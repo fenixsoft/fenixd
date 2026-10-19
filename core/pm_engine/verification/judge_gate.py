@@ -108,6 +108,7 @@ def _judge_report_context_key(pipeline, spec_name: str):
         return None
 
 
+# [fenix-ignore:f9f2945ed570] 重置写副作用已由 docstring 声明且全部 4 个调用点（gate 首行读旗标/轮内阈值门/记账校验/升级去重）都刻意依赖「上下文变化即重置」洗掉旧上下文残留，拆出的纯读入口当前零消费者、反成死代码。
 def _judge_round_state(pipeline, spec_name: str) -> dict:
     """读 (spec, 验证轮, 判定上下文) 维度计数器；上下文变化即重置（3.1）。
 
@@ -291,12 +292,17 @@ def _judge_round_verdict_history(pipeline, spec_name: str, limit: int = 5) -> st
         return ""
 
 
-def _judge_round_escalate(pipeline, spec_name: str, state: dict) -> None:
+def _judge_round_escalate(pipeline, spec_name: str) -> None:
     """轮内停派的人工升级（只发一次/轮，复用 human-escalation-alert 通道）。
 
     spec 保持 testing 可重试状态（MUST NOT 冻结、MUST NOT 销毁产物）：人工
     处置后重入 testing 按正常路径执行；重复命中（stuck 兜底重入验证轮）仅
     INFO 留痕，不重复告警。
+
+    口径单源（code-review item 2d93f5f1036a）：告警与 escalated 标记一律取
+    本函数重读的 fresh 快照，不消费调用方判阈用的陈旧快照——两读之间判定
+    上下文若变化，重读即触发计数重置，此时升级前提不复成立，放弃本次升级
+    交由下一门入重新判定（见下方守卫）。
     """
     fresh = _judge_round_state(pipeline, spec_name)
     if fresh["escalated"]:
@@ -304,6 +310,20 @@ def _judge_round_escalate(pipeline, spec_name: str, state: dict) -> None:
             "pm_engine",
             f"judge 轮内重裁决已达阈值（本轮已升级）'{spec_name}' — 保持 testing "
             f"等待人工处置，不重复告警",
+        )
+        return
+    if fresh["real"] < _JUDGE_ROUND_MAX_REAL_DISPATCHES:
+        # 调用方快照判阈后、此处重读前判定上下文已变化（引擎重写 report.json
+        # → 重读触发计数重置、real 归零）：轮内计数只增不清零，fresh 低于
+        # 阈值即重置发生的直接证据。放弃本次升级——告警不再拼接两轮数值，
+        # escalated 标记也不落在新上下文上（否则合法新执行轮的首轮派发会被
+        # _judge_dispatch_gate 的 escalated 短路拦下，须待上下文再变一次才
+        # 自愈）。
+        pipeline._context.logger.info(
+            "pm_engine",
+            f"judge 轮内升级前提已失效 '{spec_name}'（重读时判定上下文已变化，"
+            f"轮内真实派发计数已重置为 {fresh['real']}）— 放弃本次升级，"
+            "交由下一门入重新判定",
         )
         return
     # 标记写入失败不得炸穿派发门（code-review fa230eb24c59，与
@@ -337,12 +357,12 @@ def _judge_round_escalate(pipeline, spec_name: str, state: dict) -> None:
             signal_type="judge_round_rerun_cap",
             severity="major",
             description=(
-                f"'{spec_name}' 第 {state['round']} 轮验证内 judge 重裁决达阈值"
+                f"'{spec_name}' 第 {fresh['round']} 轮验证内 judge 重裁决达阈值"
                 f"（真实派发 {fresh['real']} 次，第 {fresh['real'] + 1} 次派发被阻止）—"
                 "已停止派发等待人工处置，spec 保持可重试状态"
             ),
             evidence=(
-                f"spec={spec_name}; verify_round={state['round']}; "
+                f"spec={spec_name}; verify_round={fresh['round']}; "
                 f"round_real_dispatches={fresh['real']}; 历次结论: {history or '无记录'}"
             ),
             recommended_action=(
@@ -429,7 +449,7 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
             return None
         state = _judge_round_state(pipeline, spec_name)
         if state["real"] >= _JUDGE_ROUND_MAX_REAL_DISPATCHES:
-            _judge_round_escalate(pipeline, spec_name, state)
+            _judge_round_escalate(pipeline, spec_name)
             return False
         _judge_charge_real_dispatch(pipeline, spec_name)
         return None
