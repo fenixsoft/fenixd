@@ -447,6 +447,11 @@ export default function SpecStatusModal({
       message.warning(`预算覆盖须在 1-${budgetMax} 范围内（或留空跟随全局），请修正后再保存`);
       return;
     }
+    // step=1 不拦手动键入的小数（如 2.5），保存前与后端整数口径在前端对齐，免一次 400 往返
+    if (budgetOverride !== null && !Number.isInteger(budgetOverride)) {
+      message.warning('预算覆盖须为整数，请修正后再保存');
+      return;
+    }
     setPendingAction('budget-save');
     try {
       await setSpecBudget(project, spec, budgetOverride);
