@@ -343,7 +343,7 @@ def _read_verifier_result(
     bug_count = len(bugs) if isinstance(bugs, list) else 0
     pipeline._context.logger.info(
         "pm_engine",
-        f"Verifier result: status={status}, bugs={bug_count}",
+        f"{role_label} result: status={status}, bugs={bug_count}",
     )
     return VerdictReadResult.success(status)
 
