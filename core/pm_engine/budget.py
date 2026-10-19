@@ -187,9 +187,8 @@ class ImplBudget:
         """死亡豁免侧车告警阈值（pm.budget_exempt_alert_threshold，缺省 6）。"""
         try:
             # 显式判 None（code-review item 431b18465020，与 engine.py
-            # _handle_push_failure 的 95c429d664e3 同款）：`or` 会把合法的 0
-            # （首次死亡豁免即告警，由下方 max(1, val) 夹紧下限）吞成默认 6，
-            # 仅缺省时才回退默认值。
+            # _handle_push_failure 的 95c429d664e3 同款）：`or` 会把合法的
+            # 非缺省阈值吞成默认 6，仅缺省时才回退默认值。
             raw = self._pm._get_config(
                 "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
             )
@@ -199,9 +198,12 @@ class ImplBudget:
             # 会把 6.9 截断为 6、接受 "7"，同一模块内两个配置键的合法性口径
             # 相反，用户按另一边心智配置会得到静默不同的取值。
             # bool 先排除（ae68484c51b3）：int(True)=1 会把阈值静默压到 1。
+            # 非正整数（0/负数）同判非法回退缺省（code-review item
+            # ec0456bda1ea）：与 resolve_impl_run_budget_max 的「非正整数
+            # 非法」口径一致，负数不再被下方 max(1, val) 静默夹成 1。
             val = (
                 raw
-                if isinstance(raw, int) and not isinstance(raw, bool)
+                if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1
                 else BUDGET_EXEMPT_ALERT_THRESHOLD
             )
         except (TypeError, ValueError, OverflowError):
@@ -211,7 +213,8 @@ class ImplBudget:
             # _exempt_dead_run_budget 记账段兜底 except，把已完成退款/
             # 侧车递增的豁免误标 "failed"。
             val = BUDGET_EXEMPT_ALERT_THRESHOLD
-        return max(1, val)
+        # 非正整数已在上方校验回退缺省，此处不再夹取（ec0456bda1ea）。
+        return val
 
     def _exempt_dead_run_budget(
         self,
@@ -938,6 +941,13 @@ class ImplBudget:
                 f"最近实现 run={entry.get('implementer_run') or '未知'}，"
                 f"验证 run={entry.get('tester_run') or '未知'}"
             )
+        # 截断（code-review item b55655bb61fb）：STATE error 全文可能是超长
+        # 终态文本（堆栈、stderr 片段），原样拼进冻结 error 文案与下方告警
+        # evidence 会使其膨胀；与同文件 _exempt_dead_run_budget 拒绝分支的
+        # run_reason[:80] 截断惯例同族，取 240 字符、超长以「…」标注。两处
+        # 拼接点共用本变量，截断口径天然一致。
+        if len(recent_error) > 240:
+            recent_error = recent_error[:240] + "…"
         # fix-blocked-freeze-classification 3.1：收敛到 freeze_for_human 单一
         # 入口（frozen + 人工升级告警成对写入），消除「各站点各自记得成对」
         # 的漂移面。error 文案原样保留（长文案，不强制统一前缀）。
