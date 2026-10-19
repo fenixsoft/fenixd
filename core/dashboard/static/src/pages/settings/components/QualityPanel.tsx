@@ -213,6 +213,14 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     buildValues: () => buildFormValues(config),
     backfillDeps: [config.verify, config.code_review, config.code_review_fix, config.regression],
     onSave,
+    // code-review item 05f17ff15417：下方四段各只含本面板受管键、整段提交是
+    // 有意为之——后端 write_config 为按键深合并而非按段替换（核实坐标：
+    // core/dashboard/data/config_admin.py:2114 调 _deep_merge_managed，起点
+    // copy.deepcopy(raw)；verify 段 :1121-1175 逐键合并，admin.code_review 经
+    // _apply_guarded_subkeys :996-1009 从 existing dict 逐键守卫，admin.
+    // code_review_fix :1235-1266 与 admin.regression :1271-1280 同款
+    // dict(existing) 起步——段内他处受管键不受本面板保存影响）。若后端合并
+    // 语义改为按段覆盖，此处须同步改为读取-合并-回写。
     buildPayload: (values): Partial<ConfigData> => ({
       // add-impl-code-review-gate：收尾代码质量审查开关（键路径不变，仅移至质量页签）
       verify: {
