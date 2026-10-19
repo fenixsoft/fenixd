@@ -739,12 +739,21 @@ class G4MergebackMixin:
             rec = store.append(signal_entry)
             if rec is not None:
                 schedule_narrative(rec["id"], signal_entry, self)
-            self.logger.warning(
-                "worktree_manager",
-                f"build_artifact_paths_missing 信号已写入 "
-                f"(spec={spec or '?'}, project={project_name}) — "
-                f"呼叫 Administrator 起草产物路径配置",
-            )
+                self.logger.warning(
+                    "worktree_manager",
+                    f"build_artifact_paths_missing 信号已写入 "
+                    f"(spec={spec or '?'}, project={project_name}) — "
+                    f"呼叫 Administrator 起草产物路径配置",
+                )
+            else:
+                # append 拒写返回 None 即记录未落盘（对照 _report_spec_
+                # amendment_inflight 口径）：起草信号实际丢失，不得宣称已写入。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"build_artifact_paths_missing 信号未落盘 "
+                    f"(spec={spec or '?'}, project={project_name}"
+                    f"）——admin store 下限保护拒写",
+                )
         except Exception as e:
             self.logger.warning(
                 "worktree_manager",
@@ -1761,7 +1770,18 @@ class G4MergebackMixin:
                         f"no merge in progress, main tree not in a conflicted state"
                     )
             # 恢复被移开的 untracked 文件（不丢数据，供下一轮重试）
-            self._restore_backup(backup)
+            # 回移失败不掩盖冲突归因（与 TimeoutExpired 分支/末尾通用 except
+            # 分支同口径）：_restore_backup 逐文件只捕 OSError，备份目录无读
+            # 权限或被并发删除时 rglob 迭代抛 OSError 会穿出，把携带
+            # conflict_paths/self_heal_applicable 的结构化归因顶替成裸异常。
+            try:
+                self._restore_backup(backup)
+            except Exception as restore_err:  # noqa: BLE001 — 回移失败不掩盖冲突归因
+                self.logger.warning(
+                    "worktree_manager",
+                    f"merge-back 冲突失败后回移备份失败，用户文件滞留备份目录"
+                    f"待人工处理：backup='{backup}'：{restore_err}",
+                )
             return MergeConflictInfo(
                 False,
                 error,
