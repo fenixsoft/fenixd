@@ -137,11 +137,17 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     }
     setSaving(true);
     try {
-      // 父级保存失败时返回 false（错误 toast 已由父级呈现），仅明确成功才
-      // 提示「保存成功」，避免失败时错误与成功两条提示自相矛盾。
+      // 父级保存失败时返回 false（错误 toast 已由父级呈现）；成功提示由父级
+      // handleSave 统一呈现（本设置页各面板的 onSave 均依赖该统一提示），
+      // 面板侧不再重复弹「保存成功」（code-review item 7614592202c7）。
       const ok = await onSave({ description });
       if (ok) {
-        message.success('保存成功');
+        // 保存往返的二次对账（code-review item 4a5d0a7466a5，比照
+        // handleYamlSave 的 projectRef 对账 916d9186a619）：保存期间用户已
+        // 切换项目时，迟到回包的基线/归属推进只属于发起时刻的旧项目——归属
+        // 停在旧项目会令新项目的保存被上方守卫持续拦截（提示「请稍候再
+        // 保存」）。静默跳过推进，视图与归属让给切项目后的 config 回填。
+        if (projectRef.current !== project) return;
         // 已落盘内容即新基线（比照 yaml 侧 d9f2bd1097f0）：保存触发的父级重载
         // 回填到来时，草稿不会误入「未保存修改」保护分支
         descriptionSourceRef.current = { project, baseline: description };
@@ -180,6 +186,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
         // 不得 setDescription，否则本地简介与服务器漂移且用户无从察觉。
         const saved = await onSave({ description: result.description });
         if (saved) {
+          // 保存往返的二次对账（code-review item 4a5d0a7466a5，比照
+          // handleYamlSave 的二次对账 9214c24a5464）：上方首次对账只覆盖生成
+          // 往返，覆盖不到本窗口——onSave 往返期间用户已切换项目时，
+          // setDescription 与归属推进会把发起时刻旧项目的简介盖回新项目视图，
+          // 归属停在旧项目还会令新项目的保存被守卫持续拦截。静默跳过，
+          // 视图与归属让给切项目后的 config 回填。
+          if (projectRef.current !== project) return;
           setDescription(result.description);
           // 已落盘内容即新基线（与 handleSave 同口径）：保存触发的父级重载
           // 回填到来时，草稿不会误入「未保存修改」保护分支
