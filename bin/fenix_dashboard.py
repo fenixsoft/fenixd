@@ -163,7 +163,18 @@ def get_active_agents():
             cpu = parts[1]
             mem = parts[2]
             cmd = parts[3]
-            # 提取 agent 角色
+            # 提取 agent 角色（code-review item 66af8ee3e1e2）：角色词表是
+            # claude 形态命令行的启发式，且源自旧「prompt 进 argv」形态的
+            # 残留——主车道 prompt 现经 stdin 传输，claude argv 已不驻留
+            # prompt 正文，多数情况下同样回落泛称。dsh 通道 argv 形如
+            # `dsh --profile <p> --patch <yml> --json`（prompt 走 stdin，
+            # 位置槽会被 dsh CLI 解析为任务 positional、塞不进角色标识，
+            # 见 dsh_adapter.DSH_APP_NAME 注记），恒显示泛称 agent；
+            # process_patterns 通道只负责 argv[0] 识别（harness 七成员
+            # 契约），无角色注入位，故不扩展词表、仅在此明示覆盖边界。
+            # 下方 SPEC 名启发式同理依赖 claude --add-dir 暴露的 worktree
+            # 路径段（impl-/verify- 前缀），dsh argv 不含路径，SPEC 名
+            # 亦退化为空。
             role = "agent"
             if "Implementer" in cmd:
                 role = "🔨 implementer"
