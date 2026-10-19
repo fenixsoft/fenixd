@@ -1755,29 +1755,56 @@ def _slugify(text: str) -> str:
 
 
 def _spec_name_conflicted(project_root, state_machine, candidate: str) -> bool:
-    """三处判重：spec/changes/<cand>、STATE 既有条目名、spec/archive/*-<cand>。
+    """四处判重：spec/changes/<cand>、STATE 既有条目名、归档台账、spec/archive。
 
-    与 evolution resolve_spec_name 同源口径。
+    与 evolution resolve_spec_name 同源口径：STATE / 归档台账读取与
+    spec/archive 遍历故障均保守判冲突（fail-closed，不静默放行）；归档目录
+    判重并入 _archive_name_candidates 归一化候选集（原样名含于候选集，覆盖
+    ``YYYY-MM-DD-<name>-<n>`` / ``<name>-<epoch>`` 形态）与归档台账检查。
     """
+    from core.evolution import _archive_name_candidates
+
     proot = Path(project_root)
     if (proot / "spec" / "changes" / candidate).is_dir():
         return True
-    if state_machine is not None:
-        try:
-            if candidate in state_machine.read_all():
-                return True
-        except Exception as e:
-            _logger.warning("code_review: 读取 STATE 判定重名失败: %s", e)
+    try:
+        if state_machine is not None and candidate in state_machine.read_all():
+            return True
+    except Exception as e:
+        # STATE 读取故障保守判冲突（fail-closed，与 evolution._conflicted
+        # 同口径）：放行后 add_spec 会覆盖既有同名 STATE 条目的状态。
+        _logger.warning("code_review: 读取 STATE 判定重名失败，保守按冲突处理: %s", e)
+        return True
+    # 归档台账并入撞名检查（与 evolution._conflicted 同口径）：仅在台账中
+    # 登记、目录名归一化候选集不命中的已迁出名同样不可复用。
+    try:
+        from core.dashboard.data.state import parse_archived_state
+
+        if candidate in parse_archived_state(proot):
+            return True
+    except Exception as e:
+        # 归档台账读取故障与上方 STATE 读取、下方 spec/archive 遍历同口径
+        # 保守判冲突（fail-closed）：瞬时故障静默放行会放过撞名候选。
+        _logger.warning("code_review: 读取归档清单判定重名失败，保守按冲突处理: %s", e)
+        return True
     arch_root = proot / "spec" / "archive"
     if arch_root.is_dir():
         try:
             for archived in arch_root.iterdir():
                 if not archived.is_dir():
                     continue
-                if archived.name == candidate or archived.name.endswith(f"-{candidate}"):
+                # 归档名以 ``-<candidate>`` 结尾（如 ``add-<name>`` 前缀形态）
+                # 或其归一化候选集含 candidate（全等由候选集含原样名覆盖）均判
+                # 冲突，口径与 evolution._conflicted 一致。
+                if (archived.name.endswith("-" + candidate)
+                        or candidate in _archive_name_candidates(
+                            archived.name)):
                     return True
-        except OSError:
-            pass
+        except OSError as e:
+            # 归档目录遍历失败与上方读取故障同口径保守判冲突（fail-closed）：
+            # 瞬时 IO 故障静默放行会放过与既有归档撞名的候选名。
+            _logger.warning("code_review: 遍历 spec/archive 判定重名失败，保守按冲突处理: %s", e)
+            return True
     return False
 
 
@@ -1832,7 +1859,7 @@ def generate_fix_spec(
       预检，违规则删除草稿、返回错误、条目状态不变（不半写）；
     - 命名 ``fix-cr-<slug>``（slug 由首个条目 category/短标题推导），冲突
       追加 ``-<fingerprint[:6]>`` 重试；判重覆盖 spec/changes / STATE /
-      spec/archive 三处；仍冲突返回错误不覆盖；
+      归档台账 / spec/archive 四处；仍冲突返回错误不覆盖；
     - 落地：复制草稿到 spec/changes/<name> → git add+commit → add_spec
       (drafted, priority=5[, start_after])；成功后参与条目置 in_spec 并写 spec_name；
     - 幂等：同批 item_ids 已成功（全部 in_spec 且同 spec_name）时返回既有
