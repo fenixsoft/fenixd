@@ -842,6 +842,46 @@ def _audit_stray_writes(proot: Path, before, label: str) -> None:
         )
 
 
+def _expand_knowledge_surface(proot: Path, paths) -> set:
+    """把 status 路径快照展开到 ``spec/knowledge/`` 文件粒度。
+
+    git status 对「目录下无任何已跟踪文件」的未跟踪子树按整目录折叠展示
+    （如 ``?? spec/``），文件级基线差集对此是盲区：首蒸项目（spec/ 下尚无
+    已跟踪文件）的全部产出会被折叠条目藏住，按文件路径过滤得空集而跳过
+    提交。仅当快照含与 knowledge 表面相交的折叠条目（条目在 knowledge
+    目录之下，或 knowledge 目录在其子树内）时，用 ls-files 枚举 knowledge
+    表面实际未跟踪文件补全；其余路径原样保留。探测失败按空展开降级
+    （差集收窄为保守跳过，不误提交）。
+    """
+    surface: set = set()
+    kn_prefix = KNOWLEDGE_DIR + "/"
+    need_probe = False
+    for p in paths:
+        if p.startswith(kn_prefix):
+            if p.endswith("/"):
+                need_probe = True  # knowledge 目录内部整目录折叠
+            else:
+                surface.add(p)
+        elif p.endswith("/") and kn_prefix.startswith(p):
+            need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）
+    if need_probe:
+        probe = _git(
+            proot,
+            [
+                "--no-optional-locks", "ls-files",
+                "--others", "--exclude-standard", "-z",
+                "--", KNOWLEDGE_DIR,
+            ],
+        )
+        if probe.returncode == 0:
+            surface.update(tok for tok in probe.stdout.split("\0") if tok)
+        else:
+            logger.warning(
+                "knowledge-distill 未跟踪文件枚举失败，基线差集按现状收窄"
+            )
+    return surface
+
+
 def _commit_output(proot: Path, archived_names: list, baseline=None) -> str | None:
     """pathspec 限定自动提交（复用 archive_commit 的 fail-open 哲学）。
 
@@ -875,14 +915,12 @@ def _commit_output(proot: Path, archived_names: list, baseline=None) -> str | No
                 "处置，请人工核查"
             )
             return None
-        run_new = sorted(
-            p for p in after
-            if p.startswith(KNOWLEDGE_DIR + "/") and p not in baseline
-        )
-        overlap = sorted(
-            p for p in after
-            if p.startswith(KNOWLEDGE_DIR + "/") and p in baseline
-        )
+        # 目录折叠展开：两侧快照先归一到 knowledge 表面文件粒度再做差集，
+        # 否则折叠条目（如 spec/ 全树未跟踪时的 '?? spec/'）会把产出藏住
+        after_k = _expand_knowledge_surface(proot, after)
+        baseline_k = _expand_knowledge_surface(proot, baseline)
+        run_new = sorted(p for p in after_k if p not in baseline_k)
+        overlap = sorted(p for p in after_k if p in baseline_k)
         if overlap:
             logger.warning(
                 "knowledge-distill 自动提交：spec/knowledge/ 下改动含 run 前"
