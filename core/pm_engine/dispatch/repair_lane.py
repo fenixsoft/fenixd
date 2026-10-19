@@ -30,10 +30,15 @@ def _merge_breaker_threshold(pm) -> int:
     """``agents.merge_breaker_threshold`` 读取与归一（单一落点）。
 
     归一规则（code-review item bba1be087ad5）：None 判空而非 or 兜底（对齐
-    fast_track c54ffbef69c5，合法配置 0 不被 or 吞成缺省 2）→ TypeError/
-    ValueError 回退缺省 2（code-review item a8c4f9dfc7a0：字符串/null 配置
-    裸用于熔断比较抛 TypeError）→ ``max(..., 1)`` 下限保护（负数配置无意义，
-    收敛到 1）。bool/小数显式拒绝（code-review item 4b349f62101e，对齐
+    fast_track c54ffbef69c5，合法配置 0 不被 or 吞成缺省 2）→ 读取
+    异常回退缺省 2（初为窄口径 TypeError/ValueError，code-review item
+    a8c4f9dfc7a0；50bc7b7d8e07 统一与 ``_max_retries`` 同族宽口径：两读取器
+    消费点同在失败收尾链——本文件 _handle_remerge_failure/_direct_rehearsed_
+    to_repair 与 queue/fast_track 同键读取点，异常会打断 update_spec/熔断/
+    fallback 收尾；``_get_config`` 现为 ConfigLoader.get 内存读、实际外溢面
+    窄，但异常面非契约，不据此收窄防御）→ ``max(..., 1)`` 下限保护（负数
+    配置无意义，收敛到 1）。bool/小数显式拒绝（code-review item 4b349f62101e，
+    对齐
     config._normalize_transient_seconds 归一口径）：裸 ``int()`` 会把
     ``true`` 截成 1、``1.5`` 截成 1，配置写坏静默改写熔断阈值——整值浮点
     （``2.0``）按整数接受，非法值回退缺省并经 ``pm.logger`` WARNING 留痕
@@ -46,7 +51,7 @@ def _merge_breaker_threshold(pm) -> int:
     default = 2
     try:
         cfg_threshold = pm._get_config("agents.merge_breaker_threshold", 2)
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 —— 与 _max_retries 同族同宽（失败收尾链防御，回退缺省不抛穿）
         cfg_threshold = None
     threshold = default
     illegal = False
@@ -1301,9 +1306,26 @@ class PRepairLaneMixin:
                 f"冻结转人工，不再重派",
             )
             return
-        self._pm.state_machine.update_spec(
-            spec_name, {"status": "ready", "error": full_error, **updates},
-        )
+        # 主写守卫（code-review item 66588fe4ac71，与同方法 bump_counters
+        # 4ba308cf06fe / read_one db8dcf54c94e 既有守卫同款论证）：update_spec
+        # 是真实 STATE IO（flock + read/write），而本方法是 repair 链三条失败
+        # 路径的共同收尾（且可能运行在 worker 的 except 兜底内）——裸调若瞬时
+        # 抛错：从 worker 正常失败路径发起时异常沿调用点上浮落入外层 except，
+        # 整调一次本方法（_retry_count 被重复 bump、worktree 收尾/遗产登记
+        # 重复执行）；从外层 except 内发起时异常穿出线程，_enqueue_front 被
+        # 跳过，spec 悬置 implementing 且无队列条目。失败仅 WARNING 留痕并
+        # 继续入队（状态未就绪时派发器会跳过该条目，入队无害，full_scan
+        # 周期兜底）。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name, {"status": "ready", "error": full_error, **updates},
+            )
+        except Exception as e:  # noqa: BLE001 —— 主写失败不放大收尾、不跳过入队
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair fallback 状态回写失败 '{spec_name}'（保留现场继续入队，"
+                f"等 full_scan 周期兜底）: {type(e).__name__}: {e}",
+            )
         self._pm.logger.error(
             "pm_engine",
             f"repair 链回退 fallback '{spec_name}'：{full_error[:200]}",
