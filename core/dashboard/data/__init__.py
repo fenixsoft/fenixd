@@ -249,6 +249,7 @@ from .admin_alerts import (
     mark_alert_handled,
     mark_all_alerts_handled,
     alerts_summary,
+    alerts_overview,
     get_admin_activities,
     get_archived_activities,
     merge_dispositions_by_run,

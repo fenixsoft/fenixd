@@ -134,16 +134,20 @@ class H6AlertRoutesMixin:
         total = 0
         for p in self._aggregatable_projects():
             proot = Path(p["path"])
-            summary = dashboard_data.alerts_summary(proot)
+            # 单读聚合（code-review item d3d6a32a1091）：每项目一次 read_all
+            # 在同一份记录列表上派生 summary/unhandled/resolved 三视图，替代
+            # 此前三函数各自独立读同一 admin.jsonl（3×项目数 次全量文件读）
+            view = dashboard_data.alerts_overview(proot)
+            summary = view["summary"]
             projects_out.append({"name": p["name"], **summary})
             total += summary["unhandled_count"]
-            for a in dashboard_data.get_unhandled_alerts(proot):
+            for a in view["unhandled"]:
                 item = dict(a)
                 item["project"] = p["name"]
                 all_unhandled.append(item)
             # add-alert-auto-resolve D5：已解决告警随横幅 payload 下发，
             # 前端折叠为「已解决 (N)」区（按 handled_by 区分自动解决/人工处理）
-            for a in dashboard_data.get_resolved_alerts(proot):
+            for a in view["resolved"]:
                 item = dict(a)
                 item["project"] = p["name"]
                 all_resolved.append(item)
@@ -533,7 +537,7 @@ class H6AlertRoutesMixin:
             # 对 dashboard admin 活动区可见，作为裁决审计轨迹）
             disposition_logged = False
             try:
-                store.append(
+                written = store.append(
                     {
                         "kind": DISPOSITION,
                         "signal_type": signal_type or None,
@@ -551,7 +555,11 @@ class H6AlertRoutesMixin:
                         "error": "",
                     }
                 )
-                disposition_logged = True
+                # append 拒写契约（AdminStore.append 文件损坏留底被下限保护拒写
+                # 时返回 None、记录未落盘，item 2570ca391771）：以返回值判定而非
+                # 仅异常，防拒写无异常时 disposition_logged 假 True（code-review
+                # item 7449befad4f2）
+                disposition_logged = written is not None
             except Exception as e:
                 # 留痕失败不回滚已执行的动作与 handled 标记，如实告知
                 #（结果经 disposition_logged 下发，前端不再假称「留痕已写入」，
