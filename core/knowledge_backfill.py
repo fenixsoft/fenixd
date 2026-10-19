@@ -649,7 +649,14 @@ def _is_v2_key(key: str) -> bool:
 
 # [fenix-ignore:783148c7ec9e] 本地朴素时间是有意取舍：updated_at 仅在本机 save() 合并中做字典序比较（同机同tz），若改用 timelib to_storage(now_utc()) 的 UTC/Z 后缀格式，同一时刻的新写入会比盘上既有 naive 本地串（UTC+8）字典序落后 8 小时，mark() 更新在按条合并（entry.updated_at >= other.updated_at）中永久落败、格式永远无法迁移，属行为回归故维持现状。
 def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S")
+    # 微秒精度（timelib 原语 now_local，保持 naive 本地前缀格式不变）：秒级
+    # 粒度下派发漏斗（register_archive_pending 重置 pending）与回填批次 save
+    # 的蒸馏标记同秒并列时，save 按条合并（>= 内存侧胜）无法分辨先后，登记
+    # 进程刚落盘的 pending 重置会被同秒内存态覆盖，链复核已过则该能力页缺失
+    # 新归档 delta（code-review 69a0699d64b2）。微秒化后 mark() 先后严格可辨，
+    # 并列双值歧义消除；新格式与盘上旧秒级条目字典序兼容（同秒新串更长恒
+    # 更大，新写胜出）。
+    return now_local().strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 
 @contextmanager
@@ -815,6 +822,7 @@ class BackfillLedger:
         后写者会用内存中的旧 entries 整体覆盖先写者刚落盘的条目。持锁重读盘上
         最新条目后按条合并：仅一方持有的键直接纳入，两方都有的键取
         ``updated_at`` 较新的一方——新登记条目与 pending 重置不再被覆盖丢失。
+        时间戳为微秒精度（``_now``），同秒写入的先后可辨，并列双值歧义不存在。
         """
         with _ledger_write_lock(self.path.parent.parent):
             try:
@@ -868,8 +876,9 @@ def register_archive_pending(project_root: Path, archive_name: str) -> bool:
 
     台账在盘、原子回写，重启安全；回写经 ``BackfillLedger.save`` 的进程间文件锁
     + 按条合并落盘，与回填 run 的并发整文件回写互斥、不互相覆盖。台账/specs
-    目录不可读时 fail-open 返回 False 并登记 todo（对齐 ``ledger_has_pending``
-    口径），不阻断派发漏斗。
+    目录不可读、或台账落盘（``save`` 取锁/原子回写）失败时 fail-open 返回
+    False 并登记 todo（对齐 ``ledger_has_pending`` 口径），不阻断派发漏斗——
+    单次登记故障不让同批归档中排其后的登记被中断退回即时派发。
     Returns: 是否发生登记/重置。
     """
     root = Path(project_root)
@@ -907,7 +916,22 @@ def register_archive_pending(project_root: Path, archive_name: str) -> bool:
         elif ledger.reset_pending(cap_key):
             changed = True
     if changed:
-        ledger.save()
+        # 落盘纳入同款 fail-open 口径（code-review 2d47ec6b4292）：save 的取锁
+        # （lock 文件 mkdir/open）与原子回写阶段的 OSError 同属「台账不可写」
+        # 故障，外抛会沿派发漏斗调用链上抛、由调用方兜底回退即时派发，同批
+        # archived_names 中排其后的归档登记被中断。降级为 todo 留痕 + 返回
+        # False，与上方读取失败分支一致。
+        try:
+            ledger.save()
+        except OSError:
+            try:
+                append_todo_line(
+                    project_root,
+                    f"回填登记 {archive_name} 失败（台账落盘写入异常），请人工检查后重试",
+                )
+            except OSError:
+                pass
+            return False
     return changed
 
 
@@ -1208,23 +1232,47 @@ def build_prehistoric_prompt(
 # ── 链索引、批次划分与规模统计 ───────────────────────────────────────────
 
 
-def build_chain_index(project_root: Path) -> dict[str, list[str]]:
+def build_chain_index(project_root: Path, log=None) -> dict[str, list[str]]:
     """能力聚合链索引（方案 B 核心，纯机械零 LLM）：遍历 ``spec/archive/*/specs/``
     目录名（能力名）× 归档目录名排序，产出 ``能力 → 触碰它的全部归档 delta 链``。
 
     归档目录名以 ``YYYY-MM-DD`` 日期前缀开头，字典序即日期升序——链序天然按
     时间排列，聚合蒸馏按链序一次成文最终态页面。无 ``specs/`` 的归档不触碰
     任何能力（只可能进 ADR 抽取维度）。
+
+    目录在盘但不可读（权限/EIO）时 fail-open 降级并 WARNING 留痕，不以未处理
+    异常掀翻调用方车道（对齐本车道读路径防护纪律，code-review 2e035dbc6e46）：
+    归档目录整体列举失败按零索引返回；单归档 specs 列举失败跳过该归档，其
+    delta 缺位留痕待人工。``log`` 缺省静默替身。
     """
+    log = log or _NullLogger()
     archive_dir = Path(project_root) / "spec" / "archive"
     index: dict[str, list[str]] = {}
     if not archive_dir.is_dir():
         return index
-    for archive in sorted(p.name for p in archive_dir.iterdir() if p.is_dir()):
+    try:
+        archive_names = sorted(p.name for p in archive_dir.iterdir() if p.is_dir())
+    except OSError as e:
+        log.warning(
+            "knowledge",
+            f"回填链索引：归档目录 {archive_dir} 列举失败（fail-open 按零索引降级），"
+            f"请人工检查后重跑回填：{e}",
+        )
+        return index
+    for archive in archive_names:
         specs = archive_dir / archive / "specs"
         if not specs.is_dir():
             continue
-        for cap in sorted(p.name for p in specs.iterdir() if p.is_dir()):
+        try:
+            caps = sorted(p.name for p in specs.iterdir() if p.is_dir())
+        except OSError as e:
+            log.warning(
+                "knowledge",
+                f"回填链索引：归档 {archive} 的 specs 目录列举失败（fail-open 跳过"
+                f"该归档，其 delta 链缺位），请人工检查：{e}",
+            )
+            continue
+        for cap in caps:
             index.setdefault(cap, []).append(archive)
     return index
 
@@ -1555,11 +1603,26 @@ def run_backfill(
     spawn = spawn or default_spawn(project_root)
 
     archive_dir = project_root / "spec" / "archive"
-    archives = (
-        sorted(p.name for p in archive_dir.iterdir() if p.is_dir())
-        if archive_dir.is_dir()
-        else []
-    )
+    try:
+        archives = (
+            sorted(p.name for p in archive_dir.iterdir() if p.is_dir())
+            if archive_dir.is_dir()
+            else []
+        )
+    except OSError as e:
+        # 归档目录在盘但不可读（权限/EIO）：fail-open 留痕零动作退出，对齐
+        # 台账/模板不可读的入口防护纪律，不以未处理异常掀翻车道
+        # （code-review 2e035dbc6e46）
+        log.warning(
+            "knowledge",
+            f"回填归档目录 {archive_dir} 列举失败，本车道跳过待人工检查：{e}",
+        )
+        _append_todo_fail_open(
+            project_root,
+            "回填归档目录 spec/archive 列举失败，请人工检查后重跑回填",
+            log,
+        )
+        return {"triggered": False, "reason": "archive-dir-unreadable"}
     if not archives:
         return {"triggered": False, "reason": "no-archives"}
 
@@ -1586,7 +1649,7 @@ def run_backfill(
         )
         return {"triggered": False, "reason": "prompt-template-unreadable"}
 
-    chain_index = build_chain_index(project_root)
+    chain_index = build_chain_index(project_root, log=log)
     try:
         ledger = BackfillLedger.load(project_root / LEDGER_RELPATH)
     except (OSError, ValueError):
@@ -1991,7 +2054,7 @@ def run_backfill(
                 # 下轮重入收敛判定即跳过该能力，新归档的溯源行对该能力页永久
                 # 缺失。重扫链索引与提示词所用链比对，链有增变的条目保持
                 # pending，下轮重入按新链重新聚合（code-review c06e4666a93b）。
-                fresh_index = build_chain_index(project_root)
+                fresh_index = build_chain_index(project_root, log=log)
                 for cap in batch:
                     cap_key = CAPABILITY_PREFIX + cap
                     if fresh_index.get(cap, []) != chain_index.get(cap, []):

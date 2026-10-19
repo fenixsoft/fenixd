@@ -304,7 +304,10 @@ def ownership_violations_for_task_line(line: str, lane: str) -> List[str]:
                 continue  # 防御：未登记文件（理论不可达）
             owners = VERIFICATION_ARTIFACT_OWNERS[artifact_key]
             core_hits.append(literal)
-            if _line_points_to_code(line, artifact_key):
+            # 遮蔽完整匹配字面量（与步骤 1b 同粒度）：仅遮 artifact_key 会把
+            # ``.fenix/verify-progress/<spec>/`` 前缀留在行内，spec 目录名恰为
+            # core/tests 等代码路径前缀字面量时被误判代码特征而漏报
+            if _line_points_to_code(line, literal):
                 continue  # 步骤 2：含代码文件 → 写代码让框架产出 → 放行
             if _line_has_production_verb(line, match.end()) and lane not in owners:
                 violations.append(

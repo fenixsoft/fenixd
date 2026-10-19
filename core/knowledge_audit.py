@@ -36,6 +36,9 @@ from core.config import ConfigLoader
 from core.knowledge_backfill import (
     append_todo_line,
     atomic_write_text,
+    # re-export：本文件虽未直接调用，但测试替身与外部调用方以
+    # ka.commit_pathspec 属性引用（code-review 6a2085a486ca 曾按「文件内
+    # 无引用」误删，提交路径 AttributeError 被消费段 fail-open 吞掉后回归）
     commit_pathspec,
     default_spawn,
     discard_paths,
@@ -659,7 +662,10 @@ def consume_arbitration(
     )
     _save_arbitration_list(project_root, consumed)
     # 摘注记按消费后台账现状重算期望态、只限涉事页：同页其余 escalated 条目
-    # 仍超龄在册时注记改写（fps 收敛）而非误摘。
+    # 仍超龄在册时注记改写（fps 收敛）而非误摘。期望态从盘上台账重读（对齐
+    # run_audit 收尾重读口径）：本地 ledger 是本段开局快照，将来挂载
+    # dashboard --serve 第二写入方时，同页他方在册而快照缺失的 escalated 条目
+    # 若按快照重算会被当「该页无超龄条目」整条误摘。
     changed: list[str] = []
     core = load_knowledge_core()
     if core is None:
@@ -670,7 +676,8 @@ def consume_arbitration(
     else:
         cfg = ConfigLoader.get_knowledge_lane_config(config or {})
         desired = _disputed_targets(
-            _escalated_entries(ledger), cfg["escalated_stale_days"]
+            _escalated_entries(_load_findings_ledger(project_root)),
+            cfg["escalated_stale_days"],
         )
         # 写段取蒸馏锁（同 run_audit 注记同步段口径）：_sync_disputed_annotations
         # 是对知识页的读盘-改行-整页原子回写，仲裁消费挂在 300s 检查点上、与
@@ -823,9 +830,14 @@ def _trailing_ws_dirty(ln: str) -> bool:
 
     Markdown 行尾恰好两个空格是硬换行语义（可见内容形态，非脏空白）：格式
     扫描对其豁免、机械清理原样保留；其余尾随空白（单个空格、3 个及以上连续
-    空格、制表符等）按脏空白扫描与剥除。扫描与清理共用同一判定，避免出现
-    「扫得出修不掉」的永久挂起格式页。
+    空格、制表符等）按脏空白扫描与剥除。硬换行豁免只适用于有内容的行——
+    整行仅两个空格的纯空白行不含任何可见内容、无硬换行语义可言，统一按脏
+    空白清理。扫描与清理共用同一判定，避免出现「扫得出修不掉」的永久挂起
+    格式页。
     """
+    if not ln.strip():
+        # 纯空白行：非空（rstrip 后为空但原行有字符）即脏空白，不享硬换行豁免
+        return bool(ln)
     tail = ln[len(ln.rstrip()) :]
     return tail not in ("", "  ")
 
@@ -1128,18 +1140,22 @@ def _scan_semantic(pages: list[dict]) -> list[dict]:
 
 def _apply_mechanical(
     project_root: Path, scan: dict
-) -> tuple[list[str], list[str], set[str]]:
+) -> tuple[list[str], list[str], set[str], dict[str, int]]:
     """执行机械自修（悬空溯源行/越界 sources、格式、ADR index 状态对齐），
-    返回 ``(修复明细, 待人工明细, 实际改写页 relpath 集合)``：前者只收确实完成
-    改写的条目（修复计数与提交摘要的依据），槽位定位失败等无法机械处置的场景
+    返回 ``(修复明细, 待人工明细, 实际改写页 relpath 集合, 分类修复计数)``：
+    前者只收确实完成改写的条目（修复明细与提交摘要的共同依据），槽位定位
+    失败等无法机械处置的场景
     入后者转待人工；relpath 集合只收盘上发生实际改写的文件（仅 sources 全悬空
     保留原值转待人工、无其他改写的页不在其中；混合场景删行页在内，悬空
-    sources 保留原值部分另行转待人工），供「本批已纠偏页」判定使用。
+    sources 保留原值部分另行转待人工），供「本批已纠偏页」判定使用；分类计数
+    按 dangling/format/adr 键统计各类修复条数（提交摘要直接消费，不对明细
+    文案做子串匹配，文案措辞变更不再导致摘要错计）。
     只写 spec/knowledge/ 内文件。"""
     archives = _existing_archives(project_root)
     fixed: list[str] = []
     manual: list[str] = []
     rewritten: set[str] = set()
+    cats = {"dangling": 0, "format": 0, "adr": 0}
     # [fenix-ignore:9c26e33a4a68] 病灶快照已在 run_audit 蒸馏锁内采集，扫描与删行同临界区，并发蒸馏 run 无法在两者之间插写错位行号。
     for item in scan["dangling"]:
         # 页文件在扫描快照后被外部删除/权限变化（锁外人工与 git 操作不受蒸馏
@@ -1207,6 +1223,7 @@ def _apply_mechanical(
             f"{item['rel']}：删除悬空溯源 {len(drop)} 行"
             + (f"、剔除越界 sources {removed_sources} 项" if removed_sources else "")
         )
+        cats["dangling"] += 1
         if removed_sources == 0 and item["missing_sources"]:
             # 混合场景（悬空引用行已删 + sources 全悬空保留原值）：上面 fixed
             # 只计删行，被保留的悬空 sources 当轮无留痕；missing_sources 非空
@@ -1237,6 +1254,7 @@ def _apply_mechanical(
             atomic_write_text(path, cleaned)
             rewritten.add(rel)
             fixed.append(f"{rel}：清理格式（行尾空白/EOF 换行）")
+            cats["format"] += 1
     # ADR index 状态对齐（机械）：替换只作用于状态槽位跨度（_adr_status_slot
     # 按同一切列规则重定位），不碰标题/摘要列，大小写一律对齐为规范小写形
     index_path = Path(project_root) / KNOWLEDGE_DIR / "adr" / "index.md"
@@ -1260,10 +1278,11 @@ def _apply_mechanical(
                 fixed.append(
                     f"adr/index.md：{mm['name']} ADR 索引状态对齐为 {mm['expected']}"
                 )
+                cats["adr"] += 1
         if wrote:
             atomic_write_text(index_path, "\n".join(lines) + "\n")
             rewritten.add(f"{KNOWLEDGE_DIR}/adr/index.md")
-    return fixed, manual, rewritten
+    return fixed, manual, rewritten, cats
 
 
 def build_audit_prompt(kind: str, context_a: str, context_b: str) -> str:
@@ -1412,7 +1431,9 @@ def run_audit(
         # 失败 fail-open 留盘的已验证产出、人工在盘上的编辑）。回滚纪律与语义
         # 段同款：只还原本轮触达的文件，不得全目录连带清除。
         carryover = knowledge_dirty_files(project_root)
-        fixed, manual_fixes, rewritten_rels = _apply_mechanical(project_root, scan)
+        fixed, manual_fixes, rewritten_rels, fix_cats = _apply_mechanical(
+            project_root, scan
+        )
         if manual_fixes:
             counts["pending_manual"] += len(manual_fixes)
             details["manual"].extend(manual_fixes)
@@ -1428,9 +1449,9 @@ def run_audit(
             new_violations = [v for v in violations if str(v) not in before_violations]
             if not new_violations:
                 summary = (
-                    f"悬空溯源 {sum(1 for f in fixed if '悬空' in f)} 处"
-                    f"/格式 {sum(1 for f in fixed if '格式' in f)} 页"
-                    f"/ADR 索引 {sum(1 for f in fixed if '索引' in f)} 项"
+                    f"悬空溯源 {fix_cats['dangling']} 处"
+                    f"/格式 {fix_cats['format']} 页"
+                    f"/ADR 索引 {fix_cats['adr']} 项"
                 )
                 try:
                     commit(

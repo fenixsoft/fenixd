@@ -477,6 +477,14 @@ def _pid_recently_started(pid: int, grace_seconds: float = 60.0) -> bool:
     return (time.time() - started_at) < grace_seconds
 
 
+def _pid_cwd(pid: int) -> Optional[Path]:
+    """读取 /proc/<pid>/cwd 符号链接目标（读取失败/进程已消亡返回 None）。"""
+    try:
+        return Path(os.readlink(f"/proc/{pid}/cwd"))
+    except OSError:
+        return None
+
+
 def _kill_pids(pids: list, logger=None) -> int:
     """对 PID 列表逐个 SIGTERM，短暂轮询 /proc 确认退出，仍存活补 SIGKILL。
 
@@ -585,14 +593,25 @@ def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
 
 
 def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> bool:
-    """进程表中是否存在（除 dev-server 自身外）引用该 worktree 的**存活 claude 进程**。
+    """进程表中是否存在（除 dev-server 自身外）引用该 worktree 的**存活进程**。
 
-    attempt 的 claude 进程经 --add-dir 引用 worktree 目录；dev-server 自身
-    cmdline 也含该路径，需排除，否则永远「存活」。
+    argv 维度：attempt 的 claude 进程经 --add-dir 引用 worktree 目录，cmdline
+    携带路径 token；dev-server 自身 cmdline 也含该路径，需排除，否则永远
+    「存活」。
 
-    design D4（豁免过滤修复）：有效豁免**必须**以 claude 进程为锚——否则同一
-    worktree 的两个孤儿 dev-server 互为"存活引用"互相豁免、永不清扫（09-04/05
-    事故根因之一）。与 worktree_manager._worktree_has_live_process 同判定。
+    cwd 维度（code-review item 9cf345f60aee）：dsh 通道 agent 的 argv 仅含
+    dsh/--profile/--patch/--json，worktree 只落在 cwd、cmdline 不含路径
+    token，argv 维度探测结构性落空——在服 run 的 dev-server 会被误判孤儿
+    遭周期清扫/reconcile 击杀（V2_BASE_URL 悬挂）。故补 /proc/<pid>/cwd ==
+    wt_root 判定，使豁免判据与 harness 的 argv 形态解耦（claude 经
+    --add-dir、dsh 经 cwd，形态随 harness 漂移，argv 识别名集合不可依赖）。
+
+    design D4（豁免过滤修复）：argv 维度的有效豁免**必须**以 agent 可执行名
+    为锚——否则同一 worktree 的两个孤儿 dev-server 互为"存活引用"互相豁免、
+    永不清扫（09-04/05 事故根因之一）。cwd 维度无此隐患：dev-server 的 cwd
+    继承 daemon（项目根）而非 worktree，同 wt 孤儿互不构成 cwd 引用，D4
+    防线仍成立；与 worktree_manager._worktree_has_live_process 的 argv 维度
+    同判定。
     """
     # 尾边界防串扰：pgrep -f 按子串 ERE 匹配，worktree 名 foo 会连引用
     # worktrees/foo-bar 的进程一并命中（跨 worktree 误豁免）；须后随
@@ -604,9 +623,33 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     pids = _pgrep_dev_servers(
         rf"worktrees/{re.escape(wt_root.name)}(/|[[:space:]]|$)"
     )
-    return any(
+    if any(
         pid != exclude_pid and is_claude_process(str(pid)) for pid in pids
-    )
+    ):
+        return True
+    # cwd 维度扫描（harness 无关）：cwd 直接落在该 worktree 的存活进程即归属
+    # 引用，不再锚可执行名。方向性取舍：旁观进程（人工 shell 停在 wt 内）
+    # 命中造成的是漏清一轮，远低于误杀在服 run（V2_BASE_URL 悬挂、验证伪
+    # 失败）；僵尸态按已亡不计（_pid_alive 口径）。realpath 兜底：argv token
+    # 可经未解析软链（tmp 软链等），内核 cwd 恒为解析后路径，直接相等失配
+    # 时按归一路径再比对一次，防维度结构性落空。
+    wt_real = os.path.realpath(wt_root)
+    try:
+        proc_ids = os.listdir("/proc")
+    except OSError:
+        return False
+    for name in proc_ids:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid == exclude_pid or not _pid_alive(pid):
+            continue
+        cwd = _pid_cwd(pid)
+        if cwd is not None and (
+            cwd == wt_root or os.path.realpath(cwd) == wt_real
+        ):
+            return True
+    return False
 
 
 def _argv_touches_worktree_base(tokens: list, worktree_base: Path) -> bool:
@@ -619,6 +662,24 @@ def _argv_touches_worktree_base(tokens: list, worktree_base: Path) -> bool:
     """
     prefix = str(worktree_base).rstrip("/") + "/"
     return any(t.startswith(prefix) for t in tokens if t.startswith("/"))
+
+
+def _is_dev_server_argv(tokens: list) -> bool:
+    """argv 是否为本框架 node 起停形态（marker 裸子串命中的旁观进程过滤）。
+
+    dev-server 由本模块以 ``node <dev-server.mjs> ...`` 起停；pgrep -f 按
+    marker 裸子串匹配全系统 cmdline，排障类命令（grep/tail 的参数同时含
+    marker 字面量与 worktree 静态根路径）会被收进候选，若放行会被归因/
+    归属判定收进孤儿分类遭误杀。argv[0] 非 node、或 node 后既非脚本路径也
+    非选项的命中不是本框架起停的 dev-server，直接排除：
+    - 常态/回退形态 ``[node, <script>, <static_root>, <port>, marker, ...]``：
+      argv[1] 即脚本路径（脚本路径只比对文件名，跨 worktree 形态同样命中）；
+    - node 选项形态（-c/--inspect 等）：argv[1] 以 ``-`` 开头。
+    """
+    if len(tokens) < 2 or Path(tokens[0]).name != "node":
+        return False
+    second = tokens[1]
+    return second.startswith("-") or Path(second).name == _dev_server_script().name
 
 
 def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
@@ -646,6 +707,13 @@ def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
             argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
             tokens = [a.decode("utf-8", "replace") for a in argv if a]
         except OSError:
+            continue
+        if not _is_dev_server_argv(tokens):
+            # marker 裸子串 pgrep 会命中 cmdline 恰携带 marker 字面量与
+            # worktree 静态根路径的旁观进程（code-review item 0eb953af2d11，
+            # 排障类 grep/tail 参数形态）：非 node 起停形态不是本框架的
+            # dev-server，不记账不告警不清扫——放行会被下方归因/归属判定
+            # 收进孤儿分类，cleanup_orphans 对无关进程组发 SIGTERM/SIGKILL。
             continue
         if worktree_base is not None and not _argv_touches_worktree_base(
             tokens, Path(worktree_base)
@@ -716,7 +784,11 @@ def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
 
 
 def cleanup_orphans(logger=None, worktree_base=None) -> int:
-    """daemon 启动时清扫遗留 dev-server（D2）：无存活归属的 dev-server 进程。
+    """daemon 启动与周期清扫共用的孤儿回收入口（D2）：无存活归属的 dev-server 进程。
+
+    调用方两处：fenixd.py 启动序列与每 600s 周期清扫（verify-process-lifecycle
+    D4，孤儿泄漏可见窗口 ≤ 一个周期）；启动宽限豁免正是为周期清扫的
+    TOCTOU 窗口设计。
 
     判定（admin 处置 v2-alerts-activities 加固，取代纯标记匹配）：
     dev-server argv 携带 worktree 路径，据此判断其归属——worktree 已消失、

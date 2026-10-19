@@ -715,8 +715,8 @@ def _discard_output(proot: Path, before=None) -> bool:
     try:
         # -d（code-review e2029f25ad5b）：clean 缺省不进未跟踪目录，run 新建的
         # 域目录（spec/knowledge/domains/<新域>/ 等）乃至整个 spec/knowledge/
-        # 会整体滞留工作区，滞留半成品会被下批 _commit_output 的全目录
-        # git add 一并提交进知识库真相源
+        # 会整体滞留工作区，滞留半成品会被下批 _commit_output 一并提交进
+        # 知识库真相源
         clean = _git(proot, ["clean", "-fd", "--", KNOWLEDGE_DIR])
         if clean.returncode != 0:
             logger.warning(
@@ -842,64 +842,134 @@ def _audit_stray_writes(proot: Path, before, label: str) -> None:
         )
 
 
-def _commit_output(proot: Path, archived_names: list) -> str | None:
+def _expand_knowledge_surface(proot: Path, paths) -> set:
+    """把 status 路径快照展开到 ``spec/knowledge/`` 文件粒度。
+
+    git status 对「目录下无任何已跟踪文件」的未跟踪子树按整目录折叠展示
+    （如 ``?? spec/``），文件级基线差集对此是盲区：首蒸项目（spec/ 下尚无
+    已跟踪文件）的全部产出会被折叠条目藏住，按文件路径过滤得空集而跳过
+    提交。仅当快照含与 knowledge 表面相交的折叠条目（条目在 knowledge
+    目录之下，或 knowledge 目录在其子树内）时，用 ls-files 枚举 knowledge
+    表面实际未跟踪文件补全；其余路径原样保留。探测失败按空展开降级
+    （差集收窄为保守跳过，不误提交）。
+    """
+    surface: set = set()
+    kn_prefix = KNOWLEDGE_DIR + "/"
+    need_probe = False
+    for p in paths:
+        if p.startswith(kn_prefix):
+            if p.endswith("/"):
+                need_probe = True  # knowledge 目录内部整目录折叠
+            else:
+                surface.add(p)
+        elif p.endswith("/") and kn_prefix.startswith(p):
+            need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）
+    if need_probe:
+        probe = _git(
+            proot,
+            [
+                "--no-optional-locks", "ls-files",
+                "--others", "--exclude-standard", "-z",
+                "--", KNOWLEDGE_DIR,
+            ],
+        )
+        if probe.returncode == 0:
+            surface.update(tok for tok in probe.stdout.split("\0") if tok)
+        else:
+            logger.warning(
+                "knowledge-distill 未跟踪文件枚举失败，基线差集按现状收窄"
+            )
+    return surface
+
+
+def _commit_output(proot: Path, archived_names: list, baseline=None) -> str | None:
     """pathspec 限定自动提交（复用 archive_commit 的 fail-open 哲学）。
 
+    基线甄别（code-review 50251dbfd0c1）：``baseline`` 为本批 run 前的
+    ``_git_status_paths`` 快照（_run_batch 的 run_baseline），与
+    _discard_output / _audit_stray_writes「不吞用户未提交改动」同一尺度：
+    仅 add/commit 相对基线确为本次 run 新增的 spec/knowledge/ 路径。此前
+    整目录 ``git add -- spec/knowledge`` 是无基线的全路径面收纳，会把用户
+    同窗口内在合法写面（spec/knowledge/）里的未提交手工策展一并卷进
+    distill 提交落库，来源归属失真。基线已有路径不入提交、WARNING 留痕
+    交人工；基线不可用（快照失败）时不收纳、按提交失败处置（重试 + 登
+    台账），宁可滞留人工也不静默卷入用户改动。
+
     Returns:
-        commit hash；``""``（工作区无变更 nothing to commit，或提交已落库
-        但 hash 回读失败——后者已记 warning，视为 ok）；
-        None（提交失败，已记 warning）。
+        commit hash；``""``（无本次 run 新增改动可提交——空产出，或改动
+        全落在基线已有路径上；或提交已落库但 hash 回读失败——后者已记
+        warning，视为 ok）；None（提交失败，已记 warning）。
     """
     names = ", ".join(archived_names)
     commit_msg = f"{COMMIT_PREFIX} {names}"
     try:
-        add = _git(proot, ["add", "--", KNOWLEDGE_DIR])
-        if add.returncode != 0:
-            # add 失败先区分「pathspec 零命中」：蒸馏 run 空产出（或仅建了空
-            # 目录）时 spec/knowledge 无可加文件，git add 以 fatal 退出非零——
-            # 这不是提交失败，工作区并无产出滞留，按空产出 noop 返回 ""（同
-            # 下方 nothing-to-commit 口径），避免误登「产出滞留」重试台账且
-            # pending 条目经 recover_pending 每轮重蒸永不收敛
-            # （code-review 0acc8a12d881）。
-            # 零命中判据不用 status --porcelain：同目录下与 add 无关的用户既有
-            # 脏文件会使其非空，把真实零命中误判回 add 故障。改用只读的
-            # ls-files 枚举「已跟踪 + 未跟踪（排除 ignore）」文件——与 add 的
-            # pathspec 命中集一致，空输出即零命中；探测自身失败（returncode
-            # 非 0）或有命中时仍按真实 add 故障返回 None 走重试台账。
-            probe = _git(
-                proot,
-                [
-                    "--no-optional-locks", "ls-files",
-                    "--cached", "--others", "--exclude-standard",
-                    "--", KNOWLEDGE_DIR,
-                ],
+        # 基线差集（code-review 50251dbfd0c1）：after - baseline 即本次 run
+        # 新增路径（含未跟踪新建与 tracked 改/删）；与 baseline 的交集疑似
+        # 用户手工策展或 run 与用户同文件双写，排除不入提交（内容不丢，
+        # 留工作区交人工，同 _discard_output 的 overlap 保守跳过口径）。
+        after = _git_status_paths(proot)
+        if baseline is None or after is None:
+            logger.warning(
+                "knowledge-distill 自动提交：工作区基线快照不可用，跳过 "
+                "spec/knowledge/ 收纳（避免卷入用户未提交改动），按提交失败"
+                "处置，请人工核查"
             )
-            if probe.returncode == 0 and not probe.stdout.strip():
-                logger.info(
-                    "knowledge-distill git add pathspec 零命中（%s 无产出），"
-                    "按空产出跳过提交",
-                    names,
-                )
-                return ""
+            return None
+        # 目录折叠展开：两侧快照先归一到 knowledge 表面文件粒度再做差集，
+        # 否则折叠条目（如 spec/ 全树未跟踪时的 '?? spec/'）会把产出藏住
+        after_k = _expand_knowledge_surface(proot, after)
+        baseline_k = _expand_knowledge_surface(proot, baseline)
+        run_new = sorted(p for p in after_k if p not in baseline_k)
+        overlap = sorted(p for p in after_k if p in baseline_k)
+        if overlap:
+            logger.warning(
+                "knowledge-distill 自动提交：spec/knowledge/ 下改动含 run 前"
+                "基线已有路径（疑似用户未提交的手工策展，或 run 与用户改动"
+                "同文件），本次提交不含这些路径（避免 distill 提交信息来源"
+                "归属失真），请人工核查: %s",
+                ", ".join(overlap),
+            )
+        if not run_new:
+            # 无可归属本轮的产出（空产出，或改动全落在基线已有路径）：按
+            # 空产出 noop 返回 ""（即旧「pathspec 零命中」口径，
+            # code-review 0acc8a12d881），避免误登「产出滞留」重试台账。
+            logger.info(
+                "knowledge-distill 无本次 run 新增的 spec/knowledge/ 改动"
+                "（%s），跳过提交",
+                names,
+            )
+            return ""
+        # add 的 pathspec 即本次 run 新增路径集：均来自当前 status 快照
+        # （文件在工区存在或为 tracked 删除），不存在旧整目录 add 的
+        # 「pathspec 零命中」歧义，无需 ls-files 零命中探测。
+        add = _git(proot, ["add", "--"] + run_new)
+        if add.returncode != 0:
             logger.warning("knowledge-distill git add 失败: %s", add.stderr.strip())
             return None
-        commit = _git(proot, ["commit", "-m", commit_msg, "--", KNOWLEDGE_DIR], timeout=120)
+        commit = _git(
+            proot, ["commit", "-m", commit_msg, "--"] + run_new, timeout=120
+        )
         if commit.returncode != 0:
             # nothing to commit ≠ 提交失败：蒸馏判定无需新增/修改页面（如重复
             # 蒸馏同批归档），按无变更视为 ok，避免误报「产出滞留」+ 误登重试
-            # 台账（code-review 1e83848b80f1）。
+            # 台账（code-review 1e83848b80f1）。探测 pathspec 同样限定 run 新增
+            # 路径：整目录探测会被基线已有路径（用户未提交改动）误判成
+            # 「有变更」。
             # --no-optional-locks（code-review 4df445fc71e3）：本探测与归档主线程
             # commit_archive_move 的 git add 并发（同 _git_status_paths 场景），
             # status 的机会式索引刷新撞 index.lock 退出非零时会把「无变更可提交」
             # 误判为提交失败，走 reset + warning + None，白耗一轮重试并可能误登
             # 台账。只读探测不应写索引。
             status = _git(
-                proot, ["--no-optional-locks", "status", "--porcelain", "--", KNOWLEDGE_DIR]
+                proot,
+                ["--no-optional-locks", "status", "--porcelain", "--"] + run_new,
             )
             if status.returncode == 0 and not status.stdout.strip():
                 logger.info("knowledge-distill 无变更可提交（%s），跳过空提交", names)
                 return ""
-            _git(proot, ["reset", "--", KNOWLEDGE_DIR])
+            # reset 同样只落 run 新增路径：不触碰基线已有路径（含用户可能
+            # 自行 staged 的条目）。
+            _git(proot, ["reset", "--"] + run_new)
             logger.warning(
                 "knowledge-distill git commit 失败: %s",
                 commit.stderr.strip() or f"exit {commit.returncode}",
@@ -1206,7 +1276,9 @@ class DistillManager:
 
         # 批次级 run 前基线快照（code-review 4d1e46fa795c）：放弃产出时据此
         # 判别 spec/knowledge/ 下哪些改动是用户 run 前既有的未提交改动，避免
-        # 整目录回滚吞掉手工策展。逐轮快照（status_before）仍供越界对账。
+        # 整目录回滚吞掉手工策展；成功收尾时同快照供 _commit_output 做提交
+        # 基线甄别（仅收纳本轮新增路径，code-review 50251dbfd0c1）。逐轮快照
+        # （status_before）仍供越界对账。
         run_baseline = _git_status_paths(proot)
 
         for round_no in range(1 + self._max_fix_rounds):
@@ -1227,13 +1299,13 @@ class DistillManager:
                 return result
             violations = validate_knowledge(proot)
             if not violations:
-                commit = _commit_output(proot, archived_names)
+                commit = _commit_output(proot, archived_names, baseline=run_baseline)
                 if commit is None:
                     # 提交失败当轮重试一次（index.lock 撞车等瞬态失败常可恢复）；
                     # 锁持有方通常毫秒到秒级才释放，零间隔重试命中率极低，先短
                     # 退避再重试（code-review 06141f417790）
                     time.sleep(1.0)
-                    commit = _commit_output(proot, archived_names)
+                    commit = _commit_output(proot, archived_names, baseline=run_baseline)
                 if commit is not None:
                     result["ok"] = True
                     result["commit"] = commit

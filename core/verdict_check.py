@@ -1071,8 +1071,16 @@ def compute_attribution_level(scenario: dict) -> str:
         归因级别字符串（ATTRIBUTION_LEVELS 之一）
     """
     classification = scenario.get("classification")
-    if classification in (None, "pass"):
+    if classification == "pass":
         return ATTRIBUTION_LEVEL_EVIDENCE_BACKED  # pass 场景不需要归因
+    if classification is None:
+        # 四分类未决（如 status=error 且未被归类）的非 PASS 场景不得沿用
+        # evidence-backed（code-review item 383452d8eb38）：归因级别须与证据
+        # 充分性对齐（docstring 三级定义），未决分类的归因没有结构化证据
+        # 兜底，保守落 speculative 下界。影响有界：None 不∈
+        # FORCE_FAILED_CLASSES，不构成 should_suppress_bug_found 的打回驱动
+        # 场景，本分支只校准 report 标注口径。
+        return ATTRIBUTION_LEVEL_SPECULATIVE
 
     # 归一引擎嵌套形态（{路径: 标签dict}）为扁平标签并集（code-review item
     # fdd31d3d542d）：web_runner 写入按截图路径嵌套，扁平直读使
@@ -1931,6 +1939,18 @@ def scenario_fingerprint(scenario: dict) -> str:
     步骤失败字段仅在确有失败步骤时并入载荷：无失败步骤形态的载荷逐字
     不变（既有指纹值向后兼容）；步骤失败形态的指纹由此变化，旧缓存自然
     未命中 → 重裁一轮后写回新指纹（fail-open，不影响正确性）。
+
+    已知局限（code-review item e543120876ae）：载荷不含 ``visual_results``，
+    纯视觉差异失败（无失败断言、无失败步骤）场景的指纹退化为 sid+status
+    的哈希——视觉基线变化不会使跨轮缓存键失效，上轮结论可被沿用。缓解在
+    消费侧而非本函数：tag_cached_attributions 对指纹命中场景打
+    cached_from_previous_round 并把纯缓存归因降级 speculative（不得驱动
+    bug-found 打回，见 should_suppress_bug_found 的推测抑制门）；pipeline
+    侧 PASS 场景复用对出处标注缺失与 fix diff 触碰均 fail-closed。不并入
+    视觉摘要（visual_status/算法标签哈希）的取舍：并入会整体翻动既有缓存
+    键（全部场景重裁一轮），且逐轮重算的量化指标/截图路径等易变分量可能
+    使同内容失败的指纹逐轮漂移、缓存恒不命中，回归风险大于该有界盲区的
+    收益。
 
     异常/缺字段返回空串（调用方按未命中处理，fail-open）。
     """

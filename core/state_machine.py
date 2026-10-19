@@ -689,6 +689,25 @@ def _spec_sort_key(item: Tuple[str, dict]) -> Tuple[int, str]:
     return (item[1].get("priority", 999), item[1].get("created", "z"))
 
 
+def _normalize_priority_int(value) -> int:
+    """写侧 priority 形状归一：与读侧 _parse_content 同口径，int 强转、非法回落 999。
+
+    读侧对 STATE.md 文本形态的 priority 做 int() 归一（非法回落 999），写侧
+    （add_spec / _apply_updates_entry）此前不设防：进程内调用方以非整型
+    priority（如 "high"/None）写入后，下一次 serialize 的
+    sorted(specs.items(), key=_spec_sort_key) 在 int 与 str 比较时抛
+    TypeError，中断本次 STATE.md 全量回写（code-review item 18afef1d8d99）。
+    bool 是 int 子类、会被 int() 静默转 0/1，按 spec-priority 端点既有口径
+    （bool 显式拒绝，int(True) 会被误当 P1）同样回落 999。
+    """
+    if isinstance(value, bool):
+        return 999
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 999
+
+
 # ── 归档清单（add-archive-state-migration D1/D2）─────────────────────
 
 # 已迁出 STATE.md 条目的归档清单，与 STATE.md 同级同生命周期（.fenix/ 内、
@@ -1793,6 +1812,12 @@ class StateMachine:
             return False
         entry = specs[spec_name]
         local = dict(updates)
+        # priority 形状归一（code-review item 18afef1d8d99）：与读侧
+        # _parse_content 同口径，int 强转、非法回落 999——非整型 priority
+        # 落盘会让下一次 serialize 的 sorted(_spec_sort_key) 在 int 与 str
+        # 比较时抛 TypeError，中断 STATE.md 全量回写。
+        if "priority" in local:
+            local["priority"] = _normalize_priority_int(local["priority"])
         # 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：
         # _verify_parallel_override 契约 int|None（降档并行度 int 或复位
         # null）。布尔或非 int 形状（'False'/'true' 等字符串、float 等）拒绝
@@ -2363,6 +2388,9 @@ class StateMachine:
             new_entry = dict(entry)
             new_entry.setdefault("status", SpecStatus.DRAFTED)
             new_entry.setdefault("priority", 5)
+            # priority 形状归一（code-review item 18afef1d8d99）：调用方传入
+            # 非整型 priority 不得原样落盘（详见 _normalize_priority_int）。
+            new_entry["priority"] = _normalize_priority_int(new_entry["priority"])
             new_entry.setdefault("created", datetime.now(timezone.utc).isoformat())
             new_entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
             new_entry.setdefault("implementer_run", None)

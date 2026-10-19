@@ -799,7 +799,9 @@ def _extract_spec_attribution_from_text(text, known_specs=()) -> str:
     """从证据文本（ERROR 原文摘录等）提取 spec 归属（1.2，双线索任一命中）。
 
     线索一（强模式）：实现分支名 fenix/<spec>-<时间戳> 正则；线索二：已知
-    spec 名直接匹配（长名优先——短名是长名前缀时不被短名抢先归属）。命中
+    spec 名词边界匹配（长名优先——短名是长名前缀时不被短名抢先归属；边界
+    防护与 _is_orphan_merge_commit/_is_orphan_finalize_commit 的 token 口径
+    一致，防在册短名在更长的不在册名字内部被裸子串抢先误归属）。命中
     返回 spec 名；无线索（含空文本）返回空串，调用方兜底现状派发（1.4，
     行为不变）。
     """
@@ -812,7 +814,11 @@ def _extract_spec_attribution_from_text(text, known_specs=()) -> str:
     for name in sorted(
         (str(s) for s in known_specs if s), key=len, reverse=True
     ):
-        if name in text:
+        # code-review item b74580879a53：负向前后视排除前导/后随标识符字符
+        # （[\w-]），与孤儿提交判定的词边界防护同口径
+        if re.search(
+            r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", text
+        ):
             return name
     return ""
 
@@ -1571,6 +1577,15 @@ class AdminMonitor:
                 getattr(self, "_spec_amendment_fp_alerted", {}).pop(
                     signal.get("spec"), None
                 )
+            if not delivered and signal.get("_daemon_fp_pending"):
+                # code-review item 28607dce61c1：daemon_errors 指纹备忘同样于
+                # 成条时预写（_detect_daemon_errors），未送达时在此回滚——
+                # 保证「已升级」备忘与实际唤起一致，重启冷却窗内同指纹复发
+                # 不被内存成员查询误判为已知（回滚后 _daemon_fp_known 回落
+                # store 对账路径，漏报方向归零）。
+                _escalated_at = getattr(self, "_daemon_fp_escalated_at", {})
+                for _fp in signal.get("_daemon_fp_pending"):
+                    _escalated_at.pop(_fp, None)
 
         # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
         # （code-review item eccaad574376：逐段 try 兜底，任何异常只记日志不阻断巡检）
@@ -3820,9 +3835,20 @@ class AdminMonitor:
             for k in list(escalated_at)[: DAEMON_ERROR_FP_MEMORY_LIMIT // 2]:
                 escalated_at.pop(k, None)
         if len(escalating) == 1:
-            return [self._make_daemon_error_signal(*escalating[0])]
-        # 同轮孪生/成对指纹合并（3.2）：一条召唤信号、一次 Administrator run
-        return [self._make_daemon_error_signal_merged(escalating)]
+            signals = [self._make_daemon_error_signal(*escalating[0])]
+        else:
+            # 同轮孪生/成对指纹合并（3.2）：一条召唤信号、一次 Administrator run
+            signals = [self._make_daemon_error_signal_merged(escalating)]
+        # code-review item 28607dce61c1：成条 ≠ 送达（同 78eb37d3b06b 先例）。
+        # 指纹备忘仍于成条时预写（上方），但信号此后还要经 run_once 的
+        # _handle_signal 守卫链（节流/冻结/夹具抑制/落库拒写/唤起跳过），
+        # 任一命中即丢弃本次唤起——信号携带 ``_daemon_fp_pending``（合并信号
+        # 聚合本轮全部指纹），由 run_once 在未送达时回滚备忘，重启冷却窗内
+        # 复发同指纹仍可再次升级（否则零送达被记成「本生命周期已升级」，
+        # 漏报）；送达成功则备忘照常保留。
+        for sig in signals:
+            sig["_daemon_fp_pending"] = [fp for fp, *_ in escalating]
+        return signals
 
     def _detect_crossday_recurrence(self, by_fp: dict) -> dict:
         """跨日同刻复发判别（evo-add-codefix-conn-error-cooldown 3.1，design D6）。
@@ -5418,7 +5444,10 @@ class AdminMonitor:
             return
         # ① 幂等：已补记的组不再重复补记/收口（与信号已收口的天然幂等双保险
         # ——补记后 mark_signal_handled 收口，后续轮次在下方未命中处返回）
-        if self.store.has_disposition_backfill(rid):
+        # code-review item c743b21ac4c7：复用调用方 _recover_orphaned_dispositions
+        # 已读取的轮首快照做存在性判定，免逐 final 组重复全文件读取
+        # （组内补记只发生在本轮自身收敛之后，快照内已含历史补记，无新鲜度问题）
+        if self.store.has_disposition_backfill(rid, records=records):
             return
         head = info["rec"] or {}
         group_spec = head.get("spec")

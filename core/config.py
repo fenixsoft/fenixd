@@ -1204,7 +1204,7 @@ class ConfigLoader:
                 )
 
         # add-daily-self-review：admin.self_review 段护栏。
-        # enabled/read_todo 须为布尔（非布尔直接拒绝）；run_at 须合法 HH:MM、
+        # enabled/read_todo/todo_head_restore 须为布尔（非布尔直接拒绝）；run_at 须合法 HH:MM、
         # 非法值打 ERROR 并回退缺省（不阻塞加载，硬语义由 get_self_review_config
         # 的生效值兜底）。enabled 缺省 false（纯增量零行为变化）。
         # 整段非 dict（列表/标量）与 self_evolution / stale_code_selfheal 同口径
@@ -1223,7 +1223,7 @@ class ConfigLoader:
                     type(sr).__name__,
                 )
         elif isinstance(sr, dict):
-            for field in ("enabled", "read_todo"):
+            for field in ("enabled", "read_todo", "todo_head_restore"):
                 if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
                     raise ValueError(f"admin.self_review.{field} must be a boolean: {sr[field]}")
             if "run_at" in sr and sr["run_at"] is not None:

@@ -389,20 +389,42 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
 def _derive_status(run_result, report) -> str:
     """从结构化数据推导终局判定：'verified' 或 'bug-found'。
 
+    run_result 携带 fast-track 验证段（``verification.verdict``，契约见
+    ``core/fast_track_result.py``：顶层 ``status="success"``、终局判定承载在
+    verification 段，值域 verified/bug-found 有硬校验器白名单
+    ``core.verdict_check.validate_fast_track_result``）时**优先采信**该
+    verdict（code-review item 3b6791cdcc2a）——本模块 ``_load_run_result``/
+    ``_resolve_scenarios`` 设计内消费 fast-track 形态数据源（共享文件清理
+    失败残留 + primary 缺失时即落到本函数），不得把该合法取值交由下方
+    full 模式 status 白名单误判 bug-found。
+
     run_result.status 按白名单正向匹配：已知成功裁决（``verified``/
     ``bug-found``）原样返回；已知失败/未完成取值（``error``/``partial``，
     fast-track 结果文件 status 白名单 success/error/partial 中的非成功终态）
     判 bug-found（fail-closed 方向）。其余非空未知取值（如 implementer/
-    planner 收工票据残留的 ``success``/``plan-ready``，或未来写手新增的
-    timeout 等未收录词）同判 bug-found——与读侧 verdict status 白名单
+    planner 收工票据残留的 ``success``/``plan-ready``——不带 verification 段，
+    或未来写手新增的 timeout 等未收录词）同判 bug-found——与读侧 verdict
+    status 白名单
     （``core/agent_runner/prompt_builder.PLANNER_RESULT_STATUS_WHITELIST``）
     同口径：语义错位/未收录取值若落到报告分支，会经「无法判定 → 默认
     verified」的宽松兜底为实际并非成功裁决的验证轮合成出 ✅ 通过报告，与
     结构化数据语义及模块 fail-closed 哲学相反。status 缺失/为空仍属「无
     状态信息」（``_load_run_result`` 允许仅携带 bugs 的合法结果文件），交由
-    下方报告分支判定。
+    下方报告分支判定；报告分支对 failed/errors>0 的 summary 先做豁免轮形态
+    判定（``_failed_scenarios_all_exempt``），豁免轮合法保留失败计数而终局
+    verified，与 ``render_verification_report`` 的「其余失败场景已豁免」
+    count_note 同一形态（code-review item efb8b1419948）。
     """
     if run_result:
+        # fast-track 形态优先（item 3b6791cdcc2a）：verification.verdict 在
+        # 硬校验器白名单值域内即原样采信，fast-track 全绿轮的合法顶层
+        # status="success" 不再落「未知取值 fail-closed」误判 bug-found
+        verification = run_result.get("verification")
+        if isinstance(verification, dict) and verification.get("verdict") in (
+            "verified",
+            "bug-found",
+        ):
+            return verification.get("verdict")
         status = run_result.get("status")
         if status in ("verified", "bug-found"):
             return status
@@ -416,14 +438,24 @@ def _derive_status(run_result, report) -> str:
         summary = report.get("summary")
         if isinstance(summary, dict):
             try:
-                if (int(summary.get("failed", 0) or 0) + int(summary.get("errors", 0) or 0)) > 0:
-                    return "bug-found"
+                declared_failures = int(summary.get("failed", 0) or 0) + int(
+                    summary.get("errors", 0) or 0
+                )
             except (TypeError, ValueError):
-                pass
-            else:
-                # 显式声明过 failed/errors 键且值非 0 已被上分支拦截 → 判定有据
-                if "failed" in summary or "errors" in summary:
+                declared_failures = None
+            if declared_failures is not None and declared_failures > 0:
+                # code-review item efb8b1419948：豁免轮形态（失败场景全部被
+                # 豁免、终局 verified 合法保留失败计数）不得判 bug-found——
+                # 否则 _report_is_superseded 在 run_result 缺失（status 无法
+                # 短路）的窗口会把与本轮一致的豁免轮 ✅ 报告误判上一轮残留
+                # 并重合成 ❌。全豁免判定复用 verdict_check 豁免口径；含任一
+                # 不可豁免失败仍 fail-closed 判 bug-found。
+                if _failed_scenarios_all_exempt(report, run_result):
                     return "verified"
+                return "bug-found"
+            # 显式声明过 failed/errors 键且值非 0 已被上分支拦截 → 判定有据
+            if declared_failures == 0 and ("failed" in summary or "errors" in summary):
+                return "verified"
         # summary 缺失/非 dict/不可解析/未声明失败键时退化为按场景计数兜底：
         # 存在非 pass/passed 场景即 bug-found（与 _resolve_scenarios 的场景级
         # 数据源回退同向）
@@ -431,6 +463,40 @@ def _derive_status(run_result, report) -> str:
             if isinstance(sc, dict) and str(sc.get("status") or "") not in ("pass", "passed"):
                 return "bug-found"
     return "verified"
+
+
+def _failed_scenarios_all_exempt(report, run_result) -> bool:
+    """豁免轮形态判定（code-review item efb8b1419948）：summary 声明的失败
+    场景是否全部被豁免（终局 verified 合法保留失败计数）。
+
+    豁免口径复用 ``core.verdict_check``（惰性导入，与
+    ``_render_assertion_exempt_section`` 同款避免模块环）：
+
+      - 逐场景 ``is_scenario_exemptible``：逐断言归因合规且无 product-bug
+        断言才可豁免（product-bug 逃逸/旧报告无 assertion_triage 一律不可
+        豁免，fail-closed）；
+      - 整表 ``whitewash_violations(…, "verified")``：verified 洗白不变量
+        （0 通过、env 失败、损坏/空场景表均不得 verified）——豁免判定不得
+        比引擎侧洗白门更宽松。
+
+    场景明细经 ``_resolve_scenarios`` 解析（report.json 顶层，或 fast-track
+    run-result 的 verification.scenarios 回退）；无场景明细、或不存在任何
+    失败场景（无「豁免」对象）时返回 False，交由调用方既有分支判定。
+    """
+    scenarios = _resolve_scenarios(report, run_result)
+    if not isinstance(scenarios, list) or not scenarios:
+        return False
+    from core.verdict_check import is_scenario_exemptible, whitewash_violations
+
+    has_failure = False
+    for sc in scenarios:
+        if isinstance(sc, dict) and str(sc.get("status") or "") not in ("pass", "passed"):
+            has_failure = True
+            if not is_scenario_exemptible(sc):
+                return False
+    if not has_failure:
+        return False
+    return not whitewash_violations(scenarios, "verified")
 
 
 def _summary_counts(report):
@@ -651,7 +717,12 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
         # 优先引用 report.json 的场景结构化证据（引用而非重复渲染）
         referenced = False
         for sid in scenario_ids if isinstance(scenario_ids, list) else []:
-            ev = scenario_evidence.get(sid)
+            # code-review item 999e4fac3a17：scenario_ids 元素未经 schema 校验
+            # （渲染层仅 isinstance(scenario_ids, list) 守卫），list/dict 等
+            # unhashable 元素会让 dict.get 抛 TypeError 中断合成、闸门按
+            # 「无法合成」fail-closed 阻断并误发升级告警。str() 归一后可哈希，
+            # 与上方「关联场景」行的 str(s) 渲染容错同口径。
+            ev = scenario_evidence.get(str(sid))
             if isinstance(ev, dict):
                 lines.append(f"- 证据（场景 {sid} 结构化证据，引用）：")
                 lines.extend(_render_evidence(ev))

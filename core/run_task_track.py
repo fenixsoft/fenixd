@@ -109,6 +109,13 @@ def parse_unattainable(data: dict) -> "tuple[set, list]":
 
 # parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
 # 上限 64 项，超出整体清空，防止 append-only 文件每次追加换键导致无界增长。
+#
+# 键正确性前提（code-review item e8ab91a96045）：(path, mtime_ns, size) 依赖
+# 产物文件 append-only——追加必改 size，天然换键。若未来出现「等长覆写」产物
+# 文件的写入路径（size 不变且 mtime 粒度粗于写入间隔：部分文件系统 mtime 粒度
+# 1 秒，且 noatime/relatime 挂载选项会影响时间戳行为），同键会读到陈旧解析
+# 结果，届时需在写入端主动失效缓存或入键加内容指纹；当前生产写入路径均为
+# O_APPEND 只增，维持现状。
 _RUN_TASK_CACHE: dict = {}
 
 
@@ -238,24 +245,29 @@ def honest_exit_convergence_gap(data, project_root, spec_name) -> "list[str]":
     return []
 
 
-def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
-    """最新一次 impl-<spec>-*.jsonl 运行产物，或 None。
+def _collect_impl_runs(project_root, spec_name, files=None) -> "list[tuple[float, Path]]":
+    """impl-<spec>-*.jsonl 运行产物的收集单点（item f69bd0bb4fbf）。
 
-    运行中 STATE.md 的 implementer_run 字段为空，不能用它定位；
-    按 mtime 取最新与 worktree 选择（find_implementer_worktree）一致。
+    find_impl_run_file 与 parse_run_task_done_cumulative 共用：目录 glob（或
+    files 预扫描集过滤）+ 精确归属守卫 + mtime 收集 + OSError 容错只此一处，
+    目录布局或归属规则变化（如新增 archive 子目录语义）只改这里。
     files: 调用方预扫描文件集（dashboard 侧 _runs_by_spec_sigs 分组结果）；
         提供时按同名 glob 语义（fnmatch ``impl-<spec>-*.jsonl``、仅活跃目录）
         从中过滤，避免每 spec 重新 glob 整个 runs 目录（fix-dashboard-read-path-
         performance D2：摘要读路径目录 glob 次数为常数）。缺省 None 走 glob。
+
+    Returns:
+        [(mtime, Path), ...]；runs 目录缺失或探测失败 → 空列表。条目顺序
+        不作保证，排序由调用方按需进行。
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
-    candidates = []
     pattern = f"impl-{spec_name}-*.jsonl"
+    candidates: list = []
     try:
         # is_dir() 探测也纳入守卫：其只吞 ENOENT/ENOTDIR，EIO/EBUSY 会上抛，
-        # 探测失败与目录缺失同义（返回 None）。
+        # 探测失败与目录缺失同义（返回空列表）。
         if not runs_dir.is_dir():
-            return None
+            return []
         if files is None:
             for p in runs_dir.glob(pattern):
                 try:
@@ -273,13 +285,24 @@ def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
                 except OSError:
                     pass
     except OSError:
-        return None
+        return []
     # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀（fix-x vs fix-x-y）
     # 时 fnmatch/glob 命中不得直接认定——fix-x 不得取到 fix-x-y 的最新产物。
     # 函数内 import（与 recovery.py 同款）：run_task_track 被 agent_runner
     # 初始化路径（result_gate）反向引用，模块级 import 会造成循环导入。
     from core.agent_runner.run_files import run_spec_part
-    candidates = [(m, p) for m, p in candidates if run_spec_part(p.stem) == spec_name]
+    return [(m, p) for m, p in candidates if run_spec_part(p.stem) == spec_name]
+
+
+def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
+    """最新一次 impl-<spec>-*.jsonl 运行产物，或 None。
+
+    运行中 STATE.md 的 implementer_run 字段为空，不能用它定位；
+    按 mtime 取最新与 worktree 选择（find_implementer_worktree）一致。
+    收集/归属过滤下沉 _collect_impl_runs 单点（与 parse_run_task_done_cumulative
+    共用，item f69bd0bb4fbf）；files 预扫描集语义见其 docstring。
+    """
+    candidates = _collect_impl_runs(project_root, spec_name, files)
     if not candidates:
         return None
     candidates.sort(reverse=True)
@@ -322,6 +345,8 @@ def parse_run_task_done(run_file: Path) -> dict:
     """
     try:
         st = run_file.stat()
+        # 缓存键前提：产物 append-only（等长覆写会同键陈旧命中），
+        # 见 _RUN_TASK_CACHE 处注释（item e8ab91a96045）。
         key = (str(run_file), st.st_mtime_ns, st.st_size)
     except OSError:
         return {"done_ids": set(), "created_count": 0, "flat_done": set(), "in_progress_ids": []}
@@ -507,26 +532,12 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
          "tracked_ids": set[str],   # 正常收尾 run 中「出现过 TaskCreate」的 id 并集
          "created_count": int}      # 单族最大 TaskCreate 次数（展示用）
     """
-    runs_dir = Path(project_root) / ".fenix" / "runs"
     empty = {"done_ids": set(), "tracked_ids": set(), "created_count": 0}
-    files: list = []
-    try:
-        # is_dir() 探测也纳入守卫：其只吞 ENOENT/ENOTDIR，EIO/EBUSY 会上抛，
-        # 探测失败按「无 runs 目录」返回 empty。
-        if not runs_dir.is_dir():
-            return empty
-        # 函数内 import run_spec_part：模块级 import 会与 agent_runner 初始化
-        # 路径（result_gate 反向引用本模块）构成循环导入（见 find_impl_run_file）
-        from core.agent_runner.run_files import run_spec_part
-
-        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
-            if run_spec_part(p.stem) != spec_name:
-                continue  # 精确归属守卫（fix-x vs fix-x-y 前缀误命中全部排除）
-            try:
-                files.append((p.stat().st_mtime, p))
-            except OSError:
-                pass
-    except OSError:
+    # 收集单点复用（item f69bd0bb4fbf）：glob + 精确归属守卫 + mtime 收集 +
+    # OSError 容错全部下沉 _collect_impl_runs，与 find_impl_run_file 共用；
+    # 目录缺失/探测失败/无命中均得空列表 → 按「无 runs 目录」返回 empty。
+    files = _collect_impl_runs(project_root, spec_name)
+    if not files:
         return empty
     files.sort()
 

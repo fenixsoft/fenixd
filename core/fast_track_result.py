@@ -121,10 +121,13 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
         # 被静默清空，修复车道拿不到 bug 描述与场景关联、在无上下文下盲修。
         return None
 
+    # 外返拷贝（code-review item 3820017da286）：scenarios/bugs 不与入参
+    # result 共享 list 引用，消费方对返回值原地 append/pop 不回污原始结果
+    # dict（对齐 run_task_track.parse_run_task_done 的外返拷贝口径）。
     return {
-        SCENARIOS_KEY: scenarios,
+        SCENARIOS_KEY: list(scenarios),
         VERDICT_KEY: verdict,
-        BUGS_KEY: bugs,
+        BUGS_KEY: list(bugs),
     }
 
 
