@@ -482,14 +482,17 @@ class ProviderCircuit:
         # "exit code 1432" 被截成 143，前者恰被 classify_switch_error 判成 5xx
         # 驱动链前进。(?!\d) 要求 3 位之后不再是数字才算命中；非数字后缀
         # （"500." / "500)" / 行尾）不受影响。
-        # 裸 code 模式的左边界 (?<!exit )（code-review item 06f7547b214f）：
-        # 恰好 3 位的进程退出码仍会命中——"Exit code: 143"（runner 的
-        # ``Exit code: {returncode}`` 回退形态，信号死法 Exit 143/-9 即此族）
-        # 会被解析成 143；退出码数值一旦撞上 400/401/403/404 或 5xx，就会把
-        # 退出码当网关 HTTP 状态码误驱动 4xx 熔断计数 / classify_switch_error
-        # 链前进。固定宽度回视排除 exit 前缀（re.IGNORECASE 全局生效，覆盖
-        # "Exit "）；"status code 500" 由更早的 status code 模式先行命中，
-        # 不受该回视影响。
+        # 裸 code 模式的左边界 (?<!exit[\s_:=-])（code-review item
+        # 06f7547b214f / 64d799b21058）：恰好 3 位的进程退出码仍会命中——
+        # "Exit code: 143"（runner 的 ``Exit code: {returncode}`` 回退形态，
+        # 信号死法 Exit 143/-9 即此族）会被解析成 143；退出码数值一旦撞上
+        # 400/401/403/404 或 5xx，就会把退出码当网关 HTTP 状态码误驱动 4xx
+        # 熔断计数 / classify_switch_error 链前进。固定宽度回视（"exit" +
+        # 单个分隔字符 = 5 字符，re.IGNORECASE 全局生效）实现「Exit code:
+        # 前缀豁免」——覆盖空格/下划线/冒号/连字符/等号连写变体（"Exit
+        # code: " / "exit_code: " / "exit-code: " 等）；新增错误拼装方须
+        # 同步维护此处，不得假设任意退出码文案均已豁免。"status code 500"
+        # 由更早的 status code 模式先行命中，不受该回视影响。
         for pat in (
             r"HTTP\s+(\d{3})(?!\d)",
             # 括号模式的语境约束（code-review item 279583edab07）：裸
@@ -501,7 +504,7 @@ class ProviderCircuit:
             # 形态仍命中；语境词随匹配消费，状态码仍取 group(1)。
             r"(?:HTTP|status|error|reject\w*)[^\n(]{0,24}\((\d{3})\)",
             r"status\s*code\s*[:=]?\s*(\d{3})(?!\d)",
-            r"(?<!exit )\bcode\s*[:=]?\s*(\d{3})(?!\d)",
+            r"(?<!exit[\s_:=-])\bcode\s*[:=]?\s*(\d{3})(?!\d)",
             r"[Ee]rror:?\s*(\d{3})(?!\d)",
         ):
             m = re.search(pat, error_text, re.IGNORECASE)
