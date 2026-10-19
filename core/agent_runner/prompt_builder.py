@@ -1334,9 +1334,11 @@ class PromptBuilder:
     def _verifier_breakpoint_section(self, spec_name: str) -> str:
         """断点续跑段（verifier-checkpoint-resume spec）。
 
-        读取上次 attempt 的进度文件，存在且 done>0 时把断点信息注入提示词，
+        读取上次 attempt 的进度文件，存在且 0<done<total 时把断点信息注入提示词，
         让新 agent 从 done+1 场景继续，不再从头重跑。文件缺失 / done==0 /
-        JSON 损坏 → 不注入、全新开始，损坏文件移除以免污染后续 attempt。
+        done==total（上一 attempt 已写完全部场景进度、死于收尾前的收敛态，注入会
+        同时给出「从 total+1 开始执行」与「直至 done 达到 total」互斥指令，见下）
+        / JSON 损坏 → 不注入、全新开始，损坏文件移除以免污染后续 attempt。
         """
         try:
             progress = self._pm.read_verify_progress(spec_name)
@@ -1349,6 +1351,15 @@ class PromptBuilder:
         done = progress.get("done") or 0
         current = progress.get("current") or ""
         if not (isinstance(done, int) and done > 0):
+            return ""
+        # 收敛态守卫（code-review item 0e0a4e955cf3）：done==total 表示上一
+        # attempt 已写完全部场景的进度文件、在写结果文件/收尾前死亡——此时照常
+        # 注入会同时给出「跳过全部场景、从第 total+1 个场景开始执行」与
+        # 「直至 done 达到 total」两条互斥指令，续跑 agent 行为摇摆。视作无断点
+        # 零注入（全新收尾）。total 类型随读侧 _read_verify_progress 的强校验
+        # 口径（恒为非布尔 int）一并守卫，保证比较不因契约外脏数据抛 TypeError。
+        total_is_int = isinstance(total, int) and not isinstance(total, bool)
+        if not total_is_int or done >= total:
             return ""
         initial_done = done
         start_scenario = done + 1
