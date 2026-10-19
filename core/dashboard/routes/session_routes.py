@@ -123,7 +123,9 @@ class H_SessionRoutesMixin:
     def _api_session_send(self, query):
         """POST /api/session/send?project=<name> → body {"text": "..."} 发送用户文本。
 
-        空/空白/非字符串 → 400；项目或会话缺失 → 404；成功 → {"ok": true}
+        空/空白/非字符串 → 400；项目或会话缺失 → 404；会话态失败
+        （SessionError 族：已退出/不存在）→ 400；意外异常 → 500；
+        成功 → {"ok": true}
         """
         context = self._session_context(query)
         if context is None:
@@ -155,9 +157,16 @@ class H_SessionRoutesMixin:
             self._error(400, "text is required and must not be blank")
             return
 
+        # item 7033967e20db：send 的预期失败（会话不存在/进程已退出/空文本）
+        # 均为 SessionError 族，属客户端可见的会话态/参数问题，维持 400；
+        # 其余意外异常（SessionManager 内部状态故障等）按服务端内部错误对待，
+        # 同 _api_session_start 返回 500 并 logger.exception 留完整堆栈，
+        # 便于监控区分「会话态问题」与「服务端故障」。
+        from core.dashboard.session_manager import SessionError
+
         try:
             sm.send(session.session_id, text)
-        except Exception as exc:
+        except SessionError as exc:
             # 对外固定文案（code-review item a2fbd4f5d9dd，同 _api_session_stop
             # 留痕写法）：不把 {exc} 透给 HTTP 客户端，详情留服务端日志。
             logger.warning(
@@ -167,6 +176,10 @@ class H_SessionRoutesMixin:
                 exc,
             )
             self._error(400, "send failed")
+            return
+        except Exception:
+            logger.exception("会话发送失败（session=%s）", session.session_id)
+            self._error(500, "send failed")
             return
 
         self._json({"ok": True})
