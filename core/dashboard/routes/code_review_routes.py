@@ -534,6 +534,7 @@ class H11CodeReviewRoutesMixin:
             # 不阻塞受理。
             stale = _result_stale()
         if stale:
+            # [fenix-ignore:0fc5e76f8fbf] 第二次 stale 复核与 unlink 之间仍余极窄窗口（daemon 1s tick 恰在此原子写回本次判定即误删）：双读复核已把窗口压到极窄且删除失败不阻塞受理，彻底闭合需跨端 created 令牌协议或 advisory lock，收益不抵风险。
             try:
                 result_path.unlink()
             except OSError:
@@ -626,7 +627,7 @@ class H11CodeReviewRoutesMixin:
         self._json(result)
 
     def _api_code_review_items_status(self, query):
-        """POST /api/code-review/items/status — body {project, item_id, status}
+        """POST /api/code-review/items/status?project=<name> — body {item_id, status}
 
         人工状态流转（ignored 忽略 / open 清除归属），经
         ``core.code_review.set_item_status``（仅 open/ignored 可人工置入）。

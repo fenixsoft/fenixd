@@ -578,6 +578,16 @@ def _check_agent_result_artifact(
             )
         return None
     if agent_type not in ("planner-judge", "planner-plan"):
+        # 兜底分支本就放行（verifier / self-review 等无结果文件契约的车道合法
+        # 落此），但「门静默消失」须可观测：车道新增/拼错 agent_type（如
+        # implementor）时此处零校验零留痕即失去全部产物硬门。记 WARNING 留痕
+        # （返回语义不变），与 _check_impl_code_review_artifact 门开关读取
+        # 失败留痕的既有取向对齐。
+        runner.logger.warning(
+            "agent_runner",
+            f"产物硬门未识别 agent_type='{agent_type}'（按无门放行，留痕）"
+            f": spec={spec_name}",
+        )
         return None
     if agent_type == "planner-plan":
         # 双产物叠加校验：test_scenarios.json（既有，保持不变）+
@@ -2286,15 +2296,20 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
         return violations
     if isinstance(code_review, dict):
         cr_dispositions = None
+        # 显式记录命中别名键（同 _validate_code_review_report 的 _alias_hit），
+        # 违规文案不依赖循环变量泄漏取值（别名元组为空/循环重构时防 NameError
+        # 或错键名）。
+        _alias_hit = "dispositions"
         for alias in _DISPOSITION_KEY_ALIASES:
             val = code_review.get(alias)
             if val is not None:
                 cr_dispositions = val
+                _alias_hit = alias
                 break
         if cr_dispositions is not None:
             if not isinstance(cr_dispositions, list):
                 violations.append(
-                    f"code_review.{alias} 非数组（逐条处置 MUST 为对象数组，"
+                    f"code_review.{_alias_hit} 非数组（逐条处置 MUST 为对象数组，"
                     f"每项含 disposition 键）（impl-code-review-gate 自证）: "
                     f"{report_rel}"
                 )

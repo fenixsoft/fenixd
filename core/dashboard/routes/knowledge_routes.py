@@ -169,7 +169,9 @@ class H14KnowledgeRoutesMixin:
                 # 枚举本身失败（权限/IO）时按空清单降级，对齐上下两处容错口径
                 try:
                     pages = sorted(
-                        p.name for p in d.glob("*.md") if p.name != "_domain.md"
+                        p.name
+                        for p in d.glob("*.md")
+                        if p.is_file() and p.name != "_domain.md"
                     )
                 except OSError as exc:
                     logger.warning(
@@ -207,7 +209,9 @@ class H14KnowledgeRoutesMixin:
                 except (OSError, UnicodeDecodeError):
                     index_titles = {}
             try:
-                adr_files = sorted(adr_dir.glob("ADR-*.md"))
+                adr_files = sorted(
+                    p for p in adr_dir.glob("ADR-*.md") if p.is_file()
+                )
             except OSError as exc:
                 logger.warning(
                     "knowledge adr 目录枚举失败（%s）: %s", project["name"], exc

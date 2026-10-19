@@ -194,6 +194,18 @@ class InfraCircuitBreaker:
                 return
             for link, st in raw.items():
                 if not isinstance(st, dict):
+                    # 条目整体写坏为非 dict（手改/旧版本写入）→ 比照下方数值与
+                    # state 两个脏值分支记 warning 并复位 closed（code-review
+                    # item e4c16642878f）：静默 continue 会丢弃该链路熔断状态
+                    # 且无任何日志线索，熔断保护静默失效一轮，与本文件「静默
+                    # 禁用须留痕」口径不一致。仅复位该链路，不整体重置文件。
+                    self._log(
+                        "warning",
+                        "infra_breaker",
+                        f"熔断状态含非 dict 链路条目（link={link}），fail-open "
+                        f"复位为 closed: {self._state_path}",
+                    )
+                    self._cache[link] = {"count": 0, "until": 0.0, "state": "closed"}
                     continue
                 count = st.get("count", 0)
                 until = st.get("until", 0.0)

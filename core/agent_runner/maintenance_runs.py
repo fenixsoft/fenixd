@@ -3678,6 +3678,7 @@ def run_impl_ocr(
     wt = None
     heartbeat = None  # (stop_event, thread)；审查子进程运行期非 None
     lane_done = None  # threading.Event；登记进排水集合后由本线程收尾时 set
+    cursor_advance_pending = False  # 成功路径置位；尾段主产物落盘成功后才推进游标
     try:
         # ── provider 注入（任务 3.2）：复用 implementer 分配 + 同源 _write_run_ocr_config ──
         env_overrides: Dict[str, str] = {"FENIX_OCR_BIN": DEFAULT_OCR_BIN}
@@ -3880,14 +3881,19 @@ def run_impl_ocr(
                         "ocr 原始报告缺失或不可解析（exit 0 但无有效 JSON）"
                     )
                 else:
-                    # ── 成功路径：规范化 findings + carry-forward + 记账 + 推进游标 ──
+                    # ── 成功路径：规范化 findings + carry-forward + 记账 ──
+                    # 游标推进不在此处就地执行（code-review item 9201a12579c2）：
+                    # 先推游标后落盘时，主产物落盘失败会留下「游标已越过本区间、
+                    # code-review.json 仍是上一轮陈旧内容」的盘面，本区间发现
+                    # 永久漏审；改为置位延迟到尾段，主产物 durable 后才推进，
+                    # 保证「游标前移 ⇒ 本轮结果已 durable」。
                     findings = _normalize_impl_ocr_findings(raw.get("comments"))
                     findings.extend(_carry_forward_ocr_findings(prev_findings, findings))
                     artifact["status"] = "completed"
                     artifact["findings"] = findings
                     artifact["reason"] = ""
                     _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
-                    _write_ocr_cursor(cursor_path, head_commit, run_id)
+                    cursor_advance_pending = True
     except Exception as e:  # noqa: BLE001 — 车道内部异常折算 unavailable（任务 3.3）
         artifact["status"] = "unavailable"
         artifact["reason"] = f"车道内部异常: {type(e).__name__}: {e}"
@@ -3948,6 +3954,11 @@ def run_impl_ocr(
                 )
             ],
         )
+        # 游标推进（code-review item 9201a12579c2）：仅在主产物成功落盘后执行
+        # ——落盘失败（artifact_persisted=False）不推进，下轮回退全量重审本
+        # 区间，保持 _write_ocr_cursor「失败不影响正确性」的单向安全语义。
+        if cursor_advance_pending and artifact_persisted:
+            _write_ocr_cursor(cursor_path, head_commit, run_id)
         if log is not None:
             log.info(
                 "agent_runner",

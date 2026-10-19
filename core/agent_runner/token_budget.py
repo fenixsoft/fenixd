@@ -247,7 +247,22 @@ class TokenAccountant:
         budget_tokens = budget * 1_000_000
         if budget_tokens <= 0:
             return
-        ratio = tokens_in / budget_tokens
+        # code-review item ccbe24b883c0：tokens_in 恒为 int（_to_int 全分支回退
+        # int），但超大整数（STATE 被人工写为 10**400，或网关畸形回传 usage）在
+        # int/float 除法里触发 int→float 转换抛 OverflowError——本调用点在锁外且
+        # 无 try 保护，异常沿 _accumulate_token_usage 冒泡到收工路径，中断其后的
+        # 验证链侧车，与上方 config（858e28e2e186）/cost（864a2142f6f3）「检查
+        # 永不向收工路径抛异常」的防护口径不一致。比照 cost 侧口径入捕：预算信息
+        # 不可用，记 warning 后跳过本轮预算检查；合法值除法行为不变。
+        try:
+            ratio = tokens_in / budget_tokens
+        except OverflowError:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"token 累计值超大（预算信息不可用）'{spec_name}'"
+                f"（_tokens_in={tokens_in!r}），跳过本轮预算检查",
+            )
+            return
 
         # code-review item d005329ef9d3：「查标志-发告警-置位」跨 read_one/
         # update_spec 两次 state_machine 调用，锁外执行时同 spec 并发收工

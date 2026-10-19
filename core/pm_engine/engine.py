@@ -1358,22 +1358,27 @@ class PMEngine:
         MUST NOT 以分支名字面匹配单独充当判据——分支仅作防御性次级校验。
 
         Returns: True 表示已补记 implementing（status 曾是 ready 且次级校验通过）；
-        False 表示未触发（status 非 ready，branch 不满足 fenix/ 次级校验，或
+        False 表示未触发（status 非 ready，branch 不满足实现前缀次级校验，或
         ready→implementing 转移被拒——此时 ready→implemented 依然被拒 = 真实异常
         暴露，不静默放行）。
         """
         spec = self.state_machine.read_one(spec_name)
         if not spec or spec.get("status") != "ready":
             return False
-        # 次级校验（防御性，不是唯一判据）：实现分支属本 spec 的 `fenix/` 前缀
-        # 且非 verifier 族形状（shape.py 结构消歧单源，worktree_manager/lifecycle
-        # cleanup 同款判定）。裸前缀 startswith("fenix/verify-") 会把 verify-
-        # 开头 spec 名的实现分支（fenix/verify-dsh-plugins-live-<ts>）误判为
-        # 验证分支、合并兜底被拒（admin-global-1791999865 同型）。
+        # 次级校验（防御性，不是唯一判据）：实现分支属本 spec 的实现前缀
+        # （worktree.implement_branch_prefix，与 _resolve_push_branch /
+        # backfill_push_residuals 同源——code-review item f64bc9862af7 消除双
+        # 前缀真源：硬编码 "fenix/" 在非默认前缀部署下使本兜底恒不通过且无
+        # 日志指向配置不匹配）且非 verifier 族形状（shape.py 结构消歧单源，
+        # worktree_manager/lifecycle cleanup 同款判定）。裸前缀
+        # startswith("fenix/verify-") 会把 verify- 开头 spec 名的实现分支
+        # （fenix/verify-dsh-plugins-live-<ts>）误判为验证分支、合并兜底被拒
+        # （admin-global-1791999865 同型）。
         # 不满足 → 不兜底，维持既有转移（ready→implemented 仍被拒 = 暴露真实异常）。
+        prefix = self._get_config("worktree.implement_branch_prefix", "fenix")
         if (
             not branch
-            or not branch.startswith("fenix/")
+            or not branch.startswith(f"{prefix}/")
             or branch_shape_is_verifier(branch, spec_hint=spec_name)
         ):
             self.logger.warning(
@@ -4360,8 +4365,15 @@ class PMEngine:
         active = sum(
             1 for e in all_specs.values() if e.get("status") in ("implementing", "testing")
         )
+        # 阻塞桶并计两类（code-review item 9d32cea2977b）：ready+error 的挂起
+        # 失败，与状态机独立的 blocked 终态（freeze_for_human 冻结、收敛拦截、
+        # env 冻结等）——后者此前只进总数、不进任何分桶，冻结/拦截 SPEC 在场
+        # 时摘要不再末尾显示 ⚠️ 阻塞，人工巡检会漏判系统处于需介入状态。
         blocked = sum(
-            1 for e in all_specs.values() if e.get("status") == "ready" and e.get("error")
+            1
+            for e in all_specs.values()
+            if (e.get("status") == "ready" and e.get("error"))
+            or e.get("status") == "blocked"
         )
 
         parts = [f"📦 {total} 个 SPEC"]
@@ -4520,12 +4532,15 @@ class PMEngine:
                         f"spec={spec_name} count={count}",
                     )
             else:
-                # recovered：落 SIGNAL 档（链路级恢复，不绑定 spec）
+                # recovered：落 SIGNAL 档（链路级恢复，不绑定 spec）。
+                # severity=info（code-review item e91fbe58df5b）：严重度刻度反映
+                # 事件方向——触发=critical（真实故障升级）、恢复=info 审计档，
+                # 不得与「在熔断」等量齐观。
                 entry = {
                     "kind": SIGNAL,
                     "signal_type": "run_infra_failure",
                     "spec": None,
-                    "severity": "critical",
+                    "severity": "info",
                     "description": (
                         f"spec-review 链路 infra 熔断冷却到期，已自动恢复重试"
                         f"（冷却前连续失败 {count} 次）"

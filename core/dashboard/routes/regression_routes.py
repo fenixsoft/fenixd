@@ -163,6 +163,7 @@ _AUTODRAFT_REAP_TIMEOUT_SECONDS = 5
 # 请求会各起一个 claude 起草进程，互相踩 verify.yaml / git index。同项目
 # 在途时第二个请求直接 409。
 _AUTODRAFT_LOCKS_GUARD = threading.Lock()
+# [fenix-ignore:722bc833a62a] 键数以项目数为上界且 Lock 占用极小，清退需引全局守卫+引用计数反引入竞态，收益不抵
 _AUTODRAFT_LOCKS: dict[str, threading.Lock] = {}
 
 
@@ -748,6 +749,10 @@ class H12RegressionRoutesMixin:
                 )
                 return
             full_contract = contract is None
+            # 起草前 verify.yaml 存在性快照（item f869f6f487e5）：整契约路径下
+            # 若起草后盘上留下不可解析的契约文件，据此区分「本轮凭空写出、可
+            # 回滚删除」与「起草前已存在、MUST NOT 删除只能报失败」。
+            pre_yaml_exists = (proot / ".fenix" / "verify.yaml").is_file()
             prompt = _autodraft_prompt(proot, project["name"], full_contract)
             # add-harness-adapter-layer 8.2：第 6 个一次性 spawn 点收编
             # run_one_shot（design「7 个表亲」清单的遗漏面——原 4.1 收编五点 +
@@ -856,6 +861,49 @@ class H12RegressionRoutesMixin:
                             "已生成 regression 段并写入 .fenix/verify.yaml"
                             if not full_contract
                             else "已起草验证契约（含 regression 段）并写入 .fenix/verify.yaml"
+                        ),
+                    }
+                )
+                return
+
+            # 整契约路径（full_contract=True）对称校验（item f869f6f487e5）：
+            # 起草前无有效契约，若起草后盘上留有 verify.yaml 却不可解析
+            # （claude 违反自证门把契约写坏又输出 no_test_system），不得以
+            # no_test_system 成功结案把坏契约留在盘上——落失败回包；文件系
+            # 本轮凭空写出（起草前不存在）时回滚删除，起草前已存在的文件
+            # MUST NOT 删除、只报失败。盘上无文件（什么都没写）仍是合法
+            # no_test_system 结案。
+            if (
+                marker == "no_test_system"
+                and full_contract
+                and contract_after is None
+                and (proot / ".fenix" / "verify.yaml").is_file()
+            ):
+                if pre_yaml_exists:
+                    # 起草前已存在：不可回滚删除，只能报失败
+                    outcome = "（文件起草前已存在，未回滚，请手工修复）"
+                else:
+                    try:
+                        (proot / ".fenix" / "verify.yaml").unlink()
+                        outcome = "，已回滚删除该文件"
+                    except OSError as exc:
+                        logger.warning(
+                            f"回滚删除写坏的 verify.yaml 失败（project={project['name']}）: "
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                        outcome = "，回滚删除失败，请手工处理"
+                logger.warning(
+                    f"整契约起草后 verify.yaml 不可解析，契约文件被写坏"
+                    f"（project={project['name']}，marker={marker!r}，"
+                    f"pre_yaml_exists={pre_yaml_exists}）；"
+                    f"stdout 尾部: {stdout_tail[-400:]}",
+                )
+                self._json(
+                    {
+                        "ok": False,
+                        "error": (
+                            f"AI 生成未成功：.fenix/verify.yaml 被本轮起草写坏为不可解析"
+                            f"{outcome}，可重试或查看服务端日志"
                         ),
                     }
                 )

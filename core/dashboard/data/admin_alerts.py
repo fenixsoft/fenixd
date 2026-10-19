@@ -66,11 +66,49 @@ def get_alerts(project_root) -> list:
     return _merge_narrative_sidecars(project_root, AdminStore(project_root).read_all())
 
 
+def _unhandled_records(records: list) -> list:
+    """未处理升级告警过滤单点（kind=escalation 且未 handled，最新在前）。
+
+    AdminStore.unhandled 同款过滤在**已读记录**上的单点复刻：单函数读路径
+    （get_unhandled_alerts）与 alerts_overview 单读聚合共用（code-review
+    item d3d6a32a1091，聚合路径免对同项目二次全量读盘）；口径变更须与
+    AdminStore.unhandled 同步。
+    """
+    from core.admin_store import ESCALATION
+
+    return [
+        r for r in records if r.get("kind") == ESCALATION and not r.get("handled")
+    ]
+
+
 def get_unhandled_alerts(project_root) -> list:
     """读取项目未处理的升级告警（最新在前）。含叙事侧车合并（3.3）。"""
     from core.admin_store import AdminStore
 
-    return _merge_narrative_sidecars(project_root, AdminStore(project_root).unhandled())
+    return _merge_narrative_sidecars(
+        project_root, _unhandled_records(AdminStore(project_root).read_all())
+    )
+
+
+def _resolved_records(records: list) -> list:
+    """已处理告警过滤单点（ESCALATION 全量 + 自愈收口 SIGNAL，最新在前）。
+
+    get_resolved_alerts docstring 的 5.3 口径（handled 且 kind=escalation，
+    或 kind=signal 且 handled_by="auto-self-heal"——人工 mark_signal_handled
+    的信号不进本视图）在**已读记录**上的单点实现：单函数读路径与
+    alerts_overview 单读聚合共用（code-review item d3d6a32a1091）。
+    """
+    from core.admin_store import AUTO_SELF_HEAL_BY, ESCALATION, SIGNAL
+
+    return [
+        r
+        for r in records
+        if r.get("handled")
+        and (
+            r.get("kind") == ESCALATION
+            or (r.get("kind") == SIGNAL and r.get("handled_by") == AUTO_SELF_HEAL_BY)
+        )
+    ]
 
 
 def get_resolved_alerts(project_root, limit: int = 50) -> list:
@@ -86,18 +124,11 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
     本视图，不扩既有语义），配合待处理视图的既有 handled 过滤实现「待处理
     不再出现已自愈条目、已处理视图自然收纳」。
     """
-    from core.admin_store import AdminStore, AUTO_SELF_HEAL_BY, ESCALATION, SIGNAL
+    from core.admin_store import AdminStore
 
-    resolved = [
-        r
-        for r in AdminStore(project_root).read_all()
-        if r.get("handled")
-        and (
-            r.get("kind") == ESCALATION
-            or (r.get("kind") == SIGNAL and r.get("handled_by") == AUTO_SELF_HEAL_BY)
-        )
-    ]
-    return _merge_narrative_sidecars(project_root, resolved[:limit])
+    return _merge_narrative_sidecars(
+        project_root, _resolved_records(AdminStore(project_root).read_all())[:limit]
+    )
 
 
 def mark_alert_handled(project_root, alert_id: str) -> bool:
@@ -127,13 +158,12 @@ def mark_all_alerts_handled(project_root) -> int:
     return AdminStore(project_root).mark_all_handled()
 
 
-def alerts_summary(project_root) -> dict:
-    """项目告警摘要：{unhandled_count, max_severity, latest}。
+def _summary_from_unhandled(unhandled: list) -> dict:
+    """告警摘要派生单点：{unhandled_count, max_severity, latest}。
 
-    max_severity 取未处理告警中最高严重度（critical > major > minor）；
-    latest 为最新一条未处理告警。无未处理时三者为空/0。
+    alerts_summary 与 alerts_overview 单读聚合共用（code-review item
+    d3d6a32a1091）；语义与拆分前逐字段一致。
     """
-    unhandled = get_unhandled_alerts(project_root)
     if not unhandled:
         return {"unhandled_count": 0, "max_severity": None, "latest": None}
     sev_rank = {"critical": 3, "major": 2, "minor": 1}
@@ -142,6 +172,44 @@ def alerts_summary(project_root) -> dict:
         "unhandled_count": len(unhandled),
         "max_severity": top.get("severity"),
         "latest": unhandled[0],
+    }
+
+
+def alerts_summary(project_root) -> dict:
+    """项目告警摘要：{unhandled_count, max_severity, latest}。
+
+    max_severity 取未处理告警中最高严重度（critical > major > minor）；
+    latest 为最新一条未处理告警。无未处理时三者为空/0。
+    """
+    return _summary_from_unhandled(get_unhandled_alerts(project_root))
+
+
+def alerts_overview(project_root, resolved_limit: int = 50) -> dict:
+    """按项目单读聚合入口：一次 read_all 派生 summary/unhandled/resolved 三视图。
+
+    为 ``_api_alerts`` 缺省跨项目聚合分支而设（code-review item
+    d3d6a32a1091）：此前该分支对每个项目先后调用 alerts_summary /
+    get_unhandled_alerts / get_resolved_alerts，三者各自独立读同一
+    admin.jsonl，一次请求产生 3×项目数 次全量文件读。本入口只读一次，
+    在同一份记录列表上经既有过滤/摘要助手（_unhandled_records /
+    _resolved_records / _summary_from_unhandled）派生三视图，与单函数
+    读路径逐字段同语义；叙事侧车合并同样只做一次。
+
+    返回 ``{"summary": …, "unhandled": […], "resolved": […]}``；resolved
+    截断上限与 get_resolved_alerts 缺省一致（resolved_limit=50，先过滤
+    后截断）。注意 summary["latest"] 与 unhandled[0] 为同一记录对象
+    （序列化结果不受影响）。
+    """
+    from core.admin_store import AdminStore
+
+    merged = _merge_narrative_sidecars(
+        project_root, AdminStore(project_root).read_all()
+    )
+    unhandled = _unhandled_records(merged)
+    return {
+        "summary": _summary_from_unhandled(unhandled),
+        "unhandled": unhandled,
+        "resolved": _resolved_records(merged)[:resolved_limit],
     }
 
 

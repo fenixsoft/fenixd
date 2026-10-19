@@ -245,12 +245,15 @@ class TestReportingCharacterization(unittest.TestCase):
             "d": {"status": "testing"},
             "e": {"status": "ready", "error": "boom"},
             "f": {"status": "ready"},
+            # blocked 终态（冻结/收敛拦截/env 冻结）并入 ⚠️ 阻塞桶
+            # （code-review item 9d32cea2977b）
+            "g": {"status": "blocked"},
         }
         summary = self.engine.get_health_summary()
-        self.assertIn("📦 6 个 SPEC", summary)
+        self.assertIn("📦 7 个 SPEC", summary)
         self.assertIn("✅ 2 完成", summary)
         self.assertIn("🔨 2 进行中", summary)
-        self.assertIn("⚠️ 1 阻塞", summary)
+        self.assertIn("⚠️ 2 阻塞", summary)
 
 
 class TestDependenciesSatisfiedCharacterization(unittest.TestCase):

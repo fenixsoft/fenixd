@@ -387,7 +387,9 @@ class FamilyGovernor:
             siblings.append(name)
         return siblings
 
-    def _sibling_repair_active(self, spec_name: str, my_enqueued_at: float = None) -> str:
+    def _sibling_repair_active(
+        self, spec_name: str, my_enqueued_at: Optional[float] = None
+    ) -> str:
         """判定同根兄弟是否存在 actionable 修复活动，返回承载方 spec 名或空串（design D3）。
 
         actionable 定义（design D3）：兄弟 status ∈ {implementing, ready(其队列含实现器条目)}
@@ -1196,18 +1198,45 @@ class FamilyGovernor:
             f"- [ ] 修复后重跑验证确认通过\n"
         )
 
-        m = self._pm._VERIFY_FIX_SECTION_RE.search(text)
+        # 段界起点围栏感知（code-review item ba8419bf22ef）：与下方终点扫描
+        # 口径对齐——tasks.md 代码围栏示例内可能出现行首「## 验证修复」行，
+        # 裸 search 会让起点落入围栏内部，替换区间从围栏中段拼接破坏围栏
+        # 结构与后续版式。逐行跟踪 ``` / ~~~ 围栏开合（判定谓词与终点扫描
+        # 逐字对齐），仅取围栏外的首个命中。
+        m = None
+        m_start = 0
+        m_end = 0
+        fence_char = ""
+        fence_len = 0
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            body = line.strip()
+            if fence_char:
+                # 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
+                if body and set(body) == {fence_char} and len(body) >= fence_len:
+                    fence_char = ""
+            elif body.startswith("```") or body.startswith("~~~"):
+                fence_char = body[0]
+                fence_len = len(body) - len(body.lstrip(body[0]))
+            elif line.startswith("## "):
+                lm = self._pm._VERIFY_FIX_SECTION_RE.match(line)
+                if lm:
+                    m = lm
+                    m_start = offset
+                    m_end = offset + lm.end()
+                    break
+            offset += len(line)
         if m:
             # 已有验证修复段：替换为新轮数版本
             # 找到段的起始位置（含前一个 \n\n），到段尾
-            start = m.start()
+            start = m_start
             # 向前找到段落分隔
             while start > 0 and text[start - 1] == "\n":
                 start -= 1
             # 向后找到下一个二级标题或文件末尾。MUST NOT 排除「验」字（item
             # 255393413ec3）：本段内部不含二级标题，「## 验收标准」等以「验」
             # 开头的后续标题也是合法段界——排除会把整段误并入替换区间删掉。
-            after = text[m.end() :]
+            after = text[m_end:]
             # 段界探测围栏感知（code-review item cb421886ef72）：tasks.md 可能
             # 贴含行首「## 」的代码围栏示例，裸搜 "\n## " 会在围栏内提前截断
             # 替换区间丢内容——逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配
