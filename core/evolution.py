@@ -754,38 +754,42 @@ def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
 
 
 def _ignorable_before_marker(line: str) -> bool:
-    """标记行「紧跟标题行」判定中可忽略的行：空白行、未知标签行与裸缩进行。
+    """标记行「紧跟标题行」判定中可忽略的行：不写入 current_fields 的行。
 
-    与 parse_todo_entries 的 current_fields 收集口径对齐（code-review item
-    066161cd80de）：parse 侧未知标签行（_FIELD_RE 命中但标签不在四字段
-    集合）不写入 current_fields，其后紧跟的标记行仍判已处理（整条丢弃）；
-    strip 侧若把该行当实体行则判孤立、只剔标记整块保留——同一文件形态下
-    两侧结论相反，条目继续留在分析输入中被重复分析，apply_marker_to_lines
-    原地插新标记后旧标记沦为孤立告警源。四字段行之外，这类行在两侧都不算
-    「已收集字段」。
+    与 parse_todo_entries 的 current_fields 收集口径单源对齐（code-review
+    item 066161cd80de / cdc2b0693d6b / 9cd5c32ea758）：parse 侧唯一能让标
+    记失效的行形态是四字段行（_FIELD_RE 命中且标签在四字段集合内，写入
+    current_fields），它也是此处唯一不可忽略的形态。其余行在 parse 侧均不
+    改变 current_fields，strip 侧必须同判——否则同一文件形态下 strip 判标
+    记孤立（只剔标记、整块保留进分析输入）、parse 判整条已处理（丢弃），
+    条目被重复分析，apply_marker_to_lines 原地插新标记后旧标记沦为孤立告
+    警源：
 
-    裸缩进续行同理（code-review item cdc2b0693d6b）：parse 侧四字段未收集
-    前的裸缩进行（无「- 标签：」形态，如手工编辑残留的续行）同样不写入
-    current_fields（:620 要求 current_fields 非空才并入续行），其后的标记
-    行仍判已处理；strip 侧保持同判。已收集四字段之后的续行不受此处豁免
-    影响——_flush 按序扫描，四字段行（非可忽略行）先阻断，与 parse 侧
-    「有字段后标记即孤立」的口径一致。
+    - 未知标签行（_FIELD_RE 命中但标签不在四字段集合，item 066161cd80de）；
+    - 裸缩进续行（无「- 标签：」形态；parse 侧续行分支要求 current_fields
+      非空才并入既有字段值，不可能把空集合变非空，item cdc2b0693d6b）；
+    - 非缩进纯文本行（既不匹配 _FIELD_RE 也不满足续行缩进谓词，逐分支落
+      空，如手工编辑加在标题与标记行之间的正文，item 9cd5c32ea758）。
+
+    已收集四字段之后的行不受此处豁免影响——_flush 按序扫描，四字段行（非
+    可忽略行）先阻断，与 parse 侧「有字段后标记即孤立」的口径一致。
     """
     if not line.strip():
         return True
     fm = _FIELD_RE.match(line)
     if fm:
         return fm.group(1).strip() not in _FIELD_LABEL_SET
-    # 无「- 标签：」形态的缩进行（与 parse 侧续行判定的缩进谓词一致）
-    return line.startswith((" ", "\t"))
+    # 非字段行（未知标签行已在上方返回）：与 parse 侧一致，均不写入
+    # current_fields，不阻断其后标记行的「已处理」判定
+    return True
 
 
 def strip_processed_entries(text: str) -> str:
     """剥离带处理标记的条目整块（标题 + 其缩进行），供分析 run 的输入使用。
 
-    处理标记行仅在其紧跟条目标题行（其间空白行、未知标签行与裸缩进续行忽
-    略，四字段行挡下判定，与 parse_todo_entries 的字段收集口径一致）时才
-    生效：此时整块
+    处理标记行仅在其紧跟条目标题行（其间除四字段行外不写入 current_fields
+    的行——空白行、未知标签行、续行、非缩进纯文本行——均忽略，四字段行挡
+    下判定，与 parse_todo_entries 的字段收集口径一致）时才生效：此时整块
     视为已处理并剥离。孤立标记行（其标题行已被手工删除/改写后残留）不连坐
     所在块，仅剔除标记行本身并记 WARNING。
     """
@@ -794,8 +798,9 @@ def strip_processed_entries(text: str) -> str:
 
     def _flush() -> None:
         # 块首标题行（block[0]）之后按序扫描：遇到处理标记行即整块已处理；
-        # 遇到四字段行（非可忽略行）则标记不生效；空白行/未知标签行/裸缩进
-        # 续行不阻断判定（code-review item 066161cd80de、cdc2b0693d6b，见
+        # 遇到四字段行（非可忽略行）则标记不生效；其余不写入 current_fields
+        # 的行（空白行/未知标签行/续行/非缩进纯文本行）不阻断判定（code-
+        # review item 066161cd80de、cdc2b0693d6b、9cd5c32ea758，见
         # _ignorable_before_marker）
         marked = False
         for l in block[1:]:
@@ -817,9 +822,10 @@ def strip_processed_entries(text: str) -> str:
                 out.append(line)
             continue
         if _TODO_MARKER_RE.match(line):
-            # 标记行仅紧跟标题行（其间只夹空白行/未知标签行/裸缩进续行/既
-            # 有标记行，与 _flush 及 parse_todo_entries 口径一致）才生效；
-            # 孤立标记行不连坐所在块，仅剔除标记行本身
+            # 标记行仅紧跟标题行（其间只夹不写入 current_fields 的行——空
+            # 白行/未知标签行/续行/非缩进纯文本行——与既有标记行，与 _flush
+            # 及 parse_todo_entries 口径一致）才生效；孤立标记行不连坐所在
+            # 块，仅剔除标记行本身
             if block and all(
                 _TODO_MARKER_RE.match(l) or _ignorable_before_marker(l) for l in block[1:]
             ):
