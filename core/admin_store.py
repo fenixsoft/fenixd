@@ -70,6 +70,14 @@ MAX_ARCHIVE_RECORDS = 2000
 # 队列；warning/minor 写入即自动标记已处理（仍留历史记录，不弹横幅）。
 HUMAN_SEVERITIES = ("critical", "major")
 
+# code-review item 6aec6b094174：随处置收口告警的 close_cause 字段值（单点
+# 常量防漂移）。close_escalations_for_run 的关闭成因是「admin run 落最终
+# disposition」，与 auto_resolve 的「解除条件命中」触发条件完全不同，但
+# handled_by 同署 AUTO_RESOLVE_BY；审计侧按 close_cause 过滤即可区分两类
+# 闭环，不再依赖 resolve_note 自然语言注记。无 close_cause 的 auto-resolve
+# 记录即经典条件族自动闭环（字段缺省语义）。
+CLOSED_BY_DISPOSITION = "closed-by-disposition"
+
 
 def severity_needs_human(severity: str) -> bool:
     return (severity or "").lower() in HUMAN_SEVERITIES
@@ -247,6 +255,10 @@ class AdminStore:
         判定，不得按实现默认推断（design D2：否则二选一皆错——恒不触发则
         静默清库仍在，恒触发则拦掉损坏后的合法恢复写入）。正常空文件/合法
         空数组路径恒 ``corrupt=False``，不得被下限保护误拦。
+
+        exists 预检通过后文件被并发删除（``read_text`` 抛 ``FileNotFoundError``）
+        与「文件本不存在」同语义：不留底、``corrupt=False``，本次写回照常
+        放行（code-review item d857f48fb533）。
         """
         if not path.exists():
             return [], False
@@ -259,6 +271,13 @@ class AdminStore:
                 # （code-review item 2d386f296ace）。
                 return [], False
             data = json.loads(text)
+        except FileNotFoundError:
+            # exists 预检通过后、读取前被并发删除（良性竞态，code-review item
+            # d857f48fb533）：非损坏、无留底，语义等同上方「文件本不存在」
+            # 预检缺失路径——corrupt=False 放行本次写回，不误入留底路径打出
+            # 指向不存在 .corrupt-* 文件的失实日志（须列于 OSError 之前，
+            # FileNotFoundError 是其子类）
+            return [], False
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             # 非法 UTF-8 字节（磁盘损坏/外部工具误写）抛 UnicodeDecodeError
             # （ValueError 子类，上两类均不覆盖）——同走留底取证路径
@@ -853,7 +872,11 @@ class AdminStore:
         escalation 带同 admin_run_id），随后 run 正常完成落最终 disposition——
         误报 escalation 若无人关闭，dashboard 处置卡片永久显示「需人工决策」
         与 result=resolved 矛盾，且 unhandled_for 节流会压制该 spec 后续同型
-        告警。仅改写 handled 族字段；已处理条目不可覆盖。返回关闭数量。
+        告警。仅改写 handled 族字段并附 close_cause 成因标记（6aec6b094174：
+        handled_by 沿用 AUTO_RESOLVE_BY 与 auto_resolve 同署，审计按
+        close_cause=CLOSED_BY_DISPOSITION 区分「随处置收口」与「解除条件
+        命中」两类闭环，不依赖 resolve_note 文本）；已处理条目不可覆盖。
+        返回关闭数量。
         """
         if not admin_run_id:
             return 0
@@ -871,6 +894,9 @@ class AdminStore:
                     rec["handled_by"] = AUTO_RESOLVE_BY
                     rec["handled_at"] = closed_at
                     rec["resolve_note"] = resolve_note
+                    # 显式成因标记（6aec6b094174）：handled_by 与 auto_resolve
+                    # 同署，审计按本字段区分随处置收口与条件族自动闭环
+                    rec["close_cause"] = CLOSED_BY_DISPOSITION
                     changed += 1
             return changed
 
@@ -1038,17 +1064,24 @@ class AdminStore:
 
     # ── evo-add-admin-orphan-disposition-effect-check 1.3 ─────────
 
-    def has_disposition_backfill(self, admin_run_id: str) -> bool:
+    def has_disposition_backfill(
+        self, admin_run_id: str, records: Optional[list] = None
+    ) -> bool:
         """某处置组（admin_run_id）内是否已存在补记记录（幂等判据）。
 
         仅匹配 kind=DISPOSITION ∧ admin_run_id 相等 ∧
         source == ORPHAN_BACKFILL_SOURCE。补记记录携带同组 admin_run_id
         （审计可溯），非 pending 形态不改变 _merge_admin_runs 的 final 归并
         语义（组本已 final）；本探测供孤儿收敛分支「已补记即跳过」用。
+
+        ``records``（可选，code-review item c743b21ac4c7）：调用方已持有的
+        全量记录快照（如 _recover_orphaned_dispositions 轮首 read_all()），
+        传入则免逐 final 组重复全文件读取解析（存在性判定与排序无关，
+        read_records/read_all 同源同形）；缺省照旧自读，既有调用方不受影响。
         """
         if not admin_run_id:
             return False
-        for rec in self.read_records():
+        for rec in (records if records is not None else self.read_records()):
             if rec.get("kind") != DISPOSITION:
                 continue
             if rec.get("admin_run_id") != admin_run_id:
