@@ -406,6 +406,9 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         True 表示本轮已按 inconclusive 处理（调用方跳过 bug-found/verified
         判定）；False 表示无环境性失联，按既有判定继续。
     """
+    # 空值防御口径与同族 inconclusive 入口一致（_handle_verdict_env_exemption_inconclusive
+    # / _inconclusive_fail_signature 均容 None）。
+    report = report or {}
     summary = report.get("summary") or {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     failed = _summary_count(pipeline, spec_name, summary, "failed")
@@ -2367,7 +2370,7 @@ def _handle_env_exemption_handshake(
                 f"env 豁免握手拦截 '{spec_name}'：查得的 admin 放行处置记录"
                 f"（{disposition.get('created') or '时间未知'}）不晚于本轮 "
                 f"inconclusive_loop 信号，属早先 episode 的陈旧放行，不复用 — "
-                f"转 inconclusive 重验，不落 verified",
+                f"转 inconclusive 升级停车等人工处置（不再自动重验），不落 verified",
             )
         else:
             pipeline._context.logger.warning(
@@ -2375,7 +2378,8 @@ def _handle_env_exemption_handshake(
                 f"env 豁免握手拦截 '{spec_name}'：本轮验证失败全部被裁决归类 env"
                 f"（env 断言 {verdict['env_entries']} 条、blocked-env 场景 "
                 f"{len(verdict['blocked_env_scenarios'])} 个），无 admin 放行处置"
-                f"记录 — 转 inconclusive 重验，不落 verified",
+                f"记录 — 转 inconclusive 升级停车等人工处置（不再自动重验），"
+                f"不落 verified",
             )
         if report is None:
             report = load_report(pipeline._context.project_root, spec_name) or {}
