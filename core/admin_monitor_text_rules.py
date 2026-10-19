@@ -173,8 +173,8 @@ def family_waiver_granted(text: str, spec: str) -> bool:
         错开派生口子）；
       - 否则动词型/赋值型模式按句（_SENTENCE_SPLIT_RE 分句：句末标点外加
         分号）判定，命中句须为本次处置的
-        显式放行表述：含 _WAIVER_CURRENT_MARKERS 全部限定词（本次/该族/
-        本族）或与本次父 SPEC 名同现——叙述
+        显式放行表述：含 _WAIVER_CURRENT_MARKERS 任一限定词（本次/该族/
+        本族其一）或与本次父 SPEC 名同现——叙述
         提及其他族谱/历史放行（「另一族谱已同意放行」「父 SPEC 此前已放行过
         一次」）且不含否定短语不构成对本次对象的放行（code-review
         4dd652206902）；
