@@ -137,7 +137,13 @@ class Logger:
         # 尚未就绪、不能走日志通道，先向 stderr 打一行警告再按 INFO 宽容回退，
         # 避免配置静默失效（code-review item c0dc5282e062）。构造期一次性
         # 告警，重复构造重复警告可接受，无需去重。
-        _resolved_level = getattr(logging, level.upper(), None)
+        # 非 str 级别（如沿用 stdlib 数值习惯的 20、布尔）同样走下面的 stderr
+        # 告警 + INFO 宽容回退，不在 level.upper() 上 AttributeError 炸掉构造
+        # （code-review item b0340a81d79d）；显式 null 经 ConfigLoader.get 已
+        # 回缺省 "INFO"，不进本分支。
+        _resolved_level = None
+        if isinstance(level, str):
+            _resolved_level = getattr(logging, level.upper(), None)
         if _resolved_level is None:
             print(
                 f"fenixd: unknown logging level {level!r}, falling back to INFO",
