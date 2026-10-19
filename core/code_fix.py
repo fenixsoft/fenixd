@@ -6878,9 +6878,31 @@ class CodeFixOrchestrator:
         new_done = done + hit
         # 链末批合回即链终局（2.1）：rollup 汇总 + 一行结构化日志，随本写点
         # 落盘并归零链级累积（非末批返回空 dict，不触碰链级字段——链继续）。
-        chain_final = (
-            self._chain_terminal_fields("chain_last_batch") if is_last_batch else {}
-        )
+        # 出账前按本时点重查 open 池（code-review item 0252e094724b）：
+        # is_last_batch 在合回前固化，合回+核销窗口内审查新产出的 open 条目
+        # 令链实际未收敛——此刻照固化判定清零会让同链后续批次的 run/核销
+        # 脱离链级累积，链终局 rollup 计数偏小。本批条目此刻已核销/终态出池，
+        # 重查无需再排除 batch_item_ids；仍留 selectable open 条目（含本批
+        # 未修复条目）即不清零，链级累积随链延续到真实终局出口。仅固化判定
+        # 为末批时才重查（非末批本就不清零，零额外台账读）；重查异常按固化
+        # 判定收口（保住既有出账+清账行为，不因观测面问题劫持成功写点）。
+        chain_final = {}
+        if is_last_batch:
+            try:
+                truly_last = is_chain_last_batch(
+                    root,
+                    (),
+                    chain_skipped=ctx.get("chain_skipped"),
+                    severity_gate=self._severity_gate(),
+                )
+            except Exception as e:  # noqa: BLE001 — 重查失败按既有判定出账
+                self._log(
+                    "warning",
+                    f"code-fix 链末批 open 池重查异常，按合回前判定收口: {e}",
+                )
+                truly_last = True
+            if truly_last:
+                chain_final = self._chain_terminal_fields("chain_last_batch")
         write_progress(
             root,
             phase="merging",
