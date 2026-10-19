@@ -373,7 +373,12 @@ def _is_selfcontained_html(path: Path) -> bool:
     ``<!DOCTYPE html`` 或 ``<html`` 前缀（大小写不敏感）。"""
     try:
         with path.open("rb") as f:
-            head = f.read(512)
+            # code-review item 5806fa31b2b2：读取窗口取 4KB——前缀匹配只需
+            # 覆盖「前导空白/BOM/注释」的容忍量级，512B 会把带超长前导空白
+            # 的合法产物误判为非自包含；4KB 对文档头绰绰有余且远小于产物
+            # 整体体积（超出 4KB 前导空白仍判非自包含，属可接受假设）。
+            # BOM（U+FEFF）与空白同由下方 lstrip 消化，前缀匹配语义不变。
+            head = f.read(4096)
     except OSError:
         return False
     text = head.decode("utf-8", errors="replace").lstrip("﻿ \t\r\n").lower()
@@ -476,8 +481,9 @@ class ArchitectureManager:
 
         首判定为非在飞仍须复核（item cae05392adba）：判定与读文件两步之间
         他线程 refresh 可刚受理并写 generating（锁自受理起持有至终态落盘才
-        释放），过期快照会把刚受理的生成误合成中断——故合成前重读状态并
-        二次复核在飞，仍非在飞才合成。
+        释放），过期快照会把刚受理的生成误合成中断——故合成前按首判定同一
+        「在飞先于读文件」纪律复核：先二次查在飞、后重读状态，仍非在飞才
+        合成（item 6eaea59dd68a）。
         """
         alive = self._in_flight_alive(proot)
         data = _read_status(proot)
@@ -489,14 +495,21 @@ class ArchitectureManager:
             # 间隙——另一线程的 refresh() 可在 alive 判定之后、读文件之前
             # 完成受理（acquire 单飞锁并写 generating），本次读到的
             # generating 配上过期快照 alive=False 会把刚受理的生成误合成
-            # 为中断。单飞锁自受理起持有、终态写盘后才释放，故合成前重读
-            # 一次状态并复核在飞：复核已回到在飞 → 落到下方按正常
-            # generating 返回；重读已非 generating → 以新读结果为准；仍
-            # generating 且仍非在飞才合成 failed（首判定已把「读到
-            # generating 后生成才完成」的既有反向竞态挡在门外）。
+            # 为中断。单飞锁自受理起持有、终态写盘后才释放，故合成前按首
+            # 判定同一纪律复核：先二次查在飞、后重读状态（code-review
+            # item 6eaea59dd68a：旧序「先重读后查在飞」的两次动作之间若恰
+            # 有新一轮 refresh 受理且其生成完整走完，重读捕获的 generating
+            # 配上翻转后的 alive=False 会把刚 ready 的生成误合成为中断；
+            # 对调后重读所见的 generating 若出自 T2 前受理的生成必已被在飞
+            # 判定捕捉，不再与「判定后才完成」的终态翻转相撞）。复核已回
+            # 到在飞 → 落到下方按正常 generating 返回；重读已非
+            # generating → 以新读结果为准；仍 generating 且复核仍非在飞才
+            # 合成 failed（残留缺口仅剩「二次在飞判定与重读之间恰好受理」
+            # 的窄窗口，下一轮轮询按在飞正常返回即自愈）。
+            alive = self._in_flight_alive(proot)
             data = _read_status(proot) or data
             state = str(data.get("state") or "")
-            if state == "generating" and not self._in_flight_alive(proot):
+            if state == "generating" and not alive:
                 synth = _status_payload(
                     "failed",
                     started_at=data.get("started_at"),
@@ -901,7 +914,12 @@ class ArchitectureManager:
                     component_count=component_count,
                 ),
             )
-        except OSError:
+        except Exception:
+            # code-review item 1e7127422a27：只捕 OSError 会放走终态写入调用
+            # （json.dumps/write_text/os.replace）抛出的非 OSError 异常，终态
+            # 未落盘而锁随调用方 finally 释放，违反读侧「终态写入 MUST 严格
+            # 先于锁释放」契约（严格度对齐 refresh 线程启动失败路径
+            # item 1295fb028cb4）；BaseException 仍照常穿出不吞。
             pass  # 终态写盘失败不逃逸线程；读侧按残留态兜底
 
 
