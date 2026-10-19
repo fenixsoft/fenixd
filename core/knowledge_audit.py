@@ -36,6 +36,10 @@ from core.config import ConfigLoader
 from core.knowledge_backfill import (
     append_todo_line,
     atomic_write_text,
+    # re-export：本文件虽未直接调用，但测试替身与外部调用方以
+    # ka.commit_pathspec 属性引用（code-review 6a2085a486ca 曾按「文件内
+    # 无引用」误删，提交路径 AttributeError 被消费段 fail-open 吞掉后回归）
+    commit_pathspec,
     default_spawn,
     discard_paths,
     knowledge_dirty_files,
