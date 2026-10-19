@@ -349,7 +349,10 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
         if item.get("kind") not in VALID_KINDS:
             # b25b28a4ed8a：缺/非法 kind 兜底归类 web 保留在集（不再剔除，
             # 防存量无 kind 冻结集被清成空集后写回）；不写回文件。
-            backfilled.append(str(item.get("id") or "?"))
+            # 显式判空（code-review 5e4596631913）：数字 id 0 属合法 falsy
+            # 值，``or`` 会显示成 "?"；仅 None/空串回退占位符。
+            raw_bid = item.get("id")
+            backfilled.append((str(raw_bid) if raw_bid is not None else "") or "?")
             item = {**item, "kind": "web"}
         kept.append(item)
     if backfilled:
@@ -409,7 +412,10 @@ def validate_scenario_entries(entry_dicts: list) -> list[str]:
         if not isinstance(item, dict):
             errors.append(f"场景集条目[{i}]解析失败: 期望对象，" f"实际为 {type(item).__name__}")
             continue
-        sid = item.get("id") or f"[{i}]"
+        # 显式判空（code-review 5e4596631913）：数字 id 0 属合法 falsy 值，
+        # ``or`` 会显示成下标占位；仅 None/空串回退占位符。
+        sid = str(item.get("id")) if item.get("id") is not None else ""
+        sid = sid or f"[{i}]"
         if not str(item.get("id") or "").strip():
             errors.append(f"场景集条目[{i}] 缺少非空 id")
         kind = item.get("kind")
@@ -443,6 +449,8 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     for e in scenario_set.scenarios:
         if not isinstance(e, ScenarioEntry):
             eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
+            # 显式判空（code-review 5e4596631913）：数字 id 0 显示原值不吞占位。
+            eid = str(eid) if eid is not None else ""
             rejected.append(f"{eid or '?'}（期望 ScenarioEntry，实际为 {type(e).__name__}）")
             continue
         d = {
@@ -691,6 +699,13 @@ def diff_planner_output(
     blocked_stuck 各一）原子，后写者不再以自身读到的旧基线整档覆盖、丢掉先写
     者新增/补齐的条目。锁不可得（锁文件打开失败/文件系统不支持 flock/限时未
     抢到）降级无锁继续，不阻断验证；本函数异常退出时就地释放。
+
+    调用方契约（code-review 59d8b4603f5d）：返回集 MUST 要么交
+    ``save_scenario_set`` 落盘（落盘即释放锁），要么在校验后放弃落盘时显式
+    释放（``_release_scenarios_lock(result.scenario_set._pending_write_lock)``,
+    可先判 None）；两者都不做时锁 fd 随 ScenarioSet 实例滞留至 GC/进程退出，
+    期间同 spec 其他写方每次都按 ``_SCENARIOS_LOCK_WAIT`` 白等限时才降级无锁
+    （有界不悬挂，但与异常退出的就地释放不对称）。
     """
     lock_file = _hold_scenarios_write_lock(project_root, spec_name)
     try:
@@ -743,14 +758,19 @@ def _diff_planner_output_impl(
             # 移除声明条目（remove_reason 非空的不可执行形态）不入集，与
             # 下方有持久化集分支的 sid in reasons 跳过同口径——否则首轮
             # 写进 scenarios.json 成幽灵条目，下一轮被判无理由缺失。
-            if isinstance(s, dict) and s.get("id") and not s.get("remove_reason"):
-                dedup_by_id[str(s["id"])] = s
+            raw_sid = s.get("id") if isinstance(s, dict) else None
+            # 显式判空而非 ``or``/真值回退（code-review 5e4596631913，与
+            # _parse_reasons/ScenarioEntry 构造器 144ec547f48f 同款）：数字
+            # id 0 属合法 falsy 值，不得当「缺 id」跳过。
+            sid = str(raw_sid) if raw_sid is not None else ""
+            if isinstance(s, dict) and sid and not s.get("remove_reason"):
+                dedup_by_id[sid] = s
             elif not isinstance(s, dict):
                 skipped.append(f"[{i}]非对象")
-            elif not s.get("id"):
+            elif not sid:
                 skipped.append(f"[{i}]缺 id")
             else:
-                skipped.append(f"[{i}]{s.get('id')}（remove_reason 声明移除）")
+                skipped.append(f"[{i}]{sid}（remove_reason 声明移除）")
         if skipped:
             # 剔除留痕（code-review 5a762fcbff17）：本分支没有有持久化集分支
             # 的 missing→补齐路径兜底，静默跳过会让冻结集缩水且无法从日志
@@ -812,9 +832,15 @@ def _diff_planner_output_impl(
     planner_ids = set()
     planner_by_id = {}
     for s in planner_scenarios:
-        if not isinstance(s, dict) or not s.get("id"):
+        if not isinstance(s, dict):
             continue
-        sid = str(s["id"])
+        raw_sid = s.get("id")
+        # 显式判空而非 ``or``/真值回退（code-review 5e4596631913，与
+        # _parse_reasons 144ec547f48f 同款）：数字 id 0 属合法 falsy 值，
+        # 不得当「缺 id」跳过（否则持久化集对应条目被判「无理由缺失」误报）。
+        sid = str(raw_sid) if raw_sid is not None else ""
+        if not sid:
+            continue
         if sid in reasons:
             continue  # 该场景被 planner 显式移除（带理由）
         planner_ids.add(sid)
