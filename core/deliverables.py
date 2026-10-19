@@ -723,6 +723,10 @@ def _is_unsafe_spec_name(spec_name) -> bool:
 
     参照 core/spec_mode.read_spec_mode 的既有防线形态在本模块内实现（不 import
     该模块——避免跨模块状态耦合）：拒收空值、``.``、``..``、路径分隔符与 NUL。
+    另拒收 glob 元字符（``*`` ``?`` ``[`` ``]``，code-review item
+    2255103c1ac5）：spec_name 会拼进 git 负向 pathspec
+    （``:!spec/changes/<name>/**``，_git_grep_zero_refs），含元字符时 pathspec
+    按 glob 语义展开、偏离字面路径，孤儿判定的排除面随之漂移。
     spec_name 在本模块多处直接拼进文件路径（``spec/changes/<name>/tasks.md``）、
     git 对象路径（``<branch>:spec/changes/<name>/tasks.md``）与
     ``.fenix/verify-progress/<name>/`` 快照路径，含路径成分时可越出 spec/changes
@@ -736,6 +740,7 @@ def _is_unsafe_spec_name(spec_name) -> bool:
         or "/" in s
         or ".." in s
         or "\0" in s
+        or any(c in s for c in "*?[]")
     )
 
 
@@ -1084,7 +1089,7 @@ def snapshot_declaration_baseline(spec_name, run_id, project_root) -> "dict | No
         # 收缩防护该轮降级保守。
         _resolution_logger.warning(
             "deliverables",
-            f"基线快照 spec 名含路径成分，拒绝 '{spec_name}'（不落快照，收缩防护该轮降级）",
+            f"基线快照 spec 名含路径成分或 glob 元字符，拒绝 '{spec_name}'（不落快照，收缩防护该轮降级）",
         )
         return None
     spec_dir = root / "spec" / "changes" / spec_name
@@ -1124,7 +1129,7 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
         # 读快照（可越出 .fenix/verify-progress/<spec>/），守卫降级保守。
         _resolution_logger.warning(
             "deliverables",
-            f"基线快照读取 spec 名含路径成分，拒绝 '{spec_name}'（守卫降级保守）",
+            f"基线快照读取 spec 名含路径成分或 glob 元字符，拒绝 '{spec_name}'（守卫降级保守）",
         )
         return None
     target = (
