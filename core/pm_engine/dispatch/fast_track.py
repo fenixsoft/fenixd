@@ -1130,6 +1130,18 @@ class FFastTrackMixin:
                     f"fast-track 读取 test_scenarios.json 失败 '{spec_name}'"
                     f"（按无设计集降级，仅做结构与证据校验）: {degrade_reason}",
                 )
+        else:
+            # 覆盖门降级 MUST 留痕（code-review item 79ad19a63096，同上方
+            # 75770d2d2cc6 / 58efa16245ef 三态口径拉齐）：文件整体缺失时
+            # designed_ids 同样保持空 → validate 按 None 跳过全量执行比对，
+            # 硬校验同样无声退化为仅结构校验；路径漂移/计划产物未落盘时恰以
+            # 缺失形态出现，留痕文案区分「文件不存在」以便排障时与「无设计集」
+            # 相区分。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track test_scenarios.json 文件不存在 '{spec_name}'"
+                f"（按无设计集降级，仅做结构与证据校验）: {scenarios_path}",
+            )
 
         check = validate_fast_track_result(ft_result, designed_ids or None)
         # （fix-fasttrack-recovery-resume 4.1 出口矩阵：硬校验失败重派分支）
