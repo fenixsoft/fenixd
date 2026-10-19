@@ -11,8 +11,9 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
   已移除、改为 ini 配置项），挂起时打印各线程栈；
 - 超时/挂起时中止子进程**组**（SIGTERM 优雅窗口后对整组补发 SIGKILL，孙进程
   一并中止）并输出**挂起测试标识**（faulthandler 栈顶用例）；
-- 子进程输出落盘匿名临时文件，回读与磁盘占用双有界（回读留尾部窗口，收割
-  线程周期截断回收磁盘，失控输出不再无界涨盘）；
+- 子进程输出落盘匿名临时文件（另伴随生尾窗文件），回读与磁盘占用双有界
+  （回读留尾部窗口，收割线程周期把末尾窗口快照到伴生文件后截断主文件回收
+  磁盘，失控输出不再无界涨盘、尾部证据不因收割丢失）；
 - 正常结束返回 pytest 完整输出与退出码；
 - ``--baseline <ref>``：在基线 ref 的临时 worktree 跑同一套件，输出两侧失败集合
   差异并给出「存量 / 本次引入」归类（混合情形判为存在本次引入回归）；
@@ -77,10 +78,13 @@ OUTPUT_READBACK_LIMIT_BYTES = 64 * 1024 * 1024
 
 # 输出临时文件的磁盘收割窗口（code-review item 77429f359c2d）：子进程对临时
 # 文件的写入量本身不受限，失控输出在硬超时窗口内可持续涨盘。收割线程
-# （_drain_output_disk）周期把文件截到尾部该窗口：ftruncate 不回退子进程
-# 写偏移，被截区间留稀疏洞、不占实际磁盘块（tmpfs 亦不占页），磁盘占用
-# 上界 ≈ 窗口 + 单个轮询周期内的新增写入。窗口 ≥ 回读上限（4 倍冗余），
-# _read_back_output 的尾部回读不受影响。
+# （_drain_output_disk）周期把文件**末尾**该窗口经 os.pread 快照到伴生尾窗
+# 文件后再截断主文件（POSIX ftruncate 只能保留头部、就地截断恰丢最新写入
+# 的尾部，而 FAILED 摘要与 faulthandler 栈集中在输出后段，故先快照后截断）：
+# 被截区间留稀疏洞、不占实际磁盘块（tmpfs 亦不占页），主文件磁盘占用上界
+# ≈ 窗口 + 单个轮询周期内的新增写入，伴生文件 ≤ 窗口。窗口 ≥ 回读上限
+# （4 倍冗余），_read_back_output 拼接「伴生尾窗 + 截断后新增」的尾部回读
+# 不受影响。
 OUTPUT_DISK_KEEP_BYTES = 4 * OUTPUT_READBACK_LIMIT_BYTES
 
 # 以当前解释器起子进程（``sys.executable -m pytest``，与 bin/test_for.py 的
@@ -198,38 +202,103 @@ def extract_hanging_test(stderr: str) -> "str | None":
 # ── 命令运行（有界）────────────────────────────────────────────────────
 
 
-def _read_back_output(stream, limit: int = OUTPUT_READBACK_LIMIT_BYTES) -> str:
+def _read_back_output(
+    stream, limit: int = OUTPUT_READBACK_LIMIT_BYTES, tail_stream=None, tail_start=None,
+) -> str:
     """回读子进程输出流并解码为文本；超出上限只保留尾部 limit 字节。
 
     输出经临时文件落盘（见 run_command），回读设上限保证父进程内存有界：
     FAILED 摘要与 faulthandler 栈集中在输出后段，尾部截取不损害提取。
     截断起点可能落在多字节字符中间，``errors="replace"`` 容忍。
+
+    tail_stream（伴生尾窗文件，见 _drain_output_disk）持有主文件最近 keep
+    字节的快照、tail_start 为最近一次快照边界（主文件该偏移之后是收割后的
+    新增写入）时，回读取「伴生尾窗 + 主文件边界之后新增」拼接后的尾部——
+    与未收割时的尾部窗口语义等价，末端证据不因收割丢失；只取边界之后是为
+    避免边界前的头部/稀疏洞与伴生尾窗重复入文。无伴生（收割未触发）时
+    退化为直接读主文件尾部，语义与既有行为一致。
     """
+    parts = []
+    total = 0
+    if tail_stream is not None:
+        tsize = os.fstat(tail_stream.fileno()).st_size
+        if tsize > 0:
+            tail_stream.seek(max(0, tsize - limit))
+            parts.append(tail_stream.read(limit))
+            total += tsize
     stream.seek(0, os.SEEK_END)
     size = stream.tell()
-    stream.seek(max(0, size - limit))
-    text = stream.read(limit).decode("utf-8", errors="replace")
-    if size > limit:
+    if tail_start is not None and total:
+        start = max(tail_start, size - limit)  # limit 封顶防单周期巨量新增
+        total += max(0, size - tail_start)
+    else:
+        start = max(0, size - limit)
+        total += size
+    stream.seek(start)
+    parts.append(stream.read(limit))
+    data = b"".join(parts)[-limit:]
+    text = data.decode("utf-8", errors="replace")
+    if total > limit:
         text = f"[run_full_suite] 子进程输出超过 {limit} 字节回读上限，仅保留尾部\n" + text
     return text
 
 
-def _drain_output_disk(fds, stop_event, keep=OUTPUT_DISK_KEEP_BYTES, poll_seconds=1.0) -> None:
-    """收割线程体：周期把输出临时文件截到尾部 keep 窗口，回收磁盘（有界收割）。
+def _copy_tail_snapshot(fd, tail_file, size: int, keep: int, chunk=1024 * 1024) -> None:
+    """把主文件末尾 [max(0, size-keep), size) 拷贝到伴生尾窗文件（整窗重写）。
+
+    读侧用 ``os.pread``（独立偏移，不触碰子进程共享的写偏移，不干扰追加写），
+    写侧伴生文件只由收割线程与停机后的回读访问，整窗重写（seek(0)+truncate(0)
+    后覆写）无并发冲突。
+    """
+    start = max(0, size - keep)
+    tail_file.seek(0)
+    tail_file.truncate(0)
+    pos = start
+    while pos < size:
+        block = os.pread(fd, min(chunk, size - pos), pos)
+        if not block:
+            break
+        tail_file.write(block)
+        pos += len(block)
+    # 立即冲刷：回读经 os.fstat 判断伴生文件是否持有尾窗，缓冲未落盘时
+    # st_size 恒为 0，尾窗会被整段跳过（实测探针抓到的缺陷）。
+    tail_file.flush()
+
+
+def _drain_output_disk(
+    fds, stop_event, keep=OUTPUT_DISK_KEEP_BYTES, poll_seconds=1.0,
+    tail_files=None, snapshots=None,
+) -> None:
+    """收割线程体：周期把输出临时文件末尾 keep 窗口快照到伴生文件后截断主
+    文件，回收磁盘（有界收割且不丢尾部证据）。
 
     子进程（含逃过 killpg 的游离孙进程）对输出临时文件的写入量本身不受限，
-    本线程周期把文件截到尾部 keep 字节，使失控输出的磁盘占用有界（内存/
-    磁盘双有界）。截断只丢尾部窗口之外的旧数据：ftruncate 不回退子进程写
-    偏移，被截区间成为稀疏洞（不占实际块），末段 keep ≥ 回读上限，
-    _read_back_output 的尾部回读不受影响。任何异常（fd 失效等）直接停机——
-    fail-open 退化为「磁盘维度无界」的现状，不干扰主流程。
+    本线程周期收割使失控输出的磁盘占用有界（内存/磁盘双有界）。POSIX
+    ftruncate 只能保留文件**前** size-keep 字节（本机实测：截断后首字节仍为
+    旧数据、子进程续写偏移不回退、被截区间成稀疏洞）——就地截断丢弃的恰是
+    最新写入的末端，而 FAILED 摘要与 faulthandler 栈集中在输出后段，正是
+    不能丢的证据。故每轮先经 _copy_tail_snapshot 把末尾 keep 字节存入伴生
+    尾窗文件（tail_files，与 fds 一一对应），快照落定并记入 snapshots
+    （fd → 截断前 size，供 _read_back_output 拼接边界之后的新增写入）后才
+    ftruncate 主文件：尾部块已存伴生、丢弃安全，头部保留为稀疏洞夹旧数据、
+    不占实际块，磁盘占用仍有界（主文件 ≈ 窗口 + 单轮询周期新增，伴生 ≤ 窗口）。
+
+    顺序纪律：先快照、后截断——任一步异常直接停机（fail-open 退化为「磁盘
+    维度无界」的现状，不干扰主流程），绝不出现「截断了却没快照」的证据丢失。
+    tail_files/snapshots 缺省 None 时退化为就地截断（无伴生文件的调用方，
+    不保留尾部窗口之外的语义承诺）。
     """
     while not stop_event.wait(poll_seconds):
         try:
-            for fd in fds:
+            for i, fd in enumerate(fds):
                 size = os.fstat(fd).st_size
-                if size > keep:
-                    os.ftruncate(fd, size - keep)
+                if size <= keep:
+                    continue
+                if tail_files is not None:
+                    _copy_tail_snapshot(fd, tail_files[i], size, keep)
+                    if snapshots is not None:
+                        snapshots[fd] = size
+                os.ftruncate(fd, size - keep)
         except Exception:
             return
 
@@ -250,17 +319,20 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
     失控输出（死循环 print 等）只涨文件不涨内存，回读另有上限
     （_read_back_output）——管道方案下 communicate 全量缓冲可在硬超时窗口
     内被撑到 OOM，且游离孙进程持有管道写端会让 EOF 迟迟不到。收割线程
-    （_drain_output_disk）另把临时文件周期截到尾部窗口，磁盘占用同样有界
-    （code-review item 77429f359c2d）。收割纪律与 bin/test_for.run_bounded
-    同口径：SIGTERM/SIGKILL 阶梯后无条件 wait 收尾，不留僵尸（code-review
-    item 05c30167fbc9）。
+    （_drain_output_disk）另把临时文件末尾窗口快照到伴生尾窗文件后周期截断
+    主文件，磁盘占用同样有界且尾部证据不因收割丢失（code-review item
+    77429f359c2d）。收割纪律与 bin/test_for.run_bounded 同口径：SIGTERM/
+    SIGKILL 阶梯后无条件 wait 收尾，不留僵尸（code-review item 05c30167fbc9）。
     """
     # 匿名临时文件（系统临时目录、创建即 unlink、随 with 块关闭）：
     # 不经 .fenix/ 也不在系统 /tmp 留命名残留；游离孙进程逃过 killpg 时
     # 仍持继承 fd 继续写，只影响文件内容不影响本函数返回（不阻塞）。
-    # 子进程写入量本身不受限，磁盘维度由收割线程截到尾部窗口有界化
-    # （见 _drain_output_disk / OUTPUT_DISK_KEEP_BYTES）。
-    with tempfile.TemporaryFile("w+b") as out_file, tempfile.TemporaryFile("w+b") as err_file:
+    # 每流另伴随生尾窗文件（out_tail/err_tail）：收割线程把主文件末尾窗口
+    # 快照于此再截断主文件，回读据此拼接尾部（见 _drain_output_disk /
+    # OUTPUT_DISK_KEEP_BYTES）——子进程写入量本身不受限，磁盘维度由收割
+    # 有界化，且最新写入（FAILED 摘要/faulthandler 栈）不因截断丢失。
+    with tempfile.TemporaryFile("w+b") as out_file, tempfile.TemporaryFile("w+b") as err_file, \
+            tempfile.TemporaryFile("w+b") as out_tail, tempfile.TemporaryFile("w+b") as err_tail:
         proc = subprocess.Popen(
             cmd,
             stdout=out_file,
@@ -270,14 +342,18 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
             start_new_session=True,
         )
         # 有界收割（code-review item 77429f359c2d）：后台线程周期把输出临时
-        # 文件截到尾部窗口回收磁盘（子进程写入量本身无上限）；线程起不来或
-        # 中途异常均 fail-open 退化为磁盘维度无界的现状，不干扰主流程。
+        # 文件末尾窗口快照到伴生尾窗文件后截断主文件回收磁盘（子进程写入量
+        # 本身无上限）；线程起不来或中途异常均 fail-open 退化为磁盘维度无界
+        # 的现状，不干扰主流程。snapshots 记录每流最近一次快照边界（fd →
+        # 截断前 size），供回读拼接伴生尾窗与其后的新增写入。
         stop_drain = threading.Event()
+        snapshots = {}
         drainer = None
         try:
             thread = threading.Thread(
                 target=_drain_output_disk,
                 args=([out_file.fileno(), err_file.fileno()], stop_drain),
+                kwargs={"tail_files": [out_tail, err_tail], "snapshots": snapshots},
                 daemon=True,
             )
             thread.start()
@@ -310,13 +386,20 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
                 proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
             except subprocess.TimeoutExpired:
                 pass
-        # 回读前停机收割线程，避免截断与下方回读竞争（set 立即生效，join
-        # 兜足一个轮询周期余量；线程未启动/已退出时不执行）。
+        # 回读前停机收割线程，避免快照/截断与下方回读竞争（set 立即生效，
+        # join 兜足一个轮询周期余量；线程未启动/已退出时不执行；join 返回后
+        # snapshots 不再被收割线程写入，读取无竞争）。
         stop_drain.set()
         if drainer is not None:
             drainer.join(timeout=5)
-        out = _read_back_output(out_file)
-        err = _read_back_output(err_file)
+        out = _read_back_output(
+            out_file, tail_stream=out_tail,
+            tail_start=snapshots.get(out_file.fileno()),
+        )
+        err = _read_back_output(
+            err_file, tail_stream=err_tail,
+            tail_start=snapshots.get(err_file.fileno()),
+        )
         return (None if timed_out else proc.returncode), out, err, timed_out
 
 
