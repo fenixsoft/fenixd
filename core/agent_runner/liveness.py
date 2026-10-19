@@ -39,6 +39,15 @@ AGENT_TERMINATE_GRACE_SECONDS = 10
 # ── attempt 存活探测 / 超时活性监督（improve-run-lifecycle-governance）──────
 # 进程扫描不可用时，run 流文件 mtime 在该窗口内视为 attempt 仍在活动（D4 回退判据）。
 LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
+# has_live_attempt 回退链专用窗口（code-review item d2aafa27b9ee）：pgrep 整体
+# 不可用/未命中降级到流新鲜度判定时取本值。依据 _pgrep_live_attempt 前缀集注释
+# 已记载的事实——repair claude 进程长工具执行期内可数分钟不写流——pgrep 降级
+# （二进制缺失/全部前缀瞬时故障）时，正处于长工具静默期的存活 spec 其流 mtime
+# 会超出 120s 窗口被误判无存活 attempt，auto-recovery / 孤儿 ready 恢复随之重置
+# 仍在跑的 spec；故取注释自认「数分钟」的上限量级 600s。只用于回退链（526 行
+# 调用点），pgrep 命中主路径不经本窗口、判定时效不受影响；reviewer_in_flight /
+# get_extension_baseline 的 per-run 120s 口径保持不变。
+LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS = 600
 # 超时监督默认值（D3）：单源定义于 core.config（supervision-timeout-config-consistency，
 # 与 supervision_floor 派生共用，禁止两处各自手写常数）；本模块 import 后 re-export，
 # 保持 ``from core.agent_runner.liveness import SUPERVISION_DEFAULTS`` 路径可用。
@@ -507,8 +516,10 @@ class LivenessSupervisor:
           1. pgrep 进程表：cmdline 含该 spec 的 worktree 目录字面量
              （``worktrees/{impl,verify,repair}-<spec>-<ts>``）→ 存活；
           2. 进程扫描不可用/未命中时，回退 run 流文件新鲜度：
-             该 spec 任一 run jsonl 的 mtime < LIVE_ATTEMPT_STREAM_WINDOW_SECONDS
-             视为仍在活动（resume 孤儿进程通常持续写流）。
+             该 spec 任一 run jsonl 的 mtime <
+             LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS 视为仍在活动
+             （resume 孤儿进程通常持续写流；回退窗口对齐长工具静默量级，
+             见模块常量注释）。
 
         供 pm_engine auto-recovery 与 event_bus 孤儿 ready 白名单调用——
         有存活子进程时 MUST NOT 重置状态/清空跟踪字段。
@@ -523,7 +534,8 @@ class LivenessSupervisor:
                 "agent_runner",
                 f"has_live_attempt process scan failed for '{spec_name}': {e}",
             )
-        return self._stream_recent(spec_name, LIVE_ATTEMPT_STREAM_WINDOW_SECONDS)
+        return self._stream_recent(
+            spec_name, LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS)
 
     def _pgrep_live_attempt(self, spec_name: str) -> bool:
         """pgrep 匹配 cmdline 含该 spec worktree 目录字面量的进程。
@@ -549,10 +561,14 @@ class LivenessSupervisor:
         # 识别 repair- 前缀，下方全等守卫照常生效）。repair claude 进程长工具执行
         # 期内可数分钟不写流，漏扫会让 has_live_attempt 误判无存活子进程，
         # auto-recovery / 孤儿 ready 白名单对仍在修复中的 spec 重置状态。
+        # 整体降级（二进制缺失/全前缀故障）时 WARNING 留痕见下方两处
+        #（code-review item d2aafa27b9ee：使流新鲜度回退的降级形态可观测）。
+        scanned_any = False
         for prefix in ("impl", "verify", "repair"):
             # code-review item e9a2001542af：spec 名可能含 + ? ( ) [ ] | 等正则
             # 元字符，pgrep -f 按 ERE 解释模式，不转义时字面目录匹配不到（该
-            # 前缀漏扫后仅剩 120s 流新鲜度回退，长工具执行期不写流的进程被误判
+            # 前缀漏扫后仅剩回退窗口 LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS
+            # 的流新鲜度判定（item d2aafa27b9ee），长工具执行期不写流的进程被误判
             # 无存活 attempt，auto-recovery / 孤儿 ready 恢复会重置仍在跑的
             # spec）；re.escape 的反斜杠转义为 ERE 兼容。过匹配形态（他 spec 名
             # 恰为转义后前缀的匹配）由下方 /proc cmdline 的 run_spec_part 全等
@@ -567,7 +583,16 @@ class LivenessSupervisor:
                 )
             except FileNotFoundError:
                 # pgrep 二进制缺失：其余前缀必然同样失败，提前返回 False，
-                # 由 has_live_attempt 的流新鲜度回退判定（保留提前返回路径）
+                # 由 has_live_attempt 的流新鲜度回退判定（保留提前返回路径）。
+                # 降级形态 WARNING 留痕（item d2aafa27b9ee）：此时回退链用
+                # LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS，正处于长工具
+                # 静默期的存活 spec 不再因 120s 窗口被误判无存活 attempt。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"pgrep binary unavailable, has_live_attempt for "
+                    f"'{spec_name}' degrades to stream-freshness fallback "
+                    f"(window={LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS}s)",
+                )
                 return False
             except (subprocess.SubprocessError, OSError) as e:
                 # 单前缀瞬时故障（如 timeout=5 超时）只跳过本前缀继续扫描其余
@@ -583,6 +608,7 @@ class LivenessSupervisor:
                     f"'{spec_name}', skipping: {e}",
                 )
                 continue
+            scanned_any = True
             if res.returncode != 0 or not res.stdout.strip():
                 continue
             for pid_str in res.stdout.split():
@@ -600,6 +626,15 @@ class LivenessSupervisor:
                     dirname = text[idx + len("worktrees/") :].split("/", 1)[0]
                     if run_spec_part(dirname) == spec_name:
                         return True
+        if not scanned_any:
+            # 全部前缀均瞬时故障（超时/OSError）降级：WARNING 留痕
+            #（item d2aafa27b9ee），使流新鲜度回退的降级形态可观测。
+            self._pm.logger.warning(
+                "agent_runner",
+                f"pgrep scan failed on all prefixes, has_live_attempt for "
+                f"'{spec_name}' degrades to stream-freshness fallback "
+                f"(window={LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS}s)",
+            )
         return False
 
     def _stream_recent(self, spec_name: str, seconds: int) -> bool:
@@ -1320,6 +1355,166 @@ class LivenessSupervisor:
             )
         return None
 
+    def _fast_track_extension_lift(self, max_extensions: int, spec_name: str) -> int:
+        """fast-track higher 档 extension 预算抬升（纯代码搬移自
+        _supervision_deadline_action，item f80bfc83658d，行为逐行等价）。
+
+        ── 规模预检 higher 档 extension 上限调整（add-fast-track-scale-precheck）──
+        fast-track spec 标记 _fast_track_scale_tier == "higher" 时，extension
+        预算提高 2 次（默认 max_extensions 2 -> 4），使大任务面 spec 获得
+        更充足超时预算（9000 + 4×1800 = 16200s = 4.5h）。
+        """
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            if entry.get("_fast_track_scale_tier") == "higher":
+                max_extensions += 2
+                self._pm.logger.info(
+                    "agent_runner",
+                    f"fast-track higher tier: max_extensions "
+                    f"increased to {max_extensions} for '{spec_name}'",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"fast-track scale tier precheck failed for '{spec_name}' "
+                f"— keeping default max_extensions={max_extensions}: {e}",
+            )
+        return max_extensions
+
+    def _impl_wallclock_sizing_lift(
+        self, max_extensions: int, spec_name: str, impl_scale: int | None
+    ) -> int:
+        """impl 车道墙钟预算 sizing（纯代码搬移自 _supervision_deadline_action，
+        item f80bfc83658d，行为逐行等价）。
+
+        ── impl 车道墙钟预算 sizing（evo-add-impl-wallclock-budget-sizing 1.2）──
+        泛化 fast-track higher 档先例到 implementer 车道：按 run 启动
+        同源总规模（estimate_spec_scale 单点，runner 在 run 启动点一次解析
+        后经 impl_scale 传入）抬升续期预算 max_extensions。生效序（对齐
+        _impl_turn_budget 的 override > 推算 > base）：STATE 覆盖键
+        impl_wallclock_extension_override（正整数，只抬不压）> 规模推算
+        （lifted_max_extensions_for_scale，enabled 门控）> base。逐 deadline
+        判定的档位推导幂等——impl_scale 为同一入参，MUST NOT 以
+        remaining_tasks 回算（剩余数随推进递减，逐次重算会回撤已抬档位，
+        使 extensions_used ≥ 回撤后 max_extensions 触发伪击杀）。
+        impl_scale=None（非实现车道/解析回退/既有直调）不抬升，行为与引入
+        前逐位一致。absolute_max_seconds 封顶语义不变：sizing 只扩续期预算，
+        floor 派生传抬升后的实际预算（与 fast-track 加成同机制协同）。
+        """
+        try:
+            from core.fast_track_result import (
+                get_impl_wallclock_sizing_config,
+                lifted_max_extensions_for_scale,
+            )
+            _wc_cfg = get_impl_wallclock_sizing_config(
+                getattr(self._pm, "config", None))
+            _wc_override = None
+            _ov_fn = getattr(
+                self._pm, "_impl_wallclock_extension_override", None)
+            if callable(_ov_fn):
+                _wc_override = _ov_fn(spec_name)
+            if _wc_override is not None:
+                _wc_target = max(max_extensions, int(_wc_override))
+            elif _wc_cfg.get("enabled") and impl_scale is not None:
+                _wc_target = lifted_max_extensions_for_scale(
+                    max_extensions, int(impl_scale), _wc_cfg)
+            else:
+                _wc_target = max_extensions
+            if _wc_target != max_extensions:
+                max_extensions = _wc_target
+                self._pm.logger.info(
+                    "agent_runner",
+                    f"impl wallclock sizing: max_extensions "
+                    f"increased to {max_extensions} for '{spec_name}' "
+                    f"(override={_wc_override}, scale={impl_scale})",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"impl wallclock sizing failed for '{spec_name}' "
+                f"— keeping default max_extensions={max_extensions}: {e}",
+            )
+        return max_extensions
+
+    def _wrapup_grace_absolute_max_lift(self, run_id: str) -> float:
+        """已发放收尾宽限对应的 absolute_max 一次性抬升量（纯代码搬移自
+        _supervision_deadline_action，item f80bfc83658d，行为逐行等价）。
+
+        ── 已发放收尾宽限的 absolute_max 一次性抬升（1.2）────────────────
+        发放的宽限窗口必须真实可用：floor 派生下 max_extensions 用满点已
+        贴近 absolute_max，若不抬升，branch 2（总墙钟上限）会在下一次
+        deadline 判定把宽限窗口整体截断，墙钟侧宽限形同虚设。抬升量 =
+        已发放宽限秒数（随发放标记落共享状态 _turn_branch_state[run_id]
+        的 wrapup_grace_seconds；无标记/读不到即 0——既有 run 逐位不变）。
+        总墙钟仍有界：absolute_max + 一次性宽限，无周期性续抬入口
+        （发放标记防重复，同一 run 至多抬一次）。
+        """
+        _grace_lift = 0.0
+        _grace_state_entry = getattr(self._pm, "_wrapup_grace_state_entry", None)
+        if callable(_grace_state_entry):
+            try:
+                _grace_lift = float(
+                    (_grace_state_entry(run_id) or {}).get(
+                        "wrapup_grace_seconds") or 0.0)
+            except Exception as e:
+                # 容错口径与 fast-track 预检/impl wallclock sizing 对齐
+                #（code-review item 3bc2f44ed013）：门面异常全捕降级为 0，
+                # 不让替身缺属性/配置段结构异常等沿监督判定主路径向上冒泡
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"wrapup grace state entry read failed for run "
+                    f"'{run_id}' — keeping absolute_max unchanged: {e}",
+                )
+                _grace_lift = 0.0
+        return _grace_lift
+
+    def _wrapup_grace_seconds(
+        self,
+        agent_type: str | None,
+        run_id: str,
+        run_file: Path,
+        spec_name: str | None,
+        now: float,
+        started_at: float,
+        turn_count: int | None,
+        extension_seconds: float,
+    ) -> float | None:
+        """一次性收尾宽限折算/发放（纯代码搬移自 _supervision_deadline_action
+        的 extension budget 用满分支，item f80bfc83658d，行为逐行等价）。
+
+        发放量按秒折算：宽限轮数 × 该 run 近期平均每轮墙钟
+        （elapsed/turn_count；turn_count 不可用以 extension_seconds 作每轮
+        代理），clamp 见 WRAPUP_GRACE_MIN/MAX_SECONDS。发放经门面单点
+        _wrapup_grace_grant；门面不可用（最小门面/测试替身缺方法）或发放
+        条件不满足 → 返回 None，调用方走既有击杀路径，行为与引入前逐位一致。
+        """
+        _grace_seconds = None
+        _grant_fn = getattr(self._pm, "_wrapup_grace_grant", None)
+        if callable(_grant_fn):
+            try:
+                _avg_turn = (
+                    (now - started_at) / turn_count
+                    if turn_count else extension_seconds)
+                _grant = _grant_fn(
+                    agent_type, run_id, run_file, spec_name,
+                    avg_turn_seconds=_avg_turn)
+                if isinstance(_grant, dict) and _grant.get("seconds"):
+                    _grace_seconds = float(_grant["seconds"])
+            except Exception as e:
+                # 容错口径与 fast-track 预检/impl wallclock sizing 对齐
+                #（code-review item 3bc2f44ed013）：门面异常全捕并
+                # WARNING 留痕，_grace_seconds=None 落既有击杀路径
+                #（注释承诺的「门面不可用 → 走既有击杀路径」对任意异常
+                # 类型成立），不让非数值类异常沿监督主路径冒泡。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"wrapup grace grant facade failed for "
+                    f"'{spec_name or 'unknown'}' ({run_id}) — falling "
+                    f"back to existing kill path: {e}",
+                )
+                _grace_seconds = None
+        return _grace_seconds
+
     def _supervision_deadline_action(
         self,
         run_file: Path,
@@ -1405,71 +1600,19 @@ class LivenessSupervisor:
         max_extensions = max(0, int(sup["max_extensions"]))
         # ── 规模预检 higher 档 extension 上限调整（add-fast-track-scale-precheck）──
         # fast-track spec 标记 _fast_track_scale_tier == "higher" 时，extension
-        # 预算提高 2 次（默认 max_extensions 2 -> 4），使大任务面 spec 获得
-        # 更充足超时预算（9000 + 4×1800 = 16200s = 4.5h）。
+        # 预算提高 2 次（默认 max_extensions 2 -> 4）；派生细节见
+        # _fast_track_extension_lift（item f80bfc83658d 抽取）。
         if agent_type == "fast-track" and spec_name:
-            try:
-                entry = self._pm.state_machine.read_one(spec_name) or {}
-                if entry.get("_fast_track_scale_tier") == "higher":
-                    max_extensions += 2
-                    self._pm.logger.info(
-                        "agent_runner",
-                        f"fast-track higher tier: max_extensions "
-                        f"increased to {max_extensions} for '{spec_name}'",
-                    )
-            except Exception as e:
-                self._pm.logger.warning(
-                    "agent_runner",
-                    f"fast-track scale tier precheck failed for '{spec_name}' "
-                    f"— keeping default max_extensions={max_extensions}: {e}",
-                )
+            max_extensions = self._fast_track_extension_lift(
+                max_extensions, spec_name)
         # ── impl 车道墙钟预算 sizing（evo-add-impl-wallclock-budget-sizing 1.2）──
-        # 泛化上方 fast-track higher 档先例到 implementer 车道：按 run 启动
-        # 同源总规模（estimate_spec_scale 单点，runner 在 run 启动点一次解析
-        # 后经 impl_scale 传入）抬升续期预算 max_extensions。生效序（对齐
-        # _impl_turn_budget 的 override > 推算 > base）：STATE 覆盖键
-        # impl_wallclock_extension_override（正整数，只抬不压）> 规模推算
-        # （lifted_max_extensions_for_scale，enabled 门控）> base。逐 deadline
-        # 判定的档位推导幂等——impl_scale 为同一入参，MUST NOT 以
-        # remaining_tasks 回算（剩余数随推进递减，逐次重算会回撤已抬档位，
-        # 使 extensions_used ≥ 回撤后 max_extensions 触发伪击杀）。
-        # impl_scale=None（非实现车道/解析回退/既有直调）不抬升，行为与引入
-        # 前逐位一致。absolute_max_seconds 封顶语义不变：sizing 只扩续期预算，
-        # 下方 floor 派生传抬升后的实际预算（与 fast-track 加成同机制协同）。
+        # 按 run 启动同源总规模（impl_scale 入参）抬升续期预算，生效序
+        # override > 规模推算 > base；派生细节见 _impl_wallclock_sizing_lift
+        #（item f80bfc83658d 抽取）。逐 deadline 判定的档位推导幂等，
+        # MUST NOT 以 remaining_tasks 回算（会回撤已抬档位触发伪击杀）。
         if agent_type == "implementer" and spec_name:
-            try:
-                from core.fast_track_result import (
-                    get_impl_wallclock_sizing_config,
-                    lifted_max_extensions_for_scale,
-                )
-                _wc_cfg = get_impl_wallclock_sizing_config(
-                    getattr(self._pm, "config", None))
-                _wc_override = None
-                _ov_fn = getattr(
-                    self._pm, "_impl_wallclock_extension_override", None)
-                if callable(_ov_fn):
-                    _wc_override = _ov_fn(spec_name)
-                if _wc_override is not None:
-                    _wc_target = max(max_extensions, int(_wc_override))
-                elif _wc_cfg.get("enabled") and impl_scale is not None:
-                    _wc_target = lifted_max_extensions_for_scale(
-                        max_extensions, int(impl_scale), _wc_cfg)
-                else:
-                    _wc_target = max_extensions
-                if _wc_target != max_extensions:
-                    max_extensions = _wc_target
-                    self._pm.logger.info(
-                        "agent_runner",
-                        f"impl wallclock sizing: max_extensions "
-                        f"increased to {max_extensions} for '{spec_name}' "
-                        f"(override={_wc_override}, scale={impl_scale})",
-                    )
-            except Exception as e:
-                self._pm.logger.warning(
-                    "agent_runner",
-                    f"impl wallclock sizing failed for '{spec_name}' "
-                    f"— keeping default max_extensions={max_extensions}: {e}",
-                )
+            max_extensions = self._impl_wallclock_sizing_lift(
+                max_extensions, spec_name, impl_scale)
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
         # absolute_max 是总墙钟上限；配置偏小时抬到派生下限，否则续期预算会被总上限
         # 截断（语义矛盾）。下限由单一派生函数给出（supervision-timeout-config-consistency）：
@@ -1497,31 +1640,11 @@ class LivenessSupervisor:
         configured_abs_max = float(sup["absolute_max_seconds"])
         absolute_max = max(configured_abs_max, floor_absolute_max)
         # ── 已发放收尾宽限的 absolute_max 一次性抬升（1.2）────────────────
-        # 发放的宽限窗口必须真实可用：floor 派生下 max_extensions 用满点已
-        # 贴近 absolute_max，若不抬升，branch 2（总墙钟上限）会在下一次
-        # deadline 判定把宽限窗口整体截断，墙钟侧宽限形同虚设。抬升量 =
-        # 已发放宽限秒数（随发放标记落共享状态 _turn_branch_state[run_id]
-        # 的 wrapup_grace_seconds；无标记/读不到即 0——既有 run 逐位不变）。
-        # 总墙钟仍有界：absolute_max + 一次性宽限，无周期性续抬入口
-        #（发放标记防重复，同一 run 至多抬一次）。
-        _grace_state_entry = getattr(self._pm, "_wrapup_grace_state_entry", None)
-        if callable(_grace_state_entry):
-            try:
-                _grace_lift = float(
-                    (_grace_state_entry(run_id) or {}).get(
-                        "wrapup_grace_seconds") or 0.0)
-            except Exception as e:
-                # 容错口径与上方 fast-track 预检/impl wallclock sizing 对齐
-                #（code-review item 3bc2f44ed013）：门面异常全捕降级为 0，
-                # 不让替身缺属性/配置段结构异常等沿监督判定主路径向上冒泡
-                self._pm.logger.warning(
-                    "agent_runner",
-                    f"wrapup grace state entry read failed for run "
-                    f"'{run_id}' — keeping absolute_max unchanged: {e}",
-                )
-                _grace_lift = 0.0
-            if _grace_lift > 0:
-                absolute_max += _grace_lift
+        # 抬升量派生（含门面容错）见 _wrapup_grace_absolute_max_lift
+        #（item f80bfc83658d 抽取）；总墙钟仍有界：absolute_max + 一次性宽限。
+        _grace_lift = self._wrapup_grace_absolute_max_lift(run_id)
+        if _grace_lift > 0:
+            absolute_max += _grace_lift
         if configured_abs_max < floor_absolute_max:
             # per-agent-timeout-override 3.2：生效超时（覆盖后）抬高 absolute_max 兜底时
             # ERROR 留痕（守护配置告警），每次 deadline 判定至多几次（续期轮次有界）。
@@ -1560,32 +1683,11 @@ class LivenessSupervisor:
             # 判定）；未发放的 kill reason 串逐字保留 "extension budget
             # exhausted" 子串（budget.py _is_exemptable_reason 按子串匹配
             # 判不可豁免，evo-add-impl-wallclock-budget-sizing 决策 5 复核
-            # 口径）；宽限观测只进 evidence。
-            _grace_seconds = None
-            _grant_fn = getattr(self._pm, "_wrapup_grace_grant", None)
-            if callable(_grant_fn):
-                try:
-                    _avg_turn = (
-                        (now - started_at) / turn_count
-                        if turn_count else extension_seconds)
-                    _grant = _grant_fn(
-                        agent_type, run_id, run_file, spec_name,
-                        avg_turn_seconds=_avg_turn)
-                    if isinstance(_grant, dict) and _grant.get("seconds"):
-                        _grace_seconds = float(_grant["seconds"])
-                except Exception as e:
-                    # 容错口径与同函数 fast-track 预检/impl wallclock sizing
-                    # 对齐（code-review item 3bc2f44ed013）：门面异常全捕并
-                    # WARNING 留痕，_grace_seconds=None 落既有击杀路径
-                    #（注释承诺的「门面不可用 → 走既有击杀路径」对任意异常
-                    # 类型成立），不让非数值类异常沿监督主路径冒泡。
-                    self._pm.logger.warning(
-                        "agent_runner",
-                        f"wrapup grace grant facade failed for "
-                        f"'{spec_name or 'unknown'}' ({run_id}) — falling "
-                        f"back to existing kill path: {e}",
-                    )
-                    _grace_seconds = None
+            # 口径）；宽限观测只进 evidence。折算/发放派生（含门面容错）
+            # 见 _wrapup_grace_seconds（item f80bfc83658d 抽取）。
+            _grace_seconds = self._wrapup_grace_seconds(
+                agent_type, run_id, run_file, spec_name,
+                now, started_at, turn_count, extension_seconds)
             if _grace_seconds and _grace_seconds > 0:
                 return {
                     "action": "extend",
