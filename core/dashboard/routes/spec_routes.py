@@ -113,6 +113,14 @@ class H3SpecRoutesMixin:
 
 
     def _api_spec_detail(self, spec: str, query) -> dict:
+        # 未知/不存在项目、spec 未命中维持 200 + {"error": ...}，不走本文件
+        # 其余端点的 _error(404) 家族——与 _api_specs 同款的有意兼容契约，
+        # 非遗漏：tests/test_dashboard_api.py::test_error_responses_bare_no_etag
+        # 钉死 /api/specs/<unknown-spec> 仍 200（_sig_spec_detail 对未命中 spec
+        # 返 None，错误体不挂 ETag 的形态前提）；v3 详情页 load() 亦按 200 消费
+        # 该响应，error 字段落 detail.tsx 的 info Alert 渲染，改 404 会翻转为
+        # 整页错误 Alert。勿在未核实消费方前收敛为 404
+        # （code-review item ac15c878c995）。
         project = self._project_from_query(query)
         if project is None:
             return {"error": "unknown project"}
