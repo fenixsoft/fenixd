@@ -139,6 +139,18 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
     return dedup
 
 
+def _iter_violation_dicts(violations) -> list:
+    """violations 清单元素形态过滤单点：非 dict 元素跳过（fail-open）。
+
+    同源 violations 清单在本模块多处消费（告警 evidence / 拒绝收口日志 /
+    升级 error 摘要 / violations_entries 构造），统一经此过滤后再取字段：
+    非 dict 元素不得以 ``v.get`` 裸外溢 AttributeError（_verdict_violations_
+    evidence 先例口径；拒绝收口链上的消费点异常会沿 _rejection_closure 的
+    try 折算为 cause=requeue_error，spec 反复停滞到 stuck 兜底）。
+    """
+    return [v for v in (violations or []) if isinstance(v, dict)]
+
+
 def _rejection_closure(
     pipeline, spec_name: str, report: dict, dedup: dict, lane_label: str
 ) -> dict:
@@ -160,11 +172,10 @@ def _rejection_closure(
     """
     # [fenix-code-fix:4a5ffe0439c9] 防御取用：兜底收口自身不得因上游查重
     # 结果缺 violations 键裸外溢 KeyError（与下方 except 分支同口径）；
-    # 元素形态同口径过滤（_verdict_violations_evidence 先例）：非 dict
-    # 跳过，不以 v.get 裸外溢 AttributeError。
-    for v in dedup.get("violations") or []:
-        if not isinstance(v, dict):
-            continue
+    # 元素形态同口径过滤（_verdict_violations_evidence 先例，收编至
+    # _iter_violation_dicts 单点）：非 dict 跳过，不以 v.get 裸外溢
+    # AttributeError。
+    for v in _iter_violation_dicts(dedup.get("violations")):
         pipeline._context.logger.error(
             "pm_engine",
             f"批量归因查重拒绝采纳{lane_label}'{spec_name}': {v.get('reason')}",
@@ -549,7 +560,7 @@ def _verdict_violations_evidence(pipeline, spec_name: str, violations: list) -> 
     fix-verdict-retry-misattribution D5：每条 `scenario_id + reason`，超过 20 条
     截断并注明总数——人工无需读 report.json 即可定位违规形状。
     """
-    shown = [v for v in (violations or []) if isinstance(v, dict)][:20]
+    shown = _iter_violation_dicts(violations)[:20]
     parts = [
         f"spec={spec_name}",
         f"report=spec/changes/{spec_name}/verification-report.md",
@@ -831,7 +842,7 @@ def _escalate_dedup_resynthesis(
     # 与 _verdict_violations_evidence 同口径截断（20 条 + 总数注明）：违规
     # 多时 error 字段直入 STATE.md，无总长上限会膨胀数 KB——截断后单条 error
     # 有界（≤20×160 字符）。
-    shown_violations = [v for v in (violations or []) if isinstance(v, dict)][:20]
+    shown_violations = _iter_violation_dicts(violations)[:20]
     summary = "; ".join(str(v.get("reason") or "")[:160] for v in shown_violations)
     if len(violations or []) > 20:
         summary = f"{summary}; violations_truncated=20/{len(violations)}"
@@ -963,13 +974,18 @@ def _handle_attr_dedup_rejection(
         rejection_round = 0
     rejection_round += 1
 
-    # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）
+    # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）；
+    #    元素形态同口径过滤收编至 _iter_violation_dicts 单点（与
+    #    _verdict_violations_evidence/_rejection_closure 先例一致）：非 dict
+    #    跳过，不以 v.get 裸外溢 AttributeError（本函数位于拒绝收口链上，
+    #    异常会沿 _rejection_closure 的 try 折算为 cause=requeue_error，spec
+    #    反复停滞到 stuck 兜底）。
     violations_entries = [
         {
             "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
             "reason": str(v.get("reason") or ""),
         }
-        for v in (dedup_violations or [])
+        for v in _iter_violation_dicts(dedup_violations)
     ]
     pipeline._write_verdict_violations(spec_name, violations_entries)
 
@@ -1111,12 +1127,17 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
     requeue_ids = [str(s) for s in (dedup.get("requeue_ids") or [])]
     accept_ids = [str(s) for s in (dedup.get("accept_ids") or [])]
     counts = dedup.get("counts") or {}
+    # 元素形态同口径过滤收编至 _iter_violation_dicts 单点（与
+    # _verdict_violations_evidence/_rejection_closure 先例一致）：非 dict
+    # 跳过，不以 v.get 裸外溢 AttributeError（本函数位于拒绝收口链上，
+    # 异常会沿 _rejection_closure 的 try 折算为 cause=requeue_error，spec
+    # 反复停滞到 stuck 兜底）。
     violations_entries = [
         {
             "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
             "reason": str(v.get("reason") or ""),
         }
-        for v in (dedup.get("violations") or [])
+        for v in _iter_violation_dicts(dedup.get("violations"))
     ]
 
     # 1) 逐场景条目落盘：从 report 非 PASS 场景提取归因摘要，按查重结果
