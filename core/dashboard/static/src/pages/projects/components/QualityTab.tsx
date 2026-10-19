@@ -400,19 +400,22 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 一律过期——含切到非激活态（effect 早退不调用本函数）的窗口。
   const progressSeqRef = useRef(0);
 
-  // 在飞去重标志（code-review item 269005cbcda4，仿 ArchitectureTab
-  // 7756f9675f6a 的 loadInFlightRef 惯例）：running 轮询的 2s interval 每 tick
-  // 原本无条件发起请求，统一请求超时 30s 下后端挂起时在飞请求最多堆积约 15 个
+  // 在飞去重引用计数（初版 code-review item 269005cbcda4 为布尔标志，仿
+  // ArchitectureTab 7756f9675f6a 的 loadInFlightRef 惯例；code-review item
+  // 59ceed862544 改为整数计数）：running 轮询的 2s interval 每 tick 原本
+  // 无条件发起请求，统一请求超时 30s 下后端挂起时在飞请求最多堆积约 15 个
   // （progressSeqRef 只拦过期响应写状态，不拦请求堆积本身）。loadProgress
-  // 入口与轮询 tick 置位、各自 finally 复位，tick 见在飞则跳过本轮，等上一
-  // 请求落定后再发下一轮。用 ref 而非 state：不参与渲染，卸载/切页签清理
-  // 路径无需额外复位（在飞响应本就被 seq 守卫丢弃）。
-  const progressInFlightRef = useRef(false);
+  // 入口与轮询 tick 各自 +1、各自 finally -1，tick 见计数 >0 则跳过本轮，
+  // 等全部在飞请求落定后再发下一轮——布尔在两次 loadProgress 近乎同时触发
+  // （数据加载 effect/SSE 帧/30s 心跳）时会被先完成者的 finally 提前复位，
+  // 削弱去重效果。用 ref 而非 state：不参与渲染，卸载/切页签清理路径无需
+  // 额外复位（在飞响应本就被 seq 守卫丢弃）。
+  const progressInFlightCountRef = useRef(0);
 
   const loadProgress = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++progressSeqRef.current;
-    progressInFlightRef.current = true;
+    progressInFlightCountRef.current += 1;
     try {
       const p = await getCodeReviewProgress(project);
       if (seq !== progressSeqRef.current) return; // 过期响应丢弃（陈旧覆盖/旧轮询重建防护）
@@ -421,10 +424,10 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         // 运行中：轮询进度（2s），结束兜底刷新表格
         if (pollTimerRef.current !== null) return;
         pollTimerRef.current = window.setInterval(async () => {
-          // 在飞去重（code-review item 269005cbcda4）：上一轮请求未落定则跳过
-          // 本轮 tick，避免后端挂起时在飞请求随 2s interval 堆积
-          if (progressInFlightRef.current) return;
-          progressInFlightRef.current = true;
+          // 在飞去重（code-review item 269005cbcda4）：仍有在飞请求未落定则
+          // 跳过本轮 tick，避免后端挂起时在飞请求随 2s interval 堆积
+          if (progressInFlightCountRef.current > 0) return;
+          progressInFlightCountRef.current += 1;
           try {
             // 过期守卫（code-review item bcdc14169759）：cleanup（卸载/切项目/
             // 切页签）自增 progressSeqRef 并清 interval，但已发出的在飞轮询响应
@@ -447,15 +450,16 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           } catch {
             // 轮询失败继续（下轮重试）
           } finally {
-            progressInFlightRef.current = false;
+            progressInFlightCountRef.current -= 1;
           }
         }, PROGRESS_POLL_INTERVAL_MS);
       }
     } catch {
       // 进度读取失败静默（非关键路径）
     } finally {
-      // 成功/失败两条路径都复位在飞标志（269005cbcda4，对齐 ArchitectureTab）
-      progressInFlightRef.current = false;
+      // 成功/失败两条路径都递减在飞计数（269005cbcda4，对齐 ArchitectureTab；
+      // 59ceed862544 起引用计数递减，先完成者不再提前放行并发中的另一请求）
+      progressInFlightCountRef.current -= 1;
     }
   }, [active, project]);
 

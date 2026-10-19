@@ -589,8 +589,13 @@ const SuggestedImprovementsPanel = forwardRef<
 
   const loadView = useCallback(async (item: EvolutionItem, tab: ViewTab) => {
     const reqSeq = ++viewReqSeqRef.current;
-    setViewLoading(true);
-    setViewError(null);
+    // unmount 守卫（code-review item 9c6bc5add459）：与 loadItems 入口同款口径
+    // ——同为「加载即写 state」的函数，入口 setState 统一挂 mountedRef 守卫，
+    // 消除两函数防御粒度差
+    if (mountedRef.current) {
+      setViewLoading(true);
+      setViewError(null);
+    }
     try {
       const data = tab === 'analysis'
         ? await getEvolutionAnalysis(item.id)
@@ -1021,9 +1026,11 @@ const SuggestedImprovementsPanel = forwardRef<
       title: '类别', dataIndex: 'section', key: 'section', width: 90,
       sorter: (a: EvolutionItem, b: EvolutionItem) => (a.section || '').localeCompare(b.section || ''),
       // 参照 SPEC 列表页「模式」列：Tag 渲染 + marginInlineEnd:0 收紧列宽
-      render: (s: string) => (
+      // 空值短路（code-review item 388e1808eaa7）：section 键缺失为 null 时
+      // 不渲染空胶囊 Tag，与上方 sorter 的 `|| ''` 豁免口径一致
+      render: (s: string) => (s ? (
         <Tag color={SECTION_TAG_COLORS[s]} style={{ marginInlineEnd: 0 }}>{s}</Tag>
-      ),
+      ) : null),
     },
     {
       title: '问题', dataIndex: 'title', key: 'title', ellipsis: true,

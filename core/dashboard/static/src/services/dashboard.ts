@@ -2413,12 +2413,19 @@ export function fixRegression(project: string) {
   );
 }
 
-/** add-regression-auto-fix：读取回归修复触发判定结果（无副作用，缺失返回缺省态） */
+/** add-regression-auto-fix：读取回归修复触发判定结果（无副作用，缺失返回缺省态）
+ *
+ * timeoutMs：轮询方（RegressionTab handleFix）传入剩余预算，避免缺省 30s
+ * 统一超时令挂起请求把单轮迭代膨胀到 30s+，总等待远超轮询声明的 30s 上限
+ * （code-review item 082b4f2fb7bc）。缺省不传时行为不变（REQUEST_TIMEOUT_MS）。 */
 export async function getRegressionFixResult(
   project: string,
+  timeoutMs?: number,
 ): Promise<RegressionFixRunResult> {
   return request<RegressionFixRunResult>(
     `/api/regression/fix-result?project=${encodeURIComponent(project)}`,
+    undefined,
+    timeoutMs === undefined ? undefined : { timeoutMs },
   );
 }
 

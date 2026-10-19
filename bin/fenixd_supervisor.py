@@ -978,11 +978,28 @@ def main():
             f"alive={alive_seconds:.0f}s)"
         )
 
-        # 清除重启请求（无论是否因重启请求退出）
-        try:
-            RESTART_REQUEST.unlink()
-        except OSError:
-            pass
+        # 清除重启请求（无论是否因重启请求退出）。兜底收尸超限（rc is None）
+        # 放弃看护路径除外：此时重启请求未被执行、supervisor 又即将退出，若仍
+        # 无条件 unlink 会把挂起重启意图静默消费掉（既无执行也无留痕）——保留
+        # 该文件并把内容摘记进 supervisor.log，供人工重启 supervisor 恢复托管
+        # 后续接（code-review 1c385131ce4c）。
+        if rc is None:
+            if RESTART_REQUEST.exists():
+                try:
+                    pending = RESTART_REQUEST.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                except OSError:
+                    pending = "<unreadable>"
+                log(
+                    "pending restart_request preserved (not consumed): "
+                    f"{pending!r}——人工重启 supervisor 恢复托管后将续接该重启"
+                )
+        else:
+            try:
+                RESTART_REQUEST.unlink()
+            except OSError:
+                pass
 
         if rc is None:
             # 兜底收尸超限（code-review 9266d3b0bff3）：不再无限阻塞（否则

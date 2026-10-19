@@ -221,6 +221,11 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
             text=True,
             timeout=30,
         )
+        if res.returncode == 2:
+            warning_buf.append(
+                "> ⚠️ 覆盖自检不可用：server 路由 grep 退出码 2（扫描目标可能缺失），"
+                "启发式缺该分项，差值告警可能不触发\n"
+            )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
         warning_buf.append(
@@ -242,6 +247,11 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
             text=True,
             timeout=30,
         )
+        if res.returncode == 2:
+            warning_buf.append(
+                "> ⚠️ 覆盖自检不可用：testid grep 退出码 2（扫描目标可能缺失），"
+                "启发式缺该分项，差值告警可能不触发\n"
+            )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
         warning_buf.append(
@@ -260,6 +270,11 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
             text=True,
             timeout=30,
         )
+        if res.returncode == 2:
+            warning_buf.append(
+                "> ⚠️ 覆盖自检不可用：菜单路由 grep 退出码 2（扫描目标可能缺失），"
+                "启发式缺该分项，差值告警可能不触发\n"
+            )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
         warning_buf.append(

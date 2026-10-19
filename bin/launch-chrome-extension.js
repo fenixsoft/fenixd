@@ -85,13 +85,15 @@ function parseArgs() {
   }
 
   // 校验参数取值：--timeout 缺值/非数字会得 NaN、0 或负数会使剩余预算恒为 0 立即超时收卷，
-  // 造成零验证假通过，故须为正数；带值选项缺值时静默得 undefined
+  // 造成零验证假通过，故须为正数；带值选项缺值时静默得 undefined，空串取值（如 `--detect ""`）
+  // 则会通过缺值校验后在 main 里按假值分支走（--detect 空串跳过检测、--output 空串放弃落盘），
+  // 调用方预期被静默改变，故空串与 undefined 同列报错
   const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>] [--detect <spec-dir>]';
   let invalidReason = null;
   if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
-  if (opts.distPath === undefined) invalidReason = '--dist-path 缺少取值';
-  if (opts.output === undefined) invalidReason = '--output 缺少取值';
-  if (opts.detect === undefined) invalidReason = '--detect 缺少取值';
+  if (opts.distPath === undefined || opts.distPath === '') invalidReason = '--dist-path 缺少取值';
+  if (opts.output === undefined || opts.output === '') invalidReason = '--output 缺少取值';
+  if (opts.detect === undefined || opts.detect === '') invalidReason = '--detect 缺少取值';
   if (invalidReason) {
     console.error(`错误: ${invalidReason}\n${usage}`);
     process.exit(1);
@@ -157,14 +159,15 @@ function checkRequiredHeaders(url, headers) {
 
 /**
  * 根据状态码确定异常严重级别
+ * 唯一调用点（detectAnomalies 的 status >= 400 分支）已保证 status >= 400，
+ * 故不设更低区间的分支（原 return 'low' 死分支已移除，口径同 26d37b169a48 删除 critical 死分支）
  */
 function severityFromStatus(status) {
   if (status >= 500) return 'external-service';  // 外部服务异常，不计为代码缺陷
   if (status === 403) return 'high';              // 403 通常是配置问题
   if (status === 401) return 'high';
   if (status === 404) return 'medium';
-  if (status >= 400) return 'high';
-  return 'low';
+  return 'high';
 }
 
 /**
@@ -201,21 +204,36 @@ function detectAnomalies(networkLog) {
     if (entry.type === 'failure') {
       const errorMsg = (entry.error || '').toLowerCase();
       const isCors = errorMsg.includes('cors') || errorMsg.includes('cross-origin');
+      // 取消/拦截类失败并非被验证扩展的代码缺陷：ERR_ABORTED 是导航取消或页面侧 abort，
+      // ERR_BLOCKED_BY_CLIENT/ADMINPOLICY 是被浏览器或其它扩展拦截，降为 medium（category
+      // 单列 cancelled/blocked）不入 hasCriticalAnomalies 的 high 档，避免功能完好的扩展
+      // 因取消类失败被误判 success=false；仅真实网络层错误（ERR_CONNECTION_*/
+      // ERR_NAME_NOT_RESOLVED 等）保持 high
+      const isCancelled = errorMsg.includes('err_aborted');
+      const isBlocked = errorMsg.includes('err_blocked_by_client') || errorMsg.includes('err_blocked_by_adminpolicy');
+      const isBenign = isCancelled || isBlocked;
+      const severity = isBenign ? 'medium' : 'high';
 
       anomalies.push({
         type: 'request-failure',
-        severity: 'high',
+        severity,
         url: entry.url,
         method: entry.method || 'GET',
         error: entry.error,
         timestamp: entry.timestamp,
-        category: isCors ? 'cors' : 'network',
-        description: isCors
-          ? 'CORS 错误 — 浏览器拦截了跨域请求'
-          : `请求失败: ${entry.error}`,
-        suggestion: isCors
-          ? '检查 manifest.json 中的 host_permissions 是否包含该域名'
-          : '检查网络连接和目标服务器状态',
+        category: isBenign ? (isCancelled ? 'cancelled' : 'blocked') : (isCors ? 'cors' : 'network'),
+        description: isCancelled
+          ? `请求被取消/中止（${entry.error}）— 导航取消或页面侧 abort，非代码缺陷`
+          : isBlocked
+            ? `请求被拦截（${entry.error}）— 被浏览器或其它扩展拦截，非代码缺陷`
+            : isCors
+              ? 'CORS 错误 — 浏览器拦截了跨域请求'
+              : `请求失败: ${entry.error}`,
+        suggestion: isCancelled || isBlocked
+          ? '若该请求为预期行为可忽略；否则检查导航/abort 逻辑或拦截来源（其它扩展、浏览器策略）'
+          : isCors
+            ? '检查 manifest.json 中的 host_permissions 是否包含该域名'
+            : '检查网络连接和目标服务器状态',
       });
     }
 
@@ -707,8 +725,9 @@ function buildSummary(anomalies, uiTests = []) {
   const codeAnomalies = anomalies.filter(a => a.severity === 'high');
   // warning 级问题单列，不混入 codeDefects。当前唯一产生源 missing-header 依赖
   // checkRequiredHeaders 的规则表（现为空，见其函数注释），故 warnings 现阶段恒 0；
-  // medium（HTTP 404）/low 异常不入任何分档，仅计入 totalAnomalies，分档之和可与
-  // totalAnomalies 不一致（预期口径，needsAttention 与 success 判定不依赖分档）
+  // medium（HTTP 404，以及取消/拦截类请求失败，见 detectAnomalies）异常不入任何分档，
+  // 仅计入 totalAnomalies，分档之和可与 totalAnomalies 不一致（预期口径，needsAttention
+  // 与 success 判定不依赖分档）
   const warningAnomalies = anomalies.filter(a => a.severity === 'warning');
   const serviceAnomalies = anomalies.filter(a => a.severity === 'external-service');
   const uiFailures = uiTests.filter(t => t.status === 'fail' || t.status === 'error');
@@ -816,6 +835,10 @@ function checkManifestHostPermissions(manifestPath, reasons) {
     // 后判定，避免 http://127.0.0.1/*、http://[::1]/* 这类纯本机权限被判为外部域名
     const externalHosts = hostPermissions.filter(h => {
       if (!h.includes('://') || h.includes('<all_urls>')) return false;
+      // 非 http(s)/ws(s) scheme（file:、chrome-extension:、urn: 等）不指向外部域名；
+      // scheme 为 * 的 match pattern（*://host/path，等价 http/https）仍按域名判定
+      const scheme = h.split('://')[0].toLowerCase();
+      if (scheme !== '*' && !/^(https?|wss?)$/.test(scheme)) return false;
       let host = (h.split('://')[1] || '').split('/')[0];
       if (host.startsWith('[')) {
         // [::1]:8080 形态取方括号内主机（isLocalHostname 自行去括号归一化）
@@ -825,6 +848,10 @@ function checkManifestHostPermissions(manifestPath, reasons) {
         // 普通主机去端口后再判定（localhost:8080、127.0.0.1:9944 等）
         host = host.slice(0, host.lastIndexOf(':'));
       }
+      // 通配 host 段（file:///*、http://*/*、*://*/* 解析出的 *）不指向具体外部域名，
+      // 显式排除，避免纯本地文件类扩展被落进 Tier 2 触发理由；*.example.com 等
+      // 子域通配仍计为外部域名（方向保守，多验不漏验）
+      if (host === '*') return false;
       return host.length > 0 && !isLocalHostname(host);
     });
     if (externalHosts.length > 0) {

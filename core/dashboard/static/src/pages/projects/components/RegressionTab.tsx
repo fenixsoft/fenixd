@@ -685,7 +685,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         if (fixPollAbortedRef.current) return;
         if (projectRef.current !== project) return;
         try {
-          const snap = await getRegressionFixResult(project);
+          // 单次请求超时收敛到剩余预算（code-review item 082b4f2fb7bc）：
+          // deadline 只在循环入口判定，若请求仍用统一 30s 超时，后端挂起时
+          // 单轮迭代可膨胀到 30s+，总等待远超 FIX_POLL_LIMIT_MS 声明的上限
+          const snap = await getRegressionFixResult(
+            project,
+            Math.min(deadline - Date.now(), FIX_POLL_LIMIT_MS),
+          );
           if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;
@@ -918,8 +924,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
           dataIndex: 'time',
           key: 'time',
           width: 100,
-          // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等
-          render: (t: number) =>
+          // 显式判空（code-review item 30024ba4279f）：项目 lint 禁止宽松相等。
+          // 参数类型对齐 CaseRow.time（number | null，整体超时伪行可为 null，
+          // item ffd13522bd1a），避免误导后续维护者按非空使用
+          render: (t: number | null | undefined) =>
             t !== null && t !== undefined ? `${t}s` : '—',
         },
         {

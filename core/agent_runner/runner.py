@@ -851,6 +851,11 @@ class AgentRunner:
         # _log_lane_run_metrics / dispute-judge·spec-review 直调车道各自收尾
         # finally，code-review item 7d45c6cd8be2）。
         self._run_harness: Dict[str, str] = {}
+        # 本 run 派发点解析的 adapter 实例（code-review item bb55449a1a7b）：
+        # _run_agent spawn 装配按 _normalize_run_id(run_id) 查此登记取值，
+        # 不读进程级全局；键空间与 _run_harness 同为 base run_id，随其同一
+        # finally 外口摘除。值为 adapter 对象（区别于 _run_harness 的名串）。
+        self._run_resolved_adapter: Dict[str, object] = {}
         # 轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_limit_action
         # 建态侧的 24h 过期清理迭代与 _execute_agent 终态外口 forget 的摘除迭代
         # 并发互斥（协议见 _turn_branch_state_lock property 注释）。
@@ -2220,7 +2225,7 @@ class AgentRunner:
                     except OSError:
                         pass
             return home_dir
-        except (OSError, json.JSONDecodeError) as e:
+        except OSError as e:
             self.logger.warning(
                 "agent_runner",
                 f"[impl-code-review-gate] _write_run_ocr_config 失败，跳过 ocr 注入: {e}",
@@ -3153,6 +3158,12 @@ class AgentRunner:
         # adapter 即本 run 的实际驱动者，后续所有 attempt 与收尾路径均从
         # 本登记取值，不读进程级全局（防并发 run 收尾串号）。
         self._register_run_harness(run_id, _resolved_adapter)
+        # code-review item bb55449a1a7b：本 run 解析的 adapter 实例入 run 级
+        # 登记（键同 _run_harness），_run_agent spawn 装配按 run_id 取用——
+        # 不经形参透传（_execute_agent_inner/_run_agent 是测试替身替换面，
+        # 加参会破既有替身签名），也不读进程级全局。
+        self.__dict__.setdefault("_run_resolved_adapter", {})[run_id] = \
+            _resolved_adapter
         try:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,
@@ -3164,6 +3175,8 @@ class AgentRunner:
             #（覆盖 success/exhausted 两收口之外的全部早退终态 return），防
             # 长驻 daemon 下登记无界增长；惰性回退对齐 _run_harness 声明处。
             getattr(self, "_run_harness", {}).pop(run_id, None)
+            # adapter 实例登记与品牌登记同生命周期（bb55449a1a7b）。
+            getattr(self, "_run_resolved_adapter", {}).pop(run_id, None)
             # 轮次分支基线按 run 摘除（code-review item b9f426346304 /
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
@@ -3201,6 +3214,10 @@ class AgentRunner:
         收割义务由外层 _execute_agent 的 try/finally 承担；本层仅登记
         used_wts（本 run 创建/复用的 wt_path）与 handed_off（有意交接集合），
         不自行清理——任意终态漏网（异常/早退）都回到外层 finally 收口。
+
+        spawn 装配的 adapter 取值不走本层形参（bb55449a1a7b）：
+        _execute_agent_inner/_run_agent 是测试替身替换面，加参会破替身签名；
+        _run_agent 按 run_id 查 _execute_agent 预登记的 _run_resolved_adapter。
         """
         if used_wts is None:
             used_wts = set()
@@ -4178,7 +4195,7 @@ class AgentRunner:
                 self.logger.info(
                     "agent_runner",
                     f"Worktree for '{spec_name}' ({agent_type}) acquired "
-                    f"after lock wait ({round_no}/{len(seq)}) — peer run "
+                    f"after lock wait ({round_no}/{len(waits)}) — peer run "
                     f"released spec lock",
                 )
                 return wt_path, None
@@ -5816,6 +5833,12 @@ class AgentRunner:
                 基线，evo-add-impl-run-budget-sizing 3.1；``_impl_turn_budget``
                 在 1.2 同一读点顺带产出）。None（评审/裁决车道或无数字任务）
                 时守卫侧视为无基线不判不济。
+            spawn 装配的 adapter 取值（code-review item bb55449a1a7b）：本方法
+                不设 adapter 形参（测试替身按既有签名替换本方法）——派发家族从
+                _execute_agent 预登记的 _run_resolved_adapter[base_run_id] 取
+                派发点解析实例，保证 spawn/build_spawn_spec 与本 run 的 provider
+                候选链/健康检查同源；直调一次性车道无登记，回退
+                get_current_adapter()，行为与引入前一致。
 
         Returns: (output, turns_used, session_id, usage_info, stall_latency)。
             usage_info 为终态 result 事件提取的 usage/成本（add-cost-observability
@@ -5863,16 +5886,32 @@ class AgentRunner:
         # 等原注释随迁 harness/claude_adapter.py 与 protocol.py）；车道词表
         # （_NO_MAIN_TREE_VERIFY_PROGRESS_LANES）留 runner 侧——design D8：
         # harness 包不感知车道。
-        adapter = get_current_adapter()
+        # code-review item bb55449a1a7b：spawn 装配统一用派发点解析的 adapter
+        # （_execute_agent 已按同一实例完成 provider 候选链与前置健康检查，
+        # 登记于 _run_resolved_adapter[base_run_id]）——不在 spawn 读点读进程
+        # 级全局：set_current_adapter 与本捕获之间隔着 worktree 创建/锁退避
+        # （自适应预算最长约 1200s），窗口内并发 dispatch 因配置热更新写入
+        # 不同 adapter 时，读全局会让本 run 用对方实例 spawn、与本 run 自行
+        # 解析的候选链不一致。取值不走形参（本方法是测试替身替换面，加参会
+        # 破替身签名），按 run_id 查 run 级登记；直调一次性车道
+        # （maintenance/admin/dispute-judge/spec-review）无登记，保持
+        # get_current_adapter() 缺省取值不变。
+        _resolved_adapter_here = getattr(self, "_run_resolved_adapter", {}).get(
+            self._normalize_run_id(run_id))
+        adapter = (_resolved_adapter_here if _resolved_adapter_here is not None
+                   else get_current_adapter())
         # add-harness-brand-projection 2.1：一次性车道同口径登记（maintenance
-        # 三车道 / admin 车道等直调 _run_agent、不经 _execute_agent 派发装配
-        # ——dispatch 家族已登记时本调用为 no-op，其条目仍由 _execute_agent
-        # 终态外口统一摘除）。spawn 装配此刻取的 adapter 即本 run 进程的实际
-        # 驱动者，此刻读进程级全局（与 build_spawn_spec 同一取值）无收尾串号
-        # 问题；maintenance/admin 车道的条目由 _log_lane_run_metrics 收尾消费
-        # 后摘除，dispute-judge/spec-review 车道由各自收尾 finally 摘除（本
-        # 方法不摘——摘早了车道收尾的 run_metrics 行就取不到值）。
-        self._register_run_harness(run_id, adapter)
+        # 三车道 / admin 车道等直调 _run_agent、不经 _execute_agent 派发装配；
+        # dispatch 家族的条目由 _execute_agent 先行登记、终态外口统一摘除）。
+        # code-review item 08445ba7aaac：登记键归一化到基础 run_id——本方法
+        # 收到的是 attempt/sub_run_id（-a<n>/-r<n> 后缀），原样登记会另成一
+        # 键、登记并非 no-op，而全部摘除点（_execute_agent finally、dispute-
+        # judge/spec-review 各自 finally、_log_lane_run_metrics 收尾）均按
+        # 基础 id 或车道 id 摘，子 id 条目随每次 attempt/原地重试在长驻
+        # daemon 中无界滞留。归一化后 dispatch 家族回到「已登记即 no-op」；
+        # 一次性车道 id 无该后缀形态，归一化幂等，登记键与各收尾摘除键一致
+        # （本方法不摘——摘早了车道收尾的 run_metrics 行就取不到值）。
+        self._register_run_harness(self._normalize_run_id(run_id), adapter)
         spawn_spec = adapter.build_spawn_spec(SpawnRequest(
             prompt=prompt,
             cwd=str(cwd),
@@ -5932,9 +5971,22 @@ class AgentRunner:
             except (BrokenPipeError, OSError, ValueError):
                 pass
 
-        threading.Thread(
-            target=_feed_stdin, name=f"stdin-feed-{run_id}", daemon=True
-        ).start()
+        try:
+            threading.Thread(
+                target=_feed_stdin, name=f"stdin-feed-{run_id}", daemon=True
+            ).start()
+        except BaseException:
+            # code-review item 648cf3d8ecca：Popen 已成功、_running_agents 已
+            # 登记，而轮询环的 try/finally 尚未进入——线程装配失败（如进程线
+            # 程数耗尽 RuntimeError）裸抛会让子进程无人 kill、stdout 无人排水
+            #（管道写满后子进程永久阻塞），登记与进程组成为孤儿。先杀子进程
+            # 并摘登记，再按原语义向上抛。
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            self._running_agents.pop(run_id, None)
+            raise
 
         # 两条守护线程分别读 stdout / stderr，避免单线程 readline 卡死。
         # 共享状态由主线程在 join 之后读取，天然构成 happens-before。
@@ -6310,8 +6362,20 @@ class AgentRunner:
 
         t_out = threading.Thread(target=_read_stream, args=(proc.stdout, False), daemon=True)
         t_err = threading.Thread(target=_read_stream, args=(proc.stderr, True), daemon=True)
-        t_out.start()
-        t_err.start()
+        try:
+            t_out.start()
+            t_err.start()
+        except BaseException:
+            # code-review item 648cf3d8ecca：转录线程装配失败同样先杀子进程并
+            # 摘登记再向上抛（已启动的读线程随管道 EOF 自然退出，_read_stream
+            # 自吞异常；stdin 喂入线程经 BrokenPipeError 静默收口），保证任一
+            # 线程装配失败都不遗留活子进程。
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            self._running_agents.pop(run_id, None)
+            raise
 
         # 轮询等待：同时支持超时与 max_turns 强制（claude CLI 无 --max-turns flag）
         returncode = None

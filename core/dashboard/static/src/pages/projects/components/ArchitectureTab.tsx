@@ -65,13 +65,16 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   // 请求序号守卫（对齐 QualityTab/RegressionTab）：轮询与手动刷新并发时
   // 较慢的早期响应不得覆盖较新数据。
   const seqRef = useRef(0);
-  // 在飞去重标志（code-review item 7756f9675f6a）：generating 轮询的 3s
+  // 在飞去重计数（code-review item 7756f9675f6a）：generating 轮询的 3s
   // interval 每 tick 原本无条件发起请求，统一请求超时 30s 下后端挂起时在飞
   // 请求最多堆积约 10 个（seq 守卫只拦过期响应写状态，不拦请求堆积本身）。
-  // loadStatus 入口置位、finally 复位，interval tick 见在飞则跳过本轮，等
-  // 上一请求落定后再发下一轮。用 ref 而非 state：不参与渲染，卸载/切离
-  // 清理路径无需额外复位（在飞响应本就被 seq/active 守卫丢弃）。
-  const loadInFlightRef = useRef(false);
+  // loadStatus 入口 +1、finally −1，interval tick 见计数非零则跳过本轮，等
+  // 在飞请求全部落定后再发下一轮。用计数而非布尔标志（item e0ed13fb88cb）：
+  // 手动「重试读取」与在飞轮询重叠时两个请求共用一个布尔，先落定的旧请求
+  // 会在 finally 提前复位、使仍在飞的新请求失去去重保护。用 ref 而非 state：
+  // 不参与渲染，卸载/切离清理路径无需额外复位（在飞响应本就被 seq/active
+  // 守卫丢弃，入口 +1 与 finally −1 严格成对，不泄漏）。
+  const loadInFlightRef = useRef(0);
   // active 快照（模式同 loadStatusRef）：await 返回后闭包里的 active 可能
   // 已过期（请求在途时切离分面），离面复核以 ref 中的最新值为准。
   const activeRef = useRef(active);
@@ -82,7 +85,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   const loadStatus = useCallback(async () => {
     if (!active || !project) return;
     const seq = ++seqRef.current;
-    loadInFlightRef.current = true;
+    loadInFlightRef.current += 1;
     try {
       const data = await getArchitectureStatus(project);
       // seq 之外再复核最新 active：请求在途时切离分面则直接放弃，否则
@@ -96,9 +99,9 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       if (data.state === 'generating') {
         if (pollTimerRef.current === null) {
           pollTimerRef.current = window.setInterval(() => {
-            // 在飞去重（7756f9675f6a）：上一轮请求未落定则跳过本轮 tick，
+            // 在飞去重（7756f9675f6a）：仍有请求未落定则跳过本轮 tick，
             // 避免后端挂起时在飞请求随 interval 堆积
-            if (loadInFlightRef.current) return;
+            if (loadInFlightRef.current > 0) return;
             void loadStatusRef.current();
           }, POLL_INTERVAL_MS);
         }
@@ -123,9 +126,11 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       setReadError(errMsg);
       message.error(`加载失败: ${errMsg}`);
     } finally {
-      // 成功/失败两条路径都复位在飞标志（7756f9675f6a）：失败路径止损会停
-      // 定时器，复位仅影响后续手动重试读取；成功路径复位后下一 tick 恢复放行。
-      loadInFlightRef.current = false;
+      // 成功/失败两条路径都递减在飞计数（7756f9675f6a / e0ed13fb88cb）：计
+      // 数归零即全部在飞请求落定，与响应落定顺序无关（先落定的旧请求不再
+      // 提前放行仍在飞的新请求）。失败路径止损会停定时器，递减仅影响后续
+      // 手动重试读取；成功路径归零后下一 tick 恢复放行。
+      loadInFlightRef.current -= 1;
     }
   }, [active, project, message]);
 

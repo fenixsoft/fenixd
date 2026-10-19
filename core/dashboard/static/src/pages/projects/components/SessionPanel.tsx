@@ -522,7 +522,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
             if (sseConnectedRef.current) setStreamDown(false);
             const again = await getSession(projectRef.current);
             if (disposed) return;
+            // 空会话兜底（code-review item 48682b16b4cc）：会话恰在注册成功与
+            // 本 GET 之间被服务端整体摘除（session_ended 事件未被 watch 收到）时，
+            // 不复位会让面板滞留 started=true 旧状态直到下一次快照才自愈；
+            // 与 pollSnapshot 的空会话复位口径对齐
             if (again.session) applySnapshotCarried(again);
+            else applySnapshot(again);
           } catch (e) {
             if (disposed) return;
             console.error('Failed to register session watch (retry):', e);
@@ -598,8 +603,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
             // 与 handleStart 复用。
             const again = await getSession(project);
             if (disposed) return;
+            // 空会话兜底（code-review item 48682b16b4cc）：会话恰在两次 GET 之间
+            // 被服务端整体摘除（无 session_ended 事件或未被 watch 收到）时，
+            // 不复位会让面板滞留 started=true 旧状态直到下一次快照才自愈；
+            // 与 pollSnapshot 的空会话复位口径对齐
             if (again.session) {
               applySnapshotCarried(again);
+            } else {
+              applySnapshot(again);
             }
           }
           // 无会话（空态）或快照已判终态：跳过注册，避免 404 + console.error
@@ -701,6 +712,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       setEnded(false);
       setSending(false);
       setStopping(false);
+      // loading 复位（code-review item 9c07fe612f2d）：loadAll 的 finally 以
+      // !disposed 守卫复位，切离中断的在途加载不再回落——不补复位的话，
+      // inactive 期间（面板仍被渲染的形态）会持续显示「加载会话...」
+      setLoading(false);
     }
     // 卸载守卫（code-review item e71b2c2de7cf）：组件在 active===true 且已注册
     // watch 时被销毁，本 effect 主体不会「再跑」（React 卸载只执行清理函数，
