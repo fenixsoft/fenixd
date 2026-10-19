@@ -851,6 +851,11 @@ class AgentRunner:
         # _log_lane_run_metrics / dispute-judge·spec-review 直调车道各自收尾
         # finally，code-review item 7d45c6cd8be2）。
         self._run_harness: Dict[str, str] = {}
+        # 本 run 派发点解析的 adapter 实例（code-review item bb55449a1a7b）：
+        # _run_agent spawn 装配按 _normalize_run_id(run_id) 查此登记取值，
+        # 不读进程级全局；键空间与 _run_harness 同为 base run_id，随其同一
+        # finally 外口摘除。值为 adapter 对象（区别于 _run_harness 的名串）。
+        self._run_resolved_adapter: Dict[str, object] = {}
         # 轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_limit_action
         # 建态侧的 24h 过期清理迭代与 _execute_agent 终态外口 forget 的摘除迭代
         # 并发互斥（协议见 _turn_branch_state_lock property 注释）。
@@ -3153,20 +3158,25 @@ class AgentRunner:
         # adapter 即本 run 的实际驱动者，后续所有 attempt 与收尾路径均从
         # 本登记取值，不读进程级全局（防并发 run 收尾串号）。
         self._register_run_harness(run_id, _resolved_adapter)
+        # code-review item bb55449a1a7b：本 run 解析的 adapter 实例入 run 级
+        # 登记（键同 _run_harness），_run_agent spawn 装配按 run_id 取用——
+        # 不经形参透传（_execute_agent_inner/_run_agent 是测试替身替换面，
+        # 加参会破既有替身签名），也不读进程级全局。
+        self.__dict__.setdefault("_run_resolved_adapter", {})[run_id] = \
+            _resolved_adapter
         try:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,
                 pre_wt_path=pre_wt_path, conflict_summary=conflict_summary,
                 used_wts=used_wts, handed_off=handed_off,
-                # code-review item bb55449a1a7b：显式传递本 run 解析的 adapter
-                # （_run_agent spawn 装配统一用它，不再读进程级全局）
-                adapter=_resolved_adapter,
             )
         finally:
             # add-harness-brand-projection 2.1：品牌登记随 run 终态外口摘除
             #（覆盖 success/exhausted 两收口之外的全部早退终态 return），防
             # 长驻 daemon 下登记无界增长；惰性回退对齐 _run_harness 声明处。
             getattr(self, "_run_harness", {}).pop(run_id, None)
+            # adapter 实例登记与品牌登记同生命周期（bb55449a1a7b）。
+            getattr(self, "_run_resolved_adapter", {}).pop(run_id, None)
             # 轮次分支基线按 run 摘除（code-review item b9f426346304 /
             # 9dc9195cbd73）：统一在 run 终态外口摘除，覆盖 success/exhausted
             # 两收口之外的全部早退终态 return（frozen/取消/熔断/链耗尽/让位）。
@@ -3198,17 +3208,16 @@ class AgentRunner:
                              pre_wt_path: Path | None = None,
                              conflict_summary: dict | None = None,
                              used_wts: set = None,
-                             handed_off: set = None,
-                             adapter=None) -> AgentRunResult:
+                             handed_off: set = None) -> AgentRunResult:
         """派发循环主体（verify-process-lifecycle）：维护收割集合并返回结果。
 
         收割义务由外层 _execute_agent 的 try/finally 承担；本层仅登记
         used_wts（本 run 创建/复用的 wt_path）与 handed_off（有意交接集合），
         不自行清理——任意终态漏网（异常/早退）都回到外层 finally 收口。
 
-        ``adapter``（code-review item bb55449a1a7b）：外层透传的本 run 已解析
-        adapter，随每次 attempt 传 _run_agent 作 spawn 装配取值；None 时
-        _run_agent 回退 get_current_adapter()（仅替身直调场景）。
+        spawn 装配的 adapter 取值不走本层形参（bb55449a1a7b）：
+        _execute_agent_inner/_run_agent 是测试替身替换面，加参会破替身签名；
+        _run_agent 按 run_id 查 _execute_agent 预登记的 _run_resolved_adapter。
         """
         if used_wts is None:
             used_wts = set()
@@ -3453,9 +3462,6 @@ class AgentRunner:
                         spec_name=spec_name,
                         agent_type=agent_type,
                         task_progress_snapshot=_task_progress_snap,
-                        # code-review item bb55449a1a7b：spawn 装配用本 run
-                        # 派发点解析的 adapter（不读进程级全局）
-                        adapter=adapter,
                     )
                     if run_session_id:
                         session_id = run_session_id
@@ -5789,8 +5795,7 @@ class AgentRunner:
                     max_turns: int | None = None,
                     spec_name: str | None = None,
                     agent_type: str | None = None,
-                    task_progress_snapshot: dict | None = None,
-                    adapter=None) -> tuple:
+                    task_progress_snapshot: dict | None = None) -> tuple:
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -5828,11 +5833,12 @@ class AgentRunner:
                 基线，evo-add-impl-run-budget-sizing 3.1；``_impl_turn_budget``
                 在 1.2 同一读点顺带产出）。None（评审/裁决车道或无数字任务）
                 时守卫侧视为无基线不判不济。
-            adapter: spawn 装配用的 harness adapter 实例（code-review item
-                bb55449a1a7b）。派发家族经 _execute_agent → _execute_agent_inner
-                显式传入派发点解析的 _resolved_adapter，保证 spawn/build_spawn_spec
-                与本 run 的 provider 候选链/健康检查同源；直调一次性车道不传
-                （None）时回退 get_current_adapter()，行为与引入前一致。
+            spawn 装配的 adapter 取值（code-review item bb55449a1a7b）：本方法
+                不设 adapter 形参（测试替身按既有签名替换本方法）——派发家族从
+                _execute_agent 预登记的 _run_resolved_adapter[base_run_id] 取
+                派发点解析实例，保证 spawn/build_spawn_spec 与本 run 的 provider
+                候选链/健康检查同源；直调一次性车道无登记，回退
+                get_current_adapter()，行为与引入前一致。
 
         Returns: (output, turns_used, session_id, usage_info, stall_latency)。
             usage_info 为终态 result 事件提取的 usage/成本（add-cost-observability
@@ -5880,16 +5886,20 @@ class AgentRunner:
         # 等原注释随迁 harness/claude_adapter.py 与 protocol.py）；车道词表
         # （_NO_MAIN_TREE_VERIFY_PROGRESS_LANES）留 runner 侧——design D8：
         # harness 包不感知车道。
-        # code-review item bb55449a1a7b：spawn 装配统一用派发侧显式传入的
-        # _resolved_adapter（_execute_agent 已按同一实例完成 provider 候选链
-        # 与前置健康检查）——不再在 spawn 读点读进程级全局：set_current_adapter
-        # 与本捕获之间隔着 worktree 创建/锁退避（自适应预算最长约 1200s），
-        # 窗口内并发 dispatch 因配置热更新写入不同 adapter 时，读全局会让本
-        # run 用对方实例 spawn、与本 run 自行解析的候选链不一致。直调一次性
-        # 车道（maintenance/admin/dispute-judge/spec-review）不传参，保持
+        # code-review item bb55449a1a7b：spawn 装配统一用派发点解析的 adapter
+        # （_execute_agent 已按同一实例完成 provider 候选链与前置健康检查，
+        # 登记于 _run_resolved_adapter[base_run_id]）——不在 spawn 读点读进程
+        # 级全局：set_current_adapter 与本捕获之间隔着 worktree 创建/锁退避
+        # （自适应预算最长约 1200s），窗口内并发 dispatch 因配置热更新写入
+        # 不同 adapter 时，读全局会让本 run 用对方实例 spawn、与本 run 自行
+        # 解析的候选链不一致。取值不走形参（本方法是测试替身替换面，加参会
+        # 破替身签名），按 run_id 查 run 级登记；直调一次性车道
+        # （maintenance/admin/dispute-judge/spec-review）无登记，保持
         # get_current_adapter() 缺省取值不变。
-        if adapter is None:
-            adapter = get_current_adapter()
+        _resolved_adapter_here = getattr(self, "_run_resolved_adapter", {}).get(
+            self._normalize_run_id(run_id))
+        adapter = (_resolved_adapter_here if _resolved_adapter_here is not None
+                   else get_current_adapter())
         # add-harness-brand-projection 2.1：一次性车道同口径登记（maintenance
         # 三车道 / admin 车道等直调 _run_agent、不经 _execute_agent 派发装配；
         # dispatch 家族的条目由 _execute_agent 先行登记、终态外口统一摘除）。
