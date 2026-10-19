@@ -376,9 +376,13 @@ class H5SettingsRoutesMixin:
         相对文件名也是错误文案语境名（现有调用二者同值）。
         """
         target = Path(project["path"]) / ".fenix" / what
-        exists = target.is_file()
         content = ""
         try:
+            # is_file() 探测也纳入守卫（code-review item 185956449849）：
+            # pathlib 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，stat 遇 EIO/EBUSY
+            # 会上抛，与 read_text 同走「{what} 读取失败」可读 500（口径同
+            # _api_prompts_get 的 try 包裹先例），不落通用 500 兜底。
+            exists = target.is_file()
             if exists:
                 content = target.read_text(encoding="utf-8")
         except OSError as e:
