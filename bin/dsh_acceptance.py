@@ -168,6 +168,7 @@ def cleanup_fixture(manifest: Dict[str, Any]) -> Dict[str, Any]:
 # 装置：假模型端点 + DSH_HOME 隔离（装置与 SPEC-3 e2e 冒烟 7.1 同源）
 # ══════════════════════════════════════════════════════════════════════
 
+# [fenix-ignore:3ab95b705a6d] 本机瞬时 TOCTOU 概率低（item 自认可接受现状）；收敛需 node bind(0) 端口回传文件，改动面大不值得修
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -564,6 +565,7 @@ def judge_lane_steps() -> List[Dict[str, Any]]:
             {"kind": "text", "text": verdict}]
 
 
+# [fenix-ignore:d74774709e7c] smoke/real 车道驱动同构但证据面形状已分叉（证据键顺序/run_jsonl_exists/error 路径 problems/截断/result_gate 时机/端点注入均不同），逐字节等价抽取需大范围参数化，超出最小修复口径
 def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any],
                    mock: MockModelServer, timeout: float,
                    defer_result_gate: bool = False) -> Dict[str, Any]:
@@ -619,8 +621,12 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
         #（完成 ⇒ 在飞窗口存在过，终态先于观测窗到达同样算观测过）
         inflight_seen = False
         sampled: List[str] = []
-        deadline = time.time() + 30
-        while time.time() < deadline and "ret" not in box and "err" not in box:
+        # 观测窗与车道线程同生命周期（沿用 join 截止时刻）：spawn 前置
+        # （adapter 健康门/bundle 探测）耗时超独立固定窗，会把成功完成的
+        # 车道误判成「未观测到在飞 dsh headless 进程」（假阴性）
+        lane_deadline = time.time() + timeout + 60
+        while (time.time() < lane_deadline
+               and "ret" not in box and "err" not in box):
             for proc in list(runner._running_agents.values()):
                 if proc.poll() is not None:
                     continue
@@ -633,7 +639,7 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
             # 观测的 dsh 子进程争抢，反过来拉长被测车道耗时（elapsed_seconds
             # 是基线对比输入）
             time.sleep(0.2 if inflight_seen else 0.1)
-        th.join(timeout=timeout + 60)
+        th.join(timeout=max(0.0, lane_deadline - time.time()))
     finally:
         set_current_adapter(prev)
     if th.is_alive() and "ret" not in box and "err" not in box:
@@ -1439,7 +1445,7 @@ def accept_selfcheck(project_root: Path, profile: str,
             names = [str(p.get("name")) for p in providers]
             add("provider 链凭据", True,
                 f"{len(providers)} 个可用 provider：{names}；缺省选中首个 "
-                f"baseurl={p0.get('baseurl')}，"
+                f"baseurl={_host_of(str(p0.get('baseurl')))}，"
                 f"apikey={redact(str(p0.get('apikey')))}"
                 f"（首个可能已失效——用 --provider <name> 显式指定）")
         else:
@@ -1726,8 +1732,10 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
     try:
         th = threading.Thread(target=_drive, daemon=True)
         th.start()
-        deadline = time.time() + 60
-        while time.time() < deadline and "ret" not in box and "err" not in box:
+        # 同 run_agent_lane：观测窗沿用 join 截止时刻，与车道线程同生命周期
+        lane_deadline = time.time() + timeout + 120
+        while (time.time() < lane_deadline
+               and "ret" not in box and "err" not in box):
             for proc in list(runner._running_agents.values()):
                 if proc.poll() is not None:
                     continue
@@ -1738,7 +1746,7 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
                     inflight_seen = True
             # 同 run_agent_lane：在飞观测后保留固定采样间隔，不做热自旋
             time.sleep(0.4 if inflight_seen else 0.2)
-        th.join(timeout=timeout + 120)
+        th.join(timeout=max(0.0, lane_deadline - time.time()))
     finally:
         set_current_adapter(prev)
     if th.is_alive() and "ret" not in box and "err" not in box:
