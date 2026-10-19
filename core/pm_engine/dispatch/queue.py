@@ -253,6 +253,12 @@ class QQQueueMixin:
         # 排程（集合挂门面存续——SpecReviewManager 每次派发重建，实例级集合
         # 判不住跨派发重复）；到期回调重入队评审条目并重扫队列。
         self._review_content_backoff_timers: set = set()
+        # merge-only 顺延重试定时器判重登记表（_schedule_merge_retry 维护）：
+        # {spec_name: threading.Timer}，与退避通道的 ``_backoff_timer_specs``
+        # 形态对齐、相互独立（merge-only 专用，不与退避判重共表）。构造期
+        # 一次建齐（code-review item 19ce372be8d3，对齐 _backoff_timers 等
+        # 队列状态纪律），读写两侧直读，不再 getattr 惰性建表/防御。
+        self._merge_retry_timer_specs: Dict[str, threading.Timer] = {}
         # add-impl-ocr-parallel-lane（任务 4.1/4.2）：ocr 审查车道在飞登记
         # {spec_name: True} + 专锁。单飞去重判据（join 侧幂等触发与 merge-back
         # 时点启动共用）；车道线程完成回调经同锁摘除登记。
@@ -502,22 +508,35 @@ class QQQueueMixin:
             floor_levels (默认 4) —— 单条目等效降级总量上限（P6 最低可比至 P2，
               仍天然低于新到的 P1，高优家族先占）。
         """
-        from core.config import ConfigLoader
-
-        cfg = self._pm.config or {}
-        a = dict(ConfigLoader.get(cfg, "pm.dispatch.aging", {}) or {})
-        enabled = a.get("enabled", False)
-        if not enabled:
-            return 0
-        # 注意：不能用 `or 默认值` 取参 —— 配置 0（initial_wait/step_down）合法且常见，
-        # 0 为假值会被误替换为默认值。
-        iw = a.get("initial_wait_minutes")
-        sw = a.get("step_down_minutes")
-        fl = a.get("floor_levels")
+        # 配置读取/归一统一口径（code-review item ee231cfc12f6）：与
+        # _merge_retry_* 读取器同款走 _normalized_*_config 严格归一——原裸
+        # 真值判定/float()/int() 直转会把带引号的 "false" 误开启老化、把
+        # true 折成 1、非整值浮点静默截断采信。enabled 非布尔 fail-closed
+        # 回缺省关闭；数值非法 WARNING 留痕回缺省；try/except 保留为最后
+        # 兜底（畸形配置不炸派发循环）。
         try:
-            initial_wait = max(0.0, float(iw if iw is not None else 30)) * 60.0
-            step_down = max(0.0, float(sw if sw is not None else 15)) * 60.0
-            floor_levels = max(0, int(fl if fl is not None else 4))
+            enabled = self._pm._get_config("pm.dispatch.aging.enabled", False)
+            if not isinstance(enabled, bool) or not enabled:
+                return 0
+            # 注意：数值键不能用 `or 默认值` 取参 —— 0（initial_wait/
+            # step_down）合法且常见，0 为假值会被误替换为默认值（归一读取器
+            # None 判空回缺省同口径）。
+            initial_wait = (
+                max(0.0, _normalized_float_config(
+                    self._pm, "pm.dispatch.aging.initial_wait_minutes", 30
+                )) * 60.0
+            )
+            step_down = (
+                max(0.0, _normalized_float_config(
+                    self._pm, "pm.dispatch.aging.step_down_minutes", 15
+                )) * 60.0
+            )
+            floor_levels = max(
+                0,
+                _normalized_int_config(
+                    self._pm, "pm.dispatch.aging.floor_levels", 4
+                ),
+            )
         except (TypeError, ValueError):
             # 畸形配置（如非数值字符串）只降级回缺省值，不炸派发循环
             #（口径对齐 _merge_retry_* 读取器）。
@@ -674,9 +693,13 @@ class QQQueueMixin:
           档放行、full 档拦截），杜绝入口放行 / 队列二次拦截的口径分裂。
         - 判定异常 fail-open 放行（不阻塞候选扫描，与其它候选闸门一致）。
         """
-        if atype != "spec-review":
-            return start_after_pending(spec)
+        # 判定异常 fail-open 覆盖两车道（code-review item 67471ee7b96e）：
+        # 单一 try 包住实现车道与 spec-review 分支，保护对称——实现车道原裸调
+        # ``start_after_pending``，未来该谓词引入可抛实现时异常会沿
+        # _process_queue 扫描链逃逸且无日志。
         try:
+            if atype != "spec-review":
+                return start_after_pending(spec)
             return start_after_blocks_promotion(spec, getattr(self._pm, "config", None))
         except Exception as e:
             self._pm.logger.warning(
@@ -3294,9 +3317,7 @@ class QQQueueMixin:
             # 状态守卫（仅看 status==implementing）挡不住并发重入，重复 merge 尝试
             # 经 _defer_merge_back 使 _merge_retry_count 每窗口虚增两次，提前触发
             # 超限 stuck 告警/窗口降级。
-            pending: dict = getattr(self, "_merge_retry_timer_specs", None)
-            if pending is None:
-                pending = self._merge_retry_timer_specs = {}
+            pending = self._merge_retry_timer_specs
             stale = pending.pop(spec_name, None)
             self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
             if stale is not None:
@@ -3325,7 +3346,7 @@ class QQQueueMixin:
                 # 判重登记表同步回滚（对齐 _schedule_backoff_retry start 失败路径）：
                 # 失败的 Timer 未运行，残留登记只占位（下轮排程会替换），摘除保持
                 # 登记表与在飞定时器一致。
-                if getattr(self, "_merge_retry_timer_specs", {}).get(spec_name) is timer:
+                if self._merge_retry_timer_specs.get(spec_name) is timer:
                     self._merge_retry_timer_specs.pop(spec_name, None)
             try:
                 self._pm.state_machine.update_spec(
