@@ -197,7 +197,7 @@ class TestLedgerLifecycle(DistillResumeTestBase):
         spawn = _GateSpawn()
         mgr = DistillManager(spawn=spawn)
         with mock.patch.object(kn, "validate_knowledge", lambda p: []), \
-                mock.patch.object(kn, "_commit_output", lambda p, n: None):
+                mock.patch.object(kn, "_commit_output", lambda p, n, baseline=None: None):
             mgr.dispatch(self.root, [N1])
             self._wait_ledger_contains(N1)
             spawn.release.set()
