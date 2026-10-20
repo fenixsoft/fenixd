@@ -836,6 +836,34 @@ def _extract_spec_attribution_from_text(text, known_specs=()) -> str:
 # 尾部读上限：日志增长后每轮巡检只 seek 最近 256KB（3.5），避免全量 read_text
 _TAIL_ERROR_READ_BYTES = 256 * 1024
 
+
+def _read_tail_lines(path: Path, window: int) -> tuple[bool, str]:
+    """尾部限量读取的单点实现：seek 最近 window 字节并处理截断首行边界。
+
+    「尾部限量读取并丢弃被截断首行」的边界判定收敛于此（原为本文件四处
+    独立实现，同类边界修正已在 96293d84951d / 190881dd0168 两轮
+    code-review 中被迫逐点双份同步，故归并单点防再度漂移）：回看 start
+    前一字节，恰为换行符说明 start 本身是完整行的起点——完整行必须保留
+    （误丢会让窗口计数少一/终态事件退化到更早行）；仅 mid-line 切入时
+    first_line_truncated=True，消费方丢弃首段截断残行。
+
+    返回 (first_line_truncated, data)：data 为窗口内容 utf-8/replace 解码
+    后的文本，**含**待丢弃的首段残行（若 first_line_truncated 为 True）；
+    消费方按自身切行方式丢首元素即可，与旧「回退重 seek + readline 丢弃
+    式」逐字节等价（两式丢弃区间均为 bytes[start..首个\n] 含 \n）。
+    size ≤ window 时全量读、标记恒 False。OSError（stat/open/读失败）向上
+    抛出，由调用方按各自 fail-closed 语义处置（空列表/跳过/False/"empty"）。
+    """
+    size = path.stat().st_size
+    first_line_truncated = False
+    with path.open("rb") as f:
+        if size > window:
+            start = size - window
+            f.seek(start - 1)
+            first_line_truncated = f.read(1) != b"\n"
+        data = f.read().decode("utf-8", "replace")
+    return first_line_truncated, data
+
 # ── 孤儿处置收敛的生效核查（evo-add-admin-orphan-disposition-effect-check）──
 # global 占位记法归一：DISPOSITION 记录 spec="global"（daemon 级唤起写占位），
 # SIGNAL 记录 spec=None——unhandled_signal_for 严格相等匹配须先归一，否则对
@@ -4300,27 +4328,19 @@ class AdminMonitor:
         丢弃；读取/解码失败返回空列表（检测静默跳过）。
         """
         try:
-            size = log_file.stat().st_size
-            with log_file.open("rb") as f:
-                if size > _TAIL_ERROR_READ_BYTES:
-                    start = size - _TAIL_ERROR_READ_BYTES
-                    # 边界判定（code-review item 96293d84951d）：回看 start 前
-                    # 一字节，恰为换行符说明 start 本身是完整行的起点——回退到
-                    # 该换行符处再 readline，只吞掉行尾换行、保留这条完整 ERROR
-                    # 行（否则同指纹窗口计数少 1，极端情形下升级延迟一轮巡检，
-                    # 漏报方向与模块 fail-closed 取向相反）；mid-line 时 readline
-                    # 照旧丢弃截断残行。
-                    f.seek(start - 1)
-                    if f.read(1) == b"\n":
-                        f.seek(start - 1)
-                    else:
-                        f.seek(start)
-                    f.readline()  # 丢弃 seek 可能截断的首行
-                data = f.read().decode("utf-8", "replace")
+            # 边界判定（code-review item 96293d84951d 的修正语义）已收敛到
+            # _read_tail_lines 单点：完整行起点保留、mid-line 切入丢截断残行
+            # （否则同指纹窗口计数少 1，极端情形下升级延迟一轮巡检，漏报方向
+            # 与模块 fail-closed 取向相反）。
+            first_line_truncated, data = _read_tail_lines(
+                log_file, _TAIL_ERROR_READ_BYTES)
         except OSError:
             return []
         entries = []
-        for line in data.splitlines():
+        lines = data.splitlines()
+        if first_line_truncated:
+            lines = lines[1:]  # 丢弃 seek 可能截断的首行
+        for line in lines:
             line = line.strip()
             if not line:
                 continue
@@ -5883,22 +5903,16 @@ class AdminMonitor:
             if st.st_mtime < since_epoch:
                 continue  # mtime 剪枝：最后写入早于窗口起点 → 只含更老条目
             try:
-                size = st.st_size
-                with log_file.open("rb") as f:
-                    if size > _TAIL_ERROR_READ_BYTES:
-                        start = size - _TAIL_ERROR_READ_BYTES
-                        # 边界判定与 _read_tail_error_entries 同款（code-review
-                        # item 96293d84951d）：回看一字节保住完整行起点
-                        f.seek(start - 1)
-                        if f.read(1) == b"\n":
-                            f.seek(start - 1)
-                        else:
-                            f.seek(start)
-                        f.readline()  # 丢弃 seek 可能截断的首行
-                    data = f.read().decode("utf-8", "replace")
+                # 边界判定与 _read_tail_error_entries 同款（code-review item
+                # 96293d84951d），已收敛到 _read_tail_lines 单点
+                first_line_truncated, data = _read_tail_lines(
+                    log_file, _TAIL_ERROR_READ_BYTES)
             except OSError:
                 continue
-            for line in data.splitlines():
+            lines = data.splitlines()
+            if first_line_truncated:
+                lines = lines[1:]  # 丢弃 seek 可能截断的首行
+            for line in lines:
                 line = line.strip()
                 if not line:
                     continue
@@ -5955,19 +5969,12 @@ class AdminMonitor:
         if run_file is None:
             return False
         try:
-            size = run_file.stat().st_size
-            first_line_truncated = False
-            with run_file.open("rb") as f:
-                if size > _RUN_TAIL_READ_WINDOW:
-                    start = size - _RUN_TAIL_READ_WINDOW
-                    # 边界判定（code-review item 190881dd0168 同款，对齐
-                    # _run_terminal_status）：回看 start 前一字节，恰为换行说明
-                    # start 本身是完整行的起点，该行须保留；仅 mid-line 切入时
-                    # 丢截断残段（残段 JSON 解析失败本就跳过，显式丢弃不靠
-                    # 解析失败兜底）。
-                    f.seek(start - 1)
-                    first_line_truncated = f.read(1) != b"\n"
-                tail = f.read().decode("utf-8", "replace")
+            # 边界判定（code-review item 190881dd0168，对齐
+            # _run_terminal_status）已收敛到 _read_tail_lines 单点：完整行
+            # 起点保留；仅 mid-line 切入时丢截断残段（残段 JSON 解析失败本就
+            # 跳过，显式丢弃不靠解析失败兜底）。
+            first_line_truncated, tail = _read_tail_lines(
+                run_file, _RUN_TAIL_READ_WINDOW)
         except OSError:
             return False
         lines = tail.split("\n")
@@ -7691,21 +7698,13 @@ class AdminMonitor:
         # _file_tail_is_terminal：其只返回「末行是否终态」的 bool，区分不了
         # error/done（本方法的返回值语义），故只对齐窗口口径。
         try:
-            size = run_file.stat().st_size
-            first_line_truncated = False
-            with run_file.open("rb") as f:
-                if size > _RUN_TAIL_READ_WINDOW:
-                    start = size - _RUN_TAIL_READ_WINDOW
-                    # 边界判定（code-review item 190881dd0168，同
-                    # _read_tail_error_entries 的 96293d84951d 修正）：回看
-                    # start 前一字节，恰为换行符说明 start 本身是完整行的
-                    # 起点——该完整行必须保留解析（若它是尾部唯一终态 error
-                    # 事件，误丢会让 last 退化到更早事件、已失败 run 被误判
-                    # running）；仅 mid-line 切入时才丢截断残行。读完这一字节
-                    # 后文件指针恰停在 start，下方 f.read() 仍从 start 起读。
-                    f.seek(start - 1)
-                    first_line_truncated = f.read(1) != b"\n"
-                tail = f.read().decode("utf-8", "replace")
+            # 边界判定（code-review item 190881dd0168，同
+            # _read_tail_error_entries 的 96293d84951d 修正）已收敛到
+            # _read_tail_lines 单点：完整行起点保留（若它是尾部唯一终态
+            # error 事件，误丢会让 last 退化到更早事件、已失败 run 被误判
+            # running）；仅 mid-line 切入时才丢截断残行。
+            first_line_truncated, tail = _read_tail_lines(
+                run_file, _RUN_TAIL_READ_WINDOW)
         except OSError:
             return "empty"
         last = None
