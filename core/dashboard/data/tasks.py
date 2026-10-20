@@ -116,8 +116,10 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
             # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
-            # 与 bin/fenix_process.py:parse_tasks、core/deliverables.py:
-            # lint_tasks_parseable 同源正则（task-track D1），三处必须一致。
+            # 与 core/deliverables.py 的 _TASKS_GROUP_RE/_TASKS_ITEM_RE 同源
+            # 正则（task-track D1），两处必须一致；bin/fenix_process.py 已改为
+            # 经 _render_tasks 消费本门面解析结果（detail.tasks），不再持有
+            # 自有 parse_tasks。
             m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
                 current_group = {"title": m.group(1), "tasks": [], "done": 0, "total": 0}

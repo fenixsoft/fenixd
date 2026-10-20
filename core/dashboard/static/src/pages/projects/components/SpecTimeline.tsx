@@ -227,15 +227,20 @@ export default function SpecTimeline({
             // escalation handled 绿「已处理」、未处理橙
             const dispResult = String(item.result || '');
             const dispDone = !!dispResult && dispResult !== 'pending';
-            const statusTag = isEscalation
-              ? (item.handled
+            // 分支选择以 if/else 表达（code-review item 7471b4865219）：嵌套三元
+            // 违反前端「禁止嵌套三元」规则（先例：MessageItem avatarFor fd9e3ef421b4）
+            let statusTag: ReactNode;
+            if (isEscalation) {
+              statusTag = item.handled
                 ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已处理</Tag>
-                : <Tag color="orange" style={{ marginInlineEnd: 0 }}>未处理</Tag>)
-              : (dispDone
-                ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已解决</Tag>
-                : dispResult
-                  ? <Tag color="blue" style={{ marginInlineEnd: 0 }}>处置中</Tag>
-                  : <Tag style={{ marginInlineEnd: 0 }}>未知状态</Tag>);
+                : <Tag color="orange" style={{ marginInlineEnd: 0 }}>未处理</Tag>;
+            } else if (dispDone) {
+              statusTag = <Tag color="green" style={{ marginInlineEnd: 0 }}>已解决</Tag>;
+            } else if (dispResult) {
+              statusTag = <Tag color="blue" style={{ marginInlineEnd: 0 }}>处置中</Tag>;
+            } else {
+              statusTag = <Tag style={{ marginInlineEnd: 0 }}>未知状态</Tag>;
+            }
             return {
               color: 'blue',
               children: (
@@ -346,7 +351,20 @@ export default function SpecTimeline({
           // stale（fix-retry-orphan-active-runs）：弃置/断尾——原地重试换文件
           // 弃置或进程被杀无终态，读侧 mtime 兜底判定；灰色区别于 running 蓝 /
           // error 红，归入非在飞非错误分支。未知 status 行为不变（绿兜底）
-          const dotColor = isFailed ? 'red' : isAborted ? 'orange' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green';
+          // 圆点着色以 if/else 表达（code-review item 7471b4865219）：五分支嵌套
+          // 三元违反前端「禁止嵌套三元」规则
+          let dotColor: string;
+          if (isFailed) {
+            dotColor = 'red';
+          } else if (isAborted) {
+            dotColor = 'orange';
+          } else if (st === 'stale') {
+            dotColor = 'gray';
+          } else if (isRunning) {
+            dotColor = 'blue';
+          } else {
+            dotColor = 'green';
+          }
           const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
           const isFix = item.spec && String(item.spec).startsWith('fix-');
 

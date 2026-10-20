@@ -84,6 +84,12 @@ const SIGNAL_LABEL: Record<string, string> = {
 
 const PRE_WRAP: React.CSSProperties = { whiteSpace: 'pre-wrap' };
 
+// remarkPlugins 提为模块级常量（code-review item 4b308c9443d2）：每次渲染新建
+// 数组引用会让 react-markdown 对每张卡片的 summary/actions_taken/
+// recommended_action 重复 parse 与转换（SSE 节流刷新 500ms 全卡片树重渲染），
+// 三处共用同一引用。
+const ACTIVITY_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
+
 function resultPill(result?: string) {
   if (!result) return null;
   const meta = RESULT_META[result.toLowerCase()];
@@ -127,7 +133,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
     >
       {/* fix 17c024ffff30: summary 与 actions_taken/recommended_action 统一插件集，
           叙述文本单换行折行口径一致 */}
-      <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+      <Markdown remarkPlugins={ACTIVITY_REMARK_PLUGINS} components={markdownComponents}>
         {a.summary}
       </Markdown>
     </div>
@@ -178,7 +184,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
       {a.actions_taken && (
         <div style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.65 }}>
           <Typography.Text type="secondary">处置：</Typography.Text>
-          <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+          <Markdown remarkPlugins={ACTIVITY_REMARK_PLUGINS} components={markdownComponents}>
             {a.actions_taken}
           </Markdown>
         </div>
@@ -186,7 +192,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
       {a.recommended_action && (
         <div style={{ fontSize: 13, lineHeight: 1.65 }}>
           <Typography.Text type="secondary">建议：</Typography.Text>
-          <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+          <Markdown remarkPlugins={ACTIVITY_REMARK_PLUGINS} components={markdownComponents}>
             {a.recommended_action}
           </Markdown>
         </div>

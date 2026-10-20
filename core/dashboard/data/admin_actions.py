@@ -2664,6 +2664,15 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
         return {"ok": False, "steps": [], "error": f"spec not found: {spec}",
                 "frozen_manual": False}
     entry = specs[spec]
+    # 终态守卫（code-review item 71a8f2aca2ee）：done/pushed 终态不可逆，
+    # 陈旧告警误选修订重验或注册表调整后，不得经下方 else 豁免通道把终态
+    # spec 强拽回 testing。与同模块 activate_spec/resume_cancelled_spec/
+    # set_spec_start_after/set_spec_budget 的终态拒绝口径对齐。
+    if entry.get("status") in ("done", "pushed"):
+        return {"ok": False, "steps": [],
+                "error": (f"spec 已是终态（{entry.get('status')}），"
+                          "不可修订重验（终态不可逆）"),
+                "frozen_manual": False, "terminal": True}
     try:
         revision_count = int(entry.get(SCENARIO_REVISION_COUNT_FIELD) or 0)
     except (TypeError, ValueError):
@@ -2849,11 +2858,18 @@ def parse_stray_wip_manifest(evidence) -> list:
     文本（无结构化字段），本函数按段解析：返回清单内相对路径列表（保序
     去重）；无清单段 / 清单为「无」→ 空列表。只做段级文本解析，不做路径
     合法性裁决（合法性由调用方以「清单 ∩ 当刻 git status」求交保证）。
+
+    分号截断缓解（code-review item 2dc676288186）：清单段以 ``;`` 收尾且
+    文件名无转义，``[^;]+`` 在文件名自带的分号处截断、其后条目静默丢失
+    （逗号拆散是碎片仍可探测，分号截断是丢尾）。声明计数 N 与实际解析
+    条目数不符时 logger.warning 留痕，供人工按 evidence 原文核对——根治
+    须写读两侧成对改结构化清单字段（stray_wip.py 在修复清单外）。
     """
-    m = re.search(r"文件清单\(\d+\):\s*([^;]+)", str(evidence or ""))
+    m = re.search(r"文件清单\((\d+)\):\s*([^;]+)", str(evidence or ""))
     if not m:
         return []
-    raw = m.group(1).strip()
+    declared = int(m.group(1))
+    raw = m.group(2).strip()
     if not raw or raw == "无":
         return []
     out: list = []
@@ -2861,6 +2877,12 @@ def parse_stray_wip_manifest(evidence) -> list:
         p = item.strip()
         if p and p not in out:
             out.append(p)
+    if declared and len(out) != declared:
+        logger.warning(
+            "stray_wip 清单疑似分号截断：声明 %d 条、实解析 %d 条"
+            "（文件名含分号会在该处截断丢尾），请按记录 evidence 原文人工核对",
+            declared, len(out),
+        )
     return out
 
 
@@ -3536,14 +3558,19 @@ def _claim_untracked_manifest(project_root, signal_type: str, paths=None) -> dic
                       "tracked 桶与 info 信号零 git 写零文件触碰，design D4）"),
         }
     proot = Path(project_root)
-    # 清单解析与上方绑定守卫共用同一来源（code-review item a830be215f12）：
-    # 遍历白名单各信号类型取最新可解析清单——固定取 [0] 会在白名单扩容时
-    # 让新信号过守卫却永远解析不到自己的记录、恒以「未找到信号记录」失败。
-    manifest: list = []
-    for claim_sig in UNTRACKED_CLAIM_SIGNAL_TYPES:
-        manifest = _latest_stray_wip_manifest(proot, claim_sig)
-        if manifest:
-            break
+    # 清单解析与传入 sig 严格绑定（code-review item 16ab21f59713）：先精确
+    # 解析本信号自己的最新记录——白名单扩容为多信号后，纯遍历会把兄弟信号
+    # 的清单记录当成 B 信号的执行目标（archive/ignore/delete 作用面错配）。
+    # 仅当本 sig 无可解析记录时才回退遍历白名单（item a830be215f12 的
+    # 「固定取 [0] 恒解析不到自己记录」问题由回退分支兜住）。
+    manifest: list = _latest_stray_wip_manifest(proot, sig)
+    if not manifest:
+        for claim_sig in UNTRACKED_CLAIM_SIGNAL_TYPES:
+            if claim_sig == sig:
+                continue
+            manifest = _latest_stray_wip_manifest(proot, claim_sig)
+            if manifest:
+                break
     if not manifest:
         return {
             "manifest": [], "candidates": [],

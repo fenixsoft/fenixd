@@ -1199,6 +1199,20 @@ def _retention_top_copy_newer(p: Path, dest: Path) -> bool:
         return True
 
 
+# 顶层副本比归档副本新的已告警去重（code-review item b4a5ba2f8cd1）：守卫
+# 命中态在 SPEC 归档前无法收敛（归属活跃 SPEC 的归档副本不被天龄兜底删除、
+# 顶层副本保持终态可归档判定恒命中），每清理周期逐条重报会产生无界重复
+# 日志——进程内按文件名去重，同名只告警一次。
+_RETENTION_TOP_NEWER_WARNED: set = set()
+
+
+def _retention_top_newer_warned() -> set:
+    """已告警文件名集（超界整体清空：文件名集与归档滞留量同阶，正常极小）。"""
+    if len(_RETENTION_TOP_NEWER_WARNED) > 1024:
+        _RETENTION_TOP_NEWER_WARNED.clear()
+    return _RETENTION_TOP_NEWER_WARNED
+
+
 def runs_retention_check(project_root, config: dict | None = None, logger=None) -> dict:
     """daemon 周期 runs 保留清理（fix-dashboard-read-path-performance D4）。
 
@@ -1271,11 +1285,17 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                     # /人工对账收口；在飞误判 stale 的上游概率由阈值注释声明接受，
                     # 此处只堵「销毁较新数据」这一真实损害。
                     if _retention_top_copy_newer(p, dest):
-                        _retention_log(
-                            logger,
-                            "warning",
-                            f"runs 保留: 顶层副本比归档副本新，跳过同名去重删除以保留较新记录 {p.name}",
-                        )
+                        # 同名重复告警去重（code-review item b4a5ba2f8cd1）：
+                        # 收敛路径——无主车道等第 2 步天龄兜底（14 天）删掉归档
+                        # 副本后重新走移档分支；活跃 SPEC 至 archive_spec_runs
+                        # 归档清理。收敛前每周期只首报一次。
+                        if p.name not in _retention_top_newer_warned():
+                            _retention_top_newer_warned().add(p.name)
+                            _retention_log(
+                                logger,
+                                "warning",
+                                f"runs 保留: 顶层副本比归档副本新，跳过同名去重删除以保留较新记录 {p.name}",
+                            )
                         actions += 1
                         continue
                     # 去重删除前做轻量判等（code-review item 750bb741c8fd）：旧实现

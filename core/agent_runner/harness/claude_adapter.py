@@ -232,6 +232,15 @@ def build_env(req: SpawnRequest) -> Optional[Dict[str, str]]:
       （AGENT_RUN_BANNED_ENV_KEYS 单一口径）；
     - inherit：返回 None（Popen 不传 env，完整继承——叙事通道现状）。
     """
+    # 未知 env_mode fail-fast（code-review item 0e2abeaf2b12，与
+    # build_spawn_spec 的 prompt_transport 校验同口径）：分支结构会使未知值
+    # 静默落入末尾 agent-run 主车道，向本应 clean/inherit 口径的一次性 spawn
+    # 注入 FENIX_RUN_* 等 agent-run 专用键（跨车道上下文污染）。
+    if req.env_mode not in (ENV_MODE_INHERIT, ENV_MODE_CLEAN, ENV_MODE_AGENT_RUN):
+        raise ValueError(
+            f"不支持的 env_mode 值：{req.env_mode!r}"
+            f"（合法值：{ENV_MODE_INHERIT!r}/{ENV_MODE_CLEAN!r}/{ENV_MODE_AGENT_RUN!r}）"
+        )
     if req.env_mode == ENV_MODE_INHERIT:
         return None
     if req.env_mode == ENV_MODE_CLEAN:

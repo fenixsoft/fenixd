@@ -665,7 +665,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (ackPollAbortedRef.current) return;
         try {
-          const snap = await getCodeReviewRunResult(project);
+          // 单次请求超时收敛到剩余预算（code-review item 85cf36b04e26，同
+          // RegressionTab 082b4f2fb7bc 口径）：deadline 只在循环入口判定，若
+          // 请求仍用统一 30s 超时，后端挂起时单轮迭代可膨胀到 30s+，总等待
+          // 远超 ACK_RESULT_POLL_BUDGET_MS 声明的上限
+          const snap = await getCodeReviewRunResult(
+            project,
+            Math.min(deadline - Date.now(), ACK_RESULT_POLL_BUDGET_MS),
+          );
           // 仅认定是本次触发的结果（统一回链判读，见 isTriggerResultForRequest）
           if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
@@ -707,7 +714,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         if (ackPollAbortedRef.current) return;
         try {
-          const p = await getCodeReviewProgress(project);
+          // 单次请求超时收敛到剩余预算（85cf36b04e26，同上口径）
+          const p = await getCodeReviewProgress(
+            project,
+            Math.min(runDeadline - Date.now(), ACK_START_POLL_BUDGET_MS),
+          );
           // 过期守卫（code-review item bcdc14169759）：请求在飞期间发生卸载/
           // 切项目/切页签时，cleanup 置位的取消哨拦不住已发出的本轮响应——
           // 出消息前复核一次，防旧项目进度覆盖新项目（连带 Cancel 按钮拿到
@@ -764,7 +775,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (fixRunPollAbortedRef.current) return;
         try {
-          const snap = await getCodeFixRunResult(project);
+          // 单次请求超时收敛到剩余预算（85cf36b04e26，同上口径）
+          const snap = await getCodeFixRunResult(
+            project,
+            Math.min(deadline - Date.now(), FIX_RUN_RESULT_POLL_BUDGET_MS),
+          );
           if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;

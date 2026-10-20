@@ -680,7 +680,10 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
     """
     try:
         count = int(entry.get("_retry_count") or 0)
-    except (TypeError, ValueError):
+    # OverflowError 同捕（STATE.md 为 YAML 方言、字段被手写成 .inf 时解析为
+    # float inf，int() 抛溢出——与 summary._judge_stat_or_none/_int_or_zero
+    # 同口径，code-review item 53612ac26ee4）
+    except (TypeError, ValueError, OverflowError):
         count = 0
     if count <= 0 or not timeline:
         return timeline
@@ -693,7 +696,7 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
         # max(1, ...) 收口到 1。不写 `or 3`——那会把合法配置的 0 静默
         # 吞成 3、负数原样透传，展示与真实派发行为脱节。
         max_r = max(1, int(ConfigLoader.get(cfg, "agents.max_retries", 3)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # resolve_config 自兜底（文件缺失/解析失败降级空 dict），此处仅防
         # max_retries 配出非数值——回退默认 3，展示信号不阻断时间轴
         pass
