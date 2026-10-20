@@ -325,6 +325,12 @@ class FileWatcher:
             # 是轻量空增量广播（前端不刷新列表，跑马灯等靠心跳校准），回滚须在
             # _scan_logs 前多备一份逐项目快照并连带 stale 删除分支，复杂度不成
             # 比例；广播失败仅丢一次跑马灯刷新，心跳全量校准兜底。
+            # _run_base 同样有意豁免回滚（code-review item 485a68e5452f）：基线
+            # 推进严格后置于 _handle_run_change 内 read_run_events_between 成功
+            # 之后（先读增量后推进基线），且 hub.broadcast 经 conn.send 全容错
+            # 不抛错——「基线推进即事件已成功送达」的回滚安全前提由该时序固化；
+            # 改动 _handle_run_change 的推进时序或 broadcast 异常面时须同步复核
+            # 此前提，否则 run 增量事件会静默丢失。
             top_sigs.clear()
             top_sigs.update(prev_top_sigs)
             spec_dirs.clear()
