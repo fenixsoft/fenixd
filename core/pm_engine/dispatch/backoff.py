@@ -34,6 +34,18 @@ class BBackoffMixin:
             "pm.dispatch_backoff_schedule",
             list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE),
         )
+        if isinstance(sched, bool):
+            # bool 是 int 子类（code-review item 7b529d5446f4）：配 true 得
+            # [1.0]（锁冲突高频自旋重试）、配 false 得 [0.0]（0.5 秒下限自旋）
+            # 均被无声采信——按脏配置回默认并 WARNING 留痕，与
+            # repair_lane._max_retries/_merge_breaker_threshold 同族归一口径
+            # （item 637ed7beaee1）对齐。
+            self._pm.logger.warning(
+                "pm_engine",
+                "配置 pm.dispatch_backoff_schedule 非法（布尔不合法），"
+                f"回退默认 {list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)}: {sched!r}",
+            )
+            return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         if isinstance(sched, (int, float)):
             sched = [sched]
         if not isinstance(sched, (list, tuple)) or not sched:
@@ -42,7 +54,13 @@ class BBackoffMixin:
         for x in sched:
             try:
                 v = float(x)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError 同按脏值跳过（code-review item 64c2ae5ae4b9）：
+                # YAML 任意精度巨型 int（如 10**400）送 float() 抛 OverflowError
+                # 不在原捕获族内，沿 _handle_dispatch_lock_conflict 向派发主链
+                # 外泄——口径对齐 _transient_redispatch_delay /
+                # _infra_retry_redispatch_delay（item 851ba3eeed41）。下方
+                # isfinite 守卫在 float() 转换之后，拦不住该异常。
                 continue
             # code-review item e2d87491cc64：非有限浮点（.inf/.nan，YAML 合法
             # 字面量）按脏值跳过——``.inf`` 使 threading.Timer 永不到期（退避

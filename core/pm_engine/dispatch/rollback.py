@@ -704,11 +704,17 @@ class RRollbackMixin:
             # 复位写点已清标志）。以 callable 传入助手：记账读取与 update_spec
             # 同路兜底（构造失败与写入失败同WARNING，不阻塞后续留痕与告警）。
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            count, first_f = self._parse_defer_accounting(entry, time.time())  # 首阻缺省=now，写侧回填与原 int(time.time()) 同口径
+            _, first_f = self._parse_defer_accounting(entry, time.time())  # 首阻缺省=now，写侧回填与原 int(time.time()) 同口径
+            # 首次登记不写 _merge_retry_count（code-review item c2d25b5d94dd）：
+            # 「read_one 读原值 → update_spec 绝对写回」与 _defer_merge_back /
+            # _record_wip_defer_retry_failure / repair_lane._handle_remerge_
+            # failure 的 bump_counters 原子递增写点并发时互相覆盖丢递增、WIP
+            # 等待封顶晚触发（仓库已系统性治理该「读→算→绝对写回」形态，本
+            # 写点是残留）——首次登记语义只需 _merge_retry_first_at 缺省回填，
+            # count 交由等待/重试写点的 bump_counters 原子维护。
             return {
                 "error": f"mergeback wip overlap blocked (policy=escalate): files={overlap}",
                 "_wip_gate_deferred": True,
-                "_merge_retry_count": count,
                 "_merge_retry_first_at": int(first_f),
             }
 

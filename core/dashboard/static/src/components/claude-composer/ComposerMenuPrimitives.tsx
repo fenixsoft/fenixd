@@ -43,8 +43,14 @@ export function ComposerMenuSurface({
 }
 
 export function ComposerMenuHeading({ children }: { children: ReactNode }) {
+  // role=presentation（code-review item 350ec072c41e）：宿主 ComposerMenuSurface
+  // 以 role=menu 暴露容器，menu 的合法子元素为 menuitem 系列——纯视觉标题去除
+  // 段落语义，不再作为 menu 下的非法子节点参与屏幕阅读器遍历。
   return (
-    <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
+    <p
+      role="presentation"
+      className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground"
+    >
       {children}
     </p>
   );

@@ -161,6 +161,10 @@ export function useSlashCommands({
       // 空候选（无在飞会话 / init 未到）不弹菜单（spec：MUST NOT 出现补全菜单）
       return;
     }
+    // 按钮开关路径同样取消在途查询 debounce（code-review item 00b49c1b3385，
+    // 与 resetCommandMenuState 同口径）：输入 /x 后 150ms 内快速关开菜单，
+    // pending 回调到期会以旧查询词覆盖打开时设置的全量候选集。
+    commandQueryDebounce?.cancel();
     setShowCommandMenu(isOpening);
     setCommandQuery('');
     setSelectedCommandIndex(-1);
@@ -170,7 +174,7 @@ export function useSlashCommands({
     }
 
     textareaRef.current?.focus();
-  }, [showCommandMenu, sortedCommands, textareaRef]);
+  }, [showCommandMenu, sortedCommands, textareaRef, commandQueryDebounce]);
 
   const handleCommandInputChange = useCallback(
     (newValue: string, cursorPos: number) => {

@@ -583,7 +583,11 @@ class PromptBuilder:
             prompt += self._interaction_contract_section(spec_name)
             prompt += self._triage_recheck_section(spec_name)
             # add-judge-artifact-gate D2：产物硬门契约注入（结果文件缺失=run失败）
-            prompt += self._result_gate_section(spec_name)
+            # 显式传 agent_type（code-review item dc83fd9baa34）：消除对签名
+            # 缺省值 planner-judge 的隐式依赖——该段当前对 judge/plan 渲染同一
+            # 段双路径文本，未来若按 agent_type 分叉渲染，planner-plan 不至
+            # 静默拿到 planner-judge 形态而不触发任何告警。
+            prompt += self._result_gate_section(spec_name, agent_type="planner-plan")
             # evo-planner-scenario-schema-alignment 2.1：断言/操作 schema 单源注入
             # （planner-plan 是第一条会重写 test_scenarios.json 断言/操作结构的车道）
             # evo-scenario-product-toplevel-contract 1.2：顶层纯数组交付契约
@@ -1350,7 +1354,11 @@ class PromptBuilder:
         total = progress.get("total")
         done = progress.get("done") or 0
         current = progress.get("current") or ""
-        if not (isinstance(done, int) and done > 0):
+        # done 判据排除 bool（code-review item 8a09eafba407，与下方 total 的
+        # total_is_int 口径对齐）：isinstance(True, int) 为真，脏数据 done=True
+        # 会通过判据并在续跑指令中渲染出「done=True、从第 2 个场景开始执行」
+        # 的畸形注入。
+        if not (isinstance(done, int) and not isinstance(done, bool) and done > 0):
             return ""
         # 收敛态守卫（code-review item 0e0a4e955cf3）：done==total 表示上一
         # attempt 已写完全部场景的进度文件、在写结果文件/收尾前死亡——此时照常
@@ -1389,9 +1397,19 @@ class PromptBuilder:
         if not replan_fb_path.exists():
             return ""
         try:
-            fb_text = replan_fb_path.read_text(encoding="utf-8")[:3000]
+            fb_raw = replan_fb_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return ""
+        fb_text = fb_raw[:3000]
+        if len(fb_raw) > len(fb_text):
+            # 截断守卫（code-review item 09930ae9d026，对齐 _prev_error_section
+            # 的截断口径）：段尾指令要求「全部修正」，静默截断会让尾部错误条目
+            # 对 agent 不可见、形成不可满足指令并引发验收反复拒绝——截断时
+            # 明示原文总字数与完整清单的读取来源。
+            fb_text = (
+                f"{fb_text}\n…（上轮清单原文共 {len(fb_raw)} 字，已尾部截断；"
+                f"完整清单以 {replan_fb_path} 为准，可自行读取）"
+            )
         return (
             f"\n## ⚠️ 上一轮场景验收未通过（MANDATORY：逐条修复后再输出）\n\n"
             f"{fb_text}\n\n"
@@ -2972,24 +2990,27 @@ class PromptBuilder:
             return ""
         if not isinstance(report, dict):
             return ""
-        cache = load_verdict_cache(self._pm.project_root, spec_name)
-        if not cache:
+        try:
+            cache = load_verdict_cache(self._pm.project_root, spec_name)
+            if not cache:
+                return ""
+            hits = []
+            for sc in report.get("scenarios") or []:
+                if not isinstance(sc, dict) or sc.get("status") in ("pass", "passed"):
+                    continue
+                entry = cache.get(str(sc.get("scenario_id")))
+                if not isinstance(entry, dict):
+                    continue
+                # 空指纹按未命中处理（fail-open，code-review item 369dcba19363，
+                # 与 tag_cached_attributions 的空指纹守卫同口径）：两侧空串相等
+                # 会把「无法计算指纹」误判成「失败复现一致」，向 judge 下发免复现
+                # 注入。
+                fp = entry.get("fingerprint") or ""
+                if not fp or fp != scenario_fingerprint(sc):
+                    continue
+                hits.append((str(sc.get("scenario_id")), entry))
+        except Exception:  # noqa: BLE001 — 兑现 docstring fail-open 承诺（code-review item fdd69e5b513e）：缓存读取 OSError/畸形场景 dict 令指纹计算抛异常时零注入回退，不中断 judge 派发
             return ""
-        hits = []
-        for sc in report.get("scenarios") or []:
-            if not isinstance(sc, dict) or sc.get("status") in ("pass", "passed"):
-                continue
-            entry = cache.get(str(sc.get("scenario_id")))
-            if not isinstance(entry, dict):
-                continue
-            # 空指纹按未命中处理（fail-open，code-review item 369dcba19363，
-            # 与 tag_cached_attributions 的空指纹守卫同口径）：两侧空串相等
-            # 会把「无法计算指纹」误判成「失败复现一致」，向 judge 下发免复现
-            # 注入。
-            fp = entry.get("fingerprint") or ""
-            if not fp or fp != scenario_fingerprint(sc):
-                continue
-            hits.append((str(sc.get("scenario_id")), entry))
         if not hits:
             return ""
         lines = [

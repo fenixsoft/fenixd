@@ -18,23 +18,12 @@ import time
 from pathlib import Path
 from typing import Callable
 
-
-def _resolve_max_retries(cfg) -> int:
-    """解析 agents.max_retries 为重派/熔断轮数上限（三处共用防双写漂移）。
-
-    code-review item f68ba79c3e07：``_writeback_recur_bump``、
-    ``_adjudicate_deliverable_missing`` 熔断分支与 ``_redispatch_with_retry``
-    原各持一份相同解析样板，而注释要求「文案轮数与实际熔断阈值一致」，
-    双写任一处调整即漂移——解析口径收敛于此。None 判空回缺省 3（而非
-    or 兜底：合法配置 0 不被吞成缺省，code-review item c54ffbef69c5），
-    STATE.md 读回的非数字文本 int 异常回退 3，``max(..., 1)`` 下限保证
-    分母恒正。
-    """
-    try:
-        max_r = 3 if cfg is None else int(cfg)
-    except Exception:
-        max_r = 3
-    return max(max_r, 1)
+# agents.max_retries 归一读取器收敛三车道单一落点（code-review item
+# 00af54aa1442）：本模块 _resolve_max_retries 曾保留 max(..., 1) 下限且不拒
+# bool/浮点，与 repair_lane._max_retries（无下限：0=不自动重试为合法语义；
+# 显式拒绝 bool/非整值浮点并 WARNING 留痕）同键跨通道语义分裂——读取点全部
+# 转调单一读取器，本模块双写实现删除。
+from core.pm_engine.dispatch.repair_lane import _max_retries
 
 
 def _entry_by_path(entries) -> dict:
@@ -738,11 +727,10 @@ class VAdjudicationMixin:
                 self._pm.state_machine.update_spec(
                     spec_name, {"_writeback_recur_path": path}
                 )
-            # 解析口径收敛进 _resolve_max_retries（code-review item
-            # f68ba79c3e07，三处共用防「文案轮数与实际熔断阈值一致」双写漂移）。
-            max_r = _resolve_max_retries(
-                self._pm._get_config("agents.max_retries", 3)
-            )
+            # 解析口径收敛三车道单一读取器 repair_lane._max_retries（code-
+            # review item f68ba79c3e07 双写收敛 + item 00af54aa1442 跨通道
+            # 统一：无下限 0=不自动重试、拒 bool/非整值浮点）。
+            max_r = _max_retries(self._pm)
             self._pm.logger.warning(
                 "pm_engine",
                 f"声明修正复发计数 '{spec_name}': {path} 第 {streak}/{max_r} 轮"
@@ -2281,7 +2269,33 @@ class VAdjudicationMixin:
                 if verdict == "typo":
                     actual_path = str(v.get("actual_path") or "").strip()
                     if not actual_path:
-                        verdict_by_element[m] = {"verdict": "unclear"}
+                        # judge 判 typo 但未给 actual_path：执行层改写为
+                        # unclear 转人工。留痕对齐 delete-kind reference 拒绝
+                        # 分支（code-review item 89b2076a7b9f）：登记
+                        # executed_verdicts（带 judge_original/rewrite_reason）
+                        # + WARNING——否则本轮全部条目都走此路径时
+                        # executed_verdicts 为空、dispute 审计块整块跳过，
+                        # 「judge 曾判 typo」与「执行层改写为 unclear」完全
+                        # 不可追溯。
+                        verdict_by_element[m] = {
+                            "verdict": "unclear",
+                            "judge_original": "typo",
+                            "rewrite_reason": "typo-missing-actual-path",
+                        }
+                        executed_verdicts.append(
+                            {
+                                "element": m,
+                                "verdict": "unclear",
+                                "judge_original": "typo",
+                                "rewrite_reason": "typo-missing-actual-path",
+                            }
+                        )
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"dispute judge 裁决 typo 缺 actual_path "
+                            f"'{spec_name}': {m} 无法定位改写落点，改写为 "
+                            f"unclear 转人工",
+                        )
                         continue
                     from core.deliverables import is_stale_declaration
 
@@ -2725,12 +2739,10 @@ class VAdjudicationMixin:
         for recur_path in sorted(set(remaining_paths) & typo_touched)[:1]:
             if not self._writeback_recur_bump(spec_name, recur_path):
                 continue
-            # 解析口径收敛进 _resolve_max_retries（code-review item
-            # f68ba79c3e07），与 _writeback_recur_bump 同源——文案轮数与
-            # 实际熔断阈值一致。
-            max_r = _resolve_max_retries(
-                self._pm._get_config("agents.max_retries", 3)
-            )
+            # 解析口径收敛三车道单一读取器 repair_lane._max_retries（code-
+            # review item f68ba79c3e07 + item 00af54aa1442 跨通道统一），与
+            # _writeback_recur_bump 同源——文案轮数与实际熔断阈值一致。
+            max_r = _max_retries(self._pm)
             recur_entry = self._pm.state_machine.read_one(spec_name) or {}
             err = (
                 f"声明修正连续复发熔断（形态=修正未生效于读取基准，非普通缺件）: "
@@ -2858,9 +2870,9 @@ class VAdjudicationMixin:
         retries = self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1}).get(
             "_retry_count", 0
         )
-        # 解析口径收敛进 _resolve_max_retries（code-review item
-        # f68ba79c3e07，三处共用；此处原缺 max(..., 1) 下限，统一到同口径）。
-        max_r = _resolve_max_retries(self._pm._get_config("agents.max_retries", 3))
+        # 解析口径收敛三车道单一读取器 repair_lane._max_retries（code-review
+        # item f68ba79c3e07 三处共用 + item 00af54aa1442 跨通道统一）。
+        max_r = _max_retries(self._pm)
         err_ready, err_blocked = error_builder(retries, max_r)
         updates: dict = {
             "status": "ready",

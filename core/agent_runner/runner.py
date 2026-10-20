@@ -2995,11 +2995,23 @@ class AgentRunner:
             seconds = float(cfg["turns"]) * float(avg_turn_seconds)
             seconds = min(max(seconds, WRAPUP_GRACE_MIN_SECONDS),
                           WRAPUP_GRACE_MAX_SECONDS)
+        elif avg_turn_seconds is not None:
+            # 墙钟侧入参无效（≤0）→ 宽限秒数无法折算（code-review item
+            # 96b3bbd7b7d8）：不置一次性发放标记即返回。「已发放过」与「尝试
+            # 过但无可折算数据」必须区分——此形态下 run 实际未获得任何宽限
+            # （两侧消费方均按未发放处理），置位会永久拦下后续发放机会；不
+            # 标记则后续监督判定拿到有效均值时可重试折算。轮数侧不传 avg
+            # （宽限以轮数计，seconds 保持 None），是合法发放形态，不受此限。
+            return None
         with self._turn_branch_state_lock:
             if entry.get("wrapup_grace_granted"):
                 return None
             entry["wrapup_grace_granted"] = True
-            entry["wrapup_grace_seconds"] = float(seconds or 0.0)
+            if seconds is not None:
+                # 仅真实折算出正宽限秒数时落键（原实现把 None 折叠成伪
+                # 0.0，墙钟侧 _wrapup_grace_absolute_max_lift 读 0.0 同样
+                # 不抬升，落 None 更诚实）；轮数侧只发轮数，不落秒数键。
+                entry["wrapup_grace_seconds"] = float(seconds)
         self.logger.info(
             "agent_runner",
             f"wrapup grace granted for '{spec_name}' ({run_id}): "
@@ -3207,8 +3219,8 @@ class AgentRunner:
     def _execute_agent_inner(self, spec_name: str, agent_type: str, run_id: str,
                              pre_wt_path: Path | None = None,
                              conflict_summary: dict | None = None,
-                             used_wts: set = None,
-                             handed_off: set = None) -> AgentRunResult:
+                             used_wts: set | None = None,
+                             handed_off: set | None = None) -> AgentRunResult:
         """派发循环主体（verify-process-lifecycle）：维护收割集合并返回结果。
 
         收割义务由外层 _execute_agent 的 try/finally 承担；本层仅登记
@@ -3749,10 +3761,30 @@ class AgentRunner:
                             )
                         else:
                             self._record_switch_cooldown(provider_name)
-                        # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将
-                        # 在下一 attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
+                        # 仅当链上还有后续候选才前进指针；链尾候选（含单候选
+                        # 链）进入切换/限流冷却时显式把指针推出界（code-review
+                        # item 9db824f6d620）：_resolve_provider_candidate 仅在
+                        # cursor < 0 或 >= len(chain) 时才走
+                        # _select_chain_candidate 的冷却跳过/全链耗尽判定——
+                        # cursor 停在链尾（原注释所称「下一 attempt 判定
+                        # chain_exhausted」的路径不可达）会让同 run 后续 attempt
+                        # 绕过冷却直接复用同一 provider 白烧重试（429 不在
+                        # is_circuit_open 之列）。本分支上方必刚记录过冷却，
+                        # 推出界后下一 attempt 落入 _select_chain_candidate：
+                        # 冷却未到期 → chain_exhausted 廉价失败（不启动进程、
+                        # 不消耗 spec 重试）；到期后 → 重选该候选正常恢复。
+                        # 瞬断通道豁免（is_transient）：瞬断失败是先消费完原地
+                        # 退避预算才落到本分支（_maybe_in_place_retry 预算耗尽），
+                        # attempt 层复用同一候选重试是瞬断治理的既有恢复通道
+                        # （既有退避不变、[provider-transient] 标签须存续到终态
+                        # 供 dispatch 读侧路由）——推出界会让下一 attempt 直接
+                        # chain_exhausted 且错误文本失去瞬断标签，把合法恢复
+                        # 预算变成廉价失败。白烧危害面（冷却期内 spawn 必撞
+                        # 同源 429/拒模型）仅存在于非瞬态切换错误上。
                         if st.chain_cursor + 1 < len(chain):
                             st.chain_cursor += 1
+                        elif not is_transient:
+                            st.chain_cursor = len(chain)
                     # fix-provider-transient-backoff（D2）：implementer 失败后从产物尾部
                     # 提取 session_id 供续跑（attempt 间 worktree 保留扩展到全部
                     # agent_type，session 随同现场保留）。repair 有意排除：载体由调度层
@@ -4449,7 +4481,18 @@ class AgentRunner:
                         f.seek(size - 65536)
                     tail = f.read().decode("utf-8", "replace")
                 for line in tail.splitlines():
-                    if '"type": "ratelimit_redispatch"' in line:
+                    if '"type": "ratelimit_redispatch"' not in line:
+                        continue
+                    # 子串预筛命中后复核 JSON type（code-review item
+                    # 4abf03800e3a，与 _ratelimit_terminal_hit 的 39f9902e47f8
+                    # 同口径）：嵌入代码/JSON 样例/prompt 回显的伪命中行不得
+                    # 顶替真实事件——解析失败或 type 不符继续扫描后续行，防
+                    # 真实 429 的重投递意图被误判「已登记」而丢失。
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(ev, dict) and ev.get("type") == "ratelimit_redispatch":
                         return None
         except OSError:
             pass

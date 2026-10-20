@@ -141,6 +141,12 @@ class SessionTracker:
         if cost is None:  # 键缺失或显式 null 均回退旧版键；显式判 None，0.0 不误回退
             cost = result_event.get("cost_usd")
         # cost 为 None 时 float(None) 抛 TypeError，由 except 归位 None（out 初始即 None）
+        if cost is not None and type(cost) is bool:
+            # bool 是 int 子类（code-review item 13ad2d001e8b，对齐
+            # token_budget._check_token_budget 的 bool 钳制口径）：网关畸形回传
+            # total_cost_usd=true 经 float() 成功折成 1.0 且是有限值，下游非有
+            # 限值守卫拦不住，1.0 美元会真实累计进 STATE 成本——按缺失处理。
+            cost = None
         try:
             out["cost_usd"] = float(cost)
         # OverflowError：JSON 任意精度往返可携带超大整数字面量（如 10**400），

@@ -371,8 +371,12 @@ class QQQueueMixin:
     def _get_spec_priority(self, spec_name: str) -> int:
         """读取 SPEC 的 priority，缺省为 5。"""
         spec = self._pm.state_machine.read_one(spec_name)
-        if spec and isinstance(spec.get("priority"), int):
-            return spec["priority"]
+        raw = spec.get("priority") if spec else None
+        # bool 是 int 子类（code-review item ad674a33a659，对齐模块级
+        # _normalized_int_value 刻意拒绝 bool 的归一口径）：STATE priority 误写
+        # 布尔 true 按 1 折算会以最高优先档提权派发，非法回缺省 5。
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
         return 5
 
     def _rollback_dispatch_slot(self, base_prio, entry_to_dispatch=None):
@@ -3500,17 +3504,20 @@ class QQQueueMixin:
                 list(getattr(wm, "last_stash_pop_conflicts", []) or []),
             )
             return True
-        # ── WIP 等待标志在场且失败仍为 wip 阻断形态
-        # （evo-add-wip-defer-merge-retry-consumer 2.1b）── 交回等待记账
-        # （计数 +1、超限降级），MUST NOT 落入既有可重试分类/指纹熔断：主路径
-        # 对 wip_gate_blocked 有同型旁路先例（wip 阻断是「前置拦截」而非
-        # 「merge 失败」，熔断会把「等待人工清 WIP」误记成 merge 连败而冻结
-        # spec）。真内容冲突（非 wip 形态）不在此列——按设计走既有失败路径，
+        # ── 失败仍为 wip 阻断形态（evo-add-wip-defer-merge-retry-consumer
+        # 2.1b）── 交回等待记账（计数 +1、超限降级），MUST NOT 落入既有可重试
+        # 分类/指纹熔断：主路径对 wip_gate_blocked 有同型旁路先例（wip 阻断是
+        # 「前置拦截」而非「merge 失败」，熔断会把「等待人工清 WIP」误记成
+        # merge 连败而冻结 spec）。旁路只看 merge_info.wip_gate_blocked、不看
+        # _wip_gate_deferred 标志（code-review item b73f2a8e42d5）：spec_dir_
+        # inflight 顺延条目（仅 _merge_retry_pending）经 merge-only 重试撞上
+        # WIP 阻断时同样不得按 merge 真失败记账——无标志条目落既有失败路径会
+        # 进 _handle_merge_back_real_failure 记 _merge_streak（指纹熔断 blocked
+        # /ready 降级清锚点重派），与主路径豁免语义不一致；
+        # _record_wip_defer_retry_failure 内部落 _wip_gate_deferred 标志转等待
+        # 车道。真内容冲突（非 wip 形态）不在此列——按设计走既有失败路径，
         # 不尝试自动解决内容冲突。
-        if (
-            entry.get("_wip_gate_deferred")
-            and getattr(merge_info, "wip_gate_blocked", False)
-        ):
+        if getattr(merge_info, "wip_gate_blocked", False):
             self._record_wip_defer_retry_failure(
                 spec_name, merge_info, merge_error, branch
             )
@@ -3673,8 +3680,11 @@ class QQQueueMixin:
         _, first_f = self._parse_defer_accounting(entry, now)
         # 记账失败不阻塞 WIP 顺延处置链（code-review item 941b22736836，与
         # _defer_merge_back / _handle_merge_back_real_failure 同批收口）：
-        # 失败时按读取侧旧值继续参与超限判定，WARNING 留痕后照常落标志与
-        # 告警，不让记账 IO 异常打断降级处置。
+        # 失败时按读取侧旧值+1 内存参与超限判定（本轮失败仍计数；与
+        # _defer_merge_back / _handle_merge_back_real_failure 同型兜底同一
+        # 约定——code-review item 26abcb1efb91 统一同型兜底口径，防后续单侧
+        # 修改漂移），WARNING 留痕后照常落标志与告警，不让记账 IO 异常打断
+        # 降级处置。
         try:
             count = self._pm.state_machine.bump_counters(
                 spec_name, {"_merge_retry_count": 1}
@@ -3682,10 +3692,10 @@ class QQQueueMixin:
         except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
             self._pm.logger.warning(
                 "pm_engine",
-                f"WIP 等待轮数记账递增失败 '{spec_name}'（按未递增继续）: "
+                f"WIP 等待轮数记账递增失败 '{spec_name}'（按读取侧旧值+1 继续）: "
                 f"{type(e).__name__}: {e}",
             )
-            count = self._parse_int_field(entry, "_merge_retry_count", 0)
+            count = self._parse_int_field(entry, "_merge_retry_count", 0) + 1
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
         try:
             self._pm.state_machine.update_spec(
@@ -3960,7 +3970,10 @@ class QQQueueMixin:
           60 秒 merge-only Timer 链驱动（_defer_merge_back 尾部排程），消费者
           跳过，否则与存活 Timer 链同拍双驱动重试同一分支，git index.lock 竞争
           的失败会被 bump_counters 误计入顺延轮数提前熔断；
-        - status 非 implementing 的条目跳过（人工/admin 已推进，不重复合并）。
+        - status 非 implementing 的条目跳过（人工/admin 已推进，不重复合并），
+          并受保护清账残留的 _merge_retry_pending 记账（复位 ready 经
+          update_spec 写 status 不触达 side-car 字段，与
+          _recheck_wip_deferred_merges 同款——code-review item c4f6f8717265）。
 
         接手动作：merge-only 重试一次（_retry_merge_back_only）。重试失败链会
         再入 _defer_merge_back：超阈值分支先做归档残留自愈评估（Timer 链缺失
@@ -3988,7 +4001,36 @@ class QQQueueMixin:
                 if not entry.get("_merge_retry_pending"):
                     continue
                 if (entry.get("status") or "") != "implementing":
-                    continue  # 人工/admin 已推进，不重复合并（守卫 2.1a 同款）
+                    # 人工/admin 已推进，不重复合并（守卫 2.1a 同款）。受保护
+                    # 清账残留的顺延记账（code-review item c4f6f8717265，与
+                    # _recheck_wip_deferred_merges 对陈旧 _wip_gate_deferred 的
+                    # 清账对称补齐）：admin/人工复位 ready 经 update_spec 写
+                    # status 不触达 side-car 字段，daemon 重启清空
+                    # _inflight_defer_recheck_attempted 后残留 pending 会被本
+                    # 消费者按超限判式误接手——新轮 branch 已清锚点时误发
+                    # mergeback_branch_anchor_missing 告警，锚点在飞窗口内则
+                    # 把半成品新分支提前合入主树、与在飞收尾竞态。
+                    try:
+                        self._pm.state_machine.update_spec(
+                            name,
+                            {
+                                "_merge_retry_pending": False,
+                                "_merge_retry_count": 0,
+                                "_merge_retry_first_at": None,
+                            },
+                        )
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"顺延记账陈旧清账失败 '{name}'（非阻塞）: {e}",
+                        )
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"spec_dir_inflight 顺延复查 '{name}' 跳过：status="
+                        f"{entry.get('status') or '无'} 非 implementing"
+                        f"（人工/admin 已推进，不重复合并），陈旧顺延记账已清账",
+                    )
+                    continue
                 count, first_f = self._parse_defer_accounting(entry, now)
                 if not self._inflight_defer_over_limit(count, first_f, now):
                     # 未超阈值：60 秒 merge-only Timer 链驱动，跳过防双驱动

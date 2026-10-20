@@ -1604,7 +1604,18 @@ def salvage_result_from_transcript(
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False, indent=2))
+                # 孤立代理符预清洗（code-review item 0207a767a725，同
+                # run_files.append_run_line 的 3644eb85f017 口径）：载荷可含
+                # \udXXX 转义（json.loads 接受、json.dumps 本身成功），文本模式
+                # write 的 UTF-8 编码抛 UnicodeEncodeError（ValueError 族）不在
+                # 下方 except OSError 捕获面内，会击穿「转录缺失/不可读 → 不落
+                # 盘不抛异常返回 False」契约——encode('utf-8', 'replace') 预清洗
+                # 后写。
+                f.write(
+                    json.dumps(payload, ensure_ascii=False, indent=2)
+                    .encode("utf-8", "replace")
+                    .decode("utf-8")
+                )
             # mkstemp 建文件为 0600，rename 前放宽到 write_text 的 umask 缺省
             # 0644（同 verify_report 手法；chmod 失败不阻断写入）。
             try:
