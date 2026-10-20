@@ -141,7 +141,10 @@ def test_derive_loop(spec_name: str):
         fix_name = f"fix-{spec_name}"
         fix_entry = sm.read_one(fix_name) or {}
         if not fix_entry:
-            print(json.dumps({"fix_spawned": False, "reverified": False,
+            # 失败输出契约统一带 case 归因（code-review item 1752ce00a480，
+            # 与 restart-persist/hot-switch/main 兜底同款）
+            print(json.dumps({"case": "derive-loop",
+                              "fix_spawned": False, "reverified": False,
                               "error": "fix spec not created"}, ensure_ascii=False))
             sys.exit(1)
 
