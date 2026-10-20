@@ -275,6 +275,13 @@ class G3LockMixin:
                     ["pgrep", "-f", pattern],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（code-review item e6532767942c，对齐包内其余
+                    # text=True 采集点）：text=True 缺省按 locale 解码，非 UTF-8
+                    # locale 下非 ASCII 输出抛 UnicodeDecodeError（ValueError
+                    # 子类，不在下方捕获范围），把「pgrep 基础设施异常」伪装成
+                    # 其他归因。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
             except (subprocess.SubprocessError, OSError):
@@ -366,6 +373,10 @@ class G3LockMixin:
                 ["pgrep", "-f", pattern],
                 capture_output=True,
                 text=True,
+                # 显式 UTF-8（code-review item e6532767942c），理由同
+                # _pgrep_spec_process
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
         except (subprocess.SubprocessError, OSError):

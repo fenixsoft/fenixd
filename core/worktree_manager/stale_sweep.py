@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 
 from typing import Optional
+
+from core.worktree_manager.constants import STALE_LOCK_IDLE_SECONDS
 
 
 class G7StaleSweepMixin:
@@ -114,6 +117,23 @@ class G7StaleSweepMixin:
                     f"unrecognized worktree naming, conservative keep",
                 )
                 continue
+            # pgrep 失效窗的二次确认（code-review item 51b88016057c）：_worktree_
+            # has_live_process 在 pgrep 不可用/超时时按无进程返回 False，此处
+            # 无法区分「真无进程」与「探针故障」——删除前复核 run 流新鲜度，
+            # 仍在活动窗口内的目录本轮跳过（对齐 has_active_worktree /
+            # refresh_locks 的 mtime 兜底与 _pgrep_spec_process docstring 的
+            # 「调用方以 run 流新鲜度做二次确认」约定；宁可不清理，不可误删在用）。
+            newest_mtime = self._latest_stream_mtime(spec)
+            if (
+                newest_mtime is not None
+                and time.time() - newest_mtime < STALE_LOCK_IDLE_SECONDS
+            ):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Skip stale worktree cleanup for '{wt_dir.name}' — run stream "
+                    f"fresh in pgrep-unavailable window, conservative keep",
+                )
+                continue
             self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
             # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
             # 避免删目录后留下 cwd 失效的永生进程
@@ -163,15 +183,15 @@ class G7StaleSweepMixin:
                         f"Stale worktree remove failed (non-blocking), "
                         f"falling back to rmtree: '{wt_dir}' — {res.stderr.strip()}",
                     )
-                    shutil.rmtree(str(wt_dir), ignore_errors=True)
-                    if wt_dir.exists():
-                        # 降级删除也失败（目录被占用/权限异常等被 rmtree 吞掉）：
-                        # 目录保留交下轮清扫，同样必须留痕。
-                        self.logger.warning(
-                            "worktree_manager",
-                            f"Stale worktree rmtree fallback also failed "
-                            f"(non-blocking): '{wt_dir}' kept for next sweep",
-                        )
+                    # rmtree 兜底 + 残留复核留痕（code-review item cf1e1e8dde6e）：
+                    # 收敛到 cleanup/cleanup_orphans 共用的模块级辅助（同 lifecycle
+                    # 两处先例），残留时 WARNING 留痕、目录保留交下轮清扫。延迟
+                    # 导入对齐本模块 StateParser 惯例。
+                    from core.worktree_manager.lifecycle import (
+                        _rmtree_with_residual_warning,
+                    )
+
+                    _rmtree_with_residual_warning(self.logger, wt_dir, "Stale worktree")
                     # 兜底删除后先清注册再删分支（69bc35ca6e4c）：rmtree 只删目录
                     # 不清 git 注册，陈旧注册仍 checkout 该分支会令下方 branch -D
                     # 被 git 拒绝——对齐 lifecycle.cleanup() 先 prune 再 -D 的次序；

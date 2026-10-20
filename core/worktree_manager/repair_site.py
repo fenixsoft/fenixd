@@ -10,6 +10,7 @@ _wt_branches 写入登记，WT_REBUILDABLE 时经 create_worktree_on_branch
 from __future__ import annotations
 
 import subprocess
+import time
 
 from typing import Optional
 
@@ -17,6 +18,7 @@ from core.worktree_manager import (  # noqa: E402
     WT_AVAILABLE,
     WT_UNAVAILABLE,
 )
+from core.worktree_manager.constants import LEGACY_GRACE_SECONDS  # noqa: E402
 
 
 class G9RepairSiteMixin:
@@ -154,8 +156,19 @@ class G9RepairSiteMixin:
         成功路径 consume_legacy，fallback 由调度层按既有清扫策略处理。
 
         Returns: 被摘出的遗产记录 dict（结构同 register_legacy），无则 None。
+
+        出册持锁 + pop 后复核（code-review item ae4697f9486e，对齐包内 _legacy
+        变更的单一持锁纪律 fb49eca84deb/d6c32c0b63b6）：认领探测与 pop 之间该
+        spec 可能被并发车道重新登记——pop 到宽限期内刚登记的新遗产时 setdefault
+        放回出册位（清扫豁免保持完整）并返回 None，调度层降级走全新建树。
         """
-        rec = self._legacy.pop(spec_name, None)
+        with self._spec_lock_th:
+            rec = self._legacy.pop(spec_name, None)
+            if rec is not None and (
+                time.time() - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
+            ):
+                self._legacy.setdefault(spec_name, rec)
+                rec = None
         if rec:
             self.logger.info(
                 "worktree_manager",

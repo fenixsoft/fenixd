@@ -73,6 +73,17 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
                 continue
 
             if "*" in item:
+                if item.endswith("/"):
+                    # 含 * 且以 / 结尾（code-review item 9f364710a307）：归为
+                    # glob 后 fnmatch 对以 / 结尾的模式恒 False（产物匹配面是
+                    # 不带尾斜杠的 git 文件路径），该项静默恒假、判定面被无声
+                    # 收窄——比照前缀未以 / 结尾同款丢弃 + WARNING，写入侧
+                    # validate_build_artifact_paths 随 kept 集自动判非法提示。
+                    logger.warning(
+                        "build_artifact_paths: 含 * 的通配项以 / 结尾（对文件"
+                        "路径恒不命中），丢弃: %r", item,
+                    )
+                    continue
                 # 通配形态（含 *）：按完整相对路径匹配
                 result.append(("glob", item))
                 continue

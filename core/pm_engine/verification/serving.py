@@ -263,7 +263,7 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     .fenix/verify-serving/，gitignore 排除）；HEAD 未变时复用已启动实例
     与产物（replan 循环不重复构建）。
     """
-    wt, head, err, _created = pipeline._ensure_serving_worktree(
+    wt, head, err, created = pipeline._ensure_serving_worktree(
         spec_name, contract, mode="static"
     )
     if wt is None:
@@ -298,7 +298,12 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
         )
     root_dir = Path(wt) / contract.serve.root
     if not root_dir.is_dir():
-        pipeline._remove_serving_worktree(wt)
+        # code-review 2931d3ff2963：created 门控删除（对齐 command 侧
+        # e3d99b7b7862 纪律）——复用态不动：旧缓存条目仍引用同一目录，
+        # 无条件删会令旧 StaticVerifyServer 线程对着已删目录应答 404、残留
+        # 死条目；留待复用门 is_dir 失败走既有重建自愈路径。
+        if created:
+            pipeline._remove_serving_worktree(wt)
         return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
     if old is not None:
         # code-review b53dc36cb6cc：覆写缓存前对旧静态实例补 stop 收尾（对齐
@@ -1712,6 +1717,11 @@ def _read_boot_log_tail(pipeline, spec_name: str, handle) -> str:
         handle.flush()
     except Exception:
         pass
+    # code-review a11989a8edbf：与写侧 _open_boot_log 同款 spec 名路径分量
+    # 守卫（2c579adb670f）——非法 spec 名会使 stat/open 引到 verify-serving
+    # 之外，读侧按「读失败返回空串」既有口径静默返回。
+    if _spec_name_path_error(spec_name) is not None:
+        return ""
     try:
         log_path = (
             Path(pipeline._context.project_root)
@@ -1757,7 +1767,7 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
         （code-review c0637b767434：改写未落盘时内存探针虽通过，场景文件
         仍指向旧端口，下一轮会复现同一「不可达→改写」循环）。
     """
-    from core.verify_contract import _rewrite_scenario_target_values
+    from core.verify_contract import rewrite_scenario_target_values
     # code-review 22e59d9a5ffb：原子写复用 scenario_gate 助手（失败时清理
     # 残留 .tmp 再上抛，与 fastlane 同一收敛点），不再手写 tmp+replace
     from core.pm_engine.verification.scenario_gate import atomic_write_text
@@ -1771,7 +1781,7 @@ def _rewrite_scenario_port(pipeline, scenarios_path: Path, old_port: int, new_po
         raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
         if not isinstance(raw, list):
             return True
-        rewritten, n = _rewrite_scenario_target_values(
+        rewritten, n = rewrite_scenario_target_values(
             raw, requires_http_scheme=False, rewrite_value=_rewrite_value
         )
         if not n:

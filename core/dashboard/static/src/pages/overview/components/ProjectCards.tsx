@@ -244,34 +244,35 @@ export default function ProjectCards({
         // 只覆盖项目全集为空；搜索关键词/状态筛选把 filtered 清空时由此占位提示
         locale={{ emptyText: '无匹配项目，请调整搜索关键词或状态筛选' }}
         renderItem={(project) => {
+          // 错误卡片与正常卡片共用同一组 actions（code-review item 0631845feadf）：
+          // 原两分支各自内联逐字相同的数组，单独改动其一易漏改另一致行为分叉。
+          const projectActions = [
+            <Button
+              key="enter"
+              type="link"
+              size="small"
+              className="touch-expand"
+              onClick={() => history.push(`/projects/${encodeURIComponent(project.name)}`)}
+            >
+              进入
+            </Button>,
+            <Dropdown
+              key="more"
+              menu={{ items: menuItems(project), onClick: ({ key }) => onMenuClick(project, key) }}
+              placement="bottomRight"
+              trigger={['click']}
+            >
+              <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">
+                更多
+              </Button>
+            </Dropdown>,
+          ];
           // fix-dashboard-fault-isolation 3.3：项目级错误态——摘要携带非空 error 时
           // 呈现警示色错误卡片（不渲染 daemon 徽标 / 状态 Tag / 进度数字），
           // 卡片 MUST 仍出现在概览中，作为「该项目当前不可用」的可见信号。
           if (project.error) {
             return (
-              <List.Item
-                actions={[
-                  <Button
-                    key="enter"
-                    type="link"
-                    size="small"
-                    className="touch-expand"
-                    onClick={() => history.push(`/projects/${encodeURIComponent(project.name)}`)}
-                  >
-                    进入
-                  </Button>,
-                  <Dropdown
-                    key="more"
-                    menu={{ items: menuItems(project), onClick: ({ key }) => onMenuClick(project, key) }}
-                    placement="bottomRight"
-                    trigger={['click']}
-                  >
-                    <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">
-                      更多
-                    </Button>
-                  </Dropdown>,
-                ]}
-              >
+              <List.Item actions={projectActions}>
                 <List.Item.Meta
                   avatar={
                     <Avatar
@@ -312,29 +313,7 @@ export default function ProjectCards({
             );
           });
           return (
-            <List.Item
-              actions={[
-                <Button
-                  key="enter"
-                  type="link"
-                  size="small"
-                  className="touch-expand"
-                  onClick={() => history.push(`/projects/${encodeURIComponent(project.name)}`)}
-                >
-                  进入
-                </Button>,
-                <Dropdown
-                  key="more"
-                  menu={{ items: menuItems(project), onClick: ({ key }) => onMenuClick(project, key) }}
-                  placement="bottomRight"
-                  trigger={['click']}
-                >
-                  <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">
-                    更多
-                  </Button>
-                </Dropdown>,
-              ]}
-            >
+            <List.Item actions={projectActions}>
               <List.Item.Meta
                 avatar={<Avatar shape="square" icon={<FolderOutlined />} />}
                 title={

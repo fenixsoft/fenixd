@@ -301,15 +301,24 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path, logger=None) -> 
             timeout=30,
         )
 
-    remove = _git_remove()
-    if remove.returncode != 0:
-        subprocess.run(
-            ["git", "-C", str(project_root), "worktree", "prune"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+    try:
         remove = _git_remove()
+        if remove.returncode != 0:
+            subprocess.run(
+                ["git", "-C", str(project_root), "worktree", "prune"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            remove = _git_remove()
+    except (OSError, subprocess.SubprocessError) as exc:
+        # 异常面归一（code-review item d9eee63197c5）：git 缺失（OSError）与
+        # remove/prune 超时（TimeoutExpired）同样按「全部手段均失败才抛
+        # RuntimeError」的文档契约折算（附上下文），调用方只见 RuntimeError、
+        # 不必细分 subprocess 异常族。
+        raise RuntimeError(
+            f"git worktree remove --force {wt_path} 基础设施失败: {exc}"
+        ) from exc
     if remove.returncode != 0:
         try:
             shutil.rmtree(wt_path)

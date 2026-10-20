@@ -692,7 +692,10 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
             "stage": "dispatch-failed",
             "reason": reason,
             "streak": streak,
-            "decision_of": decision.get("failed_id"),
+            # 键名对齐 evaluate_fastlane 判定记录的 failed_id（code-review
+            # item 72112c70dbb2）：原 decision_of 承载的实为失败场景 id，
+            # 键名与值语义错位、审计需回读源码才能对账。
+            "failed_id": decision.get("failed_id"),
         })
         return outcome
 

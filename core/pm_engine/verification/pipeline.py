@@ -248,6 +248,7 @@ from core.pm_engine.verification.report_gate import (
     _read_verifier_result,
     _read_verify_report,
     _verifier_result_is_stale,
+    verify_progress_dir,
 )
 
 # refactor-verification-module 阶段3.2：分支门/交付物门组已迁 branch_guard.py，
@@ -1958,13 +1959,7 @@ class VerificationPipeline:
             if not entries:
                 return _full("无 verdict 缓存，全量执行")
 
-            prev_path = (
-                Path(self._context.project_root)
-                / ".fenix"
-                / "verify-progress"
-                / spec_name
-                / "report.json"
-            )
+            prev_path = verify_progress_dir(self, spec_name) / "report.json"
             try:
                 prev = json.loads(prev_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -1972,10 +1967,17 @@ class VerificationPipeline:
             prev_scenarios = prev.get("scenarios") if isinstance(prev, dict) else None
             if not isinstance(prev_scenarios, list):
                 return _full("上轮 report 无场景列表，全量执行")
+            # 键口径与 ids/cached_results 侧同源（code-review item 6e25a84c03c0，
+            # _parallel_plan_scenario_sid 的 b81fe155c73b 单源）：上轮场景缺
+            # scenario_id 仅带 id（或两者皆缺）时不再生成字面量 "None" 键致
+            # 失败集与缓存采信查表双双落空、裁剪静默失效——同函数内枚举序
+            # 对位，位置兜底可命中。
             prev_by_id = {
-                str(sc.get("scenario_id")): sc
-                for sc in prev_scenarios
-                if isinstance(sc, dict) and sc.get("scenario_id") is not None
+                _parallel_plan_scenario_sid(
+                    _parallel_plan_scenario_def(sc), i
+                ): sc
+                for i, sc in enumerate(prev_scenarios)
+                if isinstance(sc, dict)
             }
             failed_ids = {
                 sid
@@ -2540,7 +2542,20 @@ class VerificationPipeline:
         # 改 .get 取值只兜上游报告结构演进/测试替身注入精简 report 的退化
         # 形态（缺键按 0 计，不再 KeyError 沿主流程穿透）；正常路径数值不变。
         summary = report.get("summary") or {}
-        fail_count = summary.get("failed", 0) + summary.get("errors", 0)
+
+        def _summary_int(key: str) -> int:
+            # 同源 int 容错（code-review item 33ad34a0745f，口径对齐
+            # infra_classify._detect_uniform_verify_failure 与 judge_gate.
+            # _all_green_fast_path 的 73f3b554171b 防御）：脏值（报告结构演进/
+            # 测试替身注入字符串）按 0 计不入加总，下方不可达门禁比较与快道
+            # 分档校验消费同一归一值——不再出现字符串拼接（"2"+"1"→"21"）
+            # 致门禁比较失真。
+            try:
+                return int(summary.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        fail_count = _summary_int("failed") + _summary_int("errors")
         self._context.logger.info(
             "pm_engine",
             f"[阶段2] 完成: {summary.get('total', 0)}场景, "
@@ -2556,7 +2571,7 @@ class VerificationPipeline:
         if (
             not app_reachable
             and summary.get("passed", 0) == 0
-            and fail_count == summary.get("total", 0)
+            and fail_count == _summary_int("total")
         ):
             # 「需用户参与」型不可达让位（code-review item ad95fc9cdbdd）：
             # user_blocked 预留判定位与阶段2.5 fail-fast 处（_execute_stage2
@@ -3022,7 +3037,11 @@ class VerificationPipeline:
         # 场景验收（绝对 navigate URL/完整性）失败 → 写 REPLAN_FEEDBACK.md 退回
         # plan 阶段重新生成，上限 2 次重排；连续失败保持 implemented + error
         # 可见（验收失败属环境/任务书问题，绝非产品缺陷，绝不流转 bug-found）。
-        verify_dir = self._context.project_root / ".fenix" / "verify-progress" / spec_name
+        # verify-progress 拼接收敛到 report_gate.verify_progress_dir 单源
+        # （code-review item 7ce25c46042b；净化后与引擎写侧同目录），主流程
+        # verify_dir / _prune_rescan_scenarios prev_path / scenarios_path 三处
+        # 同款替换。
+        verify_dir = verify_progress_dir(self, spec_name)
         replan_left = 2
         # 记录初始预算：预算耗尽分支渲染已执行重排次数（彼时 replan_left 恒为 0，
         # 直接插值会恒显示「0 次用尽」，与实际已重排次数不符）。
@@ -3191,9 +3210,13 @@ class VerificationPipeline:
                         else f"'{plan_read.status}'"
                     )
                     # 时长统一空值守卫（code-review item 30f5b0c0c57e）：与下方
-                    # _write_degrade_context 的 `or 0` 同口径，防 duration_seconds
-                    # 可空（或测试以替身注入）时 f-string 除法 TypeError。
-                    _dur = plan_result.duration_seconds or 0
+                    # _write_degrade_context 同口径——float 归一 + 转换异常整体
+                    # 容错（code-review item 40dfb9c3b42e），非数值脏值按 0.0
+                    # 计，防 f-string 除法 TypeError 把既定降级路径炸成整轮异常。
+                    try:
+                        _dur = float(plan_result.duration_seconds or 0)
+                    except (TypeError, ValueError):
+                        _dur = 0.0
                     _dur_min = _dur / 60
                     self._context.state_machine.update_spec(
                         spec_name,
@@ -3386,13 +3409,7 @@ class VerificationPipeline:
                 return
 
             # ── 阶段2: 验证引擎执行（见 _execute_stage2，D2：env_error 回写段留循环体）──
-            scenarios_path = (
-                self._context.project_root
-                / ".fenix"
-                / "verify-progress"
-                / spec_name
-                / "test_scenarios.json"
-            )
+            scenarios_path = verify_progress_dir(self, spec_name) / "test_scenarios.json"
             env_error, report, app_reachable, reach_note, _stage2_aborted = self._execute_stage2(
                 spec_name, verify_dir, scenarios_path
             )
@@ -3550,11 +3567,13 @@ class VerificationPipeline:
         return
 
 
-# ── env 阻塞复位判定（add-blocked-reverify-lane D2）────────────────
-# 决定 env 阻塞 spec 在 admin 处置完成后走哪条复位路径：BLOCKED→TESTING 重验
-# 直通道（实现分支已合并）还是既有 BLOCKED→READY 全量重实现。模块级函数（非
-# VerificationPipeline 方法）：admin_monitor 处置收尾消费点直接 import 复用，
-# 两处共享同一守卫判定，避免语义漂移。
+# ── env 族信号类型常量（add-blocked-reverify-lane D2）────────────────
+# 本文件在此仅保留常量：复位路径判定（BLOCKED→TESTING 重验直通道，实现分支
+# 已合并 vs 既有 BLOCKED→READY 全量重实现）实现在 branch_guard.
+# resolve_env_blocked_reset_path（模块级函数，非 VerificationPipeline 方法）；
+# 本常量的消费者是 admin_monitor——据此组装 DISPOSITION_AUTO_RESET_SIGNAL_
+# TYPES，处置收尾经 branch_guard 的守卫判定复位，两处共享同一守卫判定，
+# 避免语义漂移。
 
 # env 族信号类型：仅这些信号触发的 blocking 复位才适用重验直通道判定，其余
 # 信号（如 blocked_stuck 等）的复位语义不动。

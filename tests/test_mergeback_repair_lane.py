@@ -187,6 +187,9 @@ class TestRepairSiteResolution(unittest.TestCase):
         # 模拟死亡 run 遗留的遗产（分支 + worktree 均登记）
         legacy_wt = self.wm.create_worktree_on_branch("spec-a", "fenix/spec-a-123")
         self.wm.register_legacy("spec-a", legacy_wt, "fenix/spec-a-123")
+        # claim 出册复核（item ae4697f9486e）：宽限期内刚登记的记录会放回——
+        # 本测试模拟既成遗产，先人工做老再认领。
+        self.wm._legacy["spec-a"]["registered_at"] -= 10_000
         self.assertTrue(self.wm.has_legacy("spec-a"))
         # repair 认领：摘出登记表
         rec = self.wm.claim_legacy_for_repair("spec-a")

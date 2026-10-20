@@ -872,22 +872,34 @@ class G1LifecycleMixin:
             # stderr 已被 capture_output 吞掉，若仍记成功日志会掩盖残留死分支、
             # 误导排障，与 worktree remove 失败有 WARNING 的口径对齐。
             if not success and branch and branch != "HEAD":
-                del_res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=10,
-                )
-                if del_res.returncode == 0:
-                    self.logger.info("worktree_manager", f"Deleted branch: {branch}")
-                else:
+                # 分支在飞引用保护（code-review item d35168265657，对齐
+                # legacy_registry._physically_reclaim_legacy 与 stale_sweep 的
+                # 删分支前口径）：失败分支被 STATE 在飞/冻结保持引用时保留分支
+                # 仅回收 worktree，解冻后续做/恢复不降级为从零重做。
+                kept, reason = self._branch_protected_by_state(branch)
+                if kept:
                     self.logger.warning(
                         "worktree_manager",
-                        f"Branch delete failed for {branch}: "
-                        f"{(del_res.stderr or '').strip()}",
+                        f"分支在飞引用保护：保留分支 '{branch}'（{reason}）— "
+                        f"worktree 已清理，分支留待恢复/后继 run 收编",
                     )
+                else:
+                    del_res = subprocess.run(
+                        ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=10,
+                    )
+                    if del_res.returncode == 0:
+                        self.logger.info("worktree_manager", f"Deleted branch: {branch}")
+                    else:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Branch delete failed for {branch}: "
+                            f"{(del_res.stderr or '').strip()}",
+                        )
 
             self._active_worktrees.discard(wt_str)
             self._wt_branches.pop(wt_str, None)
