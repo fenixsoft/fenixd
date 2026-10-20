@@ -417,10 +417,14 @@ class AssertionRunner:
                             return null;
                         }"""
                     )
-                except Exception:
+                except Exception as e:
                     # 拦截详情提取失败不阻塞主流程，但随结果 note 注明原因，
                     # judge 归因时可知 intercept_detail=None 并非「无遮挡详情」。
-                    detail_note = "拦截详情未提取（选择器解析失败，拦截元素 tag/z-index 未知）"
+                    # evaluate 抛错不一定是选择器语法：存在性/拦截判定通过后
+                    # 元素被移除、页面导航中、上下文关闭等竞态同样会抛错（比照
+                    # z_index_order/alignment 竞态窗口「元素不存在」口径），
+                    # note 携带实际异常类型，避免固定归因选择器误导排障。
+                    detail_note = f"拦截详情未提取（{type(e).__name__}，拦截元素 tag/z-index 未知）"
 
             return {
                 "type": "no_click_interception",
