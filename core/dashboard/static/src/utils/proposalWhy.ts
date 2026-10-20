@@ -5,22 +5,16 @@ import { getSpecDoc } from '@/services/dashboard';
 export function extractProposalWhy(markdown: string): string | null {
   if (!markdown) return null;
   const lines = String(markdown).split('\n');
-  let start = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^##\s+why\s*$/i.test(lines[i])) {
-      start = i + 1;
-      break;
-    }
-  }
-  if (start === -1) return null;
-  const collected: string[] = [];
-  // 段界探测围栏感知（code-review item cc7049690387）：Why 区块可能贴含行首
-  // 「## 」的代码围栏示例，裸 /^##\s/ 会在围栏内第一个二级标题处提前截断——
-  // 逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配下一个二级标题
+  // 单次遍历（code-review item c14cf2e09af4，对齐段界探测 cc7049690387 的
+  // 围栏口径）：起始定位与段界探测共用同一份 ``` / ~~~ 围栏开合跟踪——起始
+  // 扫描不跟踪围栏时，真 Why 区块之前含「## why」示例行的代码围栏（模板
+  // 教学文档）会被误认成段首，采错内容且真区块被跳过；仅围栏外匹配标题
   // （与 pm_engine/family.py _inject_verify_fix_task 同口径）。
+  let start = -1;
+  const collected: string[] = [];
   let fenceChar = "";
   let fenceLen = 0;
-  for (let i = start; i < lines.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const stripped = lines[i].trim();
     if (fenceChar) {
       // 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
@@ -35,11 +29,15 @@ export function extractProposalWhy(markdown: string): string | null {
       let run = 0;
       while (run < stripped.length && stripped[run] === fenceChar) run++;
       fenceLen = run;
-    } else if (/^##\s/.test(lines[i])) {
+    } else if (start === -1 && /^##\s+why\s*$/i.test(lines[i])) {
+      start = i + 1;
+      continue;
+    } else if (start !== -1 && /^##\s/.test(lines[i])) {
       break; // 下一个二级标题即段尾（### 子标题不影响）
     }
-    collected.push(lines[i]);
+    if (start !== -1) collected.push(lines[i]);
   }
+  if (start === -1) return null;
   const text = collected.join('\n').trim();
   return text || null;
 }
