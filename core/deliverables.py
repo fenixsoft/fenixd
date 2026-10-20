@@ -2660,6 +2660,13 @@ def lint_declared(spec_dir, project_root) -> List[str]:
     12. 同一 path 在声明段出现多种 kind（abc42cc46260）——解析器
         （``_declared_entries_from_text``）按 path 去重静默保留首条，生效 kind
         取决于书写顺序，自相矛盾的声明在晋升当下拒绝并提示合并/去重。
+    13. ``kind: new`` 的路径在主树已存在 → 不拦（有意放行）——与规则 8 对
+        delete「主树不存在即无可删」的对称形态在此刻意不对称：该形态并非
+        确定性无效（串联 spec 前序产物已落主树等场景合法，拦之即误拦），
+        「作者本应写 kind: modify」的语义混淆亦非机械可判的确定性形态；
+        守卫存在性校验在派发当下恒满足、声明对账失去约束力的代价，交由
+        作者自查与后续层兜底（add-deliverable-declaration-triage design
+        Non-Goal，``test_new_existing_path_pass`` 固化）。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
     规则 0 的形态违规属「内容确定性无效」而非 lint 故障，照常返回违规。
@@ -2863,6 +2870,9 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         # 规则 4（D1）：new 路径主树不存在时做 basename 模糊匹配，仓库内唯一
         # 命中即判疑似笔误拒绝晋升；零命中或多命中放行（语义矛盾交由后续层）。
         if kind == "new":
+            # 主树已存在 → 有意放行（docstring 规则 13，design Non-Goal，
+            # test_new_existing_path_pass 固化）：该形态非确定性无效，零误拦
+            # 取向不拦；早退同时避免规则 4 的 basename 匹配命中该路径自身。
             if any((project_root / c).exists() for c in candidates):
                 continue
             hits = match_basename_in_tree(project_root, path)
