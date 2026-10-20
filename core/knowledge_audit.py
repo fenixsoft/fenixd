@@ -8,7 +8,8 @@
 - **语义项**（矛盾、跨页重复）MUST NOT 脚本改写——转定向蒸馏 run（``audit.md``
   提示词）读两处冲突上下文后按增量蒸馏契约重写，允许「判无矛盾」零改动收场；
   重写失败登记 todo.md；
-- **报告项**（超 150 行硬顶、ADR supersede 链断裂、ADR 目录未提交改动）进体检报告
+- **报告项**（超 150 行硬顶、ADR supersede 链断裂、ADR 目录未提交改动、单页/ADR
+  文件不可读盘面已变）进体检报告
   待人工。报告落 ``.fenix/knowledge_audit_report.md``，含规模趋势：总行数相对
   上次体检增长超 +10% 显式标「需精简」并给候选页清单。
 
@@ -776,8 +777,15 @@ def knowledge_daily_check(
 # ── 页面收集与病灶扫描 ───────────────────────────────────────────────────
 
 
-def _collect_pages(project_root: Path) -> list[dict]:
-    """收集能力页与导航页（relpath + 文本）。graph/ 产物非真相源本体，跳过。"""
+def _collect_pages(
+    project_root: Path, unreadable: Optional[list[str]] = None
+) -> list[dict]:
+    """收集能力页与导航页（relpath + 文本）。graph/ 产物非真相源本体，跳过。
+
+    unreadable 为可选出参：单页读取失败（扫描后盘面已变抛 OSError）时登记
+    「盘面已变转待人工」明细并跳过该页，不让单文件故障穿出 run_audit 令
+    整轮体检反复失败（对齐 _apply_mechanical 的防护口径）。
+    """
     kdir = Path(project_root) / KNOWLEDGE_DIR
     pages: list[dict] = []
     if not kdir.is_dir():
@@ -790,11 +798,19 @@ def _collect_pages(project_root: Path) -> list[dict]:
         if not path.is_file():
             continue
         rel = path.relative_to(project_root).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            if unreadable is not None:
+                unreadable.append(
+                    f"{rel}：盘面已变（文件不可读或已删除），本页本轮体检转待人工"
+                )
+            continue
         pages.append(
             {
                 "rel": rel,
                 "path": path,
-                "text": path.read_text(encoding="utf-8", errors="replace"),
+                "text": text,
             }
         )
     return pages
@@ -844,7 +860,8 @@ def _trailing_ws_dirty(ln: str) -> bool:
 
 def _scan_pages(project_root: Path) -> dict:
     """五类病灶中的页级扫描：悬空溯源（①② 机械）、超行数（报告）、格式。"""
-    pages = _collect_pages(project_root)
+    unreadable: list[str] = []  # 报告：单页读取失败（盘面已变），转待人工
+    pages = _collect_pages(project_root, unreadable)
     archives = _existing_archives(project_root)
     dangling_pages: list[dict] = []  # 机械：页 rel → 待删行/待删 sources
     dangling_suspect: list[str] = []  # 报告：带尾缀（句点/.md）疑似悬空引用，不机械删行
@@ -939,14 +956,23 @@ def _scan_pages(project_root: Path) -> dict:
         "overcap": overcap,
         "format": format_pages,
         "no_marker": no_marker,
+        "unreadable": unreadable,
     }
 
 
 def _adr_entry_status(text: str) -> Optional[str]:
-    """ADR 条目头部状态：Superseded by: 在场 → superseded；status: 行次之。"""
-    if re.search(r"^Superseded by:", text, re.MULTILINE | re.IGNORECASE):
+    """ADR 条目头部状态：Superseded by: 在场 → superseded；status: 行次之。
+
+    与 core.knowledge 校验器同口径（code-review 21abbfe8e1c8）：只在
+    「## Context」（core.knowledge 的 _ADR_BODY_SPLIT 切分标记）之前的头部段
+    做状态判定，无该段时头部段退化为全文（同 str.split 切分语义）。正文引用
+    其他 ADR 状态、示例片段出现的状态字样不参与 adr/index.md 的机械对齐，
+    两车道对同一 ADR 的状态结论不再漂移。
+    """
+    header = text.split("## Context", 1)[0]
+    if re.search(r"^Superseded by:", header, re.MULTILINE | re.IGNORECASE):
         return "superseded"
-    m = re.search(r"^status:\s*(accepted|superseded)\b", text, re.MULTILINE | re.IGNORECASE)
+    m = re.search(r"^status:\s*(accepted|superseded)\b", header, re.MULTILINE | re.IGNORECASE)
     return m.group(1).lower() if m else None
 
 
@@ -992,9 +1018,19 @@ def _scan_adrs(project_root: Path) -> dict:
     broken_chain: list[str] = []
     status_mismatch: list[dict] = []
     entry_status: dict[str, str] = {}
+    unreadable: list[str] = []  # 报告：ADR 条目/index 读取失败（盘面已变），转待人工
     if adr_dir.is_dir():
         for path in sorted(adr_dir.glob("ADR-*.md")):
-            text = path.read_text(encoding="utf-8", errors="replace")
+            # 扫描后盘面已变（文件不可读/已删除）时按待人工登记并跳过该条目，
+            # 不让 OSError 穿出 run_audit 令当日体检反复失败（对齐
+            # _apply_mechanical 的「盘面已变转待人工」口径，code-review f0f346fad076）。
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                unreadable.append(
+                    f"{path.stem}：盘面已变（文件不可读或已删除），ADR 状态扫描转待人工"
+                )
+                continue
             mm = re.match(r"ADR-(\d{3})", path.stem)
             name = f"ADR-{mm.group(1)}" if mm else path.stem
             m = re.search(r"^Superseded by:\s*(ADR-\d{3})", text, re.MULTILINE | re.IGNORECASE)
@@ -1005,7 +1041,14 @@ def _scan_adrs(project_root: Path) -> dict:
                 entry_status[name] = status
     index_path = adr_dir / "index.md" if adr_dir.is_dir() else None
     if index_path and index_path.is_file():
-        index_lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        # 同条目口径：index 读取失败转待人工，状态对齐本轮跳过（code-review f0f346fad076）。
+        try:
+            index_lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            unreadable.append(
+                "adr/index.md：盘面已变（文件不可读或已删除），索引状态对齐转待人工"
+            )
+            index_lines = []
         for i, ln in enumerate(index_lines):
             nm = _ADR_NAME_RE.search(ln)
             slot = _adr_status_slot(ln)
@@ -1042,6 +1085,7 @@ def _scan_adrs(project_root: Path) -> dict:
         "broken_chain": broken_chain,
         "status_mismatch": status_mismatch,
         "adr_dirty": adr_dirty,
+        "unreadable": unreadable,
     }
 
 
@@ -1769,7 +1813,9 @@ def run_audit(
         [f"{item['rel']}：超 {LINE_CAP} 行硬顶（{item['lines']} 行）" for item in scan["overcap"]]
         + list(scan["dangling_suspect"])
         + [f"{rel}：能力页 marker 缺失或不可解析" for rel in scan["no_marker"]]
+        + list(scan["unreadable"])
         + [f"ADR supersede 链断裂：{item}" for item in scan["adr"]["broken_chain"]]
+        + list(scan["adr"]["unreadable"])
         + (
             [f"ADR 目录存在未提交改动：{len(scan['adr']['adr_dirty'])} 项"]
             if scan["adr"]["adr_dirty"]
@@ -1787,7 +1833,9 @@ def run_audit(
             scan["overcap"],
             scan["format"],
             scan["no_marker"],
+            scan["unreadable"],
             scan["adr"]["broken_chain"],
+            scan["adr"]["unreadable"],
             semantic_pending,
         )
         if not v

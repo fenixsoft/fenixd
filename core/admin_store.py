@@ -123,6 +123,14 @@ def _fsync_parent_dir(path: Path) -> None:
         os.close(dfd)
 
 
+# code-review item dda0ab4ba29c：跨模块（core.verdict_check 等）复用统一走
+# 公开名，模块边界不依赖下划线私有符号（verdict_check 对 extract_step_number
+# 公开别名的自述纪律同款）。私有名保留给既有调用点（本模块内部调用与
+# serving_registry/signals/state_machine/admin_monitor 的既有 import）。
+# 别名直引同一实现，签名与行为随本体，无任何包装差异。
+fsync_parent_dir = _fsync_parent_dir
+
+
 def _apply_target_mode(tmp_path: Path, target: Path) -> None:
     """rename 前校正临时文件权限位（code-review item 2e535ed632c6）。
 

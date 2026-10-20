@@ -463,10 +463,17 @@ def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool
                     if not isinstance(c, dict) or c.get("type") != "tool_use":
                         continue
                     if c.get("name") == "TaskCreate":
-                        m = _TASK_ID_RE.search(str((c.get("input") or {}).get("subject") or ""))
+                        inp = c.get("input")
+                        # input 非 dict（真值字符串/数字等损坏行）视为无 input，
+                        # 与同函数 message/content 的 isinstance 守卫口径一致，
+                        # 仍按序占位 append None（保 taskId 索引对齐）。
+                        subject = inp.get("subject") if isinstance(inp, dict) else None
+                        m = _TASK_ID_RE.search(str(subject or ""))
                         created_ordered.append(m.group(1) if m else None)
                     elif c.get("name") == "TaskUpdate":
-                        inp = c.get("input") or {}
+                        inp = c.get("input")
+                        if not isinstance(inp, dict):
+                            continue  # 非 dict 视为无 input，跳过该 tool_use
                         try:
                             n = int(str(inp.get("taskId")))  # 兼容 str/int
                         except (TypeError, ValueError):
@@ -658,7 +665,9 @@ class TaskCompletionWatcher:
                 continue
             if c.get("name") != "TaskUpdate":
                 continue
-            inp = c.get("input") or {}
+            inp = c.get("input")
+            if not isinstance(inp, dict):
+                continue  # input 非 dict 视为无 input（对齐 _scan_run_events 守卫口径）
             if inp.get("status") != "completed":
                 continue
             try:

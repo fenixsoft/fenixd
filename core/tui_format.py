@@ -14,6 +14,11 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
 
     默认 fmt 与回退切片 [:19] 是既有展示契约（test_cli_time_display 钉死）；
     需要日期的调用点显式传 fmt="%m-%d %H:%M"。
+
+    前置约定：日志层写入的 UTC 串一律带时区后缀（Z / ±HH:MM）。底层
+    timelib.parse_ts 对无偏移的 naive 串按本地时区解读（非转换）——若日志层
+    写出裸 UTC 形态会原样当本地墙钟展示、产生静默时区错位（code-review
+    3dd0dd9c9c7d 注记）。
     """
     # SPEC-B 批⑤：渲染边界统一走 timelib.fmt_display（解析内核 parse_ts
     # 单源不变）；解析失败仍走既有 [:19] 切片回退——fmt_display 渲染层
@@ -28,7 +33,11 @@ def local_ts(iso_str, fmt="%H:%M:%S"):
 
 
 def fmt_dur(seconds) -> str:
-    """秒数 → 紧凑时长（30s / 5m / 2h5m / 1d5h0m）；非正数或非法输入返回空串。"""
+    """秒数 → 紧凑时长（30s / 5m / 2h5m / 1d5h0m）；非正数或非法输入返回空串。
+
+    截断口径：浮点秒数经 int() 向零截断而非四舍五入（599.9s → 9m），展示层
+    可接受的近似（code-review 96d3d80c773d 注记）。
+    """
     try:
         s = int(seconds or 0)
     except (TypeError, ValueError, OverflowError):

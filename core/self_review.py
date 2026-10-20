@@ -405,19 +405,29 @@ def _strip_terminal_echo_lines(lines: list) -> list:
 
 
 def _scan_run_signals(path: Path) -> Optional[str]:
-    """全文件扫描 run 产物找结构性失败信号（预算耗尽/spec 缺失类）。
+    """有界流式扫描 run 产物找结构性失败信号（预算耗尽/spec 缺失类）。
 
     只做逐行子串匹配（不完整 JSON 解析），命中首个信号词即返回凭据摘要；
     未命中返回 None。仅用于失败样本的归因补充（collect_failed_run_samples）：
     _classify_run 已给 detail 时以其为准，detail 为空（如 error 终态缺省
     error 文本）时拼出 signal=<词>；MUST NOT 据此改写 _classify_run 给出的
     category——成功终态（result 未命中 marker/终态邻近 3 行无信号）由终态
-    判定直接计为 succeeded，不再做全文件主题词扫描降级（主题词与 repair/
-    planner/evo 轮正文高度重合，扫描必然误报）。
+    判定直接计为 succeeded，不再做主题词扫描降级（主题词与 repair/planner/
+    evo 轮正文高度重合，扫描必然误报）。
+
+    行数上限（code-review item 04ff4f4eb341）：与 _scan_run_midflight/
+    _scan_run_stall_totals 同套 MIDFLIGHT_SCAN_MAX_LINES 纪律——daemon 巡检
+    进程内对每个空 detail 失败 run 逐个重扫转录，单文件可 MB 级，无上限时
+    IO/CPU 随失败 run 数×转录体积线性放大；超限截断并以 signal=truncated
+    注记带出（保留 signal= 前缀，双源交叉守卫对截断未命中的样本照常可查
+    daemon 侧终态），不冒充全量扫描。
     """
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
+            for i, line in enumerate(f, 1):
+                if i > MIDFLIGHT_SCAN_MAX_LINES:
+                    # 行数上限：截断标注后停止（超限归因以 truncated 注记带出）
+                    return f"signal=truncated(>{MIDFLIGHT_SCAN_MAX_LINES}行)"
                 if not line.strip():
                     continue
                 for sig in _BUSINESS_FAIL_SIGNALS:
@@ -751,7 +761,8 @@ def collect_failed_run_samples(
         # result 分支判定结果为准（不引入成功语义文本白名单），成功终态不入选
         # 失败样本；接受项边界：终态邻近 3 行之外的主题词不再翻转分类。
         # 信号扫描兜底仅保留给 failed 样本的归因补充：_classify_run 已给 detail
-        # 时以其为准，detail 为空（如 error 终态缺省 error 文本）时用全文件扫描
+        # 时以其为准，detail 为空（如 error 终态缺省 error 文本）时用有界信号
+        # 扫描（≤MIDFLIGHT_SCAN_MAX_LINES 行，超限以 signal=truncated 注记带出）
         # 拼出 signal=<词> 摘要；MUST NOT 改写 _classify_run 给出的 category
         # （running/dropped/timeout/instant_hang 桶位不变，在飞 run 转录正文
         # 必含被修改源码字面量，改写会制造与本次修复同源的新误报）。
@@ -941,7 +952,7 @@ def _iter_window_classified_runs(project_root, window_start: datetime, window_en
     侧既有约定——物化点冻结后贯穿，本函数入参恒为具体快照值）。
 
     双源交叉守卫不在此收口：collect_failed_run_samples 在分类后、守卫前还有
-    一次 failed 空 detail 的全文件信号回填（_scan_run_signals），守卫判定须按
+    一次 failed 空 detail 的有界信号回填（_scan_run_signals），守卫判定须按
     各自回填后的 detail 执行（_is_phantom_signal_failure）——若守卫前先行回填，
     collect_runs_stats 对「error 终态空文本」run 的既有计数会被改写。
     """
@@ -2269,9 +2280,11 @@ class SelfReviewScheduler:
 
         只处理注入清单（entries）内的 id；命中条件为 (日期, 小节, 原文快照)
         逐字一致——不一致（运行期间文件被并发编辑）跳过该条并记 WARNING，
-        绝不按序号盲删。同日期节同小节下逐字相同的重复条目按收集序（id 序）
-        逐块核销（code-review item ff0901b2eba8：三元组键不唯一，同文重复
-        条目各自可命中各自的 id），各自命中只删对应块。条目移除后空小节剔除，
+        绝不按序号盲删。同日期节同小节下逐字相同的重复条目按「块序对齐 id
+        序号」核销（code-review item ff0901b2eba8：三元组键不唯一，同文重复
+        条目各自可命中各自的 id；4a24ddf3eab1：文件中第 k 个同文块只对位收集
+        序第 k 个 id 且该 id 在 resolved 清单才删——仅判后一条时前一同文块
+        不再被误删），各自命中只删对应块。条目移除后空小节剔除，
         小节全空的日期节整体剔除；未涉及的日期节逐字保留（涉及块按机器格式
         规范化重渲染）。
         """
@@ -2301,16 +2314,20 @@ class SelfReviewScheduler:
             )
             if not text:
                 return []
-            # (日期, 小节, 原文快照) -> 待核销 id 队列（code-review item
-            # ff0901b2eba8）：同键同文重复条目全部入队，按收集序（即文件序）
-            # 逐块核销，避免 dict 单值覆盖使后来者永远匹配不上。
+            # (日期, 小节, 原文快照) -> 同键全部 id（按收集序=文件序；code-
+            # review item ff0901b2eba8：三元组键不唯一，同键同文重复条目全部
+            # 入列，避免 dict 单值覆盖使后来者永远匹配不上）。收录全部同键 id
+            # 而非仅待核销者——块序对位需要完整收集序（4a24ddf3eab1：只录
+            # 待核销 id 会让第 k 块错配第 j 个待核销 id，判后一条时误删前一
+            # 同文块）。
             match_key: Dict[Tuple[str, str, str], List[str]] = {}
             for eid, e in by_id.items():
-                if eid in targets:
-                    match_key.setdefault((e["date"], e["section"], e["text"]), []).append(eid)
+                match_key.setdefault((e["date"], e["section"], e["text"]), []).append(eid)
             target_dates = {by_id[eid]["date"] for eid in targets}
             preamble, blocks = parse_todo_blocks(text)
             matched_ids: set = set()
+            # 同文块出现序计数（4a24ddf3eab1）：键含日期与小节，跨日期节天然隔离
+            occurrence: Dict[Tuple[str, str, str], int] = {}
             new_blocks: List[Tuple[str, List[str]]] = []
             for date, body in blocks:
                 if date not in target_dates:
@@ -2345,15 +2362,20 @@ class SelfReviewScheduler:
                         continue
                     if is_new_bullet:
                         item = line[2:].strip()
-                        # 同文重复条目按未消费 id 队列逐个核销：命中块只消费
-                        # 队首一个 id，其余同文条目留待各自块命中时核销
-                        eid = next(
-                            (
-                                cand
-                                for cand in match_key.get((date, cur["title"], item)) or []
-                                if cand not in matched_ids
-                            ),
-                            None,
+                        # 同文重复条目按「块序对齐 id 序号」核销（4a24ddf3eab1）：
+                        # 第 k 个同文块只对位收集序第 k 个 id，且该 id 在
+                        # resolved 清单才删除——判哪条删哪条，仅判后一条时
+                        # 前一同文块保留；同文块数与条目收集数漂移（并发编辑）
+                        # 时越界不删，留待末尾 skipped WARNING 兜底
+                        key = (date, cur["title"], item)
+                        occurrence[key] = occurrence.get(key, 0) + 1
+                        same_key = match_key.get(key) or []
+                        ord_idx = occurrence[key]
+                        eid = (
+                            same_key[ord_idx - 1]
+                            if ord_idx <= len(same_key)
+                            and same_key[ord_idx - 1] in targets
+                            else None
                         )
                         if eid:
                             matched_ids.add(eid)

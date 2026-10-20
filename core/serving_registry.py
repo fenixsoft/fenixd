@@ -508,37 +508,81 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                     f"without killing",
                 )
         # 记入待摘名单（匹配语义同 remove：_pid_eq 严格 pid 匹配，spec 非空
-        # 时叠加同值限定），收尾统一批量摘除
-        stale.append((pid, spec))
+        # 时叠加同值限定），收尾统一批量摘除；随行携带身份锚点快照
+        # （start_ticks/registered_at）：快照取得与收尾摘除之间隔着收割等待
+        # 等秒级窗口（kill_process_group 最长 3 秒），期间旧条目进程已亡、
+        # 同 spec 重验 spawn 新实例且系统复用同一 pid 时，register 会就地
+        # 刷新该 (pid, spec) 的身份快照——收尾须按锚点复核（范式同
+        # state_machine._anchor_recheck_locked 的锁内锚点复核）仍等于快照值
+        # 才摘，防 stale 名单按值匹配误删新登记、使新实例脱离登记制收割面。
+        stale.append(
+            (
+                pid,
+                spec,
+                {
+                    "start_ticks": entry.get("start_ticks"),
+                    "registered_at": entry.get("registered_at"),
+                },
+            )
+        )
     if malformed or stale:
         # stale 按 (pid, spec) 匹配（语义同 remove），malformed 按值相等匹配
         # （entries() 快照与 _mutate 内重读是两次独立 json 解析，对象身份必然
         # 不同）；pid 须类型精确一致——bool 是 int 子类，畸形 {"pid": true} 与
         # 合法 pid=1 值相等，纯值匹配会把合法条目一并误摘，类型锚定后无误摘
         # 风险，并发 register 的新条目同样不受波及。
+        # 锚点已刷新（期间同 (pid, spec) 发生新实例登记）而保留的条目：
+        # (pid, spec) 锁内收集，_mutate 返回后（锁外）统一留痕——持锁窗口
+        # 不含日志（同 state_machine._anchor_recheck_locked 范式）
+        kept_fresh = []
+
         def _purge(records):
             before = len(records)
-            records[:] = [
-                r
-                for r in records
-                if not (
-                    any(
-                        type(r.get("pid")) is type(m.get("pid")) and r == m
-                        for m in malformed
-                    )
-                    or any(
-                        _pid_eq(r.get("pid"), pid)
+            kept = []
+            for r in records:
+                if any(
+                    type(r.get("pid")) is type(m.get("pid")) and r == m
+                    for m in malformed
+                ):
+                    continue
+                hit = next(
+                    (
+                        (pid, spec, anchor)
+                        for pid, spec, anchor in stale
+                        if _pid_eq(r.get("pid"), pid)
                         and (not spec or r.get("spec") == spec)
-                        for pid, spec in stale
-                    )
+                    ),
+                    None,
                 )
-            ]
+                if hit is None:
+                    kept.append(r)
+                    continue
+                _, _spec, anchor = hit
+                # 锁内锚点复核：锚点仍等于 sweep 快照值才认定是快照所指条目
+                # 并摘除；不等（register 已刷新 start_ticks/registered_at）
+                # 说明是 pid 复用后新登记的身份快照，保留该条目（否则新实例
+                # 自此脱离登记制收割面）。
+                if all(
+                    r.get(f) == anchor.get(f)
+                    for f in ("start_ticks", "registered_at")
+                ):
+                    continue
+                kept_fresh.append((hit[0], _spec))
+            records[:] = kept
             return len(records) != before
 
         try:
             reg._mutate(_purge)
         except OSError:
             pass  # 非阻塞：写盘失败下轮清扫再清（同 register/remove 口径）
+        for pid, spec in kept_fresh:
+            if logger:
+                logger.warning(
+                    "serving_registry",
+                    f"skip purge pid={pid} (spec={spec or '-'}) stale-entry "
+                    f"anchor refreshed since snapshot (pid reused by new "
+                    f"register?) — keeping refreshed entry",
+                )
     if harvested and logger:
         logger.warning(
             "serving_registry",

@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from core.proc_utils import guard_killpg
-from core.signals import validate_scheduling_kick_spec
+from core.spec_naming import validate_spec_name
 # add-harness-adapter-layer 4.2：叙事通道 adapter 化（命令构造唯一入口
 # ClaudeAdapter、spawn 原语 one_shot；超时清场仍用本模块 _kill_process_group）
 from core.agent_runner.harness import (  # noqa: E402
@@ -481,7 +481,7 @@ def _collect_report_path(project_root: Any, spec: str) -> Optional[str]:
     """fail-open 采集验证报告路径存在性（report_gate 同一惯例路径）。"""
     if not spec or project_root is None:
         return None
-    if validate_scheduling_kick_spec(spec) is not None:
+    if validate_spec_name(spec) is not None:
         # spec 名须为 kebab-case 白名单形态才能拼进产物路径（与 verify-progress
         # 读侧防御口径对齐），含 .. 等成分的越界值按不存在处理
         return None
@@ -640,7 +640,7 @@ def _collect_verification_materials(
         return None
     if signal_type not in VERIFY_FAMILY_SIGNALS:
         return None
-    if validate_scheduling_kick_spec(spec) is not None:
+    if validate_spec_name(spec) is not None:
         # spec 名须为 kebab-case 白名单形态才能拼进 spec/changes/<spec>/... 与
         # .fenix/verify-progress/<spec>/... 产物路径（与 verify-progress 读侧
         # 防御口径对齐），越界值按无材料处理

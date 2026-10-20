@@ -1945,21 +1945,13 @@ class ConfigLoader:
         breaker = cls.get(config, "admin.merge_breaker_threshold", None)
         if breaker is None:
             breaker = cls.get(config, "agents.merge_breaker_threshold", 2)
-        # 类型校验 fail-open（code-review item d2344d1546c2）：_validate 只在
-        # dashboard 写路径把关（须正整数 ≥1），手改 config.yaml 的非数字值
-        # （"two"/list/dict）此前让下方 int(breaker) 抛 ValueError/TypeError
-        # 而非回退默认，打破本类其余读取助手的 fail-open 归一哲学。bool
-        # （int 子类，恒通过 isinstance int 检查）与 ≤0（熔断阈值无意义：
-        # 0/负值使 _merge_streak 恒触发）同按非法回文档默认 2。
-        if isinstance(breaker, bool):
-            breaker = 2
-        else:
-            try:
-                breaker = int(breaker)
-            except (TypeError, ValueError):
-                breaker = 2
-            if breaker <= 0:
-                breaker = 2
+        # 类型校验 fail-open（code-review item d2344d1546c2 的 fail-open 哲学
+        # 不变）：归一收敛 _normalize_int_value（code-review 9177db72bbeb）——
+        # 与 run_infra_breaker.threshold（item f03d70778889）同为熔断阈值语义，
+        # 非整值浮点不再被 int() 静默截断（2.9 此前截成 2 直接生效）而回文档
+        # 默认 2；bool/非数值/非有限浮点/≤0（0/负值使 _merge_streak 恒触发）
+        # 同回缺省，整值浮点仍按整数接受。
+        breaker = cls._normalize_int_value(breaker, 2, positive=True)
         brm = admin.get("bug_repair_mode", "inplace")
         if brm not in VALID_BUG_REPAIR_MODES:
             # 校验层已拦截非法值；运行期兜底（直读脏配置的旁路调用）回退缺省
@@ -2014,43 +2006,27 @@ class ConfigLoader:
         narrative_enabled = admin.get("narrative_enabled", True)
         if not isinstance(narrative_enabled, bool):
             narrative_enabled = True
-        narrative_timeout_raw = admin.get("narrative_timeout_seconds")
-        if isinstance(narrative_timeout_raw, bool) or (
-            isinstance(narrative_timeout_raw, float)
-            and not narrative_timeout_raw.is_integer()
-        ):
-            # bool 与非整值浮点回缺省（code-review item ed7dedfe5a87）：2.5
-            # 旧实现经 _num 的 int() 截成 2 直接生效，与 run_infra_breaker.
-            # threshold（item f03d70778889）/ _normalize_transient_seconds 的
-            # 「非整值浮点回退缺省」口径对齐（.nan/.inf 的 is_integer() 为
-            # False，同在此回缺省）。整值浮点（如 180.0）仍按整数接受。
-            narrative_timeout = DEFAULT_TIMEOUT_SECONDS
-        else:
-            narrative_timeout = _num(
-                narrative_timeout_raw, DEFAULT_TIMEOUT_SECONDS, int
-            )
-            if narrative_timeout is None or narrative_timeout <= 0:
-                narrative_timeout = DEFAULT_TIMEOUT_SECONDS
+        # 归一收敛 _normalize_int_value（code-review b9649029122c）：与同族读取器
+        # run_infra_breaker.threshold（item f03d70778889）口径一致，数字字符串
+        # （"180"）不再经 int() 转换生效而回缺省，同一「引号串」写法在两类
+        # 读取器下命运一致；bool/非数值/非有限浮点/非整值浮点（item
+        # ed7dedfe5a87）/≤0 仍回缺省，整值浮点（如 180.0）仍按整数接受。
+        narrative_timeout = cls._normalize_int_value(
+            admin.get("narrative_timeout_seconds"),
+            DEFAULT_TIMEOUT_SECONDS,
+            positive=True,
+        )
 
         # add-alert-self-heal-marking 3.2：告警自愈安静窗口（分钟）——瞬态
         # 告警签名安静多久后标「已自愈」。缺省 1440（design D4：盖过跨日
-        # 同刻复发节律）；bool / 负数 / 零 / 非 int / 非整值浮点回缺省，与
-        # 上方 narrative_timeout 同口径（整值浮点仍按整数接受）。
-        self_heal_quiet_raw = admin.get("self_heal_quiet_minutes")
-        if isinstance(self_heal_quiet_raw, bool) or (
-            isinstance(self_heal_quiet_raw, float)
-            and not self_heal_quiet_raw.is_integer()
-        ):
-            self_heal_quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
-        else:
-            self_heal_quiet_minutes = _num(
-                self_heal_quiet_raw, DEFAULT_SELF_HEAL_QUIET_MINUTES, int
-            )
-            if (
-                self_heal_quiet_minutes is None
-                or self_heal_quiet_minutes <= 0
-            ):
-                self_heal_quiet_minutes = DEFAULT_SELF_HEAL_QUIET_MINUTES
+        # 同刻复发节律）。归一收敛 _normalize_int_value（code-review
+        # b9649029122c，与上方 narrative_timeout 同口径）：数字字符串回缺省，
+        # bool / 负数 / 零 / 非 int / 非整值浮点回缺省，整值浮点仍按整数接受。
+        self_heal_quiet_minutes = cls._normalize_int_value(
+            admin.get("self_heal_quiet_minutes"),
+            DEFAULT_SELF_HEAL_QUIET_MINUTES,
+            positive=True,
+        )
 
         # interrupt-recovery-preserve D1：显式提供的 shutdown_drain_seconds
         # 非整值浮点回缺省（code-review item e3dbb81371ea）——旧实现经 _num 的

@@ -1221,10 +1221,12 @@ def build_prehistoric_prompt(
         "{{COVERED_CAPS}}",
         "\n".join(f"- {c}" for c in sorted(covered_caps)) or "（空）",
     )
-    now_local, now_tz = _now_local_parts()
+    # 局部改名 now_stamp：避免与模块级 timelib 原语 now_local 同名遮蔽（同
+    # build_prompt 口径，code-review 0722632ec0d9）。
+    now_stamp, now_tz = _now_local_parts()
     return (
         text.replace("{{VIOLATIONS_BLOCK}}", _violations_block(violations or []))
-        .replace("{{NOW_LOCAL}}", now_local)
+        .replace("{{NOW_LOCAL}}", now_stamp)
         .replace("{{NOW_TZ}}", now_tz)
     )
 
@@ -1734,6 +1736,10 @@ def run_backfill(
             try:
                 spawn(base_prompt, run_id)
             except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
+                # 早退路径同校验异常分支差集回滚：run 被杀前可能已写入部分
+                # 知识页，残留落入重入批次基线会被后续 pathspec 提交连带
+                # 落库、绕过校验闸门（code-review 5fadf61e2d82）
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root,
                     f"回填聚类自举 run 失败（{run_id}）：{e}",
@@ -1742,6 +1748,8 @@ def run_backfill(
                 return {"triggered": True, "ok": False, "reason": "bootstrap-spawn-failed"}
             domain_map = _read_json(domain_map_path)
             if not isinstance(domain_map, dict) or not domain_map:
+                # 同上：run 已落盘的域骨架页未过校验，不留工作区
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root,
                     f"回填聚类自举 run（{run_id}）未产出域归位清单 {DOMAIN_MAP_RELPATH}，"
@@ -1896,12 +1904,17 @@ def run_backfill(
             try:
                 spawn(prompt, run_id)
             except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
+                # 同自举段口径：早退路径差集回滚，防残留被后续 pathspec
+                # 提交连带落库（code-review 5fadf61e2d82）
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root, f"回填史前复原 run 失败（{run_id}）：{e}", log
                 )
                 return {"triggered": True, "ok": False, "reason": "prehistoric-spawn-failed"}
             inventory = _read_json(prehistoric_path)
             if not isinstance(inventory, list) or not inventory:
+                # 同上：run 可能已写入部分史前页
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root,
                     f"回填史前复原 run（{run_id}）未产出史前清单 "
@@ -1911,6 +1924,8 @@ def run_backfill(
                 return {"triggered": True, "ok": False, "reason": "prehistoric-no-inventory"}
             missing = _missing_prehistoric_pages(project_root, inventory, chain_index)
             if missing:
+                # 同上：未过校验的产出不留工作区
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
                     project_root,
                     f"回填史前复原 run（{run_id}）未覆盖能力缺史前页："

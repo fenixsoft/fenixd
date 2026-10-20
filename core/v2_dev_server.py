@@ -438,6 +438,10 @@ def base_url(port: int) -> str:
 
 def _pgrep_dev_servers(pattern: str) -> list:
     """pgrep -f 匹配 cmdline，返回 PID 列表（pgrep 不可用/超时返回空）。"""
+    # [fenix-ignore:e2a83fea7d79] 有意不加防护/可观测：pgrep -f 匹配 marker 字面量的
+    # 命中数受 dev-server 实际数量约束（个位数），无超大输出风险；pgrep 缺失
+    # 被吞为空列表与 docstring 声明的降级口径一致（清扫能力静默退化），不值得
+    # 为其新增按进程生命周期去重的告警面（code-review e2a83fea7d79 判 not_worth_fixing）
     try:
         res = subprocess.run(
             ["pgrep", "-f", pattern],
@@ -1051,7 +1055,11 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
         if not _pid_alive(pid):
             continue  # 已消亡：摘登记
         snapshot = entry.get("start_ticks")
-        if not (isinstance(snapshot, int) and snapshot > 0):
+        # bool 显式排除（code-review 6c9a404d284f）：bool 是 int 子类，手改
+        # v2_servers.json 写 true 会以 True>0 通过纯 isinstance/>0 形状检查，
+        # 随后恒与真实 start_ticks 失配被误判 pid 复用——复用 _registry_pid_valid
+        # 与 pid 校验口径对齐（命中走下方「快照缺失/非法」摘登记不杀分支）。
+        if not _registry_pid_valid(snapshot):
             # 快照缺失/非法：身份无法核实（eecd5c191ad7），与 pid 复用同
             # 语义——摘登记不杀，防 pid 被复用后误杀无关进程。
             if logger:

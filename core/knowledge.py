@@ -290,6 +290,17 @@ def validate_knowledge(project_root) -> list:
             # 故下方越界判定作用于解码后的值（先行复核），转义形态不得绕出
             # 真相源目录。
             path_part = urllib.parse.unquote(path_part)
+            # %00 解码出 NUL 字节时下方 resolve 抛 ValueError（embedded
+            # null byte），该调用位于 try 之外，异常会击穿整个
+            # validate_knowledge（蒸馏批被 _worker 记「执行异常」误登台账，
+            # knowledge_audit / knowledge_backfill 基线采集点同步被击穿），
+            # 与本函数对 UnicodeDecodeError 的显式防护同口径按格式违规记
+            # 条目（code-review 375576fcef79）。
+            if "\x00" in path_part:
+                violations.append(
+                    f"{label}: 链接目标格式非法（含 NUL 字节）: {target}"
+                )
+                continue
             resolved = (rel_dir / path_part).resolve()
             try:
                 resolved.relative_to(kroot.resolve())
@@ -842,7 +853,7 @@ def _audit_stray_writes(proot: Path, before, label: str) -> None:
         )
 
 
-def _expand_knowledge_surface(proot: Path, paths) -> set:
+def _expand_knowledge_surface(proot: Path, paths) -> set | None:
     """把 status 路径快照展开到 ``spec/knowledge/`` 文件粒度。
 
     git status 对「目录下无任何已跟踪文件」的未跟踪子树按整目录折叠展示
@@ -850,8 +861,10 @@ def _expand_knowledge_surface(proot: Path, paths) -> set:
     已跟踪文件）的全部产出会被折叠条目藏住，按文件路径过滤得空集而跳过
     提交。仅当快照含与 knowledge 表面相交的折叠条目（条目在 knowledge
     目录之下，或 knowledge 目录在其子树内）时，用 ls-files 枚举 knowledge
-    表面实际未跟踪文件补全；其余路径原样保留。探测失败按空展开降级
-    （差集收窄为保守跳过，不误提交）。
+    表面实际未跟踪文件补全；其余路径原样保留。探测失败返回 None：若
+    按空集降级，折叠条目藏住的未跟踪产出会被差集误判为「无本次 run
+    新增」而按成功收尾（code-review 4d0b4682b40a 无账滞留链），调用方
+    须按快照不可用口径处置（不提交、登重试台账）。
     """
     surface: set = set()
     kn_prefix = KNOWLEDGE_DIR + "/"
@@ -877,8 +890,9 @@ def _expand_knowledge_surface(proot: Path, paths) -> set:
             surface.update(tok for tok in probe.stdout.split("\0") if tok)
         else:
             logger.warning(
-                "knowledge-distill 未跟踪文件枚举失败，基线差集按现状收窄"
+                "knowledge-distill 未跟踪文件枚举失败，无法可靠判定基线差集"
             )
+            return None
     return surface
 
 
@@ -919,6 +933,17 @@ def _commit_output(proot: Path, archived_names: list, baseline=None) -> str | No
         # 否则折叠条目（如 spec/ 全树未跟踪时的 '?? spec/'）会把产出藏住
         after_k = _expand_knowledge_surface(proot, after)
         baseline_k = _expand_knowledge_surface(proot, baseline)
+        if after_k is None or baseline_k is None:
+            # 枚举失败时差集不可靠（折叠条目可能藏住产出，误判「无变更」
+            # 会按 ok 收尾清 pending 让产出无账滞留），返回 None 走提交失败
+            # 处置（_run_batch 短退避重试 + 登重试台账），与「基线快照不可
+            # 用」同一口径（code-review 4d0b4682b40a）
+            logger.warning(
+                "knowledge-distill 自动提交：spec/knowledge/ 未跟踪文件枚举"
+                "失败，无法可靠甄别基线差集，跳过收纳，按提交失败处置，"
+                "请人工核查"
+            )
+            return None
         run_new = sorted(p for p in after_k if p not in baseline_k)
         overlap = sorted(p for p in after_k if p in baseline_k)
         if overlap:

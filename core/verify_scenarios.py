@@ -831,8 +831,14 @@ def _diff_planner_output_impl(
     # planner 产出的「保留/新增」场景（非移除项）
     planner_ids = set()
     planner_by_id = {}
-    for s in planner_scenarios:
+    # 剔除留痕（code-review 10e98d8d1125，对齐首轮分支 5a762fcbff17 纪律）：
+    # 非 dict/缺 id 条目静默丢弃会让冻结集表现无法从日志还原，复用首轮分支
+    # 同款 skipped 收集记 WARNING；remove_reason 声明移除走下方 sid in reasons
+    # 路径、已有「有理由删减留痕」，不在其中。
+    skipped: list[str] = []
+    for i, s in enumerate(planner_scenarios):
         if not isinstance(s, dict):
+            skipped.append(f"[{i}]非对象")
             continue
         raw_sid = s.get("id")
         # 显式判空而非 ``or``/真值回退（code-review 5e4596631913，与
@@ -840,11 +846,20 @@ def _diff_planner_output_impl(
         # 不得当「缺 id」跳过（否则持久化集对应条目被判「无理由缺失」误报）。
         sid = str(raw_sid) if raw_sid is not None else ""
         if not sid:
+            skipped.append(f"[{i}]缺 id")
             continue
         if sid in reasons:
             continue  # 该场景被 planner 显式移除（带理由）
         planner_ids.add(sid)
         planner_by_id[sid] = s
+    if skipped:
+        # 剔除留痕（code-review 5a762fcbff17）：与首轮分支同口径，含原始
+        # 数组下标供按日志定位；本分支对坏条目同样只是丢弃不入集。
+        _logger.warning(
+            "场景集 diff 跳过 %d 条 planner 条目（非对象/缺 id，不入冻结集）: %s",
+            len(skipped),
+            "、".join(skipped),
+        )
 
     # 交互契约元数据（D2）：既有条目的 covers 以 planner 本轮产出为准刷新
     # （场景重排后映射可能变化），新增条目直接携带。kind 仅在 planner 产出
