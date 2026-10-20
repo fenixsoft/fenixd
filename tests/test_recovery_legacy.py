@@ -48,6 +48,9 @@ class TestLegacyRegister:
     def test_consume_returns_record_and_clears(self, tmp_path):
         wm = make_wm(tmp_path)
         wm.register_legacy("s1", tmp_path / "impl-s1-100", "fenix/s1-100")
+        # consume 出册复核（item 0a6ef391747a）：宽限期内刚登记的记录视为并发
+        # 新遗产放回出册位——本测试模拟既成遗产，先人工做老再消费。
+        wm._legacy["s1"]["registered_at"] -= LEGACY_GRACE_SECONDS + 1
         rec = wm.consume_legacy("s1")
         assert rec is not None
         assert rec["branch"] == "fenix/s1-100"

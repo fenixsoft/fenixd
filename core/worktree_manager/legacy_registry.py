@@ -91,7 +91,10 @@ class G2LegacyRegistryMixin:
             "registered_at": time.time(),
             "dirty": bool(wt_str),  # worktree 模式待刷新脏快照；仅分支模式无脏文件
         }
-        return old.get("path") if old is not None else None
+        # 非 dict 防御（code-review item 16a559a09f44，与 stale_sweep.
+        # cleanup_stale_worktrees 读取同表的防御口径对齐）：当前写入方均产出
+        # dict，纯防御——异形记录混入时不 AttributeError 穿出，视为无覆盖。
+        return old.get("path") if isinstance(old, dict) else None
 
     def get_legacy(self, spec_name: str) -> Optional[dict]:
         """返回某 spec 的遗产记录（copy），无则 None。
@@ -110,8 +113,24 @@ class G2LegacyRegistryMixin:
         返回 None 表示该 spec 无在册遗产（幂等：重复调用安全）。回收时同步物理删除
         遗产 worktree 与分支（失败后保留的半成品不再需要），使清扫器不再对其豁免。
         物理删除失败仅记 WARNING，内存态遗产仍清除以放行后续逻辑。
+
+        pop 后复核（code-review item 0a6ef391747a）：pop 到的条目若仍处宽限期内
+        （LEGACY_GRACE_SECONDS 内刚被并发车道重新登记的新遗产），放回出册位并
+        返回 None、不做物理回收——详见下方实现注。
         """
-        rec = self._legacy.pop(spec_name, None)
+        # 出册与复核同锁：_legacy 以 spec 为键、无 agent_type/family 维度，本
+        # run 成功 merge 消费遗产的同时，同 spec 另一车道（如 verifier 失败经
+        # keep_for_reuse）可能刚重新登记——pop 到宽限期内的新登记视为并发新
+        # 死亡现场而非本 run 消费的旧遗产：setdefault 放回出册位（保留清扫
+        # 豁免）并返回 None（与 _reclaim_expired_legacy 的 pop 后复核同口径
+        # 0d5c6c7e148e；临界区内只做字典读写，物理回收留锁外）。
+        with self._spec_lock_th:
+            rec = self._legacy.pop(spec_name, None)
+            if rec is not None and (
+                time.time() - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
+            ):
+                self._legacy.setdefault(spec_name, rec)
+                rec = None
         if rec is None:
             return None
         self._active_reuse.pop(spec_name, None)
