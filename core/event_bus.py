@@ -129,6 +129,15 @@ class EventBus:
         if not isinstance(schedule, dict):
             schedule = {}
         poll_interval = schedule.get("poll_interval_minutes", 30)
+        # 数值归一（code-review 67c654146188）：与 _periodic_scan_loop 的热读
+        # 归一同口径（float 转换 + isfinite 校验，异常回退 30.0），脏值不再以
+        # None/字符串原样进入启动日志文案与兜底参数。
+        try:
+            poll_interval = float(poll_interval)
+            if not math.isfinite(poll_interval):
+                poll_interval = 30.0
+        except (TypeError, ValueError, OverflowError):
+            poll_interval = 30.0
         # 同上存活复用守卫（code-review item de45aae4e422）：join 超时后仍存活
         # 的旧扫描线程复用，不再另起第二条。
         if self._scan_thread and self._scan_thread.is_alive():
@@ -1014,6 +1023,20 @@ class EventBus:
         # （RLock 亦允许既有持锁调用方重入）。
         with self._state_lock:
             specs = self.state_machine.read_all()
+            # 空读视为异常读而非权威删除（code-review 601892dd73ec，与
+            # _diff_specs 的 3838697ca747 空读守卫同口径）：STATE.md 被外部
+            # 截断/清空时若照常重写快照，``_known_specs`` 会被整体清空——
+            # 截断窗口内重启则 start() 建立空基线（解析成功不抛错），文件恢复
+            # 后 watcher 的 checksum 变化会把全部存量 SPEC 判为「新出现」并
+            # 重放 hook 事件（_snapshot_baseline 判空重建恰好使该形态持续存在
+            # 而非自愈）。保留既有快照并跳过重写，待下一轮读数确认。
+            if not specs:
+                self.logger.warning(
+                    "event_bus",
+                    "STATE.md 读出空段（可能被外部截断/清空）：跳过快照重写，"
+                    "保留既有 _known_specs 待下一轮确认",
+                )
+                return
             # status None 归一（code-review item a1210ff24c15）：.get 默认值只兜
             # 键缺失，手改 STATE.md 写出显式 null（YAML 空值）时返回 None 原样
             # 入快照；``or`` 形态与 _diff_specs 两处取值口径统一。
