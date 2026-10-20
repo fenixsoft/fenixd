@@ -165,7 +165,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
               <div className="whitespace-nowrap text-sm font-medium text-foreground">
                 {headerLabelFor(message.type, brand.name)}
               </div>
-              <span className="ml-auto text-[11px] text-gray-400">{formattedTime}</span>
+              <span className="ml-auto text-[11px] text-muted-foreground">{formattedTime}</span>
             </div>
           )}
 
@@ -203,7 +203,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
                 {formattedMessageContent}
               </div>
             ) : (
-              <div dir="auto" className="text-sm text-gray-700">
+              <div dir="auto" className="text-sm text-foreground">
                 {(() => {
                   // JSON 探测/格式化结果已 memo 化（item 14eea692ef38），此处只做分支渲染
                   if (jsonFormattedContent !== null) {
@@ -240,7 +240,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
                    jsonFormattedContent，item d49ecef4bdd2），复制同源格式化
                    文本，保证「剪贴板 == 气泡所见」（用户消息侧同理复制其原样
                    展示的 content） */
-                <div className="group mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400">
+                <div className="group mt-1 flex w-full items-center gap-2 text-[11px] text-muted-foreground">
                   <MessageCopyControl
                     content={
                       jsonFormattedContent !== null ? jsonFormattedContent : formattedMessageContent
