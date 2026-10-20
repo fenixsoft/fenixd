@@ -21,4 +21,4 @@ def safe_component(name: str) -> str:
     stripped = str(name).strip()
     if not stripped or not stripped.strip("."):
         return "_"
-    return re.sub(r"[\\/\x00]", "_", name)
+    return re.sub(r"[\\/\x00]", "_", stripped)
