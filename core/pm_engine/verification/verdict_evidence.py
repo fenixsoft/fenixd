@@ -9,11 +9,11 @@ verified 结果持久化门禁。纯结构搬移，零行为变化。
 
 import json
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
+from core.fs_utils import atomic_write_text
 
 from typing import Optional
 
@@ -622,47 +622,21 @@ def _attach_derived_failed_assertions(report: Optional[dict], violations: list) 
     return enriched
 
 
-def _write_json_atomic(path: Path, payload: object, prefix: str) -> None:
+def _write_json_atomic(path: Path, payload: object) -> None:
     """JSON 原子写单点（``_write_verdict_violations`` /
     ``_write_resynthesis_directive`` 共用，此前两处近逐字复制约 30 行）。
 
-    mkstemp 同目录临时文件 → fdopen → fsync → os.replace 原子替换：写入
-    中途崩溃不留截断 JSON（两处读侧均 fail-open，截断文件会静默丢失违规
-    明细/重合成素材致 judge 盲重试）。失败清理临时文件后按
-    ``(OSError, TypeError, ValueError)`` 上抛，由调用方统一 WARNING 留痕。
+    薄委托 core.fs_utils.atomic_write_text 收口单点（对齐 scenario_gate.
+    _atomic_write_text 先例，code-review item 055124d22edd）：mkstemp 唯一
+    临时名 + fsync + os.replace + 权限修复（缺省 0644，与同目录
+    test_scenarios.json 口径一致——旧手写版 mkstemp 恒 0600 经 replace 会
+    静默收紧既有 0644 文件）+ 尽力而为目录 fsync。旧版专用 prefix 参数由
+    fs_utils 的 ``.{目标名}.XXXX.tmp`` 唯一临时命名取代（并发可辨识性不降），
+    两处调用点已同步去掉该参数。json.dumps 的 TypeError/ValueError 在委托
+    前抛出、写盘失败抛 OSError，异常面与旧实现一致，仍由调用方统一 WARNING
+    留痕。
     """
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=prefix, suffix=".json.tmp"
-    )
-    try:
-        # fdopen 失败路径显式接管（对齐 agent_runner _write_claim_placeholder
-        # 先例 cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，fdopen
-        # 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            # fsync 对齐全仓原子写口径（core/signals.py / core/serving_registry.py）：
-            # 只 flush 时掉电场景下 rename 后目标可能空/截断。
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.replace(tmp_path, path)
-    except (OSError, TypeError, ValueError):
-        # 清理临时文件后上抛：写盘/替换失败（含 json.dump 遇不可序列化载荷
-        # 抛 TypeError/ValueError），调用方外层 WARNING 留痕，.json.tmp 不残留。
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _write_verdict_violations(
@@ -689,7 +663,7 @@ def _write_verdict_violations(
         # 原子替换（与 _write_resynthesis_directive 同口径，样板收编至
         # _write_json_atomic）：写入中途崩溃不留截断 JSON——读侧 fail-open
         # 会丢违规明细致重试 judge 盲重试；写失败由外层 WARNING 统一留痕。
-        _write_json_atomic(path, payload, prefix=".verdictv.")
+        _write_json_atomic(path, payload)
     except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -823,7 +797,7 @@ def _write_resynthesis_directive(
         # 原子替换样板收编至 _write_json_atomic（同 _write_verdict_violations
         # 口径）：写失败由外层 WARNING 统一留痕——零留痕时重试 judge 收不到
         # 定向修复素材，会白烧满重合成预算才升级且 .json.tmp 残留。
-        _write_json_atomic(path, payload, prefix=".resynth.")
+        _write_json_atomic(path, payload)
     except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
@@ -1024,6 +998,17 @@ def _handle_attr_dedup_rejection(
     # 任一失败 → 失败 result dict 原样早退（禁止 load_report 复读旧产物）。
     re_judge = _dispatch_judge(pipeline, spec_name, violations_entries, "重合成")
     if isinstance(re_judge, dict):
+        # code-review 886921f0aca0：dispatch_frozen/cancelled 属人工接管让位
+        # ——与上方 report_missing/二次违规出口及 _escalate_dedup_resynthesis
+        # 清除点同口径清三件套（e92461050ae5）：滞留的 directive 会使解除接
+        # 管后的新 episode 首 judge 仍被旧纪律锚定（prompt_builder 按「文件
+        # 在场」无条件注入），attempts 亦跨接管周期残留累计。dispatch_failed
+        # 非人工接管（引擎将重派同一 spec），保留 directive 以延续重合成预算
+        # 与差异化素材——两分支差异依据见此。
+        if re_judge.get("cause") in ("dispatch_frozen", "dispatch_cancelled"):
+            pipeline._clear_resynthesis_directive(spec_name)
+            pipeline._clear_requeue_manifest(spec_name)
+            pipeline._clear_verdict_violations(spec_name)
         return re_judge
 
     # 4) 重合成产物回灌完整校验链（与 _verify_verdict_evidence 既有路径同源）
