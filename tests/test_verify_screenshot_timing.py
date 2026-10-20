@@ -23,8 +23,11 @@ import json
 import shutil
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from PIL import Image
 
 from core.verify_engine.web_runner import WebRunner
 from core.verify_engine.scenarios import TestScenario
@@ -243,14 +246,14 @@ class TestVisualBaselineScreenshotAttribution(unittest.TestCase):
             screenshots_dir = Path(tmpdir) / ".fenix" / "verify-progress" / \
                 "demo-spec" / "screenshots"
             screenshots_dir.mkdir(parents=True, exist_ok=True)
-            # 预置一张有效 PNG 供 shutil.copy 使用（baseline_created 路径）
+            # 预置一张有效 PNG 供 shutil.copy 使用（baseline_created 路径）。
+            # 须真实可解码：损坏流的截图自 item 8953abec4c68 起被 classify
+            # 判定失败防护按 baseline_deferred 拒绝固化（原硬编码字节即
+            # 残缺流，靠旧缺陷「判定失败照常固化」才走到建基线路径）
+            buf = BytesIO()
+            Image.new("RGB", (2, 2), (255, 255, 255)).save(buf, format="PNG")
             dummy_png = screenshots_dir / "_dummy.png"
-            dummy_png.write_bytes(
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-                b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
-                b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0c"
-                b"IDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05"
-                b"\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+            dummy_png.write_bytes(buf.getvalue())
 
             page = MagicMock()
 
