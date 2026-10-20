@@ -247,11 +247,19 @@ class TestVisualBaselineScreenshotAttribution(unittest.TestCase):
                 "demo-spec" / "screenshots"
             screenshots_dir.mkdir(parents=True, exist_ok=True)
             # 预置一张有效 PNG 供 shutil.copy 使用（baseline_created 路径）。
-            # 须真实可解码：损坏流的截图自 item 8953abec4c68 起被 classify
-            # 判定失败防护按 baseline_deferred 拒绝固化（原硬编码字节即
-            # 残缺流，靠旧缺陷「判定失败照常固化」才走到建基线路径）
+            # 须真实可解码且非纯色/低对比：损坏流自 item 8953abec4c68 起被
+            # 判定失败防护按 baseline_deferred 拒绝固化（原硬编码字节即残缺
+            # 流，靠旧缺陷「判定失败照常固化」才走到建基线路径）；纯色图又
+            # 会被既有防污染门按 blank/low_contrast 判 baseline_rejected，
+            # 故用确定性渐变纹理（64 个互异灰度，std≈0.29、主色占比 1/64）
+            w, h = 8, 8
+            img = Image.new("RGB", (w, h))
+            img.putdata([
+                (r * 32 + c * 4, r * 32 + c * 4, r * 32 + c * 4)
+                for r in range(h) for c in range(w)
+            ])
             buf = BytesIO()
-            Image.new("RGB", (2, 2), (255, 255, 255)).save(buf, format="PNG")
+            img.save(buf, format="PNG")
             dummy_png = screenshots_dir / "_dummy.png"
             dummy_png.write_bytes(buf.getvalue())
 
