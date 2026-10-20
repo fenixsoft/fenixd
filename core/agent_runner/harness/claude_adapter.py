@@ -188,7 +188,10 @@ def ensure_agent_config_dir(
             if isinstance(existing, dict) and existing == settings:
                 _ensure_symlinks()
                 return cfg_dir
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # 非 UTF-8 字节（外部误写/磁盘损坏）与坏 JSON 同路降级：内容视为
+            # 不匹配走下方原子重写路径（口径对齐 build_isolated_settings 与
+            # admin_store._read_unlocked），不向 agent run 构造链上抛。
             pass
         # 内容不匹配（旧版无 env / 用户改过 / 损坏）→ 原子重写（幂等陷阱处置）
         try:

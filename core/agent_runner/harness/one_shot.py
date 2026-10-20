@@ -138,6 +138,13 @@ def run_one_shot(
         popen_kwargs["errors"] = spec.errors
 
     guard = spawn_guard if spawn_guard is not None else contextlib.nullcontext()
+
+    def _sweep_spawned_process_group() -> None:
+        # spawn/on_spawn 失败与 communicate 期中断共用的清场口径：
+        # 清场自身异常不吞原异常（suppress 后继续上抛原异常）
+        with contextlib.suppress(Exception):
+            _kill_process_group(proc, terminate_grace_seconds)
+
     with guard:
         proc = popen_fn(
             spec.argv,
@@ -148,10 +155,9 @@ def run_one_shot(
                 on_spawn(proc)
             except BaseException:
                 # 回调失败同样不遗留活子进程：先按超时同径两段式清场再原样
-                # 上抛（清场自身异常不吞原异常），否则已 spawn 的子进程
-                # （start_new_session 独立进程组）无人登记、无人收割成孤儿
-                with contextlib.suppress(Exception):
-                    _kill_process_group(proc, terminate_grace_seconds)
+                # 上抛，否则已 spawn 的子进程（start_new_session 独立进程组）
+                # 无人登记、无人收割成孤儿
+                _sweep_spawned_process_group()
                 raise
 
     timed_out = False
@@ -181,6 +187,13 @@ def run_one_shot(
         else:
             _kill_process_group(proc, terminate_grace_seconds)
         raise OneShotCommunicateError(e) from e
+    except BaseException:
+        # Ctrl+C/SystemExit 等 BaseException 同样不遗留活子进程：与 on_spawn
+        # 失败路径同构——先按超时同径两段式清场再原样上抛（不走 on_timeout，
+        # 该回调语义仅限超时路径），否则交互式 CLI（bin 一次性入口）Ctrl+C
+        # 时已 spawn 的独立进程组（start_new_session）无人收割成孤儿
+        _sweep_spawned_process_group()
+        raise
     return OneShotResult(
         returncode=proc.returncode,
         stdout=stdout or "",
