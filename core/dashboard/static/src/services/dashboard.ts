@@ -1800,9 +1800,14 @@ export async function getCodeReviewItems(
 }
 
 /** add-code-review-agent-and-quality-tab：读取审查运行进度 */
-export async function getCodeReviewProgress(project: string): Promise<CodeReviewProgress> {
+export async function getCodeReviewProgress(
+  project: string,
+  timeoutMs?: number,
+): Promise<CodeReviewProgress> {
   return request<CodeReviewProgress>(
     `/api/code-review/progress?project=${encodeURIComponent(project)}`,
+    undefined,
+    timeoutMs === undefined ? undefined : { timeoutMs },
   );
 }
 
@@ -1884,9 +1889,14 @@ export interface CodeReviewRunResult {
 }
 
 /** add-code-review-trigger-ack：读取审查触发受理判定结果（无副作用，缺失返回缺省态） */
-export async function getCodeReviewRunResult(project: string): Promise<CodeReviewRunResult> {
+export async function getCodeReviewRunResult(
+  project: string,
+  timeoutMs?: number,
+): Promise<CodeReviewRunResult> {
   return request<CodeReviewRunResult>(
     `/api/code-review/run-result?project=${encodeURIComponent(project)}`,
+    undefined,
+    timeoutMs === undefined ? undefined : { timeoutMs },
   );
 }
 
@@ -1923,9 +1933,14 @@ export function triggerCodeFixRun(project: string) {
 }
 
 /** add-code-fix-manual-trigger：读取手动触发判定结果（无副作用，缺失返回缺省态） */
-export async function getCodeFixRunResult(project: string): Promise<CodeFixRunResult> {
+export async function getCodeFixRunResult(
+  project: string,
+  timeoutMs?: number,
+): Promise<CodeFixRunResult> {
   return request<CodeFixRunResult>(
     `/api/code-review/fix-run-result?project=${encodeURIComponent(project)}`,
+    undefined,
+    timeoutMs === undefined ? undefined : { timeoutMs },
   );
 }
 
