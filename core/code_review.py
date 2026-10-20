@@ -1540,6 +1540,18 @@ def read_progress(project_root) -> dict:
             except OSError:
                 age = 10**9
             running = age <= _run_stale_seconds()
+    else:
+        # run 文件未创建（manifest 已落盘、agent run 未起跑——派发与首行之间
+        # 的窗口，或 spawn 失败后永不创建）：上方 running 判定罩不住该形态，
+        # 零进度停滞检测被 running 短路，run 以 running=false、done=0 静默
+        # 滞留（code-review bd6ab58e5fe0）。按 requested_at 起算补窄口径
+        # pending 判定：manifest 写入后 stale 阈值内仍视为 running（已派发
+        # 未产出），check_progress_stall 的既有 requested_at 超时判定接手，
+        # spawn 失败的 run 同样进入停滞告警面。
+        started = _iso_to_aware_dt(mdata.get("requested_at"))
+        if started is not None:
+            age = now_local().timestamp() - started.timestamp()
+            running = age <= _run_stale_seconds()
     return {
         "running": running,
         "review_id": run_id,
