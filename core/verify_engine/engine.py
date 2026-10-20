@@ -750,8 +750,9 @@ class VerifyEngine:
         # _execute_parallel 的结算口径（r.get("status")）对齐——验收门只校验
         # 场景定义、不校验 Runner 结果形状，Runner.execute 返回缺 status 键的
         # 结果时直接下标会抛 KeyError 穿出 run()（此时 teardown 已完成、报告
-        # 无法落盘）；缺键在此归入 errors 分档（保守判失败而非静默放行，保证
-        # total 恒等于各分档之和，code-review item 18ccbdcf225b）。
+        # 无法落盘）；缺键或取值非任何约定档位的畸形结果在此归入 errors 分档
+        # （保守判失败而非静默放行，保证 total 恒等于各分档之和，code-review
+        # item 18ccbdcf225b、ea075c9a39e5）。
         passed = sum(1 for r in scenario_results if r.get("status") == "pass")
         warnings = sum(1 for r in scenario_results if r.get("status") == "warning")
         # 终态失败两档计数与依赖失败传播判定共用 TERMINAL_FAILURE_STATUSES
@@ -760,9 +761,14 @@ class VerifyEngine:
             sum(1 for r in scenario_results if r.get("status") == st)
             for st in TERMINAL_FAILURE_STATUSES
         )
-        # 缺 status 键的畸形 Runner 结果计入 errors 档（见上），分档和与
-        # total 对账一致，不再出现 total > 分档和的缺口
-        errors += sum(1 for r in scenario_results if "status" not in r)
+        # 兜底档按取值反选（code-review item ea075c9a39e5）：缺 status 键
+        # （get 得 None）或取值不在任何约定分档（None/空串/Runner 契约回归的
+        # 未知值）都计入 errors，分档和与 total 对账一致，不再出现 total >
+        # 分档和的缺口
+        legal_tiers = ("pass", "warning", "blocked-env", *TERMINAL_FAILURE_STATUSES)
+        errors += sum(
+            1 for r in scenario_results if r.get("status") not in legal_tiers
+        )
         blocked_env = sum(1 for r in scenario_results if r.get("status") == "blocked-env")
 
         # blocked-env 计入 warning 统计而非 fail（spec verify-environment-sanity-gate），
