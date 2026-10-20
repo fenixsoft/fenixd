@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, List, Optional, Set
 
-from core.admin_store import _fsync_parent_dir
+from core.admin_store import fsync_parent_dir
 from core.fast_track_result import SCENARIO_STATUSES
 
 # 四分类取值（design D1）
@@ -499,22 +499,33 @@ def triage_violation(scenario: dict) -> Optional[str]:
     # 失效且检测②需自申报清单，若不并入本检测，该形态与 status=fail 及失败
     # 步骤/驱动视觉信号自相矛盾却绕过派生覆盖核对，逐条归因硬门退化为
     # 「任意 1 条形状合规的 triage 即放行」；引擎侧「步骤失败即跳过断言」使
-    # 该形态不可能自然产出，仅 judge 改写可达）也无自申报失败断言清单，而
-    # 场景仍存在失败步骤/驱动视觉结论等失败信号 → 由失败信号派生缺省
-    # failed_assertions 清单（verdict-step-failure-evidence-derivation D1），
-    # 以派生清单为基准执行 triage 覆盖校验：归因未逐条覆盖派生清单仍判违规
-    # 并列出派生条目（fail-closed 不弱化，不给「任意 1 条合规 triage 即放行」
-    # 留口）；逐条覆盖 → 合规——空表不再空转驳回，重试轮 judge 有应申报
-    # 条目可依。
+    # 该形态不可能自然产出，仅 judge 改写可达），而场景仍存在失败步骤/驱动
+    # 视觉结论等失败信号 → 由失败信号派生缺省 failed_assertions 清单
+    # （verdict-step-failure-evidence-derivation D1），以派生清单为基准执行
+    # triage 覆盖校验：归因未逐条覆盖派生清单仍判违规并列出派生条目
+    # （fail-closed 不弱化，不给「任意 1 条合规 triage 即放行」留口）；
+    # 逐条覆盖 → 合规——空表不再空转驳回，重试轮 judge 有应申报条目可依。
     # failed_count 仅在 ars 为含失败条目的列表时才 >0，==0 即涵盖缺失/非列表/
     # 空表/零失败条目四种「清单不可作失败基准」形态。
+    # 短报旁路封堵（code-review item 4af1b5b91485）：派生核对不再以「无自申报
+    # 清单」为前提——judge 把 failed_assertions 短报为少量条目（引擎实际失败
+    # 步骤/驱动视觉信号更多）时，此前整段派生核对被跳过，检测①（清单不可作
+    # 基准时 failed_count 恒 0）与检测②（只核自申报条数，相等即放行）叠加把
+    # 逐条归因硬门退化为按自申报条数核对。现无论 ev_failed 是否为空都执行
+    # 派生核对；条数下界取 triage 条数与自申报条数的 max——检测②已保证
+    # triage 条数不小于自申报条数，_uncovered_derived_entries 按 len(triage)
+    # 核条数即 max 口径。空表死循环豁免保留：派生不出条目且 judge 已自申报
+    # 清单时不再驳回（清单已申报、条数已经②核对，驳回只会空转死循环）。
     ars_unusable_as_baseline = failed_count == 0
-    if ars_unusable_as_baseline and not (isinstance(ev_failed, list) and ev_failed):
+    if ars_unusable_as_baseline:
         if _scenario_has_failure_signal(scenario):
             derived = derive_default_failed_assertions(scenario)
             if not derived:
                 # 防御兜底：有失败信号却派生不出条目（畸形条目形态）→ 沿用
-                # 原清单缺失文案（fail-closed 不放行）
+                # 原清单缺失文案（fail-closed 不放行）；judge 已自申报清单时
+                # 按死循环豁免放行（不空转驳回）
+                if isinstance(ev_failed, list) and ev_failed:
+                    return None
                 return (
                     "assertion_results 断言清单缺失或零失败条目，"
                     "无法逐条核验归因完整性（场景仍存在失败信号）："
@@ -1796,6 +1807,8 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
         - 场景全量执行：每个设计 ID 必须在执行集中出现；缺失 → violation 列出
         - 逐场景证据：每个非 PASS 场景缺分类/证据 → violation 列出
         - 豁免逃逸：status=exempt 且分类 product-bug → violation（视为 bug 未修复）
+        - verified 洗白：verdict=verified 且非 PASS 场景分类 product-bug →
+          violation（同豁免逃逸口径，视为 bug 未修复）
     """
     violations: list = []
     if not isinstance(result, dict):
@@ -1830,6 +1843,22 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
                 f" {sc.get('classification')!r}"
                 f"（须为 {'、'.join(_EXEMPT_ALLOWED_CLASSES)} 之一；"
                 "豁免不得掩盖产品缺陷，视为 bug 未修复）"
+            )
+        # verified 洗白不变量（code-review item 214d61c09ffe，与豁免逃逸检查
+        # 同型同文案口径）：exempt 态的 product-bug 已由上方拦截，fail 等非
+        # PASS 态此前缺席——verdict=verified 与 product-bug 失败场景共存时
+        # 本校验照样放行，下游（verdict=bug-found 才升级完整模式；收尾段
+        # _env_whitewash_gate 只拦 0-pass 与 env）也不再拦，实现者可带着
+        # 自申报的未修复产品缺陷直推 verified。
+        if (
+            verdict == "verified"
+            and sc.get("status") in NON_PASS_STATUSES
+            and sc.get("classification") == "product-bug"
+        ):
+            violations.append(
+                f"场景 {sid} verified 洗白：verdict=verified 但非 PASS 场景"
+                f"分类为 {sc.get('classification')!r}"
+                "（verified 不得掩盖产品缺陷，视为 bug 未修复）"
             )
 
     # 场景全量执行：设计集与执行集一致，无静默遗漏
@@ -1897,9 +1926,9 @@ def save_report(project_root, spec_name, report: dict) -> None:
                     pass
         os.replace(tmp_path, path)
         # rename 生效后刷父目录项，防掉电后裁决证据整体回退为旧内容
-        # （复用 admin_store._fsync_parent_dir，内部吞 EINVAL 等目录 fsync
+        # （复用 admin_store.fsync_parent_dir，内部吞 EINVAL 等目录 fsync
         # 不支持的异常，尽力而为）
-        _fsync_parent_dir(path)
+        fsync_parent_dir(path)
     except (OSError, TypeError, ValueError):
         # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理半成品
         try:
@@ -2050,9 +2079,9 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
                         pass
             os.replace(tmp_path, p)
             # rename 生效后刷父目录项，防掉电后缓存整体回退为旧内容
-            # （复用 admin_store._fsync_parent_dir，内部吞目录 fsync 不支持
+            # （复用 admin_store.fsync_parent_dir，内部吞目录 fsync 不支持
             # 的异常，尽力而为；缓存侧本就 fail-open，不影响正确性）
-            _fsync_parent_dir(p)
+            fsync_parent_dir(p)
         except (OSError, TypeError, ValueError):
             # json.dump 对不可序列化对象抛 TypeError/ValueError，同样须清理
             # .tmp 半成品（code-review item c48f3a21b953，与 save_report 原子写
