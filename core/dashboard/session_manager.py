@@ -92,7 +92,8 @@ class SessionManager:
         self._idle_thread: threading.Thread | None = None
         self._idle_stop = threading.Event()
         # code-review item ba9e09f14e6d：关闭闸门——shutdown 置位后 start 拒绝
-        # 新会话，堵住「快照之后、进程退出之前」窗口内 spawn 的孤儿子进程。
+        # 新会话，堵住「快照之后、进程退出之前」窗口内 spawn 的孤儿子进程；
+        # send 亦受同一闸门拒绝（item ce79496a981d），覆盖 start/send 全部入口。
         self._closed = False
         self._start_idle_thread()
 
@@ -218,6 +219,13 @@ class SessionManager:
         if not text or not text.strip():
             raise SessionError("text is empty")
         with self._lock:
+            # code-review item ce79496a981d：关闭闸门覆盖 send——shutdown 置位
+            # 后、_terminate 逐个收尾前，不得再向存活会话 stdin 写入竞态消息；
+            # 与 start 闸门（ba9e09f14e6d）口径一致。关闭链路（_terminate/
+            # _reap_claimed_session）直接操作 stdin，不经 send，无放行需求。
+            # 调用方 _api_session_send 以 except SessionError 兜 400，无穿透。
+            if self._closed:
+                raise SessionError("session manager is shut down")
             session = self._find_by_id(session_id)
             if session is None:
                 raise SessionNotFoundError(f"session not found: {session_id}")
