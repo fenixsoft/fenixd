@@ -138,7 +138,13 @@ def has_live_process(wt_path: Path) -> bool:
             cwd_file = pid_dir / "cwd"
             try:
                 cwd_link = os.readlink(str(cwd_file))
-                if cwd_link == target or cwd_link.startswith(target + "/"):
+                # code-review 4ac8ad87577c：readlink 结果先 realpath 归一再比较
+                # （与 worktree_manager/locks.py 的 _pid_in_project_worktrees /
+                # _kill_worktree_strays 同范式，消解符号链接/挂载拼写差异）——
+                # 字面前缀匹配在 cwd 为拼写不同但同物理的路径时漏命中，失败
+                # 方向是「判无主→删目录」而非保守保留
+                cwd_real = os.path.realpath(cwd_link)
+                if cwd_real == target or cwd_real.startswith(target + "/"):
                     return True
             except OSError:
                 pass

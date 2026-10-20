@@ -104,6 +104,13 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
             ["git", "-C", str(pipeline._context.project_root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            # code-review 935de9d9e921：固化解码口径（对齐 knowledge_audit/
+            # pipeline 仓库惯例）——text=True 缺省按 locale strict 解码，
+            # git 输出混入非 UTF-8 字节时 UnicodeDecodeError（ValueError
+            # 子类）不在下方 (OSError, SubprocessError) 捕获清单内，会炸穿
+            # 失败早退路径
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError) as e:
@@ -180,6 +187,12 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
             ],
             capture_output=True,
             text=True,
+            # code-review 935de9d9e921：固化解码口径（对齐 knowledge_audit/
+            # pipeline 仓库惯例）——text=True 缺省按 locale strict 解码，
+            # 非 UTF-8 字节的 UnicodeDecodeError 不在下方异常捕获清单内，
+            # 会炸穿失败早退路径
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as e:
@@ -225,7 +238,17 @@ def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tupl
     pipeline._evict_spec_serving(spec_name)
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
     srv = cache.get("main")
-    if srv is None or srv.root != root_dir.resolve():
+    if (
+        srv is None
+        or srv.root != root_dir.resolve()
+        # code-review 44136ea7d6c0：静态服务线程存活门（对齐 worktree 侧
+        # 3d75f84caf3c 同款，getattr 容缺属性）——ThreadingHTTPServer 服务
+        # 线程意外退出后不再把死实例逐轮复用（否则 _finalize_static 探针
+        # 每轮打已死 base_url 判失败，且无任何分支重建，static+main 作用域
+        # 的验证轮持续 env 失败直至 daemon 重启）；门不过时 stop 旧实例并
+        # 重建，与 worktree 静态路径对齐
+        or not getattr(srv, "alive", False)
+    ):
         if srv is not None:
             srv.stop()
         srv = StaticVerifyServer(root_dir)
@@ -745,6 +768,13 @@ def _remove_serving_worktree(pipeline, wt_path) -> None:
             ],
             capture_output=True,
             text=True,
+            # code-review 935de9d9e921：固化解码口径（对齐 knowledge_audit/
+            # pipeline 仓库惯例）——text=True 缺省按 locale strict 解码，
+            # 非 UTF-8 字节的 UnicodeDecodeError 不在下方 (OSError,
+            # SubprocessError) 捕获清单内，会击穿「best-effort 清理不向上
+            # 抛」承诺（下方 prune 同口径）
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         # code-review 40d00d0ca687：非零返回码（目录被进程占用/权限等）不抛
@@ -761,6 +791,11 @@ def _remove_serving_worktree(pipeline, wt_path) -> None:
             ["git", "-C", str(pipeline._context.project_root), "worktree", "prune"],
             capture_output=True,
             text=True,
+            # code-review 935de9d9e921：固化解码口径（对齐 knowledge_audit/
+            # pipeline 仓库惯例）——同上方 remove 写点，防 UnicodeDecodeError
+            # 击穿「best-effort 清理不向上抛」承诺
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         if prune.returncode != 0:
@@ -1502,11 +1537,21 @@ def _legacy_selfheal_start(
         boot_log.close()
         return True, False, "已执行 commands.start，场景集无本机入口 URL，跳过可达性确认"
 
-    for _ in range(LEGACY_START_PROBE_ATTEMPTS):
-        time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
-        if all(_probe_url(u, http_error_ok=True) for u in urls):
-            boot_log.close()
-            return True, False, "已自动启动应用服务"
+    # code-review 27a294e05a24：探活环并发化（对齐 _probe_ports_responding
+    # 15745b057144 同款，按 URL 维度 map）——原串行逐 URL _probe_url（默认
+    # timeout 2.0s）连接拒绝虽即时失败，但被防火墙丢包/挂起的端口每 URL
+    # 独吃 2s：N 个 URL 时单轮最坏 1+2N 秒、30 轮最坏远超名义 30s 占住验证
+    # 主流程；并发后单轮最坏墙钟收敛到 1+单探针 timeout。每个 URL 探测结果
+    # 独立（_probe_url 无共享状态），并发仅缩短墙钟，判定语义与原串行
+    # all(...) 一致（全部 URL 应答才算可达）。pool 提到环外只建一次。
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for _ in range(LEGACY_START_PROBE_ATTEMPTS):
+            time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
+            if all(pool.map(lambda u: _probe_url(u, http_error_ok=True), urls)):
+                boot_log.close()
+                return True, False, "已自动启动应用服务"
 
     # 场景 URL 端口 ≠ commands.start 端口（场景声明端口与框架分配端口不一致，
     # 如 3000 vs 8787）：应用已在 base_port 可达时，错的是场景端口而非应用——

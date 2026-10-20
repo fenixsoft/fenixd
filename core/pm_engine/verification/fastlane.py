@@ -40,6 +40,14 @@ from pathlib import Path
 # 裸写中途被 SIGKILL 会留截断文件（code-review 1eeac794401f）。
 from core.pm_engine.verification.scenario_gate import atomic_write_text
 
+# verify-progress 路径成分净化（口径同 verify_report.py 读侧与写侧
+# engine._safe_component，code-review item a8a7ad6d880e）：spec_name 含
+# 分隔符或纯点成分时裸拼会落到与 report.json 不同的（未净化）路径，判定
+# 记录与子集场景文件脱离既有审计/读取面。本模块五处 verify-progress 拼接
+# 点统一经 _verify_dir 收敛。spec-review 侧路径不在其列（写侧两侧均裸拼，
+# 须与既有 spec 目录名逐字一致，不净化）。
+from core.verify_engine.path_safety import safe_component
+
 # VERIFIED_RESET_FIELDS（下方）引用的 STATE 字段常量：state_machine 是共同
 # 底层、不反向依赖 pm_engine（经包 __init__ `from .engine import PMEngine`
 # 拉起 engine 会成环），本模块向下单向引用无环。
@@ -121,12 +129,23 @@ _AFFECTED_PATH_RE = re.compile(
 )
 
 
+def _verify_dir(project_root, spec_name: str) -> Path:
+    """``.fenix/verify-progress/<spec>/`` 单点拼接（spec_name 经净化）。
+
+    与写侧 engine._write_progress/_save_report 及读侧 verify_report.py 同
+    口径（``safe_component``，code-review item a8a7ad6d880e）：病理形态
+    spec_name 时 fastlane_decision.json / test_scenarios.fastlane.json 才
+    不会落到与 report.json 不同的未净化路径。
+    """
+    return (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / safe_component(spec_name)
+    )
+
+
 def fastlane_decision_path(project_root, spec_name: str) -> Path:
     """判定记录落盘路径：``.fenix/verify-progress/<spec>/fastlane_decision.json``。"""
-    return (
-        Path(project_root) / ".fenix" / "verify-progress" / spec_name
-        / "fastlane_decision.json"
-    )
+    return _verify_dir(project_root, spec_name) / "fastlane_decision.json"
 
 
 def disputed_findings(result) -> list:
@@ -177,7 +196,7 @@ def has_dispute_signal(pipeline, spec_name: str) -> tuple:
     shared_root_result = Path(root) / ".fenix" / ".fenix-run-result.json"
     candidates = [
         (
-            Path(root) / ".fenix" / "verify-progress" / spec_name
+            _verify_dir(root, spec_name)
             / ".fenix-run-result.json"
         ),
         shared_root_result,
@@ -256,8 +275,8 @@ def judge_affected_files(pipeline, spec_name: str) -> tuple:
         「不满足」处理（无归因＝影响面不可判定）。
     """
     path = (
-        Path(pipeline._context.project_root) / ".fenix" / "verify-progress"
-        / spec_name / "judge_attribution.json"
+        _verify_dir(pipeline._context.project_root, spec_name)
+        / "judge_attribution.json"
     )
     if not path.exists():
         return None, f"judge_attribution.json 缺失: {path.name}（影响面不可判定，保守回落）"
@@ -489,8 +508,7 @@ def evaluate_fastlane(pipeline, spec_name: str) -> dict:
             from core.verify_engine.scenarios import load_scenarios
 
             scenarios_path = (
-                Path(ctx.project_root) / ".fenix" / "verify-progress" / spec_name
-                / "test_scenarios.json"
+                _verify_dir(ctx.project_root, spec_name) / "test_scenarios.json"
             )
             scenarios = load_scenarios(scenarios_path) if scenarios_path.exists() else []
             subset_ids = subset_scenario_ids(scenarios, failed_id)
@@ -524,7 +542,7 @@ def subset_reverify(pipeline, spec_name: str, subset_ids: list) -> dict:
     from core.verify_engine.scenarios import load_scenarios
 
     ctx = pipeline._context
-    verify_dir = Path(ctx.project_root) / ".fenix" / "verify-progress" / spec_name
+    verify_dir = _verify_dir(ctx.project_root, spec_name)
     scenarios_path = verify_dir / "test_scenarios.json"
     if not scenarios_path.exists():
         return {"ok": False, "report": None, "reason": "场景文件缺失，子集重验无法执行"}

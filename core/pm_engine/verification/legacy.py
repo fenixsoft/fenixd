@@ -250,7 +250,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
             f"(保持 testing): {cancelled_err}",
         )
         return
-    if pipeline._verifier_error_is_infra(result.error):
+    # code-review item 695c4c18d3eb：infra 门仅作用于失败终态——生产契约
+    # success ⇒ error 恒空（runner 三处 success=True 构造点均不传 error、
+    # 缺省 None 且全仓无结果对象 .error 事后赋值），本门对成功终态不触发；
+    # 加 not success 前置把「裁决消费优先」钉进控制流：成功终态即使未来
+    # 演进出非空 error 文本，也先走下方 result.success 裁决分支消费产出，
+    # 不被本门整轮丢弃、spec 不致挂 error 原地等待 recovery。
+    if not result.success and pipeline._verifier_error_is_infra(result.error):
         # 基础设施类失败（熔断/链耗尽/网关切换类错误）＝「验证没能发生」，
         # 不是「验证发现了缺陷」：保持当前状态不流转 bug-found、不派生 fix
         # （2026-08-28 chain_exhausted 误产空壳 fix 实证），由 full_scan
@@ -324,13 +330,17 @@ def _run_legacy_verification(pipeline, spec_name: str):
         verifier_result_stale = pipeline._verifier_result_is_stale(
             result, run_result_path, spec_name
         )
+        # code-review item f8ede80248e3：report 读取提为无条件（读取廉价且
+        # 幂等，失败恒返回 {} 哨兵）——下方 bug-found/verified 分支无条件
+        # 消费 report，原先依赖「stale 结果必在下方 stale 处置提前 return」
+        # 的隐式控制流不变量，读取前置后该不变量不再被隐式依赖。
+        # [fenix-ignore:f6c112fcb5a5] _read_verify_report 失败恒返回 {} 哨兵（report_gate 契约，绝不为 None），report.get 无 AttributeError 风险
+        report = pipeline._read_verify_report(spec_name)
         # 环境性失联门禁（legacy 路径同样生效）：旧版 verifier 若在 report.json
         # 中标记了 blocked-env 且全批环境性失联，则同样判定 inconclusive 重派，
         # 不判 bug-found（防假阴性派生 fix 家族）。stale 命中时跳过本消费
         # （不计数、不按 inconclusive 重派），交由下方既有 stale 处置路径。
         if not verifier_result_stale:
-            # [fenix-ignore:f6c112fcb5a5] _read_verify_report 失败恒返回 {} 哨兵（report_gate 契约，绝不为 None），report.get 无 AttributeError 风险
-            report = pipeline._read_verify_report(spec_name)
             if pipeline._handle_env_blocked_inconclusive(spec_name, report):
                 return
         # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读

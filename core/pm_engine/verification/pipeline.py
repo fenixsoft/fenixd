@@ -1719,6 +1719,10 @@ class VerificationPipeline:
                 ],
                 title="场景计划争议",
             )
+            # 早退前清侧车（code-review item 64c771aed8d5，同 88d58ec1565d
+            # 清理口径）：本轮到不了 _execute_stage2 消费点，写回失败轮随行
+            # 携带的内存迁移集在此 pop，防滞留实例字典（常驻进程累积）。
+            self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
             return None, True
         except Exception as e:
             self._context.logger.error(
@@ -1733,6 +1737,9 @@ class VerificationPipeline:
                 ],
                 title="场景计划争议",
             )
+            # 早退前清侧车（code-review item 64c771aed8d5，同 88d58ec1565d
+            # 清理口径）：同上，防内存迁移集滞留实例字典。
+            self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
             return None, True
         if not frozen:
             # 空集不出现在迁移后（空文件/全过时已被 all_scenarios_stale
@@ -1747,6 +1754,9 @@ class VerificationPipeline:
                 ],
                 title="场景计划争议",
             )
+            # 早退前清侧车（code-review item 64c771aed8d5，同 88d58ec1565d
+            # 清理口径）：同上，防内存迁移集滞留实例字典。
+            self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
             return None, True
         return frozen, False
 
@@ -2798,7 +2808,16 @@ class VerificationPipeline:
         判定全部以并行出题状态标记（parallel_plan.json）为准，无标记/已消费
         → 行为与现状一致（frozen 复用或串行出题，零新逻辑）。任何异常
         fail-open 返回 True（回落正常流程，绝不因消费校验故障打断验证轮）。
+        fail-open 与单写者不变量的张力（code-review item 2fb4a707ce88）：已
+        确认在飞（进入 dispatched 等待）的轮次在 fail-open 前尽力清理（取消
+        在飞 run + 隔离半成品 + 标记 discarded，各项自兜异常），清理失败时
+        单写者不变量不再保证——WARNING 点名并发写风险；未确认在飞（首读
+        标记即异常/产物已就绪）不清理，盲隔离会误删上一轮冻结集或已就绪产物。
         """
+        # code-review item 2fb4a707ce88：是否已确认存在在飞并行 run（进入
+        # dispatched 等待分支）——fail-open 尽力清理的门槛，避免盲隔离误删
+        # 上一轮冻结集/已就绪产物。
+        _inflight_observed = False
         try:
             lane = self._context.parallel_plan_lane
             marker = lane.read_marker(spec_name) or {}
@@ -2807,6 +2826,7 @@ class VerificationPipeline:
                 return True
             if status == "dispatched":
                 # ── 在飞：有界等待（spec Scenario「testing 进入时并行出题仍在飞」）──
+                _inflight_observed = True
                 deadline = time.monotonic() + self._parallel_plan_wait_timeout()
                 prefix = f"planner-plan-{spec_name}-"
                 _liveness_gap_logged = False
@@ -2920,10 +2940,37 @@ class VerificationPipeline:
             )
             return True
         except Exception as e:  # fail-open：消费校验异常不阻断验证轮
+            # code-review item 2fb4a707ce88：异常若发生在 dispatched 等待/取消/
+            # 隔离中途，直接回落串行重出会让未被取消的在飞 run 与串行 planner
+            # 并发写同一 test_scenarios.json。此处尽力清理（stop 取消在飞 run +
+            # 隔离半成品 + 标记 discarded，各项自兜异常，清理失败不阻断回落）；
+            # lane 变量在 _inflight_observed 为真时必已绑定（进入 dispatched
+            # 分支以 read_marker 成功为前提），无 NameError 风险。
+            if _inflight_observed:
+                for _cleanup in (
+                    lambda: lane.stop(spec_name, "并行出题消费异常，尽力取消在飞 run"),
+                    lambda: lane.quarantine(
+                        spec_name, "并行出题消费异常，半成品尽力隔离"
+                    ),
+                    lambda: lane.write_marker(
+                        spec_name, {"status": "discarded", "reason": "consume_error"}
+                    ),
+                ):
+                    try:
+                        _cleanup()
+                    except Exception:  # noqa: BLE001 — 清理自身失败不阻断 fail-open
+                        pass
             self._context.logger.warning(
                 "pm_engine",
-                f"并行出题产物消费异常 '{spec_name}'（回落正常流程）: "
-                f"{type(e).__name__}: {e}",
+                f"并行出题产物消费异常 '{spec_name}'（回落正常流程"
+                + (
+                    "，尽力清理已执行，若清理失败则在飞 run 未取消，"
+                    "串行重出存在并发写 test_scenarios.json 风险"
+                    if _inflight_observed
+                    else "，未确认在飞 run，若实际在飞则存在并发写 "
+                    "test_scenarios.json 风险"
+                )
+                + f"）: {type(e).__name__}: {e}",
             )
             return True
 

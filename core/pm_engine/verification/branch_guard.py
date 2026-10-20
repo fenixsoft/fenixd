@@ -276,9 +276,29 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
         worktree_path=worktree_path,
         project_root=project_root,
     )
-    typed = {"deliverables": resolved["deliverables"], "references": resolved["references"]}
-    decl_source = resolved["source"]
-    entries = resolved["entries"]
+    # .get 访问（code-review item 2037be0ba28e）：resolve_effective_declaration
+    # 契约漂移（键改名/缺键）时直接下标会让 KeyError 从守卫冲出，不走守卫既有
+    # 的保守放行路径——比照同契约消费方 estimate_spec_scale 的 .get 口径，按键
+    # 成员缺失检测（source 取值 None 属合法返回，不能按值判缺），缺键显式记
+    # 「疑似上游契约漂移」并保守放行（返回 []）。
+    drift_keys = [
+        k
+        for k in ("deliverables", "references", "source", "entries")
+        if k not in resolved
+    ]
+    if drift_keys:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"交付物守卫声明解析结果缺键 {drift_keys}"
+            f"（spec '{spec_name}'，疑似上游契约漂移，保守放行）",
+        )
+        return []
+    typed = {
+        "deliverables": resolved.get("deliverables"),
+        "references": resolved.get("references"),
+    }
+    decl_source = resolved.get("source")
+    entries = resolved.get("entries")
     # 无声明段（含两处均不可用）：回退 extract_paths_typed（向后兼容存量 spec）。
     # 回退读取目标 = 生效声明所在目录（worktree 内优先；分支版本无落盘位置时
     # 回读主树目录，与解析回退语义一致）。

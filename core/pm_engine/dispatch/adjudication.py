@@ -520,6 +520,29 @@ class VAdjudicationMixin:
 
         def _rollback(reason: str) -> None:
             if before_bytes is None:
+                # 快照缺失 ≠ 无需回滚（code-review item c48b885e16b4）：
+                # tasks.md 改写前不存在/读取失败时，apply_fn 若在该状态下仍
+                # 产生了写入（如新建文件），写回层会残留「从未提交」的半写
+                # 声明——守卫（同源读取该层）下一轮读到它，凭据核销（D4）
+                # 与复发计数（D5）即失锚。此时以删除代替还原，使「快照缺失」
+                # 与「无需回滚」可区分；当前内置 apply_fn（soften/replace/
+                # remove）均先读声明段后写、文件缺失即上抛不落盘，本分支属
+                # 防御性兜底而非现行可达路径。
+                try:
+                    if tasks_file.exists():
+                        tasks_file.unlink()
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"声明改写已回滚（删除改写前不存在的新建 tasks.md）"
+                            f"'{spec_name}'（{wb.get('source')} 层改写/提交失败，"
+                            f"清除半写残留防读取错层）: {reason}",
+                        )
+                except Exception as rb_err:
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"声明改写回滚失败 '{spec_name}'（写回层残留未提交新建"
+                        f"声明，需人工核对声明落层）: {rb_err}",
+                    )
                 return
             try:
                 tasks_file.write_bytes(before_bytes)
@@ -1820,6 +1843,21 @@ class VAdjudicationMixin:
                             + (f"; {evidence}" if evidence else ""),
                         }
                     ],
+                    # diff 落册形态登记（code-review item e61146647649）：
+                    # DisputeAuditStore 的 diff 字段现存两种 schema，消费方
+                    # 须双形态兼容——
+                    # 1) 元素键控 {old_path: {"before","after"}}：本处（重定位）
+                    #    与 _adjudicate_deliverable_missing 裁决执行审计（另含
+                    #    凭据回执 {"type":"credential",...} 形态，未发生文本
+                    #    改写时原样透传不投影）；
+                    # 2) 文件级 {"before","after","by_element"}：四预分类器审计
+                    #    （_preclassify_missing/_orphan/_drift/_stale），
+                    #    by_element 为逐元素投影（_diff_by_element_projection）。
+                    # 仓库内暂无对 diff 字段的结构化读取
+                    # （_has_relocation_credential 只消费 verdicts/actual_path）；
+                    # 元素键控形态已被 drift 对齐测试按路径取值消费
+                    # （test_deliverable_drift_align），统一形态须联动改测、非
+                    # 最小修复——先登记两种 schema 供后续消费方遵循。
                     "diff": {
                         old_path: {
                             "before": (diff or {}).get("before"),
@@ -2299,6 +2337,43 @@ class VAdjudicationMixin:
                                 "new_path": actual_path,
                                 "source": "judge-actual-path",
                             }
+                            # 子形态分叉（code-review item 3555ba0caac7）：
+                            # cred_only 有两种成因——(a) 条目已不在生效声明
+                            # （实现方先行对齐）→ 凭据登记即修正完成，下方
+                            # readback 复检会通过；(b) 条目仍在生效声明、
+                            # _text_rewrite_applicable 仅因可写性不成立
+                            # （source == "branch" 无落盘位置）→ 声明本未被
+                            # 改写，readback 对守卫基准复读恒仍见旧路径原
+                            # kind（确定性失败）。后者与非陈日 typo 的「写回
+                            # 层不可写」处置同型（Task 2.1）：verdict 保持
+                            # typo + deferred 转打回/凭据通道，凭据核销
+                            # （D4）与复发熔断（D5）下一轮才有运行机会——
+                            # readback-failed 的 unclear 会落 blocked 待人工
+                            # 令自动化流程停摆，凭据在册却无人核销。条目在册
+                            # 判据用 eff_by_path（生效声明条目映射，与
+                            # _text_rewrite_applicable 的 entry_still_present
+                            # 同源键控），不另行镜像可写性判定。
+                            if m in eff_by_path:
+                                verdict_by_element[m] = {
+                                    "verdict": "typo", "deferred": True,
+                                }
+                                self._audit_deferred_correction(
+                                    spec_name,
+                                    [m],
+                                    verdict="typo",
+                                    reason=(
+                                        f"judge-typo-deferred: 凭据已登记但条目"
+                                        f"仍在生效声明且写回层不可写（source="
+                                        f"{effective_resolved.get('source')}），"
+                                        f"声明未被改写、readback 恒失败——转打回/"
+                                        f"凭据通道"
+                                    ),
+                                    actual_paths={m: actual_path},
+                                    trigger_run_id=getattr(result, "run_id", "") or "",
+                                    judge_run_id=judge_run_id,
+                                )
+                                deferred_typo_elements.append(m)
+                                continue
                         else:
                             # 改写后文本（失败回退空串，diff 仍可反映「改写前非空」）
                             try:

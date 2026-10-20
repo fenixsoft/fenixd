@@ -287,8 +287,13 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     # 只被调用方外层 except 以 WARNING 收场，冻结持久化失败无 ERROR 归因，
     # 还会连坐跳过下方 test_scenarios.json 合法子集写回。比照同函数各写点：
     # ERROR 留痕后继续本轮（持久化集未更新，下轮 diff 退化首轮全量口径）。
+    # persisted_updated（code-review item 416f69c853dc）：登记持久化集是否
+    # 真已写入，供下方补齐分支空集 abort 的分叉留痕区分「已写入」与
+    # 「写失败未动」两种事实（留痕措辞必须与实际落盘状态一致）。
+    persisted_updated = False
     try:
         path = save_scenario_set(pipeline._context.project_root, diff.scenario_set)
+        persisted_updated = True
     except OSError as e:
         pipeline._context.logger.error(
             "pm_engine",
@@ -485,6 +490,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         # test_scenarios.json——0 场景经 engine.run([]) 产出无 env_error 的
         # 全绿报告、会被洗白门 fail-open 放行判 verified。比照第一遍空集
         # abort 语义：不写文件，以结构化信号交调用点退回 plan / 拒绝重入。
+        # code-review item 416f69c853dc：与第一遍空集兜底（空集判定先于
+        # save_scenario_set、持久化集保持不变，下轮 diff 维持首轮全量口径）
+        # 不同，本分支到达时上方 save_scenario_set 已先行执行——此处有意
+        # 接受持久化集与执行文件两份场景事实源分叉（持久化集非空、下轮
+        # diff 可继续增量口径），不回滚，仅补 WARNING 留痕说明。
         if not write_valid:
             combined_rejected = rejected + write_rejected
             pipeline._context.logger.error(
@@ -492,6 +502,20 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 f"补齐写回后无合法场景 '{spec_name}'（过滤 pass {len(rejected)} "
                 f"条 + 补齐收编剔除 {len(write_rejected)} 条，写回集为空）— "
                 f"不写空文件，退回 plan 重排: {'、'.join(combined_rejected)}",
+            )
+            # 416f69c853dc：分叉留痕（不落 change_lines——abort 返回值不携带
+            # diff，此处追加只会被丢弃；日志是本路径唯一有效留痕通道）。
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"持久化集与执行文件分叉 '{spec_name}'：test_scenarios.json "
+                f"保持 planner 原文件未动，"
+                + (
+                    "scenarios.json 已写入本轮 diff 场景集，下轮 diff 以更新后"
+                    "持久化集为基准（增量口径，非首轮全量）"
+                    if persisted_updated
+                    else "scenarios.json 本轮写回失败未更新（见前述 ERROR），"
+                    "下轮 diff 退化首轮全量口径"
+                ),
             )
             return {
                 "aborted": "no_valid_scenarios",

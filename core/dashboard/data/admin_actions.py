@@ -348,13 +348,24 @@ def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
 
     Args:
         stopping: 待停止的在跑 agent 计数（API 侧经 running_run_ids_for_spec
-            预先计数，写进信号供 daemon 日志/审计）。
+            预先计数，写进信号供 daemon 日志/审计）。非 int（含 bool）/不可
+            解析值归零并 WARNING 留痕，不影响受理语义。
 
     Returns:
         {"ok", "conflict", "unmanaged", "daemon_down", "file", "created",
          "error"}
     """
     proot = Path(project_root)
+    # stopping 类型守卫（code-review item 206652e81943，对齐 set_spec_budget/
+    # reclassify_infra_rounds 的数值参数口径）：bool 是 int 子类须先排除；
+    # 非数值（如 "abc"）会令下方 int() 抛未捕获 ValueError 穿透为 500——
+    # 程序化直调/路由透传外部输入时不依赖调用方保证。该计数仅进信号 payload
+    # 供 daemon 日志/审计，非法值归零（保守中性值）。
+    if isinstance(stopping, bool) or not isinstance(stopping, int):
+        logger.warning(
+            "request_spec_delete 非法 stopping（%r），归零处理", stopping,
+        )
+        stopping = 0
     created = datetime.now(timezone.utc).isoformat()
     payload = {
         "spec": spec,
@@ -817,6 +828,9 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
     - 降级：共享判定**真正运行过**且不通过（三层锚点均不可得 / 分支零提交 /
       载体不可用）→ WARNING 留痕 + 原子写降级集（branch/implementer_run
       清空、不置 ``_recovery_resume``），返回 ``degraded: true`` + 原因；
+      锚点清空经 ``_mutate_locked`` 锁内复核（与命中分支 dbc51407f377 同
+      口径）：保留判定运行期间锚点被并发改写则整体放弃本次降级（STATE 零
+      变更），如实返回失败；
     - fail-closed：WorktreeManager 构造失败（保留判定根本未运行）MUST 拒绝
       且 STATE 零变更——该情形下「无可保留分支」没有依据，降级清锚点会把
       仍可续做的保留分支从 STATE 脱钩（正是本动作要消除的事故面）。
@@ -955,12 +969,10 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
         # 降级：共享判定已实际运行且给出「不可保留」结论 → 普通全新重派。
         # _resolve_preserved_branch 各失败层内已有 WARNING 留痕；此处写降级集
         # （不置 _recovery_resume），携带 status 即自动清保持标记。
-        if not sm.update_spec(spec, {
+        updates = {
             "status": "ready",
             "error": "Recovered from cancelled hold (no preserved branch — fresh dispatch)"
                      f"：原状态 {status}",
-            "branch": None,
-            "implementer_run": None,
             # 降级同为人工裁决出口，陈旧计数无条件清零（与 unfreeze_spec 命中/
             # 降级两路径同款，state_machine.py 人工处置清零先例）：取消收尾刻意
             # 保留的 _retry_count/_merge_*/重派计数若残留，全新重派首几轮即可
@@ -970,10 +982,60 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
             "_merge_streak": 0,
             "_redispatch_same_cause_streak": 0,
             "_redispatch_cause_fp": None,
-        }):
+        }
+        # 锚点清空收进 _mutate_locked 锁内回调（code-review item f73d71d2185c，
+        # 与命中分支 fenix-fix dbc51407f377 同一口径）：parse_state 快照与落盘
+        # 之间隔着 _resolve_preserved_branch 的 git 子进程（窗口可达秒级），
+        # 期间并发写者若已改写 branch/implementer_run，锁外盲写清空会把新锚点
+        # 覆盖为 None、work 链接脱离 STATE。以最新条目复核快照锚点未变才并入
+        # 清空集；被并发改写时整体放弃本次降级（回调返回 (False, False)，
+        # STATE 零变更、_cancelled_hold 保持原态可重试），如实返回失败。
+        degraded_anchors = {"branch": None, "implementer_run": None}
+        applied: dict = {}
+        anchor_conflict: dict = {}
+
+        def _mutate(specs):
+            fresh = specs.get(spec) or {}
+            if not (
+                fresh.get("branch") == entry.get("branch")
+                and fresh.get("implementer_run") == entry.get("implementer_run")
+            ):
+                anchor_conflict["snapshot"] = entry
+                anchor_conflict["fresh"] = fresh
+                return False, False  # 放弃本次降级：零写入
+            updates.update(degraded_anchors)
+            found = sm._apply_updates_entry(specs, spec, updates, applied)
+            return found, found
+
+        if not sm._mutate_locked(_mutate):
+            if anchor_conflict:
+                _snap = anchor_conflict["snapshot"]
+                _fresh = anchor_conflict["fresh"]
+                sm.logger.warning(
+                    "state_machine",
+                    f"Cancel-hold degraded anchor recheck: spec '{spec}' 的 "
+                    f"branch/implementer_run 锚点在保留判定后被并发改写"
+                    f"（快照 branch={_snap.get('branch')!r}/implementer_run="
+                    f"{_snap.get('implementer_run')!r} → 最新 branch="
+                    f"{_fresh.get('branch')!r}/implementer_run="
+                    f"{_fresh.get('implementer_run')!r}）——放弃降级清锚点，"
+                    f"防并发新锚点被覆盖为 None",
+                )
+                logger.warning(
+                    "resume_cancelled_spec 降级放弃：branch/implementer_run "
+                    "锚点在保留判定后被并发改写，降级未落盘（spec=%s）",
+                    spec,
+                )
+                return {
+                    "ok": False,
+                    "found": True,
+                    "error": ("branch/implementer_run 锚点已被并发改写，"
+                              "降级未落盘（请刷新后重试）"),
+                }
             # 与 activate_spec 同口径（写入必留痕）：parse_state 快照与落盘之间
             # spec 被并发软删除/写入被拒时恢复未落盘，WARNING 留痕并如实返回
             # 失败形状（对齐命中分支，不再宣称 degraded 成功）。
+            sm.logger.warning("state_machine", f"SPEC not found: {spec}")
             logger.warning(
                 "resume_cancelled_spec 恢复失败：spec 已并发删除或写入被拒，"
                 "恢复未落盘（spec=%s）",
@@ -984,6 +1046,7 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
                 "found": True,
                 "error": "spec 已并发删除或写入被拒，恢复未落盘",
             }
+        sm._log_update_applied(spec, applied)
         result = {
             "ok": True,
             "found": True,
@@ -2910,6 +2973,8 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
       不随本动作提交（pathspec 提交对未跟踪文件必 fatal），提示走
       untrack_stray_wip；交集为空返回明确 error、不产生空提交；
     - 非 destructive（提交可回溯），无需确认门；成功结果附提交 hash。
+      提交已落库而哈希回读失败（如超时）不回滚也不报失败，commit_hash 为
+      空串并在 steps 说明（同 _exec_untrack_stray_wip 口径）。
 
     paths 仅供程序化调用方显式收窄提交范围（MUST 为清单子集，清单外路径
     拒绝，零 git 写）；缺省从 store 内最新一条含可解析清单的
@@ -3022,13 +3087,6 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         if note:
             msg += f"\n\n裁决依据：{note}"
         _git_out(proot, "commit", "-m", msg, "--", *to_commit)
-        # pathspec 锚定读哈希（code-review item 7fe327348b37，同
-        # archive_commit.commit_archive_move / queue.py 既有口径：不用
-        # rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上，审计
-        # 追溯失真）。
-        commit_hash = _git_out(
-            proot, "log", "-1", "--format=%H", "--", *to_commit,
-        ).strip()
     except RuntimeError as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：同上，git stderr
         # 原文经服务端日志留痕，客户端收固定文案。
@@ -3037,11 +3095,35 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         )
         return {"ok": False, "steps": [],
                 "error": "git 提交失败（详见服务端日志）"}
+
+    # pathspec 锚定读哈希（code-review item 7fe327348b37，同
+    # archive_commit.commit_archive_move / queue.py 既有口径：不用
+    # rev-parse HEAD，防 commit→读取窗口内并发提交记到别人头上，审计
+    # 追溯失真）。
+    # 回读 MUST 与上方 commit 分离（code-review item a107cdc890b0，同
+    # dd2262c17587 在 _exec_untrack_stray_wip / _append_gitignore_and_commit
+    # 已修的同形轻症）：此处失败时提交已落库，若仍并入 commit 的 try 走
+    # 失败分支，调用方会据「git 提交失败」重试而产出重复提交，审计结果与
+    # 盘面不一致。回读失败仅 WARNING 留痕，commit_hash 置空并在 steps 说明。
+    commit_hash = ""
+    try:
+        commit_hash = _git_out(
+            proot, "log", "-1", "--format=%H", "--", *to_commit,
+        ).strip()
+    except (OSError, RuntimeError) as e:
+        # 不外泄裸异常文本（code-review item e584a2ede367 同口径）。
+        logger.warning(
+            "commit_stray_wip 提交已落库但哈希回读失败: %s: %s",
+            type(e).__name__, e,
+        )
     steps = [
         f"提交主树散件 WIP {len(to_commit)} 个文件（信号清单∩当刻改动）："
         f"{', '.join(to_commit)}",
-        f"提交 hash: {commit_hash}",
     ]
+    if commit_hash:
+        steps.append(f"提交 hash: {commit_hash}")
+    else:
+        steps.append("提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）")
     if skipped:
         steps.append(
             f"清单内已不在当刻改动、跳过 {len(skipped)} 个：{', '.join(skipped)}"
