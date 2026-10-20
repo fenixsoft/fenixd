@@ -379,6 +379,18 @@ class FFastTrackMixin:
                 # error + 入队原地重派，达封顶时已 freeze_for_human（按其契约
                 # MUST 终止重派）；本形态分支恒零提交，不得再落零变更哨双计
                 # _retry_count/_zero_change_attempts 两套熔断、覆写冻结锚点。
+                if ft_result.get("status") == "partial" and honest_exit_gap:
+                    # 零提交诚实退出（code-review item 061d42a50990）：partial
+                    # + 缺口全申报的结果文件必然不含合法 verification 段（本
+                    # 文件诚实退出收敛块 D2a 注释自证），下方硬校验对其确定性
+                    # 失败，经 _hard_check_fail_accounting 以「结果文件非法」
+                    # 归因原地重派直至冻结——「merge + 升级完整模式补独立验证」
+                    # 的诚实退出通道对零提交形态不可达。改走诚实退出收敛（与
+                    # 常规收敛块同语义），绕开对该形态的硬校验。
+                    self._fast_track_honest_exit_converge(
+                        spec_name, result, ft_result, honest_exit_gap
+                    )
+                    return
                 verification = self._hard_check_fast_track(spec_name, ft_result)
                 if verification is None:
                     # worktree-reuse：打回保留 worktree，重派在同一目录继承上一
@@ -456,32 +468,8 @@ class FFastTrackMixin:
         # 复用既有 _handle_fast_track_missing_result_merge 的「merge + mode 改写
         # + enqueue verifier」语义（design D2a 方案 (a)；裁决理由见 design.md）。
         if honest_exit_gap:
-            merged = self._reconcile_and_merge(spec_name, result)
-            if not merged:
-                return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
-            self._rewrite_fast_track_to_full(spec_name)
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": "诚实退出收敛（fast-track）：缺口全部 ⊆ unattainable，"
-                    "降级完整模式补独立验证",
-                },
-            )
-            # impl-result per-spec 快照 + 共享结果文件清理（与其余成功收口同语义）
-            try:
-                self._pm._write_impl_result_snapshot(spec_name, ft_result)
-            except Exception as e:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"fast-track 诚实退出收敛 impl-result 快照写入失败 "
-                    f"'{spec_name}'（非阻塞）: {e}",
-                )
-            self._pm._cleanup_shared_result_file(spec_name)
-            self._enqueue(spec_name, "verifier")
-            self._pm.logger.warning(
-                "pm_engine",
-                f"诚实退出收敛（fast-track）'{spec_name}'：缺口全部 ⊆ unattainable "
-                f"申报 {honest_exit_gap} —— 降级完整模式，入队 verifier 补独立验证",
+            self._fast_track_honest_exit_converge(
+                spec_name, result, ft_result, honest_exit_gap
             )
             return
 
@@ -527,6 +515,46 @@ class FFastTrackMixin:
 
         # ── verified → implemented → testing → verified → _on_spec_verified ──
         self._fast_track_advance_to_verified(spec_name, result)
+
+    def _fast_track_honest_exit_converge(
+        self, spec_name: str, result, ft_result: dict, honest_exit_gap: list
+    ) -> None:
+        """诚实退出收敛：merge + 完整模式改写 + 入队 verifier 补独立验证（D2a）。
+
+        原为成功收口段内联块；收敛为方法供两个形态共用（code-review item
+        061d42a50990）：非零提交诚实退出走常规收敛点；零提交诚实退出会被零
+        变更哨的确认型 no-op 分支先行拦截——partial + 缺口全申报的结果文件必然
+        不含合法 verification 段（D2a），硬校验对其确定性失败并以「结果文件
+        非法」归因重派死路，分支内改调本方法绕开硬校验。
+        """
+        merged = self._reconcile_and_merge(spec_name, result)
+        if not merged:
+            return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
+        self._rewrite_fast_track_to_full(spec_name)
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "error": "诚实退出收敛（fast-track）：缺口全部 ⊆ unattainable，"
+                "降级完整模式补独立验证",
+            },
+        )
+        # impl-result per-spec 快照 + 共享结果文件清理（与其余成功收口同语义）
+        try:
+            self._pm._write_impl_result_snapshot(spec_name, ft_result)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 诚实退出收敛 impl-result 快照写入失败 "
+                f"'{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm._cleanup_shared_result_file(spec_name)
+        self._enqueue(spec_name, "verifier")
+        self._pm.logger.warning(
+            "pm_engine",
+            f"诚实退出收敛（fast-track）'{spec_name}'：缺口全部 ⊆ unattainable "
+            f"申报 {honest_exit_gap} —— 降级完整模式，入队 verifier 补独立验证",
+        )
+
 
     def _harvest_fast_track_worktree(self, spec_name: str, result) -> None:
         """fast-track 异常兜底（verify-process-lifecycle D3）：回收 dev-server。
