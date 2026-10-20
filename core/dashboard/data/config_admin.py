@@ -436,7 +436,10 @@ def _managed_key_sources(raw: dict) -> dict:
             if verify_src["impl_code_review_lane_timeout_sec"] > 0:
                 sources["verify.impl_code_review_lane_timeout_sec"] = "project"
         sr_raw = verify_src.get("serving_reclaim")
-        if isinstance(sr_raw, dict) and "enabled" in sr_raw:
+        # code-review item 90136be31282：严格 bool 才标注 project（与 impl_code_review
+        # 同款；存在性判定会把手工脏值标成 project，读侧已归一回退缺省，徽标与
+        # 展示值互相矛盾）
+        if isinstance(sr_raw, dict) and isinstance(sr_raw.get("enabled"), bool):
             sources["verify.serving_reclaim.enabled"] = "project"
         # code-review item 96df8344d8ff：上下文经济性告警阈值显式定义 → project
         # （非负整数才标注，0=关闭告警是合法显式值——与读回显/合并分支/写校验
@@ -457,69 +460,95 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-test-regression-tab：admin.regression 段显式定义 → project
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("regression"), dict):
         sources["admin.regression"] = "project"
-    # add-settings-system-tab：admin.* 受管键显式定义 → project
+    # add-settings-system-tab：admin.* 受管键显式定义 → project。
+    # code-review item 90136be31282：改按 _managed_admin_keys 同款合法类型谓词
+    # 判定（严格 bool / 严格 int 非 bool / 枚举 / str）——存在性判定会把手工
+    # 脏值标成 project，而读回显已归一回退缺省，徽标与展示值互相矛盾
     if isinstance(admin_raw, dict):
+        for _k in ("enabled", "narrative_enabled"):
+            if isinstance(admin_raw.get(_k), bool):
+                sources[f"admin.{_k}"] = "project"
         for _k in (
-            "enabled",
             "interval_minutes",
             "escalation_cooldown_minutes",
             "merge_breaker_threshold",
             "shutdown_drain_seconds",
-            "bug_repair_mode",
             "stuck_silence_minutes",
-            # code-review item 7d53f7fb5c7a：叙事三键与 _SOURCE_KEYS /
-            # _SYNC_PAGE_KEYS（system 页）登记对齐——缺此三键时项目级显式配置后
-            # sources 仍回 "user"，设置页「继承自用户级」徽标恒错
-            "narrative_enabled",
             "narrative_timeout_seconds",
-            "narrative_model",
-            # add-alert-self-heal-marking 5.2：来源标注三键对齐（缺此键时项目级
-            # 显式配置后 sources 仍回 "user"，设置页徽标恒错）
             "self_heal_quiet_minutes",
         ):
-            if _k in admin_raw:
+            _v = admin_raw.get(_k)
+            if isinstance(_v, int) and not isinstance(_v, bool):
                 sources[f"admin.{_k}"] = "project"
+        if admin_raw.get("bug_repair_mode") in ("inplace", "derive"):
+            sources["admin.bug_repair_mode"] = "project"
+        # code-review item 7d53f7fb5c7a：叙事三键与 _SOURCE_KEYS /
+        # _SYNC_PAGE_KEYS（system 页）登记对齐——缺此键时项目级显式配置后
+        # sources 仍回 "user"，设置页「继承自用户级」徽标恒错
+        if isinstance(admin_raw.get("narrative_model"), str):
+            sources["admin.narrative_model"] = "project"
+        # add-alert-self-heal-marking 5.2：来源标注三键对齐（缺此键时项目级
+        # 显式配置后 sources 仍回 "user"，设置页徽标恒错）
+        # （self_heal_quiet_minutes 已并入上方严格 int 组）
     # add-spec-hooks：hooks 段显式定义 → project
     if isinstance(raw.get("hooks"), dict):
         sources["hooks"] = "project"
     # add-stale-code-selfheal：stale_code_selfheal 节显式定义 → project
+    # code-review item 90136be31282：合法类型才标注（enabled 严格 bool、
+    # idle_confirm_seconds 正整数——对齐 impl_code_review_timeout_sec 同款）
     scs_raw = raw.get("stale_code_selfheal")
     if isinstance(scs_raw, dict):
-        if "enabled" in scs_raw:
+        if isinstance(scs_raw.get("enabled"), bool):
             sources["stale_code_selfheal.enabled"] = "project"
-        if "idle_confirm_seconds" in scs_raw:
+        _scs_idle = scs_raw.get("idle_confirm_seconds")
+        if isinstance(_scs_idle, int) and not isinstance(_scs_idle, bool) and _scs_idle > 0:
             sources["stale_code_selfheal.idle_confirm_seconds"] = "project"
     # add-framework-self-evolution：self_evolution 节（全局用户级键）——项目级
     # 写入被 write_config 前置校验拒绝；此处仅当手工残留/历史遗留时标注来源。
+    # code-review item 90136be31282：合法类型才标注（auto_accept 严格 bool、
+    # max_items_per_run 正整数、spec_run_at None|str——None=立即执行是合法显式值）
     se_raw = raw.get("self_evolution")
     if isinstance(se_raw, dict):
-        if "auto_accept" in se_raw:
+        if isinstance(se_raw.get("auto_accept"), bool):
             sources["self_evolution.auto_accept"] = "project"
-        if "max_items_per_run" in se_raw:
+        _se_max = se_raw.get("max_items_per_run")
+        if isinstance(_se_max, int) and not isinstance(_se_max, bool) and _se_max > 0:
             sources["self_evolution.max_items_per_run"] = "project"
-        if "spec_run_at" in se_raw:
+        if "spec_run_at" in se_raw and (
+            se_raw["spec_run_at"] is None or isinstance(se_raw["spec_run_at"], str)
+        ):
             sources["self_evolution.spec_run_at"] = "project"
     # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
     # worktree 段显式定义 → project（两键各判一次，存在性判定不可用 or/in 合并）
+    # code-review item 90136be31282：合法类型才标注（build_artifact_paths 列表、
+    # has_build_artifacts bool|None——None=未裁决是合法显式值，须保留存在性前提）
     wm_raw = raw.get("worktree")
-    if isinstance(wm_raw, dict) and "build_artifact_paths" in wm_raw:
-        sources["worktree.build_artifact_paths"] = "project"
-    if isinstance(wm_raw, dict) and "has_build_artifacts" in wm_raw:
-        sources["worktree.has_build_artifacts"] = "project"
+    if isinstance(wm_raw, dict):
+        if isinstance(wm_raw.get("build_artifact_paths"), list):
+            sources["worktree.build_artifact_paths"] = "project"
+        if "has_build_artifacts" in wm_raw and (
+            wm_raw["has_build_artifacts"] is None
+            or isinstance(wm_raw["has_build_artifacts"], bool)
+        ):
+            sources["worktree.has_build_artifacts"] = "project"
     # add-knowledge-atlas(-maintenance)：knowledge 两键存在性判定 → project
     # （code-review item 84c86642e5c9：缺标注分支——项目级显式配置后 sources
     # 仍回 "user"，设置页「杂项」页签徽标恒错；对齐 worktree 两键同款写法）
+    # code-review item 90136be31282：两键均严格 bool 才标注
     kn_raw = raw.get("knowledge")
     if isinstance(kn_raw, dict):
-        if "enabled" in kn_raw:
+        if isinstance(kn_raw.get("enabled"), bool):
             sources["knowledge.enabled"] = "project"
-        if "audit_enabled" in kn_raw:
+        if isinstance(kn_raw.get("audit_enabled"), bool):
             sources["knowledge.audit_enabled"] = "project"
     # add-spec-archive D5：archive.auto_threshold 存在性判定 → project（code-review
     # item 8ac7731fc9b6：缺标注分支——项目级显式配置后 sources 缺键，杂项页签
     # 徽标拿不到 "project" 标注；对齐 worktree 两键同款写法）
+    # code-review item 90136be31282：非负整数才标注（0=禁用是合法显式值，
+    # 与 context_cost_per_turn_threshold 同口径）
     ar_raw = raw.get("archive")
-    if isinstance(ar_raw, dict) and "auto_threshold" in ar_raw:
+    _ar_th = ar_raw.get("auto_threshold") if isinstance(ar_raw, dict) else None
+    if isinstance(_ar_th, int) and not isinstance(_ar_th, bool) and _ar_th >= 0:
         sources["archive.auto_threshold"] = "project"
     return sources
 
