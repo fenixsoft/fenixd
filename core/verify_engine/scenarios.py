@@ -1369,6 +1369,34 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
                 f"场景'{scenario.id}'步骤{i}: command 须为字符串（经 shell 执行）"
                 f"或列表（argv 直接执行），收到 {type(step.command).__name__}"
             )
+        # env/headers 形态验收（code-review item ed59b43fbd40）：from_dict 对
+        # env/headers 仅做 or {} 判空归一、真值非 dict 形态原样存活，而运行层
+        # 均已按「非 dict 即本步骤结构化失败」消费（cli_runner env 分支
+        # 345415c58ac8 / api_runner headers 分支）——坏档先过验收、白烧一轮
+        # 验证才在单个步骤失败，与 command 形态拦截（071b40c06e33）同根因，
+        # 验收期前移同口径。缺失/空值已被 or {} 归一为合法缺省，仅拦真值非
+        # dict 形态；消费面对齐：env 仅 cli run 消费、headers 仅 api
+        # http_request 消费，其余 kind/action 无运行期失败面，不扩大拦截范围。
+        if (
+            kind == "cli"
+            and step.action == "run"
+            and step.env
+            and not isinstance(step.env, dict)
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: env 须为 object（键值表），"
+                f"收到 {type(step.env).__name__}"
+            )
+        if (
+            kind == "api"
+            and step.action == "http_request"
+            and step.headers
+            and not isinstance(step.headers, dict)
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: headers 须为 object（键值映射），"
+                f"收到 {type(step.headers).__name__}"
+            )
         # api 步骤 url 绝对地址验收（code-review item cf81feeaec37）：对齐
         # web navigate 同款 ^https?:// 校验——rewrite_origin 对无 scheme/netloc
         # 的 URL 原样透传，相对 URL 会拖到运行期 httpx 请求时才失败。缺失
