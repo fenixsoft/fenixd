@@ -79,7 +79,7 @@ function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageList
     >
       <div className="w-full space-y-3 px-2 sm:px-4 sm:space-y-4">
         {messages.length === 0 ? (
-          <div className="mt-8 text-center text-gray-500">
+          <div className="mt-8 text-center text-muted-foreground">
             <p className="text-sm">暂无消息</p>
           </div>
         ) : (
