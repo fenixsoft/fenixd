@@ -1012,6 +1012,13 @@ class G6StashGuardMixin:
                     preserved_because = (
                         "pre-pop top sha unavailable; drop not attempted"
                     )
+                elif cur is not None and cur[0] == 0 and cur[1].strip() != sha_before:
+                    # 栈顶确被并发条目改动（code-review item 10eb7d162811）：
+                    # drop 因 sha 守卫短路根本未尝试，dropped 恒 None——归因
+                    # 先判插队再按 dropped 取值区分命令故障，避免把并发插队
+                    # 误述成 stash drop failed（原尾部 else 分支在此归因序下
+                    # 恒不可达：dropped.returncode==0 时必已置 drop_sha 走上方）。
+                    preserved_because = "top entry moved"
                 elif cur is None or cur[0] != 0:
                     preserved_because = (
                         "stash top recheck unavailable (git fault)"
