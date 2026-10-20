@@ -902,7 +902,19 @@ class FamilyGovernor:
         # STATE 坏值容错（code-review item f0514aca33fe）：priority 被人工/外部
         # 改写为 None/非数值时下方 +1 会抛 TypeError 中断 bug-found 主链——
         # 对齐 dispatch/queue._get_spec_priority 的容错口径，非法值回退 5。
-        parent_prio = raw_prio if isinstance(raw_prio, int) else 5
+        # bool 显式排除（code-review item 5fad69785324，对齐 _family_gate_int
+        # 的归一口径）：bool 是 int 子类，误写 true 会被当作 1 参与子 fix
+        # 优先级计算（parent_prio+1=2），回退缺省 5 并 WARNING 留痕。
+        if isinstance(raw_prio, int) and not isinstance(raw_prio, bool):
+            parent_prio = raw_prio
+        else:
+            if isinstance(raw_prio, bool):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"STATE priority 非法（应为整数，布尔不合法）: "
+                    f"{raw_prio!r}，回退缺省 5",
+                )
+            parent_prio = 5
 
         # 确定本轮 bug 应使用的 fix SPEC 名称
         fix_spec_name = self._resolve_fix_spec_name(spec_name)
