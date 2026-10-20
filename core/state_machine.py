@@ -992,6 +992,19 @@ class StateParser:
                 f"下个写者将把它从 STATE.md 移除",
             )
 
+        # code-review 7fee9ffc5435：未闭合的 HTML 注释（有 <!-- 无 -->）使文件
+        # 尾部整体被当作注释跳过，其后全部 ### 条目（含 branch/run 锚点与预算
+        # 计数）不进入解析结果——与 _admit_entry 的丢弃留痕纪律同型（下个写者
+        # 「锁内读全部→改→全量回写」会把它们物理删除且无痕）。此处把该形态
+        # 显性化为 warning，不改变丢弃行为；logger=None（脚本/测试直调）自然静默。
+        if in_comment and logger is not None:
+            logger.warning(
+                "state_machine",
+                "STATE.md 存在未闭合的 HTML 注释（有 <!-- 无 -->），文件尾部内容被"
+                "整体视为注释跳过——其中的 ### 条目未进入解析结果，下个写者将把它们"
+                "从 STATE.md 移除，请人工核对未闭合注释位置",
+            )
+
         return specs
 
     # serialize 固定字段表（顺序即落盘字段序）。成员判定共用 SERIALIZED_FIELD_SET
@@ -2041,6 +2054,17 @@ class StateMachine:
             }
             updates.update(safe_extra)
         ok = self.update_spec(spec_name, updates)
+        if not ok and alert_callback is not None:
+            # code-review 2886e9ef0e25：update_spec False = 条目缺失/被并发删除，
+            # 冻结并未落盘——不再发送「已冻结」人工升级告警（人工会按推荐动作
+            # 去排查/解冻一个并不存在的冻结条目），改记 warning 留痕；与
+            # recover_interrupted 据 frozen_ok 修正 recovered 口径一致。
+            self.logger.warning(
+                "state_machine",
+                f"freeze_for_human: '{spec_name}' 冻结写盘失败（SPEC 缺失或被并发删除），"
+                f"跳过人工升级告警",
+            )
+            return False
         if alert_callback is None:
             # 无告警回调=静默冻结：必须有审计痕迹（None 仅允许单测；生产
             # 通过 fenixd._build_human_alert_callback / pm_engine
