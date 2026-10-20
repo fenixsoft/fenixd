@@ -867,6 +867,15 @@ class MainTreeStrayWipSweeper:
         # 读盘，IO 与散件内容规模解耦）；越过阈值升级为含内容 sha256 的完整
         # 指纹。级别切换改变 fp → 升级当刻计时自然重起（语义损失可控），
         # 同级别稳定期内沿用原 first_seen 不重计（与 tracked 流 D1 同款）。
+        # 成本注记（code-review item c0420957589a）：内容级指纹在 sweep 持有
+        # _main_tree_lock 的临界区内逐文件全量读盘，耗时随集合总体积线性
+        # （集合可合法增长到升级体积阈值量级，缺省 500MB，见
+        # DEFAULT_UNTRACKED_ESCALATION_BYTES），大体量越阈集合每轮盘点都会
+        # 拉长与 merge-back 写互斥的主树锁持有时间（口径同 _git_indexed_paths
+        # 对 ls-files 的明示成本注记）。未做降频缓释：内容级指纹是「同内容
+        # 滞留 vs 持续演化」区分与级别切换重计时的判定数据源，任何按轮次/
+        # TTL 的降频都会改变检测及时性语义；锁外哈希则需重排 sweep 锁契约
+        # 并引入盘点-哈希竞态——成本在此明示，缓释与否供后续权衡。
         fp = self._untracked_fingerprint(
             entries, include_content=not below_threshold
         )
@@ -1071,6 +1080,16 @@ class MainTreeStrayWipSweeper:
         集、零文件读盘——低于降噪阈值的常态轮次用此级建档计时，IO 与散件
         内容规模解耦；``include_content=True`` 追加逐文件 sha256（越过阈值
         后的告警判定级）。级别切换改变 fp 值，计时在升级当刻自然重起。
+
+        成本注记（code-review item c0420957589a）：``include_content=True``
+        对集合逐文件 64KB 分块全量读内容（下方循环体），耗时随集合总体积
+        线性，且调用发生在 sweep 持有 ``_main_tree_lock`` 的临界区内——大体
+        量集合（可合法增长到升级体积阈值量级，缺省 500MB，见
+        ``DEFAULT_UNTRACKED_ESCALATION_BYTES``）会拉长与 merge-back 写互斥的
+        主树锁持有时间（与 ``_git_indexed_paths`` 对 ls-files 的明示成本注记
+        同款）。当前无体积/轮次降频缓释：内容哈希是「同内容滞留 vs 持续演化」
+        区分与级别切换重计时的判定数据源，降频会改变检测及时性语义（取舍
+        详见 ``_untracked_signal`` 调用处注记）。
         """
         h = hashlib.sha256()
         rels = sorted(str(p) for p in entries)
@@ -1301,6 +1320,52 @@ class MainTreeStrayWipSweeper:
         """注册表持久化文件落点（.fenix/ 运行时状态区，见模块常量注记）。"""
         return self.project_root / UNTRACKED_REGISTRY_RELPATH
 
+    def _restore_registry_entry(self, item, fields) -> "dict | None":
+        """注册表单条目恢复助手：按分区持久化字段白名单驱动投影。
+
+        写侧 ``_persist_untracked_registry`` 以 ``*_PERSISTED_FIELDS`` 白名单
+        投影落盘，本助手是恢复侧的成对单源（code-review item c305f1664948）：
+        ``fields`` 传对应分区的持久化字段白名单，条目先过形态守卫（非 dict
+        ／first_seen 非数值／files 非列表 → None，调用方剔除该条目，部分
+        损坏不株连完好条目），再逐字段强制转换投影出内存条目——键序即白
+        名单序，与写侧投影同名单同序。新增持久化字段只须同步字段白名单与
+        本助手转换分支两处，落盘与载入自动成对（消除「落盘存了、载入丢弃」
+        的多处同步漂移面）。守卫与强制转换沿用此前三段手写循环的既有容忍
+        度：bool 通过 isinstance(int) 的数值守卫、``first_seen_iso`` 缺失
+        回退 ``_iso(first_seen)``、``rules`` 非 dict 容错空表、各标记
+        or-空串缺省，均与原实现逐字段一致。
+        """
+        if not isinstance(item, dict):
+            return None
+        first_seen = item.get("first_seen")
+        files = item.get("files")
+        if not isinstance(first_seen, (int, float)) or not isinstance(
+            files, list
+        ):
+            return None
+        entry: dict = {}
+        for name in fields:
+            if name == "first_seen":
+                entry[name] = float(first_seen)
+            elif name == "first_seen_iso":
+                entry[name] = str(
+                    item.get("first_seen_iso") or self._iso(float(first_seen))
+                )
+            elif name == "files":
+                entry[name] = [str(p) for p in files]
+            elif name == "rules":
+                rules_raw = item.get("rules")
+                entry[name] = (
+                    {str(k): str(v) for k, v in rules_raw.items()}
+                    if isinstance(rules_raw, dict)
+                    else {}
+                )
+            elif name == "escalated_at":
+                entry[name] = str(item.get("escalated_at") or "")
+            elif name == "escalated_signal_at":
+                entry[name] = str(item.get("escalated_signal_at") or "")
+        return entry
+
     def _load_untracked_registry(self) -> None:
         """盘点开始时载入持久化注册表（每进程一次），重启恢复时钟。
 
@@ -1314,7 +1379,10 @@ class MainTreeStrayWipSweeper:
         条目剔除（部分损坏不株连完好条目）。白名单脱落注册表分区
         （``_WHITELIST_SECTION_KEY``）同轮一并恢复：形态守卫同款（first_seen
         数值 / files 列表），``rules`` 非 dict 容错为空表，escalated_at 标记
-        随盘存活使「同指纹一次性告警」跨重启成立。载入后内存态为单源
+        随盘存活使「同指纹一次性告警」跨重启成立。三分区条目恢复统一经
+        ``_restore_registry_entry`` 按各自持久化字段白名单投影（与写侧
+        ``_persist_untracked_registry`` 投影成对单源，code-review item
+        c305f1664948）。载入后内存态为单源
         （``_untracked_registry_loaded`` 守卫），文件此后只是收尾落盘的
         镜像。
         """
@@ -1365,69 +1433,34 @@ class MainTreeStrayWipSweeper:
                     )
             else:
                 untracked_raw, first_sight_raw, whitelist_raw = data, {}, {}
+            # 三分区条目恢复统一经 _restore_registry_entry：以各分区持久化
+            # 字段白名单驱动投影，与写侧 _persist_untracked_registry 的投影
+            # 成对单源（code-review item c305f1664948），守卫与强制转换逐
+            # 字段等价（None＝形态守卫不过，剔除该条目）。
             restored: dict = {}
             for fp, item in untracked_raw.items():
-                if not isinstance(item, dict):
+                entry = self._restore_registry_entry(
+                    item, _UNTRACKED_PERSISTED_FIELDS
+                )
+                if entry is None:
                     continue
-                first_seen = item.get("first_seen")
-                files = item.get("files")
-                if not isinstance(first_seen, (int, float)) or not isinstance(
-                    files, list
-                ):
-                    continue
-                entry = {
-                    "first_seen": float(first_seen),
-                    "first_seen_iso": str(
-                        item.get("first_seen_iso") or self._iso(float(first_seen))
-                    ),
-                    "files": [str(p) for p in files],
-                    "escalated_at": str(item.get("escalated_at") or ""),
-                    "escalated_signal_at": str(
-                        item.get("escalated_signal_at") or ""
-                    ),
-                }
                 restored[str(fp)] = entry
             restored_dirs: dict = {}
             for d, item in first_sight_raw.items():
-                if not isinstance(item, dict):
+                entry = self._restore_registry_entry(
+                    item, _FIRST_SIGHT_PERSISTED_FIELDS
+                )
+                if entry is None:
                     continue
-                first_seen = item.get("first_seen")
-                files = item.get("files")
-                if not isinstance(first_seen, (int, float)) or not isinstance(
-                    files, list
-                ):
-                    continue
-                restored_dirs[str(d)] = {
-                    "first_seen": float(first_seen),
-                    "first_seen_iso": str(
-                        item.get("first_seen_iso") or self._iso(float(first_seen))
-                    ),
-                    "files": [str(p) for p in files],
-                }
+                restored_dirs[str(d)] = entry
             restored_whitelist: dict = {}
             for fp, item in whitelist_raw.items():
-                if not isinstance(item, dict):
+                entry = self._restore_registry_entry(
+                    item, _WHITELIST_PERSISTED_FIELDS
+                )
+                if entry is None:
                     continue
-                first_seen = item.get("first_seen")
-                files = item.get("files")
-                if not isinstance(first_seen, (int, float)) or not isinstance(
-                    files, list
-                ):
-                    continue
-                rules_raw = item.get("rules")
-                restored_whitelist[str(fp)] = {
-                    "first_seen": float(first_seen),
-                    "first_seen_iso": str(
-                        item.get("first_seen_iso") or self._iso(float(first_seen))
-                    ),
-                    "files": [str(p) for p in files],
-                    "rules": (
-                        {str(k): str(v) for k, v in rules_raw.items()}
-                        if isinstance(rules_raw, dict)
-                        else {}
-                    ),
-                    "escalated_at": str(item.get("escalated_at") or ""),
-                }
+                restored_whitelist[str(fp)] = entry
         except (ValueError, TypeError) as exc:
             self._untracked_registry = {}
             self._first_sight_dirs = {}
