@@ -54,13 +54,13 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from core import timelib
+from core.fs_utils import atomic_write_text
 from core.verify_contract import RegressionSpec
 
 from core.proc_utils import kill_process_group
@@ -313,43 +313,16 @@ def _result_path(project_root) -> Path:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """原子写：tempfile + fsync + os.replace（code_review 同式）。
+    """原子写：薄委托 core.fs_utils.atomic_write_text 收口单点
+    （code-review item e9311f1be2ee，对齐 escalation/infra_classify 等
+    兄弟模块口径，不再手写第二套 mkstemp 实现）。
 
-    目录不存在时自动创建。rename 前文件不完整，rename 后旧内容消失——
-    写坏在系统层面不可能出现。
+    mkstemp 唯一临时名 + fsync + os.replace + 权限修复（新文件 0644，
+    对非 root 辅助进程/人工其它账号可读，旧实现恒 0600）+ 尽力而为
+    目录 fsync 的纪律单点维护于 fs_utils；mkdir 与失败清理临时文件
+    由助手内建，调用点行为保持不变。
     """
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path_str = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
-    )
-    tmp_path = Path(tmp_path_str)
-    try:
-        # fdopen 失败路径显式接管（对齐 scenario_gate._atomic_write_text /
-        # verdict_evidence._write_verdict_violations 先例 cbb57806fbfd，
-        # code-review item 5021154cf4ff）：with 的 close 只在 fdopen 成功后
-        # 才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-        f = None
-        try:
-            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-        os.replace(str(tmp_path), str(path))
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+    atomic_write_text(path, content)
 
 
 def current_repo_fingerprint(project_root) -> Dict[str, Any] | None:
