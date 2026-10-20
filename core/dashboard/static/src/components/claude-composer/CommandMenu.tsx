@@ -338,9 +338,9 @@ export default function CommandMenu({
       style={{ ...menuBaseStyle, ...menuPosition }}
     >
       {orderedNamespaces.map((namespace) => (
-        {/* role=group + aria-labelledby（code-review item 303f6ad91158）：listbox
-            的直接子元素按 ARIA 应为 option/group——分组标题仅在多组时渲染，
-            单组时 aria-labelledby 置 undefined 不落悬空引用。 */}
+        /* role=group + aria-labelledby（code-review item 303f6ad91158）：listbox
+           的直接子元素按 ARIA 应为 option/group——分组标题仅在多组时渲染，
+           单组时 aria-labelledby 置 undefined 不落悬空引用。 */
         <div
           key={namespace}
           className="command-group"
