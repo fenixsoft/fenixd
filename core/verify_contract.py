@@ -2305,6 +2305,11 @@ def _rewrite_scenario_target_values(raw, *, requires_http_scheme: bool,
     return out, n
 
 
+# 公开别名（跨模块消费走公开名，不 import 私有符号；同 commit_verification_report
+# 先例，code-review item 14bc75c819c6）
+rewrite_scenario_target_values = _rewrite_scenario_target_values
+
+
 def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -> int:
     """把场景**目标地址**的 origin 改写为本次被测实例（BASE_URL 注入）。
 
