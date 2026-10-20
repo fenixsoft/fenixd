@@ -1400,6 +1400,7 @@ def run_prepare_steps(
     # 时长，长构建下的并发车道不再等满 600s 被误判「prepare 主机锁等待超时」
     # 而按验证环境错误拦截。步数（contract.prepare）在加锁前即已可得，锁的
     # 获取时序不变。
+    # [fenix-ignore:c9d6c84746ec] 按声明步数计上限仅被极少数占位条目虚增（loader 已拒非法映射步），info 级、无正确性影响，现状可接受。
     lock = _PrepareHostLock(
         root,
         timeout=max(
@@ -1998,8 +1999,54 @@ def ensure_main_tree_deps(
         logger: 日志记录器（可选）
 
     Returns:
-        已预装依赖的目录列表（相对 project_root），供调用方记日志。
+        已预装依赖的目录列表（相对 project_root），供调用方记日志。锁等待
+        超时未获互斥时返回空列表（best-effort，见下方并发护栏说明）。
     """
+    root = Path(project_root)
+    if not _is_main_checkout(root):
+        # worktree（.git 为文件）构建目录天然 run 级隔离，不加锁零开销。
+        return _ensure_main_tree_deps_unlocked(root, sub_dirs, mode, logger)
+    log_fn = (lambda msg: logger.info("verify_contract", msg)) if logger else None
+    # 主机级互斥（code-review item 2e56f130a983）：本入口在 serving 路径
+    # （serving 两调用点、dist_conflicts re-prepare）于 run_prepare_steps 取
+    # 锁之前执行且原先自身无互斥——并行度>1 时两条主树车道可在 node_modules
+    # 尚不存在的冷启动窗口内各自通过 exists() 检查，随后并发对同一目录
+    # npm ci（先删后装）产出残缺依赖，残缺形态再被 exists() 短路长期留存
+    # （正是 _cleanup_partial_node_modules 想消除的形态）。与 prepare 段复用
+    # 同一 _PrepareHostLock 互斥域（对齐 run_prepare_steps 的「worktree 不锁、
+    # 主检出持锁」判定）。锁等待上限覆盖并发车道最坏供给持有时长（sub_dirs
+    # 数 × NPM_PROVISION_TIMEOUT）；竞争车道锁内还可能再持 prepare 段（步数
+    # 本入口不可知），超时按 best-effort 跳过预装，不为不可知量放大等待。
+    lock = _PrepareHostLock(
+        root,
+        timeout=max(PREPARE_LOCK_TIMEOUT, len(sub_dirs) * NPM_PROVISION_TIMEOUT),
+        log_fn=log_fn,
+    )
+    if not lock.acquire():
+        if lock.bypassed:
+            # 锁基础设施故障（权限等）：按无锁继续（保守可用性，对齐
+            # run_prepare_steps 的 bypassed 语义）。
+            return _ensure_main_tree_deps_unlocked(root, sub_dirs, mode, logger)
+        # 等待超时：持有者正在其车道内预装/构建，node_modules 大概率就位；
+        # 本入口 best-effort——跳过预装（真缺依赖由下游持锁 prepare 以
+        # 「prepare 失败＝验证环境错误」门禁可见），不冒并发 npm ci 风险。
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"主树依赖预装跳过（prepare 主机锁等待超时 >{lock.timeout:.0f}s，"
+                f"{PREPARE_LOCK_REL} 持有者 pid={lock.holder_pid() or '未知'}）",
+            )
+        return []
+    try:
+        return _ensure_main_tree_deps_unlocked(root, sub_dirs, mode, logger)
+    finally:
+        lock.release()
+
+
+def _ensure_main_tree_deps_unlocked(
+    project_root: Path, sub_dirs: list, mode: str, logger=None
+) -> list:
+    """依赖预检与预装本体（ensure_main_tree_deps 的无锁实现，护栏在其上游）。"""
     done = []
     for sub in sub_dirs:
         target = Path(project_root) / sub
