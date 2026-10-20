@@ -1004,6 +1004,29 @@ class PRepairLaneMixin:
             )
             self._defer_merge_back(spec_name, remerge_info, branch, merge_error)
             return False
+        # ── 主树脏 / dispatch 锁冲突顺延（code-review item 3b4cd12a68dc，对齐
+        # full 车道 _handle_retryable_mergeback_failure 三类判据）── re-merge
+        # 撞主树脏（git merge 拒绝覆写/丢失改动）原会落 _merge_streak 指纹记账：
+        # 达 agents.merge_breaker_threshold 即 blocked、否则 _fallback_after_
+        # repair 全新重派（清 repair worktree、烧新一轮实现 run）——同一故障
+        # 跨车道行为分裂，违背「顺延不是 merge 失败」原则（:990 自证）。与上方
+        # spec_dir_inflight 分支同纪律：不消费 _repair_awaiting_remerge，交
+        # merge-only Timer 链有界重试合并。
+        if self._retryable_merge_error_text(merge_error):
+            self._defer_merge_back(
+                spec_name, remerge_info, branch, merge_error,
+                cause="main_tree_dirty",
+            )
+            return False
+        if self._dispatch_lock_conflict_pending(spec_name):
+            # dispatch 锁冲突在 merge-back 时刻理论上不成立（queue.py
+            # _dispatch_lock_conflict_pending docstring 自证），防御性识别——
+            # 判命中同按顺延，不落熔断记账。
+            self._defer_merge_back(
+                spec_name, remerge_info, branch, merge_error,
+                cause="dispatch_lock_conflict",
+            )
+            return False
         # 入口读取守卫（code-review item af519c42ee6f，与下方 bump_counters
         # 守卫 2917c609d8ad 同款论证）：read_one 同为 STATE 文件 IO（flock+read，
         # 同 _dispatch_repair_lane 读取 _repair_round 处 noqa 注释的认知），瞬时
@@ -1316,6 +1339,32 @@ class PRepairLaneMixin:
         # 跳过，spec 悬置 implementing 且无队列条目。失败仅 WARNING 留痕并
         # 继续入队（状态未就绪时派发器会跳过该条目，入队无害，full_scan
         # 周期兜底）。
+        # ready 回退写前状态复查（code-review item a5995960e313，对齐 queue.py
+        # _handle_merge_back_real_failure 的 testing/implemented+活跃 tester 不
+        # 降级守卫 fix-startup-double-dispatch）：本方法开头有 worktree cleanup
+        # 等 git IO，判态（上方 read）与写盘窗口被拉长——窗口内并发写者（admin/
+        # panel 处置、恢复链）推进 spec 时无条件 ready 覆写会回退已推进状态并
+        # 重派实现。已不在 implementing（并发推进/冻结）→ 跳过覆写与入队仅留
+        # 痕；读取失败按既有宽口径守卫降级，继续原路径收尾。
+        try:
+            _cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get(
+                "status"
+            )
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大收尾
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair fallback ready 回退前状态复查失败 '{spec_name}'"
+                f"（按原路径继续收尾）: {type(e).__name__}: {e}",
+            )
+            _cur_status = "implementing"
+        if _cur_status not in (None, "", "implementing"):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair fallback 状态回写放弃 '{spec_name}'：status 已被并发"
+                f"推进为 '{_cur_status}'——跳过 ready 覆写与重派入队（不回退在飞"
+                f"状态）",
+            )
+            return
         try:
             self._pm.state_machine.update_spec(
                 spec_name, {"status": "ready", "error": full_error, **updates},
