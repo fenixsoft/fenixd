@@ -835,7 +835,12 @@ def _read_self_review_out(out_path: Path) -> dict:
             # 失效退化为机器形态（09-08 事故）。
             data[field] = [x if isinstance(x, (dict, str)) else str(x) for x in val if x]
     sm = data.get("summary")
-    if sm is None:
+    if isinstance(sm, list):
+        # 列表型 summary 逐元素 str 后换行合并（code-review item 0232c4dd078f，
+        # 对齐 _read_admin_disposition 同名字段的 D5 归一口径）：str() 兜底会把
+        # "['a', 'b']" 机器形态落进 todo.md，repr 形态不可读。
+        data["summary"] = "\n".join(str(x) for x in sm if x)
+    elif sm is None:
         data["summary"] = ""
     elif not isinstance(sm, str):
         data["summary"] = str(sm)
@@ -3902,6 +3907,22 @@ def run_impl_ocr(
                 "agent_runner",
                 f"impl-ocr 车道内部异常（run {run_id}）: {type(e).__name__}: {e}",
             )
+    except BaseException as e:  # noqa: BLE001 — BaseException 穿透同样折算收尾（code-review item 67a6a431c7d8）
+        # KeyboardInterrupt/SystemExit 等 BaseException（如 register_lane_process
+        # 失败分支显式 raise、线程内 sys.exit）原会越过 except 与尾段：artifact
+        # 不落盘（join 读侧读旧产物）、lane_done 永不 set（重启排水收口退化为
+        # 盲等超窗）、unregister_lane_process 不执行（登记泄漏）。折算状态后
+        # 重抛，产物落盘与 lane_done 注销由 finally 保证执行（兑现 docstring
+        # 「任何意外异常都折算为 unavailable 产物收尾」的承诺）。
+        artifact["status"] = "unavailable"
+        artifact["reason"] = f"车道内部异常: {type(e).__name__}: {e}"
+        if log is not None:
+            log.warning(
+                "agent_runner",
+                f"impl-ocr 车道 BaseException 穿透（run {run_id}）: "
+                f"{type(e).__name__}: {e}",
+            )
+        raise
     finally:
         # 停跳兜底（1.2 全路径覆盖）：心跳启动后任何未预期异常路径（含降级
         # unavailable 各分支）都先停跳，再清理 worktree——归档/清理不会被
@@ -3910,68 +3931,72 @@ def run_impl_ocr(
             _stop_impl_ocr_heartbeat(*heartbeat)
         _remove_impl_ocr_worktree(runner.project_root, wt)
 
-    # ── 产物原子落盘（unavailable/completed 两条路径都写，join 读侧以文件为准）──
-    # planned-restart-drain B：落盘→终态事件→收尾日志整段包 try/finally——
-    # 尾段任何退出路径（含收尾日志等调用抛错）都保证 set lane_done 并注销
-    # 排水登记：set 使 terminate_lane_processes 的 bounded 等待不盲等，注销
-    # 放在同一 finally 让登记与「终态已 durable」同生命周期（此前在
-    # communicate 返回即注销，持久化窗口内车道对排水收口不可见）。finally
-    # 只做收尾不吞异常，既有错误传播行为不变。
-    try:
-        artifact_persisted = True
+        # ── 尾段自原函数尾位置移入 finally（code-review item 67a6a431c7d8）：
+        # BaseException 穿透主 try 时原位置尾段整体被跳过——产物不落盘、
+        # lane_done 永不 set、排水登记泄漏；移入后全退出路径都执行收尾。
+        # ── 产物原子落盘（unavailable/completed 两条路径都写，join 读侧以文件为准）──
+        # planned-restart-drain B：落盘→终态事件→收尾日志整段包 try/finally——
+        # 尾段任何退出路径（含收尾日志等调用抛错）都保证 set lane_done 并注销
+        # 排水登记：set 使 terminate_lane_processes 的 bounded 等待不盲等，注销
+        # 放在同一 finally 让登记与「终态已 durable」同生命周期（此前在
+        # communicate 返回即注销，持久化窗口内车道对排水收口不可见）。finally
+        # 只做收尾不吞异常，既有错误传播行为不变。
         try:
-            artifact_path.parent.mkdir(parents=True, exist_ok=True)
-            # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下
-            # 双实例并发 write_text 可交错半写、被对方 os.replace 原子发布。
-            tmp = artifact_path.with_name(f".code-review-{run_id}.json.tmp")
-            tmp.write_text(
-                json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            os.replace(tmp, artifact_path)
-        except OSError as e:
-            artifact_persisted = False
-            if log is not None:
-                log.warning(
-                    "agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}"
+            artifact_persisted = True
+            try:
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下
+                # 双实例并发 write_text 可交错半写、被对方 os.replace 原子发布。
+                tmp = artifact_path.with_name(f".code-review-{run_id}.json.tmp")
+                tmp.write_text(
+                    json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+                os.replace(tmp, artifact_path)
+            except OSError as e:
+                artifact_persisted = False
+                if log is not None:
+                    log.warning(
+                        "agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}"
+                    )
 
-        _write_impl_ocr_run_events(
-            runner.project_root,
-            run_id,
-            spec_name,
-            [
-                (
-                    "result",
-                    {
-                        "status": artifact["status"],
-                        "findings": len(artifact["findings"]),
-                        "reason": artifact["reason"],
-                        # 落盘失败时 status 取内存值，可能与磁盘实况（旧内容
-                        # 或缺失）不一致（code-review item 74189e02c2fa）：
-                        # 补布尔标记供时间线读者判别，不改变既有 status 语义。
-                        "artifact_persisted": artifact_persisted,
-                    },
-                )
-            ],
-        )
-        # 游标推进（code-review item 9201a12579c2）：仅在主产物成功落盘后执行
-        # ——落盘失败（artifact_persisted=False）不推进，下轮回退全量重审本
-        # 区间，保持 _write_ocr_cursor「失败不影响正确性」的单向安全语义。
-        if cursor_advance_pending and artifact_persisted:
-            _write_ocr_cursor(cursor_path, head_commit, run_id)
-        if log is not None:
-            log.info(
-                "agent_runner",
-                f"impl-ocr 车道完成（run {run_id}）: status={artifact['status']} "
-                f"findings={len(artifact['findings'])}",
+            _write_impl_ocr_run_events(
+                runner.project_root,
+                run_id,
+                spec_name,
+                [
+                    (
+                        "result",
+                        {
+                            "status": artifact["status"],
+                            "findings": len(artifact["findings"]),
+                            "reason": artifact["reason"],
+                            # 落盘失败时 status 取内存值，可能与磁盘实况（旧内容
+                            # 或缺失）不一致（code-review item 74189e02c2fa）：
+                            # 补布尔标记供时间线读者判别，不改变既有 status 语义。
+                            "artifact_persisted": artifact_persisted,
+                        },
+                    )
+                ],
             )
-    finally:
-        # 产物+终态事件均已落盘（或尾段异常退出），通知 shutdown 收口本车道
-        # 终态就绪并注销登记（terminate_lane_processes 据此 bounded 等待，
-        # 不再盲等；注销幂等）。
-        if lane_done is not None:
-            lane_done.set()
-        _unregister_lane = getattr(runner, "unregister_lane_process", None)
-        if callable(_unregister_lane):
-            _unregister_lane(run_id)
+            # 游标推进（code-review item 9201a12579c2）：仅在主产物成功落盘后执行
+            # ——落盘失败（artifact_persisted=False）不推进，下轮回退全量重审本
+            # 区间，保持 _write_ocr_cursor「失败不影响正确性」的单向安全语义。
+            if cursor_advance_pending and artifact_persisted:
+                _write_ocr_cursor(cursor_path, head_commit, run_id)
+            if log is not None:
+                log.info(
+                    "agent_runner",
+                    f"impl-ocr 车道完成（run {run_id}）: status={artifact['status']} "
+                    f"findings={len(artifact['findings'])}",
+                )
+        finally:
+            # 产物+终态事件均已落盘（或尾段异常退出），通知 shutdown 收口本车道
+            # 终态就绪并注销登记（terminate_lane_processes 据此 bounded 等待，
+            # 不再盲等；注销幂等）。
+            if lane_done is not None:
+                lane_done.set()
+            _unregister_lane = getattr(runner, "unregister_lane_process", None)
+            if callable(_unregister_lane):
+                _unregister_lane(run_id)
+
     return artifact
