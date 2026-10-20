@@ -176,22 +176,24 @@ def is_verifier_process_death(result) -> bool:
       run 级总存活上界——低于 ``VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS``）。
 
     **保守缺省**：``turns_used``/``duration_seconds`` 缺失（``None``/属性不存在）
-    或脏值（非数值；负值 ``duration_seconds`` 同口径——数值合法但语义非法，
-    视为 runner 计时异常/mock 脏值，code-review item 89a982b09a33）按「口径
-    未知」处理——该项不命中，回落既有归因链按 product 保守处置。宁可少分流，
+    或脏值按「口径未知」处理——该项不命中，回落既有归因链按 product 保守
+    处置。两字段脏值防御同款对称（code-review item 89a982b09a33 /
+    aad7f481aa7f）：``turns_used`` 仅接受真实 int（float/str 等经 ``int()``
+    会被截断/放行的类型不参与——0.5 截断为 0、"0" 放行均会误判死亡；负值
+    同不命中；bool 属替身脏值，虽为 int 子类亦不参与）；``duration_seconds``
+    负值数值合法但语义非法，视为 runner 计时异常/mock 脏值。宁可少分流，
     不可把口径未知的结果误判为死亡（误分流会绕过 bug-found 出口）。
     非对象（None）恒不命中。
     """
     if result is None:
         return False
-    # None（构造点未回填/替身缺属性）≠ 0（真实零轮）：未知口径不命中
+    # None（构造点未回填/替身缺属性）≠ 0（真实零轮）：未知口径不命中。
+    # 与 duration_seconds 同款防御（code-review item aad7f481aa7f）：仅真实
+    # int 参与 int() 转换会截断浮点脏值、放行数字字符串，不对称的脏值深度
+    # 会让 mock 脏值走死亡分流、绕过 bug-found 出口。
     turns = getattr(result, "turns_used", None)
-    if turns is not None:
-        try:
-            if int(turns) == 0:
-                return True
-        except (TypeError, ValueError):
-            pass
+    if isinstance(turns, int) and not isinstance(turns, bool) and turns == 0:
+        return True
     duration = getattr(result, "duration_seconds", None)
     if duration is not None:
         try:
@@ -719,7 +721,11 @@ def _scenario_classification_distribution(pipeline, spec_name: str) -> dict:
         failed.append((str(sid), raw_cls if isinstance(raw_cls, str) else None))
     if not failed:
         return dist
-    counts = Counter(cls for _sid, cls in failed)
+    # 仅统计显式字符串分类（code-review item d030830f068b）：非 str 条目
+    # （脏数据归一为 None）不进 counts——None 键经 json.dumps（escalation
+    # 信号/日志序列化面）会落成形似分类名的 "null" 桶，与 unclassified 字段
+    # 语义重叠易误读；未分类规模单由 unclassified 承载。
+    counts = Counter(cls for _sid, cls in failed if isinstance(cls, str))
     product_bug = int(counts.get("product-bug", 0) or 0)
     unclassified = sum(
         1
@@ -798,11 +804,15 @@ def reclassify_infra_rounds(
 ) -> dict:
     """从 ``_verify_fail_rounds`` 减回实为 infra 却误计入的历史轮次（evo-infra-failure-budget-exempt R3）。
 
-    admin 声明「实为 infra 的历史轮次」后执行：原子改写
+    admin 声明「实为 infra 的历史轮次」后执行：扣减
     ``_verify_fail_rounds = max(0, 当前值 - n)`` + 解冻 + 审计留痕。
 
     **幂等**（admin_store DISPOSITION 记录按 reclassify_key 去重，重复回拨
-    不二次扣减）：同一 ``(spec, n, audit_reason)`` 组合只应用一次。
+    不二次扣减）：同一 ``(spec, n, audit_reason)`` 组合只应用一次。审计
+    append 落盘后的扣减/解冻收尾写若因进程中断未完成，幂等短路前按记录的
+    扣减前值（``reclassify_before_fail_rounds``）对账补偿补齐收尾写
+    （code-review item de7798915398）——当前值已偏离记录值（收尾已发生，
+    或其后计数被其他轮改动无法安全归因）时维持短路，不二次扣减。
 
     **回拨方向**（只做减法）：product→infra 方向（实为 infra 却计入
     fail_rounds）；env→product-bug 属相反方向（补计），不在此入口。
@@ -872,19 +882,66 @@ def reclassify_infra_rounds(
                 f"退化）'{spec_name}': reclassify_key={reclassify_key}: "
                 f"{type(e).__name__}: {e}",
             )
-    already_applied = any(
-        rec.get("kind") == DISPOSITION
-        and rec.get("signal_type") == RECLASSIFY_SIGNAL_TYPE
-        and rec.get("spec") == spec_name
-        and rec.get("reclassify_key") == reclassify_key
-        for rec in existing + archived
+    applied_rec = next(
+        (
+            rec
+            for rec in existing + archived
+            if rec.get("kind") == DISPOSITION
+            and rec.get("signal_type") == RECLASSIFY_SIGNAL_TYPE
+            and rec.get("spec") == spec_name
+            and rec.get("reclassify_key") == reclassify_key
+        ),
+        None,
     )
-    if already_applied:
+    if applied_rec is not None:
         entry = state_machine.read_one(spec_name) or {}
+        current_now = _read_fail_rounds(entry)
+        # ── 幂等短路前的对账补偿（code-review item de7798915398）──
+        # append 落盘后、扣减/解冻收尾写完成前进程中断时，纯短路会让半态
+        # （spec 已解冻或仍冻结，但 _verify_fail_rounds 未扣）长期存续。append
+        # 时记录的扣减前值与当前值仍相等 ⇒ 收尾写从未发生，此处补齐；不等 ⇒
+        # 收尾已发生、或其后计数被其他轮改动（无法安全归因），维持原短路，
+        # 不二次扣减（等值巧合回增时重复扣减方向仍保守——预算偏紧）。
+        before = applied_rec.get("reclassify_before_fail_rounds")
+        if (
+            isinstance(before, int)
+            and not isinstance(before, bool)
+            and current_now == before
+        ):
+            applied = min(n, before)
+            new_fail_rounds = before - applied
+            if entry.get("status") == "blocked" and not entry.get(FROZEN_FIELD):
+                # 与主路径同款目标状态判定：当前值仍冻结形态则按最新条目
+                # 重新解析复位路径（主路径解析过的 target_status 不复用，
+                # 条目在窗口内可能已被并发改写）
+                target_status = resolve_env_blocked_reset_path(entry, project_root)
+            else:
+                target_status = None
+            if target_status is not None:
+                state_machine.unfreeze_spec(spec_name, status=target_status)
+            state_machine.update_spec(
+                spec_name, {"_verify_fail_rounds": new_fail_rounds}
+            )
+            if logger is not None:
+                logger.warning(
+                    "pm_engine",
+                    f"infra 回拨对账补偿: '{spec_name}' 幂等键已落盘但扣减/解冻"
+                    f"收尾未完成，补写 _verify_fail_rounds "
+                    f"{current_now}→{new_fail_rounds}（减回 {applied} 轮，"
+                    f"status → {target_status or 'unchanged'}，"
+                    f"audit={audit_reason[:120]}）",
+                )
+            return {
+                "ok": True,
+                "applied": applied,
+                "fail_rounds": new_fail_rounds,
+                "status": (state_machine.read_one(spec_name) or {}).get("status", ""),
+                "note": "already applied (reconciled unfinished decrement)",
+            }
         return {
             "ok": True,
             "applied": 0,
-            "fail_rounds": _read_fail_rounds(entry),
+            "fail_rounds": current_now,
             "status": entry.get("status", ""),
             "note": "already applied (idempotent)",
         }
@@ -917,9 +974,12 @@ def reclassify_infra_rounds(
     # 键会二次扣减，超出 admin 声明的 n 轮上限（code-review item
     # b0d51bd553d4）；append 抛异常（如 OSError）时状态尚未被改动，调用方
     # 重试会重新走完整流程且只扣一次。若先扣减后写审计，append 失败时幂等
-    # 键未落盘，重试同样会二次扣减。反向窗口（append 成功后扣减失败）由
-    # already_applied 幂等短路兜底——fail_rounds 保持偏高（预算偏紧，不放大
-    # 重试预算）。
+    # 键未落盘，重试同样会二次扣减。反向窗口（append 成功后扣减/解冻收尾
+    # 未完成——进程中断或写盘异常）由 already_applied 幂等短路前的对账补偿
+    # 兜底（code-review item de7798915398）：按 append 记录的扣减前值
+    # reclassify_before_fail_rounds 判定收尾写是否从未发生，未发生则补齐
+    # 扣减与解冻，已发生（或当前值已偏离、无法安全归因）则维持短路不二次
+    # 扣减——半态不再长期存续至人工对账。
     rec = store.append(
         {
             "kind": DISPOSITION,
@@ -936,6 +996,10 @@ def reclassify_infra_rounds(
             "summary": f"reclassify {applied} infra rounds, actor={actor}",
             "admin_run_id": f"reclassify:{reclassify_key}",
             "reclassify_key": reclassify_key,
+            # 扣减前值快照（code-review item de7798915398）：already_applied
+            # 短路前的对账补偿以此为「收尾写从未发生」判据——append 与扣减/
+            # 解冻收尾是两次独立写盘，中断后重试据此补齐半态
+            "reclassify_before_fail_rounds": current,
         }
     )
     if rec is None:
