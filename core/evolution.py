@@ -1759,6 +1759,24 @@ def accept_item(
                 "spec_name": None,
                 "error": rec["draft_failed_reason"],
             }
+        # spec.name 缺失/非法须在消解冲突前先行校验（code-review item
+        # 18ad1ef05d99）：materialize_draft 的 name 校验只在落盘路径生效，接受
+        # 路径不会再经过；resolve_spec_name 对非法名同样返回 None，不预检会把
+        # 「spec 内容缺 name 字段」误记成下方「SPEC 名无法消解冲突」，误导排查
+        # 方向。报因文案与 materialize_draft 的校验口径对齐。
+        raw_name = spec.get("name")
+        if not isinstance(raw_name, str) or not _KEBAB_RE.match(raw_name):
+            rec["status"] = "draft_failed"
+            rec["draft_failed_reason"] = (
+                f"spec.name 缺失或非法（应满足 {_KEBAB_RE.pattern}）: {raw_name!r}"
+            )
+            _persist(rec)
+            return {
+                "ok": False,
+                "status": "draft_failed",
+                "spec_name": None,
+                "error": rec["draft_failed_reason"],
+            }
         name = resolve_spec_name(spec.get("name"), item_id_, project_root, state_machine)
         if name is None:
             rec["status"] = "draft_failed"
@@ -1834,6 +1852,28 @@ def accept_item(
                     "spec_name": None,
                     "error": rec["draft_failed_reason"],
                 }
+        except FileExistsError:
+            # code-review item 8b7c78717b19：dest.exists() 预检（41d71f597331）
+            # 与 copytree 之间的窗口期被外部新建同名目录时，copytree 顶层
+            # makedirs(exist_ok=False) 即以 FileExistsError 失败、未写入任何
+            # 文件，dest 内容全部来自外部——MUST NOT rmtree（会整体删除外部
+            # 目录，未提交内容不可恢复）。按上方预检分支同款处置：保留现场、
+            # 置 accept_failed + 告警，重试经 resolve_spec_name 换后缀名立项。
+            rec["status"] = "accept_failed"
+            rec["draft_failed_reason"] = f"spec/changes/{name} 已存在且非本条目残留（名字被占用）"
+            _persist(rec)
+            _write_admin_warning(
+                project_root,
+                f"自进化条目 {item_id_} 接受失败：spec/changes/{name} 在冲突检查后的"
+                "复制窗口期被外部新建（copytree 未写入任何文件，外部目录原样保留，"
+                f"未做任何改动）；重试将改用 -{str(item_id_)[:6]} 后缀名立项",
+            )
+            return {
+                "ok": False,
+                "status": "accept_failed",
+                "spec_name": None,
+                "error": rec["draft_failed_reason"],
+            }
         except OSError as e:
             # 复制失败：清理半写副本（对齐下方提交失败分支的清理纪律），
             # 否则残留目录永久占用原名，重试被迫换后缀立项
