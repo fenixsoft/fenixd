@@ -69,6 +69,24 @@ def _split_rename_sides(field: str) -> list:
     return sides
 
 
+# ``git stash pop`` 成功输出中 Dropped 行的 sha 捕获（restore_after_merge 与
+# reclaim 两侧防插队核对共用同一解析，code-review item 9cd4bd49ca8d）。
+_DROPPED_STASH_RE = re.compile(r"Dropped refs/stash@\{\d+\} \(([0-9a-f]+)\)")
+
+
+def _parse_dropped_stash_sha(pop_stdout: str | None) -> str:
+    """从 ``git stash pop`` 成功输出解析 Dropped 行的被弹条目 sha。
+
+    同 ``_rev_parse_stash_top`` 的收口方式：pop 后「被弹条目是否确为本方
+    条目」的核对（restore_after_merge / _reclaim_stale_autostash_locked）
+    共用同一解析与比对基准，不再一侧正则解析、一侧子串包含（子串法会被
+    pop 输出其它行恰好含该 sha 十六进制串骗过、漏报误弹）。解析不到
+    Dropped 行（输出形态变化）返回空串，调用方按「无法核对」跳过、不误报。
+    """
+    m = _DROPPED_STASH_RE.search(pop_stdout or "")
+    return m.group(1) if m else ""
+
+
 class G6StashGuardMixin:
     """G6 主树还原/autostash 治理（design D1 表 A G6）。"""
 
@@ -331,13 +349,9 @@ class G6StashGuardMixin:
             # pinned_sha 不一致即误弹，记 ERROR 供人工按 sha 排查；解析不到
             # Dropped 行（输出形态变化）或 pin 为空时跳过核对不误报。仅补
             # 观测，不改变 pop 成功的返回语义（同 reclaim_stale_autostash）。
-            dropped_sha = ""
-            m = re.search(
-                r"Dropped refs/stash@\{\d+\} \(([0-9a-f]+)\)",
-                result.stdout or "",
-            )
-            if m:
-                dropped_sha = m.group(1)
+            # Dropped 行解析收口 _parse_dropped_stash_sha（code-review item
+            # 9cd4bd49ca8d），与 reclaim 侧共用同一解析与比对逻辑。
+            dropped_sha = _parse_dropped_stash_sha(result.stdout)
             if pinned_sha and dropped_sha and dropped_sha != pinned_sha:
                 self.logger.error(
                     "worktree_manager",
@@ -895,8 +909,12 @@ class G6StashGuardMixin:
         if pop.returncode == 0:
             # pop 输出含「Dropped refs/stash@{0} (<sha>)」：核对被弹条目确为
             # sha_before，不一致说明复核后仍发生并发插队造成误弹，记 ERROR
-            # 供人工按 sha 排查。
-            if sha_before and sha_before not in (pop.stdout or ""):
+            # 供人工按 sha 排查。解析收口 _parse_dropped_stash_sha（code-review
+            # item 9cd4bd49ca8d，对齐 restore_after_merge 口径）：子串包含会被
+            # pop 输出其它行（如被恢复文件路径）恰好含该 sha 十六进制串骗过、
+            # 漏报误弹；解析不到 Dropped 行时跳过核对不误报。
+            dropped_sha = _parse_dropped_stash_sha(pop.stdout)
+            if sha_before and dropped_sha and dropped_sha != sha_before:
                 self.logger.error(
                     "worktree_manager",
                     f"Stale autostash reclaim mis-popped a concurrent entry "
@@ -1379,7 +1397,20 @@ class G6StashGuardMixin:
                 errors="replace",
                 timeout=30,
             )
-            if diff.returncode != 0 or not diff.stdout.strip():
+            if diff.returncode != 0:
+                # 命令失败（index.lock 争用、git 不可用、old_head 失效等）与
+                # 「无新增路径」不可混同（code-review item a14b215ba4d4）：
+                # 本自愈承担防撞车循环复发的职责，枚举失败被静默吞掉后被
+                # ignore 草稿保持 tracked、下一轮脏修改重致撞车循环复发，
+                # 日志却无任何 purge 痕迹可排障——记 warning 对齐同文件其余
+                # 失败路径（_untrack_index_paths 各中止分支）的日志口径。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Purge ignored brought-in: diff enumeration failed: "
+                    f"{(diff.stderr or diff.stdout).strip()}",
+                )
+                return
+            if not diff.stdout.strip():
                 return
             # 路径反转义（同 _list_dirty_tracked_files 口径）：diff --name-only
             # 对非 ASCII/特殊字符路径默认输出 C-quoted 转义形，不反转义则下方
@@ -1510,7 +1541,13 @@ class G6StashGuardMixin:
                     # 只处理 DU（主树删除、分支修改）
                     if xy != "DU":
                         return False
-                    du_paths.append(line[3:].strip())
+                    # 反转义口径对齐 _list_dirty_tracked_files（code-review item
+                    # b9381c0972e3）：quotePath=false 只豁免高位字节，路径含双引号/
+                    # 反斜杠/控制字符时输出仍是 C-quote 转义形，直接拼入下方
+                    # git rm --cached 与 check-ignore 的 pathspec 永不命中；
+                    # unquote_git_path 对无引号行原样返回（幂等），保留
+                    # quotePath=false 以减少转义面
+                    du_paths.append(unquote_git_path(line[3:].strip()))
             if not du_paths:
                 return False
             for path in du_paths:

@@ -1183,6 +1183,22 @@ def _retention_files_differ(a: Path, b: Path) -> bool:
     return sa.st_size != sb.st_size or int(sa.st_mtime) != int(sb.st_mtime)
 
 
+def _retention_top_copy_newer(p: Path, dest: Path) -> bool:
+    """顶层副本 mtime 是否晚于归档副本（探测失败保守按「更晚」= 保留顶层）。
+
+    同名去重的删除守卫（code-review item f7332957913b）：本函数把停更超
+    _RUN_STALE_SECONDS 的在飞 run 判 stale 移入归档后，runner 按原路径追加会在
+    活跃目录重建产物，续写与终态事件只落在顶层副本——此时顶层（较新、含终态）
+    晚于归档副本（截断前缀、无终态），按「归档为准」删除会销毁较新记录且归档
+    副本永无终态。仅顶层不晚于归档副本时才允许走删除路径；stat 失败不可验证
+    时同样保留顶层（宁可下轮重判，不可销毁未核实的新数据）。
+    """
+    try:
+        return p.stat().st_mtime > dest.stat().st_mtime
+    except OSError:
+        return True
+
+
 def runs_retention_check(project_root, config: dict | None = None, logger=None) -> dict:
     """daemon 周期 runs 保留清理（fix-dashboard-read-path-performance D4）。
 
@@ -1190,7 +1206,9 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
     1. 终态（done/error/interrupted/cancelled/superseded/gate-blocked，及 stale
        断尾）run 从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
        同 run_id 归档副本已存在时删除顶层副本（轻量判等后仍以归档为准，分歧记
-       WARNING），删除不计入 moved、单独记日志。
+       WARNING），删除不计入 moved、单独记日志；顶层副本 mtime 晚于归档副本者
+       除外——那是归档后按原路径重建的较新记录（含续写与终态事件），保留顶层
+       并记 WARNING（code-review item f7332957913b）。
     2. 无主车道归档产物天龄兜底（fix-run-cleanup-attach-spec-archive D2）：
        ``archive/*.jsonl`` 中 run_spec_part 不属于活跃 SPEC 集（``spec/changes/``
        目录名集合，每周期现算）且 mtime 超过 ``_LANE_RUN_RETENTION_DAYS`` 天者
@@ -1226,7 +1244,8 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
         }
 
     # 1. 终态 run 移入归档（同 run_id 归档副本已存在时改为删除顶层副本——
-    #    判等后仍以归档为准，不计入 moved）
+    #    判等后仍以归档为准，不计入 moved；顶层副本比归档副本新则保留顶层，
+    #    见去重删除守卫）
     moved = 0
     # 扫描级失败摘要（code-review item b15df4b11c6c）：失败态此前只落 WARNING
     # 日志、error 恒 None，调用方无法感知本轮清理已降级——各扫描失败分支在此
@@ -1244,6 +1263,21 @@ def runs_retention_check(project_root, config: dict | None = None, logger=None) 
                 archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = archive_dir / p.name
                 if dest.exists():
+                    # 去重删除守卫（code-review item f7332957913b）：顶层副本比归档
+                    # 副本新时不得按「归档为准」删除。该形态源于本函数把停更超
+                    # _RUN_STALE_SECONDS 的在飞 run 判 stale 移档后，runner 按原路径
+                    # 追加在活跃目录重建产物——续写与终态事件只落在顶层副本，删顶层
+                    # 会丢失较新记录且归档副本永无终态。保留顶层并告警，待 SPEC 归档
+                    # /人工对账收口；在飞误判 stale 的上游概率由阈值注释声明接受，
+                    # 此处只堵「销毁较新数据」这一真实损害。
+                    if _retention_top_copy_newer(p, dest):
+                        _retention_log(
+                            logger,
+                            "warning",
+                            f"runs 保留: 顶层副本比归档副本新，跳过同名去重删除以保留较新记录 {p.name}",
+                        )
+                        actions += 1
+                        continue
                     # 去重删除前做轻量判等（code-review item 750bb741c8fd）：旧实现
                     # 无条件 unlink 且不留日志、仍计入 moved（误报「移入归档」），
                     # 仅在「归档副本与顶层副本同源」假设下安全。顶层副本因本函数

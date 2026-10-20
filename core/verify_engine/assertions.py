@@ -1268,6 +1268,13 @@ class AssertionRunner:
                 ),
             }
 
+        # 元素级类型归一（code-review item c70f6bf51b8f）：list 形态防御不
+        # 覆盖元素类型——含非 str 元素（新 runner 变体或收集器回归写入
+        # dict/int）时下方 startswith 遍历抛 AttributeError，被 run() 包装
+        # 成裸异常文本的「断言执行异常」（正是上方防御注释要避免的归因
+        # 形态）；归一为 str 后正常收集路径（恒产 str）逐元素原样保留，
+        # 不翻转 pass 裁决，畸形条目保真转字符串参与过滤与透出。
+        errors = [e if isinstance(e, str) else str(e) for e in errors]
         # 收集侧触顶截断标记（browser._capped_append）不计入 pass：
         # external_net_errors_ok 豁免路径上，纯网络层错误风暴被截断后
         # 标记若留在 errors 里会被误计为控制台错误（误报）
@@ -1337,6 +1344,12 @@ class AssertionRunner:
                     f"实际 {type(errors).__name__}"
                 ),
             }
+        # 元素级类型归一（code-review item c70f6bf51b8f，同 no_console_error
+        # 口径）：list 形态防御不覆盖元素类型——含非 str 元素时下方
+        # startswith 遍历抛 AttributeError，被 run() 包装成裸异常文本的
+        # 「断言执行异常」；归一为 str 后正常收集路径逐元素原样保留，
+        # 不翻转 pass 裁决，畸形条目保真转字符串参与过滤与透出。
+        errors = [e if isinstance(e, str) else str(e) for e in errors]
         # 收集侧触顶截断标记（browser._capped_append）不计入 errors：标记是
         # 「后续还有错误被截断」的信号而非真实 4xx/5xx 记录，与 console 侧
         # （_assert_no_console_error）同口径剔除并以 truncated 标志透出
@@ -1431,11 +1444,9 @@ class AssertionRunner:
             }
 
         if relation == "contains":
-            count = await page.locator(f"{parent_sel} {child_sel}").count()
-            passed = count > 0
+            locator_str = f"{parent_sel} {child_sel}"
         elif relation == "direct-child":
-            count = await page.locator(f"{parent_sel} > {child_sel}").count()
-            passed = count > 0
+            locator_str = f"{parent_sel} > {child_sel}"
         else:
             # 非法 relation 显式可见化（与 z_index_order 非法 operator、
             # text_match 非法 mode 口径对齐）：裸失败会让 judge 把 planner
@@ -1450,6 +1461,27 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"非法 relation: {relation!r}，仅支持 contains/direct-child",
             }
+
+        # 拼接片段可能无法被选择器引擎解析（code-review item 811c5b6c700e）：
+        # planner 误写 text=/xpath= 等引擎语法或空格敏感片段时 count() 抛错
+        # 会穿透到 run() 的通用 except，结果只带 assertion.get("selector","")
+        # ——dom_structure 用的是 parent/child 键，定位上下文全丢；比照上方
+        # 非法 relation 分支的 dict 形态返回带 parent/child/relation 的确定
+        # 性失败，与同文件「缺参/非法参数进匹配前显式失败」口径一致。
+        try:
+            count = await page.locator(locator_str).count()
+        except Exception as e:
+            return {
+                "type": "dom_structure",
+                "layer": 3,
+                "parent": parent_sel,
+                "child": child_sel,
+                "relation": relation,
+                "count": 0,
+                "pass": False,
+                "error": f"选择器拼接无法解析: {e}",
+            }
+        passed = count > 0
 
         return {
             "type": "dom_structure",

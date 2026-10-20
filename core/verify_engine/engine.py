@@ -526,9 +526,20 @@ class VerifyEngine:
             for i, r in enumerate(batch_results):
                 sid = ready[i].id
                 completed_ids.add(sid)
-                if isinstance(r, BaseException):  # 含 CancelledError，防异常对象漏进结果集
+                # 非 dict 结果与异常同口径降级（code-review item 687043281817）：
+                # Runner.execute 契约回归返回 None/list 等时，下方 r.get("status")
+                # 会抛 AttributeError 穿出结算循环与 run()（finally teardown 已
+                # 完成，报告不落盘、进度不写），故并入既有合成 error 分支降级为
+                # 单场景 error 档。含 CancelledError，防异常对象漏进结果集。
+                if isinstance(r, BaseException) or not isinstance(r, dict):
                     failed_ids.add(sid)
-                    self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
+                    if isinstance(r, BaseException):
+                        self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
+                    else:
+                        self.logger.error(
+                            "verify_engine",
+                            f"场景'{sid}'返回非 dict 结果({type(r).__name__})，按 error 档结算: {r!r}",
+                        )
                     r = {
                         "scenario_id": sid,
                         "description": ready[i].description,

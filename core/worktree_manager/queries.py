@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.git_base_branch import resolve_base_branch
+from core.git_text import unquote_git_path
 
 from core.worktree_manager import (  # noqa: E402
     WT_AVAILABLE,
@@ -131,15 +132,28 @@ class G8QueryMixin:
             )
             if kind.returncode != 0 or not kind.stdout:
                 return False
+            # 路径形态决定 ls-tree 输出形态：确切路径（无尾斜杠）命中时输出
+            # 该路径自身条目（文件 100644/100755、目录 040000 tree、symlink
+            # 120000，单条）；目录带尾斜杠（声明记法如 ``core/``，交付声明
+            # 侧不剥尾斜杠）时输出其**子条目清单**。故逐条目扫描取「任一条
+            # 目 mode 落在集合内」判定，不得拿首条目 mode 代表整体
+            # （code-review item 274b5f7d5592）：混合内容目录首子项恰为
+            # symlink/gitlink 时整目录被误判非落地 → 交付守卫确定性缺件 →
+            # 打回循环烧预算（与下述死锁事故同向）。
             # 100644/100755（文件）= 落地交付物；040000（目录）同样算落地——
             # git 不追踪空目录，path 为 tree 必然内含文件（如构建产物 dist/
             # 整目录声明）。曾为 blob-only：目录声明成为不可满足契约 → 收工
             # 守卫确定性缺件 → 打回循环烧预算至 blocked
             # （remove-auto-run-cleanup 死锁事故 2026-09-03）。
-            # symlink（120000）与 gitlink（160000）等其余类型不算。
-            entry = kind.stdout.split("\0", 1)[0]
-            mode = entry.split(" ", 1)[0].strip()
-            return mode in ("100644", "100755", "040000")
+            # symlink（120000）与 gitlink（160000）等其余类型不算——子条目
+            # 清单里全为 symlink/gitlink 时同样判缺失（与单条 symlink 判定
+            # 同口径）。
+            for entry in kind.stdout.split("\0"):
+                if not entry:
+                    continue
+                if entry.split(" ", 1)[0].strip() in ("100644", "100755", "040000"):
+                    return True
+            return False
         except subprocess.TimeoutExpired:
             return False
         except Exception:
@@ -341,8 +355,22 @@ class G8QueryMixin:
         if not branch:
             return None
         try:
+            # -c core.quotePath=false（code-review item 8360737f053f）：非 ASCII
+            # worktree 路径缺省按 quotePath 的 C 转义引号形输出，下方按原文
+            # 切分与 Path 实际形态失配 → is_available 误降级 REBUILDABLE；
+            # 提取处再经 unquote_git_path 兜底双引号/反斜杠等残余引号形
+            # （与 dist_conflicts 采集点同口径，单源在 core.git_text）。
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "worktree",
+                    "list",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -356,7 +384,7 @@ class G8QueryMixin:
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree ") :].strip()
+                current_path = unquote_git_path(line[len("worktree ") :].strip())
             elif line.startswith("branch "):
                 listed_branch = line[len("branch ") :].strip()
                 # porcelain 格式：branch refs/heads/<name>；HEAD <sha> 行只是
@@ -391,8 +419,20 @@ class G8QueryMixin:
         if not spec_name:
             return None
         try:
+            # -c core.quotePath=false + 下方 unquote_git_path（code-review
+            # item 8360737f053f，与 find_worktree_path 同口径）：非 ASCII
+            # worktree 路径不被 C 转义引号形污染，目录名归属比对不失配。
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "worktree",
+                    "list",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -419,7 +459,7 @@ class G8QueryMixin:
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree ") :].strip()
+                current_path = unquote_git_path(line[len("worktree ") :].strip())
                 continue
             if line.startswith("branch ") and current_path:
                 listed_branch = line[len("branch ") :].strip()
@@ -478,8 +518,20 @@ class G8QueryMixin:
         if not spec_name:
             return []
         try:
+            # -c core.quotePath=false + 下方 unquote_git_path（code-review
+            # item 8360737f053f，与 find_worktree_path 同口径）：非 ASCII
+            # worktree 路径不被 C 转义引号形污染，目录名归属比对不失配。
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "-c",
+                    "core.quotePath=false",
+                    "worktree",
+                    "list",
+                    "--porcelain",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -502,7 +554,7 @@ class G8QueryMixin:
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree ") :].strip()
+                current_path = unquote_git_path(line[len("worktree ") :].strip())
                 if current_path and self._wt_name_matches_spec(Path(current_path).name, spec_name):
                     paths.append(current_path)
         return paths

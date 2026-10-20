@@ -33,6 +33,57 @@ from .admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS  # noqa: F401
 _TERMINAL_STATUSES = ("done", "pushed")
 
 
+def _rollback_nested_archive_move(
+    spec_dir: Path, target: Path, moved: Path
+) -> tuple[str, Path | None]:
+    """TOCTOU 嵌套落位的回滚处置（soft_delete_spec/archive_spec 共用单源）。
+
+    exists 预检与 shutil.move 之间归档目标若被并发创建为目录，move 会把源
+    目录嵌套移入其内部（target/<name>/）而非独占落位。处置对齐
+    bin/fenix_archive.py::archive_change 的同源逻辑：原位空闲则移回原位完成
+    回滚；原位已被并发重建、回滚自身失败或回滚时二次嵌套则放弃回滚，报错
+    文案带实际落点供人工核对。不改用 os.rename 独占落位——归档可能跨设备
+    （rename 会 EXDEV 失败，bin/ 侧同款裁决）。
+
+    Returns:
+        (error_msg, stranded_path)：stranded_path 非 None 表示内容未能回滚至
+        原位、滞留在该嵌套路径，调用方记账/展示须以它为实际落点。
+    """
+    if spec_dir.is_dir():
+        # 原位已被并发重建：此时移回会被 shutil.move 嵌套进重建目录内部
+        # （层级二次漂移），放弃回滚，报错带实际落点供排障者直接定位。
+        return (
+            f"归档目标被并发创建: {target} — 原位 {spec_dir} 已被并发重建，"
+            f"误移内容保留在 {moved}，请手工核对处置",
+            moved,
+        )
+    try:
+        shutil.move(str(moved), str(spec_dir))
+    except OSError as e:
+        # 回滚移回原位自身失败（原位被占、跨设备复制中断等）时内容仍滞留
+        # 嵌套层级，报错带实际落点，与上方并发重建分支口径对齐。
+        return (
+            f"归档移动失败: {e} — 回滚移回原位失败，误移内容保留在 {moved}，"
+            "请手工核对处置",
+            moved,
+        )
+    # 二次 TOCTOU：回滚前 is_dir 检查与移动之间原位若被并发者重建为同名
+    # 目录，shutil.move 会把内容静默嵌套移入其内部（spec_dir/<name>/）而不
+    # 抛异常，报错须带实际落点（对齐 bin/ 侧同款检查）。
+    nested = spec_dir / moved.name
+    if nested.exists():
+        return (
+            f"归档目标被并发创建: {target} — 回滚时原位 {spec_dir} 已被并发"
+            f"重建，误移内容嵌套保留在 {nested}，请手工核对处置",
+            nested,
+        )
+    return (
+        f"归档移动失败: 目标 {target} 在移动前一刻被并发创建（exists 预检与"
+        f"移动之间的竞态窗口），内容已回滚至原位 {spec_dir}",
+        None,
+    )
+
+
 def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     """软删除 SPEC：STATE.md 移除条目 + spec/changes/<name>/ 移入 archive。
 
@@ -61,6 +112,10 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
       （与已删条目自洽，重试可完成清单清理），不回滚。回滚亦失败时
       ``archived``/``archive_path`` 保留滞留位置并写入 ``error``。
     - 归档同名冲突（极小概率）：在名字追加微秒后缀重试，直至成功。
+    - 预检与移动之间目标被并发创建（TOCTOU，code-review item 48f255c71094）：
+      内容回滚至原位并按 ``归档移动失败`` 失败形态返回（STATE.md 未改动）；
+      无法回滚时 ``error`` 带实际落点留人工核对，``archived``/``archive_path``
+      恒为 False/None（不作为有效归档入库）。
 
     Returns:
         {"found", "running", "archived": bool, "archive_path": str|null,
@@ -191,7 +246,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             # mkdir 同样收进 try（code-review item 3dbdfe8302c9）：权限不足/
             # 磁盘满等 OSError 一并按「归档移动失败: ...」返回 dict，不裸抛
             archive_root.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(spec_dir), str(dest))
+            moved = Path(shutil.move(str(spec_dir), str(dest)))
         except OSError as e:
             # 比照 archive_spec（同文件）以返回码告知调用方，不裸抛 OSError：
             # STATE.md 尚未改动、目录留在原位，两端天然一致
@@ -201,6 +256,25 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
                 "archived": False,
                 "archive_path": None,
                 "error": f"归档移动失败: {e}",
+                "pending": None,
+                "stopped": initial_running_count if initial_running_count else None,
+            }
+        # 独占落位复核（code-review item 48f255c71094）：exists 探测与 move 之间
+        # dest 若被并发创建为目录，shutil.move 会把 spec 目录嵌套移入其内部
+        # （dest/<spec>/），archive_path 按外层 dest 记账即与实际内容错位。
+        # 回滚处置单源 _rollback_nested_archive_move（对齐 bin/fenix_archive.py::
+        # archive_change 同款 TOCTOU 处置，不换 os.rename：归档可能跨设备
+        # EXDEV）。本步先于 STATE.md 改动，回滚/滞留后按既有「归档移动失败」
+        # 失败形态返回，STATE 未改动、两端天然一致；内容滞留嵌套层时不置
+        # archived/archive_path（不作为有效归档入库），实际落点在 error 中留痕。
+        if moved != dest:
+            error, _stranded = _rollback_nested_archive_move(spec_dir, dest, moved)
+            return {
+                "found": True,
+                "running": False,
+                "archived": False,
+                "archive_path": None,
+                "error": error,
                 "pending": None,
                 "stopped": initial_running_count if initial_running_count else None,
             }
@@ -352,7 +426,9 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
         - spec 不在 STATE.md → {"ok": False, "found": False, ...}
         - 非终态 → {"ok": False, "found": True, "error": "仅终态..."}
         - 活跃目录缺失（已归档）→ {"ok": False, "found": True, "archived_already": True}
-        - 目标已存在 → {"ok": False, "found": True, "conflict": True}（不覆盖）
+        - 目标已存在 → {"ok": False, "found": True, "conflict": True}（不覆盖；
+          含预检后并发创建的竞态冲突——能回滚则回滚后报 conflict，无法回滚时
+          ``to`` 为内容实际落点、error 带落点留人工核对）
         - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径}
           附 ``state_evicted``（迁出成功）或 ``evict_warning``（迁出失败降级）
 
@@ -427,6 +503,22 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
             "from": str(change_dir),
             "to": str(target),
             "error": f"归档移动失败: {e}",
+        }
+    # 独占落位复核（code-review item 48f255c71094）：exists 预检与 move 之间
+    # target 若被并发创建为目录，shutil.move 会把 change 目录嵌套移入其内部
+    # （target/<name>/）。回滚处置单源 _rollback_nested_archive_move（对齐
+    # bin/fenix_archive.py::archive_change 同源逻辑，不换 os.rename：归档可能
+    # 跨设备 EXDEV），按既有 conflict 形态返回；内容滞留嵌套层时 to 记实际
+    # 落点，防止 to 记外层路径与实际内容错位。
+    if moved != target:
+        error, stranded = _rollback_nested_archive_move(change_dir, target, moved)
+        return {
+            "ok": False,
+            "found": True,
+            "from": str(change_dir),
+            "to": str(stranded) if stranded is not None else str(target),
+            "conflict": True,
+            "error": error,
         }
     result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved), "error": None}
     # 归档成功即迁出（add-archive-state-migration D3）：目录已移入 archive/，

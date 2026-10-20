@@ -489,7 +489,7 @@ class G5DistConflictsMixin:
         upstream、amend 失败恢复三个分支共用同一 unstage 语义，收敛于此
         （原为三处逐字重复调用）。
         """
-        subprocess.run(
+        res = subprocess.run(
             [
                 "git",
                 "-C",
@@ -505,6 +505,17 @@ class G5DistConflictsMixin:
             errors="replace",
             timeout=30,
         )
+        if res.returncode != 0:
+            # 非零退出也留痕（item f5a16f7ba5c3，口径对齐 _heal_unmerged_files
+            # 的 reset 失败处理）：index.lock 争用等场景下 unstage 失败时，越
+            # 界/stale 暂存条目会残留 index，可被后续全树 amend/commit 静默
+            # 折进提交——非阻塞记录，不改控制流（三个调用分支均按「unstage
+            # 已尽力、仅保留工作区重建」继续）。
+            self.logger.warning(
+                "worktree_manager",
+                f"git reset unstage of {DASHBOARD_STATIC_ROOT} failed: "
+                f"{(res.stderr or '').strip()[:200]}",
+            )
 
     def _rebuild_dist_after_merge(self) -> None:
         """merge 后从合并后 src 确定性重建主树产物（dist 冲突根治 B）。

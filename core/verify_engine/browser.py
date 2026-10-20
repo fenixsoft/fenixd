@@ -752,6 +752,16 @@ class BrowserManager:
         的正向场景（如「调整优先级」直接确认预填 P5）会走取消/校验失败分支，
         场景必须显式携带 prompt_text（admin 修 2026-08-29：族谱爆炸根因之一）。
         """
+        # prompt_text 同款 str 归一（code-review item b44580320e5d）：target/
+        # value/dialog 已在运行层入口做 str 归一（08ef327b2c7e /
+        # 394576642420 / 5f5d31a35c76），prompt_text 此前原样透传——步骤里
+        # 数值/布尔形态的 prompt_text 会让 dialog.accept(prompt_text=<数值>)
+        # 在 playwright 协议层抛类型错误，异常只经 _reap_dialog_task 落一条
+        # warning，声明的 prompt 意图静默丢失、对话框回落 Playwright 默认
+        # dismiss，后续步骤失败被归因到时序/元素。None 保持 None（缺省语义
+        # =accept 不带文本），其余 str() 归一
+        if prompt_text is not None and not isinstance(prompt_text, str):
+            prompt_text = str(prompt_text)
 
         def _reap_dialog_task(task, _mode=mode):
             # 收割 accept/dismiss 任务的异常（code-review item 5804ee753ce8）：
@@ -877,6 +887,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error_type": "invalid_navigate_url",
                         "error": (
                             f"navigate URL 必须为绝对地址（http/https），"
@@ -928,6 +939,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（应为毫秒数）: {value!r}",
                     }
@@ -942,6 +954,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（毫秒数不能为负且必须有限）: {value!r}",
                     }
@@ -956,6 +969,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error_type": "invalid_wait_value",
                         "error": f"wait 值非法（毫秒数不能超过 {_MAX_WAIT_MS}）: {value!r}",
                     }
@@ -978,6 +992,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error": f"dialog 模式无效: {value}（应为 accept/dismiss）",
                     }
                 self._register_dialog_handler(page, mode, prompt_text=step.get("prompt_text"))
@@ -989,10 +1004,34 @@ class BrowserManager:
 
             # 所有其他操作都需要 target
             if not target:
-                return {"success": False, "action": action, "error": "缺少 target 选择器"}
+                return {
+                    "success": False,
+                    "action": action,
+                    "target": target,
+                    "error": "缺少 target 选择器",
+                }
 
             # seed 的 target 是 localStorage 键（非 CSS 选择器），需在通用选择器等待前处理
             if action == "seed":
+                # origin 预检（code-review item fb21b35af4a7）：seed 先于 navigate
+                # 执行时页面停留在 about:blank 不透明 origin，localStorage 访问
+                # 抛 SecurityError 后被顶层 except 归为 unknown；即便写入成功也
+                # 不属于应用 origin，随后的 navigate 会使其静默丢失——两类失败
+                # 都无法归因到「seed 需在 navigate 之后」这一配置错误。与
+                # invalid_wait_value / invalid_mock_status 同口径，结构化失败
+                # 返回并附当前页面地址
+                current_url = page.url or ""
+                if not current_url.startswith(("http://", "https://")):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error_type": "invalid_seed_origin",
+                        "error": (
+                            f"seed 需在 navigate 之后执行（当前页面非 http(s) origin）: "
+                            f"{current_url!r}"
+                        ),
+                    }
                 # 写入 localStorage 后重载页面，使应用按新数据重新渲染：
                 # target = 存储键，value = 原始 JSON 字符串（直接写入，不解析）
                 await page.evaluate(
@@ -1294,6 +1333,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error": "drag 缺少目标选择器（value 或 value.to）",
                     }
                 via_sel = cfg.get("via", "")
@@ -1362,7 +1402,12 @@ class BrowserManager:
 
                 src_box = await locator.bounding_box()
                 if not src_box:
-                    return {"success": False, "action": action, "error": f"源元素不可见: {target}"}
+                    return {
+                        "success": False,
+                        "action": action,
+                        "target": target,
+                        "error": f"源元素不可见: {target}",
+                    }
                 to_locator = page.locator(to_sel).first
                 await to_locator.wait_for(state="visible", timeout=5000)
                 to_box = await to_locator.bounding_box()
@@ -1370,6 +1415,7 @@ class BrowserManager:
                     return {
                         "success": False,
                         "action": action,
+                        "target": target,
                         "error": f"目标元素不可见: {to_sel}",
                     }
 
@@ -1421,6 +1467,7 @@ class BrowserManager:
                 return {
                     "success": False,
                     "action": action,
+                    "target": target,
                     "error": f"不支持的操作: {action}",
                 }
 
@@ -1479,7 +1526,7 @@ class BrowserManager:
         """
         # 首帧真实渲染：等待 body 出现非空文本（空白页 CLS 恒稳定，见 docstring）
         try:
-            await page.wait_for_function(
+            handle = await page.wait_for_function(
                 "() => (document.body && document.body.innerText || '').trim().length > 0",
                 timeout=8000,
             )
@@ -1491,6 +1538,17 @@ class BrowserManager:
             # （客户端渲染失败不进产品/场景归因）。「不在此处判失败」的原语义
             # 保留：极端形态（纯画布等）仍走 CLS 退化，不放大为步骤失败。
             return False
+
+        # 句柄释放（code-review item f1f6353374a1）：wait_for_function 返回包裹
+        # 返回值的 JSHandle，此处仅用于等待真值、返回值被丢弃，句柄若不显式
+        # dispose 会在单场景内按步骤累积，直到场景 context 关闭才统一回收。
+        # 释放放在等待成功路径之后并单独吞掉二次异常：页面已关闭等场景下
+        # dispose 自身抛错不得顶替等待结果、不得改变既有等待语义（首帧超时
+        # → False，成功 → 继续 CLS 判定）
+        try:
+            await handle.dispose()
+        except Exception:
+            pass
 
         # CLS 稳定
         try:

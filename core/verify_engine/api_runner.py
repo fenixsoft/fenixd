@@ -22,7 +22,7 @@ import asyncio
 import json
 import math
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from ._evidence import _EVIDENCE_LIMIT, _truncate, _interpolate_env  # 共享证据工具（符号出口保持）
 from .runner import VerifyRunner, register_runner, determine_scenario_status
@@ -49,7 +49,13 @@ def rewrite_origin(url: str, base_url: str) -> str:
     """
     if not base_url or not url:
         return url
-    parsed = urlparse(url)
+    # urlsplit 而非 urlparse（code-review item 4f6feb8324e3）：urlparse 会把
+    # 最后一段的「;参数」从 path 拆到 params 属性，仅用 path 重建 suffix 会把
+    # 该段静默丢弃（改写后请求打到 /api/users 而非 /api/users;format=json，
+    # 作者意图与实际请求悄然背离）；urlsplit 不拆 params，path 原样含分号段，
+    # 「路径保留」对旧式 REST 分号路径参数同样成立。scheme/netloc/query/
+    # fragment 两个函数语义一致，其余逻辑不受影响。
+    parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return url
     suffix = parsed.path
@@ -267,6 +273,7 @@ class ApiRunner(VerifyRunner):
                 "url": url,
                 "error": f"timeout 须为有限数字（秒）: {step.get('timeout')!r}",
             }
+        # [fenix-ignore:3d0316f9d300] falsy 标量在运行层不可达：场景装载经 TestStep.from_dict 的 _str_field 已把显式 0/False 归一为字符串 "0"/"False"（item 057b6e7741a5，同一失效类已在验收层修复），to_dict 真值过滤后本方法只会收到非空字符串或键缺失，YAML 写 body: 0 实际发送的是 "0"，所述静默丢 body 不成立
         if body and not isinstance(body, str):
             # 结构化 body（dict/list）进 json.loads 会抛 TypeError（仅捕获
             # JSONDecodeError），未捕获即整个场景 run 异常收场——入口归一为
@@ -579,6 +586,11 @@ class ApiRunner(VerifyRunner):
                         # 任意大、在本步骤内存里全量驻留到分帧/收尾才被裁剪
                         # （读入侧触顶即停，对齐 http_request 的
                         # _RESPONSE_READ_LIMIT 读入硬上限纪律）。
+                        # 边界（code-review item ff5572421785）：本纪律只约束
+                        # aiter_lines 行级交付之后的累计与入列；单行在交付前已在
+                        # httpx 内部按换行切分时整体缓冲，无换行的超长单行（如
+                        # 单条数百 MB 的 data: 行）不受 64KB/读入上限约束，属
+                        # 端点行为异常下的瞬时单行量级峰值。
                         line_bytes = len((v + "\n").encode("utf-8", errors="replace"))
                         if data_bytes + line_bytes <= _EVIDENCE_LIMIT:
                             data_bytes += line_bytes

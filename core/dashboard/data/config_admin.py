@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
+from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET, IMPL_RUN_BUDGET_MAX_DEFAULT
 
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / verify.*） ──
 
@@ -338,6 +338,17 @@ def _managed_key_sources(raw: dict) -> dict:
     sources = {k: "user" for k in _SOURCE_KEYS}
     if isinstance(raw.get("llm"), dict):
         sources["llm"] = "project"
+    # add-harness-adapter-layer 6.3：agent.harness 来源标注（code-review item
+    # caa75ba04817：缺标注分支——项目级显式配置后 sources 恒回 "user"，设置页
+    # 「继承自用户级」来源徽标恒错）。规范化合法词表值才标注 project（对齐
+    # gates 四键 e81d0bce264c 同款：手工脏值读侧 get_harness 已归一回退缺省，
+    # 存在性判定会让徽标与展示值互相矛盾）
+    ag_raw = raw.get("agent")
+    if isinstance(ag_raw, dict) and isinstance(ag_raw.get("harness"), str):
+        from core.agent_runner.harness import VALID_HARNESS_VALUES  # 延迟解析避开 runner 重链
+
+        if ag_raw["harness"].strip().lower() in VALID_HARNESS_VALUES:
+            sources["agent.harness"] = "project"
     agents_raw = raw.get("agents")
     if isinstance(agents_raw, dict):
         if isinstance(agents_raw.get("models"), dict):
@@ -606,6 +617,10 @@ def _default_echo_view(scope: str) -> dict:
             # 回显缺省与运行时单源（code-review item 3ee9a4e0d218）：取
             # DEFAULT_IMPL_RUN_BUDGET，勿再手写字面量（曾与运行时 6 漂移为 4）
             "impl_run_budget": DEFAULT_IMPL_RUN_BUDGET,
+            # open-impl-budget-ceiling：预算上限缺省键（code-review item
+            # 592c835632a0：缺此键则缺省回显段漏受管 agents 标量键，缺省值
+            # 散落前端常量成第二来源；与 impl_run_budget 同款取运行时常量单源）
+            "impl_run_budget_max": IMPL_RUN_BUDGET_MAX_DEFAULT,
             "verify_redo_budget": 3,
             "max_same_cause_redispatches": 3,
             # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）

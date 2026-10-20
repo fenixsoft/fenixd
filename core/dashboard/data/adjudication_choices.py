@@ -369,10 +369,12 @@ ADJUDICATION_CHOICES: MappingProxyType = MappingProxyType({
 
 # 模块加载期自检（code-review item cf4b9efbae3a）：resolve_choice 的全表反查
 # 在首个命中即返回，其结论以「同一 id 在各信号下 action 语义一致、spec_scoped
-# 取值一致」为前提（见 resolve_choice docstring），该不变式此前无任何断言钉死
-# ——同一 id 若以作用域/非作用域两种形态登记在不同桶，反查判 scoped-no-reverse
-# 还是放行将取决于注册表插入顺序。此处遍历全表 fail-fast：任一 id 跨桶出现
-# spec_scoped/action 冲突即在 import 期拒绝，不留给运行期静默漂移。
+# 取值一致、destructive 取值一致」为前提（见 resolve_choice docstring），该
+# 不变式此前无任何断言钉死——同一 id 若以作用域/非作用域（或带/不带
+# destructive 确认门字段）两种形态登记在不同桶，反查判 scoped-no-reverse 还是
+# 放行、返回的选项触发不触发前端二次确认，都将取决于注册表插入顺序。此处遍历
+# 全表 fail-fast：任一 id 跨桶出现 action/spec_scoped/destructive 冲突即在
+# import 期拒绝，不留给运行期静默漂移（code-review item 26a81a23b8da）。
 def _assert_registry_consistency() -> None:
     first_seen: dict = {}
     for sig, choices in ADJUDICATION_CHOICES.items():
@@ -380,15 +382,20 @@ def _assert_registry_consistency() -> None:
             cid = choice.get("id")
             action = choice.get("action")
             scoped = bool(choice.get("spec_scoped", True))
+            destructive = bool(choice.get("destructive", False))
             prev = first_seen.get(cid)
-            if prev is not None and (prev[1], prev[2]) != (action, scoped):
+            if prev is not None and (
+                (prev[1], prev[2], prev[3]) != (action, scoped, destructive)
+            ):
                 raise AssertionError(
                     f"choice id {cid!r} 跨桶语义冲突：桶 {prev[0]!r} 声明 "
-                    f"action={prev[1]!r}/spec_scoped={prev[2]}，桶 {sig!r} 声明 "
-                    f"action={action!r}/spec_scoped={scoped}；resolve_choice "
+                    f"action={prev[1]!r}/spec_scoped={prev[2]}"
+                    f"/destructive={prev[3]}，桶 {sig!r} 声明 "
+                    f"action={action!r}/spec_scoped={scoped}"
+                    f"/destructive={destructive}；resolve_choice "
                     "全表反查在首个命中即返回，结论将取决于注册表插入顺序"
                 )
-            first_seen[cid] = (sig, action, scoped)
+            first_seen[cid] = (sig, action, scoped, destructive)
 
 
 _assert_registry_consistency()
@@ -500,7 +507,10 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
         if p.startswith("~") or os.path.isabs(p) or ":" in p.split("/")[0]:
             return f"拒绝绝对路径（修订仅允许项目内相对路径）：{p}"
         norm = os.path.normpath(p)
-        if norm == "." or norm.startswith(".."):
+        # ``..`` 须按整段精确匹配（code-review item e7289a7bd03e）：
+        # startswith('..') 会误拒 '..data/x' 这类以两点开头、但首段并非
+        # ``..`` 段、并不越出项目根的合法目录名
+        if norm == "." or norm == ".." or norm.startswith("../"):
             return f"拒绝路径穿越（越出项目根）：{p}"
         # project_root 锚定复核：base 拼接归一后必须仍落在 base 内（双重
         # 保险——norm 已无前导 ``..``，此处防 project_root 形态异常）
@@ -534,8 +544,9 @@ def resolve_choice(choice_id, signal_type=""):
     1. signal_type 已注册：桶内精确匹配；未命中 → (None, "not-in-bucket")
        （alert-resolve 契约「按 alert 的 signal_type 校验 choice_id 合法」，
        不跨信号放行）；
-    2. signal_type 缺失/未注册：全表反查——同一 id 在各信号下 action 语义
-       一致，但 spec 作用域动作（spec_scoped 缺省 True 保守）不再兜底放行
+    2. signal_type 缺失/未注册：全表反查——同一 id 在各信号下 action 与
+       destructive 语义一致（import 自检钉死，含确认门字段），但 spec 作用域
+       动作（spec_scoped 缺省 True 保守）不再兜底放行
        （1.1 收紧只针对 spec_scoped 动作）→ (None, "scoped-no-reverse")；
        命中非作用域动作 → (拷贝, "")；
     3. 全表无此 id → (None, "unknown-choice")。
