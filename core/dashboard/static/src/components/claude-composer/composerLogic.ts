@@ -140,6 +140,7 @@ export interface FileMentionMatch {
   query: string;
 }
 
+// [fenix-ignore:e54e6143443a] 不收紧为「@ 须行首/空白后」：邮箱误触发的域名 query 多数匹配不到文件、下拉因候选空不渲染而无 UI 危害（SessionComposer 渲染门 filteredFiles.length > 0），收紧反而破坏中文输入「看看@」（@ 后空 query 直接弹 top10 候选）的合法唤起入口，回归风险大于收益。
 /**
  * @ 提及触发判定（spec：光标前最后一个 `@` 且其后无空白时触发；空白口径与
  * matchSlashTrigger 的 `\S` 对齐，@ 后出现换行同样终止触发，避免跨行选中候选

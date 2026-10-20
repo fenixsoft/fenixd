@@ -221,9 +221,10 @@ DSH_EVENT_TYPES = (
     "error",
 )
 
-#: 坏事件分类词表（spec「坏事件分类统计」三分类）。
+#: 坏事件分类词表（spec「坏事件分类统计」三分类 + 合法 JSON 形状不符单列）。
 DSH_BAD_EVENT_KINDS = (
-    "json_parse_failed",     # 行级 JSON 解析失败
+    "json_parse_failed",     # 行级 JSON 解析失败（非合法 JSON）
+    "json_shape_mismatch",   # 合法 JSON 但非 dict（标量/数组，形状不符）
     "unknown_type",          # 未知事件类型（忽略+计数，不中断流）
     "over_limit_truncated",  # 超 8KiB/32KiB 截断（truncated: true 透传）
 )
@@ -242,7 +243,8 @@ class DshEventProjector:
     - 原始事件 dump：采集输入原样落盘 run 目录旁路文件
       ``<run_id>.dsh-events.jsonl``（含解析失败的原始行，取证现场完整）；
     - 逐级计数：各事件类型 收到/投影/忽略（:meth:`metrics`）；
-    - 坏事件分类：json_parse_failed / unknown_type / over_limit_truncated。
+    - 坏事件分类：json_parse_failed / json_shape_mismatch / unknown_type
+      / over_limit_truncated。
     计数与统计经 :meth:`metrics` 交 runner 落 run_metrics 结构化日志
     （MUST NOT 仅散落 print）。
     """
@@ -287,7 +289,15 @@ class DshEventProjector:
         """
         self._dump_raw_line(line)
         if not isinstance(entry, dict):
-            self.bad_events["json_parse_failed"] += 1
+            if entry is None:
+                # 解析失败：行不是合法 JSON（code-review d0e9cb6acb88：与
+                # 形状不符区分口径，别把合法 JSON 行混进解析失败统计）。
+                self.bad_events["json_parse_failed"] += 1
+            else:
+                # 形状不符：合法 JSON 标量/数组（如 [1,2]），解析并未失败，
+                # 单列一类计入统计（消费方兼容：验收判定按「非零即失败」
+                # 读键值，报告渲染按 .get 兜底，词表键集合经测试对账）。
+                self.bad_events["json_shape_mismatch"] += 1
             return []
         ev_type = entry.get("type")
         if ev_type not in self.received:
@@ -730,6 +740,15 @@ class DshAdapter:
         )
         try:
             fh.write(content)
+        except OSError:
+            # 写失败（磁盘满等）：文件尚未进 _patch_files 登记表，按龄回收
+            # 兜不到——best-effort 摘除后再上抛，避免空/半截 patch 永久
+            # 残留系统 tmp（code-review cbf5c41bbad6）。
+            try:
+                os.unlink(fh.name)
+            except OSError:
+                pass
+            raise
         finally:
             fh.close()
         with self._patch_files_lock:
@@ -1010,13 +1029,23 @@ class DshAdapter:
             )
         # 版本识别：取 stdout 首行；stdout 为空时回退 stderr 首行（CLI 惯例
         # 差异——版本走 stderr 的形态不该被误报成「版本不在白名单」，排障
-        # 方向别被带偏；两通道皆空才落 version '' 分支）。
-        version = ""
+        # 方向别被带偏；两通道皆空才落 version '' 分支）。首行可能带前缀
+        # 文案/构建信息（如「dsh 0.2.0-rc.2」），整行精确比对对输出格式
+        # 脆弱（code-review 6a1a3649e5d1）——改用正则从首行提取 semver
+        # 形态再比对白名单：多候选时优先取白名单命中者（容忍行内含其它
+        # 版本样数字段），提取不到 semver 则维持整行原样落白名单失败分支
+        # （报错文案仍呈现原始现场）。
+        first_line = ""
         for stream in (proc.stdout, proc.stderr):
             stripped = (stream or "").strip()
             if stripped:
-                version = stripped.splitlines()[0].strip()
+                first_line = stripped.splitlines()[0].strip()
                 break
+        candidates = re.findall(r"\d+\.\d+\.\d+[-\w.]*", first_line)
+        version = next(
+            (c for c in candidates if c in DSH_VERSION_WHITELIST),
+            candidates[0] if candidates else first_line,
+        )
         if version not in DSH_VERSION_WHITELIST:
             raise HarnessHealthError(
                 f"dsh 版本 {version!r} 不在兼容白名单 "

@@ -1,7 +1,7 @@
 // 消息列表面板 —— 迁移自 claudecodeui ChatMessagesPane.tsx（精简版）：
 // 去 provider 管理/分页加载/导出/权限/空态组件，保留分组渲染 + 聊天区布局，
 // 新增滚动跟随（接近底部时新消息自动滚到底）。
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 
 import type { ChatMessage } from './types';
 import { getIntrinsicMessageKey } from './messageKeys';
@@ -56,11 +56,13 @@ function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageList
   );
 
   // 滚动跟随：接近底部时新内容自动滚到底，用户上滚阅读历史时不打扰
-  useEffect(() => {
+  // useLayoutEffect 在绘制前同步滚动，避免流式追加时先露底再跳底的抖动；
+  // showThinking 入依赖：切换 thinking 显示会改变分组与高度，也须重新贴底。
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, showThinking]);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;

@@ -121,6 +121,9 @@ export default function OverviewPage() {
       } catch {
         return;
       }
+      // item 43c08fc037cf：EV.data 为字面量 "null" 时 JSON.parse 返回 null，
+      // 直接访问 msg.type 会抛 TypeError 中断本次事件处理——补类型守卫丢弃非对象报文
+      if (!msg || typeof msg !== 'object') return;
       // alerts/admin_activities 事件均驱动横幅刷新（跨项目告警聚合，与 30s 心跳解耦）：
       // AdminMonitor 新写入的升级告警走 admin_alerts.json 变更，watcher 只广播
       // type=admin_activities（无 alerts 事件），不同驱则停留页面期间新告警不上屏

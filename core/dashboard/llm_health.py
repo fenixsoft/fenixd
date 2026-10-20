@@ -27,7 +27,9 @@ import urllib.parse
 import urllib.request
 
 # 超时单源常量（design D4）：同步 urlopen(timeout=) 直传；检测是用户点击后的
-# 显式等待，15s 足够覆盖慢网关又不至于让页面干等过久。
+# 显式等待，15s 足够覆盖慢网关又不至于让页面干等过久。注意它是单次 socket
+# 操作的超时而非全程硬上界——各阶段段间对账，单次操作可再阻塞一个完整超时
+# 窗口，探测总耗时最坏约 2×15s≈30s（见 run_llm_health_check 读循环注释）。
 HEALTH_CHECK_TIMEOUT_SECONDS = 15
 
 # 非成功响应体回传片段的截断上限（spec「上游返回 HTTP 错误」：≤200 字符）
@@ -195,8 +197,11 @@ def run_llm_health_check(baseurl: str, apikey: str, model: str) -> dict:
         req = _build_probe_request(baseurl, apikey, model)
         # 挂跨主机重定向拦截 handler 的局部 opener（勿 install_opener，避免改全局状态）
         opener = urllib.request.build_opener(_NoCrossHostRedirectHandler)
-        # open 的 timeout 只作用于建连/收响应头的单次 socket 操作，整个探测
-        # 窗口的时限由下方读循环按 started 起算的总 deadline 兜底
+        # open 的 timeout 只作用于建连/收响应头的单次 socket 操作；探测窗口的
+        # 时限由下方读循环按 started 起算的总 deadline 段间对账——不中断进行中
+        # 的 socket 操作：响应头若临近 15s 才到，首个分段读仍可再阻塞一个完整
+        # per-recv 超时，探测总耗时最坏约 2×15s≈30s。接受现状（严格 15s 硬上界
+        # 须探 resp.fp.raw._sock 私有属性逐段 settimeout，脆弱不值当）
         with opener.open(req, timeout=HEALTH_CHECK_TIMEOUT_SECONDS) as resp:
             # 分段读 + 总 deadline：urlopen 的 timeout 是 per-recv 而非总时限，
             # 一次性 read(_MAX_BODY_BYTES + 1) 需收满 ~1MiB 或 EOF 才返回，遇

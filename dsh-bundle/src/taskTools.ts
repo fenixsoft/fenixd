@@ -68,6 +68,11 @@ export class TaskStore {
     this.sessions.delete(sessionId);
   }
 
+  /** 丢弃全部会话状态表（TaskStore 不提供会话键枚举，不知键时的兜底清理口）。 */
+  resetAll(): void {
+    this.sessions.clear();
+  }
+
   /** 是否仍持有任何会话键（含空表，语义对齐 reset 的「无任务也清键」）；供启动期校验。 */
   isPristine(): boolean {
     return this.sessions.size === 0;
@@ -99,16 +104,20 @@ export class TaskStore {
       throw new Error("TaskUpdate 至少需要一个更新字段（status/subject/description/activeForm/metadata）");
     }
     const task = this.get(sessionId, taskId);
+    // 两段式更新：先对全部传入字段完成校验构建补丁，再一次性应用——保证校验失败
+    // 零副作用，避免边校验边改写在后置字段（如 metadata）抛错时留下部分生效的更新。
+    const patch: Partial<FenixTask> = {};
     if (input.status !== undefined) {
       if (!TASK_STATUSES.includes(input.status)) {
         throw new Error(`status 必须是 ${TASK_STATUSES.join("|")} 之一，收到 ${JSON.stringify(input.status)}`);
       }
-      task.status = input.status;
+      patch.status = input.status;
     }
-    if (input.subject !== undefined) task.subject = requireNonEmptyString(input.subject, "subject");
-    if (input.description !== undefined) task.description = optionalString(input.description);
-    if (input.activeForm !== undefined) task.activeForm = optionalString(input.activeForm);
-    if (input.metadata !== undefined) task.metadata = requirePlainObject(input.metadata, "metadata");
+    if (input.subject !== undefined) patch.subject = requireNonEmptyString(input.subject, "subject");
+    if (input.description !== undefined) patch.description = optionalString(input.description);
+    if (input.activeForm !== undefined) patch.activeForm = optionalString(input.activeForm);
+    if (input.metadata !== undefined) patch.metadata = requirePlainObject(input.metadata, "metadata");
+    Object.assign(task, patch);
     return task;
   }
 
@@ -170,7 +179,7 @@ export function registerTaskTools(ctx: { tools: { register(definition: unknown):
   if (!sharedStore.isPristine()) {
     throw new Error(
       "TaskStore 存在跨 run 任务残留：本 Bundle 依赖「进程单会话」假设，同进程二次装配即假设被打破；" +
-        "重装配前请先调用 TaskStore.reset(sessionId) 清理上一 run 的任务表。",
+        "重装配前请先调用 TaskStore.resetAll() 清理全部会话的任务表。",
     );
   }
   ctx.tools.register(
