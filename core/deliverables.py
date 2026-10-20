@@ -2909,13 +2909,15 @@ def lint_declared(spec_dir, project_root) -> List[str]:
 
 
 # tasks.md 分组标题正则（task-track D2「同源规则」）：与
-# core/dashboard/data/tasks.py:parse_tasks 及 bin/fenix_process.py:parse_tasks 的
-# 分组正则字面量互指，三处必须保持一致（点号可选双历史格式兼容：
-# `## 1. 标题` 与 `## 1 标题`）。漂移由 tests/test_task_track.py 双格式
-# Scenario 兜底。
+# core/dashboard/data/tasks.py:parse_tasks 的分组正则字面量互指，两处必须
+# 保持一致（点号可选双历史格式兼容：`## 1. 标题` 与 `## 1 标题`）；
+# bin/fenix_process.py 已改为经 _render_tasks 消费 dashboard data 门面返回的
+# detail.tasks，不再持有自有 parse_tasks。漂移由 tests/test_task_track.py
+# 双格式 Scenario 兜底。
 _TASKS_GROUP_RE = re.compile(r"^##\s+\d+\.?\s+(.+)$")
 
-# 任务项正则：与 data/tasks.py:parse_tasks / fenix_process.py:parse_tasks 同源。
+# 任务项正则：与 data/tasks.py:parse_tasks 同源（fenix_process.py 已改为消费
+# 门面解析结果，见上）。
 # （tasks.py 处为带后缀捕获组的前缀超集，前缀字面量一致，非漂移。）
 # 严口径（仅行首 `- [x]`/`- [ ]`）专用于任务行计数与孤儿判定；语境分类用
 # 文件头部 _CHECKBOX_RE 宽口径，差异有意、勿混用（item 6e387df34df1）。
