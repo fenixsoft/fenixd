@@ -20,6 +20,7 @@ from pathlib import Path
 # planner 裁决共用同一状态集，PLANNER 前缀系历史命名，verifier 增删 status
 # 亦改彼处（常量定义处有声明），本模块不另立词表。
 from core.agent_runner.prompt_builder import PLANNER_RESULT_STATUS_WHITELIST
+from core.verify_engine.path_safety import safe_component
 
 
 class VerdictReadResult:
@@ -355,8 +356,16 @@ def verify_progress_dir(pipeline, spec_name: str) -> Path:
     台账路径（infra_classify._fail_history_path）原先各自手写同款拼接，
     目录名/层级调整时漏改其一会使台账与裁决产物落不同目录、回拨参考失配
     ——收敛到本助手后两处恒同源。
+
+    spec_name 经 safe_component 净化（code-review item dd07c72fe22d，与引擎
+    写侧 _save_report、fastlane._verify_dir 同款 a8a7ad6d880e）：病理形态
+    spec_name 时本单源的读侧不再落到与净化后 report.json 不同的未净化目录，
+    fail-closed 读取不会把「净化目录有报告」误判成「无报告」。
     """
-    return pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name
+    return (
+        pipeline._context.project_root / ".fenix" / "verify-progress"
+        / safe_component(spec_name)
+    )
 
 
 def _verify_progress_result_paths(pipeline, spec_name: str) -> tuple:

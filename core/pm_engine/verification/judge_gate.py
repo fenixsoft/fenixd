@@ -11,7 +11,6 @@ _clear_degrade_context）。纯结构搬移，零行为变化。
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 from core.agent_runner.run_files import run_spec_part
 # 原子写收口共享助手 core.fs_utils.atomic_write_text（code-review
@@ -28,6 +27,7 @@ from core.fs_utils import atomic_write_text
 # 本处按事实公开契约消费——escalation 侧重构该助手（改名/挪位/改签名）时
 # MUST 同步本文件导入。
 from core.pm_engine.verification.escalation import _read_int_config
+from core.pm_engine.verification.report_gate import verify_progress_dir
 
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
 _MAX_JUDGE_RERUNS = 5
@@ -87,13 +87,10 @@ def _judge_report_context_key(pipeline, spec_name: str):
     → 仍识别为新判定上下文。字段缺失/报告不可读时退化为文件 mtime_ns
     （与 current_round_fingerprint 同款降级序），保持旧键可比形态。
     """
-    p = (
-        Path(pipeline._context.project_root)
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "report.json"
-    )
+    # verify-progress 拼接收敛到 report_gate.verify_progress_dir 单源（code-
+    # review item 9eab16eecdbc；净化后与引擎写侧同目录），本模块五处写/读点
+    # 同款替换，病理 spec_name 不再落到未净化路径。
+    p = verify_progress_dir(pipeline, spec_name) / "report.json"
     try:
         report = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -726,13 +723,7 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
             f"+ 失败 {fail_total}）— 不可判定全绿，走常规 judge",
         )
         return None
-    result_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / ".fenix-run-result.json"
-    )
+    result_path = verify_progress_dir(pipeline, spec_name) / ".fenix-run-result.json"
     text = (
         f"全绿快道: {passed}/{total} 场景通过、"
         "0 失败 0 警告——无分类对象，跳过 judge 机械 verified"
@@ -789,9 +780,7 @@ def _last_planner_cost_usd(pipeline, spec_name: str) -> float | None:
     Returns:
         cost_usd 或 None（侧车缺失/无 planner 条目/回传为 None）。
     """
-    tokens_json = (
-        pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name / "tokens.json"
-    )
+    tokens_json = verify_progress_dir(pipeline, spec_name) / "tokens.json"
     if not tokens_json.is_file():
         return None
     try:
@@ -891,13 +880,7 @@ def _write_degrade_context(
         run_id: 被降级的 planner run id。
         duration_seconds: 被降级轮次的时长（秒）。
     """
-    ctx_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "degrade_context.json"
-    )
+    ctx_path = verify_progress_dir(pipeline, spec_name) / "degrade_context.json"
     cost_usd = pipeline._last_planner_cost_usd(spec_name)
     try:
         payload = {
@@ -932,13 +915,7 @@ def _clear_degrade_context(pipeline, spec_name: str) -> None:
     （D3：成功时删除；失败/重验路径之外不清，历史留痕）。删除失败仅 WARNING
     （陈旧标注风险窗口极小，不阻断验证主流程）。
     """
-    ctx_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "degrade_context.json"
-    )
+    ctx_path = verify_progress_dir(pipeline, spec_name) / "degrade_context.json"
     try:
         if ctx_path.exists():
             ctx_path.unlink()
