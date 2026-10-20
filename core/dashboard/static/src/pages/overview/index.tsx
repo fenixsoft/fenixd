@@ -14,6 +14,12 @@ const HEARTBEAT_MS = 30000;
 // 短时间连发多个 alerts/admin_activities 事件，逐事件 tick 会让 AlertBanner 逐
 // 事件各发一次 GET /api/alerts 形成重拉风暴；窗口内合并为一次横幅刷新
 const ALERTS_TICK_COALESCE_MS = 500;
+// SSE 永久停连时告警横幅的兜底轮询间隔（code-review item 690bc68a1883）：服务端
+// 连接数满等非 200 响应会让 EventSource 永久停止重连，alerts/admin_activities
+// 事件永不再到，停留页面期间新告警不再上屏（SessionPanel item 2303508d27ff 同类
+// 先例）。onerror 降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts，
+// onopen（连接恢复）停轮询；间隔对齐 HEARTBEAT_MS 量级
+const ALERTS_FALLBACK_POLL_MS = 30000;
 
 export default function OverviewPage() {
   const [data, setData] = useState<OverviewData | null>(null);
@@ -113,7 +119,29 @@ export default function OverviewPage() {
       }
     };
     document.addEventListener('visibilitychange', onVisible);
+    // ── SSE 永久停连降级（code-review item 690bc68a1883）──
+    // onerror 只靠「原生自动重连」不够：非 200 响应（连接数满 503 等）会让浏览器
+    // 永久停止重连，此后 alerts/admin_activities 事件永不再到，停留页面期间新增
+    // 告警不再上屏。降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts
+    // （SessionPanel 2303508d27ff 同款兜底）；onopen（连接恢复）停轮询
+    let alertsPollTimer: ReturnType<typeof setInterval> | null = null;
+    const stopAlertsFallback = () => {
+      if (alertsPollTimer) {
+        clearInterval(alertsPollTimer);
+        alertsPollTimer = null;
+      }
+    };
+    const startAlertsFallback = () => {
+      // 幂等：断线重连风暴中 onerror 可连发，只起一个轮询
+      if (alertsPollTimer) return;
+      setAlertsTick((t) => t + 1);
+      alertsPollTimer = setInterval(() => setAlertsTick((t) => t + 1), ALERTS_FALLBACK_POLL_MS);
+    };
     const es = new EventSource(STREAM_URL);
+    // 连接（重新）建立：停兜底轮询，回到 SSE 事件驱动（690bc68a1883 恢复路径）
+    es.onopen = () => {
+      stopAlertsFallback();
+    };
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
       try {
@@ -140,9 +168,15 @@ export default function OverviewPage() {
       }
       // state/refresh/run_meta 不触发 overview 重拉：由 30s 心跳统一校准
     };
+    es.onerror = () => {
+      // 非瞬态断连（503 连接数上限等）EventSource 会永久停止重连——降级低频
+      // 轮询驱动横幅刷新（690bc68a1883），连接恢复由 onopen 停轮询
+      startAlertsFallback();
+    };
     // 卸载必须关闭，防 EventSource 连接泄漏
     return () => {
       es.close();
+      stopAlertsFallback();
       clearInterval(hb);
       document.removeEventListener('visibilitychange', onVisible);
       // 合帧定时器随卸载清理，防卸载后仍触发 tick（同 activities 页统一清理惯例）
