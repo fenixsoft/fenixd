@@ -1012,18 +1012,28 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
     if not serve_missing:
         return False
     # ── serve 缺失打回（对齐 selfcheck 先例：信号通道 + env 阻塞升级 + return）──
+    # 全部缺口随信号下行（code-review item 34dc470c3cfe）：多 kind 场景各有
+    # 缺口时只上报首条，Administrator 修掉第一处后会被同一门再次打回——
+    # 逐条汇总进信号描述并注明命中总数，升级清单同步给全量。
     finding = serve_missing[0]
+    all_messages = [str(f.get("message") or "") for f in serve_missing]
     pipeline._context.logger.error(
         "pm_engine",
         f"契约 serve 一致性门打回 '{spec_name}' — fail-fast 阻断场景执行"
-        f"（不触发 planner replan，重排出题无助于契约缺口）: {finding.get('message')}",
+        f"（不触发 planner replan，重排出题无助于契约缺口；命中 "
+        f"{len(serve_missing)} 处）: {'；'.join(all_messages)}",
     )
     _write_verify_contract_missing(
         pipeline,
         spec_name,
         (
             f"{finding.get('message')}（契约静态检查 serve 缺失交叉规则命中，"
-            f"出题产物消费期打回，场景执行数为 0）"
+            f"出题产物消费期打回，场景执行数为 0；共 {len(serve_missing)} 处缺口）"
+            + (
+                "\n" + "\n".join(f"- {m}" for m in all_messages)
+                if len(serve_missing) > 1
+                else ""
+            )
         ),
         str(finding.get("evidence") or ""),
         recommended_action=(
@@ -1035,7 +1045,7 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
     )
     pipeline._escalate_env_blocked(
         spec_name,
-        [str(finding.get("message") or "")],
+        all_messages,
         title="验证环境阻塞（契约 serve 缺失）",
     )
     return True
