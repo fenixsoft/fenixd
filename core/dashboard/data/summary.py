@@ -401,10 +401,10 @@ def spec_summary(
     budget_max = _impl_budget_max(project_root)
     budget_override_raw = entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD)
     budget_override = clamp_impl_run_budget(budget_override_raw, budget_max)
-    try:
-        budget_used = int(entry.get("_impl_run_budget_used", 0) or 0)
-    except (TypeError, ValueError):
-        budget_used = 0
+    # 容错读复用同文件单点 _int_or_zero（code-review item 15d0082f5c0f）：
+    # STATE.md 为 YAML 方言、字段被手写成 .inf 时 int() 抛 OverflowError，
+    # 仅捕 (TypeError, ValueError) 会沿 /api/specs 调用链穿透 500。
+    budget_used = _int_or_zero(entry.get("_impl_run_budget_used"))
     if budget_override is not None:
         budget_effective = budget_override
     else:
@@ -796,7 +796,12 @@ class SummaryIndex:
         self._arch_snapshot: dict = {}
 
     def get(self, proot, specs: dict | None = None, state_sig=None) -> list:
-        """返回该项目的全部 spec_summary 列表（顺序与 specs dict 一致）。
+        """返回该项目的全部 spec_summary 列表。
+
+        顺序语义（code-review item 7fa611dccdfb）：合并归档清单后，**归档
+        条目在前**（STATE.archive.md 清单序，其中与活跃 specs 同名的条目
+        保持在归档位置），**活跃独有条目按合并追加序排在尾部**——并非
+        调用方传入 specs dict 的原始顺序；需要活跃序的消费方自行按键排序。
 
         Args:
             proot: 项目根路径
@@ -992,9 +997,17 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         (
             {
                 **sc,
+                # screenshots 非列表（字符串等，report.json 被手改/部分写入）
+                # 时按空处理：for 逐字符迭代会产出单字符垃圾文件名原样进入
+                # 响应，与上方 scenarios 的 fail-closed 口径对齐（code-review
+                # item d4abe4a693fd）。
                 "screenshots": [
                     os.path.basename(s)
-                    for s in sc.get("screenshots", [])
+                    for s in (
+                        sc.get("screenshots")
+                        if isinstance(sc.get("screenshots"), list)
+                        else []
+                    )
                     if isinstance(s, str) and s.strip()
                 ],
             }
