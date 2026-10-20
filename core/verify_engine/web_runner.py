@@ -16,6 +16,7 @@ navigate 绝对 URL 硬要求随迁至 WebRunner.validate（经 scenarios.valida
 
 import asyncio
 import re
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -105,6 +106,14 @@ class WebRunner(VerifyRunner):
     kind = "web"
 
     def __init__(self, spec_name, project_root=None, logger=None, config: Optional[dict] = None, **kwargs):
+        # code-review item 2b8a2997cc9f：project_root 归一为 Path（str/PathLike
+        # → Path，falsy 保持 None）。基类 __init__ 原样存储、缺省 None，不归一
+        # 时 _execute_scenario 截图目录拼接 ``self.project_root / ".fenix"``
+        # 对 str/None 形态抛 TypeError 穿出场景执行，被引擎 return_exceptions
+        # 兜底替换为空 error 条目、已采集证据全失。None 保持 None 不改探测
+        # （无 root 时 base_url 考古/CLI 回退链的 falsy 判定）与 fail-fast
+        # 语义（VisualDiffer 构造契约本要求 Path）。
+        project_root = Path(project_root) if project_root else None
         super().__init__(spec_name, project_root, logger, config, **kwargs)
         self.browser = BrowserManager(project_root=project_root, logger=self.logger)
         self.asserter = AssertionRunner()
