@@ -1436,6 +1436,11 @@ RELEASE_TRACE_REL = ".fenix/code-review/fix-failed-release.jsonl"
 _TODO_ENTRY_TITLE = "## [code-fix] 失败批已达自动重试上限，待人工排查"
 _TODO_ENTRY_IDS_LINE = "- 被跳过的条目集合（保持 open）："
 
+# defer 受阻态文案锚（code-review item 59a384aaa7c7）：_retry_one_deferred
+# 组装阻断文案与 checkpoint 收敛出口的 startswith 判定共用同一前缀常量，
+# 消除跨函数字面耦合（任一侧文案微调致 reason 误分类）。
+_DEFER_WIP_BLOCKED_PREFIX = "延迟批合回待重试"
+
 
 def _append_release_trace(
     project_root, released_records, item_ids, logger=None,
@@ -1905,6 +1910,44 @@ def _remove_deferred_batch(project_root, item_ids) -> None:
             if not (
                 isinstance(rec.get("item_ids"), list)
                 and {str(i) for i in rec["item_ids"]} == key
+            )
+        ]
+        if len(kept) != len(entries):
+            _save_deferred_batches(project_root, kept)
+
+    _with_lock(path, _do)
+
+
+def _remove_deferred_entry(project_root, entry) -> None:
+    """按记录身份移除命中的单条台账条目（不依赖 item_ids 形态）。
+
+    code-review item b6fac1d8f6cf：坏档记录 item_ids 非列表时
+    ``_remove_deferred_batch`` 的整条匹配恒不命中、条目无法移出台账，同链
+    每个 checkpoint 重复判死并打「已移出台账」warning（实际未移出），记录
+    永久滞留。以 worktree+branch+tip_sha+first_deferred_at 组合键比对（与
+    ``record_deferred_batch`` 登记字段同源，同一 worktree 单条登记）；缺
+    worktree 的坏档无身份可匹配，交由新链启动 ``reclaim_deferred_batches``
+    按存活判据整体清理。读-改-写全程持 flock（``_with_lock``，同
+    ``_remove_deferred_batch`` 口径）。
+    """
+    wt = str(entry.get("worktree") or "")
+    if not wt:
+        return
+    branch = str(entry.get("branch") or "")
+    tip_sha = str(entry.get("tip_sha") or "")
+    first_at = str(entry.get("first_deferred_at") or "")
+    path = _deferred_path(project_root)
+
+    def _do() -> None:
+        entries = load_deferred_batches(project_root)
+        kept = [
+            rec
+            for rec in entries
+            if not (
+                str(rec.get("worktree") or "") == wt
+                and str(rec.get("branch") or "") == branch
+                and str(rec.get("tip_sha") or "") == tip_sha
+                and str(rec.get("first_deferred_at") or "") == first_at
             )
         ]
         if len(kept) != len(entries):
@@ -4642,14 +4685,14 @@ class CodeFixOrchestrator:
                         # 非受阻，MUST NOT 误标 wip_gate_blocked——按排除来源
                         # 分级 reason（与下方无延迟批分支同口径），phase 由写
                         # 点按 severity_deferred=idle／其余=blocked 落。前缀
-                        # 须与 _retry_one_deferred 阻断文案（「延迟批合回待
-                        # 重试（主树未提交改动：…）」）保持同步。
+                        # 用常量 _DEFER_WIP_BLOCKED_PREFIX，与 _retry_one_deferred
+                        # 阻断文案组装共用（文案改动不再致 reason 误分类）。
                         current = deferred_msg + (
                             "；含已达自动重试上限条目，需人工排查"
                             if maxed
                             else "；其余跳过条目下轮自动重试"
                         ) + sev_note
-                        if deferred_msg.startswith("延迟批合回待重试"):
+                        if deferred_msg.startswith(_DEFER_WIP_BLOCKED_PREFIX):
                             reason = "wip_gate_blocked"
                         elif maxed:
                             reason = "failed_batch_maxed"
@@ -5395,7 +5438,8 @@ class CodeFixOrchestrator:
         root = self.project_root
         # item_ids 形态守卫（code-review item 3bf751ec88d9）：坏档非列表标量
         # 按空列表容错（后续移出/降级路径不炸；空集使 _remove_deferred_batch
-        # 无命中，坏档滞留由时间门/磁盘对账兜底）。
+        # 无命中，判死回收/降级改走 _remove_deferred_entry 按记录身份移除，
+        # 缺 worktree 的坏档由新链 reclaim_deferred_batches 兜底）。
         _raw_ids = entry.get("item_ids")
         item_ids = [str(i) for i in _raw_ids] if isinstance(_raw_ids, list) else []
         # fixed_ids 形态守卫（code-review item a4e188106d9e，对齐上方 item_ids
@@ -5443,7 +5487,10 @@ class CodeFixOrchestrator:
         if not _deferred_entry_alive(entry):
             if wt.name and wt.exists():
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
-            _remove_deferred_batch(root, item_ids)
+            # 按记录身份移除（code-review item b6fac1d8f6cf）：坏档 item_ids
+            # 非列表时 _remove_deferred_batch 恒不命中、条目滞留台账并每轮
+            # 重复判死告警——此处 MUST NOT 依赖 item_ids 形态。
+            _remove_deferred_entry(root, entry)
             self._log(
                 "warning",
                 f"code-fix 延迟批 worktree 已丢失，条目移出台账"
@@ -5602,7 +5649,7 @@ class CodeFixOrchestrator:
                 )
                 return 0, f"延迟批合回超预算已入失败档案（branch={branch}）"
             msg = (
-                f"延迟批合回待重试（主树未提交改动：{_fmt_overlap(overlap)}）"
+                f"{_DEFER_WIP_BLOCKED_PREFIX}（主树未提交改动：{_fmt_overlap(overlap)}）"
                 "— 已保留，主树清理后自动合回"
             )
             # 占用者协调（add-mergeback-wip-active-coordination 1.1/2.1/2.2）：
@@ -5624,6 +5671,11 @@ class CodeFixOrchestrator:
         # pending_ids / 65f65b784f2a 核销前过滤同口径）：defer 窗口内被人工
         # 置终态的条目不随批入档。
         open_ids = _open_ids_for_archive(root, item_ids)
+        # 入档写盘失败不得销毁台账锚点（code-review item 3de742f89765）：条目
+        # 未入失败档案时若照常移除台账，「确定性失败」失去唯一排除锚点回池，
+        # select_batch 下轮立即重选同批无限重派——移除动作挪到入档成功之后，
+        # 入档失败保留台账条目待下轮重试降级（台账 item_ids 亦是选批排除源）。
+        archived_ok = not open_ids
         if open_ids:
             # 入档收尾的触顶/降档告警在锁外经 AdminStore 落盘，磁盘满/权限类
             # OSError 上抛会跳过紧随的 cleanup 与台账移除（code-review item
@@ -5634,6 +5686,7 @@ class CodeFixOrchestrator:
                     reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
                     logger=self._logger,
                 )
+                archived_ok = True
             except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
                 self._log(
                     "warning",
@@ -5641,7 +5694,14 @@ class CodeFixOrchestrator:
                     f"（收尾不受影响）: {e}",
                 )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
-        _remove_deferred_batch(root, item_ids)
+        if archived_ok:
+            _remove_deferred_entry(root, entry)
+        else:
+            self._log(
+                "warning",
+                f"code-fix 延迟批合回冲突入档案失败，台账条目保留待下轮重试降级"
+                f"（branch={branch}）",
+            )
         self._log(
             "error",
             f"code-fix 延迟批合回落真冲突，已入失败档案"
@@ -5665,6 +5725,10 @@ class CodeFixOrchestrator:
         # 置终态的条目不随批入档、不进一次性告警名录。
         open_ids = _open_ids_for_archive(root, item_ids)
         first_expire = bool(open_ids) and not _has_expired_archive(root, open_ids)
+        # 入档写盘失败不得销毁台账锚点（code-review item 3de742f89765，同
+        # _retry_one_deferred 真冲突降级手法）：移除动作挪到入档成功之后，
+        # 入档失败保留台账条目待下轮重试降级（台账 item_ids 亦是选批排除源）。
+        archived_ok = not open_ids
         if open_ids:
             # 告警写盘失败不得劫持降级收尾（code-review item ff69fd3d36ec，同
             # 下方 _write_defer_expired_alert 手法）：触顶告警经 AdminStore
@@ -5675,13 +5739,21 @@ class CodeFixOrchestrator:
                     reason="wip_gate_blocked_expired", branch=branch, tip_sha=tip_sha,
                     logger=self._logger,
                 )
+                archived_ok = True
             except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
                 self._log(
                     "warning",
                     f"code-fix defer 降级入档案/告警写盘异常（收尾不受影响）: {e}",
                 )
         _safe_cleanup(wm, wt, success=False, logger=self._logger)
-        _remove_deferred_batch(root, item_ids)
+        if archived_ok:
+            _remove_deferred_entry(root, entry)
+        else:
+            self._log(
+                "warning",
+                f"code-fix defer 降级入档案失败，台账条目保留待下轮重试降级"
+                f"（branch={branch}）",
+            )
         if first_expire:
             # 告警写盘失败不得劫持降级收尾（code-review item 2ab1bb5633f0，
             # 同 _defer_merge_back 手法）：紧随的 write_progress 尚未执行。
@@ -6153,6 +6225,12 @@ class CodeFixOrchestrator:
             f"（回收 {len(picked)}/{len(commits)} 组，resolved 候选 "
             f"{len(recovered_ids)} 条，兜底入档案 {archived} 条）",
         )
+        # 承载分支清理（code-review item c58aff86bca2，与 _salvage_give_up 口径
+        # 对齐）：回收集已合回主树，承载分支删除无信息损失，best-effort 清除
+        # 避免每次救回成功累积一个 <批分支>-salvage-* 临时分支；先还原批分支
+        # 检出（git 拒删当前检出分支，give_up 路径同序）。
+        _salvage_restore_branch(wt, branch0)
+        _git_try(wt, ["branch", "-D", carrier], timeout=30)
         return info, recovered_ids
 
     def _run_batch(self, ctx: dict) -> None:
@@ -6561,6 +6639,11 @@ class CodeFixOrchestrator:
                 # 批入档、不进回归失败告警名录——fail_count 预算与达上限一次
                 # 性告警的名录须与真实失败条目一致；子集为空则跳过入档与告警。
                 open_ids = _open_ids_for_archive(root, archive_ids)
+                # 入档写盘失败兜底（code-review item 3de742f89765）：异常被吞后
+                # 条目未进失败档案，随后的 _consumed_progress 把 open_ids 并入
+                # chain_skipped，保住「确定性失败本链离开可选池」不变量（否则
+                # select_batch 下轮立即重选同批，烧预算/告警语义静默失效）。
+                archived_ok = not open_ids
                 if open_ids:
                     # 告警写盘失败不得劫持 consumed 收尾（code-review item
                     # ff69fd3d36ec，同下方 write_regression_failed_alert 手法）：
@@ -6595,6 +6678,7 @@ class CodeFixOrchestrator:
                             },
                         )
                     except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                        archived_ok = False
                         self._log(
                             "warning",
                             f"code-fix 回归耗尽入档案/告警写盘异常"
@@ -6636,6 +6720,9 @@ class CodeFixOrchestrator:
                         "regression_parse_error_breaker" if breaker_triggered
                         else "regression_failed_twice"
                     ) + f": {reg.status}",
+                    # 入档失败的条目并入链内跳过集（code-review item
+                    # 3de742f89765）：失败档案未写成时这是本链唯一排除源。
+                    chain_skip_ids=None if archived_ok else open_ids,
                 )
                 return "consumed"
 
@@ -6782,6 +6869,11 @@ class CodeFixOrchestrator:
                 # fail_count 预算与达上限一次性告警的名录须与真实失败条目一致；
                 # 子集为空则跳过入档（ignored 已在 pending_ids 构造处排除）。
                 open_ids = _open_ids_for_archive(root, pending_ids)
+                # 入档写盘失败兜底（code-review item 3de742f89765，同耗尽收口
+                # 手法）：异常被吞后条目未进失败档案，随后的 _consumed_progress
+                # 把 open_ids 并入 chain_skipped，保住「确定性失败本链离开可选
+                # 池」不变量（否则 select_batch 下轮立即重选同批）。
+                archived_ok = not open_ids
                 if open_ids:
                     # 告警写盘失败不得劫持 consumed 收尾（code-review item
                     # ff69fd3d36ec，同耗尽收口手法）：异常上穿会跳过紧随的
@@ -6793,6 +6885,7 @@ class CodeFixOrchestrator:
                             logger=self._logger,
                         )
                     except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
+                        archived_ok = False
                         self._log(
                             "warning",
                             f"code-fix 合回冲突入档案/告警写盘异常"
@@ -6802,6 +6895,9 @@ class CodeFixOrchestrator:
                 self._consumed_progress(
                     current=f"第 {batch_no} 批失败已跳过（合回冲突）— 继续后续批次",
                     reason="merge_back_conflict",
+                    # 入档失败的条目并入链内跳过集（code-review item
+                    # 3de742f89765）：失败档案未写成时这是本链唯一排除源。
+                    chain_skip_ids=None if archived_ok else open_ids,
                 )
                 return "consumed"
         # 核销前过滤（code-review item 65f65b784f2a，与 defer 路径同口径）：
