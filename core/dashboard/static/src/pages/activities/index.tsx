@@ -393,7 +393,19 @@ export default function ActivitiesPage() {
       if (totalPages != null && pageAtStart > totalPages && pageRef.current === pageAtStart) {
         pageRef.current = 1;
         setCurrent(1);
-        d = await fetchPage(1);
+        try {
+          d = await fetchPage(1);
+        } catch (e) {
+          // fix af1b26684e93: 补拉第 1 页失败时按进入 load 时的快照回滚页码——
+          // setData 不会执行、时间线仍上屏 pageAtStart 的旧页内容，分页指示须与
+          // 其保持一致；pageRef 已非 1 说明用户在飞翻页，回滚交新请求处理勿覆盖。
+          // 回滚后 rethrow，错误横幅仍由外层 catch 统一落位
+          if (pageRef.current === 1) {
+            pageRef.current = pageAtStart;
+            setCurrent(pageAtStart);
+          }
+          throw e;
+        }
       }
       // 二次检查保留：越界补拉第 1 页是第二个 await，期间可能有新请求启动，
       // 状态写入前仍需复核序号（非越界路径为幂等复查，无窗口）
