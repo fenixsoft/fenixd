@@ -224,6 +224,10 @@ class G4MergebackMixin:
             #     直接 merge（紧急推送用，冲突按既有失败路径处理）。
             gate_blocked, wip_overlap = self._wip_overlap_gate(branch)
             if gate_blocked is not None:
+                # code-review 11b87f4f6b3e：早退值同样搭在飞修订情报下行——
+                # 与 rehearsed/最终返回两出口同口径，调度层在任何失败形态上
+                # 都可读 amended_inflight（不影响布尔与语义冲突判定）。
+                gate_blocked.amended_inflight = amended_inflight
                 return gate_blocked
 
             # ── spec 目录在飞编辑卫检查（evo-merge-back-spec-dir-inflight-guard D1）──
@@ -250,21 +254,55 @@ class G4MergebackMixin:
                         f"HEAD（本地未提交产物改动已丢弃，merge 未发生；顺延解除后"
                         f"由 src 重建找回）：{self._wip_gate_aligned_artifacts}",
                     )
+                # code-review 11b87f4f6b3e：早退值同样搭在飞修订情报下行
+                # （与 rehearsed/最终返回两出口同口径）。
+                inflight_info.amended_inflight = amended_inflight
                 return inflight_info
 
-            stashed = self.ensure_clean_tree(
-                prefix=WIP_GATE_STASH_PREFIX if wip_overlap else None
-            )
+            # code-review 190f7508efd4：ensure_clean_tree 纳入 try 覆盖——stash
+            # 条目已写入后抛异常时不再裸穿（WARNING 留痕去向，条目交由
+            # reclaim_stale_autostash 周期兜底回收），调用方仍按原异常形态处理。
+            stashed = False
             try:
+                stashed = self.ensure_clean_tree(
+                    prefix=WIP_GATE_STASH_PREFIX if wip_overlap else None
+                )
                 info = self._merge_back_from_branch_locked(branch)
                 info.wip_overlap = wip_overlap
                 # 修订列表搭最终结果下行（成功/真失败均携带）：dispatch 层在
                 # rehearsed 直通 repair 之外也可读该字段做观测，不改变判定。
                 info.amended_inflight = amended_inflight
                 return info
+            except Exception as exc:
+                if stashed:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"merge-back '{branch}' 异常退出且 clean-tree stash 已入栈"
+                        f"（本轮 merge 未判定完成，stash 条目交由 "
+                        f"reclaim_stale_autostash 兜底回收）: {exc}",
+                    )
+                raise
             finally:
                 if stashed:
-                    _ok, conflict_files = self.restore_after_merge()
+                    # code-review cc5cfeab61a0：restore_after_merge 的异常/异形
+                    # 返回不得顶替 try 已判定的返回值——merge 可能已成功落地，
+                    # 被 finally 异常顶替会让调用方把成功当失败清理 worktree、
+                    # 主树与台账状态分叉（_merge_back_from_branch_locked 成功
+                    # 路径注释同款禁令）。
+                    try:
+                        _restored = self.restore_after_merge()
+                        conflict_files = (
+                            _restored[1]
+                            if isinstance(_restored, tuple) and len(_restored) >= 2
+                            else None
+                        )
+                    except Exception as restore_err:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"merge-back 后恢复工作区失败（不改写本轮 merge 结果）"
+                            f"'{branch}': {restore_err}",
+                        )
+                        conflict_files = None
                     if conflict_files:
                         self.last_stash_pop_conflicts = list(conflict_files)
 
