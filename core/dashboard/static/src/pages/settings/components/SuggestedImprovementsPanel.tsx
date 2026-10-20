@@ -885,8 +885,11 @@ const SuggestedImprovementsPanel = forwardRef<
 
   // ── 弹窗最大化（7.5）────────────────────────────────────────────
 
-  const { modalProps: viewModalProps, maximizeButton: viewMaximizeButton } =
-    useMaximizeModal(DOC_MODAL_OPTIONS);
+  const {
+    modalProps: viewModalProps,
+    maximizeButton: viewMaximizeButton,
+    isFullscreen: viewIsFullscreen,
+  } = useMaximizeModal(DOC_MODAL_OPTIONS);
 
   // 弹窗底部操作区：与操作列菜单同源判禁用（同一条目状态），动作完成后关闭
   // 弹窗——条目已改状态，留在弹窗里看的是上一状态的禁用态与草稿页签
@@ -1386,6 +1389,7 @@ const SuggestedImprovementsPanel = forwardRef<
           <MaximizeTitle
             text={viewItem ? viewItem.title : '查看'}
             button={viewMaximizeButton}
+            isFullscreen={viewIsFullscreen}
           />
         }
         open={viewVisible}

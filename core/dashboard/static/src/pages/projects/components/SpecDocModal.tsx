@@ -78,7 +78,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
     setPrevOpen(open);
     if (open && initialDoc) setActiveTab(initialDoc);
   }
-  const { modalProps, maximizeButton } = useMaximizeModal({
+  const { modalProps, maximizeButton, isFullscreen } = useMaximizeModal({
     defaultWidth: '80%',
     defaultBodyHeight: 'calc(80vh - 80px)',
     extraBodyStyle: { display: 'flex', flexDirection: 'column', overflow: 'hidden' },
@@ -224,7 +224,11 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   return (
     <Modal
       title={
-        <MaximizeTitle text={`${spec || ''} 文档`} button={maximizeButton} />
+        <MaximizeTitle
+          text={`${spec || ''} 文档`}
+          button={maximizeButton}
+          isFullscreen={isFullscreen}
+        />
       }
       open={open}
       onCancel={onClose}
