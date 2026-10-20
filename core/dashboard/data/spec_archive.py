@@ -318,8 +318,22 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         if archived and not state_entry_removed:
             try:
                 shutil.move(archive_path, str(spec_dir))
-                archived = False
-                archive_path = None
+                # 回滚嵌套落位复核（code-review item 4f7878f4ef0f，与
+                # _rollback_nested_archive_move 同口径）：回滚窗口内原位若被
+                # 并发重建为目录，shutil.move 会把归档目录静默嵌套移入其内部
+                # （spec_dir/<归档名>/）且不抛异常——按回滚失败记账并带实际
+                # 落点（docstring「回滚亦失败时 archived/archive_path 保留
+                # 滞留位置并写入 error」），不按回滚成功清账。
+                nested = spec_dir / Path(archive_path).name
+                if nested.exists():
+                    rollback_err = (
+                        "回滚移回原位时原位已被并发重建，归档目录嵌套滞留"
+                        "（请手工核对处置）"
+                    )
+                    archive_path = str(nested)
+                else:
+                    archived = False
+                    archive_path = None
             except Exception as re_:
                 rollback_err = str(re_)
         error = f"移除 STATE.md 条目失败: {e}"
