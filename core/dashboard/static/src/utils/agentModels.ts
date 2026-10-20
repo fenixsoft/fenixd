@@ -19,12 +19,14 @@ export interface RoleValue {
 
 // 深拷贝一份角色配置：复制到剪贴板、从剪贴板粘贴回卡片都经此归一。
 // 深拷贝保证之后编辑卡片（含 rows 增删改）不会引用串改已复制的内容。
-// roleKey 仅在源上有值时携带（避免 undefined 键改变既有 deepEqual 语义）。
+// roleKey 仅在源上有值时携带（避免 undefined 键改变既有 deepEqual 语义）；
+// 显式真值判定同时排除 null——剪贴板 JSON.parse 回的数据或后端 models 键
+// 映射异常携带的 null 不写入 copy.roleKey（code-review item 5898a65eb4c5）。
 export function cloneRoleValue(value?: RoleValue): RoleValue {
   const copy: RoleValue = {
     roleModel: value?.roleModel ?? '',
     rows: (value?.rows ?? []).map((r) => ({ provider: r.provider, model: r.model })),
   };
-  if (value?.roleKey !== undefined) copy.roleKey = value.roleKey;
+  if (value?.roleKey) copy.roleKey = value.roleKey;
   return copy;
 }
