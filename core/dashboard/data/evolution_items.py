@@ -19,6 +19,28 @@ EVOLUTION_DOC_FILES = {
 }
 
 
+def _safe_capability(capability) -> str:
+    """capability 路径成分校验（code-review item 1479f8f0b077）。
+
+    capability 取自可手工编辑的 items.jsonl（与 item_id 同一威胁模型），会被
+    直接拼进 ``specs/<capability>/spec.md`` 相对路径——含分隔符/``..`` 等
+    相对路径片段时仅靠下游 is_relative_to 拦越界，未越出基目录的形态
+    （如 ``..``）可读到草稿/SPEC 目录内任意 md。与 _safe_draft_dir 同款
+    防线：非法值按「无 capability」空串处理（草稿路径跳过、SPEC 回退走
+    唯一子目录兜底）。
+    """
+    cap = str(capability or "").strip()
+    if (
+        not cap
+        or cap in (".", "..")
+        or "/" in cap
+        or "\\" in cap
+        or "\x00" in cap
+    ):
+        return ""
+    return cap
+
+
 def read_evolution_items(project_root, project_filter=None) -> list:
     """读 ``.fenix/evolution/items.jsonl`` 生成摘要列表（6.4）。
 
@@ -158,7 +180,7 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
     d = _safe_draft_dir(project_root, item_id_)
     if d is not None and d.is_dir():
         if doc == "spec":
-            capability = _record_capability(rec)
+            capability = _safe_capability(_record_capability(rec))
             # capability 为空时令 rel 落空（跳过草稿读取、走 SPEC 回退），与
             # SPEC 回退路径的空值处理对齐，避免构造出 specs//spec.md 双斜杠路径
             rel = f"specs/{capability}/spec.md" if capability else None
@@ -176,7 +198,7 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
             if doc == "spec":
                 # capability 取条目记录 spec.capability；缺失或目录不存在时
                 # 回退到唯一的能力子目录
-                capability = _record_capability(rec)
+                capability = _safe_capability(_record_capability(rec))
                 if capability:
                     sub = spec_dir / "specs" / capability
                     if sub.is_dir():
