@@ -936,12 +936,21 @@ export default function SpecListPage() {
   // 旧实现 `[tree]` 依赖会在流式更新期间反复把用户手工收起的树弹开，且与受控
   // 展开 onExpandedRowsChange 互相打架。用 ref 标记首次初始化。
   const expandedInitRef = useRef(false);
+  // 已见节点记忆（code-review item 81b677017e09）：error 信息行走
+  // expandedRowRender，可见性受 expandedKeys 控制。闩锁置位后 SSE patch 新增的
+  // spec（新建任务/修复子任务）也要默认展开，但不能把用户已手动收起的行强制
+  // 弹开——区分「新增节点」与「被用户收起的已见行」需要记忆已纳入展开集合的
+  // 节点名，增量合并只并入从未见过的 keys。
+  const seenKeysRef = useRef<Set<Key>>(new Set());
   // 项目切换复位闩锁（code-review item 9dd9b3c6679b）：本路由组件在同一路径
   // /projects/:name 下复用不重挂载，expandedInitRef 是锚定不到项目的一次性
   // 闩锁——name 变化时不复位则新项目树保持折叠、expandedKeys 残留上一项目的
   // spec 名。复位后由下方 init effect 在新项目 tree 首次到达时重新展开。
   useEffect(() => {
     expandedInitRef.current = false;
+    // 已见节点记忆随项目复位：残留上一项目的 spec 名会把新项目同名 spec
+    // 误判为「已见」而拒绝展开（code-review item 81b677017e09）。
+    seenKeysRef.current.clear();
     setExpandedKeys([]);
     // specLoadedRef 闩锁随项目复位（code-review item f8144e4ed721）
     specLoadedRef.current = false;
@@ -971,9 +980,7 @@ export default function SpecListPage() {
     setAdminInvoke(null);
   }, [name]);
   useEffect(() => {
-    if (expandedInitRef.current) return;
     if (tree.length === 0) return;
-    expandedInitRef.current = true;
     // 递归收集全树所有节点名（code-review item 6869f19d419c）：三层归并树
     // （fix-fix-a→fix-a→a）只收根名会漏掉中间层，其子级默认折叠隐藏；叶子名
     // 也要收——error 信息行走 expandedRowRender，同受这组 keys 控制。
@@ -985,7 +992,26 @@ export default function SpecListPage() {
       });
     };
     walk(tree);
-    setExpandedKeys(keys);
+    if (!expandedInitRef.current) {
+      // 首棵树到达：全展开（既有行为，b229013a3316 闩锁语义不变）
+      expandedInitRef.current = true;
+      keys.forEach((k) => seenKeysRef.current.add(k));
+      setExpandedKeys(keys);
+      return;
+    }
+    // 闩锁置位后的增量合并（code-review item 81b677017e09）：SSE patch 新增的
+    // spec 原实现进不了 expandedKeys，其 error 信息行保持折叠不可见。只把从未
+    // 见过的节点 keys 并入展开集合——新增行默认展开；用户已手动收起的行是
+    // 「已见」节点、不在 fresh 内，不被强制重开（b229013a3316 语义保持）。
+    const fresh = keys.filter((k) => !seenKeysRef.current.has(k));
+    if (fresh.length === 0) return;
+    keys.forEach((k) => seenKeysRef.current.add(k));
+    setExpandedKeys((prev) => {
+      const merged = new Set(prev);
+      for (const k of fresh) merged.add(k);
+      // 返回原引用避免无谓 re-render（同 flushPatches 惯例）
+      return merged.size === prev.length ? prev : [...merged];
+    });
   }, [tree]);
 
   const handleClearError = async (record: SpecSummary) => {
