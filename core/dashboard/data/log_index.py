@@ -177,6 +177,12 @@ def _write_log_index(proot: Path, idx: dict, log_name: str = "fenixd.log"):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(idx, ensure_ascii=False))
+                # replace 前 flush+fsync（对齐 config_admin 原子写惯例，
+                # code-review item d67bb2df8b7e）：掉电时半截 JSON 不被换入
+                # 正式索引。索引属可再生缓存（校验失败走全量重建自愈），
+                # fsync 只是每次落盘的廉价元数据开销，仍以不换入半截数据为先。
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_name, str(idx_path))
         except Exception:
             try:
