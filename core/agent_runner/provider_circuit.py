@@ -912,6 +912,13 @@ class ProviderCircuit:
                         warn = int(raw_warn)
                     except (TypeError, ValueError):
                         warn = PROVIDER_DAILY_ATTEMPTS_WARN
+            elif type(raw_warn) is bool:
+                # bool（int 子类）按畸形回默认而非禁用（code-review item
+                # a2a84b360695）：原实现把布尔值整段跳过、warn 保持 None，命中
+                # 「禁用告警」分支——yaml 误写 daily_attempts_warn: true 会让
+                # 当日 attempt 超限的防烧钱 WARNING 整体静默失效，而非按上方
+                # 注释声称的「bool 按畸形回默认」语义回退默认阈值。
+                warn = PROVIDER_DAILY_ATTEMPTS_WARN
             if (
                 warn is not None
                 and warn > 0
