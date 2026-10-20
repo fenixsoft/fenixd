@@ -4496,34 +4496,15 @@ class PMEngine:
         try:
             store = AdminStore(self.project_root, self.logger)
             count = int(state.get("count", 0)) if state else 0
-            # 冷却总时长（秒→分钟，取整）
-            # 配置非法值防御（code-review item e3e50d960b1b，与 _handle_push_failure
-            # 的 max_retries 同款）：非数字字符串裸 int() 抛 ValueError/TypeError，
-            # 从 recovered 分支穿透 handle_event 炸到调用方，中断当轮事件处理且
-            # 每次冷却到期复现——回退默认值 30。
-            try:
-                raw_cooldown = self._get_config(
-                    "admin.run_infra_breaker.cooldown_minutes", 30
-                )
-                # 显式判 None（code-review item 95c429d664e3）：`or 30` 会把
-                # 合法的 cooldown_minutes=0（不冷却）吞成默认 30，仅缺省才回退。
-                cooldown_minutes = 30 if raw_cooldown is None else int(raw_cooldown)
-                # 布尔/负值拒绝（code-review item 28cef84516d4，与
-                # _handle_push_failure 的 max_retries 同款）：int() 接受 YAML
-                # 布尔（True→1、False→0），负值冷却把熔断窗口文案失真——
-                # WARNING 留痕后回退默认 30。0（不冷却）仍为合法显式配置。
-                if isinstance(raw_cooldown, bool) or cooldown_minutes < 0:
-                    self.logger.warning(
-                        "pm_engine",
-                        f"admin.run_infra_breaker.cooldown_minutes 含布尔/负值 "
-                        f"{raw_cooldown}，回退默认 30",
-                    )
-                    cooldown_minutes = 30
-            # 补捕 OverflowError（code-review item e09138583cd4）：.inf 配置
-            # int() 抛 OverflowError 不在原元组，异常从 recovered 分支穿透
-            # _on_spec_reviewing 中断当轮评审入队（infra_breaker 先例同口径）。
-            except (TypeError, ValueError, OverflowError):
-                cooldown_minutes = 30
+            # 冷却总时长（秒→分钟，取整展示）——归一取值（code-review item
+            # 8f00ff48b279）：改经 self.infra_breaker.cooldown_minutes property
+            # 取归一后数值，不再经 _get_config 直读原始配置。property 对
+            # bool/非数值（含数字字符串 "45"）/非正值/非有限值/巨大 int 一律
+            # 回退缺省 30.0，与熔断实际生效值（record_failure 的
+            # cooldown_minutes*60）同源同口径——脏配置下 evidence/description
+            # 不再与实际生效值分叉误导人工排障。int() 仅保留旧的整数分钟展示
+            # 口径；property 保证恒返回正有限 float，不会抛。
+            cooldown_minutes = int(self.infra_breaker.cooldown_minutes)
             now_epoch = time.time()
             window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
             evidence = (
@@ -4536,7 +4517,7 @@ class PMEngine:
                     "spec": spec_name,
                     "severity": "critical",
                     "description": (
-                        f"spec-review 链路连续 infra 失败 {count} 次（阈值 {self._get_config('admin.run_infra_breaker.threshold', 3)}），"
+                        f"spec-review 链路连续 infra 失败 {count} 次（阈值 {self.infra_breaker.threshold}），"
                         f"已触发熔断（冷却 {cooldown_minutes} 分钟）。"
                         f"原因：{reason}"
                     ),
