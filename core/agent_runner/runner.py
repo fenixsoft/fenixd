@@ -2995,18 +2995,23 @@ class AgentRunner:
             seconds = float(cfg["turns"]) * float(avg_turn_seconds)
             seconds = min(max(seconds, WRAPUP_GRACE_MIN_SECONDS),
                           WRAPUP_GRACE_MAX_SECONDS)
+        elif avg_turn_seconds is not None:
+            # 墙钟侧入参无效（≤0）→ 宽限秒数无法折算（code-review item
+            # 96b3bbd7b7d8）：不置一次性发放标记即返回。「已发放过」与「尝试
+            # 过但无可折算数据」必须区分——此形态下 run 实际未获得任何宽限
+            # （两侧消费方均按未发放处理），置位会永久拦下后续发放机会；不
+            # 标记则后续监督判定拿到有效均值时可重试折算。轮数侧不传 avg
+            # （宽限以轮数计，seconds 保持 None），是合法发放形态，不受此限。
+            return None
         with self._turn_branch_state_lock:
             if entry.get("wrapup_grace_granted"):
                 return None
-            if seconds is None:
-                # 无可折算宽限秒数（code-review item 96b3bbd7b7d8）：不置一次
-                # 性发放标记——「已发放过」与「尝试过但无可折算数据」必须区分，
-                # 否则本 run 实际未获得任何宽限（轮数侧与墙钟侧消费方均按未发
-                # 放处理）却被一次性标记永久拦下后续发放机会；不标记则后续监
-                # 督判定再达条件时可重试折算。
-                return None
             entry["wrapup_grace_granted"] = True
-            entry["wrapup_grace_seconds"] = float(seconds)
+            if seconds is not None:
+                # 仅真实折算出正宽限秒数时落键（原实现把 None 折叠成伪
+                # 0.0，墙钟侧 _wrapup_grace_absolute_max_lift 读 0.0 同样
+                # 不抬升，落 None 更诚实）；轮数侧只发轮数，不落秒数键。
+                entry["wrapup_grace_seconds"] = float(seconds)
         self.logger.info(
             "agent_runner",
             f"wrapup grace granted for '{spec_name}' ({run_id}): "
