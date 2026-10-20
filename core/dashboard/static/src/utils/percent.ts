@@ -7,5 +7,8 @@ export function pct(done: number, total: number): number {
   // 非有限值（NaN/±Infinity）回 0、结果钳下限（code-review item 9b5f4f881c7f）：
   // 与 @/utils/duration 的防御口径看齐，异常数据不透传 NaN/负百分比到展示层。
   if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
-  return Math.max(0, Math.round((done / total) * 100));
+  // 上限同钳 100（code-review item 551fbf47beec）：done > total（数据异常或
+  // 统计口径错位）时不向展示层透传超过 100 的百分比，与 tokens.ts 命中率的
+  // [0, 100] 钳制口径对齐。
+  return Math.min(100, Math.max(0, Math.round((done / total) * 100)));
 }
