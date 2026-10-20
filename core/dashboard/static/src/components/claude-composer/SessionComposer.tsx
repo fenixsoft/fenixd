@@ -394,7 +394,11 @@ export default function SessionComposer({
         </PromptInput>
 
         {disabled && (
-          <p className="mt-1.5 px-1 text-xs text-gray-500">{endHint || END_HINT_DEFAULT}</p>
+          /* 语义色对齐同组件次级文案（code-review item 41b549274e68）：硬编码
+             text-gray-500 在主题切换/暗色变量调整时不随语义色变化。 */
+          <p className="mt-1.5 px-1 text-xs text-muted-foreground/70">
+            {endHint || END_HINT_DEFAULT}
+          </p>
         )}
       </div>
     </div>
