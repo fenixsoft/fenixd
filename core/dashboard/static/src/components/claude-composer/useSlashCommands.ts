@@ -164,7 +164,7 @@ export function useSlashCommands({
     // 按钮开关路径同样取消在途查询 debounce（code-review item 00b49c1b3385，
     // 与 resetCommandMenuState 同口径）：输入 /x 后 150ms 内快速关开菜单，
     // pending 回调到期会以旧查询词覆盖打开时设置的全量候选集。
-    commandQueryDebounce.cancel();
+    commandQueryDebounce?.cancel();
     setShowCommandMenu(isOpening);
     setCommandQuery('');
     setSelectedCommandIndex(-1);
