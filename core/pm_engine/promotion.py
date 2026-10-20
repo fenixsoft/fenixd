@@ -32,10 +32,11 @@ def promote_drafted(
         {"ok": False, "violations": [...], "error_written": True} — lint 违规，
         STATE error 已写入
         {"ok": False, "violations": [...], "error_written": False} — lint 违规，
-        但写前冻结复查发现 spec 已冻结：放弃 error 直写（冻结现场保留待人工解冻），
-        violations 照常返回由调用方呈现，STATE error 保留原值。消费方 MUST NOT
-        依赖 ok=False + violations 形态推断 STATE error 已写入，须以 error_written
-        区分两种子情况
+        但写前复查放弃 error 直写：写盘前重读发现 spec 已冻结（冻结现场保留
+        待人工解冻），或 status 已非 drafted（窗口内被人工 CLI/Dashboard 并发
+        晋升，陈旧 lint 结论不覆写外部推进后的状态）。violations 照常返回由
+        调用方呈现，STATE error 保留原值。消费方 MUST NOT 依赖 ok=False +
+        violations 形态推断 STATE error 已写入，须以 error_written 区分子情况
         {"ok": False, "reason": "..."} — 拒绝（不存在 / 非 drafted / 其它原因）
     """
     # 1. 检查 SPEC 是否存在且处于 drafted 状态
@@ -136,11 +137,30 @@ def promote_drafted(
         # 呈现），冻结现场保留待人工解冻后重新晋升。
         from core.state_machine import FROZEN_FIELD
 
-        if (state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+        recheck = state_machine.read_one(spec_name) or {}
+        if recheck.get(FROZEN_FIELD):
             logger.warning(
                 "pm_engine",
                 f"Promotion lint error write abandoned '{spec_name}': "
                 "写盘前复查发现已冻结——放弃 error 直写，冻结现场保留待人工解冻",
+            )
+            return {"ok": False, "violations": violations + tasks_violations,
+                    "error_written": False}
+        # 写前状态复核（code-review item 8aa4caccad7c，对齐 engine.py
+        # _on_spec_verified 49044ee6e490「status 非预期即放弃写」先例）：
+        # 复用上方同一 read_one 重读结果——入口 status 快照（本函数第 1 步）
+        # 到此处隔着软化编排与两项 lint 的文件 I/O，窗口内 spec 可能已被
+        # 人工 CLI/Dashboard 并发晋升到 ready/reviewing，陈旧 lint error
+        # 落到非 drafted 条目会被 get_health_summary 计入阻塞桶、
+        # check_blockers 计入挂起失败警告，误导看板与巡检。status 非
+        # drafted 即与冻结同样放弃本次 error 写（violations 照常返回，由
+        # 调用方呈现），让位于外部进度。
+        if recheck.get("status", "") != "drafted":
+            logger.info(
+                "pm_engine",
+                f"Promotion lint error write abandoned '{spec_name}': "
+                f"写盘前复核发现 status 已为 '{recheck.get('status', '')}'，"
+                "非 drafted——放弃 error 直写，让位于外部进度",
             )
             return {"ok": False, "violations": violations + tasks_violations,
                     "error_written": False}
