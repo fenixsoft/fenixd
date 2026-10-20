@@ -261,6 +261,37 @@ class VisualDiffer:
                     )
                 ]
 
+            # ── 判定失败防护（code-review item 8953abec4c68）──
+            # classify_screenshot 判定自身异常（解码失败、0 像素图除零等）时
+            # fail-open 返回空 dict（「绝不抛出」契约），与「无标签=正常态」
+            # 不可区分——异常截图会静默绕过上方污染门被固化为基线，防污染
+            # 门对「判定自身失败」形态失效。正常路径必产的量化键（pixel_std/
+            # dominant_color_pct，见 _classify_impl 的 labels 组装）缺失即
+            # 判定失败形态：与污染同罪拒绝固化，记 warning 留痕，本轮不固化
+            # 顺延下轮（baseline_deferred 非 pass 非 fail，下游按非打回依据
+            # 处理），下轮截图判定正常时再建立基线。
+            if "pixel_std" not in labels or "dominant_color_pct" not in labels:
+                self._log_warning(
+                    f"视觉基线健全性判定自身失败（classify 结果缺量化键: {labels}），"
+                    f"拒绝固化基线 {baseline_name}，顺延下轮重试"
+                )
+                return [
+                    _evidence_fields(
+                        {
+                            "baseline": baseline_name,
+                            "status": "baseline_deferred",
+                            "ssim": None,
+                            "pass": False,
+                            "note": (
+                                "首次运行，截图健全性判定自身失败"
+                                "（classify 结果缺量化指标，如解码失败），"
+                                "无法证实画面正常，拒绝固化为基线，顺延下轮重试"
+                            ),
+                            "screenshot_labels": labels,
+                        }
+                    )
+                ]
+
             # ── 基线固化门（fix-visual-baseline-settle D3）──
             # 健全性判定在前（拒绝污染画面），通过性门在后（拒绝失败场景固化）
             # ——两道独立防线。不满足前置条件则本轮不固化，视觉结果记
@@ -359,26 +390,33 @@ class VisualDiffer:
             retake_no = retake_count + 1
             retake_shot = screenshots_dir / f"{scenario_id}_current_r{retake_no}.png"
             retake_diff = screenshots_dir / f"{scenario_id}_diff_r{retake_no}.png"
-            await page.screenshot(path=str(retake_shot), full_page=False)
-            retake_count += 1
-            cand = (await asyncio.to_thread(_compare_once, retake_shot, retake_diff))[0]
-            # 跨标尺防护（code-review e91595028247）：SSIM 分与像素降级折算分
-            # （1-差异比）语义不同，极端情况下首轮 SSIM、重拍轮 skimage 失效
-            # 降级像素时直接比较无意义；方案标识不一致时维持 best 不择优。
-            if self._score_scheme(cand) == self._score_scheme(
-                best
-            ) and self._compare_score(cand) > self._compare_score(best):
-                cand["current_image"] = str(current_path)
-                cand_diff = cand.get("diff_image")
-                if cand_diff:
-                    std_diff = screenshots_dir / f"{scenario_id}_diff.png"
-                    shutil.copy(str(cand_diff), str(std_diff))
-                    cand["diff_image"] = str(std_diff)
-                shutil.copy(str(retake_shot), str(current_path))
-                best = cand
-            # 未入选轮次文件不留盘（入选内容已复制回标准路径）
-            retake_shot.unlink(missing_ok=True)
-            retake_diff.unlink(missing_ok=True)
+            try:
+                await page.screenshot(path=str(retake_shot), full_page=False)
+                retake_count += 1
+                cand = (
+                    await asyncio.to_thread(_compare_once, retake_shot, retake_diff)
+                )[0]
+                # 跨标尺防护（code-review e91595028247）：SSIM 分与像素降级折算分
+                # （1-差异比）语义不同，极端情况下首轮 SSIM、重拍轮 skimage 失效
+                # 降级像素时直接比较无意义；方案标识不一致时维持 best 不择优。
+                if self._score_scheme(cand) == self._score_scheme(
+                    best
+                ) and self._compare_score(cand) > self._compare_score(best):
+                    cand["current_image"] = str(current_path)
+                    cand_diff = cand.get("diff_image")
+                    if cand_diff:
+                        std_diff = screenshots_dir / f"{scenario_id}_diff.png"
+                        shutil.copy(str(cand_diff), str(std_diff))
+                        cand["diff_image"] = str(std_diff)
+                    shutil.copy(str(retake_shot), str(current_path))
+                    best = cand
+            finally:
+                # 未入选轮次文件不留盘（入选内容已复制回标准路径）；
+                # 截图/对比中途抛异常（页面崩溃/连接断开）时同样清理
+                # （code-review item fd9393af89ee），异常穿出 compare 后
+                # 轮次命名文件不残留累积占盘
+                retake_shot.unlink(missing_ok=True)
+                retake_diff.unlink(missing_ok=True)
 
         final = _evidence_fields(best)
 
