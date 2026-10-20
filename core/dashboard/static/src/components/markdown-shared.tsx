@@ -12,8 +12,9 @@ import type { Components } from 'react-markdown';
  * 安全约束：本映射不放行 raw HTML，不得引入 rehype-raw，否则静默放开 HTML 注入面。
  */
 
-// 允许的链接协议白名单
-const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+// 允许的链接协议白名单（共享导出，code-review item e571142420c3）：SafeLink 与
+// claude-msg/Markdown.tsx 的链接白名单兜底同源消费，单一来源避免两份白名单各自漂移
+export const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
 // 纯页内锚点判定（#xxx，排除 SPA 路由 #/ 与裸 #）：SafeLink 与帮助中心（help 页，
 // 自建 a 组件做页内滚动）共用的条件口径，单一来源避免双处判定各自漂移

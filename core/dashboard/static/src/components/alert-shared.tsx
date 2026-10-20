@@ -129,7 +129,7 @@ export function AlertActionColumn({ children }: { children: ReactNode }) {
  */
 export function AlertReportButton({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
-  const { modalProps, maximizeButton } = useMaximizeModal({
+  const { modalProps, maximizeButton, isFullscreen } = useMaximizeModal({
     defaultWidth: '80vw',
     defaultBodyHeight: '80vh',
     centered: true,
@@ -144,7 +144,7 @@ export function AlertReportButton({ text }: { text: string }) {
         open={open}
         onCancel={() => setOpen(false)}
         footer={null}
-        title={<MaximizeTitle text="调查报告" button={maximizeButton} />}
+        title={<MaximizeTitle text="调查报告" isFullscreen={isFullscreen} button={maximizeButton} />}
         {...modalProps}
       >
         <div style={{ fontSize: 13 }}>

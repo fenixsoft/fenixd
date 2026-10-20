@@ -29,6 +29,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from .path_safety import safe_component
+
 # playwright 类型化异常（code-review item ea1ef016ced3）：顶层 error_type
 # 分类优先按异常类型分流，不依赖随版本漂移的错误文案；playwright 未安装的
 # 环境（本模块由 web_runner 间接导入，启动路径才真正触达 playwright）回退
@@ -1324,9 +1326,28 @@ class BrowserManager:
                 #   {"to": 目标选择器, "hold": 长按ms(默认450),
                 #    "dwell": 驻留ms(默认600), "via": 中间悬停选择器,
                 #    "via_wait": 中间悬停ms(默认300)}
-                try:
-                    cfg = json.loads(value) if value.strip().startswith("{") else {"to": value}
-                except Exception:
+                # 残缺 JSON 拦截（code-review item d1980b980f9c）：value 以 {
+                # 开头但 json.loads 失败（planner 写出截断 JSON，如 {"to": "x"
+                # 缺右括号）时，整段残缺 JSON 若落入 {"to": value} 回退会成为
+                # to_sel，后续 locator/wait_for 抛错被顶层 except 归为
+                # unknown——与 hold/dwell/via_wait 脏值（44b3d43812ab）同口径，
+                # 复用既有 invalid_drag_config 结构化失败并附原始 value；
+                # 纯选择器形态保持现回退
+                if value.strip().startswith("{"):
+                    try:
+                        cfg = json.loads(value)
+                    except Exception:
+                        return {
+                            "success": False,
+                            "action": action,
+                            "target": target,
+                            "error_type": "invalid_drag_config",
+                            "error": (
+                                f"drag 配置 JSON 解析失败（应为选择器或完整 JSON 配置）: "
+                                f"value={value!r}"
+                            ),
+                        }
+                else:
                     cfg = {"to": value}
                 to_sel = cfg.get("to", "")
                 if not to_sel:
@@ -1611,10 +1632,10 @@ class BrowserManager:
         output_dir.mkdir(parents=True, exist_ok=True)
         # 路径成分净化（code-review item 8c2bad0d3932）：name 拼自 scenario.id
         # （validate_scenario 只查非空、不查字符集），含 ../ 或分隔符的 id 经
-        # f-string 拼接可把截图写出 screenshots 目录——与 visual_diff 的
-        # _safe_component 同款净化（browser 不能反向导入 visual_diff，会循环
-        # 导入），正常 kebab-case 命名不受影响
-        safe_name = re.sub(r"[\\/\x00]", "_", str(name))
+        # f-string 拼接可把截图写出 screenshots 目录——复用共用的
+        # path_safety.safe_component（含纯点 . / .. 归一，code-review item
+        # 80d8ee05f07a），正常 kebab-case 命名不受影响
+        safe_name = safe_component(str(name))
         path = output_dir / f"{safe_name}.png"
         await page.screenshot(path=str(path), full_page=False)
         from .screenshot_lab import classify_screenshot

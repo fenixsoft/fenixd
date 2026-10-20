@@ -64,12 +64,14 @@ _DESCRIBE_LOCKS_GUARD = threading.Lock()
 
 # ── /api/overview 结果缓存（add-alerts-archive-and-overview-cache 3.1）──────
 # D3「TTL 或 签名」双键取或：TTL 窗口内直接命中；超 TTL 但「项目集合 + 全部
-# 项目数据源签名」未变时直接复用（签名 stat 比聚合便宜 1~2 个量级）。概览页
+# 项目数据源签名」未变且仍在同一时钟刻度内时直接复用（签名 stat 比聚合便宜
+# 1~2 个量级；刻度维度使缓存随时间自然失效，见 _api_overview item
+# ce75392d257d 注释）。概览页
 # 由 2s SSE 心跳驱动重拉，此前每次请求都冷算 project_summary 聚合（实测稳定
 # ~200ms）。D4 单槽即可：overview 响应全局一份（无 project 参数维度）；
 # 防写撕裂用简单 threading.Lock（读竞态最坏多算一次，无正确性风险）。
 _OVERVIEW_CACHE_TTL = 2.0  # 与 watcher.REFRESH_HEARTBEAT 对齐
-_OVERVIEW_CACHE: dict = {}  # 单槽 {sig, projects_key, computed_at, payload}
+_OVERVIEW_CACHE: dict = {}  # 单槽 {sig, projects_key, time_slice, computed_at, payload}
 _OVERVIEW_CACHE_LOCK = threading.Lock()
 
 
@@ -85,8 +87,8 @@ def _overview_project_sig(proot: Path) -> dict:
     维持 summary 单源、经公开别名引用。覆盖 overview 聚合的文件型数据源：
     STATE.md（spec 清单/状态）、各 spec tasks.md（任务计数）、
     runs 目录（active_runs）、config.yaml（description）。daemon_health /
-    hosting_state 等动态源不入签名，由 TTL 窗口兜底（陈旧与心跳节奏同量
-    级）。
+    hosting_state 等动态源不入签名，陈旧上界由 _api_overview 缓存键的
+    60 秒时钟刻度兜底（分钟级，item ce75392d257d）。
     """
     sigs: dict = {}
     for p in (proot / ".fenix" / "STATE.md", proot / ".fenix" / "config.yaml"):
@@ -184,13 +186,19 @@ class H2ProjectRoutesMixin:
             ):
                 return copy.deepcopy(_OVERVIEW_CACHE["payload"])
 
-        # TTL 已过：签名未变仍直接复用（D3 双键取或）。复用即刷新 computed_at，
-        # 后续请求走回免 stat 快路径；签名未变即数据未变，不拉长可感知陈旧窗口。
+        # TTL 已过：签名未变且仍在同一 60 秒时钟刻度内才复用（D3 双键取或 +
+        # 刻度维度，code-review item ce75392d257d）。此前复用即刷新
+        # computed_at，TTL 被无限续期：daemon_health / hosting_state 等不入
+        # 签名的动态源（第三方 daemon 崩溃不产生任何签名文件变更）与按墙钟
+        # 计算的 spec_updated_today/week 跨日后均可无限期滞留陈旧值；混入量化
+        # 刻度后，跨刻度的首个 TTL 过期请求即重算，动态字段陈旧上界分钟级。
+        now_slice = int(time.time() // 60)
         sig = _overview_sig(projects)
         with _OVERVIEW_CACHE_LOCK:
             if (
                 _OVERVIEW_CACHE.get("projects_key") == projects_key
                 and _OVERVIEW_CACHE.get("sig") == sig
+                and _OVERVIEW_CACHE.get("time_slice") == now_slice
             ):
                 _OVERVIEW_CACHE["computed_at"] = time.monotonic()
                 return copy.deepcopy(_OVERVIEW_CACHE["payload"])
@@ -202,6 +210,9 @@ class H2ProjectRoutesMixin:
                 {
                     "projects_key": projects_key,
                     "sig": sig,
+                    # 取重算完成时刻的刻度：payload 与记录刻度同片，跨刻度
+                    # 后首个 TTL 过期请求必走重算
+                    "time_slice": int(time.time() // 60),
                     "computed_at": time.monotonic(),
                     "payload": payload,
                 }
@@ -308,11 +319,11 @@ class H2ProjectRoutesMixin:
             if not _acquired:
                 self._json({"ok": False, "error": "该项目正有另一启停操作进行中，请稍后重试"})
                 return
-            self._run_project_lifecycle_locked(action, project, path)
+            self._run_project_lifecycle_locked(action, project)
 
 
 
-    def _run_project_lifecycle_locked(self, action: str, project: dict, path: str):
+    def _run_project_lifecycle_locked(self, action: str, project: dict):
         """_api_project_lifecycle 的锁内实现（调用方已持有项目生命周期锁）。"""
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙命名空间延迟解析
         try:

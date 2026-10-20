@@ -179,6 +179,20 @@ class TestAttributionBridge(unittest.TestCase):
             "infra",
         )
 
+    def test_underscore_adjacent_fingerprints_stay_content(self):
+        """紧邻下划线的指纹不判 infra（code-review item ecec53733c66）：
+        foo_429_bar（数字）/ quota_used（词根）与连字符形态同按分隔符语义
+        处理——边界字符类未收下划线时二者均被误判 infra、跳过重试预算。"""
+        m = _make_manager(self.tmp)
+        self.assertEqual(
+            m._classify_run_failure("fix_429_backoff: Exit code: 1", "demo"),
+            "content",
+        )
+        self.assertEqual(
+            m._classify_run_failure("quota_used exhausted in spec", "demo"),
+            "content",
+        )
+
     def test_unstructured_content_failure_stays_content(self):
         """conn_error 非 True（含替身真值子对象）不误判 infra（严格等值判定）。"""
         m = _make_manager(self.tmp)

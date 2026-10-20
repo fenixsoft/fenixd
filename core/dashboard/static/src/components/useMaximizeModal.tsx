@@ -4,7 +4,7 @@
 // 态重合后切换按钮无意义，一并隐藏；桌面端行为不变。
 import { Button } from 'antd';
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
-import { isValidElement, useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
@@ -41,8 +41,11 @@ export function useMaximizeModal({
   const [maximized, setMaximized] = useState(false);
   const isMobile = useIsMobile();
   const toggle = useCallback(() => setMaximized((v) => !v), []);
+  // 全屏布局状态（最大化或移动端默认全屏）：modalProps 与 MaximizeTitle 的标题
+  // 截断共用这一显式布尔，调用方直接透传，不再依赖按钮元素上的隐式标记
+  const isFullscreen = maximized || isMobile;
 
-  const modalProps = maximized || isMobile
+  const modalProps = isFullscreen
     ? {
         width: MAXIMIZED_WIDTH,
         centered: false,
@@ -68,23 +71,22 @@ export function useMaximizeModal({
 
   // 按钮绝对定位到标题右侧：antd 关闭按钮为绝对定位（占 modal 右缘约 12~44px），
   // 按钮放其左侧；aria-label 提供显式可访问名（仅靠 title 属性对部分屏幕阅读器
-  // /键盘场景不可靠）。最大化态给按钮打 data-maximized 标记，MaximizeTitle 依此
-  // 把标题切成单行截断（header 不得突破 80px 预算）；还原态仍允许断词换行。
-  // 移动端默认与最大化态重合，按钮不渲染（MaximizeTitle 对 button=null 同样按全屏截断）
+  // /键盘场景不可靠）。全屏布局信号由返回值 isFullscreen 显式传递，MaximizeTitle
+  // 据此把标题切成单行截断（header 不得突破 80px 预算）；还原态仍允许断词换行。
+  // 移动端默认与最大化态重合，按钮不渲染（isFullscreen 已含 isMobile 分支）
   const maximizeButton: ReactNode = isMobile ? null : (
     <Button
       type="text"
       size="small"
       title={maximized ? '还原' : '最大化'}
       aria-label={maximized ? '还原' : '最大化'}
-      data-maximized={maximized || undefined}
       icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
       onClick={toggle}
       style={{ position: 'absolute', right: 24, top: -4 }}
     />
   );
 
-  return { maximized, toggle, modalProps, maximizeButton };
+  return { maximized, toggle, modalProps, maximizeButton, isFullscreen };
 }
 
 // 标题容器标准包装：relative 定位承载最大化按钮，文本右留白防重叠；
@@ -93,19 +95,24 @@ export function useMaximizeModal({
 // 标题必须单行截断：允许断词换行会让 header 实高超出 80px 预算，footer 被裁切；
 // span 转 block 后 auto 宽度天然受限于容器（不依赖 box-sizing），ellipsis 截在按钮
 // 留白之前，悬停 title 属性保留全文可读。还原态无此预算，维持断词换行。
-export function MaximizeTitle({ text, extra, button }: { text: ReactNode; extra?: ReactNode; button: ReactNode }) {
-  // 全屏态信号：hook 给最大化按钮打 data-maximized 标记；移动端按钮为 null（同全屏几何）。
-  // == null 同时覆盖 undefined（漏传 prop 或条件表达式透传 undefined），避免静默退回非全屏布局
-  const fullscreen =
-    button == null ||
-    (isValidElement(button) &&
-      (button.props as { 'data-maximized'?: unknown })['data-maximized'] !== undefined);
+export function MaximizeTitle({
+  text,
+  extra,
+  button,
+  isFullscreen,
+}: {
+  text: ReactNode;
+  extra?: ReactNode;
+  button: ReactNode;
+  // 全屏态显式信号：由调用方从 useMaximizeModal 返回值透传（不再从按钮元素 props 反推）
+  isFullscreen: boolean;
+}) {
   return (
     <div style={{ position: 'relative' }}>
       <span
-        title={fullscreen && typeof text === 'string' ? text : undefined}
+        title={isFullscreen && typeof text === 'string' ? text : undefined}
         style={{
-          ...(fullscreen
+          ...(isFullscreen
             ? { display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
             : { display: 'inline-block', wordBreak: 'break-all' }),
           paddingRight: button ? 56 : 12,

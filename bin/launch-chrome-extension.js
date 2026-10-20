@@ -87,13 +87,15 @@ function parseArgs() {
   // 校验参数取值：--timeout 缺值/非数字会得 NaN、0 或负数会使剩余预算恒为 0 立即超时收卷，
   // 造成零验证假通过，故须为正数；带值选项缺值时静默得 undefined，空串取值（如 `--detect ""`）
   // 则会通过缺值校验后在 main 里按假值分支走（--detect 空串跳过检测、--output 空串放弃落盘），
-  // 调用方预期被静默改变，故空串与 undefined 同列报错
+  // 调用方预期被静默改变，故空串与 undefined 同列报错；取值以 -- 开头（如 `--dist-path --debug`
+  // 漏给值）会把下一个选项名当作路径静默通过——--dist-path 报「dist 目录不存在: …/--debug」误导
+  // 排障，--output 更会在 cwd 落出错误命名的结果文件，故以 -- 开头的取值一并报错（code-review item 6075c3ad88f7）
   const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>] [--detect <spec-dir>]';
   let invalidReason = null;
   if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
-  if (opts.distPath === undefined || opts.distPath === '') invalidReason = '--dist-path 缺少取值';
-  if (opts.output === undefined || opts.output === '') invalidReason = '--output 缺少取值';
-  if (opts.detect === undefined || opts.detect === '') invalidReason = '--detect 缺少取值';
+  if (opts.distPath === undefined || opts.distPath === '' || opts.distPath.startsWith('--')) invalidReason = '--dist-path 缺少取值';
+  if (opts.output === undefined || opts.output === '' || opts.output.startsWith('--')) invalidReason = '--output 缺少取值';
+  if (opts.detect === undefined || opts.detect === '' || opts.detect.startsWith('--')) invalidReason = '--detect 缺少取值';
   if (invalidReason) {
     console.error(`错误: ${invalidReason}\n${usage}`);
     process.exit(1);
@@ -499,15 +501,25 @@ function sanitizeUrl(url) {
   }
   if (!parsed.search) return url;
   const params = new URLSearchParams(parsed.search);
-  let redacted = false;
-  for (const name of [...params.keys()]) {
-    if (SENSITIVE_KEY_PATTERN.test(name.toLowerCase())) {
-      params.set(name, '[REDACTED]');
-      redacted = true;
+  // 同名多值参数（如 ?a=1&a=2）会让 keys() 迭代出重复键名，若对命中键用 set（先删后插）
+  // 会把多值折叠成单值，脱敏后落盘的 URL 丢失参数个数信息，排查网关行为时误读请求形态
+  // （code-review item 8b0227b84e1d）。故先收集命中键集合，再重建查询串：
+  // 非命中键逐值原样 append 复制，命中键按原值个数逐个 append 占位符，保持多值结构
+  const redactedKeys = new Set();
+  for (const name of params.keys()) {
+    if (SENSITIVE_KEY_PATTERN.test(name.toLowerCase())) redactedKeys.add(name);
+  }
+  if (redactedKeys.size === 0) return url;
+  const rebuilt = new URLSearchParams();
+  for (const name of new Set(params.keys())) {
+    const values = params.getAll(name);
+    if (redactedKeys.has(name)) {
+      for (let k = 0; k < values.length; k++) rebuilt.append(name, '[REDACTED]');
+    } else {
+      for (const value of values) rebuilt.append(name, value);
     }
   }
-  if (!redacted) return url;
-  parsed.search = params.toString();
+  parsed.search = rebuilt.toString();
   return parsed.toString();
 }
 

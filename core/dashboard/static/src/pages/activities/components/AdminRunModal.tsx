@@ -23,7 +23,7 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
       setEventCount(0);
     }
   }, [open]);
-  const { modalProps, maximizeButton } = useMaximizeModal({
+  const { modalProps, maximizeButton, isFullscreen } = useMaximizeModal({
     defaultWidth: '80vw',
     defaultBodyHeight: '72vh',
     extraBodyStyle: { display: 'flex', flexDirection: 'column', paddingTop: 12 },
@@ -50,6 +50,7 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
             )
           }
           button={maximizeButton}
+          isFullscreen={isFullscreen}
         />
       }
       open={open}

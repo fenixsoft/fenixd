@@ -413,11 +413,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     if (!project) return;
     if (autodraftInFlight.current) return; // 竞态窗口内重复触发：同步锁拦截
     autodraftInFlight.current = true;
-    // 存在性守卫（比照 handleYamlSave 的草稿归属守卫口径）：加载失败或草稿
-    // 归属不指向当前项目（切项目的加载往返窗口内残留）时，overwrite 依据的
-    // yamlExists 可能是上一项目的残留值——拒绝触发并提示先重试加载确认。
+    // 存在性守卫（比照 handleYamlSave 的草稿归属守卫口径）：加载失败、草稿
+    // 归属不指向当前项目（切项目的加载往返窗口内残留）、或归属序号落后于当前
+    // 加载序号（重载/保存后静默重载在飞，yamlExists 尚未对账到最新一次加载）
+    // 时，overwrite 依据的 yamlExists 可能是残留值——拒绝触发并提示先重试加载
+    // 确认。
     const src = yamlDraftSourceRef.current;
-    if (yamlLoadError || !src || src.project !== project) {
+    if (yamlLoadError || !src || src.project !== project || src.seq !== yamlLoadSeq.current) {
       autodraftInFlight.current = false; // 未进入在飞段，就地释放锁
       message.warning('verify.yaml 尚未加载确认（加载失败或已切换项目），请重新加载后再自动生成');
       return;
@@ -572,6 +574,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                   <Button
                     style={{ marginLeft: 8 }}
                     loading={autodraftLoading}
+                    // 在飞加载/保存期间禁用（与同区「插入模板」「重新加载」「保存」
+                    // 同口径）：起草/覆盖决定须基于最新一次加载的对账结果
+                    disabled={yamlLoading || yamlSaving}
                     data-testid="verify-yaml-autodraft"
                   >
                     AI 自动生成
@@ -588,6 +593,9 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                   <Button
                     style={{ marginLeft: 8 }}
                     loading={autodraftLoading}
+                    // 在飞加载/保存期间禁用（与同区「插入模板」「重新加载」「保存」
+                    // 同口径）：起草/覆盖决定须基于最新一次加载的对账结果
+                    disabled={yamlLoading || yamlSaving}
                     data-testid="verify-yaml-autodraft"
                   >
                     AI 自动生成

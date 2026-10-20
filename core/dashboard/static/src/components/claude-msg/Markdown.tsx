@@ -13,6 +13,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 import { normalizeInlineCodeFences } from './chatFormatting';
+import { ALLOWED_PROTOCOLS } from '../markdown-shared';
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -263,20 +264,21 @@ export function Markdown({ children, className, breaks = false }: MarkdownProps)
           );
         }
 
-        // 协议白名单（与 SpecDocModal 的 SafeLink 同口径：http/https/mailto）：
-        // AI 生成的正文或工具输出可能携带 javascript: 等危险协议链接，非白名单
-        // 协议一律降级为纯文本，杜绝点击执行任意脚本。href 交给 URL 解析器统一
-        // 处理大小写与制表符/换行混淆（java\tscript:）、首尾空白；相对路径无协
-        // 议，基于当前页面解析后落在本站 http(s) 白名单内，维持既有可点击渲染。
-        // 不直接复用 SafeLink：claude-msg 是共享组件目录，反向依赖 pages 模块会
-        // 拖入 antd Modal/Tabs 等页面级耦合
+        // 协议白名单（消费 markdown-shared 的共享导出 ALLOWED_PROTOCOLS，与
+        // SafeLink 同源，避免两份白名单各自漂移，见 code-review item
+        // e571142420c3）：AI 生成的正文或工具输出可能携带 javascript: 等危险协
+        // 议链接，非白名单协议一律降级为纯文本，杜绝点击执行任意脚本。href 交给
+        // URL 解析器统一处理大小写与制表符/换行混淆（java\tscript:）、首尾空白；
+        // 相对路径无协议，基于当前页面解析后落在本站 http(s) 白名单内，维持既有
+        // 可点击渲染。不直接复用 SafeLink 组件：其会把站点相对路径降级为纯文本，
+        // 与本组件的既有可点击行为不同
         let linkUrl: URL | undefined;
         try {
           linkUrl = new URL(href || '', window.location.href);
         } catch {
           // 无效 URL：按纯文本处理
         }
-        if (!linkUrl || !['http:', 'https:', 'mailto:'].includes(linkUrl.protocol)) {
+        if (!linkUrl || !ALLOWED_PROTOCOLS.has(linkUrl.protocol)) {
           return <span>{linkChildren}</span>;
         }
 
