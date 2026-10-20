@@ -107,25 +107,28 @@ _SUPERVISION_TIMEOUT_PHRASES = (
 # 失败原因文本任意位置出现这些数字（如路径 …-1403.md、行号 "line 4290"、
 # exit code 14029）都会被误判 infra——不递增 _review_attempts、计入熔断计数，
 # 真实 content 失败的重试预算被悄悄跳过。收紧为「两侧为分隔符」边界：
-# 仅当数字串不邻接 ASCII 字母/数字/连字符（"HTTP 429"、"Error 403"、
+# 仅当数字串不邻接 ASCII 字母/数字/连字符/下划线（"HTTP 429"、"Error 403"、
 # "402 余额不足"、"错误403"）才归 infra——封死 spec 名拼入 reason 的
-# 连字符形态（fix-429-backoff / add-403-retry）误判穿透
-# （code-review item 80d45b2a5087）。不用 \w/\b——二者视 CJK 为 word
-# 字符，会漏掉中文紧邻数字的真实指纹，故字符类只收 ASCII 字母数字与连字符。
-_NUMERIC_INFRA_RE = re.compile(r"(?<![0-9A-Za-z-])(?:402|403|429)(?![0-9A-Za-z-])")
+# 连字符/下划线形态（fix-429-backoff / add-403-retry / fix_429_helper）误判穿透
+# （code-review item 80d45b2a5087 / ecec53733c66）。不用 \w/\b——二者视 CJK 为
+# word 字符，会漏掉中文紧邻数字的真实指纹，故字符类只收 ASCII 字母数字、连字符
+# 与下划线（下划线与连字符同按分隔符语义处理）。
+_NUMERIC_INFRA_RE = re.compile(r"(?<![0-9A-Za-z_-])(?:402|403|429)(?![0-9A-Za-z_-])")
 # 词形指纹（quota/budget/余额/rate limit 等）同样不做裸子串匹配（code-review
 # item 489d6071b236）：失败原因文本常内嵌 spec 名或产物路径（如
 # .fenix/spec-review/add-budget-widget/...、"结果文件读取失败: <spec 目录前缀>…"），
 # spec 名含 budget/quota 词根的 content 类失败会被裸子串误判 infra——不递增
 # _review_attempts、只清锚点，重试预算被跳过并持续计入熔断。复用
-# _NUMERIC_INFRA_RE 的分隔符边界思路：字符类只收 ASCII 字母数字与连字符
+# _NUMERIC_INFRA_RE 的分隔符边界思路：字符类同款只收 ASCII 字母数字、连字符
+# 与下划线（code-review item ecec53733c66：词根紧邻下划线的 quota_used 等
+# 形态同按分隔符语义处理，不判 infra）
 # （不用 \w/\b——二者视 CJK 为 word 字符，"402 余额不足" 这类中文紧邻形态
 # 会漏判；数字串形态仍由 _NUMERIC_INFRA_RE 兜底命中）。"rate limit exceeded"、
 # "quota exceeded" 等正常 infra 文案两侧为空格/标点，边界判定不受影响。
 _INFRA_FINGERPRINT_RE = re.compile(
-    r"(?<![0-9A-Za-z-])(?:"
+    r"(?<![0-9A-Za-z_-])(?:"
     + "|".join(re.escape(fp) for fp in _INFRA_FINGERPRINTS)
-    + r")(?![0-9A-Za-z-])"
+    + r")(?![0-9A-Za-z_-])"
 )
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
 _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
@@ -438,6 +441,20 @@ class SpecReviewManager:
                     except OSError:
                         pass
         except OSError as e:
+            # 快照落盘失败须使旧基线失效（code-review item 98b1b56b1eca）：磁盘
+            # 残留的上一轮 snapshot.json 会被 _check_write_boundary /
+            # _artifact_landed_valid 经 _load_snapshot_or_none 当本轮基线加载
+            # （无归属/新鲜度校验），SPEC 目录两轮间有变化时遭陈旧哈希误判
+            # （repaired 轮误报「repairs 未实际改动」硬门拦截、或误报 SPEC 内
+            # 文件被删除），一次瞬态 IO 故障被放大为重试耗尽冻结转人工。消费侧
+            # 对基线缺失已按「跳过比对」降级（_load_snapshot_or_none 对文件不
+            # 存在返回 (None, None, None)），删除不制造新失败面；尽力删除即可
+            # （mkdir 失败的同因权限场景下删不动属预期，吞 OSError 不掩盖原
+            # WARNING；os.replace 成功路径不会进本分支，基线不误删）。
+            try:
+                snapshot_path.unlink()
+            except OSError:
+                pass
             self.logger.warning("spec_review", f"快照保存失败: {spec_name}: {e}")
 
         # ③ 阻塞执行评审 run（正常收工或异常后返回）

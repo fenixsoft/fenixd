@@ -1776,6 +1776,21 @@ class PMEngine:
                             f"skip error write",
                         )
                         return
+                    # 写前冻结复查（code-review item ac983fb2d386，对齐同文件
+                    # 收敛拦截 54d679a82fc7 先例）：上方 transition_gate 成功到
+                    # 此写之间的残余窗口内并发冻结时，frozen 条目的 update_spec
+                    # 只剥 status 键，error 覆写照常生效——会把内嵌「原状态 X」
+                    # 的冻结 error 覆写为验证进度文案，frozen_until 到期时
+                    # parse_orig_status 解析不到原状态将回退 ready。发现冻结即
+                    # 放弃本次 error 写，留待下一轮周期重评。
+                    latest = self.state_machine.read_one(spec_name) or {}
+                    if latest.get(FROZEN_FIELD):
+                        self.logger.info(
+                            "pm_engine",
+                            f"门禁逃生门写盘前冻结复查：'{spec_name}' 已冻结"
+                            "——放弃回退 testing 的 error 写，留待解冻后重评",
+                        )
+                        return
                     # 保留 implementer_run 与既有 progress 断点（D7），仅置 error 摘要
                     self.state_machine.update_spec(
                         spec_name,
@@ -1801,6 +1816,21 @@ class PMEngine:
                         f"门禁拦截竞争后到者：'{spec_name}' 状态已为 "
                         f"'{fresh.get('status')}'，让位于外部进度，"
                         f"跳过本次 error 写入（缺口留待后续周期重评）",
+                    )
+                    return
+                # 写前冻结复查（code-review item ac983fb2d386，对齐同文件
+                # 收敛拦截 54d679a82fc7 先例）：上方 fresh status 复核到此写
+                # 之间的残余窗口内并发冻结时，frozen 条目的 update_spec 只剥
+                # status 键，error 覆写照常生效——会把内嵌「原状态 X」的冻结
+                # error 覆写为 task-gap 文案，frozen_until 到期时
+                # parse_orig_status 解析不到原状态将回退 ready。发现冻结即
+                # 放弃本次 error 写，留待下一轮周期重评。
+                latest = self.state_machine.read_one(spec_name) or {}
+                if latest.get(FROZEN_FIELD):
+                    self.logger.info(
+                        "pm_engine",
+                        f"task-gap 拦截写盘前冻结复查：'{spec_name}' 已冻结"
+                        "——放弃保持 verified 的 error 写，留待解冻后重评",
                     )
                     return
                 self.state_machine.update_spec(
@@ -2981,6 +3011,7 @@ class PMEngine:
         except Exception as e:
             return False, str(e)
 
+    # [fenix-ignore:5d8daba9a294] 推送退避域完整拆分属架构演进任务，非本批最小改动范畴；四方法与 _push_lock/推送辅助/测试打桩（tests 直接 patch engine._push_branch_best_effort 依赖 self 直呼）强耦合，迁独立组件的回归风险大于收益
     def approve_push(self, spec_name: str) -> bool:
         """Approve and push a done SPEC (main 先行 + 分支尽力 + SHA 去重)。
 
