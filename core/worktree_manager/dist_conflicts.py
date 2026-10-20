@@ -42,6 +42,13 @@ def _collect_unmerged_paths(status_text: str) -> list:
     return [p for p in paths if p]
 
 
+# 回退构建路径的整程超时（code-review item abd64890c023）：prepare 契约路径的
+# 每步超时由 PREPARE_STEP_TIMEOUT 统一约束，本常量为回退路径（npm run build）
+# 的同一量纲单点出处——调参时两条构建路径须同步评估，避免「契约路径成功、
+# 回退路径超时」的口径分叉。
+FALLBACK_BUILD_TIMEOUT_SECONDS = 600
+
+
 def run_dist_build(
     project_root: Path,
     static_root: str | Path = DASHBOARD_STATIC_ROOT,
@@ -149,7 +156,7 @@ def run_dist_build(
             start_new_session=True,
         )
         try:
-            out, err = p.communicate(timeout=600)
+            out, err = p.communicate(timeout=FALLBACK_BUILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             # 提前取定 pgid 句柄：wait 回收 leader 后 getpgid 将抛
             # ProcessLookupError，组清扫补刀须用此句柄。
@@ -639,6 +646,18 @@ class G5DistConflictsMixin:
                 errors="replace",
                 timeout=30,
             )
+            if staged.returncode != 0:
+                # 探针失败可见性（code-review item 52b11b78f27f）：与 add 失败 /
+                # foreign / upstream 各分支同口径——不把命令失败当「空暂存」
+                # 早退（add -A 已暂存的重建产物会无留痕残留、被后续全树提交
+                # 静默折入），记 warning 并走 _unstage_static_root 收口。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"dist rebuild staged probe failed: "
+                    f"{(staged.stderr or '').strip()[:200]} — unstaging static root",
+                )
+                self._unstage_static_root()
+                return
             if not staged.stdout.strip():
                 return  # 重建结果与提交版一致，无需 amend
             # 暂存范围守卫（code-review item 53677e0b5ef7）：add -A 面向整个
