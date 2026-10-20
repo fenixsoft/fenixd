@@ -3773,9 +3773,17 @@ class AgentRunner:
                         # 推出界后下一 attempt 落入 _select_chain_candidate：
                         # 冷却未到期 → chain_exhausted 廉价失败（不启动进程、
                         # 不消耗 spec 重试）；到期后 → 重选该候选正常恢复。
+                        # 瞬断通道豁免（is_transient）：瞬断失败是先消费完原地
+                        # 退避预算才落到本分支（_maybe_in_place_retry 预算耗尽），
+                        # attempt 层复用同一候选重试是瞬断治理的既有恢复通道
+                        # （既有退避不变、[provider-transient] 标签须存续到终态
+                        # 供 dispatch 读侧路由）——推出界会让下一 attempt 直接
+                        # chain_exhausted 且错误文本失去瞬断标签，把合法恢复
+                        # 预算变成廉价失败。白烧危害面（冷却期内 spawn 必撞
+                        # 同源 429/拒模型）仅存在于非瞬态切换错误上。
                         if st.chain_cursor + 1 < len(chain):
                             st.chain_cursor += 1
-                        else:
+                        elif not is_transient:
                             st.chain_cursor = len(chain)
                     # fix-provider-transient-backoff（D2）：implementer 失败后从产物尾部
                     # 提取 session_id 供续跑（attempt 间 worktree 保留扩展到全部
