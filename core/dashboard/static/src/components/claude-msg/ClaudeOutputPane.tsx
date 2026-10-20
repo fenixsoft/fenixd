@@ -130,7 +130,11 @@ function appendWithoutOverlap(newer: RunEvent[], loaded: RunEvent[]): RunEvent[]
 // Map 而非对象字面量（code-review item aaf2897625a6）：`ev.type in obj` 沿
 // Object.prototype 原型链查找，'toString'/'constructor' 等键也会命中而误判终态；
 // Map 的 has/get 不走原型链，与下方 TERMINAL_RUN_STATUSES 的 Set.has 口径对齐。
-const TERMINAL_EVENT_STATUS = new Map<string, string>([
+// 终态词表单一来源（code-review item 5d6e032ecfbf）：[SSE 终态事件类型,
+// 归一 status] 表，下方 Map（SSE 增量侧）与 Set（REST status 侧）均由此
+// 派生——后端新增终态串只改此表，两集合不再人工对齐（漏改即「SSE 已判
+// 终态、零事件空态分支仍转圈」或反向漂移）。
+const TERMINAL_STATUS_SOURCE: Array<[string, string]> = [
   ['result', 'done'],
   ['error', 'error'],
   ['interrupted', 'interrupted'],
@@ -138,24 +142,23 @@ const TERMINAL_EVENT_STATUS = new Map<string, string>([
   ['session_ended', 'interrupted'],
   ['frozen-terminated', 'interrupted'],
   ['stall-budget-terminated', 'interrupted'],
-]);
+];
+// Map 而非对象字面量（code-review item aaf2897625a6）：`ev.type in obj` 沿
+// Object.prototype 原型链查找，'toString'/'constructor' 等键也会命中而误判终态；
+// Map 的 has/get 不走原型链，与下方 TERMINAL_RUN_STATUSES 的 Set.has 口径对齐。
+const TERMINAL_EVENT_STATUS = new Map<string, string>(TERMINAL_STATUS_SOURCE);
 
 // REST 拉取返回的 run status 终态集合（空态分支判定用），与 onRunStatus 契约
 // 词表对齐：frozen-terminated（item ce8a84164320 扩展）REST 初载/重同步直报原
 // 始串——不入集则零事件冻结终止 run 恒停在「等待输出」转圈（外层
 // AdminInvokeModal 直接导入本集合解锁按钮，单一出处无口径漂移）：
-// 空态分支据其区分「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）
-export const TERMINAL_RUN_STATUSES = new Set([
-  'done',
-  'error',
-  'interrupted',
-  'cancelled',
+// 空态分支据其区分「已终态但零事件」与「等待输出」（code-review item 97dcdc581245）。
+// 由单一来源表派生：事件类型即其 REST 原始串（result 的 REST 形态为 done；
+// session_ended 为 SSE 独有事件态、REST 不产该串，入集冗余无害），另补 REST
+// 独有的 missing（产物缺失终态）。
+export const TERMINAL_RUN_STATUSES = new Set<string>([
+  ...TERMINAL_STATUS_SOURCE.map(([event, status]) => (event === 'result' ? status : event)),
   'missing',
-  'frozen-terminated',
-  // stall-budget-terminated（item 87adf6f381d5）：与 SSE 增量路径的
-  // TERMINAL_EVENT_STATUS 词表对齐——事件产物被轮转/清理的零事件停滞判停 run
-  // 不入集会恒停在「等待输出」转圈
-  'stall-budget-terminated',
 ]);
 
 // watch 注册失败的退避重试上限（code-review item 11f787b2d13c）：按 1s/2s/4s
