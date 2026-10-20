@@ -308,6 +308,12 @@ export default function CommandMenu({
     return renderInPortal(
       <div
         ref={menuRef}
+        // 空态分支复用同一 menuIds.listbox 契约（code-review item f21497db2d93）：
+        // 宿主 aria-controls/aria-activedescendant 恒引用该 id，空态缺 id/role
+        // 会令辅助技术拿到悬空引用。
+        id={menuIds.listbox}
+        role="listbox"
+        aria-label="可用命令"
         className="fenix-composer-portal command-menu border border-border bg-popover/95 text-sm text-muted-foreground"
         style={{
           ...menuBaseStyle,
@@ -332,9 +338,24 @@ export default function CommandMenu({
       style={{ ...menuBaseStyle, ...menuPosition }}
     >
       {orderedNamespaces.map((namespace) => (
-        <div key={namespace} className="command-group">
+        {/* role=group + aria-labelledby（code-review item 303f6ad91158）：listbox
+            的直接子元素按 ARIA 应为 option/group——分组标题仅在多组时渲染，
+            单组时 aria-labelledby 置 undefined 不落悬空引用。 */}
+        <div
+          key={namespace}
+          className="command-group"
+          role="group"
+          aria-labelledby={
+            orderedNamespaces.length > 1
+              ? `${idPrefix ?? autoIdPrefix}-group-${namespace}`
+              : undefined
+          }
+        >
           {orderedNamespaces.length > 1 && (
-            <div className="flex items-center justify-between px-2 pb-1.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div
+              id={`${idPrefix ?? autoIdPrefix}-group-${namespace}`}
+              className="flex items-center justify-between px-2 pb-1.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+            >
               <span>{namespaceLabels[namespace] || namespace}</span>
               <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {(groupedCommands[namespace] || []).length}
