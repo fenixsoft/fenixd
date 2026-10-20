@@ -62,9 +62,12 @@ class TimeoutRegexError(re.error):
     """regex 库匹配超时（疑似灾难性回溯）的定向异常。
 
     继承 re.error 以保住调用方既有 ``except re.error`` 捕获面（超时沿
-    原异常面传播、run() 归一为带定向归因的断言失败），同时让「匹配
-    超时」在类型层可判别——调用点无须再依赖文案区分超时与真正的
-    非法正则（非法正则在 _compile_regex 预检期返回、不以此类型抛出）。
+    原异常面传播、run() 归一为带定向归因的断言失败），同时让「regex
+    库引擎侧失败」在类型层可判别——调用点无须再依赖文案区分超时与
+    真正的非法正则。除超时外，re/regex 合法性判定的罕见分歧（预检用
+    stdlib re 放行、regex 库判定非法）也从 search 路径以此类型定向
+    抛出，保住「非法正则」归因不漏成笼统「断言执行异常」；常规非法
+    正则仍在 _compile_regex 预检期返回、不以此类型抛出。
     """
 
 
@@ -115,6 +118,17 @@ class _TimeoutRegex:
                 raise TimeoutRegexError(
                     f"正则匹配超时（>{_REGEX_MATCH_TIMEOUT_SECONDS}s，"
                     f"疑似灾难性回溯）: {self._source!r}"
+                ) from None
+            except _regex_lib.error as e:
+                # re/regex 合法性判定的罕见分歧（_compile_regex 用 stdlib re
+                # 预检放行、regex 库判定同一模式非法）走回退 search 时抛出的
+                # regex.error 不是 re.error 子类，无此层会漏进 run() 的
+                # except Exception 被归因为笼统「断言执行异常」；转抛同族
+                # 定向失败保住「非法正则」归因（code-review item
+                # d41d3b5063e2），不吞 TimeoutRegexError 的超时语义
+                raise TimeoutRegexError(
+                    f"非法正则（regex 库判定该模式非法，"
+                    f"与 stdlib re 预检判定分歧）: {self._source!r}: {e}"
                 ) from None
         return self._compiled.search(text) is not None
 
@@ -197,6 +211,11 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
       - ``items[0].name``（数组下标）
       - 混合：``a.b[1].c``
       - 引号键（含点的键名）：``data['a.b']``
+      - 宽松形态（有意放行，code-review item 80f0a81fbd6c）：下标段后可
+        省略点分隔直接跟标识符，``items[0]name`` 按 ``items[0].name``
+        求值——语义无歧义、不会指错节点，故不按非法路径报错；收紧该
+        形态会改变「当前合法」路径的接受面（存量场景可能已有此写法），
+        维持宽松并在此注明属已知取舍，不在下方「路径非法」清单内
     求值失败（键缺失/越界）返回 ``missing``（缺省 None——与「值相等或不等」
     语义无关，断言结果通过 actual=None 与 expected 对比即可区分；
     传入哨兵可区分「路径不存在」与「显式 null」）。
@@ -483,6 +502,11 @@ class ApiAssertionRunner:
         """断言 JSON 子树与期望值相等（path 点路径求值）。"""
         path = a.get("path")
         expected = a.get("expected")
+        # mode 提前取定：所有出口（含早期失败分支）统一回显，结果证据形态
+        # 与 body_contains / sse_event_matches 对齐（code-review item
+        # 3cf9e89cc36a）；只作证据回显，不影响下方 mode 分支与
+        # _missing_expected 拦截判定
+        mode = a.get("mode", "exact")
         payload = resp.get("json")
         if payload is None:
             if resp.get("type") == "sse":
@@ -493,6 +517,7 @@ class ApiAssertionRunner:
                     "type": "json_path",
                     "path": path,
                     "expected": expected,
+                    "mode": mode,
                     "actual": None,
                     "pass": False,
                     "error": (
@@ -508,6 +533,7 @@ class ApiAssertionRunner:
                     "type": "json_path",
                     "path": path,
                     "expected": expected,
+                    "mode": mode,
                     "actual": None,
                     "pass": False,
                     "error": f"{resp['json_parse_skipped']}，无 JSON 载荷可求值",
@@ -516,6 +542,7 @@ class ApiAssertionRunner:
                 "type": "json_path",
                 "path": path,
                 "expected": expected,
+                "mode": mode,
                 "actual": None,
                 "pass": False,
                 "error": "响应体非合法 JSON（或 JSON 根为 null），无 JSON 载荷可求值",
@@ -531,6 +558,7 @@ class ApiAssertionRunner:
                 "type": "json_path",
                 "path": path,
                 "expected": expected,
+                "mode": mode,
                 "actual": None,
                 "pass": False,
                 "error": "缺少 path 字段",
@@ -544,11 +572,11 @@ class ApiAssertionRunner:
                 "type": "json_path",
                 "path": path,
                 "expected": expected,
+                "mode": mode,
                 "actual": None,
                 "pass": False,
                 "error": str(e),
             }
-        mode = a.get("mode", "exact")
         # fail-closed：expected 缺失（None 是 Assertion 的「未设置」哨兵，
         # 非显式 null）时 exact 与 None 判等、contains 以 "None" 子串、
         # regex 以字面 None 为模式参与匹配，配置缺失被静默当作合法期望；
@@ -561,6 +589,7 @@ class ApiAssertionRunner:
                 "type": "json_path",
                 "path": path,
                 "expected": expected,
+                "mode": mode,
                 "actual": None,
                 "pass": False,
                 "error": "缺少 expected 字段",
@@ -617,6 +646,7 @@ class ApiAssertionRunner:
             "type": "json_path",
             "path": path,
             "expected": expected,
+            "mode": mode,
             "actual": shown_actual,
             "pass": passed,
         }
@@ -640,6 +670,7 @@ class ApiAssertionRunner:
                 "type": "response_header",
                 "header": header,
                 "expected": expected,
+                "mode": mode,
                 "actual": None,
                 "pass": False,
                 "error": "缺少 header 字段",
@@ -681,6 +712,7 @@ class ApiAssertionRunner:
             "type": "response_header",
             "header": header,
             "expected": expected,
+            "mode": mode,
             "actual": actual,
             "pass": passed,
         }
