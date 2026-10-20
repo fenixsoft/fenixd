@@ -630,6 +630,53 @@ def _entry_fingerprint(entry: dict) -> str:
     )
 
 
+# 归档副本树签名 memo（code-review item 67356f2fde4f）：_spec_dep_sigs 对
+# 活跃目录缺失的 spec（即全部已归档 spec）逐请求深扫归档树，随归档规模线性
+# 放大 /api/specs（约 2s 轮询）的每请求成本。失效语义与 spec_docs 归档清单
+# memo 同款：键 = arc_dir 自身 (mtime_ns, size, nlink)（子项增删必翻
+# mtime/nlink）+ 短 TTL 兜底深层原地改写（归档树一次写入不可变的前提下仅剩
+# 理论角）。命中路径每 spec 只剩一次根目录 stat。键以归档 spec 目录数为界
+# （与归档量同阶，条目为定长元组，内存 MB 级），超限整体清空重建。
+_ARCHIVE_TREE_TTL = 5.0  # 秒；与 daemon_health/hosting_state 同窗口
+_ARCHIVE_TREE_CACHE: dict = {}  # arc_dir 路径串 -> (目录签名, tree_sigs 元组, 构建时刻 monotonic)
+_ARCHIVE_TREE_LOCK = threading.Lock()
+
+
+def _arch_tree_sigs(arc_dir: Path) -> tuple:
+    """归档副本树签名集（目录签名粗判 + TTL memo，避免逐请求全树深扫）。
+
+    返回元组为共享缓存对象，调用方只读遍历、不得修改（与
+    spec_docs._archive_dir_entries 同约定）。根目录 stat 失败（竞态消失等）
+    不读写缓存，本调用退化为现扫，与无缓存行为一致。
+    """
+    key = str(arc_dir)
+    now = time.monotonic()
+    try:
+        st = arc_dir.stat()
+        dir_sig = (st.st_mtime_ns, st.st_size, st.st_nlink)
+    except OSError:
+        dir_sig = None
+    if dir_sig is not None:
+        with _ARCHIVE_TREE_LOCK:
+            hit = _ARCHIVE_TREE_CACHE.get(key)
+            if (
+                hit is not None
+                and hit[0] == dir_sig
+                and now - hit[2] < _ARCHIVE_TREE_TTL
+            ):
+                return hit[1]
+    # 延迟导入（summary ↔ signature 互引，与 invalidation_signature 同款）
+    from .signature import tree_sigs
+
+    out = tree_sigs(arc_dir)
+    if dir_sig is not None:
+        with _ARCHIVE_TREE_LOCK:
+            if len(_ARCHIVE_TREE_CACHE) > 4096:
+                _ARCHIVE_TREE_CACHE.clear()
+            _ARCHIVE_TREE_CACHE[key] = (dir_sig, out, now)
+    return out
+
+
 def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) -> dict:
     """单个 spec 摘要的依赖签名集合（对齐 spec_summary 实际读路径）。
 
@@ -670,14 +717,12 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     # spec/archive/<date>-<spec>/（与 signature.spec_detail_signature 的归档
     # 分支同读取口径），副本树被改而 STATE 条目与清单未变时也须失效摘要。
     # 前提取舍：归档目录常规视为一次写入不可变，故扫描仅落在活跃目录缺失的
-    # spec 上（活跃态零额外开销）。
+    # spec 上（活跃态零额外开销）；已归档 spec 自身的逐请求重复深扫经
+    # _arch_tree_sigs（目录签名粗判 + TTL memo，67356f2fde4f）降为低频操作。
     if not changes.is_dir():
         arc_dir = _facade.resolve_spec_dir(proot, spec_name)
         if arc_dir is not None:
-            # 延迟导入（summary ↔ signature 互引，与 invalidation_signature 同款）
-            from .signature import tree_sigs
-
-            for rel, mtime_ns, size in tree_sigs(arc_dir):
+            for rel, mtime_ns, size in _arch_tree_sigs(arc_dir):
                 sigs[str(arc_dir / rel)] = (mtime_ns, size)
     add(proot / ".fenix" / "verify-progress" / f"{spec_name}.json")
     vp_dir = proot / ".fenix" / "verify-progress" / spec_name
