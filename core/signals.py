@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 from core.admin_store import _fsync_parent_dir
-from core.spec_naming import KEBAB_RE
+from core.spec_naming import validate_spec_name
 from core.timelib import now_utc, to_storage
 
 # ADMIN_INVOKE_REQUEST 常量（信号文件路径）
@@ -34,9 +34,10 @@ ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
 # 消费侧仍识别并消费存量旧文件（消费后删除），新写入一律走本目录。
 SCHEDULING_KICK_DIR = ".fenix/scheduling_kick"
 
-# SPEC 名合法性判据：kebab-case 权威正则单源于 core/spec_naming.py
-# （code-review item a26570d2bf14），core.spec_gen 与本模块同源引用，
-# 命名规则演进改一处即全链生效。
+# SPEC 名合法性校验单源在 core/spec_naming.py（KEBAB_RE / validate_spec_name，
+# code-review item a26570d2bf14 收口正则、d591ada0d4ef 收口校验函数），
+# core.spec_gen 与本模块同源引用；本模块 validate_scheduling_kick_spec
+# 为其兼容别名薄委托，命名规则演进改一处即全链生效。
 
 
 def _existing_created(req_path) -> str | None:
@@ -237,25 +238,16 @@ def request_admin_invoke(
 
 
 def validate_scheduling_kick_spec(spec: str) -> str | None:
-    """校验 SPEC 名可否作 scheduling kick 信号文件名。
+    """兼容别名（code-review item d591ada0d4ef）：实现单源
+    core/spec_naming.validate_spec_name。
 
-    判据复用 core/spec_gen.py 的 kebab-case 权威正则（^[a-z][a-z0-9]*(-[a-z0-9]+)*$）：
-    SPEC 名已被 fenix_spec.py new 约束为该形态，可安全作文件名。黑名单式拒绝
-    （仅查空串 / `/` / `\` / `..`）会放过 `.`、前导点、含 `:` 或非 ASCII 等
-    「能当文件名但不合规」的输入——正则白名单与之等价且无遗漏。
-
-    Returns:
-        合法返回 None；不合法返回非空错误描述。
+    本函数语义实为 SPEC 名 kebab-case 合法性校验，与 scheduling kick 场景无
+    绑定：消费方已涵盖 write_scheduling_kick 信号文件名、parse_verify_progress
+    路径穿越防护、adjudication_narrative 产物路径拼接防护等。校验判据与错误
+    文案均以 spec_naming 单源为准，新代码请直接 import validate_spec_name；
+    旧名仅为既有调用方（core.dashboard.data.admin_actions 等）保留。
     """
-    if not isinstance(spec, str):
-        return f"spec 名必须为字符串（当前类型 {type(spec).__name__}）"
-    if not spec:
-        return "spec 名为空"
-    if not KEBAB_RE.fullmatch(spec):
-        return (
-            f"spec 名不合法（须为 kebab-case，如 'fix-foo-bar'）：{spec!r}"
-        )
-    return None
+    return validate_spec_name(spec)
 
 
 def write_scheduling_kick(project_root, spec: str) -> dict:
