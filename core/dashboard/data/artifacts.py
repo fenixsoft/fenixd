@@ -7,7 +7,6 @@ verify-progress / 验证报告 / 测试场景 / 截图 / 裁决与 bug 解析。
 import json
 import os
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 # ── 验证产物（容错解析） ──────────────────────────────────────────
@@ -23,10 +22,17 @@ _EMPTY_VALUE_MARKERS = ("n/a", "-", "--", "—")
 # 此处 re-export 保住既有门面导入路径。
 from core.timelib import from_epoch
 from core.signals import parse_verify_progress  # noqa: E402,F401
+from core.spec_naming import validate_spec_name  # noqa: E402
 
 
 def parse_report(project_root, spec_name) -> dict:
     """解析 .fenix/verify-progress/<spec>/report.json（逐场景断言结果）。"""
+    # 读侧形态白名单（code-review item 87200f11aa7a）：spec_name 直接拼进
+    # verify-progress 读路径，与写路径（reset_verification /
+    # revise_scenario_reverify）同源 kebab-case 校验；非法名按「无产物」
+    # fail-closed，不越目录读取同名后缀文件。
+    if validate_spec_name(spec_name):
+        return {"exists": False}
     rp = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     if not rp.exists():
         return {"exists": False}
@@ -53,6 +59,9 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
     fast-track spec 的 Dashboard「场景结果」页签恒空（数据在专属副本里并不缺）。
     返回场景 dict 列表（已归一化截图字段），不可得返回 []。
     """
+    # 读侧形态白名单（item 87200f11aa7a，同 parse_report 口径）
+    if validate_spec_name(spec_name):
+        return []
     # 候选读取（verify-progress 优先，项目根共享文件需 spec 匹配，损坏/非对象
     # fail-closed）复用 _load_run_result 单点封装，避免两处读取口径漂移
     data = _load_run_result(project_root, spec_name)
@@ -118,6 +127,9 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
 
 def list_screenshots(project_root, spec_name) -> list:
     """列出 .fenix/verify-progress/<spec>/screenshots/ 下的截图文件。"""
+    # 读侧形态白名单（item 87200f11aa7a，同 parse_report 口径）
+    if validate_spec_name(spec_name):
+        return []
     ss_dir = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "screenshots"
     if not ss_dir.is_dir():
         return []
@@ -176,6 +188,9 @@ def _load_run_result(project_root, spec_name) -> dict | None:
     一致的 spec 字段，缺失或不符均视为其它 spec 残留忽略（fail-closed）。
     损坏/非对象同样返回 None（fail-closed）。
     """
+    # 读侧形态白名单（item 87200f11aa7a，同 parse_report 口径）
+    if validate_spec_name(spec_name):
+        return None
     candidates = [
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
         Path(project_root) / ".fenix" / ".fenix-run-result.json",
@@ -289,6 +304,11 @@ def parse_verdict(project_root, spec_name) -> dict:
     fast-track 模式不产 verification-report.md，原先 verdict.exists 恒 False，
     列表「验证」列 Popover 与详情页 VerdictPanel 对 fast-track spec 恒隐。
     """
+    # 读侧形态白名单（item 87200f11aa7a）：spec_name 拼进 spec/changes/ 读
+    # 路径，同 parse_report 口径 fail-closed（不走 run-result 兜底，防兜底
+    # 读取同样吃非法名）。
+    if validate_spec_name(spec_name):
+        return {"exists": False, "status": "", "status_detail": "", "conclusion": "", "summary": {}}
     path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     if not path.exists():
         return _verdict_from_run_result(project_root, spec_name)
