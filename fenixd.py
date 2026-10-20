@@ -912,7 +912,18 @@ class FenixDaemon:
         # fix-verify-serving-disk-reclaim（D4 启动 reconcile）：登记收割之后再
         # 按「无主」判据回收 verify-serving 目录与 boot.log（启动 use_in_flight=
         # False：前一轮 daemon 已死，无在飞保留；覆盖 daemon 死机期间累积孤儿）。
-        self._reclaim_verify_serving_tree(use_in_flight=False)
+        # non-blocking 包裹（code-review item 22ec843cf592）：与相邻启动步骤同
+        # 口径——方法内 try 不覆盖 serving_reclaim 的模块导入（安装残缺/字节码
+        # 损坏时 import 异常会击穿 start() 使 daemon 以 FATAL 退出、supervisor
+        # 拉起即再崩循环），启动序列不因清扫异常中断。
+        try:
+            self._reclaim_verify_serving_tree(use_in_flight=False)
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Verify serving tree reclaim failed "
+                f"(non-blocking, daemon 启动继续): {e}",
+            )
 
         # Start event bus monitoring——必须先于 initial full_scan：
         # start() 会建立 STATE 基线快照（_update_known_state），若首扫先行，
@@ -3107,6 +3118,21 @@ class FenixDaemon:
         spec = payload.get("spec")
         if not spec:
             self.logger.warning("fenixd", f"scheduling_kick 信号缺少 spec，删除: {path.name}")
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+        # 纵深防御（code-review item d684b8e307ab，对齐 spec_delete 车道
+        # item e92148d3515e 同款）：spec 名会被拼进 spec/changes/<name> 等路径，
+        # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
+        # 删除信号并 WARNING 留痕、不进入唤起链（下方 read_one 在场校验仍在，
+        # 两条信号车道纵深防御口径一致）。
+        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
+            self.logger.warning(
+                "fenixd",
+                f"scheduling_kick 信号 spec 名不合法，删除信号不唤起: {spec!r}",
+            )
             try:
                 path.unlink()
             except OSError:
