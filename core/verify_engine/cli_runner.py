@@ -230,24 +230,39 @@ class CliRunner(VerifyRunner):
                     "error_level": "error",
                     "error": f"env 值不得含 NUL 空字节: {_k!r}",
                 }
-        stdin = step_dict.get("stdin") or ""
-        if stdin and not isinstance(stdin, str):
-            # 场景 stdin 非字符串形态（dict/list 等）：str() 强转会把 Python
-            # repr（如 "{'a': 1}"）当文本静默注入子进程标准输入——归一为本
-            # 步骤结构化失败（code-review item 166d6bced5d5，与 env 非 dict/
-            # timeout 非法同规），判 error 与 cwd 缺失同口径：场景定义缺陷
-            # 不进 product-bug 管道（item 74368415e965）
+        # 仅以 is None 判缺失（code-review item 9d5e1c10b673）：or "" 兜底
+        # 会把显式 0/False/[] 等显式 falsy 脏值静默当「未提供」清空，且下方
+        # 非字符串守卫因 or 短路对这些值不可达——与 browser.py value/target
+        # 归一口径（item 205fe924442d）及本文件 timeout 的「区分键缺失与
+        # 显式 0」纪律对齐：缺省（空串）语义仅在键缺失时生效
+        _raw_stdin = step_dict.get("stdin")
+        if _raw_stdin is not None and not isinstance(_raw_stdin, str):
+            # 场景 stdin 非字符串形态（dict/list/布尔/数值等）：str() 强转会
+            # 把 Python repr（如 "{'a': 1}"）当文本静默注入子进程标准输入
+            # ——归一为本步骤结构化失败（code-review item 166d6bced5d5，
+            # 与 env 非 dict/timeout 非法同规），判 error 与 cwd 缺失同口径：
+            # 场景定义缺陷不进 product-bug 管道（item 74368415e965）
             return {
                 "success": False,
                 "action": "run",
                 "error_level": "error",
-                "error": f"stdin 须为字符串，收到 {type(stdin).__name__}",
+                "error": f"stdin 须为字符串，收到 {type(_raw_stdin).__name__}",
             }
+        stdin = _raw_stdin if _raw_stdin is not None else ""
         try:
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
             # 改写成缺省 60s，与 api 侧 _execute_http_request 的 timeout 口径
             # 对齐——缺省仅在键缺失时生效
             _raw_timeout = step_dict.get("timeout")
+            # bool 是 int 子类，须在 float() 前显式排除（同 cli_assertions
+            # _assert_exit_code 的 expected、engine max_parallel 先例）：
+            # float(True/False) 会合法折算 1.0/0.0，False（0.0s）可穿过下方
+            # 负值/非有限值/MAX_STEP_TIMEOUT 上限三道拦截成 wait_for(
+            # timeout=0.0) 立即 TimeoutError 走超时强杀，把 timeout: true/false
+            # 笔误伪装成 hang 类产品缺陷（code-review item f197156bd05a），
+            # 并入既有「timeout 须为数字（秒）」结构化失败分支
+            if isinstance(_raw_timeout, bool):
+                raise TypeError(f"布尔值须先排除: {type(_raw_timeout).__name__}")
             timeout = float(
                 DEFAULT_RUN_TIMEOUT if _raw_timeout is None else _raw_timeout
             )
