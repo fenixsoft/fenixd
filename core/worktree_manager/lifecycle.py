@@ -1267,9 +1267,30 @@ class G1LifecycleMixin:
         # 其余路径未持该非重入锁，锁内取锁无死锁风险。
         with self._spec_lock_th:
             self._active_worktrees.clear()
+            # 分支映射表与活动集同属 create/cleanup 成对维护的活动登记
+            # （code-review item 3c4a2e810936）：shutdown 清理语义完整化，
+            # 一并清空，防同实例二次 shutdown 时残留已删 worktree 的
+            # path→branch 陈旧映射（此后按分支表反推 spec 的读路径不再命中
+            # 已删目录）。dict.clear() 原子完成，无迭代撕裂问题；boot 侧
+            # 恢复路径（recover_interrupted / preservation）自行重建登记，
+            # 不依赖本进程残留。
+            self._wt_branches.clear()
             self._spec_locks.clear()
             self._lock_since.clear()
             self._proc_scan_cache.clear()
+            # _legacy / _active_reuse 不在此清空（code-review item
+            # 3c4a2e810936 保留原因说明）：二者非本进程活动登记，有独立
+            # 生命周期与专门回收机制——_legacy 保留至后继 run 成功 merge
+            # （consume_legacy）或宽限期超时（stale_sweep 的
+            # _reclaim_expired_legacy 兜底回收）；_active_reuse 由收工路径
+            # （cleanup / keep_for_reuse / _take_reusable_worktree 认领时
+            # 摘出）管理。shutdown 后登记随进程终结，同进程无再消费路径；
+            # daemon 重启后本就为空（内存态不持久化），boot/恢复路径以
+            # git 与 STATE 为真相重建，不读本进程残留（find_worktree_by_spec
+            # 等明示不信任内存表）。测试复用同实例二次 shutdown 时残留记录
+            # 为惰性数据：读取方（get_legacy / get_reuse_record → prompt
+            # 注入）不在 shutdown 链路上，cleanup / 孤儿清扫循环另有
+            # _active_worktrees 门卫，不会据陈旧记录错误动作。
 
     def has_active_worktree(self, spec_name: str) -> bool:
         """Check if any worktree is active for the given SPEC.
