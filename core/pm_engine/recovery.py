@@ -100,7 +100,13 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
         f.seek(start)
         raw = f.read()
     text = raw.decode("utf-8", errors="replace")
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+    # 切行只按物理换行 \n（code-review item 728ea373eb72）：写侧
+    # json.dumps(ensure_ascii=False)（run_files.append_run_line）不转义
+    # U+2028/U+2029/NEL 等字符，str.splitlines() 会把它们当作行界、把同一
+    # JSONL 物理行切成多段，末段非完整 JSON → 解析失败、在途重试豁免静默
+    # 失效；与下方按 b"\n" 的字节级完整性判据同口径（裸 \r 不可能出现在
+    # 物理行尾：写侧 dumps 已把 \r 转义为 \\r），全量回退路径同口径。
+    lines = [ln for ln in text.split("\n") if ln.strip()]
     if not lines:
         return ""
     # 末行完整判据：尾部块正好从行首开始（start == 0，整文件已读）→ 末行必
@@ -115,7 +121,7 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
     if start == 0 or (raw.endswith(b"\n") and b"\n" in raw.rstrip(b"\n")):
         return lines[-1]
     # 整个块是被截断的单行 → 回退全量读
-    full = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    full = path.read_text(encoding="utf-8", errors="replace").split("\n")
     nonempty = [ln for ln in full if ln.strip()]
     return nonempty[-1] if nonempty else ""
 
