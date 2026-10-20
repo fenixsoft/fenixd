@@ -34,7 +34,8 @@ _ADR_TITLE_RE = re.compile(r"^#\s+ADR-\d{3}\s*[:：]\s*(.+?)\s*$", re.M)
 # adr/index.md 表格行：'| ADR-NNN | 标题 | ...'（标题列兜底源）
 _ADR_INDEX_ROW_RE = re.compile(r"^\|\s*(ADR-\d{3})\s*\|\s*([^|]+?)\s*\|", re.M)
 # 首 H1 标题（titles 下发源）：'# <标题>'。能力页头部 marker 为 HTML 注释行、
-# 二级标题缩进一格，均不匹配 ``^# ``，天然跳过；只取首处（首个 H1 即页题）。
+# 二级标题缩进一格，均不匹配 ``^# ``，天然跳过；只取首处（首个 H1 即页题），
+# 围栏代码块内的 ``#`` 行由 _read_h1_title 的围栏状态机排除。
 _H1_TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
 
 # 真相源目录相对路径（契约见 spec/knowledge/README.md）
@@ -79,13 +80,26 @@ def _read_h1_title(path: Path) -> str | None:
 
     titles 下发的单文件取题入口，调用方（域/能力页枚举）对 None 原样
     下发，前端按「无标题回退 slug」渲染，此处不抛错不告警（缺标题是
-    蒸馏管线的合法中间态，非本端点异常）。
+    蒸馏管线的合法中间态，非本端点异常）。围栏代码块（``` / ~~~）内
+    的行不参与匹配，代码示例中的 ``# 注释`` 行不会被误当页题。
     """
     try:
-        m = _H1_TITLE_RE.search(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    return m.group(1) if m else None
+    in_fence = False
+    for line in text.splitlines():
+        # 轻量围栏状态机：行首（容忍缩进与 ```bash 等尾随信息符）
+        # ``` / ~~~ 翻转开关，围栏内行不参与 _H1_TITLE_RE 匹配
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            m = _H1_TITLE_RE.match(line)
+            if m:
+                return m.group(1)
+    return None
 
 
 def _safe_knowledge_file(proot: Path, rel: str) -> Path | None:

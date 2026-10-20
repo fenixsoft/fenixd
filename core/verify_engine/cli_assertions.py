@@ -167,6 +167,14 @@ class CliAssertionRunner:
                     continue
                 try:
                     result = await handler(step, assertion)
+                    # 层归属按词表 CLI_ASSERTION_LAYERS 单点覆盖（对齐 web 侧
+                    # assertions.py run() 出口口径，code-review item
+                    # 9a9a94495197）：handler 内硬编码 layer 是第二副本，词表
+                    # 调整层归属时成功路径不再静默漂移；未登记类型保留
+                    # handler 原值（缺省 0，与未知类型回退口径一致）。
+                    result["layer"] = CLI_ASSERTION_LAYERS.get(
+                        a_type, result.get("layer", 0)
+                    )
                     results.append(result)
                     continue
                 except Exception as e:
@@ -182,6 +190,12 @@ class CliAssertionRunner:
             # 文件系统断言（不依赖命名结果）
             try:
                 result = await handler(assertion)
+                # 同上：层归属按 CLI_ASSERTION_LAYERS 词表单点覆盖（对齐
+                # web 侧出口口径，code-review item 9a9a94495197），handler
+                # 硬编码 layer 不再是第二副本漂移面。
+                result["layer"] = CLI_ASSERTION_LAYERS.get(
+                    a_type, result.get("layer", 0)
+                )
                 results.append(result)
             except Exception as e:
                 results.append(

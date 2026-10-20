@@ -1635,6 +1635,24 @@ def _parse_and_validate_scenario_dicts(raw: list) -> tuple:
     return scenarios, all_errors
 
 
+def _read_scenario_json(path: Path) -> Any:
+    """读入并解析场景文件 JSON（load_scenarios / salvage_scenarios_file 共用读取段）。
+
+    解析失败（JSON 语法损坏 / 非 UTF-8 字节）统一包装为
+    「场景文件格式错误: JSON 解析失败: …」的 ValueError（code-review item
+    6154dbe841df）：同一场景文件的两种读入口报错文案逐字一致，admin 排障
+    口径不漂移。
+
+    Raises:
+        ValueError: JSON 解析失败（含 UTF-8 解码错误）
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError(f"场景文件格式错误: JSON 解析失败: {e}") from e
+
+
 def load_scenarios(filepath) -> list[TestScenario]:
     """从JSON文件加载场景列表，并校验合法性。
 
@@ -1651,8 +1669,9 @@ def load_scenarios(filepath) -> list[TestScenario]:
     if not path.exists():
         raise FileNotFoundError(f"场景文件不存在: {path}")
 
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    # 解析失败与 salvage 读入口同款包装（共用 helper，code-review item
+    # 6154dbe841df），损坏 JSON 不再以英文定位消息裸穿
+    raw = _read_scenario_json(path)
 
     if not isinstance(raw, list):
         raise ValueError(f"场景文件格式错误: 期望JSON数组，实际为 {type(raw).__name__}")
@@ -1768,10 +1787,7 @@ def salvage_scenarios_file(filepath) -> tuple[list[TestScenario], dict]:
     if not path.exists():
         raise FileNotFoundError(f"场景文件不存在: {path}")
 
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise ValueError(f"场景文件格式错误: JSON 解析失败: {e}") from e
+    raw = _read_scenario_json(path)
 
     entries = unwrap_scenarios_dict(raw)
     info = {"top_keys": sorted((str(k) for k in raw.keys())), "entry_count": len(entries)}

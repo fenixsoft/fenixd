@@ -1211,7 +1211,10 @@ class H0BaseMixin:
         return body
 
     def _json(self, payload, status: int = 200):
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        # 非有限值（inf/NaN）在序列化单点快速失败，经 _handle_inner 兜底 500 留痕
+        body = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
         self._mark_response_started()
         self.send_response(status)
         # 条件请求通道（add-dashboard-paging-and-etag 1.2）：200 成功响应附带

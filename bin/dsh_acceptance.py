@@ -142,7 +142,11 @@ def build_fixture(parent: Path, prefix: str) -> Dict[str, Any]:
 
 
 def cleanup_fixture(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    """清理夹具（项目根 + worktree + 空掉的父目录），返回清理回执。"""
+    """清理夹具（项目根 + worktree + 脚本自建的空掉父目录），返回清理回执。
+
+    用户经 ``--parent`` 显式传入的 parent 即便被夹具清空也不代删（删除
+    用户目录属未声明副作用）；回执 ``parent_cleanup_skipped`` 注明原因。
+    """
     removed = []
     for key in ("project_root", "worktree"):
         path = Path(manifest[key])
@@ -151,15 +155,22 @@ def cleanup_fixture(manifest: Dict[str, Any]) -> Dict[str, Any]:
             removed.append(manifest[key])
     parent = Path(manifest["parent"])
     parent_removed = False
-    try:
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-            parent_removed = True
-    except OSError:
-        pass
+    # 缺键按脚本自建处理（smoke/accept 的 mkdtemp holder 与既有调用均走
+    # 此默认）；仅脚本自建的 parent 才随清理 rmdir
+    user_parent = manifest.get("parent_created_by_script", True) is False
+    if not user_parent:
+        try:
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+                parent_removed = True
+        except OSError:
+            pass
     return {
         "removed": removed,
         "parent_removed": parent_removed,
+        "parent_cleanup_skipped": (
+            "parent 由 --parent 显式传入（非脚本自建），即便清空也不代删"
+            if user_parent else None),
         "residue_free": all(not Path(p).exists() for p in removed),
     }
 
@@ -316,8 +327,31 @@ def prepare_dsh_home(profile: str = "fenix",
                 f"profile 清单 {pkg} 顶层不是 JSON 对象"
                 f"（{type(data).__name__}）：请手工装配 profile"
                 f"（dsh plugin --profile {profile} add link:{BUNDLE}）后重试")
-    bundles = (data.setdefault("dsh", {}).setdefault("profile", {})
-               .setdefault("bundles", []))
+    # 逐级类型守卫（dsh/profile 须 JSON 对象、bundles 须 JSON 数组）：畸形
+    # 清单报与顶层同款修复指引，而非裸 AttributeError
+    dsh_cfg = data.get("dsh")
+    if dsh_cfg is not None and not isinstance(dsh_cfg, dict):
+        raise RuntimeError(
+            f"profile 清单 {pkg} \"dsh\" 键不是 JSON 对象"
+            f"（{type(dsh_cfg).__name__}）：请手工装配 profile"
+            f"（dsh plugin --profile {profile} add link:{BUNDLE}）后重试")
+    dsh_cfg = data.setdefault("dsh", {}) if dsh_cfg is None else dsh_cfg
+    prof_cfg = dsh_cfg.get("profile")
+    if prof_cfg is not None and not isinstance(prof_cfg, dict):
+        raise RuntimeError(
+            f"profile 清单 {pkg} \"dsh.profile\" 不是 JSON 对象"
+            f"（{type(prof_cfg).__name__}）：请手工装配 profile"
+            f"（dsh plugin --profile {profile} add link:{BUNDLE}）后重试")
+    prof_cfg = (dsh_cfg.setdefault("profile", {})
+                if prof_cfg is None else prof_cfg)
+    bundles = prof_cfg.get("bundles")
+    if bundles is not None and not isinstance(bundles, list):
+        raise RuntimeError(
+            f"profile 清单 {pkg} \"dsh.profile.bundles\" 不是 JSON 数组"
+            f"（{type(bundles).__name__}）：请手工装配 profile"
+            f"（dsh plugin --profile {profile} add link:{BUNDLE}）后重试")
+    if bundles is None:
+        bundles = prof_cfg.setdefault("bundles", [])
     for required in ("@deepseek-ai/dsh-headless", "fenix-dsh-bundle"):
         if required not in bundles:
             bundles.append(required)
@@ -1975,6 +2009,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
         prefix = unique_prefix()
         manifest = build_fixture(parent, prefix)
+        # parent 来源记账：脚本 mkdtemp 自建的随清理 rmdir；用户 --parent
+        # 显式传入的目录不代删（cleanup_fixture 凭此键区分）
+        manifest["parent_created_by_script"] = args.parent is None
         if not args.keep:
             receipt = cleanup_fixture(manifest)
             manifest["cleanup"] = receipt

@@ -57,18 +57,39 @@ export interface OverviewData {
     settle，UI 转圈无出路。统一 30s；个别长耗时端点经 request 第三参覆盖。 */
 const REQUEST_TIMEOUT_MS = 30000;
 
+// per-call 超时对照表（code-review item a21b19e73181）：「端点 → 服务端预算
+// 秒」单源。客户端 per-call 超时一律经 serverBudgetTimeoutMs 派生为
+// 预算*1000 + 30s 余量，不再逐常量手工推导——服务端调参只改本表，客户端
+// 超时自动跟随，避免服务端上调预算后客户端先行超时误报失败（item
+// c9e2a7e67173 事故形态）。键为端点 path（不含 query）。
+const SERVER_BUDGET_SECONDS = {
+  '/api/quality/ocr-install': 300, // install_ocr 同步 `npm install -g`（_INSTALL_TIMEOUT）
+  '/api/project/describe': 120, // _api_project_describe 同步 headless claude
+  '/api/regression/autodraft': 900, // AUTODRAFT_TIMEOUT_SECONDS：起草+自证真跑全量回归
+} as const;
+
+/** 服务端预算余量（毫秒）：盖住响应传输/JSON 解析等固定开销即可；独立于
+    REQUEST_TIMEOUT_MS（统一超时调参不应牵动余量）。 */
+const SERVER_BUDGET_GRACE_MS = 30000;
+
+/** 端点的服务端预算（秒）→ 客户端 per-call 超时（毫秒）：足额预算 + 余量。
+    参数经 keyof 收紧到表内键，端点漏入表即编译报错——新长耗时端点先补表。 */
+function serverBudgetTimeoutMs(endpoint: keyof typeof SERVER_BUDGET_SECONDS): number {
+  return SERVER_BUDGET_SECONDS[endpoint] * 1000 + SERVER_BUDGET_GRACE_MS;
+}
+
 /** ocr 一键安装的 per-call 超时（毫秒，code-review item bbd22d435c3e）：
-    服务端 install_ocr 同步执行 `npm install -g`、预算 _INSTALL_TIMEOUT=300s，
-    统一 30s 超时会让用户看到「安装失败：请求超时」而安装仍在跑（重试又得
-    「安装进行中」）。给足 300s + 余量，客户端等到服务端真实结论。 */
-const OCR_INSTALL_TIMEOUT_MS = 330000;
+    服务端 install_ocr 同步执行 `npm install -g`，统一 30s 超时会让用户看到
+    「安装失败：请求超时」而安装仍在跑（重试又得「安装进行中」）。预算与
+    余量推导单点在 SERVER_BUDGET_SECONDS 对照表，客户端等到服务端真实结论。 */
+const OCR_INSTALL_TIMEOUT_MS = serverBudgetTimeoutMs('/api/quality/ocr-install');
 
 /** 项目简介再生成的 per-call 超时（毫秒，code-review item c9e2a7e67173）：
-    服务端 _api_project_describe 在 HTTP 线程内同步跑 headless claude、
-    预算 timeout=120s，统一 30s 超时会先行中止、把仍在跑的生成误报为
-    「请求超时」（重试又撞同项目互斥锁的「生成进行中」）。参照
-    OCR_INSTALL_TIMEOUT_MS 先例给足 120s + 余量，客户端等到服务端真实结论。 */
-const PROJECT_DESCRIBE_TIMEOUT_MS = 150000;
+    服务端 _api_project_describe 在 HTTP 线程内同步跑 headless claude，统一
+    30s 超时会先行中止、把仍在跑的生成误报为「请求超时」（重试又撞同项目
+    互斥锁的「生成进行中」）。预算与余量推导单点在 SERVER_BUDGET_SECONDS
+    对照表，客户端等到服务端真实结论。 */
+const PROJECT_DESCRIBE_TIMEOUT_MS = serverBudgetTimeoutMs('/api/project/describe');
 
 /** SSE 事件流端点（业务端点，跨视图组件复用——code-review item ba13417eb1ff：
     以共享服务层常量单源，视图不再各自硬编码字面量）。经 embedMount 单点
@@ -1718,8 +1739,7 @@ export async function saveConfig(
 
 export async function regenerateProjectDescription(project: string): Promise<{ ok: boolean; description?: string; error?: string }> {
   // per-call 超时（code-review item c9e2a7e67173）：后端同步跑 headless
-  // claude 预算 120s，统一 30s 超时会先行中止、把仍在跑的生成误报为
-  // 「请求超时」。
+  // claude，预算单源在 SERVER_BUDGET_SECONDS 对照表（服务端调参只改表）。
   return request<{ ok: boolean; description?: string; error?: string }>(
     `/api/project/describe?project=${encodeURIComponent(project)}`,
     { method: 'POST' },
@@ -2099,8 +2119,8 @@ export async function installOcr(): Promise<{
 }> {
   // 补 error 字段（code-review item 52c15fcd9bc1）：后端失败路径返回
   // {ok:false, error:"…", version:null}，前端旧类型缺 error 使调用方无法透出原因。
-  // per-call 超时 330s（code-review item bbd22d435c3e）：服务端同步安装预算
-  // 300s，统一 30s 超时会先行中止、把仍在跑的安装误报为「请求超时」。
+  // per-call 超时（code-review item bbd22d435c3e）：服务端同步安装，预算
+  // 单源在 SERVER_BUDGET_SECONDS 对照表（服务端调参只改表）。
   return request<{ ok: boolean; version: string | null; error?: string | null }>(
     `/api/quality/ocr-install`,
     { method: 'POST' },
@@ -2509,10 +2529,12 @@ export async function getRegressionConfig(project: string): Promise<RegressionCo
 }
 
 /** regression 段 AI 同步生成的 per-call 超时（毫秒）。后端在 HTTP 线程内同步
- *  跑 headless claude 起草 + 自证（自证会按 cmd 真跑一次全量回归），预算
- *  AUTODRAFT_TIMEOUT_SECONDS=900s，客户端给足 900s + 30s 余量——参照
- *  OCR_INSTALL_TIMEOUT_MS 先例，让用户等到服务端真实结论而非 30s 假失败。 */
-export const REGRESSION_AUTODRAFT_TIMEOUT_MS = 930000;
+ *  跑 headless claude 起草 + 自证（自证会按 cmd 真跑一次全量回归），预算与
+ *  余量推导单点在 SERVER_BUDGET_SECONDS 对照表——参照 OCR_INSTALL_TIMEOUT_MS
+ *  先例，让用户等到服务端真实结论而非 30s 假失败。 */
+export const REGRESSION_AUTODRAFT_TIMEOUT_MS = serverBudgetTimeoutMs(
+  '/api/regression/autodraft',
+);
 
 /** 同步 AI 生成 regression 段（POST /api/regression/autodraft）。
  *  success = 已落位 verify.yaml；skipped = 段已配置，无需生成；

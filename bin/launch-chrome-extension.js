@@ -93,9 +93,11 @@ function parseArgs() {
   const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>] [--detect <spec-dir>]';
   let invalidReason = null;
   if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
-  if (opts.distPath === undefined || opts.distPath === '' || opts.distPath.startsWith('--')) invalidReason = '--dist-path 缺少取值';
-  if (opts.output === undefined || opts.output === '' || opts.output.startsWith('--')) invalidReason = '--output 缺少取值';
-  if (opts.detect === undefined || opts.detect === '' || opts.detect.startsWith('--')) invalidReason = '--detect 缺少取值';
+  // startsWith 前 String() 归一：--output/--detect 未传时默认值为 null，
+  // 直接对 null 调 startsWith 会在任何未带这两个选项的调用下 TypeError 崩溃
+  if (opts.distPath === undefined || opts.distPath === '' || String(opts.distPath).startsWith('--')) invalidReason = '--dist-path 缺少取值';
+  if (opts.output === undefined || opts.output === '' || String(opts.output).startsWith('--')) invalidReason = '--output 缺少取值';
+  if (opts.detect === undefined || opts.detect === '' || String(opts.detect).startsWith('--')) invalidReason = '--detect 缺少取值';
   if (invalidReason) {
     console.error(`错误: ${invalidReason}\n${usage}`);
     process.exit(1);
@@ -511,13 +513,10 @@ function sanitizeUrl(url) {
   }
   if (redactedKeys.size === 0) return url;
   const rebuilt = new URLSearchParams();
-  for (const name of new Set(params.keys())) {
-    const values = params.getAll(name);
-    if (redactedKeys.has(name)) {
-      for (let k = 0; k < values.length; k++) rebuilt.append(name, '[REDACTED]');
-    } else {
-      for (const value of values) rebuilt.append(name, value);
-    }
+  // entries() 按原查询串出现序逐对迭代：命中键的每个原值位置 append 占位符、
+  // 非命中键原值原样 append——同名多值个数与跨键交错顺序（?a=1&b=2&a=3）均原样保留
+  for (const [name, value] of params.entries()) {
+    rebuilt.append(name, redactedKeys.has(name) ? '[REDACTED]' : value);
   }
   parsed.search = rebuilt.toString();
   return parsed.toString();
