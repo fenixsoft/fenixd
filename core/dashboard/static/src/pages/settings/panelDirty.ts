@@ -15,6 +15,12 @@ import { useEffect, useRef } from 'react';
 interface PanelDirtyEntry {
   isDirty: () => boolean;
   reset: () => void;
+  // 最近一次 setDirty(true) 的时刻（code-review item e52769cbc6c5）：供
+  // snapshotPanelDirty 区分「发起保存前的既有脏」与「在飞保存期间的同面板
+  // 再编辑」。所有置脏都经 usePanelDirty 返回的单个 setDirty 写入（面板侧
+  // 无其他脏标记写点），单点记录即全覆盖；Date.now() 同一 JS 运行时单调
+  // 可比，快照与再置脏之间隔至少一个事件循环任务，同毫秒碰撞不可达。
+  lastDirtyAt: number;
 }
 
 const entries = new Set<PanelDirtyEntry>();
@@ -37,12 +43,24 @@ export function anyPanelDirty(): boolean {
  * 恰为被保存面板的条目（自进化页签两张卡片各一份、同属被保存页签）：
  * 仅复位快照内仍挂载的条目，此后挂载/编辑的其他面板不受波及；保存失败时
  * 调用方不执行复位，被保存面板的脏标记原样保留（编辑仍未落盘）。
+ *
+ * 同面板再编辑守卫（code-review item e52769cbc6c5）：面板未锁定，在飞期间
+ * 用户仍可在被保存面板上继续编辑并 setDirty(true)，若成功回调无条件复位，
+ * 这批未落盘的再编辑会被抹脏、后续切页签静默丢弃。复位前比对 lastDirtyAt：
+ * 仅复位「快照后未再置脏」的条目——快照时刻已脏且此后未再置脏（编辑确已
+ * 落盘）才复位；快照后新置脏（lastDirtyAt > 快照时刻）的一律保留。快照
+ * 时刻未脏的条目本就无脏可清，复位与否行为等价，无需逐条目记录快照时值。
+ * probe 型面板 reset 本为 no-op，脏状态由面板自身归零，不受此门禁影响。
  */
 export function snapshotPanelDirty(): () => void {
   const armed = new Set(entries);
+  const snapshotAt = Date.now();
   return () => {
     for (const entry of armed) {
-      if (entries.has(entry)) entry.reset();
+      if (!entries.has(entry)) continue;
+      // 在飞保存期间的同面板再编辑不被复位（code-review item e52769cbc6c5）
+      if (entry.lastDirtyAt > snapshotAt) continue;
+      entry.reset();
     }
   };
 }
@@ -65,6 +83,10 @@ export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolea
   // probe 经 ref 间接引用（镜像 index.tsx 的 scopeRef 模式）：内联箭头每次
   // 渲染都是新引用，注册效果只跑一次、探针读到的始终是最新闭包
   const probeRef = useRef(probe);
+  // 注册表条目经 ref 镜像回 setDirty（code-review item e52769cbc6c5）：条目
+  // 在注册 effect 内创建，setDirty 需要引用它记录置脏时刻；卸载即注销并清
+  // 引用，迟到的 setDirty（面板卸载后事件不可达，防御性兜底）不写已注销条目
+  const entryRef = useRef<PanelDirtyEntry | null>(null);
   useEffect(() => {
     probeRef.current = probe;
   }, [probe]);
@@ -74,14 +96,24 @@ export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolea
       reset: () => {
         dirtyRef.current = false;
       },
+      lastDirtyAt: 0,
     };
+    entryRef.current = entry;
     entries.add(entry);
     return () => {
       entries.delete(entry);
+      if (entryRef.current === entry) entryRef.current = null;
     };
   }, []);
   return {
     setDirty: (dirty: boolean) => {
+      // 置脏即记录时刻（code-review item e52769cbc6c5）：snapshotPanelDirty
+      // 以此区分在飞保存期间的新编辑与发起保存前的既有脏。setDirty 是全部
+      // 非探针置脏路径的唯一入口，此处单点记录即覆盖所有面板的置脏调用
+      if (dirty) {
+        const entry = entryRef.current;
+        if (entry) entry.lastDirtyAt = Date.now();
+      }
       dirtyRef.current = dirty;
     },
   };
