@@ -20,6 +20,7 @@
 // active 门控（对齐 SessionPanel）：仅在选中本分面时拉取数据与订阅 SSE，
 // 未选中零请求（project-page-tabs 按需加载语义）。
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Key } from 'react';
 import {
   App,
   Button,
@@ -282,7 +283,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const isMobile = useIsMobile();
   const [items, setItems] = useState<CodeReviewItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedKeys, setSelectedKeys] = useState<React.Key[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
   const [severityFilter, setSeverityFilter] = useState<string | undefined>();
   const [statusFilter, setStatusFilter] = useState<string | undefined>('open');
   const [progress, setProgress] = useState<CodeReviewProgress | null>(null);
