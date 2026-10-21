@@ -765,7 +765,7 @@ class G1LifecycleMixin:
                 # verify- 开头 spec 名无歧义；_spec_from_branch 会把实现分支
                 # fenix/verify-<spec>-<ts> 按验证语义剥前缀回推出错 spec。
                 spec = self._spec_from_worktree_name(wt_path.name) or (
-                    self._spec_from_branch(branch)
+                    self._spec_from_branch(branch or "")
                 )
                 if spec:
                     self.register_legacy(spec, wt_path, branch)
@@ -977,7 +977,16 @@ class G1LifecycleMixin:
                         if wt_is_verifier
                         else (k.partition(":")[2] != "verifier")
                     )
-                    and self._lock_since.get(k, 0.0) <= cleanup_entry_ts
+                    # 入口时刻守卫对齐 locks._release_spec_locks_core 的
+                    # not_after 口径（code-review item 279dac9d45dc，同
+                    # 98ad40e18a38）：缺 _lock_since 记录=无法证明陈旧，保守
+                    # 跳过摘除——repair_lane._claim_repair_site 的
+                    # <spec>:repair 只写 _spec_locks 不写 _lock_since，旧
+                    # get(k, 0.0) 兜底把这类在飞新锁按远古时刻处理、恒过守卫
+                    # 被摘，非 verifier 形状收尾会误摘 repair 车道在飞锁
+                    # （宁可靠 refresh_locks 陈锁清扫兜底，不误摘）。
+                    and (since := self._lock_since.get(k)) is not None
+                    and since <= cleanup_entry_ts
                 ]
                 for k in to_remove:
                     self._spec_locks.discard(k)
@@ -985,6 +994,18 @@ class G1LifecycleMixin:
                 # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
                 for k in to_remove:
                     self._proc_scan_cache.pop(self._lock_spec_name(k), None)
+                    # 家族限定缓存键一并失效（code-review item 47b98315d174）：
+                    # _spec_process_alive 按 (spec, prefixes) 二元组为家族限定
+                    # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
+                    # 取 _lock_family_prefix 值域 verify/impl），仅清裸 spec 键
+                    # 会在缓存窗口内残留摘锁前的家族存活判定，与上方「防读到
+                    # 陈旧存活结果」的意图不完整一致。
+                    self._proc_scan_cache.pop(
+                        (self._lock_spec_name(k), ("verify",)), None,
+                    )
+                    self._proc_scan_cache.pop(
+                        (self._lock_spec_name(k), ("impl",)), None,
+                    )
                     # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）。
                     # 仅清不再指向活动集成员的残留（code-review item 23e1bc091552，
                     # 同 create() 的 097d73d377dd 口径）：_active_reuse 以 spec 为键、
