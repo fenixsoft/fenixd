@@ -1055,7 +1055,10 @@ class G4MergebackMixin:
         current_path = ""
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree "):].strip()
+                # quotePath=false 只豁免高位字节 C 转义，双引号/反斜杠等残余
+                # 引号形经 _unquote_git_path 兜底（对无引号行幂等），与包内
+                # queries 层 porcelain 采集点同口径双保险（da2b5dbddd85）。
+                current_path = _unquote_git_path(line[len("worktree "):].strip())
                 continue
             if line.startswith("branch ") and current_path:
                 branch = line[len("branch "):].strip()
