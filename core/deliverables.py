@@ -1257,7 +1257,12 @@ def relocation_credential_target(project_root, path) -> "str | None":
         return _relocation_target_in_records(
             DisputeAuditStore(project_root).read_all(), path
         )
-    except Exception:
+    except Exception as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"relocation 凭据审计流读取失败（fail-safe 按 None，不误核销）"
+            f"project_root={project_root} path={path}: {type(e).__name__}: {e}",
+        )
         return None
 
 
