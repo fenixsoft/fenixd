@@ -618,6 +618,31 @@ class TestUsageUnobserved:
             info = SessionTracker._extract_usage_info(bad)
             assert info["unobserved"] is True
 
+    def test_extract_nonfinite_cost_clamped_to_none(self):
+        """成本字段非有限值钳制（code-review item df7550907642）：NaN/inf
+        按缺失处理回退 None，正常有限值不受影响。
+
+        网关畸形回传 JSON NaN/Infinity 字面量（Python json.loads 默认接受）
+        或字符串 'nan'/'inf' 时 float() 均成功且有限性无关，原实现直接出口。"""
+        base_usage = {"input_tokens": 10, "output_tokens": 3,
+                      "cache_creation_input_tokens": 4,
+                      "cache_read_input_tokens": 5}
+        for bad_cost in (float("nan"), float("inf"), float("-inf"),
+                         "nan", "inf", "-inf"):
+            info = SessionTracker._extract_usage_info(
+                {**base_usage, "total_cost_usd": bad_cost})
+            assert info["cost_usd"] is None, bad_cost
+        # 经 json.loads 的 NaN/Infinity 字面量（网关畸形回传形态）同样钳制
+        raw = json.loads(
+            '{"type": "result", "total_cost_usd": NaN, '
+            '"usage": {"input_tokens": 1, "output_tokens": 1, '
+            '"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}')
+        assert SessionTracker._extract_usage_info(raw)["cost_usd"] is None
+        # 正常有限值不受影响
+        ok = SessionTracker._extract_usage_info(
+            {**base_usage, "total_cost_usd": 0.42})
+        assert ok["cost_usd"] == 0.42
+
     def test_accumulate_unobserved_zero_delta(self, tmp_path):
         """_accumulate_token_usage 对 unobserved 输入零增量（不伪造、不累计）。"""
         from core.state_machine import StateMachine

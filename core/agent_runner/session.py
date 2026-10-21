@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import math
 
 
 def _to_int(value) -> int:
@@ -148,11 +149,18 @@ class SessionTracker:
             # 限值守卫拦不住，1.0 美元会真实累计进 STATE 成本——按缺失处理。
             cost = None
         try:
-            out["cost_usd"] = float(cost)
+            cost_val = float(cost)
         # OverflowError：JSON 任意精度往返可携带超大整数字面量（如 10**400），
         # float() 溢出——口径对齐 _to_int 兜底（code-review item 86f44192983b）
         except (TypeError, ValueError, OverflowError):
-            out["cost_usd"] = None
+            cost_val = None
+        # 非有限值钳制（code-review item df7550907642，口径对齐 token_budget
+        # 累计侧 math.isfinite(total_cost)）：json.loads 默认接受 NaN/Infinity
+        # 字面量、float('nan')/float('inf') 亦成功，NaN/inf 经公开入口泄入
+        # harness 适配层与 verify-progress 侧车并可落盘 tokens.json——按缺失处理。
+        if cost_val is not None and not math.isfinite(cost_val):
+            cost_val = None
+        out["cost_usd"] = cost_val
         return out
 
     @staticmethod
