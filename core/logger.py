@@ -144,7 +144,11 @@ class Logger:
         _resolved_level = None
         if isinstance(level, str):
             _resolved_level = getattr(logging, level.upper(), None)
-        if _resolved_level is None:
+        # 级别常量均为 int；getattr 命中 logging 模块的非级别属性（如
+        # BASIC_FORMAT 是格式模板字符串）时同样视为解析失败，否则
+        # setLevel(该字符串) 会 ValueError 炸掉构造（code-review item
+        # 2781d8672820），统一走下面的 stderr 告警 + INFO 回退
+        if not isinstance(_resolved_level, int):
             print(
                 f"fenixd: unknown logging level {level!r}, falling back to INFO",
                 file=sys.stderr,
