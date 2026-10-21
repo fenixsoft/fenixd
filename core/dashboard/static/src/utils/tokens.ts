@@ -20,7 +20,11 @@ export interface TokenUsageLike {
 
 export const fmtInputTokens = (usage: TokenUsageLike) => {
   const cacheRead = usage.cache_read_input_tokens;
-  if (cacheRead == null || !usage.tokens_in) return fmtMillions(usage.tokens_in);
+  // 非有限值守卫（code-review item c414a07b4aa3）：tokens_in 为 ±Infinity 时
+  // !usage.tokens_in 不成立会穿透，命中率被钳成 0% 与主数值/分项矛盾；非有限时
+  // 统一走 fmtMillions 兜底（回退 0.0M），守卫口径对齐 fmtMillions。
+  if (cacheRead == null || !usage.tokens_in || !Number.isFinite(usage.tokens_in))
+    return fmtMillions(usage.tokens_in);
   // 异常数据钳制（code-review item 7991b6540abd）：cacheRead 大于 tokens_in 时
   // 差值为负、命中率超 100%，钳到 max(0, …) / [0, 100] 避免渲染矛盾数字。
   const pct = Math.min(100, Math.max(0, (cacheRead / usage.tokens_in) * 100)).toFixed(1);
