@@ -416,7 +416,10 @@ def validate_scenario_entries(entry_dicts: list) -> list[str]:
         # ``or`` 会显示成下标占位；仅 None/空串回退占位符。
         sid = str(item.get("id")) if item.get("id") is not None else ""
         sid = sid or f"[{i}]"
-        if not str(item.get("id") or "").strip():
+        # 显式判空（f54ff9c4e1f5，与上方 sid/构造器 144ec547f48f 同款）：
+        # 数字 id 0 属合法 falsy 值，不得经 ``or`` 兜底误判缺 id。
+        raw = item.get("id")
+        if raw is None or not str(raw).strip():
             errors.append(f"场景集条目[{i}] 缺少非空 id")
         kind = item.get("kind")
         if kind not in VALID_KINDS:
