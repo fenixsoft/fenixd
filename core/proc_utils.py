@@ -48,6 +48,12 @@ def is_claude_process(pid_str: str) -> bool:
     2026-09-02）。清扫豁免（worktree_manager._kill_worktree_strays 与
     v2_dev_server._worktree_has_live_referencing_process）共用此判定。
     """
+    # code-review item c626cc2abedc：pid_str 内插 /proc 路径前先做纯数字
+    # 校验——"self"/"thread-self" 或含路径分段的串会读到调用者自身或无
+    # 关进程的 cmdline 参与存活/豁免判定；非数字按「非 claude 进程」直接
+    # 返回 False，与同模块 proc_stat_fields 的 int 形参口径对齐。
+    if not pid_str.strip().isdigit():
+        return False
     # add-harness-adapter-layer 5.1：识别名集合经 current adapter
     # （process_patterns，claude 值与原字面量 ("claude", "claude.exe") 全等）。
     # 函数内延迟解析：core.agent_runner 包初始化即拉入 runner 重链，本模块是
