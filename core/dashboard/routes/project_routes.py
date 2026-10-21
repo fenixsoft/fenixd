@@ -353,6 +353,13 @@ class H2ProjectRoutesMixin:
                             "或 /fenix-setup 恢复 supervisor 托管后重试"
                         ),
                     }
+                elif hosting != "managed":
+                    # item 01ce76f667c2：stopped（daemon 未运行）同样拒绝，
+                    # 与同族信号端点（hosting_guard._guard_hosting_state 的
+                    # 400「daemon 未运行」）口径一致——冷启动时已在盘的
+                    # restart_request 会在下次拉起后被立即消费成一次用户
+                    # 并未请求的排水重启，滞留超时还会触发 admin 升级误报。
+                    result = {"ok": False, "error": "daemon 未运行，请先启动 daemon"}
                 else:
                     req_path = Path(project["path"]) / ".fenix" / "restart_request"
                     try:
