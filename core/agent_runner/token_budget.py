@@ -144,7 +144,22 @@ class TokenAccountant:
                 + _to_int(usage_info.get("cache_creation_input_tokens", 0)),
             }
             # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
-            if cost is not None:
+            if cost is not None and type(entry.get("_cost_usd")) is bool:
+                # code-review item ccbf36ac4b84：既有 _cost_usd 被人工/历史版本
+                # 写成布尔值时，下方 ``float(entry.get("_cost_usd", 0) or 0)``
+                # 会放行——true 经 float(True)=1.0 静默按 1 美元并入总额、false
+                # 折 0，均无 warning 留痕，与同块非法字符串（918342f2200f）记
+                # warning 后跳过的损坏值处置口径不一致。比照 _check_token_budget
+                # （b75b390dd579）的 budget bool 钳制口径用 ``type(x) is bool``
+                # 精确排除（bool 是 int 子类，isinstance 会连带误伤合法 int）：
+                # 命中记 warning 后跳过本轮成本累计；token 分项不受影响，仍正常写回。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 累计既有成本值非法 '{spec_name}'"
+                    f"（既有 _cost_usd={entry.get('_cost_usd')!r}，"
+                    f"本轮 cost={cost!r}），跳过本轮成本累计",
+                )
+            elif cost is not None:
                 try:
                     prev_cost = float(entry.get("_cost_usd", 0) or 0)
                     total_cost = prev_cost + float(cost)

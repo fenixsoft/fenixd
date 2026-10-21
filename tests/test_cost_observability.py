@@ -53,6 +53,45 @@ def _int(entry, key):
     return int(entry[key])
 
 
+class _RecordingCostLogger:
+    """记录 warning 文案的 logger stub（既有成本累计口径断言用）。"""
+
+    def __init__(self):
+        self.warnings = []
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, component, message, *a, **k):
+        self.warnings.append(message)
+
+    def error(self, *a, **k):
+        pass
+
+
+class _MemStateStub:
+    """read_one 返回内存条目、update_spec 记录最近一次写回的 state_machine stub。
+
+    _cost_usd 不在 STATE.md 布尔归一清单内，bool 经往返会字符串化；测
+    「既有 _cost_usd 为真 bool」的累计口径（code-review item ccbf36ac4b84）
+    须经内存 stub 保持原始类型。
+    """
+
+    def __init__(self, entry):
+        self._entry = dict(entry)
+        self.updates = None
+
+    def read_one(self, spec_name):
+        return dict(self._entry)
+
+    def update_spec(self, spec_name, updates):
+        self.updates = updates
+        return True
+
+
 class TestExtractUsageInfo:
     def test_full_usage_with_cache(self):
         runner = make_runner(Path("/tmp"))
@@ -170,6 +209,49 @@ class TestAccumulateTokenUsage:
             "cost_usd": None,
         })
         assert sm.read_one("spec-b")["_cost_usd"] == "1.5"
+
+    def test_accumulate_bool_prev_cost_skipped_with_warning(self, tmp_path):
+        """既有 _cost_usd 为布尔值时不计入总额且记 warning（code-review item
+        ccbf36ac4b84）：true 此前经 float(True)=1.0 静默按 1 美元并入、false
+        折 0，均无留痕；现在比照 budget bool 钳制口径 type(x) is bool 排除，
+        命中记 warning 后跳过本轮成本累计，token 分项仍正常写回。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        usage = {
+            "input_tokens": 100, "output_tokens": 10,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cost_usd": 0.5,
+        }
+        for bad in (True, False):
+            runner = make_runner(proot)
+            stub = _MemStateStub({"_cost_usd": bad, "_tokens_in": 0, "_tokens_out": 0})
+            runner.state_machine = stub
+            runner.logger = _RecordingCostLogger()
+            runner._token_accountant._accumulate_token_usage(f"spec-bool-{bad}", usage)
+            # 布尔既有成本不入总额：_cost_usd 不写，token 分项照常累计
+            assert "_cost_usd" not in stub.updates
+            assert stub.updates["_tokens_in"] == 100
+            assert stub.updates["_tokens_out"] == 10
+            assert len(runner.logger.warnings) == 1
+            assert "跳过本轮成本累计" in runner.logger.warnings[0]
+            assert repr(bad) in runner.logger.warnings[0]
+
+    def test_accumulate_normal_float_prev_cost_unaffected(self, tmp_path):
+        """既有 _cost_usd 为正常 float 时累计不受 bool 排除影响。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        runner = make_runner(proot)
+        stub = _MemStateStub({"_cost_usd": 1.5, "_tokens_in": 0, "_tokens_out": 0})
+        runner.state_machine = stub
+        runner.logger = _RecordingCostLogger()
+        runner._token_accountant._accumulate_token_usage("spec-float", {
+            "input_tokens": 100, "output_tokens": 10,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cost_usd": 0.5,
+        })
+        assert stub.updates["_cost_usd"] == 2.0
+        assert stub.updates["_tokens_in"] == 100
+        assert runner.logger.warnings == []
 
     def test_error_run_zero_count(self, tmp_path):
         proot = tmp_path / "proj"
