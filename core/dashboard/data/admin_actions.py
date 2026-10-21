@@ -88,7 +88,8 @@ def _atomic_write_request(req_path: Path, payload: dict, tmp_prefix: str) -> tup
 
     Args:
         req_path: 信号文件目标路径
-        payload: 待写入的 JSON payload（原地追加 write_id）
+        payload: 待写入的 JSON payload（原地追加 write_id；须预置 created
+            isoformat 键，缺省时按当前 UTC 时间回填兜底）
         tmp_prefix: 临时文件前缀（保持各调用点既有命名）
 
     Returns:
@@ -97,6 +98,13 @@ def _atomic_write_request(req_path: Path, payload: dict, tmp_prefix: str) -> tup
         返回对齐既有「读既有 created」语义）。
     """
     req_path.parent.mkdir(parents=True, exist_ok=True)
+    # created 容错回填（code-review item eaab696c2481）：契约上调用方须预置
+    # created（三个 request_* 调用方均构造）；漏设时在此兜底，避免下方回读
+    # 胜出分支与 _request_signal_with_guards 成功返回按 payload["created"]
+    # 直取时 KeyError 穿透为 500。
+    payload.setdefault(
+        "created", datetime.now(timezone.utc).isoformat()
+    )
     payload["write_id"] = uuid.uuid4().hex
     fd, tmp_path = tempfile.mkstemp(dir=str(req_path.parent), prefix=tmp_prefix, suffix=".tmp")
     try:
@@ -2399,7 +2407,7 @@ def _env_exemption_candidates(project_root, spec: str, disposition_id) -> list:
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
-        # pass/paired 之外全部入豁免候选：含 fail/error/warning 与 blocked-env
+        # pass/passed 之外全部入豁免候选：含 fail/error/warning 与 blocked-env
         # （judge 裁决「全部失败归 env」时 blocked-env 场景从未执行、无失败
         # 断言，签名退化为 blocked-env——同样是豁免对象；NON_PASS_STATUSES
         # 不含 blocked-env，不能用之作过滤，会整类漏授）。
@@ -3938,18 +3946,24 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
     # 不合规条目剔除、不阻断其余合规条目。
     escapes = _stray_manifest_path_escapes(proot, pre["candidates"])
     compliant = [p for p in pre["candidates"] if p not in escapes]
-    targets, skipped = [], []
+    # 三态分流（与 archive 执行器同构），但 delete 保持整体拒绝语义（docstring
+    # 防御性收口声明：目录与特殊文件拒绝，不 rmtree、不部分删除）——扫完全
+    # 清单收集全部非普通文件，error 携带完整语境（全部受阻条目 + 未处置的
+    # 普通文件数）供人工判断（code-review item ece5d22ae9ef）。
+    targets, skipped, not_plain = [], [], []
     for p in compliant:
         f = proot / p
         if not f.exists():
             skipped.append(p)
         elif not f.is_file():
-            return {
-                "ok": False, "steps": [],
-                "error": f"拒绝删除非普通文件（防御性收口，仅文件删除）: {p}",
-            }
+            not_plain.append(p)
         else:
             targets.append(p)
+    if not_plain:
+        err = ("拒绝删除非普通文件（防御性收口，仅文件删除）: "
+               + ", ".join(not_plain))
+        err += f"；其余 {len(targets)} 个普通文件未删除"
+        return {"ok": False, "steps": [], "error": err}
     # 含逗号文件名拆散检测（item 86cda9326ae7，同 archive 执行器口径）。
     comma_frags = (
         _stray_manifest_comma_fragments(compliant, lambda p: (proot / p).exists())
