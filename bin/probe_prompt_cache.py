@@ -151,7 +151,18 @@ def probe(provider_name: str, config_path: Path) -> dict:
     # yaml.safe_load 遇语法非法的 config.yaml 抛 YAMLError，不捕获则 main()
     # 直接 traceback 崩溃且 stdout 无 JSON，破坏模块「确定性 JSON 判据」契约；
     # 归为 cache_supported=None，main() 据此 exit 1（参数类硬错误同口径）。
-    import yaml
+    # ImportError 同口径（code-review item dd185b9d9c1c）：PyYAML 缺失的环境
+    # 里裸 import 以 traceback 收场、stdout 无 JSON，同样破坏「确定性 JSON
+    # 判据」契约；口径对齐 bin/test_for.py load_test_map（延迟导入+降级、把
+    # PyYAML 缺失当真实场景），移入 try 归为 cache_supported=None 的判据 JSON。
+    try:
+        import yaml
+    except ImportError as e:
+        return {
+            "provider": provider_name,
+            "cache_supported": None,
+            "error": f"PyYAML 依赖缺失，无法解析配置文件: {e}",
+        }
 
     try:
         provider = _load_provider(config_path, provider_name)
@@ -272,7 +283,14 @@ def probe(provider_name: str, config_path: Path) -> dict:
 
 def _load_provider(config_path: Path, provider_name: str):
     """从配置文件中提取指定 provider 的连接信息。"""
-    import yaml
+    # ImportError 归一（code-review item dd185b9d9c1c）：PyYAML 缺失时裸
+    # import 抛 ImportError，不在 probe() 捕获的 (yaml.YAMLError, ValueError)
+    # 之列，会裸 traceback 破坏「确定性 JSON 判据」契约；与下方 OSError 处理
+    # 同口径转 ValueError，由调用方转 cache_supported=None 的判据 JSON。
+    try:
+        import yaml
+    except ImportError as e:
+        raise ValueError(f"PyYAML 依赖缺失，无法解析配置文件: {e}") from e
 
     # 文件消失（TOCTOU）不再 return None（code-review item 40a170065cd9）：
     # probe() 首检已对文件缺失短路并输出专门错误，正常控制流到不了这里；
