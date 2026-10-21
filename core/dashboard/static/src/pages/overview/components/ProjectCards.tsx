@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import { Alert, App, Avatar, Button, Card, Dropdown, Input, List, Progress, Radio, Space, Tag, Typography } from 'antd';
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { history } from '@umijs/max';
 import type { ProjectSummary } from '@/services/dashboard';
 import { deleteProject, installHosting, startProject, statusMeta, stopProject } from '@/services/dashboard';
@@ -41,7 +42,7 @@ function DaemonBadge({ daemon, hosting }: { daemon: string; hosting?: string }) 
   return null;
 }
 
-function MiniStat({ label, value, color }: { label: string; value: React.ReactNode; color?: string }) {
+function MiniStat({ label, value, color }: { label: string; value: ReactNode; color?: string }) {
   return (
     <div style={{ minWidth: 0 }}>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
