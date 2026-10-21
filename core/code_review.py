@@ -191,7 +191,10 @@ def read_manifest_files(project_root, run_id: str) -> List[str]:
     files = data.get("files")
     if not isinstance(files, list):
         return []
-    return [str(f) for f in files if str(f)]
+    # 非字符串元素直接丢弃（与 read_progress 的归一口径统一，code-review
+    # a7568c98f784）：生产 manifest 恒为纯字符串列表；手工编辑/外部直写混入
+    # 数组/对象等畸形元素时两读侧同口径，不再一弃一留漂移。
+    return [f for f in files if isinstance(f, str)]
 
 
 def covered_files(project_root, run_id: str) -> set:
@@ -1454,11 +1457,25 @@ def read_progress(project_root) -> dict:
       同款口径）。终态集合取 _RUN_TERMINAL_STATUS_MAP 全量（result/error/
       interrupted/cancelled/frozen-terminated/superseded/gate-blocked）。
     """
+    return _read_progress_with_manifest(project_root)[0]
+
+
+def _read_progress_with_manifest(project_root) -> tuple:
+    """read_progress 的共享内核：单次读盘同时产出进度 dict 与 manifest 数据。
+
+    code-review 754390de7ac2：check_progress_stall 只需进度判定 + manifest
+    ``requested_at``，原先独立调 read_progress 后再自行 _read_json_file 把
+    manifest-<run_id>.json 在同一次调用链里读两遍（admin_monitor 周期节拍
+    热路径的冗余 IO）——内核一次读取两处复用。返回 ``(progress, mdata)``：
+    ``mdata`` 为 manifest 原始 dict（缺失/损坏回 {}，同 _read_json_file 容错
+    口径）；``progress`` 结构与 read_progress 契约完全一致，manifest 数据
+    不进返回 dict（响应字段形状守卫不受影响）。
+    """
     base = {"running": False, "review_id": None, "review_kind": None,
             "total": 0, "done": 0, "current": None}
     run_id = _latest_review_run(project_root)
     if run_id is None:
-        return base
+        return base, {}
     # 读 manifest（total 权威来源；_read_json_file 自身已容错，缺失/损坏回空 dict）
     mpath = manifest_path(project_root, run_id)
     mdata = _read_json_file(mpath)
@@ -1552,7 +1569,7 @@ def read_progress(project_root) -> dict:
         if started is not None:
             age = now_local().timestamp() - started.timestamp()
             running = age <= _run_stale_seconds()
-    return {
+    progress = {
         "running": running,
         "review_id": run_id,
         "review_kind": review_kind,
@@ -1560,6 +1577,7 @@ def read_progress(project_root) -> dict:
         "done": done,
         "current": current,
     }
+    return progress, mdata
 
 
 def _stall_alert_minutes(project_root) -> int:
@@ -1595,7 +1613,10 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     ``now`` 参数供测试注入时钟（naive/aware 皆可，按瞬时差计算）；生产路径
     缺省取 ``timelib.now_local()``（aware 本地，SPEC-B 批③收拢）。
     """
-    progress = read_progress(project_root)
+    # 共享内核一次读盘（code-review 754390de7ac2）：progress 与 manifest
+    # mdata 同源于单次 manifest-<run_id>.json 读取，不再在 read_progress
+    # 之后自行 _read_json_file 把同一文件重读一遍（巡检热路径冗余 IO）。
+    progress, mdata = _read_progress_with_manifest(project_root)
     if not progress.get("running"):
         return None
     if progress.get("done") != 0:
@@ -1603,7 +1624,6 @@ def check_progress_stall(project_root, now: Optional[datetime] = None) -> Option
     run_id = progress.get("review_id")
     if not run_id:
         return None
-    mdata = _read_json_file(manifest_path(project_root, run_id))
     started = _iso_to_aware_dt(mdata.get("requested_at"))
     if started is None:
         return None
