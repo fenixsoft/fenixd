@@ -288,6 +288,7 @@ export function thinkingPreviewText(text: string, max = 40): string {
 // 不跨轮累积；多个调用方（ClaudeOutputPane / SessionPanel）交替转换时会互踩
 // 缓存键，代价仅是复用未命中，仍正确。
 type MessageReferenceCache = Map<string, ChatMessage>;
+// [fenix-ignore:e7b39aa4951c] 已知取舍非缺陷：复用前经 chatMessageShallowEqual 等值判定保证语义正确，且实测仅 ClaudeOutputPane/SessionPanel 两调用方，交替互踩缓存键的代价只是复用未命中（注释已载明）
 let previousMessageCache: MessageReferenceCache = new Map();
 
 // 字段值比较：引用相等直通过；toolResult 是转换层每轮新建的嵌套对象，按其
@@ -415,6 +416,15 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
     out.push({ type: 'system', content, timestamp });
   };
 
+  // user 事件文本提取 + 中断哨兵过滤单源化（code-review item 600bb3c13d77）：
+  // tool_result 分支与普通用户消息分支共用同一判定，哨兵口径变化只改此处
+  const pushUserTextIfVisible = (ev: RunEvent, timestamp: string | number) => {
+    const text = userMessageText(ev);
+    if (text && text !== USER_INTERRUPT_SENTINEL) {
+      out.push({ type: 'user', content: text, timestamp });
+    }
+  };
+
   for (const ev of events) {
     if (!ev) continue;
     // 缺时间戳事件（框架 stderr/error 行、透传缺失 timestamp 的 CLI 事件）用
@@ -461,18 +471,12 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
           }
         }
         // tool_result 消息不再渲染文本行（除非另有文本内容）
-        const text = userMessageText(ev);
-        if (text && text !== USER_INTERRUPT_SENTINEL) {
-          out.push({ type: 'user', content: text, timestamp });
-        }
+        pushUserTextIfVisible(ev, timestamp);
         continue;
       }
       // 普通用户消息：优先字符串 content，回显事件（isReplay，块数组无顶层
       // content）经 userMessageText 提取 text 块
-      const text = userMessageText(ev);
-      if (text && text !== USER_INTERRUPT_SENTINEL) {
-        out.push({ type: 'user', content: text, timestamp });
-      }
+      pushUserTextIfVisible(ev, timestamp);
       continue;
     }
 
