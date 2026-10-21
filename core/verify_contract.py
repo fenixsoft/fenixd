@@ -1531,6 +1531,19 @@ def _find_free_port() -> int:
 _STATIC_PORT_BIND_ATTEMPTS = 5
 
 
+class _StaticVerifyRequestHandler(SimpleHTTPRequestHandler):
+    """StaticVerifyServer 专用 handler：socket 层有界超时（dc9b92d80fd6）。
+
+    SimpleHTTPRequestHandler 默认 timeout=None，半开连接（对端异常消失
+    未挥手/慢速客户端）会让 handler 线程在 readline 上永久阻塞（线程与
+    fd 泄漏）。timeout 类属性经 StreamRequestHandler.setup 转 settimeout，
+    挂起线程有界退出；keep-alive 空闲超时由 handle_one_request 捕获
+    TimeoutError 后置 close_connection 关连接，正常请求处理行为不变。
+    """
+
+    timeout = 5
+
+
 class StaticVerifyServer:
     """内置静态被测实例：服务 ``root`` 目录，可探活、可停止。
 
@@ -1541,7 +1554,7 @@ class StaticVerifyServer:
 
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
-        handler = lambda *args, **kw: SimpleHTTPRequestHandler(  # noqa: E731
+        handler = lambda *args, **kw: _StaticVerifyRequestHandler(  # noqa: E731
             *args, directory=str(self.root), **kw
         )
         # 端口竞态防护（item 657a2e747992）：EADDRINUSE＝探测到的端口在 bind
@@ -1554,6 +1567,10 @@ class StaticVerifyServer:
             self._port = _find_free_port()
             try:
                 self._httpd = ThreadingHTTPServer(("127.0.0.1", self._port), handler)
+                # code-review dc9b92d80fd6：显式 daemon_threads（stdlib 默认已
+                # 为 True，此处固化以防基类/版本差异）——确保 server_close()
+                # 不 join 请求处理线程，stop() 在半开连接场景下仍有界返回。
+                self._httpd.daemon_threads = True
                 break
             except OSError as e:
                 if e.errno != errno.EADDRINUSE:

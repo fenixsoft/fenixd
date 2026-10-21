@@ -27,6 +27,13 @@ from core.proc_utils import guard_killpg, pid_alive_signal, proc_start_ticks
 
 SERVERS_FILENAME = "servers.json"
 
+# kill_process_group 的 SIGTERM→SIGKILL 升级固定等待秒数（就绪判据为组非空
+# 轮询）。与 core.proc_utils.kill_process_group 的 TERM_GRACE_SECONDS（默认
+# 5 秒）构成并行两套击杀时序常量（未并入的差异理由见 kill_process_group
+# docstring）；两侧取值由 tests/test_serving_registry_kill_timing.py 守卫
+# 钉住，单侧调整须两侧同步修订并更新守卫断言，防同名语义静默分叉。
+KILL_WAIT_SECONDS = 3.0
+
 
 def servers_path(project_root) -> Path:
     """登记文件绝对路径：<project_root>/.fenix/verify-serving/servers.json。"""
@@ -142,7 +149,8 @@ class ServingRegistry:
         但若该 pid 的 /proc starttime 与快照不一致（旧进程退出后 pid 被
         复用给同 spec 的新 spawn），就地刷新身份快照后写回。
 
-        Returns: 是否发生写入（False = 已存在且快照未过期，幂等跳过）。
+        Returns: 是否发生写入（False = 已存在且快照未过期，幂等跳过；
+        写盘失败同样返回 False，但会记 warning 以便排障）。
         """
 
         def _fn(records):
@@ -293,7 +301,14 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     无法核实（快照在而读数缺失，跳过本轮收割且保留登记）。
     """
     recorded = entry.get("start_ticks")
-    if isinstance(recorded, int) and recorded > 0:
+    # bool 是 int 子类（口径同 _pid_eq / sweep 的 pid 校验）：手改文件写入
+    # 的 {"start_ticks": true} 若放行进快照分支，True(==1) 对真实 tick 数
+    # 恒为假 → 恒判「身份失配」摘登记不杀；排除后落回下方 worktree/放行路径。
+    if (
+        isinstance(recorded, int)
+        and not isinstance(recorded, bool)
+        and recorded > 0
+    ):
         cur = _proc_start_ticks(pid)
         if cur is None:
             # 「读不到＝无法核实」不在此判失配：返回 None 让 sweep 跳过
@@ -382,7 +397,7 @@ def kill_process_group(pid: int, logger=None) -> bool:
             pgid, signal.SIGTERM, caller="serving_registry.kill_process_group", resolve=False
         ):
             sent = True
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + KILL_WAIT_SECONDS
     while time.monotonic() < deadline:
         # 就绪判据针对进程组而非组长：shell 形态命令后台化实例后组长可先于
         # 组内成员退出，只探组长会让存活成员跳过等待与 SIGKILL 兜底。

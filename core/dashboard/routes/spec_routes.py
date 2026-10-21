@@ -634,8 +634,8 @@ class H3SpecRoutesMixin:
                 f"Spec '{spec}' 已归档: {result['from']} → {result['to']}",
                 context={"spec": spec, "from": result["from"], "to": result["to"]},
             )
-        except Exception:
-            pass  # 写日志失败不阻断归档响应
+        except Exception as e:  # noqa: BLE001 兜底：写日志失败不阻断归档响应
+            logger.warning("spec archive: record_project_event failed: %s", e)
         # from/to 用 .get 兜底（code-review item a88f940cc788）：数据层 ok=true
         # 契约恒含 from/to（spec_archive.archive_spec 成功分支硬编码），但同文件
         # 其余端点对数据层返回值普遍不直接下标强信任——此处缺失时降级为 None

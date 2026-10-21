@@ -80,6 +80,29 @@ REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX = "评审失败冻结："
 REVIEW_REJECTED_FREEZE_ERROR_PREFIX = "评审否决冻结："
 
 
+# update_spec 留痕键单源（code-review 2cd5458a25d4）：_apply_updates_entry 写入
+# applied 的三类「非生效」留痕键——
+# - _stripped：人工冻结剥离的 status 写留痕；
+# - _rejected_verify_parallel_override：非法形状 _verify_parallel_override
+#   拒写留痕；
+# - _dropped_keys：serialize 固定字段表外普通键被静默丢弃的显性化留痕。
+# update_spec 的零写入判定据 _APPLIED_TRACEBACK_KEYS 把「applied 仅含留痕键」
+# 判为零字段生效（changed=False 跳过全量落盘）。新增第三类拒写/留痕键时在本处
+# 登记键名常量并纳入集合——写入点与排除点共用同一常量，漏登会把纯留痕写误判
+# 为有效写（触发 STATE.md 全量落盘、EventBus 空 diff 噪声与假「Updated SPEC」
+# 审计）。
+_APPLIED_TRACEBACK_KEY_STRIPPED = "_stripped"
+_APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE = (
+    "_rejected_verify_parallel_override"
+)
+_APPLIED_TRACEBACK_KEY_DROPPED_KEYS = "_dropped_keys"
+_APPLIED_TRACEBACK_KEYS = frozenset({
+    _APPLIED_TRACEBACK_KEY_STRIPPED,
+    _APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE,
+    _APPLIED_TRACEBACK_KEY_DROPPED_KEYS,
+})
+
+
 # ── SPEC 定时调度（add-spec-scheduling-controls D1）────────────────────
 # 单一事实源 = STATE.md entry 字段：start_after（定时拾取）与 frozen_until
 # （冻结定时解冻）均为可空 ISO8601 UTC，缺省 null（=无限制/永久冻结）。
@@ -978,6 +1001,24 @@ class StateParser:
                 ):
                     if value.lower() in ("null", "none", ""):
                         value = None
+                elif key.startswith("_"):
+                    # 未登记内部键的值形态兜底归一（code-review 955a2e122b01）：
+                    # 布尔/可空键清单靠人工登记，新增 _ 前缀内部字段漏登时，
+                    # serialize 把 True/False/None 写成 "True"/"False"/"null"，
+                    # 本处原样透传即类型漂移（字符串 "False" 为 truthy——上方
+                    # 清单内每个键的注释各记录一次同型事故）。此处按值形态做
+                    # 「新增字段漏登记」的模式性防线：仅整串精确匹配，已登记
+                    # 键由上方显式清单优先处理、行为不变。值域已核查：现存未
+                    # 登记 _ 键仅 _family_waiver 写字面串 "true"（admin_monitor
+                    # _apply_family_waiver），其唯一消费判真口径
+                    # （family._waiver_flag_set：str(value).lower()）类型无关，
+                    # 归一为 True 不改判真结果，无回归。
+                    if value in ("True", "true"):
+                        value = True
+                    elif value in ("False", "false"):
+                        value = False
+                    elif value in ("None", "null"):
+                        value = None
 
                 current_entry[key] = value
 
@@ -1763,8 +1804,8 @@ class StateMachine:
             if found:
                 # 零写入（code-review c8881a2031f0，对齐 _transition_atomic 在
                 # 45dc313473ef 的既有口径）：applied = local 生效字段 ∪ 留痕键
-                # （_stripped / _rejected_verify_parallel_override /
-                # _dropped_keys），故「applied 仅含留痕键」⟺「剥离/拒绝后
+                # （单源 _APPLIED_TRACEBACK_KEYS，勿在此重抄键名），故
+                # 「applied 仅含留痕键」⟺「剥离/拒绝后
                 # local 为空、零字段生效」——唯一残留副作用只剩
                 # _apply_updates_entry 的 updated 时间戳刷新，改返回
                 # changed=False 跳过全量落盘（避免仅 updated 变化的 STATE.md
@@ -1773,8 +1814,7 @@ class StateMachine:
                 # local 非空，照常落盘。
                 effective = [
                     k for k in applied
-                    if k not in ("_stripped", "_rejected_verify_parallel_override",
-                                 "_dropped_keys")
+                    if k not in _APPLIED_TRACEBACK_KEYS
                 ]
                 if not effective:
                     persisted = False
@@ -1842,10 +1882,10 @@ class StateMachine:
         if "_verify_parallel_override" in local:
             _vpo = local["_verify_parallel_override"]
             if not (_vpo is None or (isinstance(_vpo, int) and not isinstance(_vpo, bool))):
-                applied["_rejected_verify_parallel_override"] = _vpo
+                applied[_APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE] = _vpo
                 del local["_verify_parallel_override"]
         if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in local and "status" in local:
-            applied["_stripped"] = local.pop("status")
+            applied[_APPLIED_TRACEBACK_KEY_STRIPPED] = local.pop("status")
         if "status" in local:
             local["_cancelled_hold"] = False
             # implementing→ready 中央清除（code-fix 6a2031777cc3）：admin 处置
@@ -1878,7 +1918,7 @@ class StateMachine:
             if not k.startswith("_") and k not in StateParser.SERIALIZED_FIELD_SET
         )
         if dropped:
-            applied["_dropped_keys"] = dropped
+            applied[_APPLIED_TRACEBACK_KEY_DROPPED_KEYS] = dropped
         return True
 
     def _log_update_applied(self, spec_name: str, applied: dict,

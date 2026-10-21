@@ -2295,6 +2295,20 @@ class ConfigLoader:
         if spec_run_at is not None and not (
             isinstance(spec_run_at, str) and _HHMM_RE.match(spec_run_at)
         ):
+            # 非法值 ERROR 留痕后回退缺省（docstring 宣称口径，与
+            # _validated_run_at 同款）；进程级 (键路径, repr(value)) 一次性
+            # 去重（code-review item 71306d72e5e3）：读取器被 30s 热更新反复
+            # 调用，坏值在场时同一 ERROR 逐周期重复打印。去重只作用于日志，
+            # 回退缺省行为不变。
+            cls._warn_reader_once(
+                "self_evolution.spec_run_at",
+                spec_run_at,
+                _logger.error,
+                "self_evolution.spec_run_at 非法（应为 HH:mm，如 09:30）：%r，"
+                "回退缺省 %s",
+                spec_run_at,
+                SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT,
+            )
             spec_run_at = SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT
         return {
             "auto_accept": auto_accept,
@@ -3451,9 +3465,13 @@ class ConfigLoader:
 
     @classmethod
     def get_impl_code_review_effort(cls, config: Dict[str, Any]) -> str:
-        """读取 ``verify.impl_code_review_effort``：ocr 审查力度预设（low/medium/high，提示词命令示例 ``--effort <v>``），缺省 "low"，仅白名单三值（add-impl-code-review-tuning）。"""
+        """读取 ``verify.impl_code_review_effort``：ocr 审查力度预设（low/medium/high，提示词命令示例 ``--effort <v>``），缺省 "low"，仅白名单三值、非法值记 DEBUG（add-impl-code-review-tuning）。"""
         return cls._whitelist_str_reader(
-            config, "impl_code_review_effort", ("low", "medium", "high"), "low"
+            config,
+            "impl_code_review_effort",
+            ("low", "medium", "high"),
+            "low",
+            log_invalid=True,
         )
 
     @classmethod

@@ -77,7 +77,9 @@ PROMPT_FILE = "knowledge_prompts/distill.md"  # 相对 core/ 包
 MAX_PAGE_LINES = 150
 
 # marker 字段合法性
-_KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# 结尾锚用 \Z 而非 $：$ 会放行带尾部换行的 capability/目录名/文件名
+# （与 evolution.py bd2227732d7e 确立的 \Z 纪律对齐）
+_KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 _MARKER_RE = re.compile(r"<!--\s*knowledge:(.*?)-->", re.S)
 _MARKER_FIELD_RE = re.compile(r"([A-Za-z_]+)=(\S+)")
 
@@ -123,7 +125,7 @@ def local_now_stamp() -> tuple:
     return now.strftime("%Y-%m-%d %H:%M"), tz
 
 # ADR 文件名与头部状态
-_ADR_NAME_RE = re.compile(r"^ADR-(\d{3})-.+\.md$")
+_ADR_NAME_RE = re.compile(r"^ADR-(\d{3})-.+\.md\Z")  # 结尾锚 \Z 同 _KEBAB_RE
 _ADR_STATUS_RE = re.compile(r"^status:\s*(accepted|superseded)\s*$", re.M)
 _SUPERSEDED_BY_RE = re.compile(r"Superseded by:\s*ADR-(\d{3})")
 _ADR_BODY_SPLIT = "## Context"

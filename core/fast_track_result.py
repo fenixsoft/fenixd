@@ -586,7 +586,7 @@ _IMPL_WALLCLOCK_FALLBACK_DEFAULTS = {
 }
 
 
-def _impl_wallclock_default(key: str):
+def _impl_wallclock_default(key: str, logger=None):
     """读墙钟 sizing 单点缺省（core.config；惰性导入避免模块环）。
 
     KeyError/ImportError 回退硬编码字面缺省：本模块
@@ -596,19 +596,34 @@ def _impl_wallclock_default(key: str):
     显式记「疑似上游契约漂移」）；常量整体缺失/改名时导入失败同样回退，
     不让 ImportError 沿配置归一化路径向上传播（code-review item
     dc3ffe79dbda）。
+
+    Args:
+        key: 缺省键（enabled / full_scale_threshold / extra_extensions）。
+        logger: 可选 ``core.logger.Logger`` 实例（code-review item
+            7da9dff295c1）。漂移告警与 ``estimate_spec_scale`` 同款注入
+            范式：传入时经实例通道落**本项目** fenixd.log；未传时
+            （单测/独立调用）回退原裸 ``logging.getLogger`` 通道（多项目
+            同进程下项目归属不确定的局限见 core/logger.py 明示）。
     """
     try:
         from core.config import IMPL_WALLCLOCK_SIZING_DEFAULTS
         return IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
     except (ImportError, KeyError) as e:
-        logging.getLogger("fenixd.fast_track_scale").warning(
-            "fast-track 墙钟 sizing 缺省读取失败"
-            f"（疑似上游契约漂移，回退硬编码字面缺省）: {e}")
+        message = ("fast-track 墙钟 sizing 缺省读取失败"
+                   f"（疑似上游契约漂移，回退硬编码字面缺省）: {e}")
+        if logger is not None:
+            logger.warning("fast_track_scale", message)
+        else:
+            logging.getLogger("fenixd.fast_track_scale").warning(message)
         return _IMPL_WALLCLOCK_FALLBACK_DEFAULTS[key]
 
 
-def get_impl_wallclock_sizing_config(config: dict) -> dict:
+def get_impl_wallclock_sizing_config(config: dict, logger=None) -> dict:
     """归一化 ``agents.impl_wallclock_sizing`` 配置（读侧与设置界面共用，单点缺省）。
+
+    ``logger`` 透传给 ``_impl_wallclock_default``（code-review item
+    7da9dff295c1）：注入时上游键漂移告警经 Logger 实例通道落本项目日志，
+    未传时回退裸 getLogger 通道。
 
     非法值逐项回退缺省（风格对齐 ``get_turn_budget_sizing_config``，不抛异常）：
 
@@ -633,23 +648,24 @@ def get_impl_wallclock_sizing_config(config: dict) -> dict:
             return default
         return val
 
-    enabled = section.get(IMPL_WALLCLOCK_ENABLED_KEY, _impl_wallclock_default("enabled"))
+    enabled = section.get(
+        IMPL_WALLCLOCK_ENABLED_KEY, _impl_wallclock_default("enabled", logger))
     if not isinstance(enabled, bool):
-        enabled = _impl_wallclock_default("enabled")
+        enabled = _impl_wallclock_default("enabled", logger)
 
     return {
         "enabled": enabled,
         "full_scale_threshold": _int(
             section, IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY,
-            _impl_wallclock_default("full_scale_threshold")),
+            _impl_wallclock_default("full_scale_threshold", logger)),
         "extra_extensions": _int(
             section, IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY,
-            _impl_wallclock_default("extra_extensions")),
+            _impl_wallclock_default("extra_extensions", logger)),
     }
 
 
 def lifted_max_extensions_for_scale(
-    base_max_extensions: int, scale: int, cfg: dict,
+    base_max_extensions: int, scale: int, cfg: dict, logger=None,
 ) -> int:
     """按规模分推算 impl 车道生效续期预算（只抬不压，1.1/1.2）。
 
@@ -670,19 +686,23 @@ def lifted_max_extensions_for_scale(
             max_extensions``，经 ``_supervision_settings`` 归一）。
         scale: 规模分（run 启动点 ``estimate_spec_scale`` 返回值）。
         cfg: ``get_impl_wallclock_sizing_config`` 的返回值（契约：调用方先归一化）。
+        logger: 可选 ``core.logger.Logger`` 实例，透传给
+            ``_impl_wallclock_default`` 的漂移告警通道（code-review item
+            7da9dff295c1）；未传时回退裸 getLogger 通道。
 
     Returns:
         生效续期预算（int）。
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    if not cfg.get(IMPL_WALLCLOCK_ENABLED_KEY, _impl_wallclock_default("enabled")):
+    if not cfg.get(IMPL_WALLCLOCK_ENABLED_KEY,
+                   _impl_wallclock_default("enabled", logger)):
         return base_max_extensions
     threshold = cfg.get(
         IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY,
-        _impl_wallclock_default("full_scale_threshold"))
+        _impl_wallclock_default("full_scale_threshold", logger))
     extra = cfg.get(
         IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY,
-        _impl_wallclock_default("extra_extensions"))
+        _impl_wallclock_default("extra_extensions", logger))
     if (isinstance(scale, int) and not isinstance(scale, bool)
             and isinstance(threshold, int) and not isinstance(threshold, bool)
             and isinstance(extra, int) and not isinstance(extra, bool)

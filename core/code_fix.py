@@ -1607,7 +1607,7 @@ def _rewrite_todo_entry_consumed(
 
     def _rewrite_locked() -> bool:
         try:
-            text = todo_path.read_text(encoding="utf-8")
+            text = todo_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return False
         lines = text.splitlines(keepends=True)
@@ -1664,7 +1664,7 @@ def _rewrite_todo_entry_ids(project_root, old_ids, new_ids) -> bool:
 
     def _rewrite_locked() -> bool:
         try:
-            text = todo_path.read_text(encoding="utf-8")
+            text = todo_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return False
         lines = text.splitlines(keepends=True)
@@ -4789,6 +4789,9 @@ class CodeFixOrchestrator:
                     phase="blocked",
                     reason="wip_overlap_at_select",
                     current=current,
+                    activation_id=activation_id,
+                    total=total,
+                    done=done,
                     worktree=None,
                     run_id=None,
                     batch_total=None,
@@ -5518,14 +5521,23 @@ class CodeFixOrchestrator:
                 # 仍失败则保留台账条目等下一链边界再核销（merge_back 幂等：
                 # 分支已是 HEAD 祖先时跳过并报成功，重试无副作用）。
                 items = None
+                # 读降级检出（code-review item d542d1f755d1，与主路径
+                # 91150654629c / consume_resolved_failed_batches 同款
+                # degraded_out 出参 + 双门）：read_items 契约对瞬时访问失败
+                # 按空集降级、从不抛异常，items is None 兜底对降级场景不可达
+                # ——degraded 非空与 items is None 并列按 ledger_read_failed
+                # 保留台账条目与现场。
+                items_degraded: list = []
                 for attempt in range(3):
                     try:
-                        items = read_items(root)
+                        items = _read_items_unlocked(
+                            items_path(root), degraded_out=items_degraded
+                        )
                         break
                     except Exception:  # noqa: BLE001 — 重试耗尽走「保留待下链」分支
                         if attempt < 2:
                             time.sleep(0.2 * (attempt + 1))
-                if items is None:
+                if items is None or items_degraded:
                     ledger_read_failed = True
                 else:
                     # 批界守卫（与 _run_batch_created 核销前 batch_set 过滤同
@@ -6913,15 +6925,23 @@ class CodeFixOrchestrator:
         # 修复的新 HEAD 上多半零提交，跨链反复空转。短间隔重试 3 次；无候选
         # 核销条目时读结果对核销无影响，跳过重试直走零核销收尾。
         ledger = None
+        # 读降级检出（code-review item 91150654629c，对齐
+        # consume_resolved_failed_batches 的 degraded_out 出参 + 双门范式）：
+        # read_items 契约对瞬时访问失败记 WARNING 后按空集降级、从不抛异常，
+        # 仅凭「读抛异常」的兜底对降级场景不可达——degraded 非空与 ledger
+        # is None 并列触发转延迟台账，防「已合回却不核销即销毁现场」。
+        ledger_degraded: list = []
         if resolve_candidates:
             for attempt in range(3):
                 try:
-                    ledger = read_items(root)
+                    ledger = _read_items_unlocked(
+                        items_path(root), degraded_out=ledger_degraded
+                    )
                     break
                 except Exception:  # noqa: BLE001 — 重试耗尽走「保留待下链」分支
                     if attempt < 2:
                         time.sleep(0.2 * (attempt + 1))
-        if resolve_candidates and ledger is None:
+        if resolve_candidates and (ledger is None or ledger_degraded):
             # 已合回但核销状态未知（与 defer 路径 ledger_read_failed 分支同
             # 款）：MUST NOT 此刻以 success 清理现场——比照 _defer_merge_back
             # 登记延迟台账 + 放锁后按 consumed 收尾，条目随 _deferred_item_ids

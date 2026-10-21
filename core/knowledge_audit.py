@@ -720,7 +720,10 @@ def knowledge_daily_check(
 
     门控与防重语义：
     - ``knowledge.audit_enabled`` 门控；
-    - 车道按状态文件的自然日戳同自然日防重（只跑一次）；
+    - 车道按状态文件的自然日戳同自然日防重（只跑一次）。该防重仅在单写入方
+      （daemon 300s 检查点）前提下成立：读日戳与执行体检之间无跨进程互斥，
+      跨进程并发不在覆盖范围（见 consume_arbitration docstring 末尾
+      「挂载现状」段，code-review cab1fb7126c4）；
     - 禁用或当日已跑 → 静默返回，零日志噪音（禁用跳过场景）；
     - 车道抛异常记日志不更新日戳（下一周期重试），不中断主循环（挂载侧同款
       try/except）。
@@ -747,6 +750,10 @@ def knowledge_daily_check(
     if arb.get("triggered"):
         results["arbitration"] = arb
 
+    # 自然日防重仅在单写入方（daemon 300s 检查点）前提下成立：上方 _read_state
+    # 读日戳与本处执行体检之间无跨进程互斥、也无当日预占位写，第二写入方同日
+    # 并发会各自读到旧日戳竞跑整轮体检（跨进程并发不在覆盖范围，见
+    # consume_arbitration 尾注「挂载现状」段，code-review cab1fb7126c4）。
     if state.get("last_audit_date") != today:
         try:
             lane = audit_lane or run_audit
@@ -1304,28 +1311,47 @@ def _apply_mechanical(
     index_path = Path(project_root) / KNOWLEDGE_DIR / "adr" / "index.md"
     mismatches = scan["adr"]["status_mismatch"]
     if mismatches and index_path.is_file():
-        lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        wrote = False
-        for mm in mismatches:
-            ln = lines[mm["line_no"]]
-            slot = _adr_status_slot(ln)
-            if slot is None:
-                # 状态槽位重定位失败（行内容相对扫描快照已变）不盲改，转待人工
-                # 而非计入机械修复。
-                manual.append(
-                    f"adr/index.md：{mm['name']} 状态槽位定位失败，请人工对齐为 {mm['expected']}"
-                )
-                continue
-            if slot[2] != mm["expected"]:
-                lines[mm["line_no"]] = ln[: slot[0]] + mm["expected"] + ln[slot[1] :]
-                wrote = True
-                fixed.append(
-                    f"adr/index.md：{mm['name']} ADR 索引状态对齐为 {mm['expected']}"
-                )
-                cats["adr"] += 1
-        if wrote:
-            atomic_write_text(index_path, "\n".join(lines) + "\n")
-            rewritten.add(f"{KNOWLEDGE_DIR}/adr/index.md")
+        # 同悬空段/格式段口径：扫描后盘面已变（文件不可读/已删除）时转待人工，
+        # 不让 OSError 中断本轮机械修复（code-review 174ffbb6ce28）。
+        lines: Optional[list[str]] = None
+        try:
+            lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = None
+        if lines is None:
+            manual.append(
+                "adr/index.md：盘面已变（文件不可读或已删除），索引状态对齐转待人工"
+            )
+        else:
+            wrote = False
+            for mm in mismatches:
+                if not 0 <= mm["line_no"] < len(lines):
+                    # 行号相对扫描快照越界（盘面已变行数增删）不盲索引，同槽位
+                    # 定位失败口径转待人工而非计入机械修复。
+                    manual.append(
+                        f"adr/index.md：{mm['name']} 状态行号越界（盘面相对扫描快照已变），"
+                        f"请人工对齐为 {mm['expected']}"
+                    )
+                    continue
+                ln = lines[mm["line_no"]]
+                slot = _adr_status_slot(ln)
+                if slot is None:
+                    # 状态槽位重定位失败（行内容相对扫描快照已变）不盲改，转待人工
+                    # 而非计入机械修复。
+                    manual.append(
+                        f"adr/index.md：{mm['name']} 状态槽位定位失败，请人工对齐为 {mm['expected']}"
+                    )
+                    continue
+                if slot[2] != mm["expected"]:
+                    lines[mm["line_no"]] = ln[: slot[0]] + mm["expected"] + ln[slot[1] :]
+                    wrote = True
+                    fixed.append(
+                        f"adr/index.md：{mm['name']} ADR 索引状态对齐为 {mm['expected']}"
+                    )
+                    cats["adr"] += 1
+            if wrote:
+                atomic_write_text(index_path, "\n".join(lines) + "\n")
+                rewritten.add(f"{KNOWLEDGE_DIR}/adr/index.md")
     return fixed, manual, rewritten, cats
 
 

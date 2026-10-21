@@ -1178,12 +1178,14 @@ class HookEngine:
         """
         import yaml
 
-        # 读-改-写全程与 config_admin.write_config（dashboard 保存端点）共用
-        # 同一把进程内 config 写锁（code-review item 34488d84e084）：整文件
-        # 替换式写回无锁时，恰逢保存并发则双方各持陈旧副本，后写者静默覆盖
-        # 先写者（用户刚保存的 hook 丢失，或清扫结果被旧副本顶回）。按文件
-        # 粒度短临界区、锁内不嵌套其他锁；config_admin 不可导入时退化为无锁
-        # 清扫并记警告（不因导入失败阻断清扫语义）。
+        # 读-改-写全程持 config_admin 的进程内 config 写锁（code-review item
+        # 34488d84e084）：整文件替换式写回无锁时，同进程并发写回各持陈旧副本，
+        # 后写者静默覆盖先写者（用户刚保存的 hook 丢失，或清扫结果被旧副本
+        # 顶回）。该锁仅提供同进程互斥（admin_actions 裁决回写路径），
+        # dashboard --serve 为独立进程，跨进程并发不在本锁覆盖范围（如需可
+        # 叠加 flock，见 config_admin.py 注释；code-review item
+        # a28282d49539）。按文件粒度短临界区、锁内不嵌套其他锁；config_admin
+        # 不可导入时退化为无锁清扫并记警告（不因导入失败阻断清扫语义）。
         try:
             from core.dashboard.data.config_admin import _CONFIG_WRITE_LOCK
         except Exception as e:

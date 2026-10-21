@@ -1553,7 +1553,7 @@ def verdict_failed_ids(report) -> list:
     误判稳定而复用裁决（防御性：引擎产物正常都带 id，位置或数量一变集合
     即不同 → 保守不复用）。
     """
-    scenarios = (report or {}).get("scenarios") or []
+    scenarios = (report if isinstance(report, dict) else {}).get("scenarios") or []
     ids: set = set()
     for i, sc in enumerate(scenarios):
         if not isinstance(sc, dict):

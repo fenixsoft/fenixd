@@ -1312,15 +1312,30 @@ def scale_stats(project_root: Path, log=None) -> dict[str, int]:
     kdir = Path(project_root) / KNOWLEDGE_DIR
     domains_dir = kdir / "domains"
     adr_dir = kdir / "adr"
-    domains = (
-        len([p for p in domains_dir.iterdir() if (p / "_domain.md").is_file()])
-        if domains_dir.is_dir()
-        else 0
-    )
+    domains = 0
+    try:
+        domains = (
+            len([p for p in domains_dir.iterdir() if (p / "_domain.md").is_file()])
+            if domains_dir.is_dir()
+            else 0
+        )
+    except OSError as e:
+        log.warning(
+            "knowledge",
+            f"回填规模统计：domains 目录 {domains_dir} 列举失败（fail-open 计 0 降级）：{e}",
+        )
     pages = 0
     lines = 0
     if domains_dir.is_dir():
-        for page in domains_dir.rglob("*.md"):
+        try:
+            md_pages = list(domains_dir.rglob("*.md"))
+        except OSError as e:
+            log.warning(
+                "knowledge",
+                f"回填规模统计：domains 目录 {domains_dir} 遍历失败（fail-open 计 0 降级）：{e}",
+            )
+            md_pages = []
+        for page in md_pages:
             if page.name == "_domain.md":
                 continue
             pages += 1
@@ -1344,11 +1359,18 @@ def scale_stats(project_root: Path, log=None) -> dict[str, int]:
                 )
                 continue
             lines += len(text.splitlines())
-    adrs = (
-        len([p for p in adr_dir.glob("ADR-*.md") if p.is_file()])
-        if adr_dir.is_dir()
-        else 0
-    )
+    adrs = 0
+    try:
+        adrs = (
+            len([p for p in adr_dir.glob("ADR-*.md") if p.is_file()])
+            if adr_dir.is_dir()
+            else 0
+        )
+    except OSError as e:
+        log.warning(
+            "knowledge",
+            f"回填规模统计：adr 目录 {adr_dir} 列举失败（fail-open 计 0 降级）：{e}",
+        )
     return {"domains": domains, "pages": pages, "adrs": adrs, "lines": lines}
 
 
@@ -2415,6 +2437,8 @@ def _write_report(project_root: Path, summary: dict) -> None:
         lines.append("")
     skipped = summary.get("adr_skipped_no_design", [])
     if skipped:
+        lines.append("## 无 design.md 跳过（已标 distilled 留痕）")
+        lines.append("")
         lines.append(
             f"- 无 design.md 归档 {len(skipped)} 个，已标 distilled 留痕跳过："
             f"{', '.join(skipped)}"

@@ -81,16 +81,16 @@ class H8HelpRoutesMixin:
         except OSError:
             return {"docs": []}
         docs = []
-        try:
-            for f in files:
+        # code-review b32643bc6058：循环体内唯一 OSError 源（read_text）已在内层
+        # 捕获并回退空标题，外层 except OSError 不可达，且一旦命中会把已收集
+        # 的 docs 吞成空列表，与「目录缺失/为空才返回空列表」契约不符，故不设
+        for f in files:
+            title = ""
+            try:
+                title = self._help_doc_title(f.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
                 title = ""
-                try:
-                    title = self._help_doc_title(f.read_text(encoding="utf-8", errors="replace"))
-                except OSError:
-                    title = ""
-                docs.append({"name": f.name, "title": title or f.name[:-3]})
-        except OSError:
-            return {"docs": []}
+            docs.append({"name": f.name, "title": title or f.name[:-3]})
         order = {name: i for i, name in enumerate(_server_mod.HELP_DOC_ORDER)}
         docs.sort(key=lambda d: (order.get(d["name"], len(order)), d["name"]))
         return {"docs": docs}

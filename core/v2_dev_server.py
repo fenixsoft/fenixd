@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from core.proc_utils import (
     find_free_port,
@@ -307,12 +307,16 @@ def _wait_ready(port: int, timeout: float = 5.0) -> bool:
     return False
 
 
-def _listen_inode(port: int) -> Optional[str]:
-    """取 port 当前 LISTEN socket 的 inode（/proc/net/tcp[6]；无监听返回 None）。
+def _listen_inode(port: int) -> List[str]:
+    """取 port 当前全部 LISTEN socket 的 inode（/proc/net/tcp[6]；无则空表）。
 
     /proc/net/tcp 固定布局：local_address 形如 0100007F:4A38（IP:十六进制
-    端口）、第 4 列 st=0A 即 LISTEN、第 10 列为 socket inode。
+    端口）、第 4 列 st=0A 即 LISTEN、第 10 列为 socket inode。收集该端口
+    全部 LISTEN 条目而非首条：wildcard（00000000/::）与具体地址（如
+    0100007F）可被不同进程同时 LISTEN 同一端口，只取首条可能命中他方
+    socket 的 inode，导致身份收口误判。
     """
+    inodes: List[str] = []
     for table in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
             rows = Path(table).read_text().splitlines()[1:]
@@ -322,10 +326,10 @@ def _listen_inode(port: int) -> Optional[str]:
             fields = row.split()
             try:
                 if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
-                    return fields[9]
+                    inodes.append(fields[9])
             except (IndexError, ValueError):
                 continue
-    return None
+    return inodes
 
 
 def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -> bool:
@@ -333,20 +337,23 @@ def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -
 
     _wait_ready 只证明「有 listener 应答」；若 allocate_port 的 bind 探测与
     node 实际 bind 之间端口被抢注，应答者是他方进程、验证流量会打到异码服务。
-    同一 addr:port 不可能存在两个 LISTEN（node 未用 SO_REUSEPORT），故端口
-    LISTEN inode 出现在 proc 的 /proc/<pid>/fd 即证明应答者就是本实例，判定
-    与进程退出时机无关。就绪即命中通常首轮通过；短暂重试仅覆盖 node 尚在
-    bind 的窗口与 procfs 瞬时读失败，proc 已退出（bind 失败自灭）则立即判负。
+    同一 addr:port 不可能存在两个 LISTEN（node 未用 SO_REUSEPORT），但 wildcard
+    与具体地址可被不同进程同时 LISTEN 同一端口，故收集该端口全部 LISTEN
+    inode 逐一与 proc 的 /proc/<pid>/fd 比对，任一命中即证明 proc 自身持有
+    该端口 LISTEN socket（应答者含本实例），判定与进程退出时机无关。就绪即
+    命中通常首轮通过；短暂重试仅覆盖 node 尚在 bind 的窗口与 procfs 瞬时读
+    失败，proc 已退出（bind 失败自灭）则立即判负。
     """
     deadline = time.time() + timeout
     while True:
         if proc.poll() is not None:
             return False
-        inode = _listen_inode(port)
-        if inode is not None:
+        inodes = _listen_inode(port)
+        if inodes:
             try:
                 fds = Path(f"/proc/{proc.pid}/fd").iterdir()
-                if any(os.readlink(fd) == f"socket:[{inode}]" for fd in fds):
+                links = {os.readlink(fd) for fd in fds}
+                if any(f"socket:[{inode}]" in links for inode in inodes):
                     return True
             except OSError:
                 pass

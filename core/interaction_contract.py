@@ -15,8 +15,9 @@
   - 纯展示声明双通道：SPEC 元素定义处（命中行）的「纯展示 / 不可交互」标注，
     或 planner 产出场景对象上的 ``declared_display`` 列表。
   - 覆盖判定三通道：场景 ``covers`` 显式登记 → 候选标识原文/归一化形式出现在
-    场景文本（steps/assertions/description）→ 主语义关键词别名匹配（如
-    ``dark-Card--link`` ↔ 场景描述「卡片」）。
+    场景文本（steps/assertions/description；场景 id 亦计入通道 2 证据——有意
+    设计：id 命名承载元素语义，如 id=dark-card-render 即为 card 的覆盖证据）→
+    主语义关键词别名匹配（如 ``dark-Card--link`` ↔ 场景描述「卡片」）。
   - 旧场景集（无元数据）不追溯（design D2）：持久化集为遗留集时跳过强制，
     仅新验证轮生效。
 
@@ -307,6 +308,8 @@ def scenario_text_blob(scenario: Any) -> str:
     if not isinstance(scenario, dict):
         return ""
     parts: List[str] = []
+    # 场景 id 也计入通道 2 覆盖证据（有意设计：id 命名承载元素语义，如
+    # id=dark-card-render 即构成 card 的覆盖证据）；口径见模块 docstring 三通道。
     for key in ("id", "description"):
         val = scenario.get(key)
         if isinstance(val, str):
