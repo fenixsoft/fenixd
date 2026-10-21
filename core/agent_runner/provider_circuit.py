@@ -947,9 +947,10 @@ class ProviderCircuit:
         错误文本各异则指纹不同。
 
         实现要点：小写化 → 剥离 ``[claude-code:...]`` 诊断前缀 → 剥已知非模型
-        数字字段（exit code / http 状态码 / request id）→ 剥 model 名
-        （``deepseek-v4-flash`` / ``glm-5.3-flash`` / ``claude-*`` 等形态）→
-        剥 ISO 时间戳与长数字串 → 压空白。
+        数字字段（exit code / http 状态码 / request id）→ 剥 model 名（已知
+        provider 前缀 + 数字版本痕迹的真实模型名，``deepseek-v4-flash`` /
+        ``glm-5.3-flash`` / ``claude-sonnet-5`` 等形态；utf-8 / sha-1 等
+        非模型「连字符+短数字」词不吞）→ 剥 ISO 时间戳与长数字串 → 压空白。
         """
         if not error_text:
             return ""
@@ -966,17 +967,23 @@ class ProviderCircuit:
         text = re.sub(
             r"\brequest[\s-]+id[\s-]+[a-z0-9][a-z0-9-]*\b", "request id", text
         )
-        # 剥 model 名：版本化模型名形如 deepseek-v4-flash / glm-5.3-flash /
-        # claude-3-5-haiku（含「-<数字>」版本片段）。统一替换为占位符，使不同
-        # 模型变体的同型瞬断收敛为同一指纹。
-        # 版本段收窄（item 686d4a1b599f）：数字版本段只认三类形态——``v`` 前缀
-        # （``-v4``）、点分版本（``-5.3``）、1-2 位裸数字（``-5``，即
-        # claude-sonnet-5 / gpt-5 形态）；裸 3 位以上数字尾段（exit-code-143 /
-        # http-503 / request-id-88271）不构成版本段，不触发剥离。
+        # 剥 model 名：已知 provider 模型前缀（deepseek- / glm- / claude- /
+        # gpt- / qwen- 等清单）且词内含数字版本痕迹的真实模型名（deepseek-v4 /
+        # glm-5.3-flash / claude-3-5-haiku / claude-sonnet-5 / gpt-5 形态）
+        # 统一替换为占位符，使不同模型变体的同型瞬断收敛为同一指纹。
+        # 收窄（item ad4f49e45fd8）：旧 pattern 版本段接受「任意小写词 + 1-2
+        # 位裸数字」，utf-8 / sha-1 / base-2 / error-1 等非模型「连字符+短数
+        # 字」词被误吞成 <model>，同骨架不同根因的瞬断误收敛同一指纹。改为
+        # 「已知模型前缀清单 + lookahead 数字版本痕迹」双条件：非清单词一律
+        # 不吞；claude-code / claude-watchdog 等仓内大量存在的 claude- 前缀
+        # 非模型词因不含数字同样不吞（宁可少吞不可多吞）；裸 3 位以上数字尾
+        # 段（exit-code-143 / http-503 / request-id-88271）本就非清单词，不
+        # 触发剥离（item 686d4a1b599f 语义不变）。
         text = re.sub(
-            r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
-            r"(?:-v\d+(?:\.\d+)*|-\d{1,2}(?:\.\d+)+|-\d{1,2})"
-            r"(?:-[a-z0-9.]+)*\b",
+            r"\b(?:deepseek|glm|claude|gpt|qwen|gemini|llama|mistral"
+            r"|kimi|minimax|grok)"
+            r"(?=[a-z0-9.-]*\d)"
+            r"(?:-[a-z0-9.]+)+\b",
             "<model>",
             text,
         )

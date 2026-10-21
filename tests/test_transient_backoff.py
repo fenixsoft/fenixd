@@ -1346,6 +1346,39 @@ class TestRealFailureFingerprintReplay:
         )
         assert len(set(fps)) == 1, f"模型变体同型瞬断应收敛同一指纹: {fps}"
 
+    def test_generic_hyphen_numeric_words_not_swallowed_as_model(self):
+        """utf-8 / sha-1 等非模型「连字符+短数字」词不再被吞成 <model>
+        （item ad4f49e45fd8）：异根因失败文本指纹互异，不误收敛。"""
+        texts = [
+            "decoding failed: invalid utf-8 sequence in stream",
+            "artifact checksum mismatch using sha-1",
+            "unexpected base-2 representation while parsing",
+            "sandbox worker error-1 aborted the request",
+            "claude-code: command not found",
+        ]
+        fps = [ProviderCircuit.normalize_transient_fingerprint(t) for t in texts]
+        assert all("<model>" not in fp for fp in fps), (
+            f"非模型连字符短数字词不应被吞成 <model>: {fps}"
+        )
+        assert len(set(fps)) == len(texts), f"异根因文本指纹应互异: {fps}"
+
+    def test_prefixed_versioned_model_names_still_normalized(self):
+        """已知 provider 前缀 + 数字版本痕迹的真实模型名仍剥成 <model> 并收敛
+        （item ad4f49e45fd8 收窄后风暴聚类语义不回退）。"""
+        texts = [
+            'API error: unrecognized model "deepseek-v3"',
+            'API error: unrecognized model "glm-4-flash"',
+            'API error: unrecognized model "claude-3-5-sonnet"',
+            'API error: unrecognized model "gpt-5"',
+            'API error: unrecognized model "qwen-2.5-72b"',
+            'API error: unrecognized model "kimi-k2"',
+        ]
+        fps = [ProviderCircuit.normalize_transient_fingerprint(t) for t in texts]
+        assert all("<model>" in fp for fp in fps), (
+            f"真模型名应仍被归一为 <model>: {fps}"
+        )
+        assert len(set(fps)) == 1, f"模型变体同型瞬断应收敛同一指纹: {fps}"
+
 
 class TestShutdownInterruptGuard:
     """shutdown-kill 不进瞬断通道（2026-09-09 事故守卫）。
