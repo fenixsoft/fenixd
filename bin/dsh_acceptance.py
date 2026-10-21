@@ -1553,7 +1553,16 @@ def dry_run_plan(lanes: List[str],
 
 
 def run_accept(args: argparse.Namespace) -> int:
-    project_root = Path(args.project_root or REPO_ROOT).resolve()
+    # expanduser（code-review item cb5b661b9cb2）：引号包裹传入的 ~ 开头路径按
+    # 字面解析会读不到 provider 凭据、自检把缺项误归因 config，口径对齐仓库 CLI
+    try:
+        # 路径解析收口进 try（与 fenix_detect_artifacts.py 等仓库 CLI 惯例对齐）：
+        # expanduser 解析不出家目录抛 RuntimeError、含空字节路径在构造阶段抛
+        # ValueError，裸抛会以 traceback 收场而非可读错误退出
+        project_root = Path(args.project_root or REPO_ROOT).expanduser().resolve()
+    except (ValueError, OSError, RuntimeError) as e:
+        print(f"错误: 项目根目录无法解析: {e}", file=sys.stderr)
+        return 1
     profile = args.profile
     checks = accept_selfcheck(project_root, profile,
                               with_claude_baseline=not args.no_claude_baseline)
@@ -2005,8 +2014,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     if args.mode == "fixture":
-        parent = Path(args.parent) if args.parent else Path(
-            tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
+        # expanduser（code-review item cb5b661b9cb2）：引号包裹传入的 ~ 开头路径
+        # 按字面解析会在 cwd 下创建字面 "~" 目录，口径对齐仓库其他 CLI
+        try:
+            # 路径解析收口进 try（与 fenix_detect_artifacts.py 等仓库 CLI 惯例对齐）：
+            # expanduser 解析不出家目录抛 RuntimeError、含空字节路径在构造阶段抛
+            # ValueError，裸抛会以 traceback 收场而非可读错误退出
+            parent = (Path(args.parent).expanduser().resolve() if args.parent
+                      else Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-")))
+        except (ValueError, OSError, RuntimeError) as e:
+            print(f"错误: fixture parent 路径无法解析: {e}", file=sys.stderr)
+            return 1
         prefix = unique_prefix()
         manifest = build_fixture(parent, prefix)
         # parent 来源记账：脚本 mkdtemp 自建的随清理 rmdir；用户 --parent
