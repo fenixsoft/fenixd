@@ -1697,9 +1697,15 @@ def accept_item(
     同一把 flock（compare-and-set，code-review item fba717748316）：daemon
     自动接受与 dashboard 人工同意并发时只有先到者通过 pending 校验并立项，
     后到者锁内重读即见最终状态、按幂等语义返回现状。失败分支：
-    - 目标名已存在且非本条目此前失败残留（冲突检查后窗口期被外部参与者
-      创建）→ 不删不动、保留暂存草稿、置 accept_failed + 告警，重试经
-      resolve_spec_name 换后缀名立项；
+    - 目标名已存在且该名已在 STATE 注册在途、本条目无归属标记（本条目
+      此前注册成功后台账写回失败的窗口形态，code-review item
+      81177d6a2495）→ 按 afe111a45d02 的 residue 语义形态持久化
+      spec_name/residue 归属标记，不删不动、置 accept_failed + 告警；
+      该名在途期间不指引换后缀重立项（会产生同内容双份在途 SPEC），
+      须先人工核对归属；
+    - 目标名已存在、未在 STATE 注册在途且非本条目此前失败残留（冲突
+      检查后窗口期被外部参与者创建）→ 不删不动、保留暂存草稿、置
+      accept_failed + 告警，重试经 resolve_spec_name 换后缀名立项；
     - 提交失败 → 删除 spec/changes 副本（避免主树未跟踪文件）、保留暂存
       草稿、置 accept_failed + 告警；
     - 注册失败 → 清理已提交的 spec/changes 副本（git rm + 路径限定提交，
@@ -1818,6 +1824,52 @@ def accept_item(
             # afe111a45d02）：注册失败分支无论清理成败都持久化 spec_name，清理
             # 成功后磁盘已无残留，窗口内外部新建的同名目录会被误判为本条目残留
             # 而整体删除（未提交内容不可恢复）。
+            # 该名是否已注册在途（code-review item 81177d6a2495）：与
+            # resolve_spec_name 的 _conflicted 同口径读 STATE（bc6af1b9fe13
+            # 同款 fail-closed 保守判），把「本条目注册成功后 _persist 写回
+            # 失败」的窗口形态纳入残留归属判定——此时台账条目已无
+            # spec_name/residue，单靠标记会误判「非本条目残留」并以换后缀
+            # 重立项收场，在原名已注册在途的情况下产出同内容双份在途 SPEC。
+            state_registered = False
+            if state_machine is not None:
+                try:
+                    state_registered = name in state_machine.read_all()
+                except Exception as e:
+                    _logger.warning(
+                        "evolution: 读取 STATE 判定 %s 归属失败，"
+                        "保守按已注册在途处理: %s",
+                        name,
+                        e,
+                    )
+                    state_registered = True
+            if state_registered:
+                # 已注册在途：按本条目残留归属处理（afe111a45d02 语义形态——
+                # 持久化 spec_name + residue 归属标记），不删不动（STATE
+                # 条目无 item 关联，归属无法确证，删除不可恢复）；告警不再
+                # 指引 -<id6> 后缀重立项。
+                rec["status"] = "accept_failed"
+                rec["spec_name"] = name
+                rec["residue"] = True
+                rec["draft_failed_reason"] = (
+                    f"spec/changes/{name} 已存在且该名已在 STATE 注册在途"
+                    "（疑似本条目此前注册成功后台账写回失败，已按本条目残留"
+                    "归属标记，需人工核对）"
+                )
+                _persist(rec)
+                _write_admin_warning(
+                    project_root,
+                    f"自进化条目 {item_id_} 接受失败：spec/changes/{name} 已存在"
+                    "且该名已在 STATE 注册在途（疑似本条目此前注册成功后台账写回"
+                    f"失败的窗口形态，已按本条目残留归属标记），本条目未做任何"
+                    f"改动；该名在途期间请勿以 -{str(item_id_)[:6]} 后缀重立项"
+                    "（会产生同内容双份在途 SPEC），请先人工核对 STATE 归属",
+                )
+                return {
+                    "ok": False,
+                    "status": "accept_failed",
+                    "spec_name": name,
+                    "error": rec["draft_failed_reason"],
+                }
             if rec.get("spec_name") != name or not rec.get("residue"):
                 rec["status"] = "accept_failed"
                 rec["draft_failed_reason"] = (
