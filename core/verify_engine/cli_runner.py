@@ -277,10 +277,12 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": f"timeout 须为数字（秒）: {step_dict.get('timeout')!r} ({e})",
             }
-        if timeout < 0:
-            # 负数 timeout 直通 wait_for 会立即抛 TimeoutError 走超时强杀，
-            # 把场景定义错误误判成 hang 缺陷：归一为本步骤结构化失败
-            # （code-review item bf2ffeded38c，词表校验层已同拦负值），
+        if timeout <= 0:
+            # 负数/显式 0 timeout 直通 wait_for 会立即抛 TimeoutError 走超时
+            # 强杀，把场景定义错误误判成 hang 缺陷：归一为本步骤结构化失败
+            # （code-review item bf2ffeded38c，词表校验层已同拦负值；item
+            # 233c33d2e833：显式 0 恰落在负值/非有限值/上限三道拦截之间，
+            # 词表层真值过滤同样放行 0，故此处以 <= 0 收口），
             # 判 error 同上口径（item 74368415e965）
             return {
                 "success": False,
@@ -601,7 +603,11 @@ class CliRunner(VerifyRunner):
         p = root_path / rel_path
         try:
             p.resolve().relative_to(root_path.resolve())
-        except ValueError:
+        except (ValueError, OSError):
+            # resolve 对循环符号链接（ELOOP）等文件系统异常抛 OSError 而非
+            # ValueError：与 cli_assertions._resolve_under_root 同口径一并
+            # 归 None，按 cwd 缺失判 error，不穿出场景执行
+            # （code-review item 878ec506609c）
             return None
         # [fenix-ignore:5f27f4a2d378] cwd 含 NUL 时上方 p.resolve() 先抛 ValueError 已被 except 捕获返回 None（即便落至 is_dir()，pathlib 自身也吞 ValueError 返 False），结构化 cwd 缺失口径已在位，所述穿出路径不存在
         return p if p.is_dir() else None
