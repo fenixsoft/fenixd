@@ -37,7 +37,9 @@ __all__ = ["OneShotResult", "run_one_shot"]
 # SIGTERM → SIGKILL 两段式宽限（与 AGENT_TERMINATE_GRACE_SECONDS 同量级）
 TERMINATE_GRACE_SECONDS = 5.0
 
-logger = logging.getLogger(__name__)
+# fenixd. 可传播层级（test_logger_no_bypass 守卫口径）：core/ 禁止裸
+# getLogger(__name__)，子日志器自身无 handler、随 "fenixd" 层级传播到已挂载 handler
+logger = logging.getLogger("fenixd.agent_runner.harness.one_shot")
 
 
 class OneShotCommunicateError(Exception):
