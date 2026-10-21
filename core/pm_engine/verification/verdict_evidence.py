@@ -11,6 +11,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 from core.fs_utils import atomic_write_text
@@ -440,7 +441,11 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # 不复用 batch_attribution_dedup：消费侧「已 blocked」前提对异常
         # 折算路径不成立，见 _rejection_closure docstring）
         # （宁可不推进也不带病采纳）。
-        if dedup is not None and not dedup["ok"]:
+        # [fenix-code-fix:e19babb62b7d] ok 改 .get 防御取（与 _run_attribution_gate
+        # 的 (dedup or {}).get 口径对齐）：缺 ok 键的畸形查重结果按 None 走既有
+        # 「跳过分级照常采纳」语义进采纳链，不以 KeyError 裸外溢炸穿本门
+        # （engine 层 except Exception 会整体降级旧版 verifier 旁路查重门）。
+        if dedup is not None and dedup.get("ok") is False:
             # 场景级回炉闭环收口：与重试轮/重合成轮共用单源实现
             return _rejection_closure(pipeline, spec_name, report, dedup, " ")
         # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
@@ -470,11 +475,14 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # 全为可补类型（evidence 缺失/截断）→ 证据扩充（每轮 1 次，不计重派）；
         # 否则记真实派发（轮内达阈值即由 gate 在下次派发前停派+升级）。
         retry_kind = pipeline._judge_charge_verdict_retry(spec_name, violations_1)
+        # [fenix-code-fix:8c8ffb488e3a] scenario_id 收编 _iter_violation_dicts
+        # 单点 + .get 防御取：非 dict 元素不再以裸键访问 TypeError 炸穿本终局
+        # 分支（会绕过下方 _clear_verdict_violations 清理与结构化返回）。
         pipeline._context.logger.warning(
             "pm_engine",
             f"裁决证据分类校验未通过 '{spec_name}'（{len(violations_1)} 项，"
             f"记账={retry_kind}），重试 judge 一次："
-            f"{[v['scenario_id'] for v in violations_1]}",
+            f"{[str(v.get('scenario_id') or v.get('id') or '?') for v in _iter_violation_dicts(violations_1)]}",
         )
         # ── 派发壳三分支（异常 / None 契约违约 / 派发失败）单源 _dispatch_judge ──
         # 成功 → AgentRunResult 继续下方校验链；任一失败 → 失败 result dict
@@ -515,7 +523,9 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # （engine 层会降级旧版 verifier 旁路查重门）——单独 try 折算为
             # cause=requeue_error 失败返回（宁可不推进不采纳；独立 cause 不
             # 复用 batch_attribution_dedup，见 _rejection_closure docstring）。
-            if dedup is not None and not dedup["ok"]:
+            # [fenix-code-fix:e19babb62b7d] 同首轮口径：.get 防御取 ok，缺键
+            # 走「跳过分级照常采纳」，不裸取炸穿。
+            if dedup is not None and dedup.get("ok") is False:
                 # 场景级回炉闭环收口：与首轮/重合成轮共用单源实现
                 return _rejection_closure(pipeline, spec_name, report2, dedup, "（重试轮）")
             return _adopt_report(pipeline, spec_name, report2, "裁决重试")
@@ -524,7 +534,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         pipeline._context.logger.error(
             "pm_engine",
             f"裁决重试后证据分类仍不合规 '{spec_name}'："
-            f"{[v['scenario_id'] for v in result2['violations']]}",
+            f"{[str(v.get('scenario_id') or v.get('id') or '?') for v in _iter_violation_dicts(result2['violations'])]}",
         )
         # code-review b430dc4aa9d4：二次违规终局返回前同口径清掉本轮落盘的
         # 驳回清单——result2 明细已随返回 dict 供调用方 blocked +
@@ -678,12 +688,40 @@ def _clear_verdict_violations(pipeline, spec_name: str) -> None:
         pass
 
 
+def _spec_dir_component(spec_name: str) -> str:
+    """spec 名 → verify-progress 单一路径分量（非法名转义隔离，fail-open）。
+
+    code-review 1c4a4c61bcc0：复用 serving._spec_name_path_error（2c579adb670f）
+    单点判定（函数内延迟导入，serving 不反向依赖本模块，无环）——上游
+    state_machine.add_spec 无字符集约束，含路径分隔符或 ``..`` 分量的 spec 名
+    直接内插 ``verify-progress/<spec>/`` 会把本模块的 unlink/write 引到
+    verify-progress 之外。与 serving 的显式拒绝路径不同，本模块写/清/读既有
+    口径均为 fail-open（写失败仅 warning、清幂等、读得缺省），故非法名经
+    percent-escape 派生为单一路径分量隔离落盘：不逃逸目录、不与合法 spec
+    目录撞名（合法名即便含 ``%``/``.`` 亦经同一双射转义）、不同非法名互不
+    覆盖；清/读沿同一派生路径幂等或得缺省。
+    """
+    from core.pm_engine.verification.serving import _spec_name_path_error
+
+    if isinstance(spec_name, str) and _spec_name_path_error(spec_name) is None:
+        return spec_name
+    # 非 str（异常上游形态）与非法名同走转义隔离；quote 产物中的 ``.`` 再补
+    # 转义为 %2E，``..`` 派生不出路径分量语义；空串（唯一转义为空的输入）
+    # 与非 str 兜底为固定隔离分量。
+    escaped = (
+        quote(spec_name, safe="").replace(".", "%2E")
+        if isinstance(spec_name, str)
+        else ""
+    )
+    return escaped or "_invalid_spec_name"
+
+
 def _verdict_violations_path(pipeline, spec_name: str) -> Path:
     return (
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / _spec_dir_component(spec_name)
         / "verdict_violations.json"
     )
 
@@ -693,7 +731,7 @@ def _resynthesis_directive_path(pipeline, spec_name: str) -> Path:
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / _spec_dir_component(spec_name)
         / _RESYNTHESIS_DIRECTIVE_FILENAME
     )
 
@@ -1036,7 +1074,7 @@ def _handle_attr_dedup_rejection(
         pipeline._context.logger.error(
             "pm_engine",
             f"重合成产物证据分类仍不合规 '{spec_name}'："
-            f"{[v['scenario_id'] for v in result2['violations']]}",
+            f"{[str(v.get('scenario_id') or v.get('id') or '?') for v in _iter_violation_dicts(result2['violations'])]}",
         )
         # code-review e92461050ae5：二次违规终局返回前同口径清三件套（与上方
         # report_missing 出口及 _escalate_dedup_resynthesis 清除点对齐）——
@@ -1064,7 +1102,9 @@ def _handle_attr_dedup_rejection(
     # 查重门）——单独 try 折算为 cause=requeue_error 失败返回（独立 cause，
     # 不复用 batch_attribution_dedup，见 _rejection_closure docstring）
     # （宁可不推进不采纳）。
-    if dedup2 is not None and not dedup2["ok"]:
+    # [fenix-code-fix:e19babb62b7d] 同首轮口径：.get 防御取 ok，缺键
+    # 走「跳过分级照常采纳」，不裸取炸穿。
+    if dedup2 is not None and dedup2.get("ok") is False:
         # 重合成产物再拒 → 递归进入下一轮场景级回炉（或达上限升级）
         return _rejection_closure(pipeline, spec_name, report2, dedup2, "（重合成轮）")
 
