@@ -1183,6 +1183,40 @@ class AgentRunner:
                 f"（attempt 间隙取消，复活/重派 attempt 将被启动守卫拦截；"
                 f"reason={reason!r}, by={by}）",
             )
+            # minor 级审计（code-review item 1434c8966a1b）：attempt 间隙取消
+            # 与命中活跃 attempt 同为外部人工取消动作，台账留痕口径统一——
+            # 间隙场景恰是 evo-add-run-stop-loss 1.1 拦截的高价值场景，缺席
+            # 则事后无法从审计流还原该次人工干预。
+            try:
+                from core.admin_store import AdminStore, SIGNAL
+                store = AdminStore(self.project_root, self.logger)
+                # 从 run_id 推断 spec（与 run_spec_part 同逻辑）；解析失败留空不强解
+                spec_name = run_spec_part(base_id)
+                store.append({
+                    "kind": SIGNAL,
+                    "signal_type": "run_cancelled",
+                    "spec": spec_name if spec_name != base_id else None,
+                    "severity": "minor",
+                    "description": (
+                        f"人工取消 run '{base_id}'（attempt 间隙，无活跃 attempt）"
+                        f"—— reason={reason!r}, by={by}"
+                    ),
+                    "evidence": (
+                        f"base_run_id={base_id}; attempts=0; "
+                        f"reason={reason}; by={by}"
+                    ),
+                    "recommended_action": (
+                        "run 已登记取消旗标（attempt 间隙：无持有线程可收口）——"
+                        "复活/重派的 attempt 将在启动守卫（_attempt_top_guards）"
+                        "与 in-place retry 让位复查处命中即有序终止；spec 保持原"
+                        "状态，由 stuck 检测/恢复扫描按既有节奏接管。"
+                    ),
+                })
+            except Exception as e:
+                self.logger.debug(
+                    "agent_runner",
+                    f"cancel_run 审计记录写入失败（非阻塞）: {e}",
+                )
             return {
                 "status": "not_running",
                 "base_run_id": base_id,
@@ -3677,7 +3711,9 @@ class AgentRunner:
                     # 先于 _record_instant_fail：信号死法若同时是秒挂，两条
                     # 通道对同一事件各自计数（双记仅累加，冷却截止互不覆盖）。
                     error = self._record_signal_kill_or_label(
-                        spec_name, error, getattr(e, "exit_code", None))
+                        spec_name, error, getattr(e, "exit_code", None),
+                        framework_terminate=getattr(
+                            e, "framework_terminate", False))
                     # cli-retry-backoff（2.1）：attempt 失败按存活时长判定秒挂并累计。
                     # 仅「进程确实启动过」的失败才判定（worktree 创建失败等进程未起的
                     # 分支走上方 return/continue，不进入本法）；框架主动 SIGTERM 由
@@ -3714,6 +3750,7 @@ class AgentRunner:
                         getattr(e, "has_result", None),
                         spec_name=spec_name,
                         run_id=attempt_run_id,
+                        exc=e,
                     )
                     # 瞬断原地退避重试（见 _maybe_in_place_retry；跨边界
                     # continue 回到 while 顶部 / return 让位经返回值驱动，D2）。
@@ -4244,7 +4281,8 @@ class AgentRunner:
     # 均保持从 runner.py 模块全局访问（D7 patch 缝隙）。
     def _record_4xx_or_transient(self, error, provider_name, agent_type,
                                  exc_stderr, exc_exit, exc_has_result,
-                                 spec_name=None, run_id=None) -> tuple:
+                                 spec_name=None, run_id=None,
+                                 exc=None) -> tuple:
         """4xx 熔断计数 + 瞬断判定（等价搬移自 R6 的 `if provider_name:` 段）。
 
         返回 (error, is_transient, may_switch)：error 可能被注入
@@ -4256,6 +4294,10 @@ class AgentRunner:
 
         spec_name/run_id 为瞬断记账的 attempt 元信息（evo-transient-storm-alert-
         context D1）：缺省 None → 空串占位正常记账，既有调用零改动。
+
+        exc 为 attempt 循环捕获的原始异常（code-review item ea09a0794248）：
+        缺省 None → 既有单源文本判定；挂载了 api_error_status / result_text
+        的失败异常（_run_agent 失败路径挂载段）参与 429/4xx 双源回退判定。
         """
         if not provider_name:
             return error, False, False
@@ -4282,7 +4324,35 @@ class AgentRunner:
         # 原地重试）；且 429 不在 PROVIDER_CIRCUIT_4XX 内，天然不进熔断计数。
         if error and self.classify_ratelimit_error(error):
             return error, False, True
+        # code-review item ea09a0794248：归因双源回退——文本匹配未命中时消费
+        # 异常挂载的结构化 api_error_status / result_text（归因序与
+        # _ratelimit_terminal_hit ①文本 ②api_error_status ③result_text 对齐）。
+        # 429 仅经 result 事件表达（降噪文本不含 429 字样）时，单靠文本会漏判
+        # 为普通失败，按普通失败 sleep 后原地重试同一账号直至 attempt 预算
+        # 耗尽。api_error_status 判型与 _ratelimit_terminal_hit._is_429_status
+        # 同口径：int 429 / 裸数字字符串 / 含状态码文本；bool 是 int 子类显式
+        # 排除。
+        _exc_code = None
+        _exc_status = getattr(exc, "api_error_status", None)
+        if _exc_status is not None and not isinstance(_exc_status, bool):
+            if isinstance(_exc_status, str):
+                _exc_code = self.parse_api_error_status(_exc_status)
+                if _exc_code is None:
+                    _digits = _exc_status.strip()
+                    _exc_code = int(_digits) if _digits.isdigit() else None
+            else:
+                _exc_code = _exc_status
+        _exc_result_text = getattr(exc, "result_text", "") or ""
+        if _exc_code == 429 or (
+                _exc_result_text
+                and self.classify_ratelimit_error(_exc_result_text)):
+            return error, False, True
         code = self.parse_api_error_status(error)
+        # 结构化回退（code-review item ea09a0794248）：降噪文本解析不出状态码
+        # 时用异常挂载的 api_error_status 补足（429 已在上方短路，此处只会命中
+        # PROVIDER_CIRCUIT_4XX 内的 4xx）。
+        if code is None and _exc_code is not None:
+            code = _exc_code
         if code is not None and code in PROVIDER_CIRCUIT_4XX:
             # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
             # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
@@ -5362,8 +5432,12 @@ class AgentRunner:
             self.worktree_manager.cleanup(st.wt_path, success=False)
         st.wt_path = None
         # evo-add-run-stop-loss 2.1：停滞判停与取消/停机/冻结同列 should_break
-        #（终止整个重试链）；worktree 走下方默认 else cleanup 分支——非冻结的
-        # 保留现场语义不适用（判停 run 的现场由 WIP 保全锚点在强杀前收走）。
+        #（终止整个重试链）。worktree 去向按上方分支序分型（code-review item
+        # 1c9cf5a65edd 注释对齐）：fast-track/repair 分支不排除判停旗标，判停
+        # run 照走各自 keep_for_reuse/handed_off 保留现场（复用继承语义）；
+        # implementer 等其余车道（非 provider-transient）走默认 else cleanup。
+        # 判停 run 的未提交改动已由 WIP 保全锚点在强杀前收走，保留与清理均
+        # 不损失受保护内容。
         return (cancelled_flag or shutdown_interrupted
                 or frozen_terminated_flag or stall_budget_flag)
 
@@ -6156,7 +6230,15 @@ class AgentRunner:
                             continue
                         entry = _projected[-1]
                     else:
-                        if entry is None:
+                        # 行级判型兜底（code-review item e1675875b20b）：合法
+                        # JSON 但非 dict 非 None 的行（123/true/"str"/[...]）
+                        # 与解析失败 None 同样归一为 stderr 兜底事件——否则
+                        # 直达下方转录写盘块后 entry.get("type") 抛
+                        # AttributeError 命中外层 except，单行即令 stdout 读
+                        # 线程死亡并按 e63cd8072306 契约 kill 整个 run。与
+                        # message/usage/content 字段级防御同粒度：单事件异常
+                        # 不得终止读线程。
+                        if not isinstance(entry, dict):
                             entry = {"type": "stderr", "line": line}
                     if isinstance(entry, dict):
                         # add-harness-adapter-layer 3.1：落盘前经 adapter 归一
@@ -7201,9 +7283,13 @@ class AgentRunner:
                     "agent_runner",
                     f"timeout 终态错误行落盘失败（不阻断收口）: {e}",
                 )
-            raise RuntimeError(
+            _fw_exc = RuntimeError(
                 f"claude CLI {timeout_error}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
+            # 结构化框架终止标记（code-review item eab683eabeec）：
+            # _record_signal_kill_or_label 据此先行短路，不再依赖错误文案子串。
+            _fw_exc.framework_terminate = True
+            raise _fw_exc
 
         if turn_limit_error is not None:
             # 锚点 C（add-turn-limit-anchor-c D1）：turn-limit 强杀收口前的 WIP
@@ -7217,9 +7303,13 @@ class AgentRunner:
                     "agent_runner",
                     f"turn-limit 终态错误行落盘失败（不阻断收口）: {e}",
                 )
-            raise RuntimeError(
+            _fw_exc = RuntimeError(
                 f"claude CLI {turn_limit_error}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
+            # 结构化框架终止标记（code-review item eab683eabeec）：
+            # _record_signal_kill_or_label 据此先行短路，不再依赖错误文案子串。
+            _fw_exc.framework_terminate = True
+            raise _fw_exc
 
         # code-review item 48b02c8e1746：读线程残留存活时统一以 unobserved
         # 口径收口——不消费共享 last_result（None 占位，与「无 result 事件」
@@ -8054,25 +8144,39 @@ class AgentRunner:
         return None
 
     def _record_signal_kill_or_label(self, spec_name: str, error: str,
-                                     exit_code) -> str:
+                                     exit_code,
+                                     framework_terminate: bool = False) -> str:
         """信号死法来源判定（闭集）+ spec 维度信号冷却计数。
 
         调用点 MUST 在 shutdown-interrupted 守卫之后（shutting_down/产物
         interrupted 已先行短路为 [shutdown-interrupted]）；cancel 旗标走
         RunCancelledError 独立异常通道，不达本方法。框架自身终止（supervision
-        超时/轮次上限强杀：错误文本 Timeout after/Max turns）MUST NOT 打信号
-        标签、MUST NOT 计信号计数——框架自己强杀不得冷却链路。
+        超时/轮次上限强杀）MUST NOT 打信号标签、MUST NOT 计信号计数——框架
+        自己强杀不得冷却链路。判定以结构化标记 framework_terminate（构造方
+        在异常上挂载，见 _run_agent timeout/turn_limit raise 处）先行；错误
+        文本 Timeout after/Max turns 匹配降级为历史兼容回退（code-review
+        item eab683eabeec：文本子串契约脆弱，可能被外部错误文本误命中）。
 
         Returns: 可能被注入 ``[signal-kill: …]`` 前缀的 error。
         """
         if not spec_name or not error:
             return error
-        # 框架自身终止排除（supervision 超时/轮次上限强杀，错误文本为
-        # `Timeout after …` / `Max turns …`，见 _run_agent 内
-        # timeout_error / turn_limit_error 赋值处收口）。
+        # 框架自身终止排除。结构化标记先行（code-review item eab683eabeec）：
+        # supervision 超时/轮次上限强杀路径的异常由构造方挂 framework_terminate
+        # 显式声明，不再依赖错误文案子串。
+        if framework_terminate:
+            return error
+        # 历史兼容回退：无标记路径（未透传异常标记的调用方）维持错误文本
+        # `Timeout after …` / `Max turns …` 匹配（构造点见 _run_agent 内
+        # timeout_error / turn_limit_error 赋值处收口），DEBUG 留痕备审计。
         # 真实超时/强杀路径异常不带 exit_code（timeout/turn_limit raise 无属性），
-        # 错误文本排除对有无 exit_code 一视同仁——统一先行短路。
+        # 排除对有无 exit_code 一视同仁——统一先行短路。
         if "Timeout after" in error or "Max turns" in error:
+            self.logger.debug(
+                "agent_runner",
+                f"'{spec_name}' 框架自身终止经文本回退识别（异常无结构化标记）"
+                f"— 跳过 signal-kill 标签与冷却计数",
+            )
             return error
         if exit_code is None:
             # 无 exit_code 且非框架自身终止文本 → 判别力不足，不归类不计数。
