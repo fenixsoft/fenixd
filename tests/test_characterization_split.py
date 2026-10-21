@@ -208,6 +208,21 @@ class TestReportingCharacterization(unittest.TestCase):
         self.assertIn("- 🎯 done: 1", report)
         self.assertIn("- ❓ weird-status: 1", report)
 
+    def test_generate_report_tolerates_status_none(self):
+        # status 键显式为 None（YAML 空值形态）时 .get 默认值不生效，
+        # counts 混入 None 键使 Stats 区 sorted 抛 TypeError 报告整体崩；
+        # 防御后并入 unknown 桶（code-review item d06cd0d4af77）
+        self.sm.read_all.return_value = {
+            "a-spec": {"status": "done", "priority": 2},
+            "n-spec": {"status": None, "priority": 3},
+        }
+        report = self.engine.generate_report()
+        self.assertIn("### Summary", report)
+        self.assertIn("- ❓ **n-spec** (P3): unknown", report)
+        self.assertIn("- Total: 2", report)
+        self.assertIn("- 🎯 done: 1", report)
+        self.assertIn("- ❓ unknown: 1", report)
+
     def test_generate_daily_report_appends_project_log(self):
         self.sm.read_all.return_value = {}
         (self.tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
