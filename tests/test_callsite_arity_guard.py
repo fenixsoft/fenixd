@@ -122,6 +122,11 @@ ARITY_WHITELIST = [
     #    同名异签名（同族 3 的 stdlib 零参/单参形态）。
     ("core/pm_engine/verification/pipeline.py", "format", "_SCENARIO_SID_FALLBACK_FMT"),
     ("core/verify_engine/browser.py", "exception", "task"),
+    # 9. harness/one_shot.py 超时清场回调的 stdlib logging logger.exception(
+    #    "单参消息")（getLogger("fenixd.…") 返回的 stdlib Logger 支持 *args）
+    #    与 core/logger.py Logger.exception(component, message) 同名异签名
+    #    ——同族 3 的 stdlib 单参形态。
+    ("core/agent_runner/harness/one_shot.py", "exception", "logger"),
 ]
 
 

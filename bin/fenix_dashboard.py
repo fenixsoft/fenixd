@@ -256,7 +256,10 @@ def render_overview(specs, daemon_ok, agents=None):
     total = len(specs)
     status_counts = {}
     for e in specs.values():
-        st = e.get("status", "?")
+        # parse_state 把 `- status:`（空值）折叠为 None，.get 默认值只在键缺失时
+        # 生效；与 fenix_status/fenix_process 统计口径对齐折叠为「?」，否则
+        # None 作键计数令各状态槽位漏计该 SPEC（code-review item b595af705518）。
+        st = e.get("status", "?") or "?"
         status_counts[st] = status_counts.get(st, 0) + 1
 
     pushed = status_counts.get("pushed", 0)

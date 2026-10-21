@@ -386,15 +386,17 @@ class TestPurgeIgnoredBroughtIn:
         # 模拟 git diff 返回新增文件
         with patch("core.worktree_manager.subprocess.run") as mock_sub:
             def side_effect(args, **kw):
+                # 对齐批量口径实现（item 2eecaa4ef78d）：tracked 集与 ignore
+                # 判定均收敛为单条批量调用，且「出现在 -z 输出即命中」。
                 if "diff" in args and "--diff-filter=A" in args:
                     return MagicMock(returncode=0, stdout="run.draft\n")
-                if "ls-files" in args and "--error-unmatch" in args:
-                    return MagicMock(returncode=0, stdout="run.draft\n")
+                if "ls-files" in args:
+                    return MagicMock(returncode=0, stdout="run.draft\0")
                 if "check-ignore" in args:
-                    return MagicMock(returncode=0, stdout="")  # 被 ignore
-                if args[1] == "rm":
+                    return MagicMock(returncode=0, stdout="run.draft\0")  # 被 ignore
+                if "rm" in args:
                     return MagicMock(returncode=0, stdout="", stderr="")
-                if args[1] == "commit":
+                if "commit" in args:
                     return MagicMock(returncode=0, stdout="", stderr="")
                 return MagicMock(returncode=0, stdout="", stderr="")
             mock_sub.side_effect = side_effect

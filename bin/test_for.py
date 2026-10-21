@@ -534,6 +534,15 @@ def main():
             # 可执行文件——pytest 选中它们只会空跑或报错；选中项出口统一按
             # test_*.py / *_test.py 命名过滤（显式映射来的模块同样过此关）。
             if not _is_executable_test_module(test_module):
+                # 显式映射值若写成目录形态（如 tests/sub/）或 conftest.py 等非
+                # 测试命名模块，归一后在此被静默丢弃，配置者会误以为映射已
+                # 生效而漏测；对齐同函数其余出口告警口径。
+                print(
+                    f"Warning: selected test {test_module!r} is not an "
+                    "executable test module (expected test_*.py / *_test.py "
+                    "naming); ignoring it.",
+                    file=sys.stderr,
+                )
                 continue
             # 模块段的 '.' 既来自路径分隔符拼接（见 build_import_graph），也可能
             # 是文件名/目录名自带的点号；回转须还原 '/' 且保住点号名——否则嵌套

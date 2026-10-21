@@ -235,6 +235,30 @@ function assertionDetail(a: AssertionResultItem): string {
   }
 }
 
+// 场景结果状态 Tag 的配色/文案（code-review item 9901ec50d3e8：具名函数替代
+// 嵌套三元，先例 progressPhase.ts strokeColorFor）。fail/error 共用 error 配色，
+// 文案区分「失败/错误」，与过滤条色值同源。
+function scenarioStatusColor(status: string): string {
+  if (status === 'pass') return 'success';
+  if (status === 'warning') return 'warning';
+  return 'error';
+}
+
+function scenarioStatusLabel(status: string): string {
+  if (status === 'pass') return '✅ 通过';
+  if (status === 'warning') return '⚠️ 警告';
+  if (status === 'fail') return '✗ 失败';
+  return '✗ 错误';
+}
+
+// Bug 严重度 → Tag 配色（code-review item aad21e0a380f：具名映射替代嵌套三元；
+// info 及未知档兜底 blue）。
+const SEVERITY_TAG_COLOR: Record<string, string> = {
+  critical: 'error',
+  major: 'orange',
+  minor: 'default',
+};
+
 // 场景 kind 徽章（web/cli/api 视觉区分；multi-kind-report-compat）
 const KIND_META: Record<string, { color: string; label: string }> = {
   web: { color: 'blue', label: 'web' },
@@ -1051,22 +1075,8 @@ export default function SpecDetailPage() {
                     style={{ marginBottom: 12 }}
                     title={
                       <Space size={8}>
-                        <Tag
-                          color={
-                            scenario.status === 'pass'
-                              ? 'success'
-                              : scenario.status === 'warning'
-                                ? 'warning'
-                                : 'error'
-                          }
-                        >
-                          {scenario.status === 'pass'
-                            ? '✅ 通过'
-                            : scenario.status === 'warning'
-                              ? '⚠️ 警告'
-                              : scenario.status === 'fail'
-                                ? '✗ 失败'
-                                : '✗ 错误'}
+                        <Tag color={scenarioStatusColor(scenario.status)}>
+                          {scenarioStatusLabel(scenario.status)}
                         </Tag>
                         <KindBadge kind={scenario.kind} />
                         <Typography.Text strong>{scenario.scenario_id}</Typography.Text>
@@ -1185,17 +1195,7 @@ export default function SpecDetailPage() {
                   style={{ marginBottom: 12 }}
                   title={
                     <Space size={8}>
-                      <Tag
-                        color={
-                          bug.severity === 'critical'
-                            ? 'error'
-                            : bug.severity === 'major'
-                              ? 'orange'
-                              : bug.severity === 'minor'
-                                ? 'default'
-                                : 'blue'
-                        }
-                      >
+                      <Tag color={SEVERITY_TAG_COLOR[bug.severity] ?? 'blue'}>
                         {bug.severity || 'major'}
                       </Tag>
                       <Typography.Text type="secondary">{bug.source || 'report'}</Typography.Text>
