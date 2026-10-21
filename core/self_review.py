@@ -1350,7 +1350,8 @@ def _collect_api_stall_aggregates(
     """窗口内 stall 计数>0 的 run 停滞聚合（evo-api-stall-signal-grading 2.1）。
 
     扫 .fenix/runs 当前目录 ∪ 归档并集去重（口径同 _iter_window_runs /
-    _collect_run_files，窗口内 run 在自省执行前被归档不漏列），窗口归属复核
+    _collect_run_files，排除 review- 前缀自省 run——自省 run 不审视自身，
+    窗口内 run 在自省执行前被归档不漏列），窗口归属复核
     同深扫口径（run_id 内嵌时间戳优先、缺失回退 mtime）；逐 run 经
     _scan_run_stall_totals 有界流式扫描，stalls==0 的 run 不列。已被深扫覆盖的 run 允许重复出现（不做去重——聚合行与深扫行
     数据同源但列选口径不同：深扫只列初筛离群 run，聚合行列全部停滞 run；
@@ -1376,6 +1377,8 @@ def _collect_api_stall_aggregates(
     scan_failures: List[Tuple[str, Exception]] = []
     scanned = 0
     for p in sorted(_collect_run_files(runs_dir), key=lambda p: p.stem):
+        if p.stem.startswith("review-"):
+            continue  # 自省 run 不审视自身（对齐 _iter_window_runs 口径）
         try:
             stat = p.stat()
         except OSError:
@@ -1769,7 +1772,7 @@ class SelfReviewScheduler:
             }
 
         try:
-            written = self._apply_todo_update(
+            written, appended = self._apply_todo_update(
                 today, result, cleanup_entries,
                 todo_head_restore=sr.get("todo_head_restore", True),
             )
@@ -1782,7 +1785,8 @@ class SelfReviewScheduler:
         self._save_state(today)
         self.logger.info(
             "self_review",
-            f"每日自省完成 {today}（todo.md 已追加：{written}，"
+            f"每日自省完成 {today}（todo.md 已追加："
+            f"{'是' if appended else '否（当日节已存在）'}，"
             f"commit: {'ok' if committed else 'skipped/failed'}）",
         )
         return {
@@ -2429,8 +2433,12 @@ class SelfReviewScheduler:
         result,
         entries: List[Dict[str, str]],
         todo_head_restore: Optional[bool] = None,
-    ) -> Path:
-        """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。"""
+    ) -> Tuple[Path, bool]:
+        """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。
+
+        返回 (todo.md 路径, 是否实际落了当日节)（code-review item
+        ae2079961372：真追加与当日节撞车跳过可分辨）。
+        """
         resolved = getattr(result, "resolved", None) or []
         removed = self._remove_resolved(entries, resolved, todo_head_restore=todo_head_restore)
         if removed:
@@ -2477,13 +2485,18 @@ class SelfReviewScheduler:
         str_lines = [ln for ln in item_str.splitlines() if ln.strip()]
         return [f"- {str_lines[0]}"] + [f"  {ln}" for ln in str_lines[1:]]
 
-    def _append_todo(self, date_str: str, result, todo_head_restore: Optional[bool] = None) -> Path:
+    def _append_todo(
+        self, date_str: str, result, todo_head_restore: Optional[bool] = None
+    ) -> Tuple[Path, bool]:
         """把自省结果按固定结构追加到 .fenix/todo.md（首次写入创建文件）。
 
         结构：``## YYYY-MM-DD`` 分节 + 「浪费」「失误」「可改进」三个小节。
         结构化条目每条渲染为「短标题 + 嵌套明细」bullet 块（2026-09-08 用户
         改版），同小节条目块之间空行（markdown 松列表）；字符串条目单行透传
-        （历史格式兼容）。历史分节不变（追加在尾部）。返回 todo.md 路径。
+        （历史格式兼容）。历史分节不变（追加在尾部）。返回 (todo.md 路径,
+        是否实际落了当日节)；当日节已存在（状态文件丢失重跑）跳过追加时
+        appended=False（code-review item ae2079961372：供完成日志与调用方
+        分辨真追加与撞车跳过）。
         """
         todo = self.project_root / ".fenix" / "todo.md"
         if todo_head_restore is None:
@@ -2513,7 +2526,10 @@ class SelfReviewScheduler:
         # 不加锁时先读后写会用陈旧副本覆盖掉刚落下的处理标记。
         from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 evolution 共用同一把锁
 
+        appended = False
+
         def _do() -> None:
+            nonlocal appended
             # 空文件/缺失而 HEAD 版非空时自 HEAD 恢复基线（回写前自愈，
             # 与 _skip_review 同口径）；读异常按空串回退
             existing = _load_existing_with_head_rescue(
@@ -2533,9 +2549,10 @@ class SelfReviewScheduler:
                 body = content
             todo.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_text(todo, body)
+            appended = True
 
         with_file_lock(todo, _do)
-        return todo
+        return todo, appended
 
     def _commit_todo(self, date_str: str) -> bool:
         """git add（仅 todo.md）→ commit → push；push 失败降级 WARNING。
@@ -2619,24 +2636,41 @@ class SelfReviewScheduler:
     def _state_path(self) -> Path:
         return self.project_root / ".fenix" / STATE_FILE
 
-    def _load_state(self) -> dict:
+    def _load_state(self, degraded_out: Optional[List[str]] = None) -> dict:
         path = self._state_path()
         try:
             # errors="replace"：磁盘损坏/手改产生的非法字节按同文件其他读取
             # 惯例容忍，避免 UnicodeDecodeError 逃逸到防风暴守卫之外（当日
             # last_run_date 写不进去 → 巡检每轮重试风暴）。
             data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
+            # 状态文件缺失＝原本就无状态（首跑/已清理），属「原本就无锚点」
+            # 良性形态，不记 degraded_out（code-review item 1312883c52e6：
+            # 调用方据此区分「原本就无锚点」与「回读失败」两种形态）。
+            return {}
+        except (OSError, json.JSONDecodeError) as e:
+            # 读失败出参（degraded_out 范式同 code_review._read_items_unlocked）：
+            # IO 故障/JSON 损坏属真实回读失败，报给调用方留痕。
+            if degraded_out is not None:
+                degraded_out.append(f"{type(e).__name__}: {e}")
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _load_last_run_at(self) -> Optional[datetime]:
+    def _load_last_run_at(
+        self, degraded_out: Optional[List[str]] = None
+    ) -> Optional[datetime]:
         """状态文件 last_run_at → aware datetime；缺失/畸形返回 None。
 
         仅作增量窗口锚点使用（2026-09-08 起）；同日防重复由 last_run_date
         承担。旧格式状态文件（仅 last_run_date）返回 None → 回退 24h 窗口。
+        degraded_out（code-review item 1312883c52e6）：传列表则状态文件回读
+        失败（IO 故障/JSON 损坏，文件缺失不算）时报入，供调用方区分
+        「原本就无锚点」与「回读失败」。
         """
-        raw = self._load_state().get("last_run_at")
+        state_degraded: List[str] = []
+        raw = self._load_state(degraded_out=state_degraded).get("last_run_at")
+        if degraded_out is not None:
+            degraded_out.extend(state_degraded)
         if not isinstance(raw, str) or not raw:
             return None
         return _iso_to_aware_dt(raw)
@@ -2658,8 +2692,25 @@ class SelfReviewScheduler:
             if advance_anchor:
                 anchor: Optional[str] = to_storage(now_utc())
             else:
-                prev = self._load_last_run_at()
-                anchor = to_storage(prev) if prev is not None else None
+                # 回读留痕（code-review item 1312883c52e6）：区分「原本就无
+                # 锚点」（首跑/旧格式状态文件，良性，口径不变）与「回读失败」
+                # （IO 故障/状态文件损坏——锚点将整体省略、增量窗口静默回退
+                # 24h，实际锚点在数日前时中间各日的窗口内容将不被后续自省
+                # 覆盖）。后者记 WARNING 带异常信息后仍继续既有写路径（当日
+                # last_run_date 防重复必须落盘，防风暴优先）。
+                anchor_degraded: List[str] = []
+                prev = self._load_last_run_at(degraded_out=anchor_degraded)
+                if prev is not None:
+                    anchor = to_storage(prev)
+                else:
+                    if anchor_degraded:
+                        self.logger.warning(
+                            "self_review",
+                            "advance_anchor=False 回读 last_run_at 失败，本次状态"
+                            "覆写将省略 last_run_at（增量窗口回退 24h 口径）: "
+                            f"{anchor_degraded[0]}",
+                        )
+                    anchor = None
             state: Dict[str, str] = {"last_run_date": date_str}
             if anchor is not None:
                 state["last_run_at"] = anchor
