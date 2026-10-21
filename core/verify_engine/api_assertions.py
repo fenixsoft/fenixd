@@ -412,10 +412,23 @@ class ApiAssertionRunner:
         expected = a.get("expected")
         actual = resp.get("status")
         norm_expected = _numeric(expected) if expected is not None else None
+        # 非法形态判定提前到 passed 计算之前（口径对齐 sse_event_count 的
+        # invalid_min / latency_under 的 limit None 哨兵：配置非法即确定性
+        # 失败）。float 形态（如 200.0）经 _numeric 归一失败原值保留，
+        # 200 == 200.0 数值相等会判 pass，不先拦截会产生 pass=True 与下方
+        # 「期望须为整型」error 并存的自相矛盾证据（code-review item
+        # 91f27822d323）；bool 是 int 子类须排除，先例同 sse_event_count
+        invalid_expected = not isinstance(norm_expected, int) or isinstance(
+            norm_expected, bool
+        )
         # fail-closed：expected 缺失时不得借 None==None 蒙混判 pass（验收期
         # 必填表 ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/
         # 绕过验收的调用路径），口径对齐 json_path 断言的 fail-closed
-        passed = expected is not None and _numeric(actual) == norm_expected
+        passed = (
+            expected is not None
+            and not invalid_expected
+            and _numeric(actual) == norm_expected
+        )
         result = {
             "type": "status_code",
             "expected": expected,
@@ -424,11 +437,11 @@ class ApiAssertionRunner:
         }
         if expected is None:
             result["error"] = "断言缺 expected，无法与实际状态码对比（fail-closed）"
-        elif not isinstance(norm_expected, int) or isinstance(norm_expected, bool):
+        elif invalid_expected:
             # fail-closed：expected 不可整型化（如 "2xx" 通配形态）时原值
             # 参与严格不等比较恒 False 且无 error，judge 须能区分场景配置
             # 错误与产品缺陷（口径对齐 sse_event_count 的 min 非数字定向
-            # 归因；bool 是 int 子类须排除，先例同 sse_event_count）
+            # 归因）
             result["error"] = (
                 f"status_code 期望须为整型状态码，不支持通配形态: {expected!r}"
             )
