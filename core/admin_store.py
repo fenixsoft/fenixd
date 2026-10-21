@@ -1308,7 +1308,7 @@ class DisputeAuditStore:
         """取跨进程排他锁的 fd（与 AdminStore._lock 同型，单点收敛）。
 
         只负责 open 锁文件；目录创建由调用方在各自语境下处理（append
-        带容错、read_all 依赖数据文件已存在）。
+        直接创建、失败上抛，read_all 依赖数据文件已存在）。
         """
         return self._lockfile.open("w", encoding="utf-8")
 
@@ -1319,10 +1319,9 @@ class DisputeAuditStore:
         rec = dict(entry or {})
         rec["kind"] = "dispute-audit"
         rec["created"] = _utcnow_iso()
-        try:
-            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+        # 与 AdminStore._lock 同型：exist_ok 已覆盖目录已存在竞态，创建失败
+        # 直接上抛（后续取锁/写失败本就无降级）
+        self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         with self._thread_lock:
             with self._acquire_lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
