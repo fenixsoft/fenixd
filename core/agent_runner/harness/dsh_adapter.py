@@ -771,6 +771,16 @@ class DshAdapter:
         provider 链的**渲染来源**（build_spawn_spec 已消费），MUST NOT 透传
         进 dsh 子进程环境（dsh banned 剔除口径覆盖）。
         """
+        # 未知 env_mode fail-fast（与 claude_adapter.build_env 同口径）：
+        # 分支结构会使未知值静默走「只剔 dsh banned、不剔
+        # AGENT_RUN_BANNED_ENV_KEYS、也不注入 FENIX_RUN_*」的混合口径，
+        # ambient 的 agent-run 专用键残留进本应 clean/inherit 口径的
+        # 一次性 spawn 子进程（跨车道上下文污染）。
+        if req.env_mode not in (ENV_MODE_INHERIT, ENV_MODE_CLEAN, ENV_MODE_AGENT_RUN):
+            raise ValueError(
+                f"不支持的 env_mode 值：{req.env_mode!r}"
+                f"（合法值：{ENV_MODE_INHERIT!r}/{ENV_MODE_CLEAN!r}/{ENV_MODE_AGENT_RUN!r}）"
+            )
         if req.env_mode == ENV_MODE_INHERIT:
             return None
 

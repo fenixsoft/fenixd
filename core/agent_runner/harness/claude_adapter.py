@@ -160,6 +160,11 @@ def ensure_agent_config_dir(
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(settings, ensure_ascii=False, indent=2))
+                # code-review item 161e36c1913c：replace 前刷缓冲并 fsync，
+                # 与 admin_store._write_unlocked 原子写模式对齐，掉电时
+                # settings.json 不以空/部分内容经 rename 落位。
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, marker)
         finally:
             if tmp_path.exists():
