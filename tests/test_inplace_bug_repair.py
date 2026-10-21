@@ -243,6 +243,77 @@ class TestExistingCheckboxPreserved(_InplaceBase):
         self.assertIn("第 2 轮", txt)
 
 
+class TestRepairSectionUpdateWithTrailingHeading(_InplaceBase):
+    """更新分支段尾扫描回归（code-review item 3e3b67e58122）。
+
+    修复段之后存在后续二级标题时，第 2 轮替换的段尾扫描必须以 m_end 为
+    绝对原点（after 行首相对位置从 0 累计）——起点误用标题行内 m.end() 会让
+    算出的 end 少 m_start，text[end:] 起点前移、旧段尾部字符（含旧轮未勾
+    任务行）残留在新段与后续标题之间，被 _task_completion_blocker 判为永久
+    缺口阻断 verified→done。
+    """
+
+    def test_second_round_no_stale_tail_before_next_heading(self):
+        self._write_tasks("quick-links-folders",
+                          "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 已完成\n")
+        self._make_buggy_spec("quick-links-folders")
+
+        # 第 1 轮：修复段追加在文件末尾
+        self.engine._family._do_spec_bug_found("quick-links-folders")
+
+        # 实现者随后在修复段之后续写了后续二级标题段（正常使用中 tasks.md
+        # 会被续写，修复段不再位于文件末尾）
+        tasks_path = (self.project_root / "spec" / "changes"
+                      / "quick-links-folders" / "tasks.md")
+        with open(tasks_path, "a", encoding="utf-8") as f:
+            f.write("\n## 2. 验收标准\n\n- [ ] 2.1 验收通过\n")
+
+        # 第 2 轮：走更新分支，段尾扫描遇到后续二级标题
+        self.sm.update_spec("quick-links-folders", {"status": "bug-found"})
+        self.engine._family._do_spec_bug_found("quick-links-folders")
+
+        txt = self._tasks_text("quick-links-folders")
+        self.assertIn("第 2 轮", txt)
+        # 旧轮标题不残留
+        self.assertNotIn("第 1 轮", txt)
+        # 轮数注记更新而非新增段
+        self.assertEqual(txt.count("## 验证修复"), 1)
+        # 后续标题段内容完好
+        self.assertIn("## 2. 验收标准", txt)
+        self.assertIn("- [ ] 2.1 验收通过", txt)
+        # 新段最后一个任务行与后续标题之间不允许残留旧段内容（修前此处会
+        # 夹带旧段尾部碎片）
+        between = txt.split("- [ ] 修复后重跑验证确认通过\n", 1)[1] \
+            .split("## 2. 验收标准", 1)[0]
+        self.assertEqual(
+            between.strip(), "",
+            f"修复段与后续标题之间残留旧段内容: {between!r}")
+
+
+class TestInplaceStatusDriftGuard(_InplaceBase):
+    """写前状态漂移复核（code-review item d931057e6b0d）。
+
+    入口快照到写前复查之间 spec 被外部推进（人工推到终态、并发验证收工）
+    时，放弃本次 implementing 重置写与重派，不把合法状态拉回 implementing。
+    """
+
+    def test_advanced_status_aborts_inplace_reset(self):
+        self._write_tasks("quick-links-folders", "# Tasks\n")
+        self._make_buggy_spec("quick-links-folders")
+        # 写前复查前，外部把状态推进到终态（模拟人工推进/并发收工）
+        self.sm.update_spec("quick-links-folders", {"status": "done"})
+
+        self.engine._family._do_spec_bug_found("quick-links-folders")
+
+        entry = self.sm.read_one("quick-links-folders")
+        # 合法终态不被拉回 implementing
+        self.assertEqual(entry["status"], "done")
+        # 不注入修复段
+        self.assertNotIn("## 验证修复", self._tasks_text("quick-links-folders"))
+        # 不重派
+        self.engine._enqueue.assert_not_called()
+
+
 class TestLegacyFixChainReverify(_InplaceBase):
     """存量 fix 链重验闭环回归（D4 legacy 路径仍生效，derive 模式下）。"""
 

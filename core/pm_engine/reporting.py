@@ -60,10 +60,18 @@ class ReportBuilder:
         # AttributeError 使报告整体不可用。
         all_specs = {k: v for k, v in all_specs.items() if isinstance(v, dict)}
 
+        # status 键存在但值为 None（YAML 空值形态）时 .get 默认值不生效，
+        # counts 以 None 为键，Stats 区 sorted 混合 None/str 键抛 TypeError
+        # 使报告整体不可用；非 str（含空串）归一 "unknown"，与 _priority_key
+        # 的 _coerce_int 防御同口径（code-review item d06cd0d4af77）。
+        def _status_of(entry):
+            s = entry.get("status")
+            return s if isinstance(s, str) and s else "unknown"
+
         # Count by status
         counts = {}
         for entry in all_specs.values():
-            s = entry.get("status", "unknown")
+            s = _status_of(entry)
             counts[s] = counts.get(s, 0) + 1
 
         lines = [
@@ -94,7 +102,7 @@ class ReportBuilder:
             return 999 if p is None else p
 
         for name, entry in sorted(all_specs.items(), key=_priority_key):
-            status = entry.get("status", "unknown")
+            status = _status_of(entry)
             icon = status_icons.get(status, "❓")
             priority = entry.get("priority", "?")
             lines.append(f"- {icon} **{name}** (P{priority}): {status}")

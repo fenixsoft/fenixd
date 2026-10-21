@@ -1,14 +1,15 @@
 /**
  * agentsMd.test.ts — AGENTS.md system-prompt 分区单测。
  * 覆盖：分区文本形态（标记 + 正文）、缺文件/空文件零贡献、软链正文透出、
- * 注册接线（inject(["systemPrompt"]) → section 注册，text 现读 cwd）。
+ * 超限截断带尾注（贴上限不误伤）、注册接线（inject(["systemPrompt"]) → section
+ * 注册，text 现读 cwd）。
  */
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AGENTS_MD_SECTION_NAME, agentsMdSectionText, registerAgentsMdSection } from "../src/agentsMd.ts";
+import { AGENTS_MD_MAX_BYTES, AGENTS_MD_SECTION_NAME, agentsMdSectionText, registerAgentsMdSection } from "../src/agentsMd.ts";
 
 const dirs: string[] = [];
 function tmpWs(): string {
@@ -41,6 +42,26 @@ describe("agentsMdSectionText（分区文本纯函数）", () => {
   it("尾部空白归一，正文逐字保留", () => {
     const text = agentsMdSectionText("/any", () => "# 规则\n\n- 主树只读\n");
     expect(text).toContain("# 规则\n\n- 主树只读\n</system-reminder>");
+  });
+
+  it("贴着上限内的正常大小内容：不截断、无尾注，原样注入", () => {
+    const unit = "规则甲。\n"; // UTF-8 下 13 字节/行
+    const lines = Math.floor(AGENTS_MD_MAX_BYTES / 13) - 1; // 留一行余量贴上限
+    const body = unit.repeat(lines);
+    const text = agentsMdSectionText("/any", () => body);
+    expect(text).not.toContain("已截断");
+    expect(text.endsWith(`${body.replace(/\s+$/, "")}\n</system-reminder>`)).toBe(true);
+  });
+
+  it("超大内容：截断到上限内并追加尾注", () => {
+    const unit = "规则甲。\n";
+    const text = agentsMdSectionText("/any", () => unit.repeat(20000)); // 260000 字节 > 上限
+    const note = `（AGENTS.md 超过上限 ${AGENTS_MD_MAX_BYTES} 字节，已截断）`;
+    expect(text).toContain(note);
+    expect(text.endsWith(`${note}\n</system-reminder>`)).toBe(true);
+    const inner = text.slice(text.indexOf("AGENTS.md\n\n") + "AGENTS.md\n\n".length, text.indexOf(note)).replace(/\n$/, "");
+    expect(Buffer.byteLength(inner, "utf-8")).toBeLessThanOrEqual(AGENTS_MD_MAX_BYTES);
+    expect(inner).not.toContain("�"); // 按字符截断，不产生残字符
   });
 });
 

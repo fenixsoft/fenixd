@@ -91,31 +91,28 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
   const savedDraftRef = useRef<string>('');
 
   // 判脏口径单点（code-review item 5836b8df59e9）：面板当前内容相对服务端是否
-  // 有未保存改动，供 usePanelDirty 探针、项目切换确认 effect、handleAgentChange
-  // 三处复用，任一处调整口径只改此处，避免「切页签弹确认、切 agent 不弹」的
-  // 漂移不一致。data 为空时以「草稿非空即脏」兜底（加载失败/未加载时草稿不
-  // 代表服务端现值）；data 为空时 projectExtraOf 恒返回 ''，与该兜底分支等价。
+  // 有未保存改动，供 usePanelDirty 探针、handleAgentChange 两处复用，任一处
+  // 调整口径只改此处，避免「切页签弹确认、切 agent 不弹」的漂移不一致。
+  // data 为空时以「草稿非空即脏」兜底（加载失败/未加载时草稿不代表服务端
+  // 现值）；data 为空时 projectExtraOf 恒返回 ''，与该兜底分支等价。
   const isDirty = () =>
     data ? extraDraft !== projectExtraOf(data, activeAgent) : extraDraft !== '';
 
-  // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持草稿
-  // 而非 antd Form，按既有判脏口径（同下方项目切换确认）向 index 注册探针，
-  // 切页签前由 index 统一弹确认；切项目确认（f2830281595d）保持原位不动。
+  // 页签/作用域/项目切换丢弃确认（code-review item 8a3eb01dc2b9）：本面板自持
+  // 草稿而非 antd Form，按既有判脏口径向 index 注册探针，切页签/切作用域/切
+  // 项目前均由 index 统一弹确认（原 effect 内切项目二次确认已并入此口径，
+  // code-review item 42a80be18f8f）。
   usePanelDirty(isDirty);
 
   useEffect(() => {
-    // 项目切换丢弃确认（code-review item f2830281595d）：与 handleAgentChange
-    // 同语义——切换 agent 前询问，切换 project 却静默覆盖草稿。此处读到的
-    // data/extraDraft 仍是旧项目的渲染快照（effect 跑在 project 已变、state
-    // 未变的渲染之后）。拒绝则保留当前内容、不加载新项目；此时 loadedFor
-    // 与当前 project 不一致，handleSave 的对账会拦住跨项目错写。
-    // 加载失败场景（code-review item c542789d7297）：data 为 null 时 extra
-    // 输入框仍渲染可编辑，仅以 data 判脏会跳过确认、静默丢弃用户键入的
-    // 草稿——data 为空但草稿非空同样视为脏。
-    const dirty = isDirty();
-    if (dirty && !window.confirm('当前项目的修改尚未保存，切换将丢弃，确定继续？')) {
-      return;
-    }
+    // 项目切换不再二次确认（code-review item 42a80be18f8f）：index 层
+    // handleScopeSelect 在变更 scope/project 前已经 confirmDiscardPanelEdits()
+    // （anyPanelDirty → 本面板注册的同口径 isDirty 探针，见上方 usePanelDirty）
+    // 弹过一次丢弃确认，此处再弹属同一动作双重确认；且拒绝分支只保留旧项目
+    // 草稿不加载新项目，loadedFor 已落后于新 project，handleSave 的对账恒拦截
+    // 保存——拒绝后被卡住的草稿再无落盘入口。现直接加载新项目数据并前移
+    // loadedFor；跨项目错写防护不弱化（index 层确认与 handleSave 的
+    // loadedForRef 拦截均保留，加载在飞期间 loadedFor 未前移仍拦得住）。
     let cancelled = false;
     const load = async () => {
       setLoading(true);

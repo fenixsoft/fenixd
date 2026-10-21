@@ -380,6 +380,44 @@ class TestRunImplOcrLane:
         cursor_path = repo / ".fenix" / "verify-progress" / "demo" / "ocr-cursor.json"
         assert not cursor_path.exists()
 
+    def test_artifact_persist_failure_cleans_tmp_and_marks_not_persisted(
+        self, tmp_path, monkeypatch
+    ):
+        """主产物落盘失败（os.replace 抛 OSError）→ 不残留半写 tmp、时间线
+        标记 artifact_persisted=False（对齐 _write_ocr_cursor 退痕形态）。
+        """
+        repo = _init_repo_with_fake_ocr(tmp_path)
+        real_replace = os.replace
+
+        def poisoned_replace(src, dst, *a, **kw):
+            name = Path(src).name
+            if name.startswith(".code-review-") and name.endswith(".json.tmp"):
+                raise OSError(28, "No space left on device")
+            return real_replace(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "replace", poisoned_replace)
+        artifact = _run_lane(repo)
+
+        # 内存产物语义不变（仍 completed；persist 失败只影响落盘事实）
+        assert artifact["status"] == "completed"
+        # 主产物未发布、tmp 已退痕（finally unlink，成功发布路径下为 no-op）
+        spec_dir = repo / ".fenix" / "verify-progress" / "demo"
+        assert not (spec_dir / "code-review.json").exists()
+        assert not list(spec_dir.glob(".code-review-*.json.tmp")), list(
+            spec_dir.glob(".code-review-*.json.tmp")
+        )
+        # 落盘失败不推进游标
+        assert not (spec_dir / "ocr-cursor.json").exists()
+        # run 时间线 result 行带 artifact_persisted=False 供读者判别
+        run_files = list((repo / ".fenix" / "runs").glob("impl-ocr-*.jsonl"))
+        assert len(run_files) == 1
+        lines = [
+            json.loads(line)
+            for line in run_files[0].read_text(encoding="utf-8").splitlines()
+        ]
+        assert lines[-1]["type"] == "result"
+        assert lines[-1]["artifact_persisted"] is False
+
     def test_lane_hard_timeout_unavailable(self, tmp_path, monkeypatch):
         repo = _init_repo_with_fake_ocr(tmp_path)
         monkeypatch.setenv("FAKE_OCR_MODE", "hang")

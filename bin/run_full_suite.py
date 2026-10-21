@@ -373,6 +373,7 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+            # [fenix-ignore:58de4e6a75c9] 双文件同构阶梯系书面记录的既定取舍；抽共享助手属跨文件重构，待任一侧下次实际改动时再收敛
             # 宽限期结束无论组长是否已退出都对整组补发 SIGKILL（与
             # bin/test_for.run_bounded 同构）：组长通常即刻响应 SIGTERM 退出，
             # SIGKILL 若只留在 wait 超时分支，组内忽略 SIGTERM 的幸存孙进程
@@ -726,7 +727,7 @@ def _log_to_stderr(message: str) -> None:
 def _positive_int(value):
     """--timeout 取值校验（code-review item 084b705344b2）：仅接受正整数。
 
-    0/负数传入 run_command 后 communicate(timeout<=0) 立即抛 TimeoutExpired，
+    0/负数传入 run_command 后 wait(timeout<=0) 立即抛 TimeoutExpired，
     套件一个用例未跑即被整组 SIGKILL 并误归为「挂起」。与
     fenix_dashboard._port_type 同口径：argparse 校验失败自动以退出码 2 报参数错误。
     """

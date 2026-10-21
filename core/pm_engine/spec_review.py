@@ -668,8 +668,18 @@ class SpecReviewManager:
         boundary_err = self._check_write_boundary(spec_name, data)
         if boundary_err:
             self.logger.warning("spec_review", f"写入边界校验失败: {spec_name}: {boundary_err}")
+            # content_failure=True（code-review item 9cdd0d2fe972）：边界错误文案
+            # 内嵌 LLM 产出的不可信内容（repairs 路径回显 / 非对象元素 {repair!r} /
+            # repairs 指向文件清单等），垃圾 repairs（如裸字符串 "429"、"rate limit"
+            # 词形）会被文本指纹误判 infra——不递增 _review_attempts、只清锚点计
+            # 熔断，对确定性 content/格式缺陷形成无预算约束的重派循环（MAX_REVIEW_
+            # ATTEMPTS 冻结兜底失效）。与同方法三个兄弟通道（结果硬门失败 / 结果
+            # 文件读取失败 / 未知 status，code-review item 4a086cfce2e9）对齐：
+            # 写入边界失败恒为产物格式/契约问题归 content；真实链路失败走 run
+            # error 通路（带结构化归因）不受影响。
             self._handle_review_failure(
-                spec_name, boundary_err, allow_artifact=False, run_started_at=run_started_at
+                spec_name, boundary_err, allow_artifact=False, run_started_at=run_started_at,
+                content_failure=True,
             )
             return False
 
@@ -1767,8 +1777,15 @@ class SpecReviewManager:
         if entry.get(FROZEN_FIELD):
             return False, "SPEC 已冻结"
         error = entry.get("error") or ""
+        # 子串包含（code-review item 8fdc700aaec1）：现行评审冻结站点把标记写在
+        # 文案中段（REVIEW_REJECTED_FREEZE_ERROR_PREFIX 等中文前缀开头，形如
+        # 「评审否决冻结：原状态 reviewing · spec-review-rejected: …」），
+        # startswith 恒 False——冻结标记被外部抹掉而 status 仍 blocked 的残留
+        # 形态会被误报「SPEC 未因评审进入 blocked」而无法走重评恢复。放宽为
+        # 子串包含与现行冻结格式兼容；旧语义裸前缀形态不受影响（两标记本身
+        # 仍是评审专属，误放行面不扩大）。
         if not (
-            error.startswith("spec-review-rejected:") or error.startswith("spec-review-incomplete:")
+            "spec-review-rejected:" in error or "spec-review-incomplete:" in error
         ):
             return False, "SPEC 未因评审进入 blocked"
 

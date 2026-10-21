@@ -743,10 +743,58 @@ class RRollbackMixin:
             ),
         )
 
+    # 成因键 → 差异化处置指引 (fix_hint, recommended_action)（code-review
+    # item 21b27d682b40）：键取自 queue.py ``QQQueueMixin._MERGEBACK_DEFER_
+    # CAUSES`` 的 key，``_report_mergeback_spec_dir_inflight_stuck`` 按 key
+    # 反查（此前按 cause_label 中文标签文本前缀 startswith 匹配 queue.py 的
+    # 标签值，标签措辞改写即静默回落 spec 目录指引——跨模块字符串耦合无断言
+    # 保护）。键集合与 queue.py 键集合的一致性由
+    # tests/test_merge_back_spec_dir_guard.py 键集合断言拦截漂移；
+    # ``{spec_name}`` 占位符在消费点替换。未识别键回落 spec 目录指引
+    # （保守方向：提交 spec 目录对主树脏/锁冲突无害）。
+    _MERGEBACK_CAUSE_GUIDANCE = {
+        "spec_dir_inflight": (
+            (
+                "处置指引：提交主树 spec/changes/{spec_name}/ 目录的未提交改动"
+                "（git add/commit，含 spec 迭代修补），再把该 spec 复位 ready "
+                "重新放行 merge-back；或等待 daemon 恢复通道（recovery）下一轮再试。"
+            ),
+            (
+                "提交主树 spec/changes/ 目录的未提交改动"
+                "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
+                "（ready 重派）继续 merge-back；分支与已成功实现保留"
+            ),
+        ),
+        "main_tree_dirty": (
+            (
+                "处置指引：提交或 stash 主树与分支重叠的未提交改动"
+                "（git add/commit 或 git stash push，重叠文件清单见 merge_error），"
+                "等待自动 merge-only 重试；或人工复位 ready 重放 merge-back。"
+            ),
+            (
+                "提交或 stash 主树与分支重叠的未提交改动（git add/commit 或 "
+                "git stash push）后重新放行该 spec 继续 merge-back；分支与已"
+                "成功实现保留"
+            ),
+        ),
+        "dispatch_lock_conflict": (
+            (
+                "处置指引：等待 dispatch 锁退避（_dispatch_backoff_until）到期后"
+                "自动 merge-only 重试；长时间不解除排查锁冲突根因，或人工复位 "
+                "ready 重放 merge-back。"
+            ),
+            (
+                "等待 dispatch 锁退避到期自动重试，或排查锁冲突根因后人工复位 "
+                "该 spec 继续 merge-back；分支与已成功实现保留"
+            ),
+        ),
+    }
+
     def _report_mergeback_spec_dir_inflight_stuck(
         self, spec_name: str, merge_info, branch: str, merge_error: str,
         retry_count: int, first_at: int, selfheal_evidence: str | None = None,
         cause_label: str = "spec 目录在飞编辑",
+        cause_key: str = "spec_dir_inflight",
     ) -> None:
         """spec 目录在飞编辑顺延超限回落告警（evo-merge-back-spec-dir-inflight-guard D1a/D2）。
 
@@ -771,33 +819,25 @@ class RRollbackMixin:
         出口前的归档残留自愈评估摘要（判据命中与否、补提交 hash、重放/失败
         原因），非空时增补进告警 description 与 evidence，保持人工可见。
 
+        ``cause_key``（code-review item 21b27d682b40）：结构化成因键（queue.py
+        ``_MERGEBACK_DEFER_CAUSES`` 的 key），处置指引按
+        ``_MERGEBACK_CAUSE_GUIDANCE`` 反查——不再按标签文本前缀匹配，queue 侧
+        标签措辞改写不再影响分流；未识别键回落 spec 目录指引（保守方向：提交
+        spec 目录对主树脏/锁冲突无害）。
+
         ``cause_label``（code-review item a9a96d9d650e）：可重试成因的人工可读
-        标签（queue.py ``_MERGEBACK_DEFER_CAUSES``）。三类成因（spec 目录在飞
+        标签（queue.py ``_MERGEBACK_DEFER_CAUSES``），仅进 description/evidence
+        展示，不参与分流。三类成因（spec 目录在飞
         编辑 / 主树脏 / dispatch 锁冲突）共用本告警站点，description 与处置指引
-        不再按「spec 目录在飞编辑」单一成因写死——标签前缀选差异化指引，未识别
-        标签回落 spec 目录指引（保守方向：提交 spec 目录对主树脏/锁冲突无害）。
+        不再按「spec 目录在飞编辑」单一成因写死。
         """
-        # 成因差异化处置指引（前缀匹配 queue.py 标签文本，两处文案同源）
-        if cause_label.startswith("主树"):
-            fix_hint = (
-                "处置指引：提交或 stash 主树与分支重叠的未提交改动"
-                "（git add/commit 或 git stash push，重叠文件清单见 merge_error），"
-                "等待自动 merge-only 重试；或人工复位 ready 重放 merge-back。"
-            )
-            recommended_action = (
-                "提交或 stash 主树与分支重叠的未提交改动（git add/commit 或 "
-                "git stash push）后重新放行该 spec 继续 merge-back；分支与已"
-                "成功实现保留"
-            )
-        elif cause_label.startswith("dispatch"):
-            fix_hint = (
-                "处置指引：等待 dispatch 锁退避（_dispatch_backoff_until）到期后"
-                "自动 merge-only 重试；长时间不解除排查锁冲突根因，或人工复位 "
-                "ready 重放 merge-back。"
-            )
-            recommended_action = (
-                "等待 dispatch 锁退避到期自动重试，或排查锁冲突根因后人工复位 "
-                "该 spec 继续 merge-back；分支与已成功实现保留"
+        # 成因差异化处置指引按结构化成因键分流（item 21b27d682b40，键取自
+        # queue.py _MERGEBACK_DEFER_CAUSES；键集合一致性由
+        # tests/test_merge_back_spec_dir_guard.py 断言拦截）
+        guidance = self._MERGEBACK_CAUSE_GUIDANCE.get(cause_key)
+        if guidance is not None:
+            fix_hint, recommended_action = (
+                text.replace("{spec_name}", spec_name) for text in guidance
             )
         else:
             fix_hint = (

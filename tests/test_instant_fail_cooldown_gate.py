@@ -489,3 +489,47 @@ class TestRecoveryTimerReschedule:
         )
         # 仍只有一个判重登记（无截止通道下第二个调用幂等早退）
         assert list(dispatcher._transient_timers) == ["s"]
+
+    def test_cleared_deadline_zero_keeps_old_timer(self, tmp_path):
+        """通道截止被清除（resolve_deadline 返回 0.0 而非 None）时幂等早退：
+        旧定时器不被取消也不重排（对齐真实冷却通道未冷却恒返 0.0 的表示）。"""
+        fenix = Path(tmp_path) / ".fenix"
+        fenix.mkdir(parents=True, exist_ok=True)
+        logger = RecordingLogger()
+        engine = PMEngine(
+            StateMachine(fenix / "STATE.md", logger), MagicMock(), {},
+            Path(tmp_path), logger)
+        dispatcher = Dispatcher(engine)
+        deadlines = {"s": time.monotonic() + 300.0}
+        fired = []
+        timers = dispatcher._instant_fail_timers
+        table = dispatcher._instant_fail_timer_deadlines
+        handles = dispatcher._instant_fail_timer_handles
+
+        self._schedule(dispatcher, "s", deadlines, timers, table, handles, fired)
+        first = handles["s"]
+        assert "s" in timers
+        assert table["s"] == deadlines["s"]
+        old_deadline = deadlines["s"]
+
+        # 冷却截止被清除（如 runner._finalize_success 摘除条目）：真实通道
+        # resolve_deadline 未冷却时恒返 0.0、resolve_delay 因 until<=0 返 None
+        # → 须视为「截止已解除」幂等早退，旧定时器保留到期自会重入派发链。
+        deadlines["s"] = 0.0
+        dispatcher._schedule_recovery_timer(
+            "s",
+            timers=timers,
+            resolve_delay=lambda s: (
+                max(0.5, deadlines[s] - time.monotonic())
+                if deadlines[s] > 0 else None
+            ),
+            min_delay=0.5,
+            callback=lambda s: fired.append(s),
+            resolve_deadline=lambda s: deadlines[s],
+            deadline_table=table,
+            handle_table=handles,
+        )
+        assert handles["s"] is first          # 旧定时器句柄未被替换
+        assert first.is_alive()               # 未被 cancel
+        assert list(timers) == ["s"]          # 判重标记保留，未重排新定时器
+        assert table["s"] == old_deadline     # deadline_table 保留旧正截止

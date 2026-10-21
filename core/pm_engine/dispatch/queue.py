@@ -518,10 +518,19 @@ class QQQueueMixin:
         # true 折成 1、非整值浮点静默截断采信。enabled 非布尔 fail-closed
         # 回缺省关闭；数值非法 WARNING 留痕回缺省；try/except 保留为最后
         # 兜底（畸形配置不炸派发循环）。
+        # enabled 读取独立包 try（code-review item be649b434782）：读取抛
+        # TypeError/ValueError 时若落入外层 except，会按缺省参数（30/15 分钟、
+        # 4 档）继续计算老化——等效把 enabled 当 true 处理，与「enabled 非布尔
+        # fail-closed 回缺省关闭」方向相反。异常时与非法布尔同向直接 return 0
+        # （写法对齐 _normalized_int_config/_normalized_float_config 的读取
+        # try 形态）。
         try:
             enabled = self._pm._get_config("pm.dispatch.aging.enabled", False)
-            if not isinstance(enabled, bool) or not enabled:
-                return 0
+        except (TypeError, ValueError):
+            return 0
+        if not isinstance(enabled, bool) or not enabled:
+            return 0
+        try:
             # 注意：数值键不能用 `or 默认值` 取参 —— 0（initial_wait/
             # step_down）合法且常见，0 为假值会被误替换为默认值（归一读取器
             # None 判空回缺省同口径）。
@@ -2835,7 +2844,8 @@ class QQQueueMixin:
     # 顺延 error 文案与超限 stuck 告警此前按「spec 目录在飞编辑」单一成因
     # 写死——主树脏/锁冲突形态下人工按告警指引去提交 spec 目录，处置对象
     # 错误。key 随调用链传入 _defer_merge_back / rollback 告警，value 为
-    # 人工可读标签（rollback 侧按标签前缀选差异化处置指引）。
+    # 人工可读标签（仅展示；rollback 侧指引分流按 key 查映射，键集合一致性
+    # 由 tests/test_merge_back_spec_dir_guard.py 断言——item 21b27d682b40）。
     _MERGEBACK_DEFER_CAUSES = {
         "spec_dir_inflight": "spec 目录在飞编辑",
         "main_tree_dirty": "主树 tracked 文件脏（git merge 拒绝覆写/丢失改动）",
@@ -3051,6 +3061,7 @@ class QQQueueMixin:
                 self._report_mergeback_spec_dir_inflight_stuck(
                     spec_name, merge_info, branch, merge_error, count, int(first_f),
                     selfheal_evidence=selfheal_evidence, cause_label=cause_label,
+                    cause_key=cause,
                 )
             return
         self._schedule_merge_retry(spec_name, self._merge_retry_delay_seconds())
@@ -3323,7 +3334,7 @@ class QQQueueMixin:
             # 超限 stuck 告警/窗口降级。
             pending = self._merge_retry_timer_specs
             stale = pending.pop(spec_name, None)
-            self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
+            self._backoff_timers = [t for t in self._backoff_timers if t.is_alive()]
             if stale is not None:
                 stale.cancel()
             self._backoff_timers.append(timer)

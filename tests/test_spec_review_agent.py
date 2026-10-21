@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.state_machine import StateMachine
+from core.state_machine import StateMachine, REVIEW_REJECTED_FREEZE_ERROR_PREFIX
 from core.pm_engine.infra_breaker import InfraCircuitBreaker
 from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS, MAX_REJECT_REDO
 
@@ -200,6 +200,28 @@ class TestConsumeReviewResult(unittest.TestCase):
         self.assertEqual(entry["status"], "ready")
         self.assertEqual(int(entry.get("_review_attempts", -1)), 0)
 
+    def test_boundary_failure_counts_as_content_retry(self):
+        """写入边界失败须递增重试预算（code-review item 9cdd0d2fe972）：边界
+        文案内嵌不可信产物内容（本例 repairs path 回显 "429"/"rate limit"/
+        "quota" 词形），不传 content_failure=True 会被文本指纹误判 infra——
+        不递增 _review_attempts、只计熔断，确定性格式缺陷陷入无预算约束的
+        重派循环。与兄弟通道（硬门/读取失败/未知 status）对齐恒归 content。"""
+        _mk_project(self.tmpdir)
+        mgr, sm, engine = self._manager()
+        _write_result(self.tmpdir, "spec", {
+            "status": "repaired",
+            "repairs": [{"path": "core/429 rate limit quota.txt", "summary": "x"}],
+        })
+        mgr.consume_review_result("spec")
+        entry = sm.read_one("spec")
+        # content 语义：尝试预算递增且保持 reviewing 重试（误判 infra 则为 0）
+        self.assertEqual(int(entry.get("_review_attempts", 0)), 1)
+        self.assertEqual(entry["status"], "reviewing")
+        self.assertIsNone(entry.get("reviewer_run"))
+        self.assertTrue(
+            str(entry.get("error", "")).startswith("spec-review-incomplete:")
+        )
+
 
 class TestReReviewConditions(unittest.TestCase):
     def setUp(self):
@@ -246,6 +268,22 @@ class TestReReviewConditions(unittest.TestCase):
         mgr, sm = self._blocked_spec()
         ok, msg = mgr.re_review("spec")
         self.assertTrue(ok)
+        self.assertEqual(sm.read_one("spec")["status"], "reviewing")
+
+    def test_frozen_format_error_accepted(self):
+        """冻结格式（标记位于中段）的评审 blocked 残留可走重评（code-review
+        item 8fdc700aaec1）：现行冻结站点 error 形如「评审否决冻结：原状态
+        reviewing · spec-review-rejected: …」（中文前缀开头、评审标记在中段），
+        冻结标记被外部抹掉而 status 仍 blocked 时 startswith 判定恒 False，
+        重评恢复通道失联——判定放宽为子串包含。"""
+        mgr, sm = self._blocked_spec(
+            error=(
+                f"{REVIEW_REJECTED_FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                "spec-review-rejected: 方向性错误"
+            )
+        )
+        ok, msg = mgr.re_review("spec")
+        self.assertTrue(ok, msg)
         self.assertEqual(sm.read_one("spec")["status"], "reviewing")
 
     def test_idempotent_defense(self):

@@ -19,6 +19,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -195,3 +196,53 @@ class TestSoftBoundaryZeroRegression(SoftAlertBase):
         })
         assert result_gate._check_quality_gates_soft(self.runner, SPEC, self.wt) is None
         assert self._drift_alerts() == []
+
+
+class TestVerifyProgressCandidatePathsHelper(SoftAlertBase):
+    """共享候选收集助手（code-review item 4325bdfed213）。
+
+    _check_impl_code_review_artifact 与 _check_quality_gates_soft 的双载体
+    收集/resolve() 去重抽进 _verify_progress_candidate_paths 后，两调用点对
+    同一夹具必须产出同构候选序（仅主树标签按各自 main_label 映射：
+    impl 门=main、quality-gates 告警=main-tree）。
+    """
+
+    def test_both_call_sites_same_path_sequence(self):
+        cr = result_gate._verify_progress_candidate_paths(
+            SPEC, self.wt, self.proot, "code-review.json"
+        )
+        qg = result_gate._verify_progress_candidate_paths(
+            SPEC, self.wt, self.proot, "quality-gates.json", main_label="main-tree"
+        )
+        assert [(p, m) for p, m in cr] == [
+            (self.wt / ".fenix" / "verify-progress" / SPEC / "code-review.json", "worktree"),
+            (self.proot / ".fenix" / "verify-progress" / SPEC / "code-review.json", "main"),
+        ]
+        assert [(p, loc) for p, loc in qg] == [
+            (self.wt / ".fenix" / "verify-progress" / SPEC / "quality-gates.json", "worktree"),
+            (self.proot / ".fenix" / "verify-progress" / SPEC / "quality-gates.json", "main-tree"),
+        ]
+        # 去掉文件名/标签差异后，两调用点候选序同构（worktree 先行、主树兜底）
+        assert [p.parent for p, _ in cr] == [p.parent for p, _ in qg]
+
+    def test_dedup_keeps_first_when_wt_equals_root(self):
+        # wt_path == project_root（测试 tmp_path 同充两者）→ resolve() 去重，
+        # 保留先出现者的 worktree 标签
+        out = result_gate._verify_progress_candidate_paths(
+            SPEC, self.wt, str(self.wt), "code-review.json"
+        )
+        assert out == [
+            (self.wt / ".fenix" / "verify-progress" / SPEC / "code-review.json", "worktree")
+        ]
+
+    def test_mock_like_root_carrier_excluded_and_no_carrier_empty(self):
+        # MagicMock 替身非 str/Path 载体 → 主树候选不加（isinstance 防御口径，
+        # 防 json.loads(mock.read_text()) 逸出）；双缺 → 空列表（调用方降级）
+        assert result_gate._verify_progress_candidate_paths(
+            SPEC, None, MagicMock(), "code-review.json"
+        ) == []
+        assert result_gate._verify_progress_candidate_paths(
+            SPEC, None, self.proot, "code-review.json"
+        ) == [
+            (self.proot / ".fenix" / "verify-progress" / SPEC / "code-review.json", "main")
+        ]

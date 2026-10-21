@@ -842,21 +842,35 @@ class FamilyGovernor:
             repair_fields["implementer_run"] = None
         if entry.get("tester_run") is not None:
             repair_fields["tester_run"] = None
-        # 写前冻结复查（code-review item 7d53e9eacf26，仿 dispatch/rollback
-        # ._rollback_frozen_recheck/_rollback_write_guarded 收口）：入口 entry
-        # 快照到此写之间隔着 bump_counters 与 _append_fail_history 的文件 I/O
-        # （窗口比 transition 路径更宽），窗口内并发冻结时 frozen 条目的
+        # 写前复查（冻结：code-review item 7d53e9eacf26；状态漂移：code-review
+        # item d931057e6b0d。仿 dispatch/rollback
+        # ._rollback_frozen_recheck/_rollback_write_guarded 与 engine 收敛拦截
+        # f9e6461bbd96 / 门禁拦截 49044ee6e490「竞争后到者让位」收口）：入口
+        # entry 快照到此写之间隔着 bump_counters 与 _append_fail_history 的文件
+        # I/O（窗口比 transition 路径更宽）。窗口内并发冻结时 frozen 条目的
         # update_spec 只剥 status 键——error 覆盖与 implementer_run/tester_run
-        # 锚点清除照常生效，破坏冻结恢复语义。发现冻结即放弃打回（下方
-        # tasks.md 修复段注入与重派一并跳过），bug-found 事件留待冻结解除后
-        # 处理。
+        # 锚点清除照常生效，破坏冻结恢复语义；窗口内 spec 被外部推进（人工把
+        # bug-found 推进 done 等终态，或并发验证收工转 verified）时，盲写会把
+        # 合法状态拉回 implementing。发现冻结即放弃打回（下方 tasks.md 修复段
+        # 注入与重派一并跳过），冻结现场保留待人工解冻；状态漂移出可打回态
+        # （bug-found/implemented，implementing=上轮已重置的滞后重放，幂等放行）
+        # 同样放弃打回，bug-found 事件留待后续周期重评兜底。
         from core.state_machine import FROZEN_FIELD
 
-        if (self._pm.state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+        latest = self._pm.state_machine.read_one(spec_name) or {}
+        if latest.get(FROZEN_FIELD):
             self._pm.logger.warning(
                 "pm_engine",
                 f"原地打回放弃：'{spec_name}' 写盘前复查发现已冻结——放弃 "
                 f"implementing 重置写与重派，冻结现场保留待人工解冻",
+            )
+            return
+        if latest.get("status") not in ("bug-found", "implemented", "implementing"):
+            self._pm.logger.info(
+                "pm_engine",
+                f"原地打回竞争后到者：'{spec_name}' 状态已为 "
+                f"'{latest.get('status')}'，让位于外部进度——放弃 "
+                f"implementing 重置写与重派（缺口留待后续周期重评）",
             )
             return
         self._pm.state_machine.update_spec(spec_name, repair_fields)
@@ -1254,7 +1268,14 @@ class FamilyGovernor:
             # 替换区间丢内容——逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配
             # 首个二级标题（保持原「下一个二级标题」命中语义）。
             end = len(text)
-            offset = m.end()
+            # 行首相对位置从 0 累计，命中时绝对下标 = 切片原点 m_end + 相对
+            # 累计值（code-review item 3e3b67e58122）：end 供 text[end:] 按
+            # 绝对下标切片，若漏加 m_end（此前误初始化为 m.end()，等于只把
+            # 标题行内的匹配相对终点计入），算出的 end 比下一个二级标题的
+            # 真实绝对位置少 m_end——text[end:] 落进旧段体内部，旧段尾部
+            # （含旧轮任务行）残留在新段与后续标题之间，会被
+            # _task_completion_blocker 判为永久缺口阻断 verified→done。
+            offset = 0
             fence_char = ""
             fence_len = 0
             for line in after.splitlines(keepends=True):
@@ -1267,7 +1288,7 @@ class FamilyGovernor:
                     fence_char = body[0]
                     fence_len = len(body) - len(body.lstrip(body[0]))
                 elif line.startswith("## "):
-                    end = offset
+                    end = m_end + offset
                     break
                 offset += len(line)
             # 行首锚保持（item a25d95843de3）：start 已回退吃掉段前全部换行、

@@ -931,7 +931,21 @@ class PMEngine:
                 # 窗口内并发冻结时，frozen 条目的 update_spec 只剥 status 键，
                 # error 覆写照常生效、会覆盖内嵌「原状态 X」的冻结 error。
                 # 发现冻结即放弃本次收敛拦截与派发，留待下一轮周期重评。
+                # 同一快照顺带复核 status（code-review item 3281b7c66515，对齐
+                # _on_spec_verified 双读分别复核 status 与 frozen 的口径）：
+                # fresh 复核到此读之间隔着本次 read_one 的文件 IO，窗口内队列
+                # worker 可能已消费在队 implementer 条目把 spec 转入
+                # implementing，盲写会把合法进度覆写回 blocked。状态已漂移即
+                # 与冻结命中同样放弃本次 blocked 写。
                 latest = self.state_machine.read_one(spec_name) or {}
+                if latest.get("status") != "ready":
+                    self.logger.warning(
+                        "pm_engine",
+                        f"同源草案收敛拦截放弃：'{spec_name}' 写盘前复查发现"
+                        f"状态已为 '{latest.get('status')}'——放弃 blocked 写"
+                        "与派发，让位于在飞进度，留待后续周期重评",
+                    )
+                    return
                 if latest.get(FROZEN_FIELD):
                     self.logger.warning(
                         "pm_engine",

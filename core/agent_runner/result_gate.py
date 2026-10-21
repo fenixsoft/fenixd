@@ -759,6 +759,46 @@ def _validate_code_review_report(
     return _validate_disposition_entries(cr_dispositions, report_rel)
 
 
+def _verify_progress_candidate_paths(
+    spec_name: str, wt_path, root, filename: str, *, main_label: str = "main"
+) -> list[tuple[Path, str]]:
+    """verify-progress 双载体候选收集 + Path.resolve() 去重（保留先见者）。
+
+    _check_impl_code_review_artifact 与 _check_quality_gates_soft 共享的单一
+    来源（code-review item 4325bdfed213：原先两处各自手写同一段约 20 行的
+    收集/去重逻辑，任一侧先修载体判定细节另一侧易漏改，形成判定漂移）。规则：
+    - worktree 候选先行（wt_path 为 None 时缺席）；
+    - 主树回退候选仅在 root 为真 str/Path 载体时加入（裸 getattr 对 MagicMock
+      替身无效：其任意属性恒 truthy，`isinstance` 判定才能拦下替身，防
+      json.loads(mock.read_text()) 抛 TypeError 逸出）；
+    - 按 Path.resolve() 去重（wt_path == project_root / 测试用 tmp_path 同时
+      充当两者），保留**先出现者**。
+
+    返回 (path, location 标签) 序列：worktree 候选恒标 ``"worktree"``；主树
+    候选标签由 ``main_label`` 指定（impl-code-review 门一侧是判定模式
+    ``"main"``，quality-gates 告警一侧是漂移副本位置 ``"main-tree"``）。
+    返回空列表表示无任何载体（调用方各自按「缺载体不校验」降级）。
+    """
+    candidates: list[tuple[Path, str]] = []
+    if wt_path is not None:
+        candidates.append(
+            (Path(wt_path) / ".fenix" / "verify-progress" / spec_name / filename, "worktree")
+        )
+    if isinstance(root, (str, Path)):
+        candidates.append(
+            (Path(root) / ".fenix" / "verify-progress" / spec_name / filename, main_label)
+        )
+    seen: set = set()
+    dedup_candidates: list[tuple[Path, str]] = []
+    for path, label in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        dedup_candidates.append((path, label))
+    return dedup_candidates
+
+
 def _check_impl_code_review_artifact(
     runner,
     spec_name: str,
@@ -802,31 +842,13 @@ def _check_impl_code_review_artifact(
         return None
 
     # ── 候选路径收集（fix-impl-code-review-gate-readback D2）──
-    # worktree 候选先行；主树回退候选仅在 project_root 为真 Path 载体时加入
-    # （裸 getattr 对 MagicMock 替身无效：其任意属性恒 truthy，`isinstance`
-    # 判定才能拦下替身，防 json.loads(mock.read_text()) 抛 TypeError 逸出）。
+    # 收集 + resolve() 去重收进共享助手（code-review item 4325bdfed213，与
+    # _check_quality_gates_soft 同源，防双份手写逻辑单侧漂移）；本门主树
+    # 标签是判定模式语义（worktree/main），用助手默认 main_label。
     report_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
-    candidates = []
-    if wt_path is not None:
-        candidates.append(
-            ("worktree", Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "code-review.json")
-        )
-    root = getattr(runner, "project_root", None)
-    if isinstance(root, (str, Path)):
-        candidates.append(
-            ("main", Path(root) / ".fenix" / "verify-progress" / spec_name / "code-review.json")
-        )
-    # 按 Path.resolve() 去重（wt_path == project_root / 测试用 tmp_path 同时
-    # 充当两者）：保留**先出现者**的校验模式——worktree 语义，不做 mtime 硬拦。
-    seen = set()
-    dedup_candidates = []
-    for mode, path in candidates:
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        dedup_candidates.append((mode, path))
-    candidates = dedup_candidates
+    candidates = _verify_progress_candidate_paths(
+        spec_name, wt_path, getattr(runner, "project_root", None), "code-review.json"
+    )
     if not candidates:
         # 缺载体不校验（与现状 wt_path is None → return None 同语义；MUST NOT
         # 落到下方「两处皆缺」缺失归因，与 spec「无 worktree 载体时不误判」一致）
@@ -837,7 +859,7 @@ def _check_impl_code_review_artifact(
     # 含「陈旧」）。全部候选无有效数据时：曾命中非法/陈旧 → 返回该 err；
     # 所有候选文件均不存在 → 缺失归因。
     first_err = None
-    for mode, path in candidates:
+    for path, mode in candidates:
         if not path.is_file():
             continue
         if mode == "worktree":
@@ -1017,28 +1039,14 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
         return None
 
     rel = f".fenix/verify-progress/{spec_name}/quality-gates.json"
-    candidates: list[tuple[Path, str]] = []
-    if wt_path is not None:
-        candidates.append(
-            (
-                Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json",
-                "worktree",
-            )
-        )
-    root = getattr(runner, "project_root", None)
-    if isinstance(root, (str, Path)):
-        candidates.append(
-            (
-                Path(root) / ".fenix" / "verify-progress" / spec_name / "quality-gates.json",
-                "main-tree",
-            )
-        )
-    seen: set = set()
+    # 候选收集 + resolve() 去重收进共享助手（code-review item 4325bdfed213，
+    # 与 _check_impl_code_review_artifact 同源，防双份手写逻辑单侧漂移）；
+    # 告警落库的漂移副本标记（worktree / main-tree）经 main_label 原样保留。
+    candidates = _verify_progress_candidate_paths(
+        spec_name, wt_path, getattr(runner, "project_root", None),
+        "quality-gates.json", main_label="main-tree",
+    )
     for path, location in candidates:
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
         try:
             if not path.is_file():
                 continue

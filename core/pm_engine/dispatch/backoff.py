@@ -335,8 +335,10 @@ class BBackoffMixin:
           截止未变化仍幂等早退（既有语义不变）；截止变化先 cancel 旧 Timer、
           摘判重标记后按新截止重排；
         - ``resolve_deadline``：``(spec_name) -> float | None``，返回该通道当前
-          冷却截止单调秒（None 表示通道未设截止——此时旧定时器保留，到期自会
-          兜底重入派发链）；
+          冷却截止单调秒（未设截止——None 或已清零的 0.0；真实冷却通道
+          engine._instant_fail_cooldown_until / _signal_kill_cooldown_until
+          未冷却时恒返回 0.0——两者均视为「通道未设截止」：此时旧定时器
+          保留，到期自会兜底重入派发链）；
         - ``resolve_delay`` 返回 None 则本此不排程；
         - 延迟下限 ``min_delay``；
         - ``scheduled_log`` 非空时于定时器启动后记 INFO，模板可用
@@ -350,10 +352,12 @@ class BBackoffMixin:
                 current_deadline = resolve_deadline(spec_name)
             except Exception:
                 return
-            if (current_deadline is None or live_deadline is None
+            if (current_deadline is None or float(current_deadline) <= 0
+                    or live_deadline is None
                     or float(live_deadline) == float(current_deadline)):
-                # 截止未变化（或通道截止已解除）：幂等早退，旧定时器到期自会
-                # 重入派发链（闸门查询侧届时按现状判定）。
+                # 截止未变化（或通道截止已解除——None 或已清零的 0.0）：
+                # 幂等早退，旧定时器保留，到期自会重入派发链（闸门查询侧
+                # 届时按现状判定）。
                 return
             # 截止时刻变化（冷却被续写/翻倍）：cancel 旧 Timer、摘判重标记，
             # 落到下方按新截止重排。

@@ -865,5 +865,68 @@ class TestBudgetReconcileCorrect(unittest.TestCase):
         self.assertEqual(int(entry["_impl_run_budget_used"]), 2)
 
 
+class TestBudgetBaselineClampGuard(unittest.TestCase):
+    """人工重置基线钳零旁路守卫（code-review item d8157e828d16）。
+
+    基线写入的是清零前 used；该值含不可豁免死亡 run 消耗（used 启动即计、
+    completed 不计、无豁免侧车）时基线 > 重置时点 completed，expected 恒被
+    max(0, …) 钳零——守卫前流程落入纯漂移分支把重置后新 run 的 used 反复
+    改写清零，预算闸门被静默旁路。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix" / "runs").mkdir(parents=True)
+        self.engine, self.sm, self.logger = build_engine(self.root)
+        self.sm.add_spec("spec-a", {"status": "ready", "priority": 5})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _reconcile_with(self, used, baseline, normal_runs=2):
+        for i in range(normal_runs):
+            write_impl_run_file(
+                self.root, f"impl-spec-a-178840000{i + 1}-a1", "result")
+        self.sm.update_spec("spec-a", {"_impl_run_budget_used": used,
+                                       "_budget_manual_reset_baseline": baseline})
+        self.engine._reconcile_impl_budget("spec-a")
+        return self.sm.read_one("spec-a")
+
+    def test_clamped_expected_reanchors_and_keeps_new_runs_used(self):
+        """expected 被钳零（baseline=4 > 重置时点收工数）→ used 不清零、重锚基线。"""
+        # 重置后 2 次派发（used=2），1 次正常收工（completed=2 含 1 次重置前）
+        entry = self._reconcile_with(used=2, baseline=4, normal_runs=2)
+        # 旧纯漂移分支会把它改写为 max(0, 2−4)=0
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 2)
+        # 基线重锚为 completed − used = 2 − 2 = 0
+        self.assertEqual(int(entry["_budget_manual_reset_baseline"]), 0)
+        infos = [str(c) for c in self.logger.info.call_args_list]
+        self.assertTrue(any("重锚" in m for m in infos), "应留 INFO 重锚日志")
+
+    def test_clamped_keeps_used_when_deaths_exceed_completions(self):
+        """重置后死亡使 used > completed：同样不清零，重锚取下限 0。"""
+        entry = self._reconcile_with(used=2, baseline=5, normal_runs=1)
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 2)
+        self.assertEqual(int(entry["_budget_manual_reset_baseline"]), 0)
+
+    def test_normal_downward_drift_with_baseline_unchanged(self):
+        """正常无污染场景（baseline ≤ 重置时点 completed）行为不变：expected>0
+        的下调仍走既有纯漂移分支，基线不动、不触发钳零重锚。"""
+        entry = self._reconcile_with(used=3, baseline=1, normal_runs=2)
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 1)  # 2 − 1
+        self.assertEqual(int(entry["_budget_manual_reset_baseline"]), 1)
+        logs = [str(c) for c in self.logger.info.call_args_list]
+        self.assertFalse(any("重锚" in m for m in logs))
+
+    def test_impl_run_budget_used_corrupt_field_warns_and_falls_back(self):
+        """used 字段损坏按 0 兜底但 WARNING 留痕含字段原值（item 5f0dd66580bc）。"""
+        self.sm.update_spec("spec-a", {"_impl_run_budget_used": "2.5"})
+        self.assertEqual(self.engine._impl_run_budget_used("spec-a"), 0)
+        warnings = [str(c) for c in self.logger.warning.call_args_list]
+        self.assertTrue(any("损坏" in m and "2.5" in m for m in warnings),
+                        "应 WARNING 留痕并含字段原值")
+
+
 if __name__ == "__main__":
     unittest.main()

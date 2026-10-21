@@ -564,7 +564,22 @@ class PRepairLaneMixin:
                     try:
                         data = json.loads(wt_result.read_text(encoding="utf-8"))
                         if isinstance(data, dict):
+                            # code-review item f39e39f00397：缺 spec 戳采信点的宽容
+                            # 口径依据——跨轮陈旧已由上方派发前 unlink 兜住（本轮未
+                            # 写 = 文件不存在），残余暴露仅剩 unlink 之后、读取之前
+                            # 被无戳结果文件覆盖的窄窗口；runner 侧写戳是 prompt 软
+                            # 约束（repair 模板含 spec 字段，框架无 post-run 盖章），
+                            # 「恒写戳」契约未核实，故缺戳不硬判失败，仅 WARNING
+                            # 留痕后按本 spec 采信（status==error 仍可推翻）。
                             stamped = data.get("spec")
+                            if not stamped:
+                                self._pm.logger.warning(
+                                    "pm_engine",
+                                    f"repair 结果文件 '{wt_result}' 无 spec 戳，"
+                                    f"按本 spec '{spec_name}' 采信（宽容口径：跨轮"
+                                    f"陈旧已由派发前 unlink 兜住，runner 写戳契约"
+                                    f"未核实）",
+                                )
                             if stamped and stamped != spec_name:
                                 repair_ok = False
                                 repair_error = f"结果文件 spec 戳 '{stamped}' 与 '{spec_name}' 不符"

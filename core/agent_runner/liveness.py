@@ -1058,10 +1058,35 @@ class LivenessSupervisor:
         （超时/非零退出/输出不可解析/异常）时，以减半超时短重试一次，重试
         仍故障才按原 fail-closed 语义返回 stagnant；judge 正常给出的 stagnant
         verdict 属「确认停滞」，不重试。返回值结构与 evidence 格式不变。
+
+        code-review item 53d8a2f73d90：钉死 ClaudeAdapter 通道的结构性不可用
+        （spawn 阶段 FileNotFoundError＝argv[0] 裸 "claude" PATH 解析缺失，
+        如 dsh 独立部署且宿主无 claude CLI）不受上述 fail-closed 约束——
+        重试无意义（部署态不会秒级自愈），直接 fail-open 返回 advancing
+        （附 WARNING 留痕）跳过本轮判活、保留推进中 run；真实停滞仍由上游
+        零事件守卫与零产出启发式短路兜底，extend 亦受 max_extensions /
+        absolute_max 封顶。
         """
         timeout = self._supervision_judge_timeout()
         verdict = self._judge_liveness_once(snapshot, spec_name, run_id, timeout)
         evidence = str(verdict.get("evidence") or "")
+        # 结构性不可用 fail-open：不判 stagnant、不进减半重试链。下轮 deadline
+        # 重新 spawn 探测，部署修复（安装 claude CLI）后判活自动恢复。
+        if verdict.get("unavailable_reason") == "binary_missing":
+            self._pm.logger.warning(
+                "agent_runner",
+                f"Liveness judge channel binary missing for "
+                f"{spec_name or 'unknown'} ({run_id}); fail-open skip this "
+                f"round (run preserved): {evidence[:160]}",
+            )
+            return {
+                "verdict": "advancing",
+                "evidence": (
+                    "liveness judge unavailable: judge spawn binary missing; "
+                    "fail-open skip (run preserved, heuristic guards still "
+                    "active)"
+                ),
+            }
         if verdict.get("verdict") != "stagnant" or not evidence.startswith(
             "liveness judge unavailable"
         ):
@@ -1112,11 +1137,12 @@ class LivenessSupervisor:
         # judge 通道现状钉死 claude、有意不走 resolve_adapter/get_current_adapter
         # 装配点（code-review item f30b26413466）：监督判活只读 run 流统计快照做
         # 裁决，不依赖 harness 差异化行为，与 knowledge/adjudication 等辅助一次性
-        # LLM 通道同款现状。已知失效形态：agent.harness=dsh 且宿主无 claude CLI
-        # 的部署下，每轮 deadline 的 judge spawn 都会失败，经 _judge_liveness
-        # 「减半重试一次 → 仍故障 fail-closed」链路把 advancing 的 run 判为
-        # stagnant 终止——dsh 独部署形态须保证 claude CLI 可用；长期可让 judge
-        # 通道按 harness 能力选型或降级纯启发式判定（架构改动，超出本次最小修复）。
+        # LLM 通道同款现状。已知失效形态（code-review item 53d8a2f73d90，已修）：
+        # agent.harness=dsh 且宿主无 claude CLI 的部署下 judge spawn 恒
+        # FileNotFoundError——经 _judge_liveness 的 unavailable_reason=
+        # binary_missing 分型 fail-open（不判死、跳过本轮判活），其余部署形态
+        # 仍要求 claude CLI 可用；长期可让 judge 通道按 harness 能力选型或降级
+        # 纯启发式判定（架构改动，超出本次最小修复）。
         try:
             model = self._pm._get_admin_model()
             result = run_one_shot(
@@ -1130,6 +1156,18 @@ class LivenessSupervisor:
                 ),
                 timeout=timeout,
             )
+        except FileNotFoundError as e:
+            # code-review item 53d8a2f73d90：spawn 原语 FileNotFoundError＝钉死
+            # ClaudeAdapter 通道结构性不可用（argv[0] 裸 "claude" 走 PATH 解析，
+            # dsh 独立部署且宿主无 claude CLI 时恒现；cwd 为 project_root 恒
+            # 存在不构成误分类）。带 unavailable_reason 分型返回（附加键，
+            # 消费方只读 verdict/evidence 不受影响），供 _judge_liveness 免重试
+            # 直接 fail-open，不把 advancing 的 run 经 fail-closed 链路误杀。
+            return {
+                "verdict": "stagnant",
+                "evidence": f"liveness judge unavailable: {e}",
+                "unavailable_reason": "binary_missing",
+            }
         except Exception as e:
             return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
 

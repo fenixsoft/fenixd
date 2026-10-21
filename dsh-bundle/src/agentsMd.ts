@@ -9,6 +9,7 @@
  * dsh 生态约定，本分区服务 spec 的 system-prompt 契约。
  */
 
+import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,9 +17,33 @@ import { join } from "node:path";
 export const AGENTS_MD_SECTION_NAME = "fenix:agents-md";
 
 /**
+ * 注入长度上限（宽松档，UTF-8 字节）：AGENTS.md 超过该值时按字符截断并在尾部
+ * 注明，防载体异常膨胀（如误粘贴大段日志）把每次模型请求的 system prompt 无界
+ * 撑大。正常大小的 AGENTS.md 远低于此档位，行为不受影响。
+ */
+export const AGENTS_MD_MAX_BYTES = 128 * 1024;
+
+/**
+ * 二分求 UTF-8 字节数 ≤ maxBytes 的最长字符前缀（按 UTF-16 码元二分，若恰落在
+ * 代理对中间则回退一个码元，不劈开字符）。
+ */
+function truncateUtf8ByBytes(text: string, maxBytes: number): string {
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (Buffer.byteLength(text.slice(0, mid), "utf-8") <= maxBytes) lo = mid;
+    else hi = mid - 1;
+  }
+  if (lo > 0 && lo < text.length && text.charCodeAt(lo - 1) >= 0xd800 && text.charCodeAt(lo - 1) < 0xdc00) lo -= 1;
+  return text.slice(0, lo);
+}
+
+/**
  * 读取 root 下的 AGENTS.md 并返回分区文本；无文件或空内容返回 ""
  * （renderPrompt 丢弃空 section，故未挂载体文件的工作区零影响）。
  * AGENTS.md 允许是软链（约定载体：AGENTS.md -> CLAUDE.md，读时经软链取正文）。
+ * 超过 AGENTS_MD_MAX_BYTES 时按字符截断并在尾部注明（防异常膨胀挤占上下文）。
  */
 export function agentsMdSectionText(root: string, readFile: (p: string) => string = (p) => readFileSync(p, "utf-8")): string {
   let body: string;
@@ -28,6 +53,10 @@ export function agentsMdSectionText(root: string, readFile: (p: string) => strin
     return "";
   }
   if (!body.trim()) return "";
+  // 宽松长度上限：超限时按字符截断并加尾注，避免全量内容随每次请求挤占上下文且无告警。
+  if (Buffer.byteLength(body, "utf-8") > AGENTS_MD_MAX_BYTES) {
+    body = `${truncateUtf8ByBytes(body, AGENTS_MD_MAX_BYTES)}\n（AGENTS.md 超过上限 ${AGENTS_MD_MAX_BYTES} 字节，已截断）`;
+  }
   // 正文中的闭合标记须转义（仅补一个反斜杠，语义仍可读），否则会提前终结
   // <system-reminder> 包裹，其后内容脱离注入语境。
   const safe = body.replace(/<\/system-reminder>/g, "<\\/system-reminder>").replace(/\s+$/, "");

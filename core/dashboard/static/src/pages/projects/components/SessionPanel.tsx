@@ -166,6 +166,14 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 移除会话后后续请求命中服务端无会话判定而报错）。在途期间禁用按钮，
   // finally 复位——失败也复位，保留重试能力。
   const [stopping, setStopping] = useState(false);
+  // 发送/停止重入守卫（code-review item 3ea48a0e30b5，比照 HooksPanel/
+  // useGatedFormPanel 的 savingRef 口径）：setSending/setStopping 渲染生效存在
+  // React 调度间隙，防重若只靠 sending/stopping state（SessionComposer 按钮
+  // disabled 同样消费这两个 state），间隙内连点或 Enter 连发会并发发出两次
+  // sendSessionMessage/stopSession 请求；经 sendingRef/stoppingRef 写读同帧
+  // 原子短路，state 只负责按钮视觉反馈。
+  const sendingRef = useRef(false);
+  const stoppingRef = useRef(false);
   const [ended, setEnded] = useState(false);
   const [started, setStarted] = useState(false); // 会话是否已启动（session: null 时空态）
   const [truncated, setTruncated] = useState(false);
@@ -710,6 +718,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 切页签草稿保留）
       sessionIdRef.current = null;
       setEnded(false);
+      // ref 与 state 同步复位（code-review item 3ea48a0e30b5）：在飞请求的
+      // finally 也会复位 ref，但晚于切离时刻——切回分面立即重发会被残留的
+      // ref 误拦，与上方 setSending/setStopping(false) 同口径就地清掉。
+      sendingRef.current = false;
+      stoppingRef.current = false;
       setSending(false);
       setStopping(false);
       // loading 复位（code-review item 9c07fe612f2d）：loadAll 的 finally 以
@@ -814,9 +827,11 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 文本参数化；失败 reject 让 composer 还原草稿（成功清空由 composer 处理）。
   const handleSend = async (text: string) => {
     const t = text.trim();
-    if (!t || sending || ended) return;
+    if (!t || sendingRef.current || ended) return;
+    sendingRef.current = true;
     if (!sessionIdRef.current) {
       message.error('会话尚未启动');
+      sendingRef.current = false;
       throw new Error('会话尚未启动');
     }
     // 跨项目切换守卫（code-review item 8984465fd469，同 handleStart 口径）：
@@ -844,6 +859,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       message.error(`发送失败：${e instanceof Error ? e.message : String(e)}`);
       throw e instanceof Error ? e : new Error(String(e));
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
     // await 返回后已切离/已切换项目：不 resolve（见上方守卫说明，resolve
@@ -854,7 +870,8 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   };
 
   const handleStop = async () => {
-    if (stopping || ended) return;
+    if (stoppingRef.current || ended) return;
+    stoppingRef.current = true;
     // 跨项目切换守卫（code-review item 8984465fd469，同 handleStart 口径）：
     // await 往返期间切换项目后回写 ended 会把新项目面板短暂打入终态
     // （输入区禁用），摘 watchRegisteredRef 标记还会让新项目会话的 watch
@@ -874,6 +891,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       if (!activeRef.current || projectRef.current !== startProject) return;
       message.error(`停止失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      stoppingRef.current = false;
       setStopping(false);
     }
   };

@@ -1052,8 +1052,9 @@ class VAdjudicationMixin:
         非孤儿 → 维持 blocked 待人工（宁可多走人工，不误删真实交付物）。
         kind: delete 不参与预分类（防洗白，一律进人工裁决）。
 
-        删除后的续走契约 MUST 与 ``_preclassify_missing``（本模块 295 行）的
-        proceed 分支逐条对齐（design「删除后的续走契约」节）：
+        删除后的续走契约 MUST 与 ``_preclassify_missing`` 的 proceed 分支
+        逐条对齐（design「删除后的续走契约」节；对照定位用方法名，勿写裸
+        行号——对齐 fast_track.py MUST 同步注释同款口径）：
 
         1. 删声明：改写 tasks.md 声明段（只删该条的 path+kind 两行），留
            .history 备份（对齐 admin 处置 .history 备份惯例）；
@@ -2163,17 +2164,31 @@ class VAdjudicationMixin:
         # 与残留旧结果文件的 run stamp 同串，393 行严格匹配会误放行陈旧裁决。
         judge_run_id = f"dispute-judge-{spec_name}-{time.time_ns()}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "blocked",
-                "tester_run": None,
-                "error": (
-                    f"交付物守卫缺件 [{', '.join(remaining_paths)}] — LLM 终审进行中"
-                    f"（judge run {judge_run_id}）"
-                ),
-            },
-        )
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "blocked",
+                    "tester_run": None,
+                    "error": (
+                        f"交付物守卫缺件 [{', '.join(remaining_paths)}] — LLM 终审进行中"
+                        f"（judge run {judge_run_id}）"
+                    ),
+                },
+            )
+        except Exception as e:
+            # STATE.md 瞬态 IO/锁异常不穿透裁决主体（code-review item
+            # c942deb9c1ff，对齐 _record_impl_diagnosis ac84e8dc1873 /
+            # _writeback_recur_bump 9aebf947d532「非关键 STATE 写盘失败仅
+            # WARNING 非阻塞」口径）：置 blocked 仅用于阻断轮询重派竞态，
+            # 写失败时降级续走 —— judge run 照常派发并裁决兜底，裁决链
+            # （typo 修正 / reference 软化 / missing 重派 / unclear 转人工）
+            # 照常落终态，仅短暂存在重派竞态窗口（重派可恢复，有界）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"终审置 blocked 写盘失败 '{spec_name}'（非阻塞，继续派 "
+                f"{judge_run_id} 兜底）: {type(e).__name__}: {e}",
+            )
         self._pm.logger.warning(
             "pm_engine",
             f"交付物守卫缺件 '{spec_name}' 进入 LLM 终审（{judge_run_id}）",

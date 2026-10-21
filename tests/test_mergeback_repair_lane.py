@@ -571,6 +571,53 @@ class TestRepairWorker(unittest.TestCase):
         queues = [(e[1], e[2]) for e in self.engine._dispatcher._run_queue]
         self.assertIn((self.spec, "implementer"), queues)
 
+    def test_repair_result_without_spec_stamp_accepted_with_warning(self):
+        """缺 spec 戳的结果文件按本 spec 采信（f39e39f00397）：不硬判失败、
+        仅 WARNING 留痕（含结果文件与「无 spec 戳，按本 spec 采信」事实）；
+        跨轮陈旧由派发前 unlink 兜住，runner 写戳契约未核实故维持宽容。"""
+        branch = self._conflicted_branch()
+        info = self.wm.merge_back_from_branch(branch)
+        wt, resolved_branch = self.wm.resolve_repair_site(self.spec, branch)
+
+        def fake_run_repair(*args, **kwargs):
+            # 派发后写入（worker 预清理 unlink 之后），模拟 agent run 真实时序；
+            # repair agent 漏带 spec 戳（prompt 软约束下的真实形态）
+            git(wt, "merge", "-q", "main", "-X", "theirs",
+                "-m", f"[fenix] {self.spec}: resolve merge conflicts")
+            (wt / ".fenix-run-result.json").write_text(
+                json.dumps({"status": "success", "summary": "resolved"}),
+                encoding="utf-8")
+            return self._success_result()
+
+        self.engine.agent_runner.run_repair = MagicMock(side_effect=fake_run_repair)
+        self.engine._run_repair_worker(self.spec, wt, resolved_branch, info)
+        entry = self.sm.read_one(self.spec)
+        # 无戳不推翻采信：链成功 → implemented
+        self.assertEqual(entry["status"], "implemented")
+        # WARNING 留痕：含「无 spec 戳」与本 spec 名
+        self.assertTrue(
+            any("无 spec 戳" in w and self.spec in w
+                for w in self.logger.warnings),
+            f"应留下缺戳采信 WARNING，实际: {self.logger.warnings}")
+
+    def test_repair_result_without_spec_stamp_error_still_fails(self):
+        """缺 spec 戳但 status=error 仍判失败（既有语义不变，f39e39f00397）。"""
+        branch = self._conflicted_branch()
+        info = self.wm.merge_back_from_branch(branch)
+        wt, resolved_branch = self.wm.resolve_repair_site(self.spec, branch)
+
+        def fake_run_repair(*args, **kwargs):
+            (wt / ".fenix-run-result.json").write_text(
+                json.dumps({"status": "error", "error": "无戳但显式失败"}),
+                encoding="utf-8")
+            return self._success_result()
+
+        self.engine.agent_runner.run_repair = MagicMock(side_effect=fake_run_repair)
+        self.engine._run_repair_worker(self.spec, wt, resolved_branch, info)
+        entry = self.sm.read_one(self.spec)
+        self.assertEqual(entry["status"], "ready")
+        self.assertIn("无戳但显式失败", entry["error"])
+
 
 class TestRepairRunBudget(unittest.TestCase):
     """repair 计费归 spec（D5/D6）：run_id 前缀 repair-<spec>-<ts>，复用既有

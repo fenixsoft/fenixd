@@ -3943,11 +3943,11 @@ def run_impl_ocr(
         # 只做收尾不吞异常，既有错误传播行为不变。
         try:
             artifact_persisted = True
+            # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下
+            # 双实例并发 write_text 可交错半写、被对方 os.replace 原子发布。
+            tmp = artifact_path.with_name(f".code-review-{run_id}.json.tmp")
             try:
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
-                # 临时名嵌入 run_id（code-review item 272527a1542c）：固定名下
-                # 双实例并发 write_text 可交错半写、被对方 os.replace 原子发布。
-                tmp = artifact_path.with_name(f".code-review-{run_id}.json.tmp")
                 tmp.write_text(
                     json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
@@ -3958,6 +3958,14 @@ def run_impl_ocr(
                     log.warning(
                         "agent_runner", f"impl-ocr 产物落盘失败（run {run_id}）: {e}"
                     )
+            finally:
+                # 失败路径退痕（对齐 _write_ocr_cursor/_append_token_run 的清理
+                # 形态）：write_text 半写或 replace 失败都不残留 tmp 垃圾文件；
+                # 成功发布后 tmp 已不存在，missing_ok 下为 no-op。
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
             _write_impl_ocr_run_events(
                 runner.project_root,

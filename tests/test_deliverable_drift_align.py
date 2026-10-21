@@ -750,6 +750,64 @@ class TestSupersededConvergence(_DriftDispatchFixture):
         self.assertIn("同源草案收敛义务未满足", entry["error"])
         enqueue_spy.assert_not_called()
 
+    def test_on_spec_ready_status_drifted_before_write_abandons_block(self):
+        """写盘前复查发现状态已漂移：放弃本次 blocked 写，合法进度不被覆写。
+
+        fresh 复核（status=ready）与写盘前 latest 复核之间，队列 worker 消费
+        在队 implementer 条目把 spec 推进 implementing——收敛拦截不得把合法
+        进度盲写回 blocked（code-review item 3281b7c66515）。
+        """
+        gate, live = self._make_superseded_layout()
+        name = "evo-merge-back-wip-overlap-gate"
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+
+        real_convergence = self.engine._check_superseded_convergence
+        armed = {"on": False}
+
+        def convergence_then_arm(spec_name):
+            # 收敛检查返回 blocked 后武装：其后首次 read_one 即 fresh 复核
+            result = real_convergence(spec_name)
+            if result.get("blocked"):
+                armed["on"] = True
+            return result
+
+        real_read_one = self.sm.read_one
+
+        def drift_after_fresh(spec_name):
+            entry = real_read_one(spec_name)
+            if armed["on"] and spec_name == name:
+                armed["on"] = False
+                # 模拟窗口内队列 worker：fresh 读到的仍是 ready 快照，
+                # 随后状态被合法推进 implementing，下一次读（写盘前
+                # latest 复核）即看到漂移后状态。
+                self.sm.update_spec(name, {"status": "implementing"})
+            return entry
+
+        with mock.patch.object(
+            self.engine, "_check_superseded_convergence",
+            side_effect=convergence_then_arm,
+        ), mock.patch.object(
+            self.sm, "read_one", side_effect=drift_after_fresh,
+        ), mock.patch.object(
+            self.engine._dispatcher, "_enqueue",
+        ) as enqueue_spy:
+            self.engine._on_spec_ready(name)
+
+        entry = self.sm.read_one(name)
+        self.assertEqual(
+            entry["status"], "implementing",
+            "合法进度不应被覆写回 blocked",
+        )
+        self.assertIsNone(entry.get("error"), "不应落入收敛义务 error 文案")
+        enqueue_spy.assert_not_called()
+        warned = any(
+            "同源草案收敛拦截放弃" in str(c.args)
+            for c in self.logger.warning.call_args_list
+        )
+        self.assertTrue(warned, "放弃分支应留痕 warning 日志")
+
     def test_on_spec_ready_effective_target_dispatches(self):
         """_on_spec_ready 对生效落点正常派发（不被归一误拦）。"""
         gate, live = self._make_superseded_layout()

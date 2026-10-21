@@ -34,7 +34,7 @@ export interface FenixModelSegment {
   model: string;
   /** 线协议；缺省 openai-completions。 */
   api?: string;
-  /** 模型目录元数据（可选项，缺省用 pi-ai 缺省窗口）。 */
+  /** 模型目录元数据（可选项，缺省注入 DEFAULT_MODEL_CONTEXT_WINDOW=262144，不省略字段）。 */
   contextWindow?: number;
   maxTokens?: number;
   /** 附加请求头（可选）。 */

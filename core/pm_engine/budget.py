@@ -463,9 +463,12 @@ class ImplBudget:
         历史 run 数不再冲掉人工清零（否则对账把 used 改写回历史 run 数，人工
         重置在一个周期内被静默回滚）；基线之后新产生的 run 消耗照常累计，
         预算闸门再次耗尽仍生效。多次人工重置后基线与 completed 绝对计数
-        脱钩的口径错位由纯漂移分支的「重锚」自愈（expected > used 时把基线
-        重锚为 completed − used，不改写 used）。豁免判定守卫（不改数分支）
-        保持在基线改写之前、优先级不变。无该字段时对账口径与历史完全一致。
+        脱钩的口径错位由「重锚」自愈，双向均把基线重锚为 completed − used、
+        不改写 used：expected > used（幽灵历史计回，见下方重锚分支）；expected
+        被钳零（清零前 used 含不可豁免死亡 run 消耗、基线大于重置时点
+        completed，item d8157e828d16，见下方钳零守卫）。豁免判定守卫（不改数
+        分支）保持在基线改写之前、优先级不变。无该字段时对账口径与历史完全
+        一致。
         """
         used = self._impl_run_budget_used(spec_name)
         completed = self._count_normal_completed_impl_runs(spec_name)
@@ -536,8 +539,11 @@ class ImplBudget:
         # 第二次及以后 continue_auto_fix 重置后（彼时 used==增量 ≠ completed
         # 全量），completed − 基线会把更早周期的历史 run 数幽灵式计回，
         # expected 虚高于 used——若按它上调改写 used 会再次回滚人工重置。
-        # 「expected > used」即该口径错位的签名（正常收工的 run 必然 used 与
-        # completed 同涨，二者只会在基线错位/used 异常丢失时脱钩）：把基线
+        # 「expected > used」即该口径错位的签名（正常收工的 run 使 used 与
+        # completed 同涨，但该前提有例外：不可豁免死亡 run used 启动即计、
+        # completed 不计、亦无豁免侧车回退，会使基线大于重置时点 completed、
+        # expected 反被钳零——反向错位由下方钳零守卫同式重锚，item
+        # d8157e828d16）：把基线
         # 重锚为 completed − used（=重置时刻 completed 的快照），expected 随即
         # 归位为重置后新增；used 保持不变，留 INFO 留痕。
         if baseline is not None and expected > used:
@@ -557,6 +563,38 @@ class ImplBudget:
                 f"预算重置基线重锚: '{spec_name}' baseline={baseline} → {reanchored}"
                 f"（人工重置后基线口径错位自愈，used={used} 保持不变，"
                 f"对账目标归位为重置后新增）",
+            )
+            return
+        # 基线钳零旁路守卫（code-review item d8157e828d16）：基线写入的是清零
+        # 前 used，若该值含不可豁免死亡 run 的消耗（监督超时杀：used 启动即
+        # 计、completed 不计、亦无豁免侧车回退），基线可大于重置时点
+        # completed——此后 completed 追平基线的整个窗口内 expected 恒被上方
+        # max(0, …) 钳为 0，流程落入下方纯漂移分支把重置后新 run 的 used 反复
+        # 改写清零，预算闸门被静默旁路（continue_auto_fix 承诺的「重置后消耗
+        # 照常累计、闸门再次耗尽仍生效」失效）。签名：expected 被钳零
+        # （completed ≤ 基线）而 used > 0——baseline ≤ 重置时点 completed 的
+        # 正常场景 expected = completed − baseline ≥ 重置后收工计数 ≥ 1（对账
+        # 只在 merge 成功路径触发，重置后首次收工必使 completed 越过重置时点
+        # 值），恒不会命中。与上方 expected > used 重锚同式重锚为
+        # completed − used：expected 随即归位为 used，重置后新 run 的消耗保持
+        # 不丢失；used 保持不变，留 INFO 留痕。
+        if baseline is not None and expected == 0 and used > 0:
+            reanchored = max(0, completed - used)
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, {BUDGET_MANUAL_RESET_BASELINE_FIELD: reanchored}
+                )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"预算重置基线重锚写回失败 '{spec_name}': {e}",
+                )
+                return
+            self._pm.logger.info(
+                "pm_engine",
+                f"预算重置基线重锚: '{spec_name}' baseline={baseline} → {reanchored}"
+                f"（基线大于重置时点正常收工数、expected 被钳零，used={used} "
+                f"保持不变，重置后新 run 消耗不再被对账改写清零）",
             )
             return
         # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）。
@@ -896,10 +934,24 @@ class ImplBudget:
         return isinstance(last, dict) and last.get("type") == "error"
 
     def _impl_run_budget_used(self, spec_name: str) -> int:
+        """读取实现预算计数（``_impl_run_budget_used``，缺失/损坏按 0 兜底）。
+
+        字段损坏（非整数，item 5f0dd66580bc）按 0 兜底但 WARNING 留痕标明
+        字段原值：闸门方向为 fail-open，损坏期间 used 恒读 0、恒过闸，无痕
+        兜底使该窗口不可定位；与同文件 _budget_reconcile_has_exemption 对
+        侧车字段损坏的 WARNING 口径对齐。返回 None「不可知」语义会波及闸门
+        比较与对账 CAS 两个调用面的 0 值判定，不在本修复范围。
+        """
         entry = self._pm.state_machine.read_one(spec_name) or {}
+        raw = entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0)
         try:
-            return int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
+            return int(raw or 0)
         except (TypeError, ValueError):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算计数字段损坏 '{spec_name}'（{IMPL_RUN_BUDGET_USED_FIELD}"
+                f" 非法，按 0 兜底，预算闸门 fail-open）: {raw!r}",
+            )
             return 0
 
     def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
