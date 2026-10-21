@@ -21,6 +21,7 @@ planner 实质会产出该形态（本仓 5 个在飞 spec 中 4 个含字母后
 
 import fnmatch
 import json
+import os
 import re
 from pathlib import Path
 
@@ -119,6 +120,30 @@ def parse_unattainable(data: dict) -> "tuple[set, list]":
 _RUN_TASK_CACHE: dict = {}
 
 
+def _spec_name_path_error(spec_name):
+    """spec 名路径分量校验：合法返回 None，非法返回人类可读原因。
+
+    code-review item fbac6439c318：tasks_md_path 把 spec_name 直接内插
+    ``spec/changes/<spec>/tasks.md``，含 ``..`` 分量或路径分隔符的名字会让
+    parse_tasks_md 读到 tasks.md 之外的任意文件并按 ``^- [x] <id>`` 行解析，
+    伪造勾选状态污染 verified→done 门禁判据。上游 spec 名无字符集约束
+    （serving.py code-review 2c579adb670f 已认定 spec/changes 目录名等旁路
+    可产生此类名字），判定与 serving._spec_name_path_error 逐条等价。
+    不直接复用 serving 版是刻意的：engine 于模块级 import 本文件（经
+    pm_engine/__init__），本文件反向 import pm_engine.verification.serving
+    会成环，故本地实现，两处须同步演化。
+    """
+    if (
+        not spec_name
+        or spec_name in (".", "..")
+        or os.sep in spec_name
+        or (os.altsep and os.altsep in spec_name)
+        or ".." in Path(spec_name).parts
+    ):
+        return f"spec 名含路径分隔符或 '..' 分量，拒绝拼入 tasks.md 路径: {spec_name!r}"
+    return None
+
+
 def tasks_md_path(project_root, spec_name) -> Path:
     """tasks.md 规格内路径单点：``<root>/spec/changes/<spec>/tasks.md``。
 
@@ -141,6 +166,11 @@ def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     文件缺失/不可读/不含任何数字任务 → ([]， set())——「无缺口概念」，
     调用方判据通过（与既有 _task_completion_blocker 语义一致）。
     """
+    # code-review item fbac6439c318：spec 名先过路径分量校验再拼路径读文件，
+    # 非法名按「无缺口概念」降级返回空（与下方「文件缺失」同形态），不把
+    # 读取引向 tasks.md 之外的任意文件。
+    if _spec_name_path_error(spec_name) is not None:
+        return [], set()
     tasks_path = tasks_md_path(project_root, spec_name)
     all_ids: list = []
     checked_ids: set = set()
