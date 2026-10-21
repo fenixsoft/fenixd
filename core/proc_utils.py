@@ -31,6 +31,13 @@ from typing import List, Optional
 
 _logger = logging.getLogger("fenixd.proc_utils")
 
+# kill_process_group 的 SIGTERM 优雅退出宽限秒数（wait(timeout=...)）。
+# 与 core.serving_registry.kill_process_group 的 KILL_WAIT_SECONDS（固定
+# 3 秒）构成并行两套击杀时序常量（未并入的差异理由见 serving_registry 侧
+# docstring）；两侧取值由 tests/test_serving_registry_kill_timing.py 守卫
+# 钉住，单侧调整须两侧同步修订并更新守卫断言，防同名语义静默分叉。
+TERM_GRACE_SECONDS = 5
+
 
 def is_claude_process(pid_str: str) -> bool:
     """进程 argv[0] 是否为 claude agent 可执行文件（basename claude / claude.exe）。
@@ -219,7 +226,7 @@ def hold_free_port(host: str = "127.0.0.1", retries: int = 3) -> socket.socket:
 
 def kill_process_group(
     popen: "subprocess.Popen",
-    term_grace: float = 5,
+    term_grace: float = TERM_GRACE_SECONDS,
     sigterm_only_if_alive: bool = False,
     sigkill_only_if_group_alive: bool = False,
     caller: str = "proc_utils.kill_process_group",
