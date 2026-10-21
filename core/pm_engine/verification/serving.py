@@ -250,7 +250,17 @@ def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tupl
         or not getattr(srv, "alive", False)
     ):
         if srv is not None:
-            srv.stop()
+            # code-review 1f6c032a0802：存活门不过恰在「旧实例线程意外死亡」
+            # 的异常态触发，stop() 失败（socket 关闭等）不得炸穿 static+main
+            # 作用域的整条供给路径——对齐同文件其余 stop 调用点 try/except +
+            # warning 样板，把可自愈的死实例重建照常走完
+            try:
+                srv.stop()
+            except Exception as stop_err:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"停止旧静态服务实例 'main' 失败（不影响重建）: {stop_err}",
+                )
         srv = StaticVerifyServer(root_dir)
         cache["main"] = srv
     return pipeline._finalize_static(srv, contract, scenarios_path, "主树")
@@ -730,12 +740,27 @@ def _finalize_static(pipeline, srv, contract, scenarios_path, scope_label) -> tu
     n = _facade.rewrite_scenarios_origin(scenarios_path, srv.base_url, _logger)
     # -1 = 已解析出候选目标但写盘失败（BASE_URL 铁律未落盘，WARNING 已由
     # rewrite_scenarios_origin 记录）——note 与「本无需改写」(0) 可判别，
-    # 不再同值混淆（code-review item 90ca963ad6e7）。
+    # 不再同值混淆（code-review item 90ca963ad6e7）；n == -1 时下方
+    # fail-closed 早退拒绝放行（code-review ad0ee010a131），不放仍持旧
+    # origin 的场景集进引擎执行。
     rewrite_note = (
         f"场景 origin 改写 {n} 处"
         if n >= 0
         else "场景 origin 改写写盘失败（BASE_URL 未落盘）"
     )
+    if n == -1:
+        # code-review ad0ee010a131：写盘失败＝场景文件仍指向旧 origin，探针
+        # 打的是新实例地址，探针通过证明不了场景可正确寻址——放行只会让整
+        # 批场景按未改写旧 URL 执行伪失败并烧掉整轮（走全价升级通道）。按
+        # fail-closed 早退，交阶段 2.5 既有可达性 fail-fast 通道（infra-
+        # retry 车道 0 场景廉价重派，下一轮重验时改写重试；返回形态对齐
+        # 下方探针失败分支）。
+        return (
+            False,
+            False,
+            f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
+            f"（{rewrite_note}）— 场景 origin 未落盘，拒绝放行待下轮改写重试",
+        )
     ok, probe_note = _facade.probe_ready(srv.base_url, contract.ready)
     if not ok:
         note = (

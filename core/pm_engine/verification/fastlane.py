@@ -735,8 +735,13 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         f"fastlane 承接 '{spec_name}': 派发 code-fix 轻量修复 run {run_id}"
         f"（失败场景={failed_id}，影响面={decision.get('affected_files')}）",
     )
+    # 接线判定前移至属性解析（code-review item 5f1ed1409eb8）：AttributeError
+    # 只在 ctx.agent_runner（或其 _execute_agent 成员）解析失败时按「接线故障」
+    # ERROR 留痕；调用本身落入通用 except Exception——执行体内部属性链访问
+    # 漏出的同型异常不再被误冠接线故障文案误导排障。两条路径回落记账同走
+    # _bump_fail_streak，语义不变。
     try:
-        fix_result = ctx.agent_runner._execute_agent(spec_name, "code-fix", run_id)
+        _execute_agent = ctx.agent_runner._execute_agent
     except AttributeError as e:
         # 接线故障（context 未绑定 agent_runner，如桩 context 漏成员）≠ 真实
         # 修复失败：每次 eligible 必然复现、白耗验证轮预算（连续 2 次即熔断
@@ -747,6 +752,8 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
             "——车道无法派发 code-fix，请检查 PipelineContext.agent_runner 绑定",
         )
         return _bump_fail_streak(f"code-fix 轻量修复派发异常: {e!r}（回落整轮）")
+    try:
+        fix_result = _execute_agent(spec_name, "code-fix", run_id)
     except Exception as e:
         return _bump_fail_streak(f"code-fix 轻量修复派发异常: {e!r}（回落整轮）")
     if not getattr(fix_result, "success", False):

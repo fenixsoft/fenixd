@@ -856,8 +856,12 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     if streaks_path.exists():
         try:
             loaded = json.loads(streaks_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            # 仅整个文件不可解析（JSONDecodeError/OSError）才整体置空
+        except (json.JSONDecodeError, OSError, ValueError):
+            # 仅整个文件不可解析才整体置空：JSONDecodeError/OSError，另含
+            # UnicodeDecodeError（read_text 撞上非 UTF-8 损坏字节所抛；
+            # 其为 ValueError 子类、非 OSError，code-review item
+            # 80c0f15da543，对齐 _read_scenario_reroute_stoploss 口径），
+            # 损坏文件按「无侧车」置空，本轮计数继续不被跳过
             loaded = None
         if isinstance(loaded, dict):
             # 逐条转换并跳过不可解析条目（code-review 9d6ee3c303a6）：单条
@@ -898,7 +902,8 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     if recheck_path.exists():
         try:
             data = json.loads(recheck_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, ValueError):
+            # UnicodeDecodeError 非 OSError 子类，一并收口（item 80c0f15da543）
             data = None
         if isinstance(data, list):
             already_recheck = {sid for sid in data if isinstance(sid, str)}
@@ -1930,7 +1935,7 @@ def _write_inconclusive_loop_signal(
 
     store = AdminStore(pipeline._context.project_root, pipeline._context.logger)
     try:
-        store.append(
+        written = store.append(
             {
                 "kind": SIGNAL,
                 "signal_type": "inconclusive_loop",
@@ -1960,6 +1965,14 @@ def _write_inconclusive_loop_signal(
                 ),
             }
         )
+        if written is None:
+            # append 返回值必须接收（code-review item 3ec12d222c27，对齐
+            # append 契约 item 2570ca391771 与 recovery.py _signal_dispatch_stalled
+            # 同款消费 item ecfbdf352681）：文件损坏留底被下限保护拒写时返回
+            # None、记录未落盘，不得照记写入成功——下游
+            # _env_exempt_disposition_is_stale 凭本 SIGNAL 判「陈旧放行」，
+            # 抛出走下方既有失败分支记 ERROR 并返回 False。
+            raise RuntimeError("admin store 下限保护拒写（append 返回 None）")
         return True
     except Exception as e:
         pipeline._context.logger.error(

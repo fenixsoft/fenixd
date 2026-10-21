@@ -83,10 +83,17 @@ def _verifier_error_is_infra(pipeline, error_text: str) -> bool:
 # ── evo-infra-failure-budget-exempt R1：统一失败归因接口 ───────────
 
 # infra 降级触发 error 文本标记（enrich_failure_class 判定）。R1 有意收窄为
-# worktree / merge conflict / tree dirty 三项——仅命中本清单才判 infra；
-# worktree 为子串宽匹配（覆盖 git worktree add / worktree lock 等具体形态）。
+# worktree / merge conflict / tree dirty 三项——仅命中本清单才判 infra。
+# worktree 按具体短语匹配（code-review item 76528a72b467：裸 "worktree" 子串
+# 宽匹配会把偶然提及 worktree 的产品性失败误判 infra，与「宁可少豁免」保守
+# 原则相悖）——三短语均为仓库实测/官方失败形态："worktree add"（撞名
+# already exists，tests/test_infra_budget_exempt.py 既有用例）、"worktree
+# lock"（前缀子串同覆盖 "worktree locked"，worktree_manager lifecycle 真实
+# 文案）、"is not a working tree"（git 对失效 worktree 路径的官方报错）。
 _INFRA_DEGRADE_MARKERS = (
-    "worktree",
+    "worktree add",
+    "worktree lock",
+    "is not a working tree",
     "merge conflict",
     "tree dirty",
 )
@@ -248,6 +255,11 @@ def _read_infra_retry_max(pipeline) -> int:
             "verify_engine.infra_retry_max", INFRA_RETRY_MAX_DEFAULT
         )
         if value is None:
+            return INFRA_RETRY_MAX_DEFAULT
+        # bool 替身显式排除（code-review item d6fa6d2637d0）：True 经 int()
+        # 得 1 且 1>0 成立，预算会被静默改写为 1 而非回退缺省——比照
+        # is_verifier_process_death 同款防御口径（bool 虽为 int 子类不参与）。
+        if isinstance(value, bool):
             return INFRA_RETRY_MAX_DEFAULT
         n = int(value)
     except Exception as e:

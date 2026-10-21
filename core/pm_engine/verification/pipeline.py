@@ -2570,7 +2570,7 @@ class VerificationPipeline:
         # 已尝试的解决方案写入 error 暴露（而非 "0通过/31失败" 却标完成）。
         if (
             not app_reachable
-            and summary.get("passed", 0) == 0
+            and _summary_int("passed") == 0
             and fail_count == _summary_int("total")
         ):
             # 「需用户参与」型不可达让位（code-review item ad95fc9cdbdd）：
@@ -2663,7 +2663,10 @@ class VerificationPipeline:
         PROVIDER_CIRCUIT_ERROR_MARKER 子串匹配（与 FROZEN_TERMINATED_ERROR_PREFIX
         同一约定，防措辞漂移使匹配静默失效）。
 
-        写字段集合（与让位语义「不写 blocked、不发告警」兼容）：
+        写字段集合（与让位语义「不写 blocked、不发告警」兼容；cancelled/
+        provider_circuit 两分支写盘前经 _discard_if_not_testing 状态复核——
+        与 legacy.py 同款：spec 已漂移出 testing 时 DEBUG 丢弃不落盘、静默
+        让位，仍返回让位原因走调用方静默退出路径，不误 raise 进 legacy 降级）：
         - frozen_terminated → mark_frozen_hold（补 hold 标记：不落 _frozen_hold
           则解冻后 unfreeze_spec 的续做判定 _resolve_preserved_branch →
           _recovery_resume 不触发，重派侧 code-review item b7f86878b739；
@@ -2687,6 +2690,14 @@ class VerificationPipeline:
         if getattr(result, "cancelled", False) is True:
             c_err = result.error or ""
             cancelled_err = f"run 被人工取消：{c_err}" if c_err else "run 被人工取消"
+            # ── 在飞 agent 结果状态复核（与 legacy.py cancelled 分支同款，
+            # fix-cancel-holdstate-recovery D1）：run 失败期间 spec 可能已漂移
+            # 出 testing（admin 冻结/改态），直接写会把取消 error 覆写到漂移后
+            # 状态、并在非 testing 的 spec 上留 _cancelled_hold 幽灵持久标记，
+            # 干扰后续 cancel-holdstate recovery 判定。非 testing 静默让位
+            # （判据已 DEBUG 留痕）：不落盘，仍返回让位原因。
+            if _discard_if_not_testing(self, spec_name, result, "cancelled"):
+                return "cancelled", cancelled_err
             self._context.state_machine.update_spec(
                 spec_name,
                 {
@@ -2697,6 +2708,12 @@ class VerificationPipeline:
             )
             return "cancelled", cancelled_err
         if PROVIDER_CIRCUIT_ERROR_MARKER in (result.error or ""):
+            # ── 在飞 agent 结果状态复核（与 legacy.py infra 分支同款）：
+            # 结果应用前 spec 已非 testing → 静默让位不落盘：不覆写漂移后
+            # 状态的 error、终态 SPEC 不记 infra 噪音账（附带预算豁免记账
+            # 副作用对终态无意义）。判据已 DEBUG 留痕，仍返回让位原因。
+            if _discard_if_not_testing(self, spec_name, result, "provider_circuit"):
+                return "provider_circuit", result.error
             self._context.state_machine.update_spec(
                 spec_name,
                 {

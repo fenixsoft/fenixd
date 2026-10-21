@@ -70,7 +70,9 @@ def _read_verify_report(pipeline, spec_name: str) -> dict:
     / _failed_scenario_ids（经 pipeline 门面）；load_report 消费方：
     escalation._env_whitewash_gate 等。
     """
-    path = pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
+    # 净化读侧（code-review item f3c1a9650caf）：与写侧 _save_report 及本模块
+    # verify_progress_dir 单源同口径，病理形态 spec_name 时不再落到未净化目录。
+    path = verify_progress_dir(pipeline, spec_name) / "report.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}

@@ -491,7 +491,10 @@ def _run_meta_cached(p: Path, stat, now: float,
             # fix-retry-orphan-active-runs D3：stale 判定按当前时刻每次重算
             if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
                 status = "stale"
+            # code-review 929e46a31513：与下方现算分支返回形状统一（都含
+            # status_raw），避免消费方在「首调命中、二调现算」间键忽有忽无
             return {
+                "status_raw": meta_c["status_raw"],
                 "status": status,
                 "started": meta_c["started"],
                 "duration_seconds": meta_c["duration_seconds"],
@@ -987,12 +990,29 @@ def _run_tail_insights(
                     # carry 是上界 pos 处被截断行的行尾残段：该行的行头在本
                     # 块末尾，raw + carry 复原整行，避免边界行两侧同时解析
                     # 失败被静默跳过
-                    _, llm, _, _ = parse_chunk(raw + carry, skip_first=start > 0)
+                    merged = raw + carry
+                    _, llm, _, _ = parse_chunk(merged, skip_first=start > 0)
+                    # code-review 206a0485a7e8：skip_first 丢弃的 merged 首行
+                    # 在 start 恰落行边界时是完整行——中间块尚可靠 carry 于
+                    # 下一轮复原重析，末块（start == floor）后无下一轮，
+                    # provider_marker 行恰落此处会被静默漏采。对被丢首行单独
+                    # 补采一次：llm 已非空时不覆盖（保持「取文件序更晚
+                    # marker」语义）；行中间残段 json.loads 失败自然跳过，
+                    # 嵌套对象残段因外层闭合符尾随也必失配，无误采面
+                    if not llm and start > 0:
+                        try:
+                            fe = json.loads(merged.split("\n", 1)[0].strip())
+                        except (json.JSONDecodeError, ValueError):
+                            fe = None
+                        if (isinstance(fe, dict)
+                                and fe.get("type") == "provider_marker"):
+                            fm, fp = fe.get("model"), fe.get("provider")
+                            if fm and fp:
+                                llm = f"{fm}@{fp}"
                     # 下一轮的 carry 取本轮 raw 首行（跨下界 start 边界那行
                     # 的行尾残段）：行头在更早块末尾，须靠它拼接复原；
-                    # start 恰落在行边界时 raw 首行是完整行，拼接只会重复
-                    # 解析一次、无害，故 start > 0 恒下传，不依赖块尾是否
-                    # 以换行收尾
+                    # start > 0 恒下传 skip_first（不依赖块尾是否以换行收尾），
+                    # 被丢首行完整/残段两种形态已由上方补采兜住
                     carry = raw.split("\n", 1)[0]
                     pos = start
         except OSError:

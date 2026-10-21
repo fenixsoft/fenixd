@@ -369,7 +369,9 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 # 白名单外 status：文件可读，可能是共享文件中的其它 spec 残留
                 # 或 implementer 残留——走既有陈旧/归属护栏（检测 spec stamp
                 # 不符 / mtime 陈旧），foreign → re-dispatch 不 blocked。
-                if pipeline._verifier_result_is_stale(result, run_result_path, spec_name):
+                # code-review item eb06c288c3c7：复用上方 :330 前置计算的同一
+                # 布尔（单一观测口径，与 :431-433 声明一致），不重复观测。
+                if verifier_result_stale:
                     # stale 命中 → 复用单点 re-dispatch helper（状态复核/
                     # verified 放行门/重派/infra 记账见 _redispatch_fresh_verify）。
                     _redispatch_fresh_verify(
@@ -918,6 +920,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 f"'{spec_name}' — 保留原状，不覆写字段",
             )
             return
+        # [fenix-ignore:25628c32f523] 失败台账非失明：bug-found 采纳后与 fix 派生同理依赖 recovery 兜底——event_bus full_scan 对滞留 bug-found 态 re-trigger spec_bug_found（无时间门槛）→ _do_spec_bug_found 同一调用内 bump _verify_fail_rounds 并 _append_fail_history（failure_class=product，family.py :780-786，升级分型读账晚于该追加），derive/cap/子 fix 守卫对两条 bug-found 入口对称生效，回拨参考台账含本轮。
         pipeline._context.state_machine.update_spec(
             spec_name,
             {

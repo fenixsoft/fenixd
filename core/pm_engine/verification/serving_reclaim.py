@@ -298,6 +298,15 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path, logger=None) -> 
             ],
             capture_output=True,
             text=True,
+            # code-review item dbe9a23549a6：固化解码口径（对齐
+            # serving.py._remove_serving_worktree 同款写点）——text=True
+            # 缺省按 locale strict 解码，git 输出（含怪异文件名的 worktree
+            # 路径报错）混入非 UTF-8 字节时抛 UnicodeDecodeError（ValueError
+            # 子类），不在下方 except (OSError, SubprocessError) 捕获清单内，
+            # 击穿「异常面归一（调用方只见 RuntimeError）」契约（下方两次
+            # prune 同口径）
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
 
@@ -308,6 +317,9 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path, logger=None) -> 
                 ["git", "-C", str(project_root), "worktree", "prune"],
                 capture_output=True,
                 text=True,
+                # code-review item dbe9a23549a6：同 _git_remove 固化解码口径
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
             remove = _git_remove()
@@ -337,6 +349,9 @@ def _remove_serving_worktree(project_root: Path, wt_path: Path, logger=None) -> 
             ["git", "-C", str(project_root), "worktree", "prune"],
             capture_output=True,
             text=True,
+            # code-review item dbe9a23549a6：同 _git_remove 固化解码口径
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
     except Exception as prune_err:
@@ -442,6 +457,11 @@ def reclaim_verify_serving(
                     f"回收无主 serving worktree: {entry.name}",
                 )
         except Exception as e:
+            # code-review item 42deb4eb7182：回收失败目录计入 kept 留痕
+            # （与无法判定归属 fail-safe 保留同口径，同属「本轮未回收」观测
+            # 集合），保证返回值对 serve_root 目录全集完备，消费方按返回值
+            # 对账时不必翻日志才发现回收缺口
+            kept.append(entry.name)
             if logger:
                 logger.warning(
                     "serving_reclaim",

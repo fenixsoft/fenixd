@@ -2471,6 +2471,21 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         )
             # add-daily-self-review：admin.self_review 三键（后端校验，非法输入拒绝 400）
             admin_m = merged.get("admin") or {}
+            # code-review item cd2fa5d312de：admin 内层受管子段形态守卫（存量
+            # config.yaml 手工写成 admin.code_review: true 之类的非 dict 真值时，
+            # _deep_merge_managed 两路合并分支均以 isinstance dict 为前置静默
+            # 跳过、上方容器守卫只覆盖顶层段——脏值被原样回写且 write_config
+            # 返回 ok，运行时靠读取器 fail-safe 回落缺省。对齐 a2b46547c3d6
+            # 容器守卫口径统一拒绝存量非法段；patch 侧非 dict 仍由写路径前置
+            # 守卫先行拒绝，此处兜底直连调用与存量）
+            if isinstance(admin_m, dict):
+                for _asub in ("code_review", "code_review_fix", "regression"):
+                    _asub_v = admin_m.get(_asub)
+                    if _asub_v is not None and not isinstance(_asub_v, dict):
+                        raise ValueError(
+                            f"admin.{_asub} must be an object "
+                            f"(存量非法段请先修正 config.yaml): {_asub_v!r}"
+                        )
             if isinstance(admin_m, dict) and isinstance(admin_m.get("self_review"), dict):
                 sr = admin_m["self_review"]
                 for field in ("enabled", "read_todo"):
