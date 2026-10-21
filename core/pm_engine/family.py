@@ -1268,12 +1268,13 @@ class FamilyGovernor:
             # 替换区间丢内容——逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配
             # 首个二级标题（保持原「下一个二级标题」命中语义）。
             end = len(text)
-            # 行首相对位置从 0 累计（code-review item 3e3b67e58122）：after 的
-            # 切片原点已是 m_end（绝对定位由 m_end 承担），此前误初始化为
-            # m.end()（标题行内的匹配相对终点）会让算出的 end 比下一个二级
-            # 标题的真实绝对位置少 m_start——text[end:] 起点前移，旧段尾部
-            # m_start 个字符（含旧轮未勾任务行）残留在新段与后续标题之间，
-            # 会被 _task_completion_blocker 判为永久缺口阻断 verified→done。
+            # 行首相对位置从 0 累计，命中时绝对下标 = 切片原点 m_end + 相对
+            # 累计值（code-review item 3e3b67e58122）：end 供 text[end:] 按
+            # 绝对下标切片，若漏加 m_end（此前误初始化为 m.end()，等于只把
+            # 标题行内的匹配相对终点计入），算出的 end 比下一个二级标题的
+            # 真实绝对位置少 m_end——text[end:] 落进旧段体内部，旧段尾部
+            # （含旧轮任务行）残留在新段与后续标题之间，会被
+            # _task_completion_blocker 判为永久缺口阻断 verified→done。
             offset = 0
             fence_char = ""
             fence_len = 0
@@ -1287,7 +1288,7 @@ class FamilyGovernor:
                     fence_char = body[0]
                     fence_len = len(body) - len(body.lstrip(body[0]))
                 elif line.startswith("## "):
-                    end = offset
+                    end = m_end + offset
                     break
                 offset += len(line)
             # 行首锚保持（item a25d95843de3）：start 已回退吃掉段前全部换行、
