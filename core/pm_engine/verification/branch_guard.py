@@ -332,7 +332,20 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
 
     def _exists_on_branch(path: str) -> bool:
         # 字面路径校验（.fenix 前缀归一化已退役，见本方法 docstring）
-        return pipeline._pm.agent_runner.worktree_manager.file_exists_on_branch(branch, path)
+        # 属性缺失/查询异常按「路径不存在=False」保守回退（code-review item
+        # 2d18a722b42c）：与上方 find_worktree_path 的 try/except 静默跳过
+        # 同口径，防桩 pm / 接线变化时 AttributeError 从守卫抛穿、不走守卫
+        # 其余路径的保守语义；WARNING 留痕供接线回归排查。
+        try:
+            wm = pipeline._pm.agent_runner.worktree_manager
+            return wm.file_exists_on_branch(branch, path)
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"交付物守卫分支存在性查询失败 '{spec_name}'"
+                f"（{branch}:{path}，按不存在保守处理）: {e}",
+            )
+            return False
 
     # 交付物（硬校验）：按 kind 区分违规类别——
     #   new/modify 缺失 → missing（既有一致行为）；
@@ -578,7 +591,11 @@ def _extract_replan_error_items(env_error: str) -> list[str]:
             items.append(stripped[2:].strip())
     if items:
         return items
-    return [env_error.strip()]
+    # 回退单条目前先 strip 判空（code-review item fe5a88f6995a）：纯空白
+    # 错误文本 truthy 通过上方空串门，直接回退会产出空字符串条目参与下游
+    # 「未消费」超集比对——strip 后为空按空清单返回（下游空清单不作判定）。
+    fallback = env_error.strip()
+    return [fallback] if fallback else []
 
 
 def _replan_errors_unconsumed(prev_items: list, cur_items: list) -> bool:

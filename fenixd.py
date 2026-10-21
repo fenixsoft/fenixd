@@ -1321,8 +1321,18 @@ class FenixDaemon:
         try:
             entry = self.state_machine.read_one(spec_name) or {}
             return entry.get("status") == "testing"
-        except Exception:
-            return False
+        except Exception as e:
+            # code-review item 3668f45d2827：判定异常按在飞处理（宁紧勿松，
+            # 同 _ocr_lane_selfheal_block「判定异常按阻断处理」口径）——
+            # fail-open 返回 False 会让 serving 清扫在 read_one 瞬时异常下
+            # 对 testing 中的 spec 收割存活实例、拆掉验证环境；异常时清扫侧
+            # 宁可多留一轮。
+            self.logger.warning(
+                "fenixd",
+                f"spec 在飞判定异常（按在飞处理，清扫跳过）: "
+                f"spec={spec_name}: {e}",
+            )
+            return True
 
     def _sweep_verify_serving_registry(self, use_in_flight: bool = True) -> None:
         """servers.json 登记制收割：无在飞 spec 但进程仍存活的登记项。
@@ -2861,6 +2871,16 @@ class FenixDaemon:
         if not spec:
             self.logger.warning("fenixd", "admin_invoke 请求缺少 spec，忽略")
             return
+        # 纵深防御（code-review item 5483b63922bf，对齐 scheduling_kick /
+        # spec_delete 兄弟车道同款）：spec 名进入 admin 信号与 run 命名链，
+        # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
+        # WARNING 留痕、不进入唤起链（信号已经 _consume_request_file 消费）。
+        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
+            self.logger.warning(
+                "fenixd",
+                f"admin_invoke 信号 spec 名不合法，丢弃不唤起: {spec!r}",
+            )
+            return
         # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
         # approve_push 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
         # daemon 停机期间积压的旧唤起信号重启后仅消费不执行（人工呼叫
@@ -3400,6 +3420,16 @@ class FenixDaemon:
         spec = payload.get("spec")
         if not spec:
             self.logger.warning("fenixd", "approve_push 请求缺少 spec，忽略")
+            return
+        # 纵深防御（code-review item 5483b63922bf，对齐 scheduling_kick /
+        # spec_delete 兄弟车道同款）：spec 名进入 approve_push 推送与 run 链，
+        # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
+        # WARNING 留痕、不进入推送链（信号已经 _consume_request_file 消费）。
+        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
+            self.logger.warning(
+                "fenixd",
+                f"approve_push 信号 spec 名不合法，丢弃不执行推送: {spec!r}",
+            )
             return
         # 时效分档（item 69d57b48a605）：与 scheduling_kick 同判据同阈值，
         # 停机积压的旧审批重启后不执行推送；created 缺失/非法保守按陈旧处理
@@ -5835,7 +5865,20 @@ class FenixDaemon:
                 f"来源 (c) implementing spec {src_c_count} 项；保护集合计 "
                 f"{len(protected)} 个 worktree",
             )
-            self.worktree_manager.cleanup_orphans(protected=protected)
+            # code-review item 1aa31914857a：cleanup_orphans 仅对每个目录项
+            # 内部 try/except，外层 base_dir.iterdir() 等路径抛 OSError 时异常
+            # 会穿出本调用——「fenixd stopped」日志与无在途异常时的 sys.exit(0)
+            # 被跳过（本方法处于 start() 的 finally，此处抛出会替换在途异常，
+            # 信号停机路径转 FATAL exit 1）。独立容错对齐紧邻
+            # wait_for_running_agents 的包裹口径：留痕后继续停机收尾。
+            try:
+                self.worktree_manager.cleanup_orphans(protected=protected)
+            except Exception as e:
+                _safe_log(
+                    "error",
+                    f"cleanup_orphans on shutdown failed (non-blocking, "
+                    f"继续停机收尾): {e}",
+                )
 
         _safe_log("info", "fenixd stopped")
         # code-review item ecc6fd4d27ad：仅在无在途异常时以 0 干净退出。

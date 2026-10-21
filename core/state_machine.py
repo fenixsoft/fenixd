@@ -2386,6 +2386,13 @@ class StateMachine:
         # 解冻后重新获得「首次耗尽排程重验 → 再次耗尽升级」的完整体验；其余
         # 中间转换（admin 处置复位 / daemon 恢复 / fix 链）一律不清零。
         updates[SCENARIO_REPAIR_EXHAUSTED_FIELD] = 0
+        # inconclusive 重验窗口预算隔离双字段与去重旗标随人工解冻一并清零/
+        # 清除（与 verified 落定清零点、admin 人工复位清单同款）：否则
+        # episode 中途人工冻结→解冻后，独立计数器从旧值续涨很快到顶、
+        # dedup 旗标命中使升级告警被吞且 judge 派发被永久拦停。
+        updates[JUDGE_INCONCLUSIVE_DISPATCHES_FIELD] = 0
+        updates[IN_INCONCLUSIVE_REVERIFY_FIELD] = False
+        updates["_judge_inconclusive_cap_escalated"] = False
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         # update_spec 的单条目写语义在此显式展开（与 freeze_spec 同款：
