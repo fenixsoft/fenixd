@@ -825,3 +825,22 @@ class TestAmendedInflightRepairPassthrough(_BaseDispatch):
         }
         prompt = pb._build_repair_prompt("spec-x", summary)
         assert "主树在飞修订根因" not in prompt
+
+
+# ── code-review item 21b27d682b40: rollback 成因键分流映射与 queue.py 键集合一致 ──
+
+
+def test_mergeback_cause_guidance_keys_match_queue_defer_causes():
+    """rollback 侧指引分流映射键集合 MUST 与 queue.py _MERGEBACK_DEFER_CAUSES 一致。
+
+    此前 rollback 按 cause_label 中文标签文本前缀（startswith）匹配做成因分流，
+    queue 侧改写标签措辞即静默回落 spec 目录指引（主树脏/锁冲突条目被指错处置
+    对象），且无任何断言拦截漂移。改按结构化成因键分流后，queue 新增/更名成因
+    键而 rollback 未同步建指引时由本断言先红。
+    """
+    from core.pm_engine.dispatch.queue import QQQueueMixin
+    from core.pm_engine.dispatch.rollback import RRollbackMixin
+
+    assert set(RRollbackMixin._MERGEBACK_CAUSE_GUIDANCE) == set(
+        QQQueueMixin._MERGEBACK_DEFER_CAUSES
+    )
