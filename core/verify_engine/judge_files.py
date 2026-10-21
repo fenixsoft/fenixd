@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .fs_ops import atomic_write_json, fsync_dir
+from .fs_ops import atomic_write_json
 from .path_safety import safe_component
 
 logger = logging.getLogger("fenixd.verify_engine.judge_files")
@@ -61,15 +61,6 @@ def _requeue_manifest_path(project_root: Path, spec_name: str) -> Path:
         / safe_component(spec_name)
         / REQUEUE_MANIFEST_FILENAME
     )
-
-
-def _fsync_dir(path: Path) -> None:
-    """fsync 父目录，持久化 rename 的目录项元数据（code-review item
-    d1a142dccb99：正文下沉共享实现 fs_ops.fsync_dir，本名保留为委托别名
-    以兼容既有引用路径）。judge 归因/回炉清单属可重算产物，故尽力而为：
-    fsync 目录失败不阻断主流程。
-    """
-    fsync_dir(path)
 
 
 def _atomic_write_json(path: Path, payload: Any, *, tmp_prefix: str) -> None:
@@ -193,7 +184,7 @@ def save_attribution(
     }
 
     # 原子写盘正文与 build_requeue_manifest 共用 _atomic_write_json（含
-    # fdopen 失败接管 + flush/fsync + os.replace + _fsync_dir + 异常清理临时
+    # fdopen 失败接管 + flush/fsync + os.replace + fs_ops.fsync_dir + 异常清理临时
     # 文件，code-review item 794cfb6f999c）；写失败清理后原样抛出（OSError
     # 或 JSON 序列化异常，由调用方处理）。
     _atomic_write_json(path, payload, tmp_prefix=".judge_attr.")
@@ -295,7 +286,7 @@ def build_requeue_manifest(
 
     try:
         # mkstemp/写入/原子落盘正文与 save_attribution 共用 _atomic_write_json
-        # （fdopen 失败接管 + flush/fsync + os.replace + _fsync_dir + 异常
+        # （fdopen 失败接管 + flush/fsync + os.replace + fs_ops.fsync_dir + 异常
         # 清理临时文件，code-review item 794cfb6f999c）：replace 前刷数据
         # 落盘，防掉电后 rename 到位而内容为空/截断（清单驱动下轮回炉子集，
         # 丢失后果是回炉信息缺失）
