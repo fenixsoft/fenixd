@@ -137,6 +137,14 @@ class VerifyEngine:
             self._runners[kind] = runner
             if kind == "web":
                 self.browser = runner.browser  # 兼容旧访问点
+        else:
+            # memoize 命中同样刷新 base_url（code-review item 502246108731）：
+            # 与 run() 入口重置探针 memoize 的复用纪律对齐——引擎实例复用跑
+            # 第二轮时，首轮注入的地址已 stale（首轮无实例为空串而复用轮有
+            # 实例、或两轮实例地址变化），按新建分支同口径重注入，复用
+            # Runner 不带旧/空地址执行。
+            if self.base_url:
+                self._runners[kind].base_url = self.base_url
         return self._runners[kind]
 
     # ── 主入口 ────────────────────────────────────────────────
@@ -512,10 +520,17 @@ class VerifyEngine:
                     finally:
                         # 逐场景完成即写进度（含异常路径，fix-verify-progress-granularity）：
                         # 批次级写点对无依赖场景集退化成「结尾一次性」（0→100% 跳变
-                        # 根因 2）。事件循环单线程，done_count 递增与写文件间无 await。
+                        # 根因 2）。done_count 递增留在事件循环线程；写盘（json.dump
+                        # + fsync + os.replace，code-review item bf90f74e9d08）下沉
+                        # 线程池，不再阻塞同循环内并发场景与 daemon 其他协程。写盘
+                        # 正文为纯本地 payload（mkstemp 临时名互异 + os.replace 原子
+                        # 替换，无事件循环共享状态），线程池内并发安全。
                         done_count += 1
-                        self._write_progress(
-                            done_count, total, f"已完成 {done_count}/{total}（{scenario.id}）"
+                        await asyncio.to_thread(
+                            self._write_progress,
+                            done_count,
+                            total,
+                            f"已完成 {done_count}/{total}（{scenario.id}）",
                         )
 
             batch_results = await asyncio.gather(
