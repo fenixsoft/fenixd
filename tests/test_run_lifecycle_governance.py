@@ -1137,6 +1137,28 @@ class TestJudgeLiveness(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "stagnant")
         self.assertIn("liveness judge unavailable", verdict["evidence"])
 
+    def test_spawn_binary_missing_fail_open_advancing(self):
+        """item 53d8a2f73d90：钉死通道二进制缺失（dsh 独部署无 claude CLI）
+        属结构性不可用——免重试、不 fail-closed 判死，fail-open 保留推进中
+        run（返回 advancing + evidence 标记），下轮 deadline 重新探测。"""
+        calls = []
+
+        def _no_binary(cmd, **kwargs):
+            calls.append(cmd)
+            raise FileNotFoundError(2, "No such file or directory", "claude")
+
+        original = agent_runner_module.subprocess.Popen
+        agent_runner_module.subprocess.Popen = _no_binary
+        try:
+            verdict = self.runner._judge_liveness({}, "s1", "r1")
+        finally:
+            agent_runner_module.subprocess.Popen = original
+        self.assertEqual(verdict["verdict"], "advancing")
+        self.assertIn("liveness judge unavailable", verdict["evidence"])
+        self.assertIn("binary missing", verdict["evidence"])
+        # 结构性不可用不进减半重试链：只 spawn 一次
+        self.assertEqual(len(calls), 1)
+
 
 class TestSupervisionDeadlineAction(unittest.TestCase):
     """4.3 封顶决策矩阵：disabled / 绝对上限 / 次数上限 / 零事件 / 续期 / 停滞。"""
