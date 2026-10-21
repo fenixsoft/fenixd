@@ -520,17 +520,16 @@ class VerifyEngine:
                     finally:
                         # 逐场景完成即写进度（含异常路径，fix-verify-progress-granularity）：
                         # 批次级写点对无依赖场景集退化成「结尾一次性」（0→100% 跳变
-                        # 根因 2）。done_count 递增留在事件循环线程；写盘（json.dump
-                        # + fsync + os.replace，code-review item bf90f74e9d08）下沉
-                        # 线程池，不再阻塞同循环内并发场景与 daemon 其他协程。写盘
-                        # 正文为纯本地 payload（mkstemp 临时名互异 + os.replace 原子
-                        # 替换，无事件循环共享状态），线程池内并发安全。
+                        # 根因 2）。事件循环单线程，done_count 递增与写文件间无 await。
                         done_count += 1
-                        await asyncio.to_thread(
-                            self._write_progress,
-                            done_count,
-                            total,
-                            f"已完成 {done_count}/{total}（{scenario.id}）",
+                        # [fenix-ignore:bf90f74e9d08] 写盘刻意保持事件循环内同步：
+                        # 「逐场景完成写点对同批兄弟场景即时可见」是
+                        # fix-verify-progress-granularity 固化的行为契约
+                        # （tests/test_verify_progress_granularity.py 实测回归失败
+                        # 证实 to_thread 化后 c2 开跑时观察到 done=0）；毫秒级同步
+                        # 写盘是已接受取舍，异步化修复风险更大。
+                        self._write_progress(
+                            done_count, total, f"已完成 {done_count}/{total}（{scenario.id}）"
                         )
 
             batch_results = await asyncio.gather(
