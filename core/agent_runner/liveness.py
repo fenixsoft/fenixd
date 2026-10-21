@@ -1406,8 +1406,10 @@ class LivenessSupervisor:
                 get_impl_wallclock_sizing_config,
                 lifted_max_extensions_for_scale,
             )
+            # logger 注入：键漂移告警经 Logger 实例落本项目日志
+            # （code-review item 7da9dff295c1，同 estimate_spec_scale 注入范式）。
             _wc_cfg = get_impl_wallclock_sizing_config(
-                getattr(self._pm, "config", None))
+                getattr(self._pm, "config", None), logger=self._pm.logger)
             _wc_override = None
             _ov_fn = getattr(
                 self._pm, "_impl_wallclock_extension_override", None)
@@ -1417,7 +1419,8 @@ class LivenessSupervisor:
                 _wc_target = max(max_extensions, int(_wc_override))
             elif _wc_cfg.get("enabled") and impl_scale is not None:
                 _wc_target = lifted_max_extensions_for_scale(
-                    max_extensions, int(impl_scale), _wc_cfg)
+                    max_extensions, int(impl_scale), _wc_cfg,
+                    logger=self._pm.logger)
             else:
                 _wc_target = max_extensions
             if _wc_target != max_extensions:
