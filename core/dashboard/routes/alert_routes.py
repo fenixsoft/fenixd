@@ -245,9 +245,12 @@ class H6AlertRoutesMixin:
             merged: list = []
             for p in self._aggregatable_projects():
                 acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
+                # 先 dict(a) 拷贝再注入 project（code-review item
+                # adcf402ca17a，对齐 _api_alerts 的防御性拷贝写法）
                 for a in acts:
-                    a["project"] = p["name"]
-                merged.extend(acts)
+                    item = dict(a)
+                    item["project"] = p["name"]
+                    merged.append(item)
             _sort_activities_frontend(merged)
             total = len(merged)
             start = (page - 1) * page_size
@@ -272,12 +275,16 @@ class H6AlertRoutesMixin:
         projects_out = []
         for p in self._aggregatable_projects():
             acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
+            # 先 dict(a) 拷贝再注入 project（code-review item adcf402ca17a）
+            items = []
             for a in acts:
-                a["project"] = p["name"]
+                item = dict(a)
+                item["project"] = p["name"]
+                items.append(item)
             # 非分页分支同分页口径：组内也做时间戳归一排序（组序仍按项目
             # 枚举序，code-review item 00d16b77fc6c）
-            _sort_activities_frontend(acts)
-            projects_out.append({"name": p["name"], "activities": acts})
+            _sort_activities_frontend(items)
+            projects_out.append({"name": p["name"], "activities": items})
         return {"projects": projects_out}
 
     def _api_archived_activities(self, project_name, spec_name, query) -> dict:
@@ -608,11 +615,9 @@ class H6AlertRoutesMixin:
         只应经 bin/fixture_scheduling_showcase.py --reset 复位）。
         """
         cleared = 0
-        for p in self.server.projects():
-            if p.get("fixture"):
-                continue  # fixture-project-governance：夹具告警只经 --reset 复位
-            if not p.get("exists"):
-                continue
+        # 聚合口径单源（code-review item 6c70c29fa1d5）：fixture/exists 过滤
+        # 收敛 _aggregatable_projects，不再内联复写谓词
+        for p in self._aggregatable_projects():
             proot = Path(p["path"])
             # 与 _api_alert_handled / alert-resolve 同一 per-alert 锁口径
             # （code-review item 05bbe3368891）：mark_all_alerts_handled 内部
