@@ -106,6 +106,37 @@ class TestDualLaneSharedPipeline(unittest.TestCase):
         self.assertIn("LLM 终审", entry["error"])
 
 
+    def test_prejudge_block_write_failure_does_not_abort(self):
+        """终审前置 blocked 写盘失败（瞬态 STATE IO）→ WARNING 降级，不穿透
+        裁决主体，judge run 照常派发兜底（code-review item c942deb9c1ff）"""
+        _write_spec(self.tmpdir, _DECL)
+        self.sm.transition("s1", "implementing")
+        self.wm.file_exists_on_branch.return_value = False
+        self.runner.run_dispute_judge.return_value = AgentRunResult(
+            "dispute-judge-s1-1", "s1", "dispute-judge",
+            success=False, duration_seconds=1.0, error="boom")
+        real_update = self.sm.update_spec
+        raised = []
+
+        def flaky_update(name, updates, *a, **kw):
+            if "LLM 终审进行中" in str((updates or {}).get("error", "")):
+                raised.append(1)
+                raise OSError("transient STATE.md io")
+            return real_update(name, updates, *a, **kw)
+
+        with mock.patch.object(self.sm, "update_spec",
+                               side_effect=flaky_update):
+            result = self._make_result()
+            outcome = self.engine._adjudicate_deliverable_missing(
+                "s1", result, None, ["core/a.py"], agent_type="fast-track")
+        self.assertEqual(raised, [1], "终审置 blocked 写盘恰好失败一次且被吞")
+        self.assertEqual(outcome["action"], "handled",
+                         "STATE 写失败不穿透裁决主体，按 judge 结果正常收敛")
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "blocked",
+                         "judge 失败 → unclear 归宿照常落终态 blocked")
+
+
 class TestRelocationBudgetPreserved(unittest.TestCase):
     """重定位/软化不消耗重派预算（4.3 预算对齐）：relocate 全清 → proceed
     且 _retry_count 不递增"""
