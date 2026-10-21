@@ -707,8 +707,8 @@ class TestProjectLifecycleAPI:
             srv.stop()
 
     def test_restart_writes_restart_request_signal(self, tmp_path, monkeypatch):
-        """restart 走 supervisor 优雅重启协议：写 .fenix/restart_request 文件信号，
-        不直接调用 start/stop_daemon。"""
+        """restart（managed）走 supervisor 优雅重启协议：写 .fenix/restart_request
+        文件信号，不直接调用 start/stop_daemon。"""
         proot = make_project(tmp_path)
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
@@ -721,6 +721,9 @@ class TestProjectLifecycleAPI:
                             lambda root: lifecycle_calls.append(("start", root)) or {"ok": True})
         monkeypatch.setattr("core.dashboard.server.stop_daemon",
                             lambda root: lifecycle_calls.append(("stop", root)) or {"ok": True})
+        # code-review item 01ce76f667c2：stopped 拒绝受理后，写信号协议仅对
+        # managed（supervisor 托管、信号有消费方）成立，存根托管态保持正向覆盖。
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "managed")
 
         try:
             status, body = srv.post("/api/projects/proj-a/restart")
@@ -728,6 +731,35 @@ class TestProjectLifecycleAPI:
             assert (proot / ".fenix" / "restart_request").exists(), \
                 "restart 必须写 restart_request 信号（supervisor 优雅重启协议）"
             assert lifecycle_calls == [], "restart 不应直接调用 start/stop_daemon"
+        finally:
+            srv.stop()
+
+    def test_restart_stopped_daemon_rejected_without_signal(self, tmp_path, monkeypatch):
+        """daemon stopped → 拒绝受理（ok: false「daemon 未运行」）且不写
+        restart_request：冷启动滞留信号会在下次拉起后被立即消费成用户未请求的
+        排水重启（code-review item 01ce76f667c2，与同族信号端点 stopped 口径
+        一致）。"""
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        lifecycle_calls = []
+        monkeypatch.setattr("core.dashboard.server.start_daemon",
+                            lambda root: lifecycle_calls.append(("start", root)) or {"ok": True})
+        monkeypatch.setattr("core.dashboard.server.stop_daemon",
+                            lambda root: lifecycle_calls.append(("stop", root)) or {"ok": True})
+        monkeypatch.setattr("core.fenix_session.hosting_state", lambda p: "stopped")
+
+        try:
+            status, body = srv.post("/api/projects/proj-a/restart")
+            assert body["ok"] is False
+            assert "daemon 未运行" in body["error"]
+            assert not (proot / ".fenix" / "restart_request").exists(), \
+                "stopped 拒绝时 MUST NOT 写 restart_request 信号"
+            assert lifecycle_calls == [], "拒绝路径不应直接调用 start/stop_daemon"
         finally:
             srv.stop()
 
