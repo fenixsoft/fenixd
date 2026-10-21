@@ -336,6 +336,23 @@ class CliAssertionRunner:
             return None
         return resolved
 
+    def _contained_under_root(self, path) -> bool:
+        """glob 命中条目的逃逸复核：resolve 后前缀仍在本根内。
+
+        glob 模式中含通配符的组件在 _resolve_under_root 里只按字面量解析
+        （``*`` 等不被展开、照字面通过校验），防不住遍历时命中的条目——
+        通配组件匹配到指向验证树外的 symlink 目录/文件会把树外条目计入
+        断言计数。命中条目是具体路径，逐个 resolve 后复核前缀即与
+        _resolve_under_root 的逃逸判定同口径；resolve 抛错（NUL 字节等）
+        按不可信条目剔除。
+        """
+        try:
+            resolved = Path(path).resolve()
+            resolved.relative_to(self.project_root.resolve())
+        except (ValueError, OSError):
+            return False
+        return True
+
     # ═══════════════════════════════════════════════════════════════
     # 第1层：存在性/状态（确定性，0误判）
     # ═══════════════════════════════════════════════════════════════
@@ -347,6 +364,12 @@ class CliAssertionRunner:
         # 先-bool-后-int 纪律、verify_contract._positive_int_or_default 先例）：
         # expected: true 否则被静默折算成 1 改写断言目标而非显式报错
         if isinstance(expected, bool):
+            raise ValueError(f"expected 非法，须为整数: {expected!r}")
+        # 非整数 float（如 3.7）会被 int() 静默截断改写断言目标（3.7→3），
+        # 与字符串 "3.7" 报错、上方 bool 排除的「非法显式报错，不回退掩盖
+        # 场景编写错误」口径不一致——显式报错（is_integer 对 nan/inf 恒
+        # False，天然一并拦截）
+        if isinstance(expected, float) and not expected.is_integer():
             raise ValueError(f"expected 非法，须为整数: {expected!r}")
         try:
             expected = int(expected)
@@ -433,12 +456,24 @@ class CliAssertionRunner:
                 "error": "glob 非法：须为相对验证树根的路径（不得为绝对路径或含 '..' 段）",
             }
         paths = sorted(self.project_root.glob(glob)) if glob else []
+        # 命中条目逐个复核 symlink 逃逸：通配组件在 _resolve_under_root 只做
+        # 字面量校验，逃逸出验证树的命中条目不计入计数（防树外文件参与
+        # min/max 裁决），其余行为不变
+        paths = [p for p in paths if self._contained_under_root(p)]
         count = len(paths)
         minimum = a.get("min")
         maximum = a.get("max")
         # bool 是 int 子类，须在 int() 前显式排除（同 _assert_exit_code 的
         # bool 前判口径）：min/max: true 否则被静默折算成 1 改写断言边界
         if isinstance(minimum, bool) or isinstance(maximum, bool):
+            raise ValueError(
+                f"min/max 非法，须为整数: min={minimum!r}, max={maximum!r}"
+            )
+        # 非整数 float（如 2.5）会被 int() 静默截断改写断言边界，与
+        # _assert_exit_code 对非法 expected 的同款显式报错口径对齐
+        if (isinstance(minimum, float) and not minimum.is_integer()) or (
+            isinstance(maximum, float) and not maximum.is_integer()
+        ):
             raise ValueError(
                 f"min/max 非法，须为整数: min={minimum!r}, max={maximum!r}"
             )
@@ -641,6 +676,14 @@ class CliAssertionRunner:
         }
         if truncated:
             result["truncated"] = True
+            if not negate:
+                # negate 已被上方 fail-closed 拦截；正向 contains/regex 只在
+                # 截断样本上裁决，命中落在截断点之后的真实出现会保守假失败
+                # ——显式标注样本边界供归因，不改 pass 判定语义
+                result["note"] = (
+                    f"文件超过上限 {_FILE_CONTENT_LIMIT} 字节，"
+                    f"仅前 {_FILE_CONTENT_LIMIT} 字节参与匹配"
+                )
         if error:
             result["error"] = error
         return result

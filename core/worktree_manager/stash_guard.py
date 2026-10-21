@@ -1423,40 +1423,75 @@ class G6StashGuardMixin:
             # 对非 ASCII/特殊字符路径默认输出 C-quoted 转义形，不反转义则下方
             # ls-files/check-ignore/rm --cached 的 pathspec 永不命中，purge
             # 对该类文件静默跳过。
-            for rel in [
+            cands = [
                 unquote_git_path(ln.strip())
                 for ln in diff.stdout.splitlines()
                 if ln.strip()
-            ]:
-                ls = subprocess.run(
-                    ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
+            ]
+            # 批量口径（item 2eecaa4ef78d，对照 mergeback._backup_untracked_spec_files
+            # 的 d307bc3bd39e）：本方法在 merge 成功后的 _post_merge_finalize 内执行
+            # （调用链仍持有 _main_tree_lock），逐路径起 ls-files --error-unmatch 与
+            # check-ignore 子进程会随新增路径线性放大主树全局合并锁持锁时长。tracked
+            # 判定收敛为单条 ``ls-files -z -- :(literal)<全部候选>``（:(literal) 禁
+            # pathspec glob、-z 免 core.quotePath 转义），输出集合即 tracked 集，
+            # 不在集合中与逐路径 --error-unmatch 非 0 等价（已不在索引/不存在）。
+            ls = subprocess.run(
+                ["git", "-C", str(self.project_root), "ls-files", "-z", "--"]
+                + [f":(literal){rel}" for rel in cands],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+            if ls.returncode != 0:
+                # 逐路径版失败语义是「该路径跳过不 purge」；批量无法区分哪些候选
+                # 在索引中，等价整体放弃（victims 留空），并按 diff 枚举失败同款
+                # 口径（item a14b215ba4d4）记 warning 不静默吞掉。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Purge ignored brought-in: tracked set enumeration failed: "
+                    f"{(ls.stderr or ls.stdout).strip()}",
                 )
-                if ls.returncode != 0:
-                    continue  # 已不在索引（或不存在）
-                chk = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.project_root),
-                        "check-ignore",
-                        "--no-index",
-                        "-q",
-                        "--",
-                        rel,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=30,
+                return
+            tracked = {p for p in ls.stdout.split("\0") if p}
+            cands = [rel for rel in cands if rel in tracked]
+            if not cands:
+                return
+            # check-ignore 批量判定（单条 ``--stdin``，对照 mergeback
+            # ._rehearsed_paths_all_ignored_du 的 2bde1727f26c 批量口径）：必须
+            # 保留 --no-index——候选刚随 merge 进入索引，缺它则 tracked 路径永不
+            # 判忽略；-z 下输入输出均 NUL 分隔（免路径歧义与 quotePath 转义），
+            # 「出现在输出即被忽略」与逐路径 -q 退出码语义等价（! 否定规则的
+            # 未命中路径同样不进输出）。
+            chk = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "check-ignore",
+                    "--no-index",
+                    "-z",
+                    "--stdin",
+                ],
+                input="\0".join(cands),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+            if chk.returncode not in (0, 1):
+                # 0=有忽略命中、1=全部未命中均为有效裁决；其余退出码才是命令
+                # 失败，无法判定哪些被忽略——同上整体放弃并记 warning。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Purge ignored brought-in: ignore check failed: "
+                    f"{(chk.stderr or chk.stdout).strip()}",
                 )
-                if chk.returncode == 0:
-                    victims.append(rel)
+                return
+            ignored = {ln for ln in chk.stdout.split("\0") if ln}
+            victims = [rel for rel in cands if rel in ignored]
             if not victims:
                 return
             if self._untrack_index_paths(

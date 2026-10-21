@@ -762,10 +762,6 @@ class VisualDiffer:
         """
         try:
             from PIL import Image
-            import numpy as np
-
-            baseline = Image.open(baseline_path).convert("RGB")
-            current = Image.open(current_path).convert("RGB")
         except ImportError:
             return [
                 {
@@ -777,6 +773,22 @@ class VisualDiffer:
                     "scenario_id": scenario_id,
                 }
             ]
+        try:
+            import numpy as np
+        except ImportError:
+            return [
+                {
+                    "baseline": baseline_name,
+                    "status": "skipped",
+                    "ssim": None,
+                    "pass": True,
+                    "error": "numpy 不可用，无法进行像素对比，跳过",
+                    "scenario_id": scenario_id,
+                }
+            ]
+
+        baseline = Image.open(baseline_path).convert("RGB")
+        current = Image.open(current_path).convert("RGB")
 
         if baseline.size != current.size:
             return [

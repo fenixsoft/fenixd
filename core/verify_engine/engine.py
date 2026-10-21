@@ -137,6 +137,14 @@ class VerifyEngine:
             self._runners[kind] = runner
             if kind == "web":
                 self.browser = runner.browser  # 兼容旧访问点
+        else:
+            # memoize 命中同样刷新 base_url（code-review item 502246108731）：
+            # 与 run() 入口重置探针 memoize 的复用纪律对齐——引擎实例复用跑
+            # 第二轮时，首轮注入的地址已 stale（首轮无实例为空串而复用轮有
+            # 实例、或两轮实例地址变化），按新建分支同口径重注入，复用
+            # Runner 不带旧/空地址执行。
+            if self.base_url:
+                self._runners[kind].base_url = self.base_url
         return self._runners[kind]
 
     # ── 主入口 ────────────────────────────────────────────────
@@ -514,6 +522,12 @@ class VerifyEngine:
                         # 批次级写点对无依赖场景集退化成「结尾一次性」（0→100% 跳变
                         # 根因 2）。事件循环单线程，done_count 递增与写文件间无 await。
                         done_count += 1
+                        # [fenix-ignore:bf90f74e9d08] 写盘刻意保持事件循环内同步：
+                        # 「逐场景完成写点对同批兄弟场景即时可见」是
+                        # fix-verify-progress-granularity 固化的行为契约
+                        # （tests/test_verify_progress_granularity.py 实测回归失败
+                        # 证实 to_thread 化后 c2 开跑时观察到 done=0）；毫秒级同步
+                        # 写盘是已接受取舍，异步化修复风险更大。
                         self._write_progress(
                             done_count, total, f"已完成 {done_count}/{total}（{scenario.id}）"
                         )

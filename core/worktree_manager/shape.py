@@ -24,7 +24,9 @@ verifier 分支形状前缀（``fenix/verify-``）撞车。cleanup finally 段�
      ``impl-`` 判实现族、``verify-`` 判 verifier 族、``repair-``/``judge-``
      为不登记锁的载体（返回 None）；
   3. 分支自结构：验证语义剥 ``verify-`` 得 spec 锚后全等判别（锚不可得
-     或分支非本框架命名时回落 4）；
+     或分支非本框架命名时回落 4）——对 verify- 开头 spec 名的实现分支
+     同样**不可解歧**（确定性误判为 verifier 族，维持历史判定语义，
+     调用方应优先提供锚 1/2）；
   4. 历史前缀启发式：裸 ``startswith("fenix/verify-")``——对 verify- 开头
      spec 名的实现分支**不可解歧**（维持历史判定，调用方应提供锚 1/2）。
 """

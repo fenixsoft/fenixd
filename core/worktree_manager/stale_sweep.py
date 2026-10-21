@@ -123,7 +123,23 @@ class G7StaleSweepMixin:
             # 仍在活动窗口内的目录本轮跳过（对齐 has_active_worktree /
             # refresh_locks 的 mtime 兜底与 _pgrep_spec_process docstring 的
             # 「调用方以 run 流新鲜度做二次确认」约定；宁可不清理，不可误删在用）。
-            newest_mtime = self._latest_stream_mtime(spec)
+            # 家族限定（code-review item 98fa0b97fbda，同步 locks 层 item
+            # 216784713669 已固化的 refresh_locks 家族过滤口径）：按目录名前缀
+            # 解析本目录家族（impl- → ("impl",)、verify- → ("verify",)），只
+            # 考察本族 run 流的新鲜度——同 spec 他族流仍在增长不再庇护本族
+            # 孤儿目录（cleanup_stale_worktrees 仅 daemon 启动路径执行，spec
+            # 粒度误庇护会滞留整个 daemon 生命周期）。非 impl-/verify- 前缀
+            # （repair-/judge- 等载体，_spec_from_worktree_name 词表可解析但
+            # 无对应流家族）退回 spec 粒度保守判活，同 refresh_locks 键解析
+            # 不出 agent_type 的回退纪律：宁多留不误删。
+            family = next(
+                (p for p in ("impl", "verify") if wt_dir.name.startswith(f"{p}-")),
+                None,
+            )
+            if family is not None:
+                newest_mtime = self._latest_stream_mtime(spec, prefixes=(family,))
+            else:
+                newest_mtime = self._latest_stream_mtime(spec)
             if (
                 newest_mtime is not None
                 and time.time() - newest_mtime < STALE_LOCK_IDLE_SECONDS

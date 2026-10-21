@@ -451,10 +451,24 @@ class BrowserManager:
             dir=str(verify_path.parent), prefix=f".{verify_path.name}-", suffix=".tmp"
         )
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # fdopen 失败路径显式接管（fs_ops.atomic_write_json /
+            # cbb57806fbfd 统一口径）：with 的 close 只在 fdopen 成功后才
+            # 生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底
+            # os.close。
+            f = None
+            try:
+                f = os.fdopen(fd, "w", encoding="utf-8")
                 f.write(html)
                 f.flush()
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             os.replace(tmp_path, str(verify_path))
         except Exception:
             try:
@@ -1113,6 +1127,12 @@ class BrowserManager:
                     # wait 的 invalid_wait_value 同口径）
                     raw_status = step.get("status")
                     try:
+                        # bool 是 int 子类，须在 int() 前显式排除（与
+                        # cli_assertions._assert_exit_code / cli_runner
+                        # timeout / engine max_parallel 同纪律），否则
+                        # status: true 被静默折算成 HTTP 状态码 1
+                        if isinstance(raw_status, bool):
+                            raise ValueError(raw_status)
                         mock_status = 200 if raw_status is None else int(raw_status)
                     except (TypeError, ValueError):
                         # 不静默回退 200（code-review 修）：场景意图的 4xx/5xx

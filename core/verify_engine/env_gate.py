@@ -39,10 +39,16 @@ _DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # [fenix-ignore:71beefa96751] 文案指纹耦合已在上文显式注明：Playwright 超时
 # 文案为库内固定英文不随 locale 本地化，browser.py 分类以类型化异常优先、
 # 文案仅兜底，引擎「wait 超时」中文前缀本身已在指纹表内。
+# 裸 "wait_for" 已收窄为 "wait_for_selector"（code-review 821c2b29bb5b）：
+# 业务型错误文案（步骤名 wait_for_xxx、「wait_for_response 返回业务错误」类）
+# 不再凭 wait_for 子串混入纯等待超时候选。真实 Playwright 超时文案均带
+# 「Timeout ...ms exceeded」稳定特征（由 "timeout " 覆盖），引擎 wait 步骤由
+# "wait 超时" 覆盖，裸 wait_for 的唯一独立覆盖面仅剩 API 前缀形态
+# "wait_for_selector: ..."——收窄零漏判真实 env 阻塞。
 _WAIT_TIMEOUT_MARKERS = (
     "timeout ",
     "timed out",
-    "wait_for",
+    "wait_for_selector",
     "waiting for locator",
     "wait 超时",
     "locator does not exist",
@@ -55,7 +61,7 @@ def is_wait_timeout_error(error: str) -> bool:
 
     特征包括:
     - Playwright 统一超时文案: "Timeout 3000ms exceeded."
-    - 等待过程描述: "waiting for locator" / "wait_for"
+    - 等待过程描述: "waiting for locator" / "wait_for_selector"
     - 元素缺席描述: "did not appear" / "locator does not exist"
     - 引擎 wait 步骤封装: "wait 超时: ..."（裸「超时」/「exceeded」已收窄，
       业务型超时文案不判纯等待超时——code-review 2084e503bd60）

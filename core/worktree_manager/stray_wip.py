@@ -104,6 +104,16 @@ DEFAULT_GRACE_MINUTES = 30.0
 # 合理宽限上限（一天）：超限等同「无限期静默等待」，回退缺省。
 _MAX_GRACE_MINUTES = 24 * 60
 
+# git 空树对象固定哈希：unborn HEAD（新初始化、尚无任何提交）仓库里
+# ``git diff HEAD`` 恒以 unknown revision 失败（_git 归一为 None），unborn
+# 形态改对空树对象求 diff（code-review item c83f6152a72a）。
+GIT_EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+# ls-files 索引路径集消费面形参缺省占位（code-review item f13cb07aa95d）：
+# 独立调用形态自行查询；盘点轮内由 _sweep_locked 一次取回、经参数下发
+# （「同命令只跑一遍」共用纪律），None（查询失败）随之经参数透传。
+_INDEXED_PATHS_UNSET = object()
+
 # untracked 注册表持久化文件（相对 project_root，evo-persist-stray-escalation
 # 1.1）：.fenix/ 运行时状态区（与 restart_history.jsonl 同区）。消费仓库
 # .gitignore 均有 ``.fenix/*``（或 ``.fenix/``）规则——文件不入库、也不被
@@ -445,7 +455,8 @@ class MainTreeStrayWipSweeper:
         """sweep 实现体，调用方必须已持有 _main_tree_lock。
 
         编排两路只读口径（add-verify-evidence-placement-contract 2.1）：
-        tracked 散件流（``_tracked_sweep_locked``，现行行为逐字节不变）+
+        tracked 散件流（``_tracked_sweep_locked``，现行行为逐字节不变；唯一
+        例外 unborn HEAD 的 diff 失败分支，见该方法 2) 段注记）+
         untracked 散件信号流（entry 级判定）。untracked 盘点插桩在 tracked
         空集早退**之前**——现行实现在 tracked 零改动时直接返回 clean，纯
         untracked 场景若在其后判定，信号永不触发。untracked 结果以附加键
@@ -500,12 +511,27 @@ class MainTreeStrayWipSweeper:
             # tracked 侧放弃本轮（diff 失败/识别器缺失）：untracked 条目同轮
             # 保留交下轮，注册表均不复位（保守不告警）。
             return None
+        # 1.55) 索引路径集一次取回（code-review item f13cb07aa95d）：``git
+        #       ls-files -z`` 全量查询纳入「持锁临界区内同命令只跑一遍」共
+        #       用纪律（与 status / check-ignore 批量明细同款）——放行候选
+        #       （白名单脱落流）与目录型散件（首现归组流）同时在场的轮次
+        #       不再重复跑两次全量子进程。仅在有消费面在场的轮次取回（两
+        #       消费面分别以散件候选 / untracked 散件为输入），纯 tracked
+        #       轮维持 ls-files 零开销，以缺省占位透传（白名单流放行候选
+        #       空短路在先、首现流不进入，不会误按查询失败处置）；None＝
+        #       查询失败，由消费面按各自既有语义处置（白名单流放弃本流、
+        #       首现判定 abandoned）。
+        indexed = (
+            self._git_indexed_paths()
+            if (stray_paths or untracked)
+            else _INDEXED_PATHS_UNSET
+        )
         # 1.6) 白名单脱落口径（evo-whitelist-tracked-patrol 1.1）：`!` 放行 +
         #      不在索引＝白名单脱落。插桩在 untracked 空集早退**之前**（与
         #      untracked 流插桩理由同款：早退不得吞掉本流判定），结果以附加键
         #      ``whitelist_untracked`` 并入返回。
         result["whitelist_untracked"] = self._whitelist_signal(
-            stray_paths, check_detail
+            stray_paths, check_detail, indexed
         )
         if not untracked:
             self._reset_untracked_registry_absent(set())
@@ -514,13 +540,16 @@ class MainTreeStrayWipSweeper:
             # 新首现（proposal：目录消失走既有复位逻辑）。
             self._reset_first_sight_registry_absent(set())
             return result
-        result["untracked"] = self._untracked_signal(untracked, running_run_ids)
+        result["untracked"] = self._untracked_signal(
+            untracked, running_run_ids, indexed
+        )
         return result
 
     def _tracked_sweep_locked(
         self, files: list, running_run_ids=()
     ) -> "dict | None":
-        """tracked 散件流（现行行为逐字节不变）：调用方必须已持有主树锁。"""
+        """tracked 散件流（现行行为逐字节不变；唯一例外 unborn HEAD 的 diff
+        失败分支，见 2) 段注记）：调用方必须已持有主树锁。"""
         wm = self.worktree_manager
         if not files:
             # 归因解除判定先行（文件消失迁移）：clean 早退到不了归因分支，
@@ -531,8 +560,19 @@ class MainTreeStrayWipSweeper:
 
         # 2) 内容指纹（D1）：路径排序集 + git diff HEAD 内容哈希。diff 对
         #    HEAD 求（含暂存+未暂存，与 porcelain tracked 口径一致）；diff
-        #    失败按放弃本轮（保守：不建档不告警，条目保留交下轮）。
+        #    失败按放弃本轮（保守：不建档不告警，条目保留交下轮）——唯一
+        #    例外：unborn HEAD（新初始化、尚无任何提交）仓库里 diff HEAD 恒
+        #    以 unknown revision 失败（_git 归一为 None，code-review item
+        #    c83f6152a72a），以 ``git rev-list -n 1 --all`` 探测区分（输出为
+        #    空＝无任何提交；探测失败不豁免，维持放弃），unborn 形态改对空
+        #    树对象求 diff（无提交仓库下与 HEAD 口径等效、同样含暂存内容），
+        #    不再连带放弃不依赖 HEAD 的 untracked/白名单/首现信号流
+        #    （_sweep_locked 对 tracked None 整轮返回 None）。
         diff = self._git("diff", "HEAD")
+        if diff is None:
+            probe = self._git("rev-list", "-n", "1", "--all")
+            if probe is not None and not probe.strip():
+                diff = self._git("diff", GIT_EMPTY_TREE_SHA)
         if diff is None:
             self._log(
                 "warning",
@@ -789,7 +829,12 @@ class MainTreeStrayWipSweeper:
         切在行号位。残余歧义如实记录：pattern 段自身内嵌 ``:<数字>:``（且
         其后还有内容）时会切进 pattern 尾段，单串无法机械消歧，``!`` 开头
         判据在该形态下失真；source 侧形态远比 pattern 内嵌数字冒号常见，
-        右锚取代价最小侧。两个消费面同享正确 pattern。
+        右锚取代价最小侧。行内左段/回显路径的制表符切分同取右锚
+        （``rsplit("\\t", 1)``，code-review item 92b0668114e5）：pattern 段
+        原样输出、内嵌裸制表符只可能落在该段，回显路径列控制字符恒被 git
+        C 转义——左锚切分在该形态下首个制表符落进 pattern、左段只剩前缀、
+        与输入路径恒不等且 detail 缺失，右锚后制表符形态消解。两个消费面
+        同享正确 pattern。
         """
         try:
             res = subprocess.run(
@@ -816,7 +861,13 @@ class MainTreeStrayWipSweeper:
         for line in res.stdout.splitlines():
             if "\t" not in line:
                 continue
-            left, echoed = line.split("\t", 1)
+            # 左段/回显路径按最后一个制表符右锚切分（code-review item
+            # 92b0668114e5）：pattern 段原样输出、内嵌裸制表符只可能落在
+            # 该段，回显路径列的控制字符（含制表符）恒被 git C 转义——
+            # 左锚切分遇 pattern 内嵌制表符会把首个落点切进左段、与输入
+            # 路径恒不等且 detail 缺失（散件流保守不计入、白名单脱落流
+            # 静默漏报），rsplit 后制表符形态消解。
+            left, echoed = line.rsplit("\t", 1)
             # pattern 段按「:<行号>:」右锚正则提取（取**最后一个**
             # ``:<数字>:`` 序列，code-review item 589a995c72c6 取代 item
             # 003836038272 的非贪婪左锚：source 路径自身含 ``:<数字>:`` 形态
@@ -830,7 +881,9 @@ class MainTreeStrayWipSweeper:
             detail[echoed] = m.group(3) if m else ""
         return detail
 
-    def _untracked_signal(self, entries: list, running_run_ids=()) -> dict:
+    def _untracked_signal(
+        self, entries: list, running_run_ids=(), indexed=_INDEXED_PATHS_UNSET
+    ) -> dict:
         """untracked 散件滞留信号流（2.1）：阈值闸门 + 宽限计时 + 一次性告警。
 
         记账/复位复用 tracked 形态（first_seen 注册表、同指纹一次性、指纹
@@ -853,6 +906,10 @@ class MainTreeStrayWipSweeper:
             entries: untracked 散件路径清单。
             running_run_ids: 在飞 run_id 列表，透传给越阈后的归因探测（与
                 tracked 流同一入参口径；低于阈值时不消费）。
+            indexed: 已取回的 ls-files 全量索引路径集（``_sweep_locked`` 同
+                轮一次取回、经参数下发，code-review item f13cb07aa95d）；
+                缺省占位时自行查询（独立调用形态保持可用），透传给首现
+                归组。
 
         Returns: 子 dict（并入 sweep 返回的 ``untracked`` 键）：status 取
         ``below-threshold`` / ``timed`` / ``alerted`` / ``escalated`` /
@@ -903,7 +960,7 @@ class MainTreeStrayWipSweeper:
         # 提示（below_threshold 静默缺口正是本判定的填补对象）；与既有
         # 阈值/宽限/升级判定完全解耦（提示不启动升级时钟、不改 status
         # 语义，各返回分支均带 ``first_sight`` 子 dict 供消费方取用）。
-        first_sight = self._untracked_first_sight(entries)
+        first_sight = self._untracked_first_sight(entries, indexed=indexed)
 
         if below_threshold:
             return {
@@ -1137,7 +1194,9 @@ class MainTreeStrayWipSweeper:
 
     # ── untracked 首现提示（evo-stray-first-sight-prevention 1.1/1.2）────
 
-    def _untracked_first_sight(self, entries: list) -> dict:
+    def _untracked_first_sight(
+        self, entries: list, indexed=_INDEXED_PATHS_UNSET
+    ) -> dict:
         """目录型产物集合首现判定与一次性 info 提示（1.1/1.2）。
 
         归组（``_untracked_first_sight_groups``）后逐目录判定：首现登记无
@@ -1151,7 +1210,7 @@ class MainTreeStrayWipSweeper:
         键）：status 取 ``prompted`` / ``clean`` / ``abandoned``（归组查询
         不可用时放弃本轮首现判定——登记不动、不提示，既有阈值流不受影响）。
         """
-        grouped = self._untracked_first_sight_groups(entries)
+        grouped = self._untracked_first_sight_groups(entries, indexed=indexed)
         if grouped is None:
             return {"status": "abandoned"}
         now = time.time()
@@ -1182,7 +1241,7 @@ class MainTreeStrayWipSweeper:
         }
 
     def _untracked_first_sight_groups(
-        self, entries: list
+        self, entries: list, indexed=_INDEXED_PATHS_UNSET
     ) -> "dict[str, list[str]] | None":
         """按「目录型产物集合的规范化根目录」归组散件条目（1.1 归组约定）。
 
@@ -1195,6 +1254,12 @@ class MainTreeStrayWipSweeper:
         文件的散件（落在既有目录内的散文件，如源码目录里的临时笔记——
         对其建议整目录 ignore 会误伤 tracked 文件）。
 
+        Args:
+            entries: untracked 散件路径清单。
+            indexed: 已取回的 ls-files 全量索引路径集（``_sweep_locked`` 同
+                轮一次取回、经参数下发，code-review item f13cb07aa95d）；
+                缺省占位时自行查询（独立调用形态保持可用）。
+
         Returns: 根目录 → 条目清单（相对路径，排序不保证，发射侧 sorted）；
         ``git ls-files`` 不可用返回 None（调用方按放弃本轮首现判定处置）。
         无任何目录型候选时返回空 dict（零子进程开销）。
@@ -1202,7 +1267,8 @@ class MainTreeStrayWipSweeper:
         candidates = [str(e) for e in entries if "/" in str(e)]
         if not candidates:
             return {}
-        indexed = self._git_indexed_paths()
+        if indexed is _INDEXED_PATHS_UNSET:
+            indexed = self._git_indexed_paths()
         if indexed is None:
             return None
         # 索引目录前缀集一次构建（O(索引规模×路径深度)）：判据「目录下无
@@ -1564,7 +1630,8 @@ class MainTreeStrayWipSweeper:
     # ── 白名单脱落口径（evo-whitelist-tracked-patrol 1.1）────────────────
 
     def _whitelist_untracked_entries(
-        self, paths: list, detail: "dict[str, str] | None"
+        self, paths: list, detail: "dict[str, str] | None",
+        indexed=_INDEXED_PATHS_UNSET,
     ) -> "list[str] | None":
         """白名单脱落候选清单：命中 ``!`` 放行规则且不在 git 索引中的路径。
 
@@ -1581,6 +1648,11 @@ class MainTreeStrayWipSweeper:
         Args:
             paths: porcelain ``??`` 候选路径（``_porcelain_untracked_paths``）。
             detail: check-ignore 批量明细（``_git_check_ignore_detail`` 形态）。
+            indexed: 已取回的 ls-files 全量索引路径集（``_sweep_locked`` 同
+                轮一次取回、经参数下发，code-review item f13cb07aa95d——与
+                status/check_detail 同款「同命令只跑一遍」共用手法，放行
+                候选与目录型散件同时在场的轮次不再重复跑两次全量子进程）；
+                缺省占位时自行查询（独立调用形态保持可用）。
 
         ls-files 查询失败返回 None（调用方按放弃本流处置：不告警不复位，
         注册表条目保留交下轮——保守语义与 tracked/untracked 流同款）。
@@ -1592,7 +1664,8 @@ class MainTreeStrayWipSweeper:
         ]
         if not released:
             return []
-        indexed = self._git_indexed_paths()
+        if indexed is _INDEXED_PATHS_UNSET:
+            indexed = self._git_indexed_paths()
         if indexed is None:
             return None
         return sorted(p for p in released if p not in indexed)
@@ -1603,12 +1676,14 @@ class MainTreeStrayWipSweeper:
         全量取回而非逐路径查询：ls-files 实参按 pathspec 语义解析（glob/
         ``:`` magic），直传文件名有误读风险；-z 输出无引号包装，与 porcelain
         反转义路径直接可比。消费方两个：``_whitelist_untracked_entries``
-        （放行候选非空才调用）与 ``_untracked_first_sight_groups``
-        （evo-stray-first-sight-prevention 起的第二消费方：当轮存在含目录
-        成分的 untracked 散件即调用，含低于 entry 阈值、目录早已登记过的
-        常态轮）——目录型散件在场时每轮盘点都会在主树锁内多跑一次全量
-        ls-files（耗时随索引规模线性，拉长与 merge-back 写互斥的主树锁
-        持有时间），「常态零开销」仅对纯顶层散文件轮成立。
+        与 ``_untracked_first_sight_groups``——盘点轮内由 ``_sweep_locked``
+        一次取回、经参数下发（code-review item f13cb07aa95d：与
+        status/check_detail 同款「持锁临界区内同命令只跑一遍」纪律，放行
+        候选与目录型散件同时在场的轮次不再重复跑两次全量子进程），消费面
+        indexed 实参缺省占位时才自行查询（独立调用形态保持可用）。有消费
+        面在场的轮次每轮盘点都会在主树锁内跑一次全量 ls-files（耗时随索引
+        规模线性，拉长与 merge-back 写互斥的主树锁持有时间），「常态零开
+        销」仅对纯 tracked 轮成立。
         """
         out = self._git("ls-files", "-z")
         if out is None:
@@ -1616,7 +1691,8 @@ class MainTreeStrayWipSweeper:
         return {p for p in out.split("\0") if p}
 
     def _whitelist_signal(
-        self, paths: list, detail: "dict[str, str] | None"
+        self, paths: list, detail: "dict[str, str] | None",
+        indexed=_INDEXED_PATHS_UNSET,
     ) -> dict:
         """白名单脱落信号流（evo-whitelist-tracked-patrol 1.1）。
 
@@ -1631,7 +1707,7 @@ class MainTreeStrayWipSweeper:
         Returns: 子 dict（并入 sweep 返回的 ``whitelist_untracked`` 键）：
         status 取 ``clean`` / ``alerted`` / ``recorded`` / ``abandoned``。
         """
-        entries = self._whitelist_untracked_entries(paths, detail)
+        entries = self._whitelist_untracked_entries(paths, detail, indexed)
         if entries is None:
             # ls-files/check-ignore 明细不可用：放弃本流（不告警不复位，条目
             # 保留交下轮）；散件流与 tracked 流不受影响（各自判定已在前序

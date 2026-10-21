@@ -1438,7 +1438,7 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         elif step.timeout is not None and step.timeout > MAX_STEP_TIMEOUT:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: timeout 超过上限"
-                f" {MAX_STEP_TIMEOUT:g} 秒（30 分钟），收到 {step.timeout}"
+                f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.timeout}"
             )
         # sse_connect duration 负值同款拦截（code-review item c0d449652c16）：
         # 负窗口 deadline 落在过去、首行即 break，场景以 0 事件失败收场，报错
@@ -1464,7 +1464,7 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
         elif step.duration is not None and step.duration > MAX_STEP_TIMEOUT:
             errors.append(
                 f"场景'{scenario.id}'步骤{i}: duration 超过上限"
-                f" {MAX_STEP_TIMEOUT:g} 秒（30 分钟），收到 {step.duration}"
+                f" {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟），收到 {step.duration}"
             )
 
     for i, a in enumerate(scenario.assertions):

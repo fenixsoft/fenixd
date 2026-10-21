@@ -237,6 +237,13 @@ class ApiRunner(VerifyRunner):
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
             # 改写成缺省 30s；缺省仅在键缺失时生效
             _raw_timeout = step.get("timeout")
+            # bool 显式拦截：float(True)=1.0 不抛 ValueError，YAML 写
+            # timeout: true 会被静默折算成 1.0 秒（false→0.0 秒经 httpx
+            # Timeout(0) 立即超时、judge 把配置笔误误归因为产品响应慢）——
+            # 口径对齐 cli_runner 运行层同款兜底与 api_assertions 的 bool
+            # 排除纪律（code-review item 1abb769d8411）。
+            if isinstance(_raw_timeout, bool):
+                raise TypeError("bool 形态不可作秒数")
             timeout = float(30.0 if _raw_timeout is None else _raw_timeout)
         except (TypeError, ValueError) as e:
             # 非法 timeout（非数字字符串/结构化值）归一为本步骤结构化失败，
@@ -512,6 +519,12 @@ class ApiRunner(VerifyRunner):
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（零窗口）静默
             # 改写成缺省 5s；缺省仅在键缺失时生效
             _raw_duration = step.get("duration")
+            # bool 显式拦截：float(True)=1.0 不抛 ValueError，YAML 写
+            # duration: true 会被静默折算成 1.0 秒窗口——与 http_request
+            # timeout 的 bool 排除及 cli_runner 运行层兜底同口径
+            # （code-review item 1abb769d8411）。
+            if isinstance(_raw_duration, bool):
+                raise TypeError("bool 形态不可作秒数")
             duration = float(5.0 if _raw_duration is None else _raw_duration)
         except (TypeError, ValueError) as e:
             # 非法 duration（非数字字符串/结构化值）归一为本步骤结构化失败，

@@ -253,6 +253,14 @@ class G2LegacyRegistryMixin:
             )
             self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
+            # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
+            # lifecycle.py cleanup finally 的 47b98315d174 口径，正常收尾
+            # 出口同款）：_spec_process_alive 按 (spec, prefixes) 二元组为
+            # 家族限定扫描单独缓存（refresh_locks 家族过滤判活消费，
+            # prefixes 取 _lock_family_prefix 值域 verify/impl），仅清裸
+            # spec 键会在缓存窗口内残留摘锁前的家族存活判定。
+            self._proc_scan_cache.pop((spec_name, ("verify",)), None)
+            self._proc_scan_cache.pop((spec_name, ("impl",)), None)
             self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
             return
         self._active_worktrees.discard(wt_str)
@@ -263,6 +271,14 @@ class G2LegacyRegistryMixin:
         # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。
         self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
         self._proc_scan_cache.pop(spec_name, None)
+        # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
+        # lifecycle.py cleanup finally 47b98315d174 口径，登记未生效出口
+        # 同款）：_spec_process_alive 按 (spec, prefixes) 二元组为家族限定
+        # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes 取
+        # _lock_family_prefix 值域 verify/impl），仅清裸 spec 键会在缓存
+        # 窗口内残留摘锁前的家族存活判定。
+        self._proc_scan_cache.pop((spec_name, ("verify",)), None)
+        self._proc_scan_cache.pop((spec_name, ("impl",)), None)
         self.logger.info(
             "worktree_manager",
             f"Kept worktree for reuse: {wt_path} (branch {branch}, "
@@ -603,10 +619,16 @@ class G2LegacyRegistryMixin:
         # "dictionary changed size during iteration" 并中断整轮回收；物化后
         # 迭代期间的增删不再作用于正在迭代的字典流（与 _release_spec_locks_of
         # 对 _spec_locks 的 sorted 快照同纪律）。
+        # 非 dict 记录守卫（code-review item 873493c07398，与 stale_sweep
+        # cleanup_stale_worktrees 的 294379129b27 同表读取守卫口径对齐）：
+        # _legacy 混入非 dict 记录时 rec.get 会 AttributeError 中断整轮
+        # 宽限期回收（当前写入方均产出 dict，纯防御）。非 dict 记录保守
+        # 跳过、不参与回收。
         expired = [
             spec
             for spec, rec in list(self._legacy.items())
-            if now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
+            if isinstance(rec, dict)
+            and now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
         ]
         reclaimed: list = []
         for spec in expired:

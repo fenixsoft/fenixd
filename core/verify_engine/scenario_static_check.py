@@ -377,7 +377,9 @@ _FIXTURE_TRUE_RE = re.compile(r"fixture\s*=\s*True\b")
 def _unmarked_add_project_snippets(text: str) -> list[str]:
     """提取文本中实参未含 fixture=True 的 add_project( 调用片段（保序去重）。
 
-    括号配平提取实参跨度（嵌套括号安全）；命令截断等未闭合形态取剩余
+    括号配平提取实参跨度（嵌套括号安全；引号字面量区间含反斜杠转义
+    整体跳过——实参字符串内的括号字符不参与配平，避免 name="x(y)" 形态
+    提前截断实参跨度漏检 fixture=True）；命令截断等未闭合形态取剩余
     文本判。实参含 fixture=True 即视为已打标——显式 fixture=False 与缺省
     不传均未打标（本次两起事故根因形态）。
     """
@@ -388,9 +390,18 @@ def _unmarked_add_project_snippets(text: str) -> list[str]:
         depth = 1
         i = start
         n = len(text)
+        quote = ""  # 非 "" 表示处于字符串字面量内（该区间括号不参与配平）
         while i < n and depth:
             ch = text[i]
-            if ch == "(":
+            if quote:
+                if ch == "\\":  # 转义连同被转义字符一并跳过（含 \" 与 \\）
+                    i += 2
+                    continue
+                if ch == quote:
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "(":
                 depth += 1
             elif ch == ")":
                 depth -= 1
