@@ -39,6 +39,8 @@ alert_lifecycle.py — 告警生命周期闭环（add-alert-auto-resolve）。
 AdminStore.auto_self_heal 在排他锁内完成（design D6 / D3）。
 """
 
+import math
+
 from .timelib import from_epoch, parse_ts, to_storage
 
 # spec 终态（与 admin_monitor._TERMINAL_SPEC_STATUSES 同口径）
@@ -262,8 +264,10 @@ def _evaluate_self_heal(
         return None  # 无可用时间锚点：无法判定，保持原状
     try:
         now_epoch = float(now)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+    if not math.isfinite(now_epoch):
+        return None  # NaN/inf：无法判定，保守不闭环
     elapsed = now_epoch - anchor
     if elapsed < quiet_minutes * 60:
         return None  # 窗口内仍复现：保持待处理
