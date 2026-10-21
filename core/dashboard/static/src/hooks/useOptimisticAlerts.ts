@@ -56,7 +56,8 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
   // 标记已处理包装：成功记录收敛时刻并返回 null（遮蔽待确认或超时兜底清除），
   // 失败立即回滚遮蔽并返回错误文案（提示与刷新由各 surface 接续）
   const markHandled = useCallback(async (a: AlertItem): Promise<string | null> => {
-    setOptimistic((prev) => [...prev, a.id]);
+    // 去重守卫：同 id 并发重复调用（快速双击等）不重复写入遮蔽数组
+    setOptimistic((prev) => (prev.includes(a.id) ? prev : [...prev, a.id]));
     try {
       await markAlertHandled(a.project, a.id);
       confirmedAtRef.current.set(a.id, Date.now());
