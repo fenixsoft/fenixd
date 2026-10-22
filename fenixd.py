@@ -1633,14 +1633,24 @@ class FenixDaemon:
                                     "handled_at": datetime.now(timezone.utc).isoformat(),
                                 }
                             )
-                            # 日计数（跨重启存活）：当日累计以 admin_alerts.json 中
-                            # 当日 signal_type=stale_code 记录数计——进程内计数器在
-                            # daemon 高频自愈重启下每次归零，撑不起「当日」语义。
-                            self.logger.info(
-                                "fenixd",
-                                f"stale_code info 级留痕已写入（id {rec['id']}），"
-                                f"当日累计 {self._stale_code_daily_count()} 条",
-                            )
+                            if rec is None:
+                                # AdminStore.append 拒写返回 None＝记录未落盘、
+                                # 无 id 锚点；拒写与异常两种失败分开留痕
+                                # （对齐 stray_wip _write_*_alert 拒写分支口径）。
+                                self.logger.warning(
+                                    "fenixd",
+                                    "stale_code info 级留痕被 AdminStore 拒写"
+                                    "（未落盘，non-blocking）",
+                                )
+                            else:
+                                # 日计数（跨重启存活）：当日累计以 admin_alerts.json 中
+                                # 当日 signal_type=stale_code 记录数计——进程内计数器在
+                                # daemon 高频自愈重启下每次归零，撑不起「当日」语义。
+                                self.logger.info(
+                                    "fenixd",
+                                    f"stale_code info 级留痕已写入（id {rec['id']}），"
+                                    f"当日累计 {self._stale_code_daily_count()} 条",
+                                )
                         else:
                             # 降噪（2026-09-13 用户决策）：陈旧是可自愈收敛的持续状态，
                             # 降为 warning 级——写入即自动标记已处理，不进人工告警横幅/
@@ -1672,7 +1682,16 @@ class FenixDaemon:
                                     ),
                                 }
                             )
-                            if not severity_needs_human(rec.get("severity")):
+                            if rec is None:
+                                # AdminStore.append 拒写返回 None＝记录未落盘、
+                                # 无 id 锚点可 mark_handled；拒写与异常两种失败
+                                # 分开留痕（对齐 stray_wip _write_*_alert 口径）。
+                                self.logger.warning(
+                                    "fenixd",
+                                    "stale_code warning 级留痕被 AdminStore 拒写"
+                                    "（未落盘，non-blocking）",
+                                )
+                            elif not severity_needs_human(rec.get("severity")):
                                 self.admin_store.mark_handled(rec["id"])
             except Exception as e:
                 self.logger.warning("fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
@@ -5248,7 +5267,16 @@ class FenixDaemon:
                         "recommended_action": "重启 supervisor 使排水窗口与上报刷新生效",
                     }
                 )
-                if not severity_needs_human(rec.get("severity")):
+                if rec is None:
+                    # AdminStore.append 拒写返回 None＝记录未落盘、无 id 锚点
+                    # 可 mark_handled；拒写与异常两种失败分开留痕（对齐
+                    # stray_wip _write_*_alert 拒写分支口径）。
+                    self.logger.warning(
+                        "fenixd",
+                        "supervisor 告警去重标记被 AdminStore 拒写"
+                        "（未落盘，non-blocking）",
+                    )
+                elif not severity_needs_human(rec.get("severity")):
                     self.admin_store.mark_handled(rec["id"])
             except Exception as e:
                 self.logger.warning(
