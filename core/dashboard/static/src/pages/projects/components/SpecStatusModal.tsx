@@ -224,7 +224,11 @@ export default function SpecStatusModal({
   }, [project, spec, onDone, message, appModal]);
 
   // ── 切换冻结模式（永久↔定时） ─────────────────────
-  const handleFreezeConfig = useCallback(async () => {
+  // code-review item 931e241c6437：「切换为永久冻结」会清除既有定时解冻时间、把对
+  // daemon 调度的拦截无限期延长，与 handleFreeze/handleUnfreeze 属同级防误触风险，
+  // 同样走 appModal.confirm 二次确认；定时「应用」只设置/延长到期自动解冻（调度
+  // 拦截只收窄不扩大），保留直执行不另加确认。
+  const applyFreezeConfig = useCallback(async () => {
     setPendingAction('freeze-config');
     try {
       if (freezeMode === 'scheduled') {
@@ -256,6 +260,21 @@ export default function SpecStatusModal({
       setPendingAction(null);
     }
   }, [project, spec, freezeMode, freezeUntil, onDone, message]);
+
+  const handleFreezeConfig = useCallback(() => {
+    if (freezeMode !== 'permanent') {
+      void applyFreezeConfig();
+      return;
+    }
+    appModal.confirm({
+      title: '切换为永久冻结',
+      content: `确认将 SPEC「${spec}」切换为永久冻结？将清除定时解冻时间，daemon 持续停止调度直到手动解冻。`,
+      okText: '切换为永久冻结',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: applyFreezeConfig,
+    });
+  }, [freezeMode, spec, appModal, applyFreezeConfig]);
 
   // ── 晋升（drafted→ready） ─────────────────────────
   const handlePromote = useCallback(() => {
