@@ -164,6 +164,10 @@ class G9RepairSiteMixin:
         """
         with self._spec_lock_th:
             rec = self._legacy.pop(spec_name, None)
+            if rec is not None and not isinstance(rec, dict):
+                # 异形记录按噪声丢弃，与包内同表防御口径一致
+                # （legacy_registry / stale_sweep 读取点均有 isinstance 门）。
+                rec = None
             if rec is not None and (
                 time.time() - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
             ):

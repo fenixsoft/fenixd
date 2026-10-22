@@ -140,7 +140,7 @@ class AgentRunResult:
         success: bool,
         duration_seconds: float,
         turns_used: int = 0,
-        error: str = None,
+        error: str | None = None,
         output: str = "",
         branch: str | None = None,
         provider_used: str | None = None,
@@ -411,7 +411,7 @@ class RegressionResult:
         success: bool = True,
         status: str = "",
         error: str = "",
-        snapshot: dict = None,
+        snapshot: dict | None = None,
         output: str = "",
     ):
         self.run_id = run_id

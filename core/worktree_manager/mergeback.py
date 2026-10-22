@@ -26,6 +26,7 @@ from core.timelib import now_local  # noqa: E402
 from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager.constants import WIP_GATE_STASH_PREFIX  # noqa: E402
+from core.worktree_manager.shape import branch_shape_is_verifier  # noqa: E402
 # quotePath 反转义唯一实现在 core.git_text（本模块原持有一份独立实现，已收敛
 # 委托，code-review 3e99a584fdf5）；别名沿用旧名，调用点零改动。
 from core.git_text import unquote_git_path as _unquote_git_path  # noqa: E402
@@ -968,6 +969,14 @@ class G4MergebackMixin:
         for spec, run_ids in lane_specs.items():
             for wt_name, wt_path, branch in pairs:
                 if not self._wt_name_matches_spec(wt_name, spec):
+                    continue
+                # 排除 verifier 载体（item 1edc92d923f2）：_wt_name_matches_spec
+                # 对同 spec 的 verify-<spec>-<ts> 载体同样命中，verifier 分支
+                # 改动集会被记成实现车道持有证据——与上方
+                # _INFLIGHT_LANE_RUN_PREFIXES 注释承诺（planner/verifier/admin
+                # 等非实现车道不参与识别）对齐。tri-state 只摘 is True，
+                # repair-/judge- 等不可辨载体的历史口径不变。
+                if branch_shape_is_verifier(branch, wt_name, spec_hint=spec) is True:
                     continue
                 if branch not in branch_files_cache:
                     branch_files_cache[branch] = self._branch_changed_files(branch)
