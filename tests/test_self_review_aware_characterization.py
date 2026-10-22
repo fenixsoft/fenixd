@@ -179,7 +179,8 @@ class TestSchedulerTriggerCharacterization:
 
         # last_run_at 替身走生产解析器（aware 化后 _iso_to_aware_dt 直返
         # aware；naive 替身串按本地解读，与迁移前同一瞬时）。
-        def fake_load_last_run_at():
+        def fake_load_last_run_at(degraded_out=None):
+            # degraded_out 为成功路径出参：替身成功回读保持静默（不追加）
             if last_run_at_str is None:
                 return None
             return csr._iso_to_aware_dt(last_run_at_str)

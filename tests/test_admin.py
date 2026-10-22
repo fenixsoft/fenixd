@@ -2066,7 +2066,9 @@ class TestRunAdministrator:
         rr.write_text("restart", encoding="utf-8")
         os.utime(rr, (time.time() - 60 * 30, time.time() - 60 * 30))  # 30 分钟前
         result = mon._detect_restart_failure(time.time())
-        assert result == ["restart_failed"]
+        # 恒返回 []（fc9bcd6de005 返回值契约）：升级记录直接经 store.append
+        # 落盘、由下方 store 断言验证，不经返回值汇总。
+        assert result == []
         recs = AdminStore(proot, FakeLogger()).read_all()
         assert any(r.get("kind") == ESCALATION and r.get("signal_type") == "restart_failed"
                    for r in recs)

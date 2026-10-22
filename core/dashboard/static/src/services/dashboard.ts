@@ -472,24 +472,35 @@ export async function getAlerts(): Promise<AlertsData> {
   return request<AlertsData>('/api/alerts');
 }
 
+/** project 必填守卫单源（code-review item 8c08f9d5e34f）：原先
+ *  markAlertHandled/resolveAlert 各持一份逐字重复的守卫块（ApiError 构造
+ *  与注释双重复），收拢于此——日后调整缺省错误码/文案只改本处；asserts
+ *  断言让调用点判空收窄不变。fnName 拼入消息保留定位信息。 */
+function requireProject(
+  project: string | undefined,
+  fnName: string,
+): asserts project is string {
+  // 改抛 ApiError 对齐本文件「对外恒抛 ApiError」契约（code-review item
+  // cf487bc6ec59、29fcb06957b6）：ApiError 是 Error 子类，现网调用面均为
+  // instanceof Error 泛捕获，行为兼容；status=400/kind='client' 与后端
+  // 「缺 project 恒 400」语义一致，code 供调用方按稳定机器码分支。
+  if (!project) {
+    throw new ApiError(
+      `${fnName}: project 必填（后端对缺 project 恒 400）`,
+      400,
+      'client',
+      'missing_project',
+    );
+  }
+}
+
 export function markAlertHandled(project: string | undefined, id: string) {
   // 后端硬约束：_api_alert_handled 对缺 project 无条件 400（"unknown project"），
   // 告警均按项目归档（AdminStore per-project），不存在项目无关的告警发射点。
   // 签名无法收紧为必填——现网调用面（AlertBanner/activities/SPEC 详情）传的是
   // AlertItem.project（可选字段，类型 string | undefined）——改为封装内对空值
   // 显式报错，避免静默发出确定性失败的请求（code-review item 54cd19ca3bb3）。
-  if (!project) {
-    // 改抛 ApiError 对齐本文件「对外恒抛 ApiError」契约（code-review item
-    // cf487bc6ec59、29fcb06957b6）：ApiError 是 Error 子类，现网调用面均为
-    // instanceof Error 泛捕获，行为兼容；status=400/kind='client' 与后端
-    // 「缺 project 恒 400」语义一致，code 供调用方按稳定机器码分支。
-    throw new ApiError(
-      'markAlertHandled: project 必填（后端对缺 project 恒 400）',
-      400,
-      'client',
-      'missing_project',
-    );
-  }
+  requireProject(project, 'markAlertHandled');
   const q = `?project=${encodeURIComponent(project)}`;
   return request(`/api/alerts/${encodeURIComponent(id)}/handled${q}`, { method: 'POST' });
 }
@@ -521,18 +532,7 @@ export async function resolveAlert(
   // 现网调用面（useAlertAdjudication）传的是 AlertItem.project（可选字段，
   // 类型 string | undefined）——改为封装内对空值显式报错，避免类型层邀请
   // 非法调用（code-review item 54cd19ca3bb3）。
-  if (!project) {
-    // 改抛 ApiError 对齐本文件「对外恒抛 ApiError」契约（code-review item
-    // cf487bc6ec59、29fcb06957b6）：ApiError 是 Error 子类，现网调用面均为
-    // instanceof Error 泛捕获，行为兼容；status=400/kind='client' 与后端
-    // 「缺 project 恒 400」语义一致，code 供调用方按稳定机器码分支。
-    throw new ApiError(
-      'resolveAlert: project 必填（后端对缺 project 恒 400）',
-      400,
-      'client',
-      'missing_project',
-    );
-  }
+  requireProject(project, 'resolveAlert');
   // project 只走 body 通道（code-review item 7045ef4ae4c7）：POST 载荷本就
   // 内聚 project/alert_id/choice_id/note，旧的 ?project= 双通道系冗余
   //（后端 query 优先、body 兜底，两通道并存只会邀请日后失配）
