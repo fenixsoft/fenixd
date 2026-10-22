@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
-from core.spec_naming import KEBAB_RE
+from core.spec_naming import KEBAB_RE, validate_spec_name
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas" / "spec-driven"
 
@@ -80,6 +80,10 @@ def _load_template(template_path: str) -> str:
 
 def _validate_name(name: str) -> Optional[str]:
     """kebab-case 名称校验；合法返回 None，否则返回具体错误信息。"""
+    if not isinstance(name, str):
+        # 非字符串入参的防御与单源 validate_spec_name 一致（item e594012e94b6），
+        # 否则 truthy 非字符串（如 int）会在 KEBAB_RE.fullmatch 处裸抛 TypeError。
+        return validate_spec_name(name)
     if not name:
         return "Change name cannot be empty"
     if not KEBAB_RE.fullmatch(name):
