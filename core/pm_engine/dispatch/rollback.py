@@ -418,6 +418,28 @@ class RRollbackMixin:
                 # 时消费侧 resolve_resume_site 自会降级为全新派发，保留无副作用）；
                 # 无标记时 branch 属上一轮空壳/陈旧锚点，照常清除。
                 resume_pending = bool(spec_entry.get("_recovery_resume"))
+                if not resume_pending:
+                    # code-review item 6dc9a7a4fc4e：单凭标记判「续做轮」只对
+                    # **消费前**的派发期异常成立（上方 D5 注释前提的适用边界）——
+                    # 标记已在 queue.py 两条派发分支入口被一次性消费（置 None，
+                    # 先于 worker 启动），run 启动后中途异常沿 worker 外层 except
+                    # 进入本方法时标记恒缺，仅按标记会把本轮续做轮误判成普通轮、
+                    # 无条件清空 branch——而它正是本轮续做在用的保留分支锚点，
+                    # 清后续做链静默降级为全新派发。补判据：消费侧在 worker 启动
+                    # 前已 mark_reused(..., recovery=True) 登记（design D6 来源
+                    # 标记，仅续做命中轮在场；普通轮/跨 attempt 复用无此键，且
+                    # create/收工路径会清陈旧记录保证「本轮」语义），读内存登记
+                    # 即可区分，不新增跨模块状态字段。极端时序（fast-track 冒泡
+                    # 异常且外层 finally 已对未交接 worktree 走 keep_for_reuse、
+                    # 登记被摘出）下按非续做轮处置＝既有行为：现场已由遗产登记
+                    # 兜住，损失仅 --resume 会话续跑，不劣于修复前。探测失败同口径
+                    # 静默退回（branch 仍在 git，不丢成果）。
+                    try:
+                        _wm = getattr(self._pm.agent_runner, "worktree_manager", None)
+                        _rec = _wm.get_reuse_record(spec_name) if _wm else None
+                        resume_pending = bool((_rec or {}).get("recovery"))
+                    except Exception:  # noqa: BLE001 —— 判据失效退回现状行为
+                        resume_pending = False
                 rollback_updates = {
                     "status": "ready",
                     "implementer_run": None,
