@@ -2505,19 +2505,22 @@ class SelfReviewScheduler:
             title = " ".join(str(item.get("title") or "").splitlines()).strip()
             if title:
                 lines.append(f"- **{title}**")
+            # 无标题条目（code-review item 9e5292d5a543）：首个非空字段升
+            # 格为块首「- 」行——否则整块首行是缩进续行形态，
+            # _collect_recent_entries 只收集「- 」行，条目进不了闭环判定清单、
+            # _remove_resolved 永不命中，台账永久残留。仅首个非空字段升格，
+            # 其余字段保持「  - 」缩进（同一逻辑条目不被撕成多个闭环条目）。
+            is_first_field = not title
             for label, key in _FIELD_LABELS:
                 val = str(item.get(key) or "").strip()
                 if not val:
                     continue
                 val_lines = [ln for ln in val.splitlines() if ln.strip()]
-                if title:
-                    lines.append(f"  - {label}：{val_lines[0]}")
-                else:
-                    # 无标题条目（code-review item 9e5292d5a543）：首个非空
-                    # 字段升格为块首「- 」行——否则整块首行是缩进续行形态，
-                    # _collect_recent_entries 只收集「- 」行，条目进不了闭环
-                    # 判定清单、_remove_resolved 永不命中，台账永久残留。
+                if is_first_field:
                     lines.append(f"- {label}：{val_lines[0]}")
+                    is_first_field = False
+                else:
+                    lines.append(f"  - {label}：{val_lines[0]}")
                 lines.extend(f"  {ln}" for ln in val_lines[1:])
             return lines
         item_str = str(item).strip()

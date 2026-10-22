@@ -1359,7 +1359,9 @@ class TestTodoMultilineFormat:
             mistakes=[], improvements=[])
         sched._append_todo("2026-09-07", result)
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
-        assert "  - 影响：仅有影响" in content
+        # 唯一非空字段升格为块首「- 」行（code-review item 9e5292d5a543：
+        # 全缩进形态进不了闭环收集，属已修缺陷，勿再断言缩进形态）
+        assert "- 影响：仅有影响" in content
         assert "证据：" not in content and "建议：" not in content
         # 全部字段为空的条目被跳过，无有效条目的小节回落（当日无）
         assert "（当日无）" in content
