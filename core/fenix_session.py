@@ -159,14 +159,6 @@ def _argv_script_token(argv):
             return None
         if token.startswith("-"):
             if not token.startswith("--"):
-                # 分离式取参旗标（token 恰为 -W/-X 单字符）的参数是下一个 argv
-                # token，一并跳过：否则真正的脚本 token 永远不被考察，判活原语
-                # （_is_daemon_proc/_is_supervisor_proc → is_running /
-                # supervisor_running/_fenix_pids_under）漏检该形态 daemon
-                # （code-review item 35d975aaafb2）。合并写法（-Ximporttime /
-                # -Wignore）参数附着在旗标后，无需跳过。
-                if token in ("-W", "-X") and i + 1 < len(rest):
-                    i += 1
                 # 短选项簇内可能藏着 -c/-m（如 -xc / -uc / -im / -c"<code>"）：按 Python
                 # 选项解析语义逐字符扫旗标，见 c/m 即代码串/模块调用；遇取参旗标
                 # （W/X）即止——其余字符是它的参数（如 -Ximporttime），不算旗标。
@@ -177,6 +169,16 @@ def _argv_script_token(argv):
                         return None
                     if ch in ("W", "X"):
                         break
+                # 分离式取参旗标以 W/X 收尾（裸 -W/-X 单字符，或簇尾形态如
+                # `python3 -xW ignore <script>` 的 -xW）时，其参数是下一个 argv
+                # token，一并跳过：否则真正的脚本 token 永远不被考察，判活原语
+                # （_is_daemon_proc/_is_supervisor_proc → is_running /
+                # supervisor_running/_fenix_pids_under）漏检该形态 daemon
+                # （code-review item 35d975aaafb2；簇尾形态 item a65e14674c66）。
+                # 参数附着在旗标后（-Ximporttime / -Wignore）则 W/X 非收尾字符，
+                # 无需跳过。
+                if token[-1] in ("W", "X") and i + 1 < len(rest):
+                    i += 1
             i += 1
             continue
         return token
