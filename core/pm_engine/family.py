@@ -499,12 +499,23 @@ class FamilyGovernor:
                 return False
             # 精确前缀归属守卫（对齐 queries.find_implementer_worktree 范式）：
             # 子串匹配会把同根后代 fix-fix-x 的 worktree 误记到 fix-x 头上
+            from core.worktree_manager.queries import G8QueryMixin
+
             for d in wt_root.iterdir():
                 if not d.is_dir():
                     continue
-                if d.name.startswith(f"impl-{spec_name}-") or d.name.startswith(
-                    f"verify-{spec_name}-"
+                # 载体圈定（impl/verify，与本函数既有探测范围一致）后按权威
+                # 范式精确归属：剥载体前缀与末段纯数字时间戳后与 spec 名全等
+                # （分隔符边界锚定，禁止子串包含）。裸 startswith 在 spec 名
+                # 互为连字符边界前缀时过配——impl-fix-a-b-<ts> 会被误记到
+                # fix-a 头上，其活进程使 sibling 互斥/孤儿修复判定被他人活动
+                # 持续压制（code-review item 689b4271a5b8）
+                if not (
+                    d.name.startswith("impl-") or d.name.startswith("verify-")
                 ):
+                    continue
+                if G8QueryMixin._spec_from_worktree_name(d.name) != spec_name:
+                    continue
                     # 尾部锚定（对齐 worktree_manager.locks._worktree_has_live_process
                     # 的锚定纪律）：裸子串在兄弟 worktree 目录名互为前缀时过配——
                     # impl-x-<ts10> 的 pattern 会命中 impl-x-<ts11> 的进程，
@@ -1013,22 +1024,36 @@ class FamilyGovernor:
                     reset_fields["implementer_run"] = None
                 if existing_fix.get("tester_run") is not None:
                     reset_fields["tester_run"] = None
-                # 写前冻结复查（code-review item 7d53e9eacf26，与上方 inplace
-                # 打回及 dispatch/rollback._rollback_frozen_recheck 同款收口）：
-                # existing_fix 快照到此写之间隔着 _ensure_fix_spec_files 等文件
-                # I/O，窗口内 fix SPEC 被并发冻结时 frozen 条目的 update_spec
-                # 只剥 status 键——error 覆盖与 run 锚点清除照常生效。发现冻结
-                # 即放弃重置（_on_spec_ready 与重派一并跳过），bug-found 事件
-                # 留待冻结解除后处理。
+                # 写前复查（code-review item 7d53e9eacf26 冻结 + 22fd9285d92b
+                # 状态，与上方 inplace 打回、dispatch/rollback
+                # ._rollback_frozen_recheck 及 engine 同源草案收敛拦截的双查
+                # 口径同款收口）：existing_fix 快照到此写之间隔着
+                # _ensure_fix_spec_files 等文件 I/O，窗口内 fix SPEC 被并发
+                # 冻结时 frozen 条目的 update_spec 只剥 status 键——error
+                # 覆盖与 run 锚点清除照常生效；窗口内被并发路径重置并被队列
+                # 消费转入 implementing/testing（worktree 锁在飞）时，盲写会
+                # 把合法进度覆写回 ready 并清空 run 锚点。同一快照先核冻结
+                # （发现冻结即放弃重置，_on_spec_ready 与重派一并跳过，冻结
+                # 现场保留待人工解冻）再核 status：仅仍处可重置态
+                # （drafted/ready/bug-found）才写，状态已漂移即让位于外部
+                # 进度，bug-found 事件留待后续周期重评兜底。
                 from core.state_machine import FROZEN_FIELD
 
-                if (
-                    self._pm.state_machine.read_one(fix_spec_name) or {}
-                ).get(FROZEN_FIELD):
+                latest_fix = self._pm.state_machine.read_one(fix_spec_name) or {}
+                if latest_fix.get(FROZEN_FIELD):
                     self._pm.logger.warning(
                         "pm_engine",
                         f"legacy fix 重置放弃：'{fix_spec_name}' 写盘前复查发现"
                         "已冻结——放弃 ready 重置写与重派，冻结现场保留待人工解冻",
+                    )
+                    return
+                latest_status = latest_fix.get("status")
+                if latest_status not in ("drafted", "ready", "bug-found"):
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"legacy fix 重置竞争后到者：'{fix_spec_name}' 状态已为 "
+                        f"'{latest_status}'，让位于外部进度——放弃 ready 重置写"
+                        "与重派（缺口留待后续周期重评）",
                     )
                     return
                 self._pm.state_machine.update_spec(fix_spec_name, reset_fields)

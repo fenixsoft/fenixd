@@ -585,9 +585,13 @@ class ArchitectureManager:
         started_at = _utcnow_iso()
         try:
             _write_status(proot, _status_payload("generating", started_at=started_at))
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 — item 7c1787f26168：只捕
+            # OSError 会放走 _write_status 非 OSError 异常（如 json.dumps
+            # 序列化类），此处持锁已成功则锁不释放、generating 终态也不落
+            # 盘，后续该项目 refresh 恒 409 至 daemon 重启；口径对齐
+            # _finish（item 1e7127422a27）。BaseException 仍照常穿出不吞。
             lock.release()
-            # code-review item 955818ba1bd9：OSError 文本可携带内部绝对路径/
+            # code-review item 955818ba1bd9：异常文本可携带内部绝对路径/
             # errno 属主细节，不得内嵌进响应体（对齐 regression_routes/
             # help_routes 既有口径）：客户端只收固定文案，细节降级服务端日志。
             if logger is not None:

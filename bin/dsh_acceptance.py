@@ -1004,8 +1004,7 @@ def evaluate_agent_lane(ev: Dict[str, Any], real: bool = False) -> List[str]:
         failures.append(
             f"假端点收到的 model={ev.get('mock_model_seen')}（期望 "
             f"{MOCK_MODEL}，patch 渲染未达传输层）")
-    if ev.get("mock_requests") and not ev.get("mock_tools_contain_taskcreate") \
-            and ev["lane"] != "judge":
+    if ev.get("mock_requests") and not ev.get("mock_tools_contain_taskcreate"):
         failures.append("请求工具面未含 TaskCreate（Bundle 工具注册缺失）")
     return failures
 
@@ -1602,34 +1601,42 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
     """真实验收执行（--go）：同夹具 dsh 三车道 + claude 基线车道（可选），
     产出五段证据报告。"""
     from core.config import ConfigLoader
-    cfg = ConfigLoader.resolve_config(project_root)
-    # provider 选择：--provider 按 name 精确选；缺省取首个合格项——盲取
-    # providers[0] 曾选中已失效网关（404，2026-10-14 run1 实证），自检段
-    # 会列出全部候选名提示显式指定。
-    providers = [p for p in (cfg.get("llm") or {}).get("providers") or []
-                 if isinstance(p, dict) and p.get("baseurl") and p.get("apikey")]
-    wanted = str(getattr(args, "provider", "") or "").strip()
-    if wanted:
-        provider = next((p for p in providers
-                         if str(p.get("name", "")) == wanted), None)
+    try:
+        # provider 选择段（resolve_config→env_overrides 构造）整体纳入 try
+        # （code-review item 523b310151a6）：若 config 的 llm 键为非 dict 真值，
+        # .get 抛 AttributeError 会以裸 traceback 收场；accept_selfcheck 同款
+        # 表达式降级为「配置解析失败」并拒绝 --go，两处口径保持一致。
+        cfg = ConfigLoader.resolve_config(project_root)
+        # provider 选择：--provider 按 name 精确选；缺省取首个合格项——盲取
+        # providers[0] 曾选中已失效网关（404，2026-10-14 run1 实证），自检段
+        # 会列出全部候选名提示显式指定。
+        providers = [p for p in (cfg.get("llm") or {}).get("providers") or []
+                     if isinstance(p, dict) and p.get("baseurl") and p.get("apikey")]
+        wanted = str(getattr(args, "provider", "") or "").strip()
+        if wanted:
+            provider = next((p for p in providers
+                             if str(p.get("name", "")) == wanted), None)
+            if provider is None:
+                print(f"--provider {wanted!r} 不在 provider 链：可用 "
+                      f"{[str(p.get('name')) for p in providers]}", file=sys.stderr)
+                return 1
+        else:
+            provider = providers[0] if providers else None
         if provider is None:
-            print(f"--provider {wanted!r} 不在 provider 链：可用 "
-                  f"{[str(p.get('name')) for p in providers]}", file=sys.stderr)
+            print("provider 链无 baseurl+apikey 齐备项", file=sys.stderr)
             return 1
-    else:
-        provider = providers[0] if providers else None
-    if provider is None:
-        print("provider 链无 baseurl+apikey 齐备项", file=sys.stderr)
+        model = args.model or str(provider.get("model") or "")
+        if not model:
+            print("未指定 --model 且 provider 缺 model 字段——dsh 通道要求显式模型",
+                  file=sys.stderr)
+            return 1
+        env_overrides = {
+            "ANTHROPIC_BASE_URL": str(provider["baseurl"]),
+            "ANTHROPIC_API_KEY": str(provider["apikey"]),
+        }
+    except Exception as e:  # noqa: BLE001 — 配置解析失败可读退出，不裸抛 traceback
+        print(f"配置解析失败：{e}", file=sys.stderr)
         return 1
-    model = args.model or str(provider.get("model") or "")
-    if not model:
-        print("未指定 --model 且 provider 缺 model 字段——dsh 通道要求显式模型",
-              file=sys.stderr)
-        return 1
-    env_overrides = {
-        "ANTHROPIC_BASE_URL": str(provider["baseurl"]),
-        "ANTHROPIC_API_KEY": str(provider["apikey"]),
-    }
 
     started = utc_iso()
     prefix = unique_prefix()

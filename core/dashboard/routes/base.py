@@ -1198,7 +1198,26 @@ class H0BaseMixin:
                 pass
 
     def _wants_gzip(self) -> bool:
-        return "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        # q-value 语义（code-review item 2e38f637456e）："gzip;q=0" 按
+        # RFC 7231 表示客户端不接受 gzip，仅做子串匹配会照常压缩返回。
+        # 轻量解析：对 gzip 标记到下一逗号为止的参数段检查 q<=0 即排除；
+        # 解析异常回退原「含 gzip 子串即压缩」行为（fail-open）。
+        accept = self.headers.get("Accept-Encoding", "").lower()
+        if "gzip" not in accept:
+            return False
+        try:
+            for part in accept.split(","):
+                codings = part.strip().split(";")
+                if codings[0].strip() != "gzip":
+                    continue
+                for param in codings[1:]:
+                    name, _, value = param.partition("=")
+                    if name.strip() == "q" and float(value.strip()) <= 0:
+                        return False
+                return True
+        except ValueError:
+            pass
+        return True
 
     def _maybe_gzip(self, body: bytes) -> bytes:
         # Vary 无条件发送（code-review item f812b5255a66）：响应是否压缩随
