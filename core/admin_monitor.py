@@ -3071,26 +3071,43 @@ class AdminMonitor:
                 rec.get("evidence") or "拦截详情见 pm_engine 日志",
             )
             signals.append(signal)
-            # 先落 escalated 再唤起：即使唤起过程异常中止，下一 tick 也会跳过该记录
-            marked = self.store.mark_escalated(rec.get("id"))
-            if not marked:
-                # 留痕：mark 未命中意味着该记录下一 tick 会被重捞，可能形成重复唤起
-                self.logger.warning(
-                    "admin_monitor",
-                    f"{stype}: mark_escalated 未命中记录 id={rec.get('id')}"
-                    f"（spec={spec}），该记录可能被反复摄取",
-                )
-            # fixture 项目抑制（alert-noise-governance 5.1）：记录已 mark
-            # escalated（消费掉「写入即待唤起」语义，防每轮重复摄取与重复
-            # INFO），但不创建 admin run；记录本身保留可查（5.2 不删除）。
+            # fixture 项目抑制（alert-noise-governance 5.1）：mark escalated
+            # （消费掉「写入即待唤起」语义，防每轮重复摄取与重复 INFO），
+            # 但不创建 admin run；记录本身保留可查（5.2 不删除）。
             if self._fixture_invocation_suppressed(signal):
+                marked = self.store.mark_escalated(rec.get("id"))
+                if not marked:
+                    # 留痕：mark 未命中意味着该记录下一 tick 会被重捞，可能形成重复唤起
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"{stype}: mark_escalated 未命中记录 id={rec.get('id')}"
+                        f"（spec={spec}），该记录可能被反复摄取",
+                    )
                 continue
             self.logger.warning(
                 "admin_monitor",
                 f"{stype}: invoking Administrator for '{spec}'",
                 {"signal": signal},
             )
-            self._invoke_administrator(signal, rec)
+            # code-review item 7bb7bdf118df：mark_escalated 挪到唤起返回之后。
+            # _invoke_administrator 在信号死法冷却 / 秒挂冷却 / 夜间断窗三条
+            # 跳过路径返回 False（实际未派发）——此时不消费「写入即待唤起」
+            # 语义，下一巡检周期该存储型信号可被重捞重评，跳过路径 skipped
+            # 处置文案所称「冷却到期/下一轮检测循环自然恢复」由此成真（与
+            # 上方在飞互斥守卫「源记录未消费，由摄取循环自然重评」同语义）。
+            # 返回 None（正常投递 / agent_runner 缺失升级 / 守卫拒写，均已
+            # 留痕）才 mark 核销——唤起过程异常由 _invoke_administrator 外层
+            # 通用兜底吞掉并返回 None，mark 照常，保持「异常中止不重复唤起」
+            # 的既有防重约定。
+            if self._invoke_administrator(signal, rec) is not False:
+                marked = self.store.mark_escalated(rec.get("id"))
+                if not marked:
+                    # 留痕：mark 未命中意味着该记录下一 tick 会被重捞，可能形成重复唤起
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"{stype}: mark_escalated 未命中记录 id={rec.get('id')}"
+                        f"（spec={spec}），该记录可能被反复摄取",
+                    )
         return signals
 
     def _make_signal(self, signal_type: str, spec, description: str, evidence) -> dict:
@@ -3849,7 +3866,14 @@ class AdminMonitor:
         if not escalating:
             return []
         # 记录指纹上次唤起时间戳（3.1「生命周期内用内存时间戳」）
+        # 先 pop 再重插（code-review item bb65224dd314）：对已存在 key 的就地
+        # 赋值不刷新插入位次，下方「超限淘汰最早一半」按插入序取队首，会把
+        # 近期仍在复现但早插入的活跃指纹先于久未唤起的陈旧指纹误淘——与
+        # 跨日记忆 _daemon_fp_last_failure 的同款修复（33042541a50c）保持
+        # 同口径：重插使插入序=最近唤起时刻序，淘汰对齐「最早」的真实语义
+        # （最近唤起时刻最旧）。
         for fp, *_ in escalating:
+            self._daemon_fp_escalated_at.pop(fp, None)
             self._daemon_fp_escalated_at[fp] = now
         # 容量上限（code-review item e6516ce88dc9）：与姊妹记忆
         # _daemon_fp_last_failure 同款封顶（DAEMON_ERROR_FP_MEMORY_LIMIT，超限
@@ -6049,6 +6073,11 @@ class AdminMonitor:
     def _detect_restart_failure(self, now: float):
         """restart_request 存在且过期 → 重启未完成 → 升级人工。
 
+        返回值约定（code-review item fc9bcd6de005）：恒返回 []——升级记录
+        直接经 store.append 落盘，不经 run_once 的信号汇总消费（唯一调用处
+        不接收返回值），与其他 _detect_* 的「返回信号 dict 列表交由 run_once
+        汇总派发」语义不同，勿据返回值做汇总或派发。
+
         admin 请求重启后由 supervisor 负责实际重启并清除 restart_request。
         若文件一直存在，说明 supervisor 未运行或重启失败，需人工介入。
         fix-supervisor-hosting-chain D5：recommended_action 按托管态分支——
@@ -6102,7 +6131,8 @@ class AdminMonitor:
                 "recommended_action": rec_action,
             }
         )
-        return ["restart_failed"]
+        # 恒返回 []（code-review item fc9bcd6de005，语义见 docstring 返回值约定）
+        return []
 
     def _dispatch_precheck_guards(self, signal: dict) -> tuple:
         """唤起前预判守卫判定单源（code-review item 052de970a16f）。
