@@ -126,12 +126,27 @@ class G2LegacyRegistryMixin:
         # 0d5c6c7e148e；临界区内只做字典读写，物理回收留锁外）。
         with self._spec_lock_th:
             rec = self._legacy.pop(spec_name, None)
-            if rec is not None and (
+            # 非 dict 记录守卫（code-review item 35dfd88369df，与
+            # _register_legacy_unlocked 16a559a09f44 / _reclaim_expired_legacy
+            # 873493c07398 的同表读取防御口径对齐）：isinstance 先行，异形
+            # 记录不进 rec.get 宽限期复核，落到下方锁外出口按无遗产返回。
+            if isinstance(rec, dict) and (
                 time.time() - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
             ):
                 self._legacy.setdefault(spec_name, rec)
                 rec = None
         if rec is None:
+            return None
+        if not isinstance(rec, dict):
+            # 异形记录出口（留痕移出锁外，同 register_legacy「锁内只做字典
+            # 读写」纪律）：pop 已把非 dict 记录清出册，与 docstring「内存态
+            # 遗产仍清除以放行后续逻辑」口径一致——按无遗产返回 None，不让
+            # rec.get 在后继 run 成功 merge 的关键路径上 AttributeError 穿出。
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy record for '{spec_name}' is not a dict "
+                f"({type(rec).__name__}) — treated as no legacy",
+            )
             return None
         self._active_reuse.pop(spec_name, None)
         self.logger.info(
@@ -436,14 +451,28 @@ class G2LegacyRegistryMixin:
         if wt is None:
             # 仅分支模式（fix-relint-redispatch-legacy，守卫/relint 打回）：成功收工
             # 后 worktree 已被 cleanup(success=True) 物理清理、仅分支留存完整已提交
-            # 成果——在既有分支上重建载体（checkout，impl- 前缀保持 implementer 通道
-            # 语义）认领同一分支，MUST NOT 从 main HEAD 起新分支（继承首轮已提交
-            # 工作）。仅在 path 为空时启用，worktree 模式语义不变；分支不可解析或
-            # 换壳失败 → fail-open 回退全新 create（遗产清除，防 sweeper 误豁免）。
+            # 成果——在既有分支上重建载体（checkout）认领同一分支，MUST NOT 从
+            # main HEAD 起新分支（继承首轮已提交工作）。仅在 path 为空时启用，
+            # worktree 模式语义不变；分支不可解析或换壳失败 → fail-open 回退
+            # 全新 create（遗产清除，防 sweeper 误豁免）。
             if not branch:
                 self._pop_legacy_if_current(spec_name, rec)
                 return None
-            wt_path = self.create_worktree_on_branch(spec_name, branch, prefix="impl")
+            # 载体前缀按遗产分支形状选（code-review item f73657828755，对齐
+            # shape.py 锚 2「create() 按 agent_type 定前缀（verifier →
+            # verify-、其余 → impl-），从无歧义」）：写死 impl- 会给 verifier
+            # 族仅分支遗产生成 impl- 目录名，目录锚失真为实现族，无
+            # spec_hint/分支锚语境的形状判定会误判家族。判定走 shape.py
+            # 结构消歧单源（入参与上方家族校验同款），形状不可辨维持 impl-
+            # （历史缺省）。
+            _rebuild_prefix = (
+                "verify"
+                if branch_shape_is_verifier(branch, "", spec_hint=spec_name)
+                else "impl"
+            )
+            wt_path = self.create_worktree_on_branch(
+                spec_name, branch, prefix=_rebuild_prefix,
+            )
             if wt_path is None:
                 self._pop_legacy_if_current(spec_name, rec)
                 self.logger.info(
@@ -632,16 +661,27 @@ class G2LegacyRegistryMixin:
         ]
         reclaimed: list = []
         for spec in expired:
-            rec = self._legacy.pop(spec, None)
+            # pop、宽限期复核与放回全程持 _spec_lock_th（对齐 consume_legacy
+            # 同款复核 0d5c6c7e148e 的持锁口径）：全程无锁时，pop 取到超期旧
+            # 记录进入物理回收的间隙内，同 spec 可能被并发 register_legacy
+            # 以相同 branch 覆盖登记（仅分支模式守卫拒绝重派可复用同一分支
+            # 名），回收序列 branch -D 会删掉新登记仍在宽限期内的同分支遗产。
+            # 临界区内只做字典读写（threading.Lock 非重入；唯一调用点
+            # stale_sweep.cleanup_stale_worktrees 不持本锁），物理回收照旧
+            # 留锁外。
+            with self._spec_lock_th:
+                rec = self._legacy.pop(spec, None)
+                # pop 后复核宽限期（code-review item 0d5c6c7e148e）：快照与
+                # pop 之间该 spec 可能被 register_legacy 覆盖登记（再次死亡，
+                # registered_at=now），pop 取出的是当前新记录；仍在宽限期内
+                # 则放回出册位并跳过本条，不提前回收新遗产。setdefault 而非
+                # 直接赋值，避免覆盖此间隙内更新的登记。
+                if rec is not None and (
+                    now - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
+                ):
+                    self._legacy.setdefault(spec, rec)
+                    rec = None
             if rec is None:
-                continue
-            # pop 后复核宽限期（code-review item 0d5c6c7e148e）：快照与 pop
-            # 之间该 spec 可能被 register_legacy 覆盖登记（再次死亡，
-            # registered_at=now），pop 取出的是当前新记录；仍在宽限期内则
-            # 放回出册位并跳过本条，不提前回收新遗产。setdefault 而非直接
-            # 赋值，避免覆盖此间隙内更新的登记。
-            if now - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS:
-                self._legacy.setdefault(spec, rec)
                 continue
             path = rec.get("path", "")
             branch = rec.get("branch", "")
