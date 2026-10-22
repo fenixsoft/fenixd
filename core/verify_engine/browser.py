@@ -297,6 +297,11 @@ class BrowserManager:
         # 独立 HTML 入口点支持
         self._use_verify_html: bool = False
 
+        # 截图文件名唯一后缀序号（code-review item c593862ba608）：
+        # 见 screenshot()——不同原始名经 safe_component 折叠为同一文件名时防
+        # 互相覆盖。
+        self._screenshot_seq = 0
+
         # （dialog 待摘一次性处理器亦记录在 page 对象属性
         # _fenix_pending_dialog_handler 上——并发场景共享本管理器，实例级
         # 单槽会摘错别的场景页面的处理器并让本页旧 mode 残留与新处理器同响
@@ -1656,7 +1661,17 @@ class BrowserManager:
         # path_safety.safe_component（含纯点 . / .. 归一，code-review item
         # 80d8ee05f07a），正常 kebab-case 命名不受影响
         safe_name = safe_component(str(name))
-        path = output_dir / f"{safe_name}.png"
+        # 唯一后缀（code-review item c593862ba608）：safe_component 把分隔符
+        # 与纯点成分统一折叠为下划线，不同原始名可净化出同一文件名（如
+        # 「x/../y」与「x_.._y」同为 x_.._y）→ 同目录后写截图覆盖先写截图、
+        # 报告证据丢失。附加实例内单调序号保证同一次运行内不重名（asyncio
+        # 单线程事件循环，取号两行间无 await，天然原子）；实例随 run 重建、
+        # 序号复位，保留「同槽位重跑覆盖旧证据」的既有语义。消费方（报告
+        # screenshots 列表等）一律使用本方法返回的 path，不按名字重建路径，
+        # 后缀对消费方透明；序号为纯数字，文件名字符集安全。
+        seq = self._screenshot_seq
+        self._screenshot_seq += 1
+        path = output_dir / f"{safe_name}_{seq}.png"
         await page.screenshot(path=str(path), full_page=False)
         from .screenshot_lab import classify_screenshot
 

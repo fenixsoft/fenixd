@@ -114,6 +114,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
         validate_scenario_dicts,
         prepare_scenarios_for_write,
     )
+    # code-review ef247f2792d2：verify-progress 目录解析收敛到
+    # verify_progress_dir 净化单源（延迟导入防环，与 judge_gate 先例同款），
+    # 病理 spec_name 时与冻结复用读点/裁决读点恒同源、不落到未净化目录。
+    from core.pm_engine.verification.report_gate import verify_progress_dir
 
     # code-review 3dd5194ce79b：pipeline 实例被 engine 跨 spec 串行复用，本函数
     # 是三个实例缓存（_last_freeze_rejected / _last_freeze_rejected_covers /
@@ -130,7 +134,7 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
     # _apply_interaction_contract，其入口另有同款清空）。
     pipeline._last_interaction_contract = None
 
-    verify_dir = pipeline._context.project_root / ".fenix" / "verify-progress" / spec_name
+    verify_dir = verify_progress_dir(pipeline, spec_name)
     scenarios_path = verify_dir / "test_scenarios.json"
     if not scenarios_path.exists():
         # planner 未产出场景文件属正常状态，debug 留痕即可（code-review
@@ -616,14 +620,11 @@ def _apply_interaction_contract(pipeline, spec_name: str) -> dict:
         load_planner_scenarios,
     )
     from core.verify_scenarios import load_scenario_set
+    from core.pm_engine.verification.report_gate import verify_progress_dir
 
     try:
         scenarios_path = (
-            pipeline._context.project_root
-            / ".fenix"
-            / "verify-progress"
-            / spec_name
-            / "test_scenarios.json"
+            verify_progress_dir(pipeline, spec_name) / "test_scenarios.json"
         )
         planner_scenarios = load_planner_scenarios(scenarios_path)
         if planner_scenarios is None:
@@ -872,13 +873,10 @@ def _run_scenario_static_check(pipeline, spec_name: str) -> None:
         scan_scenarios,
         write_findings,
     )
+    from core.pm_engine.verification.report_gate import verify_progress_dir
 
     scenarios_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "test_scenarios.json"
+        verify_progress_dir(pipeline, spec_name) / "test_scenarios.json"
     )
 
     def _scan():
@@ -946,13 +944,10 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
         start_fallback_valid,
         write_contract_findings,
     )
+    from core.pm_engine.verification.report_gate import verify_progress_dir
 
     scenarios_path = (
-        pipeline._context.project_root
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "test_scenarios.json"
+        verify_progress_dir(pipeline, spec_name) / "test_scenarios.json"
     )
 
     def _scan():

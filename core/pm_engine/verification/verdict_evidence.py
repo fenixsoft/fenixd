@@ -1410,7 +1410,7 @@ def _round_definition_fingerprints(pipeline, spec_name: str) -> dict:
         Path(pipeline._context.project_root)
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / _spec_dir_component(spec_name)
         / "test_scenarios.json"
     )
     try:

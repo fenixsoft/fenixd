@@ -73,14 +73,12 @@ DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
 
 # ── 同因重派熔断易变段剔除正则（fix-redispatch-loop-governance D3/D3.1）──
 # 归因文案指纹计算前的易变段剔除（见 PMEngine._redispatch_cause_fingerprint）：
-# 1. run_id 形态 impl-<spec>-<epoch>[-aN][-rN]（spec 名可含连字符，贪婪消费到
-#    尾部至少一个「-数字」段即 epoch，再可选 -aN/-rN 后缀）；
-# 2. 9 位以上数字（时间戳 / epoch / pid）；
-# 3. worktree 路径（…/.claude/worktrees/impl-… 形态）。
 # 1. run_id 形态（可选带 run=/run_id= 标签）impl-<spec>-<epoch>[-aN][-rN]
 #   （spec 名可含连字符，贪婪消费到尾部至少一个「-数字」段即 epoch，再可选
 #   -aN/-rN 后缀）；标签仅在接受显式分隔符（=_:\s 或空白）后消费，避免把
 #   「running」这类普通词吞掉（防归一化过度 → 不同因误判同因）。
+# 2. 9 位以上数字（时间戳 / epoch / pid）；
+# 3. worktree 路径（…/.claude/worktrees/impl-… 形态）。
 _REDISPATCH_RUN_ID_RE = re.compile(
     r"(?:(?:run|run_id)\s*[=_:\s-]+\s*)?impl-[A-Za-z0-9._-]+(?:-[0-9]+){1,}"
     r"(?:-[a-z][0-9]+)?(?:-r[0-9]+)?"
@@ -4189,6 +4187,22 @@ class PMEngine:
                             "——放弃 stuck implementing 恢复写，留待解冻后重评",
                         )
                         continue
+                    # 同一快照顺带复核 status（code-review item f89d7a5c9b7a，对齐
+                    # _on_spec_ready 收敛拦截 3281b7c66515 的 status+frozen 双查
+                    # 口径）：上方 fresh status 复核到此写之间隔着
+                    # _exempt_dead_run_budget 的锚点文件 I/O 与多条日志，窗口内
+                    # run 可能已合法收工完成 implementing→implemented 转移，盲写
+                    # 会把合法进度覆写回 ready 并清空 implementer_run/tester_run
+                    # 锚点、孤儿化 run 结果。状态已漂移即与冻结命中同样跳过本轮
+                    # 恢复写。
+                    if latest.get("status") != "implementing":
+                        self.logger.info(
+                            "pm_engine",
+                            f"auto-recovery 写盘前 status 复查：'{spec_name}' 状态已为 "
+                            f"'{latest.get('status')}'——放弃 stuck implementing "
+                            "恢复写，让位于在飞进度，留待下轮周期重评",
+                        )
+                        continue
                     self.state_machine.update_spec(
                         spec_name,
                         {
@@ -4302,6 +4316,21 @@ class PMEngine:
                             "pm_engine",
                             f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
                             "——放弃 stuck testing 恢复写，留待解冻后重评",
+                        )
+                        continue
+                    # 同一快照顺带复核 status（code-review item f89d7a5c9b7a，对齐
+                    # _on_spec_ready 收敛拦截 3281b7c66515 的 status+frozen 双查
+                    # 口径）：上方 fresh status 复核到此写之间隔着 fast-track
+                    # 分流判读、ocr 车道在飞判定等 I/O 与多条日志，窗口内
+                    # verifier 可能已竞争收工完成 testing→verified 转移，盲写会
+                    # 把合法进度覆写回 implemented 并清空 tester_run 锚点、孤儿
+                    # 化 run 结果。状态已漂移即与冻结命中同样跳过本轮恢复写。
+                    if latest.get("status") != "testing":
+                        self.logger.info(
+                            "pm_engine",
+                            f"auto-recovery 写盘前 status 复查：'{spec_name}' 状态已为 "
+                            f"'{latest.get('status')}'——放弃 stuck testing "
+                            "恢复写，让位于在飞进度，留待下轮周期重评",
                         )
                         continue
                     self.state_machine.update_spec(

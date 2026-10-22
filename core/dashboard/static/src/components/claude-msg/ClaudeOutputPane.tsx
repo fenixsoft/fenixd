@@ -25,6 +25,11 @@ interface ClaudeOutputPaneProps {
    * classify 原始串；SSE 增量路径已由 TERMINAL_EVENT_STATUS 转译为
    * interrupted）（供外层恢复输入与按钮状态） */
   onRunStatus?: (status: string) => void;
+  /** 零事件且未终态时的空态等待文案（code-review item 689f4805ae67）：本组件被
+   * SpecTimeline/RunRecordModal（普通 run 查看）与 AdminInvokeModal/AdminRunModal
+   * （admin 处置）多语境复用，文案不得写死 Administrator——默认中性表述，
+   * admin 语境调用方显式注入「Administrator 已唤起」 */
+  waitingText?: string;
 }
 
 // 对界去重共用核心（code-review item 6d06358498b2）：prepend/append 两镜像实现
@@ -172,6 +177,7 @@ export default function ClaudeOutputPane({
   tail = 300,
   onEventsCount,
   onRunStatus,
+  waitingText = 'run 进行中，等待输出…',
 }: ClaudeOutputPaneProps) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [totalEvents, setTotalEvents] = useState(0);
@@ -399,6 +405,10 @@ export default function ClaudeOutputPane({
       } catch {
         return;
       }
+      // 非 object 载荷守卫（code-review item 8e40f5d0564e，对齐 session_manager
+      // a1ad7f4c983b 修复口径）：合法 JSON 非 object（如字面 null 解析得 null）
+      // 直接丢弃，不在事件回调内抛 TypeError
+      if (!msg || typeof msg !== 'object') return;
 
       // 服务端在 hello 中分配连接 cid —— watch 注册必须用它，否则 _conns.get(cid)
       // 匹配不到连接、订阅静默失效（自造 cid 是无效的）
@@ -575,7 +585,7 @@ export default function ClaudeOutputPane({
       <div className="flex h-full flex-col items-center justify-center">
         {!isTerminalStatus && <Spin size="small" />}
         <Typography.Text type="secondary" style={{ marginTop: isTerminalStatus ? 0 : 12 }}>
-          {isTerminalStatus ? '该 run 无事件记录' : 'Administrator 已唤起，等待输出…'}
+          {isTerminalStatus ? '该 run 无事件记录' : waitingText}
         </Typography.Text>
       </div>
     );

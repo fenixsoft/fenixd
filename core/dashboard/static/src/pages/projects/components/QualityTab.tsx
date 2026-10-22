@@ -979,7 +979,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
             // await generateFixSpec 往返期间发生项目切换时，直呼本闭包捕获的旧
             // loader 会拿旧 project 重新请求并把旧项目条目写进新项目视图——此时
-            // seq 取到的仍是最新值，第 365 行守卫拦不住。
+            // seq 取到的仍是最新值，loadItems 的 seq 过期守卫拦不住。
             void loadItemsRef.current();
           } else {
             message.error(result.error || '生成失败');
@@ -1028,7 +1028,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 经 ref 取最新 loader（code-review item 31c9cfb5cb4e，同 75c98014e626）：
       // Promise.allSettled 期间发生项目切换时，直呼本闭包捕获的旧 loader 会拿
       // 旧 project 重新请求并把旧项目条目写进新项目视图——此时 seq 取到的仍
-      // 是最新值，第 365 行守卫拦不住。
+      // 是最新值，loadItems 的 seq 过期守卫拦不住。
       void loadItemsRef.current();
     } finally {
       setIgnorePending(false);

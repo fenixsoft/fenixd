@@ -393,13 +393,24 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         stop_drain.set()
         if drainer is not None:
             drainer.join(timeout=5)
+        # join 超时时收割线程可能仍停在 _copy_tail_snapshot 的整窗重写中
+        # （truncate(0) 后逐块覆写，窗口上限 OUTPUT_DISK_KEEP_BYTES，慢盘/
+        # 高负载下可超 5s）——此时回读伴生尾窗会与该重写并发，读到撕裂尾部。
+        # 放弃伴生路径（tail_stream/tail_start 均置 None），退化为直接回读主
+        # 文件尾部（语义与未收割一致；主文件侧与残余 ftruncate 并发至多短读，
+        # 不产生撕裂内容），与收割线程「起不来/中途异常均 fail-open 退化、不
+        # 干扰主流程」的既定纪律同口径；线程为 daemon，不再等待，随进程退出
+        # 回收。join 正常返回（含线程未启动）时行为与原先完全一致。
+        read_tail = drainer is None or not drainer.is_alive()
         out = _read_back_output(
-            out_file, tail_stream=out_tail,
-            tail_start=snapshots.get(out_file.fileno()),
+            out_file,
+            tail_stream=out_tail if read_tail else None,
+            tail_start=snapshots.get(out_file.fileno()) if read_tail else None,
         )
         err = _read_back_output(
-            err_file, tail_stream=err_tail,
-            tail_start=snapshots.get(err_file.fileno()),
+            err_file,
+            tail_stream=err_tail if read_tail else None,
+            tail_start=snapshots.get(err_file.fileno()) if read_tail else None,
         )
         return (None if timed_out else proc.returncode), out, err, timed_out
 

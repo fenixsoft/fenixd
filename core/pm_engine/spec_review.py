@@ -931,6 +931,38 @@ class SpecReviewManager:
 
     # ── 写入边界校验 ────────────────────────────────────────────
 
+    def _git_porcelain_lines(self) -> Optional[list]:
+        """运行 `git status --porcelain` 返回输出行列表，失败返回 None。
+
+        参数完全相同的 subprocess 调用（-C、core.quotePath=false、errors=replace、
+        timeout=10）与 except 元组此前在 _take_snapshot 与 _verify_snapshot 各复制
+        一份，调整超时或解码策略须两处同步修改（code-review item afe20e9488a4）
+        ——抽公共入口集中异常口径，防人肉同步漂移（同族先例
+        _load_snapshot_or_none）。
+
+        Returns:
+            行列表：git 退出码 0 时的 stdout 按行拆分；
+            None：非零退出码或 SubprocessError/OSError 失败（调用方按原口径
+            降级跳过，不作硬门）。
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
+                 "status", "--porcelain"],
+                capture_output=True,
+                # errors="replace"（code-review item 2e49d64043c9）：text=True
+                # 严格解码下非 UTF-8 文件名（core.quotePath=false 原样输出）抛
+                # UnicodeDecodeError（ValueError 族）逃出下方 except 元组——
+                # 有损替换解码即可（core/regression.py 加固先例同款）。
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            return result.stdout.splitlines()
+        except (subprocess.SubprocessError, OSError):
+            return None
+
     def _take_snapshot(self, spec_name: str) -> dict:
         """派发前对 SPEC 目录与工作区脏文件记录快照。
 
@@ -954,20 +986,9 @@ class SpecReviewManager:
                 except OSError:
                     pass
         # 记录工作区脏文件的内容哈希
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
-                 "status", "--porcelain"],
-                capture_output=True,
-                # errors="replace"（code-review item 2e49d64043c9）：text=True
-                # 严格解码下非 UTF-8 文件名（core.quotePath=false 原样输出）抛
-                # UnicodeDecodeError（ValueError 族）逃出下方 except 元组——
-                # 有损替换解码即可（core/regression.py 加固先例同款）。
-                text=True, encoding="utf-8", errors="replace",
-                timeout=10,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
+        lines = self._git_porcelain_lines()
+        if lines is not None:
+            for line in lines:
                     # 脏文件判定：porcelain 首两字符（index 列/工作区列）任一非
                     # 空格即脏——覆盖 ??、MM/AM/MT 组合态，及 index 列 D/R/C 的
                     # 暂存删除/重命名/拷贝（code-review item 0e6649a88334：旧判据
@@ -993,8 +1014,6 @@ class SpecReviewManager:
                             snapshot["dirty_files"][path] = h
                         except OSError:
                             pass
-        except (subprocess.SubprocessError, OSError):
-            pass
         return snapshot
 
     def _verify_snapshot(
@@ -1106,20 +1125,9 @@ class SpecReviewManager:
 
         # SPEC 目录外新增未跟踪文件：非归因（并发写者新建文件同样命中），仅留痕
         added_untracked = []
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(self.project_root), "-c", "core.quotePath=false",
-                 "status", "--porcelain"],
-                capture_output=True,
-                # errors="replace"（code-review item 2e49d64043c9）：text=True
-                # 严格解码下非 UTF-8 文件名（core.quotePath=false 原样输出）抛
-                # UnicodeDecodeError（ValueError 族）逃出下方 except 元组——
-                # 有损替换解码即可（core/regression.py 加固先例同款）。
-                text=True, encoding="utf-8", errors="replace",
-                timeout=10,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
+        lines = self._git_porcelain_lines()
+        if lines is not None:
+            for line in lines:
                     if line.startswith("??"):
                         path = _parse_porcelain_path(line)
                         if path is None:
@@ -1128,8 +1136,6 @@ class SpecReviewManager:
                             # 检查是否在快照中已存在
                             if path not in snapshot.get("dirty_files", {}):
                                 added_untracked.append(path)
-        except (subprocess.SubprocessError, OSError):
-            pass
         if added_untracked:
             self.logger.warning(
                 "spec_review",

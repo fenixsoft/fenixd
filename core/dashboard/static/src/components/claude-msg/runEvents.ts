@@ -18,7 +18,11 @@ import type { ChatMessage, ToolResult } from './types';
 // subtype 形态（system/init、system/status、system/task_started…）。分类判定先
 // 归一再查表——按顶层 type 直配会使整张名单失效。
 function normalizedKind(ev: RunEvent): string {
-  if (ev.type === 'system') return String(ev.subtype || '');
+  // subtype 缺失/空串时回退字面量 'system'：归一化空串既不命中静默名单与分类
+  // 分支，也过不了末尾 fail-open 的 if (kind) 判真，事件会被整体静默丢弃，违背
+  // design D1「system 形态未分类事件 MUST 显示归一化 kind」不变式
+  //（code-review item 6bce55dfed37）
+  if (ev.type === 'system') return String(ev.subtype || 'system');
   return String(ev.type || '');
 }
 

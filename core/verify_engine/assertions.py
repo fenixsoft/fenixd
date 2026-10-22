@@ -78,14 +78,22 @@ class AssertionRunner:
         而不是在方法体内抛 ValueError/TypeError 被 run() 包成缺 selector
         的「断言执行异常」。bool 须在 int() 前显式排除（bool 是 int 子类，
         先例 verify_contract._positive_int_or_default）：否则 count: true
-        之类 YAML 笔误会被静默折算成 1 按正常断言裁决。
+        之类 YAML 笔误会被静默折算成 1 按正常断言裁决。非整数值浮点
+        （如 2.5）会被 int() 静默截断，同样按 None 拒绝，不予截断放行。
         """
         if isinstance(value, bool):
             return None
         try:
-            return int(value)
+            result = int(value)
         except (TypeError, ValueError):
             return None
+        # 非整数值浮点（如 2.5）被 int() 截断后按截断值裁决，而字符串 "2.5"
+        # 走 int() 抛 ValueError 被确定性拒绝——同一非法语义两种处置
+        # （code-review item badad82d7719）。比照字符串口径返回 None，由各
+        # 调用方既有的非法参数失败路径透出；整数值浮点（300.0）不受影响。
+        if isinstance(value, float) and result != value:
+            return None
+        return result
 
     @staticmethod
     def _clamp_poll_params(timeout_ms: int, interval_ms: int):

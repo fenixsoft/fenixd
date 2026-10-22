@@ -320,6 +320,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
               project={project}
               onEventsCount={setEventCount}
               onRunStatus={handleRunStatus}
+              waitingText="Administrator 已唤起"
             />
           </div>
         )}

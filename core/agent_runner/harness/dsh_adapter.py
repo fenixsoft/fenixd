@@ -590,6 +590,17 @@ def _to_int(value: Any) -> int:
 
 # ── adapter 本体 ─────────────────────────────────────────────────────────
 
+# ── patch 登记表（模块级单例）────────────────────────────────────────────
+# _write_model_patch 的按龄回收登记表 (path, monotonic 创建时刻)。真源必须
+# 跨 adapter 实例存活：runner 每次 dispatch 经 resolve_adapter_from_config
+# 现读现配新建 DshAdapter（热更新语义），实例级登记表会随旧实例丢弃、旧
+# 实例登记的 patch 永远无人按龄回收（code-review 411ec95f99cb）。回收按龄
+# 不按槽（见 _write_model_patch docstring：单槽回收在多车道并发派发下会互
+# 踩刚写未读的 patch）；「筛存活→整表重赋→append」读改写序列无锁会互踩丢
+# 登记（登记丢失的 patch 失去按龄回收资格 → 泄漏）。
+_DSH_PATCH_FILES: List[Tuple[str, float]] = []
+_DSH_PATCH_FILES_LOCK = threading.Lock()
+
 
 @dataclass
 class DshAdapterConfig:
@@ -618,14 +629,13 @@ class DshAdapter:
 
     def __init__(self, config: Optional[DshAdapterConfig] = None) -> None:
         self._config = config or DshAdapterConfig()
-        # 本实例落盘的 patch 临时文件登记表 (path, monotonic 创建时刻)。
-        # 回收按龄不按槽（见 _write_model_patch docstring：单槽回收在全局
-        # adapter 单例 + 多车道并发派发下会互踩刚写未读的 patch）。
-        self._patch_files: List[Tuple[str, float]] = []
-        # 登记表读写锁：本 adapter 是全局单例 + 多车道并发派发，
-        # _write_model_patch 的「筛存活→整表重赋→append」读改写序列
-        # 无锁会互踩丢登记（登记丢失的 patch 失去按龄回收资格 → 泄漏）。
-        self._patch_files_lock = threading.Lock()
+        # patch 登记表与锁的真源是模块级单例（_DSH_PATCH_FILES /
+        # _DSH_PATCH_FILES_LOCK，定义见类上方），此处仅绑定为别名：runner
+        # 每次 dispatch 经 resolve_adapter_from_config 现读现配新建本类
+        # 实例（热更新语义），实例级登记表会随旧实例丢弃、其登记的 patch
+        # 永远无人按龄回收（code-review 411ec95f99cb）。
+        self._patch_files = _DSH_PATCH_FILES
+        self._patch_files_lock = _DSH_PATCH_FILES_LOCK
 
     # ── 协议成员 ─────────────────────────────────────────────────────
 
@@ -730,7 +740,9 @@ class DshAdapter:
                     os.unlink(path)
                 except OSError:
                     pass  # 已被系统 tmp 清理/进程重启，静默跳过
-            self._patch_files = survivors
+            # 切片原地赋值（非重绑）：实例属性是指向模块级单例的别名，
+            # 重绑会让本实例脱钩单例、后续 append 丢进孤儿列表。
+            self._patch_files[:] = survivors
         fh = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",

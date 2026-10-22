@@ -192,6 +192,19 @@ def find_affected_tests(
         for test_module in import_graph:
             if _is_executable_test_module(test_module) and test_module.startswith(scope_prefix):
                 affected.add(test_module)
+    # __init__.py 目标特判：包 __init__（core/__init__.py、tests/pkg/__init__.py）
+    # 归一后以 .__init__ 结尾（core.__init__），而导入图依赖边只有包（core）或
+    # 子模块（core.xxx）形态——末段 __init__ 永不出现在边上，三种匹配式对子模块
+    # 导入者恒不成立（改 core/__init__.py 实际作用于 import core 任意子模块的
+    # 全部测试，仅裸包导入可经 module.startswith(imp + '.') 偶合命中），典型
+    # 结果接近零命中后以「No tests affected」exit 0 收场（虚假绿色）。把导入链
+    # 匹配目标回退为父包名（core.__init__ → core），既有匹配式即可按前缀命中
+    # 全部导入者，命中集是原行为的超集；tests/ 下 __init__ 同样受益
+    # （tests.pkg.__init__ → tests.pkg）。目标自身的 self-inclusion 检查仍按
+    # 原模块名（tests/**/__init__.py 在图中是中转键，维持既有出口过滤口径）。
+    match_target = target_module
+    if match_target.endswith(".__init__"):
+        match_target = match_target[: -len(".__init__")]
     # 目标本身是被索引的模块（如直接编辑 tests/test_x.py 自身）时必然要跑
     # 自己：下方循环只按 imports 反查 importer，目标自身永不命中——否则改测试
     # 文件会零命中，以「No tests affected」exit 0 收场（虚假绿色）。graph 键即
@@ -199,7 +212,7 @@ def find_affected_tests(
     # 出口处再按可执行命名过滤），成员判断已含该口径。
     if target_module in import_graph:
         affected.add(target_module)
-    queue = [(target_module, 0)]
+    queue = [(match_target, 0)]
     visited = set()
 
     while queue:

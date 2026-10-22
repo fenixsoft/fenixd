@@ -72,7 +72,12 @@ export default function AdminRunModal({ project, spec, adminRunId, harness, open
         }}
       >
         <HarnessBrandProvider harness={harness}>
-          <ClaudeOutputPane runId={adminRunId} project={project} onEventsCount={setEventCount} />
+          <ClaudeOutputPane
+            runId={adminRunId}
+            project={project}
+            onEventsCount={setEventCount}
+            waitingText="Administrator 已唤起"
+          />
         </HarnessBrandProvider>
       </div>
     </Modal>
