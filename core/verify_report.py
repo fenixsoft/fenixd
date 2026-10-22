@@ -409,8 +409,10 @@ def _derive_status(run_result, report) -> str:
     同口径：语义错位/未收录取值若落到报告分支，会经「无法判定 → 默认
     verified」的宽松兜底为实际并非成功裁决的验证轮合成出 ✅ 通过报告，与
     结构化数据语义及模块 fail-closed 哲学相反。status 缺失/为空仍属「无
-    状态信息」（``_load_run_result`` 允许仅携带 bugs 的合法结果文件），交由
-    下方报告分支判定；报告分支对 failed/errors>0 的 summary 先做豁免轮形态
+    状态信息」（``_load_run_result`` 允许仅携带 bugs 的合法结果文件）：bugs
+    为空时交由下方报告分支判定，bugs 非空则由下方 fail-closed 收口直接判
+    bug-found（code-review eb521e1b2f62）；报告分支对 failed/errors>0 的
+    summary 先做豁免轮形态
     判定（``_failed_scenarios_all_exempt``），豁免轮合法保留失败计数而终局
     verified，与 ``render_verification_report`` 的「其余失败场景已豁免」
     count_note 同一形态（code-review item efb8b1419948）。
@@ -433,6 +435,18 @@ def _derive_status(run_result, report) -> str:
         # code-review 07a30ddd0bae：白名单外的非空未知取值 fail-closed，
         # 不再落报告分支经宽松兜底合成 verified 报告（取舍见 docstring）
         if status:
+            return "bug-found"
+        # code-review eb521e1b2f62：无 verification.verdict / status 等显式
+        # 裁决而 run-result 携带非空 bugs 列表（候选门
+        # _iter_run_result_candidates 明确放行的 bugs-only 合法形态）时，
+        # bugs 即 affirmative 失败证据，fail-closed 判 bug-found——否则
+        # report.json 缺失/不可解析时报告分支的场景计数兜底对空场景集推不
+        # 出 bug-found，末行兜底 return "verified" 合成 ✅ 通过报告，且
+        # bugs 被静默丢弃（bug 章节仅 status=bug-found 时渲染）。与同模块
+        # 03296ed3a49e/cbea2bb63e40/c0bc338cd2ea 对「假通过」形态的
+        # fail-closed 收口同口径。
+        raw_bugs = run_result.get("bugs")
+        if isinstance(raw_bugs, list) and raw_bugs:
             return "bug-found"
     if isinstance(report, dict):
         summary = report.get("summary")
