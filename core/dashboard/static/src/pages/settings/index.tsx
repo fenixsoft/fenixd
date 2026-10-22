@@ -403,7 +403,9 @@ export default function SettingsPage() {
                 {/* 配置状态提示 */}
                 {!config.raw_exists && (
                   <div style={{ marginBottom: 16, color: '#faad14' }}>
-                    项目尚无配置文件，表单为默认值
+                    {config.scope === 'project'
+                      ? '项目尚无配置文件，表单为默认值'
+                      : '用户级配置文件不存在，表单为默认值'}
                   </div>
                 )}
                 {config.error && (
