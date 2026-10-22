@@ -356,7 +356,15 @@ class ConfigLoader:
             if value == "dsh":
                 cls._warn_dsh_protocol_mismatch(config)
             return value
-        _logger.warning(
+        # 进程级一次性去重（code-review item 5298b3ca315e，同 _warn_reader_once
+        # 范式）：本函数经 resolve_adapter 在每次 agent spawn 与 Dashboard 设置页
+        # 回显被反复调用，坏值未修复期间同一告警逐次重复刷屏；键取
+        # (键路径, repr(值))，同一坏值只在首次告警；去重只作用于日志、回退缺省
+        # 行为不变。
+        cls._warn_reader_once(
+            "agent.harness",
+            raw,
+            _logger.warning,
             "agent.harness 配置值不支持：%r（合法值：%s）；回退缺省 %s",
             raw,
             "/".join(VALID_HARNESS_VALUES),
@@ -2042,10 +2050,43 @@ class ConfigLoader:
         if isinstance(shutdown_drain_raw, float) and not shutdown_drain_raw.is_integer():
             shutdown_drain_raw = 1800
 
+        # model 两键类型归一（code-review item b2110b91a910）：与上方 enabled
+        # （严格 bool）/ breaker、narrative_timeout（_normalize_int_value）的
+        # 严格归一口径对齐——YAML 手写真值非字符串形态（如 agent_model: 123 /
+        # 列表 / 布尔）此前经 `or None` 原样透传，直入模型链消费方
+        # （core/adjudication_narrative 直取 admin.agent_model）。仅非空白
+        # 字符串才透传，否则回 None；真值非法形态经 _warn_reader_once 留痕
+        # 一次（进程级去重，只作用于日志、回 None 行为不变），falsy 值
+        # （""/0/[]/None）既有 `or None` 语义本就归 None，静默不告警。
+        agent_model_raw = admin.get("agent_model")
+        if not (isinstance(agent_model_raw, str) and agent_model_raw.strip()):
+            if agent_model_raw:
+                cls._warn_reader_once(
+                    "admin.agent_model",
+                    agent_model_raw,
+                    _logger.warning,
+                    "admin.agent_model 配置值须为非空字符串，收到 %r；回退 None"
+                    "（回退链 agents.subagent_model → 框架默认）",
+                    agent_model_raw,
+                )
+            agent_model_raw = None
+        narrative_model_raw = admin.get("narrative_model")
+        if not (isinstance(narrative_model_raw, str) and narrative_model_raw.strip()):
+            if narrative_model_raw:
+                cls._warn_reader_once(
+                    "admin.narrative_model",
+                    narrative_model_raw,
+                    _logger.warning,
+                    "admin.narrative_model 配置值须为非空字符串，收到 %r；回退 None"
+                    "（回退链 admin.agent_model → 框架默认）",
+                    narrative_model_raw,
+                )
+            narrative_model_raw = None
+
         return {
             "enabled": enabled,
             "interval_minutes": _num(admin.get("interval_minutes"), 5.0, float),
-            "agent_model": admin.get("agent_model") or None,
+            "agent_model": agent_model_raw,
             "escalation_cooldown_minutes": _num(
                 admin.get("escalation_cooldown_minutes"), 60.0, float
             ),
@@ -2092,7 +2133,7 @@ class ConfigLoader:
             # 回退链 admin.agent_model → 框架默认）
             "narrative_enabled": narrative_enabled,
             "narrative_timeout_seconds": narrative_timeout,
-            "narrative_model": admin.get("narrative_model") or None,
+            "narrative_model": narrative_model_raw,
             # add-alert-self-heal-marking 3.2：瞬态告警自愈安静窗口（分钟，
             # 缺省 1440，脏值回退——见上方取值段）
             "self_heal_quiet_minutes": self_heal_quiet_minutes,
