@@ -261,7 +261,17 @@ def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tupl
                     "pm_engine",
                     f"停止旧静态服务实例 'main' 失败（不影响重建）: {stop_err}",
                 )
-        srv = StaticVerifyServer(root_dir)
+        # code-review 46f18dea34ee：构造抛 OSError（端口连续 EADDRINUSE、
+        # bind 权限异常等）时收口为 (False, False, err) 失败返回——与
+        # command 侧端口分配失败（36ef6311efcc）同口径走可达性 fail-fast/
+        # infra-retry 廉价重派通道，不炸穿阶段 2.5
+        try:
+            srv = StaticVerifyServer(root_dir)
+        except OSError as e:
+            pipeline._context.logger.warning(
+                "pm_engine", f"静态服务实例构造失败（主树）: {e}"
+            )
+            return False, False, f"静态实例启动失败: {e}"
         cache["main"] = srv
     return pipeline._finalize_static(srv, contract, scenarios_path, "主树")
 
@@ -332,10 +342,21 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
                 "pm_engine",
                 f"停止旧静态服务实例 '{spec_name}' 失败（不影响重建）: {stop_err}",
             )
+    # code-review 46f18dea34ee：构造抛 OSError（端口连续 EADDRINUSE、
+    # bind 权限异常等）时收口为 (False, False, err) 失败返回——与
+    # command 侧端口分配失败（36ef6311efcc）同口径走可达性 fail-fast/
+    # infra-retry 廉价重派通道，不炸穿阶段 2.5
+    try:
+        srv = StaticVerifyServer(root_dir)
+    except OSError as e:
+        pipeline._context.logger.warning(
+            "pm_engine", f"静态服务实例构造失败 '{spec_name}': {e}"
+        )
+        return False, False, f"静态实例启动失败: {e}"
     # serve_root 补存供复用门比对 verify.yaml serve 段改动
     # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重建）
     cache[spec_name] = {
-        "server": StaticVerifyServer(root_dir),
+        "server": srv,
         "wt_path": wt,
         "head": head,
         "mode": "static",
@@ -498,6 +519,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
                     "pm_engine",
                     f"停止旧 serving 实例 '{spec_name}' 失败（不影响失败返回）: {stop_err}",
                 )
+            # code-review 5761d716adce：清退完成即驱逐缓存条目（对齐
+            # _ensure_serving_worktree e96dc4a61601 口径），缓存不再滞留
+            # 指向已 stop 旧实例的死条目
+            cache.pop(spec_name, None)
         return False, False, f"验证命令实例启动失败: {e}"
     srv = CommandVerifyServer(
         proc,
@@ -535,6 +560,10 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
                     "pm_engine",
                     f"停止旧 serving 实例 '{spec_name}' 失败（不影响失败返回）: {stop_err}",
                 )
+            # code-review 5761d716adce：清退完成即驱逐缓存条目（对齐
+            # _ensure_serving_worktree e96dc4a61601 口径），缓存不再滞留
+            # 指向已 stop 旧实例的死条目
+            cache.pop(spec_name, None)
         return (
             False,
             False,
@@ -1735,8 +1764,10 @@ def _open_boot_log(pipeline, spec_name: str):
 def _read_boot_log_tail(pipeline, spec_name: str, handle) -> str:
     """读 boot.log 尾部 ≤2KB 附入探活失败错误串（design D3）。
 
-    句柄关闭前调用以 flush 子进程残留输出；读失败/空文件返回空串
-    （不因取证自身异常改动错误判定）。
+    尽力而为读取（best-effort 取证）：stdout=boot_log 形态下子进程经
+    继承 fd 直写文件，输出不经父进程文件对象的用户态缓冲，flush 不
+    改变子进程侧缓冲——子进程自身缓冲未刷时尾部可能缺最后几行。
+    读失败/空文件返回空串（不因取证自身异常改动错误判定）。
     """
     try:
         handle.flush()
