@@ -130,7 +130,8 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
     """聚合读取某次 review run 的全部产物行（add-code-review-sharded-out D2）。
 
     迭代顺序：分片（``shard_paths`` N 升序）→ 主产物 ``out-<run_id>.jsonl``。
-    逐行 json.loads，空行/不可解析行/非 dict 行过滤；同 ``file`` 多行保留
+    逐行 json.loads，空行/不可解析行/非 dict 行/顶层 dict 缺 ``file``
+    字段行过滤（缺字段行 WARNING 留痕后跳过）；同 ``file`` 多行保留
     **先见者**（分片是原始产出，主产物是汇总兜底——提示词已约束主 agent
     不重写分片批次，去重是机械兜底）。三消费侧（read_progress / 收尾
     ingest / 产物硬门）MUST 统一经本函数取行，禁止自写读取口径。
@@ -155,7 +156,7 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
                 except Exception:  # noqa: BLE001 — 回调异常不影响读取主流程
                     pass
             continue
-        for line in text.splitlines():
+        for lineno, line in enumerate(text.splitlines(), 1):
             line = line.strip()
             if not line:
                 continue
@@ -166,7 +167,13 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
             if not isinstance(rec, dict):
                 continue
             file_ = str(rec.get("file") or "")
-            if not file_ or file_ in seen_files:
+            if not file_:
+                _logger.warning(
+                    "code_review: %s 第 %s 行为 JSON 对象但缺 file 字段，已跳过",
+                    src, lineno,
+                )
+                continue
+            if file_ in seen_files:
                 continue
             seen_files.add(file_)
             rows.append(rec)
