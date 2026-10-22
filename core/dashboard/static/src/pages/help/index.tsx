@@ -30,6 +30,11 @@ const SafeLinkComp = SafeLink as ComponentType<AnchorHTMLAttributes<HTMLAnchorEl
 
 const DEFAULT_DOC = 'README.md';
 
+// remarkPlugins 提为模块级常量（code-review item e80d92a09a0e）：内联数组每次渲染
+// 新建引用会让 react-markdown 对整篇文档重新 parse（移动端开合目录抽屉、isMobile
+// 变化等重渲染均触发），比照 activities 页 ACTIVITY_REMARK_PLUGINS 模式复用同一引用
+const HELP_REMARK_PLUGINS = [remarkGfm];
+
 function getDocFromUrl(): string {
   try {
     const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
@@ -504,7 +509,7 @@ export default function HelpPage() {
     // 「文档内容为空」空态或上一篇的陈旧内容（docData.name 由后端原样回显请求名）
     if (!docData || docData.name !== currentDoc) return <Skeleton active paragraph={{ rows: 8 }} />;
     return (
-      <Markdown remarkPlugins={[remarkGfm]} components={helpComponents}>
+      <Markdown remarkPlugins={HELP_REMARK_PLUGINS} components={helpComponents}>
         {docData.content || ''}
       </Markdown>
     );
