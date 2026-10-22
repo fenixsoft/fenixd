@@ -110,6 +110,9 @@ export const commandMenuDomIds = (prefix: string) => {
     listbox: `${sanitized}-command-menu-listbox`,
     option: (commandIndex: number) =>
       `${sanitized}-command-menu-opt-${commandIndex}`,
+    // 分组标题 id 同经 sanitize（code-review item c974d76c9c5d）：与
+    // listbox/option 同口径，前缀不得裸用 useId 原文（含 «» 等非法字符）。
+    group: (namespace: string) => `${sanitized}-group-${namespace}`,
   };
 };
 
@@ -346,14 +349,12 @@ export default function CommandMenu({
           className="command-group"
           role="group"
           aria-labelledby={
-            orderedNamespaces.length > 1
-              ? `${idPrefix ?? autoIdPrefix}-group-${namespace}`
-              : undefined
+            orderedNamespaces.length > 1 ? menuIds.group(namespace) : undefined
           }
         >
           {orderedNamespaces.length > 1 && (
             <div
-              id={`${idPrefix ?? autoIdPrefix}-group-${namespace}`}
+              id={menuIds.group(namespace)}
               className="flex items-center justify-between px-2 pb-1.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
             >
               <span>{namespaceLabels[namespace] || namespace}</span>
