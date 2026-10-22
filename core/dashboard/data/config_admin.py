@@ -353,10 +353,17 @@ def _managed_key_sources(raw: dict) -> dict:
     if isinstance(agents_raw, dict):
         if isinstance(agents_raw.get("models"), dict):
             sources["agents.models"] = "project"
+        # code-review item 0a9ded5f9c32：改按 _is_int_not_bool 合法值判定
+        # （读侧 _echo_agents_int_keys 同谓词；对齐 gates 四键 e81d0bce264c
+        # 口径——存在性判定会把手工脏值标成 project，而读侧回显已回退缺省，
+        # 徽标与展示值互相矛盾）
         for _ak in _AGENTS_SOURCE_KEYS:
-            if _ak in agents_raw:
+            if _is_int_not_bool(agents_raw.get(_ak)):
                 sources[f"agents.{_ak}"] = "project"
         # fix-provider-transient-backoff（D6）：瞬断治理五键显式定义 → project
+        # code-review item 0a9ded5f9c32：同上改按类型合法值判定（与
+        # ConfigLoader.get_transient_config 归一化/写侧前置校验同口径：
+        # schedule 为 str、四数值键为非负数），脏值读侧回退缺省不标 project
         for _tk in (
             "transient_backoff_schedule",
             "transient_redispatch_delay_seconds",
@@ -364,7 +371,13 @@ def _managed_key_sources(raw: dict) -> dict:
             "transient_break_window_seconds",
             "transient_break_cooldown_seconds",
         ):
-            if _tk in agents_raw:
+            _tv = agents_raw.get(_tk)
+            if _tv is None:
+                continue
+            if _tk == "transient_backoff_schedule":
+                if isinstance(_tv, str):
+                    sources[f"agents.{_tk}"] = "project"
+            elif isinstance(_tv, (int, float)) and not isinstance(_tv, bool) and _tv >= 0:
                 sources[f"agents.{_tk}"] = "project"
         # supervision-timeout-config-consistency：超时监督段显式定义 → project
         # （映射段，isinstance 判定对齐 agents.models 同款）
@@ -1478,8 +1491,10 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 
     Args:
         scope_root: 项目根路径（scope="project" 时使用；scope="user" 忽略）
-        config_patch: 含 llm / agents.models / gates.approve_mode /
-            gates.start_after_scope 的 patch dict
+        config_patch: 受管键 patch dict——受管键集的权威来源是 _SOURCE_KEYS 与
+            _SYNC_PAGE_KEYS（见各自注释锚点），经 _deep_merge_managed 显式
+            合并分支白名单写回，覆盖范围以这两处单源为准，不在本行枚举
+            （枚举会随受管键扩充过时，误导维护者低估写入面）
         scope: "user" 写 ~/.fenix/config.yaml（自动建目录）；"project" 写项目文件
 
     Returns: {"ok": bool, "error": str|null, "scope": "user"|"project", "path": str}
@@ -2773,6 +2788,11 @@ def _pred_start_after_scope(v) -> bool:
 # 拒绝（不剔除、不假成功）。agents.models 与 admin.code_review /
 # admin.code_review_fix 不在表内：非 dict 已由 write_config 的「must be an
 # object」前置守卫直接拒绝，无需本函数重复预检。
+# code-review item 6061a7c0b966：错误消息串改引 ConfigLoader.VALID_* 单源
+# 生成（与 write_config 主路径同写法），须在表定义时求值——core.config 不
+# 反向依赖 dashboard，此处模块级 import 无环；_pred_* 延迟 import 形态不变。
+from core.config import ConfigLoader
+
 _SYNC_PAGE_APPLY_PREDICATES = {
     "verify": {
         "static_scope": (
@@ -2894,25 +2914,28 @@ _SYNC_PAGE_APPLY_PREDICATES = {
     # 「synced 与实际落盘不一致」假成功的残余面）。谓词与 write_config 前置
     # 枚举同口径（None 即拒绝）。
     "gates": {
+        # code-review item 6061a7c0b966：四条消息串统一改引上方 ConfigLoader
+        # VALID_* 单源 f-string 生成（与 write_config 主路径同写法），杜绝
+        # 枚举扩充时谓词先行生效、文案先漂移
         "promote_mode": (
             _pred_promote_mode,
-            "must be one of ['auto', 'manual']",
+            f"must be one of {ConfigLoader.VALID_PROMOTE_MODES}",
         ),
         "approve_mode": (
             _pred_approve_mode,
-            "must be one of ['manual', 'auto']",
+            f"must be one of {ConfigLoader.VALID_APPROVE_MODES}",
         ),
         "spec_review_mode": (
             # code-review item 7ed7a7eef548：lambda 硬编码改命名谓词引
             # ConfigLoader.VALID_SPEC_REVIEW_MODES 单源（对齐上方 approve_mode/
             # promote_mode 的 _pred_* 写法），杜绝枚举扩充时硬编码处先漂移
             _pred_spec_review_mode,
-            "must be one of ['auto', 'never']",
+            f"must be one of {ConfigLoader.VALID_SPEC_REVIEW_MODES}",
         ),
         "start_after_scope": (
             # code-review item 7ed7a7eef548：同上改引 VALID_START_AFTER_SCOPES
             _pred_start_after_scope,
-            "must be one of ['full', 'dispatch']",
+            f"must be one of {ConfigLoader.VALID_START_AFTER_SCOPES}",
         ),
     },
 }
