@@ -924,7 +924,7 @@ class EventBus:
             fail_backoff = 2.0
             time.sleep(2)  # Poll every 2 seconds
 
-    def _periodic_scan_loop(self, interval_minutes: int):
+    def _periodic_scan_loop(self, interval_minutes: float):
         """Periodic full scan as fallback. 每轮热读 poll_interval（配置热更新生效）。"""
         while self._running:
             # 非数值/非有限脏值统一回退缺省 30.0（code-review items
