@@ -1977,14 +1977,26 @@ def _deferred_entry_alive(entry) -> bool:
     空 tip_sha（登记时 ``_worktree_head`` 瞬时失败所致）不直接判死：现场
     补解析 HEAD，能解析即视为存活（merge_back 不依赖记账的 tip_sha），
     否则带修复提交的存活 worktree 会被误判死移出台账且无人清理。
+
+    HEAD 判据不可得 ≠ 确认漂移/死亡（code-review item 355aaf54226a）：git
+    超时/OSError/非零退出时 ``_worktree_head`` 返回空串，与 tip_sha 比对必
+    不等——会把瞬时故障窗口内带修复提交的有效条目误判死，reclaim 与
+    _retry_one_deferred 随即移出台账并清理在盘现场。空串只说明「此刻解析
+    不到 HEAD」，保守按存活保留条目待下一链边界重试（同
+    ``_worktree_commit_count`` 侧 e992bc1af898/b0c5cf011d29 口径）；仅
+    HEAD 可解析且与 tip_sha 不等才确认漂移判死。
     """
     wt = Path(str(entry.get("worktree") or ""))
     tip_sha = str(entry.get("tip_sha") or "")
     if not wt.name or not wt.exists():
         return False
+    head = _worktree_head(wt)
+    # 判据不可得：空串不构成 HEAD 证据，保守存活（详见上方 docstring）。
+    if not head:
+        return True
     if not tip_sha:
-        return bool(_worktree_head(wt))
-    return _worktree_head(wt) == tip_sha
+        return True
+    return head == tip_sha
 
 
 def reclaim_deferred_batches(project_root) -> int:
@@ -6438,6 +6450,9 @@ class CodeFixOrchestrator:
             anomaly_streak = 0
             anomaly_rounds: list[str] = []
             breaker_triggered = False
+            # 首轮熔断标记（code-review item 5706217c6a9d）：True = 收口块
+            # 面对的 reg 已在循环顶部 ① 提取落盘，复用 ① 结果不再重提取。
+            first_round_ingested = False
             for attempt in range(1, retry_max + 1):
                 # ① 失败明细提取 + 合并 + 落盘（1.1/1.2/2.3）：本轮注入的
                 # reg 为上一轮回归结果；映射失败（非 pytest 形态、classname
@@ -6471,6 +6486,10 @@ class CodeFixOrchestrator:
                         # 不再烧第二轮全量回归。
                         breaker_triggered = True
                         exhausted = True
+                        # 首轮明细已在循环顶部 ① 提取落盘（code-review item
+                        # 5706217c6a9d）：标记收口块复用 ① 的结果，不再对同
+                        # 一 reg 重复提取重写明细文件。
+                        first_round_ingested = True
                         self._log(
                             "warning",
                             f"code-fix 第 {batch_no} 批回归异常熔断触发"
@@ -6601,12 +6620,21 @@ class CodeFixOrchestrator:
             else:
                 exhausted = True
             if exhausted:
-                # 最后一轮（耗尽轮）的回归失败明细补落盘（1.1：每个定向轮
-                # 回归非 passed 时各落一份——循环顶部的提取点覆盖不到它），
-                # 随后该轮明细引用随现场即弃入失败档案。最终轮明细同时是
-                # reg_form 判定源（零失败面=anomaly，有真实失败面=mapped）。
-                final_fail_items, _, detail_rel, _ = _ingest_failure_round(
-                    root, reg, cumulative, wt)
+                if first_round_ingested:
+                    # 首轮熔断（attempt==1 分支 break）收口：reg 即循环顶部
+                    # ① 刚提取过的同一首轮回归（code-review item
+                    # 5706217c6a9d）——重提取只会原样重写同 run_id 明细文件
+                    # （仅 created_at 变化）并对 cumulative 重复合并（去重
+                    # 幂等），直接复用 ① 的提取与落盘结果。
+                    final_fail_items, detail_rel = fail_items, last_detail_ref
+                else:
+                    # 最后一轮（耗尽轮）的回归失败明细补落盘（1.1：每个定
+                    # 向轮回归非 passed 时各落一份——循环顶部的提取点覆盖
+                    # 不到它），随后该轮明细引用随现场即弃入失败档案。最终
+                    # 轮明细同时是 reg_form 判定源（零失败面=anomaly，有真
+                    # 实失败面=mapped）。
+                    final_fail_items, _, detail_rel, _ = _ingest_failure_round(
+                        root, reg, cumulative, wt)
                 if detail_rel:
                     last_detail_ref = detail_rel
                 # 耗尽 targeted_retry_max 轮仍失败 → 现场即弃（selfheal D2
