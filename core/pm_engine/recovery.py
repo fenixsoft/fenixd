@@ -604,8 +604,10 @@ class RecoveryWatch:
             try:
                 fresh = self._pm.state_machine.read_one(spec_name) or {}
                 reread_exc = None
-            except Exception as reread_exc:
+            except Exception as _reread_err:
+                # except ... as 名字在块尾被隐式删除，须转存才能在块外引用
                 fresh = {}
+                reread_exc = _reread_err
             # 第 3 层「已有活跃派发」须**重新探测**（code-review item 838ada899c96）：
             # 旧实现复用 `active_dispatch`——它在上方计算，且控制流能到达此处
             # 意味着 2.1 已返回（`status ∈ RECOVERY_PROGRESS_STATUSES or
