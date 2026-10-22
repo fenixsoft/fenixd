@@ -12,7 +12,8 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     _is_running, USER_CONFIG_PATH,
     archive_spec_runs   (spec_archive.py，显式 D8 注释),
     spec_summary        (summary.py),
-    parse_verify_progress (spec_docs.py),
+    parse_verify_progress (core/signals.py 定义，经 artifacts.py re-export；
+                           summary.py 经门面解析),
     classify_run        (runs.py，tasks.py 经门面解析),
     parse_quality_gates (quality_gates.py，summary.py 经门面消费),
     find_implementer_worktree (tasks.py，quality_gates.py 经门面解析),

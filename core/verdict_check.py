@@ -890,6 +890,13 @@ def exempted_assertions(report: dict) -> List[dict]:
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
+        # 豁免只针对失败场景：pass 场景残留的 assertion_triage 与 pass 状态
+        # 自相矛盾（enforce_status_mapping 容忍该残留不强改，item
+        # 5f76fe78291f），不渲染进「断言级豁免清单」；"pass"/"passed" 双词表，
+        # 与 enforce_status_mapping / should_suppress_bug_found 跳过口径一致
+        # （code-review item eec1909bfac2）。
+        if sc.get("status") in ("pass", "passed"):
+            continue
         sid = str(sc.get("scenario_id") or sc.get("id") or "-")
         for t in triage_entries(sc):
             cls = t.get("classification")

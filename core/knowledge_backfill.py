@@ -1474,7 +1474,17 @@ def _clean_untracked_knowledge(project_root: Path, log) -> None:
             f"请人工核查：{str(exc)[:200]}",
         )
         return
-    if dry.returncode == 0 and dry.stdout.strip():
+    if dry.returncode != 0:
+        # 干跑命令自身失败（仓库状态异常等）：删除清单同样不可知，与上方
+        # OSError/TimeoutExpired 分支同口径——WARNING 留痕并跳过实际清理，
+        # 避免形成无枚举留痕的破坏性删除窗口（code-review b9ffe3df4075）
+        log.warning(
+            "knowledge",
+            f"回填自举清理干跑失败（fail-open，exit={dry.returncode}），"
+            f"跳过未跟踪残留清场，请人工核查：{dry.stderr.strip()[:200]}",
+        )
+        return
+    if dry.stdout.strip():
         log.warning(
             "knowledge",
             "回填自举清理将删除 spec/knowledge/ 下未跟踪内容（不可从 git 找回，"
@@ -1840,8 +1850,25 @@ def run_backfill(
                     "reason": "bootstrap-prune-invalid",
                     "violations": prune_violations[:10],
                 }
+            # pathspec 收窄为相对 dirty_baseline 差集内实际触达的文件
+            # （code-review 28ef98d99462，对齐 knowledge_audit 5e5e4ea03d8c
+            # 收窄口径）：整目录 pathspec 会把 run 前已在场的用户未提交改动
+            # 一并扫进 backfill 提交，溯源归属失真。
+            dirty_now = _knowledge_dirty_files_or_none(project_root)
             try:
-                commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill bootstrap")
+                if dirty_now is None:
+                    # 现状采集失败时触达集不可知：按提交失败同口径 fail-open，
+                    # 不以整目录 pathspec 兜底扫走用户未提交改动
+                    raise RuntimeError(
+                        "提交前脏文件现状采集失败（git status 不可用/超时）"
+                    )
+                touched = sorted(dirty_now - dirty_baseline)
+                if touched:
+                    commit(
+                        project_root,
+                        touched,
+                        "[fenix] knowledge: backfill bootstrap",
+                    )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
                 _append_todo_fail_open(
                     project_root, f"回填自举提交失败（{run_id}）：{e}", log
@@ -1990,8 +2017,24 @@ def run_backfill(
                     "reason": "prehistoric-invalid",
                     "violations": violations[:10],
                 }
+            # pathspec 收窄为相对 dirty_baseline 差集内实际触达的文件
+            # （code-review 28ef98d99462，同自举段口径）：整目录 pathspec 会把
+            # run 前已在场的用户未提交改动一并扫进 backfill 提交。
+            dirty_now = _knowledge_dirty_files_or_none(project_root)
             try:
-                commit(project_root, [KNOWLEDGE_DIR], "[fenix] knowledge: backfill prehistoric")
+                if dirty_now is None:
+                    # 同自举段口径：现状采集失败按提交失败 fail-open，不整目录
+                    # 兜底扫走用户未提交改动
+                    raise RuntimeError(
+                        "提交前脏文件现状采集失败（git status 不可用/超时）"
+                    )
+                touched = sorted(dirty_now - dirty_baseline)
+                if touched:
+                    commit(
+                        project_root,
+                        touched,
+                        "[fenix] knowledge: backfill prehistoric",
+                    )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
                 _append_todo_fail_open(
                     project_root, f"回填史前复原提交失败（{run_id}）：{e}", log
@@ -2016,10 +2059,15 @@ def run_backfill(
     total = len(batches)
     ok_batches: list[int] = []
     failed_batches: list[dict] = []
-    # 提交失败但内容有效、尚未落库的台账键（fail-open 遗留）：任一批次提交
-    # 成功即被 pathspec 扫入落库并清空；遇到回滚/收尾仍未落库则打回 pending，
-    # 保证台账不虚报已完成（code-review 3fd930cb6bbd）。
+    # 提交失败但内容有效、尚未落库的台账键（fail-open 遗留）：提交 pathspec
+    # 收窄为本批触达文件后（code-review 28ef98d99462），前序失败批次产出不再
+    # 被整目录 pathspec 被动扫入，改由 carryover_files 显式并入下一笔成功
+    # 提交后一并清空；遇到回滚/收尾仍未落库则打回 pending，保证台账不虚报
+    # 已完成（code-review 3fd930cb6bbd）。
     uncommitted_keys: set[str] = set()
+    # 提交失败批次已过校验产出的 relpath 遗留集：只含本车道产出（用户未提交
+    # 改动不在其中），并入后续批次的触达集提交落库，成功即清空。
+    carryover_files: set[str] = set()
     for i, batch in enumerate(batches, 1):
         # 写段取蒸馏锁：spawn→校验→提交/回滚作为整体与 DistillManager 串行，
         # 防两车道并发写 spec/knowledge/（code-review 2443e98dc1f0）
@@ -2072,18 +2120,37 @@ def run_backfill(
                 ok, violations = False, [f"run 派发/执行失败：{e}"]
             if ok:
                 # 校验通过即落库；提交失败 fail-open 记日志（内容已在盘上，
-                # 后续批次的 pathspec 提交会自然扫入）
+                # 触达集记入 carryover_files，由后续批次成功提交显式扫入落库）。
+                # pathspec 收窄为本批相对 dirty_baseline 触达的文件
+                # （code-review 28ef98d99462，对齐 knowledge_audit 5e5e4ea03d8c
+                # 收窄口径）：整目录 pathspec 会把 run 前已在场的用户未提交
+                # 改动一并扫进 backfill 提交，溯源归属失真。
+                dirty_now = _knowledge_dirty_files_or_none(project_root)
+                batch_touched = (
+                    sorted((dirty_now - dirty_baseline) | (carryover_files & dirty_now))
+                    if dirty_now is not None
+                    else []
+                )
                 try:
-                    commit(
-                        project_root,
-                        [KNOWLEDGE_DIR],
-                        f"[fenix] knowledge: backfill batch {i}/{total}",
-                    )
+                    if dirty_now is None:
+                        # 现状采集失败时触达集不可知：按提交失败同口径
+                        # fail-open，不以整目录 pathspec 兜底扫走用户未提交改动
+                        raise RuntimeError(
+                            "提交前脏文件现状采集失败（git status 不可用/超时）"
+                        )
+                    if batch_touched:
+                        commit(
+                            project_root,
+                            batch_touched,
+                            f"[fenix] knowledge: backfill batch {i}/{total}",
+                        )
                 except Exception as e:  # noqa: BLE001
                     log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
                     uncommitted_keys.update(CAPABILITY_PREFIX + cap for cap in batch)
+                    carryover_files.update(batch_touched)
                 else:
                     uncommitted_keys.clear()
+                    carryover_files.clear()
                 # 回填在飞期间新登记的归档（register_archive_pending 在派发
                 # 漏斗进程并发改盘台账）可能触碰本批能力：车道入口一次性构建
                 # 的 chain_index 不含其 delta，此处若照常标 distilled，台账按
@@ -2221,17 +2288,35 @@ def run_backfill(
             except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
                 ok, violations = False, [f"run 派发/执行失败：{e}"]
             if ok:
+                # pathspec 收窄为本批相对 dirty_baseline 触达的文件（同能力
+                # 批次口径，code-review 28ef98d99462）；前序失败批次产出经
+                # carryover_files 并入本笔提交，落库保证不变。
+                dirty_now = _knowledge_dirty_files_or_none(project_root)
+                batch_touched = (
+                    sorted((dirty_now - dirty_baseline) | (carryover_files & dirty_now))
+                    if dirty_now is not None
+                    else []
+                )
                 try:
-                    commit(
-                        project_root,
-                        [KNOWLEDGE_DIR],
-                        f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
-                    )
+                    if dirty_now is None:
+                        # 同能力批次口径：现状采集失败按提交失败 fail-open，
+                        # 不以整目录 pathspec 兜底扫走用户未提交改动
+                        raise RuntimeError(
+                            "提交前脏文件现状采集失败（git status 不可用/超时）"
+                        )
+                    if batch_touched:
+                        commit(
+                            project_root,
+                            batch_touched,
+                            f"[fenix] knowledge: backfill adr batch {i}/{adr_total}",
+                        )
                 except Exception as e:  # noqa: BLE001
                     log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
                     uncommitted_keys.update(ADR_PREFIX + a for a in batch)
+                    carryover_files.update(batch_touched)
                 else:
                     uncommitted_keys.clear()
+                    carryover_files.clear()
                 for a in batch:
                     ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
                 adr_ok += 1

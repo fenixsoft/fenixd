@@ -482,6 +482,18 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         run_ok=success,
         provider_name=provider_name,
     )
+    # code-review item e3a860c68d6a：escalate/family_waiver 布尔位走类型
+    # 归一助手（与 result 硬门同思路）——LLM 误写成字符串 "false" 时
+    # bool() 非空串恒 True，升级与豁免位语义反转。
+    _log = getattr(runner, "logger", None)
+    escalate = _coerce_admin_disposition_bool(
+        disp.get("escalate", False), "escalate", _log,
+        f"Administrator run {run_id} 处置记录 {disp_path.name}",
+    )
+    family_waiver = _coerce_admin_disposition_bool(
+        disp.get("family_waiver", False), "family_waiver", _log,
+        f"Administrator run {run_id} 处置记录 {disp_path.name}",
+    )
     return AdminDisposition(
         run_id=run_id,
         spec=disp.get("spec") or spec,
@@ -489,12 +501,12 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         problem=disp.get("problem") or admin_signal.get("description", ""),
         actions_taken=disp.get("actions_taken") or "",
         result=disp.get("result") or ("resolved" if success else "failed"),
-        escalate=bool(disp.get("escalate", False)),
+        escalate=escalate,
         recommended_action=disp.get("recommended_action") or "",
         summary=disp.get("summary") or "",
         error=error,
         output=output,
-        family_waiver=bool(disp.get("family_waiver", False)),
+        family_waiver=family_waiver,
         failure_evidence=failure_evidence,
         # add-human-adjudication-choices 4.2：处置记录结构化裁决字段透传
         # （缺省空串兼容无键的存量处置记录）
@@ -557,6 +569,32 @@ def _read_admin_disposition(disp_path: Path) -> dict:
     elif not isinstance(sm, str):
         data["summary"] = str(sm)
     return data
+
+
+def _coerce_admin_disposition_bool(value, field: str, log=None, ctx: str = "") -> bool:
+    """admin 处置记录布尔字段类型归一（code-review item e3a860c68d6a）。
+
+    处置文件由 LLM 按 prompt 写入，escalate/family_waiver 误写成字符串时
+    ``bool("false")`` 非空串恒为 True，升级与豁免位语义反转（family_waiver
+    消费侧据此给父 SPEC 开派生豁免口，方向 fail-open）。归一口径：仅接受
+    Python 布尔；字符串去空白小写后为 "true"/"false" 时显式归一；其余非
+    布尔值记 WARNING 按 False 处理（fail-closed）。两个布尔位共用本助手。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    if log is not None:
+        log.warning(
+            "agent_runner",
+            f"{ctx} {field} 非布尔（{value!r}），按 False 处理",
+            {"field": field, "raw_value": repr(value)},
+        )
+    return False
 
 
 # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
@@ -1554,6 +1592,11 @@ def _archive_failed_evolution_out(out_path: Path) -> str | None:
     ``<原路径>.failed`` 同目录保留供逐条归因回查（run_id 每轮递增不碰撞）；
     改名后 ``_delete_evolution_out`` 对原路径 missing_ok 幂等安全。改名失败
     （OSError）返回 None——留档尽力而为非正确性依赖，不阻塞部分接受收尾。
+
+    留档策略（code-review item be38b1552d12）：框架侧对 ``.failed`` 留档
+    无自动清理与保留期，每次部分接受永久新增一个文件、随时间累积——留由
+    外部运维按需清理（``_TOKEN_RUNS_MAX_ENTRIES`` 滚动窗口仅覆盖 token
+    归账文件，不及于此）。
 
     Returns:
         留档后的路径字符串；改名失败返回 None。
@@ -3820,11 +3863,14 @@ def run_impl_ocr(
                     raise
             try:
                 try:
-                    _proc_out, _proc_err = proc.communicate(
-                        timeout=ConfigLoader.get_impl_code_review_lane_timeout_sec(
-                            runner.config
-                        )
+                    # code-review item 1c7c7ca67dc1：硬超时阈值一次读取入局部
+                    # 变量，communicate 与超时文案共用同一值——runner.config
+                    # 可被 Dashboard 运行时改写，超时命中后二次重读会让
+                    # unavailable 产物报告的阈值与实际执行的窗口不一致，误导归因。
+                    lane_timeout = ConfigLoader.get_impl_code_review_lane_timeout_sec(
+                        runner.config
                     )
+                    _proc_out, _proc_err = proc.communicate(timeout=lane_timeout)
                     timed_out = False
                 except subprocess.TimeoutExpired:
                     # 车道硬超时：对齐 subprocess.run 语义（进程组清场+reap 后
@@ -3855,9 +3901,8 @@ def run_impl_ocr(
                 _stop_impl_ocr_heartbeat(*heartbeat)
 
             if timed_out:
-                lane_timeout = ConfigLoader.get_impl_code_review_lane_timeout_sec(
-                    runner.config
-                )
+                # code-review item 1c7c7ca67dc1：复用 communicate 处一次读取的
+                # lane_timeout，不再二次重读配置（保证产物记录与实际执行一致）。
                 artifact["reason"] = (
                     f"车道硬超时（>{lane_timeout}s，verify."
                     f"impl_code_review_lane_timeout_sec）"

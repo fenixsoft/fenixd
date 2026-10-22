@@ -35,6 +35,7 @@ from typing import Callable, Optional
 
 from core.config import ConfigLoader
 from core.knowledge_backfill import (
+    _knowledge_dirty_files_or_none,
     append_todo_line,
     atomic_write_text,
     # re-export：本文件虽未直接调用，但测试替身与外部调用方以
@@ -791,7 +792,8 @@ def _collect_pages(
 
     unreadable 为可选出参：单页读取失败（扫描后盘面已变抛 OSError）时登记
     「盘面已变转待人工」明细并跳过该页，不让单文件故障穿出 run_audit 令
-    整轮体检反复失败（对齐 _apply_mechanical 的防护口径）。
+    整轮体检反复失败（对齐 _apply_mechanical 的防护口径）；domains 目录
+    列举失败同样登记明细，按仅剩导航页候选降级（code-review 0b0c225e965a）。
     """
     kdir = Path(project_root) / KNOWLEDGE_DIR
     pages: list[dict] = []
@@ -800,7 +802,18 @@ def _collect_pages(
     candidates = [kdir / "index.md"]
     dom = kdir / "domains"
     if dom.is_dir():
-        candidates.extend(p for p in sorted(dom.rglob("*.md")))
+        try:
+            candidates.extend(sorted(dom.rglob("*.md")))
+        except OSError:
+            # domains 目录在盘但不可读（权限/EIO）：fail-open 跳过域能力页收集
+            # 并登记 unreadable 转待人工，不让 OSError 穿出 _scan_pages 令整轮
+            # 体检反复失败（code-review 0b0c225e965a，口径对齐
+            # knowledge_backfill.build_chain_index 的目录列举失败防护）。
+            if unreadable is not None:
+                unreadable.append(
+                    f"{dom}：目录列举失败（目录在盘但不可读），"
+                    "域能力页本轮体检跳过转待人工"
+                )
     for path in candidates:
         if not path.is_file():
             continue
@@ -835,9 +848,21 @@ def _parse_marker(text: str) -> Optional[dict]:
     return fields if fields else None
 
 
-def _existing_archives(project_root: Path) -> set[str]:
+def _existing_archives(project_root: Path) -> Optional[set[str]]:
+    """spec/archive 在盘归档的基名集合；目录在盘但不可读（权限/EIO）时返回
+    None（code-review 0b0c225e965a）：fail-open 不让 OSError 穿出 _scan_pages /
+    _apply_mechanical 令整轮体检反复失败，同时不可按空集降级——空集会把存量
+    合法归档引用全部误判悬空，触发 _apply_mechanical 成批机械删行；调用方按
+    「判定基准不可得」跳过悬空类扫描/自修并转待人工（口径对齐
+    knowledge_backfill.build_chain_index 的目录列举失败防护）。
+    """
     adir = Path(project_root) / "spec" / "archive"
-    return {p.name for p in adir.iterdir() if p.is_dir()} if adir.is_dir() else set()
+    if not adir.is_dir():
+        return set()
+    try:
+        return {p.name for p in adir.iterdir() if p.is_dir()}
+    except OSError:
+        return None
 
 
 def _source_base(src: str) -> str:
@@ -870,6 +895,13 @@ def _scan_pages(project_root: Path) -> dict:
     unreadable: list[str] = []  # 报告：单页读取失败（盘面已变），转待人工
     pages = _collect_pages(project_root, unreadable)
     archives = _existing_archives(project_root)
+    if archives is None:
+        # 归档目录列举失败（fail-open 降级，见 _existing_archives）：登记
+        # unreadable 转待人工，悬空溯源检测本轮整体跳过，防误判成批删行。
+        unreadable.append(
+            "spec/archive：归档目录列举失败（目录在盘但不可读），"
+            "悬空溯源扫描本轮跳过转待人工"
+        )
     dangling_pages: list[dict] = []  # 机械：页 rel → 待删行/待删 sources
     dangling_suspect: list[str] = []  # 报告：带尾缀（句点/.md）疑似悬空引用，不机械删行
     overcap: list[dict] = []  # 报告：超 150 行
@@ -887,7 +919,7 @@ def _scan_pages(project_root: Path) -> dict:
         # 悬空溯源：marker sources + 正文 spec/archive 引用
         drop_lines: list[int] = []
         missing_sources: list[str] = []
-        if marker and marker.get("sources"):
+        if marker and marker.get("sources") and archives is not None:
             names = [s for s in re.split(r"[,，]", marker["sources"]) if s]
             if (marker.get("origin") or "archive") == "prehistoric":
                 # 史前页 sources 是 git 区间锚点（origin=prehistoric，core.knowledge
@@ -918,6 +950,10 @@ def _scan_pages(project_root: Path) -> dict:
             )
         for i, ln in enumerate(lines):
             if i in marker_lines:
+                continue
+            if archives is None:
+                # 归档目录不可读（见上方 fail-open 降级）：正文归档引用的悬空
+                # 判定基准不可得，本轮跳过，防误判成批删行。
                 continue
             for m in _ARCHIVE_REF_RE.finditer(ln):
                 name = m.group(1).strip("\"'`")
@@ -1207,8 +1243,16 @@ def _apply_mechanical(
     manual: list[str] = []
     rewritten: set[str] = set()
     cats = {"dangling": 0, "format": 0, "adr": 0}
+    if archives is None:
+        # 归档目录列举失败（fail-open 降级，见 _existing_archives）：悬空溯源
+        # 判定基准不可得，本段机械自修整体跳过转待人工，防误判成批删行。
+        manual.append(
+            "spec/archive：归档目录列举失败（目录在盘但不可读），"
+            "悬空溯源机械自修本轮跳过转待人工"
+        )
+    dangling_items = scan["dangling"] if archives is not None else []
     # [fenix-ignore:9c26e33a4a68] 病灶快照已在 run_audit 蒸馏锁内采集，扫描与删行同临界区，并发蒸馏 run 无法在两者之间插写错位行号。
-    for item in scan["dangling"]:
+    for item in dangling_items:
         # 页文件在扫描快照后被外部删除/权限变化（锁外人工与 git 操作不受蒸馏
         # 锁约束）时 read_text 抛 OSError 穿出 run_audit，整轮体检中止、日戳不
         # 落盘、后续每个检查点重复失败。读不到按「盘面已变、转待人工」计入
@@ -1642,7 +1686,19 @@ def run_audit(
             # 提交/回滚纪律以 spec/knowledge/ 的 git dirty 状态为唯一依据；
             # carryover 是本轮开始前已存在的未提交改动（如机械段提交失败遗留的
             # 已验证产出），失败回滚只作用于本轮新触达的文件。
-            carryover = knowledge_dirty_files(project_root)
+            carryover = _knowledge_dirty_files_or_none(project_root)
+            if carryover is None:
+                # git 状态采集失败（code-review 909237f50444）：回滚基线不可得，
+                # 若按空集继续，失败回滚会把进锁前已存在的未提交改动当本 run
+                # 产出连带清除。跳过本轮转写，条目保持 suspected 等下轮复核
+                # （升级轮次照常入账，连续无确定性判定照常升级）。
+                counts["pending_manual"] += 1
+                details["manual"].append(
+                    f"{finding['kind']}（{pages[0]} × {pages[1]}）：git 状态采集失败，"
+                    "本轮转写跳过，保持 suspected 待下轮复核"
+                )
+                _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
+                continue
             # 违规基线进锁后、spawn 前采集（与机械段 before_violations 同款口径）：
             # 失败回滚只在「相对本基线的新发违规」时才连带回滚 carryover，真相源
             # 里与 carryover 无关的既有违规（marker 缺失等报告类病灶）不拦。
@@ -1681,7 +1737,21 @@ def run_audit(
                 )
             except Exception as e:  # noqa: BLE001 - 单个转写失败不阻塞其余
                 ok, violations = False, [f"转写 run 失败：{e}"]
-            dirty_now = knowledge_dirty_files(project_root)
+            dirty_now = _knowledge_dirty_files_or_none(project_root)
+            if dirty_now is None:
+                # git 状态采集失败（code-review 909237f50444）：无法区分「确无
+                # 改动」与「采集失败」——按空集继续会把 run 实际已改写误判为
+                # 判无矛盾，并以改写后页面现文固化 page_hashes 豁免键，盘上矛盾
+                # 规则行从此逃脱复核。跳过判定入账（不写 page_hashes），条目保持
+                # suspected 等下轮复核；本 run 已验证产出留工作区，由收尾
+                # leftover 曝光。
+                counts["pending_manual"] += 1
+                details["manual"].append(
+                    f"{finding['kind']}（{pages[0]} × {pages[1]}）：git 状态采集失败，"
+                    "无法判定改写结果，保持 suspected 待下轮复核"
+                )
+                _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
+                continue
             # 本 run 新触达的文件（2.3 快照滞后去重的「已纠偏」判定基准）：carryover
             # 是本轮开始前已存在的未提交改动，不是本 run 的产出，既不能当作该疑点的
             # 「重写」证据，也不能据此把涉及页标记为本批已纠偏。

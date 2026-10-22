@@ -306,7 +306,7 @@ class AdminStore:
         return recs, False
 
     def _quarantine_corrupt(self, path: Path) -> bool:
-        """把损坏的告警文件改名 ``<name>.corrupt-<ts>`` 留底，返回是否成功。
+        """把损坏的告警文件改名 ``<name>.corrupt-<ts>`` 留底；恒返回 True，表示损坏语义成立（后续写回受下限保护拒绝）。
 
         读损坏的取证保留：改名后返回空集合，且不覆盖损坏证据（后续写回受
         ``_mutate`` 下限保护拒绝）。改名失败（OSError，权限/硬件异常）仍返回

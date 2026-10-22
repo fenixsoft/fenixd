@@ -120,6 +120,9 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     Returns:
         {"found", "running", "archived": bool, "archive_path": str|null,
          "error": str|null, "pending": list|null, "stopped": int|null}
+        仅 ``archived=True`` 的路径（成功 / 部分完成）附加：
+        ``committed``（bool，归档自动提交是否成功）；提交失败时另有
+        ``commit_warning``（str，告警文案，无告警不带该键）。
     """
     from core.agent_runner.liveness import AGENT_TERMINATE_GRACE_SECONDS
     # SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS 已在模块顶层导入（测试可 patch 覆盖）

@@ -394,7 +394,7 @@ class QQQueueMixin:
         if entry_to_dispatch is not None:
             # 去重：回滚闸门在锁外判定，窗口内其他线程可能已 _enqueue 同
             # (spec, agent) 条目（此刻队列已无被 pop 条目，其去重落空）——
-            # 先摘除同键条目再插回队首，与 _enqueue/_enqueue_front 的
+            # 先摘除同键条目再插回同档队首，与 _enqueue/_enqueue_front 的
             # 「按 (spec, type) 去重，无双派」契约一致
             # （code-review item 862c77bb4acf）。
             self._run_queue = [
@@ -402,7 +402,11 @@ class QQQueueMixin:
                 if not (e[1] == entry_to_dispatch[1]
                         and e[2] == entry_to_dispatch[2])
             ]
-            self._run_queue.insert(0, entry_to_dispatch)
+            # code-review item 335bc27adb77：原 insert(0, ...) 是整条队列绝对
+            # 队首，同档内存在更早入队条目时二次扫描按队头顺序会命中回滚
+            # 条目、颠倒同档 FCFS——对齐 _enqueue_front 的档首插入语义，
+            # 插回同优先级档首。
+            self._insert_at_bucket_front(entry_to_dispatch)
         self._active_runs -= 1
         cnt = self._active_priority_counts.get(base_prio, 0) - 1
         if cnt <= 0:
@@ -410,6 +414,25 @@ class QQQueueMixin:
             self._active_priorities.discard(base_prio)
         else:
             self._active_priority_counts[base_prio] = cnt
+
+    def _insert_at_bucket_front(self, entry):
+        """把条目插入 _run_queue 同优先级档的最前面（调用方须持 _queue_lock）。
+
+        _enqueue_front 与 _rollback_dispatch_slot 共享的档首定位单一落点
+        （code-review item 335bc27adb77：回滚重入队此前是 insert(0, ...) 绝对
+        队首，与队首重入队路径的档内顺序语义漂移，统一为同款档首插入）。
+        """
+        priority = entry[0]
+        # 插入到同优先级档的最前面（保持同一档内的顺序）：落在同档队首/
+        # 更高档之前（code-review item 80516624eaa2：原 ==/＞ 两分支动作
+        # 逐字相同，合并为一个 >= 判断，语义不变）。
+        insert_idx = 0
+        for i, e in enumerate(self._run_queue):
+            if e[0] >= priority:
+                insert_idx = i
+                break
+            insert_idx = i + 1
+        self._run_queue.insert(insert_idx, entry)
 
     def _enqueue(self, spec_name: str, agent_type: str):
         """Add a run request to the queue (thread-safe).
@@ -482,15 +505,9 @@ class QQQueueMixin:
                 e for e in self._run_queue if not (e[1] == spec_name and e[2] == agent_type)
             ]
             # 插入到同优先级档的最前面（保持同一档内的顺序）：落在同档队首/
-            # 更高档之前（code-review item 80516624eaa2：原 ==/＞ 两分支动作
-            # 逐字相同，合并为一个 >= 判断，语义不变）。
-            insert_idx = 0
-            for i, e in enumerate(self._run_queue):
-                if e[0] >= priority:
-                    insert_idx = i
-                    break
-                insert_idx = i + 1
-            self._run_queue.insert(insert_idx, entry)
+            # 更高档之前。档首定位与 _rollback_dispatch_slot 共享单一落点
+            # （code-review item 335bc27adb77）。
+            self._insert_at_bucket_front(entry)
             self._pm.logger.debug(
                 "pm_engine", f"Queued at front of P{priority}: {spec_name} ({agent_type})"
             )

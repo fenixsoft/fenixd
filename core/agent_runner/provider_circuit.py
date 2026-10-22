@@ -905,6 +905,12 @@ class ProviderCircuit:
                     fv = float(raw_warn)
                 except (TypeError, ValueError):
                     fv = None
+                except OverflowError:
+                    # 超大 int 前置排除（code-review item 413cec9ddf39，补
+                    # 7ff98f1589cd 只堵 .inf 字面量的缺口）：float 对数百位超大
+                    # int 抛 OverflowError 不在原 except 族内。归一为 inf 并入
+                    # 下方非有限值分支按畸形回缺省，不落入 else 的 int() 转换。
+                    fv = float("inf")
                 if fv is not None and (fv != fv or fv in (float("inf"), float("-inf"))):
                     warn = PROVIDER_DAILY_ATTEMPTS_WARN
                 else:
@@ -1365,7 +1371,10 @@ class ProviderCircuit:
             return float(default)
         try:
             v = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError（code-review item 413cec9ddf39）：float 对数百位超大
+            # int 会抛 OverflowError，与下方 NaN/inf 同族按畸形回缺省，不在
+            # except 族内会让失败路径以未捕获异常中断。
             return float(default)
         if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
             return float(default)
@@ -2172,6 +2181,12 @@ class ProviderCircuit:
             fv = float(raw)
         except (TypeError, ValueError):
             fv = None
+        except OverflowError:
+            # 超大 int 前置排除（code-review item 413cec9ddf39）：float 对数百位
+            # 超大 int 抛 OverflowError 不在原 except 族内；超出 float 有限范围
+            # 与 inf 同族，按畸形回缺省（不可落下方 int() 转换——int(超大 int)
+            # 合法，会把天文数字当合法配置收下）。
+            return default
         if fv is not None and (fv != fv or fv in (float("inf"), float("-inf"))):
             return default
         try:
@@ -2307,7 +2322,10 @@ class ProviderCircuit:
             return float(default)
         try:
             v = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError（code-review item 413cec9ddf39）：float 对数百位超大
+            # int 会抛 OverflowError，与下方 NaN/inf 同族按畸形回缺省，不在
+            # except 族内会让失败路径以未捕获异常中断。
             return float(default)
         if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
             return float(default)

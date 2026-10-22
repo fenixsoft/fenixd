@@ -821,13 +821,19 @@ class PromptBuilder:
         duck-typing：当前 adapter 暴露 harness_notes() 即注入其产物（dsh=
         headless 行为模型）；claude adapter 无该方法 → 回落 CLAUDE_HARNESS_
         NOTES 原文（快照零差异）。装配点未注入 adapter 时 get_current_adapter
-        惰性回落 claude，同现状。
+        惰性回落 claude，同现状。注入调用自身抛错 → 记 WARNING 并回落同一
+        常量（code-review item 2ae5222f3421，fail-open 不阻断 prompt 构建）。
         """
         from core.agent_runner.harness import get_current_adapter
 
         notes_fn = getattr(get_current_adapter(), "harness_notes", None)
         if notes_fn is not None:
-            return notes_fn()
+            try:
+                return notes_fn()
+            except Exception as exc:  # noqa: BLE001 — prompt 软约束 fail-open（与本文件 schema/freeze/evidence/selfcheck 段同族）：adapter 注入值抛错仅记 WARNING 并回落 claude 原文，不阻断 prompt 构建/派发（code-review item 2ae5222f3421）
+                _logger.warning(
+                    "harness_notes() 注入失败，回落 CLAUDE_HARNESS_NOTES：%r",
+                    exc)
         return CLAUDE_HARNESS_NOTES
 
     def _noninteractive_contract_section(self) -> str:

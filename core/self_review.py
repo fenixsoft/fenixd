@@ -41,7 +41,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.config import ConfigLoader, SELF_REVIEW_DEFAULT_RUN_AT
 from core.timelib import from_epoch, now_local, now_utc, parse_ts, to_storage
@@ -1217,6 +1217,61 @@ def _scan_run_midflight(path, max_lines: int = MIDFLIGHT_SCAN_MAX_LINES) -> Dict
     }
 
 
+def _bounded_per_run_scan(
+    items: Iterable[Any],
+    path_of: Callable[[Any], Optional[Path]],
+    scan_fn: Callable[[Path], Dict[str, Any]],
+    build_result: Callable[[Any, Dict[str, Any]], Optional[Dict[str, Any]]],
+    warning_text: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> List[Dict[str, Any]]:
+    """逐 run 有界扫描共享编排（深扫与 API 停滞聚合同款口径的单点实现）。
+
+    逐 item：``path_of`` 取产物路径（None 跳过）→ stat 复核（不可读跳过）
+    → 窗口归属复核（run_id 内嵌时间戳优先、缺失回退 mtime）→ ``scan_fn``
+    有界扫描 → ``build_result`` 出结果行（None 不列）。结果保持迭代序。
+
+    降级留痕（两侧既有口径收敛于此，code-review item f916cc5a50d6）：单
+    run 扫描异常先登记不阻断其余 run——部分失败逐 run ``warning_text``
+    warning 留痕并跳过失败 run；全部 run 扫描失败属采样整体故障（如
+    latency 采样函数损坏），上抛首个异常交由调用方既有降级契约「异常降级
+    空产出 + warning」留痕——降级必须可观测。
+    """
+    results: List[Dict[str, Any]] = []
+    scan_failures: List[Tuple[str, Exception]] = []
+    scanned = 0
+    for item in items:
+        p = path_of(item)
+        if p is None:
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue  # 产物已清理/不可读 → 该 run 跳过
+        start_ts = _run_start_ts(p.stem)
+        ts = start_ts if start_ts is not None else int(stat.st_mtime)
+        if not _in_window(from_epoch(ts), window_start, window_end):
+            continue
+        scanned += 1
+        try:
+            scan = scan_fn(p)
+        except Exception as e:
+            # 先登记不阻断其余 run（部分失败仅留痕；全失败在循环后升级）
+            scan_failures.append((p.stem, e))
+            continue
+        res = build_result(item, scan)
+        if res is not None:
+            results.append(res)
+    if scan_failures:
+        if scanned and len(scan_failures) == scanned:
+            # 采样整体故障（零成功）：升级上抛，随外层降级契约留 warning
+            raise scan_failures[0][1]
+        for run_id, err in scan_failures:  # 部分失败：逐 run warning 留痕
+            _logger.warning(warning_text, run_id, err)
+    return results
+
+
 def _collect_midflight_scans(
     project_root,
     outliers,
@@ -1244,49 +1299,28 @@ def _collect_midflight_scans(
     """
     if window_end is None:
         window_end = now_utc()
-    results: List[Dict[str, Any]] = []
-    scan_failures: List[Tuple[str, Exception]] = []
-    scanned = 0
-    for o in outliers or []:
+
+    def _path_of(o):
         path = o.get("path")
-        if not path:
-            continue
-        p = Path(path)
-        try:
-            stat = p.stat()
-        except OSError:
-            continue  # 产物已清理/不可读 → 该 run 空产出跳过
-        start_ts = _run_start_ts(p.stem)
-        ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(from_epoch(ts), window_start, window_end):
-            continue
-        scanned += 1
-        try:
-            scan = _scan_run_midflight(p)
-        except Exception as e:
-            # 先登记不阻断其余 run（部分失败仅留痕；全失败在循环后升级）
-            scan_failures.append((p.stem, e))
-            continue
-        results.append(
-            {
-                "run_id": o.get("run_id"),
-                "agent_type": o.get("agent_type"),
-                "terminal": o.get("terminal"),
-                "outliers": o.get("outliers") or {},
-                **scan,
-            }
-        )
-    if scan_failures:
-        if scanned and len(scan_failures) == scanned:
-            # 采样整体故障（零成功）：升级上抛，随外层降级契约留 warning
-            raise scan_failures[0][1]
-        for run_id, err in scan_failures:  # 部分失败：逐 run warning 留痕
-            _logger.warning(
-                "self_review: 深扫单 run 异常（跳过该 run） run_id=%s error=%s",
-                run_id,
-                err,
-            )
-    return results
+        return Path(path) if path else None
+
+    # 逐 run 有界扫描编排收敛于 _bounded_per_run_scan（code-review item
+    # f916cc5a50d6）：stat 复核→窗口归属→深扫→失败升级口径单点维护。
+    return _bounded_per_run_scan(
+        outliers or [],
+        _path_of,
+        _scan_run_midflight,
+        lambda o, scan: {
+            "run_id": o.get("run_id"),
+            "agent_type": o.get("agent_type"),
+            "terminal": o.get("terminal"),
+            "outliers": o.get("outliers") or {},
+            **scan,
+        },
+        "self_review: 深扫单 run 异常（跳过该 run） run_id=%s error=%s",
+        window_start,
+        window_end,
+    )
 
 
 def _scan_run_stall_totals(
@@ -1373,42 +1407,29 @@ def _collect_api_stall_aggregates(
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return []
-    results: List[Dict[str, Any]] = []
-    scan_failures: List[Tuple[str, Exception]] = []
-    scanned = 0
-    for p in sorted(_collect_run_files(runs_dir), key=lambda p: p.stem):
-        if p.stem.startswith("review-"):
-            continue  # 自省 run 不审视自身（对齐 _iter_window_runs 口径）
-        try:
-            stat = p.stat()
-        except OSError:
-            continue  # 产物已清理/不可读 → 该 run 跳过
-        start_ts = _run_start_ts(p.stem)
-        ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(from_epoch(ts), window_start, window_end):
-            continue
-        scanned += 1
-        try:
-            scan = _scan_run_stall_totals(p)
-        except Exception as e:
-            # 先登记不阻断其余 run（部分失败仅留痕；全失败在循环后升级）
-            scan_failures.append((p.stem, e))
-            continue
+
+    def _build_result(p, scan):
         if scan["stalls"] <= 0:
-            continue  # stalls=0 不列
-        results.append({"run_id": p.stem, **scan})
-    if scan_failures:
-        if scanned and len(scan_failures) == scanned:
-            # 采样整体故障（零成功）：升级上抛，随外层降级契约留 warning
-            raise scan_failures[0][1]
-        for run_id, err in scan_failures:  # 部分失败：逐 run warning 留痕
-            _logger.warning(
-                "self_review: API 停滞聚合单 run 扫描异常（跳过该 run）"
-                " run_id=%s error=%s",
-                run_id,
-                err,
-            )
-    return results
+            return None  # stalls=0 不列
+        return {"run_id": p.stem, **scan}
+
+    # 自省 run 不审视自身（对齐 _iter_window_runs 口径）——迭代前过滤；
+    # 逐 run 有界扫描编排收敛于 _bounded_per_run_scan（code-review item
+    # f916cc5a50d6），stat 复核→窗口归属→扫描→失败升级口径单点维护。
+    return _bounded_per_run_scan(
+        (
+            p
+            for p in sorted(_collect_run_files(runs_dir), key=lambda p: p.stem)
+            if not p.stem.startswith("review-")
+        ),
+        lambda p: p,
+        _scan_run_stall_totals,
+        _build_result,
+        "self_review: API 停滞聚合单 run 扫描异常（跳过该 run）"
+        " run_id=%s error=%s",
+        window_start,
+        window_end,
+    )
 
 
 def _collect_rescue_traces(
@@ -1683,8 +1704,20 @@ class SelfReviewScheduler:
         if self._load_state().get("last_run_date") == local_today_str():
             return {"triggered": False, "reason": "already_ran_today"}
 
-        # 增量窗口锚点：上次执行时刻；无（首跑/旧格式）回退 24h
-        last_run_at = self._load_last_run_at()
+        # 增量窗口锚点：上次执行时刻；无（首跑/旧格式）回退 24h。回读失败
+        # （IO 故障/JSON 损坏）同样回退 24h，但须即时留 WARNING：否则
+        # [真实锚点, 24h 前] 区间的窗口内容当日不被审查且无任何留痕（此前
+        # 仅后续失败路径 _save_state(advance_anchor=False) 才补记）。
+        # （code-review item fe975576ca8b；此处每日至多执行一次——同日防
+        # 重复判定在前——WARNING 无风暴风险，防风暴语义不变。）
+        anchor_degraded: List[str] = []
+        last_run_at = self._load_last_run_at(degraded_out=anchor_degraded)
+        if anchor_degraded:
+            self.logger.warning(
+                "self_review",
+                "增量窗口锚点 last_run_at 回读失败，本次增量窗口回退 24h 口径: "
+                f"{anchor_degraded[0]}",
+            )
         window_start = last_run_at if last_run_at is not None else now - timedelta(hours=24)
 
         # 触发：成功/失败都写 last_run_date=today（失败当日不重试，次日
@@ -2454,7 +2487,8 @@ class SelfReviewScheduler:
 
         dict 条目（结构化契约 {title, impact, evidence, analysis?, suggestion}）
         渲染为「- **标题**」+ 嵌套「  - 影响：…／  - 证据：…／  - 调查评估：…／
-        - 建议：…」bullet 块；title 缺省省略标题行（历史输出兼容），空字段
+        - 建议：…」bullet 块；title 缺省省略标题行、首个非空字段升格为块首「- 」行（code-review item
+        9e5292d5a543：纯缩进块不进闭环收集，台账永久残留），空字段
         跳行；str 条目先经 dict-repr 抢救（_rescue_structured_entry，旧解析
         层产物兼容），未命中则按旧行内格式单行透传。空渲染返回 []。条目间
         空行由 _append_todo 负责（同小节块间 join 空行）。含换行的值续行
@@ -2471,12 +2505,22 @@ class SelfReviewScheduler:
             title = " ".join(str(item.get("title") or "").splitlines()).strip()
             if title:
                 lines.append(f"- **{title}**")
+            # 无标题条目（code-review item 9e5292d5a543）：首个非空字段升
+            # 格为块首「- 」行——否则整块首行是缩进续行形态，
+            # _collect_recent_entries 只收集「- 」行，条目进不了闭环判定清单、
+            # _remove_resolved 永不命中，台账永久残留。仅首个非空字段升格，
+            # 其余字段保持「  - 」缩进（同一逻辑条目不被撕成多个闭环条目）。
+            is_first_field = not title
             for label, key in _FIELD_LABELS:
                 val = str(item.get(key) or "").strip()
                 if not val:
                     continue
                 val_lines = [ln for ln in val.splitlines() if ln.strip()]
-                lines.append(f"  - {label}：{val_lines[0]}")
+                if is_first_field:
+                    lines.append(f"- {label}：{val_lines[0]}")
+                    is_first_field = False
+                else:
+                    lines.append(f"  - {label}：{val_lines[0]}")
                 lines.extend(f"  {ln}" for ln in val_lines[1:])
             return lines
         item_str = str(item).strip()

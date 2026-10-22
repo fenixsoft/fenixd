@@ -478,6 +478,7 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
             )
             continue
         if not isinstance(state, dict):
+            _logger.debug("evolution: 项目 %s 的 self_review_state.json 顶层不是对象，不就绪", name)
             continue
         last_run_at = _parse_iso(state.get("last_run_at"))
         if last_run_at is None:

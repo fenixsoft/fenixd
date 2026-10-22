@@ -2084,6 +2084,16 @@ def skip_review_gate(project_root, spec: str, note: str = "") -> dict:
             "error": (f"spec 未处于冻结态（当前 {entry.get('status')}），"
                       "跳过评审门仅对评审器失败冻结开放"),
         }
+    # 用户指令冻结前置拒绝（code-review item 9ddc604fb072，与
+    # reset_verification 同口径）：freeze_spec 把人工 reason 并入冻结
+    # error，reason 恰含「spec-review-incomplete」等标记词时会命中下方
+    # marker 子串判别、被误判为评审器失败冻结而静默解冻清计数——须先于
+    # marker 判别拒绝，人工冻结走解冻/裁决动词处置。
+    if error_text.startswith(FREEZE_ERROR_PREFIX):
+        return {
+            "ok": False, "found": True, "steps": [], "status": None,
+            "error": "用户指令冻结不属评审器失败冻结（人工冻结走解冻/裁决处置），跳过评审门被拒绝",
+        }
     if "spec-review-rejected" in error_text:
         return {
             "ok": False, "found": True, "steps": [], "status": None,
@@ -2142,6 +2152,15 @@ def _exec_review_unfreeze(project_root, spec: str, note: str, marker: str, label
     if not (is_spec_frozen(entry) or entry.get("status") == "blocked"):
         return {"ok": False, "steps": [],
                 "error": (f"spec 未处于冻结/blocked 态（当前 {entry.get('status')}），"
+                          f"{label}被拒绝")}
+    # 用户指令冻结前置拒绝（code-review item 9ddc604fb072，与
+    # reset_verification 同口径）：freeze_spec 把人工 reason 并入冻结
+    # error，reason 恰含「spec-review-incomplete/spec-review-rejected」
+    # 标记词时会命中下方 marker 子串判别、被误判为评审冻结而静默解冻清
+    # 计数——须先于 marker 判别拒绝，人工冻结走 unfreeze/裁决动词处置。
+    if str(entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX):
+        return {"ok": False, "steps": [],
+                "error": ("用户指令冻结不属评审冻结（人工冻结走解冻/裁决处置），"
                           f"{label}被拒绝")}
     if marker not in str(entry.get("error") or ""):
         return {"ok": False, "steps": [],
@@ -3407,19 +3426,36 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         # 回滚段复用 stash_guard 骨架（_reset_index_paths：只重置索引不动
         # 工作区；尽力而为，失败仅记 warning 不掩盖原始原因）。
         probe._reset_index_paths(rollback)
+        restore_note = ""
         if appended:
-            if gi_backup is None:
-                gi_path.unlink(missing_ok=True)
-            else:
-                # 原子字节写回备份原始字节（code-review item 41c87143c57e）：
-                # 还原不经 decode/re-encode 往返——.gitignore 含非 UTF-8 字节
-                # 时 errors="replace" 会把坏字节改写成 U+FFFD，还原结果不再
-                # 字节级等值于备份。原子纪律沿用 item 55aaffc3e33b（与
-                # _append_gitignore_entries 同口径）：裸 write_bytes 非原子，
-                # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库
-                # 忽略规则整体丢失面）。
-                _atomic_write_bytes(gi_path, gi_backup)
-        return {"ok": False, "steps": [],
+            try:
+                if gi_backup is None:
+                    gi_path.unlink(missing_ok=True)
+                else:
+                    # 原子字节写回备份原始字节（code-review item 41c87143c57e）：
+                    # 还原不经 decode/re-encode 往返——.gitignore 含非 UTF-8 字节
+                    # 时 errors="replace" 会把坏字节改写成 U+FFFD，还原结果不再
+                    # 字节级等值于备份。原子纪律沿用 item 55aaffc3e33b（与
+                    # _append_gitignore_entries 同口径）：裸 write_bytes 非原子，
+                    # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库
+                    # 忽略规则整体丢失面）。
+                    _atomic_write_bytes(gi_path, gi_backup)
+            except OSError as e:
+                # 还原失败不吞中止原因（code-review item c88d597d898e，比照
+                # _append_gitignore_and_commit 还原分支同口径）：磁盘满/权限
+                # 问题抛 OSError 会被 execute_adjudication_choice 的宽 except
+                # 吃成泛化「动作执行异常」，且索引已重置而 .gitignore 未还原
+                # ——细节日志留痕，steps 保留还原失败线索，error 仍携带原始
+                # 中止 reason。
+                logger.warning(
+                    "untrack_stray_wip 中止还原 .gitignore 失败: %s: %s",
+                    type(e).__name__, e,
+                )
+                restore_note = "；.gitignore 还原失败（保留现状）"
+        abort_steps: list = []
+        if restore_note:
+            abort_steps.append(f"untrack 根治中止回滚{restore_note}")
+        return {"ok": False, "steps": abort_steps,
                 "error": f"untrack 根治中止已回滚（主树状态已还原）: {reason}"}
 
     try:

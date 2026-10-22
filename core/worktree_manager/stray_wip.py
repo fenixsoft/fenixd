@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -1157,10 +1158,18 @@ class MainTreeStrayWipSweeper:
         for rel in rels:
             digest = hashlib.sha256()
             try:
-                with open(self.project_root / rel, "rb") as fh:
-                    for chunk in iter(lambda: fh.read(65536), b""):
-                        digest.update(chunk)
-                content_fp = digest.hexdigest()
+                # code-review item 80b3fd45d00c: porcelain -uall 也会把管道/设备文件
+                # （含指向 /dev/zero 等无限流的符号链接目标）列为 untracked 条目，
+                # 读之会让哈希循环无限挂起、长期占用 _main_tree_lock 临界区——
+                # 读前先 stat 判普通文件，非普通文件与下方 OSError 同取
+                # unreadable 占位参与哈希。
+                if not stat.S_ISREG(os.stat(self.project_root / rel).st_mode):
+                    content_fp = "unreadable"
+                else:
+                    with open(self.project_root / rel, "rb") as fh:
+                        for chunk in iter(lambda: fh.read(65536), b""):
+                            digest.update(chunk)
+                    content_fp = digest.hexdigest()
             except OSError:
                 content_fp = "unreadable"
             h.update(rel.encode("utf-8"))
