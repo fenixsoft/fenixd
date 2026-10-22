@@ -293,7 +293,9 @@ class BBackoffMixin:
         """统一排程入口：按 ``lock_held`` 决定是否自取 ``_queue_lock``。
 
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
-        跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        跳过内部再取锁——保持临界区原子性、避免冗余加锁（``_queue_lock`` 自
+        fix-spec-review-blocking-dispatch BUG-01 起为 threading.RLock，同线程
+        重入不会死锁）。
         ``resolve_deadline`` / ``deadline_table`` / ``handle_table``：截止对账
         通道（evo-add-instant-fail-cooldown-full-lane-gate 2.3），原样透传锁内
         实现；缺省 None 的通道保持既有幂等早退语义。
@@ -436,7 +438,9 @@ class BBackoffMixin:
         剩余秒；到期回调重新触发派发并顺带 process_queue。
 
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
-        跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        跳过内部再取锁——保持临界区原子性、避免冗余加锁（``_queue_lock`` 自
+        fix-spec-review-blocking-dispatch BUG-01 起为 threading.RLock，同线程
+        重入不会死锁）。
         """
         self._schedule_recovery_timer(
             spec_name,
@@ -480,7 +484,9 @@ class BBackoffMixin:
         差值为剩余秒；到期回调重新触发派发并顺带 process_queue。
 
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
-        跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        跳过内部再取锁——保持临界区原子性、避免冗余加锁（``_queue_lock`` 自
+        fix-spec-review-blocking-dispatch BUG-01 起为 threading.RLock，同线程
+        重入不会死锁）。
         """
         self._schedule_recovery_timer(
             spec_name,
@@ -591,7 +597,9 @@ class BBackoffMixin:
         ``_enqueue(spec, "verifier")`` 重新入队。
 
         ``lock_held``：调用方已持 ``_queue_lock`` 时为 True，跳过内部再取锁
-        （threading.Lock 非重入，双重获取会死锁）。
+        （保持临界区原子性、避免冗余加锁——``_queue_lock`` 自
+        fix-spec-review-blocking-dispatch BUG-01 起为 threading.RLock，同线程
+        重入不会死锁）。
         """
         self._schedule_recovery_timer(
             spec_name,
