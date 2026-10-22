@@ -210,6 +210,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // staleKeys 的「provider/生效模型变化即清」一致（item 495527f13465）——
   // provider 去空白，生效模型 = 行内 model → 角色级缺省。健康检测是慢请求
   // （含网关往返超时），结论只对发起时的组合有效，写回前据此比对
+  // [fenix-ignore:b014a6598d2c] 指纹无需第三层 Provider 默认模型：该层只能在「模型」页签修改，切页签即卸载本面板、healthRows 随之销毁，重挂后徽标为空；挂载期内 providers 内容不变，陈旧徽标不可达
   const rowHealthFingerprint = (index: number, rIdx: number): string => {
     const rv = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
     const row = (rv?.rows || [])[rIdx];
