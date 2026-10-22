@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Callable
@@ -560,6 +561,34 @@ class VAdjudicationMixin:
                 # → 回滚半写残留 + 降级打回/凭据通道。不回滚的话写回层磁盘上
                 # 是未提交的新路径，凭据核销（D4）/复发计数（D5）双双失锚。
                 _rollback(f"提交失败（commit_root={wb.get('commit_root')}）")
+                # 工作区还原 ≠ 暂存区干净（code-review item c53a9b20e61b）：
+                # _git_commit 先 add 后 commit，add 成功、commit 失败（钩子
+                # 拒绝/gpg 签名失败等）时该 worktree 的 index 仍持有改写后
+                # 的声明内容，后续在该 worktree 内不带 pathspec 的 git commit
+                # 会把本应回滚的半写声明重新提交落分支，绕过回滚目标（磁盘上
+                # 不留从未提交的声明）。同步清理暂存区对齐磁盘态；清理失败仅
+                # WARNING 留痕不阻塞降级通道。
+                try:
+                    unstage = subprocess.run(
+                        ["git", "restore", "--staged", "--",
+                         f"spec/changes/{spec_name}/tasks.md"],
+                        cwd=str(wb.get("commit_root")),
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                        timeout=60,
+                    )
+                    if unstage.returncode != 0:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"声明改写回滚后暂存区清理失败 '{spec_name}'"
+                            f"（worktree index 可能残留半写声明）: "
+                            f"{unstage.stderr.strip() or f'git exit {unstage.returncode}'}",
+                        )
+                except Exception as unst_err:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"声明改写回滚后暂存区清理异常 '{spec_name}': {unst_err}",
+                    )
                 return (
                     False,
                     "改写已落盘但提交失败（worktree 层占用/冲突，已回滚）",
@@ -1672,7 +1701,14 @@ class VAdjudicationMixin:
                 # else p` 两分支恒等（code-review item 0a8b4d70dc57），简化为直接追加。
                 remaining.append(p)
                 continue
-            # 陈日信号命中：机械 basename 唯一命中 → 候选替代路径（3.4）
+            # 陈日信号命中：凭据三要素之 2 依赖分支上下文——判定上移到全树
+            # basename 扫描之前（code-review item 6ef83cf93760：branch 在函数
+            # 入口已取得且判定无副作用，result 无分支上下文时每个陈日命中条目
+            # 不必先付一次完整目录树扫描才被跳过）。
+            if not branch:
+                remaining.append(p)
+                continue
+            # 机械 basename 唯一命中 → 候选替代路径（3.4）
             try:
                 hits = match_basename_in_tree(self._pm.project_root, p)
             except Exception:
@@ -1682,10 +1718,6 @@ class VAdjudicationMixin:
                 remaining.append(p)
                 continue
             new_path = hits[0]
-            # 凭据三要素之 2：替代路径在实现分支 HEAD 真实存在
-            if not branch:
-                remaining.append(p)
-                continue
             try:
                 exists = self._pm.agent_runner.worktree_manager.file_exists_on_branch(
                     branch, new_path

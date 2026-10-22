@@ -1125,6 +1125,13 @@ class PRepairLaneMixin:
                 "error": final_error,
                 "_merge_fp": fp,
                 "_retry_count": 0,
+                # 熔断即本条失败链终结（D6）：_repair_round 一并归零
+                # （code-review item 06d96aa5edb5，字段表对齐
+                # _fallback_after_repair）——unfreeze_spec 的解冻清零集不含
+                # 此字段，不归零则解冻重派后的新失败链首轮
+                # _should_enter_repair 按陈旧轮次判超限，repair 预算被前链
+                # 侵占。
+                "_repair_round": 0,
                 # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
                 # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
                 # 残留导致后续启动误走 re-merge 路径。
@@ -1193,7 +1200,10 @@ class PRepairLaneMixin:
           引发的 merge-back 失败与前序失败连续累计（熔断协同）。
         """
         wm = self._pm.agent_runner.worktree_manager
-        # 清理 repair worktree（若有现场）：分支按既有清扫策略登记遗产
+        # 清理 repair worktree（若有现场）：分支按既有清扫策略登记遗产。
+        # 清理与登记分属独立 try（code-review item cf9342eeb8a7）：cleanup
+        # 失败仅自行留痕，不连带跳过 register_legacy——已解决的冲突成果
+        # 须登记为仅分支遗产供后继 run 参考收编，两类失败文案分别表述。
         try:
             if branch and wm.branch_exists(branch):
                 wt_path = wm.find_worktree_path(branch)
@@ -1203,7 +1213,14 @@ class PRepairLaneMixin:
                         self._pm._stop_devserver_for_worktree(wt_path)
                     except Exception:
                         pass
-                    wm.cleanup(wt_path, success=True)
+                    try:
+                        wm.cleanup(wt_path, success=True)
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"fallback 清理 repair worktree 失败 '{spec_name}'"
+                            f"（非阻塞，分支遗产登记不受影响照常执行）: {e}",
+                        )
                 # 成功收工清理后仅分支留存（已解决的冲突成果随分支保留），
                 # 登记为仅分支遗产供后继 run 参考收编（不丢失修复工作）
                 wm.register_legacy(spec_name, None, branch)
@@ -1212,7 +1229,8 @@ class PRepairLaneMixin:
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"fallback 清理 repair worktree 失败 '{spec_name}'（非阻塞）: {e}",
+                f"fallback 分支清扫/遗产登记失败 '{spec_name}'（非阻塞，"
+                f"失败发生在登记前则分支遗产未登记）: {e}",
             )
         # 失败链收尾：归零轮次，回退 fallback
         # _retry_count 走锁内原子递增（bump_counters 返回写后值）：原先
