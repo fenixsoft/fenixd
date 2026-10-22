@@ -46,23 +46,26 @@ class H10StaticRoutesMixin:
         if "\x00" in filename:
             self._error(404, "Not Found")
             return
-        static_root = self.server.static_dir.resolve()
-        target = (static_root / filename).resolve()
-        # 防路径穿越：解析后必须仍在 static 目录内
-        if not target.is_relative_to(static_root):
+        # 对外服务根收敛为 dist/（code-review item f3c00cefb7b8，security）：
+        # static 目录是完整前端工程（src/ tests/ node_modules/
+        # package-lock.json 等），整树作服务根会把源码与依赖树暴露给本机
+        # 任意进程。全部已知运行时消费——根路径 index.html 特判（base.py
+        # 传 "dist/index.html"，其 "dist/" 前缀在此剥离兼容）、index.html
+        # 内 ./umi.* 根相对资源、public/ 的构建期拷贝——实际均落 dist/
+        # （前端源码与 py 测试均无引用 static 根下非 dist 路径的 HTTP 请求）；
+        # 收敛后原「根相对 → dist/」回退被主查找直接覆盖，一并移除。
+        dist_root = (self.server.static_dir / "dist").resolve()
+        target = (dist_root / re.sub(r"^dist/", "", filename)).resolve()
+        # 防路径穿越：解析后必须仍在 dist 目录内（先 resolve 再包含检查，
+        # 不 resolve 的词法前缀匹配不归一化「..」、不跟随 symlink，防线形同虚设）
+        if not target.is_relative_to(dist_root):
             self._error(404, "Not Found")
             return
         if target.is_dir():
             target = target / "index.html"
         if not target.is_file():
-            # v3 SPA 直接挂载在 / 时，index.html 内相对资源（./umi.js）
-            # 会以根路径请求；回退映射到 dist/ 目录
-            # 与主分支同纪律：先 resolve 再包含检查（不 resolve 的词法
-            # 前缀匹配不归一化「..」、不跟随 symlink，防线形同虚设）
-            target = (static_root / "dist" / filename).resolve()
-            if not target.is_relative_to(static_root) or not target.is_file():
-                self._error(404, "Not Found")
-                return
+            self._error(404, "Not Found")
+            return
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         # 构建产物文件名带内容 hash，可安全长缓存；index.html 不缓存
         cache = "no-cache"

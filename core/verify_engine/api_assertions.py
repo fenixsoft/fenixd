@@ -750,7 +750,7 @@ class ApiAssertionRunner:
                 "error": "缺少 expected 字段",
             }
         # 定向归因：SSE 捕获（{type: sse, events, duration}）无 body，经下方
-        # `resp.get("body") or ""` 得空串后会按「响应体不包含期望文本」失败
+        # 缺失归一得空串后会按「响应体不包含期望文本」失败
         # （actual_snippet 为空），judge 无法看出是捕获类型不匹配；口径对齐
         # json_path / json_schema 的 SSE 分流，防误归因为产品缺陷
         if resp.get("type") == "sse":
@@ -765,7 +765,11 @@ class ApiAssertionRunner:
                     "事件内容断言请改用 sse_event_matches"
                 ),
             }
-        body = resp.get("body") or ""
+        # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""
+        # （口径对齐 _assert_json_path contains 分支与 _assert_sse_event_matches）
+        body = resp.get("body")
+        if body is None:
+            body = ""
         passed = False
         error = None
         if mode not in ("exact", "contains", "regex"):

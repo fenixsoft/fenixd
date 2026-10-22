@@ -1304,6 +1304,25 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             specs,
             lambda key, a=a: _assert_lookup_value(a, key),
         )
+        # no_overlap threshold 形态验收（code-review item 77ee8f1bc273）：
+        # from_dict 对 threshold 原样透传（d.get("threshold", 0.2)），词表
+        # 校验零形态检查，坏档（"20%"、null、对象等）过验收白烧一轮验证后，
+        # 才在运行期 _assert_no_overlap 以「非法 threshold」结构化失败——
+        # 与 command/env/headers/url 形态拦截（071b40c06e33 / ed59b43fbd40 /
+        # cf81feeaec37）确立的「坏档验收期前移」对齐。判据逐字同运行层
+        # assertions.py（float() 可转 + (0,1) 开区间，数值串 "0.5" 运行期
+        # 合法消费故不收紧）；threshold 仅 no_overlap 消费，其余断言类型无
+        # 运行期失败面，不扩大拦截范围（消费面对齐先例 ed59b43fbd40）。
+        if a.type == "no_overlap":
+            try:
+                t = float(a.threshold)
+            except (TypeError, ValueError):
+                t = None
+            if t is None or not 0 < t < 1:
+                errors.append(
+                    f"场景'{scenario.id}'断言{i}: 类型 'no_overlap' 的 threshold "
+                    f"须为 (0,1) 开区间内数值，收到 {a.threshold!r}"
+                )
 
     # navigate URL 验收（2026-08-28：相对路径导致浏览器白屏、整轮断言全灭）
     nav_steps = [s for s in scenario.steps if s.action == "navigate"]
