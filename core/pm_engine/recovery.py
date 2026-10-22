@@ -603,7 +603,8 @@ class RecoveryWatch:
             # （不因本机制漏报真滞留，不静默关闭）。
             try:
                 fresh = self._pm.state_machine.read_one(spec_name) or {}
-            except Exception:
+                reread_exc = None
+            except Exception as reread_exc:
                 fresh = {}
             # 第 3 层「已有活跃派发」须**重新探测**（code-review item 838ada899c96）：
             # 旧实现复用 `active_dispatch`——它在上方计算，且控制流能到达此处
@@ -626,9 +627,19 @@ class RecoveryWatch:
                     f"before escalation, no alert)",
                 )
                 continue
+            # 重读失败时不再复用 fresh.get('status')（空 dict 会拼出
+            # 「spec still None」，与 STATE 可读但 status 字段缺失不可区分），
+            # 改为注明 pre-escalation re-read failed + 异常类型
+            # （code-review item 53bb2d91f556）。
+            if reread_exc is not None:
+                reread_desc = (
+                    f"pre-escalation re-read failed: {type(reread_exc).__name__}"
+                )
+            else:
+                reread_desc = f"spec still {fresh.get('status')}"
             evidence = (
                 f"auto-recovery/defer at {item.get('registered_at')} "
-                f"({item.get('reason')}); spec still {fresh.get('status')} "
+                f"({item.get('reason')}); {reread_desc} "
                 f"with no active dispatch after followup window, in-place "
                 f"redispatch "
                 f"{'succeeded' if dispatched else 'not established'}, "

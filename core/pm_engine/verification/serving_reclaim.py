@@ -504,6 +504,10 @@ def reclaim_verify_serving(
             if logger:
                 logger.info("serving_reclaim", f"回收无主 boot.log: {name}")
         except Exception as e:
+            # code-review item f1092ccd9c85：回收失败文件计入 kept 留痕
+            # （与目录维度回收失败留痕同口径，同属「本轮未回收」观测集合），
+            # 保证返回值对 boot.log 全集完备，消费方按返回值对账时不必翻日志。
+            kept.append(name)
             if logger:
                 logger.warning(
                     "serving_reclaim",

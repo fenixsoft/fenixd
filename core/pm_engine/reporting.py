@@ -104,7 +104,10 @@ class ReportBuilder:
         for name, entry in sorted(all_specs.items(), key=_priority_key):
             status = _status_of(entry)
             icon = status_icons.get(status, "❓")
-            priority = entry.get("priority", "?")
+            # priority 键存在但值为 None（YAML 空值形态）时 .get 默认值不
+            # 生效，行内展示 PNone；归一 "?" 与 _status_of 同口径。
+            priority = entry.get("priority")
+            priority = "?" if priority is None else priority
             lines.append(f"- {icon} **{name}** (P{priority}): {status}")
 
         lines.append("")
