@@ -1,7 +1,7 @@
 ## 2026-10-13
 
 ### 知识真相源
-- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 23 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
+- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 24 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
 
 ### dsh 真实全链验收执行请求（dsh-primary-acceptance-switch，人工队列）
 - **执行记录（2026-10-14，用户在本会话发起）**：车道级真实验收 **PASS**（第 6 轮；证据 `.fenix/verify-evidence/dsh-primary-acceptance-switch/dsh-acceptance-real-dshacc-20261014090932-41544c.{json,md}`，四车道 implementer 93s/verifier 68s/judge 8s/claude 基线 55s 全绿）。**daemon 全生命周期验收亦完成**：夹具项目 `/root/dsh-e2e-proj`（agent.harness=dsh）注册 `add-e2e-hello-note`，daemon 自主走完 spec-review(dsh, 191s/\$0.587)→planner(dsh, 136 事件)→implementer(dsh, a1 补丁回收并发互踩秒死后 attempt 环自动重试)→a2 实现并 cmp 逐字节校验→verify→merge-back→**done**，全程 6.5 分钟，交付物在主树。试错修出三缺陷已提交：`agent.dsh_api` 线协议渲染（03c50328）、argv 裸 headless 占任务槽（stdin prompt 丢失）、验收脚本 dsh_api 穿参+在飞谓词。遗留 finding 处置（2026-10-14，主 daemon 重启后修复，回归 run7 PASS）：①②已修——agent.dsh_api 落地 + config 线协议守卫告警（Anthropic 形态 baseurl 未配 dsh_api 时 WARNING 一次，进程级去重）；patch 回收改按龄（DSH_PATCH_RETENTION_SECONDS=3600，单槽互踩消除，a1 类秒死不再依赖 attempt 兜底）。③已修——验收脚本 --provider 按 name 选网关 + 自检列出全部候选并提示首个可能失效。④成本页接 dsh-events usage 属增强未动（投影层 usage 已实测可用）。回归证据：dsh-acceptance-real-dshacc-20261014095026-350656（四车道全绿）。
