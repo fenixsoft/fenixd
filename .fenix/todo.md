@@ -274,3 +274,50 @@
   - 证据：回归模块 WARNING 两行：2026-10-21T19:13:41Z 与 20:26:29Z「回归命令非零退出（exit=4，pytest usage error 即命令行用法错误，未执行任何用例也不写新 XML）但 JUnit XML 可解析且无失败，按解析结果判 passed」，两条命令目标列表首项分别为 #tests/__pycache__/test_code_fix.cpython-310-pytest-9.1.1.pyc 与 #tests/__pycache__/conftest.cpython-310-pytest-9.1.1.pyc——带 # 前缀的无效编译缓存路径使命令在跑任何用例前 usage error 退出；两时刻与批 1/批 3 的 run_metrics 收尾行（19:13:35Z、20:26:23Z）差 6 秒，与合回行「第 1 批合回成功：resolved 40/40 条」（19:13:45Z）、「第 3 批合回成功：resolved 32/33 条」（20:26:32Z）前后咬合；git log 核实 core/regression.py 最近提交仍为 22d92c607（10-21 03:27，原子写收口重构，与本缺口无关）。
   - 调查评估：问题源：对 [2026-10-22#可改进#3] 的定向复发对账（全窗 grep 回归 WARNING）。已核实事实：①本窗复发 2 次（10-04 以来累计 23 次），毒行形态与前两窗一致——# 前缀 __pycache__ 缓存路径→usage error→判定读上一批遗留产物伪绿；②窗口内 core/regression.py 零触碰，mtime 新鲜度校验与 targets 消毒两项修复零落地；③对照面：批 2 的定向回归真实执行并当场拦下坏修复（提交 fb3d13b77 自述 test_per_scenario_progress_visible_to_sibling_scenario 实测失败→回退改判 not_worth_fixing），证明门本体在 targets 合法时有效，缺口仅在「exit=4＋陈旧 XML」路径；④# 前缀来源两假说（映射输入行污染 vs 替换哨兵泄漏进执行命令）仍未裁决，本轮仅确认毒行稳定指向 __pycache__ 编译缓存路径。根因维持形态层结论：门判定缺「结果新鲜度」维度＋定向 targets 混入无效路径。与存量工作关系：add-codefix-test-targets-fallback-sanitization 与 code-review item 5f88b3b78f7c 治理目标集静默收窄、evo-codefix-zero-face-regression-hardening 治理回归空转烧墙钟，均未覆盖本形态，维持非重复判定。结论：连续三窗复发且修复面小（新鲜度校验+消毒两条），优先级再上调，值立项。
   - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警，顺带核查映射输入源为何混入注释行；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
+
+## 2026-10-24
+
+### 浪费
+- **夜间API停滞第八晚约23分钟，低于60分钟取证阈值连续第三窗**
+  - 影响：窗口内 4 个 run 的 API 侧等待（stall，指 tool_result 到下一个 assistant 事件之间的模型往返间隔）合计约 22.7 分钟（1363.5 秒），较上晚 51.4 分钟明显回落，连续第三窗低于 60 分钟取证阈值；无 run 因停滞失败或重派，属成功 run 内部的挂钟消耗与延迟尾部风险。
+  - 证据：逐 run（数据摘要第六节，与日志 context metrics 行的 latency 三字段交叉一致）：evo-1792692791（自进化分析 run）3 次 513.7 秒最长 360.1 秒；evo-1792686178（自进化分析 run）5 次 510.0 秒最长 160.5 秒（context metrics 行 173 轮/5 次/160.5 秒吻合）；code-fix-1792697985（批修复 run）3 次 235.0 秒最长 106.2 秒；code-fix-1792693587 1 次 104.8 秒（context 行 405 轮/1 次/104.8 秒吻合）。周期审查 run code-review-1792684949 仅 1 次停滞未入第六节阈值（context 行 1029 轮/1 次）。
+  - 调查评估：问题源：数据摘要第六节停滞聚合的离群深扫。已核实事实：①停滞口径为 API 侧等待（2026-10-17#浪费#1 更正后的口径），本轮 22.7 分钟全部为 API 侧；②八晚序列（整晚总量口径，分钟）：80.3→48.3→85.7→98.2→27.7→50.7→51.4→22.7，[2026-10-21#浪费#1] 自设「连续两晚 ≥60 分钟重启取证」阈值连续第三窗未触发；③453-463 秒钉值家族本窗缺席（最长 360.1 秒，介于钉值与普通长尾之间），「网关约 450-460 秒固定超时」假说维持弱化；④evo-1792692791 的 3 次停滞密集于收尾段、随后被 429 限流击杀（api_retry 重试 2 次耗尽），「整轮往返偏慢」与「网关限流」在同 run 相邻出现，逐轮档案无 ttft/usage 响应侧字段（已由 evo-1792427246 实测裁决在 CLI 子进程边界外不可得），根因未定、维持多假说。与存量工作关系：观测与分级面由 evo-add-api-stall-observability（停滞指标入账）与 evo-api-stall-signal-grading（停滞分级告警）覆盖，分级告警本窗零触发（无单轮超 300 秒）。结论：损耗真实且连续回落，维持纯观测、不立项。
+  - 建议：维持纯观测并按既有阈值跟踪；若连续两晚回到 ≥60 分钟量级，重启定向取证（对照网关 bigmodel 与 claude CLI 侧超时/重试配置，钉值家族已 4 次显形），不依赖已证不可得的档案字段。
+
+### 失误
+- **（当日无）**
+  - 影响：窗口内 7 个 run 无执行层失误造成损失：摘要所记唯一「失败」evo-1792692791 实为框架按成功落地的 salvage run（更正见可改进#2），其 429 限流死亡属 provider 侧且产物零损失；窗口边界外的审查 run code-review-1792771331 空产物属工具面缺陷而非执行错误。
+  - 证据：数据摘要第 2 节失败 1、秒挂 0、超时 0；daemon 日志 10-22T18:44:17Z「CLI 退出异常但契约产物完整（产物直读），按成功落地」；审查 run 档案尾部自证报告「工具面缺失，无法开展审查」逐查询留痕、无捏造产物。
+  - 调查评估：逐项复核当日事件：①evo-1792692791 死于 429 限流（api_retry 两次耗尽、Exit 1），非配置/操作失误，产物 salvage 链按设计工作（50248 字节产物被采信、todo 回写照常处理）；②批链 3 批合回（48/30/6 条）零冲突零返工，批 1 的 exit=4 伪绿属守卫缺口（既有条目复盘，非新失误）；③审查 run 的工具面饥饿根因未定，且 agent 行为（穷举工具面、如实收 error 报告、零编造）无过错。当日无可判定为执行错误的条目。
+  - 建议：无需动作。
+
+### 可改进
+- **夜间审查工具面饥饿空转零产物，硬门拦下后无重派当晚覆盖归零**
+  - 影响：10-24 00:01 按排程派发的周期审查 run code-review-1792771331 因工具面不可用空转约 5 分钟（16 轮、9 次工具调用、0.55 美元）产出零结果行，产物硬门拦下记 error 后无重派、无 admin 信号——当晚全仓审查覆盖归零：前夜 84 条发现已被修复链全数消费、台账清零，当晚 40+ 个 fix 提交引入的变更无人复审，缺口静默悬置到下一轮审查（24 小时后）。
+  - 证据：run 档案 init 事件显示 26 个工具已装配（Task/Bash/Read/Write/ToolSearch 等，permissionMode=bypassPermissions），但 9 次 ToolSearch（工具面检索）查询中 5 次对基础工具返回 No matches（含「^(Bash|Read|Write|…)」锚定式与「bash|shell」等关键词式），其余 4 次仅返回裸 tool_reference 名单（只有工具名无 schema）；agent 16 轮后自证「Run 失败报告：工具面缺失，无法开展审查」如实收场、CLI 退出码 0；日志 10-23T16:06:06Z ERROR「产物硬门拦截: manifest=316 — 审查产物为零有效行（repo-code-review-gate）」与完成行 inserted=0/updated=0/resolved=0/shards=0；其后日志无重派记录，摘要第 3 节 admin 信号 0 条。
+  - 调查评估：问题源：周期审查链（夜间全仓审查，run_at=00:00 排程）当晚 run 的失败复盘。已核实事实：①守卫按设计工作——repo-code-review-gate（产物硬门，逐文件结果行核验）首现即拦住空产物入账，台账未被污染；②完成行仅 INFO 级、无重派路径、无升级信号，覆盖缺口只能靠下一轮自然恢复；③根因在形态层——工具面在会话层已装配但「发现/加载」通道不可用，三假说并存：ToolSearch 索引/匹配缺陷（对已装配工具名返回 No matches）、延迟工具加载协议失效（引用只回名不回 schema 致 agent 无法加载）、CLI unrecognized_model stderr 行在案下的装配降级，档案证据不足以裁决。与存量工作关系：evo-add-review-night-defer-snapshot-writeoff 覆盖派发顺延与抢救面，spec/changes/ 活跃区无「零产物重派」同主题在飞提案，非重复立项。结论：守卫已堵住污染面，残余缺口是「拦截后无止损、无取证、无信号」，机制清楚，值立项。
+  - 建议：①零有效行拦截后自动限次重派 1 次，重派仍失败升级 admin 信号（当前纯 INFO 完成行无人消费）；②审查 run 档案留存 ToolSearch 查询与返回原文，失败面可取证以在三假说间裁决；③审查提示词预注工具自救指引（No matches 时改用 select: 精确名加载）；④对照当晚与前夜成功审查 run 的 CLI 版本/工具装配路径差异。
+
+- **日报把产物直读抢救成功的run误计失败，幻影失败家族第三源**
+  - 影响：当日数据摘要把 7 个 run 记为「5 成功/1 失败/1 在跑」，唯一失败样本 evo-1792692791 实为框架登记的成功 run：CLI 死于产出完成后的收尾交换（429 限流重试 2 次耗尽、Exit 1），50248 字节产物已落盘并被「产物直读」采信、todo 回写照常处理，6.76 美元产出零损失——误计使失败计数虚高并误导复盘方向，本条同时构成对当日摘要的显式更正（实际：窗口内 6 成功 0 失败 1 在跑；真实失败是窗口边界外的审查 run，见可改进#1）。
+  - 证据：daemon 日志 10-22T18:44:17Z「CLI 退出异常但契约产物完整（产物直读），按成功落地」及同秒 run_metrics 行 terminal=success；run 档案尾部 {"type":"error","error":"Exit code: 1","exit_code":1}（摘要失败行「evo-1792692791: Exit code: 1」即源于此）与末位 assistant 事件（清理 parts 目录并确认产物在盘 50248 字节）；18:48:14Z「todo.md 提交无变更」证明回写链正常走完；档案侧 run_metrics 事件 197 轮、total_cost_usd=6.756、latency_stalls=3。
+  - 调查评估：问题源：对摘要第 2 节失败样本的逐条复核（自省消费自身聚合产物的自指核查）。已核实事实：①分类器 _classify_run（core/self_review.py）读 run 文件尾 error 事件即记 failed；②「双源交叉守卫」（evo-fix-self-review-phantom-failed-samples 2.2）只对 detail 前缀 signal= 的样本查 daemon 侧 run_metrics 终态，且注释明确把 marker= 排除在守卫外——error 终态样本不在守卫射程，lane 侧「按成功落地」的 salvage 登记未被聚合侧消费，两账分叉时采信了过程账；③附带口径分裂：产物直读路径的 daemon 指标行 turns/cost 记 0（真实 197 轮/6.76 美元只在档案），成本与轮次维度对该 run 失明。与存量工作关系：[2026-10-22#可改进#1]（失败词复述误判）是同族第二源，其建议③「结构化双源否决」若落地即同时覆盖本案——本案是其第三源（error 终态 vs salvage 登记分叉），应合流立项而非单独立 spec。结论：机制清楚（守卫扩界+夹具），值立项。
+  - 建议：把双源交叉守卫扩到 error 终态样本：detail 为 Exit code/CLI 错误形态时查 run_metrics 终态，terminal=success（salvage 登记）即改计 success 并写 self_review_phantom_failure 告警，查无账面行时保守保持 failed；以本案 evo-1792692791 为夹具补契约测试；产物直读路径的指标行顺带透传档案侧真实 turns/cost，消除双账分裂。
+
+- **（恶化）回归门exit=4伪绿第四连窗，批1共48条回归保证空转**
+  - 影响：本窗口批链 3 批中批 1 的定向回归（按触碰面映射只跑相关测试的回归轮）在 pytest 未执行任何用例的情况下按上一批遗留的 JUnit XML（测试结果标准格式文件）判 passed，48 条台账修复的回归保证在合回时刻为空；10-04 以来累计 24 次、连续第四窗复发，两项修复建议（新鲜度校验、targets 消毒）悬置第四天零落地。
+  - 证据：回归模块 WARNING：2026-10-22T18:56:39Z（本地 02:56）「回归命令非零退出（exit=4，pytest usage error 即命令行用法错误，未执行任何用例也不写新 XML）但 JUnit XML 可解析且无失败，按解析结果判 passed」，命令目标列表首项为 #tests/__pycache__/test_code_fix.cpython-310-pytest-9.1.1.pyc（带 # 前缀的无效编译缓存路径）；3 秒后合回行「第 1 批合回成功：resolved 48/48 条」；批 2/批 3 回归无告警（真实执行）。git 核实 core/regression.py 最近提交仍为 22d92c607（10-21 03:27，原子写收口重构，与本缺口无关）。
+  - 调查评估：问题源：对 [2026-10-23#可改进#2] 的定向复发对账（全窗 grep 回归 WARNING）。已核实事实：①本窗复发 1 次（窗口内 3 批中 1 批中招，累计 24 次），毒行形态前三窗一致——# 前缀 __pycache__ 缓存路径→usage error→判定读上一批遗留产物伪绿；②exit=4 不写新 XML，判 passed 所据必为陈旧产物，机制判定与前轮一致；③# 前缀来源两假说（映射输入行污染 vs 替换哨兵泄漏进执行命令）仍未裁决，本窗毒行仍稳定指向 __pycache__ 缓存路径，无新裁决证据。与存量工作关系：add-codefix-test-targets-fallback-sanitization 与 code-review item 5f88b3b78f7c 治理目标集静默收窄、evo-codefix-zero-face-regression-hardening 治理回归空转烧墙钟，均未覆盖本形态，维持非重复判定；对照面：前窗批 2 坏修复由真实执行的定向回归当场拦截改判（提交 fb3d13b77 自述），门本体在 targets 合法时有效。结论：连续四窗复发且修复面小（新鲜度校验+消毒+契约测试三条），优先级维持，值立项。
+  - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
+
+- **04:30断窗守卫真空第六天，本窗口无在飞run侥幸零损失**
+  - 影响：网卡 enp42s0 断连按每日节律继续复发（10-23 04:30:02/04:31:21 双断，另 17:29:16、22:19:34 两次 2 秒级日间抖动），而守卫配置第 302 行 night_quiet_window: false（非法布尔值，合法关闭应写字符串 off）已第 6 天原样，本窗口零损失纯属日程侥幸：批链 02:26-03:46 收工、04:30 无在飞 run——10-18 同型死亡实测单次 136 美元量级，批数波动下裕量并无保证。
+  - 证据：journalctl -k 内核日志 10-23 四次 Link is Down/Up（04:30:02 Down、04:31:00 Up 10Mbps 半双工、04:31:21 Down、04:31:23 Up 1Gbps）；daemon 日志 10-22T18:26:23Z（本地 02:26）链激活时再次打印「code-fix 夜间静默窗配置非法（'False'…）按无窗处理」WARNING；code-fix 链 rollup 19:46:28Z（本地 03:46）runs=4 resolved=84 收工；git 核实窗口内 core/code_fix.py 最近提交 8b206e8a2（10-23 02:49）为台账条目修复，窗值 lint、停用自动再武装、批投递窗前缓冲三项建议零落地。
+  - 调查评估：问题源：[2026-10-23#可改进#1] 预测场景的连续对账。已核实事实：①断窗双断形态第 6 天准点复发，本窗无击杀仅因无在飞（链提前收工；今晚更因审查零产物零入账、无批可派——守卫缺口的非损失均属失败侧的侥幸）；②审查前移 00:00 排程后，链激活时刻改由审查完成时刻决定（本窗 02:26），44 分钟裕量依赖批次数量波动（10-22 夜 7 批滚动到 04:56 即有批被击杀），结构性暴露未消除；③零代码手工动作（把 false 改为合法窄多窗）悬置第 6 天。根因沿前轮结论：停用/关闭类人工处置缺格式校验与自动恢复语义，属处置持久化缺口。与存量工作关系：evo-add-night-window-inflight-guard 的顺延守卫已落地但依赖窗值合法才生效；evo-code-fix-api-timeout-salvage（api_timeout 终局把未提交现场提交批分支的抢救机制）与连接冷却按设计止损。结论：守卫前提持续缺位、止损链有效，维持优先立项。
+  - 建议：①手工把 night_quiet_window 改为合法窄多窗（如「04:22-04:40」，零代码、多窗解析 _parse_night_quiet_windows 已上线）；②窗解析把布尔 false 与 off 同义化并在配置载入时 lint 告警；③修复链 enabled 停用态加自动再武装或每日一次提醒信号；④批投递窗前缓冲（预计批结束落入窗内则延至窗末后投递）。
+
+- **evolution回写git push恒失败41次仅降WARNING，远端同步长期未达**
+  - 影响：自进化 todo 回写的 push 步骤每夜恒失败：本窗口 2 次（本地 10-23 02:44、02:48 两轮回写），日志累计 41 条同文 WARNING——commit 每次落地但 todo.md 的远端同步（ADR-060 语义）长期未达成，且每夜固定失败噪音稀释告警面价值。
+  - 证据：WARNING 原文「evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: fatal: No configured push destination.」（.fenix/logs/fenixd.log 累计 41 次）；core/evolution.py:1099-1112 push 失败降级不重试的注释自述；同函数内 add/commit 均成功且输出显示「On branch main…up to date with 'origin/main'」，主仓 origin 在案（git@github.com:fenixsoft/fenixd.git）且 origin/main 与 main 同步至 10-24 00:02 的审计提交——同仓其他代码路径 push 可达。
+  - 调查评估：问题源：窗口内 evolution 回写告警面盘点（同窗另有 4 条「todo.md 中未找到条目…标记回写跳过」陈旧标记噪音，为已清理条目的回写空转）。已核实事实：①「No configured push destination」按 git 语义仅在仓库零 remote 时出现，与主仓 origin 在案矛盾；②探针显示 daemon cwd=/root/fenixd 且 /root/fenixd/.fenix 非独立仓（rev-parse 归主 .git），与报错仍矛盾——push 子进程实际执行环境与静态探测不符，根因未定（假说：subprocess 的 git 命令变量构造/cwd/env 传递差异），未核实不出单因结论。与存量工作关系：2026-10-12#可改进「幂等空转处置被记 ERROR 级失败，日报错误信号被稀释」同属恒失败步骤的固定噪音家族但对象不同，非重复立项。结论：先低成本取证再修，值小立项。
+  - 建议：①push 前以 git remote 探测，空则记 DEBUG 跳过；②恒失败（连续 N 次）收敛为每日一条聚合告警，防逐夜重复噪音；③核查 _commit_todo_marker 内 push 子进程的 git 命令构造与 cwd/env 传递，定位「无推送目标」的真实执行环境。
