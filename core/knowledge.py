@@ -601,9 +601,13 @@ def _default_spawn(cmd: list, cwd: str):
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
     # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：守卫拒绝（自身组/
-    # 非正 pgid）与组已不存在同样静默——MUST NOT 降级单 pid proc.kill
-    # （pid=0 经 os.kill 折算同为调用者自身组广播）；既有 ESRCH 场景该降级
-    # 本就 no-op（目标已亡），收口后行为不变。
+    # 非正 pgid）与组已不存在同样静默——MUST NOT 用无守卫单 pid 击杀降级
+    # 替代本次 killpg（pid=0 经 os.kill 折算同为调用者自身组广播）；既有
+    # ESRCH 场景该降级本就 no-op（目标已亡），收口后行为不变。该禁令只
+    # 约束守卫击杀本身的降级替代，不含下方超时收尾对直接子进程的
+    # proc.kill()：那是对自 spawn 直子的精确击杀（killpg 得手后等价 no-op，
+    # 守卫拒绝场景则是唯一保底），无 pid=0 组广播风险——同款收尾见
+    # core/hook_engine.py _terminate_proc_group（code-review d516e78585b6）。
     guard_killpg(
         proc.pid, signal.SIGKILL, caller="knowledge._kill_process_group", resolve=True
     )
@@ -614,7 +618,8 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         # setsid 逃出进程组并继承 stdout/stderr 管道，管道不关闭——worker 线程
         # 卡死连带 knowledge-distill.lock 不释放，同项目后续批次全部滞留
         # （code-review 44d833e20470）。强杀直接子进程并弃管道，保底让
-        # _run_with_lock 的 finally 能释放 flock。
+        # _run_with_lock 的 finally 能释放 flock；收尾范式与 core/
+        # hook_engine.py _terminate_proc_group 统一。
         try:
             proc.kill()
         except Exception:  # noqa: BLE001
