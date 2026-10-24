@@ -17,7 +17,7 @@
  * 纯判定函数与 dsh 装配分离：单测零 dsh 依赖。
  */
 
-import { existsSync, realPathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 
 // ── 纯逻辑：三守卫判定 ─────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ function normalize(p: string): string {
  */
 function resolveReal(p: string): string {
   try {
-    return realPathSync(p);
+    return realpathSync(p);
   } catch {
     return p;
   }
