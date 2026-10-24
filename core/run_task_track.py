@@ -21,7 +21,6 @@ planner 实质会产出该形态（本仓 5 个在飞 spec 中 4 个含字母后
 
 import fnmatch
 import json
-import os
 import re
 from pathlib import Path
 
@@ -88,7 +87,13 @@ def parse_unattainable(data: dict) -> "tuple[set, list]":
         ``invalid`` 为非法项（非 dict / task 非合法 id / 缺 reason）——调用方
         MUST 对非空 ``invalid`` 判失败（防伪造豁免绕过缺口判据）。
     """
-    raw = (data or {}).get("unattainable")
+    # 入口归一（code-review item b518f17b76c9）：truthy 非 dict（结果文件根
+    # 被外部写坏为字符串/数组后原样透传）不得 AttributeError——公开解析层
+    # 不假设上游已守卫，非 dict 一律按「无申报」处置，对齐本仓读侧
+    # isinstance 防御口径。
+    if not isinstance(data, dict):
+        data = {}
+    raw = data.get("unattainable")
     if raw is None:
         return set(), []
     if not isinstance(raw, list):
@@ -128,20 +133,19 @@ def _spec_name_path_error(spec_name):
     parse_tasks_md 读到 tasks.md 之外的任意文件并按 ``^- [x] <id>`` 行解析，
     伪造勾选状态污染 verified→done 门禁判据。上游 spec 名无字符集约束
     （serving.py code-review 2c579adb670f 已认定 spec/changes 目录名等旁路
-    可产生此类名字），判定与 serving._spec_name_path_error 逐条等价。
-    不直接复用 serving 版是刻意的：engine 于模块级 import 本文件（经
-    pm_engine/__init__），本文件反向 import pm_engine.verification.serving
-    会成环，故本地实现，两处须同步演化。
+    可产生此类名字）。
+    判定单点复用 serving._spec_name_path_error（code-review item 0e3983704ef9，
+    对齐 verdict_evidence._spec_dir_component 先例）：serving 不反向依赖本模块，
+    函数内延迟导入无环——「会成环」只对模块级 import 成立（engine 经
+    pm_engine/__init__ 模块级 import 本文件），运行期调用点延迟导入时各模块
+    均已加载完毕。消除第三份同名拷贝，路径校验规则演化只改 serving 一处，
+    不再产生「serving 拒绝、本模块放行」的口径分裂。
     """
-    if (
-        not spec_name
-        or spec_name in (".", "..")
-        or os.sep in spec_name
-        or (os.altsep and os.altsep in spec_name)
-        or ".." in Path(spec_name).parts
-    ):
-        return f"spec 名含路径分隔符或 '..' 分量，拒绝拼入 tasks.md 路径: {spec_name!r}"
-    return None
+    from core.pm_engine.verification.serving import (
+        _spec_name_path_error as _serving_spec_name_path_error,
+    )
+
+    return _serving_spec_name_path_error(spec_name)
 
 
 def tasks_md_path(project_root, spec_name) -> Path:
@@ -213,13 +217,18 @@ def gap_from_result(data, project_root, spec_name) -> "list[str]":
     Returns:
         缺口 id 清单（文档顺序）；无缺口或无法判定 → 空列表。
     """
-    unfinished = (data or {}).get("unfinished")
+    # 入口归一（code-review item b518f17b76c9）：truthy 非 dict 不得
+    # AttributeError——公开解析层不假设上游已守卫，非 dict 按「无缺口概念」
+    # 空列表处置，对齐 parse_unattainable 入口与本仓读侧 isinstance 防御口径。
+    if not isinstance(data, dict):
+        data = {}
+    unfinished = data.get("unfinished")
     if isinstance(unfinished, list) and unfinished:
         # code-review item 727f910f1344：去重保序，与下方 completed_tasks 反推
         # 分支（item a13b782d263d）同口径——结果文件 unfinished 含重复 id 时
         # 缺口清单不得带重复条目进日志/人工待办告警。
         return list(dict.fromkeys(str(t) for t in unfinished))
-    completed = (data or {}).get("completed_tasks")
+    completed = data.get("completed_tasks")
     if isinstance(completed, list):
         # code-review item 9afc80c852c8：all_ids 取自主树 tasks.md——三处消费点
         # （engine._partial_attribution / engine._task_completion_blocker /
