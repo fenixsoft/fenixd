@@ -859,10 +859,18 @@ class LivenessSupervisor:
         try:
             mtime = run_file.stat().st_mtime
         except OSError:
-            self._extension_baselines.pop(spec_name, None)
+            # code-review e1783a573259：stat 期间并发 note_run_extension 可能已把
+            # 同 spec 新 run 的新基准覆写进该键——仅当键仍指向本次读取的 entry
+            # 时才清理，避免把刚写入的新基准一并误删（否则新 run 回退到 STATE.md
+            # 固定 stuck 起点，刚续期即被提前误判 stuck）。
+            if self._extension_baselines.get(spec_name) is entry:
+                self._extension_baselines.pop(spec_name, None)
             return None
         if time.time() - mtime > LIVE_ATTEMPT_STREAM_WINDOW_SECONDS:
-            self._extension_baselines.pop(spec_name, None)
+            # 同上覆写守卫：键已被并发覆写时不清理，新基准由其自身 run 流
+            # 新鲜度自清理。
+            if self._extension_baselines.get(spec_name) is entry:
+                self._extension_baselines.pop(spec_name, None)
             return None
         return float(entry.get("baseline") or 0.0)
 
@@ -1761,6 +1769,10 @@ class LivenessSupervisor:
             # 只是瞬时不可读，与「窗口内零实质事件」的确认停滞是两回事——先重试一次
             # 快照，避免一次瞬时 I/O 抖动终止一个本可被判 advancing 续期的 run
             # （对齐 _line_is_terminal/_file_tail_is_terminal 的 fail-open 不误杀口径）。
+            # code-review 9dba10a0e009：立即重读对 fd 耗尽类瞬时故障几乎必然二次
+            # 失败（EMFILE 不会在微秒级窗口内自愈）——两次快照间插入短暂退避
+            # （0.5s，仅此失败路径执行一次），给 EMFILE/权限抖动留出自愈窗口。
+            time.sleep(0.5)
             snapshot = self._liveness_snapshot(run_file, window)
         evidence = self._summarize_snapshot(snapshot)
         if not snapshot.get("stream_available"):
