@@ -47,6 +47,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 # 框架根（定位 core/），仿 bin/fenix_cli.py：标准调用 `python3 bin/fenix_detect_artifacts.py`
@@ -280,6 +281,39 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
             return {"wrote": False, "reason": f"候选路径校验未通过: {err}"}
     except ImportError:
         pass  # 独立脚本环境（无 core 包）时跳过校验，仅作参考
+    def _atomic_replace_text(path: Path, text: str) -> None:
+        # 临时文件 + os.replace 原子替换（对齐 core/dashboard/registry.py 保存路径
+        # 先例）：原地写 config.yaml 在进程中途崩溃/磁盘满/与并发写者交错时会留下
+        # 半截文件，daemon/ConfigLoader 随后整份解析失败；mkstemp 在同目录取进程
+        # 唯一临时名，fsync 落盘后 os.replace 原子替换，OSError 上抛由调用点落
+        # {"wrote": False, "reason": ...} 错误契约
+        fd, tmp_str = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            try:
+                f = open(fd, "w", encoding="utf-8")
+            except OSError:
+                # open 失败不会接管 fd：不显式关闭则描述符泄漏——finally 只负责
+                # unlink 临时文件。close 自身再失败（fd 已坏）不吞掉原始异常。
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
+            with f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_str, str(path))
+        finally:
+            tmp_path = Path(tmp_str)
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
     try:
         import yaml  # PyYAML（fenix-setup 步骤 1 已确保安装）
 
@@ -332,8 +366,10 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         # yaml.dump 全量重写：PyYAML 不保留注释，原文件注释/排版在此全部丢失
         # （保留注释需保守文本插入，风险更高，此处如实告知而非伪装成无损合并）
         try:
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            _atomic_replace_text(
+                cfg_path,
+                yaml.dump(config, allow_unicode=True, default_flow_style=False, sort_keys=False),
+            )
         except OSError as e:
             # 与退化文本路径错误契约对齐（docstring 承诺写入失败返回
             # {"wrote": False, "reason": ...}）：只读文件系统/磁盘满/权限不足时
@@ -494,7 +530,7 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     if text and not text.endswith("\n"):
         text += "\n"
     try:
-        cfg_path.write_text(text, encoding="utf-8")
+        _atomic_replace_text(cfg_path, text)
         return {"wrote": True, "reason": "探测结果已写入（文本定向更新退化路径）"}
     except OSError as e:
         return {"wrote": False, "reason": f"写入失败: {e}"}

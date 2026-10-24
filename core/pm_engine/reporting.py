@@ -121,19 +121,21 @@ class ReportBuilder:
 
     def generate_daily_report(self):
         """Generate daily report and append to PROJECT_LOG.md（.fenix/ 下）."""
-        report = self._pm.generate_report()
-
         log_path = self._pm.project_root / ".fenix" / "PROJECT_LOG.md"
-        # （b21d8f2d8247）报告可丢，主链不可断：.fenix 不可写/磁盘满时写
-        # PROJECT_LOG 失败降级 WARNING 不外抛，与 engine._write_blocker_report
-        # 同口径（code-review item 73c715f2be3a）。
+        # （b21d8f2d8247）报告可丢，主链不可断：STATE 读取（generate_report
+        # → read_all，读失败 fail-loud 上抛，StateParser.parse 不降级）与
+        # .fenix 不可写/磁盘满时写 PROJECT_LOG 失败均降级 WARNING 不外抛，
+        # 与 engine._write_blocker_report 同口径（code-review item
+        # 73c715f2be3a）；3a9840c05337 将 generate_report 一并纳入本 try
+        # 降级范围，ValueError 覆盖 read_text 编码损坏的 UnicodeDecodeError。
         try:
+            report = self._pm.generate_report()
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"\n\n---\n\n{report}\n")
-        except OSError as e:
+        except (OSError, ValueError) as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"Daily report write to PROJECT_LOG.md failed "
+                f"Daily report generation/write failed "
                 f"(daily report droppable): {e}",
             )
             return

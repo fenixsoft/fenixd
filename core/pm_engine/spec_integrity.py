@@ -80,7 +80,8 @@ def spec_has_content(project_root, spec_name: str) -> bool:
         specs_dir = spec_dir / "specs"
         if specs_dir.is_dir():
             # specs/ 子目录递归扫 *.md：覆盖只有 specs/ 无三文档的形态
-            if next(specs_dir.rglob("*.md"), None) is not None:
+            # is_file() 过滤：rglob 同时命中名为 *.md 的目录，空目录不可伪造有内容
+            if next((p for p in specs_dir.rglob("*.md") if p.is_file()), None) is not None:
                 return True
         return False
     except OSError:

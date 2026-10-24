@@ -34,10 +34,13 @@ from types import MappingProxyType
 #   action 映射的后端动词标识（admin_actions 既有动词或新增裁决动词；
 #          alert-resolve 端点按它分派 execute_adjudication_choice）
 # 可选第五字段：
-#   destructive  True=不可逆/越权语义（abandon/skip_review_gate）；前端据此
-#                决定执行前二次确认——确认门由注册表单源驱动，前端不再
-#                硬编码业务 id（code-review item 19f72b875e8f；历史告警
-#                快照缺该字段时前端按已知不可逆 id 回退）
+#   destructive  True=不可逆/越权语义（abandon/skip_review_gate/
+#                delete_untracked_stray）；前端据此决定执行前二次确认——
+#                确认门由注册表单源驱动，前端不再硬编码业务 id
+#                （code-review item 19f72b875e8f；历史告警快照缺该字段时
+#                前端按已知不可逆 id 回退，回退清单见 useAlertAdjudication
+#                .tsx 的 choiceNeedsConfirm，注册表新增 destructive 选项时
+#                须同步该清单）
 # 可选第六字段：
 #   spec_scoped  True=spec 作用域动作（动作语义针对某个具体 spec 的状态机，
 #                如 retry_review/force_advance/abandon）；False=非作用域

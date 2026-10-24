@@ -17,6 +17,9 @@ from pathlib import Path
 # 每 64KB 一块；查询窗口只读尾部 ≤1MB（16 块），不再全量扫描日志文件。
 LOG_INDEX_BLOCK = 64 * 1024
 LOG_INDEX_TAIL_WINDOW = 1 * 1024 * 1024
+# created 锚定读取窗口上限（与尾窗同量级）：锚点/文件头到文件尾跨度超上限时
+# 只读上限处并以 .truncated 标注截断，单请求内存不随日志体积无界增长。
+LOG_INDEX_ANCHOR_WINDOW = 1 * 1024 * 1024
 # 进程内重建计数（测试断言用：追加热更新 0 次重建、损坏容错恰好 1 次）。
 _LOG_INDEX_REBUILDS = {"count": 0}
 
@@ -362,29 +365,54 @@ def _norm_utc_iso(ts: str) -> str:
     return ts.replace("+00:00", "Z")
 
 
+class _LogWindow(bytes):
+    """带截断标注的日志窗口 bytes（_read_log_window_from 返回形态）。
+
+    内容语义与普通 bytes 完全一致（decode/切片/相等比较不受影响，未截断路径
+    返回值与无上限时期逐字节相等，既有调用方零改动兼容）；truncated=True
+    表示窗口被 LOG_INDEX_ANCHOR_WINDOW 截断，上限外的日志内容不在返回值中。
+    """
+
+    truncated: bool
+
+    def __new__(cls, data: bytes, truncated: bool = False) -> "_LogWindow":
+        self = super().__new__(cls, data)
+        self.truncated = truncated
+        return self
+
+
 def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
-    """从时间戳 start_ts 对应位置读到文件尾（块偏移索引二分定位起点）。
+    """从时间戳 start_ts 对应位置读取窗口（块偏移索引二分定位起点）。
 
     spec 时间轴的读取窗口：尾部 1MB 尾窗对跨窗口存活的长周期 spec 会静默截断
     早期事件（fenixd.log 无轮转持续增长后，早于尾窗的派发/报错/重派全部丢失）。
     改为按 spec created 锚定：日志 append-only 且时间戳单调，二分最后一个
-    首行时间戳 < start_ts 的块，从该块读至文件尾（锚点前的残留行由调用方
-    spec 名过滤兜底，属无害冗余）。start_ts 为空 → 全文件读取（正确性优先，
-    仅低频 REST 详情页触达）；块首行探测失败 → 保守回退全文件。
+    首行时间戳 < start_ts 的块，从该块读至窗口上限处（锚点前的残留行由调用方
+    spec 名过滤兜底，属无害冗余）。start_ts 为空 → 从文件头读取（正确性优先，
+    仅低频 REST 详情页触达）；块首行探测失败 → 保守回退从文件头读取。
+
+    窗口上限 LOG_INDEX_ANCHOR_WINDOW（与尾窗同量级）：无上限时单请求内存随
+    日志体积无界增长，锚点/文件头到文件尾跨度超上限只读上限处（保留锚点侧
+    早期事件），超出部分按截断语义丢弃并以返回值 .truncated 标注（未截断为
+    False）；上限外截在行中间的残行由调用方逐行 json.loads 失败跳过，与
+    _read_log_tail_window 的尾窗截断同口径。
     """
     idx = _load_log_index(proot, log_path)
     size = idx.get("size", 0)
     offsets = idx.get("offsets", [0]) or [0]
     if size == 0:
-        return b""
+        return _LogWindow(b"")
 
-    def _read(start: int) -> bytes:
+    def _read(start: int) -> "_LogWindow":
+        # 窗口上限：起点到文件尾跨度无界时只读上限处，单请求内存不随日志体积
+        # 线性放大；是否截断经 .truncated 携带给调用方。
+        end = min(size, start + LOG_INDEX_ANCHOR_WINDOW)
         try:
             with log_path.open("rb") as f:
                 f.seek(start)
-                return f.read(size - start)
+                return _LogWindow(f.read(end - start), truncated=end < size)
         except OSError:
-            return b""
+            return _LogWindow(b"")
 
     if not start_ts:
         return _read(0)

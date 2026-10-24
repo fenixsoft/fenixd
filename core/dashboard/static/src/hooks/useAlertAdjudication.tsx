@@ -21,7 +21,9 @@ export function choiceNeedsConfirm(selChoice: AlertChoice | undefined, selChoice
   return (
     selChoice?.destructive === true ||
     (selChoice?.destructive === undefined &&
-      (selChoiceId === 'abandon' || selChoiceId === 'skip_review_gate'))
+      (selChoiceId === 'abandon' ||
+        selChoiceId === 'skip_review_gate' ||
+        selChoiceId === 'delete_untracked_stray'))
   );
 }
 

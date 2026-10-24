@@ -3160,3 +3160,24 @@ class TestAdminActivitiesHarness(unittest.TestCase):
         acts = self._activities()
         self.assertEqual(len(acts), 1)
         self.assertNotIn("harness", acts[0])
+
+
+class TestArchiveManifestBasenameSync(unittest.TestCase):
+    """归档清单文件名两侧常量同步契约（读侧 == 状态机写侧）。
+
+    core.dashboard.data.state.STATE_ARCHIVE_BASENAME 与
+    core.state_machine.ARCHIVE_MANIFEST_FILENAME 是同值复制的两份常量
+    （叶子模块避免反向依赖 state_machine 包循环，注释声明两处 MUST 同步
+    修改，运行期并无单源约束）。任一侧单独改名后 parse_archived_state
+    静默恒返回空 dict，归档条目可见性判定（is_spec_archived 的清单侧
+    合取）随之失效且不易察觉。仿 TestClassifyRunTerminalTypes
+    「测试锁两侧同步」先例补契约。
+    """
+
+    def test_archive_basename_matches_state_machine(self):
+        from core.dashboard.data.state import STATE_ARCHIVE_BASENAME
+        from core.state_machine import ARCHIVE_MANIFEST_FILENAME
+        self.assertEqual(
+            STATE_ARCHIVE_BASENAME, ARCHIVE_MANIFEST_FILENAME,
+            "dashboard 归档清单文件名与 state_machine 侧漂移："
+            "parse_archived_state 将静默恒空，归档条目可见性失效")

@@ -217,7 +217,12 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
          "unmanaged": bool, "daemon_down": bool,
          "file": str|null, "created": str|null, "error": str|null}
     """
-    if not run_id or not run_id.strip():
+    # run_id 类型守卫（code-review item d93da6a1ae26，对齐同模块
+    # reclassify_infra_rounds/set_spec_budget 的参数守卫口径）：非 str
+    # （如程序化直调传 int）会让下方 .strip() 抛 AttributeError 穿透为
+    # 500——程序化直调/路由透传外部输入时不依赖调用方保证。标识符无
+    # 中性归一值，非 str 一并按 missing_run_id 拒绝。
+    if not isinstance(run_id, str) or not run_id.strip():
         return {
             "ok": False,
             "conflict": False,
@@ -3222,6 +3227,10 @@ def _path_already_ignored(proot, path: str) -> bool:
     tracked 文件的普通 check-ignore 恒为非忽略（误报，stash_guard 同款教训），
     ``--no-index`` 只按 ignore 规则判定。git 不可用/超时按「未忽略」处理
     （保守追加，去重由字面行比对兜底）。
+
+    ``path`` 是**字面路径名**（check-ignore 对待测路径不按模式解析），
+    故不做 gitignore 语法转义——转义只作用于写入 .gitignore 的规则行与
+    字面行去重（_gitignore_escape_entry，code-review item f0d504af6cac）。
     """
     try:
         r = subprocess.run(
@@ -3258,12 +3267,34 @@ def _atomic_write_bytes(path, data: bytes) -> None:
         raise
 
 
+def _gitignore_escape_entry(entry: str) -> str:
+    """把清单路径转义成 gitignore 字面匹配语义的规则行（item f0d504af6cac）。
+
+    追加规则的目标是对清单路径**字面**忽略，但 gitignore 语法里首字符
+    ``#`` 是注释、首字符 ``!`` 是反向排除、``* ? [ ]`` 是通配元字符、
+    ``\\`` 是转义前缀、行尾空格被裁剪——含这些形态的文件名原样写入会
+    语义失真，散件实际未被忽略（untrack_stray_wip 根治后文件重新浮现、
+    同指纹告警复发）。转义口径：反斜杠与 glob 元字符前置 ``\\``、首字符
+    ``#``/``!`` 前置 ``\\``、行尾空格逐个前置 ``\\``；普通文件名转义
+    前后不变（零行为漂移）。
+    """
+    escaped = entry.replace("\\", "\\\\")
+    escaped = re.sub(r"([*?\[\]])", r"\\\1", escaped)
+    if escaped[:1] in ("#", "!"):
+        escaped = "\\" + escaped
+    escaped = re.sub(r" +$", lambda m: "\\ " * len(m.group()), escaped)
+    return escaped
+
+
 def _append_gitignore_entries(proot, paths) -> list:
     """把 paths 逐条追加进 .gitignore（去重），返回实际新增条目列表。
 
-    去重双重口径：条目字面行已在 .gitignore → 不重复写（幂等重入不增行）；
-    ``check-ignore --no-index`` 判定已被既有规则覆盖（如通配 ``*.log``）→
-    追加亦冗余，不写。.gitignore 不存在则新建。
+    条目先经 _gitignore_escape_entry 转义成字面匹配规则行再比对/写入
+    （code-review item f0d504af6cac），返回与写入的都是转义后的行。
+    去重双重口径：转义后条目字面行已在 .gitignore → 不重复写（幂等重入
+    不增行）；``check-ignore --no-index`` 判定已被既有规则覆盖（如通配
+    ``*.log``）→ 追加亦冗余，不写（复核仍传原始路径，见
+    _path_already_ignored）。.gitignore 不存在则新建。
     """
     gi = Path(proot) / ".gitignore"
     # 字节级读入（code-review item 41c87143c57e）：.gitignore 可能含历史手工
@@ -3276,10 +3307,14 @@ def _append_gitignore_entries(proot, paths) -> list:
     }
     appended: list = []
     for p in paths:
-        if p in have_lines or _path_already_ignored(proot, p):
+        # 去重按转义后的字面行（item f0d504af6cac）：.gitignore 实际存的
+        # 是转义行，按原始路径比对会漏判（如 # 开头文件名的历史行只是
+        # 注释，永远等不到字面匹配）。
+        entry = _gitignore_escape_entry(p)
+        if entry in have_lines or _path_already_ignored(proot, p):
             continue
-        appended.append(p)
-        have_lines.add(p)
+        appended.append(entry)
+        have_lines.add(entry)
     if appended:
         sep = b"" if (not raw or raw.endswith(b"\n")) else b"\n"
         # 原子写回（code-review item c971a8de0638）：裸 write_bytes 非原子，

@@ -96,7 +96,18 @@ class RRollbackMixin:
         default = 300
         try:
             cfg = self._pm._get_config("pm.dispatch_rollback_backoff_seconds", default)
-        except (TypeError, ValueError):
+        # 配置读取层任何异常（IO/键结构等，不限值错误）均不阻断回滚主流程
+        # （code-review item b59a54cc9ed1）：此前仅捕 TypeError/ValueError，
+        # 其余异常会从 _rollback_failed_dispatch 调用点冒泡到外层 except，
+        # 被记成泛化「State rollback failed」，状态复位与重派入队整段中止。
+        except Exception as cfg_exc:  # noqa: BLE001 —— 读取异常回退缺省
+            logger = getattr(self._pm, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "pm_engine",
+                    "配置 pm.dispatch_rollback_backoff_seconds 读取异常，"
+                    f"回退缺省 {default}: {type(cfg_exc).__name__}: {cfg_exc}",
+                )
             return default
         # bool 显式拒绝（code-review item f56862fd7372）：float() 把 YAML 布尔
         # true 折算成 1.0，绕过下方非正/NaN/inf 全部守卫，防振荡窗被静默从
@@ -288,8 +299,15 @@ class RRollbackMixin:
                 # 纪律一致（_queue_lock 为 RLock，本方法无调用方持该锁）。
                 _active_verifies = getattr(self, "_active_verifies", None)
                 if _active_verifies is not None:
-                    with self._queue_lock:
-                        _active_verifies.discard(spec_name)
+                    # _queue_lock 同样 getattr 兼容（code-review item
+                    # 3c3603ebbcb5）：替身只注入 _active_verifies 时裸访问锁，
+                    # AttributeError 会跳到外层 except 被记成「State rollback
+                    # failed」且跳过后续回滚步骤；锁缺失则跳过摘除（生产
+                    # Dispatcher 恒有锁，行为不变）。
+                    lock = getattr(self, "_queue_lock", None)
+                    if lock is not None:
+                        with lock:
+                            _active_verifies.discard(spec_name)
                 # 入队独立守卫（code-review item 01bfb767effe，与 implementer 分支
                 # 同款）：_enqueue 若裸露在大 try 内，队列写入抛错（锁/IO）会跳到
                 # 外层 except 记误导性「State rollback failed」（尽管上方 update_spec
@@ -857,21 +875,14 @@ class RRollbackMixin:
         # queue.py _MERGEBACK_DEFER_CAUSES；键集合一致性由
         # tests/test_merge_back_spec_dir_guard.py 断言拦截）
         guidance = self._MERGEBACK_CAUSE_GUIDANCE.get(cause_key)
-        if guidance is not None:
-            fix_hint, recommended_action = (
-                text.replace("{spec_name}", spec_name) for text in guidance
-            )
-        else:
-            fix_hint = (
-                f"处置指引：提交主树 spec/changes/{spec_name}/ 目录的未提交改动"
-                f"（git add/commit，含 spec 迭代修补），再把该 spec 复位 ready "
-                f"重新放行 merge-back；或等待 daemon 恢复通道（recovery）下一轮再试。"
-            )
-            recommended_action = (
-                "提交主树 spec/changes/ 目录的未提交改动"
-                "（git add/commit，含 spec 迭代修补）后重新放行该 spec"
-                "（ready 重派）继续 merge-back；分支与已成功实现保留"
-            )
+        if guidance is None:
+            # 未识别键回落 spec 目录指引（保守方向：提交 spec 目录对主树脏/
+            # 锁冲突无害）；直接复用字典条目再做占位符替换（code-review item
+            # cd39e0212af4），消除同文案第二落点的复制粘贴漂移。
+            guidance = self._MERGEBACK_CAUSE_GUIDANCE["spec_dir_inflight"]
+        fix_hint, recommended_action = (
+            text.replace("{spec_name}", spec_name) for text in guidance
+        )
         description = (
             f"SPEC '{spec_name}' merge-back 顺延超限（{cause_label}）："
             f"自首轮顺延（{first_at}）起已连续 {retry_count} 轮仍未解除"
