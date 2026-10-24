@@ -288,6 +288,14 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
     return paths
 
 
+# evidence「文件清单(N):」段条目展示上限（code-review item 25c02e6d1261）：
+# 超限仅展示前 50 条、尾部附「等 N 项」截断注记——未 ignore 的大型产物目录
+# （数千 entry）若全量 join 会生成数十万字符 evidence，AdminStore 记录与告警
+# 面板渲染同被放大。解析侧 admin_actions.parse_stray_wip_manifest 成对剥离
+# 该尾巴（写读两端成对改，防截断注记被当作路径拼进清单）。
+EVIDENCE_MANIFEST_PREVIEW_LIMIT = 50
+
+
 def _evidence_file_manifest(files: list) -> str:
     """evidence「文件清单(N): a, b」段生成单源（code-review c65487d05d8a）。
 
@@ -299,14 +307,29 @@ def _evidence_file_manifest(files: list) -> str:
     成对单源——任一侧调整段名/分隔符即与对侧显式对撞，不再出现单点内联
     改动令 re.search 匹配不到、复发型告警静默降级为首次口径的失配形态。
     段尾 ``; `` 分隔符由调用方拼接（本函数只产段本体）。
+
+    条目数上限（code-review item 25c02e6d1261）：超过
+    ``EVIDENCE_MANIFEST_PREVIEW_LIMIT`` 条仅展示前 50 条，尾部附「等 N 项」
+    截断注记（N＝声明总数，与段头声明计数一致）；阈值内形态与既有输出
+    逐字节一致。截断态下执行器/复发计数只消费前 50 条，残余条目由当刻
+    status 求交与下轮盘点兜底。
     """
-    return f"文件清单({len(files)}): {', '.join(files) or '无'}"
+    count = len(files)
+    if count <= EVIDENCE_MANIFEST_PREVIEW_LIMIT:
+        return f"文件清单({count}): {', '.join(files) or '无'}"
+    shown = files[:EVIDENCE_MANIFEST_PREVIEW_LIMIT]
+    return f"文件清单({count}): {', '.join(shown)} 等{count}项"
 
 
 class MainTreeStrayWipSweeper:
     """主树散件 WIP 周期盘点器：只读建档 + 宽限升级，零触碰。
 
-    进程内持有 first_seen 注册表（fingerprint → 条目，D5 内存态）。由
+    注册表分账概述（code-review item ee9773d4dc18）：tracked 流 first_seen
+    注册表为进程内内存态（fingerprint → 条目，D5 内存态仍有效——重启重置
+    宽限的损失仅时效）；untracked / first_sight / whitelist 三表随持久化
+    文件分区落盘（``.fenix/stray_untracked_registry.json``），跨重启存活
+    （模块 docstring 的 D5 取代注记）。细节见模块 docstring 与 ``__init__``
+    各注册表条目注记。由
     ``pm_engine.sweep_maintree_stray_wip`` 包装方法驱动（供在飞 run_ids 与
     WorktreeManager 句柄），无独立线程/定时器。
     """
@@ -570,10 +593,12 @@ class MainTreeStrayWipSweeper:
         #    不再连带放弃不依赖 HEAD 的 untracked/白名单/首现信号流
         #    （_sweep_locked 对 tracked None 整轮返回 None）。
         diff = self._git("diff", "HEAD")
+        treeish = "HEAD"
         if diff is None:
             probe = self._git("rev-list", "-n", "1", "--all")
             if probe is not None and not probe.strip():
                 diff = self._git("diff", GIT_EMPTY_TREE_SHA)
+                treeish = GIT_EMPTY_TREE_SHA
         if diff is None:
             self._log(
                 "warning",
@@ -581,7 +606,16 @@ class MainTreeStrayWipSweeper:
                 "conservative abandon, entries kept)",
             )
             return None
-        fp = self._fingerprint(files, diff)
+        # 二进制感知指纹补全（code-review item 9255bd1d2e39）：diff 文本对
+        # 二进制文件只输出固定的「Binary files ... differ」行、与内容无关，
+        # 二进制散件被反复改写时路径集与 diff 文本均不变、指纹恒定，宽限从
+        # 旧 first_seen 继续累计（滞留时长高估、可能提前升级 major）。此处
+        # 改以 numstat 识别二进制改动、逐文件内容 sha256 参与指纹——空补全
+        # 段不追加哈希材料，纯文本集合指纹与既有值逐字节一致（既有注册表
+        # 零扰动）。
+        fp = self._fingerprint(
+            files, diff, binary_content=self._binary_diff_content(treeish)
+        )
 
         # 3) 机械归因（复用 identify_wip_occupant，不重造求交逻辑）：命中
         #    在飞实现车道 → 不计时不告警（归属期间不算散件滞留，既有计时
@@ -732,18 +766,74 @@ class MainTreeStrayWipSweeper:
     # ── 指纹 / 注册表 ───────────────────────────────────────────────────
 
     @staticmethod
-    def _fingerprint(files: list, diff_head: str) -> str:
+    def _fingerprint(files: list, diff_head: str, binary_content: str = "") -> str:
         """改动集指纹（D1）：路径排序集 + ``git diff HEAD`` 内容哈希。
 
         ``git diff HEAD`` 对 HEAD 求，含暂存+未暂存——纯 ``git diff`` 对纯
         暂存态散件为空、哈希会退化为空串哈希，故不用。路径集与内容哈希用
         NUL 分隔，防「文件列表拼接歧义」撞指纹。
+
+        ``binary_content``（可选，code-review item 9255bd1d2e39）：二进制
+        改动文件的逐文件内容 sha256 补全段（``_binary_diff_content`` 供给）
+        ——diff 文本对二进制只输出固定一行、与内容无关，不补全则二进制散件
+        内容演化不改指纹、宽限不重计。空串不追加任何哈希材料，纯文本集合
+        指纹与既有值逐字节一致。
         """
         h = hashlib.sha256()
         h.update("\x00".join(sorted(str(p) for p in files)).encode("utf-8"))
         h.update(b"\x00\x00")
         h.update(diff_head.encode("utf-8"))
+        if binary_content:
+            h.update(b"\x00")
+            h.update(binary_content.encode("utf-8"))
         return h.hexdigest()
+
+    def _binary_diff_content(self, treeish: str) -> str:
+        """二进制改动的指纹补全段（code-review item 9255bd1d2e39）。
+
+        ``git diff <treeish>`` 对二进制文件只输出固定文本
+        ``Binary files a/x and b/x differ``、与实际内容无关，D1「内容演化使
+        指纹变化从而重置计时」的意图对二进制散件失效。本助手以
+        ``git diff --numstat <treeish>`` 识别二进制改动（added/deleted 两列
+        均为 ``-``），改读工作区内容 sha256 参与 ``_fingerprint``——内容
+        演化改变指纹、宽限重起。读盘口径对齐 ``_untracked_fingerprint``：
+        先 stat 判普通文件（防管道/设备文件挂起哈希循环），OSError 按
+        unreadable 占位（该文件下轮指纹自然变化、计时重起，不虚构内容
+        哈希）。
+
+        numstat 查询失败或无二进制改动返回空串——``_fingerprint`` 对空串
+        不追加哈希材料，指纹与既有值一致（既有注册表零扰动；查询失败退化
+        回 diff-only 旧口径，不放大成本轮放弃）。
+        """
+        from core.worktree_manager.mergeback import _unquote_git_path
+
+        numstat = self._git("diff", "--numstat", treeish)
+        if numstat is None:
+            return ""
+        rels: list = []
+        for line in numstat.splitlines():
+            cols = line.split("\t")
+            if len(cols) >= 3 and cols[0] == "-" and cols[1] == "-":
+                # quotePath 引号形还原（unquote_git_path 对无引号行幂等，
+                # 与 porcelain 解析同口径），供下方按真实路径读盘。
+                rels.append(_unquote_git_path(cols[2]))
+        if not rels:
+            return ""
+        parts: list = []
+        for rel in rels:
+            digest = hashlib.sha256()
+            try:
+                if not stat.S_ISREG(os.stat(self.project_root / rel).st_mode):
+                    content_fp = "unreadable"
+                else:
+                    with open(self.project_root / rel, "rb") as fh:
+                        for chunk in iter(lambda: fh.read(65536), b""):
+                            digest.update(chunk)
+                    content_fp = digest.hexdigest()
+            except OSError:
+                content_fp = "unreadable"
+            parts.append(f"{rel}={content_fp}")
+        return "\x00".join(sorted(parts))
 
     def _reset_registry_absent(self, current_fingerprints: set) -> None:
         """清除指纹不再出现的注册表条目（1.5 状态复位：不告警不残留）。"""
@@ -1324,8 +1414,6 @@ class MainTreeStrayWipSweeper:
         执行 ignore 动作（盘点零写副作用）。AdminStore 拒写时返回 False
         （不计首现登记，下轮重试），不让提示静默蒸发。
         """
-        from core.admin_store import AdminStore, SIGNAL
-
         files = list(entries)
         draft_line = f"{dir_path}/"
         draft_comment = (
@@ -1344,42 +1432,35 @@ class MainTreeStrayWipSweeper:
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
             f"提示发出前后主树工作区状态未变"
         )
-        store = AdminStore(self.project_root, logger=None)
-        rec = store.append(
-            {
-                "kind": SIGNAL,
-                "signal_type": UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE,
-                "spec": None,
-                "severity": "info",
-                "description": (
-                    "主树 untracked 散件首现提示（周期盘点，info 级只提示"
-                    f"不处置）：目录型产物集合 {dir_path} 首次出现 "
-                    f"{len(files)} 个 untracked entry。同目录仅提示一次"
-                    "（集合内容增长不重提示），目录消失复位后再现视为新"
-                    "首现；本提示不启动升级时钟、不派生任何自动处置，仅"
-                    "建议预防性 ignore"
-                ),
-                "evidence": evidence,
-                "source": "maintree-stray-wip-sweep",
-                "recommended_action": (
-                    "建议面（info 级只提示不处置，不唤起人工）：人工核对"
-                    "目录归属后，将 evidence 中 gitignore 草案行（含成因"
-                    "注释）追加至 .gitignore（预防性 ignore，一行消除该"
-                    "目录后续散件告警），或将默认落盘路径移出仓库树/挪入"
-                    "证据落位目录 .fenix/verify-evidence/<spec>/；本提示"
-                    "不自动执行 ignore 动作（ignore 仍走既有裁决执行器或"
-                    "人工）。同目录仅提示一次，目录消失复位后再现视为新"
-                    "首现"
-                ),
-            }
-        )
-        if rec is None:
-            self._log(
-                "warning",
+        rec = self._append_signal(
+            signal_type=UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE,
+            severity="info",
+            description=(
+                "主树 untracked 散件首现提示（周期盘点，info 级只提示"
+                f"不处置）：目录型产物集合 {dir_path} 首次出现 "
+                f"{len(files)} 个 untracked entry。同目录仅提示一次"
+                "（集合内容增长不重提示），目录消失复位后再现视为新"
+                "首现；本提示不启动升级时钟、不派生任何自动处置，仅"
+                "建议预防性 ignore"
+            ),
+            evidence=evidence,
+            recommended_action=(
+                "建议面（info 级只提示不处置，不唤起人工）：人工核对"
+                "目录归属后，将 evidence 中 gitignore 草案行（含成因"
+                "注释）追加至 .gitignore（预防性 ignore，一行消除该"
+                "目录后续散件告警），或将默认落盘路径移出仓库树/挪入"
+                "证据落位目录 .fenix/verify-evidence/<spec>/；本提示"
+                "不自动执行 ignore 动作（ignore 仍走既有裁决执行器或"
+                "人工）。同目录仅提示一次，目录消失复位后再现视为新"
+                "首现"
+            ),
+            reject_log=(
                 f"{UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE}: 提示写入被拒"
                 f"（AdminStore 拒写），未落盘——本轮不计首现登记，下轮盘点"
-                f"重试",
-            )
+                f"重试"
+            ),
+        )
+        if rec is None:
             return False
         self._log(
             "info",
@@ -1782,8 +1863,6 @@ class MainTreeStrayWipSweeper:
         另附放行规则快照（人工处置时免二次考古 .gitignore）。AdminStore 拒写
         时返回 False（escalated_at 不落、下轮重试），不让告警静默蒸发。
         """
-        from core.admin_store import AdminStore, SIGNAL
-
         files = list(entry.get("files") or [])
         rules = entry.get("rules") or {}
         evidence = (
@@ -1802,41 +1881,34 @@ class MainTreeStrayWipSweeper:
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset/add），"
             f"告警发出前后主树工作区状态未变"
         )
-        store = AdminStore(self.project_root, logger=None)
-        rec = store.append(
-            {
-                "kind": SIGNAL,
-                "signal_type": WHITELIST_UNTRACKED_SIGNAL_TYPE,
-                "spec": None,
-                "severity": "major",
-                "description": (
-                    "白名单文件脱落（周期盘点，major）：negation 放行即声明"
-                    f"入库意图，放行+未跟踪＝白名单脱落——{len(files)} 个被 "
-                    ".gitignore ! 规则放行的路径不在 git 索引中，几乎必然是"
-                    "脱落事故（入库意图已声明、文件却未入库，只能等 fresh "
-                    "clone 或新开 worktree 断链才暴露）。本信号接入自动唤起，"
-                    "等待人工二选一处置（恢复入库或删除放行规则），不自动"
-                    "执行 git add 类修复动作"
-                ),
-                "evidence": evidence,
-                "source": "maintree-stray-wip-sweep",
-                "recommended_action": (
-                    "negation 放行即声明入库意图，放行+未跟踪＝白名单脱落，"
-                    "二选一处置：① git add 恢复入库（白名单状态文件应随仓库"
-                    "入库，如 .fenix/verify.yaml / todo.md / "
-                    "config.template.yaml）；② 删除 .gitignore 对应放行规则、"
-                    "承认其为运行时文件（确保整体 ignore 规则覆盖）。文件清单"
-                    "与放行规则见 evidence。同指纹一次性告警，指纹消失后盘点"
-                    "状态自动复位"
-                ),
-            }
+        rec = self._append_signal(
+            signal_type=WHITELIST_UNTRACKED_SIGNAL_TYPE,
+            severity="major",
+            description=(
+                "白名单文件脱落（周期盘点，major）：negation 放行即声明"
+                f"入库意图，放行+未跟踪＝白名单脱落——{len(files)} 个被 "
+                ".gitignore ! 规则放行的路径不在 git 索引中，几乎必然是"
+                "脱落事故（入库意图已声明、文件却未入库，只能等 fresh "
+                "clone 或新开 worktree 断链才暴露）。本信号接入自动唤起，"
+                "等待人工二选一处置（恢复入库或删除放行规则），不自动"
+                "执行 git add 类修复动作"
+            ),
+            evidence=evidence,
+            recommended_action=(
+                "negation 放行即声明入库意图，放行+未跟踪＝白名单脱落，"
+                "二选一处置：① git add 恢复入库（白名单状态文件应随仓库"
+                "入库，如 .fenix/verify.yaml / todo.md / "
+                "config.template.yaml）；② 删除 .gitignore 对应放行规则、"
+                "承认其为运行时文件（确保整体 ignore 规则覆盖）。文件清单"
+                "与放行规则见 evidence。同指纹一次性告警，指纹消失后盘点"
+                "状态自动复位"
+            ),
+            reject_log=(
+                f"{WHITELIST_UNTRACKED_SIGNAL_TYPE}: 告警写入被拒"
+                f"（AdminStore 拒写），未落盘——本轮不计升级标记，下轮盘点重试"
+            ),
         )
         if rec is None:
-            self._log(
-                "warning",
-                f"{WHITELIST_UNTRACKED_SIGNAL_TYPE}: 告警写入被拒"
-                f"（AdminStore 拒写），未落盘——本轮不计升级标记，下轮盘点重试",
-            )
             return False
         self._log(
             "warning",
@@ -1860,8 +1932,6 @@ class MainTreeStrayWipSweeper:
         AdminStore 拒写时返回 False（escalated_at 不落、下轮重试），不让告警
         静默蒸发。
         """
-        from core.admin_store import AdminStore, SIGNAL
-
         files = list(entry.get("files") or [])
         total_bytes = int(entry.get("total_bytes") or 0)
         evidence = (
@@ -1877,35 +1947,28 @@ class MainTreeStrayWipSweeper:
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
             f"告警发出前后主树工作区状态未变"
         )
-        store = AdminStore(self.project_root, logger=None)
-        rec = store.append(
-            {
-                "kind": SIGNAL,
-                "signal_type": UNTRACKED_SIGNAL_TYPE,
-                "spec": None,
-                "severity": "info",
-                "description": (
-                    "主树 untracked 散件超阈值滞留（周期盘点，info 级只告警"
-                    f"不处置）：{len(files)} 个 untracked entry 自 first_seen "
-                    f"起超过宽限 {grace:g} 分钟。本告警不派生任何自动处置、"
-                    "不唤起人工，仅留痕供 Dashboard 呈现与人工核查"
-                ),
-                "evidence": evidence,
-                "source": "maintree-stray-wip-sweep",
-                "recommended_action": (
-                    "只告警不处置（info 级）：人工按需核对主树这些 untracked "
-                    "文件归属，挪入证据落位目录 .fenix/verify-evidence/<spec>/、"
-                    "补 ignore 规则或删除；文件清单与滞留起点见 evidence。"
-                    "同指纹一次性告警，指纹消失后盘点状态自动复位"
-                ),
-            }
+        rec = self._append_signal(
+            signal_type=UNTRACKED_SIGNAL_TYPE,
+            severity="info",
+            description=(
+                "主树 untracked 散件超阈值滞留（周期盘点，info 级只告警"
+                f"不处置）：{len(files)} 个 untracked entry 自 first_seen "
+                f"起超过宽限 {grace:g} 分钟。本告警不派生任何自动处置、"
+                "不唤起人工，仅留痕供 Dashboard 呈现与人工核查"
+            ),
+            evidence=evidence,
+            recommended_action=(
+                "只告警不处置（info 级）：人工按需核对主树这些 untracked "
+                "文件归属，挪入证据落位目录 .fenix/verify-evidence/<spec>/、"
+                "补 ignore 规则或删除；文件清单与滞留起点见 evidence。"
+                "同指纹一次性告警，指纹消失后盘点状态自动复位"
+            ),
+            reject_log=(
+                f"{UNTRACKED_SIGNAL_TYPE}: 告警写入被拒（AdminStore 拒写），"
+                f"未落盘——本轮不计升级标记，下轮盘点重试"
+            ),
         )
         if rec is None:
-            self._log(
-                "warning",
-                f"{UNTRACKED_SIGNAL_TYPE}: 告警写入被拒（AdminStore 拒写），"
-                f"未落盘——本轮不计升级标记，下轮盘点重试",
-            )
             return False
         self._log(
             "info",
@@ -1934,7 +1997,6 @@ class MainTreeStrayWipSweeper:
         AdminStore 拒写时返回 False（escalated_signal_at 不落、下轮重试），
         不让升级静默蒸发。
         """
-        from core.admin_store import AdminStore, SIGNAL
         from core.dashboard.data.adjudication_choices import choices_for
 
         files = list(entry.get("files") or [])
@@ -1964,38 +2026,31 @@ class MainTreeStrayWipSweeper:
             # 基串末段（零触碰注记）无尾部分隔符，追加段自带 "; " 前缀
             # （对齐 _write_alert 复发注记段形态），防两段文本粘连
             evidence += f"; 归因探测: {attribution_note}"
-        store = AdminStore(self.project_root, logger=None)
-        rec = store.append(
-            {
-                "kind": SIGNAL,
-                "signal_type": UNTRACKED_ESCALATED_SIGNAL_TYPE,
-                "choices": list(choices_for(UNTRACKED_ESCALATED_SIGNAL_TYPE)),
-                "spec": None,
-                "severity": "major",
-                "description": (
-                    "主树 untracked 散件滞留升级（周期盘点第二档，major）："
-                    f"{len(files)} 个 untracked entry（体积合计 "
-                    f"{int(total_bytes)} 字节）滞留时长超 24 小时或集合体积"
-                    "超阈值。本升级信号接入自动唤起，等待认领处置"
-                    "（归档/追加 .gitignore/删除）"
-                ),
-                "evidence": evidence,
-                "source": "maintree-stray-wip-sweep",
-                "recommended_action": (
-                    "核对主树这些 untracked 文件归属后，执行裁决选项 "
-                    "archive_untracked_stray 显式归档（移入登记目录）、"
-                    "ignore_untracked_stray 追加 .gitignore 或 "
-                    "delete_untracked_stray 删除；文件清单、体积与滞留起点见 "
-                    "evidence。同一集合只升级一次，指纹消失后盘点状态自动复位"
-                ),
-            }
+        rec = self._append_signal(
+            signal_type=UNTRACKED_ESCALATED_SIGNAL_TYPE,
+            severity="major",
+            description=(
+                "主树 untracked 散件滞留升级（周期盘点第二档，major）："
+                f"{len(files)} 个 untracked entry（体积合计 "
+                f"{int(total_bytes)} 字节）滞留时长超 24 小时或集合体积"
+                "超阈值。本升级信号接入自动唤起，等待认领处置"
+                "（归档/追加 .gitignore/删除）"
+            ),
+            evidence=evidence,
+            recommended_action=(
+                "核对主树这些 untracked 文件归属后，执行裁决选项 "
+                "archive_untracked_stray 显式归档（移入登记目录）、"
+                "ignore_untracked_stray 追加 .gitignore 或 "
+                "delete_untracked_stray 删除；文件清单、体积与滞留起点见 "
+                "evidence。同一集合只升级一次，指纹消失后盘点状态自动复位"
+            ),
+            choices=choices_for(UNTRACKED_ESCALATED_SIGNAL_TYPE),
+            reject_log=(
+                f"{UNTRACKED_ESCALATED_SIGNAL_TYPE}: 升级告警写入被拒"
+                f"（AdminStore 拒写），未落盘——本轮不计升级标记，下轮盘点重试"
+            ),
         )
         if rec is None:
-            self._log(
-                "warning",
-                f"{UNTRACKED_ESCALATED_SIGNAL_TYPE}: 升级告警写入被拒"
-                f"（AdminStore 拒写），未落盘——本轮不计升级标记，下轮盘点重试",
-            )
             return False
         self._log(
             "warning",
@@ -2007,6 +2062,53 @@ class MainTreeStrayWipSweeper:
         return True
 
     # ── 告警（core/code_fix._write_defer_orphan_alert 同型）─────────────
+
+    def _append_signal(
+        self,
+        signal_type: str,
+        severity: str,
+        description: str,
+        evidence: str,
+        recommended_action: str,
+        choices=None,
+        reject_log: str = "",
+    ) -> "dict | None":
+        """五个 _write_* 告警写入函数的 append/拒写公共助手（code-review
+        item 4d2583300182）。
+
+        AdminStore 构造（logger=None）、payload 组装（``kind``/``spec``/
+        ``source`` 三键五处同值；``choices`` 有无两形态的键序与原内联一致
+        ——choices 紧随 signal_type）、append、拒写路径（rec is None →
+        warning 日志并返回 None）收口于此，消除五处同型样板（调整拒写语义
+        或日志通道只改本处）；各 _write_* 只拼 evidence 与文案后调用，
+        成功路径的既有日志通道与文案（各异）留在调用方，调用方按返回值
+        None/记录维持原有 False/True 返回语义。局部导入避免模块级环依赖
+        （与原内联形态一致）。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+
+        payload: dict = {
+            "kind": SIGNAL,
+            "signal_type": signal_type,
+        }
+        if choices is not None:
+            payload["choices"] = list(choices)
+        payload.update(
+            {
+                "spec": None,
+                "severity": severity,
+                "description": description,
+                "evidence": evidence,
+                "source": "maintree-stray-wip-sweep",
+                "recommended_action": recommended_action,
+            }
+        )
+        store = AdminStore(self.project_root, logger=None)
+        rec = store.append(payload)
+        if rec is None:
+            self._log("warning", reject_log)
+            return None
+        return rec
 
     def _prior_stray_rounds(self, files) -> int:
         """同文件历史 maintree_stray_wip_stale 告警/处置轮数（D2 复发计数）。
@@ -2050,7 +2152,6 @@ class MainTreeStrayWipSweeper:
         ``mergeback_wip_orphan_stuck`` 同款批语义适配）。AdminStore 拒写时
         返回 False（escalated_at 不落、下轮重试），不让告警静默蒸发。
         """
-        from core.admin_store import AdminStore, SIGNAL
         from core.worktree_manager.types import WipOccupantInfo
 
         files = list(entry.get("files") or [])
@@ -2081,7 +2182,6 @@ class MainTreeStrayWipSweeper:
                 "吸收、不再产生散件告警）或等效操作，或在处置记录挂显式跟踪项"
                 "（写明跟踪载体与复查时机）；MUST NOT 再以仅提交收尾"
             )
-        store = AdminStore(self.project_root, logger=None)
         # evo-add-commit-stray-wip-choice 2.2：发射点快照 choices（照
         # mergeback.py 先例）。注册表为单源（缺键回退），告警是历史事实，
         # 注册表演进不回写历史告警的选项集。局部导入避免模块级环依赖。
@@ -2107,30 +2207,24 @@ class MainTreeStrayWipSweeper:
                 "按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后"
                 "盘点状态自动复位"
             )
-        rec = store.append(
-            {
-                "kind": SIGNAL,
-                "signal_type": SIGNAL_TYPE,
-                "choices": list(choices_for(SIGNAL_TYPE)),
-                "spec": None,
-                "severity": "major",
-                "description": (
-                    "主树 tracked 未提交改动（散件 WIP）经周期盘点确认为无主"
-                    f"滞留：{len(files)} 个文件自 first_seen 起超过宽限 "
-                    f"{grace:g} 分钟无人认领（在飞实现车道分支改动集零命中）。"
-                    "盘点只读零触碰，等待人工提交或 stash 处置"
-                ),
-                "evidence": evidence,
-                "source": "maintree-stray-wip-sweep",
-                "recommended_action": recommended,
-            }
+        rec = self._append_signal(
+            signal_type=SIGNAL_TYPE,
+            severity="major",
+            description=(
+                "主树 tracked 未提交改动（散件 WIP）经周期盘点确认为无主"
+                f"滞留：{len(files)} 个文件自 first_seen 起超过宽限 "
+                f"{grace:g} 分钟无人认领（在飞实现车道分支改动集零命中）。"
+                "盘点只读零触碰，等待人工提交或 stash 处置"
+            ),
+            evidence=evidence,
+            recommended_action=recommended,
+            choices=choices_for(SIGNAL_TYPE),
+            reject_log=(
+                f"{SIGNAL_TYPE}: 告警写入被拒（AdminStore 拒写），未落盘——"
+                f"本轮不计升级标记，下轮盘点重试"
+            ),
         )
         if rec is None:
-            self._log(
-                "warning",
-                f"{SIGNAL_TYPE}: 告警写入被拒（AdminStore 拒写），未落盘——"
-                f"本轮不计升级标记，下轮盘点重试",
-            )
             return False
         self._log(
             "warning",

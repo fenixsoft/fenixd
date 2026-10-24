@@ -2899,12 +2899,22 @@ def parse_stray_wip_manifest(evidence) -> list:
     raw = m.group(2).strip()
     if not raw or raw == "无":
         return []
+    # 写侧截断注记剥离（code-review item 25c02e6d1261，与
+    # stray_wip._evidence_file_manifest 成对单源）：清单超 50 条时尾部附
+    # 「等 N 项」（N＝声明总数），不剥离会被当作末位路径拼进清单、令执行器
+    # 对着不存在的路径求交落空。截断态下「声明 N 条、实解析 50 条」属预期
+    # 差异，豁免下方分号截断告警。
+    truncated = False
+    tail = re.search(r"\s等\d+项$", raw)
+    if tail:
+        truncated = True
+        raw = raw[: tail.start()].rstrip()
     out: list = []
     for item in raw.split(","):
         p = item.strip()
         if p and p not in out:
             out.append(p)
-    if declared and len(out) != declared:
+    if declared and not truncated and len(out) != declared:
         logger.warning(
             "stray_wip 清单疑似分号截断：声明 %d 条、实解析 %d 条"
             "（文件名含分号会在该处截断丢尾），请按记录 evidence 原文人工核对",
