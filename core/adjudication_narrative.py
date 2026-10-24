@@ -159,6 +159,12 @@ _MATERIAL_SECTION_MAX_CHARS = max(
     (_NARRATIVE_CONTEXT_MAX_CHARS - 256) // 4, 256
 )
 
+# 告警机械字段单字段 prompt 预算（字符，code-review cecc338d58a1）：
+# description/evidence/recommended_action、choices 文本与 STATE 条目值原文
+# 不经预算直接拼入 prompt，超长错误串会把单次 prompt 撑到【验证材料】16K
+# 量级之外——单字段 2K 截断（_clip_segment 同形态），与既有材料预算口径对齐。
+_PROMPT_FIELD_MAX_CHARS = 2048
+
 # 四段标题锚定正则（与 _validate_structure 同形态 ^##<空白><标题>，MULTILINE
 # 逐行锚定）：截断分段边界用（随 REQUIRED_SECTIONS 单源更新）
 _SECTION_HEAD_RE = re.compile(
@@ -257,6 +263,12 @@ def wait_pending_narrative(timeout: float = 30.0) -> bool:
     with _active_lock:
         threads = list(_active_threads)
     for t in threads:
+        # schedule_narrative 锁内登记、锁外 start()，两步窗口内快照可能拿到
+        # 尚未启动的线程（code-review 79f65e197189）：join 对未启动线程抛
+        # RuntimeError——t.ident 为 None 即未启动，跳过；该线程若确在飞，由
+        # 末尾登记集非空检查兜底返回 False，等待语义不受影响。
+        if t.ident is None:
+            continue
         remaining = max(deadline - time.monotonic(), 0.0)
         t.join(remaining)
     with _active_lock:
@@ -731,8 +743,11 @@ def _build_prompt(
     for c in choices:
         if not isinstance(c, dict):
             continue
+        # label/desc 为自由文本，同受单字段预算约束（code-review cecc338d58a1）
+        label = _clip_segment(str(c.get("label", "")), _PROMPT_FIELD_MAX_CHARS)
+        desc = _clip_segment(str(c.get("desc", "")), _PROMPT_FIELD_MAX_CHARS)
         choice_lines.append(
-            f"- id={c.get('id', '?')}｜label={c.get('label', '')}｜说明={c.get('desc', '')}"
+            f"- id={c.get('id', '?')}｜label={label}｜说明={desc}"
         )
     lines = [
         "你在为一条「转人工裁决」告警撰写一段人类可读的四段式调查叙事，"
@@ -762,9 +777,9 @@ def _build_prompt(
         f"- signal_type: {entry.get('signal_type', '')}",
         f"- spec: {entry.get('spec', '') or '（无）'}",
         f"- severity: {entry.get('severity', '')}",
-        f"- 描述(description): {entry.get('description', '')}",
-        f"- 证据(evidence): {entry.get('evidence', '') or '（无）'}",
-        f"- 建议动作(recommended_action): {entry.get('recommended_action', '') or '（无）'}",
+        f"- 描述(description): {_clip_segment(str(entry.get('description', '')), _PROMPT_FIELD_MAX_CHARS)}",
+        f"- 证据(evidence): {_clip_segment(str(entry.get('evidence', '') or '（无）'), _PROMPT_FIELD_MAX_CHARS)}",
+        f"- 建议动作(recommended_action): {_clip_segment(str(entry.get('recommended_action', '') or '（无）'), _PROMPT_FIELD_MAX_CHARS)}",
         "- 选项快照(choices):",
     ]
     if choice_lines:
@@ -775,7 +790,10 @@ def _build_prompt(
     if isinstance(state_entry, dict):
         for key in ("status", "error", "frozen"):
             if key in state_entry and state_entry.get(key) not in (None, ""):
-                lines.append(f"- {key}: {state_entry.get(key)}")
+                # STATE 条目值（error 可携带长错误原文）同受单字段预算约束
+                # （code-review cecc338d58a1）
+                value = _clip_segment(str(state_entry.get(key)), _PROMPT_FIELD_MAX_CHARS)
+                lines.append(f"- {key}: {value}")
     else:
         lines.append("- （未采集到）")
     lines.append("【验证报告】")
