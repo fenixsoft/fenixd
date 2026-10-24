@@ -777,6 +777,15 @@ class PRepairLaneMixin:
                             f"repair 任务进度回写失败 '{spec_name}'（非阻塞）: {e}",
                         )
                     try:
+                        # 认领摘出后本调用对被认领遗产通常空转（记录已出册，
+                        # consume 的 pop 拿到 None 即返回，code-review item
+                        # b3d6e5357355）：目录已由上方 cleanup(success=True)
+                        # 回收，合并分支正被 implemented 态 STATE.branch 引用
+                        # （在飞保护）本就保留为 verify 锚点。保留本调用作兜底：
+                        # 宽限期内放回后拖过宽限期、或并发车道重新登记且已超期
+                        # 的在册残留遗产仍由此即时回收。不可替换为直接物理回收
+                        # ——branch -D 会被在飞引用保护拦下（每次成功平添
+                        # WARNING），绕开保护则砍掉 verify 的分支锚点。
                         wm.consume_legacy(spec_name)
                     except Exception as e:
                         # 失败不再静默吞掉（code-review item 8fde33e82e7b）：与
