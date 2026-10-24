@@ -63,6 +63,14 @@ EXEMPTION_REASON = {
 #     放行——此类场景要么 status=pass 无需分类，要么按 DOM 断言单独归因。
 NON_DRIVING_VISUAL_STATUSES = ("baseline_deferred", "baseline_rejected")
 
+# 驱动视觉状态词表（与引擎侧 determine_scenario_status 同档口径：
+# core/verify_engine/runner.py 把 diff_detected/warning/error/size_mismatch
+# 四档视觉结论均驱动场景落 warning 而非 pass——error/size_mismatch 两档由
+# code-review item b4c2ca41e4c2 并入 warning 档）。本模块三处判驱动口径
+# （_scenario_has_failure_signal / has_only_non_driving_visual_indicators /
+# derive_default_failed_assertions）统一引用本常量，避免词表漂移。
+DRIVING_VISUAL_STATUSES = ("diff_detected", "warning", "error", "size_mismatch")
+
 
 # 预留判别单源（当前全仓无生产消费点）：仅 tests/test_visual_baseline_integrity.py
 # 引用钉死契约；「judge 不得将非驱动视觉状态计入 bug-found 打回依据」的实际承接点
@@ -73,8 +81,8 @@ def has_only_non_driving_visual_indicators(scenario: dict) -> bool:
 
     Returns:
         True 表示：全部 DOM 断言通过、无步骤失败，且 visual_results 中存在
-        baseline_deferred/baseline_rejected（不含 diff_detected/warning 类
-        驱动视觉结论）——judge 不得将其计入 bug-found 打回依据（同 flaky/env
+        baseline_deferred/baseline_rejected（不含 DRIVING_VISUAL_STATUSES 词表
+        内的驱动视觉结论）——judge 不得将其计入 bug-found 打回依据（同 flaky/env
         待遇）；场景整体 status 应判 pass，无需分类与归因。
     """
     if not isinstance(scenario, dict):
@@ -91,7 +99,7 @@ def has_only_non_driving_visual_indicators(scenario: dict) -> bool:
     for v in visual:
         if not isinstance(v, dict):
             continue
-        if v.get("status") in ("diff_detected", "warning"):
+        if v.get("status") in DRIVING_VISUAL_STATUSES:
             return False  # 存在驱动视觉结论，非「仅非驱动」
     return any(
         isinstance(v, dict) and v.get("status") in NON_DRIVING_VISUAL_STATUSES for v in visual
@@ -171,15 +179,15 @@ def _scenario_has_failure_signal(scenario: dict) -> bool:
     """场景是否含断言清单之外的失败信号（失败步骤 / 驱动视觉结论）。
 
     判定口径与 ``has_only_non_driving_visual_indicators`` 同源：step_results
-    任一 success=False，或 visual_results 存在 diff_detected/warning 类驱动
-    视觉结论，即视为有失败信号（baseline_deferred/rejected 等非驱动视觉
-    状态不构成失败信号）。
+    任一 success=False，或 visual_results 存在驱动视觉状态（DRIVING_VISUAL_
+    STATUSES 词表，与引擎侧 determine_scenario_status 同档）的视觉结论，即视为
+    有失败信号（baseline_deferred/rejected 等非驱动视觉状态不构成失败信号）。
     """
     for s in scenario.get("step_results") or []:
         if isinstance(s, dict) and not s.get("success", True):
             return True
     for v in scenario.get("visual_results") or []:
-        if isinstance(v, dict) and v.get("status") in ("diff_detected", "warning"):
+        if isinstance(v, dict) and v.get("status") in DRIVING_VISUAL_STATUSES:
             return True
     return False
 
@@ -266,7 +274,8 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
 
     条目来源（与 ``_scenario_has_failure_signal`` 同判定口径）：
       - step_results 中 success=False 条目 → ``{"type": "step_error", ...}``
-      - visual_results 中 diff_detected/warning 条目 → ``{"type": "screenshot_mismatch", ...}``
+      - visual_results 中驱动视觉状态（DRIVING_VISUAL_STATUSES 词表）条目
+        → ``{"type": "screenshot_mismatch", ...}``
 
     条目形状与 agents/planner-judge.md「步骤失败型场景必填清单（强制）」处方
     的申报形态一致（type/selector/expected/actual），并附 ``step_failure``
@@ -299,7 +308,7 @@ def derive_default_failed_assertions(scenario: dict) -> List[dict]:
             }
         )
     for v in scenario.get("visual_results") or []:
-        if not (isinstance(v, dict) and v.get("status") in ("diff_detected", "warning")):
+        if not (isinstance(v, dict) and v.get("status") in DRIVING_VISUAL_STATUSES):
             continue
         # 形态归一与 error/detail 同口径（_clip_derived_text，item 114e48d39f91）：
         # baseline/name/id 为非串真值时直接进 _normalize_whitespace 的 re.sub
