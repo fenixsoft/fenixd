@@ -185,35 +185,51 @@ def _read_preserve_sidecar() -> list:
         return []
 
 
+def _atomic_write_text(path, text: str) -> None:
+    """mkstemp + fsync + os.replace 原子写文本文件（写路径样板收口，
+    code-review item 6fbb322ca2fc；实现同型 core/code_review._atomic_write）。
+
+    目录不存在自动创建；失败清理残留 tmp 后原样上抛 OSError，由调用方按各自
+    语义记日志（捕获宽严口径分叉保留在各调用点）。
+    """
+    path = Path(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent),
+    )
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_str, str(path))
+    finally:
+        # replace 成功后 tmp 已不存在，exists() False 即跳过；失败路径清残留
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def _write_preserve_sidecar(entries: list) -> bool:
     """写中断保全 sidecar（原子替换）。返回 True 表示落盘成功；失败仅记调用方日志。
 
     原子写（code-review item 80bcbbf05e5b）：旧实现 ``write_text`` 原地截断后写，
     崩溃/SIGKILL 落在截断与落盘之间会留下截断/非法 JSON，而上方读取侧会把这类
     文件按空列表静默吞掉——恰好丢失本 sidecar 存在意义所在的保全数据
-    （branch/worktree/保护集）。改用同目录 tempfile + fsync + os.replace。
+    （branch/worktree/保护集）。mkstemp 样板经 _atomic_write_text 收口
+    （code-review item 6fbb322ca2fc）。
     """
-    tmp_path = None
     try:
-        PRESERVE_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_str = tempfile.mkstemp(
-            prefix=f".{PRESERVE_SIDECAR.name}.", suffix=".tmp",
-            dir=str(PRESERVE_SIDECAR.parent),
+        _atomic_write_text(
+            PRESERVE_SIDECAR,
+            json.dumps(entries, ensure_ascii=False, indent=2),
         )
-        tmp_path = Path(tmp_str)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(entries, ensure_ascii=False, indent=2))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_str, str(PRESERVE_SIDECAR))
         return True
     except OSError:
-        if tmp_path is not None:
-            try:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-            except OSError:
-                pass
         return False
 
 
@@ -1999,13 +2015,11 @@ class FenixDaemon:
         旧实现固定名 .tmp + write_text 无 fsync，SIGKILL/断电落在写入与 replace
         之间会留半截文件——读侧 _read_restart_history 逐行容错会跳过损坏尾行，
         而尾行恰携带最新 self_triggered_streak，streak 归零使重启循环 critical
-        告警与冷却窗口计数低估。改用同目录 mkstemp + fsync + os.replace，
-        失败清理残留 tmp。
+        告警与冷却窗口计数低估。mkstemp 样板经 _atomic_write_text 收口
+        （code-review item 6fbb322ca2fc）。
         """
         path = self._restart_history_path()
-        tmp_path = None
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
             payload = "".join(
                 json.dumps(
                     {
@@ -2018,22 +2032,8 @@ class FenixDaemon:
                 + "\n"
                 for e in entries
             )
-            fd, tmp_str = tempfile.mkstemp(
-                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent),
-            )
-            tmp_path = Path(tmp_str)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_str, str(path))
+            _atomic_write_text(path, payload)
         except Exception as e:  # noqa: BLE001 — 清理失败不影响自愈
-            if tmp_path is not None:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except OSError:
-                    pass
             self.logger.warning("fenixd", f"restart_history 清理写入失败（non-blocking）: {e}")
 
     def _append_restart_history(self, record: dict) -> None:
@@ -3633,7 +3633,11 @@ class FenixDaemon:
             self._admin_executor.submit(
                 self._spec_delete_worker,
                 spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
-        except RuntimeError as e:
+        except Exception as e:  # noqa: BLE001 — 非 RuntimeError 同样处置
+            # （code-review item 8232ac14d5d8，口径对齐 _check_evolution_checkpoint
+            # / _check_code_review_requests 的宽 Exception 投递点）：只接
+            # RuntimeError 时其它异常会令去重旗标不复位（后续 spec_delete 被去
+            # 重门永久吞掉直至重启）、submitted 泄漏使 _is_idle 空闲判定永不达成
             with self._admin_pool_lock:
                 stats = dict(self._admin_pool_stats)
                 stats["submitted"] -= 1
@@ -4352,30 +4356,14 @@ class FenixDaemon:
         # / _write_restart_history 惯例）：固定名 .tmp 中转在写入中途 SIGKILL 时
         # 会在 .fenix 残留零字节 tmp（直至下次成功写才被清理），改用同目录
         # mkstemp 随机名消除固定名残留窗口（亦免未来第二写者同名互踩）。
-        tmp_path = None
+        # 样板经 _atomic_write_text 收口（code-review item 6fbb322ca2fc）。
         try:
-            result_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_str = tempfile.mkstemp(
-                prefix=f".{result_path.name}.", suffix=".tmp",
-                dir=str(result_path.parent),
+            _atomic_write_text(
+                result_path,
+                json.dumps(payload, ensure_ascii=False, indent=2),
             )
-            tmp_path = Path(tmp_str)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_str, str(result_path))
         except OSError as e:
             self.logger.error("fenixd", f"code_fix 手动触发结果写入失败: {e}")
-            # 失败路径清掉残留 tmp，防 .fenix 堆积零字节临时文件（replace 成功
-            # 后 tmp 已不存在，无需清理；对齐 core/code_review
-            # .write_request_result 同型写路径的清理口径，item e61c4efcdbc4）。
-            if tmp_path is not None:
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except OSError:
-                    pass
 
     def _check_code_fix_requests(self):
         """主循环每轮扫描手动「立即自动修复」文件信号并消费（task 3.1）。
@@ -4875,7 +4863,9 @@ class FenixDaemon:
             self._admin_pool_stats = stats
         try:
             self._admin_executor.submit(self._admin_run_worker, signal)
-        except RuntimeError as e:
+        except Exception as e:  # noqa: BLE001 — 非 RuntimeError 同样回滚泄漏的
+            # submitted 并落 failed 处置留痕（code-review item 8232ac14d5d8，
+            # 口径对齐 _check_evolution_checkpoint / _check_code_review_requests）
             with self._admin_pool_lock:
                 stats = dict(self._admin_pool_stats)
                 stats["submitted"] -= 1
@@ -5712,7 +5702,21 @@ class FenixDaemon:
         drain_seconds = self._run_drain_max_seconds(planned=planned_restart)
         preserved_wts: list = []
         if planned_restart and drain_seconds > 0 and self.agent_runner:
-            wait_list = self._drain_log_waiting()
+            # code-review item 30293577280e：排水探测两步对齐紧邻步骤
+            # （wait_for_running_agents / terminate_lane_processes）的独立容错
+            # 口径——shutdown 处于 start() 的 finally，此处抛出会替换在途异常
+            # 并跳过后续车道进程终止、WIP checkpoint 提交、端口回收与保护集
+            # 构造。探测失败按「在跑清单不可得」降级继续收口（spec 驱动的
+            # 保全不受影响）。
+            try:
+                wait_list = self._drain_log_waiting()
+            except Exception as e:
+                _safe_log(
+                    "error",
+                    f"Drain: enumerate waiting runs failed "
+                    f"(non-blocking, 继续排水收口): {e}",
+                )
+                wait_list = []
             # graceful-restart-drain：排水等待前向每个在飞 run 广播一次
             # checkpoint 信号（写 run 控制旗标即返回，不阻塞排水等待，不产生
             # 新增失败终态）。广播清单计入排水日志留痕。
@@ -5741,7 +5745,14 @@ class FenixDaemon:
                 f"checkpoint broadcast: {len(checkpointed)}/{len(wait_list)}",
             )
             start_ts = time.time()
-            remaining = self.agent_runner.drain_wait(timeout=drain_seconds)
+            try:
+                remaining = self.agent_runner.drain_wait(timeout=drain_seconds)
+            except Exception as e:
+                _safe_log(
+                    "error",
+                    f"Drain wait failed (non-blocking, 继续保全与收口): {e}",
+                )
+                remaining = []
             _safe_log(
                 "info",
                 f"Drain finished after {time.time() - start_ts:.0f}s, "
