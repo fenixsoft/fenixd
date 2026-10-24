@@ -657,6 +657,18 @@ class SpecReviewManager:
             )
             return False
 
+        # 顶层非对象守卫（code-review item cbcc18af7f36）：json.loads 成功不代表
+        # 产物是对象——data 为 []/123/字符串等合法 JSON 非对象时，下方
+        # _check_write_boundary 的 review_data.get(...) 与 data.get("status") 会
+        # 抛 AttributeError 逃出本方法，绕过 _handle_review_failure 的分类/重试/
+        # 冻结收口。按「结果文件读取失败」同款 content 收口（与
+        # _load_snapshot_or_none 的「快照非 JSON 对象」归一先例同口径）。
+        if not isinstance(data, dict):
+            err = f"结果文件顶层非 JSON 对象: {type(data).__name__}"
+            self.logger.warning("spec_review", f"结果文件读取失败: {spec_name}: {err}")
+            self._handle_review_failure(spec_name, err, content_failure=True)
+            return False
+
         # 写入边界校验。MUST NOT 再走 artifact 分类（code-review item 4b9f59b8717f）：
         # 边界错误（approved 带 repairs / repaired 无 repairs / repairs 路径非法）
         # 的产物在 `_artifact_landed_valid` 眼里是**合法**的（它只看文件可解析 +
@@ -1192,6 +1204,15 @@ class SpecReviewManager:
                 return f"repairs 路径越界（须落在 {spec_name}/ 内）: {path}"
             if not resolved.exists():
                 return f"repairs 路径不存在: {path}"
+            # 目录（含 spec 子目录）也不是合法落点（code-review item dd3fd979654d）：
+            # 指向 spec/changes/<spec>/ 子目录的伪 repair 同样穿过归属校验与
+            # exists()（子目录 exists() 恒真），「repaired 状态无修补清单」检查
+            # 被满足而 _verify_snapshot 的快照集合比对因子目录不在文件清单失配
+            # ——评审者可声称 repaired 而实际未修改任何文件。b497c1b4ebbc
+            # 「目录即伪凭据」的结论从目录本身延伸到子目录：唯一合法落点须是
+            # 本 spec 目录内的**文件**。
+            if not resolved.is_file():
+                return f"repairs 路径不是文件: {path}"
             # 归一化为快照键同形（code-review item 8477caae0977）：快照键是
             # str(file.relative_to(project_root)) 规范形（spec/changes/<spec>/a.md），
             # 步骤 1 归属校验只经 resolve() 判合法性——'./spec/...'、冗余分隔符等
