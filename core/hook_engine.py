@@ -365,7 +365,7 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
       值）会在执行线程在飞去重的集合操作处抛 TypeError，且该调用位于线程 try
       保护之外，异常将无审计终结线程，故在配置层按「配置非法（不执行）」拦截；
     - events 非空列表，取值 ∈ VALID_EVENTS（SpecStatus.ALL + 伪事件 all-done，
-      后者仅全局作用域生效）；
+      后者仅全局作用域生效，spec 级订阅由 validate_hooks_config 拦截）；
     - action ∈ 七枚举；
     - action=webhook 必须 url 非空字符串；
     - action=shell 必须 command 非空字符串；
@@ -494,6 +494,16 @@ def validate_hooks_config(config: dict) -> Optional[str]:
             err = validate_hook_entry(h)
             if err:
                 return f"hooks.specs.{spec_name}[{idx}] {err}"
+            # spec 级订阅伪事件 all-done 判非法（code-review item 354176967a91）：
+            # validate_hook_entry 不感知作用域（all-done 在 VALID_EVENTS 中供
+            # global 段校验），而 match_hooks 对 all-done 提前返回、只查 global
+            # 段——spec 级订阅永不触发且无审计留痕，故在 spec 作用域注册期此处
+            # 显式拦截（此处 err 已为 None，h 必为 dict 且 events 为合法列表）
+            if HOOK_EVENT_ALL_DONE in (h.get("events") or []):
+                return (
+                    f"hooks.specs.{spec_name}[{idx}] events 含伪事件 all-done"
+                    f"（all-done 仅全局作用域生效，请订阅至 hooks.global）"
+                )
     return None
 
 
@@ -502,7 +512,8 @@ def match_hooks(config: dict, spec: str, event_type: str) -> List[Tuple[dict, st
 
     返回 [(hook_cfg, scope), ...]，scope ∈ "global" | "spec"。
     匹配不看 enabled（disabled 在执行阶段记 skipped 审计）；事件类型 = 新状态。
-    all-done 是项目级伪事件：仅全局作用域匹配（spec 级订阅被忽略）。
+    all-done 是项目级伪事件：仅全局作用域匹配（spec 级订阅已在注册期被
+    validate_hooks_config 拦截；直改 config.yaml 的存量订阅仍在此被忽略）。
     """
     hooks = hook_config(config)
     matched: List[Tuple[dict, str]] = []
