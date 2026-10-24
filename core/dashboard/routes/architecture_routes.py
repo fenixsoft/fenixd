@@ -995,19 +995,16 @@ class H13ArchitectureRoutesMixin:
             return
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
         # code-review item 277eb5753256：diagram.html 由 claude 原地覆写（非
-        # tmp+rename），落盘是生成侧提示词驱动、代码侧无法原子化，故读侧收敛：
-        # 先完整读一遍产物，读后复核 state 仍为 ready 再下发。claude 只在单飞
-        # 锁持有期内写文件，而 refresh 持锁先落 generating 再起生成线程，故
-        # 「读后 state 仍 ready」即本次读取未与覆写并发（任何覆写必以
-        # generating 落盘为先导，先于读取结束前可见）；复核失败与首查同形
-        # （同 code，前端控制流不受影响）。复核通过后 _send_file 的二次读取
-        # 与复核间隔极短（须在该间隙内受理刷新且覆写恰好落在其 stat/read
-        # 之间），残留窗口可忽略。
-        try:
-            diagram_path.read_bytes()
-        except OSError:
-            # 缺失/不可读交 _send_file 按既有 404 形态处理（口径不变）
-            pass
+        # tmp+rename），落盘是生成侧提示词驱动、代码侧无法原子化，读侧收敛为
+        # 「复核 state 仍为 ready 再下发」。claude 只在单飞锁持有期内写文件，
+        # 而 refresh 持锁先落 generating 再起生成线程，故「读时 state 仍
+        # ready」即覆写未在进行中（任何覆写必以 generating 落盘为先导，先于
+        # 本复核前可见）；复核失败与首查同形（同 code，前端控制流不受影响）。
+        # 产物完整性由本复核与 _send_file 的短窗口二次读取共同保证——_send_file
+        # 实际读取与复核间隔极短（须在该间隙内受理刷新且覆写恰好落在其
+        # stat/read 之间），残留窗口可忽略；缺失/不可读同样交 _send_file 按
+        # 既有 404 形态处理。（曾有的 read_bytes 预读块读取结果被丢弃、对响应
+        # 与控制流均无效果，已删——code-review item 34d118b04dcd。）
         if self._architecture_manager().status(proot).get("state") != "ready":
             self._json(
                 {"error": "架构图尚未生成", "code": "architecture_not_generated"},

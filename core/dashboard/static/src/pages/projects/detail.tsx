@@ -15,6 +15,9 @@ import HookManager from '@/components/HookManager';
 import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
+// 「快速/完整模式」标记单源（code-review item 504cf2d4b647）：标题旁标记与
+// SPEC 切换列表的执行模式列共用，判据/文案/配色与列表页同源
+import { ModeTag } from './components/ModeTag';
 import RunRecordModal from './components/RunRecordModal';
 import RunCancelModal from './components/RunCancelModal';
 // 运行时间轴渲染编排抽至独立子组件（code-review item fa5ce9f79354）；formatUsd
@@ -432,6 +435,15 @@ function FilteredFailuresBlock({
 // = spec 级 CRUD（写入 hooks.specs.<spec>）；「最近执行」= 该 spec 审计。
 function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec: string; readOnly?: boolean }) {
   const { message } = App.useApp();
+  // 迟到保存守卫（code-review item d9af09d2b926）：本组件随 [name, spec] 变化
+  // 不重挂载（Tabs children 同位置复用），保存请求在飞期间切换 SPEC 后旧项目
+  // 的响应会经 setConfig 无条件写入（组件无轮询不会自愈）。effect 内同步
+  // 「当前路由值」，保存返回时比对不一致即丢弃（与主页面 loadSpecAlerts /
+  // handleClearInfo 同款 nameSpecRef 纪律）
+  const nameSpecRef = useRef({ name, spec });
+  useEffect(() => {
+    nameSpecRef.current = { name, spec };
+  }, [name, spec]);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -491,6 +503,9 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
         }),
         (patch) => saveConfig(name, patch),
       );
+      // 在飞期间已切换 SPEC：响应属旧项目配置，丢弃且不提示（nameSpecRef 纪律，
+      // code-review item d9af09d2b926）；return 仍走 finally 的 setSaving(false)
+      if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
       setConfig(cfg);
       message.success('保存成功');
     } catch (e) {
@@ -851,13 +866,9 @@ export default function SpecDetailPage() {
               <Typography.Text ellipsis={{ tooltip: s.name }} style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
                 {s.name}
               </Typography.Text>
-              {/* 执行模式列：与标题旁模式标记同语义（fast-track 单 run 全包，存量无 mode 字段按完整模式） */}
-              <Tag
-                color={s.mode === 'fast-track' ? 'cyan' : 'default'}
-                style={{ marginInlineEnd: 0, fontSize: 12, lineHeight: '18px', paddingInline: 5, paddingBlock: 0 }}
-              >
-                {s.mode === 'fast-track' ? '快速模式' : '完整模式'}
-              </Tag>
+              {/* 执行模式列：单源 ModeTag compact 形态（code-review item 504cf2d4b647，
+                  fast-track 单 run 全包，存量无 mode 字段按完整模式） */}
+              <ModeTag mode={s.mode} compact />
               <OutlinedTag tone={m.tone}>{m.label}</OutlinedTag>
             </div>
           );
@@ -871,11 +882,10 @@ export default function SpecDetailPage() {
     title: (
       <Space size={8} align="baseline" wrap>
         <span>{spec}</span>
-        {/* add-fast-track-mode（task 7.2）：执行模式标记——fast-track 单 run 全包，
-            其余（含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
-        <Tag color={detail?.mode === 'fast-track' ? 'cyan' : 'default'} style={{ marginInlineEnd: 0 }}>
-          {detail?.mode === 'fast-track' ? '快速模式' : '完整模式'}
-        </Tag>
+        {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
+            （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
+            （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
+        <ModeTag mode={detail?.mode} />
         {detail?.status && (
           <Tag color={TONE_TAG_COLOR[statusInfo.tone] || 'default'}>{statusInfo.label}</Tag>
         )}
@@ -1098,7 +1108,10 @@ export default function SpecDetailPage() {
                         </Typography.Text>
                         {failedSteps.map((step, sIdx) => (
                           <div
-                            key={sIdx}
+                            // 复合稳定 key（code-review item 81564d8b530d，口径同
+                            // 下方断言行）：场景重跑/SSE 整表替换在中间增删时避免
+                            // 按位置复用错位，内容拼前缀、索引仅作 tie-breaker
+                            key={`${step.action || ''}-${step.description || ''}-${sIdx}`}
                             style={{
                               padding: '4px 8px',
                               marginBottom: 4,

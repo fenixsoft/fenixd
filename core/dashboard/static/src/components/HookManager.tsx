@@ -80,6 +80,22 @@ function paramSummary(h: HookConfig): string {
   }
 }
 
+// 动作→消费参数白名单（code-review item 65e012b8404d）：Modal 内按动作条件
+// 渲染的参数字段（antd Form.Item 缺省 preserve=true）卸载后值仍留在 form
+// store，validateFields 会把旧动作的参数一并带出（如 webhook 改 commit 后
+// 落盘残留 url/timeout_seconds，后端 validate_hook_entry 不拒绝动作外多余键）。
+// 提交时按本表白名单收敛，非本动作消费的键不写入 entry（字段-动作对应与
+// 后端 validate_hook_entry 口径一致）
+const ACTION_PARAM_KEYS: Record<string, string[]> = {
+  webhook: ['url', 'timeout_seconds'],
+  shell: ['command', 'timeout_seconds'],
+  commit: ['message'],
+  'commit-push': ['message'],
+  push: [],
+  'restart-daemon': [],
+  'restart-dashboard': ['target'],
+};
+
 // ── Props ──────────────────────────────────────────────────────────
 
 export interface HookManagerProps {
@@ -211,16 +227,19 @@ export default function HookManager({
         setSubmitting(false);
         return;
       }
+      // 白名单收敛（ACTION_PARAM_KEYS，code-review item 65e012b8404d）：动作
+      // 切换后残留 form store 的旧参数不写入 entry
+      const allowed = ACTION_PARAM_KEYS[values.action] ?? [];
       const entry: HookConfig = {
         id: editIdx !== null ? hooks[editIdx].id : shortId(),
         enabled: values.enabled !== false,
         events: values.events,
         action: values.action,
-        url: values.url || undefined,
-        command: values.command || undefined,
-        message: values.message || undefined,
-        timeout_seconds: values.timeout_seconds || undefined,
-        target: values.target || undefined,
+        url: (allowed.includes('url') && values.url) || undefined,
+        command: (allowed.includes('command') && values.command) || undefined,
+        message: (allowed.includes('message') && values.message) || undefined,
+        timeout_seconds: (allowed.includes('timeout_seconds') && values.timeout_seconds) || undefined,
+        target: (allowed.includes('target') && values.target) || undefined,
       };
       let next: HookConfig[];
       if (editIdx !== null) {

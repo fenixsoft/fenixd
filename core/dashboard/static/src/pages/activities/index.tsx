@@ -380,18 +380,39 @@ export default function ActivitiesPage() {
       const pageAtStart = pageRef.current;
       // fix 2ca9c5ff7be6: 告警接口的请求级失败（reject）归一到 alerts.error 通道，
       // 与响应级 error 同路径处理——只阻断告警数据上屏，不拖垮运维记录渲染
-      const [first, alerts] = await Promise.all([
+      // code-review item 7dc0791dcba5: 改 Promise.allSettled 双 settle——运维记录
+      // 接口同时失败时不再让 Promise.all 短路进外层 catch、把已归一的告警错误
+      // 整体丢弃；双失败横幅合并两侧来源文案
+      const [activitiesRes, alertsRes] = await Promise.allSettled([
         fetchPage(pageAtStart),
-        getAlerts().catch((e: unknown): AlertsData => ({
-          alerts: [],
-          error: e instanceof Error ? e.message : String(e),
-        })),
+        getAlerts(),
       ]);
       // fix 7d23b9e8d1bc: 过期检查提前到所有 await 之后、越界回退之前——过期请求
       // 直接丢弃，不改写 pageRef/setCurrent、不触发补拉，避免旧响应把页码改成 1
       // 而破坏新请求的 `pageRef.current === pageAtStart` 守卫，致越界页被直接上屏
       if (seq !== loadSeqRef.current) return;
-      let d = first;
+      // 告警侧失败归一（原 getAlerts().catch 形态等价搬移）
+      const alerts: AlertsData =
+        alertsRes.status === 'fulfilled'
+          ? alertsRes.value
+          : {
+              alerts: [],
+              error:
+                alertsRes.reason instanceof Error ? alertsRes.reason.message : String(alertsRes.reason),
+            };
+      if (activitiesRes.status === 'rejected') {
+        // 运维记录接口失败：合并透出两侧原因（双失败时告警侧不再被整体丢弃）
+        const actMsg =
+          activitiesRes.reason instanceof Error
+            ? activitiesRes.reason.message
+            : String(activitiesRes.reason);
+        setError({
+          source: 'activities',
+          message: alerts.error ? `${actMsg}；告警加载失败：${alerts.error}` : actMsg,
+        });
+        return;
+      }
+      let d = activitiesRes.value;
       // 总条数收缩导致当前页越界时回退第 1 页重拉一次（design D5 语义保留：
       // SSE 刷新保持页码，仅越界回退；第 1 页恒 ≤ 总页数，不会循环）。
       // 在飞期间用户已翻页（pageRef 变化）则本请求已过期，回退交给新请求处理

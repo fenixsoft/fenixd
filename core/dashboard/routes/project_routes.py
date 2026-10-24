@@ -627,6 +627,14 @@ class H2ProjectRoutesMixin:
         # 缺失 → 404 "project not found"。与共用助手 _project_query_or_error
         # 的统一口径（未知/不存在一律 404）差异系有意保留，改用共用助手会
         # 破坏 test_describe_unknown_project_returns_400。
+        # 缺参先判（code-review item e98f750f2df9，文案口径对齐
+        # _project_query_or_error）：缺参（前端漏拼 query）与名字笔误共用
+        # "unknown project" 无法区分排查方向；状态码仍 400，不动上方
+        # c6597d26ac7c 钉住的双档契约
+        name = query.get("project", [None])[0]
+        if not name:
+            self._error(400, "缺少 project 参数")
+            return
         project = self._project_from_query(query)
         if project is None:
             self._error(400, "unknown project")

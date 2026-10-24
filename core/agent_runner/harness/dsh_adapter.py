@@ -817,8 +817,15 @@ class DshAdapter:
         # 清单为空，覆写的 ANTHROPIC_AUTH_TOKEN/ANTHROPIC_MODEL 会原样回灌
         # （BUG-01）。consumed 两键是 provider 链渲染来源，同样不透传。
         consumed = ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY")
+        # clean 口径追加 AGENT_RUN_BANNED_ENV_KEYS 过滤（code-review item
+        # 9d831802eeab，与 claude_adapter.build_env clean 分支同型）：剔除掉的
+        # agent-run 专用键不得经覆写字典回灌进一次性 spawn 子进程。仅 clean
+        # 分支生效——agent-run 口径的 FENIX_RUN_* 随后由显式注入覆写，语义不变。
+        clean_mode = req.env_mode == ENV_MODE_CLEAN
         for key, value in (req.env_overrides or {}).items():
             if key in consumed or is_dsh_banned_env_key(key):
+                continue
+            if clean_mode and key in AGENT_RUN_BANNED_ENV_KEYS:
                 continue
             env[key] = value
 

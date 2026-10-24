@@ -66,6 +66,9 @@ import {
   trailColorFor,
   GATES_STROKE,
 } from './progressPhase';
+// 「快速/完整模式」标记单源（code-review item 504cf2d4b647）：桌面「模式」列、
+// 移动卡片（与 detail.tsx）共用，判据/文案/配色改一处生效
+import { ModeTag } from './components/ModeTag';
 // add-spec-list-filter-stickiness：过滤状态 ↔ URL 查询参数白名单与 fail-safe
 // 解析（纯函数单测见 tests/listFilters.test.mjs）
 import {
@@ -585,13 +588,9 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <Badge color={TONE_DOT[m.tone]} text={m.label} />
                 <StatusWaitGroup record={record} />
-                {/* 模式标记与桌面「模式」列同源判据、同款 Tag：存量无 mode
-                    字段的 spec 按缺省 full 展示「完整模式」等价标记 */}
-                {record.mode === 'fast-track' ? (
-                  <Tag color="cyan" style={{ marginInlineEnd: 0 }}>快速模式</Tag>
-                ) : (
-                  <Tag style={{ marginInlineEnd: 0 }}>完整模式</Tag>
-                )}
+                {/* 模式标记单源 ModeTag（code-review item 504cf2d4b647）：存量无
+                    mode 字段的 spec 按缺省 full 展示「完整模式」等价标记 */}
+                <ModeTag mode={record.mode} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <SpecNameCell project={project} record={record} />
                 </div>
@@ -981,6 +980,13 @@ export default function SpecListPage() {
   }, [name]);
   useEffect(() => {
     if (tree.length === 0) return;
+    // 树归属门控（code-review item e6881ebd1b26）：name 变更的复位 effect 与
+    // SSE flush 的 setSpecMap 同批提交时，本 effect 会以旧项目的 tree 执行——
+    // 闩锁刚被复位又被置回、旧 keys 记入已见，新项目同名 spec 被判「已见」
+    // 不再默认展开、error 信息行保持折叠。specLoadedRef 只在当前项目 load
+    // 成功落地时置位、随复位清 false：false 即 tree 快照不属于当前 name，
+    // 跳过本次展开处理，等新项目数据落地后正常初始化
+    if (!specLoadedRef.current) return;
     // 递归收集全树所有节点名（code-review item 6869f19d419c）：三层归并树
     // （fix-fix-a→fix-a→a）只收根名会漏掉中间层，其子级默认折叠隐藏；叶子名
     // 也要收——error 信息行走 expandedRowRender，同受这组 keys 控制。
@@ -1244,15 +1250,10 @@ export default function SpecListPage() {
       sorter: (a: SpecSummary, b: SpecSummary) => (a.mode || '').localeCompare(b.mode || ''),
       onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      // add-fast-track-mode（task 7.2）：执行模式标记——fast-track 与 full 可辨识，
-      // 存量无 mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
-      render: (v: string | null | undefined) => (
-        v === 'fast-track' ? (
-          <Tag color="cyan" style={{ marginInlineEnd: 0 }}>快速模式</Tag>
-        ) : (
-          <Tag style={{ marginInlineEnd: 0 }}>完整模式</Tag>
-        )
-      ),
+      // add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
+      // （code-review item 504cf2d4b647），fast-track 与 full 可辨识，存量无
+      // mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
+      render: (v: string | null | undefined) => <ModeTag mode={v} />,
     },
     {
       title: '名称',

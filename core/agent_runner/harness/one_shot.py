@@ -115,7 +115,9 @@ def run_one_shot(
         on_timeout: 超时清场回调（缺省两段式 SIGTERM→SIGKILL 整组；knowledge
             蒸馏传自有 _kill_process_group 保持既有直 SIGKILL+弃管道语义）。
             回调自身异常仅记日志并回退缺省两段式兜底清场，不清空后续收割、
-            不向上传播。
+            不向上传播。仅 TimeoutExpired（超时）分支触发——通信异常与
+            BaseException 清场走缺省两段式、不经本回调
+            （code-review item 8308651a90b2）。
         spawn_guard: 包住「Popen + on_spawn」的上下文管理器（锁_scope 对齐：
             architecture_routes 现状只在 Popen+登记段持 _guard，communicate 在
             锁外）；None = 空 context。
@@ -153,7 +155,9 @@ def run_one_shot(
             _kill_process_group(proc, terminate_grace_seconds)
 
     def _reap_with_timeout_callback() -> None:
-        # 超时/通信异常路径的清场口径：on_timeout 注入形态下回调即清场，
+        # 超时路径的清场口径（通信异常与 BaseException 路径走缺省两段式清场、
+        # 不触发本回调——回调语义仅限超时，code-review item 8308651a90b2）：
+        # on_timeout 注入形态下回调即清场，
         # 但回调自身异常不得短路清场（item 1574b7d430db）——否则
         # _kill_process_group 与二次 communicate 收割都被跳过，已 spawn 的
         # 独立进程组（start_new_session）无人收割成孤儿；回调异常仅记日志
@@ -199,9 +203,12 @@ def run_one_shot(
         except (subprocess.TimeoutExpired, ValueError):
             stdout, stderr = "", ""
     except Exception as e:  # noqa: BLE001
-        # 通信期非超时异常：按超时同径清场后包装上抛（spawn 阶段异常已在
-        # 上方原样穿透，站点据此区分两段文案）
-        _reap_with_timeout_callback()
+        # 通信期非超时异常：走缺省两段式清场后包装上抛（spawn 阶段异常已在
+        # 上方原样穿透，站点据此区分两段文案）。不走 on_timeout——该回调语义
+        # 仅限超时路径（与下方 BaseException 分支同一口径），调用方为超时场景
+        # 注册的专属副作用（超时打点/告警）不因通信错误误触发
+        # （code-review item 8308651a90b2）
+        _sweep_spawned_process_group()
         raise OneShotCommunicateError(e) from e
     except BaseException:
         # Ctrl+C/SystemExit 等 BaseException 同样不遗留活子进程：与 on_spawn
