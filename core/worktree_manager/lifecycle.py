@@ -655,6 +655,11 @@ class G1LifecycleMixin:
                 timeout=30,
             )
             if add.returncode != 0:
+                # 留痕口径对齐下方 commit 失败分支（code-review item fe67f0001bd2）
+                self.logger.warning(
+                    "worktree_manager",
+                    f"SPEC add failed: {rel}: {add.stderr.strip() or add.stdout.strip()}",
+                )
                 return False
 
             # 路径作用域守卫（code-review item a83addc7fe6d）：裸 commit 会把 index
