@@ -159,6 +159,22 @@ class TokenAccountant:
                     f"（既有 _cost_usd={entry.get('_cost_usd')!r}，"
                     f"本轮 cost={cost!r}），跳过本轮成本累计",
                 )
+            elif cost is not None and type(cost) is bool:
+                # code-review item c40186889899：本轮 usage_info.get("cost_usd")
+                # 为布尔值时 float(True)=1.0 / float(False)=0.0 转换成功且为有限
+                # 值，下方有限值守卫拦不住，成本被静默按 1/0 美元入账且无任何
+                # 留痕——与既有 _cost_usd 的 bool 钳制（ccbf36ac4b84）及
+                # _check_token_budget（b75b390dd579）/maintenance_runs 的全仓
+                # bool 剔除口径不一致（生产调用方经 _extract_usage_info 归一后
+                # bool 已折 None，此处为调用方绕过归一直传裸 dict 的纵深防御）。
+                # 比照上方既有值钳制同口径用 ``type(cost) is bool`` 精确排除
+                # （bool 是 int 子类，isinstance 会连带误伤合法 int）：记 warning
+                # 后跳过本轮成本累计；token 分项不受影响，仍正常写回。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 累计本轮成本值非法 '{spec_name}'"
+                    f"（本轮 cost={cost!r}），跳过本轮成本累计",
+                )
             elif cost is not None:
                 try:
                     prev_cost = float(entry.get("_cost_usd", 0) or 0)
@@ -218,11 +234,12 @@ class TokenAccountant:
         告警 MUST NOT 修改 spec 状态（不自动冻结，design 决策有意为之）。
         """
         budget = self._pm._get_config("agents.token_budget_millions", 50)
-        # code-review item 8a37762cf313：config 若被误写成非数值（如 "80"），裸
-        # budget <= 0 比较抛 TypeError、float() 抛 ValueError，沿锁外的
+        # code-review item 8a37762cf313：config 若被误写成非法字符串（如 "8a"），
+        # 裸 budget <= 0 比较抛 TypeError、float() 抛 ValueError，沿锁外的
         # _accumulate_token_usage 调用点冒泡到 runner 收工路径，中断其后的验证链
-        # 侧车与指标记录。容错口径与同模块 _to_int 对齐：非法值记 warning 并回退
-        # 缺省 50，保证预算检查永不向收工路径抛异常。
+        # 侧车与指标记录；纯数字字符串（如 "80"）则被 float() 静默接受为合法
+        # 预算，不记 warning 也不回退缺省。容错口径与同模块 _to_int 对齐：非法
+        # 值记 warning 并回退缺省 50，保证预算检查永不向收工路径抛异常。
         # code-review item b75b390dd579：NaN/inf 经 float() 成功且穿透下方
         # ``not budget or budget <= 0`` 守卫（not nan 与 nan <= 0 均为 False），
         # ratio 变 NaN 后 80%/100% 两档比较恒 False，预算告警被静默禁用且无
