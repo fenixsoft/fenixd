@@ -60,10 +60,11 @@ def parse_spec_from_worktree_name(name: str):
 
 
 def is_spec_alive(spec: str, project_root: Path) -> bool:
-    """判据 1：spec 存活于 spec/changes/ 或 spec/archive/*-<spec>。
+    """判据 1：spec 存活于 spec/changes/ 或 spec/archive/<日期>-<spec>。
 
-    archive 按 *-<spec> 后缀全等匹配（与 _spec_from_branch 约定一致）。
-    无法判定时返回 True（fail-safe）。
+    archive 目录名形如 YYYY-MM-DD-<spec>（归档写点统一为
+    f"{date.today().isoformat()}-{spec_name}"），按「剥离日期前缀后整段
+    == spec」全等匹配。无法判定时返回 True（fail-safe）。
     """
     try:
         changes_dir = project_root / "spec" / "changes"
@@ -74,9 +75,14 @@ def is_spec_alive(spec: str, project_root: Path) -> bool:
             for entry in archive_dir.iterdir():
                 if not entry.is_dir():
                     continue
-                # *-<spec> 全等后缀：archive 目录名形如 YYYY-MM-DD-<spec>，
-                # 须完全匹配后缀 "-<spec>"（非 glob 前缀，防 spec 互为前缀误归属）
-                if entry.name.endswith("-" + spec):
+                # 日期前缀剥离后整段全等（code-review 3178096202d1：原
+                # endswith("-"+spec) 在 spec 名互为后缀组件时误命中——归档
+                # 2026-01-01-add-spec-hooks 以 "-hooks" 结尾使已死 spec "hooks"
+                # 被误判存活，其无主 serving worktree 与 boot.log 每轮被本判据
+                # 保留，回收永不发生）；非日期前缀形态不归属本判据，失败方向
+                # 仍是保守保留
+                m = re.fullmatch(r"\d{4}-\d{2}-\d{2}-(.+)", entry.name)
+                if m is not None and m.group(1) == spec:
                     return True
         return False
     except Exception:
@@ -144,7 +150,9 @@ def has_live_process(wt_path: Path) -> bool:
                 # 字面前缀匹配在 cwd 为拼写不同但同物理的路径时漏命中，失败
                 # 方向是「判无主→删目录」而非保守保留
                 cwd_real = os.path.realpath(cwd_link)
-                if cwd_real == target or cwd_real.startswith(target + "/"):
+                # code-review 7eab5dba1293：分隔符与 argv 判据同源（os.sep），
+                # 消除同函数两口径
+                if cwd_real == target or cwd_real.startswith(target + os.sep):
                     return True
             except OSError:
                 pass
