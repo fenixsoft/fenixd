@@ -1280,6 +1280,24 @@ class ProviderCircuit:
                 )
                 self._transient_break_until = 0.0
                 self._transient_break_events.clear()
+                # 有界化（code-review item 67f98b3ae41d）：解封记账两字典
+                # （_transient_unseal_counts/_transient_unseal_hot_at）按指纹只增
+                # 不删（_effective_unseal_count 仅读取时惰性衰减数值），长寿命
+                # 进程遇大量不同瞬断指纹时无界慢增。照 is_signal_kill_cooldown
+                # 到期 pop 先例，在本临界区内顺手回收已衰减归零的条目：计数>=1
+                # 衰减到 0 蕴含距 hot_at 已满至少一个稳定窗（elapsed >=
+                # count*stable）；本次 involved 指纹刚 _bump 保温（count>=1、
+                # hot_at=now）不会命中。纯内存回收无行为变更：被删条目 effective
+                # 本为 0，后续 _bump_unseal_count 自 0+1 起算等价（读侧一律走
+                # effective 语义，无直读原始条目的判定）。
+                stale_unseal_fps = [
+                    fp
+                    for fp in self._transient_unseal_counts
+                    if self._effective_unseal_count(fp, now) <= 0
+                ]
+                for fp in stale_unseal_fps:
+                    self._transient_unseal_counts.pop(fp, None)
+                    self._transient_unseal_hot_at.pop(fp, None)
                 # 解封瞬间不再全量放行：错峰/探针残留一并清零（新 hold 全新起算）。
                 self._transient_release_next_at = 0.0
                 self._transient_release_until = 0.0
@@ -1749,8 +1767,13 @@ class ProviderCircuit:
 
         「读旧引 → 造新 → 存新」持锁，cancel 旧/start 在锁外（item
         62a1c4e3e71f）：并发排程的交错此前可留下两活定时器只跟踪其一。
-        锁外安全：cancel 已 fire 定时器为无操作；start 后回调线程经
-        _on_unseal_wake 再取锁，不持 _queue_lock，无锁序风险。start 失败
+        锁外安全：cancel 已 fire 定时器为无操作；已知无害交错（item
+        f7ad4efbd466）：旧定时器尚未 start 即被并发排程 cancel、本线程
+        随后对同一实例 start 时 run() 的 finished.wait 立即放行——回调
+        提前执行一次冗余唤醒，由 _on_unseal_wake 的身份比较（不误清并发
+        新登记）与 _next_unseal_wake_delay 按当前态锚点重算兜底，仅多余
+        一次 _process_queue。start 后回调线程经 _on_unseal_wake 再取锁，
+        不持 _queue_lock，无锁序风险。start 失败
         （线程资源耗尽/解释器关停期可抛 RuntimeError）按身份清登记并
         WARNING 留痕（item fac3f4dfaeb4），交下一次状态迁移重新排程，
         自驱链不静默断裂。
