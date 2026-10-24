@@ -139,8 +139,14 @@ def build_import_graph(tests_dir: str) -> Dict[str, Set[str]]:
 
         rel_module = ".".join(py_file.relative_to(Path(tests_dir)).with_suffix("").parts)
         module_path = f"tests.{rel_module}"
-        # 所在包路径 = 模块路径剥掉自身末段（module_path 至少含 tests.x，包至少为 tests）
-        imports = extract_imports_from_file(str(py_file), module_path.rsplit(".", 1)[0])
+        # 所在包路径 = py_file.parent 相对 tests_dir 的目录段以 "." 拼接（无目录
+        # 段时回退顶层包 tests），不从模块键 rsplit 推导：文件名自带点号时（如
+        # tests/test_v1.2.py → 键 tests.test_v1.2）末段点号会被误当段边界，把
+        # 所在包错推成 tests.test_v1（真实包为 tests），相对导入会被锚到不存在
+        # 的包而生成永不匹配的依赖边；按目录段拼接与文件名是否含点号解耦，普通
+        # 文件两种推导结果完全一致。
+        package = ".".join(("tests", *py_file.parent.relative_to(Path(tests_dir)).parts))
+        imports = extract_imports_from_file(str(py_file), package)
         graph[module_path] = imports
 
     return graph
