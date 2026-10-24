@@ -738,12 +738,32 @@ class G2LegacyRegistryMixin:
             # 从未被收割——目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检
             # 测永久受骗）。与 cleanup / cleanup_orphans / stale_sweep /
             # keep_for_reuse 四条删除或保留目录的路径同口径。
-            self._kill_worktree_strays(wt.name)
+            try:
+                self._kill_worktree_strays(wt.name)
+            except Exception as e:
+                # 杀残留异常隔离（code-review item 6bea25616b59，与
+                # cleanup_orphans 的 5f3dee9b3ef8 整改口径对齐）：残余未预期
+                # 异常不穿出本方法中断 _reclaim_expired_legacy 的回收循环与
+                # consume_legacy 收编路径，WARNING 留痕后继续后续步骤。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} stray-kill failed for "
+                    f"'{spec_name}': {e}",
+                )
             # 删除前留档（code-review item d1735b0c555f，cleanup_orphans
             # docstring 声明的 MUST 不变量）：本方法面对的正是未提交半成品
             # （register_legacy：死亡 run 的未提交半成品目录保留），销毁前做
             # stash create 快照引用供事后取证；失败仅 WARNING，不阻断删除。
-            self._snapshot_dirty_worktree(wt, branch or None)
+            try:
+                self._snapshot_dirty_worktree(wt, branch or None)
+            except Exception as e:
+                # 快照异常隔离（code-review item 6bea25616b59，同上款口径）：
+                # 失败仅 WARNING，不阻断删除序列与整轮回收循环。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} snapshot failed for "
+                    f"'{spec_name}': {e}",
+                )
             try:
                 res = subprocess.run(
                     ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
