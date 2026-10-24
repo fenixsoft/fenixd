@@ -17,6 +17,7 @@ admin_monitor。
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -123,6 +124,12 @@ def build_isolated_settings(
     return settings
 
 
+# fenixd. 可传播层级（对齐 one_shot.py；core/ 禁止裸 getLogger(__name__)）。
+# 隔离配置写失败是不向上抛的降级语义，无留痕则运维无法察觉 agent 以缺
+# hooks/模型映射的降级配置运行（code-review item e207cc39ba4b）。
+logger = logging.getLogger("fenixd.agent_runner.harness.claude_adapter")
+
+
 def ensure_agent_config_dir(
     project_root: Path | str,
     provider_name: str,
@@ -201,15 +208,24 @@ def ensure_agent_config_dir(
         # 内容不匹配（旧版无 env / 用户改过 / 损坏）→ 原子重写（幂等陷阱处置）
         try:
             _write_atomic()
-        except OSError:
-            pass
+        except OSError as e:
+            # 不向上抛的降级语义不变，但 WARNING 留痕（code-review item
+            # e207cc39ba4b）：settings.json 缺失/停留旧版意味着 PreToolUse
+            # hook（block-image-read）与子代理模型映射全部缺席
+            logger.warning(
+                "ensure_agent_config_dir: 隔离 settings.json 重写失败"
+                "（agent 以降级配置运行，无 hooks/模型映射）: %s", e,
+            )
         _ensure_symlinks()
         return cfg_dir
 
     try:
         _write_atomic()
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning(
+            "ensure_agent_config_dir: 隔离 settings.json 首建失败"
+            "（agent 以降级配置运行，无 hooks/模型映射）: %s", e,
+        )
 
     _ensure_symlinks()
     return cfg_dir
