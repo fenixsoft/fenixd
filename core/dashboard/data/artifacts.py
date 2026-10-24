@@ -379,6 +379,7 @@ def parse_verdict(project_root, spec_name) -> dict:
     if any(v is None for v in summary.values()):
         for pat, field in [
             # 否定环视排除「未通过」「不通过」前缀，避免兜底把失败计数误计为 passed
+            # [fenix-ignore:35c45d919fae] 「通过率/失败率/错误率：N」形态中「率」隔断关键词与冒号，兜底正则要求关键词后紧跟 [：:]（\s* 仅吃空白）故永不命中，_fold_summary 键表亦无率形键，passed/failed/errors 保持 None，所述误折桶不可复现（实测正则三率形态均 None）
             (r"(?<![未不])通过", "passed"),
             ("失败", "failed"),
             ("错误", "errors"),
