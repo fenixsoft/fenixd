@@ -503,7 +503,7 @@ class TestGenerateFixSpecContent(unittest.TestCase):
         res = generate_fix_spec(self.repo, self.sm, list(self.item_ids.values()))
         self.assertTrue(res["ok"], res)
         all_ids, checked = parse_tasks_md(self.repo, res["spec_name"])
-        self.assertEqual(all_ids, ["1.1", "2.2"], all_ids)
+        self.assertEqual(all_ids, ["1.1", "1.2"], all_ids)
         self.assertEqual(checked, set())
 
     def test_deliverables_dedup_same_file(self):

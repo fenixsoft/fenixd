@@ -2475,8 +2475,10 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         # file 同经 _one_line 折叠：换行会使任务行第二行起沦为裸文本、
         # file:line 归属校验错位（44975cdf30fb）；与上方 deliverables path
         # 同口径折叠，两处引用保持一致。
+        # 编号口径：组号固定 1、组内按条目序递增（1.1、1.2、…），符合常规
+        # 「组.序」编号语义（code-review item f89dffefe985）。
         lines.append(
-            f"- [ ] {idx}.{idx} {_one_line(it.get('title'))}"
+            f"- [ ] 1.{idx} {_one_line(it.get('title'))}"
             f" — {_one_line(it.get('file'))}:{it.get('line')}"
         )
         lines.append("")
