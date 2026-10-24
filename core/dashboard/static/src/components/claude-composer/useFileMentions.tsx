@@ -49,7 +49,10 @@ export function useFileMentions({
   dropdownRef,
 }: UseFileMentionsOptions) {
   const fileList = useMemo(() => toMentionableFiles(files), [files]);
-  const [fileMentions, setFileMentions] = useState<string[]>([]);
+  // 会话级累积语义命名（code-review item c9a8ffd19c8f）：只在 selectFile 时
+  // 追加、从不清空，「当前仍在输入中的提及」靠下方 includes 过滤取——旧名
+  // fileMentions 易误读为当前提及列表
+  const [knownFileMentions, setKnownFileMentions] = useState<string[]>([]);
   const [filteredFiles, setFilteredFiles] = useState<MentionableFile[]>([]);
   const [showFileDropdown, setShowFileDropdown] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(-1);
@@ -100,11 +103,13 @@ export function useFileMentions({
   }, [showFileDropdown, textareaRef, dropdownRef]);
 
   const activeFileMentions = useMemo(() => {
-    if (!input || fileMentions.length === 0) {
+    if (!input || knownFileMentions.length === 0) {
       return [];
     }
-    return fileMentions.filter((path) => input.includes(path));
-  }, [fileMentions, input]);
+    // @ 锚定（code-review item efc20c017bbe）：要求路径前紧邻 @，普通位置的
+    // 同名子词（后随空格等边界字符）不再被判为提及而误染色
+    return knownFileMentions.filter((path) => input.includes(`@${path}`));
+  }, [knownFileMentions, input]);
 
   const sortedFileMentions = useMemo(() => {
     if (activeFileMentions.length === 0) {
@@ -119,11 +124,17 @@ export function useFileMentions({
       return null;
     }
     const pattern = sortedFileMentions.map(escapeRegExp).join('|');
-    // 边界前瞻：捕获片段后不得紧跟路径字符，防同前缀更长文件名（a.ts vs a.tsx）的前缀被误染。
-    return new RegExp(`(${pattern})(?![A-Za-z0-9._/-])`, 'g');
+    // @ 锚定 + 边界前瞻（code-review item efc20c017bbe）：仅「@ 紧邻路径」的
+    // 真实提及参与染色（捕获片段连 @ 一并高亮），普通位置的子词不再误染；
+    // 后向边界前瞻防同前缀更长文件名（a.ts vs a.tsx）的前缀被误染。
+    return new RegExp(`(@${pattern})(?![A-Za-z0-9._/-])`, 'g');
   }, [sortedFileMentions]);
 
-  const fileMentionSet = useMemo(() => new Set(sortedFileMentions), [sortedFileMentions]);
+  // 分段含 @ 前缀（与 fileMentionRegex 的捕获形态一致），成员判定按 '@'+path
+  const fileMentionSet = useMemo(
+    () => new Set(sortedFileMentions.map((p) => `@${p}`)),
+    [sortedFileMentions],
+  );
 
   // overlay 着色：已提及路径渲染为高亮 span（视觉层；发送仍为原始文本）。
   const renderInputWithMentions = useCallback(
@@ -166,7 +177,7 @@ export function useFileMentions({
 
       setInput(newInput);
       setCursorPosition(newCursorPosition);
-      setFileMentions((previousMentions) =>
+      setKnownFileMentions((previousMentions) =>
         previousMentions.includes(file.path)
           ? previousMentions
           : [...previousMentions, file.path],

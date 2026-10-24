@@ -149,6 +149,21 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   const [dragReady, setDragReady] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
 
+  // 全局兜底复位（code-review item 9dcac1b55672）：mouseUp 只挂手柄元素上，
+  // 按住后移出元素再松开（未触发 HTML5 drag、dragend 不派发）时 dragReady
+  // 永不复位，行停留半透明拖动态。置位期间挂 document 级 mouseup 兜底复位；
+  // 真实拖拽期间原生 drag 不派发 mouseup，监听随 dragReady 复位（onDrop/
+  // onDragEnd 置 null）自动摘除
+  useEffect(() => {
+    if (dragReady === null) return;
+    const resetDrag = () => {
+      setDragReady(null);
+      setDragOver(null);
+    };
+    document.addEventListener('mouseup', resetDrag);
+    return () => document.removeEventListener('mouseup', resetDrag);
+  }, [dragReady]);
+
   // 行内健康检测（add-provider-health-check 4.2）：每行独立状态，loading 防行内
   // 并发重复、行间互不影响。键用 `${index}-${rowField.key}` 组合串（code-review
   // item 0f5501b57f78）：纯位置串会随行删除/拖拽换序把检测结论按位置错配；但裸

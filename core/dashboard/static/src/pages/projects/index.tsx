@@ -15,7 +15,10 @@ export default function ProjectsPage() {
   useEffect(() => {
     const first = projects?.[0];
     // replace 语义：重定向不在历史栈留占位路径，返回键不回弹到本页
-    if (first) history.replace(`/projects/${encodeURIComponent(first)}`);
+    // 非字符串守卫（code-review item 294951ea0d4f）：上游数据异常混入非字符串
+    // 元素时 encodeURIComponent 会产出 '[object Object]' 形态路径，宁可不重定向、
+    // 留在占位页兜底
+    if (typeof first === 'string' && first) history.replace(`/projects/${encodeURIComponent(first)}`);
   }, [projects]);
 
   return <PagePlaceholder title="项目" />;
