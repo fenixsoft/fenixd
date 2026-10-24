@@ -67,6 +67,32 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
         "（铁律，承袭 narrative 网关别名事故）。",
     );
   }
+  // 可选字段类型守卫：字段存在但形态非法即在校验期 fail-fast（缺省路径行为不变），
+  // 避免异常值经 buildProviderSegment 原样透传进 dsh providers 配置、推迟到请求期才暴露。
+  for (const key of ["contextWindow", "maxTokens"] as const) {
+    const val = seg[key];
+    if (val !== undefined && (typeof val !== "number" || !Number.isInteger(val) || val <= 0)) {
+      throw new Error(
+        `模型未显式配置：config.model.${key} 必须是正整数——当前值类型 ${typeof val}（${String(val)}）非法。`,
+      );
+    }
+  }
+  const headers = seg.headers;
+  if (headers !== undefined) {
+    if (typeof headers !== "object" || headers === null || Array.isArray(headers)) {
+      throw new Error(
+        `模型未显式配置：config.model.headers 必须是 string→string 的纯对象——当前值类型 ` +
+          `${Array.isArray(headers) ? "array" : typeof headers} 非法。`,
+      );
+    }
+    for (const [headerKey, headerVal] of Object.entries(headers)) {
+      if (typeof headerVal !== "string") {
+        throw new Error(
+          `模型未显式配置：config.model.headers.${headerKey} 的值必须是字符串——当前值类型 ${typeof headerVal}（${String(headerVal)}）非法。`,
+        );
+      }
+    }
+  }
   return segment as unknown as FenixModelSegment;
 }
 
