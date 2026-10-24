@@ -293,6 +293,11 @@ _PLANNER_SEMAPHORE_LOCK = threading.Lock()
 # 一次 throttled-wait（run 流保持新鲜，防 recovery watch 把「已派发、在持槽
 # 等待」误判为 stuck/dispatch_stalled）。
 THROTTLED_WAIT_HEARTBEAT_SECONDS = 60.0
+# 排队期取消感知切片（code-review item da172f03bf66）：单次 sem.acquire 的超时
+# 粒度。若以心跳周期（60s）为单次 acquire 超时，排队期到达的取消请求最迟要等
+# 当前 60s 等待超时返回才被感知，取消延迟被放大到分钟级且持续占住排队位；拆成
+# 小片循环累计等待，每片超时返回即复查取消旗标。保活心跳节流口径不变。
+_PLANNER_THROTTLE_CANCEL_POLL_SECONDS = 5.0
 
 # 主树 verify-progress 目录非其工作区的车道（fix-impl-code-review-writepath D2）：
 # 这三条车道的 verify-progress 产物全在 worktree 内或别处——implementer 的
@@ -1130,6 +1135,34 @@ class AgentRunner:
 
     # ── 人工取消原语（add-run-cancel D1）─────────────────────────
 
+    def _append_cancel_audit(self, base_id: str, description: str,
+                             evidence: str, recommended_action: str) -> None:
+        """cancel_run 两分支共用的 minor 级审计追加（code-review item
+        67b2dae1d8b3 DRY 收敛）：kind/signal_type/spec 推断/severity 与
+        「写失败仅 debug 非阻塞留痕」契约单点维护，仅 description/evidence
+        /recommended_action 由分支按场景传参（attempt 间隙 vs 命中活跃
+        attempt），审计字段口径不再靠双处手工同步。
+        """
+        try:
+            from core.admin_store import AdminStore, SIGNAL
+            store = AdminStore(self.project_root, self.logger)
+            # 从 run_id 推断 spec（与 run_spec_part 同逻辑）；解析失败留空不强解
+            spec_name = run_spec_part(base_id)
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "run_cancelled",
+                "spec": spec_name if spec_name != base_id else None,
+                "severity": "minor",
+                "description": description,
+                "evidence": evidence,
+                "recommended_action": recommended_action,
+            })
+        except Exception as e:
+            self.logger.debug(
+                "agent_runner",
+                f"cancel_run 审计记录写入失败（非阻塞）: {e}",
+            )
+
     def cancel_run(self, run_id: str, reason: str = "", by: str = "admin") -> dict:
         """外部专用 run 粒度终止原语——登记取消旗标，由属主线程执行终止。
 
@@ -1186,37 +1219,25 @@ class AgentRunner:
             # minor 级审计（code-review item 1434c8966a1b）：attempt 间隙取消
             # 与命中活跃 attempt 同为外部人工取消动作，台账留痕口径统一——
             # 间隙场景恰是 evo-add-run-stop-loss 1.1 拦截的高价值场景，缺席
-            # 则事后无法从审计流还原该次人工干预。
-            try:
-                from core.admin_store import AdminStore, SIGNAL
-                store = AdminStore(self.project_root, self.logger)
-                # 从 run_id 推断 spec（与 run_spec_part 同逻辑）；解析失败留空不强解
-                spec_name = run_spec_part(base_id)
-                store.append({
-                    "kind": SIGNAL,
-                    "signal_type": "run_cancelled",
-                    "spec": spec_name if spec_name != base_id else None,
-                    "severity": "minor",
-                    "description": (
-                        f"人工取消 run '{base_id}'（attempt 间隙，无活跃 attempt）"
-                        f"—— reason={reason!r}, by={by}"
-                    ),
-                    "evidence": (
-                        f"base_run_id={base_id}; attempts=0; "
-                        f"reason={reason}; by={by}"
-                    ),
-                    "recommended_action": (
-                        "run 已登记取消旗标（attempt 间隙：无持有线程可收口）——"
-                        "复活/重派的 attempt 将在启动守卫（_attempt_top_guards）"
-                        "与 in-place retry 让位复查处命中即有序终止；spec 保持原"
-                        "状态，由 stuck 检测/恢复扫描按既有节奏接管。"
-                    ),
-                })
-            except Exception as e:
-                self.logger.debug(
-                    "agent_runner",
-                    f"cancel_run 审计记录写入失败（非阻塞）: {e}",
-                )
+            # 则事后无法从审计流还原该次人工干预。（共用追加单点见
+            # _append_cancel_audit，code-review item 67b2dae1d8b3。）
+            self._append_cancel_audit(
+                base_id,
+                description=(
+                    f"人工取消 run '{base_id}'（attempt 间隙，无活跃 attempt）"
+                    f"—— reason={reason!r}, by={by}"
+                ),
+                evidence=(
+                    f"base_run_id={base_id}; attempts=0; "
+                    f"reason={reason}; by={by}"
+                ),
+                recommended_action=(
+                    "run 已登记取消旗标（attempt 间隙：无持有线程可收口）——"
+                    "复活/重派的 attempt 将在启动守卫（_attempt_top_guards）"
+                    "与 in-place retry 让位复查处命中即有序终止；spec 保持原"
+                    "状态，由 stuck 检测/恢复扫描按既有节奏接管。"
+                ),
+            )
             return {
                 "status": "not_running",
                 "base_run_id": base_id,
@@ -1235,41 +1256,29 @@ class AgentRunner:
             f"{matched_attempts}（reason={reason!r}, by={by}）",
         )
 
-        # minor 级审计（add-run-cancel D1 / spec「取消动作审计留痕」）
-        try:
-            from core.admin_store import AdminStore, SIGNAL
-            store = AdminStore(self.project_root, self.logger)
-            # 从 run_id 推断 spec（与 run_spec_part 同逻辑）；解析失败留空不强解
-            spec_name = run_spec_part(base_id)
-            store.append({
-                "kind": SIGNAL,
-                "signal_type": "run_cancelled",
-                "spec": spec_name if spec_name != base_id else None,
-                "severity": "minor",
-                "description": (
-                    f"人工取消 run '{base_id}'（活跃 attempt: {matched_attempts}）"
-                    f"—— reason={reason!r}, by={by}"
-                ),
-                "evidence": (
-                    f"base_run_id={base_id}; attempts={len(matched_attempts)}; "
-                    f"reason={reason}; by={by}"
-                ),
-                "recommended_action": (
-                    "run 已登记取消旗标，由持有线程完成 terminate/kill 与 cancelled "
-                    "终态落盘；spec 保持原状态，由 stuck 检测/恢复扫描按既有节奏接管。"
-                    "取消收口前已尽力执行 WIP checkpoint（锚点 cancel）：attempt 的"
-                    "未提交改动以 'fenix(wip): checkpoint cancel <spec>' 提交进入 "
-                    "attempt 分支，可从分支恢复；无 worktree 载体（attempt 间隙）或"
-                    "主树车道则无保全。worktree 目录去向按车道：fast-track/transient "
-                    "等车道经 keep_for_reuse 登记为复用遗产保留（宽限期后回收），"
-                    "其余车道维持既有收口处置，分支与 wip 提交不受影响"
-                ),
-            })
-        except Exception as e:
-            self.logger.debug(
-                "agent_runner",
-                f"cancel_run 审计记录写入失败（非阻塞）: {e}",
-            )
+        # minor 级审计（add-run-cancel D1 / spec「取消动作审计留痕」；
+        # 共用追加单点见 _append_cancel_audit，code-review item 67b2dae1d8b3）
+        self._append_cancel_audit(
+            base_id,
+            description=(
+                f"人工取消 run '{base_id}'（活跃 attempt: {matched_attempts}）"
+                f"—— reason={reason!r}, by={by}"
+            ),
+            evidence=(
+                f"base_run_id={base_id}; attempts={len(matched_attempts)}; "
+                f"reason={reason}; by={by}"
+            ),
+            recommended_action=(
+                "run 已登记取消旗标，由持有线程完成 terminate/kill 与 cancelled "
+                "终态落盘；spec 保持原状态，由 stuck 检测/恢复扫描按既有节奏接管。"
+                "取消收口前已尽力执行 WIP checkpoint（锚点 cancel）：attempt 的"
+                "未提交改动以 'fenix(wip): checkpoint cancel <spec>' 提交进入 "
+                "attempt 分支，可从分支恢复；无 worktree 载体（attempt 间隙）或"
+                "主树车道则无保全。worktree 目录去向按车道：fast-track/transient "
+                "等车道经 keep_for_reuse 登记为复用遗产保留（宽限期后回收），"
+                "其余车道维持既有收口处置，分支与 wip 提交不受影响"
+            ),
+        )
 
         return {
             "status": "cancel_requested",
@@ -1455,6 +1464,7 @@ class AgentRunner:
         )
         return True
 
+    # [fenix-ignore:db627727c48c] 与 run_spec_review 的镜像骨架抽取属约 450 行一次性车道大重构：成功收口差异段咬合紧密（dispute 的 run stamp 原子补写 vs review 的读侧 mtime 新鲜度门），无人值守批处理下回归风险高于收益
     def run_dispute_judge(self, spec_name: str, judge_input: dict,
                           run_id: str | None = None) -> AgentRunResult:
         """Run the Dispute Judge Agent for a SPEC (deliverable-declaration-triage D3).
@@ -2007,7 +2017,12 @@ class AgentRunner:
                     f"run={run_id}——放弃排队（未获取信号量，不派发）",
                 )
                 return False
-            if sem.acquire(timeout=THROTTLED_WAIT_HEARTBEAT_SECONDS):
+            # 单次 acquire 拆成小片（code-review item da172f03bf66）：片超时
+            # 返回即回到循环顶复查取消旗标，排队期取消请求最迟一个切片内被
+            # 感知（原 60s 单片粒度会把感知延迟放大到分钟级且持续占住排队
+            # 位）；保活心跳仍按下方 deadline 口径约每 60s 一次，节流/保活
+            # 语义不变。
+            if sem.acquire(timeout=_PLANNER_THROTTLE_CANCEL_POLL_SECONDS):
                 # 获取成功，补一次保活事件标记正式开始
                 try:
                     append_run_line(run_file, {
@@ -6212,6 +6227,7 @@ class AgentRunner:
                     if is_stderr:
                         # stderr 噪声：不保证是 JSON，一律按 stderr 兜底写入
                         stderr_lines.append(line)
+                        # [fenix-ignore:5b11d43a8406] append_run_line 已按行字节长分路（run_files.py item 29df176ff441）：>4KiB 行走单次 os.write(O_APPEND)，≤4KiB 行不超 TextIOWrapper 缓冲恒单次 raw write，超长 stderr 行不再被拆分撕裂
                         append_run_line(run_file, {"type": "stderr", "line": line})
                         continue
                     try:
