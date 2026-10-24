@@ -638,6 +638,12 @@ class G2LegacyRegistryMixin:
         spec 名列表（审计/测试用）。
 
         宽限期内（后继 run 尚在派发中）的遗产不动，交 merge 成功 / 重派逻辑处理。
+
+        触发时机口径（code-review item 1ff2715901b2）：唯一调用点
+        stale_sweep.cleanup_stale_worktrees 仅由 daemon 启动路径执行一次、无周期
+        调度——本回收并非随孤儿清扫周期持续触发（「跟随孤儿清扫周期」仅指宽限
+        时长与陈锁空闲阈值同源）；长驻 daemon 内新登记的遗产过期后滞留至下次
+        重启才被本回收清除。
         """
         if not self._legacy:
             return []
