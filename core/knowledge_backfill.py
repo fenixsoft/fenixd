@@ -714,6 +714,12 @@ class BackfillLedger:
                     entry = json.loads(line)
                 except ValueError:
                     continue  # 损坏行跳过，不阻塞重入
+                if not isinstance(entry, dict):
+                    # 合法 JSON 但顶层非 dict（手工编辑残留的数组/字符串/数字
+                    # 等）：同损坏行口径跳过，不让 AttributeError 穿透各调用
+                    # 点的 (OSError, ValueError) fail-open 容错（对齐
+                    # maintenance_ledger / budget 的 isinstance 先例）
+                    continue
                 name = entry.get("name")
                 if name:
                     ledger.entries[name] = entry
@@ -2051,6 +2057,11 @@ def run_backfill(
         if not isinstance(item, dict):
             continue
         cap, baseline = item.get("capability"), item.get("baseline")
+        # 与 _missing_prehistoric_pages 的就地校验口径对齐：不依赖上游校验的
+        # 传递性保证——cap 非字符串/不可哈希时 `cap in chain_index` 直接抛
+        # TypeError 掀翻车道（本语句不在任何 try 内），非法值跳过该条目
+        if not _valid_domain_component(cap):
+            continue
         if cap and baseline and cap in chain_index:
             baselines[str(cap)] = str(baseline)
 
