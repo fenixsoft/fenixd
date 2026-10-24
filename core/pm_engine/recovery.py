@@ -584,7 +584,8 @@ class RecoveryWatch:
             # 2.2/2.3：尚未恢复推进 → 先就地重新派发（仅 ready 且无活跃派发
             # 值得尝试；其余状态由各自事件路径接管，直接走信号兜底）。
             dispatched = False
-            if status == "ready" and not active_dispatch:
+            # active_dispatch 此处可证为 False（2.1 已对 "or active_dispatch" continue）
+            if status == "ready":
                 dispatched = self._redispatch_stalled_ready(spec_name)
             if dispatched:
                 self._pm.logger.info(
@@ -1184,6 +1185,10 @@ class RecoveryWatch:
             )
         except (TypeError, ValueError):
             cooldown = DEFAULT_SIGNAL_COOLDOWN_MINUTES * 60
+        # NaN/inf 冷却使 (now - prev) < cooldown 恒 False（指纹冷却失效）——
+        # 非有限值回落权威缺省，与 _parse_event_timestamp 的 isfinite 守卫同口径。
+        if not math.isfinite(cooldown):
+            cooldown = DEFAULT_SIGNAL_COOLDOWN_MINUTES * 60
         # 指纹冷却 check-then-act 持锁（code-review item dbf6069ef584）：
         # check_recovery_watch 并发进入时，两线程可同时通过下方指纹检查并各自
         # 写 admin store（重复信号）。与 _recovery_watch 同一把可重入锁序列化
@@ -1218,7 +1223,8 @@ class RecoveryWatch:
             )
         except (TypeError, ValueError):
             store_cooldown = DEFAULT_ESCALATION_COOLDOWN_MINUTES
-        if not store_cooldown or store_cooldown <= 0:
+        # NaN 不命中 not / <=0 守卫（store 级去重随之失效），非有限值一并回落
+        if not math.isfinite(store_cooldown) or store_cooldown <= 0:
             store_cooldown = DEFAULT_ESCALATION_COOLDOWN_MINUTES
         store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
