@@ -19,7 +19,8 @@ from pathlib import Path
 
 # 框架根（.resolve() 跟随 .fenix 软链接，定位真实安装位置）：schemas/ 与 core/ 所在目录
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(FRAMEWORK_ROOT))
+if str(FRAMEWORK_ROOT) not in sys.path:
+    sys.path.insert(0, str(FRAMEWORK_ROOT))
 
 # 项目根（经 .fenix/bin/ 软链接调用时 = 项目目录）
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
