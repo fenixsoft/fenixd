@@ -37,6 +37,7 @@ def promote_drafted(
         晋升，陈旧 lint 结论不覆写外部推进后的状态）。violations 照常返回由
         调用方呈现，STATE error 保留原值。消费方 MUST NOT 依赖 ok=False +
         violations 形态推断 STATE error 已写入，须以 error_written 区分子情况
+        （update_spec 写盘失败时亦以 (ok=False, error_written=False) 表达）
         {"ok": False, "reason": "..."} — 拒绝（不存在 / 非 drafted / 其它原因）
     """
     # 1. 检查 SPEC 是否存在且处于 drafted 状态
@@ -164,7 +165,14 @@ def promote_drafted(
             )
             return {"ok": False, "violations": violations + tasks_violations,
                     "error_written": False}
-        state_machine.update_spec(spec_name, {"error": err})
+        if not state_machine.update_spec(spec_name, {"error": err}):
+            logger.warning(
+                "pm_engine",
+                f"Promotion lint error write failed '{spec_name}': "
+                "update_spec 返回 False（条目缺失/原子写失败），error 未落盘",
+            )
+            return {"ok": False, "violations": violations + tasks_violations,
+                    "error_written": False}
         return {"ok": False, "violations": violations + tasks_violations,
                 "error_written": True}
 
