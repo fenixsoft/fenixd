@@ -447,6 +447,23 @@ def _reset_uniform_fail_streak(pipeline, spec_name: str) -> None:
         )
 
 
+def _summary_real_int(summary: dict, key: str) -> int:
+    """summary 数值字段严格解析：仅接受真实 int（is_verifier_process_death 同款防御口径）。
+
+    缺键/None 仍按 0（既有 ``or 0`` 缺省口径不变）；float/str/bool 等脏值抛
+    TypeError 落入调用方既有 except 回落分支——float 经 ``int()`` 截断
+    （0.5→0）会把有通过轮误判为全失败轮参与同因签名比对并累计连续计数
+    （code-review item 37298d2c7523，与 item 89a982b09a33 的 0.5 截断误判
+    死亡同型）。
+    """
+    value = summary.get(key, 0)
+    if value is None:
+        return 0
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    raise TypeError(f"summary.{key} 非真实 int 脏值: {type(value).__name__}")
+
+
 def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bool:
     """全场景同因失败哨：pass=0 且全部失败场景（fail/error）错误签名一致 → 疑环境/场景问题。
 
@@ -457,11 +474,11 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     """
     summary = report.get("summary") or {}
     try:
-        passed = int(summary.get("passed", 0) or 0)
+        passed = _summary_real_int(summary, "passed")
         # failed 与 errors 分开计数（与 fastlane 子集重验同源口径），失败轮合计看两者
-        failed = int(summary.get("failed", 0) or 0)
-        errors = int(summary.get("errors", 0) or 0)
-        total = int(summary.get("total", 0) or 0)
+        failed = _summary_real_int(summary, "failed")
+        errors = _summary_real_int(summary, "errors")
+        total = _summary_real_int(summary, "total")
     except (TypeError, ValueError):
         # summary 数值字段脏值=本轮不可判定：与函数内其余非同因分支一致回落
         # 连续计数，避免脏报告轮夹在中间时前后同因失败跨轮累计到熔断阈值
