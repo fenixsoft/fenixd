@@ -376,8 +376,13 @@ def test_cancelled_hold_true_literal_count_unchanged():
 # ── 7.4/7.5：解冻续做接线与共享判定零漂移 ────────────────────────
 
 
-def _mk_resume_fixture(tmp_path, sm_name="s1"):
-    """构造带 _frozen_hold + 保留分支（相对 main 有未合并提交）的 fixture。"""
+def _mk_resume_fixture(tmp_path, sm_name="s1", *, freeze: bool = True):
+    """构造带 _frozen_hold + 保留分支（相对 main 有未合并提交）的 fixture。
+
+    freeze=False 跳过冻结与保持标记（供 7.5 恢复保留路径使用——
+    recover_interrupted 实供的是 implementing 非冻结快照，f9a26038d5ae
+    冻结复查后冻结现场不再是恢复保留的合法输入）。
+    """
     proot = Path(tmp_path) / "proj"
     proot.mkdir(parents=True, exist_ok=True)
     sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
@@ -406,8 +411,9 @@ def _mk_resume_fixture(tmp_path, sm_name="s1"):
         "branch": "fenix/s1-123",
         "implementer_run": "impl-s1-1",
     })
-    sm.freeze_spec(sm_name, "冻结")
-    sm.mark_frozen_hold(sm_name, "冻结终止")
+    if freeze:
+        sm.freeze_spec(sm_name, "冻结")
+        sm.mark_frozen_hold(sm_name, "冻结终止")
     return proot, sm
 
 
@@ -494,14 +500,26 @@ def test_unfreeze_no_frozen_hold_unchanged(tmp_path):
 
 
 def test_shared_judgment_zero_drift(tmp_path):
-    """7.5：_recovery_preserve_spec 与 unfreeze 续做经同一函数（同形结果）。"""
-    proot, sm = _mk_resume_fixture(str(tmp_path))
+    """7.5：_recovery_preserve_spec 与 unfreeze 续做经同一函数（同形结果）。
+
+    冻结复查（f9a26038d5ae）后恢复保留对 frozen=True 现场整体让位（跳过
+    本写返回 False、不计 recovered——恢复让位于人工冻结），故恢复保留半
+    改用未冻结的 implementing 快照（recover_interrupted 实供形态），并
+    同场补断言冻结让位契约；解冻续做半仍走冻结 + _frozen_hold fixture。
+    """
+    # 恢复保留路径：recover_interrupted 供非冻结 implementing 快照
+    proot, sm = _mk_resume_fixture(str(tmp_path), freeze=False)
     wm = _mk_wt_mgr(proot, available=True)
     entry = sm.read_one("s1")
-    # 恢复保留路径
     recovered = sm._recovery_preserve_spec("s1", entry, proot, wm)
     assert recovered is True
     entry_r = sm.read_one("s1")
+    assert entry_r.get("status") == "ready"
+    # 冻结复查契约（f9a26038d5ae）：冻结现场恢复写整体让位
+    proot_f, sm_f = _mk_resume_fixture(str(tmp_path) + "f")
+    assert sm_f._recovery_preserve_spec(
+        "s1", sm_f.read_one("s1"), proot_f,
+        _mk_wt_mgr(proot_f, available=True)) is False
     # 重建同 fixture 再走解冻续做
     proot2, sm2 = _mk_resume_fixture(str(tmp_path) + "b")
     wm2 = _mk_wt_mgr(proot2, available=True)
