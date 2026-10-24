@@ -867,6 +867,11 @@ def _num_field(d: dict, key: str) -> Optional[float]:
     raw = d.get(key)
     if raw is None:
         return None
+    # type(...) is bool 拦截（code-review item 8b5db019accf）：float(True/False)
+    # 合法（1.0/0.0），"timeout": true 会被静默归一成 1.0 秒而非走字段级报错；
+    # 精确类型拒绝与 _parse_viewport / frozen_contract_version 的 bool 口径对齐。
+    if type(raw) is bool:
+        raise ValueError(f"步骤 {key} 须为数值（秒），收到 {raw!r}") from None
     try:
         return float(raw)
     except (TypeError, ValueError):

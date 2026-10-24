@@ -367,6 +367,35 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
     )
 
 
+def _retire_cached_instance(pipeline, spec_name, old, cache, *, on_fail_note, evict):
+    """旧命令实例清退样板单一实现（_serve_command_in_worktree 三分支共享）。
+
+    code-review 7be7de6a1e72：Popen 异常/启动即死/重启三分支逐字重复的
+    「unregister → 判空 stop → 捕异常 warning → 按需驱逐缓存」序列收敛到
+    本助手，后续修补单点同步。on_fail_note 参数化日志尾注（「失败返回」/
+    「重启」文案逐字保留）；evict=False 为重启分支既有口径——旧条目随即
+    被新实例条目覆写，不重复 pop（73a34755ac94）。
+    """
+    old_server = old.get("server")
+    if isinstance(old_server, CommandVerifyServer):
+        pipeline._unregister_serving_instance(spec_name, old_server)
+    try:
+        # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
+        # _evict_spec_serving 防御形态），不 AttributeError 炸穿
+        if old_server is not None:
+            old_server.stop()
+    except Exception as stop_err:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"停止旧 serving 实例 '{spec_name}' 失败（不影响{on_fail_note}）: {stop_err}",
+        )
+    # code-review 5761d716adce：清退完成即驱逐缓存条目（对齐
+    # _ensure_serving_worktree e96dc4a61601 口径），缓存不再滞留
+    # 指向已 stop 旧实例的死条目
+    if evict:
+        cache.pop(spec_name, None)
+
+
 # [fenix-ignore:d22cbb0313a4] 与 _serve_command_in_main 已实质分叉（本侧 HEAD 缓存复用门+created worktree 生命周期+失败分支手工 unregister+stop；main 侧永不复用、失败分支无收尾、仅成功路径走 _evict_spec_serving），参数化须先裁决清退语义属行为变更，serving 为全部验证 run 关键路径，最小改动纪律下风险大于收益。
 def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) -> tuple:
     """命令型被测实例的 worktree 隔离（serve.kind=command + static_scope=worktree）。
@@ -455,6 +484,14 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
     preflight_err = entry_preflight_error(orig_cmd, Path(wt))
     if preflight_err:
+        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
+        # （对齐正常路径 Popen 前显式 close，不依赖引用计数回收）；
+        # f94a245435cc：close 前移到信号落盘/worktree 清理之前——任一后续
+        # 调用抛异常时占位 fd 不落 GC 兜底
+        try:
+            _port_holder.close()
+        except OSError:
+            pass
         pipeline._write_verify_contract_missing(
             spec_name,
             f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
@@ -469,12 +506,6 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # 7470b5d89795）；复用态不动——旧缓存条目仍引用同一目录
         if created:
             pipeline._remove_serving_worktree(wt)
-        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
-        # （对齐正常路径 Popen 前显式 close，不依赖引用计数回收）
-        try:
-            _port_holder.close()
-        except OSError:
-            pass
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
@@ -506,23 +537,9 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         if created:
             pipeline._remove_serving_worktree(wt)
         if old is not None:
-            old_server = old.get("server")
-            if isinstance(old_server, CommandVerifyServer):
-                pipeline._unregister_serving_instance(spec_name, old_server)
-            try:
-                # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
-                # _evict_spec_serving 防御形态），不 AttributeError 炸穿
-                if old_server is not None:
-                    old_server.stop()
-            except Exception as stop_err:
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"停止旧 serving 实例 '{spec_name}' 失败（不影响失败返回）: {stop_err}",
-                )
-            # code-review 5761d716adce：清退完成即驱逐缓存条目（对齐
-            # _ensure_serving_worktree e96dc4a61601 口径），缓存不再滞留
-            # 指向已 stop 旧实例的死条目
-            cache.pop(spec_name, None)
+            _retire_cached_instance(
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+            )
         return False, False, f"验证命令实例启动失败: {e}"
     srv = CommandVerifyServer(
         proc,
@@ -547,23 +564,9 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             # 分支即上方复用门未满足（如实例中途死亡 ok=False、worktree 被
             # 外部清掉），旧实例的 servers.json 登记移除与 boot.log 句柄关闭
             # 不拖延到 serving_reclaim 600s 周期兜底（stop 对已死进程安全）
-            old_server = old.get("server")
-            if isinstance(old_server, CommandVerifyServer):
-                pipeline._unregister_serving_instance(spec_name, old_server)
-            try:
-                # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
-                # _evict_spec_serving 防御形态），不 AttributeError 炸穿
-                if old_server is not None:
-                    old_server.stop()
-            except Exception as stop_err:
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"停止旧 serving 实例 '{spec_name}' 失败（不影响失败返回）: {stop_err}",
-                )
-            # code-review 5761d716adce：清退完成即驱逐缓存条目（对齐
-            # _ensure_serving_worktree e96dc4a61601 口径），缓存不再滞留
-            # 指向已 stop 旧实例的死条目
-            cache.pop(spec_name, None)
+            _retire_cached_instance(
+                pipeline, spec_name, old, cache, on_fail_note="失败返回", evict=True
+            )
         return (
             False,
             False,
@@ -575,19 +578,9 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
         # _ensure_serving_worktree 重建路径 / _evict_spec_serving 同口径，
         # 半死实例的进程组清理不拖延到 serving_registry 周期清扫、boot.log
         # 句柄不靠 GC 兜底（stop 对已死进程安全）。
-        old_server = old.get("server")
-        if isinstance(old_server, CommandVerifyServer):
-            pipeline._unregister_serving_instance(spec_name, old_server)
-        try:
-            # code-review cd109376b90a：条目缺 server 键时判空跳过（对齐
-            # _evict_spec_serving 防御形态），不 AttributeError 炸穿
-            if old_server is not None:
-                old_server.stop()
-        except Exception as e:
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"停止旧 serving 实例 '{spec_name}' 失败（不影响重启）: {e}",
-            )
+        _retire_cached_instance(
+            pipeline, spec_name, old, cache, on_fail_note="重启", evict=False
+        )
     # serve_cmd 补存供复用门比对 verify.yaml serve 段改动
     # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重启）
     cache[spec_name] = {
@@ -671,6 +664,14 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
     preflight_err = entry_preflight_error(orig_cmd, pipeline._context.project_root)
     if preflight_err:
+        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
+        # （对齐正常路径 Popen 前显式 close，不依赖引用计数回收）；
+        # f94a245435cc：close 前移到信号落盘之前——写信号盘 IO 故障抛异常
+        # 时占位 fd 不落 GC 兜底
+        try:
+            _port_holder.close()
+        except OSError:
+            pass
         pipeline._write_verify_contract_missing(
             spec_name,
             f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
@@ -680,12 +681,6 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
                 "按错误信息中「候选」提示修正，或确认构建产物已生成后重验"
             ),
         )
-        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
-        # （对齐正常路径 Popen 前显式 close，不依赖引用计数回收）
-        try:
-            _port_holder.close()
-        except OSError:
-            pass
         return False, False, preflight_err
     cmd_str = orig_cmd.replace("{port}", str(port))
     env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
@@ -1246,6 +1241,38 @@ def _probe_url(u: str, timeout: float = 2.0, http_error_ok: bool = False) -> boo
         return False
 
 
+def _prepare_in_main_tree(pipeline, contract):
+    """主树契约 prepare 共同序列（纯 cli 分支/契约主树分支单一出处）。
+
+    code-review 3c10d632f410：「ensure_main_tree_deps 依赖供给 → run_prepare_
+    steps 主树构建 → 失败收口」序列收敛到本助手，verify-prepare.lock 锁语义
+    注释留单一出处。成功返回 None；失败返回 f"验证契约 prepare 失败: {err}"
+    （调用方按 (False, False, note) 既有形态失败早退）。
+    """
+    # D9：经包命名空间延迟解析，使 patch(
+    #   "core.pm_engine.verification.ensure_main_tree_deps") /
+    #   "core.pm_engine.verification.run_prepare_steps" 生效
+    import core.pm_engine.verification as _facade
+
+    _facade.ensure_main_tree_deps(
+        pipeline._context.project_root,
+        sorted({(s.cwd or ".") for s in contract.prepare}),
+        mode=resolve_deps_mode(
+            contract, pipeline._context.config_reader("verify.deps_mode", "")
+        ),
+        logger=pipeline._context.logger,
+    )
+    # 主树 prepare 并发护栏（evo-add-verify-dispatch-single-flight 2.2）：
+    # 本路径 project_root=主检出，run_prepare_steps 内按主检出判定自动
+    # 持 .fenix/verify-prepare.lock 主机锁串行——两路验证并发 clean/构建
+    # 互擦产物（neutralize-pack 事故）由此拦截；worktree 路径（:152）
+    # 天然 run 级隔离不加锁。
+    err = _facade.run_prepare_steps(contract, pipeline._context.project_root)
+    if err:
+        return f"验证契约 prepare 失败: {err}"
+    return None
+
+
 def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     """验证前确保应用可达：自动启动 commands.start、处理端口冲突。
 
@@ -1266,8 +1293,11 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     #   "core.pm_engine.verification.run_prepare_steps" 生效
     import core.pm_engine.verification as _facade
 
+    # code-review 8471dd3626a0：project_root 拼路径前统一 Path() 归一——
+    # 与 _ensure_serving_worktree/_open_boot_log 同一拼接口径（契约标 Path，
+    # str 形态混入时不抛 TypeError 而是同走防御包裹）
     scenarios_path = (
-        pipeline._context.project_root
+        Path(pipeline._context.project_root)
         / ".fenix"
         / "verify-progress"
         / spec_name
@@ -1314,22 +1344,9 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # （add-main-tree-deps-provision：主树 prepare 前按 prepare cwd
             # 集合预装依赖，防 add-ssh-foundation 事故 exit 127 复发；本 SPEC
             # 入口预检在其后的 spawn 点——顺序：供给 → prepare → 预检 → spawn。）
-            _facade.ensure_main_tree_deps(
-                pipeline._context.project_root,
-                sorted({(s.cwd or ".") for s in contract.prepare}),
-                mode=resolve_deps_mode(
-                    contract, pipeline._context.config_reader("verify.deps_mode", "")
-                ),
-                logger=pipeline._context.logger,
-            )
-            # 主树 prepare 并发护栏（evo-add-verify-dispatch-single-flight 2.2）：
-            # 本路径 project_root=主检出，run_prepare_steps 内按主检出判定自动
-            # 持 .fenix/verify-prepare.lock 主机锁串行——两路验证并发 clean/构建
-            # 互擦产物（neutralize-pack 事故）由此拦截；worktree 路径（:152）
-            # 天然 run 级隔离不加锁。
-            err = _facade.run_prepare_steps(contract, pipeline._context.project_root)
-            if err:
-                return False, False, f"验证契约 prepare 失败: {err}"
+            note = _prepare_in_main_tree(pipeline, contract)
+            if note:
+                return False, False, note
         return True, False, "纯 cli 场景集，跳过 serve/ready（无实例形态）"
     if not kinds:
         return True, False, ""
@@ -1364,22 +1381,9 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
             # add-main-tree-deps-provision：主树 prepare 前按 prepare cwd
             # 集合预装依赖（本 SPEC 预检在其后 spawn 前——供给 → prepare
             # → 预检 → spawn）
-            _facade.ensure_main_tree_deps(
-                pipeline._context.project_root,
-                sorted({(s.cwd or ".") for s in contract.prepare}),
-                mode=resolve_deps_mode(
-                    contract, pipeline._context.config_reader("verify.deps_mode", "")
-                ),
-                logger=pipeline._context.logger,
-            )
-            # 主树 prepare 并发护栏（evo-add-verify-dispatch-single-flight 2.2）：
-            # 本路径 project_root=主检出，run_prepare_steps 内按主检出判定自动
-            # 持 .fenix/verify-prepare.lock 主机锁串行——两路验证并发 clean/构建
-            # 互擦产物（neutralize-pack 事故）由此拦截；worktree 路径（:152）
-            # 天然 run 级隔离不加锁。
-            err = _facade.run_prepare_steps(contract, pipeline._context.project_root)
-            if err:
-                return False, False, f"验证契约 prepare 失败: {err}"
+            note = _prepare_in_main_tree(pipeline, contract)
+            if note:
+                return False, False, note
         if serve and serve.kind == "static":
             if wt_scope:
                 return pipeline._serve_static_in_worktree(spec_name, contract, scenarios_path)
@@ -1449,7 +1453,8 @@ def _legacy_selfheal_start(
             f"——已派发 Administrator 起草验证契约"
         )
         # 检测是否为契约解析失败（文件存在但 YAML 解析失败）
-        contract_path = pipeline._context.project_root / ".fenix" / "verify.yaml"
+        # code-review 8471dd3626a0：Path() 归一与 _ensure_serving_worktree 同口径
+        contract_path = Path(pipeline._context.project_root) / ".fenix" / "verify.yaml"
         parse_error = False
         if contract_path.is_file() and contract is None:
             # 文件存在但 load_verify_contract 返回 None = 解析失败

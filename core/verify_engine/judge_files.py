@@ -133,9 +133,25 @@ def _migrate_legacy_attribution(legacy_data: dict[str, Any]) -> dict[str, Any]:
     判定依赖该文本），同时保留独立 classification 字段并标注
     classification_fallback=True，显式标记为分类回退而非原生归因。
     """
-    # 整块归因作为单个条目
+    # 整块归因作为单个条目。attribution/classification 须为文本字符串：judge
+    # 漂移可能把它们写成 dict/list 等非字符串真值，`or ""` 只挡 falsy，非字符
+    # 串真值会原样进入条目，而下游查重与回炉判定按文本 str 处理该字段。非字
+    # 符串一律降级为空串并留痕告警（口径同 build_requeue_manifest 条目 id 畸
+    # 形防御，code-review item fa738bf8033b）。
     attribution = legacy_data.get("attribution") or ""
     classification = legacy_data.get("classification") or ""
+    if not isinstance(attribution, str):
+        logger.warning(
+            "旧格式归因 attribution 非字符串（%s），降级为空串",
+            type(attribution).__name__,
+        )
+        attribution = ""
+    if not isinstance(classification, str):
+        logger.warning(
+            "旧格式归因 classification 非字符串（%s），降级为空串",
+            type(classification).__name__,
+        )
+        classification = ""
     scenario_entry = {
         "id": "legacy_0",
         "attribution": attribution,

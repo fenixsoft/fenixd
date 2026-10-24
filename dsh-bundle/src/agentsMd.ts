@@ -44,12 +44,26 @@ function truncateUtf8ByBytes(text: string, maxBytes: number): string {
  * （renderPrompt 丢弃空 section，故未挂载体文件的工作区零影响）。
  * AGENTS.md 允许是软链（约定载体：AGENTS.md -> CLAUDE.md，读时经软链取正文）。
  * 超过 AGENTS_MD_MAX_BYTES 时按字符截断并在尾部注明（防异常膨胀挤占上下文）。
+ * 错误形态区分：ENOENT（载体未挂）维持静默零注入；其它异常（EACCES/EISDIR/
+ * 软链循环等）在宿主 logger 可得时留一条可归因的 warning——通道缺省（裸 ctx/
+ * 单测）时宁可舍弃诊断也不写 stderr（通道选择同 approval.ts warnUnreadable）。
  */
-export function agentsMdSectionText(root: string, readFile: (p: string) => string = (p) => readFileSync(p, "utf-8")): string {
+export function agentsMdSectionText(
+  root: string,
+  readFile: (p: string) => string = (p) => readFileSync(p, "utf-8"),
+  logger?: { warn(...args: unknown[]): unknown },
+): string {
+  const path = join(root, "AGENTS.md");
   let body: string;
   try {
-    body = readFile(join(root, "AGENTS.md"));
-  } catch {
+    body = readFile(path);
+  } catch (err) {
+    if ((err as { code?: unknown } | null | undefined)?.code !== "ENOENT") {
+      logger?.warn(
+        `[fenix-dsh-bundle] 读取 AGENTS.md 失败（${path}）：` +
+          `${err instanceof Error ? err.message : String(err)}；本轮分区不注入。`,
+      );
+    }
     return "";
   }
   if (!body.trim()) return "";
@@ -66,6 +80,8 @@ export function agentsMdSectionText(root: string, readFile: (p: string) => strin
 /** 本插件消费的 systemPrompt 服务面（结构最小集，避免直接依赖 cordis 类型）。 */
 export interface AgentsMdContext {
   inject(deps: string[], fn: (scope: AgentsMdScope) => void): unknown;
+  /** 宿主诊断通道（cordis LoggerService，形态同 approval.ts）：可选，缺省时静默。 */
+  logger?: { warn(...args: unknown[]): unknown };
 }
 
 interface AgentsMdScope {
@@ -92,7 +108,7 @@ export function registerAgentsMdSection(ctx: AgentsMdContext, root?: string): vo
     scope.systemPrompt.section({
       name: AGENTS_MD_SECTION_NAME,
       order,
-      text: () => agentsMdSectionText(root ?? process.cwd()),
+      text: () => agentsMdSectionText(root ?? process.cwd(), undefined, ctx.logger),
     });
   });
 }

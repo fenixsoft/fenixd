@@ -2293,9 +2293,12 @@ def _selfcheck_dispositions_violations(data: dict, wt_path: Path, spec_name: str
     """
     violations: list = []
     code_review = data.get("code_review")
-    report_rel = f".fenix/verify-progress/{spec_name}/code-review.json"
+    report_rel = f".fenix/verify-progress/{spec_name or '<unknown-spec>'}/code-review.json"
     report_path = Path(wt_path) / ".fenix" / "verify-progress" / spec_name / "code-review.json"
-    if spec_name and report_path.is_file():
+    # 报告校验分支与 spec_name 真值解耦（code-review item ef519066cb08）：缺 spec
+    # （run_selfcheck 置空串）时 Path 空段折叠，报告若就位仍须走全量校验；
+    # 文案用占位串保持违规行可读。
+    if report_path.is_file():
         try:
             cr_data = json.loads(report_path.read_text(encoding="utf-8"))
         # [fenix-ignore:ab11f8ece35d] except 元组已含 RecursionError（超深嵌套

@@ -85,7 +85,9 @@ class AssertionRunner:
             return None
         try:
             result = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError：int(float('inf'))（如 JSON 合法值 1e999），
+            # 同 engine.py max_parallel 口径；nan 走 ValueError。
             return None
         # 非整数值浮点（如 2.5）被 int() 截断后按截断值裁决，而字符串 "2.5"
         # 走 int() 抛 ValueError 被确定性拒绝——同一非法语义两种处置

@@ -422,12 +422,23 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         # （null 恒落盘、解析归一 None），键存在性判定会在首次清零后每轮
         # 健康裁决重复触发 update_spec 全量落盘。
         if spec.get("_verify_parallel_override") is not None:
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "_verify_parallel_override": None,
-                },
-            )
+            # update_spec 含磁盘 IO，异常上抛会沿调用点中断本轮 verdict 处置
+            # （与 _escalate_inconclusive_parking 容错口径对齐，code-review
+            # item 428bab82943c）：复位写失败仅 WARNING 留痕，降档旗标滞留
+            # 由后续健康轮复位点兜底，不阻断正常判定路由。
+            try:
+                pipeline._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "_verify_parallel_override": None,
+                    },
+                )
+            except Exception as e:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' 并行度降档复位写盘失败（降档旗标滞留，"
+                    f"非阻塞）: {type(e).__name__}: {e}",
+                )
         return False
 
     try:
@@ -520,7 +531,18 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
         if attempts >= 2:
             base = _read_int_config(pipeline, "verify_engine.max_parallel", 5)
             updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
-        pipeline._context.state_machine.update_spec(spec_name, updates)
+        # update_spec 含磁盘 IO，异常上抛会沿调用点中断本轮 verdict 处置
+        # （与 _escalate_inconclusive_parking 容错口径对齐，code-review item
+        # 428bab82943c）：记账写失败仅 WARNING 留痕（attempt 计数/降档/签名
+        # 本轮未推进，下一轮处置点按落盘旧值重算兜底），不阻断重派主链。
+        try:
+            pipeline._context.state_machine.update_spec(spec_name, updates)
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' inconclusive 重验记账写盘失败（计数未推进，"
+                f"仍按重派处理，非阻塞）: {type(e).__name__}: {e}",
+            )
         pipeline._context.enqueue(spec_name, "verifier")
         return True
 
@@ -1640,25 +1662,36 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
 
     if attempts < max_attempts:
         pipeline._context.logger.warning("pm_engine", f"'{spec_name}' {note}")
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "implemented",
-                "tester_run": None,
-                "error": note,
-                "_inconclusive_attempts": attempts,
-                # 本形态无签名比较基准，显式按空串回写（与本函数升级分支注释
-                # 声明一致，code-review de2568acfdf3）：两种 inconclusive 形态
-                # 共用 _inconclusive_attempts 计数，不回写会残留 blocked-env 轮
-                # 旧签名，下轮 blocked-env 同签名复现时被误判「环境未变化」
-                # 提前升级停车（跨形态非相邻两轮的误配）。
-                "_last_inconclusive_signature": "",
-                # 预算隔离（design D3，与 _handle_env_blocked_inconclusive
-                # 重验分支同语义）：本重验轮若触发 judge 派发，计入独立计数器
-                # 而非 _judge_rerun_count 生命周期账。
-                "_in_inconclusive_reverify": True,
-            },
-        )
+        # update_spec 含磁盘 IO，异常上抛会沿调用点中断本轮 verdict 处置
+        # （与 _escalate_inconclusive_parking 容错口径对齐，code-review item
+        # 428bab82943c）：记账写失败仅 WARNING 留痕（attempt 计数/签名本轮
+        # 未推进，下一轮处置点按落盘旧值重算兜底），不阻断重派主链。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "implemented",
+                    "tester_run": None,
+                    "error": note,
+                    "_inconclusive_attempts": attempts,
+                    # 本形态无签名比较基准，显式按空串回写（与本函数升级分支注释
+                    # 声明一致，code-review de2568acfdf3）：两种 inconclusive 形态
+                    # 共用 _inconclusive_attempts 计数，不回写会残留 blocked-env 轮
+                    # 旧签名，下轮 blocked-env 同签名复现时被误判「环境未变化」
+                    # 提前升级停车（跨形态非相邻两轮的误配）。
+                    "_last_inconclusive_signature": "",
+                    # 预算隔离（design D3，与 _handle_env_blocked_inconclusive
+                    # 重验分支同语义）：本重验轮若触发 judge 派发，计入独立计数器
+                    # 而非 _judge_rerun_count 生命周期账。
+                    "_in_inconclusive_reverify": True,
+                },
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' judge-env 重验记账写盘失败（计数未推进，"
+                f"仍按重派处理，非阻塞）: {type(e).__name__}: {e}",
+            )
         pipeline._context.enqueue(spec_name, "verifier")
         return True
 

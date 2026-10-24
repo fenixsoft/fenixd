@@ -160,7 +160,11 @@ def _implementer_zero_change(pipeline, spec_name: str, result) -> bool:
     # 分支零提交，再看运行产物中是否有编辑类工具调用
     run_file = pipeline._context.project_root / ".fenix" / "runs" / f"{result.run_id}.jsonl"
     try:
-        with run_file.open(encoding="utf-8") as f:
+        # 显式 UTF-8 + errors=replace（与本文件上方 rev-list、git status
+        # 两处同口径）：run 流末行半写在多字节字符中间时，严格解码在迭代
+        # 即抛 UnicodeDecodeError（ValueError 族、非 OSError 子类），不被
+        # 下方 except OSError 捕获，破坏零变更哨 fail-open 契约。
+        with run_file.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 try:
                     d = json.loads(line)

@@ -17,7 +17,7 @@
  * 纯判定函数与 dsh 装配分离：单测零 dsh 依赖。
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 
 // ── 纯逻辑：三守卫判定 ─────────────────────────────────────────────────────
 
@@ -58,6 +58,20 @@ function normalize(p: string): string {
 }
 
 /**
+ * realpath 解析：消解符号链接后参与判定。worktree 内指向主树的链接
+ * （checked-in symlink，git mode 120000，或 run 前已存在的链接）词法上
+ * 落在 worktree 内会被放行、实际落盘写穿主树。解析失败（目标不存在、
+ * 循环等）回退词法路径——守卫不因异常放行或失效。
+ */
+function resolveReal(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
  * 主树写守卫：对 write/edit 的 file_path 判定（对齐 block-main-tree-write.py）。
  * - 两个 env 任一为空 → 直通（非 fenixd 派发场景，不误伤）；
  * - 相对路径 → 相对 CWD（spawn 已保证 = worktree）解析，放行；
@@ -65,6 +79,10 @@ function normalize(p: string): string {
  * - 落在主树 .fenix/verify-progress/（--add-dir 授权的进度目录）→ 放行；
  * - 其余主树路径 → 拦截并给纠偏处方（「主树只读」语义）；
  * - 主树之外（/tmp 等）→ 不归本防线管，放行。
+ *
+ * 判定前 filePath / worktree / projectRoot 均先 realpath（失败回退词法路径）：
+ * 同一真实坐标系内比对，worktree 内指向主树的符号链接不再被词法前缀放行
+ * 写穿主树。dsh 通道较 Python 版 hook（纯 normpath 词法判定）多这一层收紧。
  */
 export function mainTreeWriteDecision(filePath: string, env: GuardEnv): GuardDecision {
   const worktree = (env.worktree ?? "").trim();
@@ -75,11 +93,13 @@ export function mainTreeWriteDecision(filePath: string, env: GuardEnv): GuardDec
   // 相对路径 → 相对 CWD 解析，天然安全
   if (!filePath.startsWith("/")) return { blocked: false };
 
-  const norm = normalize(filePath);
-  if (within(norm, normalize(worktree))) return { blocked: false };
-  if (within(norm, normalize(`${projectRoot}/.fenix/verify-progress`))) return { blocked: false };
-  if (within(norm, normalize(projectRoot))) {
-    const rel = norm.slice(normalize(projectRoot).length + 1);
+  const norm = normalize(resolveReal(filePath));
+  const wt = normalize(resolveReal(worktree));
+  const root = normalize(resolveReal(projectRoot));
+  if (within(norm, wt)) return { blocked: false };
+  if (within(norm, normalize(resolveReal(`${root}/.fenix/verify-progress`)))) return { blocked: false };
+  if (within(norm, root)) {
+    const rel = norm.slice(root.length + 1);
     return {
       blocked: true,
       reason:

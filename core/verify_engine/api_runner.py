@@ -28,7 +28,7 @@ from ._evidence import _EVIDENCE_LIMIT, _truncate, _interpolate_env  # 共享证
 from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .api_assertions import ApiAssertionRunner, json_schema_available
 from .env_gate import probe_http_health
-from .scenarios import validate_scenario
+from .scenarios import MAX_STEP_TIMEOUT, validate_scenario
 
 _SSE_MAX_EVENTS = 100  # sse_connect 单窗口事件收集上限（触顶截断并在 detail 标注）
 # 响应体 JSON 解析体积上限（与 evidence 侧 64KB 截断纪律同旨）：异常端点返回
@@ -279,6 +279,20 @@ class ApiRunner(VerifyRunner):
                 "method": method,
                 "url": url,
                 "error": f"timeout 须为有限数字（秒）: {step.get('timeout')!r}",
+            }
+        if timeout > MAX_STEP_TIMEOUT:
+            # 量级上限镜像验收层（scenarios MAX_STEP_TIMEOUT，code-review
+            # item be6104b7a055）：正数+有限两支守卫拦不住有限大值（毫秒
+            # 语义误写 "600000"≈7 天），httpx read 超时如实等待、单场景占住
+            # 并行槽挂起整轮验证——兜住绕过验收的调用路径（手工构造
+            # TestScenario 直达），超限归一为本步骤结构化失败，与上方
+            # 负值/非有限守卫同口径。
+            return {
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
+                "error": f"timeout 超过上限 {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟）: {step.get('timeout')!r}",
             }
         # [fenix-ignore:3d0316f9d300] falsy 标量在运行层不可达：场景装载经 TestStep.from_dict 的 _str_field 已把显式 0/False 归一为字符串 "0"/"False"（item 057b6e7741a5，同一失效类已在验收层修复），to_dict 真值过滤后本方法只会收到非空字符串或键缺失，YAML 写 body: 0 实际发送的是 "0"，所述静默丢 body 不成立
         if body and not isinstance(body, str):
@@ -557,6 +571,18 @@ class ApiRunner(VerifyRunner):
                 "action": "sse_connect",
                 "url": url,
                 "error": f"duration 须为有限数字（秒）: {step.get('duration')!r}",
+            }
+        if duration > MAX_STEP_TIMEOUT:
+            # 量级上限镜像验收层（scenarios MAX_STEP_TIMEOUT，code-review
+            # item be6104b7a055）：收集窗口 deadline 与 httpx read 超时均由
+            # duration 派生，有限大值会如实等待整个窗口、单场景占住并行槽
+            # 挂起整轮验证——兜住绕过验收的调用路径，超限归一为本步骤
+            # 结构化失败，与上方负值/非有限守卫同口径。
+            return {
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
+                "error": f"duration 超过上限 {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟）: {step.get('duration')!r}",
             }
         events: list[dict] = []
         truncated = False

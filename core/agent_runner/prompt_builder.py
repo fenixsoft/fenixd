@@ -821,12 +821,18 @@ class PromptBuilder:
         duck-typing：当前 adapter 暴露 harness_notes() 即注入其产物（dsh=
         headless 行为模型）；claude adapter 无该方法 → 回落 CLAUDE_HARNESS_
         NOTES 原文（快照零差异）。装配点未注入 adapter 时 get_current_adapter
-        惰性回落 claude，同现状。注入调用自身抛错 → 记 WARNING 并回落同一
-        常量（code-review item 2ae5222f3421，fail-open 不阻断 prompt 构建）。
+        惰性回落 claude，同现状。模块导入/adapter 装配/注入调用任一抛错 →
+        记 WARNING 并回落同一常量（code-review item 2ae5222f3421 与
+        4f278aab8e0d，fail-open 不阻断 prompt 构建）。
         """
-        from core.agent_runner.harness import get_current_adapter
+        try:
+            from core.agent_runner.harness import get_current_adapter
 
-        notes_fn = getattr(get_current_adapter(), "harness_notes", None)
+            notes_fn = getattr(get_current_adapter(), "harness_notes", None)
+        except Exception as exc:  # noqa: BLE001 — prompt 软约束 fail-open（与本文件 schema/freeze/evidence/selfcheck 段同族）：harness 导入/adapter 装配抛错仅记 WARNING 并回落 claude 原文，不阻断 prompt 构建/派发（code-review item 4f278aab8e0d）
+            _logger.warning(
+                "harness adapter 获取失败，回落 CLAUDE_HARNESS_NOTES：%r", exc)
+            return CLAUDE_HARNESS_NOTES
         if notes_fn is not None:
             try:
                 return notes_fn()
@@ -1788,7 +1794,13 @@ class PromptBuilder:
         # _str_field 归一：键缺失、显式 None 或结构化值都安全（None 切片 [:2000] 抛
         # TypeError——历史修复防回归）。
         merge_error = _str_field(conflict_summary.get("merge_error")) or "（未提供原始错误）"
-        conflict_paths = conflict_summary.get("conflict_paths", [])
+        # 条目防御（code-review item 7387ef13061b）：非 list 的脏值（如上游回归
+        # 传入字符串）直接作废回空——否则 for 循环按字符迭代，冲突清单渲染成逐
+        # 字符一行一项的畸形段（与 _declared_reality_snapshot 的条目防御同口径，
+        # 脏数据不得让 prompt 段畸形）。
+        conflict_paths = conflict_summary.get("conflict_paths") or []
+        if not isinstance(conflict_paths, list):
+            conflict_paths = []
         repair_round = conflict_summary.get("repair_round", 1)
         # 主树在飞修订根因（evo-inflight-spec-amendment-watch 1.3）：merge-back
         # 侧检出 spec/changes/<spec>/ 的主树已提交修订时由调度层透传——非空才
