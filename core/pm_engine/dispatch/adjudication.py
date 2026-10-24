@@ -1653,8 +1653,6 @@ class VAdjudicationMixin:
         from core.deliverables import (
             is_stale_declaration,
             match_basename_in_tree,
-            register_relocation_credential,
-            relocate_declared_path,
         )
 
         branch = getattr(result, "branch", None)
