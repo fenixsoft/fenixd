@@ -600,6 +600,11 @@ def _run_legacy_verification(pipeline, spec_name: str):
             )
             # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
             pipeline._record_verdict_adoption(spec_name, "bug-found", report)
+            # 本轮场景集变更小节追加到验证报告（spec 需求 2.3，与主路径
+            # _apply_bug_found 及本文件 verified 分支同语义；code-review
+            # item 2bd89b74e952——bug-found 分支两车道报告产物对称，
+            # 同一 spec 走降级车道不再缺该小节）。
+            pipeline._render_scenario_change_section_to_report(spec_name)
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"Verifier (legacy) found bugs in '{spec_name}'",

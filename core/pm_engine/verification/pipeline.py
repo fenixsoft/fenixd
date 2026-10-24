@@ -18,6 +18,7 @@ import functools
 import json
 import re
 import subprocess
+import threading
 import time
 
 # judge-scenario-repair：judge 原地场景修复预算（_SCENARIO_REPAIR_MAX_ROUNDS）
@@ -120,6 +121,9 @@ from core.pm_engine.verification.judge_gate import (
     _judge_rerun_count,
     _last_planner_cost_usd,
     _last_planner_run_cost,
+    # 布尔 STATE 字面量读法单源（code-review item ace41e622f21：
+    # _scenario_revision_reentry 的本地字面量清单并入此单源）。
+    _state_flag_true,
     _write_degrade_context,
 )
 
@@ -316,8 +320,11 @@ def _scenario_revision_reentry(pipeline, spec_name: str) -> bool:
     重验修订（调用方按既有路径继续）。
     """
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
-    pending = str(entry.get(SCENARIO_REVISION_PENDING_FIELD) or "").strip().lower()
-    if pending not in ("true", "1", "yes"):
+    # 布尔字面量口径复用单源 judge_gate._state_flag_true（code-review
+    # item ace41e622f21：本地 ("true", "1", "yes") 第二清单与单源
+    # ("true", "1") 集合不一致且 "yes" 为死分支——写侧只落布尔
+    # True/False，将来口径修正只改单源不再漏改本处）。
+    if not _state_flag_true(entry, SCENARIO_REVISION_PENDING_FIELD):
         return False
     pipeline._context.state_machine.update_spec(
         spec_name,
@@ -534,6 +541,15 @@ class VerificationPipeline:
             return False
         return True
 
+    # 并发验证轮互斥（code-review item 886f158ffa7c）：importlib.reload 非
+    # 线程安全，同一实例可并发跑不同 spec 的验证轮（派发在锁外），两个并发
+    # 轮同时 reload 时，另一轮在 _execute_stage2 函数体内执行的
+    # `from core.verify_engine import VerifyEngine` 可能解析到半初始化模块。
+    # 模块重载是进程全局副作用，锁定义为类属性以覆盖同进程全部 pipeline
+    # 实例：reload 段全程持锁，并发轮在锁内等待既有 reload 完成后再做函数
+    # 体内 import（锁内仅 reload/import_module 与日志留痕，无重入路径）。
+    _VERIFY_ENGINE_RELOAD_LOCK = threading.Lock()
+
     def _reload_verify_engine_modules(self) -> None:
         """重新加载验证引擎模块，确保使用最新代码（D4：局部 import 留在函数体内）。
 
@@ -549,65 +565,71 @@ class VerificationPipeline:
         留存旧代码属已知局限（上循环 WARNING 留痕「将沿用旧代码」）。测试靠
         patch("core.verify_engine.VerifyEngine") 生效正因 import 在函数体内于
         调用时执行——提取时 MUST 保留 import 于本方法体内（D4）。
+
+        并发互斥（code-review item 886f158ffa7c）：本方法 reload 段全程持
+        类级 ``_VERIFY_ENGINE_RELOAD_LOCK``，串行化进程内全部验证轮的模块
+        热重载（importlib.reload 非线程安全，函数体内 import 不得与并发
+        reload 竞争）。
         """
         import importlib
         import sys
 
-        _verify_modules = [
-            "core.verify_engine.visual_diff",
-            "core.verify_engine.browser",
-            # admin 修 2026-09-06：web_runner 持有 `from .browser import
-            # BrowserManager` 的旧类引用（reload 不会更新其他模块已导入的
-            # 名称），不 reload 它则 browser.py 的更新经 WebRunner 实例化
-            # 路径完全不生效（add-spec-hooks admin 处置实测：browser 首帧
-            # 等待修复被旧 BrowserManager 类屏蔽）。须先于 engine reload。
-            "core.verify_engine.web_runner",
-            # admin 修 2026-09-07：三个 runner 一并 reload——此前 cli/api
-            # runner 不在列表内，其代码修复同样不生效；配合 runner.py 的
-            # 同模块重注册放行（否则装饰器对已注册 kind raise、reload 整体
-            # 失败且被下方静默吞掉，sys.modules 留存旧类）。
-            "core.verify_engine.cli_runner",
-            "core.verify_engine.api_runner",
-            "core.verify_engine.assertions",
-            "core.verify_engine.scenarios",
-            "core.verify_engine.scenario_static_check",
-            "core.verify_engine.engine",
-            "core.verify_engine",
-        ]
-        for mod_name in _verify_modules:
-            if mod_name in sys.modules:
+        with self._VERIFY_ENGINE_RELOAD_LOCK:
+            _verify_modules = [
+                "core.verify_engine.visual_diff",
+                "core.verify_engine.browser",
+                # admin 修 2026-09-06：web_runner 持有 `from .browser import
+                # BrowserManager` 的旧类引用（reload 不会更新其他模块已导入的
+                # 名称），不 reload 它则 browser.py 的更新经 WebRunner 实例化
+                # 路径完全不生效（add-spec-hooks admin 处置实测：browser 首帧
+                # 等待修复被旧 BrowserManager 类屏蔽）。须先于 engine reload。
+                "core.verify_engine.web_runner",
+                # admin 修 2026-09-07：三个 runner 一并 reload——此前 cli/api
+                # runner 不在列表内，其代码修复同样不生效；配合 runner.py 的
+                # 同模块重注册放行（否则装饰器对已注册 kind raise、reload 整体
+                # 失败且被下方静默吞掉，sys.modules 留存旧类）。
+                "core.verify_engine.cli_runner",
+                "core.verify_engine.api_runner",
+                "core.verify_engine.assertions",
+                "core.verify_engine.scenarios",
+                "core.verify_engine.scenario_static_check",
+                "core.verify_engine.engine",
+                "core.verify_engine",
+            ]
+            for mod_name in _verify_modules:
+                if mod_name in sys.modules:
+                    try:
+                        importlib.reload(sys.modules[mod_name])
+                    except Exception as e:
+                        # reload 失败绝不可静默：sys.modules 将留存旧代码，admin
+                        # 的引擎修复看似已生效实则被旧类屏蔽（本类根因曾静默潜伏
+                        # 至 fix-mobile-touch-disclosure 轮才暴露）。降级告警留痕。
+                        self._context.logger.warning(
+                            "pm_engine",
+                            f"verify_engine 模块热重载失败 '{mod_name}'（将沿用旧代码）: "
+                            f"{type(e).__name__}: {e}",
+                        )
+
+            # 第二循环：失败可见性探测（code-review item bf4ff4bcf5f6 修正表述）。
+            # import_module 对 sys.modules 已存在的模块只返回既有条目、不重读磁盘，
+            # 此处**不能**恢复 reload 失败留存的旧代码（reload 失败已在上循环
+            # WARNING 留痕）；作用仅为幂等探测 import 可用性，并对失败记 WARNING
+            # 而非静默 pass。
+            for mod_name in _verify_modules:
                 try:
-                    importlib.reload(sys.modules[mod_name])
+                    # 条件放宽（code-review item eb64219d5fa8）：旧守卫 `not in sys.modules`
+                    # 使本循环永远无法恢复「importlib.reload 失败」的模块（失败的 reload
+                    # 会把旧条目留在 sys.modules 中），与方法 docstring 声称的「reload 后
+                    # 重导入」矛盾。改为对**所有**目标模块尝试 import_module（已存在则
+                    # 直接返回既有模块，幂等无副作用），并对失败记 WARNING 而非静默 pass
+                    # （静默会让调用方继续跑陈旧/半加载的引擎代码——正是本方法要防的形态）。
+                    importlib.import_module(mod_name)
                 except Exception as e:
-                    # reload 失败绝不可静默：sys.modules 将留存旧代码，admin
-                    # 的引擎修复看似已生效实则被旧类屏蔽（本类根因曾静默潜伏
-                    # 至 fix-mobile-touch-disclosure 轮才暴露）。降级告警留痕。
                     self._context.logger.warning(
                         "pm_engine",
-                        f"verify_engine 模块热重载失败 '{mod_name}'（将沿用旧代码）: "
+                        f"模块重导入失败 {mod_name}（继续，可能残留陈旧代码）: "
                         f"{type(e).__name__}: {e}",
                     )
-
-        # 第二循环：失败可见性探测（code-review item bf4ff4bcf5f6 修正表述）。
-        # import_module 对 sys.modules 已存在的模块只返回既有条目、不重读磁盘，
-        # 此处**不能**恢复 reload 失败留存的旧代码（reload 失败已在上循环
-        # WARNING 留痕）；作用仅为幂等探测 import 可用性，并对失败记 WARNING
-        # 而非静默 pass。
-        for mod_name in _verify_modules:
-            try:
-                # 条件放宽（code-review item eb64219d5fa8）：旧守卫 `not in sys.modules`
-                # 使本循环永远无法恢复「importlib.reload 失败」的模块（失败的 reload
-                # 会把旧条目留在 sys.modules 中），与方法 docstring 声称的「reload 后
-                # 重导入」矛盾。改为对**所有**目标模块尝试 import_module（已存在则
-                # 直接返回既有模块，幂等无副作用），并对失败记 WARNING 而非静默 pass
-                # （静默会让调用方继续跑陈旧/半加载的引擎代码——正是本方法要防的形态）。
-                importlib.import_module(mod_name)
-            except Exception as e:
-                self._context.logger.warning(
-                    "pm_engine",
-                    f"模块重导入失败 {mod_name}（继续，可能残留陈旧代码）: "
-                    f"{type(e).__name__}: {e}",
-                )
 
     def _handle_verdict_evidence_rejection(self, spec_name: str, verdict_ret: dict) -> None:
         """裁决证据分类校验失败处置（add-verdict-evidence-taxonomy D1-D5）。
@@ -917,7 +939,11 @@ class VerificationPipeline:
         本段承载：warning streak 升级、_read_verdict 结构化三态读取、结果应用处
         最终状态核对（D6）、裁决不可读重派一次→二次仍不可读 blocked + critical
         告警（重派 judge 的派发异常同样折算为二次不可读归因，不外溢）。
-        任一失败路径返回 None（丢弃）；成功返回 (verifier_result, verifier_status)。
+        任一失败路径返回 None（丢弃）；成功返回 (verifier_result, verifier_status,
+        verdict_judge_run)——第三元素为实际产出所读裁决产物的 judge run 对象
+        （首轮不可读重派成功路径为 retry_judge，否则为入参首轮 judge_run）；
+        调用方以它写 tester_run/trigger_run_id，防审计/关联错位到白跑的首轮
+        （code-review item 1f072888eb4d）。
         """
         # ── 阶段3+ warning 连续悬置追踪与升级（design D4 / D5）──
         # 裁决采纳处更新连续计数侧车；达 2 轮的 warning 场景发 triage 升级告警，
@@ -936,6 +962,9 @@ class VerificationPipeline:
         # evo-verifier-result-single-source R1：统一走 _read_verdict 入口，
         # 主树共享回退须过 role/spec 戳校验——implementer 残留不采信；
         # eb76bcf8e306：共享回退命中再补 mtime 陈旧复核，与 legacy 车道对齐）
+        # 实际产出裁决产物的 judge run（code-review item 1f072888eb4d）：
+        # 首轮默认；下方重派成功路径切换为 retry_judge。
+        _verdict_judge_run = judge_run
         verifier_result = self._read_verdict_guarded(spec_name, judge_run)
         verifier_status = verifier_result.status if verifier_result.ok else None
         # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
@@ -1040,6 +1069,9 @@ class VerificationPipeline:
                         f"fail-closed 处置，真实根因入 blocked 留痕: {retry_failure}",
                     )
                 if retry_judge is not None and retry_judge.success:
+                    # 裁决产物来自重派轮（code-review item 1f072888eb4d）：
+                    # 采纳尾段 tester_run/trigger_run_id 须记重派轮 run id。
+                    _verdict_judge_run = retry_judge
                     verifier_result = self._read_verdict_guarded(spec_name, retry_judge)
                     verifier_status = verifier_result.status if verifier_result.ok else None
                     # 重派成功且裁决可读同样须核对（code-review item
@@ -1172,7 +1204,7 @@ class VerificationPipeline:
                         f"'{spec_name}': {type(e).__name__}: {e}",
                     )
                 return None
-        return verifier_result, verifier_status
+        return verifier_result, verifier_status, _verdict_judge_run
 
     # ── B9: bug-found 应用（编排骨架，等价搬移）────────────────────────
     # D1 B9 段落：5 道守卫 → infra 归因（前置到 transition 之前）→ transition
@@ -2368,7 +2400,18 @@ class VerificationPipeline:
                             f"[阶段2] infra-retry 重派触发失败，回落直接入队 "
                             f"'{spec_name}': {exc}",
                         )
-                        self._context.enqueue(spec_name, "verifier")
+                        # 二次兜底对齐 legacy 车道同款路径（code-review item
+                        # bbf7c1936cad）：回落入队再抛不穿出 _execute_stage2
+                        # （本轮记账/决议已在上游完成），仅 ERROR 留痕，spec
+                        # 保持 testing 由 recovery 兜底重排。
+                        try:
+                            self._context.enqueue(spec_name, "verifier")
+                        except Exception as exc2:
+                            self._context.logger.error(
+                                "pm_engine",
+                                f"[阶段2] infra-retry 回落入队失败（保持 testing "
+                                f"由 recovery 兜底重排）'{spec_name}': {exc2}",
+                            )
                 return None, None, False, "", True
 
             # 自愈可能改写场景文件端口（场景声明端口 → 框架分配端口）：
@@ -3537,7 +3580,9 @@ class VerificationPipeline:
         verdict_read = self._read_verdict_failclosed(spec_name, judge_run=judge_result)
         if verdict_read is None:
             return
-        verifier_result, verifier_status = verdict_read
+        # 第三元素=实际产出裁决产物的 judge run（重派成功时为 retry_judge，
+        # code-review item 1f072888eb4d）：下游采纳尾段以它记账。
+        verifier_result, verifier_status, verdict_judge_run = verdict_read
         # ── 阶段3+ 场景原地修复通道（judge-scenario-repair，见 _handle_scenario_repaired）──
         if self._handle_scenario_repaired(spec_name, verifier_status, _repair_depth):
             return
@@ -3559,12 +3604,12 @@ class VerificationPipeline:
             # 耗时步骤，窗口内 spec 可能被人工复位/冻结接管/并发 attempt
             # 接管——非 testing 时 DEBUG 丢弃，不覆写较新状态的
             # error/tester_run。
-            if _discard_if_not_testing(self, spec_name, judge_result, verifier_status):
+            if _discard_if_not_testing(self, spec_name, verdict_judge_run, verifier_status):
                 return
             self._context.state_machine.update_spec(
                 spec_name,
                 {
-                    "tester_run": judge_result.run_id,
+                    "tester_run": verdict_judge_run.run_id,
                     "error": (
                         f"验证未完成：裁决 status={verifier_status}"
                         f"（场景计划裁决不按通过收口），保持 testing 待重验"
@@ -3578,9 +3623,9 @@ class VerificationPipeline:
             )
             return
         if verifier_status == "bug-found":
-            self._apply_bug_found(spec_name, judge_result, report, _repair_depth)
+            self._apply_bug_found(spec_name, verdict_judge_run, report, _repair_depth)
             return
-        self._apply_verified(spec_name, judge_result, report)
+        self._apply_verified(spec_name, verdict_judge_run, report)
         return
 
 
