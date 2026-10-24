@@ -81,13 +81,14 @@ REVIEW_REJECTED_FREEZE_ERROR_PREFIX = "评审否决冻结："
 
 
 # update_spec 留痕键单源（code-review 2cd5458a25d4）：_apply_updates_entry 写入
-# applied 的三类「非生效」留痕键——
+# applied 的「非生效」留痕键——
 # - _stripped：人工冻结剥离的 status 写留痕；
 # - _rejected_verify_parallel_override：非法形状 _verify_parallel_override
 #   拒写留痕；
+# - _rejected_status：值域外非法 status 拒写留痕（code-review d6738d1c310b）；
 # - _dropped_keys：serialize 固定字段表外普通键被静默丢弃的显性化留痕。
 # update_spec 的零写入判定据 _APPLIED_TRACEBACK_KEYS 把「applied 仅含留痕键」
-# 判为零字段生效（changed=False 跳过全量落盘）。新增第三类拒写/留痕键时在本处
+# 判为零字段生效（changed=False 跳过全量落盘）。新增拒写/留痕键时在本处
 # 登记键名常量并纳入集合——写入点与排除点共用同一常量，漏登会把纯留痕写误判
 # 为有效写（触发 STATE.md 全量落盘、EventBus 空 diff 噪声与假「Updated SPEC」
 # 审计）。
@@ -95,10 +96,12 @@ _APPLIED_TRACEBACK_KEY_STRIPPED = "_stripped"
 _APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE = (
     "_rejected_verify_parallel_override"
 )
+_APPLIED_TRACEBACK_KEY_REJECTED_STATUS = "_rejected_status"
 _APPLIED_TRACEBACK_KEY_DROPPED_KEYS = "_dropped_keys"
 _APPLIED_TRACEBACK_KEYS = frozenset({
     _APPLIED_TRACEBACK_KEY_STRIPPED,
     _APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE,
+    _APPLIED_TRACEBACK_KEY_REJECTED_STATUS,
     _APPLIED_TRACEBACK_KEY_DROPPED_KEYS,
 })
 
@@ -1854,7 +1857,11 @@ class StateMachine:
         - 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：非法
           形状（布尔/字符串等非 int|None）的 ``_verify_parallel_override``
           拒绝写入，剥字段留痕（``_rejected_verify_parallel_override``），
-          其余更新照常应用。
+          其余更新照常应用；
+        - status 值域守卫（code-review d6738d1c310b）：不在 SpecStatus.ALL 的
+          非法 status 拒绝写入，剥字段留痕（``_rejected_status``），其余更新
+          照常应用——非法值原样落盘会被读侧 _admit_entry 连同条目（锚点与
+          预算计数）整条丢弃，防线须前移到写侧。
 
         ``applied`` 收集本次实际生效的字段（含 ``_stripped`` 剥离留痕），
         供 ``_log_update_applied`` 在锁外输出留痕日志。
@@ -1884,6 +1891,17 @@ class StateMachine:
             if not (_vpo is None or (isinstance(_vpo, int) and not isinstance(_vpo, bool))):
                 applied[_APPLIED_TRACEBACK_KEY_REJECTED_VERIFY_PARALLEL_OVERRIDE] = _vpo
                 del local["_verify_parallel_override"]
+        # status 值域守卫（code-review d6738d1c310b）：非法 status（调用方笔误/
+        # 上游接口回归）此前原样 serialize 落盘——读侧 _admit_entry 对含非法
+        # status 的条目仅 warning 后整条丢弃，下个写者「锁内读全部 → 全量回写」
+        # 即把该条目连同 branch/run 锚点与全部预算计数物理删除。防线前移到
+        # 写侧：非法值拒写该字段、其余更新照常应用（_verify_parallel_override
+        # 拒绝留痕先例同款），留痕经 applied 带出锁外由 _log_update_applied
+        # 输出 warning（锁内不落日志）。拒写后下方冻结剥离分支与「显式携带
+        # status 清取消保持标记」分支自然不触发——status 写未生效即不算人工
+        # 裁决落地。
+        if "status" in local and local["status"] not in SpecStatus.ALL:
+            applied[_APPLIED_TRACEBACK_KEY_REJECTED_STATUS] = local.pop("status")
         if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in local and "status" in local:
             applied[_APPLIED_TRACEBACK_KEY_STRIPPED] = local.pop("status")
         if "status" in local:
@@ -1965,6 +1983,16 @@ class StateMachine:
                 f"（契约 int|None：降档并行度 int 或复位 null）——已拒绝该字段"
                 f"写入，不序列化进 STATE.md；其余更新照常应用",
             )
+        if _APPLIED_TRACEBACK_KEY_REJECTED_STATUS in applied:
+            # code-review d6738d1c310b：非法 status 值域拒绝留痕（收集点在
+            # _apply_updates_entry，此处锁外输出）。
+            self.logger.warning(
+                "state_machine",
+                f"SPEC '{spec_name}' 的更新含非法 status="
+                f"{applied[_APPLIED_TRACEBACK_KEY_REJECTED_STATUS]!r}"
+                f"（合法值域 SpecStatus.ALL）——已拒绝该字段写入，不序列化进"
+                f" STATE.md；其余更新照常应用",
+            )
         if not persisted:
             # 零写入（code-review 0f755914db2b）：无字段生效、STATE.md 未回写，
             # 细节已由上方 _stripped / _rejected warning 覆盖，不再复述。
@@ -1981,7 +2009,8 @@ class StateMachine:
                 "updates": {
                     k: v for k, v in applied.items()
                     if k not in ("updated", "_stripped", "_dropped_keys",
-                                 "_rejected_verify_parallel_override")
+                                 "_rejected_verify_parallel_override",
+                                 "_rejected_status")
                 }
             },
         )
@@ -2458,6 +2487,14 @@ class StateMachine:
             # 即 UnboundLocalError）。
             new_entry = dict(entry)
             new_entry.setdefault("status", SpecStatus.DRAFTED)
+            # status 值域守卫（code-review d6738d1c310b）：非法 status 原样落盘
+            # 会被读侧 _admit_entry 连同条目（branch/run 锚点与预算计数）整条
+            # 丢弃（与 _apply_updates_entry 同名守卫同一根因）。拒写非法字段、
+            # 回落 drafted 默认，条目其余字段照常写入；原始值带出锁外 WARNING
+            # （锁内不落日志）。
+            if new_entry["status"] not in SpecStatus.ALL:
+                added["rejected_status"] = new_entry["status"]
+                new_entry["status"] = SpecStatus.DRAFTED
             new_entry.setdefault("priority", 5)
             # priority 形状归一（code-review item 18afef1d8d99）：调用方传入
             # 非整型 priority 不得原样落盘（详见 _normalize_priority_int）。
@@ -2479,6 +2516,15 @@ class StateMachine:
         if not self._mutate_locked(_mutate):
             self.logger.warning("state_machine", f"SPEC already exists: {spec_name}")
             return False
+        if "rejected_status" in added:
+            # code-review d6738d1c310b：非法 status 拒写留痕（收集点在锁内
+            # _mutate，此处锁外输出）。
+            self.logger.warning(
+                "state_machine",
+                f"SPEC '{spec_name}' 的新增 entry 含非法 status="
+                f"{added['rejected_status']!r}（合法值域 SpecStatus.ALL）"
+                f"——已拒写该字段并回落 drafted 默认，其余字段照常写入",
+            )
         self.logger.info(
             "state_machine", f"Added SPEC '{spec_name}'", {"status": added["status"]}
         )
@@ -3345,7 +3391,11 @@ class StateMachine:
         Returns: True 表示 re-merge 成功并已推进 implemented；False 表示
         re-merge 失败（调用方清除标记后回落保留续做路径，spec 不滞留
         implementing），或 SPEC 已在本方法的 git 窗口内被并发删除
-        （code-review 1b4fc51aac73：跳过收口回调与成功日志，不计成功）。
+        （code-review 1b4fc51aac73：跳过收口回调与成功日志，不计成功），
+        或 SPEC 已在本方法的 git 窗口内被并发冻结（code-review
+        f9a26038d5ae：锁内 frozen 复查整体跳过收口写，status 未推进不计
+        成功，remerge_callback/consume_legacy 不触发，
+        ``_repair_awaiting_remerge`` 标记原样保留待解冻后下一轮）。
         ``deferred_out``（可选出参，code-review item d2671999d33c）：spec 目录
         在飞编辑顺延时写 ``deferred_out["deferred"] = True`` 带出顺延事实——
         顺延已声明标记原样保留待下一轮，调用方据此**直接跳过**本 spec 的后续
@@ -3426,6 +3476,7 @@ class StateMachine:
         }
         applied: dict = {}
         anchor_recheck: dict = {}
+        skip: dict = {}
 
         def _mutate(specs):
             # 快照锚点复核口径收敛到共享 helper（code-review 6e8fb8190679）；
@@ -3437,6 +3488,16 @@ class StateMachine:
                 # SPEC 已在 re-merge 的 git 窗口内被并发删除（code-review
                 # 1b4fc51aac73）：缺失事实带出锁外，收口出口据此跳过假成功
                 anchor_recheck["missing"] = True
+            if fresh.get(FROZEN_FIELD):
+                # 冻结复查（code-review f9a26038d5ae，与 _recovery_update_spec
+                # 同款口径）：快照与落盘之间的 git 子进程窗口内 spec 恰被冻结
+                # （frozen=True）时，status 写被冻结剥离、状态实际未推进——
+                # 照常收口会把假成功记进 recovered 并触发 remerge_callback/
+                # consume_legacy 副作用，且 updates 的 error=None 会整段覆盖
+                # 冻结 error。恢复让位于人工冻结：整体跳过本写（标记原样
+                # 保留，解冻后下一轮恢复再试），跳过事实带出锁外 WARNING。
+                skip["frozen"] = True
+                return False, False
             if matched:
                 updates["implementer_run"] = entry.get("implementer_run")
                 updates["branch"] = branch
@@ -3447,6 +3508,14 @@ class StateMachine:
             return found, found
 
         if not self._mutate_locked(_mutate):
+            if skip.get("frozen"):
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过恢复期 re-merge 收口：'{name}' 已在 re-merge 窗口内"
+                    f"被冻结——收口写整体放弃（status 未推进，不计成功，"
+                    f"remerge/consume_legacy 不触发），冻结 error 不被覆盖",
+                )
+                return False
             if anchor_recheck.get("missing"):
                 # SPEC 已被并发删除：不记假成功、不触发收口副作用——此前本
                 # 出口只记一条 SPEC not found warning 后无条件执行
@@ -3662,7 +3731,10 @@ class StateMachine:
 
         Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）；
         False 表示判定未通过、锚点复核不一致（并发改写），或 SPEC 已在本方法
-        的 git 窗口内被并发删除（code-review 1b4fc51aac73，不计入 recovered）。
+        的 git 窗口内被并发删除（code-review 1b4fc51aac73，不计入 recovered），
+        或 SPEC 已在本方法的 git 窗口内被并发冻结（code-review f9a26038d5ae：
+        锁内 frozen 复查整体跳过本写，恢复续做未落盘不计入 recovered；调用方
+        回落的清空重建路径同带 frozen 复查，冻结现场不被任何恢复写覆盖）。
         ``reason_out``（可选出参）原样透传 ``_resolve_preserved_branch`` 的回落
         原因（仅判定未通过/载体不可用路径），供调用方按真实原因分流留痕；
         锚点复核不一致/并发删除出口不写该键。
@@ -3724,6 +3796,7 @@ class StateMachine:
         # 路径（该路径只写常量、无快照锚点回写，不会复活陈旧值）。
         applied: dict = {}
         anchor_recheck: dict = {}
+        skip: dict = {}
 
         def _mutate(specs):
             # 快照锚点复核口径收敛到共享 helper（code-review 6e8fb8190679）；
@@ -3735,6 +3808,16 @@ class StateMachine:
                 # SPEC 已在保留判定的 git 窗口内被并发删除（code-review
                 # 1b4fc51aac73）：缺失事实带出锁外，收口出口据此跳过假成功
                 anchor_recheck["missing"] = True
+            if fresh.get(FROZEN_FIELD):
+                # 冻结复查（code-review f9a26038d5ae，与 _recovery_update_spec
+                # 同款口径）：保留判定的 git 窗口内 spec 恰被冻结（frozen=True）
+                # 时，status=ready 写被冻结剥离、恢复续做实际未落盘，照常返回
+                # True 会把冻结 spec 误计入 recovered 并以「preserved branch」
+                # 成功日志收口。恢复让位于人工冻结：整体跳过本写，跳过事实带
+                # 出锁外 WARNING（调用方回落清空重建路径同样带 frozen 复查，
+                # 冻结现场不被任何恢复写覆盖）。
+                skip["frozen"] = True
+                return False, False
             if matched:
                 found = self._apply_updates_entry(specs, name, updates, applied)
             else:
@@ -3744,6 +3827,13 @@ class StateMachine:
             return found, found
 
         if not self._mutate_locked(_mutate):
+            if skip.get("frozen"):
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过恢复保留续做：'{name}' 已在保留判定窗口内被冻结"
+                    f"——恢复写整体放弃，不计入 recovered",
+                )
+                return False
             if anchor_recheck.get("missing"):
                 # SPEC 已被并发删除：不再走下方「SPEC not found → return True」
                 # 假成功出口（否则调用方把已删 spec 计入 recovered，与 docstring
