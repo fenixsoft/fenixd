@@ -847,6 +847,36 @@ class ConfigLoader:
         return {}
 
     @classmethod
+    def _sub_segment_or_empty(cls, admin: Dict[str, Any], key: str) -> Dict[str, Any]:
+        """admin 嵌套子段归一助手：读 ``admin[key]`` 子段，真值非 dict 时 ERROR 告警
+        并按空段降级（code-review item 762bf6bb8c9d）。
+
+        admin 整段已由 _segment_or_empty 归一，但其嵌套子段（admin.code_review /
+        code_review_fix / regression / run_infra_breaker）此前由各读取器
+        ``if not isinstance(..., dict)`` 静默置空：手改 YAML 把子段写坏（如
+        ``regression: enabled`` 裸标量）时功能被静默关闭且无任何日志线索。本助手
+        与顶层段口径对齐——缺段（None）不告警，真值非 dict 按 (键路径, 脏值类型)
+        进程级一次性 ERROR 告警（复用 _SEGMENT_DIRTY_WARNED 去重装置）后返回空段；
+        去重只作用于告警分支，降级返回 {} 的行为不变。
+        """
+        seg = admin.get(key) if isinstance(admin, dict) else None
+        if isinstance(seg, dict):
+            return seg
+        if seg is not None:
+            # 同 _segment_or_empty 的 (键, 脏值类型) 去重范式，键路径加 admin.
+            # 前缀与顶层段键空间区分。
+            dedup_key = (f"admin.{key}", type(seg).__name__)
+            if dedup_key not in _SEGMENT_DIRTY_WARNED:
+                _SEGMENT_DIRTY_WARNED.add(dedup_key)
+                _logger.error(
+                    "config.admin.%s 子段非 dict（%s），该段已忽略、按空段降级；"
+                    "其余配置照常生效",
+                    key,
+                    type(seg).__name__,
+                )
+        return {}
+
+    @classmethod
     def _warn_reader_once(cls, key: str, value, log, msg: str, *args) -> None:
         """配置读取器非法值告警的进程级一次性去重（code-review item 50dac34fe569）。
 
@@ -2437,9 +2467,9 @@ class ConfigLoader:
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
         # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
         admin = cls._segment_or_empty(config, "admin")
-        cr = admin.get("code_review")
-        if not isinstance(cr, dict):
-            cr = {}
+        # 子段同样归一：真值非 dict ERROR 告警降级，不再静默置空
+        # （code-review item 762bf6bb8c9d）。
+        cr = cls._sub_segment_or_empty(admin, "code_review")
         max_files = cr.get("max_files", 500)
         if (
             not isinstance(max_files, int)
@@ -2529,9 +2559,9 @@ class ConfigLoader:
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
         # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
         admin = cls._segment_or_empty(config, "admin")
-        crf = admin.get("code_review_fix")
-        if not isinstance(crf, dict):
-            crf = {}
+        # 子段同样归一：真值非 dict ERROR 告警降级，不再静默置空
+        # （code-review item 762bf6bb8c9d）。
+        crf = cls._sub_segment_or_empty(admin, "code_review_fix")
         enabled = crf.get("enabled", False)
         if not isinstance(enabled, bool):
             enabled = False
@@ -2696,9 +2726,9 @@ class ConfigLoader:
         # 与 get_admin_config/get_self_review_config 对齐——admin 整段为列表/
         # 标量时 ERROR 告警并按空段降级，不再静默吞掉故障配置。
         admin = cls._segment_or_empty(config, "admin")
-        reg = admin.get("regression")
-        if not isinstance(reg, dict):
-            reg = {}
+        # 子段同样归一：真值非 dict ERROR 告警降级，不再静默置空
+        # （code-review item 762bf6bb8c9d）。
+        reg = cls._sub_segment_or_empty(admin, "regression")
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
         # enabled: "false"）静默转 True、意外开启周期回归；非 bool 回退文档
         # 缺省 False（与 get_code_review_fix_config 同范式）。
@@ -2723,9 +2753,9 @@ class ConfigLoader:
         # 非 dict admin 段 ERROR 告警并按空段降级，对齐同族 admin.* 读取器
         # （config=None 缺省参时助手按空段处理，全缺省语义不变）。
         admin = cls._segment_or_empty(config, "admin")
-        ib = admin.get("run_infra_breaker")
-        if not isinstance(ib, dict):
-            ib = {}
+        # 子段同样归一：真值非 dict ERROR 告警降级，不再静默置空
+        # （code-review item 762bf6bb8c9d）。
+        ib = cls._sub_segment_or_empty(admin, "run_infra_breaker")
         threshold = ib.get("threshold", 3)
         cooldown = ib.get("cooldown_minutes", 30)
         # 校验：必须为整值 ≥ 1（排除 bool，code-review item 46b77a7d7e83）；
