@@ -1040,9 +1040,22 @@ class EventBus:
             # status None 归一（code-review item a1210ff24c15）：.get 默认值只兜
             # 键缺失，手改 STATE.md 写出显式 null（YAML 空值）时返回 None 原样
             # 入快照；``or`` 形态与 _diff_specs 两处取值口径统一。
-            self._known_specs = {
-                name: (entry.get("status") or "drafted") for name, entry in specs.items()
-            }
+            # 非 dict 条目沿用旧已知状态（无则不登记），与 _diff_specs 快照重写
+            # 段/recovery 段/_find_dependents 的 isinstance 双保险同口径
+            # （code-review item 609c98e20eff）：read_all 契约已剔除坏条目，
+            # 此处为解析层回归时的双保险——稳态快照缺失时 _snapshot_baseline
+            # 走此处重建，若坏条目直接 .get 抛 AttributeError 会被
+            # _periodic_scan_loop 记 error 并跳过整轮 full_scan（恢复链、
+            # 悬空清扫、code-fix checkpoint 一并损失），违反「单条坏条目只
+            # 损失自身事件」的双保险意图；``elif name in`` 而非 .get 缺省
+            # None，避免把 None 引入快照（a1210ff24c15 归一口径）。
+            next_known = {}
+            for name, entry in specs.items():
+                if isinstance(entry, dict):
+                    next_known[name] = entry.get("status") or "drafted"
+                elif name in self._known_specs:
+                    next_known[name] = self._known_specs[name]
+            self._known_specs = next_known
 
     def _dispatch_changes(self, current_specs: dict):
         """Compare current state against known state and dispatch events.

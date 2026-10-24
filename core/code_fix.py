@@ -358,6 +358,7 @@ def _synthesize_item_progress(project_root, progress: dict) -> list:
         return []
     if not rows:
         return []
+    # [fenix-ignore:d45b94f04c61] 进度快照批上下文仅持久化 batch_total 计数、无批条目集，函数内无可靠批内过滤源且不得为此新增持久化结构——item_done 未做批界过滤属读侧展示口径局限（合成字段不落盘、不影响核销与台账），明示保留。
     # item_done：有效行按 item_id 去重（同条目重复追加只计一次，取末次）
     latest: dict = {}
     for row in rows:
@@ -3371,7 +3372,10 @@ def _parse_night_quiet_window(raw):
 
     单窗薄包装（evo-add-review-night-defer-snapshot-writeoff 1.1）：内部改调
     多窗版取首窗，保持旧签名与旧返回值（既有消费方/测试逐字节兼容）；多窗
-    列表解析见 ``_parse_night_quiet_windows``。本函数纯解析不告警，非法值的
+    列表解析见 ``_parse_night_quiet_windows``。当前无生产调用方——生产静默窗
+    消费方（admin_monitor 等）均已直用多窗版，仅
+    tests/test_code_fix_night_quiet_window.py 的兼容性测试在消费（code-review
+    item 7692bc616da8）。本函数纯解析不告警，非法值的
     WARNING 由调用方（``_night_quiet_window``）按「一次」纪律补。
     """
     windows = _parse_night_quiet_windows(raw)
@@ -4978,19 +4982,31 @@ class CodeFixOrchestrator:
         ``_run_batch`` 内，其 finally 无条件复位且严格覆盖到本批 worker 线程
         退出——提前复位会在收尾尾窗（本函数之后的进度写盘等）打开并发
         checkpoint 绕过单飞派新批的窗口竞态。
+
+        进度写盘失败只告警留痕不上穿（code-review item 69fa65e6c353，同
+        ff69fd3d36ec「写盘失败不得劫持收尾」先例）：本函数恰在 ``_run_batch``
+        的 except 分支内被调用，写盘二次抛出会穿出线程目标、跳过其 finally
+        之后的自驱动收尾。
         """
-        write_progress(
-            self.project_root,
-            phase=phase,
-            reason=reason,
-            worktree=None,
-            run_id=None,
-            batch_total=None,
-            manual_authorized=False,
-            # 链中途终局（halt）同样出账（2.1）：rollup 随本写点落盘并清账。
-            **self._chain_terminal_fields("halt"),
-            **fields,
-        )
+        try:
+            write_progress(
+                self.project_root,
+                phase=phase,
+                reason=reason,
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+                manual_authorized=False,
+                # 链中途终局（halt）同样出账（2.1）：rollup 随本写点落盘并清账。
+                **self._chain_terminal_fields("halt"),
+                **fields,
+            )
+        except Exception as e:  # noqa: BLE001 — 终态写盘失败不上穿，交由下轮 full scan 自愈
+            self._log(
+                "warning",
+                f"code-fix halt 收尾进度写盘失败（phase={phase}, "
+                f"reason={reason}）: {e}",
+            )
 
     # -- 链级 rollup（evo-add-codefix-digest-cost-metrics 2.1/2.2）---------
 
@@ -7047,19 +7063,31 @@ class CodeFixOrchestrator:
                 truly_last = True
             if truly_last:
                 chain_final = self._chain_terminal_fields("chain_last_batch")
-        write_progress(
-            root,
-            phase="merging",
-            done=new_done,
-            current=f"第 {batch_no} 批完成（已核销 {hit} 条，累计 {new_done}/{total}）",
-            reason="",
-            # 批收尾清除批上下文（D2）：worktree 已 cleanup、out 随之不可达，
-            # 条级字段让位给批级进度（spec「批收尾后条级字段让位」）。
-            worktree=None,
-            run_id=None,
-            batch_total=None,
-            **chain_final,
-        )
+        # 成功收尾写点护栏（code-review item 69fa65e6c353，同 ff69fd3d36ec
+        # 「写盘失败不得劫持收尾」先例）：合回与核销均已成功、worktree 已
+        # 清理，此刻磁盘满/权限类 OSError 若上穿会沿 _run_batch 的 except
+        # 分支走 _finish("failed", batch_worker_error)，把实际已成功的批在
+        # 进度面翻转成 failed——异常只留痕，保住 "success" 三态不翻转。
+        try:
+            write_progress(
+                root,
+                phase="merging",
+                done=new_done,
+                current=f"第 {batch_no} 批完成（已核销 {hit} 条，累计 {new_done}/{total}）",
+                reason="",
+                # 批收尾清除批上下文（D2）：worktree 已 cleanup、out 随之不可达，
+                # 条级字段让位给批级进度（spec「批收尾后条级字段让位」）。
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+                **chain_final,
+            )
+        except Exception as e:  # noqa: BLE001 — 成功收尾写盘失败不翻转 outcome
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批成功收尾进度写盘失败（合回核销已完成，"
+                f"done 目标 {new_done}/{total} 未落盘）: {e}",
+            )
         self._log(
             "info",
             f"code-fix 第 {batch_no} 批合回成功：resolved {hit}/{len(items)} 条"

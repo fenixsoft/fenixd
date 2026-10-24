@@ -992,6 +992,54 @@ class G5DistConflictsMixin:
             return []
         return _collect_unmerged_paths(res.stdout)
 
+    def _rm_working_tree_leftover(self, f: str) -> None:
+        """checkout 自愈失败后清除「HEAD 侧已删」冲突文件的工作区残留。
+
+        DU/UD（modify/delete）冲突中 HEAD 侧已删该路径时，``checkout -f
+        HEAD -- <f>`` 因 pathspec 在 HEAD 不存在而必然失败，仅靠调用方的
+        ``git reset`` 只把 index 条目清回 HEAD（即从 index 移除），stash/冲突
+        侧版本仍残留在工作区成 untracked 文件，可被后续全树 ``add -A`` 类操
+        作静默收编复活已删路径。先 ``cat-file -e HEAD:<f>`` 探明 HEAD 确无
+        该路径（checkout 因瞬时故障失败但 HEAD 仍在时不误删，保持原样交调
+        用点 remaining 复查兜底），再 ``git rm -f --ignore-unmatch`` 同步清
+        掉 index 条目与工作区残留——口径对齐
+        ``_resolve_build_artifact_conflicts`` 的「HEAD 已删 → git rm」分支。
+        rm 失败仅留痕非阻塞（残留复查与条目保留机制仍兜底）。
+        """
+        try:
+            probe = subprocess.run(
+                ["git", "-C", str(self.project_root), "cat-file", "-e", f"HEAD:{f}"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            # 探针不可用（超时/git 缺失）＝HEAD 侧有无不可知：保守不清，
+            # 与 _artifact_paths 探针失败返回 None 的保守口径一致
+            self.logger.warning(
+                "worktree_manager",
+                f"HEAD existence probe for {f} failed during self-heal: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
+        if probe.returncode != 0:
+            rm = subprocess.run(
+                ["git", "-C", str(self.project_root), "rm", "-f", "--ignore-unmatch", "--", f],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+            if rm.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"git rm -- {f} failed during self-heal (HEAD-side "
+                    f"deleted): {(rm.stderr or '').strip()[:200]}",
+                )
+
     def _heal_unmerged_files(self, conflict_files: list) -> None:
         """对 UU 文件执行自愈：丢弃 stash/冲突合并态，统一回退 HEAD 版本。
 
@@ -1031,6 +1079,7 @@ class G5DistConflictsMixin:
                         f"checkout -f HEAD -- {f} failed during stash-pop "
                         f"self-heal: {(res.stderr or '').strip()[:200]}",
                     )
+                    self._rm_working_tree_leftover(f)
         # 清空 index 残留的 staged 冲突条目（mixed reset，不动工作区）。
         # pathspec 限定 reset 范围（code-review item d2a5c64158c4，与
         # _rebuild_dist_after_merge 的 8bb77946bb6b/75e4515b7204 先例同口径）：

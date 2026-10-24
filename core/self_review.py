@@ -88,6 +88,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
     e42aabcf003a 指认，刻意保留）：无 chmod（mkstemp 落盘即 0600，todo.md
     属个人日审产物、维持私有权限取向）、无目录 fsync（断电时 rename 目录项
     可能未持久化，属可接受的取舍），且用 ``os.rename`` 而非 ``os.replace``。
+    fdopen 失败路径已对齐 cbb57806fbfd 先例做显式接管（code-review item
+    dfe3cb14b904），非本处刻意差异项。
     """
     fd, tmp_str = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -96,10 +98,23 @@ def _atomic_write_text(path: Path, content: str) -> None:
     )
     tmp_path = Path(tmp_str)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 state_machine._atomic_write_text /
+        # signals 先例 cbb57806fbfd）：with 的 close 只在 fdopen 成功后才
+        # 生效，fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8")
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         os.rename(str(tmp_path), str(path))
     finally:
         if tmp_path.exists():

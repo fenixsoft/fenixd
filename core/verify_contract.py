@@ -1847,6 +1847,39 @@ def _cleanup_partial_node_modules(target: Path, logger=None) -> None:
             )
 
 
+# 供给完成标记（code-review item 5c56bc946124）：供给成功出口写入 node_modules，
+# 供给入口以「目录存在且标记在」判定完整。daemon 在 npm ci 中途被 SIGKILL/断电
+# 等外部中断留下的残缺目录不经任何函数内失败清理路径（_cleanup_partial_node_modules
+# 只覆盖本进程的失败/超时出口），仅凭 exists() 短路会永久留存——标记缺失即判
+# 残缺，先清残壳再重装。标记落在 gitignore 的 node_modules 内，不入库。
+PROVISION_OK_MARKER = ".fenix-provision-ok"
+
+
+def _write_provision_ok_marker(nm: Path, logger=None) -> None:
+    """供给成功后补写完成标记；失败只留痕、不判供给整体失败（best-effort）。"""
+    try:
+        (nm / PROVISION_OK_MARKER).write_text("", encoding="utf-8")
+    except OSError as e:
+        if logger:
+            logger.warning("verify_contract", f"供给完成标记写入失败（{nm}）: {e}")
+
+
+def _discard_incomplete_node_modules(nm: Path, label: str, logger=None) -> None:
+    """目录存在但缺完成标记 → 按外部中断残缺清理，调用方随后重装。
+
+    rmtree 失败只记 WARNING 继续重装（对齐 _cleanup_partial_node_modules 的
+    容错口径：hardlink copytree / npm ci 对已存在目录自带失败出口，不会静默
+    假成功）。旧版供给的目录（无标记但完整）升级后首次会被重装一次，属可
+    接受的一次性代价。
+    """
+    if logger:
+        logger.warning(
+            "verify_contract",
+            f"node_modules 缺供给完成标记，按中断残缺清理重装（{label}）",
+        )
+    _cleanup_partial_node_modules(nm, logger)
+
+
 # npm 依赖供给命令上限（秒）：provision_worktree_node_modules /
 # ensure_main_tree_deps 既有 timeout=900 语义收拢为常量（与 run_prepare_steps
 # 的 PREPARE_STEP_TIMEOUT 分立——依赖安装与构建是两类步骤，口径不强行合并）。
@@ -1932,8 +1965,13 @@ def provision_worktree_node_modules(
         main_dir = Path(project_root) / sub
         if not (wt_dir / "package.json").is_file():
             continue
-        if (wt_dir / "node_modules").exists():
-            continue
+        nm = wt_dir / "node_modules"
+        if nm.exists():
+            if (nm / PROVISION_OK_MARKER).is_file():
+                continue
+            # exists() 短路只认「目录存在」，外部中断（SIGKILL/断电）残缺须靠
+            # 完成标记识别（item 5c56bc946124）——清残壳后落到下方正常供给重装
+            _discard_incomplete_node_modules(nm, sub, logger)
         provisioned = False
         if mode == "hardlink":
             main_nm = main_dir / "node_modules"
@@ -1947,6 +1985,8 @@ def provision_worktree_node_modules(
                         ignore_dangling_symlinks=True,
                     )
                     done.append(str(sub))
+                    # 供给成功写完成标记（item 5c56bc946124），下次凭标记短路
+                    _write_provision_ok_marker(wt_dir / "node_modules", logger)
                     provisioned = True
                 except OSError as e:
                     if logger:
@@ -1970,6 +2010,8 @@ def provision_worktree_node_modules(
                     )
                 if r.returncode == 0:
                     done.append(str(sub))
+                    # 供给成功写完成标记（item 5c56bc946124），下次凭标记短路
+                    _write_provision_ok_marker(wt_dir / "node_modules", logger)
                 else:
                     if logger:
                         logger.warning(
@@ -2069,8 +2111,13 @@ def _ensure_main_tree_deps_unlocked(
         target = Path(project_root) / sub
         if not (target / "package.json").is_file():
             continue
-        if (target / "node_modules").exists():
-            continue
+        nm = target / "node_modules"
+        if nm.exists():
+            if (nm / PROVISION_OK_MARKER).is_file():
+                continue
+            # exists() 短路只认「目录存在」，外部中断（SIGKILL/断电）残缺须靠
+            # 完成标记识别（item 5c56bc946124）——清残壳后落到下方 npm 重装
+            _discard_incomplete_node_modules(nm, sub, logger)
         try:
             r = _run_npm_provision(
                 ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
@@ -2085,6 +2132,8 @@ def _ensure_main_tree_deps_unlocked(
                 cmd = "npm install --prefer-offline"
             if r.returncode == 0:
                 done.append(str(sub))
+                # 供给成功写完成标记（item 5c56bc946124），下次凭标记短路
+                _write_provision_ok_marker(target / "node_modules", logger)
                 if logger:
                     logger.info(
                         "verify_contract",

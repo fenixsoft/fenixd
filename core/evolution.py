@@ -1625,8 +1625,14 @@ def _write_admin_warning(project_root, message: str) -> None:
     """
     try:
         from core.admin_store import AdminStore, ESCALATION
+        # AdminStore 失败路径以两参形态（tag, msg）调用注入 logger（同
+        # event_bus/deliverables 注入口径），裸 stdlib Logger 会被当 format
+        # string 插值触发 logging error、恰在审计留痕时刻丢日志
+        # （item 739be7b39b9c）：复用 deliverables 的 lenient 适配器包装
+        # （deliverables 不反向依赖 evolution，惰性 import 无环风险）。
+        from core.deliverables import _LenientLogAdapter
 
-        store = AdminStore(project_root, logger=_logger)
+        store = AdminStore(project_root, logger=_LenientLogAdapter(_logger))
         store.append(
             {
                 "kind": ESCALATION,

@@ -638,6 +638,12 @@ class G2LegacyRegistryMixin:
         spec 名列表（审计/测试用）。
 
         宽限期内（后继 run 尚在派发中）的遗产不动，交 merge 成功 / 重派逻辑处理。
+
+        触发时机口径（code-review item 1ff2715901b2）：唯一调用点
+        stale_sweep.cleanup_stale_worktrees 仅由 daemon 启动路径执行一次、无周期
+        调度——本回收并非随孤儿清扫周期持续触发（「跟随孤儿清扫周期」仅指宽限
+        时长与陈锁空闲阈值同源）；长驻 daemon 内新登记的遗产过期后滞留至下次
+        重启才被本回收清除。
         """
         if not self._legacy:
             return []
@@ -738,12 +744,32 @@ class G2LegacyRegistryMixin:
             # 从未被收割——目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检
             # 测永久受骗）。与 cleanup / cleanup_orphans / stale_sweep /
             # keep_for_reuse 四条删除或保留目录的路径同口径。
-            self._kill_worktree_strays(wt.name)
+            try:
+                self._kill_worktree_strays(wt.name)
+            except Exception as e:
+                # 杀残留异常隔离（code-review item 6bea25616b59，与
+                # cleanup_orphans 的 5f3dee9b3ef8 整改口径对齐）：残余未预期
+                # 异常不穿出本方法中断 _reclaim_expired_legacy 的回收循环与
+                # consume_legacy 收编路径，WARNING 留痕后继续后续步骤。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} stray-kill failed for "
+                    f"'{spec_name}': {e}",
+                )
             # 删除前留档（code-review item d1735b0c555f，cleanup_orphans
             # docstring 声明的 MUST 不变量）：本方法面对的正是未提交半成品
             # （register_legacy：死亡 run 的未提交半成品目录保留），销毁前做
             # stash create 快照引用供事后取证；失败仅 WARNING，不阻断删除。
-            self._snapshot_dirty_worktree(wt, branch or None)
+            try:
+                self._snapshot_dirty_worktree(wt, branch or None)
+            except Exception as e:
+                # 快照异常隔离（code-review item 6bea25616b59，同上款口径）：
+                # 失败仅 WARNING，不阻断删除序列与整轮回收循环。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} snapshot failed for "
+                    f"'{spec_name}': {e}",
+                )
             try:
                 res = subprocess.run(
                     ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],

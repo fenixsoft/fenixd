@@ -57,6 +57,8 @@ def _git_output(project_root, args: list, timeout: float) -> str | None:
             ["git", "-C", str(project_root), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except (subprocess.TimeoutExpired, OSError, ValueError):

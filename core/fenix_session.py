@@ -35,6 +35,20 @@ START_DAEMON_PROBE_ATTEMPTS = 50
 START_DAEMON_PROBE_INTERVAL_SECONDS = 0.1
 
 
+def _tmux_env() -> dict:
+    """tmux 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
+
+    与 ``deliverables._git_c_env`` / ``evolution._git_c_env`` 同源手法
+    （code-review item 73465fa1839d）：start_daemon 的失败分流以 tmux
+    stderr 英文文案 ``duplicate session`` 判别「同名会话已在」与「会话
+    没建起来」，强制 C locale 消除该文案匹配对运行环境本地化的依赖。
+    合并而非整体替换，保留 PATH 等既有环境。
+    """
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    return env
+
+
 def resolve_root(root: str | None = None) -> Path:
     """规范化项目根路径（展开 ~ 与软链接）。"""
     return Path(root or os.getcwd()).expanduser().resolve()
@@ -484,6 +498,7 @@ def start_daemon(root: str | None = None) -> dict:
             capture_output=True,
             text=True,
             timeout=15,
+            env=_tmux_env(),
         )
         # new-session 返回码校验（code-review item ed96126c1cdf）：非零说明会话
         # 根本没建起来，静默吞掉会让后续轮询必败、收口 has-session 又只看「会话
@@ -530,6 +545,7 @@ def start_daemon(root: str | None = None) -> dict:
             ["tmux", "has-session", "-t", session],
             capture_output=True,
             timeout=2,
+            env=_tmux_env(),
         )
     except Exception as e:
         return {
@@ -555,6 +571,7 @@ def start_daemon(root: str | None = None) -> dict:
             capture_output=True,
             text=True,
             timeout=2,
+            env=_tmux_env(),
         )
     except Exception as e:
         return {

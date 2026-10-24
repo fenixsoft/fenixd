@@ -113,6 +113,21 @@ def commit_wip_checkpoint(
                 f"git add failed in '{path}': "
                 f"{add.stderr.strip() or add.stdout.strip()} — skip (non-blocking)",
             )
+            # git add -A 非原子：部分文件已暂存后才遇到不可读路径等错误即
+            # exit 非零，index 已被本函数部分改写——与 commit 失败分支同理，
+            # 残留 partial staged 现场被 keep_for_reuse 后继继承后使以 HEAD
+            # 为基准的留证链路判读失真。补一次尽力而为的 mixed reset 回滚；
+            # reset 自身失败仅追加留痕，不改变本函数返回值与既有降级语义。
+            reset = _git(["reset", "-q"], path, timeout)
+            if reset.returncode != 0:
+                logger.warning(
+                    "wip_checkpoint",
+                    f"WIP checkpoint (anchor '{anchor}', spec '{spec}') "
+                    f"index rollback (git reset) after failed add failed "
+                    f"in '{path}': "
+                    f"{reset.stderr.strip() or reset.stdout.strip()} "
+                    f"— ignore (non-blocking)",
+                )
             return False
         message = f"{WIP_COMMIT_PREFIX} checkpoint {anchor} {spec}"
         cm = _git(["commit", "-m", message], path, timeout)

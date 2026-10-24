@@ -1675,9 +1675,6 @@ def run_audit(
             )
         entry["review_rounds"] = prev_rounds + 1
 
-        # 走到此处必然派发一个转写 run（superseded/豁免两条无 run 出口已在
-        # 上方 continue），在此消耗转写名额；失败 run 同样计额（run 已 spawn）。
-        semantic_quota -= 1
         # 写段取蒸馏锁（同机械段）：每次转写迭代的 spawn→validate→提交/回滚
         # 整体与 DistillManager / run_backfill 串行（与 run_backfill 批次同款
         # 粒度），转写产出在提交前不再可能被并发蒸馏 run 的 discard 清掉。
@@ -1723,6 +1720,10 @@ def run_audit(
                     }),
                 )
                 spawn(prompt, run_id)
+                # run 已 spawn 才消耗转写名额（code-review 781342f664eb）：扣减
+                # 从循环头部下移到此处，carryover 采集失败 / prompt 构建异常等
+                # 未及 spawn 的出口不白耗名额；失败 run 同样计额。
+                semantic_quota -= 1
                 # 透传进锁后采集的违规基线（与 backfill 批次同款差集口径）：修正
                 # 反馈与最终否决只看本轮新引入的违规——真相源既有的报告类病灶
                 # （超 150 行硬顶页、marker 缺失等）不令转写 run 恒判失败空转、

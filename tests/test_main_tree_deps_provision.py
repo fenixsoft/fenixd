@@ -66,6 +66,9 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
     def test_existing_node_modules_skipped(self):
         _write(self.tmp, "pkg/package.json", "{}")
         (self.tmp / "pkg" / "node_modules").mkdir()
+        # item 5c56bc946124：供给入口以完成标记判完整，替身目录须带标记
+        # 才复现「已存在跳过」场景
+        _write(self.tmp, "pkg/node_modules/.fenix-provision-ok")
         done = ensure_main_tree_deps(self.tmp, ["pkg"], logger=self.logger)
         self.assertEqual(done, [])
         self.logger.info.assert_not_called()
@@ -129,6 +132,8 @@ class TestEnsureMainTreeDeps(unittest.TestCase):
         _write(self.tmp, "a/package.json", "{}")
         _write(self.tmp, "b/package.json", "{}")
         (self.tmp / "b" / "node_modules").mkdir()
+        # 同 item 5c56bc946124：已存在替身目录须带完成标记才被短路跳过
+        _write(self.tmp, "b/node_modules/.fenix-provision-ok")
         calls = []
 
         def fake_provision(cmd, cwd):

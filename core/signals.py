@@ -330,6 +330,12 @@ def parse_verify_progress(project_root, spec_name) -> dict:
     done < total（存在无 status 场景，运行中/中断）时为进行中文案
     「验证中: D/T」，并标记 source: "run-result" 区分来源
     （进度文件路径返回 source: "file"）。两者皆缺维持 exists: False 空态语义。
+
+    键集契约（code-review item 11739ea83549）：exists: True 的三个分支恒返回
+    同一组七键 exists/total/done/current/step/error/source——文件分支 step/error
+    透传进度文件、source: "file"；corrupt 分支 error: "corrupt"、step/source
+    置 None；fast-track 合成分支 source: "run-result"、step/error 置 None。
+    exists: False 空态恒四键（不含 step/error/source），消费方按 exists 判别。
     """
     # 与写路径（write_scheduling_kick）同口径：spec 名过 kebab-case 白名单才拼
     # 文件路径，不合法语义等同「文件不存在」，返回空态（防路径穿越读任意 json）。
@@ -340,7 +346,7 @@ def parse_verify_progress(project_root, spec_name) -> dict:
         try:
             data = json.loads(pf.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": ""}
+                return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
             return {
                 "exists": True,
                 "total": int(data.get("total", 0) or 0),
@@ -351,7 +357,7 @@ def parse_verify_progress(project_root, spec_name) -> dict:
                 "source": "file",
             }
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
-            return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": ""}
+            return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
     # 进度文件缺失：fast-track 回退合成（场景为空维持空态，不抛异常）
     from core.dashboard.data.artifacts import parse_run_result_scenarios
 
@@ -383,5 +389,7 @@ def parse_verify_progress(project_root, spec_name) -> dict:
         "total": total,
         "done": done,
         "current": current,
+        "step": None,
+        "error": None,
         "source": "run-result",
     }

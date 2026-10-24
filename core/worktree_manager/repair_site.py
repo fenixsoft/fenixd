@@ -161,6 +161,16 @@ class G9RepairSiteMixin:
         变更的单一持锁纪律 fb49eca84deb/d6c32c0b63b6）：认领探测与 pop 之间该
         spec 可能被并发车道重新登记——pop 到宽限期内刚登记的新遗产时 setdefault
         放回出册位（清扫豁免保持完整）并返回 None，调度层降级走全新建树。
+
+        成功收尾真实语义（code-review item b3d6e5357355，修正旧 docstring 的
+        失真描述）：本方法摘出的记录不会再被成功路径的 consume_legacy 回收
+        （记录已出册，consume 的 pop 拿到 None 即空转）——worktree 目录已由
+        repair 收尾的 cleanup(success=True) 回收；合并分支此刻正被 implemented
+        态 STATE.branch 引用（_branch_protected_by_state 在飞保护），本就保留
+        为 verify 派发锚点，由后继清扫/收编按同款保护口径延迟回收，与普通
+        implementer 成功路径（cleanup 保留分支）一致。成功路径的 consume_legacy
+        并非死代码：仅兜底仍在册的残留遗产（宽限期内放回后拖过宽限期、或并发
+        车道重新登记且已超期者）。
         """
         with self._spec_lock_th:
             rec = self._legacy.pop(spec_name, None)

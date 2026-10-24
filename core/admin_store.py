@@ -227,6 +227,21 @@ def _read_jsonl_locked(path: Path) -> list:
     return out
 
 
+class _WriteRefusalTLS(threading.local):
+    """拒写原因的线程本地槽（code-review item 6dfd5ad8b7a8）。
+
+    拒写原因经共享实例属性传递时存在并发读窗口：_mutate 返回、锁已释放
+    之后调用方才读取该属性，ThreadingHTTPServer 每请求一线程的并发形态下，
+    后继线程的 _mutate 入口复位会把别的线程刚置入的原因串抹掉，拒写被
+    误判为「在途已存在」。改线程本地后置位/复位（_mutate 锁内）与读取
+    （调用方锁外）同线程不交错；每个新线程首次访问时本子类 ``__init__``
+    自动初始化该线程的槽，无跨线程残留与泄漏。
+    """
+
+    def __init__(self):
+        self.refusal = None
+
+
 class AdminStore:
     """读写 .fenix/admin_alerts.json 的存储层。
 
@@ -244,8 +259,24 @@ class AdminStore:
         # 最近一次 _mutate 的拒写原因（None=未拒写；见 _mutate docstring）。
         # 拒写与「skip_unchanged 无变更」在 refuse_returns_none=True 调用方
         # 眼里同为返回 None（code-review item be0d21670e4d），本属性让
-        # 调用方不破坏既有签名即可区分两种语义。
-        self.last_write_refusal = None
+        # 调用方不破坏既有签名即可区分两种语义。存储为线程本地（item
+        # 6dfd5ad8b7a8）：经下方 property 读写，调用方在 _mutate 返回、
+        # 锁释放后读到的必是本线程自己那次调用的结果。
+        self._refusal_tls = _WriteRefusalTLS()
+
+    @property
+    def last_write_refusal(self):
+        """最近一次 _mutate 的拒写原因（线程本地；None=未拒写）。
+
+        并发读窗口修复（code-review item 6dfd5ad8b7a8）：读写均限定在本
+        线程——_mutate 锁内的复位/置位写的是本线程槽，调用方在返回后
+        读取的也是本线程槽，不再被并发线程的后继 _mutate 复位抹掉。
+        """
+        return self._refusal_tls.refusal
+
+    @last_write_refusal.setter
+    def last_write_refusal(self, value):
+        self._refusal_tls.refusal = value
 
     # ── 内部：加锁读/写 ───────────────────────────────────────────
 
@@ -397,14 +428,21 @@ class AdminStore:
         ``self.last_write_refusal`` 复位为 None，corrupt 拒写分支置为原因串
         ——``skip_unchanged`` 无变更与 corrupt 拒写在 refuse_returns_none=True
         调用方眼里同为 None，调用方读该属性即可区分「在途已存在/无变更」与
-        「记录未落盘的拒写」两种语义。每次调用先复位，属性只反映最近一次
-        _mutate；仅诊断用途，不参与任何既有返回值/控制流。
+        「记录未落盘的拒写」两种语义。每次调用先复位，属性只反映本线程
+        最近一次 _mutate；仅诊断用途，不参与任何既有返回值/控制流。
+
+        该属性存储为线程本地（item 6dfd5ad8b7a8）：调用方是在 _mutate
+        返回、锁已释放之后才读取，共享实例属性会被并发线程的后继 _mutate
+        入口复位抹掉，把拒写误判为在途；线程本地后置位/复位/读取同线程
+        不交错，「None=在途 / 非空=拒写」区分在 ThreadingHTTPServer 并发下
+        成立。
         """
         with self._thread_lock:
-            # 复位与 corrupt 分支的置位同在 _thread_lock 互斥域内（item
-            # f05f83ca6b6d）：锁外复位会和并发调用的锁内置位交错，把别的
-            # 线程刚留下的拒写原因清掉，破坏 append_if_absent 依赖的
-            # 「None=在途 / 非空=拒写」区分
+            # 复位与 corrupt 分支的置位均落在本线程的 TLS 槽（item
+            # 6dfd5ad8b7a8，前身 item f05f83ca6b6d 只保证锁内不交错）：
+            # 调用方在 _mutate 返回、锁释放后才读取，共享实例属性会被并发
+            # 线程的后继 _mutate 复位抹掉，破坏 append_if_absent 依赖的
+            # 「None=在途 / 非空=拒写」区分；线程本地后互不影响
             self.last_write_refusal = None
             with self._lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
@@ -606,7 +644,9 @@ class AdminStore:
         返回落地的记录；存在在途（未写）或文件损坏留底被下限保护拒写
         （记录未落盘，item 2570ca391771）时返回 None。
         两种 None 语义经 ``self.last_write_refusal`` 区分（None=在途已存在，
-        非空=拒写原因，item be0d21670e4d）。
+        非空=拒写原因，item be0d21670e4d）。属性线程本地（item
+        6dfd5ad8b7a8）：返回后立即读取即得本次调用的拒写状态，不受并发
+        _mutate 复位影响。
         """
         rec = self._normalize_entry(entry)
 

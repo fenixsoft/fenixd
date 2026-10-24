@@ -216,20 +216,37 @@ def _terminate_proc_group(proc: subprocess.Popen) -> Tuple[str, str]:
     """超时强杀进程组并回收（_run_git 与 _action_shell 共享的收尾实现）。
 
     killpg(SIGKILL) 经自保护守卫连孙进程一并回收（守卫拒绝或组已不存在时
-    静默返回，MUST NOT 再降级单 pid proc.kill）；复杀后 communicate 仍超时
-    ——守护化孙进程（setsid 脱离进程组）继承管道且杀不掉——则关闭读端放弃
-    读取，保证执行线程必然返回。返回已收集的 (out, err)，管道被放弃时为
-    ("", "")。
+    静默返回；MUST NOT 用无守卫单 pid 击杀降级替代本次 killpg——pid=0 经
+    os.kill 折算同为调用者自身组广播，该禁令不约束超时收尾对直接子进程的
+    proc.kill()）；复杀后 communicate 仍超时——守护化孙进程（setsid 脱离
+    进程组）继承管道且杀不掉——则保底强杀直接子进程并关闭读端放弃读取，
+    保证执行线程必然返回（killpg 得手后对已亡直子等价 no-op，守卫拒绝
+    场景则是清直子的唯一保底；收尾范式与 core/knowledge.py
+    _kill_process_group 统一，code-review d516e78585b6）。返回已收集的
+    (out, err)，管道被放弃时为 ("", "")。
     """
     # 击杀经自保护守卫（add-killpg-self-guard，resolve 型）：getpgid 内联点
     # 收口；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默——MUST NOT
-    # 降级单 pid proc.kill（pid=0 经 os.kill 折算同为调用者自身组广播）。
+    # 用无守卫单 pid 击杀降级替代本次 killpg（pid=0 经 os.kill 折算同为
+    # 调用者自身组广播）；该禁令不约束下方超时收尾的 proc.kill()——那是
+    # 对自 spawn 直子的精确击杀、非守卫降级，与 knowledge._kill_process_group
+    # 同口径。
     guard_killpg(
         proc.pid, signal.SIGKILL, caller="hook_engine._terminate_proc_group", resolve=True
     )
     try:
         return proc.communicate(timeout=SHELL_KILL_REAP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        # 保底强杀直接子进程：killpg 得手后对已亡直子等价 no-op（此处尚未
+        # wait，pid 仍被占位、无误杀复用风险），守卫拒绝场景（直子仍活）
+        # 则是清掉直子的唯一手段；随后弃管道——守护化孙进程 setsid 脱离
+        # 进程组继承管道且杀不掉，关闭读端令写端破裂，保证执行线程必然
+        # 返回（与 knowledge._kill_process_group 同款收尾，code-review
+        # d516e78585b6）。
+        try:
+            proc.kill()
+        except OSError:
+            pass
         for _stream in (proc.stdout, proc.stderr):
             try:
                 if _stream:
@@ -365,7 +382,7 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
       值）会在执行线程在飞去重的集合操作处抛 TypeError，且该调用位于线程 try
       保护之外，异常将无审计终结线程，故在配置层按「配置非法（不执行）」拦截；
     - events 非空列表，取值 ∈ VALID_EVENTS（SpecStatus.ALL + 伪事件 all-done，
-      后者仅全局作用域生效）；
+      后者仅全局作用域生效，spec 级订阅由 validate_hooks_config 拦截）；
     - action ∈ 七枚举；
     - action=webhook 必须 url 非空字符串；
     - action=shell 必须 command 非空字符串；
@@ -494,6 +511,16 @@ def validate_hooks_config(config: dict) -> Optional[str]:
             err = validate_hook_entry(h)
             if err:
                 return f"hooks.specs.{spec_name}[{idx}] {err}"
+            # spec 级订阅伪事件 all-done 判非法（code-review item 354176967a91）：
+            # validate_hook_entry 不感知作用域（all-done 在 VALID_EVENTS 中供
+            # global 段校验），而 match_hooks 对 all-done 提前返回、只查 global
+            # 段——spec 级订阅永不触发且无审计留痕，故在 spec 作用域注册期此处
+            # 显式拦截（此处 err 已为 None，h 必为 dict 且 events 为合法列表）
+            if HOOK_EVENT_ALL_DONE in (h.get("events") or []):
+                return (
+                    f"hooks.specs.{spec_name}[{idx}] events 含伪事件 all-done"
+                    f"（all-done 仅全局作用域生效，请订阅至 hooks.global）"
+                )
     return None
 
 
@@ -502,7 +529,8 @@ def match_hooks(config: dict, spec: str, event_type: str) -> List[Tuple[dict, st
 
     返回 [(hook_cfg, scope), ...]，scope ∈ "global" | "spec"。
     匹配不看 enabled（disabled 在执行阶段记 skipped 审计）；事件类型 = 新状态。
-    all-done 是项目级伪事件：仅全局作用域匹配（spec 级订阅被忽略）。
+    all-done 是项目级伪事件：仅全局作用域匹配（spec 级订阅已在注册期被
+    validate_hooks_config 拦截；直改 config.yaml 的存量订阅仍在此被忽略）。
     """
     hooks = hook_config(config)
     matched: List[Tuple[dict, str]] = []

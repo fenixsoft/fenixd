@@ -36,9 +36,10 @@ def load_schema() -> Dict[str, Any]:
     """读取 vendored `schema.yaml` 并返回解析后的 dict。
 
     Raises:
-        ValueError: schema 缺 'artifacts'，或某 artifact 条目缺必需键
-            （id/generates/template）。在加载期集中校验，让 schema 漂移
-            可直读定位，而非散落在 status/instructions 里以裸 KeyError 失败。
+        ValueError: schema 缺 'artifacts'，某 artifact 条目缺必需键
+            （id/generates/template），或 artifact id 重复。在加载期集中校验，
+            让 schema 漂移可直读定位，而非散落在 status/instructions 里以裸
+            KeyError 失败。
     """
     schema_path = SCHEMA_DIR / "schema.yaml"
     if not schema_path.exists():
@@ -51,6 +52,7 @@ def load_schema() -> Dict[str, Any]:
         raise ValueError(
             f"Invalid schema ('artifacts' is not a list): {schema_path}"
         )
+    seen_ids: Dict[str, int] = {}
     for index, artifact in enumerate(schema["artifacts"]):
         if not isinstance(artifact, dict):
             raise ValueError(
@@ -63,6 +65,14 @@ def load_schema() -> Dict[str, Any]:
             raise ValueError(
                 f"Invalid schema: artifact '{label}' missing required keys "
                 f"{missing}: {schema_path}"
+            )
+        first_index = seen_ids.setdefault(artifact["id"], index)
+        if first_index != index:
+            # 重复 id 会让依赖建键静默覆盖、_artifact_by_id 恒取首条、isComplete
+            # 永假，各处行为不一致且无报错指向漂移点（code-review item 226ad92bfa8d）。
+            raise ValueError(
+                f"Invalid schema: duplicate artifact id '{artifact['id']}' at "
+                f"artifacts[{first_index}] and artifacts[{index}]: {schema_path}"
             )
     return schema
 
@@ -212,13 +222,32 @@ def _get_build_order(schema: Dict[str, Any]) -> List[str]:
                 newly_ready.append(dep)
         queue.extend(sorted(newly_ready))
     if len(result) != len(in_degree):
-        # 含环依赖时环内 artifact 永不入队，输出残缺拓扑序；仅告警不抛错（vendored schema 无环）。
-        _LOGGER.warning(
-            "Dependency cycle in schema '%s': artifacts never reachable in "
-            "build order: %s",
-            schema.get("name", DEFAULT_SCHEMA),
-            sorted(set(in_degree) - set(result)),
+        # 拓扑序残缺时区分根因（code-review item c5a932a9bc83）：悬空 requires 与
+        # 环依赖都表现为 artifact 永不入队，按各自成员分别告警，避免排障者按 cycle
+        # 文案在 schema 里找环扑空；仅告警不抛错（vendored schema 无环）。
+        unreachable = sorted(set(in_degree) - set(result))
+        unreachable_set = set(unreachable)
+        dangling = sorted(
+            artifact["id"]
+            for artifact in schema["artifacts"]
+            if artifact["id"] in unreachable_set
+            and any(req not in in_degree for req in artifact.get("requires", []))
         )
+        cyclic = sorted(unreachable_set.difference(dangling))
+        if dangling:
+            _LOGGER.warning(
+                "Dangling requires in schema '%s': artifacts requiring undeclared "
+                "ids, never reachable in build order: %s",
+                schema.get("name", DEFAULT_SCHEMA),
+                dangling,
+            )
+        if cyclic:
+            _LOGGER.warning(
+                "Dependency cycle in schema '%s': artifacts never reachable in "
+                "build order: %s",
+                schema.get("name", DEFAULT_SCHEMA),
+                cyclic,
+            )
     return result
 
 
