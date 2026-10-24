@@ -516,10 +516,11 @@ class FamilyGovernor:
                     continue
                 if G8QueryMixin._spec_from_worktree_name(d.name) != spec_name:
                     continue
-                    # 尾部锚定（对齐 worktree_manager.locks._worktree_has_live_process
-                    # 的锚定纪律）：裸子串在兄弟 worktree 目录名互为前缀时过配——
-                    # impl-x-<ts10> 的 pattern 会命中 impl-x-<ts11> 的进程，
-                    # 其活进程持续把本 spec 判存活，压制孤儿修复/重派判定
+                # 尾部锚定（对齐 worktree_manager.locks._worktree_has_live_process
+                # 的锚定纪律）：裸子串在兄弟 worktree 目录名互为前缀时过配——
+                # impl-x-<ts10> 的 pattern 会命中 impl-x-<ts11> 的进程，
+                # 其活进程持续把本 spec 判存活，压制孤儿修复/重派判定
+                try:
                     r = _sp.run(
                         [
                             "pgrep",
@@ -530,8 +531,19 @@ class FamilyGovernor:
                         text=True,
                         timeout=10,
                     )
-                    if r.returncode == 0 and r.stdout.strip():
-                        return True
+                except _sp.TimeoutExpired:
+                    # 单目录探测超时不中止整轮扫描（code-review item
+                    # 275217853b61）：超时冒泡到最外层 except 会把前序目录的
+                    # 卡顿放大成「兄弟判不存活」的 fail-open——同根多于一个
+                    # worktree 时，后续目录的存活进程完全不参与判定
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"pgrep 探测超时（10s），跳过 worktree 目录 "
+                        f"'{d.name}' 继续扫描",
+                    )
+                    continue
+                if r.returncode == 0 and r.stdout.strip():
+                    return True
         except Exception:
             return False
         return False
@@ -775,11 +787,49 @@ class FamilyGovernor:
                 f"冻结递增（保持 {entry.get('_verify_fail_rounds', 0)}）",
             )
             return
+        # 写前复查（冻结：code-review item 7d53e9eacf26；状态漂移：code-review
+        # item d931057e6b0d。仿 dispatch/rollback
+        # ._rollback_frozen_recheck/_rollback_write_guarded 与 engine 收敛拦截
+        # f9e6461bbd96 / 门禁拦截 49044ee6e490「竞争后到者让位」收口）：本复查
+        # 与打回写之间隔着 bump_counters 与 _append_fail_history 的文件 I/O
+        # （递增/侧车后移到复查之后——code-review item 6cc743d3b07f，放弃路径
+        # 不留计数与侧车残留；窗口比 transition 路径更宽）。窗口内并发冻结时
+        # frozen 条目的
+        # update_spec 只剥 status 键——error 覆盖与 implementer_run/tester_run
+        # 锚点清除照常生效，破坏冻结恢复语义；窗口内 spec 被外部推进（人工把
+        # bug-found 推进 done 等终态，或并发验证收工转 verified）时，盲写会把
+        # 合法状态拉回 implementing。发现冻结即放弃打回（下方 tasks.md 修复段
+        # 注入与重派一并跳过），冻结现场保留待人工解冻；状态漂移出可打回态
+        # （bug-found/implemented，implementing=上轮已重置的滞后重放，幂等放行）
+        # 同样放弃打回，bug-found 事件留待后续周期重评兜底。
+        from core.state_machine import FROZEN_FIELD
+
+        latest = self._pm.state_machine.read_one(spec_name) or {}
+        if latest.get(FROZEN_FIELD):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回放弃：'{spec_name}' 写盘前复查发现已冻结——放弃 "
+                f"implementing 重置写与重派，冻结现场保留待人工解冻",
+            )
+            return
+        if latest.get("status") not in ("bug-found", "implemented", "implementing"):
+            self._pm.logger.info(
+                "pm_engine",
+                f"原地打回竞争后到者：'{spec_name}' 状态已为 "
+                f"'{latest.get('status')}'，让位于外部进度——放弃 "
+                f"implementing 重置写与重派（缺口留待后续周期重评）",
+            )
+            return
+
         # 计数递增走锁内原子原语（code-fix dd37a2be6ef6）：原先「read_one 读 →
         # 算 +1 → 并进下方 update_spec 写回」读与写分处两段，与 fastlane 失败
         # 记账（dispatch_minor_defect_fastlane 对同字段 bump_counters 原子递增）
         # 在同一 spec 上时间重叠时，读旧值写回会吞掉对方刚加的增量。改按
         # bump_counters 写后最新值判阈值；下方冻结/打回写不再并入该字段。
+        # 递增后移到写前复查全部通过之后（code-review item 6cc743d3b07f）：
+        # 冻结/状态漂移放弃路径不再留下已递增计数与本轮 fail_history 条目，
+        # 与 _judge_cap_frozen 分支「冻结期间计数不累积」语义对齐；MAX 上限
+        # 判定仍紧跟递增、按写后最新值判，判序不变。
         fail_rounds = self._pm.state_machine.bump_counters(
             spec_name, {"_verify_fail_rounds": 1}
         ).get("_verify_fail_rounds", 0)
@@ -853,37 +903,6 @@ class FamilyGovernor:
             repair_fields["implementer_run"] = None
         if entry.get("tester_run") is not None:
             repair_fields["tester_run"] = None
-        # 写前复查（冻结：code-review item 7d53e9eacf26；状态漂移：code-review
-        # item d931057e6b0d。仿 dispatch/rollback
-        # ._rollback_frozen_recheck/_rollback_write_guarded 与 engine 收敛拦截
-        # f9e6461bbd96 / 门禁拦截 49044ee6e490「竞争后到者让位」收口）：入口
-        # entry 快照到此写之间隔着 bump_counters 与 _append_fail_history 的文件
-        # I/O（窗口比 transition 路径更宽）。窗口内并发冻结时 frozen 条目的
-        # update_spec 只剥 status 键——error 覆盖与 implementer_run/tester_run
-        # 锚点清除照常生效，破坏冻结恢复语义；窗口内 spec 被外部推进（人工把
-        # bug-found 推进 done 等终态，或并发验证收工转 verified）时，盲写会把
-        # 合法状态拉回 implementing。发现冻结即放弃打回（下方 tasks.md 修复段
-        # 注入与重派一并跳过），冻结现场保留待人工解冻；状态漂移出可打回态
-        # （bug-found/implemented，implementing=上轮已重置的滞后重放，幂等放行）
-        # 同样放弃打回，bug-found 事件留待后续周期重评兜底。
-        from core.state_machine import FROZEN_FIELD
-
-        latest = self._pm.state_machine.read_one(spec_name) or {}
-        if latest.get(FROZEN_FIELD):
-            self._pm.logger.warning(
-                "pm_engine",
-                f"原地打回放弃：'{spec_name}' 写盘前复查发现已冻结——放弃 "
-                f"implementing 重置写与重派，冻结现场保留待人工解冻",
-            )
-            return
-        if latest.get("status") not in ("bug-found", "implemented", "implementing"):
-            self._pm.logger.info(
-                "pm_engine",
-                f"原地打回竞争后到者：'{spec_name}' 状态已为 "
-                f"'{latest.get('status')}'，让位于外部进度——放弃 "
-                f"implementing 重置写与重派（缺口留待后续周期重评）",
-            )
-            return
         self._pm.state_machine.update_spec(spec_name, repair_fields)
         self._pm.logger.warning(
             "pm_engine",
