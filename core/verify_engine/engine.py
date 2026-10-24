@@ -461,6 +461,19 @@ class VerifyEngine:
                 if s.id in mutex_waits:
                     skipped_result["mutex_waited"] = True
                     skipped_result["mutex_wait_batches"] = mutex_waits[s.id]
+                # 与批次收尾统一附加段对齐（item 7933ab1e041a）：合成结果同样
+                # 带 resource_group/parallel_context，防 _build_report 的
+                # resource_mutex 段在全批仅剩依赖跳过场景带资源组时整段丢失。
+                # 合成时点先于批号自增与实测并行度计算：batch 取 +1 对齐收尾段
+                # 自增后的批号口径；场景未执行、无同窗证据，peers/observed_parallel
+                # 记空与 0。
+                if s.resource_group:
+                    skipped_result["resource_group"] = s.resource_group
+                skipped_result["parallel_context"] = {
+                    "batch": batch_num + 1,
+                    "peers": [],
+                    "observed_parallel": 0,
+                }
                 results.append(skipped_result)
 
             # ── 资源组在飞互斥（evo-add-verify-scenario-resource-mutex 1.2）──
