@@ -201,7 +201,10 @@ def _superseded_name_peers(spec_name: str, scan: dict) -> list:
 # evo-add-worktree-acquire-backoff 1.3：新验证流程降级累计计数器。
 # MUST 为模块级——PMEngine 按 run 重建实例，实例级计数恒为 1、无法统计
 # 降级频率；WARNING 附「第 N 次降级」供日志保留窗内统计降级频率。
+# 递增锁（code-review item 98e2a2803b54）：多 verifier worker 线程可并发
+# 进入降级分支，`+= 1` 读-改-写非原子会丢增量——加锁保证序号不重不跳。
 _NEW_VERIFIER_FALLBACK_COUNT = 0
+_NEW_VERIFIER_FALLBACK_LOCK = threading.Lock()
 
 
 class PMEngine:
@@ -1524,7 +1527,9 @@ class PMEngine:
         unfrozen: list = []
         signaled: list = []
         now = datetime.now(timezone.utc)
-        for name, entry in self.state_machine.read_all().items():
+        # read_all None 防御与 backfill_push_residuals 同款（code-review item
+        # 47f06a001297）：STATE 读取异常路径返回 None 时不得中断整轮定时巡检。
+        for name, entry in (self.state_machine.read_all() or {}).items():
             if not isinstance(entry, dict):
                 continue
             # ── 1) frozen_until 到期自动解冻（幂等：写前重读确认仍冻结）──
@@ -2879,12 +2884,16 @@ class PMEngine:
                     )
             # evo-add-worktree-acquire-backoff 1.3：模块级累计计数（实例按
             # run 重建，实例级计数恒为 1），WARNING 附「第 N 次降级」。
+            # 递增持锁并取快照（code-review item 98e2a2803b54）：并发降级时
+            # 读-改-写非原子，WARNING 取数与递增之间也可被其他线程插入。
             global _NEW_VERIFIER_FALLBACK_COUNT
-            _NEW_VERIFIER_FALLBACK_COUNT += 1
+            with _NEW_VERIFIER_FALLBACK_LOCK:
+                _NEW_VERIFIER_FALLBACK_COUNT += 1
+                fallback_seq = _NEW_VERIFIER_FALLBACK_COUNT
             self.logger.warning(
                 "pm_engine",
                 f"新验证流程失败 '{spec_name}': {degrade_error}，降级到旧版 verifier"
-                f"（第 {_NEW_VERIFIER_FALLBACK_COUNT} 次降级）",
+                f"（第 {fallback_seq} 次降级）",
             )
             try:
                 self._run_legacy_verification(spec_name)
@@ -3874,7 +3883,9 @@ class PMEngine:
 
         Returns a dict with blocker details if any found.
         """
-        all_specs = self.state_machine.read_all()
+        # read_all None 防御与 backfill_push_residuals 同款（code-review item
+        # 47f06a001297）：STATE 读取异常路径返回 None 时不得中断整轮 blocker 扫描。
+        all_specs = self.state_machine.read_all() or {}
 
         from core.config import ConfigLoader
 
@@ -4153,16 +4164,23 @@ class PMEngine:
                     # 结果产出），回退本次启动的预算计数并递增豁免侧车。
                     # fix-run-hang-amplification D2：run_reason 传入豁免判据，
                     # 此路径为基础设施性死亡（无存活子进程/无 run-result），应豁免。
-                    self._exempt_dead_run_budget(
+                    # 豁免返回值必须接收（code-review item bb5ff51ff512，对齐
+                    # rollback.py 的 exempt_applied/exempt_result 同款口径）：
+                    # _exempt_dead_run_budget 对拒绝/幂等跳过/记账异常均静默
+                    # 返回指纹、不抛异常，忽略返回值会把未生效的豁免当已豁免。
+                    exempt_result = self._exempt_dead_run_budget(
                         spec_name,
                         f"auto-recovery: stuck implementing "
                         f"{b['elapsed_minutes']}m, no live child (no run-result)",
                         run_reason=f"auto-recovery: stuck implementing " f"{b['elapsed_minutes']}m",
                     )
+                    exempt_applied = exempt_result == "applied"
                     self.logger.info(
                         "pm_engine",
                         f"budget_exempt_audit: spec={spec_name}, "
                         f"auto-recovery stuck implementing, "
+                        f"exempt_applied={exempt_applied}, "
+                        f"exempt_result={exempt_result}, "
                         f"elapsed_minutes={b['elapsed_minutes']}",
                     )
                     # （fix-fasttrack-recovery-resume D5 区分注释）本处清锚点属**有意
