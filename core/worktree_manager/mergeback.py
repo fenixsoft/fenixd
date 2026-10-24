@@ -1371,6 +1371,14 @@ class G4MergebackMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（item ae288f9adc53，对齐同文件 6f235c189552 采集
+                    # 点惯例）：text=True 缺省按 locale strict 解码，git 输出含
+                    # 非 ASCII 时抛 UnicodeDecodeError（ValueError 子类），不在
+                    # 下方 except (SubprocessError, OSError) 元组内，且本方法在
+                    # _rehearse_merge_from_branch 的 try 之外调用，异常会穿出
+                    # merge-back 主链。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                     # 固化 C locale（item 7c9098abfdb3，与 _merge_once 同口径）：
                     # 本探测按「退出码 + oid 形态」判定本不受信息行翻译影响，
@@ -1649,6 +1657,14 @@ class G4MergebackMixin:
                     ],
                     capture_output=True,
                     text=True,
+                    # 显式 UTF-8（item dc465c9ff921，对齐同文件 8b72d5824f19 采集
+                    # 点惯例）：text=True 缺省按 locale strict 解码，merge 输出
+                    # 含非 ASCII 路径/译文时抛 UnicodeDecodeError（ValueError
+                    # 子类），被外层兜底 except 按「merge 执行失败」处置，真实
+                    # 冲突归因被解码异常顶替、_parse_merge_blockers 拿不到冲突
+                    # 输出导致三级自愈失联。
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=120,
                     # 固化 C locale（同 queries.create_worktree_on_branch 先例）：DRY
                     # 拒绝的 "would be overwritten by merge" 是 git 可翻译串（unpack-
