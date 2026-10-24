@@ -1135,7 +1135,11 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
     target = (
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / "declaration-baseline.json"
     )
-    if not target.is_file():
+    # OSError 容错探测，与 resolve_effective_declaration 同口径（code-review
+    # item 39add8a04b72）：裸 is_file() 只吞 ENOENT/ENOTDIR 等少数 errno，
+    # EACCES/EIO 等会直接上抛，冲出本函数「读取失败 → None（守卫降级保守）」
+    # 的 fail-safe 契约
+    if not _is_file_safe(target):
         return None
     try:
         with target.open(encoding="utf-8") as f:
@@ -1667,6 +1671,31 @@ def _declared_kind_line(lines, path_idx, end):
     return None, None
 
 
+def _declared_entry_end(lines, path_idx, end):
+    """条目边界：path 行之后首个「下一列表项/围栏行/空行或顶格行」行号。
+
+    机械删除与去重（``remove_declared_entry`` / ``replace_declared_path``
+    去重分支）的删除窗终点。条目除 path/kind 外可携带附加键行（``note:``
+    等，lint 规则 0 不拒绝带附加键的合法条目），删除窗只到 kind 行会在段
+    内残留孤立缩进键行——非首条目时被 yaml 解析并入上一条目（污染其字段），
+    首条目时 yaml 解析失败、守卫静默回退正则语境猜测（code-review item
+    31a4dfc51e14）。下一列表项起始行的判定与 ``_declared_kind_line`` 的窗
+    口停行条件同款；围栏行（``_FENCE_RE``）与非缩进行/空行视作条目终止，
+    删除不得越过围栏闭合行吞掉块外内容。
+    """
+    i = path_idx + 1
+    while i < end:
+        line = lines[i]
+        if (
+            re.match(r"^\s*-\s", line)
+            or _FENCE_RE.match(line)
+            or not re.match(r"^\s", line)
+        ):
+            break
+        i += 1
+    return i
+
+
 def _locate_declared_section(lines):
     """定位 tasks.md 行列表中 ``## Deliverables`` 声明段边界（单点助手）。
 
@@ -1782,8 +1811,8 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
             raise ValueError(f"声明段无条目匹配 {element}（无法修正）")
 
         before = "\n".join(lines[start:end])
-        # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 +
-        # 窗口内的 kind 行，含中间间隔行），而不是制造两份同名声明
+        # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行至
+        # 条目边界，含 kind 与附加键行），而不是制造两份同名声明
         dup_idx = None
         for i in range(start, end):
             if i != elem_idx and _path_line_re(actual_path).match(lines[i]):
@@ -1794,7 +1823,7 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
             # 不一致（含任一条目无 kind 行无法判定）上抛转人工——否则硬交付
             # 条目（new/modify）会被静默删除、只留软审计 reference，硬校验降级
             # 为软校验（code-review item 1a98aed80b98）
-            elem_kind_idx, elem_kind_m = _declared_kind_line(lines, elem_idx, end)
+            _, elem_kind_m = _declared_kind_line(lines, elem_idx, end)
             dup_kind_m = _declared_kind_line(lines, dup_idx, end)[1]
             # kind 一致性按 .lower() 归一比较（item e736d5cf0def）：大小写
             # 形态不同的同一 kind（如 Modify / modify）不算不一致
@@ -1811,7 +1840,10 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
                     f"{dup_kind_m.group(2) if dup_kind_m else '（无 kind 行）'}）"
                     f"——去重要求同 kind，请人工核对声明段"
                 )
-            remove_end = elem_kind_idx + 1
+            # 删除窗按条目边界（_declared_entry_end）：条目带附加键行时只删
+            # 到 kind 行会残留孤立缩进键行（code-review item 31a4dfc51e14，
+            # 同 remove_declared_entry）
+            remove_end = _declared_entry_end(lines, elem_idx, end)
             del lines[elem_idx:remove_end]
             # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
             # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
@@ -1961,7 +1993,10 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
                 # （code-review item feccb157c1d5）。
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=10,
+                # 与同模块其余 git 只读子进程同源（_GIT_READ_TIMEOUT_SECONDS，
+                # code-review item 934548beab2f）：写死更短预算会在慢盘/大仓
+                # 先于其他 git 读超时，fail-open 静默收窄 gitignored 拦截面
+                timeout=_GIT_READ_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.SubprocessError):
             # fail-open 只作用于当前候选：继续判下一个候选（docstring「任一
@@ -2547,13 +2582,13 @@ def is_drift_candidate(entry, project_root, branch, merge_base=None) -> dict:
 
 
 def remove_declared_entry(spec_dir, element: str) -> dict:
-    """机械删除 tasks.md 声明段条目的 path+kind 两行（孤儿声明删除）。
+    """机械删除 tasks.md 声明段条目（path 行至条目边界，孤儿声明删除）。
 
     逐行精确文本操作（不经 yaml 反序列化再序列化——保留注释/顺序，diff
     最小）：在 ``## Deliverables`` 段内找到 ``path == element`` 的条目，
-    删除 path 行 + 搜索窗（+1..+2）内的 kind 行（kind 与 path 间隔的行，
-    如注释行，一并移除；其余内容不动）。删除前重读文件、按条目精确删除，
-    任何失败上抛（调用方等价 fallback 回退既有路径）。
+    按条目边界删除（path/kind 行及该条目的附加键行如 ``note:``，kind 与
+    path 间隔的注释行一并移除；下一列表项起的内容不动）。删除前重读文件、
+    按条目精确删除，任何失败上抛（调用方等价 fallback 回退既有路径）。
 
     Returns:
         {"element", "before": <声明段原文>, "after": <声明段新文>}，
@@ -2582,11 +2617,12 @@ def remove_declared_entry(spec_dir, element: str) -> dict:
             raise ValueError(f"声明段无条目匹配 {element}（无法删除）")
 
         before = "\n".join(lines[start:end])
-        # kind 行定位走单点助手（+1..+2 两行窗口，容忍 path 与 kind 间隔一行）：
-        # 只认紧邻一行会在 kind 于 +2 时把孤立 kind 行留在段内，声明段 yaml
-        # 解析失败、守卫静默回退正则语境猜测（code-review item 4fc4ed9e05a9）
-        kind_idx, _kind_match = _declared_kind_line(lines, elem_idx, end)
-        remove_end = kind_idx + 1 if kind_idx is not None else elem_idx + 1
+        # 删除窗按条目边界（_declared_entry_end）而非仅 path+kind 两行：
+        # 窗口只到 kind 行（4fc4ed9e05a9 修的是 kind 于 +2 时的孤立残留），
+        # 条目带附加键行（note: 等）时仍会残留孤立缩进键行——非首条目时被
+        # yaml 并入上一条目污染其字段，首条目时 yaml 解析失败、守卫静默回退
+        # 正则语境猜测（code-review item 31a4dfc51e14）
+        remove_end = _declared_entry_end(lines, elem_idx, end)
         del lines[elem_idx:remove_end]
         # 声明段缩短了 remove_end - elem_idx 行，右端同步收缩：after 仍须是
         # 纯声明段新文（Returns 契约），不得吞进下一节的标题行
