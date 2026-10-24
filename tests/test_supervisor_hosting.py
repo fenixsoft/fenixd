@@ -166,7 +166,8 @@ class TestSessionNameNormalization:
 
 # ── 3.4 唯一托管启停路径 ──────────────────────────────────────────────
 
-def _fake_tmux_run(cmd, capture_output=False, text=False, timeout=None):
+# env 形参对齐 start_daemon 的 env=_tmux_env() 调用形态，替身签名缺该 kwarg 会让启动路径误入 tmux 异常分支。
+def _fake_tmux_run(cmd, capture_output=False, text=False, timeout=None, env=None):
     return mock.Mock(returncode=0, stdout="", stderr="")
 
 
