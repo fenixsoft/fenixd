@@ -7,8 +7,8 @@ D3 patch 缝隙：
 - 本组使用 `time` 模块，经模块顶部导入即可——测试
   ``patch.object(_dispatch_mod.time, "time", _tick)`` 修改的是 time 模块对象
   的 ``time`` 属性，全进程共享，patch 依旧生效；
-- `DEFAULT_DISPATCH_BACKOFF_SCHEDULE` 常量自 `_legacy` 命名空间导入
-  （常量定义先于 mixin 绑定，无环）。
+- `DEFAULT_DISPATCH_BACKOFF_SCHEDULE` 常量自包门面 core.pm_engine.dispatch 导入
+  （__init__ 内常量定义先于子模块接入行，无环）。
 """
 
 from __future__ import annotations
