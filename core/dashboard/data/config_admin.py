@@ -2626,8 +2626,11 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         return _err
 
     # 4. 原子写回（临时文件 + rename）
-    config_dir.mkdir(parents=True, exist_ok=True)
+    # code-review item bf73050107cc：mkdir 收进 try（与 mkstemp 同段）——目录
+    # 创建失败（权限收走/被并发移除/只读挂载等）同走 fail() 结构化返回，
+    # 不再以异常穿透 write_config 破坏 {ok, error} 契约
     try:
+        config_dir.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
