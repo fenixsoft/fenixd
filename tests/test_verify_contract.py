@@ -329,6 +329,9 @@ class TestProvisionNodeModules(unittest.TestCase):
         (self.tmp / "main-tree" / "v3" / "node_modules").mkdir(parents=True)
         _write(self.tmp, "wt/v3/package.json", "{}")
         (self.tmp / "wt" / "v3" / "node_modules").mkdir()
+        # item 5c56bc946124：供给入口以完成标记判完整，替身目录须带标记
+        # 才复现「已存在跳过」场景
+        _write(self.tmp, "wt/v3/node_modules/.fenix-provision-ok", "")
         _write(self.tmp, "wt/no-pkg/index.html", "x")
         linked = provision_worktree_node_modules(
             self.tmp / "wt", self.tmp / "main-tree", ["v3", "no-pkg"],
