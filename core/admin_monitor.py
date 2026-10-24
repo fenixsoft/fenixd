@@ -1962,16 +1962,18 @@ class AdminMonitor:
             for path in candidates:
                 if len(samples) >= NIGHT_QUIET_DURATION_SAMPLE_LIMIT:
                     break
+                # 尾部读已收敛到 _read_tail_lines 单点（与其他消费方口径
+                # 对齐，不依赖 TextIOWrapper.seek 的非文档化任意字节偏移）；
+                # 窗口切入的截断首行按单点语义丢弃（原本靠 json.loads 剔除）。
                 try:
-                    with path.open(encoding="utf-8", errors="replace") as fh:
-                        fh.seek(0, 2)
-                        size = fh.tell()
-                        fh.seek(max(0, size - 524288))
-                        tail = fh.read()
+                    first_line_truncated, tail = _read_tail_lines(path, 524288)
                 except OSError:
                     continue
+                lines = tail.splitlines()
+                if first_line_truncated:
+                    lines = lines[1:]  # 丢弃窗口切入可能截断的首行
                 last: dict = {}
-                for line in tail.splitlines():
+                for line in lines:
                     line = line.strip()
                     if not line:
                         continue
@@ -7811,15 +7813,22 @@ class AdminMonitor:
         return data if isinstance(data, dict) else {}
 
     def _save_history(self, history: dict):
-        self._history_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(
-            prefix=".admin_state_history.",
-            suffix=".tmp",
-            dir=str(self._history_path.parent),
-        )
-        tmp_path = Path(tmp)
+        # code-review e9b2b61a052b：磁盘满等 OSError 只降级为日志告警，
+        # 不沿 _detect_flapping 中断当轮整批信号检测（f9814702b128 /
+        # 69e57a219b75 / e459e98bf6f8 三处读侧守卫同旨：不得中断整轮）。
+        # 丢一轮写盘可接受：下一轮快照对比自然重建历史并落盘。
+        fd = None
+        tmp_path = None
         try:
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                prefix=".admin_state_history.",
+                suffix=".tmp",
+                dir=str(self._history_path.parent),
+            )
+            tmp_path = Path(tmp)
             with open(fd, "w", encoding="utf-8") as f:
+                fd = None  # open 成功后 fd 移交 f（with 负责关闭），防下方重复 close
                 json.dump(history, f, ensure_ascii=False)
                 # 与 store 层落盘口径一致（AdminStore._write_unlocked 同款）：
                 # flush+fsync 后才 replace，崩溃不丢最近一轮 flapping 历史
@@ -7830,8 +7839,24 @@ class AdminMonitor:
             # rename 后刷父目录项（_write_unlocked 同款收尾）：目录项变更落盘，
             # 掉电重启后不整体回退为旧历史
             _fsync_parent_dir(self._history_path)
+        except OSError as e:
+            if fd is not None:
+                # mkstemp 之后 open(fd) 之前的极窄异常窗口：close 拿回的 fd 防泄漏
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                try:
+                    logger.warning(
+                        "admin_monitor",
+                        f"flapping 历史写盘失败（降级跳过本轮落盘）: {e}",
+                    )
+                except Exception:  # noqa: BLE001 — 磁盘满下告警自身也可能失败
+                    pass
         finally:
-            if tmp_path.exists():
+            if tmp_path is not None and tmp_path.exists():
                 try:
                     tmp_path.unlink()
                 except OSError:
