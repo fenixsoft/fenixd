@@ -15,3 +15,10 @@ ignoredBuiltDependencies:
   - koffi
   - node-pty
   - protobufjs
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': false
+  '@google/genai': false
+  esbuild: false
+  koffi: false
+  node-pty: false
+  protobufjs: false
