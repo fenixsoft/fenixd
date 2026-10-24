@@ -37,7 +37,38 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     degraded_project    (summary.py 公开别名，project_routes.py 经门面解析；
                          code-review 850b89f106d6),
     merge_dispositions_by_run (admin_alerts.py，timeline.py 经门面解析；
-                               code-review 55336c2a40af)
+                               code-review 55336c2a40af),
+    compute_run_cost      (runs.py，timeline.py 经门面解析),
+    count_scenarios       (spec_docs.py，summary.py 经门面解析),
+    daemon_health         (summary.py),
+    find_impl_run_file    (tasks.py，runs.py 经门面解析),
+    get_frozen_until      (admin_actions.py，summary.py 经门面解析),
+    get_runs              (runs.py，timeline.py、quality_gates.py、
+                           summary.py 经门面解析),
+    get_spec_start_after  (admin_actions.py，summary.py 经门面解析),
+    get_spec_timeline     (timeline.py，summary.py 经门面解析),
+    hosting_state         (summary.py),
+    is_spec_archived      (spec_archive.py，summary.py 经门面解析),
+    is_spec_frozen        (admin_actions.py，summary.py 经门面解析),
+    list_screenshots      (artifacts.py，summary.py 经门面解析),
+    parse_archived_state  (state.py，summary.py 经门面解析),
+    parse_bugs            (artifacts.py，summary.py 经门面解析),
+    parse_filtered_failures (artifacts.py，summary.py 经门面解析),
+    parse_report          (artifacts.py，timeline.py、summary.py 经门面解析),
+    parse_run_result_scenarios (artifacts.py，summary.py 经门面解析),
+    parse_state           (state.py，summary.py 经门面解析),
+    parse_tasks           (tasks.py，summary.py 经门面解析),
+    parse_verdict         (artifacts.py，summary.py 经门面解析),
+    project_summary       (summary.py),
+    read_effective_config (config_admin.py，timeline.py、summary.py
+                           经门面解析),
+    resolve_spec_dir      (spec_docs.py，tasks.py、summary.py 经门面解析),
+    run_activity          (runs.py，summary.py 经门面解析),
+    run_task_progress     (tasks.py，summary.py 经门面解析),
+    spec_generation_progress (spec_docs.py，summary.py 经门面解析),
+    task_progress         (tasks.py，summary.py 经门面解析),
+    tasks_note            (tasks.py，summary.py 经门面解析),
+    validated_spec_name   (spec_docs.py，tasks.py 经门面解析)
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
