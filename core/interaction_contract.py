@@ -377,11 +377,19 @@ def scenario_cover_channel(
             r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", blob
         ):
             return 2
-    # 通道 3：主语义关键词别名（中文表述同一元素）
+    # 通道 3：主语义关键词别名（中文表述同一元素）。英文别名与通道 2 边界
+    # 口径对齐（discard/hyperlink 等嵌入式子串不得假覆盖），右界前容许复数
+    # s（cards/buttons 归一到单数再比对，仿 _bare_keyword 口径）；中文别名
+    # 维持裸子串（中文无词边界，子串即语义）。
     primary = _primary_keyword(candidate.key)
     if primary:
         for alias in KEYWORD_ALIASES.get(primary, ()):
-            if alias in blob:
+            if alias.isascii():
+                if re.search(
+                    r"(?<![a-z0-9])" + re.escape(alias) + r"s?(?![a-z0-9])", blob
+                ):
+                    return 3
+            elif alias in blob:
                 return 3
     return 0
 
