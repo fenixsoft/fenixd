@@ -561,6 +561,18 @@ _PROGRESS_TAIL_BYTES = 8192
 _PROGRESS_MARKER_RE = re.compile(r"\[\s*(\d+)%\]")
 
 
+def _progress_log_path(project_root, output_rel: str) -> Path:
+    """stdout 进度日志路径：``<output>.log``（resolve 后的绝对路径构造）。
+
+    写侧（run_regression）与读侧（read_progress）共用同一构造口
+    （code-review item dec73e92402f）：resolve 在拼 ``.log`` 后缀之前执行，
+    output_rel 含符号链接目录或 ``..`` 分量（乃至绝对路径整体替换根）时
+    两侧仍解析到同一物理路径，避免真实进度静默退化为估算口径。resolve
+    幂等且非严格（目标不存在同样可调用），对既有绝对路径零变化。
+    """
+    return Path(str((Path(project_root) / str(output_rel)).resolve()) + ".log")
+
+
 def read_progress(project_root) -> Dict[str, Any]:
     """读取运行中回归的执行进度（GET /api/regression/result 透出 progress）。
 
@@ -628,7 +640,7 @@ def read_progress(project_root) -> Dict[str, Any]:
             # 绝对路径会整体替换根、``..`` 可越出项目目录；不合规按无真实
             # 进度处理（percent_real 保持 None，照常回落估算/未知口径）。
             root_abs = Path(project_root).resolve()
-            log_abs = Path(str((root_abs / str(output_rel)).resolve()) + ".log")
+            log_abs = _progress_log_path(project_root, output_rel)
             if log_abs.is_relative_to(root_abs) and log_abs.is_file():
                 with log_abs.open("rb") as f:
                     f.seek(0, os.SEEK_END)
@@ -824,7 +836,10 @@ def run_regression(
     # stdout 进度日志（与 XML 同名 + .log，junit.xml → junit.xml.log）：运行中
     # 由 read_progress tail 提取 pytest 终端进度标记 [ NN%]（junit XML 9.x 是
     # sessionfinish 一次性写盘，运行中不可读，进度只能来自 stdout）。
-    log_abs = Path(str(output_abs) + ".log")
+    # code-review item dec73e92402f：与 read_progress 读侧共用助手，统一以
+    # resolve 后的绝对路径拼 .log 后缀（此前写侧不 resolve、读侧 resolve，
+    # output_rel 含符号链接/.. 分量时两侧可能指向不同物理路径）。
+    log_abs = _progress_log_path(project_root, output_rel)
 
     # D7: 主机级锁互斥——同一主机只允许一套全量测试（D10：锁根可锚定主树）
     lock = _SuiteLock(
@@ -1060,7 +1075,17 @@ def run_and_write_regression(
             # write_result 不改写调用方传入的 dict（{**result, ...} 拷贝式）
             if run_scope is not None:
                 result = {**result, "run_scope": run_scope}
-            write_result(project_root, result)
+            try:
+                # code-review item c567b861a566：快照写盘失败（磁盘满/权限）
+                # 与同函数 mark_running/clear_running 的吞错降级同口径——回归
+                # 已实际跑完，OSError 不外溢中断收尾日志/向上传播，WARNING 留痕。
+                write_result(project_root, result)
+            except OSError as e:
+                log.warning(
+                    "regression",
+                    f"回归快照写入失败（last-run.json 未更新，"
+                    f"本轮结果仅本日志可查）: {e}",
+                )
             log.info(
                 "regression",
                 f"回归完成: status={result['status']}, "
