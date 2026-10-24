@@ -13,7 +13,7 @@ stat 不读文件内容，成本显著低于响应体序列化。
    的路径只 stat 一次），缓存随本轮计算即弃；
 2. ``combine`` 的树哈希 memo：键即完整签名集的 repr（部件内已含路径）——
    命中校验本身仍需全量 stat，memo 只省去对同一签名集的重复哈希，有界
-   （LRU 式清空）。
+   （超限整体清空）。
 """
 
 from __future__ import annotations
