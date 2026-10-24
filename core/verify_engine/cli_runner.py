@@ -213,6 +213,20 @@ class CliRunner(VerifyRunner):
                     "error_level": "error",
                     "error": f"env 键须为非空且不含 '=' 或控制字符: {_k!r}",
                 }
+        for _k, _v in declared_env.items():
+            # 场景 env 值非字符串形态（null/数值/布尔/list/dict 等）：str() 强转
+            # 会把字面 "None"/Python repr（如 "{'a': 1}"）静默注入子进程环境，
+            # 命令侧读到的值与场景作者意图偏离且无留痕——归一为本步骤结构化
+            # 失败（code-review item 191a4c7db8e6，与 stdin 非 str 同规），判
+            # error 与 cwd 缺失同口径：场景定义缺陷不进 product-bug 管道
+            # （item 74368415e965）
+            if not isinstance(_v, str):
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"env 值须为字符串，收到 {type(_v).__name__}: {_k!r}",
+                }
         env = self._build_env(declared_env)
         for _k in declared_env:
             # 场景 env 值含 NUL 空字节（场景 JSON \u0000 转义可构造）：
