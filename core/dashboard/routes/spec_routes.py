@@ -14,6 +14,9 @@ from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 from core.dashboard.registry import Registry
+# 托管态守卫（code-review item 48af85ca5ee7）：spec-admin-invoke 与 run-cancel /
+# regression 同族共用 hosting_guard 单点实现
+from core.dashboard.routes.hosting_guard import _guard_hosting_state
 
 # fenixd. 层级字面量（tests/test_logger_no_bypass.py：core/ 禁 __name__ 旁路）
 logger = logging.getLogger("fenixd.dashboard.routes.spec_routes")
@@ -942,6 +945,15 @@ class H3SpecRoutesMixin:
                     return
                 prompt = (raw or "").strip() or None
         proot = Path(project["path"])
+        # 托管态守卫（code-review item 48af85ca5ee7）：admin_invoke_request.json
+        # 同样只有 daemon 主循环消费，daemon 未运行/未托管时写入只会滞留（前端
+        # 提示「下一轮拾取」但拾取永不来，用户无从区分排队与滞留）。对齐
+        # run-cancel / regression 同族共用守卫：unmanaged→409、stopped→400，
+        # 判定异常按 stopped 兜底（宁拒勿假放行）。
+        guard = _guard_hosting_state(proot, "Admin 处置信号")
+        if guard is not None:
+            self._error(*guard)
+            return
         try:
             result = dashboard_data.request_admin_invoke(proot, spec, prompt)
         except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程

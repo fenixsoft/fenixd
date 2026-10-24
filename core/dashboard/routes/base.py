@@ -1173,7 +1173,12 @@ class H0BaseMixin:
         try:
             content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
+            # 不可解析 Content-Length（code-review item c68e83d427e1）：仅按 0
+            # 处理会让已发出的 body 字节残留 keep-alive 连接、被下一请求当请求
+            # 行解析（协议失步）。比照 _handle 快速拒绝分支与 _read_json_body
+            # 的同型处置置 close_connection=True，残留字节随连接关闭作废。
             content_length = 0
+            self.close_connection = True
         remaining = content_length - getattr(self, "_request_body_consumed", 0)
         if remaining > 0:
             # 残留长度上界（code-review item 5761d9f2f5c3）：handler 走 query
