@@ -885,7 +885,7 @@ def _read_self_review_out(out_path: Path) -> dict:
     return data
 
 
-def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
+def _write_claim_placeholder(fd: int, content: str = "{}\n", sync: bool = False) -> None:
     """fdopen 写申领占位内容并接管 fdopen 自身的失败路径（item cbb57806fbfd）。
 
     ``os.fdopen`` 自身抛错（fd 非法/MemoryError 等）时裸 fd 未被包装也无人
@@ -895,11 +895,19 @@ def _write_claim_placeholder(fd: int, content: str = "{}\n") -> None:
     None（fdopen 未成功）时兜底 os.close；成功后统一经 finally close
     （等价 with 语义）。申领机制收敛于 _claim_run_path（item b15e0a4af66c），
     六条维护车道共用（admin/self-review/evolution 走空占位分支，不经本助手）。
+
+    ``sync=True`` 时写后附加 flush+fsync（原子替换盘的持久性诉求）：token
+    归账 _append_token_run 的 mkstemp 写盘段原为内联同构复制
+    （item 727d123be095），fd 接管口径（编码策略、失败分级、fsync 开关）
+    收敛本单点演进，杜绝「漏改一处即 fd 泄漏修复回潮」的缺陷模式。
     """
     f = None
     try:
         f = os.fdopen(fd, "w", encoding="utf-8")
         f.write(content)
+        if sync:
+            f.flush()
+            os.fsync(f.fileno())
     finally:
         if f is not None:
             f.close()
@@ -1050,24 +1058,12 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
                     dir=str(tokens_json.parent),
                 )
                 try:
-                    # fdopen 失败路径显式接管（item cbb57806fbfd，形态对齐
-                    # _write_claim_placeholder / routes 先例 71d502440d3b）：
-                    # with 的 close 只在 fdopen 成功后才生效，fdopen 自身抛错
-                    # 时裸 fd 无人关闭——f 为 None 时兜底 os.close。
-                    f = None
-                    try:
-                        f = os.fdopen(fd, "w", encoding="utf-8")
-                        f.write(content)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    finally:
-                        if f is not None:
-                            f.close()
-                        else:
-                            try:
-                                os.close(fd)
-                            except OSError:
-                                pass
+                    # 写盘与 fd 生命周期接管收敛于 _write_claim_placeholder
+                    # （item 727d123be095；接管形态由 item cbb57806fbfd /
+                    # routes 先例 71d502440d3b 确立）：sync=True 附带
+                    # flush+fsync，fdopen 自身抛错时 f=None 兜底 os.close
+                    # 的口径单点维护，不再内联手写同构块。
+                    _write_claim_placeholder(fd, content, sync=True)
                     os.replace(tmp_str, str(tokens_json))
                 finally:
                     tmp_path = Path(tmp_str)
@@ -2574,6 +2570,17 @@ _PYTEST_VALUE_OPTIONS = frozenset({
     "--junit-xml", "--junit-prefix", "--result-log", "--basetemp",
     "--rootdir", "--durations", "--maxfail", "--html", "--css", "--tb",
     "--deselect", "--ignore", "--ignore-glob",
+    # 常用带值插件选项（code-review item 0ea92b4a27b4）：pytest-timeout /
+    # pytest-xdist / last-failed-no-failures 等的空格形态值（数字/枚举/
+    # 路径 glob）漏收会被误判为收集目标——首个「目标」（实为选项值）被
+    # 替换成失败 nodeids、真实收集目标被删除（``pytest --timeout 300
+    # tests/`` → ``pytest --timeout <nodeid>`` 坏命令），定向子集回归对
+    # 该命令形态必然改写失败。这些选项恒带值、其值不是收集目标，收录进
+    # 本清单（--cov 例外：值可选，``pytest --cov tests/`` 无值形态下
+    # tests/ 是真收集目标，收录反而改坏合法命令）。
+    "--timeout", "--timeout-method", "-n", "--numprocesses", "--dist",
+    "--maxprocesses", "--max-worker-restart", "--tx", "--rsyncdir",
+    "--rsyncignore", "--lfnf", "--last-failed-no-failures",
 })
 
 # -k/-m 的值为布尔表达式（值可含空格），未加引号的多词形态会被带值消费
