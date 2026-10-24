@@ -8,7 +8,6 @@ verified 结果持久化门禁。纯结构搬移，零行为变化。
 """
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -497,6 +496,12 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # （该段无新鲜度判据）——与升级点对 directive/manifest/violations
             # 三件套的同型清除纪律对齐（_escalate_dedup_resynthesis 清除点）；
             # 违规明细已随本返回 dict 交调用方按 cause 留痕，清清单不丢事实。
+            # code-review 86583b22e80a：对齐 e92461050ae5 三件套同口径——此前
+            # 场景级回炉 episode 若按 dispatch_failed 语义保留过 directive
+            # （_handle_attr_dedup_rejection 分支），blocked 处置后残留的
+            # directive/manifest 仍会锚定下一 episode 首 judge，一并补清。
+            pipeline._clear_resynthesis_directive(spec_name)
+            pipeline._clear_requeue_manifest(spec_name)
             pipeline._clear_verdict_violations(spec_name)
             return re_judge
         report2 = load_report(pipeline._context.project_root, spec_name)
@@ -505,6 +510,10 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # code-review b430dc4aa9d4：终局早退同口径清驳回清单（同上方派发
             # 失败出口——blocked 交人工后，下一 episode 首 judge 不得被旧清单
             # 「强制修复」纪律锚定）。
+            # code-review 86583b22e80a：同口径补清 directive/manifest
+            # （e92461050ae5 三件套纪律，理由同上方派发失败出口）。
+            pipeline._clear_resynthesis_directive(spec_name)
+            pipeline._clear_requeue_manifest(spec_name)
             pipeline._clear_verdict_violations(spec_name)
             return {
                 "ok": False,
@@ -689,7 +698,7 @@ def _clear_verdict_violations(pipeline, spec_name: str) -> None:
 
 
 def _spec_dir_component(spec_name: str) -> str:
-    """spec 名 → verify-progress 单一路径分量（非法名转义隔离，fail-open）。
+    """spec 名 → verify-progress 单一路径分量（非法名/含 % 名转义隔离，fail-open）。
 
     code-review 1c4a4c61bcc0：复用 serving._spec_name_path_error（2c579adb670f）
     单点判定（函数内延迟导入，serving 不反向依赖本模块，无环）——上游
@@ -697,13 +706,29 @@ def _spec_dir_component(spec_name: str) -> str:
     直接内插 ``verify-progress/<spec>/`` 会把本模块的 unlink/write 引到
     verify-progress 之外。与 serving 的显式拒绝路径不同，本模块写/清/读既有
     口径均为 fail-open（写失败仅 warning、清幂等、读得缺省），故非法名经
-    percent-escape 派生为单一路径分量隔离落盘：不逃逸目录、不与合法 spec
-    目录撞名（合法名即便含 ``%``/``.`` 亦经同一双射转义）、不同非法名互不
+    percent-escape 派生为单一路径分量隔离落盘：不逃逸目录、不同非法名互不
     覆盖；清/读沿同一派生路径幂等或得缺省。
+
+    code-review 6a6d211c0b47：合法名仅当不含 ``%`` 时原样返回（既有目录映射
+    不变，历史目录可读）；``_spec_name_path_error`` 不拒 ``%``，若含 ``%`` 的
+    合法名也原样落盘，会与某非法名的 percent-escape 产物撞同一目录（如合法名
+    ``a%2Fb`` vs 非法名 ``a/b`` → ``a%2Fb``），跨 spec 读写互串。含 ``%`` 的
+    合法名与非法名同走下方转义：``%`` 转为 ``%25``，转义产物必含 ``%`` 而原样
+    产物必不含，两空间不相交；quote 自身单射、其输出中的字面 ``.`` 再补
+    ``%2E`` 不引入碰撞（输出中 ``%2E`` 序列只能来自输入 ``%252E``），故全集
+    映射恢复双射、不撞名。
     """
     from core.pm_engine.verification.serving import _spec_name_path_error
 
-    if isinstance(spec_name, str) and _spec_name_path_error(spec_name) is None:
+    # code-review 6a6d211c0b47：合法名须不含 ``%`` 才原样返回——``%`` 不在
+    # _spec_name_path_error 拒绝清单，若含 ``%`` 的合法名也原样落盘，会与某
+    # 非法名的转义产物撞同一目录；含 ``%`` 合法名与非法名同走下方转义
+    # （``%`` → ``%25``，双射性论证见 docstring）。
+    if (
+        isinstance(spec_name, str)
+        and _spec_name_path_error(spec_name) is None
+        and "%" not in spec_name
+    ):
         return spec_name
     # 非 str（异常上游形态）与非法名同走转义隔离；quote 产物中的 ``.`` 再补
     # 转义为 %2E，``..`` 派生不出路径分量语义；空串（唯一转义为空的输入）
