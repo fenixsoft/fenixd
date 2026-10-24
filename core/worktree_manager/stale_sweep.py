@@ -34,6 +34,11 @@ class G7StaleSweepMixin:
         豁免清理（清扫器跳过），直到后继 run 成功 merge（consume_legacy）或宽限期
         超时（_reclaim_expired_legacy 兜底回收）。先触发一次宽限期兜底回收，再扫
         孤儿——宽限期内的遗产保持不动，宽限期外的遗产在此被兜底清除。
+
+        触发时机（code-review item 1ff2715901b2）：本方法仅由 daemon 启动路径
+        （fenixd.py start()）调用一次、无周期调度，宽限期兜底回收因此仅在启动时
+        生效——长驻 daemon 内新登记的遗产过期后滞留至下次重启才被清除，并非按
+        120s 宽限期持续回收（排查磁盘滞留时勿按周期回收预期）。
         """
         # 宽限期兜底回收：超时遗产由 sweeper 在此清除并记审计（设计 D2）。
         # non-blocking 承诺（code-review item ea0ba60cd65f）：回收链内的
@@ -151,10 +156,14 @@ class G7StaleSweepMixin:
                 )
                 continue
             self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
-            # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
-            # 避免删目录后留下 cwd 失效的永生进程
-            self._kill_worktree_strays(wt_dir.name)
             try:
+                # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
+                # 避免删目录后留下 cwd 失效的永生进程。杀残留移入 try（code-review
+                # item 76b5aa0c583d，对齐 cleanup_orphans 的 5f3dee9b3ef8 整改口径）：
+                # 未预期异常不再穿出 for 循环中断剩余孤儿目录清理与收尾 prune，落到
+                # 下方 except 降级 WARNING 后继续下一目录，与 docstring「失败记
+                # WARNING，不阻塞」的逐目录容错口径一致。
+                self._kill_worktree_strays(wt_dir.name)
                 branch = None
                 br = subprocess.run(
                     ["git", "-C", str(wt_dir), "rev-parse", "--abbrev-ref", "HEAD"],
