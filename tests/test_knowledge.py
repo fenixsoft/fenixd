@@ -755,7 +755,7 @@ class TestDistillManager(KnowledgeTestBase):
     def _manager(self, on_spawn, returncode=0, max_fix_rounds=2):
         mgr = DistillManager(max_fix_rounds=max_fix_rounds)
 
-        def spawn(cmd, cwd):
+        def spawn(cmd, cwd, env=None):
             on_spawn(cmd, cwd)
             return _FakeProc(returncode)
 
@@ -767,7 +767,7 @@ class TestDistillManager(KnowledgeTestBase):
         state = {"round": 0}
         lock = threading.Lock()
 
-        def on_spawn(cmd, cwd):
+        def on_spawn(cmd, cwd, env=None):
             with lock:
                 rnd = min(state["round"], len(versions) - 1)
                 state["round"] += 1
@@ -843,7 +843,7 @@ class TestDistillManager(KnowledgeTestBase):
                 prompts.append(prompt)
                 return super().communicate(prompt, timeout)
 
-        def on_spawn(cmd, cwd):
+        def on_spawn(cmd, cwd, env=None):
             rnd = len(prompts)
             payload = bad if rnd == 0 else good
             for rel, text in payload.items():
@@ -921,7 +921,7 @@ class TestDistillManager(KnowledgeTestBase):
 
         mgr = DistillManager()
 
-        def on_spawn(cmd, cwd):
+        def on_spawn(cmd, cwd, env=None):
             with lock:
                 active["n"] += 1
                 active["max"] = max(active["max"], active["n"])
@@ -954,7 +954,7 @@ class TestDistillManager(KnowledgeTestBase):
 
         mgr = DistillManager(max_fix_rounds=0)
 
-        def spawn(cmd, cwd):
+        def spawn(cmd, cwd, env=None):
             return _FakeProc(timeout=0.05)
 
         mgr._spawn = spawn

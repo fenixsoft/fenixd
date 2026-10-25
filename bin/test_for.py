@@ -220,6 +220,9 @@ def find_affected_tests(
         affected.add(target_module)
     queue = [(match_target, 0)]
     visited = set()
+    # 因 max_depth 截断未继续展开的命中项计数（code-review item bddfaa7fe44c）：
+    # 深层导入链被静默漏选构成虚假绿色风险，出口处按计数告警
+    depth_truncated = 0
 
     while queue:
         module, depth = queue.pop(0)
@@ -238,8 +241,18 @@ def find_affected_tests(
                     # Also check transitive imports
                     if depth < max_depth:
                         queue.append((test_module, depth + 1))
+                    else:
+                        depth_truncated += 1
                     break
 
+    if depth_truncated:
+        print(
+            f"Warning: {depth_truncated} matched test module(s) sit at the BFS "
+            f"depth limit (max_depth={max_depth}); import chains passing through "
+            "them are not followed, so tests 4+ hops away may be missed. Raise "
+            "max_depth if deeper coverage is needed.",
+            file=sys.stderr,
+        )
     return affected
 
 
@@ -385,23 +398,28 @@ def _print_timeout_hint() -> None:
     )
 
 
-def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
+def run_tests(test_files: List[str], dry_run: bool = False) -> int:
     """Run the specified test files.
 
     Bounded run: pytest runs with ``-o faulthandler_timeout`` (dumps thread
     stacks on hangs) and a subprocess hard timeout that kills the whole
     process group (孙进程一并中止，同 ``bin/run_full_suite.py``); on timeout
     a hint points to ``bin/run_full_suite.py`` for hanging-test triage.
+
+    Returns:
+        pytest 子进程退出码（dry-run/无测试为 0）。负值 = 被信号终止，调用方
+        按 128+signum 归一退出（与 main --all 分支同口径，code-review item
+        dca024958cc3），不再折叠成普通失败 exit 1。
     """
     if not test_files:
         print("No tests affected. Consider running full test suite.")
-        return True
+        return 0
 
     if dry_run:
         print("Tests that would be run:")
         for test_file in sorted(test_files):
             print(f"  {test_file}")
-        return True
+        return 0
 
     # Run pytest with selected test files (bounded, 同 run_full_suite 约定)
     cmd = _build_pytest_cmd(test_files)
@@ -412,19 +430,19 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
     )
     if timed_out:
         _print_timeout_hint()
-        return False
+        return 1
     if returncode < 0:
-        # 负 rc = pytest 子进程被信号终止（如 OOM killer 的 SIGKILL → -9）：布尔
-        # 返回值会把这种终态与普通测试失败同样折叠成 False（exit 1），信号信息
-        # 在此按 shell 惯例补一行 128+signum 提示（同 main --all 分支的归一口径），
-        # 不再完全丢失。
+        # 负 rc = pytest 子进程被信号终止（如 OOM killer 的 SIGKILL → -9）：按
+        # shell 惯例补一行 128+signum 提示，退出码以负 rc 原样透传给调用方按
+        # 同口径归一（code-review item dca024958cc3：与 main --all 分支一致，
+        # 调用方可区分普通测试失败与 OOM/信号终止）。
         print(
             f"Warning: pytest was terminated by signal {-returncode} "
             f"(shell-convention exit code {128 - returncode}); "
             "this is not an ordinary test failure.",
             file=sys.stderr,
         )
-    return returncode == 0
+    return returncode
 
 
 def main():
@@ -581,8 +599,10 @@ def main():
                 )
 
     # Run tests
-    success = run_tests(test_files, dry_run)
-    sys.exit(0 if success else 1)
+    returncode = run_tests(test_files, dry_run)
+    # 负 rc = 被信号终止：与 --all 分支同口径归一 128+signum（code-review item
+    # dca024958cc3），不再与普通测试失败同折叠 exit 1
+    sys.exit(128 + abs(returncode) if returncode < 0 else returncode)
 
 
 if __name__ == "__main__":

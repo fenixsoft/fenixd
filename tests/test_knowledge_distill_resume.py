@@ -81,7 +81,7 @@ class _GateSpawn:
         self.prompts = []  # 每轮 run 收到的提示词（合并批断言用）
         self.calls = 0
 
-    def __call__(self, cmd, cwd):
+    def __call__(self, cmd, cwd, env=None):
         self.calls += 1
         return _Proc0(returncode=self.returncode, on_prompt=self._on_prompt)
 

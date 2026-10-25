@@ -67,6 +67,7 @@ def archive_change(project_root: Path, name: str) -> dict:
         )
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    # [fenix-ignore:ea37b7dab08c] 空目录替换情形并入上方同一竞态取舍：并发者恰在 exists() 检查后创建空目录形式的 target 时 POSIX rename(目录, 空目录) 可直接替换（moved == target 不进任何告警分支），实际影响仅为丢失一个空目录、change_dir 内容零损失；inode 比对防线会把每次归档成功路径复杂化，不值得
     moved = Path(shutil.move(str(change_dir), str(target)))
     if moved != target:
         # TOCTOU：exists 检查与 move 之间 target 若被并发创建为目录，

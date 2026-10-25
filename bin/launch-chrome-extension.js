@@ -340,10 +340,22 @@ async function launchChromeExtension(distPath, opts = {}) {
     // ========================================================================
 
     let timedOut = false;
+    // 可取消睡眠（code-review item ddb452cde2a2）：超时收卷后 collectAndTest
+    // 仍在后台挂起，其内部的裸 setTimeout 睡眠会让进程在结果已输出后继续
+    // 空等至定时器到期（管道捕获 stdout 的调用方感知为 EOF 前空等）；登记到
+    // pendingSleeps 后由超时收卷处统一清除，进程随结果输出自然退出。
+    const pendingSleeps = new Set();
+    const cancellableSleep = ms => new Promise(resolve => {
+      const t = setTimeout(() => {
+        pendingSleeps.delete(t);
+        resolve();
+      }, ms);
+      pendingSleeps.add(t);
+    });
     const collectAndTest = async () => {
       // 等待扩展加载 — 扩展接管 newtab 后会自动打开一个新标签页
       // 给扩展一些时间加载
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await cancellableSleep(3000);
 
       // 无已有页面时兜底开一页（网络监听挂于 context 级，开页时序不影响采集覆盖）
       const pages = browserContext.pages();
@@ -367,7 +379,7 @@ async function launchChromeExtension(distPath, opts = {}) {
       });
 
       // 等待一段时间让页面完成初始网络请求
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await cancellableSleep(5000);
 
       // ======================================================================
       // UI 交互测试
@@ -390,6 +402,12 @@ async function launchChromeExtension(distPath, opts = {}) {
     collectPromise.catch(() => {});
     const raced = await Promise.race([collectPromise, timeoutPromise]);
     clearTimeout(timeoutTimer);
+    // 超时收卷后清除 collectAndTest 残留的睡眠定时器（code-review item
+    // ddb452cde2a2）：挂起句柄会让进程在结果输出后延迟退出；被清除的睡眠
+    // 永不再恢复，后台协程随 finally 的 browserContext.close() 以 Target
+    // closed 拒绝收尾（已由 collectPromise.catch 吞掉，不产生 unhandledRejection）。
+    for (const t of pendingSleeps) clearTimeout(t);
+    pendingSleeps.clear();
     const uiResults = raced === null ? [] : raced;
 
     // ========================================================================
@@ -428,7 +446,11 @@ async function launchChromeExtension(distPath, opts = {}) {
     const anomalies = detectAnomalies(networkLog);
     return {
       success: false,
-      extensionLoaded: false,
+      // 加载态区分（code-review item 46ca31b453cd）：浏览器尚未成功启动
+      // （browserContext 未建立）才可断言未加载置 false；启动成功后才发生的
+      // 采集/测试异常（newPage、页面求值等）时扩展可能已实际加载，按头部
+      // 契约置 null（不确定态，非 false），下游统计不低估真实加载情况。
+      extensionLoaded: browserContext ? null : false,
       extensionId: null,
       manifestPath,
       networkLog,
@@ -934,6 +956,9 @@ if (isMainModule) {
       duration: 0,
       error: err.message || String(err),
     }, null, 2));
-    process.exit(1);
+    // 与正常路径同口径（code-review item 3b5b28e0c649）：stderr 在 Windows
+    // 管道等场景写入也是异步的，process.exit 可能截断上方错误 JSON；设
+    // exitCode 自然排空缓冲后退出，退出码语义不变。
+    process.exitCode = 1;
   });
 }

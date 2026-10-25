@@ -536,6 +536,30 @@ def _pid_alive(pid: int):
     return True
 
 
+def _proc_state(pid: int) -> "str | None":
+    """读 /proc/<pid>/stat 的进程状态字段（Z=zombie 待收尸）；不可读返回 None。
+
+    code-review item 70aae27faf6f：PID 1 不收尸孤儿的容器环境（无 tini/init
+    的常见 Docker 部署）中，旧 daemon 退出即成持久 zombie——SIGTERM/SIGKILL
+    对 zombie 均无效果、starttime 仍与记录一致、os.kill(pid, 0) 探活恒真，
+    仅按 _pid_alive 复核会把它误判成 D 状态存活进程而放弃看护。
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    # comm 字段可含空格与括号，状态字段是最后一个 ')' 之后的第 1 个字段
+    tail = stat.rpartition(")")[2].split()
+    return tail[0] if tail else None
+
+
+def _pid_reaped(pid: int) -> bool:
+    """进程已退出（ESRCH）或已成 zombie 待收尸——两者都可直接放行拉起。"""
+    if _pid_alive(pid) is False:
+        return True
+    return _proc_state(pid) == "Z"
+
+
 def _adopt_leftover_daemon() -> bool:
     """拉起新 daemon 前收编 SIGKILL 遗留的存活旧 daemon（先收编再拉起）。
 
@@ -551,8 +575,11 @@ def _adopt_leftover_daemon() -> bool:
     进程复用后必然不同，不再误发 SIGTERM/SIGKILL）；记录缺失（旧版 runtime
     文件 / 写盘时读取失败）回退 cmdline 含 fenixd 字样的宽松校验（仅缓解），
     cmdline 不可读按存活保守处理（宁可多等不双拉）。os.kill(pid, 0) 对
-    zombie 仍返回真，但旧 supervisor 死后 daemon 已 re-parent 由 init 收尸，
-    本进程通常见不到 zombie，不特判。
+    zombie 仍返回真：正常主机上旧 supervisor 死后 daemon 已 re-parent 由
+    init 收尸、通常见不到 zombie，但 PID 1 不收尸孤儿的容器环境中旧 daemon
+    退出即成持久 zombie——探活与状态字段（_pid_reaped）把它按「已退出待
+    收尸」放行拉起，不再误判成 D 状态存活进程（code-review item
+    70aae27faf6f）。
 
     返回 True=可放行拉起；False=放弃拉起（code-review 0c19b214e411）：SIGKILL
     后不再盲等 5s 即放行，改为轮询 _pid_alive 复核死亡（总时限与兜底收尸
@@ -572,6 +599,11 @@ def _adopt_leftover_daemon() -> bool:
         return True
     alive = _pid_alive(pid)
     if alive is False:
+        return True
+    if _proc_state(pid) == "Z":
+        # zombie 待收尸（code-review item 70aae27faf6f）：信号与等待对它都无
+        # 意义，按「已退出」放行拉起，不落入收编序列空等后误报放弃看护。
+        log(f"daemon_runtime pid {pid} is zombie (unreaped) — treat as exited")
         return True
     if alive is None:
         # EPERM：进程存在但不可发信号（其它用户 / 容器 uid 边界）。按已死亡
@@ -628,7 +660,9 @@ def _adopt_leftover_daemon() -> bool:
     sigkill_wait = _sigkill_wait_seconds()
     deadline = time.monotonic() + sigkill_wait
     while True:
-        if _pid_alive(pid) is False:
+        # _pid_reaped 含 zombie（容器环境无人收尸时 SIGTERM 后退出即成 zombie，
+        # _pid_alive 探不出其已退）：code-review item 70aae27faf6f
+        if _pid_reaped(pid):
             log(f"leftover daemon (pid {pid}) exited after SIGTERM")
             return True
         if time.monotonic() >= deadline:
@@ -696,7 +730,10 @@ def _adopt_leftover_daemon() -> bool:
     for attempt in range(1, DAEMON_REAP_WAIT_ATTEMPTS + 1):
         bucket_end = time.monotonic() + DAEMON_REAP_WAIT_SECONDS
         while time.monotonic() < bucket_end:
-            if _pid_alive(pid) is False:
+            # _pid_reaped 含 zombie（SIGKILL 后退出而无人收尸的容器形态，
+            # code-review item 70aae27faf6f）：按已退出放行拉起，不误判成
+            # D 状态存活进程而放弃看护。
+            if _pid_reaped(pid):
                 return True
             time.sleep(0.5)
         log(

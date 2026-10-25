@@ -222,10 +222,15 @@ class MockModelServer:
         # 步骤脚本启动前落盘（服务器启动时一次性加载，启动后改写不生效）
         self.steps_file.write_text(
             json.dumps(self.steps, ensure_ascii=False), encoding="utf-8")
-        self.proc = subprocess.Popen(
-            ["node", str(MOCK_SERVER), "--port", str(self.port),
-             "--script", str(self.steps_file), "--log", str(self.log_file)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # stderr 落盘（code-review item 7a36b069f06d）：DEVNULL 让「提前退出/
+        # 端口就绪超时」只剩一句报错无从定位根因（node 语法错误、端口被占等）；
+        # 失败路径的 RuntimeError 附 stderr 尾部，stdout 保持 DEVNULL
+        self.stderr_log = self.workdir / "mock-server-stderr.log"
+        with open(self.stderr_log, "w", encoding="utf-8") as fh:
+            self.proc = subprocess.Popen(
+                ["node", str(MOCK_SERVER), "--port", str(self.port),
+                 "--script", str(self.steps_file), "--log", str(self.log_file)],
+                stdout=subprocess.DEVNULL, stderr=fh)
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
@@ -234,10 +239,25 @@ class MockModelServer:
                     return
             except OSError:
                 if self.proc.poll() is not None:
-                    raise RuntimeError("mock-model-server 提前退出")
+                    raise RuntimeError(
+                        f"mock-model-server 提前退出，stderr 尾部: "
+                        f"{self._stderr_tail()}")
                 time.sleep(0.1)
         self.stop()
-        raise RuntimeError("mock-model-server 端口就绪超时")
+        raise RuntimeError(
+            f"mock-model-server 端口就绪超时（15s），stderr 尾部: "
+            f"{self._stderr_tail()}")
+
+    def _stderr_tail(self, keep: int = 600) -> str:
+        """stderr 日志尾部（失败诊断附文；日志不可读时如实说明）。"""
+        path = getattr(self, "stderr_log", None)
+        if path is None or not path.is_file():
+            return "（stderr 日志不存在）"
+        try:
+            return (path.read_text(encoding="utf-8", errors="replace")
+                    .strip()[-keep:]) or "（空）"
+        except OSError:
+            return "（stderr 日志不可读）"
 
     def stop(self) -> None:
         if self.proc is None:
@@ -259,8 +279,15 @@ class MockModelServer:
         out = []
         for line in self.log_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            # 坏行跳过（code-review item f16c11d2e45e，对齐 _read_jsonl_entries
+            # 口径）：服务端仍在写入时可能读到半写行，JSONDecodeError 不放大
+            # 成车道装置失败（假阴性）
+            try:
                 out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
         return out
 
     @property
@@ -1261,7 +1288,7 @@ def write_evidence(evidence: Dict[str, Any], evidence_dir: Path,
 # ══════════════════════════════════════════════════════════════════════
 
 def run_smoke(args: argparse.Namespace) -> int:
-    started = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
+    started = utc_iso()
     prefix = unique_prefix()
     lanes = [l.strip() for l in (args.lanes or ",".join(SMOKE_LANES)).split(",")
              if l.strip()]
@@ -1459,20 +1486,28 @@ def accept_selfcheck(project_root: Path, profile: str,
     else:
         add("dsh 可用", True, f"PATH 命中：{shutil.which('dsh')}")
 
-    # provider 链凭据（accept 的模型三要素来源；值永不打印）
-    providers: List[Dict[str, Any]] = []
+    # 配置单次解析（code-review item fcac790f8719）：provider 链凭据与 dsh
+    # 健康门（agent.dsh_api）两处消费共用同一份，删除下方重复的别名再导入
+    # （_ConfigLoader）与二次 resolve_config——解析代价上升时不再双倍放大。
+    cfg = None
+    cfg_error: Optional[Exception] = None
     try:
         from core.config import ConfigLoader
         cfg = ConfigLoader.resolve_config(project_root)
+    except Exception as e:  # noqa: BLE001 — 配置解析失败即缺凭据
+        cfg_error = e
+
+    # provider 链凭据（accept 的模型三要素来源；值永不打印）
+    providers: List[Dict[str, Any]] = []
+    if cfg is None:
+        add("provider 链凭据", False, f"配置解析失败：{cfg_error}",
+            "检查 .fenix/config.yaml 的 llm.providers 段")
+    else:
         raw = ((cfg.get("llm") or {}).get("providers")) or []
         if isinstance(raw, list):
             providers = [p for p in raw
                          if isinstance(p, dict) and p.get("baseurl")
                          and p.get("apikey")]
-    except Exception as e:  # noqa: BLE001 — 配置解析失败即缺凭据
-        add("provider 链凭据", False, f"配置解析失败：{e}",
-            "检查 .fenix/config.yaml 的 llm.providers 段")
-    else:
         if providers:
             p0 = providers[0]
             names = [str(p.get("name")) for p in providers]
@@ -1492,11 +1527,12 @@ def accept_selfcheck(project_root: Path, profile: str,
             # 线协议随 config 装配（agent.dsh_api）：Anthropic 兼容形态
             # baseurl 须配 anthropic-messages，否则健康门过的 Bundle 照样
             # 在真实调用上 TRANSPORT 断流（2026-10-14 两轮验收实证）。
-            from core.config import ConfigLoader as _ConfigLoader
-            _cfg = _ConfigLoader.resolve_config(project_root)
+            _dsh_api = (
+                str(ConfigLoader.get(cfg, "agent.dsh_api", "") or "").strip()
+                if cfg is not None else "")
             adapter = resolve_adapter("dsh", {"agent": {
                 "harness": "dsh", "dsh_profile": profile,
-                "dsh_api": str(_ConfigLoader.get(_cfg, "agent.dsh_api", "") or "").strip()}})
+                "dsh_api": _dsh_api}})
             adapter.check_health()
             add("dsh 健康门", True,
                 f"版本白名单 + Bundle 挂载探测通过（profile={profile}）")
@@ -1561,7 +1597,10 @@ def run_accept(args: argparse.Namespace) -> int:
         project_root = Path(args.project_root or REPO_ROOT).expanduser().resolve()
     except (ValueError, OSError, RuntimeError) as e:
         print(f"错误: 项目根目录无法解析: {e}", file=sys.stderr)
-        return 1
+        # 参数/装置错误按模块头口径归 2（code-review item 9e78b1086b81）：
+        # 该路径失败无证据文件产出，归 1 会与「验收失败（证据内含明细）」
+        # 语义混淆，命令行调用方判读口径不稳。
+        return 2
     profile = args.profile
     checks = accept_selfcheck(project_root, profile,
                               with_claude_baseline=not args.no_claude_baseline)
@@ -2031,7 +2070,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                       else Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-")))
         except (ValueError, OSError, RuntimeError) as e:
             print(f"错误: fixture parent 路径无法解析: {e}", file=sys.stderr)
-            return 1
+            return 2
+        # parent 须已存在（code-review item b59b3fd7ce56）：build_fixture 的
+        # mkdir(parents=True) 会在多级不存在路径下连带创建全部祖先，cleanup
+        # 只 rmdir 最深一层、中间空目录残留违背零残留目标——不存在直接按
+        # 用法错误退出（模块头口径 2=用法/装置错误）。
+        if args.parent is not None and not parent.is_dir():
+            print(f"错误: --parent 指向的目录不存在: {parent}",
+                  file=sys.stderr)
+            return 2
         prefix = unique_prefix()
         manifest = build_fixture(parent, prefix)
         # parent 来源记账：脚本 mkdtemp 自建的随清理 rmdir；用户 --parent
