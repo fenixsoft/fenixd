@@ -757,6 +757,12 @@ class BrowserManager:
             return True
         except Exception as e:
             self._log("warning", f"navigate_to_app 失败 ({target}): {type(e).__name__}: {e}")
+            # goto 本身失败（dev server 未就绪、浏览器异常等环境级故障）时
+            # 首帧必然未渲染，与成功路径同款落 False（code-review item
+            # f0d6a9d819d7）：否则最严重的环境级失败拿不到白屏降级标记，
+            # 仍被归因为「元素不存在」类产品/场景失败，与 execute_action
+            # navigate 分支首帧超时即落 False 的口径不对称
+            page._fenix_nav_first_frame_ok = False
             return False
 
     # ── 操作执行 ───────────────────────────────────────────────

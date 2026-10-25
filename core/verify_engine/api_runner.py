@@ -659,10 +659,12 @@ class ApiRunner(VerifyRunner):
                         event["event"] = line[6:].strip()
                     elif line == "":
                         # 仅携带 event 名而无 data 的事件（如纯心跳 event 行）
-                        # 也是合法 SSE 事件：按空 data 入列，否则 sse_event_count/
-                        # sse_event_matches 会少计而假失败；data 与 event 名皆空
-                        # 的空行/连续空行不产生幻影事件。
-                        if event["data"].strip() or event["event"]:
+                        # 与显式空载荷 data 行（"data:" 累计为单个换行）都是
+                        # 合法 SSE 事件：按「缓冲非空或 event 名非空」入列，
+                        # 否则 sse_event_count/sse_event_matches 会少计而假失
+                        # 败；data 与 event 名皆空的空行/连续空行不产生幻影
+                        # 事件。
+                        if event["data"] != "" or event["event"]:
                             data, over = _truncate(event["data"].rstrip("\n"))
                             if over:
                                 data_truncated = True
@@ -732,7 +734,7 @@ class ApiRunner(VerifyRunner):
         # 缓冲中未以空行终结的最后一个事件若不在此落 events 会被静默丢弃，
         # sse_event_count/sse_event_matches 等事件类断言据此假失败。窗口
         # 截止/EOF 后仍有 data 或仅有 event 名的缓冲按空行分帧同口径入列。
-        if event["data"].strip() or event["event"]:
+        if event["data"] != "" or event["event"]:
             data, over = _truncate(event["data"].rstrip("\n"))
             if over:
                 data_truncated = True
