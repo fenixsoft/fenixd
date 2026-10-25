@@ -286,3 +286,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-278](ADR-278-env-exemption-state-single-source-dual-gate.md) | accepted | env 豁免生效锚收拢为 spec 级 STATE 字段（场景 id+归一化失败签名+定义 hash+TTL），升级握手与 verified 白化门禁经同一纯函数双门同源消费、disposition 降审计镜像不回填；配场景修订重验第三出口（夹具白名单+修订上限 2）与豁免有效轮不计冻结阈值（推翻 ADR-212 的 disposition 唯一锚裁定，豁免不得自我批准不变量承继） |
 | [ADR-279](ADR-279-lane-trigger-decoupling-window-watermark-lane-owned.md) | accepted | 周期车道触发时点解耦为独立键必须配套窗口水位归车道自身状态承载（共享源水位降为回退，禁只挪时点），非法取值一律回退缺省不中断巡检、解析单源收口，检查点次序约束正交保留；回归车道后续解耦复用同模式 |
 | [ADR-280](ADR-280-alert-selfheal-entry-timestamp-evidence-triage-surface-only.md) | accepted | 告警自动收口证据只取条目自身时间戳（调用方注入纯函数不读日志、收敛升级双源安静锚点禁只锚 disposition created），收口只作用人工甄别面绝不改写 disposition 台账，复发走新条目不重开、1440 分钟满窗才收口 |
+| [ADR-281](ADR-281-admin-invoke-protection-gates-body-covers-manual.md) | accepted | admin 唤起保护闸（瞬断冻结/静默窗避让）收共用唤起入口本体、人工与自动同政策、跳过非失败路径（不增 retry_count、不落升级告警），与抑制类判定（留调用点、人工豁免）按闸门目的二分落点；窗配置复用 code-fix 静默窗单源 |

@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-10-25 21:38 UTC+8
+> 最后更新：2026-10-26 01:16 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、人工裁决选择题、告警生命周期与告警自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [administrator-agent](administrator-agent.md) | 管理员 agent 角色与职责 | 2026-10-15 01:55 |
+| [administrator-agent](administrator-agent.md) | 管理员 agent 角色职责与唤起闸门（避让/抑制、执行模型、权限与留痕） | 2026-10-26 01:16 |
 | [admin-run-wrapup-contract](admin-run-wrapup-contract.md) | admin run 收尾契约：预算封顶收尾宽限与处置记录先行 | 2026-10-15 01:55 |
 | [administrator-model-assignment](administrator-model-assignment.md) | 管理员 agent 模型指派 | 2026-10-03 04:59 |
 | [admin-activity-view](admin-activity-view.md) | 管理员处置活动视图 | 2026-10-03 04:59 |
