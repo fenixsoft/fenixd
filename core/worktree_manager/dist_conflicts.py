@@ -1,6 +1,7 @@
 """dist_conflicts.py — G5 构建产物冲突/dist 重建（refactor-giant-classes D1/D5）。
 
-原为 WorktreeManager 的 8 个方法，原样搬移为 mixin（方法体零改动）。
+原为 WorktreeManager 的 G5 职责方法集，原样搬移为 mixin（搬移时方法体
+零改动；搬移后又追加了新方法，数量不以初搬清单为限）。
 verify_contract 函数延迟导入（原方法体内已有延迟 import 模式）。
 """
 

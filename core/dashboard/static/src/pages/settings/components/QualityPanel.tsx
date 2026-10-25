@@ -11,9 +11,19 @@ import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
 
-/** regression.cmd 可为 str（shell）或 list（argv）；展示统一成可读串 */
+/** list（argv）参数的 shell 引用（code-review item 7b7453b3c4d5）：安全字符集
+ *  与包裹规则同 Python shlex.quote（后端 code_fix.py 注入 {test_targets} 时同款），
+ *  空串与含空白/引号/shell 元字符的参数一律单引号包裹，内嵌单引号按 '"'"' 惯例
+ *  转义——「执行命令」展示串可安全复制回终端重跑而不失真。 */
+function shellQuoteArg(arg: string): string {
+  const shellSafe = /^[A-Za-z0-9_@%+=:,./-]*$/;
+  return arg !== '' && shellSafe.test(arg) ? arg : `'${arg.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** regression.cmd 可为 str（shell）或 list（argv）；展示统一成可读串。
+ *  list 形态逐参数经 shellQuoteArg 引用后拼接（str 形态本身即 shell 串，原样展示）。 */
 function formatCmd(cmd: string | string[]): string {
-  return Array.isArray(cmd) ? cmd.join(' ') : cmd;
+  return Array.isArray(cmd) ? cmd.map(shellQuoteArg).join(' ') : cmd;
 }
 
 // ── 共享常量与校验器（code-review item 6562160caeaa）────────────────

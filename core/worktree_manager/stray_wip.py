@@ -288,6 +288,30 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
     return paths
 
 
+def _numstat_rename_dst(display: str) -> str:
+    """``git diff --numstat`` rename 显示形路径 → 目的端待还原路径串。
+
+    numstat 对 rename/copy 条目的路径列不输出真实路径，而是对齐显示形
+    （diff.c pprint_rename）：可缩写（任一侧无 quotePath 可引号字符）时为
+    brace 形 ``prefix{old_mid => new_mid}suffix``（prefix/suffix 可为空，如
+    ``dir/{old => new}/file``、``{old.bin => new.bin}``）；不可缩写时两侧
+    各自全引号 ``"old" => "new"``。目的端取最后一个 `` => `` 之后的残段：
+    命中外层 brace 形则以 prefix/suffix 拼回真实路径（目的端中段同样取
+    最后一个分隔符之后的残段）；全引号形残段保留自身引号、交调用方
+    ``_unquote_git_path`` 还原。调用方须已判 `` => `` 在场（非显示形不进
+    本函数，原样返回由 unquote 幂等兜底）。
+
+    （code-review item e170743ae020：显示形若被当真实路径读盘，os.stat
+    恒 OSError、恒定 unreadable 占位使 rename 后二进制内容演化不改指纹、
+    宽限从旧 first_seen 续算。）
+    """
+    head, brace, rest = display.partition("{")
+    mid, close, tail = rest.rpartition("}")
+    if brace and close and " => " in mid:
+        return head + mid.rpartition(" => ")[2] + tail
+    return display.rpartition(" => ")[2]
+
+
 # evidence「文件清单(N):」段条目展示上限（code-review item 25c02e6d1261）：
 # 超限仅展示前 50 条、尾部附「等 N 项」截断注记——未 ignore 的大型产物目录
 # （数千 entry）若全量 join 会生成数十万字符 evidence，AdminStore 记录与告警
@@ -796,10 +820,15 @@ class MainTreeStrayWipSweeper:
         指纹变化从而重置计时」的意图对二进制散件失效。本助手以
         ``git diff --numstat <treeish>`` 识别二进制改动（added/deleted 两列
         均为 ``-``），改读工作区内容 sha256 参与 ``_fingerprint``——内容
-        演化改变指纹、宽限重起。读盘口径对齐 ``_untracked_fingerprint``：
-        先 stat 判普通文件（防管道/设备文件挂起哈希循环），OSError 按
-        unreadable 占位（该文件下轮指纹自然变化、计时重起，不虚构内容
-        哈希）。
+        演化改变指纹、宽限重起。numstat 路径列对 rename/copy 条目输出
+        显示形（``old.bin => new.bin`` 或 brace 形 ``dir/{old => new}/file``）
+        而非真实路径，须先经 ``_numstat_rename_dst`` 解析出目的端再读盘
+        （code-review item e170743ae020：显示形直读则 os.stat 恒 OSError、
+        恒定占位令 rename 后内容演化不改指纹、宽限从旧 first_seen 续算）。
+        读盘口径对齐 ``_untracked_fingerprint``：先 stat 判普通文件（防
+        管道/设备文件挂起哈希循环），OSError 按 unreadable 占位（真实
+        路径解析后占位只剩真实不可读的盘上态，该文件下轮指纹自然变化、
+        计时重起，不虚构内容哈希）。
 
         numstat 查询失败或无二进制改动返回空串——``_fingerprint`` 对空串
         不追加哈希材料，指纹与既有值一致（既有注册表零扰动；查询失败退化
@@ -814,9 +843,16 @@ class MainTreeStrayWipSweeper:
         for line in numstat.splitlines():
             cols = line.split("\t")
             if len(cols) >= 3 and cols[0] == "-" and cols[1] == "-":
+                # rename/copy 条目路径列是显示形（``src => dst`` 或
+                # ``dir/{old => new}/file``）而非真实路径，先解析出目的端
+                # （否则 os.stat 恒失败、恒定 unreadable 占位使 rename 后
+                # 二进制内容演化不改指纹，item e170743ae020），再走
                 # quotePath 引号形还原（unquote_git_path 对无引号行幂等，
                 # 与 porcelain 解析同口径），供下方按真实路径读盘。
-                rels.append(_unquote_git_path(cols[2]))
+                path = cols[2]
+                if " => " in path:
+                    path = _numstat_rename_dst(path)
+                rels.append(_unquote_git_path(path))
         if not rels:
             return ""
         parts: list = []

@@ -19,9 +19,12 @@ const buildFormValues = (cfg: ConfigData) => {
     ? (cfg.verify?.planner_max_concurrent ?? 1)
     : 1;
   return {
-    max_concurrent: cfg.agents.max_concurrent ?? 2,
-    max_turns: cfg.agents.max_turns ?? 400,
-    run_timeout_seconds: cfg.agents.run_timeout_seconds ?? 9000,
+    // agents?. 防护（code-review item 60ae9a174a6c）：与上方 verify?. 及
+    // MiscSettingsPanel 的 archive?. 同族口径——旧版本配置或接口降级响应
+    // 可能缺 agents 段，直接访问会让面板首帧渲染抛 TypeError 白屏。
+    max_concurrent: cfg.agents?.max_concurrent ?? 2,
+    max_turns: cfg.agents?.max_turns ?? 400,
+    run_timeout_seconds: cfg.agents?.run_timeout_seconds ?? 9000,
     planner_throttle: throttleEnabled,
     planner_max_concurrent: throttleValue,
   };
