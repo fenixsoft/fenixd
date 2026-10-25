@@ -283,7 +283,15 @@ def collect_spec_candidates(project_root, spec_name: str) -> List[InteractiveCan
     for p in paths:
         try:
             text = p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            # 读取失败留痕（code-review 69334827cdbf）：单篇文档损坏/编码异常
+            # 时候选集静默缩水，可能使本应 uncovered 的元素消失、契约对该元素
+            # 失效；与 is_legacy_scenario_set 的形态漂移留痕口径对齐。
+            _logger.debug(
+                "collect_spec_candidates: SPEC 文档 %s 读取失败（%s），跳过该文档",
+                p,
+                exc,
+            )
             continue
         try:
             rel = str(p.relative_to(project_root))

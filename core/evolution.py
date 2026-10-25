@@ -1731,13 +1731,6 @@ def accept_item(
     path = items_path(project_root)
     marker_item: Dict[str, Any] = {}
 
-    def _persist(rec: dict) -> None:
-        # 锁内单条写回收口到 _write_items_unlocked；MUST NOT 再走
-        # upsert_item/read_items——锁内二次 flock 自阻塞（见 helper 说明）。
-        current = _read_items_unlocked(path)
-        current[rec["id"]] = rec
-        _write_items_unlocked(path, current)
-
     def _do() -> dict:
         # [fenix-ignore:17b84b130a08] 整体持锁（含 copytree 与 git 子进程）是
         # compare-and-set 的既定取舍（见下注释）：拆锁会让并发接受者看到中间态；
@@ -1748,6 +1741,16 @@ def accept_item(
         # dashboard 人工同意并发时，后到者在锁内重读必见先到者写回的最终状态，
         # 走幂等分支返回现状，不再各自立项出两份 spec 目录与两次 STATE 注册。
         items = _read_items_unlocked(path)
+
+        def _persist(rec: dict) -> None:
+            # 锁内单条写回收口到 _write_items_unlocked；MUST NOT 再走
+            # upsert_item/read_items——锁内二次 flock 自阻塞（见 helper 说明）。
+            # 直接复用 _do 开头读取的 items dict——持锁期间合作写者均被 flock
+            # 排除，锁内重读必然返回同一内容，纯属重复 IO（与 reject_item/
+            # delete_item 同口径，code-review item 05ecd61b5e37）。
+            items[rec["id"]] = rec
+            _write_items_unlocked(path, items)
+
         rec = items.get(item_id_)
         if rec is None:
             return {"ok": False, "status": None, "spec_name": None, "error": f"条目不存在: {item_id_}"}

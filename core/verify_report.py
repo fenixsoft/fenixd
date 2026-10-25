@@ -891,8 +891,9 @@ def render_verification_report(
 ) -> str:
     """把结构化数据渲染为人读报告 Markdown。
 
-    纯函数：不做 IO、不写文件，便于测试与下游复用。project_root 用于读取验证链
-    token 侧车（add-cost-observability 2.2），缺失时跳过「本链增量 token」行。
+    除可选的 token 侧车读取外无其他 IO、不写文件，便于测试与下游复用。
+    project_root 用于读取验证链 token 侧车（add-cost-observability 2.2），
+    缺失时跳过「本链增量 token」行。
 
     add-planready-artifact-gate D4：degrade_annotation 为可选降级标注 dict
     （reason/run_id/duration_seconds/cost_usd/degraded_at，源自 degrade_context.json），

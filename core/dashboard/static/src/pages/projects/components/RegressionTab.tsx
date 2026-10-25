@@ -296,7 +296,6 @@ interface CaseRow {
   // 其余行恒为 number
   time: number | null;
   kind: string;
-  message?: string;
 }
 
 /** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */
@@ -310,7 +309,6 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
       line: f.line,
       time: f.time,
       kind: f.kind,
-      message: f.message,
     });
   }
   // timeout：快照本身无独立用例表，以「整体超时」一行呈现（结果表 MUST 含
@@ -328,7 +326,6 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
       // 渲染成误导性的 "0s"
       time: snapshot.duration_seconds ?? null,
       kind: 'timeout',
-      message: snapshot.reason,
     });
   }
   // 长耗时独立于 failures（一个慢但通过的用例也在其中，design D6）

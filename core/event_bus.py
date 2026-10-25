@@ -93,7 +93,29 @@ class EventBus:
         # 瞬时故障通常已消。运行期同源读取的容错口径见 _periodic_scan_loop
         # 与 _run_full_scan_body（彼时旧基线在手，降级不丢基线）——启动期无
         # 旧基线可依，口径不同属有意区分。
-        self._update_known_state()
+        # 冷启动空段短窗重试（code-review item 9d5342f91f03）：_update_known_state
+        # 的空读守卫机制是「保留既有快照」，但冷启动时 _known_specs 本就是空
+        # dict、无快照可保——STATE.md 恰在截断/清空窗口内完成基线解析时
+        # （解析成功返回空段、不抛错，上方 fail-fast 只拦异常），基线以空收场
+        # 且无自愈：initial scan 刻意不做二次 baseline，周期 full_scan 的
+        # _snapshot_baseline 判空重建最快也要等一个 poll_interval（缺省 30
+        # 分钟），watcher 每 2 秒轮询必然先感知文件恢复，把全部存量 SPEC 判为
+        # 「新出现」并重放 hook 事件（2026-09-07 事故形态）。截断窗口通常极短，
+        # 故对「解析成功但读出空段」做数百毫秒短窗重试（异常仍按上方 fail-fast
+        # 口径向上传播，不在本重试覆盖范围内）；重试耗尽仍为空则按空基线继续
+        # （真实空项目/超长截断窗）并留一行 warning 留痕。
+        for _baseline_attempt in range(3):
+            if _baseline_attempt:
+                time.sleep(0.2)
+            self._update_known_state(warn_on_empty=_baseline_attempt == 0)
+            if self._known_specs:
+                break
+        else:
+            self.logger.warning(
+                "event_bus",
+                "启动基线读出空段（数百毫秒短窗重试后仍为空，可能处于截断窗口"
+                "或项目确为空）：按空基线继续，存量 SPEC 将由后续扫描重新登记",
+            )
 
         # Start the inotify/polling watcher
         # 线程存活复用守卫（code-review item de45aae4e422）：对齐姊妹类
@@ -1014,8 +1036,13 @@ class EventBus:
             )
             return ""
 
-    def _update_known_state(self):
-        """Update internal snapshot of known SPEC states（持 _state_lock 串行化）。"""
+    def _update_known_state(self, warn_on_empty: bool = True):
+        """Update internal snapshot of known SPEC states（持 _state_lock 串行化）。
+
+        ``warn_on_empty=False`` 供 start() 冷启动空段短窗重试的后续尝试静默
+        复用（code-review item 9d5342f91f03）：空读守卫的 warning 每次空读
+        各刷一条，重试循环内由 start() 统一收口为至多一行，避免启动期噪音。
+        """
         # 读快照必须在临界区内取得（0d392c7aaec3）：「锁外 read_all → 锁内整体
         # 重写」存在窗口，窗口内另一线程经 _diff_specs 刚写入的快照会被本线程
         # 用旧快照整体覆盖（更新丢失），违背文件头 :46-53 声明的读-改-写原子
@@ -1029,13 +1056,17 @@ class EventBus:
             # 截断窗口内重启则 start() 建立空基线（解析成功不抛错），文件恢复
             # 后 watcher 的 checksum 变化会把全部存量 SPEC 判为「新出现」并
             # 重放 hook 事件（_snapshot_baseline 判空重建恰好使该形态持续存在
-            # 而非自愈）。保留既有快照并跳过重写，待下一轮读数确认。
+            # 而非自愈）。保留既有快照并跳过重写，待下一轮读数确认。冷启动
+            # 一腿（本守卫无既有快照可保）由 start() 的短窗重试收窄
+            # （code-review item 9d5342f91f03）：重试耗尽仍空时按空基线继续，
+            # 属已知残余窗口。
             if not specs:
-                self.logger.warning(
-                    "event_bus",
-                    "STATE.md 读出空段（可能被外部截断/清空）：跳过快照重写，"
-                    "保留既有 _known_specs 待下一轮确认",
-                )
+                if warn_on_empty:
+                    self.logger.warning(
+                        "event_bus",
+                        "STATE.md 读出空段（可能被外部截断/清空）：跳过快照重写，"
+                        "保留既有 _known_specs 待下一轮确认",
+                    )
                 return
             # status None 归一（code-review item a1210ff24c15）：.get 默认值只兜
             # 键缺失，手改 STATE.md 写出显式 null（YAML 空值）时返回 None 原样

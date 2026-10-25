@@ -1997,8 +1997,9 @@ class AdminMonitor:
             return None
         return sum(samples) / len(samples)
 
-    def _code_review_night_window_defer_note(self) -> Optional[str]:
-        """周期审查跨窗顺延判定：顺延返回日志文案，不顺延返回 None。
+    def _code_review_night_window_defer(self) -> "tuple[str, float] | None":
+        """周期审查跨窗顺延判定单源：顺延返回 (日志文案, 下一可派发时刻
+        epoch) 二元组，不顺延返回 None。
 
         判定（design D2）：派发时刻加近几轮归档 code-review run 实测时长
         均值（``_code_review_archive_duration_mean``；无有效样本回退仅判
@@ -2014,7 +2015,10 @@ class AdminMonitor:
         配置读取/解析/取样异常一律按不顺延处理——观测失败 MUST NOT 阻断
         派发主路径。调用方职责（契约）：命中时 MUST NOT 写同日防重状态
         （否则顺延当日永不跑）、MUST 复位单飞标志（对齐空 manifest 分支
-        口径）。
+        口径）。定时审查路径只需文案，经薄封装
+        _code_review_night_window_defer_note 消费；429 重派路径
+        （_consume_ratelimit_redispatch）另需下一可派发时刻以重排 Timer，
+        直接消费本二元组（code-review item 19a93cd1e240）。
         """
         try:
             from .code_fix import (
@@ -2064,10 +2068,21 @@ class AdminMonitor:
                 "code-review: 预计审查区间与夜间静默窗相交，本轮顺延不派发"
                 f"（预计区间 {span}，{sample_note}；窗区间 "
                 f"{', '.join(w[2] for w in crossing)}；下一可派发时刻="
-                f"{_epoch_iso(next_ts)}），同日防重未写、窗末后巡检自然触发"
+                f"{_epoch_iso(next_ts)}），同日防重未写、窗末后巡检自然触发",
+                next_ts,
             )
         except Exception:  # noqa: BLE001 — 判定失败按不顺延处理（fail-open）
             return None
+
+    def _code_review_night_window_defer_note(self) -> Optional[str]:
+        """周期审查跨窗顺延判定薄封装：顺延返回日志文案，不顺延返回 None。
+
+        定时审查路径（_run_code_review_checkpoint）只消费文案；429 重派
+        路径（_consume_ratelimit_redispatch）需连同下一可派发时刻一并取用
+        以重排 Timer，直接调 _code_review_night_window_defer。
+        """
+        defer = self._code_review_night_window_defer()
+        return defer[0] if defer is not None else None
 
     def _pending_writeoff_note(self) -> str:
         """pending-writeoff 锚在侧 → 完成日志追加「部分覆盖待核销」标注。
@@ -2189,6 +2204,15 @@ class AdminMonitor:
         置位/复位不经过本监视器自有 _worker，自有标志检测不到）。放弃不退
         重派配额（防风暴优先，与 _schedule_ratelimit_redispatch 登记处口径
         一致）。
+
+        夜间静默窗顺延（code-review item 19a93cd1e240）：派发前经
+        _code_review_night_window_defer 做与定时审查路径同款跨窗顺延判定
+        （冷却到期落在静默窗内/窗前时直接派发，run 必遭断窗击杀，而重派
+        配额登记即占额、放弃不退额，唯一一次重派机会被白白消耗）。命中即
+        按「下一可派发时刻」把本 Timer 顺延重排到窗末之后——同一重派意图
+        顺延，沿用原 intent 登记时已占的配额、不重复占额（登记即占额口径
+        不变）；顺延到期后若因车道忙等既有守卫放弃，仍按「放弃不退额」
+        既有口径收场。
         """
         # ── 分片续跑：重派前把 manifest 剃成剩余文件（evo-add-code-review-
         # ratelimit-resume 3.2）── 事故基线 code-review-1790574672：270 文件级
@@ -2227,6 +2251,49 @@ class AdminMonitor:
                 f"完整（{len(manifest)} 文件全部落账），无需重派（核销解锁由"
                 f" maintenance_runs 收尾分支按覆盖完整性判定）",
             )
+            return
+
+        # 夜间静默窗顺延（code-review item 19a93cd1e240）：与定时审查路径
+        # （_run_code_review_checkpoint 派发前判定）同口径——冷却到期落在静
+        # 默窗内/窗前（预计在飞区间与窗相交）时直接派发，run 必遭断窗击杀
+        # （2026-10-10 03:00 断窗击杀 118 分钟 run 实证），且重派配额登记即
+        # 占额、放弃不退额，唯一一次重派机会被白白消耗。命中 → 按判定返回
+        # 的下一可派发时刻把本 Timer 顺延重排到窗后（同一重派意图顺延，沿
+        # 用原 intent 登记时已占的配额、不重复占额）。此刻句柄仍指向已触发
+        # 的本 Timer（其他路径改写前都先判 is not None），锁内以新 Timer 顶
+        # 替，后续新意图的「已有待发重派 Timer」守卫照常生效。
+        defer = self._code_review_night_window_defer()
+        if defer is not None:
+            defer_note, next_ts = defer
+            delay = max(0.0, next_ts - time.time())
+            timer = threading.Timer(
+                delay,
+                self._consume_ratelimit_redispatch,
+                args=(manifest, review_kind, window_start, scope, original_run_id),
+            )
+            timer.daemon = True
+            with self._code_review_lock:
+                self._code_review_redispatch_timer = timer
+            try:
+                self.logger.info(
+                    "admin_monitor",
+                    f"{defer_note}；429 重派 Timer 顺延重排到窗后"
+                    f"（原 run {original_run_id}，{int(delay)}s 后）",
+                )
+                timer.start()
+            except Exception as e:
+                # 排程失败对齐 _schedule_ratelimit_redispatch 的回滚口径摘句
+                # 柄；配额不退——配额早在原 intent 登记时占用，消费侧放弃不
+                # 退额（防风暴优先），本次失败按既有放弃口径流失该次机会。
+                with self._code_review_lock:
+                    if self._code_review_redispatch_timer is timer:
+                        self._code_review_redispatch_timer = None
+                timer.cancel()
+                self.logger.error(
+                    "admin_monitor",
+                    f"code-review 429 重派顺延重排失败: {e}（原 run "
+                    f"{original_run_id}，按既有放弃不退额口径收场）",
+                )
             return
 
         # Timer 已触发：先摘句柄（允许后续新意图再排程——上限计数仍守卫）
@@ -7202,7 +7269,9 @@ class AdminMonitor:
           跳过本次重派（复位语义保留，evo-inprocess-verify-activity-signal
           1.3——本出口不经 spec_is_undriven，须单独堵口）；
         - implementing：transition(ready) 清 error 重实现（VALID_TRANSITIONS
-          允许 IMPLEMENTING→READY）。
+          允许 IMPLEMENTING→READY）；复位前与 testing 分支同款在飞互斥
+          （_has_active_admin_run_for_spec，命中跳过——code-review
+          043c5562506b）。
 
         自身异常只记日志（右关联：处置记录永远先落盘，复位失败不得回滚）。
         """
@@ -7293,6 +7362,20 @@ class AdminMonitor:
                 )
         elif status == "implementing":
             try:
+                # 在飞互斥（code-review 043c5562506b）：与 testing 分支及
+                # _reset_env_blocked_after_disposition 同款守卫——同 spec 任意
+                # signal_type 的 admin 处置在飞/待派发（正在写 STATE）时，本
+                # 复位（IMPLEMENTING→READY 翻转 + 清 error）与之交叠踩踏风险
+                # 同型，纳入该守卫（无豁免依据：本分支同样先于处置收尾执行
+                # 状态写）。命中 → 记 INFO 跳过本次复位（不写状态，SPEC 保持
+                # 原样），在飞 run 收尾后下一巡检周期自然重评。
+                if self._has_active_admin_run_for_spec(spec):
+                    self.logger.info(
+                        "admin_monitor",
+                        f"孤儿 implementing 复位跳过 '{spec}': admin 处置在飞，"
+                        f"ready 重实现复位互斥（fix-recovery-path-blockers D2）",
+                    )
+                    return
                 # fix-observability-gaps 2.2：孤儿 implementing 复位（恢复来源）
                 sm.transition(
                     spec, "ready",

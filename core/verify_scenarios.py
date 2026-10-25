@@ -591,13 +591,24 @@ def declares_new_delivery(fix_section: Optional[str], notes: Optional[list] = No
 
 # ── 修复轮判定（design D1）─────────────────────────────────────────
 
+# 缺省哨兵（ce38ede06575）：区分「调用方未提供已读修复段」与「已读且段不
+# 存在（None）」——后者不得回源重读盘，否则同一轮 diff 对修复段两次观测。
+_UNSET = object()
 
-def is_repair_round(project_root, spec_name: str, state: Optional[dict]) -> bool:
+
+def is_repair_round(
+    project_root, spec_name: str, state: Optional[dict], fix_section=_UNSET
+) -> bool:
     """判定是否为修复轮。
 
     D1 信号（与原地打回机制同源，不引入新状态）：
       - STATE.md ``_verify_fail_rounds > 0``，或
       - tasks.md 含「## 验证修复」段。
+
+    fix_section：调用方已读的修复段文本（``read_verify_fix_section`` 返回
+    值，None＝段不存在）。提供时本函数不再重复读盘、直接据其存在性判定，
+    与同轮 ``extended`` 闸门共用同一文本快照；缺省哨兵时维持原读盘行为，
+    既有三参调用点不受影响。
     """
     entry = state or {}
     try:
@@ -606,7 +617,9 @@ def is_repair_round(project_root, spec_name: str, state: Optional[dict]) -> bool
         fail_rounds = 0
     if fail_rounds > 0:
         return True
-    return read_verify_fix_section(project_root, spec_name) is not None
+    if fix_section is _UNSET:
+        fix_section = read_verify_fix_section(project_root, spec_name)
+    return fix_section is not None
 
 
 # ── 确定性 diff 校验器（design D3：planner 不可绕过）─────────────────
@@ -747,7 +760,9 @@ def _diff_planner_output_impl(
     persisted = load_scenario_set(project_root, spec_name)
     fix_section = read_verify_fix_section(project_root, spec_name)
     result.extended = declares_new_delivery(fix_section, notes=result.change_lines)
-    repair = is_repair_round(project_root, spec_name, state)
+    # 复用上一行已读的修复段快照（ce38ede06575）：单轮 diff 对修复段单次
+    # 观测，extended 与 repair 两闸门不同文本判定、且多付一次 IO。
+    repair = is_repair_round(project_root, spec_name, state, fix_section)
 
     # ── 首轮 / 无持久化集：直接采用 planner 产出，全量写回 ──
     if persisted is None:

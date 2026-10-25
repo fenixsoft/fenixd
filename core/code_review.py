@@ -46,6 +46,29 @@ from core.timelib import now_local, parse_ts
 
 _logger = logging.getLogger("fenixd.code_review")
 
+# ── 读取路径告警的进程级一次性去重（code-review item caeafd8e81b1）────
+# 错名分片 / 缺 file 字段坏行是持久状态，read_progress 被前端进度轮询与
+# admin_monitor 巡检反复调用（_read_progress_with_manifest 内 shard_paths
+# 还会连读两遍），不节流则同一条 WARNING 每轮重复落盘、淹没真实告警。
+# 复用 evolution._ORPHAN_TODO_MARKERS_WARNED 的模块级 set 范式：进程生命
+# 周期内同键至多放行一次（点名效果不变）。键空间 = (告警类别, run_id,
+# 文件名/行号)，由实际出问题的分片/坏行数决定、人工清理前有限；仍设上限
+# 整体清空兜底，防海量坏行等异常输入把集合撑爆（清空后至多重放一轮
+# WARNING，可接受）。
+_WARN_ONCE_KEYS: set = set()
+_WARN_ONCE_KEYS_MAX = 512
+
+
+def _warn_once(key: tuple) -> bool:
+    """进程生命周期内同键至多放行一次 WARNING；返回 True 表示首次。"""
+    if key in _WARN_ONCE_KEYS:
+        return False
+    if len(_WARN_ONCE_KEYS) >= _WARN_ONCE_KEYS_MAX:
+        _WARN_ONCE_KEYS.clear()
+    _WARN_ONCE_KEYS.add(key)
+    return True
+
+
 # ── 台账路径常量 ─────────────────────────────────────────────────────
 
 
@@ -113,6 +136,8 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
                 if p.is_file() and not legit_re.fullmatch(p.name)
             )
             for stray in strays:
+                if not _warn_once(("stray-shard", run_id, stray.name)):
+                    continue
                 _logger.warning(
                     "code_review: 疑似错名分片 %s（run %s 的分片名应为 "
                     "out-%s-b<N>.jsonl）——该文件不参与聚合消费，请核对"
@@ -168,10 +193,11 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
                 continue
             file_ = str(rec.get("file") or "")
             if not file_:
-                _logger.warning(
-                    "code_review: %s 第 %s 行为 JSON 对象但缺 file 字段，已跳过",
-                    src, lineno,
-                )
+                if _warn_once(("missing-file-field", str(src), lineno)):
+                    _logger.warning(
+                        "code_review: %s 第 %s 行为 JSON 对象但缺 file 字段，已跳过",
+                        src, lineno,
+                    )
                 continue
             if file_ in seen_files:
                 continue
@@ -2331,6 +2357,11 @@ def _problem_lines(it: dict, detail_prefix: str = "  ") -> List[str]:
     description 里的复现路径与建议（2026-09-20 用户反馈）。严重度与位置由
     调用方各自渲染，本函数只负责描述/建议/证据三段（各自可选——suggestion
     实测大量为空，缺失时整段不渲染）。
+
+    ``detail_prefix`` MUST 非空：三段文本同属 LLM 产出不受控输入，空缩进
+    会让以「#### Scenario:」「### Requirement:」「- [ ]」等行首形态开头的
+    行原样顶格，在宿主文档注入同形态结构行——全部渲染点统一走默认
+    ``"  "``（与 _tasks_md 同口径），缩进后不匹配任何行首结构正则。
     """
     lines: List[str] = []
     for label, key in (("问题描述", "description"), ("修复建议", "suggestion"), ("证据", "evidence")):
@@ -2374,7 +2405,7 @@ def _proposal_md(name: str, items: List[dict]) -> str:
         lines.append(f"- 类别：`{it.get('category')}`")
         lines.append(f"- 位置：`{it.get('file')}:{it.get('line')}`")
         lines.append("")
-        lines.extend(_problem_lines(it, ""))
+        lines.extend(_problem_lines(it))
     lines += [
         "## Capabilities",
         "",
@@ -2406,7 +2437,7 @@ def _spec_md(capability: str, items: List[dict]) -> str:
         lines.append("")
         lines.append(f"- 严重度：{it.get('severity')}")
         lines.append("")
-        lines.extend(_problem_lines(it, ""))
+        lines.extend(_problem_lines(it))
     lines += [
         "#### Scenario: 修复完成",
         "",
@@ -2441,7 +2472,7 @@ def _design_md(name: str, items: List[dict]) -> str:
     for it in items:
         lines.append(f"### `{it.get('file')}:{it.get('line')}` — {_one_line(it.get('title'))}")
         lines.append("")
-        lines.extend(_problem_lines(it, ""))
+        lines.extend(_problem_lines(it))
     return "\n".join(lines)
 
 

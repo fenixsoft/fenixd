@@ -172,7 +172,16 @@ export default function SpecTimeline({
             const isEscalation = item.record_kind === 'escalation';
             const sev = String(item.severity || '');
             // severity 着色复用运维记录页语义：critical 红 / major 橙 / 其余灰
-            const sevColor = sev === 'critical' ? 'red' : sev === 'major' ? 'orange' : 'default';
+            // 分支选择以 if/else 表达（code-review item 93d38a7f6847）：嵌套三元
+            // 违反前端「禁止嵌套三元」规则（先例：statusTag 7471b4865219）
+            let sevColor: string;
+            if (sev === 'critical') {
+              sevColor = 'red';
+            } else if (sev === 'major') {
+              sevColor = 'orange';
+            } else {
+              sevColor = 'default';
+            }
             // 状态 Tag：disposition 终态（resolved 等）绿「已解决」、pending 蓝「处置中」、
             // result 缺失中性「未知状态」（状态不明不宣示已解决）；
             // escalation handled 绿「已处理」、未处理橙

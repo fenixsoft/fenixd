@@ -853,6 +853,46 @@ class BackfillLedger:
             atomic_write_text(self.path, "\n".join(lines) + ("\n" if lines else ""))
 
 
+def _ledger_carryover_files(ledger: BackfillLedger) -> set[str]:
+    """台账条目持久化的提交失败遗留文件全集（跨进程重入召回用）。
+
+    条目 ``carryover`` 字段由提交失败批次经 ``_ledger_record_carryover``
+    写入；手工编辑产生的脏值（非列表/含非字符串项）按无效跳过，不以异常
+    掀翻车道。
+    """
+    out: set[str] = set()
+    for entry in ledger.entries.values():
+        carry = entry.get("carryover")
+        if isinstance(carry, list):
+            out.update(p for p in carry if isinstance(p, str))
+    return out
+
+
+def _ledger_record_carryover(
+    ledger: BackfillLedger, keys: list[str], files: list[str]
+) -> None:
+    """把提交失败批次的触达文件持久化到批次条目的 ``carryover`` 字段。
+
+    文件到批内条目的映射车道不可知（页路径约定不属车道知识），同批条目共享
+    同一遗留集，重入批次按批内条目并集召回并入提交 pathspec；已落库（不再
+    脏）的召回路径被并入处的 ``& dirty_now`` 滤除，陈旧字段无行为影响
+    （code-review 7a39a875fdfd）。
+    """
+    if not files:
+        return
+    for key in keys:
+        entry = ledger.entries.get(key)
+        if entry is None:
+            continue
+        prev = entry.get("carryover")
+        prev_set = (
+            {p for p in prev if isinstance(p, str)}
+            if isinstance(prev, list)
+            else set()
+        )
+        entry["carryover"] = sorted(prev_set | set(files))
+
+
 # ── 回填期排队（core.knowledge 派发漏斗调用，design D3） ─────────────────
 
 
@@ -1562,7 +1602,20 @@ def _prune_stale_domains(project_root: Path, domain_map: dict, log) -> list[str]
     # LLM 值不信任：只收合法单路径成分，畸形值（带路径分隔符/相对引用）不得
     # 影响白名单判定
     keep = {v for v in domain_map.values() if _valid_domain_component(v)}
-    for d in sorted(domains_dir.iterdir()):
+    try:
+        candidates = sorted(domains_dir.iterdir())
+    except OSError as e:
+        # domains 目录在盘但不可读（权限/EIO）：fail-open 跳过本轮剪枝并
+        # WARNING 留痕，不以未处理异常沿 run_backfill 掀翻车道（对齐
+        # build_chain_index / scale_stats 的目录列举防护纪律，
+        # code-review 4d048662de83）；遗留域留在盘上，待人工核查后重跑
+        log.warning(
+            "knowledge",
+            f"回填域剪枝：domains 目录 {domains_dir} 列举失败（fail-open 跳过"
+            f"剪枝），请人工检查后重跑回填：{e}",
+        )
+        return removed
+    for d in candidates:
         if d.is_dir() and d.name not in keep:
             if _domain_has_tracked_content(project_root, d):
                 removed_tracked.append(d.name)
@@ -1638,7 +1691,18 @@ def run_backfill(
             "本车道零动作",
         )
         return {"triggered": False, "reason": "knowledge-core-unavailable"}
-    validate = core.validate_knowledge
+    # 版本偏差降级（对齐 load_knowledge_core 的 fail-open 入口契约）：模块
+    # 可导入但未提供校验器（前置合并不完整/被裁剪）时零动作退出，不以裸
+    # AttributeError 掀翻车道（与 resolve_commit 的 getattr 缺省回退同口径，
+    # code-review 56eb4114add1）
+    validate = getattr(core, "validate_knowledge", None)
+    if validate is None:
+        log.warning(
+            "knowledge",
+            "回填车道跳过：core.knowledge 未提供 validate_knowledge（前置合并"
+            "不完整），本车道零动作",
+        )
+        return {"triggered": False, "reason": "knowledge-core-incomplete"}
     commit = resolve_commit(core)
     spawn = spawn or default_spawn(project_root)
 
@@ -1954,10 +2018,12 @@ def run_backfill(
                 }
             # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
             before_violations = {str(v) for v in (validate(project_root) or [])}
-            prompt = build_prehistoric_prompt(project_root, chain_index)
+            # 修正环复用同一基础提示词（同自举段/两批次段的 base_prompt 用法，
+            # 不二次构建，code-review af33cd1a66a5）
+            base_prompt = build_prehistoric_prompt(project_root, chain_index)
             run_id = f"kb-prehistoric-{int(time.time())}"
             try:
-                spawn(prompt, run_id)
+                spawn(base_prompt, run_id)
             except Exception as e:  # noqa: BLE001 - fail-open 记台账不中断
                 # 同自举段口径：早退路径差集回滚，防残留被后续 pathspec
                 # 提交连带落库（code-review 5fadf61e2d82）
@@ -1988,7 +2054,6 @@ def run_backfill(
                     log,
                 )
                 return {"triggered": True, "ok": False, "reason": "prehistoric-missing-pages"}
-            base_prompt = build_prehistoric_prompt(project_root, chain_index)
             try:
                 ok, violations = _validate_with_repair(
                     project_root, validate, spawn, base_prompt, run_id,
@@ -2077,8 +2142,12 @@ def run_backfill(
     # 已完成（code-review 3fd930cb6bbd）。
     uncommitted_keys: set[str] = set()
     # 提交失败批次已过校验产出的 relpath 遗留集：只含本车道产出（用户未提交
-    # 改动不在其中），并入后续批次的触达集提交落库，成功即清空。
+    # 改动不在其中），并入后续批次的触达集提交落库，成功即清空。重入时先从
+    # 台账条目持久化的 carryover 字段召回上轮遗留——局部集合跨不了进程，否则
+    # 重入批次按 dirty_baseline 差集把它们排除，重写内容永不落库而台账照标
+    # distilled（code-review 7a39a875fdfd）。
     carryover_files: set[str] = set()
+    carryover_files.update(_ledger_carryover_files(ledger))
     for i, batch in enumerate(batches, 1):
         # 写段取蒸馏锁：spawn→校验→提交/回滚作为整体与 DistillManager 串行，
         # 防两车道并发写 spec/knowledge/（code-review 2443e98dc1f0）
@@ -2157,11 +2226,20 @@ def run_backfill(
                         )
                 except Exception as e:  # noqa: BLE001
                     log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
-                    uncommitted_keys.update(CAPABILITY_PREFIX + cap for cap in batch)
+                    batch_keys = [CAPABILITY_PREFIX + cap for cap in batch]
+                    uncommitted_keys.update(batch_keys)
                     carryover_files.update(batch_touched)
+                    # 遗留文件持久化到台账条目：本进程内无后续成功提交时相关
+                    # 条目打回 pending，重入批次据此把仍在盘上的产出重新纳入
+                    # 提交 pathspec（code-review 7a39a875fdfd）
+                    _ledger_record_carryover(ledger, batch_keys, batch_touched)
                 else:
                     uncommitted_keys.clear()
                     carryover_files.clear()
+                    # 成功提交已扫入全部在盘遗留（含台账召回部分）：清除条目
+                    # 上的持久化字段，免留已落库路径的陈旧记录
+                    for entry in ledger.entries.values():
+                        entry.pop("carryover", None)
                 # 回填在飞期间新登记的归档（register_archive_pending 在派发
                 # 漏斗进程并发改盘台账）可能触碰本批能力：车道入口一次性构建
                 # 的 chain_index 不含其 delta，此处若照常标 distilled，台账按
@@ -2236,17 +2314,22 @@ def run_backfill(
         # 无 design.md 无决策可抽：直接标 distilled 留痕跳过（对齐既有口径），
         # 否则 adr 条目永久 pending——回填无法收敛且排队门不释放
         ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED)
-    no_design_saved = True
+    # no_design 留痕之后台账是否成功落盘过一次（留痕先入内存）：收尾兜底以
+    # 「未发生过任何一次成功 save」为准，而非仅看显式落盘失败——ADR 批循环
+    # 尾部的 save 位于 with 块之外，基线采集失败的 continue 会整批跳过它，
+    # 只看失败标志会在 adr_batches 非空且全批提前跳过时漏住 distilled 标记
+    # （code-review e5c65d4d8b7c）
+    no_design_saved = False
     if no_design:
         # 留痕必须落盘：全部归档无 design 时下方批次循环不执行，循环内 save
         # 覆盖不到，台账文件会停在 pending（排队门被永久顶住）
         try:
             ledger.save()
+            no_design_saved = True
         except OSError as e:
             # 台账落盘失败不掀翻车道（fail-open，对齐批次循环同款防护）：
             # distilled 标记已在内存而盘上停在 pending，无 ADR 批次循环 save
             # 兜底重写时由收尾段受保护重试（code-review 9af86b82d9b7）
-            no_design_saved = False
             log.warning(
                 "knowledge", f"回填 no_design 台账留痕落盘失败（fail-open）：{e}"
             )
@@ -2323,11 +2406,18 @@ def run_backfill(
                         )
                 except Exception as e:  # noqa: BLE001
                     log.warning("knowledge", f"回填 ADR 批次 {i}/{adr_total} 提交失败（fail-open）：{e}")
-                    uncommitted_keys.update(ADR_PREFIX + a for a in batch)
+                    adr_keys = [ADR_PREFIX + a for a in batch]
+                    uncommitted_keys.update(adr_keys)
                     carryover_files.update(batch_touched)
+                    # 遗留文件持久化到台账条目（同能力批次口径，
+                    # code-review 7a39a875fdfd）
+                    _ledger_record_carryover(ledger, adr_keys, batch_touched)
                 else:
                     uncommitted_keys.clear()
                     carryover_files.clear()
+                    # 同能力批次口径：成功提交后清除条目持久化的遗留字段
+                    for entry in ledger.entries.values():
+                        entry.pop("carryover", None)
                 for a in batch:
                     ledger.mark(ADR_PREFIX + a, STATUS_DISTILLED, batch=i)
                 adr_ok += 1
@@ -2367,6 +2457,7 @@ def run_backfill(
         # 重写全量台账可自愈
         try:
             ledger.save()
+            no_design_saved = True
         except OSError as e:
             log.warning(
                 "knowledge",
@@ -2389,14 +2480,17 @@ def run_backfill(
         # 且 todo 已留痕，收尾段落盘故障不让全部批次已跑完的车道沿调用链崩掉
         try:
             ledger.save()
+            no_design_saved = True
         except OSError as e:
             log.warning("knowledge", f"回填收尾台账落盘失败（fail-open）：{e}")
         uncommitted_keys.clear()
 
-    if not no_design_saved and not adr_batches:
-        # no_design 留痕兜底重试（code-review 9af86b82d9b7）：上方落盘失败且
-        # 无 ADR 批次循环 save 覆盖时，收尾段受保护重写全量台账补落 distilled
-        # 标记；仍失败仅再留痕，不让已跑完的车道以未处理异常告终
+    if no_design and not no_design_saved:
+        # no_design 留痕兜底重试（code-review 9af86b82d9b7）：留痕后未发生过
+        # 任何一次成功落盘（含 ADR 批全部因基线采集失败提前 continue、循环尾
+        # save 整批被跳过且收尾 save 未覆盖的情形）时，收尾段受保护重写全量
+        # 台账补落 distilled 标记；仍失败仅再留痕，不让已跑完的车道以未处理
+        # 异常告终（code-review e5c65d4d8b7c）
         try:
             ledger.save()
         except OSError as e:

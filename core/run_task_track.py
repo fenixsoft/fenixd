@@ -20,6 +20,7 @@ planner 实质会产出该形态（本仓 5 个在飞 spec 中 4 个含字母后
 """
 
 import fnmatch
+import glob
 import json
 import re
 from pathlib import Path
@@ -300,7 +301,12 @@ def _collect_impl_runs(project_root, spec_name, files=None) -> "list[tuple[float
         不作保证，排序由调用方按需进行。
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
-    pattern = f"impl-{spec_name}-*.jsonl"
+    # code-review item 134abf8eb822：spec 名无字符集约束（spec/changes 目录名
+    # 等旁路可产生含 glob 元字符的名字），直接内插会让 * ? [ ] 被当元字符解释、
+    # 真实产物匹配不到 → 判据静默降级。构造 pattern 前先 glob.escape（3.4+，
+    # 将 * ? [ 包裹为方括号字面量）：对下方 Path.glob 与 fnmatch.fnmatch 两个
+    # 消费方同语义，且对不含元字符的常规名恒等、零行为变化。
+    pattern = f"impl-{glob.escape(spec_name)}-*.jsonl"
     candidates: list = []
     try:
         # is_dir() 探测也纳入守卫：其只吞 ENOENT/ENOTDIR，EIO/EBUSY 会上抛，

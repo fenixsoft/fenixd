@@ -19,6 +19,12 @@ const POLL_INTERVAL_MS = 3000;
 // 超时仍未定位（daemon 崩溃/请求丢失）则停止轮询，等待层改报超时并恢复输入可用，
 // 避免弹窗打开期间无限空转（code-review item 1d0089ad568d）
 const LOCATE_TIMEOUT_MS = 60000;
+// 定位成功后的停滞兜底：run 落盘后、写终态前 daemon 崩溃/重启会让该 run 恒为
+// 非终态，ClaudeOutputPane 永不上报终态，「处置进行中」会在弹窗打开期间永久
+// 禁用输入与发起按钮。定位成功后持续该时长既无新事件也未到终态，视为处置可能
+// 已中断：解除进行中并提示可重新发起（量级须覆盖长工具执行期间的输出静默，
+// 取 5 分钟，远大于正常流式事件间隔，code-review item c808030f8929）
+const RUN_STALL_TIMEOUT_MS = 300000;
 // 事件数达到 8 才揭示输出区：LLM prefill 阶段无可见输出，过早切换会先呈现
 // 一段空白面板，保持等待动画直到确有内容可看。重连已有输出的 run 时尾部
 // 事件立即计入 eventCount，几乎立即揭示。
@@ -44,6 +50,14 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   // 定位阶段超时：超过 LOCATE_TIMEOUT_MS 仍未发现本次处置的 run，停止轮询、
   // 等待层改报超时并恢复输入可用
   const [locateTimedOut, setLocateTimedOut] = useState(false);
+  // 定位成功后的停滞：超过 RUN_STALL_TIMEOUT_MS 无新事件且未到终态（daemon 在
+  // run 落盘后、写终态前崩溃留下的孤儿 run，code-review item c808030f8929），
+  // 解除「进行中」并提示可重新发起
+  const [runStalled, setRunStalled] = useState(false);
+  // runStalled 的同步镜像：handleRunStatus 据此识别停滞解除后迟到的终态上报——
+  // 此时输入已恢复可用、用户可能正在输入下一条提示词，终态迁移不得再无声清空
+  // 输入框（与 runDoneRef 同型，b165d0c1b6da 的同类保护）
+  const runStalledRef = useRef(false);
   // 「处置进行中」（inProgress = invoked && !runDone && !locateTimedOut）的同步
   // 镜像：回车延后触发的 handleSend 回调持有按键那帧的闭包，读 state 拿到的是
   // 旧值——终态事件恰在按键与回调之间被处理时，守卫会按旧值误判「处置进行中」
@@ -79,8 +93,8 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     extraBodyStyle: { display: 'flex', flexDirection: 'column', paddingTop: 12 },
   });
 
-  // 定位超时同样解除「进行中」：输入与按钮恢复可用，允许直接重新发起
-  const inProgress = invoked && !runDone && !locateTimedOut;
+  // 定位超时/输出停滞同样解除「进行中」：输入与按钮恢复可用，允许直接重新发起
+  const inProgress = invoked && !runDone && !locateTimedOut && !runStalled;
   // 输出区是否已揭示：事件数达标即揭示（重连已有输出时尾部事件立即计入，几乎立即
   // 成立）；run 已到终态也强制揭示——秒败等极短 run 事件数可能永远达不到阈值，
   // 否则等待层 Spin 会永久悬挂，遮挡已产出的失败输出（code-review item 9c95d9076c6b）。
@@ -102,11 +116,13 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     sendingRef.current = false;
     setInvoked(false);
     setLocateTimedOut(false);
+    setRunStalled(false);
     setRunId(null);
     setEventCount(0);
     setQueued(false);
     setRunDone(false);
     runDoneRef.current = false;
+    runStalledRef.current = false;
     inProgressRef.current = false;
     invokeTimeRef.current = 0;
     acceptAnyRunRef.current = false;
@@ -181,6 +197,27 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     };
   }, [open, invoked, runId, locateTimedOut, project, spec]);
 
+  // 定位成功后的停滞兜底（code-review item c808030f8929）：孤儿 pending run 恒为
+  // 非终态时 ClaudeOutputPane 永不上报 TERMINAL_RUN_STATUSES，「进行中」会把输入
+  // 与按钮锁死到弹窗关闭。eventCount 在依赖里，任一新事件即重置计时——持续
+  // RUN_STALL_TIMEOUT_MS 既无新事件也未上报终态才触发；runDone/runStalled 置位、
+  // 重新发起（runId 置空）或弹窗关闭时由清理函数移除计时器
+  useEffect(() => {
+    if (!open || !runId || runDone || runStalled) return;
+    let stopped = false;
+    const timer = setTimeout(() => {
+      if (stopped) return;
+      inProgressRef.current = false;
+      runStalledRef.current = true;
+      setRunStalled(true);
+      message.warning('处置长时间无输出且未到终态，可能已中断，可重新发起');
+    }, RUN_STALL_TIMEOUT_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [open, runId, runDone, runStalled, eventCount, message]);
+
   const handleRunStatus = (status: string) => {
     // interrupted/cancelled：终态但非崩溃（daemon 停机/人工取消），同样解除
     // 「处置进行中」——否则被取消的 admin run 会把按钮永久锁死。
@@ -196,8 +233,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       // 同一终态会被 ClaudeOutputPane 反复上报（初载 loadTail、SSE 重连后的 hello
       // 重同步、逐条终态事件），run 结束后弹窗保持打开、输入框已恢复可用，重连
       // 重同步再次上报终态时不得清掉用户正在输入的下一条提示词
-      if (!runDoneRef.current) {
-        // 处置完成、按钮恢复可用时同步清空输入框，便于直接输入下一个提示词
+      if (!runDoneRef.current && !runStalledRef.current) {
+        // 处置完成、按钮恢复可用时同步清空输入框，便于直接输入下一个提示词；
+        // 停滞兜底已解除进行中时例外——用户可能已在输入下一条提示词，迟到的
+        // 终态上报不得无声清空（runStalledRef，code-review item c808030f8929）
         setPrompt('');
       }
       runDoneRef.current = true;
@@ -240,6 +279,8 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       setRunDone(false);
       runDoneRef.current = false;
       setLocateTimedOut(false);
+      setRunStalled(false);
+      runStalledRef.current = false;
       setInvoked(true);
       inProgressRef.current = true;
     } catch (err) {
@@ -260,6 +301,8 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         setRunDone(false);
         runDoneRef.current = false;
         setLocateTimedOut(false);
+        setRunStalled(false);
+        runStalledRef.current = false;
         setInvoked(true);
         inProgressRef.current = true;
       } else {
@@ -340,6 +383,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
             {locateTimedOut ? (
               <Text type="danger">
                 {`定位处置输出超时（超过 ${LOCATE_TIMEOUT_MS / 1000} 秒）：daemon 可能未受理本次请求，请重新发起或稍后重试`}
+              </Text>
+            ) : runStalled ? (
+              <Text type="danger">
+                {`处置超过 ${RUN_STALL_TIMEOUT_MS / 60000} 分钟无输出且未到终态，可能已中断：请重新发起或关闭弹窗稍后查看`}
               </Text>
             ) : (
               <>

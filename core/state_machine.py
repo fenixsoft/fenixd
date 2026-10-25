@@ -2006,11 +2006,13 @@ class StateMachine:
             "state_machine",
             f"Updated SPEC '{spec_name}'",
             {
+                # 排除口径与 update_spec 零写入判定同源（code-review
+                # b9bc1ed7b8db）：留痕键消费单源 _APPLIED_TRACEBACK_KEYS，
+                # 勿在此重抄键名——新增留痕键漏登会泄漏进本审计日志的
+                # updates 字段。
                 "updates": {
                     k: v for k, v in applied.items()
-                    if k not in ("updated", "_stripped", "_dropped_keys",
-                                 "_rejected_verify_parallel_override",
-                                 "_rejected_status")
+                    if k == "updated" or k not in _APPLIED_TRACEBACK_KEYS
                 }
             },
         )
@@ -2509,6 +2511,19 @@ class StateMachine:
             new_entry.setdefault("reviewer_run", None)
             new_entry.setdefault("_review_attempts", 0)
 
+            # serialize 白名单外普通命名键的显性化（code-review bdaa3734f628，
+            # 与 _apply_updates_entry 的 _dropped_keys 收集同口径，成员判定
+            # 同源 StateParser.SERIALIZED_FIELD_SET）：调用方传入 entry 中既
+            # 不在固定字段表也无下划线前缀的键，本次内存写可见，但 STATE.md
+            # 全量回写时会被 serialize 静默丢弃——收集带出锁外 WARNING（锁内
+            # 不落日志），不改变丢弃行为。
+            dropped = sorted(
+                k for k in new_entry
+                if not k.startswith("_") and k not in StateParser.SERIALIZED_FIELD_SET
+            )
+            if dropped:
+                added["dropped_keys"] = dropped
+
             specs[spec_name] = new_entry
             added["status"] = new_entry["status"]
             return True, True
@@ -2524,6 +2539,16 @@ class StateMachine:
                 f"SPEC '{spec_name}' 的新增 entry 含非法 status="
                 f"{added['rejected_status']!r}（合法值域 SpecStatus.ALL）"
                 f"——已拒写该字段并回落 drafted 默认，其余字段照常写入",
+            )
+        if "dropped_keys" in added:
+            # code-review bdaa3734f628：白名单外普通命名键留痕（收集点在锁内
+            # _mutate，此处锁外输出）。
+            self.logger.warning(
+                "state_machine",
+                f"SPEC '{spec_name}' 的新增 entry 含 serialize 固定字段表外且无"
+                f"下划线前缀的键 {added['dropped_keys']}——本次内存写可见，但 "
+                f"STATE.md 全量回写时会被静默丢弃（读写口径不对称，仅显性化"
+                f"不改变丢弃行为）",
             )
         self.logger.info(
             "state_machine", f"Added SPEC '{spec_name}'", {"status": added["status"]}
@@ -3052,7 +3077,8 @@ class StateMachine:
 
     # ── Recovery ───────────────────────────────────────────────────
 
-    def _recovery_update_spec(self, spec_name: str, updates: dict) -> bool:
+    def _recovery_update_spec(self, spec_name: str, updates: dict, *,
+                              snapshot_status: str) -> bool:
         """recover_interrupted 恢复写专用入口（code-review item d373f46756dd）。
 
         recover_interrupted 以 get_by_status 锁外快照选取目标，快照与本写
@@ -3063,6 +3089,14 @@ class StateMachine:
         ``_mutate_locked`` 的锁内以最新条目复查 frozen 标记：冻结即整体跳过
         本写（恢复让位于人工冻结；冻结条目 status 已是 blocked、不在中断态，
         无需恢复），返回 False 由调用方按既有「不计入 recovered」口径处置。
+
+        快照 status 一致性复查（code-review 540f478356de）：同一窗口内该 spec
+        若已被并发推进出快照中断态（boot 期 dashboard/admin 独立进程可写，如
+        testing→verified、testing→bug-found），照常恢复会把并发已达的状态连同
+        其 error 整体覆盖回恢复目标。本入口在锁内一并复查 status 是否仍等于
+        快照值（``snapshot_status``，与快照选取同源必传），不一致即整体跳过
+        本写（与上方 frozen 复查同款出口），返回 False 由调用方按既有「不计入
+        recovered」口径处置。
 
         单条目写语义仍单源 ``_apply_updates_entry``（不复制第二份）；本路径
         已排除冻结、恢复写恒含 status（不会被剥离），applied 必有生效字段，
@@ -3079,6 +3113,12 @@ class StateMachine:
             if entry.get(FROZEN_FIELD):
                 skip["frozen"] = True
                 return False, False
+            if entry.get("status") != snapshot_status:
+                # 快照 status 一致性复查（code-review 540f478356de）：窗口内
+                # 已被并发推进出快照中断态的 spec 不再是恢复目标，恢复写整体
+                # 放弃（并发推进的状态不被覆盖回恢复态），跳过事实带出锁外。
+                skip["status_drift"] = (snapshot_status, entry.get("status"))
+                return False, False
             found = self._apply_updates_entry(specs, spec_name, updates, applied)
             return found, found
 
@@ -3088,6 +3128,14 @@ class StateMachine:
                     "state_machine",
                     f"跳过重启恢复：'{spec_name}' 已在恢复窗口内被冻结"
                     f"——恢复写整体放弃，冻结 error 不被恢复文案覆盖",
+                )
+            elif "status_drift" in skip:
+                _snap_status, _fresh_status = skip["status_drift"]
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过重启恢复：'{spec_name}' 的 status 已在恢复窗口内被"
+                    f"并发改写（快照 {_snap_status!r} → 最新 {_fresh_status!r}）"
+                    f"——恢复写整体放弃，并发推进不被恢复文案覆盖",
                 )
             else:
                 self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
@@ -3246,6 +3294,7 @@ class StateMachine:
                             REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
                             "_redispatch_cause_fp": None,
                         },
+                        snapshot_status=status,
                     )
                     if retested:
                         recovered.append(name)
@@ -3265,6 +3314,7 @@ class StateMachine:
                             "reviewer_run": None,
                             "_review_attempts": 0,
                         },
+                        snapshot_status=status,
                     )
                     if redrafted:
                         recovered.append(name)
@@ -3347,6 +3397,7 @@ class StateMachine:
                         REDISPATCH_SAME_CAUSE_STREAK_FIELD: 0,
                         "_redispatch_cause_fp": None,
                     },
+                    snapshot_status=status,
                 )
                 # code-review 1b4fc51aac73：SPEC 在恢复窗口内被并发删除时
                 # update_spec 返回 False——不计入 recovered（recovered 口径

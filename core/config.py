@@ -2078,6 +2078,18 @@ class ConfigLoader:
         # bool 已由 _num 既有护栏回缺省，此处不重复判定。
         shutdown_drain_raw = admin.get("shutdown_drain_seconds")
         if isinstance(shutdown_drain_raw, float) and not shutdown_drain_raw.is_integer():
+            # 非整值浮点已合法通过 _validate 加载（其只拒非有限浮点），生效值却
+            # 被整条替换为缺省——按本文件「回退必告警」哲学经 _warn_reader_once
+            # 留痕一次（进程级去重，只作用于日志、回退行为不变；code-review
+            # item 843c6a3f44f8，对照 _warn_backoff_schedule_fallback 同族范式）。
+            cls._warn_reader_once(
+                "admin.shutdown_drain_seconds",
+                shutdown_drain_raw,
+                _logger.warning,
+                "admin.shutdown_drain_seconds 非整值浮点 %r（应为整数秒），"
+                "回退缺省 1800",
+                shutdown_drain_raw,
+            )
             shutdown_drain_raw = 1800
 
         # model 两键类型归一（code-review item b2110b91a910）：与上方 enabled
@@ -3460,13 +3472,15 @@ class ConfigLoader:
         # 与 get_impl_code_review_enabled 同口径）；空段下键读取回退缺省。
         verify = cls._segment_or_empty(config, "verify")
         val = verify.get(key)
-        if isinstance(val, bool):
-            return default
-        if isinstance(val, int) and val > 0:
+        # bool 是 int 子类须显式排除（True 否则按整数 1 生效）；排除后 bool 脏值
+        # 不再先于告警分支静默回缺省，而是与 str / 非整值浮点同落入下方
+        # 「配置了但非法」去重 WARNING 再回缺省（code-review item 4834d39b25d3，
+        # 消除实现与 docstring「回退前打 WARNING 留痕」承诺的口径分叉）。
+        if not isinstance(val, bool) and isinstance(val, int) and val > 0:
             return val
         # 整值浮点按整数接受（code-review item 4a67fbffa917）：YAML ``300.0``
         # 解析为 float，旧实现判非法静默回缺省；.nan/.inf 的 is_integer() 恒
-        # False，自然落入下方非法分支。
+        # False，自然落入下方非法分支（bool 恒非 float，同落入告警分支）。
         if isinstance(val, float) and val.is_integer() and val > 0:
             return int(val)
         # 「配置了但非法」回退缺省前 WARNING 留痕（违背「回退必告警」哲学的
