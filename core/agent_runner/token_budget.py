@@ -490,7 +490,10 @@ class TokenAccountant:
         # fsync + os.replace，约 55 行）与同包 maintenance_runs._append_token_run
         # 逐行同构却各自演进（条目键形态、临时文件清理写法已现微差）——直接委托
         # 公共助手，消除双份漂移面。惰性 import：maintenance_runs 不依赖本模块，
-        # 无 import 环。
+        # 无 import 环。跨模块契约（code-review item c7eca258c506）：下方两个
+        # 下划线前缀助手虽以下划线命名，却是 maintenance_runs 供本模块消费的
+        # 既定跨模块接口，并非其可随意改动的内部实现——maintenance_runs 侧
+        # 对二者任一改名/改签名都必须同步本导入点。
         from core.agent_runner.maintenance_runs import (
             _append_token_run,
             _token_usage_fields,

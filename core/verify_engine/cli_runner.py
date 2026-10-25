@@ -244,6 +244,22 @@ class CliRunner(VerifyRunner):
                     "error_level": "error",
                     "error": f"env 值不得含 NUL 空字节: {_k!r}",
                 }
+            # 场景 env 值含孤立代理符（场景 JSON \ud800 等转义可构造）：
+            # NUL 校验放行后，spawn 阶段 os.fsencode 抛 UnicodeEncodeError
+            # （ValueError 子类而非 OSError，下方 except FileNotFoundError/
+            # OSError 均不捕获）穿出 execute——进执行前对插值终值试编码，
+            # 归一为本步骤结构化失败（code-review item a3e5ebdbf17e，与
+            # NUL 校验同规），判 error 与 cwd 缺失同口径：场景定义缺陷
+            # 不进 product-bug 管道（item 74368415e965）
+            try:
+                env[str(_k)].encode("utf-8")
+            except UnicodeEncodeError:
+                return {
+                    "success": False,
+                    "action": "run",
+                    "error_level": "error",
+                    "error": f"env 值不得含无法编码的孤立代理符: {_k!r}",
+                }
         # 仅以 is None 判缺失（code-review item 9d5e1c10b673）：or "" 兜底
         # 会把显式 0/False/[] 等显式 falsy 脏值静默当「未提供」清空，且下方
         # 非字符串守卫因 or 短路对这些值不可达——与 browser.py value/target
@@ -263,6 +279,21 @@ class CliRunner(VerifyRunner):
                 "error": f"stdin 须为字符串，收到 {type(_raw_stdin).__name__}",
             }
         stdin = _raw_stdin if _raw_stdin is not None else ""
+        try:
+            # 场景 stdin 含孤立代理符（场景 JSON \ud800 等转义可构造）：
+            # 字符串类型守卫放行后，下方 stdin.encode() 抛 UnicodeEncodeError
+            # 无 try 包裹直接穿出 _execute_run——进执行前试编码，归一为本
+            # 步骤结构化失败（code-review item a3e5ebdbf17e，与 env 值
+            # 孤立代理符/NUL 校验同规），判 error 与 cwd 缺失同口径：
+            # 场景定义缺陷不进 product-bug 管道（item 74368415e965）
+            stdin.encode("utf-8")
+        except UnicodeEncodeError:
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": "stdin 不得含无法编码的孤立代理符",
+            }
         try:
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
             # 改写成缺省 60s，与 api 侧 _execute_http_request 的 timeout 口径
