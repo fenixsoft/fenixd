@@ -456,6 +456,70 @@ def _get_knowledge_file(s, p, q, m):
     s._api_knowledge_file(q)
 
 
+# ── collab-graph（add-collab-graph-bigscreen）────────────────────
+
+def _get_overview_collab_graph(s, p, q, m):
+    s._json(s._api_overview_collab_graph(q))
+
+
+def _sig_collab_graph(s, q, m):
+    """跨项目角色图谱聚合端点签名（add-collab-graph-bigscreen 2.1）。
+
+    与 _aggregate_alerts_sig 同口径的聚合签名骨架：registry 项目清单参与
+    哈希（聚合集合本身是响应形状的一部分），fixture/不存在项目不入签名
+    （与 _api_overview_collab_graph 的聚合范围一致）。单项目 ?project= 变体
+    只签该项目（同 _resolve_project_for_sig 降级口径：未知/不存在项目响应
+    本就是 200+error 错误体，返回 None 退出协商——宁缺 304 不假 304）。
+
+    每项目数据源 = project_signature（STATE.md/归档清单/spec/changes 树/
+    runs 树含 archive/config——KPI 计数与 run 权重源）+ 补充源组合：
+    logs 树（transitions/验证轮次派生源）、verify-progress 树（report.json
+    验证统计源）、admin_alerts.json（admin 事件，derive 内读取）、spec/
+    archive 树（resolve_spec_dir 归档回退的批准留痕）。宁多勿漏：多签只
+    产生多余 200，漏签会令大屏 304 假命中、图谱不实时。
+    """
+    from pathlib import Path
+
+    from core.dashboard.data import signature as _sig
+
+    project_name = q.get("project", [None])[0]
+    if project_name:
+        project = _resolve_project_for_sig(s, q)
+        if project is None:
+            return None
+        projects = [project]
+    else:
+        projects = [
+            p for p in s.server.projects() if not p.get("fixture") and p.get("exists")
+        ]
+    parts = [_sig.registry_signature(s.server.registry)]
+    for p in projects:
+        proot = Path(p["path"])
+        parts.append(_sig.project_signature(proot))
+        # 补充源（project_signature 之外的派生输入）：logs 树单独签名并排除
+        # .idx 派生缓存（log_index 读时物化的 offsets 文件，非派生数据源——
+        # 不排除会让 ETag 在首个请求后必然翻转一次，与 _sig_spec_topology
+        # 同款 skip_dirs 口径）；verify-progress 树（report.json 验证统计源）、
+        # admin_alerts.json（admin 事件）、spec/archive 树（resolve_spec_dir
+        # 归档回退的批准留痕）。
+        parts.append(
+            _sig.combine(
+                [
+                    (
+                        "logs",
+                        _sig.tree_sigs(
+                            proot / ".fenix" / "logs", skip_dirs=frozenset({".idx"})
+                        ),
+                    ),
+                    ("verify-progress", _sig.tree_sigs(proot / ".fenix" / "verify-progress")),
+                    ("admin_alerts", _sig.file_sig(proot / ".fenix" / "admin_alerts.json")),
+                    ("spec-archive", _sig.tree_sigs(proot / "spec" / "archive")),
+                ]
+            )
+        )
+    return _sig.combine(parts)
+
+
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
 def _post_config(s, p, q, m):
@@ -701,6 +765,8 @@ _API_GET_ROUTES = [
     # graph 下发端点已随 graphify 功能取消下线）
     ("exact", "/api/knowledge/index", _get_knowledge_index),
     ("exact", "/api/knowledge/file",   _get_knowledge_file),
+    # 跨项目角色协作图谱聚合（add-collab-graph-bigscreen 2.1，GET，无副作用）
+    ("exact", "/api/overview/collab-graph", _get_overview_collab_graph, _sig_collab_graph),
 ]
 
 _API_POST_ROUTES = [

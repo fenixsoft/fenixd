@@ -1270,6 +1270,73 @@ export async function getSpecTopology(project: string, spec: string): Promise<Sp
   );
 }
 
+// ── 跨项目角色协作图谱（/api/overview/collab-graph，add-collab-graph-bigscreen）──
+//
+// 后端单点聚合（core/dashboard/data/collab_graph.py，逐 SPEC 复用
+// topology.derive_topology 派生结果投影），前端零图谱推导：角色集/边权/KPI
+// 口径全部由服务端下发，本文件仅承载传输形态。
+
+// 角色泳道（值域与后端 topology.LANES 一致：单 SPEC 大屏八泳道同一套口径）
+export type CollabRoleLane = 'user' | 'pm' | 'demand' | 'plan' | 'dev' | 'review' | 'test' | 'ops';
+
+// 下钻明细条目（角色节点/边各附最近交接 run 明细；archived=true 为归档
+// 条目——明细已随归档清理语义，前端标注且不可跳转单 SPEC 大屏）
+export interface CollabRunEntry {
+  project: string;
+  spec: string;
+  time: string;
+  status: string;
+  archived?: boolean;
+}
+
+// 角色节点（固定 8 泳道全集；cost_usd 为 null = 该角色全部 run 不可计价）
+export interface CollabRoleNode {
+  id: CollabRoleLane;
+  role: string;
+  label: string;
+  cost_usd: number | null;
+  duration_seconds: number;
+  run_count: number;
+  running: number;
+  in_flight: boolean;
+  recent_runs: CollabRunEntry[];
+}
+
+// 跨角色交接边（weight = 交接次数；recent_runs 取交接接收方 run 明细）
+export interface CollabEdge {
+  from: CollabRoleLane;
+  to: CollabRoleLane;
+  weight: number;
+  recent_runs: CollabRunEntry[];
+}
+
+export interface CollabGraphKpis {
+  spec_count: number;
+  active_spec_count: number;
+  archived_excluded: number;
+  running_specs: number;
+  running_runs: number;
+  total_runs: number;
+  total_cost_usd: number | null;
+  total_handoffs: number;
+}
+
+// 与 detail 同族错误契约：未知项目维持 200 + error 字典
+export interface CollabGraphData {
+  project: string | null;
+  projects: string[];
+  roles: CollabRoleNode[];
+  edges: CollabEdge[];
+  kpis: CollabGraphKpis;
+  archived_excluded: number;
+  error?: string;
+}
+
+export async function getCollabGraph(project?: string): Promise<CollabGraphData> {
+  const query = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<CollabGraphData>(`/api/overview/collab-graph${query}`);
+}
+
 // ── 运行流（/api/runs/<run_id> 系列端点，与 v1 run watch 同源） ──
 
 export interface RunEvent {

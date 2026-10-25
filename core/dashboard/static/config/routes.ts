@@ -14,6 +14,14 @@ export default [
     component: './overview',
   },
   {
+    // 跨项目角色协作图谱大屏（add-collab-graph-bigscreen 3.1）：layout:false
+    // 脱壳——全屏深色独立页面，无 ProLayout 侧边栏/顶栏（overview 枢纽页
+    // 「协作图谱大屏」入口进入，退出大屏返回 overview）。
+    path: '/overview/collab-graph',
+    layout: false,
+    component: './overview/collabGraph',
+  },
+  {
     path: '/projects',
     name: '项目',
     icon: 'project',
