@@ -25,14 +25,14 @@
 
 ## 1. 后端图谱聚合引擎
 
-- [ ] 1.1 新建 `core/dashboard/data/collab_graph.py`：`aggregate_collab_graph(project=None)` 遍历托管项目全部 SPEC，逐个调用 `derive_topology` 并在其结果上聚合角色级图谱（8 角色固定集、跨角色交接边含 weight、节点累计成本/时长/run 计数/在飞计数、全局 KPI）；角色归列与 attempt 归并零第二套实现（纯复用 topology.py）
+- [ ] 1.1 新建 `core/dashboard/data/collab_graph.py`：`aggregate_collab_graph(project=None)` 遍历托管项目全部 SPEC，逐个调用 `derive_topology` 并在其结果上聚合角色级图谱（8 角色固定集、跨角色交接边含 weight、节点累计成本/时长/run 计数/在飞计数、全局 KPI）；每个角色节点与每条边附最近交接/run 明细（`recent_runs`：项目名/SPEC 名/时间/状态，条数上限实现裁量）供下钻面板直接渲染；角色归列与 attempt 归并零第二套实现（纯复用 topology.py）
 - [ ] 1.2 归档口径：已归档 SPEC 计入 kpis SPEC 计数、响应携 `archived_excluded` 计数，不产出边与权重；聚合对其跳过 run 产物读取（零文件读取），不触发任何归档产物访问
 - [ ] 1.3 边界鲁棒：空项目（零 SPEC）与全归档项目聚合不抛错、零读取；`project` 参数收窄聚合范围
 
 ## 2. 后端端点与单测
 
 - [ ] 2.1 新建 `core/dashboard/routes/collab_graph_routes.py`：只读端点 `GET /api/overview/collab-graph`（支持 `project` 可选参数，复用现有鉴权约定），`core/dashboard/server.py` 以 Mixin 方式接入
-- [ ] 2.2 新建 `tests/test_collab_graph_aggregation.py`：表驱动覆盖任务 1.1–1.3 全部 Scenario（多项目聚合边权重求和、项目筛选收窄、跨项目在飞计数、归档只进 KPI、空项目不抛错）
+- [ ] 2.2 新建 `tests/test_collab_graph_aggregation.py`：表驱动覆盖任务 1.1–1.3 全部 Scenario（多项目聚合边权重求和、项目筛选收窄、跨项目在飞计数、归档只进 KPI、空项目不抛错、节点/边 `recent_runs` 明细嵌入）
 
 ## 3. 前端大屏页面
 
