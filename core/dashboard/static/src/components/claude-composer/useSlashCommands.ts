@@ -166,6 +166,10 @@ export function useSlashCommands({
     // pending 回调到期会以旧查询词覆盖打开时设置的全量候选集。
     commandQueryDebounce?.cancel();
     setShowCommandMenu(isOpening);
+    // 斜杠位与查询词同口径归零（code-review item 363b4a6ae5f4）：关闭时不清，
+    // 残留的旧 slashPosition >= 0 会让按钮重开后的点选按「斜杠显式触发」插到
+    // 上一次输入的旧斜杠位置而非当前光标处。
+    setSlashPosition(-1);
     setCommandQuery('');
     setSelectedCommandIndex(-1);
 

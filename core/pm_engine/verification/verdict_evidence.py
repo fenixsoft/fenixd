@@ -551,6 +551,12 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # _verdict_violations_evidence），滞留磁盘会让下一 episode 首 judge
         # 被旧清单「强制修复」纪律锚定（同上方派发失败出口，与
         # _escalate_dedup_resynthesis 清除点对齐）。
+        # code-review a72a0164a729：对齐 e92461050ae5 三件套同口径——此前
+        # 若按 dispatch_failed 语义保留过 directive（_handle_attr_dedup_rejection
+        # 分支），blocked 处置后残留的 directive/manifest 仍会锚定下一
+        # episode 首 judge，一并补清（理由同上方两终局出口）。
+        pipeline._clear_resynthesis_directive(spec_name)
+        pipeline._clear_requeue_manifest(spec_name)
         pipeline._clear_verdict_violations(spec_name)
         return {
             "ok": False,

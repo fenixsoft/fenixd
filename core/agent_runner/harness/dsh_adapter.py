@@ -300,7 +300,10 @@ class DshEventProjector:
                 self.bad_events["json_shape_mismatch"] += 1
             return []
         ev_type = entry.get("type")
-        if ev_type not in self.received:
+        # type 非字符串（契约漂移）：dict/list 等不可哈希值会让下方成员判定
+        # 抛 TypeError 冲出读线程，与 usage/reason/input 的 isinstance 判型
+        # 降级对齐，非 str 一律落 unknown_type 坏事件，不中断流。
+        if not isinstance(ev_type, str) or ev_type not in self.received:
             # 未知类型：忽略+计数，MUST NOT 中断流（spec 投影需求）
             self.received_unknown += 1
             self.bad_events["unknown_type"] += 1

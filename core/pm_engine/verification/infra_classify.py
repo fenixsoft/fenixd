@@ -188,8 +188,10 @@ def is_verifier_process_death(result) -> bool:
     aad7f481aa7f）：``turns_used`` 仅接受真实 int（float/str 等经 ``int()``
     会被截断/放行的类型不参与——0.5 截断为 0、"0" 放行均会误判死亡；负值
     同不命中；bool 属替身脏值，虽为 int 子类亦不参与）；``duration_seconds``
-    负值数值合法但语义非法，视为 runner 计时异常/mock 脏值。宁可少分流，
-    不可把口径未知的结果误判为死亡（误分流会绕过 bug-found 出口）。
+    同口径仅接受真实数值（str/bool 等经 ``float()`` 会被放行的类型不参与
+    ——"30" 放行、True→1.0 均会误判死亡），负值数值合法但语义非法，视为
+    runner 计时异常/mock 脏值。宁可少分流，不可把口径未知的结果误判为死亡
+    （误分流会绕过 bug-found 出口）。
     非对象（None）恒不命中。
     """
     if result is None:
@@ -202,15 +204,14 @@ def is_verifier_process_death(result) -> bool:
     if isinstance(turns, int) and not isinstance(turns, bool) and turns == 0:
         return True
     duration = getattr(result, "duration_seconds", None)
-    if duration is not None:
-        try:
-            seconds = float(duration)
-            # 负值数值合法但语义非法（runner 计时异常/mock 脏值）：与脏值同按
-            # 「口径未知」不命中，宁少分流（code-review item 89a982b09a33）
-            if 0 <= seconds < VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS:
-                return True
-        except (TypeError, ValueError):
-            pass
+    # 与 turns_used 同口径：仅真实数值参与阈值比较——float() 会放行数字
+    # 字符串（"30"）、bool（True→1.0）等替身脏值，不对称的脏值深度会让
+    # mock 脏值走死亡分流、绕过 bug-found 出口，其余类型按「口径未知」不命中。
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+        # 负值数值合法但语义非法（runner 计时异常/mock 脏值）：与脏值同按
+        # 「口径未知」不命中，宁少分流（code-review item 89a982b09a33）
+        if 0 <= duration < VERIFIER_DEATH_SURVIVAL_THRESHOLD_SECONDS:
+            return True
     return False
 
 

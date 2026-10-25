@@ -1530,6 +1530,15 @@ def _legacy_selfheal_start(
     # 型运行时形态由解析器返回 None 放行（零误杀）。
     preflight_err = entry_preflight_error(orig_start_cmd, pipeline._context.project_root)
     if preflight_err:
+        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
+        # （对齐正常路径 Popen 前显式 close；本路径仅 {port} 注入时持有）；
+        # f94a245435cc：close 前移到信号落盘之前——写信号盘 IO 故障抛异常
+        # 时占位 fd 不落 GC 兜底
+        if _port_holder is not None:
+            try:
+                _port_holder.close()
+            except OSError:
+                pass
         pipeline._write_verify_contract_missing(
             spec_name,
             f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
@@ -1550,13 +1559,6 @@ def _legacy_selfheal_start(
         # _verify_infra_rounds（infra_classify 两分支共用唯一入账点，
         # 调用方 MUST NOT 二次调用）。与 _serve_command_in_worktree/_main
         # 预检分支「仅写 verify_contract_missing、升级交调用方」口径对齐。
-        # code-review 717cebb27a1d：预检失败早退同样确定性释放占位 socket
-        # （对齐正常路径 Popen 前显式 close；本路径仅 {port} 注入时持有）
-        if _port_holder is not None:
-            try:
-                _port_holder.close()
-            except OSError:
-                pass
         return False, False, preflight_err
 
     # 启动一次（后台、脱离会话、stdout/stderr 落盘 boot.log）；

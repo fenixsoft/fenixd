@@ -88,14 +88,26 @@ def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""
     # TESTING 的合法出边。复核与写入间 TOCTOU 窗口由上方
     # _discard_if_not_testing + _verified_gate_refuses 读侧复核收敛，
     # 与主路径同款。
-    pipeline._context.state_machine.update_spec(
+    # 返回值核对（code-review item 33abefe13a94，与 dispatch/rollback.py
+    # item 90b4004274a9 口径一致）：False = 条目缺失/原子写失败，
+    # implemented 未落盘、spec 仍停留原状态——后续 infra 记账与
+    # 「re-dispatching fresh verification」告警一并跳过（重派并未发生，
+    # 不为未生效的重派记账），改记 WARNING 如实留痕。
+    if not pipeline._context.state_machine.update_spec(
         spec_name,
         {
             "status": "implemented",
             "tester_run": None,
             "error": "stale/foreign verifier result replayed — re-dispatching fresh verify",
         },
-    )
+    ):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"Stale/foreign re-dispatch write failed for '{spec_name}' — "
+            f"update_spec 返回 False（条目缺失/原子写失败），状态未变更、"
+            f"不记 infra 账，本次重派未生效",
+        )
+        return
     # evo-infra-failure-budget-exempt R2：结果文件「读错文件」（陈旧/异
     # spec 归属）属 infra，沿用既有 re-dispatch，同挂预算退款与记账
     # （否则本路径白耗实现预算且无 infra 记账可观测）。退款锚点不传
@@ -146,7 +158,12 @@ def _block_legacy_verdict(
     # 读侧复核收敛 TOCTOU 后 update_spec 直写 blocked，与本收口点同款；
     # 与 bug-found/verified 分支的 transition 口径差异即在此——那两处目标
     # 是 TESTING 的合法出边。
-    pipeline._context.state_machine.update_spec(
+    # 返回值核对（code-review item 33abefe13a94，与 dispatch/rollback.py
+    # item 90b4004274a9 口径一致）：False = 条目缺失/原子写失败，blocked
+    # 未落盘、spec 仍停留原状态——跳过下方「已 blocked 等待人工裁决」
+    # critical 告警（人工会被引向不存在的 blocked 现场），改记 WARNING
+    # 如实留痕。
+    if not pipeline._context.state_machine.update_spec(
         spec_name,
         {
             "status": "blocked",
@@ -157,7 +174,13 @@ def _block_legacy_verdict(
                 f"{verifier_result.detail}"
             ),
         },
-    )
+    ):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"legacy blocked 落盘失败：update_spec 返回 False（条目缺失/"
+            f"原子写失败）'{spec_name}' — 状态未变更，跳过 critical 升级告警",
+        )
+        return
     # 升级通道自身失败不得抛穿裁决流程（code-review item c0d75398fc9a，与
     # escalation.py 7e0509f14fdd 包裹模式同款）：上方 blocked 已落盘为
     # fail-closed 终态，notifier 异常若沿 engine except e2 上抛会被
