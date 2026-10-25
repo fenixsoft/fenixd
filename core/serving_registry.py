@@ -513,8 +513,24 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
             if identity_ok:
                 # 仅在真正向进程组发出过信号时计数（进程在 pid_alive 与
                 # getpgid 之间已退出的 already-gone 情形不算，避免虚报）
-                if kill_process_group(pid, logger):
+                delivered = kill_process_group(pid, logger)
+                if delivered:
                     harvested += 1
+                elif pid_alive(pid):
+                    # 投递失败（getpgid 遭 EPERM、guard_killpg 守卫拒绝等，
+                    # 未发出任何信号）且进程仍存活：与 identity unverifiable
+                    # 同口径——本轮跳过收割且不摘登记（下轮重试），否则刚被
+                    # pid_alive 确认存活的实例被永久摘出登记、失去唯一收割
+                    # 通道（command 型 serve 无 marker pgrep 兜底）。复核已亡
+                    # 的 already-gone 情形照旧落入待摘名单收尾摘除。
+                    if logger:
+                        logger.warning(
+                            "serving_registry",
+                            f"skip harvest pid={pid} (spec={spec or '-'}) "
+                            f"kill delivery failed (no signal sent) but "
+                            f"process alive — keeping entry for next sweep",
+                        )
+                    continue
             elif logger:
                 logger.warning(
                     "serving_registry",

@@ -985,9 +985,12 @@ def verify_correction_readback(
     能看到修正**；读回仍是旧路径（写读错层，add-code-review-auto-fix 事故根因）
     → 返回 False，调用方 MUST NOT 判为修正成功。
 
-    Fail-safe 取向：解析来源为 ``None``（两处均不可用），或 ``corrected_path``
-    归一后为空串（无比对基准）→ 返回 False（无读取基准可证修正生效，
-    不静默销账；code-review item bd24fbff4c2d）。
+    Fail-safe 取向：解析来源为 ``None``（两处均不可用）、生效来源有效但
+    ``entries`` 为空（主树 tasks.md 存在但声明段缺失/不可解析——守卫下一
+    次读取将回退 ``extract_paths_typed`` 正则语境猜测，无声明对账基准），
+    或 ``corrected_path`` 归一后为空串（无比对基准）→ 返回 False（无读取
+    基准可证修正生效，不静默销账；code-review item bd24fbff4c2d /
+    94676dc2f621）。
 
     Args:
         spec_name: spec 名。
@@ -1030,6 +1033,15 @@ def verify_correction_readback(
         project_root=project_root,
     )
     if resolved.get("source") is None:
+        return False
+    # 生效来源非 None 但条目为空（code-review item 94676dc2f621）：主树
+    # tasks.md 存在但声明段缺失/不可解析时，resolve_effective_declaration
+    # 返回空 entries + source 标记，守卫下一次读取将回退 extract_paths_typed
+    # 正则语境猜测——循环不命中任何条目便返回 True「修正已生效」，而旧路径
+    # 仍可能以硬校验交付物形态被守卫读到，违背「修正被执行 ⇔ 下一次守卫读取
+    # 能看到修正」不变量。与上方 source 为 None 同向 fail-safe：无有效声明
+    # 对账基准不给修正生效的肯定结论，交由调用方走重试/人工兜底（不静默销账）。
+    if not (resolved.get("entries") or []):
         return False
     for e in resolved.get("entries") or []:
         if not isinstance(e, dict) or e.get("path") != corrected_path:
@@ -1672,7 +1684,7 @@ def _declared_kind_line(lines, path_idx, end):
 
 
 def _declared_entry_end(lines, path_idx, end):
-    """条目边界：path 行之后首个「下一列表项/围栏行/空行或顶格行」行号。
+    """条目边界：path 行之后首个「下一列表项/围栏行/顶格非空行」行号。
 
     机械删除与去重（``remove_declared_entry`` / ``replace_declared_path``
     去重分支）的删除窗终点。条目除 path/kind 外可携带附加键行（``note:``
@@ -1680,8 +1692,15 @@ def _declared_entry_end(lines, path_idx, end):
     内残留孤立缩进键行——非首条目时被 yaml 解析并入上一条目（污染其字段），
     首条目时 yaml 解析失败、守卫静默回退正则语境猜测（code-review item
     31a4dfc51e14）。下一列表项起始行的判定与 ``_declared_kind_line`` 的窗
-    口停行条件同款；围栏行（``_FENCE_RE``）与非缩进行/空行视作条目终止，
+    口停行条件同款；围栏行（``_FENCE_RE``）与顶格非空行视作条目终止，
     删除不得越过围栏闭合行吞掉块外内容。
+
+    空行不终止条目（code-review item 53d537d7d58b）：yaml 块映射允许同一
+    列表项内 path 与 kind 之间夹空行（lint 规则 0 与解析链照常放行，
+    ``_declared_kind_line`` 的 +1..+2 窗口亦跨空行命中 kind），空行视作
+    终止会让删除/去重只删到空行为止、孤立缩进 kind 行残留段内——恰是
+    item 31a4dfc51e14 要消灭的形态。条目边界与 kind 行定位对「隔行」形态
+    的容忍口径就此对齐（两者停行条件仍同款：下一列表项起始行）。
     """
     i = path_idx + 1
     while i < end:
@@ -1689,7 +1708,7 @@ def _declared_entry_end(lines, path_idx, end):
         if (
             re.match(r"^\s*-\s", line)
             or _FENCE_RE.match(line)
-            or not re.match(r"^\s", line)
+            or (line.strip() and not re.match(r"^\s", line))
         ):
             break
         i += 1

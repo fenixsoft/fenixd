@@ -300,18 +300,49 @@ class VerifyContract:
     # 静默回退 DEFAULT_EVIDENCE_MAX_BINARY_BYTES，不报错、不阻断契约加载。
     evidence_max_binary_bytes: int = DEFAULT_EVIDENCE_MAX_BINARY_BYTES
 
-    def resolve_evidence_dir(self, spec_name: str) -> str:
+    def resolve_evidence_dir(self, spec_name: str, logger=None) -> str:
         """该 spec 的证据目录（**相对项目根**的路径；落点语义=主树）。
 
         契约显式声明 ``evidence_dir`` 时以契约为准（spec delta「契约覆盖」
         场景），否则回退缺省 ``.fenix/verify-evidence/<spec>/``。返回相对
         路径：报告本体只引用以主树根为基准的相对路径，绝对路径由消费方
         join 项目根得到（项目根=消费项目主树，与 worktree 生命周期解耦）。
+
+        路径复检（code-review item 538dbc40fc3a）：加载层对显式 evidence_dir
+        的绝对路径/含 ".." 段守卫只覆盖 loader 加载路径，本方法可被绕过
+        loader 的调用方（测试夹具、未来新入口）以手工构造的 VerifyContract
+        直达。declared 与缺省模板结果在此统一复用 _prepare_cwd_bad_reason
+        复检（与 _run_prepare_steps_unlocked 的 cwd 复检先例 item
+        75a115723804 同款单点判定），判非法记 warning 后回退缺省模板；缺省
+        结果仍非法（spec 名病理含 ".." 段，框架内受控、纯兜底）时以占位
+        spec 重出一期缺省模板，保住「落点在主树内受控目录」语义。
         """
-        declared = (self.evidence_dir or "").strip()
-        if not declared:
-            return default_evidence_dir(spec_name)
-        return declared
+        default_dir = default_evidence_dir(spec_name)
+        bad_declared = _prepare_cwd_bad_reason(self.evidence_dir)
+        declared = (
+            self.evidence_dir.strip() if isinstance(self.evidence_dir, str) else ""
+        )
+        if bad_declared:
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"evidence_dir 非法（{bad_declared}，回退缺省 "
+                    f"{DEFAULT_EVIDENCE_DIR_TEMPLATE}）: {self.evidence_dir!r}",
+                )
+            return default_dir
+        if declared:
+            return declared
+        # 缺省模板结果复检：spec_name 病理（含 ".." 段）时模板结果同样逃出
+        # 主树——无更优回退层级，按占位 spec 重出一期缺省模板（合法相对路径）。
+        if _prepare_cwd_bad_reason(default_dir):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"spec 名非法致缺省证据目录逃逸（按占位 spec 回退缺省"
+                    f"模板）: {spec_name!r}",
+                )
+            return DEFAULT_EVIDENCE_DIR_TEMPLATE.format(spec="_invalid_spec_")
+        return default_dir
 
 
 def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyContract]:
@@ -1961,6 +1992,20 @@ def provision_worktree_node_modules(
         mode = DEFAULT_DEPS_MODE
     done = []
     for sub in sub_dirs:
+        # sub 相对性复检（code-review item c366eb91ef20）：sub_dirs 与
+        # ensure_main_tree_deps 同源（prepare 步骤 cwd 集合，见其 docstring），
+        # 本函数亦可被绕过 loader 的调用方直达——绝对路径/含 ".." 段的 sub
+        # 会同时污染 wt_dir 与 main_dir 两个 ``Path(root) / sub`` 落点。与
+        # _run_prepare_steps_unlocked 共用 _prepare_cwd_bad_reason 判定，
+        # 判非法记 warning 后跳过该目录（对齐 prepare.cwd 复检口径）。
+        bad_sub_reason = _prepare_cwd_bad_reason(sub)
+        if bad_sub_reason:
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"worktree 依赖供给跳过非法目录（{bad_sub_reason}）: {sub!r}",
+                )
+            continue
         wt_dir = Path(worktree_root) / sub
         main_dir = Path(project_root) / sub
         if not (wt_dir / "package.json").is_file():
@@ -2105,9 +2150,27 @@ def ensure_main_tree_deps(
 def _ensure_main_tree_deps_unlocked(
     project_root: Path, sub_dirs: list, mode: str, logger=None
 ) -> list:
-    """依赖预检与预装本体（ensure_main_tree_deps 的无锁实现，护栏在其上游）。"""
+    """依赖预检与预装本体（ensure_main_tree_deps 的无锁实现，护栏在其上游）。
+
+    sub_dirs 相对性复检在本体兜底（code-review item c366eb91ef20）：本函数
+    可被绕过 loader 的调用方以手工构造的 VerifyContract 直达（与
+    _run_prepare_steps_unlocked 的 cwd 复检先例 item 75a115723804 同理由）。
+    """
     done = []
     for sub in sub_dirs:
+        # cwd 相对性复检（code-review item c366eb91ef20）：与
+        # _run_prepare_steps_unlocked 共用 _prepare_cwd_bad_reason 判定，
+        # 绝对路径/含 ".." 段的 sub 会让 ``Path(project_root) / sub`` 把
+        # npm ci/install 漂移到项目根之外执行——判非法记 warning 后跳过
+        # 该目录，对齐 prepare.cwd 复检的「告警＋跳过/回退」口径。
+        bad_sub_reason = _prepare_cwd_bad_reason(sub)
+        if bad_sub_reason:
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"主树依赖预装跳过非法目录（{bad_sub_reason}）: {sub!r}",
+                )
+            continue
         target = Path(project_root) / sub
         if not (target / "package.json").is_file():
             continue
