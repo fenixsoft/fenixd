@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- 后端新增只读拓扑派生端点 `GET /api/projects/<name>/specs/<spec>/topology`：以既有 timeline/runs 数据源为唯一输入，派生 nodes/edges/kpis（含角色归列、attempt 链归并、KPI 口径、多轮验证、交付闸门自适应、归档降级骨架）
+- 后端新增只读拓扑派生端点 `GET /api/specs/<spec>/topology`（与 `/api/specs/<spec>` detail 同族单键寻址）：以既有 timeline/runs 数据源为唯一输入，派生 nodes/edges/kpis（含角色归列、attempt 链归并、KPI 口径、多轮验证、交付闸门自适应、归档降级骨架）
 - 前端新增「脱壳」全屏深色大屏页面（路由 `/projects/:name/:spec/topology`，无 dashboard 框架），含两个切换式视图：
   - **管线视图**：左→右 7 阶段列（需求/规划/开发/审查修复/测试验证/运维/交付）的分层 DAG，用户/fenix-new 与 PMEngine 为特殊节点
   - **协作时序视图**：角色泳道 × 真实时间轴，run 色块宽度=耗时，跨泳道箭头=交接

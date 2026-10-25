@@ -33,16 +33,16 @@
 
 ## 1. 后端拓扑派生引擎
 
-- [ ] 1.1 新建 `core/dashboard/data/topology.py`：`derive_topology` 以既有 timeline/runs 数据源为唯一输入产出 `nodes/edges/kpis/archived`；角色归列按 `run_files` 的 agent 前缀映射权威源执行七阶段列映射（需求=用户+spec-review+dispute-judge / 规划=planner 族 / 开发=impl / 审查修复=impl-ocr+repair / 测试验证=test+verify+验证执行 / 运维=admin / 交付=终点）；未知前缀落开发列 `role: unknown` 不丢节点
+- [ ] 1.1 新建 `core/dashboard/data/topology.py`：`derive_topology` 以既有 timeline/runs 数据源为唯一输入产出 `nodes/edges/kpis/archived`；角色归列按 `core/agent_runner/run_files.py` 的 `RUN_ID_AGENT_PREFIXES` 权威源执行七阶段列映射（需求=用户+spec-review+dispute-judge / 规划=planner 族 / 开发=impl / 审查修复=impl-ocr+repair+code-review+code-fix / 测试验证=test+verify+验证执行 / 运维=admin / 交付=终点）；未知前缀落开发列 `role: unknown` 不丢节点
 - [ ] 1.2 attempt 链归并与 KPI 口径：按 `strip_run_id_suffixes` 语义归并同 base run_id；`dispatched`=逻辑 run 数、`retried`=attempt>1 或 superseded/stale 数、`completed`=成功终态数、全不可计价时 `total_cost_usd=null`
 - [ ] 1.3 重试边判定：仅同 base run_id 的 attempt 链节点间连 `retry` 边；不同 base run_id 的独立重派一律 `handoff` 边
 - [ ] 1.4 多轮验证派生：扫运行日志「开始验证」行逐轮产出验证执行节点，历史轮仅含时长，末轮（与现存 report.json 配对）携带场景通过/失败统计
-- [ ] 1.5 交付终点自适应：按 `pushed` 状态转移的结构化 context 判定触发方——人工批准链路产出 `kind: approve` 节点（含批准时间），fast-track 连跳/自动链推送产出「自动推送」普通终点，未发生人工批准 MUST NOT 产出 approve 节点
+- [ ] 1.5 交付终点自适应：以**持久可确证**的人工批准记录判定——无确证记录（fast-track 连跳/自动链推送，实测 pushed 转移 context 恒 `channel="auto"`、`approve_push_request.json` 信号消费即清、PROJECT_LOG 文案无来源区分）时产出 `kind: delivery`「自动推送」普通终点；仅在存在持久批准留痕时产出 `kind: approve` 节点（含批准时间），无持久确证记录 MUST NOT 产出 approve 节点
 - [ ] 1.6 归档降级：run 产物已被 `archive_spec_runs` 清理时正常返回状态骨架（PMEngine 状态转移/验证/运维事件）+ `archived: true` + 空 run 节点集，不报错；归档链路自身零改动
 
 ## 2. 后端端点与单测
 
-- [ ] 2.1 新建 `core/dashboard/routes/topology_routes.py`：只读端点 `GET /api/projects/<name>/specs/<spec>/topology`（复用现有鉴权与多项目宿主约定），`core/dashboard/server.py` 以 Mixin 方式接入
+- [ ] 2.1 新建 `core/dashboard/routes/topology_routes.py`：只读端点 `GET /api/specs/<spec>/topology`（与 `/api/specs/<spec>` detail 同族单键寻址，在 `base.py` `_API_GET_ROUTES` regex 表新增条目，复用现有鉴权/sig 与宿主约定），`core/dashboard/server.py` 以 Mixin 方式接入
 - [ ] 2.2 新建 `tests/test_topology_derivation.py`：表驱动覆盖任务 1.1–1.6 对应全部 Scenario（含归档 fixture、多轮验证 fixture、attempt 链与独立重派 fixture、未知前缀兜底、全不可计价 null）
 
 ## 3. 前端共享常量等价迁移

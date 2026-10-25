@@ -2,7 +2,7 @@
 
 ### Requirement: 拓扑只读端点
 
-后端 MUST 提供只读端点 `GET /api/projects/<name>/specs/<spec>/topology`，返回派生图数据：`spec`、`status`、`kpis`、`nodes`、`edges`。节点 `kind` 枚举 `run|verify|user|pm|approve`；边 `type` 枚举 `handoff|dispatch|retry|approve`。派生逻辑 MUST 位于 `core/dashboard/data/topology.py`，以既有 timeline/runs 数据源为唯一输入，前端零拓扑推导。端点对活跃与归档 SPEC 均可调用，读侧 MUST NOT 区分数据获取路径。
+后端 MUST 提供只读端点 `GET /api/specs/<spec>/topology`（与 `/api/specs/<spec>` detail 同族单键寻址），返回派生图数据：`spec`、`status`、`kpis`、`nodes`、`edges`。节点 `kind` 枚举 `run|verify|user|pm|approve|delivery`（`delivery`=交付终点，`approve` 为其人工批准变体）；边 `type` 枚举 `handoff|dispatch|retry|approve`。派生逻辑 MUST 位于 `core/dashboard/data/topology.py`，以既有 timeline/runs 数据源为唯一输入，前端零拓扑推导。端点对活跃与归档 SPEC 均可调用，读侧 MUST NOT 区分数据获取路径。
 
 #### Scenario: 正常 SPEC 派生完整图
 
@@ -11,7 +11,7 @@
 
 ### Requirement: 角色归列映射以后端前缀为权威
 
-run 节点的 `stage`/`lane` 归属 MUST 由后端按 `run_id` 前缀派生（以 `run_files` 的 agent 前缀映射为权威源），七阶段列映射固定为：需求（用户/fenix-new、`spec-review-`、`dispute-judge-`）、规划（`planner-`、`planner-plan-`、`planner-judge-`）、开发（`impl-`）、审查/修复（`impl-ocr-`、`repair-`）、测试/验证（`test-`、`verify-`、验证执行节点）、运维（`admin-`）、交付（终点）。未识别前缀 MUST 落入开发列并保留 `role: unknown`，MUST NOT 丢弃节点。
+run 节点的 `stage`/`lane` 归属 MUST 由后端按 `run_id` 前缀派生（以 `core/agent_runner/run_files.py` 的 `RUN_ID_AGENT_PREFIXES` 为权威源），七阶段列映射固定为：需求（用户/fenix-new、`spec-review-`、`dispute-judge-`）、规划（`planner-`、`planner-plan-`、`planner-judge-`）、开发（`impl-`）、审查/修复（`impl-ocr-`、`repair-`、`code-review-`、`code-fix-`）、测试/验证（`test-`、`verify-`、验证执行节点）、运维（`admin-`）、交付（终点）。未识别前缀（含不带 spec 段的 `evo-`/`maintenance-`/`review-` 等）MUST 落入开发列并保留 `role: unknown`，MUST NOT 丢弃节点。
 
 #### Scenario: impl-ocr 归审查列
 
@@ -62,11 +62,11 @@ run 节点的 `stage`/`lane` 归属 MUST 由后端按 `run_id` 前缀派生（�
 
 ### Requirement: 交付终点自适应
 
-交付终点节点 MUST 按 `pushed` 状态转移的触发方自适应：转移 context 表明人工批准（approve_push_request 链路）时渲染 `kind: approve` 节点并携带批准时间；fast-track 连跳或自动链推送时渲染普通交付终点（`自动推送` 语义）。MUST NOT 在未发生人工批准时输出「人工批准」节点。
+交付终点节点（`kind: delivery`）MUST 按**持久可确证**的人工批准记录自适应：存在持久批准留痕时渲染 `kind: approve` 节点并携带批准时间；无确证记录时（含 fast-track 连跳、自动链推送）MUST 渲染普通交付终点（`自动推送` 语义）。注意实测：pushed 转移 context 恒 `channel="auto"`（`core/pm_engine/engine.py` transition 调用）、人工批准 `approve_push_request.json` 为消费即清的瞬态文件信号、PROJECT_LOG 推送文案无来源区分——当前系统不产生持久批准记录，故 approve 节点仅在出现持久化批准留痕时才可达。MUST NOT 在无持久确证记录时输出「人工批准」节点。
 
 #### Scenario: 人工批准出 approve 节点
 
-- **WHEN** pushed 转移由人工批准触发（state 节点 context 可判）
+- **WHEN** 存在持久可确证的人工批准留痕（如批准信号的持久化记录）
 - **THEN** 交付节点 kind 为 approve 且含批准时间
 
 #### Scenario: fast-track 不虚构人工批准
