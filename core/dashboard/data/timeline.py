@@ -742,3 +742,8 @@ cost_summary_from_timeline = _cost_summary_from_timeline
 # 公开访问面（code-review item 19f8899fac87）：runs.py 跨组消费改用公开名，
 # 与 _parse_iso_ts 同一函数对象单源绑定。
 parse_iso_ts = _parse_iso_ts
+# 公开访问面（add-spec-topology-bigscreen）：topology 组跨组消费改用公开名，
+# 不消费下划线私有名（同上方 329a77d10a7e 先例）——轮转日志枚举与 admin
+# 运维事件均为拓扑派生的既有 timeline 数据源，同一函数对象单源绑定。
+rotated_log_files = _rotated_log_files
+admin_events_for_spec = _admin_events_for_spec
