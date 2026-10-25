@@ -1,7 +1,7 @@
 # SPEC 协作拓扑大屏（Agent Topology Big-Screen）设计文档
 
 日期：2026-10-25
-状态：已与用户对齐（brainstorming 定稿，待建设者复核）
+状态：建设者复核完成、争议项已裁决（定稿待最终批准）
 
 ## 1. 背景与意图
 
@@ -76,13 +76,13 @@
 | 审查/修复 | 代码审查 Agent（`impl-ocr-`）、修复 Agent（`repair-`） |
 | 测试/验证 | 测试 Agent（`test-`）、验证 Agent（`verify-`）、验证执行（确定性节点，非 agent run） |
 | 运维 | 运维 Agent（`admin-`） |
-| 交付 | 人工批准闸门（终态 `pushed`，标注批准时间） |
+| 交付 | 交付终点（终态 `pushed`）：按实际触发方自适应渲染——确有人工批准（approve_push_request）时渲染「人工批准」闸门节点（标注批准时间）；fast-track 连跳 / 自动推送渲染「自动推送」普通终点。MUST NOT 对未发生人工批准的 SPEC 虚构「人工批准」节点（state 节点结构化 context 可判触发方） |
 
 - 角色判别单源复用现有 `agentLabel` 逻辑（`agent_type` 优先、`run_id` 前缀兜底），映射表抽为共享常量，MUST NOT 在新视图内重复实现第二套前缀匹配。
 - 同列节点纵向排列（按时间从上到下）；列内节点数多时列内滚动或压缩节点高度（plan 细化）。
-- **边 = 交接**：时间序上「上一节点终结 → 下一节点启动」；并行 run 的边一律从 PMEngine 节点出发（表达「由 PM 派发」）。失败重试边（run → 同角色下一轮）用橙色区分。
+- **边 = 交接**：时间序上「上一节点终结 → 下一节点启动」；并行 run 的边一律从 PMEngine 节点出发（表达「由 PM 派发」）。失败重试边（橙）只连**同 base run_id 的 attempt 链**（`-a<n>`/`-r<n>` 后缀归并，归并用 `strip_run_id_suffixes` 现成先例）；不同 base run_id 的两次独立重派 MUST NOT 连成重试边（按普通交接处理，防止假叙述）。
 - `fix-*` 子 SPEC 的 run（时间轴已有 `spec` 字段标记）正常入列，节点带 🔧 角标。
-- 验证执行节点（kind=verify）：菱形或方形特殊节点，显示 N 场景/通过/失败统计摘要。
+- 验证执行节点（kind=verify）：菱形或方形特殊节点。数据源 timeline 只保留末轮，多轮验证会失真为「只验证了一次」——后端派生时另扫运行日志取全部「开始验证」行，**每轮各渲染一个验证执行节点**：历史轮仅显示时长，末轮（与现存 report.json 配对的那轮）显示 N 场景/通过/失败统计摘要。
 - 运维处置/升级告警事件（kind=admin）不在 A 中渲染为节点（避免审计噪音），仅 D 中呈现。
 
 ## 6. 协作时序视图（D）规格
@@ -104,6 +104,10 @@
   "spec": "fix-provider-transient-backoff",
   "status": "done",
   "kpis": { "total_duration": 4980, "total_cost_usd": 3.42, "dispatched": 14, "completed": 12, "retried": 1 },
+  // KPI 口径（裁量定稿）：dispatched = 逻辑 run 数（同一次派发的多个 attempt
+  // 归并为 1，避免瞬断重试虚增派发数）；retried = attempt>1 或被弃置
+  // （superseded/stale）的 run 数；completed = 有成功终态的 run 数。
+  // total_cost_usd：全部 run 不可计价时为 null（与 cost_summary_from_timeline 同语义）。
   "nodes": [ { "id": "run-impl-04", "kind": "run|verify|user|pm|approve", "role": "implementer",
                "stage": "dev", "lane": "dev", "status": "running", "start": "...", "end": "...",
                "duration_seconds": 720, "cost_usd": 0.84, "llm": "...", "retry": 1, "run_id": "...", "fix_spec": null } ],
@@ -113,18 +117,18 @@
 
 - 派生逻辑放后端（Python、可单测）：以现有 timeline 数据源（run/state/verify 事件，与 `SpecDetail.timeline` 同源）为唯一输入，产出 nodes/edges/lanes；前端零拓扑推导。
 - SSE：复用现有 spec 维度事件流，拓扑端点数据变更后前端重新拉取（或 SSE 携带 invalidate 信号），不做增量 patch（大屏全量重渲染成本可接受，节点量级 ~几十）。
-- 已归档 SPEC 同样可用（数据源与 timeline 一致，读侧不区分活跃/归档）。
+- **已归档 SPEC：降级可用（用户定稿，选项 a）**。归档链路会把 run 产物物理删除（`archive_spec_runs`），归档 SPEC 的数据源只剩 state/verify/admin 节点——拓扑图塌缩为状态骨架（PMEngine 状态刻度 + 状态转移 + 验证/运维事件），无 Agent 节点、无成本。前端必须对归档 SPEC 显式提示「run 明细已随归档清理」（横幅或空态文案，plan 细化），KPI 中 `total_cost_usd` 为 null。**不触碰归档链路**（快照持久化方案已评估、明确不做）；入口对归档 SPEC 照常提供。
 
 ## 8. 技术选型（我的裁量）
 
 - **渲染：手写 SVG + React**，不引入 ECharts/G6/X6 等重型图表库。理由：两个视图布局均为确定性布局（A 列坐标固定、D 泳道坐标=时间线性映射），无需通用图布局引擎；SVG 便于精确控制 IOC 风格（发光滤镜、脉冲动画）；零新依赖符合本项目「薄」的取向。若 plan 阶段发现列内布局复杂度超预期，可复议 dagre 这类纯布局工具（仅算法、无渲染）。
 - 后端端点挂在现有 dashboard HTTP 服务（`core/dashboard/routes/`），遵循现有路由注册约定。
-- 状态色板/角色中文名与现有 `SpecTimeline.tsx`、`statusMeta` 单源共享，新增视图不复制第二套映射。
+- **单源与红线豁免（裁量定稿）**：把 `SpecTimeline.tsx` 内联的状态着色分支抽为共享常量模块（角色中文名/前缀映射、run 状态语义色），`SpecTimeline.tsx` 改为导入消费——属「行为与视觉严格等价的纯迁移」，豁免于第 9 节零改动红线（仓库有等价抽取先例：SpecTimeline 本身即自 detail.tsx 等价迁出），等价性由纯函数测试背书。跨语言无法字面单源：后端 stage/role 归列以 `run_files.RUN_ID_AGENT_PREFIXES`/`infer_run_agent_type` 为权威源；前端常量仅服务前端渲染。
 
 ## 9. 约束
 
 - 前端遵循仓库现有 lint 规则（禁止嵌套三元等，见既有 code-review 先例）。
-- 现有页面零改动红线：`list.tsx` 仅新增菜单项与导航 handler；不触碰 `SpecTimeline.tsx` / detail 页面。
+- 现有页面零改动红线：`list.tsx` 仅新增菜单项与导航 handler；detail 页面不触碰。`SpecTimeline.tsx` 仅允许第 8 节定义的等价纯迁移（抽常量、改导入），渲染输出严格等价；除此之外不改动。归档链路（`archive_spec_runs`）零改动。
 - 新增配置项为零（无需 Dashboard 设置界面，规避「新增配置必须带 UI」约定）。
 - 后端派生逻辑须带 pytest 单测（拓扑派生规则表驱动用例），前端组件遵循现有测试形态。
 
