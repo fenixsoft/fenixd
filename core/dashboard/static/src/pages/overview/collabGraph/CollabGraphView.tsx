@@ -178,7 +178,10 @@ export default function CollabGraphView({ data }: { data: CollabGraphData }) {
           const a = ROLE_POS[e.from];
           const b = ROLE_POS[e.to];
           if (!a || !b) return null;
-          const { x1, y1, x2, y2 } = trimmedLine(a, 24, b, 24);
+          // 端点按两端节点实际半径内缩（节点层后绘会盖住线端，固定 24 会让大节点的箭头被圆面遮住）
+          const ra = roleRadius(roles.find((r) => r.id === e.from)?.duration_seconds ?? 0, maxDuration);
+          const rb = roleRadius(roles.find((r) => r.id === e.to)?.duration_seconds ?? 0, maxDuration);
+          const { x1, y1, x2, y2 } = trimmedLine(a, ra, b, rb);
           const active = isSelectedEdge(e);
           return (
             <g key={`${e.from}->${e.to}`} onClick={() => setSelection({ kind: 'edge', edge: e })} style={{ cursor: 'pointer' }}>

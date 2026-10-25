@@ -1160,6 +1160,7 @@ export default function SpecListPage() {
       const result = await setSpecStartAfter(name, startAfterEdit.spec, value);
       // fix-scheduling-kick-single-slot D3：清空定时成功但即时唤醒信号写出失败时
       // 如实告知（MUST NOT 无条件宣称「立即恢复调度」）
+      // [fenix-ignore:df8a6acd2788] 路由层已把 scheduling_kick 失败折算为响应体 warning（spec_routes.py _api_spec_start_after，契约测试 test_clear_start_after_write_failure_warning 锁定），前端读 result.warning 正确
       if (!saDate && result.warning) {
         message.warning(result.warning);
       } else {

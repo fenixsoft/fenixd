@@ -279,20 +279,33 @@ interface SwimModel {
 }
 
 function buildModel(data: SpecTopology): SwimModel | null {
-  const byId = new Map(data.nodes.map((n) => [n.id, n]));
   // 有效时刻节点集（泳道与时间轴只覆盖可定位节点；全缺失 → 显式空态）
   const timed = data.nodes
     .map((n) => ({ n, ms: parseTsMs(n.time) }))
     .filter((p): p is { n: TopologyNode; ms: number } => p.ms != null);
   if (!timed.length) return null;
 
-  let t0 = Math.min(...timed.map((p) => p.ms));
+  // run/verify 色块节点（lane 归属：run 按 lane 字段；verify 固定 test 泳道）
+  const laneNodes = timed.filter(
+    (p) => (p.n.kind === 'run' && p.n.lane) || p.n.kind === 'verify',
+  );
+  // 时间域纳入 transitions/user_actions 的可定位时刻与色块 end 的 30s 最小延伸，
+  // 否则越界时刻的标记/色块经 x(ms) 线性映射后会落在可视区外被 SVG 视口裁剪
+  const markTimes = [
+    ...data.transitions.map((tr) => parseTsMs(tr.time)),
+    ...(data.user_actions ?? []).map((a) => parseTsMs(a.time)),
+  ].filter((ms): ms is number => ms != null);
+
+  let t0 = Math.min(...timed.map((p) => p.ms), ...markTimes);
   let t1 = Math.max(
     ...timed.map((p) => {
       const dur = p.n.duration_seconds;
       const end = dur != null ? p.ms + dur * 1000 : p.ms;
       return end;
     }),
+    ...markTimes,
+    // 与下方色块 end = start + max(dur, 30s) 保持一致，避免末端色块越过右缘被裁剪
+    ...laneNodes.map((p) => p.ms + Math.max(p.n.duration_seconds ?? 0, 30) * 1000),
   );
   if (t1 <= t0) t1 = t0 + 60_000; // 全零跨度给最小可视区间
 
@@ -310,10 +323,7 @@ function buildModel(data: SpecTopology): SwimModel | null {
     ticks.push({ ms, x: x(ms), label: fmtTick(ms, spanS) });
   }
 
-  // run/verify 色块（lane 归属：run 按 lane 字段；verify 固定 test 泳道）
-  const laneNodes = timed.filter(
-    (p) => (p.n.kind === 'run' && p.n.lane) || p.n.kind === 'verify',
-  );
+  // run/verify 色块
   const perLane = new Map<string, { node: TopologyNode; start: number; end: number }[]>();
   for (const { n, ms } of laneNodes) {
     const lane = n.kind === 'verify' ? 'test' : (n.lane as string);
@@ -380,7 +390,6 @@ function buildModel(data: SpecTopology): SwimModel | null {
       d: `M ${a.x2} ${a.y} L ${midX} ${a.y} L ${midX} ${b.y} L ${b.x1 - 2} ${b.y}`,
     });
   }
-  void byId;
 
   return { t0, t1, spanS, contentW, x, ticks, blocks, marks, userMarks, arrows };
 }

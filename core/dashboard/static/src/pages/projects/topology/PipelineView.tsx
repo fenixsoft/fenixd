@@ -233,9 +233,7 @@ export default function PipelineView({
                     ? n.total != null
                       ? `共 ${n.total} · ✓${n.passed ?? '—'} ✗${n.failed ?? '—'}`
                       : '验证轮次'
-                    : n.time
-                      ? n.label
-                      : n.label}
+                    : n.label}
               </text>
               {n.fix && (
                 <>
