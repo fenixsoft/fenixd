@@ -1335,7 +1335,10 @@ class VAdjudicationMixin:
             (g.get("path") or "") if isinstance(g, dict) else str(g)
             for g in gate_result
         ]
-        remaining_disputed = [r for r in remaining_paths if r in (disputed + non_orphans)]
+        # 成员判断预构建集合（code-review item fd02ab5d5005）：推导式条件里
+        # 逐项拼接列表做 O(n) 线性查找，集合一次构建后 O(1) 判断、语义更直白。
+        allowed = set(disputed) | set(non_orphans)
+        remaining_disputed = [r for r in remaining_paths if r in allowed]
         return {
             "action": "continue",
             "remaining_missing": gate_result,
@@ -1553,7 +1556,8 @@ class VAdjudicationMixin:
             (g.get("path") or "") if isinstance(g, dict) else str(g)
             for g in gate_result
         ]
-        remaining_disputed = [r for r in remaining_paths if r in (disputed + remaining)]
+        allowed = set(disputed) | set(remaining)
+        remaining_disputed = [r for r in remaining_paths if r in allowed]
         return {
             "action": "continue",
             "remaining_missing": gate_result,
@@ -2009,10 +2013,9 @@ class VAdjudicationMixin:
                 f"保留在原层工作区，非阻塞",
             )
             return
-        import subprocess as _sp
 
         try:
-            add = _sp.run(
+            add = subprocess.run(
                 ["git", "-C", str(worktree_path), "add", "--", rel],
                 capture_output=True,
                 text=True,
@@ -2022,7 +2025,7 @@ class VAdjudicationMixin:
             )
             commit = None
             if add.returncode == 0:
-                commit = _sp.run(
+                commit = subprocess.run(
                     [
                         "git",
                         "-C",
@@ -2281,10 +2284,20 @@ class VAdjudicationMixin:
                 f"（judge run {judge_run_id}）— 已 blocked 待人工裁决: "
                 f"{type(e).__name__}: {e}"
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {"status": "blocked", "tester_run": None, "error": err_final},
-            )
+            # 终态 blocked 写盘同样不穿透裁决主体（code-review item
+            # 7e723f2d249d，对齐上方临时 blocked c942deb9c1ff 口径）：写失败
+            # 仅 WARNING，避免异常把 spec 滞留「LLM 终审进行中」僵尸文案。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {"status": "blocked", "tester_run": None, "error": err_final},
+                )
+            except Exception as werr:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"终审解析失败置 blocked 写盘失败 '{spec_name}'（非阻塞，"
+                    f"归因以 ERROR 日志为准）: {type(werr).__name__}: {werr}",
+                )
             self._pm.logger.error(
                 "pm_engine",
                 f"交付物守卫缺件终审解析失败 '{spec_name}'"
@@ -2733,14 +2746,23 @@ class VAdjudicationMixin:
                 "pm_engine",
                 f"dispute judge 裁决后守卫重跑异常 '{spec_name}'（保守按仍缺件处置）: {e}",
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "blocked",
-                    "tester_run": None,
-                    "error": f"dispute judge 裁决后守卫重跑异常（需人工复核）: {e}",
-                },
-            )
+            # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
+            # 失败仅 WARNING，归因以 ERROR 日志为准。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "blocked",
+                        "tester_run": None,
+                        "error": f"dispute judge 裁决后守卫重跑异常（需人工复核）: {e}",
+                    },
+                )
+            except Exception as werr:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"守卫重跑异常置 blocked 写盘失败 '{spec_name}'（非阻塞）: "
+                    f"{type(werr).__name__}: {werr}",
+                )
             return {"action": "handled"}
         if not remaining:
             # Task 5.1：SPEC 退出本形态（守卫放行）→ 复发计数清零
@@ -2795,10 +2817,19 @@ class VAdjudicationMixin:
                 f"missing（streak={recur_entry.get('_writeback_recur_streak')}）"
                 f"——需人工核对声明落层与凭据核销条件"
             )
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {"status": "blocked", "error": err, "tester_run": None},
-            )
+            # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
+            # 失败仅 WARNING，归因以 ERROR 日志为准。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {"status": "blocked", "error": err, "tester_run": None},
+                )
+            except Exception as werr:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"复发熔断置 blocked 写盘失败 '{spec_name}'（非阻塞）: "
+                    f"{type(werr).__name__}: {werr}",
+                )
             self._pm.logger.error(
                 "pm_engine",
                 f"声明修正复发熔断置 blocked '{spec_name}': {err}",
@@ -2833,17 +2864,26 @@ class VAdjudicationMixin:
             unclear_remaining.append(p)
         if unclear_remaining:
             u_q = "、".join(unclear_remaining)
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "blocked",
-                    "tester_run": None,
-                    "error": (
-                        f"交付物守卫缺件 [{u_q}] LLM 终审裁决 unclear/不可信 — "
-                        f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
-                    ),
-                },
-            )
+            # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
+            # 失败仅 WARNING，归因以 ERROR 日志为准。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "blocked",
+                        "tester_run": None,
+                        "error": (
+                            f"交付物守卫缺件 [{u_q}] LLM 终审裁决 unclear/不可信 — "
+                            f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
+                        ),
+                    },
+                )
+            except Exception as werr:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"unclear 转人工置 blocked 写盘失败 '{spec_name}'（非阻塞）: "
+                    f"{type(werr).__name__}: {werr}",
+                )
             self._pm.logger.error(
                 "pm_engine",
                 f"交付物守卫缺件终审 unclear '{spec_name}'（{u_q}）— blocked 待人工",

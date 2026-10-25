@@ -3428,7 +3428,7 @@ class QQQueueMixin:
         """merge-only 重试体（D2/task 2.4/2.6）：重试合并而非重派实现。
 
         预算耗尽 MUST NOT 被本通道绕过（task 2.6）：先经 ``_check_impl_budget_exhausted``
-        （budget.py:443，与派发前预算闸门同一判据）——耗尽时该闸门自行置 blocked +
+        （与派发前预算闸门同一判据；对照定位用方法名，勿写裸行号）——耗尽时该闸门自行置 blocked +
         写 ``impl_budget_exhausted`` 告警（人工通道），本通道不再尝试合并。本路径
         未派生新实现 run（D3）：**不递增** 实现尝试预算，也**不需要** ``bump_impl_budget(-1)``
         事后回退（无计数可退；``_reconcile_impl_budget`` 以 runs 实际计数对账，

@@ -1351,32 +1351,54 @@ class FFastTrackMixin:
 
         # 1. .spec.yaml 写 mode: full
         yaml_path = self._pm.project_root / "spec" / "changes" / spec_name / ".spec.yaml"
+        # 三类静默 no-op 跳过分支补留痕（code-review item 32c7dda17fbd）：
+        # 文件缺失/顶层载荷非 dict 属异常形态记 WARNING，mode 已非 fast-track
+        # 属幂等重入常态记 DEBUG——排障时可区分「已是 full」与「改写被跳过」。
         try:
-            if yaml_path.is_file():
-                data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and data.get("mode") == "fast-track":
-                    data["mode"] = "full"
-                    # mkstemp 唯一临时文件 + fsync + os.replace 原子写（复用仓库
-                    # 统一助手 scenario_gate.atomic_write_text，code-review item
-                    # efb92f4ba1d7）：原固定名 ``.spec.yaml.tmp`` + 裸 write_text
-                    # 两个漂移点——① 无 flush+fsync，掉电/内核崩溃时 replace 后
-                    # 内容可能在文件系统层未持久；② 固定临时名在并发改写同一
-                    # .spec.yaml 时互踩同一 tmp，后写者可能把截断/混合内容
-                    # replace 成正式文件。唯一临时名保证 rename 前目标不变、
-                    # rename 后内容完整（函数内 import 同 serving.py 先例，避开
-                    # verification 包门面的重依赖导入链）。
-                    from core.pm_engine.verification.scenario_gate import (
-                        atomic_write_text,
-                    )
+            if not yaml_path.is_file():
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 升级跳过（.spec.yaml 不存在，mode 未改写）"
+                    f" '{spec_name}'",
+                )
+                return
+            data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 升级跳过（.spec.yaml 顶层载荷非 dict，mode 未改写）"
+                    f" '{spec_name}': {type(data).__name__}",
+                )
+                return
+            if data.get("mode") != "fast-track":
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"fast-track 升级跳过（mode 已非 fast-track，无需改写）"
+                    f" '{spec_name}': {data.get('mode')!r}",
+                )
+                return
+            data["mode"] = "full"
+            # mkstemp 唯一临时文件 + fsync + os.replace 原子写（复用仓库
+            # 统一助手 scenario_gate.atomic_write_text，code-review item
+            # efb92f4ba1d7）：原固定名 ``.spec.yaml.tmp`` + 裸 write_text
+            # 两个漂移点——① 无 flush+fsync，掉电/内核崩溃时 replace 后
+            # 内容可能在文件系统层未持久；② 固定临时名在并发改写同一
+            # .spec.yaml 时互踩同一 tmp，后写者可能把截断/混合内容
+            # replace 成正式文件。唯一临时名保证 rename 前目标不变、
+            # rename 后内容完整（函数内 import 同 serving.py 先例，避开
+            # verification 包门面的重依赖导入链）。
+            from core.pm_engine.verification.scenario_gate import (
+                atomic_write_text,
+            )
 
-                    atomic_write_text(
-                        yaml_path,
-                        _yaml.safe_dump(data, default_flow_style=False, sort_keys=False),
-                    )
-                    self._pm.logger.info(
-                        "pm_engine",
-                        f"fast-track 升级: .spec.yaml mode → full " f"for '{spec_name}'",
-                    )
+            atomic_write_text(
+                yaml_path,
+                _yaml.safe_dump(data, default_flow_style=False, sort_keys=False),
+            )
+            self._pm.logger.info(
+                "pm_engine",
+                f"fast-track 升级: .spec.yaml mode → full " f"for '{spec_name}'",
+            )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",

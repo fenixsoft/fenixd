@@ -543,9 +543,20 @@ class RRollbackMixin:
         """
         try:
             updates = state_updates() if callable(state_updates) else state_updates
-            self._pm.state_machine.update_spec(spec_name, updates)
+            ok = self._pm.state_machine.update_spec(spec_name, updates)
         except Exception as e:
             self._pm.logger.warning("pm_engine", f"{state_fail_note}: {e}")
+        else:
+            if not ok:
+                # 写后核对（code-review item 4a5f706c9053，对齐
+                # _rollback_write_guarded 030f2c204875 口径）：返回 False＝
+                # 条目缺失/原子写失败，状态未落盘——下方 ERROR 与 admin 告警
+                # 照常发出，事后对账会把「状态未写」误读为「已写」，补 WARNING。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"{state_fail_note}: update_spec 返回 False"
+                    "（条目缺失/原子写失败，状态未落盘）",
+                )
         self._pm.logger.error("pm_engine", error_note)
         try:
             from core.agent_runner.prompt_builder import _str_field

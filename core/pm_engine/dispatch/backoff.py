@@ -260,10 +260,22 @@ class BBackoffMixin:
         缺省 600s，不得中断瞬断恢复排程。``spec_name`` 仅用于对齐
         ``resolve_delay`` 签名（该通道等待时长与 spec 无关）。
         """
-        try:
-            val = float(
-                self._pm._get_config("agents.transient_redispatch_delay_seconds", 600)
+        raw = self._pm._get_config(
+            "agents.transient_redispatch_delay_seconds", 600
+        )
+        if isinstance(raw, bool):
+            # bool 是 int 子类（code-review item 88ef37e3e57e，对齐
+            # _dispatch_backoff_schedule 7b529d5446f4 布尔守卫）：
+            # float(True)=1.0 会被 isfinite 守卫误判为合法延时（经 min_delay
+            # 夹紧后偏离声明缺省），按脏配置回退缺省并 WARNING 留痕。
+            self._pm.logger.warning(
+                "pm_engine",
+                "配置 agents.transient_redispatch_delay_seconds 非法（布尔不合法），"
+                f"回退缺省 600s: {raw!r}",
             )
+            return 600.0
+        try:
+            val = float(raw)
         except (TypeError, ValueError, OverflowError):
             # code-review item 851ba3eeed41：巨大 int（YAML 任意精度）送 float()
             # 抛 OverflowError 同按脏值回退缺省（口径同 infra_breaker threshold，
@@ -573,10 +585,22 @@ class BBackoffMixin:
         5s，不得中断重派排程。``spec_name`` 仅用于对齐 ``resolve_delay`` 签名
         （该通道等待时长与 spec 无关）。
         """
-        try:
-            val = float(
-                self._pm._get_config("verify.infra_retry_redispatch_delay_seconds", 5)
+        raw = self._pm._get_config(
+            "verify.infra_retry_redispatch_delay_seconds", 5
+        )
+        if isinstance(raw, bool):
+            # bool 是 int 子类（code-review item 88ef37e3e57e，对齐
+            # _dispatch_backoff_schedule 7b529d5446f4 布尔守卫）：
+            # float(True)=1.0 会被 isfinite 守卫误判为合法延时（经 min_delay
+            # 夹紧后偏离声明缺省），按脏配置回退缺省并 WARNING 留痕。
+            self._pm.logger.warning(
+                "pm_engine",
+                "配置 verify.infra_retry_redispatch_delay_seconds 非法（布尔不合法），"
+                f"回退缺省 5s: {raw!r}",
             )
+            return 5.0
+        try:
+            val = float(raw)
         except (TypeError, ValueError, OverflowError):
             # 巨大 int（YAML 任意精度）送 float() 抛 OverflowError 同按脏值回退
             # 缺省（口径同 _transient_redispatch_delay，item 851ba3eeed41）。
