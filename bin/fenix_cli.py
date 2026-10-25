@@ -67,6 +67,17 @@ def cmd_promote(args):
                 file=sys.stderr,
             )
             sys.exit(1)
+        # 取值范围同属契约（code-review item 0162bdbeb124）：越界值若照常执行
+        # 转移，提示语会落入 else 分支向操作者谎报「已晋升 ready」——按契约
+        # 破坏同口径显式报错退出。
+        if next_status not in ("ready", "reviewing"):
+            print(
+                f"✗ 晋升失败：promote_drafted 返回非法 next_status={next_status!r}"
+                f"（契约破坏，合法值 ready/reviewing），MUST NOT 执行未知转移，"
+                f"请人工核查",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # fix-observability-gaps 2.2：CLI 人工晋升来源（channel=manual）
         # transition 返回 False（spec 缺失或并发下状态已变，promote_drafted
         # 校验与 transition 落盘之间存在 TOCTOU）时如实报错退出，MUST NOT

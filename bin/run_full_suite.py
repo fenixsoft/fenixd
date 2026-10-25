@@ -140,13 +140,18 @@ def suite_port_base() -> int:
     优先元 ``FENIX_SUITE_PORT_BASE``（显式覆盖），否则按 pid 派生：
     ``31000 + (pid % 1000)``——pid 不同则段不同只是**概率性**不重叠
     （约 1/1000 概率同段）；需要强不重叠保证时用 FENIX_SUITE_PORT_BASE
-    显式覆盖。环境变量上界校验含段宽余量（基址+段宽 ≤ 65535）。
+    显式覆盖。环境变量校验取值域 [31000, 65535-段宽]（下界对齐 pid 派生段，
+    上界含段宽余量；越界同按非法值回退派生，code-review item 28562fe24bb9）。
     """
     env_base = os.environ.get("FENIX_SUITE_PORT_BASE")
     if env_base:
         try:
             val = int(env_base)
-            if 1 <= val <= 65535 - SUITE_PORT_SEGMENT_WIDTH:
+            # 下界对齐 pid 派生段（code-review item 28562fe24bb9）：1-1023 的
+            # 特权端口段在非 root 环境绑定 EACCES、报错落在具体用例内部难以
+            # 归因到端口段配置——显式覆盖值低于派生段下界时同按非法值回退
+            # pid 派生（上界校验含段宽余量不变）。
+            if 31000 <= val <= 65535 - SUITE_PORT_SEGMENT_WIDTH:
                 return val
         except (TypeError, ValueError):
             pass

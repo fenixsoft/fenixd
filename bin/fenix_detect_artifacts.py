@@ -120,9 +120,12 @@ def detect_build_artifacts(project_root: Path) -> dict:
             content = pyproject.read_text(encoding="utf-8", errors="replace")
             # 段头判定（code-review item 85ae09234ddc）：逐行 strip 后以 startswith
             # 匹配段头，替代全文子串包含——注释/字符串值里提到这些字样的行不再
-            # 被误判为 Python 项目在册（误判仅影响 dist/_build 归因文案，仍须收紧）
+            # 被误判为 Python 项目在册（误判仅影响 dist/_build 归因文案，仍须收紧）。
+            # poetry 子段前缀匹配（code-review item 0e2a77bd5fb2）：poetry 2.x
+            # 支持 PEP 621 后主段可省略，仅声明 [tool.poetry.dependencies] 等
+            # 子段的 pyproject.toml 同属 Python 项目，"[tool.poetry" 前缀一并覆盖。
             if any(
-                row.strip().startswith(("[build-system]", "[tool.poetry]"))
+                row.strip().startswith(("[build-system]", "[tool.poetry"))
                 for row in content.splitlines()
             ):
                 # Python 项目的常见产物目录。site-packages/ 不列为候选：根级出现
@@ -131,10 +134,15 @@ def detect_build_artifacts(project_root: Path) -> dict:
                 # 通道，误列会把语义改动产物化；build/ 同样不列：目录名太通用
                 # （易误报任意同名目录），不作 Python 项目产物候选
                 for d in ["dist", "_build"]:
-                    candidate = project_root / d
-                    if candidate.is_dir() and any(candidate.iterdir()):
-                        paths_found.add(f"{d}/")
-                        sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
+                    try:
+                        candidate = project_root / d
+                        if candidate.is_dir() and any(candidate.iterdir()):
+                            paths_found.add(f"{d}/")
+                            sources.append(f"pyproject.toml 存在 + {d}/ 目录非空")
+                    except OSError:
+                        # 该目录不可读时只跳过本目录，不连带其余候选
+                        # （code-review item 74ac90941c60）
+                        pass
         except OSError:
             pass
 
@@ -143,30 +151,40 @@ def detect_build_artifacts(project_root: Path) -> dict:
     # build/ 目录名太通用（易误报任意同名目录），Python 项目（pyproject.toml
     # 在册）不作产物候选，与 pyproject 分支的排除语义一致
     has_pyproject = pyproject.is_file()
-    try:
-        for d in ["dist", "build", "out"]:
-            if d == "build" and has_pyproject:
-                continue
+    # 逐目录收窄 try（code-review item 74ac90941c60）：循环级 except 会让单个
+    # 目录不可读（权限/挂载异常）连带跳过其余候选目录，与「单源粒度跳过，
+    # 不阻塞探测」的语义不符
+    for d in ["dist", "build", "out"]:
+        if d == "build" and has_pyproject:
+            continue
+        try:
             candidate = project_root / d
             if candidate.is_dir() and any(candidate.iterdir()):
                 if f"{d}/" in paths_found:
                     continue  # dist/ 已由 pyproject 分支归因，不重复记源
                 paths_found.add(f"{d}/")
                 sources.append(f"{d}/ 目录存在且非空")
-    except OSError:
-        pass  # 目录不可读（权限/挂载异常）时跳过该信息源，不阻塞探测
+        except OSError:
+            pass  # 该目录不可读（权限/挂载异常）时只跳过本目录，不阻塞探测
 
     # ── 5. 根级产物文件（release-*.zip 等命名 → 写入具体文件名）──────────────
     try:
-        for f in project_root.iterdir():
-            if f.is_file():
-                name = f.name
+        # 一次性物化枚举（code-review item 74ac90941c60）：iterdir 是惰性生成器，
+        # 中途失败会丢弃剩余文件；物化后枚举失败按该信息源整段跳过（单源
+        # 粒度），逐文件判定不再处于 try 内
+        root_entries = list(project_root.iterdir())
+    except OSError:
+        root_entries = []  # 根目录不可读（权限/挂载异常）时跳过该信息源，不阻塞探测
+    for f in root_entries:
+        if f.is_file():
+            name = f.name
+            # zip 与 tar.gz 同边界语义（code-review item b3927c8887e3）：原先
+            # zip 仅认 release- 前缀、tar.gz 允许词根任意位置带边界，形如
+            # foo-release-1.0.zip 不命中而同名 .tar.gz 命中，口径不对称
+            if name.endswith((".zip", ".tar.gz")):
                 if (
                     name.startswith("release-")
-                    and name.endswith(".zip")
-                ) or (
-                    name.endswith(".tar.gz")
-                    and (
+                    or (
                         # dist/build/release 同须边界语义：tag 前是行首或 -/_，
                         # tag 后紧跟 -/_/数字/v数字；纯子串会误命中 distribution、
                         # redistribute、buildkit-docs 等普通词
@@ -179,8 +197,6 @@ def detect_build_artifacts(project_root: Path) -> dict:
                 ):
                     paths_found.add(name)  # 具体文件名（如 release-1.0.zip），非通配
                     sources.append(f"根级通配产物: {name}")
-    except OSError:
-        pass
 
     # ── 汇总 ─────────────────────────────────────────────────────────────────
     # 目录前缀保留 / 尾缀，文件为具体文件名（不生成通配模式）
