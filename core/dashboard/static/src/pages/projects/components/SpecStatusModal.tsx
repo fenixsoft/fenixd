@@ -391,8 +391,9 @@ export default function SpecStatusModal({
             const reason = result.reason || result.error || '回炉被拒绝';
             message.error(`回炉被拒绝：${reason}`);
           }
-        } catch (err) {
-          message.error(`回炉失败：${err instanceof Error ? err.message : String(err)}`);
+        } catch (requestErr) {
+          // 与外层 task-gap 错误文案 err（gapNote 用）区分，请求异常专用命名
+          message.error(`回炉失败：${requestErr instanceof Error ? requestErr.message : String(requestErr)}`);
         } finally {
           setPendingAction(null);
         }
@@ -518,9 +519,14 @@ export default function SpecStatusModal({
           const result = await activateSpec(project, spec);
           if (result.ok) {
             // fix-scheduling-kick-single-slot D3：激活成功但即时唤醒信号写出失败时
-            // 如实告知（MUST NOT 无条件宣称「daemon 将立即拾取」）
+            // 如实告知（MUST NOT 无条件宣称「daemon 将立即拾取」）。冻结态与
+            // start_after: manual 可同时成立（调度区块对任意非终态放宽，后端
+            // activate 只拒终态），激活只清 manual 哨兵、冻结拦截仍在，daemon
+            // 实际不会派发，此分支文案须限定为解冻后才恢复调度。
             if (result.warning) {
               message.warning(result.warning);
+            } else if (frozen) {
+              message.success(`SPEC「${spec}」已激活，当前仍处冻结态，解冻后 daemon 恢复调度`);
             } else {
               message.success(`SPEC「${spec}」已激活，daemon 将立即拾取`);
             }
@@ -535,7 +541,7 @@ export default function SpecStatusModal({
         }
       },
     });
-  }, [project, spec, onDone, message, appModal]);
+  }, [project, spec, frozen, onDone, message, appModal]);
 
   const handleSetManual = useCallback(() => {
     appModal.confirm({

@@ -637,6 +637,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 随 loadItems/loadProgress 重建每轮同步为最新闭包（同 SSE/心跳刷新路径）。
       void loadProgressRef.current();
       void loadItemsRef.current({ background: false });
+      // 防御守卫（与 handleTriggerFixRun 的同款守卫反馈口径一致）：POST 成功
+      // 但回链时间戳缺失时 isTriggerResultForRequest 恒不匹配，受理等待必然
+      // 空转到超时并误报「启动确认未收到」，此处如实反馈后解禁返回；下方外层
+      // `if (!wantedAt) return` 只承接 catch 异常路径（已反馈，不重复提示）
+      if (!wantedAt) {
+        message.info('未收到触发回链时间戳，请稍后在进度卡片确认');
+        return;
+      }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       // 业务拒绝按稳定错误码分支（code-review item fbdb437a22a0）：旧实现对
@@ -665,15 +673,17 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (ackPollAbortedRef.current) return; // 卸载/切走后停止轮询与提示
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (ackPollAbortedRef.current) return;
+        // 剩余预算兜底（code-review item 25707d0b3e28）：1s 睡眠返回后可能已
+        // 越过 deadline，剩余预算 ≤0 时负数会被原样传成请求超时（AbortSignal
+        // 语义下立即中止，白费一轮），此处直接跳出走下方超时兜底分支
+        const remainMs = Math.min(deadline - Date.now(), ACK_RESULT_POLL_BUDGET_MS);
+        if (remainMs <= 0) break;
         try {
           // 单次请求超时收敛到剩余预算（code-review item 85cf36b04e26，同
           // RegressionTab 082b4f2fb7bc 口径）：deadline 只在循环入口判定，若
           // 请求仍用统一 30s 超时，后端挂起时单轮迭代可膨胀到 30s+，总等待
           // 远超 ACK_RESULT_POLL_BUDGET_MS 声明的上限
-          const snap = await getCodeReviewRunResult(
-            project,
-            Math.min(deadline - Date.now(), ACK_RESULT_POLL_BUDGET_MS),
-          );
+          const snap = await getCodeReviewRunResult(project, remainMs);
           // 仅认定是本次触发的结果（统一回链判读，见 isTriggerResultForRequest）
           if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
@@ -714,12 +724,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (ackPollAbortedRef.current) return;
         await new Promise((resolve) => setTimeout(resolve, 2000));
         if (ackPollAbortedRef.current) return;
+        // 剩余预算兜底（code-review item 25707d0b3e28，同上口径）：2s 睡眠
+        // 返回后剩余预算 ≤0 时不再发起本轮请求，跳出走「启动较慢」兜底分支
+        const remainMs = Math.min(runDeadline - Date.now(), ACK_START_POLL_BUDGET_MS);
+        if (remainMs <= 0) break;
         try {
           // 单次请求超时收敛到剩余预算（85cf36b04e26，同上口径）
-          const p = await getCodeReviewProgress(
-            project,
-            Math.min(runDeadline - Date.now(), ACK_START_POLL_BUDGET_MS),
-          );
+          const p = await getCodeReviewProgress(project, remainMs);
           // 过期守卫（code-review item bcdc14169759）：请求在飞期间发生卸载/
           // 切项目/切页签时，cleanup 置位的取消哨拦不住已发出的本轮响应——
           // 出消息前复核一次，防旧项目进度覆盖新项目（连带 Cancel 按钮拿到
@@ -775,12 +786,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         if (fixRunPollAbortedRef.current) return;
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (fixRunPollAbortedRef.current) return;
+        // 剩余预算兜底（code-review item 25707d0b3e28，同上口径）：1s 睡眠
+        // 返回后剩余预算 ≤0 时不再发起本轮请求，跳出走「尚未就绪」兜底分支
+        const remainMs = Math.min(deadline - Date.now(), FIX_RUN_RESULT_POLL_BUDGET_MS);
+        if (remainMs <= 0) break;
         try {
           // 单次请求超时收敛到剩余预算（85cf36b04e26，同上口径）
-          const snap = await getCodeFixRunResult(
-            project,
-            Math.min(deadline - Date.now(), FIX_RUN_RESULT_POLL_BUDGET_MS),
-          );
+          const snap = await getCodeFixRunResult(project, remainMs);
           if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;

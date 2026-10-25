@@ -174,6 +174,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 原子短路，state 只负责按钮视觉反馈。
   const sendingRef = useRef(false);
   const stoppingRef = useRef(false);
+  // 启动重入守卫（code-review item 038d04ea5c2e，同上 sendingRef/stoppingRef
+  // 口径）：handleStart 只靠 setLoading(true) 的渲染反馈间接防重，「开始会话」
+  // 空态按钮未接 loading disabled，调度间隙内连点可并发发出两次 startSession。
+  const startRef = useRef(false);
   const [ended, setEnded] = useState(false);
   const [started, setStarted] = useState(false); // 会话是否已启动（session: null 时空态）
   const [truncated, setTruncated] = useState(false);
@@ -723,6 +727,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // ref 误拦，与上方 setSending/setStopping(false) 同口径就地清掉。
       sendingRef.current = false;
       stoppingRef.current = false;
+      startRef.current = false;
       setSending(false);
       setStopping(false);
       // loading 复位（code-review item 9c07fe612f2d）：loadAll 的 finally 以
@@ -754,6 +759,12 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 回写 sessionIdRef/started、注册 watch 或应用快照（提前 return 仍走 finally
   // 复位 loading，不悬置加载态）。
   const handleStart = async () => {
+    // 重入守卫（code-review item 038d04ea5c2e，与 sendingRef/stoppingRef 同
+    // 口径）：state 驱动的防重存在 React 调度间隙（L169-176 论述），间隙内
+    // 连点会并发发出两次 startSession；经 ref 写读同帧原子短路，各 await 后
+    // 的提前 return 仍走 finally 复位。
+    if (startRef.current) return;
+    startRef.current = true;
     // 跨项目切换守卫（code-review item 794f1b8ac9be）：activeRef 只覆盖切离/
     // 卸载，分面保持激活的跨项目切换（list.tsx 的 project 来自 useParams、
     // 组件不重挂载）不拦——各 await 之间闭包 project 停留发起帧，会以旧项目
@@ -808,6 +819,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
         if (!activeRef.current || projectStale()) return;
         if (data.session) {
           applySnapshotCarried(data);
+        } else {
+          // 空会话兜底（code-review item 1ae2f19b442c）：startSession 成功后、
+          // 快照 GET 前会话被服务端整体摘除（如进程启动即崩）时，不复位会让
+          // 面板滞留 started=true 旧状态、输入区可编辑但发送必败，直到下一次
+          // 快照才自愈；与 pollSnapshot / watch 重试成功路径 / afterHello
+          // 第二次重拉的三处空会话复位口径对齐
+          applySnapshot(data);
         }
       });
       // 快照落定前已切离/已切换项目：不回写状态（同上）；正常路径清 error
@@ -819,6 +837,7 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       if (!activeRef.current || projectStale()) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      startRef.current = false;
       setLoading(false);
     }
   };

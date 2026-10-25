@@ -1311,9 +1311,15 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
     todo.md 对应登记块（复用 _rewrite_todo_entry_consumed 重写式核销，
     注记写明解除时刻与 fix-failed-release.jsonl 留痕行）——记录已删即
     永远够不着既有 consume 闭环（``consume_resolved_failed_batches`` 的
-    pending 过滤按在册记录驱动），
-    不核销则登记块成孤儿（proposal 实证 2026-10-08：带外解除删记录后
-    登记块无人核销、正文损毁成裸标题壳）。核销 needle 整行精确匹配，
+    pending 过滤按在册记录驱动），不核销则登记块成孤儿
+    （proposal 实证 2026-10-08：带外解除删记录后登记块无人核销、
+    正文损毁成裸标题壳）。
+
+    整批解除同步收口触顶告警（code-review item 4f4611083822）：记录已删
+    即永远够不着消费闭环的告警收口（同按在册记录驱动），对应
+    code_fix_retry_budget_exhausted 告警会以 handled=false 永久滞留——
+    与 todo 登记块核销同一序列 best-effort 同步收口
+    （_close_retry_exhausted_alerts，action_taken 写人工解除口径）。核销 needle 整行精确匹配，
     防同批子集与「清单为其前缀扩展」的他批登记块误命中。仅整批删除
     触发核销；部分解除（收缩）剩余条目仍在册仍跳过、登记块不同步核销，
     但 ids 行同步收缩为记录当前清单（_rewrite_todo_entry_ids）——否则剩余
@@ -1388,6 +1394,20 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
         # not_found 审计（不静默吞掉部分失败）。
         todo_consumed = bool(released_batches)
         for rec_ids in released_batches:
+            # 告警同步收口（code-review item 4f4611083822）：记录已整批删除，
+            # 既有 consume 闭环只对在册记录对账，本批触顶告警永远够不着；
+            # 与 todo 登记块核销同一序列 best-effort 收口（内部已容错，
+            # 失败仅 logger 留痕、不阻断解除主流程）。
+            _close_retry_exhausted_alerts(
+                project_root,
+                rec_ids,
+                note="人工整批解除",
+                action_taken=(
+                    f"失败登记已人工整批解除（{released_at}，解除留痕见 "
+                    f"{RELEASE_TRACE_REL}），对应告警一并收口"
+                ),
+                logger=logger,
+            )
             if not _rewrite_todo_entry_consumed(
                 project_root,
                 rec_ids,
@@ -1508,7 +1528,9 @@ def _evidence_item_ids(evidence) -> set:
     return set()
 
 
-def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> int:
+def _close_retry_exhausted_alerts(
+    project_root, item_ids, note, logger=None, action_taken=None,
+) -> int:
     """核销时收口对应 code_fix_retry_budget_exhausted 告警（1.2）。
 
     告警记录无结构化 item_ids/branch/tip_sha 字段（_write_retry_exhausted_alert
@@ -1522,7 +1544,10 @@ def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> 
     名录多出条目全部已出册（被解除/已随他批终态），不再有在册归属。卸下
     精确锚的既有批间语义不变。action_taken 附终态分布注记；已 handled 告警
     跳过（重复核销幂等）。告警收口失败不回滚核销记账（核销为只增记账动
-    作），仅 logger（可选）留痕。返回收口条数。
+    作），仅 logger（可选）留痕。``action_taken``（可选，
+    code-review item 4f4611083822）：定制 mark_signal_handled 处置留痕
+    文案（缺省仍为自动核销文案；release 整批解除路径传人工解除口径，
+    避免把人工解除误记成「被跳过条目全部终态」）。返回收口条数。
     """
     from core.admin_store import AdminStore, SIGNAL
 
@@ -1561,7 +1586,8 @@ def _close_retry_exhausted_alerts(project_root, item_ids, note, logger=None) -> 
             if store.mark_signal_handled(
                 rec.get("id"),
                 action_taken=(
-                    "失败登记已自动核销（被跳过条目全部终态：" f"{note}）"
+                    action_taken
+                    or ("失败登记已自动核销（被跳过条目全部终态：" f"{note}）")
                 ),
             ):
                 closed += 1
@@ -3217,10 +3243,11 @@ def write_regression_failed_alert(
 ) -> None:
     """回归多轮（首轮 + 定向重试）耗尽仍失败丢弃批时写失败告警。
 
-    ``retry_rounds``：定向重试轮数，调用方按生效 targeted_retry_max 传入
-    （缺省 TARGETED_RETRY_MAX_DEFAULT），文案按「首轮 + N 轮重试」如实
-    描述回归轮数——历史文案「两次全量回归均未通过」已随定向重试机制
-    漂移（add-codefix-targeted-retry），不再使用。
+    ``retry_rounds``：定向重试轮数，耗尽路径按生效 targeted_retry_max、
+    熔断路径按实际执行轮数传入（可小于 targeted_retry_max，
+    add-codefix-parse-error-breaker 2.3；缺省 TARGETED_RETRY_MAX_DEFAULT），
+    文案按「首轮 + N 轮重试」如实描述回归轮数——历史文案「两次全量回归
+    均未通过」已随定向重试机制漂移（add-codefix-targeted-retry），不再使用。
     ``reg_form``（可选，evo-add-codefix-anomaly-redispatch-budget 1.3）：
     ``anomaly`` 时切换为异常形态降档/停派文案（零失败面、预算降档耗尽、
     停止自动重派）——signal_type 不变（复用既有通道，不新增告警类型），
@@ -3845,7 +3872,8 @@ class CodeFixOrchestrator:
 
         缺省复用 PROVIDER_SWITCH_COOLDOWN_SECONDS（300s > 实测约 101 秒连接
         窗口）；配置键 ``admin.code_review_fix.switch_cooldown_seconds`` 覆盖。
-        读取与防御转换仿 ``_orphan_grace_minutes``：解析失败/负值/NaN/inf 回退
+        读取与防御转换仿 ``_orphan_grace_minutes``：解析失败/负值/NaN/inf/超
+        合理上限（24h，单位误写等超大有限值同回退并 WARNING 留痕）回退
         缺省（配置事故 MUST NOT 放大成「无限期停摆」极端）；``0`` 合法＝关闭
         冷却（spec R2「0 表示关闭」）。读取走 ``ConfigLoader.get`` 点号键——
         ``_get_config()`` 段读取器是白名单形态（未登记的新键会被剥掉），直接
@@ -3860,9 +3888,19 @@ class CodeFixOrchestrator:
             val = float(raw)
         except (TypeError, ValueError):
             return float(PROVIDER_SWITCH_COOLDOWN_SECONDS)
-        # 负值/NaN（val != val）回退；inf 与负值同属「配置事故放大」极端。
-        # 0 不回退（合法的关闭语义）。
-        if val != val or val < 0 or val == float("inf"):
+        # 负值/NaN（val != val）回退。0 不回退（合法的关闭语义）。
+        if val != val or val < 0:
+            return float(PROVIDER_SWITCH_COOLDOWN_SECONDS)
+        # inf 与超合理上限（一天）同属「配置事故放大成数日停摆」极端，回退
+        # 缺省并 WARNING 留痕（上限口径对齐 _orphan_grace_minutes 的 24 小时
+        # 先例；缺省 300s 与正常运维值远低于此）。
+        if val == float("inf") or val > 24 * 3600:
+            self._log(
+                "warning",
+                f"code-fix 连接类失败冷却配置非法（{val}s 超 24h 上限，"
+                f"疑似单位写错），回退缺省 "
+                f"{PROVIDER_SWITCH_COOLDOWN_SECONDS}s",
+            )
             return float(PROVIDER_SWITCH_COOLDOWN_SECONDS)
         return val
 
