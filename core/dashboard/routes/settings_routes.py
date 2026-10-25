@@ -698,6 +698,12 @@ class H5SettingsRoutesMixin:
         返回 {"installed", "bin", "version"}；探测口径见 core.dashboard.ocr_status
         （shutil.which("ocr")，与 bin/ocr_review.py 包装器的 PATH 解析同源）。
         无项目参数依赖——ocr 是机器级环境，与作用域/项目无关。
+
+        响应契约例外（code-review item 9b1d814cb3af）：本文件其余端点均
+        self._json/_error 自含发送并返回 None，唯本端点 return dict，由
+        分派层包装序列化（routes/base.py _get_quality_ocr_status：
+        s._json(handler(q))）。勿改回自含发送——该分派包装会对返回值
+        再调一次 _json，自含发送将导致同一响应双次发送。
         """
         return check_ocr_installed()
 

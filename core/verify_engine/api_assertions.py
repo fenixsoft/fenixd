@@ -362,6 +362,24 @@ class ApiAssertionRunner:
                     }
                 )
                 continue
+            if not isinstance(resp, dict):
+                # fail-closed：捕获本体为字符串/列表等非 dict 形态（mock/
+                # 手写 capture 来源，防御假设同 latency_under 对 latency_ms
+                # 非数字的预检）会让各 handler 首行 resp.get 抛
+                # AttributeError，被 try 兜底包成笼统「断言执行异常」——
+                # 预检归一为定向 error（code-review item e56643fb8af0）
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": ASSERTION_LAYERS.get(a_type, 0),
+                        "pass": False,
+                        "error": (
+                            f"断言引用的响应捕获结构非法: 须为 dict，"
+                            f"实际 {type(resp).__name__}"
+                        ),
+                    }
+                )
+                continue
             try:
                 result = await handler(resp, assertion)
                 result.setdefault("type", a_type)

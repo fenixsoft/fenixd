@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 import glob
 import json
 import logging
-import os
 import re
 import signal
 import subprocess
@@ -169,6 +168,22 @@ RUN_TERMINAL_EVENT_TYPES = frozenset(
 RUNTIME_SWEEP_IDLE_SECONDS = 1800
 
 
+def _is_dsh_events_dump(run_file: Path) -> bool:
+    """判文件是否为 dsh 原始事件 dump 取证旁路（``<run_id>.dsh-events.jsonl``）。
+
+    dsh 通道每个 run 在 runs 目录同侧落取证旁路 dump（dsh_adapter 落盘，自称
+    「取证现场完整」），其事件词表不含 ``RUN_TERMINAL_EVENT_TYPES`` 任一终态
+    类型，且 ``strip_run_id_suffixes`` 的后缀正则锚定行尾、剥不掉
+    ``.dsh-events`` 尾巴——两处终态清扫的 glob 若不过滤，会把每个已完结 dsh
+    run 的取证 dump 判成「无终态的悬空 run」并向其补写伪 interrupted 终态。
+    排除口径与 run_files.archive_spec_runs（code-review item c8be48d57864）、
+    core/dashboard/data/runs.py 读侧同款：它是投影层取证产物、非 run 产物
+    （code-review item ca95d6f1ad8d / 7a122f70382b：启动/运行期两处清扫统一
+    经本助手排除，避免第三处名单漂移）。
+    """
+    return run_file.stem.endswith(".dsh-events")
+
+
 def _file_has_terminal_event(run_file: Path) -> bool:
     """读 run jsonl 逐行判定尾部是否已有终态事件（运行期/启动清扫共享口径）。
 
@@ -307,7 +322,11 @@ def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
         return []
     patched = []
     try:
-        files = list(runs_dir.glob("*.jsonl"))
+        # dsh 取证旁路 dump 显式排除（_is_dsh_events_dump）：成功 dsh run 的
+        # dump 末行为 final、永无 run 侧终态，不过滤会被本清扫补写 interrupted。
+        files = [
+            p for p in runs_dir.glob("*.jsonl") if not _is_dsh_events_dump(p)
+        ]
     except OSError as e:
         # 扫描失败与「目录不存在」同返回 [] 且上游只汇报补写成功清单——失败路径
         # 零留痕会让悬空 run 静默等到运行期清扫器兜底（code-review item
@@ -409,7 +428,11 @@ class LivenessSupervisor:
         if not runs_dir.is_dir():
             return []
         try:
-            files = list(runs_dir.glob("*.jsonl"))
+            # dsh 取证旁路 dump 显式排除（_is_dsh_events_dump）：其 mtime 停更、
+            # 不在注册表、无终态事件三判据天然全中，不过滤会被补写伪 interrupted。
+            files = [
+                p for p in runs_dir.glob("*.jsonl") if not _is_dsh_events_dump(p)
+            ]
         except OSError:
             return []
         now = time.time()
@@ -515,11 +538,14 @@ class LivenessSupervisor:
         判定顺序：
           1. pgrep 进程表：cmdline 含该 spec 的 worktree 目录字面量
              （``worktrees/{impl,verify,repair}-<spec>-<ts>``）→ 存活；
-          2. 进程扫描不可用/未命中时，回退 run 流文件新鲜度：
+          2. 进程扫描不可用/未命中时，回退 run 流文件新鲜度（_stream_recent）：
              该 spec 任一 run jsonl 的 mtime <
-             LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS 视为仍在活动
-             （resume 孤儿进程通常持续写流；回退窗口对齐长工具静默量级，
-             见模块常量注释）。
+             LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS **且末行非终态**
+             （_file_tail_is_terminal）视为仍在活动（resume 孤儿进程通常持续
+             写流；「末行终态即 run 已明确终结」的并列条件排除刚被杀 run 在
+             新鲜流窗口内误判存活、阻塞恢复一轮的已修事故形态，fix-orphan-
+             ready-recovery-liveness；回退窗口对齐长工具静默量级，见模块
+             常量注释）。
 
         供 pm_engine auto-recovery 与 event_bus 孤儿 ready 白名单调用——
         有存活子进程时 MUST NOT 重置状态/清空跟踪字段。

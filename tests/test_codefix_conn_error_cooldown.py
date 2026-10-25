@@ -216,6 +216,12 @@ class TestConnErrorClassification(unittest.TestCase):
                             spec_name=None, agent_type=None):
                 raise self._exc
 
+            def _accumulate_code_fix_tokens(self, run_id, usage_info):
+                # run_code_fix 经 runner 门面归账 token（D2b 规则 2，实例属性
+                # 打桩有效），替身须提供同名方法承接，替身缺方法曾致
+                # AttributeError（回归 2026-10-26）。
+                return None
+
         items = [_item("a")]
         res = run_code_fix(_ConnFailRunner(_conn_error_exc()), wt, items,
                            run_id="code-fix-conn-1")

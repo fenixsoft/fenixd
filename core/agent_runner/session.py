@@ -15,7 +15,12 @@ def _to_int(value) -> int:
     code-review item 578ff5ba74ea：``int(float("inf"))`` 抛的是 OverflowError
     （畸形 usage 经网关回传或 JSON 往返可携带 Infinity），一并入捕、回退 0，
     口径与 token_budget._to_int（c7706d3ad78d）/ maintenance_runs._safe_int（dc8f109b8b60）对齐。
+    code-review item 8d5d66eb594c：bool 是 int 子类，对齐 _extract_usage_info
+    成本字段的 bool 钳制（13ad2d001e8b）——网关畸形回传 token 字段 true/false
+    经 ``value or 0``/int() 会折成 1/0，按缺失处理回 0，不计入 token 统计。
     """
+    if isinstance(value, bool):
+        return 0
     try:
         return int(value or 0)
     except (TypeError, ValueError, OverflowError):

@@ -726,6 +726,12 @@ def run_self_review(
         else:
             model_override = runner._get_admin_model()
 
+        # 既有产物清理移入组装保护块、_claim_settled 置位之前（code-review
+        # item 3b376b8ff5c5，对齐 run_administrator 的 _clear_admin_disposition
+        # 置位前先例）：替身 runner 缺该方法抛 AttributeError 时 finally 仍会
+        # 清掉 O_CREAT|O_EXCL 申领的空占位再上抛，不留零事件 run 残留。
+        runner._clear_self_review_out(out_path)
+
         # 收尾富指标取数基线（对齐 run_administrator 361-368 同款先例）：
         # _started 量测派发→返回窗口；turns 预置 0——_run_agent 抛出路径不
         # 产生 turns（evo-add-run-metrics-lane-baseline 1.3 同款先例）。
@@ -739,7 +745,6 @@ def run_self_review(
             except OSError:
                 pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
 
-    runner._clear_self_review_out(out_path)
     try:
         output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
@@ -1511,7 +1516,14 @@ def run_evolution(
                             )
                     else:
                         run_ok = False
+                        # 先取 prev_error 再拼装（code-review item 55a3ba7777ff，
+                        # 口径与上方 ContractError / partial 及外层落地异常分支
+                        # 一致）：CLI 非零退出的归因文本（429 限流、信号击杀
+                        # 等死因）不被固定文案覆盖丢失。
+                        prev_error = error
                         error = "CLI 退出异常且契约产物无条目"
+                        if prev_error:
+                            error = f"{error}（CLI 退出异常: {prev_error}）"
         except Exception as e:
             # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因。
             # 先取 prev_error 再拼装（code-review item 350af222efd8，口径与
@@ -3151,11 +3163,11 @@ def run_code_fix(
 
         # token 归账到独立类目（item 4aaad812aa8a，落点/字段形态对齐
         # run_code_review 的收尾段）：成功/失败路径统一落
-        # .fenix/cost/code_fix_tokens.json（agent_type=code-fix）。直调本
-        # 模块函数（同 _check_code_fix_artifact 等本车道 helper 形态）——
-        # _accumulate_code_fix_tokens 未注册进 runner._FORWARDER_REGISTRY，
-        # `runner.<名>` 门面形态不可用（注册须改 runner.py）。
-        _accumulate_code_fix_tokens(runner, run_id, usage_info)
+        # .fenix/cost/code_fix_tokens.json（agent_type=code-fix）。经门面调用
+        # （code-review item 4f76ed361dfb，对齐 run_code_review 的
+        # _accumulate_code_review_tokens 形态，D2b 规则 2）：直接调模块函数
+        # 会绕过 __getattr__，实例属性打桩被静默忽略。
+        runner._accumulate_code_fix_tokens(run_id, usage_info)
 
         # ── 产物硬门（task 6.2）：run exit 0 但 out 缺失/零有效行 → 判失败 ──
         if run_ok:
@@ -3701,6 +3713,39 @@ def run_impl_ocr(
     """
     from core.config import ConfigLoader
 
+    # ── spec 名路径分量校验（code-review item 8eb9572741c4，对齐 serving
+    # 2c579adb670f 同款守卫，判定单点复用 _spec_name_path_error，先例
+    # run_task_track/verdict_evidence 的惰性导入形态）── spec_name 直接内插
+    # verify-progress 子目录、runs 事件流文件名（经 run_id）与 verify-serving
+    # worktree 目录名，含路径分隔符或 ``..`` 分量的名字会把车道产物与
+    # detached 检出引到目标目录之外。上游 add_spec 无字符集约束且存在
+    # spec/changes 目录名等旁路，故在任何路径拼点/盘面落点之前按分量拒绝：
+    # 不派生 run_id、不写 run 事件、不建检出，折算 unavailable 产物直接
+    # 返回（盘面零写入，run_id 留空由调用方既有缺省分支兜底）。
+    from core.pm_engine.verification.serving import _spec_name_path_error
+
+    unsafe = _spec_name_path_error(spec_name)
+    if unsafe:
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning("agent_runner", f"impl-ocr 车道拒绝非法 spec 名: {unsafe}")
+        return {
+            "status": "unavailable",
+            "spec": spec_name,
+            "run_id": "",
+            "kind": "impl-ocr-lane",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "fingerprint": {
+                "branch": branch,
+                "merge_base": base_commit,
+                "head_commit": head_commit,
+            },
+            "review_range": {},
+            "llm": {},
+            "findings": [],
+            "reason": unsafe,
+        }
+
     run_id = _unique_impl_ocr_run_id(spec_name)
     log = getattr(runner, "logger", None)
     artifact_path, raw_path, cursor_path = _impl_ocr_paths(
@@ -3751,6 +3796,7 @@ def run_impl_ocr(
         # ── detached 检出（审的是分支 head；非 git 仓库在此折算 unavailable）──
         serving_root = runner.project_root / ".fenix" / "verify-serving"
         serving_root.mkdir(parents=True, exist_ok=True)
+        # [fenix-ignore:4744b99d2ffd] serving_reclaim 已核实不构成误回收：判据③活进程扫 /proc cwd/argv，审查子进程 Popen cwd 即本检出、存活期覆盖整个审查窗口，spawn 前窗口由判据④600s mtime 宽限覆盖，判定异常一律 fail-safe 保留。
         wt = serving_root / f"ocr-{run_id}"
         r = subprocess.run(
             ["git", "-C", str(runner.project_root), "worktree", "add", "--detach",

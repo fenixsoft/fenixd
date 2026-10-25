@@ -1084,12 +1084,22 @@ def _check_quality_gates_soft(runner, spec_name: str, wt_path: Path | None) -> N
             continue
         gates = data.get("gates") if isinstance(data, dict) else None
         if not isinstance(gates, dict):
-            _logger.warning(
-                "quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: %s", rel
-            )
+            # 文案区分两种形态（code-review item febcaff08fb8）：gates 键缺失
+            # 与键在场但类型错误（数组/标量）。violation_class 归类不变
+            # （missing-gates），仅告警/日志文案精确化，避免误导排障方向。
+            if isinstance(data, dict) and "gates" in data:
+                detail = (
+                    f"quality-gates.json 顶层 gates 键非对象（实际类型 "
+                    f"{type(gates).__name__}，宽松对账，仅告警放行）: {rel}"
+                )
+            else:
+                detail = (
+                    "quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）"
+                    f": {rel}"
+                )
+            _logger.warning("%s", detail)
             _alert_quality_gates_form_drift(
-                runner, spec_name, rel, "missing-gates",
-                f"quality-gates.json 顶层缺 gates 对象（宽松对账，仅告警放行）: {rel}",
+                runner, spec_name, rel, "missing-gates", detail,
                 location=location,
             )
             continue
@@ -1676,13 +1686,23 @@ def classify_terminal_stall(runner, sub_run_id: str) -> str:
     （文案 MUST 由映射层产出，MUST NOT 改既有方法返回值）。
 
     转录缺失/损坏时既有方法降级「未提交即收工」→ 映射后即「未收工即停」。
+    已知归因值做显式双分支映射；未知归因值（含未来既有方法新增类别）原样
+    透传并记 WARNING 留痕，MUST NOT 被静默归入错误桶
+    （code-review item 89c78acb19ed）。
     归因仅用于日志/告警语义区分，MUST NOT 改变处置路径（重试次数/退避/resume
     不变）。
     """
     raw = runner._classify_terminal_no_commit(sub_run_id)
     if raw == "格式回退截断":
-        return "格式回退截断"
-    return "未收工即停"
+        return raw
+    if raw == "未提交即收工":
+        return "未收工即停"
+    # 未知归因值：透传 + WARNING 留痕，防未来新增类别被静默误标为
+    # 「未收工即停」（code-review item 89c78acb19ed）。
+    _logger.warning(
+        "classify_terminal_stall 收到未知归因值 %r，原样透传: run_id=%s",
+        raw, sub_run_id)
+    return raw
 
 
 def classify_and_enrich_artifact_error(

@@ -143,6 +143,7 @@ from core.agent_runner.maintenance_runs import (
     ADMIN_DISPOSITION_PREFIX,
     DEFAULT_GATEWAY_MODEL,
     DEFAULT_OCR_BIN,
+    _accumulate_code_fix_tokens,
     _accumulate_code_review_tokens,
     _accumulate_evolution_tokens,
     _accumulate_self_review_tokens,
@@ -693,8 +694,12 @@ class AgentRunner:
         "_accumulate_code_review_tokens": _accumulate_code_review_tokens,
         # add-code-review-auto-fix（task 6.4）：code-fix 运维车道同处注册。
         # code-fix 不在 _execute_agent 路径（不占 spec 维度预算、不计入每日
-        # agent run 计数），仅经本转发表被编排器调用。
+        # agent run 计数），仅经本转发表被编排器调用；token 归账 helper 同注册
+        # （code-review item 4f76ed361dfb，对齐上方 _accumulate_code_review_
+        # tokens 门面先例——run_code_fix 内部经 runner.<名> 调用，D2b 规则 2，
+        # 实例属性打桩有效）。
         "run_code_fix": run_code_fix,
+        "_accumulate_code_fix_tokens": _accumulate_code_fix_tokens,
         "run_regression": run_regression,
         # add-impl-ocr-parallel-lane（任务 3.1/3.2）：ocr 审查车道同处注册——
         # 不走 _execute_agent（不占 spec 预算、不计每日 run 计数），仅经本

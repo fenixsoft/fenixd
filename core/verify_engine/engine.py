@@ -622,7 +622,12 @@ class VerifyEngine:
     async def _post_classify_environment(self, results: list[dict]) -> dict:
         """对全部场景结果做统一后置分类：候选场景 → 环境探针 → blocked-env。
 
-        - 候选 = 场景 status==fail 且（mock_api 步骤 + 纯等待超时失败）。
+        - 候选 = 场景 status==fail 且满足 env_gate 三类判据之一的析取
+          （判据单一来源见 core/verify_engine/env_gate.py）：
+          is_env_candidate（mock_api 步骤 + 纯等待超时失败）/
+          is_connection_error_candidate（http_request、sse_connect 步骤
+          error_type==connection_failed）/ is_blank_render_candidate（步骤
+          显式 first_frame_ok is False，白屏渲染）。
         - 探针只跑一次（本方法入口即整轮验证的首次触达），结果 memoize 在
           self._env_probe，供候选场景共享。探针健康 → 维持 fail。
         - 探针失联 → 候选降级为 blocked-env（按各 kind 的探针结论逐组结算）。

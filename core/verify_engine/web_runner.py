@@ -113,6 +113,7 @@ class WebRunner(VerifyRunner):
         # 兜底替换为空 error 条目、已采集证据全失。None 保持 None 不改探测
         # （无 root 时 base_url 考古/CLI 回退链的 falsy 判定）与 fail-fast
         # 语义（VisualDiffer 构造契约本要求 Path）。
+        # [fenix-ignore:7d85a0f2316a] 已核实 None 崩溃不可达：下方 VisualDiffer 构造（visual_diff.py Path(project_root)）对 None 在 __init__ 构造期即抛 TypeError fail-fast，实例到不了 _execute_scenario 的截图目录拼接。
         project_root = Path(project_root) if project_root else None
         super().__init__(spec_name, project_root, logger, config, **kwargs)
         self.browser = BrowserManager(project_root=project_root, logger=self.logger)

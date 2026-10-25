@@ -701,6 +701,9 @@ def _del_session_watch(s, p, q, m):
     s._api_session_watch(q, watch=False)
 
 def _del_project(s, p, q, m):
+    # m.group(1) 不消费（code-review item ddeae9121380）：_api_project_delete
+    # 同 _api_project_lifecycle，自整条 path 经 _resolve_project_or_400 解析
+    # 项目名（内部 unquote），传裸名反而失配——故保持整条 path 原样下传
     s._api_project_delete(p, q)
 
 
