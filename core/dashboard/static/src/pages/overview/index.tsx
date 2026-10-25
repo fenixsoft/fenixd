@@ -115,8 +115,14 @@ export default function OverviewPage() {
         clearInterval(hb);
         hb = setInterval(() => void load(), HEARTBEAT_MS);
         void load();
+        // item cad10ca9d3a8：恢复可见时补启告警兜底轮询——仅当 SSE 仍处降级
+        // 状态（onopen 未接管）才重启，避免 SSE 已重连却重复起轮询
+        if (alertsFallbackActive) startAlertsFallback();
       } else {
         clearInterval(hb);
+        // item cad10ca9d3a8：隐藏时告警兜底轮询与心跳一并暂停（降级标记保留，
+        // 恢复可见后补启），避免 SSE 断连 + 后台标签组合持续消耗 daemon
+        stopAlertsFallback();
       }
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -126,6 +132,10 @@ export default function OverviewPage() {
     // 告警不再上屏。降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts
     // （SessionPanel 2303508d27ff 同款兜底）；onopen（连接恢复）停轮询
     let alertsPollTimer: ReturnType<typeof setInterval> | null = null;
+    // item cad10ca9d3a8：告警兜底轮询的降级状态标记（区别于定时器句柄）——
+    // 可见性暂停只清句柄、保留标记，恢复可见后据此补启；仅 onopen（SSE 重连
+    // 接管）才置 false，确保恢复可见不会在 SSE 已重连时误起重复轮询
+    let alertsFallbackActive = false;
     const stopAlertsFallback = () => {
       if (alertsPollTimer) {
         clearInterval(alertsPollTimer);
@@ -133,14 +143,19 @@ export default function OverviewPage() {
       }
     };
     const startAlertsFallback = () => {
+      alertsFallbackActive = true;
       // 幂等：断线重连风暴中 onerror 可连发，只起一个轮询
       if (alertsPollTimer) return;
+      // 可见性门控（cad10ca9d3a8）：隐藏期间只记降级状态不起轮询，与心跳同一
+      // 后台资源纪律，恢复可见后由 onVisible 补启
+      if (document.visibilityState !== 'visible') return;
       setAlertsTick((t) => t + 1);
       alertsPollTimer = setInterval(() => setAlertsTick((t) => t + 1), ALERTS_FALLBACK_POLL_MS);
     };
     const es = new EventSource(STREAM_URL);
     // 连接（重新）建立：停兜底轮询，回到 SSE 事件驱动（690bc68a1883 恢复路径）
     es.onopen = () => {
+      alertsFallbackActive = false;
       stopAlertsFallback();
     };
     es.onmessage = (ev: MessageEvent) => {

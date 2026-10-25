@@ -186,6 +186,11 @@ export default function SettingsPage() {
     if (!confirmDiscardPanelEdits()) return;
     setScope(nextScope);
     setProject(nextProject);
+    // 未消费的聚焦信号随作用域切换作废（code-review item b49d23bf8dd1）：信号
+    // 置位后面板尚未挂载消费（如保存重载 loading 期间）时切作用域，回落的
+    // activeKey 下信号无人消费，残留会让之后打开「项目简介」页签拿旧时间戳
+    // 误触发一次聚焦；切换发生即复位，保证信号只能被紧接着的跳转消费。
+    setVerifyFocusSignal(0);
     // 项目级页签仅项目级存在：切回用户级时不能停留在已消失的页签上
     if (nextScope === 'user' && PROJECT_ONLY_KEYS.has(activeKey)) {
       setActiveKey('llm');
@@ -369,6 +374,10 @@ export default function SettingsPage() {
                 // 切页签即卸载当前面板：有未保存改动先确认（item 8a3eb01dc2b9）
                 if (key !== activeKey && !confirmDiscardPanelEdits()) return;
                 setActiveKey(key);
+                // 未消费的聚焦信号随页签切换作废（code-review item b49d23bf8dd1）：
+                // 目标非「项目简介」时信号已无人消费，残留会在之后打开该页签时
+                // 拿旧时间戳误触发一次聚焦。
+                if (key !== 'project-profile') setVerifyFocusSignal(0);
               }}
               items={menuItems}
               style={

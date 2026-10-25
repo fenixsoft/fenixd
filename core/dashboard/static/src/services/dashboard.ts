@@ -2,7 +2,7 @@
 
 // SPEC 状态值域单源在 pages/projects/listFilters.ts（LIST_STATUS_KEYS），
 // 此处仅引入其字面量类型做 STATUS_META 键域的编译期穷尽约束（type-only，
-// 运行时零依赖，不改变本模块零 import 的形态）。
+// 不增加运行时依赖）。
 import type { ListStatus } from '../pages/projects/listFilters';
 import { withApiBase } from '../utils/embedMount.ts';
 

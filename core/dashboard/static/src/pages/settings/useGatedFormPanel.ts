@@ -78,12 +78,16 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
     const next = buildValues();
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
     if (onBackfill) {
       onBackfill(next, () => form.setFieldsValue(next));
     } else {
       form.setFieldsValue(next);
     }
+    // ref 记账移到回填成功之后（code-review item 51e106646c29）：onBackfill
+    // 的 apply 前置清理（如 LlmProviderPanel 健康徽标缓存清理）或 setFieldsValue
+    // 抛异常时 effect 中断、key 不落 ref，同样的配置内容在依赖下次变化时仍会
+    // 重试回填；先写 ref 会把失败的那次变更因 key 相等永久跳过，表单停留旧值。
+    lastBackfillRef.current = key;
     // 依赖由调用方按面板订阅的 config 段传入（长度逐面板恒定）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...backfillDeps, form]);
