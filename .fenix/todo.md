@@ -365,6 +365,7 @@
 
 ### 浪费
 - **夜间API停滞连续第十晚约56分钟，逼近60分钟取证阈值**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：窗口内 run 级 API 侧等待（stall，指 tool_result 到下一个 assistant 事件之间的模型往返间隔）合计约 56.3 分钟：数据摘要第六节 10 个 run 合计 2748.7 秒，另有周期审查 run 的 4 次停滞 631.1 秒未入第六节聚合；连续第十晚同型损耗，整晚总量贴近 60 分钟取证阈值，较上晚 13.6 分钟明显回升。无 run 因停滞失败或重派。
   - 证据：第六节逐 run：code-fix-1792877804（code-fix 批修复 run，4.63 美元）6 次 729.2 秒最长 208.4 秒、code-fix-1792869999（同车道批 run）4 次 554.8 秒最长 232.8 秒、spec-review-add-spec-topology-bigscreen-9bd2fc-1792929023（拓扑大屏 spec 审查 run）6 次 617.7 秒最长 187.0 秒、evo-1792858420（自进化分析 run，9.14 美元）1 次 165.8 秒；审查 run code-review-1792857630（周期全仓审查，80.61 美元、2 小时 52 分完成）另有 4 次 120.2-239.7 秒停滞（daemon 日志 10-24T16:40/16:46/17:46/18:18Z 四条 round-trip stall INFO，round #195/214/658/824），未入第六节。
   - 调查评估：问题源：第六节停滞聚合与 daemon 停滞告警的离群深扫。已核实事实：①十晚序列（整晚总量口径，逐项回源当晚汇总行/告警行）：80.3→48.3→85.7→98.2→27.7→50.7→51.4→22.7→13.6→约 56.3 分钟，本晚回升但「连续两晚 ≥60 分钟重启取证」阈值尚未触发；②453-519 秒钉值家族本窗缺席（整窗最长 239.7 秒），「网关/CLI 约 450-460 秒固定超时」假说继续弱化；③全部 run 成功收尾，停滞均为 API 侧等待（2026-10-17#浪费#1 更正后的口径）。归因边界：逐轮档案无 ttft/usage 响应侧字段（已由自进化 run evo-1792427246 实测裁决在 CLI 子进程边界外不可得），根因未定、维持多假说（整轮往返偏慢 vs 网关限流相位），不作单因结论。与存量工作关系：evo-add-api-stall-observability（停滞指标入账）与 evo-api-stall-signal-grading（停滞分级告警）覆盖观测与分级面，本窗零 300 秒级升级档告警。结论：损耗真实且总量回升贴阈值，维持纯观测、不立项；明日若再 ≥60 分钟即触发重启取证。
@@ -372,6 +373,7 @@
 
 ### 失误
 - **admin根治实验遗留895MB备份目录，升级处置又秒死**
+  - 自进化：问题部分成立 / 建议合理 / — 不需要
   - 影响：admin 根治实验在主树遗留 51054 个 untracked 文件、合计约 895MB 的 node_modules 备份目录，即时触发 major 级散件升级告警；接手处置的 Administrator run 7.4 秒即死于 prompt 超长（零产出、零美元），目录滞留约 16 小时后才消失且无任何框架处置记录——其间主树一直拖着 895MB 垃圾参与后续构建与盘点。
   - 证据：创建者裁决证据：admin-fenixd-1792879707（pnpm-workspace.yaml 散件根治 run，本地 06:08-06:15）档案内命令原文「mv node_modules node_modules.bak-admin-probe && timeout 300 pnpm install --prefer-offline」——备份目录为其 pnpm 全新安装实验所建且未清理；告警 478057388bda（maintree_untracked_stray_escalated，主树 untracked 散件滞留升级，10-24T22:15:06Z 即本地 06:15:06）记 51054 entry/895111702 字节、体积阈值 524288000 字节；接手的 admin-fenixd-1792880308 档案尾部 terminal_reason=prompt_too_long（API 400、1 轮、7403 毫秒、0 美元），归档 458 个 run 中 prompt_too_long 仅此一例；worktree_manager 日志 10-25T14:23-14:33Z（本地 22:23-22:33）显示该集合归因到主树活交互会话后「文件集消失」，全窗无 delete_untracked_stray（散件删除裁决）处置动作记录。
   - 调查评估：问题源：maintree_stray_wip_stale（主树散件 WIP 滞留）第 2 度复发的根治处置复盘。已核实事实：①创建者裁决为 admin-fenixd-1792879707——transcript 含 mv 命令原文，且升级时点（06:15:06）恰在该 run 收尾提交 43c89c8dc（06:15:42）前 36 秒；②升级信号自身的归因探测（判据：近窗提交路径交/活跃 transcript 路径提及）报「零命中」，与 transcript 明确含「node_modules.bak-admin-probe」字串矛盾——探测漏判机制未定（假说：admin 车道 transcript 未纳入探测面/探测时序早于 mv 落盘），不出单因结论；③目录消失路径未核实（归因日志指向活交互会话，判带外清理概率大）。根因：一次性执行失误（实验程序 mv 后无清理/恢复步骤）＋两层系统性缺口（归因探测漏判、大体量清单下处置链失效——后者另立可改进条目）。与存量工作关系：evo-stray-untracked-session-attribution（散件会话归因）与 evo-stray-untracked-escalation（untracked 散件升级）已在飞/归档，本案是其探测面与处置纪律面的实证缺口，非重复立项。结论：失误本体未在框架内闭环（目录被带外清走），须以「admin 实验类 run 的主树副作用清理纪律」收口。
@@ -379,30 +381,35 @@
 
 ### 可改进
 - **（恶化）断窗守卫真空第八天，批run第三次被04:30击杀**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：code-fix 第 3 批修复 run（code-fix-1792873192）跑约 13 分钟、99 轮、1.68 美元后死于每日 04:30 断连窗（api_timeout 即 API 往返超时终局），同链下批被连接冷却顺延 300 秒；这是该断窗第 3 次实战击杀（10-21 批 5、10-22 批 4、本窗批 3），守卫配置第 8 天原样，同类暴露每夜可复制。
   - 证据：内核日志 10-25 04:30:02/04:31:20 两次 enp42s0 Link is Down；ERROR 行 2026-10-24T20:32:29Z「code-fix run 失败（run code-fix-1792873192）: claude CLI failed: Exit code: 1 …api_timeout=True」与断连秒点咬合，同秒 WARNING「第 3 批 api_timeout 终局，未提交现场已 salvage（api-timeout-salvage，把未提交现场提交批分支的抢救机制）提交到批分支」；告警 fbefb6511818（code_fix_switch_window_deferred，同链下批派发推迟 300 秒）与 ed4eada52b6d（04:52 冷却到期恢复投递）；.fenix/config.yaml 第 302 行 night_quiet_window: false 仍为非法布尔值（合法关闭应写字符串 off），文件 mtime 2026-10-20 05:48 未再改动。
   - 调查评估：问题源：[2026-10-25#可改进#1] 断窗守卫真空的连续对账与第 3 次击杀复盘。已核实事实：①死亡与断连因果闭合（时点咬合、api_timeout=True）；②止损链按设计工作——salvage 保住批 3 已完成修复、连接冷却顺延下批，链 A 收尾 rollup（trigger=chain_exhausted，runs=5、resolved=86、ignored=2）与链 B rollup（runs=3、resolved=49、ignored=2）合计消费审查入账 139 条中的 135 条，净损失即被杀 run 自身 1.68 美元与 300 秒投递延迟；③守卫三项建议（窗值 lint、停用自动再武装、投递窗前缓冲）零落地，本窗 core/ 提交均为台账修复与两个产品 spec，03:00 断点本窗未现（仅 04:30 双断）。根因沿前轮结论：停用/关闭类人工处置缺格式校验与自动恢复语义，属处置持久化缺口。与存量工作关系：evo-add-night-window-inflight-guard（跨窗顺延守卫）已落地但依赖窗值合法才生效；evo-code-fix-api-timeout-salvage 与连接冷却按设计止损。结论：止损有效、守卫前提持续缺位，零代码手工动作（改合法窄多窗）悬置第 8 天，维持优先立项。
   - 建议：①手工把 night_quiet_window 改为合法窄多窗（如 "04:22-04:40"，零代码、多窗解析 _parse_night_quiet_windows 已上线）；②窗解析把布尔 false 与 off 同义化并在配置载入时 lint 告警；③修复链 enabled 停用态加自动再武装或每日一次提醒信号；④批投递与审查派发加窗前缓冲（预计结束落入任一窗则顺延至窗末后）。
 
 - **散件升级信号全量清单撑爆prompt，Administrator秒死无重派**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：maintree_untracked_stray_escalated（主树 untracked 散件滞留升级）信号把 51054 文件全量清单注入 Administrator 提示词，处置 run 首轮即被 API 400 prompt_too_long 拒绝（7.4 秒、1 轮、0 次工具调用、0 美元），死后台无重派、无失败升级信号——凡散件集合体量过阈值（本次 895MB/5 万文件即过），该升级信号的自动处置链路结构性失效，只能等带外清理。
   - 证据：admin-fenixd-1792880308 档案尾部 result 原文「Prompt is too long · this conversation is a single exchange and cannot be compacted」、terminal_reason=prompt_too_long、api_error_status=400、num_turns=1、duration_ms=7403；告警 478057388bda 的 evidence 字段含「文件清单(51054): …」逐文件罗列（daemon 日志 10-24T22:18:28Z 行可见数千文件全量展开）；core/admin_monitor.py:401 注释自证「evidence 穿透 str.replace 实证：prompt_builder.py:204」——evidence 全文替换进 Administrator 提示词；对照组：同晨 admin-fenixd-1792879707（小清单散件信号）正常完成并产出根治提交、admin-add-spec-topology-bigscreen-1792934698（验证阻塞处置 run，21:32）67 轮成功；该 run 死后无第二次 invoking Administrator 记录；归档 458 个 run 中 prompt_too_long 仅此一例。
   - 调查评估：问题源：今日失误条目中被击杀处置 run 的失败面复盘。已核实事实：①直接死因裁决为 prompt_too_long（API 400，单轮、无工具调用、结果明文）；②注入链路有代码注释背书（evidence 全文 str.replace 进提示词），且同晨小清单 admin run 全部成功——失败变量即清单体量，归因到「全量清单注入撑爆首轮请求」证据充分；③死后信号路径：仅 agent_runner WARNING 一行，无重派、无计数、无「处置失败」升级，指纹消失前信号一直挂「Administrator 处置中」。根因：系统性缺口——升级信号 evidence 构造无体量上限、处置失败无兜底重试。与存量工作关系：evo-stray-untracked-escalation（升级机制）与 evo-stray-untracked-session-attribution（归因）均不覆盖清单截断与重派面，spec/changes/ 活跃区无同主题在飞提案，非重复立项。结论：修复面小（截断＋限次重派＋失败信号），值立项。
   - 建议：①升级信号 evidence 清单截断为头部 N 项（如 50 项）＋总数/体积聚合，全量清单落盘为附件路径引用而非内联；②Administrator 死于 prompt_too_long/api_error 时自动限次重派 1 次（携带瘦身 evidence），再失败升级 admin 信号；③补契约测试：万项级清单信号不得撑爆处置提示词。
 
 - **（恶化）回归门exit=4伪绿第五连窗，批1共47条保证空转**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：本窗口批链两链 8 个批 run 中，链 A 批 1（合回 resolved 47/48 条）的定向回归（按触碰面映射只跑相关测试的回归轮）在 pytest 未执行任何用例的情况下按上一批遗留的 JUnit XML（测试结果标准格式文件）判 passed，47 条台账修复的回归保证在合回时刻为空；保留日志内累计 24 条（log.3 覆盖 10-04 起），连续第五窗复发，两项修复建议（新鲜度校验、targets 消毒）持续零落地。
   - 证据：回归模块 WARNING 2026-10-24T19:26:32Z（本地 10-25 03:26）「回归命令非零退出（exit=4，pytest usage error 即命令行用法错误，未执行任何用例也不写新 XML）但 JUnit XML 可解析且无失败，按解析结果判 passed」，命令目标列表首项为 #tests/__pycache__/test_code_fix.cpython-310-pytest-9.1.1.pyc（带 # 前缀的无效编译缓存路径）；3 秒后合回行 19:26:35Z「code-fix 第 1 批合回成功：resolved 47/48 条」；本窗其余批次回归无告警（真实执行），链 A（20:58Z）与链 B（22:22Z）rollup 正常收尾。
   - 调查评估：问题源：对 [2026-10-24#可改进#3] 的定向复发对账（全窗 grep 回归 WARNING）。已核实事实：①本窗复发 1 次，毒行形态与前四窗完全一致——# 前缀 __pycache__ 缓存路径→usage error→判定读遗留 XML 伪绿；②窗口内 core/regression.py 零触碰（本窗提交均为台账修复与两个产品 spec），# 前缀来源两假说（映射输入行污染 vs 替换哨兵泄漏进执行命令）仍未裁决；③对照面：其余批次真实执行，门本体在 targets 合法时有效。根因维持形态层结论：门判定缺「结果新鲜度」维度＋定向 targets 混入无效路径。与存量工作关系：add-codefix-test-targets-fallback-sanitization（回退路径占位符消毒）与 evo-codefix-zero-face-regression-hardening（回归空转治理）均未覆盖本形态，维持非重复判定。结论：连续五窗复发且修复面小，优先级维持，值立项。
   - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
 
 - **（恶化）evolution回写push恒失败累计45次，窗口再添1次**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：自进化 todo 回写的 push 步骤每轮回写恒失败：本窗口 1 次（本地 10-25 00:48，对应自进化 run evo-1792858420 的收尾回写），日志累计 45 条同文 WARNING（上轮盘点 44）——commit 每次落地但 todo.md 的远端同步（ADR-060 语义，自进化标记随仓库远端备份的约定）长期未达成，固定失败噪音继续稀释告警面价值。
   - 证据：WARNING 原文「evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: fatal: No configured push destination.」保留日志累计 45 条，窗口内 1 条时点 2026-10-24T16:48:44Z；evo-1792858420 档案 terminal=completed、9.14 美元正常收尾（回写链 commit 成功、push 单点恒败）；git 核实主仓 origin 在案且 origin/main 同步正常（同仓其他代码路径 push 可达）。
   - 调查评估：问题源：[2026-10-25#可改进#3] 的连续对账。已核实事实：①失败按回写节律逐轮复现，累计 45 次；②「No configured push destination」按 git 语义仅在零 remote 仓库出现，与主仓 origin 在案矛盾——push 子进程实际执行环境与静态探测不符的根因仍未裁决（假说：subprocess 的 git 命令变量构造差异、cwd/env 传递差异），不出单因结论；③窗口内 core/evolution.py 零触碰，三项建议（remote 预探测降 DEBUG、恒失败聚合告警、执行环境取证）零落地。与存量工作关系：与 2026-10-12#可改进「幂等空转记 ERROR 稀释错误信号」同属恒失败步骤固定噪音家族但对象不同，维持非重复。结论：低成本取证方向明确、持续零落地，维持小立项。
   - 建议：①push 前以 git remote 探测，空则记 DEBUG 跳过；②恒失败（连续 N 次）收敛为每日一条聚合告警，防逐夜重复噪音；③核查 _commit_todo_marker（自进化 todo 回写函数）内 push 子进程的 git 命令构造与 cwd/env 传递，定位「无推送目标」的真实执行环境。
 
 - **空状态场景截图判low_contrast环境阻塞，spec卡7分钟重验**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：add-spec-topology-bigscreen（协作拓扑大屏 spec）验证收尾时，空状态场景 topology-empty-spec-zero-state 的首跑截图被视觉健全性门判 low_contrast（pixel_std=0.0773<0.08 阈值）拒绝固化视觉基线，连锁触发「env 失败场景不得判 verified」门禁，spec 卡 blocked 约 7 分钟（本地 21:24-21:32），烧掉一轮 verifier 重验与一个 67 轮/37 次工具调用的 Administrator 处置 run；期间 daemon 陈旧自愈重启还补写了 2 个被中断的 judge run，零数据场景同型阻塞在未来大屏类 spec 会复现。
   - 证据：告警 2f3f05cef937（verify_env_blocked，验证环境阻塞，10-25T13:24:58Z）「验证环境阻塞（第 1 轮）……topology-empty-spec-zero-state」；告警 685c513e647b（manual-intervention，13:32:04Z）自述根因「首跑截图被健全性门判 low_contrast（pixel_std=0.0773<0.08）拒绝固化视觉基线，场景被判 env warning」result=resolved；日志 13:24:57Z「verified 洗白门禁拦截 'add-spec-topology-bigscreen': env 失败场景不得判 verified」与 13:32:04Z「env 阻塞处置复位（直通道）+ verifier 入队重验」；处置 run admin-add-spec-topology-bigscreen-1792934698 run_metrics（run 收尾结构化指标行）success、turns=67、tools=37；spec 最终 21:35 verification-report 入库、21:38 归档；21:56 启动扫尾补写 planner-judge-add-spec-topology-bigscreen-1792934539/-1792935242 两个 interrupted 终态。
   - 调查评估：问题源：add-spec-topology-bigscreen 验证收尾的环境阻塞对账。已核实事实：①守卫链按设计工作——洗白门禁拦截、admin 处置、直通道复位、重验通过，全链约 7 分钟自愈，spec 交付未受损；②假阳性根源在形态层：零数据/空状态场景的截图天然接近纯色（空画布＋占位文案），固定 pixel_std 阈值无法区分「真空白渲染失败」与「空状态的合法低对比」，同类场景（empty/zero-state）在后续大屏类 spec 中会复现同型阻塞；③首跑失败的具体机理未定、两假说并存（渲染时序——截图早于数据/字体就绪 vs 场景本身就是低对比），档案无首跑截图留存不可裁决，重验通过仅说明二跑达标。与存量工作关系：浏览器端到端视觉基线验证为本窗新交付面（拓扑/协作图谱两个大屏 spec 首次走通），活跃区无同主题提案，非重复立项。结论：单次损失小（约 7 分钟＋一个 admin run），属新验证机制的第一个假阳性样本，低成本加固即可消除复发面。
