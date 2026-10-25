@@ -303,6 +303,19 @@ def validate_knowledge(project_root) -> list:
                     f"{label}: 链接目标格式非法（含 NUL 字节）: {target}"
                 )
                 continue
+            # 尖括号完整包裹（code-review item 619958a1e296，对齐兜底通道
+            # cc2ca6fe60b1 的合法形态放行）：_LINK_RE 捕获组不排除尖括号，
+            # [x](<file.md>) 会按含尖括号的路径做解析与存在性检查、必然误报
+            # 「链接目标不存在」；严格通道同样剥离成对尖括号包裹后再解析，
+            # 两通道对该合法形态裁决一致。
+            if (
+                len(path_part) >= 2
+                and path_part.startswith("<")
+                and path_part.endswith(">")
+            ):
+                path_part = path_part[1:-1]
+                if not path_part:
+                    continue  # <> 空包裹按纯页内锚点同口径跳过
             resolved = (rel_dir / path_part).resolve()
             try:
                 resolved.relative_to(kroot.resolve())
@@ -577,13 +590,18 @@ def _build_spawn_env() -> dict:
     return env
 
 
-def _default_spawn(cmd: list, cwd: str):
+def _default_spawn(cmd: list, cwd: str, env=None):
     """spawn claude 子进程（独立会话组，超时可 killpg 整组清场）。
 
     提示词经 stdin 传入（spawn 带 ``stdin=subprocess.PIPE``，配合
     :meth:`DistillManager._spawn_and_wait` 的 ``communicate(prompt, ...)``），
     同 agent_runner / adjudication_narrative 既有口径——argv 全文驻留
     /proc/<pid>/cmdline 对同机其他用户可见，且单参数受 MAX_ARG_STRLEN 约束。
+
+    ``env``：harness（run_one_shot）按 SpawnRequest.env_mode 算好经 popen
+    kwargs 传入的环境（蒸馏车道声明 ENV_MODE_CLEAN，即 os.environ 副本剔除
+    agent-run 专用键，code-review item 8c9e46ed49c2）；None（测试直呼等
+    未经 harness 的调用形态）回落既有 _build_spawn_env() 全量口径。
     """
     return subprocess.Popen(
         cmd,
@@ -594,7 +612,7 @@ def _default_spawn(cmd: list, cwd: str):
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_build_spawn_env(),
+        env=env if env is not None else _build_spawn_env(),
         start_new_session=True,
     )
 
@@ -705,7 +723,23 @@ def _discard_output(proot: Path, before=None) -> bool:
             "spec/knowledge/ 回滚（避免吞掉用户未提交改动），请人工核查"
         )
         return False
-    overlap = sorted(p for p in after if p.startswith(KNOWLEDGE_DIR + "/") and p in before)
+    # 目录折叠展开（code-review item 0180bdeaf91d，对齐 _commit_output
+    # 4d0b4682b40a 同款处理）：git status 把无任何已跟踪文件的整棵子树折叠
+    # 为单条目录项（如 spec/ 全树未跟踪时基线只含 "spec/"），原始路径快照
+    # 直接做交集时折叠发生在 spec/ 祖先层的基线里看不到用户未跟踪文件——
+    # overlap 判空后 git clean -fd 会把 run 前已存在的手工文件一并删除。
+    # 两侧快照先归一到 knowledge 表面文件粒度再做交集判定。
+    after_k = _expand_knowledge_surface(proot, after)
+    baseline_k = _expand_knowledge_surface(proot, before)
+    if after_k is None or baseline_k is None:
+        # 枚举失败时交集不可靠（折叠条目可能藏住基线已有路径），按基线
+        # 不可用口径保守跳过回滚
+        logger.warning(
+            "knowledge-distill 放弃产出：spec/knowledge/ 未跟踪文件枚举失败，"
+            "无法可靠甄别基线交集，跳过回滚，请人工核查"
+        )
+        return False
+    overlap = sorted(p for p in after_k if p in baseline_k)
     if overlap:
         logger.warning(
             "knowledge-distill 放弃产出：spec/knowledge/ 下改动含 run 前基线"
@@ -756,7 +790,17 @@ def _discard_output(proot: Path, before=None) -> bool:
             "spec/knowledge/ 清理结果未确认，请人工核查"
         )
         return False
-    left = sorted(p for p in residue if p.startswith(KNOWLEDGE_DIR + "/"))
+    # 残留复查同口径折叠展开（code-review item 0180bdeaf91d）：折叠条目
+    # （如 "spec/"）不以 KNOWLEDGE_DIR 前缀开头，原始前缀过滤会把藏在其
+    # 下的残留误判为「确认干净」。
+    residue_k = _expand_knowledge_surface(proot, residue)
+    if residue_k is None:
+        logger.warning(
+            "knowledge-distill 放弃产出：回滚后残留复查枚举失败，"
+            "spec/knowledge/ 清理结果未确认，请人工核查"
+        )
+        return False
+    left = sorted(residue_k)
     if left:
         logger.warning(
             "knowledge-distill 放弃产出：回滚后 spec/knowledge/ 仍有残留半成品，"
@@ -1403,7 +1447,11 @@ class DistillManager:
         # 弃管道语义保持）；spawn 注入缝 self._spawn 保持（测试替身经
         # DistillManager(spawn=...) 注入 Popen 级替身）。
         def _popen(argv, **kwargs):
-            return self._spawn(argv, cwd=str(proot))
+            # env 透传（code-review item 8c9e46ed49c2）：run_one_shot 按契约把
+            # build_spawn_spec 依据 env_mode（此处 ENV_MODE_CLEAN）算出的 env
+            # 经 popen kwargs 传入，垫片原先丢弃全部额外参数，清洁环境声明被
+            # 静默忽略、实际回落 _default_spawn 的全量 os.environ 拷贝减禁用键。
+            return self._spawn(argv, cwd=str(proot), env=kwargs.get("env"))
 
         try:
             outcome = run_one_shot(

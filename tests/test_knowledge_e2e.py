@@ -205,7 +205,7 @@ class KnowledgeE2E(unittest.TestCase):
             _git(self.root, *cmd)
 
     # ── fake spawn：扮演蒸馏 agent，读真实 delta 按契约写产物 ─────────
-    def _fake_spawn(self, cmd, cwd):
+    def _fake_spawn(self, cmd, cwd, env=None):
         # 真实时序：claude run 耗时（分钟级）≫ 归档提交（毫秒级），蒸馏的
         # git add/commit 恒在归档提交之后；fake 瞬时完成会与主线程撞
         # index.lock（非产品缺陷，测试须布防真实时序）——等主线程受理方

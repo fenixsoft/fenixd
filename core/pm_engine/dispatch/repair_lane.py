@@ -245,7 +245,12 @@ class PRepairLaneMixin:
             return False
         try:
             spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-        except Exception:
+        except Exception as e:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按空表降级；降级后果是 blocked 检查被跳过（已 blocked spec 仍可能被判可 repair），WARNING 留痕对齐 L305 同型处置（code-review item 33e082578fee）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"读取 '{spec_name}' 状态失败，repair 入口 blocked 检查按空表降级: "
+                f"{type(e).__name__}: {e}",
+            )
             spec_entry = {}
         if spec_entry.get("status") == "blocked":
             return False
@@ -1074,7 +1079,10 @@ class PRepairLaneMixin:
         # 6c89067c172a）：原先「read_one 读 → 算 +1 → 并进 update_spec 写回」读与
         # 写分处两次 STATE 锁临界区，merge-only 重试通道并发进入同一 spec 时各持
         # 相同旧值写回、丢一次递增，同指纹熔断晚一轮触发。指纹切换属重置语义
-        # （绝对写 1，无丢增量面），不 bump、随后续 update_spec 落盘。
+        # （绝对写 1，无丢增量面），不 bump、在本分支内直接落盘（code-review
+        # item ff450a695794：后续两条非熔断出口——续链 repair 只写
+        # _repair_merge_fp、fallback 的 updates 不含本组字段——原「随后续
+        # update_spec 落盘」的说法不成立，链内 streak 会恒为 1）。
         if prev_fp == fp:
             # 记账失败不阻塞熔断分类（code-review item 2917c609d8ad，对齐
             # queue.py _handle_merge_back_real_failure 同型守卫 941b22736836）：
@@ -1101,6 +1109,23 @@ class PRepairLaneMixin:
         else:
             streak = 1
             streak_bumped = False
+            # 指纹切换重置的持久化（code-review item ff450a695794）：切换即绝对
+            # 写 _merge_fp=fp 与 streak=1（重置语义、无丢增量面），使续链 repair
+            # 与 fallback 两条出口的下一轮失败能正确走 prev_fp == fp 的 bump
+            # 分支——否则链内同指纹连续失败每轮都重走切换路径、streak 恒为 1，
+            # fp 熔断在链内永不触发（仅轮次上限兜底）。写失败仅 WARNING：下一
+            # 轮仍走切换路径重置，轮次上限兜底，有界性无损。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name, {"_merge_fp": fp, "_merge_streak": 1},
+                )
+            except Exception as e:  # noqa: BLE001 —— 重置落盘失败不放大处置
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair re-merge 指纹切换重置落盘失败 '{spec_name}'"
+                    f"（streak 记账延迟一轮，轮次上限兜底）: "
+                    f"{type(e).__name__}: {e}",
+                )
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
         # 配置侧 int() 归一（code-review item a8c4f9dfc7a0，对齐 fast_track
         # 同键 74317ab4a77a 治理）：字符串/null 配置裸用于比较抛 TypeError
@@ -1341,36 +1366,49 @@ class PRepairLaneMixin:
                     f"（按 'implementing' 缺省继续收尾）: {type(e).__name__}: {e}",
                 )
                 orig_status = "implementing"
-            self._pm.state_machine.freeze_for_human(
-                spec_name,
-                error=(
-                    f"原状态 {orig_status} · 实现尝试连续 {max_r} 次失败"
-                    f"（含 repair 通道）— 已冻结转人工，需人工检查。"
-                    f"最近失败：{full_error[:400]}"
-                ),
-                signal_type="redispatch_loop_detected",
-                severity="major",
-                description=(
-                    f"'{spec_name}' 实现尝试连续 {max_r} 次失败（含 repair 通道）"
-                    f"已达 agents.max_retries 上限，自动重试终止——已冻结转人工处置"
-                ),
-                evidence=(
-                    f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                    f"final_error={full_error}"
-                ),
-                recommended_action=(
-                    "检查实现/repair 失败根因；处置后解冻（unfreeze_spec 自动清零"
-                    "计数）可重新获得自动修复机会"
-                ),
-                alert_callback=self._pm._send_human_escalation_alert,
-                extra_updates=updates,
-            )
-            self._pm.logger.error(
-                "pm_engine",
-                f"repair 链回退重试耗尽 '{spec_name}'：{full_error[:200]} — "
-                f"冻结转人工，不再重派",
-            )
-            return
+            # 冻结收尾守卫（code-review item e8f1fac9cbc8，对齐同文件 66588fe4ac71
+            # / _enqueue_front 851-860 守卫范式）：本方法可能运行在 worker 的
+            # except 兜底内（4ba308cf06fe），freeze_for_human 裸调抛错会从失败
+            # 收尾路径再冒出、穿出 worker 线程，冻结转人工不落地、spec 悬置。
+            # 失败仅 WARNING 并改走下方 ready 重派路径兜底（admin_monitor 亦可兜底）。
+            try:
+                self._pm.state_machine.freeze_for_human(
+                    spec_name,
+                    error=(
+                        f"原状态 {orig_status} · 实现尝试连续 {max_r} 次失败"
+                        f"（含 repair 通道）— 已冻结转人工，需人工检查。"
+                        f"最近失败：{full_error[:400]}"
+                    ),
+                    signal_type="redispatch_loop_detected",
+                    severity="major",
+                    description=(
+                        f"'{spec_name}' 实现尝试连续 {max_r} 次失败（含 repair 通道）"
+                        f"已达 agents.max_retries 上限，自动重试终止——已冻结转人工处置"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                        f"final_error={full_error}"
+                    ),
+                    recommended_action=(
+                        "检查实现/repair 失败根因；处置后解冻（unfreeze_spec 自动清零"
+                        "计数）可重新获得自动修复机会"
+                    ),
+                    alert_callback=self._pm._send_human_escalation_alert,
+                    extra_updates=updates,
+                )
+            except Exception as fz_exc:  # noqa: BLE001 —— 冻结失败不放大收尾
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair 链回退冻结转人工失败 '{spec_name}'（改走 ready 重派"
+                    f"路径兜底）: {type(fz_exc).__name__}: {fz_exc}",
+                )
+            else:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"repair 链回退重试耗尽 '{spec_name}'：{full_error[:200]} — "
+                    f"冻结转人工，不再重派",
+                )
+                return
         # 主写守卫（code-review item 66588fe4ac71，与同方法 bump_counters
         # 4ba308cf06fe / read_one db8dcf54c94e 既有守卫同款论证）：update_spec
         # 是真实 STATE IO（flock + read/write），而本方法是 repair 链三条失败
@@ -1433,7 +1471,18 @@ class PRepairLaneMixin:
             )
         except Exception:
             channel = "implementer"
-        self._enqueue_front(spec_name, channel)
+        # 入队守卫（code-review item e8f1fac9cbc8，对齐同文件 851-860 同款
+        # try/except「失败等 full_scan 周期兜底」）：本方法是失败收尾（且可能
+        # 运行在 worker 的 except 兜底内），_enqueue_front 裸调抛错会穿出
+        # worker 线程，重派入队不落地、spec 悬置 implementing 且无队列条目。
+        try:
+            self._enqueue_front(spec_name, channel)
+        except Exception as q_exc:  # noqa: BLE001 —— 入队失败不放大收尾
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair fallback 重派入队失败 '{spec_name}'"
+                f"（等 full_scan 周期兜底）: {type(q_exc).__name__}: {q_exc}",
+            )
 
     def _repair_conflict_summary(self, spec_name: str, merge_info) -> dict:
         """构造 repair prompt 的冲突摘要（D5：spec 身份 + 冲突清单 + 方向说明）。
