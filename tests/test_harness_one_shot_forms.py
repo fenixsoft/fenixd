@@ -160,9 +160,10 @@ class TestDistillForm:
     def test_argv_matches_pre_migration(self, tmp_path):
         seen = {}
 
-        def spawn(cmd, cwd):
+        def spawn(cmd, cwd, env=None):
             seen["argv"] = cmd
             seen["cwd"] = cwd
+            seen["env"] = env
             return _OutProc()
 
         ok, err = DistillManager(spawn=spawn)._spawn_and_wait(tmp_path, "提示词")
@@ -171,9 +172,12 @@ class TestDistillForm:
             "claude", "-p", "--permission-mode", "bypassPermissions",
         ]
         assert seen["cwd"] == str(tmp_path)
+        # clean env 口径经垫片 env kwarg 显式传入（code-review 8c9e46ed49c2：
+        # 垫片不再丢弃 popen kwargs），ENV_MODE_CLEAN 下恒为非 None 剔除键副本
+        assert seen["env"] is not None
 
     def test_nonzero_exit_maps_to_error_with_stderr_tail(self, tmp_path):
-        def spawn(cmd, cwd):
+        def spawn(cmd, cwd, env=None):
             return _OutProc(stderr="boom-tail", returncode=2)
 
         ok, err = DistillManager(spawn=spawn)._spawn_and_wait(tmp_path, "提示词")
