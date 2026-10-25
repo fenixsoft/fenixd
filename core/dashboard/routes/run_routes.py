@@ -13,7 +13,6 @@ import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
-from core.dashboard.registry import Registry
 
 logger = logging.getLogger("fenixd.dashboard.run_routes")
 
