@@ -872,7 +872,7 @@ class PromptBuilder:
            授权推进并在结果文件/处置记录留痕；
         3. 禁止为等待人类回复而结束回合（end_turn），无法继续时按本车道
            契约的失败出口（partial/error/相应终态）收工；
-        4. 显式覆盖 Claude Code 系统提示词默认框架（interactive agent /
+        4. 显式覆盖底层交互式 agent 系统提示词默认框架（interactive agent /
            「难以撤销的操作先确认」/ plan mode / brainstorming 等交互式
            工作流）在 Fenix run 中不适用。
         """
@@ -890,7 +890,7 @@ class PromptBuilder:
             "SPEC/tasks 授权推进，事后在结果文件/处置记录中留痕。\n"
             "- 禁止为「等人回复」而结束回合（`end_turn`）；要么继续推进，"
             "要么按各自契约的失败出口（`partial` / `error` / 相应终态）收工。\n"
-            "- Claude Code 系统提示词中的默认框架（`interactive agent`、"
+            "- 底层交互式 agent 系统提示词的默认框架（`interactive agent`、"
             "「难以撤销的操作先确认」，以及 `plan mode` / `brainstorming` "
             "等交互式工作流）在 Fenix run 中**不适用**。\n"
         )
@@ -957,9 +957,9 @@ class PromptBuilder:
         notes = self._harness_notes()
         return (
             f"- **两类后台能力均不可用于等待**：非交互派发（{notes}）下"
-            "既无 `ScheduleWakeup` 定时唤醒，后台 Bash 任务的**完成通知也不会"
-            "送达**——run 结束当前 turn 即进程终止，后台子进程随之被杀。"
-            "「后台启动 + 等通知」在本模式下与「启动即忘」是同一件事。\n"
+            "既无 `ScheduleWakeup` 类定时唤醒，后台任务（Bash 等）的**完成"
+            "通知也不会送达**——run 结束当前 turn 即进程终止，后台子进程随之"
+            "被杀。「后台启动 + 等通知」在本模式下与「启动即忘」是同一件事。\n"
             "- **有界入口优先前台直跑**：可能超过 600s 工具上限的长任务（全量"
             "回归、大范围构建、超时探针等），若存在受硬超时约束、必在返回前给"
             "出完整结果的有界入口（如 `bin/run_full_suite.py --timeout <t>`），"
