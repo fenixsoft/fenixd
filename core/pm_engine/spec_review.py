@@ -1001,31 +1001,31 @@ class SpecReviewManager:
         lines = self._git_porcelain_lines()
         if lines is not None:
             for line in lines:
-                    # 脏文件判定：porcelain 首两字符（index 列/工作区列）任一非
-                    # 空格即脏——覆盖 ??、MM/AM/MT 组合态，及 index 列 D/R/C 的
-                    # 暂存删除/重命名/拷贝（code-review item 0e6649a88334：旧判据
-                    # index 列仅认 M/A，'D ' 两列均不命中、暂存删除漏出快照）。
-                    # dirty_files 仅作 _verify_snapshot 的 WARNING 留痕、不作硬门，
-                    # 放宽判据无行为安全风险；'!!'（assume-unchanged/skip-worktree）
-                    # 默认 porcelain 输出不含，语义不受影响。
-                    status = line[:2]
-                    is_dirty = len(status) == 2 and (status[0] != " " or status[1] != " ")
-                    if not is_dirty:
-                        continue
-                    path = _parse_porcelain_path(line)
-                    if path is None:
-                        continue
-                    # 忽略 SPEC 目录内的文件（已经单独记录）
-                    if path.startswith(SPEC_CHANGES_PREFIX):
-                        continue
-                    full = self.project_root / path
-                    if full.is_file():
-                        try:
-                            content = full.read_bytes()
-                            h = hashlib.md5(content).hexdigest()
-                            snapshot["dirty_files"][path] = h
-                        except OSError:
-                            pass
+                # 脏文件判定：porcelain 首两字符（index 列/工作区列）任一非
+                # 空格即脏——覆盖 ??、MM/AM/MT 组合态，及 index 列 D/R/C 的
+                # 暂存删除/重命名/拷贝（code-review item 0e6649a88334：旧判据
+                # index 列仅认 M/A，'D ' 两列均不命中、暂存删除漏出快照）。
+                # dirty_files 仅作 _verify_snapshot 的 WARNING 留痕、不作硬门，
+                # 放宽判据无行为安全风险；'!!'（assume-unchanged/skip-worktree）
+                # 默认 porcelain 输出不含，语义不受影响。
+                status = line[:2]
+                is_dirty = len(status) == 2 and (status[0] != " " or status[1] != " ")
+                if not is_dirty:
+                    continue
+                path = _parse_porcelain_path(line)
+                if path is None:
+                    continue
+                # 忽略 SPEC 目录内的文件（已经单独记录）
+                if path.startswith(SPEC_CHANGES_PREFIX):
+                    continue
+                full = self.project_root / path
+                if full.is_file():
+                    try:
+                        content = full.read_bytes()
+                        h = hashlib.md5(content).hexdigest()
+                        snapshot["dirty_files"][path] = h
+                    except OSError:
+                        pass
         return snapshot
 
     def _verify_snapshot(
@@ -1140,14 +1140,14 @@ class SpecReviewManager:
         lines = self._git_porcelain_lines()
         if lines is not None:
             for line in lines:
-                    if line.startswith("??"):
-                        path = _parse_porcelain_path(line)
-                        if path is None:
-                            continue
-                        if not path.startswith(SPEC_CHANGES_PREFIX):
-                            # 检查是否在快照中已存在
-                            if path not in snapshot.get("dirty_files", {}):
-                                added_untracked.append(path)
+                if line.startswith("??"):
+                    path = _parse_porcelain_path(line)
+                    if path is None:
+                        continue
+                    if not path.startswith(SPEC_CHANGES_PREFIX):
+                        # 检查是否在快照中已存在
+                        if path not in snapshot.get("dirty_files", {}):
+                            added_untracked.append(path)
         if added_untracked:
             self.logger.warning(
                 "spec_review",
