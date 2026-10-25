@@ -972,7 +972,12 @@ def _iter_window_classified_runs(project_root, window_start: datetime, window_en
     collect_runs_stats 对「error 终态空文本」run 的既有计数会被改写。
     """
     for run_id, p, ts in _iter_window_runs(project_root, window_start, window_end):
-        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+        # 尾读行数与 _strip_terminal_echo_lines 的剥除窗口共用同一单源常量
+        # （code-review item e05105d6fbeb）：调窗只改一处，分类输入与剥除
+        # 窗口不失配。
+        category, detail = _classify_run(
+            run_id, _read_run_tail(p, _TERMINAL_ADJACENT_WINDOW)
+        )
         if category == "running":
             # 对账仅触达 running 判定的 run（终态 run 零额外 IO）
             category, detail = _reconcile_running_run(project_root, run_id, p, window_end)
@@ -1830,7 +1835,12 @@ class SelfReviewScheduler:
             return {"triggered": True, "ok": False, "reason": f"append_error: {e}", "date": today}
 
         committed = self._commit_todo(today)
-        self._save_state(today)
+        # 锚点回写取本次聚合冻结的 window_end 而非状态落盘时刻（code-review
+        # item af4335da489a）：自省 run 同步执行期间（[window_end, 状态落盘]，
+        # 分钟级）新完成的 SPEC run 不在本轮窗口内，锚点若取落盘时刻会把它们
+        # 永久排除出下轮增量窗口；取 window_end 使相邻两轮窗口无缝衔接（失败
+        # 路径 advance_anchor=False 的可覆盖语义不受影响）。
+        self._save_state(today, anchor_at=window_end)
         self.logger.info(
             "self_review",
             f"每日自省完成 {today}（todo.md 已追加："
@@ -2734,7 +2744,9 @@ class SelfReviewScheduler:
             return None
         return _iso_to_aware_dt(raw)
 
-    def _save_state(self, date_str: str, advance_anchor: bool = True) -> None:
+    def _save_state(
+        self, date_str: str, advance_anchor: bool = True, anchor_at: Optional[datetime] = None
+    ) -> None:
         """记录执行日（last_run_date，同日防重复判定基准）与执行时刻。
 
         last_run_at 保留写入：下次执行的增量窗口锚点（数据聚合与活动判定
@@ -2745,11 +2757,18 @@ class SelfReviewScheduler:
         产出回顾，锚点不动使这些内容次日仍落在增量窗口内被真正覆盖；原
         锚点缺失（首跑/旧格式状态文件）时省略该字段，读端回退 24h 窗口
         口径不变。
+
+        anchor_at（code-review item af4335da489a）：advance_anchor=True 时
+        显式指定锚点时刻——成功路径传本次聚合冻结的 window_end，使相邻两轮
+        增量窗口无缝衔接（自省 run 执行期间落地的活动不被挤出下轮窗口）；
+        None 时维持取 _save_state 调用时刻的既有口径。
         """
         path = self._state_path()
         try:
             if advance_anchor:
-                anchor: Optional[str] = to_storage(now_utc())
+                anchor: Optional[str] = to_storage(
+                    anchor_at if anchor_at is not None else now_utc()
+                )
             else:
                 # 回读留痕（code-review item 1312883c52e6）：区分「原本就无
                 # 锚点」（首跑/旧格式状态文件，良性，口径不变）与「回读失败」
