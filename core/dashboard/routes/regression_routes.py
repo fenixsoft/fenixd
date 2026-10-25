@@ -9,7 +9,7 @@
 - POST /api/regression/fix       （query project）→ 写回归问题自动修复触发信号（add-regression-auto-fix）
 - GET  /api/regression/fix-result（query project）→ 只读修复触发判定结果（add-regression-auto-fix）
 
-端点 handler 走既有 mixin 形态（self._json / self._error）。两个 POST 端点的
+端点 handler 走既有 mixin 形态（self._json / self._error）。各 POST 端点的
 项目均从 query string 解析，不消费请求体（code-review item 6e9597e51e90：
 旧实现读 body 却不用，且 _read_json_body 对空 body 回 400，把遵循契约
 不带 body 的客户端拒之门外；残留 body 字节由派发层
@@ -866,16 +866,15 @@ class H12RegressionRoutesMixin:
                 )
                 return
 
-            # 整契约路径（full_contract=True）对称校验（item f869f6f487e5）：
-            # 起草前无有效契约，若起草后盘上留有 verify.yaml 却不可解析
-            # （claude 违反自证门把契约写坏又输出 no_test_system），不得以
-            # no_test_system 成功结案把坏契约留在盘上——落失败回包；文件系
-            # 本轮凭空写出（起草前不存在）时回滚删除，起草前已存在的文件
-            # MUST NOT 删除、只报失败。盘上无文件（什么都没写）仍是合法
-            # no_test_system 结案。
+            # 整契约路径（full_contract=True）对称校验（item f869f6f487e5、
+            # 5e6b0f32f552）：起草前无有效契约，若起草后盘上留有 verify.yaml
+            # 却不可解析（claude 违反自证门把契约写坏），不论 marker 为
+            # no_test_system / failed / 未输出，都不得把坏契约留在盘上——
+            # 一律落失败回包；文件系本轮凭空写出（起草前不存在）时回滚删除，
+            # 起草前已存在的文件 MUST NOT 删除、只报失败。盘上无文件（什么
+            # 都没写）仍是合法 no_test_system 结案。
             if (
-                marker == "no_test_system"
-                and full_contract
+                full_contract
                 and contract_after is None
                 and (proot / ".fenix" / "verify.yaml").is_file()
             ):

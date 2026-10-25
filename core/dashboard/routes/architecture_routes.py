@@ -552,8 +552,10 @@ class ArchitectureManager:
         diagram.html/evidence.md，并与用户重启后重新触发的下一轮生成并发写
         同一文件（code-review item dffc01af10fa）。退出链对每个登记句柄
         killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
-        _kill_process_group）；目标已退出属可预期竞态（ProcessLookupError/
-        OSError 降级 proc.kill）。不在此排干管道/清理 _procs：SIGKILL 后
+        _kill_process_group）；目标已退出属可预期竞态，与守卫拒绝（自身组/
+        非正 pgid）同样静默：ProcessLookupError/OSError 一律不降级单 pid
+        proc.kill（对齐下方行内注释与 guard_killpg 的 resolve 语义）。不在
+        此排干管道/清理 _procs：SIGKILL 后
         communicate 可能被逃出进程组的孙进程无限阻塞（knowledge.py 同款已知
         形态），收尾交由仍在飞的生成线程自身 finally 完成。
         """
@@ -918,13 +920,19 @@ class ArchitectureManager:
                     component_count=component_count,
                 ),
             )
-        except Exception:
+        except Exception as exc:
             # code-review item 1e7127422a27：只捕 OSError 会放走终态写入调用
             # （json.dumps/write_text/os.replace）抛出的非 OSError 异常，终态
             # 未落盘而锁随调用方 finally 释放，违反读侧「终态写入 MUST 严格
             # 先于锁释放」契约（严格度对齐 refresh 线程启动失败路径
             # item 1295fb028cb4）；BaseException 仍照常穿出不吞。
-            pass  # 终态写盘失败不逃逸线程；读侧按残留态兜底
+            # code-review item 79585a2bd0c7：不逃逸线程（读侧按残留态兜底）
+            # 但须留痕服务端日志——残留 generating 合成的「生成被中断」无法
+            # 与真实写盘故障区分，口径对齐本模块其余失败路径。
+            logger.warning(
+                f"架构图终态写盘失败（proot={proot}）: "
+                f"{type(exc).__name__}: {exc!r}",
+            )
 
 
 # dashboard 进程内单例（design D2 单写者）。测试经独立 tmp 项目隔离，

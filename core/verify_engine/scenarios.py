@@ -156,6 +156,29 @@ def prepare_scenarios_for_write(raw: list) -> list:
 # MUST NOT import pm_engine。
 
 
+def _entry_contract_version(item) -> int:
+    """单条冻结集条目 ``contract_version`` 的归一（缺失/非整型/非正整型 → 1）。
+
+    条目级「版本归一」的唯一权威实现：frozen_contract_version（min 侧）与
+    migrate_frozen_contract 的 max_declared（max 侧）共用，归一式只写这一份，
+    防两处内联写法单向漂移（code-review item 9c0145265be7）。
+
+    type(...) is int（code-review item 380e0508406d）：bool 是 int 子类，
+    isinstance 会把 contract_version:true 当成 1 放行；精确类型拒绝 bool，
+    与「非整型→1」的文档语义一致。max(v, 1)（code-review item 03b0371dc1fb）：
+    负/零整型不是合法契约版本号，与「非整型→1」同口径归一为 1；正版本号
+    （含新于目标版本的更新声明）原样返回。max 侧沿用同一钳制不影响
+    fail-closed 判定：max_declared 只在 min 侧判定 current <= current_version
+    之后执行，此时 current_version >= current >= 1，非法值钳到 1 仍不可能
+    大于 current_version，正值更新声明不受钳制影响——与不钳的旧内联式
+    逐路径等价。
+    """
+    if not isinstance(item, dict):
+        return 1
+    v = item.get(CONTRACT_VERSION_FIELD)
+    return max(v, 1) if type(v) is int else 1
+
+
 def frozen_contract_version(scenarios: list) -> int:
     """冻结集条目级 ``contract_version`` 的最小值（缺失/非整型/非正整型视为 1）。
 
@@ -169,21 +192,9 @@ def frozen_contract_version(scenarios: list) -> int:
     Returns:
         整型版本号（>= 1）。
     """
-    versions = []
-    for item in scenarios:
-        if not isinstance(item, dict):
-            versions.append(1)
-            continue
-        v = item.get(CONTRACT_VERSION_FIELD)
-        # type(...) is int（code-review item 380e0508406d）：bool 是 int 子类，
-        # isinstance 会把 contract_version:true 当成 1 放行；精确类型拒绝 bool，
-        # 与「非整型→1」的文档语义一致。
-        # max(v, 1)（code-review item 03b0371dc1fb）：负/零整型不是合法契约
-        # 版本号，与「非整型→1」同口径归一为 1，兑现本函数 docstring
-        # 「Returns: 整型版本号（>= 1）」的值域承诺；正版本号（含新于目标
-        # 版本的更新声明）原样返回，migrate_frozen_contract 对更新版本的
-        # fail-closed 路由不受影响。
-        versions.append(max(v, 1) if type(v) is int else 1)
+    # 逐条目归一口径（bool 精确拒绝/负零钳制）单源于 _entry_contract_version
+    # （code-review item 9c0145265be7），本函数只保留 min 聚合语义。
+    versions = [_entry_contract_version(item) for item in scenarios]
     return min(versions) if versions else 1
 
 
@@ -233,13 +244,10 @@ def migrate_frozen_contract(
     # 又被旧版追加 / 冻结文件被部分改写），后者会被逐段迁移一路盖成目标版本
     # 戳、按旧规则静默校验采纳，旁路上方 min 判定的 fail-closed。版本不一致
     # 本身即异常——补 max 校验：任一条目声明新于目标版本即同款交人工通道
-    # （「任一存疑即人工」口径），正常单版本路径行为不变。
-    max_declared = max(
-        item.get(CONTRACT_VERSION_FIELD)
-        if isinstance(item, dict) and type(item.get(CONTRACT_VERSION_FIELD)) is int
-        else 1
-        for item in scenarios
-    )
+    # （「任一存疑即人工」口径），正常单版本路径行为不变。条目版本归一
+    # （含钳制）单源 _entry_contract_version（code-review item 9c0145265be7）：
+    # 钳制不改变本判定可达路径行为的理由见其 docstring。
+    max_declared = max(_entry_contract_version(item) for item in scenarios)
     if max_declared > current_version:
         # fail-closed：声明更新契约版本的条目不降级不静默放行（c542bb97d171）
         return {
@@ -759,6 +767,42 @@ ASSERTION_REQUIRED_FIELDS: dict = {
             "mode": "post",
         },
     ),
+    # text_match / attribute_match 必填内容参数（code-review item ea8d6a657ca4）：
+    # 缺参在运行期是确定性失败守卫（assertions.py「缺少 expected / attribute
+    # 字段」），与 json_output/json_path 先例（baaae8c599ae / 2cab94c9b2df）
+    # 同形态——验收期前移打回，不耗一整轮验证。expected 的「未设置」哨兵是
+    # None 而非空串（断言「元素文本/属性值为空串」是合法期望，须显式写
+    # expected: ""，与 Assertion.expected 哨兵及运行层 `expected is None` 守卫
+    # 同口径），故 mode=none_only 仅拒 None。
+    "text_match": (
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"期望的元素文本"',
+            "mode": "none_only",
+        },
+    ),
+    "attribute_match": (
+        {
+            "key": "extra.attribute",
+            "short": "attribute",
+            "help": "要断言的属性名",
+            "example": '"href"',
+            "mode": "post",
+        },
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"/docs/getting-started"',
+            "mode": "none_only",
+        },
+    ),
+    # text_contains 刻意不在本表登记：text/expected 二选一（运行层
+    # `a.get("text") or a.get("expected", "")` 任一非空即合法），表条目是
+    # 「逐字段 AND 必填」语义，登记任一字段都会误打回仅带另一字段的存量
+    # 场景——按 no_overlap threshold 先例在 _validate_web 加类型专用分支。
 }
 
 # 操作必填字段单源表（键 = (kind, action)）。cli 仅 run；api 有
@@ -1309,6 +1353,18 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             specs,
             lambda key, a=a: _assert_lookup_value(a, key),
         )
+        # text_contains 必填内容验收（code-review item ea8d6a657ca4）：text/
+        # expected 二选一（运行层 `a.get("text") or a.get("expected", "")` 任一
+        # 非空即合法，双缺才命中「缺少 text/expected 字段」确定性失败），与
+        # 单源表「逐字段 AND 必填」条目语义不匹配，故不入 ASSERTION_REQUIRED_
+        # FIELDS（登记任一字段都会误打回仅带另一字段的存量场景），按 no_overlap
+        # threshold 先例在此加类型专用分支；判据逐字对齐运行层缺参守卫的
+        # truthiness（text 与 expected 双空串/双缺失同款打回）。
+        if a.type == "text_contains" and not (a.extra.get("text") or a.expected):
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: 类型 'text_contains' 需要 text"
+                "或 expected 至少一项（二选一）"
+            )
         # no_overlap threshold 形态验收（code-review item 77ee8f1bc273）：
         # from_dict 对 threshold 原样透传（d.get("threshold", 0.2)），词表
         # 校验零形态检查，坏档（"20%"、null、对象等）过验收白烧一轮验证后，

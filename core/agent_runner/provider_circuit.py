@@ -995,8 +995,14 @@ class ProviderCircuit:
         )
         # 剥 iso 时间戳（2026-09-07t10:40:03z 等）
         text = re.sub(r"\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?z?", "", text)
-        # 剥长数字串（unix 时间戳 / session id 碎片）
-        text = re.sub(r"\d{4,}", "", text)
+        # 剥长数字串（unix 时间戳 / session id 碎片）。exit code / http 骨架
+        # 后保留的数值豁免剥离（item b31beddde9a6）：异类失败指纹必须互异，
+        # 4 位以上退出码（exit code 1432 / 1532 形态）不得被吞成同一骨架。
+        text = re.sub(
+            r"(?P<kept>\b(?:exit code|http) \d{4,})|\d{4,}",
+            lambda m: m.group("kept") or "",
+            text,
+        )
         # 剥分隔符噪音与空白
         text = re.sub(r"[\s:/.,()\"'-]+", " ", text).strip()
         return text
@@ -2241,7 +2247,8 @@ class ProviderCircuit:
                                    SIGNAL_KILL_ALERT_THROTTLE_MINUTES) is not None:
                 self._pm.logger.debug(
                     "agent_runner",
-                    f"signal_kill_storm 告警已 throttle（15 分钟内已有）: '{spec_name}'",
+                    f"signal_kill_storm 告警已 throttle "
+                    f"({SIGNAL_KILL_ALERT_THROTTLE_MINUTES} 分钟内已有): '{spec_name}'",
                 )
                 return
             store.append({
@@ -2281,7 +2288,8 @@ class ProviderCircuit:
                                    SIGNAL_KILL_ALERT_THROTTLE_MINUTES) is not None:
                 self._pm.logger.debug(
                     "agent_runner",
-                    f"signal_kill_recovered 告警已 throttle（15 分钟内已有）: '{spec_name}'",
+                    f"signal_kill_recovered 告警已 throttle "
+                    f"({SIGNAL_KILL_ALERT_THROTTLE_MINUTES} 分钟内已有): '{spec_name}'",
                 )
                 return
             store.append({

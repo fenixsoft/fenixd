@@ -88,6 +88,20 @@ def _str_field(value) -> str:
         return str(value)
 
 
+def _str_id_list(value) -> list:
+    """字符串 id 列表归一：非 list 脏值作废回空 list，成员强转 str 并剔除空值。
+
+    code-review item 7673c27f0dd8：scenario_ids / requeue_scenario_ids 等
+    被拒场景清单由框架落盘 JSON 读取（_load_json_lenient），上游回归可能
+    落字符串/标量——join 按单字符迭代把场景清单渲染成逐字符畸形注入文本，
+    标量更会抛 TypeError 中断 prompt 构建。与 conflict_paths（item
+    7387ef13061b）、failed_ids 的 isinstance list 防御同口径。
+    """
+    if not isinstance(value, list):
+        return []
+    return [str(s) for s in value if s]
+
+
 def _load_json_lenient(path) -> object | None:
     """宽松 JSON 读取共享 helper：读文件 + json.loads，缺失/不可读/损坏 → None。
 
@@ -1503,7 +1517,13 @@ class PromptBuilder:
         prev_error = ""
         try:
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            prev_error = (entry.get("error") or "") if isinstance(entry, dict) else ""
+            # 字符串归一（code-review item 1d699dd25240）：error 与 evidence
+            # 同属多路径信号字段，历史/直发记录可能落结构化值——非字符串脏值
+            # 会让下方 len()/切片抛 TypeError 冲出本段、中止重派轮整次 prompt
+            # 构建。真值判断先行保持 falsy 脏值丢弃语义，归一口径与
+            # _impl_diagnosis_section 的 isinstance str 守卫对齐。
+            if isinstance(entry, dict) and entry.get("error"):
+                prev_error = _str_field(entry.get("error"))
         except Exception:
             prev_error = ""
         if not prev_error:
@@ -2668,12 +2688,15 @@ class PromptBuilder:
         for v in data:
             if not isinstance(v, dict):
                 continue
-            if v.get("scenario_ids"):
+            sids = _str_id_list(v.get("scenario_ids"))
+            if sids:
                 # 批量归因查重违规（fix-verdict-dedup-resynthesis）：无单场景
-                # scenario_id，场景集在 scenario_ids 列表
+                # scenario_id，场景集在 scenario_ids 列表；非 list 脏值经
+                # _str_id_list 作废回空（落单场景分支呈现，is_dedup 不误标）
                 is_dedup = True
-                sids = "、".join(str(s) for s in v["scenario_ids"] if s)
-                lines.append(f"  - 批量归因查重违规（场景：{sids}）：{v.get('reason')}\n")
+                lines.append(
+                    f"  - 批量归因查重违规（场景：{'、'.join(sids)}）：{v.get('reason')}\n"
+                )
             else:
                 lines.append(
                     f"  - 场景 `{v.get('scenario_id')}`（status={v.get('status')}）："
@@ -2751,7 +2774,7 @@ class PromptBuilder:
         for v in violations:
             if not isinstance(v, dict):
                 continue
-            sids = "、".join(str(s) for s in (v.get("scenario_ids") or []) if s)
+            sids = "、".join(_str_id_list(v.get("scenario_ids")))
             lines.append(f"  - {sids}: {v.get('reason')}\n")
         lines.append(
             "- 各被拒场景的差异化素材（框架已掌握的场景局部数据，归因改写 MUST "
@@ -2798,7 +2821,7 @@ class PromptBuilder:
             return ""
         if not isinstance(data, dict):
             return ""
-        requeue_ids = [str(s) for s in (data.get("requeue_scenario_ids") or [])]
+        requeue_ids = _str_id_list(data.get("requeue_scenario_ids"))
         if not requeue_ids:
             return ""
         return (
