@@ -10,14 +10,18 @@ daemon 侧 event_bus.py 的 checksum 轮询一致。
 - {type: "state",   project, specs, details, overview: null}  —— 增量形态
   （dashboard-incremental-watcher D2）：specs 仅列变更 spec 的摘要
   （新增/变更带 summary，删除以 summary:null 标记），details 仅含变更 spec 的详情，
-  overview 恒为 null（D3：前端本地归并统计，30s 心跳校准）
+  overview 恒为 null（D3：前端本地归并统计，30s 心跳校准；该 30s 指前端自身
+  兜底轮询 refreshPolicy.HEARTBEAT_MS=30s，非下方 2s 的 refresh 心跳）
 - {type: "detail",  spec, data}    —— 单个 SPEC 自己的文件变化（保留，兼容详情弹窗）
 - {type: "run_meta", run_id, status}           —— run 状态转换（running→done/error）
 - {type: "run_events", run_id, status, events[, reset]} —— 被订阅 run 的增量事件
 - {type: "admin_activities", project}          —— .fenix/admin_alerts.json 变化
   （add-admin-invoke-dialog：弹窗打开时前端据此重新拉取该 SPEC 的处置记录）
 - {type: "refresh"}                            —— 全局刷新心跳（无 project 字段），
-  周期广播：daemon 状态/新项目发现等变化不产生数据源文件变更，前端据此整体重拉校准
+  周期广播：daemon 状态/新项目发现等变化不产生数据源文件变更。轻量校准信号：
+  前端并非逐事件全量重拉（详情页 500ms 节流 + ETag 条件请求，304 未变零传输；
+  overview/列表页不逐事件重拉），全量校准由前端 30s 兜底轮询承担
+  （dashboard-sse-refresh 知识库口径）
 
 监视模型（dashboard-incremental-watcher D7，两级签名跳层 + 索引兜底）：
 - **一级（顶层源）**：每项目 stat 固定集合（STATE.md、spec/changes、
@@ -50,7 +54,11 @@ from . import data as dashboard_data
 logger = logging.getLogger("fenixd.dashboard.watcher")
 
 SCAN_INTERVAL = 1.0  # 数据源文件轮询周期（秒）
-REFRESH_HEARTBEAT = 2.0  # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
+# 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送。
+# 2s 只是轻量信号广播周期，前端消费侧另有节流与条件请求（详情页 ETag/304，
+# overview/列表页不逐事件重拉），全量校准由前端 30s 兜底轮询承担——上方
+# docstring「30s 心跳校准」指前端该轮询，与本常量是两个节奏，勿混读。
+REFRESH_HEARTBEAT = 2.0
 
 
 def _dir_sig(p: Path):

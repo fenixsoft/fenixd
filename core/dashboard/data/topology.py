@@ -84,8 +84,8 @@ def split_attempt(run_id: str) -> tuple:
     """run_id → ``(base_run_id, attempt, transient_retry)``。
 
     base 与 ``strip_run_id_suffixes`` 同一函数对象（单源）；attempt 取尾部
-    attempt 段最大序号（缺省 1），transient_retry 取尾部 -r<n>（缺省 None）。
-    解析只读 run_id 字符串，不触产物文件。
+    attempt 段最大序号（缺省 1），transient_retry 取尾部 -r 段最大序号
+    （缺省 None）。解析只读 run_id 字符串，不触产物文件。
     """
     base = strip_run_id_suffixes(run_id)
     attempt = 1
@@ -99,7 +99,12 @@ def split_attempt(run_id: str) -> tuple:
             continue
         m = _TRANSIENT_SEG_RE.search(rid)
         if m is not None:
-            transient = int(m.group(1))
+            # 多段 -r（语法允许，见 RUN_ID_SUFFIX_RE）：与 attempt 同口径取最大
+            transient = (
+                int(m.group(1))
+                if transient is None
+                else max(transient, int(m.group(1)))
+            )
             rid = rid[: m.start()]
             continue
         break

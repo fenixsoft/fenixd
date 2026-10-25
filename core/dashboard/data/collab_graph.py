@@ -56,7 +56,8 @@ def _recent_key(entry: dict):
     if dt is None:
         from datetime import datetime as _dt, timezone as _tz
 
-        return (1, _dt.max.replace(tzinfo=_tz.utc))
+        # 失败键首元素 -1 < 成功键 0：reverse=True 降序时失败条目稳定垫底
+        return (-1, _dt.min.replace(tzinfo=_tz.utc))
     return (0, dt)
 
 

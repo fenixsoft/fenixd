@@ -191,6 +191,22 @@ class TestAggregationScenarios:
         # 保留的是最近 CAP 条（最旧两条被截断）
         assert times[0] == _iso(E1 + (cg.RECENT_RUNS_CAP + 1) * 60)
 
+    def test_recent_runs_unparseable_time_sorted_last(self):
+        """排序契约：time 解析失败（含缺失）的明细在降序列表排**末尾**，
+        不反超可解析条目，优先被 RECENT_RUNS_CAP 截断而非挤掉正常条目。"""
+        bucket: list = []
+        for entry in ({"time": _iso(E1)}, {"time": "not-a-ts"}, {}, {"time": _iso(E3)}):
+            cg._push_recent(bucket, entry)
+        assert [e.get("time") for e in bucket] == [_iso(E3), _iso(E1), "not-a-ts", None]
+        # 失败条目垫底 → 先被条数上限截断，可解析条目的名额不受挤占
+        full: list = []
+        for i in range(cg.RECENT_RUNS_CAP):
+            cg._push_recent(full, {"time": _iso(E1 + i * 60)})
+        cg._push_recent(full, {"time": "not-a-ts"})
+        assert len(full) == cg.RECENT_RUNS_CAP
+        assert all(e["time"] != "not-a-ts" for e in full)
+        assert full[0]["time"] == _iso(E1 + (cg.RECENT_RUNS_CAP - 1) * 60)
+
 
 # ══ 任务 1.1：节点权重与在飞语义 ═════════════════════════════════════════
 

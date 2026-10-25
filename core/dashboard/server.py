@@ -525,9 +525,12 @@ def _start_claude_watchdog(env=None) -> bool:
         daemon=True,
         name="claude-watchdog",
     )
-    thread.start()
+    # 先登记后 start（同一把锁内完成）：若先 start 后登记，收割口恰在两步之间
+    # 执行会永久漏掉该 watchdog，残留线程误判死亡仍会触发 on_death 自杀扳机；
+    # 事件先于线程启动被置位时，循环首轮 stop_event.wait 即返回 True 裸退出。
     with _ACTIVE_WATCHDOG_LOCK:
         _ACTIVE_WATCHDOG_STOPS.append((_stop, thread))
+        thread.start()
     return True
 
 

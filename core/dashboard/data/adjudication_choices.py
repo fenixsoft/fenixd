@@ -479,6 +479,8 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
     """修订出口文件路径白名单校验（2.1；返回空串=全部合法，非空=拒绝理由）。
 
     规则（project_root 锚定，fail-closed）：
+      0. paths 须为路径序列；误传单个路径字符串整体拒绝（防 for 按字符
+         迭代把首字符当路径展示，code-review item 7dad3d40224f）；
       1. 空/非字符串路径拒绝；
       2. 绝对路径（os.path.isabs，含 ``~`` 展开与 Windows 盘符形态）拒绝
          ——不以 project_root 为锚的路径一概不收；
@@ -502,6 +504,11 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
     """
     import os
 
+    # 入参形态守卫（code-review item 7dad3d40224f）：paths 误传单个路径
+    # 字符串时 for 会按字符迭代，拒绝理由把首字符当路径展示、误导排查；
+    # 此处显式拒绝并点明形态错误，不静默归一掩盖调用方笔误。
+    if isinstance(paths, str):
+        return "paths 入参须为路径列表（收到字符串，请传 [path, ...]）"
     base = os.path.abspath(str(project_root or ""))
     for raw in paths or []:
         p = str(raw or "").strip()

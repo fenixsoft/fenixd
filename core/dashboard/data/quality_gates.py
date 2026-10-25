@@ -574,7 +574,10 @@ def _gate_blocked_reason(project_root, run_id: str) -> str:
 
 def _result_artifact_gate_status(entry: dict, runs: list, project_root) -> tuple:
     """结果文件产物硬门：权威判定在 run 终态（读侧合成，不落盘）。"""
-    st = entry.get("status")
+    # 与 _full_suite_status/_code_review_status 的终态豁免同口径（code-review
+    # item a72c9af7f459）：STATE 条目可手工编辑，status 带空白或为 None 时
+    # 先归一化再做集合成员/等值比较，六道门对同一脏数据不出现状态分歧。
+    st = str(entry.get("status") or "").strip()
     if st in _FRAMEWORK_PASSED_STATUSES:
         return ("passed", "实现 run 已过结果文件产物硬门")
     impl_run = _latest_impl_run(runs)
@@ -588,7 +591,9 @@ def _result_artifact_gate_status(entry: dict, runs: list, project_root) -> tuple
 
 def _deliverable_guard_status(entry: dict) -> tuple:
     """交付物守卫与格式复检：权威判定在 STATE 状态（读侧合成，不落盘）。"""
-    st = entry.get("status")
+    # 与 _result_artifact_gate_status 同口径（code-review item a72c9af7f459）：
+    # 归一化后再比较，status 为 None 或带空白时不漏判 _FRAMEWORK_PASSED_STATUSES。
+    st = str(entry.get("status") or "").strip()
     if st in _FRAMEWORK_PASSED_STATUSES:
         return ("passed", "交付物声明对账与格式复检已过")
     if st == "blocked":
