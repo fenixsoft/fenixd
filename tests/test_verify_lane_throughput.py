@@ -15,6 +15,7 @@ import json
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -102,7 +103,14 @@ class TestParallelPlanningTrigger(_EngineCase):
         self.sm.transition("my-spec", "ready")
         self.dispatcher._enqueue = MagicMock()
         for status in ("dispatched", "completed", "consumed"):
-            self.engine._write_parallel_plan_marker("my-spec", {"status": status})
+            # dispatched 形态须带新鲜 dispatched_at（fix_scope=test，回归重试轮）：
+            # 真实在飞标记由车道起点写入时必带该时间戳（_run_parallel_plan_lane）；
+            # item 46fcea7e4842 起 dispatched_at 缺失/非法按「无主残留」回收重派
+            # （fail-open 为有意设计），缺时间戳的标记不再表达「在飞」语义
+            marker = {"status": status}
+            if status == "dispatched":
+                marker["dispatched_at"] = datetime.now(timezone.utc).isoformat()
+            self.engine._write_parallel_plan_marker("my-spec", marker)
             self.engine._trigger_parallel_planning("my-spec")
         self.dispatcher._enqueue.assert_not_called()
 

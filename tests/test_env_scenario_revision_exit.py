@@ -118,7 +118,11 @@ def _revised_scenarios():
                 {"action": "navigate", "value": "http://127.0.0.1:8787/list"},
             ],
             "assertions": [
-                {"type": "text_contains", "target": "body", "value": "共"},
+                # 断言键须用运行层实际消费的规范形态（fix_scope=test，回归重试轮）：
+                # _assert_text_contains 只读 text/expected（二选一）、元素定位读
+                # selector；target/value 从不消费，场景定义校验（item ea8d6a657ca4
+                # 前移运行层缺参守卫）按「缺 text/expected」打回属预期行为
+                {"type": "text_contains", "selector": "body", "expected": "共"},
             ],
             "depends_on": [],
         },
