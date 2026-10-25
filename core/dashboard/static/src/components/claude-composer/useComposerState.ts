@@ -146,6 +146,11 @@ export function useComposerState({
   }, []);
 
   // ── 发送（D3 单点） ──
+  /**
+   * 发送当前输入。失败时还原草稿后会重新抛出错误——所有调用点 MUST
+   * 附加 .catch 吞掉（参考 handleKeyDown 的 `void handleSubmit().catch()`），
+   * 否则以 unhandled rejection 逃逸；错误提示由调用方呈现。
+   */
   const handleSubmit = useCallback(async () => {
     const currentInput = inputValueRef.current;
     if (!currentInput.trim() || sendingRef.current || disabledRef.current) {

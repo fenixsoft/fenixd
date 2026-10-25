@@ -444,7 +444,8 @@ class ImplBudget:
             recommended_action=(
                 "检查 provider 网关健康度与最近死亡 run 产物（.fenix/runs/ 中 "
                 "error 终态的 impl-*.jsonl）；排除基础设施故障后人工清理 "
-                "_budget_exempt_runs 侧车即可解除告警条件"
+                "_budget_exempt_runs 侧车与 _exempt_alerted 幂等标记即可解除"
+                "告警条件（漏清标记则新一轮死亡循环的告警被永久拦下）"
             ),
         )
 
@@ -547,22 +548,12 @@ class ImplBudget:
         # 重锚为 completed − used（=重置时刻 completed 的快照），expected 随即
         # 归位为重置后新增；used 保持不变，留 INFO 留痕。
         if baseline is not None and expected > used:
-            reanchored = max(0, completed - used)
-            try:
-                self._pm.state_machine.update_spec(
-                    spec_name, {BUDGET_MANUAL_RESET_BASELINE_FIELD: reanchored}
-                )
-            except Exception as e:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"预算重置基线重锚写回失败 '{spec_name}': {e}",
-                )
-                return
-            self._pm.logger.info(
-                "pm_engine",
-                f"预算重置基线重锚: '{spec_name}' baseline={baseline} → {reanchored}"
-                f"（人工重置后基线口径错位自愈，used={used} 保持不变，"
-                f"对账目标归位为重置后新增）",
+            self._reanchor_manual_reset_baseline(
+                spec_name,
+                baseline,
+                max(0, completed - used),
+                f"人工重置后基线口径错位自愈，used={used} 保持不变，"
+                f"对账目标归位为重置后新增",
             )
             return
         # 基线钳零旁路守卫（code-review item d8157e828d16）：基线写入的是清零
@@ -579,22 +570,12 @@ class ImplBudget:
         # completed − used：expected 随即归位为 used，重置后新 run 的消耗保持
         # 不丢失；used 保持不变，留 INFO 留痕。
         if baseline is not None and expected == 0 and used > 0:
-            reanchored = max(0, completed - used)
-            try:
-                self._pm.state_machine.update_spec(
-                    spec_name, {BUDGET_MANUAL_RESET_BASELINE_FIELD: reanchored}
-                )
-            except Exception as e:
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"预算重置基线重锚写回失败 '{spec_name}': {e}",
-                )
-                return
-            self._pm.logger.info(
-                "pm_engine",
-                f"预算重置基线重锚: '{spec_name}' baseline={baseline} → {reanchored}"
-                f"（基线大于重置时点正常收工数、expected 被钳零，used={used} "
-                f"保持不变，重置后新 run 消耗不再被对账改写清零）",
+            self._reanchor_manual_reset_baseline(
+                spec_name,
+                baseline,
+                max(0, completed - used),
+                f"基线大于重置时点正常收工数、expected 被钳零，used={used} "
+                f"保持不变，重置后新 run 消耗不再被对账改写清零",
             )
             return
         # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）。
@@ -652,6 +633,29 @@ class ImplBudget:
                 f"预算对账自动校正: '{spec_name}' used={used} → {expected}"
                 f"（{target_basis}，无豁免因素；后续预算闸门按校正值生效）",
             )
+
+    def _reanchor_manual_reset_baseline(
+        self, spec_name: str, baseline: int, reanchored: int, detail: str
+    ) -> None:
+        """人工重置基线重锚的共用写回路径（expected > used 与钳零守卫两个
+        重锚分支各传自己的 detail 文案）：update_spec 落盘，失败留 WARNING
+        后返回（调用方随后收口），成功留 INFO 留痕。
+        """
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name, {BUDGET_MANUAL_RESET_BASELINE_FIELD: reanchored}
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算重置基线重锚写回失败 '{spec_name}': {e}",
+            )
+            return
+        self._pm.logger.info(
+            "pm_engine",
+            f"预算重置基线重锚: '{spec_name}' baseline={baseline} → {reanchored}"
+            f"（{detail}）",
+        )
 
     def _budget_manual_reset_baseline(self, spec_name: str) -> int | None:
         """人工预算重置基线（``_budget_manual_reset_baseline``，无锚点返回 None）。

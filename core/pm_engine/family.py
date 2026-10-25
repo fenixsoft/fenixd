@@ -544,7 +544,15 @@ class FamilyGovernor:
                     continue
                 if r.returncode == 0 and r.stdout.strip():
                     return True
-        except Exception:
+        except Exception as exc:
+            # 兜底探测基础设施故障（G8QueryMixin 导入失败、iterdir/pgrep 缺失
+            # 等）保持 fail-open，但留痕后再判不存活（code-review item
+            # 731df9c78edb）：与上方 pgrep 超时分支同一留痕口径，避免探测失败
+            # 与「确无存活进程」在日志上不可区分、事后排障无线索
+            self._pm.logger.warning(
+                "pm_engine",
+                f"pgrep 兜底探测异常，spec '{spec_name}' 按不存活处理：{exc}",
+            )
             return False
         return False
 

@@ -424,7 +424,10 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
   // tool_result 分支与普通用户消息分支共用同一判定，哨兵口径变化只改此处
   const pushUserTextIfVisible = (ev: RunEvent, timestamp: string | number) => {
     const text = userMessageText(ev);
-    if (text && text !== USER_INTERRUPT_SENTINEL) {
+    // 前缀匹配过滤（item 21e48d0e540f）：CLI 在工具调用期间插入的中断哨兵存在
+    // 变体（如带 for tool use 后缀的形态），全串相等命中不了，会以用户气泡渲染
+    // 英文哨兵原文；按前缀判定对哨兵口径漂移更稳健
+    if (text && !text.startsWith(USER_INTERRUPT_SENTINEL)) {
       out.push({ type: 'user', content: text, timestamp });
     }
   };

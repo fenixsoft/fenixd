@@ -344,7 +344,7 @@ class ClaudeAdapter(HarnessAdapter):
                 f"（合法值：{PROMPT_TRANSPORT_STDIN!r}/{PROMPT_TRANSPORT_ARGV!r}）"
             )
         argv: List[str] = ["claude", "-p"]
-        if req.prompt_transport == "argv":
+        if req.prompt_transport == PROMPT_TRANSPORT_ARGV:
             argv.append(req.prompt)
         if req.output_format == "stream-json":
             # claude CLI 要求: --print + --output-format=stream-json 必须带 --verbose
@@ -376,7 +376,7 @@ class ClaudeAdapter(HarnessAdapter):
             argv += list(req.extra_args)
 
         stdin_payload = (
-            req.prompt if req.prompt_transport == "stdin" else None
+            req.prompt if req.prompt_transport == PROMPT_TRANSPORT_STDIN else None
         )
         return SpawnSpec(
             argv=argv,

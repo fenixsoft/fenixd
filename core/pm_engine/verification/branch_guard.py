@@ -301,6 +301,21 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
         "deliverables": resolved.get("deliverables"),
         "references": resolved.get("references"),
     }
+    # 值形态归一（code-review item 494a5643c206）：缺键已由上方 drift_keys
+    # 防御，值漂移（None/非列表）未归一——二者非同空时不触发下方
+    # extract_paths_typed 回退，declared/references 直接参与迭代会让
+    # TypeError 冲出守卫、破坏守卫「任何异常保守放行/留痕」口径。比照
+    # entries 的条目形状防御同构处理：非列表按空表处理并记「疑似上游
+    # 契约漂移」留痕；归一后二者同空自然走既有回退/无路径跳过路径，
+    # 不单独放行。
+    for _field in ("deliverables", "references"):
+        if not isinstance(typed[_field], list):
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"交付物守卫声明解析结果 '{_field}' 非列表"
+                f"（spec '{spec_name}'，疑似上游契约漂移，按空表处理）",
+            )
+            typed[_field] = []
     decl_source = resolved.get("source")
     entries = resolved.get("entries")
     # 无声明段（含两处均不可用）：回退 extract_paths_typed（向后兼容存量 spec）。

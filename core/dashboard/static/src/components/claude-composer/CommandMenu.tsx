@@ -283,7 +283,7 @@ export default function CommandMenu({
     {},
   );
   if (hasFrequentCommands) {
-    groupedCommands.frequent = frequent
+    const frequentRows = frequent
       .map((command, index) => {
         const commandIndex = getFrequentCommandIndex(command);
         return {
@@ -293,6 +293,18 @@ export default function CommandMenu({
         };
       })
       .filter((row) => row.commandIndex >= 0);
+    // 覆写前合并同名分组的真实命令（code-review item f817bb7454cc）：命令自身
+    // namespace 恰为 "frequent" 时会先归入 groups.frequent，整组覆写会把这批
+    // 真实命令静默丢掉；按 commandKey 去重后拼回（frequent 行在前）。
+    const frequentRowKeys = new Set(
+      frequentRows.map((row) => getCommandKey(row.command)),
+    );
+    groupedCommands.frequent = [
+      ...frequentRows,
+      ...(groupedCommands.frequent ?? []).filter(
+        (row) => !frequentRowKeys.has(getCommandKey(row.command)),
+      ),
+    ];
   }
 
   const preferredOrder = hasFrequentCommands

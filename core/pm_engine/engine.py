@@ -1030,6 +1030,24 @@ class PMEngine:
             return {}
         return data if isinstance(data, dict) else {}
 
+    def _parallel_plan_dispatch_stale(self, marker: dict) -> bool:
+        """dispatched 标记是否超窗无主（code-review item 46fcea7e4842）。
+
+        dispatched → 终态的翻转只发生在本进程 _run_parallel_plan_lane 收尾段，
+        daemon 在写入 dispatched 后崩溃/重启时标记永久滞留（_active_parallel_plans
+        在飞登记随重启清空），该 spec 的并行出题车道从此不再触发。标记写入紧邻
+        run_planner（车道起点），故窗口取 planner-plan 生效 run 超时的 2 倍即安全：
+        未超窗标记必有本进程在飞登记拦截重派，超窗标记必属无主残留可回收；
+        另设 600s 下限吸收超时终止后的收尾窗口。dispatched_at 缺失/非法按无主
+        处理（与 _read_parallel_plan_marker 的 fail-open 同型）。
+        """
+        dispatched = parse_utc(marker.get("dispatched_at") or "")
+        if dispatched is None:
+            return True
+        elapsed = (datetime.now(timezone.utc) - dispatched).total_seconds()
+        window = max(self._effective_run_timeout("planner-plan") * 2, 600.0)
+        return elapsed > window
+
     def _write_parallel_plan_marker(self, spec_name: str, payload: dict) -> None:
         """原子写并行出题状态标记；写失败仅 WARNING（观测增强，不阻断车道）。"""
         p = self._parallel_plan_marker_path(spec_name)
@@ -1100,6 +1118,7 @@ class PMEngine:
           内部设计会双写同一产物文件，不参与）；
         - 无既有可用场景集（``test_scenarios.json`` 不存在）；
         - 状态标记非 dispatched/completed/consumed（在飞/待消费/已消费不重派；
+          dispatched 超窗视为崩溃残留回收重派，见 _parallel_plan_dispatch_stale；
           failed/cancelled/frozen 允许 ready 重入时再试，与实现车道重派同语义）；
         - 同 spec 无在飞并行出题 run（``_active_parallel_plans`` 防重）。
 
@@ -1122,8 +1141,20 @@ class PMEngine:
             if scenarios_path.is_file():
                 return
             marker = self._read_parallel_plan_marker(spec_name)
-            if marker.get("status") in ("dispatched", "completed", "consumed"):
+            marker_status = marker.get("status")
+            if marker_status in ("completed", "consumed"):
                 return
+            if marker_status == "dispatched":
+                # dispatched 超窗回收（code-review item 46fcea7e4842）：翻终态只在
+                # 本进程车道收尾段发生，daemon 于写入后崩溃/重启时标记永久滞留
+                # dispatched（在飞登记亦随重启清空）→ 车道对该 spec 永久停用。
+                # 超窗残留回收重派；未超窗仍视为在飞不重派（本进程另有在飞防重）。
+                if not self._parallel_plan_dispatch_stale(marker):
+                    return
+                self.logger.warning(
+                    "pm_engine",
+                    f"并行出题 dispatched 标记超窗无主，回收重派: {spec_name}",
+                )
             if spec_name in self._active_parallel_plans:
                 return
             # 经门面单跳（code-review item 1fdb2783df6f）：_FORWARDER_REGISTRY 已
@@ -1532,69 +1563,79 @@ class PMEngine:
         for name, entry in (self.state_machine.read_all() or {}).items():
             if not isinstance(entry, dict):
                 continue
-            # ── 1) frozen_until 到期自动解冻（幂等：写前重读确认仍冻结）──
-            until_raw = entry.get(FROZEN_UNTIL_FIELD)
-            if until_raw:
-                until = parse_utc(until_raw)
-                if until is not None and until <= now:
-                    fresh = self.state_machine.read_one(name) or {}
-                    if not self._frozen_state(fresh):
-                        continue  # 竞争后到者：已解冻/非冻结，跳过
-                    orig = parse_orig_status(fresh.get("error"))
-                    before = fresh.get(FROZEN_UNTIL_FIELD)
-                    try:
-                        self.state_machine.unfreeze_spec(name, status=orig)
-                    except Exception as e:
-                        self.logger.error(
-                            "pm_engine",
-                            f"定时解冻写回失败 '{name}'（留待下轮重试）: {e}",
-                        )
-                        continue
-                    unfrozen.append(name)
-                    try:
-                        self._append_project_log(
-                            f"⏰ 定时解冻 SPEC: **{name}**"
-                            f"（原状态 {orig}，frozen_until {before} 到期自动恢复）"
-                        )
-                        record_project_event(
-                            self.project_root,
-                            "pm_engine",
-                            f"定时解冻 SPEC '{name}'（原状态 {orig}）",
-                            context={"source": "scheduled-unfreeze", "frozen_until": before},
-                        )
-                    except Exception as e:
-                        self.logger.warning(
-                            "pm_engine",
-                            f"定时解冻事件记录失败 '{name}'（非阻塞）: {e}",
-                        )
-                    self.logger.info(
-                        "pm_engine",
-                        f"Scheduled unfreeze '{name}': frozen_until {before} "
-                        f"expired → restored to {orig}",
-                    )
-            # ── 2) start_after 到期唤起派发（仅登记过定时字段的 spec）──
-            sa = entry.get(START_AFTER_FIELD)
-            # 哨兵 `manual` 经 parse_utc 判 None 天然跳过到期检测，MUST NOT 改为
-            # `sa != None` 之类判据——否则哨兵被判到期误唤起（D3 要求保留该行为，
-            # 勿改此分支）。见 core/state_machine.py START_AFTER_MANUAL 常量注释。
-            if sa is None or parse_utc(sa) is None:
-                continue  # 无定时字段（或非法/哨兵）→ 无到期检测需求
-            if start_after_pending(entry, now):
-                continue  # 尚未到期
-            status = entry.get("status")
-            if status not in (SpecStatus.DRAFTED, SpecStatus.READY):
-                continue
+            # 逐条隔离（code-review item c6bbdd83cd61）：字段解析与到期判定
+            # （含 _frozen_state 对非串 truthy error 的 .startswith，与
+            # check_blockers 的 str 归一防御同源风险）抛错只记日志跳过本条，
+            # 不中断整轮定时解冻与到期拾取（docstring 承诺）。
             try:
-                if status == SpecStatus.DRAFTED:
-                    # drafted 走晋升链（lint 拦截/error 写回由 _on_spec_drafted 自理）
-                    self._on_spec_drafted(name)
-                else:
-                    self._on_spec_ready(name)
-                signaled.append(name)
+                # ── 1) frozen_until 到期自动解冻（幂等：写前重读确认仍冻结）──
+                until_raw = entry.get(FROZEN_UNTIL_FIELD)
+                if until_raw:
+                    until = parse_utc(until_raw)
+                    if until is not None and until <= now:
+                        fresh = self.state_machine.read_one(name) or {}
+                        if not self._frozen_state(fresh):
+                            continue  # 竞争后到者：已解冻/非冻结，跳过
+                        orig = parse_orig_status(fresh.get("error"))
+                        before = fresh.get(FROZEN_UNTIL_FIELD)
+                        try:
+                            self.state_machine.unfreeze_spec(name, status=orig)
+                        except Exception as e:
+                            self.logger.error(
+                                "pm_engine",
+                                f"定时解冻写回失败 '{name}'（留待下轮重试）: {e}",
+                            )
+                            continue
+                        unfrozen.append(name)
+                        try:
+                            self._append_project_log(
+                                f"⏰ 定时解冻 SPEC: **{name}**"
+                                f"（原状态 {orig}，frozen_until {before} 到期自动恢复）"
+                            )
+                            record_project_event(
+                                self.project_root,
+                                "pm_engine",
+                                f"定时解冻 SPEC '{name}'（原状态 {orig}）",
+                                context={"source": "scheduled-unfreeze", "frozen_until": before},
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                "pm_engine",
+                                f"定时解冻事件记录失败 '{name}'（非阻塞）: {e}",
+                            )
+                        self.logger.info(
+                            "pm_engine",
+                            f"Scheduled unfreeze '{name}': frozen_until {before} "
+                            f"expired → restored to {orig}",
+                        )
+                # ── 2) start_after 到期唤起派发（仅登记过定时字段的 spec）──
+                sa = entry.get(START_AFTER_FIELD)
+                # 哨兵 `manual` 经 parse_utc 判 None 天然跳过到期检测，MUST NOT 改为
+                # `sa != None` 之类判据——否则哨兵被判到期误唤起（D3 要求保留该行为，
+                # 勿改此分支）。见 core/state_machine.py START_AFTER_MANUAL 常量注释。
+                if sa is None or parse_utc(sa) is None:
+                    continue  # 无定时字段（或非法/哨兵）→ 无到期检测需求
+                if start_after_pending(entry, now):
+                    continue  # 尚未到期
+                status = entry.get("status")
+                if status not in (SpecStatus.DRAFTED, SpecStatus.READY):
+                    continue
+                try:
+                    if status == SpecStatus.DRAFTED:
+                        # drafted 走晋升链（lint 拦截/error 写回由 _on_spec_drafted 自理）
+                        self._on_spec_drafted(name)
+                    else:
+                        self._on_spec_ready(name)
+                    signaled.append(name)
+                except Exception as e:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"start_after 到期唤起 '{name}' 失败（非阻塞）: {e}",
+                    )
             except Exception as e:
                 self.logger.warning(
                     "pm_engine",
-                    f"start_after 到期唤起 '{name}' 失败（非阻塞）: {e}",
+                    f"定时巡检条目 '{name}' 处理异常（跳过本条，不中断整轮）: {e}",
                 )
         # 唤起后立即处理派发队列，使「到期精确触发」不依赖后续其它事件驱动
         # （periodic full_scan 仍为兜底；_process_queue 幂等，空队列直接返回）。
@@ -5069,7 +5110,10 @@ class PMEngine:
         """
         anchors: dict = {}
         try:
-            specs = self.state_machine.read_all()
+            # None 防御与本文件其余 read_all 调用点同款（code-review item
+            # 47f06a001297）：STATE 读取异常路径返回 None 时按空 dict 兜底，
+            # 兑现 docstring「STATE 不可读时返回空 dict 记 WARNING」的承诺。
+            specs = self.state_machine.read_all() or {}
         except Exception as e:  # noqa: BLE001 — 候选枚举失败不抛出（调用方保守兜底）
             self.logger.warning("pm_engine", f"review_anchors 读取 STATE 失败: {e}")
             return anchors
