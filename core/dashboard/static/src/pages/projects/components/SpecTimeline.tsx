@@ -18,70 +18,26 @@ import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg'
 import { OutlinedTag } from '@/components/StatusTag';
 import { SEV_LABEL } from '@/components/alert-shared';
 import { fmtDuration } from '@/utils/duration';
+// 状态语义色/角色映射共享常量（add-spec-topology-bigscreen 3.1 等价纯迁移）：
+// 常量与纯函数单源自 utils/runVisual，渲染输出与迁移前严格等价
+// （tests/runVisual.test.mjs 纯函数单测背书）；formatUsd 以 re-export 保持
+// detail.tsx 既有 import 路径零改动。
+import { agentLabel, formatUsd, reasonTone, runDotColor } from '@/utils/runVisual';
 import { ocrJoinNote } from '../qualityGates';
 import { markdownComponents } from './SpecDocModal';
 
 type TimelineItem = NonNullable<SpecDetail['timeline']>[number];
 
-// Agent 中文名（与设置页 Agent 模型角色中文名对应；implementer 沿用「开发」）。
-// agent_type 为泛型 'agent' 或缺失时，按 run_id 前缀（RUN_ID_PREFIX_LABEL）判别。
-const AGENT_LABEL: Record<string, string> = {
-  implementer: '开发 Agent',
-  'impl-ocr': '代码审查 Agent',
-  planner: '规划 Agent',
-  'planner-plan': '生成场景 Agent',
-  'planner-judge': '判定结果 Agent',
-  'spec-review': '需求评审 Agent',
-  'dispute-judge': '争议裁决 Agent',
-  repair: '修复 Agent',
-  verifier: '验证 Agent',
-  tester: '测试 Agent',
-  administrator: '运维 Agent',
-};
+// add-model-billing-cost-display（design D5）：金额格式化单源已迁
+// utils/runVisual（add-spec-topology-bigscreen 3.1 等价纯迁移）；此处
+// re-export 保持 detail.tsx 既有 import 路径（./components/SpecTimeline）零改动。
+export { formatUsd };
 
-// run_id 前缀兜底。⚠️ 必须按完整前缀匹配（不能用 split('-')[0]）：spec-review- /
-// dispute-judge- / planner-plan- 等是多段前缀，首段 'spec'/'dispute'/'planner'
-// 无法唯一归属；长的排前面，首个命中即止（impl-ocr- 必须排在 impl- 之前，
-// 否则被 impl- 先命中、车道节点标签退回「开发 Agent」）。
-const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
-  ['planner-judge-', '判定结果 Agent'],
-  ['planner-plan-', '生成场景 Agent'],
-  ['dispute-judge-', '争议裁决 Agent'],
-  ['spec-review-', '需求评审 Agent'],
-  ['impl-ocr-', '代码审查 Agent'],
-  ['impl-', '开发 Agent'],
-  ['repair-', '修复 Agent'],
-  ['admin-', '运维 Agent'],
-  ['test-', '测试 Agent'],
-  ['verify-', '验证 Agent'],
-];
+// Agent 中文名与 run_id 前缀映射（AGENT_LABEL / RUN_ID_PREFIX_LABEL /
+// agentLabel）、终态原因语气（reasonTone）已等价迁至 @/utils/runVisual
+// （add-spec-topology-bigscreen 3.1）：本组件改为导入消费，渲染输出严格等价。
 
-function agentLabel(item: { agent_type?: string; run_id?: string }): string {
-  const t = (item.agent_type || '').toLowerCase();
-  // 泛型 'agent' 视同缺失（后端未识别出类型），继续走 run_id 前缀判别
-  if (t && t !== 'agent' && AGENT_LABEL[t]) return AGENT_LABEL[t];
-  const rid = (item.run_id || '').toLowerCase();
-  for (const [prefix, label] of RUN_ID_PREFIX_LABEL) {
-    if (rid.startsWith(prefix)) return label;
-  }
-  return AGENT_LABEL[t] || '未知 Agent';
-}
-
-/** run 终态原因行的呈现（add-timeline-gate-failure-display D5）：语气 + 前缀。
- *
- * 门禁拒绝（gate-blocked）与 error 同为失败（danger 红，前缀区分「门禁拒绝：」与
- * 「失败原因：」——一眼分清「产物门拒绝」与「运行崩了」）；superseded 是被弃置的
- * 中间产物（secondary + 「原地重试：」，失败归因由紧随其后的 gate-blocked 节点承担）；
- * 其余中止类（interrupted/cancelled）橙色 warning。未知状态落 warning/中止原因，
- * 与改动前行为一致。映射单一真源，渲染处 MUST NOT 再内联重复该条件链。 */
-function reasonTone(
-  st: string,
-): { tone: 'danger' | 'warning' | 'secondary'; prefix: string } {
-  if (st === 'gate-blocked') return { tone: 'danger', prefix: '门禁拒绝：' };
-  if (st === 'error') return { tone: 'danger', prefix: '失败原因：' };
-  if (st === 'superseded') return { tone: 'secondary', prefix: '原地重试：' };
-  return { tone: 'warning', prefix: '中止原因：' };
-}
+/** run 终态原因行的呈现（reasonTone 单源消费，见 @/utils/runVisual）。 */
 
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
@@ -114,14 +70,9 @@ function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: ()
   );
 }
 
-// add-model-billing-cost-display（design D5）：金额格式化——统一 $x.xx；
-// < $0.01 显示三位小数（$0.001），避免小额全零。仅展示口径，不做入账四舍五入。
-// detail.tsx 头部信息区/降级注记仍消费本函数（code-review item fa5ce9f79354
-// 抽取时随时间轴 helper 迁入，回导入避免两处重复实现）
-export function formatUsd(v: number): string {
-  if (v > 0 && v < 0.01) return `$${v.toFixed(3)}`;
-  return `$${v.toFixed(2)}`;
-}
+// add-model-billing-cost-display（design D5）：金额格式化（formatUsd）已等价
+// 迁至 @/utils/runVisual（add-spec-topology-bigscreen 3.1），本文件经顶部
+// import + re-export 单点转发，detail.tsx 既有 import 路径零改动。
 
 export default function SpecTimeline({
   timeline,
@@ -346,25 +297,11 @@ export default function SpecTimeline({
           const reasonView = reasonTone(st);
           // interrupted/cancelled：已终结但非崩溃（daemon 停机/启动清扫补写/
           // 人工取消），橙色区别于 error 红；不处理会落入 else 误显成功绿
-          const isAborted = st === 'interrupted' || st === 'cancelled';
           const isRunning = st === 'running' || st === 'empty';
-          // stale（fix-retry-orphan-active-runs）：弃置/断尾——原地重试换文件
-          // 弃置或进程被杀无终态，读侧 mtime 兜底判定；灰色区别于 running 蓝 /
-          // error 红，归入非在飞非错误分支。未知 status 行为不变（绿兜底）
-          // 圆点着色以 if/else 表达（code-review item 7471b4865219）：五分支嵌套
-          // 三元违反前端「禁止嵌套三元」规则
-          let dotColor: string;
-          if (isFailed) {
-            dotColor = 'red';
-          } else if (isAborted) {
-            dotColor = 'orange';
-          } else if (st === 'stale') {
-            dotColor = 'gray';
-          } else if (isRunning) {
-            dotColor = 'blue';
-          } else {
-            dotColor = 'green';
-          }
+          // 圆点着色五分支单源（add-spec-topology-bigscreen 3.1 等价迁移至
+          // runDotColor：error/gate-blocked 红、interrupted/cancelled 橙、
+          // stale 灰、running/empty 蓝、其余绿兜底——渲染输出与迁移前一致）
+          const dotColor = runDotColor(st);
           const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
           const isFix = item.spec && String(item.spec).startsWith('fix-');
 

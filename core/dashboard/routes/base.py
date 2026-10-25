@@ -151,6 +151,42 @@ def _sig_spec_detail(s, q, m):
     return _sig.spec_detail_signature(proot, spec)
 
 
+def _sig_spec_topology(s, q, m):
+    """拓扑端点签名（add-spec-topology-bigscreen 2.1）：detail 签名超集。
+
+    spec_detail_signature 已盖 STATE/spec 目录树/logs 树/verify-progress/本
+    spec runs（含归档）等全部派生数据源；拓扑派生额外并入 fix 家族子 SPEC
+    （fix-<spec>、fix-fix-<spec>…）的 run 产物——detail 签名只盖本 spec 命名
+    的 runs，家族 run 变化（新修复 run/终态翻转）必须翻转拓扑 ETag，否则
+    大屏 304 假命中、修复环不实时。spec 不存在 → None（错误体不挂 ETag）。
+    """
+    import re as _re
+    from pathlib import Path
+
+    from core.dashboard import data as dashboard_data
+    from core.dashboard.data import signature as _sig
+
+    project = _resolve_project_for_sig(s, q)
+    if project is None:
+        return None
+    spec = urllib.parse.unquote(m.group(1))
+    proot = Path(project["path"])
+    entry = s.server.summary_index.state_snapshot(proot).get(spec)
+    if entry is None:
+        entry = dashboard_data.parse_archived_state(proot).get(spec)
+    if entry is None and dashboard_data.resolve_spec_dir(proot, spec) is None:
+        return None
+    parts = [_sig.spec_detail_signature(proot, spec)]
+    fam_re = _re.compile(rf"^(?:fix-)+{_re.escape(spec)}$")
+    fam = []
+    for name, sigs in dashboard_data.runs_by_spec_sigs(proot).items():
+        if fam_re.fullmatch(name):
+            fam.append((name, sorted((str(p), v[0], v[1]) for p, v in sigs.items())))
+    if fam:
+        parts.append(sorted(fam, key=lambda x: x[0]))
+    return _sig.combine(parts)
+
+
 def _aggregate_alerts_sig(s, sig_fn):
     """跨项目告警类聚合签名（code-review item a71bde47b10c 提取的单点循环）。
 
@@ -283,6 +319,13 @@ def _get_specs(s, p, q, m):
 def _get_spec_detail(s, p, q, m):
     spec = urllib.parse.unquote(m.group(1))
     s._json(s._api_spec_detail(spec, q))
+
+def _get_spec_topology(s, p, q, m):
+    # _api_spec_topology 是自含响应 handler（同 _get_spec_doc 注记）：成功写
+    # _json、错误分支自写 _error——不得再包 _json 双重写响应（keep-alive 下
+    # 残留第二响应 200+null 污染下一请求）。add-spec-topology-bigscreen 2.1。
+    spec = urllib.parse.unquote(m.group(1))
+    s._api_spec_topology(spec, q)
 
 def _get_runs_watch(s, p, q, m):
     rest = urllib.parse.unquote(m.group(1))
@@ -607,6 +650,9 @@ _API_GET_ROUTES = [
     ("exact", "/api/specs",            _get_specs, _sig_specs),
     # 参数化前缀（regex）
     ("regex", r"^/api/specs/([^/]+)$", _get_spec_detail, _sig_spec_detail),
+    # SPEC 协作拓扑派生图（add-spec-topology-bigscreen 2.1，只读、detail 同族
+    # 单键寻址；自含响应 handler，条目第 4 位挂 ETag 签名）
+    ("regex", r"^/api/specs/([^/]+)/topology$", _get_spec_topology, _sig_spec_topology),
     ("regex", r"^/api/runs/(.+)$",     _get_runs_watch),
     ("exact", "/api/events",           _get_events),
     ("exact", "/api/alerts",           _get_alerts, _sig_alerts),

@@ -160,6 +160,8 @@ from .timeline import (
     timeline_with_retry,
     _cost_summary_from_timeline,
     cost_summary_from_timeline,
+    rotated_log_files,
+    admin_events_for_spec,
 )
 
 # ── runs 组 ──
@@ -368,6 +370,19 @@ from .adjudication_choices import (
 
 # ── state 组 ──
 from .state import parse_state, parse_archived_state, STATE_ARCHIVE_BASENAME
+
+# ── topology 组（add-spec-topology-bigscreen）──
+# SPEC 协作拓扑派生：只读端点 /api/specs/<spec>/topology 的数据源（timeline/
+# runs 既有数据为唯一输入，前端零推导）
+from .topology import (
+    LANES,
+    LANE_LABELS,
+    STAGES,
+    STAGE_LABELS,
+    derive_topology,
+    split_attempt,
+    stage_lane_role,
+)
 
 # ── config_admin 组 ──
 from .config_admin import (

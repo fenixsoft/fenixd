@@ -1178,6 +1178,9 @@ export default function SpecListPage() {
     // 仅保留查看类（删除保留与否依实现；归档 SPEC 不可再调度，全部调度项移除）
     if (archivedOnly) {
       return [
+        // add-spec-topology-bigscreen 4.6：协作拓扑入口（归档 SPEC 亦可看状态
+        // 骨架大屏；只读查看类入口，不违反归档调度收敛）
+        { key: 'topology', label: '协作拓扑' },
         { type: 'divider' as const },
         { key: 'delete', label: '删除 SPEC', danger: true },
       ];
@@ -1202,6 +1205,8 @@ export default function SpecListPage() {
       { key: 'priority', label: '调整优先级', disabled: terminal },
       // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
       { key: 'pickup-time', label: '设置拾取时间', disabled: terminal },
+      // add-spec-topology-bigscreen 4.6：协作拓扑大屏入口（独立脱壳全屏页面）
+      { key: 'topology', label: '协作拓扑' },
       { type: 'divider' as const },
       { key: 'delete', label: '删除 SPEC', danger: true },
     ];
@@ -1220,6 +1225,12 @@ export default function SpecListPage() {
       handleDeleteSpec(record);
     } else if (key === 're-review') {
       handleReReview(record);
+    } else if (key === 'topology') {
+      // add-spec-topology-bigscreen 4.6：跳转协作拓扑大屏（脱壳路由
+      // /projects/:name/:spec/topology，退出大屏由页面内按钮返回本列表页）
+      history.push(
+        `/projects/${encodeURIComponent(name)}/${encodeURIComponent(record.name)}/topology`,
+      );
     }
   };
 
