@@ -60,14 +60,21 @@ function normalize(p: string): string {
 /**
  * realpath 解析：消解符号链接后参与判定。worktree 内指向主树的链接
  * （checked-in symlink，git mode 120000，或 run 前已存在的链接）词法上
- * 落在 worktree 内会被放行、实际落盘写穿主树。解析失败（目标不存在、
- * 循环等）回退词法路径——守卫不因异常放行或失效。
+ * 落在 worktree 内会被放行、实际落盘写穿主树。realpathSync 要求整条
+ * 路径已存在，写工具新建的目标（最终分量不存在）必抛 ENOENT——若直接
+ * 回退词法路径，会重新放开上述链接写穿面。故解析失败时对 dirname 递归
+ * 解析最深已存在祖先，再拼接未消解的剩余分量：新建文件同样落在真实
+ * 坐标系内比对。祖先也解析不了（权限、循环、已到底等）才整体回退
+ * 词法路径——守卫不因异常放行或失效。
  */
 function resolveReal(p: string): string {
   try {
     return realpathSync(p);
   } catch {
-    return p;
+    const slash = p.lastIndexOf("/");
+    const parent = slash > 0 ? p.slice(0, slash) : "";
+    if (!parent) return p;
+    return resolveReal(parent) + p.slice(slash);
   }
 }
 

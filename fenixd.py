@@ -1056,7 +1056,9 @@ class FenixDaemon:
                     self.logger.error("fenixd", f"scheduling_kick pickup failed: {e}")
                 # SPEC 审批推送信号（add-spec-approve-push-modal）：dashboard
                 # 审批 done SPEC 时写入 .fenix/approve_push_request.json，主循环
-                # 下一轮（≤2s）消费并调 pm_engine.approve_push 执行推送。
+                # 下一轮（≤2s）消费并投递后台执行 pm_engine.approve_push 推送
+                # （code-review item d2d3b0c5f314：推送不在主循环内联，防阻塞
+                # 其它 1s 粒度信号车道与陈旧自愈 tick）。
                 try:
                     self._check_approve_push_requests()
                 except Exception as e:
@@ -1761,6 +1763,24 @@ class FenixDaemon:
                 count += 1
         return count
 
+    def _warn_exception_edge(self, edge_attr: str, error: Exception, message: str) -> None:
+        """1s 粒度判定异常 WARNING 的边沿去重留痕（code-review item 6582258b4e40）。
+
+        比照 _evo_interval_invalid_key 的 (raw, reason) 边沿键与
+        _heal_block_reason 状态边沿先例：陈旧自愈期相关判定以 1s 粒度逐 tick
+        重试，STATE/内部状态持续不可读时异常摘要（类型: 消息）不变——仅首次
+        留痕，不再逐 tick 刷 WARNING（持续异常约 8.6 万条/天量级）。异常摘要
+        变化（新故障形态）或恢复正常后复发（调用方在判定合法路径把 edge_attr
+        复位为 None，同 _evo_interval_invalid_key 复位口径）才再留痕一次。
+        边沿记忆经 getattr 惰性读取（同 _code_review_io_identity 先例），
+        不要求宿主 __init__ 预声明。
+        """
+        err_key = f"{type(error).__name__}: {error}"
+        if getattr(self, edge_attr, None) == err_key:
+            return
+        setattr(self, edge_attr, err_key)
+        self.logger.warning("fenixd", message)
+
     def _is_idle(self) -> bool:
         """空闲判定（add-stale-code-selfheal D2 + fix-state-atomicity-and-selfheal-restart D3
         + evo-stale-selfheal-restart-cooldown 2.1）：内部状态判定，不依赖外部进程扫描。
@@ -1799,13 +1819,20 @@ class FenixDaemon:
             except Exception:
                 return False  # 内部状态不可读按非空闲处理，宁紧勿松
             try:
-                if self._review_lane_busy():
-                    return False
+                busy = self._review_lane_busy()
             except Exception as e:  # noqa: BLE001 — 判定异常按非空闲处理（宁紧勿松）
-                self.logger.warning(
-                    "fenixd",
+                # 边沿去重（item 6582258b4e40，经 _warn_exception_edge）：陈旧期
+                # 本判定 1s 一次，持续异常（STATE 持续不可读等）仅首次留痕
+                self._warn_exception_edge(
+                    "_review_lane_busy_err_key",
+                    e,
                     f"评审车道在飞判定异常（按非空闲处理，不触发自愈重启）: {e}",
                 )
+                return False
+            # 判定恢复合法：复位评审车道边沿记忆（修复后复发可再留痕，同
+            # _evo_interval_invalid_key 复位口径）
+            self._review_lane_busy_err_key = None
+            if busy:
                 return False
             # ⑤ fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道维度
             # （code-review item e557560d61c0：守卫链委托
@@ -1887,15 +1914,23 @@ class FenixDaemon:
         """
         busy_fn = getattr(self.pm_engine, "ocr_lane_busy", None)
         if not callable(busy_fn):
+            self._ocr_lane_busy_err_key = None
             return False
         try:
-            return busy_fn() is True
+            busy = busy_fn() is True
         except Exception as e:  # noqa: BLE001 — 判定异常按阻断处理（宁紧勿松）
-            self.logger.warning(
-                "fenixd",
+            # 边沿去重（item 6582258b4e40，经 _warn_exception_edge）：_is_idle
+            # 与自愈 reason 判定两处各调一次本方法，持续异常原最多每秒两条
+            # WARNING，收敛为仅首次留痕
+            self._warn_exception_edge(
+                "_ocr_lane_busy_err_key",
+                e,
                 f"ocr 车道在飞判定异常（按阻断处理，不触发自愈重启）: {e}",
             )
             return True
+        # 判定恢复合法：复位 ocr 车道边沿记忆（修复后复发可再留痕）
+        self._ocr_lane_busy_err_key = None
+        return busy
 
     def _codefix_selfheal_block(self) -> bool:
         """code-fix 批在飞自愈阻断判定（09-23 批5/6 烧毁事故热修）。
@@ -2457,9 +2492,15 @@ class FenixDaemon:
         )
         if not enabled:
             reason = "disabled"
-        elif req.exists():
-            reason = "in-flight"
         else:
+            # 托管存在性先于请求在场判定（code-review item 4be85f1655c1）：
+            # supervisor 崩溃退出而未消费 restart_request 时文件会残留
+            # （bin/fenixd_supervisor.py 对 pending 请求亦有 preserved 留痕），
+            # 若先判 req.exists() 会把无人消费的陈旧请求误归因「重启在途」，
+            # 与启动自检 supervisor_missing 告警「restart_request 不会被消费」
+            # 的口径相互矛盾——未托管时优先归因 unmanaged（两种状态功能上都
+            # 阻断自愈，差异仅在归因与日志口径）；in-flight 分支自此必然处于
+            # 托管期，确有 supervisor 在消费该请求。
             try:
                 from core.fenix_session import supervisor_running
 
@@ -2468,6 +2509,8 @@ class FenixDaemon:
                 supervised = False  # /proc 不可读等：按未托管处理，宁紧勿松
             if not supervised:
                 reason = "unmanaged"
+            elif req.exists():
+                reason = "in-flight"
             elif self._ocr_lane_selfheal_block():
                 # fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道
                 # 挂入阻断原因体系——车道跑着不自愈（重启会 SIGTERM 杀掉在飞
@@ -2511,7 +2554,10 @@ class FenixDaemon:
                 else:  # in-flight
                     self.logger.info(
                         "fenixd",
-                        "restart_request 已在，重启在途，自愈不重复写入",
+                        "restart_request 已在，重启在途，自愈不重复写入"
+                        "（当前受 supervisor 托管、由其在消费该请求；未托管场景"
+                        "已优先归因 unmanaged，与 supervisor_missing 告警口径"
+                        "对齐，item 4be85f1655c1）",
                     )
             self._stale_idle_since = None
             return
@@ -2811,6 +2857,33 @@ class FenixDaemon:
         outcome["kind"] = "payload"
         return None
 
+    def _consume_signal_payload(
+        self, req_path, outcome, payload_invalid_text, on_payload_dropped=None
+    ):
+        """文件信号车道消费前奏收口：原子消费 + payload 归因留痕（各车道共用）。
+
+        item 2af9f5f0af71（样板收口，先例 _load_preserve_entries/_preserve_entry）：
+        「_consume_request_file 原子消费 → payload 为 None 且 outcome 归因
+        payload 时 WARNING 留痕（留痕后可选车道收尾回调）」的前奏在
+        admin_invoke / cancel_run / approve_push / spec_delete / code_review /
+        code_fix / regression / regression_fix 八条车道逐字重复、仅文案微差，
+        收口此处，新增车道不再漏带 payload 归因留痕段。文案参数化（各车道
+        措辞保留原样）；on_payload_dropped 供落结果回执的车道在留痕后追加
+        车道收尾（code_review / code_fix / regression_fix）。io 归因留痕不在
+        本助手内（code_review 车道有按信号身份去重等车道特有逻辑，调用方经
+        outcome 自行分支）。
+
+        Returns: payload dict 或 None（None 时留痕/回调已执行，调用方直接 return）。
+        """
+        payload = self._consume_request_file(req_path, outcome=outcome)
+        if payload is None:
+            if outcome.get("kind") == "payload":
+                self.logger.warning("fenixd", payload_invalid_text)
+                if on_payload_dropped is not None:
+                    on_payload_dropped()
+            return None
+        return payload
+
     @staticmethod
     def _reclaim_consumed_request_residues() -> None:
         """回收 _consume_request_file 崩溃窗口残留的 .consumed 私有副本
@@ -2858,6 +2931,44 @@ class FenixDaemon:
             datetime.now(timezone.utc) - dt
         ).total_seconds() > SCHEDULING_KICK_STALE_THRESHOLD_SECONDS
 
+    def _reject_invalid_spec_name(self, spec, warning_text, on_reject=None) -> bool:
+        """spec 名纵深白名单校验收口（信号车道共用样板，item 2af9f5f0af71）。
+
+        判据收单点（此前在 admin_invoke / scheduling_kick / approve_push /
+        spec_delete 四条车道逐字重复、仅文案微差——code-review items
+        5483b63922bf / d684b8e307ab / e92148d3515e 逐车道补齐的同一防线）：
+        非 str 或不匹配 ``[A-Za-z0-9_-]+`` 全串 → 非法：WARNING 留痕（文案
+        参数化，各车道措辞保留原样）→ 可选 on_reject 清理回调（scheduling_kick
+        车道删信号文件）→ 返回 True 供调用方直接 return。合法返回 False，
+        调用方继续后续链路。
+        """
+        if isinstance(spec, str) and re.fullmatch(r"[A-Za-z0-9_-]+", spec):
+            return False
+        self.logger.warning("fenixd", warning_text)
+        if on_reject is not None:
+            on_reject()
+        return True
+
+    def _drop_stale_signal(
+        self, created, stale_text, on_stale=None, level: str = "warning"
+    ) -> bool:
+        """created 时效分档 + 留痕收口（信号车道共用样板，item 2af9f5f0af71）。
+
+        判据经 _signal_created_is_stale 单点（同判据同阈值不变）；陈旧时按
+        level 留痕（文案参数化，各车道措辞保留原样；scheduling_kick 车道为
+        info、其余车道 warning）→ 可选 on_stale 车道收尾回调（落结果回执 /
+        failed disposition / 删信号文件）→ 返回 True 供调用方直接 return。
+        未陈旧返回 False，调用方继续后续链路。「超过 Ns 阈值 / 积压旧请求」
+        等文案在调用方拼好传入，本助手不做二次插值。
+        """
+        if not self._signal_created_is_stale(created):
+            return False
+        log = self.logger.warning if level == "warning" else self.logger.info
+        log("fenixd", stale_text)
+        if on_stale is not None:
+            on_stale()
+        return True
+
     def _check_admin_invoke_requests(self):
         """主循环每轮扫描手动唤起 Admin 的文件信号并投递后台执行。
 
@@ -2876,14 +2987,12 @@ class FenixDaemon:
         # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
         # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "admin_invoke 信号 payload 非法/损坏，信号已消费并丢弃，本次唤起未执行",
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "admin_invoke 信号 payload 非法/损坏，信号已消费并丢弃，"
-                    "本次唤起未执行",
-                )
             return
 
         spec = payload.get("spec")
@@ -2894,11 +3003,9 @@ class FenixDaemon:
         # spec_delete 兄弟车道同款）：spec 名进入 admin 信号与 run 命名链，
         # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
         # WARNING 留痕、不进入唤起链（信号已经 _consume_request_file 消费）。
-        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
-            self.logger.warning(
-                "fenixd",
-                f"admin_invoke 信号 spec 名不合法，丢弃不唤起: {spec!r}",
-            )
+        if self._reject_invalid_spec_name(
+            spec, f"admin_invoke 信号 spec 名不合法，丢弃不唤起: {spec!r}"
+        ):
             return
         # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
         # approve_push 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
@@ -2906,22 +3013,21 @@ class FenixDaemon:
         # Administrator 属昂贵动作，不对旧请求重放）；created 缺失/非法保守
         # 按陈旧处理
         created = payload.get("created")
-        if self._signal_created_is_stale(created):
-            self.logger.warning(
-                "fenixd",
-                f"admin_invoke 陈旧信号（created={created}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不唤起 "
-                f"Administrator: spec='{spec}'（积压旧请求，如仍需处置请在 "
-                f"dashboard 重新发起）",
-            )
+        if self._drop_stale_signal(
+            created,
+            f"admin_invoke 陈旧信号（created={created}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不唤起 "
+            f"Administrator: spec='{spec}'（积压旧请求，如仍需处置请在 "
+            f"dashboard 重新发起）",
             # 留痕（item 2b1b4683c997，对齐同车道投递被拒路径）：陈旧唤起仅
             # 消费不执行，但用户在 dashboard 发起的动作须有界面可见回执——
             # 落 failed disposition 供前端时间线/告警感知，不再只留 daemon 日志
-            self._record_failed_admin_disposition(
+            on_stale=lambda: self._record_failed_admin_disposition(
                 spec,
                 "唤起信号已过期（停机积压超过 1 小时阈值），未唤起 "
                 "Administrator；如仍需处置请在 dashboard 重新发起",
-            )
+            ),
+        ):
             return
 
         # 底层 signal_type 透传（fix-manual-invoke-signal-type-passthrough 1.1 +
@@ -3024,14 +3130,12 @@ class FenixDaemon:
         # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
         # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "cancel_run 信号 payload 非法/损坏，信号已消费并丢弃，本次取消未执行",
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "cancel_run 信号 payload 非法/损坏，信号已消费并丢弃，"
-                    "本次取消未执行",
-                )
             return
 
         run_id = payload.get("run_id")
@@ -3162,33 +3266,35 @@ class FenixDaemon:
             except OSError:
                 pass
             return
+
+        def _unlink_quiet():
+            # 非法名/陈旧分档共用的删除收尾：删除失败留待下轮重试，不因
+            # OSError 中断分档流程
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
         # 纵深防御（code-review item d684b8e307ab，对齐 spec_delete 车道
         # item e92148d3515e 同款）：spec 名会被拼进 spec/changes/<name> 等路径，
         # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
         # 删除信号并 WARNING 留痕、不进入唤起链（下方 read_one 在场校验仍在，
         # 两条信号车道纵深防御口径一致）。
-        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
-            self.logger.warning(
-                "fenixd",
-                f"scheduling_kick 信号 spec 名不合法，删除信号不唤起: {spec!r}",
-            )
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        if self._reject_invalid_spec_name(
+            spec,
+            f"scheduling_kick 信号 spec 名不合法，删除信号不唤起: {spec!r}",
+            on_reject=_unlink_quiet,
+        ):
             return
         # 陈旧分档（D4/D5）：created 缺失/非法按陈旧处理（仅删）；
         # 判据抽为 _signal_created_is_stale（item 69d57b48a605：approve_push 共用）
         created = payload.get("created")
-        if self._signal_created_is_stale(created):
-            self.logger.info(
-                "fenixd",
-                f"scheduling_kick 陈旧信号（created={created}），仅删除不唤起: {path.name}",
-            )
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        if self._drop_stale_signal(
+            created,
+            f"scheduling_kick 陈旧信号（created={created}），仅删除不唤起: {path.name}",
+            on_stale=_unlink_quiet,
+            level="info",
+        ):
             return
         if self.pm_engine is None:
             self.logger.warning("fenixd", "pm_engine 未初始化，跳过 scheduling_kick 信号")
@@ -3399,9 +3505,13 @@ class FenixDaemon:
 
         dashboard 的 /api/spec-approve-push 校验通过后原子写入
         .fenix/approve_push_request.json（含 spec/source/created）；本方法在
-        主循环（1s 粒度）中检测其存在：读取→删除→调 pm_engine.approve_push(spec)。
-        与 _check_cancel_requests / _check_scheduling_kick_requests 同构：
-        损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
+        主循环（1s 粒度）中检测其存在：原子消费→校验→投递后台执行
+        pm_engine.approve_push(spec)（code-review item d2d3b0c5f314：推送的
+        git push 子进程/推送锁等待不得内联阻塞主循环其它 1s 粒度信号车道与
+        陈旧自愈 tick，整体投 _admin_executor——对齐 _submit_admin_run 的
+        submitted 计数与 RuntimeError 回滚；admin.workers=0 回退同步保留
+        逃生门）。与 _check_cancel_requests / _check_scheduling_kick_requests
+        同构：损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
 
         推送语义完全复用 pm_engine.approve_push 既有实现（单飞锁、main 先行+
         分支尽力、SHA 去重、退避、归档收口、project log），本方法不新增任何
@@ -3422,18 +3532,13 @@ class FenixDaemon:
         时效只决定「是否执行推送」。
         """
         req_path = PROJECT_ROOT / ".fenix" / "approve_push_request.json"
-        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
-        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
-        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "approve_push 信号 payload 非法/损坏，信号已消费并丢弃，本次推送未执行",
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "approve_push 信号 payload 非法/损坏，信号已消费并丢弃，"
-                    "本次推送未执行",
-                )
             return
 
         spec = payload.get("spec")
@@ -3444,22 +3549,19 @@ class FenixDaemon:
         # spec_delete 兄弟车道同款）：spec 名进入 approve_push 推送与 run 链，
         # 真值检查后再过字符白名单，拦截路径分隔符 / .. 等畸形名——非法名
         # WARNING 留痕、不进入推送链（信号已经 _consume_request_file 消费）。
-        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
-            self.logger.warning(
-                "fenixd",
-                f"approve_push 信号 spec 名不合法，丢弃不执行推送: {spec!r}",
-            )
+        if self._reject_invalid_spec_name(
+            spec, f"approve_push 信号 spec 名不合法，丢弃不执行推送: {spec!r}"
+        ):
             return
         # 时效分档（item 69d57b48a605）：与 scheduling_kick 同判据同阈值，
         # 停机积压的旧审批重启后不执行推送；created 缺失/非法保守按陈旧处理
         created = payload.get("created")
-        if self._signal_created_is_stale(created):
-            self.logger.warning(
-                "fenixd",
-                f"approve_push 陈旧信号（created={created}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行推送: "
-                f"spec='{spec}'（积压旧审批，如仍需推送请在 dashboard 重新发起）",
-            )
+        if self._drop_stale_signal(
+            created,
+            f"approve_push 陈旧信号（created={created}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行推送: "
+            f"spec='{spec}'（积压旧审批，如仍需推送请在 dashboard 重新发起）",
+        ):
             return
         if self.pm_engine is None:
             self.logger.warning("fenixd", "pm_engine 未初始化，丢弃 approve_push 请求")
@@ -3469,14 +3571,77 @@ class FenixDaemon:
             "fenixd",
             f"消费审批推送信号：spec='{spec}'，source={payload.get('source', 'dashboard')}",
         )
+        # 投递后台执行（code-review item d2d3b0c5f314）：pm_engine.approve_push
+        # 在 _push_lock 临界区内跑 git push origin main / 分支尽力推送 / 归档
+        # 收口提交（单次 git push 子进程超时上限 120s），还可能与 event_bus
+        # 线程在锁上排队——慢远端或锁竞争期间主循环全部 1s 粒度信号车道
+        # （cancel_run / admin_invoke / spec_delete 拾取等）与陈旧自愈 tick 均
+        # 被阻塞。对齐 spec_delete（item dc0563435ba5）/ admin 处置
+        # （fix-admin-run-blocks-mainloop）既有后台化先例：主循环只做信号
+        # 拾取与投递，推送全程移入 _admin_executor worker。
+        self._submit_approve_push(spec)
+
+    def _submit_approve_push(self, spec) -> bool:
+        """把一次审批推送投递到后台 worker 池（code-review item d2d3b0c5f314）。
+
+        admin.workers=0（未启用后台池）时回退主循环内同步执行，保持既有行为
+        （逃生门，对齐 _submit_admin_run / spec_delete 同款；同步完成无重叠
+        窗口，不计池统计——_is_idle 对 executor=None 本就视为空闲）。submit
+        前先递增 submitted、被拒回滚（code-review item 5786fd76ad49 口径，
+        对齐 _submit_admin_run / spec_delete）：推送在飞期 MUST 计入 _is_idle
+        的池在途维度，避免慢远端推送期间被 stale-code 自愈误判空闲重启
+        （SIGTERM 会杀掉在飞推送收口）。去重不新增：推送单飞由
+        pm_engine.approve_push 既有 _push_lock 承担，排队中的多次信号由其
+        幂等/退避语义吸收。
+
+        Returns:
+            True = 已投递（或同步执行完成）；False = 投递被拒绝。
+        """
+        if self._admin_executor is None:
+            self._execute_approve_push(spec)
+            return True
+        with self._admin_pool_lock:
+            stats = dict(self._admin_pool_stats)
+            stats["submitted"] += 1
+            self._admin_pool_stats = stats
+        try:
+            self._admin_executor.submit(self._approve_push_worker, spec)
+        except Exception as e:  # noqa: BLE001 — 非 RuntimeError 同样回滚泄漏的
+            # submitted（code-review item 8232ac14d5d8，口径对齐
+            # _submit_admin_run / spec_delete 的宽 Exception 投递点）
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
+                stats["submitted"] -= 1
+                self._admin_pool_stats = stats
+            self.logger.error(
+                "fenixd",
+                f"approve_push 投递被拒绝 spec='{spec}': {e}（recovery 兜底）",
+            )
+            return False
+        queued = stats["submitted"] - stats["completed"] - stats["failed"]
+        self.logger.info(
+            "fenixd",
+            f"approve_push 已投递后台（spec='{spec}'，"
+            f"已提交 {stats['submitted']}，排队中 {queued}）",
+        )
+        return True
+
+    def _execute_approve_push(self, spec) -> bool:
+        """执行一次审批推送并保持既有留痕语义（主循环回退/worker 共用）。
+
+        返回 False 时记 WARNING 不重试（design D3）：False 的三种来源各有
+        既有兜底——非 done（幂等拒绝，重试无意义）、退避期内
+        （_is_push_backoffed，重放由 recovery full_scan 覆盖）、推送失败
+        （_handle_push_failure 已写回退避标记或升级 push_failed 信号）。
+        """
         try:
             ok = self.pm_engine.approve_push(spec)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — 异常不外抛（worker 兜底收口）
             self.logger.error(
                 "fenixd",
                 f"approve_push 调用失败 spec={spec}（recovery 兜底）: {e}",
             )
-            return
+            return False
         if ok:
             self.logger.info("fenixd", f"审批推送成功：spec='{spec}' 已推进 pushed")
         else:
@@ -3487,6 +3652,29 @@ class FenixDaemon:
                 f"审批推送未成功 spec='{spec}'（非 done/退避期内/推送失败），"
                 "不重试，退避与 recovery 兜底覆盖",
             )
+        return bool(ok)
+
+    def _approve_push_worker(self, spec):
+        """approve_push 后台 worker 体（code-review item d2d3b0c5f314）。
+
+        在 _admin_executor 线程内执行推送全程：git push 子进程与推送锁等待
+        不再占用主循环，admin_invoke / cancel_run / scheduling_kick /
+        spec_delete / code_review / regression 等信号车道与周期检查、陈旧
+        自愈 tick 不受阻塞。对齐 _admin_run_worker / _spec_delete_worker 的
+        catch-all 纪律——单次推送异常不得带病退出线程；completed/failed
+        收口保证 submitted ≥ completed + failed（_is_idle 池在途推导不失真）。
+        """
+        ok = False
+        try:
+            ok = self._execute_approve_push(spec)
+        except Exception as e:  # noqa: BLE001 — worker 兜底，防线程带病退出
+            self.logger.error(
+                "fenixd",
+                f"approve_push 后台推送异常 spec='{spec}': {e}",
+            )
+        finally:
+            with self._admin_pool_lock:
+                self._admin_pool_stats["completed" if ok else "failed"] += 1
 
     # ── SPEC 删除信号消费（add-freeze-stop-inflight-agents 5.2/5.3）────────
 
@@ -3531,18 +3719,13 @@ class FenixDaemon:
             # 再消费（去重门，item dc0563435ba5）
             return
         req_path = PROJECT_ROOT / ".fenix" / "spec_delete_request.json"
-        # 「信号在场但 payload 非法」留痕（item 3ae81f8b6d0b，对齐 code_review
-        # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
-        # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "spec_delete 信号 payload 非法/损坏，信号已消费并丢弃，本次删除未执行",
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "spec_delete 信号 payload 非法/损坏，信号已消费并丢弃，"
-                    "本次删除未执行",
-                )
             return
 
         spec = payload.get("spec")
@@ -3555,24 +3738,21 @@ class FenixDaemon:
         # scripts/verify-bug-repair-drive-engine.py 对同类外部输入的
         # fullmatch 白名单同款，拦截路径分隔符 / .. 等畸形名：信号文件已经
         # _consume_request_file 原子消费，此处仅 WARNING 留痕、不进入删除链。
-        if not isinstance(spec, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", spec):
-            self.logger.warning(
-                "fenixd",
-                f"spec_delete 信号 spec 名不合法，丢弃不执行删除: {spec!r}",
-            )
+        if self._reject_invalid_spec_name(
+            spec, f"spec_delete 信号 spec 名不合法，丢弃不执行删除: {spec!r}"
+        ):
             return
         # 时效分档（code-review item 225b38618faf）：与 scheduling_kick /
         # approve_push 等兄弟车道同判据同阈值（经 _signal_created_is_stale）——
         # daemon 停机期间积压的旧删除信号重启后仅消费不执行（先停后删属破坏性
         # 动作，不对旧请求重放）；created 缺失/非法保守按陈旧处理
         created = payload.get("created")
-        if self._signal_created_is_stale(created):
-            self.logger.warning(
-                "fenixd",
-                f"spec_delete 陈旧信号（created={created}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行删除: "
-                f"spec='{spec}'（积压旧请求，如仍需删除请在 dashboard 重新发起）",
-            )
+        if self._drop_stale_signal(
+            created,
+            f"spec_delete 陈旧信号（created={created}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行删除: "
+            f"spec='{spec}'（积压旧请求，如仍需删除请在 dashboard 重新发起）",
+        ):
             return
 
         self.logger.info(
@@ -3885,18 +4065,16 @@ class FenixDaemon:
         # 出参区分——IO 异常不落 invalid_payload 结果（那会把「触发信号内容
         # 非法」误展示给用户、误导排障方向），仅记日志待下轮自愈重试。
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "code_review 触发信号 payload 非法/损坏，信号已消费并落 "
+            "invalid_payload 结果",
+            on_payload_dropped=lambda: self._write_code_review_request_result(
+                None, "dropped", "invalid_payload"),
+        )
         if payload is None:
-            kind = outcome.get("kind")
-            if kind == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "code_review 触发信号 payload 非法/损坏，信号已消费并落 "
-                    "invalid_payload 结果",
-                )
-                self._write_code_review_request_result(
-                    None, "dropped", "invalid_payload")
-            elif kind == "io":
+            if outcome.get("kind") == "io":
                 # 主循环约 1s 一轮巡检：IO 异常下信号留盘待下轮重试，磁盘满/
                 # 权限等持久故障期间同一信号的 IO 告警会无限刷屏（item
                 # 974d06dfad47）。按信号文件身份（ino+mtime_ns+size）去重：
@@ -3948,15 +4126,14 @@ class FenixDaemon:
         # daemon 停机期间积压的旧审查请求重启后仅消费、落 stale_created 结果，
         # 不投递 full/window LLM 审查（昂贵动作不对旧请求重放）；requested_at
         # 缺失/非法保守按陈旧处理
-        if self._signal_created_is_stale(requested_at):
-            self.logger.warning(
-                "fenixd",
-                f"code_review 陈旧信号（requested_at={requested_at}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不投递"
-                f"（停机积压旧请求，如仍需审查请在 dashboard 重新发起）",
-            )
-            self._write_code_review_request_result(
-                requested_at, "dropped", "stale_created")
+        if self._drop_stale_signal(
+            requested_at,
+            f"code_review 陈旧信号（requested_at={requested_at}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不投递"
+            f"（停机积压旧请求，如仍需审查请在 dashboard 重新发起）",
+            on_stale=lambda: self._write_code_review_request_result(
+                requested_at, "dropped", "stale_created"),
+        ):
             return
 
         # 守卫：daemon 未运行或 unmanaged 时信号无人消费。hosting_state 探测
@@ -4164,27 +4341,24 @@ class FenixDaemon:
         # 车道 item 94618d6567ee）：payload 归因时信号已被消费删除、不会再重试，
         # 不能与 absent（每轮稀疏常态）/io（信号留盘待下轮重试）一样静默丢弃
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "regression 信号 payload 非法/损坏，信号已消费并丢弃，本次回归未执行",
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "regression 信号 payload 非法/损坏，信号已消费并丢弃，"
-                    "本次回归未执行",
-                )
             return
 
         # 时效分档（item 117044e0ae4a）：与 approve_push / code_fix 同判据
         # 同阈值，停机积压的旧手动回归重启后不派发全量回归；时间戳字段为
         # requested_at（writer 契约），缺失/非法保守按陈旧处理
         created = payload.get("requested_at")
-        if self._signal_created_is_stale(created):
-            self.logger.warning(
-                "fenixd",
-                f"regression 陈旧信号（requested_at={created}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行回归"
-                f"（停机积压旧请求，如仍需执行请在 dashboard 重新发起）",
-            )
+        if self._drop_stale_signal(
+            created,
+            f"regression 陈旧信号（requested_at={created}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不执行回归"
+            f"（停机积压旧请求，如仍需执行请在 dashboard 重新发起）",
+        ):
             return
 
         # 守卫：daemon 未运行或 unmanaged 时信号无人消费。hosting_state 探测
@@ -4400,16 +4574,15 @@ class FenixDaemon:
         # created 可回链，request_created 落空串）；absent（每轮稀疏常态）与
         # io（信号未消费留盘待下轮重试，不误标 payload 非法）归因维持静默
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "code_fix 触发信号 payload 非法/损坏，信号已消费并落 "
+            "invalid_payload 结果",
+            on_payload_dropped=lambda: self._write_code_fix_request_result(
+                result_path, "", False, "invalid_payload"),
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "code_fix 触发信号 payload 非法/损坏，信号已消费并落 "
-                    "invalid_payload 结果",
-                )
-                self._write_code_fix_request_result(
-                    result_path, "", False, "invalid_payload")
             return
 
         request_created = str(payload.get("created") or "")
@@ -4418,15 +4591,14 @@ class FenixDaemon:
         # 时效分档（item 6cc24b51f6b9）：与 scheduling_kick / approve_push
         # 同判据同阈值，停机积压的旧触发重启后不投递 checkpoint，仅落
         # stale_created 结果（下游可辨认）；单飞等守卫不受影响
-        if self._signal_created_is_stale(payload.get("created")):
-            self.logger.warning(
-                "fenixd",
-                f"code-fix 陈旧信号（created={request_created}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不投递"
-                f"（停机积压旧请求，如仍需修复请在 dashboard 重新发起）",
-            )
-            self._write_code_fix_request_result(
-                result_path, request_created, False, "stale_created")
+        if self._drop_stale_signal(
+            payload.get("created"),
+            f"code-fix 陈旧信号（created={request_created}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不投递"
+            f"（停机积压旧请求，如仍需修复请在 dashboard 重新发起）",
+            on_stale=lambda: self._write_code_fix_request_result(
+                result_path, request_created, False, "stale_created"),
+        ):
             return
 
         # 编排器未装配不静默：落 orchestrator_missing 结果，用户可见明确原因
@@ -4541,17 +4713,16 @@ class FenixDaemon:
         # created 可回链，request_created 落空串）；absent（每轮稀疏常态）与
         # io（信号未消费留盘待下轮重试，不误标 payload 非法）归因维持静默
         outcome = {}
-        payload = self._consume_request_file(req_path, outcome=outcome)
+        payload = self._consume_signal_payload(
+            req_path,
+            outcome,
+            "regression_fix 触发信号 payload 非法/损坏，信号已消费并落 "
+            "invalid_payload 结果",
+            on_payload_dropped=lambda: self._write_result_message(
+                result_path, "", False, "invalid_payload",
+                self.REGRESSION_FIX_RESULT_MESSAGES),
+        )
         if payload is None:
-            if outcome.get("kind") == "payload":
-                self.logger.warning(
-                    "fenixd",
-                    "regression_fix 触发信号 payload 非法/损坏，信号已消费并落 "
-                    "invalid_payload 结果",
-                )
-                self._write_result_message(
-                    result_path, "", False, "invalid_payload",
-                    self.REGRESSION_FIX_RESULT_MESSAGES)
             return
 
         request_created = str(payload.get("created") or "")
@@ -4561,16 +4732,15 @@ class FenixDaemon:
         # 时效分档（item 6cc24b51f6b9）：与 code_fix / approve_push 同判据
         # 同阈值，停机积压的旧触发重启后不转换入账、不投递 checkpoint，仅落
         # stale_created 结果（下游可辨认）；须在快照转换入账之前分档
-        if self._signal_created_is_stale(payload.get("created")):
-            self.logger.warning(
-                "fenixd",
-                f"regression-fix 陈旧信号（created={request_created}）超过 "
-                f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不转换入账"
-                f"不投递（停机积压旧请求，如仍需修复请在 dashboard 重新发起）",
-            )
-            self._write_result_message(
+        if self._drop_stale_signal(
+            payload.get("created"),
+            f"regression-fix 陈旧信号（created={request_created}）超过 "
+            f"{SCHEDULING_KICK_STALE_THRESHOLD_SECONDS}s 阈值，不转换入账"
+            f"不投递（停机积压旧请求，如仍需修复请在 dashboard 重新发起）",
+            on_stale=lambda: self._write_result_message(
                 result_path, request_created, False, "stale_created",
-                self.REGRESSION_FIX_RESULT_MESSAGES)
+                self.REGRESSION_FIX_RESULT_MESSAGES),
+        ):
             return
 
         # 编排器未装配不静默（且 MUST NOT 先入账再落结果——入账前置检查）

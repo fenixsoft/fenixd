@@ -7,6 +7,7 @@ SPEC 状态经门面回引 self._pm.state_machine（design D3 规则 3）；
 """
 
 from pathlib import Path
+from typing import Optional
 import glob
 import hashlib
 import json
@@ -567,12 +568,25 @@ class RecoveryWatch:
                 )
                 continue
             active_dispatch = False
+            dispatch_probe_exc = None
             try:
                 active_dispatch = bool(
                     self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
                 )
-            except Exception:
+            except Exception as _probe_err:
+                # except ... as 名字在块尾被隐式删除，须转存才能在块外引用
+                # （同下方重读失败分支口径）。探测失败按无活跃派发保守处置，
+                # 但须记 WARNING 留痕并把失败事实拼入升级 evidence，否则
+                # 误升级 dispatch_stalled 时日志无从归因（code-review item
+                # e660dbe20ce0）。
                 active_dispatch = False
+                dispatch_probe_exc = _probe_err
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Active dispatch probe failed for '{spec_name}' "
+                    f"(treating as no active dispatch): "
+                    f"{type(_probe_err).__name__}: {_probe_err}",
+                )
             # 2.1：已恢复推进 = 已进入 ready 之后的后续态，或已有活跃派发
             if status in RECOVERY_PROGRESS_STATUSES or active_dispatch:
                 self._pm.logger.info(
@@ -616,12 +630,23 @@ class RecoveryWatch:
             # `or active_dispatch` 恒假，docstring 声称的「升级前重读…已有活跃
             # 派发 → 不升级」实际从未执行。就地重派窗口内 worktree 可能已变活跃，
             # 故重读时一并重探，避免误升级。
+            reprobe_exc = None
             try:
                 active_dispatch_now = bool(
                     self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
                 )
-            except Exception:
+            except Exception as _reprobe_err:
+                # 同第 2 层探测失败口径：按无活跃派发保守处置，记 WARNING
+                # 留痕并把失败事实拼入下方升级 evidence（code-review item
+                # e660dbe20ce0）。
                 active_dispatch_now = False
+                reprobe_exc = _reprobe_err
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Pre-escalation active dispatch re-probe failed for "
+                    f"'{spec_name}' (treating as no active dispatch): "
+                    f"{type(_reprobe_err).__name__}: {_reprobe_err}",
+                )
             if fresh.get("status") in RECOVERY_PROGRESS_STATUSES or active_dispatch_now:
                 self._pm.logger.info(
                     "pm_engine",
@@ -640,9 +665,24 @@ class RecoveryWatch:
                 )
             else:
                 reread_desc = f"spec still {fresh.get('status')}"
+            # 两层活跃派发探测失败须拼入 evidence（code-review item
+            # e660dbe20ce0）：探测失败按 False 保守处置，若升级
+            # dispatch_stalled，evidence 须能归因到探测为何失败。
+            probe_failure_desc = ""
+            if dispatch_probe_exc is not None:
+                probe_failure_desc += (
+                    f" (layer-2 dispatch probe failed: "
+                    f"{type(dispatch_probe_exc).__name__})"
+                )
+            if reprobe_exc is not None:
+                probe_failure_desc += (
+                    f" (layer-3 dispatch re-probe failed: "
+                    f"{type(reprobe_exc).__name__})"
+                )
             evidence = (
                 f"auto-recovery/defer at {item.get('registered_at')} "
-                f"({item.get('reason')}); {reread_desc} "
+                f"({item.get('reason')}); {reread_desc}"
+                f"{probe_failure_desc} "
                 f"with no active dispatch after followup window, in-place "
                 f"redispatch "
                 f"{'succeeded' if dispatched else 'not established'}, "
@@ -1134,7 +1174,7 @@ class RecoveryWatch:
         return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:12]
 
     def _signal_dispatch_stalled(
-        self, spec_name: str, evidence: str, fingerprint: str | None = None
+        self, spec_name: str, evidence: str, fingerprint: Optional[str] = None
     ) -> bool:
         """退避耗尽仍持锁 / 恢复复查未通过 / 假就绪滞留 → dispatch_stalled 信号（D5/D6）。
 

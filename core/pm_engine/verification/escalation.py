@@ -679,10 +679,19 @@ def _escalate_env_blocked(
                 f"env blocked: {'; '.join(str(v) for v in (violations or [])[:3])}",
                 retry_gate=infra_retry,
             )
-        except Exception:
-            # 记账侧车失败：infra-retry 车道保守按「达预算」走全价升级
+        except Exception as e:
+            # 记账侧车失败：infra-retry 车道保守按「达预算」走全价升级；
+            # 非 infra-retry 轮（常规 env 阻塞升级）记账异常不得静默——
+            # WARNING 留痕「本轮 infra 记账未落」，不阻断升级（与其余
+            # 记账/侧车失败必留痕口径一致）。
             if infra_retry:
                 infra_retry_decision = "escalate"
+            else:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' infra 轮次记账失败（本轮 infra 记账未落，"
+                    f"不阻断升级）: {type(e).__name__}: {e}",
+                )
         if infra_retry and infra_retry_decision == "redispatch":
             # ── infra-retry 旁路（D6）：不计 env 冻结轮、不写 blocked/status、
             # 不呼叫 admin、不落 verify_env_blocked 信号——函数在此返回，
@@ -994,7 +1003,9 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     if recheck_path.exists():
         try:
             data = json.loads(recheck_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, ValueError):
+            # UnicodeDecodeError 非 OSError 子类，一并收口（item
+            # fc51c35a9f83，与上方 already_recheck 回读同口径）
             data = None
         if isinstance(data, list) and data:
             pruned = [
@@ -1109,7 +1120,9 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
                 data = json.loads(recheck_path.read_text(encoding="utf-8"))
                 if isinstance(data, list):
                     existing = data
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, ValueError):
+                # UnicodeDecodeError 非 OSError 子类，一并收口（item
+                # fc51c35a9f83，与上方 already_recheck 回读同口径）
                 existing = []
         merged = list(dict.fromkeys(existing + sids))
         # 原子写（共用 fs_utils.atomic_write_text 助手）：优先复核清单会被
@@ -1312,12 +1325,21 @@ def _scenario_defect_reroute_gate(
             "pm_engine",
             f"改道重派 judge 异常 '{spec_name}'（保持 testing）: " f"{type(e).__name__}: {e}",
         )
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "error": f"场景缺陷改道重派 judge 异常（保持 testing）：{e}",
-            },
-        )
+        # 留痕写盘不得抛穿改道门（比照 _escalate_scenario_defect_reroute
+        # 容错口径包裹）：失败仅 ERROR 留痕，收口恒返回 True 语义不变。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": f"场景缺陷改道重派 judge 异常（保持 testing）：{e}",
+                },
+            )
+        except Exception as e2:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"改道重派异常留痕写盘失败 '{spec_name}'（error 未落盘，"
+                f"收口语义不变，保持 testing）: {type(e2).__name__}: {e2}",
+            )
         return True
     finally:
         try:
@@ -1354,13 +1376,23 @@ def _scenario_defect_reroute_gate(
                 if reroute_judge.error
                 else "run 被人工取消"
             )
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": cancelled_err,
-                    "_cancelled_hold": True,
-                },
-            )
+            # 取消 hold 标记写盘不得抛穿改道门（容错口径同上）：失败仅
+            # ERROR 留痕，取消告警与收口恒返回 True 不受影响。
+            try:
+                pipeline._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": cancelled_err,
+                        "_cancelled_hold": True,
+                    },
+                )
+            except Exception as e:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"改道取消 hold 标记写盘失败 '{spec_name}'（error/"
+                    f"_cancelled_hold 未落盘，收口语义不变）: "
+                    f"{type(e).__name__}: {e}",
+                )
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"改道重派 judge 被取消 '{spec_name}' — hold-state"
@@ -1372,12 +1404,21 @@ def _scenario_defect_reroute_gate(
                 f"改道重派 judge 派发失败 '{spec_name}' — 保持 testing，"
                 f"留 error 待下轮重验: {reroute_judge.error}",
             )
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": f"改道重派 judge 派发失败（保持 testing）：" f"{reroute_judge.error}",
-                },
-            )
+            # 派发失败留痕写盘不得抛穿改道门（容错口径同上）：失败仅
+            # ERROR 留痕，收口恒返回 True 语义不变。
+            try:
+                pipeline._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": f"改道重派 judge 派发失败（保持 testing）：" f"{reroute_judge.error}",
+                    },
+                )
+            except Exception as e:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"改道派发失败留痕写盘失败 '{spec_name}'（error 未落盘，"
+                    f"收口语义不变，保持 testing）: {type(e).__name__}: {e}",
+                )
         return True
 
     # 重派结果判定（evo-verifier-result-single-source R1：统一走
@@ -1398,16 +1439,25 @@ def _scenario_defect_reroute_gate(
             # 改道重入路径与 judge 重入同语义：修复后场景集为空 → 拒绝
             # 本次重入、保持原状并留痕，MUST NOT 以空集/未过滤文件进入阶段2。
             reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": (
-                        f"改道重派 judge 修复后场景集为空（写前预校验整批拒绝，"
-                        f"共 {freeze_result.get('total', 0)} 条）— 拒绝本次重入，"
-                        f"保持 testing 待人工/下轮处置: {reject_detail}"
-                    ),
-                },
-            )
+            # 空集拒绝留痕写盘不得抛穿改道门（容错口径同上）：失败仅 ERROR
+            # 留痕，拒绝重入 + 恒返回 True 的收口语义不变。
+            try:
+                pipeline._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": (
+                            f"改道重派 judge 修复后场景集为空（写前预校验整批拒绝，"
+                            f"共 {freeze_result.get('total', 0)} 条）— 拒绝本次重入，"
+                            f"保持 testing 待人工/下轮处置: {reject_detail}"
+                        ),
+                    },
+                )
+            except Exception as e:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"改道空集拒绝留痕写盘失败 '{spec_name}'（error 未落盘，"
+                    f"拒绝重入语义不变，保持 testing）: {type(e).__name__}: {e}",
+                )
             pipeline._context.logger.error(
                 "pm_engine",
                 f"改道重派后无合法场景 '{spec_name}' — 拒绝重入，0 场景不进入"
@@ -1443,12 +1493,21 @@ def _scenario_defect_reroute_gate(
         f"{reroute_read.reason if reroute_read.ok is False else '?'}）— "
         f"保持 testing 等待下轮重验",
     )
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "error": "改道重派 judge 结果不可读（保持 testing，等待下轮重验）",
-        },
-    )
+    # 结果不可读留痕写盘不得抛穿改道门（容错口径同上）：失败仅 ERROR 留痕，
+    # 保持 testing + 恒返回 True 的收口语义不变。
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "error": "改道重派 judge 结果不可读（保持 testing，等待下轮重验）",
+            },
+        )
+    except Exception as e:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"改道结果不可读留痕写盘失败 '{spec_name}'（error 未落盘，"
+            f"收口语义不变，保持 testing）: {type(e).__name__}: {e}",
+        )
     return True
 
 
@@ -1795,7 +1854,25 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
         if not should_suppress_bug_found(gate_report):
             # 清空门禁计数：本轮未触发（有证据支撑的归因，不记入 speculative 统计）
             spec_data = pipeline._context.state_machine.read_one(spec_name) or {}
-            if spec_data.get("_credibility_gate_attempts"):
+            # 按取值判定而非真值：行式存储把 int 读回 str，清零写入的 0
+            # 读回为 '0' 仍为真值，真值判定会在门禁轮之后每个健康轮重复
+            # 触发下方 update_spec 全量落盘（违背「避免每轮无谓写盘」意图）。
+            # int 归一后等于 0 即跳过清零；脏值按 0 兜底（与
+            # _inconclusive_attempts 同款防御）。
+            try:
+                gate_attempts_val = int(
+                    spec_data.get("_credibility_gate_attempts", 0) or 0
+                )
+            except (TypeError, ValueError):
+                gate_attempts_val = 0
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' _credibility_gate_attempts 字段脏值（非数字），"
+                    f"已按 0 兜底跳过清零",
+                )
+            if gate_attempts_val != 0:
+                # update_spec 含磁盘 IO，写盘失败静默丢清零会让健康轮每轮
+                # 重复落盘——WARNING 留痕，不阻断健康轮推进。
                 try:
                     pipeline._context.state_machine.update_spec(
                         spec_name,
@@ -1803,8 +1880,12 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                             "_credibility_gate_attempts": 0,
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    pipeline._context.logger.warning(
+                        "pm_engine",
+                        f"'{spec_name}' 门禁计数清零写盘失败（下轮健康轮仍会"
+                        f"重试清零，非阻塞）: {type(e).__name__}: {e}",
+                    )
             return False
 
         max_retries = _read_int_config(

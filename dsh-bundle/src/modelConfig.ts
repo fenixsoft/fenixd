@@ -48,16 +48,16 @@ export const DEFAULT_MODEL_MAX_TOKENS = 32768;
 export function assertModelExplicit(segment: unknown): FenixModelSegment {
   if (typeof segment !== "object" || segment === null || Array.isArray(segment)) {
     throw new Error(
-      "模型未显式配置：fenix-dsh-bundle 要求 config.model 显式给出 provider/baseURL/apiKeyEnv/model 三要素" +
-        "（OpenAI 兼容端点）；绝不回退 dsh 默认档。",
+      "模型未显式配置：fenix-dsh-bundle 要求 config.model 显式给出 OpenAI 兼容端点三要素" +
+        "（provider/baseURL/apiKeyEnv）与模型 id（model）；绝不回退 dsh 默认档。",
     );
   }
   const seg = segment as Record<string, unknown>;
   for (const key of ["provider", "baseURL", "apiKeyEnv"] as const) {
     if (typeof seg[key] !== "string" || (seg[key] as string).trim() === "") {
       throw new Error(
-        `模型未显式配置：config.model.${key} 缺失或为空——fenixd provider 链渲染必须给出完整三要素` +
-          `（provider/baseURL/apiKeyEnv/model），绝不回退 dsh 默认档。`,
+        `模型未显式配置：config.model.${key} 缺失或为空——fenixd provider 链渲染必须给出完整端点三要素` +
+          `（provider/baseURL/apiKeyEnv）与模型 id（model），绝不回退 dsh 默认档。`,
       );
     }
   }
