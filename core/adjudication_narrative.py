@@ -267,6 +267,7 @@ def wait_pending_narrative(timeout: float = 30.0) -> bool:
         # 尚未启动的线程（code-review 79f65e197189）：join 对未启动线程抛
         # RuntimeError——t.ident 为 None 即未启动，跳过；该线程若确在飞，由
         # 末尾登记集非空检查兜底返回 False，等待语义不受影响。
+        # [fenix-ignore:7ef3a070da0b] ident 判空后线程恰启动的残留窗口由末尾登记集非空检查兜底返回 False，返回值语义始终准确，无实际缺陷。
         if t.ident is None:
             continue
         remaining = max(deadline - time.monotonic(), 0.0)
@@ -815,6 +816,9 @@ def _validate_structure(text: str) -> bool:
 
     逐行按 ``^##<空白><标题>`` 形态锚定匹配（re.MULTILINE）：正文叙述句
     提前出现标题词不再顶替缺失标题骗过校验（code-review b90c2e93afe9）。
+    标题行尾锚定（``(?=[ \\t]*\\r?$)``）要求四段标题逐字精确匹配——
+    「## 调查结论与建议」这类残缺变体不再顶替约定标题骗过校验
+    （code-review 73261ec50499）。
     空白用 ``[ \\t]*`` 而非 ``\\s*``——避免 ``\\s`` 吞换行把独立「##」行与
     下一行正文误拼成一个标题。旧三段输出（缺「调查结论」段）判失败走兜底
     ——不兼容旧输出是故意的（design D3）。
@@ -823,7 +827,7 @@ def _validate_structure(text: str) -> bool:
         return False
     positions = []
     for head in REQUIRED_SECTIONS:
-        m = re.search(rf"^##[ \t]*{re.escape(head)}", text, re.MULTILINE)
+        m = re.search(rf"^##[ \t]*{re.escape(head)}(?=[ \t]*\r?$)", text, re.MULTILINE)
         if m is None:
             return False
         positions.append(m.start())
@@ -844,8 +848,12 @@ def _clip_narrative(text: str) -> str:
         return text
     starts = [m.start() for m in _SECTION_HEAD_RE.finditer(text)]
     if len(starts) < len(REQUIRED_SECTIONS):
-        # 防御性兜底（不应发生——调用前已过 _validate_structure）
-        return text[:_NARRATIVE_MAX_CHARS].rstrip() + _NARRATIVE_TRUNCATION_MARK
+        # 防御性兜底（不应发生——调用前已过 _validate_structure）；预扣截断标记
+        # 开销——兜底产物同样满足整体 ≤ _NARRATIVE_MAX_CHARS 预算不变式
+        return (
+            text[:_NARRATIVE_MAX_CHARS - len(_NARRATIVE_TRUNCATION_MARK)].rstrip()
+            + _NARRATIVE_TRUNCATION_MARK
+        )
     starts = starts[: len(REQUIRED_SECTIONS)]
     bounds = starts + [len(text)]
     pieces: list = []

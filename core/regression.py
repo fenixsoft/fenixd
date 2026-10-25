@@ -57,7 +57,7 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core import timelib
 from core.fs_utils import atomic_write_text
@@ -166,6 +166,17 @@ def _resolve_line(tc: ET.Element) -> int:
         return 0
 
 
+# 实体膨胀守卫（code-review item d25b89a98831）：xml.etree.ElementTree 对
+# billion laughs / quadratic blowup 实体膨胀攻击无防护（官方文档明示），而
+# 本模块在 daemon 进程内同步解析被测项目侧产出的 XML（verify.yaml 与测试
+# 命令均由项目侧 author）。defusedxml 本仓库不可用（无依赖声明、无先例），
+# 故解析前探测头部：合法 JUnit XML（pytest/jest-junit/surefire/
+# go-junit-report 产出）从不携带 DOCTYPE/ENTITY 声明，命中即拒。
+_XML_ENTITY_GUARD_PROBE_BYTES = 65536
+# NUL 剥离后再匹配：UTF-16 编码变体（字符间夹 NUL）同样命中。
+_XML_ENTITY_GUARD_RE = re.compile(rb"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
+
+
 def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
     """宽松递归解析 JUnit XML，返回结构化结果 dict。
 
@@ -177,11 +188,31 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
 
     文件缺失抛出 FileNotFoundError；其余解析期文件异常（XML 存在但
     打开/读取失败等）与格式错误均归一为 ValueError（调用方据此归为
-    parse_error）。
+    parse_error）。含 DOCTYPE/ENTITY 声明的 XML 在解析前即拒绝（同样
+    归一 ValueError，防实体膨胀，code-review item d25b89a98831）。
     """
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"JUnit XML 不存在: {path}")
+
+    # 实体膨胀守卫（item d25b89a98831，纵深防御）：只探头部——DOCTYPE/
+    # ENTITY 声明按 XML 规范必须位于根元素之前，头部若干 KB 足以覆盖；
+    # 命中即拒并留 WARNING。FileNotFoundError 保持原契约不归一。
+    try:
+        with path.open("rb") as f:
+            head = f.read(_XML_ENTITY_GUARD_PROBE_BYTES)
+    except FileNotFoundError:
+        raise
+    except OSError as e:
+        raise ValueError(f"JUnit XML 无法读取: {e}") from e
+    if _XML_ENTITY_GUARD_RE.search(head.replace(b"\x00", b"")):
+        _logger.warning(
+            "regression: JUnit XML 含 DOCTYPE/ENTITY 声明，拒绝解析"
+            f"（防实体膨胀）: {path}"
+        )
+        raise ValueError(
+            "JUnit XML 含 DOCTYPE/ENTITY 声明，已拒绝解析（防实体膨胀攻击）"
+        )
 
     try:
         tree = ET.parse(str(path))
@@ -573,6 +604,25 @@ def _progress_log_path(project_root, output_rel: str) -> Path:
     return Path(str((Path(project_root) / str(output_rel)).resolve()) + ".log")
 
 
+def _resolve_output_paths(project_root, output_rel: str) -> Optional[Tuple[Path, Path]]:
+    """resolve 回归产物路径并校验包含于 project_root（写读两侧单点收口）。
+
+    code-review item 2a2702ee5ad2：``output`` 一字两用——run_regression 写侧
+    （XML 落盘/清理、进度日志 open）与 read_progress 读侧（进度日志 tail），
+    且取值与 spec/last-run.json 快照同源、项目侧可篡改，两侧必须同一防御
+    口径：绝对路径会整体替换根、``..`` 可越出项目目录，故 resolve 后做
+    ``is_relative_to(root_abs)`` 包含校验，任一路径越界返回 None（读侧按
+    无真实进度回落，写侧按 skipped 放弃本次回归）。resolve 幂等且非严格
+    （目标不存在同样可调用）。
+    """
+    root_abs = Path(project_root).resolve()
+    output_abs = (Path(project_root) / str(output_rel)).resolve()
+    log_abs = _progress_log_path(project_root, output_rel)
+    if not (output_abs.is_relative_to(root_abs) and log_abs.is_relative_to(root_abs)):
+        return None
+    return output_abs, log_abs
+
+
 def read_progress(project_root) -> Dict[str, Any]:
     """读取运行中回归的执行进度（GET /api/regression/result 透出 progress）。
 
@@ -639,17 +689,20 @@ def read_progress(project_root) -> Dict[str, Any]:
             # （外部可篡改），读取前校验其解析后仍位于 project_root 内——
             # 绝对路径会整体替换根、``..`` 可越出项目目录；不合规按无真实
             # 进度处理（percent_real 保持 None，照常回落估算/未知口径）。
-            root_abs = Path(project_root).resolve()
-            log_abs = _progress_log_path(project_root, output_rel)
-            if log_abs.is_relative_to(root_abs) and log_abs.is_file():
-                with log_abs.open("rb") as f:
-                    f.seek(0, os.SEEK_END)
-                    size = f.tell()
-                    f.seek(max(0, size - _PROGRESS_TAIL_BYTES))
-                    chunk = f.read().decode("utf-8", "replace")
-                marks = _PROGRESS_MARKER_RE.findall(chunk)
-                if marks:
-                    percent_real = int(marks[-1])
+            # item 2a2702ee5ad2：包含校验收口 _resolve_output_paths 单点
+            # 助手，与 run_regression 写侧共用同一防御口径。
+            resolved = _resolve_output_paths(project_root, output_rel)
+            if resolved is not None:
+                log_abs = resolved[1]
+                if log_abs.is_file():
+                    with log_abs.open("rb") as f:
+                        f.seek(0, os.SEEK_END)
+                        size = f.tell()
+                        f.seek(max(0, size - _PROGRESS_TAIL_BYTES))
+                        chunk = f.read().decode("utf-8", "replace")
+                    marks = _PROGRESS_MARKER_RE.findall(chunk)
+                    if marks:
+                        percent_real = int(marks[-1])
     except Exception:
         pass
     if percent_real is not None:
@@ -832,14 +885,25 @@ def run_regression(
     now_iso = lambda: timelib.to_storage(timelib.now_utc())
     cmd_display = spec.cmd if isinstance(spec.cmd, str) else " ".join(str(s) for s in spec.cmd)
     output_rel = str(spec.output)
-    output_abs = Path(project_root) / output_rel
+    # code-review item 2a2702ee5ad2：output_rel 与 spec/last-run.json 快照
+    # 同源、项目侧可篡改，写侧在清理旧产物/落盘进度日志前做与 read_progress
+    # 读侧同款的 resolve 后包含校验（单点助手两侧共用，纵深口径一致）——
+    # 越出 project_root 的路径不 mkdir/open/unlink，本次回归按 skipped 放弃
+    # （与主机级锁未获取同形的返回，不落快照）。
+    resolved = _resolve_output_paths(project_root, output_rel)
+    if resolved is None:
+        log.warning(
+            "regression",
+            f"回归产物路径越出项目根，放弃本次回归: {output_rel}",
+        )
+        return {"status": "skipped", "reason": "output_path_outside_project_root"}
+    output_abs, log_abs = resolved
     # stdout 进度日志（与 XML 同名 + .log，junit.xml → junit.xml.log）：运行中
     # 由 read_progress tail 提取 pytest 终端进度标记 [ NN%]（junit XML 9.x 是
     # sessionfinish 一次性写盘，运行中不可读，进度只能来自 stdout）。
-    # code-review item dec73e92402f：与 read_progress 读侧共用助手，统一以
-    # resolve 后的绝对路径拼 .log 后缀（此前写侧不 resolve、读侧 resolve，
-    # output_rel 含符号链接/.. 分量时两侧可能指向不同物理路径）。
-    log_abs = _progress_log_path(project_root, output_rel)
+    # code-review item dec73e92402f：log_abs 经单点助手统一以 resolve 后的
+    # 绝对路径拼 .log 后缀（output_rel 含符号链接/.. 分量时写读两侧仍解析到
+    # 同一物理路径）。
 
     # D7: 主机级锁互斥——同一主机只允许一套全量测试（D10：锁根可锚定主树）
     lock = _SuiteLock(

@@ -640,7 +640,10 @@ def whitewash_violations(scenarios: list, verdict: str,
             # 全垃圾场景表会绕过本不变量在零有效场景上放行 verified
             invalid_idx.append(f"#{idx}")
             continue
-        sid = str(sc.get("scenario_id") or "?")
+        # 双键回退（item 1a656196aa7d）：与本模块其余消费点（validate_report
+        # 等）同口径，judge 改写/旧格式产物只带 id 键时 sid 不落 "?"，
+        # 否则 find_env_exemption 豁免查询恒空，env 失败被误计入违规。
+        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
         # 双词表对齐（item 229075ac0732）：与本模块其余函数同口径——"passed"
         # 亦为通过态（下游 verdict_evidence/pipeline 均按双词表防御），否则
         # 全过报告会被误判 0 通过而错误阻断合法 verified 裁决。

@@ -1133,7 +1133,9 @@ def _scan_adrs(project_root: Path) -> dict:
 
 
 def _rule_lines(text: str) -> list[str]:
-    """提取 `## 规则` 段（或唯一二级标题段）下的列表项行。"""
+    """提取标题文本含「规则」子串的二级标题段下的列表项行（子串开关扫描状态，
+    无「唯一二级标题段」回退：其他命名二级标题段不纳入，标题含「规则」子串的
+    其他段落照扫——误报由转写 run 判无矛盾零改动收场）。"""
     lines = text.splitlines()
     rules: list[str] = []
     in_rules = False
@@ -1568,9 +1570,14 @@ def run_audit(
                     f"/ADR 索引 {fix_cats['adr']} 项"
                 )
                 try:
+                    # pathspec 收窄为本轮实际改写页（对齐语义段 5e5e4ea03d8c
+                    # 纪律）：整目录 pathspec 会把进锁前已在场的 carryover
+                    # （前序 fail-open 留盘产出、人工编辑）卷进 audit fix 提交；
+                    # carryover 留工作区由收尾 leftover 曝光，与回滚段「只还原
+                    # 本轮触达文件」口径对称。
                     commit(
                         project_root,
-                        [KNOWLEDGE_DIR],
+                        sorted(rewritten_rels),
                         f"[fenix] knowledge: audit fix {summary}",
                     )
                 except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
@@ -1632,12 +1639,26 @@ def run_audit(
 
         # no-conflict 按内容豁免（2.1）：两页全文 sha256 均未变才跳派；任一页
         # 变化即解冻回 suspected 照常派发，升级轮次同步清零（豁免解冻重派不计
-        # 入升级轮次——每次内容变更重置，翻转情形保有再审价值）。
-        if cfg["no_conflict_exempt"] and entry.get("status") == "exempt":
-            cur_hashes = {
-                rel: _page_hash(project_root, rel) for rel in dict.fromkeys(pages)
-            }
-            if all(
+        # 入升级轮次——每次内容变更重置，翻转情形保有再审价值）。比对不受
+        # no_conflict_exempt 开关门控（code-review f327001bc988 降级跳派）：
+        # 开关关闭时历史 exempt 条目若落空进复核，既不走哈希豁免也不被重开
+        # （重开分支只覆盖 fixed/superseded-in-batch），状态停留 exempt 却每日
+        # 照常派发转写 run 消耗名额、判 no-conflict 后 status 又写回 exempt，
+        # 形成每日重复复核同一批旧疑点、新候选名额被占持续溢出转待人工的不收敛
+        # 循环——统一按页哈希比对跳派/解冻，内容未变即收敛，不再白耗名额。
+        if entry.get("status") == "exempt":
+            # 涉事页在扫描快照后被外部删除/权限变化（is_file 通过后 read_text
+            # 仍可抛 OSError）时哈希比对不可得：按「盘面已变」解冻回 suspected
+            # 照常派发（转写段 try 按既有单点失败路径隔离），不让 OSError 穿出
+            # run_audit 令整轮体检反复失败（对齐 _collect_pages 防护口径）。
+            try:
+                cur_hashes = {
+                    rel: _page_hash(project_root, rel)
+                    for rel in dict.fromkeys(pages)
+                }
+            except OSError:
+                cur_hashes = None
+            if cur_hashes is not None and all(
                 entry.get("page_hashes", {}).get(rel) == h for rel, h in cur_hashes.items()
             ):
                 entry["exempted_at"] = _today()
@@ -1803,14 +1824,19 @@ def run_audit(
                 details["no_conflict"].append(
                     f"{finding['kind']}（{finding['a']['page']} × {finding['b']['page']}）：判无矛盾"
                 )
-                # 判定入账（2.2）：记两页全文哈希作下次初筛的内容豁免键
-                _record_verdict(
-                    entry,
-                    "no-conflict",
-                    page_hashes={
-                        rel: _page_hash(project_root, rel) for rel in dict.fromkeys(pages)
-                    },
-                )
+                # 判定入账（2.2）：记两页全文哈希作下次初筛的内容豁免键。涉事页
+                # 盘面已变（快照后外部删除/权限变化）时哈希读不到：降级为仅入账
+                # 判定、不记豁免键（下轮比对自然失配解冻重派，不会以读空内容误
+                # 固化豁免），不让 OSError 穿出 run_audit 令整轮体检反复失败
+                # （对齐 _collect_pages 防护口径）。
+                try:
+                    verdict_hashes = {
+                        rel: _page_hash(project_root, rel)
+                        for rel in dict.fromkeys(pages)
+                    }
+                except OSError:
+                    verdict_hashes = None
+                _record_verdict(entry, "no-conflict", page_hashes=verdict_hashes)
                 _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
                 continue
             summary = f"{finding['kind']} {finding['a']['page']} × {finding['b']['page']}"
@@ -1882,9 +1908,12 @@ def run_audit(
         # （污染提交归属），或与注记提交撞 git index.lock 走 fail-open 告警。
         if changed:
             try:
+                # pathspec 收窄为本轮实际改写页（对齐语义段 5e5e4ea03d8c 纪律）：
+                # 整目录 pathspec 会把进锁前已在场的 carryover 卷进注记提交，
+                # 污染提交归属；carryover 留工作区由收尾 leftover 曝光。
                 commit(
                     project_root,
-                    [KNOWLEDGE_DIR],
+                    sorted(changed),
                     f"[fenix] knowledge: audit disputed 注记同步（{len(changed)} 页）",
                 )
             except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
@@ -1941,8 +1970,30 @@ def run_audit(
 
     scale = scale_stats(project_root)
     state = _read_state(project_root)
-    last_scale = state.get("last_scale") or {}
-    prev_lines = last_scale.get("lines") or 0
+    last_scale = state.get("last_scale")
+    # 状态文件损坏值容错（与 _read_state 的 fail-open、台账 review_rounds 的
+    # 就地归零同口径）：last_scale 非 dict 形态回空、lines 非数值回 0，WARNING
+    # 留痕后按无基线处理——不让 last_scale.get 抛 AttributeError、prev_lines > 0
+    # 比较抛 TypeError 令体检车道自此每日失败重试；收尾回写会以本轮 scale 覆盖
+    # 损坏值自愈。
+    if not isinstance(last_scale, dict):
+        if last_scale is not None:
+            log.warning(
+                "knowledge",
+                f"audit 状态文件 last_scale 形状损坏"
+                f"（{type(last_scale).__name__}），按无基线处理",
+            )
+        last_scale = {}
+    raw_lines = last_scale.get("lines") or 0
+    try:
+        prev_lines = int(raw_lines)
+    except (TypeError, ValueError):
+        if raw_lines:
+            log.warning(
+                "knowledge",
+                f"audit 状态文件 last_scale.lines 值损坏（{raw_lines!r}），按无基线处理",
+            )
+        prev_lines = 0
     growth = (
         (scale["lines"] - prev_lines) / prev_lines if prev_lines > 0 else 0.0
     )
