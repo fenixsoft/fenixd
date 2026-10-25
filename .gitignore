@@ -74,3 +74,4 @@ core/dashboard/static/src/components/claude-msg/tailwind.gen.css
 dsh-bundle/node_modules/
 # pnpm 安装运行态（prepare/场景装依赖生成；npm 口径锁文件 package-lock.json 才入库）
 dsh-bundle/pnpm-lock.yaml
+.superpowers/
