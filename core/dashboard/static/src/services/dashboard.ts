@@ -1161,6 +1161,115 @@ export async function getSpecDetail(project: string, spec: string): Promise<Spec
   );
 }
 
+// ── SPEC 协作拓扑（/api/specs/<spec>/topology，add-spec-topology-bigscreen） ──
+//
+// 后端单点派生（core/dashboard/data/topology.py），前端零拓扑推导：节点
+// stage/lane/role 与 kpis 口径全部由服务端下发，本文件仅承载传输形态。
+
+// 七阶段列（管线视图列序；值域与后端 STAGES 一致）
+export type TopologyStage = 'demand' | 'plan' | 'dev' | 'review' | 'test' | 'ops' | 'delivery';
+// 八泳道（协作时序视图行序；交付终点不单设泳道 → lane=null）
+export type TopologyLane = 'user' | 'pm' | 'demand' | 'plan' | 'dev' | 'review' | 'test' | 'ops';
+export type TopologyNodeKind = 'run' | 'verify' | 'user' | 'pm' | 'approve' | 'delivery';
+export type TopologyEdgeType = 'handoff' | 'dispatch' | 'retry' | 'approve';
+
+export interface TopologyNode {
+  id: string;
+  kind: TopologyNodeKind;
+  stage: TopologyStage;
+  lane: TopologyLane | null;
+  // 角色中文名（后端按 RUN_ID_AGENT_PREFIXES 权威源归列；未知前缀为 'unknown'）
+  role: string;
+  label: string;
+  // 节点主时间（ISO；run=started / verify=轮开始 / user=创建 / delivery=pushed 时刻）
+  time?: string;
+  // run 节点字段
+  run_id?: string;
+  base_run_id?: string;
+  attempt?: number;
+  transient_retry?: number;
+  agent_type?: string;
+  status?: string;
+  duration_seconds?: number | null;
+  llm?: string;
+  harness?: string;
+  summary?: string;
+  reason?: string;
+  // run 实际归属 SPEC（fix 家族子 SPEC 为 fix-<parent>，前端据此渲染 🔧 角标）
+  spec?: string;
+  fix?: boolean;
+  // 可计价 run 的本地计算成本（$；不可计价不下发，与 timeline run 节点同口径）
+  cost_usd?: number;
+  // verify 节点统计（仅与现存 report.json 配对的末轮携带）
+  total?: number;
+  passed?: number;
+  failed?: number;
+  warnings?: number;
+  errors?: number;
+  env_error?: string;
+}
+
+export interface TopologyEdge {
+  from: string;
+  to: string;
+  type: TopologyEdgeType;
+}
+
+// PMEngine 状态转移（不折叠原始序列；channel=写侧来源标记 auto/manual）
+export interface TopologyTransition {
+  time: string;
+  from: string;
+  to: string;
+  channel?: string | null;
+}
+
+export interface TopologyAdminEvent {
+  time: string;
+  kind: string;
+  record_kind?: string;
+  signal_type?: string | null;
+  severity?: string | null;
+  description?: string;
+  handled?: boolean;
+  result?: string | null;
+}
+
+export interface TopologyUserAction {
+  time: string;
+  action: string;
+}
+
+export interface SpecTopologyKpis {
+  // done/pushed 读 STATE 固化快照，其余实时求和（秒）
+  total_duration: number | null;
+  // 全部 run 不可计价时为 null（与 cost_summary_from_timeline 同语义）
+  total_cost_usd: number | null;
+  dispatched: number;
+  completed: number;
+  retried: number;
+}
+
+export interface SpecTopology {
+  spec: string;
+  project?: string;
+  status: string | null;
+  archived: boolean;
+  kpis: SpecTopologyKpis;
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  transitions: TopologyTransition[];
+  admin_events?: TopologyAdminEvent[];
+  user_actions?: TopologyUserAction[];
+  // 与 detail 同族错误契约：未知项目/spec 未命中维持 200 + error 字典
+  error?: string;
+}
+
+export async function getSpecTopology(project: string, spec: string): Promise<SpecTopology> {
+  return request<SpecTopology>(
+    `/api/specs/${encodeURIComponent(spec)}/topology?project=${encodeURIComponent(project)}`,
+  );
+}
+
 // ── 运行流（/api/runs/<run_id> 系列端点，与 v1 run watch 同源） ──
 
 export interface RunEvent {

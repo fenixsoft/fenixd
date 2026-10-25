@@ -24,6 +24,14 @@ export default [
     component: './projects/detail',
   },
   {
+    // SPEC 协作拓扑大屏（add-spec-topology-bigscreen 4.1）：layout:false 脱壳
+    // ——独立全屏深色页面，无 ProLayout 侧边栏/顶栏（从 SPEC 列表「协作拓扑」
+    // 菜单项进入，退出大屏返回来源列表页）。
+    path: '/projects/:name/:spec/topology',
+    layout: false,
+    component: './projects/topology',
+  },
+  {
     path: '/projects/:name',
     component: './projects/list',
   },
