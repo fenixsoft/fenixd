@@ -213,8 +213,16 @@ def _load_run_metric_index(project_root: Path) -> dict:
         return index
 
 
-# 同主日志索引按 log_path 分槽（dashboard 单进程多项目交替查询各自零重建）
+# 同主日志索引按 log_path 分槽（dashboard 单进程多项目交替查询各自零重建）。
+# 槽容量上限（code-review 63a3bfee947f，与主索引 _RUN_METRIC_INDEX_MAX 同动机）：
+# 槽只增不回收——每个被查询过的项目永久占一槽（槽内是整份轮转日志的索引），
+# 项目移除后槽仍保留，多项目长驻 daemon 内存随「历史项目数 × 单轮转日志 run
+# 数」单调增长。超限按槽插入序（=项目首查序）淘汰最旧槽：整槽 del 而非清条目，
+# 下次访问走首扫全量重建即自愈（轮转日志冻结、size 键语义，重建即正确），无
+# 主索引那种「清索引不推进 key 丢增量段」的顾虑；仍在轮询的被淘汰项目仅多一次
+# 全量重扫。
 _ROTATED_METRIC_INDEX: dict = {}  # {str(log_path): {"key": (size,), "index": {run_id: ctx}}}
+_ROTATED_METRIC_INDEX_MAX_SLOTS = 256
 
 
 def _load_rotated_run_metric_index(project_root: Path) -> dict:
@@ -223,7 +231,8 @@ def _load_rotated_run_metric_index(project_root: Path) -> dict:
     主日志索引只覆盖最近一次轮转之后的行，轮转前收尾的旧 run 终态只在
     .fenixd.log.1（evo-fix-self-review-phantom-failed-samples 2.1）。轮转
     日志写入后冻结、下次轮转被整体替换，每槽按 size 键增量维护：
-    size 变化（含被新轮转替换）仅重建本槽。
+    size 变化（含被新轮转替换）仅重建本槽。槽总数上限
+    _ROTATED_METRIC_INDEX_MAX_SLOTS，超限按插入序淘汰最旧槽。
 
     并发：与主索引同款，读改写段（定槽 fast path/落账推进 key）经
     _RUN_METRIC_INDEX_LOCK 串行化，扫描 IO 在锁外；落账前 re-stat 复核
@@ -263,6 +272,10 @@ def _load_rotated_run_metric_index(project_root: Path) -> dict:
         if unchanged:
             slot["index"] = index
             slot["key"] = key
+        # 容量上限（锁内纯内存，段 1 新建槽必经本段）：超限按槽插入序淘汰
+        # 最旧槽，新建槽落账后立即闭合超限窗口。
+        while len(_ROTATED_METRIC_INDEX) > _ROTATED_METRIC_INDEX_MAX_SLOTS:
+            del _ROTATED_METRIC_INDEX[next(iter(_ROTATED_METRIC_INDEX))]
         return index
 
 
@@ -654,8 +667,11 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         # add-harness-brand-projection 2.2：harness 透出（品牌投影真相源）——
         # 从 run_metrics 旁路行取该 run 派发时登记的 adapter.name；存量 run
         # 指标行无该键（或指标行整体缺失）缺省 claude，前端按回退链消费
-        # （harnessBrandLogic.resolveHarness）。索引在上方 duration 指标查找
-        # 时已预热，此处为热路径 dict 直查。
+        # （harnessBrandLogic.resolveHarness）。复用上方 duration 指标查找
+        # 已预热的增量索引——非纯内存 dict 直查：fast path 仍含 stat+打开
+        # 日志读首块指纹校验与 _RUN_METRIC_INDEX_LOCK，只是无全量重扫；本处
+        # 与上方 duration 查找对每条 run 各触发一次 load_run_metric（轮询
+        # 每条 run 两次该成本），勿在此路径叠加高频调用。
         harness = "claude"
         metric = load_run_metric(Path(project_root), run_id)
         if metric and metric.get("harness"):

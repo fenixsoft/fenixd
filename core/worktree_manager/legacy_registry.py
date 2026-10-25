@@ -335,7 +335,12 @@ class G2LegacyRegistryMixin:
         if rec:
             return dict(rec)
         rec = self._legacy.get(spec_name)
-        if rec and rec.get("reuse"):
+        # 非 dict 记录守卫（code-review item 7fdbff295c15，与
+        # _register_legacy_unlocked 16a559a09f44 / consume_legacy 35dfd88369df
+        # / _reclaim_expired_legacy 873493c07398 的同表读取防御口径对齐）：
+        # isinstance 先行，异形记录按无遗产处置，不让 rec.get 在 prompt
+        # 注入查询 AttributeError 穿出。
+        if isinstance(rec, dict) and rec.get("reuse"):
             return dict(rec)
         return None
 
@@ -417,7 +422,13 @@ class G2LegacyRegistryMixin:
         # 锁外读取不失真；threading.Lock 非重入，临界区内只做字典读判定。
         with self._spec_lock_th:
             rec = self._legacy.get(spec_name)
-            if rec is None or not rec.get("reuse"):
+            # 非 dict 记录守卫（code-review item 7fdbff295c15，与
+            # _register_legacy_unlocked 16a559a09f44 / consume_legacy
+            # 35dfd88369df / _reclaim_expired_legacy 873493c07398 的同表读取
+            # 防御口径对齐）：isinstance 先行，异形记录按不可认领处置——
+            # 不让 rec.get 在 create 认领路径 AttributeError 穿出（锁内
+            # 早退后，下方锁外 rec.get("path")/rec.get("branch") 均不再触达）。
+            if rec is None or not isinstance(rec, dict) or not rec.get("reuse"):
                 return None
         path = rec.get("path") or ""
         branch = rec.get("branch") or ""
@@ -674,7 +685,9 @@ class G2LegacyRegistryMixin:
             # 名），回收序列 branch -D 会删掉新登记仍在宽限期内的同分支遗产。
             # 临界区内只做字典读写（threading.Lock 非重入；唯一调用点
             # stale_sweep.cleanup_stale_worktrees 不持本锁），物理回收照旧
-            # 留锁外。
+            # 留锁外。branch -D 时刻残余的再登记窗口由
+            # _physically_reclaim_legacy 删分支前的同 spec 同分支宽限期
+            # 复核兜住（code-review item 0bc6f9f9e69f）。
             with self._spec_lock_th:
                 rec = self._legacy.pop(spec, None)
                 # pop 后复核宽限期（code-review item 0d5c6c7e148e）：快照与
@@ -822,6 +835,32 @@ class G2LegacyRegistryMixin:
                 f"Legacy {failure_label} prune failed for '{spec_name}': {e}",
             )
         if branch and branch != "HEAD":
+            # ── branch -D 前同 spec 再登记复核（code-review item 0bc6f9f9e69f）──
+            # 调用方出册（pop）时刻的锁保护只覆盖 pop 瞬间：物理回收刻意留锁外
+            # 执行，worktree remove/prune 的耗时窗口内同 spec 可能被并发
+            # register_legacy 以相同 branch 重新登记（仍在宽限期内的新遗产）——
+            # 此处直接删分支会删掉新登记遗产的分支，pop 时刻的锁保护对
+            # branch -D 并不完整。删分支前持锁快照复核 _legacy：命中同 spec
+            # 同 branch 且仍在宽限期内的登记则跳过删分支、仅保留上方已完成的
+            # 目录回收（分支留给新遗产收编）。锁内只做字典读判定（_spec_lock_th
+            # 为 threading.Lock 非重入；两个调用点 consume_legacy /
+            # _reclaim_expired_legacy 均在锁外调用本方法，无重入死锁）。
+            with self._spec_lock_th:
+                cur = self._legacy.get(spec_name)
+                re_registered = (
+                    isinstance(cur, dict)
+                    and cur.get("branch") == branch
+                    and time.time() - cur.get("registered_at", 0)
+                    <= LEGACY_GRACE_SECONDS
+                )
+            if re_registered:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Legacy {failure_label} branch-delete skipped for "
+                    f"'{spec_name}': 同 spec 同分支 '{branch}' 已被并发再登记"
+                    f"（宽限期内）— 仅回收目录，分支留给新遗产",
+                )
+                return
             # ── 分支在飞引用保护（code-review item 77071d383b94）──
             # 删分支前复核该分支是否被 STATE 在飞/待收口 spec 引用
             # （implementing/implemented/testing/带 _recovery_resume 的 ready、

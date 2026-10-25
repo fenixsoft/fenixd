@@ -413,11 +413,16 @@ def _managed_key_sources(raw: dict) -> dict:
         sources["gates.start_after_scope"] = "project"
     verify_src = raw.get("verify")
     if isinstance(verify_src, dict):
-        if "static_scope" in verify_src:
+        # code-review item d9fb542d86e4：三键改按合法值谓词判定（与读侧
+        # _echo_verify_view 同谓词，对齐 90136be31282 已建立口径）——存在性
+        # 判定会把手工脏值标成 project，而读侧回显已回退缺省，徽标与展示值
+        # 互相矛盾
+        if verify_src.get("static_scope") in ("main", "worktree"):
             sources["verify.static_scope"] = "project"
-        if "deps_mode" in verify_src:
+        if verify_src.get("deps_mode") in ("prefer-offline", "hardlink"):
             sources["verify.deps_mode"] = "project"
-        if "planner_max_concurrent" in verify_src:
+        _pmc_src = verify_src.get("planner_max_concurrent")
+        if isinstance(_pmc_src, int) and not isinstance(_pmc_src, bool) and _pmc_src >= 0:
             sources["verify.planner_max_concurrent"] = "project"
         # add-impl-code-review-gate：严格 bool 才标注 project（缺省/非法不标）
         if isinstance(verify_src.get("impl_code_review"), bool):
@@ -1286,41 +1291,21 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["admin"].get("code_review"),
             _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review")],
         )
-    # add-code-review-auto-fix：admin.code_review_fix 两键（enabled 严格 bool、
-    # batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用合法值
-    # ——对齐 code_review 合并语义）
+    # add-code-review-auto-fix：admin.code_review_fix 受管子段（enabled 严格
+    # bool、batch_size 正整数；非法值由 write_config 前置校验拒绝，此处只应用
+    # 合法值——对齐 code_review 合并语义）。code-review item 8973aa7c125f：
+    # 逐键守卫委托 _apply_guarded_subkeys，谓词表单源取
+    # _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review_fix")]，顶层与下方嵌套
+    # sync 两路共用同一份口径，新增子键只改表不再双处同步（双份漂移实证见
+    # 5607e1eab677、63cd90ee7a6d）。
     if "code_review_fix" in patch and isinstance(patch["code_review_fix"], dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
-        existing_crf = merged["admin"].get("code_review_fix")
-        if not isinstance(existing_crf, dict):
-            existing_crf = {}
-        crf = dict(existing_crf)
-        if isinstance(patch["code_review_fix"].get("enabled"), bool):
-            crf["enabled"] = patch["code_review_fix"]["enabled"]
-        bs = patch["code_review_fix"].get("batch_size")
-        if isinstance(bs, int) and not isinstance(bs, bool) and bs > 0:
-            crf["batch_size"] = bs
-        trm = patch["code_review_fix"].get("targeted_retry_max")
-        if isinstance(trm, int) and not isinstance(trm, bool) and 1 <= trm <= 5:
-            crf["targeted_retry_max"] = trm
-        # add-codefix-affinity-batching 4.3：定向回归开关随受管段放行
-        #（严格 bool 才合并——非法值由 write_config 前置校验拒绝）
-        if isinstance(patch["code_review_fix"].get("targeted_regression"), bool):
-            crf["targeted_regression"] = patch["code_review_fix"]["targeted_regression"]
-        # evo-add-codefix-severity-batch-gate：severity 门限两键随受管段放行
-        #（词表白名单/正整数才合并——非法值由 write_config 前置校验拒绝）
-        mis = patch["code_review_fix"].get("min_immediate_severity")
-        if mis in ("critical", "major", "minor", "info"):
-            crf["min_immediate_severity"] = mis
-        mbc = patch["code_review_fix"].get("minor_batch_cadence")
-        if isinstance(mbc, int) and not isinstance(mbc, bool) and mbc > 0:
-            crf["minor_batch_cadence"] = mbc
-        # 2026-10-11：severity-batch-gate 总开关随受管段放行（严格 bool 才
-        # 合并——非法值由 write_config 前置校验拒绝）
-        if isinstance(patch["code_review_fix"].get("severity_batch_gate_enabled"), bool):
-            crf["severity_batch_gate_enabled"] = patch["code_review_fix"]["severity_batch_gate_enabled"]
-        merged["admin"]["code_review_fix"] = crf
+        merged["admin"]["code_review_fix"] = _apply_guarded_subkeys(
+            patch["code_review_fix"],
+            merged["admin"].get("code_review_fix"),
+            _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review_fix")],
+        )
     # add-test-regression-tab：admin.regression 键（enabled 严格 bool；非法值
     # 由 write_config 前置校验拒绝，此处只应用合法值——对齐 code_review 合并
     # 语义；未知 admin 键由 _managed_admin_keys 白名单狭窄回显，读不懂写入值，
@@ -1375,47 +1360,18 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # code_review_fix 键只有设置页保存路径走）——不在此显式合并子段，该值
         # 会被上面的标量白名单静默丢弃，sync 返回 ok 但项目配置未落盘（ocr
         # 审查实证，正是上方 regression 注释点名的「缺分支静默丢弃保存」坑）。
-        # item baa0aad69634：本分支曾与顶层 code_review_fix 分支不同构（缺
-        # severity 门限三键）——item 63cd90ee7a6d 已补齐三键，两分支现同构；
-        # 仍维持两份内联（未委托 _apply_guarded_subkeys 单源化），键谓词与
-        # _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review_fix")] 逐键对齐
-        # （synced 回执裁剪同表单源）。
+        # code-review item 8973aa7c125f：本分支曾与顶层 code_review_fix 分支
+        # 双份内联且已实际漂移两次（5607e1eab677 缺 targeted_retry_max、
+        # 63cd90ee7a6d 缺 severity 门限三键），现与上方 code_review 同款委托
+        # _apply_guarded_subkeys 及 _SYNC_DICT_SUBKEY_APPLY[("admin",
+        # "code_review_fix")] 谓词表单源（synced 回执裁剪同表单源）。
         crf_sync = patch["admin"].get("code_review_fix")
         if isinstance(crf_sync, dict):
-            existing_crf = merged["admin"].get("code_review_fix")
-            if not isinstance(existing_crf, dict):
-                existing_crf = {}
-            merged_crf = dict(existing_crf)
-            if isinstance(crf_sync.get("enabled"), bool):
-                merged_crf["enabled"] = crf_sync["enabled"]
-            _bs = crf_sync.get("batch_size")
-            if isinstance(_bs, int) and not isinstance(_bs, bool) and _bs > 0:
-                merged_crf["batch_size"] = _bs
-            # code-review item 5607e1eab677：定向重试上限补合并分支（与顶层
-            # code_review_fix 分支同口径：int 非 bool 且 1..5）——_SYNC_PAGE_KEYS
-            # 把用户级 code_review_fix 段原样构进 patch（含 targeted_retry_max），
-            # 缺此步该键在合并阶段被静默丢弃，sync 返回 ok 且 synced 回执原样
-            # 包含该键（synced 与实际落盘不一致，复制粘贴漂移同款坑）
-            _trm = crf_sync.get("targeted_retry_max")
-            if isinstance(_trm, int) and not isinstance(_trm, bool) and 1 <= _trm <= 5:
-                merged_crf["targeted_retry_max"] = _trm
-            # add-codefix-affinity-batching 4.3：定向回归开关同口径合并
-            if isinstance(crf_sync.get("targeted_regression"), bool):
-                merged_crf["targeted_regression"] = crf_sync["targeted_regression"]
-            # code-review item 63cd90ee7a6d：severity 门限三键同口径合并
-            #（词表白名单/正整数/严格 bool 才合并——非法值由 write_config
-            # 前置校验拒绝；缺此步 QualityPanel 保存的用户级三键经「同步
-            # 用户级设置」在合并阶段被静默丢弃，项目级文件缺键）
-            _mis = crf_sync.get("min_immediate_severity")
-            if _mis in ("critical", "major", "minor", "info"):
-                merged_crf["min_immediate_severity"] = _mis
-            _mbc = crf_sync.get("minor_batch_cadence")
-            if isinstance(_mbc, int) and not isinstance(_mbc, bool) and _mbc > 0:
-                merged_crf["minor_batch_cadence"] = _mbc
-            # 2026-10-11：severity-batch-gate 总开关严格 bool（同顶层分支口径）
-            if isinstance(crf_sync.get("severity_batch_gate_enabled"), bool):
-                merged_crf["severity_batch_gate_enabled"] = crf_sync["severity_batch_gate_enabled"]
-            merged["admin"]["code_review_fix"] = merged_crf
+            merged["admin"]["code_review_fix"] = _apply_guarded_subkeys(
+                crf_sync,
+                merged["admin"].get("code_review_fix"),
+                _SYNC_DICT_SUBKEY_APPLY[("admin", "code_review_fix")],
+            )
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     # （非 str 非 None 由 write_config 前置校验拒绝，此处只应用合法值）
     if "description" in patch and isinstance(patch["description"], str):
@@ -3013,8 +2969,6 @@ def sync_config_from_user(project_root, page: str) -> dict:
         try:
             with _facade.USER_CONFIG_PATH.open("r", encoding="utf-8") as f:
                 loaded = yaml.safe_load(f)
-            if isinstance(loaded, dict):
-                user_raw = loaded
         except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
             # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛（code-review
             # item eeec7a6f3ff5，与五处 yaml 读取点同款口径）
@@ -3024,6 +2978,21 @@ def sync_config_from_user(project_root, page: str) -> dict:
                 "synced": None,
                 "path": str(_facade.USER_CONFIG_PATH),
             }
+        # 空文件（None）仍按空配置处理，对齐写/清空路径 `or {}` 口径。
+        if loaded is None:
+            loaded = {}
+        # code-review item b11d30931a75：顶层非 dict（list/标量）时与写路径
+        # （item 2108d49c5ea8）及清空路径（item 3fc70edaec8c）同款报错（提示
+        # 先手工修正），不再静默按空配置处理——否则最终报「用户级配置中该
+        # 页面没有已设置的值」，掩盖配置文件顶层已损坏的真实原因。
+        if not isinstance(loaded, dict):
+            return {
+                "ok": False,
+                "error": "配置文件顶层不是对象，请先手工修正 config.yaml",
+                "synced": None,
+                "path": str(_facade.USER_CONFIG_PATH),
+            }
+        user_raw = loaded
 
     section_map = _SYNC_PAGE_KEYS[page]
     patch = {}

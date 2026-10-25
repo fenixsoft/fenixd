@@ -183,8 +183,12 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         # 在跑判定每轮复用 running_run_ids_for_spec（code-review item
         # 4b5e9fa50b3a：与初始判定单源同口径，不内联重写末行终态判定；
         # OSError 容错也由该助手内部承担）
-        deadline = time.time() + SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS
-        while time.time() < deadline:
+        # 有界等待 deadline 用单调时钟（code-review item d19c607f08ef）：
+        # 墙钟可能因 NTP 校时/手工设置回拨，deadline 相对变远会按回拨幅度
+        # 拉长请求阻塞窗口；time.monotonic 不受跳变影响，与本仓库其他限时
+        # 逻辑（quality_gates 指纹缓存 TTL）同口径
+        deadline = time.monotonic() + SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS
+        while time.monotonic() < deadline:
             still_running: list = running_run_ids_for_spec(proot, spec)
             if not still_running:
                 running_ids = []
@@ -193,7 +197,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
             # sleep 前钳制 remaining（code-review item 02f76ca4add6）：上一轮
             # 扫描 runs 目录可能耗时越过 deadline，time.sleep(负值) 抛
             # ValueError 会破坏本函数「以返回 dict 报错、不裸抛异常」契约
-            remaining = deadline - time.time()
+            remaining = deadline - time.monotonic()
             if remaining > 0:
                 time.sleep(min(AGENT_TERMINATE_GRACE_SECONDS, remaining))
         if running_ids:
@@ -664,7 +668,10 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
         {"archived": int, "skipped": int, "target_count": int,
          "threshold": int, "total_terminal_unarchived": int, "backfill": dict}
         target_count 为本轮拟归档数 = max(total_terminal_unarchived -
-        threshold, 0)（code-review item 1c9a574c5356：统一三处返回口径）；
+        threshold, 0)（code-review item 1c9a574c5356：统一三处返回口径；
+        threshold<=0 阈值归档关闭，target_count 恒 0）；
+        total_terminal_unarchived 恒为回填后终态未归档真实总数，阈值关闭时
+        仍照常统计（code-review item 1045349ad1a8）；
         backfill 为本轮存量回填计数（add-archive-state-migration 4.2）。
     """
     from core.config import ConfigLoader
@@ -674,21 +681,14 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     backfill = backfill_archived_entries(project_root, logger)
 
     threshold = ConfigLoader.effective_auto_archive_threshold(config)
-    if threshold <= 0:
-        return {
-            "archived": 0,
-            "skipped": 0,
-            "target_count": 0,
-            "threshold": threshold,
-            "total_terminal_unarchived": 0,
-            "backfill": backfill,
-        }
 
     proot = Path(project_root)
     # 回填后重读活跃 STATE：刚迁出的条目不再进入本轮阈值统计
     specs = parse_state(proot)
 
-    # 统计终态 + 未归档（活跃目录仍存在）
+    # 统计终态 + 未归档（活跃目录仍存在）。阈值关闭（<=0）的早退分支同样
+    # 先完成统计（code-review item 1045349ad1a8）：total_terminal_unarchived
+    # 契约为终态未归档总数，早退直接报 0 会让基于该字段的监控/日志误判无积压
     candidates = []
     for name, entry in specs.items():
         if entry.get("status") not in _TERMINAL_STATUSES:
@@ -698,7 +698,8 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
         candidates.append((name, entry))
 
     total = len(candidates)
-    if total <= threshold:
+    if threshold <= 0 or total <= threshold:
+        # 阈值关闭仅跳过阈值归档动作（统计值照常返回）；未超阈值无动作
         return {
             "archived": 0,
             "skipped": 0,

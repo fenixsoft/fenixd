@@ -2843,21 +2843,45 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             rolled = _rollback_written()
             if rolled:
                 steps.append(f"状态转换失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
+            # 补偿还原步骤 6 已落盘的修订簿记（code-review item c66bef46e771）：
+            # 计数/重验旗标随失败一并还原，防白耗修订预算与「STATE 已记修订
+            # 待重验、盘面仍旧场景集」半改态；补偿写若再失败经 steps 如实
+            # 留痕供人工核对。
+            if sm.update_spec(spec, {
+                SCENARIO_REVISION_COUNT_FIELD: revision_count,
+                SCENARIO_REVISION_PENDING_FIELD: False,
+            }):
+                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标）")
+            else:
+                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标待人工核对）")
             return {"ok": False, "steps": steps,
-                    "error": "修订后状态转换未生效（IMPLEMENTED→TESTING 被拒）",
+                    "error": ("修订后状态转换未生效（IMPLEMENTED→TESTING 被拒；"
+                              "场景文件与 STATE 修订簿记均已还原）"),
                     "frozen_manual": False}
         steps.append("IMPLEMENTED→TESTING 门禁转换（channel=manual）")
     else:
         # 冻结/blocked 等形态经显式豁免通道直改（force_advance 同款：updates
-        # 自带 frozen 键过冻结剥离守卫），留 Transition 痕
-        if not sm.update_spec(spec, {"status": "testing"}):
+        # 自带 frozen 键过冻结剥离守卫——步骤 6 与本写之间被并发重新冻结时
+        # status 亦不被剥离，code-review item d767e4ae2f67），留 Transition 痕
+        if not sm.update_spec(spec, {"frozen": False, "status": "testing"}):
             # 直改失败同样回滚（code-review item a4702f0e5a65）：同属 STATE
             # 写失败分支，回滚文件避免「盘上新场景、STATE 未动」半改态。
             rolled = _rollback_written()
             if rolled:
                 steps.append(f"状态直改失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
+            # 直改失败同属步骤 6 之后的 STATE 写后段失败，补偿还原已落盘的
+            # 修订簿记（code-review item c66bef46e771，与转换失败分支同口径）；
+            # 补偿写若再失败经 steps 如实留痕供人工核对。
+            if sm.update_spec(spec, {
+                SCENARIO_REVISION_COUNT_FIELD: revision_count,
+                SCENARIO_REVISION_PENDING_FIELD: False,
+            }):
+                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标）")
+            else:
+                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标待人工核对）")
             return {"ok": False, "steps": steps,
-                    "error": f"状态 {old_status} → testing 直改未生效",
+                    "error": (f"状态 {old_status} → testing 直改未生效"
+                              "（场景文件与 STATE 修订簿记均已还原）"),
                     "frozen_manual": False}
         sm.logger.info(
             "state_machine",
@@ -3780,12 +3804,18 @@ def _stray_manifest_path_escapes(proot, paths) -> list:
     同模块先例防线：夹具写入走 validate_scenario_revision_paths 白名单、
     spec 名拼路径走 kebab-case 正则；散件路径散布全仓、不在任何目录白名单
     内，故只取其绝对路径/穿越规则做同型校验，白名单目录约束不适用。
+    首段冒号（Windows 盘符形态）检查仅 ``os.name == "nt"`` 生效——POSIX
+    文件名可合法含冒号，非 nt 下一律判不合规会把此类条目从 archive/ignore/
+    delete 三个执行器永久剔除（code-review item 8502d6ba2438）；非 nt 的
+    越界风险由绝对路径判定与下方 realpath 前缀锚定兜底。
     """
     base = os.path.realpath(os.path.abspath(str(proot)))
+    check_win_drive = os.name == "nt"
     bad: list = []
     for raw in paths or []:
         p = str(raw or "").strip()
-        if not p or p.startswith("~") or os.path.isabs(p) or ":" in p.split("/")[0]:
+        if (not p or p.startswith("~") or os.path.isabs(p)
+                or (check_win_drive and ":" in p.split("/")[0])):
             bad.append(p)
             continue
         norm = os.path.normpath(p)
