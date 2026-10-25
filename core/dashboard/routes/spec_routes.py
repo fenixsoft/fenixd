@@ -13,7 +13,6 @@ import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
-from core.dashboard.registry import Registry
 # 托管态守卫（code-review item 48af85ca5ee7）：spec-admin-invoke 与 run-cancel /
 # regression 同族共用 hosting_guard 单点实现
 from core.dashboard.routes.hosting_guard import _guard_hosting_state
