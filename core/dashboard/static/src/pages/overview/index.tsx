@@ -1,7 +1,8 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, Button, Card, Space, Spin } from 'antd';
+import { ClusterOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useModel } from '@umijs/max';
+import { history, useModel } from '@umijs/max';
 import { getOverview, STREAM_URL } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
 import AlertBanner from './components/AlertBanner';
@@ -192,6 +193,17 @@ export default function OverviewPage() {
       header={{
         title: '跨项目概览',
         subTitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
+        // 协作图谱大屏入口（add-collab-graph-bigscreen 3.4，仅新增——既有
+        // 卡片/列表渲染逻辑零改动）
+        extra: [
+          <Button
+            key="collab-graph"
+            icon={<ClusterOutlined />}
+            onClick={() => history.push('/overview/collab-graph')}
+          >
+            协作图谱大屏
+          </Button>,
+        ],
       }}
     >
       <AlertBanner refreshTick={alertsTick} />

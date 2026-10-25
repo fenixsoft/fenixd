@@ -384,6 +384,15 @@ from .topology import (
     stage_lane_role,
 )
 
+# ── collab_graph 组（add-collab-graph-bigscreen）──
+# 跨项目角色级协作图谱聚合：只读端点 /api/overview/collab-graph 的数据源
+# （逐 SPEC 复用 topology.derive_topology 派生结果聚合，零第二套归列/归并）
+from .collab_graph import (
+    IN_FLIGHT_STATUSES,
+    RECENT_RUNS_CAP,
+    aggregate_collab_graph,
+)
+
 # ── config_admin 组 ──
 from .config_admin import (
     _MANAGED_KEYS,
