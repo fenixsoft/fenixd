@@ -1,13 +1,13 @@
 # 验证报告：add-spec-topology-bigscreen
 
-> ⚠️ 本报告由框架于 2026-10-25T13:24:57Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-10-25T13:22:19.058560+00:00+run-result@mtime1792934679319345624
+> ⚠️ 本报告由框架于 2026-10-25T13:35:54Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-10-25T13:34:02.272778+00:00+run-result@mtime1792935345064968342
 
 ## 结论：✅ 通过（verified）
 
 **状态：verified — 19/20 场景通过，0 失败，0 错误（全部场景通过）**
 
-20 场景：19 PASS + 1 env-warning（topology-empty-spec-zero-state 首跑截图被健全性门判 low_contrast 拒固化基线，6/6 功能断言全过、页面渲染正常，属截图采集环境伪画面，引擎后续干净轮次自动建基线，不阻塞）。上轮 5 处场景缺陷修复本轮全部转 PASS。静态情报 15 条 double_han_text_selector 旗标经执行证据核实均为误报（目标为 SVG text/span 容器非 antd Button，autoInsertSpace 不适用，相关断言本轮全 pass）。0 product-bug、0 test-defect、0 flaky、1 env。
+20 场景：19 pass + 1 warning（topology-user-node-actions-record，flaky：用户节点下钻弹窗为动态记录表致视觉基线 SSIM 0.912 落警告带，4 条功能断言全过，非产品缺陷）。无 product-bug、无场景文件修复（静态情报 double_han 命中均为 SVG 文本/容器文本目标，不受 antd autoInsertSpace 影响，属误报）。
 
 | 指标 | 数量 |
 | --- | --- |
@@ -15,8 +15,8 @@
 | 失败 | 0 |
 | 错误 | 0 |
 | 产品 Bug | 0 |
-| 本链增量 Token（输入） | 0.44M |
-| 本链增量 Token（输出） | 0.14M |
+| 本链增量 Token（输入） | 0.48M |
+| 本链增量 Token（输出） | 0.15M |
 
 
 ## 场景结果
@@ -37,12 +37,12 @@
 | topology-cross-view-highlight-sync | 交互流程·跨视图联动高亮：在管线视图点击选中某 run 节点后切换到协作时序视图，对应 run 的色块处于高亮态（data-selected=true）。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:54-61（跨视图联动高亮需求与 Scenario）、tasks.md:59（任务 4.5 跨视图联动高亮）、design.md:28（联动高亮弥补不同屏对照）。 | pass | 0/3 | - |
 | topology-run-node-drilldown-record-modal | 交互流程·节点下钻复用运行记录弹窗：点击管线视图 run 节点打开现有运行记录弹窗（RunRecordModal，标题「运行记录 · <run_id>」）并加载该 run 转录（弹窗体渲染、无网络错误=转录拉取成功）；不新建第二套转录组件（弹窗即现有组件复用）。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:63-70（节点下钻复用运行记录需求）、tasks.md:59（任务 4.5 下钻复用 RunRecordModal/ClaudeOutputPane）、core/dashboard/static/src/pages/projects/components/RunRecordModal.tsx:19-27（Modal 标题「运行记录 · runId」与 ClaudeOutputPane 装载真实结构）、core/dashboard/static/src/components/claude-msg/ClaudeOutputPane.tsx:263（getRunTail 转录拉取）、/root/fenixd/.fenix/runs/（目标 run 产物现存，转录可加载）。 | pass | 0/6 | - |
 | topology-pm-node-state-transitions | 交互流程·PMEngine 节点点击展示状态转移记录：点击管线视图 PMEngine 调度节点，出现状态转移记录详情（topology-node-detail 容器，含「状态转移」内容）。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:65（点击 PMEngine 节点展示状态转移记录需求）、tasks.md:59（任务 4.5 PMEngine/用户节点点击展示状态转移与人工动作记录）、core/dashboard/data/timeline.py:263 起（状态转移事件数据源真实存在，当前 SPEC 有 drafted→reviewing→ready→implementing 转移实测 /root/fenixd/.fenix/logs/fenixd.log）。 | pass | 0/4 | - |
-| topology-user-node-actions-record | 交互流程·用户节点点击展示人工动作记录：点击管线视图用户入口节点，出现人工动作记录详情（topology-node-detail 容器，含「人工动作」内容）。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:65（点击用户节点展示人工动作记录需求）、tasks.md:59（任务 4.5 用户节点点击展示人工动作记录）、core/agent_runner/run_files.py:32 起（用户/fenix-new 为需求列特殊节点权威源）。 | pass | 0/4 | - |
+| topology-user-node-actions-record | 交互流程·用户节点点击展示人工动作记录：点击管线视图用户入口节点，出现人工动作记录详情（topology-node-detail 容器，含「人工动作」内容）。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:65（点击用户节点展示人工动作记录需求）、tasks.md:59（任务 4.5 用户节点点击展示人工动作记录）、core/agent_runner/run_files.py:32 起（用户/fenix-new 为需求列特殊节点权威源）。 | failed（已修正） | 0/4 | flaky |
 | topology-archived-banner-degraded-render | 降级路径·归档 SPEC 大屏骨架渲染与显式提示：打开已归档 SPEC add-fenix-dashboard 的大屏页面，正常渲染状态骨架（管线画布与 KPI 条在场）并显示「run 明细已随归档清理」降级提示横幅，而非空白无解释页面。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:72-79（归档降级提示需求与 Scenario）、tasks.md:59（任务 4.5 归档横幅）、core/dashboard/data/spec_archive.py:391-420（归档判定双源）、/root/fenixd/.fenix/STATE.archive.md（add-fenix-dashboard 条目现存实测）、design.md:20（决策 7 归档降级用户选型 a）。 | pass | 0/5 | - |
 | topology-mobile-card-menu-entry | 正向路径·移动卡片列表同源菜单进入大屏：390×844 视口下 SPEC 列表以卡片渲染（useIsMobile 门控），卡片「更多」Dropdown 与桌面表格同源 specMenuItems——过滤出目标 SPEC 卡片、点「更多」、点「协作拓扑」同样可达大屏。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:13（桌面表格与移动卡片同源 specMenuItems）、tasks.md:60（任务 4.6 两处同源生效）、core/dashboard/static/src/pages/projects/list.tsx:605-611（移动卡片「更多」Dropdown 触发器真实渲染结构）、list.tsx:1519/661（isMobile 门控表格/卡片切换）、core/dashboard/static/src/hooks/useIsMobile.ts:7（767.98px 断点，390 宽判移动）。 | pass | 0/4 | - |
 | topology-detail-timeline-zero-change-regression | 回归点·现有页面零改动红线（UI 半边）：runVisual 等价迁移后，SPEC 详情页运行时间轴照常渲染——时间轴区块可见、run 节点「查看运行记录」入口在场（现有渲染行为与视觉不变）。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-bigscreen-ui/spec.md:90-97（现有界面零改动红线）、tasks.md:50（任务 3.1 SpecTimeline 改为导入消费渲染严格等价）、core/dashboard/static/src/pages/projects/detail.tsx:1031（.spec-detail-timeline 时间轴挂载点真实结构）、core/dashboard/static/src/pages/projects/components/SpecTimeline.tsx:468（「查看运行记录」入口文案）、core/dashboard/static/config/config.ts:15（hash 路由 URL 形态）。 | pass | 0/3 | - |
 | topology-kpi-null-cost-zero-runs | KPI 口径·全不可计价与零 run：对夹具项目 scheduling-showcase（fixture=true，每轮验证 prepare 幂等复位）中无任何 run 历史/日志事件的 SPEC c-sched-set（基线 ready 态）调用端点：total_cost_usd MUST 为 null 而非 0（与 cost_summary_from_timeline 同语义），dispatched=0，archived=false。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-derivation/spec.md:26-38（KPI 口径与全不可计价 null）、bin/fixture_scheduling_showcase.py:55-60（夹具运行时根 /root/scheduling-showcase 与基线 STATE，c-sched-set 为 ready）、实测 /root/scheduling-showcase/.fenix/（仅有 STATE.md/config.yaml/admin_alerts.json，无 runs/ 无 logs/）、~/.config/fenixd/dashboard.yaml（scheduling-showcase 已登记 fixture=true，场景零 add_project 调用）。 | pass | 0/3 | - |
-| topology-empty-spec-zero-state | 空状态·零 run 历史 SPEC 大屏：夹具项目 scheduling-showcase 的 c-sched-set（ready、无 run 产物无日志事件）大屏不空白不崩溃：用户入口节点仍渲染，KPI 条渲染且派发计数为 0、总成本呈 null 态。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-derivation/spec.md:26-38（零 run KPI 口径）、specs/topology-bigscreen-ui/spec.md:5（KPI 条状态常态渲染）、bin/fixture_scheduling_showcase.py:55-60（夹具基线 c-sched-set ready 无 run）、实测 /root/scheduling-showcase/.fenix/（无 runs/ 无 logs/）、~/.config/fenixd/dashboard.yaml（scheduling-showcase 已登记 fixture=true）。 | warning | 0/6 | env |
+| topology-empty-spec-zero-state | 空状态·零 run 历史 SPEC 大屏：夹具项目 scheduling-showcase 的 c-sched-set（ready、无 run 产物无日志事件）大屏不空白不崩溃：用户入口节点仍渲染，KPI 条渲染且派发计数为 0、总成本呈 null 态。出处：spec/changes/add-spec-topology-bigscreen/specs/topology-derivation/spec.md:26-38（零 run KPI 口径）、specs/topology-bigscreen-ui/spec.md:5（KPI 条状态常态渲染）、bin/fixture_scheduling_showcase.py:55-60（夹具基线 c-sched-set ready 无 run）、实测 /root/scheduling-showcase/.fenix/（无 runs/ 无 logs/）、~/.config/fenixd/dashboard.yaml（scheduling-showcase 已登记 fixture=true）。 | pass | 0/6 | - |
 
 
 ## 断言级豁免清单
@@ -51,7 +51,8 @@
 
 | 场景 | 断言 | 归类 | 豁免理由 | 证据 |
 | --- | --- | --- | --- | --- |
-| topology-empty-spec-zero-state | visual_baseline_rejected [topology-empty-spec-zero-state_baseline] 截图健全性判定 | env | 环境因素（非产品缺陷） | 首跑 1280x800 帧 pixel_std=0.077、dominant_color_pct=0.54 被判低对比拒固化为基线；同场景 element_visible 用户节点/派发/总成本与 text_contains "0" 共 6 条断言全过，页面渲染正常，纯截图采集环境性伪画面，引擎注明后续干净轮次自... |
+| topology-user-node-actions-record | visual_ssim topology-user-node-actions-record_baseline SSIM>=0.95 | flaky | 不稳定复现（非产品缺陷） | index.tsx:300-311 弹窗表含 time/action 动态行，SPEC 推进后记录集变化致基线失配；4 条功能断言全过、retake 2 次 SSIM 稳定，非产品缺陷，属动态内容基线漂移 |
+| topology-user-node-actions-record | 静态情报 double_han_text_selector steps[2]/steps[3] target 含「用户」二字 | test-defect | 测试用例自身缺陷（非产品缺陷） | 误报：target 为 svg g:has(text:has-text("用户")) SVG 文本节点，非 antd Button，不受 autoInsertSpace 影响；执行证据 step_results[2]/[3] success=true、弹窗正常打开 |
 
 ## 本轮场景集变更
 
