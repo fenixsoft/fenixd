@@ -1238,7 +1238,21 @@ class G6StashGuardMixin:
                     errors="replace",
                     timeout=30,
                 )
-                if chk.returncode != 0:
+                if chk.returncode not in (0, 1):
+                    # check-ignore 退出码 0=有忽略命中、1=全部未命中，其余为
+                    # 命令 fatal（index.lock 争用、git 不可用等），忽略态不可
+                    # 判定：按「check-ignore 命令失败」单独归因记日志，勿冒充
+                    # 「路径未被忽略——非运行时草稿」把排障引向路径校验方向
+                    # （对照 _untrack_index_paths 的 diff --cached 失败分支与
+                    # purge 侧 check-ignore 批量口径，code-review item
+                    # 8af338d766c3 / 2d526a1254d6）。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (untrack) aborted: git check-ignore failed "
+                        f"for '{path}': {(chk.stderr or chk.stdout).strip()}",
+                    )
+                    return False
+                if chk.returncode == 1:
                     self.logger.warning(
                         "worktree_manager",
                         f"Self-heal (untrack) aborted: '{path}' is not gitignored "
@@ -1622,7 +1636,23 @@ class G6StashGuardMixin:
                     errors="replace",
                     timeout=30,
                 )
-                if chk.returncode != 0:
+                if chk.returncode not in (0, 1):
+                    # check-ignore 退出码 0=有忽略命中、1=全部未命中，其余为
+                    # 命令 fatal（index.lock 争用、git 不可用等），忽略态不可
+                    # 判定：按「check-ignore 命令失败」单独归因记日志，勿冒充
+                    # 「路径未被忽略——非运行时草稿」把排障引向路径校验方向
+                    # （对照 _untrack_index_paths 的 diff --cached 失败分支，
+                    # code-review item 8af338d766c3 / 2d526a1254d6）。同口径
+                    # 就地 abort：上方 rm 段可能已滞留部分 DU 路径的 staged
+                    # 删除，不把半合并态留给调用方兜底。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal aborted: git check-ignore failed for "
+                        f"'{path}': {(chk.stderr or chk.stdout).strip()}",
+                    )
+                    self._abort_pending_merge_best_effort()
+                    return False
+                if chk.returncode == 1:
                     # 未被忽略 → 疑似真实交付物冲突，不自愈，交回 abort 路径
                     self.logger.warning(
                         "worktree_manager",

@@ -324,6 +324,11 @@ def get_spec_timeline(
                 if not isinstance(msg, str):
                     continue
                 ts = log_entry.get("timestamp", "")
+                # timestamp 为非字符串（数字/数组等异常 JSON 行）时归一为空串，
+                # 与同函数 message/ctx/updates 的防护口径一致：节点 time 字段
+                # 与下游排序键入参恒为字符串（空串走解析失败排末尾的既定分支）
+                if not isinstance(ts, str):
+                    ts = ""
                 ctx = log_entry.get("context") or {}
                 if not isinstance(ctx, dict):
                     ctx = {}

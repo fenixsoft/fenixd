@@ -542,11 +542,18 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
     out: dict = {}
     try:
         paths = list(runs_dir.glob("*.jsonl"))
-        arc = runs_dir / "archive"
-        if arc.is_dir():
-            paths.extend(arc.glob("*.jsonl"))
     except OSError:
         return out
+    # archive 目录 glob 单独容错（code-review item 1099eaeec4cf）：主目录
+    # glob 已成功时，archive glob 抛 OSError 不再整批丢弃已收集的主 runs
+    # 签名（否则下游把所有 run 判为消失 → 摘要全量失效、短暂显示零活跃
+    # run），降级为仅缺归档侧签名继续分组。
+    arc = runs_dir / "archive"
+    if arc.is_dir():
+        try:
+            paths.extend(arc.glob("*.jsonl"))
+        except OSError:
+            pass
     for p in paths:
         # dsh 原始事件 dump 旁路（<run_id>.dsh-events.jsonl）非 run 产物，不入
         # spec 分组（与 get_runs 读侧排除同口径，code-review item c8be48d57864）。
@@ -994,27 +1001,28 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         scenarios = []
     # 场景内截图同样归一化为文件名（report.json 存的是服务器本地绝对路径）
     scenarios = [
-        (
-            {
-                **sc,
-                # screenshots 非列表（字符串等，report.json 被手改/部分写入）
-                # 时按空处理：for 逐字符迭代会产出单字符垃圾文件名原样进入
-                # 响应，与上方 scenarios 的 fail-closed 口径对齐（code-review
-                # item d4abe4a693fd）。
-                "screenshots": [
-                    os.path.basename(s)
-                    for s in (
-                        sc.get("screenshots")
-                        if isinstance(sc.get("screenshots"), list)
-                        else []
-                    )
-                    if isinstance(s, str) and s.strip()
-                ],
-            }
-            if isinstance(sc, dict)
-            else sc
-        )
+        {
+            **sc,
+            # screenshots 非列表（字符串等，report.json 被手改/部分写入）
+            # 时按空处理：for 逐字符迭代会产出单字符垃圾文件名原样进入
+            # 响应，与上方 scenarios 的 fail-closed 口径对齐（code-review
+            # item d4abe4a693fd）。
+            "screenshots": [
+                os.path.basename(s)
+                for s in (
+                    sc.get("screenshots")
+                    if isinstance(sc.get("screenshots"), list)
+                    else []
+                )
+                if isinstance(s, str) and s.strip()
+            ],
+        }
+        # 条目非对象（字符串等垃圾项，report.json 被手改/部分写入）时直接
+        # 过滤、不透传进响应：与顶层非列表、screenshots 非列表的 fail-closed
+        # 口径对齐（code-review item ddc3f5715c99）；全垃圾置空后由下方
+        # run-result 兜底接管。
         for sc in scenarios
+        if isinstance(sc, dict)
     ]
     # 合成报告（report.json 缺失/无 scenarios）时，从 .fenix-run-result.json 兜底取
     # 逐场景明细，使 Dashboard「场景结果」页签即便在无 report.json 的合成产物下也能

@@ -397,7 +397,16 @@ class G4MergebackMixin:
             return None
         if res.returncode != 0:
             return None
-        dirty = [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+        # 逐行反转义 quotePath 转义形（item 349ab4652215，与 _branch_changed_files
+        # /_detect_wip_overlap 等本文件路径采集点同口径）：porcelain 行首 `XY `
+        # 状态前缀仅保留供展示，路径段经 _unquote_git_path 反转义，非 ASCII
+        # 路径在下方日志与 MergeConflictInfo 文案中直接可读；该函数对无引号行
+        # 幂等（见 core.git_text）。
+        dirty = [
+            f"{ln[:3]}{_unquote_git_path(ln[3:])}"
+            for ln in (raw.strip() for raw in res.stdout.splitlines())
+            if ln
+        ]
         if not dirty:
             return None
         self.logger.warning(
@@ -411,7 +420,8 @@ class G4MergebackMixin:
             f"spec 目录在飞编辑：{rel}/ 有 {len(dirty)} 个未提交改动"
             f"（{dirty[0]}{'…' if len(dirty) > 1 else ''}）"
             f" — merge-back 顺延等待提交动作解除"
-            f"（提交或 git commit -am \"spec: {spec}\" 后重试）",
+            f"（提交，或先 git add -A {rel} 纳入 untracked 再 "
+            f"git commit -m \"spec: {spec}\" 后重试）",
             spec_dir_inflight=True,
         )
 

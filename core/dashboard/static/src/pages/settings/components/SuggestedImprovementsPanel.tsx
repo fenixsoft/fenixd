@@ -810,8 +810,14 @@ const SuggestedImprovementsPanel = forwardRef<
         // 执行时刻确认时现算（code-review item 3535e67816d4）：开窗预填的
         // batchStartAfterPreview 可能因弹窗停留跨过配置时刻而成过去值，见其上方注释
         const batchStartAfter = action === 'accept' ? configStartAfter() : null;
-        setBatchAction(action);
-        setBatchRunning(true);
+        // unmount 守卫（code-review item 0af3924642db）：确认弹窗由 antd 静态
+        // 方法挂在 body 门户，弹窗停留期间面板可能已卸载，此时仍可点「确定」，
+        // 入口 setState 不得打到已卸载实例——与下方 finally 收口及 loadItems/
+        // loadView 的 mountedRef 口径一致
+        if (mountedRef.current) {
+          setBatchAction(action);
+          setBatchRunning(true);
+        }
         let succeeded = 0;
         // 携带 item.id 作 key（code-review item 4d4f1e78b97b）：不同项目条目的
         // title 可能相同，以 title 作 React key 会冲突导致明细错位
@@ -986,8 +992,13 @@ const SuggestedImprovementsPanel = forwardRef<
     // 只有「查看」弹窗开着时才在窗内翻页——操作列菜单发起的同名动作没有
     // 弹窗可翻，保持原行为（仅刷新表格）。
     if (target && visibleNow) {
-      setViewItem(target);
-      setViewTab('analysis'); // 与首次打开同构：页签回到分析结论
+      // unmount 守卫（code-review item 0af3924642db）：本函数在决策请求 +
+      // loadItems 刷新的多段 await 之后才执行，期间面板可能已卸载，state
+      // 更新不得打到已卸载实例——与 loadItems/loadView 的 mountedRef 口径一致
+      if (mountedRef.current) {
+        setViewItem(target);
+        setViewTab('analysis'); // 与首次打开同构：页签回到分析结论
+      }
       return;
     }
     (onDone ?? closeView)();

@@ -360,8 +360,15 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
       return;
     }
     // 同帧短路（item eea9b5b7cbd1）：前置补齐检查是同步代码、无调度间隙，守卫
-    // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该卡片已有检测在飞，直接 return
-    if (healthCheckInFlightRef.current.has(field.key)) return;
+    // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该卡片已有检测在飞。命中不静默
+    // 吞掉：在飞期间改动 baseurl/apikey/model 会经 clearHealthCard 删掉 healthMap
+    // 条目、按钮 loading/disabled 随之消失，此时再点击会命中守卫，须给轻提示
+    //（code-review item 31eb25117704）。ref 的 key 仍由在飞请求 finally 释放，
+    // 不在 clearHealthCard 同步删（否则旧请求 finally 会误删新请求的在飞标记）
+    if (healthCheckInFlightRef.current.has(field.key)) {
+      message.info('该卡片的检测仍在进行中');
+      return;
+    }
     healthCheckInFlightRef.current.add(field.key);
     // 发起时捕获卡片身份串：await 返回后配置可能已被改（原位改 Base URL/API
     // Key/模型名、同步回填覆盖），旧结论（可能是绿色「已验证」）不再代表当前
@@ -623,12 +630,14 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                           data-testid={`billing-switch-${index}`}
                           onClick={(_, e) => e.stopPropagation()}
                           onChange={(checked) => {
-                            // 开启计费：自动展开价格区；若无价格行则自动补一行
-                            // （预填卡片默认模型名），免手工点击
+                            // 开启计费：自动展开价格区；若无有效价格行则自动补
+                            // 一行（预填卡片默认模型名），免手工点击。跳过判断
+                            // 剔除全空白占位行（口径同保存链路 isBlankPriceRow
+                            // 剔除，code-review item fd1f67a74b1a）
                             if (!checked) return;
                             setBillingOpenMap((m) => ({ ...m, [field.key]: true }));
                             const prices = form.getFieldValue(['providers', field.name, 'prices']);
-                            if (Array.isArray(prices) && prices.length > 0) return;
+                            if (Array.isArray(prices) && prices.some((r: PriceRowValues) => !isBlankPriceRow(r))) return;
                             const cardModel = form.getFieldValue(['providers', field.name, 'model']) || '';
                             form.setFieldValue(['providers', field.name, 'prices'], [{ model: cardModel }]);
                           }}
