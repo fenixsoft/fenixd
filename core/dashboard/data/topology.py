@@ -17,6 +17,7 @@ report.json + STATE 条目）为唯一输入，派生 nodes/edges/kpis 图数据
 
 import json
 import re
+from datetime import timedelta
 from pathlib import Path
 
 from core import timelib
@@ -353,6 +354,51 @@ def _work_sort_key(n: dict):
     return (dt.replace(microsecond=0), rank, int(n.get("attempt") or 0), dt)
 
 
+def _is_serial_handoff(prev: dict, cur: dict) -> bool:
+    """handoff 边单一串行判定（improve-spec-topology-pipeline-view 2.1 / design D6）。
+
+    画 handoff 边当且仅当前一节点与后一节点**串行**：
+    ``prev.end ≤ cur.start 且 prev.start < cur.start``（终点缺失取 start）。
+    时间重叠（prev.end > cur.start）或同刻启动（prev.start == cur.start，含
+    双零时长退化——原「终点缺失取 start」口径在双零时长下严格不等式全为假、
+    判不出重叠，同刻启动须为独立跳过条件）一律不画；串行贴邻（prev.end ==
+    cur.start 且起点严格更早）照画。
+
+    时刻解析失败（降级骨架/损坏产物）无法做时间判定 → 沿用旧链保持图连通
+    （「图不断链」既有原则优先于串行判定）。
+    """
+    ps = timelib.parse_ts(str(prev.get("time") or ""))
+    cs = timelib.parse_ts(str(cur.get("time") or ""))
+    if ps is None or cs is None:
+        return True
+    end = ps
+    d = prev.get("duration_seconds")
+    if isinstance(d, (int, float)) and not isinstance(d, bool) and d > 0:
+        end = ps + timedelta(seconds=d)
+    return end <= cs and ps < cs
+
+
+def _dispatch_anchor(started, tr_ts: list) -> "str | None":
+    """run 首节点 started → 归位转移节点 id ``tr:<i+1>``（无归位返回 None）。
+
+    started 落在 transitions 相邻转移时刻区间 ``[t_i, t_{i+1})`` 时取
+    ``tr:<i+1>``（转移节点按 verify 节点同款 ``<kind>:<序号>`` 风格 1 基编号，
+    即 at-or-before started 的最近一次转移）；无 transitions / 时刻缺失 /
+    started 早于首转移或落在末转移之后（无右端点闭区间）时返回 None——
+    下发侧不下发该字段，前端回退 PMEngine 主节点。
+    """
+    st = timelib.parse_ts(str(started or ""))
+    if st is None:
+        return None
+    for i in range(len(tr_ts) - 1):
+        ti, tj = tr_ts[i], tr_ts[i + 1]
+        if ti is None or tj is None:
+            continue
+        if ti <= st < tj:
+            return f"tr:{i + 1}"
+    return None
+
+
 # ── 主入口 ─────────────────────────────────────────────────────────────────
 
 
@@ -511,6 +557,15 @@ def derive_topology(project_root, spec_name: str, entry: "dict | None" = None) -
     groups: dict = {}
     for n in run_nodes:
         groups.setdefault(n["base_run_id"], []).append(n)
+    # dispatch 归位锚点（improve-spec-topology-pipeline-view 2.2 / design D5）：
+    # 为每个 run 首节点计算可选字段 dispatch_anchor（tr:<n>），前端管线视图
+    # 据此把 dispatch 边自生命周期链上对应状态的转移节点画出；既有 edges 端点
+    # 不改写（泳道视图消费同一份 edges 做派发标记 ▾，改端点会破泳道）。
+    tr_ts = [timelib.parse_ts(str(t.get("time") or "")) for t in transitions]
+    for members in groups.values():
+        anchor = _dispatch_anchor(members[0].get("time"), tr_ts)
+        if anchor:
+            members[0]["dispatch_anchor"] = anchor
     for members in groups.values():
         # members 已按全局时序排序（run_nodes.sort 先行）
         add_edge("pm", members[0]["id"], "dispatch")
@@ -524,6 +579,11 @@ def derive_topology(project_root, spec_name: str, entry: "dict | None" = None) -
         cur_base = cur.get("base_run_id")
         if prev_base is not None and prev_base == cur_base:
             continue  # attempt 链相邻段已由 retry 边覆盖
+        # 单一串行判定（design D6）：时间重叠或同刻启动（含双零时长退化）的
+        # 相邻节点不画伪 handoff 边——并行结构由时间轴对齐直接表达，两视图
+        # （管线/泳道）消费同一份 edges 一致受益；派生层修而非前端过滤。
+        if not _is_serial_handoff(prev, cur):
+            continue
         add_edge(prev["id"], cur["id"], "handoff")
     if work:
         add_edge(work[-1]["id"], "delivery", endpoint_type)

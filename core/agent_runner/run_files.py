@@ -192,9 +192,17 @@ def run_spec_part(run_id: str) -> str:
     近期活动判定取假、误报 stuck（与 admin_monitor._spec_from_run_id 事故口径
     一致，evo-verifier-result-single-source）。
 
+    spec-review uuid 段剥除（improve-spec-topology-pipeline-view 1.1）：需求
+    评审 run_id 恒插入 6 位 uuid 段（core/pm_engine/spec_review.py 的
+    ``spec-review-<spec>-<6hex>-<unix秒>`` 形态），时间戳剥离后 spec 名仍带
+    尾巴、family 全等匹配失败 → 拓扑/时间轴/运行记录全部丢节点。仅当 agent
+    前缀为 ``spec-review-`` 时对该尾巴剥除（uuid 段唯一写入方即 spec_review，
+    其余前缀不触碰）；剥后非空才生效。已知限制与 9-10 位数字时间戳同级：
+    spec 名合法以 6hex 结尾且走 spec-review 通道的极边界场景会误剥。
+
     前缀表 = 本模块 ``RUN_ID_AGENT_PREFIXES``（唯一真源，见其定义处注释）。
     """
-    _agent_type, spec_part = infer_run_agent_type(run_id)
+    agent_type, spec_part = infer_run_agent_type(run_id)
     spec_part = strip_run_id_suffixes(spec_part)
     # 时间戳剥离限定 9-10 位数字（code-review item 6c089e65a080）：spec 名以
     # 9-10 位数字结尾时会被误剥（如 spec-123456789 → spec）。属极边界场景，
@@ -203,6 +211,13 @@ def run_spec_part(run_id: str) -> str:
     m = re.match(r"^(.*)-\d{9,10}$", spec_part)
     if m:
         spec_part = m.group(1)
+    if agent_type == "spec-review":
+        # uuid 段剥除严格限定 spec-review 前缀形态（design D1）：6 位 hex 段
+        # 仅 spec_review.py 写入；正则锚定整段尾部、剥后非空才生效，其余
+        # 前缀（impl-/planner-/code-review- 等）推断行为不变。
+        m_uuid = re.match(r"^(.*)-[0-9a-f]{6}$", spec_part)
+        if m_uuid and m_uuid.group(1):
+            spec_part = m_uuid.group(1)
     return spec_part
 
 

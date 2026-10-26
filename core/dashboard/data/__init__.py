@@ -306,8 +306,10 @@ from .tasks import (
 
 # ── log_index 组 ──
 from .log_index import (
+    LOG_INDEX_ANCHOR_WINDOW,
     LOG_INDEX_BLOCK,
     LOG_INDEX_TAIL_WINDOW,
+    LOG_LINE_SKIP_THRESHOLD,
     _LOG_INDEX_REBUILDS,
     _log_index_path,
     _build_log_block_index,

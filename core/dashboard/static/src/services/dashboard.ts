@@ -1207,6 +1207,10 @@ export interface TopologyNode {
   warnings?: number;
   errors?: number;
   env_error?: string;
+  // dispatch 归位锚点（improve-spec-topology-pipeline-view 2.2，仅 run 首节点
+  // 携带）：started 落在 transitions 相邻转移时刻区间 [t_i, t_{i+1}) 时为转移
+  // 节点 id `tr:<i+1>`；缺省 = 无法定位，管线视图回退自 PMEngine 主节点画边
+  dispatch_anchor?: string;
 }
 
 export interface TopologyEdge {
