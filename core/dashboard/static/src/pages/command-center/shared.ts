@@ -39,8 +39,11 @@ export function fmtTokens(v: number | null | undefined): string {
 export function fmtDurationSeconds(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—';
   if (v < 60) return `${Math.round(v)}s`;
-  const m = Math.floor(v / 60);
-  const s = Math.round(v % 60);
+  // 先对总秒数取整再拆分：浮点秒下「floor 取分 + round 余秒」会让 59.5~60
+  // 区间的余秒进成 60 且不向分钟进位（输出「59m60s」越界文案）。
+  const t = Math.round(v);
+  const m = Math.floor(t / 60);
+  const s = t % 60;
   if (m < 60) return s ? `${m}m${s}s` : `${m}m`;
   const h = Math.floor(m / 60);
   const rm = m % 60;

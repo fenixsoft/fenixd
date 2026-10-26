@@ -834,6 +834,12 @@ class SummaryIndex:
             state_changed = (
                 state_sig is not None and self._state_sigs.get(key) != state_sig
             ) or (state_sig is None and key in self._state_sigs)
+            if state_sig is None and key in self._state_sigs:
+                # 消失即落 None 哨兵（code-review item 7f8be2113505）：只刷空快照
+                # 不记签名时，STATE.md 被原样放回（mv 回原文件，mtime_ns/size 与
+                # 消失前一致）会判「未变化」而持续复用消失窗口内的空快照；记哨兵
+                # 后任意非 None 签名的恢复都判为变更，强制重解析即自愈。
+                self._state_sigs[key] = None
             if specs is None:
                 if not state_changed:
                     specs = self._state_snapshot.get(key)
@@ -916,6 +922,9 @@ class SummaryIndex:
             state_changed = (
                 state_sig is not None and self._state_sigs.get(key) != state_sig
             ) or (state_sig is None and key in self._state_sigs)
+            if state_sig is None and key in self._state_sigs:
+                # 同 get() 的消失哨兵（item 7f8be2113505）：防原样放回后复用空快照
+                self._state_sigs[key] = None
             specs = self._state_snapshot.get(key)
             if state_changed or specs is None:
                 specs = _facade.parse_state(proot)

@@ -3933,10 +3933,16 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
                   f"重试续移；详见服务端日志）")
     steps = []
     if gi["appended"]:
-        steps.append(
-            f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 追加 ignore 并独立提交"
-            f"（{gi['commit_hash'][:12]}）"
-        )
+        if gi["commit_hash"]:
+            steps.append(
+                f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 追加 ignore 并独立提交"
+                f"（{gi['commit_hash'][:12]}）"
+            )
+        else:
+            steps.append(
+                f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 追加 ignore 并独立提交；"
+                "提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）"
+            )
     else:
         steps.append(f"登记目录 {UNTRACKED_STRAY_ARCHIVE_DIR}/ 已在 ignore 规则内，无需追加")
     steps.append(
@@ -4019,7 +4025,10 @@ def _exec_ignore_untracked_stray(project_root, note: str = "", signal_type: str 
             f".gitignore 追加 {len(gi['appended'])} 条（去重后实际新增）: "
             f"{', '.join(gi['appended'])}"
         )
-        steps.append(f"独立提交 hash: {gi['commit_hash']}")
+        if gi["commit_hash"]:
+            steps.append(f"独立提交 hash: {gi['commit_hash']}")
+        else:
+            steps.append("提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）")
     else:
         steps.append(".gitignore 无需追加（既有规则已覆盖或条目已存在）")
     if escapes:

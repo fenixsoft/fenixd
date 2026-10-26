@@ -18,7 +18,7 @@
 import { useMemo, useState } from 'react';
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
 import { statusMeta } from '@/services/dashboard';
-import type { SpecTopology, TopologyNode, TopologyStage } from '@/services/dashboard';
+import type { SpecTopology, TopologyEdgeType, TopologyNode, TopologyStage } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
 import {
   fmtCost,
@@ -53,6 +53,47 @@ const TR_SLOT = TR_H + TR_GAP;
 
 function nodeX(stage: TopologyStage): number {
   return PAD + STAGE_ORDER.indexOf(stage) * (COL_W + COL_GAP);
+}
+
+// ── 节点/边视觉单源（具名函数承载原嵌套三元，与 runDotColor 的单源具名
+// 风格对齐——code-review item 3413bcfaf05a「禁止嵌套三元」） ──
+
+/** 节点语义色调：run 按状态语义色单源投影；verify 绿；其余节点无色调（走蓝圆点）。 */
+function nodeTone(kind: TopologyNode['kind'], status: string): string {
+  if (kind === 'run') return runDotColor(status);
+  if (kind === 'verify') return 'green';
+  return '';
+}
+
+/** 节点边框色：选中高亮蓝优先；其次失败红/中止橙/弃置灰（runDotColor 同口径）；
+ * 兜底取圆点色（特殊节点蓝）。 */
+function nodeBorderColor(selected: boolean, tone: string, dot: string): string {
+  if (selected) return '#40a9ff';
+  if (tone === 'red') return STATUS_HEX.red;
+  if (tone === 'orange') return STATUS_HEX.orange;
+  if (tone === 'gray') return STATUS_HEX.gray;
+  return dot;
+}
+
+/** 节点第二行文案：run 状态标签+耗时；verify 场景计数（无数据回退占位）；其余原标签。 */
+function nodeSubLabel(n: TopologyNode): string {
+  if (n.kind === 'run') {
+    const status = n.status ?? '';
+    return `${statusMeta(status).label || status || '—'}${
+      n.duration_seconds != null ? ` · ${fmtDuration(n.duration_seconds)}` : ''
+    }`;
+  }
+  if (n.kind === 'verify') {
+    return n.total != null ? `共 ${n.total} · ✓${n.passed ?? '—'} ✗${n.failed ?? '—'}` : '验证轮次';
+  }
+  return n.label;
+}
+
+/** 边终点箭头 id：retry 橙、approve 金、其余默认青（与边线着色同口径）。 */
+function edgeMarkerId(type: TopologyEdgeType): string {
+  if (type === 'retry') return 'url(#topo-arrow-retry)';
+  if (type === 'approve') return 'url(#topo-arrow-approve)';
+  return 'url(#topo-arrow)';
 }
 
 // PMEngine 生命周期小节点（纯展示；id 与后端 dispatch_anchor 编号规则一致：
@@ -341,13 +382,7 @@ export default function PipelineView({
                 strokeWidth={isRetry || isApprove ? 1.6 : 1.1}
                 strokeDasharray={e.type === 'dispatch' ? '5 3' : undefined}
                 opacity={0.75}
-                markerEnd={
-                  isRetry
-                    ? 'url(#topo-arrow-retry)'
-                    : isApprove
-                      ? 'url(#topo-arrow-approve)'
-                      : 'url(#topo-arrow)'
-                }
+                markerEnd={edgeMarkerId(e.type)}
               />
             );
           })}
@@ -403,19 +438,10 @@ export default function PipelineView({
             if (y == null) return null;
             const status = n.status ?? '';
             const isRunning = n.kind === 'run' && (status === 'running' || status === 'empty');
-            const tone = n.kind === 'run' ? runDotColor(status) : n.kind === 'verify' ? 'green' : '';
+            const tone = nodeTone(n.kind, status);
             // 着色：run 走状态语义色单源（失败红/中止橙/弃置灰）；verify 绿；特殊节点蓝
             const dot = n.kind === 'run' ? runDotHex(status) : n.kind === 'verify' ? STATUS_HEX.green : STATUS_HEX.blue;
-            const border =
-              selectedId === n.id
-                ? '#40a9ff'
-                : tone === 'red'
-                  ? STATUS_HEX.red
-                  : tone === 'orange'
-                    ? STATUS_HEX.orange
-                    : tone === 'gray'
-                      ? STATUS_HEX.gray
-                      : dot;
+            const border = nodeBorderColor(selectedId === n.id, tone, dot);
             return (
               <g
                 key={n.id}
@@ -448,13 +474,7 @@ export default function PipelineView({
                   {n.kind === 'run' && n.attempt != null && n.attempt > 1 ? ` ·a${n.attempt}` : ''}
                 </text>
                 <text x={26} y={35} fill="#7f9cba" fontSize={10.5}>
-                  {n.kind === 'run'
-                    ? `${statusMeta(status).label || status || '—'}${n.duration_seconds != null ? ` · ${fmtDuration(n.duration_seconds)}` : ''}`
-                    : n.kind === 'verify'
-                      ? n.total != null
-                        ? `共 ${n.total} · ✓${n.passed ?? '—'} ✗${n.failed ?? '—'}`
-                        : '验证轮次'
-                      : n.label}
+                  {nodeSubLabel(n)}
                 </text>
                 {n.fix && (
                   <>

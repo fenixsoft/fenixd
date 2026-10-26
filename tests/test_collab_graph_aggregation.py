@@ -10,7 +10,9 @@ test_topology_derivation.py 的产物构造助手（run_id 前缀/STATE 形态�
 """
 
 import json
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -74,15 +76,28 @@ def write_archive_manifest(proot: Path, specs: list) -> None:
 
 
 def write_run(proot: Path, run_id: str, last_event: dict, start_ts: str = "") -> None:
-    """写 run 产物：start 事件（带 timestamp 作真实起点）+ 终态事件。"""
+    """写 run 产物：start 事件（带 timestamp 作真实起点）+ 终态事件。
+
+    终态 run 产物 mtime 回拨到 start+30s：读侧 duration_seconds 无 run_metrics
+    指标行时兜底为 mtime − started（真实形态假设 mtime ≈ 运行结束），夹具默认
+    mtime=写入时刻（现在）会与事件时间轴（2026-02）自相矛盾，伪 8 个月时长令
+    handoff 单一串行判定（prev.end ≤ cur.start，improve-spec-topology-pipeline-view
+    2.1）把相距 60s 的串行链误判重叠、plan→dev/dev→review 边全灭。在飞 run
+    不回拨——(now − mtime) > _RUN_STALE_SECONDS 会被读侧改判 stale，翻转在飞
+    计数。
+    """
     events = [{"type": "start", "message": "start"}]
     if start_ts:
         events[0]["timestamp"] = start_ts
     events.append(last_event)
-    (proot / ".fenix" / "runs" / f"{run_id}.jsonl").write_text(
+    path = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
+    path.write_text(
         "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n",
         encoding="utf-8",
     )
+    if start_ts and last_event.get("type") != "progress":
+        start_epoch = datetime.fromisoformat(start_ts).timestamp()
+        os.utime(path, (start_epoch + 30, start_epoch + 30))
 
 
 def write_handoff_chain(proot: Path, spec: str, running: bool = False) -> list:

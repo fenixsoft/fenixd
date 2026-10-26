@@ -12,7 +12,7 @@
 //   iframe 与后端 /api/knowledge/graph 下发端点一并移除。）
 // - 链接导航：Markdown 相对链接（truth-source 内部路径）拦截为站内拉取，
 //   经 resolveKnowledgePath 基于当前页目录归一化；外部链接走 SafeLink 白名单。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AnchorHTMLAttributes, FC, ReactNode } from 'react';
 import { Breadcrumb, Button, Card, Space, Spin, Typography } from 'antd';
 import Markdown from 'react-markdown';
@@ -32,6 +32,12 @@ import SpecDocModal, { SafeLink, markdownComponents } from './SpecDocModal';
 const SafeLinkAsAnchor = SafeLink as FC<
   AnchorHTMLAttributes<HTMLAnchorElement> & { children?: ReactNode }
 >;
+
+// remarkPlugins 提为模块级常量（code-review item 4a7edcc6e283）：内联 [remarkGfm]
+// 数组每次渲染新建引用会让 react-markdown 对整篇文档重新 parse（打开 SPEC 归档
+// 弹窗 setDocSpec 等与本页内容无关的重渲染也触发），比照 help 页
+// HELP_REMARK_PLUGINS / activities 页 ACTIVITY_REMARK_PLUGINS 先例复用同一引用。
+const KNOWLEDGE_REMARK_PLUGINS = [remarkGfm];
 
 interface KnowledgeTabProps {
   project: string;
@@ -242,6 +248,73 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     setDocSpec(null);
   }, [project]);
 
+  // 站内相对链接拦截：spec/archive 归档链接 → 弹 SPEC 文档弹窗；真相源内
+  // 路径 → 站内拉取；其余走 SafeLink 白名单。
+  // （currentPath/openPage/linkComponents 须置于下方早退分支之前——hooks 规则。）
+  const currentPath = view.kind === 'page' ? view.path : null;
+
+  const openPage = useCallback(async (path: string) => {
+    if (pageLoadingRef.current === path) return; // 同路径在途，忽略重复发起
+    pageLoadingRef.current = path;
+    const seq = ++seqRef.current;
+    try {
+      const data = await getKnowledgeFile(project, path);
+      if (seq !== seqRef.current) return;
+      setView({ kind: 'page', path: data.path, content: data.content });
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      // 文件缺失等：不置全局 loadError 态，而是整页切换为 page 视图、以引用
+      // 块形式提示错误（原视图被替换，可经「返回总目录」回退）
+      const msg = e instanceof ApiError ? e.message : String(e);
+      setView({ kind: 'page', path, content: `> 加载失败：${msg}\n` });
+    } finally {
+      // 守卫槽仍归属本次请求时才清空（已被更新的路径接管则不动）
+      if (pageLoadingRef.current === path) pageLoadingRef.current = null;
+    }
+  }, [project]);
+
+  // linkComponents 经 useMemo 收敛引用（code-review item 4a7edcc6e283）：依赖取
+  // 闭包真正引用的 currentPath/openPage（openPage 实际捕获 project，refs 与
+  // setDocSpec 稳定），打开 SPEC 归档弹窗等无关重渲染不再整篇重建 components。
+  const linkComponents = useMemo<Components>(
+    () => ({
+      ...markdownComponents,
+      a: (props) => {
+        const href = props.href || '';
+        const spec = archiveSpecName(href);
+        if (spec !== null) {
+          return (
+            <a
+              href={href}
+              onClick={(e) => {
+                e.preventDefault();
+                setDocSpec(spec);
+              }}
+            >
+              {props.children}
+            </a>
+          );
+        }
+        const target = resolveKnowledgePath(currentPath, href);
+        if (target !== null) {
+          return (
+            <a
+              href={`#knowledge:${target}`}
+              onClick={(e) => {
+                e.preventDefault();
+                void openPage(target);
+              }}
+            >
+              {props.children}
+            </a>
+          );
+        }
+        return <SafeLinkAsAnchor {...props} />;
+      },
+    }),
+    [currentPath, openPage],
+  );
+
   if (!active) return null;
 
   // ── 禁用占位（knowledge.enabled=false）────────────────────────────
@@ -288,65 +361,6 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
 
   const uninitialized = !indexData?.initialized;
 
-  const openPage = async (path: string) => {
-    if (pageLoadingRef.current === path) return; // 同路径在途，忽略重复发起
-    pageLoadingRef.current = path;
-    const seq = ++seqRef.current;
-    try {
-      const data = await getKnowledgeFile(project, path);
-      if (seq !== seqRef.current) return;
-      setView({ kind: 'page', path: data.path, content: data.content });
-    } catch (e) {
-      if (seq !== seqRef.current) return;
-      // 文件缺失等：不置全局 loadError 态，而是整页切换为 page 视图、以引用
-      // 块形式提示错误（原视图被替换，可经「返回总目录」回退）
-      const msg = e instanceof ApiError ? e.message : String(e);
-      setView({ kind: 'page', path, content: `> 加载失败：${msg}\n` });
-    } finally {
-      // 守卫槽仍归属本次请求时才清空（已被更新的路径接管则不动）
-      if (pageLoadingRef.current === path) pageLoadingRef.current = null;
-    }
-  };
-
-  // 站内相对链接拦截：spec/archive 归档链接 → 弹 SPEC 文档弹窗；真相源内
-  // 路径 → 站内拉取；其余走 SafeLink 白名单
-  const currentPath = view.kind === 'page' ? view.path : null;
-  const linkComponents: Components = {
-    ...markdownComponents,
-    a: (props) => {
-      const href = props.href || '';
-      const spec = archiveSpecName(href);
-      if (spec !== null) {
-        return (
-          <a
-            href={href}
-            onClick={(e) => {
-              e.preventDefault();
-              setDocSpec(spec);
-            }}
-          >
-            {props.children}
-          </a>
-        );
-      }
-      const target = resolveKnowledgePath(currentPath, href);
-      if (target !== null) {
-        return (
-          <a
-            href={`#knowledge:${target}`}
-            onClick={(e) => {
-              e.preventDefault();
-              void openPage(target);
-            }}
-          >
-            {props.children}
-          </a>
-        );
-      }
-      return <SafeLinkAsAnchor {...props} />;
-    },
-  };
-
   const docSpecModal =
     docSpec === null ? null : (
       <SpecDocModal
@@ -385,7 +399,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
         <Card variant="borderless" data-testid="knowledge-page-view">
           <Space direction="vertical" style={{ width: '100%' }} size={12}>
             <Breadcrumb data-testid="knowledge-page-path" items={crumbItems} />
-            <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
+            <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
               {stripHtmlComments(view.content)}
             </Markdown>
           </Space>
@@ -408,7 +422,7 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
           ) : (
             <>
               <div data-testid="knowledge-index-md">
-                <Markdown remarkPlugins={[remarkGfm]} components={linkComponents}>
+                <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
                   {stripHtmlComments(indexData?.index_md || '')}
                 </Markdown>
               </div>

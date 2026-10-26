@@ -445,6 +445,57 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     }
   };
 
+  // AI 自动生成按钮（code-review item fea8e2e7e184）：旧实现以两层嵌套三元
+  // 表达「起草确认 / 覆盖确认 / 加载中不渲染」三分支，违反前端禁止嵌套三元
+  // 规则，比照同族 QualityPanel renderOcrStatus 抽 helper 以 if/else 表达。
+  const renderAutodraftButton = () => {
+    if (!yamlExists && !yamlLoading) {
+      return (
+        <Popconfirm
+          title="AI 起草验证契约"
+          description="将探索项目 → 生成契约 → 三段自证 → 提交仓库，约数分钟"
+          okText="确认起草"
+          cancelText="取消"
+          onConfirm={() => handleAutodraft(false)}
+        >
+          <Button
+            style={{ marginLeft: 8 }}
+            loading={autodraftLoading}
+            // 在飞加载/保存期间禁用（与同区「插入模板」「重新加载」「保存」
+            // 同口径）：起草/覆盖决定须基于最新一次加载的对账结果
+            disabled={yamlLoading || yamlSaving}
+            data-testid="verify-yaml-autodraft"
+          >
+            AI 自动生成
+          </Button>
+        </Popconfirm>
+      );
+    }
+    if (yamlExists) {
+      return (
+        <Popconfirm
+          title="⚠️ 覆盖现有契约"
+          description="现有验证契约将被覆盖，未保存的编辑也会丢失。确定继续？"
+          okText="确认覆盖"
+          cancelText="取消"
+          onConfirm={() => handleAutodraft(true)}
+        >
+          <Button
+            style={{ marginLeft: 8 }}
+            loading={autodraftLoading}
+            // 在飞加载/保存期间禁用（与同区「插入模板」「重新加载」「保存」
+            // 同口径）：起草/覆盖决定须基于最新一次加载的对账结果
+            disabled={yamlLoading || yamlSaving}
+            data-testid="verify-yaml-autodraft"
+          >
+            AI 自动生成
+          </Button>
+        </Popconfirm>
+      );
+    }
+    return null;
+  };
+
   return (
     <div>
       <h3>项目：{project}</h3>
@@ -562,46 +613,8 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
                   插入模板
                 </Button>
               )}
-              {/* AI 自动生成按钮 */}
-              {!yamlExists && !yamlLoading ? (
-                <Popconfirm
-                  title="AI 起草验证契约"
-                  description="将探索项目 → 生成契约 → 三段自证 → 提交仓库，约数分钟"
-                  okText="确认起草"
-                  cancelText="取消"
-                  onConfirm={() => handleAutodraft(false)}
-                >
-                  <Button
-                    style={{ marginLeft: 8 }}
-                    loading={autodraftLoading}
-                    // 在飞加载/保存期间禁用（与同区「插入模板」「重新加载」「保存」
-                    // 同口径）：起草/覆盖决定须基于最新一次加载的对账结果
-                    disabled={yamlLoading || yamlSaving}
-                    data-testid="verify-yaml-autodraft"
-                  >
-                    AI 自动生成
-                  </Button>
-                </Popconfirm>
-              ) : yamlExists ? (
-                <Popconfirm
-                  title="⚠️ 覆盖现有契约"
-                  description="现有验证契约将被覆盖，未保存的编辑也会丢失。确定继续？"
-                  okText="确认覆盖"
-                  cancelText="取消"
-                  onConfirm={() => handleAutodraft(true)}
-                >
-                  <Button
-                    style={{ marginLeft: 8 }}
-                    loading={autodraftLoading}
-                    // 在飞加载/保存期间禁用（与同区「插入模板」「重新加载」「保存」
-                    // 同口径）：起草/覆盖决定须基于最新一次加载的对账结果
-                    disabled={yamlLoading || yamlSaving}
-                    data-testid="verify-yaml-autodraft"
-                  >
-                    AI 自动生成
-                  </Button>
-                </Popconfirm>
-              ) : null}
+              {/* AI 自动生成按钮（渲染逻辑抽 renderAutodraftButton，见其注释） */}
+              {renderAutodraftButton()}
               <Button
                 style={{ marginLeft: 8 }}
                 onClick={() => loadVerifyYaml()}
