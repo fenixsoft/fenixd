@@ -1,7 +1,7 @@
 # 主树散件 WIP 周期盘点与滞留升级
 
-<!-- knowledge: capability=maintree-stray-wip-sweep rev=2
-     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution -->
+<!-- knowledge: capability=maintree-stray-wip-sweep rev=3
+     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice -->
 
 daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件），机械归因持有者，无主且宽限耗尽时以一次性 major 告警浮出——散件滞留由分钟级机械巡检检出，而非 LLM 复盘车道的偶然检出。
 
@@ -28,20 +28,21 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 ### 宽限与一次性升级告警
 
 - 宽限配置 `admin.maintree_stray_wip_grace_minutes`，缺省 30，语义对齐 `admin.mergeback_wip_orphan_grace_minutes`；`0` 合法＝耗尽即升级（同指纹一次性去重兜住刷屏）；解析失败/负值/NaN/inf/超一天上限一律回退缺省——配置事故既不放大成无限期静默等待，也不变成关闭降噪的极端。
-- 宽限耗尽恰发一次 `maintree_stray_wip_stale` major 告警（经 AdminStore，同指纹先查后记去重，MUST NOT 重复升级）：evidence 附文件清单、first_seen、归因证据、盲区注记与零触碰注记，recommended_action 指向人工 `git add/commit` 或 `git stash push` 留痕。
+- 宽限耗尽恰发一次 `maintree_stray_wip_stale` major 告警（经 AdminStore，同指纹先查后记去重，MUST NOT 重复升级）：evidence 附文件清单、first_seen、归因证据、盲区注记与零触碰注记；落库记录自带 `choices` 快照（缺键时消费端回退裁决注册表），`recommended_action` 文案带出裁决选项 `commit_stray_wip`（核对归属后一键提交信号清单内文件），并与 admin_monitor `SIGNAL_RECOMMENDATION` 同文同步（防双处漂移）。
 - 告警经 admin_monitor 三表登记（SIGNAL_SEVERITY + SIGNAL_RECOMMENDATION + STORED_SIGNAL_TYPES）接入自动唤起 Administrator；落盘记录 evidence 以「项目名=」开头供摄取项目名解析收录（本告警无 spec 归属）。漏 STORED_SIGNAL_TYPES 则记录落 store 后无人摄取、升级出口落空。
 
 ### 零触碰与能力边界
 
-- 盘点与升级链路全只读：MUST NOT 对主树执行 stash、stash pop、checkout、clean、reset 或任何改变工作区/索引内容的操作；一次盘点/告警前后 `git status --porcelain` 输出逐字节一致。框架仅报告，处置权完全留给人工程序。
+- 盘点与升级链路全只读：MUST NOT 对主树执行 stash、stash pop、checkout、clean、reset 或任何改变工作区/索引内容的操作；一次盘点/告警前后 `git status --porcelain` 输出逐字节一致。框架仅报告：主树处置由处置程序显式发起，标准化提交动作以裁决选项 `commit_stray_wip` 挂在裁决执行链（受清单约束与 signal_type 绑定守卫约束，见 [adjudication-actions](../admin-ops/adjudication-actions.md)），不在盘点链路内自动触发。
 - first_seen 与告警去重注册表为 daemon 进程内存态，daemon 重启即重置宽限：重启后散件仍在场会重新起算并最终再告警，损失仅时效，不引入持久化状态文件。
 - 本能力为独立旁路观察者，覆盖合回闸门看不见的散件形态（autostash 先行腾空主树使 WIP overlap 占用识别全程不触发，见 [mergeback-wip-active-coordination](mergeback-wip-active-coordination.md)）；不改动 autostash 路径、reclaim「脏不抢」语义与 WIP overlap 闸门任何现行行为，也不消费合回协调的台账与事件。
 
 ## 关键行为
 
-- 单轮盘点流程：非阻塞取主树锁（忙则弃轮返回）→ `git status --porcelain` 取 tracked 改动（空集即 status=clean 零产出）→ 构造指纹并与注册表比对（新增档记 first_seen / 同指纹沿用 / 消失清除）→ 传入飞实现车道 run_ids 归因三分流（车道命中不计时 / 会话归因默认 info 留痕 / 无主按宽限计时）→ 无主且在场超宽限且同指纹未升级过 → 写 AdminStore 告警并记升级标记。
+- 单轮盘点流程：非阻塞取主树锁（忙则弃轮返回）→ `git status --porcelain` 取 tracked 改动（空集即 status=clean 零产出）→ 构造指纹并与注册表比对（新增档记 first_seen / 同指纹沿用 / 消失清除）→ 传入飞实现车道 run_ids 归因三分流（车道命中不计时 / 会话归因默认 info 留痕 / 无主按宽限计时）→ 无主且在场超宽限且同指纹未升级过 → 写 AdminStore 告警（记录附 choices 快照）并记升级标记。
 
 ## 溯源
 
 - 2026-10-08 evo-add-maintree-stray-wip-sweep（spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep） — 新建本页：主树 tracked 散件 WIP 周期只读盘点（60s 节拍、主树锁非阻塞互斥、tracked-only 口径）、内容指纹滞留计时（mtime 免疫）、复用 `identify_wip_occupant` 机械归因、宽限耗尽一次性 `maintree_stray_wip_stale` major 告警（admin_monitor 三表登记接入唤起）、全链零触碰仅报告。
 - 2026-10-09 evo-add-maintree-interactive-session-attribution（spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution） — 修改本页：占用归因由二分支扩为三分支——车道归因零命中后归因器追加主树活交互会话只读探测，会话归因散件缺省降级 status=session-attributed info 留痕（不派 major 不触发代查），`admin.maintree_session_attribution_action=keep` 回退现状无主宽限升级；归因源与采信规则收敛至 maintree-wip-attribution 页。
+- 2026-10-26 evo-add-commit-stray-wip-choice（spec/archive/2026-10-26-evo-add-commit-stray-wip-choice） — 修改本页：宽限升级告警落库记录自带 choices 快照，recommended_action 带出裁决选项 commit_stray_wip 并与 SIGNAL_RECOMMENDATION 同文同步；盘点与升级链路零触碰边界不变（提交动作在裁决执行链、不自动触发）
