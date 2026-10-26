@@ -83,3 +83,27 @@ export function midTrunc(s: string, max = 28): string {
   const tail = Math.floor((max - 1) / 2);
   return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
+
+// ── 时间刻度（协作时序/管线视图共用；improve-spec-topology-pipeline-view 3.1
+//    自 SwimlaneView 迁入本模块单源，两视图复用同档位与文案格式） ─────────────
+
+// 时间刻度自适应档位（秒）：目标 ~8 条刻度，就近取整到分钟/小时档
+export const TICK_STEPS_S = [
+  60, 2 * 60, 5 * 60, 10 * 60, 15 * 60, 30 * 60, 3600, 2 * 3600, 6 * 3600, 12 * 3600, 24 * 3600,
+];
+
+export function pickTickStep(spanS: number): number {
+  for (const s of TICK_STEPS_S) {
+    if (spanS / s <= 10) return s;
+  }
+  return TICK_STEPS_S[TICK_STEPS_S.length - 1];
+}
+
+export function fmtTick(ms: number, spanS: number): string {
+  const d = new Date(ms);
+  const hh = `${String(d.getHours()).padStart(2, '0')}`;
+  const mm = `${String(d.getMinutes()).padStart(2, '0')}`;
+  if (spanS <= 2 * 3600) return `${hh}:${mm}`;
+  const day = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+  return spanS <= 48 * 3600 ? `${day} ${hh}:${mm}` : day;
+}

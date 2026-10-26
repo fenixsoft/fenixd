@@ -13,7 +13,16 @@ import { useMemo } from 'react';
 import { statusMeta } from '@/services/dashboard';
 import type { SpecTopology, TopologyEdge, TopologyNode } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
-import { LANE_LABELS, LANE_ORDER, midTrunc, parseTsMs, runDotHex, STATUS_HEX } from './shared';
+import {
+  LANE_LABELS,
+  LANE_ORDER,
+  midTrunc,
+  parseTsMs,
+  runDotHex,
+  fmtTick,
+  pickTickStep,
+  STATUS_HEX,
+} from './shared';
 
 const LANE_H = 64; // 泳道行高
 const ROW_H = 18; // 泳道内并行错行行高
@@ -21,27 +30,6 @@ const LABEL_W = 96; // 左侧泳道标签列宽（固定，不随滚动）
 const PAD_X = 20; // 时间轴左右内边距
 const HEADER_H = 34; // 刻度头高
 const MIN_CONTENT_W = 720; // 内容最小宽（短跨度不压缩到不可读）
-
-// 时间刻度自适应档位（秒）：目标 ~8 条刻度，就近取整到分钟/小时档
-const TICK_STEPS_S = [
-  60, 2 * 60, 5 * 60, 10 * 60, 15 * 60, 30 * 60, 3600, 2 * 3600, 6 * 3600, 12 * 3600, 24 * 3600,
-];
-
-function pickTickStep(spanS: number): number {
-  for (const s of TICK_STEPS_S) {
-    if (spanS / s <= 10) return s;
-  }
-  return TICK_STEPS_S[TICK_STEPS_S.length - 1];
-}
-
-function fmtTick(ms: number, spanS: number): string {
-  const d = new Date(ms);
-  const hh = `${String(d.getHours()).padStart(2, '0')}`;
-  const mm = `${String(d.getMinutes()).padStart(2, '0')}`;
-  if (spanS <= 2 * 3600) return `${hh}:${mm}`;
-  const day = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
-  return spanS <= 48 * 3600 ? `${day} ${hh}:${mm}` : day;
-}
 
 // 泳道内并行错行：按开始时间排序后做「行占用区间」贪心分配（重叠块换行）
 function assignRows(items: { start: number; end: number }[]): number[] {
