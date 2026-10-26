@@ -1341,6 +1341,145 @@ export async function getCollabGraph(project?: string): Promise<CollabGraphData>
   return request<CollabGraphData>(`/api/overview/collab-graph${query}`);
 }
 
+// ── 管理指挥中心（/api/command-center/*，add-command-center 3.1）──
+//
+// 后端单点聚合（core/dashboard/data/command_center.py：KPI 四指标 + 组织
+// 网格 + 交付流水线 + 执行台账 + 裁决收件箱五类只读数据），前端零推导，
+// 本文件仅承载传输形态。null 语义：比率/成本 null = 分母零或不可计价，
+// 前端按「—」渲染（不得显示 0）。
+
+// KPI 四指标 + 网关配置态（GET /api/command-center/kpi）
+export interface CommandCenterKpi {
+  project: string | null;
+  projects: string[];
+  delivered_specs_7d: number;
+  human_intervention_rate_7d: number | null;
+  run_success_rate_7d: number | null;
+  cost_per_spec_7d: number | null;
+  gateway_health: { configured: boolean; providers: number };
+  error?: string;
+}
+
+// 组织网格车道卡（花名册全量 ∪ 观测 lane；attributable 为最近在飞 run
+// 归属，供钻取 /projects/:name/:spec）
+export interface CommandCenterLaneCard {
+  lane: string;
+  zone: string;
+  status: 'working' | 'idle';
+  runs_today: number;
+  success_rate_7d: number | null;
+  cost_7d: number | null;
+  activity_14d: number[];
+  last_activity_ts: string | null;
+  attributable: { project: string; spec: string } | null;
+}
+
+// 静态汇报线（模块级冻结结构，非配置项）
+export interface CommandCenterEdge {
+  from: string;
+  to: string;
+}
+
+export interface CommandCenterOrg {
+  project: string | null;
+  projects: string[];
+  zones: { zone: string; cards: CommandCenterLaneCard[] }[];
+  edges: CommandCenterEdge[];
+  error?: string;
+}
+
+// 交付流水线卡（原生 SpecStatus；implementing 卡存在在飞 run 时附 running）
+export interface CommandCenterPipelineCard {
+  project: string;
+  spec: string;
+  status: string;
+  running?: { lane: string; started_at: string };
+}
+
+export interface CommandCenterPipeline {
+  project: string | null;
+  projects: string[];
+  columns: { key: string; cards: CommandCenterPipelineCard[] }[];
+  error?: string;
+}
+
+// 执行台账行（trigger 为既有调度记录数据缺口，null 不硬造）
+export interface CommandCenterLedgerRow {
+  project: string;
+  spec: string;
+  lane: string;
+  outcome: string;
+  duration: number | null;
+  tokens: number | null;
+  cost: number | null;
+  started_at: string | null;
+  trigger: string | null;
+}
+
+export interface CommandCenterLedger {
+  project: string | null;
+  projects: string[];
+  rows: CommandCenterLedgerRow[];
+  error?: string;
+}
+
+// 裁决收件箱卡（choices 为告警记录内只读快照；执行走既有 POST
+// /api/alert-resolve，本端点纯装配）
+export interface CommandCenterInboxChoice {
+  id: string;
+  label: string;
+  desc?: string;
+  action?: string;
+  destructive?: boolean;
+  [key: string]: unknown;
+}
+
+export interface CommandCenterInboxCard {
+  id: string;
+  project: string;
+  spec?: string;
+  run_id?: string;
+  kind?: string;
+  signal_type?: string;
+  severity?: string;
+  /** 四段式调查叙事（侧车合并产物，形态与 AlertItem.narrative 一致） */
+  narrative?: { text: string; model: string | null; at: string };
+  narrative_pending?: boolean;
+  choices: CommandCenterInboxChoice[];
+  created_at?: string;
+}
+
+export interface CommandCenterInbox {
+  project: string | null;
+  projects: string[];
+  cards: CommandCenterInboxCard[];
+  error?: string;
+}
+
+function ccQuery(project?: string): string {
+  return project ? `?project=${encodeURIComponent(project)}` : '';
+}
+
+export async function commandCenterKpi(project?: string): Promise<CommandCenterKpi> {
+  return request<CommandCenterKpi>(`/api/command-center/kpi${ccQuery(project)}`);
+}
+
+export async function commandCenterOrg(project?: string): Promise<CommandCenterOrg> {
+  return request<CommandCenterOrg>(`/api/command-center/org${ccQuery(project)}`);
+}
+
+export async function commandCenterPipeline(project?: string): Promise<CommandCenterPipeline> {
+  return request<CommandCenterPipeline>(`/api/command-center/pipeline${ccQuery(project)}`);
+}
+
+export async function commandCenterLedger(project?: string): Promise<CommandCenterLedger> {
+  return request<CommandCenterLedger>(`/api/command-center/ledger${ccQuery(project)}`);
+}
+
+export async function commandCenterInbox(project?: string): Promise<CommandCenterInbox> {
+  return request<CommandCenterInbox>(`/api/command-center/inbox${ccQuery(project)}`);
+}
+
 // ── 运行流（/api/runs/<run_id> 系列端点，与 v1 run watch 同源） ──
 
 export interface RunEvent {

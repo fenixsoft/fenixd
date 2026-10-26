@@ -28,6 +28,14 @@ export default [
     component: './projects',
   },
   {
+    // 管理指挥中心（add-command-center 3.2）：layout:false 脱壳——全屏深色
+    // 独立页面，无 ProLayout 侧边栏/顶栏（与协作图谱/拓扑大屏同款脱壳，
+    // 菜单项「指挥中心」进入）。
+    path: '/command-center',
+    layout: false,
+    component: './command-center',
+  },
+  {
     path: '/projects/:name/:spec',
     component: './projects/detail',
   },
