@@ -1,5 +1,6 @@
 import { App as AntdApp, Breadcrumb, Space, theme } from 'antd';
 import {
+  ControlOutlined,
   DashboardOutlined,
   HistoryOutlined,
   ProjectOutlined,
@@ -84,6 +85,7 @@ function crumbItems(pathname: string) {
     settings: '设置',
     activities: '运维',
     help: '帮助',
+    'command-center': '指挥中心',
   };
   return [{ title: map[seg[0]] || '概览' }];
 }
@@ -133,6 +135,8 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       },
       { path: '/settings', name: '设置', icon: <SettingOutlined /> },
       { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
+      // 管理指挥中心（add-command-center 3.2）：管理演示大屏入口
+      { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
       { path: '/help', name: '帮助', icon: <QuestionCircleOutlined /> },
     ],
     // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
