@@ -93,6 +93,9 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/improve-spec-topology-pipeline-view/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/improve-spec-topology-pipeline-view/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+      （复核结论：BUG-01 场景断言 `→implementing` 完整标签与 design D5「标签 →<目标状态>」及 specs/topology-bigscreen-ui「每个节点显示目标状态名」契约一致，产品 midTrunc(…,10) 中段截断确属产品行为不符——真实产品 Bug，非场景缺陷，场景文件零改动；2 项 visual baseline low_contrast 已裁定 env 豁免、2 项双Han静态情报已裁定误报，均无需修场景）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+      （修复：PipelineView.tsx 生命周期链转移标签由 `→{midTrunc(tr.to, 10)}` 改为完整 `→{tr.to}`，长状态名不再中段截断）
+- [x] 修复后重跑验证确认通过
+      （验证：tsc --noEmit 零新增错误（PipelineView.tsx 零错误）、max build exit 0 重建 dist、编译产物 p__projects__topology__index chunk 中标签为 children:["→",t.to] 完整直渲染无截断包装；端到端场景复验由验证链在收工后执行）
