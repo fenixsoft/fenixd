@@ -17,6 +17,20 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 
+# 单事件序列化体积上限（字节；improve-spec-topology-pipeline-view 1.3）：
+# daemon 日志首行曾出现 6.6MB 巨型行（admin_monitor 信号把 51054 个 untracked
+# entry 全文嵌入 context），读侧锚定窗口被巨型行整体占据、锚点后事件全部丢失。
+# 写侧在序列化出口整体封顶：超限事件 context 替换为占位摘要后重新序列化
+# （message/level/timestamp/component 原样保留），防止单条 context 再次撑爆
+# 日志窗口。常量可调（测试按需放宽/收紧）。
+LOG_EVENT_MAX_BYTES = 256 * 1024
+
+
+def _json_len(line: str) -> int:
+    """序列化产物的 UTF-8 字节长（编码防御与 format 出口同口径，replace 不抛）。"""
+    return len(line.encode("utf-8", "replace"))
+
+
 class JsonFormatter(logging.Formatter):
     """Format log records as JSON lines."""
 
@@ -38,7 +52,54 @@ class JsonFormatter(logging.Formatter):
         # default=str 兜底不可序列化的 context 值（datetime/Path 等）：
         # 否则 json.dumps 抛 TypeError，整条记录被 emit→handleError 吞掉只剩
         # stderr 提示，结构化日志静默丢失
-        return json.dumps(entry, ensure_ascii=False, default=str)
+        line = json.dumps(entry, ensure_ascii=False, default=str)
+        # 单事件体积上限（improve-spec-topology-pipeline-view 1.3）：不超限
+        # 路径逐字节不变（快照测试钉死），超限才进入截断防御。
+        if _json_len(line) <= LOG_EVENT_MAX_BYTES:
+            return line
+        return self._cap_event(entry)
+
+    @staticmethod
+    def _cap_event(entry: dict) -> str:
+        """超限事件截断防御：保证落盘单行 ≤ LOG_EVENT_MAX_BYTES（任意输入可达）。
+
+        ① context 替换为占位摘要（truncated/orig_bytes/context_keys）后重新
+        序列化——message/level/timestamp/component 原样保留（specs
+        daemon-log-event-governance「message 本体不因 context 截断而丢失」）；
+        ② 替换后仍超限（message/exc_info 单体超限）：对超限字段尾部截断并
+        附带顶层 truncated 留痕，保证「落盘单行 ≤ 上限」在任意输入下可达。
+        """
+        line = json.dumps(entry, ensure_ascii=False, default=str)
+        total = _json_len(line)
+        if "context" in entry:
+            orig_ctx = entry["context"]
+            entry["context"] = {
+                "truncated": True,
+                "orig_bytes": total,
+                "context_keys": list(orig_ctx.keys()) if isinstance(orig_ctx, dict) else [],
+            }
+            line = json.dumps(entry, ensure_ascii=False, default=str)
+            if _json_len(line) <= LOG_EVENT_MAX_BYTES:
+                return line
+        # 仍超限：message/exc_info 单体超限，尾部截断（保留头部）。逐次折半
+        # 保证终止（1 字符残段直接清空）；顶层 truncated 留痕标记截断形态。
+        entry["truncated"] = True
+        for _ in range(256):
+            line = json.dumps(entry, ensure_ascii=False, default=str)
+            if _json_len(line) <= LOG_EVENT_MAX_BYTES:
+                return line
+            for field in ("exc_info", "message"):
+                val = entry.get(field)
+                if isinstance(val, str) and val:
+                    # 先截 exc_info（堆栈可再生）后截 message（本体优先保留头部）
+                    entry[field] = val[: len(val) // 2] if len(val) > 1 else ""
+                    break
+            else:
+                break
+        # 理论兜底（无字符串字段仍超限，仅 default=str 折叠出超大非字符串
+        # 表示时可达）：硬截序列化产物尾部。截断行不再保证合法 JSON——
+        # 读侧逐行 json.loads 失败跳过，不令日志读取链路失败。
+        return line.encode("utf-8", "replace")[:LOG_EVENT_MAX_BYTES].decode("utf-8", "ignore")
 
 
 class FlockRotatingFileHandler(RotatingFileHandler):

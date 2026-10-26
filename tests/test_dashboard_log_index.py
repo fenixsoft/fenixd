@@ -228,3 +228,167 @@ class TestLogOffsetIndex:
         states = [e for e in timeline if e.get("kind") == "state"]
         assert not any(e.get("to") == "implementing" for e in states)
         assert any(e.get("to") == "implemented" for e in states)
+
+
+# ── improve-spec-topology-pipeline-view 1.6：首行巨型行日志读侧防御 ──────────
+
+_GIANT_BYTES = 6600 * 1024  # 实测样本：fenixd.log 首行 admin_monitor 巨型行 6.6MB
+
+
+def _iso(epoch: int) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _make_giant_first_line_log(tmp_path) -> tuple:
+    """首行 6.6MB 巨型行 + 其后 3 条常规事件（含可解析 Transition 行）。"""
+    proot = tmp_path / "proj-giant"
+    (proot / ".fenix" / "logs").mkdir(parents=True)
+    log = proot / ".fenix" / "logs" / "fenixd.log"
+    giant_ts = _iso(1792938331)
+    with log.open("wb") as f:
+        f.write(json.dumps({
+            "timestamp": giant_ts,
+            "level": "INFO",
+            "component": "admin_monitor",
+            "message": "signal",
+            "context": {"blob": "x" * _GIANT_BYTES},
+        }, ensure_ascii=False).encode("utf-8") + b"\n")
+        for i in range(1, 4):
+            f.write(json.dumps({
+                "timestamp": _iso(1792938331 + i),
+                "message": f"Transition: demo drafted → reviewing #{i}",
+            }, ensure_ascii=False).encode("utf-8") + b"\n")
+    return proot, log, giant_ts
+
+
+class _MaxReadProbe:
+    """包装文件对象：累计 read 总字节 + 单次 read 最大字节数。"""
+
+    def __init__(self, underlying, stats):
+        self._u = underlying
+        self._s = stats
+
+    def read(self, *a, **kw):
+        data = self._u.read(*a, **kw)
+        self._s["total"] += len(data)
+        self._s["max_single"] = max(self._s["max_single"], len(data))
+        return data
+
+    def seek(self, *a, **kw):
+        return self._u.seek(*a, **kw)
+
+    def close(self):
+        return self._u.close()
+
+    def __getattr__(self, name):
+        return getattr(self._u, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self._u.__exit__(*a)
+
+
+def _probe_log_reads(log_path: Path, fn):
+    """运行 fn 期间统计日志文件 read 总字节与单次最大 read 字节。"""
+    stats = {"total": 0, "max_single": 0}
+    orig_open = Path.open
+
+    def patched_open(self, *a, **kw):
+        f = orig_open(self, *a, **kw)
+        if str(self) == str(log_path):
+            return _MaxReadProbe(f, stats)
+        return f
+
+    import pathlib
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(pathlib.Path, "open", patched_open)
+    try:
+        result = fn()
+    finally:
+        monkey.undo()
+    return result, stats
+
+
+class TestGiantFirstLineDefense:
+    def test_anchor_after_giant_line_reads_parseable_events(self, tmp_path):
+        """created 锚点在巨型行后：窗口含锚点后可解析事件（transitions 可派生）。"""
+        proot, log, giant_ts = _make_giant_first_line_log(tmp_path)
+        assert log.stat().st_size > _GIANT_BYTES
+        # 建索引（一次性全量扫描不计入窗口读取统计）
+        dash_data.read_log_window_from(proot, log, "")
+        anchor_ts = _iso(1792938331 + 1)
+        w = dash_data.read_log_window_from(proot, log, anchor_ts)
+        content = w.decode("utf-8", errors="replace")
+        events = [json.loads(line) for line in content.split("\n") if line.strip()]
+        assert events, "锚点后可解析事件 MUST 不因巨型行丢失"
+        assert any(f"#{3}" in e["message"] for e in events)
+        # 事件时刻全部 ≥ 锚点（巨型行及其后残余不混入）
+        assert all(e["timestamp"] >= anchor_ts for e in events)
+        # 拓扑派生链路：_scan_spec_log_events 可派生该 SPEC 的状态转移
+        from core.dashboard.data.topology import _scan_spec_log_events
+
+        transitions, _ = _scan_spec_log_events(proot, "demo", giant_ts)
+        assert len(transitions) == 3, "transitions MUST NOT 因单个巨型行整体为空"
+        assert all(t["to"] == "reviewing" for t in transitions)
+
+    def test_giant_line_content_not_read_wholesale(self, tmp_path):
+        """超长行内容不整读入内存：单次 read 字节数有界（不以窗口上限整读）。"""
+        proot, log, _ = _make_giant_first_line_log(tmp_path)
+        dash_data.read_log_window_from(proot, log, "")  # 建索引
+        _, stats = _probe_log_reads(
+            log, lambda: dash_data.read_log_window_from(proot, log, _iso(1792938331 + 1))
+        )
+        # 旧实现单次 read 整窗（1MB）；新实现分块扫描 + 逐行读取，单次 read
+        # 字节数 ≤ 阈值常量 + 块扫描窗，绝不出现一次性读入巨型行的单请求
+        bound = dash_data.LOG_LINE_SKIP_THRESHOLD + dash_data.LOG_INDEX_BLOCK + 4096
+        assert stats["max_single"] <= bound, (
+            f"单次 read {stats['max_single']} 字节超界（{bound}）：巨型行被整读"
+        )
+        # 总字节有界：定位巨型行行界必须以 64KB 探测窗顺序扫描其字节（锚点
+        # 探测 + 窗口起点跳过各一遍，最坏 2 遍），内存峰值受单次 read 上限
+        # 约束——断言防整读与读放大，不断言零扫描（扫描是定位行界的必要 IO）。
+        assert stats["total"] < 3 * _GIANT_BYTES, (
+            f"窗口读取总字节 {stats['total']} 超界：读放大超出分块扫描上界"
+        )
+
+    def test_regular_log_window_identical_to_raw_read(self, tmp_path):
+        """常规日志（无超长行）：窗口起点/终点/截断标记与整读实现一致。"""
+        proot = _make_project_with_log(tmp_path, size_mb=0)
+        log = proot / ".fenix" / "logs" / "fenixd.log"
+        with log.open("a", encoding="utf-8") as f:
+            for i in range(1, 8):
+                f.write(json.dumps({
+                    "timestamp": _iso(1792938330 + i),
+                    "message": f"event-{i}",
+                }) + "\n")
+        size = log.stat().st_size
+        dash_data.read_log_window_from(proot, log, "")  # 建索引
+        # 锚定窗口（锚点在首事件前 → 从文件头读至窗口上限）
+        w = dash_data.read_log_window_from(proot, log, _iso(1792938300))
+        raw = log.read_bytes()
+        expect_end = min(size, dash_data.LOG_INDEX_ANCHOR_WINDOW)
+        assert w == raw[:expect_end], "常规日志窗口内容应与整读逐字节一致"
+        assert w.truncated == (expect_end < size)
+        # 锚点晚于全部事件 → 二分定位 + 窗口内容仍为行对齐字节区间
+        w2 = dash_data.read_log_window_from(proot, log, _iso(1792938400))
+        assert w2 == raw, "全事件早于锚点：窗口应覆盖整个小文件"
+        assert w2.truncated is False
+
+    def test_giant_line_only_log_degrades_empty_without_error(self, tmp_path):
+        """巨型行直达 EOF（无后续行）：窗口退化为空，不抛错不误读行中偏移。"""
+        proot = tmp_path / "proj-only-giant"
+        (proot / ".fenix" / "logs").mkdir(parents=True)
+        log = proot / ".fenix" / "logs" / "fenixd.log"
+        with log.open("wb") as f:
+            f.write(json.dumps({
+                "timestamp": _iso(1792938331),
+                "message": "giant to eof",
+                "context": {"blob": "x" * (_GIANT_BYTES)},
+            }).encode("utf-8"))  # 无行尾 \n
+        w = dash_data.read_log_window_from(proot, log, _iso(1792938400))
+        assert w == b""
+        assert w.truncated is False

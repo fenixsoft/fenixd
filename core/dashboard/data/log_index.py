@@ -20,6 +20,12 @@ LOG_INDEX_TAIL_WINDOW = 1 * 1024 * 1024
 # created 锚定读取窗口上限（与尾窗同量级）：锚点/文件头到文件尾跨度超上限时
 # 只读上限处并以 .truncated 标注截断，单请求内存不随日志体积无界增长。
 LOG_INDEX_ANCHOR_WINDOW = 1 * 1024 * 1024
+# 锚定窗口超长行跳过阈值（字节；improve-spec-topology-pipeline-view 1.5）：
+# 窗口读取遇长度超过它的行（实测样本：admin_monitor 信号单行 6.6MB）以 seek
+# 越过该行字节区间继续读后续行——超长行内容不读入内存，单请求读取字节数有
+# 界（阈值常量 + 窗口上限双重约束）。写侧已加 LOG_EVENT_MAX_BYTES 封顶，
+# 存量巨型行只求读侧跳过（设计 D2：扩大窗口上限会让内存无界化，否决）。
+LOG_LINE_SKIP_THRESHOLD = 128 * 1024
 # 进程内重建计数（测试断言用：追加热更新 0 次重建、损坏容错恰好 1 次）。
 _LOG_INDEX_REBUILDS = {"count": 0}
 
@@ -381,6 +387,85 @@ class _LogWindow(bytes):
         return self
 
 
+def _skip_leading_giant_lines(f, start: int, size: int) -> int:
+    """窗口起点落在超长行上时向后跳过连续超长行，返回新窗口起点。
+
+    锚定窗口被超长行整体占据时（实测样本：首行 6.6MB 巨型行，1MB 窗口全部
+    落在其内部），跳过该行后窗口才能覆盖其后可解析事件——超长行本身无信息
+    价值（写侧已封顶，存量巨型行只求跳过，设计 D2）。起点为常规行（长度
+    ≤ LOG_LINE_SKIP_THRESHOLD）时原样返回，常规日志窗口行为不变。
+    """
+    pos = start
+    while pos < size:
+        f.seek(pos)
+        scanned = 0
+        found_nl = False
+        while True:
+            read_len = min(LOG_INDEX_BLOCK, size - (pos + scanned))
+            chunk = f.read(read_len) if read_len > 0 else b""
+            if not chunk:
+                break  # EOF：行直达文件尾
+            nl = chunk.find(b"\n")
+            if nl != -1:
+                scanned += nl  # scanned = 行长（\n 前字节数）
+                found_nl = True
+                break
+            scanned += len(chunk)
+            if scanned >= LOG_LINE_SKIP_THRESHOLD:
+                break
+        giant = found_nl and scanned > LOG_LINE_SKIP_THRESHOLD
+        if not found_nl:
+            giant = scanned >= LOG_LINE_SKIP_THRESHOLD
+        if not giant:
+            return pos
+        if found_nl:
+            pos = pos + scanned + 1  # 超长行行尾 \n 的下一行首（连续超长行继续跳）
+        else:
+            # 阈值内无行界且未达 EOF：从已扫位置续读定位超长行尾
+            nxt = _next_line_start(f, pos + scanned, size)
+            if nxt == -1:
+                return size  # 超长行直达 EOF：窗口退化为空
+            pos = nxt
+    return pos
+
+
+def _read_lines_bounded(f, start: int, end: int) -> bytes:
+    """逐行读取 [start, end)，超长行以 seek 越过（improve-spec-topology-pipeline-view 1.5）。
+
+    行长度 > LOG_LINE_SKIP_THRESHOLD 的行（存量巨型行，如 admin_monitor 单行
+    6.6MB）内容不读入内存——仅以 ≤ LOG_INDEX_BLOCK 探测窗扫描行界定位行尾，
+    随后 seek 越过整行字节区间继续读后续行；常规行照常读入。单请求读取字节
+    数有界（阈值常量 + 窗口上限双重约束），不出现一次性读入超长行全文的内存
+    峰值。窗口末端截在行中间的残行语义与整读实现一致（由调用方逐行
+    json.loads 失败跳过）。
+    """
+    parts: list = []
+    pos = start
+    line_start = start
+    while pos < end:
+        f.seek(pos)
+        chunk = f.read(min(LOG_INDEX_BLOCK, end - pos))
+        if not chunk:
+            break
+        nl = chunk.find(b"\n")
+        if nl != -1:
+            line_len = pos + nl - line_start
+            if line_len <= LOG_LINE_SKIP_THRESHOLD:
+                f.seek(line_start)
+                parts.append(f.read(line_len + 1))  # 含行尾 \n，保持逐行切分形态
+            # 超长行：整行字节区间跳过（不 append），继续下一行
+            line_start = pos + nl + 1
+            pos = line_start
+        else:
+            # 本探测窗内无行界：窗口末端残行（≤ 阈值）照读；否则属超长行
+            # 中段，seek 越过 [line_start, end) 剩余区间
+            if end - line_start <= LOG_LINE_SKIP_THRESHOLD:
+                f.seek(line_start)
+                parts.append(f.read(end - line_start))
+            pos = end
+    return b"".join(parts)
+
+
 def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
     """从时间戳 start_ts 对应位置读取窗口（块偏移索引二分定位起点）。
 
@@ -405,12 +490,16 @@ def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
 
     def _read(start: int) -> "_LogWindow":
         # 窗口上限：起点到文件尾跨度无界时只读上限处，单请求内存不随日志体积
-        # 线性放大；是否截断经 .truncated 携带给调用方。
-        end = min(size, start + LOG_INDEX_ANCHOR_WINDOW)
+        # 线性放大；是否截断经 .truncated 携带给调用方。行切分经
+        # _read_lines_bounded：超长行以 seek 越过（不整读入内存）；起点被超长
+        # 行占据时先经 _skip_leading_giant_lines 跳过（否则 1MB 窗口整体落在
+        # 巨型行内部，锚点后事件全部丢失）。常规日志两道防御均不触发，起点/
+        # 终点/截断标记与整读实现逐字节一致。
         try:
             with log_path.open("rb") as f:
-                f.seek(start)
-                return _LogWindow(f.read(end - start), truncated=end < size)
+                start = _skip_leading_giant_lines(f, start, size)
+                end = min(size, start + LOG_INDEX_ANCHOR_WINDOW)
+                return _LogWindow(_read_lines_bounded(f, start, end), truncated=end < size)
         except OSError:
             return _LogWindow(b"")
 
@@ -423,6 +512,18 @@ def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
             with log_path.open("rb") as f:
                 f.seek(offset)
                 chunk = f.read(LOG_INDEX_BLOCK)
+                if chunk.find(b"\n") == -1:
+                    # 块字节内无行界（超长行征兆，实测样本首行 6.6MB）：探测
+                    # 窗整体落在巨型行内部，整块解析必失败 → 自块起点向后越过
+                    # 超长行、从下一行界（向后扫描到的首个 \n）之后探测（同
+                    # _next_line_start 续读法），替代整体放弃回退文件头——
+                    # 否则锚点后可解析事件全部丢失（实测 transitions=0 事故）。
+                    # 巨型行直达 EOF（无后续行界）→ None，沿用保守回退。
+                    next_start = _next_line_start(f, offset + LOG_INDEX_BLOCK, size)
+                    if next_start == -1:
+                        return None
+                    f.seek(next_start)
+                    chunk = f.read(LOG_INDEX_BLOCK)
             line = chunk.split(b"\n", 1)[0].decode("utf-8", errors="replace")
             return _norm_utc_iso(json.loads(line).get("timestamp", "")) or None
         except (OSError, json.JSONDecodeError, ValueError, UnicodeDecodeError, AttributeError):

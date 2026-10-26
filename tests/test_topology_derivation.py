@@ -349,9 +349,16 @@ class TestRetryEdges:
         assert (a1, a2, "retry") in edge_set(data)
 
     def test_independent_redispatch_is_handoff(self, tmp_path):
-        # Scenario「独立重派不连重试边」：同角色两个不同 base 的 run 先后出现
-        # → handoff 边，非 retry
+        # Scenario「独立重派不连重试边」：同角色两个不同 base 的 run 串行先后
+        # 出现（run1 真实耗时 10s，end ≤ run2.start）→ handoff 边，非 retry。
+        # improve-spec-topology-pipeline-view 2.1：handoff 须过单一串行判定，
+        # 无耗时数据时 mtime 兜底推算会把两 run 判成时间重叠 → 无边（见
+        # TestSerialHandoff.overlapping_redispatch_no_edge）。
         proot = make_proot(tmp_path)
+        write_log(
+            proot,
+            [run_metric(f"impl-demo-{E1}", 10.0), run_metric(f"impl-demo-{E2}", 5.0)],
+        )
         write_run(proot, f"impl-demo-{E1}", {"type": "error"}, start_ts=_iso(E1))
         write_run(proot, f"impl-demo-{E2}", {"type": "result"}, start_ts=_iso(E2))
         data = derive(proot)
@@ -533,7 +540,203 @@ class TestArchivedSkeleton:
         assert data["archived"] is True
 
 
-# ── 任务 2.1 只读端点（真实 DashboardHandler） ─────────────────────────────
+# ── improve-spec-topology-pipeline-view 2.3：handoff 单一串行判定 ────────────
+
+
+class TestSerialHandoff:
+    """specs/topology-bigscreen-ui「并行无伪串行边」Requirement。
+
+    画 handoff 边当且仅当 prev.end ≤ cur.start 且 prev.start < cur.start
+    （终点缺失取 start）；时间重叠或同刻启动（含双零时长退化）一律跳过。
+    """
+
+    def test_same_instant_start_no_handoff_edge(self, tmp_path):
+        # Scenario「同刻启动节点间无 handoff 边」：implementer 与 planner-plan
+        # 同刻启动（实测样本 2026-10-25T14:32:58Z）→ 派生边中不存在两 run 间
+        # 的 handoff 边（双向均无）
+        proot = make_proot(tmp_path)
+        same_ts = _iso(E1)
+        write_run(proot, f"planner-plan-demo-{E1}", {"type": "result"}, start_ts=same_ts)
+        write_run(proot, f"impl-demo-{E1}", {"type": "result"}, start_ts=same_ts)
+        data = derive(proot)
+        es = edge_set(data)
+        r1, r2 = f"run:planner-plan-demo-{E1}", f"run:impl-demo-{E1}"
+        assert (r1, r2, "handoff") not in es
+        assert (r2, r1, "handoff") not in es
+        # dispatch 边不受影响（双 run 各自自 pm 派发）
+        assert ("pm", r1, "dispatch") in es
+        assert ("pm", r2, "dispatch") in es
+
+    def test_overlapping_runs_no_handoff_edge(self, tmp_path):
+        # 时间重叠（prev.end > cur.start）一律无边：run1 真实耗时 100s，
+        # run2 在 run1.start + 60s 启动 → 重叠 40s → 不画
+        proot = make_proot(tmp_path)
+        write_log(
+            proot,
+            [run_metric(f"impl-demo-{E1}", 100.0), run_metric(f"planner-plan-demo-{E2}", 5.0)],
+        )
+        write_run(proot, f"impl-demo-{E1}", {"type": "result"}, start_ts=_iso(E1))
+        write_run(proot, f"planner-plan-demo-{E2}", {"type": "result"}, start_ts=_iso(E2))
+        data = derive(proot)
+        es = edge_set(data)
+        r1, r2 = f"run:impl-demo-{E1}", f"run:planner-plan-demo-{E2}"
+        assert (r1, r2, "handoff") not in es
+
+    def test_serial_judge_chain_keeps_handoff(self, tmp_path):
+        # Scenario「串行节点保留 handoff 边」：3 轮 planner-judge 依次执行
+        # （各 30s，间隔 60s）→ 相邻两轮之间保留 handoff 边
+        proot = make_proot(tmp_path)
+        epochs = [E1, E2, E3]
+        metrics = [run_metric(f"planner-judge-demo-{e}", 30.0) for e in epochs]
+        write_log(proot, metrics)
+        for e in epochs:
+            write_run(proot, f"planner-judge-demo-{e}", {"type": "result"}, start_ts=_iso(e))
+        data = derive(proot)
+        es = edge_set(data)
+        r1, r2, r3 = (f"run:planner-judge-demo-{e}" for e in epochs)
+        assert (r1, r2, "handoff") in es
+        assert (r2, r3, "handoff") in es
+
+    def test_serial_adjacent_end_equals_start_keeps_handoff(self, tmp_path):
+        # 串行贴邻（prev.end == cur.start 且起点严格更早）照画
+        proot = make_proot(tmp_path)
+        write_log(
+            proot,
+            [run_metric(f"impl-demo-{E1}", 60.0), run_metric(f"verify-demo-{E2}", 5.0)],
+        )
+        write_run(proot, f"impl-demo-{E1}", {"type": "result"}, start_ts=_iso(E1))
+        write_run(proot, f"verify-demo-{E2}", {"type": "result"}, start_ts=_iso(E2))
+        data = derive(proot)
+        assert (
+            f"run:impl-demo-{E1}",
+            f"run:verify-demo-{E2}",
+            "handoff",
+        ) in edge_set(data)
+
+    def test_attempt_chain_retry_edges_unaffected(self, tmp_path):
+        # attempt 链 retry 边不受串行判定影响：同 base 多 attempt 同刻启动，
+        # 相邻段仍连 retry 边（非 handoff）
+        proot = make_proot(tmp_path)
+        base = f"impl-demo-{E1}"
+        write_run(proot, f"{base}-a1", {"type": "superseded"}, start_ts=_iso(E1))
+        write_run(proot, f"{base}-a2", {"type": "result"}, start_ts=_iso(E1))
+        data = derive(proot)
+        es = edge_set(data)
+        a1, a2 = f"run:{base}-a1", f"run:{base}-a2"
+        assert (a1, a2, "retry") in es
+        assert (a1, a2, "handoff") not in es
+
+    def test_overlapping_redispatch_no_edge_without_metrics(self, tmp_path):
+        # 无耗时数据（run_metrics 缺失）时 mtime 兜底推算耗时远超下一 run
+        # 起点 → 按重叠判定无边（不画伪串行边，宁缺勿假）
+        proot = make_proot(tmp_path)
+        write_run(proot, f"impl-demo-{E1}", {"type": "error"}, start_ts=_iso(E1))
+        write_run(proot, f"impl-demo-{E2}", {"type": "result"}, start_ts=_iso(E2))
+        data = derive(proot)
+        assert (
+            f"run:impl-demo-{E1}",
+            f"run:impl-demo-{E2}",
+            "handoff",
+        ) not in edge_set(data)
+
+
+# ── improve-spec-topology-pipeline-view 2.3：dispatch 归位锚点 ───────────────
+
+
+class TestDispatchAnchor:
+    """派生层为 run 首节点计算可选字段 dispatch_anchor（design D5）。
+
+    started 落在 transitions 相邻转移时刻区间 [t_i, t_{i+1}) → tr:<i+1>；
+    无法定位时不下发该字段（前端回退 pm 主节点）；既有 edges 端点不改写。
+    """
+
+    def _proot_with_transitions(self, tmp_path, status="testing") -> Path:
+        proot = make_proot(tmp_path, status=status)
+        write_log(
+            proot,
+            [
+                transition("demo", "drafted", "ready", "2026-03-01T00:01:00Z"),
+                transition("demo", "ready", "implementing", "2026-03-01T00:02:00Z"),
+                transition("demo", "implementing", "testing", "2026-03-01T00:03:00Z"),
+            ],
+        )
+        return proot
+
+    def test_anchor_for_started_between_transitions(self, tmp_path):
+        # started 落在 [t_1, t_2)（第 2、3 条转移之间）→ tr:2
+        proot = self._proot_with_transitions(tmp_path)
+        write_run(
+            proot, f"impl-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:02:30Z",
+        )
+        data = derive(proot)
+        n = run_node(data, f"impl-demo-{E1}")
+        assert n["dispatch_anchor"] == "tr:2"
+        # 既有 edges 端点不改写（前端按 anchor 归位渲染，泳道不受影响）
+        assert ("pm", f"run:impl-demo-{E1}", "dispatch") in edge_set(data)
+
+    def test_anchor_first_interval(self, tmp_path):
+        # started 落在 [t_0, t_1) → tr:1
+        proot = self._proot_with_transitions(tmp_path)
+        write_run(
+            proot, f"impl-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:01:30Z",
+        )
+        assert run_node(derive(proot), f"impl-demo-{E1}")["dispatch_anchor"] == "tr:1"
+
+    def test_anchor_at_transition_time_inclusive_left(self, tmp_path):
+        # started 恰为转移时刻（区间左闭）：00:02:00 ∈ [t_1, t_2) → tr:2
+        proot = self._proot_with_transitions(tmp_path)
+        write_run(
+            proot, f"impl-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:02:00Z",
+        )
+        assert run_node(derive(proot), f"impl-demo-{E1}")["dispatch_anchor"] == "tr:2"
+
+    def test_no_anchor_before_first_transition(self, tmp_path):
+        # started 早于首转移：不在任何相邻区间 → 字段不下发
+        proot = self._proot_with_transitions(tmp_path)
+        write_run(
+            proot, f"impl-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:00:30Z",
+        )
+        assert "dispatch_anchor" not in run_node(derive(proot), f"impl-demo-{E1}")
+
+    def test_no_anchor_at_or_after_last_transition(self, tmp_path):
+        # started 恰为末转移时刻 / 之后：无右端点闭区间 → 字段不下发
+        proot = self._proot_with_transitions(tmp_path)
+        write_run(
+            proot, f"impl-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:03:00Z",
+        )
+        write_run(
+            proot, f"verify-demo-{E2}", {"type": "result"},
+            start_ts="2026-03-01T00:03:30Z",
+        )
+        data = derive(proot)
+        assert "dispatch_anchor" not in run_node(data, f"impl-demo-{E1}")
+        assert "dispatch_anchor" not in run_node(data, f"verify-demo-{E2}")
+
+    def test_no_anchor_without_transitions(self, tmp_path):
+        # 无 transitions（日志窗口无转移行）：字段不下发（前端回退 pm 主节点）
+        proot = make_proot(tmp_path)
+        write_run(proot, f"impl-demo-{E1}", {"type": "result"}, start_ts=_iso(E1))
+        data = derive(proot)
+        assert data["transitions"] == []
+        assert "dispatch_anchor" not in run_node(data, f"impl-demo-{E1}")
+
+    def test_anchor_only_on_first_node_of_base_group(self, tmp_path):
+        # 仅 run 首节点（attempt 链 a1）携带 anchor，后续 attempt 节点不携带
+        proot = self._proot_with_transitions(tmp_path)
+        base = f"impl-demo-{E1}"
+        write_run(proot, f"{base}-a1", {"type": "superseded"}, start_ts="2026-03-01T00:02:30Z")
+        write_run(proot, f"{base}-a2", {"type": "result"}, start_ts="2026-03-01T00:02:40Z")
+        data = derive(proot)
+        assert run_node(data, f"{base}-a1")["dispatch_anchor"] == "tr:2"
+        assert "dispatch_anchor" not in run_node(data, f"{base}-a2")
+
+
+
 
 
 @pytest.fixture()
@@ -556,6 +759,101 @@ def topo_server_fx(tmp_path):
     )
     yield proot, srv
     srv.stop()
+
+
+# ── improve-spec-topology-pipeline-view 4.1：端到端派生断言 ──────────────────
+
+
+class TestEndToEndFieldSample:
+    """临时目录 fixture 复刻实测样本形态（add-collab-graph-bigscreen）：
+
+    首行巨型行日志 + spec-review uuid 形态 run_id 产物 + 转移日志行 +
+    同刻启动的 impl/planner-plan。断言四个集成结果：spec-review 节点恢复
+    （stage=demand）、transitions 非空（巨型行不再吞掉锚定窗口）、不存在
+    impl↔planner-plan 伪 handoff 边、run 首节点带 dispatch_anchor。
+    """
+
+    def _field_sample_proot(self, tmp_path) -> Path:
+        proot = make_proot(tmp_path, status="implementing", dirname="proj-field")
+        log = proot / ".fenix" / "logs" / "fenixd.log"
+        # 首行 6.6MB 巨型行（admin_monitor 信号形态，时刻早于 SPEC created）
+        giant = json.dumps(
+            {
+                "timestamp": "2026-02-28T10:00:00Z",
+                "level": "INFO",
+                "component": "admin_monitor",
+                "message": "signal",
+                "context": {"blob": "x" * (6600 * 1024)},
+            },
+            ensure_ascii=False,
+        )
+        # 转移日志行（created 锚点之后，实测 9 条形态抽样为 3 条）
+        events = [
+            transition("demo", "drafted", "reviewing", "2026-03-01T00:00:05Z"),
+            transition("demo", "reviewing", "ready", "2026-03-01T00:00:10Z"),
+            transition("demo", "ready", "implementing", "2026-03-01T00:00:15Z"),
+        ]
+        log.write_text(
+            giant + "\n" + "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n",
+            encoding="utf-8",
+        )
+        # spec-review uuid 形态 run_id 产物（spec_review.py 恒插入 6hex 段）
+        write_run(
+            proot,
+            "spec-review-demo-8e869d-1792938300",
+            {"type": "result"},
+            start_ts="2026-03-01T00:00:20Z",
+        )
+        # 生成场景 ∥ 开发同刻启动（实测 2026-10-25T14:32:58Z 形态）
+        write_run(
+            proot, f"planner-plan-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:00:12Z",
+        )
+        write_run(
+            proot, f"impl-demo-{E1}", {"type": "result"},
+            start_ts="2026-03-01T00:00:12Z",
+        )
+        return proot
+
+    def test_field_sample_full_derivation(self, tmp_path):
+        proot = self._field_sample_proot(tmp_path)
+        data = derive(proot)
+
+        # ① spec-review 节点恢复（uuid 段剥除 → family 全等命中、stage=demand）
+        sr = [
+            n for n in data["nodes"]
+            if n.get("agent_type") == "spec-review" and n["kind"] == "run"
+        ]
+        assert len(sr) == 1, "spec-review run 节点 MUST NOT 因 uuid 段丢失"
+        assert sr[0]["stage"] == "demand"
+        assert sr[0]["spec"] == "demo"
+        assert sr[0]["run_id"] == "spec-review-demo-8e869d-1792938300"
+        # 与其他 run 节点同构（attempt/时长/harness 字段在位）
+        assert sr[0]["attempt"] == 1
+        assert "duration_seconds" in sr[0]
+        assert "harness" in sr[0]
+
+        # ② transitions 非空（首行巨型行不再吞掉 created 锚定窗口）
+        assert len(data["transitions"]) == 3
+        assert [t["to"] for t in data["transitions"]] == ["reviewing", "ready", "implementing"]
+
+        # ③ 同刻启动的 impl/planner-plan 之间无伪 handoff 边（双向均无）
+        es = edge_set(data)
+        r_impl, r_plan = f"run:impl-demo-{E1}", f"run:planner-plan-demo-{E1}"
+        assert (r_impl, r_plan, "handoff") not in es
+        assert (r_plan, r_impl, "handoff") not in es
+
+        # ④ run 首节点带 dispatch_anchor（started 落在 [t_1, t_2) → tr:2）
+        assert run_node(data, f"impl-demo-{E1}")["dispatch_anchor"] == "tr:2"
+        assert run_node(data, f"planner-plan-demo-{E1}")["dispatch_anchor"] == "tr:2"
+        # spec-review run started 晚于末转移 → 无归位区间 → 字段不下发
+        assert "dispatch_anchor" not in sr[0]
+        # 既有 edges 端点不改写：dispatch 边仍自 pm 出发
+        assert ("pm", r_impl, "dispatch") in es
+        assert ("pm", "run:spec-review-demo-8e869d-1792938300", "dispatch") in es
+
+
+# ── 任务 2.1 只读端点（真实 DashboardHandler） ─────────────────────────────
 
 
 class TestTopologyEndpoint:
