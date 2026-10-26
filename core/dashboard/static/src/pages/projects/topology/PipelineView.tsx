@@ -383,8 +383,11 @@ export default function PipelineView({
                   strokeWidth={1}
                 />
                 <circle cx={9} cy={TR_H / 2} r={3} fill={STATUS_HEX.blue} />
+                {/* design D5：标签为完整「→<目标状态>」，不做中段截断——
+                    长状态名（implementing/implemented）截形互相难辨且违反
+                    「节点显示目标状态名」契约（验证轮 BUG-01 修复） */}
                 <text x={16} y={11} fill="#d6e7f7" fontSize={10} fontWeight={600}>
-                  →{midTrunc(tr.to, 10)}
+                  →{tr.to}
                 </text>
                 <text x={16} y={20.5} fill="#5b82a8" fontSize={8.5}>
                   {parseTsMs(tr.time) != null ? fmtTick(parseTsMs(tr.time)!, layout.spanS) : '—'}
