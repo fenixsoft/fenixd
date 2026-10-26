@@ -54,10 +54,12 @@
 
 ### Requirement: 并行无伪串行边
 
-管线视图的全局时序 handoff 链不再把并行节点串成伪依赖：前一节点与后一节点
-时间重叠（`prev.start < cur.end` 且 `cur.start < prev.end`，终点缺失按 start 处理）
-或同刻启动时，两者之间不画 handoff 边；串行（前一节点结束不晚于后一节点开始）
-才画 handoff 边。attempt 链 retry 边与 PMEngine dispatch 边不受影响。
+管线视图的全局时序 handoff 链不再把并行节点串成伪依赖，判定为单一规则：画
+handoff 边当且仅当前一节点与后一节点**串行**——`prev.end ≤ cur.start` 且
+`prev.start < cur.start`（终点缺失按 start 处理）；时间重叠或同刻启动（含双零
+时长同刻退化）一律不画。该规则同时满足下方两个 Scenario（串行贴邻含
+prev.end == cur.start 保留边；同刻启动无边）。attempt 链 retry 边与 PMEngine
+dispatch 边不受影响。
 
 #### Scenario: 同刻启动节点间无 handoff 边
 

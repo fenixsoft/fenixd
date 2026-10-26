@@ -41,7 +41,8 @@
       单行 ≤ 上限且为合法 JSONL、含 truncated 标记与 message 完整；正常事件序列化
       结果与截断逻辑接入前逐字节一致
 - [ ] 1.5 `core/dashboard/data/log_index.py` 读侧防御：`_first_ts` 块内探测遇无行界
-      超长内容（块字节内无 `\n`）时改从块内第一个 `\n` 后探测；窗口读取遇长度
+      超长内容（块字节内无 `\n`）时自块起点向后越过超长行、从下一行界（向后
+      扫描到的首个 `\n`）之后探测（同 `_next_line_start` 续读法）；窗口读取遇长度
       > 常量 `LOG_LINE_SKIP_THRESHOLD`（128*1024）的行以 seek 越过继续读后续行，
       超长行内容不读入内存；`.truncated` 语义不变
 - [ ] 1.6 扩展 `tests/test_dashboard_log_index.py`：构造首行 6.6MB 巨型行的日志
@@ -51,9 +52,10 @@
 
 ## 2. 拓扑派生增强（topology.py）
 
-- [ ] 2.1 `core/dashboard/data/topology.py` handoff 时序链构建处增加重叠判定：
-      `prev.start < cur.end 且 cur.start < prev.end`（终点缺失取 start）时跳过
-      handoff 边；串行对照画；attempt 链 retry 边与 dispatch 边不受影响
+- [ ] 2.1 `core/dashboard/data/topology.py` handoff 时序链构建处改为单一串行判定：
+      画边当且仅当 `prev.end ≤ cur.start 且 prev.start < cur.start`（终点缺失取
+      start）；时间重叠或同刻启动（含双零时长退化）一律跳过；串行贴邻照画；
+      attempt 链 retry 边与 dispatch 边不受影响
 - [ ] 2.2 派生层 dispatch 归位锚点：为每个 run 首节点计算可选字段
       `dispatch_anchor`——started 落在 transitions 相邻转移时刻区间 `[t_i, t_{i+1})`
       时取 `tr:<i+1>`（转移节点按既有 verify 节点同款 `<kind>:<序号>` 风格编号），

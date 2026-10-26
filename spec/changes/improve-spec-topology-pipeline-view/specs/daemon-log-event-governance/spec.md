@@ -5,7 +5,10 @@
 daemon 日志写侧（`core/logger.py` 序列化出口，`json.dumps(entry, …)` 处）对单条
 日志事件设置序列化体积上限（默认 256KB 量级，常量可调）：序列化结果超限时，
 context 以占位摘要替换后重新序列化（保证产出仍是合法 JSONL 单行），并附带
-`truncated: true` 留痕标记；message 本体不因 context 截断而丢失。
+`truncated: true` 留痕标记；message 本体不因 context 截断而丢失。边界约定：
+context 替换后重新序列化仍超上限（message/exc_info 单体超限）时，允许对超限
+字段尾部截断并同样附带 `truncated: true` 留痕，保证「落盘单行 ≤ 上限」在任意
+输入下可达。
 
 #### Scenario: 巨型 context 事件被截断留痕
 

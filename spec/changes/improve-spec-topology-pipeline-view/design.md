@@ -40,7 +40,8 @@ spec-review 1 + planner-plan 1 + planner-judge 6 + impl 1 + verify 1，
 ### D2 读侧窗口防御：探测跳行 + 读取 seek 越行（log_index.py）
 
 - `_first_ts` 探测：块内前 `LOG_INDEX_BLOCK` 字节无 `\n`（超长行征兆）时，
-  从块内第一个 `\n` 之后探测下一行，替代整体放弃；
+  自块起点向后越过超长行、扫描至下一个行界（向后找到的首个 `\n`）之后探测
+  （与块索引构建既有 `_next_line_start` 续读同法），替代整体放弃；
 - 窗口读取：行切分后遇到「行长度 > 单行上限阈值（128KB 量级常量）」的行，
   以 seek 越过该行字节区间继续读后续内容——超长行不进内存，单请求读取字节数
   有界（阈值常量 + 窗口上限双重约束）；
@@ -82,9 +83,12 @@ message/level/timestamp/component 原样保留，重新序列化。正常事件�
 
 ### D6 伪 handoff 边在派生层消除（topology.py，非前端过滤）
 
-handoff 时序链构建处（`derive_topology` work 链）增加重叠判定：
-`prev.start < cur.end 且 cur.start < prev.end`（终点缺失取 start，即同刻启动
-也视为重叠）→ 跳过该 handoff 边。串行对（prev 终点 ≤ cur 起点）照画。
+handoff 时序链构建处（`derive_topology` work 链）改为单一串行判定——画 handoff
+边当且仅当 `prev.end ≤ cur.start 且 prev.start < cur.start`（终点缺失取 start）；
+时间重叠或同刻启动一律跳过。原表述「终点缺失取 start，即同刻启动也视为重叠」
+在双零时长退化下严格不等式全为假、判不出重叠（评审修补：同刻启动须为独立跳过
+条件，与 specs/topology-bigscreen-ui「并行无伪串行边」判定对齐）。串行贴邻
+（prev 终点 == cur 起点、起点严格更早）照画。
 
 - 为什么派生层修：泳道视图消费同一份 edges，派生层消除使两视图一致受益；
   前端过滤会造成视图间边集分裂（违背「前端零拓扑推导」的 D2 既有决策）。
