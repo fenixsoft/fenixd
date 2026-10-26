@@ -519,6 +519,64 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     );
   };
 
+  // verify.yaml regression 段配置状态行（code-review item e90818824d7d）：旧实现
+  // 嵌套三元违反前端规则，比照 renderOcrStatus 抽 helper 以 if/else 表达
+  //「读取失败 / 读取中 / 已配置 / 无 verify.yaml / 未配置 regression 段」五分支。
+  const renderRegressionConfigStatus = () => {
+    if (regressionCfgError) {
+      return (
+        <Alert
+          type="error"
+          showIcon
+          message="读取 verify.yaml regression 段失败"
+          description={regressionCfgError}
+        />
+      );
+    }
+    if (regressionCfg === null) {
+      return <Text type="secondary">正在读取 verify.yaml 的 regression 段…</Text>;
+    }
+    if (regressionCfg.regression) {
+      return (
+        <>
+          <Text type="secondary">已配置回归段（.fenix/verify.yaml）：</Text>
+          <Descriptions size="small" column={1} bordered style={{ marginTop: 8 }}>
+            <Descriptions.Item label="执行命令">
+              <Text code>{formatCmd(regressionCfg.regression.cmd)}</Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="结果文件">
+              <Text code>{regressionCfg.regression.output}</Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="硬超时">
+              {regressionCfg.regression.timeout_seconds} 秒
+            </Descriptions.Item>
+            <Descriptions.Item label="长耗时阈值">
+              {regressionCfg.regression.long_test_threshold_seconds} 秒
+            </Descriptions.Item>
+          </Descriptions>
+        </>
+      );
+    }
+    if (!regressionCfg.exists) {
+      return (
+        <Alert
+          type="info"
+          showIcon
+          message="项目尚无 verify.yaml，未配置 regression 段"
+          description="开启周期性全量回归不会实际执行。点「AI 自动生成」将同步探测测试体系并起草验证契约（有测试体系时一并生成 regression 段），约数分钟；也可点「手工编辑」自行维护。"
+        />
+      );
+    }
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="未配置 regression 段"
+        description=".fenix/verify.yaml 存在但没有有效的 regression 段，开启周期性全量回归不会实际执行。点「AI 自动生成」同步探测测试体系后补写（不改动契约其它内容），约数分钟；也可点「手工编辑」自行维护。"
+      />
+    );
+  };
+
   return (
     <div>
       <h3>代码质量</h3>
@@ -978,48 +1036,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
                 判定走后端 load_verify_contract（前端无 yaml 解析库，正则判段不可靠）。 */}
             {project && (
               <div style={{ marginTop: 16 }} data-testid="regression-config-section">
-                {regressionCfgError ? (
-                  <Alert
-                    type="error"
-                    showIcon
-                    message="读取 verify.yaml regression 段失败"
-                    description={regressionCfgError}
-                  />
-                ) : regressionCfg === null ? (
-                  <Text type="secondary">正在读取 verify.yaml 的 regression 段…</Text>
-                ) : regressionCfg.regression ? (
-                  <>
-                    <Text type="secondary">已配置回归段（.fenix/verify.yaml）：</Text>
-                    <Descriptions size="small" column={1} bordered style={{ marginTop: 8 }}>
-                      <Descriptions.Item label="执行命令">
-                        <Text code>{formatCmd(regressionCfg.regression.cmd)}</Text>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="结果文件">
-                        <Text code>{regressionCfg.regression.output}</Text>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="硬超时">
-                        {regressionCfg.regression.timeout_seconds} 秒
-                      </Descriptions.Item>
-                      <Descriptions.Item label="长耗时阈值">
-                        {regressionCfg.regression.long_test_threshold_seconds} 秒
-                      </Descriptions.Item>
-                    </Descriptions>
-                  </>
-                ) : !regressionCfg.exists ? (
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="项目尚无 verify.yaml，未配置 regression 段"
-                    description="开启周期性全量回归不会实际执行。点「AI 自动生成」将同步探测测试体系并起草验证契约（有测试体系时一并生成 regression 段），约数分钟；也可点「手工编辑」自行维护。"
-                  />
-                ) : (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="未配置 regression 段"
-                    description=".fenix/verify.yaml 存在但没有有效的 regression 段，开启周期性全量回归不会实际执行。点「AI 自动生成」同步探测测试体系后补写（不改动契约其它内容），约数分钟；也可点「手工编辑」自行维护。"
-                  />
-                )}
+                {renderRegressionConfigStatus()}
                 <div style={{ marginTop: 12 }}>
                   {/* loading 双源：本地 drafting（本组件生命周期内）+ 后端单飞锁
                       在途态（切页签卸载重建后本地 state 丢失，重挂载拉 config 恢复）。

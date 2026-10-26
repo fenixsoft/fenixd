@@ -56,6 +56,15 @@ function assignRows(items: { start: number; end: number }[]): number[] {
   return rows;
 }
 
+/** 色块着色（具名函数承载原嵌套三元，与 runDotColor 单源具名风格对齐——
+ * code-review item 3413bcfaf05a「禁止嵌套三元」）：run 按状态语义色单源
+ * 投影；verify 绿；特殊节点蓝（与 PipelineView 圆点同口径）。 */
+function blockColor(n: TopologyNode): string {
+  if (n.kind === 'run') return runDotHex(n.status ?? '');
+  if (n.kind === 'verify') return STATUS_HEX.green;
+  return STATUS_HEX.blue;
+}
+
 export default function SwimlaneView({
   data,
   selectedId,
@@ -328,12 +337,7 @@ function buildModel(data: SpecTopology): SwimModel | null {
     const rows = assignRows(items);
     items.forEach((it, i) => {
       const n = it.node;
-      const color =
-        n.kind === 'run'
-          ? runDotHex(n.status ?? '')
-          : n.kind === 'verify'
-            ? STATUS_HEX.green
-            : STATUS_HEX.blue;
+      const color = blockColor(n);
       blocks.push({
         node: n,
         laneIdx,
