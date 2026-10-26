@@ -1,6 +1,6 @@
 ## Context
 
-dashboard 已有两块大屏能力：collab-graph（`core/dashboard/data/collab_graph.py` + `routes/collab_graph_routes.py`，跨项目角色协作图谱）与 spec-topology（`data/topology.py` + `routes/topology_routes.py`，单 SPEC 拓扑）。指挥中心是第三块，叙事对象从「系统运转」换成「AI 团队交付」（参照 Trinity 的组织网格/收件箱/台账/带日期的数字）。既有可复用事实源：run metric index（`data/runs.py`，含 classify_run / compute_run_cost / 在飞判定 / `run_activity`）、STATE.md 状态读取（`data/state.py`）、admin_alerts + adjudication_choices（`data/admin_alerts.py` / `data/adjudication_choices.py`，choices 快照随告警落盘）、裁决执行（既有 `POST /api/alert-resolve`）、网关健康（`core/dashboard/llm_health.py`）。前端为 umi + antd React SPA，路由表 `static/config/routes.ts`，导航 `src/app.tsx` menuDataRender，API client `src/services/dashboard.ts`。
+dashboard 已有两块大屏能力：collab-graph（`core/dashboard/data/collab_graph.py` + `routes/collab_graph_routes.py`，跨项目角色协作图谱）与 spec-topology（`data/topology.py` + `routes/topology_routes.py`，单 SPEC 拓扑）。指挥中心是第三块，叙事对象从「系统运转」换成「AI 团队交付」（参照 Trinity 的组织网格/收件箱/台账/带日期的数字）。既有可复用事实源：run metric index（`data/runs.py`，含 classify_run / compute_run_cost / 在飞判定 / `run_activity`）、STATE.md 状态读取（`data/state.py`）、admin_alerts + adjudication_choices（`data/admin_alerts.py` / `data/adjudication_choices.py`，choices 快照随告警落盘）、裁决执行（既有 `POST /api/alert-resolve`）、网关配置态（项目配置只读派生；`core/dashboard/llm_health.py` 为按需主动探测工具、无缓存结果，不作数据源）。前端为 umi + antd React SPA，路由表 `static/config/routes.ts`，导航 `src/app.tsx` menuDataRender，API client `src/services/dashboard.ts`。
 
 ## Goals / Non-Goals
 

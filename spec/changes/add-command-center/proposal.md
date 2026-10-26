@@ -22,5 +22,5 @@
 
 - 后端：`core/dashboard/data/`（新增 command_center.py）、`core/dashboard/routes/`（新增 command_center_routes.py）、`core/dashboard/server.py`（注册 mixin）。
 - 前端：`core/dashboard/static/` 的 routes.ts、app.tsx（导航）、services/dashboard.ts（API client）、新增 pages/command-center/ 四屏组件。
-- 只读消费既有数据源：run metric index（runs.py）、STATE.md 状态（state.py）、admin_alerts、adjudication_choices、llm_health；不新增 POST 端点（裁决走既有 alert-resolve）。
+- 只读消费既有数据源：run metric index（runs.py）、STATE.md 状态（state.py）、admin_alerts、adjudication_choices、项目配置（网关配置态派生，不发探测；llm_health 为按需主动探测工具，不复用）；不新增 POST 端点（裁决走既有 alert-resolve）。
 - 无配置项新增（部门分区/汇报线为模块级静态常量，避免配置+UI 连带义务）；无数据迁移；无破坏性变更。

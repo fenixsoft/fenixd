@@ -33,13 +33,13 @@
 
 ## 1. 后端聚合：KPI 与组织网格
 
-- [ ] 1.1 新建 `core/dashboard/data/command_center.py`：模块级静态常量 `ROSTER`（花名册 lane→zone：需求线 planner/spec-review、交付线 implementer/code-fix、质量线 code-review/judge/testing、运营线 administrator/self-review/scan/ocr，未登记 lane 归「其他」）与 `EDGES`（planner→implementer、implementer→code-review、code-review→judge、code-fix→code-review，冻结结构）；实现 7×24h UTC 滚动窗工具与 `aggregate_kpi(registry_projects, project=None)`：四指标按 spec 口径派生（delivered_specs_7d=窗内归档目录名日期前缀 SPEC 数+活跃 pushed 数跨源去重、human_intervention_rate_7d、run_success_rate_7d 复用 classify_run、cost_per_spec_7d 复用既有成本口径；分母 0 → null），`gateway_health` 复用 `core.dashboard.llm_health` 既有只读数据、不发探测请求
-- [ ] 1.2 同模块实现 `aggregate_org(registry_projects, project=None)`：车道卡=花名册全量（零 run 也出卡）∪ 观测 lane（落「其他」），字段 lane/zone/status（复用 runs.py 在飞判定口径，working/idle）/runs_today/success_rate_7d/cost_7d/activity_14d（长度 14 按日计数，mtime 粗筛入窗文件）/last_activity_ts，响应携带 `edges` 常量与 projects 回显（与 collab-graph 同一注入与筛选模式）
+- [ ] 1.1 新建 `core/dashboard/data/command_center.py`：模块级静态常量 `ROSTER`（花名册 lane→zone：需求线 planner/spec-review、交付线 implementer/code-fix、质量线 code-review/judge/testing、运营线 administrator/self-review/scan/ocr，未登记 lane 归「其他」）与 `EDGES`（planner→implementer、implementer→code-review、code-review→judge、code-fix→code-review，冻结结构）；实现 7×24h UTC 滚动窗工具与 `aggregate_kpi(registry_projects, project=None)`：四指标按 spec 口径派生（delivered_specs_7d=窗内归档目录名日期前缀 SPEC 数+活跃 pushed 数跨源去重、human_intervention_rate_7d、run_success_rate_7d 复用 classify_run、cost_per_spec_7d 复用既有成本口径；分母 0 → null），`gateway_health` 为网关配置态只读派生（复用既有配置读取路径，输出 configured 与 provider 数；`llm_health` 为按需主动探测工具 MUST NOT 调用）、不发探测请求
+- [ ] 1.2 同模块实现 `aggregate_org(registry_projects, project=None)`：车道卡=花名册全量（零 run 也出卡）∪ 观测 lane（落「其他」），字段 lane/zone/status（复用 runs.py 在飞判定口径，working/idle）/runs_today（UTC 日界）/success_rate_7d/cost_7d/activity_14d（长度 14 按日计数，mtime 粗筛入窗文件）/last_activity_ts/attributable（最近在飞 run 归属 {project, spec} 或 null，供钻取），响应携带 `edges` 常量与 projects 回显（与 collab-graph 同一注入与筛选模式）
 - [ ] 1.3 新建 `tests/test_command_center_aggregation.py`：fixture 覆盖 specs 全部 Scenario——四指标混合派生（含出窗归档不计、跨源去重）、分母零 null、花名册卡+未登记 lane「其他」分区、working/idle 状态、edges 两次请求恒等
 
 ## 2. 后端聚合：流水线、台账、收件箱与路由
 
-- [ ] 2.1 同模块实现 `aggregate_pipeline(registry_projects, project=None)`：跨项目活跃 SPEC 按 STATE.md 状态归五列（drafted/ready/implementing/reviewing/pushed），implementing 卡存在在飞 run 时附 `running`（lane+开始时间），project 筛选与回显同 D1 注入模式
+- [ ] 2.1 同模块实现 `aggregate_pipeline(registry_projects, project=None)`：跨项目活跃 SPEC 按 STATE.md 原生状态桶映射归五列（drafted←drafted/reviewing；ready←ready；implementing←implementing/bug-found/blocked；verifying←implemented/testing/verified；pushed←done/pushed，覆盖 SpecStatus 全量），卡片携带原生 status，implementing 列卡存在在飞 run 时附 `running`（lane+开始时间），project 筛选与回显同 D1 注入模式
 - [ ] 2.2 同模块实现 `aggregate_ledger(registry_projects, project=None)`：跨项目最近 50 条 run 按开始时间倒序，字段 project/spec/lane/outcome(classify_run)/duration/tokens/cost/started_at/trigger（调度记录可得则带，不可得置 null 不硬造）
 - [ ] 2.3 同模块实现 `aggregate_inbox(registry_projects, project=None)`：未终态且带 choices 快照的 admin_alerts 条目，choices 只读告警记录内快照（MUST NOT 回读注册表演进态），narrative 可得则带，严重度降序+created_at 降序，携带 spec/run 溯源字段；纯装配、不新增执行端点
 - [ ] 2.4 新建 `core/dashboard/routes/command_center_routes.py` 只读 mixin：`GET /api/command-center/{kpi,org,pipeline,ledger,inbox}` 五端点接对应 aggregate 函数（可选 `project` 查询参数），按 base.py H1 表驱动分派链既有模式注册，并在 `core/dashboard/server.py` 导入挂载 mixin

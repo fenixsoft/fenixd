@@ -14,7 +14,7 @@
 
 ### Requirement: 组织总览屏
 
-组织总览屏 SHALL 按后端 `org` 数据渲染：部门分区标题 + 区内车道卡 + 汇报线。汇报线 SHALL 以静态 SVG 细线绘制（随数据一次性渲染，MUST NOT 使用动画）。车道卡 SHALL 展示：车道名、状态徽标（working=在飞/idle=空闲）、今日 run 数、7 日成功率、14 日活动 sparkline（静态柱点）、累计成本、最近活动时间。花名册内零 run 车道 MUST 与活跃车道同尺寸出卡。点击有在飞 run 的车道卡 SHALL 跳转该 run 所属 SPEC 的既有详情页 `/projects/:name/:spec`（所属 SPEC 不可得时卡片点击 MUST 禁用）。
+组织总览屏 SHALL 按后端 `org` 数据渲染：部门分区标题 + 区内车道卡 + 汇报线。汇报线 SHALL 以静态 SVG 细线绘制（随数据一次性渲染，MUST NOT 使用动画）。车道卡 SHALL 展示：车道名、状态徽标（working=在飞/idle=空闲）、今日 run 数、7 日成功率、14 日活动 sparkline（静态柱点）、7 日成本（`cost_7d`）、最近活动时间。花名册内零 run 车道 MUST 与活跃车道同尺寸出卡。点击有在飞 run 的车道卡 SHALL 跳转该 run 所属 SPEC 的既有详情页 `/projects/:name/:spec`（所属 SPEC 不可得时卡片点击 MUST 禁用）。
 
 #### Scenario: 分区与卡片渲染
 - **WHEN** org 数据返回 4 个分区、花名册卡与 1 条静态汇报线集合
@@ -24,7 +24,7 @@
 
 ### Requirement: 交付流水线屏
 
-交付流水线屏 SHALL 渲染五列泳道：drafted、ready、implementing、reviewing、pushed，卡片含项目名、SPEC 名，implementing 卡有 `running` 时 SHALL 显示在飞 lane 与开始时间。点击卡片 SHALL 跳转既有 `/projects/:name/:spec` 详情页。SHALL 提供项目筛选下拉（数据源为响应 `projects` 全集，含「全部项目」项）。
+交付流水线屏 SHALL 渲染五列泳道：drafted、ready、implementing、verifying、pushed（列归属按聚合层五列桶映射，覆盖 SpecStatus 全量；卡片可显示原生 status 徽标），卡片含项目名、SPEC 名，implementing 列卡有 `running` 时 SHALL 显示在飞 lane 与开始时间。点击卡片 SHALL 跳转既有 `/projects/:name/:spec` 详情页。SHALL 提供项目筛选下拉（数据源为响应 `projects` 全集，含「全部项目」项）。
 
 #### Scenario: 泳道与钻取
 - **WHEN** pipeline 数据返回五列卡与 projects 全集
