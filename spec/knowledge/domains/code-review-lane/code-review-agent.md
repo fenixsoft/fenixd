@@ -1,7 +1,7 @@
 # 周期性代码审查 agent
 
-<!-- knowledge: capability=code-review-agent rev=4
-     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at -->
+<!-- knowledge: capability=code-review-agent rev=5
+     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at,spec/archive/2026-10-28-evo-code-review-vendored-scope -->
 
 项目级周期性代码审查的一等公民 agent 车道：由框架调度层按独立周期配置（触发时点缺省回退每日自省时点）派发，对主树代码逐文件审查并增量落盘，支撑质量分面台账与手动触发。
 
@@ -18,7 +18,7 @@
 - 触发时点独立生效、两车道互不连带：自省照常在其生效时点触发，code-review 在其生效时点触发；未到生效时点的巡检轮返回 `before_run_at` 不派发，任一车道触发不连带另一方。
 - 审查窗口水位由审查车道自身承载：调度收尾将本轮审查完成时刻写入 `.fenix/code_review_state.json` 的 `last_run_at`（aware ISO8601 本地时区表述，与自省状态文件口径一致；`last_run_date` 自然日防重字段保留）。scope=`window`（缺省）时 `window_start` 优先读该字段；字段缺失（首跑/存量状态）回退读 `.fenix/self_review_state.json` 的 `last_run_at`，再缺失回退 `now - 24h`。`window_kind` 映射不变：读到任一水位（审查自身或自省回退）返回 `last_run`，双缺失返回 `fallback`。
 - 巡检循环中 code-review 检查点先于自省检查点执行（自省收尾覆写自身 `last_run_at` 会退化窗口）；时点错开后两检查点在不同巡检轮各自判定，同轮相遇时该次序约束兜底。
-- 审查范围经 `admin.code_review.scope` 配置，取值 `window`（缺省）| `full`；非法值（含缺失/类型错误）回退 `window`，不报错中断巡检。两档共用同一套调度守卫（生效 `run_at` 阈值、同一自然日不重复触发、单飞、开关零动作），`review_kind` 均保持 `scheduled`。
+- 审查范围经 `admin.code_review.scope` 配置，取值 `window`（缺省）| `full`；非法值（含缺失/类型错误）回退 `window`，不报错中断巡检。两档共用同一套调度守卫（生效 `run_at` 阈值、同一自然日不重复触发、单飞、开关零动作），`review_kind` 均保持 `scheduled`。两档的出题面收集共用 vendored 第三方目录排除（vendored 路径不入 manifest，见 [vendored-review-scope](vendored-review-scope.md)）。
   - scope=`window`：审查对象为 `window_start` 之后合并/产出到主树的 SPEC 所变更的文件集合。
   - scope=`full`：审查对象为全仓受控源码文件（`collect_manifest(scope="full")`），经 `max_files` 上限截断；`window_start` 以 None 参与 run，manifest 审计字段如实记录 `full`。
 - `admin.code_review.enabled` 为 false 时全链路零动作（不派发、不写任何产物），任意 scope 与 `run_at` 取值下均成立。
@@ -40,3 +40,4 @@
 - 2026-09-27 add-code-review-scope-config（spec/archive/2026-09-27-add-code-review-scope-config） — 审查范围经 `admin.code_review.scope` 扩为 window/full 两档（共用调度守卫），设置页「质量」页签新增「审查范围」下拉（当期审查/全库审查，非法回退 window）。
 - 2026-09-29 add-code-review-sharded-out（spec/archive/2026-09-29-add-code-review-sharded-out） — 产物落盘契约扩为主产物+分片双轨直写（落盘义务「谁审谁写」），追加禁 async 等待收工条款与产物硬门聚合口径；进度/台账/硬门三侧改聚合消费（读侧口径另立 code-review-progress-visibility 页）。
 - 2026-10-15 add-code-review-run-at（spec/archive/2026-10-15-add-code-review-run-at） — 触发时点与窗口水位同自省解耦：触发时点读独立键 `admin.code_review.run_at`（缺失/脏值回退自省 run_at，解析单源收口），窗口水位改由 `code_review_state.json` 的 `last_run_at` 自承载（回退自省水位、再回退 24h）；检查点先于自省的次序约束保留；设置页质量页签新增触发时点输入。
+- 2026-10-28 evo-code-review-vendored-scope（spec/archive/2026-10-28-evo-code-review-vendored-scope） — scope 两档出题面收集加装 vendored 第三方目录排除（收集层单表生效，规则细节另立 [vendored-review-scope](vendored-review-scope.md) 页），非 vendored 路径收集行为不变。
