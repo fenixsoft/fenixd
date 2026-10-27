@@ -884,8 +884,15 @@ class TestStaleVerdictGuard(unittest.TestCase):
                 self.engine._run_legacy_verification(name)
                 self._assert_late_result_fully_dropped(name, target)
 
-    def test_testing_state_stale_behavior_unchanged(self):
-        """testing 状态下 stale 分支既有行为逐项不变（纯增防御回归锚）。"""
+    def test_testing_state_stale_behavior_failclosed(self):
+        """testing 状态下 stale 分支按 fail-closed 收口（fix-verify-verdict-run-attribution D2）。
+
+        旧语义（打回 implemented + 「stale/foreign replayed」归因 + 整轮
+        重派 + infra 记账）已按本 SPEC 移除——该归因是 add-command-center
+        事故中当轮 39 分钟真实验证被整体作废的直接根因。新语义：陈旧残留
+        先归档 .stale-<ts> 备份，本轮按「未产出机器可读裁决」blocked +
+        critical 告警收口；不重派即无退款对象，不记 infra。
+        """
         name = "testing-stale-spec"
         self.sm.add_spec(name, {"priority": 5})
         _push_spec_to(self.sm, name, "testing")
@@ -896,14 +903,18 @@ class TestStaleVerdictGuard(unittest.TestCase):
             self._flip_spec_then_return(name, "testing"))
         self.engine._run_legacy_verification(name)
         entry = self.sm.read_one(name)
-        self.assertEqual(entry["status"], "implemented",
-                         "testing 内 stale 结果仍走既有回退重派语义")
-        self.assertEqual(entry["tester_run"], None)
-        self.assertEqual(
-            entry["error"],
-            "stale/foreign verifier result replayed — re-dispatching fresh verify",
-            "error 文案逐字不变")
-        self.engine._record_infra_failure.assert_called_once()
+        self.assertEqual(entry["status"], "blocked",
+                         "testing 内 stale 结果按 fail-closed blocked 收口")
+        self.assertNotIn("replayed", entry.get("error") or "",
+                         "不得再以「replayed」归因当轮结果")
+        self.assertIn("本轮未产出机器可读裁决", entry.get("error") or "")
+        # 残留已归档 .stale-<ts> 备份（原共享文件不再存在）
+        stale_backups = list(
+            (Path(self.tmpdir) / ".fenix").glob(".fenix-run-result.json.stale-*"))
+        self.assertEqual(len(stale_backups), 1, "陈旧残留未归档备份")
+        self.assertFalse(self.result_path.exists())
+        # 不重派 → 无退款对象：不记 infra
+        self.engine._record_infra_failure.assert_not_called()
 
 
 # ── (5b) 机械快道裁决来源戳（fix-verify-late-result-terminal-clobber D3）──

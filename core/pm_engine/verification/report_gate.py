@@ -29,9 +29,12 @@ class VerdictReadResult:
     - ok=True  → status 为白名单内合法裁决（verified/bug-found/plan-ready/
       scenario-repaired）。
     - ok=False → 结果文件**不可读**（missing/parse/io-error/unknown-status/
-      foreign-stamp），reason 归因、detail 附解析错误原文。不可读**绝不**等价
-      于 verified——历史 add-verify-contract-autodraft 事故：summary 裸换行致
-      非法 JSON → 读侧按 None 处理 → else 分支 → verified → done → auto-push。
+      foreign-stamp/foreign-role/not-produced——not-produced 为
+      fix-verify-verdict-run-attribution D2 分支②：文件仍为派发预写戳
+      原样，本轮未产出裁决），reason 归因、detail 附解析错误原文。不可读
+      **绝不**等价于 verified——历史 add-verify-contract-autodraft 事故：
+      summary 裸换行致非法 JSON → 读侧按 None 处理 → else 分支 → verified
+      → done → auto-push。
     """
 
     __slots__ = ("status", "reason", "detail")
@@ -169,6 +172,28 @@ def _check_verification_gate(pipeline, spec_name: str) -> str | None:
         )
         return f"验证进度计数异常：done({done}) > total({total})"
     return None
+
+
+def _is_verifier_dispatch_stamp(data, spec_name: str) -> bool:
+    """内容是否为派发侧预写归属戳（fix-verify-verdict-run-attribution D1/D2）。
+
+    判据（queue.py ``_prewrite_verifier_dispatch_stamp`` 预写的三键形态）：
+    ``role == "verifier"`` 且 ``status == "dispatched"`` 且 spec 戳与当前
+    spec 一致。spec 戳不符的同形态文件属**其它 spec 的派发残留**（落 D2
+    分支③陈旧/异归属处置），不作本轮「未产出裁决」判定。
+
+    非对象内容一律 False（交由调用方既有 fail-closed 读取器归因）。
+    """
+    return (
+        isinstance(data, dict)
+        and data.get("role") == "verifier"
+        and data.get("status") == "dispatched"
+        and data.get("spec") == spec_name
+    )
+
+
+# 公开别名（跨模块消费走公开名，同 verify_progress_result_paths 先例）
+is_verifier_dispatch_stamp = _is_verifier_dispatch_stamp
 
 
 def _verifier_stamp_gate(data, spec_name: str, require_verifier_role: bool) -> tuple:
@@ -497,6 +522,21 @@ def _read_verdict(pipeline, spec_name: str) -> VerdictReadResult:
     主树共享 .fenix/.fenix-run-result.json 仅作兼容回退，且回退必须先过
     role/spec 戳校验（再交由调用方的陈旧护栏/状态机判据处置）。
 
+    fix-verify-verdict-run-attribution D2 三分支判据（消费侧归属校验）：
+    1. **采信**：status 白名单内的正常裁决——含既有无 role 戳的新鲜 primary
+       直写形态（agent/judge 正常产物），照既有 primary 豁免口径采信，
+       MUST NOT 把 role 门套到 primary（judge_gate 快道 D3 教训：role 门
+       套到 primary 会把本轮 verifier 现写裁决拒掉）；
+    2. **本轮未产出裁决**：文件仍为本次派发预写戳原样（role=verifier 且
+       status=dispatched 且 spec 戳匹配，判据单点
+       ``_is_verifier_dispatch_stamp``）→ 返回 failure("not-produced")，
+       调用方走既有 fail-closed（blocked + critical 告警），不引用残留
+       内容作裁决；
+    3. **残留**：陈旧 mtime / 异 spec 戳 / 异归属形态 → 照既有 reason 归因
+       （foreign-role/foreign-stamp/unknown-status + 调用方 mtime 陈旧
+       护栏），由调用方先归档 ``.stale-<ts>`` 再 fail-closed（不再走
+       stale/foreign「replayed」重派语义——处置在 legacy.py 消费分支）。
+
     - 优先 verify-progress/<spec>/.fenix-run-result.json（per-spec 隔离的
       确定性产物路径，judge/verifier 新式写入落点，直接采信）；
     - 缺失时回退主树共享文件——但仅当 role=verifier（legacy verifier 的
@@ -509,12 +549,35 @@ def _read_verdict(pipeline, spec_name: str) -> VerdictReadResult:
       误判链，两次复发）；
     - 仍无结果文件则返回 failure("missing")（unreadable 语义）。
 
-    不可读（missing/parse/unknown-status/foreign-role/foreign-stamp）一律
-    返回 ok=False 的 VerdictReadResult，**绝不**以 None 等价放行（fail-closed）。
+    不可读（missing/parse/io-error/unknown-status/foreign-role/foreign-stamp/
+    not-produced）一律返回 ok=False 的 VerdictReadResult，**绝不**以 None
+    等价放行（fail-closed）。
     """
     primary, shared = _verify_progress_result_paths(pipeline, spec_name)
     if primary.exists():
-        return _read_verifier_result(pipeline, primary)
+        # ── D2 分支②先判：派发预写戳原样 → 「本轮未产出裁决」────────
+        # 单次读取贯穿戳判定与采信（data 直传 _read_verifier_result，消除
+        # 两次读取之间文件被覆写的 TOCTOU 窗口，与 _read_shared_result 同
+        # 款口径）。解析失败时 data=None 交由 _read_verifier_result 重读并
+        # 按既有 missing/parse/io-error 口径归因（fail-closed 不变）。
+        stamp_probe = None
+        try:
+            stamp_probe = json.loads(primary.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            stamp_probe = None
+        if _is_verifier_dispatch_stamp(stamp_probe, spec_name):
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"Verifier result file still at dispatch prewrite stamp "
+                f"（本轮未产出裁决）: {primary}",
+            )
+            return VerdictReadResult.failure(
+                "not-produced",
+                f"{primary}: 派发预写戳原样（role=verifier, status=dispatched）",
+            )
+        return _read_verifier_result(
+            pipeline, primary, data=stamp_probe if isinstance(stamp_probe, dict) else None
+        )
 
     if not shared.exists():
         return VerdictReadResult.failure("missing", f"{shared}")
