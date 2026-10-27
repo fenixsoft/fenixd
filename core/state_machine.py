@@ -639,6 +639,25 @@ PUSH_ATTEMPTS_FIELD = "_push_attempts"
 # 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
 SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 
+# ── judge 场景修复申报计数留痕（fix-judge-budget-counters-alignment D3/D4）──
+# 字段名单点定义（pm_engine.verification 的 pipeline.py scenario-repaired
+# 受理门写点与 judge_gate.py 硬上限冻结告警取数共用，避免裸串漂移）。
+# 属预算口径计数（design D3 禁列仅指「模式推导旗标」，本组为取数留痕），
+# 与 _judge_rerun_count 同族生命周期累计语义：**唯一**清零点 = verified
+# 落定（verdict_evidence._record_verdict_adoption verified 分支，同一原子写）
+# 与人工 unfreeze_spec；admin 处置复位 / daemon 恢复 / 排程重验触发等中间
+# 转换一律不清零（防「毒 spec 借复位重置计数无限循环」敞口，同上方口径）。
+# _judge_repair_claim_rounds：spec 生命周期内 judge「scenario-repaired」修复
+#   申报轮数（受理门受理与拒收均计，写点=受理门）；
+# _judge_repair_rejected_rounds：其中修复预算耗尽（耗尽字段 >= 1）后被受理
+#   门拒收的轮数（无修复纯归因模式证据）；
+# _judge_repair_last_summary：最近一次修复申报摘要（judge 裁决产物 report.json
+#   非 PASS 场景 id 级截断，受理门写点维护）——供硬上限冻结告警 evidence
+#   直接取数（SPEC 条款：MUST NOT 依赖日志回捞）。
+JUDGE_REPAIR_CLAIMS_FIELD = "_judge_repair_claim_rounds"
+JUDGE_REPAIR_REJECTED_FIELD = "_judge_repair_rejected_rounds"
+JUDGE_REPAIR_LAST_SUMMARY_FIELD = "_judge_repair_last_summary"
+
 # ── judge 重跑计数与硬上限冻结旗标（fix-unfreeze-judge-counter-reset D1）──
 # 字段名单点定义（state_machine 与 pm_engine.verification.judge_gate 共用，
 # 避免裸串漂移；judge_gate 读侧键名逐字一致）：
@@ -2467,6 +2486,12 @@ class StateMachine:
         # judge_rerun_cap 冻结的人工裁决出口可达。
         updates[JUDGE_RERUN_COUNT_FIELD] = 0
         updates[JUDGE_CAP_FROZEN_FIELD] = False
+        # fix-judge-budget-counters-alignment D3：修复申报计数留痕三字段随人工
+        # 解冻清零（与 _judge_rerun_count 同族清零点，同一原子写）——解冻重开
+        # 修复通道后申报历史从零起算，旧周期计数不污染下一轮告警取数。
+        updates[JUDGE_REPAIR_CLAIMS_FIELD] = 0
+        updates[JUDGE_REPAIR_REJECTED_FIELD] = 0
+        updates[JUDGE_REPAIR_LAST_SUMMARY_FIELD] = None
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         # update_spec 的单条目写语义在此显式展开（与 freeze_spec 同款：

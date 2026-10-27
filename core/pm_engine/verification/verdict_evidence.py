@@ -1380,6 +1380,9 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
         from core.state_machine import (
             IN_INCONCLUSIVE_REVERIFY_FIELD,
             JUDGE_INCONCLUSIVE_DISPATCHES_FIELD,
+            JUDGE_REPAIR_CLAIMS_FIELD,
+            JUDGE_REPAIR_LAST_SUMMARY_FIELD,
+            JUDGE_REPAIR_REJECTED_FIELD,
             SCENARIO_REPAIR_EXHAUSTED_FIELD,
         )
 
@@ -1392,6 +1395,13 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                 # _judge_rerun_count 同生命周期——verified 落定清零，使成功
                 # 后的新一轮验证重新获得「首次耗尽排程重验」的完整体验。
                 SCENARIO_REPAIR_EXHAUSTED_FIELD: 0,
+                # fix-judge-budget-counters-alignment D3：修复申报计数留痕
+                # 三字段（生命周期申报轮数/耗尽后拒收轮数/最近申报摘要）与
+                # _judge_rerun_count 同族清零点——verified 落定一并清零/清除
+                # （同一原子写），下一验证周期的申报历史从零起算。
+                JUDGE_REPAIR_CLAIMS_FIELD: 0,
+                JUDGE_REPAIR_REJECTED_FIELD: 0,
+                JUDGE_REPAIR_LAST_SUMMARY_FIELD: None,
                 # fix-env-exemption-exit-reachability D3：inconclusive 重验
                 # 预算隔离双字段与 _judge_rerun_count 同生命周期——verified
                 # 落定一并清零/清除（独立计数器归零、旗标清除），防旗标

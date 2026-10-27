@@ -64,6 +64,11 @@ from core.timelib import from_epoch
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     SCENARIO_REPAIR_EXHAUSTED_FIELD,
+    # judge 场景修复申报计数留痕三字段（fix-judge-budget-counters-alignment
+    # D3/D4：受理门写点维护，单点定义与 judge_gate 告警取数同源）
+    JUDGE_REPAIR_CLAIMS_FIELD,
+    JUDGE_REPAIR_REJECTED_FIELD,
+    JUDGE_REPAIR_LAST_SUMMARY_FIELD,
     # env 豁免 STATE 字段/修订生命周期字段单源（evo-fix-env-exemption-gate-
     # conflict-and-scenario-revision-exit：与 admin_actions/escalation 同源）
     SCENARIO_REVISION_PENDING_FIELD,
@@ -1833,11 +1838,17 @@ class VerificationPipeline:
     # scenario-repaired 状态，调用者继续后续分支。
     def _handle_scenario_repaired(self, spec_name: str, verifier_status: str,
                                   _repair_depth: int) -> bool:
-        """处理 scenario-repaired 通道：预算检查 → 冻结记账 → 空集拒绝 → 尾递归重入。
+        """处理 scenario-repaired 通道：预算检查 → 受理门 → 冻结记账 → 空集拒绝 → 尾递归重入。
 
         等价搬移自 _run_three_stage_verification B8 段落，保持尾递归调用原样。
-        返回 True 表示调用者 MUST return（已重入或预算耗尽/空集拒绝提前退出）；
-        返回 False 表示非 scenario-repaired，调用者继续后续分支。
+        返回 True 表示调用者 MUST return（已重入或预算耗尽/受理门拒收/空集
+        拒绝提前退出）；返回 False 表示非 scenario-repaired，调用者继续后续
+        分支。
+
+        fix-judge-budget-counters-alignment D1：预算耗尽状态（STATE 持久字段
+        ``_scenario_repair_exhausted_rounds >= 1``，跨 episode / 跨 daemon 重启）
+        下本通道以无修复纯归因模式运行——修复申报一律拒收（场景文件不改写、
+        不触发重执行重入，见下方受理门），judge 裁决产物照常落盘。
         """
         if verifier_status != "scenario-repaired":
             return False
@@ -1903,6 +1914,53 @@ class VerificationPipeline:
                 )
                 _escalate_scenario_repair_exhausted(self, spec_name)
             return True
+        # ── fix-judge-budget-counters-alignment D1：修复通道受理门（无修复
+        # 纯归因模式）──
+        # 耗尽状态以 STATE 持久字段为准（跨 episode / 跨 daemon 重启持久），
+        # 不以进程内 _repair_depth 为准：排程重验新 episode（含重启后恢复路径
+        # 重入）的 judge 修复申报一律拒收——场景文件不改写（不进
+        # _apply_scenario_freeze 写回）、不触发重执行重入；judge 裁决产物
+        # 照常落盘（test-defect 仅记录在案）。机械门挂受理点而非 judge
+        # prompt——prompt 层约束会被模型漂移突破，受理点 fail-closed。
+        # 拒收 MUST 提前退出裁决采纳尾段（返回 True，比照上方空集拒绝先例：
+        # error 留痕、spec 保持 testing），MUST NOT 返回 False——调用方平铺
+        # 尾段（plan-ready/bug-found 守卫后落 _apply_verified）依赖
+        # 「scenario-repaired 已由专门分支消费」前提，拒收返回 False 会穿透
+        # 守卫未重执行即假收敛为 verified。
+        try:
+            gate_exhausted_rounds = int(
+                (self._context.state_machine.read_one(spec_name) or {}).get(
+                    SCENARIO_REPAIR_EXHAUSTED_FIELD, 0
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            gate_exhausted_rounds = 0
+        if gate_exhausted_rounds >= 1:
+            # 生命周期修复申报计数 + 耗尽后拒收单独计数（D3 预算口径字段，
+            # 写点维护；失败不阻断拒收主路径）+ 最近申报摘要留痕（硬上限
+            # 告警取数，D4）。
+            _record_repair_claim(self, spec_name, rejected=True)
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        "judge 修复预算已耗尽（无修复纯归因模式）— 拒收本次 "
+                        "scenario-repaired 申报，场景文件不改写、不重入执行，"
+                        "转纯归因（test-defect 仅记录），保持 testing"
+                    ),
+                },
+            )
+            self._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' 修复预算已耗尽，转纯归因 — 拒收 judge "
+                f"scenario-repaired 申报（场景文件不改写、不重入执行，"
+                f"test-defect 仅记录于裁决产物）",
+            )
+            return True
+        # 受理：生命周期修复申报计数照常递增（受理与拒收均计，D3/D4 预算
+        # 口径字段）+ 最近申报摘要留痕；失败不阻断既有受理路径。
+        _record_repair_claim(self, spec_name, rejected=False)
         try:
             freeze_result = self._apply_scenario_freeze(spec_name)
         except Exception as e:
@@ -3674,3 +3732,83 @@ class VerificationPipeline:
 # env 族信号类型：仅这些信号触发的 blocking 复位才适用重验直通道判定，其余
 # 信号（如 blocked_stuck 等）的复位语义不动。
 ENV_BLOCK_SIGNAL_TYPES = ("verify_env_blocked", "verify_env_inconclusive")
+
+
+# ── judge 场景修复申报计数留痕（fix-judge-budget-counters-alignment D3/D4）──
+# 受理门（_handle_scenario_repaired）写点维护的预算口径字段，供 judge_gate
+# `_judge_hard_cap_freeze` 硬上限冻结告警 evidence 直接取数（具名 STATE 来源，
+# 不依赖日志回捞）。清零点与 `_judge_rerun_count` 同族：verified 落定
+# （verdict_evidence._record_verdict_adoption verified 分支）+ 人工 unfreeze_spec。
+
+
+def _repair_claim_summary(pipeline, spec_name: str) -> str:
+    """最近一次 judge 修复申报摘要（judge 裁决产物场景 id 级截断，D4）。
+
+    取自 judge 裁决产物 report.json 非 PASS 场景 id 清单（场景 id 级别即可，
+    SPEC 条款）；产物缺失/不可读/结构异常一律返回空串（fail-open，摘要仅
+    告警取数用途，缺失方向在 evidence 以「无记录」文案呈现）。异常全吞：
+    本函数位于受理门/拒收写点路径上，任何取数失败不得阻断受理主流程。
+    """
+    try:
+        from core.verdict_check import load_report
+
+        report = load_report(pipeline._context.project_root, spec_name) or {}
+        ids: list = []
+        for sc in report.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            if str(sc.get("status") or "") in ("pass", "passed"):
+                continue
+            sid = str(sc.get("scenario_id") or sc.get("id") or "")
+            if sid and sid not in ids:
+                ids.append(sid)
+        if not ids:
+            return ""
+        return "、".join(ids)[:200]
+    except Exception as e:  # noqa: BLE001 — 摘要取数失败不阻断受理主路径
+        try:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"修复申报摘要取数失败 '{spec_name}'（留空，不阻断）: "
+                f"{type(e).__name__}: {e}",
+            )
+        except Exception:  # noqa: BLE001 — 日志失败静默
+            pass
+        return ""
+
+
+def _record_repair_claim(pipeline, spec_name: str, *, rejected: bool) -> None:
+    """受理门写点记账：生命周期修复申报计数 +1，拒收轮单独计数 +1，摘要留痕。
+
+    - ``_judge_repair_claim_rounds``：受理与拒收均递增（D3 预算口径字段，
+      锁内原子 bump，与 `_judge_rerun_count` 同族范式）；
+    - ``_judge_repair_rejected_rounds``：仅耗尽后拒收轮递增（无修复纯归因
+      模式证据）；
+    - ``_judge_repair_last_summary``：最近一次申报摘要（report.json 非 PASS
+      场景 id 级截断），硬上限冻结告警取数源。
+
+    全程容错：计数/摘要属观测留痕，任何失败仅 WARNING 留痕，不阻断受理或
+    拒收主路径。
+    """
+    deltas = {JUDGE_REPAIR_CLAIMS_FIELD: 1}
+    if rejected:
+        deltas[JUDGE_REPAIR_REJECTED_FIELD] = 1
+    try:
+        pipeline._context.state_machine.bump_counters(spec_name, deltas)
+    except Exception as e:  # noqa: BLE001 — 记账失败不阻断受理/拒收主路径
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"修复申报计数 bump 失败 '{spec_name}'（不阻断，计数不可得）: "
+            f"{type(e).__name__}: {e}",
+        )
+    try:
+        summary = _repair_claim_summary(pipeline, spec_name)
+        pipeline._context.state_machine.update_spec(
+            spec_name, {JUDGE_REPAIR_LAST_SUMMARY_FIELD: summary or None},
+        )
+    except Exception as e:  # noqa: BLE001 — 摘要留痕失败不阻断主路径
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"修复申报摘要留痕失败 '{spec_name}'（不阻断）: "
+            f"{type(e).__name__}: {e}",
+        )

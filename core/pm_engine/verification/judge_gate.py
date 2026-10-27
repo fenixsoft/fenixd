@@ -29,6 +29,16 @@ from core.fs_utils import atomic_write_text
 from core.pm_engine.verification.escalation import _read_int_config
 from core.pm_engine.verification.report_gate import verify_progress_dir
 
+# 修复预算上下文字段（fix-judge-budget-counters-alignment D4：硬上限冻结
+# 告警 evidence 取数；单点定义在 state_machine，与 pipeline 受理门写点同源，
+# 避免裸串漂移）。
+from core.state_machine import (
+    JUDGE_REPAIR_CLAIMS_FIELD,
+    JUDGE_REPAIR_LAST_SUMMARY_FIELD,
+    JUDGE_REPAIR_REJECTED_FIELD,
+    SCENARIO_REPAIR_EXHAUSTED_FIELD,
+)
+
 # judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
 _MAX_JUDGE_RERUNS = 5
 
@@ -482,7 +492,29 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
     judge_rerun_count 与 _verify_fail_rounds 正交；hard cap 触发时两者一并
     冻结（_judge_cap_frozen 标记使两侧自动递增全部失效），与 fail-closed
     同语义需人工裁决放行。
+
+    fix-judge-budget-counters-alignment D4：告警 evidence 拼入场景修复预算
+    状态——①修复耗尽字段值（STATE 持久字段 _scenario_repair_exhausted_rounds）；
+    ②生命周期修复申报轮数与耗尽后拒收轮数（pipeline 受理门写点维护的预算
+    口径字段）；③最近一次修复申报摘要（受理门写点留痕，场景 id 级截断）。
+    三项均具名 STATE 来源，MUST NOT 依赖日志回捞。recommended_action 按耗尽
+    与否分叉：耗尽 → 剩余 test-defect 走人工修复或归因豁免；未耗尽 → 既有
+    「检查反复重跑根因」文案。
     """
+    # 修复预算上下文取数（脏值按 0 兜底，与 _judge_rerun_count 同防御；
+    # 取数失败不阻断冻结主路径——冻结本身 fail-closed 优先落盘）。
+    entry = pipeline._context.state_machine.read_one(spec_name) or {}
+
+    def _int_field(name: str) -> int:
+        try:
+            return int(entry.get(name, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    exhausted_rounds = _int_field(SCENARIO_REPAIR_EXHAUSTED_FIELD)
+    claim_rounds = _int_field(JUDGE_REPAIR_CLAIMS_FIELD)
+    rejected_rounds = _int_field(JUDGE_REPAIR_REJECTED_FIELD)
+    last_summary = str(entry.get(JUDGE_REPAIR_LAST_SUMMARY_FIELD) or "").strip()
     # code-fix 0eda9bae5886：改走 freeze_for_human 单一入口——原先裸
     # update_spec 置 blocked 无 frozen 结构化标记、error 亦无 FREEZE_ERROR_
     # PREFIX，blocked_stuck 看门狗的三选一豁免（frozen 字段 / 'frozen:'
@@ -502,10 +534,24 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
             f"'{spec_name}' judge 重跑超上限"
             f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
         ),
-        evidence=f"spec={spec_name}; judge_rerun_count={count}",
+        evidence=(
+            f"spec={spec_name}; judge_rerun_count={count}; "
+            f"修复预算状态: 耗尽={exhausted_rounds}（_scenario_repair_exhausted_rounds）; "
+            f"生命周期修复申报={claim_rounds} 轮（其中耗尽后拒收 "
+            f"{rejected_rounds} 轮）; 最近修复申报摘要="
+            f"{last_summary or '无记录'}"
+        ),
         recommended_action=(
-            "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
-            "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+            (
+                "场景修复预算已耗尽（无修复纯归因模式运行中）：重跑超上限主要由"
+                "耗尽后 test-defect 复判重跑贡献——剩余 test-defect 走人工修复"
+                "或归因豁免路径处置；人工解冻（unfreeze）后修复预算重新获得"
+            )
+            if exhausted_rounds >= 1
+            else (
+                "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
+                "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+            )
         ),
         alert_callback=pipeline._context.escalation_notifier,
         extra_updates={"_judge_cap_frozen": True},
