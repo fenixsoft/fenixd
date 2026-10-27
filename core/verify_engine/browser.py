@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from .path_safety import safe_component
+from .scenarios import url_matches_network_pattern
 
 # playwright 类型化异常（code-review item ea1ef016ced3）：顶层 error_type
 # 分类优先按异常类型分流，不依赖随版本漂移的错误文案；playwright 未安装的
@@ -54,6 +55,20 @@ _NOT_VISIBLE_MARKER = "not visible"
 # 器 resolve 的两处 evaluate 显式包 asyncio.wait_for，超时按「注入失败」
 # 既有容错路径处理。
 _IN_PAGE_EVALUATE_TIMEOUT_S = 10
+
+# ── expect_network 步骤窗口网络断言（add-mechanical-scenario-refetch-
+#    assertion design Risks）：窗口收尾的固定短静默窗。请求在步骤标记完成后
+#    50-100ms 才入栈的尾部请求靠它兜进窗口；MUST NOT 用
+#    wait_for_load_state("networkidle")（本仓库页面常驻 SSE，networkidle
+#    永不满足，见模块 docstring 设计决策）。漏计方向只影响「该过的场景
+#    失败」（保守方向），不产生假通过。
+# 单轮静默窗毫秒数（design 钉死约 300ms，单测锁定该值）
+_EXPECT_NETWORK_QUIET_MS = 300
+# 静默收窗总时长封顶（常驻 SSE/高频轮询页面的请求流可能贯穿整个窗口，
+# 静默永不到来，封顶防止单步骤空等放大）
+_EXPECT_NETWORK_QUIET_MAX_MS = 1500
+# 失败明细携带的实际请求 URL 样例条数上限（spec：至多 3 条）
+_EXPECT_NETWORK_SAMPLE_LIMIT = 3
 
 
 class _ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -838,7 +853,146 @@ class BrowserManager:
 
     # [fenix-ignore:031f326ccf92] 结构性拆分超出 code-fix 最小改动边界：十余动作分支共享同一顶层 try/except 错误分类与 target/value 归一口径，抽 handler 需穿参并保 raise 穿透语义、回归风险大于收益
     async def execute_action(self, page, step: dict) -> dict:
-        """执行单个用户操作。
+        """执行单个用户操作（公开入口）。
+
+        步骤携带 ``expect_network`` 期望时（add-mechanical-scenario-refetch-
+        assertion，design D1：字段挂交互步骤上而非独立 op，监听窗口=该步骤
+        执行起止）：挂 playwright request 事件收集 → 执行操作 → 静默收窗 →
+        逐项断言；断言失败把步骤置败（spec：步骤失败，场景计入 fail），明细
+        随步骤结果 ``network_assertions`` 键落报告。无该字段的步骤直通
+        _execute_action_impl，行为逐位不变。
+        """
+        expectations = step.get("expect_network")
+        if not expectations:
+            return await self._execute_action_impl(page, step)
+        return await self._execute_action_with_expect_network(page, step, expectations)
+
+    async def _execute_action_with_expect_network(self, page, step, expectations) -> dict:
+        """带网络请求断言的步骤执行窗口（design D2 收集实现）。"""
+        captured: list[str] = []
+
+        def _on_request(request) -> None:
+            # request 事件在请求发起时即触发：交互「发了请求」的直接信号
+            # （即便响应失败/挂起也计），与「点了但没拉数据」缺陷的判定
+            # 语义一致；非 str url（异常形态）防御性跳过
+            url = getattr(request, "url", None)
+            if isinstance(url, str):
+                captured.append(url)
+
+        page.on("request", _on_request)
+        try:
+            result = await self._execute_action_impl(page, step)
+            if not result.get("success"):
+                # 交互本身失败：网络断言无从归因，按步骤原失败返回——
+                # 步骤已 fail，不再叠加第二份失败明细混淆归因
+                return result
+            await self._wait_network_quiet(page, captured)
+            records = self._evaluate_expect_network(expectations, captured)
+            result["network_assertions"] = records
+            failures = [r for r in records if not r["pass"]]
+            if failures:
+                # design D5：断言失败计入场景 fail（步骤置败 → web_runner
+                # steps_failed → determine_scenario_status 判 fail），明细
+                # 结构与其他断言一致（type/message），不做新的失败分类
+                result["success"] = False
+                result["error_type"] = "expect_network_failed"
+                result["error"] = "; ".join(r["message"] for r in failures)
+            return result
+        finally:
+            # 处理器必摘：同 page 跨步骤/跨场景复用，残留监听会把后续
+            # 步骤的请求计进已收窗的旧捕获列表（按捕获列表闭包隔离的
+            # 影响有限，但监听器本身泄漏会随场景数累积）
+            try:
+                page.remove_listener("request", _on_request)
+            except Exception:
+                pass
+
+    async def _wait_network_quiet(self, page, captured: list) -> None:
+        """窗口收尾静默等待：固定短窗连续无新请求即收窗（design Risks）。
+
+        单轮静默窗 _EXPECT_NETWORK_QUIET_MS、总时长
+        _EXPECT_NETWORK_QUIET_MAX_MS 封顶——常驻 SSE/高频轮询页面的请求流
+        可能贯穿整个窗口、静默永不到来，封顶防止单步骤空等放大。超封顶
+        即按当前捕获收窗断言：漏计方向只影响「该过的场景失败」（保守
+        方向），不产生假通过。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _EXPECT_NETWORK_QUIET_MAX_MS / 1000.0
+        prev = len(captured)
+        while True:
+            await page.wait_for_timeout(_EXPECT_NETWORK_QUIET_MS)
+            now = len(captured)
+            if now == prev or loop.time() >= deadline:
+                return
+            prev = now
+
+    @staticmethod
+    def _evaluate_expect_network(expectations, captured: list) -> list:
+        """逐项断言期望（匹配单点：scenarios.url_matches_network_pattern）。
+
+        每项产出 {type, url_pattern, min_count, actual_count, pass, message,
+        samples?}；message 含「期望 ≥N 实际 M」计数与至多 3 条窗口捕获样例
+        URL（零匹配时样例为空提示，供排查「窗口内到底发了什么」）。条目
+        形态非法（直构 TestStep 绕过验收的残档）按该项失败收场，不静默
+        跳过——保守方向不允许假通过。
+        """
+        records: list[dict] = []
+        if not isinstance(expectations, list):
+            # 直构 TestStep 绕过验收的残档：按整体失败收场（保守方向，
+            # 不给「字段坏档 = 无断言 = 通过」留假通过通道）
+            return [
+                {
+                    "type": "expect_network",
+                    "pass": False,
+                    "message": (
+                        "expect_network 必须为列表（[{url_pattern, min_count}]），"
+                        f"收到 {type(expectations).__name__}"
+                    ),
+                }
+            ]
+        for i, exp in enumerate(expectations):
+            pattern = exp.get("url_pattern") if isinstance(exp, dict) else None
+            min_count = exp.get("min_count") if isinstance(exp, dict) else None
+            form_ok = isinstance(pattern, str) and bool(pattern.strip()) and isinstance(
+                min_count, int
+            ) and not isinstance(min_count, bool) and min_count >= 1
+            if not form_ok:
+                records.append(
+                    {
+                        "type": "expect_network",
+                        "pass": False,
+                        "message": (
+                            f"expect_network 条目{i} 形态非法"
+                            f"（url_pattern/min_count 不合契约）: {exp!r}"
+                        ),
+                    }
+                )
+                continue
+            actual = sum(1 for url in captured if url_matches_network_pattern(url, pattern))
+            passed = actual >= min_count
+            # 样例取窗口捕获去重后的前 3 条：轮询端点会刷屏原始序列，
+            # 去重后的样例更能回答「窗口内到底发了哪些请求」
+            samples = list(dict.fromkeys(captured))[:_EXPECT_NETWORK_SAMPLE_LIMIT]
+            record = {
+                "type": "expect_network",
+                "url_pattern": pattern,
+                "min_count": min_count,
+                "actual_count": actual,
+                "pass": passed,
+                "message": (
+                    f"expect_network 条目{i}: "
+                    f"期望 ≥{min_count} 实际 {actual}"
+                    f"（url_pattern {pattern!r}，窗口捕获 {len(captured)} 个请求，"
+                    f"样例: {samples if samples else '（无）'}）"
+                ),
+            }
+            if not passed:
+                record["samples"] = samples
+            records.append(record)
+        return records
+
+    async def _execute_action_impl(self, page, step: dict) -> dict:
+        """执行单个用户操作（无 expect_network 的直通实现）。
 
         支持的操作类型（词表权威源：scenarios.py 的 WEB_ACTIONS，以该处为准）：
         - navigate: 页面导航

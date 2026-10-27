@@ -8,11 +8,14 @@ scenarios.py — 测试场景数据结构定义与校验
 from dataclasses import dataclass, field
 from typing import Any, Optional
 import json
+import logging
 import math
 import re
 from pathlib import Path
 
 from .fs_ops import atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
 # 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
@@ -409,6 +412,94 @@ WEB_ACTIONS = {
     "dialog",
     "mock_api",
 }
+
+# 交互/非交互步骤显式集（add-mechanical-scenario-refetch-assertion design D3）：
+# expect_network 仅允许挂在交互步骤上（监听窗口=该步骤执行起止，交互是请求的
+# 归因主体）；非交互步骤（navigate/wait/seed/mock_api）无交互归因语义，携带
+# 该字段在验收期拒绝。显式集合消除 spec「click/hover/contextmenu 等」的
+# 「等」字歧义，防验收与实现各自解释漂移——收口于本文件（_validate_web 与
+# 词表旁），引擎侧（browser.py）经下方 expect_network 单点函数消费同一口径。
+INTERACTIVE_WEB_ACTIONS = frozenset(
+    {"click", "type", "clear", "select", "scroll", "hover", "drag", "contextmenu", "dialog"}
+)
+
+# ── expect_network 形态定义单点（add-mechanical-scenario-refetch-assertion
+#    design D3）：验收校验（_validate_web）与引擎断言执行（browser.py）共用
+#    下方匹配函数与前缀约定，防校验/执行两处对「什么算匹配」各自漂移。
+#    注：本函数不放 assertions.py——assertions.py 顶层 import 本模块
+#    （WEB_ASSERTION_LAYERS），反向依赖成环，单点只能落在被依赖侧。
+
+# URL 模式正则前缀：`re:` 开头按正则 search 匹配，否则纯子串（design D2，
+# 与既有断言器 contains/regex 风格对齐）
+EXPECT_NETWORK_RE_PREFIX = "re:"
+
+
+def url_matches_network_pattern(url: str, pattern: str) -> bool:
+    """expect_network 的 URL 模式匹配（引擎执行侧单点消费）。
+
+    `re:` 前缀剥前缀后按正则 search；否则纯子串包含。pattern 非法
+    （空/非字符串/正则编译失败）一律按不匹配收场——引擎侧永不抛，
+    坏档形态应由验收期 ``validate_expect_network_form`` 拦截，此处
+    只做防御（漏报方向保守：该过的场景判失败，不产生假通过）。
+    """
+    if not isinstance(url, str) or not isinstance(pattern, str) or not pattern:
+        return False
+    if pattern.startswith(EXPECT_NETWORK_RE_PREFIX):
+        try:
+            return re.search(pattern[len(EXPECT_NETWORK_RE_PREFIX):], url) is not None
+        except re.error:
+            return False
+    return pattern in url
+
+
+def validate_expect_network_form(entries) -> tuple:
+    """expect_network 字段形态校验（验收侧单点消费，design D3）。
+
+    Args:
+        entries: TestStep.expect_network 原值（应为 list[dict]）。
+
+    Returns:
+        (errors, warnings)：errors 为逐条错误消息（每条带条目下标定位，
+        调用方补场景/步骤前缀）；warnings 为不拦截验收的提示（当前仅
+        min_count > 3 的易碎提示）。两列表均可为空。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(entries, list):
+        return (
+            [f"必须为列表（[{{url_pattern, min_count}}]），收到 {type(entries).__name__}"],
+            [],
+        )
+    for j, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append(
+                f"条目{j}: 须为对象 {{url_pattern, min_count}}，"
+                f"收到 {type(entry).__name__}"
+            )
+            continue
+        pattern = entry.get("url_pattern")
+        if not isinstance(pattern, str) or not pattern.strip():
+            errors.append(f"条目{j}: url_pattern 须为非空字符串，收到 {pattern!r}")
+        elif pattern.startswith(EXPECT_NETWORK_RE_PREFIX):
+            # `re:` 前缀正则编译预检（坏档验收期前移先例：no_overlap
+            # threshold / navigate URL 形态拦截同取向）——编译失败的模式
+            # 引擎侧按不匹配收场，放行只会产出「该过判失败」的哑失败
+            try:
+                re.compile(pattern[len(EXPECT_NETWORK_RE_PREFIX):])
+            except re.error as e:
+                errors.append(f"条目{j}: url_pattern 正则编译失败: {e}")
+        min_count = entry.get("min_count")
+        # bool 是 int 子类，显式排除（口径同 _parse_viewport）
+        if isinstance(min_count, bool) or not isinstance(min_count, int) or min_count < 1:
+            errors.append(f"条目{j}: min_count 须为正整数，收到 {min_count!r}")
+        elif min_count > 3:
+            # 过严断言易碎提示（design Risks：planner 滥用新字段取向）——
+            # WARNING 不拦截验收，经本模块 logger 落验证日志
+            warnings.append(
+                f"条目{j}: min_count={min_count} > 3，过严的网络断言易碎"
+                "（建议端点子串 + min_count: 1）"
+            )
+    return errors, warnings
 
 WEB_ASSERTIONS = {
     # 第1层：元素存在性（确定性，0误判）
@@ -951,6 +1042,10 @@ class TestStep:
         body: 请求体
         body_type: 请求体类型（json/text）
         duration: sse_connect 收集窗口秒数（最多收集 100 个事件，触顶即截断）
+        expect_network: 交互步骤网络请求断言期望（web，add-mechanical-
+            scenario-refetch-assertion）：[{"url_pattern": <子串或 "re:" 前缀
+            正则>, "min_count": <正整数>}]。挂交互步骤上与操作同对象（design
+            D1），监听窗口=该步骤执行起止；非交互步骤携带在验收期拒绝。
     """
 
     action: str
@@ -981,6 +1076,10 @@ class TestStep:
     body: str = ""
     body_type: str = ""
     duration: Optional[float] = None  # has-value 标记，口径同上方 timeout
+    # 交互步骤网络请求断言期望（add-mechanical-scenario-refetch-assertion）：
+    # from_dict 显式构造、to_dict 回环序列化——TestStep 无 extra 字段机制，
+    # 不补模型字段则该键在解析层被静默丢弃、引擎不可见（评审实测）。
+    expect_network: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d: dict = {"action": self.action}
@@ -1026,6 +1125,10 @@ class TestStep:
         # 非 None 即写（口径同上方 timeout，code-review item b52d4d781214）
         if self.duration is not None:
             d["duration"] = self.duration
+        # 原样回写（形态校验在验收期 validate_expect_network_form，序列化层
+        # 不清洗，坏档经 to_dict 回环后仍可被验收逐条定位）
+        if self.expect_network:
+            d["expect_network"] = self.expect_network
         return d
 
     @classmethod
@@ -1078,6 +1181,9 @@ class TestStep:
             body=_str_field(d, "body"),
             body_type=_str_field(d, "body_type"),
             duration=_num_field(d, "duration"),
+            # 原样透传（list 归一缺省）：形态校验在验收期
+            # validate_expect_network_form 逐条报错，解析层不清洗不丢键
+            expect_network=d.get("expect_network") or [],
         )
 
 
@@ -1331,6 +1437,27 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             )
         if step.action in ACTIONS_REQUIRING_TARGET and not step.target:
             errors.append(f"场景'{scenario.id}'步骤{i}: 操作 '{step.action}' 需要 target 选择器")
+        # expect_network 验收（add-mechanical-scenario-refetch-assertion 2.1）：
+        # 仅交互步骤可携带（design D3 显式集合），形态逐条校验（url_pattern
+        # 非空 / re: 正则可编译 / min_count 正整数）；min_count > 3 落 WARNING
+        # 不拒绝（经本模块 logger 落验证日志，验收错误通道只承载拦截项）。
+        if not step.expect_network:
+            continue
+        if step.action not in INTERACTIVE_WEB_ACTIONS:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 非交互操作 '{step.action}' 不支持 "
+                f"expect_network（仅交互步骤可携带: "
+                f"{', '.join(sorted(INTERACTIVE_WEB_ACTIONS))}）"
+            )
+            continue
+        entry_errors, entry_warnings = validate_expect_network_form(step.expect_network)
+        errors.extend(
+            f"场景'{scenario.id}'步骤{i}expect_network: {msg}" for msg in entry_errors
+        )
+        for msg in entry_warnings:
+            logger.warning(
+                "场景'%s'步骤%d expect_network 验收 WARNING: %s", scenario.id, i, msg
+            )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in WEB_ASSERTIONS:
