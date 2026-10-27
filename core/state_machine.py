@@ -639,6 +639,19 @@ PUSH_ATTEMPTS_FIELD = "_push_attempts"
 # 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
 SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 
+# ── judge 重跑计数与硬上限冻结旗标（fix-unfreeze-judge-counter-reset D1）──
+# 字段名单点定义（state_machine 与 pm_engine.verification.judge_gate 共用，
+# 避免裸串漂移；judge_gate 读侧键名逐字一致）：
+# _judge_rerun_count：judge 派发门跨轮重跑计数（读写方 judge_gate
+# ``_judge_rerun_count`` / 派发门 delta=+1）；_judge_cap_frozen：hard cap
+# （count > _MAX_JUDGE_RERUNS）冻结旗标，置位后计数停止自动递增。
+# 与 _scenario_repair_exhausted_rounds 同生命周期累计语义：**唯一**清零点 =
+# 验证通过（verified 落定）与人工 unfreeze_spec。两字段 MUST 成对清零
+# （D2）：只清计数不清旗标 → 递增恒失效、judge 生命周期预算失明；只清
+# 旗标不清计数 → 解冻后首轮派发 6 > 5 立即原样再冻，人工裁决出口形同虚设。
+JUDGE_RERUN_COUNT_FIELD = "_judge_rerun_count"
+JUDGE_CAP_FROZEN_FIELD = "_judge_cap_frozen"
+
 # ── legacy verifier 连续降级熔断计数（fix-worktree-lock-release-degrade-gate
 # D4）────────────────────────────────────────────────────────────────
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
@@ -2446,6 +2459,14 @@ class StateMachine:
         updates[JUDGE_INCONCLUSIVE_DISPATCHES_FIELD] = 0
         updates[IN_INCONCLUSIVE_REVERIFY_FIELD] = False
         updates["_judge_inconclusive_cap_escalated"] = False
+        # fix-unfreeze-judge-counter-reset D1/D2：judge 重跑计数与 hard cap
+        # 冻结旗标随人工解冻成对清零/清除（与上方各验证计数同一原子写）——
+        # 只清计数不清旗标则递增恒失效、judge 预算失明；只清旗标不清计数则
+        # 解冻后首轮派发 6 > 5 立即原样再冻（2026-10-27 19:17 add-command-center
+        # 监视期实证）。解冻后 judge 派发门从 0 重新起算（0+1=1 ≤ 上限），
+        # judge_rerun_cap 冻结的人工裁决出口可达。
+        updates[JUDGE_RERUN_COUNT_FIELD] = 0
+        updates[JUDGE_CAP_FROZEN_FIELD] = False
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         # update_spec 的单条目写语义在此显式展开（与 freeze_spec 同款：
