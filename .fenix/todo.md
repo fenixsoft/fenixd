@@ -414,3 +414,7 @@
   - 证据：告警 2f3f05cef937（verify_env_blocked，验证环境阻塞，10-25T13:24:58Z）「验证环境阻塞（第 1 轮）……topology-empty-spec-zero-state」；告警 685c513e647b（manual-intervention，13:32:04Z）自述根因「首跑截图被健全性门判 low_contrast（pixel_std=0.0773<0.08）拒绝固化视觉基线，场景被判 env warning」result=resolved；日志 13:24:57Z「verified 洗白门禁拦截 'add-spec-topology-bigscreen': env 失败场景不得判 verified」与 13:32:04Z「env 阻塞处置复位（直通道）+ verifier 入队重验」；处置 run admin-add-spec-topology-bigscreen-1792934698 run_metrics（run 收尾结构化指标行）success、turns=67、tools=37；spec 最终 21:35 verification-report 入库、21:38 归档；21:56 启动扫尾补写 planner-judge-add-spec-topology-bigscreen-1792934539/-1792935242 两个 interrupted 终态。
   - 调查评估：问题源：add-spec-topology-bigscreen 验证收尾的环境阻塞对账。已核实事实：①守卫链按设计工作——洗白门禁拦截、admin 处置、直通道复位、重验通过，全链约 7 分钟自愈，spec 交付未受损；②假阳性根源在形态层：零数据/空状态场景的截图天然接近纯色（空画布＋占位文案），固定 pixel_std 阈值无法区分「真空白渲染失败」与「空状态的合法低对比」，同类场景（empty/zero-state）在后续大屏类 spec 中会复现同型阻塞；③首跑失败的具体机理未定、两假说并存（渲染时序——截图早于数据/字体就绪 vs 场景本身就是低对比），档案无首跑截图留存不可裁决，重验通过仅说明二跑达标。与存量工作关系：浏览器端到端视觉基线验证为本窗新交付面（拓扑/协作图谱两个大屏 spec 首次走通），活跃区无同主题提案，非重复立项。结论：单次损失小（约 7 分钟＋一个 admin run），属新验证机制的第一个假阳性样本，低成本加固即可消除复发面。
   - 建议：①健全性门对场景名含 empty/zero-state/placeholder 的场景豁免或放宽 low_contrast 阈值，改按与基线模板的相对差异判 env；②env 阻塞重验前对同场景延时重截一次（如 +2 秒），排除渲染时序假阳性；③首跑被判 low_contrast 的截图落盘留存（.fenix/verify-evidence/），使假阳性可事后裁决。
+
+## 2026-10-27
+### 知识真相源
+- [ ] knowledge-distill 重试：归档 2026-10-27-evo-add-review-failure-attribution — run 失败: claude 进程非零退出（exit=1）；stderr 尾部: [claude-code:unrecognized_model] {"model":"glm-5.3-flash[1M]","query_source":"sdk"}
