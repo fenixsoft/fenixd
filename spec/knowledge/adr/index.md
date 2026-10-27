@@ -291,3 +291,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-283](ADR-283-spec-attached-signal-closure-resolve-channel-kind-gate.md) | accepted | spec 附着信号终态收口归 auto-resolve 通道（判定/盘点/写回三处 kind 门同步放宽、条件族白名单界定收口面），自愈注册表保持纯类型元组不承载主体终态锚，收口注记由判定端附终态时刻、写回端只透传 | |
 | [ADR-284](ADR-284-evolution-product-contract-per-item-partial-accept-no-repair-loop.md) | accepted | 进化产物契约拒绝粒度细化到单条部分回收（宽口径仅落库链路显式启用、复用 partial 语义水位不推进下检查点幂等补齐），全非法仍 fail-closed、文件级错误不豁免、部分接受路径 .failed 留档，不做修复回问回路（搭检查点自动重试便车） |
 | [ADR-285](ADR-285-todo-marker-commit-producer-scoped-batch-no-file-debounce.md) | accepted | todo.md 标记提交去抖按生产者批末收集（ingest/自动接受/保留清理逐条 defer、批末按项目各一枚、消息附条目 id 明细），单点写保持写后即提交，禁建跨生产者文件级时间窗合并窗口（同 pathspec 双生产者会互卷改动随 push 外泄） |
+| [ADR-286](ADR-286-scenario-salvage-single-point-atomic-rewrite-readers-zero-defense.md) | accepted | 场景顶层拯救形态收窄「dict 且含非空 scenarios 数组」唯一形态、解包重过全量校验后原子重写产物文件落地（禁内存采纳），拯救助手只接验收归因单点、load_scenarios 本体与其余读端零防御恒假设纯数组顶层，解包必留痕；后续新增场景文件读端受同约束 |
