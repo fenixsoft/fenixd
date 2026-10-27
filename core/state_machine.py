@@ -16,6 +16,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 
 from core.admin_store import _fsync_parent_dir
 from core.git_base_branch import resolve_base_branch
@@ -658,6 +659,36 @@ JUDGE_REPAIR_CLAIMS_FIELD = "_judge_repair_claim_rounds"
 JUDGE_REPAIR_REJECTED_FIELD = "_judge_repair_rejected_rounds"
 JUDGE_REPAIR_LAST_SUMMARY_FIELD = "_judge_repair_last_summary"
 
+# ── 排程重验等待态来源标记（fix-scheduled-reverify-survive-restart D1）─────
+# 字段名单点定义（state_machine 与 pm_engine.verification.escalation 共用，
+# 避免裸串漂移）：
+# _reverify_pending：排程重验等待态标记（bool）。置位点唯一 =
+# escalation._schedule_scenario_repair_reverify，与截止字段
+# _dispatch_backoff_until **同一原子写**落盘。daemon 全扫恢复路径
+# （recover_interrupted TESTING 分支）以本字段为门识别「合法等待排程重验」
+# 的 testing 态——MUST NOT 裸读 _dispatch_backoff_until 作门：该字段被
+# dispatch 锁冲突退避（dispatch/backoff.py）/instant-fail 退避/env 阻塞升级
+# （escalation.py）多机制共用，裸读会把非排程等待态也纳入恢复豁免
+# （真孤儿态行为回归，design D2）。
+# _reverify_reason：排程来源信号短串（如 scenario_repair_exhausted），
+# 与标记字段同原子写，恢复日志/排障溯源用。
+# 截止时刻**单源复用 _dispatch_backoff_until**（既有字段，与
+# spec_is_undriven 条件③ 探测静默、_dispatch_backoffed 派发门同源），
+# MUST NOT 另立 _reverify_scheduled_at 之类第二截止字段（双源必然漂移）。
+# 清零点三处（清零集 REVERIFY_STATE_RESET_FIELDS 单点，各处同一原子写）：
+# ① 重验执行落定（verified/bug-found，verdict_evidence._record_verdict_adoption
+#    与 fastlane.VERIFIED_RESET_FIELDS）；② 人工解冻（unfreeze_spec 清零集）；
+# ③ 恢复路径拾起（recover_interrupted 到期分支）。三处 MUST 同步清
+# _reverify_pending/_reverify_reason 与仍未来的 _dispatch_backoff_until 残留
+# ——只清标记不清截止会把已收口 spec 留在探测静默/派发退避窗内。
+REVERIFY_PENDING_FIELD = "_reverify_pending"
+REVERIFY_REASON_FIELD = "_reverify_reason"
+REVERIFY_STATE_RESET_FIELDS = {
+    REVERIFY_PENDING_FIELD: False,
+    REVERIFY_REASON_FIELD: None,
+    "_dispatch_backoff_until": None,
+}
+
 # ── judge 重跑计数与硬上限冻结旗标（fix-unfreeze-judge-counter-reset D1）──
 # 字段名单点定义（state_machine 与 pm_engine.verification.judge_gate 共用，
 # 避免裸串漂移；judge_gate 读侧键名逐字一致）：
@@ -1000,6 +1031,11 @@ class StateParser:
                     # 会把已消费的修订 re-entry 误判为仍在待重验（无限追加
                     # 重验轮）。
                     SCENARIO_REVISION_PENDING_FIELD,
+                    # fix-scheduled-reverify-survive-restart D1：排程重验等待态
+                    # 标记——False 不转会读回 "False" 为 truthy，恢复路径会把
+                    # 已收口/无排程的 testing 态误判为排程等待中（永久跳过
+                    # 孤儿态重置，testing 悬挂）。
+                    REVERIFY_PENDING_FIELD,
                 ):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
@@ -2492,6 +2528,12 @@ class StateMachine:
         updates[JUDGE_REPAIR_CLAIMS_FIELD] = 0
         updates[JUDGE_REPAIR_REJECTED_FIELD] = 0
         updates[JUDGE_REPAIR_LAST_SUMMARY_FIELD] = None
+        # fix-scheduled-reverify-survive-restart D1：排程重验等待态三字段随
+        # 人工解冻清零（清零集单点 REVERIFY_STATE_RESET_FIELDS，同一原子写）
+        # ——解冻即人工裁决完成，重验日程一并作废；仍未来的
+        # _dispatch_backoff_until 残留同步清除，防解冻后的 spec 留在
+        # 探测静默/派发退避窗内。
+        updates.update(REVERIFY_STATE_RESET_FIELDS)
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         # update_spec 的单条目写语义在此显式展开（与 freeze_spec 同款：
@@ -3290,6 +3332,56 @@ class StateMachine:
                     f"Recovering interrupted SPEC: {name} (was {status})",
                 )
                 if status == SpecStatus.TESTING:
+                    # ── 排程重验等待态前置检查（fix-scheduled-reverify-survive-
+                    # restart D2）── 孤儿态判定前先识别「合法等待排程重验」的
+                    # testing 态：以 _reverify_pending 标记为门。MUST NOT 裸读
+                    # _dispatch_backoff_until 作门——该字段被 dispatch 锁冲突
+                    # 退避（dispatch/backoff.py）/instant-fail 退避/env 阻塞
+                    # 升级（escalation.py）多机制共用，裸读会把非排程等待态
+                    # 也纳入「不重置」豁免，改变真孤儿态既有行为（回归）。
+                    if entry.get(REVERIFY_PENDING_FIELD):
+                        until_raw = entry.get("_dispatch_backoff_until")
+                        try:
+                            until = float(until_raw) if until_raw else 0.0
+                        except (TypeError, ValueError):
+                            # 截止不可解析视同已到期：标记残留但排程时刻不可信，
+                            # 清标记交周期扫描拾起（等待一个不可判定的截止会让
+                            # testing 悬挂）。
+                            until = 0.0
+                        if until > time.time():
+                            # 未到期：合法等待态——不重置、保持 testing、排程
+                            # 字段原样保留。到点重验由既有
+                            # event_bus._recover_testing 周期扫描兜底消费（读
+                            # STATE 截止字段，不依赖内存定时器，重启后照常执行）。
+                            self.logger.info(
+                                "state_machine",
+                                f"跳过重启恢复：'{name}' 排程重验等待中"
+                                f"（_dispatch_backoff_until={until_raw} 未到期，"
+                                f"reason={entry.get(REVERIFY_REASON_FIELD)}）——"
+                                f"保持 testing，到点由周期扫描触发重验",
+                            )
+                            continue
+                        # 已到期（或截止缺失/不可解析）：重启恰落在排程到期窗口、
+                        # 重验尚未执行——保持 testing 不重置，仅清排程标记与
+                        # 截止残留（REVERIFY_STATE_RESET_FIELDS 单点清零集），
+                        # 交既有周期扫描拾起（spec_is_undriven 条件③ 已出窗 →
+                        # _recover_testing 重触发 verify，最坏延迟一个
+                        # poll_interval）。MUST NOT 在恢复路径自行派发——派发
+                        # 单源走 _recover_testing，双触发由 _enqueue 按
+                        # (spec, agent_type) 去重与 _dispatch_backoffed 门兜底。
+                        cleared = self._recovery_update_spec(
+                            name,
+                            dict(REVERIFY_STATE_RESET_FIELDS),
+                            snapshot_status=status,
+                        )
+                        self.logger.info(
+                            "state_machine",
+                            f"跳过重启恢复：'{name}' 排程重验已到期未执行——"
+                            f"保持 testing"
+                            f"{'，已清排程标记' if cleared else '（并发变更，清除放弃）'}"
+                            f"；重验交由周期扫描拾起",
+                        )
+                        continue
                     # 重启恢复重验计数（fix-daemon-lifecycle-races D3）：递增并
                     # 持久化（_bump_counter 文件锁内原子读写）。仅此恢复路径递增
                     # ——运行期中断/重派不经过 recover_interrupted，天然不计数。
