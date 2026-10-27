@@ -4703,14 +4703,6 @@ class FenixDaemon:
         积压旧信号重启后仅消费、落 stale_created 结果，不转换入账、不投递
         checkpoint（手动授权语义锚定点击时刻）；created 缺失/非法保守按陈旧处理。
         """
-        from core.code_fix import (
-            convert_regression_snapshot_to_findings,
-            regression_findings_fingerprints,
-            reopen_regression_items,
-        )
-        from core.code_review import upsert_findings
-        from core.regression import read_result
-
         req_path = PROJECT_ROOT / ".fenix" / "regression_fix_request.json"
         result_path = PROJECT_ROOT / ".fenix" / "regression_fix_request_result.json"
         # 「信号在场但 payload 非法」探测（item 3ae81f8b6d0b，对齐 code_review
@@ -4730,6 +4722,20 @@ class FenixDaemon:
         )
         if payload is None:
             return
+
+        # 模块 import 下沉到「信号在场」判定之后（code-review item
+        # 006c50651722，对齐 _check_spec_delete_requests 先例）：本车道由主循环
+        # 每约 1s 无条件调用，import 若前置于任何门控，懒加载模块首次导入失败
+        # （rsync/patch 热更新窗口文件短暂不一致或安装残缺）会穿出被主循环逐
+        # tick except 捕获，每秒刷一条 pickup failed ERROR；下沉后仅信号在场才
+        # 执行，且信号已被消费删除，异常不逐轮复发。
+        from core.code_fix import (
+            convert_regression_snapshot_to_findings,
+            regression_findings_fingerprints,
+            reopen_regression_items,
+        )
+        from core.code_review import upsert_findings
+        from core.regression import read_result
 
         request_created = str(payload.get("created") or "")
         self.logger.info(

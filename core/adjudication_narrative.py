@@ -166,9 +166,12 @@ _MATERIAL_SECTION_MAX_CHARS = max(
 _PROMPT_FIELD_MAX_CHARS = 2048
 
 # 四段标题锚定正则（与 _validate_structure 同形态 ^##<空白><标题>，MULTILINE
-# 逐行锚定）：截断分段边界用（随 REQUIRED_SECTIONS 单源更新）
+# 逐行锚定）：截断分段边界用（随 REQUIRED_SECTIONS 单源更新）。行尾锚定
+# （``(?=[ \t]*\r?$)``，与 _validate_structure 一致）只认逐字精确标题——
+# 「## 调查结论与后续计划」这类前缀伪标题不挤占段界窗口（否则真实的
+# 「## 决策选项」标题被挤出前 4 个匹配、整段并入上一段遭预算砍尾）。
 _SECTION_HEAD_RE = re.compile(
-    "^##[ \t]*(?:" + "|".join(re.escape(h) for h in REQUIRED_SECTIONS) + ")",
+    "^##[ \t]*(?:" + "|".join(re.escape(h) for h in REQUIRED_SECTIONS) + ")(?=[ \t]*\r?$)",
     re.MULTILINE,
 )
 

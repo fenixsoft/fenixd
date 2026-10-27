@@ -47,8 +47,10 @@ const StaleCodeSelfhealPanel = forwardRef<
     const next = buildScsFormValues(config.stale_code_selfheal);
     const key = JSON.stringify(next);
     if (key === lastBackfillRef.current) return;
-    lastBackfillRef.current = key;
     form.setFieldsValue(next);
+    // ref 记账在回填成功之后（与 useGatedFormPanel item 51e106646c29 对齐）：
+    // setFieldsValue 抛异常时 key 不落 ref，同样的配置内容依赖下次变化仍会重试
+    lastBackfillRef.current = key;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.stale_code_selfheal, form]);
 

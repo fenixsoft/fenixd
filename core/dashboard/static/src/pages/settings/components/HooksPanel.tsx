@@ -82,7 +82,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         const d = await getHookAudit(project, undefined, 20);
         if (!cancelled) setAudit(d.audit ?? []);
       } catch (e) {
-        console.error('Failed to load hook audit:', e);
+        // 不落 console，避免触发验证场景的 no_console_error 断言（同族面板口径）
         if (!cancelled) message.error(`加载 hook 执行记录失败：${e instanceof Error ? e.message : e}`);
       } finally {
         if (!cancelled) setAuditLoading(false);

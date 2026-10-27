@@ -771,6 +771,12 @@ class EventBus:
         failed = 0
         for name, entry in current_specs.items():
             if not isinstance(entry, dict):
+                # 与 _run_full_scan_body 双保险分支同口径：跳过留痕不静默
+                self.logger.warning(
+                    "event_bus",
+                    f"Orphan ready recovery 跳过非法条目 '{name}'（非 dict），"
+                    f"以防恢复崩溃",
+                )
                 failed += 1
                 continue
             if entry.get("status") != "ready":

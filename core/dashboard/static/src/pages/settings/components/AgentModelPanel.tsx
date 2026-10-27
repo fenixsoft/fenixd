@@ -385,7 +385,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // 与角色链可用模型校验（checkValues）。
   const { saving, initialValues, handleSave } = useGatedFormPanel({
     form,
-    buildValues: () => buildFormValues(config.agents),
+    // agents 段空值防护（item daa896661772，比照 ParallelSettingsPanel 与上方
+    // providers 的兜底口径）：降级响应可能缺 agents 段，直接传入会在
+    // buildFormValues 内解引用抛 TypeError 首帧白屏，`?? {}` 交给缺省兜底
+    buildValues: () => buildFormValues(config.agents ?? {}),
     backfillDeps: [config.agents],
     onSave,
     buildPayload: (values): Partial<ConfigData> => ({

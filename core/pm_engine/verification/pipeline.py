@@ -2401,12 +2401,20 @@ class VerificationPipeline:
         # 入口 pop 清残留（code-review item 88d58ec1565d）：读侧缺省 False
         # 兜底，清键与置 False 等价。
         self.__dict__.get("_replan_error_format_class", {}).pop(spec_name, None)
+        # FileNotFoundError 同收口（code-review item 3d051b000228）：
+        # load_scenarios 对缺失文件抛 FileNotFoundError（非 ValueError），
+        # 验证轮在飞期间文件被删（_corrupt_freeze_options 选项①「删除
+        # test_scenarios.json 批准重新出题」的 admin 处置）竞窗命中时
+        # 同走 env_error → replan / 升级温和通道，不炸穿到 engine 层触发
+        # 整轮回滚 + legacy 降级（对齐 _load_frozen_or_escalate 的兜底
+        # 口径；缺失文件顶层拯救不适用——助手内部 OSError 兜底返回
+        # None，照常进下方 env_error 赋值）。
         try:
             if scenarios_override is not None:
                 scenarios = scenarios_override
             else:
                 scenarios = load_scenarios(scenarios_path)
-        except ValueError as e:
+        except (ValueError, FileNotFoundError) as e:
             # 顶层拯救助手（evo-scenario-product-toplevel-contract 2.2）：判定
             # 失败前先尝试「dict 且含 scenarios 数组」唯一形态的机械解包——
             # 解包重过全部校验通过即以纯数组原子重写落地（其余读端与冻结层
@@ -2515,9 +2523,12 @@ class VerificationPipeline:
             # 回退迁移——保持内存迁移集执行；自愈端口改写只落盘上旧集，本轮
             # 不反映，下轮写回成功后由自愈再改写。
             if scenarios_override is None:
+                # FileNotFoundError 同收口（code-review item 3d051b000228）：
+                # 首载后文件在飞被删（选项①竞窗）同走 env_error → replan
+                # 温和通道，不炸穿整轮回滚（口径同上方首载读点）。
                 try:
                     scenarios = load_scenarios(scenarios_path)
-                except ValueError as e:
+                except (ValueError, FileNotFoundError) as e:
                     env_error = f"自愈改写后场景文件验收失败: {e}"
                     # 同属场景文件结构验收阶段 → 格式类（design D3 按失败
                     # 发生阶段判定；该读点文件已过首载拯救/校验，一般仅

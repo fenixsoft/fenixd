@@ -5595,14 +5595,22 @@ class CodeFixOrchestrator:
                 # 保留台账条目与现场。
                 items_degraded: list = []
                 for attempt in range(3):
+                    # 读降级（契约：OSError/非常规文件不抛异常、按空集降级并经
+                    # degraded_out 回传）同纳入重试（code-review item
+                    # d987e99191cd）：出参按次清空后短间隔重读，仅最后一次尝试
+                    # 的信号参与下方双门判定；3 次仍降级/异常才走「保留待下链」
+                    # 保守分支。
+                    items_degraded.clear()
                     try:
                         items = _read_items_unlocked(
                             items_path(root), degraded_out=items_degraded
                         )
-                        break
                     except Exception:  # noqa: BLE001 — 重试耗尽走「保留待下链」分支
-                        if attempt < 2:
-                            time.sleep(0.2 * (attempt + 1))
+                        items = None
+                    if items is not None and not items_degraded:
+                        break
+                    if attempt < 2:
+                        time.sleep(0.2 * (attempt + 1))
                 if items is None or items_degraded:
                     ledger_read_failed = True
                 else:
@@ -6771,6 +6779,11 @@ class CodeFixOrchestrator:
                                 "breaker_triggered": breaker_triggered,
                             },
                         )
+                        # 入档成功置位（698bb643077b，与 _defer_merge_back
+                        # 5767 / _downgrade_deferred 5820 先例同款）：否则
+                        # archived_ok 恒 False，下方 chain_skip_ids 的 None
+                        # 分支不可达，入档成功的条目被重复并入链内跳过集。
+                        archived_ok = True
                     except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
                         archived_ok = False
                         self._log(
@@ -6978,6 +6991,10 @@ class CodeFixOrchestrator:
                             reason="merge_back_conflict", branch=branch, tip_sha=tip_sha,
                             logger=self._logger,
                         )
+                        # 入档成功置位（698bb643077b，同上耗尽收口 twin）：
+                        # 否则 chain_skip_ids 的 None 分支不可达，入档成功的
+                        # 条目被重复并入链内跳过集。
+                        archived_ok = True
                     except Exception as e:  # noqa: BLE001 — 入档/告警写盘失败只留痕
                         archived_ok = False
                         self._log(
@@ -7015,14 +7032,21 @@ class CodeFixOrchestrator:
         ledger_degraded: list = []
         if resolve_candidates:
             for attempt in range(3):
+                # 读降级（不抛异常、经 degraded_out 回传）同纳入重试（code-
+                # review item d987e99191cd，与 _retry_one_deferred 同款）：
+                # 出参按次清空后短间隔重读，仅最后一次尝试的信号参与下方
+                # 双门判定；3 次仍降级/异常才转延迟台账。
+                ledger_degraded.clear()
                 try:
                     ledger = _read_items_unlocked(
                         items_path(root), degraded_out=ledger_degraded
                     )
-                    break
                 except Exception:  # noqa: BLE001 — 重试耗尽走「保留待下链」分支
-                    if attempt < 2:
-                        time.sleep(0.2 * (attempt + 1))
+                    ledger = None
+                if ledger is not None and not ledger_degraded:
+                    break
+                if attempt < 2:
+                    time.sleep(0.2 * (attempt + 1))
         if resolve_candidates and (ledger is None or ledger_degraded):
             # 已合回但核销状态未知（与 defer 路径 ledger_read_failed 分支同
             # 款）：MUST NOT 此刻以 success 清理现场——比照 _defer_merge_back

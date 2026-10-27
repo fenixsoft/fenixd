@@ -536,10 +536,28 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         _reset_uniform_fail_streak(pipeline, spec_name)
         return False
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
+    # 锁内原子递增（code-review item d27b6261a8d8，比照 fastlane._bump_fail_streak
+    # / judge_gate._judge_round_bump / escalation 的 _inconclusive_attempts 同款）：
+    # 锁外快照读改写会与 _reset_uniform_fail_streak 的清零写（混合失败轮回落 /
+    # 解冻路径）互相覆盖——丢清零则提前冻结，丢增量则熔断推迟一轮。脏值由
+    # bump_counters 兜底按 0 起算（同原 except 防御）；递增落盘由 bump 原子完成，
+    # 下方 freeze_for_human / update_spec 写点不再回写计数字段。
     try:
-        attempts = int(spec.get("_uniform_fail_attempts", 0) or 0) + 1
-    except (TypeError, ValueError):
-        attempts = 1
+        attempts = pipeline._context.state_machine.bump_counters(
+            spec_name, {"_uniform_fail_attempts": 1}
+        ).get("_uniform_fail_attempts", 0)
+    except Exception as e:
+        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档（非阻断），
+        # 不中断同因失败哨处置。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' uniform 同因计数原子递增失败（按快照+1 降档，"
+            f"非阻断）: {type(e).__name__}: {e}",
+        )
+        try:
+            attempts = int(spec.get("_uniform_fail_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
     note = (
         f'全场景同因失败（{fail_total}/{total}，签名一致: "{signature[:60]}"）'
         f"——疑似环境或场景问题，已呼叫 admin 介入判断（第 {attempts} 次）"
@@ -585,8 +603,9 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         # admin run。自动呼叫 admin 不依赖该裸写：上方 verify_uniform_failure
         # SIGNAL 属 STORED_SIGNAL_TYPES，由 _detect_family_explosion 按记录摄取
         # 即唤起 Administrator（含本轮，带专属三分支处置指引）；本入口则保证
-        # frozen 与人工升级告警成对落盘。tester_run 清空与 attempts 计数经
-        # extra_updates 并入同一原子写（error/status/frozen 三键由入口自管）。
+        # frozen 与人工升级告警成对落盘。tester_run 清空经 extra_updates 并入
+        # 同一原子写（error/status/frozen 三键由入口自管）；attempts 计数已由
+        # 上方 bump_counters 锁内原子递增，不再随本写点回写。
         pipeline._context.state_machine.freeze_for_human(
             spec_name,
             error=note,
@@ -601,17 +620,12 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 "轮同因，spec 已冻结等待人工。"
             ),
             alert_callback=pipeline._context.escalation_notifier,
-            extra_updates={
-                "_uniform_fail_attempts": attempts,
-                "tester_run": None,
-            },
+            extra_updates={"tester_run": None},
         )
     else:
-        # 未达阈值：仅落 error 文案与连续计数，不改状态（继续按轮呼叫 admin）。
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {"error": note, "_uniform_fail_attempts": attempts},
-        )
+        # 未达阈值：仅落 error 文案，不改状态（继续按轮呼叫 admin；连续计数
+        # 已由上方 bump_counters 锁内原子递增，不在此回写）。
+        pipeline._context.state_machine.update_spec(spec_name, {"error": note})
     pipeline._context.logger.warning("pm_engine", f"全场景同因失败哨触发 '{spec_name}': {note}")
     return True
 

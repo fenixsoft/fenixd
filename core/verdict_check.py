@@ -1846,7 +1846,9 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
         if not isinstance(sc, dict):
             violations.append(f"场景 #{idx + 1} 非对象")
             continue
-        sid = sc.get("scenario_id") or f"#{idx + 1}"
+        # 双键回退（与 whitewash_violations item 1a656196aa7d 同口径）：实现者
+        # 手写产物场景条目可能只带 id 键，不得落 "#N" 占位符
+        sid = sc.get("scenario_id") or sc.get("id") or f"#{idx + 1}"
         if sc.get("status") not in _FAST_TRACK_SCENARIO_STATUSES:
             violations.append(
                 f"场景 {sid} status 非法: {sc.get('status')!r}"
@@ -1881,10 +1883,12 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
             )
 
     # 场景全量执行：设计集与执行集一致，无静默遗漏
+    # 双键回退（与 whitewash_violations item 1a656196aa7d 同口径）：条目只带
+    # id 键时执行集不得为空，否则全部设计 id 被误报「场景静默遗漏」
     executed_ids = {
-        str(sc.get("scenario_id"))
+        str(sc.get("scenario_id") or sc.get("id"))
         for sc in scenarios
-        if isinstance(sc, dict) and sc.get("scenario_id")
+        if isinstance(sc, dict) and (sc.get("scenario_id") or sc.get("id"))
     }
     if designed_ids:
         missing = [str(d) for d in designed_ids if str(d) and str(d) not in executed_ids]

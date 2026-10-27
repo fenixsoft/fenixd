@@ -149,6 +149,13 @@ def request_admin_invoke(
     # （fenixd._consume_request_file 先 rename 后读私有副本）无害：最坏
     # rename 走空占位、下一轮（1s 粒度）拾取换入的完整内容，请求不丢。
     # [fenix-ignore:c3d305a22fc2] 进程崩溃残留的零字节占位无需 TTL 自愈：消费侧 _consume_request_file 每轮主循环把它 rename 成私有副本，空文件 json.load 抛 JSONDecodeError 走清理分支照样 unlink（fenixd.py），占位随之从磁盘移除，通道不会被永久锁死。
+    # 占位成功后的失败清理（code-review item f2533b810016）：fstat/close
+    # 与 mkstemp 失败同落下方清理段——按 inode 复核尽力 unlink 自家占位
+    # 后原样 re-raise，兑现「占位成功后失败即清理」契约，避免零字节占位
+    # 残留顶住通道一个扫描周期。本 try 内仅 os.open（O_EXCL）可能抛
+    # FileExistsError，conflict 语义不受合并影响。
+    placeholder_fd = None
+    placeholder_ino = None
     try:
         placeholder_fd = os.open(
             req_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
@@ -158,13 +165,29 @@ def request_admin_invoke(
         # 他人 O_EXCL 重建占位时会记下他人 inode，比对照样误删。
         placeholder_ino = os.fstat(placeholder_fd).st_ino
         os.close(placeholder_fd)
+        placeholder_fd = None
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
+        )
     except FileExistsError:
         # 冲突时同样回读既有 created（对齐同族冲突语义）；并发空占位或
         # 读失败保持 None，不抛异常
         return _conflict_result(req_path)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
-    )
+    except Exception:
+        # fstat/close/mkstemp 失败：尽力关闭仍握着的占位 fd（对齐下方
+        # fdopen 失败兜底 os.close 先例），再按 inode 复核 unlink 自家
+        # 占位（避免误删他人请求/占位），最后原样 re-raise。
+        if placeholder_fd is not None:
+            try:
+                os.close(placeholder_fd)
+            except OSError:
+                pass
+        try:
+            if req_path.stat().st_ino == placeholder_ino:
+                req_path.unlink()
+        except OSError:
+            pass
+        raise
     try:
         # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked /
         # regression._atomic_write 先例 cbb57806fbfd）：with 的 close 只在

@@ -1457,8 +1457,11 @@ def _collect_rescue_traces(
 ) -> Dict[str, Dict[str, Any]]:
     """编排层救回痕迹归集（design D3 / tasks 3.1）。
 
-    流式扫描 .fenix/logs/fenixd.log（仅主日志，对齐既有第 4节日志节口径；
-    窗口早于当前日志起点（轮转）时按日志起点自然截断，不强制回扫 .1），按
+    流式扫描 .fenix/logs/fenixd.log，仅扫主日志（第 4 节日志节
+    collect_log_errors 已按 code-review item 2a855b65782c 补扫轮转
+    fenixd.log.1，本节轮转口径与其有意独立、不回扫 .1：窗口早于当前
+    日志起点（轮转）时按日志起点自然截断，轮转窗口内救回痕迹少计属
+    已知取舍），按
     _RESCUE_TRACE_PATTERNS「关键词 → 组件」成对过滤窗口内日志行，归组计数 +
     每组至多 _RESCUE_TRACE_SAMPLE_MAX 条样本（时间戳 + message 截断）。不按
     run_id 关联（部分行只有 spec 名，强行关联引入第三个解析口径）。

@@ -2541,6 +2541,14 @@ class ConfigLoader:
             or isinstance(max_files, bool)
             or max_files <= 0
         ):
+            cls._warn_reader_once(
+                "admin.code_review.max_files",
+                max_files,
+                _logger.warning,
+                "admin.code_review.max_files 非法值 %r（非正整数），"
+                "回退缺省 500",
+                max_files,
+            )
             max_files = 500
         # scope 白名单：恰为 "full" 才取 full，其余（缺失/window/非法字面量/
         # 非字符串类型）一律回退 "window"（add-code-review-scope-config D1）
@@ -2552,6 +2560,14 @@ class ConfigLoader:
         # 缺省 False（与 get_code_review_fix_config 同范式）。
         enabled = cr.get("enabled", False)
         if not isinstance(enabled, bool):
+            cls._warn_reader_once(
+                "admin.code_review.enabled",
+                enabled,
+                _logger.warning,
+                "admin.code_review.enabled 非法值 %r（非 bool），"
+                "回退缺省 False",
+                enabled,
+            )
             enabled = False
         # 停滞告警阈值（分钟，正整数，缺省 15）：bool 是 int 子类显式排除
         #（与 max_files 同款守卫）；非法回退缺省。
@@ -2561,6 +2577,14 @@ class ConfigLoader:
             or isinstance(stall_alert_minutes, bool)
             or stall_alert_minutes <= 0
         ):
+            cls._warn_reader_once(
+                "admin.code_review.stall_alert_minutes",
+                stall_alert_minutes,
+                _logger.warning,
+                "admin.code_review.stall_alert_minutes 非法值 %r（非正整数），"
+                "回退缺省 15",
+                stall_alert_minutes,
+            )
             stall_alert_minutes = 15
         # 手动全仓审查叠加防护阈值（evo-add-code-review-ratelimit-resume 4.1）：
         # 台账 open 条数超过该阈值时手动 full 触发回 409 确认态（对齐
@@ -2573,6 +2597,14 @@ class ConfigLoader:
             or isinstance(manual_full_open_warn, bool)
             or manual_full_open_warn < 0
         ):
+            cls._warn_reader_once(
+                "admin.code_review.manual_full_open_warn",
+                manual_full_open_warn,
+                _logger.warning,
+                "admin.code_review.manual_full_open_warn 非法值 %r"
+                "（负数/bool/非整数），回退缺省 30",
+                manual_full_open_warn,
+            )
             manual_full_open_warn = 30
         # 触发时点（add-code-review-run-at D1）：合法 HH:MM 才生效，其余一切
         # （键缺失/非法字面量/非字符串类型）回退自省 run_at——缺省＝历史行为
@@ -2629,6 +2661,14 @@ class ConfigLoader:
         crf = cls._sub_segment_or_empty(admin, "code_review_fix")
         enabled = crf.get("enabled", False)
         if not isinstance(enabled, bool):
+            cls._warn_reader_once(
+                "admin.code_review_fix.enabled",
+                enabled,
+                _logger.warning,
+                "admin.code_review_fix.enabled 非法值 %r（非 bool），"
+                "回退缺省 False",
+                enabled,
+            )
             enabled = False
         batch_size = crf.get("batch_size", 20)
         if (
@@ -2636,6 +2676,14 @@ class ConfigLoader:
             or isinstance(batch_size, bool)
             or batch_size <= 0
         ):
+            cls._warn_reader_once(
+                "admin.code_review_fix.batch_size",
+                batch_size,
+                _logger.warning,
+                "admin.code_review_fix.batch_size 非法值 %r（非正整数），"
+                "回退缺省 20",
+                batch_size,
+            )
             batch_size = 20
         targeted_retry_max = crf.get("targeted_retry_max", 3)
         if (
@@ -2643,6 +2691,14 @@ class ConfigLoader:
             or isinstance(targeted_retry_max, bool)
             or not 1 <= targeted_retry_max <= 5
         ):
+            cls._warn_reader_once(
+                "admin.code_review_fix.targeted_retry_max",
+                targeted_retry_max,
+                _logger.warning,
+                "admin.code_review_fix.targeted_retry_max 非法值 %r"
+                "（bool/非整数/越界 1-5），回退缺省 3",
+                targeted_retry_max,
+            )
             targeted_retry_max = 3
         targeted_regression = crf.get("targeted_regression", True)
         if not isinstance(targeted_regression, bool):

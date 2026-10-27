@@ -91,7 +91,8 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     同步跟进：提供 project 时复用本模块读侧（list_maintenance_entries）探测
     候选 run_id 是否已在台账出现，已存在即追加 ``-<n>``（n 从 1 起递增）。
     探测台账而非落申领占位：台账是纯登记簿（追加行 + 读侧全量扫描），
-    run_id 只作关联键、无独立产物文件可申领。退避 run 尾段变为 ``-<n>``，
+    run_id 只作关联键、无独立产物文件可申领。退避 run 尾段变为
+    ``-<rand>-<n>``（仅 project=None 的 base 形态无随机段），
     admin_monitor._spec_from_run_id 的 ``-\\d{9,10}(-[ar]\\d+)*$`` 尾锚不再
     命中、scope 还原返回 None（回落泛型主体），与 code-review-<epoch>-<n>
     退避先例同口径；未撞名时（绝大多数）形态与解析不变。
@@ -103,7 +104,8 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     ``x`` 引导保证尾段不落入 run_files.RUN_ID_SUFFIX_RE 的 ``-a<n>``/``-r<n>``
     attempt 形态、也不满足 admin_monitor._spec_from_run_id 的 ``-\\d{9,10}``
     尾锚（与既有 ``-<n>`` 退避同口径回落泛型主体）；随机段居尾，时间前缀
-    保序。探测退避保留：串行的同秒同 scope 重复登记仍走确定性 ``-<n>`` 防撞。
+    保序。探测退避保留：串行的同秒同 scope 重复登记仍走确定性
+    ``-<rand>-<n>`` 防撞。
     project=None 时保持纯 base 形态不变（无台账可探测的调用方形态稳定）。
 
     Args:

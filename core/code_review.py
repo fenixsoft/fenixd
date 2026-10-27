@@ -111,7 +111,30 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
             if not re.fullmatch(r"[0-9]+", n_str):
                 continue
             n = int(n_str)
-            if n < 1 or not p.is_file():
+            if n < 1:
+                continue
+            # 「确认缺失 vs 访问失败」分口（对齐 _read_items_unlocked 的
+            # d9690f2c3475）：is_file() 对 stat 层异常（权限漂移、NFS 句柄
+            # 失效等）同样回 False，瞬时访问失败不得与真缺失混同静默排除
+            # ——否则该分片被三消费侧漏读且无留痕。WARNING（warn-once 节流，
+            # read_progress 热路径且本函数每轮连读两遍）留痕后按缺失跳过；
+            # 仅 FileNotFoundError 确认缺失维持静默。
+            try:
+                p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                if _warn_once(("shard-stat", run_id, p.name)):
+                    _logger.warning(
+                        "code_review: 访问分片 %s 失败（run %s），按缺失跳过，"
+                        "本分片发现可能漏读: %s",
+                        p, run_id, e,
+                    )
+                continue
+            # 目录/非常规文件兜底保留（345902f74690 不改变既有排除语义）：
+            # ``-b<N>`` 同形名也可能是 mkdir 的目录，stat 成功不代表是可读
+            # 产物——确认存在但非普通文件仍按缺失跳过，不进 found。
+            if not p.is_file():
                 continue
             found.append((n, p))
     except OSError as e:
@@ -162,14 +185,38 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
     ingest / 产物硬门）MUST 统一经本函数取行，禁止自写读取口径。
 
     ``on_error(source, exc)``：某来源（分片或主产物）读取发生 OSError 时
-    回调注明并跳过该来源——单分片失败不中断整轮；不传则静默跳过。文件
-    缺失（如分片直写模式下主产物尚未创建）是常态而非错误，不回调。各
+    回调注明并跳过该来源——单分片失败不中断整轮；不传则静默跳过。stat
+    层访问失败（``is_file()`` 对权限类异常同样回 False，不得与真缺失混同）
+    同走本回调并另记 WARNING 留痕。文件缺失（如分片直写模式下主产物尚未
+    创建）是常态而非错误，不回调。各
     消费侧更严的有效性判据（如 ingest/硬门要求 ``findings`` 为列表）由
     消费侧在返回行上自行过滤。
     """
     rows: List[dict] = []
     seen_files: set = set()
     for src in [*shard_paths(project_root, run_id), out_path(project_root, run_id)]:
+        # 「确认缺失 vs 访问失败」分口（对齐 _read_items_unlocked 的
+        # d9690f2c3475）：is_file() 对 stat 层异常同样回 False，瞬时访问
+        # 失败不得与真缺失混同静默跳过——WARNING（warn-once 节流，热路径）
+        # 与 on_error 留痕后跳过；仅 FileNotFoundError 确认缺失维持静默
+        # 不回调。stat 成功后的 is_file() 兜底保留（非普通文件仍静默跳过）。
+        try:
+            src.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            if _warn_once(("out-stat", run_id, src.name)):
+                _logger.warning(
+                    "code_review: 访问产物 %s 失败（run %s），按缺失跳过，"
+                    "该来源发现可能漏读: %s",
+                    src, run_id, e,
+                )
+            if on_error is not None:
+                try:
+                    on_error(src, e)
+                except Exception:  # noqa: BLE001 — 回调异常不影响读取主流程
+                    pass
+            continue
         if not src.is_file():
             continue
         try:

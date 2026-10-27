@@ -973,7 +973,14 @@ def render_verification_report(
         head = "✅ 通过（verified）"
         # count_note 须与状态详情行（detail_parts）一致：豁免失败（flaky/test-defect
         # 豁免场景合法保留失败计数而终局 verified）时再写「全部场景通过」会自相矛盾
-        if (failed or 0) + (errors or 0) > 0:
+        # code-review 225644080811：fast-track 形态（report.json 缺失、明细来自
+        # run-result verification.scenarios）下 summary 计数不可得，上方计数判定
+        # 恒假仍落「全部场景通过」，与场景明细表渲染的豁免失败场景行自相矛盾——
+        # 补充对 _resolve_scenarios 场景级的同款非 pass 检查，与豁免轮口径对齐。
+        if (failed or 0) + (errors or 0) > 0 or any(
+            isinstance(sc, dict) and str(sc.get("status") or "") not in ("pass", "passed")
+            for sc in _resolve_scenarios(report, run_result) or []
+        ):
             count_note = "其余失败场景已豁免（见分类列）"
         else:
             count_note = "全部场景通过"

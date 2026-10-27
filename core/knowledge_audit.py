@@ -1618,7 +1618,19 @@ def run_audit(
         idx += 1
         fp = _finding_fingerprint(finding)
         entry = ledger.get(fp)
-        if entry is None:
+        if not isinstance(entry, dict):
+            # 台账条目人工编辑/旧版本可能写坏为非 dict 值（如字符串）：按缺
+            # 席同口径用 _new_finding_entry 重建走正常复核流程，非 dict 且非
+            # None 时 WARNING 留痕，不让单条损坏条目炸整轮 audit 车道（与
+            # _record_verdict 对 verdicts 的就地补齐、review_rounds 就地归零、
+            # _escalated_entries 的 isinstance 过滤同口径）。
+            if entry is not None:
+                log.warning(
+                    "knowledge",
+                    f"audit 台账条目类型损坏（{type(entry).__name__}），按缺席重建："
+                    f"{finding['kind']}"
+                    f"（{finding['a']['page']} × {finding['b']['page']}）",
+                )
             entry = _new_finding_entry(finding)
             ledger[fp] = entry
             _save_findings_ledger(project_root, ledger, own_fingerprints={fp})

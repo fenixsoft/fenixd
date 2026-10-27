@@ -2780,6 +2780,13 @@ class StateMachine:
             f.write(self._render_archive_entry(spec_name, entry))
             f.flush()
             os.fsync(f.fileno())
+            # 新建清单文件时追加路径仅有数据 fsync，需补刷父目录项使新文件
+            # 目录项与数据一同持久化（对齐 _atomic_write_text 与
+            # admin_store._write_store 口径；内部吞 EINVAL 等目录 fsync
+            # 不支持的异常）——否则「清单首次落盘 + STATE.md 已删条目」
+            # 窗口掉电会双丢条目，落入 evict_spec 注释声称不可能的
+            # 丢条目态（code-review item 095621784257）。
+            _fsync_parent_dir(path)
 
     def evict_spec(self, spec_name: str, archived_by: str = "ui") -> dict:
         """把 STATE.md 中该 SPEC 的条目迁出至归档清单 ``.fenix/STATE.archive.md``。

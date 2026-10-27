@@ -196,7 +196,9 @@ def write_items(project_root, records: Iterable[dict]) -> None:
     每条一行 JSON；records MUST 是可迭代的记录（逐条为含 id 字段的 dict），
     MUST NOT 传 id→记录 dict——实现直接遍历 records，传 dict 会把键字符串
     当记录全部丢弃、全量写回空文件（既有条目全部丢失）。同一 id 只保留
-    一条（后写覆盖先写）。
+    一条（后写覆盖先写）。记录非 dict 或缺字符串 id 时抛 TypeError
+    （与 upsert_item 同口径快速失败，不做静默丢弃）；校验在写回前完成，
+    异常时 items.jsonl 保持原样不被覆盖。
     """
     # code-review item 0f1a54886379：把 docstring 契约变成运行期保证——
     # 误传 id→记录 dict 时快速失败（TypeError），不留「静默清空全量条目、
@@ -209,7 +211,13 @@ def write_items(project_root, records: Iterable[dict]) -> None:
     recs: Dict[str, dict] = {}
     for rec in records:
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str):
-            continue
+            # code-review item ded46e2a46f7：与 upsert_item（a820db66d8fa）
+            # 同口径快速失败——write_items 是全量覆盖写入口，缺字符串 id 的
+            # 记录若被静默丢弃，会在写回结果中无告警丢失。
+            raise TypeError(
+                "write_items 期望逐条为含字符串 id 字段的 dict，"
+                "记录缺 id 无法定位写回键"
+            )
         recs[rec["id"]] = rec
 
     path = items_path(project_root)

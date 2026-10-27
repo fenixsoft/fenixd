@@ -346,17 +346,16 @@ def evaluate_alert(
 
     # ── 自愈分支（add-alert-self-heal-marking 1.2）────────────────────
     # 以 signal_type 注册表为门：注册表外类型（含 inconclusive_loop env
-    # 握手族）永不自愈。spec 附着族命中既有条件枚举（trigger 已识别，或
-    # 回填模式下 signal_type ∈ BACKFILL_SIGNAL_TYPES）→ 既有条件判定，
-    # 不双重判定（specs/alert-lifecycle 排除项）。
+    # 握手族）永不自愈。spec 附着族命中既有条件枚举（trigger 已识别）→
+    # 既有条件判定，不双重判定（specs/alert-lifecycle 排除项）。
+    # 自愈注册表与回填注册表 BACKFILL_SIGNAL_TYPES 互斥（无交集），故
+    # 此处不存在「无 trigger 按回填推断」的既有条件路径。
     if (
         now is not None
         and kind in ("escalation", "signal")
         and signal_type in SELF_HEAL_SIGNAL_TYPES
     ):
-        existing_applies = (has_trigger and _recognized(condition)) or (
-            not has_trigger and backfill and signal_type in BACKFILL_SIGNAL_TYPES
-        )
+        existing_applies = has_trigger and _recognized(condition)
         if not existing_applies:
             return _evaluate_self_heal(
                 alert,
