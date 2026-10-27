@@ -402,6 +402,9 @@ export default function ActivitiesPage() {
             };
       if (activitiesRes.status === 'rejected') {
         // 运维记录接口失败：合并透出两侧原因（双失败时告警侧不再被整体丢弃）
+        // fix 5d51d0d16083: 落横幅前先上屏告警一路已成功拉取的数据——否则告警
+        // fulfilled 时数据随 rejected 分支整体丢弃，告警视图误渲染空态
+        if (!alerts.error) setAlertsData(alerts);
         const actMsg =
           activitiesRes.reason instanceof Error
             ? activitiesRes.reason.message
