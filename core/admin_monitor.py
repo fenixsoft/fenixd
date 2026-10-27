@@ -1953,10 +1953,24 @@ class AdminMonitor:
 
         archive_dir = Path(self.project_root) / ".fenix" / "runs" / "archive"
         samples: list = []
+
+        def _archive_mtime(p: Path) -> float:
+            # stat 守卫（code-review item 68973543a88e）：glob 与 stat 之间
+            # 归档副本会被 runs 保留清理并发删除/移动（_admin_run_file：归档
+            # 副本不再永久保留），sorted 的 key 里任一 p.stat() 抛
+            # FileNotFoundError/OSError 即沿外层 except 令整轮取样返回 None，
+            # 顺延判定静默退化为仅判派发时刻落窗。失败文件记 mtime 0.0 沉底
+            # （reverse 排序后由读取段既有 OSError 守卫跳过），对齐
+            # _detect_repeated_failures 的逐文件守卫口径（item 57cb3554af55）。
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
         try:
             candidates = sorted(
                 archive_dir.glob("code-review-*.jsonl"),
-                key=lambda p: p.stat().st_mtime,
+                key=_archive_mtime,
                 reverse=True,
             )
             for path in candidates:
