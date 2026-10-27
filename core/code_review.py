@@ -131,6 +131,11 @@ def shard_paths(project_root, run_id: str) -> List[Path]:
                         p, run_id, e,
                     )
                 continue
+            # 目录/非常规文件兜底保留（345902f74690 不改变既有排除语义）：
+            # ``-b<N>`` 同形名也可能是 mkdir 的目录，stat 成功不代表是可读
+            # 产物——确认存在但非普通文件仍按缺失跳过，不进 found。
+            if not p.is_file():
+                continue
             found.append((n, p))
     except OSError as e:
         _logger.warning("code_review: 分片目录 %s 列举失败（按无分片处理）: %s", d, e)
