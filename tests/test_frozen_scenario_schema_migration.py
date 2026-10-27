@@ -19,6 +19,8 @@ from unittest import mock
 import pytest
 
 from core.verify_engine.scenarios import (
+    CONTRACT_VERSION_FIELD,
+    CURRENT_CONTRACT_VERSION,
     SCHEMA_VERSION,
     TestScenario,
     load_scenarios,
@@ -31,8 +33,10 @@ from core.admin_monitor import AdminMonitor
 from core.admin_monitor import DISPOSITION_AUTO_RESET_SIGNAL_TYPES
 from core.pm_engine.verification import (
     ENV_BLOCK_SIGNAL_TYPES,
+    VerificationPipeline,
     resolve_env_blocked_reset_path,
 )
+from core.state_machine import StateMachine
 
 
 # ── 夹具 ─────────────────────────────────────────────────────────
@@ -484,6 +488,124 @@ class TestBlockedStuckDispositionReset:
         """复位守卫：blocked_stuck 场景冻结不触发复位（resolve 路径 None）。"""
         spec = {"status": "blocked", "frozen": True, "branch": "fenix/x"}
         assert resolve_env_blocked_reset_path(spec, "/tmp") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 冻结装载读端顶层 dict 包裹机械拯救（fix-frozen-scenario-dict-salvage 1.2）
+# ═══════════════════════════════════════════════════════════════════════
+
+def _valid_cli_entry(sid: str = "salvage-cli") -> dict:
+    """可过既有全部场景校验的 cli 场景条目（与冻结写端同形）。"""
+    return {
+        "id": sid,
+        "description": f"拯救场景 {sid}",
+        "kind": "cli",
+        "steps": [{"action": "run", "command": "echo hi"}],
+        "assertions": [{"type": "exit_code", "expected": 0}],
+    }
+
+
+class TestFrozenLoadTopLevelDictSalvage:
+    """冻结装载读端 dict 包裹拯救接线（pipeline._load_frozen_or_escalate）。"""
+
+    def _pipe(self, tmp_path: Path):
+        """构造最小 VerificationPipeline（同 frozen-contract-evolution 夹具）。"""
+        sm = StateMachine(tmp_path / ".fenix" / "STATE.md", _FakeLogger())
+        pm = mock.MagicMock()
+        pm.project_root = tmp_path
+        pm.logger = _FakeLogger()
+        pm.state_machine = sm
+        pipe = VerificationPipeline(pm)
+        pipe._escalate_env_blocked = mock.MagicMock()
+        return pipe
+
+    def _write_frozen_raw(self, tmp_path: Path, spec: str, text: str):
+        """写入冻结场景文件原文，返回 (verify_dir, 文件路径)。"""
+        vp = tmp_path / ".fenix" / "verify-progress" / spec
+        vp.mkdir(parents=True)
+        path = vp / "test_scenarios.json"
+        path.write_text(text, encoding="utf-8")
+        return vp, path
+
+    def test_dict_wrapper_salvaged_loads_and_rewrites_array(self, tmp_path: Path):
+        """① 合法 dict 包裹 → 拯救成功装载推进、文件被重写为纯数组、
+        不触发 env_blocked。"""
+        spec = "salvage-s1"
+        wrapped = {"spec": spec, "total": 1, "scenarios": [_valid_cli_entry()]}
+        vp, path = self._write_frozen_raw(
+            tmp_path, spec, json.dumps(wrapped, ensure_ascii=False)
+        )
+        pipe = self._pipe(tmp_path)
+        with mock.patch.object(
+            pipe, "_current_instance_base_url", return_value="http://127.0.0.1:8000"
+        ):
+            frozen, aborted = pipe._load_frozen_or_escalate(spec, vp)
+        assert aborted is False
+        assert frozen is not None and len(frozen) == 1
+        pipe._escalate_env_blocked.assert_not_called()
+        # 文件已被拯救以纯数组原子重写落地
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        assert isinstance(persisted, list)
+        assert persisted[0]["id"] == "salvage-cli"
+        # 解包后继续既有契约迁移（写回盖版本戳）
+        assert persisted[0][CONTRACT_VERSION_FIELD] == CURRENT_CONTRACT_VERSION
+
+    def test_dict_wrapper_invalid_entries_env_blocked(self, tmp_path: Path):
+        """② dict 包裹但条目非法 → 拯救不可救 → 走 env_blocked，文件不被重写。"""
+        spec = "salvage-s2"
+        bad_entry = {
+            "id": "broken-entry",
+            "kind": "cli",
+            "steps": [{"action": "run"}],  # 缺 command/value
+            "assertions": [{"type": "output_match"}],  # 缺 expected/value
+        }
+        wrapped = {"spec": spec, "total": 1, "scenarios": [bad_entry]}
+        vp, path = self._write_frozen_raw(
+            tmp_path, spec, json.dumps(wrapped, ensure_ascii=False)
+        )
+        before = path.read_text(encoding="utf-8")
+        pipe = self._pipe(tmp_path)
+        frozen, aborted = pipe._load_frozen_or_escalate(spec, vp)
+        assert frozen is None
+        assert aborted is True
+        pipe._escalate_env_blocked.assert_called_once()
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_top_level_dict_without_scenarios_env_blocked(self, tmp_path: Path):
+        """③ 顶层 dict 无 scenarios 数组键 → 走 env_blocked（文案维持既有）。"""
+        spec = "salvage-s3"
+        vp, path = self._write_frozen_raw(
+            tmp_path, spec, json.dumps({"spec": spec, "total": 0})
+        )
+        pipe = self._pipe(tmp_path)
+        frozen, aborted = pipe._load_frozen_or_escalate(spec, vp)
+        assert frozen is None
+        assert aborted is True
+        pipe._escalate_env_blocked.assert_called_once()
+        assert "期望 JSON 数组" in pipe._escalate_env_blocked.call_args.args[1][1]
+
+    def test_pure_array_untouched_no_salvage(self, tmp_path: Path):
+        """④ 顶层纯数组 → 行为与接线前一致：不触发拯救、无额外重写。"""
+        raw = [_valid_cli_entry("array-kept")]
+        raw[0][CONTRACT_VERSION_FIELD] = CURRENT_CONTRACT_VERSION  # 现行版本零操作
+        spec = "salvage-s4"
+        vp, path = self._write_frozen_raw(
+            tmp_path, spec, json.dumps(raw, ensure_ascii=False, indent=2)
+        )
+        before = path.read_text(encoding="utf-8")
+        pipe = self._pipe(tmp_path)
+        with mock.patch.object(
+            pipe, "_salvage_top_level_dict", return_value=None
+        ) as salvage_mock, mock.patch.object(
+            pipe, "_current_instance_base_url"
+        ) as base_mock:
+            frozen, aborted = pipe._load_frozen_or_escalate(spec, vp)
+        assert aborted is False
+        assert frozen is not None and len(frozen) == 1
+        salvage_mock.assert_not_called()
+        base_mock.assert_not_called()
+        assert path.read_text(encoding="utf-8") == before
+        pipe._escalate_env_blocked.assert_not_called()
 
 
 if __name__ == "__main__":
