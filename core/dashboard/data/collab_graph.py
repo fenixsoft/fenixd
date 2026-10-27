@@ -84,7 +84,8 @@ def _merge_topology(topo: dict, project_name: str, roles: dict, edges: dict, sta
         n.get("kind") == "run" and n.get("status") in IN_FLIGHT_STATUSES
         for n in topo.get("nodes", [])
     ):
-        state["running_specs"].add(spec_name)
+        # 以 (项目, SPEC) 二元组去重：跨项目同名 SPEC 在飞时不互相吞并计数
+        state["running_specs"].add((project_name, spec_name))
 
     node_by_id = {n["id"]: n for n in topo.get("nodes", []) if isinstance(n, dict)}
 

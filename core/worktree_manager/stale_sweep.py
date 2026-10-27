@@ -223,9 +223,11 @@ class G7StaleSweepMixin:
                 # 口径执行（GC 与 consume/_reclaim 竞争规避）
                 n_legacy += 1
                 continue
-            # 守卫 (i)：在飞引用保护（单一来源复用）。STATE 不可解析时本
-            # 守卫恒真（保守保留），故 GC 不会在 STATE 异常窗口内误删。
-            kept, reason = self._branch_protected_by_state(branch)
+            # 守卫 (i)：在飞引用保护（单一来源复用）。传入循环前的 states
+            # 快照，避免逐分支重复解析 STATE（整轮 GC 至多解析一次）。
+            # STATE 不可解析时本守卫恒真（保守保留），故 GC 不会在 STATE
+            # 异常窗口内误删。
+            kept, reason = self._branch_protected_by_state(branch, states)
             if kept:
                 n_active += 1
                 continue
@@ -648,7 +650,9 @@ class G7StaleSweepMixin:
             )
             return None
 
-    def _branch_protected_by_state(self, branch: str) -> tuple:
+    def _branch_protected_by_state(
+        self, branch: str, states: Optional[dict] = None
+    ) -> tuple:
         """分支是否被 STATE 在飞/待收口 spec 引用（fix-recovery-branch-anchor D6）。
 
         判据（D6）：
@@ -667,10 +671,15 @@ class G7StaleSweepMixin:
 
         Returns: ``(kept: bool, reason: str)``；STATE 不可解析时 ``(True, ...)``
         保守保留。
+
+        ``states`` 为预取的 STATE 条目快照（``_read_state_entries`` 返回值），
+        供循环内批量判定复用同一快照、避免逐分支重复读取/解析 STATE；为
+        None（缺省）时保持原行为自行读取。
         """
         if not branch:
             return False, ""
-        states = self._read_state_entries()
+        if states is None:
+            states = self._read_state_entries()
         if states is None:
             return True, "STATE 不可解析，保守保留"
         # (a) 字段值直接命中

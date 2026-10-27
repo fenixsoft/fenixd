@@ -42,7 +42,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess
 import tempfile
@@ -909,9 +908,10 @@ class MainTreeStrayWipSweeper:
                 自行查询（独立调用形态保持可用）。
 
         git 查询失败返回 None（调用方按放弃本轮处置，条目保留）。check-ignore
-        以 --stdin 批量一次调用（散件多时避免逐路径子进程）；``-n
-        --non-matching`` 保证每个输入路径都有输出行（未匹配输出 ``::\t路径``），
-        按输出末列回映射、不依赖行序。
+        以 --stdin 批量一次调用（散件多时避免逐路径子进程，``-z`` NUL 分隔
+        口径见 ``_git_check_ignore_detail``）；``-n --non-matching`` 保证每个
+        输入路径都有输出记录（未匹配记录 pattern 段为空串），按记录回映射、
+        不依赖顺序。
         """
         if status_stdout is None:
             status_stdout = self._git("status", "--porcelain", "-uall")
@@ -937,43 +937,36 @@ class MainTreeStrayWipSweeper:
         return sorted(entries)
 
     def _git_check_ignore_detail(self, paths: list) -> "dict[str, str] | None":
-        """批量 ``git check-ignore -v -n --non-matching --stdin``。
+        """批量 ``git check-ignore -z -v -n --non-matching --stdin``。
 
-        返回 路径 → 匹配规则（未匹配 ``::`` 行归一为空串）；check-ignore 退出
-        码语义特殊（0=存在 ignored，1=全部未 ignored），1 是合法终态——与
+        返回 路径 → 匹配规则（未匹配记录归一为空串）；check-ignore 退出码
+        语义特殊（0=存在 ignored，1=全部未 ignored），1 是合法终态——与
         ``_git`` 的「非零即失败」不同，此处只把超时/不可用/128 视为失败返回
-        None。规则行左段形如 ``<source>:<linenum>:<pattern>``，以 ``:<行号>:``
-        左锚切段取 pattern（code-review item 003836038272）：source 路径含
-        冒号（Linux 合法）时按前两个冒号切分会把行号卷进 pattern 段——
-        pattern 段错位对散件流无害（``!`` 放行与 非``!`` 命中均不计入），但
-        白名单脱落流 _whitelist_untracked_entries 恰以 pattern 段以 ``!``
-        开头为放行判据，错位即放行项被误判已 ignore、脱落检测静默漏报；
-        切分取**最后一个** ``:<数字>:``（贪婪前缀右锚正则，code-review
-        item 589a995c72c6）：source 路径自身含 ``:<数字>:`` 形态（如目录
-        名 ``foo:123``、文件名 ``a:1:b``）时非贪婪左锚会切在第一个序列、
-        行号后的真实 pattern 整段卷入错位段——放行项即被误判已 ignore、
-        脱落检测静默漏报；右锚后 source 含冒号（含 ``:<数字>:`` 形态）均
-        切在行号位。残余歧义如实记录：pattern 段自身内嵌 ``:<数字>:``（且
-        其后还有内容）时会切进 pattern 尾段，单串无法机械消歧，``!`` 开头
-        判据在该形态下失真；source 侧形态远比 pattern 内嵌数字冒号常见，
-        右锚取代价最小侧。行内左段/回显路径的制表符切分同取右锚
-        （``rsplit("\\t", 1)``，code-review item 92b0668114e5）：pattern 段
-        原样输出、内嵌裸制表符只可能落在该段，回显路径列控制字符恒被 git
-        C 转义——左锚切分在该形态下首个制表符落进 pattern、左段只剩前缀、
-        与输入路径恒不等且 detail 缺失，右锚后制表符形态消解。两个消费面
-        同享正确 pattern。
+        None。-z（code-review item 1871c70f1a6f）：输入输出均 NUL 分隔，输出
+        为 ``<source> <NUL> <linenum> <NUL> <pattern> <NUL> <pathname>
+        <NUL>`` 四字段记录（pattern 段自带 ``!``/``/`` 修饰，未匹配记录为
+        三空字段），pathname/pattern 均原文输出、不经 core.quotePath C 转
+        义，回显键与输入真实路径恒等。取代旧逐行口径（``-c
+        core.quotePath=false`` + 制表符右锚切分 + ``:<行号>:`` 正则切段，
+        item 17e26b92199c / 92b0668114e5 / 589a995c72c6）：quotePath=false
+        只豁免高位字节，路径含双引号/反斜杠/控制字符时回显仍是 C 转义形、
+        回显键与真实路径恒不等——untracked 散件流对取不到 detail 的路径按
+        异常形态保守剔除、白名单脱落流 ``!`` 放行判据恒 False，被 ``!``
+        规则放行的该类脱落路径静默漏报；-z 记录下 source/linenum 独立成
+        字段，冒号与制表符两类切分歧义一并消解。``-n --non-matching`` 保证
+        每个输入路径恰有一条输出记录，按记录回映射、不依赖顺序。两个消费
+        面同享正确 pattern。
         """
         try:
             res = subprocess.run(
                 [
                     "git", "-C", str(self.project_root),
-                    # -c core.quotePath=false（code-review item 17e26b92199c）：
-                    # 非 ASCII 路径回显原样（与 porcelain 解析 + _unquote_git_path
-                    # 的口径对齐），否则回显带引号 C 转义形、末列回映射恒失配。
-                    "-c", "core.quotePath=false",
-                    "check-ignore", "-v", "-n", "--non-matching", "--stdin",
+                    # -z（code-review item 1871c70f1a6f）：输入输出均 NUL 分隔、
+                    # 输出路径不经 core.quotePath C 转义，免行内制表符/冒号
+                    # 切分歧义（旧逐行口径的回显失配形态见 docstring）。
+                    "check-ignore", "-z", "-v", "-n", "--non-matching", "--stdin",
                 ],
-                input="\n".join(paths) + "\n",
+                input="\0".join(paths),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -985,27 +978,13 @@ class MainTreeStrayWipSweeper:
         if res.returncode not in (0, 1):
             return None
         detail: dict = {}
-        for line in res.stdout.splitlines():
-            if "\t" not in line:
-                continue
-            # 左段/回显路径按最后一个制表符右锚切分（code-review item
-            # 92b0668114e5）：pattern 段原样输出、内嵌裸制表符只可能落在
-            # 该段，回显路径列的控制字符（含制表符）恒被 git C 转义——
-            # 左锚切分遇 pattern 内嵌制表符会把首个落点切进左段、与输入
-            # 路径恒不等且 detail 缺失（散件流保守不计入、白名单脱落流
-            # 静默漏报），rsplit 后制表符形态消解。
-            left, echoed = line.rsplit("\t", 1)
-            # pattern 段按「:<行号>:」右锚正则提取（取**最后一个**
-            # ``:<数字>:`` 序列，code-review item 589a995c72c6 取代 item
-            # 003836038272 的非贪婪左锚：source 路径自身含 ``:<数字>:`` 形态
-            # 时左锚切在第一个序列、行号后的真实 pattern 整段卷入错位段，
-            # detail dict 的消费方 _whitelist_untracked_entries 恰以 pattern
-            # 段以 ``!`` 开头为放行判据，白名单脱落检测即静默漏报；残余歧义
-            # pattern 自身内嵌 ``:<数字>:`` 见 docstring）。无 ``:<数字>:``
-            # 形态（含未匹配 ``::`` 行）归一为空串，与原兜底同口径。
-            m = re.match(r"^(.+):(\d+):(.*)$", left)
-            # 右锚正则三组：source / 行号 / pattern——pattern 取 group(3)。
-            detail[echoed] = m.group(3) if m else ""
+        # 四字段 NUL 记录：<source>/<linenum>/<pattern>/<pathname>，各字段
+        # 后随一个 NUL——stdout 恰以 NUL 收尾、split 末项为空串，去尾后按
+        # 步长 4 解构完整记录（尾段残缺记录被上界自然截除）：pathname 段
+        # 作键、pattern 段（含未匹配空串）作值。
+        records = res.stdout.split("\0")[:-1]
+        for i in range(0, len(records) - 3, 4):
+            detail[records[i + 3]] = records[i + 2]
         return detail
 
     def _untracked_signal(

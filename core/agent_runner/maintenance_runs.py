@@ -260,6 +260,33 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
             （signal_type/spec/severity/description/evidence/recommended_action）。
     """
     spec = admin_signal.get("spec") or "global"
+    # ── spec 名路径分量校验（code-review item 29985b608a34，对齐 run_impl_ocr
+    # 8eb9572741c4 / serving 2c579adb670f 同款守卫，判定单点复用
+    # _spec_name_path_error，先例 run_impl_ocr 的惰性导入形态）── spec 直接内插
+    # run_id（admin-<spec>-<epoch>）并拼进 runs/<run_id>.jsonl 事件流与
+    # .fenix/admin_disposition-<run_id>.json 实例文件（该路径还经 prompt 交
+    # 管理员写入、框架读回），含路径分隔符或 ``..`` 分量的名字会把申领占位/
+    # 处置文件与事件流引到 .fenix 之外。上游 add_spec 无字符集约束且存在
+    # spec/changes 目录名等旁路，故在任何路径拼点/申领之前按分量拒绝：
+    # 不派生 run_id、不落占位、不唤起 run，按既有降级语义折算失败信封返回
+    # （success=False + result="failed"，与下方产物硬门 fail-closed 折算
+    # 同口径，run_id 留空由调用方既有缺省分支兜底）。
+    from core.pm_engine.verification.serving import _spec_name_path_error
+
+    unsafe = _spec_name_path_error(spec)
+    if unsafe:
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning("agent_runner", f"admin 车道拒绝非法 spec 名: {unsafe}")
+        return AdminDisposition(
+            run_id="",
+            spec=spec,
+            success=False,
+            problem=admin_signal.get("description", ""),
+            result="failed",
+            recommended_action=admin_signal.get("recommended_action") or "",
+            error=unsafe,
+        )
     run_id = _unique_admin_run_id(runner, spec)
     # 申领占位收尾清理（对齐 run_code_review/run_regression/run_code_fix 三车道
     # item e6a103d93b91 确立的 finally 形态）：_unique_admin_run_id 以

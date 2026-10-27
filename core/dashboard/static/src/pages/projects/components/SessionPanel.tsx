@@ -388,6 +388,17 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       applySnapshot(data);
       return;
     }
+    // 跨会话代际守卫（code-review item 24ac9f4e49d6）：服务端重启换代会话后，
+    // 快照属于新 session，本地保留的还是旧 session 的事件（uuid 与新快照无
+    // 交集），按下方时序边界判定 boundary=-1 会把旧会话全文整体尾补到新会话
+    // 之后（渲染出「新会话在上、旧会话全文缀尾」的错乱转录，直到切离分面重拉
+    // 才自愈）。此刻 applySnapshot 尚未改写 sessionIdRef，读到的即本地列表
+    // 所属会话的 id：与快照会话不一致即放弃 carried 合并，直接整表替换对齐
+    // 新会话（旧事件随 syncEvents 重建去重集合一并丢弃）。
+    if (sessionIdRef.current !== data.session.id) {
+      applySnapshot(data);
+      return;
+    }
     const snapshotEvents = data.events || [];
     const snapshotUuids = new Set(
       snapshotEvents
@@ -405,8 +416,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // 在本地列表中的下标」为边界：carried 中位于该下标之前的事件早于快照
     // 窗口（前插回快照之前），位于其后的才是快照 GET 发起后经 SSE 先行到达、
     // 快照未涵盖的窗口内事件（保持尾补回）。快照为空或首事件 uuid 在本地
-    // 找不到（如服务端重启后的新会话代际）时 boundary=-1，全部按尾补回——
-    // 不误删本地已有事件，保持断线窗口合并语义。
+    // 找不到时 boundary=-1，全部按尾补回——不误删本地已有事件，保持断线
+    // 窗口合并语义（跨会话代际场景已在函数入口按 session id 拦截为整表
+    // 替换，不再落入本分支）。
     const firstUuid = snapshotEvents.find((ev) => Boolean(ev && ev.uuid))?.uuid;
     const boundary = firstUuid
       ? local.findIndex((ev) => (ev ? (ev.uuid as string | undefined) : undefined) === firstUuid)
