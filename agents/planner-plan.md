@@ -45,6 +45,13 @@
 - 如涉及输入：1个 text_match（输入内容正确）
 - 如涉及表单：1个 element_enabled（提交按钮状态正确）
 
+## 交互后网络请求断言（expect_network，scenario-network-assertion 能力）
+「点击/输入等交互应触发数据重拉取（refetch）」的场景，在该**交互步骤**上携带 `expect_network`，引擎在步骤执行窗口内收集网络请求并断言（「点了但没拉数据」类缺陷由此机械可暴露）：
+- 最小示例：`{"action": "click", "target": "[data-testid='project-filter']", "expect_network": [{"url_pattern": "/api/command-center/pipeline", "min_count": 1}]}`
+- 形态：`[{"url_pattern": <URL 子串，或 "re:" 前缀正则>, "min_count": <正整数>}]`
+- 稳健用法：url_pattern 用**端点路径子串**（如 `/api/command-center/pipeline`，精确到筛选端点，勿用会命中背景轮询的宽泛前缀）+ **min_count: 1**；min_count > 3 验收会落 WARNING（过严易碎）。
+- 仅允许挂在交互步骤（click/type/clear/select/scroll/hover/drag/contextmenu/dialog）上；navigate/wait/seed/mock_api 携带会被验收拒绝。断言失败=该步骤失败、场景计入 fail（明细含期望/实际计数与窗口捕获样例 URL）。
+
 ## 对话框处理（window.confirm/alert/prompt）
 - 点击若触发 window.confirm 等浏览器对话框，必须显式处理，否则被默认 dismiss 会误判：
   - 确认场景：在触发对话框的 click 步骤加 "dialog": "accept"，或在 click 前加一步 `{"action": "dialog", "value": "accept"}`
@@ -85,7 +92,7 @@
 
 支持的断言类型: `element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment`
 
-支持的操作类型: `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`（click 步骤可携带 "dialog": "accept" | "dismiss" 处理浏览器对话框）
+支持的操作类型: `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`（click 步骤可携带 "dialog": "accept" | "dismiss" 处理浏览器对话框；交互步骤可携带 "expect_network": [...] 断言步骤窗口内网络请求，见上节）
 
 ## 多形态验证：kind 选择判定树（add-verify-multi-kind-runner）
 
