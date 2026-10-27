@@ -1,5 +1,5 @@
-<!-- knowledge: capability=adjudication-choices-registry rev=4
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice -->
+<!-- knowledge: capability=adjudication-choices-registry rev=5
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation -->
 
 # 裁决选项静态注册表
 
@@ -21,7 +21,7 @@
 | `spec-review-incomplete`（评审器连坏） | retry_review（解冻重派评审）/ skip_review_gate / abandon |
 | `token_budget` | ignore（知情确认）/ freeze_stop_loss（冻结止损）/ raise_budget（调大预算） |
 | `build_artifact_paths_missing` | open_config（引导到配置表单）/ declare_no_artifacts（声明无产物）/ ack_self_heal（确认自愈·继续观察） |
-| `maintree_stray_wip_stale`（主树散件 WIP 滞留升级，全局信号） | commit_stray_wip（提交散件 WIP：核对归属后直接提交主树信号清单内散件改动，与 stash 类动作互斥，处置记录附提交 hash） |
+| `maintree_stray_wip_stale`（主树散件 WIP 滞留升级，全局信号） | commit_stray_wip（提交散件 WIP：核对归属后直接提交主树信号清单内散件改动，与 stash 类动作互斥，处置记录附提交 hash）/ untrack_stray_wip（根治·散件出库：对信号清单内文件执行 git rm --cached 出库、.gitignore 追加条目（已存在则不重复写）并以独立提交落地，此后该路径改动由 ignore 规则自然吸收，结果附 untrack 清单与提交 hash） |
 
 - 消费通道：上表除 `build_artifact_paths_missing`、`maintree_stray_wip_stale` 外，各信号告警为 `kind=ESCALATION`（经 freeze_for_human/升级告警入口成对写入），进前端告警区渲染下拉；`build_artifact_paths_missing` 与 `maintree_stray_wip_stale` 的发射点分别在 mergeback（`_maybe_signal_build_artifact_paths_missing`）与主树散件宽限升级（`worktree_manager/stray_wip.py`），写 `kind=SIGNAL` 记录（后者经 admin_monitor 三表登记接入 Administrator 自动唤起）——SIGNAL 记录不进前端告警区（`get_unhandled_alerts`/`AdminStore.unhandled()` 仅含 ESCALATION），其 choices 由 Administrator 处置契约消费。
 - 发射点接线：预算耗尽与 token 告警（`budget.py` / `token_budget.py`）、升级闸门（`family.py`）、评审否决上限与评审器失败上限（`spec_review.py`）、judge 重跑上限（`judge_gate.py`）、同因重派熔断（`dispatch/queue.py`、`dispatch/fast_track.py`）、配置裁决（`mergeback.py`）、主树散件滞留升级（`worktree_manager/stray_wip.py`）写告警时同时写入 `choices` 字段；`admin_monitor.py`（SIGNAL 摄取侧与桶 0 发射侧）不携带。
@@ -34,6 +34,7 @@
 - 解析单源 `resolve_choice(choice_id, signal_type)`：注册桶内精确匹配，未命中返回 `not-in-bucket`（不跨信号放行）→ signal_type 未注册时全表反查，spec_scoped 动作拒绝（`scoped-no-reverse`，不兜底放行）、非作用域动作返回拷贝 → 全表无此 id 返回 `unknown-choice`。执行器与消费端守卫共用本函数防解析漂移；返回选项为逐项拷贝，就地改写不污染注册表。
 - `ack_self_heal`（确认自愈·继续观察，非作用域收口动作）声明在可能全局形态的 `build_artifact_paths_missing` 桶末位，未注册 signal_type 经全表反查可达，保证全局信号执行收口不断路。
 - `commit_stray_wip` 是注册表中首个带主树 git 写副作用的动作：执行器以 signal_type 绑定守卫收口（仅受理 `maintree_stray_wip_stale`，未注册信号与姊妹 info 信号一律拒绝），未注册信号经全表反查通道可达本动作但不获执行授权（守卫细节见 [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md)，执行语义见 [adjudication-actions](adjudication-actions.md)）。
+- `untrack_stray_wip` 沿用同款双保险形态入桶（spec_scoped=False + 执行端 signal_type 绑定守卫仅收 `maintree_stray_wip_stale`），与 `commit_stray_wip` 同桶并存：提交适合交互会话遗留等应入库改动，根治适合被 track 的生成物类散件（每次构建必复发的确定性敞口）；二者的取舍由处置程序按复发计数判断（复发型处置义务见 [admin-choices-contract](admin-choices-contract.md)）。
 
 ## 溯源
 
@@ -42,3 +43,4 @@
 - 2026-10-08 evo-fix-env-exemption-exit-reachability（spec/archive/2026-10-08-fix-env-exemption-exit-reachability） — 新增 inconclusive_loop 裁决桶与 grant_env_exemption 授予 env 豁免选项（choices 闭环：告警下拉→alert-resolve→执行器，与 Administrator SIGNAL 通道并存）
 - 2026-10-15 evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit（spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit） — inconclusive_loop 桶新增 revise_scenario_reverify 修订场景·重验选项（JSON 载荷、夹具供给层路径白名单、修订上限默认 2 次超限冻结转人工）
 - 2026-10-26 evo-add-commit-stray-wip-choice（spec/archive/2026-10-26-evo-add-commit-stray-wip-choice） — maintree_stray_wip_stale 桶新增 commit_stray_wip 提交散件选项（spec_scoped=False 全局作用域、与 stash 类动作互斥），为注册表首个主树 git 写动作；发射点 stray_wip 落库记录附 choices 快照、recommended_action 带出选项 id 并与 SIGNAL_RECOMMENDATION 同文同步
+- 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — maintree_stray_wip_stale 桶新增 untrack_stray_wip 根治·散件出库选项（git rm --cached + .gitignore 追加 + 独立提交），沿 commit_stray_wip 双保险形态（spec_scoped=False + 执行器 signal_type 绑定守卫），与提交选项同桶并存

@@ -1,4 +1,4 @@
-<!-- knowledge: capability=admin-choices-contract rev=1 sources=spec/archive/2026-09-27-add-human-adjudication-choices -->
+<!-- knowledge: capability=admin-choices-contract rev=2 sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-27-evo-recurring-stray-remediation -->
 
 # Administrator 处置与裁决注册表共用契约
 
@@ -10,7 +10,9 @@ Administrator agent 的自动处置与人工下拉选择收敛为同一裁决空
 - 仅当注册表无对应选项（处置超出既有裁决空间）时才允许自由处置，且必须在处置记录中回填「建议注册表新增选项」字段（含建议 id/label/action 语义），供自省通道消费。
 - 框架消费处置记录时，`choice_id` 与人工下拉选择走同一执行路径：同一动作映射、同一留痕格式。
 - `kind=SIGNAL` 类携带 choices 的记录（如 `build_artifact_paths_missing`，不进前端告警区）由本契约消费：Administrator 处置时按注册表选项表达结论。
+- 复发型主树散件 MUST 当场根治（`agents/administrator.md` 铁律区条款）：处置 `maintree_stray_wip_stale` 告警时，evidence 带出「已 N 度处置」复发计数（N≥2，即同文件第 2 次处置起）即触发根治义务——MUST 当场执行根治（裁决选项 `untrack_stray_wip` 或等效手工操作）【或】在处置记录挂显式跟踪项（写明跟踪载体与复查时机），二者必有其一；MUST NOT 以「仅提交」第三次收尾——被 track 的生成物类散件每次构建必复发，仅提交只是把确定性复发挂起。首次处置（evidence 无复发计数）维持「提交+建议」现状，不强制根治。该义务以契约铁律承载而非代码硬拦截，代码侧保证根治路径一键可达与复发计数可见，违反义务由下轮告警与复盘回收。
 
 ## 溯源
 
 - 2026-09-27 add-human-adjudication-choices（spec/archive/2026-09-27-add-human-adjudication-choices） — 建立 Administrator 处置优先消费注册表、choice_id 结构化表达、超出裁决空间回填建议的契约
+- 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — 契约新增复发型主树散件根治铁律：同文件第 2 度处置起 MUST 当场根治（untrack_stray_wip 或等效）或挂显式跟踪项、MUST NOT 仅提交第三次收尾，首次处置维持「提交+建议」不强制

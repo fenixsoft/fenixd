@@ -1,7 +1,7 @@
 # 主树散件 WIP 周期盘点与滞留升级
 
-<!-- knowledge: capability=maintree-stray-wip-sweep rev=3
-     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice -->
+<!-- knowledge: capability=maintree-stray-wip-sweep rev=4
+     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation -->
 
 daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件），机械归因持有者，无主且宽限耗尽时以一次性 major 告警浮出——散件滞留由分钟级机械巡检检出，而非 LLM 复盘车道的偶然检出。
 
@@ -28,12 +28,18 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 ### 宽限与一次性升级告警
 
 - 宽限配置 `admin.maintree_stray_wip_grace_minutes`，缺省 30，语义对齐 `admin.mergeback_wip_orphan_grace_minutes`；`0` 合法＝耗尽即升级（同指纹一次性去重兜住刷屏）；解析失败/负值/NaN/inf/超一天上限一律回退缺省——配置事故既不放大成无限期静默等待，也不变成关闭降噪的极端。
-- 宽限耗尽恰发一次 `maintree_stray_wip_stale` major 告警（经 AdminStore，同指纹先查后记去重，MUST NOT 重复升级）：evidence 附文件清单、first_seen、归因证据、盲区注记与零触碰注记；落库记录自带 `choices` 快照（缺键时消费端回退裁决注册表），`recommended_action` 文案带出裁决选项 `commit_stray_wip`（核对归属后一键提交信号清单内文件），并与 admin_monitor `SIGNAL_RECOMMENDATION` 同文同步（防双处漂移）。
+- 宽限耗尽恰发一次 `maintree_stray_wip_stale` major 告警（经 AdminStore，同指纹先查后记去重，MUST NOT 重复升级）：evidence 附文件清单、first_seen、归因证据、盲区注记与零触碰注记；落库记录自带 `choices` 快照（缺键时消费端回退裁决注册表，现含 commit_stray_wip 提交与 untrack_stray_wip 根治两选项）。
+
+### 复发识别与根治指引
+
+- 告警发射时以 AdminStore 既有 `maintree_stray_wip_stale` SIGNAL 记录为台账检索同文件历史处置轮数：逐条解析 evidence「文件清单(N):」段（与执行器共用同一清单解析单源，防 manifest 形态漂移后双处解析失配）与本次文件清单求交，非空即记一轮；不另建台账文件。检索失败（store 不可读/解析链不可用）按 0 轮处理——退化为「首次处置」语义，不阻断告警发射（复发检索是增强信息，不是告警门槛）。
+- 历史 ≥1 轮即复发型告警：evidence 追加复发注记（「已 N 度处置」计数与根治指引——执行裁决选项 `untrack_stray_wip` 或等效操作、或在处置记录挂显式跟踪项，MUST NOT 再以仅提交收尾），`recommended_action` 同步换根治优先口径。计数随告警下发，使「同文件第 2 度处置起必须根治」的义务在处置时点可判定（处置契约见 [admin-choices-contract](../admin-ops/admin-choices-contract.md)），不依赖处置方自行考古历史记录。
+- 首发型（0 轮）`recommended_action` 维持提交建议口径（带出 `commit_stray_wip`），与 admin_monitor `SIGNAL_RECOMMENDATION` 同文同步（防双处漂移）；复发型根治口径仅随告警记录 inline 下发。
 - 告警经 admin_monitor 三表登记（SIGNAL_SEVERITY + SIGNAL_RECOMMENDATION + STORED_SIGNAL_TYPES）接入自动唤起 Administrator；落盘记录 evidence 以「项目名=」开头供摄取项目名解析收录（本告警无 spec 归属）。漏 STORED_SIGNAL_TYPES 则记录落 store 后无人摄取、升级出口落空。
 
 ### 零触碰与能力边界
 
-- 盘点与升级链路全只读：MUST NOT 对主树执行 stash、stash pop、checkout、clean、reset 或任何改变工作区/索引内容的操作；一次盘点/告警前后 `git status --porcelain` 输出逐字节一致。框架仅报告：主树处置由处置程序显式发起，标准化提交动作以裁决选项 `commit_stray_wip` 挂在裁决执行链（受清单约束与 signal_type 绑定守卫约束，见 [adjudication-actions](../admin-ops/adjudication-actions.md)），不在盘点链路内自动触发。
+- 盘点与升级链路全只读：MUST NOT 对主树执行 stash、stash pop、checkout、clean、reset 或任何改变工作区/索引内容的操作；一次盘点/告警前后 `git status --porcelain` 输出逐字节一致。框架仅报告：主树处置由处置程序显式发起，标准化提交与根治动作以裁决选项 `commit_stray_wip`/`untrack_stray_wip` 挂在裁决执行链（受清单约束与 signal_type 绑定守卫约束，见 [adjudication-actions](../admin-ops/adjudication-actions.md)），不在盘点链路内自动触发。untrack 根治落地后同路径改动由 .gitignore 自然吸收、不再进入 tracked 散件盘点口径（检测面零改动下自然止损）。
 - first_seen 与告警去重注册表为 daemon 进程内存态，daemon 重启即重置宽限：重启后散件仍在场会重新起算并最终再告警，损失仅时效，不引入持久化状态文件。
 - 本能力为独立旁路观察者，覆盖合回闸门看不见的散件形态（autostash 先行腾空主树使 WIP overlap 占用识别全程不触发，见 [mergeback-wip-active-coordination](mergeback-wip-active-coordination.md)）；不改动 autostash 路径、reclaim「脏不抢」语义与 WIP overlap 闸门任何现行行为，也不消费合回协调的台账与事件。
 
@@ -46,3 +52,4 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 - 2026-10-08 evo-add-maintree-stray-wip-sweep（spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep） — 新建本页：主树 tracked 散件 WIP 周期只读盘点（60s 节拍、主树锁非阻塞互斥、tracked-only 口径）、内容指纹滞留计时（mtime 免疫）、复用 `identify_wip_occupant` 机械归因、宽限耗尽一次性 `maintree_stray_wip_stale` major 告警（admin_monitor 三表登记接入唤起）、全链零触碰仅报告。
 - 2026-10-09 evo-add-maintree-interactive-session-attribution（spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution） — 修改本页：占用归因由二分支扩为三分支——车道归因零命中后归因器追加主树活交互会话只读探测，会话归因散件缺省降级 status=session-attributed info 留痕（不派 major 不触发代查），`admin.maintree_session_attribution_action=keep` 回退现状无主宽限升级；归因源与采信规则收敛至 maintree-wip-attribution 页。
 - 2026-10-26 evo-add-commit-stray-wip-choice（spec/archive/2026-10-26-evo-add-commit-stray-wip-choice） — 修改本页：宽限升级告警落库记录自带 choices 快照，recommended_action 带出裁决选项 commit_stray_wip 并与 SIGNAL_RECOMMENDATION 同文同步；盘点与升级链路零触碰边界不变（提交动作在裁决执行链、不自动触发）
+- 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — 修改本页：新增复发识别段——同文件历史处置轮数以 AdminStore 既有 SIGNAL 记录为台账检索（清单段解析单源、失败按 0 轮不阻断发射），复发型告警 evidence 带「已 N 度处置」计数与根治指引、recommended_action 换根治优先口径（untrack_stray_wip），检测与触发逻辑本身不动；choices 快照与零触碰条款补记 untrack 选项
