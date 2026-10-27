@@ -18,7 +18,7 @@
 
 ### Requirement: 硬上限冻结告警附修复预算上下文
 
-`_judge_hard_cap_freeze` 冻结的告警（description/evidence/recommended_action）MUST 附场景修复预算状态：生命周期累计修复申报轮数、是否已耗尽、耗尽后是否仍有修复申报被拒。人工裁决者 MUST 能从告警直接判断「重跑超上限」由哪类重入贡献、剩余缺陷该走修复还是归因。
+`_judge_hard_cap_freeze` 冻结的告警（description/evidence/recommended_action）MUST 附场景修复预算状态，三项各具名数据来源：①是否已耗尽（`_scenario_repair_exhausted_rounds` STATE 持久字段）；②生命周期累计修复申报轮数与耗尽后被拒轮数（受理门写点维护的预算口径计数留痕）；③最近一次修复申报摘要（judge 裁决产物，场景 id 级别即可）。MUST NOT 依赖日志回捞取数。人工裁决者 MUST 能从告警直接判断「重跑超上限」由哪类重入贡献、剩余缺陷该走修复还是归因。
 
 #### Scenario: 告警含修复历史摘要
 - **WHEN** judge 重跑计数触顶冻结，且此前存在修复申报轮

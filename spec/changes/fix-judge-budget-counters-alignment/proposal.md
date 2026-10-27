@@ -18,6 +18,7 @@ add-command-center 监视期实证（2026-10-27）：judge 场景原地修复预
 ## Impact
 
 - `core/pm_engine/verification/pipeline.py`：judge 修复通道门（scenario-repaired 申报受理处——修复预算耗尽状态拒绝改写）
-- `core/pm_engine/verification/escalation.py`：排程重验 episode 的修复预算状态传递（`_escalate_scenario_repair_exhausted` 一带）
+- `core/state_machine.py`：修复申报计数留痕字段单点定义（预算口径，与 `_judge_rerun_count` 同族清零点）
+- `core/pm_engine/verification/escalation.py`：无行为改动（门直读 STATE 持久字段、无状态传递，见 design D2/D3；`_escalate_scenario_repair_exhausted` 仅属任务 2.1 写点审计范围）
 - `core/pm_engine/verification/judge_gate.py`：`_judge_hard_cap_freeze` 告警上下文补修复预算摘要
 - 新增 `tests/test_judge_repair_budget_alignment.py`；既有 judge 预算相关用例回归
