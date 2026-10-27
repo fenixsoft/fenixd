@@ -100,16 +100,27 @@ class TestVerdictCheck(unittest.TestCase):
         pm = MagicMock()
         pm.project_root = tmp
         pm.state_machine.read_one.return_value = {"status": "testing"}
+        # code-review 3a39bcdb19d0 起阻塞轮计数经 state_machine.bump_counters
+        # 锁内原子递增并落盘（update_spec 不再回写计数字段）；替身返回递增后
+        # 快照，否则 MagicMock 返回值无法参与 >= 比较且升级通道被函数级
+        # except 整体吞掉。
+        pm.state_machine.bump_counters.return_value = {"_env_block_rounds": 1}
         pipeline = VerificationPipeline.__new__(VerificationPipeline)
         pipeline._pm = pm
 
         allowed = pipeline._env_whitewash_gate("s1")
         self.assertFalse(allowed, "0 通过 + verified 必须被拦截")
-        # 阻塞 + 轮次计数
+        # 阻塞 + 轮次计数：计数经 bump_counters 原子递增落盘
+        pm.state_machine.bump_counters.assert_called_once_with(
+            "s1", {"_env_block_rounds": 1}
+        )
         entry = pm.state_machine.update_spec.call_args[0]
         self.assertEqual(entry[0], "s1")
         self.assertEqual(entry[1]["status"], "blocked")
-        self.assertEqual(entry[1]["_env_block_rounds"], 1)
+        self.assertNotIn(
+            "_env_block_rounds", entry[1],
+            "计数字段已改由 bump_counters 原子落盘，update_spec 不再回写",
+        )
         # admin 呼叫 + 人工告警
         pm._send_human_escalation_alert.assert_called_once()
 
@@ -135,6 +146,9 @@ class TestVerdictCheck(unittest.TestCase):
         pm.project_root = tmp
         pm.state_machine.read_one.return_value = {"status": "blocked",
                                                   "_env_block_rounds": 1}
+        # 替身返回递增后快照（读 1 + delta 1 = 2，恰达冻结阈值）；同上，
+        # MagicMock 缺省返回值无法参与 >= 比较，升级通道会被整体吞掉。
+        pm.state_machine.bump_counters.return_value = {"_env_block_rounds": 2}
         pipeline = VerificationPipeline.__new__(VerificationPipeline)
         pipeline._pm = pm
 
