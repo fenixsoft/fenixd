@@ -286,8 +286,9 @@ export default function SpecTimeline({
             };
           }
 
-          // 未知 kind 守卫（add-timeline-admin-events）：state/admin/run 之外不渲染
-          // 卡片体（脏数据降级只留时间轴圆点），不报错崩渲染
+          // 兜底守卫（add-timeline-admin-events）：以上各 kind 分支未处理的
+          // 已知/未知 kind 一律降级为灰点（只留时间轴圆点，不渲染卡片体），
+          // 不报错崩渲染
           if (item.kind !== 'run') {
             return { color: 'gray' };
           }

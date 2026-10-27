@@ -1533,8 +1533,15 @@ class PMEngine:
             return False
         if entry.get(FROZEN_FIELD) is True:
             return True
-        return entry.get("status") == SpecStatus.BLOCKED and (entry.get("error") or "").startswith(
-            FREEZE_ERROR_PREFIX
+        # str 归一防非串 truthy error 抛 AttributeError（code-review item
+        # 75949b9f8ab5，对齐 _clear_task_gap_error / check_blockers 的既有
+        # str 归一防御口径）：_on_spec_ready 调用点位于无 except 的
+        # try/finally 内，异常会穿透 handle_event 中断当轮派发。
+        err = entry.get("error")
+        return (
+            entry.get("status") == SpecStatus.BLOCKED
+            and isinstance(err, str)
+            and err.startswith(FREEZE_ERROR_PREFIX)
         )
 
     def check_scheduling_deadlines(self) -> dict:
@@ -1566,9 +1573,9 @@ class PMEngine:
             if not isinstance(entry, dict):
                 continue
             # 逐条隔离（code-review item c6bbdd83cd61）：字段解析与到期判定
-            # （含 _frozen_state 对非串 truthy error 的 .startswith，与
-            # check_blockers 的 str 归一防御同源风险）抛错只记日志跳过本条，
-            # 不中断整轮定时解冻与到期拾取（docstring 承诺）。
+            # 抛错只记日志跳过本条，不中断整轮定时解冻与到期拾取（docstring 承诺）。
+            # _frozen_state 对非串 truthy error 的 .startswith 同源风险已在
+            # 其本体内 isinstance str 归一消除（code-review item 75949b9f8ab5）。
             try:
                 # ── 1) frozen_until 到期自动解冻（幂等：写前重读确认仍冻结）──
                 until_raw = entry.get(FROZEN_UNTIL_FIELD)

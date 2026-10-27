@@ -130,8 +130,9 @@ def _scan_spec_log_events(project_root, spec_name: str, created: str):
       唯一依据——timeline 只保留最后一轮，本处保留全部）。
 
     读取窗口按 created 锚定（read_log_window_from，与时间轴同参同源）；行解析
-    失败/非对象/非字符串 message 一律跳过，不令派生整体失败（与
-    get_spec_timeline 的防护口径一致）。
+    失败/非对象/非字符串 message 一律跳过，timestamp 非字符串归一为空串
+    （transitions/verify_starts 的 time 恒为字符串），不令派生整体失败
+    （与 get_spec_timeline 的防护口径一致）。
     """
     import core.dashboard.data as _facade
 
@@ -170,6 +171,11 @@ def _scan_spec_log_events(project_root, spec_name: str, created: str):
             if not isinstance(msg, str):
                 continue
             ts = ev.get("timestamp", "")
+            # timestamp 为非字符串（数字/数组等异常 JSON 行）时归一为空串，
+            # 与 get_spec_timeline 的归一口径一致：transitions/verify_starts
+            # 的 time 字段与下游排序键入参恒为字符串（空串走解析失败的既定分支）
+            if not isinstance(ts, str):
+                ts = ""
             m = pat.search(msg) or gate_pat.search(msg)
             if m:
                 ctx = ev.get("context") or {}

@@ -46,7 +46,10 @@ function ReportingLines({ org }: { org: CommandCenterOrg }) {
       pos.set(c.lane, { x: EDGE_PAD_X + zi * EDGE_COL_W, y: EDGE_PAD_Y + ci * EDGE_ROW_H });
     });
   });
-  const width = EDGE_PAD_X * 2 + Math.max(0, org.zones.length - 1) * EDGE_COL_W;
+  // 末列追加标签预留宽度：text 自圆心右侧 10px 起排，无预留会被
+  // SVG 默认 overflow hidden 裁掉末列车道名。
+  const width =
+    EDGE_PAD_X * 2 + Math.max(0, org.zones.length - 1) * EDGE_COL_W + 60;
   const height = EDGE_PAD_Y * 2 + Math.max(0, maxRows - 1) * EDGE_ROW_H;
   if (!org.zones.length || width <= 0 || height <= 0) return null;
   return (

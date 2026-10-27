@@ -559,10 +559,15 @@ class BrowserManager:
 
         self._is_extension_project = self._detect_extension_project()
 
+        # playwright 导入提前到 _start_dev_server 之前（code-review item
+        # 35bb4aba4712）：playwright 未安装的环境（模块头 36-38 行注释）此行
+        # ImportError 直接向调用方传播，原先放在 _start_dev_server 之后时扩展
+        # 项目已启动的本地 HTTP 服务器不回收，daemon 跨轮重试每次失败泄漏一个
+        # 监听端口与服务器线程；先导入，失败时尚无资源可泄漏。
+        from playwright.async_api import async_playwright
+
         if self._is_extension_project:
             self._start_dev_server()
-
-        from playwright.async_api import async_playwright
 
         # 半初始化残留释放（code-review item 00cdf0b6ee65）：上次 start() 在
         # async_playwright().start() 成功后 chromium.launch 抛错时，_playwright

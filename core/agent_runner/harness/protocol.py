@@ -90,8 +90,8 @@ class SpawnRequest:
     # 由 runner 轮询环统计 assistant 事件数强制；adapter MUST NOT 把它映射进
     # argv——快照测试锁定）。仅作请求描述随行，供 adapter/监督面读取。
     max_turns: Optional[int] = None
-    # 期望超时（秒；None = 不限）。run_one_shot 据此设 communicate timeout；
-    # 主车道轮询环自带监督，此字段仅描述。
+    # 期望超时（秒；None = 不限）。当前无消费方——run_one_shot 的 communicate
+    # timeout 取自身同名形参（None = 无限等），不读本字段；仅作请求描述随行。
     timeout: Optional[float] = None
     # 显式 env 键值对覆盖 env_mode 产物（优先级最高；当前无消费方，预留）
     strict_env: Optional[Dict[str, str]] = None

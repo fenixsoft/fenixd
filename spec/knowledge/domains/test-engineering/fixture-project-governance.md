@@ -21,4 +21,4 @@ dashboard 全局监控中「验证夹具项目」的标记、读写与跨项目�
 ## 溯源
 
 - 2026-09-24 fix-fixture-project-alert-noise（spec/archive/2026-09-24-fix-fixture-project-alert-noise） — 新增 fixture 标记读写与透出、跨项目告警/运维记录聚合过滤、供给脚本复位告警基线并登记标记
-- 2026-10-27 evo-add-verify-fixture-flag-guard（spec/archive/2026-10-27-evo-add-verify-fixture-flag-guard） — 新增「场景自注册探针夹具 MUST fixture=True」规则（两起事故场景 fixture=False 使夹具 critical 对照告警直通人工告警横幅引发误排查）及双重触达：出题提示词正反示例固化 + 静态扫描 `unmarked_fixture_add_project` 情报模式；裁定守卫走静态扫描而非翻转 Registry 缺省（按路径翻转即 ADR-163 禁止的路径推导，且拦不住显式 False 形态）
+- 2026-10-27 evo-add-verify-fixture-flag-guard（spec/archive/2026-10-27-evo-add-verify-fixture-flag-guard） — 新增「场景自注册探针夹具 MUST fixture=True」规则（selfheal-scratch-verify / arch-scratch-verify 两起事故：场景 fixture=False 使夹具 critical 对照告警直通人工告警横幅引发误排查）及双重触达：出题提示词正反示例固化 + 静态扫描 `unmarked_fixture_add_project` 情报模式；裁定守卫走静态扫描而非翻转 Registry 缺省（按路径翻转即 ADR-163 禁止的路径推导，且拦不住显式 False 形态）

@@ -74,7 +74,7 @@ def analyze_file(run_file: Path) -> tuple:
 
 
 def expand_globs(paths) -> list:
-    """展开脚本内 glob（shell 未展开时兜底）；缺失路径跳过并告警。"""
+    """展开脚本内 glob（shell 未展开时兜底）；缺失路径与目录等非文件跳过并告警。"""
     out: list = []
     for raw in paths:
         p = Path(raw)
@@ -94,7 +94,15 @@ def expand_globs(paths) -> list:
         if p not in seen:
             seen.add(p)
             dedup.append(p)
-    return dedup
+    # 目录等非文件路径不是 run 转录：过滤并明确告警，避免被当作转录
+    # 读入后在 skipped 中报「读取失败」误导用户
+    files = []
+    for p in dedup:
+        if p.is_file():
+            files.append(p)
+        else:
+            print(f"[analyze_run_latency] 路径不是文件，跳过: {p}", file=sys.stderr)
+    return files
 
 
 def main() -> int:

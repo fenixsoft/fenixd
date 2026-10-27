@@ -2757,7 +2757,12 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
                 if snap is None:
                     path.unlink(missing_ok=True)
                 else:
-                    path.write_bytes(snap)
+                    # 原子还原（code-review item 9caae0d42f0d）：与正向写入
+                    # 同口径（唯一临时名 + fsync + os.replace），防回滚中途
+                    # 崩溃/掉电在目标路径留半截恢复文件——复用模块内
+                    # _atomic_write_bytes（同 _exec_untrack_stray_wip 还原
+                    # 路径），失败仍经下方 except OSError 留痕不掩盖原失败。
+                    _atomic_write_bytes(path, snap)
             except OSError as e:
                 # 回滚尽力而为：失败仅留痕，不掩盖原始失败原因
                 logger.warning(

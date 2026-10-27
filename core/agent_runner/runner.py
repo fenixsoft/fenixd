@@ -3297,9 +3297,10 @@ class AgentRunner:
         if handed_off is None:
             handed_off = set()
         max_retries = self._get_config("agents.max_retries", 3)
-        # 误配置下限钳制：0/负数/None/非整数值会使 attempt 循环体不执行，
+        # 误配置下限钳制：小于 1 的值（0/负数）会使 attempt 循环体不执行，
         # 收口处 _exhausted_result 引用未绑定的 error 抛 UnboundLocalError，
-        # 失败形态与真实死因（配置非法）无关。非法值统一回落缺省 3。
+        # 失败形态与真实死因（配置非法）无关，故钳为 1（至少执行一次
+        # attempt）；None/非整数值经 except 回落缺省 3。
         try:
             max_retries = max(1, int(max_retries))
         except (TypeError, ValueError):

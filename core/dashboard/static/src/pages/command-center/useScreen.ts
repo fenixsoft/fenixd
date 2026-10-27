@@ -23,21 +23,34 @@ export function useScreenResource<T>(
   const loadRef = useRef(load);
   loadRef.current = load;
   const loadedRef = useRef(false);
+  // fix e14d8d1dbe05: run 自增请求序号——60s 轮询、refreshKey 变化重拉（如
+  // PipelineBoard 切换项目筛选）与 retry 可能并发在飞，响应到达顺序不保证，
+  // 先发出后返回的旧响应会把旧数据写回（如筛选后被「全部项目」旧响应刷回
+  // 未过滤列表）。仿 activities 页（fix 01635701025b）loadSeqRef 口径：仅
+  // 最新一次请求允许落状态，过期响应（含其失败与收尾置位）直接丢弃
+  const runSeqRef = useRef(0);
   const [tick, setTick] = useState(0);
   const retry = useCallback(() => setTick((t) => t + 1), []);
 
   const run = useCallback(async (initial: boolean) => {
+    const seq = ++runSeqRef.current;
     try {
       if (initial) setLoading(true);
       const d = await loadRef.current();
+      // 写回前复核序号：过期请求不改写任何状态（data 与 loaded 标记均不覆盖）
+      if (seq !== runSeqRef.current) return;
       loadedRef.current = true;
       setData(d);
       setError('');
     } catch (err) {
+      // 过期请求的失败同样不落状态，避免旧错误提示覆盖新请求结果
+      if (seq !== runSeqRef.current) return;
       // 后台刷新失败：保留旧数据仅置 error（首载失败 data 保持 null → 占位）
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      // 收尾置 false 同样纳入序号守卫（对齐 activities 页 fix 9fc948945fc7）：
+      // 旧请求先完成时不抢在并发中的新请求之前撤掉加载指示
+      if (seq === runSeqRef.current) setLoading(false);
     }
   }, []);
 

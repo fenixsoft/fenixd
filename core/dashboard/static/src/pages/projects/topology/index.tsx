@@ -74,23 +74,37 @@ export default function SpecTopologyPage() {
   // ── 拉取（SSE 触发的节流重拉与 30s 心跳共用；后台刷新静默原位，先例 detail.tsx）──
   const loadRef = useRef<(initial?: boolean) => Promise<void>>(async () => {});
 
+  // 加载币值守卫（code-review item 7ef79d3a2087，仿 list.tsx loadSeqRef）：SSE 节流
+  // 重拉、30s 心跳与手动刷新三个触发源在慢响应（>500ms）下可重叠在飞，先发后至
+  // 的旧快照会把较新拓扑覆盖回旧值。每次调用递增序号作为币值，await 返回后比对
+  // 仍是最新一次才 setData/setError，过期响应直接丢弃。
+  const loadSeqRef = useRef(0);
   const load = useCallback(
     async (initial = false) => {
       if (!name || !spec) return;
+      const seq = ++loadSeqRef.current;
       try {
         if (initial) setLoading(true);
         const d = await getSpecTopology(name, spec);
+        if (loadSeqRef.current !== seq) return;
         setData(d);
         setError(d.error ?? '');
       } catch (err) {
+        if (loadSeqRef.current !== seq) return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        // loading 只由最新一次请求收口，过期响应不抢（新请求自己会复位）
+        if (loadSeqRef.current === seq) setLoading(false);
       }
     },
     [name, spec],
   );
-  loadRef.current = load;
+  // 渲染期副作用消除（code-review item 624414f4664a）：原在渲染体直接写
+  // loadRef.current = load，属 render side effect（并发渲染/StrictMode 下 ref 可能
+  // 与本次渲染不一致）；改在 effect 中同步（list.tsx specMapRef 同款纪律）。
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
 
   useEffect(() => {
     setSelectedId(null);

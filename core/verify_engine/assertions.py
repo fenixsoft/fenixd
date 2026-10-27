@@ -703,14 +703,16 @@ class AssertionRunner:
     # 第3层：内容正确性（确定性，0误判）
     # ═══════════════════════════════════════════════════════════════
 
-    def _text_matches(self, actual: str, expected: str, mode: str) -> bool:
+    def _text_matches(
+        self, actual: str, expected: str, mode: str, regex_compiled: re.Pattern | None = None
+    ) -> bool:
         """按 mode 判断文本是否匹配。"""
         if mode == "exact":
             return actual.strip() == expected.strip()
         if mode == "contains":
             return expected in actual
         if mode == "regex":
-            return self._regex_search(expected, actual)
+            return self._regex_search(expected, actual, regex_compiled)
         return False
 
     # regex 模式单次匹配的回溯预算（秒）：compile 通过但呈灾难性回溯的
@@ -722,7 +724,9 @@ class AssertionRunner:
     _REGEX_MATCH_TIMEOUT_S = 1.0
 
     @classmethod
-    def _regex_search(cls, pattern: str, text: str) -> bool:
+    def _regex_search(
+        cls, pattern: str, text: str, compiled: re.Pattern | None = None
+    ) -> bool:
         """regex 模式匹配，带单次匹配超时保护。
 
         优先用第三方 regex 库的 timeout 参数（覆盖嵌套量词等全部灾难性
@@ -732,9 +736,19 @@ class AssertionRunner:
         匹配超时重抛为带归因的 re.error（code-review item b34af3a4195b，
         与 api 侧 _TimeoutRegex 的定向归因口径对齐），由
         _assert_text_match 单独捕获记入结果 error，归因不被吞。
+
+        compiled 是调用方预编译好的同一 pattern（编译引擎与 regex 库可用
+        性一致，见 _assert_text_match 的正则预检），传入时复用编译产物，
+        轮询循环不必每轮重复解析编译（同 api 侧 _TimeoutRegex 的预编译
+        口径，code-review item ad66fbae76be）；未传入时保持模块级 search
+        的旧行为。
         """
         if _regex_mod is not None:
             try:
+                if compiled is not None:
+                    return bool(
+                        compiled.search(text, timeout=cls._REGEX_MATCH_TIMEOUT_S)
+                    )
                 return bool(
                     _regex_mod.search(pattern, text, timeout=cls._REGEX_MATCH_TIMEOUT_S)
                 )
@@ -745,6 +759,8 @@ class AssertionRunner:
                 ) from None
             except Exception:
                 return False
+        if compiled is not None:
+            return bool(compiled.search(text))
         return bool(re.search(pattern, text))
 
     async def _assert_text_match(self, page, a: dict) -> dict:
@@ -840,13 +856,17 @@ class AssertionRunner:
         # [fenix-ignore:7f1d7284e123] 正则预检以 mode == "regex" 为门，mode 非法
         # 时进不了本分支，下方「非法 mode」校验必然先于任何正则报错触发，
         # 「双配置错误归因偏离」场景在当前代码中不存在。
+        # 预编译产物（regex 库可用时 regex.compile、缺失时 re.compile）随
+        # 轮询循环复用，避免每轮匹配重复解析编译同一 pattern（同 api 侧
+        # _TimeoutRegex 的预编译口径，code-review item ad66fbae76be）。
+        regex_compiled = None
         if mode == "regex":
             if _regex_mod is not None:
                 regex_compile, regex_errors = _regex_mod.compile, _regex_mod.error
             else:
                 regex_compile, regex_errors = re.compile, re.error
             try:
-                regex_compile(expected)
+                regex_compiled = regex_compile(expected)
             except regex_errors as e:
                 return {
                     "type": "text_match",
@@ -902,7 +922,7 @@ class AssertionRunner:
                     ) or ""
 
                 try:
-                    passed = self._text_matches(actual, expected, mode)
+                    passed = self._text_matches(actual, expected, mode, regex_compiled)
                 except re.error as e:
                     # 正则匹配超时（灾难性回溯）的定向归因（code-review item
                     # b34af3a4195b，与 api 侧 _TimeoutRegex 口径对齐）：按普通
