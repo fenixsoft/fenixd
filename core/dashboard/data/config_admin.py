@@ -128,6 +128,10 @@ _SOURCE_KEYS = [
     # fix-artifact-paths-hardcoded-default D4：项目是否存在构建产物（三态，
     # 缺省 None=未裁决 / false=已声明无产物 / true=按路径判定）
     "worktree.has_build_artifacts",
+    # add-merged-branch-gc：已合并分支 GC 两键（项目级可编辑；与 worktree
+    # 产物键同款——不含 _SYNC_PAGE_KEYS，不参与用户级同步写入）
+    "worktree.branch_gc.enabled",
+    "worktree.branch_gc.retention_days",
     # add-knowledge-atlas：知识真相源总开关（设置页「杂项」页签可编辑）
     "knowledge.enabled",
     # add-knowledge-atlas-maintenance：知识真相源维护车道键（设置页「杂项」页签可编辑；
@@ -549,6 +553,19 @@ def _managed_key_sources(raw: dict) -> dict:
             or isinstance(wm_raw["has_build_artifacts"], bool)
         ):
             sources["worktree.has_build_artifacts"] = "project"
+        # add-merged-branch-gc：branch_gc 两键合法类型才标注（enabled 严格
+        # bool、retention_days ≥1 正整数——对齐 stale_code_selfheal 两键同款）
+        _bgc_raw = wm_raw.get("branch_gc")
+        if isinstance(_bgc_raw, dict):
+            if isinstance(_bgc_raw.get("enabled"), bool):
+                sources["worktree.branch_gc.enabled"] = "project"
+            _bgc_rd = _bgc_raw.get("retention_days")
+            if (
+                isinstance(_bgc_rd, int)
+                and not isinstance(_bgc_rd, bool)
+                and _bgc_rd >= 1
+            ):
+                sources["worktree.branch_gc.retention_days"] = "project"
     # add-knowledge-atlas(-maintenance)：knowledge 两键存在性判定 → project
     # （code-review item 84c86642e5c9：缺标注分支——项目级显式配置后 sources
     # 仍回 "user"，设置页「杂项」页签徽标恒错；对齐 worktree 两键同款写法）
@@ -725,7 +742,14 @@ def _default_echo_view(scope: str) -> dict:
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
         # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
         # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
-        "worktree": {"build_artifact_paths": [], "has_build_artifacts": None},
+        # add-merged-branch-gc：branch_gc 两键缺省（enabled=True / retention_days=7，
+        # 与 ConfigLoader.get_branch_gc_config 缺省同步——避免设置页以旧值回填表单、
+        # 用户保存即把旧缺省显式写入项目配置）
+        "worktree": {
+            "build_artifact_paths": [],
+            "has_build_artifacts": None,
+            "branch_gc": {"enabled": True, "retention_days": 7},
+        },
         "scope": scope,
         "raw_exists": False,
         # code-review item 7e414f8f4485：description 顶层缺省键——正常路径由
@@ -884,6 +908,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
 
     result["worktree"] = _wtcv(raw)
+    # add-merged-branch-gc：分支 GC 两键回显（经 ConfigLoader 生效值——非法值
+    # 回退缺省，回显与生效值一致，与 stale_code_selfheal 回显同型）
+    result["worktree"]["branch_gc"] = ConfigLoader.get_branch_gc_config(raw)
     return result
 
 
@@ -1038,6 +1065,9 @@ def read_effective_config(project_root) -> dict:
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
 
     result["worktree"] = _wtcv(effective)
+    # add-merged-branch-gc：分支 GC 两键生效值回显（与 read_config 同型，
+    # 经 ConfigLoader 归一——非法值回退缺省，回显与生效值一致）
+    result["worktree"]["branch_gc"] = ConfigLoader.get_branch_gc_config(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -1428,6 +1458,22 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             # 「未配置」态真正生效，而非保留旧布尔让单选框弹回。写路径的
             # has_build_artifacts 缺省本就是 None（见 _defaults），语义自洽。
             merged["worktree"]["has_build_artifacts"] = None
+        # add-merged-branch-gc：branch_gc 两键合并（前置校验已拒绝非法值，此处
+        # 只应用合法值；缺省透传由 get_branch_gc_config 兜底）。缺合并分支会被
+        # 静默丢弃——「界面可填、保存被静默吞掉」历史同坑，两键须对称登记。
+        _bgc = patch["worktree"].get("branch_gc")
+        if isinstance(_bgc, dict):
+            if not isinstance(merged["worktree"].get("branch_gc"), dict):
+                merged["worktree"]["branch_gc"] = {}
+            if isinstance(_bgc.get("enabled"), bool):
+                merged["worktree"]["branch_gc"]["enabled"] = _bgc["enabled"]
+            _bgc_rd = _bgc.get("retention_days")
+            if (
+                isinstance(_bgc_rd, int)
+                and not isinstance(_bgc_rd, bool)
+                and _bgc_rd >= 1
+            ):
+                merged["worktree"]["branch_gc"]["retention_days"] = _bgc_rd
     return merged
 
 # config 写路径进程内串行锁（code-review item 39d2fda48088）：write_config 的
@@ -1985,6 +2031,36 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 f"worktree.has_build_artifacts must be a boolean (true/false): "
                 f"{hba_patch!r}"
             )
+        # add-merged-branch-gc：branch_gc 前置校验（enabled 严格 bool、
+        # retention_days int-not-bool 且 ≥1；非法值直接拒绝 400 不落盘，
+        # 对齐 stale_code_selfheal 两键同款；None 视为「未提交」放行）
+        bgc_patch = config_patch["worktree"].get("branch_gc")
+        if bgc_patch is not None and not isinstance(bgc_patch, dict):
+            return fail(f"worktree.branch_gc must be an object: {bgc_patch!r}")
+        if isinstance(bgc_patch, dict):
+            if (
+                "enabled" in bgc_patch
+                and bgc_patch["enabled"] is not None
+                and not isinstance(bgc_patch["enabled"], bool)
+            ):
+                return fail(
+                    f"worktree.branch_gc.enabled must be a boolean: "
+                    f"{bgc_patch['enabled']!r}"
+                )
+            if (
+                "retention_days" in bgc_patch
+                and bgc_patch["retention_days"] is not None
+            ):
+                _bgc_rd = bgc_patch["retention_days"]
+                if (
+                    isinstance(_bgc_rd, bool)
+                    or not isinstance(_bgc_rd, int)
+                    or _bgc_rd < 1
+                ):
+                    return fail(
+                        f"worktree.branch_gc.retention_days must be an integer "
+                        f">= 1: {_bgc_rd!r}"
+                    )
 
     # add-stale-code-selfheal：两键前置校验（非法值直接拒绝 400，同 verify/self_review 模式）
     if isinstance(config_patch.get("stale_code_selfheal"), dict):

@@ -277,6 +277,22 @@ worktree:
   # has_build_artifacts: true
   # build_artifact_paths: ["dist/", "build/", "release-*.zip"]
 
+  # ── 已合并分支 GC（add-merged-branch-gc）─────────────────────────
+  # 每轮 daemon 启动清扫回收满足全部安全条件的 fenix/* 分支：已完全并入
+  # 基线分支（git branch -d 语义，未合并分支天然免疫）、tip 提交时间早于
+  # 宽限期、未被任何 worktree checkout、所属 spec 非活跃（implementing /
+  # implemented / testing / reviewing / ready+_recovery_resume /
+  # blocked+frozen_hold 均豁免）。
+  branch_gc:
+    # 分支 GC 总开关（缺省 true）：false 时整个 GC 环节跳过，行为与引入
+    # GC 之前完全一致（不扫描、不删除、无日志）。
+    enabled: true
+    # 宽限期天数（缺省 7，最小 1）：分支 tip 提交时间需早于该宽限期才会被
+    # 回收。宽限期保护合并后流程中的分支读取窗口（deliverables D1 读侧
+    # 兜底 git show <branch>:tasks.md、验证 diff 参照），窗口滑到 main 后
+    # 读取结果等价。0/负数/非整数按非法值处理，回退默认 7。
+    retention_days: 7
+
 # ---- Gate Configuration ----
 gates:
   # The ONLY human gate: push approval

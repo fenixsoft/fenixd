@@ -1804,6 +1804,15 @@ export interface StaleCodeSelfhealConfig {
   idle_confirm_seconds?: number;
 }
 
+// add-merged-branch-gc：已合并分支 GC 配置节（enabled 缺省 true /
+// retention_days 缺省 7，与 ConfigLoader.get_branch_gc_config 缺省同步）
+export interface BranchGcConfig {
+  /** 分支 GC 总开关（缺省 true）：false 时整个 GC 环节跳过，行为与引入前一致 */
+  enabled?: boolean;
+  /** 宽限期天数（缺省 7，最小 1）：分支 tip 提交早于该宽限期才会被回收 */
+  retention_days?: number;
+}
+
 // ── 框架自进化（add-framework-self-evolution）───────────────────────
 
 /** self_evolution 配置节（全局用户级键：auto_accept / max_items_per_run / spec_run_at） */
@@ -2012,9 +2021,12 @@ export interface ConfigData {
   // has_build_artifacts 三态（code-review item deed1f27d507）：后端
   // worktree_config_view 恒发该键，未裁决取 None → JSON null（非 undefined），
   // 故类型含 null。
+  // add-merged-branch-gc：分支 GC 两键（后端恒发 branch_gc 子段，经
+  // get_branch_gc_config 归一——非法值回退缺省，回显与生效值一致）
   worktree?: {
     build_artifact_paths?: string[];
     has_build_artifacts?: boolean | null;
+    branch_gc?: BranchGcConfig;
   };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;

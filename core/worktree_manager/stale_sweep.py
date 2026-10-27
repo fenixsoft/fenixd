@@ -12,12 +12,265 @@ import time
 
 from typing import Optional
 
+from core.git_base_branch import resolve_base_branch
 from core.worktree_manager.constants import STALE_LOCK_IDLE_SECONDS
 
 
 class G7StaleSweepMixin:
     """G7 陈旧清扫（design D1 表 A G7）。"""
 
+    # ── 已合并分支 GC（add-merged-branch-gc 2.2）─────────────────────
+    # STATE.md 显式活跃状态集（静态清单，design 决策 2 守卫 (ii)）：补齐
+    # _branch_protected_by_state 保护集未覆盖的活跃状态（reviewing 等）。
+    # ready 仅当带 _recovery_resume、blocked 仅当 frozen+_frozen_hold 时
+    # 豁免（守卫 (i) 同款旗标条件，两守卫语义对齐）；drafted / ready（无
+    # 恢复标记）/ bug-found / verified / done / pushed 不属活跃集——其已
+    # 合并分支按宽限期正常回收。STATE.md 新增活跃状态时 MUST 同步本清单
+    # 与 design/spec 的状态集枚举（design Risks「活跃状态集漂移」）。
+    _BRANCH_GC_ACTIVE_STATUSES = frozenset(
+        {"implementing", "implemented", "testing", "reviewing"}
+    )
+    # git 只读探测统一超时（秒）：与 queries/branch_exists 等同量级；
+    # GC 在启动路径执行一次，万级分支下 for-each-ref 毫秒级，超时仅兜底
+    # 异常挂起（文件系统抖动等）。
+    _BRANCH_GC_GIT_TIMEOUT_SECONDS = 30
+
+    def _gc_merged_branches_nonblocking(self) -> None:
+        """分支 GC 的 non-blocking 包裹（add-merged-branch-gc 2.3）。
+
+        GC 整体异常（git 命令失败、解析异常等）按既有清扫环节同口径兜底：
+        降级 WARNING，不阻塞 daemon 启动清扫。挂载点（cleanup_stale_worktrees
+        尾部 + 两处前置 early-return 出口）共用本包裹。
+        """
+        try:
+            self._gc_merged_branches()
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Merged branch GC failed (non-blocking): {e}",
+            )
+
+    def _gc_merged_branches(self, now: float | None = None) -> Optional[dict]:
+        """已合并分支 GC：回收满足全部安全条件的实现/验证前缀家族分支。
+
+        四条件判定（design 决策 2，缺一不删）：
+        1. 已完全并入基线分支（``--merged`` 口径，基线经 resolve_base_branch：
+           origin/HEAD → main → master 回退，不以硬编码 main 使 master 基线
+           仓库整轮失效）；
+        2. tip 提交时间早于宽限期（``worktree.branch_gc.retention_days``）；
+        3. 未被任何 worktree checkout（git worktree list 全集判定，宁漏勿误）；
+        4. spec 活跃豁免 = ``_branch_protected_by_state`` 在飞引用保护（单一
+           来源复用，不复制状态常量）∪ STATE.md 显式活跃状态判定（本 mixin
+           ``_BRANCH_GC_ACTIVE_STATUSES`` 静态清单 + ready/_recovery_resume、
+           blocked/frozen/_frozen_hold 旗标条件）。spec 名解析复用
+           ``_spec_from_branch`` 口径（其硬编码 ``fenix/`` 前缀，非 fenix
+           配置命名空间分支解析失败 → 按宁漏勿误跳过不删）。
+
+        另：被在册 recovery legacy 登记（``_legacy``，宽限期内同分支再登记
+        含在内）引用的分支跳过——避免 GC 与 consume_legacy /
+        _reclaim_expired_legacy 竞争同一分支，防「续做」降级为从零重派
+        （对齐 legacy_registry.py:838 删分支前同 spec 再登记复核先例与
+        freeze-stop 保留语义）。
+
+        删除动作只用 ``git branch -d``（MUST NOT ``-D``）：唯一安全硬边界。
+        扫描与删除之间的并发变化（新 worktree checkout / rebase 脱离 main）
+        由 ``-d`` 拒绝语义兜底——最坏漏删，无误删路径。「同锁内执行」口径：
+        GC 挂在启动清扫（cleanup_stale_worktrees）内执行，与清扫共享的
+        ``_legacy`` 快照读持 ``_spec_lock_th``（对齐 _reclaim_expired_legacy
+        的持锁读口径）；git 操作不持锁（低频启动路径 + ``-d`` 语义兜底竞态）。
+
+        可观测（add-merged-branch-gc 2.4）：有删除时输出结构化日志（删除
+        清单、总数、四档跳过计数 + legacy/解析失败/删除失败附加计数）；零
+        删除静默（不产日志噪音，跳过计数同静默）；GC 关闭时整个环节跳过
+        且无日志。
+
+        Returns: 计数 dict（测试断言用）；GC 关闭返回 None。
+        """
+        # enabled=false：整个环节跳过且无日志（spec「GC 关闭时零动作」）
+        if not self._branch_gc_enabled:
+            return None
+        now = time.time() if now is None else now
+        # 在册 legacy 分支快照（持 _spec_lock_th，与清扫同锁语境）：扫描
+        # 期间并发 register_legacy / consume_legacy 的增删不作用于已物化
+        # 集合；快照非实时（清扫期间新登记的分支不在集合内），竞态兜底
+        # 仍是 ``-d`` 语义（最坏漏删）。
+        with self._spec_lock_th:
+            legacy_branches = {
+                rec.get("branch")
+                for rec in list(self._legacy.values())
+                if isinstance(rec, dict)
+            } - {None, ""}
+        # 前缀家族（tasks 2.1）：实现/验证分支前缀并集——创建端 fenix ∪
+        # 配置 implement_branch_prefix（验证分支 fenix/verify-* 被 fenix/
+        # 覆盖），与既有清扫分支删除的命名空间并集同口径（stale_sweep
+        # 「框架归属校验」段）。快照：for-each-ref 一次取全部分支名与 tip
+        # 提交时间，物化后删除不再作用于正在扫描的流（边扫边删防护）。
+        prefixes = {f"{p}/" for p in ({"fenix", self._implement_branch_prefix or "fenix"})}
+        snap = subprocess.run(
+            [
+                "git", "-C", str(self.project_root),
+                "for-each-ref",
+                "--format=%(refname:short)%09%(committerdate:unix)",
+                "refs/heads/",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+        )
+        if snap.returncode != 0:
+            raise RuntimeError(
+                f"branch GC for-each-ref failed: {(snap.stderr or '').strip()[:200]}"
+            )
+        tip_ts: dict = {}
+        for line in snap.stdout.splitlines():
+            name, _, ts_raw = line.partition("\t")
+            if not name:
+                continue
+            try:
+                tip_ts[name] = int(ts_raw.strip())
+            except ValueError:
+                # tip 时间不可解析（异常 ref 形态）：保守按「宽限期内」处理
+                tip_ts[name] = None
+        # 合并判定基线（design 决策 2）：既有 resolve_base_branch 单点。
+        base = resolve_base_branch(self.project_root)
+        merged_res = subprocess.run(
+            [
+                "git", "-C", str(self.project_root),
+                "for-each-ref", f"--merged={base}",
+                "--format=%(refname:short)",
+                "refs/heads/",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+        )
+        if merged_res.returncode != 0:
+            raise RuntimeError(
+                f"branch GC --merged scan failed: {(merged_res.stderr or '').strip()[:200]}"
+            )
+        merged = {ln.strip() for ln in merged_res.stdout.splitlines() if ln.strip()}
+        # worktree 占用全集（宁漏勿误：git 注册的全部 checkout，含管理器
+        # 未登记的 carrier）。git 自身亦拒绝删除被 checkout 的分支，此处
+        # 预检只为跳过计数与减少无效删除尝试。
+        wt_res = subprocess.run(
+            ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+        )
+        checked_out: set = set()
+        if wt_res.returncode == 0:
+            for line in wt_res.stdout.splitlines():
+                if line.startswith("branch "):
+                    ref = line[len("branch "):].strip()
+                    if ref.startswith("refs/heads/"):
+                        checked_out.add(ref[len("refs/heads/"):])
+        # STATE 条目单次读取（守卫 (ii) 用）：None（不可解析）时全部分支
+        # 由守卫 (i) 的「STATE 不可解析 → 保守保留」兜住，不在此放行。
+        states = self._read_state_entries()
+        cutoff = now - self._branch_gc_retention_days * 86400
+        deleted: list = []
+        failed: list = []
+        n_unmerged = n_grace = n_active = n_worktree = 0
+        n_legacy = n_unparseable = 0
+        # 逐条判定（物化快照后迭代；名称排序保证日志/删除次序确定性）
+        for branch in sorted(tip_ts):
+            if not any(branch.startswith(p) for p in prefixes):
+                continue
+            if branch not in merged:
+                # 未合并分支永不进入删除（-d 语义 + 扫描阶段即排除），只计数
+                n_unmerged += 1
+                continue
+            ts = tip_ts.get(branch)
+            if ts is None or ts >= cutoff:
+                # tip 时间缺失/不可解析保守并入宽限期内（宁漏勿误）
+                n_grace += 1
+                continue
+            if branch in checked_out:
+                n_worktree += 1
+                continue
+            spec = self._spec_from_branch(branch)
+            if not spec:
+                # 解析失败（含非 fenix 配置命名空间）：一律跳过不删
+                n_unparseable += 1
+                continue
+            # 守卫 (ii)：STATE.md 显式活跃状态（含 ready/_recovery_resume、
+            # blocked/frozen/_frozen_hold 旗标条件）
+            entry = states.get(spec) if isinstance(states, dict) else None
+            if isinstance(entry, dict):
+                status = entry.get("status", "")
+                if status in self._BRANCH_GC_ACTIVE_STATUSES:
+                    n_active += 1
+                    continue
+                if status == "ready" and entry.get("_recovery_resume"):
+                    n_active += 1
+                    continue
+                if (
+                    status == "blocked"
+                    and entry.get("frozen")
+                    and entry.get("_frozen_hold")
+                ):
+                    n_active += 1
+                    continue
+            if branch in legacy_branches:
+                # 在册 legacy 登记引用：删除留给 legacy 兜底回收链按其既定
+                # 口径执行（GC 与 consume/_reclaim 竞争规避）
+                n_legacy += 1
+                continue
+            # 守卫 (i)：在飞引用保护（单一来源复用）。STATE 不可解析时本
+            # 守卫恒真（保守保留），故 GC 不会在 STATE 异常窗口内误删。
+            kept, reason = self._branch_protected_by_state(branch)
+            if kept:
+                n_active += 1
+                continue
+            # 删除动作：只用 -d（绝不 -D）。并发 checkout/脱离 main 时 git
+            # 拒绝，记录明细后继续其余分支，不中断清扫轮。
+            del_res = subprocess.run(
+                ["git", "-C", str(self.project_root), "branch", "-d", branch],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+            )
+            if del_res.returncode != 0:
+                failed.append(branch)
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Branch GC delete failed (non-blocking): '{branch}' — "
+                    f"{(del_res.stderr or '').strip()[:200]}",
+                )
+            else:
+                deleted.append(branch)
+        if not deleted:
+            # 零删除静默：不产日志噪音（跳过计数同静默）
+            return {
+                "deleted": [], "failed": failed, "unmerged": n_unmerged,
+                "grace_period": n_grace, "active_spec": n_active,
+                "worktree_checkout": n_worktree, "legacy": n_legacy,
+                "unparseable": n_unparseable, "base_branch": base,
+            }
+        self.logger.info(
+            "worktree_manager",
+            f"Merged branch GC completed: deleted={len(deleted)} "
+            f"branches=[{', '.join(deleted)}]; skipped: unmerged={n_unmerged} "
+            f"grace_period={n_grace} active_spec={n_active} "
+            f"worktree_checkout={n_worktree} legacy={n_legacy} "
+            f"unparseable={n_unparseable}; delete_failed={len(failed)} "
+            f"(base={base}, retention_days={self._branch_gc_retention_days})",
+        )
+        return {
+            "deleted": deleted, "failed": failed, "unmerged": n_unmerged,
+            "grace_period": n_grace, "active_spec": n_active,
+            "worktree_checkout": n_worktree, "legacy": n_legacy,
+            "unparseable": n_unparseable, "base_branch": base,
+        }
 
     def cleanup_stale_worktrees(self):
         """启动时全量清理孤儿 worktree：删除所有不在活动集合的目录 + 对应分支 + prune。
@@ -39,6 +292,13 @@ class G7StaleSweepMixin:
         （fenixd.py start()）调用一次、无周期调度，宽限期兜底回收因此仅在启动时
         生效——长驻 daemon 内新登记的遗产过期后滞留至下次重启才被清除，并非按
         120s 宽限期持续回收（排查磁盘滞留时勿按周期回收预期）。
+
+        已合并分支 GC（add-merged-branch-gc 2.1）：本轮清扫的追加环节，正常
+        路径在 worktree 清扫（含收尾 prune）之后执行；两处前置 early-return
+        （base_dir 不存在 / 目录扫描 OSError）不吞 GC——分支 GC 不依赖
+        base_dir，出口处同样触发（挂载点绕开 early-return，tasks 2.1）。
+        non-blocking 口径与清扫其余环节一致（_gc_merged_branches_nonblocking
+        内部降级 WARNING，不阻塞 daemon 启动）。
         """
         # 宽限期兜底回收：超时遗产由 sweeper 在此清除并记审计（设计 D2）。
         # non-blocking 承诺（code-review item ea0ba60cd65f）：回收链内的
@@ -52,6 +312,9 @@ class G7StaleSweepMixin:
                 f"Legacy grace-period reclaim failed (non-blocking): {e}",
             )
         if not self.base_dir.exists():
+            # 分支 GC 不依赖 base_dir：worktree 清扫 early-return 前照常执行
+            # （MUST NOT 被静默跳过，add-merged-branch-gc tasks 2.1）
+            self._gc_merged_branches_nonblocking()
             return
         # 在册遗产 worktree 名集合（宽限期内豁免）。循环前一次性物化快照
         # （code-review item 19fc3ac92552）：register_legacy / consume_legacy /
@@ -83,6 +346,9 @@ class G7StaleSweepMixin:
                 "worktree_manager",
                 f"Stale worktree scan failed (non-blocking): {e}",
             )
+            # 分支 GC 不依赖 base_dir 扫描：worktree 清扫 early-return 前
+            # 照常执行（MUST NOT 被静默跳过，add-merged-branch-gc tasks 2.1）
+            self._gc_merged_branches_nonblocking()
             return
         for wt_dir in stale_dirs:
             if not wt_dir.is_dir() or str(wt_dir) in self._active_worktrees:
@@ -325,6 +591,11 @@ class G7StaleSweepMixin:
                 "worktree_manager",
                 f"Final worktree prune failed (non-blocking): {e}",
             )
+        # ── 已合并分支 GC（add-merged-branch-gc 2.1）─────────────────────
+        # worktree 清扫（含收尾 prune）完成后的追加环节：同一次启动清扫、
+        # 同锁语境（_gc_merged_branches 的 _legacy 快照读持 _spec_lock_th）。
+        # 异常经 _gc_merged_branches_nonblocking 降级 WARNING，不阻塞启动。
+        self._gc_merged_branches_nonblocking()
 
     def _read_state_entries(self) -> Optional[dict]:
         """读取 STATE 全部 spec 条目（fix-recovery-branch-anchor D6）。
@@ -362,7 +633,14 @@ class G7StaleSweepMixin:
                 return {}
             from core.state_machine import StateParser
 
-            return StateParser.parse(state_path.read_text(encoding="utf-8"))
+            # 传 Path 而非文本（add-merged-branch-gc 修入）：StateParser.parse
+            # 的入参是 state_path: Path（内部自做 exists() 与 read_text），历史上
+            # 误传 read_text() 文本致 AttributeError 被上方 except 吞成
+            # 「STATE.md 解析失败（保守不清分支）」——state_reader 未注入时
+            # 在飞引用保护退化为恒保守（全部保留），GC 的 STATE 显式活跃
+            # 状态判定（守卫 (ii)）也随之永不生效。修复后回退路径与注入路径
+            # 同源生效；解析仍失败（文件损坏等）照旧走 None 保守保留。
+            return StateParser.parse(state_path)
         except Exception as e:
             self.logger.warning(
                 "worktree_manager",
