@@ -172,6 +172,22 @@ class TestCliRunnerSemantics(unittest.TestCase):
         })
         self.assertEqual(r["status"], "pass", r["assertion_results"])
 
+    def test_file_assertions_reject_non_string_path_glob(self):
+        """非字符串 path/glob 显式类型拦截（与 json_output 的类型拦截同口径），
+        不静默 str() 归一成字面量路径把场景编写缺陷误归因为文件缺失。"""
+        asserter = CliRunner("spec-a", self.tmp, logger=None, config={}).asserter
+        results = asyncio.run(asserter.run({}, [
+            {"type": "file_exists", "path": 5},
+            {"type": "file_content", "path": 5, "expected": "x"},
+            {"type": "dir_contains", "glob": 5},
+        ]))
+        self.assertFalse(results[0]["pass"])
+        self.assertIn("path 须为字符串", results[0]["error"])
+        self.assertFalse(results[1]["pass"])
+        self.assertIn("path 须为字符串", results[1]["error"])
+        self.assertFalse(results[2]["pass"])
+        self.assertIn("glob 须为字符串", results[2]["error"])
+
     def test_named_step_reference(self):
         """断言 step 字段引用命名结果（缺省=最近一次）。"""
         r = self._exec({

@@ -157,6 +157,7 @@ def get_active_agents():
             # "claude " 会漏计无参数启动的裸 `claude` 进程——其命令行恰以
             # .../claude 结尾、不含 "claude "；改取首段命令的 basename
             # 精确判断（node 包装进程、ps 头行等非 claude 可执行不误计）
+            # [fenix-ignore:592b05b685bd] split(None, 3) 存在第 4 段时该段必以非空白字符开头（行尾空白/空 args 行无第 4 段，已被上方 len<4 守卫跳过），parts[3].split() 不会为空列表，无 IndexError
             if parts[3].split()[0].rsplit("/", 1)[-1] not in agent_names:
                 continue
             pid = parts[0]

@@ -1300,8 +1300,17 @@ def run_smoke(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
 
-    holder = Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
-    fixture = build_fixture(holder, prefix)
+    # 装置创建收口进 try（code-review item 61687c562eff）：/tmp 写满或权限
+    # 异常时 mkdtemp/mkdir 抛 OSError，裸抛以 traceback + 退出码 1 收场，
+    # 违背模块头「2=用法/装置错误」退出码契约（同 run_accept 路径解析收口）
+    try:
+        holder = Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
+        fixture = build_fixture(holder, prefix)
+        workdir = holder / "mock"
+        workdir.mkdir()
+    except (ValueError, OSError) as e:
+        print(f"夹具装置创建失败：{e}", file=sys.stderr)
+        return 2
     device: Optional[Dict[str, Any]] = None
     evidence: Dict[str, Any] = {
         "meta": {"spec": "dsh-primary-acceptance-switch", "mode": "smoke",
@@ -1309,8 +1318,6 @@ def run_smoke(args: argparse.Namespace) -> int:
                  "repo_root": str(REPO_ROOT), "dsh_profile": args.profile},
         "lanes": [],
     }
-    workdir = holder / "mock"
-    workdir.mkdir()
     try:
         device = prepare_dsh_home(profile=args.profile, workdir=workdir)
         evidence["meta"]["dsh_home"] = device["home"]
@@ -1679,8 +1686,16 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
 
     started = utc_iso()
     prefix = unique_prefix()
-    holder = Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
-    fixture = build_fixture(holder, prefix)
+    # 装置创建收口进 try（code-review item 61687c562eff，同 run_smoke 口径）：
+    # mkdtemp/build_fixture 抛 OSError 时以裸 traceback + 退出码 1 收场，违背
+    # 模块头「2=用法/装置错误」契约；此处失败无证据文件产出，归 1 会与
+    # 「验收失败（证据内含明细）」语义混淆（同 run_accept 路径解析收口先例）
+    try:
+        holder = Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
+        fixture = build_fixture(holder, prefix)
+    except (ValueError, OSError) as e:
+        print(f"夹具装置创建失败：{e}", file=sys.stderr)
+        return 2
     evidence: Dict[str, Any] = {
         "meta": {"spec": "dsh-primary-acceptance-switch", "mode": "accept",
                  "prefix": prefix, "started_at": started,

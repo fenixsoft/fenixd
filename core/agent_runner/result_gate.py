@@ -1580,7 +1580,12 @@ def salvage_result_from_transcript(
                     content = None
                 for c in content or []:
                     if isinstance(c, dict) and c.get("type") == "text":
-                        last_text = c.get("text") or ""
+                        # text 为真值非字符串（列表/数字/对象等 json.loads 可
+                        # 产出的损坏形态）时与上方 msg/content 同口径归一为空
+                        # 串，防 _FENCED_JSON_RE.findall 对非 str 抛 TypeError
+                        # 逸出本函数「转录损坏不抛异常」的防御序列。
+                        t = c.get("text")
+                        last_text = t if isinstance(t, str) else ""
     except (OSError, UnicodeDecodeError):
         # 转录含无效 UTF-8 视为「不可读」（同 _check_artifact_json_file 口径），
         # 不抛异常、不落盘返回 False。
@@ -1624,11 +1629,13 @@ def salvage_result_from_transcript(
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 # 孤立代理符预清洗（code-review item 0207a767a725，同
                 # run_files.append_run_line 的 3644eb85f017 口径）：载荷可含
-                # \udXXX 转义（json.loads 接受、json.dumps 本身成功），文本模式
-                # write 的 UTF-8 编码抛 UnicodeEncodeError（ValueError 族）不在
-                # 下方 except OSError 捕获面内，会击穿「转录缺失/不可读 → 不落
-                # 盘不抛异常返回 False」契约——encode('utf-8', 'replace') 预清洗
-                # 后写。
+                # \udXXX 转义（json.loads 接受、json.dumps 可原样输出），文本
+                # 模式 write 的 UTF-8 编码抛 UnicodeEncodeError（ValueError 族）
+                # 会击穿「转录缺失/不可读 → 不落盘不抛异常返回 False」契约——
+                # encode('utf-8', 'replace') 预清洗后写。但 json.dumps 并非恒
+                # 成功：indent=2 走纯 Python 编码器，接近解释器递归上限的超深
+                # 嵌套载荷会在序列化期抛 RecursionError，已纳入下方 except 捕
+                # 获面。
                 f.write(
                     json.dumps(payload, ensure_ascii=False, indent=2)
                     .encode("utf-8", "replace")
@@ -1657,7 +1664,10 @@ def salvage_result_from_transcript(
                     tmp_path.unlink()
                 except OSError:
                     pass
-    except OSError as e:
+    except (OSError, RecursionError) as e:
+        # RecursionError：indent=2 使 json.dumps 走纯 Python 编码器，超深嵌套
+        # 载荷在序列化期抛 RecursionError（非 OSError 子类，同上方 json.loads
+        # 先例口径），一并按「捞回写盘失败」WARNING 留痕后返回 False。
         _logger.warning(
             "结果捞回写盘失败 '%s' (%s): %s", spec_name, agent_type, e)
         return False

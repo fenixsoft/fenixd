@@ -484,13 +484,20 @@ def validate_expect_network_form(entries) -> tuple:
         if not isinstance(pattern, str) or not pattern.strip():
             errors.append(f"条目{j}: url_pattern 须为非空字符串，收到 {pattern!r}")
         elif pattern.startswith(EXPECT_NETWORK_RE_PREFIX):
+            body = pattern[len(EXPECT_NETWORK_RE_PREFIX):]
+            if not body.strip():
+                # 裸 `re:` 前缀后空模式体编译必然成功、运行期空正则匹配
+                # 任意 URL（假通过通道），与上方 url_pattern 非空检查同级
+                # 验收期拦截
+                errors.append(f"条目{j}: url_pattern 正则体不得为空，收到 {pattern!r}")
             # `re:` 前缀正则编译预检（坏档验收期前移先例：no_overlap
             # threshold / navigate URL 形态拦截同取向）——编译失败的模式
             # 引擎侧按不匹配收场，放行只会产出「该过判失败」的哑失败
-            try:
-                re.compile(pattern[len(EXPECT_NETWORK_RE_PREFIX):])
-            except re.error as e:
-                errors.append(f"条目{j}: url_pattern 正则编译失败: {e}")
+            else:
+                try:
+                    re.compile(body)
+                except re.error as e:
+                    errors.append(f"条目{j}: url_pattern 正则编译失败: {e}")
         min_count = entry.get("min_count")
         # bool 是 int 子类，显式排除（口径同 _parse_viewport）
         if isinstance(min_count, bool) or not isinstance(min_count, int) or min_count < 1:

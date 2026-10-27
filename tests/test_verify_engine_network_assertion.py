@@ -302,6 +302,12 @@ class ExpectNetworkValidationTest(unittest.TestCase):
         )
         self.assertTrue(any("正则编译失败" in e for e in errors), errors)
 
+        # 裸 `re:` 前缀空正则体：编译必过、运行期匹配任意 URL，验收期拦截
+        errors = self._validate(
+            [dict(_NAV), _valid_click(expect_network=[{"url_pattern": "re:", "min_count": 1}])]
+        )
+        self.assertTrue(any("url_pattern 正则体不得为空" in e for e in errors), errors)
+
         # bool 是 int 子类，显式拒绝（口径同 _parse_viewport）
         errors = self._validate(
             [dict(_NAV), _valid_click(expect_network=[{"url_pattern": MATCH_PATTERN, "min_count": True}])]

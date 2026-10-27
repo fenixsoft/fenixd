@@ -79,6 +79,7 @@ class SessionTracker:
             size = run_file.stat().st_size
             with run_file.open("rb") as f:
                 if size > 65536:
+                    # [fenix-ignore:3d4f7f1b7a20] 证伪：seek 目标受上方守卫恒为 size-65536≥1 不可能为负；并发截断后正偏移绝对 seek 越界合法（读到 EOF 返回空，不抛错），负向目标在本平台也抛 OSError（EINVAL，已被下方捕获），ValueError 无触发路径
                     f.seek(size - 65536)
                 tail = f.read().decode("utf-8", "replace")
                 f.seek(0)

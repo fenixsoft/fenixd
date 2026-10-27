@@ -414,6 +414,21 @@ class CliAssertionRunner:
                 "pass": False,
                 "error": "缺少 path 字段",
             }
+        # fail-closed：非字符串 path（如 YAML 合法标量 path: 5 归一成 int）
+        # 不经 _resolve_under_root 的 Path(str(raw)) 静默归一成字面量路径
+        # "5"——exists=false 判失败时证据落在「<root>/5 不存在」，把场景
+        # 编写类型错误误导为产品未产出文件；与 _assert_json_output 对非
+        # 字符串 path 的显式类型拦截同口径（验收期必填表
+        # ASSERTION_REQUIRED_FIELDS 是前置防线，此处兜住运行期自愈/绕过
+        # 验收的调用路径）
+        if not isinstance(raw_path, str):
+            return {
+                "type": "file_exists",
+                "layer": 1,
+                "path": raw_path,
+                "pass": False,
+                "error": "path 类型非法（path 须为字符串）",
+            }
         path = self._resolve_under_root(raw_path)
         if path is None:
             return {
@@ -435,6 +450,20 @@ class CliAssertionRunner:
     async def _assert_dir_contains(self, a: dict) -> dict:
         """断言目录通配匹配数量在 [min, max] 内（glob 相对验证树根）。"""
         raw_glob = a.get("glob")
+        # fail-closed：非字符串 glob（如 YAML 合法标量 glob: 5）不经下方
+        # str() 静默归一成字面量 "5"——glob 计 0 无 min/max 时假通过、带
+        # min/max 时把场景编写类型错误误导为目录内容不符；与
+        # _assert_json_output 对非字符串 path 的显式类型拦截同口径（显式
+        # null 仍由下方缺参分支按「缺少 glob 字段」处理，不在此误伤）
+        if raw_glob is not None and not isinstance(raw_glob, str):
+            return {
+                "type": "dir_contains",
+                "layer": 1,
+                "glob": raw_glob,
+                "count": 0,
+                "pass": False,
+                "error": "glob 类型非法（glob 须为字符串）",
+            }
         # 先拦 None 再字符串化：显式 null 经 str(None)="None" 会伪装成非空串
         # 绕过空值拦截（字面量 "None" 路径 glob 计 0，无 min/max 时恒通过），
         # 与空/缺失 glob 同按缺参失败
@@ -597,6 +626,20 @@ class CliAssertionRunner:
                 "path": raw_path,
                 "pass": False,
                 "error": "缺少 path 字段",
+            }
+        # fail-closed：非字符串 path（如 YAML 合法标量 path: 5 归一成 int）
+        # 不经 _resolve_under_root 的 Path(str(raw)) 静默归一成字面量路径
+        # "5"——那会以「文件不存在: <root>/5」失败，把场景编写类型错误
+        # 误导为产品未产出文件；与 _assert_json_output 对非字符串 path 的
+        # 显式类型拦截同口径（验收期必填表 ASSERTION_REQUIRED_FIELDS 是
+        # 前置防线，此处兜住运行期自愈/绕过验收的调用路径）
+        if not isinstance(raw_path, str):
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": raw_path,
+                "pass": False,
+                "error": "path 类型非法（path 须为字符串）",
             }
         path = self._resolve_under_root(raw_path)
         if path is None:
