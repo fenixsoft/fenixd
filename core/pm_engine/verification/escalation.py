@@ -26,6 +26,10 @@ from core.state_machine import (
     # judge-scenario-repair：judge 原地场景修复预算单点定义在 core.state_machine
     # （与 pipeline.py 同源，防两侧调参漂移）
     _SCENARIO_REPAIR_MAX_ROUNDS,
+    # fix-scheduled-reverify-survive-restart D1：排程重验等待态来源标记字段
+    # 单点定义（与 state_machine 恢复路径读侧同引常量，防裸串漂移）
+    REVERIFY_PENDING_FIELD,
+    REVERIFY_REASON_FIELD,
 )
 
 # tmp+replace 原子写助手（core/fs_utils 单点实现；code-review 45390e0eb835：
@@ -2668,12 +2672,21 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
     # 探测器静默；到期后由定时器（主）+ 周期扫描（兜底）触发重验。
     # （锁外执行——状态机写盘属耗时 IO，MUST NOT 入临界区；写失败不阻断
     # 排程，此时定时器已占位启动、兜底语义不受影响。）
+    # fix-scheduled-reverify-survive-restart D1：来源标记字段
+    # _reverify_pending/_reverify_reason 与截止字段**同一原子写**落盘——
+    # daemon 全扫恢复路径（state_machine.recover_interrupted TESTING 分支）
+    # 以该标记为门识别「合法等待排程重验」的 testing 态，不再把等待态误判
+    # 为中断孤儿态重置 implemented（2026-10-27 17:58 add-command-center
+    # 监视期实证）。截止时刻单源复用 _dispatch_backoff_until，MUST NOT
+    # 另立第二截止字段。
     deadline_epoch = int(time.time()) + _SCENARIO_REPAIR_REVERIFY_DELAY_SECONDS
     try:
         pipeline._context.state_machine.update_spec(
             spec_name,
             {
                 "_dispatch_backoff_until": deadline_epoch,
+                REVERIFY_PENDING_FIELD: True,
+                REVERIFY_REASON_FIELD: "scenario_repair_exhausted",
             },
         )
     except Exception as e:

@@ -57,6 +57,9 @@ from core.state_machine import (
     INCONCLUSIVE_ATTEMPTS_FIELD,
     LEGACY_DEGRADE_LAST_REASON_FIELD,
     LEGACY_DEGRADE_STREAK_FIELD,
+    # fix-scheduled-reverify-survive-restart D1：排程重验等待态清零集单点
+    # （verified 落定收口随本表展开，与 verdict_evidence/unfreeze_spec 同源）
+    REVERIFY_STATE_RESET_FIELDS,
     SCENARIO_REVISION_PENDING_FIELD,
     VERIFY_INFRA_RETRY_STREAK_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
@@ -125,6 +128,11 @@ VERIFIED_RESET_FIELDS = {
     # 验证成功即「连续降级」链条断裂，后续首次失败重新获得既有降级机会。
     LEGACY_DEGRADE_STREAK_FIELD: 0,
     LEGACY_DEGRADE_LAST_REASON_FIELD: None,
+    # fix-scheduled-reverify-survive-restart D1：排程重验等待态三字段随
+    # verified 落定收口（重验窗口已消费）——标记/来源/仍未来的退避截止
+    # 残留一并清零（清零集单点 REVERIFY_STATE_RESET_FIELDS 展开，与
+    # unfreeze_spec / 恢复路径拾起 / bug-found 落定四处同源）。
+    **REVERIFY_STATE_RESET_FIELDS,
 }
 
 # 仓库相对路径形态（judge 归因文本中的影响面文件）：

@@ -1373,6 +1373,20 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                 "_judge_token_baseline": json.dumps(cur, ensure_ascii=False),
             },
         )
+    # fix-scheduled-reverify-survive-restart D1：重验执行落定（bug-found 分支
+    # 见下；verified 分支经既有 update_spec 并入同款清零集）——排程重验窗口
+    # 已消费（重验已执行、裁决落定），等待态标记/来源与截止残留一并清零
+    # （清零集单点 REVERIFY_STATE_RESET_FIELDS）。本单点覆盖主路径与 legacy
+    # 车道两条 bug-found 采纳尾（两处均经 _record_verdict_adoption(spec,
+    # "bug-found") 收口）；verified 落定侧与 fastlane.VERIFIED_RESET_FIELDS
+    # 同源展开。
+    if status == "bug-found":
+        from core.state_machine import REVERIFY_STATE_RESET_FIELDS
+
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            dict(REVERIFY_STATE_RESET_FIELDS),
+        )
     # verified 落定 = judge 重跑窗口关闭：judge_rerun_count 归零并解除
     # hard cap 冻结标记（与 _verify_fail_rounds 的清零点对齐，D1 同语义）；
     # 打回轮（bug-found）不清零——失败链中计数跨轮累计直至上限。
@@ -1383,6 +1397,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
             JUDGE_REPAIR_CLAIMS_FIELD,
             JUDGE_REPAIR_LAST_SUMMARY_FIELD,
             JUDGE_REPAIR_REJECTED_FIELD,
+            REVERIFY_STATE_RESET_FIELDS,
             SCENARIO_REPAIR_EXHAUSTED_FIELD,
         )
 
@@ -1415,6 +1430,11 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                 # 复位清单（admin_actions._RETRY_COUNTER_RESETS）同形态清
                 # False；读侧为字符串防御式解析，STATE.md 往返安全。
                 "_judge_inconclusive_cap_escalated": False,
+                # fix-scheduled-reverify-survive-restart D1：verified 落定 =
+                # 排程重验窗口已消费——等待态标记/来源与仍未来的截止残留
+                # 一并清零（与 bug-found 分支/unfreeze_spec/恢复路径拾起同源
+                # 清零集，fastlane.VERIFIED_RESET_FIELDS 展开同款）。
+                **REVERIFY_STATE_RESET_FIELDS,
             },
         )
 
