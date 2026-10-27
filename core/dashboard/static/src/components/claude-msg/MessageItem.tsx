@@ -114,8 +114,10 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
     // 非法 timestamp（缺失/格式错）解析得 Invalid Date，toLocaleTimeString 会把
     // 字面 'Invalid Date' 渲染到头像行/气泡时间（code-review item 4bc55b8aa8d6）：
     // 校验解析结果，非法时省略时间显示（类型契约只保证字段存在，不保证可解析）。
+    // 哨兵 0 兜底（runEvents.ts 缺时间戳事件保键稳定所设）解析合法但指向 1970
+    // 纪元，同样渲染出误导性假时间（code-review item 99140a20c1e4）：一并省略。
     const t = new Date(message.timestamp);
-    return Number.isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
+    return Number.isNaN(t.getTime()) || t.getTime() <= 0 ? '' : t.toLocaleTimeString();
   }, [message.timestamp]);
   // thinkingForced：无正文兜底强制渲染的 thinking（design D4）不受开关隐藏，
   // 否则 thinking-only 流的兜底产物在渲染层被击穿（verification BUG-02）。

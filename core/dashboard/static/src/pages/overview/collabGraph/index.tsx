@@ -57,18 +57,29 @@ export default function CollabGraphPage() {
   // ── 拉取（SSE 触发的节流重拉与 30s 心跳共用；后台刷新静默原位，先例
   //    projects/topology/index.tsx）──
   const loadRef = useRef<(initial?: boolean) => Promise<void>>(async () => {});
+  // 仿 overview/activities 页 loadSeqRef 口径：项目筛选切换重拉、SSE 节流重拉与
+  // 30s 心跳可并发在飞，响应到达顺序不保证——较早发出（如「全部项目」）的响应
+  // 后到会把旧聚合结果写回覆盖新筛选数据。仅最新一次请求允许落状态，过期响应
+  // （含其失败与收尾置位）直接丢弃
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(
     async (initial = false) => {
+      const seq = ++loadSeqRef.current;
       try {
         if (initial) setLoading(true);
         const d = await getCollabGraph(project || undefined);
+        // 写回前复核序号：过期请求不改写任何状态
+        if (seq !== loadSeqRef.current) return;
         setData(d);
         setError(d.error ?? '');
       } catch (err) {
+        // 过期请求的失败同样不落状态，防旧错误提示覆盖新请求结果
+        if (seq !== loadSeqRef.current) return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        // 收尾置 false 同样纳入序号守卫：旧请求后完成时不抢撤加载指示
+        if (seq === loadSeqRef.current) setLoading(false);
       }
     },
     [project],

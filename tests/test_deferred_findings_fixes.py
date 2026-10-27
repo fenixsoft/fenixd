@@ -92,7 +92,23 @@ def _make_pipeline(ctx):
     def read_one(name):
         return {"_env_block_rounds": 0}
 
+    def bump_counters(name, deltas):
+        # 对齐真实 StateMachine.bump_counters 契约（code-review 3a39bcdb19d0
+        # 起 _escalate_env_blocked 经该原语锁内原子递增计数并落盘，替代旧
+        # 「快照读 +1 后随 update_spec 回写」路径）：读当前值→逐字段 int
+        # 累加→返回 {field: 新值} 快照。替身缺该方法会 AttributeError 被
+        # _escalate_env_blocked 函数级 except 吞掉，升级通道整体静默跳过。
+        cur = dict(read_one(name) or {})
+        out = {}
+        for field, delta in deltas.items():
+            try:
+                out[field] = int(cur.get(field, 0) or 0) + int(delta)
+            except (TypeError, ValueError):
+                out[field] = int(delta)
+        return out
+
     sm.read_one = read_one
+    sm.bump_counters = bump_counters
     sm.update_spec = lambda name, entry: ctx.state_updates.append((name, entry))
     ctx.state_machine = sm
     ctx.logger = type("L", (), {})()

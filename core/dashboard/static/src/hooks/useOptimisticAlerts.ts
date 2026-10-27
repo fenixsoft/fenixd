@@ -35,6 +35,14 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
   // 收敛 effect：后端确认已消失的乐观 id 才移除遮蔽（绝不永久遮蔽）；
   // alertsData 陈旧（load 持续失败）期间由 tick 驱动的超时兜底强制收敛
   useEffect(() => {
+    // 孤儿记账清理：并发 markHandled 一成一败等场景可能留下不在遮蔽内的
+    // confirmedAtRef 条目，而收敛遍历只看 optimistic 内的 id，孤儿条目永不会
+    // 被下方逻辑清除；这里顺带移除，防 ref 记账随组件生命周期缓慢累积
+    // （ref 删除不触发渲染，仅影响 optimistic 内 id 的超时兜底计时）
+    const optimisticSet = new Set(optimistic);
+    for (const id of confirmedAtRef.current.keys()) {
+      if (!optimisticSet.has(id)) confirmedAtRef.current.delete(id);
+    }
     if (!optimistic.length) return;
     const stillThere = alertsData ? new Set((alertsData.alerts || []).map((a) => a.id)) : null;
     const now = Date.now();
@@ -63,8 +71,13 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
       confirmedAtRef.current.set(a.id, Date.now());
       return null;
     } catch (err) {
-      // 失败即回滚乐观遮蔽：后端列表仍含该 id，不回滚会让未处理告警被永久隐藏
-      setOptimistic((prev) => prev.filter((id) => id !== a.id));
+      // 失败即回滚乐观遮蔽：后端列表仍含该 id，不回滚会让未处理告警被永久隐藏。
+      // 例外：同 id 已有成功记录（并发一成一败、成功侧先返回）则跳过回滚——
+      // 此刻移除会撤掉由成功请求支撑的遮蔽，让已处理告警闪回「未处理」列表；
+      // 遮蔽仍由收敛 effect（后端确认消失或超时兜底）正常清除，绝不永久遮蔽
+      if (!confirmedAtRef.current.has(a.id)) {
+        setOptimistic((prev) => prev.filter((id) => id !== a.id));
+      }
       return err instanceof Error ? err.message : String(err);
     }
   }, []);
