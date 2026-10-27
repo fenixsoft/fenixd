@@ -18,6 +18,6 @@ add-command-center 的 BUG-1（项目筛选切换后各屏 0 新请求、滞留�
 ## Impact
 
 - `core/verify_engine/browser.py`：步骤执行窗口网络监听与断言（playwright page route/response 事件收集）
-- 场景契约校验点（场景验收「未知操作，支持: …」白名单所在，pipeline.py 场景校验段）：新字段放行与形态校验
+- `core/verify_engine/scenarios.py`：场景契约校验点（「未知操作，支持: …」白名单 `_validate_web` 与 `TestStep` 步骤模型所在，评审实测：该白名单在 scenarios.py 而非 pipeline.py，pipeline.py 仅编排/热重载无词表校验）：新字段放行、形态校验与步骤字段解析/回环
 - `agents/*.md` planner 契约段：新能力声明（一句，附最小示例）
 - 新增 `tests/test_verify_engine_network_assertion.py`
