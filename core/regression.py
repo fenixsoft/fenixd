@@ -771,7 +771,7 @@ class _SuiteLock:
                 # （acquired=False，调用方照旧走 skipped 分支），仅日志与
                 # 时机不同。
                 if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
-                    _logger.warning(
+                    self._log(
                         f"regression: 主机级锁不可用（errno={e.errno}: "
                         f"{e.strerror}），放弃本次回归（供复盘）"
                     )

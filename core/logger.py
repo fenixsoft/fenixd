@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import sys
-import time
 import threading
 from pathlib import Path
 from datetime import datetime, timezone
@@ -55,9 +54,16 @@ class JsonFormatter(logging.Formatter):
         line = json.dumps(entry, ensure_ascii=False, default=str)
         # 单事件体积上限（improve-spec-topology-pipeline-view 1.3）：不超限
         # 路径逐字节不变（快照测试钉死），超限才进入截断防御。
-        if _json_len(line) <= LOG_EVENT_MAX_BYTES:
-            return line
-        return self._cap_event(entry)
+        if _json_len(line) > LOG_EVENT_MAX_BYTES:
+            line = self._cap_event(entry)
+        # 孤立代理字符清洗（item 98cd82225213）：os.fsdecode 出的非法文件名等
+        # 输入混入孤立代理时 json.dumps(ensure_ascii=False) 原样保留，_json_len
+        # 以 replace 口径度量通过，但 handler 以 encoding='utf-8' 写盘会抛
+        # UnicodeEncodeError，整条记录被 emit→handleError 吞掉、结构化日志静默
+        # 丢失。超限兜底路径（_cap_event 尾部硬截）已有同口径解码清洗先例，这里
+        # 在 format 唯一出口拉齐口径，保证任意输入可写盘；合法输入经 replace
+        # 往返逐字节不变，不触碰快照钉死的不超限路径。
+        return line.encode("utf-8", "replace").decode("utf-8")
 
     @staticmethod
     def _cap_event(entry: dict) -> str:
