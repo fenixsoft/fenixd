@@ -9,6 +9,7 @@
 import { App, Button, Popconfirm } from 'antd';
 import { useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
+import { KNOWN_IRREVERSIBLE_CHOICE_IDS } from '@/pages/command-center/shared';
 import type { AlertChoice, AlertItem } from '@/services/dashboard';
 import { resolveAlert } from '@/services/dashboard';
 
@@ -16,14 +17,13 @@ export type AlertResolveMsg = { text: string; tone: 'error' | 'info' };
 
 // 不可逆/越权裁决执行前二次确认（5.3）：确认门由注册表 destructive 标志单源
 // 驱动（code-review item 19f72b875e8f，前端不硬编码业务 id）；历史告警快照
-//（D2 不回写）缺该字段时按已知不可逆 id 回退保底。
+//（D2 不回写）缺该字段时按已知不可逆 id 回退保底——回退清单 import shared.ts
+// 的 KNOWN_IRREVERSIBLE_CHOICE_IDS 单源常量（code-review item 3a6a2d1bc5f7），
+// 与收件箱 isDestructiveChoice 同一口径，本地不再维护副本。
 export function choiceNeedsConfirm(selChoice: AlertChoice | undefined, selChoiceId: string): boolean {
   return (
     selChoice?.destructive === true ||
-    (selChoice?.destructive === undefined &&
-      (selChoiceId === 'abandon' ||
-        selChoiceId === 'skip_review_gate' ||
-        selChoiceId === 'delete_untracked_stray'))
+    (selChoice?.destructive === undefined && KNOWN_IRREVERSIBLE_CHOICE_IDS.includes(selChoiceId))
   );
 }
 
