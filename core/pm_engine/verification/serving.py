@@ -985,7 +985,17 @@ def _current_instance_base_url(pipeline, spec_name: str) -> str:
             and pid_alive(e["pid"])
         ]
         if candidates:
-            newest = max(candidates, key=lambda e: e.get("registered_at") or 0)
+            # code-review 08352ada6688：registered_at 防御同上方逐字段过滤
+            # ——servers.json 外部可改写，字符串型时间戳与 int 数值比较会在
+            # max 内抛 TypeError，被下方裸 except 吞掉后 base_url 静默返回
+            # 空串（api/web runner 集体退回 navigate 考古）；非数值形态按
+            # 0（最老）参与比较。
+            newest = max(
+                candidates,
+                key=lambda e: e["registered_at"]
+                if isinstance(e.get("registered_at"), (int, float))
+                else 0,
+            )
             return f"http://127.0.0.1:{newest['port']}"
     except Exception:
         pass
@@ -1293,16 +1303,17 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     #   "core.pm_engine.verification.run_prepare_steps" 生效
     import core.pm_engine.verification as _facade
 
-    # code-review 8471dd3626a0：project_root 拼路径前统一 Path() 归一——
-    # 与 _ensure_serving_worktree/_open_boot_log 同一拼接口径（契约标 Path，
-    # str 形态混入时不抛 TypeError 而是同走防御包裹）
-    scenarios_path = (
-        Path(pipeline._context.project_root)
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "test_scenarios.json"
-    )
+    # code-review dcc9f87cb991：verify-progress 下场景路径改走净化单源
+    # （report_gate.verify_progress_dir 经 safe_component，与写侧及
+    # scenario_gate 读侧恒同源）——原手拼点 spec_name 原始内插，病理
+    # spec 名（state_machine.add_spec 无字符集约束）时读侧落到未净化
+    # 目录：exists() 判 False 后可达性门禁整体静默放行，契约 serve 不
+    # 建立、场景端口/origin 改写作用于错误路径。延迟导入同
+    # scenario_gate._run_scenario_static_check 先例（避免模块加载期
+    # 环导入）；project_root 契约标 Path，全仓调用点同口径。
+    from core.pm_engine.verification.report_gate import verify_progress_dir
+
+    scenarios_path = verify_progress_dir(pipeline, spec_name) / "test_scenarios.json"
     if not scenarios_path.exists():
         return True, False, ""
     try:

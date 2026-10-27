@@ -148,8 +148,11 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // 序列化值不同，仍会回填覆盖。
     const key = JSON.stringify(initialValues);
     if (key === lastSelfReviewBackfillRef.current) return;
-    lastSelfReviewBackfillRef.current = key;
     form.setFieldsValue(initialValues);
+    // ref 记账在回填成功之后（code-review item 51e106646c29，与 useGatedFormPanel
+    // 同口径）：setFieldsValue 抛异常时 key 不落 ref，同样的配置内容在依赖下次
+    // 变化时仍会重试回填；先写 ref 会把失败的那次变更因 key 相等永久跳过
+    lastSelfReviewBackfillRef.current = key;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.self_review, form]);
 

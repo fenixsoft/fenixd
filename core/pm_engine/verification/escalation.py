@@ -327,7 +327,9 @@ def _escalate_inconclusive_parking(
                     f"（choices：grant_env_exemption / manual_fixed_reverify / "
                     f"abandon）；自动重验已停止"
                 ),
-                "_inconclusive_attempts": attempts,
+                # 计数字段不在此回写（code-review item 3a39bcdb19d0）：三个
+                # 调用点入口均已用 bump_counters 锁内原子递增并落盘，此处
+                # 快照值合并写会在窗口内覆盖 admin 人工重置清零。
                 "_last_inconclusive_signature": signature or "",
                 "_in_inconclusive_reverify": True,
                 "_dispatch_backoff_until": (
@@ -445,10 +447,27 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                 )
         return False
 
+    # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
+    # / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
+    # （unfreeze 同轮清零）等其他写者互相覆盖——丢清零则重验提前熔断误升级，
+    # 丢增量则熔断晚一轮。脏值由 bump_counters 兜底按 0 起算（同原 except
+    # 防御）；递增落盘由 bump 原子完成，下方 update_spec 写点不再回写计数字段。
     try:
-        attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
-    except (TypeError, ValueError):
-        attempts = 1
+        attempts = pipeline._context.state_machine.bump_counters(
+            spec_name, {"_inconclusive_attempts": 1}
+        ).get("_inconclusive_attempts", 0)
+    except Exception as e:
+        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与下方
+        # update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
+            f"非阻断）: {type(e).__name__}: {e}",
+        )
+        try:
+            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
     max_attempts = _read_int_config(
         pipeline, "verify_engine.inconclusive_max_attempts", 2
     )
@@ -520,7 +539,8 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
                 f"环境性失联：{blocked_env} 个失败场景均 blocked-env，"
                 f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"
             ),
-            "_inconclusive_attempts": attempts,
+            # 计数字段不在此回写（code-review item 3a39bcdb19d0）：入口已用
+            # bump_counters 锁内原子递增并落盘，快照值合并写会覆盖并发清零。
             # 2.2：回写本轮签名摘要——下一轮 inconclusive 处置点的比较基准
             # （与 _inconclusive_attempts 同生命周期，人工重置清零后失效）。
             "_last_inconclusive_signature": signature,
@@ -537,15 +557,17 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
             updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
         # update_spec 含磁盘 IO，异常上抛会沿调用点中断本轮 verdict 处置
         # （与 _escalate_inconclusive_parking 容错口径对齐，code-review item
-        # 428bab82943c）：记账写失败仅 WARNING 留痕（attempt 计数/降档/签名
-        # 本轮未推进，下一轮处置点按落盘旧值重算兜底），不阻断重派主链。
+        # 428bab82943c）：记账写失败仅 WARNING 留痕（attempt 计数以入口
+        # bump_counters 原子落盘为准，写失败时降档/签名本轮未推进，下一轮
+        # 处置点按落盘旧值重算兜底），不阻断重派主链。
         try:
             pipeline._context.state_machine.update_spec(spec_name, updates)
         except Exception as e:
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"'{spec_name}' inconclusive 重验记账写盘失败（计数未推进，"
-                f"仍按重派处理，非阻塞）: {type(e).__name__}: {e}",
+                f"'{spec_name}' inconclusive 重验记账写盘失败（计数以入口 "
+                f"bump 落盘为准，降档/签名未落，仍按重派处理，非阻塞）: "
+                f"{type(e).__name__}: {e}",
             )
         pipeline._context.enqueue(spec_name, "verifier")
         return True
@@ -717,18 +739,27 @@ def _escalate_env_blocked(
             frozen = False
         else:
             try:
-                rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
+                int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0)
             except (TypeError, ValueError):
                 # 字段被外部工具写坏为非数字串时，int() 抛 ValueError 会被函数级
                 # except 吞成一条 WARNING，其后的阻塞落盘、admin 自动呼叫、人工
                 # 告警全部静默跳过——比照 _inconclusive_attempts 同款防御，
                 # 脏值按首轮阻塞处置，不让记账字段脏值瘫痪升级通道。
-                rounds = 1
                 pipeline._context.logger.warning(
                     "pm_engine",
                     f"'{spec_name}' {ENV_BLOCK_ROUNDS_FIELD} 字段脏值（非数字），"
                     f"已按首轮阻塞兜底",
                 )
+            # 锁内原子递增（code-review item 3a39bcdb19d0，比照
+            # fastlane._bump_fail_streak / judge_gate._judge_round_bump）：
+            # 锁外快照读改写会与 unfreeze_spec 人工解冻清零等其他写者互相
+            # 覆盖——丢清零则 spec 提前再冻结/误升级，丢增量则熔断晚一轮。
+            # 脏值由 bump_counters 兜底按 0 起算（与上方 except 防御同语义）；
+            # IO 异常沿函数级 except 走既有 WARNING 降级，与下方 update_spec
+            # 写点失败同口径。
+            rounds = pipeline._context.state_machine.bump_counters(
+                spec_name, {ENV_BLOCK_ROUNDS_FIELD: 1}
+            ).get(ENV_BLOCK_ROUNDS_FIELD, 0)
             frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
         # blocked 落盘前的非关键计算单独容错（code-review ad6e029c0827）：
         # 成本查询含 planner run 产物磁盘 IO，一旦抛异常会被函数级 except
@@ -767,10 +798,12 @@ def _escalate_env_blocked(
                 else ""
             )
             error_msg = f"{exemption_note}{title}（第 {rounds} 轮）：{violations_note}"
+        # 计数字段不在此回写（code-review item 3a39bcdb19d0）：非豁免轮已由
+        # 上方 bump_counters 锁内原子递增并落盘，快照值合并写会覆盖并发清零；
+        # 豁免轮轮次保持原值不递增，无需写。
         entry = {
             "status": "blocked",
             "error": error_msg,
-            ENV_BLOCK_ROUNDS_FIELD: rounds,
         }
         if frozen:
             entry[FROZEN_FIELD] = True
@@ -1674,10 +1707,27 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
     重验并暴露错误等待人工（无界重验会烧 token）。
     """
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
+    # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
+    # / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
+    # （unfreeze 同轮清零）等其他写者互相覆盖——丢清零则重验提前熔断误升级，
+    # 丢增量则熔断晚一轮。脏值由 bump_counters 兜底按 0 起算（同原 except
+    # 防御）；递增落盘由 bump 原子完成，下方 update_spec 写点不再回写计数字段。
     try:
-        attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
-    except (TypeError, ValueError):
-        attempts = 1
+        attempts = pipeline._context.state_machine.bump_counters(
+            spec_name, {"_inconclusive_attempts": 1}
+        ).get("_inconclusive_attempts", 0)
+    except Exception as e:
+        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与下方
+        # update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
+            f"非阻断）: {type(e).__name__}: {e}",
+        )
+        try:
+            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
     max_attempts = _read_int_config(
         pipeline, "verify_engine.inconclusive_max_attempts", 2
     )
@@ -1727,8 +1777,9 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
         pipeline._context.logger.warning("pm_engine", f"'{spec_name}' {note}")
         # update_spec 含磁盘 IO，异常上抛会沿调用点中断本轮 verdict 处置
         # （与 _escalate_inconclusive_parking 容错口径对齐，code-review item
-        # 428bab82943c）：记账写失败仅 WARNING 留痕（attempt 计数/签名本轮
-        # 未推进，下一轮处置点按落盘旧值重算兜底），不阻断重派主链。
+        # 428bab82943c）：记账写失败仅 WARNING 留痕（attempt 计数以入口
+        # bump_counters 原子落盘为准，签名本轮未推进，下一轮处置点按落盘
+        # 旧值重算兜底），不阻断重派主链。
         try:
             pipeline._context.state_machine.update_spec(
                 spec_name,
@@ -1736,7 +1787,9 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
                     "status": "implemented",
                     "tester_run": None,
                     "error": note,
-                    "_inconclusive_attempts": attempts,
+                    # 计数字段不在此回写（code-review item 3a39bcdb19d0）：入口
+                    # 已用 bump_counters 锁内原子递增并落盘，快照值合并写会覆盖
+                    # 并发清零。
                     # 本形态无签名比较基准，显式按空串回写（与本函数升级分支注释
                     # 声明一致，code-review de2568acfdf3）：两种 inconclusive 形态
                     # 共用 _inconclusive_attempts 计数，不回写会残留 blocked-env 轮
@@ -1752,8 +1805,9 @@ def _handle_judge_env_declared(pipeline, spec_name: str) -> bool:
         except Exception as e:
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"'{spec_name}' judge-env 重验记账写盘失败（计数未推进，"
-                f"仍按重派处理，非阻塞）: {type(e).__name__}: {e}",
+                f"'{spec_name}' judge-env 重验记账写盘失败（计数以入口 bump "
+                f"落盘为准，签名未落，仍按重派处理，非阻塞）: "
+                f"{type(e).__name__}: {e}",
             )
         pipeline._context.enqueue(spec_name, "verifier")
         return True
@@ -2259,10 +2313,27 @@ def _handle_verdict_env_exemption_inconclusive(
     summary = (report or {}).get("summary") or {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
+    # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak
+    # / judge_gate._judge_round_bump）：锁外快照读改写会与 admin 人工重置清零
+    # 等其他写者互相覆盖——丢清零则重验提前熔断误升级，丢增量则熔断晚一轮。
+    # 脏值由 bump_counters 兜底按 0 起算（同原 except 防御）；递增落盘由 bump
+    # 原子完成，收口 _escalate_inconclusive_parking 不再回写计数字段。
     try:
-        attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
-    except (TypeError, ValueError):
-        attempts = 1
+        attempts = pipeline._context.state_machine.bump_counters(
+            spec_name, {"_inconclusive_attempts": 1}
+        ).get("_inconclusive_attempts", 0)
+    except Exception as e:
+        # bump 失败（磁盘 IO）仅 WARNING 留痕，按快照+1 降档——与收口
+        # update_spec 写点失败的非阻断容错同口径，不中断 verdict 处置。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"'{spec_name}' inconclusive 计数原子递增失败（按快照+1 降档，"
+            f"非阻断）: {type(e).__name__}: {e}",
+        )
+        try:
+            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
     env_note = (
         f"env 断言 {verdict.get('env_entries', 0)} 条、"
         f"blocked-env 场景 {len(verdict.get('blocked_env_scenarios') or [])} 个"

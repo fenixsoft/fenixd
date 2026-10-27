@@ -45,16 +45,20 @@ const NON_NEGATIVE_INT_RULE = {
 // 九字段表单映射单源（config 取值 ?? AGENTS_DEFAULTS）：initialValues 与回填 effect
 // 共用，新增预算字段只改此处，避免两份映射漏改一处导致初值与回填值分叉
 function buildAgentsFormValues(agents: ConfigData['agents']) {
+  // agents?. 防护（code-review item bf63df93837f，比照 ParallelSettingsPanel
+  // 的 item 60ae9a174a6c 同族口径）：旧版本配置或接口降级响应可能缺 agents 段，
+  // 首帧 useState(buildValues) 即执行本函数，直接解引用会抛 TypeError 白屏；
+  // 缺段时全字段落 AGENTS_DEFAULTS，与 ParallelSettingsPanel 行为一致。
   return {
-    token_budget_millions: agents.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
-    daily_run_limit: agents.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
-    impl_run_budget: agents.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
-    impl_run_budget_max: agents.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
-    verify_redo_budget: agents.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
-    max_same_cause_redispatches: agents.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
-    scale_precheck_enabled: agents.scale_precheck?.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
-    scale_precheck_higher: agents.scale_precheck?.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
-    scale_precheck_full: agents.scale_precheck?.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
+    token_budget_millions: agents?.token_budget_millions ?? AGENTS_DEFAULTS.tokenBudgetMillions,
+    daily_run_limit: agents?.daily_run_limit ?? AGENTS_DEFAULTS.dailyRunLimit,
+    impl_run_budget: agents?.impl_run_budget ?? AGENTS_DEFAULTS.implRunBudget,
+    impl_run_budget_max: agents?.impl_run_budget_max ?? AGENTS_DEFAULTS.implRunBudgetMax,
+    verify_redo_budget: agents?.verify_redo_budget ?? AGENTS_DEFAULTS.verifyRedoBudget,
+    max_same_cause_redispatches: agents?.max_same_cause_redispatches ?? AGENTS_DEFAULTS.maxSameCauseRedispatches,
+    scale_precheck_enabled: agents?.scale_precheck?.enabled ?? AGENTS_DEFAULTS.scalePrecheckEnabled,
+    scale_precheck_higher: agents?.scale_precheck?.higher_threshold ?? AGENTS_DEFAULTS.scalePrecheckHigher,
+    scale_precheck_full: agents?.scale_precheck?.full_threshold ?? AGENTS_DEFAULTS.scalePrecheckFull,
   };
 }
 
