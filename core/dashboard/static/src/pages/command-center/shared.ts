@@ -120,9 +120,11 @@ export function sparklineHeights(activity: number[]): number[] {
 }
 
 // choices 选项破坏性判定：注册表 destructive 标志单源；历史快照缺字段时按
-// 已知不可逆选项 id 回退保底（与 useAlertAdjudication.choiceNeedsConfirm
-// 同一口径，收件箱屏独立判定不做选择状态耦合）。
-const KNOWN_IRREVERSIBLE_CHOICE_IDS = ['abandon', 'skip_review_gate', 'delete_untracked_stray'];
+// 已知不可逆选项 id 回退保底。该回退清单为唯一权威单源（code-review item
+// 3a6a2d1bc5f7）：useAlertAdjudication.choiceNeedsConfirm import 此常量判定，
+// 两侧不得再各自维护副本；本模块零 react/antd 依赖，node --test 直载不受
+// 影响，收件箱屏独立判定不做选择状态耦合。
+export const KNOWN_IRREVERSIBLE_CHOICE_IDS = ['abandon', 'skip_review_gate', 'delete_untracked_stray'];
 
 export function isDestructiveChoice(
   choice: { id: string; destructive?: boolean } | null | undefined,

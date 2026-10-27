@@ -7,7 +7,7 @@
 // 移出并触发 KPI 刷新（onKpiRefresh → shell kpiTick → 执行台账重拉）；失败
 // 保留卡片展示错误可重试；空态「无待人工裁决事项」。
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { history } from '@umijs/max';
 import { Alert, Empty, Radio, Tag } from 'antd';
 import { commandCenterInbox } from '@/services/dashboard';
@@ -155,6 +155,20 @@ export default function AdjudicationInbox({
   const adj = useAlertAdjudication();
   // 裁决成功后卡片本地移出（服务端真相经 60s 轮询回归：仍未决会重新出现）
   const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set());
+  // 兑现上注的回归语义：resolvedIds 仅承担本地隐藏，服务端真相仍以轮询为
+  // 准——某轮 60s 数据若仍下发同 id（如 resolveAlert 请求成功但 marked=false，
+  // 告警未入已处理），把该 id 从集合移除，卡片重新出现、恢复重试入口。
+  // 依赖仅 data：只有轮询快照换新才触发；resolvedIds 经函数式更新读取，
+  // 无可移除项时原样返回旧 Set（Object.is 判等跳过更新），不产生每轮渲染
+  // 的 setState 循环。
+  useEffect(() => {
+    if (!data) return;
+    const serverIds = new Set(data.cards.map((c) => c.id));
+    setResolvedIds((s) => {
+      const n = new Set([...s].filter((id) => !serverIds.has(id)));
+      return n.size === s.size ? s : n;
+    });
+  }, [data]);
 
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
   if (!data) return <ScreenLoading hint="裁决收件箱加载中" />;

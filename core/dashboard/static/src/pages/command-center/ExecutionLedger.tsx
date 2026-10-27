@@ -70,29 +70,35 @@ function KpiBar({ kpi, kpiError, onRetry }: { kpi: CommandCenterKpi | null; kpiE
   }
   const gh = kpi?.gateway_health;
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: 2,
-        border: `1px solid ${PANEL_BORDER}`,
-        borderRadius: 8,
-        padding: '8px 10px',
-        marginBottom: 12,
-      }}
-    >
-      <KpiCell label="7 日交付 SPEC" value={kpi ? kpi.delivered_specs_7d : '—'} />
-      <KpiCell label="人工介入率" value={kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—'} />
-      <KpiCell label="run 成功率" value={kpi ? fmtRate(kpi.run_success_rate_7d) : '—'} />
-      <KpiCell label="单 SPEC 成本" value={kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—'} />
-      {gh ? (
-        <span style={{ marginLeft: 10 }}>
-          <Tag color={gh.configured ? 'green' : 'default'}>
-            网关{gh.configured ? '已配置' : '未配置'}
-            {gh.configured ? ` · ${gh.providers} provider` : ''}
-          </Tag>
-        </span>
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: 2,
+          border: `1px solid ${PANEL_BORDER}`,
+          borderRadius: 8,
+          padding: '8px 10px',
+          marginBottom: 12,
+        }}
+      >
+        <KpiCell label="7 日交付 SPEC" value={kpi ? kpi.delivered_specs_7d : '—'} />
+        <KpiCell label="人工介入率" value={kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—'} />
+        <KpiCell label="run 成功率" value={kpi ? fmtRate(kpi.run_success_rate_7d) : '—'} />
+        <KpiCell label="单 SPEC 成本" value={kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—'} />
+        {gh ? (
+          <span style={{ marginLeft: 10 }}>
+            <Tag color={gh.configured ? 'green' : 'default'}>
+              网关{gh.configured ? '已配置' : '未配置'}
+              {gh.configured ? ` · ${gh.providers} provider` : ''}
+            </Tag>
+          </span>
+        ) : null}
+      </div>
+      {/* 后台刷新失败保留旧数据（与台账/网格/流水线同口径），内联提示不阻塞视图 */}
+      {kpiError ? (
+        <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`KPI 刷新失败：${kpiError}`} />
       ) : null}
     </div>
   );

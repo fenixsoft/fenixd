@@ -391,7 +391,7 @@ def _new_lane_stat(lane: str, zone: str) -> dict:
         "status": "idle",
         "runs_today": 0,
         "success_7d": 0,
-        "terminal_7d": 0,
+        "success_denom_7d": 0,
         "cost_7d": 0.0,
         "cost_priced": False,
         "activity_14d": [0] * 14,
@@ -405,8 +405,9 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
 
     车道卡 = 花名册全量（零 run 也出卡）∪ 观测 lane（花名册外落「其他」
     分区）。卡片字段：lane/zone/status（working=存在在飞 run，复用 runs.py
-    在飞判定口径）/runs_today（UTC 日界）/success_rate_7d/cost_7d/
-    activity_14d（长度 14 按日计数，旧→新；mtime 粗筛入窗文件后按 started
+    在飞判定口径）/runs_today（UTC 日界）/success_rate_7d（分母对齐
+    aggregate_kpi ``run_success_rate_7d`` 同款口径 done/(done+error)）/
+    cost_7d/activity_14d（长度 14 按日计数，旧→新；mtime 粗筛入窗文件后按 started
     落桶）/last_activity_ts/attributable（最近在飞 run 归属 {project, spec}
     或 null，供钻取 /projects/:name/:spec）。
 
@@ -443,10 +444,14 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
                     st["runs_today"] += 1
                 if started >= win7_start:
                     st7 = r.get("status")
-                    if st7 not in ("running", "empty", "stale"):
-                        st["terminal_7d"] += 1
+                    # 成功率分母对齐 aggregate_kpi run_success_rate_7d 同款
+                    # 口径：done/(done+error)；cancelled/interrupted 等其他
+                    # 终态不计入分母，避免同名指标双口径
                     if st7 == "done":
                         st["success_7d"] += 1
+                        st["success_denom_7d"] += 1
+                    elif st7 == "error":
+                        st["success_denom_7d"] += 1
                 # 14 日活动桶：旧→新，index 13 = 今天（UTC 日界）
                 idx = 13 - (now_dt.date() - started.date()).days
                 if 0 <= idx <= 13:
@@ -489,8 +494,8 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
                 "status": "working" if inflight else "idle",
                 "runs_today": st["runs_today"],
                 "success_rate_7d": (
-                    round(st["success_7d"] / st["terminal_7d"], 6)
-                    if st["terminal_7d"]
+                    round(st["success_7d"] / st["success_denom_7d"], 6)
+                    if st["success_denom_7d"]
                     else None
                 ),
                 "cost_7d": round(st["cost_7d"], 6) if st["cost_priced"] else None,
