@@ -2341,6 +2341,59 @@ class ConfigLoader:
             ),
         }
 
+    # ── worktree.branch_gc 配置（add-merged-branch-gc 1.1）────────────
+    # worktree 节下分支 GC 两键缺省：enabled 默认开启（用户诉求即收敛，
+    # 关闭是显式动作）；retention_days 默认 7 天宽限期——覆盖验证收尾后的
+    # diff 参照窗口与 deliverables D1 读侧兜底（git show <branch>:tasks.md）
+    # 的读取窗口。retention_days 非法值回退默认 7（与 stale_code_selfheal
+    # 的容错口径一致）；节存在但类型非法（非 dict / 字段类型错）时按既有
+    # 容错口径回退默认值，不抛异常不进入硬失败。
+    BRANCH_GC_ENABLED_DEFAULT = True
+    BRANCH_GC_RETENTION_DAYS_DEFAULT = 7
+    # retention_days 最小值 1（0/负数无语义：当天即删，宽限期形同虚设）。
+    BRANCH_GC_RETENTION_DAYS_MIN = 1
+
+    @classmethod
+    def get_branch_gc_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``worktree.branch_gc`` 段，缺失/非法值回退缺省。
+
+        - enabled: 布尔，缺省 True（非布尔回退缺省——布尔缺省语义下非法即用
+          缺省，与 stale_code_selfheal.enabled 同口径）
+        - retention_days: 正整数天，缺省 7（bool 是 int 子类须显式排除；
+          0/负数/字符串/None/非整值浮点一律回退缺省，经 _normalize_int_value
+          positive=True 口径——0 不等效关闭，宽限期无「0 天」合法形态）
+
+        节缺失（worktree 或 branch_gc 任一层缺）→ 两键全按缺省生效；子段真值
+        非 dict（如 ``branch_gc: [1]``）→ 进程级一次性 ERROR 告警后按空段降级
+        （对齐 _segment_or_empty / _sub_segment_or_empty 纪律，配置没生效时
+        日志留痕，不再静默吞脏段）；不抛异常、不使 daemon 启动失败。GC 仅在
+        daemon 启动清扫路径消费一次，无热路径压力。
+        """
+        wt = config.get("worktree") if isinstance(config, dict) else None
+        section = wt.get("branch_gc") if isinstance(wt, dict) else None
+        if section is None:
+            # 缺段不告警（对齐 _sub_segment_or_empty：缺段 ≠ 脏段）
+            section = {}
+        elif not isinstance(section, dict):
+            cls._warn_reader_once(
+                "worktree.branch_gc",
+                section,
+                _logger.error,
+                "config.worktree.branch_gc 整段非 dict（%s），该段已忽略、"
+                "按空段降级；其余配置照常生效",
+                type(section).__name__,
+            )
+            section = {}
+        enabled = section.get("enabled", cls.BRANCH_GC_ENABLED_DEFAULT)
+        if not isinstance(enabled, bool):
+            enabled = cls.BRANCH_GC_ENABLED_DEFAULT
+        retention = cls._normalize_int_value(
+            section.get("retention_days", cls.BRANCH_GC_RETENTION_DAYS_DEFAULT),
+            cls.BRANCH_GC_RETENTION_DAYS_DEFAULT,
+            positive=True,
+        )
+        return {"enabled": enabled, "retention_days": retention}
+
     @classmethod
     def get_self_evolution_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the ``self_evolution`` 段，缺失/非法值回退缺省。

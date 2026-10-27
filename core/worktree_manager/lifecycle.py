@@ -131,6 +131,8 @@ class G1LifecycleMixin:
         merge_precheck_bypass=False,
         build_artifact_paths=None,
         has_build_artifacts=None,
+        branch_gc_enabled=True,
+        branch_gc_retention_days=7,
     ):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
@@ -235,6 +237,22 @@ class G1LifecycleMixin:
         self._artifacts = ArtifactPathMatcher(
             normalize_artifact_patterns(build_artifact_paths),
             has_build_artifacts=has_build_artifacts,
+        )
+
+        # 已合并分支 GC 配置（add-merged-branch-gc 2.1）：fenixd 启动时经
+        # ConfigLoader.get_branch_gc_config 解析注入（enabled 缺省 True /
+        # retention_days 缺省 7）。GC 仅在 daemon 启动清扫路径执行一次，
+        # 构造期注入与「每轮启动取当时配置」语义天然对齐（30s 热更新对
+        # 启动一次性动作无意义）。enabled=False 时 GC 环节整体跳过且无日志。
+        self._branch_gc_enabled = bool(branch_gc_enabled)
+        # retention_days 非法值（非 int / bool / < 1）在此兜底回退 7：
+        # 构造端（fenixd / 测试）直传不经 ConfigLoader 归一时仍不放大脏值。
+        self._branch_gc_retention_days = (
+            branch_gc_retention_days
+            if isinstance(branch_gc_retention_days, int)
+            and not isinstance(branch_gc_retention_days, bool)
+            and branch_gc_retention_days >= 1
+            else 7
         )
 
     def create(self, spec_name: str, agent_type: str = "implementer",

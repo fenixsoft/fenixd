@@ -24,6 +24,7 @@ import SystemPanel from './components/SystemPanel';
 import SelfReviewPanel from './components/SelfReviewPanel';
 import HooksPanel from './components/HooksPanel';
 import StaleCodeSelfhealPanel from './components/StaleCodeSelfhealPanel';
+import BranchGcPanel from './components/BranchGcPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
 
@@ -471,12 +472,18 @@ export default function SettingsPage() {
                   />
                 )}
                 {activeKey === 'verify' && (
-                  <VerifyPanel
-                    config={config}
-                    onSave={handleSave}
-                    project={scope === 'project' ? project : undefined}
-                    onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
-                  />
+                  <>
+                    <VerifyPanel
+                      config={config}
+                      onSave={handleSave}
+                      project={scope === 'project' ? project : undefined}
+                      onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
+                    />
+                    {/* add-merged-branch-gc：已合并分支 GC 面板（worktree.branch_gc
+                        两键），与验证/worktree 维护设置同页签呈现；独立 Form 与
+                        保存按钮，保存走同一 handleSave 写回通道 */}
+                    <BranchGcPanel config={config} onSave={handleSave} />
+                  </>
                 )}
                 {activeKey === 'quality' && (
                   <QualityPanel

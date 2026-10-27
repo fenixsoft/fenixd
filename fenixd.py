@@ -583,6 +583,10 @@ class FenixDaemon:
         _has_build_artifacts = ConfigLoader.get(
             self.config, "worktree.has_build_artifacts", None
         )
+        # 已合并分支 GC 配置（add-merged-branch-gc 2.1）：经 ConfigLoader 归一
+        # 读取器解析（缺失/非法值回退缺省 True/7），构造期注入 WorktreeManager
+        # ——GC 仅在 daemon 启动清扫路径执行一次，启动时点的配置即生效值。
+        _branch_gc_cfg = ConfigLoader.get_branch_gc_config(self.config)
         self.worktree_manager = WorktreeManager(
             wt_base,
             PROJECT_ROOT,
@@ -597,6 +601,8 @@ class FenixDaemon:
             merge_precheck_bypass=_strict_bool(_precheck_bypass, False),
             build_artifact_paths=_artifact_paths,
             has_build_artifacts=_has_build_artifacts,
+            branch_gc_enabled=_branch_gc_cfg["enabled"],
+            branch_gc_retention_days=_branch_gc_cfg["retention_days"],
         )
         self.logger.info("fenixd", "WorktreeManager initialized")
 
