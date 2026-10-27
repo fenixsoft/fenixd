@@ -4,8 +4,8 @@ add-command-center 事故（2026-10-26）：planner-plan run 被 supersede 后�
 
 ## What Changes
 
-- **run 终态释放锁**：run 到达终态（superseded / error / failed / frozen-terminated 等）时释放其持有的 `spec:agent_type` 内存锁，锁记录增 owner run 归属
-- **陈锁存活清扫**：acquire 因「already active」早退前核对持锁 run 存活性，持锁主已确认死亡（run 记录终态 / 进程不存活）则清扫陈锁并放行本次派发
+- **run 终态释放锁**：run 到达失败类终态（框架终态单源 `RUN_TERMINAL_EVENT_TYPES`：非成功 result / error / interrupted / cancelled / frozen-terminated / gate-blocked）时释放其持有的 `spec:agent_type` 内存锁，锁记录增 owner run 归属；原地重试中间弃置件 superseded 不在此列（由陈锁清扫兜底，见下条）
+- **陈锁存活清扫**：acquire 因「already active」早退前核对持锁 run 存活性，持锁主已确认死亡（run 记录末行属死亡判据集 ∪ superseded 弃置件 / 记录缺失且窗口已过）则清扫陈锁并放行本次派发
 - **legacy 降级前置门**：同一 spec 新验证流程连续第 2 次失败降级时不再自动派发 legacy verifier，改 blocked + 升级告警（附降级原因链），杜绝连续静默劣化
 
 ## Capabilities
@@ -18,7 +18,9 @@ add-command-center 事故（2026-10-26）：planner-plan run 被 supersede 后�
 
 ## Impact
 
-- `core/worktree_manager/lifecycle.py`：锁记录结构（owner run）、终态释放 API、acquire 早退段存活清扫
+- `core/worktree_manager/lifecycle.py`：锁记录结构（owner run）、终态释放 API（扩展既有 `release_spec_lock`）、acquire 早退段存活清扫
+- `core/worktree_manager/locks.py`：`_register_spec_locks` 登记写点 owner 适配
 - `core/pm_engine/engine.py`：降级决策点（新验证流程失败 → 降级段，约 ：2893-2936）加连续降级熔断
-- run 终态收尾链（agent_runner run 收尾处）挂释放调用
+- `core/agent_runner/runner.py`：run 终态收尾链（终态落账收口段）挂释放调用、`create()` 调用点传 owner run_id
+- `core/state_machine.py`：unfreeze_spec 清零集扩展（熔断计数清零）
 - 新增 `tests/test_worktree_lock_terminal_release.py`；`tests/` 既有 worktree/降级相关用例回归
