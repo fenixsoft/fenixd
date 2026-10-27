@@ -66,6 +66,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-command-center/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-command-center/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（结论：cc-web-pipeline-filter 断言有效——spec 字面「筛选切换项目后仅剩该项目卡片」，选择器期望 7 与前置种子一致；产品筛选切换不重拉属实 → 真实产品缺陷，与验证链 product-bug 裁决一致）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（commit a69373557：PipelineBoard/ExecutionLedger 把 project 经 refreshKey 传入 useScreenResource 触发筛选切换即时重拉——台账屏为 BUG-1 同源一并修复；useScreen 注释正名）
+- [x] 修复后重跑验证确认通过（run 内可跑面全绿：全量 node:test 280/280、pytest 聚合 15/15、npm run build 产出 command-center 页面 chunk、tsc 裸扫 57 处均存量类别；浏览器场景 cc-web-pipeline-filter 由框架验证链复跑终验，证据 .fenix/verify-evidence/add-command-center/impl-repair-round1.json）

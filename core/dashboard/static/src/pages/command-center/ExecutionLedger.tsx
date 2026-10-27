@@ -130,11 +130,15 @@ export default function ExecutionLedger({ active, kpiTick }: { active: boolean; 
   const kpi = useScreenResource<CommandCenterKpi>(
     () => commandCenterKpi(project || undefined),
     active,
-    kpiTick,
+    // kpiTick=裁决后 KPI 刷新；project=筛选切换即时重拉（BUG-01 同源修复，
+    // specs「台账与 KPI 条」Scenario：筛选切到零交付项目后 KPI 换该项目值）
+    `${kpiTick}:${project}`,
   );
   const ledger = useScreenResource<CommandCenterLedger>(
     () => commandCenterLedger(project || undefined),
     active,
+    // 筛选切换即时重拉（与流水线屏同数据源模式，含同款即时生效语义）
+    project,
   );
 
   const ledgerView = () => {
