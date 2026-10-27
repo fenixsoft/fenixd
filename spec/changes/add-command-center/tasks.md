@@ -63,3 +63,9 @@
 
 - [x] 5.1 前端构建更新产物（`max build` 成功，新增 command-center 页面 chunk；dist/ 为 gitignore 不入库——锚点即本地构建产物）；python `py_compile` 全过、`tests/test_command_center_aggregation.py` 全绿、前端 node:test 全绿（含既有套件不回归）
 - [x] 5.2 以 fixture 项目端到端自验并记录（`.history/` 下冒烟脚本，生产同款 DashboardHTTPServer + dist 静态透传）：五端点对 fixture 返回与 specs Scenario 一致；四屏渲染走查+端点 e2e 代偿（无浏览器环境）：Tab 切换/独立降级/收件箱执行链路以 mock alert-resolve 断言请求体与刷新行为；风格红线核对：汇报线静态 SVG 无动画属性、页面无插画/动画角色元素（组件代码审查记录）；零改动红线：git diff 确认既有 data/routes 模块仅 server.py 注册行新增
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-command-center/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
