@@ -569,7 +569,19 @@ def discard_knowledge_changes(
     project_root = Path(project_root)
     log = log or _NullLogger()
     if before is not None:
-        after = _knowledge_dirty_files(project_root)
+        # 现状快照与 run 前 baseline 同口径用严格变体（code-review
+        # da10732be935）：fail-open 空集会把采集失败伪装成「无新增产出」，
+        # 失败 run 的半成品既不回滚也无告警、静默残留工作区
+        after = _knowledge_dirty_files_or_none(project_root)
+        if after is None:
+            # 现状不可得时差集无法安全计算：留痕告警交人工核查（对齐
+            # baseline 采集失败分支处置口径，code-review 90e35f54ac7b）
+            log.warning(
+                "knowledge",
+                "回填失败回滚：spec/knowledge/ 现状采集失败（git status 不可用"
+                "/超时），本次产出未回滚，请人工核查",
+            )
+            return
         overlap = sorted(after & before)
         if overlap:
             log.warning(
