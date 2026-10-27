@@ -288,3 +288,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-280](ADR-280-alert-selfheal-entry-timestamp-evidence-triage-surface-only.md) | accepted | 告警自动收口证据只取条目自身时间戳（调用方注入纯函数不读日志、收敛升级双源安静锚点禁只锚 disposition created），收口只作用人工甄别面绝不改写 disposition 台账，复发走新条目不重开、1440 分钟满窗才收口 |
 | [ADR-281](ADR-281-admin-invoke-protection-gates-body-covers-manual.md) | accepted | admin 唤起保护闸（瞬断冻结/静默窗避让）收共用唤起入口本体、人工与自动同政策、跳过非失败路径（不增 retry_count、不落升级告警），与抑制类判定（留调用点、人工豁免）按闸门目的二分落点；窗配置复用 code-fix 静默窗单源 |
 | [ADR-282](ADR-282-maintree-git-write-adjudication-manifest-and-signal-binding.md) | accepted | 主树 git 写裁决动作三重收口：文件清单∩当刻 status 拒任意路径、执行器 signal_type 绑定（反查通道可达≠执行授权、证据仅取绑定类型记录）、非 destructive+提交 hash 留痕；后续写副作用裁决动作同型约束，盘点链路零写边界不推翻 |
+| [ADR-283](ADR-283-spec-attached-signal-closure-resolve-channel-kind-gate.md) | accepted | spec 附着信号终态收口归 auto-resolve 通道（判定/盘点/写回三处 kind 门同步放宽、条件族白名单界定收口面），自愈注册表保持纯类型元组不承载主体终态锚，收口注记由判定端附终态时刻、写回端只透传 | |

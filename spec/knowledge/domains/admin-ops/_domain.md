@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-10-26 13:52 UTC+8
+> 最后更新：2026-10-27 15:28 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、人工裁决选择题、告警生命周期与告警自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -29,7 +29,7 @@
 | [admin-choices-contract](admin-choices-contract.md) | 裁决选择题 admin 侧契约 | 2026-10-03 04:59 |
 | [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md) | 裁决 choice 作用域守卫与结果前置回写（全局信号拒 spec 作用域动作、写副作用动作绑定 signal_type 收口、失败记 failed 保留待重审） | 2026-10-26 13:52 |
 | [adjudication-alert-narrative](adjudication-alert-narrative.md) | 转人工裁决告警异步调查叙事（四段式+侧车补叙） | 2026-10-09 02:02 |
-| [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解＋瞬态族签名安静自愈） | 2026-10-25 21:38 |
+| [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解，升级与信号双 kind 皆然＋瞬态族签名安静自愈） | 2026-10-27 15:28 |
 | [alert-resolve](alert-resolve.md) | 告警人工消解闭环 | 2026-10-03 04:59 |
 | [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警发出与节流 | 2026-10-03 04:59 |
 | [blocked-disposition-classification](blocked-disposition-classification.md) | blocked 冻结/阻塞二分类机械化 | 2026-10-03 04:59 |
