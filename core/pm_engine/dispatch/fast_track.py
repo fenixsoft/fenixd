@@ -698,8 +698,12 @@ class FFastTrackMixin:
                 # 区，merge-only 重试定时器、WIP 周期消费者与 worker 失败链
                 # 并发进入同一 spec 时各持相同旧值写回、丢一次递增，同指纹
                 # 熔断晚一轮触发、多烧一轮 fast-track run。指纹切换属重置
-                # 语义（绝对写 1，无丢增量面），不 bump、随后续 update_spec
-                # 落盘（streak_bumped=True 时各分支不再并写该字段）。
+                # 语义（绝对写 1，无丢增量面），不 bump、由各失败出口落盘：
+                # 熔断/ready 分支经下方 not streak_bumped 条件写回；repair
+                # 分支在派发前补写（code-review item a99545c43f09，与
+                # repair_lane._handle_remerge_failure 同型收口——
+                # _dispatch_repair_lane 只写 repair 轮次元数据、不含本组
+                # 字段，原「随后续 update_spec 落盘」在该出口不成立）。
                 if prev_fp == fp:
                     streak = self._pm.state_machine.bump_counters(
                         spec_name, {"_merge_streak": 1}
@@ -762,6 +766,28 @@ class FFastTrackMixin:
                     # main 合入原地修复，而非 ready+重派废弃整轮成果
                     # （2026-09-04 task-track 事故：112 turns 因混合冲突整单废弃）。
                     # 与 implementer 路径同序：熔断优先，repair 次之，普通重试兜底。
+                    # 指纹切换重置的持久化（code-review item a99545c43f09，与
+                    # repair_lane._handle_remerge_failure 同型收口）：切换即绝对
+                    # 写 _merge_fp=fp 与 streak=1（重置语义、无丢增量面）——
+                    # _dispatch_repair_lane 只写 _repair_round/_repair_merge_fp
+                    # 等 repair 轮次元数据、不含本组字段，不在此落盘则下一轮
+                    # 同指纹失败仍判切换、streak 恒为 1，fp 熔断在链内晚触发。
+                    # 仅指纹切换轮补写（streak_bumped=True 时 bump_counters 已
+                    # 原子递增落盘且 _merge_fp 未变）；熔断/ready 两出口各有
+                    # 既有写盘路径，不重复写。写失败仅 WARNING：下一轮仍走
+                    # 切换路径重置，轮次上限兜底，有界性无损。
+                    if not streak_bumped:
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name, {"_merge_fp": fp, "_merge_streak": 1},
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 重置落盘失败不放大处置
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"fast-track merge 指纹切换重置落盘失败 '{spec_name}'"
+                                f"（streak 记账延迟一轮，轮次上限兜底）: "
+                                f"{type(e).__name__}: {e}",
+                            )
                     self._pm._dispatch_repair_lane(
                         spec_name,
                         merge_info,

@@ -3864,8 +3864,10 @@ class QQQueueMixin:
         # update_spec 写回」读与写分处两次 STATE 锁临界区，merge-only 重试
         # 定时器、WIP 周期消费者与 worker 失败链并发进入同一 spec 时各持相同
         # 旧值写回、丢一次递增，同指纹熔断晚一轮触发、多烧一整轮实现 run。
-        # 指纹切换属重置语义（绝对写 1，无丢增量面），不 bump、随后续
-        # update_spec 落盘（streak_bumped=True 时各分支不再并写该字段）。
+        # 指纹切换属重置语义（绝对写 1，无丢增量面），不 bump；落盘分两路：
+        # repair 出口在派发前即时补写（_dispatch_repair_lane 只写 _repair_*
+        # 轮次字段、不触达本组字段），其余出口经既有 not streak_bumped 路径
+        # 绝对写回（streak_bumped=True 时各分支不再并写该字段）。
         if prev_fp == fp:
             # 记账失败不阻塞熔断分类（code-review item 941b22736836，对齐
             # 「记账失败不阻塞失败分类」先例）：递增未落盘时按读取侧旧值+1
@@ -3960,6 +3962,27 @@ class QQQueueMixin:
             # ── repair 通道（add-merge-back-repair-lane）──
             # 语义冲突失败且熔断未触发：派 repair agent 原地修复
             # （把 main 合入分支解决冲突），而非 abort 后全新重派。
+            # 指纹切换重置的持久化（对齐 repair_lane._handle_remerge_failure
+            # 切换轮即时落盘收口）：切换即绝对写 _merge_fp=fp 与 streak=1
+            # （重置语义、无丢增量面）——_dispatch_repair_lane 只写 _repair_*
+            # 轮次字段，不触达 _merge_fp/_merge_streak，本出口不补写则切换轮
+            # 的指纹与计数不落盘，repair 链 re-merge 与 fallback 后 full 车道
+            # 的同指纹失败读到的 prev_fp 仍是旧值、每轮重走切换路径 streak 恒
+            # 为 1，与 _fallback_after_repair「_merge_fp/_merge_streak 不清零、
+            # 连续累计熔断协同」语义相悖。写失败仅 WARNING（同 repair_lane
+            # 口径）：下一轮仍走切换路径重置，熔断兜底有界性无损。
+            if prev_fp != fp:
+                try:
+                    self._pm.state_machine.update_spec(
+                        spec_name, {"_merge_fp": fp, "_merge_streak": 1},
+                    )
+                except Exception as e:  # noqa: BLE001 —— 重置落盘失败不放大处置
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"merge 指纹切换重置落盘失败 '{spec_name}'"
+                        f"（streak 记账延迟一轮，熔断兜底有界）: "
+                        f"{type(e).__name__}: {e}",
+                    )
             self._pm._dispatch_repair_lane(
                 spec_name,
                 merge_info,

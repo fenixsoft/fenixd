@@ -36,11 +36,20 @@ export const copyToClipboard = async (text: string): Promise<boolean> => {
     textarea.value = text;
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(textarea);
-    return ok;
+    // select()/execCommand 抛异常时也要移除已插入的节点，否则透明定位的隐藏
+    // textarea 会在 body 中残留累积（code-review item 8df2dd69b7bc）
+    let inserted = false;
+    try {
+      document.body.appendChild(textarea);
+      inserted = true;
+      textarea.select();
+      const ok = document.execCommand('copy');
+      return ok;
+    } finally {
+      if (inserted) {
+        document.body.removeChild(textarea);
+      }
+    }
   } catch {
     return false;
   }

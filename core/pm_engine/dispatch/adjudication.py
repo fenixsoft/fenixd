@@ -822,13 +822,24 @@ class VAdjudicationMixin:
         扫齐。告警文案由调用方传入（保留各通道原文案，含已对齐清单插值）。
         """
         self._pm.logger.warning("pm_engine", message)
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "implementing",
-                "error": None,
-            },
-        )
+        # 终态写盘不穿透裁决主体（code-review item 91dc42d762c6，对齐
+        # c942deb9c1ff / 7e723f2d249d 口径）：写失败仅 WARNING，避免异常
+        # 令 spec 滞留临时 blocked「LLM 终审进行中」僵尸文案；放行语义
+        # 以上方 WARNING 告警为准。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "implementing",
+                    "error": None,
+                },
+            )
+        except Exception as werr:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"守卫重跑全清放行写盘失败 '{spec_name}'（非阻塞）: "
+                f"{type(werr).__name__}: {werr}",
+            )
         return {"action": "proceed"}
 
     def _preclassify_missing(self, spec_name: str, result, missing: list) -> dict:
@@ -2952,9 +2963,20 @@ class VAdjudicationMixin:
         # _retry_count，丢一次递增、agents.max_retries 封顶晚一轮触发。对齐
         # repair_lane.py _fallback_after_repair 同型修复：_retry_count 不再
         # 并入下方 update_spec（避免并发覆盖丢增量）。
-        retries = self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1}).get(
-            "_retry_count", 0
-        )
+        # 终态写盘不穿透裁决主体（code-review item 91dc42d762c6）：计数递增
+        # 失败仅 WARNING 并以 0 兜底（封顶判定至多推迟一轮），打回流水线
+        # 照常落，不令异常穿出裁决主体。
+        try:
+            retries = self._pm.state_machine.bump_counters(
+                spec_name, {"_retry_count": 1}
+            ).get("_retry_count", 0)
+        except Exception as werr:
+            retries = 0
+            self._pm.logger.warning(
+                "pm_engine",
+                f"打回重试计数递增失败 '{spec_name}'（非阻塞，本轮按 0 计）: "
+                f"{type(werr).__name__}: {werr}",
+            )
         # 解析口径收敛三车道单一读取器 repair_lane._max_retries（code-review
         # item f68ba79c3e07 三处共用 + item 00af54aa1442 跨通道统一）。
         max_r = _max_retries(self._pm)
@@ -2967,7 +2989,17 @@ class VAdjudicationMixin:
             updates["status"] = "blocked"
             updates["tester_run"] = None
             updates["error"] = err_blocked
-        self._pm.state_machine.update_spec(spec_name, updates)
+        # 终态写盘不穿透裁决主体（code-review item 91dc42d762c6，对齐
+        # c942deb9c1ff / 7e723f2d249d 口径）：写失败仅 WARNING，error 日志
+        # 与前置入队照常落，异常不携带僵尸 blocked 文案穿出裁决主体。
+        try:
+            self._pm.state_machine.update_spec(spec_name, updates)
+        except Exception as werr:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"打回重派状态写盘失败 '{spec_name}'（非阻塞）: "
+                f"{type(werr).__name__}: {werr}",
+            )
         self._pm.logger.error("pm_engine", log_builder(retries))
         if updates["status"] != "blocked":
             self._enqueue_front(spec_name, agent_type)
