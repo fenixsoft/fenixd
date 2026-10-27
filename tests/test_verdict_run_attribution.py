@@ -126,7 +126,7 @@ class TestDispatchStampPrewrite(unittest.TestCase):
     def _primary(self) -> Path:
         return self.tmpdir / ".fenix" / "verify-progress" / "demo" / ".fenix-run-result.json"
 
-    def _dispatch(self, status: str = "implemented"):
+    def _dispatch_verifier(self, status: str = "implemented"):
         sm, engine, dispatched = _make_dispatch_engine(self.tmpdir, status)
         engine._dispatcher._enqueue("demo", "verifier")
         engine._dispatcher._process_queue()
@@ -140,7 +140,7 @@ class TestDispatchStampPrewrite(unittest.TestCase):
         primary.write_text(
             json.dumps({"status": "plan-ready", "spec": "demo"}),
             encoding="utf-8")
-        sm, engine, dispatched = self._dispatch()
+        sm, engine, dispatched = self._dispatch_verifier()
         self.assertEqual(dispatched, [("demo", "verifier")], "verifier 未被派发")
         data = json.loads(primary.read_text(encoding="utf-8"))
         self.assertEqual(
@@ -153,7 +153,7 @@ class TestDispatchStampPrewrite(unittest.TestCase):
     def test_stamp_written_when_file_absent(self):
         """无残留时派发同样预写归属戳（首次验证轮）。"""
         self._primary().parent.mkdir(parents=True, exist_ok=True)
-        sm, engine, dispatched = self._dispatch("testing")
+        sm, engine, dispatched = self._dispatch_verifier("testing")
         self.assertEqual(dispatched, [("demo", "verifier")])
         self.assertEqual(
             json.loads(self._primary().read_text(encoding="utf-8")),
@@ -167,7 +167,7 @@ class TestDispatchStampPrewrite(unittest.TestCase):
         # 与运行身份（root 下 chmod 失效）无关的确定性失败注入。
         primary.mkdir()
         (primary / "keep").write_text("x", encoding="utf-8")
-        sm, engine, dispatched = self._dispatch()
+        sm, engine, dispatched = self._dispatch_verifier()
         self.assertEqual(dispatched, [("demo", "verifier")], "预写失败不得阻断派发")
         warnings = "\n".join(
             str(c) for c in self._last_logger(engine).warning.call_args_list)
