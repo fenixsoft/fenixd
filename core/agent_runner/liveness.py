@@ -307,6 +307,87 @@ def _file_tail_is_terminal(run_file: Path) -> bool:
     return _line_is_terminal(lines[-1])
 
 
+def file_tail_event_type(run_file: Path) -> "str | None":
+    """读 run jsonl **末条非空行**的事件 type（worktree 陈锁清扫判据消费）。
+
+    fix-worktree-lock-release-degrade-gate D3 判据①：acquire 早退段核对持锁
+    run 存活性需读末行事件类型（终态/superseded = 持锁主已死），而
+    ``_file_tail_is_terminal`` 只回答布尔、拿不到类型本身——本助手与其共用
+    同一尾读窗口实现（字节窗口 seek + 行边界修正 + 全量读回退），返回值：
+
+    - 末条非空行 JSON 解析为 dict 且 type 为字符串 → 该 type（含
+      ``superseded`` 等非终态类型，由调用方按判据集自行归类）；
+    - 文件不存在 / 空 / 不可读（OSError）/ 末行损坏不可解析 / 末条非 dict /
+      type 缺失或非字符串 → None（调用方 fail-open 按未知=存活处理，
+      错杀活锁 → 双派发的保守侧）。
+    """
+    try:
+        size = run_file.stat().st_size
+    except OSError:
+        return None
+    if size <= 0:
+        return None
+    last_line: "str | None" = None
+    if size <= _TAIL_READ_WINDOW:
+        try:
+            with run_file.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+        except OSError:
+            return None
+    else:
+        try:
+            with run_file.open("rb") as f:
+                # 多读窗口起点前一字节（code-review item b89929148e58 边界
+                # 判定范式，与 _file_tail_is_terminal 同款）：换行 ⇒ 起点恰落
+                # 行边界，首段是完整一行；非换行 ⇒ 首段是上一行残段，丢弃。
+                f.seek(-(_TAIL_READ_WINDOW + 1), 2)
+                raw = f.read()
+        except OSError:
+            return None
+        starts_mid_line = raw[:1] != b"\n"
+        text = raw[1:].decode("utf-8", errors="replace")
+        # 末行跨窗（窗口末字节非换行）或窗口内无完整行 → 回退全量逐行读
+        # （方向保守，拿不准一律回退全量读）。
+        if not text.endswith("\n"):
+            last_line = _last_line_of_file(run_file)
+        else:
+            segments = text.split("\n")
+            if starts_mid_line:
+                segments = segments[1:]
+            lines = [ln for ln in segments if ln.strip()]
+            if lines:
+                last_line = lines[-1]
+            else:
+                last_line = _last_line_of_file(run_file)
+    if not last_line:
+        return None
+    try:
+        entry = json.loads(last_line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("type")
+    return value if isinstance(value, str) else None
+
+
+def _last_line_of_file(run_file: Path) -> "str | None":
+    """全量逐行读文件的末条非空行；空/不可读返回 None（尾读窗口回退分支）。"""
+    last = ""
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    last = line
+    except OSError:
+        return None
+    return last or None
+
+
 def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
     """启动终态补写扫描：扫描 runs_dir 顶层 *.jsonl，对尾部无终态事件的
     run 文件追加 ``{"type": "interrupted", "reason": "startup terminal-state

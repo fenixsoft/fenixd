@@ -55,6 +55,8 @@ from core.state_machine import (
     ENV_BLOCK_ROUNDS_FIELD,
     ENV_EXEMPTIONS_FIELD,
     INCONCLUSIVE_ATTEMPTS_FIELD,
+    LEGACY_DEGRADE_LAST_REASON_FIELD,
+    LEGACY_DEGRADE_STREAK_FIELD,
     SCENARIO_REVISION_PENDING_FIELD,
     VERIFY_INFRA_RETRY_STREAK_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
@@ -117,6 +119,12 @@ VERIFIED_RESET_FIELDS = {
     # verified 不经该点，跨验证周期残留的旧连击会让后续 fastlane 首败即被
     # 误判逼近熔断阈值、提前回落整轮。与收敛点清零并存幂等。
     FASTLANE_STREAK_FIELD: 0,
+    # fix-worktree-lock-release-degrade-gate D4：legacy 连续降级熔断计数随
+    # 验证轮成功推进（verified 落定）清零（三个清零点之一；另两处=
+    # admin 处置复位 _RETRY_COUNTER_RESETS / 人工解冻 unfreeze_spec）——
+    # 验证成功即「连续降级」链条断裂，后续首次失败重新获得既有降级机会。
+    LEGACY_DEGRADE_STREAK_FIELD: 0,
+    LEGACY_DEGRADE_LAST_REASON_FIELD: None,
 }
 
 # 仓库相对路径形态（judge 归因文本中的影响面文件）：
