@@ -639,6 +639,22 @@ PUSH_ATTEMPTS_FIELD = "_push_attempts"
 # 「毒 spec 借每次 admin 复位重置计数 → 无限循环」敞口复开。
 SCENARIO_REPAIR_EXHAUSTED_FIELD = "_scenario_repair_exhausted_rounds"
 
+# ── legacy verifier 连续降级熔断计数（fix-worktree-lock-release-degrade-gate
+# D4）────────────────────────────────────────────────────────────────
+# 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
+# _legacy_degrade_streak：同一 spec 新验证流程**连续**降级到 legacy verifier 的
+# 计数（spec 级，持久化于 STATE 条目，对齐 _verify_fail_rounds /
+# _env_block_rounds 字段先例——实例/模块级计数已被 engine.py:201-205 注释证伪：
+# PMEngine 按 run 重建实例、模块级跨 spec 串扰）。首次降级放行 +1；连续第 2 次
+# 由 engine 降级决策点熔断（blocked + human-escalation-alert，不再自动派发
+# legacy）。_legacy_degrade_last_reason：最近一次降级原因（熔断告警拼两次降级
+# 原因链用，截断存储）。清零点（与既有验证计数清零口径一致，三处）：
+# 验证轮成功推进（verified 落定，fastlane.VERIFIED_RESET_FIELDS 同一原子写）/
+# admin 处置复位（dashboard _RETRY_COUNTER_RESETS）/ 人工解冻（unfreeze_spec
+# 清零集，同一原子写）。其余中间转换（daemon 恢复 / fix 链）一律不清零。
+LEGACY_DEGRADE_STREAK_FIELD = "_legacy_degrade_streak"
+LEGACY_DEGRADE_LAST_REASON_FIELD = "_legacy_degrade_last_reason"
+
 # ── inconclusive 重验轮的 judge 预算隔离（fix-env-exemption-exit-reachability
 # D3）────────────────────────────────────────────────────────────────
 # 字段名单点定义（pm_engine.verification 与 state_machine 共用，避免漂移）。
@@ -2417,6 +2433,12 @@ class StateMachine:
         # 解冻后重新获得「首次耗尽排程重验 → 再次耗尽升级」的完整体验；其余
         # 中间转换（admin 处置复位 / daemon 恢复 / fix 链）一律不清零。
         updates[SCENARIO_REPAIR_EXHAUSTED_FIELD] = 0
+        # fix-worktree-lock-release-degrade-gate D4：legacy 连续降级熔断计数
+        # 随人工解冻清零（对齐 _env_block_rounds「人工解冻是唯一人工裁决出口」
+        # 同口径，同一原子写）——解冻后重新获得「首次失败降级 → 第二次熔断」
+        # 的完整体验；其余中间转换（daemon 恢复 / fix 链）一律不清零。
+        updates[LEGACY_DEGRADE_STREAK_FIELD] = 0
+        updates[LEGACY_DEGRADE_LAST_REASON_FIELD] = None
         # inconclusive 重验窗口预算隔离双字段与去重旗标随人工解冻一并清零/
         # 清除（与 verified 落定清零点、admin 人工复位清单同款）：否则
         # episode 中途人工冻结→解冻后，独立计数器从旧值续涨很快到顶、

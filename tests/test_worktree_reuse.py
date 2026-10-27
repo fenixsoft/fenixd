@@ -235,8 +235,10 @@ class TestStaleWorktreeValidation:
         result = runner._execute_agent(
             "spec-a", "implementer", "impl-spec-a-1", pre_wt_path=stale)
         assert result.success is True
+        # fix-worktree-lock-release-degrade-gate D1：create 调用点传 attempt
+        # run_id 作为锁 owner 归属（终态释放 owner 校验 / 陈锁清扫存活核对消费）。
         runner.worktree_manager.create.assert_called_once_with(
-            "spec-a", "implementer")
+            "spec-a", "implementer", owner_run_id="impl-spec-a-1-a1")
         # claude 的 cwd 是新建 worktree，而非失效路径
         assert runner._run_agent.call_args.args[1] == tmp_path / "wt-fresh"
 

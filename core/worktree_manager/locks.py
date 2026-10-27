@@ -25,6 +25,7 @@ from core.worktree_manager import _is_claude_process  # noqa: E402
 from core.worktree_manager.constants import (  # noqa: E402
     PROCESS_SCAN_CACHE_SECONDS,
     STALE_LOCK_IDLE_SECONDS,
+    STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS,
 )
 
 
@@ -69,12 +70,18 @@ class G3LockMixin:
 
         add 与 _lock_since 写入全程持 _spec_lock_th（code-review item
         776cffc0a278），与 create / release_spec_lock 的加锁纪律对齐。
+
+        owner 登记（fix-worktree-lock-release-degrade-gate D1/D3）：本写点无
+        run 上下文，owner=None（_spec_lock_owners 无条目等价）——acquire 陈锁
+        清扫对 owner 未知的锁退回锁龄判据（保守，缺 owner=无法核对存活）。
         """
         with self._spec_lock_th:
             self._spec_locks.add(f"{spec_name}:implementer")
             self._lock_since[f"{spec_name}:implementer"] = time.time()
+            self._spec_lock_owners.pop(f"{spec_name}:implementer", None)
             self._spec_locks.add(f"{spec_name}:verifier")
             self._lock_since[f"{spec_name}:verifier"] = time.time()
+            self._spec_lock_owners.pop(f"{spec_name}:verifier", None)
 
     def _release_spec_locks(
         self, spec_name: str, reason: str, not_after: float | None = None,
@@ -162,6 +169,7 @@ class G3LockMixin:
             for k in to_remove:
                 self._spec_locks.discard(k)
                 self._lock_since.pop(k, None)
+                self._spec_lock_owners.pop(k, None)
             return to_remove
 
     def _lock_young(self, spec_name: str, family: str | None = None) -> bool:
@@ -193,6 +201,78 @@ class G3LockMixin:
                 if since is not None and (now - since) < STALE_LOCK_IDLE_SECONDS:
                     return True
             return False
+
+    def _stale_lock_owner_dead(self, lock_key: str) -> tuple:
+        """acquire 陈锁存活清扫的死亡判定（fix-worktree-lock-release-degrade-gate D3）。
+
+        判据双源（任一命中即判死）：
+        ① run 记录末行死亡判据：owner 已知且 ``.fenix/runs/<owner>.jsonl``
+           （非归档）存在，末行事件 type ∈ ``RUN_TERMINAL_EVENT_TYPES`` ∪
+           {"superseded"}——**比 liveness 存活判定单源口径有意多收 superseded**
+           （弃置件即持锁主已死，10-26 事故形态正是尾行为 superseded 的陈锁）；
+           liveness 侧判「在飞」保守正确、清扫侧判「持锁主死亡」必须含弃置件，
+           两处口径分叉是实现要点。末行不可解析/文件不可读 fail-open 判活。
+        ② 锁龄判据：run 记录不存在（或 owner 未知——_register_spec_locks /
+           repair 车道等无 run 上下文登记点）且锁龄超过 early give-up cap
+           （STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS，与 adaptive backoff
+           预算封顶缺省同源）。owner 未知时仅本判据可用（缺 owner=无法核对
+           存活，保守：锁龄未知/年轻一律判活）。
+
+        返回 ``(dead, reason)``：dead=True 时 reason 为人类可读判据描述（调用
+        方 WARNING 留痕消费）。只做判定不做摘除——调用方（create 早退段）持
+        _spec_lock_th 临界区内调用，摘除由调用方锁内直做（本方法若自行摘锁须
+        再取非重入锁，死锁）。
+
+        liveness 尾读经函数级 import（防包初始化期 core.agent_runner.liveness →
+        harness 链反向拉起本包的循环依赖，_NullLogger 延迟导入同款手法）。
+        """
+        owner = self._spec_lock_owners.get(lock_key)
+        since = self._lock_since.get(lock_key)
+        lock_age = (
+            max(0.0, time.time() - float(since)) if since is not None else None
+        )
+        age_over_cap = (
+            lock_age is not None
+            and lock_age > STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS
+        )
+        if owner:
+            run_file = self.project_root / ".fenix" / "runs" / f"{owner}.jsonl"
+            if run_file.exists():
+                from core.agent_runner.liveness import (  # noqa: E402 延迟导入防环
+                    RUN_TERMINAL_EVENT_TYPES,
+                    file_tail_event_type,
+                )
+
+                tail_type = file_tail_event_type(run_file)
+                if tail_type is None:
+                    # 末行不可解析/不可读：fail-open 判活（错杀活锁 → 双派发）
+                    return False, ""
+                if (
+                    tail_type in RUN_TERMINAL_EVENT_TYPES
+                    or tail_type == "superseded"
+                ):
+                    return True, (
+                        f"run record tail is terminal/superseded "
+                        f"(type={tail_type}, owner={owner})"
+                    )
+                # 记录在飞且末行非死亡判据行：维持早退（宁可慢清扫不可错杀）
+                return False, ""
+            # run 记录不存在 → 判据②
+            if age_over_cap:
+                return True, (
+                    f"run record missing and lock age {lock_age:.0f}s exceeds "
+                    f"early give-up cap "
+                    f"{STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS:.0f}s "
+                    f"(owner={owner})"
+                )
+            return False, ""
+        # owner 未知 → 仅判据②（锁龄判据）
+        if age_over_cap:
+            return True, (
+                f"owner unknown and lock age {lock_age:.0f}s exceeds early "
+                f"give-up cap {STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS:.0f}s"
+            )
+        return False, ""
 
     def _spec_process_alive(
         self, spec_name: str, prefixes: tuple[str, ...] | None = None,

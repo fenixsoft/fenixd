@@ -1710,6 +1710,12 @@ _RETRY_COUNTER_RESETS = {
     # re-entry 追加重验轮。修订次数计数（_scenario_revision_count）**不清**：
     # 生命周期累计语义（修订上限跨复位保持，防借复位刷修订预算）。
     SCENARIO_REVISION_PENDING_FIELD: False,
+    # fix-worktree-lock-release-degrade-gate D4：legacy 连续降级熔断计数随
+    # admin 处置复位清零（三个清零点之一；另两处=验证轮成功推进
+    # VERIFIED_RESET_FIELDS / 人工解冻 unfreeze_spec 清零集）——人工裁决
+    # 后重新获得「首次失败降级 → 第二次熔断」的完整体验。
+    "_legacy_degrade_streak": 0,
+    "_legacy_degrade_last_reason": None,
 }
 
 # force_advance 允许的目标状态（design D4：校验目标可达性，不开放任意跳转）

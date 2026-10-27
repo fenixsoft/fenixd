@@ -33,6 +33,14 @@ AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
 # 闸门条目被 60s 巡检抢走并沿用丢弃策略，去向记录随即失真。
 WIP_GATE_STASH_PREFIX = "fenix: wip-overlap gate stash"
 
+# acquire 侧陈锁存活清扫的锁龄判据上限（fix-worktree-lock-release-degrade-gate
+# D3 判据②）：锁龄超过该值即「派发窗口已过」。与 agent_runner adaptive backoff
+# early give-up 预算封顶缺省值同源（runner.
+# ACQUIRE_BACKOFF_BUDGET_CAP_DEFAULT_SECONDS = 1200.0）；worktree_manager 无配置
+# 访问通道（镜像常量，零依赖约束见本模块 docstring），配置覆盖项
+# （worktree.acquire_backoff_max_budget_seconds）不在此生效——两侧口径演进须同步。
+STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS = 1200.0
+
 # dashboard 静态根（相对项目根）：构建产物目录（dist/、v3/dist/ 等层级变体）
 # 都在其下。产物冲突判定按目录层次容错——写死单一路径前缀会在主树重命名产物
 # 目录（如 v3/dist→dist，add-dashboard-incremental-data 事故）后，把冲突

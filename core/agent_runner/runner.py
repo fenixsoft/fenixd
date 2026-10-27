@@ -602,6 +602,13 @@ class _AttemptState:
     # （置位后 attempt 预算立即收场——对同一拒模型再起必败进程是纯浪费）。
     chain_reject_hits: int = 0
     chain_rejected_exhausted: bool = False
+    # spec 锁 owner 归属（fix-worktree-lock-release-degrade-gate D1/D2）：
+    # 本 run 链最近一次经 create() 成功取得 worktree 时登记的持锁 run_id
+    # （attempt_run_id 形态）。终态收尾据此做 owner 校验释放——跨 attempt
+    # 复用（attempt 1 持锁、attempt 2+ reuse 不再 create）后终态，仍能以
+    # 原始 owner 命中。None = 本链从未经 create 取得（继承/repair 载体等），
+    # 终态不发起释放（不传 owner 的释放会误放他人锁，禁用）。
+    lock_owner_run_id: Optional[str] = None
 
 
 class AgentRunner:
@@ -4040,7 +4047,7 @@ class AgentRunner:
             # _cancelled_hold/status 迁出预期态三种人工接管态立即让位不进
             # 退避；其余失败保持既有 attempt 层重试语义。
             wt_path, acquire_yield = self._create_worktree_with_backoff(
-                spec_name, agent_type)
+                spec_name, agent_type, owner_run_id=attempt_run_id)
             if wt_path is None:
                 error_msg = "Failed to create worktree"
                 self.logger.error("agent_runner", error_msg)
@@ -4077,6 +4084,10 @@ class AgentRunner:
                     success=False, duration_seconds=time.time() - start_time,
                     error=error_msg, provider_used=provider_name, model_used=model,
                 ), False
+            # spec 锁 owner 归属登记（fix-worktree-lock-release-degrade-gate
+            # D1）：本次 create 成功即持锁，owner=本 attempt run_id；终态收尾
+            # （_finalize_failure_keep）据此做 owner 校验释放。
+            st.lock_owner_run_id = attempt_run_id
             # verify-process-lifecycle（D1）：登记本 run 使用的 worktree，
             # 供外层 finally 对未交接集合执行终态收割。
             used_wts.add(wt_path)
@@ -4192,7 +4203,8 @@ class AgentRunner:
         return detail
 
     def _create_worktree_with_backoff(self, spec_name: str,
-                                      agent_type: str) -> tuple:
+                                      agent_type: str,
+                                      owner_run_id: Optional[str] = None) -> tuple:
         """create worktree，锁活跃时按短退避序列等待重试
         （evo-add-worktree-acquire-backoff design 1/2）。
 
@@ -4213,6 +4225,10 @@ class AgentRunner:
         - 其余失败原因（非锁、非人工接管）：不等待，交还调用方按
           既有 attempt 层语义处理。
 
+        owner_run_id（fix-worktree-lock-release-degrade-gate D1）：透传给
+        create() 登记锁 owner 归属（两个 create 调用点均传），终态释放按
+        该归属校验；缺省 None 维持现状。
+
         返回 (wt_path, acquire_yield)：
         - wt_path 非 None → 取得成功，acquire_yield 为 None；
         - wt_path 为 None → acquire_yield 为让位/失败原因：
@@ -4220,7 +4236,8 @@ class AgentRunner:
           "lock-backoff-exhausted"（退避耗尽仍锁活跃）/
           "create-failed"（其它失败原因）
         """
-        wt_path = self.worktree_manager.create(spec_name, agent_type)
+        wt_path = self.worktree_manager.create(
+            spec_name, agent_type, owner_run_id=owner_run_id)
         if wt_path is not None:
             return wt_path, None
         # 分探针 1：人工接管态立即让位（check_lock=False——锁由下方独立分流）
@@ -4279,7 +4296,8 @@ class AgentRunner:
                     f"接管",
                 )
                 return None, "human-takeover"
-            wt_path = self.worktree_manager.create(spec_name, agent_type)
+            wt_path = self.worktree_manager.create(
+                spec_name, agent_type, owner_run_id=owner_run_id)
             if wt_path is not None:
                 self.logger.info(
                     "agent_runner",
@@ -5450,6 +5468,37 @@ class AgentRunner:
             )
         else:
             self.worktree_manager.cleanup(st.wt_path, success=False)
+        # ── 终态释放 spec 锁（fix-worktree-lock-release-degrade-gate D2）────
+        # run 到达失败类终态（框架终态单源 RUN_TERMINAL_EVENT_TYPES 口径：
+        # 本收口段只被失败终态触达——成功走 _finalize_success 既有清理路径，
+        # 中间弃置件 superseded 的原地重试在上方 return False 提前返回，不经
+        # 此处）时释放本 run 持有的 spec:agent_type 锁。既有 cleanup /
+        # keep_for_reuse 收尾在 finally 段已摘锁（本调用幂等 no-op），此处的
+        # 增量价值在收尾键解析失败（分支/目录名反推不出 spec）、worktree
+        # 不在活动登记表（cleanup 提前返回不经过摘锁段）等泄漏形态。owner
+        # 校验释放：仅本链经 create() 持锁（st.lock_owner_run_id 非 None）才
+        # 发起，归属不一致（锁已被陈锁清扫放行给后继 run）no-op + DEBUG，
+        # 杜绝误放他人锁。释放失败不阻断终态收尾（异常吞并留痕）。
+        if st.lock_owner_run_id is not None:
+            try:
+                released = self.worktree_manager.release_spec_lock(
+                    spec_name, agent_type,
+                    owner_run_id=st.lock_owner_run_id,
+                )
+                if released:
+                    self.logger.info(
+                        "agent_runner",
+                        f"Terminal-state spec lock released for '{spec_name}' "
+                        f"({agent_type}, owner={st.lock_owner_run_id}) "
+                        f"(fix-worktree-lock-release-degrade-gate)",
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "agent_runner",
+                    f"Terminal-state spec lock release failed for "
+                    f"'{spec_name}' ({agent_type}): {e} — 由 acquire 陈锁"
+                    f"存活清扫兜底",
+                )
         st.wt_path = None
         # evo-add-run-stop-loss 2.1：停滞判停与取消/停机/冻结同列 should_break
         #（终止整个重试链）。worktree 去向按上方分支序分型（code-review item

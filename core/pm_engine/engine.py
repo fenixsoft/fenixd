@@ -59,6 +59,8 @@ from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     FROZEN_FIELD,
     FROZEN_UNTIL_FIELD,
+    LEGACY_DEGRADE_LAST_REASON_FIELD,
+    LEGACY_DEGRADE_STREAK_FIELD,
     PUSH_ATTEMPTS_FIELD,
     PUSH_BACKOFF_NEXT_RETRY_AT_FIELD,
     START_AFTER_FIELD,
@@ -2883,6 +2885,114 @@ class PMEngine:
         except Exception:
             return True
 
+    def _legacy_degrade_gate(self, spec_name: str, degrade_error: Exception) -> bool:
+        """legacy 降级前置门（fix-worktree-lock-release-degrade-gate 3.1/D4）。
+
+        spec 级连续降级计数（``_legacy_degrade_streak``，持久化于 spec STATE
+        条目——实例级/模块级计数已被 :201-205 注释证伪，PMEngine 按 run 重建
+        实例、模块级跨 spec 串扰）：
+        - 首次（streak == 0）：放行 + 计数 +1 + 首次原因持久化，返回 True；
+        - 连续第 2 次（streak >= 1）：不再派发 legacy verifier，SPEC 转
+          blocked + human-escalation-alert（文案拼两次降级原因链与建议动作），
+          返回 False。
+
+        清零点（_legacy_degrade_streak）：验证轮成功推进（verified 落定，
+        fastlane.VERIFIED_RESET_FIELDS）/ admin 处置复位（dashboard
+        _RETRY_COUNTER_RESETS）/ 人工解冻（unfreeze_spec 清零集）。
+
+        判定异常（state_machine 缺失/读取失败等）fail-open 回直接降级（保守
+        侧＝现状，对齐 _is_worktree_contention_error 既有口径）。
+        """
+        reason = str(degrade_error or "")[:300]
+        try:
+            sm = getattr(self, "state_machine", None)
+            if sm is None:
+                self.logger.warning(
+                    "pm_engine",
+                    f"legacy 降级前置门无 state_machine 上下文 '{spec_name}'"
+                    f"—— fail-open 放行本次降级（计数跳过）",
+                )
+                return True
+            entry = sm.read_one(spec_name) or {}
+            streak = int(entry.get(LEGACY_DEGRADE_STREAK_FIELD, 0) or 0)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"legacy 降级前置门计数读取失败 '{spec_name}': {e} — "
+                f"fail-open 放行本次降级（计数跳过）",
+            )
+            return True
+
+        if streak >= 1:
+            # 连续第 2 次降级：熔断转人工，不派发 legacy verifier。
+            first_reason = str(
+                entry.get(LEGACY_DEGRADE_LAST_REASON_FIELD) or "（首轮原因未登记）"
+            )
+            error_msg = (
+                f"新验证流程连续 2 次失败降级，已熔断停止自动派发 legacy "
+                f"verifier，等待人工裁决"
+            )
+            chain = f"第 1 次降级: {first_reason}；第 2 次降级: {reason}"
+            try:
+                sm.update_spec(spec_name, {
+                    "status": "blocked",
+                    "error": f"{error_msg}（{chain[:300]}）",
+                    LEGACY_DEGRADE_STREAK_FIELD: streak + 1,
+                    LEGACY_DEGRADE_LAST_REASON_FIELD: reason,
+                })
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"降级熔断 STATE 写入失败 '{spec_name}': {e}（告警照发）",
+                )
+            self.logger.error(
+                "pm_engine",
+                f"新验证流程连续降级熔断 '{spec_name}': {chain} — "
+                f"不再自动派发 legacy verifier，SPEC 转 blocked + 升级告警"
+                f"（fix-worktree-lock-release-degrade-gate）",
+            )
+            try:
+                self._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type="verify_env_blocked",
+                    severity="major",
+                    description=f"{error_msg}。原因链：{chain[:300]}",
+                    evidence=(
+                        f"spec={spec_name}; 连续 2 次新验证流程（三阶段）失败"
+                        f"触发降级决策点，第 2 次降级被熔断拦截"
+                    ),
+                    recommended_action=(
+                        "核对 worktree 状态（残留锁 / worktree 目录 / 并行 "
+                        "run）后重验；确认环境正常后 unfreeze_spec 解冻——"
+                        "解冻即清零降级计数，后续首次失败重新获得既有降级"
+                        "机会"
+                    ),
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"降级熔断升级告警发送失败 '{spec_name}': {e}（不阻塞熔断）",
+                )
+            return False
+
+        # 首次降级：放行 + 计数 +1（原因持久化，供第 2 次熔断文案拼原因链）。
+        try:
+            sm.update_spec(spec_name, {
+                LEGACY_DEGRADE_STREAK_FIELD: streak + 1,
+                LEGACY_DEGRADE_LAST_REASON_FIELD: reason,
+            })
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"降级计数写入失败 '{spec_name}': {e}（本次降级照常放行）",
+            )
+        self.logger.warning(
+            "pm_engine",
+            f"新验证流程首次失败降级 '{spec_name}': {reason} — 计数 +1，"
+            f"连续第 2 次将熔断转人工（fix-worktree-lock-release-degrade-gate）",
+        )
+        return True
+
     def _run_verification_pipeline(self, spec_name: str):
         """执行三步验证流水线。
 
@@ -2923,6 +3033,12 @@ class PMEngine:
                         f"（首次失败: {e}）— 转降级通道"
                         f"（evo-add-verify-dispatch-single-flight 3.2）",
                     )
+            # legacy 降级前置门（fix-worktree-lock-release-degrade-gate 3.1）：
+            # 首次降级放行（计数 +1）；连续第 2 次 NOT 派发 legacy，改 blocked
+            # + human-escalation-alert（两次降级原因链）——gate 返回 False 即
+            # 熔断收口返回，不产生第三轮静默降级。
+            if not self._legacy_degrade_gate(spec_name, degrade_error):
+                return
             # evo-add-worktree-acquire-backoff 1.3：模块级累计计数（实例按
             # run 重建，实例级计数恒为 1），WARNING 附「第 N 次降级」。
             # 递增持锁并取快照（code-review item 98e2a2803b54）：并发降级时

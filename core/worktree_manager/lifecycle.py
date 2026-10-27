@@ -22,6 +22,7 @@ from typing import Dict, Optional, Set
 
 from core.worktree_manager.constants import (  # noqa: E402
     STALE_LOCK_IDLE_SECONDS,
+    STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS,
 )
 from core.worktree_manager.artifact_paths import (
     ArtifactPathMatcher,
@@ -145,6 +146,15 @@ class G1LifecycleMixin:
         self._active_worktrees: Set[str] = set()
         self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
         self._spec_locks: Set[str] = set()  # SPECs currently being worked on
+        # 锁 owner 归属（fix-worktree-lock-release-degrade-gate D1）：锁键
+        # ``<spec>:<agent_type>`` → 持锁 run_id（create(owner_run_id=…) 记录；
+        # 无 run 上下文的登记路径（locks._register_spec_locks 重建、repair 车道
+        # 直写 _spec_locks）无条目，owner 语义 = None）。与 _spec_locks 并行的
+        # 归属映射而非改结构（design D1「新增 dict 或改结构均可」取前者）：既有
+        # 成员判定/迭代/快照读点零改动，写侧摘锁点同步 pop 本表。释放 API
+        # （release_spec_lock owner_run_id=…）与 acquire 陈锁清扫按本表核对
+        # 持锁主归属；owner 未知（无条目）时清扫退回锁龄判据（保守不清扫）。
+        self._spec_lock_owners: Dict[str, Optional[str]] = {}
         # 分支创建端口径前缀（fix-recovery-branch-anchor D2）：
         # 分支创建端硬编码 `fenix/`（同 mixin create() 内 _names 闭包的分支名
         # 拼装；code-review item ded13afb19bb：拆包后失效行号引用改方法级定位），
@@ -227,13 +237,18 @@ class G1LifecycleMixin:
             has_build_artifacts=has_build_artifacts,
         )
 
-    def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
+    def create(self, spec_name: str, agent_type: str = "implementer",
+               owner_run_id: Optional[str] = None) -> Optional[Path]:
         """
         Create a git worktree for an Agent run.
 
         Args:
             spec_name: The SPEC name (e.g., "add-user-login")
             agent_type: "implementer" or "verifier"
+            owner_run_id: 持锁 run 归属（fix-worktree-lock-release-degrade-gate
+                D1）：非 None 时登记进 _spec_lock_owners，供终态释放的 owner
+                校验与 acquire 陈锁清扫的存活核对消费；缺省 None 维持现状
+                （无 run 上下文的调用方零改动）。
 
         Returns: Path to the worktree, or None on failure.
         """
@@ -242,13 +257,35 @@ class G1LifecycleMixin:
         lock_key = f"{spec_name}:{agent_type}"
         with self._spec_lock_th:
             if lock_key in self._spec_locks:
-                self.logger.warning(
-                    "worktree_manager",
-                    f"Worktree already active for {lock_key}",
-                )
-                return None
+                # 陈锁存活清扫（fix-worktree-lock-release-degrade-gate D3）：
+                # 早退前核对持锁 run 存活性——确认死亡（末行死亡判据 / 记录缺失
+                # 且锁龄超 early give-up cap / owner 未知但锁龄超 cap）则清扫
+                # 放行本次 acquire；判据不确定（记录在飞且末行非死亡判据行、
+                # 锁龄未知或年轻）维持既有早退（宁可慢清扫不可错杀活锁）。
+                # 判定与摘除同处持锁临界区（check-then-add 原子段内完成，并发
+                # create 无缝隙可插）；_stale_lock_owner_dead 只做判定不做摘除
+                # （_spec_lock_th 非重入，摘除由本调用方在锁内直做）。
+                dead, sweep_reason = self._stale_lock_owner_dead(lock_key)
+                if dead:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Stale lock swept for {lock_key}: {sweep_reason} "
+                        f"— reacquiring (fix-worktree-lock-release-degrade-gate)",
+                    )
+                    self._spec_locks.discard(lock_key)
+                    self._lock_since.pop(lock_key, None)
+                    self._spec_lock_owners.pop(lock_key, None)
+                else:
+                    owner = self._spec_lock_owners.get(lock_key)
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Worktree already active for {lock_key}"
+                        + (f" (owner={owner})" if owner else ""),
+                    )
+                    return None
             self._spec_locks.add(lock_key)
             self._lock_since[lock_key] = time.time()
+            self._spec_lock_owners[lock_key] = owner_run_id
 
         # try 覆盖锁释放前的全部步骤（code-review item 545846c6e8cd）：reuse
         # 认领段与 base_dir.mkdir 原先位于 try 之外，权限不足等 OSError 会让
@@ -384,6 +421,7 @@ class G1LifecycleMixin:
                 with self._spec_lock_th:
                     self._spec_locks.discard(lock_key)
                     self._lock_since.pop(lock_key, None)
+                    self._spec_lock_owners.pop(lock_key, None)
                 return None
 
             self._active_worktrees.add(str(wt_path))
@@ -403,12 +441,14 @@ class G1LifecycleMixin:
             with self._spec_lock_th:
                 self._spec_locks.discard(lock_key)
                 self._lock_since.pop(lock_key, None)
+                self._spec_lock_owners.pop(lock_key, None)
             return None
         except Exception as e:
             self.logger.error("worktree_manager", f"Worktree creation error: {e}")
             with self._spec_lock_th:
                 self._spec_locks.discard(lock_key)
                 self._lock_since.pop(lock_key, None)
+                self._spec_lock_owners.pop(lock_key, None)
             return None
 
     def _provision_worktree_deps(self, wt_path: Path) -> None:
@@ -527,7 +567,8 @@ class G1LifecycleMixin:
         """
         return f"{spec_name}:{agent_type}" in self._spec_locks
 
-    def release_spec_lock(self, spec_name: str, agent_type: str = "implementer") -> bool:
+    def release_spec_lock(self, spec_name: str, agent_type: str = "implementer",
+                          owner_run_id: Optional[str] = None) -> bool:
         """释放该 spec+agent_type 的在册 spec 锁（code-fix defer 车道专用原语）。
 
         fix-codefix-wipgate-defer D3：defer 收尾保留 worktree 目录/分支与
@@ -536,13 +577,32 @@ class G1LifecycleMixin:
         批 worker 对 None 走 halt 终止链，不放锁则 defer 后下一批建树必败、
         整条车道在主树脏期间死锁。``wip_gate_blocked`` 标志与闸门策略零改动。
 
+        owner_run_id（fix-worktree-lock-release-degrade-gate D1）：传非 None
+        时做 owner 一致校验——在册锁的归属与本参一致才摘除，不一致 no-op +
+        DEBUG 留痕（杜绝误放他人锁：陈锁清扫窗口内同键已被后继 run 重新取得
+        时，原 run 迟到的终态释放不得把新锁摘掉）；不传（None）维持既有幂等
+        语义（不校验归属，defer 车道既有 caller 零改动）。
+
         Returns: 是否确有在册锁被释放（无锁时 False，幂等安全）。
         """
         lock_key = f"{spec_name}:{agent_type}"
         with self._spec_lock_th:
-            released = lock_key in self._spec_locks
+            if lock_key not in self._spec_locks:
+                return False
+            if owner_run_id is not None:
+                owner = self._spec_lock_owners.get(lock_key)
+                if owner != owner_run_id:
+                    self.logger.debug(
+                        "worktree_manager",
+                        f"release_spec_lock({lock_key}) skipped: owner "
+                        f"mismatch (lock owner={owner!r}, releaser="
+                        f"{owner_run_id!r}) — no-op",
+                    )
+                    return False
+            released = True
             self._spec_locks.discard(lock_key)
             self._lock_since.pop(lock_key, None)
+            self._spec_lock_owners.pop(lock_key, None)
         return released
 
     def _seed_spec(self, spec_name: str, wt_path: Path):
@@ -996,6 +1056,7 @@ class G1LifecycleMixin:
                 for k in to_remove:
                     self._spec_locks.discard(k)
                     self._lock_since.pop(k, None)
+                    self._spec_lock_owners.pop(k, None)
                 # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
                 for k in to_remove:
                     self._proc_scan_cache.pop(self._lock_spec_name(k), None)
@@ -1315,6 +1376,7 @@ class G1LifecycleMixin:
             self._wt_branches.clear()
             self._spec_locks.clear()
             self._lock_since.clear()
+            self._spec_lock_owners.clear()
             self._proc_scan_cache.clear()
             # _legacy / _active_reuse 不在此清空（code-review item
             # 3c4a2e810936 保留原因说明）：二者非本进程活动登记，有独立
