@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-15 02:25 UTC+8
+> 最后更新：2026-10-27 16:48 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -30,7 +30,7 @@
 | [frozen-scenario-schema-migration](frozen-scenario-schema-migration.md) | 冻结场景结构迁移 | 2026-10-03 04:59 |
 | [scenario-schema-single-source](scenario-schema-single-source.md) | 场景结构单源 | 2026-10-03 04:59 |
 | [scenario-write-schema-gate](scenario-write-schema-gate.md) | 场景写入结构门 | 2026-10-03 04:59 |
-| [scenario-static-defect-scan](scenario-static-defect-scan.md) | 场景静态缺陷扫描 | 2026-10-03 04:59 |
+| [scenario-static-defect-scan](scenario-static-defect-scan.md) | 场景静态缺陷扫描（模式表含端口残留/双汉字选择器/夹具打标） | 2026-10-27 16:48 |
 | [scenario-defect-reroute-gate](scenario-defect-reroute-gate.md) | 场景缺陷改道门 | 2026-10-03 04:59 |
 | [scenario-defect-reroute-stoploss](scenario-defect-reroute-stoploss.md) | 场景缺陷改道止损 | 2026-10-03 04:59 |
 | [scenario-replan-consumption-gate](scenario-replan-consumption-gate.md) | 重规划场景消费门 | 2026-10-03 04:59 |

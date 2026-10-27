@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-27 15:28 UTC+8
+> 最后更新：2026-10-27 16:48 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -14,7 +14,7 @@
 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 24 | 2026-10-11 03:32 |
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | 调度与派发 | 8 | 2026-10-03 04:59 |
 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 28 | 2026-10-14 18:51 |
-| [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 52 | 2026-10-15 02:25 |
+| [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 52 | 2026-10-27 16:48 |
 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 24 | 2026-10-15 02:25 |
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 18 | 2026-10-15 14:28 |
 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 26 | 2026-10-26 01:16 |
@@ -30,7 +30,7 @@
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
 | [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 29 | 2026-10-27 15:28 |
 | [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 12 | 2026-10-12 03:33 |
-| [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 13 | 2026-10-07 03:30 |
+| [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 13 | 2026-10-27 16:48 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义 | 2 | 2026-10-07 02:58 |
 | [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 5 | 2026-10-04 05:06 |
