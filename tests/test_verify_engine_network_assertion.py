@@ -317,7 +317,7 @@ class ExpectNetworkValidationTest(unittest.TestCase):
                 records.append(record)
 
         handler = _Capture()
-        cap_logger = logging.getLogger("core.verify_engine.scenarios")
+        cap_logger = logging.getLogger("fenixd.verify_engine.scenarios")
         cap_logger.addHandler(handler)
         try:
             errors = self._validate(

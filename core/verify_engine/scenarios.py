@@ -15,7 +15,10 @@ from pathlib import Path
 
 from .fs_ops import atomic_write_json
 
-logger = logging.getLogger(__name__)
+# 旁路 getLogger 守卫（test_logger_no_bypass）：core/ 内 MUST 用 fenixd.
+# 可传播层级字面量（同 verify_engine 既有 judge_files/scenario_static_check
+# 口径），getLogger(__name__) 会落 core.* 死层级、告警写丢
+logger = logging.getLogger("fenixd.verify_engine.scenarios")
 
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
 # 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
