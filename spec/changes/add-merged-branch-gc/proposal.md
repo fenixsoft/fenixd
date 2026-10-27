@@ -14,8 +14,9 @@ worktree 目录有 `cleanup_stale_worktrees` 清理，分支 ref 则永久累积
 
 ## What Changes
 
-在 worktree 陈旧清扫（`stale_sweep`）中新增**已合并分支 GC** 环节，定期回收满足全部安全条件的
-`fenix/*` 分支：
+在 worktree 陈旧清扫（`stale_sweep`）中新增**已合并分支 GC** 环节，随清扫回收满足全部安全条件的
+`fenix/*` 分支（既有清扫由 daemon 启动路径触发、无周期调度——GC 随每次 daemon 启动执行一轮，
+收敛性依赖重启节奏，见 design 决策 1）：
 
 1. **GC 判定（四条件同时满足才删）**：
    - 分支名命中实现/验证分支前缀家族（复用 `worktree.implement_branch_prefix` 配置，默认 `fenix/`）；
@@ -23,7 +24,8 @@ worktree 目录有 `cleanup_stale_worktrees` 清理，分支 ref 则永久累积
    - 分支 tip 提交时间早于宽限期（默认 7 天）——保留 deliverables 读侧 D1 兜底
      （`git show <branch>:tasks.md`）在合并后流程中的读取窗口；
    - 分支未被任何 worktree checkout，且所属 spec 在 STATE.md 中非活跃状态
-     （复用 `stale_sweep._branch_protected_by_state` 的状态保护口径）。
+     （保护口径 = `stale_sweep._branch_protected_by_state` 在飞引用保护 ∪ STATE.md 显式活跃
+     状态集判定——前者未覆盖 reviewing 等活跃状态，由后者补齐，见 design 决策 2/5）。
 2. **删除动作只用 `git branch -d`**（绝不 `-D`）：未合并分支天然免疫，扫描与删除之间的竞态
    最坏结果是漏删，不可能丢失内容；已合并分支的提交仍从 main 可达，删除后可随时按 sha 重建。
 3. **不引入备份 ref 机制**：`-d` 口径下零内容损失，备份只会把 ref 膨胀问题换名字重演。

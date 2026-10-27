@@ -37,11 +37,18 @@
 - [ ] 2.1 `core/worktree_manager/stale_sweep.py` 新增分支 GC 环节（worktree 清扫后追加，
   同锁内执行）：`git for-each-ref` 扫描实现/验证分支前缀家族（前缀取既有
   `worktree.implement_branch_prefix` 配置拼 `fenix/` 形态），先全量快照再逐条判定，
-  沿用既有「边扫边删防护」口径
-- [ ] 2.2 四条件判定实现：`--merged main` 合并判定；tip 提交时间早于
-  `worktree.branch_gc.retention_days`；未被任何已登记 worktree checkout；
-  spec 非活跃判定复用 `_branch_protected_by_state` 的状态集与 STATE.md 口径
-  （不复制状态常量），spec 名解析复用 `_spec_from_branch` 口径，解析失败一律跳过
+  沿用既有「边扫边删防护」口径；GC 环节 MUST NOT 被 worktree 清扫的前置 early-return
+  （base_dir 不存在 / 目录扫描 OSError，stale_sweep.py:54-55、79-86）静默跳过——分支 GC
+  不依赖 base_dir，挂载点须绕开这些 return 或在方法入口独立守卫
+- [ ] 2.2 四条件判定实现：`--merged <基线>` 合并判定（基线走既有 `resolve_base_branch`：
+  origin/HEAD → main → master 回退，不以硬编码 main 使 master 基线仓库整轮失效）；
+  tip 提交时间早于 `worktree.branch_gc.retention_days`；未被任何已登记 worktree checkout；
+  spec 活跃豁免 = `_branch_protected_by_state` 在飞引用保护（单一来源复用，不复制状态常量）
+  ∪ STATE.md 显式活跃状态判定（implementing/implemented/testing/reviewing/
+  ready+_recovery_resume/blocked+frozen_hold，补齐 `_branch_protected_by_state` 未覆盖的
+  reviewing），另对在册 legacy 登记（`_legacy`）命中的分支跳过；spec 名解析复用
+  `_spec_from_branch` 口径（其硬编码 fenix/ 前缀，非 fenix 配置命名空间分支解析失败
+  按宁漏勿误跳过）
 - [ ] 2.3 删除动作只用 `git branch -d`，单分支失败（含并发 checkout 拒绝）记录明细后
   继续其余分支，不中断清扫轮；GC 整体异常按既有清扫环节同口径兜底（non-blocking）
 - [ ] 2.4 可观测：有删除时输出结构化日志（删除清单、总数、四档跳过计数：
@@ -49,7 +56,8 @@
   `worktree.branch_gc.enabled=false` 时整个环节跳过且无日志
 - [ ] 2.5 `tests/test_branch_gc.py` 覆盖 GC 判定与执行：四条件齐备删除成功、宽限期内保留、
   未合并不删且计数、活跃 spec 豁免（含 testing/reviewing 等状态）、worktree 占用跳过、
-  GC 关闭零动作、单分支 -d 失败不中断、解析失败分支跳过、零删除静默
+  GC 关闭零动作、单分支 -d 失败不中断、解析失败分支跳过、零删除静默、在册 legacy 登记
+  分支跳过
 
 ## 3. Dashboard：分支 GC 设置面板
 

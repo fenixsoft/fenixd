@@ -34,11 +34,25 @@
 
 ## Decisions
 
-1. **GC 挂在 stale_sweep 而非独立定时器**：复用既有清扫节奏、锁与「先快照后删除」防护，
+1. **GC 挂在 stale_sweep 而非独立定时器**：复用既有清扫触发点、锁与「先快照后删除」防护，
    不引入新的调度面。worktree 清扫与分支清扫天然同源（同一批分支的生命周期两段）。
+   触发形态取证（stale_sweep.py:38-41、legacy_registry.py:654、fenixd.py:883 唯一调用点）：
+   `cleanup_stale_worktrees` 仅由 daemon 启动路径调用一次、无周期调度——GC 实际形态是
+   「每次 daemon 启动回收一轮」而非周期定时；收敛性依赖 daemon 重启节奏，与 legacy
+   宽限期兜底回收的既定姿态一致（长驻运行期间新增的已合并分支留待下次启动回收）。
 
 2. **四条件判定，缺一不删**：merged + tip 早于宽限期 + 无 worktree 占用 + spec 非活跃。
-   活跃状态集与 `_branch_protected_by_state` 同口径，不另立标准。
+   spec 活跃豁免 = 两守卫并集：(i) `_branch_protected_by_state` 在飞引用保护（branch 字段
+   引用 / implementing 命名空间精确归属 / 冻结保持；单一来源复用，不复制常量）；
+   (ii) spec 名解析 → STATE.md 显式状态判定，状态 ∈ 活跃状态集（implementing / implemented /
+   testing / reviewing / ready(+_recovery_resume) / blocked(+frozen+_frozen_hold)）即豁免。
+   取证：`_branch_protected_by_state` 的保护集不含 reviewing（stale_sweep.py:411 状态元组、
+   (b) 仅查 implementing），而 reviewing 属 STATE 活跃状态——reviewing spec 的已合并分支若
+   只靠 (i) 会在合并超宽限期后被误收，(ii) 为其补齐（宁漏勿误）。合并判定基线走既有
+   `resolve_base_branch`（origin/HEAD → main → master 回退），不以硬编码 main 使 master
+   基线仓库整轮 GC 失效。另：分支命中在册 recovery legacy 登记（`_legacy`，宽限期内同分支
+   再登记含在内）时跳过——避免 GC 与 consume_legacy / _reclaim_expired_legacy 竞争同一分支，
+   防「续做」降级为从零重派（对齐 legacy_registry.py:838 复核先例与 freeze-stop 保留语义）。
 
 3. **删除只允许 `git branch -d`**：这是唯一的安全硬边界——扫描与删除之间若发生并发变化
    （如分支被新 worktree checkout、被 rebase 脱离 main），`-d` 会拒绝而非误删。
@@ -47,9 +61,13 @@
 4. **宽限期默认 7 天**：覆盖验证收尾后的 diff 参照窗口与 D1 读侧兜底窗口；经验上 spec 从
    merge-back 到归档极少超过 7 天。配置化后可按项目节奏调整。
 
-5. **spec 非活跃判定**：分支名 → spec 名（剔除前缀与时间戳后缀，`_spec_from_branch` 口径）
-   → STATE.md 查状态；spec 不存在（已归档/已删除）视为非活跃。解析失败的分支一律跳过
-   （宁漏勿误）。
+5. **spec 非活跃判定**（配合决策 2 守卫 (ii)）：分支名 → spec 名（`_spec_from_branch` 口径：
+   去前缀、末段纯数字时间戳、verify- 按验证分支语义剥离——GC 的目标是找回所属 spec，该
+   helper 的既定选边正合适；queries.py 对「归属判定链」的 MUST NOT 复用警示针对的是
+   「是否某 spec 的实现分支」这一不同问题，不适用本守卫）→ STATE.md 查状态；spec 不存在
+   （已归档/已删除）视为非活跃。注意 `_spec_from_branch` 硬编码 `fenix/` 前缀
+   （queries.py:82）：非 fenix 配置命名空间下的分支解析失败 → 按宁漏勿误跳过不删
+   （仅漏删，无误删）。解析失败的分支一律跳过。
 
 6. **配置形态 `worktree.branch_gc.{enabled,retention_days}`**：挂在 worktree 节下与
    GC 的宿主模块一致；默认开启（用户诉求即收敛，关闭是显式动作）；`retention_days`
@@ -61,8 +79,9 @@
   影响面评估：D1 优先序为 worktree 内 tasks.md > branch > main；合并后 worktree 已清理、
   main 已有同内容文件，兜底落点自动滑到 main，读取结果等价。宽限期进一步覆盖长尾。
 - **活跃状态集漂移**：STATE.md 新增活跃状态时若不同步 GC 的状态集，活跃分支可能被误收。
-  缓解：状态集取自 `_branch_protected_by_state` 单一来源（不复制常量），该处新增状态时
-  GC 自动跟随；spec 解析失败的分支默认跳过。
+  缓解：守卫 (i) 取自 `_branch_protected_by_state` 单一来源（不复制常量），该处新增状态时
+  GC 自动跟随；守卫 (ii) 的显式状态集为静态清单，STATE 新增活跃状态时 MUST 同步本设计与
+  spec.md 的状态集枚举；spec 解析失败的分支默认跳过。
 - **扫描开销**：`git branch --merged` 在万级分支下仍为毫秒级 ref 操作；每轮清扫多一次
   `for-each-ref` + 逐分支 tip 时间查询，量级可控（GC 只处理前缀家族命中分支）。
 - **存量 116 条未合并分支不随本 SPEC 消失**：它们是历史 retry 中间态，自动机制不覆盖

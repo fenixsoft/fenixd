@@ -2,14 +2,16 @@
 
 ### Requirement: 已合并分支定期回收
 
-worktree 陈旧清扫（stale_sweep）MUST 在每轮清扫中包含已合并分支 GC 环节：扫描实现/验证分支
+worktree 陈旧清扫（stale_sweep）MUST 在每轮清扫中包含已合并分支 GC 环节（既有清扫由 daemon
+启动路径触发、无周期调度，GC 随启动清扫执行一轮）：扫描实现/验证分支
 前缀家族（默认 `fenix/`）下的分支，对同时满足以下全部条件的分支执行 `git branch -d` 删除：
 
 1. 分支已完全并入 main（`--merged` 口径）；
 2. 分支 tip 提交时间早于宽限期（`worktree.branch_gc.retention_days`，默认 7 天）；
 3. 分支未被任何已登记 worktree checkout；
-4. 分支所属 spec 在 STATE.md 中不存在或处于非活跃状态（状态保护口径与既有
-   worktree 清扫的 `_branch_protected_by_state` 一致）。
+4. 分支所属 spec 在 STATE.md 中不存在或处于非活跃状态（保护口径 = 既有 worktree 清扫的
+   `_branch_protected_by_state` 在飞引用保护 ∪ STATE.md 显式活跃状态集判定，见
+   「活跃 spec 分支豁免」Requirement）。
 
 删除动作 MUST 只使用 `git branch -d`（拒绝未合并分支的删除语义），MUST NOT 使用 `-D`。
 GC MUST 在既有清扫锁内执行；GC 关闭（`worktree.branch_gc.enabled: false`）时 MUST 完全跳过。
@@ -38,15 +40,32 @@ GC MUST 在既有清扫锁内执行；GC 关闭（`worktree.branch_gc.enabled: f
 
 ### Requirement: 活跃 spec 分支豁免
 
-分支所属 spec 处于活跃状态（ready / implementing / testing / reviewing 等 STATE.md 活跃
-状态集）时，GC MUST 跳过该分支，无论合并状态与 tip 新旧。spec 名从分支名解析（剔除前缀与
-时间戳后缀），解析规则 MUST 与 `_spec_from_branch` 现有口径一致。
+分支所属 spec 处于活跃状态（implementing / implemented / testing / reviewing /
+ready(+_recovery_resume) / blocked(+frozen+_frozen_hold)）时，GC MUST 跳过该分支，无论合并
+状态与 tip 新旧。活跃豁免按两守卫并集实现：`_branch_protected_by_state` 在飞引用保护，
+加 STATE.md 显式状态判定补齐其未覆盖的 reviewing 等活跃状态。spec 名从分支名解析
+（剔除前缀与时间戳后缀），解析规则 MUST 与 `_spec_from_branch` 现有口径一致；解析失败
+（含非 fenix 配置命名空间）的分支一律跳过不删。被在册 recovery legacy 登记（`_legacy`，
+宽限期内同分支再登记含在内）引用的分支，GC 同样 MUST 跳过——避免与 consume_legacy /
+_reclaim_expired_legacy 竞争，防「续做」降级为从零重派。
 
 #### Scenario: 活跃 spec 的已合并分支保留
 
 - **WHEN** spec `add-command-center` 状态为 testing，其某轮分支 `fenix/add-command-center-<ts>`
   已并入 main 且 tip 超过宽限期
 - **THEN** GC 不删除该分支（活跃豁免优先于合并判定）
+
+#### Scenario: reviewing 状态 spec 的已合并分支保留
+
+- **WHEN** spec `add-some-feature` 状态为 reviewing（`_branch_protected_by_state` 保护集外的
+  活跃状态），其已并入 main 的分支 `fenix/add-some-feature-<ts>` tip 超过宽限期
+- **THEN** GC 不删除该分支（STATE.md 显式活跃状态判定补齐 reviewing 豁免）
+
+#### Scenario: 在册 legacy 登记分支跳过
+
+- **WHEN** 某已合并且 tip 超宽限期的分支被 recovery legacy 登记引用（登记仍在宽限期内）
+- **THEN** GC 跳过该分支，删除留给 legacy 兜底回收链（_reclaim_expired_legacy）按其既定
+  口径执行
 
 #### Scenario: worktree 占用分支跳过
 
@@ -63,7 +82,8 @@ GC MUST 在既有清扫锁内执行；GC 关闭（`worktree.branch_gc.enabled: f
 #### Scenario: 配置缺省即开启
 
 - **WHEN** 用户配置中不存在 `worktree.branch_gc` 节
-- **THEN** GC 按默认参数（enabled=true, retention_days=7）运行，日志可见 GC 生效
+- **THEN** GC 按默认参数（enabled=true, retention_days=7）生效（有删除时按「GC 运行可观测」
+  Requirement 记日志；零删除保持静默，两要求不矛盾）
 
 #### Scenario: 非法配置不致崩
 
