@@ -1,5 +1,5 @@
 # 自省与自进化
-> 最后更新：2026-10-27 22:26 UTC+8
+> 最后更新：2026-10-27 22:53 UTC+8
 
 自省与自进化：每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent、陈旧代码自愈及其冷却保护。本域能力页清单如下。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [self-evolution](self-evolution.md) | 自进化车道（就绪扫描、逐条复核、产物抢救、草稿 lint、接受/拒绝/删除路径、保留清理） | 2026-10-27 22:18 |
 | [evolution-product-contract](evolution-product-contract.md) | 产物契约校验与部分接受（两级拒绝粒度、部分接受落库、失败现场留档） | 2026-10-27 22:26 |
-| [todo-marker-commit-on-write](todo-marker-commit-on-write.md) | 自进化标记写后即时入库（tracked 判定、按项目合并提交、失败降级） | 2026-10-12 03:33 |
+| [todo-marker-commit-on-write](todo-marker-commit-on-write.md) | 自进化标记回写提交（批量批末合并/单点写后即时分治、条目 id 明细对账、失败降级） | 2026-10-27 22:53 |
 | [evolution-subagent-wait-ceiling](evolution-subagent-wait-ceiling.md) | 自进化子代理等待上限（车道 env 无限等待、前台派发兜底、击杀归因嗅探） | 2026-10-11 01:53 |
 | [daily-self-review](daily-self-review.md) | 每日自省调度与增量窗口 | 2026-10-12 01:48 |
 | [self-review](self-review.md) | 自省 run 统计与失败判定口径 | 2026-10-06 07:44 |

@@ -290,3 +290,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-282](ADR-282-maintree-git-write-adjudication-manifest-and-signal-binding.md) | accepted | 主树 git 写裁决动作三重收口：文件清单∩当刻 status 拒任意路径、执行器 signal_type 绑定（反查通道可达≠执行授权、证据仅取绑定类型记录）、非 destructive+提交 hash 留痕；后续写副作用裁决动作同型约束，盘点链路零写边界不推翻 |
 | [ADR-283](ADR-283-spec-attached-signal-closure-resolve-channel-kind-gate.md) | accepted | spec 附着信号终态收口归 auto-resolve 通道（判定/盘点/写回三处 kind 门同步放宽、条件族白名单界定收口面），自愈注册表保持纯类型元组不承载主体终态锚，收口注记由判定端附终态时刻、写回端只透传 | |
 | [ADR-284](ADR-284-evolution-product-contract-per-item-partial-accept-no-repair-loop.md) | accepted | 进化产物契约拒绝粒度细化到单条部分回收（宽口径仅落库链路显式启用、复用 partial 语义水位不推进下检查点幂等补齐），全非法仍 fail-closed、文件级错误不豁免、部分接受路径 .failed 留档，不做修复回问回路（搭检查点自动重试便车） |
+| [ADR-285](ADR-285-todo-marker-commit-producer-scoped-batch-no-file-debounce.md) | accepted | todo.md 标记提交去抖按生产者批末收集（ingest/自动接受/保留清理逐条 defer、批末按项目各一枚、消息附条目 id 明细），单点写保持写后即提交，禁建跨生产者文件级时间窗合并窗口（同 pathspec 双生产者会互卷改动随 push 外泄） |
