@@ -1575,16 +1575,50 @@ class VerificationPipeline:
             )
             return None, True
         if not isinstance(raw, list):
-            # 根节点非数组不属契约漂移 → 维持既有 corrupt → env_blocked
-            self._escalate_env_blocked(
-                spec_name,
-                [
-                    _corrupt_freeze_options(spec_name),
-                    f"场景文件格式错误: 期望 JSON 数组，实际为 {type(raw).__name__}",
-                ],
-                title="场景计划争议",
-            )
-            return None, True
+            # 顶层 dict 包裹机械拯救接线（fix-frozen-scenario-dict-salvage 1.1，
+            # design D1/D2）：非数组时先调既有单点拯救助手——顶层为「dict 且含
+            # scenarios 数组」→ 解包重验 → 以纯数组原子重写落地（D4：留痕由
+            # 助手既有 WARNING 承担，本读端不新增日志形态）。拯救成功则按解包
+            # 结果继续既有 frozen_contract_version 迁移与装载；不可拯救（None）
+            # 落回既有 corrupt → env_blocked 分支（错误文案与处置选项不变，
+            # design D3 fail-closed）。
+            salvaged = self._salvage_top_level_dict(path)
+            if salvaged is not None:
+                # 拯救已把文件原子重写为纯数组（内存与磁盘一致）——以重读的
+                # 纯数组 dict 条目替换 raw 继续既有契约迁移与装载（拯救返回值
+                # 为 TestScenario 对象列表，后续 frozen_contract_version/
+                # migrate_frozen_contract 消费的是原始 dict 条目）。
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                    # 重读异常兜底 fail-closed（design D3）：与下方不可拯救
+                    # 同通道收敛，不放大拯救面。
+                    self._context.logger.error(
+                        "pm_engine",
+                        f"冻结场景顶层拯救落地重读失败 '{spec_name}'（维持人工）: "
+                        f"{type(e).__name__}: {e}",
+                    )
+                    self._escalate_env_blocked(
+                        spec_name,
+                        [
+                            _corrupt_freeze_options(spec_name),
+                            f"场景文件格式错误: 期望 JSON 数组，实际为 "
+                            f"{type(raw).__name__}",
+                        ],
+                        title="场景计划争议",
+                    )
+                    return None, True
+            else:
+                # 根节点非数组不属契约漂移 → 维持既有 corrupt → env_blocked
+                self._escalate_env_blocked(
+                    spec_name,
+                    [
+                        _corrupt_freeze_options(spec_name),
+                        f"场景文件格式错误: 期望 JSON 数组，实际为 {type(raw).__name__}",
+                    ],
+                    title="场景计划争议",
+                )
+                return None, True
 
         # ── 步骤 2：集内 contract_version 最小值路由（缺失/非整型=1）──
         # 取 min 保守迁移（任一旧条目都走迁移）；>= 当前版本 → 幂等零操作
