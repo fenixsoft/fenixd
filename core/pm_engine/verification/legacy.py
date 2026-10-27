@@ -6,6 +6,11 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
+import re
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
 # verified 收口清零/复位字段集单源（code-review item e143213f2b45）：
 # fastlane.VERIFIED_RESET_FIELDS 收编 state_machine 与 fastlane 两侧字段，
 # 与主路径 pipeline._apply_verified 同引一张表，字段演进只改该表。
@@ -19,15 +24,21 @@ from core.pm_engine.verification.infra_classify import (
     is_verifier_process_death,
 )
 
+# 本轮 verify 派发时刻解析口径（fix-verify-verdict-run-attribution D4）：
+# run/attempt id 形如 ``<run>-<epoch>-a<n>[-r<m>]``，内嵌 epoch 即本轮
+# attempt 启动时刻（≈ 派发时刻），与 report_gate._verifier_result_is_stale
+# 的 ``-(\d{10,})-a\d+$`` 既有口径同源。
+_RUN_ID_EPOCH_PATTERN = re.compile(r"-(\d{10,})-a\d+$")
+
 
 def _discard_if_not_testing(pipeline, spec_name, result, label):
     """在飞 verify 结果应用前状态复核的单一收敛点（code-review 05d216e0182d）。
 
-    _redispatch_fresh_verify 与 legacy 的 bug-found/verified/process-failure
+    _residue_fail_closed 与 legacy 的 bug-found/verified/process-failure
     三个应用分支共用同一判据：结果应用前 spec 已非 testing（终态已收敛 /
     stale-result 防护拨回 implemented / 并发新 attempt 已接管）→ DEBUG 丢弃
     并返回 True；仍在 testing → 返回 False 继续应用。状态判据与 DEBUG 文案
-    单点维护，防多处演进漏改其一造成行为漂移（与 _redispatch_fresh_verify
+    单点维护，防多处演进漏改其一造成行为漂移（与 _residue_fail_closed
     的收敛思路一致）。
 
     前史（fix-verify-late-result-terminal-clobber D1 / fix-daemon-lifecycle-
@@ -55,94 +66,176 @@ def _discard_if_not_testing(pipeline, spec_name, result, label):
     return False
 
 
-def _redispatch_fresh_verify(pipeline, spec_name, result, reason, warn_reason=""):
-    """stale/foreign re-dispatch 处置的单点收敛（code-review 842cfc9b4447）。
+def _archive_stale_verdict_file(result_path: Path, logger) -> str:
+    """stale/foreign 残留裁决文件归档备份（fix-verify-verdict-run-attribution D2 分支③）。
 
-    foreign-role/foreign-stamp、unknown-status+stale、主 stale 护栏三条
-    路径共用同一结局：状态复核 → verified 一次性放行门 → 打回 implemented
-    重派 fresh verify → infra 记账 → warning 日志。状态判据与 error 文案
-    单点维护，防三处演进漏改其一造成行为漂移。
+    消费守卫判「陈旧 mtime / 异 spec 戳 / 异归属残留」时先归档为
+    ``<原文件名>.stale-<UTC ISO 时间戳>``（保留法证现场），再走 fail-closed。
+    归档失败仅 WARNING——fail-closed 处置不因归档失败而中断（残留内容本就
+    不作为本轮裁决采信，归档只为留痕）。
 
-    ``reason``：DEBUG 丢弃消息中的结果标签（foreign-role/
-    unknown-status+stale/stale）；``warn_reason``：warning 日志附带的
-    reason 注记，仅 foreign-role/foreign-stamp 传入（保持既有文案）。
+    返回归档后路径；无可归档文件或归档失败返回空字符串。
     """
-    # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
-    # 结果应用前 spec 已非 testing → DEBUG 丢弃，不覆写状态、不重派、不记账
-    # infra（终态 SPEC 记 infra 是噪音且附带预算豁免对终态无意义）。判据与
-    # 文案单点收敛于 _discard_if_not_testing（code-review 05d216e0182d）。
-    if _discard_if_not_testing(pipeline, spec_name, result, reason):
-        return
-    # ── verified 一次性放行门（judge-rerun-stability R2）──
-    # 已 verified 且场景集未变时，陈旧/异归属残留不得把 verified 打回
-    # implemented 触发整轮重验（裁决仍以 verdict_stability.json 为准）。
-    if pipeline._verified_gate_refuses(spec_name, "implemented"):
-        return
-    # ── 直写 update_spec 而非 transition（code-review db38086cb54a）──
-    # testing→implemented 不在 VALID_TRANSITIONS（TESTING 仅放行
-    # verified/bug-found），transition 会确定性拒绝——若按「被拒保留原状」
-    # 口径消费返回值，本重派路径将永久失效（stale/foreign 结果永远无人
-    # 重派）。测试车道保护性回退全库既定通道均为 update_spec 直写（同款：
-    # dispatch/rollback.py _rollback_failed_dispatch verifier 分支）；与
-    # bug-found/verified 分支的 transition 口径差异即在此——那两处目标是
-    # TESTING 的合法出边。复核与写入间 TOCTOU 窗口由上方
-    # _discard_if_not_testing + _verified_gate_refuses 读侧复核收敛，
-    # 与主路径同款。
-    # 返回值核对（code-review item 33abefe13a94，与 dispatch/rollback.py
-    # item 90b4004274a9 口径一致）：False = 条目缺失/原子写失败，
-    # implemented 未落盘、spec 仍停留原状态——后续 infra 记账与
-    # 「re-dispatching fresh verification」告警一并跳过（重派并未发生，
-    # 不为未生效的重派记账），改记 WARNING 如实留痕。
-    if not pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "status": "implemented",
-            "tester_run": None,
-            "error": "stale/foreign verifier result replayed — re-dispatching fresh verify",
-        },
-    ):
+    if not result_path.exists():
+        return ""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    archive_path = result_path.with_name(f"{result_path.name}.stale-{ts}")
+    try:
+        result_path.rename(archive_path)
+    except OSError as e:
+        logger.warning(
+            "pm_engine",
+            f"stale/foreign verdict 归档失败（继续 fail-closed 处置）: "
+            f"path={result_path}, err={e}",
+        )
+        return ""
+    logger.warning(
+        "pm_engine",
+        f"stale/foreign verdict 已归档备份（本轮不采信、不重派）: "
+        f"{result_path} → {archive_path}",
+    )
+    return str(archive_path)
+
+
+def _verify_dispatch_epoch(result) -> float:
+    """解析本轮 verify 派发时刻（UTC epoch 秒，fix-verify-verdict-run-attribution D4）。
+
+    优先从 ``result.run_id`` 内嵌 epoch 解析（``-(\d{10,})-a\d+$`` 口径，
+    与 report_gate._verifier_result_is_stale 同源）；解析失败回退本轮 run
+    流启动时刻（完成时刻 - result.duration_seconds，即本轮 verify run 流
+    的起算点）；时长亦不可得时回退当前时刻（mtime < now 恒不成立 → 不
+    保全——回退链全断时按「无新鲜 report」口径走照常 fail-closed）。
+    """
+    raw_run_id = getattr(result, "run_id", "") or ""
+    try:
+        m = _RUN_ID_EPOCH_PATTERN.search(raw_run_id)
+        if m:
+            return float(int(m.group(1)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        duration = float(getattr(result, "duration_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return time.time() - duration
+
+
+def _preserve_verify_report(pipeline, spec_name: str, result) -> str:
+    """fail-closed 丢弃前保全本轮验证成果 report.json（fix-verify-verdict-run-attribution D4）。
+
+    消费守卫判「残留 / 本轮未产出裁决」、丢弃当轮成果进入 fail-closed 前
+    调用：report.json 存在且 mtime（stat UTC 口径）≥ 本轮 verify 派发时刻
+    （``_verify_dispatch_epoch``：run_id 内嵌 epoch 优先，回退本轮 run 流
+    启动时刻）→ 重命名保全为 ``report-<run_id>.json`` + WARNING（杜绝静默
+    扔验证成果，add-command-center 2026-10-26 事故：39 分钟真实验证的
+    report 因 verdict 断链被整体作废）；不满足（无 report / 陈旧 report）
+    则跳过保全照常 fail-closed。升级告警文案附保全路径由调用方
+    （``_residue_fail_closed`` → ``_block_legacy_verdict``）承载。
+
+    返回保全后路径；未触发保全返回空字符串。
+    """
+    from core.pm_engine.verification.report_gate import verify_progress_dir
+
+    report_path = verify_progress_dir(pipeline, spec_name) / "report.json"
+    if not report_path.exists():
+        return ""
+    try:
+        # stat 的 st_mtime 即 UTC epoch 秒（D5：与派发时刻同口径对齐比较，
+        # 无 naive/aware 混比）。
+        report_mtime = report_path.stat().st_mtime
+    except OSError as e:
         pipeline._context.logger.warning(
             "pm_engine",
-            f"Stale/foreign re-dispatch write failed for '{spec_name}' — "
-            f"update_spec 返回 False（条目缺失/原子写失败），状态未变更、"
-            f"不记 infra 账，本次重派未生效",
+            f"验证成果保全跳过（report mtime 不可得）'{spec_name}': {e}",
         )
-        return
-    # evo-infra-failure-budget-exempt R2：结果文件「读错文件」（陈旧/异
-    # spec 归属）属 infra，沿用既有 re-dispatch，同挂预算退款与记账
-    # （否则本路径白耗实现预算且无 infra 记账可观测）。退款锚点不传
-    # run_id（回退 implementer_run，与 escalation 的记账口径一致）——
-    # verifier attempt run id 作锚点会使每个 attempt 各自退款一次、按
-    # 实现 run 的幂等去重失效（code-review item 87cfffac1d3c）；attempt
-    # run id 经 ledger_run_id 只进失败台账，观测信息不丢。
-    pipeline._record_infra_failure(
-        spec_name,
-        "stale/foreign verifier result replayed",
-        ledger_run_id=getattr(result, "run_id", "") or "",
-    )
-    warn_note = f"（reason={warn_reason}）— " if warn_reason else " — "
+        return ""
+    if report_mtime < _verify_dispatch_epoch(result):
+        return ""
+    raw_run_id = getattr(result, "run_id", "") or ""
+    from core.verify_engine.path_safety import safe_component
+
+    safe_run_id = safe_component(raw_run_id) or f"unknown-{int(time.time())}"
+    preserved_path = report_path.with_name(f"report-{safe_run_id}.json")
+    try:
+        report_path.rename(preserved_path)
+    except OSError as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"验证成果保全失败（继续 fail-closed 处置）'{spec_name}': "
+            f"path={report_path}, err={e}",
+        )
+        return ""
     pipeline._context.logger.warning(
         "pm_engine",
-        f"Stale/foreign verifier result for '{spec_name}'{warn_note}"
-        f"re-dispatching fresh verification",
+        f"本轮验证成果保全（fail-closed 丢弃前）'{spec_name}': "
+        f"{report_path} → {preserved_path}",
+    )
+    return str(preserved_path)
+
+
+def _residue_fail_closed(
+    pipeline, spec_name, result, run_result_path, verifier_result,
+    label, archive=True,
+):
+    """残留 / 本轮未产出裁决消费处置单点（fix-verify-verdict-run-attribution D2/D4）。
+
+    取代旧 stale/foreign re-dispatch 语义（code-review 842cfc9b4447 的
+    ``_redispatch_fresh_verify`` 已随本改向移除）：跨 run 残留或预写戳原样
+    不再被归因为「他人结果重放」、不再自动整轮重派——该归因是
+    add-command-center（2026-10-26）两轮 39 分钟真实验证被整体作废的直接
+    根因。新语义四步：
+
+    1. 状态复核（在飞结果判据，收敛于 ``_discard_if_not_testing``）；
+    2. verified 一次性放行门（judge-rerun-stability R2：已 verified 且场景
+       集未变时，残留不构成把 verified 降级为 blocked 的裁决——放行门拒绝）；
+    3. 归档残留裁决文件（``.stale-<ts>``，保留法证现场；预写戳原样形态
+       archive=False 跳过——预写戳是本轮自己的产物，非跨 run 残留）；
+    4. 保全本轮 report.json（``report-<run_id>.json``）后 blocked fail-closed
+       + critical 告警，文案「本轮未产出机器可读裁决」、附保全路径。
+
+    ``label``：DEBUG 丢弃消息中的结果标签（not-produced/foreign-role/
+    foreign-stamp/unknown-status+stale/stale）。
+    """
+    # ── 在飞 verify 结果状态判据（fix-verify-late-result-terminal-clobber D1）──
+    if _discard_if_not_testing(pipeline, spec_name, result, label):
+        return
+    # ── verified 一次性放行门（judge-rerun-stability R2）──
+    # 已 verified 且场景集未变时，残留/预写戳不构成裁决，不得把 verified
+    # 覆盖为 blocked（放行门读自有 verdict_stability.json）。
+    if pipeline._verified_gate_refuses(spec_name, "blocked"):
+        return
+    if archive:
+        _archive_stale_verdict_file(run_result_path, pipeline._context.logger)
+    preserved = _preserve_verify_report(pipeline, spec_name, result)
+    _block_legacy_verdict(
+        pipeline, spec_name, result, run_result_path, verifier_result,
+        reason_label="本轮未产出机器可读裁决",
+        recommended_action=(
+            "检查 verifier/judge 为何未写出裁决文件"
+            "（跨 run 残留已归档 .stale-* 备份）；人工排查后重置验证重派"
+        ),
+        preserve_path=preserved,
     )
 
 
 def _block_legacy_verdict(
     pipeline, spec_name, result, run_result_path, verifier_result,
-    reason_label, recommended_action,
+    reason_label, recommended_action, preserve_path="",
 ):
-    """unknown-status / unreadable 两分支的 blocked 结局收敛单点
-    （code-review 493154d23013）。
+    """unknown-status / unreadable / 残留未产出裁决 分支的 blocked 结局收敛单点
+    （code-review 493154d23013；fix-verify-verdict-run-attribution 扩接入）。
 
-    两分支除 reason 文案与推荐动作外完全同构：logger.error →
+    各分支除 reason 文案与推荐动作外完全同构：logger.error →
     update_spec(status=blocked) → escalation_notifier(
     verdict_result_unreadable/critical)。状态判据与 error 文案单点维护，
     防多处演进漏改其一造成行为漂移（与 _discard_if_not_testing/
-    _redispatch_fresh_verify 收敛动机一致）。
+    _residue_fail_closed 收敛动机一致）。
 
-    ``reason_label``：分支差异文案（「status 白名单外」/「结果不可读」），
-    嵌入日志/ error / 告警描述；``recommended_action``：推荐动作原文。
+    ``reason_label``：分支差异文案（「status 白名单外」/「结果不可读」/
+    「本轮未产出机器可读裁决」），嵌入日志/ error / 告警描述；
+    ``recommended_action``：推荐动作原文。``preserve_path``：非空时为
+    D4 成果保全路径（fail-closed 丢弃前已重命名保全的 report-<run_id>.json），
+    附入升级告警描述与 evidence（人工可回查被保全的当轮验证成果）。
     """
     pipeline._context.logger.error(
         "pm_engine",
@@ -194,10 +287,12 @@ def _block_legacy_verdict(
             description=(
                 f"'{spec_name}' legacy 验证裁决结果文件{reason_label}，已 blocked "
                 f"等待人工裁决（reason={verifier_result.reason}）"
+                + (f"；{preserve_path}" if preserve_path else "")
             ),
             evidence=(
                 f"spec={spec_name}; result_file={run_result_path}; "
                 f"parse_error={verifier_result.detail}"
+                + (f"; preserved_report={preserve_path}" if preserve_path else "")
             ),
             recommended_action=recommended_action,
         )
@@ -304,7 +399,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
             spec_name,
             result.error,
             # 退款锚点回退 implementer_run（不传 run_id）；attempt run id
-            # 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+            # 只作台账事件标识（attempt run id 不作预算退款锚点）。
             ledger_run_id=getattr(result, "run_id", "") or "",
         )
         pipeline._context.logger.warning(
@@ -373,32 +468,43 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 名单外（如 implementer 共享残留的 "success"）文件本身可读，须先走既有
         # 陈旧/归属护栏（foreign-spec 残留 → re-dispatch）再决定 blocked。
         if not verifier_result.ok:
+            if verifier_result.reason == "not-produced":
+                # fix-verify-verdict-run-attribution D2 分支②：文件仍为本次
+                # 派发预写戳原样（role=verifier、status=dispatched）——本轮
+                # 未产出裁决。走既有 fail-closed（blocked + critical 告警，
+                # 文案「本轮未产出机器可读裁决」），不引用任何残留内容作为
+                # 裁决；丢弃当轮成果前按 D4 保全 report.json（archive=False：
+                # 预写戳是本轮派发自己的产物，非跨 run 残留，不作 .stale 归档）。
+                _residue_fail_closed(
+                    pipeline, spec_name, result, run_result_path, verifier_result,
+                    "not-produced", archive=False,
+                )
+                return
             if verifier_result.reason in ("foreign-role", "foreign-stamp"):
                 # _read_verdict 已定性：主树共享文件 role≠verifier/缺 role
                 # （implementer 残留 status=success 等）或 spec 戳不符——
-                # 文件可读但归属不明，一律不采信为验证裁决，走 stale/foreign
-                # 护栏 re-dispatch 不 blocked（修复 _verifier_result_is_stale
-                # 的 run_id fail-open：run_id 不匹配 -\d{10,}-a\d+$ 时旧行为
-                # 不判陈旧，残留 status=success 仍落 blocked——add-web-ui
-                # 误判链实证）。
-                # 状态复核/verified 放行门/重派/infra 记账单点见
-                # _redispatch_fresh_verify（三处收敛）。
-                _redispatch_fresh_verify(
-                    pipeline, spec_name, result, verifier_result.reason,
-                    warn_reason=verifier_result.reason,
+                # 文件可读但归属不明，一律不采信为验证裁决。
+                # fix-verify-verdict-run-attribution D2 分支③：异归属残留
+                # 先归档 .stale-<ts> 再 fail-closed（blocked + critical 告警），
+                # MUST NOT 沿用「stale/foreign 重放」语义把当轮 verify 成果
+                # 判为他人重放、不再自动整轮重派（re-dispatch 处置已移除）。
+                _residue_fail_closed(
+                    pipeline, spec_name, result, run_result_path, verifier_result,
+                    verifier_result.reason, archive=True,
                 )
                 return
             if verifier_result.reason == "unknown-status":
                 # 白名单外 status：文件可读，可能是共享文件中的其它 spec 残留
-                # 或 implementer 残留——走既有陈旧/归属护栏（检测 spec stamp
-                # 不符 / mtime 陈旧），foreign → re-dispatch 不 blocked。
+                # 或 implementer 残留——先走既有陈旧/归属护栏（检测 spec stamp
+                # 不符 / mtime 陈旧）。
                 # code-review item eb06c288c3c7：复用上方 :330 前置计算的同一
                 # 布尔（单一观测口径，与 :431-433 声明一致），不重复观测。
                 if verifier_result_stale:
-                    # stale 命中 → 复用单点 re-dispatch helper（状态复核/
-                    # verified 放行门/重派/infra 记账见 _redispatch_fresh_verify）。
-                    _redispatch_fresh_verify(
-                        pipeline, spec_name, result, "unknown-status+stale",
+                    # stale 命中 → D2 分支③：归档残留 + 保全成果 + fail-closed
+                    # （不再 re-dispatch，语义见 _residue_fail_closed）。
+                    _residue_fail_closed(
+                        pipeline, spec_name, result, run_result_path, verifier_result,
+                        "unknown-status+stale", archive=True,
                     )
                     return
                 # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
@@ -456,10 +562,14 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 判定已在 report.json 消费之前前置计算（code-review item
         # 06a41cc7dc03），此处复用同一布尔，不重复观测。
         if verifier_result_stale:
-            # 陈旧/异 spec 判定重放命中 → 复用单点 re-dispatch helper
-            # （状态复核/verified 放行门/重派/infra 记账见
-            # _redispatch_fresh_verify）。
-            _redispatch_fresh_verify(pipeline, spec_name, result, "stale")
+            # fix-verify-verdict-run-attribution D2 分支③：陈旧/异归属残留
+            # 先归档 .stale-<ts> + 保全本轮成果，再 fail-closed（blocked +
+            # critical 告警「本轮未产出机器可读裁决」）——不再 re-dispatch
+            # 整轮重派（处置单点见 _residue_fail_closed）。
+            _residue_fail_closed(
+                pipeline, spec_name, result, run_result_path, verifier_result,
+                "stale", archive=True,
+            )
             return
         if verifier_status == "bug-found":
             # ── 在飞 verify 结果状态判据·闸门写点前置复核（code-review
@@ -549,7 +659,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     spec_name,
                     "infra at attribution entry (legacy)",
                     # 退款锚点回退 implementer_run（不传 run_id）；attempt
-                    # run id 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+                    # run id 只作台账事件标识（attempt run id 不作预算退款锚点）。
                     ledger_run_id=getattr(result, "run_id", "") or "",
                 )
                 return
@@ -832,7 +942,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 _death_reason,
                 retry_gate=True,
                 # 退款锚点回退 implementer_run（不传 run_id）；attempt run id
-                # 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+                # 只作台账事件标识（attempt run id 不作预算退款锚点）。
                 ledger_run_id=getattr(result, "run_id", "") or "",
             )
             if _decision == "redispatch":
@@ -929,7 +1039,7 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 spec_name,
                 "infra at attribution entry (legacy process-failure)",
                 # 退款锚点回退 implementer_run（不传 run_id）；attempt
-                # run id 只作台账事件标识（口径见 _redispatch_fresh_verify 注释）。
+                # run id 只作台账事件标识（attempt run id 不作预算退款锚点）。
                 ledger_run_id=getattr(result, "run_id", "") or "",
             )
             return

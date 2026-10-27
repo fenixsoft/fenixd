@@ -73,6 +73,47 @@ def agent_worker_thread_name(spec_name: str, agent_type: str) -> str:
     return f"fenix-{agent_type}-{spec_name}"
 
 
+def _prewrite_verifier_dispatch_stamp(pm, spec_name: str) -> None:
+    """verifier 派发侧归属戳预写（fix-verify-verdict-run-attribution 1.1/D1）。
+
+    verifier 出队派发单点（transition 成功后、worker 线程启动前）把 per-spec
+    primary 裁决文件 ``.fenix/verify-progress/<spec>/.fenix-run-result.json``
+    原子覆写为三键归属戳 ``{"role": "verifier", "spec": <spec>,
+    "status": "dispatched"}``：既有跨 run 残留（如上一轮 in-chain planner 的
+    plan-ready）在派发时刻即被覆盖，消费侧据此可判「文件仍为预写戳原样 =
+    本轮未产出裁决」。不含 run_id：run/attempt id（``<run>-a<n>[-r<m>]``）在
+    runner attempt 环内才生成且逐 attempt 变化，派发点不可得。
+
+    原子写（tmp + ``os.replace``）；任何 OSError 仅 WARNING 留痕、**不阻断
+    派发**——预写失败窗口内残留可能在消费时出现，消费侧按陈旧/异归属残留
+    归档 + fail-closed 兜底，不因预写失败停止验证。
+    """
+    from core.verify_engine.path_safety import safe_component
+
+    stamp = {"role": "verifier", "spec": spec_name, "status": "dispatched"}
+    target = (
+        Path(pm.project_root) / ".fenix" / "verify-progress"
+        / safe_component(spec_name) / ".fenix-run-result.json"
+    )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(
+            f".{target.name}.dispatch-stamp-{os.getpid()}-{threading.get_ident()}.tmp"
+        )
+        tmp.write_text(
+            json.dumps(stamp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, target)
+    except OSError as e:
+        # 预写失败不阻断派发（spec 需求「预写失败不阻断」）：WARNING 留痕，
+        # 派发流程照常继续。
+        pm.logger.warning(
+            "pm_engine",
+            f"verifier 归属戳预写失败（不阻断派发）'{spec_name}': "
+            f"path={target}, err={e}",
+        )
+
+
 def _normalized_int_value(cfg, key: str, default: int, logger=None) -> int:
     """整型配置值归一（值级单一落点，code-review item f863e2bbcc3d）。
 
@@ -1425,6 +1466,13 @@ class QQQueueMixin:
                 f"Dispatching {agent_type} for '{spec_name}' (P{priority})",
                 {"active_runs": active_count},
             )
+
+            if agent_type == "verifier":
+                # fix-verify-verdict-run-attribution 1.1：verifier 派发单点
+                # 预写归属戳（transition 成功后、worker 线程启动前）——跨 run
+                # 残留在派发时刻即被覆盖，消费侧可判「预写戳原样 = 本轮未
+                # 产出裁决」。写入失败仅 WARNING 不阻断派发（见助手注释）。
+                _prewrite_verifier_dispatch_stamp(self._pm, spec_name)
 
             # code-review item 186ea8df1cb1：条目 pop、槽位/在飞登记与准入消费
             # 均已在锁内完成，而释放只在线程体 finally——Thread 构造/start 失败

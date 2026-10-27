@@ -212,7 +212,8 @@ class TestReadVerdictEntry(_ContaminationBase, unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestLegacyContamination(_ContaminationBase, unittest.TestCase):
-    """legacy 路径：implementer 残留不得当裁决，走 stale/foreign 护栏 re-dispatch。"""
+    """legacy 路径：implementer 残留不得当裁决，归档 + blocked fail-closed
+    （fix-verify-verdict-run-attribution D2 分支③语义）。"""
 
     def _run_legacy(self, verifier_run_id="verify-demo-spec-1750000000"):
         """run_id 不匹配 -\d{10,}-a\d+$（无 -a 后缀）→ 旧 fail-open 红灯场景。"""
@@ -225,25 +226,42 @@ class TestLegacyContamination(_ContaminationBase, unittest.TestCase):
                 success=True, error=None, run_id=verifier_run_id))
         self.engine._run_legacy_verification("demo-spec")
 
-    def test_implementer_role_residual_redispatches(self):
-        """role=implementer 残留（run_id 不可解析）→ 不 blocked、re-dispatch。"""
+    def test_implementer_role_residual_archives_and_blocks(self):
+        """role=implementer 残留（run_id 不可解析）→ 归档 + blocked fail-closed。
+
+        fix-verify-verdict-run-attribution D2 分支③：异归属残留不再走
+        「stale/foreign 重放 → 整轮重派」旧语义（add-command-center 事故：
+        该归因把当轮 39 分钟真实验证整体作废）——残留先归档 .stale-<ts>
+        备份，本轮按「未产出机器可读裁决」blocked + critical 告警收口。
+        """
         self._write_shared(IMPL_RESIDUAL_ROLE)
         self._run_legacy()
         entry = self.sm.read_one("demo-spec")
-        self.assertEqual(entry["status"], "implemented")
-        self.assertIn("replayed", entry.get("error", ""))
-        self.assertIsNone(entry.get("tester_run"))
+        self.assertEqual(entry["status"], "blocked")
+        # 无「replayed」归因、无整轮重派（不再打回 implemented）
+        self.assertNotIn("replayed", entry.get("error", ""))
+        self.assertNotEqual(entry.get("status"), "implemented")
+        # 残留已归档 .stale-<ts> 备份（原残留文件不再存在）
+        stale_backups = list(Path(self.tmpdir).glob(
+            ".fenix/.fenix-run-result.json.stale-*"))
+        self.assertEqual(len(stale_backups), 1, "异归属残留未归档备份")
+        self.assertFalse(self.shared_path.exists())
+        # critical 升级告警已发（blocked fail-closed 通道）
+        self.engine._send_human_escalation_alert.assert_called()
         self.engine._on_spec_verified.assert_not_called()
         self.engine._on_spec_bug_found.assert_not_called()
-        self.engine._send_human_escalation_alert.assert_not_called()
 
-    def test_missing_role_residual_redispatches(self):
-        """旧格式（缺 role）残留 → 同样 re-dispatch 不 blocked。"""
+    def test_missing_role_residual_archives_and_blocks(self):
+        """旧格式（缺 role）残留 → 同样归档 + blocked fail-closed。"""
         self._write_shared(IMPL_RESIDUAL_NO_ROLE)
         self._run_legacy()
         entry = self.sm.read_one("demo-spec")
-        self.assertEqual(entry["status"], "implemented")
-        self.assertIn("replayed", entry.get("error", ""))
+        self.assertEqual(entry["status"], "blocked")
+        self.assertNotIn("replayed", entry.get("error", ""))
+        self.assertEqual(
+            len(list(Path(self.tmpdir).glob(".fenix/.fenix-run-result.json.stale-*"))),
+            1,
+        )
 
     def test_primary_missing_role_fresh_accepted(self):
         """agent 直写的 primary 缺 role 戳但 spec 戳匹配 + mtime 新鲜 → 采信。

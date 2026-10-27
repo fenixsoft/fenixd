@@ -79,22 +79,39 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
             import os
             os.utime(self.result_path, (mtime_epoch, mtime_epoch))
 
-    def test_stale_same_spec_bugfound_not_replayed(self):
+    def test_stale_same_spec_bugfound_archived_and_blocked(self):
+        """陈旧同 spec bug-found → 归档 .stale-<ts> + blocked fail-closed。
+
+        fix-verify-verdict-run-attribution D2 分支③：陈旧残留不再打回
+        implemented 整轮重派（「replayed」归因把当轮验证整体作废的事故
+        语义已移除），改归档备份后按「本轮未产出机器可读裁决」blocked。
+        """
         self._make_impl_spec()
         now = int(time.time())
         self._write_result("quick-links-folders", "bug-found", mtime_epoch=now - 600)
         self._run_verify(now)  # 本次 run 晚于结果文件 → 陈旧
         e = self.sm.read_one("quick-links-folders")
-        self.assertEqual(e["status"], "implemented")
-        self.assertIn("stale", str(e.get("error")))
+        self.assertEqual(e["status"], "blocked")
+        self.assertIn("本轮未产出机器可读裁决", str(e.get("error")))
+        self.assertNotIn("replayed", str(e.get("error")))
+        # 残留已归档备份（原共享文件不再存在）
+        stale_backups = list(
+            (Path(self.tmpdir) / ".fenix").glob(".fenix-run-result.json.stale-*"))
+        self.assertEqual(len(stale_backups), 1)
+        self.assertFalse(self.result_path.exists())
 
-    def test_cross_spec_result_not_consumed(self):
+    def test_cross_spec_result_archived_and_blocked(self):
+        """异 spec 残留（foreign-stamp）→ 归档 + blocked，不消费不重派。"""
         self._make_impl_spec()
         self._write_result("some-other-spec", "success")
         self._run_verify(int(time.time()))
         e = self.sm.read_one("quick-links-folders")
-        self.assertEqual(e["status"], "implemented")
-        self.assertIn("stale", str(e.get("error")))
+        self.assertEqual(e["status"], "blocked")
+        self.assertIn("本轮未产出机器可读裁决", str(e.get("error")))
+        self.assertNotIn("replayed", str(e.get("error")))
+        stale_backups = list(
+            (Path(self.tmpdir) / ".fenix").glob(".fenix-run-result.json.stale-*"))
+        self.assertEqual(len(stale_backups), 1)
 
     def test_missing_result_not_treated_as_verified(self):
         """结果文件缺失 → 不得晋级 verified；legacy 路径按 D5 阻断为 blocked。"""
