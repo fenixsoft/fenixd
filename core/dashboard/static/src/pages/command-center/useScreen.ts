@@ -18,7 +18,8 @@ export function useScreenResource<T>(
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  // load 闭包经 ref 每渲染同步（project 等筛选变化即时生效，无需进依赖数组）
+  // load 闭包经 ref 每渲染同步——闭包新鲜不等于重拉：筛选变化要即时生效
+  // 须把筛选值作为 refreshKey 传入（进激活 effect 依赖触发 run）
   const loadRef = useRef(load);
   loadRef.current = load;
   const loadedRef = useRef(false);

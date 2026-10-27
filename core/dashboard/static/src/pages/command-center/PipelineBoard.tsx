@@ -81,6 +81,9 @@ export default function PipelineBoard({ active }: { active: boolean }) {
   const { data, error, loading, retry } = useScreenResource<CommandCenterPipeline>(
     () => commandCenterPipeline(project || undefined),
     active,
+    // 筛选切换即时重拉（project 变化经 refreshKey 触发激活 effect；BUG-01
+    // 修复——specs「交付流水线筛选」Scenario：切换后仅剩该项目卡片）
+    project,
   );
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
   if (!data) return <ScreenLoading hint="交付流水线加载中" />;
