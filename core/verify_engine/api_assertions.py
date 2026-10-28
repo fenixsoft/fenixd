@@ -419,6 +419,21 @@ class ApiAssertionRunner:
 
     async def _assert_status_code(self, resp, a: dict) -> dict:
         """断言 HTTP 状态码等于期望值（expected 允许 str/int 表示等价，如 "200"）。"""
+        # 定向提示：SSE 捕获（{type: sse, events, duration}）无 status，actual
+        # 取 None 后会静默 pass=False 且无 error，judge 须能区分「场景把断言
+        # 挂错捕获类型」与真实「状态码不符」（口径对齐 json_path / latency_under
+        # 的 SSE 定向归因，code-review item 6f38e20828ab）
+        if resp.get("type") == "sse":
+            return {
+                "type": "status_code",
+                "expected": a.get("expected"),
+                "actual": None,
+                "pass": False,
+                "error": (
+                    "status_code 断言不支持 SSE 捕获（无 status）；"
+                    "状态码断言请引用 http_request 捕获"
+                ),
+            }
 
         def _numeric(value: Any) -> Any:
             # 仅做 str/int 表示归一：可解析为整型则按数值比较，否则保持原值严格相等

@@ -94,7 +94,10 @@ VALID_BUG_REPAIR_MODES = ("inplace", "derive")
 # 零行为变化）。run_at 非法值打 ERROR 并回退本缺省（design「Migration
 # Plan」：enabled 缺省 false，开启后次日生效）。
 SELF_REVIEW_DEFAULT_RUN_AT = "02:00"
-_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+# 结尾用 \Z 而非 $（code-review item 8439a709a168）：$ 在末尾换行符之前也
+# 断言成功，"12:30\n" 这类带尾随换行的值会漏过校验流入生效配置；\Z 要求
+# 整串精确匹配 HH:MM（.match 锚定开头，与 \Z 合成 fullmatch 语义）。
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
 
 # ── add-framework-self-evolution：self_evolution 段 ──────────────────
 # auto_accept 缺省 false（纯增量，用户显式开启后才自动接受）。
@@ -2611,6 +2614,19 @@ class ConfigLoader:
         # 逐位一致；_HHMM_RE 与 self_review._parse_run_at 的格式口径同源。
         cr_run_at = cr.get("run_at")
         if not (isinstance(cr_run_at, str) and _HHMM_RE.match(cr_run_at)):
+            # 键缺失（None）＝缺省路径，静默回退自省 run_at；显式非法值
+            # （非 None 且未过 HH:MM 校验）先经 _warn_reader_once 留痕再回退
+            #（code-review item c84c736fe9b0，与同段 max_files/enabled/
+            # stall_alert_minutes 的「回退必告警」口径一致）。
+            if cr_run_at is not None:
+                cls._warn_reader_once(
+                    "admin.code_review.run_at",
+                    cr_run_at,
+                    _logger.warning,
+                    "admin.code_review.run_at 非法值 %r（应为 HH:MM），"
+                    "回退 admin.self_review.run_at",
+                    cr_run_at,
+                )
             cr_run_at = cls.get_self_review_config(config)["run_at"]
         return {
             "enabled": enabled,
@@ -2914,7 +2930,7 @@ class ConfigLoader:
     def _validated_run_at(cls, raw) -> str:
         """校验 ``run_at`` 的 HH:MM 合法性；非法值打 ERROR 并回退缺省 02:00。
 
-        合法格式：``^([01]\\d|2[0-3]):[0-5]\\d$``（00:00–23:59）。None/缺省
+        合法格式：``^([01]\\d|2[0-3]):[0-5]\\d\\Z``（00:00–23:59）。None/缺省
         直接回退缺省（不视为错误，读取方默认值语义）；显式提供的非法值记
         ERROR 后回退。所有消费方（self_review 调度、Dashboard 回显）MUST
         经本助手读取生效值，非法配置不会流入调度判定。

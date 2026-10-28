@@ -365,9 +365,18 @@ def parse_verify_progress(project_root, spec_name) -> dict:
     if validate_scheduling_kick_spec(spec_name) is not None:
         return {"exists": False, "total": 0, "done": 0, "current": ""}
     pf = Path(project_root) / ".fenix" / "verify-progress" / f"{spec_name}.json"
-    if pf.exists():
+    # exists() 为真后、读取前文件被消费侧删除（如 run 结束清理）的竞态：
+    # FileNotFoundError 是 OSError 子类，须先于 OSError 单独捕获，按文件缺失
+    # 语义落下方 run-result 回退合成，不误标 corrupt（item 7669e1b0c8b9）。
+    try:
+        text = pf.read_text(encoding="utf-8") if pf.exists() else None
+    except FileNotFoundError:
+        text = None
+    except OSError:
+        return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
+    if text is not None:
         try:
-            data = json.loads(pf.read_text(encoding="utf-8"))
+            data = json.loads(text)
             if not isinstance(data, dict):
                 return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
             return {
@@ -379,7 +388,7 @@ def parse_verify_progress(project_root, spec_name) -> dict:
                 "error": data.get("error"),
                 "source": "file",
             }
-        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError):
             return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
     # 进度文件缺失：fast-track 回退合成（场景为空维持空态，不抛异常）
     from core.dashboard.data.artifacts import parse_run_result_scenarios

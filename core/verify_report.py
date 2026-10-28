@@ -24,10 +24,13 @@
 ``ensure_verification_report``，禁止第二套渲染逻辑。
 """
 
+import errno
 import fcntl
 import json
+import logging
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +40,10 @@ from core.fs_utils import atomic_write_text
 # 会与写侧净化后路径错位，闸门恒判 report.json 缺失。仅收敛 verify-progress
 # 拼接点；spec/changes/<spec_name> 侧路径须与既有 spec 目录名逐字一致，不净化。
 from core.verify_engine.path_safety import safe_component
+
+# 须挂 fenixd. 可传播层级（tests/test_logger_no_bypass.py 禁 core 下裸
+# getLogger(__name__)——core.* 无 handler，告警会旁路丢弃），禁改回 __name__。
+_logger = logging.getLogger("fenixd.verify_report")
 
 # 告警 signal_type（human-escalation-alerts 能力，.fenix/admin_alerts.json）
 SIGNAL_MISSING = "verify_report_missing"
@@ -313,6 +320,47 @@ def _load_degrade_context(project_root, spec_name):
     return data
 
 
+# 伴生写锁限时（秒）：抢不到不无限阻塞，降级无锁继续（core/verify_scenarios
+# 的 _SCENARIOS_LOCK_WAIT 同款限时口径，code-review item e7dbd934f7e7）。
+_VERDICT_LOCK_WAIT = 10.0
+
+
+def _acquire_advisory_lock(lf, spec_name, timeout: float = _VERDICT_LOCK_WAIT) -> bool:
+    """在已打开的锁文件上限时抢排他锁；成功返回 True，限时未抢到/文件系统不
+    支持 flock 返回 False（调用方降级无锁读改写）。
+
+    以 LOCK_NB 轮询替代无限阻塞 flock：持锁方活着但异常滞留（同 spec 双活跃
+    run、调试器停在锁内窗口）时，阻塞式 flock 会吊住另一侧验证管线。本模块
+    两处伴生锁（record_verdict_round / _persist_degrade_annotation）的消费
+    契约均是「缓存/标注尽力而为、不阻断裁决」，故限时未抢到即降级并留
+    WARNING（降级窗口可从事后日志对账）。
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EAGAIN):
+                # 特殊文件系统不支持 flock 等：降级无锁（不阻断主流程）
+                _logger.warning(
+                    "verify_report 伴生写锁降级无锁（spec=%s）："
+                    "文件系统不支持 flock（errno=%s）",
+                    spec_name,
+                    e.errno,
+                )
+                return False
+            if time.monotonic() >= deadline:
+                _logger.warning(
+                    "verify_report 伴生写锁降级无锁（spec=%s）：限时 %g 秒内"
+                    "未抢到锁（他方持锁滞留），本轮读-改-写失去并发互斥保障",
+                    spec_name,
+                    timeout,
+                )
+                return False
+            time.sleep(0.05)
+
+
 def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
     """把降级标注注入 report.json 顶层并落盘（持久化，D3/D4）。
 
@@ -323,9 +371,10 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
     读-改-写在伴生 ``.lock`` 的 fcntl 排他锁内完成（record_verdict_round 同款
     范式）：_atomic_write 只保证文件不撕裂，不保证读-改-写原子；验证引擎同窗
     重写 report.json（每轮刷新 timestamp 属常规路径）时，无锁读改写会以读到的
-    旧底稿覆盖引擎新写的报告，丢掉新报告的场景明细/计数。锁文件不可用、或
-    flock 本身抛 OSError（特殊文件系统不支持等）时降级为无锁读改写——
-    annotation 是纯观测量，尽力而为不阻断合成主流程。
+    旧底稿覆盖引擎新写的报告，丢掉新报告的场景明细/计数。锁文件不可用、限时
+    未抢到锁（他方持锁滞留，LOCK_NB 轮询不无限阻塞）、或 flock 本身抛 OSError
+    （特殊文件系统不支持等）时降级为无锁读改写——annotation 是纯观测量，
+    尽力而为不阻断合成主流程。
     """
     report_path = (
         Path(project_root)
@@ -343,15 +392,13 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
         except OSError:
             lf = None
         try:
-            if lf is not None:
-                try:
-                    fcntl.flock(lf, fcntl.LOCK_EX)
-                except OSError:
-                    # flock 本身不可用（特殊文件系统不支持等）：降级前先 close
-                    # 原 fd 再置 None（只置 None 不 close 会让 fd 等 GC 才回收，
-                    # record_verdict_round 对 code-review 002ddf629f96 同款处置）
-                    lf.close()
-                    lf = None
+            if lf is not None and not _acquire_advisory_lock(lf, spec_name):
+                # 限时未抢到锁（他方持锁滞留）/文件系统不支持 flock：降级前先
+                # close 原 fd 再置 None（只置 None 不 close 会让 fd 等 GC 才
+                # 回收，record_verdict_round 对 code-review 002ddf629f96 同款
+                # 处置）
+                lf.close()
+                lf = None
             data = {}
             if report_path.is_file():
                 try:
@@ -469,6 +516,22 @@ def _derive_status(run_result, report) -> str:
                 return "bug-found"
             # 显式声明过 failed/errors 键且值非 0 已被上分支拦截 → 判定有据
             if declared_failures == 0 and ("failed" in summary or "errors" in summary):
+                # code-review 204b96ec3147：summary 低报零失败而场景明细含非
+                # pass 场景时不得直接合成 ✅——渲染侧与豁免轮判定都承认 summary
+                # 与场景明细可并存矛盾，判定侧在此同样先按豁免轮口径核对（全部
+                # 可豁免仍 verified，与上方 declared_failures > 0 分支同款）；
+                # 含任一不可豁免失败场景即数据不一致，fail-closed 判 bug-found，
+                # 不让损坏/被改写报告经「声明零失败」分支入库成合法 verified
+                # 证据（与 03296ed3a49e/cbea2bb63e40/c0bc338cd2ea 的「假通过」
+                # 收口同族）。明细缺失/全 pass（与 summary 一致）仍按 summary
+                # 判 verified。
+                scenarios = _resolve_scenarios(report, run_result)
+                if any(
+                    isinstance(sc, dict)
+                    and str(sc.get("status") or "") not in ("pass", "passed")
+                    for sc in scenarios or []
+                ) and not _failed_scenarios_all_exempt(report, run_result):
+                    return "bug-found"
                 return "verified"
         # summary 缺失/非 dict/不可解析/未声明失败键时退化为按场景计数兜底：
         # 存在非 pass/passed 场景即 bug-found（与 _resolve_scenarios 的场景级
@@ -1634,9 +1697,10 @@ def record_verdict_round(
     fcntl 伴生 ``.lock`` 范式）：同 spec 双活跃 run（manual-intervention 与
     blocked_stuck 各一）几乎同时采纳裁决时，两步无锁读改写会让后写者覆盖
     前写者丢一轮，稳定性判据退化（多跑一次 judge）。_atomic_write 只保证
-    文件不撕裂，不保证读-改-写原子。锁文件不可用、或 open 成功而 flock 本身
-    抛 OSError（特殊文件系统不支持等）时，同样降级为无锁读改写——缓存属
-    尽力而为（同 write_verdict_stability 静默语义），不阻断裁决。
+    文件不撕裂，不保证读-改-写原子。锁文件不可用、限时未抢到锁（他方持锁
+    滞留，LOCK_NB 轮询不无限阻塞）、或 open 成功而 flock 本身抛 OSError
+    （特殊文件系统不支持等）时，同样降级为无锁读改写——缓存属尽力而为
+    （同 write_verdict_stability 静默语义），不阻断裁决。
     """
     if stamp is None:
         stamp = compute_spec_stamp(project_root, spec_name)
@@ -1659,19 +1723,16 @@ def record_verdict_round(
     except OSError:
         lf = None
     try:
-        if lf is not None:
-            try:
-                fcntl.flock(lf, fcntl.LOCK_EX)
-            except OSError:
-                # flock 本身不可用（特殊文件系统不支持等）同样降级为无锁读
-                # 改写（docstring 契约：缓存尽力而为，不阻断裁决采纳流程），
-                # 不向上传播中断调用方。降级前先 close 原 fd 再置 None：只置
-                # None 不 close 会让 fd 等 GC 才回收，此路径每次调用泄漏一个
-                # （长期运行 daemon 在特殊文件系统上累积，code-review
-                # 002ddf629f96）；finally 的 ``lf is not None`` 守卫保证不会
-                # 对已关闭对象重复 close/LOCK_UN。
-                lf.close()
-                lf = None
+        if lf is not None and not _acquire_advisory_lock(lf, spec_name):
+            # 限时未抢到锁（他方持锁滞留）/文件系统不支持 flock 同样降级为
+            # 无锁读改写（docstring 契约：缓存尽力而为，不阻断裁决采纳流程），
+            # 不向上传播中断调用方。降级前先 close 原 fd 再置 None：只置
+            # None 不 close 会让 fd 等 GC 才回收，此路径每次调用泄漏一个
+            # （长期运行 daemon 在特殊文件系统上累积，code-review
+            # 002ddf629f96）；finally 的 ``lf is not None`` 守卫保证不会
+            # 对已关闭对象重复 close/LOCK_UN。
+            lf.close()
+            lf = None
         data = read_verdict_stability(project_root, spec_name) or {}
         rounds = data.get("rounds") or []
         if not isinstance(rounds, list):

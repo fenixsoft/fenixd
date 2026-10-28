@@ -325,9 +325,9 @@ class CliRunner(VerifyRunner):
         if timeout <= 0:
             # 负数/显式 0 timeout 直通 wait_for 会立即抛 TimeoutError 走超时
             # 强杀，把场景定义错误误判成 hang 缺陷：归一为本步骤结构化失败
-            # （code-review item bf2ffeded38c，词表校验层已同拦负值；item
-            # 233c33d2e833：显式 0 恰落在负值/非有限值/上限三道拦截之间，
-            # 词表层真值过滤同样放行 0，故此处以 <= 0 收口），
+            # （code-review item bf2ffeded38c，词表校验层已同拦负值/显式 0
+            # ——item 6cc59ec66a46 补 0 支；item 233c33d2e833 曾在运行层以
+            # <= 0 收口显式 0，词表层前移后此处保留兜底），
             # 判 error 同上口径（item 74368415e965）
             return {
                 "success": False,

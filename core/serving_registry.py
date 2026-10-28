@@ -282,9 +282,11 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     2. worktree 路径锚定：登记 worktree 非空且 cwd（realpath 归一）位于
        该目录内——覆盖无 starttime 快照的旧格式登记项（归属核对范式同
        locks.py 的 _pid_in_project_worktrees / _kill_worktree_strays）。
-       argv 引用该目录不再是独立放行信号（code-review b23dfb5c0114：
+       argv 引用该目录不再是身份信号（历史决策 code-review b23dfb5c0114：
        tail -f <wt>/x.log、grep ... <wt>/src 这类仅引用路径的无关进程
-       argv 同样命中），须叠加 cwd 同域第二信号才判命中。
+       argv 同样命中，argv 的等值/前缀命中先被降级为「须叠加 cwd 同域
+       第二信号」；其后确认 argv_hit 计算与返回值恒等价、属死逻辑，
+       argv 读取与计算已移除，仅凭 cwd 判命中）。
 
     有快照而当前读数读不到（/proc/<pid>/stat 瞬时不可读等）→ 返回 None
     （「读不到＝无法核实」，≠「核实为另一实例」）：sweep 侧跳过本轮收割
@@ -318,36 +320,17 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     wt_text = str(entry.get("worktree") or "")
     if wt_text:
         wt_real = os.path.realpath(wt_text)
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                argv_tokens = [
-                    t.decode("utf-8", "replace") for t in f.read().split(b"\0") if t
-                ]
-        except OSError:
-            argv_tokens = []
-        # 整 token 匹配（裸子串会把 argv 中恰好含该路径字符串的无关进程
-        # 如 grep/tail 误判为身份命中并遭整组击杀）
-        argv_hit = any(
-            t in (wt_text, wt_real) or t.startswith(wt_real + os.sep)
-            for t in argv_tokens
-        )
+        # argv 不参与裁决（见 docstring 的 b23dfb5c0114 历史决策）：仅引用
+        # worktree 内路径的无关进程（tail -f/grep）argv 也会命中，单凭 argv
+        # 判身份会整组误杀；真实例 spawn 即 cwd=worktree（见
+        # serving._serve_command_in_worktree），cwd 单信号足以核身。
         try:
             cwd_real = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
         except OSError:
             cwd_real = None
-        cwd_in_wt = cwd_real is not None and (
+        return cwd_real is not None and (
             cwd_real == wt_real or cwd_real.startswith(wt_real + os.sep)
         )
-        if argv_hit and not cwd_in_wt:
-            # code-review b23dfb5c0114：argv 的 worktree 等值/前缀命中不再
-            # 独立放行——tail -f <wt>/x.log、grep ... <wt>/src 这类仅引用
-            # worktree 内路径的无关进程 argv 同样命中，单凭 argv 判身份会
-            # 整组误杀，须叠加 cwd 同域第二信号。真实例 spawn 即
-            # cwd=worktree（见 serving._serve_command_in_worktree），两信号
-            # 俱全不受影响；argv 缺路径的进程形态与旧格式登记项仍可经 cwd
-            # 单信号命中，保守少杀但不放弃清算。
-            return False
-        return cwd_in_wt
     return True
 
 

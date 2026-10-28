@@ -192,6 +192,18 @@ def _scenario_has_failure_signal(scenario: dict) -> bool:
     return False
 
 
+def _scenario_id_of(sc: dict, placeholder: str = "?") -> str:
+    """场景 id 双键回退 + str 归一（code-review 301e8f7ce8cf，比照
+    core/verify_scenarios.py 口径）：数字 id 0 / False 属合法 falsy 值，
+    ``or`` 链会吞成占位符（文案落 "?"、跨轮缓存 lookup 恒未命中）；仅当
+    ``scenario_id`` 为 None 时回退 ``id``，再为 None/空串时落占位符。
+    """
+    raw = sc.get("scenario_id")
+    if raw is None:
+        raw = sc.get("id")
+    return (str(raw) if raw is not None else "") or placeholder
+
+
 # ── 步骤失败形态的失败清单派生（verdict-step-failure-evidence-derivation D1）──
 # 引擎侧「任一步骤原语失败即跳过断言执行」（cli_runner/api_runner/web_runner
 # 同语义）使该形态下 assertion_results 必然为空表：judge 若只按「从
@@ -643,7 +655,7 @@ def whitewash_violations(scenarios: list, verdict: str,
         # 双键回退（item 1a656196aa7d）：与本模块其余消费点（validate_report
         # 等）同口径，judge 改写/旧格式产物只带 id 键时 sid 不落 "?"，
         # 否则 find_env_exemption 豁免查询恒空，env 失败被误计入违规。
-        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        sid = _scenario_id_of(sc)
         # 双词表对齐（item 229075ac0732）：与本模块其余函数同口径——"passed"
         # 亦为通过态（下游 verdict_evidence/pipeline 均按双词表防御），否则
         # 全过报告会被误判 0 通过而错误阻断合法 verified 裁决。
@@ -765,7 +777,7 @@ def validate_report(report: dict) -> dict:
         status = sc.get("status")
         if not _is_non_pass(status):
             continue
-        sid = sc.get("scenario_id") or sc.get("id") or "?"
+        sid = _scenario_id_of(sc)
         classification = sc.get("classification")
         evidence = sc.get("evidence")
 
@@ -861,7 +873,7 @@ def enforce_status_mapping(report: dict) -> dict:
             sc["exempt_blocked_by_assertion"] = True  # 豁免被单断言阻断的留痕
             corrected.append(
                 {
-                    "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
+                    "scenario_id": _scenario_id_of(sc),
                     "from_status": from_status,
                     "to_status": "failed",
                     "classification": offending,
@@ -874,7 +886,7 @@ def enforce_status_mapping(report: dict) -> dict:
             sc["status_corrected"] = True  # 报告标注「已修正」
             corrected.append(
                 {
-                    "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
+                    "scenario_id": _scenario_id_of(sc),
                     "from_status": from_status,
                     "to_status": "failed",
                     "classification": classification,
@@ -909,7 +921,7 @@ def exempted_assertions(report: dict) -> List[dict]:
         # （code-review item eec1909bfac2）。
         if sc.get("status") in ("pass", "passed"):
             continue
-        sid = str(sc.get("scenario_id") or sc.get("id") or "-")
+        sid = _scenario_id_of(sc, "-")
         for t in triage_entries(sc):
             cls = t.get("classification")
             if cls == "product-bug":
@@ -1507,7 +1519,7 @@ def merge_engine_cascade_markers(report) -> list:
             continue
         if is_engine_cascade_scenario(sc):
             sc[ENGINE_CASCADE_EXEMPT_KEY] = True
-            merged.append(str(sc.get("scenario_id") or sc.get("id") or "?"))
+            merged.append(_scenario_id_of(sc))
         else:
             sc.pop(ENGINE_CASCADE_EXEMPT_KEY, None)
     return merged
@@ -1598,7 +1610,7 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
         status = sc.get("status")
         if status in ("pass", "passed"):
             continue
-        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        sid = _scenario_id_of(sc)
         # [fenix-ignore:90c920fc9a9d] status=exempt 仅存在于 fast-track 结果文件
         # （走 validate_fast_track_result 校验，不经查重门）；本函数唯一消费链
         # _run_attribution_gate 只喂引擎 report.json，引擎/judge 均不产 exempt
@@ -1700,7 +1712,7 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
         status = sc.get("status")
         if status in ("pass", "passed"):
             continue
-        sid = str(sc.get("scenario_id") or sc.get("id") or "")
+        sid = _scenario_id_of(sc, "")
         entry = cache.get(sid)
         if not isinstance(entry, dict):
             continue
@@ -1848,7 +1860,7 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
             continue
         # 双键回退（与 whitewash_violations item 1a656196aa7d 同口径）：实现者
         # 手写产物场景条目可能只带 id 键，不得落 "#N" 占位符
-        sid = sc.get("scenario_id") or sc.get("id") or f"#{idx + 1}"
+        sid = _scenario_id_of(sc, f"#{idx + 1}")
         if sc.get("status") not in _FAST_TRACK_SCENARIO_STATUSES:
             violations.append(
                 f"场景 {sid} status 非法: {sc.get('status')!r}"
@@ -1885,11 +1897,16 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
     # 场景全量执行：设计集与执行集一致，无静默遗漏
     # 双键回退（与 whitewash_violations item 1a656196aa7d 同口径）：条目只带
     # id 键时执行集不得为空，否则全部设计 id 被误报「场景静默遗漏」
-    executed_ids = {
-        str(sc.get("scenario_id") or sc.get("id"))
-        for sc in scenarios
-        if isinstance(sc, dict) and (sc.get("scenario_id") or sc.get("id"))
-    }
+    executed_ids: Set[str] = set()
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        # 显式判空而非 ``or`` 过滤（code-review 301e8f7ce8cf）：数字 id 0 /
+        # False 不被当「缺 id」剔除（否则设计集对应条目被误报「场景静默
+        # 遗漏」）；双键皆缺省（占位空串）不入执行集。
+        sid = _scenario_id_of(sc, "")
+        if sid:
+            executed_ids.add(sid)
     if designed_ids:
         missing = [str(d) for d in designed_ids if str(d) and str(d) not in executed_ids]
         if missing:
@@ -1908,8 +1925,23 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
     return {"ok": len(violations) == 0, "violations": violations}
 
 
+def _validate_spec_name(spec_name: str) -> str:
+    """spec_name 形状防护：为空或含路径分隔符/「..」即抛 ValueError。
+
+    与 core/verify_scenarios.py 的 _validate_spec_name 同口径（code-review
+    c9cd12d16927）：这类 spec_name 经 load_report / save_report /
+    _verdict_cache_path 会拼出 verify-progress 目录之外的读写路径
+    （save_report 还会对拼接出的 parent 递归 mkdir），不合法即拒绝、
+    不拼逃逸路径。
+    """
+    if not spec_name or "/" in spec_name or "\\" in spec_name or ".." in spec_name:
+        raise ValueError(f"非法 spec 名（为空或含路径分隔符/..）: {spec_name!r}")
+    return spec_name
+
+
 def load_report(project_root, spec_name) -> Optional[dict]:
     """读取 .fenix/verify-progress/<spec>/report.json；不可用返回 None。"""
+    _validate_spec_name(spec_name)
     path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     if not path.exists():
         return None
@@ -1924,6 +1956,7 @@ def load_report(project_root, spec_name) -> Optional[dict]:
 
 def save_report(project_root, spec_name, report: dict) -> None:
     """原子写回增强后的 report.json（temp + rename，与既有产物写回同约定）。"""
+    _validate_spec_name(spec_name)
     path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
@@ -1971,6 +2004,8 @@ VERDICT_CACHE_FILENAME = "verdict_cache.json"
 
 
 def _verdict_cache_path(project_root, spec_name) -> Path:
+    """裁决缓存文件路径（spec_name 形状防护见 _validate_spec_name）。"""
+    _validate_spec_name(spec_name)
     return Path(project_root) / ".fenix" / "verify-progress" / spec_name / VERDICT_CACHE_FILENAME
 
 

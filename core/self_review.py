@@ -2737,15 +2737,28 @@ class SelfReviewScheduler:
         承担。旧格式状态文件（仅 last_run_date）返回 None → 回退 24h 窗口。
         degraded_out（code-review item 1312883c52e6）：传列表则状态文件回读
         失败（IO 故障/JSON 损坏，文件缺失不算）时报入，供调用方区分
-        「原本就无锚点」与「回读失败」。
+        「原本就无锚点」与「回读失败」；raw 是字符串但内容非法（手改/外部
+        写手损坏，JSON 本身合法）同样报入（code-review item 47db622f27e7）
+        ——该形态窗口同样静默回退 24h，不留痕则真实锚点在数日前时
+        [真实锚点, 24h 前] 区间的窗口内容当日不被审查且无任何 WARNING。
         """
         state_degraded: List[str] = []
         raw = self._load_state(degraded_out=state_degraded).get("last_run_at")
         if degraded_out is not None:
             degraded_out.extend(state_degraded)
         if not isinstance(raw, str) or not raw:
+            # 字段缺失/非 str/空＝原本就无锚点（首跑/旧格式状态文件），良性形态
             return None
-        return _iso_to_aware_dt(raw)
+        parsed = _iso_to_aware_dt(raw)
+        if parsed is None:
+            # 留痕口径同 _load_state（"{类型}: {详情}"），截断防超长脏值刷屏；
+            # 调用方（check_and_run / _save_state 失败路径）复用既有 WARNING
+            # 通道消费 degraded_out，本函数不再单独记日志。
+            if degraded_out is not None:
+                degraded_out.append(
+                    f"ValueError: last_run_at 值无法解析为时间戳: {raw[:120]!r}"
+                )
+        return parsed
 
     def _save_state(
         self, date_str: str, advance_anchor: bool = True, anchor_at: Optional[datetime] = None

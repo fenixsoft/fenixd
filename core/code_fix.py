@@ -5623,7 +5623,35 @@ class CodeFixOrchestrator:
                         and (items.get(i) or {}).get("status") == "open"
                     ]
                     if still_open:
-                        hit = mark_resolved(root, still_open)
+                        # 核销写盘失败兜底（code-review item bee20cc40622）：
+                        # OSError 上穿会被 _process_deferred_merges 单条兜底吞
+                        # 成 warning、done_hits 短路——但比照下方
+                        # ledger_read_failed 分支在此保留台账条目与 worktree
+                        # 才是安全收尾（若吞异常后照常 cleanup + 移除台账，会
+                        # 销毁 fixed_ids 且条目仍 open，被下链重选空转），交
+                        # 下一链边界幂等重试核销。
+                        try:
+                            hit = mark_resolved(root, still_open)
+                        except OSError as e:
+                            self._log(
+                                "warning",
+                                f"code-fix 延迟批已合回但核销写盘失败，已合回"
+                                f"未核销——保留台账条目与 worktree 待下一链边界"
+                                f"重试核销（branch={branch}, "
+                                f"item_ids={item_ids}）: {e}",
+                            )
+                            write_progress(
+                                root,
+                                reason="",
+                                current=(
+                                    f"延迟批已合回但核销写盘失败未核销，"
+                                    f"保留待下一链边界重试（branch={branch}）"
+                                ),
+                            )
+                            return 0, (
+                                "延迟批已合回未核销"
+                                "（核销写盘失败，保留待下链边界重试）"
+                            )
             # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准，与主路径
             # _run_batch_created 同口径——缺它则延迟批核销不进任何链的 rollup
             # （resolved 计数低于真实台账核销数、纯延迟核销场景整行被判无累积
@@ -5695,12 +5723,25 @@ class CodeFixOrchestrator:
                         f"{type(prog.get('done')).__name__}），按 0 容错",
                     )
                 prev_done = 0
-            write_progress(
-                root,
-                done=prev_done + hit,
-                reason="",
-                current=f"延迟批合回成功（核销 {hit} 条）",
-            )
+            # 进度写盘失败兜底（code-review item bee20cc40622）：此刻
+            # _safe_cleanup 与 _remove_deferred_batch 已成事实（台账条目已
+            # 移除、无重试载体），OSError 上穿会被 _process_deferred_merges
+            # 单条兜底吞成 warning——本批 hit 的链级 done 增量与成功文案一并
+            # 丢失。warning 留痕后仍以 hit 正常收尾（done_hits 累加只以返回
+            # 值为准，不因写盘异常短路；进度文件由下个写点覆盖自愈）。
+            try:
+                write_progress(
+                    root,
+                    done=prev_done + hit,
+                    reason="",
+                    current=f"延迟批合回成功（核销 {hit} 条）",
+                )
+            except OSError as e:
+                self._log(
+                    "warning",
+                    f"code-fix 延迟批合回成功进度写盘异常（核销 {hit} 条，"
+                    f"done 增量并入链计数）: {e}",
+                )
             self._log(
                 "info",
                 f"code-fix 延迟批合回成功：核销 {hit}/{len(item_ids)} 条"
@@ -7089,7 +7130,49 @@ class CodeFixOrchestrator:
             i for i in resolve_candidates
             if (ledger.get(i) or {}).get("status") == "open"
         ]
-        hit = mark_resolved(root, still_open) if still_open else 0
+        # 核销写盘失败兜底（code-review item 5215feb62c91，与上方读降级分支
+        # 同款）：mark_resolved 经 _mutate_items_unlocked 末尾 _atomic_write
+        # 落盘，写盘 OSError 原样上穿会把已合回批按 failed halt——修复代码
+        # 已入主树而条目仍 open，下一链边界重选同批（agent 零提交空转）。写
+        # 失败比照读降级：转延迟台账 + consumed 收尾，条目随 _deferred_item_ids
+        # 退出选批池，交下一链边界 _retry_one_deferred 幂等重试核销。
+        try:
+            hit = mark_resolved(root, still_open) if still_open else 0
+        except OSError as e:
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批已合回但台账核销写盘失败，"
+                "已合回未核销——保留台账条目与 worktree 转延迟台账，待下一链"
+                f"边界重试核销（item_ids={item_ids}）: {e}",
+            )
+            branch = _worktree_branch(wt)
+            tip_sha = _worktree_head(wt)
+            record_deferred_batch(
+                root, pending_ids, fixed_ids, wt,
+                branch=branch, tip_sha=tip_sha, last_overlap=[],
+            )
+            try:
+                wm.release_spec_lock("code-review-fix", "code-fix")
+            except Exception as lock_err:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕
+                self._log(
+                    "warning",
+                    f"code-fix 台账核销写盘失败保留现场放锁异常: {lock_err}",
+                )
+            write_progress(
+                root,
+                phase="merging",
+                reason="",
+                current=(
+                    f"第 {batch_no} 批已合回但核销写盘失败未核销，"
+                    f"保留待下一链边界重试（branch={branch}）"
+                ),
+                # 批上下文三键清除（读降级分支同款）：现场保留由延迟台账承载，
+                # 防读侧按陈旧 run_id 合成条级进度。
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+            )
+            return "consumed"
         # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准。
         if hit:
             self._chain_bump(root, chain_resolved=hit)

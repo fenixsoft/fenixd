@@ -937,10 +937,21 @@ def _diff_planner_output_impl(
     # （spec：修复轮不扩容），本批新增被丢弃（仅保留既有集）。
     if new_entries and not result.extended and repair:
         overcount = len(new_entries)
+        # 剔除留痕（code-review 5ea697aa80e6，对齐首轮 illegal_kinds 分支
+        # 「WARNING+变更行」双留痕口径）：只写变更行时，报告丢失或未渲染
+        # 该小节则无法从日志对账本轮哪些新增场景被丢弃；含被丢弃的
+        # scenario_id 清单供按日志定位。
+        dropped_ids = [e.id for e in new_entries]
+        _logger.warning(
+            "拦截 planner 超发 %d 个未声明新增范围的场景"
+            "（修复轮不扩容，按 D2 丢弃）: %s",
+            overcount,
+            "、".join(dropped_ids),
+        )
         new_entries = []
         result.change_lines.append(
             f"- 拦截 planner 超发 {overcount} 个未声明新增范围的场景"
-            f"（修复轮不扩容，按 D2 丢弃）"
+            f"（修复轮不扩容，按 D2 丢弃）：{'、'.join(dropped_ids)}"
         )
 
     final_entries = kept_entries + new_entries

@@ -61,55 +61,18 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core import timelib
 from core.fs_utils import atomic_write_text
+from core.log_adapter import StdLoggerAdapter
 from core.verify_contract import RegressionSpec
 
 from core.proc_utils import kill_process_group
 
 _logger = logging.getLogger("fenixd.regression")
 
-
-class _StdLoggerAdapter:
-    """标准 logging.Logger 适配为 fenix Logger 的 (component, message) 接口。
-
-    run_regression 的 logger 参数由 admin_monitor/daemon 传入时是 core.logger.Logger
-    （双参接口 info(component, message)）；测试中缺省传 None 时退化到标准 logging。
-    本适配器在组件内统一日志格式，调用方无需区分。
-
-    仅支持双参签名（code-review item 02713b6883fb）：调用方若按
-    core.logger.Logger 签名传第三位 context dict（或标准 logging 风格的
-    格式化参数），本桥无法承载，会丢弃——此前 *a/**kw 静默吞掉，排查时
-    日志缺字段且无任何提示；现降级记一条 WARNING 暴露误用。
-    """
-
-    def __init__(self, std_logger):
-        self._std = std_logger
-
-    def _warn_dropped(self, component, a, kw):
-        # 告警直接走标准 logger 且只传 %s 格式化参数，不经本适配器分派，
-        # 不会经被丢弃的参数路径递归
-        self._std.warning(
-            "regression: 日志调用携带未支持的第 3+ 位位置参数/关键字参数"
-            "（fenix context dict），已丢弃 component=%r positional=%d keyword=%d",
-            component, len(a), len(kw),
-        )
-
-    def info(self, component, message, *a, **kw):
-        if a or kw:
-            self._warn_dropped(component, a, kw)
-        self._std.info("[%s] %s", component, message)
-
-    def warning(self, component, message, *a, **kw):
-        if a or kw:
-            self._warn_dropped(component, a, kw)
-        self._std.warning("[%s] %s", component, message)
-
-    def error(self, component, message, *a, **kw):
-        if a or kw:
-            self._warn_dropped(component, a, kw)
-        self._std.error("[%s] %s", component, message)
-
-
-_default_logger = _StdLoggerAdapter(_logger)
+# 适配器收口到 core.log_adapter.StdLoggerAdapter（code-review item
+# 205eef6ee458）：原与 knowledge_backfill 各持一份同名 _StdLoggerAdapter 且
+# 签名语义漂移（本处对多余参数告警丢弃、彼处严格两参 TypeError），单点实现
+# 由参数选择形态；本车道沿用告警丢弃形态与既有 ``[component] message`` 格式。
+_default_logger = StdLoggerAdapter(_logger)
 
 # ── 主机级锁常量（与 bin/run_full_suite.py SuiteLock 同值）──
 # .fenix/ 目录随项目、不入 git——多进程间共享的 fcntl 锁路径。

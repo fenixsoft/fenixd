@@ -57,6 +57,7 @@ from core.agent_runner.harness.one_shot import (
 )
 from core.fs_utils import atomic_write_text as _fs_atomic_write_text
 from core.git_text import unquote_git_path
+from core.log_adapter import StdLoggerAdapter
 from core.timelib import now_local
 from core.proc_utils import guard_killpg
 
@@ -101,28 +102,6 @@ class _NullLogger:
 
     def error(self, *_args) -> None:  # pragma: no cover
         pass
-
-
-class _StdLoggerAdapter:
-    """标准 ``logging.Logger`` → fenixd ``(component, message)`` 签名适配。
-
-    run_backfill 的留痕调用形如 ``log.warning("knowledge", msg)``；标准 logger
-    不能直接传入（component 会被当消息、message 当位置参数，message 含 ``%``
-    时还会格式化报错）。main() 手工激活路径经本适配传入，使破坏性清理删除前
-    告警、批次提交失败 fail-open 留痕对操作者可见。
-    """
-
-    def __init__(self, std: logging.Logger):
-        self._std = std
-
-    def info(self, component: str, message: str) -> None:
-        self._std.info("%s: %s", component, message)
-
-    def warning(self, component: str, message: str) -> None:
-        self._std.warning("%s: %s", component, message)
-
-    def error(self, component: str, message: str) -> None:
-        self._std.error("%s: %s", component, message)
 
 
 def load_knowledge_core():
@@ -1349,7 +1328,13 @@ def build_batches(
     """
     by_domain: dict[str, list[str]] = {}
     for name in sorted(names):
-        domain = domain_map.get(name) or "_unassigned"
+        # LLM 值不信任（对齐 _prune_stale_domains/_missing_prehistoric_pages
+        # 的 _valid_domain_component 口径，code-review ab653782a1ca）：非字
+        # 符串的归位真值（如数字/布尔）与 str 混排会让下方 sorted 抛
+        # TypeError，本调用不在任何 try 内，烧完昂贵 bootstrap 后整条
+        # run_backfill 以未处理异常告终——畸形值一律归 _unassigned 兜底域
+        raw_domain = domain_map.get(name)
+        domain = raw_domain if _valid_domain_component(raw_domain) else "_unassigned"
         by_domain.setdefault(domain, []).append(name)
     batches: list[list[str]] = []
     for domain in sorted(by_domain):
@@ -2667,7 +2652,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     summary = run_backfill(
         Path(args.project_root).resolve(),
-        logger=_StdLoggerAdapter(logging.getLogger("fenixd.knowledge_backfill")),
+        # 适配器收口到 core.log_adapter.StdLoggerAdapter（code-review item
+        # 205eef6ee458）：严格两参形态与本车道既有 "component: message" 格式
+        # 原样保留，与 regression 车道的告警丢弃形态共用同一实现
+        logger=StdLoggerAdapter(
+            logging.getLogger("fenixd.knowledge_backfill"),
+            strict=True,
+            message_format="%s: %s",
+        ),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary.get("ok", True) else 1

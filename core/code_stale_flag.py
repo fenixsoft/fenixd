@@ -123,7 +123,22 @@ def request_restart(log: Callable[[str], None], action: str) -> bool:
             else:
                 detail = "已请求重启（restart_request 已在、重启在途，不重复写入）"
     except Exception as e:  # noqa: BLE001 — 写失败只降级说明，不抛出
-        detail = f"请求重启失败（{type(e).__name__}: {e}），supervisor 未获请求"
+        # write_text 以 "w" 模式先建/截断文件再写内容：半途失败（如磁盘满）
+        # 时文件已在场，而 supervisor 只判存在性（2s 轮询命中即触发重启），
+        # 故按文件实际在场与否区分文案，避免日志方向与真实重启请求状态相反
+        # 误导排障。
+        try:
+            landed = RESTART_REQUEST.exists()
+        except Exception:  # noqa: BLE001 — 存在性判定自身故障保守按「未获请求」降级
+            landed = False
+        if landed:
+            detail = (
+                f"请求重启写入失败（{type(e).__name__}: {e}），但 .fenix/"
+                "restart_request 已在场（内容可能不完整），supervisor 仍会按"
+                "存在性触发重启"
+            )
+        else:
+            detail = f"请求重启失败（{type(e).__name__}: {e}），supervisor 未获请求"
     try:
         log(
             f"{action}：检测到进程代码陈旧（磁盘代码较进程启动时已更新，"
