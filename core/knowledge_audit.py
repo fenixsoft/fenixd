@@ -918,6 +918,7 @@ def _scan_pages(project_root: Path) -> dict:
             no_marker.append(page["rel"])
         # 悬空溯源：marker sources + 正文 spec/archive 引用
         drop_lines: list[int] = []
+        drop_texts: dict[int, str] = {}  # 各待删行扫描时刻文本，删行前复核防快照错位
         missing_sources: list[str] = []
         if marker and marker.get("sources") and archives is not None:
             names = [s for s in re.split(r"[,，]", marker["sources"]) if s]
@@ -976,6 +977,7 @@ def _scan_pages(project_root: Path) -> dict:
                     )
                     continue
                 drop_lines.append(i)
+                drop_texts[i] = ln
                 break
         if missing_sources or drop_lines:
             dangling_pages.append(
@@ -983,6 +985,7 @@ def _scan_pages(project_root: Path) -> dict:
                     "rel": page["rel"],
                     "path": page["path"],
                     "drop_lines": drop_lines,
+                    "drop_texts": drop_texts,
                     "missing_sources": missing_sources,
                 }
             )
@@ -1273,6 +1276,20 @@ def _apply_mechanical(
             continue
         lines = orig_text.splitlines()
         drop = set(item["drop_lines"])
+        # 快照一致性复核（code-review e69e4b1bba4a，对齐 ADR 段「槽位定位失败
+        # 不盲改」口径）：drop_lines 是扫描时刻行号，扫描与删行之间隔着 validate
+        # / dirty 子进程窗口，锁外人工与 git 操作不受蒸馏锁约束——窗口内插行/
+        # 删行会使行号指向错位内容，按行号盲删即删错行并随 audit fix 自动提交。
+        # 逐条比对行内容与扫描时捕获文本，任一失配（含行号越界）即按「盘面已变」
+        # 转待人工，不做机械删行；上方 OSError 防御（文件不可读/已删除）保持不变。
+        drift = any(
+            i < 0 or i >= len(lines) or drop_texts.get(i) != lines[i] for i in drop
+        )
+        if drift:
+            manual.append(
+                f"{item['rel']}：盘面已变（悬空溯源行相对扫描快照已漂移），悬空溯源转待人工"
+            )
+            continue
         kept = [ln for i, ln in enumerate(lines) if i not in drop]
         text = "\n".join(kept)
         if text and not text.endswith("\n"):

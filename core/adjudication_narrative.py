@@ -514,6 +514,10 @@ def _collect_report_path(project_root: Any, spec: str) -> Optional[str]:
 def _clip_segment(text: str, budget: int) -> str:
     """单段材料截断：超预算砍尾附截断标记（标记计入预算——截断后整段 ≤ budget）。"""
     mark = _NARRATIVE_TRUNCATION_MARK_TEXT
+    # budget 不足以容纳截断标记时，砍尾结果（≥1 字符 + 标记）仍会超预算
+    # （item ecf82ba6a58f）：钳到 len(mark)+1 下限保证 docstring 不变式成立；
+    # 现有调用点预算均为模块常量（≥256），钳制不改变其行为。
+    budget = max(budget, len(mark) + 1)
     if len(text) <= budget:
         return text
     return text[: max(budget - len(mark), 1)].rstrip() + mark
@@ -1104,7 +1108,10 @@ def load_narrative_sidecars(project_root: Any) -> Dict[str, dict]:
     try:
         d = _sidecar_dir(project_root)
         entries = sorted(d.glob("*.json"))
-    except OSError:
+    # Path(project_root) 对 None/非路径抛 TypeError（item dc4b7c1b3208）：与
+    # 写侧 except (TypeError, ValueError, OSError) 口径对齐，读侧 fail-open
+    # 返回空，不阻断告警列表渲染。
+    except (TypeError, ValueError, OSError):
         return {}
     out: Dict[str, dict] = {}
     for p in entries:
