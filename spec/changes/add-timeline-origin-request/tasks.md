@@ -6,8 +6,8 @@
 
 ## 2. 读侧：时间轴附着 origin_request
 
-- [ ] 2.1 `core/dashboard/data/timeline.py` 的 `get_spec_timeline`：在排序与折叠完成后，经门面 `resolve_spec_dir` 解析 spec 目录（活跃/归档通吃）读取 `request.md`——文件缺失、读取异常、内容 strip 后为空均静默省字段（fail-open，对齐 lane_summary 模式）；非空时把原文附到首个 state 节点的 `origin_request` 字段（含折叠链节点），其余节点不携带
-- [ ] 2.2 新增 `tests/test_spec_timeline_origin_request.py`：覆盖有/无 request.md、归档目录路径解析、折叠链首节点附着、读异常 fail-open、空文件省字段六类场景（fixture 形态参照既有 tests/test_spec_timeline_name_isolation.py）
+- [ ] 2.1 `core/dashboard/data/timeline.py` 的 `get_spec_timeline`：在排序与折叠完成后，经门面 `resolve_spec_dir` 解析 spec 目录（活跃/归档通吃）读取 `request.md`——文件缺失、读取异常、内容 strip 后为空、时间轴无任何 state 节点均静默省字段/不附着（fail-open，对齐 lane_summary 模式；无 state 节点时 MUST NOT 退化挂到 run/verify/admin 等其它 kind 节点）；非空时把原文附到首个 state 节点的 `origin_request` 字段（含折叠链节点），其余节点不携带
+- [ ] 2.2 新增 `tests/test_spec_timeline_origin_request.py`：覆盖有/无 request.md、归档目录路径解析、折叠链首节点附着、读异常 fail-open、空文件省字段、有 request.md 但时间轴无 state 节点不附着七类场景（fixture 形态参照既有 tests/test_spec_timeline_name_isolation.py）
 - [ ] 2.3 回归既有时间轴测试（`tests/test_spec_timeline_name_isolation.py` 及 timeline 相关全部用例）零回归
 
 ## 3. 前端：渲染原话引用块

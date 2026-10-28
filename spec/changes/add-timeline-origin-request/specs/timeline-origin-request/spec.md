@@ -40,6 +40,11 @@ SPEC 详情「运行时间轴」数据中，排序与折叠后的**第一个 sta
 - **WHEN** SPEC 目录无 request.md（存量 SPEC、归档旧 SPEC、或绕过 skill 创建的 SPEC）
 - **THEN** 时间轴节点不携带 `origin_request` 字段、前端不渲染任何占位，详情接口零报错（fail-open，读取异常同样静默省字段）
 
+#### Scenario: 时间轴无 state 节点时不附着
+
+- **WHEN** SPEC 目录存在非空 request.md，但时间轴排序折叠后不含任何 state 节点（state 节点唯一来源是日志窗口，超窗/归档清理后可为空）
+- **THEN** 任何节点不携带 `origin_request` 字段，详情接口零报错；request.md 本体仍随 spec 目录留存可溯
+
 #### Scenario: 前端渲染原话引用块
 
 - **WHEN** state 节点携带非空 origin_request 字段

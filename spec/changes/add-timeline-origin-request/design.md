@@ -39,6 +39,7 @@
 - [超长原话（用户粘贴大段文本）撑爆时间轴节点] → 前端容器 max-height + 溢出滚动；存储不截断，展示层兜底
 - [request.md 与 proposal.md 语义相近被误删/误合并] → SKILL 写明两者分工（request.md=立项原话快照，永不更新；proposal.md=加工后的需求文档）；Deliverables 声明不含 request.md（它是运行时由 skill 步骤产出、非实现分支代码交付物……实现分支需含 SKILL.md 修改使其必然产出）
 - [归档 SPEC 时间轴读侧回归] → request.md 读取独立于日志窗口锚定（created 不参与），不影响既有日志读取逻辑；既有时间轴测试全量回归
+- [日志窗口蒸发：state 节点唯一来源是 .fenix/logs 日志窗口（轮转 5×10MB 有界留存），归档/长滞留 SPEC 排序折叠后可能不含任何 state 节点] → 此况按 fail-open 同口径静默不附着 origin_request（MUST NOT 退化挂到 run/verify/admin 等其它 kind 节点）；request.md 本体随 spec 目录入库与归档迁移，原话始终可从 spec 目录直接追溯，展示层降级不丢数据
 
 ## Migration Plan
 
