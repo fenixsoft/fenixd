@@ -522,6 +522,27 @@ def get_spec_timeline(
     # 连续的前向状态转换折叠为一次（回退/运行节点打断）
     events = _collapse_timeline(events)
 
+    # ── 立项原话附着（add-timeline-origin-request 任务 2.1）──
+    # 排序+折叠完成后，经门面 resolve_spec_dir 解析 spec 目录（活跃/归档通吃）
+    # 读取 request.md（用户 /fenix-new 立项原话，写侧唯一入口 fenix-new SKILL
+    # §3.1.3），非空时把原文附到首个 state 节点的 origin_request 字段（含折叠
+    # 链节点），其余节点不携带。
+    # fail-open 对齐 lane_summary 模式（design D2）：文件缺失、spec 目录解析
+    # 不出、读取异常、内容 strip 后为空、时间轴无任何 state 节点均静默省字段
+    # ——state 节点唯一来源是日志窗口（轮转 5×10MB 有界留存），超窗/归档清理
+    # 后可为空，此况 MUST NOT 退化挂到 run/verify/admin 等其它 kind 节点；
+    # request.md 本体随 spec 目录入库与归档迁移，原话始终可从 spec 目录直接
+    # 追溯，展示层降级不丢数据。
+    first_state = next((e for e in events if e.get("kind") == "state"), None)
+    if first_state is not None:
+        try:
+            spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
+            origin = spec_dir.joinpath("request.md").read_text(encoding="utf-8") if spec_dir else ""
+            if origin.strip():
+                first_state["origin_request"] = origin
+        except Exception:  # noqa: BLE001 —— 读取异常按缺失同口径静默省字段
+            pass
+
     # ── testing 停等注记（add-timeline-ocr-lane-visibility 任务 1.2）──
     # 最新状态转移节点 to == "testing" 时附 ocr 门**当前**状态（表达进行时语义，
     # 非历史转移时刻状态）。同源硬约束：经 quality_gates.parse_quality_gates

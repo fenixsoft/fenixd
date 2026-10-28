@@ -146,6 +146,30 @@ export default function SpecTimeline({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     {statusSeq}
                   </div>
+                  {/* 立项原话引用块（add-timeline-origin-request 任务 3.2）：首个
+                      state 节点（含折叠链）携带非空 origin_request 时，在 from→to
+                      状态行下方渲染原文引用——次级引用样式（左侧引用边框+浅底）
+                      与回退 reason 行视觉分层；多行原文 white-space: pre-wrap
+                      保留换行完整显示；字段缺失或空字符串不渲染任何引用块结构。
+                      超长异常数据由容器限高滚动兜底（design D3），展示不截断 */}
+                  {item.origin_request && (
+                    <div
+                      className="spec-origin-request-quote"
+                      style={{
+                        marginTop: 10,
+                        maxHeight: 200,
+                        overflow: 'auto',
+                        padding: '6px 10px',
+                        borderLeft: '3px solid #d9d9d9',
+                        background: 'rgba(0, 0, 0, 0.02)',
+                        borderRadius: 4,
+                      }}
+                    >
+                      <Typography.Text type="secondary" style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>
+                        {item.origin_request}
+                      </Typography.Text>
+                    </div>
+                  )}
                   {ocrNote && (
                     <div style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
                       <Typography.Text type="warning" style={{ fontSize: 13 }}>

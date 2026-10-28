@@ -1022,6 +1022,10 @@ export interface SpecDetail {
     // 最新「→ testing」状态节点（add-timeline-ocr-lane-visibility）：ocr 门
     // 当前状态（与质量门禁 Card 同源合成；非 running 前端零渲染注记）
     ocr_gate?: { status: string; detail?: string };
+    // 立项原话（add-timeline-origin-request）：首个 state 节点携带的
+    // /fenix-new 立项原话（spec 目录 request.md 原文；文件缺失/空白/读异常
+    // 不下发，其余节点不携带，前端不渲染任何占位）
+    origin_request?: string;
     // admin 运维节点（add-timeline-admin-events）：escalation/disposition 事件
     record_kind?: 'escalation' | 'disposition';
     signal_type?: string;

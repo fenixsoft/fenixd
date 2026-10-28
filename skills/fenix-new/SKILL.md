@@ -123,6 +123,31 @@ if 'mode:' not in text:
 换算结果在 §4 注册时写入（见下）；`--modify <name>` 更新时若用户调整定时，
 同样同步更新 STATE.md 的 `start_after` 字段。
 
+**3.1.3 写立项原话（add-timeline-origin-request）**
+
+把用户本次 /fenix-new 的 ARGUMENTS **原文**写入 `spec/changes/<name>/request.md`
+（UTF-8 纯文本）——这是立项原话的唯一持久化点，SPEC 详情时间轴以「立项原话」
+引用块展示它：
+
+```bash
+cat > spec/changes/<name>/request.md <<'FENIX_REQUEST_EOF'
+<用户 ARGUMENTS 原文，逐字照录>
+FENIX_REQUEST_EOF
+```
+
+两条硬纪律（强制）：
+
+- **原文照录，不做工程化改写**：request.md 是用户原话的历史快照，不润色、
+  不拆解、不补全、不翻译——加工后的需求文档是 proposal.md 的职责。两者分工：
+  `request.md` = 立项原话快照（**永不更新**）；`proposal.md` = 需求 Agent 加工
+  后的结构化需求文档（随 SPEC 演进正常更新）。
+- **`--modify <name>` 不更新 request.md**：立项原话是立项时刻的历史快照，
+  修改需求走 proposal/tasks 的正常更新，request.md 保持立项时刻内容不变。
+
+request.md 由本 skill 步骤运行时产出（随既有 `git add spec/changes/<name>/`
+提交流程入库、归档时随目录迁移），**不写进 tasks.md 的 Deliverables 声明段**
+（实现分支代码交付物才声明；本文件的存在由本 skill 步骤保证）。
+
 **3.2 按依赖顺序生成 artifact**
 
 ```bash
