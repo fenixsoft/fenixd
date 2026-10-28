@@ -62,7 +62,10 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
     # 探会被 fallback 兜底的路径，改探真实 API 端点；add-spec-hooks 白屏
     # env 事故 2026-09-06 防复发）。
     ready:
-      url: /#/overview               # 探针路径（相对被测实例），缺省 /
+      url: /api/health               # 探针路径（相对被测实例），缺省 /。禁止
+                                     # SPA hash 路由（/#/...）：hash 片段不随
+                                     # 请求到达服务端，探会被 fallback 兜底的
+                                     # 路径即被鉴别力自检判「无鉴别力」（见上）
       expect: 200                    # 期望 HTTP 状态码，缺省 200（仅 2xx 可命中：
                                      # 4xx/5xx 抛 HTTPError、3xx 被自动重定向
                                      # 跟随，非 2xx 期望等满 timeout 后报超时）
@@ -675,13 +678,16 @@ def _load_verify_contract_with_raw(
     # 端口注入迁移告警（不阻断）：cmd 未引用注入端口时实例会与既有实例
     # 争抢固定端口（dashboard 端口独占语义下 = 杀掉占用者接管，2026-09-05
     # 验证实例顺带杀主树 dashboard 事故的根源），由未消费注入的兜底发现
-    # 链路续命。存量为零迁移原则只告警、不拒绝。
+    # 链路续命。存量为零迁移原则只告警、不拒绝。${FENIX_VERIFY_PORT} 花括号
+    # 展开形态同属合法消费注入（code-review item bf083dd2c206：只匹配裸 $
+    # 变量，会对已正确消费注入的契约误发本告警）。
     if (
         serve is not None
         and serve.kind == "command"
         and serve.cmd
         and "{port}" not in serve.cmd
         and "$FENIX_VERIFY_PORT" not in serve.cmd
+        and "${FENIX_VERIFY_PORT}" not in serve.cmd
         and logger
     ):
         logger.warning(

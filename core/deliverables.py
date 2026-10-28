@@ -2869,13 +2869,23 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
         # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
         # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
-        # 例外：仓库外 reference 放行（design D3：reference 本就是非交付物语义，
-        # ~/x.md/.claude/settings.json 等仓库外引用合法，软化后转 reference
-        # 不应被存在性校验拦截）。
+        # 例外一：仓库外 reference 放行（design D3：reference 本就是非交付物
+        # 语义，~/x.md/.claude/settings.json 等仓库外引用合法，软化后转
+        # reference 不应被存在性校验拦截）。
+        # 例外二：gitignored reference 放行（code-review item 18218346aefd），
+        # 与例外一同型——soften_unsatisfiable_declarations 先把「new/modify +
+        # gitignored」软化成 reference（运行时产物 .fenix/x.json、fresh clone
+        # 的 dist/index.html 等在 drafted 阶段主树必然不存在），若此处不放行，
+        # 软化的 rescue 效果被同一次 lint 抵消：spec 永久卡 drafted，且违规
+        # 文案指引改回 kind: new、再晋升又被软化，形成死循环。reference 本就是
+        # 仅审计留痕语义（缺失走软告警），不在此硬拦。
         if kind in ("modify", "reference"):
             if not any((project_root / c).exists() for c in candidates):
                 # reference 仓库外放行（design D3）
                 if kind == "reference" and _path_is_outside_root(project_root, candidates):
+                    continue
+                # reference gitignored 放行（item 18218346aefd，软化闭环一致）
+                if kind == "reference" and _path_is_gitignored(project_root, candidates):
                     continue
                 violations.append(
                     f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"

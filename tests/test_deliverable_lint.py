@@ -133,6 +133,16 @@ class TestGitignoredDeclaration(unittest.TestCase):
                      "- path: dist/index.html\n  kind: reference\n")
         self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
 
+    def test_reference_gitignored_absent_passes(self):
+        # code-review item 18218346aefd：gitignored 且主树不存在的 reference
+        # 同样放行（与 outside-root 例外同型）——软化（new/modify → reference）
+        # 的运行时产物路径在 drafted 阶段必然不存在，规则 3 若不放行即把软化
+        # rescue 抵消成晋升死锁
+        _mk_tasks_md(self.spec_dir,
+                     "- path: .fenix/absent.json\n  kind: reference\n"
+                     "- path: dist/absent.html\n  kind: reference\n")
+        self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
+
     def test_negated_exception_passes(self):
         # .fenix/* 排除 + !.fenix/keep.yaml 否定 → 未被排除，不拦
         _mk_tasks_md(self.spec_dir, "- path: .fenix/keep.yaml\n  kind: modify\n")

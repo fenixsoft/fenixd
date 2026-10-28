@@ -783,6 +783,25 @@ def _unescape_state_value(val: str) -> str:
     )
 
 
+def _normalize_state_field_value(val):
+    """STATE.md 字段值落盘前归一（serialize 与归档清单渲染共享的单一口径）。
+
+    None → ``"null"``；list/dict/tuple → 紧凑 JSON 字符串（code-review item
+    f463b006889b：list/dict 形态的内部字段（如进程内直写、尚未字符串化的
+    _env_exemptions）此前走 str(val) 落成 Python repr（单引号/True/None
+    字面量），STATE.md 往返后读侧 json.loads 失败、parse_env_exemptions
+    fail-closed 返回空清单——已授予的 env 豁免静默失效。改与
+    serialize_env_exemptions 同口径 JSON 落盘（紧凑分隔符防换行入行））；
+    其余值原样返回。code-review item 273076531a83：归档清单渲染此前未
+    复刻该分支，形成第二份渲染口径漂移。
+    """
+    if val is None:
+        return "null"
+    if isinstance(val, (list, dict, tuple)):
+        return json.dumps(val, ensure_ascii=False, separators=(",", ":"))
+    return val
+
+
 def _spec_sort_key(item: Tuple[str, dict]) -> Tuple[int, str]:
     """(priority, created) 排序键：serialize 落盘序与查询序共用同一口径。
 
@@ -1192,19 +1211,13 @@ class StateParser:
             # 使其跨 daemon 重启持久化（fix-fenix-token-waste：熔断计数依赖它）
             for key, val in entry.items():
                 if key.startswith("_"):
-                    if val is None:
-                        val = "null"
-                    elif isinstance(val, (list, dict, tuple)):
-                        # code-review item f463b006889b：list/dict 形态的内部
-                        # 字段（如进程内直写、尚未字符串化的 _env_exemptions）
-                        # 此前走 str(val) 落成 Python repr（单引号/True/None
-                        # 字面量），STATE.md 往返后读侧 json.loads 失败、
-                        # parse_env_exemptions fail-closed 返回空清单——已授予
-                        # 的 env 豁免静默失效。改与 serialize_env_exemptions
-                        # 同口径 JSON 落盘（紧凑分隔符防换行入行）。
-                        val = json.dumps(val, ensure_ascii=False,
-                                         separators=(",", ":"))
-                    lines.append(f"- {key}: {_escape_state_value(val)}")
+                    # None 兜底与 list/dict/tuple 的 JSON 化归一口径单源在
+                    # _normalize_state_field_value（与归档清单渲染同源引用，
+                    # code-review item 273076531a83）。
+                    lines.append(
+                        f"- {key}: "
+                        f"{_escape_state_value(_normalize_state_field_value(val))}"
+                    )
             lines.append("")
 
         return "\n".join(lines)
@@ -2693,12 +2706,18 @@ class StateMachine:
     # ── 归档清单迁出原语（add-archive-state-migration D2）──────────────
 
     def _render_archive_entry(self, spec_name: str, entry: dict) -> str:
-        """把单个条目渲染为清单小节文本（``### name`` + 字段行，含结尾空行）。"""
+        """把单个条目渲染为清单小节文本（``### name`` + 字段行，含结尾空行）。
+
+        字段值经 ``_normalize_state_field_value`` 归一（与 StateParser.serialize
+        同源引用，code-review item 273076531a83）：进程内 list/dict 形态迁出的
+        条目（如未来 backfill/内存直迁路径）落紧凑 JSON 而非 Python repr，
+        读回 parse_env_exemptions 才不会 fail-closed 静默失效。
+        """
         lines = [f"### {_escape_state_value(spec_name)}"]
         for key, val in entry.items():
-            if val is None:
-                val = "null"
-            lines.append(f"- {key}: {_escape_state_value(val)}")
+            lines.append(
+                f"- {key}: {_escape_state_value(_normalize_state_field_value(val))}"
+            )
         lines.append("")
         return "\n".join(lines) + "\n"
 

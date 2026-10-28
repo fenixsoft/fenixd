@@ -992,14 +992,15 @@ def _is_admin_run_id(stem: str) -> bool:
     （fix-recovery-path-blockers D1）——驱动判定 MUST 排除它，否则
     Administrator 处置全过程该 spec 永恒满足「有近期写活动」→恢复路径
     永不推进（2026-09-18 add-spec-manual-activation 事故：预算耗尽停
-    testing 后 75 分钟无任何恢复动作）。前缀取用 ``RUN_ID_AGENT_PREFIXES``
-    真源（run_files.py，admin- 排首），禁硬编码散落。
+    testing 后 75 分钟无任何恢复动作）。归属取用 ``RUN_ID_AGENT_PREFIXES``
+    真源（run_files.py），按其携带的 agent_type 判定、不复刻 admin- 前缀
+    字面量（前缀改名不致静默失效），禁硬编码散落。
     """
     from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
 
-    for prefix, _agent_type in RUN_ID_AGENT_PREFIXES:
+    for prefix, agent_type in RUN_ID_AGENT_PREFIXES:
         if stem.startswith(prefix):
-            return prefix == "admin-"
+            return agent_type == "administrator"
     return False
 
 

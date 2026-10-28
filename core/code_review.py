@@ -2123,8 +2123,23 @@ def generate_fix_spec(
             "start_after": normalized_sa,
         }
 
-    # 同源 lint 预检（violation → 删除草稿、条目状态不变、返回错误）
-    violations = _lint_draft(draft_root, project_root)
+    # 同源 lint 预检（violation → 删除草稿、条目状态不变、返回错误）。
+    # _lint_draft 委托的 evolution.lint_draft 对 lint 函数自身异常 fail-open，
+    # 但 core.deliverables 导入失败会显式上抛（item 39d40a537c50）：裸抛会让
+    # 已落盘的草稿目录无人清理（.fenix/code-review/drafts 残留垃圾目录），
+    # 调用方也收不到本函数其余分支承诺的 {"ok": False, "error": ...} 形态
+    # ——按上方 OSError 分支同款兜底：清草稿、返回结构化错误。
+    try:
+        violations = _lint_draft(draft_root, project_root)
+    except Exception as e:
+        shutil.rmtree(draft_root, ignore_errors=True)
+        return {
+            "ok": False,
+            "spec_name": None,
+            "skipped": skipped,
+            "error": f"lint 预检异常: {e}",
+            "start_after": normalized_sa,
+        }
     if violations:
         shutil.rmtree(draft_root, ignore_errors=True)
         return {
