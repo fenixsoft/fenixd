@@ -1328,7 +1328,13 @@ def build_batches(
     """
     by_domain: dict[str, list[str]] = {}
     for name in sorted(names):
-        domain = domain_map.get(name) or "_unassigned"
+        # LLM 值不信任（对齐 _prune_stale_domains/_missing_prehistoric_pages
+        # 的 _valid_domain_component 口径，code-review ab653782a1ca）：非字
+        # 符串的归位真值（如数字/布尔）与 str 混排会让下方 sorted 抛
+        # TypeError，本调用不在任何 try 内，烧完昂贵 bootstrap 后整条
+        # run_backfill 以未处理异常告终——畸形值一律归 _unassigned 兜底域
+        raw_domain = domain_map.get(name)
+        domain = raw_domain if _valid_domain_component(raw_domain) else "_unassigned"
         by_domain.setdefault(domain, []).append(name)
     batches: list[list[str]] = []
     for domain in sorted(by_domain):

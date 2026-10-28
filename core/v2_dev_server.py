@@ -1038,7 +1038,9 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     （SIGTERM 等 2s + SIGKILL 等 1s）、pgrep 归属探测每次至多 5s，多无主
     条目时持锁时间线性放大并阻塞派发/终态回收路径的 register/unregister。
     回写以重读登记为基线仅剔除已判定摘除的条目键，锁外窗口内并发 register
-    落入的新条目不丢。
+    落入的新条目不丢；键命中另按 start_ticks/registered_at 锚点复核（范式同
+    serving_registry.sweep._purge），防击杀窗口内 pid 复用后同键新登记被
+    stale 名单连带误删。
 
     与 cleanup_orphans 互补：本函数覆盖「argv 不可归因但登记在册」的存量
     回退形态进程——登记 wt_path 补上了 argv 缺失的归属线索。启动宽限豁免
@@ -1131,17 +1133,43 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     # 不整表覆写判定时快照——击杀窗口内并发 register 落入的新条目不丢
     # （last-writer-wins 下整表覆写会吞并发登记）。pid 分量取 repr：畸形
     # 条目的 pid 可能是 dict/list 等不可哈希值，repr 恒可哈希且 int/str
-    # 形态不混同。
-    removed_keys = {
-        (str(e.get("wt_path") or ""), repr(e.get("pid"))) for e in entries
-    } - {(str(e.get("wt_path") or ""), repr(e.get("pid"))) for e in kept}
+    # 形态不混同。键命中另须锚点复核（范式同 serving_registry.sweep._purge）：
+    # 随键携带判定时 start_ticks/registered_at 快照——击杀窗口（单 pid 最长
+    # 约 3s）内旧 pid 被系统复用且同 worktree 重新 launch 时，register 会以
+    # 同 (wt_path, pid) 幂等键就地刷新该条目身份快照，仅按键剔除会把新登记
+    # 一并误删、使新实例脱离登记制收割面；fresh 条目锚点仍等于快照才摘，
+    # 已刷新（同键新登记）则保留。
+    removed_anchors = {
+        (str(e.get("wt_path") or ""), repr(e.get("pid"))): {
+            "start_ticks": e.get("start_ticks"),
+            "registered_at": e.get("registered_at"),
+        }
+        for e in entries
+    }
+    for e in kept:
+        removed_anchors.pop(
+            (str(e.get("wt_path") or ""), repr(e.get("pid"))), None
+        )
+    # 锚点已刷新而保留的条目：键在锁内比对，留痕统一放锁外（持锁窗口不含
+    # 日志，同 serving_registry.sweep 范式）
+    anchor_kept = []
     with _registry_io_lock:
         fresh = load_v2_server_entries(project_root)
-        merged = [
-            e for e in fresh
-            if (str(e.get("wt_path") or ""), repr(e.get("pid")))
-            not in removed_keys
-        ]
+        merged = []
+        for e in fresh:
+            anchor = removed_anchors.get(
+                (str(e.get("wt_path") or ""), repr(e.get("pid")))
+            )
+            if anchor is None:
+                merged.append(e)  # 非本次判定摘除（含并发新登记）：保留
+                continue
+            if all(
+                e.get(f) == anchor.get(f)
+                for f in ("start_ticks", "registered_at")
+            ):
+                continue  # 锚点未变：即判定时快照所指条目，按判定摘除
+            merged.append(e)  # 锚点已刷新：pid 复用后同键新登记，保留
+            anchor_kept.append(e)
         if len(merged) != len(fresh):
             if not _rewrite_v2_server_entries(project_root, merged) and logger:
                 logger.warning(
@@ -1149,6 +1177,15 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
                     f"v2 server registry write failed (non-blocking): "
                     f"{v2_servers_registry_path(project_root)}",
                 )
+    for e in anchor_kept:
+        if logger:
+            logger.warning(
+                "v2_dev_server",
+                f"reconcile skip removal pid={e.get('pid')} "
+                f"(wt={str(e.get('wt_path') or '-')}) entry anchor "
+                f"refreshed since reconcile snapshot (pid reused by new "
+                f"register?) — keeping refreshed entry",
+            )
     if killed and logger:
         logger.warning(
             "v2_dev_server",

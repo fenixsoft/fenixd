@@ -1361,6 +1361,37 @@ def ingest_item(item: dict, project_root) -> str:
     title = str(item.get("title", ""))
     eid = _resolve_entry_id(item)
 
+    # code-review item b595e581dbe0：终态重入库守卫。双防线（select_pending_
+    # entries 按 known_ids 过滤分析输入 / strip_processed_entries 剥离已处理
+    # 条目）都依赖 todo.md 处理标记或 items.jsonl 记录在场：标记回写失败仅记
+    # WARNING 不阻断，记录又被保留策略清理后，条目文本仍留在 todo.md，分析
+    # 代理再次上报同一四字段身份即走到这里。upsert_item 按 eid 无条件覆盖，
+    # 会把 accepted/auto_accepted 的 decided_at/decided_by/spec_name 冲掉、
+    # created_at 重置；更重的是 rejected 条目被重置回 pending 后经
+    # auto_accept_pending 重新走 materialize/接受路径——B2 同名在途闸门只挡
+    # spec/changes/evo-<name> 已存在，被拒条目从未建过目录不会命中，用户的
+    # 显式拒绝被静默反转。故终态（accepted/auto_accepted/rejected）记录跳过
+    # 重入库、原样保留台账字段，只按原记录刷新 todo.md 处理标记（补齐缺失
+    # 标记、断掉重报循环；失败仍仅 WARNING，不影响守卫主流程）。
+    existing = read_items(project_root).get(eid)
+    if existing is not None and existing.get("status") in (
+        "accepted",
+        "auto_accepted",
+        "rejected",
+    ):
+        _logger.warning(
+            "evolution: 条目 %s 已是终态 %s，跳过重入库（保留原 created_at/"
+            "decided_at/decided_by/spec_name）",
+            eid,
+            existing.get("status"),
+        )
+        write_todo_marker(
+            existing,
+            disposition=_disposition_from_status(existing.get("status")),
+            commit=False,
+        )
+        return str(existing.get("status") or "")
+
     base = {
         "id": eid,
         "project": str(item.get("project", "")),
