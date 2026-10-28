@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=8
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage -->
+<!-- knowledge: capability=code-fix-lane rev=9
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -68,6 +68,9 @@
 - nodeid 映射以 junit `classname` 主导重构：点分模块路径转文件路径（`tests.test_x` → `tests/test_x.py`）、余下段作 `::` 类链、末接 `::name`；`file` 属性仅当存在时参与一致性校验。pytest junitxml 不产 `file` 属性属预期形态，MUST NOT 因此判映射失败。映射失败（classname 缺失或非 Python 模块形态、同一重构结果歧义、不足以唯一重构 nodeid）时回退为全量重试并留日志（fail-closed），落盘 `fallback_full=true`。
 - 轮间注入累计失败明细：按 nodeid 去重合并（此前修过但再次失败的用例仍在集内），后轮摘要覆盖前轮；映射失败时回退注入纯文本失败摘要。定向轮回归范围为**本轮失败集**（非累计集），上一轮已通过的用例不重跑。
 - 定向轮回归 `passed` 时 MUST 按正常路径合回并核销该批条目，MUST NOT 再补跑全量回归（子集回归的实际执行用例数等于该轮失败集大小）。
+- **回归异常熔断**：回归异常类失败——回归结局 `parse_error`（junit 产物缺失/不可解析），或回归 `failed` 但失败明细为空（无可注入的失败明细，含映射失败回退全量且明细 items 为空的形态）——在同批内**连续**达到熔断阈值（模块常量 `REGRESSION_ANOMALY_BREAKER_THRESHOLD`，缺省 2，不进配置、无 Dashboard 配置义务）时，重试循环 MUST 提前终止：不再派发下一轮定向 run 与全量回归，直接按现场即弃语义进入既有收口块（入档、worktree 清理、锁释放、告警与轮数耗尽路径零分叉复用）。
+- 熔断计数为批 worker 局部状态，同批内连续累计、跨批跨链不累计；真实测试失败（`failed` 且明细非空）MUST NOT 进熔断计数且将计数清零（偶发环境抖动后恢复正常不应累积误杀），回归 `passed` 天然离开循环。既有 `targeted_retry_max` 轮数上限行为在熔断未触发时逐位不变。
+- 熔断收口与轮数耗尽共用同一收口点：`branch`/`tip_sha`/`reason`/`failed_at`/最后一轮失败明细引用先入档再清理（语义见下条），批收口 `reason` 按收口形态分流——熔断为 `regression_parse_error_breaker`、轮数耗尽保持 `regression_failed_twice`；收口告警 MUST 复用 `write_regression_failed_alert` 单一调用点（告警名 `regression_failed_twice` 历史兼容名不变），`retry_rounds` 按实际执行轮数如实传入，同批 MUST NOT 重复告警。熔断触发 MUST 记 WARNING 日志并包含触发判据（各轮回归 status 与明细形态），供事后区分「测试失败耗尽」与「回归没跑出结果被熔断」。
 - 重试 run 本身失败（run 层面，非回归失败）不入失败档案、不烧跨轮预算：条目入 `chain_skipped`，清理 worktree 并释放 spec 锁，链继续（与首轮 run 失败同语义）。
 - 耗尽 `targeted_retry_max` 轮仍未 `passed` 时现场即弃：MUST NOT 合回、MUST NOT 置 `resolved`，条目保持 `open`；清理前把 `branch`、`tip_sha`、`reason`、`failed_at` 与最后一轮失败明细引用写入失败档案记录，随后清理 worktree 并释放 spec 锁（`branch`/`tip_sha` 留作 git reflog 追溯线索，不承担恢复职责）；warning 告警含条目集与失败用例摘要，措辞为「已跳过，下轮自动重试」，不得表述为「待人工处置」。
 - 失败档案条目后续检查点跳过（同链内不重复派发同一批）；新链启动按 `fail_count` 预算自动释放（`fail_count < FAIL_RETRY_MAX`），预算内条目不要求人工解除即可重试，重组批从首轮全量回归起重走门与定向轮语义。
@@ -82,3 +85,4 @@
 - 2026-10-03 2026-10-03-decouple-codefix-review-lanes（spec/archive/2026-10-03-decouple-codefix-review-lanes） — 新增「与审查车道的调度解耦」：守卫链无审查在飞条件、物理冲突只剩回归主机级套件锁自然串行；延迟批合回自驱动推进语义固化（defer 按 consumed 收尾照常推进、延迟台账合回核销同检查点继续选批）；同归档另建审查 run 停滞看门狗能力页（code-review-lane/review-run-stall-watchdog），其取消收场急救落账不激活修复链。
 - 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 选批由「最早优先截前 batch_size 条」改写为文件亲和性贪心装箱（batch_size 放宽为目标规模 T、硬上限 2T）；回归门范围由「首轮恒全量」改写为两段式（非末批定向、末批恒全量兜底），定向失败与全量失败同走既有定向重试轮；算法与分流细则独立成页 codefix-affinity-batching。
 - 2026-10-09 evo-add-codefix-mergeback-conflict-salvage（spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage） — 新增「合回冲突定向救回」：真冲突整批即弃前先 rebase 基线+重跑批回归救回（至多 1 次）、失败降级组粒度 cherry-pick 回收（items: 清单归属、无据保守兜底入档）、救回挂 cleanup 前单轮闭环；defer 路径零预算语义不变。
+- 2026-10-28 2026-10-28-add-codefix-parse-error-breaker（spec/archive/2026-10-28-add-codefix-parse-error-breaker） — 「回归失败定向重试与丢弃」新增回归异常熔断：parse_error/空明细类失败同批连续达阈值（缺省 2）即提前终止重试循环，收口 reason 新增 `regression_parse_error_breaker`，入档/清理/告警零分叉复用轮数耗尽收口点，真实测试失败不进计数且清零。

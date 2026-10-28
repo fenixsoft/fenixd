@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-10-26 01:16 UTC+8
+> 最后更新：2026-10-28 10:36 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [code-fix-lane](code-fix-lane.md) | 自动修复车道编排（两路激活/批循环/回归门合回/合回冲突定向救回/与审查车道调度解耦） | 2026-10-09 02:10 |
+| [code-fix-lane](code-fix-lane.md) | 自动修复车道编排（两路激活/批循环/回归门合回/合回冲突定向救回/回归异常熔断/与审查车道调度解耦） | 2026-10-28 10:36 |
 | [codefix-affinity-batching](codefix-affinity-batching.md) | 选批文件亲和性装箱、波次上限自适应、批收尾回归两段式（中间批定向/末批全量兜底） | 2026-10-06 07:29 |
 | [codefix-test-targets-sanitization](codefix-test-targets-sanitization.md) | 回归占位符回退消毒（四条回退/重试路径占位符替换缺省 tests/、判别读原件、周期回归通道豁免） | 2026-10-06 07:29 |
 | [codefix-digest-cost-metrics](codefix-digest-cost-metrics.md) | 消化链成本度量（run 工具构成指标 tool_uses/text_turns、链级 rollup 覆盖全部 run 不漏样本） | 2026-10-06 07:40 |
