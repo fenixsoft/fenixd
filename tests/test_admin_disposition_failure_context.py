@@ -2,7 +2,12 @@
 
 CLI 失败 → final 记录含 error / 兜底 recommended_action / description 非空；
 成功记录不受影响；WARNING 日志在 _run_agent 异常时被调用。
+另覆盖 fix-admin-choice-payload-and-scenario-pairing 2.1/3.1：
+choice_payload 经 run_administrator 透传 AdminDisposition 并随 final 记录落盘；
+载荷型选项缺载荷 fail-closed 硬门（success 折算失败 + result 通道同步折算）。
 """
+import json
+
 import pytest
 
 from core.admin_store import AdminStore, DISPOSITION
@@ -110,6 +115,34 @@ def make_monitor(tmp_path, specs, config=None, runner=None):
         agent_runner=runner,
     )
     return proot, mon, logger
+
+
+# fix-admin-choice-payload-and-scenario-pairing：样本载荷（合法 JSON 形态，
+# 与 revise_scenario_reverify 执行器契约一致）
+CHOICE_PAYLOAD = (
+    '{"scenarios": [{"id": "s1", "name": "最小路径覆盖", "steps": []}], '
+    '"reason": "原场景定义不可行", "fixture_files": []}'
+)
+
+
+class PayloadedSuccessRunner:
+    """模拟成功处置并携带 choice_payload（final 记录透传断言用）。"""
+
+    def __init__(self, payload=CHOICE_PAYLOAD):
+        self.payload = payload
+
+    def run_administrator(self, signal):
+        return AdminDisposition(
+            run_id=f"admin-{signal.get('spec')}-test-1",
+            spec=signal.get("spec"),
+            success=True,
+            problem="已诊断",
+            actions_taken="已提交场景集载荷",
+            result="resolved",
+            summary="已提交载荷",
+            choice_id="revise_scenario_reverify",
+            choice_payload=self.payload,
+        )
 
 
 # ── 核心断言 ─────────────────────────────────────────────
@@ -337,3 +370,161 @@ class TestRunAdministratorLaneMetrics:
         # 抛出路径 turns 预置 0（不 NameError、零样本入账）
         assert ctx["turns"] == 0
         assert runner._run_harness == {}
+
+
+# ── fix-admin-choice-payload-and-scenario-pairing 2.1/3.1 ────────────────
+
+
+class TestChoicePayloadPassThrough:
+    """choice_payload 经 run_administrator 透传 AdminDisposition 并随 final
+    记录落盘；处置记录缺键 → 空串（存量记录零迁移）。"""
+
+    def _make_runner(self, tmp_path, disposition: dict):
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        logger = FakeLogger()
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+        runner.logger = logger
+        runner._run_harness = {}
+
+        def run_agent(prompt, cwd, run_id, model_override, env_overrides,
+                      max_turns, spec_name=None, agent_type=None):
+            admin_disposition_path(proot, run_id).write_text(
+                json.dumps(disposition), encoding="utf-8")
+            return ("output", 1, None,
+                    {"input_tokens": 10, "output_tokens": 5},
+                    {"rounds": 1, "stalls": 0, "max": 0.1})
+
+        runner._run_agent = run_agent
+        return runner
+
+    def test_payload_field_carried_on_disposition(self, tmp_path):
+        runner = self._make_runner(tmp_path, {
+            "result": "resolved", "summary": "ok",
+            "choice_id": "revise_scenario_reverify",
+            "choice_payload": CHOICE_PAYLOAD,
+        })
+        disp = runner.run_administrator(make_signal(
+            signal_type="inconclusive_loop"))
+        assert disp.success is True
+        assert disp.choice_id == "revise_scenario_reverify"
+        assert disp.choice_payload == CHOICE_PAYLOAD
+
+    def test_missing_payload_key_defaults_empty(self, tmp_path):
+        runner = self._make_runner(tmp_path, {
+            "result": "resolved", "summary": "ok",
+            "choice_id": "force_advance",
+        })
+        disp = runner.run_administrator(make_signal())
+        assert disp.success is True
+        assert disp.choice_payload == ""
+
+    def test_final_record_carries_choice_payload(self, tmp_path):
+        runner = PayloadedSuccessRunner()
+        proot, mon, _ = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+        }, runner=runner)
+        mon._invoke_administrator(
+            make_signal(signal_type="inconclusive_loop"), None)
+        recs = mon.store.read_all()
+        disp = next(r for r in recs if r["kind"] == DISPOSITION)
+        assert disp["choice_id"] == "revise_scenario_reverify"
+        assert disp["choice_payload"] == CHOICE_PAYLOAD
+
+    def test_final_record_payload_absent_is_none(self, tmp_path):
+        """无载荷的存量形态：final 记录键写 None（与 choice_id 同款形状口径）。"""
+        runner = PayloadedSuccessRunner(payload="")
+        proot, mon, _ = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+        }, runner=runner)
+        mon._invoke_administrator(make_signal(), None)
+        recs = mon.store.read_all()
+        disp = next(r for r in recs if r["kind"] == DISPOSITION)
+        assert disp["choice_payload"] is None
+
+
+class _DispWriterRunner:
+    """_run_agent 替身：按给定处置记录 dict 写实例文件（产物硬门测试用）。"""
+
+    def __init__(self, tmp_path, disposition: dict):
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        logger = FakeLogger()
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+        runner.logger = logger
+        runner._run_harness = {}
+
+        def run_agent(prompt, cwd, run_id, model_override, env_overrides,
+                      max_turns, spec_name=None, agent_type=None):
+            admin_disposition_path(proot, run_id).write_text(
+                json.dumps(disposition), encoding="utf-8")
+            return ("output", 1, None,
+                    {"input_tokens": 10, "output_tokens": 5},
+                    {"rounds": 1, "stalls": 0, "max": 0.1})
+
+        runner._run_agent = run_agent
+        self.runner = runner
+
+
+class TestChoicePayloadHardGate:
+    """3.1 缺载荷 fail-closed 硬门：requires_payload 选项缺 choice_payload
+    → success 折算失败 + result 通道同步折算，错误信息点名缺口；
+    合法载荷放行；非载荷选项无载荷行为不变。"""
+
+    def test_missing_payload_fails_closed(self, tmp_path):
+        holder = _DispWriterRunner(tmp_path, {
+            "result": "resolved", "summary": "已诊断，需修订场景",
+            "choice_id": "revise_scenario_reverify",
+        })
+        disp = holder.runner.run_administrator(
+            make_signal(signal_type="inconclusive_loop"))
+        assert disp.success is False
+        # result 通道同步折算（防 resolved 透传消费侧假收口）
+        assert disp.result == "failed"
+        # 错误信息点名缺口（选项需要 choice_payload JSON 载荷 + 契约形态）
+        assert "choice_payload" in disp.error
+        assert "scenarios" in disp.error
+        # WARNING 留痕
+        assert any("产物硬门拦截" in w["message"] for w in holder.runner.logger.warnings)
+
+    def test_legal_payload_passes_gate(self, tmp_path):
+        holder = _DispWriterRunner(tmp_path, {
+            "result": "resolved", "summary": "已修订场景集",
+            "choice_id": "revise_scenario_reverify",
+            "choice_payload": CHOICE_PAYLOAD,
+        })
+        disp = holder.runner.run_administrator(
+            make_signal(signal_type="inconclusive_loop"))
+        assert disp.success is True
+        assert disp.result == "resolved"
+        assert disp.choice_payload == CHOICE_PAYLOAD
+
+    def test_non_payload_option_without_payload_unchanged(self, tmp_path):
+        holder = _DispWriterRunner(tmp_path, {
+            "result": "resolved", "summary": "人工已修复",
+            "choice_id": "manual_fixed_reverify",
+        })
+        disp = holder.runner.run_administrator(
+            make_signal(signal_type="verify_fail_escalation"))
+        assert disp.success is True
+        assert disp.result == "resolved"
+        assert disp.choice_payload == ""
+
+    def test_no_choice_id_bypasses_gate(self, tmp_path):
+        holder = _DispWriterRunner(tmp_path, {
+            "result": "resolved", "summary": "自由处置留痕",
+        })
+        disp = holder.runner.run_administrator(
+            make_signal(signal_type="inconclusive_loop"))
+        assert disp.success is True
+        assert disp.result == "resolved"

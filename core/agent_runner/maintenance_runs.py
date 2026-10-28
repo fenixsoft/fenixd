@@ -487,6 +487,43 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
                 f"Administrator run {run_id} 产物硬门拦截: {error}",
                 {"run_id": run_id, "spec": spec},
             )
+    # fix-admin-choice-payload-and-scenario-pairing 3.1：缺载荷 fail-closed
+    # 第三道门——处置 choice_id 指向注册表 requires_payload 选项而处置记录
+    # 缺 choice_payload 时，下方 result 兜底会把该处置折算成 "resolved"，
+    # 而 _apply_choice_execution 空打执行器必失败（载荷型选项执行器契约强制
+    # JSON 载荷）——「resolved 但执行必败」的假收口在落 final 前拦下，按既有
+    # 两道门同型折算失败；关联升级信号按既有失败语义保持未处理（可重试裁决）。
+    # 载荷要求收敛注册表单源（choice_requires_payload），消费侧不硬编码选项
+    # 名单。choice_payload 存在时不做内容校验——非法载荷由执行器既有解析失败
+    # 路径拒绝，不设第二道内容门（design Non-Goals）。
+    if success and str(disp.get("choice_id") or "").strip():
+        from core.dashboard.data.adjudication_choices import (
+            choice_requires_payload,
+        )
+
+        _gate_cid = str(disp.get("choice_id")).strip()
+        if choice_requires_payload(
+            _gate_cid, str(admin_signal.get("signal_type") or "")
+        ) and not str(disp.get("choice_payload") or "").strip():
+            success = False
+            # 与上一道门同款：折算必须同时落到 result 通道，防 resolved
+            # 经返回值透传消费侧（code-review item 14ce3542d2b9 双保险口径）
+            disp["result"] = "failed"
+            error = (
+                f"admin 处置记录缺 choice_payload 载荷: {disp_path.name} "
+                f"choice_id={_gate_cid!r} 为 requires_payload 选项，该选项"
+                "需要 choice_payload JSON 载荷"
+                '（{"scenarios": [...], "reason": "...", '
+                '"fixture_files": [...]}），缺载荷执行必失败，'
+                "判失败（fail-closed）"
+            )
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "agent_runner",
+                    f"Administrator run {run_id} 产物硬门拦截: {error}",
+                    {"run_id": run_id, "spec": spec},
+                )
     # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
     # final 记录，文件不再有读者；不清理会随并行实例累积成垃圾。
     runner._delete_admin_disposition(disp_path)
@@ -539,6 +576,10 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         # （缺省空串兼容无键的存量处置记录）
         choice_id=str(disp.get("choice_id") or ""),
         suggested_choice=str(disp.get("suggested_choice") or ""),
+        # fix-admin-choice-payload-and-scenario-pairing 2.1：结构化动作载荷
+        # 透传（缺键缺省空串，存量记录零迁移；随 AdminDisposition 进 final
+        # 记录落盘，载荷型选项经 _apply_choice_execution 原文直传执行器）
+        choice_payload=str(disp.get("choice_payload") or ""),
     )
 
 
@@ -595,6 +636,17 @@ def _read_admin_disposition(disp_path: Path) -> dict:
         data["summary"] = ""
     elif not isinstance(sm, str):
         data["summary"] = str(sm)
+    # fix-admin-choice-payload-and-scenario-pairing 2.1：结构化载荷归一——
+    # 契约为「内容是 JSON 的字符串」，LLM 误写成结构化对象/列表时序列化回
+    # JSON 字符串（语义等价，执行器按 JSON 解析），不因载体形态差异折损
+    # 载荷；缺键缺省空串，存量记录零迁移。
+    cp = data.get("choice_payload")
+    if isinstance(cp, (dict, list)):
+        data["choice_payload"] = json.dumps(cp, ensure_ascii=False)
+    elif cp is None:
+        data["choice_payload"] = ""
+    elif not isinstance(cp, str):
+        data["choice_payload"] = str(cp)
     return data
 
 

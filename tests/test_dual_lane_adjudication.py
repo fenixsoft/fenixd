@@ -180,5 +180,127 @@ class TestRelocationBudgetPreserved(unittest.TestCase):
                          "重定位不消耗重派预算")
 
 
+# ── fix-admin-choice-payload-and-scenario-pairing 4.1：裁决 note 双车道 ──────
+
+_PAYLOAD = ('{"scenarios": [{"id": "s1", "name": "修订后场景", "steps": []}], '
+            '"reason": "原场景定义不可行", "fixture_files": []}')
+
+_BASIS = "缺口可接受的依据" * 100
+
+
+class TestChoicePayloadDualLaneNote(unittest.TestCase):
+    """人工（alert-resolve note 从请求体直传）与 Administrator 自动
+    （choice_payload 载荷优先）双车道收敛同一执行器 execute_adjudication_choice：
+    - 自动车道载荷原文整体直达执行器（不经 actions_taken 拼接/截断）；
+    - 缺载荷的 requires_payload 选项 skipped 不调执行器；
+    - 非载荷选项 note 仍为依据文本截断 200 字（行为不变）。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.proot = self.tmpdir / "proj"
+        (self.proot / ".fenix").mkdir(parents=True)
+        # s1 冻结态（force_advance 合法前置），字段集对齐 test_adjudication_choices
+        lines = ["# Fenix Project State", "", "## Specs", "", "### s1",
+                 "- status: blocked",
+                 "- priority: 2",
+                 "- created: 2026-01-01T00:00:00+00:00",
+                 "- updated: 2026-01-02T00:00:00+00:00",
+                 "- error: impl_budget_exhausted: 预算耗尽",
+                 "- depends_on: null", ""]
+        (self.proot / ".fenix" / "STATE.md").write_text("\n".join(lines),
+                                                        encoding="utf-8")
+        from core.admin_monitor import AdminMonitor
+
+        self.mon = AdminMonitor.__new__(AdminMonitor)
+        self.mon.project_root = self.proot
+        self.mon.logger = _FakeLogger()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _disp(self, **kw):
+        from core.agent_runner.result_gate import AdminDisposition
+
+        kw.setdefault("run_id", "admin-run-dl1")
+        kw.setdefault("spec", "s1")
+        kw.setdefault("success", True)
+        kw.setdefault("result", "resolved")
+        return AdminDisposition(**kw)
+
+    def _capture_executor(self):
+        captured = {}
+
+        def fake_executor(proot, spec, cid, note="", signal_type=""):
+            captured.update({"note": note, "spec": spec, "choice_id": cid})
+            return {"ok": True, "choice_id": cid, "action": cid,
+                    "steps": [], "error": None}
+
+        return captured, mock.patch(
+            "core.dashboard.data.admin_actions.execute_adjudication_choice",
+            side_effect=fake_executor,
+        )
+
+    def test_manual_lane_note_roundtrip_via_executor(self):
+        """人工车道：note 直传执行器原文可达留痕（载荷通道不触碰该语义）。"""
+        from core.dashboard.data.admin_actions import execute_adjudication_choice
+        from core.state_machine import StateMachine
+
+        r = execute_adjudication_choice(
+            self.proot, "s1", "force_advance", note=_PAYLOAD,
+            signal_type="impl_budget_exhausted")
+        self.assertTrue(r["ok"])
+        self.assertTrue(any(_PAYLOAD in s for s in r["steps"]),
+                        f"note 原文须入留痕: {r['steps']}")
+        entry = StateMachine(self.proot / ".fenix" / "STATE.md",
+                             _FakeLogger()).read_one("s1")
+        self.assertEqual(entry["status"], "done")
+
+    def test_admin_lane_payload_verbatim_to_executor(self):
+        """自动车道：choice_payload 非空 → note 取原文整体直传执行器。"""
+        captured, patcher = self._capture_executor()
+        with patcher:
+            outcome = self.mon._apply_choice_execution(
+                {"signal_type": "inconclusive_loop", "spec": "s1"},
+                self._disp(choice_id="revise_scenario_reverify",
+                           choice_payload=_PAYLOAD, actions_taken=_BASIS),
+            )
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(captured["note"], _PAYLOAD,
+                         "载荷原文 MUST 整体直传（不经依据文本拼接/截断）")
+
+    def test_admin_lane_missing_payload_skips_executor(self):
+        """自动车道缺载荷：skipped 不调执行器，信号保留待重审。"""
+        calls = []
+
+        def forbidden_executor(*a, **k):
+            calls.append(1)
+            return {"ok": True, "steps": [], "error": None}
+
+        with mock.patch(
+            "core.dashboard.data.admin_actions.execute_adjudication_choice",
+            side_effect=forbidden_executor,
+        ):
+            outcome = self.mon._apply_choice_execution(
+                {"signal_type": "inconclusive_loop", "spec": "s1"},
+                self._disp(choice_id="revise_scenario_reverify"),
+            )
+        self.assertIsNotNone(outcome)
+        self.assertFalse(outcome["ok"])
+        self.assertTrue(outcome.get("skipped"))
+        self.assertIn("choice_payload", outcome.get("error") or "")
+        self.assertEqual(calls, [], "缺载荷 MUST NOT 调执行器")
+
+    def test_admin_lane_non_payload_note_is_basis_text(self):
+        """非载荷选项：note 维持 actions_taken 截断 200 字现状。"""
+        captured, patcher = self._capture_executor()
+        with patcher:
+            outcome = self.mon._apply_choice_execution(
+                {"signal_type": "impl_budget_exhausted", "spec": "s1"},
+                self._disp(choice_id="force_advance", actions_taken=_BASIS),
+            )
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(captured["note"], _BASIS[:200])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

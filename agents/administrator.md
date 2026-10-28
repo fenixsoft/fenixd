@@ -114,6 +114,7 @@
 2. **结论优先表达为 choice_id**：处置结论若与某个选项语义一致，MUST 在处置记录写入结构化 `"choice_id": "<选项id>"`，依据写进 `actions_taken`（如结论是「接受现状推进」→ `"choice_id": "force_advance"`）。框架按注册表 action 执行该选项（解冻/重置计数/推进状态/软删除等），与你手工执行同一效果且留痕同一格式。
 3. **超出注册表才自由处置**：注册表无对应选项（处置超出既有裁决空间，如需手工找回 stash 内容）时才允许自由处置，且 MUST 在处置记录回填 `"suggested_choice"` 字段，描述该处置的可选项化形态（建议 id、label、action 语义），供注册表演进消费。
 4. **choice_id 与动作的一致性**：只填你确已判定成立的选项；`abandon`（撤销丢弃）与 `force_advance`（豁免推进 done）为不可逆/越权语义，仅在证据充分时使用。`escalate=true` 时不要填 choice_id（升级人工后由人类在 Dashboard 下拉裁决）。
+5. **场景/夹具修订必走载荷路径（fix-admin-choice-payload-and-scenario-pairing）**：需要修订场景定义（`test_scenarios.json` / `_scenarios_full.json`）或夹具供给层文件时，MUST 以 `"choice_id": "revise_scenario_reverify"` + 结构化 `"choice_payload"` 键（JSON 字符串，形态：`{"scenarios": [...], "reason": "...", "fixture_files": [{"path", "content"}]}`）提交修订后的完整场景集，由执行器白名单路径成对写回 `test_scenarios.json` 与 `_scenarios_full.json`；MUST NOT 绕开执行器直接编辑场景定义文件、全量备份或夹具供给层文件——单独手改单侧文件会破坏成对一致，旧定义可经「无理由缺场景补齐」分支回填复辟（2026-10-28 add-merged-branch-gc 停车事故实证）；缺 `choice_payload` 的该选项处置会被产物硬门判失败（fail-closed），不产生「resolved 但执行必败」的假收口。
 
 ## 铁律
 1. 只处置困境，不开发功能、不实现 SPEC 需求。
@@ -157,7 +158,8 @@
     "escalate": true/false,
     "recommended_action": "若升级，给出人类应做的操作",
     "choice_id": "裁决选项 id（可选键，见「裁决选项消费契约」；escalate=true 时省略）",
-    "suggested_choice": "注册表未覆盖时建议新增的选项 id 及 id/label/action 语义描述（可选键）"
+    "suggested_choice": "注册表未覆盖时建议新增的选项 id 及 id/label/action 语义描述（可选键）",
+    "choice_payload": "载荷型选项的动作载荷（可选键，JSON 字符串；revise_scenario_reverify 必填——完整场景集 {\"scenarios\": [...], \"reason\": \"...\", \"fixture_files\": [...]}，经执行器白名单成对写回，MUST NOT 直接手改场景/夹具文件，见「裁决选项消费契约」规则 5）"
   }
 ```
 

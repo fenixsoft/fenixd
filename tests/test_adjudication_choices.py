@@ -726,6 +726,84 @@ class TestExecuteAdjudicationChoice:
         assert outcome["action"] == "ack_self_heal"
 
 
+class TestRequiresPayloadChoice:
+    """fix-admin-choice-payload-and-scenario-pairing 1.1：注册表 requires_payload
+    单源——revise_scenario_reverify 声明置位、未声明选项缺省 False、未注册 id
+    兜底 False；载荷要求判定收敛注册表（choice_requires_payload 助手）。"""
+
+    def test_revise_scenario_reverify_declares_requires_payload(self):
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        choice, reason = resolve_choice(
+            "revise_scenario_reverify", "inconclusive_loop")
+        assert reason == ""
+        assert choice is not None
+        assert choice["requires_payload"] is True
+
+    def test_helper_exact_bucket_true(self):
+        from core.dashboard.data.adjudication_choices import choice_requires_payload
+
+        assert choice_requires_payload(
+            "revise_scenario_reverify", "inconclusive_loop") is True
+
+    def test_undeclared_choice_defaults_false(self):
+        """未声明 requires_payload 的选项按 False 处理（缺省无需载荷）。"""
+        from core.dashboard.data.adjudication_choices import (
+            choice_requires_payload,
+            resolve_choice,
+        )
+
+        for cid, sig in (("manual_fixed_reverify", "impl_budget_exhausted"),
+                         ("force_advance", "impl_budget_exhausted"),
+                         ("abandon", "spec-review-incomplete"),
+                         ("ack_self_heal", "daemon_errors")):
+            choice, reason = resolve_choice(cid, sig)
+            assert reason == "", f"{cid} 应可解析"
+            assert not choice.get("requires_payload", False), (
+                f"{cid} 未声明 requires_payload，缺省须按 False 处理")
+            assert choice_requires_payload(cid, sig) is False
+
+    def test_unregistered_id_defaults_false(self):
+        """choice 未注册 / 不在桶内 / 空 id：解析异常兜底 False，不拦处置。"""
+        from core.dashboard.data.adjudication_choices import choice_requires_payload
+
+        assert choice_requires_payload("nope", "inconclusive_loop") is False
+        # revise_scenario_reverify 是 spec_scoped 动作：未注册 signal_type 反查
+        # 被收紧拒解析（scoped-no-reverse）→ None → 兜底 False
+        assert choice_requires_payload(
+            "revise_scenario_reverify", "daemon_errors") is False
+        assert choice_requires_payload("", "inconclusive_loop") is False
+
+    def test_only_revise_scenario_reverify_declares_payload(self):
+        """初始仅 revise_scenario_reverify 置 true：全表遍历恰一处声明。"""
+        declared = {
+            (sig, c["id"])
+            for sig, choices in ADJUDICATION_CHOICES.items()
+            for c in choices
+            if c.get("requires_payload")
+        }
+        assert declared == {("inconclusive_loop", "revise_scenario_reverify")}
+
+    def test_declaration_is_pure_static_bool(self):
+        """注册表保持纯静态：声明位为模块常量内的布尔静态声明。"""
+        for sig, choices in ADJUDICATION_CHOICES.items():
+            for c in choices:
+                if "requires_payload" in c:
+                    assert isinstance(c["requires_payload"], bool), (
+                        f"{sig}/{c['id']} requires_payload 须为布尔静态声明")
+
+    def test_helper_resolve_exception_falls_back_false(self, monkeypatch):
+        """resolve_choice 抛异常时助手兜底 False（不拦处置，执行器兜底）。"""
+        from core.dashboard.data import adjudication_choices as mod
+
+        def boom(cid, sig=""):
+            raise RuntimeError("registry unavailable")
+
+        monkeypatch.setattr(mod, "resolve_choice", boom)
+        assert mod.choice_requires_payload(
+            "revise_scenario_reverify", "inconclusive_loop") is False
+
+
 # ── 6. alert-resolve 端点闭环 ────────────────────────────────────────────
 
 

@@ -49,6 +49,13 @@ from types import MappingProxyType
 #                执行器与消费端据此守卫——全局信号（spec 为空或占位 'global'）
 #                MUST NOT 执行 spec 作用域动作（无 spec 可操作），非作用域
 #                动作不受限且保留全表反查可达。
+# 可选第七字段：
+#   requires_payload  True=该选项的动作执行 MUST 以 JSON 载荷为输入（载荷经
+#                处置记录 choice_payload 或人工裁决 note 传入）；缺省按 False
+#                处理（无需载荷）。纯静态声明（fix-admin-choice-payload-and-
+#                scenario-pairing 1.1）：载荷要求判定收敛注册表单源，消费侧
+#                （处置产物硬门、自动执行通道）经 choice_requires_payload()
+#                只读本位，MUST NOT 各自硬编码选项名单。
 # 跨信号逐字共享的选项提为模块级单源（code-review item 7542b25da792），
 # 各信号元组按引用复用：字段演进只改一处，不再多点同步。desc 带信号特定
 # 文案的同名选项（judge/verify 链的 manual_fixed_reverify、评审族的
@@ -233,12 +240,19 @@ _ADJUDICATION_REGISTRY: dict = {
             # "...", "fixture_files": [{"path", "content"}]}；文件路径仅限
             # 夹具供给层白名单（validate_scenario_revision_paths），产品
             # 代码路径拒绝。
+            # requires_payload=True（fix-admin-choice-payload-and-
+            # scenario-pairing 1.1）：该选项动作执行 MUST 以 JSON 载荷为输入
+            # ——载荷经处置记录 choice_payload（Administrator 自动路径）或
+            # 人工裁决 note（alert-resolve 端点）传入执行器；缺载荷时处置
+            # 产物硬门判失败、自动执行通道跳过，不再产生「resolved 但执行
+            # 必失败」的假收口。
             "id": "revise_scenario_reverify",
             "label": "修订场景·重验",
             "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具"
             "供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
             "action": "revise_scenario_reverify",
             "spec_scoped": True,
+            "requires_payload": True,
         },
         _MANUAL_FIXED_REVERIFY,
         _ABANDON,
@@ -372,12 +386,15 @@ ADJUDICATION_CHOICES: MappingProxyType = MappingProxyType({
 
 # 模块加载期自检（code-review item cf4b9efbae3a）：resolve_choice 的全表反查
 # 在首个命中即返回，其结论以「同一 id 在各信号下 action 语义一致、spec_scoped
-# 取值一致、destructive 取值一致」为前提（见 resolve_choice docstring），该
-# 不变式此前无任何断言钉死——同一 id 若以作用域/非作用域（或带/不带
-# destructive 确认门字段）两种形态登记在不同桶，反查判 scoped-no-reverse 还是
-# 放行、返回的选项触发不触发前端二次确认，都将取决于注册表插入顺序。此处遍历
-# 全表 fail-fast：任一 id 跨桶出现 action/spec_scoped/destructive 冲突即在
-# import 期拒绝，不留给运行期静默漂移（code-review item 26a81a23b8da）。
+# 取值一致、destructive 取值一致、requires_payload 取值一致」为前提（见
+# resolve_choice docstring），该不变式此前无任何断言钉死——同一 id 若以作用域/
+# 非作用域（或带/不带 destructive 确认门字段、带/不带 requires_payload 载荷
+# 声明位）两种形态登记在不同桶，反查判 scoped-no-reverse 还是放行、返回的
+# 选项触发不触发前端二次确认、缺载荷拦不拦，都将取决于注册表插入顺序。此处
+# 遍历全表 fail-fast：任一 id 跨桶出现 action/spec_scoped/destructive/
+# requires_payload 冲突即在 import 期拒绝，不留给运行期静默漂移
+# （code-review item 26a81a23b8da；requires_payload 位随
+# fix-admin-choice-payload-and-scenario-pairing 1.1 并入同一不变式）。
 def _assert_registry_consistency() -> None:
     first_seen: dict = {}
     for sig, choices in ADJUDICATION_CHOICES.items():
@@ -386,19 +403,23 @@ def _assert_registry_consistency() -> None:
             action = choice.get("action")
             scoped = bool(choice.get("spec_scoped", True))
             destructive = bool(choice.get("destructive", False))
+            requires_payload = bool(choice.get("requires_payload", False))
             prev = first_seen.get(cid)
             if prev is not None and (
-                (prev[1], prev[2], prev[3]) != (action, scoped, destructive)
+                (prev[1], prev[2], prev[3], prev[4])
+                != (action, scoped, destructive, requires_payload)
             ):
                 raise AssertionError(
                     f"choice id {cid!r} 跨桶语义冲突：桶 {prev[0]!r} 声明 "
                     f"action={prev[1]!r}/spec_scoped={prev[2]}"
-                    f"/destructive={prev[3]}，桶 {sig!r} 声明 "
+                    f"/destructive={prev[3]}/requires_payload={prev[4]}，"
+                    f"桶 {sig!r} 声明 "
                     f"action={action!r}/spec_scoped={scoped}"
-                    f"/destructive={destructive}；resolve_choice "
+                    f"/destructive={destructive}"
+                    f"/requires_payload={requires_payload}；resolve_choice "
                     "全表反查在首个命中即返回，结论将取决于注册表插入顺序"
                 )
-            first_seen[cid] = (sig, action, scoped, destructive)
+            first_seen[cid] = (sig, action, scoped, destructive, requires_payload)
 
 
 _assert_registry_consistency()
@@ -581,3 +602,22 @@ def resolve_choice(choice_id, signal_type=""):
                     return None, "scoped-no-reverse"
                 return dict(c), ""
     return None, "unknown-choice"
+
+
+def choice_requires_payload(choice_id, signal_type="") -> bool:
+    """choice_id → 该选项是否强制要求 JSON 载荷（requires_payload 单源解析）。
+
+    fix-admin-choice-payload-and-scenario-pairing 1.1：载荷要求判定收敛
+    注册表单源——消费侧（处置产物硬门、自动执行通道）只读本助手，MUST NOT
+    各自硬编码选项名单（新增载荷型选项时双处漏改即复发的先例教训）。内部走
+    :func:`resolve_choice` 单源解析，与执行器/守卫同一解析序：
+
+    - 注册桶内精确命中 → 选项声明位（未声明键按 False 缺省）；
+    - choice 未注册 / 不在桶内 / 解析异常 → 兜底 False（缺省不拦处置，
+      载荷合法性仍由执行器既有解析失败路径拒绝，不新增爆炸半径）。
+    """
+    try:
+        choice, _reason = resolve_choice(choice_id, signal_type)
+    except Exception:  # noqa: BLE001 — 注册表不可用时缺省不拦（执行器兜底）
+        return False
+    return bool((choice or {}).get("requires_payload", False))
