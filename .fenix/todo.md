@@ -416,6 +416,7 @@
   - 建议：①健全性门对场景名含 empty/zero-state/placeholder 的场景豁免或放宽 low_contrast 阈值，改按与基线模板的相对差异判 env；②env 阻塞重验前对同场景延时重截一次（如 +2 秒），排除渲染时序假阳性；③首跑被判 low_contrast 的截图落盘留存（.fenix/verify-evidence/），使假阳性可事后裁决。
 
 ## 2026-10-27
+
 ### 知识真相源
 - [ ] knowledge-distill 重试：归档 2026-10-27-evo-add-review-failure-attribution — run 失败: claude 进程非零退出（exit=1）；stderr 尾部: [claude-code:unrecognized_model] {"model":"glm-5.3-flash[1M]","query_source":"sdk"}
 
@@ -428,13 +429,6 @@
   - 证据：周期审查 run code-review-1793030512（10-27 00:01 出发的全仓审查）收尾延迟摘要行：662 轮、median 2.7s、p90 36.5s、max 222.8s、stalls>60s=41（2026-10-26T19:18:31Z），成本 58.01 美元、完成行 inserted=7；两晚批链 code-fix-1793042316 与 code-fix-1793043759（code-fix 批修复 run）分别停滞 145.0s/85.2s；另白天 spec-review-improve-spec-topology-pipeline-view-9dc1c0-1792984205（spec 评审 run）出 362.0s 单轮停滞触发升级档告警（grade=warning-escalated，单轮超 300 秒即升档）。
   - 调查评估：问题源：数据摘要第六节停滞聚合的离群深扫。已核实事实：十一晚序列（整晚总量口径，分钟）80.3→48.3→85.7→98.2→27.7→50.7→51.4→22.7→13.6→56.3→91.1，本晚为自第四晚 98.2 以来首次回到 ≥60 分钟量级，[2026-10-21#浪费#1] 自设「连续两晚 ≥60 分钟重启定向取证」条件已触发一晚；453-519 秒钉值家族本窗夜间未复现（夜间最长 222.8 秒），362.0 秒出现在白天评审 run；停滞口径为 API 侧等待（2026-10-17#浪费#1 更正后），逐轮 ttft/usage 响应侧字段已由自进化 run evo-1792427246 实测裁决在 CLI 子进程边界外不可得，根因未定、维持「整轮往返偏慢 vs 网关限流相位」多假说并存。与存量工作关系：观测与分级面由 evo-add-api-stall-observability（停滞指标入账）与 evo-api-stall-signal-grading（停滞分级告警）覆盖，均按设计工作。结论：损耗真实且量级回到取证阈值，按既定条件执行定向取证即可，不立新 SPEC。
   - 建议：兑现 [2026-10-21#浪费#1] 既定条件：本晚已 ≥60 分钟，若今晚再 ≥60 即重启定向取证——对照网关 bigmodel.cn 与 claude CLI 侧超时/路由/限流配置是否变更；不依赖已证不可得的档案字段。
-
-- **judge硬上限三冻三解循环，单spec烧17个裁决run**
-  - 自进化：问题成立 / 建议合理 / — 不需要
-  - 影响：add-command-center（指挥中心 spec）验证回路在本窗烧掉 17 个 planner-judge run（验证裁决车道 run；两个实测样本单 run 输入 13.3 万/13.8 万 token，合计约 3.3 小时 judge 墙钟、估算约 220 万输入 token），judge 重跑硬上限（6 轮预算上限）三次冻结（本地 18:57/20:12/22:09），人工与管理员被迫多轮介入解冻，人工裁决出口一度形同虚设；spec 累计 token 计数达 748 万输入/92 万输出。
-  - 证据：归档 judge run 17 个（planner-judge-add-command-center-1793090007-a1 至 -1793116959-a1，单 run 208-1728 秒）；pm_engine ERROR「judge 重跑硬上限 'add-command-center'（6 轮）— 冻结为 blocked」三现（2026-10-27T10:57:06Z/12:12:36Z/14:09:53Z）；STATE 更新行 _tokens_in: 7475993 / _tokens_out: 923240（14:05:50Z）；20:16 人工解冻清零后循环又续 8 个 judge run 至 22:09 第三次冻结。
-  - 调查评估：问题源：add-command-center 监视期验证循环的离群复盘。已核实事实：解冻不清零——fix-unfreeze-judge-counter-reset 提案自述「人工解冻后管道 3 分钟跑完 stage2 即再次触发 count(6) > 5 原样再冻」，unfreeze_spec 清零集漏 _judge_rerun_count/_judge_cap_frozen 两字段，与 state_machine.py 注释声称的「唯一清零点=验证通过与人工 unfreeze」脱节；两个修复 spec 均在窗内落地（fix-unfreeze-judge-counter-reset 合回 22:15、fix-judge-budget-counters-alignment 合回 22:42），修复后 4 个 judge run（23:31-00:02）顺利收口未再冻结。根因：计数清零缺口＋通道受理门失准（受理门耗尽拒收与计数留痕由第二 spec 修复），属系统性缺陷且已闭环；17 个 judge run 中修复轮合法重裁与控制失灵空转不可逐 run 切分，损失按总量记录。与存量工作关系：两个落地 spec 即本问题的修复载体，spec/changes/ 活跃区无同主题其他在飞提案，不重复立项。结论：损失真实（约 220 万输入 token 与多轮人工介入）但机制已在窗内修复，本条为损失记录与观察项，不需要新 SPEC。
-  - 建议：不立新 SPEC；观察修复效果（窗内末段已连续 4 个 judge run 无再冻）；把「judge 硬上限冻结次数」纳入每日自省聚合面，使同类冻结循环在下一窗口即可见。
 
 - **dsh车道code-fix波次编排三连败，子代理派发大半作废**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
@@ -493,3 +487,56 @@
   - 证据：告警 87f72c680499（秒挂冷却升级，事件链 2026-10-27T14:44:49Z 连续 3 次秒挂→300 秒冷却→14:49:49Z 到期自动恢复调度）；spec 终态核实：STATE.md 记 status: pushed、tester_run: mechanical-all-green（updated 15:26:29Z），salvage 分支 eab74de29 于 22:56 合回；admin_alerts.json 中该告警 handled=false、status 空。
   - 调查评估：问题源：窗口内 admin 告警与处置记录的对账（未处理 1 条的归因）。已核实事实：秒挂冷却与全车道门控按设计工作（evo-add-instant-fail-cooldown-full-lane-gate 首次实战，派发与管理员处置唤起正确跳过、到期自动恢复，随后经 fallback repair 链修复交付）；秒挂死亡根因（进程 0 秒存活三连）无 run 产物可取证，假说并存（worktree/分支检出即死 vs 环境态残留），同日落地的 fix-worktree-lock-release-degrade-gate（worktree 锁释放与降级熔断）可能相关但未核实；缺口在告警生命周期——spec 到达 verified/pushed 终态时无自动收口或对账路径。与存量工作关系：orphaned final disposition group 对账（处置组已终态但信号未消除的同指纹复发检出）只在同指纹复发时才检出，覆盖不了「spec 交付后告警自然失效」形态，非重复立项。结论：小改动（终态联动收口＋龄期盘点），值小立项。
   - 建议：①spec 进入 verified/pushed/done 终态时自动把其 spec 作用域 escalation 告警置 resolved（留痕不删）；②未处理升级告警加每日龄期盘点（超 24 小时未处理升提醒）；③秒挂死亡路径留存启动 stderr 与 worktree 状态快照，使 0 秒死亡可取证。
+
+## 2026-10-29
+
+### 浪费
+- **验证env停车9.3小时，处置载荷缺失单发失败**
+  - 影响：add-merged-branch-gc（已合并分支 GC spec）验证失败被级二豁免握手（env 类失败首轮即升级停车等人工的机制）停车等人工，自 10-28 01:13 悬置到 10:33 才复验全绿，约 9.3 小时（其中约 7.7 小时为夜间人工不可达期）；期间 Administrator 处置 run 唯一匹配的处置选项 revise_scenario_reverify（修订场景后复验）因缺载荷通道执行失败一次，并烧出 7 条 inconclusive_loop（验证结论不可判定循环）告警链。
+  - 证据：日志 2026-10-27T17:13:01Z「env 豁免拦截 'add-merged-branch-gc'（env 断言 7 条、blocked-env 场景 6 个）— 转 inconclusive 升级停车等人工处置」；告警 89b2030b2d0a（处置失败留档告警，result=failed）对应 17:55:40Z ERROR「revise_scenario_reverify 需要 JSON 载荷」；告警 8f12fbbdb4c7（处置成功收口告警，10-28T00:57:44Z result=success）对应场景修订复位；重验 16/16 全绿（.fenix/verify-progress/add-merged-branch-gc.json：total=16 done=16），verification-report 10:33 入库（commit 70af43b77）。
+  - 调查评估：问题源：add-merged-branch-gc 验证收尾的 env 阻塞处置链复盘。已核实事实：①握手按设计工作、未发生 verified 洗白，6 个 blocked-env 场景（api/web-branch-gc 系）经场景修订复验全绿，说明阻塞源在场景/夹具侧而非持久环境损坏；②停车时长的主要放大器是处置通道缺陷——revise_scenario_reverify 当时无载荷通道、fail-closed 失败后无重试也无降级指引，只能等晨间人工；③通道缺陷已由窗内 spec 修复（fix-admin-choice-payload-and-scenario-pairing，提交 ac662dd28 于 09:37 合回：choice_payload 直传＋缺载荷 fail-closed 硬门＋Administrator 提示词契约增补）。根因：处置载荷通道缺口（系统性，已闭环）叠加夜间人工不可达（结构性）。与存量工作关系：修复 spec 即本问题载体，活跃区无同主题其他在飞提案。结论：损失真实但已在窗内闭环，本条为损失记录与观察项。
+  - 建议：不立新 SPEC；观察新提示词契约下 env 停车处置的一次成功率——下个 env 阻塞案例验证 choice_payload 直传端到端走通即可。
+
+### 失误
+- **（当日无）**
+  - 影响：窗口内无执行层失误造成损失：摘要所记唯一失败 run 是被网关 429 限流击杀的 judge 重试 attempt（约 0 轮、秒级成本），10 秒后被 provider 电路切换（provider switched）救回。
+  - 证据：失败样本 planner-judge-add-merged-branch-gc-1793119685-a1（judge 验证裁决 run）死于 dsh: RATE_LIMIT 429（2026-10-27T16:48:29Z，0 rounds）；16:48:39Z「provider switched bigmodel.cn → inferaiapi.com（model_changed glm-5.3-flash→deepseek-v4-flash）」后重试 -a2 正常完成；add-timeline-origin-request 的 merge-back WIP 重叠闸门（防主树未提交改动被合并覆盖的预检）5 次拦截后由周期消费者 merge-only 重试（仅合并重试车道）以 autostash（合并前自动 stash 主树未提交改动、合并后弹回）在 9 分钟内自愈，主树 dashboard.ts 改动完好弹回（当前 git status 在案）。
+  - 调查评估：逐项复核当日事件：①唯一失败属 provider 侧账号限流（错误码 1302），非执行错误，编排救回按设计工作；②WIP 重叠阻塞 08:56-09:03 五次预检拦截、告警 943218292d0a（WIP 重叠闸门告警）升级后无需人工即由周期车道解堵，主树零污染；③killpg 蒸馏首轮校验违规（链接目标未入库）由第 2 轮自愈、17:59 违规 18:03 入库。当日无可判定为执行错误的条目。
+  - 建议：无需动作。
+
+### 可改进
+- **（恶化）回归门exit=4伪绿第七连窗，批1共32条空转**
+  - 影响：复发敞口第七连窗兑现：10-28 晨 code-review-fix 链批 1 的定向回归（按触碰面映射只跑相关测试的回归轮）在 pytest 未执行任何用例的情况下（exit=4，usage error，6.63 秒、total=0）按上一批遗留的 JUnit XML（测试结果标准格式文件）判 passed，32 条台账修复的回归保证在合回时刻为空；保留日志累计 27 次。
+  - 证据：WARNING 2026-10-27T18:40:14Z「回归命令非零退出（exit=4）但 JUnit XML 可解析且无失败，按解析结果判 passed」，命令目标列表首项为 #tests/__pycache__/conftest.cpython-310-pytest-9.1.1.pyc（# 前缀无效路径）；同秒「回归完成: status=passed, total=0, duration=6.63s」；33 秒后「code-fix 第 1 批合回成功：resolved 32/32 条」；批 2/3 回归真实执行（total=2/4）未中招。git 核实 core/regression.py 窗内唯一触碰为 ce491d89e（code-fix 台账批修提交，10-28 02:33）且仅改主机级锁日志通道，新鲜度校验零落地。
+  - 调查评估：问题源：对 [2026-10-28#可改进#2] 的定向复发对账。已核实事实：毒行形态与前六窗一致（# 前缀 __pycache__ 缓存路径→usage error→判 passed 所据为陈旧 XML）；本窗新事实是毒行出现在回退全量回归形态（FENIX_TEST_TARGETS 缺省 tests/ 仍被追加了 # 前缀路径），污染面从定向回归扩到全量兜底轮的判定读数。# 前缀来源两假说（映射输入行污染 vs 替换哨兵泄漏进执行命令）仍未裁决。根因维持形态层结论：门判定缺「结果新鲜度」维度＋targets 混入无效路径。与存量工作关系：add-codefix-test-targets-fallback-sanitization 与 evo-codefix-zero-face-regression-hardening 均未覆盖本形态，维持非重复判定。结论：连续七窗复发、修复面小（两条＋契约测试），优先级维持最高档。
+  - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
+
+- **（恶化）自省聚合dsh伴随流双计未修，stale再虚增24**
+  - 影响：本窗数据摘要的 runs 统计再次被 dsh 车道伴随事件流污染：47 个「run」中 24 个落入 stale（无终态残留）桶位，与窗内实测 25 个 .dsh-events.jsonl（dsh 车道另落一份的原始事件流文件）高度吻合——真实 run 约 27 个，条目建言的过滤零落地，每日量级判断继续失真。
+  - 证据：复放 _collect_run_files（core/self_review.py 运行文件收集函数）源码核实仍为 glob("*.jsonl") 无 .dsh-events 后缀排除、以 p.stem 当 run_id；窗内 jsonl 复放共 52 个＝25 伴随流＋27 正式 run；git 核实窗内唯一触碰 self_review.py 的 ce491d89e 仅改 _collect_rescue_traces（救回痕迹归集）的文档串。
+  - 调查评估：问题源：对本日摘要「无终态残留 24」反常量级的核查（自省消费自身聚合产物的自指核查）。已核实事实：伴随文件数与 stale 桶位 24/25 吻合，与上轮 70/70 全为伴随流的形态一致；修复未落地属确认而非推测（源码＋commit 双证）。根因同上轮：聚合收集面未随 dsh 事件流落盘形态扩展，一处过滤即可修复。与存量工作关系：evo-fix-self-review-phantom-running（在跑幻影治理）未覆盖伴随文件去重，维持非重复。结论：值小立项，维持。
+  - 建议：①_collect_run_files 排除 .dsh-events.jsonl 后缀（或按基础 run_id 去重，伴随流仅作深扫证据源）；②补契约测试：含伴随流的 dsh run 在 runs 统计中计 1 次、不入 stale。
+
+- **（持续）断窗守卫真空第九天，断连扩为五时点**
+  - 影响：复发敞口继续：夜间静默窗守卫（窗内暂停派发、避免在飞 run 撞每日断连点的配置防御）依赖的 night_quiet_window 配置仍为非法布尔值 false（合法关闭应写字符串 off），config.yaml 自 10-20 05:48 起 9 天未改；10-28 内核日志断连扩为五时点（04:30 双断＋04:50、05:11、09:54 三个新时点），本窗零击杀纯因批链 03:46 收工的日程裕量，历史同型死亡单次 136 美元量级。
+  - 证据：journalctl 内核日志 10-28 五次 enp42s0 Link is Down（04:30:01/04:31:20/04:50:46/05:11:45/09:54:59）；.fenix/config.yaml 第 302 行 night_quiet_window: false 原样、文件 mtime 2026-10-20 05:48；git 核实窗内 core/code_fix.py 唯一触碰为台账批修提交，窗值 lint、停用自动再武装、投递窗前缓冲三项建议零落地。
+  - 调查评估：问题源：断窗守卫真空的连续对账。已核实事实：断点面从「03:00 间歇＋04:30 每日」再扩散为五时点散布，多窗守卫（多窗解析 _parse_night_quiet_windows 已上线、配置即可用）的价值继续上升；本窗批链 02:26-03:46 收工、04:30 无在飞属侥幸而非守卫生效。根因沿前轮结论：停用/关闭类人工处置缺格式校验与自动恢复语义，属处置持久化缺口。与存量工作关系：evo-add-night-window-inflight-guard（跨窗顺延守卫）已落地但依赖窗值合法才生效。结论：零代码手工动作悬置第九天，维持优先立项。
+  - 建议：①手工把 night_quiet_window 改为覆盖多断点的合法多窗（如 "02:52-03:10,04:22-04:50"，零代码）；②窗解析把布尔 false 与 off 同义化并在载入时 lint 告警；③修复链停用态自动再武装或每日提醒信号；④批投递与审查派发加窗前缓冲。
+
+- **（恶化）积压蒸馏零重试超32小时，窗内四个新蒸馏均正常**
+  - 影响：归档 2026-10-27-evo-add-review-failure-attribution 的知识蒸馏（knowledge-distill，归档知识提取入库车道）自 10-27 16:09 失败后至窗末零重试，龄期约 32 小时（上轮记录 8 小时），归档知识持续缺位；对照面：窗内 4 个新归档蒸馏全部一轮成功——积压项没有自动消费路径，只能靠人工按 todo 台账催办。
+  - 证据：窗内蒸馏日志 4 组「已派发/完成」（evo-code-review-vendored-scope、evo-verify-infra-retry-lane、add-codefix-parse-error-breaker、add-killpg-self-guard），无该积压归档的任何派发行；.fenix/knowledge-distill-pending.json 的 batches=[]（重试待办实际只登记在 todo.md 知识真相源节）；spec/knowledge/ 下无 review-failure-attribution 产物（find 核实）；unrecognized_model（CLI 拒识带 [1M] 后缀模型名）本窗零复发。
+  - 调查评估：问题源：[2026-10-28#可改进#4] 与 [2026-10-27#知识真相源#1] 的连续对账。已核实事实：①模型名拒识本窗未复发，上轮建议的模型名兜底暂无新触发样本；②恶化的是重试侧——积压项无消费路径，重试待办与 knowledge-distill-pending.json 双轨且后者为空，恢复依赖在飞提案 evo-knowledge-distill-resume-guard（蒸馏恢复守卫，仍滞留 spec/changes/）。与存量工作关系：resume-guard 覆盖恢复面但未合回，非重复立项。结论：维持小立项，重心压在重试消费路径的落地。
+  - 建议：①resume-guard 尽快走完合回，使积压归档自动补蒸馏；②重试台账加龄期信号（登记超 24 小时未重试发每日一条提醒）；③unrecognized_model 兜底重试（以默认网关裸模型名重试一次）照旧保留。
+
+- **evolution回写push恒败累计46次，根因收敛零remote兄弟仓**
+  - 影响：自进化 todo 回写的 push 步骤本窗再败 1 次（本地 01:43），保留日志累计 46 条同文 WARNING；但根因可从「两假说并存」收敛为单因：受管兄弟项目仓 /root/dsh-plugins 无任何 remote（git remote -v 输出为空），裸 git push（git -C 项目根 push）在该仓每轮回写必败，fenixd 主仓 origin 在案可成功。
+  - 证据：本窗失败行 2026-10-27T17:43:55Z「evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: fatal: No configured push destination.」；代码路径核实 core/evolution.py:1107-1108 为 git -C proot push（proot 为各受管项目根）；本窗实测 /root/dsh-plugins 的 git remote -v 为空；对照同夜 fenixd 仓两个标记提交（8a5c480ee、99d1acc62）add/commit/push 正常。
+  - 调查评估：问题源：[2026-10-26#可改进#4] 恒失败家族的根因收敛核查。已核实事实：daemon 为多项目服务（fenixd、dsh-plugins 等），回写按项目根就地提交推送，零 remote 的兄弟仓构成结构性必败路径——「subprocess 变量构造差异」「cwd/env 传递差异」两假说均被代码与实测排除。与存量工作关系：与 2026-10-12「幂等空转记 ERROR 稀释错误信号」同属恒失败固定噪音家族但对象不同，维持非重复。结论：根因已收敛、修复面小（探测＋跳过＋聚合告警），小立项价值上升。
+  - 建议：①push 前以 git remote 探测，空则记 DEBUG 跳过；②恒失败（连续 N 次）收敛为每日一条聚合告警；③如需兄弟仓远端备份则显式配置 remote，否则对该仓关闭 push 语义。
+
+- **夜间主run迁移dsh车道，停滞观测失明系列不可测**
+  - 影响：观测面损失：昨夜周期审查 run（7748 秒）与窗内全部 code-fix、admin run 均已切 dsh 车道（自研 CLI harness），API 停滞与逐轮延迟维度结构性失明——上晚审查 run 实测 87.2 分钟停滞（占墙钟 44%），本窗同类损耗是否发生已不可判；停滞系列条目自设的「连续两晚 ≥60 分钟重启定向取证」触发器在 dsh 配对接线前永久哑化。
+  - 证据：run_metrics（run 收尾结构化指标行）核实 harness=dsh：审查 run code-review-1793117020（夜间周期全仓审查）与窗内 5 个 code-fix run、admin-add-timeline-origin-request 均为 dsh；WARNING「run code-review-1793117020: 延迟观测疑似失明（latency_rounds=0 但 assistant 轮次=113）」（2026-10-27T18:12:48Z）；同 run context metrics 行 inp=0（dsh 事件流无 usage 透传）；本窗唯一可测停滞为两个 spec-review run（claude 车道）合计约 434.7 秒。
+  - 调查评估：问题源：停滞系列条目 [2026-10-28#浪费#1] 触发条件的可评估性核查。已核实事实：审查车道上晚（claude）尚有 662 轮延迟样本、本窗（dsh）0 样本，切换发生在两夜之间，属车道迁移而非观测恢复——十二晚停滞序列（80.3→…→91.1 分钟）自本窗起对主 run 不可测，停滞损耗大概率仍在发生只是不可见。与存量工作关系：dsh-events 延迟配对接线正是 [2026-10-15#可改进#2] 的主旨（仍在 todo 未落地），本条是其暴露面扩大的实证（从 spec 车道扩到审查/admin/code-fix 全维护车道），勿另起炉灶重复立项。结论：系列阈值跟踪在接线完成前暂停；既有两个停滞系列条目（10-26/10-28 浪费#1）保留不据此闭环，待恢复观测后续判。
+  - 建议：①优先落地 [2026-10-15#可改进#2] 的 dsh-events 延迟配对（tool_call/tool_result 对、thinking 边界）；②零代码缓解可选：夜间审查暂切回 claude 车道恢复可观测，或明确接受盲飞并在系列条目标注口径；③「失明」WARNING 按（车道,事件形态）收敛为一次性免噪防刷屏。
