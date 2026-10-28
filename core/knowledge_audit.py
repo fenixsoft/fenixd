@@ -1276,6 +1276,8 @@ def _apply_mechanical(
             continue
         lines = orig_text.splitlines()
         drop = set(item["drop_lines"])
+        # 旧扫描载荷可能缺 drop_texts（键缺失按失配处理，fail-closed 转待人工）
+        drop_texts = item.get("drop_texts", {})
         # 快照一致性复核（code-review e69e4b1bba4a，对齐 ADR 段「槽位定位失败
         # 不盲改」口径）：drop_lines 是扫描时刻行号，扫描与删行之间隔着 validate
         # / dirty 子进程窗口，锁外人工与 git 操作不受蒸馏锁约束——窗口内插行/
