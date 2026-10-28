@@ -41,7 +41,9 @@ from core.fs_utils import atomic_write_text
 # 拼接点；spec/changes/<spec_name> 侧路径须与既有 spec 目录名逐字一致，不净化。
 from core.verify_engine.path_safety import safe_component
 
-_logger = logging.getLogger(__name__)
+# 须挂 fenixd. 可传播层级（tests/test_logger_no_bypass.py 禁 core 下裸
+# getLogger(__name__)——core.* 无 handler，告警会旁路丢弃），禁改回 __name__。
+_logger = logging.getLogger("fenixd.verify_report")
 
 # 告警 signal_type（human-escalation-alerts 能力，.fenix/admin_alerts.json）
 SIGNAL_MISSING = "verify_report_missing"
