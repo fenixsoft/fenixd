@@ -1173,6 +1173,22 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"非法 expected: {expected!r}，须为字符串",
             }
+        if not isinstance(attr, str):
+            # 非字符串 attribute（planner 误写 YAML dict/list 等结构化值）是
+            # 确定性配置错误：上方缺参检查只拦 falsy，真值 dict/list 会穿过
+            # 全部预检，get_attribute(attr) 每轮抛 TypeError 被轮询 except
+            # 吞掉、按「元素尚未渲染」空转满超时后报错是 Playwright 原始
+            # 文本，正是 expected 预检着力消除的形态；比照同款口径
+            # （code-review item 5b37c05f7b47），进轮询前显式失败。
+            return {
+                "type": "attribute_match",
+                "layer": 3,
+                "selector": selector,
+                "attribute": attr,
+                "expected": expected,
+                "pass": False,
+                "error": f"非法 attribute: {attr!r}，须为字符串",
+            }
         if not await self._element_exists(page, selector):
             # 快速失败：比照 _assert_element_enabled 先查存在性，
             # 避免元素缺失时 get_attribute 拖满 Playwright 默认 30 秒超时

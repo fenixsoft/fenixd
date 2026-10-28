@@ -92,11 +92,27 @@ class ApiRunner(VerifyRunner):
         # 窗口结束后），POST/DELETE 等副作用请求已真实打到实例而捕获被整体
         # 丢弃，可能污染同一实例上后续场景的执行前提——前移到验收期在发送
         # 前拒绝，步骤内两处检查保留为兜底。
+        # 多步骤重复 as 命名验收（code-review item fe4b57169be0）：两个普通
+        # 步骤用同一 as 名同样与 captures 同槽互相覆盖——前序响应被静默丢弃，
+        # 引用该名称的断言只看到最后一次响应，作者意图与实际断言对象的偏差
+        # 会被误归因为产品行为。与 '_latest' 保留键拦截同口径，发送前拒绝。
+        seen_as_names: dict[str, int] = {}
         for i, step in enumerate(scenario.steps):
-            if step.action in ("http_request", "sse_connect") and step.as_ == "_latest":
+            if step.action not in ("http_request", "sse_connect"):
+                continue
+            if step.as_ == "_latest":
                 errors.append(
                     f"场景'{scenario.id}'步骤{i}: "
                     f"as 命名 '_latest' 是框架保留键，请改用其他名称"
+                )
+                continue
+            if not step.as_:
+                continue
+            first = seen_as_names.setdefault(step.as_, i)
+            if first != i:
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: "
+                    f"as 命名 '{step.as_}' 与步骤{first} 重复（前序捕获会被静默覆盖），请改用其他名称"
                 )
         if (
             any(a.type == "json_schema" for a in scenario.assertions)
@@ -314,7 +330,11 @@ class ApiRunner(VerifyRunner):
             if body_type == "json":
                 try:
                     json_body = json.loads(body)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
+                    # RecursionError 非 ValueError 子类须显式入元组：超深嵌套
+                    # body（如上千层 "[[[..."，1MB 内放得下）令 C 解析器递归
+                    # 爆栈，不捕获即穿出使整个场景 run 异常收场
+                    # （code-review item 97dfe58d125e）。
                     return {
                         "success": False,
                         "action": "http_request",
@@ -341,7 +361,10 @@ class ApiRunner(VerifyRunner):
                 # 显式声明的路径行为均不变。
                 try:
                     json_body = json.loads(body)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError):
+                    # 与 body_type=json 路径同口径（code-review item
+                    # 97dfe58d125e）：超深嵌套 body 的 RecursionError 降级按
+                    # 原文发送，不穿出运行层。
                     content = body
                     sniff_fallback_text = True
             else:
@@ -463,6 +486,11 @@ class ApiRunner(VerifyRunner):
         # 占用，且未解析标注里的数字与真实体积不符。
         resp_text_bytes = len(resp_text.encode("utf-8", errors="replace"))
         json_parse_skipped = resp_text_bytes > _JSON_PARSE_LIMIT
+        # 超深嵌套响应（如上千层 "[[[..."，1MB 解析上限内完全放得下）令 C 解析器
+        # 递归爆栈抛 RecursionError（code-review item 97dfe58d125e）：非 ValueError
+        # 子类须显式入元组，否则穿出步骤级结构化失败使整个场景 run 异常收场——
+        # 归一为 resp_json=None 并在 capture 标注归因。
+        json_parse_recursion_failed = False
         if json_parse_skipped:
             resp_json = None
         else:
@@ -470,6 +498,9 @@ class ApiRunner(VerifyRunner):
                 resp_json = json.loads(resp_text) if resp_text.strip() else None
             except json.JSONDecodeError:
                 resp_json = None
+            except RecursionError:
+                resp_json = None
+                json_parse_recursion_failed = True
         resp_body, truncated = _truncate(resp_text)
 
         capture = {
@@ -490,6 +521,8 @@ class ApiRunner(VerifyRunner):
             capture["json_parse_skipped"] = (
                 f"响应体超大未解析（{resp_text_bytes} 字节 > 上限 {_JSON_PARSE_LIMIT}）"
             )
+        if json_parse_recursion_failed:
+            capture["json_parse_failed"] = "响应体 JSON 嵌套过深超出解析器递归上限，按未解析处理"
         if read_truncated:
             capture["read_truncated"] = (
                 f"响应体超过读入上限（{_RESPONSE_READ_LIMIT} 字节），仅保留前缀参与解析与证据"

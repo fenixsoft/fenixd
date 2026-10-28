@@ -787,8 +787,10 @@ class VisualDiffer:
                 }
             ]
 
-        baseline = Image.open(baseline_path).convert("RGB")
-        current = Image.open(current_path).convert("RGB")
+        with Image.open(baseline_path) as base_src:
+            baseline = base_src.convert("RGB")
+        with Image.open(current_path) as cur_src:
+            current = cur_src.convert("RGB")
 
         if baseline.size != current.size:
             return [

@@ -21,8 +21,9 @@ def _truncate(text: str) -> tuple[str, bool]:
     if len(encoded) > _EVIDENCE_LIMIT:
         return encoded[:_EVIDENCE_LIMIT].decode("utf-8", errors="ignore"), True
     # 未截断分支同样清洗：归一到「必可 UTF-8 编码」口径，与截断分支对称，
-    # 防孤立代理字符原样进入证据链、把 UnicodeEncodeError 拖到 json 落盘时才炸
-    return text.encode("utf-8", errors="replace").decode("utf-8"), False
+    # 防孤立代理字符原样进入证据链、把 UnicodeEncodeError 拖到 json 落盘时才炸；
+    # 复用上方 encoded，两分支共用同一编码结果，避免重复 encode
+    return encoded.decode("utf-8"), False
 
 
 def _interpolate_env(value: str, env: dict) -> str:

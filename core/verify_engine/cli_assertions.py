@@ -800,14 +800,33 @@ class CliAssertionRunner:
                 "error": "缺少 path 字段或类型非法（path 须为非空字符串）",
             }
         expected = a.get("expected", _MISSING)
+        # mode 提前取定：所有出口（含下方路径非法分支）统一回显（口径对齐
+        # api 侧 _assert_json_path）
+        mode = a.get("mode", "exact")
         # 哨兵区分「路径不存在」与「显式 null」（与 api 侧 _assert_json_path
         # 口径对齐）：expected=null 且路径缺失时 None==None 会假通过
-        actual = evaluate_json_path(data, path, missing=_MISSING) if path else data
+        try:
+            actual = evaluate_json_path(data, path, missing=_MISSING) if path else data
+        except ValueError as e:
+            # 路径非法可见化（口径对齐 api 侧 _assert_json_path）：畸形 path
+            # （空段/裸引号段/引号未闭合/畸形括号段）按结构化定向失败回显
+            # step/path/expected/mode，而非穿到 run() 兜底归一成泛化
+            # 「断言执行异常」丢掉定位证据
+            return {
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": path,
+                "expected": None if expected is _MISSING else expected,
+                "mode": mode,
+                "actual": None,
+                "pass": False,
+                "error": str(e),
+            }
         path_missing = bool(path) and actual is _MISSING
         if path_missing:
             # 哨兵仅内部判定，不外泄（actual 归一为 None）
             actual = None
-        mode = a.get("mode", "exact")
         negate = self._normalize_negate(a)
         if path_missing:
             # fail-closed：路径缺失对任何比对 mode 都显式报错（negate 下也不
