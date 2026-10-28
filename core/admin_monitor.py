@@ -6618,6 +6618,11 @@ class AdminMonitor:
                             # 保持记录形状稳定，前端按无裁决处理）
                             "choice_id": getattr(disp, "choice_id", "") or None,
                             "suggested_choice": getattr(disp, "suggested_choice", "") or None,
+                            # fix-admin-choice-payload-and-scenario-pairing 2.1：
+                            # 结构化动作载荷随 final 记录透传落盘（审计闭环：
+                            # final 记录载荷在场即完整留痕；空值写 None 与
+                            # choice_id 同款形状稳定口径）
+                            "choice_payload": getattr(disp, "choice_payload", "") or None,
                         }
                     )
                 except Exception as e:
@@ -7443,6 +7448,9 @@ class AdminMonitor:
         # 回写，信号保留待重审），不能走 None 短路被回写门视为已执行成功。
         # 未知 choice_id 不在此拦截——交执行器报非法 choice（走失败留痕）。
         _resolved_choice = None
+        # fix-admin-choice-payload-and-scenario-pairing 4.1：requires_payload
+        # 位同样在作用域守卫处顺带读取（单次 resolve_choice 双用，不二次解析）
+        _requires_payload = False
         try:
             from core.dashboard.data.adjudication_choices import (
                 is_global_spec,
@@ -7451,6 +7459,10 @@ class AdminMonitor:
 
             _resolved_choice, _resolve_reason = resolve_choice(
                 choice_id, str(signal.get("signal_type") or "")
+            )
+            # 载荷要求读注册表解析结果（单源），不硬编码选项名单
+            _requires_payload = bool(
+                (_resolved_choice or {}).get("requires_payload", False)
             )
             # scoped-no-reverse（未注册 signal_type 的 spec_scoped 动作被反查
             # 收紧拒解析）同属作用域拒入形态——全局信号照此提前跳过
@@ -7470,6 +7482,9 @@ class AdminMonitor:
                 f"choice 作用域预判不可用（执行器守卫兜底）: {e}",
             )
             _resolved_choice = None
+            # 载荷要求位随守卫降级缺省 False（不拦处置，载荷合法性由执行器
+            # 既有解析失败路径拒绝，与作用域守卫降级同方向）
+            _requires_payload = False
             # code-review d5edc8ac335e：降级分支对全局形态 spec（空值或占位
             # 'global'，同 is_global_spec 口径）保守沿用 not-ok skipped 语义，
             # 与非降级路径 fail-closed 方向一致——否则空 spec × spec_scoped
@@ -7508,8 +7523,30 @@ class AdminMonitor:
                 f"处置 choice_id={choice_id} 无关联 spec，跳过执行",
             )
             return None
-        # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
-        basis = str(getattr(disp, "actions_taken", "") or "")[:200]
+        # fix-admin-choice-payload-and-scenario-pairing 4.1：note 来源载荷优先
+        # ——choice_payload 非空 → 原文整体直传（不经 actions_taken 拼接/截断，
+        # 载荷型选项执行器契约强制完整 JSON 载荷，200 字截断结构性必败）；
+        # 载荷空且选项 requires_payload → not-ok skipped（信号保留待重审），
+        # 不空打执行器制造必然失败日志（处置产物硬门 3.1 为前置防线，此处
+        # 双层设防）；其余情况维持依据文本截断 200 字现状。
+        _choice_payload = str(getattr(disp, "choice_payload", "") or "")
+        if _choice_payload.strip():
+            basis = _choice_payload
+        elif _requires_payload:
+            self.logger.warning(
+                "admin_monitor",
+                f"处置 choice_id={choice_id} 为 requires_payload 选项而处置"
+                "记录未携带 choice_payload JSON 载荷，跳过执行（信号保留待重审）",
+            )
+            return {"ok": False, "skipped": True,
+                    "action": ((_resolved_choice or {}).get("action") or choice_id),
+                    "error": ("该选项需要 choice_payload JSON 载荷"
+                              '（{"scenarios": [...], "reason": "...", '
+                              '"fixture_files": [...]}），处置记录未携带，'
+                              "已跳过执行")}
+        else:
+            # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
+            basis = str(getattr(disp, "actions_taken", "") or "")[:200]
         # 陈旧代码预检（evo-add-key-path-stale-code-preflight 2.3）：choice 执行
         # 前查询进程代码陈旧旗标；陈旧则请求重启（一条 WARNING + daemon 侧
         # .fenix/restart_request 防重）并照常执行——执行结果与留痕不受预检影响。

@@ -114,6 +114,8 @@ class TestResultClassesChar:
             # add-human-adjudication-choices 4.2：结构化裁决字段进 to_dict
             "choice_id": "",
             "suggested_choice": "",
+            # fix-admin-choice-payload-and-scenario-pairing 2.1：载荷通道进 to_dict
+            "choice_payload": "",
         }
         assert a.family_waiver is True  # 内部字段，不进 to_dict
 

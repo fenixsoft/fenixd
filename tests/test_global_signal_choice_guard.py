@@ -441,6 +441,118 @@ class TestConsumerGlobalSkipAndWriteback(_TempProjCase):
         self.assertIn("非法 choice_id", steps[0].get("error") or "")
 
 
+# ── 2b. 自动执行通道载荷优先（fix-admin-choice-payload-and-scenario-pairing 4.1）──
+
+
+class TestChoicePayloadChannel(_TempProjCase):
+    """_apply_choice_execution note 来源三分支：
+    载荷原文直传执行器 / 缺载荷 skipped 不调执行器 / 非载荷选项 note 仍为
+    依据文本截断 200 字（行为不变）。"""
+
+    PAYLOAD = (
+        '{"scenarios": [{"id": "s1", "name": "修订后场景", "steps": []}], '
+        '"reason": "原场景定义不可行", "fixture_files": []}'
+    )
+
+    def _make_mon(self):
+        proot = _make_proot(self.tmpdir)
+        _freeze_review_incomplete(proot)
+        mon, _store, _logger = _make_monitor(proot)
+        return mon
+
+    @staticmethod
+    def _capture_executor():
+        """替换执行器捕获 note（载荷通道断言不真改 spec 状态机）。"""
+        captured = {}
+
+        def fake_executor(proot, spec, cid, note="", signal_type=""):
+            captured.update({"note": note, "spec": spec, "choice_id": cid})
+            return {"ok": True, "choice_id": cid, "action": cid,
+                    "steps": [], "error": None}
+
+        return captured, mock.patch(
+            "core.dashboard.data.admin_actions.execute_adjudication_choice",
+            side_effect=fake_executor,
+        )
+
+    def test_payload_reaches_executor_verbatim(self):
+        """载荷非空 → note 取 choice_payload 原文整体直传（不经 actions_taken
+        拼接或 200 字截断）。"""
+        mon = self._make_mon()
+        captured, patcher = self._capture_executor()
+        long_basis = "依据文本" * 300  # 远超 200 字，证明截断路径未介入
+        disp = AdminDisposition(
+            run_id="admin-run-p1", spec="spec-frozen", success=True,
+            result="resolved", summary="已修订场景集",
+            actions_taken=long_basis,
+            choice_id="revise_scenario_reverify",
+            choice_payload=self.PAYLOAD,
+        )
+        with patcher:
+            outcome = mon._apply_choice_execution(
+                {"signal_type": "inconclusive_loop", "spec": "spec-frozen"},
+                disp,
+            )
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(captured["note"], self.PAYLOAD)
+        self.assertEqual(captured["choice_id"], "revise_scenario_reverify")
+        self.assertEqual(captured["spec"], "spec-frozen")
+
+    def test_missing_payload_skips_executor(self):
+        """载荷必需选项缺载荷 → not-ok skipped，不调执行器（不留必然失败
+        日志），信号保留待重审。"""
+        mon = self._make_mon()
+        calls = []
+
+        def forbidden_executor(*a, **k):
+            calls.append(1)
+            return {"ok": True, "steps": [], "error": None}
+
+        disp = AdminDisposition(
+            run_id="admin-run-p2", spec="spec-frozen", success=True,
+            result="resolved", summary="未携带载荷",
+            choice_id="revise_scenario_reverify",
+        )
+        with mock.patch(
+            "core.dashboard.data.admin_actions.execute_adjudication_choice",
+            side_effect=forbidden_executor,
+        ):
+            outcome = mon._apply_choice_execution(
+                {"signal_type": "inconclusive_loop", "spec": "spec-frozen"},
+                disp,
+            )
+        self.assertIsNotNone(outcome)
+        self.assertFalse(outcome["ok"])
+        self.assertTrue(outcome.get("skipped"))
+        self.assertIn("choice_payload", outcome.get("error") or "")
+        self.assertEqual(outcome.get("action"), "revise_scenario_reverify")
+        self.assertEqual(calls, [], "缺载荷 MUST NOT 调执行器")
+        # WARNING 留痕（跳过可溯源）
+        self.assertTrue(
+            any("choice_payload" in w for w in mon.logger.warnings),
+            f"应有缺载荷 WARNING 留痕: {mon.logger.warnings}",
+        )
+
+    def test_non_payload_option_note_is_basis_text(self):
+        """非载荷选项无载荷 → note 维持 actions_taken 截断 200 字现状。"""
+        mon = self._make_mon()
+        basis_text = "缺口可接受的依据" * 100
+        captured, patcher = self._capture_executor()
+        disp = AdminDisposition(
+            run_id="admin-run-p3", spec="spec-frozen", success=True,
+            result="resolved", summary="接受现状推进",
+            actions_taken=basis_text,
+            choice_id="force_advance",
+        )
+        with patcher:
+            outcome = mon._apply_choice_execution(
+                {"signal_type": "impl_budget_exhausted", "spec": "spec-frozen"},
+                disp,
+            )
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(captured["note"], basis_text[:200])
+
+
 # ── 3. mark_signal_handled 留痕契约 ─────────────────────────────────────
 
 

@@ -246,6 +246,7 @@ class AdminDisposition:
         failure_evidence: dict | None = None,
         choice_id: str = "",
         suggested_choice: str = "",
+        choice_payload: str = "",
     ):
         self.run_id = run_id
         self.spec = spec
@@ -272,6 +273,12 @@ class AdminDisposition:
         # 可选键缺省空串，既有处置记录（无这两个键）完全兼容。
         self.choice_id = choice_id or ""
         self.suggested_choice = suggested_choice or ""
+        # fix-admin-choice-payload-and-scenario-pairing 2.1：结构化动作载荷
+        # 直传通道（JSON 字符串，不经 actions_taken 文本与 200 字截断）——
+        # 载荷型选项（注册表 requires_payload=True，如 revise_scenario_reverify）
+        # 由 _apply_choice_execution 以原文整体直传执行器 note。可选键缺省
+        # 空串，存量处置记录（无该键）零迁移。
+        self.choice_payload = choice_payload or ""
 
     def to_dict(self) -> dict:
         return {
@@ -287,6 +294,7 @@ class AdminDisposition:
             "error": self.error,
             "choice_id": self.choice_id,
             "suggested_choice": self.suggested_choice,
+            "choice_payload": self.choice_payload,
         }
 
 
