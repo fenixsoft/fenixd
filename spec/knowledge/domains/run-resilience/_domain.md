@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-10-15 01:55 UTC+8
+> 最后更新：2026-10-28 17:59 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -36,3 +36,4 @@
 | [run-stop-loss](run-stop-loss.md) | run 级止损（attempt 间隙取消/重试让位/停滞预算） | 2026-10-04 03:36 |
 | [cli-stderr-noise-filtering](cli-stderr-noise-filtering.md) | CLI stderr 诊断噪声统一判别与降噪（判别单源、深扫摘要与回填归因消费端、admin 证据豁免） | 2026-10-08 02:32 |
 | [impl-env-blocker-stop-loss](impl-env-blocker-stop-loss.md) | impl 环境阻塞止损与任务停滞预警 | 2026-10-14 14:06 |
+| [killpg-self-guard](killpg-self-guard.md) | 进程清场击杀自保护守卫（禁命中调用者自身进程组） | 2026-10-28 17:59 |

@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-28 10:36 UTC+8
+> 最后更新：2026-10-28 17:59 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -19,7 +19,7 @@
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 19 | 2026-10-28 00:13 |
 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 26 | 2026-10-28 10:36 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 16 | 2026-10-15 01:55 |
-| [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 29 | 2026-10-15 01:55 |
+| [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 30 | 2026-10-28 17:59 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-10-08 04:02 |
 | [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 22 | 2026-10-27 23:33 |
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 13 | 2026-10-11 02:02 |
