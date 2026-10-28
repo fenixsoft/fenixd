@@ -492,6 +492,7 @@
 
 ### 浪费
 - **验证env停车9.3小时，处置载荷缺失单发失败**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：add-merged-branch-gc（已合并分支 GC spec）验证失败被级二豁免握手（env 类失败首轮即升级停车等人工的机制）停车等人工，自 10-28 01:13 悬置到 10:33 才复验全绿，约 9.3 小时（其中约 7.7 小时为夜间人工不可达期）；期间 Administrator 处置 run 唯一匹配的处置选项 revise_scenario_reverify（修订场景后复验）因缺载荷通道执行失败一次，并烧出 7 条 inconclusive_loop（验证结论不可判定循环）告警链。
   - 证据：日志 2026-10-27T17:13:01Z「env 豁免拦截 'add-merged-branch-gc'（env 断言 7 条、blocked-env 场景 6 个）— 转 inconclusive 升级停车等人工处置」；告警 89b2030b2d0a（处置失败留档告警，result=failed）对应 17:55:40Z ERROR「revise_scenario_reverify 需要 JSON 载荷」；告警 8f12fbbdb4c7（处置成功收口告警，10-28T00:57:44Z result=success）对应场景修订复位；重验 16/16 全绿（.fenix/verify-progress/add-merged-branch-gc.json：total=16 done=16），verification-report 10:33 入库（commit 70af43b77）。
   - 调查评估：问题源：add-merged-branch-gc 验证收尾的 env 阻塞处置链复盘。已核实事实：①握手按设计工作、未发生 verified 洗白，6 个 blocked-env 场景（api/web-branch-gc 系）经场景修订复验全绿，说明阻塞源在场景/夹具侧而非持久环境损坏；②停车时长的主要放大器是处置通道缺陷——revise_scenario_reverify 当时无载荷通道、fail-closed 失败后无重试也无降级指引，只能等晨间人工；③通道缺陷已由窗内 spec 修复（fix-admin-choice-payload-and-scenario-pairing，提交 ac662dd28 于 09:37 合回：choice_payload 直传＋缺载荷 fail-closed 硬门＋Administrator 提示词契约增补）。根因：处置载荷通道缺口（系统性，已闭环）叠加夜间人工不可达（结构性）。与存量工作关系：修复 spec 即本问题载体，活跃区无同主题其他在飞提案。结论：损失真实但已在窗内闭环，本条为损失记录与观察项。
@@ -499,6 +500,7 @@
 
 ### 失误
 - **（当日无）**
+  - 自进化：问题不成立 / 建议合理 / — 不需要
   - 影响：窗口内无执行层失误造成损失：摘要所记唯一失败 run 是被网关 429 限流击杀的 judge 重试 attempt（约 0 轮、秒级成本），10 秒后被 provider 电路切换（provider switched）救回。
   - 证据：失败样本 planner-judge-add-merged-branch-gc-1793119685-a1（judge 验证裁决 run）死于 dsh: RATE_LIMIT 429（2026-10-27T16:48:29Z，0 rounds）；16:48:39Z「provider switched bigmodel.cn → inferaiapi.com（model_changed glm-5.3-flash→deepseek-v4-flash）」后重试 -a2 正常完成；add-timeline-origin-request 的 merge-back WIP 重叠闸门（防主树未提交改动被合并覆盖的预检）5 次拦截后由周期消费者 merge-only 重试（仅合并重试车道）以 autostash（合并前自动 stash 主树未提交改动、合并后弹回）在 9 分钟内自愈，主树 dashboard.ts 改动完好弹回（当前 git status 在案）。
   - 调查评估：逐项复核当日事件：①唯一失败属 provider 侧账号限流（错误码 1302），非执行错误，编排救回按设计工作；②WIP 重叠阻塞 08:56-09:03 五次预检拦截、告警 943218292d0a（WIP 重叠闸门告警）升级后无需人工即由周期车道解堵，主树零污染；③killpg 蒸馏首轮校验违规（链接目标未入库）由第 2 轮自愈、17:59 违规 18:03 入库。当日无可判定为执行错误的条目。
@@ -506,36 +508,42 @@
 
 ### 可改进
 - **（恶化）回归门exit=4伪绿第七连窗，批1共32条空转**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：复发敞口第七连窗兑现：10-28 晨 code-review-fix 链批 1 的定向回归（按触碰面映射只跑相关测试的回归轮）在 pytest 未执行任何用例的情况下（exit=4，usage error，6.63 秒、total=0）按上一批遗留的 JUnit XML（测试结果标准格式文件）判 passed，32 条台账修复的回归保证在合回时刻为空；保留日志累计 27 次。
   - 证据：WARNING 2026-10-27T18:40:14Z「回归命令非零退出（exit=4）但 JUnit XML 可解析且无失败，按解析结果判 passed」，命令目标列表首项为 #tests/__pycache__/conftest.cpython-310-pytest-9.1.1.pyc（# 前缀无效路径）；同秒「回归完成: status=passed, total=0, duration=6.63s」；33 秒后「code-fix 第 1 批合回成功：resolved 32/32 条」；批 2/3 回归真实执行（total=2/4）未中招。git 核实 core/regression.py 窗内唯一触碰为 ce491d89e（code-fix 台账批修提交，10-28 02:33）且仅改主机级锁日志通道，新鲜度校验零落地。
   - 调查评估：问题源：对 [2026-10-28#可改进#2] 的定向复发对账。已核实事实：毒行形态与前六窗一致（# 前缀 __pycache__ 缓存路径→usage error→判 passed 所据为陈旧 XML）；本窗新事实是毒行出现在回退全量回归形态（FENIX_TEST_TARGETS 缺省 tests/ 仍被追加了 # 前缀路径），污染面从定向回归扩到全量兜底轮的判定读数。# 前缀来源两假说（映射输入行污染 vs 替换哨兵泄漏进执行命令）仍未裁决。根因维持形态层结论：门判定缺「结果新鲜度」维度＋targets 混入无效路径。与存量工作关系：add-codefix-test-targets-fallback-sanitization 与 evo-codefix-zero-face-regression-hardening 均未覆盖本形态，维持非重复判定。结论：连续七窗复发、修复面小（两条＋契约测试），优先级维持最高档。
   - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
 
 - **（恶化）自省聚合dsh伴随流双计未修，stale再虚增24**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：本窗数据摘要的 runs 统计再次被 dsh 车道伴随事件流污染：47 个「run」中 24 个落入 stale（无终态残留）桶位，与窗内实测 25 个 .dsh-events.jsonl（dsh 车道另落一份的原始事件流文件）高度吻合——真实 run 约 27 个，条目建言的过滤零落地，每日量级判断继续失真。
   - 证据：复放 _collect_run_files（core/self_review.py 运行文件收集函数）源码核实仍为 glob("*.jsonl") 无 .dsh-events 后缀排除、以 p.stem 当 run_id；窗内 jsonl 复放共 52 个＝25 伴随流＋27 正式 run；git 核实窗内唯一触碰 self_review.py 的 ce491d89e 仅改 _collect_rescue_traces（救回痕迹归集）的文档串。
   - 调查评估：问题源：对本日摘要「无终态残留 24」反常量级的核查（自省消费自身聚合产物的自指核查）。已核实事实：伴随文件数与 stale 桶位 24/25 吻合，与上轮 70/70 全为伴随流的形态一致；修复未落地属确认而非推测（源码＋commit 双证）。根因同上轮：聚合收集面未随 dsh 事件流落盘形态扩展，一处过滤即可修复。与存量工作关系：evo-fix-self-review-phantom-running（在跑幻影治理）未覆盖伴随文件去重，维持非重复。结论：值小立项，维持。
   - 建议：①_collect_run_files 排除 .dsh-events.jsonl 后缀（或按基础 run_id 去重，伴随流仅作深扫证据源）；②补契约测试：含伴随流的 dsh run 在 runs 统计中计 1 次、不入 stale。
 
 - **（持续）断窗守卫真空第九天，断连扩为五时点**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：复发敞口继续：夜间静默窗守卫（窗内暂停派发、避免在飞 run 撞每日断连点的配置防御）依赖的 night_quiet_window 配置仍为非法布尔值 false（合法关闭应写字符串 off），config.yaml 自 10-20 05:48 起 9 天未改；10-28 内核日志断连扩为五时点（04:30 双断＋04:50、05:11、09:54 三个新时点），本窗零击杀纯因批链 03:46 收工的日程裕量，历史同型死亡单次 136 美元量级。
   - 证据：journalctl 内核日志 10-28 五次 enp42s0 Link is Down（04:30:01/04:31:20/04:50:46/05:11:45/09:54:59）；.fenix/config.yaml 第 302 行 night_quiet_window: false 原样、文件 mtime 2026-10-20 05:48；git 核实窗内 core/code_fix.py 唯一触碰为台账批修提交，窗值 lint、停用自动再武装、投递窗前缓冲三项建议零落地。
   - 调查评估：问题源：断窗守卫真空的连续对账。已核实事实：断点面从「03:00 间歇＋04:30 每日」再扩散为五时点散布，多窗守卫（多窗解析 _parse_night_quiet_windows 已上线、配置即可用）的价值继续上升；本窗批链 02:26-03:46 收工、04:30 无在飞属侥幸而非守卫生效。根因沿前轮结论：停用/关闭类人工处置缺格式校验与自动恢复语义，属处置持久化缺口。与存量工作关系：evo-add-night-window-inflight-guard（跨窗顺延守卫）已落地但依赖窗值合法才生效。结论：零代码手工动作悬置第九天，维持优先立项。
   - 建议：①手工把 night_quiet_window 改为覆盖多断点的合法多窗（如 "02:52-03:10,04:22-04:50"，零代码）；②窗解析把布尔 false 与 off 同义化并在载入时 lint 告警；③修复链停用态自动再武装或每日提醒信号；④批投递与审查派发加窗前缓冲。
 
 - **（恶化）积压蒸馏零重试超32小时，窗内四个新蒸馏均正常**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：归档 2026-10-27-evo-add-review-failure-attribution 的知识蒸馏（knowledge-distill，归档知识提取入库车道）自 10-27 16:09 失败后至窗末零重试，龄期约 32 小时（上轮记录 8 小时），归档知识持续缺位；对照面：窗内 4 个新归档蒸馏全部一轮成功——积压项没有自动消费路径，只能靠人工按 todo 台账催办。
   - 证据：窗内蒸馏日志 4 组「已派发/完成」（evo-code-review-vendored-scope、evo-verify-infra-retry-lane、add-codefix-parse-error-breaker、add-killpg-self-guard），无该积压归档的任何派发行；.fenix/knowledge-distill-pending.json 的 batches=[]（重试待办实际只登记在 todo.md 知识真相源节）；spec/knowledge/ 下无 review-failure-attribution 产物（find 核实）；unrecognized_model（CLI 拒识带 [1M] 后缀模型名）本窗零复发。
   - 调查评估：问题源：[2026-10-28#可改进#4] 与 [2026-10-27#知识真相源#1] 的连续对账。已核实事实：①模型名拒识本窗未复发，上轮建议的模型名兜底暂无新触发样本；②恶化的是重试侧——积压项无消费路径，重试待办与 knowledge-distill-pending.json 双轨且后者为空，恢复依赖在飞提案 evo-knowledge-distill-resume-guard（蒸馏恢复守卫，仍滞留 spec/changes/）。与存量工作关系：resume-guard 覆盖恢复面但未合回，非重复立项。结论：维持小立项，重心压在重试消费路径的落地。
   - 建议：①resume-guard 尽快走完合回，使积压归档自动补蒸馏；②重试台账加龄期信号（登记超 24 小时未重试发每日一条提醒）；③unrecognized_model 兜底重试（以默认网关裸模型名重试一次）照旧保留。
 
 - **evolution回写push恒败累计46次，根因收敛零remote兄弟仓**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：自进化 todo 回写的 push 步骤本窗再败 1 次（本地 01:43），保留日志累计 46 条同文 WARNING；但根因可从「两假说并存」收敛为单因：受管兄弟项目仓 /root/dsh-plugins 无任何 remote（git remote -v 输出为空），裸 git push（git -C 项目根 push）在该仓每轮回写必败，fenixd 主仓 origin 在案可成功。
   - 证据：本窗失败行 2026-10-27T17:43:55Z「evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: fatal: No configured push destination.」；代码路径核实 core/evolution.py:1107-1108 为 git -C proot push（proot 为各受管项目根）；本窗实测 /root/dsh-plugins 的 git remote -v 为空；对照同夜 fenixd 仓两个标记提交（8a5c480ee、99d1acc62）add/commit/push 正常。
   - 调查评估：问题源：[2026-10-26#可改进#4] 恒失败家族的根因收敛核查。已核实事实：daemon 为多项目服务（fenixd、dsh-plugins 等），回写按项目根就地提交推送，零 remote 的兄弟仓构成结构性必败路径——「subprocess 变量构造差异」「cwd/env 传递差异」两假说均被代码与实测排除。与存量工作关系：与 2026-10-12「幂等空转记 ERROR 稀释错误信号」同属恒失败固定噪音家族但对象不同，维持非重复。结论：根因已收敛、修复面小（探测＋跳过＋聚合告警），小立项价值上升。
   - 建议：①push 前以 git remote 探测，空则记 DEBUG 跳过；②恒失败（连续 N 次）收敛为每日一条聚合告警；③如需兄弟仓远端备份则显式配置 remote，否则对该仓关闭 push 语义。
 
 - **夜间主run迁移dsh车道，停滞观测失明系列不可测**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：观测面损失：昨夜周期审查 run（7748 秒）与窗内全部 code-fix、admin run 均已切 dsh 车道（自研 CLI harness），API 停滞与逐轮延迟维度结构性失明——上晚审查 run 实测 87.2 分钟停滞（占墙钟 44%），本窗同类损耗是否发生已不可判；停滞系列条目自设的「连续两晚 ≥60 分钟重启定向取证」触发器在 dsh 配对接线前永久哑化。
   - 证据：run_metrics（run 收尾结构化指标行）核实 harness=dsh：审查 run code-review-1793117020（夜间周期全仓审查）与窗内 5 个 code-fix run、admin-add-timeline-origin-request 均为 dsh；WARNING「run code-review-1793117020: 延迟观测疑似失明（latency_rounds=0 但 assistant 轮次=113）」（2026-10-27T18:12:48Z）；同 run context metrics 行 inp=0（dsh 事件流无 usage 透传）；本窗唯一可测停滞为两个 spec-review run（claude 车道）合计约 434.7 秒。
   - 调查评估：问题源：停滞系列条目 [2026-10-28#浪费#1] 触发条件的可评估性核查。已核实事实：审查车道上晚（claude）尚有 662 轮延迟样本、本窗（dsh）0 样本，切换发生在两夜之间，属车道迁移而非观测恢复——十二晚停滞序列（80.3→…→91.1 分钟）自本窗起对主 run 不可测，停滞损耗大概率仍在发生只是不可见。与存量工作关系：dsh-events 延迟配对接线正是 [2026-10-15#可改进#2] 的主旨（仍在 todo 未落地），本条是其暴露面扩大的实证（从 spec 车道扩到审查/admin/code-fix 全维护车道），勿另起炉灶重复立项。结论：系列阈值跟踪在接线完成前暂停；既有两个停滞系列条目（10-26/10-28 浪费#1）保留不据此闭环，待恢复观测后续判。
