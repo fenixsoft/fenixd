@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-27 23:28 UTC+8
+> 最后更新：2026-10-28 10:02 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -13,7 +13,8 @@
 | [verify-preflight-gate](verify-preflight-gate.md) | 验证预检门 | 2026-10-03 04:59 |
 | [verify-environment-sanity-gate](verify-environment-sanity-gate.md) | 验证环境健康门（探针、blocked-env 换算与两级 inconclusive 判据） | 2026-10-03 05:45 |
 | [verify-lane-slot-exemption](verify-lane-slot-exemption.md) | 验证车道槽位豁免 | 2026-10-03 04:59 |
-| [verify-unreachable-failfast](verify-unreachable-failfast.md) | 被测服务不可达快速失败 | 2026-10-03 04:59 |
+| [verify-unreachable-failfast](verify-unreachable-failfast.md) | 被测服务不可达快速失败 | 2026-10-28 10:02 |
+| [verify-infra-retry](verify-infra-retry.md) | 验证准备失败 infra-retry 廉价重试车道（限次重派 + 宿主预检样板） | 2026-10-28 10:02 |
 | [verify-deps-provision-default](verify-deps-provision-default.md) | 验证依赖供给缺省 | 2026-10-03 04:59 |
 | [main-tree-deps-provision](main-tree-deps-provision.md) | 主树依赖供给 | 2026-10-03 04:59 |
 | [worktree-test-server](worktree-test-server.md) | worktree 被测服务供给 | 2026-10-03 04:59 |
