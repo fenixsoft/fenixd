@@ -95,7 +95,15 @@ MUST 在向用户汇报生成结果时说明所用层级；`plain` 层 MUST 额�
   `order-list-header`、`order-list-table`、`order-list-toolbar`。
 - 锚挂在与业务语义对应的**最近稳定容器**上，不挂纯装饰节点（图标、分隔线）。
 - 重生成 / 修订时 MUST 遵守锚保持：先解析旧原型锚集合，未波及区块沿用原锚名；
-  修订后跑锚比对并核对报告（§5，`anchor_tools.py`）。
+  修订后跑锚比对作为机械门（未波及锚未全部保持即退出码 1，不得收工）：
+
+  ```bash
+  python3 skills/fenix-prototype/scripts/anchor_tools.py diff <旧原型.html> <新原型.html> \
+      --affected <受波及锚,逗号分隔>
+  ```
+
+  报告含 kept / dropped / added 与文本快照改名猜测对；`dropped` 中出现未声明
+  受波及的锚 = 锚漂移违规，MUST 修正新原型直至通过。
 
 ### 3.5 仿样级显式标注（无约束力声明）
 

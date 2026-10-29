@@ -28,7 +28,7 @@
 - [x] 1.1 `scripts/stack_profile.py`：侦察目标工程（依赖清单识别组件库与版本、主题/设计 token 文件、DESIGN.md）输出画像 JSON；v1 实现 React+antd 画像，识别失败返回 unknown 并给出降级标记
 - [x] 1.2 `scripts/bootstrap_vendor.py`：环境自检（node/代理/缓存）后按画像版本预打包 react+antd 到 skill 自维护缓存（与工程无关），输出三级降级判定（vendor 缓存命中 / CDN ESM / 纯 HTML 仿样）；每级降级在输出中显式可见；缓存落盘于 gitignore 覆盖的运行时目录 `.fenix/prototype-vendor/`（已被 `.fenix/*` 整体忽略），MUST NOT 落仓内 `skills/` 入库
 - [ ] 1.3 SKILL.md 原型生成段：生成 prompt 契约——单文件 HTML、真组件假数据、画像主题注入、关键区块 `data-proto-id` 语义化锚规则、仿样级显式标注「视觉参照、无约束力」
-- [ ] 1.4 `scripts/anchor_tools.py` 锚保持工具：解析旧原型 `data-proto-id` 锚集合、对新原型输出保持/漂移比对报告（SKILL.md 生成契约引用其报告约束重生成）；配套确定性测试落 `tests/test_fenix_prototype.py`——以构造的 v1/v2 fixture 原型对断言未波及锚保持、波及区块换锚可检出，MUST NOT 依赖现场 LLM 生成（非确定性测试）
+- [x] 1.4 `scripts/anchor_tools.py` 锚保持工具：解析旧原型 `data-proto-id` 锚集合、对新原型输出保持/漂移比对报告（SKILL.md 生成契约引用其报告约束重生成）；配套确定性测试落 `tests/test_fenix_prototype.py`——以构造的 v1/v2 fixture 原型对断言未波及锚保持、波及区块换锚可检出，MUST NOT 依赖现场 LLM 生成（非确定性测试）
 
 ## 2. 批注回流与会话内迭代
 

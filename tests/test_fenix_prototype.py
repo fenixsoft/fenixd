@@ -384,3 +384,142 @@ class TestBootstrapCli:
     def test_repo_root_gitignore_covers_default_cache_dir(self):
         # 缓存默认目录必须被仓根 .gitignore 的 .fenix/* 规则覆盖，不入库
         assert (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").find(".fenix/*") != -1
+
+
+# ---------------------------------------------------------------------------
+# 任务 1.4：锚保持比对（确定性 fixture，MUST NOT 依赖现场 LLM 生成）
+# ---------------------------------------------------------------------------
+
+import anchor_tools  # noqa: E402
+
+V1_PROTOTYPE = """
+<html><body>
+  <header data-proto-id="order-list-header"><h1>订单列表</h1></header>
+  <aside data-proto-id="order-list-sidebar"><nav>筛选</nav></aside>
+  <main data-proto-id="order-list-table">
+    <table><tr><td>A-1001</td><td>张三</td></tr></table>
+  </main>
+  <div data-proto-id="order-list-toolbar">
+    <button>新建</button><img src="x.png" alt="icon">
+  </div>
+</body></html>
+"""
+
+# v2：未波及区块（header/sidebar/table）沿用原锚；受波及的工具栏区块换锚
+# （toolbar → actions）；另新增一个空态锚。
+V2_PROTOTYPE = """
+<html><body>
+  <header data-proto-id="order-list-header"><h1>订单列表</h1></header>
+  <aside data-proto-id="order-list-sidebar"><nav>筛选</nav></aside>
+  <main data-proto-id="order-list-table">
+    <table><tr><td>A-1001</td><td>张三</td></tr></table>
+    <div data-proto-id="order-list-empty">暂无更多数据</div>
+  </main>
+  <div data-proto-id="order-list-actions">
+    <button>新建</button><img src="x.png" alt="icon">
+  </div>
+</body></html>
+"""
+
+
+class TestExtractAnchors:
+    def test_extracts_all_anchor_ids_in_order(self):
+        anchors = anchor_tools.extract_anchors(V1_PROTOTYPE)
+        assert list(anchors.keys()) == [
+            "order-list-header", "order-list-sidebar",
+            "order-list-table", "order-list-toolbar"]
+
+    def test_records_tag_and_text_snapshot(self):
+        anchors = anchor_tools.extract_anchors(V1_PROTOTYPE)
+        assert anchors["order-list-header"]["tag"] == "header"
+        assert "订单列表" in anchors["order-list-header"]["text"]
+        assert anchors["order-list-table"]["tag"] == "main"
+        assert "A-1001" in anchors["order-list-table"]["text"]
+
+    def test_duplicate_anchor_counts_tracked(self):
+        html = ('<div data-proto-id="dup-a">一</div>'
+                '<div data-proto-id="dup-a">二</div>')
+        anchors = anchor_tools.extract_anchors(html)
+        assert anchors["dup-a"]["count"] == 2
+
+    def test_no_anchor_returns_empty(self):
+        assert anchor_tools.extract_anchors("<p>plain</p>") == {}
+
+
+class TestDiffAnchors:
+    def test_unaffected_anchors_reported_kept(self):
+        report = anchor_tools.diff_anchors(V1_PROTOTYPE, V2_PROTOTYPE)
+        for anchor_id in ("order-list-header", "order-list-sidebar", "order-list-table"):
+            assert anchor_id in report["kept"]
+        assert report["verdict"] == "anchors-changed"
+
+    def test_affected_block_reanchor_detectable_as_dropped(self):
+        report = anchor_tools.diff_anchors(V1_PROTOTYPE, V2_PROTOTYPE)
+        assert "order-list-toolbar" in report["dropped"]
+        assert "order-list-actions" in report["added"]
+        assert 0 < report["kept_ratio"] < 1
+
+    def test_rename_guess_pairs_by_text_snapshot(self):
+        report = anchor_tools.diff_anchors(V1_PROTOTYPE, V2_PROTOTYPE)
+        guesses = {(g["old"], g["new"]) for g in report["rename_guesses"]}
+        assert ("order-list-toolbar", "order-list-actions") in guesses
+
+    def test_identical_prototype_is_all_kept(self):
+        report = anchor_tools.diff_anchors(V1_PROTOTYPE, V1_PROTOTYPE)
+        assert report["verdict"] == "all-kept"
+        assert report["kept_ratio"] == 1.0
+        assert report["dropped"] == []
+
+
+class TestVerifyUnaffected:
+    def test_declared_affected_passes(self):
+        result = anchor_tools.verify_unaffected(
+            V1_PROTOTYPE, V2_PROTOTYPE, ["order-list-toolbar"])
+        assert result["ok"] is True
+        assert result["violations"] == []
+
+    def test_undeclared_drop_is_violation(self):
+        result = anchor_tools.verify_unaffected(V1_PROTOTYPE, V2_PROTOTYPE, [])
+        assert result["ok"] is False
+        assert "order-list-toolbar" in result["violations"]
+
+    def test_partial_declaration_still_flags_others(self):
+        result = anchor_tools.verify_unaffected(
+            V1_PROTOTYPE, V2_PROTOTYPE, ["order-list-header"])
+        assert result["ok"] is False
+        assert "order-list-toolbar" in result["violations"]
+
+
+class TestAnchorToolsCli:
+    def test_extract_cli(self, capsys):
+        import json as _json
+        with pytest.raises(SystemExit) as exc_info:
+            anchor_tools.main(["extract", "-"])
+        assert exc_info.value.code == 2  # "-" 不是文件，用法错误出口
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False,
+                                         encoding="utf-8") as f:
+            f.write(V1_PROTOTYPE)
+            path = f.name
+        rc = anchor_tools.main(["extract", path])
+        assert rc == 0
+        payload = _json.loads(capsys.readouterr().out)
+        assert len(payload["anchors"]) == 4
+
+    def test_diff_with_affected_gate_exit_codes(self, capsys):
+        import json as _json
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            old = Path(d) / "v1.html"
+            new = Path(d) / "v2.html"
+            old.write_text(V1_PROTOTYPE, encoding="utf-8")
+            new.write_text(V2_PROTOTYPE, encoding="utf-8")
+            rc = anchor_tools.main(["diff", str(old), str(new),
+                                    "--affected", "order-list-toolbar"])
+            assert rc == 0
+            ok_payload = _json.loads(capsys.readouterr().out)
+            assert ok_payload["ok"] is True
+            rc = anchor_tools.main(["diff", str(old), str(new)])
+            assert rc == 0
+            report = _json.loads(capsys.readouterr().out)
+            assert report["verdict"] == "anchors-changed"
