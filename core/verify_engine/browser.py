@@ -697,8 +697,12 @@ class BrowserManager:
         # （code-review item 6e48bf397533）：缺此监听时页面运行时抛错
         # （如点击处理器 TypeError）不会进入收集，no_console_error 断言
         # 与 judge 归因均不可见。并入同一桶按 _capped_append 口径截断；
-        # 断言侧网络层豁免按 net::ERR_ 等标记过滤，pageerror 条目不受
-        # 豁免影响（运行时异常属产品缺陷信号，应严格失败）
+        # 断言侧网络层豁免按 net::ERR_/Failed to fetch 等标记对本桶全部
+        # 条目（含 pageerror）做子串分拣（code-review item b6d4eef74178）：
+        # 文本含网络标记的运行时异常（如未捕获的 "TypeError: Failed to
+        # fetch"）在 external_net_errors_ok 豁免路径下同样会被过滤，并无
+        # 「pageerror 严格失败」保障；复核须以结果 filtered_network 为准
+        # （假通过残余风险披露见 _assert_no_console_error docstring）
         context.on(
             "page",
             lambda p: p.on(

@@ -1426,8 +1426,18 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # 1) 直接探测：已可达则无需自愈（4xx/5xx 同样视为服务在应答——urls 均
     #    经收集助手按本机 origin 过滤，语义与探活环/恢复路径统一，见
     #    _probe_url 注释；外链 origin 已被跳过，不再逐一探测）
-    elif all(_probe_url(u, http_error_ok=True) for u in urls):
-        return True, False, ""
+    # code-review c73b80e3ad97：首轮探活并发化（对齐 _legacy_selfheal_start
+    # 27a294e05a24 同款，按 URL 维度 map）——原串行逐 URL _probe_url（默认
+    # timeout 2.0s）遇防火墙丢包/挂起端口时每 URL 独吃 2s，N 个 URL 单轮最坏
+    # 2N 秒阻塞验证主流程；并发后墙钟收敛到单探针 timeout。每个 URL 探测
+    # 结果独立（_probe_url 无共享状态），并发仅缩短墙钟，判定语义与原串行
+    # all(...) 一致（全部 URL 应答才算可达）。
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            if all(pool.map(lambda u: _probe_url(u, http_error_ok=True), urls)):
+                return True, False, ""
 
     # 2) 自愈：无契约路径（契约 command 分支已在上方 return），
     # 直接回退 commands.start（旧行为）——整段拆为模块级助手

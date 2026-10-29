@@ -63,11 +63,22 @@ class AssertionRunner:
         except Exception:
             return False
 
-    async def _safe_evaluate(self, page, selector: str, js: str, *args):
+    async def _safe_evaluate(
+        self, page, selector: str, js: str, *args, timeout: int = 3000
+    ):
         """安全执行 evaluate，元素不存在时返回 None 而不超时。"""
         if not await self._element_exists(page, selector):
             return None
-        return await self._locator(page, selector).evaluate(js, *args)
+        # 存在性预检通过后、evaluate 前元素被移除/页面导航的竞态窗口内，
+        # locator.evaluate 会按 Playwright 缺省 30 秒超时等待选择器重新匹配，
+        # element_focused/no_overlap/in_viewport/z_index_order/no_overflow
+        # 五处消费方的单条断言各可被拖满 30 秒才落到 run() 兜底；压到
+        # 3000ms 与 element_visible/单轮读取的既有量级对齐（code-review
+        # item 5a493857d1ec）。消费方无须改签名，超时抛错仍走 run() 兜底，
+        # 判档语义不变，仅收敛最坏等待时长。
+        return await self._locator(page, selector).evaluate(
+            js, *args, timeout=timeout
+        )
 
     @staticmethod
     def _int_or_none(value: Any):
