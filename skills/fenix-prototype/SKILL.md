@@ -118,3 +118,57 @@ UI 真相源绑定（§6 批准段对其单独处理）。`vendor` / `cdn` 层�
 - [ ] 数据全部为内联假数据
 - [ ] 主题来自画像注入；缺依据处已注明
 - [ ] plain 层有无约束力横幅；vendor/cdn 层没有
+
+## 4. 伺服与批注
+
+原型目录中每个 HTML MUST 在 `</body>` 前注入批注器：
+
+```html
+<script src="annotator.js" defer></script>
+```
+
+（`annotator.js` 从 `skills/fenix-prototype/assets/annotator.js` 复制进原型目录。）
+
+启动原型服务器（独立进程，python 标准库实现，零 dashboard 依赖）：
+
+```bash
+python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --json
+```
+
+- 启动输出含完整访问 URL（`url` 字段），MUST 把 URL 交给用户在浏览器打开；
+- 默认绑定 `127.0.0.1`；用户从局域网/隧道访问时显式 `--host 0.0.0.0` 并如实告知
+  监听范围；端口默认 OS 分配随机高端口，冲突自动重试；
+- **生命周期**：同目录已有存活实例 → 自动复用（输出 `action: reused`）；残留 PID
+  → 自动探测接管（`started`，stderr 提示 `stale-takeover`）；批准/会话结束 MUST 回收：
+
+  ```bash
+  python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --stop
+  ```
+
+- 用户在浏览器批注（点选带 `data-proto-id` 的区块 → 输入意见 → 提交），批注落
+  `<原型目录>/feedback.json`；服务器不可达时（如 file:// 直接打开）批注器降级为
+  本地导出 JSON，用户把导出文件交给 agent 拷贝回原型目录同名位置即可回流。
+
+## 5. 会话内迭代闭环
+
+收到「看看意见」类用户信号后：
+
+1. 读 `<原型目录>/feedback.json`（含锚点 + 意见文本 + 时间戳 + 轮次）；
+2. 逐条消化：按意见修订原型（仍守 §3 生成契约与主题注入）；被点名区块若删除/
+   重构导致换锚，把旧锚列入受波及清单；
+3. 跑锚保持机械门（未波及锚 MUST 全部保持，否则修正后再交付）：
+
+   ```bash
+   python3 skills/fenix-prototype/scripts/anchor_tools.py diff <旧原型.html> <新原型.html> \
+       --affected <受波及锚,逗号分隔>
+   ```
+
+4. 引导用户刷新复看；迭代轮次通过 URL 参数携带（如
+   `http://127.0.0.1:<port>/index.html?proto_round=2`），批注自动带新轮次号；
+5. 循环直至用户明示认可（§6）。迭代全程会话内完成，MUST NOT 依赖异步审批流；
+   每轮修订 MUST 向用户报告：消化了哪些意见、哪些锚保留、哪些区块换锚。
+
+## 6. 批准入库与冻结
+
+（本节由批准段任务落笔：用户明示认可后原型落 `specs/<spec>/prototype/` 入库，
+截图尽力而为，冻结后再改 = 新一轮确认，批准后回填 SPEC 声明 UI 真相源。）

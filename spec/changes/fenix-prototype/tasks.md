@@ -33,8 +33,8 @@
 ## 2. 批注回流与会话内迭代
 
 - [ ] 2.1 `assets/annotator.js`：注入式批注器（与栈无关纯 DOM 操作）——hover 高亮、点选元素、意见面板、意见列表、`POST /feedback`（锚点+文本+时间戳+轮次）、服务器不可达时本地导出 JSON
-- [ ] 2.2 `scripts/serve_prototype.py`：python 标准库 HTTP 服务器——静态伺服原型目录 + `POST /feedback` 落 `feedback.json`；随机高端口冲突重试；绑定地址可配并打印完整 URL；PID 文件生命周期（存活复用 / 残留探测接管 / 回收）
-- [ ] 2.3 服务器生命周期与批注落盘测试：启动→POST 落盘→重复启动复用→杀进程留陈旧 PID→再启动接管→回收，全链路测试钉死（落 `tests/test_fenix_prototype.py`）
+- [x] 2.2 `scripts/serve_prototype.py`：python 标准库 HTTP 服务器——静态伺服原型目录 + `POST /feedback` 落 `feedback.json`；随机高端口冲突重试；绑定地址可配并打印完整 URL；PID 文件生命周期（存活复用 / 残留探测接管 / 回收）
+- [x] 2.3 服务器生命周期与批注落盘测试：启动→POST 落盘→重复启动复用→杀进程留陈旧 PID→再启动接管→回收，全链路测试钉死（落 `tests/test_fenix_prototype.py`）
 - [ ] 2.4 SKILL.md 迭代段：读 `feedback.json` → 修订原型 → 遵守锚保持 → 用户刷新复看 → 循环直至用户明示认可；迭代全程会话内，不依赖异步审批
 
 ## 3. 批准入库与绑定力契约

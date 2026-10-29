@@ -523,3 +523,213 @@ class TestAnchorToolsCli:
             assert rc == 0
             report = _json.loads(capsys.readouterr().out)
             assert report["verdict"] == "anchors-changed"
+
+
+# ---------------------------------------------------------------------------
+# 任务 2.2 / 2.3：serve_prototype.py 生命周期与批注落盘（真实子进程全链路）
+# ---------------------------------------------------------------------------
+
+import subprocess  # noqa: E402
+import time  # noqa: E402
+import urllib.request  # noqa: E402
+
+import serve_prototype  # noqa: E402
+
+SERVE_SCRIPT = str(SCRIPTS_DIR / "serve_prototype.py")
+
+
+def _make_proto_dir(tmp_path: Path) -> Path:
+    proto = tmp_path / "proto"
+    proto.mkdir()
+    (proto / "index.html").write_text(
+        '<html><body data-proto-id="page-root"><h1>原型</h1></body></html>',
+        encoding="utf-8")
+    return proto
+
+
+def _start_server(proto: Path, *extra):
+    out_path = proto / f".start-{int(time.time() * 1000)}.out"
+    out_f = open(out_path, "w", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, SERVE_SCRIPT, str(proto), "--json", *extra],
+                            stdout=out_f, stderr=subprocess.STDOUT)
+    return proc, out_f, out_path
+
+
+def _wait_result(out_path: Path, timeout: float = 5.0) -> dict:
+    """轮询启动输出直至出现结果 JSON（server 就绪后打印）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            for line in out_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("{"):
+                    data = json.loads(line)
+                    if "action" in data or "error" in data:
+                        return data
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.05)
+    raise AssertionError(f"服务器启动超时（{timeout}s）：{out_path.read_text(encoding='utf-8') if out_path.exists() else '<无输出>'}")
+
+
+def _stop_server(proto: Path):
+    subprocess.run([sys.executable, SERVE_SCRIPT, str(proto), "--stop"],
+                   capture_output=True, text=True, timeout=10)
+
+
+class TestServePrototypeLifecycle:
+    """任务 2.3：启动→POST 落盘→复用→残留接管→回收，全链路钉死。"""
+
+    def test_start_post_feedback_and_recycle(self, tmp_path):
+        proto = _make_proto_dir(tmp_path)
+        proc, out_f, out_path = _start_server(proto)
+        try:
+            result = _wait_result(out_path)
+            assert result["ok"] is True and result["action"] == "started"
+            port = result["url"].rsplit(":", 1)[1].strip("/")
+
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/feedback",
+                data=json.dumps({"anchor": "page-root", "text": "标题再大一点",
+                                 "timestamp": "2026-10-29T08:00:00Z", "round": 1}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read().decode())
+            assert payload["ok"] is True
+
+            entries = json.loads((proto / "feedback.json").read_text(encoding="utf-8"))
+            assert len(entries) == 1
+            assert entries[0]["anchor"] == "page-root"
+            assert entries[0]["text"] == "标题再大一点"
+            assert entries[0]["round"] == 1
+            assert entries[0]["timestamp"]
+        finally:
+            _stop_server(proto)
+            proc.wait(timeout=8)
+            out_f.close()
+        # 回收：PID 文件不留存
+        assert not (proto / ".proto-server.json").exists()
+
+    def test_feedback_rejects_invalid_payload(self, tmp_path):
+        proto = _make_proto_dir(tmp_path)
+        proc, out_f, out_path = _start_server(proto)
+        try:
+            result = _wait_result(out_path)
+            port = result["url"].rsplit(":", 1)[1].strip("/")
+
+            # 缺 anchor → 400
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/feedback",
+                data=json.dumps({"text": "没有锚"}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req, timeout=5)
+            assert exc_info.value.code == 400
+
+            # 非法 JSON → 400
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/feedback", data=b"not-json{",
+                headers={"Content-Type": "application/json"}, method="POST")
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req, timeout=5)
+            assert exc_info.value.code == 400
+        finally:
+            _stop_server(proto)
+            proc.wait(timeout=8)
+            out_f.close()
+
+    def test_second_start_reuses_live_instance(self, tmp_path):
+        proto = _make_proto_dir(tmp_path)
+        proc, out_f, out_path = _start_server(proto)
+        try:
+            first = _wait_result(out_path)
+            proc2, out_f2, out_path2 = _start_server(proto)
+            try:
+                second = _wait_result(out_path2)
+                assert second["action"] == "reused"
+                assert second["url"] == first["url"], "复用必须同端口"
+                assert second["pid"] == first["pid"]
+                # 复用后原进程仍存活
+                assert proc.poll() is None
+            finally:
+                out_f2.close()
+        finally:
+            _stop_server(proto)
+            proc.wait(timeout=8)
+            out_f.close()
+
+    def test_stale_pid_takeover_after_kill(self, tmp_path):
+        proto = _make_proto_dir(tmp_path)
+        proc, out_f, out_path = _start_server(proto)
+        first = _wait_result(out_path)
+        first_pid = first["pid"]
+        # SIGKILL：无清理机会，PID 文件残留成陈旧记录
+        proc.kill()
+        proc.wait(timeout=8)
+        out_f.close()
+        assert (proto / ".proto-server.json").exists()
+        assert serve_prototype.read_pid_file(proto)["pid"] == first_pid
+
+        # 再启动：探测残留 → 接管，新实例新端口
+        proc2, out_f2, out_path2 = _start_server(proto)
+        try:
+            second = _wait_result(out_path2)
+            assert second["action"] == "started", "残留必须被接管而非复用"
+            assert second["pid"] != first_pid
+            # 接管后 PID 文件指向新实例
+            assert serve_prototype.read_pid_file(proto)["pid"] == second["pid"]
+        finally:
+            _stop_server(proto)
+            proc2.wait(timeout=8)
+            out_f2.close()
+
+    def test_stop_reports_not_running_when_fresh(self, tmp_path):
+        proto = _make_proto_dir(tmp_path)
+        done = subprocess.run([sys.executable, SERVE_SCRIPT, str(proto), "--stop", "--json"],
+                              capture_output=True, text=True, timeout=10)
+        assert done.returncode == 1
+        assert json.loads(done.stdout.strip().splitlines()[-1])["action"] == "not-running"
+
+    def test_stale_stop_only_cleans_pid_file(self, tmp_path):
+        # PID 文件残留但进程已死：--stop 清理文件、不误报停止
+        proto = _make_proto_dir(tmp_path)
+        serve_prototype.write_pid_file(proto, 999999, "127.0.0.1", 59999)
+        result = serve_prototype.stop_server(proto, SERVE_SCRIPT)
+        assert result["action"] == "cleaned-stale"
+        assert not (proto / ".proto-server.json").exists()
+
+    def test_pid_reuse_by_innocent_process_is_not_killed(self, tmp_path):
+        # PID 被无辜进程复用：判定 stale 接管，MUST NOT 杀掉无辜进程
+        proto = _make_proto_dir(tmp_path)
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            serve_prototype.write_pid_file(proto, victim.pid, "127.0.0.1", 59998)
+            probe = serve_prototype.probe_existing(proto, SERVE_SCRIPT)
+            assert probe["state"] == "stale"
+            assert victim.poll() is None, "无辜进程必须存活"
+        finally:
+            victim.kill()
+            victim.wait(timeout=5)
+
+
+class TestServeStaticServing:
+    def test_serves_index_and_blocks_traversal(self, tmp_path):
+        proto = _make_proto_dir(tmp_path)
+        (proto / "annotator.js").write_text("window.__x = 1;", encoding="utf-8")
+        proc, out_f, out_path = _start_server(proto)
+        try:
+            result = _wait_result(out_path)
+            port = result["url"].rsplit(":", 1)[1].strip("/")
+            base = f"http://127.0.0.1:{port}"
+            with urllib.request.urlopen(f"{base}/index.html", timeout=5) as resp:
+                assert b"page-root" in resp.read()
+            with urllib.request.urlopen(f"{base}/annotator.js", timeout=5) as resp:
+                assert b"__x" in resp.read()
+            # 路径穿越被拒（SimpleHTTPRequestHandler 目录收敛）
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(f"{base}/..%2f..%2fetc%2fpasswd", timeout=5)
+            assert exc_info.value.code in (301, 404)
+        finally:
+            _stop_server(proto)
+            proc.wait(timeout=8)
+            out_f.close()
