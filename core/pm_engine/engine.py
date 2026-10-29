@@ -2691,7 +2691,7 @@ class PMEngine:
                     + f"{type(e).__name__}: {e}"
                 )
             if converged_gap:
-                self._note_unattainable_todos(spec_name, result, converged_gap)
+                self._note_unattainable_todos(spec_name, result)
                 self._clear_task_gap_error(spec_name)
                 return None  # 缺口全部已诚实申报 → 放行
             gap = _gap_from_result(result, self.project_root, spec_name)
@@ -2749,8 +2749,7 @@ class PMEngine:
                 f"task-gap 已补勾，清除 error：'{spec_name}'",
             )
 
-    def _note_unattainable_todos(self, spec_name: str, result: dict,
-                                 gap: "list | None" = None) -> None:
+    def _note_unattainable_todos(self, spec_name: str, result: dict) -> None:
         """诚实退出（改进②）：把 unattainable 申报落一条可见的人工待办告警。
 
         门禁放行「缺口全部已申报」的 partial 时调用——不静默放行：写 admin
@@ -3657,7 +3656,16 @@ class PMEngine:
             # 本地分支仍在时做真实 SHA 相等比对——远端同名引用若停在上次
             # 推送失败残留的旧 SHA，不得误清（code-review item 30039c4e9a5d）；
             # 本地分支已被 merge-back 清理后无从比对，降级为存在性检查。
-            branch = entry.get("branch") or f"{prefix}/{name}"
+            # 与 _resolve_push_branch 同款守卫（code-review item 27fb64a24182）：
+            # 外部直改 STATE 可产生非串 truthy branch（YAML true / 列表 / 数字），
+            # 不归一会绕过 spec 自身分支的 SHA 比对、令残留验证静默降级——非串
+            # 或空白分支一律走兜底构造。
+            raw_branch = entry.get("branch")
+            branch = (
+                raw_branch.strip()
+                if isinstance(raw_branch, str) and raw_branch.strip()
+                else f"{prefix}/{name}"
+            )
             verified = False
             verify_note = ""
             local_branch = self._local_branch_sha(branch)
@@ -3901,6 +3909,7 @@ class PMEngine:
             # 的 RUN_ID_AGENT_PREFIXES（前缀自带尾「-」），不再维护本地子集——
             # 新增 agent 类型自动纳入，impl-ocr-<spec>-<ts> 等独立前缀形态的
             # run id 也因此被 glob 覆盖。
+            # [fenix-ignore:91fcce307e9c] 误报：glob 构造处已 glob.escape(spec_name)（item bf06987de775），无未转义拼接。
             for prefix, _agent_type in RUN_ID_AGENT_PREFIXES:
                 # glob.escape 对齐 budget.py/recovery.py 先例（code-review item
                 # bf06987de775）：spec 名含 * ? [ ] 元字符时按字面量匹配，防
