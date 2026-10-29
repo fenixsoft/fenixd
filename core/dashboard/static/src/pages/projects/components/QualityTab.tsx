@@ -62,6 +62,12 @@ import ScheduleFields, {
 import type { AcceptSchedule } from '@/components/ScheduleFields';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
+// remarkPlugins 提为模块级常量（code-review item 201fe8d8fd75）：内联 [remarkGfm]
+// 数组每次渲染新建引用会让 react-markdown 把浮层整段描述重新 parse（SSE 帧、
+// 30s 心跳轮询、选中变化等与本页内容无关的重渲染也触发），比照 help 页
+// HELP_REMARK_PLUGINS / KnowledgeTab KNOWLEDGE_REMARK_PLUGINS 先例复用同一引用。
+const QR_REMARK_PLUGINS = [remarkGfm];
+
 interface QualityTabProps {
   project: string;
   active: boolean;
@@ -222,7 +228,7 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
                 lineHeight: 1.65,
               }}
             >
-              <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              <Markdown remarkPlugins={QR_REMARK_PLUGINS} components={markdownComponents}>
                 {`[${rec.category}] ${rec.description}`}
               </Markdown>
             </div>

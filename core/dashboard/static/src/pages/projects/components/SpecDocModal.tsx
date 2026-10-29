@@ -27,6 +27,11 @@ interface DocCacheEntry {
   content?: string;
 }
 
+// remarkPlugins 提为模块级常量（code-review item d54886120dec）：比照 KnowledgeTab
+// KNOWLEDGE_REMARK_PLUGINS / help 页 HELP_REMARK_PLUGINS 先例复用同一引用，避免每次
+// 渲染新建数组导致 react-markdown 整篇文档重新 parse（本弹窗因加载/最大化切换等渲染频繁）
+const SPEC_DOC_REMARK_PLUGINS = [remarkGfm];
+
 // 文档缓存条目上限：超出后按最旧淘汰，避免长会话跨 spec 浏览时大文本（验证报告/tasks 等）持续累积
 const MAX_CACHE_ENTRIES = 50;
 
@@ -213,7 +218,7 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
               lineHeight: 1.65,
             }}
           >
-            <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            <Markdown remarkPlugins={SPEC_DOC_REMARK_PLUGINS} components={markdownComponents}>
               {currentEntry.content || ''}
             </Markdown>
           </div>

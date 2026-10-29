@@ -1484,9 +1484,11 @@ class StateMachine:
         """多字段计数器锁内原子读改写（``_bump_counter`` 的多字段版）。
 
         同一临界区内同时递增多个计数器字段——分次单字段 bump 会在两次加锁
-        之间暴露窗口（他写者夹在中间写入，读者看到半新态）；fastlane 失败
-        记账须同点同时递增 ``_fastlane_fail_streak`` 与 ``_verify_fail_rounds``
-        （与整轮失败同账），走本原语保持计数路径单一范式。
+        之间暴露窗口（他写者夹在中间写入，读者看到半新态）；fastlane 车道
+        熔断计数递增也走本原语保持计数路径单一范式。code-review item
+        96cd9f5a32d2 单一写点约定：fastlane 失败只递增车道私有
+        ``_fastlane_fail_streak``；``_verify_fail_rounds``（验证轮预算）由
+        回落整轮路径 family._do_spec_bug_found 单点递增，不在此同点双记。
         与 ``_bump_counter`` 同范式：锁内 读→改→写→回读校验；不匹配重试一次
         属防御分支——回读在同一把 ``.STATE.md.lock`` 的临界区内执行、计数器值
         serialize→parse 往返恒等，当前实现下 verify == new_values 恒成立，
