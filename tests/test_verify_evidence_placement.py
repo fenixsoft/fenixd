@@ -438,12 +438,24 @@ class TestUntrackedSignal(unittest.TestCase):
         self.assertEqual(before, _status(repo))  # 零触碰
 
     def test_check_ignore_failure_abandons_round(self):
-        """check-ignore 不可用 → 放弃本轮（保守，条目保留不告警）。"""
+        """check-ignore 不可用 → 按流解耦降级（code-review item
+        a4b92c63a011）：仅放弃 untracked 与白名单两流（条目保留不复位、
+        不告警）；tracked 流只依赖 status/diff、与该查询无关，照常归因
+        计时告警，整轮不再放弃（历史语义为整轮 return None）。"""
         repo = _make_repo()
         _write_strays(repo, self.STRAYS)
         sw = _make_sweeper(repo, grace=0.0)
         sw._git_check_ignore_detail = lambda paths: None
-        self.assertIsNone(sw.sweep())
+        r = sw.sweep()
+        # 整轮不放弃：tracked 流照常上抛（本场景零 tracked 散件 → clean）
+        self.assertIsNotNone(r)
+        self.assertEqual(r["status"], "clean")
+        self.assertEqual(r["files"], [])
+        self.assertEqual(r["fingerprint"], "")
+        # 白名单流整流放弃（_whitelist_signal 既有 abandoned 语义）
+        self.assertEqual(r["whitelist_untracked"], {"status": "abandoned"})
+        # untracked 流整流放弃：不注入 untracked 键、不告警
+        self.assertNotIn("untracked", r)
         self.assertEqual(_untracked_alerts(repo), [])
 
 
