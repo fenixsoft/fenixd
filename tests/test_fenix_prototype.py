@@ -777,3 +777,38 @@ class TestPrototypeBindingContractSections:
         undeclared = "## Scenario: 重试次数上限\n- **THEN** 任务标记为 blocked"
         assert "specs/order-board/prototype/" in declared and "界面以 prototype/ 为准" in declared
         assert "prototype/" not in undeclared and "界面以 prototype/ 为准" not in undeclared
+
+
+class TestJsLiteralAnchorExtraction:
+    """React createElement/setAttribute 形态的原型锚（渲染前在 script 字面量里）。"""
+
+    V1_JS = ("<html><body><div id=root></div><script>\n"
+             "var header = h('div', { 'data-proto-id': 'panel-header' }, '标题');\n"
+             "var table = h('div', { 'data-proto-id': 'panel-table' }, rows);\n"
+             "el.setAttribute('data-proto-id', 'panel-footer');\n"
+             "</script></body></html>\n")
+    V2_JS = ("<html><body><div id=root></div><script>\n"
+             "var header = h('div', { 'data-proto-id': 'panel-header' }, '标题');\n"
+             "var table = h('div', { 'data-proto-id': 'panel-table' }, rows);\n"
+             "var stats = h('div', { 'data-proto-id': 'panel-stats' }, stat);\n"
+             "el.setAttribute('data-proto-id', 'panel-footer');\n"
+             "</script></body></html>\n")
+
+    def test_extracts_js_literal_anchors(self):
+        anchors = anchor_tools.extract_anchors(self.V1_JS)
+        assert set(anchors) == {"panel-header", "panel-table", "panel-footer"}
+        assert anchors["panel-header"]["source"] == "js-literal"
+
+    def test_js_literal_diff_reports_addition_as_kept(self):
+        report = anchor_tools.diff_anchors(self.V1_JS, self.V2_JS)
+        assert report["verdict"] == "all-kept"
+        assert set(report["added"]) == {"panel-stats"}
+        assert report["dropped"] == []
+
+    def test_mixed_static_and_js_anchors_union(self):
+        html = ('<div data-proto-id="static-anchor">静态</div>\n'
+                "<script>h('div', { 'data-proto-id': 'js-anchor' })</script>")
+        anchors = anchor_tools.extract_anchors(html)
+        assert set(anchors) == {"static-anchor", "js-anchor"}
+        assert anchors["static-anchor"]["text"] == "静态"
+        assert "source" not in anchors["static-anchor"]

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
@@ -36,6 +37,12 @@ TEXT_SNAPSHOT_LIMIT = 80
 
 _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
               "link", "meta", "param", "source", "track", "wbr"}
+
+#: 生成代码里的锚字面量（JS 对象键 / setAttribute），静态解析的补充来源
+_JS_LITERAL_ANCHOR = re.compile(
+    r"""['"]data-proto-id['"]\s*(?:\]\s*=\s*|:\s*)['"]([^'"]+)['"]"""
+    r"""|setAttribute\(\s*['"]data-proto-id['"]\s*,\s*['"]([^'"]+)['"]""",
+)
 
 
 class _AnchorParser(HTMLParser):
@@ -95,11 +102,29 @@ class _AnchorParser(HTMLParser):
 
 
 def extract_anchors(html: str) -> dict[str, dict]:
-    """解析 HTML，返回 {锚id: {id, tag, text, count}}（按首现顺序）。"""
+    """解析 HTML，返回 {锚id: {id, tag, text, count}}（按首现顺序）。
+
+    原型锚有两个来源：静态 HTML 属性（可直接解析出标签与文本快照）与
+    生成代码字面量（React ``createElement({'data-proto-id': ...})`` /
+    ``setAttribute('data-proto-id', ...)`——渲染前只存在于 ``<script>`` 文本里，
+    渲染后由运行时注入 DOM）。后者用字面量扫描补充收录（无标签/文本快照，
+    ``source: "js-literal"``），保证重生成锚保持比对对真实原型形态可用。
+    """
     parser = _AnchorParser()
     parser.feed(html)
     parser.close()
-    return parser.anchors
+    anchors = parser.anchors
+    for match in _JS_LITERAL_ANCHOR.finditer(html):
+        anchor_id = (match.group(1) or match.group(2) or "").strip()
+        if anchor_id and anchor_id not in anchors:
+            anchors[anchor_id] = {
+                "id": anchor_id,
+                "tag": "js-literal",
+                "text": "",
+                "count": 1,
+                "source": "js-literal",
+            }
+    return anchors
 
 
 def extract_anchors_file(path: Path) -> dict[str, dict]:
