@@ -13,6 +13,7 @@ knowledge_backfill 版严格两参多传即 TypeError），同名不同语义的
 """
 
 import logging
+import sys
 
 
 class StdLoggerAdapter:
@@ -30,6 +31,11 @@ class StdLoggerAdapter:
     ``message_format`` 为 component/message 的落盘模板；两车道既有输出格式
     不同（regression ``[component] message``、knowledge_backfill
     ``component: message``），按原样保留，避免收口顺带改写日志行为。
+
+    方法面覆盖 core.logger.Logger 全部五方法（debug/info/warning/error/
+    exception），车道代码按 core.logger.Logger 签名调用不会 AttributeError
+    （code-review item dbee0be8a91b）；``exception`` 语义对齐 core.logger.
+    Logger.exception——except 块外不落「NoneType: None」伪堆栈。
     """
 
     def __init__(
@@ -76,3 +82,17 @@ class StdLoggerAdapter:
     def error(self, component, message, *a, **kw):
         self._check_extra("error", component, a, kw)
         self._std.error(self._fmt, component, message)
+
+    def debug(self, component, message, *a, **kw):
+        self._check_extra("debug", component, a, kw)
+        self._std.debug(self._fmt, component, message)
+
+    def exception(self, component, message, *a, **kw):
+        # 对齐 core.logger.Logger.exception：ERROR 级 + 当前异常堆栈经
+        # std 通道落盘。except 块外 sys.exc_info() 为 (None, None, None)，
+        # 传 exc_info=True 会让 stdlib Formatter 落「NoneType: None」伪堆栈，
+        # 与 core.logger.Logger 同口径归一为 None。
+        self._check_extra("exception", component, a, kw)
+        exc = sys.exc_info()
+        exc_info = exc if exc[0] is not None else None
+        self._std.error(self._fmt, component, message, exc_info=exc_info)

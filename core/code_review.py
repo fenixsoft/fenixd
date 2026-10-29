@@ -2462,10 +2462,14 @@ def _proposal_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"### [{it.get('severity')}] {_one_line(it.get('title'))}")
+        # severity/file 与 title 同属 agent 产出不受控输入（upsert_findings
+        # 对 file 仅 str()、normalize_severity 对词表外值原样透传）：含换行
+        # 会把标题行/位置行第二行起顶成裸文本，与 _tasks_md 既有口径对齐
+        # 折叠（code-review item b66daebf15f0）。
+        lines.append(f"### [{_one_line(it.get('severity'))}] {_one_line(it.get('title'))}")
         lines.append("")
         lines.append(f"- 类别：`{it.get('category')}`")
-        lines.append(f"- 位置：`{it.get('file')}:{it.get('line')}`")
+        lines.append(f"- 位置：`{_one_line(it.get('file'))}:{it.get('line')}`")
         lines.append("")
         lines.extend(_problem_lines(it))
     lines += [
@@ -2495,9 +2499,11 @@ def _spec_md(capability: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"#### `{it.get('file')}:{it.get('line')}` — {_one_line(it.get('title'))}")
+        # file/severity 经 _one_line 折叠：同 _proposal_md/_tasks_md 口径，
+        # 防多行脏值把 `####` 标题行顶破（code-review item b66daebf15f0）。
+        lines.append(f"#### `{_one_line(it.get('file'))}:{it.get('line')}` — {_one_line(it.get('title'))}")
         lines.append("")
-        lines.append(f"- 严重度：{it.get('severity')}")
+        lines.append(f"- 严重度：{_one_line(it.get('severity'))}")
         lines.append("")
         lines.extend(_problem_lines(it))
     lines += [
@@ -2532,7 +2538,9 @@ def _design_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        lines.append(f"### `{it.get('file')}:{it.get('line')}` — {_one_line(it.get('title'))}")
+        # file 经 _one_line 折叠：同 _proposal_md/_spec_md/_tasks_md 口径，
+        # 防多行脏值顶破 `###` 标题行（code-review item b66daebf15f0）。
+        lines.append(f"### `{_one_line(it.get('file'))}:{it.get('line')}` — {_one_line(it.get('title'))}")
         lines.append("")
         lines.extend(_problem_lines(it))
     return "\n".join(lines)

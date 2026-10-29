@@ -368,11 +368,13 @@ def parse_verify_progress(project_root, spec_name) -> dict:
     # exists() 为真后、读取前文件被消费侧删除（如 run 结束清理）的竞态：
     # FileNotFoundError 是 OSError 子类，须先于 OSError 单独捕获，按文件缺失
     # 语义落下方 run-result 回退合成，不误标 corrupt（item 7669e1b0c8b9）。
+    # 解码异常 UnicodeDecodeError（ValueError 子类、非 OSError）同落 corrupt，
+    # 对齐 _existing_created 的解码容错口径（item 8e1e14217436）。
     try:
         text = pf.read_text(encoding="utf-8") if pf.exists() else None
     except FileNotFoundError:
         text = None
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
     if text is not None:
         try:

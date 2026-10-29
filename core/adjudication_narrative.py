@@ -1184,8 +1184,16 @@ def _narrative_worker(
         result: Optional[Dict[str, str]] = None
         breaker_skip = False
         # 并发封顶：线程体内排队等空位（不阻塞 schedule_narrative 调用方，
-        # 排队期间不产生子进程）；侧车落盘不经网关，无需占位
-        _narrative_slots.acquire()
+        # 排队期间不产生子进程）；侧车落盘不经网关，无需占位。排队限时
+        # （code-review f8cc370413ca）：量级取单条告警自身满预算耗时（单次
+        # 超时×尝试次数，缺省 180s×2=360s）——批量告警突发 + 网关 stall 时
+        # 排队不再小时级悬挂，超时放弃写终态侧车防「调查生成中」假态。
+        if not _narrative_slots.acquire(
+            timeout=_resolve_timeout(admin_cfg) * _MAX_ATTEMPTS
+        ):
+            write_narrative_sidecar(project_root, alert_id, GENERATION_FAILED_TEXT, None)
+            _warn(ctx, f"叙事排队等待超时，放弃补叙并写终态侧车（alert={alert_id}）")
+            return
         try:
             for _attempt in range(_MAX_ATTEMPTS):
                 if _breaker_gate():

@@ -35,6 +35,7 @@ fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加�
 """
 
 import logging
+import math
 import re
 from typing import Optional
 from pathlib import Path
@@ -450,7 +451,10 @@ def get_turn_budget_sizing_config(config: dict) -> dict:
         val = sect.get(key, default)
         if isinstance(val, bool) or not isinstance(val, (int, float)):
             return default
-        if val < 0.0 or val > 1.0:
+        # NaN 时两个区间比较恒 False 会穿透，补 isfinite 拒绝非有限值
+        # （对齐 config.py / event_bus.py 的 isfinite 防御口径）。
+        if val < 0.0 or val > 1.0 or (
+                isinstance(val, float) and not math.isfinite(val)):
             return default
         return float(val)
 
