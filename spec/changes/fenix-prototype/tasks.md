@@ -35,11 +35,11 @@
 - [ ] 2.1 `assets/annotator.js`：注入式批注器（与栈无关纯 DOM 操作）——hover 高亮、点选元素、意见面板、意见列表、`POST /feedback`（锚点+文本+时间戳+轮次）、服务器不可达时本地导出 JSON
 - [x] 2.2 `scripts/serve_prototype.py`：python 标准库 HTTP 服务器——静态伺服原型目录 + `POST /feedback` 落 `feedback.json`；随机高端口冲突重试；绑定地址可配并打印完整 URL；PID 文件生命周期（存活复用 / 残留探测接管 / 回收）
 - [x] 2.3 服务器生命周期与批注落盘测试：启动→POST 落盘→重复启动复用→杀进程留陈旧 PID→再启动接管→回收，全链路测试钉死（落 `tests/test_fenix_prototype.py`）
-- [ ] 2.4 SKILL.md 迭代段：读 `feedback.json` → 修订原型 → 遵守锚保持 → 用户刷新复看 → 循环直至用户明示认可；迭代全程会话内，不依赖异步审批
+- [x] 2.4 SKILL.md 迭代段：读 `feedback.json` → 修订原型 → 遵守锚保持 → 用户刷新复看 → 循环直至用户明示认可；迭代全程会话内，不依赖异步审批
 
 ## 3. 批准入库与绑定力契约
 
-- [ ] 3.1 SKILL.md 批准段：用户明示认可后原型落 `specs/<spec>/prototype/` 并入库提交；整页截图尽力而为（playwright-cli 可用则抓，不可用记「无渲染凭证」，不阻塞批准）；冻结语义（再改 = 新一轮确认）；批准后回填 SPEC 正文与 Scenario 声明 UI 真相源
+- [x] 3.1 SKILL.md 批准段：用户明示认可后原型落 `specs/<spec>/prototype/` 并入库提交；整页截图尽力而为（playwright-cli 可用则抓，不可用记「无渲染凭证」，不阻塞批准）；冻结语义（再改 = 新一轮确认）；批准后回填 SPEC 正文与 Scenario 声明 UI 真相源
 - [ ] 3.2 `agents/implementer.md` 追加条件式契约段：SPEC 声明原型为 UI 真相源时实现前必读 `specs/<spec>/prototype/`、冲突不擅自偏离须升级用户；措辞以 SPEC 内声明为开关，遵循该文件现有契约段惯例
 - [ ] 3.3 `agents/code-review.md` 追加条件式契约段：声明原型时对照原型检查（组件选型/布局结构/锚对应），冲突标记升级项；同样条件式开关
 - [ ] 3.4 契约段双向推演验证：构造带 UI 真相源声明的最小样例 SPEC 核对两处契约段触发判定（实现前必读原型 / 评审对照原型），构造无原型对照样例核对不触发；双向推演记录落收工说明，确认既有 SPEC 行为不变（带声明侧的首轮真实派发实证随下一个带原型的界面需求进行，非本 SPEC 实现门禁）

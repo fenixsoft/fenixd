@@ -170,5 +170,38 @@ python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --json
 
 ## 6. 批准入库与冻结
 
-（本节由批准段任务落笔：用户明示认可后原型落 `specs/<spec>/prototype/` 入库，
-截图尽力而为，冻结后再改 = 新一轮确认，批准后回填 SPEC 声明 UI 真相源。）
+### 6.1 批准判定
+
+仅当用户在会话中**明示认可**（如「原型定了」「就按这个出 SPEC」）才视为批准。
+用户提出新修改意见 = 未批准，回 §5 继续迭代。MUST NOT 自行推断批准。
+
+### 6.2 入库步骤
+
+用户明示认可后，按序执行：
+
+1. **回收服务器**：`serve_prototype.py <原型目录> --stop`；
+2. **整页截图（尽力而为）**：本机有 playwright-cli 则用命名会话对每个原型 HTML
+   抓整页截图随原型入库；无头浏览器不可用或抓取失败时**MUST NOT 阻塞批准**，
+   在 SPEC 中显式记录「无渲染凭证（截图尽力而为降级）」——HTML 是真相源主体，
+   截图只是渲染凭证；
+3. **落位入库**：把原型 HTML（连同 `vendor.js`、截图等渲染所需资源）复制到
+   `specs/<spec>/prototype/`，随 SPEC 流程 `git add specs/<spec>/prototype/` 入库提交；
+4. **清理草稿目录**：删除 `.fenix/prototypes/<spec>/`（运行时目录，不入库）；
+5. **回填 SPEC 声明（绑定力第一通道）**：
+   - SPEC 正文引用原型路径：`界面原型（UI 真相源）：specs/<spec>/prototype/index.html`；
+   - 相关 Scenario 显式声明「**界面以 prototype/ 为准**」（与「数值以 Scenario 为准」
+     同纪律等级），例如：
+     `- **THEN** 页面布局与组件选型以 specs/<spec>/prototype/ 为 UI 真相源（冲突须升级用户裁决）`；
+   - 截图缺失时在 SPEC 正文记录「无渲染凭证」。
+
+### 6.3 冻结语义
+
+- 批准入库后原型视为**冻结**：MUST NOT 静默改动 `specs/<spec>/prototype/` 下的文件；
+- 冻结后再要求修改 = **新一轮原型确认**：把原型复制回草稿目录重新走 §5 迭代、
+  重新批准、重新入库（覆盖前 MUST 向用户确认），MUST NOT 直接改入库产物。
+
+### 6.4 仿样级批准的特殊路径
+
+`level=plain`（仿样、无约束力）的原型同样可入库（作为视觉参照），但 SPEC 回填时
+MUST 声明「原型为纯 HTML/CSS 仿样，视觉参照、无约束力」，且实现者契约段
+（UI 真相源必读）不对其生效——绑定力通道只对真组件原型成立。
