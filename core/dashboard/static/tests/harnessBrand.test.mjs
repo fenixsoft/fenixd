@@ -3,8 +3,12 @@
 // package.json engines.node）。运行：cd core/dashboard/static && node --test
 // tests/harnessBrand.test.mjs
 //
-// 覆盖品牌回退链三分支（spec「回退链」Requirement）：
-// 1. 缺省 = claude（run meta 无 harness 字段/空值，存量 run 行为零变化）；
+// 覆盖品牌回退链三分支（spec「回退链」Requirement；2026-10-29 用户定稿：
+// 缺省分支 claude → 中性「AI Assistant」，run meta 无 harness 不再冒充
+// Claude 品牌——context 缺省值（SessionPanel 等 claude 专用车道）不受影响，
+// 仍为 Claude）：
+// 1. 缺省 = 中性（run meta 无 harness 字段/空值 → kind:'default'，装配层
+//    映射中性品牌）；
 // 2. dsh 映射（注册表命中，组件装配为 DshLogo 鲸鱼图标）；
 // 3. 未知值回退首字母徽标（不抛错白屏）。
 //
@@ -15,22 +19,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_BRAND_NAME, resolveHarness } from '../src/components/claude-msg/harnessBrandLogic.ts';
 
-// ── 分支 1：缺省 = claude ────────────────────────────────────────────────
+// ── 分支 1：缺省 = 中性（AI Assistant） ─────────────────────────────────
 
-test('缺省：harness 字段缺失（undefined）→ claude 品牌（存量 run 行为零变化）', () => {
-  assert.deepEqual(resolveHarness(undefined), { kind: 'default', name: 'claude' });
+test('缺省：harness 字段缺失（undefined）→ default 中性分支（不冒充 Claude）', () => {
+  assert.deepEqual(resolveHarness(undefined), { kind: 'default' });
 });
 
-test('缺省：harness 字段为 null → claude 品牌', () => {
-  assert.deepEqual(resolveHarness(null), { kind: 'default', name: 'claude' });
+test('缺省：harness 字段为 null → default 中性分支', () => {
+  assert.deepEqual(resolveHarness(null), { kind: 'default' });
 });
 
-test('缺省：harness 字段为空串/纯空白 → claude 品牌', () => {
-  assert.deepEqual(resolveHarness(''), { kind: 'default', name: 'claude' });
-  assert.deepEqual(resolveHarness('   '), { kind: 'default', name: 'claude' });
+test('缺省：harness 字段为空串/纯空白 → default 中性分支', () => {
+  assert.deepEqual(resolveHarness(''), { kind: 'default' });
+  assert.deepEqual(resolveHarness('   '), { kind: 'default' });
 });
 
-test('缺省品牌名常量为 Claude（context 缺省值与改造前渲染一致）', () => {
+test('context 缺省品牌名常量保持 Claude（SessionPanel 等 claude 专用车道未注入 Provider 即现状）', () => {
   assert.equal(DEFAULT_BRAND_NAME, 'Claude');
 });
 

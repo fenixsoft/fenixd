@@ -22,6 +22,8 @@ add-command-center 任务 5.2 零改动红线（既有 routes 模块仅 server.p
 import logging
 
 from core.dashboard.data.command_center import (
+    ORG_WINDOWS,
+    WINDOW_TODAY,
     aggregate_inbox,
     aggregate_kpi,
     aggregate_ledger,
@@ -70,11 +72,18 @@ class H17CommandCenterRoutesMixin:
         return aggregate_kpi(scope["projects"], project=scope["project"])
 
     def _api_command_center_org(self, query) -> dict:
-        """GET /api/command-center/org —— 组织网格车道卡 + 静态汇报线（只读）。"""
+        """GET /api/command-center/org —— 组织网格车道卡 + 产品团队汇总（只读）。
+
+        query: project（可选，单项目筛选）；window（可选，today/7d/all，
+        缺省 today；非法值数据层防御性回落 today）。
+        """
         scope = self._command_center_scope(query)
         if "error" in scope:
             return scope["error"]
-        return aggregate_org(scope["projects"], project=scope["project"])
+        window = query.get("window", [WINDOW_TODAY])[0] or WINDOW_TODAY
+        if window not in ORG_WINDOWS:
+            window = WINDOW_TODAY
+        return aggregate_org(scope["projects"], project=scope["project"], window=window)
 
     def _api_command_center_pipeline(self, query) -> dict:
         """GET /api/command-center/pipeline —— SPEC 状态五列看板（只读）。"""

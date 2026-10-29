@@ -1,13 +1,17 @@
 // PipelineBoard.tsx — 指挥中心「交付流水线」屏（add-command-center 4.2）。
 //
 // 五列泳道（drafted/ready/implementing/verifying/pushed，后端单点桶映射）
-// + 项目筛选下拉（数据源=响应 projects 全集 +「全部项目」）；implementing
-// 卡存在在飞 run 时渲染 running lane 与开始时间；卡片点击跳既有 SPEC 详情
-// 页 /projects/:name/:spec。
+// + 项目筛选（2026-10-28 上移壳层页签右侧全局下拉，本屏经 props 接收）；
+// implementing 卡存在在飞 run 时渲染 running lane 与开始时间；卡片点击跳
+// 既有 SPEC 详情页 /projects/:name/:spec。
+//
+// 2026-10-28 用户定稿：定高屏（100vh 减页签区），body 不滚动——滚动条
+// 下沉到各赛道内部，哪条赛道卡片超高哪条赛道自己出纵向滚动条
+// （.cmdcenter-lanescroll，深色蓝系样式单点在 index.tsx 页级 style）。
 
-import { useState } from 'react';
+import { useEffect } from 'react';
 import { history } from '@umijs/max';
-import { Alert, Select, Tag } from 'antd';
+import { Alert, Tag } from 'antd';
 import { commandCenterPipeline } from '@/services/dashboard';
 import type { CommandCenterPipeline, CommandCenterPipelineCard } from '@/services/dashboard';
 import { useScreenResource } from './useScreen';
@@ -50,6 +54,8 @@ function PipelineCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 6,
+        // flexShrink 0：卡片恒按内容高度渲染，超高由赛道滚动区承接
+        flexShrink: 0,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -75,9 +81,17 @@ function PipelineCard({
   );
 }
 
-export default function PipelineBoard({ active }: { active: boolean }) {
-  // project='' = 全部项目（服务端缺省聚合范围）
-  const [project, setProject] = useState('');
+export default function PipelineBoard({
+  active,
+  project,
+  onProjects,
+}: {
+  active: boolean;
+  /** 项目筛选：''=全部项目（服务端缺省聚合范围；壳层页签右侧全局下拉注入） */
+  project: string;
+  /** 项目全集上报（供壳层全局下拉合并），数据变化时回调一次 */
+  onProjects?: (projects: string[]) => void;
+}) {
   const { data, error, loading, retry } = useScreenResource<CommandCenterPipeline>(
     () => commandCenterPipeline(project || undefined),
     active,
@@ -85,25 +99,41 @@ export default function PipelineBoard({ active }: { active: boolean }) {
     // 修复——specs「交付流水线筛选」Scenario：切换后仅剩该项目卡片）
     project,
   );
+  // 项目全集上报给壳层（页签右侧全局下拉数据源）
+  useEffect(() => {
+    if (data?.projects) onProjects?.(data.projects);
+  }, [data, onProjects]);
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
   if (!data) return <ScreenLoading hint="交付流水线加载中" />;
   return (
-    <div>
+    // 定高屏（与组织总览同款 78px 口径=页面 padding-top 8 + 页签条 70）：
+    // 页面 body 不滚动，滚动下沉到各赛道——哪条赛道卡片超高，哪条赛道自己
+    // 出纵向滚动条（2026-10-28 用户定稿）
+    <div
+      style={{
+        height: 'calc(100vh - 78px)',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
       {error ? (
-        <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`交付流水线刷新失败：${error}`} />
-      ) : null}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Select
-          value={project}
-          onChange={setProject}
-          style={{ minWidth: 180 }}
-          options={[
-            { label: '全部项目', value: '' },
-            ...data.projects.map((p) => ({ label: p, value: p })),
-          ]}
+        <Alert
+          style={{ marginBottom: 12, flexShrink: 0 }}
+          type="warning"
+          showIcon
+          message={`交付流水线刷新失败：${error}`}
         />
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 12 }}>
+      ) : null}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'grid',
+          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+          gap: 12,
+        }}
+      >
         {data.columns.map((col) => (
           <div
             key={col.key}
@@ -114,21 +144,43 @@ export default function PipelineBoard({ active }: { active: boolean }) {
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
-              minHeight: 160,
+              minHeight: 0,
+              overflow: 'hidden',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', color: TEXT_SUB, fontSize: 13 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                color: TEXT_SUB,
+                fontSize: 13,
+                flexShrink: 0,
+              }}
+            >
               <span style={{ fontWeight: 600, color: TEXT_MAIN }}>{columnLabel(col.key)}</span>
               <span>{col.cards.length}</span>
             </div>
-            {col.cards.map((c) => (
-              <PipelineCard key={`${c.project}/${c.spec}`} card={c} />
-            ))}
-            {!col.cards.length ? (
-              <div style={{ color: TEXT_SUB, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
-                暂无
-              </div>
-            ) : null}
+            {/* 赛道滚动区：卡片列表独立滚动，赛道头/计数恒可见 */}
+            <div
+              className="cmdcenter-lanescroll"
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              {col.cards.map((c) => (
+                <PipelineCard key={`${c.project}/${c.spec}`} card={c} />
+              ))}
+              {!col.cards.length ? (
+                <div style={{ color: TEXT_SUB, fontSize: 12, textAlign: 'center', padding: '12px 0' }}>
+                  暂无
+                </div>
+              ) : null}
+            </div>
           </div>
         ))}
       </div>

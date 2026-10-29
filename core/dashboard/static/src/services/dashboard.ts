@@ -1278,73 +1278,6 @@ export async function getSpecTopology(project: string, spec: string): Promise<Sp
   );
 }
 
-// ── 跨项目角色协作图谱（/api/overview/collab-graph，add-collab-graph-bigscreen）──
-//
-// 后端单点聚合（core/dashboard/data/collab_graph.py，逐 SPEC 复用
-// topology.derive_topology 派生结果投影），前端零图谱推导：角色集/边权/KPI
-// 口径全部由服务端下发，本文件仅承载传输形态。
-
-// 角色泳道（值域与后端 topology.LANES 一致：单 SPEC 大屏八泳道同一套口径）
-export type CollabRoleLane = 'user' | 'pm' | 'demand' | 'plan' | 'dev' | 'review' | 'test' | 'ops';
-
-// 下钻明细条目（角色节点/边各附最近交接 run 明细；archived=true 为归档
-// 条目——明细已随归档清理语义，前端标注且不可跳转单 SPEC 大屏）
-export interface CollabRunEntry {
-  project: string;
-  spec: string;
-  time: string;
-  status: string;
-  archived?: boolean;
-}
-
-// 角色节点（固定 8 泳道全集；cost_usd 为 null = 该角色全部 run 不可计价）
-export interface CollabRoleNode {
-  id: CollabRoleLane;
-  role: string;
-  label: string;
-  cost_usd: number | null;
-  duration_seconds: number;
-  run_count: number;
-  running: number;
-  in_flight: boolean;
-  recent_runs: CollabRunEntry[];
-}
-
-// 跨角色交接边（weight = 交接次数；recent_runs 取交接接收方 run 明细）
-export interface CollabEdge {
-  from: CollabRoleLane;
-  to: CollabRoleLane;
-  weight: number;
-  recent_runs: CollabRunEntry[];
-}
-
-export interface CollabGraphKpis {
-  spec_count: number;
-  active_spec_count: number;
-  archived_excluded: number;
-  running_specs: number;
-  running_runs: number;
-  total_runs: number;
-  total_cost_usd: number | null;
-  total_handoffs: number;
-}
-
-// 与 detail 同族错误契约：未知项目维持 200 + error 字典
-export interface CollabGraphData {
-  project: string | null;
-  projects: string[];
-  roles: CollabRoleNode[];
-  edges: CollabEdge[];
-  kpis: CollabGraphKpis;
-  archived_excluded: number;
-  error?: string;
-}
-
-export async function getCollabGraph(project?: string): Promise<CollabGraphData> {
-  const query = project ? `?project=${encodeURIComponent(project)}` : '';
-  return request<CollabGraphData>(`/api/overview/collab-graph${query}`);
-}
-
 // ── 管理指挥中心（/api/command-center/*，add-command-center 3.1）──
 //
 // 后端单点聚合（core/dashboard/data/command_center.py：KPI 四指标 + 组织
@@ -1364,18 +1297,23 @@ export interface CommandCenterKpi {
   error?: string;
 }
 
-// 组织网格车道卡（花名册全量 ∪ 观测 lane；attributable 为最近在飞 run
-// 归属，供钻取 /projects/:name/:spec）
+// 组织网格车道卡（花名册全量 ∪ 观测 lane；attributables 为在飞 run 归属
+// 列表（started 降序、同 spec 去重取最新），run_id 供点击 spec 名打开运行
+// 记录弹窗（2026-10-29 多 spec 并行）；attributable 为兼容字段（最新一条，
+// 无 run_id）。runs/success_rate/cost 为时间窗口径（2026-10-28
+// today/7d/all，窗口由 org 响应 window 回显））
 export interface CommandCenterLaneCard {
   lane: string;
   zone: string;
   status: 'working' | 'idle';
-  runs_today: number;
-  success_rate_7d: number | null;
-  cost_7d: number | null;
+  runs: number;
+  success_rate: number | null;
+  cost: number | null;
   activity_14d: number[];
   last_activity_ts: string | null;
   attributable: { project: string; spec: string } | null;
+  // 容忍旧后端（未重启时缺键，读侧 activityLineState 兜底 running）
+  attributables?: { project: string; spec: string; run_id: string }[] | null;
 }
 
 // 静态汇报线（模块级冻结结构，非配置项）
@@ -1384,9 +1322,22 @@ export interface CommandCenterEdge {
   to: string;
 }
 
+// 产品团队汇总卡（2026-10-28 追加）：需求数量=窗口内创建的活跃 SPEC 数；
+// runs_total/duration_total/cost_total=窗口内全车道合计（时长为秒，
+// run_metrics 指标口径回退 mtime 推算；全未计价 → null → 「—」）
+export interface CommandCenterTeamSummary {
+  spec_count: number;
+  runs_total: number;
+  duration_total: number;
+  cost_total: number | null;
+}
+
 export interface CommandCenterOrg {
   project: string | null;
   projects: string[];
+  window: string;
+  // 容忍新旧前后端窗口（后端未重启时缺键）
+  summary?: CommandCenterTeamSummary;
   zones: { zone: string; cards: CommandCenterLaneCard[] }[];
   edges: CommandCenterEdge[];
   error?: string;
@@ -1460,16 +1411,20 @@ export interface CommandCenterInbox {
   error?: string;
 }
 
-function ccQuery(project?: string): string {
-  return project ? `?project=${encodeURIComponent(project)}` : '';
+function ccQuery(project?: string, window?: string): string {
+  const q = new URLSearchParams();
+  if (project) q.set('project', project);
+  if (window) q.set('window', window);
+  const s = q.toString();
+  return s ? `?${s}` : '';
 }
 
 export async function commandCenterKpi(project?: string): Promise<CommandCenterKpi> {
   return request<CommandCenterKpi>(`/api/command-center/kpi${ccQuery(project)}`);
 }
 
-export async function commandCenterOrg(project?: string): Promise<CommandCenterOrg> {
-  return request<CommandCenterOrg>(`/api/command-center/org${ccQuery(project)}`);
+export async function commandCenterOrg(project?: string, window?: string): Promise<CommandCenterOrg> {
+  return request<CommandCenterOrg>(`/api/command-center/org${ccQuery(project, window)}`);
 }
 
 export async function commandCenterPipeline(project?: string): Promise<CommandCenterPipeline> {

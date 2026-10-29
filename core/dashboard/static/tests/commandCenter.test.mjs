@@ -19,6 +19,8 @@ import {
   isDestructiveChoice,
   columnLabel,
   laneLabel,
+  activityLineState,
+  windowLabels,
 } from '../src/pages/command-center/shared.ts';
 
 // ── null 指标格式化（null→「—」、0 保留） ────────────────────────────────
@@ -163,6 +165,116 @@ test('columnLabel：五列中文标签；未知 key 原样透出', () => {
 test('laneLabel：花名册 lane 中文标签；未登记 lane 原样透出（「其他」分区）', () => {
   assert.equal(laneLabel('planner'), '需求规划');
   assert.equal(laneLabel('implementer'), '实现');
-  assert.equal(laneLabel('judge'), '裁决');
-  assert.equal(laneLabel('verifier'), 'verifier');
+  // 2026-10-28 五线重划补齐/改名（judge 按用户定稿改质量裁决；testing/scan
+  // 已取消出卡，标签随删 → 原样透出口径）
+  assert.equal(laneLabel('judge'), '质量裁决');
+  assert.equal(laneLabel('scan'), 'scan');
+  assert.equal(laneLabel('testing'), 'testing');
+  assert.equal(laneLabel('planner-plan'), '场景生成');
+  assert.equal(laneLabel('planner-judge'), '场景验证');
+  assert.equal(laneLabel('verifier'), '验证');
+  assert.equal(laneLabel('evolution'), '自改进');
+  assert.equal(laneLabel('self-review'), '自省');
+  assert.equal(laneLabel('verifier-x'), 'verifier-x');
+});
+
+// ── Agent 卡活动行状态三分（2026-10-28 LaneCard 重设计；2026-10-29 多 spec
+//    并行滚动显示改 attributables 列表口径，点击 spec 名开运行记录）──────
+
+test('activityLineState：working+attributables → specs（列表透传供点击开运行记录）', () => {
+  const items = [
+    { project: 'fenixd', spec: 'fix-a', run_id: 'impl-fix-a-1' },
+    { project: 'fenixd', spec: 'fix-b', run_id: 'impl-fix-b-2' },
+  ];
+  assert.deepEqual(activityLineState({ status: 'working', attributables: items }), {
+    kind: 'specs',
+    items,
+  });
+});
+
+test('activityLineState：脏元素防御（缺 spec/run_id 剔除；全脏视同无归属）', () => {
+  assert.deepEqual(
+    activityLineState({
+      status: 'working',
+      attributables: [
+        { project: 'p', spec: '', run_id: 'r1' },
+        { project: 'p', spec: 'keep', run_id: 'r2' },
+      ],
+    }),
+    { kind: 'specs', items: [{ project: 'p', spec: 'keep', run_id: 'r2' }] },
+  );
+  assert.deepEqual(activityLineState({ status: 'working', attributables: [] }), { kind: 'running' });
+  assert.deepEqual(activityLineState({ status: 'working', attributables: null }), { kind: 'running' });
+  assert.deepEqual(
+    activityLineState({ status: 'working', attributables: [{ project: 'p', spec: 's', run_id: '' }] }),
+    { kind: 'running' },
+  );
+});
+
+test('activityLineState：working 无归属 → running（「执行中」）', () => {
+  assert.deepEqual(activityLineState({ status: 'working', attributables: null }), { kind: 'running' });
+});
+
+test('activityLineState：旧后端兜底（attributables 缺键回退 attributable 单条，run_id 置空不可点）', () => {
+  assert.deepEqual(
+    activityLineState({
+      status: 'working',
+      attributable: { project: 'fenixd', spec: 'fenix-prototype' },
+    }),
+    {
+      kind: 'specs',
+      items: [{ project: 'fenixd', spec: 'fenix-prototype', run_id: '' }],
+    },
+  );
+  // 两字段都在时 attributables 优先（新后端正常路径不受兜底影响）
+  assert.deepEqual(
+    activityLineState({
+      status: 'working',
+      attributables: [{ project: 'p', spec: 'new', run_id: 'r1' }],
+      attributable: { project: 'p', spec: 'legacy' },
+    }),
+    { kind: 'specs', items: [{ project: 'p', spec: 'new', run_id: 'r1' }] },
+  );
+  // 兼容字段 spec 为空不兜底（防死行）
+  assert.deepEqual(
+    activityLineState({ status: 'working', attributable: { project: 'p', spec: '' } }),
+    { kind: 'running' },
+  );
+});
+
+test('activityLineState：idle → rest（「待命 · 等待信号」；attributables 有值也忽略）', () => {
+  assert.deepEqual(
+    activityLineState({ status: 'idle', attributables: [{ project: 'p', spec: 's', run_id: 'r' }] }),
+    { kind: 'rest' },
+  );
+  assert.deepEqual(activityLineState({ status: 'idle', attributables: null }), { kind: 'rest' });
+});
+
+test('activityLineState：未知状态按「非 working 即 idle」口径走 rest（与 laneBadge 同源）', () => {
+  assert.deepEqual(activityLineState({ status: '', attributables: null }), { kind: 'rest' });
+  assert.deepEqual(activityLineState({ status: 'frozen', attributables: null }), { kind: 'rest' });
+});
+
+// ── 时间窗标签（2026-10-28 页签右侧时间下拉）─────────────────────────────
+
+test('windowLabels：三窗标签组齐全（实例数/成功率/成本 + 团队三格）', () => {
+  assert.deepEqual(windowLabels('today'), {
+    run: '今日实例数', rate: '今日成功率', cost: '今日成本',
+    teamSpecs: '需求数量 · 今日',
+    teamRuns: 'Agent 实例数 · 今日', teamDuration: '运行时长 · 今日', teamCost: '总成本 · 今日',
+  });
+  assert.deepEqual(windowLabels('7d'), {
+    run: '7 日实例数', rate: '7 日成功率', cost: '成本 · 7 日',
+    teamSpecs: '需求数量 · 7 日',
+    teamRuns: 'Agent 实例数 · 7 日', teamDuration: '运行时长 · 7 日', teamCost: '总成本 · 7 日',
+  });
+  assert.deepEqual(windowLabels('all'), {
+    run: '全量实例数', rate: '全量成功率', cost: '全量成本',
+    teamSpecs: '需求数量 · 全量',
+    teamRuns: 'Agent 实例数 · 全量', teamDuration: '运行时长 · 全量', teamCost: '总成本 · 全量',
+  });
+});
+
+test('windowLabels：未知窗口回落 7 日组（防御脏值）', () => {
+  assert.equal(windowLabels('bogus').rate, '7 日成功率');
 });

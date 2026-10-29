@@ -14,14 +14,6 @@ export default [
     component: './overview',
   },
   {
-    // 跨项目角色协作图谱大屏（add-collab-graph-bigscreen 3.1）：layout:false
-    // 脱壳——全屏深色独立页面，无 ProLayout 侧边栏/顶栏（overview 枢纽页
-    // 「协作图谱大屏」入口进入，退出大屏返回 overview）。
-    path: '/overview/collab-graph',
-    layout: false,
-    component: './overview/collabGraph',
-  },
-  {
     path: '/projects',
     name: '项目',
     icon: 'project',
@@ -29,7 +21,7 @@ export default [
   },
   {
     // 管理指挥中心（add-command-center 3.2）：layout:false 脱壳——全屏深色
-    // 独立页面，无 ProLayout 侧边栏/顶栏（与协作图谱/拓扑大屏同款脱壳，
+    // 独立页面，无 ProLayout 侧边栏/顶栏（与拓扑大屏同款脱壳，
     // 菜单项「指挥中心」进入）。
     path: '/command-center',
     layout: false,

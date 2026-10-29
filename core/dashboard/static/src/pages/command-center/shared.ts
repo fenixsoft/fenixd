@@ -150,20 +150,142 @@ export function columnLabel(key: string): string {
 }
 
 // 花名册泳道中文标签（组织网格卡主标题；花名册外/未知 lane 原样透出）。
+// 2026-10-28 随五线重划补齐编制内新贵：planner-plan 场景生成 /
+// planner-judge 场景验证 / verifier 验证 / evolution 自改进；self-review
+// 按用户定稿口径改「自省」；judge 改「质量裁决」。testing（tester）与
+// scan 已取消出卡（后端 ROSTER 同步移除），标签随删。
 export const LANE_LABELS: Record<string, string> = {
   planner: '需求规划',
   'spec-review': '需求评审',
+  'planner-plan': '场景生成',
+  'planner-judge': '场景验证',
   implementer: '实现',
   'code-fix': '修复',
+  verifier: '验证',
+  judge: '质量裁决',
   'code-review': '代码评审',
-  judge: '裁决',
-  testing: '测试',
+  'self-review': '自省',
   administrator: '运维管理',
-  'self-review': '自审',
-  scan: '扫描',
+  evolution: '自改进',
   ocr: 'OCR 识别',
 };
 
 export function laneLabel(lane: string): string {
   return LANE_LABELS[lane] ?? lane;
+}
+
+// ── Agent 卡派生色/字体（2026-10-28 LaneCard 重设计定稿）──────────────────
+// 与上方大屏四色单源同族的弱色变体，集中管理（组件内不散落硬编码色值）。
+// 注意：图标组件映射因 antd import 红线不放本文件（见 OrgGrid.tsx LANE_ICONS）。
+export const FONT_MONO = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+export const CARD_BG = 'rgba(10, 30, 56, 0.55)';
+export const CARD_BG_HOVER = 'rgba(16, 42, 78, 0.65)';
+export const CARD_BORDER_BRIGHT = 'rgba(94, 150, 210, 0.7)';
+export const ACCENT = '#40a9ff';
+export const GREEN = '#52c41a';
+export const GREEN_DIM_BG = 'rgba(82, 196, 26, 0.12)';
+// 活动行 spec 条目 hover 提亮（2026-10-29 多 spec 列表可点击行；同族绿弱底）
+export const GREEN_DIM_BG_HOVER = 'rgba(82, 196, 26, 0.2)';
+// 图标徽章恒彩（2026-10-28 用户定稿：不随 working/idle 变灰，统一蓝系）
+export const AVATAR_BG =
+  'linear-gradient(135deg, rgba(64, 169, 255, 0.16), rgba(64, 169, 255, 0.05))';
+export const AVATAR_BORDER = 'rgba(64, 169, 255, 0.25)';
+export const REST_BORDER = 'rgba(91, 112, 140, 0.35)';
+export const METRIC_DIVIDER = 'rgba(59, 110, 165, 0.25)';
+// 连接线描边（2026-10-29 用户定稿加深：PANEL_BORDER 0.4 alpha 在纯黑底上
+// 偏浅看不清，提亮提饱和与 hover 边框同族）
+export const LINK_STROKE = 'rgba(94, 150, 210, 0.75)';
+
+// 时间窗（2026-10-28 时间下拉「今日/7 日/全量」）：窗口约束车道卡三格
+// （run/成功率/成本）与产品团队汇总的运行/成本口径；需求数量（活跃 SPEC）
+// 与 14 日 sparkline 不随窗变。与后端 ORG_WINDOWS 值域一致。
+export type TimeWindow = 'today' | '7d' | 'all';
+
+export const TIME_WINDOW_OPTIONS: { label: string; value: TimeWindow }[] = [
+  { label: '今日', value: 'today' },
+  { label: '7 日', value: '7d' },
+  { label: '全量', value: 'all' },
+];
+
+export function windowLabels(w: TimeWindow): {
+  run: string;
+  rate: string;
+  cost: string;
+  teamSpecs: string;
+  teamRuns: string;
+  teamDuration: string;
+  teamCost: string;
+} {
+  switch (w) {
+    case 'today':
+      return {
+        run: '今日实例数',
+        rate: '今日成功率',
+        cost: '今日成本',
+        teamSpecs: '需求数量 · 今日',
+        teamRuns: 'Agent 实例数 · 今日',
+        teamDuration: '运行时长 · 今日',
+        teamCost: '总成本 · 今日',
+      };
+    case 'all':
+      return {
+        run: '全量实例数',
+        rate: '全量成功率',
+        cost: '全量成本',
+        teamSpecs: '需求数量 · 全量',
+        teamRuns: 'Agent 实例数 · 全量',
+        teamDuration: '运行时长 · 全量',
+        teamCost: '总成本 · 全量',
+      };
+    default:
+      return {
+        run: '7 日实例数',
+        rate: '7 日成功率',
+        cost: '成本 · 7 日',
+        teamSpecs: '需求数量 · 7 日',
+        teamRuns: 'Agent 实例数 · 7 日',
+        teamDuration: '运行时长 · 7 日',
+        teamCost: '总成本 · 7 日',
+      };
+  }
+}
+// 活动行状态三分（2026-10-28 设计 §3.2；2026-10-29 多 spec 并行滚动显示改
+// 列表口径）：working+在飞归属 → specs 列表（点击 spec 名开运行记录弹窗）；
+// working 无归属 → 「执行中」；idle（含未知状态，与 laneBadge 非 working
+// 即 idle 口径同源）→ 待命。脏元素（缺 spec/run_id）防御性剔除——后端已
+// 过滤，此处兜底 UI 不出死行。纯函数零依赖，node --test 直测。
+export interface AttributableRun {
+  project: string;
+  spec: string;
+  run_id: string;
+}
+
+export type ActivityLineState =
+  | { kind: 'specs'; items: AttributableRun[] }
+  | { kind: 'running' }
+  | { kind: 'rest' };
+
+export function activityLineState(card: {
+  status: string;
+  // 可选 + undefined 均容忍（旧后端缺键；读侧逐层兜底，同 dashboard.ts）
+  attributables?: AttributableRun[] | null;
+  // 旧字段兜底（2026-10-29）：后端进程未重启时 attributables 缺键，回退旧
+  // attributable 单条仅显名字（run_id 置空 → 渲染端不可点开运行记录）
+  attributable?: { project: string; spec: string } | null;
+}): ActivityLineState {
+  if (card.status === 'working') {
+    const items = (card.attributables ?? []).filter((a) => !!a && !!a.spec && !!a.run_id);
+    if (items.length) {
+      return { kind: 'specs', items };
+    }
+    const legacy = card.attributable;
+    if (legacy && legacy.spec) {
+      return {
+        kind: 'specs',
+        items: [{ project: legacy.project, spec: legacy.spec, run_id: '' }],
+      };
+    }
+    return { kind: 'running' };
+  }
+  return { kind: 'rest' };
 }

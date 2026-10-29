@@ -247,8 +247,13 @@ class TestOrgAggregation:
         priced_run(proot, f"impl-demo-{NOW - 90000}", "done", NOW - 90000, usage=None)
         priced_run(proot, f"impl-demo-{NOW - 91800}", "done", NOW - 91800, usage=None)
         priced_run(proot, f"impl-demo-{NOW - 93600}", "error", NOW - 93600, usage=None)
-        # 花名册外观测 lane（verify- 前缀 → verifier，非 ROSTER 登记项）
+        # verifier（2026-10-28 重划后为交付线编制内 lane）
         priced_run(proot, f"verify-demo-{NOW - 4000}", "done", NOW - 4000, usage=None)
+        # 观测 lane 归并（LANE_ALIASES）：dispute-judge→judge、repair→code-fix
+        priced_run(proot, f"dispute-judge-demo-{NOW - 3000}", "done", NOW - 3000, usage=None)
+        priced_run(proot, f"repair-demo-{NOW - 2500}", "done", NOW - 2500, usage=None)
+        # 花名册外观测 lane（未知前缀 → 泛型 "agent"，落「其他」分区）
+        priced_run(proot, f"mystery-demo-{NOW - 3500}", "done", NOW - 3500, usage=None)
         return proot
 
     def card_of(self, data, lane):
@@ -273,8 +278,9 @@ class TestOrgAggregation:
         # planner 零 run：idle、计数为 0
         planner = self.card_of(data, "planner")
         assert planner["status"] == "idle"
-        assert planner["runs_today"] == 0
-        assert planner["success_rate_7d"] is None
+        assert planner["runs"] == 0
+        assert planner["success_rate"] is None  # 今日 0 需求 → denom 0 → 「—」
+        assert planner["cost"] == 0.0  # 固定 $0.00（真实零显示，非「—」）
         assert planner["activity_14d"] == [0] * 14
         assert planner["attributable"] is None
         assert planner["zone"] == "需求线"
@@ -282,21 +288,106 @@ class TestOrgAggregation:
         impl = self.card_of(data, "implementer")
         assert impl["status"] == "working"
         assert impl["zone"] == "交付线"
-        assert impl["runs_today"] == 2
-        assert impl["success_rate_7d"] == 0.75  # 3 done / (3+1)
-        assert impl["cost_7d"] == pytest.approx(1.2)
+        # 默认窗口 today：今日 2 run（1 done + 1 在飞）→ 成功率 1.0
+        assert impl["runs"] == 2
+        assert impl["success_rate"] == 1.0
+        assert impl["cost"] == pytest.approx(1.2)
         assert len(impl["activity_14d"]) == 14
         assert any(impl["activity_14d"])  # 14 日活动非全零
         assert impl["last_activity_ts"]
         # 在飞 run 归属：最近在飞（impl-demo-5）→ {project, spec}
         assert impl["attributable"] == {"project": "proj-b", "spec": "demo"}
-        # 花名册外观测 lane（verifier）落「其他」分区
-        other = self.zone_of(data, "其他")
-        assert [c["lane"] for c in other["cards"]] == ["verifier"]
-        # 分区固定序：花名册四区在前，「其他」殿后
-        assert [z["zone"] for z in data["zones"]] == [
-            "需求线", "交付线", "质量线", "运营线", "其他",
+        # 在飞归属列表（2026-10-29 多 spec 并行）：今日在飞 1 条，带 run_id
+        assert impl["attributables"] == [
+            {"project": "proj-b", "spec": "demo", "run_id": f"impl-demo-{NOW - 600}"}
         ]
+        # 观测 lane 归并：dispute-judge 计入 judge、repair 计入 code-fix
+        assert self.card_of(data, "judge")["runs"] == 1
+        assert self.card_of(data, "code-fix")["runs"] == 1
+        # verifier（2026-10-28 重划后编制内）落「交付线」
+        assert self.card_of(data, "verifier")["zone"] == "交付线"
+        assert self.card_of(data, "planner-plan")["zone"] == "设计线"
+        assert self.card_of(data, "evolution")["zone"] == "运营线"
+        assert self.card_of(data, "self-review")["zone"] == "质量线"
+        # 花名册外观测 lane（泛型 agent）落「其他」分区
+        other = self.zone_of(data, "其他")
+        assert [c["lane"] for c in other["cards"]] == ["agent"]
+        # 分区固定序：花名册五区在前，「其他」殿后
+        assert [z["zone"] for z in data["zones"]] == [
+            "需求线", "设计线", "交付线", "质量线", "运营线", "其他",
+        ]
+        # 产品团队汇总卡（2026-10-28 追加）：今日 run = implementer 2 +
+        # verifier 1 + agent 1；成本仅 implementer 计价 1.2；需求数量随窗——
+        # demo 创建于 2026-03-01（T_CREATED），不在今日窗
+        assert data["summary"]["spec_count"] == 0
+        assert data["summary"]["runs_total"] == 6
+        assert data["summary"]["cost_total"] == pytest.approx(1.2)
+        # 运行时长（秒）：无 run_metrics 指标的 fixture 走 mtime 回退——终态
+        # run 产物 mtime=started+60 → 各 60s（在飞 run 走真实墙钟，只设下界）
+        assert data["summary"]["duration_total"] >= 300.0
+        assert data["window"] == "today"
+
+    def test_attributables_multi_spec_order_and_dedup(self, tmp_path):
+        """在飞归属列表（2026-10-29 多 spec 并行滚动显示）：started 降序、
+        同 (project, spec) 去重取最新（重试场景）、spec/started/run_id 缺失
+        剔除；attributable 兼容字段取最新一条且形态不变（无 run_id 键）。"""
+        proot = make_proj(tmp_path, "proj-m")
+        # 同 spec 两条在飞（瞬态重试场景）：取最新一条
+        priced_run(proot, f"impl-alpha-{NOW - 900}", "progress", NOW - 900, usage=None)
+        priced_run(proot, f"impl-alpha-{NOW - 100}", "progress", NOW - 100, usage=None)
+        # 另一 spec 在飞（更晚 start，应排最前）
+        priced_run(proot, f"impl-beta-{NOW - 50}", "progress", NOW - 50, usage=None)
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        impl = self.card_of(data, "implementer")
+        assert [a["spec"] for a in impl["attributables"]] == ["beta", "alpha"]
+        assert impl["attributables"][0]["run_id"] == f"impl-beta-{NOW - 50}"
+        assert impl["attributables"][1]["run_id"] == f"impl-alpha-{NOW - 100}"
+        assert impl["attributable"] == {"project": "proj-m", "spec": "beta"}
+
+    def test_org_windows(self, tmp_path):
+        """时间窗（2026-10-28）：7d 窗并入昨日终态；all=未归档全部（不限
+        时间、剔除已归档 SPEC 名下 run）；需求数量随窗（按 created）；
+        14 日 sparkline 恒为 14 日口径不随窗变。"""
+        proot = self.build_observed(tmp_path)
+        # 归档 SPEC 清单 + 其名下一条 run（all 窗应剔除）
+        (proot / ".fenix" / "STATE.archive.md").write_text(
+            "# Fenix Archive State\n\n## Specs\n"
+            "\n### arch-demo\n- status: pushed\n- priority: 1\n"
+            f"- created: {T_CREATED}\n- updated: {T_CREATED}\n",
+            encoding="utf-8",
+        )
+        priced_run(proot, f"impl-arch-demo-{NOW - 5000}", "done", NOW - 5000, usage=None)
+        kw = dict(now=NOW)
+        d7 = cc.aggregate_org(projects_of(proot), window="7d", **kw)
+        impl7 = self.card_of(d7, "implementer")
+        # 7d：今日 2 + 昨日 3 → 5 run、成功率 3/4（昨日 1 error 计入）
+        assert impl7["runs"] == 5
+        assert impl7["success_rate"] == 0.75
+        assert impl7["cost"] == pytest.approx(1.2)
+        assert d7["summary"]["runs_total"] == 9  # impl 5 + verifier 1 + agent 1 + 归并 2
+        assert d7["summary"]["spec_count"] == 0  # demo 创建于 3 月，不在 7 日窗
+        assert self.card_of(d7, "planner")["runs"] == 0  # planner 派生=窗口内需求数
+        assert d7["window"] == "7d"
+        dall = cc.aggregate_org(projects_of(proot), window="all", **kw)
+        # all=未归档全部：arch-demo（归档 SPEC）名下 run 被剔除 → impl 仍 5；
+        # 需求数量计全量活跃 SPEC（demo 1 个，arch-demo 已归档不计）
+        assert self.card_of(dall, "implementer")["runs"] == 5
+        # planner 派生：全量窗 1 个活跃需求 → 1 次「需求规划」，成功率固定
+        # 100%、成本固定 $0
+        planner_all = self.card_of(dall, "planner")
+        assert planner_all["runs"] == 1
+        assert planner_all["success_rate"] == 1.0
+        assert planner_all["cost"] == 0.0
+        assert dall["summary"]["runs_total"] == 10  # 上行 9 + planner 派生 1
+        # 时长合计为数值（全量窗 ≥ 7d 窗口径）
+        assert dall["summary"]["duration_total"] >= d7["summary"]["duration_total"]
+        assert dall["summary"]["spec_count"] == 1
+        assert dall["window"] == "all"
+        # sparkline 不随窗变（两个窗口下同一 14 日口径）
+        assert (
+            self.card_of(d7, "implementer")["activity_14d"]
+            == self.card_of(dall, "implementer")["activity_14d"]
+        )
 
     def test_edges_static_constant(self, tmp_path):
         """任意两次请求 edges 完全一致且等于模块常量（4 条边）。"""

@@ -111,6 +111,37 @@ body {
   --ring: 221.2 83.2% 53.3%;
 }
 
+// claude-msg 输出面板的 portal 弹层变量注入（RunRecordModal 运行记录弹窗
+// body 内容挂载点，2026-10-29）：portal 不在 .claude-msg-pane 后代位置、
+// 变量无法继承——text-muted-foreground 等语义类 hsl(var(--*)) 静默解析
+// 失败回退继承（指挥中心暗色算法下继承 antd 白色 colorText →「显示尾部
+// N / 共 M 条事件」白字不可读，用户实测）。同 composer.css 两选择器的
+// 2026-09-25 实证同款问题；本类纯变量注入、无布局副作用（.claude-msg-pane
+// 的 padding-right 不可复用）。变量组与上方 .claude-msg-pane、composer.css
+// 的 .fenix-composer / .fenix-composer-portal 逐值相同，四处无构建期单一
+// 来源，调色时四处同步、漏改任意一处即配色漂移。
+.claude-msg-portal {
+  --background: 44 22% 96%;
+  --foreground: 36 25% 4%;
+  --card: 0 0% 100%;
+  --card-foreground: 36 25% 4%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 36 25% 4%;
+  --primary: 221.2 83.2% 53.3%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 44 15% 91%;
+  --secondary-foreground: 36 15% 18%;
+  --muted: 44 15% 91%;
+  --muted-foreground: 40 5% 44%;
+  --accent: 44 15% 91%;
+  --accent-foreground: 36 15% 18%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 44 14% 87%;
+  --input: 44 14% 87%;
+  --ring: 221.2 83.2% 53.3%;
+}
+
 // SPEC 详情告警：以收缩态边距为基准。告警 description 常驻（折叠仅 display:none），
 // antd 展开变体给 title 加的 margin-bottom:8px 会使收缩态凭空多 11px——收敛为 0，
 // 展开时的标题-内容间隔由内容 div 自身的 margin-top 提供（折叠时随 display:none 消失）。

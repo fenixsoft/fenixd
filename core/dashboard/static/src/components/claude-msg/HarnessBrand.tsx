@@ -7,8 +7,12 @@
 // 未注入 Provider 的使用点（自由会话 SessionPanel 等 claude 专用车道）
 // 行为与改造前逐字一致（spec「缺省品牌等于现状」）。
 //
-// 回退链（design Decision 3）：无 harness 字段 → claude；未注册值 →
-// 首字母徽标（圆形底 + 大写首字母），不抛错白屏。三分支判定逻辑在
+// 回退链（design Decision 3；2026-10-29 用户定稿修正）：run 视图注入点无
+// harness 字段 → 中性「AI Assistant」（AI 首字母徽标——无 meta 的 run 可能
+// 来自任何 harness，不再冒充 Claude）；未注册值 → 首字母徽标（圆形底 +
+// 大写首字母），不抛错白屏。context 缺省值仍为 Claude 品牌——未注入
+// Provider 的使用点（自由会话 SessionPanel 等 claude 专用车道）行为与改造
+// 前逐字一致（spec「缺省品牌等于现状」）。三分支判定逻辑在
 // harnessBrandLogic.ts（node --test 直测），本文件只做 React 装配。
 import { createContext, useContext, useMemo, type ComponentType, type ReactNode } from 'react';
 
@@ -40,10 +44,12 @@ function makeInitialLetterBrand(name: string, letter: string): HarnessBrandValue
   return { name, Logo: InitialLetterBadge };
 }
 
-// 品牌注册表：claude 缺省（label 保持 'Claude' 与现状一致）；dsh 用官方
-// 鲸鱼图标（DshLogo.tsx）。
+// 品牌注册表：claude（label 保持 'Claude' 与现状一致）；dsh 用官方鲸鱼
+// 图标（DshLogo.tsx）；neutral 为 run meta 缺 harness 的中性缺省（2026-10-29
+// 用户定稿：名称 AI Assistant + 「AI」首字母徽标，复用徽标形态零新资产）。
 const CLAUDE_BRAND: HarnessBrandValue = { name: DEFAULT_BRAND_NAME, Logo: ClaudeLogo };
 const DSH_BRAND: HarnessBrandValue = { name: 'dsh', Logo: DshLogo };
+const NEUTRAL_BRAND: HarnessBrandValue = makeInitialLetterBrand('AI Assistant', 'AI');
 
 // 装配表：harness 名 → 品牌值。键集单源自 harnessBrandLogic 的
 // REGISTERED_HARNESS_NAMES——新增注册品牌只报名单一处，漏配本表
@@ -65,7 +71,8 @@ function brandForHarness(harness?: string | null): HarnessBrandValue {
   if (resolution.kind === 'fallback') {
     return makeInitialLetterBrand(resolution.name, resolution.letter);
   }
-  return CLAUDE_BRAND;
+  // meta 缺 harness → 中性品牌（不冒充 Claude）
+  return NEUTRAL_BRAND;
 }
 
 // context 缺省值 = Claude 品牌（未注入 Provider 即现状行为）

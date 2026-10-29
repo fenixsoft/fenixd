@@ -2,13 +2,12 @@
 //
 // KPI 条（四指标 + 网关状态徽标；null 显示「—」非 0——分母零/不可计价的
 // 口径语义，specs「KPI 条」Requirement）+ 台账表格（项目/SPEC/车道/结果/
-// 耗时/tokens/成本/开始时间/trigger 九列，null 显示「—」）+ 项目筛选
-// （与流水线屏同数据源模式：响应 projects 全集 +「全部项目」）。
-// KPI 数据独立加载（收件箱裁决成功后经 kpiTick 触发重拉），表格独立加载，
-// 互不拖垮。
+// 耗时/tokens/成本/开始时间/trigger 九列，null 显示「—」）。项目筛选
+// 2026-10-28 上移壳层页签右侧全局下拉（与流水线屏同批），本屏经 props
+// 接收。KPI 数据独立加载，表格独立加载，互不拖垮。
 
-import { useState } from 'react';
-import { Alert, Select, Table, Tag } from 'antd';
+import { useEffect } from 'react';
+import { Alert, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { commandCenterKpi, commandCenterLedger } from '@/services/dashboard';
 import type { CommandCenterKpi, CommandCenterLedger, CommandCenterLedgerRow } from '@/services/dashboard';
@@ -130,9 +129,20 @@ const columns: ColumnsType<CommandCenterLedgerRow> = [
   { title: 'trigger', dataIndex: 'trigger', key: 'trigger', render: (v) => fmtMetric(v) },
 ];
 
-export default function ExecutionLedger({ active, kpiTick }: { active: boolean; kpiTick: number }) {
-  // project='' = 全部项目（与流水线屏同数据源模式）
-  const [project, setProject] = useState('');
+export default function ExecutionLedger({
+  active,
+  project,
+  onProjects,
+  kpiTick = 0,
+}: {
+  active: boolean;
+  /** 项目筛选：''=全部项目（服务端缺省聚合范围；壳层页签右侧全局下拉注入） */
+  project: string;
+  /** 项目全集上报（供壳层全局下拉合并），数据变化时回调一次 */
+  onProjects?: (projects: string[]) => void;
+  /** 裁决收件箱页签移除后无生产者，保留参数位（默认 0=不触发 KPI 重拉） */
+  kpiTick?: number;
+}) {
   const kpi = useScreenResource<CommandCenterKpi>(
     () => commandCenterKpi(project || undefined),
     active,
@@ -146,6 +156,10 @@ export default function ExecutionLedger({ active, kpiTick }: { active: boolean; 
     // 筛选切换即时重拉（与流水线屏同数据源模式，含同款即时生效语义）
     project,
   );
+  // 项目全集上报给壳层（页签右侧全局下拉数据源）
+  useEffect(() => {
+    if (ledger.data?.projects) onProjects?.(ledger.data.projects);
+  }, [ledger.data, onProjects]);
 
   const ledgerView = () => {
     if (ledger.error && !ledger.data) {
@@ -172,19 +186,6 @@ export default function ExecutionLedger({ active, kpiTick }: { active: boolean; 
 
   return (
     <div>
-      {ledger.data ? (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-          <Select
-            value={project}
-            onChange={setProject}
-            style={{ minWidth: 180 }}
-            options={[
-              { label: '全部项目', value: '' },
-              ...ledger.data.projects.map((p) => ({ label: p, value: p })),
-            ]}
-          />
-        </div>
-      ) : null}
       <KpiBar kpi={kpi.data} kpiError={kpi.error} onRetry={kpi.retry} />
       {ledgerView()}
     </div>

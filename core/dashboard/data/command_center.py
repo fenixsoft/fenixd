@@ -40,7 +40,12 @@ logger = logging.getLogger("fenixd.dashboard.data.command_center")
 
 # 部门分区花名册：zone →（编制内 lane 全集，固定序）。零 run 的编制内车道
 # 也 MUST 出卡（specs「花名册卡与观测数据合并」Requirement：编制内岗位可见）。
+# 2026-10-28 用户定稿重划五线：设计线（场景生成/验证）、self-review→质量线、
+# evolution→运营线；**testing（tester）与 scan 取消出卡**（fenixd 测试在实现/
+# 修复 run 内部执行、扫描由代码评审承担，两车道从未派发）；ocr 未划线
+# （观测到才落「其他」）。
 ZONE_DEMAND = "需求线"
+ZONE_DESIGN = "设计线"
 ZONE_DELIVERY = "交付线"
 ZONE_QUALITY = "质量线"
 ZONE_OPS = "运营线"
@@ -49,13 +54,31 @@ OTHER_ZONE = "其他"
 
 ROSTER = {
     ZONE_DEMAND: ("planner", "spec-review"),
-    ZONE_DELIVERY: ("implementer", "code-fix"),
-    ZONE_QUALITY: ("code-review", "judge", "testing"),
-    ZONE_OPS: ("administrator", "self-review", "scan", "ocr"),
+    ZONE_DESIGN: ("planner-plan", "planner-judge"),
+    ZONE_DELIVERY: ("implementer", "code-fix", "verifier"),
+    ZONE_QUALITY: ("judge", "code-review", "self-review"),
+    ZONE_OPS: ("administrator", "evolution"),
 }
 
 # lane → zone 反查表（花名册派生，勿手工维护第二份）
 LANE_ZONE = {lane: zone for zone, lanes in ROSTER.items() for lane in lanes}
+
+# 观测 lane → 编制内 lane 归并（2026-10-28 用户定稿）：dispute-judge 计入
+# 质量裁决（judge）、repair 计入修复（code-fix）。仅组织网格聚合消费；
+# 时间线/拓扑屏保持原生 agent_type（各有角色映射单源）。
+LANE_ALIASES = {
+    "dispute-judge": "judge",
+    "repair": "code-fix",
+}
+
+# 时间窗（2026-10-28 时间下拉「今日/7 日/全量」）：today=UTC 日界起；
+# 7d=近 7 天；all=未归档全部（仅活跃产物，无时间下界）。窗口同时约束
+# 车道卡三格（run 计数/成功率/成本）与产品团队汇总；需求数量（活跃 SPEC）
+# 与 14 日 sparkline 不随窗变。
+WINDOW_TODAY = "today"
+WINDOW_7D = "7d"
+WINDOW_ALL = "all"
+ORG_WINDOWS = (WINDOW_TODAY, WINDOW_7D, WINDOW_ALL)
 
 # 静态汇报线（冻结结构）：planner→implementer、implementer→code-review、
 # code-review→judge、code-fix→code-review。响应经 ``_edges_snapshot``
@@ -164,15 +187,16 @@ def _run_files_since(proot: Path, since_epoch: float) -> list:
     return kept
 
 
-def _window_runs(proot: Path, since_epoch: float) -> list:
+def _window_runs(proot: Path, since_epoch: float, include_archive: bool = True) -> list:
     """入窗 run 行（get_runs 既有元数据口径：status/started/duration/
-    agent_type/spec；live+archive 同 stem 活跃副本优先去重）。"""
+    agent_type/spec；live+archive 同 stem 活跃副本优先去重）。include_archive
+    False 时仅活跃产物（「全量=未归档」窗选口径）。"""
     files = _run_files_since(proot, since_epoch)
     if not files:
         return []
     import core.dashboard.data as _facade
 
-    return _facade.get_runs(proot, None, include_archive=True, files=files)
+    return _facade.get_runs(proot, None, include_archive=include_archive, files=files)
 
 
 # ── 成本口径（复用 topology/timeline 既有成本单点） ───────────────────────
@@ -384,41 +408,64 @@ def _delivered_spec_names(proot: Path, win_start: datetime, now_dt: datetime) ->
 
 
 def _new_lane_stat(lane: str, zone: str) -> dict:
-    """车道卡统计骨架（编制内零 run 车道同款出卡）。"""
+    """车道卡统计骨架（编制内零 run 车道同款出卡）。计数器为窗口中性命名
+    （runs/success/success_denom/cost），窗口语义由 aggregate_org 统一注入。"""
     return {
         "lane": lane,
         "zone": zone,
         "status": "idle",
-        "runs_today": 0,
-        "success_7d": 0,
-        "success_denom_7d": 0,
-        "cost_7d": 0.0,
+        "runs": 0,
+        "success": 0,
+        "success_denom": 0,
+        "cost": 0.0,
         "cost_priced": False,
+        "duration": 0.0,  # 窗口内 run 时长合计（秒；get_runs duration_seconds 口径）
         "activity_14d": [0] * 14,
         "last_activity_dt": None,
-        "inflight": [],  # [(started_dt, project, spec)]，attributable 取最新
+        "inflight": [],  # [(started_dt, project, spec, run_id)]，归属取最新
     }
 
 
-def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
+def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TODAY) -> dict:
     """组织网格数据（specs「组织网格数据派生」Requirement）。
 
     车道卡 = 花名册全量（零 run 也出卡）∪ 观测 lane（花名册外落「其他」
     分区）。卡片字段：lane/zone/status（working=存在在飞 run，复用 runs.py
-    在飞判定口径）/runs_today（UTC 日界）/success_rate_7d（分母对齐
+    在飞判定口径）/runs（窗内计数，窗口见下）/success_rate（分母对齐
     aggregate_kpi ``run_success_rate_7d`` 同款口径 done/(done+error)）/
-    cost_7d/activity_14d（长度 14 按日计数，旧→新；mtime 粗筛入窗文件后按 started
-    落桶）/last_activity_ts/attributable（最近在飞 run 归属 {project, spec}
-    或 null，供钻取 /projects/:name/:spec）。
+    cost/activity_14d（长度 14 按日计数恒 14 日口径，旧→新；mtime 粗筛入窗
+    文件后按 started 落桶）/last_activity_ts/attributable（最近在飞 run 归属
+    {project, spec} 或 null）/attributables（2026-10-29 多 spec 并行：在飞
+    归属列表 [{project, spec, run_id}]，started 降序、同 (project, spec) 去
+    重取最新；run_id 供点击 spec 名打开运行记录弹窗）。
 
-    响应携带静态汇报线 ``edges``（:data:`EDGES` 常量快照）与 ``projects``
-    回显（与 collab-graph 同一注入与筛选模式）。
+    窗口 ``window``（2026-10-28 时间下拉）：today=UTC 日界起（默认）；
+    7d=近 7 天；all=未归档全部（不限时间扫 live+归档 run 产物，剔除已归档
+    SPEC 名下 run）。窗口同时约束 run 计数/成功率/成本、需求数量（按 SPEC
+    created）与产品团队汇总；非法值防御性回落 today。
+
+    响应携带 ``edges``（:data:`EDGES` 常量快照）、``projects`` 回显（与
+    collab-graph 同一注入与筛选模式）、``summary``（产品团队汇总卡：需求数量
+    =窗口内创建的活跃 SPEC 数；runs_total/duration_total/cost_total=窗口内
+    全车道合计，时长为秒（run_metrics 指标口径，回退 mtime 推算），全未计价
+    → None）与 ``window`` 回显。
     """
     now_dt = _now_utc(now)
     day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
     win7_start = now_dt - timedelta(days=7)
     win14_start = now_dt - timedelta(days=14)
     win14_epoch = win14_start.timestamp()
+    if window not in ORG_WINDOWS:
+        window = WINDOW_TODAY
+    win_start = {
+        WINDOW_TODAY: day_start,
+        WINDOW_7D: win7_start,
+        WINDOW_ALL: None,
+    }[window]
+    # 「全量=未归档」：不限时间扫全部 run 产物（终态 run 会移入 runs/archive/，
+    # 故必须并入归档产物），并剔除已归档 SPEC（STATE.archive.md 清单）名下
+    # 的 run；today/7d 仍扫 14 日文件（sparkline 口径上限，同时覆盖两窗起点）
+    scan_epoch = 0 if window == WINDOW_ALL else win14_epoch
 
     stats: dict = {lane: _new_lane_stat(lane, zone) for lane, zone in LANE_ZONE.items()}
     projects_out = _echo_projects(registry_projects)
@@ -426,32 +473,45 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
     for p in _scoped_projects(registry_projects, project):
         name = p["name"]
         proot = Path(p["path"])
-        rows = _window_runs(proot, win14_epoch)
+        rows = _window_runs(proot, scan_epoch, include_archive=True)
         if not rows:
             continue
         import core.dashboard.data as _facade
 
         billing = _facade.load_billing_config(proot)
+        # 已归档 SPEC（STATE.archive.md 清单）名下的 run 全窗剔除——归档
+        # SPEC 是完结历史，不进现役车道统计（含「全量=未归档」窗）
+        archived_names = set(_facade.parse_archived_state(proot))
         for r in rows:
-            lane = r.get("agent_type") or "agent"
+            if archived_names and str(r.get("spec") or "") in archived_names:
+                continue
+            raw_lane = r.get("agent_type") or "agent"
+            lane = LANE_ALIASES.get(raw_lane, raw_lane)
             st = stats.get(lane)
             if st is None:
                 # 花名册外观测 lane：落「其他」分区（花名册外车道不丢）
                 st = stats[lane] = _new_lane_stat(lane, OTHER_ZONE)
             started = _parse_ts(r.get("started"))
             if started is not None:
-                if started >= day_start:
-                    st["runs_today"] += 1
-                if started >= win7_start:
+                if win_start is None or started >= win_start:
+                    st["runs"] += 1
                     st7 = r.get("status")
                     # 成功率分母对齐 aggregate_kpi run_success_rate_7d 同款
                     # 口径：done/(done+error)；cancelled/interrupted 等其他
                     # 终态不计入分母，避免同名指标双口径
                     if st7 == "done":
-                        st["success_7d"] += 1
-                        st["success_denom_7d"] += 1
+                        st["success"] += 1
+                        st["success_denom"] += 1
                     elif st7 == "error":
-                        st["success_denom_7d"] += 1
+                        st["success_denom"] += 1
+                    # run 时长（秒；优先 run_metrics 指标日志，回退 mtime 推算）
+                    st["duration"] += float(r.get("duration_seconds") or 0)
+                    # 成本（窗内 run；计价表存在才读产物尾窗，未计价不贡献）
+                    if billing:
+                        cost, _tok = _run_cost_and_tokens(proot, r["run_id"], billing)
+                        if cost is not None:
+                            st["cost"] += cost
+                            st["cost_priced"] = True
                 # 14 日活动桶：旧→新，index 13 = 今天（UTC 日界）
                 idx = 13 - (now_dt.date() - started.date()).days
                 if 0 <= idx <= 13:
@@ -460,14 +520,31 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
                     st["last_activity_dt"] = started
             if r.get("status") in IN_FLIGHT_STATUSES:
                 st["inflight"].append(
-                    (started, name, str(r.get("spec") or ""))
+                    (started, name, str(r.get("spec") or ""), str(r.get("run_id") or ""))
                 )
-            # 7 日成本（窗内 run；计价表存在才读产物尾窗，未计价不贡献）
-            if billing and started is not None and started >= win7_start:
-                cost, _tok = _run_cost_and_tokens(proot, r["run_id"], billing)
-                if cost is not None:
-                    st["cost_7d"] += cost
-                    st["cost_priced"] = True
+
+    # 需求规划（planner）派生口径（2026-10-28 用户定稿）：每个需求固定计 1 次
+    # 需求规划派发，代表 /fenix-new 时 AI 与人类讨论的过程——不消费真实
+    # planner- run 产物（fenixd 需求人工提，该车道零真实派发）。窗口口径与
+    # 需求数量一致（按 SPEC created）。
+    import core.dashboard.data as _facade
+
+    spec_count = 0
+    for p in _scoped_projects(registry_projects, project):
+        for entry in _facade.parse_state(Path(p["path"])).values():
+            created = _parse_ts((entry or {}).get("created"))
+            if win_start is None or (created is not None and created >= win_start):
+                spec_count += 1
+    if "planner" in stats:
+        stats["planner"]["runs"] = spec_count
+        # 成功率固定 100%、成本固定 $0（2026-10-28 用户定稿）：规划为人机
+        # 讨论派生计数，无失败语义、不计价。spec_count=0 时 denom=0 →
+        # 成功率按红线显示「—」；cost_priced 置 True 使 0 成本按「$0.00」
+        # 真实零显示（非「—」）。
+        stats["planner"]["success"] = spec_count
+        stats["planner"]["success_denom"] = spec_count
+        stats["planner"]["cost_priced"] = True
+        stats["planner"]["cost"] = 0.0
 
     cards: list = []
     # 花名册序优先（zone 序 + 区内 lane 序），花名册外观测 lane 按名排序殿后
@@ -478,32 +555,47 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
     for lane in ordered:
         st = stats[lane]
         inflight = st["inflight"]
-        attributable = None
-        if inflight:
-            # 最近在飞 run 的归属 SPEC（spec 段为空——admin/evo 等无 SPEC
-            # 车道——不可得，MUST 为 null）
-            started_dt, pname, spec = max(
-                inflight, key=lambda t: t[0] or datetime.min.replace(tzinfo=timezone.utc)
+        # 在飞归属列表（2026-10-29 多 spec 并行滚动显示）：spec/started/run_id
+        # 齐备才收（spec 段为空——admin/evo 等无 SPEC 车道——不可得）；同
+        # (project, spec) 去重取最新（瞬态重试多 run 同 spec），started 降序
+        # （最新在前）。attributable 兼容字段保留旧形态（最新一条，无 run_id）。
+        latest: dict = {}
+        for started_dt, pname, spec, run_id in inflight:
+            if not spec or started_dt is None or not run_id:
+                continue
+            key = (pname, spec)
+            prev = latest.get(key)
+            if prev is None or started_dt > prev[0]:
+                latest[key] = (started_dt, pname, spec, run_id)
+        attributables = [
+            {"project": pname, "spec": spec, "run_id": run_id}
+            for _, pname, spec, run_id in sorted(
+                latest.values(), key=lambda t: t[0], reverse=True
             )
-            if spec and started_dt is not None:
-                attributable = {"project": pname, "spec": spec}
+        ]
+        attributable = (
+            {"project": attributables[0]["project"], "spec": attributables[0]["spec"]}
+            if attributables
+            else None
+        )
         cards.append(
             {
                 "lane": lane,
                 "zone": st["zone"],
                 "status": "working" if inflight else "idle",
-                "runs_today": st["runs_today"],
-                "success_rate_7d": (
-                    round(st["success_7d"] / st["success_denom_7d"], 6)
-                    if st["success_denom_7d"]
+                "runs": st["runs"],
+                "success_rate": (
+                    round(st["success"] / st["success_denom"], 6)
+                    if st["success_denom"]
                     else None
                 ),
-                "cost_7d": round(st["cost_7d"], 6) if st["cost_priced"] else None,
+                "cost": round(st["cost"], 6) if st["cost_priced"] else None,
                 "activity_14d": st["activity_14d"],
                 "last_activity_ts": (
                     st["last_activity_dt"].isoformat() if st["last_activity_dt"] else None
                 ),
                 "attributable": attributable,
+                "attributables": attributables,
             }
         )
 
@@ -514,9 +606,24 @@ def aggregate_org(registry_projects, project=None, *, now=None) -> dict:
         if zone_cards:
             zones.append({"zone": zone, "cards": zone_cards})
 
+    # 产品团队汇总（2026-10-28 用户追加「产品团队」卡数据源）：需求数量=
+    # 窗口内创建的活跃 SPEC 数（parse_state created 时间过滤；created 缺失/
+    # 脏值仅在全量窗计入）；运行总数/总成本=窗口内全车道合计（含 planner
+    # 派生计数；全未计价 → None，读侧按「—」红线显示）。
+    runs_total = sum(c["runs"] for c in cards)
+    costs = [c["cost"] for c in cards if c["cost"] is not None]
+    duration_total = round(sum(st["duration"] for st in stats.values()), 1)
+
     return {
         "project": project,
         "projects": projects_out,
+        "window": window,
+        "summary": {
+            "spec_count": spec_count,
+            "runs_total": runs_total,
+            "duration_total": duration_total,
+            "cost_total": round(sum(costs), 6) if costs else None,
+        },
         "zones": zones,
         "edges": edges_snapshot(),
     }
