@@ -89,11 +89,25 @@ function nodeSubLabel(n: TopologyNode): string {
   return n.label;
 }
 
+/** 节点圆点色：run 按状态语义色单源投影；verify 绿；特殊节点蓝。 */
+function nodeDotHex(kind: TopologyNode['kind'], status: string): string {
+  if (kind === 'run') return runDotHex(status);
+  if (kind === 'verify') return STATUS_HEX.green;
+  return STATUS_HEX.blue;
+}
+
 /** 边终点箭头 id：retry 橙、approve 金、其余默认青（与边线着色同口径）。 */
 function edgeMarkerId(type: TopologyEdgeType): string {
   if (type === 'retry') return 'url(#topo-arrow-retry)';
   if (type === 'approve') return 'url(#topo-arrow-approve)';
   return 'url(#topo-arrow)';
+}
+
+/** 边线着色：retry 橙、approve 金、其余默认青（与 edgeMarkerId 同口径）。 */
+function edgeStroke(type: TopologyEdgeType): string {
+  if (type === 'retry') return '#fa8c16';
+  if (type === 'approve') return '#fadb14';
+  return '#3b6ea5';
 }
 
 // PMEngine 生命周期小节点（纯展示；id 与后端 dispatch_anchor 编号规则一致：
@@ -378,7 +392,7 @@ export default function PipelineView({
                 key={`e${i}`}
                 d={d}
                 fill="none"
-                stroke={isRetry ? '#fa8c16' : isApprove ? '#fadb14' : '#3b6ea5'}
+                stroke={edgeStroke(e.type)}
                 strokeWidth={isRetry || isApprove ? 1.6 : 1.1}
                 strokeDasharray={e.type === 'dispatch' ? '5 3' : undefined}
                 opacity={0.75}
@@ -440,7 +454,7 @@ export default function PipelineView({
             const isRunning = n.kind === 'run' && (status === 'running' || status === 'empty');
             const tone = nodeTone(n.kind, status);
             // 着色：run 走状态语义色单源（失败红/中止橙/弃置灰）；verify 绿；特殊节点蓝
-            const dot = n.kind === 'run' ? runDotHex(status) : n.kind === 'verify' ? STATUS_HEX.green : STATUS_HEX.blue;
+            const dot = nodeDotHex(n.kind, status);
             const border = nodeBorderColor(selectedId === n.id, tone, dot);
             return (
               <g

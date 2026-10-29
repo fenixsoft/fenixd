@@ -169,6 +169,28 @@ export default function SpecTopologyPage() {
     (n) => n.kind === 'run' && (n.status === 'running' || n.status === 'empty'),
   ).length;
 
+  // ── 画布分支：loading 兜底 → 数据无错 → 按视图二选一 → 空数据兜底 ──
+  // 禁止嵌套三元（同 SessionPanel renderBody 先例），用 if/else 早返回逐层表达
+  const renderCanvas = () => {
+    if (loading && !data) {
+      return (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
+          <Spin size="large" />
+        </div>
+      );
+    }
+    if (data && !data.error) {
+      if (view === 'pipeline') {
+        return <PipelineView data={data} selectedId={selectedId} onSelect={handleSelect} />;
+      }
+      return <SwimlaneView data={data} selectedId={selectedId} onSelect={handleSelect} />;
+    }
+    if (!error) {
+      return <Empty description="暂无拓扑数据" style={{ padding: 80 }} />;
+    }
+    return null;
+  };
+
   if (!name || !spec) {
     return (
       <div style={{ minHeight: '100vh', background: BG, padding: 24 }}>
@@ -258,23 +280,7 @@ export default function SpecTopologyPage() {
         )}
 
         {/* 画布（胶囊切换器一屏独占单视图） */}
-        <div style={{ marginTop: 14 }}>
-          {loading && !data ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
-              <Spin size="large" />
-            </div>
-          ) : data && !data.error ? (
-            view === 'pipeline' ? (
-              <PipelineView data={data} selectedId={selectedId} onSelect={handleSelect} />
-            ) : (
-              <SwimlaneView data={data} selectedId={selectedId} onSelect={handleSelect} />
-            )
-          ) : (
-            !error && (
-              <Empty description="暂无拓扑数据" style={{ padding: 80 }} />
-            )
-          )}
-        </div>
+        <div style={{ marginTop: 14 }}>{renderCanvas()}</div>
       </div>
 
       {/* run 节点下钻：复用现有运行记录弹窗（RunRecordModal/ClaudeOutputPane 单源） */}

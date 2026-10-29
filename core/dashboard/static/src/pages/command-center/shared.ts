@@ -38,10 +38,11 @@ export function fmtTokens(v: number | null | undefined): string {
 // 耗时格式化：秒 → 紧凑可读时长（<1m 取整秒；<1h 分秒；否则时分）；null → 「—」。
 export function fmtDurationSeconds(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—';
-  if (v < 60) return `${Math.round(v)}s`;
-  // 先对总秒数取整再拆分：浮点秒下「floor 取分 + round 余秒」会让 59.5~60
-  // 区间的余秒进成 60 且不向分钟进位（输出「59m60s」越界文案）。
+  // 先对总秒数取整再判进位：59.5~60 区间 round 后得 60，若按秒级输出即「60s」
+  // 不向分钟进位（v=60 才是「1m」）；分秒拆分同理会让余秒进成 60 出「59m60s」。
+  // 取整提到分支前统一做，逐级判进位则边界自然收敛。
   const t = Math.round(v);
+  if (t < 60) return `${t}s`;
   const m = Math.floor(t / 60);
   const s = t % 60;
   if (m < 60) return s ? `${m}m${s}s` : `${m}m`;

@@ -6,6 +6,9 @@
   HarnessCapabilities、HarnessAdapter 协议（spec 七成员 + 扩展成员
   worktree_pgrep_patterns，同收 HARNESS_ADAPTER_MEMBERS 单源）、分类词表）
 - :mod:`.claude_adapter` — claude CLI adapter（现状全量平移，字节级等价）
+- :mod:`.dsh_adapter` — dsh headless 通道 adapter（DshAdapter 经 DshEventProjector
+  把 dsh 事件流投影为 claude stream-json canon 形状；含部署参数装配
+  DshAdapterConfig 与 dispatch 前置健康检查 check_health）
 - :mod:`.one_shot` — 一次性 spawn 收编入口 run_one_shot
 
 依赖方向（design D8）：本包只依赖 stdlib 与既有纯工具模块，MUST NOT import
