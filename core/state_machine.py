@@ -3226,6 +3226,12 @@ class StateMachine:
         本写（恢复让位于人工冻结；冻结条目 status 已是 blocked、不在中断态，
         无需恢复），返回 False 由调用方按既有「不计入 recovered」口径处置。
 
+        取消保持复查（code-review 73cc6d5997d4）：与 frozen 同款出口——人工
+        取消保持写 ``_cancelled_hold=True`` 时有意不改 status（status/error/run
+        字段原样保留），status 复查拦不住这种并发写；本路径恢复写恒含 status，
+        照常应用会把该标记清回 False 并推进状态，故锁内一并复查该标记，在场
+        即整体跳过本写。
+
         快照 status 一致性复查（code-review 540f478356de）：同一窗口内该 spec
         若已被并发推进出快照中断态（boot 期 dashboard/admin 独立进程可写，如
         testing→verified、testing→bug-found），照常恢复会把并发已达的状态连同
@@ -3249,6 +3255,15 @@ class StateMachine:
             if entry.get(FROZEN_FIELD):
                 skip["frozen"] = True
                 return False, False
+            if entry.get("_cancelled_hold"):
+                # 取消保持复查（code-review 73cc6d5997d4）：人工取消保持写入
+                # _cancelled_hold=True 时有意不改 status（status/error/run 字段
+                # 原样保留），status_drift 复查拦不住这种并发写；本路径恢复写
+                # 恒含 status，照常应用会经 _apply_updates_entry 把标记清回
+                # False 并推进状态——人工「随根因修复一并重派」的决策不被恢复
+                # 链路静默覆盖，整体跳过本写，跳过事实带出锁外。
+                skip["cancelled_hold"] = True
+                return False, False
             if entry.get("status") != snapshot_status:
                 # 快照 status 一致性复查（code-review 540f478356de）：窗口内
                 # 已被并发推进出快照中断态的 spec 不再是恢复目标，恢复写整体
@@ -3264,6 +3279,13 @@ class StateMachine:
                     "state_machine",
                     f"跳过重启恢复：'{spec_name}' 已在恢复窗口内被冻结"
                     f"——恢复写整体放弃，冻结 error 不被恢复文案覆盖",
+                )
+            elif skip.get("cancelled_hold"):
+                self.logger.warning(
+                    "state_machine",
+                    f"跳过重启恢复：'{spec_name}' 已在恢复窗口内被人工取消"
+                    f"（取消保持标记在场）——恢复写整体放弃，"
+                    f"人工取消保持不被恢复写覆盖",
                 )
             elif "status_drift" in skip:
                 _snap_status, _fresh_status = skip["status_drift"]
@@ -3974,7 +3996,9 @@ class StateMachine:
         回落的清空重建路径同带 frozen 复查，冻结现场不被任何恢复写覆盖）。
         ``reason_out``（可选出参）原样透传 ``_resolve_preserved_branch`` 的回落
         原因（仅判定未通过/载体不可用路径），供调用方按真实原因分流留痕；
-        锚点复核不一致/并发删除出口不写该键。
+        锚点复核不一致/并发删除出口不写该键，冻结出口写专属回落原因
+        （code-review e841f18d2e62，与上下文缺失出口 3154878e97e2 同口径，
+        不被调用方默认文案误报）。
         """
         if project_root is None or worktree_manager is None:
             # 上下文缺失早退同样带出真实回落原因（code-review 3154878e97e2，
@@ -4065,6 +4089,14 @@ class StateMachine:
 
         if not self._mutate_locked(_mutate):
             if skip.get("frozen"):
+                # 冻结出口同样带出专属回落原因（code-review e841f18d2e62，与
+                # 上下文缺失出口 3154878e97e2 同口径）：否则调用方 recover_
+                # interrupted 的 clear_reason 回退默认文案，把「恢复窗口内被
+                # 并发冻结」误报为锚点复核不一致/SPEC 已被并发删除。
+                if reason_out is not None:
+                    reason_out["reason"] = (
+                        "保留判定未通过（git 窗口内被并发冻结，恢复续做未落盘）"
+                    )
                 self.logger.warning(
                     "state_machine",
                     f"跳过恢复保留续做：'{name}' 已在保留判定窗口内被冻结"

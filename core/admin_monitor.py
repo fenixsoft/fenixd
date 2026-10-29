@@ -923,11 +923,20 @@ def _normalize_orphan_group_spec(spec):
     SIGNAL 记录的 daemon 级形态是 spec=None，DISPOSITION 记录是
     spec="global"——关联信号匹配（unhandled_signal_for）与全局形态判定
     都以归一后的 None 为准。
+
+    code-review item a25cb6925069：非 str 脏形态（dict/int 等异常写入）
+    拒为 None——消费点（unhandled_for/unhandled_signal_for 关联匹配、
+    升级记录落盘、STATE 对账）均按 str 严格相等假定，原样透传非 str 对象
+    查询恒不命中（在飞互斥与重派计数守卫被静默致盲）；拒入 None 退化为
+    daemon 级宽口径，与「宁可漏收敛不可抢在飞 run 的信号」的既有
+    fail-closed 取向同向。返回的 str 统一 strip，与空值判定同口径。
     """
-    s = str(spec or "").strip()
+    if not isinstance(spec, str):
+        return None
+    s = spec.strip()
     if not s or s.lower() == _ORPHAN_GLOBAL_SPEC_PLACEHOLDER:
         return None
-    return spec
+    return s
 
 
 # ── 无驱动判定（orphaned-state-signal R1 共用口径）──────────────────────
@@ -3619,6 +3628,12 @@ class AdminMonitor:
         threshold_minutes = self._cfg_float(
             "orphaned_state_threshold_minutes", DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES
         )
+        # stuck 交接阈值整轮不变（code-review item 0f8e29c62bb3）：与上方
+        # threshold_minutes 同位循环外提、一次解析整轮复用，不随逐 spec 迭代
+        # 重复读配置（该阈值也不可逐 spec 变化）。
+        stuck_threshold = self._cfg_float(
+            "stuck_threshold_minutes", DEFAULT_STUCK_THRESHOLD_MINUTES
+        )
         for name, entry in specs.items():
             status = entry.get("status")
             if status not in ("implementing", "testing"):
@@ -3722,9 +3737,6 @@ class AdminMonitor:
             # 它也在），再补发 orphaned_state 只产生双信号/双唤起（实证：
             # 200 分钟无 run 悬置同时命中 stuck 与孤儿两路）。≤ stuck_threshold
             # 时的 orphaned 先于 stuck 触发（4.5 回归场景）。
-            stuck_threshold = self._cfg_float(
-                "stuck_threshold_minutes", DEFAULT_STUCK_THRESHOLD_MINUTES
-            )
             if stuck_threshold > 0 and elapsed_minutes > stuck_threshold:
                 continue
             # 注入 pm_engine（2026-09-18 修复）：条件 ④「无排队中的派发条目」——
@@ -7447,7 +7459,12 @@ class AdminMonitor:
         # 守卫须先于『无关联 spec 跳过』分支——spec 为空同样属全局形态，此
         # 形态下 spec_scoped choice 的跳过 MUST 以 not-ok 结果上报（拦截终态
         # 回写，信号保留待重审），不能走 None 短路被回写门视为已执行成功。
-        # 未知 choice_id 不在此拦截——交执行器报非法 choice（走失败留痕）。
+        # 未知/拒解析 choice_id（unknown-choice / not-in-bucket）对**具体
+        # spec** 仍放行执行器报非法 choice（走失败留痕）；全局信号下执行器
+        # 守卫触达不到——这些拒绝形态会落『无关联 spec』分支返回 None，被
+        # 终态回写门按 resolved 收口、失败留痕永不触达（code-review item
+        # ec2297068d68），故拒绝形态并入本守卫走 not-ok skipped，与导入失败
+        # 降级分支（d5edc8ac335e）同方向 fail-closed。
         _resolved_choice = None
         # fix-admin-choice-payload-and-scenario-pairing 4.1：requires_payload
         # 位同样在作用域守卫处顺带读取（单次 resolve_choice 双用，不二次解析）
@@ -7466,7 +7483,9 @@ class AdminMonitor:
                 (_resolved_choice or {}).get("requires_payload", False)
             )
             # scoped-no-reverse（未注册 signal_type 的 spec_scoped 动作被反查
-            # 收紧拒解析）同属作用域拒入形态——全局信号照此提前跳过
+            # 收紧拒解析）同属作用域拒入形态——全局信号照此提前跳过；
+            # not-in-bucket / unknown-choice 拒解析形态同并入（见上方注释，
+            # code-review item ec2297068d68）
             _globally_scoped = bool(
                 is_global_spec(spec)
                 and (
@@ -7474,7 +7493,8 @@ class AdminMonitor:
                         _resolved_choice
                         and _resolved_choice.get("spec_scoped", True)
                     )
-                    or _resolve_reason == "scoped-no-reverse"
+                    or _resolve_reason
+                    in ("scoped-no-reverse", "not-in-bucket", "unknown-choice")
                 )
             )
         except Exception as e:  # noqa: BLE001 — 守卫不可用不阻塞执行（执行器兜底）
@@ -7483,6 +7503,9 @@ class AdminMonitor:
                 f"choice 作用域预判不可用（执行器守卫兜底）: {e}",
             )
             _resolved_choice = None
+            # 拒绝原因位随守卫降级缺省空串（下方 skipped 留痕分支引用，
+            # 降级路径 resolve_choice 未成功调用、无拒绝原因可考）
+            _resolve_reason = ""
             # 载荷要求位随守卫降级缺省 False（不拦处置，载荷合法性由执行器
             # 既有解析失败路径拒绝，与作用域守卫降级同方向）
             _requires_payload = False
@@ -7501,17 +7524,26 @@ class AdminMonitor:
                 or _spec_form == _ORPHAN_GLOBAL_SPEC_PLACEHOLDER
             )
         if _globally_scoped:
+            # 拒解析形态（not-in-bucket/unknown-choice）下作用域不可考，留痕
+            # 以 choice_id 兜底并附拒绝原因，不作「spec 作用域动作」的失真
+            # 表述（code-review item ec2297068d68）
+            _skip_basis = (
+                f"choice 拒解析（{_resolve_reason}）"
+                if _resolve_reason in ("not-in-bucket", "unknown-choice")
+                else "为 spec 作用域动作"
+            )
             self.logger.info(
                 "admin_monitor",
-                f"处置 choice_id={choice_id} 为 spec 作用域动作，全局信号"
+                f"处置 choice_id={choice_id} {_skip_basis}，全局信号"
                 f"（spec={spec!r}）无 spec 可操作，跳过执行（信号保留待重审）",
             )
             return {"ok": False, "skipped": True,
-                    # 未注册 signal_type 的 scoped 动作被反查收紧拒解析，动作名
-                    # 以 choice_id 兜底（留痕 action_taken 不缺位）
+                    # 拒解析形态（scoped-no-reverse/not-in-bucket/
+                    # unknown-choice）解析结果为 None，动作名以 choice_id
+                    # 兜底（留痕 action_taken 不缺位）
                     "action": ((_resolved_choice or {}).get("action") or choice_id),
-                    "error": (f"全局信号（spec={spec!r}）不可执行 spec 作用域"
-                              f"动作，已跳过")}
+                    "error": (f"全局信号（spec={spec!r}）不可执行"
+                              f"（{_skip_basis}），已跳过")}
         if not spec and not (
             _resolved_choice and not _resolved_choice.get("spec_scoped", True)
         ):
@@ -7839,7 +7871,11 @@ class AdminMonitor:
             if not run_id.startswith(prefix):
                 continue
             rest = run_id[len(prefix) :]
-            m = re.match(r"^(.*)-\d{9,10}(-(?:a|r)\d+)*$", rest)
+            # \d{9,} 不设位数上限（code-review item bc0fd777ad61）：dispute-judge
+            # run_id 的时间戳取 time.time_ns()（pm_engine/dispatch/adjudication.py
+            # 组装 judge run）为 19 位纳秒，旧 9-10 位上限使该形态还原失败返回
+            # None——判官运行期被误报无驱动 stuck、其失败不计入该 spec 失败连击。
+            m = re.match(r"^(.*)-\d{9,}(-(?:a|r)\d+)*$", rest)
             if m:
                 return m.group(1)
         return None

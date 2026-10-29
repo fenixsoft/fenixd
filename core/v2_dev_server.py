@@ -341,8 +341,9 @@ def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -
     与具体地址可被不同进程同时 LISTEN 同一端口，故收集该端口全部 LISTEN
     inode 逐一与 proc 的 /proc/<pid>/fd 比对，任一命中即证明 proc 自身持有
     该端口 LISTEN socket（应答者含本实例），判定与进程退出时机无关。就绪即
-    命中通常首轮通过；短暂重试仅覆盖 node 尚在 bind 的窗口与 procfs 瞬时读
-    失败，proc 已退出（bind 失败自灭）则立即判负。
+    命中通常首轮通过；短暂重试仅覆盖 node 尚在 bind 的窗口与 procfs 目录
+    整体不可读（单 fd 瞬时读取失败就地跳过、不弃本轮），proc 已退出（bind
+    失败自灭）则立即判负。
     """
     deadline = time.time() + timeout
     while True:
@@ -350,11 +351,19 @@ def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -
             return False
         inodes = _listen_inode(port)
         if inodes:
+            targets = {f"socket:[{inode}]" for inode in inodes}
             try:
-                fds = Path(f"/proc/{proc.pid}/fd").iterdir()
-                links = {os.readlink(fd) for fd in fds}
-                if any(f"socket:[{inode}]" in links for inode in inodes):
-                    return True
+                for fd in Path(f"/proc/{proc.pid}/fd").iterdir():
+                    # 单个 fd 可能在遍历间隙被对端关闭（readlink 落 ENOENT，
+                    # 代理 SSE 的连接 fd 高频生灭）：跳过该 fd 继续扫余项，
+                    # 不连带丢弃本轮已扫到的 LISTEN socket；仅 procfs 目录
+                    # 整体不可读才整轮放弃、交由重试窗兜底。
+                    try:
+                        link = os.readlink(fd)
+                    except OSError:
+                        continue
+                    if link in targets:
+                        return True
             except OSError:
                 pass
         if time.time() >= deadline:

@@ -915,11 +915,19 @@ def _diff_planner_output_impl(
     removed_ids = {e.id for e, _ in reasoned}
     kept_entries = [e for e in persisted.scenarios if e.id not in removed_ids]
     new_entries = []
+    # 新增条目非法 kind 收集（code-review 24ec371d4d16，对齐首轮分支
+    # 284c5f40f6a9 的 illegal_kinds 口径）：raw_kind 在场但非法（如误写
+    # gui）属 planner 误写，经 _kind_of 静默归一 web 固化进冻结集后，下轮
+    # 按 web 路由到错误 Runner 且无法从日志对账误写来源，须双留痕。
+    illegal_new_kinds: list[str] = []
     # 按 sid 排序遍历：set 迭代序随 PYTHONHASHSEED 跨进程抖动，违背模块 D3 确定性
     for sid in sorted(planner_ids):
         if sid in persisted_ids:
             continue
         s = planner_by_id[sid]
+        raw_kind = s.get("kind")
+        if raw_kind is not None and raw_kind not in VALID_KINDS:
+            illegal_new_kinds.append(f"{sid}（kind={raw_kind}）")
         new_entries.append(
             ScenarioEntry(
                 id=sid,
@@ -928,6 +936,19 @@ def _diff_planner_output_impl(
                 covers=_covers_of(s),
                 kind=_kind_of(s),
             )
+        )
+    if illegal_new_kinds:
+        # 新增条目无冻结原值可保留（既有条目的「非法不刷新」17250417a111
+        # 在此不适用），仍归一 web 入集，但比照首轮分支记 WARNING 与场景集
+        # 变更行供审计、下轮 planner 纠正。
+        _logger.warning(
+            "场景集 diff %d 条新增条目携带非法 kind（归一 web 入冻结集）: %s",
+            len(illegal_new_kinds),
+            "、".join(illegal_new_kinds),
+        )
+        result.change_lines.append(
+            f"- {len(illegal_new_kinds)} 个新增条目 kind 非法（planner 误写），"
+            f"归一 web：{'、'.join(illegal_new_kinds)}"
         )
 
     # ── 受控增量约束（design D2）──

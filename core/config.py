@@ -2372,8 +2372,12 @@ class ConfigLoader:
         日志留痕，不再静默吞脏段）；不抛异常、不使 daemon 启动失败。GC 仅在
         daemon 启动清扫路径消费一次，无热路径压力。
         """
-        wt = config.get("worktree") if isinstance(config, dict) else None
-        section = wt.get("branch_gc") if isinstance(wt, dict) else None
+        # 段入口经 _segment_or_empty 归一（code-review item 8a1a87dc9906）：
+        # worktree 真值非 dict（如 worktree: [1]）不再静默按空段取缺省，而是
+        # ERROR 告警留痕后按空段降级，与同文件段读取纪律对齐——配置没生效时
+        # 日志可排查；缺段与非 dict config 仍不告警（缺段 ≠ 脏段）。
+        wt = cls._segment_or_empty(config, "worktree")
+        section = wt.get("branch_gc")
         if section is None:
             # 缺段不告警（对齐 _sub_segment_or_empty：缺段 ≠ 脏段）
             section = {}

@@ -537,7 +537,22 @@ def triage_violation(scenario: dict) -> Optional[str]:
     # triage 条数不小于自申报条数，_uncovered_derived_entries 按 len(triage)
     # 核条数即 max 口径。空表死循环豁免保留：派生不出条目且 judge 已自申报
     # 清单时不再驳回（清单已申报、条数已经②核对，驳回只会空转死循环）。
-    ars_unusable_as_baseline = failed_count == 0
+    # 注入封堵（code-review item 159f1abd756d）：failed_count 直接统计 judge
+    # 可整体改写的 assertion_results——失败步骤在场时引擎侧断言表必为空表
+    # （「任一步骤原语失败即跳过断言执行」，见上方派生机制说明），judge 塞一条
+    # {"pass": false} 形状条目即可令 failed_count>0、整段派生核对被跳过，逐条
+    # 归因硬门退化为检测①的「任意 1 条形状合规 triage 即放行」（与 517-524 行
+    # 自认的「仅 judge 改写可达」形态同类）。故失败步骤在场时无论 failed_count
+    # 取值都执行派生核对（该形态下 assertion_results 的失败条目不构成合法失败
+    # 基准；检测①已保证 triage 条数不小于 failed_count，
+    # _uncovered_derived_entries 按 len(triage) 与派生清单核条数即 max 口径。
+    # 视觉信号单独在场时 assertion_results 可合法承载失败断言，维持原
+    # failed_count==0 口径不动，不收窄既有合法放行）。
+    has_failed_step = any(
+        isinstance(s, dict) and not s.get("success", True)
+        for s in scenario.get("step_results") or []
+    )
+    ars_unusable_as_baseline = failed_count == 0 or has_failed_step
     if ars_unusable_as_baseline:
         if _scenario_has_failure_signal(scenario):
             derived = derive_default_failed_assertions(scenario)
@@ -556,7 +571,7 @@ def triage_violation(scenario: dict) -> Optional[str]:
             if uncovered:
                 listed = "；".join(f"{d.get('type')}[{d.get('selector')}]" for d in uncovered)
                 return (
-                    "assertion_results 断言清单缺失或零失败条目（场景存在失败信号），"
+                    "assertion_results 断言清单不可作失败基准（场景存在失败信号），"
                     f"assertion_triage 未逐条覆盖框架派生的失败清单"
                     f"（未覆盖 {len(uncovered)}/{len(derived)} 条：{listed}）："
                     "须在 evidence.failed_assertions 逐条申报上述派生条目"
@@ -1094,6 +1109,26 @@ def _flatten_screenshot_labels(labels) -> dict:
     return flat
 
 
+def _scenario_has_real_screenshots(scenario: dict) -> bool:
+    """场景是否在场真实截图（code-review item 426e0a8ca912 共享佐证口径）。
+
+    两处字段并集：场景级 screenshots（引擎直写形态）与 evidence.screenshots
+    （judge 增强形态）任一含非空串条目即算在场。compute_attribution_level 与
+    tag_cached_attributions 统一引用本助手，消除「佐证判定只读单处字段」的
+    双份读取漂移。evidence 非 dict 按空处理（item 803f6a23f662 防御同口径：
+    非 dict 真值 .get 抛 AttributeError 会被门禁「异常不阻断」吞掉）。
+    """
+    if not isinstance(scenario, dict):
+        return False
+    evidence = scenario.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    for source in (scenario.get("screenshots"), evidence.get("screenshots")):
+        if isinstance(source, list) and any(isinstance(s, str) and s.strip() for s in source):
+            return True
+    return False
+
+
 def compute_attribution_level(scenario: dict) -> str:
     """框架侧机械计算归因级别（design D2 / Task 2.1）。
 
@@ -1147,18 +1182,15 @@ def compute_attribution_level(scenario: dict) -> str:
     # 有真实截图 + 有失败断言归因 → evidence-backed（视觉断言有截图佐证）
     # evidence 非 dict 按空处理（code-review item 803f6a23f662，与
     # _scenario_has_substantive_evidence 同款防御：非 dict 真值 .get 抛
-    # AttributeError 会被门禁「异常不阻断」吞掉而旁路归因分级）。
-    screenshots = scenario.get("screenshots") or []
+    # AttributeError 会被门禁「异常不阻断」吞掉而旁路归因分级）；evidence
+    # 归一后仍供下方 first_failed_step / first_frame_ok 读取。
     evidence = scenario.get("evidence")
     if not isinstance(evidence, dict):
         evidence = {}
-    ev_screenshots = evidence.get("screenshots") or []
-    has_real_screenshots = (
-        isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots)
-    ) or (
-        isinstance(ev_screenshots, list)
-        and any(isinstance(s, str) and s.strip() for s in ev_screenshots)
-    )
+    # 「真实截图在场」抽共享助手（code-review item 426e0a8ca912）：与
+    # tag_cached_attributions 统一引用 scenario 级 screenshots 与
+    # evidence.screenshots 的并集口径，消除双份字段读取漂移。
+    has_real_screenshots = _scenario_has_real_screenshots(scenario)
 
     # 有算法标签 + 有失败断言归因 → evidence-backed
     if has_labels and _scenario_has_failed_assertion_evidence(scenario):
@@ -1731,17 +1763,13 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
         # 纯缓存降级的通道恒不命中；非 dict 按空处理的既有防御
         # （item 6151f22ae34d）已并入助手。
         labels = _flatten_screenshot_labels(sc.get("screenshot_labels"))
-        # evidence 非 dict 按空处理（与 _scenario_has_substantive_evidence /
-        # compute_attribution_level 的 item 803f6a23f662 防御同口径：非 dict
-        # 真值 .get 抛 AttributeError 会被门禁「异常不阻断」吞掉，跨轮缓存
-        # 打标与纯缓存归因降级 speculative 整段被跳过）。
-        evidence = sc.get("evidence")
-        if not isinstance(evidence, dict):
-            evidence = {}
-        ev_screenshots = evidence.get("screenshots") or []
-        has_real_screenshots = isinstance(ev_screenshots, list) and any(
-            isinstance(s, str) and s.strip() for s in ev_screenshots
-        )
+        # 「真实截图在场」与 compute_attribution_level 共用同一助手
+        # （code-review item 426e0a8ca912）：场景级 screenshots（引擎直写
+        # 形态）与 evidence.screenshots 并集口径——此前只读 evidence 级字段，
+        # 截图落在场景级时缓存命中场景被误判无佐证而降级 speculative，归因
+        # 级别在两次计算间来回翻转。助手内含 evidence 非 dict 按空处理
+        # （item 803f6a23f662 防御同口径）。
+        has_real_screenshots = _scenario_has_real_screenshots(sc)
         # 严格 is True 判定（code-review item a9b61778a7ec）：与
         # compute_attribution_level（item 94bf2c34ded9）同款防伪造纪律——
         # 引擎侧只写布尔 True、缺标签即正常态；真值判定下 judge 改写缓存

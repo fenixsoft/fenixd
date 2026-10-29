@@ -1679,6 +1679,13 @@ class SelfReviewScheduler:
     提供 ``run_self_review``（None 时只判定、不执行并把失败记告警）。
     """
 
+    # 内存级当日去重（code-review item bff315ccd916）：_save_state 写盘失败
+    # （磁盘满/权限/IO 故障）时 last_run_date 未落盘，磁盘判重失效，巡检每轮
+    # 会重新触发完整自省形成失败风暴。实例由 admin_monitor 每巡检轮重建，
+    # 故按 project_root 记在类属性上（进程级；进程重启标记自然失效属可接受
+    # 语义，不持久化）。
+    _mem_ran_today: Dict[str, str] = {}
+
     def __init__(
         self, config: dict, project_root, logger, state_machine, agent_runner=None, store=None
     ):
@@ -1723,8 +1730,15 @@ class SelfReviewScheduler:
         if now < _parse_run_at(sr["run_at"], now_local().date()):
             return {"triggered": False, "reason": "before_run_at"}
 
-        # 同日防重复：成功/失败/占位跳过都写 last_run_date=today
-        if self._load_state().get("last_run_date") == local_today_str():
+        # 同日防重复：成功/失败/占位跳过都写 last_run_date=today；磁盘状态
+        # 之外并集内存级标记（code-review item bff315ccd916）——写盘失败时
+        # last_run_date 未落盘，任一命中即跳过，防风暴语义不因写盘瞬时故障
+        # 失效
+        if (
+            self._load_state().get("last_run_date") == local_today_str()
+            or SelfReviewScheduler._mem_ran_today.get(str(self.project_root))
+            == local_today_str()
+        ):
             return {"triggered": False, "reason": "already_ran_today"}
 
         # 增量窗口锚点：上次执行时刻；无（首跑/旧格式）回退 24h。回读失败
@@ -2815,6 +2829,11 @@ class SelfReviewScheduler:
                 json.dumps(state, ensure_ascii=False, indent=2),
             )
         except OSError as e:
+            # 写盘失败同样置位内存级当日标记（code-review item bff315ccd916）：
+            # last_run_date 未落盘时磁盘判重失效，无此兜底巡检每轮会重新通过
+            # already_ran_today 判定并重触发完整自省（六源聚合 + self-review
+            # run，失败风暴烧 token）。
+            SelfReviewScheduler._mem_ran_today[str(self.project_root)] = date_str
             self.logger.error("self_review", f"状态文件写入失败: {e}")
 
     # ── 失败处理（design D5：静默降级为告警，24h 内不重试） ───────

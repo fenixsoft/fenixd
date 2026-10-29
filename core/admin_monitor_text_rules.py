@@ -121,6 +121,9 @@ _WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
 _RECLASSIFY_GRANT_PATTERNS = (
     r"回拨\s*(?P<n>\d+)\s*轮",
     r"reclassify\s*(?P<n>\d+)\s*(?:infra)?\s*rounds?",
+    # 已被第一条「回拨 N 轮」子串覆盖（n 捕获组同值），仅为文档性保留：消费方
+    # 按数组顺序取首个命中，本条在正常输入下永不首中（仅「回拨 0 轮」与
+    # 「infra 回拨 N>0 轮」同句的病理输入才会轮到），勿按三条独立匹配面理解。
     r"infra\s*回拨\s*(?P<n>\d+)\s*轮",
 )
 # 否定短语（保守方向：命中即不触发回拨，宁可漏回拨不可误扣 fail_rounds）。

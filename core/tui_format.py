@@ -38,6 +38,11 @@ def fmt_dur(seconds) -> str:
     截断口径：浮点秒数经 int() 向零截断而非四舍五入（599.9s → 9m），展示层
     可接受的近似（code-review 96d3d80c773d 注记）。
     """
+    # 类型守卫（code-review 74c81305c623）：数字字符串此前被 int() 静默接受
+    # （"300"→300）而 "300.5" 被拒，接受/拒绝口径漂移；统一非法输入走空串
+    # 回退，与 docstring 声明一致。bool 是 int 子类，显式排除。
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return ""
     try:
         s = int(seconds or 0)
     except (TypeError, ValueError, OverflowError):

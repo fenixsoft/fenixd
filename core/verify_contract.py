@@ -655,6 +655,14 @@ def _load_verify_contract_with_raw(
                 f"\"/\"）: {raw_url!r}",
             )
         raw_url = None
+    # 回写去空格 cand（code-review item 2f65d13dfa9b）：守卫按去空格口径判定
+    # （.strip() 非空即通过），通过后保留未 strip 原值会让带首尾空白的 url 在
+    # probe_ready 拼接出形如 "http://…/ /health" 的探测 URL——空格属
+    # http.client 请求行非法字符，urlopen 每轮抛 ValueError 被吞进 last_err，
+    # 用户只见等满 timeout 后的「就绪探针超时」难定位到配置多写了空格——
+    # 与上方 prepare.cwd/serve.root 分支回写 cand 同口径。
+    if isinstance(raw_url, str):
+        raw_url = raw_url.strip()
     # expect 取值可观测性（code-review item 300c19e55fde）：探测基于 urlopen，
     # 4xx/5xx 响应抛 HTTPError（probe_ready 的 status 比较不可达）、3xx 被
     # 自动重定向跟随（比较终态码）——expect 实际仅 2xx 取值能命中，配置

@@ -275,6 +275,9 @@ def validate_knowledge(project_root) -> list:
         """index/_domain/adr 链接可解析且不越出真相源目录。"""
         # 先剔除围栏代码块与行内代码 span（code-review 648908c58646）：两通道
         # 同口径，避免文档里代码块内的示例链接被严格通道误报为死链。
+        # [fenix-ignore:6262b72ec720] 非贪婪自左配对下未配对尾围栏之后的正文
+        # 不会被剔除、仍参与两通道检查（实测），所述死链漏报不成立；按建议
+        # 补闭合围栏反而错移配对、把末个真实闭合围栏之后的正文整段吞掉。
         scrubbed = re.sub(r"```.*?```", "", text, flags=re.S)
         scrubbed = re.sub(r"`[^`\n]+`", "", scrubbed)
         for m in _LINK_RE.finditer(scrubbed):
@@ -890,8 +893,39 @@ def _audit_stray_writes(proot: Path, before, label: str) -> None:
     after = _git_status_paths(proot)
     if after is None:
         return
+    # 目录折叠展开（code-review item 382b61405cd2，对齐 _discard_output /
+    # _commit_output 经 _expand_knowledge_surface 的同款处理）：git status 把
+    # 无任何已跟踪文件的整棵子树折叠为单条目录项——首蒸项目 spec/ 全树未
+    # 跟踪时本次 run 的合法知识产出折叠为 "spec/"，该条目不以 KNOWLEDGE_DIR
+    # 前缀开头，前缀过滤放行，run 自身产出被误报为越界写面。把折叠到
+    # KNOWLEDGE_DIR 祖先层的条目用 ls-files 展开到文件粒度再参与过滤；不直
+    # 接复用 _expand_knowledge_surface（其只归一 knowledge 表面、会丢折叠
+    # 子树内 knowledge 之外的越界改动），枚举范围取折叠子树整体，子树内
+    # knowledge 之外的新增仍被前缀过滤之外的口径上报。枚举失败时保留折叠
+    # 条目原样参与过滤（宁冒误报噪音，不引入漏报）。
+    diff = after - before
+    expanded: set = set()
+    for p in diff:
+        if not (p.endswith("/") and (KNOWLEDGE_DIR + "/").startswith(p)):
+            expanded.add(p)
+            continue
+        try:
+            probe = _git(
+                proot,
+                [
+                    "--no-optional-locks", "ls-files",
+                    "--others", "--exclude-standard", "-z", "--", p,
+                ],
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            expanded.add(p)
+            continue
+        if probe.returncode != 0:
+            expanded.add(p)
+            continue
+        expanded.update(tok for tok in probe.stdout.split("\0") if tok)
     strays = sorted(
-        p for p in after - before if not p.startswith(_STRAY_AUDIT_IGNORE_PREFIXES)
+        p for p in expanded if not p.startswith(_STRAY_AUDIT_IGNORE_PREFIXES)
     )
     if strays:
         logger.warning(

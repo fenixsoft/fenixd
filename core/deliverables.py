@@ -805,6 +805,27 @@ def _is_file_safe(path) -> bool:
         return False
 
 
+def _is_dir_safe(path) -> bool:
+    """is_dir() 的 OSError 容错版（与 _is_file_safe 同型，仿
+    core/dashboard/watcher.py:_is_dir）。
+
+    pathlib 的 is_dir() 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，其余 OSError
+    （EACCES/EIO 等）直接上抛；本模块声明判定/软化的 fail-open 契约
+    （_classify_unsatisfiable_reason 判定异常返回 None、lint_declared 自身
+    故障返回空清单放行晋升）要求单条目探测故障按「非目录」处理而非冲出
+    契约中断晋升，故显式吞掉按 False 处理并留 WARNING
+    （code-review b70ba19707b4）。
+    """
+    try:
+        return path.is_dir()
+    except OSError as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"目录探测失败（按非目录处理）{path}: {e}",
+        )
+        return False
+
+
 def resolve_effective_declaration(
     spec_name, *, branch=None, worktree_path=None, project_root=None
 ) -> dict:
@@ -2111,7 +2132,7 @@ def _classify_unsatisfiable_reason(entry, project_root):
     if kind == "modify":
         # .fenix 归一化已退役（恒等映射），目录判定按字面路径单候选
         pr = Path(project_root)
-        if pr.joinpath(path).is_dir():
+        if _is_dir_safe(pr.joinpath(path)):
             return None
     # ── 正向命中判定（.fenix 归一化已退役 → 单候选=原路径）──
     candidates = [path]
@@ -2180,14 +2201,16 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
         # 判定 + 归因一步到位（code-review item 13fbdcae0f25）：直接消费
         # classify 同源单点的命中信号类别，不再二次跑 git check-ignore
         # 反推 reason（原二次判定在路径同时 gitignored 且仓库外时恒记
-        # "gitignored"，outside-root 信号被掩盖，归因失真）。
-        reason = _classify_unsatisfiable_reason(e, project_root)
-        if reason is None:
-            continue
+        # "gitignored"，outside-root 信号被掩盖，归因失真）。判定亦纳入下方
+        # 逐条保护窗（code-review b70ba19707b4）：单条目探测故障按「跳过该条」
+        # 走 lint 兜底，不中断整批软化。
         try:
+            reason = _classify_unsatisfiable_reason(e, project_root)
+            if reason is None:
+                continue
             soften_declared_kind(spec_dir, path)
         except Exception as exc:
-            # 单条改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
+            # 单条判定/改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
             # （经 _resolution_logger，理由同上方 delete 跳过分支）。
             _resolution_logger.warning(
                 "deliverables",
@@ -2858,7 +2881,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"或改为仓库内路径"
             )
         if kind == "modify":
-            is_dir = any((project_root / c).is_dir() for c in candidates)
+            is_dir = any(_is_dir_safe(project_root / c) for c in candidates)
             if is_dir:
                 violations.append(
                     f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
@@ -2920,7 +2943,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                     f"请改为仓库内路径或从声明中移除"
                 )
             # 规则 9：目录——目录删除无法按 blob 反判，先于存在性判定
-            is_dir = any((project_root / c).is_dir() for c in candidates)
+            is_dir = any(_is_dir_safe(project_root / c) for c in candidates)
             if is_dir:
                 violations.append(
                     f"[{path}] 是目录——delete 是文件删除语义（tree 无法按 "
