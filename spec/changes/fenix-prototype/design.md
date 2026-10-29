@@ -21,7 +21,7 @@ fenix-new 的交流-头脑风暴-SPEC 流程对无 UI 需求运转良好，但�
 
 1. **独立 skill `skills/fenix-prototype/`**：fenix-new 检测到大改时调用，也可单独调用迭代既有原型。备选「并入 fenix-new」被否：职责膨胀且无法单独重放迭代。
 2. **栈画像先行**：侦察依赖清单/主题文件/DESIGN.md → 画像注入生成 prompt；识别失败降级。画像数据结构留扩展位。
-3. **真组件加载三级降级**：skill 自维护与工程无关的预打包 vendor 缓存（node 打包 react+antd 按版本缓存；antd 5+ 无浏览器全局构建，必须打包）→ CDN ESM 兜底 → 纯 HTML/CSS 仿样（标无约束力）。node 是优先条件非硬假设。不触碰「不要求工程本体可构建」反目标。
+3. **真组件加载三级降级**：skill 自维护与工程无关的预打包 vendor 缓存（node 打包 react+antd 按版本缓存；antd 5+ 无浏览器全局构建，必须打包）→ CDN ESM 兜底 → 纯 HTML/CSS 仿样（标无约束力）。node 是优先条件非硬假设。不触碰「不要求工程本体可构建」反目标。vendor 缓存落 `.fenix/prototype-vendor/`（已被 `.fenix/*` gitignore 覆盖），不入库。
 4. **`data-proto-id` 稳定锚**：批注挂锚不挂裸 selector；重生成解析旧锚集合、未波及区块沿用原锚，防批注错位。
 5. **独立简易服务器**：python 标准库（http.server），静态 + `POST /feedback` 落 `feedback.json`；PID 文件生命周期（存活复用/残留接管/结束回收）；随机高端口避让；绑定与 URL 显式。备选「复用 dashboard 路由」被用户否决。
 6. **批注器为注入式通用 JS**：与栈无关的 DOM 操作（hover 高亮/点选/意见面板/POST），服务器不可达降级本地导出。
@@ -39,7 +39,7 @@ fenix-new 的交流-头脑风暴-SPEC 流程对无 UI 需求运转良好，但�
 
 ## Migration Plan
 
-全新能力，无存量迁移。回滚 = 删除 `skills/fenix-prototype/` 与 `skills/fenix-new/SKILL.md` 衔接段、还原 `agents/implementer.md`、`agents/code-review.md` 两处契约段；运行时目录 `.fenix/prototypes/` 由人工清理。
+全新能力，无存量迁移。回滚 = 删除 `skills/fenix-prototype/` 与 `skills/fenix-new/SKILL.md` 衔接段、还原 `agents/implementer.md`、`agents/code-review.md` 两处契约段；运行时目录 `.fenix/prototypes/` 由人工清理。部署：合并后需人工在 `/root/.claude/skills/` 建 `fenix-prototype` 符号链接（fenix 系 skill 统一靠该目录链接被 Skill 工具发现，本仓不带注册机制），见 tasks.md「人工部署步骤」小节。
 
 ## Open Questions
 
