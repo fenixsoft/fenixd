@@ -18,83 +18,14 @@ cli_assertions.py — CLI 结构化断言库（spec multi-kind-scenario-model「
 import json
 from pathlib import Path
 
-from .api_assertions import _MISSING, _compile_regex, evaluate_json_path
+from .api_assertions import _MISSING, evaluate_json_path
+from .regex_safety import _compile_regex, _has_nested_quantifier
 from .scenarios import CLI_ASSERTION_LAYERS
 
 # 文件内容断言读取上限（MB 级）：场景断言 path 误指向构建产物/日志等大文件时，
 # 只读前 N 字节参与匹配，防全量读入撑爆验证进程内存（与 stdout 侧 64KB 证据
 # 截断纪律同旨，文件匹配留 MB 级余量）。
 _FILE_CONTENT_LIMIT = 8 * 1024 * 1024
-
-
-def _regex_brace_body(pattern: str, i: int) -> "str | None":
-    """取 pattern[i] 起始的 ``{...}`` 量词体；无闭合 ``}`` 返回 None。"""
-    j = pattern.find("}", i + 1)
-    return pattern[i + 1 : j] if j > i else None
-
-
-def _has_nested_quantifier(pattern: str) -> bool:
-    """高危正则预检：检测「组内变长量词 × 组整体无上界量词」的嵌套形态
-    （灾难性回溯的典型结构特征，如 ``(.+)*`` / ``(\\d+)+`` / ``(a{1,2})+``）。
-
-    保守取舍（宁少拦不误拦）：
-      - 仅当组闭合紧跟无上界量词（``*``/``+``/``{m,}``）且组内出现变长
-        量词（``*``/``+``/``{m,n}``；嵌套子组的变长标志随 ``)`` 闭合向
-        父组传播，``((a+))+`` 与 ``(a+)+`` 等价同拦）才判高危——外层有界
-        量词（``?``/``{m}``）
-        重复次数有限、内层定长（``{m}``）切分唯一，均不构成指数级回溯，不拦；
-      - 重叠分支等结构不典型的形态（如 ``(a|aa)+``）不识别，属刻意漏拦：
-        漏拦的代价是慢，误拦的代价是拒绝合法场景断言。
-      - 内层 ``{m,n}`` 范围量词亦按变长计：有界却仍拦（``(a{1,2})+`` 类
-        有界形态同样指数回溯，与 ``(?:\\d{1,3}\\.)*`` 类以分隔符消歧的
-        安全形态须语义分析才能区分）——后者是 IP/版本号惯用写法，会被
-        确定性拒绝（fail-closed 可见化，拒绝文案附改写建议），误拦面比
-        「宁少拦」宣称更宽，属已知取舍。
-    跳过转义序列与字符类（``[*+]`` 内的量词字符是字面量）。
-    """
-    group_has_variable_quant: list[bool] = []
-    in_class = False
-    i = 0
-    n = len(pattern)
-    while i < n:
-        ch = pattern[i]
-        if ch == "\\":
-            i += 2  # 转义序列整体跳过（含被转义的量词字符）
-            continue
-        if in_class:
-            if ch == "]":
-                in_class = False
-        elif ch == "[":
-            in_class = True
-        elif ch == "(":
-            group_has_variable_quant.append(False)
-            if i + 1 < n and pattern[i + 1] == "?":
-                i += 2  # 「(?:」「(?=」等的 ? 是组语法而非量词，不计
-                continue
-        elif ch == ")":
-            if group_has_variable_quant:
-                had = group_has_variable_quant.pop()
-                if group_has_variable_quant:
-                    # 变长标志向父组传播：((a+))+ 与 (a+)+ 回溯语义等价，同属
-                    # 灾难性回溯典型结构，子组标志不上提会让外层无上界量词
-                    # 判定漏拦（弹栈后栈顶即父组）
-                    group_has_variable_quant[-1] |= had
-                nxt = pattern[i + 1] if i + 1 < n else ""
-                unbounded = nxt in ("*", "+") or (
-                    nxt == "{"
-                    and (_regex_brace_body(pattern, i + 1) or "").endswith(",")
-                )
-                if had and unbounded:
-                    return True
-        elif ch in "*+":
-            if group_has_variable_quant:
-                group_has_variable_quant[-1] = True
-        elif ch == "{":
-            body = _regex_brace_body(pattern, i)
-            if body and "," in body and group_has_variable_quant:
-                group_has_variable_quant[-1] = True
-        i += 1
-    return False
 
 
 class CliAssertionRunner:

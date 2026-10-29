@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from .fs_ops import atomic_write_json
+from .regex_safety import _compile_regex, _has_nested_quantifier, _regex_lib
 
 # 旁路 getLogger 守卫（test_logger_no_bypass）：core/ 内 MUST 用 fenixd.
 # 可传播层级字面量（同 verify_engine 既有 judge_files/scenario_static_check
@@ -448,9 +449,25 @@ def url_matches_network_pattern(url: str, pattern: str) -> bool:
     if not isinstance(url, str) or not isinstance(pattern, str) or not pattern:
         return False
     if pattern.startswith(EXPECT_NETWORK_RE_PREFIX):
+        body = pattern[len(EXPECT_NETWORK_RE_PREFIX):]
+        # 与断言侧同款回溯安全匹配（复用下沉共享层 regex_safety，code-review
+        # item ee72d324ea15）：re: 前缀 pattern 由 planner 生成（有幻觉正则
+        # 原语前科），裸 stdlib re.search 对嵌套量词类病态模式在长 URL（长
+        # query 串等）上可指数回溯，长时间占住引擎事件循环。regex 库可用时
+        # search 带 1s 时限，超时按不匹配收场；库缺失时回退嵌套量词高危形态
+        # 预检拒绝（与 cli_assertions 同款），再退 stdlib re。
+        if _regex_lib is None and _has_nested_quantifier(body):
+            return False
+        compiled, _regex_error = _compile_regex(body)
+        if compiled is None:
+            # 编译失败（非法正则）：按不匹配收场，引擎侧永不抛（防御契约）
+            return False
         try:
-            return re.search(pattern[len(EXPECT_NETWORK_RE_PREFIX):], url) is not None
+            return compiled.search(url)
         except re.error:
+            # TimeoutRegexError（re.error 子类，regex 库匹配超时/判定非法）
+            # 与 stdlib 回退路径的 re.error 统一按不匹配收场：漏报方向保守，
+            # 不产生假通过，也不让病态正则占住事件循环
             return False
     return pattern in url
 

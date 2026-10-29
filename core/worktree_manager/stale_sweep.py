@@ -341,6 +341,20 @@ class G7StaleSweepMixin:
             for rec in list(self._legacy.values())
             if isinstance(rec, dict)
         }
+        # 在册 legacy 分支快照（code-review item 727d94fd7f95）：持 _spec_lock_th，
+        # 口径同 _gc_merged_branches 的 _legacy 快照读（对齐 _reclaim_expired_legacy
+        # 的持锁读口径）。供下方 branch -D 删除段豁免被 _legacy 登记（宽限期内续做
+        # 锚点）引用的分支——否则同一 spec 存在多在册载体时，清扫未豁免载体会 -D
+        # 掉 legacy 记录引用的实现分支，把 consume_legacy 的「续做」降级为从零重派，
+        # legacy 保护目的落空。命中即跳过删除（WARNING 留痕），删除留给 legacy 兜底
+        # 回收链按既定口径执行；扫描期间并发 register_legacy / consume_legacy 的
+        # 增删不作用于已物化集合，与 GC 路径的保护口径一致。
+        with self._spec_lock_th:
+            legacy_branches = {
+                rec.get("branch")
+                for rec in list(self._legacy.values())
+                if isinstance(rec, dict)
+            } - {None, ""}
         # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
         # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
         # 物化后删除不再作用于正在扫描的目录流。
@@ -528,7 +542,20 @@ class G7StaleSweepMixin:
                         # 否则保守保留分支（worktree 目录照常已清）并 WARNING
                         # 留痕。
                         prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
-                        if not any(branch.startswith(f"{p}/") for p in prefixes):
+                        if branch in legacy_branches:
+                            # ── 在册 legacy 引用豁免（code-review item
+                            # 727d94fd7f95）──对齐 _gc_merged_branches 的 legacy
+                            # 豁免口径：分支被 _legacy 在册登记引用时不得 -D，
+                            # 避免与 consume_legacy / _reclaim_expired_legacy
+                            # 竞争同一分支；删除留给 legacy 兜底回收链按既定
+                            # 口径执行，宽限期内的续做锚点得以保留。
+                            self.logger.warning(
+                                "worktree_manager",
+                                f"Skip stale branch delete for '{branch}' — "
+                                f"referenced by registered recovery legacy, "
+                                f"deletion left to legacy reclaim chain",
+                            )
+                        elif not any(branch.startswith(f"{p}/") for p in prefixes):
                             self.logger.warning(
                                 "worktree_manager",
                                 f"Skip stale branch delete for '{branch}' — "

@@ -103,7 +103,19 @@ class G2LegacyRegistryMixin:
         外部直接改内部态。结构见 register_legacy。
         """
         rec = self._legacy.get(spec_name)
+        # 非 dict 记录守卫（code-review item 4ef804ffdd27，与 consume_legacy
+        # 35dfd88369df / get_reuse_record 7fdbff295c15 / _take_reusable_worktree
+        # 7fdbff295c15 / _reclaim_expired_legacy 873493c07398 的同表读取防御
+        # 口径对齐）：isinstance 先行，异形记录按无遗产返回 None，不让
+        # dict(rec) 在 prompt 构建关键路径 ValueError/TypeError 穿出。
         if rec is None:
+            return None
+        if not isinstance(rec, dict):
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy record for '{spec_name}' is not a dict "
+                f"({type(rec).__name__}) — treated as no legacy",
+            )
             return None
         return dict(rec)
 
