@@ -46,7 +46,7 @@
 
 ## 4. fenix-new 触发衔接
 
-- [ ] 4.1 `skills/fenix-new/SKILL.md` 增触发判定与衔接段：大改（新页面/新大面板/布局重构/多区块联动）提议原型、小改跳过、用户双向一票否；调用 fenix-prototype 的时机与批准后回填 SPEC 的动作说明
+- [x] 4.1 `skills/fenix-new/SKILL.md` 增触发判定与衔接段：大改（新页面/新大面板/布局重构/多区块联动）提议原型、小改跳过、用户双向一票否；调用 fenix-prototype 的时机与批准后回填 SPEC 的动作说明
 
 ## 5. 端到端实证预演
 

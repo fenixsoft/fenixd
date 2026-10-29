@@ -55,6 +55,35 @@ description: Use when the user wants to create a new development requirement, as
 - 定时调度 → `start_after: "<ISO8601-UTC>"`（§3.1.2 换算）
 - 手工激活 → `start_after: "manual"`（哨兵，原样写入，无时区换算）
 
+### 1.7 界面改动判定与原型衔接（add-fenix-prototype）
+
+澄清需求时同步判定界面改动范围，决定是否提议**原型确认环**（fenix-prototype）：
+
+**大范围改动 → 主动提议原型**：新页面、新大面板、布局重构、多区块联动视为大改
+（判定无硬性数值阈值，由你判断）。提议话术：
+「这个需求涉及大范围界面改动，建议先出一张**真组件高保真原型**，你在浏览器点选
+批注、迭代确认后再定 SPEC（界面意图靠文字转述损耗大）。也可以跳过原型直接起草
+SPEC——你定。」
+
+**小范围局部修改 → 跳过**：改文案、调按钮位置等既有界面小改，MUST NOT 提议原型，
+直接进入后续 SPEC 起草流程。
+
+**用户双向一票否**：大改时用户说「不用出原型」→ 豁免，按正常流程走；小改时用户
+说「先出个原型看看」→ 进入原型环。以用户决定为准，MUST NOT 二次劝阻或追问。
+
+**衔接动作（用户同意出原型时）**：
+
+1. 先按 §2 确定 SPEC 名称（原型草稿目录需要它），再按
+   `skills/fenix-prototype/SKILL.md` 执行原型确认环：栈画像侦察 → vendor
+   bootstrap → 生成原型 → 伺服批注 → 会话内迭代，直至用户明示认可；
+2. 原型批准入库后（fenix-prototype SKILL §6）：原型落 `specs/<spec>/prototype/`，
+   本 skill 起草 `specs/<capability>/spec.md` 时回填声明——SPEC 正文引用原型路径
+   （`界面原型（UI 真相源）：specs/<spec>/prototype/...`），相关 Scenario 显式写
+   「**界面以 prototype/ 为准**」（与「数值以 Scenario 为准」同纪律等级）；
+   该声明是后续实现与评审的绑定力开关（`agents/implementer.md` /
+   `agents/code-review.md` 的条件式契约段据此触发：实现前必读原型、评审对照原型）。
+   仿样级原型（「视觉参照、无约束力」）不回填 UI 真相源声明。
+
 ### 2. 生成 kebab-case 名称
 
 从需求描述中提取简洁的 kebab-case 名称：
