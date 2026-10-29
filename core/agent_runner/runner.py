@@ -6065,9 +6065,13 @@ class AgentRunner:
         # 此处不再冗余校验（原读取-日志分支只打日志、从不覆盖，系死分支，已删，
         # code-review item eedfeec65a57）。
 
-        # Progress dir for verifier to write incremental progress
-        progress_dir = self.project_root / ".fenix" / "verify-progress"
-        progress_dir.mkdir(parents=True, exist_ok=True)
+        # 主树 verify-progress 目录预创建：harness 装配只把该目录拼进
+        # --add-dir（claude_adapter.build_spawn_spec 不代建目录），verifier
+        # 增量进度写入依赖目录先在；此处仅为预建副作用，无局部消费点
+        #（code-review item f1c817a401f7：原 progress_dir 局部变量在命令
+        # 构造平移至 harness 后已无消费点，内联消除死变量）。
+        (self.project_root / ".fenix" / "verify-progress").mkdir(
+            parents=True, exist_ok=True)
 
         # 运行产物目录（.fenix/runs/），加入模板 gitignore，不入版本控制
         runs_dir = self.project_root / ".fenix" / "runs"

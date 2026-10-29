@@ -673,6 +673,13 @@ def _default_echo_view(scope: str) -> dict:
         "llm": {},
         "agents": {
             "models": {},
+            # 以下六标量（含下方 verify_redo_budget）缺省 ConfigLoader 无独立
+            # 读取器（仅 validate 类型守卫），运行时缺省散落各消费点
+            # _get_config(..., 缺省)——无 getter 可单源，暂保留字面量
+            # （code-review item 4798a462e4c0）；调整缺省时 grep 键名对账
+            # 消费点。注意 max_concurrent / max_turns 与消费点 fallback 已有
+            # 分叉（pm_engine/dispatch/queue.py 5、runner/maintenance_runs 300
+            # vs 此处 2/400），权威缺省裁决属独立条目，此处不单方面改值
             "max_concurrent": 2,
             "run_timeout_seconds": 9000,
             "max_turns": 400,
@@ -685,12 +692,23 @@ def _default_echo_view(scope: str) -> dict:
             # 592c835632a0：缺此键则缺省回显段漏受管 agents 标量键，缺省值
             # 散落前端常量成第二来源；与 impl_run_budget 同款取运行时常量单源）
             "impl_run_budget_max": IMPL_RUN_BUDGET_MAX_DEFAULT,
+            # verify_redo_budget 缺省同上方组注释（运行时 state_machine.
+            # DEFAULT_VERIFY_REDO_BUDGET=3 同值）
             "verify_redo_budget": 3,
-            "max_same_cause_redispatches": 3,
-            # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用 provider model）
-            "subagent_model_override": "",
+            # 同因重派熔断阈值缺省经读取器取（code-review item 4798a462e4c0，
+            # 与提取路径 _echo_agents_view 同一单源）
+            "max_same_cause_redispatches": _CLICRT.get_max_same_cause_redispatches({}),
+            # fix-agent-lane-efficiency D1：子代理模型覆盖（缺省空串 = 用
+            # provider model）；缺省经读取器取（code-review item 4798a462e4c0，
+            # 同一单源）
+            "subagent_model_override": _CLICRT.get_subagent_model_override({}),
         },
-        "gates": {"approve_mode": "manual", "promote_mode": "auto", "spec_review_mode": "auto", "start_after_scope": "dispatch"},
+        # gates 四键缺省经读取器取（code-review item 4798a462e4c0，与 verify 块
+        # 同款单源——传空配置即回缺省，枚举/缺省调整时此处不再静默落后）
+        "gates": {"approve_mode": _CLICRT.get_approve_mode({}),
+                  "promote_mode": _CLICRT.get_promote_mode({}),
+                  "spec_review_mode": _CLICRT.get_spec_review_mode({}),
+                  "start_after_scope": _CLICRT.get_start_after_scope({})},
         "verify": {"static_scope": "main", "deps_mode": "hardlink", "serving_reclaim": {"enabled": True},
                    # add-impl-code-review-tuning：三运行参数恒回显缺省（与
                    # impl_code_review「缺省不回显」语义相反，spec「缺省回显」
@@ -714,11 +732,15 @@ def _default_echo_view(scope: str) -> dict:
                    # 与上方三运行参数同款单源——运行时 runner.py 曾内联同一字面量
                    # 200000 构成双源镜像，勿再手写）
                    "context_cost_per_turn_threshold": _CLICRT.get_context_cost_per_turn_threshold({})},
-        # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
-        "archive": {"auto_threshold": 50},
-        # add-knowledge-atlas：知识真相源总开关（缺省 true，与 ConfigLoader 缺省
-        # 同步）；add-knowledge-atlas-maintenance：维护车道键同节缺省
-        "knowledge": {"enabled": True, "audit_enabled": True},
+        # add-spec-archive D5：自动归档阈值（0 = 禁用）；缺省经读取器取
+        # （code-review item 4798a462e4c0，与读路径同一单源）
+        "archive": {"auto_threshold": _CLICRT.effective_auto_archive_threshold({})},
+        # add-knowledge-atlas：知识真相源总开关；add-knowledge-atlas-maintenance：
+        # 维护车道键。缺省经读取器取（code-review item 4798a462e4c0，与 verify
+        # 块同款单源）；挑两键保持缺省段形状（完整生效键集仅段显式在场时经
+        # 读路径回显，test_default_echo_view_has_knowledge 钉两键形状）
+        "knowledge": {"enabled": _CLICRT.get_knowledge_config({})["enabled"],
+                      "audit_enabled": _CLICRT.get_knowledge_lane_config({})["audit_enabled"]},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-code-review-agent-and-quality-tab：admin.code_review 两键（缺省 false/500）
@@ -731,24 +753,26 @@ def _default_echo_view(scope: str) -> dict:
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
         "hooks": {"global": [], "specs": {}},
-        # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true /
-        # idle_confirm_seconds 缺省 600，evo-reduce-stale-code-selfheal-noise
-        # 2.4——与 ConfigLoader 缺省同步，避免设置页以旧值回填表单、用户保存即
-        # 把旧缺省显式写入项目配置、静默覆盖新缺省）
-        "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 600},
+        # add-stale-code-selfheal：陈旧自愈配置节（evo-reduce-stale-code-
+        # selfheal-noise 2.4）。两键缺省经读取器取（code-review item
+        # 4798a462e4c0，与 verify 块同款单源——避免设置页以旧值回填表单、
+        # 用户保存即把旧缺省显式写入项目配置、静默覆盖新缺省）；挑两键保持
+        # 缺省段形状（其余键无 Dashboard 面板）
+        "stale_code_selfheal": {"enabled": _CLICRT.get_stale_code_selfheal_config({})["enabled"],
+                                "idle_confirm_seconds": _CLICRT.get_stale_code_selfheal_config({})["idle_confirm_seconds"]},
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
         # max_items_per_run=20 / spec_run_at=null 立即执行；code-review item
         # 42b017717b1e：两读路径统一含 spec_run_at，早退路径形状不缺键）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
         # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
         # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
-        # add-merged-branch-gc：branch_gc 两键缺省（enabled=True / retention_days=7，
-        # 与 ConfigLoader.get_branch_gc_config 缺省同步——避免设置页以旧值回填表单、
-        # 用户保存即把旧缺省显式写入项目配置）
+        # add-merged-branch-gc：branch_gc 两键缺省经读取器取（code-review item
+        # 4798a462e4c0，与 verify 块同款单源——避免设置页以旧值回填表单、用户
+        # 保存即把旧缺省显式写入项目配置）
         "worktree": {
             "build_artifact_paths": [],
             "has_build_artifacts": None,
-            "branch_gc": {"enabled": True, "retention_days": 7},
+            "branch_gc": _CLICRT.get_branch_gc_config({}),
         },
         "scope": scope,
         "raw_exists": False,

@@ -33,7 +33,6 @@
       String(window.__PROTO_FEEDBACK_ROUND__ || 1), 10) || 1,
     selected: null,          // 当前点选的带锚元素
     pending: [],             // 本会话已提交/待导出的批注
-    online: true,            // /feedback 可达性（失败即降级本地导出）
     annotateMode: true,      // true=点选批注（拦截点击）；false=浏览（放行点击）
   };
 
@@ -162,11 +161,9 @@
       body: JSON.stringify(annotation),
     }).then(function (resp) {
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      state.online = true;
       remember(annotation, true);
       setStatus("已提交到服务器。");
     }).catch(function () {
-      state.online = false;
       remember(annotation, false);
       exportLocal();
     });

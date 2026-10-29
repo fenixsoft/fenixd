@@ -364,14 +364,28 @@ class TokenAccountant:
                         self._pm.state_machine.update_spec(
                             spec_name, {"_token_alert_100": True, "_token_warn_80": True}
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # code-review item fd25aa0dd9d6：置位写失败不可静默——
+                        # fire_100 本轮照常发射而标志未落 STATE，待 STATE 写恢复
+                        # 后同 spec 每轮收工都会重复发射同档告警且无任何可观测
+                        # 留痕。比照同函数读失败（b6e08ef1cbbc）口径记 warning。
+                        self._pm.logger.warning(
+                            "agent_runner",
+                            f"token 预算检查置位 STATE 失败（100% 档）'{spec_name}'，"
+                            f"幂等标志未落盘，同档告警或重复发射: {e}",
+                        )
             elif ratio >= 0.8 and not warn_flag:
                 fire_80 = True
                 try:
                     self._pm.state_machine.update_spec(spec_name, {"_token_warn_80": True})
-                except Exception:
-                    pass
+                except Exception as e:
+                    # code-review item fd25aa0dd9d6：同 100% 档，置位写失败按
+                    # 同函数读失败（b6e08ef1cbbc）口径留痕，不静默。
+                    self._pm.logger.warning(
+                        "agent_runner",
+                        f"token 预算检查置位 STATE 失败（80% 档）'{spec_name}'，"
+                        f"幂等标志未落盘，同档告警或重复发射: {e}",
+                    )
         # 锁外发射（9fff308e34f4）：临界区内只剩 STATE 读改写，慢速 LLM 叙事
         # 调用不再阻塞同 spec 并发收工的锁入口。
         if fire_100:
