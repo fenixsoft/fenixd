@@ -771,6 +771,38 @@ class FamilyGovernor:
                     f"守卫一：'{spec_name}' 为 fix spec 且已有非终态子 fix "
                     f"'{carrier}' 承载修复——抑制 reset，保持 bug-found",
                 )
+                # 写前复查（code-review item 36c3cfda94ff，对齐下方 inplace 打回
+                # 与 legacy fix 重置 7d53e9eacf26 / 22fd9285d92b 的写前复查先例）：
+                # 守卫一裁定到此写之间隔着 _has_non_terminal_child_fix 的族谱扫
+                # 描 I/O，窗口内并发冻结时 frozen 条目的 update_spec 只剥 status
+                # 键——error 覆写照常生效，会把内嵌「原状态 X」的冻结 error 覆写
+                # 为抑制文案，此后人工解冻经 parse_orig_status 解析不到原状态将
+                # 回退 ready，破坏冻结恢复语义。发现冻结即放弃本次 error 写（冻
+                # 结现场保留待人工解冻）；状态已漂移出 bug-found 处置语境
+                # （bug-found/implemented，implementing=上轮已重置的滞后重放，
+                # 幂等放行，与 inplace 打回口径一致）同样让位于外部进度。
+                from core.state_machine import FROZEN_FIELD
+
+                latest_guard = self._pm.state_machine.read_one(spec_name) or {}
+                if latest_guard.get(FROZEN_FIELD):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"守卫一放弃 error 写：'{spec_name}' 写盘前复查发现已冻结"
+                        "——放弃抑制文案写，冻结现场保留待人工解冻",
+                    )
+                    return
+                if latest_guard.get("status") not in (
+                    "bug-found",
+                    "implemented",
+                    "implementing",
+                ):
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"守卫一竞争后到者：'{spec_name}' 状态已为 "
+                        f"'{latest_guard.get('status')}'，让位于外部进度——放弃"
+                        "抑制文案写（缺口留待后续周期重评）",
+                    )
+                    return
                 self._pm.state_machine.update_spec(
                     spec_name,
                     {
