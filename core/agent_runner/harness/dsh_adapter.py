@@ -37,6 +37,7 @@ dsh 字面。
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -927,7 +928,25 @@ class DshAdapter:
                 "result_text": "",
                 "usage_source": "unobserved",
             }
-        usage = last.get("usage") or {}
+        # usage 判型降级（口径同 _project_status 对 step_end usage 的
+        # isinstance 守卫）：真值非 dict（契约漂移成 list/str，或误喂 claude
+        # 形状 result 事件）按无 usage 处理，不让单事件异常沿收工路径冒泡。
+        usage = last.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
+        # cost_usd 钳制（口径同 SessionTracker._extract_usage_info）：
+        # bool 是 int 子类会被数值分支误收（true 经 float() 折成 1.0 且是
+        # 有限值，非有限值守卫拦不住）；NaN/inf 等非有限值按缺失归 None，
+        # 金额展示不伪造。
+        cost = usage.get("cost_usd")
+        if cost is not None and type(cost) is bool:
+            cost = None
+        try:
+            cost_val = float(cost)
+        except (TypeError, ValueError, OverflowError):
+            cost_val = None
+        if cost_val is not None and not math.isfinite(cost_val):
+            cost_val = None
         usage_info = {
             "input_tokens": _to_int(usage.get("input_tokens")),
             "output_tokens": _to_int(usage.get("output_tokens")),
@@ -937,7 +956,7 @@ class DshAdapter:
             "cache_read_input_tokens": _to_int(
                 usage.get("cache_read_input_tokens")
             ),
-            "cost_usd": usage.get("cost_usd"),
+            "cost_usd": cost_val,
             # usage 分支标记随 usage_info 流转（runner _log_run_metrics 按该键
             # 落 usage_source 指标；available=step_end 求和，unavailable=降级）
             "usage_source": last.get("usage_source") or "available",

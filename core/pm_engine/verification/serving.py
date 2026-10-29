@@ -1453,8 +1453,14 @@ def _legacy_selfheal_start(
     Returns:
         (reachable, user_blocked, note)，语义同 _ensure_app_reachable。
     """
+    # code-review b1b17ca7e1b2：占位哨兵复用 scenario_static_check 命名常量，
+    # 不再双写裸字面量（该模块仅依赖 .path_safety 无环，函数内局部 import
+    # 同本文件 rewrite 场景 1844/1847 行先例；口径同 planner 侧
+    # start_fallback_valid 预检）
+    from core.verify_engine.scenario_static_check import START_FALLBACK_PLACEHOLDER
+
     start_cmd = str(pipeline._context.config_reader("commands.start", "") or "").strip()
-    if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
+    if not start_cmd or start_cmd in (START_FALLBACK_PLACEHOLDER,):
         kind_label = "、".join(sorted(kinds))
         # 契约缺失/损坏：产生 verify_contract_missing 信号派发 Administrator 起草
         # （设计 D1：确定性死局不等 4 次失败计数与升级冷却）

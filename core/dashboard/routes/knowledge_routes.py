@@ -88,12 +88,20 @@ def _read_h1_title(path: Path) -> str | None:
     except (OSError, UnicodeDecodeError):
         return None
     in_fence = False
+    fence_marker = ""
     for line in text.splitlines():
         # 轻量围栏状态机：行首（容忍缩进与 ```bash 等尾随信息符）
-        # ``` / ~~~ 翻转开关，围栏内行不参与 _H1_TITLE_RE 匹配
+        # ``` / ~~~ 开启围栏；围栏内仅同符号围栏行可闭合，异符号行视为
+        # 代码内容（对齐 help_routes._help_doc_title 口径，避免「```
+        # 围栏内嵌 ~~~ 行」的语法示例提前闭合外层围栏，code-review
+        # da69388c7533）。围栏内行不参与 _H1_TITLE_RE 匹配
         stripped = line.lstrip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            if not in_fence:
+                in_fence, fence_marker = True, marker
+            elif marker == fence_marker:
+                in_fence, fence_marker = False, ""
             continue
         if not in_fence:
             m = _H1_TITLE_RE.match(line)

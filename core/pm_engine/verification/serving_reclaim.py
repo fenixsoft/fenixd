@@ -124,7 +124,6 @@ def has_live_process(wt_path: Path) -> bool:
             pid_name = pid_dir.name
             if not pid_name.isdigit():
                 continue
-            pid_int = int(pid_name)
             # argv check（code-review f9dc60296502：与 cwd 判据同口径——cmdline
             # 按 NUL 切分成单个 argv 后做全等/目录前缀匹配；纯子串匹配在目录名
             # 互为前缀时误命中（…/spec-1000 命中指向 …/spec-10001 的进程），

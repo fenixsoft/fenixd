@@ -11,6 +11,27 @@ import type { FormInstance } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
+// 回填门控键的归一副本（code-review item f112a7c0c231）：表单值可含 dayjs
+// 实例（TimePicker 值，如 QualityPanel 的 code_review_run_at），直接 stringify
+// 经其 toJSON() 序列化为含当日日期的完整 ISO 时刻——面板带着未保存编辑跨
+// 零点后，同内容刷新的键值必然与上次记账不同，门控误判为「内容真变化」执行
+// setFieldsValue，恰好覆盖本守卫要保护的未保存编辑。仅对键的序列化输入把
+// dayjs 字段归一为与配置同构的 'HH:mm' 字符串，使键只由配置内容决定、与
+// 求值时刻的墙钟日期无关；回填数据本身仍用 buildValues 原产物（dayjs 值），
+// 不受影响。dayjs 判定用 duck-typing（对象值且带 format 方法，Date/普通对象
+// 均无此方法），避免为此引入 dayjs 依赖。
+const toBackfillKeyValues = (values: unknown): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  if (typeof values !== 'object' || values === null) return out;
+  for (const [k, v] of Object.entries(values)) {
+    out[k] =
+      typeof v === 'object' && v !== null && typeof (v as { format?: unknown }).format === 'function'
+        ? (v as { format: (f: string) => string }).format('HH:mm')
+        : v;
+  }
+  return out;
+};
+
 export interface GatedFormPanelOptions<TValues> {
   /** 面板 <Form> 的实例（Form.useForm 产物） */
   form: FormInstance<TValues>;
@@ -76,7 +97,9 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
   const lastBackfillRef = useRef('');
   useEffect(() => {
     const next = buildValues();
-    const key = JSON.stringify(next);
+    // 键经归一副本序列化（code-review item f112a7c0c231，见助手注释），
+    // 与求值时刻的墙钟日期无关；回填仍写原 next
+    const key = JSON.stringify(toBackfillKeyValues(next));
     if (key === lastBackfillRef.current) return;
     if (onBackfill) {
       onBackfill(next, () => form.setFieldsValue(next));

@@ -110,6 +110,9 @@ export const STATUS_HEX: Record<string, string> = {
 // （自 SpecTimeline.tsx 等价迁入；SpecTimeline 以 re-export 保持 detail.tsx
 // 既有 import 路径零改动）
 export function formatUsd(v: number): string {
-  if (v > 0 && v < 0.01) return `$${v.toFixed(3)}`;
-  return `$${v.toFixed(2)}`;
+  // 非有限值守卫（code-review item 8477b895353e）：NaN/Infinity 会经 toFixed
+  // 渲染「$NaN/$Infinity」字面量到时间轴，守卫口径对齐 fmtMillions，统一回退 0。
+  const safe = Number.isFinite(v) ? v : 0;
+  if (safe > 0 && safe < 0.01) return `$${safe.toFixed(3)}`;
+  return `$${safe.toFixed(2)}`;
 }

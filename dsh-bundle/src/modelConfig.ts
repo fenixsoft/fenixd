@@ -77,6 +77,13 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
       );
     }
   }
+  const api = seg.api;
+  if (api !== undefined && typeof api !== "string") {
+    throw new Error(
+      `模型未显式配置：config.model.api 必须是字符串（线协议名，如 openai-completions）——` +
+        `当前值类型 ${typeof api}（${String(api)}）非法。`,
+    );
+  }
   const headers = seg.headers;
   if (headers !== undefined) {
     if (typeof headers !== "object" || headers === null || Array.isArray(headers)) {

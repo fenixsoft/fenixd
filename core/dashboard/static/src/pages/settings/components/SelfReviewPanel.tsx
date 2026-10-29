@@ -146,7 +146,17 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // setConfig 重载）不无条件 setFieldsValue——否则会静默丢弃用户尚未保存的
     // 开关/时间修改。「同步用户级设置」等显式操作带来的是真正内容变化，
     // 序列化值不同，仍会回填覆盖。
-    const key = JSON.stringify(initialValues);
+    // 门控键只由配置内容决定（code-review item f112a7c0c231）：run_at 是 dayjs
+    // 实例，直接 stringify 经其 toJSON() 序列化为含当日日期的完整 ISO 时刻——
+    // 面板带着未保存编辑跨零点后，同内容刷新的键值必然与上次记账不同，门控
+    // 误判为「内容真变化」执行 setFieldsValue，恰好覆盖本守卫要保护的未保存
+    // 编辑。故仅对键的序列化输入把 dayjs 归一为与配置同构的 'HH:mm' 字符串
+    // （空值归 null 保持键形态稳定），使键与求值时刻的墙钟日期无关；回填
+    // 数据本身仍用原 initialValues（dayjs 值），不受影响。
+    const key = JSON.stringify({
+      ...initialValues,
+      run_at: initialValues.run_at?.format('HH:mm') ?? null,
+    });
     if (key === lastSelfReviewBackfillRef.current) return;
     form.setFieldsValue(initialValues);
     // ref 记账在回填成功之后（code-review item 51e106646c29，与 useGatedFormPanel
