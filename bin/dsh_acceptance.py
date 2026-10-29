@@ -2114,7 +2114,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                   file=sys.stderr)
             return 2
         prefix = unique_prefix()
-        manifest = build_fixture(parent, prefix)
+        # 装置创建收口进 try（code-review item 032980ea998e，同 run_smoke 口径）：
+        # parent 子目录创建遇权限不足/只读文件系统等 OSError 时裸抛以
+        # traceback + 退出码 1 收场，违背模块头「2=用法/装置错误」退出码契约
+        try:
+            manifest = build_fixture(parent, prefix)
+        except (ValueError, OSError) as e:
+            print(f"夹具装置创建失败：{e}", file=sys.stderr)
+            return 2
         # parent 来源记账：脚本 mkdtemp 自建的随清理 rmdir；用户 --parent
         # 显式传入的目录不代删（cleanup_fixture 凭此键区分）
         manifest["parent_created_by_script"] = args.parent is None

@@ -98,7 +98,16 @@ class _NoCrossHostRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _build_probe_request(baseurl: str, apikey: str, model: str) -> urllib.request.Request:
-    """构造 urllib Request——与 bin/probe_prompt_cache.py::_post_once 同构。"""
+    """构造 urllib Request——与 bin/probe_prompt_cache.py::_post_once 同构。
+
+    目标网段不做回环/私网/链路本地黑名单（code-review 0a290417b930 取舍）：
+    baseurl 与运行期 agent 派发共用同一取值空间，自托管内网网关（LiteLLM/vLLM
+    等部署在 10.x/192.168.x 网段）是正当配置，黑名单会砍伤健康检测对这批
+    provider 的可用性、且与运行期「同一边 baseurl 照常连接」自相矛盾。该探测
+    面受控的前提是 dashboard 仅绑定 127.0.0.1（spec llm-health-check「安全
+    边界」已固化此约束，探测结果回传面止于本机）——日后放开监听地址，须连同
+    本前提与全组无鉴权 POST 端点同面重估。
+    """
     # 归一尾部 /v1（含 /v1/）：整段「https://host/v1」粘进表单时不剥离会拼出 /v1/v1/messages 的误导性 404
     root = baseurl.rstrip("/")
     if root.endswith("/v1"):

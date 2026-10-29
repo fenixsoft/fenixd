@@ -139,8 +139,10 @@ def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
     （运行时状态，不进 git；flock 跨进程互斥）。
 
     超过 timeout 仍未获取到锁 → acquired=False，调用方返回可读错误（避免 HTTP
-    挂死逼近客户端 30s 超时线）。获取失败（目录不可写等）同样 acquired=False，
-    不阻断操作本身（锁是尽力而为的串行化，不是权限门）。
+    挂死逼近客户端 30s 超时线）。锁目录/锁文件创建失败（.fenix 不可写等
+    OSError）同样 acquired=False（code-review item 13dd86f478d0）：调用方对
+    未获锁一律拒绝执行——.fenix 不可写时该项目的启停/删除请求会被拒绝，文案
+    同为「该项目正有另一启停操作进行中，请稍后重试」。
     """
     lock_dir = Path(proot) / ".fenix"
     lock_path = lock_dir / "lifecycle.lock"

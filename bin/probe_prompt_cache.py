@@ -27,9 +27,6 @@ import sys
 import time
 from pathlib import Path
 
-FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
-if str(FRAMEWORK_ROOT) not in sys.path:
-    sys.path.insert(0, str(FRAMEWORK_ROOT))
 # 项目根（.absolute() 不跟随软链接：经项目内 .fenix/bin/ 软链调用时 = 项目目录）。
 # 与 fenix_dashboard.py 的项目资源口径一致——FRAMEWORK_ROOT 的 .resolve() 会
 # 跟随软链回到框架主树（定位框架自身资源用），项目配置等资源须用项目根。

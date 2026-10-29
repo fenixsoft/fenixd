@@ -125,23 +125,29 @@ def _with_basetemp(cmd: list, project_root, unique: bool = False) -> list:
 
 
 # ── 端口段派生（concurrent-suite-isolation 4.2）──────────────────────────
-# 并发套件从进程/run 派生互不重叠的端口段：默认取 pid 哈希映射到 [31000, 32000)，
-# 可经 FENIX_SUITE_PORT_BASE 环境变量覆盖（显式指定基址）；FENIX_VERIFY_PORT
+# 并发套件从进程 pid 散列派生端口段基址：映射到 [31000, 65535-段宽] 全域摊开，
+# 不同 pid 的段**大概率**不交叠（散列降低交叠概率，但不保证不相交）；需要强
+# 不重叠保证时经 FENIX_SUITE_PORT_BASE 环境变量显式指定基址。FENIX_VERIFY_PORT
 # 语义不变（下发给 pytest 子进程，供测试读取）。
 
-# 端口段宽度（pid 派生偏移空间）：也是 FENIX_SUITE_PORT_BASE 上界校验余量，
-# 保证「基址 + 段宽 ≤ 65535」不越界（单一来源，勿在别处硬编码段宽）。
+# 端口段宽度：也是 FENIX_SUITE_PORT_BASE 与 pid 派生值的上界校验余量，保证
+# 「基址 + 段宽 ≤ 65535」不越界（单一来源，勿在别处硬编码段宽）。
 SUITE_PORT_SEGMENT_WIDTH = 1000
+
+# pid 派生段下界（与 FENIX_SUITE_PORT_BASE 合法域下界一致）。
+_SUITE_PORT_BASE_MIN = 31000
 
 
 def suite_port_base() -> int:
-    """返回当前套件进程使用的端口段基址（31000-31999）。
+    """返回当前套件进程使用的端口段基址（[31000, 65535-段宽] 内）。
 
-    优先元 ``FENIX_SUITE_PORT_BASE``（显式覆盖），否则按 pid 派生：
-    ``31000 + (pid % 1000)``——pid 不同则段不同只是**概率性**不重叠
-    （约 1/1000 概率同段）；需要强不重叠保证时用 FENIX_SUITE_PORT_BASE
-    显式覆盖。环境变量校验取值域 [31000, 65535-段宽]（下界对齐 pid 派生段，
-    上界含段宽余量；越界同按非法值回退派生，code-review item 28562fe24bb9）。
+    优先元 ``FENIX_SUITE_PORT_BASE``（显式覆盖），否则按 pid 乘法散列派生：
+    pid 经黄金比例乘数散列到 [31000, 65535-段宽] 全域——不同 pid 的段大概率
+    不交叠但**不保证**不相交（早期 ``31000 + pid % 1000`` 把派生空间压到与
+    段宽同宽的 1000，任意两段必然交叠，「概率性不重叠」承诺落空，已废弃）；
+    需要强不重叠保证时用 FENIX_SUITE_PORT_BASE 显式覆盖。环境变量校验取值域
+    [31000, 65535-段宽]（下界对齐 pid 派生段，上界含段宽余量；越界同按非法值
+    回退派生，code-review item 28562fe24bb9）。
     """
     env_base = os.environ.get("FENIX_SUITE_PORT_BASE")
     if env_base:
@@ -151,11 +157,14 @@ def suite_port_base() -> int:
             # 特权端口段在非 root 环境绑定 EACCES、报错落在具体用例内部难以
             # 归因到端口段配置——显式覆盖值低于派生段下界时同按非法值回退
             # pid 派生（上界校验含段宽余量不变）。
-            if 31000 <= val <= 65535 - SUITE_PORT_SEGMENT_WIDTH:
+            if _SUITE_PORT_BASE_MIN <= val <= 65535 - SUITE_PORT_SEGMENT_WIDTH:
                 return val
         except (TypeError, ValueError):
             pass
-    return 31000 + (os.getpid() % SUITE_PORT_SEGMENT_WIDTH)
+    # 派生空间与 FENIX_SUITE_PORT_BASE 合法域同宽：黄金比例乘数摊开 pid，
+    # 降低不同 pid 段的交叠概率（同 pid 确定性复现）。
+    span = 65535 - SUITE_PORT_SEGMENT_WIDTH - _SUITE_PORT_BASE_MIN + 1
+    return _SUITE_PORT_BASE_MIN + (os.getpid() * 0x9E3779B1) % span
 
 
 def _suite_env() -> dict:

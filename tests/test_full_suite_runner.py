@@ -21,6 +21,7 @@ from bin.run_full_suite import (
     extract_hanging_test,
     run_command,
     run_suite,
+    SUITE_PORT_SEGMENT_WIDTH,
     suite_port_base,
 )
 
@@ -141,8 +142,11 @@ class TestSuitePortBase:
         """
         monkeypatch.delenv("FENIX_SUITE_PORT_BASE", raising=False)
         base = suite_port_base()
-        assert 31000 <= base < 32000
-        assert (base - 31000) == (sys.modules['os'].getpid() % 1000)
+        # 派生值落在与 FENIX_SUITE_PORT_BASE 相同的合法域，同 pid 确定性复现
+        # （code-review item 17c9bdafc860：旧公式 pid % 1000 派生空间与段宽
+        # 同宽、任意两段必然交叠，已改全域散列，不再钉具体派生公式）。
+        assert 31000 <= base <= 65535 - SUITE_PORT_SEGMENT_WIDTH
+        assert base == suite_port_base()
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("FENIX_SUITE_PORT_BASE", "40000")
@@ -151,4 +155,4 @@ class TestSuitePortBase:
     def test_invalid_env_falls_back(self, monkeypatch):
         monkeypatch.setenv("FENIX_SUITE_PORT_BASE", "not-a-number")
         base = suite_port_base()
-        assert 31000 <= base < 32000
+        assert 31000 <= base <= 65535 - SUITE_PORT_SEGMENT_WIDTH

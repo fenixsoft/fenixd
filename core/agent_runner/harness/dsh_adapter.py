@@ -52,6 +52,7 @@ from .protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
     ENV_MODE_INHERIT,
+    PROMPT_TRANSPORT_STDIN,
     STDERR_CLASS_CLI_NOISE,
     STDERR_CLASS_GENERIC,
     STDERR_CLASS_UNRECOGNIZED_MODEL,
@@ -661,7 +662,10 @@ class DshAdapter:
         argv ``dsh --profile <p> --patch <yml> --json [--session-id <id>]``
         （**不含裸任务词**：``--profile`` 即 app 选择，argv 里的裸
         ``headless`` 会被解析为任务 positional、令 stdin prompt 被忽略，
-        见 DSH_APP_NAME 注记）；prompt 全文经 stdin 载荷；cwd=worktree；env
+        见 DSH_APP_NAME 注记）；prompt 全文经 stdin 载荷——prompt_transport
+        **仅支持 stdin**（argv 形态无对应语义：任务 positional 槽已被
+        ``--profile``/``--patch`` 占用，非 stdin 值与 claude_adapter 同口径
+        fail-fast）；cwd=worktree；env
         段按 dsh 口径清除 ANTHROPIC_*/CLAUDE_* 防串扰键；模型经 Bundle
         patch 显式渲染（provider 链 name/baseurl/apikey/model），缺任一要素
         fail-fast（DshSpawnConfigError），绝不回退 dsh 默认档。
@@ -670,6 +674,17 @@ class DshAdapter:
         ANTHROPIC_BASE_URL → baseURL、ANTHROPIC_API_KEY → apikey（经
         ``FENIX_DSH_PROVIDER_API_KEY`` 桥接给 dsh）、req.model → model。
         """
+        # prompt_transport 仅支持 stdin（code-review item 0952231ad037，与
+        # claude_adapter.build_spawn_spec 的枚举校验同口径 fail-fast）：dsh
+        # 任务经 stdin 载荷，argv 形态无对应语义——静默把 argv 请求改道
+        # stdin 属协议契约漂移，未来 dsh 形态或调用方依赖 argv 语义（ARG_MAX
+        # 之外的转义差异）时会静默丢任务。
+        if req.prompt_transport != PROMPT_TRANSPORT_STDIN:
+            raise ValueError(
+                f"不支持的 prompt_transport 值：{req.prompt_transport!r}"
+                f"（dsh 通道仅支持 {PROMPT_TRANSPORT_STDIN!r}：任务经 stdin"
+                f" 载荷，argv 形态无对应语义）"
+            )
         model = (req.model or "").strip()
         if not model:
             raise DshSpawnConfigError(
