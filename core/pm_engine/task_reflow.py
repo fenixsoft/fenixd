@@ -18,11 +18,21 @@ add-spec-review-gate 的教训正是 CLI 通道绕过评审分流（cmd_promote 
 `error = null`（`update_spec` 对携带 `status` 的更新会自动解除取消保持标记，
 语义与既有面板重派 / admin 处置复位一致）。写回后重读复核（code-review
 b790603c7cae）：读快照判 verified 与写回之间无原子性，窗口内该 SPEC 已被
-verified→done 门禁放行（total_duration 残留判别，全库唯一写点在门禁放行
-分支）时，回写恢复 done 并如实返回失败。MUST NOT 直接改写 tasks.md、
+verified→done 门禁放行（total_duration 残留 / 写后值漂移判别，全库唯一写点
+在门禁放行分支）时，回写恢复 done 并如实返回失败。MUST NOT 直接改写 tasks.md、
 MUST NOT 修改实现尝试预算计数（`_impl_run_budget_used`）、MUST NOT 触碰
 `frozen` / `frozen_until` / `start_after`，MUST NOT 绕过 daemon 的后续派发
 闸门（依赖、start_after、退避、冻结检查照常生效）。
+
+**已知局限**（code-review 011be6db6b10）：total_duration 一经固化全库无清空
+写点，曾 done 过的 SPEC（快照已非 None）经 admin update_spec 直写回到
+verified+task-gap 后再回炉，「快照非 None」残留判据恒假，须靠写后值漂移
+比对补检。残余 false-negative：若窗口内门禁重放行且重算求和与快照恰同值
+（窗口内无新 run 落账），残留与值漂移两判据皆不可辨——同值写与无写在任何
+快照差分下均无痕，写点协议亦无专用放行标记，闭合须新增条件写原语（清单外
+改动），故该形态不设防：窗口极窄且前置形态（done→人工直写回 verified→
+task-gap 再回炉）罕见；一旦漏网误覆盖不被回滚，已交付 SPEC 会被重派实现，
+须人工对账恢复（PROJECT_LOG 有成功留痕可循迹）。
 
 复位后 MUST 在 `.fenix/PROJECT_LOG.md` 追加一条可追溯记录（含 SPEC 名、原状态、
 缺口任务清单、动作来源）——PROJECT_LOG 追加失败仅记 warning（留痕是附加物，
@@ -163,9 +173,19 @@ def reflow_spec(
     # 无而写后残留有」并不严格等价于「窗口内门禁放行」——写点协议无专用放行
     # 标记可判别，回写恢复 done 前以下方 post.error 的 task-gap 复核兜底
     # （窗口内门禁拦截路径重写缺口结论即拒绝回写、转人工）。
-    _done_in_window = (
-        post.get("total_duration") is not None
-        and entry.get("total_duration") is None
+    # 次级判据——写后值漂移比对（code-review 011be6db6b10）：total_duration
+    # 一经固化全库无清空写点，曾 done 过的 SPEC（快照已非 None）经 admin
+    # update_spec 直写回到 verified+task-gap 后再回炉，「快照非 None」判据
+    # 恒假——补充比对写后值与快照值：engine.py 门禁放行分支是 total_duration
+    # 的全库唯一写者（本函数写回只动 status/error），写后值 ≠ 快照值即窗口
+    # 内确有门禁写落盘（重验产生非零时长新 run 则求和随之变化）。该判据严格
+    # 加严不放宽：仅新增可检形态，既有各形态判定结果不变。残余局限：门禁重
+    # 放行且重算求和与快照恰同值（窗口内无新 run 落账）时值比对同样不可辨
+    # ——同值写与无写在任何快照差分下均无痕，见模块 docstring 已知局限。
+    _snapshot_total = entry.get("total_duration")
+    _post_total = post.get("total_duration")
+    _done_in_window = _post_total is not None and (
+        _snapshot_total is None or _post_total != _snapshot_total
     )
     if _done_in_window or post.get("status") == "done":
         _post_status = post.get("status", "")
