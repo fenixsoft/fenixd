@@ -1578,6 +1578,10 @@ class VerificationPipeline:
                 ],
                 title="场景计划争议",
             )
+            # 早退前清侧车（code-review item d88ca1de3992，同 64c771aed8d5
+            # 清理口径）：本轮到不了 _execute_stage2 消费点，None 占位条目
+            # 在此 pop，防滞留实例字典。
+            self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
             return None, True
         if not isinstance(raw, list):
             # 顶层 dict 包裹机械拯救接线（fix-frozen-scenario-dict-salvage 1.1，
@@ -1612,6 +1616,9 @@ class VerificationPipeline:
                         ],
                         title="场景计划争议",
                     )
+                    # 早退前清侧车（code-review item d88ca1de3992，同
+                    # 64c771aed8d5 清理口径）：同上，防占位条目滞留实例字典。
+                    self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
                     return None, True
             else:
                 # 根节点非数组不属契约漂移 → 维持既有 corrupt → env_blocked
@@ -1623,6 +1630,9 @@ class VerificationPipeline:
                     ],
                     title="场景计划争议",
                 )
+                # 早退前清侧车（code-review item d88ca1de3992，同
+                # 64c771aed8d5 清理口径）：同上，防占位条目滞留实例字典。
+                self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
                 return None, True
 
         # ── 步骤 2：集内 contract_version 最小值路由（缺失/非整型=1）──
@@ -1672,6 +1682,9 @@ class VerificationPipeline:
                     ],
                     title="场景计划争议",
                 )
+                # 早退前清侧车（code-review item d88ca1de3992，同
+                # 64c771aed8d5 清理口径）：同上，防占位条目滞留实例字典。
+                self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
                 return None, True
             if result["aborted"] == "all_scenarios_stale":
                 # D3：全场景过时（含空集）→ 删除冻结文件、本轮回落到既有
@@ -1710,6 +1723,9 @@ class VerificationPipeline:
                     ],
                     title="场景计划争议",
                 )
+                # 早退前清侧车（code-review item d88ca1de3992，同
+                # 64c771aed8d5 清理口径）：同上，防占位条目滞留实例字典。
+                self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
                 return None, True
             if result["pending_replan"]:
                 # 部分迁移：被剔除场景不参与本轮，剩余场景继续（D2.3）

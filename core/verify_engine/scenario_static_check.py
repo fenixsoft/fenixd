@@ -648,14 +648,16 @@ def _package_start_entry(project_root: Path) -> str | None:
 
 
 # ── commands.start 兜底有效性判定（evo-add-scenario-serve-consistency-preflight）──
-# 占位哨兵与执行期 serving.py:1098-1099 旧行为同口径：config commands.start 为
+# 占位哨兵与执行期 serving.py _legacy_selfheal_start 旧行为同口径（执行期已
+# 反向局部 import 本常量，勿在此双写裸字面量）：config commands.start 为
 # 空（无自启）或 fenix-init 写入的占位 echo 时，视为「无有效兜底」——场景集含
 # api/web 时验证执行期将 fail-fast「应用不可达」。非占位 start 属执行期既有
-# 兜底形态（serve 缺失仍可服务，serving.py:1097「直接回退 commands.start」），
-# 存量零迁移。
+# 兜底形态（serve 缺失仍可服务，serving.py _legacy_selfheal_start
+# 「直接回退 commands.start」），存量零迁移。
 START_FALLBACK_PLACEHOLDER = "echo 'No start command configured yet'"
 
-# 场景 kind 集含这些 kind 时需被验证应用可服务（serving.py:958-959 同口径：
+# 场景 kind 集含这些 kind 时需被验证应用可服务（serving.py
+# _legacy_selfheal_start 同口径：
 # 含 web/api 场景 → serve（或 commands.start 兜底）必须有效；纯 cli 无实例形态）。
 SERVE_REQUIRED_KINDS = frozenset({"api", "web"})
 
@@ -663,7 +665,7 @@ SERVE_MISSING_RULE_ID = "serve_missing_for_scenario_kinds"
 
 
 def start_fallback_valid(start_cmd: str | None) -> bool:
-    """commands.start 兜底有效性判定（口径同 serving.py:1098-1099 执行期判定）。
+    """commands.start 兜底有效性判定（口径同 serving.py _legacy_selfheal_start 执行期判定）。
 
     空串/None/占位哨兵（strip 后比对）= 无有效兜底；其余非空命令 = 有效兜底。
     """
@@ -690,7 +692,7 @@ def scan_contract(
     ``scenario_kinds`` 时启用）：
     4. ``serve_missing_for_scenario_kinds``（high）：契约 serve 段缺失且场景
        kind 集含 api/web（需被验证应用可服务）且 commands.start 无有效兜底
-       （空或占位哨兵，判定口径同 serving.py:1098-1099）——验证执行期将
+       （空或占位哨兵，判定口径同 serving.py _legacy_selfheal_start）——验证执行期将
        fail-fast「应用不可达」，出题产物消费期打回补契约。serve 缺失但 start
        非占位的存量形态（执行期 commands.start 旧行为可兜底）与纯 cli 场景集
        （无实例形态）不报；serve 缺失时既有三条规则维持早退（不误报历史纯

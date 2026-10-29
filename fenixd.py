@@ -3476,6 +3476,11 @@ class FenixDaemon:
             for path in sorted(kick_dir.iterdir()):
                 try:
                     if path.name.endswith(".json"):
+                        # item 631e1bf8a8e5：对账消费与主循环消费共享同一退避
+                        # 口径——退避期内本轮静默跳过（600s 对账周期本身就是
+                        # 重试节拍，不落 ERROR），推迟重试。
+                        if self._sched_kick_backoff_active(path):
+                            continue
                         self._consume_scheduling_kick_file(path)
                     else:
                         self._reclaim_temp_scheduling_kick(path)
@@ -3484,12 +3489,18 @@ class FenixDaemon:
                         "fenixd",
                         f"scheduling_kick 对账异常（继续）: {path.name}: {e}",
                     )
+                    # item 631e1bf8a8e5：信号条目的对账消费异常同样计入失败
+                    # 退避（与消费路径同口径，达放弃阈值删信号收敛）；非
+                    # .json 残留的清理异常不属于唤起失败，不进退避账本。
+                    if path.name.endswith(".json"):
+                        self._record_sched_kick_failure(path)
         legacy = PROJECT_ROOT / ".fenix" / "scheduling_kick_request.json"
-        if legacy.exists():
+        if legacy.exists() and not self._sched_kick_backoff_active(legacy):
             try:
                 self._consume_scheduling_kick_file(legacy)
             except Exception as e:  # noqa: BLE001
                 self.logger.error("fenixd", f"scheduling_kick 旧文件对账异常: {e}")
+                self._record_sched_kick_failure(legacy)
 
     def _reclaim_temp_scheduling_kick(self, path: Path) -> None:
         """非 .json 残留（写入中断留下的临时文件，及消费端崩溃残留的
@@ -5919,7 +5930,19 @@ class FenixDaemon:
                         "error",
                         f"Checkpoint broadcast on planned restart failed: {e}",
                     )
-            _, drain_lanes = self._drain_set_inventory()
+            # item dcbe17f7286f：本探测与紧邻步骤同口径独立容错——
+            # _drain_set_inventory 对 lanes_getter 有 getattr 容错，对
+            # running_run_ids() 却是直调，此处抛出会击穿 start() finally 的
+            # 收口序列。失败按「车道清单不可得」降级继续排水收口。
+            try:
+                _, drain_lanes = self._drain_set_inventory()
+            except Exception as e:
+                _safe_log(
+                    "error",
+                    f"Drain: enumerate drain set lanes failed "
+                    f"(non-blocking, 继续排水收口): {e}",
+                )
+                drain_lanes = []
             _safe_log(
                 "info",
                 f"Drain: planned restart, drain window {drain_seconds}s, "
@@ -5959,7 +5982,17 @@ class FenixDaemon:
                 # planned-restart-drain C：规划性重启但排水窗口为 0（agents.
                 # run_drain_max_seconds 显式禁用/夹紧为 0）——在飞工作将不经
                 # 排水直接 terminate，WARNING 留痕窗口取值与排水集合清单。
-                inv_runs, inv_lanes = self._drain_set_inventory()
+                # item dcbe17f7286f：同上，探测失败降级空清单留痕后继续收口，
+                # 不让异常从 start() 的 finally 传播出去。
+                try:
+                    inv_runs, inv_lanes = self._drain_set_inventory()
+                except Exception as e:
+                    _safe_log(
+                        "error",
+                        f"Drain: enumerate drain set failed "
+                        f"(non-blocking, 继续收口): {e}",
+                    )
+                    inv_runs, inv_lanes = [], []
                 _safe_log(
                     "warning",
                     f"Drain: planned restart but drain window is 0s "

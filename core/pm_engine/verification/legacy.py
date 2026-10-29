@@ -878,6 +878,23 @@ def _run_legacy_verification(pipeline, spec_name: str):
             # 重验，MUST NOT 落入 verified 成功晋级分支（否则修复场景未
             # 验证通过即假 verified 收口——done>=total 且通过数>0 时
             # _check_verification_gate 与 _env_whitewash_gate 均拦不住）。
+            # code-review item 958624cb9642：「验证未完成」裁决清单改由白名单
+            # 单源动态渲染（扣除 verified/bug-found 后的剩余项），error/日志
+            # 不再硬编码 plan-ready/scenario-repaired 字样——白名单
+            # （prompt_builder.PLANNER_RESULT_STATUS_WHITELIST，prompt_builder
+            # 无 pm_engine 反向依赖，本导入无环）演进新增合法 status 时本分支
+            # 文案随之更新。两车道兜底语义同改约定：白名单增删时本 else 分支
+            # 与主路径 pipeline.py 平铺尾段前的拦截守卫（现为 scenario-repaired
+            # 专门分支 + plan-ready 显式拦截）MUST 同点对齐，否则同一裁决会在
+            # 主路径被假收敛为 verified、在 legacy 被扣 testing，车道间语义分叉。
+            from core.agent_runner.prompt_builder import (
+                PLANNER_RESULT_STATUS_WHITELIST,
+            )
+
+            _unfinished_statuses = "/".join(
+                s for s in PLANNER_RESULT_STATUS_WHITELIST
+                if s not in ("verified", "bug-found")
+            )
             if _discard_if_not_testing(pipeline, spec_name, result, verifier_status):
                 return
             pipeline._context.state_machine.update_spec(
@@ -886,13 +903,14 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     "tester_run": result.run_id,
                     "error": (
                         f"验证未完成 (legacy)：裁决 status={verifier_status}"
-                        f"（场景生成/场景修复裁决不按通过收口），保持 testing 待重验"
+                        f"（{_unfinished_statuses} 裁决不按通过收口）"
+                        f"，保持 testing 待重验"
                     ),
                 },
             )
             pipeline._context.logger.warning(
                 "pm_engine",
-                f"验证未完成 (legacy) '{spec_name}'：plan-ready/scenario-repaired "
+                f"验证未完成 (legacy) '{spec_name}'：{_unfinished_statuses} "
                 f"裁决不按通过收口（status={verifier_status}），保持 testing 待重验",
             )
     else:
