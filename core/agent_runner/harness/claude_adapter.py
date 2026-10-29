@@ -154,7 +154,13 @@ def ensure_agent_config_dir(
     settings["_schema_version"] = ISOLATED_SETTINGS_SCHEMA_VERSION
     try:
         cfg_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
+    except OSError as e:
+        # 不向上抛的降级语义不变，但按 e207cc39ba4b 同口径 WARNING 留痕：
+        # 目录缺席时 settings.json 与 skills/plugins symlink 均无从谈起。
+        logger.warning(
+            "ensure_agent_config_dir: 隔离配置目录创建失败"
+            "（agent 以降级配置运行，无 hooks/模型映射/symlink）: %s", e,
+        )
         return cfg_dir
 
     def _write_atomic() -> None:

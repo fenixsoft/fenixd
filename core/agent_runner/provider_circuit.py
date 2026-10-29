@@ -2116,18 +2116,27 @@ class ProviderCircuit:
         """
         if not spec_name:
             return False
-        st = self._signal_kill.get(spec_name)
-        if not st:
-            return False
-        until = st.get("cooldown_until") or 0.0
-        if until <= 0:
-            return False
-        now = self._pm._now() if now is None else now
-        if now < until:
-            return True
+        # 快路径读取同持记账锁（code-review item 4e12b266a7f3）：表项读取与
+        # now < until 判定与 record_signal_kill / reset_signal_kill 的写侧
+        # 临界区互斥——无锁读可与锁内写 cooldown_until / pop 交错，对刚置位
+        # 的冷却漏拦一次派发查询，或对刚被 pop 的条目多返一次 True。临界区内
+        # 只查表读字段，与 signal_kill_cooldown_until / signal_kill_counts
+        # 的读侧纪律（code-review item 63ff3c6e0d87）对齐；调用点（dispatch
+        # 闸门 / admin 巡检）在记账临界区外，无同线程重入。
+        with self._signal_kill_lock:
+            st = self._signal_kill.get(spec_name)
+            if not st:
+                return False
+            until = st.get("cooldown_until") or 0.0
+            if until <= 0:
+                return False
+            now = self._pm._now() if now is None else now
+            if now < until:
+                return True
         # 冷却到期自动恢复（code-review item 42a62f2fc5e4）：到期推进与
         # record_signal_kill 的记账同持 _signal_kill_lock——锁内二读
-        # cooldown_until 确认仍过期才 pop。无锁读到「已到期」后、pop 前，
+        # cooldown_until 确认仍过期才 pop。快路径临界区读到「已到期」后、
+        # 本临界区加锁前，
         # 并发收尾的 run-worker 可能以信号死法达阈值在锁内写入新
         # cooldown_until，不二读直接 pop 会把刚建立的冷却整条抹掉（该 spec
         # 立即可重派）。临界区内只查表/弹条目，恢复告警的 AdminStore 文件 IO

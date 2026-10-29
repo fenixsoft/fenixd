@@ -1,6 +1,8 @@
 /* 帮助中心目录菜单：语义 <ol> + CSS 计数器生成「一、二、…」序号。
    序号由列表结构与 counter style（cjk-ideographic）派生，不写入文档标题
-   文字；浏览器不支持该 counter style 时回退十进制，仅序号形态变化。 */
+   文字；浏览器不支持该 counter style 时回退十进制，仅序号形态变化。
+   可点击语义由 li 内的真实 <button> 承担（见下方 button reset），
+   li 保留列表项角色。 */
 
 .help-menu {
   list-style: none;
@@ -11,30 +13,44 @@
 
 .help-menu-item {
   counter-increment: help-menu-item;
-  position: relative;
-  padding: 8px;
-  border-radius: 6px;
-  cursor: pointer;
   color: var(--ant-color-text);
   font-size: 14px;
   line-height: 1.5714;
+}
+
+/* button reset：抹平 UA 默认样式，视觉对齐原先 li 直接受击的形态 */
+.help-menu-item > button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-.help-menu-item:hover {
+.help-menu-item > button:hover {
   background: var(--ant-color-fill-secondary);
 }
 
-.help-menu-item:focus-visible {
+.help-menu-item > button:focus-visible {
   outline: 2px solid var(--ant-color-primary);
   outline-offset: -2px;
 }
 
 .help-menu-item.active {
-  background: var(--ant-color-primary-bg);
   color: var(--ant-color-primary);
 }
 
-.help-menu-item::before {
+.help-menu-item.active > button {
+  background: var(--ant-color-primary-bg);
+}
+
+.help-menu-item > button::before {
   content: counter(help-menu-item, cjk-ideographic) "、";
 }

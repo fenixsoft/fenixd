@@ -1298,10 +1298,16 @@ def overview(registry_projects: list) -> dict:
     token_entries = []
     for p in registry_projects:
         if not p.get("exists"):
+            # code-review item 166b049de1f7：与 _degraded_project 同款防御归一——
+            # registry 条目缺 name/path 键或 path 非 Path 可接受类型时，本项目
+            # 降级为 error 摘要，不穿透「函数不得抛出」容错契约成整页 500。
+            path = p.get("path")
+            if not isinstance(path, (str, os.PathLike)):
+                path = ""
             projects.append(
                 {
-                    "name": p["name"],
-                    "path": p["path"],
+                    "name": p.get("name") or (Path(path).name or path),
+                    "path": path,
                     "discovered": p.get("discovered", False),
                     "exists": False,
                     "daemon": "stopped",

@@ -443,6 +443,13 @@ class FileWatcher:
         """
         runs_dir = proot / ".fenix" / "runs"
         if not _is_dir(runs_dir):
+            # 目录整体缺失 = 其中全部 run 文件已消失（code-review item 4cbe9b92ade6）：
+            # 先清掉本项目 _run_base 基线再返回，键口径同末尾 stale 清理与
+            # _prune_stale_caches；否则目录被整体删除（手工清理/项目重置）而项目
+            # 仍在 registry 时，旧 run_id 基线无主残留。目录重建后同名 run 按
+            # prev is None 全量重推，前端本地归并幂等。
+            for k in [k for k in self._run_base if k[0] == proot.as_posix()]:
+                del self._run_base[k]
             return set()
         run_changed = set()
         try:
@@ -486,6 +493,11 @@ class FileWatcher:
         """fenixd*.log 文件签名比对；任一变化（追加/轮转）返回 True。"""
         logs_dir = proot / ".fenix" / "logs"
         if not _is_dir(logs_dir):
+            # 目录整体缺失 = 其中全部日志已消失（code-review item 4cbe9b92ade6）：
+            # 先清掉本项目 _log_sigs 整张子表再返回，键口径同末尾 stale 清理与
+            # _prune_stale_caches；否则目录被整体删除后旧日志路径签名无主残留。
+            # 下轮目录恢复由下方 setdefault 重建空子表。
+            self._log_sigs.pop(proot.as_posix(), None)
             return False
         cache = self._log_sigs.setdefault(proot.as_posix(), {})
         changed = False

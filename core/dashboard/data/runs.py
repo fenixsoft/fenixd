@@ -270,6 +270,12 @@ def _load_rotated_run_metric_index(project_root: Path) -> dict:
         except OSError:
             unchanged = False
         if unchanged:
+            # 落账前重新取槽而非复用段 1 引用（c593c2b59804）：段 1/3 锁间隙内
+            # 本槽可能已被其他线程的容量淘汰（下方 while，整槽 del）按插入序
+            # 淘汰，复用旧引用会把落账写进脱离字典的孤儿 dict——本轮扫描结果
+            # 不入库，下轮 key 不命中触发全量重扫。setdefault 取不到即重建
+            # （锁内纯内存，与段 1 同款写法），落账始终写进活槽。
+            slot = _ROTATED_METRIC_INDEX.setdefault(str(log_path), {"key": None, "index": {}})
             slot["index"] = index
             slot["key"] = key
         # 容量上限（锁内纯内存，段 1 新建槽必经本段）：超限按槽插入序淘汰

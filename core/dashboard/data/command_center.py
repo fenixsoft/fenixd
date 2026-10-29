@@ -201,12 +201,40 @@ def _window_runs(proot: Path, since_epoch: float, include_archive: bool = True) 
 
 # ── 成本口径（复用 topology/timeline 既有成本单点） ───────────────────────
 
+# 已留痕过的脏 usage 值形态（str 截断为键；防逐 run/逐端点 debug 刷屏）
+_COERCE_INT_LOGGED: set = set()
+
+
+def _coerce_int(value) -> int:
+    """usage 分项容错整数转换（读侧 MUST NOT 500 契约，code-review item
+    7160f2bb14fe）：None/空按 0；非数值形态（LLM 产物手改/脏写如
+    "12,345"、"nan"）按 0 计，同一值形态仅 debug 留痕一次。"""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if value is None or value == "":
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError：非有限浮点（json.loads 默认接受 Infinity 字面量），
+        # 与 code_review._line_key 同款容错口径
+        key = str(value)[:64]
+        if key not in _COERCE_INT_LOGGED:
+            _COERCE_INT_LOGGED.add(key)
+            logger.debug(
+                "command_center: non-numeric usage value %r coerced to 0", value
+            )
+        return 0
+
 
 def _run_cost_and_tokens(proot: Path, run_id: str, billing: dict) -> tuple:
     """单 run (cost, tokens)：run_tail_insights → compute_run_cost 既有口径。
 
     cost：按计价表现算，不可计价（无 usage/卡片关闭/无匹配价格行）为 None；
-    tokens：result 事件 usage 四分项合计，usage 缺失为 None。
+    tokens：result 事件 usage 四分项合计（分项经 :func:`_coerce_int` 容错，
+    脏值不拖垮聚合端点），usage 缺失为 None。
     """
     import core.dashboard.data as _facade
 
@@ -216,7 +244,7 @@ def _run_cost_and_tokens(proot: Path, run_id: str, billing: dict) -> tuple:
     usage = insights.get("usage")
     tokens = None
     if isinstance(usage, dict):
-        tokens = sum(int(usage.get(k) or 0) for k in _USAGE_TOKEN_KEYS)
+        tokens = sum(_coerce_int(usage.get(k)) for k in _USAGE_TOKEN_KEYS)
     return cost, tokens
 
 
@@ -287,8 +315,9 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
        明示接受项，不做时间戳猜测）；
     2. ``human_intervention_rate_7d``：窗内 handled_at 落窗的人工处置
        escalation 数 ÷ 窗内终态 run 数（人工路径=alert-resolve 与「标记已
-       处理」，auto-self-heal 收口的 SIGNAL 不计——复用 get_resolved_alerts
-       既有读取口径后按 kind=escalation 剔除其自愈部分）；分母 0 → null；
+       处理」，auto-self-heal 收口的 SIGNAL 不计——AdminStore.read_all
+       全量读后按 _resolved_records 同源口径过滤，不走展示切片）；分母
+       0 → null；
     3. ``run_success_rate_7d``：窗内终态 success（classify_run=done）数 ÷
        窗内终态（done + error）数；分母 0 → null；
     4. ``cost_per_spec_7d``：窗内 run 成本合计（run_tail_insights →
@@ -347,13 +376,17 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
                     cost_total += cost
                     cost_priced = True
 
-        # ② 人工处置 escalation（get_resolved_alerts 既有口径剔除自愈部分）
+        # ② 人工处置 escalation（handled 且 kind=escalation；auto-self-heal
+        # 收口的 SIGNAL 不计）。分子统计不走 get_resolved_alerts 展示切片
+        # （先过滤后 [:limit]，已解决记录积累超限时窗内条目被静默低估）：
+        # 直接 AdminStore.read_all 全量读后按 _resolved_records 同源口径
+        # 过滤，再按 handled_at 落窗计数（code-review item bdb78a42b473）。
         try:
-            from core.admin_store import ESCALATION
+            from core.admin_store import AdminStore, ESCALATION
 
-            for rec in _facade.get_resolved_alerts(proot, limit=500):
-                if rec.get("kind") != ESCALATION:
-                    continue  # auto-self-heal 收口的 SIGNAL 不计
+            for rec in AdminStore(proot).read_all():
+                if not rec.get("handled") or rec.get("kind") != ESCALATION:
+                    continue  # 未处理条目与自愈收口 SIGNAL 不计人工介入
                 handled_at = _parse_ts(rec.get("handled_at"))
                 if handled_at is not None and win_start <= handled_at <= now_dt:
                     human_interventions += 1
@@ -379,6 +412,7 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
         ),
         # 全未计价（计价表未配置/窗内 run 全不可计价）→ None，杜绝「$0.00/spec」
         # 假零，与 aggregate_org 的全未计价红线口径对齐（code-review item 982f3a108e92）
+        # [fenix-ignore:937217517372] cost_priced 标志 + 未计价返回 None 已在此落地，本条重报不成立
         "cost_per_spec_7d": (
             round(cost_total / delivered_total, 6)
             if delivered_total and cost_priced
@@ -552,6 +586,12 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
         stats["planner"]["success_denom"] = spec_count
         stats["planner"]["cost_priced"] = True
         stats["planner"]["cost"] = 0.0
+        # 时长随派生计数复位（观测循环累加的真实 planner run 时长不混入），
+        # 避免「runs=派生计数、duration=真实观测」混口径卡片，并使
+        # summary.duration_total 与派生计数对应；activity_14d/last_activity/
+        # inflight/status 保留真实观测口径属有意行为——在飞与活动动向反映
+        # 车道真实状态，不随人工派生计数抹除（code-review item 58c5d2886806）。
+        stats["planner"]["duration"] = 0.0
 
     cards: list = []
     # 花名册序优先（zone 序 + 区内 lane 序），花名册外观测 lane 按名排序殿后

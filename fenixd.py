@@ -3967,6 +3967,11 @@ class FenixDaemon:
         d51f639c500c），锁名按旗标命名约定派生：
         ``<name>_in_flight`` ↔ ``<name>_lock`` / ``<name>_fallback_lock``。
         lock 缺失时回落本实例的惰性私有锁而非静默裸跑（item cfdf9a6819a8）。
+        命中 ``_running_agents`` 前缀探测（外部启动的 run）只返回 True 跳过、
+        MUST NOT 置位旗标（对齐 admin_monitor 周期车道 68a28fa47419 规则）：
+        外部 run 的收尾不经过本车道 worker finally 复位点，置位后旗标无人
+        复位、车道静默停摆；其去重由本探测每轮重查 ``_running_agents`` 承担
+        （item 175e1cba1633，与周期车道同口径）。
         """
         name = flag_attr.removesuffix("_in_flight")
         with self._singleflight_lock(f"{name}_lock", f"{name}_fallback_lock"):
@@ -3975,8 +3980,7 @@ class FenixDaemon:
                 return True
             running = list(getattr(self.agent_runner, "_running_agents", None) or {})
             if any(str(rid).startswith(run_prefix) for rid in running):
-                if monitor is not None:
-                    setattr(monitor, flag_attr, True)
+                # 外部 run 不置位（68a28fa47419 规则）：见方法 docstring
                 return True
             if monitor is not None:
                 setattr(monitor, flag_attr, True)
