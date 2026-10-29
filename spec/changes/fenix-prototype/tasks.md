@@ -56,3 +56,9 @@
 ## 人工部署步骤（非任务，不进门禁对账）
 
 - 实现合并后需在用户级 skill 目录建符号链接使 skill 可被发现（fenix 系惯例，参照 `/root/.claude/skills/fenix-new -> /root/fenixd/skills/fenix-new`）：`ln -s /root/fenixd/skills/fenix-prototype /root/.claude/skills/fenix-prototype`。实现 run 内的端到端实证（§5）不受影响——实现者按仓内路径直读 SKILL.md 执行，无需 Skill 工具注册。
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/fenix-prototype/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
