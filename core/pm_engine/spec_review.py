@@ -390,7 +390,26 @@ class SpecReviewManager:
         # 方法锚点回落解析段），尾段若被非数字后缀占据会让解析静默失效、产物
         # mtime 新鲜度校验被跳过。
         run_id = f"spec-review-{spec_name}-{uuid.uuid4().hex[:6]}-{int(time.time())}"
-        self.state_machine.update_spec(spec_name, {"reviewer_run": run_id})
+        # 锚点写失败不派发（code-review item d442f44edd9d）：update_spec 返回
+        # False 即锚点未落盘（条目已被并发删除），照旧派发会把分钟级评审 run
+        # 的结果整份丢在 consume_review_result 的空锚点拒收上（下轮 recovery
+        # 重派再烧一次 LLM）且本方法仍 return True 谎报已收工——把 token 浪费
+        # 与假成功挡在派发前。磁盘满/IO 错误在 STATE 原子写路径表现为 OSError
+        # 抛出，按快照段落同款 WARNING 口径收口（原子写失败 STATE 未变，锚点
+        # 无半写残余，无需清理动作）。
+        try:
+            anchor_written = self.state_machine.update_spec(
+                spec_name, {"reviewer_run": run_id}
+            )
+        except OSError as e:
+            self.logger.warning("spec_review", f"评审锚点写入失败: {spec_name}: {e}")
+            return False
+        if not anchor_written:
+            self.logger.warning(
+                "spec_review",
+                f"评审锚点写入失败（SPEC 不存在，不派发评审 run）: {spec_name}",
+            )
+            return False
 
         # ② 派发前快照（写入边界校验的基线）
         snapshot = self._take_snapshot(spec_name)

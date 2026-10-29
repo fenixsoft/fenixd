@@ -4222,7 +4222,7 @@ class QQQueueMixin:
                     # 同 spec 后续轮次首次零变更即按 3/3 熔断。
                     "_zero_change_attempts": 0,
                     # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
-                    **self._pm._clear_dispatch_conflict(spec_name),
+                    **self._pm._clear_dispatch_conflict(),
                     # 顺延记账清账（evo-merge-back-spec-dir-inflight-guard D2）：
                     # merge 成功即解除顺延态，防陈旧计数污染下一轮
                     "_merge_retry_pending": False,

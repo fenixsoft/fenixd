@@ -517,7 +517,7 @@ class PRepairLaneMixin:
             # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
             "_repair_base_tip": None,
             "_repair_awaiting_remerge": False,
-            **self._pm._clear_dispatch_conflict(spec_name),
+            **self._pm._clear_dispatch_conflict(),
         }
 
     def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:

@@ -5548,7 +5548,7 @@ class FenixDaemon:
         def _cb(spec_name: str) -> None:
             # 锁冲突计数清零（recovery 侧无锁操作，零值写回即可）
             try:
-                self.pm_engine._clear_dispatch_conflict(spec_name)
+                self.pm_engine._clear_dispatch_conflict()
             except Exception as e:
                 self.logger.warning(
                     "fenixd",

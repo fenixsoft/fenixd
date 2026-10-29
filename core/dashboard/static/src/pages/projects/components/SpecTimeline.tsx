@@ -5,7 +5,7 @@
 // 打开验证报告回调）改为显式 props 注入。
 //
 // 复用运维记录页的时间轴控件（Timeline + 盒式卡片子项：头部时间+标签行，正文着色边框）。
-import { Button, Collapse, Tag, Timeline, Typography } from 'antd';
+import { Button, Collapse, Tag, theme, Timeline, Typography } from 'antd';
 import { FullscreenOutlined } from '@ant-design/icons';
 import { Fragment } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
@@ -91,11 +91,18 @@ export default function SpecTimeline({
   onViewRecord: (runId: string, harness?: string) => void;
   onOpenVerificationReport: () => void;
 }) {
+    // 卡片/摘要盒/运行记录容器的底色与边框走 antd token（code-review item
+    // b64f38deac7d）：原迁移自 detail.tsx 的硬编码浅色常量（#fafafa/#fff/#f0f0f0，
+    // 同 SessionPanel.tsx item 22baafa4128a 已修形态）在暗色主题下是亮色补丁，
+    // 改为随主题（卡片底/运行记录容器 colorBgLayout、摘要盒 colorBgContainer、
+    // 边框 colorBorderSecondary）；急态红边/红底同走 colorError/colorErrorBg
+    // 语义 token。useToken 只能在组件内调用（同 SessionPanel.tsx 惯例）
+    const { token } = theme.useToken();
     const cardBox = (urgent: boolean): CSSProperties => ({
       padding: isMobile ? 8 : 12,
       borderRadius: 8,
-      border: urgent ? '1px solid #ff4d4f' : '1px solid #f0f0f0',
-      background: urgent ? '#fff2f0' : '#fafafa',
+      border: urgent ? `1px solid ${token.colorError}` : `1px solid ${token.colorBorderSecondary}`,
+      background: urgent ? token.colorErrorBg : token.colorBgLayout,
     });
     const headRow: CSSProperties = {
       display: 'flex',
@@ -416,9 +423,9 @@ export default function SpecTimeline({
                     style={{
                       marginBottom: 8,
                       padding: '8px 12px',
-                      border: '1px solid #f0f0f0',
+                      border: `1px solid ${token.colorBorderSecondary}`,
                       borderRadius: 8,
-                      background: '#fff',
+                      background: token.colorBgContainer,
                       fontSize: 13,
                     }}
                   >
@@ -451,7 +458,7 @@ export default function SpecTimeline({
                         ),
                         // ClaudeOutputPane 依赖父容器高度约束，这里限高滚动避免时间轴被长运行拉穿
                         children: (
-                          <div style={{ maxHeight: 480, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: isMobile ? 4 : 8, background: '#fafafa' }}>
+                          <div style={{ maxHeight: 480, overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, padding: isMobile ? 4 : 8, background: token.colorBgLayout }}>
                             {/* 品牌投影（add-harness-brand-projection 3.1）：内嵌 pane 与
                                 最大化弹窗同口径注入 run 节点的 harness */}
                             <HarnessBrandProvider harness={item.harness}>

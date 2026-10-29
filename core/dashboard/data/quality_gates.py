@@ -665,7 +665,10 @@ def parse_quality_gates(project_root, spec_name: str, entry=None, runs=None) -> 
       缺省时自行扫描（详情页路径）。
     """
     entry = entry or {}
-    spec_status = str(entry.get("status") or "")
+    # 门口径统一（code-review 937e5d93817b）：与三个门函数内部 strip-再比较
+    # 一致，spec_status 先归一化，脏空白不致 _verify_progress_candidates 的
+    # implementing 精确比较漏掉 worktree 优先候选。
+    spec_status = str(entry.get("status") or "").strip()
     file_data, exists = _read_json_candidate(
         _verify_progress_candidates(project_root, spec_name, spec_status, _GATES_FILE_NAME)
     )
