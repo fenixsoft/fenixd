@@ -40,6 +40,7 @@ def load_schema() -> Dict[str, Any]:
             （id/generates/template），或 artifact id 重复。在加载期集中校验，
             让 schema 漂移可直读定位，而非散落在 status/instructions 里以裸
             KeyError 失败。
+        FileNotFoundError: schema.yaml 文件缺失。
     """
     schema_path = SCHEMA_DIR / "schema.yaml"
     if not schema_path.exists():
@@ -334,6 +335,8 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
 
     Raises:
         ValueError: 名称非 kebab-case，change 不存在或 artifact 不在 schema 中。
+        FileNotFoundError: schema.yaml 或 artifact 模板文件缺失
+            （分别经 load_schema/_load_template 抛出）。
     """
     # 与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
     # 路径，含 ../ 时 change_dir 可越出项目根。

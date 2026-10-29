@@ -5063,9 +5063,25 @@ class CodeFixOrchestrator:
             for key, delta in deltas.items():
                 try:
                     step = int(delta)
-                    base = int(prev.get(key) or 0)
                 except (TypeError, ValueError):
                     continue
+                # base 容错解析（code-review item 71e293283f5a，对齐
+                # _chain_count_int 同款口径）：链级计数被外部写坏成非数值时
+                # 裸 int() 抛 ValueError 会静默丢弃该次核销增量，且坏值原样
+                # 留在快照中不被改写，此后该键每次 bump 都继续 no-op——链级
+                # rollup 长期低估、run_ids 为空时终局清零也不落地。非数值按
+                # 0 出账（truthy 垃圾值 warning 留痕），坏值随本写点被合法值
+                # 覆写自愈。
+                try:
+                    base = int(prev.get(key) or 0)
+                except (TypeError, ValueError):
+                    if prev.get(key):
+                        self._log(
+                            "warning",
+                            f"code-fix 进度 {key} 字段形态异常（非数值："
+                            f"{type(prev.get(key)).__name__}），按 0 容错",
+                        )
+                    base = 0
                 if step:
                     fields[key] = base + step
             if fields:
@@ -5253,16 +5269,29 @@ class CodeFixOrchestrator:
                     [str(i) for i in prev_ids] + [str(i) for i in chain_skip_ids]
                 )
             )
-        write_progress(
-            self.project_root,
-            phase="fixing",
-            reason=reason,
-            current=current,
-            worktree=None,
-            run_id=None,
-            batch_total=None,
-            **fields,
-        )
+        # 进度写盘失败兜底（code-review item 2a329aa36b99，同 _finish 守卫
+        # 69fa65e6c353「写盘失败不得劫持收尾」与成功收尾写点同款）：本写点是
+        # consumed 失败收尾的最后一笔（chain_skipped 并账 + 链继续推进），六个
+        # 调用点都已在 _safe_cleanup 清场之后执行——写盘 OSError 上穿会沿
+        # _run_batch 的 except 被 _finish 兜成 failed→halt：链被无谓终止且
+        # chain_skipped 并账丢失，下一链会原样重选同一失败批空转。异常只
+        # warning 留痕（进度文件由下个写点覆盖自愈），保住 consumed 语义。
+        try:
+            write_progress(
+                self.project_root,
+                phase="fixing",
+                reason=reason,
+                current=current,
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+                **fields,
+            )
+        except Exception as e:  # noqa: BLE001 — consumed 收尾写盘失败不劫持链收尾
+            self._log(
+                "warning",
+                f"code-fix consumed 收尾进度写盘失败（current={current}）: {e}",
+            )
 
     # -- 延迟合回（fix-codefix-wipgate-defer D4/D6）-------------------------
 
@@ -7097,10 +7126,29 @@ class CodeFixOrchestrator:
             # 的极端由既有时间门降级路径兜底）。
             branch = _worktree_branch(wt)
             tip_sha = _worktree_head(wt)
-            record_deferred_batch(
-                root, pending_ids, fixed_ids, wt,
-                branch=branch, tip_sha=tip_sha, last_overlap=[],
-            )
+            # 延迟台账入账失败兜底（code-review item 0a2ed138031e）：此刻
+            # merge_back 已成功、修复已在主树，延迟台账条目是本现场唯一恢复
+            # 锚——入账抛异常上穿会经 _run_batch_inner 的未预期异常兜底
+            # _safe_cleanup(success=False) 清掉 worktree，且台账无条目，条目
+            # 保持 open 又无核销/归档记录，下链重选后 agent 在已含修复的 HEAD
+            # 上零提交空转。入账失败时保留台账条目与 worktree/spec lock 不清
+            # 场（跳过下方放锁与写点），warning 留痕后按 halt 收尾，交下一链
+            # 边界或 reclaim 路径恢复。
+            try:
+                record_deferred_batch(
+                    root, pending_ids, fixed_ids, wt,
+                    branch=branch, tip_sha=tip_sha, last_overlap=[],
+                )
+            except Exception as e:  # noqa: BLE001 — 入账失败保留现场不清场
+                self._log(
+                    "warning",
+                    f"code-fix 第 {batch_no} 批已合回但台账读失败后延迟台账"
+                    "入账失败——保留台账条目与 worktree/spec lock 不清场，"
+                    f"按 halt 收尾待恢复（branch={branch}, "
+                    f"item_ids={item_ids}）: {e}",
+                )
+                self._finish("failed", reason=f"deferred_ledger_record_failed: {e}")
+                return "halt"
             try:
                 wm.release_spec_lock("code-review-fix", "code-fix")
             except Exception as e:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕
@@ -7147,10 +7195,28 @@ class CodeFixOrchestrator:
             )
             branch = _worktree_branch(wt)
             tip_sha = _worktree_head(wt)
-            record_deferred_batch(
-                root, pending_ids, fixed_ids, wt,
-                branch=branch, tip_sha=tip_sha, last_overlap=[],
-            )
+            # 延迟台账入账失败兜底（code-review item 0a2ed138031e，与上方读
+            # 降级分支同款）：merge_back 已成功而延迟台账条目是本现场唯一恢复
+            # 锚——入账抛异常上穿会经 _run_batch_inner 的未预期异常兜底
+            # _safe_cleanup(success=False) 清掉 worktree 且台账无条目，条目
+            # 保持 open 又无核销/归档记录，下链重选后 agent 零提交空转。入账
+            # 失败时保留台账条目与 worktree/spec lock 不清场（跳过下方放锁与
+            # 写点），warning 留痕后按 halt 收尾，交下一链边界或 reclaim 路径
+            # 恢复。
+            try:
+                record_deferred_batch(
+                    root, pending_ids, fixed_ids, wt,
+                    branch=branch, tip_sha=tip_sha, last_overlap=[],
+                )
+            except Exception as e:  # noqa: BLE001 — 入账失败保留现场不清场
+                self._log(
+                    "warning",
+                    f"code-fix 第 {batch_no} 批已合回但核销写盘失败后延迟台账"
+                    "入账失败——保留台账条目与 worktree/spec lock 不清场，"
+                    f"按 halt 收尾待恢复（item_ids={item_ids}）: {e}",
+                )
+                self._finish("failed", reason=f"deferred_ledger_record_failed: {e}")
+                return "halt"
             try:
                 wm.release_spec_lock("code-review-fix", "code-fix")
             except Exception as lock_err:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕

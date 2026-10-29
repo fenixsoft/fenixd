@@ -152,6 +152,14 @@ def _load_report_json(project_root, spec_name):
         # 空场景集推不出 bug-found，最终仍推出 verified——「total>0 即放行」
         # 的假通过漏网变体（code-review 03296ed3a49e），同按 fail-closed 拒收。
         if isinstance(scenarios, list):
+            # scenarios 非空但纯非 dict 元素（如 ["x", "y"]）同按写坏拒收，
+            # 与上分支 any(isinstance(sc, dict)) 同口径（code-review
+            # 274cf309b5cb）：此形态采信后 _derive_status 的场景明细交叉核对
+            # 对非 dict 元素 isinstance 全部跳过，summary 声明零失败即落到
+            # return "verified"，合成「全部场景通过」的假通过报告。空列表
+            # 不在此列（属明细截断形态，仍按下方 _summary_usable 门槛判定）。
+            if scenarios and not any(isinstance(sc, dict) for sc in scenarios):
+                return None
             if _summary_usable(summary):
                 return data
             return None
