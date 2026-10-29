@@ -46,6 +46,9 @@ PORT_RETRY_ATTEMPTS = 5
 RANDOM_PORT_RANGE = (49200, 65499)
 MAX_FEEDBACK_BODY_BYTES = 1 << 20  # 1MB
 STOP_WAIT_SEC = 5
+# 跨请求共享的批注写入锁：ThreadingHTTPServer 每个连接新建 handler 实例，
+# 实例级锁没有跨连接互斥，并发 POST /feedback 会互相覆盖丢批注。
+_FEEDBACK_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +67,9 @@ def read_pid_file(proto_dir: Path) -> dict | None:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or "pid" not in data:
             return None
+        pid = data["pid"]
+        if not isinstance(pid, int) or isinstance(pid, bool):
+            return None  # pid 为 null/非数字字符串等非法类型：视作无 PID 文件
         return data
     except (OSError, ValueError):
         return None
@@ -118,11 +124,19 @@ def probe_existing(proto_dir: Path, script_path: str) -> dict:
     info = read_pid_file(proto_dir)
     if info is None:
         return {"state": "fresh", "info": None}
-    pid = int(info.get("pid", 0))
+    try:
+        pid = int(info.get("pid", 0))
+    except (TypeError, ValueError):
+        return {"state": "stale", "info": info, "reason": "PID 文件 pid 字段非法"}
     if not process_alive(pid):
         return {"state": "stale", "info": info, "reason": f"PID {pid} 进程已死"}
     cmdline = process_cmdline(pid)
-    if script_path in cmdline and str(proto_dir.resolve()) in cmdline:
+    # 目录一致性以 PID 文件写入口径（resolve 后的 proto_dir）比对——cmdline 保存
+    # 的是启动时原样输入，相对路径启动的旧实例不含 resolve 后的绝对路径；
+    # 脚本身份仅作辅助确认（完整路径或脚本名均可，PID 文件已锚定同一目录）。
+    recorded_dir = str(info.get("proto_dir", ""))
+    script_identified = script_path in cmdline or Path(script_path).name in cmdline
+    if script_identified and recorded_dir == str(proto_dir.resolve()):
         return {"state": "reuse", "info": info}
     return {"state": "stale", "info": info,
             "reason": f"PID {pid} 存活但非本原型服务器实例（命令行核实不符），不误杀、直接接管"}
@@ -167,7 +181,6 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
 
     def __init__(self, *args, proto_dir: Path | None = None, **kwargs):
         self.proto_dir = proto_dir
-        self._feedback_lock = threading.Lock()
         super().__init__(*args, directory=str(proto_dir), **kwargs)
 
     # 静默访问日志（原型伺服不需要每请求刷 stderr）
@@ -179,7 +192,16 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
         if self.path.split("?")[0].rstrip("/") != "/feedback":
             self._send_json(404, {"ok": False, "error": "仅支持 POST /feedback"})
             return
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length")
+        if not raw_length:
+            # chunked 等无 Content-Length 的请求：显式 411，而非误报「请求体为空」
+            self._send_json(411, {"ok": False, "error": "缺少 Content-Length 头"})
+            return
+        try:
+            length = int(raw_length)
+        except ValueError:
+            self._send_json(400, {"ok": False, "error": "Content-Length 非法"})
+            return
         if length <= 0 or length > MAX_FEEDBACK_BODY_BYTES:
             self._send_json(413, {"ok": False,
                                   "error": f"请求体为空或超过 {MAX_FEEDBACK_BODY_BYTES}B 上限"})
@@ -201,7 +223,7 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
     def _append_feedback(self, annotation: dict) -> Path:
         """追加一条批注进 feedback.json（列表追加，锁内读改写）。"""
         target = self.proto_dir / FEEDBACK_FILE_NAME
-        with self._feedback_lock:
+        with _FEEDBACK_LOCK:
             entries: list = []
             if target.is_file():
                 try:
@@ -213,7 +235,9 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
                 except (OSError, ValueError):
                     entries = []
             entries.append(annotation)
-            tmp = target.with_suffix(".json.tmp")
+            # tmp 文件名带进程/线程唯一后缀：并发写各用各的 tmp，避免内容交错
+            tmp = target.with_name(
+                f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
                            encoding="utf-8")
             tmp.replace(target)
@@ -303,6 +327,10 @@ def main(argv: list[str] | None = None) -> int:
     pid_path = write_pid_file(proto_dir, pid, display_host, port)
 
     def _cleanup(*_a):
+        # 只回收自己写入的 PID 文件：若已被继任者覆盖（pid 非本进程），不误删
+        info = read_pid_file(proto_dir)
+        if info is not None and info.get("pid") != pid:
+            return
         remove_pid_file(proto_dir)
 
     import atexit
