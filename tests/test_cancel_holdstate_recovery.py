@@ -116,7 +116,10 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     # 断言窗口：锚点行起向后 WRITE_POINT_WINDOW 行。
     # 覆盖表内最大偏移 +20 并留 5 行余量；若未来某写点与锚点距离拉大
     # 越过窗口，报错会提示窗口大小，按表内偏移调整本常量即可。
-    WRITE_POINT_WINDOW = 25
+    # （2026-10-30 由 25 调至 35：code-review item 3005bf766ee5 给 repair
+    # 写点套 hold-state 守卫（try/except WARNING 早退），锚点到写点偏移
+    # 增至 27 行，写点契约本身不变。）
+    WRITE_POINT_WINDOW = 35
 
     @staticmethod
     def _load(rel: str) -> list:

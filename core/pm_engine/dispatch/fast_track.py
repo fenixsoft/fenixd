@@ -948,7 +948,7 @@ class FFastTrackMixin:
                 "_merge_retry_first_at": None,
                 "_wip_gate_deferred": False,
                 "_repair_awaiting_remerge": False,
-                **self._pm._clear_dispatch_conflict(spec_name),
+                **self._pm._clear_dispatch_conflict(),
             },
         )
         # 任务进度回写（与 implementer 成功路径一致，非阻塞）

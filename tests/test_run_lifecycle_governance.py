@@ -460,7 +460,7 @@ class TestDispatchLockBackoff(LockConflictFixture):
         spec["_lock_conflict_count"] = 2
         spec["_dispatch_backoff_until"] = int(time.time()) + 60
         self.sm.write_all({"s1": spec})
-        fields = self.engine._recovery._clear_dispatch_conflict("s1")
+        fields = self.engine._recovery._clear_dispatch_conflict()
         self.sm.update_spec("s1", fields)
         entry = self.sm.read_one("s1")
         self.assertEqual(int(entry["_lock_conflict_count"]), 0)

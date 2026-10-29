@@ -1115,11 +1115,15 @@ def compare_baseline(lanes: List[Dict[str, Any]],
     for ev in lanes:
         lane = ev.get("lane")
         base = base_lanes.get(lane)
-        if not isinstance(base, dict) or not base.get("duration_seconds"):
+        # 失败车道（装置异常路径）证据只有 lane/error 键、无 elapsed_seconds：
+        # 折算 0 秒会让基线表渲染出 dsh=0、ratio=0.0 的误导行——与基线缺项
+        # 分支同款置 None（code-review item 3c05b58cf78a）
+        if (not isinstance(base, dict) or not base.get("duration_seconds")
+                or "error" in ev or not ev.get("elapsed_seconds")):
             rows.append({"lane": lane, "dsh_seconds": ev.get("elapsed_seconds"),
                          "claude_seconds": None, "ratio": None})
             continue
-        dsh_s = ev.get("elapsed_seconds") or 0
+        dsh_s = ev["elapsed_seconds"]
         try:
             claude_s = float(base["duration_seconds"])
         except (TypeError, ValueError) as e:
@@ -2027,6 +2031,20 @@ def _last_jsonl_type(run_file: Path) -> Optional[str]:
 # CLI
 # ══════════════════════════════════════════════════════════════════════
 
+def _positive_float(raw: str) -> float:
+    # --timeout 取值校验（code-review item dbee0430b819）：0/负值会流入
+    # lane_deadline（timeout+60/120）与 run_timeout_seconds——观测窗退化、
+    # runner 收到负超时，车道以难解读的失败证据收场。按用法错误拒绝
+    # （argparse error 退出码 2，与模块头「2=用法/装置错误」口径一致）。
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"无效数值：{raw!r}") from None
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"须为正数（秒），得到 {raw!r}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dsh_acceptance",
@@ -2043,7 +2061,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sm.add_argument("--lanes", default=",".join(SMOKE_LANES),
                       help=f"车道清单（逗号分隔，合法值 {list(SMOKE_LANES)}）")
     p_sm.add_argument("--profile", default="fenix", help="dsh profile 名")
-    p_sm.add_argument("--timeout", type=float, default=DEFAULT_LANE_TIMEOUT,
+    p_sm.add_argument("--timeout", type=_positive_float,
+                      default=DEFAULT_LANE_TIMEOUT,
                       help="单车道超时秒数")
     p_sm.add_argument("--evidence-dir", default=str(DEFAULT_EVIDENCE_DIR))
     p_sm.add_argument("--baseline-json", default=None,
@@ -2063,7 +2082,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ac.add_argument("--provider", default=None,
                       help="provider 链按 name 选择（缺省取首个合格项；"
                            "自检会列出全部候选名）")
-    p_ac.add_argument("--timeout", type=float, default=900.0,
+    p_ac.add_argument("--timeout", type=_positive_float, default=900.0,
                       help="单车道超时秒数（真实模式放宽）")
     p_ac.add_argument("--evidence-dir", default=str(DEFAULT_EVIDENCE_DIR))
     p_ac.add_argument("--no-claude-baseline", action="store_true",

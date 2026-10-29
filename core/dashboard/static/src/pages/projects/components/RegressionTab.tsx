@@ -692,14 +692,16 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         await new Promise((resolve) => setTimeout(resolve, FIX_POLL_INTERVAL_MS));
         if (fixPollAbortedRef.current) return;
         if (projectRef.current !== project) return;
+        // 剩余预算兜底（code-review item f2aaab239120，同 QualityTab
+        // handleTriggerFixRun 口径）：睡眠返回后剩余预算 ≤0 时不再发起
+        // 本轮请求，跳出走「尚未就绪」兜底分支
+        const remainMs = Math.min(deadline - Date.now(), FIX_POLL_LIMIT_MS);
+        if (remainMs <= 0) break;
         try {
           // 单次请求超时收敛到剩余预算（code-review item 082b4f2fb7bc）：
           // deadline 只在循环入口判定，若请求仍用统一 30s 超时，后端挂起时
           // 单轮迭代可膨胀到 30s+，总等待远超 FIX_POLL_LIMIT_MS 声明的上限
-          const snap = await getRegressionFixResult(
-            project,
-            Math.min(deadline - Date.now(), FIX_POLL_LIMIT_MS),
-          );
+          const snap = await getRegressionFixResult(project, remainMs);
           if (isTriggerResultForRequest(snap, wantedAt)) {
             result = snap;
             break;

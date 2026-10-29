@@ -13,7 +13,8 @@ stat 不读文件内容，成本显著低于响应体序列化。
    的路径只 stat 一次），缓存随本轮计算即弃；
 2. ``combine`` 的树哈希 memo：键即完整签名集的 repr（部件内已含路径）——
    命中校验本身仍需全量 stat，memo 只省去对同一签名集的重复哈希，有界
-   （超限整体清空）。
+   （超限整体清空；超大签名集的键串本身可达数百 KB，超 ``_HASH_MEMO_KEY_MAX``
+   直接绕过 memo 只算哈希，键长有上界——code-review item e376434f4edf）。
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ from pathlib import Path
 # ── 树哈希 memo（键即完整签名集的 repr，安全缓存见模块 docstring） ──
 
 _HASH_MEMO_CAP = 512
+# 单个 memo 键（repr 串）长度上限：整树签名集（logs/runs 数千文件）的键可
+# 达数百 KB，512 个上限累计即数百 MB 常驻——超限键绕过 memo 只算哈希，
+# 缓存总量保持「512 × 64KB」量级上界（code-review item e376434f4edf）。
+_HASH_MEMO_KEY_MAX = 65536
 _HASH_MEMO: dict = {}
 _HASH_MEMO_LOCK = threading.Lock()
 
@@ -106,9 +111,15 @@ def combine(parts) -> str:
     """把签名部件（str/int/tuple/None 的稳定嵌套结构）组合为 sha256 十六进制串。
 
     树哈希结果 memo：键即完整部件集的 repr（部件内已含路径）——命中校验
-    本身仍需上游全量 stat，memo 只省重复哈希；超界整体清空（有界，量级 KB）。
+    本身仍需上游全量 stat，memo 只省重复哈希；超界整体清空。键长有上界
+    （``_HASH_MEMO_KEY_MAX``）：超大签名集（整树数千文件）绕过 memo 只算
+    哈希，绕过路径与缓存路径产出同一摘要。
     """
     key = repr(list(parts))
+    if len(key) > _HASH_MEMO_KEY_MAX:
+        # 键串随树规模线性膨胀（数百 KB/键），不入缓存直接算——摘要与
+        # memo 路径完全一致（同一 repr 串喂同一 sha256）。
+        return _combine_uncached(key)
     with _HASH_MEMO_LOCK:
         cached = _HASH_MEMO.get(key)
         if cached is not None:

@@ -5106,6 +5106,13 @@ class AgentRunner:
                     st.kept_wt_path = st.wt_path
                     handed_off.add(st.wt_path)
                 else:
+                    # 取消收口前保全未提交现场（code-review item e5236f4e1d6d，
+                    # 对齐轮询环取消收口 add-run-cancel-wip-checkpoint 1.2）：
+                    # 失败重试路径的 worktree 通常留有上一轮未提交改动，直接
+                    # cleanup 会静默销毁；助手自带 exclude_main_tree=True
+                    # （无载体/主树车道自动跳过），失败仅 WARNING 降级。
+                    self._wip_checkpoint_on_forced_kill(
+                        spec_name, st.wt_path, anchor=ANCHOR_CANCEL)
                     self.worktree_manager.cleanup(st.wt_path, success=False)
             self._cancel_clear(run_id)
             # fix-observability-gaps 1.1：attempt 顶部取消也是终态，写指标
@@ -8098,7 +8105,7 @@ class AgentRunner:
 
     @staticmethod
     def _stall_budget_hit_criterion(st: dict, cfg: dict,
-                                    now: float = None) -> str:
+                                    now: float | None = None) -> str:
         """纯函数评估复合判停判据（evo-add-run-stop-loss 2.1）。
 
         - 判据一 consecutive_slow_rounds：run 内连续 ≥stalls 次达到

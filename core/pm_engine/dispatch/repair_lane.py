@@ -517,7 +517,7 @@ class PRepairLaneMixin:
             # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
             "_repair_base_tip": None,
             "_repair_awaiting_remerge": False,
-            **self._pm._clear_dispatch_conflict(spec_name),
+            **self._pm._clear_dispatch_conflict(),
         }
 
     def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:
@@ -620,8 +620,23 @@ class PRepairLaneMixin:
                     f"repair run 因 spec 冻结被终止 — hold-state '{spec_name}'"
                     f"（保持原状）: {frozen_err}",
                 )
-                self._pm.state_machine.mark_frozen_hold(
-                    spec_name, frozen_err)
+                # hold-state 写点守卫（code-review item 3005bf766ee5，对齐同文件
+                # 5859406dd4b6/b072a0f618f0/e8f1fac9cbc8 既有守卫范式）：
+                # mark_frozen_hold 是真实 STATE IO（flock + read/write），裸调若
+                # 瞬时抛错会沿 worker 外层 except 被兜底成 _fallback_after_repair
+                # ——尽管冻结场景多半被 ready 写前状态复查（a5995960e313）自我
+                # 抑制，hold-state 语义也不该放大成整轮重派。失败仅 WARNING 留痕
+                # 并早退（spec 保持原状，不落 fallback）。
+                try:
+                    self._pm.state_machine.mark_frozen_hold(
+                        spec_name, frozen_err)
+                except Exception as fz_e:  # noqa: BLE001 —— 写失败不放大为重派
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"repair 冻结 hold-state 写入失败 '{spec_name}'"
+                        f"（保留冻结现场早退，不落入 fallback 重派）: "
+                        f"{type(fz_e).__name__}: {fz_e}",
+                    )
                 return
 
             # ── 人工取消 hold-state（add-run-cancel D4，repair worker）──
@@ -638,14 +653,29 @@ class PRepairLaneMixin:
                     f"repair run 被人工取消 — hold-state '{spec_name}'"
                     f"（保持原状）: {cancelled_err}",
                 )
-                self._pm.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "error": cancelled_err,
-                        # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                        "_cancelled_hold": True,
-                    },
-                )
+                # hold-state 写点守卫（code-review item 3005bf766ee5，对齐同文件
+                # b072a0f618f0/e8f1fac9cbc8 既有守卫范式）：update_spec 是真实
+                # STATE IO（flock + read/write），裸调若瞬时抛错会沿 worker 外层
+                # except 被兜底成 _fallback_after_repair——取消场景 spec 仍
+                # implementing，fallback 的 ready 写前状态复查会放行，覆写 error
+                # 并重派新 run，用户取消意图与 _cancelled_hold 标记丢失。失败仅
+                # WARNING 留痕并早退（spec 保持原状，不落 fallback 覆盖取消现场）。
+                try:
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "error": cancelled_err,
+                            # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                            "_cancelled_hold": True,
+                        },
+                    )
+                except Exception as cc_e:  # noqa: BLE001 —— 写失败不放大为重派
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"repair 取消 hold-state 写入失败 '{spec_name}'"
+                        f"（保留取消现场早退，不落入 fallback 重派）: "
+                        f"{type(cc_e).__name__}: {cc_e}",
+                    )
                 return
 
             # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2）──

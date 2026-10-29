@@ -14,6 +14,7 @@
 - latency.py           延迟统计纯函数：run 级 API 往返延迟采样与直方图摘要
 - maintenance_runs.py  维护型 run：Administrator/自省/自进化/代码审查/回归/自动修复/impl-ocr 等运维车道
 - result_gate.py       结果数据结构与产物门：结果/门面异常与产物门族
+- harness/             harness 适配层子包（claude/dsh 双通道，ADR-271）
 
 对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：
 `fenixd.py` 的 `from core.agent_runner import AgentRunner`、

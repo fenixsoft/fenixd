@@ -958,6 +958,12 @@ def _run_tail_insights(
             if not isinstance(e, dict):
                 continue
             t = e.get("type")
+            # code-review 23ac8979faf7: type 为数组/对象等合法 JSON 非 str 值
+            # 在此跳过，否则终态分支 t in _RUN_TERMINAL_STATUS_MAP 以不可哈希
+            # 值判成员抛 TypeError 致时间轴接口 500（与 classify_run 防护口径
+            # 一致）
+            if not isinstance(t, str):
+                continue
             if t == "provider_marker":
                 m, p = e.get("model"), e.get("provider")
                 if m and p:

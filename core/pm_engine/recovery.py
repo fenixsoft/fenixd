@@ -1331,7 +1331,7 @@ class RecoveryWatch:
             # 未落盘，滞留 spec 从此无人告警。
             return False
 
-    def _clear_dispatch_conflict(self, spec_name: str) -> dict:
+    def _clear_dispatch_conflict(self) -> dict:
         """派发成功后清零锁冲突计数与退避窗口（返回 update 字段供合并写入）。"""
         return {
             "_lock_conflict_count": 0,

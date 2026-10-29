@@ -911,6 +911,26 @@ class FamilyGovernor:
             repair_fields["implementer_run"] = None
         if entry.get("tester_run") is not None:
             repair_fields["tester_run"] = None
+        # 写前二次复查（code-review item 6d600eb52e86，与上方写前复查同款双查
+        # 口径）：复查与本次写之间隔着 bump_counters、_append_fail_history 与
+        # 升级闸门 freeze_for_human 的文件 I/O，窗口内并发冻结/外部推进仍可能
+        # 盲写——此处重读一次，把复查与写的间隔收敛到无文件 I/O。
+        latest = self._pm.state_machine.read_one(spec_name) or {}
+        if latest.get(FROZEN_FIELD):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"原地打回放弃：'{spec_name}' 写盘前二次复查发现已冻结——放弃 "
+                f"implementing 重置写与重派，冻结现场保留待人工解冻",
+            )
+            return
+        if latest.get("status") not in ("bug-found", "implemented", "implementing"):
+            self._pm.logger.info(
+                "pm_engine",
+                f"原地打回竞争后到者：'{spec_name}' 状态已为 "
+                f"'{latest.get('status')}'，让位于外部进度——放弃 "
+                f"implementing 重置写与重派（缺口留待后续周期重评）",
+            )
+            return
         self._pm.state_machine.update_spec(spec_name, repair_fields)
         self._pm.logger.warning(
             "pm_engine",

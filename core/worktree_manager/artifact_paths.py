@@ -45,7 +45,9 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
     - 非列表的值整体拒绝（空列表）；非字符串项丢弃；
     - 不含 ``*`` 且未以 ``/`` 结尾的项丢弃（前缀形态 MUST 以 ``/`` 结尾，
       避免 `dist` 前缀意外匹配 `dists/`、`distfoo/`）；
-    - 绝对路径（以 ``/`` 开头）或含 ``..`` 段的项丢弃。
+    - 绝对路径（以 ``/`` 开头）或含 ``..`` 段的项丢弃；
+    - 以 ``./`` 开头的项丢弃（git 树内相对路径永不以 ``./`` 开头，该前缀
+      判定恒假——判定面被静默收窄，比照含 ``*`` 尾斜杠同款丢弃）。
 
     任何异常捕获后返回空列表（fail-safe **回退空集合**：空集合 = 判定恒假，
     即未裁决的保守侧——判定器自身故障 MUST NOT 让判定变宽或失效）。
@@ -70,6 +72,17 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
 
             if item.startswith("/") or ".." in item.split("/"):
                 logger.warning("build_artifact_paths: 绝对路径或含 .. 项丢弃: %r", item)
+                continue
+
+            if item.startswith("./"):
+                # 以 ./ 开头（code-review item 1c628bc02756）：git 树内相对路径
+                # 永不以 ./ 开头，该前缀 is_artifact 恒 False、判定面被无声
+                # 收窄——比照含 * 尾斜杠同款丢弃 + WARNING，写入侧
+                # validate_build_artifact_paths 随 kept 集自动判非法提示。
+                logger.warning(
+                    "build_artifact_paths: 以 ./ 开头的项（对 git 树内相对路径"
+                    "恒不命中），丢弃: %r", item,
+                )
                 continue
 
             if "*" in item:
@@ -113,8 +126,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
 
     与 ``normalize_artifact_patterns`` 同一判定权威：顶层须为字符串列表；逐项
     strip 后仍会被 normalize 丢弃的项（非字符串、绝对路径、含 ``..`` 段、
-    不含 ``*`` 又未以 ``/`` 结尾）即非法。返回的提示含丢弃项与合法形态示例，供
-    前端回显；合法返回 None。
+    以 ``./`` 开头、不含 ``*`` 又未以 ``/`` 结尾）即非法。返回的提示含丢弃项与
+    合法形态示例，供前端回显；合法返回 None。
     """
     if value is None:
         return None
@@ -132,8 +145,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
         return (
             f"worktree.build_artifact_paths 含非法项（将被静默丢弃）：{discarded!r}。"
             f"合法形态示例：目录前缀以 '/' 结尾（如 'dist/'、'build/'），通配含 '*'"
-            f"（如 'release-*.zip'）；非字符串/绝对路径/含 '..' 段/未以 '/' "
-            f"结尾的前缀均非法。保留项：{kept!r}"
+            f"（如 'release-*.zip'）；非字符串/绝对路径/含 '..' 段/以 './' "
+            f"开头/未以 '/' 结尾的前缀均非法。保留项：{kept!r}"
         )
     return None
 

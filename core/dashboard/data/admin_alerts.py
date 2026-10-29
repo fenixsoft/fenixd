@@ -167,7 +167,9 @@ def _summary_from_unhandled(unhandled: list) -> dict:
     if not unhandled:
         return {"unhandled_count": 0, "max_severity": None, "latest": None}
     sev_rank = {"critical": 3, "major": 2, "minor": 1}
-    top = max(unhandled, key=lambda a: sev_rank.get(a.get("severity"), 0))
+    # str(...) or ""：severity 脏形态（列表/对象等不可哈希值）查表前归一，
+    # 与 command_center._SEVERITY_RANK 消费点同口径
+    top = max(unhandled, key=lambda a: sev_rank.get(str(a.get("severity") or ""), 0))
     return {
         "unhandled_count": len(unhandled),
         "max_severity": top.get("severity"),

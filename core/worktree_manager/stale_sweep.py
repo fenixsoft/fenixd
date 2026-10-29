@@ -225,9 +225,15 @@ class G7StaleSweepMixin:
                 continue
             # 守卫 (i)：在飞引用保护（单一来源复用）。传入循环前的 states
             # 快照，避免逐分支重复解析 STATE（整轮 GC 至多解析一次）。
-            # STATE 不可解析时本守卫恒真（保守保留），故 GC 不会在 STATE
-            # 异常窗口内误删。
-            kept, reason = self._branch_protected_by_state(branch, states)
+            # STATE 不可解析（states=None）时不进守卫、直接保守保留：None
+            # 在守卫侧兼作「未传快照」缺省哨兵，原样传入会对每个分支各自
+            # 重新读取/解析 STATE.md（N 倍 IO + 逐分支重复告警）；此处短路
+            # 与守卫内「STATE 不可解析 → 保守保留」同文案同语义，故 GC
+            # 不会在 STATE 异常窗口内误删。
+            if states is None:
+                kept, reason = True, "STATE 不可解析，保守保留"
+            else:
+                kept, reason = self._branch_protected_by_state(branch, states)
             if kept:
                 n_active += 1
                 continue

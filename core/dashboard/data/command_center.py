@@ -293,7 +293,8 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
        窗内终态（done + error）数；分母 0 → null；
     4. ``cost_per_spec_7d``：窗内 run 成本合计（run_tail_insights →
        compute_run_cost 既有成本口径，不可计价 run 不贡献）÷
-       delivered_specs_7d；分母 0 → null。
+       delivered_specs_7d；分母 0 → null；窗内无任一 run 可计价 → null
+       （对齐 aggregate_org 的全未计价 → None 红线口径）。
 
     ``now`` 仅测试注入（冻结当前时刻）。
     """
@@ -307,6 +308,7 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
     success_7d = 0
     failed_7d = 0
     cost_total = 0.0
+    cost_priced = False  # 窗内是否有任一 run 计价（对齐 lane 卡 cost_priced 门）
     human_interventions = 0
     gateway = {"configured": False, "providers": 0}
     projects_out = _echo_projects(registry_projects)
@@ -343,6 +345,7 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
                 cost, _tok = _run_cost_and_tokens(proot, r["run_id"], billing)
                 if cost is not None:
                     cost_total += cost
+                    cost_priced = True
 
         # ② 人工处置 escalation（get_resolved_alerts 既有口径剔除自愈部分）
         try:
@@ -374,8 +377,12 @@ def aggregate_kpi(registry_projects, project=None, *, now=None) -> dict:
         "run_success_rate_7d": (
             round(success_7d / denom_success, 6) if denom_success else None
         ),
+        # 全未计价（计价表未配置/窗内 run 全不可计价）→ None，杜绝「$0.00/spec」
+        # 假零，与 aggregate_org 的全未计价红线口径对齐（code-review item 982f3a108e92）
         "cost_per_spec_7d": (
-            round(cost_total / delivered_total, 6) if delivered_total else None
+            round(cost_total / delivered_total, 6)
+            if delivered_total and cost_priced
+            else None
         ),
         "gateway_health": gateway,
     }

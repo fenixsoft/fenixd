@@ -52,9 +52,15 @@ class FakeStateMachine:
         return self._specs.get(spec_name)
 
     def update_spec(self, spec_name, updates):
+        """契约对齐 production（core/state_machine.py:1870）：返回 bool。
+        生产在条目不存在时返回 False；本替身条目缺失时自动创建（恒写
+        成功），故恒 True。dispatch_review 锚点落盘守卫（code-review
+        item d442f44edd9d）消费该返回值，替身返回 None 会被误判为
+        锚点写失败而拒派。"""
         if spec_name not in self._specs:
             self._specs[spec_name] = {}
         self._specs[spec_name].update(updates)
+        return True
 
     def bump_counters(self, spec_name: str, deltas: Dict[str, int]) -> Dict[str, int]:
         """计数器原地递增，契约与 production（core/state_machine.py:1034）对齐：

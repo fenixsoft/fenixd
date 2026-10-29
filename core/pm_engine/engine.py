@@ -5,6 +5,7 @@ Handles SPEC auto-review, Agent scheduling, priority management,
 concurrency control, daily reporting, and the single human gate (push approval).
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -3901,7 +3902,11 @@ class PMEngine:
             # 新增 agent 类型自动纳入，impl-ocr-<spec>-<ts> 等独立前缀形态的
             # run id 也因此被 glob 覆盖。
             for prefix, _agent_type in RUN_ID_AGENT_PREFIXES:
-                for p in runs_dir.glob(f"{prefix}{spec_name}-*.jsonl"):
+                # glob.escape 对齐 budget.py/recovery.py 先例（code-review item
+                # bf06987de775）：spec 名含 * ? [ ] 元字符时按字面量匹配，防
+                # glob 模式语义漂移漏判窗口内活动；下方 run_spec_part(p.stem)
+                # 精确归属守卫按 stem 字面量比较，不受转义影响
+                for p in runs_dir.glob(f"{prefix}{glob.escape(spec_name)}-*.jsonl"):
                     # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
                     # glob 命中不得直接认定——fix-x 不得被 fix-x-y 的活动豁免
                     if run_spec_part(p.stem) != spec_name:

@@ -96,6 +96,14 @@ export default function SpecStatusModal({
   // 在飞期间其余写动作按钮统一 disabled（code-review item 4011bc5fcc60），使
   // 「同一时刻只有一个确认动作在跑」在 UI 层成立而非仅注释声明。
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  // 直连动作重入守卫（code-review item 1ff7a536272c，比照 SessionPanel/
+  // HooksPanel 的 savingRef 口径）：预算「保存」「恢复跟随全局」与冻结配置
+  // 「应用」三个直连入口的防重若只靠 pendingAction state 驱动的按钮
+  // disabled，setPendingAction 渲染生效存在 React 调度间隙，间隙内连点会
+  // 并发发出两次写请求；经 pendingActionRef 写读同帧原子短路，state 只负责
+  // 按钮视觉反馈。三个入口共用一把锁（同 pendingAction 单值口径：同一时刻
+  // 弹窗内只有一个确认动作在跑，交叉并发同样竞速）。
+  const pendingActionRef = useRef(false);
   // 预算区状态（预算动作同样走 pendingAction 单值，防与冻结等并发写竞速）
   const [budgetOverride, setBudgetOverride] = useState<number | null>(null);
   // 冻结管理状态
@@ -229,6 +237,8 @@ export default function SpecStatusModal({
   // 同样走 appModal.confirm 二次确认；定时「应用」只设置/延长到期自动解冻（调度
   // 拦截只收窄不扩大），保留直执行不另加确认。
   const applyFreezeConfig = useCallback(async () => {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = true;
     setPendingAction('freeze-config');
     try {
       if (freezeMode === 'scheduled') {
@@ -257,6 +267,7 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      pendingActionRef.current = false;
       setPendingAction(null);
     }
   }, [project, spec, freezeMode, freezeUntil, onDone, message]);
@@ -472,6 +483,9 @@ export default function SpecStatusModal({
       message.warning('预算覆盖须为整数，请修正后再保存');
       return;
     }
+    // 同步校验段无 await、不存在调度间隙，重入守卫置位紧贴写请求发起前即可
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = true;
     setPendingAction('budget-save');
     try {
       await setSpecBudget(project, spec, budgetOverride);
@@ -480,11 +494,14 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      pendingActionRef.current = false;
       setPendingAction(null);
     }
   }, [project, spec, budgetOverride, summary, onDone, message]);
 
   const handleBudgetReset = useCallback(async () => {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = true;
     setPendingAction('budget-reset');
     try {
       await setSpecBudget(project, spec, null);
@@ -494,6 +511,7 @@ export default function SpecStatusModal({
     } catch (err) {
       message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      pendingActionRef.current = false;
       setPendingAction(null);
     }
   }, [project, spec, onDone, message]);
