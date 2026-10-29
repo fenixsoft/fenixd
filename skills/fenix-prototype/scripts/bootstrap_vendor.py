@@ -15,7 +15,9 @@ react + antd 预打包进 **skill 自维护、与工程无关** 的 vendor 缓�
 输出中附 ``cache.git_ignored`` 自查结果兜底校验。
 
 node 是优先条件而非硬假设：node/npm 缺失或打包失败时逐级降级，不硬崩。
-零第三方依赖；本脚本对目标工程零写入（除缓存目录外）。
+零第三方依赖；本脚本对目标工程零写入（除缓存目录，及本地 node_modules
+打包路径在工程 ``node_modules/.cache/`` 下的临时工作目录外——该目录随
+node_modules 通行被 gitignore，打包后即清理）。
 
 用法::
 
@@ -122,7 +124,7 @@ def cache_manifest_read(cache_dir: Path) -> dict | None:
 
 
 def cache_lookup(cache_root: Path, react_version: str, antd_version: str) -> dict | None:
-    """按精确版本查缓存；manifest 版本不匹配视为未命中（不静默用错版本）。"""
+    """按精确版本查缓存；manifest 版本不匹配或产物完整性复核失败视为未命中。"""
     entry = cache_root / cache_key(react_version, antd_version)
     manifest = cache_manifest_read(entry)
     if manifest is None or not (entry / "vendor.js").is_file():
@@ -131,16 +133,36 @@ def cache_lookup(cache_root: Path, react_version: str, antd_version: str) -> dic
         return None
     if pinned(str(manifest.get("antd", ""))) != pinned(antd_version):
         return None
+    # 完整性复核：manifest 与 vendor.js 两步落盘非原子，进程在写入间隙被杀
+    # 可能留下「旧 manifest + 截断产物」组合；先比大小再做 sha256，不一致
+    # 按未命中处理，避免把损坏产物以 vendor（具约束力）层级下发。
+    try:
+        data = (entry / "vendor.js").read_bytes()
+    except OSError:
+        return None
+    expected_bytes = manifest.get("bytes")
+    if isinstance(expected_bytes, int) and len(data) != expected_bytes:
+        return None
+    expected_sha = manifest.get("sha256")
+    if isinstance(expected_sha, str) and expected_sha and \
+            hashlib.sha256(data).hexdigest() != expected_sha:
+        return None
     return {"dir": entry, "manifest": manifest}
 
 
 def write_cache(cache_root: Path, versions: dict, vendor_js: Path,
                 node_version: str | None) -> Path:
-    """把打包产物写入缓存并生成 manifest（含 sha256 与实际打包版本）。"""
+    """把打包产物写入缓存并生成 manifest（含 sha256 与实际打包版本）。
+
+    产物与 manifest 均先写临时文件再原子 replace：保证「manifest 在即产物
+    完整」不变量，进程在写入间隙被杀不会留下截断的 vendor.js 或半截 manifest。
+    """
     entry = cache_root / cache_key(versions["react"], versions["antd"])
     entry.mkdir(parents=True, exist_ok=True)
-    (entry / "vendor.js").write_bytes(vendor_js.read_bytes())
-    data = (entry / "vendor.js").read_bytes()
+    data = vendor_js.read_bytes()
+    vendor_tmp = entry / f"vendor.js.tmp-{os.getpid()}"
+    vendor_tmp.write_bytes(data)
+    os.replace(vendor_tmp, entry / "vendor.js")
     manifest = {
         "react": versions["react"],
         "react-dom": versions.get("react-dom", versions["react"]),
@@ -152,16 +174,36 @@ def write_cache(cache_root: Path, versions: dict, vendor_js: Path,
         "node_version": node_version,
         "created": datetime.now(timezone.utc).isoformat(),
     }
-    (entry / "manifest.json").write_text(
+    manifest_tmp = entry / f"manifest.json.tmp-{os.getpid()}"
+    manifest_tmp.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(manifest_tmp, entry / "manifest.json")
     return entry
 
 
 def git_ignored(path: Path) -> bool | None:
-    """自查路径是否被 gitignore 覆盖（不在 git 仓内返回 None）。"""
+    """自查路径是否被 gitignore 覆盖（路径不在任何 git 仓内返回 None）。
+
+    check-ignore 的 ignore 规则按路径所属 git 仓解析：先用最近的现存祖先
+    目录定位其仓根，再以该仓根为 cwd 执行。脱离仓语境（脚本进程 cwd 不在
+    仓内、或属于另一个仓）执行会使自查结果失真成误报源。
+    """
+    anchor = path
+    while not anchor.is_dir() and anchor.parent != anchor:
+        anchor = anchor.parent
     try:
-        proc = subprocess.run(["git", "check-ignore", "-q", str(path)],
-                              capture_output=True, timeout=10)
+        top = subprocess.run(["git", "-C", str(anchor), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode != 0:
+            return None
+        repo_root = Path(top.stdout.strip() or ".").resolve()
+        target = path.resolve()
+        try:
+            check_path = str(target.relative_to(repo_root))
+        except ValueError:
+            check_path = str(target)
+        proc = subprocess.run(["git", "check-ignore", "-q", "--", check_path],
+                              capture_output=True, timeout=10, cwd=str(repo_root))
     except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.returncode == 0
@@ -241,15 +283,14 @@ def find_local_node_modules(project: Path) -> Path | None:
 def _persist_bundle(outfile: Path) -> Path:
     """把打包产物挪出 TemporaryDirectory，落系统临时文件（调用方缓存后清理）。"""
     fd, name = tempfile.mkstemp(prefix="fenix-vendor-", suffix=".js")
-    import os as _os
-    _os.close(fd)
+    os.close(fd)
     dest = Path(name)
     shutil.copyfile(outfile, dest)
     return dest
 
 
 def bundle_with_node(project: Path, react_version: str, antd_version: str,
-                     install_timeout: float, work_dir: Path | None = None,
+                     install_timeout: float,
                      ) -> tuple[Path | None, dict | None, list[str]]:
     """按画像版本预打包 react+antd。成功返回 (vendor_js, 实际打包版本 dict, log)。
 
@@ -306,6 +347,11 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                         "antd": pinned(antd_version),
                         "esbuild": _esbuild_version(esbuild_bin),
                     }, log
+                # 安装成功但打包失败：与 registry 无关（同入口同依赖树，结果
+                # 确定），换镜像重装重打只会白耗一轮安装超时，直接转本地路径
+                log.append("bundle-fail: esbuild 打包失败与 registry 无关，"
+                           "不再重试镜像 registry，转本地 node_modules 路径")
+                break
 
         # npm 精确安装不可用 → 本地既有 node_modules 直接打包（零网络）
         local = find_local_node_modules(project)
@@ -323,12 +369,18 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
         # 本地打包：入口必须落在 node_modules 解析范围内——用其下 .cache 工作目录
         # （node_modules 通行被 gitignore，散件零风险），产物经系统临时文件中转
         work = local / ".cache" / f"fenix-proto-work-{os.getpid()}"
-        work.mkdir(parents=True, exist_ok=True)
+        outfile = None
         try:
+            work.mkdir(parents=True, exist_ok=True)
             entry = work / "vendor-entry.js"
             entry.write_text(VENDOR_ENTRY_JS, encoding="utf-8")
             outfile = _run_esbuild(esbuild_bin, entry, tmp_dir / "vendor.js",
                                    install_timeout, log)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # mkdir / 入口写入 / esbuild 执行的 OSError（权限、只读、跨设备等）
+            # 不向上穿透硬崩，记 bundle-fail 后交由调用方继续 CDN / 仿样降级
+            log.append(f"bundle-fail: 本地 node_modules 打包异常"
+                       f"（{type(exc).__name__}: {exc}），本步放弃")
         finally:
             shutil.rmtree(work, ignore_errors=True)
         if outfile is None:
@@ -458,10 +510,8 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
         if not node_ok:
             degradation_path.append("node-missing: node/npm 不可用（node 是优先条件非硬假设），"
                                     "跳过 npm 精确安装路径，尝试本地 node_modules 打包")
-        work_dir = cache_dir / f".work-{os.getpid()}"
         vendor_js, bundled_versions, bundle_log = bundle_fn(
-            project, react_version, antd_version, install_timeout, work_dir=work_dir)
-        shutil.rmtree(work_dir, ignore_errors=True)
+            project, react_version, antd_version, install_timeout)
         degradation_path.extend(bundle_log)
         if vendor_js is not None and bundled_versions is not None:
             entry = write_cache(cache_dir, bundled_versions, vendor_js,
@@ -478,11 +528,16 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
 
     cdn_ok = False
     cdn_reason = None
-    if has_stack and (cache_hit or vendor_js is None) and not offline:
+    # 探测仅在「缓存未命中且打包失败」时才有意义：cdn_ok 只在这种分支参与
+    # 判定；缓存命中已定 vendor 层，探测白付网络等待且结果不会被消费
+    if has_stack and not cache_hit and vendor_js is None and not offline:
         cdn_ok, cdn_reason = cdn_probe_fn(react_version, antd_version)
         degradation_path.append(
             f"cdn-probe: {'可达' if cdn_ok else '不可达（' + str(cdn_reason) + '）'}")
-    elif has_stack and offline and (cache_hit or vendor_js is None):
+    elif has_stack and cache_hit:
+        degradation_path.append(
+            "cdn-probe: 缓存命中已定 vendor 层，跳过 CDN 探测（结果不参与判定）")
+    elif has_stack and offline and not cache_hit and vendor_js is None:
         degradation_path.append("cdn-probe: --offline 跳过 CDN 探测")
 
     level = decide_level(
