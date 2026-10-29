@@ -968,7 +968,8 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
             return None, ""
         if not isinstance(data, list):
             return None, ""
-        # kind 集按执行 kind 原样统计（口径同 serving.py:960，缺失 kind 缺省 web）
+        # kind 集按执行 kind 原样统计（口径同 serving.py _ensure_app_reachable
+        # 的 kinds 统计，缺失 kind 缺省 web）
         kinds = {str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)}
         start_cmd = str(pipeline._context.config_reader("commands.start", "") or "")
         findings = scan_contract(

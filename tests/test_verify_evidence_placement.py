@@ -760,14 +760,16 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         半截写入/磁盘错误的典型损坏形态：读码层（read_text utf-8 解码）即
         抛 UnicodeDecodeError，先于 json.loads 发生——异常处理须在读取段
         显式捕获（ValueError 子类、非 OSError），否则上穿 sweep() 主盘点
-        整体崩溃（验证轮 BUG-01 回归钉子）。
+        整体崩溃（验证轮 BUG-01 回归钉子）。字节层损坏按 code-review item
+        d055f002ec41 裁决置「本轮禁写」哨兵：与瞬时读取故障不可区分，空表
+        payload 覆写会永久抹掉可能完好的原时钟——收尾跳过落盘、盘上原
+        字节保留待新进程重试载入（覆写自愈仅属 JSON 层真损坏路径）。
         """
         repo = _make_repo()
         _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
+        corrupt_bytes = b"\xff\xfe{not-utf8-at-all:\x00\xff}"
         self._registry_path(repo).parent.mkdir(parents=True, exist_ok=True)
-        self._registry_path(repo).write_bytes(
-            b"\xff\xfe{not-utf8-at-all:\x00\xff}"
-        )
+        self._registry_path(repo).write_bytes(corrupt_bytes)
         logger = _LoggerProbe()
         cfg = {"admin": {"maintree_stray_wip_grace_minutes": 30.0}}
         sw = MainTreeStrayWipSweeper(repo, _WmProbe(repo), config=cfg, logger=logger)
@@ -778,13 +780,16 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
             m for _, m in logger.warnings if "回退空表" in m
         ]
         self.assertEqual(len(registry_warnings), 1)  # 恰留一条降级告警
-        # 后续轮次不再重复告警，且落盘自愈为合法形态
+        # 后续轮次不再重复告警；禁写哨兵贯穿本进程，盘上原坏字节保留未
+        # 被覆写（待新进程重试载入，与 JSON 层真损坏的覆写自愈相区分）
         sw.sweep()
         registry_warnings_after = [
             m for _, m in logger.warnings if "回退空表" in m
         ]
         self.assertEqual(len(registry_warnings_after), 1)
-        json.loads(self._registry_path(repo).read_text(encoding="utf-8"))
+        self.assertEqual(
+            self._registry_path(repo).read_bytes(), corrupt_bytes
+        )
 
     def test_stale_paths_pruned_and_no_reignition(self):
         """失效路径惰性清理：已删除散件条目载入即清、指纹不复燃。
@@ -846,14 +851,26 @@ class TestUntrackedRegistryPersistence(unittest.TestCase):
         self.assertNotIn("f" * 64, sw._untracked_registry)
 
     def test_persist_failure_fails_open(self):
-        """落盘失败（目录不可写）仅告警 fail-open，盘点结果不受影响。"""
+        """落盘失败（os.replace 撞目录占位）仅告警 fail-open，盘点不受影响。
+
+        目录占位须在首次成功落盘**之后**再就位：code-review item
+        d055f002ec41 起载入失败（含 IsADirectoryError）即置「本轮禁写」
+        哨兵、收尾跳过落盘——sweep 前占目录会先被载入段吃掉，永远走不到
+        写失败分支。先正常 sweep 落盘建立 loaded 守卫（此后不再读文件），
+        再把注册表文件替换为同名目录并新增散件迫使 payload 变化，收尾
+        persist 的 os.replace 即撞目录失败，落「持久化写入失败」降级告警。
+        """
         repo = _make_repo()
         _write_strays(repo, [f"verify-evidence/r{i}.md" for i in range(6)])
-        # 预建同名目录占位：os.replace 到目录路径必失败（OSError）
-        self._registry_path(repo).mkdir(parents=True)
         logger = _LoggerProbe()
         cfg = {"admin": {"maintree_stray_wip_grace_minutes": 30.0}}
         sw = MainTreeStrayWipSweeper(repo, _WmProbe(repo), config=cfg, logger=logger)
+        r1 = sw.sweep()  # 首轮正常落盘（此后 loaded 守卫不再读该路径）
+        self.assertIsNotNone(r1)
+        registry_path = self._registry_path(repo)
+        registry_path.unlink()
+        registry_path.mkdir()  # 同名目录占位：os.replace 到目录必失败
+        _write_strays(repo, ["verify-evidence/r6.md"])  # 迫使 payload 变化
         r = sw.sweep()
         self.assertIsNotNone(r)  # 盘点照常完成
         self.assertIn("untracked", r)

@@ -117,8 +117,25 @@ class G8QueryMixin:
             # symlink 与普通文件的对象类型同为 blob（区别仅在 tree 里的
             # mode 120000），cat-file -t 无法区分。文件实测 100644/100755、
             # 目录 040000、symlink 120000。
+            # rel_path 包 :(literal)（code-review item b4b09e998e01，与
+            # mergeback.py / stash_guard.py 的 ls-files 采集点同口径）：
+            # 显式钉死字面量匹配、禁 pathspec glob——声明路径含 */?/[ 等
+            # 元字符时不因 pathspec 通配语义（git 版本间对裸 path 参数的
+            # 展开/字面量取舍有漂移）误命中别的存在文件，致交付守卫假阳性
+            # 放行。literal 只禁通配，目录声明（尾斜杠）的前缀子条目匹配
+            # 不受影响（实测 :(literal)<dir>/ 仍列子条目清单，无匹配时
+            # rc=0 空输出与下方 False 判定兼容）。
             kind = subprocess.run(
-                ["git", "-C", str(self.project_root), "ls-tree", "-z", branch, "--", rel_path],
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "ls-tree",
+                    "-z",
+                    branch,
+                    "--",
+                    f":(literal){rel_path}",
+                ],
                 capture_output=True,
                 text=True,
                 # 显式 UTF-8（同包 repair_site.py 惯例，本文件全部 text=True
@@ -169,7 +186,8 @@ class G8QueryMixin:
             目录/注册（目录被外部删除、或从未在该分支建过 worktree）→ 可在
             既有分支上重建（checkout 而非 ``-b`` 新建）；
           - ``WT_UNAVAILABLE``（unavailable）：分支不可解析（已并入主树/已
-            清扫/typo 分支名）→ 不可用，调用方降级到清空重建。
+            清扫/typo 分支名）→ 不可用，调用方降级到清空重建；另含注册
+            查询失败且候选目录在场可用的保守降级（见下）。
 
         Args:
             wt_path: 候选 worktree 路径（Path/str，可选）。提供时与 git 注册
@@ -180,6 +198,12 @@ class G8QueryMixin:
                 ``git worktree list`` 子进程（code-review item f7623a814c4d）；
                 None（缺省）＝未提供，维持内部自行查询的原语义。调用方
                 MUST 仅在实际查询且命中（非 None）时传入。
+
+        查询失败口径（code-review item f81ac44dacec）：``find_worktree_path``
+        对瞬时 git 失败（超时/非零退出）与「无注册」同样返回 None；本方法经
+        其 out 标记区分两者，仅在「查询失败 + 候选目录在场且为可用 git 工作
+        树」时保守判 UNAVAILABLE（附归因日志），未给候选路径时无「在场」
+        可核验、维持 REBUILDABLE 原语义（调用方 create 失败自有降级，无损）。
 
         Returns: 三态字符串之一（WT_* 常量）。
         """
@@ -192,11 +216,18 @@ class G8QueryMixin:
                 return WT_UNAVAILABLE
         if not self.branch_exists(branch):
             return WT_UNAVAILABLE
-        registered = (
-            known_registered
-            if known_registered is not None
-            else self.find_worktree_path(branch)
-        )
+        registered = None
+        wt_query_failed = False
+        if known_registered is not None:
+            registered = known_registered
+        else:
+            # 查询失败须与「无注册」区分（code-review item f81ac44dacec）：
+            # find_worktree_path 对 git 超时/非零退出同样返回 None，out 标记
+            # 回传失败事实，供下方保守选边——两者混同会误导调用方走注定
+            # 失败的重建路径（见 wt_path 分支注释）。
+            _failed: list = []
+            registered = self.find_worktree_path(branch, query_failed=_failed)
+            wt_query_failed = bool(_failed)
         if wt_path is not None:
             # 显式候选路径：以其自身目录存在性为「原地可用」判据——防止对
             # 已删目录盲派发（fix-resume-stale-worktree 同源缺口）。目录残留
@@ -206,6 +237,23 @@ class G8QueryMixin:
                 return WT_REBUILDABLE  # 分支在 → 可从分支重建
             if registered is not None and str(Path(registered)) == str(candidate):
                 return WT_AVAILABLE
+            if wt_query_failed and self._candidate_git_usable(candidate):
+                # 查询失败 ≠ 无注册（code-review item f81ac44dacec）：git
+                # worktree list 瞬时故障（超时/非零退出）时注册状态不可知，
+                # 此时目录在场判 REBUILDABLE 会诱导调用方 ``worktree add``
+                # 重建——分支仍被注册 checkout 时 create 必败
+                # （create_worktree_on_branch 只 prune 目录已消失的注册，
+                # 救不了在册项），白付一次注定失败的创建。目录确为可用 git
+                # 工作树（status 探测 rc=0）时保守判 UNAVAILABLE 让调用方
+                # 整体降级；status 也不可用＝目录非有效 git 载体，重建语义
+                # 本来成立，维持 REBUILDABLE 原语义。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"is_available: worktree registry query failed for branch "
+                    f"'{branch}' while candidate '{candidate}' is present and "
+                    f"usable — conservatively unavailable, not rebuildable",
+                )
+                return WT_UNAVAILABLE
             return WT_REBUILDABLE
         # 未给候选路径：以 git 注册为真相
         if registered is None or not Path(registered).is_dir():
@@ -213,6 +261,31 @@ class G8QueryMixin:
             # 应从分支重建载体。
             return WT_REBUILDABLE
         return WT_AVAILABLE
+
+    @staticmethod
+    def _candidate_git_usable(candidate: Path) -> bool:
+        """候选目录作为 git 工作树是否可用（``git status`` rc=0 判定）。
+
+        is_available 查询失败保守选边的辅助探测（code-review item
+        f81ac44dacec）：``git worktree list`` 查询失败时注册状态不可知——
+        目录确为可用 git 工作树才值得保守判 UNAVAILABLE（原地是真载体，
+        重建必败）；status 也失败＝目录非有效 git 载体，重建语义本来成立。
+        """
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(candidate), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                # 显式 UTF-8（本文件全部 text=True 子进程统一固化惯例）：
+                # 非 UTF-8 locale 下坏字节输出抛 UnicodeDecodeError 逃逸
+                # except 守卫。
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return res.returncode == 0
 
     def create_worktree_on_branch(
         self, spec_name: str, branch: str, prefix: str = "repair"
@@ -342,13 +415,23 @@ class G8QueryMixin:
             self.logger.error("worktree_manager", f"Worktree-on-branch creation error: {e}")
             return None
 
-    def find_worktree_path(self, branch: str) -> Optional[Path]:
+    def find_worktree_path(
+        self, branch: str, *, query_failed: Optional[list] = None
+    ) -> Optional[Path]:
         """按分支解析 worktree 路径（``git worktree list --porcelain`` 为准）。
 
         add-merge-back-repair-lane D3：以 git 事实为判定基准，不信任内存
         ``_active_worktrees``（daemon 重启即失）。同一分支 git 只允许一个
         worktree（``worktree add <path> <branch>`` 对已 checkout 分支会拒绝），
         故首个匹配即唯一。
+
+        Args:
+            branch: 分支名。
+            query_failed: 可选 out 标记（list，code-review item
+                f81ac44dacec）：提供（空 list）时，git 命令失败（超时/OSError/
+                非零退出）会追加 True——把「查询失败」与「无匹配」（均返回
+                None）区分开，供 is_available 保守选边；None（缺省）＝不采集，
+                返回形态与历史完全一致，既有调用点零适配。
 
         Returns: worktree 绝对路径，无匹配/命令失败返回 None。
         """
@@ -378,8 +461,15 @@ class G8QueryMixin:
                 timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError):
+            # 查询失败 ≠ 无匹配（code-review item f81ac44dacec）：out 标记
+            # 回传失败事实，供 is_available 保守选边（缺省 None 不采集，
+            # 返回形态与历史一致）。
+            if query_failed is not None:
+                query_failed.append(True)
             return None
         if res.returncode != 0:
+            if query_failed is not None:
+                query_failed.append(True)
             return None
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():

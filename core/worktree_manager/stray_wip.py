@@ -382,6 +382,16 @@ class MainTreeStrayWipSweeper:
         self._untracked_registry: dict = {}
         self._untracked_registry_loaded = False
         self._untracked_persisted_payload: "str | None" = None
+        # 「本轮禁写」哨兵（code-review item d055f002ec41）：载入遇
+        # OSError/字节层损坏（瞬时读取故障等，非 JSON 层真损坏）时置位，
+        # sweep 收尾据此跳过 _persist_untracked_registry——载入失败后内存态
+        # 为空表，照常落盘会以仅含当轮新建条目的 payload 原子覆写盘上可能
+        # 完好的注册表，first_seen 与 escalated_at/escalated_signal_at 永久
+        # 丢失。实例级一次性（与 loaded 守卫同生命周期）：载入每进程仅一次，
+        # 失败后本进程内存态不再是盘上镜像，禁写贯穿本进程，下轮由新进程
+        # 重试载入；成功载入路径不置位。JSON 层 ValueError/TypeError（真
+        # 损坏）不受此限，保持既有覆写自愈。
+        self._untracked_persist_suppressed = False
         # 首现登记表（evo-stray-first-sight-prevention 1.2）：规范化根目录
         # （str）-> {"first_seen": epoch 秒, "first_seen_iso": str,
         # "files": [该目录下散件条目快照...]}。去重键为目录路径，MUST NOT
@@ -487,14 +497,19 @@ class MainTreeStrayWipSweeper:
             # 载入（每进程一次，重启恢复 first_seen 与双档升级标记）；收尾
             # （含本轮放弃路径）惰性清理失效路径后按变更原子落盘。载入失败
             # fail-open（回退空表告警），落盘失败仅告警——持久化缺陷 MUST
-            # NOT 放大成本轮盘点失败。内层 finally 先于锁释放执行（落盘在
+            # NOT 放大成本轮盘点失败。唯一例外（code-review item
+            # d055f002ec41）：载入遇 OSError/字节层损坏时置「本轮禁写」哨兵，
+            # 收尾跳过落盘——空表 payload 覆写盘上可能完好的注册表＝永久
+            # 丢失 first_seen 与双档升级标记，保留原文件待下轮重试载入；
+            # JSON 层真损坏仍覆写自愈。内层 finally 先于锁释放执行（落盘在
             # 持锁临界区内完成，写的是 .fenix/ 忽略区运行时文件，零触碰）。
             self._load_untracked_registry()
             try:
                 return self._sweep_locked(running_run_ids)
             finally:
                 self._prune_untracked_registry_stale_paths()
-                self._persist_untracked_registry()
+                if not self._untracked_persist_suppressed:
+                    self._persist_untracked_registry()
         finally:
             lock.release()
 
@@ -1560,7 +1575,11 @@ class MainTreeStrayWipSweeper:
         （非法 UTF-8，``read_text`` 解码即抛 ``UnicodeDecodeError``）与
         JSON 层（坏 JSON/形态非法，``json.loads`` 抛 ``ValueError``/
         ``TypeError``）均回退空表并留一条告警（fail-open，不阻断主盘点
-        ——损失仅为重新宽限，与 D5 决策被取代前的重启行为一致）。条目级
+        ——损失仅为重新宽限，与 D5 决策被取代前的重启行为一致）。字节层
+        失败（OSError/``UnicodeDecodeError``）另置「本轮禁写」哨兵，收尾
+        跳过落盘、保留盘上原文件待下轮重试载入（code-review item
+        d055f002ec41——瞬时读取故障下空表 payload 覆写会永久抹掉原时钟
+        标记）；JSON 层真损坏不受此限，收尾照常覆写自愈。条目级
         形态守卫：非 dict 指纹段 / 缺 first_seen 数值 / files 非列表的
         条目剔除（部分损坏不株连完好条目）。白名单脱落注册表分区
         （``_WHITELIST_SECTION_KEY``）同轮一并恢复：形态守卫同款（first_seen
@@ -1583,10 +1602,19 @@ class MainTreeStrayWipSweeper:
         except (OSError, UnicodeDecodeError) as exc:
             # UnicodeDecodeError 是 ValueError 子类、非 OSError，须显式列出
             # 才能在 json.loads 之前拦住字节层损坏（evo 验证 BUG-01）。
+            # OSError 多为瞬时读取故障（EIO 等），非真损坏，盘上文件可能
+            # 完好：置「本轮禁写」哨兵（code-review item d055f002ec41），
+            # sweep 收尾跳过落盘、保留盘上原文件待下轮重试载入——否则空表
+            # payload 覆写会永久抹掉原 first_seen 与双档升级标记，击穿
+            # whitelist「同指纹一次性 major」与 untracked「同集合只升级一
+            # 次」的跨重启语义。JSON 层 ValueError/TypeError（真损坏）不受
+            # 此限，保持覆写自愈。
+            self._untracked_persist_suppressed = True
             self._log(
                 "warning",
                 f"untracked 注册表持久化文件读取失败或字节层损坏，回退空表"
-                f"重新宽限（fail-open，不阻断主盘点）: {path}: {exc}",
+                f"重新宽限（fail-open，本轮禁写保留盘上原文件，不阻断主盘点）"
+                f": {path}: {exc}",
             )
             return
         try:

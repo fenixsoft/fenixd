@@ -276,11 +276,28 @@ class G4MergebackMixin:
                 return info
             except Exception as exc:
                 if stashed:
+                    # code-review 569c79a176de：去向文案按入栈前缀分流——
+                    # reclaim_stale_autostash 只认栈顶含 AUTOSTASH_MSG_PREFIX
+                    # 的条目（stash_guard._reclaim_stale_autostash_locked），
+                    # WIP_GATE_STASH_PREFIX 按 constants 约定刻意不含该子串
+                    # （防 60s 巡检抢走待人工处置条目），对其宣称「兜底回收」
+                    # 会误导排障方向（误以为等巡检即可找回）。
+                    if wip_overlap:
+                        fate_hint = (
+                            f"stash 条目带闸门前缀 '{WIP_GATE_STASH_PREFIX}'，"
+                            f"按前缀隔离设计不会被 reclaim_stale_autostash 回收，"
+                            f"须人工 git stash pop/apply 找回（git stash list 按"
+                            f"该前缀定位条目；pop 冲突去向见 "
+                            f"last_stash_entry_fate）"
+                        )
+                    else:
+                        fate_hint = (
+                            "stash 条目交由 reclaim_stale_autostash 兜底回收"
+                        )
                     self.logger.warning(
                         "worktree_manager",
                         f"merge-back '{branch}' 异常退出且 clean-tree stash 已入栈"
-                        f"（本轮 merge 未判定完成，stash 条目交由 "
-                        f"reclaim_stale_autostash 兜底回收）: {exc}",
+                        f"（本轮 merge 未判定完成，{fate_hint}）: {exc}",
                     )
                 raise
             finally:

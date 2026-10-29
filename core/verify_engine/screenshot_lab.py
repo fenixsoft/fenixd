@@ -11,9 +11,11 @@ screenshot_lab.py — 截图健全性算法标签（screenshot-evidence-labeling
 阈值集中为模块常量，便于调参。
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any
 
 # ── 阈值常量 ───────────────────────────────────────────────────
 # 主色占比阈值：> 99% 像素属于同一颜色 → 纯色图（blank_screenshot 标签）
@@ -33,11 +35,11 @@ logger = logging.getLogger("fenixd.verify_engine.screenshot_lab")
 
 
 def classify_screenshot(
-    path: Union[str, Path],
+    path: str | Path,
     *,
     blank_dominant_pct: float = BLANK_DOMINANT_COLOR_PCT,
     low_contrast_upper: float = LOW_CONTRAST_STD_UPPER,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """对截图做健全性判定，返回结构化标签字典。
 
     标签规则：
@@ -75,10 +77,10 @@ def classify_screenshot(
 
 
 def _classify_impl(
-    path: Union[str, Path],
+    path: str | Path,
     blank_dominant_pct: float,
     low_contrast_upper: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """classify_screenshot 的内部实现（异常由调用方 try/except 捕获）。"""
     import numpy as np
     from PIL import Image
@@ -128,7 +130,7 @@ def _classify_impl(
     dominant_color_pct = dominant_count / len(color_tokens)
 
     # 判定
-    labels: Dict[str, Any] = {
+    labels: dict[str, Any] = {
         "pixel_std": round(pixel_std, 6),
         "dominant_color_pct": round(dominant_color_pct, 6),
         "width": width,

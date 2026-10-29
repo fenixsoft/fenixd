@@ -646,6 +646,17 @@ class ApiRunner(VerifyRunner):
                     if time.monotonic() > deadline:
                         break
                     line = (line or "").rstrip("\r")
+                    if line and ":" not in line:
+                        # SSE 规范：字段行不含冒号时以整行为字段名、值为空
+                        # 串——裸 "data" 行等价 "data:"（空载荷）、裸
+                        # "event" 行等价 "event:"。归一为带冒号形态走既有
+                        # 解析路径，保持事件分帧口径一致；否则服务端以
+                        # "data\n\n" 形态发送空载荷事件（心跳/空消息）时不
+                        # 产生事件，sse_event_count/sse_event_matches 据此
+                        # 少计而假失败（code-review item 6f3b8b9cc5e3）。
+                        # 空行不入此分支（分帧语义），其余裸未知字段归一后
+                        # 不匹配任何解析分支、按规范忽略。
+                        line += ":"
                     if line.startswith("data:"):
                         # SSE 规范：只剥除冒号后的单个前导空格，保留载荷
                         # 内部与尾部空白，避免多行 data 保真度受损。

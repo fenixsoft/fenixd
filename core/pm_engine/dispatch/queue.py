@@ -2440,40 +2440,85 @@ class QQQueueMixin:
                         # item a7395837fcbb）：持续性「success 但 branch 为空」若只
                         # 递增重派会无限烧实现 run 预算——达阈冻结转人工，不再自动
                         # 重派。
-                        retries = self._pm.state_machine.bump_counters(
-                            spec_name, {"_retry_count": 1}
-                        ).get("_retry_count", 0)
+                        # 记账失败不阻塞失败分类（code-review item d708ce0288a8，
+                        # 对齐零变更哨 bump_counters 的 941b22736836 同款守卫）：
+                        # bump_counters 是真实文件 IO，裸调异常沿 worker 外层
+                        # except 逃逸会整体跳过本分支的重试耗尽冻结分类、落入
+                        # _rollback_failed_dispatch 通用重派——恰是本闸门要遏制
+                        # 的重派，MUST NOT 放大。递增未落盘时按读取侧旧值+1
+                        # 内存继续参与阈值判定与 error 文案（对齐
+                        # repair_lane._fallback_after_repair 读侧兜底，读侧也
+                        # 失败则按 0 继续收尾，熔断晚一轮触发不丢账）。
+                        try:
+                            retries = self._pm.state_machine.bump_counters(
+                                spec_name, {"_retry_count": 1}
+                            ).get("_retry_count", 0)
+                        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"契约违反重试记账递增失败 '{spec_name}'"
+                                f"（按读取侧旧值+1 继续失败分类）: "
+                                f"{type(e).__name__}: {e}",
+                            )
+                            try:
+                                retries = int(
+                                    (
+                                        self._pm.state_machine.read_one(
+                                            spec_name
+                                        )
+                                        or {}
+                                    ).get("_retry_count", 0)
+                                    or 0
+                                ) + 1
+                            except Exception:  # noqa: BLE001 —— 读侧也失败按 0 继续分类
+                                retries = 0
                         if retries >= max_r:
                             spec_entry = (
                                 self._pm.state_machine.read_one(spec_name) or {}
                             )
                             fp = self._pm._redispatch_cause_fingerprint(contract_err)
                             orig_status = spec_entry.get("status") or "implementing"
-                            self._pm.state_machine.freeze_for_human(
-                                spec_name,
-                                error=(
-                                    f"原状态 {orig_status} · 重试耗尽"
-                                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
-                                ),
-                                signal_type="redispatch_loop_detected",
-                                severity="major",
-                                description=(
-                                    f"'{spec_name}' 契约违反（success 但 branch 为空）"
-                                    f"连续重试 {max_r} 轮已达上限（max_retries），"
-                                    f"自动重试终止——已冻结转人工处置"
-                                ),
-                                evidence=(
-                                    f"spec={spec_name}; retries={retries}; "
-                                    f"max_retries={max_r}; fp={fp}; "
-                                    f"final_error={contract_err}"
-                                ),
-                                recommended_action=(
-                                    "检查 runner 成功但分支名缺失的根因；处置后解冻"
-                                    "（unfreeze_spec 自动清零计数）可重新获得自动"
-                                    "修复机会"
-                                ),
-                                alert_callback=self._pm._send_human_escalation_alert,
-                            )
+                            # 冻结收尾守卫（code-review item d708ce0288a8，对齐
+                            # repair_lane e8f1fac9cbc8 与本文件零变更哨同款）：
+                            # freeze_for_human 裸调 IO 瞬时异常沿 worker 外层
+                            # except 逃逸会跳过重试耗尽冻结、落入通用重派回滚。
+                            # 失败 logger.error 记审计后放弃本分支收尾（finally
+                            # 照常释放槽位，交由恢复/周期通道接手），MUST NOT
+                            # 放大。
+                            try:
+                                self._pm.state_machine.freeze_for_human(
+                                    spec_name,
+                                    error=(
+                                        f"原状态 {orig_status} · 重试耗尽"
+                                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
+                                    ),
+                                    signal_type="redispatch_loop_detected",
+                                    severity="major",
+                                    description=(
+                                        f"'{spec_name}' 契约违反（success 但 branch 为空）"
+                                        f"连续重试 {max_r} 轮已达上限（max_retries），"
+                                        f"自动重试终止——已冻结转人工处置"
+                                    ),
+                                    evidence=(
+                                        f"spec={spec_name}; retries={retries}; "
+                                        f"max_retries={max_r}; fp={fp}; "
+                                        f"final_error={contract_err}"
+                                    ),
+                                    recommended_action=(
+                                        "检查 runner 成功但分支名缺失的根因；处置后解冻"
+                                        "（unfreeze_spec 自动清零计数）可重新获得自动"
+                                        "修复机会"
+                                    ),
+                                    alert_callback=self._pm._send_human_escalation_alert,
+                                )
+                            except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                                self._pm.logger.error(
+                                    "pm_engine",
+                                    f"契约违反重试耗尽冻结转人工失败 '{spec_name}'"
+                                    f"（放弃本分支收尾，交由恢复/周期通道接手）: "
+                                    f"{type(e).__name__}: {e}",
+                                )
+                                return
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"All retries exhausted for '{spec_name}' — "
@@ -2756,9 +2801,28 @@ class QQQueueMixin:
                         # 「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁临界
                         # 区，并发交错丢一次递增，max_retries 封顶与重试耗尽冻结
                         # 晚一轮触发。冻结分支不写该字段的既有语义不变。
-                        retries = self._pm.state_machine.bump_counters(
-                            spec_name, {"_retry_count": 1}
-                        ).get("_retry_count", 0)
+                        # 记账失败不阻塞失败分类（code-review item d708ce0288a8，
+                        # 对齐零变更哨 bump_counters 的 941b22736836 同款守卫）：
+                        # 裸调异常沿 worker 外层 except 逃逸会整体跳过下方同因
+                        # 熔断/重试耗尽冻结分类、落入 _rollback_failed_dispatch
+                        # 通用重派——恰是这些闸门要遏制的重派，MUST NOT 放大。
+                        # 递增未落盘时按读取侧旧值+1 内存继续参与阈值判定与
+                        # error 文案（_retry_count 不参与同因 streak 阈值判定，
+                        # 回退值仅为保住本分支收尾语义完整）。
+                        try:
+                            retries = self._pm.state_machine.bump_counters(
+                                spec_name, {"_retry_count": 1}
+                            ).get("_retry_count", 0)
+                        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"通用失败重试记账递增失败 '{spec_name}'"
+                                f"（按读取侧旧值+1 继续失败分类）: "
+                                f"{type(e).__name__}: {e}",
+                            )
+                            retries = self._parse_int_field(
+                                spec_entry, "_retry_count", 0
+                            ) + 1
                         # agents.max_retries 归一收敛三车道单一读取器（code-review
                         # item 84d793a3ac41 → 8b26fd7980ce 收敛）：字符串配置裸用于
                         # 比较抛 TypeError 中断失败重派处置，非法值回退缺省 3；
@@ -2794,10 +2858,29 @@ class QQQueueMixin:
                         # 不 bump、随后续写回落盘（streak_bumped=True 时各分支不再
                         # 并写该字段）。
                         if prev_fp == fp:
-                            streak = self._pm.state_machine.bump_counters(
-                                spec_name, {"_redispatch_same_cause_streak": 1}
-                            ).get("_redispatch_same_cause_streak", 0)
-                            streak_bumped = True
+                            # 记账失败不阻塞失败分类（code-review item
+                            # d708ce0288a8，对齐 _handle_merge_back_real_failure
+                            # 对 _merge_streak 的 941b22736836 同款守卫）：递增
+                            # 未落盘时按读取侧旧值+1 内存参与阈值判定，
+                            # streak_bumped 置 False——下方各出口经既有
+                            # not streak_bumped 路径（streak_updates 补绝对写）
+                            # 尽力补落盘，同因熔断兜底有界性无损。
+                            try:
+                                streak = self._pm.state_machine.bump_counters(
+                                    spec_name, {"_redispatch_same_cause_streak": 1}
+                                ).get("_redispatch_same_cause_streak", 0)
+                                streak_bumped = True
+                            except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                                self._pm.logger.warning(
+                                    "pm_engine",
+                                    f"同因熔断 streak 记账递增失败 '{spec_name}'"
+                                    f"（按读取侧旧值+1 继续失败分类）: "
+                                    f"{type(e).__name__}: {e}",
+                                )
+                                streak = self._parse_int_field(
+                                    spec_entry, "_redispatch_same_cause_streak", 0
+                                ) + 1
+                                streak_bumped = False
                         else:
                             streak = 1
                             streak_bumped = False
@@ -2816,40 +2899,56 @@ class QQQueueMixin:
                         if streak >= breaker_threshold:
                             # 同因熔断：冻结转人工（error 内嵌「原状态 X」供
                             # parse_orig_status 解冻还原 + 含指纹/轮数供人工审计）
-                            self._pm.state_machine.freeze_for_human(
-                                spec_name,
-                                error=(
-                                    f"原状态 {orig_status} · 同因重派循环（指纹 "
-                                    f"{fp}，连续同因 {streak} 轮，累计重派 {retries} "
-                                    f"轮，阈值 {breaker_threshold}）：{final_error}"
-                                ),
-                                signal_type="redispatch_loop_detected",
-                                severity="major",
-                                description=(
-                                    f"'{spec_name}' 连续 {streak} 轮以同一归因"
-                                    f"（指纹 {fp}）判失败重派，达熔断阈值——已冻结"
-                                    f"转人工处置，不再自动重派"
-                                ),
-                                evidence=(
-                                    f"spec={spec_name}; fp={fp}; streak={streak}; "
-                                    f"retries={retries}; max_retries={max_r}; "
-                                    f"final_error={final_error}"
-                                ),
-                                recommended_action=(
-                                    "检查失败根因（缺口/环境/网关）；处置后解冻"
-                                    "（unfreeze_spec 自动清零同因计数）可重新获得"
-                                    "自动修复机会"
-                                ),
-                                alert_callback=self._pm._send_human_escalation_alert,
-                                # 冻结瞬间持久化最终同因计数（供冻结态审计 /
-                                # 解冻前可读；解冻时统一清零）；bump 已原子递增
-                                # 落盘时不再并写（防并发写回互相覆盖丢增量），
-                                # 仅指纹切换重置路径补绝对写
-                                extra_updates={
-                                    "_redispatch_cause_fp": fp,
-                                    **streak_updates,
-                                },
-                            )
+                            # 冻结收尾守卫（code-review item d708ce0288a8，对齐
+                            # repair_lane e8f1fac9cbc8 与本文件零变更哨同款）：
+                            # freeze_for_human 裸调 IO 瞬时异常沿 worker 外层
+                            # except 逃逸会跳过同因熔断冻结、落入通用重派回滚
+                            # ——恰是熔断要遏制的重派，MUST NOT 放大。失败
+                            # logger.error 记审计后放弃本分支收尾（finally 照常
+                            # 释放槽位，交由恢复/周期通道接手）。
+                            try:
+                                self._pm.state_machine.freeze_for_human(
+                                    spec_name,
+                                    error=(
+                                        f"原状态 {orig_status} · 同因重派循环（指纹 "
+                                        f"{fp}，连续同因 {streak} 轮，累计重派 {retries} "
+                                        f"轮，阈值 {breaker_threshold}）：{final_error}"
+                                    ),
+                                    signal_type="redispatch_loop_detected",
+                                    severity="major",
+                                    description=(
+                                        f"'{spec_name}' 连续 {streak} 轮以同一归因"
+                                        f"（指纹 {fp}）判失败重派，达熔断阈值——已冻结"
+                                        f"转人工处置，不再自动重派"
+                                    ),
+                                    evidence=(
+                                        f"spec={spec_name}; fp={fp}; streak={streak}; "
+                                        f"retries={retries}; max_retries={max_r}; "
+                                        f"final_error={final_error}"
+                                    ),
+                                    recommended_action=(
+                                        "检查失败根因（缺口/环境/网关）；处置后解冻"
+                                        "（unfreeze_spec 自动清零同因计数）可重新获得"
+                                        "自动修复机会"
+                                    ),
+                                    alert_callback=self._pm._send_human_escalation_alert,
+                                    # 冻结瞬间持久化最终同因计数（供冻结态审计 /
+                                    # 解冻前可读；解冻时统一清零）；bump 已原子递增
+                                    # 落盘时不再并写（防并发写回互相覆盖丢增量），
+                                    # 仅指纹切换重置路径补绝对写
+                                    extra_updates={
+                                        "_redispatch_cause_fp": fp,
+                                        **streak_updates,
+                                    },
+                                )
+                            except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                                self._pm.logger.error(
+                                    "pm_engine",
+                                    f"同因重派熔断冻结转人工失败 '{spec_name}'"
+                                    f"（放弃本分支收尾，交由恢复/周期通道接手）: "
+                                    f"{type(e).__name__}: {e}",
+                                )
+                                return
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"同因重派熔断 '{spec_name}'（fp={fp}，streak="
@@ -2858,30 +2957,46 @@ class QQQueueMixin:
                             )
                         elif retries >= max_r:
                             # 重试耗尽（3.4）：真正终止自动重试（原清零+重派空转）。
-                            self._pm.state_machine.freeze_for_human(
-                                spec_name,
-                                error=(
-                                    f"原状态 {orig_status} · 重试耗尽"
-                                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
-                                ),
-                                signal_type="redispatch_loop_detected",
-                                severity="major",
-                                description=(
-                                    f"'{spec_name}' 连续失败重试 {max_r} 轮已达上限"
-                                    f"（max_retries），自动重试终止——已冻结转人工"
-                                    f"处置"
-                                ),
-                                evidence=(
-                                    f"spec={spec_name}; retries={retries}; "
-                                    f"max_retries={max_r}; fp={fp}; "
-                                    f"final_error={final_error}"
-                                ),
-                                recommended_action=(
-                                    "检查失败根因；处置后解冻（unfreeze_spec 自动"
-                                    f"清零计数）可重新获得自动修复机会"
-                                ),
-                                alert_callback=self._pm._send_human_escalation_alert,
-                            )
+                            # 冻结收尾守卫（code-review item d708ce0288a8，对齐
+                            # repair_lane e8f1fac9cbc8 与本文件零变更哨同款）：
+                            # 裸调 IO 瞬时异常沿 worker 外层 except 逃逸会跳过
+                            # 重试耗尽冻结、落入通用重派回滚（多烧一轮实现
+                            # run）。失败 logger.error 记审计后放弃本分支收尾
+                            # （finally 照常释放槽位，交由恢复/周期通道接手），
+                            # MUST NOT 放大。
+                            try:
+                                self._pm.state_machine.freeze_for_human(
+                                    spec_name,
+                                    error=(
+                                        f"原状态 {orig_status} · 重试耗尽"
+                                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                                    ),
+                                    signal_type="redispatch_loop_detected",
+                                    severity="major",
+                                    description=(
+                                        f"'{spec_name}' 连续失败重试 {max_r} 轮已达上限"
+                                        f"（max_retries），自动重试终止——已冻结转人工"
+                                        f"处置"
+                                    ),
+                                    evidence=(
+                                        f"spec={spec_name}; retries={retries}; "
+                                        f"max_retries={max_r}; fp={fp}; "
+                                        f"final_error={final_error}"
+                                    ),
+                                    recommended_action=(
+                                        "检查失败根因；处置后解冻（unfreeze_spec 自动"
+                                        f"清零计数）可重新获得自动修复机会"
+                                    ),
+                                    alert_callback=self._pm._send_human_escalation_alert,
+                                )
+                            except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                                self._pm.logger.error(
+                                    "pm_engine",
+                                    f"重试耗尽冻结转人工失败 '{spec_name}'"
+                                    f"（放弃本分支收尾，交由恢复/周期通道接手）: "
+                                    f"{type(e).__name__}: {e}",
+                                )
+                                return
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"All retries exhausted for '{spec_name}' — "
@@ -4038,7 +4153,23 @@ class QQQueueMixin:
             conflict_updates: dict = {"error": final_error, "_merge_fp": fp}
             if not streak_bumped:
                 conflict_updates["_merge_streak"] = streak
-            self._pm.state_machine.update_spec(spec_name, conflict_updates)
+            # 失败收尾 update_spec 守卫（code-review item 2e1cb19c63c2，复用
+            # 同方法 bump_counters 的 941b22736836 守卫范式）：update_spec 是
+            # flock+read_all+write_all 真实文件 IO，本方法被 worker 失败链与
+            # merge-only 重试 Timer 回调共享，裸调瞬时 OSError 会沿 worker 外层
+            # except 落入 _rollback_failed_dispatch（冲突留痕丢失且未被覆盖的
+            # testing/implemented 态被通用回滚扰动）、沿 Timer 回调外溢则该链
+            # 不再排程新 Timer，MUST NOT 放大——logger.error 记审计后维持本
+            # 分支既有 return（不降级状态，交由在飞验证收尾/周期消费者处置）。
+            try:
+                self._pm.state_machine.update_spec(spec_name, conflict_updates)
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"merge-back 冲突留痕写盘失败 '{spec_name}'"
+                    f"（不降级状态，交由在飞验证收尾/周期消费者处置）: "
+                    f"{type(e).__name__}: {e}",
+                )
             return
 
         # 配置侧归一经 repair_lane._merge_breaker_threshold 单一落点
@@ -4075,7 +4206,20 @@ class QQQueueMixin:
             }
             if not streak_bumped:
                 breaker_updates["_merge_streak"] = streak
-            self._pm.state_machine.update_spec(spec_name, breaker_updates)
+            # 同款守卫（code-review item 2e1cb19c63c2）：上方 transition 已
+            # 成功、blocked 态已落位，此处仅 error/计数清零补写——写盘失败时
+            # logger.error 记审计后 return（现场 blocked 状态足以被 admin/
+            # stuck 通道接手），MUST NOT 放大外溢拖垮 Timer 链。
+            try:
+                self._pm.state_machine.update_spec(spec_name, breaker_updates)
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"merge 熔断收尾写盘失败 '{spec_name}'"
+                    f"（blocked 态已落位，error/计数补写丢失仅审计留痕）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return
             self._pm.logger.error(
                 "pm_engine",
                 f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
@@ -4144,7 +4288,20 @@ class QQQueueMixin:
             }
             if not streak_bumped:
                 ready_updates["_merge_streak"] = streak
-            self._pm.state_machine.update_spec(spec_name, ready_updates)
+            # 同款守卫（code-review item 2e1cb19c63c2）：ready 降级写盘失败时
+            # 按未降级处理——spec 仍 implementing，此刻不得 _enqueue_front
+            # （状态未翻，入队即与在飞收尾竞态），logger.error 记审计后
+            # return 等周期消费者重派，MUST NOT 放大外溢。
+            try:
+                self._pm.state_machine.update_spec(spec_name, ready_updates)
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"merge-back ready 降级写盘失败 '{spec_name}'"
+                    f"（按未降级处理，等周期消费者重派）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return
             # 降级后显式重入队（code-review item f4679c0fabc1，对齐
             # fast_track.py _reconcile_and_merge ready 分支的 6e6259821f64
             # 收口——只翻状态不入队＝自动重试承诺落空，spec 悬挂 ready 只能
@@ -4500,9 +4657,17 @@ class QQQueueMixin:
 
         缺失/损坏/非对象 → None（join 按「产物缺失」分支处理）。
         """
+        # spec_name 净化后再拼路径（code-review item b789473c7eab，与
+        # _prewrite_verifier_dispatch_stamp 同目录族既有口径统一）：裸内插含
+        # ../ 或绝对路径形态的 spec_name 可逃出 verify-progress 目录读写文件，
+        # 而 spec_name 源头含 LLM/场景产出、信任边界弱。safe_component 最少
+        # 返回 "_"（永不返回空），无「净化失败」分支需要跳过。
+        from core.verify_engine.path_safety import safe_component
+
         path = (
             Path(self._pm.project_root)
-            / ".fenix" / "verify-progress" / spec_name / "code-review.json"
+            / ".fenix" / "verify-progress" / safe_component(spec_name)
+            / "code-review.json"
         )
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -4629,9 +4794,14 @@ class QQQueueMixin:
         verified 后 bug-found 打回、verifier 修复、人工返工——的 prompt_builder
         误读误注入）。文件缺失幂等静默；删除失败仅 WARNING（下次启动/放行重试）。
         """
+        # spec_name 净化后再拼路径（code-review item b789473c7eab，对齐
+        # _prewrite_verifier_dispatch_stamp 同目录族既有口径）。safe_component
+        # 最少返回 "_"（永不返回空），无「净化失败」分支需要跳过。
+        from core.verify_engine.path_safety import safe_component
+
         path = (
             Path(self._pm.project_root)
-            / ".fenix" / "verify-progress" / spec_name
+            / ".fenix" / "verify-progress" / safe_component(spec_name)
             / "ocr_findings_directive.json"
         )
         try:
@@ -4819,9 +4989,16 @@ class QQQueueMixin:
         原子替换；写失败仅 WARNING（修复轮注入缺席时实现者按无义务轮处理，
         gate 轮次上限仍兜底防死循环）。
         """
+        # spec_name 净化后再拼路径（code-review item b789473c7eab，对齐
+        # _prewrite_verifier_dispatch_stamp 同目录族既有口径）：下方
+        # mkdir(parents=True) 在净化缺位时可于 project_root 外创建目录。
+        # safe_component 最少返回 "_"（永不返回空），无「净化失败」分支。
+        # JSON 内容里的 "spec" 字段保留原 spec_name（数据非路径）。
+        from core.verify_engine.path_safety import safe_component
+
         path = (
             Path(self._pm.project_root)
-            / ".fenix" / "verify-progress" / spec_name
+            / ".fenix" / "verify-progress" / safe_component(spec_name)
             / "ocr_findings_directive.json"
         )
         try:
