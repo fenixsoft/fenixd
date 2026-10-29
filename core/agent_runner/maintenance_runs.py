@@ -497,25 +497,28 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     # 名单。choice_payload 存在时不做内容校验——非法载荷由执行器既有解析失败
     # 路径拒绝，不设第二道内容门（design Non-Goals）。
     if success and str(disp.get("choice_id") or "").strip():
-        from core.dashboard.data.adjudication_choices import (
-            choice_requires_payload,
-        )
-
+        # code-review item 0c17103bd9cb：注册表 import 纳入 try 保护——本处位于
+        # 收尾段（处置文件清理/车道指标收尾/信封返回之前）且原不在任何 try 内，
+        # dashboard 数据层 import 失败（装配损坏/成环）会直接穿透
+        # run_administrator：_delete_admin_disposition 清理、_log_lane_run_metrics
+        # 收尾与 AdminDisposition 信封返回全部被跳过（处置实例文件残留 .fenix、
+        # _run_harness 登记随 daemon 无界增长、调用方拿到异常而非失败信封）。
+        # 对齐同函数 AdminStore.append 的 try/except + WARNING 降级先例：
+        # 注册表不可达时无法判别是否 requires_payload，按「宁锁勿白洗」折算
+        # 失败（error 注明 payload 注册表不可达、跳过第三道门），收尾段照常执行。
         _gate_cid = str(disp.get("choice_id")).strip()
-        if choice_requires_payload(
-            _gate_cid, str(admin_signal.get("signal_type") or "")
-        ) and not str(disp.get("choice_payload") or "").strip():
+        try:
+            from core.dashboard.data.adjudication_choices import (
+                choice_requires_payload,
+            )
+        except Exception as e:
             success = False
-            # 与上一道门同款：折算必须同时落到 result 通道，防 resolved
-            # 经返回值透传消费侧（code-review item 14ce3542d2b9 双保险口径）
+            # 与既有两道门同款：折算同时落到 result 通道，防 resolved 经
+            # 返回值透传消费侧（code-review item 14ce3542d2b9 双保险口径）
             disp["result"] = "failed"
             error = (
-                f"admin 处置记录缺 choice_payload 载荷: {disp_path.name} "
-                f"choice_id={_gate_cid!r} 为 requires_payload 选项，该选项"
-                "需要 choice_payload JSON 载荷"
-                '（{"scenarios": [...], "reason": "...", '
-                '"fixture_files": [...]}），缺载荷执行必失败，'
-                "判失败（fail-closed）"
+                "payload 注册表不可达，缺载荷第三道门跳过（fail-closed）: "
+                f"{type(e).__name__}: {e}"
             )
             _log = getattr(runner, "logger", None)
             if _log is not None:
@@ -524,6 +527,29 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
                     f"Administrator run {run_id} 产物硬门拦截: {error}",
                     {"run_id": run_id, "spec": spec},
                 )
+        else:
+            if choice_requires_payload(
+                _gate_cid, str(admin_signal.get("signal_type") or "")
+            ) and not str(disp.get("choice_payload") or "").strip():
+                success = False
+                # 与上一道门同款：折算必须同时落到 result 通道，防 resolved
+                # 经返回值透传消费侧（code-review item 14ce3542d2b9 双保险口径）
+                disp["result"] = "failed"
+                error = (
+                    f"admin 处置记录缺 choice_payload 载荷: {disp_path.name} "
+                    f"choice_id={_gate_cid!r} 为 requires_payload 选项，该选项"
+                    "需要 choice_payload JSON 载荷"
+                    '（{"scenarios": [...], "reason": "...", '
+                    '"fixture_files": [...]}），缺载荷执行必失败，'
+                    "判失败（fail-closed）"
+                )
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "agent_runner",
+                        f"Administrator run {run_id} 产物硬门拦截: {error}",
+                        {"run_id": run_id, "spec": spec},
+                    )
     # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
     # final 记录，文件不再有读者；不清理会随并行实例累积成垃圾。
     runner._delete_admin_disposition(disp_path)
@@ -840,7 +866,12 @@ def run_self_review(
         output = ""
         success = False
         error = str(e)
-        usage_info = runner._extract_usage_info(None)
+        # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空 dict 字面量
+        # （code-review item 643baad3dab7）——_token_usage_fields 对空 dict 的
+        # 产出（input/output 0、cost_usd None）与 _extract_usage_info(None) 的
+        # 归账形态逐字段相同；不走该 facade/静态方法——打桩 runner（车道单测）
+        # 未必提供，裸调会在 except 内抛 AttributeError 顶替原始失败归因穿透。
+        usage_info = {}
 
     # token 归账到独立类目（不写 STATE，硬约束）
     runner._accumulate_self_review_tokens(date_str, usage_info)
@@ -1386,18 +1417,6 @@ def run_evolution(
         # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
         # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
         env_overrides: Dict[str, str] = {}
-        # evolution 车道专属 env：后台子代理等待上限归零（
-        # add-evolution-subagent-wait-ceiling 1.1）。本车道强制「逐条子代理」核查
-        # （agents/evolution.md 执行模式），Claude Code CLI 对未显式指定的 Task
-        # 子代理默认转后台，主 run 结束回合后 CLI 至多再等 600 秒
-        # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省 600000ms）即强杀仍在跑的
-        # 子代理——evo-1791048570 实证：主 run 以中期文案充当终局（CLI 侧
-        # completed、退出码 0），产物 json 与 .parts 分片零落盘，_salvage_evolution_
-        # out 无从合并，整任务重跑双倍消耗。置 "0" = 无限等待后台任务。只注入本
-        # 车道（D1）：其他维护车道若残留后台任务，等待上限归零会让 run 永不主动
-        # 退出、烧满 run_timeout，故不放 runner.py 全局 env 构造位
-        # （CLAUDE_CODE_ENABLE_TODO_TOOLS 所在，runner.py:5063 附近）。
-        env_overrides["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
         assignment = runner._get_agent_model_assignment(
             "self-review"
         ) or runner._get_agent_model_assignment("administrator")
@@ -1413,6 +1432,22 @@ def run_evolution(
             )
         else:
             model_override = runner._get_admin_model()
+        # evolution 车道专属 env：后台子代理等待上限归零（
+        # add-evolution-subagent-wait-ceiling 1.1）。本车道强制「逐条子代理」核查
+        # （agents/evolution.md 执行模式），Claude Code CLI 对未显式指定的 Task
+        # 子代理默认转后台，主 run 结束回合后 CLI 至多再等 600 秒
+        # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省 600000ms）即强杀仍在跑的
+        # 子代理——evo-1791048570 实证：主 run 以中期文案充当终局（CLI 侧
+        # completed、退出码 0），产物 json 与 .parts 分片零落盘，_salvage_evolution_
+        # out 无从合并，整任务重跑双倍消耗。置 "0" = 无限等待后台任务。只注入本
+        # 车道（D1）：其他维护车道若残留后台任务，等待上限归零会让 run 永不主动
+        # 退出、烧满 run_timeout，故不放 runner.py 全局 env 构造位
+        # （CLAUDE_CODE_ENABLE_TODO_TOOLS 所在，runner.py:5063 附近）。
+        # code-review item 4a65f8620c29：写入必须位于 _apply_provider_env 之后
+        # （provider.env 在其中最后合并、同键后写者胜）——车道不变量优先，不被
+        # provider.env 静默覆盖复活 evo-1791048570 事故形态；注入顺序约定与
+        # run_code_fix 的 per-agent env 后置注入对齐。
+        env_overrides["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
 
         _claim_settled = True
     finally:
@@ -1439,7 +1474,12 @@ def run_evolution(
         output = ""
         run_ok = False
         error = str(e)
-        usage_info = runner._extract_usage_info(None)
+        # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空 dict 字面量
+        # （code-review item 643baad3dab7）——_token_usage_fields 对空 dict 的
+        # 产出（input/output 0、cost_usd None）与 _extract_usage_info(None) 的
+        # 归账形态逐字段相同；不走该 facade/静态方法——打桩 runner（车道单测）
+        # 未必提供，裸调会在 except 内抛 AttributeError 顶替原始失败归因穿透。
+        usage_info = {}
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）
     runner._accumulate_evolution_tokens(run_id, usage_info)
@@ -2060,7 +2100,12 @@ def run_code_review(
         output = ""
         run_ok = False
         error = str(e)
-        usage_info = runner._extract_usage_info(None)
+        # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空 dict 字面量
+        # （code-review item 643baad3dab7）——_token_usage_fields 对空 dict 的
+        # 产出（input/output 0、cost_usd None）与 _extract_usage_info(None) 的
+        # 归账形态逐字段相同；不走该 facade/静态方法——打桩 runner（车道单测）
+        # 未必提供，裸调会在 except 内抛 AttributeError 顶替原始失败归因穿透。
+        usage_info = {}
         # 429 终态归因原文本单独留存（后续产物硬门/抢救可能改写 error 文案，
         # 限流分类 MUST 以 CLI 原始错误为准，add-code-review-concurrency-and-
         # 429-resilience D4）
@@ -3219,10 +3264,14 @@ def run_code_fix(
             output = ""
             run_ok = False
             error = str(e)
-            # 失败路径无 usage 可归账 → 零值条目：_token_usage_fields 对空
-            # dict 的产出与 run_code_review 例外路径 _extract_usage_info(None)
-            # 的归账形态逐字段相同（input/output 0、cost_usd None）。不走该
-            # facade/静态方法——打桩 runner（本车道单测）未必提供。
+            # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空
+            # dict 字面量（code-review item 643baad3dab7，原 run_self_review/
+            # run_evolution/run_code_review 的 _extract_usage_info(None) 例外
+            # 口径已收拢至此）——_token_usage_fields 对空 dict 的产出与
+            # _extract_usage_info(None) 的归账形态逐字段相同（input/output 0、
+            # cost_usd None）。不走该 facade/静态方法——打桩 runner（车道
+            # 单测）未必提供，裸调会在 except 内抛 AttributeError 顶替原始
+            # 失败归因。
             usage_info = {}
             # evo-code-fix-api-timeout-salvage 1.2：结构化签名透出——失败记录与
             # 日志携带 api_timeout / exit_code / stderr 摘要，替代仅 str(e) 压扁。
@@ -4133,7 +4182,16 @@ def run_impl_ocr(
                     json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 os.replace(tmp, artifact_path)
-            except OSError as e:
+            except (OSError, ValueError, TypeError) as e:
+                # ValueError/TypeError 口径（code-review item 6ba363221d7c，
+                # 对齐 _read_admin_disposition 的 ValueError 防御先例）：
+                # findings 原样保留 ocr 报告文本，报告 JSON 的 \udXXX 孤代理
+                # 经 json.loads 还原后，dumps(ensure_ascii=False) 的结果在
+                # write_text 编码 utf-8 时抛 UnicodeEncodeError（ValueError 系，
+                # 非 OSError）；dumps 对不可序列化异型抛 TypeError。任一命中
+                # 按落盘失败收尾（artifact_persisted=False），终态事件与日志
+                # 照常写、不向调用方上抛，兑现函数头「MUST NOT 抛未捕获异常」
+                # 契约（任务 3.3）。
                 artifact_persisted = False
                 if log is not None:
                     log.warning(

@@ -304,7 +304,8 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
 // ── 主组件 ──────────────────────────────────────────────────────────
 
 /** 目录菜单：语义 <ol>，序号由 help.css 的 CSS 计数器生成（cjk-ideographic
- * 出「一、二、…」，不写入标题文字）；选中态高亮，桌面侧栏与移动抽屉共用。 */
+ * 出「一、二、…」，不写入标题文字）；可点击语义由 li 内的真实 <button> 承担，
+ * 不在 li 上覆写列表项角色；选中态高亮，桌面侧栏与移动抽屉共用。 */
 function HelpMenu({ docs, currentDoc, onDocChange }: {
   docs: HelpDocMeta[];
   currentDoc: string;
@@ -317,18 +318,11 @@ function HelpMenu({ docs, currentDoc, onDocChange }: {
           key={d.name}
           className={`help-menu-item${d.name === currentDoc ? ' active' : ''}`}
           aria-current={d.name === currentDoc ? 'page' : undefined}
-          role="button"
-          tabIndex={0}
-          onClick={() => onDocChange(d.name)}
-          onKeyDown={(e) => {
-            // 键盘可达：Enter/Space 等价点击；Space 需阻止默认滚动页面
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onDocChange(d.name);
-            }
-          }}
         >
-          {d.title}
+          {/* 真实 <button> 承担可点击语义：Enter/Space 激活由原生按钮行为提供 */}
+          <button type="button" onClick={() => onDocChange(d.name)}>
+            {d.title}
+          </button>
         </li>
       ))}
     </ol>
@@ -553,11 +547,11 @@ export default function HelpPage() {
             style={{
               width: 240,
               flexShrink: 0,
-              borderRight: '1px solid #f0f0f0',
+              borderRight: '1px solid var(--ant-color-border-secondary)',
               padding: '16px 0',
             }}
           >
-            <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: '#595959' }}>
+            <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: 'var(--ant-color-text-description)' }}>
               文档目录
             </div>
             <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
