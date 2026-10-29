@@ -108,6 +108,7 @@ class JsonFormatter(logging.Formatter):
         return line.encode("utf-8", "replace")[:LOG_EVENT_MAX_BYTES].decode("utf-8", "ignore")
 
 
+# [fenix-ignore:67e03043bc36] 误报：实测（strace，本类+JsonFormatter 落 120–180KB 大行）emit 整行为单次 write 系统调用原子落盘——TextIOWrapper 将单次 write(str) 的全部字节合并为一次 BufferedWriter.write，regular file 大写路径单调用直写而非分发多次 raw write，O_APPEND 下内核串行化；两进程并发 1100 条大行逐行 json.loads 0 撕裂，「无轮转时常规交错」不成立，不修
 class FlockRotatingFileHandler(RotatingFileHandler):
     """
     跨进程安全的 RotatingFileHandler。

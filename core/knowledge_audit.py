@@ -873,6 +873,18 @@ def _source_base(src: str) -> str:
     return Path(src.strip().rstrip("/")).name
 
 
+def _archive_ref_bare(capture: str) -> str:
+    """_ARCHIVE_REF_RE 捕获归一为可比对的归档基名：剥引号、尾随句点与 .md
+    后缀（捕获字符类含 ``.``，正文以句点收尾或带 .md 后缀时直接对基名集合
+    比对即误判悬空）。归一逻辑单点化：悬空判定与「行内是否仍有有效引用」
+    复核共用，避免两处口径漂移。"""
+    name = capture.strip("\"'`")
+    bare = name.rstrip(".")
+    if bare.endswith(".md"):
+        bare = bare[: -len(".md")]
+    return bare
+
+
 def _trailing_ws_dirty(ln: str) -> bool:
     """行尾是否带需清理的脏空白。
 
@@ -903,7 +915,7 @@ def _scan_pages(project_root: Path) -> dict:
             "悬空溯源扫描本轮跳过转待人工"
         )
     dangling_pages: list[dict] = []  # 机械：页 rel → 待删行/待删 sources
-    dangling_suspect: list[str] = []  # 报告：带尾缀（句点/.md）疑似悬空引用，不机械删行
+    dangling_suspect: list[str] = []  # 报告：带尾缀（句点/.md）疑似悬空引用、行内混排有效引用的悬空行，不机械删行
     overcap: list[dict] = []  # 报告：超 150 行
     format_pages: list[str] = []  # 机械：尾随空白/缺 EOF 换行
     no_marker: list[str] = []  # 报告：能力页 marker 缺失/不可解析（待人工）
@@ -965,9 +977,7 @@ def _scan_pages(project_root: Path) -> dict:
                 # 归一（剥尾随点号与 .md 后缀）后再比对：归一后命中视为有效
                 # 引用；仍不中且捕获带上述尾缀（标点污染与真悬空不可分）时
                 # 降级为报告项，不做机械删行。
-                bare = name.rstrip(".")
-                if bare.endswith(".md"):
-                    bare = bare[: -len(".md")]
+                bare = _archive_ref_bare(m.group(1))
                 if bare in archives:
                     continue
                 if name != bare:
@@ -976,6 +986,21 @@ def _scan_pages(project_root: Path) -> dict:
                         f"疑似悬空待人工核实：{m.group(0)}"
                     )
                     continue
+                # 行内混排复核（code-review 7fba6f2868ca）：命中真悬空引用不直接
+                # 整行删——同一行混排「有效归档引用 + 悬空引用」时整行删除会连带
+                # 删除仍指向现存归档的引用及其周边正文（随 audit fix 自动提交，
+                # 只能靠 git 历史找回）。行内存任一有效引用即不整行删，降级为
+                # dangling_suspect 报告项转人工核实，与 marker sources 悬空的
+                # 字段粒度口径一致（_clean_sources 保留原值不机械清空）。
+                if any(
+                    _archive_ref_bare(m2.group(1)) in archives
+                    for m2 in _ARCHIVE_REF_RE.finditer(ln)
+                ):
+                    dangling_suspect.append(
+                        f"{page['rel']}：正文行混排有效归档引用与悬空引用"
+                        f"（{m.group(0)}），不整行删待人工核实"
+                    )
+                    break
                 drop_lines.append(i)
                 drop_texts[i] = ln
                 break

@@ -438,6 +438,10 @@ def assess_archive_residue_selfheal(scan: ArchiveResidueScan) -> tuple:
             "归档残留仅单侧（半提交形态，不授权自动收尾）: "
             + "、".join(sorted(unpaired)[:5])
         )
+    # [fenix-ignore:60f9a07520c8] 非死分支：成对 rename 行两侧可均落 spec/archive/
+    # （archive 内部改名被 stage），两条命中都走上方 continue、不计入任何集合，
+    # rename_paired 与 del_specs 可同时为空——此处须显式拒绝授权（否则穿透到
+    # return True 会放行提交与 changes↔archive 配对无关的脏状态），删除即引入 bug
     if not (rename_paired or del_specs):
         return False, "无成对归档残留"
     return True, "归档残留两侧成对且全部脏文件落 spec/ 两类路径"
