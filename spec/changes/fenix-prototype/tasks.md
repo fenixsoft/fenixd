@@ -27,12 +27,12 @@
 
 - [x] 1.1 `scripts/stack_profile.py`：侦察目标工程（依赖清单识别组件库与版本、主题/设计 token 文件、DESIGN.md）输出画像 JSON；v1 实现 React+antd 画像，识别失败返回 unknown 并给出降级标记
 - [x] 1.2 `scripts/bootstrap_vendor.py`：环境自检（node/代理/缓存）后按画像版本预打包 react+antd 到 skill 自维护缓存（与工程无关），输出三级降级判定（vendor 缓存命中 / CDN ESM / 纯 HTML 仿样）；每级降级在输出中显式可见；缓存落盘于 gitignore 覆盖的运行时目录 `.fenix/prototype-vendor/`（已被 `.fenix/*` 整体忽略），MUST NOT 落仓内 `skills/` 入库
-- [ ] 1.3 SKILL.md 原型生成段：生成 prompt 契约——单文件 HTML、真组件假数据、画像主题注入、关键区块 `data-proto-id` 语义化锚规则、仿样级显式标注「视觉参照、无约束力」
+- [x] 1.3 SKILL.md 原型生成段：生成 prompt 契约——单文件 HTML、真组件假数据、画像主题注入、关键区块 `data-proto-id` 语义化锚规则、仿样级显式标注「视觉参照、无约束力」
 - [x] 1.4 `scripts/anchor_tools.py` 锚保持工具：解析旧原型 `data-proto-id` 锚集合、对新原型输出保持/漂移比对报告（SKILL.md 生成契约引用其报告约束重生成）；配套确定性测试落 `tests/test_fenix_prototype.py`——以构造的 v1/v2 fixture 原型对断言未波及锚保持、波及区块换锚可检出，MUST NOT 依赖现场 LLM 生成（非确定性测试）
 
 ## 2. 批注回流与会话内迭代
 
-- [ ] 2.1 `assets/annotator.js`：注入式批注器（与栈无关纯 DOM 操作）——hover 高亮、点选元素、意见面板、意见列表、`POST /feedback`（锚点+文本+时间戳+轮次）、服务器不可达时本地导出 JSON
+- [x] 2.1 `assets/annotator.js`：注入式批注器（与栈无关纯 DOM 操作）——hover 高亮、点选元素、意见面板、意见列表、`POST /feedback`（锚点+文本+时间戳+轮次）、服务器不可达时本地导出 JSON
 - [x] 2.2 `scripts/serve_prototype.py`：python 标准库 HTTP 服务器——静态伺服原型目录 + `POST /feedback` 落 `feedback.json`；随机高端口冲突重试；绑定地址可配并打印完整 URL；PID 文件生命周期（存活复用 / 残留探测接管 / 回收）
 - [x] 2.3 服务器生命周期与批注落盘测试：启动→POST 落盘→重复启动复用→杀进程留陈旧 PID→再启动接管→回收，全链路测试钉死（落 `tests/test_fenix_prototype.py`）
 - [x] 2.4 SKILL.md 迭代段：读 `feedback.json` → 修订原型 → 遵守锚保持 → 用户刷新复看 → 循环直至用户明示认可；迭代全程会话内，不依赖异步审批
