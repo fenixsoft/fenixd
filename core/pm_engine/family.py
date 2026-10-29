@@ -862,10 +862,14 @@ class FamilyGovernor:
             return
 
         # 计数递增走锁内原子原语（code-fix dd37a2be6ef6）：原先「read_one 读 →
-        # 算 +1 → 并进下方 update_spec 写回」读与写分处两段，与 fastlane 失败
-        # 记账（dispatch_minor_defect_fastlane 对同字段 bump_counters 原子递增）
-        # 在同一 spec 上时间重叠时，读旧值写回会吞掉对方刚加的增量。改按
-        # bump_counters 写后最新值判阈值；下方冻结/打回写不再并入该字段。
+        # 算 +1 → 并进下方 update_spec 写回」读与写分处两段，与并发写者（admin
+        # infra 回拨等）在同一 spec 上时间重叠时，读旧值写回会吞掉对方刚加的
+        # 增量。本处是 bug-found 轮 ``_verify_fail_rounds`` 的单一写点
+        # （code-review item 96cd9f5a32d2：fastlane 失败记账已收敛到本回落
+        # 路径，fastlane._bump_fail_streak 只递增车道私有 FASTLANE_STREAK_
+        # FIELD、不再对同字段预记，防 inplace 同轮双计提前触发 MAX_VERIFY_
+        # FAIL_ROUNDS 冻结闸门）。改按 bump_counters 写后最新值判阈值；下方
+        # 冻结/打回写不再并入该字段。
         # 递增后移到写前复查全部通过之后（code-review item 6cc743d3b07f）：
         # 冻结/状态漂移放弃路径不再留下已递增计数与本轮 fail_history 条目，
         # 与 _judge_cap_frozen 分支「冻结期间计数不累积」语义对齐；MAX 上限
@@ -930,7 +934,7 @@ class FamilyGovernor:
 
         # ── 正常打回：重置 implementing + 注入修复任务 ──
         # 计数已由上方 bump_counters 原子递增并落盘，此处不再并入 update_spec
-        # （避免覆盖并发写者——如 fastlane 失败记账——的增量）。
+        # （避免覆盖并发写者——如 admin infra 回拨——的增量）。
         repair_fields = {
             "status": "implementing",
             "error": (f"验证失败（原地打回第 {fail_rounds} 轮），重修中"),

@@ -258,7 +258,7 @@ interface ViewingRun {
   spec?: string;
   runId: string;
   // add-harness-brand-projection 3.2：run meta 的 harness（admin 车道 run 经
-  // run_metrics 旁路行透出；存量记录缺失 → undefined → 回退链缺省 claude）
+  // run_metrics 旁路行透出；存量记录缺失 → undefined → 中性品牌（AI Assistant））
   harness?: string;
 }
 

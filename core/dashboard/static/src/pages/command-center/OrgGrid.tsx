@@ -21,8 +21,8 @@
 // 行限高（≈3 行）手动滚动（.cmdcenter-lanescroll 深色滚动条，禁动画红线），
 // 整卡钻取 /projects/:name/:spec 取消，改为点击 spec 名开运行记录弹窗
 // （复用 spec 时间轴「查看运行记录」的 RunRecordModal；harness 元数据不
-// 带，品牌走回退链缺省 claude）；③团队卡与五线间距 14→24px、连线描边
-// 加深加粗（LINK_STROKE + 1.5）。
+// 带，品牌走回退链缺省中性「AI Assistant」）；③团队卡与五线间距
+// 14→24px、连线描边加深加粗（LINK_STROKE + 1.5）。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert } from 'antd';
@@ -381,8 +381,8 @@ export default function OrgGrid({
   );
   // 运行记录弹窗（2026-10-29 多 spec 并行）：点击活动行 spec 名打开，复用
   // spec 时间轴「查看运行记录」的 RunRecordModal（harness 元数据不带，品牌
-  // 回退链缺省 claude）。state 置本屏——轮询换 data 引用不卸载组件，打开
-  // 状态在刷新间保持。
+  // 回退链缺省中性「AI Assistant」）。state 置本屏——轮询换 data 引用不
+  // 卸载组件，打开状态在刷新间保持。
   const [runView, setRunView] = useState<AttributableRun | null>(null);
 
   // 项目全集上报给宿主（页签右侧下拉数据源）

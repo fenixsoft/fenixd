@@ -2,11 +2,11 @@
 
 ``GET /api/command-center/{kpi,org,pipeline,ledger,inbox}`` 五个只读聚合端
 点：派生逻辑单点在 ``core/dashboard/data/command_center.py``，本 mixin 只做
-项目寻址/范围收窄与响应组装（与 collab_graph_routes 同构：data 模块 +
-routes mixin + server.py 注册 mixin）。
+项目寻址/范围收窄与响应组装（data 模块 + routes mixin + server.py 注册
+mixin 的既有同族形态）。
 
-错误契约与 ``/api/overview/collab-graph`` 同族的有意兼容：``?project`` 指向
-未知/不存在项目时返回 200 + ``{"error": ...}`` 字典（大屏页按 200 消费
+错误契约与 ``_api_alerts``（alert_routes.py）同族的有意兼容：``?project``
+指向未知/不存在项目时返回 200 + ``{"error": ...}`` 字典（大屏页按 200 消费
 error 字典渲染提示，改 404 会翻转成整页错误）。聚合路径跳过 fixture 项目
 与不存在项目（夹具项目为验证噪音，不进人工聚合视图）。
 
@@ -39,8 +39,8 @@ logger = logging.getLogger("fenixd.dashboard.routes.command_center_routes")
 class H17CommandCenterRoutesMixin:
     """H17 指挥中心（只读五端点）。"""
 
-    # 五端点共用的项目寻址/范围收窄单点（与 _api_overview_collab_graph 同
-    # 口径）：显式 ?project= 单项目寻址（fixture 也照常聚合）；缺省聚合全部
+    # 五端点共用的项目寻址/范围收窄单点（与 _api_alerts 的 ?project 分支
+    # 同口径）：显式 ?project= 单项目寻址（fixture 也照常聚合）；缺省聚合全部
     # 非 fixture 且 exists 的项目。未知/不存在项目返回 200+error 字典。
     # data 层聚合入口按 (registry_projects, project) 注入模式自行收窄数据
     # 范围；registry_projects 传聚合范围全集，使响应 projects 回显保持全集
@@ -53,7 +53,7 @@ class H17CommandCenterRoutesMixin:
         if project_name:
             project = self.server.project_by_name(project_name)
             if project is None or not project.get("exists"):
-                # 有意 200 错误体契约（同 _api_overview_collab_graph 注记）
+                # 有意 200 错误体契约（同 _api_alerts 注记）
                 return {
                     "error": {"error": "project not found", "project": project_name}
                 }

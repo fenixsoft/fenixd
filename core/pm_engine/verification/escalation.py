@@ -137,6 +137,9 @@ def _escalate_threshold_note(
 INCONCLUSIVE_PARKING_ERROR_MARKER = "等待人工豁免或修环境裁决"
 
 
+# pipeline / spec_name 为占位形参（code-review 203580d45564）：函数体仅消费
+# report，二者不参与判定——刻意保留以对齐同族助手签名（与 _env_exemption_matches
+# 同形态），且 tests/test_env_exemption_exit_reachability.py 按三参位置调用。
 def _inconclusive_fail_signature(pipeline, spec_name: str, report: dict) -> str:
     """本轮 inconclusive 失败签名摘要（fix-env-exemption-exit-reachability 1.2/2.2）。
 
@@ -188,6 +191,9 @@ def _load_frozen_scenario_hashes(project_root, spec_name: str) -> dict:
     return load_frozen_scenario_hashes(project_root, spec_name)
 
 
+# pipeline / spec_name 为占位形参（code-review 203580d45564）：函数体仅消费
+# report/entry/hashes，二者不参与判定——刻意保留以对齐同族助手签名（与
+# _inconclusive_fail_signature 同形态），不误导后续维护者视为判定输入。
 def _env_exemption_matches(pipeline, spec_name: str, report: dict, entry: dict,
                            hashes: dict) -> list:
     """逐个非 pass 场景查有效 STATE 豁免，返回全部命中豁免清单。
@@ -754,12 +760,26 @@ def _escalate_env_blocked(
             # fastlane._bump_fail_streak / judge_gate._judge_round_bump）：
             # 锁外快照读改写会与 unfreeze_spec 人工解冻清零等其他写者互相
             # 覆盖——丢清零则 spec 提前再冻结/误升级，丢增量则熔断晚一轮。
-            # 脏值由 bump_counters 兜底按 0 起算（与上方 except 防御同语义）；
-            # IO 异常沿函数级 except 走既有 WARNING 降级，与下方 update_spec
-            # 写点失败同口径。
-            rounds = pipeline._context.state_machine.bump_counters(
-                spec_name, {ENV_BLOCK_ROUNDS_FIELD: 1}
-            ).get(ENV_BLOCK_ROUNDS_FIELD, 0)
+            # 脏值由 bump_counters 兜底按 0 起算（与上方 except 防御同语义）。
+            # 记账含 STATE 磁盘 IO，单独容错（code-review 5e30a568037c，比照
+            # 下方 planner_cost 查询的降级口径）：IO 异常若沿函数级 except 吞
+            # 成一条 WARNING 即返回，其后的 blocked 落盘、admin 自动呼叫、人工
+            # 告警全部跳过——整轮 env 阻塞升级静默丢失，连续阻塞冻结转人工
+            # 防线可被一次瞬态 IO 抖动绕过。失败按首轮阻塞兜底（rounds=1、
+            # 不冻结）继续收口，不让记账失败丢弃整轮升级；本轮增量未落由
+            # 下一轮 bump_counters 按磁盘现值补记。
+            try:
+                rounds = pipeline._context.state_machine.bump_counters(
+                    spec_name, {ENV_BLOCK_ROUNDS_FIELD: 1}
+                ).get(ENV_BLOCK_ROUNDS_FIELD, 0)
+            except Exception as e:
+                rounds = 1
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' env 阻塞轮次记账失败（按首轮阻塞兜底，"
+                    f"继续 blocked 落盘与告警，不阻断升级）: "
+                    f"{type(e).__name__}: {e}",
+                )
             frozen = rounds >= ENV_BLOCK_FREEZE_THRESHOLD  # 阈值：连续 2 轮阻塞 → 冻结转人工
         # blocked 落盘前的非关键计算单独容错（code-review ad6e029c0827）：
         # 成本查询含 planner run 产物磁盘 IO，一旦抛异常会被函数级 except
@@ -1971,31 +1991,45 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
                 f"抑制 bug-found——转重验一次"
                 f"（第 {gate_attempts + 1}/{max_retries} 次）",
             )
-            pipeline._context.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "implemented",
-                    "tester_run": None,
-                    "error": (
-                        f"归因证据不足待人工复核：全部驱动场景归因"
-                        f"为推测级（speculative），已抑制 bug-found "
-                        f"打回并重验一次（第 {gate_attempts + 1}/"
-                        f"{max_retries} 次）"
-                    ),
-                    "_credibility_gate_attempts": gate_attempts + 1,
-                    "_inconclusive_attempts": 0,
-                    # 计数清零处同步清签名比较基准（与 _handle_judge_env_declared
-                    # 同款显式空串回写）：_last_inconclusive_signature 与
-                    # _inconclusive_attempts 同生命周期（state_machine 人工清零
-                    # 清单声明），不回写会残留上一 episode 的旧签名，新 episode
-                    # 首个 blocked-env 轮同签名复现时被误判「环境未变化」跳过
-                    # 重验直接升级停车。
-                    "_last_inconclusive_signature": "",
-                    # add-verify-parallel-backoff / design D2：计数清零处同步清
-                    # 降档并行度（_inconclusive_attempts 同生命周期）。
-                    "_verify_parallel_override": None,
-                },
-            )
+            # update_spec 含磁盘 IO，局部容错（code-review 83b11b02ea49，仿
+            # 下方 notifier 包裹范式）：写盘失败若落进函数级 except 会被误记
+            # 为「门禁校验异常跳过（不阻断裁决）」并 return False，调用方据此
+            # 继续 bug-found 打回——恰好放过门禁要抑制的推测级打回，且日志
+            # 归因（门禁校验异常）与真实根因（写盘失败）不符。失败 ERROR
+            # 留痕后仍按重验路由收口（返回 True）：抑制计数未递增由下一轮
+            # 门禁按现值重试补上。
+            try:
+                pipeline._context.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "implemented",
+                        "tester_run": None,
+                        "error": (
+                            f"归因证据不足待人工复核：全部驱动场景归因"
+                            f"为推测级（speculative），已抑制 bug-found "
+                            f"打回并重验一次（第 {gate_attempts + 1}/"
+                            f"{max_retries} 次）"
+                        ),
+                        "_credibility_gate_attempts": gate_attempts + 1,
+                        "_inconclusive_attempts": 0,
+                        # 计数清零处同步清签名比较基准（与 _handle_judge_env_declared
+                        # 同款显式空串回写）：_last_inconclusive_signature 与
+                        # _inconclusive_attempts 同生命周期（state_machine 人工清零
+                        # 清单声明），不回写会残留上一 episode 的旧签名，新 episode
+                        # 首个 blocked-env 轮同签名复现时被误判「环境未变化」跳过
+                        # 重验直接升级停车。
+                        "_last_inconclusive_signature": "",
+                        # add-verify-parallel-backoff / design D2：计数清零处同步清
+                        # 降档并行度（_inconclusive_attempts 同生命周期）。
+                        "_verify_parallel_override": None,
+                    },
+                )
+            except Exception as e:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"'{spec_name}' 门禁抑制处置写盘失败（抑制状态未落盘，"
+                    f"仍按重验路由收口）: {type(e).__name__}: {e}",
+                )
             pipeline._context.enqueue(spec_name, "verifier")
             return True
 
@@ -2006,22 +2040,35 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
             f"{gate_attempts} 次推测级归因，门禁预算耗尽，"
             f"阻断为 blocked",
         )
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "blocked",
-                "error": (
-                    f"归因证据不足待人工复核：全部驱动场景归因"
-                    f"连续 {gate_attempts} 次为推测级（speculative），"
-                    f"门禁重试预算耗尽，已 blocked 等待人工裁决"
-                ),
-            },
-        )
+        # update_spec 含磁盘 IO，局部容错（code-review 83b11b02ea49，仿下方
+        # notifier 包裹范式）：写盘失败若落进函数级 except 会被误记为「门禁
+        # 校验异常跳过（不阻断裁决）」并 return False，调用方据此继续
+        # bug-found 打回 implementer——推测级打回循环继续烧实现预算（正是
+        # 门禁要防的浪费）。失败 ERROR 留痕后告警通道照走、仍返回 True，
+        # 不让写盘失败改变裁决路由。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "blocked",
+                    "error": (
+                        f"归因证据不足待人工复核：全部驱动场景归因"
+                        f"连续 {gate_attempts} 次为推测级（speculative），"
+                        f"门禁重试预算耗尽，已 blocked 等待人工裁决"
+                    ),
+                },
+            )
+        except Exception as e:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"'{spec_name}' 门禁 blocked 处置写盘失败（blocked 未落盘，"
+                f"告警通道继续）: {type(e).__name__}: {e}",
+            )
         # 升级通道自身失败不得抛穿裁决流程（与同文件 _escalate_scenario_defect_reroute
         # 的包裹模式对齐，code-review item fb3660678b0c）：blocked 处置已在上方
-        # update_spec 落盘，notifier 抛异常若落入函数级 except 会被误记为
-        # 「门禁校验异常跳过」并 return False，调用方据此继续 bug-found 打回，
-        # 覆盖刚写入的 blocked 终态。
+        # update_spec 尽力落盘（写盘失败已 ERROR 留痕），notifier 抛异常若落入
+        # 函数级 except 会被误记为「门禁校验异常跳过」并 return False，调用方
+        # 据此继续 bug-found 打回，覆盖刚写入的 blocked 终态。
         try:
             pipeline._context.escalation_notifier(
                 spec_name=spec_name,

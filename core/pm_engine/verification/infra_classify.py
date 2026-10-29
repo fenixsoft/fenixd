@@ -473,7 +473,15 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
     （3）轮 → blocked 交人工。
     Returns: True 表示本轮已按同因失败处理（调用方跳过后续判定）。
     """
-    summary = report.get("summary") or {}
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        # summary 非 dict 形态（脏 report.json 被外部改写成 list/str 等真值）：
+        # 本轮不可判定，与下方数值脏值回落分支同语义回落连续计数，不让
+        # summary.get 的 AttributeError 穿出哨函数中断阶段 2 门禁（与
+        # fastlane 子集重验 isinstance(summary, dict) 守卫同口径，
+        # code-review item b97a47f9f8ca）。
+        _reset_uniform_fail_streak(pipeline, spec_name)
+        return False
     try:
         passed = _summary_real_int(summary, "passed")
         # failed 与 errors 分开计数（与 fastlane 子集重验同源口径），失败轮合计看两者

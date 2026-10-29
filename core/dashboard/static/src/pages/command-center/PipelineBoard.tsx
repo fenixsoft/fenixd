@@ -45,6 +45,11 @@ function PipelineCard({
   return (
     <div
       onClick={open}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') open();
+      }}
       style={{
         border: `1px solid ${PANEL_BORDER}`,
         borderRadius: 8,

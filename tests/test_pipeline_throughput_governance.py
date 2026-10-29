@@ -581,7 +581,7 @@ class TestMinorDefectFastlane:
         assert state["_verify_fail_rounds"] == 4
 
     def test_fix_failure_bumps_streak_and_budget(self, tmp_path):
-        """单次 fastlane 修复失败 → streak+1 且计入既有验证轮预算。"""
+        """单次 fastlane 修复失败 → streak+1；验证轮预算由回落路径单点递增。"""
         self._seed_fastlane_fixtures(tmp_path, failed_count=1)
         pipe, fl, _ = _make_pipeline(tmp_path, failed_ids=["s0"])
         pipe._context.agent_runner._execute_agent = (
@@ -594,7 +594,10 @@ class TestMinorDefectFastlane:
         assert outcome["dispatched"] is False
         entry = pipe._context.state_machine.read_one("spec-a")
         assert entry[fl.FASTLANE_STREAK_FIELD] == 1
-        assert entry["_verify_fail_rounds"] == 1  # 计入既有预算
+        # 单一写点约定（code-review item 96cd9f5a32d2）：fastlane 层不预记
+        # _verify_fail_rounds，由回落整轮路径 family._do_spec_bug_found 单点
+        # 记账——此处预记会与回落路径对 inplace 模式双计预算、冻结轮次虚高。
+        assert entry.get("_verify_fail_rounds", 0) == 0
 
     def test_subset_scenario_ids_chains(self):
         """子集纯函数：失败场景 ∪ depends_on 前置链（递归）∪ 下游（递归）。"""

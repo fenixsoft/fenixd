@@ -733,6 +733,17 @@ def _all_green_fast_path(pipeline, spec_name: str, report: dict, fail_count: int
     「按 verified 兜底」的旧语义（读侧缺失文件按通过放行即历史事故根因）。
     """
     summary = report.get("summary") or {}
+    # summary 非 dict 形态防御（code-review item e021cfcdf57e）：``or {}`` 只兜
+    # 住 None/空值，report.json 被外部改写成 list/str/int 等真值非 dict 时，
+    # 下方 summary.get(...) 抛 AttributeError 不落入 except (TypeError,
+    # ValueError)，异常会穿出快道判定上抛调用链——比照 fastlane.subset_reverify
+    # 同款 isinstance 守卫，非 dict = 不可判定全绿，保守走常规 judge。
+    if not isinstance(summary, dict):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"全绿快道 summary 非 dict 形态 '{spec_name}' — 不可判定全绿，走常规 judge",
+        )
+        return None
     # summary 数值字段脏值防御（code-review item 73f3b554171b）：report.json
     # 被外部改写/损坏时 passed/warnings/total 可能是非数值字符串，直接比较会
     # 抛 TypeError 中断快道判定——比照 infra_classify._detect_uniform_verify_failure

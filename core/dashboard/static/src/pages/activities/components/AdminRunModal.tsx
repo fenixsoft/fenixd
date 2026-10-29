@@ -8,8 +8,8 @@ interface AdminRunModalProps {
   spec?: string;
   adminRunId: string;
   // add-harness-brand-projection 3.2：admin 车道 run meta 的 harness（经
-  // run_activity 同口径的 run_metrics 旁路行透出）；缺失时 Provider 走回退链
-  //（缺省 claude 品牌 / 未知值首字母徽标）
+  // run_activity 同口径的 run_metrics 旁路行透出）；缺失/未知值走回退链
+  //（缺失 → 中性 AI Assistant / 未注册值 → 首字母徽标）
   harness?: string;
   open: boolean;
   onClose: () => void;

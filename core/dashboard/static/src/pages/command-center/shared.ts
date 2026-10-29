@@ -38,6 +38,7 @@ export function fmtTokens(v: number | null | undefined): string {
 // 耗时格式化：秒 → 紧凑可读时长（<1m 取整秒；<1h 分秒；否则时分）；null → 「—」。
 export function fmtDurationSeconds(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—';
+  // [fenix-ignore:712fbb46dbbd] 现行实现已将取整提前到秒级判断之前（59.5~60 取整得 60 后进位输出 1m），所述秒级输出 60s 的问题不存在。
   // 先对总秒数取整再判进位：59.5~60 区间 round 后得 60，若按秒级输出即「60s」
   // 不向分钟进位（v=60 才是「1m」）；分秒拆分同理会让余秒进成 60 出「59m60s」。
   // 取整提到分支前统一做，逐级判进位则边界自然收敛。

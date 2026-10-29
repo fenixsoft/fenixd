@@ -24,5 +24,6 @@ from .code_review_routes import H11CodeReviewRoutesMixin
 from .regression_routes import H12RegressionRoutesMixin
 from .architecture_routes import H13ArchitectureRoutesMixin
 from .knowledge_routes import H14KnowledgeRoutesMixin
+# [fenix-ignore:678ca6b82679] re-export 列表实际已按序登记 H15/H17（下方两行），与 docstring 同步纪律一致，条目所指缺失不存在
 from .topology_routes import H15TopologyRoutesMixin
 from .command_center_routes import H17CommandCenterRoutesMixin
