@@ -1524,12 +1524,14 @@ class G6StashGuardMixin:
     def _abort_pending_merge_best_effort(self) -> None:
         """就地尽力执行一次 ``git merge --abort``，自身异常一律吸收。
 
-        供 _resolve_ignored_modify_delete_conflicts 的各失败出口共用
-        （code-review item c5248bd14a6e）：rm / check-ignore / commit 失败，
-        或子进程 TimeoutExpired、OSError（含解码异常）中途抛出时，索引可能
-        已滞留部分 DU 路径的 staged 删除、其余路径仍 UU、MERGE_HEAD 未消
-        ——各失败出口统一就地 abort，不把半合并态留给调用方兜底（口径同
-        code-review item af9f0b134011）。abort 幂等，调用方兜底重复 abort
+        供 _resolve_ignored_modify_delete_conflicts 各**已产生变更后**的失败
+        出口共用（code-review item c5248bd14a6e）：rm / check-ignore / commit
+        失败，或子进程 TimeoutExpired、OSError（含解码异常）中途抛出时，索引
+        可能已滞留部分 DU 路径的 staged 删除、其余路径仍 UU、MERGE_HEAD 未消
+        ——各变更后失败出口统一就地 abort，不把半合并态留给调用方兜底（口径
+        同 code-review item af9f0b134011）；纯校验失败的早期 return（status
+        采集失败、非 DU 冲突、无 DU 路径）不经此处，保持合并态原样交调用方
+        采集冲突路径后统一 abort。abort 幂等，调用方兜底重复 abort
         无害；无挂起 merge 时 abort 以非 0 退出被静默忽略。abort 自身再失败
         （git 卡死/不可用）不掩盖原始失败原因，交调用方既有失败路径处置。
         """
@@ -1555,11 +1557,15 @@ class G6StashGuardMixin:
         步骤：存在 DU 冲突且**无其它类型冲突**时，先逐个 ``git rm -f --cached``
         采纳删除（工作区副本保留，供运行时继续使用）——此刻路径已 untracked，
         ``check-ignore`` 判定才可靠（unmerged 条目会被视为 tracked 而误报）；
-        再校验全部路径确被 .gitignore 忽略。rm / commit 失败、任何一条校验不
-        满足或子进程超时、不可用，均经 ``_abort_pending_merge_best_effort``
+        再校验全部路径确被 .gitignore 忽略。失败出口分两类：仅**已产生本函数
+        自身变更（rm --cached 之后）**的出口——rm / check-ignore / commit
+        失败或子进程超时、不可用——经 ``_abort_pending_merge_best_effort``
         就地 ``merge --abort``（code-review item c5248bd14a6e）回到调用方原有
         失败路径（分支内容仍可从分支提交找回，不丢数据；abort 幂等，调用方
-        兜底重复 abort 无害）；全部通过则 ``git commit --no-edit`` 完成 merge。
+        兜底重复 abort 无害）；纯校验失败的早期 return（status 采集失败、存在
+        非 DU 的其它类型冲突、无 DU 路径）保持合并态原样交由调用方采集冲突
+        路径后统一 abort——此处提前 abort 会让调用方的冲突分类采空。全部
+        通过则 ``git commit --no-edit`` 完成 merge。
 
         Returns: True 表示冲突已全部解决且 merge 已提交。
         """

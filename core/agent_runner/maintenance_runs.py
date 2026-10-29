@@ -1970,8 +1970,12 @@ def run_code_review(
             except OSError:
                 pass
 
+        # 兜底文案按 review_kind 区分（item f3c1479e76a6）：evo-add-review-
+        # night-defer-snapshot-writeoff 3.2 放宽后 scheduled+window_start=None
+        # 全仓档是合法组合（下方核销资格门同口径），不再一律标 manual_full，
+        # 与 manifest 记录的 review_kind 保持一致。
         review_window = (
-            f"[{window_start.isoformat()}, now]" if window_start else "（全仓，manual_full）"
+            f"[{window_start.isoformat()}, now]" if window_start else f"（全仓，{review_kind}）"
         )
         # 全仓审查并发（add-code-review-concurrency-and-429-resilience）：双通道
         # 注入①提示词侧子代理扇出上限（{repo_concurrency}），②scan 命令

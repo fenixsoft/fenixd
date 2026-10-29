@@ -1473,14 +1473,15 @@ class LivenessSupervisor:
             if not output_file or started_at is None:
                 continue  # 找不到关联输出文件 → 不可观测，不得短路
             try:
-                blocked_seconds = now - float(started_at)
+                started_at_val = float(started_at)
             except (TypeError, ValueError):
                 continue
+            blocked_seconds = now - started_at_val
             if blocked_seconds < HANG_BLOCKED_CALL_SECONDS:
                 continue
             # item 5b1eb553f47c 同窗校验（一）：started_at 落在当前判定窗口之外
             # → 历史后台调用（大概率早已完成），不参与短路。
-            if started_at < window_cutoff:
+            if started_at_val < window_cutoff:
                 continue
             path = Path(output_file)
             size = None

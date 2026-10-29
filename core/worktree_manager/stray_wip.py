@@ -525,12 +525,19 @@ class MainTreeStrayWipSweeper:
             )
             return None
         # 1.5) untracked 散件口径（2.1）：entry 级判定（porcelain -uall 逐文件
-        #      展开），豁免 .fenix/ negation 放行项与已 ignore 路径。git 查询
-        #      失败按放弃本轮（保守：条目保留，与 status 不可用同款处置）。
+        #      展开），豁免 .fenix/ negation 放行项与已 ignore 路径。清单自身
+        #      查询失败按放弃本轮（保守：条目保留，与 status 不可用同款处置）。
         #      check-ignore 批量通道一次取回、untracked 流与白名单脱落流
         #      （evo-whitelist-tracked-patrol 1.1）共用同一次查询——持锁临界
         #      区内同命令只跑一遍（与 status 共用同款纪律），两流各取各的
         #      判定（放行项此处豁免不计散件、彼处恰是检测目标），互不污染。
+        #      该查询不可用按流解耦降级（code-review item a4b92c63a011）：仅
+        #      放弃本轮 untracked 与白名单两流（untracked 置 None，两流注册表
+        #      均不复位、条目保留交下轮），tracked 流只依赖 status/diff、与该
+        #      查询无关，照常归因/计时/major 告警——不因 check-ignore 瞬时
+        #      故障（index.lock 争用等）连带压制，git 过旧不支持 -n
+        #      --non-matching 的恒失败退化也不再使 tracked major 告警无限期
+        #      静默。
         stray_paths = _porcelain_untracked_paths(status)
         check_detail = (
             self._git_check_ignore_detail(stray_paths) if stray_paths else {}
@@ -538,20 +545,21 @@ class MainTreeStrayWipSweeper:
         if stray_paths and check_detail is None:
             self._log(
                 "warning",
-                "Stray WIP sweep skipped (check-ignore inventory unavailable; "
-                "conservative abandon, entries kept)",
+                "Stray WIP untracked/whitelist flows skipped (check-ignore "
+                "inventory unavailable; conservative abandon, entries kept)",
             )
-            return None
-        untracked = self._untracked_stray_entries(
-            status_stdout=status, detail=check_detail
-        )
-        if untracked is None:
-            self._log(
-                "warning",
-                "Stray WIP sweep skipped (untracked inventory unavailable; "
-                "conservative abandon, entries kept)",
+            untracked = None
+        else:
+            untracked = self._untracked_stray_entries(
+                status_stdout=status, detail=check_detail
             )
-            return None
+            if untracked is None:
+                self._log(
+                    "warning",
+                    "Stray WIP sweep skipped (untracked inventory unavailable; "
+                    "conservative abandon, entries kept)",
+                )
+                return None
         files = list(wm._list_dirty_tracked_files(status_stdout=status))
         result = self._tracked_sweep_locked(files, running_run_ids)
         if result is None:
@@ -567,10 +575,12 @@ class MainTreeStrayWipSweeper:
         #       轮维持 ls-files 零开销，以缺省占位透传（白名单流放行候选
         #       空短路在先、首现流不进入，不会误按查询失败处置）；None＝
         #       查询失败，由消费面按各自既有语义处置（白名单流放弃本流、
-        #       首现判定 abandoned）。
+        #       首现判定 abandoned）。check-ignore 降级轮（1.5 解耦注记）
+        #       两消费面整流放弃，同轮跳过 ls-files 取回（沿用纯 tracked
+        #       轮零开销口径）。
         indexed = (
             self._git_indexed_paths()
-            if (stray_paths or untracked)
+            if ((stray_paths or untracked) and check_detail is not None)
             else _INDEXED_PATHS_UNSET
         )
         # 1.6) 白名单脱落口径（evo-whitelist-tracked-patrol 1.1）：`!` 放行 +
@@ -580,6 +590,11 @@ class MainTreeStrayWipSweeper:
         result["whitelist_untracked"] = self._whitelist_signal(
             stray_paths, check_detail, indexed
         )
+        if untracked is None:
+            # check-ignore 降级轮（1.5 解耦注记）：untracked 流整流放弃，注册
+            # 表不复位（条目保留交下轮），tracked / 白名单结果照常上抛
+            # （白名单流经 _whitelist_signal 既有 abandoned 语义处置）。
+            return result
         if not untracked:
             self._reset_untracked_registry_absent(set())
             # 首现登记同款 absent 复位（evo-stray-first-sight-prevention 1.2）：

@@ -2144,11 +2144,12 @@ class PromptBuilder:
         ]
         # json.dumps 对空列表即返回 "[]"，无需兜底（code-review e6a36e939590）
         items_txt = json.dumps(slim_items, ensure_ascii=False, indent=2)
+        # worktree 缺省表达式单次求值（code-review item 0c3da925ee91）：
+        # out_path 拼接与 {worktree} 占位符共用同一变量，缺省语义单源不漂移。
+        worktree = detail.get("worktree") or self._pm.project_root
         out_path = detail.get("out_path")
         if not out_path:
-            wt = detail.get("worktree") or self._pm.project_root
-            out_path = Path(wt) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
-        worktree = detail.get("worktree") or self._pm.project_root
+            out_path = Path(worktree) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
         # 批内波次上限自适应（add-codefix-affinity-batching 2.2）：按本批
         # items 的文件组数 G 分档（≤4→4；5–8→6；≥9→8），经 {wave_cap} 注入
         # 模板。懒加载规避装载环（code_fix 属编排侧，不反向依赖本模块——同
@@ -2877,14 +2878,20 @@ class PromptBuilder:
         if agent_type in ("implementer", "fast-track"):
             if wt_path is not None:
                 result_path = str(impl_result_path(wt_path))
+                wt_note = ""
             else:
                 # wt_path 不可得（测试/异常场景）→ 降级相对路径表述（D1），不崩溃。
-                result_path = ".fenix-run-result.json（worktree 根目录）"
+                # worktree 位置说明放路径之外独立一行（同 _selfcheck_section
+                # wt_note 口径，code-review item 308bdf1cbab0）：全角括号说明
+                # 紧贴路径会被照抄进路径/命令实参，路径保持纯净相对路径字面量。
+                result_path = ".fenix-run-result.json"
+                wt_note = "  （路径为 worktree 根目录下的相对路径）\n"
             text = (
                 "\n\n## 结果文件硬门（实现者收工契约，强制）\n"
                 "- 框架对本次 run 的成功判定 = 进程正常退出 **且** 结果文件已落盘"
                 "且为可解析的非空 JSON。\n"
                 f"  - 结果文件（**唯一交付落点**）：{result_path}\n"
+                f"{wt_note}"
                 "- **收工前未写 / 文件为空 / 非法 JSON → 本次 run 判失败并原地"
                 "退避重试（整轮 token 重烧）**。\n"
                 "- **正文里的 JSON 不算交付**：框架不解析正文，只读文件——正文里的"
