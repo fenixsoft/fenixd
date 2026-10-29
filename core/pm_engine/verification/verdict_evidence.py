@@ -10,10 +10,13 @@ verified 结果持久化门禁。纯结构搬移，零行为变化。
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 from core.fs_utils import atomic_write_text
+# verify-progress 路径成分净化单源（code-review item 9665956bd581）：本模块
+# spec 目录派生与 judge_files / 引擎写侧同走 safe_component。path_safety 只
+# 依赖标准库、不反向依赖，模块级导入无环。
+from core.verify_engine.path_safety import safe_component
 
 from typing import Optional
 
@@ -704,47 +707,29 @@ def _clear_verdict_violations(pipeline, spec_name: str) -> None:
 
 
 def _spec_dir_component(spec_name: str) -> str:
-    """spec 名 → verify-progress 单一路径分量（非法名/含 % 名转义隔离，fail-open）。
+    """spec 名 → verify-progress 单一路径分量（委托 path_safety.safe_component 单源）。
 
-    code-review 1c4a4c61bcc0：复用 serving._spec_name_path_error（2c579adb670f）
-    单点判定（函数内延迟导入，serving 不反向依赖本模块，无环）——上游
-    state_machine.add_spec 无字符集约束，含路径分隔符或 ``..`` 分量的 spec 名
-    直接内插 ``verify-progress/<spec>/`` 会把本模块的 unlink/write 引到
-    verify-progress 之外。与 serving 的显式拒绝路径不同，本模块写/清/读既有
-    口径均为 fail-open（写失败仅 warning、清幂等、读得缺省），故非法名经
-    percent-escape 派生为单一路径分量隔离落盘：不逃逸目录、不同非法名互不
-    覆盖；清/读沿同一派生路径幂等或得缺省。
+    code-review 9665956bd581：本函数原为 percent-escape 方案（1c4a4c61bcc0 /
+    6a6d211c0b47），与同一拒绝闭环的其余读写方不一致——judge_files
+    （save_attribution / build_requeue_manifest / clear_requeue_manifest）与
+    引擎写侧（_save_report / fastlane._verify_dir / report_gate.
+    verify_progress_dir）走 safe_component 下划线替换，prompt_builder 三处
+    读点（_verdict_rejection_section / _resynthesis_directive_section /
+    _requeue_manifest_section）又用裸 spec_name 内插：病理 spec 名（含
+    ``/``、``..`` 等非 kebab 形态）时同一闭环写出的 verdict_violations.json
+    与 requeue_manifest.json 分落不同目录、三段定向注入全部读空。现收敛为
+    safe_component 薄委托，与全框架 verify-progress 目录净化口径单源一致；
+    原非法名 percent-escape 的 ``%`` 撞名防御（6a6d211c0b47）随之取消——
+    safe_component 无 percent-escape 空间，「合法 ``a%2Fb`` 撞非法 ``a/b``
+    转义产物」的碰撞形态在新映射下不复存在。正常 kebab-case spec 名两方案
+    同为原名，既有目录映射与历史落盘读取不受影响。
 
-    code-review 6a6d211c0b47：合法名仅当不含 ``%`` 时原样返回（既有目录映射
-    不变，历史目录可读）；``_spec_name_path_error`` 不拒 ``%``，若含 ``%`` 的
-    合法名也原样落盘，会与某非法名的 percent-escape 产物撞同一目录（如合法名
-    ``a%2Fb`` vs 非法名 ``a/b`` → ``a%2Fb``），跨 spec 读写互串。含 ``%`` 的
-    合法名与非法名同走下方转义：``%`` 转为 ``%25``，转义产物必含 ``%`` 而原样
-    产物必不含，两空间不相交；quote 自身单射、其输出中的字面 ``.`` 再补
-    ``%2E`` 不引入碰撞（输出中 ``%2E`` 序列只能来自输入 ``%252E``），故全集
-    映射恢复双射、不撞名。
+    非 str（异常上游形态）不经 safe_component 的 ``str()`` 兜底（如 None 会
+    派生 ``"None"`` 分量），保留固定隔离分量 ``_invalid_spec_name``。
     """
-    from core.pm_engine.verification.serving import _spec_name_path_error
-
-    # code-review 6a6d211c0b47：合法名须不含 ``%`` 才原样返回——``%`` 不在
-    # _spec_name_path_error 拒绝清单，若含 ``%`` 的合法名也原样落盘，会与某
-    # 非法名的转义产物撞同一目录；含 ``%`` 合法名与非法名同走下方转义
-    # （``%`` → ``%25``，双射性论证见 docstring）。
-    if (
-        isinstance(spec_name, str)
-        and _spec_name_path_error(spec_name) is None
-        and "%" not in spec_name
-    ):
-        return spec_name
-    # 非 str（异常上游形态）与非法名同走转义隔离；quote 产物中的 ``.`` 再补
-    # 转义为 %2E，``..`` 派生不出路径分量语义；空串（唯一转义为空的输入）
-    # 与非 str 兜底为固定隔离分量。
-    escaped = (
-        quote(spec_name, safe="").replace(".", "%2E")
-        if isinstance(spec_name, str)
-        else ""
-    )
-    return escaped or "_invalid_spec_name"
+    if not isinstance(spec_name, str):
+        return "_invalid_spec_name"
+    return safe_component(spec_name)
 
 
 def _verdict_violations_path(pipeline, spec_name: str) -> Path:
@@ -874,6 +859,42 @@ def _write_resynthesis_directive(
         )
 
 
+def _parse_resynthesis_counts(
+    pipeline, spec_name: str, prior: object
+) -> "tuple[int, int]":
+    """重合成指令计数字段兜 0 解析单源（attempts 与 rejection_round 同口径）。
+
+    code-review cf12e79a85d5：``_handle_attr_dedup_rejection`` 与
+    ``_handle_scenario_requeue`` 原各持一份近逐字拷贝（``int(... or 0)`` +
+    兜 0 + warning 留痕，各自带「与对方同口径」注释互指），收敛到本助手防
+    只改其一的静默漂移。兜 0 语义即 49821e0ef973 / 37ff03ef81c7 既有口径：
+    directive 文件被人工编辑/外部工具写坏（非数值串）时 int() 抛
+    TypeError/ValueError，外溢会沿拒绝闭环折算 cause=requeue_error——该文件
+    仅在被采纳或预算耗尽升级时清除，升级又位于解析之后，损坏条目会让每一轮
+    都在同一处失败、spec 反复 requeue_error 停滞到 stuck 兜底；按 0 兜底并
+    warning 留痕，计数自本轮重新累计，闭环保持自愈。
+
+    Returns:
+        (resynthesis_attempts, rejection_round)；prior 非 dict（防御式，
+        读侧 ``_read_resynthesis_directive`` 正常恒返回 dict）时两者均为 0。
+    """
+    if not isinstance(prior, dict):
+        return 0, 0
+    values = []
+    for field in ("resynthesis_attempts", "rejection_round"):
+        try:
+            values.append(int(prior.get(field) or 0))
+        except (TypeError, ValueError):
+            values.append(0)
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
+                f"{field}={prior.get(field)!r}",
+            )
+    attempts, rejection_round = values
+    return attempts, rejection_round
+
+
 def _escalate_dedup_resynthesis(
     pipeline, spec_name: str, rejection_round: int, violations: list
 ) -> dict:
@@ -987,34 +1008,11 @@ def _handle_attr_dedup_rejection(
     )
 
     prior = pipeline._read_resynthesis_directive(spec_name)
-    # 计数字段就地兜 0（code-review item 49821e0ef973）：directive 文件被人工
-    # 编辑/外部工具写坏（非数值串）时 int() 抛错，沿拒绝闭环折算成
-    # cause=requeue_error；而该文件仅在被采纳或预算耗尽升级时清除，升级又
-    # 位于解析之后——损坏条目会让每一轮都在同一处失败，spec 反复
-    # requeue_error 停滞直到 stuck 兜底。就地按 0 兜底并 warning 留痕，
-    # 计数自本轮重新累计，闭环保持自愈。
-    if isinstance(prior, dict):
-        try:
-            prior_attempts = int(prior.get("resynthesis_attempts") or 0)
-        except (TypeError, ValueError):
-            prior_attempts = 0
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
-                f"resynthesis_attempts={prior.get('resynthesis_attempts')!r}",
-            )
-        try:
-            rejection_round = int(prior.get("rejection_round") or 0)
-        except (TypeError, ValueError):
-            rejection_round = 0
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
-                f"rejection_round={prior.get('rejection_round')!r}",
-            )
-    else:
-        prior_attempts = 0
-        rejection_round = 0
+    # 计数字段兜 0 解析收敛单源（code-review item cf12e79a85d5；兜 0 语义即
+    # 49821e0ef973 原口径，详证见助手 docstring）。
+    prior_attempts, rejection_round = _parse_resynthesis_counts(
+        pipeline, spec_name, prior
+    )
     rejection_round += 1
 
     # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）；
@@ -1233,24 +1231,10 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
 
     # 2) 回炉清单落盘（requeue 子集驱动下轮 judge 只重做该子集）
     prior = pipeline._read_resynthesis_directive(spec_name)
-    # 计数字段就地兜 0（code-review item 37ff03ef81c7，与 _handle_attr_dedup_rejection
-    # 同口径）：directive 被人工编辑/外部工具写坏为非数值串时 int() 抛
-    # ValueError，外溢后折算 cause=requeue_error——该文件仅在被采纳或预算
-    # 耗尽升级时清除，损坏条目会让每一轮都在同一处失败、spec 反复
-    # requeue_error 停滞到 stuck 兜底。按 0 兜底并 warning 留痕，计数自本轮
-    # 重新累计。
-    if isinstance(prior, dict):
-        try:
-            rejection_round = int(prior.get("rejection_round") or 0)
-        except (TypeError, ValueError):
-            rejection_round = 0
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"重合成指令计数字段损坏已兜 0 '{spec_name}': "
-                f"rejection_round={prior.get('rejection_round')!r}",
-            )
-    else:
-        rejection_round = 0
+    # 计数字段兜 0 解析与 _handle_attr_dedup_rejection 同源（code-review item
+    # cf12e79a85d5 收敛单源防漂移，兜 0 语义即 37ff03ef81c7 原口径）；本回炉
+    # 闭环只消费 rejection_round。
+    _, rejection_round = _parse_resynthesis_counts(pipeline, spec_name, prior)
     try:
         build_requeue_manifest(
             pipeline._context.project_root,

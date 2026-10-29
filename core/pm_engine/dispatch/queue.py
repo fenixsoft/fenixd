@@ -176,7 +176,10 @@ def _normalized_float_config(pm, key: str, default: float) -> float:
 
     口径仅一处差异：数值分支接受 int/float（时间窗/节拍类键允许整写秒数）；
     bool 仍显式拒绝（``float(True)`` 会把 ``true`` 折成 1.0 静默改写窗口），
-    其余非法值 WARNING 留痕回缺省。
+    NaN/±inf 一并拒绝（code-review item 514374e976b8，与 rollback.py
+    _dispatch_rollback_backoff_seconds 同口径：消费点普遍以 ``max(下限, ·)``
+    收口，而 ``max(0.0, nan)`` 返回 0.0 会把顺延窗口静默归零、inf 则使窗口
+    永不超限，均与熔断意图相反），其余非法值 WARNING 留痕回缺省。
     """
     try:
         cfg = pm._get_config(key, default)
@@ -188,18 +191,30 @@ def _normalized_float_config(pm, key: str, default: float) -> float:
     if isinstance(cfg, bool):
         illegal = True
     elif isinstance(cfg, (int, float)):
-        return float(cfg)
+        v = float(cfg)
+        if v != v or v in (float("inf"), float("-inf")):
+            # NaN/inf 拒绝（code-review item 514374e976b8，与 rollback.py:140
+            # 的 _dispatch_rollback_backoff_seconds 判式统一口径）。
+            illegal = True
+        else:
+            return v
     else:
         try:
-            return float(str(cfg).strip())
+            v = float(str(cfg).strip())
         except (TypeError, ValueError):
             illegal = True
+        else:
+            # 字符串形态（"nan"/"inf"）float() 可成功转换，转换值同判
+            if v != v or v in (float("inf"), float("-inf")):
+                illegal = True
+            else:
+                return v
     if illegal:
         logger = getattr(pm, "logger", None)
         if logger is not None:
             logger.warning(
                 "pm_engine",
-                f"配置 {key} 非法（应为数值，布尔/非数字均不合法）: "
+                f"配置 {key} 非法（应为数值，布尔/NaN/inf/非数字均不合法）: "
                 f"{cfg!r}，回退缺省 {default}",
             )
     return default
@@ -455,6 +470,25 @@ class QQQueueMixin:
             self._active_priorities.discard(base_prio)
         else:
             self._active_priority_counts[base_prio] = cnt
+
+    def _requeue_exempt_entry(self, entry_to_dispatch):
+        """豁免车道（spec-review/planner-plan）条目重入队（code-review item
+        bcd672009e41）。调用方 MUST 持有 ``_queue_lock``。
+
+        豁免车道从不递增 ``_active_runs``，线程启动失败等兜底 MUST NOT 走
+        ``_rollback_dispatch_slot``（会把 _active_runs 反向减成负数）——但只
+        摘在飞登记、已 pop 条目直接丢弃又与同段「保留条目」日志承诺相悖。
+        此助手复用 _rollback_dispatch_slot 的重入队半段（同键去重 + 同档队
+        首插入），不动槽位记账。
+        """
+        if entry_to_dispatch is None:
+            return
+        self._run_queue = [
+            e for e in self._run_queue
+            if not (e[1] == entry_to_dispatch[1]
+                    and e[2] == entry_to_dispatch[2])
+        ]
+        self._insert_at_bucket_front(entry_to_dispatch)
 
     def _insert_at_bucket_front(self, entry):
         """把条目插入 _run_queue 同优先级档的最前面（调用方须持 _queue_lock）。
@@ -1062,7 +1096,23 @@ class QQQueueMixin:
                     if slots_full and atype not in self._SLOT_EXEMPT_LANE_TYPES:
                         continue
                     eff = self._pm._effective_priority(prio, enqueued_at, now)
-                    spec = self._pm.state_machine.read_one(sname)
+                    # 读取守卫（code-review item 7e5de54ddd5e，对齐 repair_lane
+                    # af519c42ee6f「read_one 可抛 OSError」口径）：本扫描是本轮
+                    # 调度唯一未守卫的 STATE 文件 IO，瞬时异常会冒出整个
+                    # _process_queue 中断剩余候选派发（且 _process_queue 被大量
+                    # finally 块与 Timer 回调调用，异常从 finally/回调冒出按线程
+                    # 级 traceback 收场）——单条目读失败只按不可派发跳过，
+                    # MUST NOT 放大为整轮中断。读位置维持锁内不变。
+                    try:
+                        spec = self._pm.state_machine.read_one(sname)
+                    except (OSError, ValueError) as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"候选扫描读取 STATE 失败 '{sname}' ({atype})，"
+                            f"本轮按不可派发跳过: {type(e).__name__}: {e}",
+                        )
+                        scan_verdicts[(sname, atype)] = (None, False)
+                        continue
                     if not spec:
                         scan_verdicts[(sname, atype)] = (None, False)
                         continue
@@ -1439,7 +1489,8 @@ class QQQueueMixin:
                 # （implementer/fast-track/verifier，锁内已递增 _active_runs /
                 # 档位计数）回滚槽位记账；豁免车道（spec-review/planner-plan）
                 # 从不递增 _active_runs，调 _rollback_dispatch_slot 会把
-                # _active_runs 反向减成负数，只退还准入并摘除各自在飞登记。
+                # _active_runs 反向减成负数，只退还准入、摘除各自在飞登记并
+                # 重入队（条目保留待下轮重派，code-review item bcd672009e41）。
                 with self._queue_lock:
                     self._pm._transient_unseal_recredit()
                     if agent_type in ("implementer", "fast-track", "verifier"):
@@ -1451,8 +1502,10 @@ class QQQueueMixin:
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     elif agent_type == "spec-review":
                         self._active_reviews.discard(spec_name)
+                        self._requeue_exempt_entry(entry_to_dispatch)
                     elif agent_type == "planner-plan":
                         self._active_parallel_plans.discard(spec_name)
+                        self._requeue_exempt_entry(entry_to_dispatch)
                 suppressed.add((spec_name, agent_type))
                 self._pm.logger.warning(
                     "pm_engine",
@@ -1539,8 +1592,12 @@ class QQQueueMixin:
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     elif agent_type == "spec-review":
                         self._active_reviews.discard(spec_name)
+                        # 豁免车道条目保留（重入队待下轮重派，与日志承诺一致；
+                        # code-review item bcd672009e41）
+                        self._requeue_exempt_entry(entry_to_dispatch)
                     elif agent_type == "planner-plan":
                         self._active_parallel_plans.discard(spec_name)
+                        self._requeue_exempt_entry(entry_to_dispatch)
                 suppressed.add((spec_name, agent_type))
                 self._pm.logger.warning(
                     "pm_engine",
@@ -1992,9 +2049,27 @@ class QQQueueMixin:
                     # ——原两段式「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁
                     # 临界区，与 merge-only 重试定时器/WIP 周期消费者并发进入同一
                     # spec 时可丢一次递增，「连续 3 次零变更」冻结转人工晚一轮触发。
-                    attempts = self._pm.state_machine.bump_counters(
-                        spec_name, {"_zero_change_attempts": 1}
-                    ).get("_zero_change_attempts", 0)
+                    # 记账失败不阻塞失败分类（code-review item d708ce0288a8，
+                    # 对齐 _handle_merge_back_real_failure 对 _merge_streak 的
+                    # 941b22736836 同款守卫）：bump_counters 是真实文件 IO，
+                    # 裸调异常沿 worker 外层 except 逃逸会整体跳过下方零变更
+                    # 三连冻结分类、落入 _rollback_failed_dispatch 通用重派
+                    # ——恰是本闸门要遏制的重派，MUST NOT 放大。递增未落盘时
+                    # 按读取侧旧值+1 内存继续参与阈值判定与 error 文案。
+                    try:
+                        attempts = self._pm.state_machine.bump_counters(
+                            spec_name, {"_zero_change_attempts": 1}
+                        ).get("_zero_change_attempts", 0)
+                    except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"零变更计数记账递增失败 '{spec_name}'"
+                            f"（按读取侧旧值+1 继续失败分类）: "
+                            f"{type(e).__name__}: {e}",
+                        )
+                        attempts = self._parse_int_field(
+                            spec_entry, "_zero_change_attempts", 0
+                        ) + 1
                     # fix-zero-change-blindspot：区分「真空转」与「有工作未提交」。
                     # cleanup 前取证的 worktree_dirty 非空 = agent 确实动过文件
                     # （如用 Bash 写文件而非 Edit/Write），只是没 commit——不是空转，
@@ -2030,36 +2105,51 @@ class QQQueueMixin:
                         # 冷却期满会被按 stuck 自动召唤 admin run。error 内嵌
                         # 「原状态 X」供 parse_orig_status 解冻还原。
                         orig_status = spec_entry.get("status") or "implementing"
-                        self._pm.state_machine.freeze_for_human(
-                            spec_name,
-                            error=(
-                                f"原状态 {orig_status} · 实现器连续 {attempts} 次"
-                                f"零变更报成功 — 已冻结转人工，需人工检查任务书/"
-                                f"上下文/网关稳定性"
-                            ),
-                            signal_type="redispatch_loop_detected",
-                            severity="major",
-                            description=(
-                                f"'{spec_name}' 连续 {attempts} 次零变更报成功"
-                                f"（疑似输出截断/空转），自动重派终止——已冻结"
-                                f"转人工处置"
-                            ),
-                            evidence=(
-                                f"spec={spec_name}; zero_change_attempts={attempts}; "
-                                f"run={result.run_id}"
-                            ),
-                            recommended_action=(
-                                "检查任务书/上下文/网关稳定性；处置后解冻"
-                                "（unfreeze_spec 自动清零计数）可重新获得自动"
-                                "修复机会"
-                            ),
-                            alert_callback=self._pm._send_human_escalation_alert,
-                            extra_updates={
-                                # _zero_change_attempts 已由上方 bump_counters 原子
-                                # 递增落盘，不再并写（防并发写回互相覆盖丢增量）
-                                "tester_run": None,
-                            },
-                        )
+                        # 冻结收尾守卫（code-review item d708ce0288a8，对齐
+                        # repair_lane e8f1fac9cbc8「freeze_for_human 裸调抛错会
+                        # 从失败收尾路径再冒出」同型）：IO 瞬时异常沿 worker 外层
+                        # except 逃逸会跳过三连冻结分类、落入通用重派回滚。失败
+                        # 记审计后放弃本分支收尾（不重派、不翻转状态，等恢复
+                        # 通道/周期消费者接手），MUST NOT 放大。
+                        try:
+                            self._pm.state_machine.freeze_for_human(
+                                spec_name,
+                                error=(
+                                    f"原状态 {orig_status} · 实现器连续 {attempts} 次"
+                                    f"零变更报成功 — 已冻结转人工，需人工检查任务书/"
+                                    f"上下文/网关稳定性"
+                                ),
+                                signal_type="redispatch_loop_detected",
+                                severity="major",
+                                description=(
+                                    f"'{spec_name}' 连续 {attempts} 次零变更报成功"
+                                    f"（疑似输出截断/空转），自动重派终止——已冻结"
+                                    f"转人工处置"
+                                ),
+                                evidence=(
+                                    f"spec={spec_name}; zero_change_attempts={attempts}; "
+                                    f"run={result.run_id}"
+                                ),
+                                recommended_action=(
+                                    "检查任务书/上下文/网关稳定性；处置后解冻"
+                                    "（unfreeze_spec 自动清零计数）可重新获得自动"
+                                    "修复机会"
+                                ),
+                                alert_callback=self._pm._send_human_escalation_alert,
+                                extra_updates={
+                                    # _zero_change_attempts 已由上方 bump_counters 原子
+                                    # 递增落盘，不再并写（防并发写回互相覆盖丢增量）
+                                    "tester_run": None,
+                                },
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"零变更三连冻结转人工失败 '{spec_name}'"
+                                f"（放弃本分支收尾，交由恢复/周期通道接手）: "
+                                f"{type(e).__name__}: {e}",
+                            )
+                            return
                     else:
                         self._pm.state_machine.update_spec(spec_name, updates)
                     self._pm.logger.error(

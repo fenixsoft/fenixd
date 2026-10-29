@@ -16,9 +16,11 @@
 三条件全满足 → 生成 code-fix 轻量修复任务（``agents/code-fix.md`` 车道，主树
 直接修复）+ 子集重验（失败场景 ∪ ``depends_on`` 前置链（递归）∪ 以失败场景
 为前置的下游场景（递归），未实跑场景沿用上一轮原判定并标注来源）；任一条件
-不满足 → 既有 bug-found→fix SPEC 整轮路径原样。fastlane 修复失败计入该 spec
-既有验证轮预算（``_verify_fail_rounds`` 与整轮失败同账）；同一验证轮连续
-2 次 fastlane 修复后仍失败强制回落整轮（STATE 字段 ``_fastlane_fail_streak``）。
+不满足 → 既有 bug-found→fix SPEC 整轮路径原样。fastlane 修复失败回落整轮时
+``_verify_fail_rounds``（验证轮预算）由回落路径 ``family._do_spec_bug_found``
+按整轮失败同账单点递增，本模块只递增车道私有连败计数（STATE 字段
+``_fastlane_fail_streak``，单一写点约定见 ``_bump_fail_streak`` 注释）；
+同一验证轮连续 2 次 fastlane 修复后仍失败强制回落整轮。
 修复 diff 不豁免既有 code-review/交付物门禁（轻量 run 走同一 ``_execute_agent``
 收口链路，门禁照常）。
 
@@ -677,8 +679,10 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         bug-found→fix SPEC 整轮派生）；False 表示承接失败/被熔断，调用方
         沿既有整轮路径继续。
 
-    轮次语义：每次 fastlane 修复失败递增 STATE ``_fastlane_fail_streak`` 与
-    ``_verify_fail_rounds``（计入既有验证轮预算）；连续
+    轮次语义：每次 fastlane 修复失败递增 STATE ``_fastlane_fail_streak``（车道
+    私有熔断计数）；``_verify_fail_rounds`` 验证轮预算不在本层递增，由回落
+    整轮路径（family._do_spec_bug_found）单点记账（单一写点约定，见
+    ``_bump_fail_streak`` 注释）。连续
     FASTLANE_MAX_CONSECUTIVE_FAILURES 次失败强制回落整轮（不再发起 fastlane）。
     子集重验通过收敛走 ``_apply_verified``（与整轮 verified 同一收口：门禁
     不豁免），收敛即清零 streak。
@@ -687,14 +691,21 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     sm = ctx.state_machine
 
     def _bump_fail_streak(reason: str) -> dict:
-        # 锁内原子递增（_bump_counter 同范式的多字段原语）：锁外快照读改写
-        # 会与其它对同字段的写者（验证失败记账、admin infra 回拨）互相覆盖
-        # 丢增量。
-        final = sm.bump_counters(spec_name, {
-            FASTLANE_STREAK_FIELD: 1,
-            # fastlane 修复失败计入既有验证轮预算（与整轮失败同账）
-            "_verify_fail_rounds": 1,
-        })
+        # 锁内原子递增（_bump_counter 同范式）：锁外快照读改写会与其它写者
+        # 互相覆盖丢增量。
+        # 单一写点约定（code-review item 96cd9f5a32d2）：本函数只递增车道私有
+        # 熔断计数 FASTLANE_STREAK_FIELD；``_verify_fail_rounds``（验证轮预算）
+        # 由回落整轮路径 family._do_spec_bug_found 单点递增——本函数返回
+        # dispatched=False 后 pipeline._apply_bug_found 恒走 on_spec_bug_found，
+        # 若在此预记一笔，inplace 模式（bug_repair_mode 未配置缺省）会对同字段
+        # 再递增一次，同一轮验证失败使 MAX_VERIFY_FAIL_ROUNDS 冻结闸门预算
+        # 前进 2、提前冻结且冻结文案「连续失败第 N 轮」轮次虚高（derive 模式
+        # legacy 路径不递增同字段只记 1，两模式预算代价还不一致）。收敛到回落
+        # 路径单点后两模式口径一致：inplace 经 _do_spec_bug_found 的
+        # bump_counters 递增；derive 的 legacy 派生闭环本就不消费该字段（其
+        # 失控防护是族谱 governor，MAX_VERIFY_FAIL_ROUNDS 冻结闸门仅存在于
+        # inplace 分支）——两模式均为「fastlane 失败 ≡ 本模式整轮失败同账」。
+        final = sm.bump_counters(spec_name, {FASTLANE_STREAK_FIELD: 1})
         streak = final.get(FASTLANE_STREAK_FIELD, 0)
         outcome = {
             "dispatched": False,

@@ -14,6 +14,12 @@ self._pm，不在本组件持有状态。
 
 from core.timelib import now_local
 from core.git_base_branch import resolve_base_branch
+# verify-progress 路径成分净化单源（code-review item 9665956bd581）：下方
+# verdict 拒绝闭环三处注入段的读点必须与写方（verdict_evidence.
+# _spec_dir_component / verify_engine.judge_files / 引擎 _save_report）同走
+# safe_component，病理 spec 名（含 ``/``、``..`` 等）时读点才与落盘目录一致。
+# path_safety 只依赖标准库、不反向依赖，模块级导入无环。
+from core.verify_engine.path_safety import safe_component
 import json
 import logging
 import re
@@ -2666,11 +2672,15 @@ class PromptBuilder:
         ``first_failed_step`` 与断言 triage evidence 归因文本字段，其余字段
         原样保留，禁止复现/调查/改判定。
         """
+        # 读点净化与写侧单源（code-review item 9665956bd581）：写方
+        # verdict_evidence._verdict_violations_path 经 _spec_dir_component
+        # （= safe_component），此处裸内插 spec_name 在病理名下会嵌套子目录、
+        # 恒读空，verdict-rejection-retry 定向注入静默失效。
         rejection_path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "verdict_violations.json"
         )
         if not rejection_path.exists():
@@ -2747,11 +2757,13 @@ class PromptBuilder:
         素材 + 归因文本契约（MUST 引用本场景局部数据、MUST NOT 套用共享模板串）。
         文件缺失/损坏 → 返回空串（普通裁决轮零注入，prompt 与现状逐字节一致）。
         """
+        # 读点净化与写侧单源（code-review item 9665956bd581）：写方
+        # verdict_evidence._resynthesis_directive_path 同走 safe_component。
         directive_path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "dedup_resynthesis_directive.json"
         )
         if not directive_path.exists():
@@ -2808,11 +2820,14 @@ class PromptBuilder:
         其余（accept）场景归因原样保留复用——MUST NOT 重写非回炉场景。
         文件缺失/损坏 → 返回空串（普通裁决轮零注入，prompt 与现状逐字节一致）。
         """
+        # 读点净化与写侧单源（code-review item 9665956bd581）：写方
+        # verify_engine.judge_files._requeue_manifest_path 本就经
+        # safe_component，此前裸内插在病理名下恒读空、回炉清单注入失效。
         manifest_path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "requeue_manifest.json"
         )
         if not manifest_path.exists():

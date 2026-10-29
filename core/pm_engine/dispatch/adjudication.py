@@ -1544,12 +1544,14 @@ class VAdjudicationMixin:
                 (g.get("path") or "") if isinstance(g, dict) else str(g)
                 for g in remaining_missing
             ]
+            # 成员判断预构建集合（code-review item 2523034d010b）：与本方法
+            # 正常路径及 _preclassify_orphan_impl（fd02ab5d5005）同款，异常
+            # 兜底分支不保留逐项拼接列表的旧形态。
+            allowed = set(disputed) | set(remaining)
             return {
                 "action": "continue",
                 "remaining_missing": remaining_missing,
-                "remaining_disputed": [
-                    r for r in remaining_paths if r in (disputed + remaining)
-                ],
+                "remaining_disputed": [r for r in remaining_paths if r in allowed],
             }
 
         if not gate_result:
