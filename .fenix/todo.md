@@ -545,6 +545,7 @@
 
 ### 浪费
 - **fenix-prototype已交付仍被闸门冻结悬置15小时**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：fenix-prototype 的 15 个任务全部完成、实现分支已合回 main、验证报告已入库，仅因唯一 1 个产品 Bug 触发升级闸门（验证连续失败即冻结等人工的闸门）「连续失败第 3 轮」计数，spec 自 10-29 16:55 冻结为 blocked 至窗末仍悬置约 15 小时，期间派出的 2 个修复载具 run 一个零修复收尾、一个被冻结打断，spec 级累计约 109 万输入 token 后处置完全停摆。
   - 证据：日志 08:55:49Z ERROR「升级闸门：'fenix-prototype' 升级闸门连续失败第 3 轮，冻结为 blocked，等待人工裁决」；升级告警（verify_fail_escalation，major）的 evidence 字段自证「repeat_rounds=[2]（与上一轮失败场景集完全相同——可能属『根因已修复但闸门仍冻结』的误置情形，建议人工核对）」；验证报告（spec/changes/fenix-prototype/verification-report.md）：17/18 场景通过，唯一失败场景 proto-server-lifecycle-reuse-stale-recycle 为 product-bug（major）且根因行级定位——serve_prototype.py L125 身份核实条件 script_path in cmdline 与 L276 的 Path(__file__).resolve() 不对称，存活实例被误判残留另起新端口；快速修复 run code-fix-fastlane-fenix-prototype-5f2586-1793264083-a1 尾部「0 items handled (fixed 0 / skipped 0)」且其引用的清单文件 fix-out-fenix-prototype.jsonl 在盘上不存在；STATE.md 记 impl run「run 因 spec 冻结被终止（进度已保全，解冻后续做）」、告警至窗末 handled=false。
   - 调查评估：问题源：fenix-prototype（UI 原型生成 skill spec）验证收尾的升级闸门处置。已核实事实：①交付实质完成——15 任务勾选、分支 fenix/fenix-prototype-1793259959 已由提交 b6e060677 合回、报告 9873c8e0d 入库；②唯一失败场景为 1 个行级定位的产品 bug，报告明示「无场景文件缺陷，无需修复场景」；③judge 两轮（451 秒+255 秒、输入合计约 25 万 token）第一轮把失败场景按场景缺陷做原地修复，第二轮确认失败集不变（产品 bug），重入仍失败；④冻结前框架派 fastlane（零修复收尾，清单文件缺失）与 impl 收尾 run（被 spec frozen 终止），修复链均未承接行级 bug；⑤升级告警至窗末未处理。根因按形态层写：升级闸门按「连续失败轮数」机械计数冻结（防无限重试烧钱，本身按设计），但对「唯一失败=少量 product-bug 且根因行级定位」的形态无自动修复分流，冻结即全停等人工；fastlane 为何 0 items（bug 未转单 vs 清单为空）证据不足、两假说并存，不出单因结论。与存量工作关系：升级闸门冻结语义无在飞 spec 覆盖自动分流面；告警悬置面由 2026-10-28#可改进#6 承载。结论：本次悬置直接损失有限（验证轮次成本低、已合回工作不丢），但「可自动修的行级 bug 也要等人工」随每个交付 spec 复现，机制清楚，值立项。
@@ -552,6 +553,7 @@
 
 ### 失误
 - **（当日无）**
+  - 自进化：问题不成立 / 建议合理 / — 不需要
   - 影响：窗口内 17 个 run 零失败、零秒挂、零超时；批链回归门真实拦截回归并闭环，验证链对 fenix-prototype 的唯一产品 bug 当场抓出并给出行级根因，无执行层失误造成损失。
   - 证据：数据摘要第 2 节：成功 9、失败 0、秒挂 0、超时 0；10-29 凌晨批链第 1 批定向回归真实执行 failed（total=7072、455 秒，19:09:28Z）后定向重试 1 例通过（19:12:24Z total=1）并由补修提交 9b1cb2869「补修 verify_report 裸 getLogger 回归」闭环；fenix-prototype 唯一失败场景由验证链判定 product-bug 并定位到 serve_prototype.py L125/L276 不对称。
   - 调查评估：逐项复核当日事件：①回归门本窗零 exit=4 伪绿复发，末批全量回归真实执行拦下 verify_report 裸 getLogger 回归并由补修 run 闭环——门禁按设计工作（正面记录）；②fenix-prototype 冻结属升级闸门设计内行为，归入浪费条目复盘而非执行失误；③每日 04:30 断窗时段批链已收工（03:12）、无在飞 run 被击杀属日程裕量，守卫缺口由既有条目承载；④evolution 回写 push 失败 1 次为已知恒败家族（兄弟仓零 remote，既有条目）。当日无可判定为执行错误的条目。
@@ -559,48 +561,56 @@
 
 ### 可改进
 - **run_metrics延迟字段回归恒零，聚合漏报审查停滞**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：已发生+复发敞口：本窗两个 claude 大 run 的 run_metrics（run 收尾结构化指标行，离群初筛与每日停滞聚合的消费源）latency 三字段全零，与同秒收尾延迟摘要行矛盾——夜间审查 run 实测 974 轮、12 次停滞（最长 230.9 秒）被记为 0，直接导致本日摘要第六节 api-stall 聚合漏报审查 run，停滞系列「连续两晚 ≥60 分钟重启取证」的阈值判断建立在失真数据上。
   - 证据：原始行对照：run_metrics（18:40:49Z）「run_id=code-review-1793203459 … latency_rounds: 0, latency_stalls: 0, latency_max: null」vs 同秒收尾延迟摘要行「974 rounds, median 2.5s, max 230.9s, stalls>60s=12」；run_metrics（17:14:22Z）「run_id=evo-1793204980 … latency_rounds: 0, latency_stalls: 0」vs 摘要行「364 rounds, max 329.9s, stalls>60s=2, warning=1」；本日摘要第六节 api-stall 仅 2 条（evo 与 spec-review），审查 run 缺席即漏报呈现；源码核实 core/agent_runner/maintenance_runs.py 五处调用点（387/828/1427/2039/3199 行）均以 _stall_latency 绑定第 5 元后丢弃、收尾指标写入函数 _log_lane_run_metrics 无 latency 形参。
   - 调查评估：问题源：本日摘要第六节停滞聚合与延迟摘要行的交叉核对（自省发现自身聚合源失真）。已核实事实：①2026-10-21#浪费#1 曾实测维护车道 run_metrics latency 非零（修复 33a3a9cb7/d703e8e87 生效），本窗同车道回零——当前源码五处调用点均为丢弃绑定，属修复面不全或被后续提交回退，具体回退点未核实（两假说并存，不影响修复方向）；②evolution 车道写入点同样恒零（evo-1793204980 实测）；③下游后果实锤：第六节聚合消费 run_metrics，审查 run 12 次停滞整体漏报。与存量工作关系：2026-10-17#可改进#2 同家族（当时判已闭合），本条为其复发实例并升级到源码级定位；与 dsh 事件流配对接线（2026-10-15#可改进#2、2026-10-29#可改进#6）是独立缺口（写入面丢弃 vs 事件形态不识别），互补不重复。结论：透传核对+契约测试可闭环，值立项；本条同时更正当日摘要口径——10-28 晚停滞总量应为「审查 12 次（单次最长 230.9 秒，合计时长摘要行未给）+evo 408.6 秒+spec-review 274 秒」，高于第六节可见的约 11.4 分钟。
   - 建议：①恢复五处调用点与 evolution 车道收尾的 latency 透传（把 _stall_latency 传入 _log_lane_run_metrics），并用 git log 定位透传丢失的回退提交；②补契约测试：两车道各一夹具，断言 run_metrics 行 latency_rounds 与同 run 收尾延迟摘要行一致；③停滞聚合在 run_metrics 全零时回退收尾摘要行作双源防御。
 
 - **（持续）回归门exit=4伪绿修复零落地，本窗零复发**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口原样：新鲜度校验与 targets 消毒两项修复悬置约 8 天零落地，# 前缀毒行条件一现即再伪绿（10-04 以来累计 27 次）；本窗批链未中招（exit=4 零复发），且末批全量回归真实执行拦下 1 个回归并闭环——门禁本体有效，缺口仅在「exit=4＋陈旧 XML」路径。
   - 证据：本窗回归完成行：19:01:52Z「code-fix 第 1 批定向回归（触碰面 273 个测试路径）」、19:09:28Z「status=failed, total=7072, duration=455.31s」（真实执行）、19:12:24Z「status=passed, total=1, duration=2.32s」（定向重试 1 例子集）——窗口内无一条「回归命令非零退出（exit=4）」WARNING；补修提交 9b1cb2869（10-29 03:12）；core/regression.py 本窗零触碰。
   - 调查评估：问题源：对 [2026-10-29#可改进#1] 的定向复发对账（全窗 grep 回归 WARNING）。已核实事实：①本窗（含 10-29 凌晨批链 4 波与补修）回归全部真实执行，毒行（# 前缀 __pycache__ 编译缓存路径）未再现——成因未查，可能是本批触碰面映射恰好未混入缓存路径，侥幸不构成修复；②两项修复建议（junit.xml mtime 不早于命令 started_at 的 fail-closed 校验、targets 消毒）零落地；③正面记录：定向回归 failed→定向重试→补修闭环，门禁在 targets 合法时有效（与 10-23 窗观察一致）。与存量工作关系：add-codefix-test-targets-fallback-sanitization 与 evo-codefix-zero-face-regression-hardening 均未覆盖本形态，维持非重复判定。结论：连续七窗复发的缺陷本窗静默，修复面小，维持高优先级立项。
   - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
 
 - **（持续）自省聚合dsh伴随流双计未修，本窗stale再虚增6**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口持续：本窗 17 个「run」中 6 个落入 stale（无终态残留）桶位，经核实全为 dsh 车道伴随事件流文件（占 35%），真实 run 约 11 个——聚合收集面仍把每个 dsh run 的原始事件流（dsh harness 另落一份的 .dsh-events.jsonl）当独立 run 计数，每日量级判断持续失真。
   - 证据：源码 core/self_review.py:555-562 的 _collect_run_files 仍为 glob("*.jsonl") 无 .dsh-events 后缀排除、以 p.stem 当 run_id；归档清单核实：10-29 16:13-16:55 归档的 6 个 .dsh-events.jsonl（planner-plan-fenix-prototype-1793259958-a1、impl-fenix-prototype-1793259958-a1、planner-judge-1793263294-a1、planner-judge-1793263826-a1、code-fix-fastlane-1793264083-a1、impl-fenix-prototype-1793264083-a1 的伴随流）与本窗 stale=6 一一对应。
   - 调查评估：问题源：对本窗摘要「无终态残留: 6」的反常量级核查（自省消费自身聚合产物的自指核查）。已核实事实：①修复零落地（源码行级确认，窗内触碰 self_review.py 的提交均与本缺口无关）；②本窗 dsh run 全部来自 fenix-prototype 主链，伴随流随 run 等比产生；③该缺口使 stale 桶位在 dsh 车道主车道化后恒被伴随流占据，真实的无终态残留信号被淹没。与存量工作关系：evo-fix-self-review-phantom-running（在跑幻影治理家族）未覆盖伴随文件去重，维持非重复判定。结论：一处后缀过滤+一条契约测试可闭环，持续小立项。
   - 建议：①_collect_run_files 排除 .dsh-events.jsonl 后缀（或按基础 run_id 去重，伴随流仅作深扫证据源）；②补契约测试：含伴随流的 dsh run 在 runs 统计中计 1 次、不入 stale。
 
 - **（持续）断窗守卫真空，10-29双断复发零击杀属日程裕量**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：复发敞口持续：每日 04:30 断连窗 10-29 准点复发双断，守卫依赖的 night_quiet_window（夜间静默窗，窗内暂停派发避免在飞 run 撞断连点的配置防御）维持非法布尔值，多窗守卫继续哑化；本窗零击杀纯因批链 03:12 收工、审查 03:20 完成，历史同型死亡实测单次 136 美元量级，批次时点波动下裕量无保证。
   - 证据：内核日志 10-29 04:30:02 与 04:31:21 两次 enp42s0 Link is Down；.fenix/config.yaml 第 302 行 night_quiet_window: false 原样（合法关闭应写字符串 off，文件自 10-20 05:48 未改）；窗内 core/code_fix.py 零触碰，窗值 lint、停用自动再武装、投递窗前缓冲三项建议零落地。
   - 调查评估：问题源：断窗守卫真空的连续对账（覆盖 [2026-10-28#可改进#1] 与 [2026-10-29#可改进#3]）。已核实事实：①双断准点复发、本窗无在飞（批链 02:44-03:12、审查 00:04-03:20，均早于 04:30）；②零代码手工动作（改为覆盖双断点的合法多窗如 "02:52-03:10,04:22-04:40"）悬置已约 10 天；③审查 run 时长本窗约 2.6 小时（较前三轮 3.3-3.6 小时回落），裕量暂时扩大但属时长波动而非守卫生效。与存量工作关系：evo-add-night-window-inflight-guard（跨窗顺延守卫）已落地但依赖窗值合法才生效；evo-code-fix-api-timeout-salvage（api_timeout 终局把未提交现场提交批分支的抢救机制）与连接冷却按设计止损。结论：守卫前提持续缺位，维持优先立项。
   - 建议：①手工把 night_quiet_window 改为覆盖双断点的合法多窗（零代码）；②窗解析把布尔 false 与 off 同义化并在载入时 lint 告警；③修复链停用态自动再武装或每日提醒信号；④批投递与审查派发加窗前缓冲。
 
 - **（恶化）dsh延迟失明扩散到产品spec主链，全链盲飞**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：观测面损失扩大：本窗 fenix-prototype 产品 spec 全链 run（出题 69 轮、主实现 297 轮、judge 两轮、fastlane、impl 收尾）全部 dsh 车道（自研 CLI harness）且延迟配对零样本，窗内「延迟观测疑似失明」WARNING 达 7 条——停滞与延迟维度对产品主链结构性失效，12 晚停滞序列的阈值跟踪在主链上继续哑化。
   - 证据：WARNING 7 条：08:13:21Z planner-plan-fenix-prototype（69 轮）、08:40:16Z impl 主 run（297 轮）、08:49/08:54 两个 planner-judge（42/22 轮）、08:55:08 code-fix-fastlane、08:55:50 impl-1793264083，全部 latency_rounds=0；对照：本窗审查 run code-review-1793203459 为 claude 车道、974 轮延迟样本可配对——主链 dsh 化与维护链 claude 化并存，观测面碎片化。
   - 调查评估：问题源：对 [2026-10-29#可改进#6] 的连续对账。已核实事实：①上轮「夜间主 run 迁移 dsh」本窗演化为产品 spec 主链全 dsh（fenix-prototype 全链 7 run 失明），而审查 run 本窗又回 claude（harness=claude 实测）——车道选择逐 run 波动，失明面随之漂移；②停滞损耗在 dsh run 上是否发生不可判（planner-judge 单轮输入 10 万 token 级的大 run 零样本）。与存量工作关系：本条即 [2026-10-15#可改进#2]（dsh-events 延迟配对接线）主旨的暴露面扩大实证，勿另起炉灶重复立项；与 run_metrics 写入面丢弃（本日 I1）是独立缺口。结论：dsh 配对接线落地前，停滞系列的取证判断对 dsh run 持续不可执行，维持立项优先。
   - 建议：①优先落地 dsh-events 延迟配对（tool_call/tool_result 对、thinking 边界），一次覆盖主链与维护链；②「失明」WARNING 按（车道,事件形态）收敛为一次性免噪防刷屏；③dsh 配对落地前，停滞系列条目口径标注「dsh run 不可测」。
 
 - **（恶化）积压蒸馏零重试超60小时，消费路径仍缺位**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：归档 2026-10-27-evo-add-review-failure-attribution 的知识蒸馏（knowledge-distill，归档知识提取入库车道）自 10-27 16:09 失败后至窗末零重试，龄期升至约 60 小时（上轮 32 小时），归档知识持续缺位；窗内零蒸馏派发，重试待办只挂在 todo.md 靠人工催办，自动消费路径仍未落地。
   - 证据：窗内 daemon 日志 grep knowledge-distill 零命中（fenixd.log 与 log.1）；git log 核实 spec/knowledge/ 本窗零提交；.fenix/knowledge-distill-pending.json（蒸馏重试待办文件）batches=[]；spec/knowledge/ 目录下无 review-failure-attribution 产物。
   - 调查评估：问题源：[2026-10-27#知识真相源#1] 与 [2026-10-29#可改进#4] 的连续对账。已核实事实：①unrecognized_model（CLI 拒识带 [1M] 后缀模型名）本窗零复发，触发面暂消但兜底重试未落地；②积压项消费仍纯靠人工，在飞提案 evo-knowledge-distill-resume-guard（蒸馏恢复守卫）仍滞留 spec/changes/ 未合回。与存量工作关系：resume-guard 覆盖恢复面但未合回，非重复立项。结论：龄期较上轮翻倍恶化，落地重心在重试消费路径的合回。
   - 建议：①resume-guard 尽快走完合回，使积压归档自动补蒸馏；②重试台账加龄期信号（登记超 24 小时未重试发每日一条提醒）；③unrecognized_model 兜底重试（以默认网关裸模型名重试一次）照旧保留。
 
 - **（持续）evolution回写push恒败累计47次**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：自进化 todo 回写的 push 步骤本窗再败 1 次（10-29 01:14，自进化 run evo-1793204980 收尾回写），保留日志累计 47 条同文 WARNING——commit 每次落地但 todo.md 远端同步（ADR-060 语义）长期未达成，固定失败噪音继续稀释告警面价值。
   - 证据：WARNING 2026-10-28T17:14:46Z「evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: fatal: No configured push destination.」；根因已由上轮实测收敛：受管兄弟仓 /root/dsh-plugins 无任何 remote，git -C 项目根 push（core/evolution.py:1107-1108）在该仓必败，fenixd 主仓 origin 正常。
   - 调查评估：问题源：[2026-10-29#可改进#5] 的连续对账。已核实事实：①失败按回写节律逐轮复现（本窗 1 个自进化 run 1 次）；②窗内 core/evolution.py 零触碰，三项建议（push 前 remote 预探测降 DEBUG、恒失败聚合告警、兄弟仓显式配 remote 或关闭 push 语义）零落地。与存量工作关系：与「幂等空转记 ERROR 稀释错误信号」同属恒失败固定噪音家族但对象不同，维持非重复。结论：根因已收敛、修复面小，小立项价值维持。
   - 建议：①push 前以 git remote 探测，空则记 DEBUG 跳过；②恒失败（连续 N 次）收敛为每日一条聚合告警；③对 dsh-plugins 显式配置 remote 或关闭其 push 语义。
 
 - **（持续）spec终态不联动收口告警，升级告警悬置为活实例**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：复发敞口持续+本窗新实证：fenix-prototype 的升级告警（verify_fail_escalation，major）自 10-29 16:55 挂出至窗末 handled=false，spec 冻结后告警无任何自动对账或龄期提醒；对照面：既有告警 87f72c680499（秒挂风暴升级，10-27）于 10-28 10:12 被人工置 handled（动作字段全空，非机制收口）——告警收口仍纯靠人工记忆。
   - 证据：admin_alerts.json（管理告警台账）：告警 87f72c680499 handled=true、handled_at=2026-10-28T02:12:34Z、action_taken=null、result=null（人工点掉无留痕处置）；fenix-prototype 的 verify_fail_escalation 告警 handled=false（本窗数据摘要「未处理 1 条」即此条）；窗内无任何 spec 终态联动收口日志。
   - 调查评估：问题源：[2026-10-28#可改进#6] 的连续对账与本窗新实例。已核实事实：①人工置 handled 不构成机制修复（动作与结果字段全空、无处置留痕）；②fenix-prototype 告警的悬置与 spec 冻结同步发生——告警生命周期与 spec 状态完全解耦，若 spec 后续被解冻交付，告警也将无人收口（87f72c680499 形态复刻）。与存量工作关系：orphaned final disposition group 对账（处置组已终态但信号未消除的同指纹复发检出）只在同指纹复发时检出，覆盖不了「spec 交付后告警自然失效」形态，维持非重复判定。结论：小改动（终态联动收口+龄期盘点），维持立项。
