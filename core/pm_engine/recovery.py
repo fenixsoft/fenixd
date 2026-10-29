@@ -271,7 +271,6 @@ class RecoveryWatch:
         path = self._pm._recovery_watch_path()
         with self._watch_lock:
             self.__save_recovery_watch_locked(path)
-            return
 
     def __save_recovery_watch_locked(self, path) -> None:
         tmp_path = None
@@ -319,7 +318,6 @@ class RecoveryWatch:
         due = time.time() + effective_minutes * 60
         with self._watch_lock:
             self._register_watch_entry(spec_name, reason, effective_minutes, due)
-        return
 
     def _register_watch_entry(self, spec_name, reason, minutes, due) -> None:
         # STATE 读取失败不让异常逃出登记路径（code-review item 63d6472861dd）：
@@ -430,17 +428,27 @@ class RecoveryWatch:
                 # （保留观察项、推进 due），MUST NOT 静默丢弃观察项或关闭它。
                 deferred_due = self._transition_defer_due(spec_name, now)
                 if deferred_due is not None:
+                    deferred_applied = False
                     # due 顺延读改写 + 落盘持锁（code-review item dbf6069ef584）：
                     # 本方法可从 daemon 定时器与 PMEngine.check_blockers 并发进入，
                     # 无锁 RMW 会让交错巡检覆盖对方刚推进的 due（重复派发）。
+                    # 赋值前身份比对（code-review item edb1248c5e72，与下方
+                    # pop 分支 bbfc26f4c0c3 口径对齐）：锁外处理快照期间并发
+                    # register_recovery_watch 可对该 spec 整条覆盖式重新登记
+                    # （新建 dict，身份不等）——按快照条目无条件赋值会把顺延量
+                    # 写进孤儿 dict、并把不含顺延的新登记条目落盘。现值非本
+                    # 快照条目时保留现值（新登记自带新 due，无需落盘）。
                     with self._watch_lock:
-                        item["due"] = deferred_due
-                        self._pm._save_recovery_watch()
-                    self._pm.logger.info(
-                        "pm_engine",
-                        f"Recovery watch deferred for '{spec_name}' "
-                        f"(transition window active, due={deferred_due:.0f})",
-                    )
+                        if self._recovery_watch.get(spec_name) is item:
+                            item["due"] = deferred_due
+                            self._pm._save_recovery_watch()
+                            deferred_applied = True
+                    if deferred_applied:
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"Recovery watch deferred for '{spec_name}' "
+                            f"(transition window active, due={deferred_due:.0f})",
+                        )
                     continue
                 # 框架内重试在途（recovery-watch-status-recheck）：最近一次
                 # 归属该 spec 的 impl 流末事件 ∈ {transient_retry, superseded}
@@ -449,15 +457,20 @@ class RecoveryWatch:
                 # 输出——顺延让框架内推进先行，避免唤起无效 admin run）。
                 retry_due = self._inflight_retry_defer_due(spec_name, now)
                 if retry_due is not None:
+                    retry_applied = False
                     # 同上：读改写 + 落盘整体持锁（code-review item dbf6069ef584）
+                    # + 赋值前身份比对（code-review item edb1248c5e72，口径同上）
                     with self._watch_lock:
-                        item["due"] = retry_due
-                        self._pm._save_recovery_watch()
-                    self._pm.logger.info(
-                        "pm_engine",
-                        f"Recovery watch deferred for '{spec_name}' "
-                        f"(in-flight retry active, due={retry_due:.0f})",
-                    )
+                        if self._recovery_watch.get(spec_name) is item:
+                            item["due"] = retry_due
+                            self._pm._save_recovery_watch()
+                            retry_applied = True
+                    if retry_applied:
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"Recovery watch deferred for '{spec_name}' "
+                            f"(in-flight retry active, due={retry_due:.0f})",
+                        )
                     continue
             else:
                 self._pm.logger.info(
@@ -1084,8 +1097,19 @@ class RecoveryWatch:
                 raw_since = wm.pending_merge_since(spec_name)
                 if isinstance(raw_since, (int, float)):
                     pending_since = float(raw_since)
-        except Exception:
+        except Exception as _d1_err:
+            # D1 探测失败留痕（code-review item 46300f3ce558，同第 2/3 层
+            # active dispatch 探测失败口径 e660dbe20ce0）：按 pending=False
+            # 保守处置（不豁免），但须记 WARNING——worktree_manager 持续
+            # 异常时 D1 豁免静默失效、观察项被提前升级 dispatch_stalled，
+            # 无留痕则日志无从区分探测失败与真无待合并分支。
             pending = False
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Pending merge probe failed for '{spec_name}' "
+                f"(treating as no pending merge): "
+                f"{type(_d1_err).__name__}: {_d1_err}",
+            )
         if not pending:
             return None
         if pending_since is None:
