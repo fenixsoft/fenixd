@@ -814,7 +814,7 @@ class ImplBudget:
         # 扫描失败返回 None（非 0），调用方据此跳过本轮对账不改数。
         try:
             # spec_name 拼模式前做 glob 元字符转义（code-review item
-            # 8993cf9d4318，与同文件 _impl_run_unmaterialized（行 658）对
+            # 8993cf9d4318，与同文件 _impl_run_unmaterialized 对
             # current_run 的转义同口径）：spec 名含 * ? [ 时字符类语义漏配
             # 真实产物，completed 少计后纯漂移分支把 used 改成更小值。
             for p in runs_dir.glob(f"impl-{glob.escape(spec_name)}-*.jsonl"):
