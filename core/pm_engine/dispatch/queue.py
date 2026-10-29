@@ -1461,18 +1461,52 @@ class QQQueueMixin:
                 )
                 continue
 
-            self._pm.logger.info(
-                "pm_engine",
-                f"Dispatching {agent_type} for '{spec_name}' (P{priority})",
-                {"active_runs": active_count},
-            )
+            # ── 派发日志/归属戳预写段异常兜底（code-review item a1126c560a40）──
+            # 本段位于上方出锁段闸门兜底与下方线程启动兜底两个受保护段之间，
+            # 此前无异常保护：此刻条目已 pop、槽位/在飞登记/准入消费均已在锁
+            # 内落位（见下方不变量注释），若抛非 OSError 异常（
+            # _prewrite_verifier_dispatch_stamp 内部仅捕获 OSError）既不走闸
+            # 门段槽位回滚、也没有 worker finally 兜底释放——实现车道槽位永
+            # 久泄漏（max_concurrent 逐次侵蚀至派发停摆），verifier 场景
+            # _active_verifies 残留使该 spec 后续验证入队被单飞守卫永久拒绝。
+            # 对齐线程启动段同款守卫形态：锁内退还准入并按 agent_type 分流回
+            # 滚（与出锁段异常兜底同一分流口径，回滚与前置登记严格互逆），
+            # suppressed 抑制本调用内重选防热旋，条目重新入队待下轮重派。成
+            # 功路径日志与预写时序不变。
+            try:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Dispatching {agent_type} for '{spec_name}' (P{priority})",
+                    {"active_runs": active_count},
+                )
 
-            if agent_type == "verifier":
-                # fix-verify-verdict-run-attribution 1.1：verifier 派发单点
-                # 预写归属戳（transition 成功后、worker 线程启动前）——跨 run
-                # 残留在派发时刻即被覆盖，消费侧可判「预写戳原样 = 本轮未
-                # 产出裁决」。写入失败仅 WARNING 不阻断派发（见助手注释）。
-                _prewrite_verifier_dispatch_stamp(self._pm, spec_name)
+                if agent_type == "verifier":
+                    # fix-verify-verdict-run-attribution 1.1：verifier 派发单点
+                    # 预写归属戳（transition 成功后、worker 线程启动前）——跨 run
+                    # 残留在派发时刻即被覆盖，消费侧可判「预写戳原样 = 本轮未
+                    # 产出裁决」。写入失败仅 WARNING 不阻断派发（见助手注释）。
+                    _prewrite_verifier_dispatch_stamp(self._pm, spec_name)
+            except Exception as e:
+                with self._queue_lock:
+                    self._pm._transient_unseal_recredit()
+                    if agent_type in ("implementer", "fast-track", "verifier"):
+                        if agent_type == "verifier":
+                            # verify 单飞在飞摘除（evo-add-verify-dispatch-single-
+                            # flight 1.1）：闸门异常/线程启动失败路径与前置登记
+                            # 严格互逆（对齐 _active_reviews 分流回滚处置）。
+                            self._active_verifies.discard(spec_name)
+                        self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
+                    elif agent_type == "spec-review":
+                        self._active_reviews.discard(spec_name)
+                    elif agent_type == "planner-plan":
+                        self._active_parallel_plans.discard(spec_name)
+                suppressed.add((spec_name, agent_type))
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"派发日志/归属戳预写异常 '{spec_name}' ({agent_type}) — 已"
+                    f"回滚槽位记账并保留条目: {type(e).__name__}: {e}",
+                )
+                continue
 
             # code-review item 186ea8df1cb1：条目 pop、槽位/在飞登记与准入消费
             # 均已在锁内完成，而释放只在线程体 finally——Thread 构造/start 失败

@@ -991,7 +991,9 @@ def _run_contract_static_check(pipeline, spec_name: str) -> bool:
         if findings:
             from collections import Counter
 
-            dist = dict(Counter(f["rule_id"] for f in findings))
+            # 容错取键（缺 rule_id 落 "?" 桶，口径同下方 serve_missing 的 .get）：
+            # 单条畸形 finding 不经兜底 except 短路 serve 打回门
+            dist = dict(Counter(f.get("rule_id") or "?" for f in findings))
             pipeline._context.logger.info(
                 "pm_engine",
                 f"{info_head}检出 {len(findings)} 条情报: {dist}",

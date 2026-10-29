@@ -335,10 +335,21 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
 
         try:
             # errors="replace"：非 UTF-8 编码的 config.yaml 在读取层解码不抛
-            # UnicodeDecodeError（ValueError 族不在下方 except 内）；替换后若
-            # 解析失败仍落 yaml.YAMLError 分支中止写入，错误载荷契约不破
+            # UnicodeDecodeError（ValueError 族不在下方 except 内）；但被替换成
+            # U+FFFD 的文本往往仍能被 safe_load 成功解析，照常 yaml.dump 全量
+            # 重写会把篡改后的字符串持久化，故解析前先检测 U+FFFD，存在即与
+            # 「无法解析即中止写入」同口径中止，防静默破坏用户其余配置值
             with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                config = yaml.safe_load(f) or {}
+                raw_text = f.read()
+            if "\ufffd" in raw_text:
+                return {
+                    "wrote": False,
+                    "reason": (
+                        "config.yaml 含非 UTF-8 字节（读取时已被替换为 U+FFFD），"
+                        "中止写入以免静默篡改既有配置"
+                    ),
+                }
+            config = yaml.safe_load(raw_text) or {}
         except FileNotFoundError:
             config = {}  # 文件尚不存在，空配置起步不损失任何内容
         except (OSError, yaml.YAMLError) as e:
