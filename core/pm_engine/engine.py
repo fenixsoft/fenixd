@@ -2749,12 +2749,19 @@ class PMEngine:
                 f"task-gap 已补勾，清除 error：'{spec_name}'",
             )
 
-    def _note_unattainable_todos(self, spec_name: str, result: dict) -> None:
+    def _note_unattainable_todos(self, spec_name: str, result: dict,
+                                 gap: "list | None" = None) -> None:
         """诚实退出（改进②）：把 unattainable 申报落一条可见的人工待办告警。
 
         门禁放行「缺口全部已申报」的 partial 时调用——不静默放行：写 admin
         escalation 告警（含任务 id 与 reason），使 /fenix-approve 环节可见
         「哪些任务交给了人工」。告警写失败仅 debug 不阻断放行。
+
+        第三参 ``gap``（诚实退出缺口 id 清单）为可缺省兼容位：dispatch 全量
+        车道（queue）与 fast-track 车道按三参传入，本门禁路径（engine）两参
+        调用。refactor-giant-classes 拆分时签名曾缩成两参、三参调用点一律
+        TypeError 被 debug 日志吞掉，人工待办告警静默丢失——恢复可缺省形参
+        保三调用点同签名。
         """
         try:
             ids, _invalid = _parse_unattainable(result)
