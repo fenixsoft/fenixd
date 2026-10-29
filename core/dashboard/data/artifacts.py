@@ -541,7 +541,9 @@ def parse_bugs(project_root, spec_name) -> list:
                     "severity": "major" if status in ("fail", "failed") else "critical",
                     "scenario_ids": [sc.get("scenario_id", "?")],
                     "assertion_type": a.get("type", "step"),
-                    "description": sc.get("description", "未命名场景"),
+                    # or 链空值口径（对齐 run-result 回退分支）：description 显式为
+                    # null 时也回落「未命名场景」，None 不直透前端（code-review 25e03b18223f）
+                    "description": sc.get("description") or "未命名场景",
                     "evidence": (a.get("message") or a.get("detail") or a.get("actual") or "")
                     or sc_evidence,
                     "classification": classification,
