@@ -57,6 +57,21 @@
    `{"status": "partial", "spec": "{spec_name}", "summary": "<简要总结>","completed_tasks": ["1.1"], "unfinished": ["4.5", "5.1"]}`
    若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：`{"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}`
 
+## UI 原型绑定契约（条件式，prototype-binding-contract）
+
+**开关条件**：本段仅当所领 SPEC 内**显式声明原型为 UI 真相源**（SPEC 正文引用
+`specs/<spec>/prototype/` 且 Scenario 声明「界面以 prototype/ 为准」）时生效；
+未声明原型的 SPEC 本段**零影响**——实现流程与既有行为完全一致，无需任何额外动作。
+
+生效时（SPEC 声明了 UI 真相源）：
+
+- **实现前必读原型**：开始实现前 MUST 先读取 `specs/<spec>/prototype/` 下的原型
+  （HTML 与截图凭证），组件选型、布局结构、关键区块与 `data-proto-id` 锚的对应
+  关系以原型为准绳，MUST NOT 不看原型直接按文字想象实现；
+- **冲突不擅自偏离**：实现与原型冲突时 MUST NOT 擅自偏离原型自行设计，MUST 升级
+  用户裁决；有用户裁决记录的以裁决为准并把裁决记入 SPEC，无裁决时以原型为准；
+- 原型页头带「视觉参照、无约束力」标注的仿样不受本契约约束，按普通 SPEC 处理。
+
 ## 工作目录（worktree 隔离，强制）
 - 你的当前工作目录就是本次 run 的专属 worktree，**一切文件读写一律使用相对路径**（相对当前目录），不要拼绝对路径。
 - 上下文中出现的任何主树绝对路径（如 `/root/fenixd/...`，包括 skill 基路径、声明清单提到的「主树」）都只是部署/对账参考，**不是你的写盘落点**；主树不可写，写主树会被 hook 拦截。
