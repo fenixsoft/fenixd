@@ -5357,8 +5357,15 @@ class CodeFixOrchestrator:
         # 令回归红，此处按 spec 口径恢复 0 的合法语义）。
         if val != val or val < 0:
             return 30.0
-        # inf 或超合理上限（一天）等同「无限期静默等待」，同回退缺省。
+        # inf 或超合理上限（一天）等同「无限期静默等待」，同回退缺省并
+        # WARNING 留痕（留痕口径对齐 _switch_cooldown_seconds 的同款回退；
+        # 配置事故疑似单位写错，MUST NOT 静默吞掉）。
         if val == float("inf") or val > 24 * 60:
+            self._log(
+                "warning",
+                f"code-fix 无主 WIP 宽限配置非法（{val}min 超 24h 上限，"
+                f"疑似单位写错），回退缺省 30 分钟",
+            )
             return 30.0
         return val
 

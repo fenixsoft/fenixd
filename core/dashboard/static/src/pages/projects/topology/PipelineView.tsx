@@ -127,6 +127,7 @@ interface TimeLayout {
   svgH: number;
   minT: number;
   spanS: number;
+  unknownStageCount: number; // 未知 stage 节点数（已兜底跳过，仅计数提示）
 }
 
 /** 真实时间纵轴布局（improve-spec-topology-pipeline-view 3.1，纯函数不触 DOM）。
@@ -176,7 +177,15 @@ function buildTimeLayout(data: SpecTopology): TimeLayout {
   const yByKey = new Map<string, number>();
   const trByKey = new Map<string, number>();
   const perStage = new Map<TopologyStage, { key: string; isTr: boolean; y: number; i: number }[]>();
+  // 未知 stage 兜底（与 SwimlaneView laneIdx<0 跳过同源防线）：后端扩充阶段而
+  // 前端 STAGE_ORDER 未跟上时显式跳过布局，避免 nodeX 的 indexOf 返回 -1 把节点
+  // translate 到 x=-230 画布外被视口裁剪的静默丢节点；跳过数由计数提示兜底呈现
+  let unknownStageCount = 0;
   data.nodes.forEach((n, i) => {
+    if (!STAGE_ORDER.includes(n.stage)) {
+      unknownStageCount += 1;
+      return;
+    }
     const list = perStage.get(n.stage);
     const item = { key: n.id, isTr: false, y: anchorY(n.time), i };
     if (list) list.push(item);
@@ -219,6 +228,7 @@ function buildTimeLayout(data: SpecTopology): TimeLayout {
     svgH: Math.max(maxBottom + PAD, HEADER_H + PAD * 2 + NODE_H),
     minT,
     spanS,
+    unknownStageCount,
   };
 }
 
@@ -296,6 +306,27 @@ export default function PipelineView({
       >
         {showScale ? '⇤ 刻度' : '⇥ 刻度'}
       </button>
+
+      {/* 未知 stage 兜底计数提示（节点已显式跳过，告知用户而非静默消失） */}
+      {layout.unknownStageCount > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 8,
+            top: 4,
+            zIndex: 30,
+            border: '1px solid rgba(250, 140, 22, 0.45)',
+            background: 'rgba(8, 18, 34, 0.9)',
+            color: '#fa8c16',
+            fontSize: 11,
+            lineHeight: '18px',
+            borderRadius: 4,
+            padding: '0 7px',
+          }}
+        >
+          {layout.unknownStageCount} 个未知阶段节点未展示
+        </div>
+      )}
 
       {/* 左侧时间刻度列（可折叠；与主图共享同一纵向坐标系） */}
       {showScale && (

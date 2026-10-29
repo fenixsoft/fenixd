@@ -503,8 +503,8 @@ export default function ClaudeOutputPane({
           //（item a36d72e0b207），重复投递整批被剔除时 total 不动。reset/
           // 重同步路径整体重拉 total，不经本分支。
           setTotalEvents((prev) => prev + appended);
-          for (const ev of incoming) {
-            const status = TERMINAL_EVENT_STATUS.get(ev.type);
+          for (const incomingEv of incoming) {
+            const status = TERMINAL_EVENT_STATUS.get(incomingEv.type);
             if (status) {
               reportStatus(status);
               break;
