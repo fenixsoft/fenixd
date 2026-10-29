@@ -54,17 +54,29 @@ class _AnchorParser(HTMLParser):
         self.anchors: dict[str, dict] = {}
         self._stack: list[tuple[str, str | None, list[str]]] = []
 
-    def handle_starttag(self, tag, attrs):
-        anchor_id = None
+    @staticmethod
+    def _anchor_from_attrs(attrs) -> str | None:
         for name, value in attrs:
             if name == ANCHOR_ATTR:
-                anchor_id = (value or "").strip() or None
-                break
+                return (value or "").strip() or None
+        return None
+
+    def handle_starttag(self, tag, attrs):
+        anchor_id = self._anchor_from_attrs(attrs)
+        if tag in _VOID_TAGS:
+            # void 元素没有闭合标签（不会弹栈）：带锚在开始标签处直接记录，
+            # 无锚也不压栈，避免其锚帧滞留栈顶拦截后续文本归属
+            if anchor_id:
+                self._record(anchor_id, tag, "")
+            return
         self._stack.append((tag, anchor_id, []))
 
     def handle_startendtag(self, tag, attrs):
-        # 自闭合（xhtml 风格）不进栈
-        pass
+        # 自闭合（xhtml 风格 / void 带斜杠，均走本回调而非 starttag）不进栈；
+        # 带锚直接记录（无后代文本，快照置空串）
+        anchor_id = self._anchor_from_attrs(attrs)
+        if anchor_id:
+            self._record(anchor_id, tag, "")
 
     def handle_endtag(self, tag):
         if tag in _VOID_TAGS:

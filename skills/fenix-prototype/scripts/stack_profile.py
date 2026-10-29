@@ -18,7 +18,7 @@
 
     python3 stack_profile.py --project <工程目录> [--output <path>] [--pretty]
 
-退出码：0 = 侦察成功（含 unknown 降级画像，属正常产物）；2 = 用法/目录错误。
+退出码：0 = 侦察成功（含 unknown 降级画像，属正常产物）；2 = 用法/目录/落盘错误。
 """
 
 from __future__ import annotations
@@ -36,6 +36,9 @@ SKIP_DIRS = {
     "node_modules", "dist", "build", ".git", ".fenix", ".history",
     ".claude", "coverage", ".pytest_cache", "__pycache__", "vendor",
     "third_party", "thirdparty",
+    # 前端框架构建产物（Next/Nuxt/SvelteKit/Storybook/Turbo/Parcel 等）
+    ".next", ".output", ".nuxt", "out", "storybook-static",
+    ".svelte-kit", ".turbo", ".parcel-cache",
 }
 
 # 各类别扫描的文件上限（侦察是尽力而为，不为全仓遍历烧时间）
@@ -117,13 +120,24 @@ PROFILE_PROBES: list[StackProbe] = [ReactAntdProbe()]
 # 主题 / 设计 token 提取
 # ---------------------------------------------------------------------------
 
-def _iter_source_files(project: Path, exts: set[str], limit: int = MAX_FILES_PER_CATEGORY):
-    """受控遍历：跳过 SKIP_DIRS 与超出上限后的剩余文件（顺序稳定）。"""
+def _iter_source_files(
+    project: Path,
+    exts: set[str],
+    limit: int = MAX_FILES_PER_CATEGORY,
+    files: list[Path] | None = None,
+):
+    """受控遍历：跳过 SKIP_DIRS 与超出上限后的剩余文件（顺序稳定）。
+
+    ``files`` 传入已预遍历的清单（已按 SKIP_DIRS 过滤）时不再重复全树遍历，
+    供同一画像内的多个收集器共享一次遍历结果。
+    """
     count = 0
-    for path in sorted(project.rglob("*")):
+    for path in (files if files is not None else sorted(project.rglob("*"))):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.relative_to(project).parts):
+        if files is None and any(
+            part in SKIP_DIRS for part in path.relative_to(project).parts
+        ):
             continue
         if path.suffix.lower() not in exts:
             continue
@@ -133,10 +147,24 @@ def _iter_source_files(project: Path, exts: set[str], limit: int = MAX_FILES_PER
         yield path
 
 
-#: 只提取「视觉约束相关」的 CSS 自定义属性（前缀命中即收，防 token 表爆炸）
+def _walk_source_files(project: Path) -> list[Path]:
+    """单次全树遍历，产出跳过 SKIP_DIRS 的文件清单（顺序稳定，尽力而为）。"""
+    files: list[Path] = []
+    for path in sorted(project.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(project).parts):
+            continue
+        files.append(path)
+    return files
+
+
+#: 只提取「视觉约束相关」的 CSS 自定义属性（前缀命中即收，防 token 表爆炸）。
+#: 值不强制以 ``;`` 收尾（末条声明可省略分号）；排除 ``{}`` 与换行，
+#: 防无分号时跨声明吞并后续内容。
 _INTERESTING_CUSTOM_PROP = re.compile(
     r"--([a-z0-9-]*(?:primary|accent|background|foreground|radius|font|muted|border|"
-    r"card|popover|secondary|destructive|ring|input|chart|sidebar)[a-z0-9-]*)\s*:\s*([^;]+);",
+    r"card|popover|secondary|destructive|ring|input|chart|sidebar)[a-z0-9-]*)\s*:\s*([^;{}\n]+)",
     re.IGNORECASE,
 )
 
@@ -145,11 +173,13 @@ _ANTD_TOKEN_BLOCK = re.compile(r"token\s*:\s*\{([^{}]*)\}", re.DOTALL)
 _ANTD_TOKEN_KEY = re.compile(r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-Za-z]*|fontFamily)\s*:\s*['\"]?([^,'\"}\n]+)")
 
 
-def extract_css_custom_props(project: Path) -> tuple[dict[str, str], list[str]]:
+def extract_css_custom_props(
+    project: Path, files: list[Path] | None = None
+) -> tuple[dict[str, str], list[str]]:
     """提取 :root 级 CSS 自定义属性（less/scss/css 同口径），返回 (tokens, sources)。"""
     tokens: dict[str, str] = {}
     sources: list[str] = []
-    for path in _iter_source_files(project, STYLE_EXTS):
+    for path in _iter_source_files(project, STYLE_EXTS, files=files):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -166,11 +196,13 @@ def extract_css_custom_props(project: Path) -> tuple[dict[str, str], list[str]]:
     return tokens, sources
 
 
-def extract_antd_tokens(project: Path) -> tuple[dict[str, str], list[str]]:
+def extract_antd_tokens(
+    project: Path, files: list[Path] | None = None
+) -> tuple[dict[str, str], list[str]]:
     """提取代码里 antd ConfigProvider 的 theme.token 配置，返回 (tokens, sources)。"""
     tokens: dict[str, str] = {}
     sources: list[str] = []
-    for path in _iter_source_files(project, CODE_EXTS):
+    for path in _iter_source_files(project, CODE_EXTS, files=files):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -251,8 +283,10 @@ def build_profile(project: Path) -> dict:
             ["依赖清单未识别出受支持的浏览器组件库（v1 支持 React+antd）"],
         )
 
-    css_tokens, css_sources = extract_css_custom_props(project)
-    antd_tokens, antd_sources = extract_antd_tokens(project)
+    # 一次全树遍历，三类收集器共享（侦察是尽力而为，不为全仓遍历烧三遍时间）
+    walked = _walk_source_files(project)
+    css_tokens, css_sources = extract_css_custom_props(project, walked)
+    antd_tokens, antd_sources = extract_antd_tokens(project, walked)
     design_doc = extract_design_doc(project)
 
     profile = {
@@ -268,7 +302,7 @@ def build_profile(project: Path) -> dict:
             "sources": css_sources + antd_sources,
         },
         "design_doc": design_doc,
-        "samples": _sample_pages(project),
+        "samples": _sample_pages(project, walked),
         "generation": {
             "mode": "real-components",
             "binding": "binding",
@@ -307,15 +341,17 @@ def _unknown_profile(project: Path, reasons: list[str]) -> dict:
     }
 
 
-#: 现有页面样例（供生成 prompt 参考既有布局惯例），封顶 8 个
-_SAMPLE_PATTERNS = ("src/pages/", "src/views/", "src/routes/", "app/", "pages/")
+#: 现有页面样例：按路径段匹配（任一路径段等于页面目录名），封顶 8 个。
+#: 整段比较避免裸子串误命中（如 myapp/、webapp/ 含 "app/"、settings/pages-config/ 含 "pages/"）。
+_PAGE_DIR_SEGMENTS = {"app", "pages", "routes", "views"}
 
 
-def _sample_pages(project: Path) -> list[str]:
+def _sample_pages(project: Path, files: list[Path] | None = None) -> list[str]:
     samples: list[str] = []
-    for path in _iter_source_files(project, CODE_EXTS, limit=MAX_FILES_PER_CATEGORY):
+    for path in _iter_source_files(project, CODE_EXTS,
+                                   limit=MAX_FILES_PER_CATEGORY, files=files):
         rel = path.relative_to(project).as_posix()
-        if any(pat in rel for pat in _SAMPLE_PATTERNS):
+        if set(rel.split("/")) & _PAGE_DIR_SEGMENTS:
             samples.append(rel)
             if len(samples) >= 8:
                 break
@@ -343,8 +379,13 @@ def main(argv: list[str] | None = None) -> int:
     text = json.dumps(profile, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.output:
         out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text + "\n", encoding="utf-8")
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": f"画像落盘失败：{exc}"},
+                             ensure_ascii=False), file=sys.stderr)
+            return 2
     else:
         print(text)
     return 0
