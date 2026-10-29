@@ -733,3 +733,47 @@ class TestServeStaticServing:
             _stop_server(proto)
             proc.wait(timeout=8)
             out_f.close()
+
+
+# ---------------------------------------------------------------------------
+# 任务 3.4：契约段双向推演验证（条件开关的结构钉死，防回归为无条件段）
+# ---------------------------------------------------------------------------
+
+IMPLEMENTER_MD = (REPO_ROOT / "agents" / "implementer.md").read_text(encoding="utf-8")
+CODE_REVIEW_MD = (REPO_ROOT / "agents" / "code-review.md").read_text(encoding="utf-8")
+
+
+class TestPrototypeBindingContractSections:
+    """带声明 SPEC 触发两处契约段义务；无原型 SPEC 零影响（双向推演的结构化落库）。"""
+
+    def test_implementer_section_is_conditional_and_binding(self):
+        assert "## UI 原型绑定契约（条件式，prototype-binding-contract）" in IMPLEMENTER_MD
+        assert "开关条件" in IMPLEMENTER_MD
+        assert "specs/<spec>/prototype/" in IMPLEMENTER_MD
+        assert "实现前必读原型" in IMPLEMENTER_MD
+        assert "MUST NOT 擅自偏离" in IMPLEMENTER_MD
+        assert "零影响" in IMPLEMENTER_MD
+        assert "无约束力" in IMPLEMENTER_MD, "仿样原型须豁免"
+
+    def test_code_review_section_is_conditional_and_binding(self):
+        assert "## UI 原型对照契约（条件式，prototype-binding-contract）" in CODE_REVIEW_MD
+        assert "开关条件" in CODE_REVIEW_MD
+        assert "specs/<spec>/prototype/" in CODE_REVIEW_MD
+        assert "对照原型检查" in CODE_REVIEW_MD
+        assert "data-proto-id" in CODE_REVIEW_MD
+        assert "需升级项" in CODE_REVIEW_MD
+        assert "零影响" in CODE_REVIEW_MD
+
+    def test_switch_clause_mentions_both_signal_keys(self):
+        # 开关 = SPEC 正文引用 prototype/ + Scenario 声明「界面以 prototype/ 为准」
+        for text in (IMPLEMENTER_MD, CODE_REVIEW_MD):
+            assert "Scenario 声明" in text
+            assert "界面以 prototype/ 为准" in text
+
+    def test_drill_samples_resolve_as_expected(self):
+        # 与 run 内双向推演同源的最小判定：声明样例命中开关、对照样例不命中
+        declared = ("界面原型（UI 真相源）：specs/order-board/prototype/index.html\n"
+                    "界面以 prototype/ 为准")
+        undeclared = "## Scenario: 重试次数上限\n- **THEN** 任务标记为 blocked"
+        assert "specs/order-board/prototype/" in declared and "界面以 prototype/ 为准" in declared
+        assert "prototype/" not in undeclared and "界面以 prototype/ 为准" not in undeclared
