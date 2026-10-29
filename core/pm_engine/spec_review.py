@@ -75,6 +75,39 @@ def _parse_porcelain_path(line: str) -> Optional[str]:
         path = path.split(" -> ", 1)[1]
     return path or None
 
+
+# 脏文件指纹的单文件读入上限（code-review item 217147dfa18a）：dirty_files 仅
+# 服务 _verify_snapshot 的 WARNING 留痕与「新增文件」去重（非硬门），旧实现对
+# porcelain 列出的每个脏文件 read_bytes 全量读入算 md5，工作区存在大体积未跟踪
+# 文件时派发与收工各全量重读一遍，同步阻塞线程做两轮无上界 IO/内存开销——
+# 只读头部有限字节参与哈希，配合 stat 大小组成指纹，超限部分不再读入。
+_DIRTY_HASH_MAX_BYTES = 1 << 20
+
+
+def _dirty_file_fingerprint(path: Path) -> Optional[str]:
+    """计算脏文件指纹 ``"{size}:{头部 md5}"``，读失败返回 None。
+
+    对齐 _take_snapshot/_verify_snapshot 两侧既有的读失败降级口径（静默跳过，
+    非硬门信号不因 IO 故障放大）；头部读取按 _DIRTY_HASH_MAX_BYTES 截断，分块
+    读入避免大文件整体驻留内存。大小入指纹使头部之外的增长/截断仍可被比对
+    检出（同尺寸原地改写超出头部的部分不检出——dirty_files 本就非硬门，仅
+    留痕信号，漏报可接受）。
+    """
+    try:
+        size = path.stat().st_size
+        h = hashlib.md5()
+        with path.open("rb") as f:
+            remaining = _DIRTY_HASH_MAX_BYTES
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                h.update(chunk)
+                remaining -= len(chunk)
+        return f"{size}:{h.hexdigest()}"
+    except OSError:
+        return None
+
 # ── infra 失败指纹（evo-run-failure-classification-circuitbreaker D1）──────
 # 评审 API 批量失败（403 网关拒绝 / 402 余额不足 / 429 限流 / quota/budget 耗尽 /
 # rate limit / provider 侧熔断信号 / CLI 进程级崩溃）同属 infra——链路级问题，
@@ -412,7 +445,19 @@ class SpecReviewManager:
             return False
 
         # ② 派发前快照（写入边界校验的基线）
-        snapshot = self._take_snapshot(spec_name)
+        # 快照扫描同纳入异常收口（code-review item 2ca3b606537f）：锚点已在上方
+        # ① 落盘，而 _take_snapshot 内 spec_dir.rglob('*') 未包异常（pathlib 扫描
+        # 只吞 PermissionError，SPEC 目录在 is_dir 与 rglob 之间被竞态删除时
+        # FileNotFoundError 会向外传播）——异常逃出本方法即留下「锚点已落盘、
+        # run 未派发」残余，与下方 ③ 自述「派发异常须收口锚点、不得留残余」
+        # 不变量相悖。降级为空快照继续派发：消费侧对空 spec_files 的比对为空集
+        # （_load_snapshot_or_none 对基线缺失同款跳过比对口径），删除检测随之
+        # 失效一轮，属可接受降级；stale 锚点由入口 300-321 行段自愈兜底。
+        try:
+            snapshot = self._take_snapshot(spec_name)
+        except OSError as e:
+            self.logger.warning("spec_review", f"快照扫描失败: {spec_name}: {e}")
+            snapshot = {"spec_files": {}, "dirty_files": {}}
         snapshot_dir = self.project_root / ".fenix" / "spec-review" / spec_name
         snapshot_path = snapshot_dir / "snapshot.json"
         try:
@@ -999,7 +1044,8 @@ class SpecReviewManager:
 
         返回快照 dict，包含：
         - spec_files: {相对路径: 内容哈希}——SPEC 目录完整性硬门依据（删除即越界）
-        - dirty_files: {相对路径: 内容哈希}（仅 git status --porcelain 列出的脏文件）
+        - dirty_files: {相对路径: 大小+头部哈希指纹}（仅 git status --porcelain
+          列出的脏文件，单文件读入有界，见 _dirty_file_fingerprint）
           ——仅供 `_verify_snapshot` 记 WARNING 留痕与「新增文件」去重，不作硬门
         """
         spec_dir = self.project_root / "spec" / "changes" / spec_name
@@ -1039,12 +1085,13 @@ class SpecReviewManager:
                     continue
                 full = self.project_root / path
                 if full.is_file():
-                    try:
-                        content = full.read_bytes()
-                        h = hashlib.md5(content).hexdigest()
-                        snapshot["dirty_files"][path] = h
-                    except OSError:
-                        pass
+                    # 有界指纹替代全量读入 md5（code-review item 217147dfa18a）：
+                    # 大体积未跟踪文件不再整体读入，读失败照旧静默跳过（留痕
+                    # 信号不因 IO 故障放大）。比对侧 _verify_snapshot 用同一
+                    # 助手同口径取指纹，两侧格式对称。
+                    fp = _dirty_file_fingerprint(full)
+                    if fp is not None:
+                        snapshot["dirty_files"][path] = fp
         return snapshot
 
     def _verify_snapshot(
@@ -1084,6 +1131,7 @@ class SpecReviewManager:
 
         # 检查 SPEC 目录内文件哈希是否变化
         modified_spec = []
+        unreadable_spec = []
         for rel, old_hash in snapshot.get("spec_files", {}).items():
             full = self.project_root / rel
             if not full.exists():
@@ -1091,11 +1139,28 @@ class SpecReviewManager:
             try:
                 content = full.read_bytes()
                 new_hash = hashlib.md5(content).hexdigest()
-                if new_hash != old_hash:
-                    # 文件被修改，这是允许的（repaired 状态）
-                    modified_spec.append(rel)
             except OSError:
-                return f"无法读取文件: {rel}"
+                # 读失败降级跳过（code-review item 9bfd45096446）：瞬态 IO 抖动
+                # （NFS/ESTALE、并发截断读）与评审者越界无关，旧口径直接 return
+                # 「无法读取文件」经 _check_write_boundary 归为边界错误走
+                # content_failure 重试并递增 _review_attempts，极端下 3 次耗尽
+                # 冻结转人工——对齐 _take_snapshot 侧读失败静默跳过与下方
+                # dirty_files 比对的降级口径，记 WARNING 留痕、不按越界硬失败
+                # 消耗重试预算；unreadable 条目同步从下方 repaired「未实际改动」
+                # 硬门豁免（无法证实亦无法证伪，保守放行不误伤派发，同
+                # spec_integrity 族既定口径）。
+                unreadable_spec.append(rel)
+                continue
+            if new_hash != old_hash:
+                # 文件被修改，这是允许的（repaired 状态）
+                modified_spec.append(rel)
+        if unreadable_spec:
+            self.logger.warning(
+                "spec_review",
+                f"快照比对时 SPEC 文件读取失败（瞬态 IO，跳过该文件比对，"
+                f"不按越界硬失败）: {spec_name}: "
+                f"{', '.join(sorted(unreadable_spec))}",
+            )
 
         # repaired 契约上 repairs 须指向实际被修改的文件（code-review item
         # d012f86680b9）：repairs 由评审器自报、归因明确，条目指向快照中存在但
@@ -1110,6 +1175,7 @@ class SpecReviewManager:
                 path for path in repair_paths
                 if path in snapshot.get("spec_files", {})
                 and path not in modified_spec
+                and path not in unreadable_spec
             )
             if unmodified:
                 return (
@@ -1134,19 +1200,17 @@ class SpecReviewManager:
                     f"{', '.join(sorted(unregistered))}",
                 )
 
-        # 工作区脏文件变动：非归因，仅留痕
+        # 工作区脏文件变动：非归因，仅留痕。指纹取法与 _take_snapshot 同一
+        # 助手同口径（code-review item 217147dfa18a：有界读入，不再全量重读），
+        # 读失败返回 None 照旧静默跳过。
         changed_dirty = []
         for rel, old_hash in snapshot.get("dirty_files", {}).items():
             full = self.project_root / rel
             if not full.exists():
                 continue  # 文件被删除，可能不是评审者所为
-            try:
-                content = full.read_bytes()
-                new_hash = hashlib.md5(content).hexdigest()
-                if new_hash != old_hash:
-                    changed_dirty.append(rel)
-            except OSError:
-                pass
+            fp = _dirty_file_fingerprint(full)
+            if fp is not None and fp != old_hash:
+                changed_dirty.append(rel)
         if changed_dirty:
             self.logger.warning(
                 "spec_review",
