@@ -2791,3 +2791,510 @@ class TestManualWorkerRatelimitConsume(unittest.TestCase):
         self._consume_and_drive(daemon, self._run_result(self._intent()))
         self.assertTrue(daemon.logger.has("排程失败"))
         self.assertFalse(daemon.admin_monitor._code_review_in_flight)
+
+
+# ── evo-review-empty-product-redispatch：零产物止损链路 ────────────────
+
+
+class _MonitorFakeLogger:
+    """(component, message) 签名的监控器日志替身（stdlib logging 对双参调用
+    会把第二参当 % 格式参数——监控器生产注入的是项目 Logger 同签者）。"""
+
+    def __init__(self):
+        self.infos = []
+        self.warns = []
+        self.errors = []
+
+    def info(self, component, message, *a, **k):
+        self.infos.append(f"{component} {message}")
+
+    def warning(self, component, message, *a, **k):
+        self.warns.append(f"{component} {message}")
+
+    def error(self, component, message, *a, **k):
+        self.errors.append(f"{component} {message}")
+
+
+class _EmptyFaceMixins:
+    """零产物止损测试共用小工具（face 构造 / 结果桩 / 告警读取）。"""
+
+    @staticmethod
+    def _face(run_id, variant="zero_valid_rows", manifest_count=2):
+        return {
+            "run_id": run_id,
+            "manifest_count": manifest_count,
+            "variant": variant,
+            "shards": 0,
+            "sources_present": 0,
+            "unreadable": [],
+        }
+
+    @staticmethod
+    def _result(run_id, face=None, error=""):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            run_id=run_id,
+            success=face is None,
+            inserted=0,
+            updated=0,
+            resolved=0,
+            shards=0,
+            error=error or (f"gate: {face['variant']}" if face else ""),
+            fail_face=face,
+            ratelimit_redispatch=None,
+        )
+
+    def _alerts(self, monitor):
+        p = self.repo / ".fenix" / "admin_alerts.json"
+        if not p.exists():
+            return []
+        text = p.read_text(encoding="utf-8").strip()
+        if not text:
+            return []
+        data = json.loads(text)
+        return [e for e in data if isinstance(e, dict)]
+
+
+class TestEmptyProductRedispatchChain(_EmptyFaceMixins, unittest.TestCase):
+    """零产物止损链路（evo-review-empty-product-redispatch 1.1，task 3.1）。
+
+    钉住「零有效行拦截 → 自动重派恰 1 次 → 重派仍失败 → admin 升级信号且
+    不再重派」全链（stub run 函数，不真实派发），以及零产物与 429 两通道
+    限次合计语义、互不叠加调度同一 run 链。
+    """
+
+    def setUp(self):
+        self.repo = Path(_mkdtemp("cr-empty-"))
+        (self.repo / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.repo / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.repo), ignore_errors=True)
+
+    def _monitor(self, runner):
+        from core.admin_monitor import AdminMonitor
+
+        cfg = {
+            "admin": {
+                "code_review": {"enabled": True, "run_at": "00:00"},
+                "self_review": {"enabled": True, "run_at": "00:00"},
+            }
+        }
+        return AdminMonitor(
+            cfg, None, str(self.repo), _MonitorFakeLogger(),
+            agent_runner=runner, code_review_executor=None,
+        )
+
+    def _checkpoint(self, monitor):
+        from unittest.mock import patch
+
+        with patch("core.code_review.collect_manifest",
+                   lambda *a, **k: ["core/a.py", "core/b.py"]):
+            return monitor._run_code_review_checkpoint()
+
+    def _scripted_runner(self, outcomes):
+        """stub run_code_review：按脚本依次返回结果并记录调用（不真实派发）。"""
+        runner = type("R", (), {})()
+        runner._running_agents = {}
+        calls = []
+
+        def run_code_review(manifest, review_kind="scheduled", window_start=None,
+                            scope="window", **k):
+            calls.append({
+                "manifest": list(manifest), "kind": review_kind,
+                "scope": scope, "window_start": window_start,
+                "redispatch_of": k.get("redispatch_of"),
+            })
+            return outcomes.pop(0)
+
+        runner.run_code_review = run_code_review
+        runner.calls = calls
+        return runner
+
+    def test_zero_rows_redispatch_exactly_once_then_escalates(self):
+        runner = self._scripted_runner([
+            self._result("code-review-100", face=self._face("code-review-100")),
+            self._result("code-review-101", face=self._face("code-review-101")),
+        ])
+        mon = self._monitor(runner)
+        res = self._checkpoint(mon)
+        self.assertTrue(res.get("triggered"))
+        self.assertEqual(len(runner.calls), 2, "零产物自动重派恰 1 次")
+        # 重派以原 manifest/参数复调（幂等保障既有）
+        self.assertEqual(runner.calls[1]["manifest"], runner.calls[0]["manifest"])
+        self.assertEqual(runner.calls[1]["kind"], runner.calls[0]["kind"])
+        # 重派事件留痕：重派 run 自身 jsonl 追加 empty_product_redispatch 标注
+        rl = self.repo / ".fenix" / "runs" / "code-review-101.jsonl"
+        self.assertTrue(rl.exists(), "重派事件应落 run jsonl")
+        lines = [json.loads(x) for x in rl.read_text(encoding="utf-8").splitlines()
+                 if x.strip()]
+        self.assertTrue(any(
+            e.get("type") == "empty_product_redispatch"
+            and e.get("redispatch_of") == "code-review-100"
+            for e in lines), lines)
+        # 升级信号：单条 ESCALATION，携带失败面摘要（run id/manifest 计数/变体）
+        esc = [a for a in self._alerts(mon)
+               if a.get("signal_type") == "code_review_empty_product"]
+        self.assertEqual(len(esc), 1, esc)
+        self.assertEqual(esc[0].get("kind"), "escalation")
+        self.assertIn("code-review-101", esc[0]["description"])
+        self.assertIn("zero_valid_rows", esc[0]["description"])
+        self.assertIn("manifest_count=2", esc[0]["evidence"])
+        # 升级后停止：标记置位 + 链登记齐全 + 配额恰耗 1
+        self.assertTrue(mon._code_review_redispatch_escalated)
+        self.assertEqual(mon._code_review_empty_redispatches, 1)
+        self.assertIn("code-review-100", mon._code_review_redispatched_runs)
+        self.assertIn("code-review-101", mon._code_review_redispatched_runs)
+        # 升级后再来的硬门拦截不再重派（两通道均停）
+        mon._handle_code_review_empty_product(
+            manifest=["core/a.py"], review_kind="scheduled", window_start=None,
+            scope="window", fail_face=self._face("code-review-999"))
+        self.assertEqual(len(runner.calls), 2, "升级后两通道均不再自动重派")
+
+    def test_chain_already_redispatched_escalates_without_new_run(self):
+        """同一 run 链已被重派 → 再次硬门拦截只升级不再重派（双通道互不叠加）。"""
+        runner = self._scripted_runner([])
+        mon = self._monitor(runner)
+        mon._code_review_redispatched_runs.add("code-review-200")
+        mon._handle_code_review_empty_product(
+            manifest=["core/a.py"], review_kind="scheduled", window_start=None,
+            scope="window", fail_face=self._face("code-review-200"))
+        self.assertEqual(runner.calls, [], "已被重派的链 MUST NOT 再次重派")
+        esc = [a for a in self._alerts(mon)
+               if a.get("signal_type") == "code_review_empty_product"]
+        self.assertEqual(len(esc), 1)
+        self.assertIn("code-review-200", esc[0]["description"])
+        self.assertTrue(mon._code_review_redispatch_escalated)
+        self.assertEqual(mon._code_review_empty_redispatches, 0, "升级路径不占重派配额")
+
+    def test_lifetime_quota_exhausted_no_new_run_no_escalation(self):
+        """生命周期合计配额耗尽（另一条链已用）→ 记日志收场，不重派不升级。"""
+        runner = self._scripted_runner([])
+        mon = self._monitor(runner)
+        mon._code_review_empty_redispatches = 1
+        mon._handle_code_review_empty_product(
+            manifest=["core/a.py"], review_kind="scheduled", window_start=None,
+            scope="window", fail_face=self._face("code-review-300"))
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(
+            [a for a in self._alerts(mon)
+             if a.get("signal_type") == "code_review_empty_product"],
+            [], "配额耗尽不是升级条件（升级条件是重派仍零有效行）")
+        self.assertFalse(mon._code_review_redispatch_escalated)
+
+    def test_escalated_flag_blocks_both_channels(self):
+        """升级信号发出后两通道均不再自动重派（design 双通道配额约束第三条）。"""
+        import time
+        from unittest.mock import patch
+
+        runner = self._scripted_runner([])
+        mon = self._monitor(runner)
+        mon._code_review_redispatch_escalated = True
+        with patch("threading.Timer") as fake_timer:
+            mon._schedule_ratelimit_redispatch(
+                manifest=["core/a.py"], review_kind="scheduled",
+                window_start=None, scope="window",
+                intent={"run_id": "code-review-400",
+                        "cooldown_until_epoch": time.time() + 300})
+            fake_timer.assert_not_called()
+        self.assertEqual(mon._code_review_ratelimit_redispatches, 0,
+                         "升级后 429 通道不占配额")
+        mon._handle_code_review_empty_product(
+            manifest=["core/a.py"], review_kind="scheduled", window_start=None,
+            scope="window", fail_face=self._face("code-review-401"))
+        self.assertEqual(runner.calls, [], "升级后零产物通道不再重派")
+
+    def test_429_channel_registers_chain_and_empty_channel_defers(self):
+        """429 通道登记 run 链 → 同一链再遭硬门拦截只升级不再重派。"""
+        import time
+        from unittest.mock import patch
+
+        runner = self._scripted_runner([])
+        mon = self._monitor(runner)
+        with patch("threading.Timer"):
+            mon._schedule_ratelimit_redispatch(
+                manifest=["core/a.py"], review_kind="scheduled",
+                window_start=None, scope="window",
+                intent={"run_id": "code-review-500",
+                        "cooldown_until_epoch": time.time() + 300})
+        self.assertIn("code-review-500", mon._code_review_redispatched_runs)
+        self.assertEqual(mon._code_review_ratelimit_redispatches, 1,
+                         "429 通道独立限次照常占用")
+        mon._handle_code_review_empty_product(
+            manifest=["core/a.py"], review_kind="scheduled", window_start=None,
+            scope="window", fail_face=self._face("code-review-500"))
+        self.assertEqual(runner.calls, [], "同一 run 链零产物通道不得叠加调度")
+        esc = [a for a in self._alerts(mon)
+               if a.get("signal_type") == "code_review_empty_product"]
+        self.assertEqual(len(esc), 1)
+        self.assertTrue(mon._code_review_redispatch_escalated)
+
+
+class TestEmptyProductPromptAndEscalationFace(_EmptyFaceMixins, unittest.TestCase):
+    """提示词自救指引契约与升级告警失败面字段（task 2.1/3.2，1.2 消费侧）。"""
+
+    def setUp(self):
+        self.repo = Path(_mkdtemp("cr-prompt-esc-"))
+        (self.repo / ".fenix").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.repo), ignore_errors=True)
+
+    def _monitor(self):
+        from core.admin_monitor import AdminMonitor
+
+        return AdminMonitor(
+            {"admin": {"code_review": {"enabled": True}}},
+            None, str(self.repo), _MonitorFakeLogger(),
+            agent_runner=None, code_review_executor=None,
+        )
+
+    def test_prompt_carries_self_rescue_discipline(self):
+        """Scenario: 构造周期审查提示词 → 含自救指引（纪律三要素）。"""
+        from core.agent_runner.prompt_builder import PromptBuilder
+
+        pm = type("P", (), {
+            "project_root": Path(_mkdtemp("cr-prompt-build-")), "config": {},
+        })()
+        builder = PromptBuilder(pm)
+        prompt = builder._build_code_review_prompt(
+            "code-review-1",
+            {
+                "manifest": ["core/a.py"],
+                "review_window": "（全仓）",
+                "out_path": "/tmp/x.jsonl",
+            },
+        )
+        # ① ToolSearch 对基础工具回 No matches 属按设计，直接调用
+        self.assertIn("No matches", prompt)
+        self.assertIn("按设计", prompt)
+        self.assertIn("直接调用", prompt)
+        # ② select: 精确名探测
+        self.assertIn("select:", prompt)
+        # ③ TOOLFACE-MISSING fail-fast
+        self.assertIn("TOOLFACE-MISSING", prompt)
+        # 禁止凭「检索不到」推断工具缺失并放弃审查
+        self.assertIn("检索不到", prompt)
+
+    def test_escalation_alert_carries_failure_face_fields(self):
+        """升级告警携带失败面摘要字段（run id/manifest 计数/变体/工具面）。"""
+        mon = self._monitor()
+        mon._escalate_code_review_empty_product({
+            "run_id": "code-review-900",
+            "manifest_count": 7,
+            "variant": "artifact_missing",
+            "shards": 0,
+            "sources_present": 0,
+            "unreadable": [],
+            "toolface": {"declared": False, "tools": [],
+                         "probe": "toolface-unrestricted"},
+        })
+        esc = [a for a in self._alerts(mon)
+               if a.get("signal_type") == "code_review_empty_product"]
+        self.assertEqual(len(esc), 1)
+        self.assertEqual(esc[0].get("kind"), "escalation")
+        self.assertIn("code-review-900", esc[0]["description"])
+        self.assertIn("artifact_missing", esc[0]["description"])
+        self.assertIn("manifest_count=7", esc[0]["evidence"])
+        self.assertIn("toolface-unrestricted", esc[0]["evidence"])
+        # 发出即封停两通道自动重派（去重命中与否不影响标记）
+        self.assertTrue(mon._code_review_redispatch_escalated)
+        # 同 run 二次调用去重（单 run 至多一条），标记保持
+        mon._escalate_code_review_empty_product({
+            "run_id": "code-review-900", "manifest_count": 7,
+            "variant": "artifact_missing", "shards": 0,
+            "sources_present": 0, "unreadable": [],
+        })
+        self.assertEqual(
+            len([a for a in self._alerts(mon)
+                 if a.get("signal_type") == "code_review_empty_product"]), 1)
+
+
+class TestTerminalSalvageAndToolfaceTrace(unittest.TestCase):
+    """终局消息结论行抢救红线（task 5.1/3.3）与工具面预检/留痕（task 4.1/6.1/3.3）。"""
+
+    def setUp(self):
+        self.proot = Path(_mkdtemp("cr-salvage2-"))
+        self.crdir = self.proot / ".fenix" / "code-review"
+        self.crdir.mkdir(parents=True)
+        (self.proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        self.run_id = "code-review-1790205000"
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(str(self.proot), ignore_errors=True)
+
+    def _fake_runner(self):
+        from core.agent_runner import maintenance_runs as mr
+
+        runner = type("R", (), {})()
+        runner.project_root = self.proot
+        runner.logger = None
+        runner._unique_code_review_run_id = lambda: self.run_id
+        runner._build_prompt = lambda *a, **k: "PROMPT"
+        runner._get_agent_model_assignment = lambda name: None
+        runner._get_admin_model = lambda: "test-model"
+        runner._extract_usage_info = lambda x: {}
+        runner._accumulate_code_review_tokens = lambda run_id, usage: None
+        runner._read_code_review_out = lambda project_root, rid: mr._read_code_review_out(
+            runner, project_root, rid
+        )
+        return runner
+
+    def _seed_terminal_message(self, text):
+        rl = self.proot / ".fenix" / "runs" / f"{self.run_id}.jsonl"
+        rl.write_text(
+            json.dumps({"type": "result", "subtype": "error_max_turns",
+                        "result": text}, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+
+    def test_error_run_salvages_terminal_conclusion_rows(self):
+        """error 收场且终局消息携带结论行 → 结论行被抢救落账。"""
+        from core.agent_runner import maintenance_runs as mr
+
+        row = {"file": "core/a.py", "findings": [
+            {"line": 2, "severity": "major", "category": "correctness",
+             "title": "终局消息抢救发现。", "description": "d",
+             "suggestion": "s", "evidence": "core/a.py:2"},
+        ]}
+        self._seed_terminal_message(
+            "1 files reviewed\n" + json.dumps(row, ensure_ascii=False))
+        checkpoint_calls = []
+        runner = self._fake_runner()
+        runner._code_fix_orchestrator = type(
+            "O", (), {"checkpoint": staticmethod(
+                lambda: checkpoint_calls.append(1))})()
+
+        def _boom(*a, **k):
+            raise RuntimeError("API Error: 429 · [1302] rate limit")
+
+        runner._run_agent = _boom
+        result = mr.run_code_review(runner, ["core/a.py"], "manual_window")
+        self.assertFalse(result.success)
+        self.assertEqual(result.inserted, 1, "终局消息结论行被抢救落账")
+        # 抢救行补写进主产物（既有聚合读侧 upsert 消费）
+        out = self.crdir / f"out-{self.run_id}.jsonl"
+        rows = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()
+                if x.strip()]
+        self.assertEqual(rows[0]["file"], "core/a.py")
+        # 红线：MUST NOT 触发 code-fix 检查点、MUST NOT 触发全仓快照核销
+        self.assertEqual(checkpoint_calls, [], "error 收场抢救不激活 code-fix 检查点")
+        self.assertEqual(result.resolved, 0, "error 收场抢救不做全仓快照核销")
+
+    def test_gate_intercept_attaches_fail_face_with_toolface(self):
+        """零有效行拦截 → 结果信封携带失败面摘要（含工具面预检，1.2 消费侧）。"""
+        from core.agent_runner import maintenance_runs as mr
+
+        runner = self._fake_runner()
+        runner._run_toolface = {
+            self.run_id: {"declared": False, "tools": [],
+                          "probe": "toolface-unrestricted"}}
+        runner._run_agent = lambda *a, **k: (
+            "output", 1, "sid", {}, {"rounds": 0, "stalls": 0, "max": None})
+        result = mr.run_code_review(runner, ["core/a.py", "core/b.py"], "scheduled")
+        self.assertFalse(result.success, "零有效行整轮判失败（硬门既有口径）")
+        self.assertIsNotNone(result.fail_face)
+        self.assertEqual(result.fail_face["run_id"], self.run_id)
+        self.assertEqual(result.fail_face["manifest_count"], 2)
+        self.assertEqual(result.fail_face["variant"], "artifact_missing")
+        self.assertEqual(result.fail_face["toolface"]["probe"],
+                         "toolface-unrestricted")
+
+    def test_toolface_probe_variants_and_registry(self):
+        """spawn 工具面预检三态 + 登记键归一化（4.1）。"""
+        from core.agent_runner.runner import AgentRunner
+
+        runner = AgentRunner.__new__(AgentRunner)
+        logger = type("L", (), {})()
+        logger.infos = []
+        logger.warnings = []
+        logger.info = lambda *a, **k: logger.infos.append(a)
+        logger.warning = lambda *a, **k: logger.warnings.append(a)
+        runner.logger = logger
+        # ① 无显式 allowedTools → unrestricted（现状默认）
+        entry = runner._probe_spawn_toolface(
+            "run-tf-1", ["claude", "-p", "--output-format", "stream-json"])
+        self.assertEqual(entry["probe"], "toolface-unrestricted")
+        self.assertFalse(entry["declared"])
+        self.assertIn("run-tf-1", runner._run_toolface)
+        # ② 显式白名单排除全部基础工具 → missing-basic-tools + WARNING
+        entry = runner._probe_spawn_toolface(
+            "run-tf-2-a1", ["claude", "-p", "--allowedTools", "TaskSearch,WebFetch"])
+        self.assertEqual(entry["probe"], "toolface-missing-basic-tools")
+        self.assertEqual(entry["tools"], ["TaskSearch", "WebFetch"])
+        self.assertTrue(any("工具面预检" in str(w) for w in logger.warnings),
+                        logger.warnings)
+        # 登记键归一化（-a1 attempt 后缀剥离）
+        self.assertIn("run-tf-2", runner._run_toolface)
+        self.assertNotIn("run-tf-2-a1", runner._run_toolface)
+        # ③ 显式白名单覆盖基础工具（空白分隔形态）→ declared
+        entry = runner._probe_spawn_toolface(
+            "run-tf-3", ["claude", "-p", "--allowedTools", "Bash Read"])
+        self.assertEqual(entry["probe"], "toolface-declared")
+        self.assertEqual(entry["tools"], ["Bash", "Read"])
+
+    def _metric_runner(self):
+        from core.agent_runner.runner import AgentRunner
+
+        runner = AgentRunner.__new__(AgentRunner)
+        logger = type("L", (), {})()
+        logger.contexts = []
+        logger.infos = []
+        logger.info = lambda c, m, ctx=None, **k: (
+            logger.infos.append((c, m)), (
+                logger.contexts.append(ctx)
+                if isinstance(ctx, dict) and ctx.get("metric_type") == "run_metrics"
+                else None))[1]
+        logger.warning = lambda *a, **k: None
+        runner.logger = logger
+        return runner, logger
+
+    def test_run_metrics_carries_toolface_fields_and_consumes_registry(self):
+        """run_metrics 收尾携带工具面字段；登记消费即摘除（6.1/4.1）。"""
+        runner, logger = self._metric_runner()
+        runner._probe_spawn_toolface("run-m1", ["claude", "-p"])
+        runner._log_run_metrics(
+            run_id="run-m1", spec_name="code-review", agent_type="code-review",
+            duration_seconds=1.0, turns=1, usage_info={}, terminal="error",
+            provider=None, toolface={"missing": True})
+        self.assertEqual(len(logger.contexts), 1)
+        ctx = logger.contexts[0]
+        self.assertEqual(ctx["toolface_probe"], "toolface-unrestricted")
+        self.assertFalse(ctx["toolface_declared"])
+        self.assertTrue(ctx["toolface_missing"], "TOOLFACE-MISSING 分类随行留痕")
+        self.assertNotIn("run-m1", runner._run_toolface, "登记消费即摘除")
+
+    def test_run_metrics_without_toolface_zero_change(self):
+        """无预检登记且未传参（提前终态路径）→ 行不带 toolface 键（零变化）。"""
+        runner, logger = self._metric_runner()
+        runner._log_run_metrics(
+            run_id="run-m2", spec_name="spec-x", agent_type="implementer",
+            duration_seconds=0.0, turns=0, usage_info={}, terminal="cancelled",
+            provider=None)
+        self.assertEqual(len(logger.contexts), 1)
+        self.assertNotIn("toolface_probe", logger.contexts[0])
+        self.assertNotIn("toolface_missing", logger.contexts[0])
+
+    def test_lane_toolface_missing_classification_from_terminal_text(self):
+        """TOOLFACE-MISSING 分类从终态文本补出，随车道收尾指标行转发（6.1）。"""
+        from core.agent_runner import maintenance_runs as mr
+
+        runner = self._fake_runner()
+        metric_calls = []
+        runner._log_run_metrics = lambda **kw: metric_calls.append(kw)
+        runner._run_harness = {}
+
+        def _boom(*a, **k):
+            raise RuntimeError("TOOLFACE-MISSING: Bash, Read（工具面缺失，按纪律 fail-fast）")
+
+        runner._run_agent = _boom
+        mr.run_code_review(runner, ["core/a.py"], "manual_window")
+        self.assertEqual(len(metric_calls), 1)
+        self.assertTrue(metric_calls[0]["toolface"]["missing"],
+                        "终态文本含 TOOLFACE-MISSING → 分类 True")

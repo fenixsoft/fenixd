@@ -868,6 +868,13 @@ class AgentRunner:
         # _log_lane_run_metrics / dispute-judge·spec-review 直调车道各自收尾
         # finally，code-review item 7d45c6cd8be2）。
         self._run_harness: Dict[str, str] = {}
+        # run 级工具面预检登记（evo-review-empty-product-redispatch 4.1）：
+        # {base_run_id: 预检结果 dict}——_run_agent spawn 装配点后把该 run 的
+        # 工具面预检结果记入，供失败面摘要（maintenance_runs gate_err 分支
+        # .get 只读取证）与 _log_run_metrics 收尾消费（消费即摘除，对齐
+        # _run_harness 摘除口径：不摘则长驻 daemon 下登记无界增长）。惰性
+        # 回退（__dict__.setdefault）对齐 _register_run_harness 惯例。
+        self._run_toolface: Dict[str, dict] = {}
         # 本 run 派发点解析的 adapter 实例（code-review item bb55449a1a7b）：
         # _run_agent spawn 装配按 _normalize_run_id(run_id) 查此登记取值，
         # 不读进程级全局；键空间与 _run_harness 同为 base run_id，随其同一
@@ -6165,6 +6172,22 @@ class AgentRunner:
         )
         self._running_agents[run_id] = proc
 
+        # spawn 后写工具面预检（evo-review-empty-product-redispatch 4.1）：
+        # agent_runner 全仓此前无 allowedTools 预检（2026-10-30 人工核查 grep
+        # 零命中）——agent 凭「检索不到工具」放弃审查（code-review-1792771331
+        # 空转 16 轮零产物）的事后取证只能靠人工翻转录。spawn 装配点后做一次
+        # 工具面预检并留痕：登记结果供失败面摘要（maintenance_runs gate_err
+        # 分支）与 run_metrics 收尾（_log_run_metrics）消费。预检失败（显式
+        # allowedTools 排除基础工具）记 WARNING——属装配面缺陷，run 大概率
+        # 重演「工具缺失放弃」形态，提前留痕。
+        try:
+            self._probe_spawn_toolface(run_id, cmd)
+        except Exception as e:  # noqa: BLE001 — 预检失败不影响 spawn 主路径
+            self.logger.warning(
+                "agent_runner",
+                f"工具面预检失败（run {run_id}，按无显式 allowedTools 兜底）: {e}",
+            )
+
         # 提示词写 stdin 后立即关闭写端（CLI 读到 EOF 才开始跑；不走 argv——
         # argv 全文驻留 /proc/<pid>/cmdline 且受 ARG_MAX 约束，code-review
         # 75589537fb72，传输形态契约见 protocol.py）。独立守护线程写入：prompt
@@ -9129,6 +9152,74 @@ class AgentRunner:
         if run_id not in registry:
             registry[run_id] = getattr(adapter, "name", "") or "claude"
 
+    # spawn 面基础工具名单（evo-review-empty-product-redispatch 4.1）：预检
+    # 判定「显式 allowedTools 是否覆盖基础工具」的基准集——agent 审查/实现
+    # 依赖这六件的可用性（2026-10-23 事故：agent 对基础工具做 ToolSearch 回
+    # No matches 即推断缺失放弃，若装配面真排除了它们则放弃是正确行为，预检
+    # 必须能区分「装配面真缺」与「agent 误判」）。
+    TOOLFACE_BASIC_TOOLS = ("Bash", "Read", "Write", "Edit", "Grep", "Glob")
+
+    def _probe_spawn_toolface(self, run_id: str, argv: list) -> dict:
+        """spawn 装配后的工具面预检（evo-review-empty-product-redispatch 4.1）。
+
+        检什么：spawn argv 的 ``--allowedTools`` 面（claude CLI 工具白名单）。
+        agent_runner 全仓此前无任何 allowedTools 预检——装配面若显式收窄到
+        排除基础工具，agent 「工具缺失放弃」就是正确行为而非模型方差，事后
+        取证必须能区分两者。预检结果登记进 ``_run_toolface``（键 base run_id，
+        收尾 _log_run_metrics 消费即摘除），并返回给调用点留痕。
+
+        probe 四值：
+        - ``toolface-unrestricted``：argv 无 --allowedTools（现状默认，全工具面）；
+        - ``toolface-declared``：显式白名单且覆盖至少一个基础工具；
+        - ``toolface-missing-basic-tools``：显式白名单但基础工具全被排除
+          （装配面缺陷，记 WARNING——run 大概率重演工具缺失放弃形态）；
+        - ``toolface-no-argv``：argv 非法（非 list/空），按未知面登记。
+        """
+        declared = False
+        tools: list = []
+        if isinstance(argv, list) and argv:
+            i = 0
+            while i < len(argv):
+                arg = argv[i]
+                if arg == "--allowedTools" and i + 1 < len(argv):
+                    declared = True
+                    raw = argv[i + 1]
+                    i += 2
+                elif isinstance(arg, str) and arg.startswith("--allowedTools="):
+                    declared = True
+                    raw = arg.split("=", 1)[1]
+                    i += 1
+                else:
+                    i += 1
+                    continue
+                # CLI 白名单形态兼容：逗号/空白分隔（--allowedTools "Bash Read"）
+                # 与多值重复出现（后者由 while 循环自然累加）。
+                for tok in str(raw).replace(",", " ").split():
+                    if tok and tok not in tools:
+                        tools.append(tok)
+        else:
+            entry = {"declared": False, "tools": [], "probe": "toolface-no-argv"}
+            self.__dict__.setdefault("_run_toolface", {})[
+                self._normalize_run_id(run_id)] = entry
+            return entry
+        if not declared:
+            probe = "toolface-unrestricted"
+        elif tools and not (set(tools) & set(self.TOOLFACE_BASIC_TOOLS)):
+            probe = "toolface-missing-basic-tools"
+        else:
+            probe = "toolface-declared"
+        entry = {"declared": declared, "tools": tools, "probe": probe}
+        if probe == "toolface-missing-basic-tools":
+            self.logger.warning(
+                "agent_runner",
+                f"工具面预检：run {run_id} 显式 allowedTools 排除全部基础工具"
+                f"（{', '.join(self.TOOLFACE_BASIC_TOOLS)}）——装配面缺陷，"
+                f"agent 将无法读/写/执行，预期以 TOOLFACE-MISSING 形态失败",
+            )
+        self.__dict__.setdefault("_run_toolface", {})[
+            self._normalize_run_id(run_id)] = entry
+        return entry
+
     def _log_run_metrics(
         self,
         *,
@@ -9142,6 +9233,7 @@ class AgentRunner:
         provider: str | None = None,
         model: str | None = None,
         latency: dict | None = None,
+        toolface: dict | None = None,
     ) -> None:
         """写一条 run 收尾结构化指标（成功/失败/取消/中断等终态各一条）。
 
@@ -9154,6 +9246,14 @@ class AgentRunner:
         _finalize_success/_resolve_provider_candidate/_exhausted_result 等提
         前终态路径）均在 ``_run_agent`` 之外、无样本上下文，不传参时按零样
         本回退（latency_rounds=0 / latency_stalls=0 / latency_max=None）。
+
+        ``toolface``（evo-review-empty-product-redispatch 6.1）：可选承接工具
+        面留痕——spawn 预检结果（_probe_spawn_toolface 登记）与 TOOLFACE-
+        MISSING 分类。不传参时回退取 ``_run_toolface`` 登记并**消费即摘除**
+        （对齐 _run_harness 收尾摘除口径，防长驻 daemon 无界增长）；调用方
+        显式传参（如车道侧从终局文本补出 TOOLFACE-MISSING 分类）时以传参为
+        准并同样摘除登记，防重复消费。两来源皆缺时省略 toolface_* 键（提前
+        终态路径 run 未 spawn，行零变化）。
         """
         usage = usage_info or {}
         latency = latency or {}
@@ -9197,6 +9297,26 @@ class AgentRunner:
             harness = getattr(self, "_run_harness", {}).get(run_id)
             if harness:
                 metric_ctx["harness"] = harness
+            # 工具面留痕（evo-review-empty-product-redispatch 6.1）：预检结果
+            # （spawn 装配登记）为底、调用方显式传参覆盖合流（如车道侧从终局
+            # 文本补出 TOOLFACE-MISSING 分类）；消费即摘除（对齐 _run_harness
+            # 收尾摘除口径，防长驻 daemon 无界增长）。分类字段 toolface_missing：
+            # TOOLFACE-MISSING fail-fast 标记的观测（bool）；两来源都不含分类、
+            # 预检亦未判装配面缺基础工具时为 None（未观测）。
+            tf_registry = self.__dict__.setdefault("_run_toolface", {})
+            _tf_base = tf_registry.get(self._normalize_run_id(run_id))
+            tf = dict(_tf_base) if isinstance(_tf_base, dict) else {}
+            if isinstance(toolface, dict):
+                tf.update(toolface)
+            tf_registry.pop(self._normalize_run_id(run_id), None)
+            if tf:
+                metric_ctx["toolface_probe"] = tf.get("probe")
+                metric_ctx["toolface_declared"] = bool(tf.get("declared"))
+                metric_ctx["toolface_tools"] = list(tf.get("tools") or [])
+                missing = tf.get("missing")
+                if missing is None:
+                    missing = tf.get("probe") == "toolface-missing-basic-tools"
+                metric_ctx["toolface_missing"] = bool(missing)
             logger.info(
                 "agent_runner",
                 f"run metrics: {agent_type} {terminal} '{spec_name}'",

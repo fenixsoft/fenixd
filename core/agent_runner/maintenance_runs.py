@@ -43,8 +43,11 @@ from core.agent_runner.result_gate import (
     RegressionResult,
     SelfReviewResult,
     # 私有名跨模块复用（code-review item f6581e73f967）：产物硬门实现留在
-    # result_gate，此处并入同源单条 import，增删导出只改这一处
-    _check_repo_code_review_artifact,
+    # result_gate，此处并入同源单条 import，增删导出只改这一处。gate 消费
+    # 走详细版 _repo_code_review_gate_face（失败面摘要，evo-review-empty-
+    # product-redispatch 1.2）；str|None 薄封装版保留给 runner.py re-export
+    # 与 tests 直取（runner.py:53 import 面）。
+    _repo_code_review_gate_face,
 )
 from core.code_review import (
     clear_pending_writeoff,
@@ -1314,6 +1317,7 @@ def _log_lane_run_metrics(
     usage_info: dict,
     run_ok: bool,
     provider_name: str | None,
+    toolface: dict | None = None,
 ) -> None:
     """maintenance 车道收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）。
 
@@ -1327,6 +1331,11 @@ def _log_lane_run_metrics(
     ——零 turns/零时长行只污染指标索引，对初筛零贡献。打桩 runner 缺该方法
     时静默跳过（车道单测免随行打桩，与 getattr(runner, "logger", None) 同
     防御口径）。
+
+    ``toolface``（evo-review-empty-product-redispatch 6.1）：可选工具面留痕
+    （TOOLFACE-MISSING 分类等），原样转发给 _log_run_metrics 与 spawn 预检
+    登记合流；不传时该车道行不带工具面分类字段（预检登记仍由 _log_run_metrics
+    正常消费）。
     """
     log_metrics = getattr(runner, "_log_run_metrics", None)
     if log_metrics is None:
@@ -1345,6 +1354,7 @@ def _log_lane_run_metrics(
             usage_info=usage_info or {},
             terminal="success" if run_ok else "error",
             provider=provider_name,
+            toolface=toolface,
         )
     finally:
         getattr(runner, "_run_harness", {}).pop(run_id, None)
@@ -2127,16 +2137,37 @@ def run_code_review(
     # 用户看到的进度条闪一下就消失。对照同族的 spec-review 车道：
     # SpecReviewManager.dispatch_review 有 _check_agent_result_artifact 硬门。
     # 判据与归因文案见 core/agent_runner/result_gate.py 的同名门函数。
+    gate_fail_face: dict | None = None
     if run_ok:
-        gate_err = _check_repo_code_review_artifact(manifest, runner.project_root, run_id)
+        # 详细版取 (文案, 失败面)（evo-review-empty-product-redispatch 1.2）：
+        # 拦截面摘要（run id、manifest 计数、变体）进完成行与升级告警；工具面
+        # 预检结果（runner._run_toolface 登记，.get 只读——收尾 metrics 消费时
+        # 才摘除）一并并入，供止损判定区分「装配面真缺工具」与「agent 误判」。
+        gate_err, gate_fail_face = _repo_code_review_gate_face(
+            manifest, runner.project_root, run_id)
         if gate_err is not None:
             run_ok = False
             error = gate_err
+            face = dict(gate_fail_face or {
+                "run_id": run_id, "manifest_count": len(manifest),
+                "variant": "unknown",
+            })
+            tf = getattr(runner, "_run_toolface", {}).get(
+                getattr(runner, "_normalize_run_id", lambda r: r)(run_id))
+            if isinstance(tf, dict):
+                face["toolface"] = tf
+            gate_fail_face = face
             _log = getattr(runner, "logger", None)
             if _log is not None:
                 _log.error(
                     "code-review",
-                    f"产物硬门拦截: run={run_id} manifest={len(manifest)} — {gate_err}",
+                    f"产物硬门拦截: run={run_id} manifest={len(manifest)} — {gate_err}"
+                    f"（失败面: variant={face.get('variant')}, "
+                    f"sources_present={face.get('sources_present')}, "
+                    f"shards={face.get('shards')}"
+                    + (f", toolface={face['toolface'].get('probe')}"
+                       if isinstance(face.get("toolface"), dict) else "")
+                    + "）",
                 )
 
     # 读取增量产物并落账（聚合口径：分片 + 主产物，add-code-review-sharded-out
@@ -2338,6 +2369,26 @@ def run_code_review(
         try:
             from core.code_review import shard_paths as _cr_shard_paths
 
+            # 终局消息结论行抢救（evo-review-empty-product-redispatch 5.1）：
+            # 本段此前只读 shard_paths/主产物文件，agent 终局消息（run jsonl
+            # 末个 type=result 事件的 result 文本）里的逐文件结论行丢失——
+            # 零产物事故（code-review-1792771331 空转 16 轮）的同类形态即
+            # agent 把审查结论留在终局消息而从未落产物文件。抢救把结论行
+            # **补写进主产物**后走下方既有聚合抢救读侧（分片优先去重口径
+            # 不变，agent 已落盘行不被终局消息行顶替）。红线与既有抢救一致：
+            # 只补产物文件行，不核销、不激活 code-fix 检查点（run_ok 仍 False）。
+            _terminal_salvaged = _salvage_terminal_conclusion_rows(runner, run_id)
+            if _terminal_salvaged:
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "code-review",
+                        f"终局消息结论行抢救: run={run_id} 补写 "
+                        f"{len(_terminal_salvaged)} 行进主产物"
+                        f"（{', '.join(str(r.get('file')) for r in _terminal_salvaged[:5])}"
+                        f"{'…' if len(_terminal_salvaged) > 5 else ''}）",
+                    )
+
             shards = len(_cr_shard_paths(runner.project_root, run_id))
             findings = runner._read_code_review_out(runner.project_root, run_id)
             if findings:
@@ -2437,6 +2488,14 @@ def run_code_review(
     # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
     # cost_usd，离群初筛按车道分组与成本维度自此可见（全仓扫描的大 turns/
     # 大成本 run 不再失明）。产物硬门/抢救/重派意图已定型 run_ok 后才落行。
+    # 工具面留痕（evo-review-empty-product-redispatch 6.1）：TOOLFACE-MISSING
+    # 分类从终态文本补出（agent 按提示词纪律 fail-fast 时的标记，出现在
+    # output/error 即命中）；spawn 预检结果由 _log_run_metrics 从登记合流
+    # （本处只补文本观测分类）。
+    _toolface_note = {
+        "missing": "TOOLFACE-MISSING" in (output or "")
+        or "TOOLFACE-MISSING" in (error or ""),
+    }
     _log_lane_run_metrics(
         runner,
         run_id=run_id,
@@ -2447,6 +2506,7 @@ def run_code_review(
         usage_info=usage_info,
         run_ok=run_ok,
         provider_name=provider_name,
+        toolface=_toolface_note,
     )
 
     result = CodeReviewResult(
@@ -2462,7 +2522,134 @@ def run_code_review(
     # 意图随结果信封上交（result_gate.CodeReviewResult.ratelimit_redispatch，
     # 缺省 None——非 429 失败路径恒为 None，消费侧零感知）
     result.ratelimit_redispatch = ratelimit_intent
+    # 硬门拦截失败面摘要随结果信封上交（evo-review-empty-product-redispatch
+    # 1.2，缺省 None——成功/其他失败路径恒 None，消费侧零感知）。消费侧
+    # （admin_monitor）组装进完成行并驱动零产物止损（限次重派/升级）。
+    result.fail_face = gate_fail_face
     return result
+
+
+def _read_terminal_message(project_root, run_id: str) -> str:
+    """读 run 终局消息：run jsonl 末个 ``type=result`` 事件的 result 文本。
+
+    evo-review-empty-product-redispatch 5.1（终局消息结论行抢救的取数单源）。
+    事件由轮询环原样落盘（runner `_run_agent` result 段），取「末个」以最终
+    终态为准；读侧与 runner 既有 429 归因兜底同型：尾部 64KiB 窗口读取（
+    result 事件恒落文件末行附近，长 run 转录全量读入属无谓内存/IO 尖峰）、
+    `'"type": "result"'` 子串预筛 + 解析后复核 type 字段（转录伪命中行不复核
+    会顶替真实事件）。文件缺失/读失败/无 result 事件返回空串（无终局消息可
+    抢救，回退不伪造）。
+    """
+    run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    try:
+        size = run_file.stat().st_size
+        with run_file.open("rb") as f:
+            if size > 65536:
+                f.seek(size - 65536)
+            raw = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    last_text = ""
+    for line in raw.splitlines():
+        line = line.strip()
+        if '"type": "result"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, RecursionError):
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            last_text = str(ev.get("result") or "")
+    return last_text
+
+
+def _extract_terminal_review_rows(text: str) -> list:
+    """从终局消息文本提取审查结论行（``{"file": 非空 str, "findings": list}``）。
+
+    evo-review-empty-product-redispatch 5.1：形态判据与产物硬门「有效行」
+    同口径（dict + file 非空字符串 + findings 为列表），逐行尝试解析；整体
+    为 JSON 数组/单对象时同样解析（agent 把整段 JSON 贴进终局消息的形态）。
+    按 ``file`` 去重保留先见行（与聚合读侧去重方向一致）。解析失败/形态不
+    合的行静默跳过——抢救只取确定是结论行的内容，MUST NOT 把叙述文本误收
+    进产物。
+    """
+    if not text:
+        return []
+    rows: list = []
+    seen: set = set()
+
+    def _accept(cand) -> None:
+        if not isinstance(cand, dict):
+            return
+        file_v = cand.get("file")
+        if not isinstance(file_v, str) or not file_v.strip():
+            return
+        if not isinstance(cand.get("findings"), list):
+            return
+        if file_v in seen:
+            return
+        seen.add(file_v)
+        rows.append(cand)
+
+    # ① 整体即 JSON（数组或单对象）的形态
+    stripped = text.strip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            whole = json.loads(stripped)
+            if isinstance(whole, list):
+                for cand in whole:
+                    _accept(cand)
+            else:
+                _accept(whole)
+        except (json.JSONDecodeError, RecursionError, ValueError):
+            pass
+    if rows:
+        return rows
+    # ② 逐行 JSON 的形态（含 markdown 代码栅栏内的行——先剥 ``` 围栏行）
+    for line in stripped.splitlines():
+        line = line.strip()
+        if not line or line.startswith("```"):
+            continue
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            _accept(json.loads(line))
+        except (json.JSONDecodeError, RecursionError):
+            continue
+    return rows
+
+
+def _salvage_terminal_conclusion_rows(runner, run_id: str) -> list:
+    """终局消息结论行抢救（evo-review-empty-product-redispatch 5.1）。
+
+    提取终局消息中的审查结论行并**补写进主产物** ``out-<run_id>.jsonl``，
+    返回实际补写的行（供日志留痕）。写失败只记 WARNING、不改变 run 失败
+    判定（抢救失败不改变原终态，对齐既有 error 收场抢救口径）；无终局
+    消息/无可识别结论行返回空 list（零动作）。调用方（run_code_review
+    error 收场段）随后走既有聚合读侧 upsert——分片优先去重保证 agent 已
+    落盘行不被本抢救补写的行顶替。
+    """
+    try:
+        message = _read_terminal_message(runner.project_root, run_id)
+        rows = _extract_terminal_review_rows(message)
+        if not rows:
+            return []
+        from core.code_review import out_path as cr_out_path
+
+        opath = cr_out_path(runner.project_root, run_id)
+        opath.parent.mkdir(parents=True, exist_ok=True)
+        with opath.open("a", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return rows
+    except Exception as e:  # noqa: BLE001 — 抢救失败不改变 run 原失败判定
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "code-review",
+                f"终局消息结论行抢救失败（run {run_id}）: {e}",
+            )
+        return []
 
 
 def _unique_code_review_run_id(runner) -> str:
