@@ -22,6 +22,16 @@ visual_diff.py — 截图视觉对比
     顺延（健全性判定 blank/low_contrast 拒绝固化在门前保持）。
   - 存量污染基线侦测：连续 ≥3 轮 diff_detected 且 DOM 全过 → 基线标记
     suspicious + admin 告警；重建交人工确认（不自动覆盖/删除）。
+
+场景感知阈值与门内收敛复核（evo-visual-low-contrast-gate）：
+  - low_contrast 判定上限按场景感知取值：场景 id 命中声明性子串
+    （empty/zero-state/placeholder/low-contrast/low_contrast）用放宽上限，
+    普通场景缺省不变（R1，判定在 screenshot_lab，本模块按场景传参）。
+  - 首跑污染门命中先做一次门内收敛复核：延时重截复测，收敛（复测通过）
+    先把复测件回写 current_path 再按正常流程固化/放行，仍污染才
+    baseline_rejected，每场景每轮至多一次重截（R2）。
+  - 污染命中分支把当轮截图复制到 .fenix/verify-evidence/<spec>/（首截与
+    复测件均落盘，复测件带 r{n} 后缀），免人工重跑探针取证（R3）。
 """
 
 import asyncio
@@ -36,7 +46,7 @@ from typing import Optional
 from .browser import wait_animations_settled
 from .fs_ops import atomic_write_json
 from .path_safety import safe_component
-from .screenshot_lab import classify_screenshot
+from .screenshot_lab import classify_screenshot, low_contrast_upper_for_scenario
 
 
 class VisualDiffer:
@@ -62,6 +72,9 @@ class VisualDiffer:
 
     # 污染基线告警阈值（连续 ≥3 轮 diff_detected 且 DOM 全过）
     SUSPICIOUS_STREAK_THRESHOLD = 3
+    # 门内收敛复核重截次数上限（evo-visual-low-contrast-gate R2）：
+    # 污染门命中后延时重截复测至多一次，防死循环
+    POLLUTION_RECHECK_MAX = 1
     # 侧车 ssims 滑动窗口上限（阈值 ×2）：长期 diff_detected（恰是本机制要
     # 侦测的污染场景）下逐轮 append 无上界，侧车 JSON 随时间无界增长——
     # 只保留最近窗口条目，告警证据可读性不受影响。
@@ -239,27 +252,108 @@ class VisualDiffer:
         # 事故链教训：白屏被固化为基线，干净截图反而被判差异）。后续轮次
         # 截图干净时正常建立，不扩大失败。
         if not baseline_path.exists():
-            # 线程池执行：classify_screenshot 为同步 CPU 密集解码+统计，避免卡死事件循环
-            labels = await asyncio.to_thread(classify_screenshot, str(current_path))
+            # 线程池执行：classify_screenshot 为同步 CPU 密集解码+统计，避免卡死事件循环。
+            # low_contrast 上限按场景感知取值（evo-visual-low-contrast-gate R1）：
+            # 场景 id 命中声明性子串（empty/zero-state/placeholder/low-contrast/
+            # low_contrast）时用放宽上限，普通场景缺省 0.08 行为不变
+            labels = await asyncio.to_thread(
+                classify_screenshot,
+                str(current_path),
+                low_contrast_upper=low_contrast_upper_for_scenario(scenario_id),
+            )
             has_pollution = labels.get("blank_screenshot") or labels.get("low_contrast")
             if has_pollution:
-                return [
-                    _evidence_fields(
-                        {
-                            "baseline": baseline_name,
-                            "status": "baseline_rejected",
-                            "ssim": None,
-                            "pass": False,
-                            "note": (
-                                "首次运行，截图健全性判定不通过"
-                                f"（{'blank_screenshot' if labels.get('blank_screenshot') else 'low_contrast'}），"
-                                "拒绝固化为基线——环境性伪画面不得固化，"
-                                "后续轮次截图干净时正常建立基线"
-                            ),
-                            "screenshot_labels": labels,
-                        }
+                # ── 证据自动落盘（evo-visual-low-contrast-gate R3）──
+                # 污染命中即把首截复制到 .fenix/verify-evidence/<spec>/，
+                # 免人工重跑探针取证（历史 admin run 为像素探针烧 400s+）
+                self._copy_pollution_evidence(scenario_id, current_path)
+
+                # ── 门内收敛复核（evo-visual-low-contrast-gate R2）──
+                # 首跑污染门命中先做一次延时重截复测：时序性伪画面（动画
+                # 未完成、渐进渲染早段）重截即收敛；确定性低对比（空态/
+                # 大屏天然 std 贴阈值）复测不变，由场景感知阈值（R1）放行。
+                # 每场景每轮至多一次重截（POLLUTION_RECHECK_MAX），防死循环。
+                # 复测件先落盘到轮次命名文件（对齐既有重拍纪律
+                # code-review 4693d3ce3731），未回写不覆写标准证据路径。
+                recheck_shot = screenshots_dir / (
+                    f"{scenario_id}_current_r{self.POLLUTION_RECHECK_MAX}.png"
+                )
+                recheck_ran = False
+                recheck_converged = False
+                recheck_labels = labels
+                try:
+                    await _settle()
+                    await page.screenshot(path=str(recheck_shot), full_page=False)
+                    recheck_ran = True
+                    recheck_labels = await asyncio.to_thread(
+                        classify_screenshot,
+                        str(recheck_shot),
+                        low_contrast_upper=low_contrast_upper_for_scenario(
+                            scenario_id
+                        ),
                     )
-                ]
+                    recheck_polluted = recheck_labels.get(
+                        "blank_screenshot"
+                    ) or recheck_labels.get("low_contrast")
+                    if not recheck_polluted:
+                        # 复测通过（收敛）：MUST 先把复测件回写标准路径
+                        # current_path 再进入正常流程——基线固化从
+                        # current_path 复制（见下方固化段），不回写即把污染
+                        # 首图固化为基线，与本门目的相反。回写后继续走既有
+                        # 门序（判定失败防护、基线固化门），判定失败防护用
+                        # 复测件标签自然衔接。
+                        shutil.copy(str(recheck_shot), str(current_path))
+                        labels = recheck_labels
+                        recheck_converged = True
+                except Exception as e:
+                    # 复测自身失败（页面崩溃/截图/回写异常）不掩盖污染判定：
+                    # 按首截污染拒绝（fail-closed，与门的 fail-closed 语义一致）
+                    self._log_warning(
+                        f"污染门收敛复测自身失败（按首截污染拒绝）: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                if recheck_ran:
+                    # 复测件证据落盘（r{n} 后缀，与既有重拍命名同型）：
+                    # 收敛与否均落盘，两态可离线核对
+                    self._copy_pollution_evidence(
+                        scenario_id,
+                        recheck_shot,
+                        suffix=f"_r{self.POLLUTION_RECHECK_MAX}",
+                    )
+                # 工作副本不留盘（入选内容已回写标准路径+证据目录，
+                # 与重拍循环「未入选轮次文件不留盘」同纪律）
+                recheck_shot.unlink(missing_ok=True)
+
+                if not recheck_converged:
+                    # 仍污染（或复测未完成）：baseline_rejected 早返回
+                    final_labels = recheck_labels if recheck_ran else labels
+                    polluted_key = (
+                        "blank_screenshot"
+                        if final_labels.get("blank_screenshot")
+                        else "low_contrast"
+                    )
+                    recheck_note = (
+                        "门内延时重截复测仍污染（每场景每轮至多一次重截），"
+                        if recheck_ran
+                        else "门内收敛复测未完成（按首截污染拒绝），"
+                    )
+                    return [
+                        _evidence_fields(
+                            {
+                                "baseline": baseline_name,
+                                "status": "baseline_rejected",
+                                "ssim": None,
+                                "pass": False,
+                                "note": (
+                                    "首次运行，截图健全性判定不通过"
+                                    f"（{polluted_key}），{recheck_note}"
+                                    "拒绝固化为基线——环境性伪画面不得固化，"
+                                    "后续轮次截图干净时正常建立基线"
+                                ),
+                                "screenshot_labels": final_labels,
+                            }
+                        )
+                    ]
 
             # ── 判定失败防护（code-review item 8953abec4c68）──
             # classify_screenshot 判定自身异常（解码失败、0 像素图除零等）时
@@ -648,6 +742,44 @@ class VisualDiffer:
             # size_mismatch / error / skipped：不累计也不清零
             return
         self._save_baseline_streaks(streaks)
+
+    # ── 污染证据自动落盘（evo-visual-low-contrast-gate R3）──────
+
+    def _evidence_dir(self) -> Path:
+        """污染证据落盘目录。
+
+        ``.fenix/verify-evidence/<spec>/``（相对项目根）——与
+        evo-verify-evidence-tiered-retention 的缺省证据落位
+        （core/verify_contract.py default_evidence_dir）同目录，写入即受
+        分级保留生命周期管理，不新造清理面。
+        """
+        return (
+            self.project_root
+            / ".fenix"
+            / "verify-evidence"
+            / safe_component(self.spec_name)
+        )
+
+    def _copy_pollution_evidence(
+        self, scenario_id: str, shot: Path, suffix: str = ""
+    ) -> None:
+        """把污染命中轮的截图复制到证据目录（非阻塞，失败仅记 warning）。
+
+        命名含场景名与轮次（毫秒时间戳，每轮 compare 即一轮）；门内复测件
+        经 ``suffix="_r{n}"`` 带 r{n} 后缀，与既有重拍命名同型，首截与复测
+        件可离线核对两态。落盘失败不阻断验证主流程——证据是增强不是门。
+        """
+        try:
+            evidence_dir = self._evidence_dir()
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            stamp = (
+                time.strftime("%Y%m%d_%H%M%S")
+                + f"{int((time.time() % 1) * 1000):03d}"
+            )
+            dest = evidence_dir / f"{scenario_id}_polluted_{stamp}{suffix}.png"
+            shutil.copy(str(shot), str(dest))
+        except OSError as e:
+            self._log_warning(f"污染证据落盘失败（非阻塞）: {e}")
 
     def _log_warning(self, message: str) -> None:
         """宽容双形态 logger（兼容标准 logging 与 fenixd (component, msg)）。"""

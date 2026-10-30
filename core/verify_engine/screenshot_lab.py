@@ -31,6 +31,50 @@ BLANK_DOMINANT_COLOR_PCT = 0.99
 # （std 很低但主色占比未过线的画面，如 ~98% 单色图，同样归入此标签）
 LOW_CONTRAST_STD_UPPER = 0.08
 
+# 低对比度放宽上限（场景感知阈值，evo-visual-low-contrast-gate R1）：
+# 大屏/空态类页面天然 pixel_std 落在 0.06-0.094 区间贴近缺省上限 0.08，
+# 真实渲染被误判 low_contrast（10-14/10-25/10-26 三例豁免握手家族实证，
+# 页面天然 std 最高 0.0941）。场景名命中下方声明性子串时改用本档上限；
+# 真空白（std≈0）远低于两档阈值，不受放宽影响。
+LOW_CONTRAST_STD_UPPER_RELAXED = 0.095
+
+# 场景感知放宽的声明性子串（大小写不敏感）：
+#   - empty / zero-state / placeholder：空态、零状态、占位类场景天然低对比
+#   - low-contrast / low_contrast：场景 id 显式声明低对比的保留标记
+#     （复用同一子串匹配，不新增场景 schema 字段）
+# 连字符与下划线两种命名形态均在列，覆盖净化前后（safe_component 保连字符）
+# 的场景 id。
+LOW_CONTRAST_SCENARIO_MARKERS = (
+    "empty",
+    "zero-state",
+    "placeholder",
+    "low-contrast",
+    "low_contrast",
+)
+
+
+def is_low_contrast_declared_scenario(name: Any) -> bool:
+    """场景名是否声明了低对比（命中声明性子串，大小写不敏感）。
+
+    非 str（None/异常上下文）按未声明处理，回退缺省上限。
+    """
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return any(marker in lowered for marker in LOW_CONTRAST_SCENARIO_MARKERS)
+
+
+def low_contrast_upper_for_scenario(name: Any) -> float:
+    """按场景名计算 low_contrast 判定的 std 上限。
+
+    声明性场景名（empty/zero-state/placeholder/low-contrast/low_contrast
+    子串，大小写不敏感）用放宽上限，其余场景（含无场景上下文）维持缺省
+    0.08 行为不变。
+    """
+    if is_low_contrast_declared_scenario(name):
+        return LOW_CONTRAST_STD_UPPER_RELAXED
+    return LOW_CONTRAST_STD_UPPER
+
 logger = logging.getLogger("fenixd.verify_engine.screenshot_lab")
 
 
