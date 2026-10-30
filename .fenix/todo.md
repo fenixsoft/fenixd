@@ -388,7 +388,7 @@
   - 建议：①手工把 night_quiet_window 改为合法窄多窗（如 "04:22-04:40"，零代码、多窗解析 _parse_night_quiet_windows 已上线）；②窗解析把布尔 false 与 off 同义化并在配置载入时 lint 告警；③修复链 enabled 停用态加自动再武装或每日一次提醒信号；④批投递与审查派发加窗前缓冲（预计结束落入任一窗则顺延至窗末后）。
 
 - **散件升级信号全量清单撑爆prompt，Administrator秒死无重派**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：maintree_untracked_stray_escalated（主树 untracked 散件滞留升级）信号把 51054 文件全量清单注入 Administrator 提示词，处置 run 首轮即被 API 400 prompt_too_long 拒绝（7.4 秒、1 轮、0 次工具调用、0 美元），死后台无重派、无失败升级信号——凡散件集合体量过阈值（本次 895MB/5 万文件即过），该升级信号的自动处置链路结构性失效，只能等带外清理。
   - 证据：admin-fenixd-1792880308 档案尾部 result 原文「Prompt is too long · this conversation is a single exchange and cannot be compacted」、terminal_reason=prompt_too_long、api_error_status=400、num_turns=1、duration_ms=7403；告警 478057388bda 的 evidence 字段含「文件清单(51054): …」逐文件罗列（daemon 日志 10-24T22:18:28Z 行可见数千文件全量展开）；core/admin_monitor.py:401 注释自证「evidence 穿透 str.replace 实证：prompt_builder.py:204」——evidence 全文替换进 Administrator 提示词；对照组：同晨 admin-fenixd-1792879707（小清单散件信号）正常完成并产出根治提交、admin-add-spec-topology-bigscreen-1792934698（验证阻塞处置 run，21:32）67 轮成功；该 run 死后无第二次 invoking Administrator 记录；归档 458 个 run 中 prompt_too_long 仅此一例。
   - 调查评估：问题源：今日失误条目中被击杀处置 run 的失败面复盘。已核实事实：①直接死因裁决为 prompt_too_long（API 400，单轮、无工具调用、结果明文）；②注入链路有代码注释背书（evidence 全文 str.replace 进提示词），且同晨小清单 admin run 全部成功——失败变量即清单体量，归因到「全量清单注入撑爆首轮请求」证据充分；③死后信号路径：仅 agent_runner WARNING 一行，无重派、无计数、无「处置失败」升级，指纹消失前信号一直挂「Administrator 处置中」。根因：系统性缺口——升级信号 evidence 构造无体量上限、处置失败无兜底重试。与存量工作关系：evo-stray-untracked-escalation（升级机制）与 evo-stray-untracked-session-attribution（归因）均不覆盖清单截断与重派面，spec/changes/ 活跃区无同主题在飞提案，非重复立项。结论：修复面小（截断＋限次重派＋失败信号），值立项。
