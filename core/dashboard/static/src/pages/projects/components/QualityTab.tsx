@@ -118,13 +118,30 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 // 状态过滤下拉选项（value/label 单源）：状态 Select 与表格空态文案共用同一
-// 词表，避免平行维护漂移（code-review item 0ca9da12f1df）
+// 词表，避免平行维护漂移（code-review item 0ca9da12f1df）。
+// resolved 选项文案（evo-code-review-snapshot-writeoff-integrity R4）：
+// 「已修复」改为来源中立的「已核销」——快照核销（本轮未再观测）与合回修复
+// 核销在该状态下混列，单称「已修复」会把假清零计入修复成果；具体来源由
+// 行内 RESOLUTION_BADGE 徽标分列展示。
 const STATUS_FILTER_OPTIONS = [
   { value: 'open', label: 'open（待处置）' },
   { value: 'in_spec', label: 'in_spec（已立项修复）' },
-  { value: 'resolved', label: 'resolved（已修复）' },
+  { value: 'resolved', label: 'resolved（已核销）' },
   { value: 'ignored', label: 'ignored（已忽略）' },
 ];
+
+// resolved 条目核销来源徽标（evo-code-review-snapshot-writeoff-integrity
+// R4）：code-fix-auto=已修复（合回修复核销）/ snapshot_closed=快照关闭
+// （本轮未再观测而关闭，非修复成果）；resolution 缺失（存量历史条目）按
+// 快照关闭口径解读（后端不回填改写存量，design 决策 3）。
+const RESOLUTION_BADGE: Record<string, { text: string; color: string }> = {
+  'code-fix-auto': { text: '已修复', color: 'green' },
+  snapshot_closed: { text: '快照关闭', color: 'default' },
+};
+
+function resolutionBadgeOf(rec: CodeReviewItem): { text: string; color: string } {
+  return RESOLUTION_BADGE[rec.resolution ?? ''] ?? { text: '快照关闭', color: 'default' };
+}
 
 // ── 「问题」列单元格：两行堆叠 + 内容行悬浮浮层 ──────────────────────
 // 行布局（2026-09-20 用户要求）：第一行 = 问题标题 + `文件:行`（同一行不换行，
@@ -255,6 +272,7 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
 // 只剩 6~8 字）；② 描述直接全文展示——桌面版全文走悬浮 1s 的 Popover，
 // 触屏设备没有 hover，该通道在移动端不可达。
 function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
+  const badge = rec.status === 'resolved' ? resolutionBadgeOf(rec) : null;
   return (
     <Space direction="vertical" size={4} style={{ width: '100%' }}>
       <Space size={4} wrap>
@@ -264,6 +282,12 @@ function ProblemCellMobile({ rec }: { rec: CodeReviewItem }) {
         <Tag color={STATUS_COLOR[rec.status] || 'default'} style={{ marginInlineEnd: 0 }}>
           {STATUS_TEXT[rec.status] || rec.status}
         </Tag>
+        {/* resolved 来源徽标（R4）：快照核销与合回修复在移动端同样分列 */}
+        {badge && (
+          <Tag color={badge.color} style={{ marginInlineEnd: 0 }}>
+            {badge.text}
+          </Tag>
+        )}
       </Space>
       <Typography.Text style={{ fontWeight: 500, wordBreak: 'break-word' }}>
         {rec.title}
@@ -924,6 +948,21 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     (it) => selectedKeys.includes(it.item_id) && it.status === 'open',
   ).length;
 
+  // 本页 resolved 来源分列统计（evo-code-review-snapshot-writeoff-integrity
+  // R4「已修复统计按来源分列」）：server-side 分页下只能对当页行计数（口径
+  // 与上方「本页已选 N 条」一致，标注「本页」防误读为全量）；resolution
+  // 缺失的存量历史条目计入快照关闭（按快照关闭口径解读，后端不回填）。
+  const resolvedSplit = items.reduce(
+    (acc, it) => {
+      if (it.status === 'resolved') {
+        if (it.resolution === 'code-fix-auto') acc.fixed += 1;
+        else acc.snapshot += 1;
+      }
+      return acc;
+    },
+    { fixed: 0, snapshot: 0 },
+  );
+
   // 打开弹窗前把配置里的默认执行时刻算好（异步；算完再弹，避免弹窗内
   // 初始值闪一下从「立即」跳到「定时」）
   const handleGenerate = async () => {
@@ -1109,9 +1148,23 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           // STATUS_ORDER 白名单），受控方式同上方严重度列
           sorter: true,
           sortOrder: sortField === 'status' ? sortOrder : undefined,
-          render: (status: string) => (
-            <Tag color={STATUS_COLOR[status] || 'default'}>{STATUS_TEXT[status] || status}</Tag>
-          ),
+          render: (status: string, rec: CodeReviewItem) => {
+            const badge = status === 'resolved' ? resolutionBadgeOf(rec) : null;
+            return (
+              <Space size={4} wrap>
+                <Tag color={STATUS_COLOR[status] || 'default'}>
+                  {STATUS_TEXT[status] || status}
+                </Tag>
+                {/* resolved 核销来源徽标（R4）：code-fix-auto=已修复 /
+                    snapshot_closed=快照关闭 / 缺失按快照关闭口径解读 */}
+                {badge && (
+                  <Tag color={badge.color} style={{ marginInlineEnd: 0 }}>
+                    {badge.text}
+                  </Tag>
+                )}
+              </Space>
+            );
+          },
         },
         // 操作列已按用户 2026-09-24 要求整体移除（逐条「忽略/清除归属」入口随列
         // 下线；批量「全部忽略」入口保留在工具栏），对应 renderOps/handleIgnore/
@@ -1237,6 +1290,17 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           </Button>
         </Space>
       </div>
+
+      {/* 本页 resolved 来源分列统计（R4）：当页无 resolved 行时不渲染。
+          「已修复」仅指合回修复核销（code-fix-auto），快照核销单列为「快照
+          关闭」——假清零不再混入修复成果统计。 */}
+      {resolvedSplit.fixed + resolvedSplit.snapshot > 0 ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+          本页 resolved 共 {resolvedSplit.fixed + resolvedSplit.snapshot} 条：
+          已修复（合回核销） {resolvedSplit.fixed} · 快照关闭 {resolvedSplit.snapshot}
+          （存量无 resolution 条目按「快照关闭」口径解读）
+        </Typography.Text>
+      ) : null}
 
       {progress?.running ? (
         <Card size="small" style={{ marginBottom: 12, background: '#fafafa' }}>

@@ -26,6 +26,7 @@ code_review_state.json 写入失败）走裸 ``logging.getLogger("fenixd.code_re
 可能落错项目的日志文件。
 """
 
+import difflib
 import fcntl
 import glob
 import hashlib
@@ -613,6 +614,29 @@ def fingerprint(file: str, category: str, title: str) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
+# ── 快照核销来源标记与对账常量（evo-code-review-snapshot-writeoff-integrity）──
+# 核销来源标记（R4）：快照核销统一写 resolution='snapshot_closed'，与合回
+# 修复核销（mark_resolved 写 'code-fix-auto'）在台账字段、完成行与 dashboard
+# 统计中分列——「假清零计入修复成果」的展示层混同面在此收口。存量
+# resolution=None 的历史 resolved 条目按 snapshot_closed 口径解读，不回填
+# 改写（design 决策 3）。
+SNAPSHOT_CLOSED_RESOLUTION = "snapshot_closed"
+
+# 对账阈值（R1/R5，design 决策 2）：归一化标题相似度 ≥ 0.55 视同同缺陷措辞
+# 漂移。台账全量复核（2026-10-24）显示同缺陷双指纹对集中于 ≥0.82（最高
+# 0.99），0.55 覆盖更重的措辞漂移形态并留出「真不同缺陷」的区分带（同组
+# 跨指纹对中 ≥0.55 占 228/55979）。常量缺省，不新增配置键。
+WRITEOFF_TITLE_SIMILARITY_THRESHOLD = 0.55
+
+# 对账迁移时随观测记录刷新的展示字段（design 决策 5）：title/description/
+# suggestion/evidence/line/severity + last_seen_at（核销时刻）+ review 元数据
+# （review_id/review_kind/reviewed_at 仅观测记录携带时刷新）。file/category
+# 是对账分组键（同组才可能命中），迁移不改变；item_id/first_seen_at/status/
+# spec_name/spec 保持存量稳定（龄期与归属不因迁移漂移）。
+_MIGRATE_DISPLAY_FIELDS = ("title", "description", "suggestion", "evidence", "line", "severity")
+_MIGRATE_REVIEW_FIELDS = ("review_id", "review_kind", "reviewed_at")
+
+
 # severity 归一映射（2026-09-23 根治漂移）：契约四档 critical|major|minor|info
 # （agents/code-review.md「严重度定义」），但第一步 ocr scan 产出自带
 # high/medium/low 值域，经 agent「原样透传」落台账（归一责任在 agent、写侧
@@ -1073,31 +1097,109 @@ def upsert_findings(
     return {"inserted": inserted, "updated": updated}
 
 
-def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str] = None) -> int:
-    """全仓快照核销：open 且本轮未再观测到的条目置 resolved。
+def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> dict:
+    """全仓快照核销：open 且本轮未再观测到的条目置 resolved（带来源标记）。
 
     调用方保证仅在 ``review_kind == "manual_full"`` 或全仓收集的 scheduled
     （window_start=None，evo-add-review-night-defer-snapshot-writeoff 3.2
     放宽）收尾时调用（本函数不做 review_kind 判定，核销资格与覆盖完整性
     职责在 run_code_review 收尾分支）。
 
-    核销语义：台账中 ``status == "open"`` 且 fingerprint 不在
-    ``observed_fingerprints`` 中的条目置 ``resolved``（记录 resolved_at）；
+    入参（evo-code-review-snapshot-writeoff-integrity R2）：``observations``
+    为本轮**观测记录集**——每条含 ``file``/``category``/``title``/``fingerprint``
+    （本轮新指纹）的 dict（生产侧由 maintenance_runs 收尾按 findings 同口径
+    现算传入）；兼容裸指纹字符串形态（无 file/title 的记录不参与对账、仅按
+    指纹命中）。
+
+    核销前对账（R1/R5）：指纹构成含易变成分（normalize_title(title) 随审查
+    模型每轮措辞重写而漂移），「指纹未命中」≠「缺陷消失」。故置 resolved
+    前对未命中的 open 条目做同 file+category 的归一化标题相似度对账：
+
+    - 命中（相似度 ≥ WRITEOFF_TITLE_SIMILARITY_THRESHOLD）：视同本轮已观测
+      ——存量条目 fingerprint 迁移为本轮新指纹、保持 open、计 migrated
+      （不核销）；下一轮直接命中，漂移闭环收敛；
+    - 对账 1:1 领用：一条观测至多对账一条存量条目（相似度最高者优先，并列
+      取 last_seen_at 更近者），被领用的观测不得再对账其他条目——防多条
+      存量条目迁移到同一新指纹造成指纹碰撞与重复条目；
+    - 迁移去重（孪生合并，design 决策 5）：本轮 upsert_findings 先于本函数
+      执行，漂移轮次中新指纹已被 upsert 作为新 open 条目插入台账；迁移时
+      MUST 合并孪生——保留存量条目（item_id/first_seen_at/龄期稳定）、以
+      观测记录刷新其展示字段、删除孪生，维持「同一 fingerprint 至多一条
+      台账条目」不变量；孪生已非 open（in_spec/ignored 等，缺陷已由他条
+      承载）则放弃迁移，旧条目按未命中语义核销（缺陷不失踪）；
+    - 未命中（含放弃迁移）：按现语义置 resolved，且 resolution 写
+      ``snapshot_closed``（与合回核销 ``code-fix-auto`` 区分，R4），保留
+      resolved_at；``last_seen_at`` 保持最后观测时刻不动（核销时刻由
+      resolved_at 承载）。
+
     MUST NOT 触碰 ``in_spec`` / ``ignored``（全仓快照核销场景）。
     fingerprint 缺失/空/非字符串的 open 条目（手工编辑、外部直写、旧版本
     条目）无法参与「本轮是否再观测」比对，跳过核销并 WARNING 留痕、保持
     open 交人工或后续全仓收集确认（code-review item 05643bc7ce47，对齐
     1e954a7a38ec 的「无法识别台账内容留痕、不无痕消失」取向）。
 
-    Returns: 被核销的条目数。
+    Returns: ``{"snapshot_closed": n, "fixed": 0}``（design 决策 6：本函数
+    不产生合回核销，fixed 恒 0 占位以对齐两计数口径——合回核销计数由
+    code-fix 链按 mark_resolved 真实命中自行累积）。
     """
     now = now or _now_iso()
     path = items_path(project_root)
-    resolved_count = 0
+
+    # 观测记录归一（锁外）：dict 记录补算缺失指纹并透传展示字段；裸指纹
+    # 字符串包装为无对账字段的记录；同指纹重复观测只留首条（1:1 领用的
+    # 观测侧唯一性——同指纹观测在对账语义上等价，重复保留会造成领用竞态）。
+    obs_records: List[dict] = []
+    seen_obs_fp = set()
+    for obs in observations or []:
+        if isinstance(obs, str):
+            rec = {"fingerprint": obs} if obs else None
+        elif isinstance(obs, dict):
+            file_ = str(obs.get("file") or "")
+            category = str(obs.get("category") or "")
+            title = str(obs.get("title") or "")
+            fp = obs.get("fingerprint")
+            if not isinstance(fp, str) or not fp:
+                if not (file_ and title):
+                    continue
+                fp = fingerprint(file_, category, title)
+            rec = {"fingerprint": fp, "file": file_, "category": category, "title": title}
+            for key in ("line", "severity", "description", "suggestion", "evidence"):
+                if key in obs and obs[key] is not None:
+                    rec[key] = obs[key]
+            for key in _MIGRATE_REVIEW_FIELDS:
+                if key in obs and obs[key] is not None:
+                    rec[key] = obs[key]
+        else:
+            rec = None
+        if not rec or not rec.get("fingerprint") or rec["fingerprint"] in seen_obs_fp:
+            continue
+        seen_obs_fp.add(rec["fingerprint"])
+        obs_records.append(rec)
+
+    observed_fingerprints = {r["fingerprint"] for r in obs_records}
+    counts = {"snapshot_closed": 0, "fixed": 0}
+    migrated_count = 0
+
+    # 条目 last_seen_at 排序键（并列领用取更近者）：解析失败按最旧处理。
+    def _last_seen_epoch(rec: dict) -> float:
+        dt = parse_ts(str(rec.get("last_seen_at") or ""))
+        try:
+            return dt.timestamp() if dt is not None else 0.0
+        except (OverflowError, OSError, ValueError):
+            return 0.0
 
     def _apply(current: Dict[str, dict]) -> bool:
-        nonlocal resolved_count
+        nonlocal migrated_count
         changed = False
+        # 指纹索引（全态，同 upsert 的 by_fp 口径）：迁移去重的孪生定位
+        by_fp: Dict[str, dict] = {}
+        for rec in current.values():
+            fp = rec.get("fingerprint")
+            if isinstance(fp, str) and fp:
+                by_fp[fp] = rec
+
+        # ── 未命中 open 条目收集（对账候选；fingerprint 缺失跳过留痕）──
+        unmatched: List[dict] = []
         for rec in current.values():
             if rec.get("status") != "open":
                 continue
@@ -1111,16 +1213,98 @@ def resolve_snapshot(project_root, observed_fingerprints: set, now: Optional[str
                 continue
             if fp in observed_fingerprints:
                 continue
-            rec["status"] = "resolved"
-            rec["resolved_at"] = now
-            # last_seen_at 保持最后观测时刻不动（核销时刻由 resolved_at 承载）
-            changed = True
-            resolved_count += 1
+            unmatched.append(rec)
+
+        # ── 对账 1:1 领用：候选对按（相似度降序, last_seen_at 更近优先,
+        #    item_id 稳定序）贪心领用，被领用观测不复用 ──
+        obs_by_group: Dict[Tuple[str, str], List[int]] = {}
+        for idx, obs in enumerate(obs_records):
+            if obs.get("file") and obs.get("title"):
+                obs_by_group.setdefault(
+                    (str(obs["file"]), str(obs["category"])), []).append(idx)
+        pairs: List[Tuple[float, float, str, dict, int]] = []
+        for rec in unmatched:
+            group = (str(rec.get("file") or ""), str(rec.get("category") or ""))
+            candidate_idx = obs_by_group.get(group)
+            if not candidate_idx:
+                continue
+            norm_rec_title = normalize_title(str(rec.get("title") or ""))
+            if not norm_rec_title:
+                continue
+            epoch = _last_seen_epoch(rec)
+            for idx in candidate_idx:
+                sim = difflib.SequenceMatcher(
+                    None, norm_rec_title,
+                    normalize_title(str(obs_records[idx].get("title") or "")),
+                ).ratio()
+                if sim >= WRITEOFF_TITLE_SIMILARITY_THRESHOLD:
+                    pairs.append((sim, epoch, str(rec.get("item_id") or ""), rec, idx))
+        pairs.sort(key=lambda p: (-p[0], -p[1], p[2]))
+        claimed: Dict[str, dict] = {}  # item_id → 领用的观测记录
+        used_obs: set = set()  # 已被领用的观测下标（1:1，不复用）
+        for _sim, _epoch, _iid, rec, idx in pairs:
+            iid = rec.get("item_id")
+            if idx in used_obs or iid in claimed:
+                continue
+            used_obs.add(idx)
+            claimed[iid] = obs_records[idx]
+
+        # ── 迁移 / 放弃迁移 / 核销 ──
+        for rec in unmatched:
+            iid = rec.get("item_id")
+            obs = claimed.get(iid)
+            twin = None
+            if obs is not None:
+                new_fp = obs["fingerprint"]
+                twin = by_fp.get(new_fp)
+                if twin is not None and twin is not rec and twin.get("status") != "open":
+                    # 孪生非 open（in_spec/ignored/resolved，缺陷已由他条
+                    # 承载）：放弃迁移，旧条目按未命中语义核销（缺陷不失踪）
+                    obs = None
+            if obs is not None:
+                # 迁移：指纹换新、保持 open、展示字段随观测刷新（line/severity
+                # 与 upsert 落账同口径归一——被删孪生是 upsert 归一产物，保留
+                # 的存量条目刷新后形态须一致）
+                rec["fingerprint"] = obs["fingerprint"]
+                for key in _MIGRATE_DISPLAY_FIELDS:
+                    if key not in obs:
+                        continue
+                    if key == "line":
+                        rec[key] = _coerce_line(obs[key])
+                    elif key == "severity":
+                        rec[key] = normalize_severity(obs[key])
+                    else:
+                        rec[key] = obs[key]
+                rec["last_seen_at"] = now
+                for key in _MIGRATE_REVIEW_FIELDS:
+                    if key in obs:
+                        rec[key] = obs[key]
+                if twin is not None and twin is not rec:
+                    # 孪生合并（R1）：保留存量条目（本 rec，item_id/
+                    # first_seen_at 稳定），删除本轮 upsert 插入的孪生
+                    twin_id = twin.get("item_id")
+                    if isinstance(twin_id, str) and twin_id in current:
+                        del current[twin_id]
+                by_fp[obs["fingerprint"]] = rec
+                migrated_count += 1
+                changed = True
+            else:
+                rec["status"] = "resolved"
+                rec["resolution"] = SNAPSHOT_CLOSED_RESOLUTION
+                rec["resolved_at"] = now
+                counts["snapshot_closed"] += 1
+                changed = True
+        if migrated_count:
+            _logger.info(
+                "code_review: 全仓核销对账迁移 %d 条措辞漂移条目"
+                "（同文件同类目标题相似度命中，保持 open 不核销）",
+                migrated_count,
+            )
         return changed
 
     # 读降级不单独处置（既有口径）：降级读得空集 → 零变更短路天然不落盘
     _with_lock(path, lambda: _mutate_items_unlocked(path, _apply))
-    return resolved_count
+    return counts
 
 
 def set_item_status(project_root, item_id: str, status: str, spec_name: Optional[str] = None) -> dict:

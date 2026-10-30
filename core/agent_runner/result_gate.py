@@ -369,7 +369,13 @@ class CodeReviewResult:
 
     - inserted/updated: 落账到 items.jsonl 的条目数（inserted=新插入，
       updated=重复观测刷新）
-    - resolved: 全仓快照核销的条目数（仅 manual_full 收尾核销非 0）
+    - resolved: 全仓快照核销的条目数（仅 manual_full/全仓 scheduled 收尾
+      核销非 0）——分列前的单值口径兼容别名，恒等于 snapshot_closed；
+      新消费方 MUST 用 snapshot_closed/fixed 两计数
+    - snapshot_closed: 快照核销计数（本轮未再观测而关闭，非修复成果，
+      evo-code-review-snapshot-writeoff-integrity R3）
+    - fixed: 合回修复核销计数（code-fix-auto；审查车道收尾恒 0 占位——
+      合回核销计数由 code-fix 链按 mark_resolved 真实命中自行累积）
     - error: success=False 时的失败原因
     """
 
@@ -383,12 +389,16 @@ class CodeReviewResult:
         error: str = "",
         output: str = "",
         shards: int = 0,
+        snapshot_closed: int = 0,
+        fixed: int = 0,
     ):
         self.run_id = run_id
         self.success = success
         self.inserted = inserted
         self.updated = updated
         self.resolved = resolved
+        self.snapshot_closed = snapshot_closed
+        self.fixed = fixed
         self.error = error
         self.output = output
         # 本 run 被消费的分片数（add-code-review-sharded-out 2.3：完成日志

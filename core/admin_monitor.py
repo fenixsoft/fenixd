@@ -1595,6 +1595,22 @@ def _warn_night_quiet_window_invalid(raw, logger) -> None:
     )
 
 
+def code_review_writeoff_counts_note(result) -> str:
+    """审查完成行核销两计数分列段（evo-code-review-snapshot-writeoff-integrity R3）。
+
+    把单值 ``resolved`` 拆为 ``snapshot_closed``（快照核销——本轮未再观测而
+    关闭，**非修复成果**）与 ``fixed``（合回修复核销，code-fix-auto）两个
+    计数输出：快照核销与真修复在完成行/展示层不可区分、假清零计入修复成果
+    的混同面在此收口。旧结果对象（无分列字段的 daemon 旧码在飞形态）按
+    0/0 兜底，不让缺字段炸完成行。
+
+    纯函数（模块级单源）：_worker 完成行与本文件的格式断言测试共用同一实现。
+    """
+    closed = getattr(result, "snapshot_closed", 0)
+    fx = getattr(result, "fixed", 0)
+    return f"snapshot_closed={closed}, fixed={fx}"
+
+
 class AdminMonitor:
     """困境信号检测 + 节流 + 唤起调度。run_once() 为单次检测入口。"""
 
@@ -2203,7 +2219,11 @@ class AdminMonitor:
                         "admin_monitor",
                         f"code-review 周期审查完成：run_id={result.run_id}, "
                         f"inserted={result.inserted}, updated={result.updated}, "
-                        f"resolved={result.resolved}, shards={result.shards}"
+                        # 核销两计数分列（evo-code-review-snapshot-writeoff-
+                        # integrity R3）：snapshot_closed=快照核销（非修复
+                        # 成果）、fixed=合回修复核销，替代单值 resolved
+                        f"{code_review_writeoff_counts_note(result)}, "
+                        f"shards={result.shards}"
                         + (f", resume_of={resume_of}" if resume_of else "")
                         + self._pending_writeoff_note()
                         + face_note
