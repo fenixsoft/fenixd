@@ -33,3 +33,9 @@
 
 - [x] 4.1 tests/test_api_stall_disposition.py：error 终态 run_metrics 的 latency_* 与过程指标一致；成功终态透传不回归；无停滞 run 行为零变化；_run_agent 抛出路径收尾 latency 走零样本且不 NameError。
 - [x] 4.2 tests/test_api_stall_disposition.py：warning-escalated→信号 1 条且同 run 去重；「warning-escalated 且收尾 error」→stall 意图登记/上限 1 次/与 ratelimit 互斥且双条件 ratelimit 优先/redispatch_of 指向原 run；「曾停滞但正常完成」→无信号无意图。
+
+## 验证修复（原地打回第 2 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-add-api-stall-disposition-closeout/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
