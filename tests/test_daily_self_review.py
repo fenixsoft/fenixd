@@ -1608,3 +1608,135 @@ class TestAdminSummaryFixtureFilter:
         text = "\n".join(lines)
         assert "- 升级告警: 2 条（未处理 2 条）" in text, text
         assert "[fixture]" not in text
+
+
+# ═════════════════════════════════════════════════════════════════
+# evo-instant-fail-storm-alert-closeout 2.1/3.2：未处理 escalation 龄期盘点
+# ═════════════════════════════════════════════════════════════════
+
+
+class TestUnhandledEscalationAging:
+    """龄期盘点：全量台账口径、超 24 小时标注、窗口明细口径不回归。
+
+    调度窗口为 [last_run_at, now] 增量——窗口内明细按构造不可能含超 24
+    小时条目，龄期盘点 MUST 取全量未 handled 台账（design D）。
+    """
+
+    def _scheduler(self, proot):
+        from core.self_review import SelfReviewScheduler
+
+        return SelfReviewScheduler(
+            {}, proot, FakeLogger(), FakeSM(), agent_runner=None,
+            store=AdminStore(proot, FakeLogger()),
+        )
+
+    def _seed(self, proot, created_iso, signal_type="instant_fail_storm",
+              spec="storm-spec", handled=False):
+        store = AdminStore(proot, FakeLogger())
+        return store.append({
+            "kind": ESCALATION,
+            "signal_type": signal_type,
+            "spec": spec,
+            "severity": "major",
+            "description": "秒挂风暴告警（0 秒死亡三连）",
+            "handled": handled,
+            "created": created_iso,
+        })
+
+    def test_aged_entry_outside_window_still_annotated(self, tmp_path):
+        """全量台账口径：窗口外的超龄未处理条目仍被龄期标注（含空窗口）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed(proot, datetime(2026, 9, 1, 0, 0).astimezone().isoformat())
+        # 窗口 [9-2 00:00, 9-2 06:00]：条目创建于窗口外，窗口内零记录
+        lines = self._scheduler(proot)._collect_admin_summary(
+            datetime(2026, 9, 2, 0, 0).astimezone(),
+            window_end=datetime(2026, 9, 2, 6, 0).astimezone(),
+        )
+        text = "\n".join(lines)
+        assert "超 24 小时未处理提醒: 1 条" in text, text
+        assert "instant_fail_storm" in text and "storm-spec" in text
+        assert "30.0 小时" in text
+        assert "（窗口内无 admin 记录）" in text
+
+    def test_under_24h_no_aging_section(self, tmp_path):
+        """未超 24 小时的未处理条目不触发龄期提醒（零噪音）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed(proot, datetime(2026, 9, 2, 4, 0).astimezone().isoformat())
+        lines = self._scheduler(proot)._collect_admin_summary(
+            datetime(2026, 9, 2, 0, 0).astimezone(),
+            window_end=datetime(2026, 9, 2, 6, 0).astimezone(),
+        )
+        text = "\n".join(lines)
+        assert "超 24 小时未处理提醒" not in text, text
+        assert "- 升级告警: 1 条（未处理 1 条）" in text
+
+    def test_window_stats_unchanged_and_detail_not_regressed(self, tmp_path):
+        """窗口统计行口径不变：只计窗口内条目；龄期注记独立于窗口。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed(proot, datetime(2026, 9, 2, 4, 0).astimezone().isoformat(),
+                   spec="fresh-spec")
+        self._seed(proot, datetime(2026, 9, 1, 0, 0).astimezone().isoformat(),
+                   spec="aged-spec")
+        lines = self._scheduler(proot)._collect_admin_summary(
+            datetime(2026, 9, 2, 0, 0).astimezone(),
+            window_end=datetime(2026, 9, 2, 6, 0).astimezone(),
+        )
+        text = "\n".join(lines)
+        assert "- 升级告警: 1 条（未处理 1 条）" in text, text
+        assert "fresh-spec" in text, "窗口内明细不回归"
+        assert "超 24 小时未处理提醒: 1 条" in text
+        assert "aged-spec" in text and "30.0 小时" in text
+
+    def test_handled_and_malformed_created_skipped(self, tmp_path):
+        """已 handled / 非 escalation / created 缺失或畸形 → 不进龄期集。"""
+        from core.self_review import _unhandled_escalation_aging
+
+        now = datetime(2026, 9, 2, 6, 0).astimezone()
+        aged = datetime(2026, 9, 1, 0, 0).astimezone().isoformat()
+        fresh = datetime(2026, 9, 2, 5, 0).astimezone().isoformat()
+        records = [
+            {"kind": ESCALATION, "signal_type": "x", "created": aged},
+            {"kind": ESCALATION, "signal_type": "y", "created": aged,
+             "handled": True},
+            {"kind": "signal", "signal_type": "z", "created": aged},
+            {"kind": ESCALATION, "signal_type": "w"},  # created 缺失
+            {"kind": ESCALATION, "signal_type": "v",
+             "created": "not-a-timestamp"},
+            {"kind": ESCALATION, "signal_type": "u", "created": fresh},
+        ]
+        result = _unhandled_escalation_aging(records, now)
+        assert [r["signal_type"] for _, r in result] == ["x"]
+        assert result[0][0] == 30.0
+
+    def test_collection_writes_no_new_records(self, tmp_path):
+        """报告文本注记：不写新告警记录（与 admin_monitor 节流闸零交互、
+        每日调度同日防重天然幂等）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed(proot, datetime(2026, 9, 1, 0, 0).astimezone().isoformat())
+        before = AdminStore(proot, FakeLogger()).read_all()
+        self._scheduler(proot)._collect_admin_summary(
+            datetime(2026, 9, 2, 0, 0).astimezone(),
+            window_end=datetime(2026, 9, 2, 6, 0).astimezone(),
+        )
+        after = AdminStore(proot, FakeLogger()).read_all()
+        assert after == before
+        assert all(not r["handled"] for r in after)
+
+    def test_fixture_aged_entries_annotated_not_counted(self, tmp_path,
+                                                        monkeypatch):
+        """夹具项目龄期条目带 [fixture] 标注、注明不计待办。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        self._seed(proot, datetime(2026, 9, 1, 0, 0).astimezone().isoformat())
+        monkeypatch.setattr("core.self_review._is_fixture_project",
+                            lambda root: True)
+        lines = self._scheduler(proot)._collect_admin_summary(
+            datetime(2026, 9, 2, 0, 0).astimezone(),
+            window_end=datetime(2026, 9, 2, 6, 0).astimezone(),
+        )
+        text = "\n".join(lines)
+        assert "[fixture] 超 24 小时未处理提醒: 1 条（验证噪音，不计待办）" in text, text

@@ -122,6 +122,16 @@ _SIGNAL_CONDITIONS = {
     "daemon_errors": CONDITION_INFRA_TRANSIENT_SELF_HEALED,
     "run_infra_failure": CONDITION_INFRA_TRANSIENT_SELF_HEALED,
     "self-evolution": CONDITION_INFRA_TRANSIENT_SELF_HEALED,
+    # instant_fail_storm（evo-instant-fail-storm-alert-closeout 1.1）：秒挂
+    # 风暴升级告警接入终态收口，条件与 spec_delivered_no_content 同族
+    # （spec_delivered_adjudicated）——terminal-only：仅 pushed/done/archived
+    # 才 resolved。MUST NOT 挂 spec_terminal_or_unblocked：该条件对非
+    # blocked spec 一律判「已解除」（evaluate_alert 仅以 blocked 为未解除
+    # 出口），而本信号产生时 SPEC 正处秒挂冷却期（非终态在途），挂上去会被
+    # 下一轮 auto_resolve 立即闭环、冷却告警失效，「秒挂风暴升级」失去存在
+    # 意义。冷却到期自动恢复不依赖本告警收口（is_instant_fail_cooldown
+    # 独立判定），告警只承载人工关注面。
+    "instant_fail_storm": CONDITION_SPEC_DELIVERED_ADJUDICATED,
 }
 
 
@@ -391,19 +401,22 @@ def evaluate_alert(
         return None  # spec 不在状态表中：无法判定，保持原状
     status = str(entry.get("status") or "")
     if has_trigger and trigger.get("condition") == CONDITION_SPEC_DELIVERED_ADJUDICATED:
-        # 独立条件（alert-noise-governance 1.4）：仅终态自动闭环，非终态
-        # （含 ready/blocked）一律保持原状——信号产生时 SPEC 停在 ready 待
-        # 裁决，提前闭环会让告警离开人工待处理队列。「补 tasks.md 归档凭据」
-        # 裁决路径的收口为人工 handled（本判定只读状态表、不读目录，MUST
-        # NOT 承诺纯 status 判定无法达成的「补内容即自动闭环」）。
+        # 独立条件（alert-noise-governance 1.4 登记 spec_delivered_no_content；
+        # evo-instant-fail-storm-alert-closeout 1.1 扩展至 instant_fail_storm）：
+        # 仅终态自动闭环，非终态（含 ready/blocked）一律保持原状——信号产生
+        # 时 SPEC 停在待裁决/冷却等在途状态，提前闭环会让告警离开人工待处理
+        # 队列。「补 tasks.md 归档凭据」裁决路径的告警收口为人工 handled
+        # （本判定只读状态表、不读目录，MUST NOT 承诺纯 status 判定无法达成
+        # 的「补内容即自动闭环」）。
         if status not in DELIVERED_ADJUDICATED_TERMINAL_STATUSES:
             return None
         # 与 _resolve_note_for_condition 同一审计口径（evo-add-signal-subject-
         # terminal-close 1.1）：终态收口备注附状态变更时刻（updated 缺失时
-        # 保持既有表述，不硬造时刻）。
+        # 保持既有表述，不硬造时刻）。文案按 signal_type 中性泛化（不写死
+        # 单类型），同条件族新信号接入注册表后自动复用。
         reason = (
             f"spec {spec_name} 已到达终态 {status}，"
-            f"spec_delivered_no_content 人工裁决完成（终态收口）"
+            f"{signal_type or '关联信号'} 裁决完成（终态收口）"
         )
         updated = str(entry.get("updated") or "")
         if updated:
