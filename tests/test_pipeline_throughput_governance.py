@@ -382,12 +382,24 @@ def _make_pipeline(tmp_path: Path, failed_ids: list, state: dict | None = None):
 
     logger = FakeLogger()
     state = state if state is not None else {}
+    # evo-fix-fastlane-items-dispatch 1.2：捕获 code-fix 派发入参（含 detail
+    # items 转单），供注入断言消费（pipe._context.dispatched_calls）。
+    dispatched_calls: list = []
 
     def _bump_counters(spec, deltas):
         # 对齐 StateMachine.bump_counters 契约：各字段下限 0，返回最终生效值
         for field, delta in deltas.items():
             state[field] = max(0, state.get(field, 0) + delta)
         return {field: state[field] for field in deltas}
+
+    def _fake_execute_agent(spec, agent_type, run_id, detail=None):
+        # evo-fix-fastlane-items-dispatch 1.2：fastlane 派发现经 detail 形参
+        # 注入 items 转单（runner 对 code-fix 透传）——桩签名同步接受。
+        dispatched_calls.append(
+            {"spec": spec, "agent_type": agent_type,
+             "run_id": run_id, "detail": detail}
+        )
+        return SimpleNamespace(success=True, run_id=run_id, error="")
 
     ctx = SimpleNamespace(
         project_root=tmp_path,
@@ -401,11 +413,8 @@ def _make_pipeline(tmp_path: Path, failed_ids: list, state: dict | None = None):
             transition=lambda *args, **kwargs: True,
         ),
         logger=logger,
-        agent_runner=SimpleNamespace(
-            _execute_agent=lambda spec, agent_type, run_id: SimpleNamespace(
-                success=True, run_id=run_id, error=""
-            ),
-        ),
+        agent_runner=SimpleNamespace(_execute_agent=_fake_execute_agent),
+        dispatched_calls=dispatched_calls,
     )
     pipe = SimpleNamespace(
         _context=ctx,

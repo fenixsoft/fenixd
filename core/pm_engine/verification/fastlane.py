@@ -753,6 +753,26 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
 
     # ① code-fix 轻量修复任务（agents/code-fix.md 车道，主树直接修复）
     failed_id = str(decision.get("failed_id") or "")
+    # 失败场景转单（evo-fix-fastlane-items-dispatch 1.2）：派发前把失败场景
+    # （场景 ID/涉及文件/根因行号/根因说明）构造为 items，经 _execute_agent
+    # 新参 detail 注入（runner 对 code-fix 与 repair 同样透传）。条目键名严格
+    # 按 prompt_builder._CODE_FIX_ITEM_FIELDS 白名单映射——场景 ID→item_id、
+    # 文件→file、行号→line、根因→description；MUST NOT 使用白名单外键名
+    # （否则序列化整键剔除、注入被静默架空）。修复结构性空转：历史形态
+    # code-fix 载具恒拿 "[]"（run 归档 thinking 自证 items 为空）。
+    items = build_fastlane_items(
+        pipeline, spec_name,
+        failed_ids=[failed_id] if failed_id else [],
+        affected_files=decision.get("affected_files"),
+    )
+    # detail 顶层键失败上下文标记（evo-fix-fastlane-items-dispatch 1.3 消费面）：
+    # _CODE_FIX_ITEM_FIELDS 只约束 items 条目、不约束 detail 顶层键——
+    # prompt_builder 据此在 items 空时出 WARNING 留痕，消灭静默空转。
+    detail = {
+        "items": items,
+        "has_failed_scenarios": True,
+        "dispatch_source": "minor-defect-fastlane",
+    }
     # 随机中缀与 spec_review 同口径：秒级时间戳同秒重派会生成与上一轮逐字
     # 相同的 run_id（下游以整串 run_id 作转录/在飞关联键）；随机段置于 epoch
     # 尾段之前，保住尾段数字形态供按「-」尾段解析秒级时间戳的取径。
@@ -760,7 +780,8 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     ctx.logger.info(
         "pm_engine",
         f"fastlane 承接 '{spec_name}': 派发 code-fix 轻量修复 run {run_id}"
-        f"（失败场景={failed_id}，影响面={decision.get('affected_files')}）",
+        f"（失败场景={failed_id}，影响面={decision.get('affected_files')}，"
+        f"items={len(items)} 条）",
     )
     # 接线判定前移至属性解析（code-review item 5f1ed1409eb8）：AttributeError
     # 只在 ctx.agent_runner（或其 _execute_agent 成员）解析失败时按「接线故障」
@@ -780,7 +801,7 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         )
         return _bump_fail_streak(f"code-fix 轻量修复派发异常: {e!r}（回落整轮）")
     try:
-        fix_result = _execute_agent(spec_name, "code-fix", run_id)
+        fix_result = _execute_agent(spec_name, "code-fix", run_id, detail=detail)
     except Exception as e:
         return _bump_fail_streak(f"code-fix 轻量修复派发异常: {e!r}（回落整轮）")
     if not getattr(fix_result, "success", False):
@@ -788,8 +809,30 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
             f"code-fix 轻量修复失败: {getattr(fix_result, 'error', '')!r}（回落整轮）"
         )
 
-    # ② 子集重验（失败场景 ∪ 前置链 ∪ 下游）
+    # ②③ 子集重验 + 收敛（evo-fix-fastlane-items-dispatch：与冻结前分流共用
+    # 通道 _fastlane_reverify_and_converge，回落记账仍走本车道 _bump_fail_streak）
     subset_ids = [str(s) for s in decision.get("subset_ids") or [failed_id] if s]
+    return _fastlane_reverify_and_converge(
+        pipeline, spec_name,
+        run_id=run_id, subset_ids=subset_ids,
+        record_failure=_bump_fail_streak,
+    )
+
+
+def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
+                                    record_failure):
+    """fastlane ② 子集重验 + ③ 收敛共用段（承接与冻结前分流同通道）。
+
+    record_failure: 失败回落记账回调（reason -> outcome dict）。minor-defect
+    承接传 ``_bump_fail_streak``（车道私有 streak 单一写点）；冻结前分流传
+    不递增任何计数器的留痕回调——``_verify_fail_rounds`` 由回落路径
+    family._do_spec_bug_found 的 bump_counters 单点递增（单一写点约定见
+    ``_bump_fail_streak`` 注释），本通道两种记账都不碰该字段。
+    """
+    ctx = pipeline._context
+    sm = ctx.state_machine
+
+    # ② 子集重验（失败场景 ∪ 前置链 ∪ 下游）
     # 上一轮全量报告 MUST 在子集重验执行前读取：引擎经 _execute_stage2 会把
     # 仅含子集场景的报告覆写规范路径 report.json（engine._save_report），收敛
     # 时才读会把刚覆写的子集报告误当「上一轮」，carried-over 逻辑永无输入。
@@ -811,7 +854,7 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
                     "pm_engine",
                     f"fastlane 失败回落回写上一轮报告失败 '{spec_name}': {e!r}",
                 )
-        return _bump_fail_streak(f"fastlane 子集重验未收敛: {reverify.get('reason')}")
+        return record_failure(f"fastlane 子集重验未收敛: {reverify.get('reason')}")
 
     # ③ 收敛：合并报告（未实跑场景沿用上一轮通过结论并标注来源）后先落盘
     #    全量报告（引擎只写子集报告，不回写则 report.json 丢失全部未重验场景
@@ -870,7 +913,7 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
                         "pm_engine",
                         f"fastlane 转换失败回落回写上一轮报告失败 '{spec_name}': {e!r}",
                     )
-            return _bump_fail_streak(
+            return record_failure(
                 f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
             )
         _hops_done.append(_hop)
@@ -890,10 +933,9 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
     # converged=True，调用方（pipeline._do_spec_bug_found）见 dispatched=True
     # 即 return，不派生修复、不计失败轮，FASTLANE_MAX_CONSECUTIVE_FAILURES
     # 熔断在该路径永久失效。故 status 不在收敛集按 fastlane 本轮失败回落整轮
-    # （_bump_fail_streak 留痕）：返回 dispatched=False，调用方随即走
-    # on_spec_bug_found 既有整轮处置（inplace 原地打回直写 status / derive
-    # 派生 fix SPEC，均不经 transition 合法性校验，对滞留 testing 无副作用
-    # 矛盾）。
+    # （record_failure 留痕）：返回 dispatched=False，调用方随即走既有整轮/
+    # 闸门处置（inplace 原地打回直写 status / derive 派生 fix SPEC，均不经
+    # transition 合法性校验，对滞留 testing 无副作用矛盾）。
     # status 缺失（不可观测，如无 status 字段的桩 store）按既有收敛行为放行：
     # 生产 STATE 记录恒带 status，「缺失」不构成门禁拒绝的证据，不据此误回落。
     _applied_status = str((sm.read_one(spec_name) or {}).get("status", "") or "")
@@ -913,13 +955,13 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
                     "pm_engine",
                     f"fastlane 门禁拒绝回落回写上一轮报告失败 '{spec_name}': {e!r}",
                 )
-        return _bump_fail_streak(
+        return record_failure(
             f"fastlane 收敛门禁未通过（_apply_verified 后 status={_applied_status}"
             f"∉{{verified, done, pushed}}，spec 未收口），回落整轮"
         )
     # 真正收敛点（两次 transition 与 _apply_verified 全部成功之后）才清零
     # 连续失败计数：清零若前置到状态转换前，transition 被拒走
-    # _bump_fail_streak 时计数恒从 0 加回 1、在 0/1 间震荡，确定性转换失败
+    # record_failure 时计数恒从 0 加回 1、在 0/1 间震荡，确定性转换失败
     # （冻结剥离/状态机口径变化）下永远达不到 FASTLANE_MAX_CONSECUTIVE_
     # FAILURES 熔断阈值，每个验证轮都会重新完整执行轻量修复与子集重验。
     sm.update_spec(spec_name, {FASTLANE_STREAK_FIELD: 0})
@@ -936,3 +978,437 @@ def dispatch_minor_defect_fastlane(pipeline, spec_name: str, decision: dict) -> 
         "converged": True,
         "reason": f"fastlane 收敛（fix run={run_id}，子集={subset_ids}）",
     }
+
+
+# ── 冻结前定向修复分流（evo-fix-fastlane-items-dispatch 2.1/2.3）────────────
+
+# 分流触发阈值：失败场景数上限（design：失败场景数 ≤3 且 judge 根因行级定位）
+FASTLANE_DIVERSION_MAX_FAILED_SCENARIOS = 3
+# minor-defect 承接失败回落的判定记录 stage 集合（承接/分流互斥判据）
+_MINOR_DEFECT_FALLBACK_STAGES = ("dispatch-failed", "streak-circuit-break")
+# 根因行级定位识别（分流判据）：仓库相对路径:行号 形态（如 core/runner.py:123）。
+# 覆盖常见源码/配置/文档后缀；判据只要求「能定位到行」，非穷举语言清单——
+# 新后缀按需扩充。
+_LINE_LEVEL_RE = re.compile(
+    r"([\w./@+-]+\.(?:py|tsx?|jsx?|mjs|cjs|go|rs|java|kt|swift|c|cc|cpp|h|hpp"
+    r"|cs|rb|php|sh|bash|sql|vue|svelte|css|scss|html|md|json|ya?ml|toml)):([0-9]+)"
+)
+# bugs[].severity 自由词表 → code-fix 模板三档（与 dashboard severity_map 同向）
+_SEVERITY_MAP = {
+    "critical": "critical", "high": "major", "major": "major",
+    "medium": "major", "minor": "minor", "low": "minor",
+}
+
+
+def _parse_line_level(text) -> tuple:
+    """从根因/位置文本解析 (file, line) 行级定位；无行级返回 ("", None)。"""
+    if not isinstance(text, str) or not text:
+        return "", None
+    m = _LINE_LEVEL_RE.search(text)
+    if not m:
+        return "", None
+    try:
+        return m.group(1), int(m.group(2))
+    except ValueError:
+        return "", None
+
+
+def _load_judge_bugs(pipeline, spec_name) -> list:
+    """读取验证裁决产物 ``bugs[]``（verifier/judge 结果文件），不可用返回 []。
+
+    复用 report_gate 的 primary 路径解析与 spec 戳门（escalation.
+    _judge_bugs_declare_env 同款先例）：仅采信 status=bug-found 的验证裁决
+    车道产物，防 implementer/旧轮残留被误当本轮根因。读取失败按无根因
+    处理（items 退化为场景 ID+影响面，分流判据按不满足保守回落）。
+    """
+    from core.pm_engine.verification.report_gate import (
+        _verifier_stamp_gate,
+        _verify_progress_result_paths,
+    )
+
+    primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
+    if not primary.exists():
+        return []
+    try:
+        data = json.loads(primary.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    if not ok:
+        return []
+    if data.get("status") != "bug-found":
+        return []
+    bugs = data.get("bugs")
+    if not isinstance(bugs, list):
+        return []
+    return [b for b in bugs if isinstance(b, dict)]
+
+
+def _bug_for_scenario(bugs: list, sid: str):
+    """按 scenario_ids 关联取首个匹配 bug；未命中返回 None。"""
+    for bug in bugs:
+        ids = bug.get("scenario_ids")
+        if isinstance(ids, list) and str(sid) in {str(i) for i in ids}:
+            return bug
+    return None
+
+
+def _report_scenario_map(pipeline, spec_name) -> dict:
+    """report.json 场景映射（scenario_id → dict），不可读返回 {}。
+
+    judge 增强后的场景条目带 attribution（逐场景归因文本），是 bugs[]
+    root_cause 缺席时的根因兜底面（同一 judge 结论的两个落点）。
+    """
+    from core.verdict_check import load_report
+
+    report = load_report(pipeline._context.project_root, spec_name)
+    if not isinstance(report, dict):
+        return {}
+    out: dict = {}
+    for sc in report.get("scenarios") or []:
+        if isinstance(sc, dict):
+            sid = str(sc.get("scenario_id") or sc.get("id") or "")
+            if sid:
+                out[sid] = sc
+    return out
+
+
+def _scenario_root_cause(bug: dict, scenario: dict) -> str:
+    """单场景根因说明：bugs[].root_cause 优先，report 场景 attribution 兜底。"""
+    rc = str(bug.get("root_cause") or "").strip()
+    if rc:
+        return rc
+    return str(scenario.get("attribution") or "").strip()
+
+
+def build_fastlane_items(pipeline, spec_name, failed_ids: list,
+                         affected_files=None) -> list:
+    """失败场景 → code-fix items 转单（evo-fix-fastlane-items-dispatch 1.2）。
+
+    映射约定（键名严格按 prompt_builder._CODE_FIX_ITEM_FIELDS 白名单）：
+    - 场景 ID → item_id
+    - 涉及文件 → file（bug 行级定位文件优先，judge 影响面/归因兜底）
+    - 根因行号 → line（自 bugs[].location / root_cause 行级定位解析，无行级省略）
+    - 根因说明 → description（bugs[].root_cause 优先，场景 attribution 兜底，
+      拼接 bug 描述与证据）
+    severity/category/title/suggestion 按产物缺省填充；None/空值键整键剔除
+    （与 prompt_builder 序列化的 None 剔除同语义，且不注入噪声键）。
+    MUST NOT 使用白名单外键名：序列化时整键剔除、注入被静默架空。
+    """
+    affected = [str(f) for f in (affected_files or []) if f]
+    bugs = _load_judge_bugs(pipeline, spec_name)
+    scenarios = _report_scenario_map(pipeline, spec_name)
+    items: list = []
+    for idx, sid in enumerate(failed_ids):
+        sid = str(sid)
+        if not sid:
+            continue
+        bug = _bug_for_scenario(bugs, sid) or {}
+        scenario = scenarios.get(sid) or {}
+        root_cause = _scenario_root_cause(bug, scenario)
+        file, line = _parse_line_level(bug.get("location"))
+        if not line:
+            file, line = _parse_line_level(root_cause)
+        if not file:
+            if len(affected) == len(failed_ids):
+                file = affected[idx]
+            elif affected:
+                file = affected[0]
+        description_parts = []
+        if root_cause:
+            description_parts.append(f"根因：{root_cause}")
+        bug_desc = str(bug.get("description") or "").strip()
+        if bug_desc:
+            description_parts.append(f"描述：{bug_desc}")
+        evidence = bug.get("evidence")
+        if evidence is not None and not isinstance(evidence, (str, int, float)):
+            try:
+                evidence = json.dumps(evidence, ensure_ascii=False)
+            except (TypeError, ValueError):
+                evidence = str(evidence)
+        evidence = str(evidence or "").strip()
+        if evidence:
+            description_parts.append(f"证据：{evidence}")
+        severity_raw = str(bug.get("severity") or "").strip().lower()
+        suggestion = str(bug.get("suggestion") or "").strip()
+        item = {
+            "item_id": sid,
+            "file": file or "",
+            "line": line,
+            "severity": _SEVERITY_MAP.get(severity_raw, severity_raw) or "major",
+            "category": "product-bug",
+            "title": (
+                str(bug.get("title") or "").strip()
+                or f"验证失败场景 {sid} 定向修复"
+            ),
+            "description": "\n".join(description_parts),
+            "suggestion": suggestion,
+        }
+        items.append(
+            {k: v for k, v in item.items() if v is not None and v != ""}
+        )
+    return items
+
+
+def _union_subset_ids(ctx, spec_name, failed_ids: list) -> list:
+    """多失败场景的子集重验场景集：逐场景 subset_scenario_ids 并集（保序）。"""
+    try:
+        from core.verify_engine.scenarios import load_scenarios
+
+        scenarios_path = (
+            _verify_dir(ctx.project_root, spec_name) / "test_scenarios.json"
+        )
+        scenarios = load_scenarios(scenarios_path) if scenarios_path.exists() else []
+        subset: list = []
+        seen: set = set()
+        for fid in failed_ids:
+            for sid in subset_scenario_ids(scenarios, fid):
+                if sid not in seen:
+                    seen.add(sid)
+                    subset.append(sid)
+        return subset or list(failed_ids)
+    except Exception as e:  # 场景定义不可读：退化为仅失败场景集
+        ctx.logger.warning(
+            "pm_engine",
+            f"fastlane 子集计算退化 '{spec_name}'（仅失败场景集）: {e!r}",
+        )
+        return list(failed_ids)
+
+
+def evaluate_pre_freeze_diversion(pipeline, spec_name) -> dict:
+    """冻结前分流形态判定（design：失败场景数 ≤3 且 judge 根因行级定位）。
+
+    判据逐场景评估：每个失败场景都有非空根因说明且能解析出行级定位
+    （文件:行号；bugs[].location / root_cause 优先，场景 attribution 兜底）。
+    任一场景缺根因或缺行级 → 不满足（分流是修复优化通道，证据缺失宁可按
+    原闸门冻结，与 minor-defect 条件②的保守方向一致）。
+
+    Returns:
+        {"matched", "failed_ids", "items", "subset_ids", "reasons"}
+        不产生任何状态变更。
+    """
+    ctx = pipeline._context
+    failed_ids = [str(s) for s in pipeline._failed_scenario_ids(spec_name) if s]
+    reasons: list = []
+    if not (0 < len(failed_ids) <= FASTLANE_DIVERSION_MAX_FAILED_SCENARIOS):
+        reasons.append(
+            f"失败场景数 {len(failed_ids)} 超出分流形态阈值"
+            f"（1–{FASTLANE_DIVERSION_MAX_FAILED_SCENARIOS}）"
+        )
+        return {
+            "matched": False, "failed_ids": failed_ids,
+            "items": [], "subset_ids": [], "reasons": reasons,
+        }
+    bugs = _load_judge_bugs(pipeline, spec_name)
+    scenarios = _report_scenario_map(pipeline, spec_name)
+    matched = True
+    for sid in failed_ids:
+        bug = _bug_for_scenario(bugs, sid) or {}
+        scenario = scenarios.get(sid) or {}
+        root_cause = _scenario_root_cause(bug, scenario)
+        _file, line = _parse_line_level(bug.get("location"))
+        if not line:
+            _file, line = _parse_line_level(root_cause)
+        if not root_cause or not line:
+            matched = False
+            reasons.append(
+                f"场景 {sid} 根因非行级定位"
+                f"（root_cause={'有' if root_cause else '缺'}，"
+                f"行级定位={'有' if line else '缺'}）"
+            )
+    items = build_fastlane_items(pipeline, spec_name, failed_ids)
+    return {
+        "matched": matched,
+        "failed_ids": failed_ids,
+        "items": items,
+        "subset_ids": _union_subset_ids(ctx, spec_name, failed_ids),
+        "reasons": reasons or ["形态满足：失败场景数 ≤3 且根因行级定位"],
+    }
+
+
+def _minor_defect_lane_handled_current_event(pipeline, spec_name,
+                                             failed_ids: list) -> bool:
+    """本失败事件是否已由 minor-defect 承接派发过 code-fix（承接/分流互斥）。
+
+    判据：最近一次 fastlane 判定记录为承接失败回落（stage ∈ dispatch-failed/
+    streak-circuit-break、eligible=True）且其 failed_id 落在当前失败场景集内
+    ——同一失败事件已被承接处置过一轮 code-fix，分流 MUST NOT 重复派发
+    （spec Scenario「承接已处置事件不重复分流」，双派发会白烧修复预算）。
+    判定记录缺失 / stage 不符 / failed_id 不在当前集（历史事件残留）时返回
+    False（不互斥）；读取失败按不互斥 fail-open（分流判据本身已收窄触发面）。
+    """
+    path = fastlane_decision_path(pipeline._context.project_root, spec_name)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    if record.get("eligible") is not True:
+        return False
+    if record.get("stage") not in _MINOR_DEFECT_FALLBACK_STAGES:
+        return False
+    rid = record.get("failed_id")
+    if rid is not None and str(rid) not in {str(s) for s in failed_ids}:
+        return False
+    return True
+
+
+def dispatch_pre_freeze_fastlane(pipeline, spec_name) -> dict:
+    """冻结前定向修复分流派发（evo-fix-fastlane-items-dispatch 2.1/2.3）。
+
+    升级闸门（MAX_VERIFY_FAIL_ROUNDS 冻结）处理 bug-found 事件前由
+    family._do_spec_bug_found 调用：形态匹配（失败场景数 ≤3 且 judge 根因
+    行级定位）且本失败事件未经 minor-defect 承接派发处置 → 先派一轮
+    code-fix 定向修复（items 转单见 build_fastlane_items）+ 子集重验；
+    收敛则本事件就地收口（冻结闸门不介入，verified 收口清零计数），仍失败
+    由调用方沿既有 bump_counters 单点递增后按原阈值冻结/打回。
+
+    记账纪律（单一写点约定）：本函数失败回落 MUST NOT 递增
+    ``_verify_fail_rounds``（family 回落路径单点递增），MUST NOT 经
+    ``_bump_fail_streak`` 记车道 streak——分流不属 minor-defect 承接车道，
+    误记会污染承接熔断语义（fastlane.py:693-708 单一写点约定，code-review
+    item 96cd9f5a32d2）。
+
+    与在途 fix-verify-loop-convergence 的路由互斥（2.3）：该 SPEC 现为孤儿
+    在途（STATE 无条目不派发，MERGE-NOTES.md 硬依赖），其「验证失败打回
+    闸门」落地后与本分流同处 bug-found 路由面——同一失败事件只走一条路由：
+    其打回闸门命中的事件 MUST NOT 再进入本分流。当前路由仲裁点唯一（下方
+    承接互斥守卫 + 车道熔断守卫）；该 SPEC 落地时 MUST 在同一路由判定点
+    登记其打回事件标记（如判定记录 stage 扩展），避免双触发。
+
+    Returns:
+        {"dispatched": bool, "converged": bool, "matched": bool, "reason": str}
+        调用方（family）仅消费 converged：True 表示分流修复已收口本事件，
+        不再递增冻结预算；False（含未派发/派发失败/重验未收敛）一律回落
+        既有闸门路径。
+    """
+    ctx = pipeline._context
+    sm = ctx.state_machine
+    shape = evaluate_pre_freeze_diversion(pipeline, spec_name)
+    if not shape.get("matched"):
+        record_decision(pipeline, spec_name, {
+            "eligible": False,
+            "path": "full-round",
+            "stage": "pre-freeze-skipped",
+            "reason": "；".join(shape.get("reasons") or ["形态不满足"]),
+        })
+        return {
+            "dispatched": False, "converged": False, "matched": False,
+            "reason": "；".join(shape.get("reasons") or ["形态不满足"]),
+        }
+    failed_ids = shape["failed_ids"]
+    # 路由互斥守卫一（2.3）：本失败事件已由 minor-defect 承接派发处置过
+    # （承接失败回落记录 + 同 failed_id）→ 不重复分流，按既有记账路径推进
+    # 冻结计数（spec Scenario「承接已处置事件不重复分流」）。
+    if _minor_defect_lane_handled_current_event(pipeline, spec_name, failed_ids):
+        reason = (
+            "本失败事件已由 minor-defect fastlane 承接派发处置，"
+            "不重复进入冻结前分流（承接/分流互斥）"
+        )
+        record_decision(pipeline, spec_name, {
+            "eligible": False,
+            "path": "full-round",
+            "stage": "pre-freeze-skipped-handled",
+            "reason": reason,
+            "failed_id": failed_ids[0] if failed_ids else None,
+        })
+        return {"dispatched": False, "converged": False, "matched": True,
+                "reason": reason}
+    # 路由互斥守卫二：车道熔断（连续 FASTLANE_MAX_CONSECUTIVE_FAILURES 次
+    # fastlane 修复失败）期间不分流——同一 code-fix 载具已连续打转，再派
+    # 只会白烧修复预算，直接按既有闸门路径推进冻结计数。
+    entry = sm.read_one(spec_name) or {}
+    try:
+        streak = int(entry.get(FASTLANE_STREAK_FIELD, 0) or 0)
+    except (TypeError, ValueError):
+        streak = 0
+    if streak >= FASTLANE_MAX_CONSECUTIVE_FAILURES:
+        reason = (
+            f"fastlane 车道熔断中（连续 {streak} 次失败），"
+            "不进入冻结前分流，按既有闸门路径推进"
+        )
+        record_decision(pipeline, spec_name, {
+            "eligible": False,
+            "path": "full-round",
+            "stage": "pre-freeze-skipped-circuit-break",
+            "reason": reason,
+            "streak": streak,
+        })
+        return {"dispatched": False, "converged": False, "matched": True,
+                "reason": reason}
+
+    items = shape["items"]
+    detail = {
+        "items": items,
+        "has_failed_scenarios": True,
+        "dispatch_source": "pre-freeze-diversion",
+    }
+    # run_id 前缀区分分流载具（与 minor-defect 承接的 code-fix-fastlane- 并列）
+    run_id = f"code-fix-prefreeze-{spec_name}-{uuid.uuid4().hex[:6]}-{int(time.time())}"
+    ctx.logger.info(
+        "pm_engine",
+        f"冻结前分流 '{spec_name}': 派发 code-fix 定向修复 run {run_id}"
+        f"（失败场景={failed_ids}，items={len(items)} 条）",
+    )
+    try:
+        _execute_agent = ctx.agent_runner._execute_agent
+    except AttributeError as e:
+        # 接线故障（对齐 minor-defect 承接同款口径）：ERROR 留痕后回落既有
+        # 闸门路径，不递增任何计数器（family 回落路径单点记账）。
+        ctx.logger.error(
+            "pm_engine",
+            f"冻结前分流接线故障 '{spec_name}': ctx.agent_runner 不可用（{e!r}）"
+            "——回落既有闸门路径，请检查 PipelineContext.agent_runner 绑定",
+        )
+        return {"dispatched": False, "converged": False, "matched": True,
+                "reason": f"接线故障: {e!r}"}
+    try:
+        fix_result = _execute_agent(spec_name, "code-fix", run_id, detail=detail)
+    except Exception as e:
+        record_decision(pipeline, spec_name, {
+            "eligible": True,
+            "path": "full-round",
+            "stage": "pre-freeze-failed",
+            "reason": f"code-fix 定向修复派发异常: {e!r}（回落闸门路径）",
+            "failed_id": failed_ids[0] if failed_ids else None,
+        })
+        return {"dispatched": False, "converged": False, "matched": True,
+                "reason": f"code-fix 定向修复派发异常: {e!r}"}
+    if not getattr(fix_result, "success", False):
+        record_decision(pipeline, spec_name, {
+            "eligible": True,
+            "path": "full-round",
+            "stage": "pre-freeze-failed",
+            "reason": (
+                f"code-fix 定向修复失败: {getattr(fix_result, 'error', '')!r}"
+                "（回落闸门路径）"
+            ),
+            "fix_run_id": run_id,
+            "failed_id": failed_ids[0] if failed_ids else None,
+        })
+        return {"dispatched": False, "converged": False, "matched": True,
+                "reason": f"code-fix 定向修复失败: {getattr(fix_result, 'error', '')!r}"}
+
+    def _record_pre_freeze_failure(reason: str) -> dict:
+        # 分流失败回落：只留痕、不递增任何计数器——_verify_fail_rounds 由
+        # family._do_spec_bug_found 的 bump_counters 单点递增（单一写点约定），
+        # _fastlane_fail_streak 是 minor-defect 车道私有字段、禁碰。
+        record_decision(pipeline, spec_name, {
+            "eligible": True,
+            "path": "full-round",
+            "stage": "pre-freeze-failed",
+            "reason": reason,
+            "fix_run_id": run_id,
+            "subset_ids": shape["subset_ids"],
+        })
+        return {"dispatched": False, "converged": False, "matched": True,
+                "reason": reason}
+
+    return _fastlane_reverify_and_converge(
+        pipeline, spec_name,
+        run_id=run_id, subset_ids=shape["subset_ids"],
+        record_failure=_record_pre_freeze_failure,
+    )
