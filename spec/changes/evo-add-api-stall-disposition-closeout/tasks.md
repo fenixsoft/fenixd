@@ -36,6 +36,6 @@
 
 ## 验证修复（原地打回第 2 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-add-api-stall-disposition-closeout/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/evo-add-api-stall-disposition-closeout/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：场景 monitor-escalated-signal-negative-controls 断言「success 终态 + latency_max=400 → 无升级信号」与 specs/api-stall-disposition/spec.md 验收 4 逐字相符，属有效断言；产品侧 _check_api_round_stall_escalated 只读 run_metrics 终态行不读 result 终态行，确属产品 Bug，修产品代码）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（产品修复：core/admin_monitor.py 检测面补 result 终态行读取与 success 豁免——新增 _read_terminal_result_event/_result_event_is_success helper，判据镜像 runner 伪装成功校验（is_error/subtype），崩溃/强杀无 result 事件不豁免；提交 2eb45c716）
+- [x] 修复后重跑验证确认通过（tests/test_api_stall_disposition.py 33 项全绿含新增负控 success 终态/伪成功/崩溃路径 5 项；被改模块直接引用面 82 文件 2327 项回归通过；端到端探针复刻失败场景形态：success 终态 latency_max=400 → 0 信号、error 终态 726.284 → 1 信号）
