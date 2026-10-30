@@ -723,7 +723,18 @@ def _archive_aged_specs(project_root, logger=None) -> dict:
     specs = parse_state(proot)
     now = time.time()
     age_archived = orphan_archived = skipped = 0
-    for child in sorted(changes_root.iterdir()):
+    # iterdir 容错（code-review item dbfe3c826417）：changes 根权限/IO 异常
+    # 按空清单降级并告警（与 spec_docs._archive_dir_entries / signature 对
+    # iterdir 的既有容错口径一致）；只吞 OSError，其余异常照常上抛。
+    try:
+        children = sorted(changes_root.iterdir())
+    except OSError as e:
+        _archive_log(
+            logger, "warning",
+            f"时效归档跳过本轮: spec/changes/ 扫描失败: {e}",
+        )
+        return {"age_archived": 0, "orphan_archived": 0, "skipped": 0}
+    for child in children:
         if not child.is_dir():
             continue
         name = child.name
@@ -778,13 +789,16 @@ def _archive_aged_specs(project_root, logger=None) -> dict:
     }
 
 
-def _scan_stale_dirs(proot: Path) -> list:
+def _scan_stale_dirs(proot: Path) -> list | None:
     """R4 盘点扫描（只读）：返回 [(目录名, [类别标记...])]，按目录名排序。
 
     类别口径（evo-spec-changes-archive-drain R4）：
     - ① 含 verification-report.md 且滞留 ≥ 3 天（目录 mtime，同 R2 判据）；
     - ② STATE 无条目的孤儿目录（无条件列示，满足 R3 条件者归档后自然移出）；
     - ③ STATE 终态但无 verification-report.md 的目录。
+
+    changes 根 iterdir 失败（权限/IO 等 OSError）时返回 None 表示本轮扫描
+    未完成（调用方不消耗 24h 去重水位，下一周期重试）。
     """
     changes_root = proot / "spec" / "changes"
     if not changes_root.is_dir():
@@ -792,7 +806,14 @@ def _scan_stale_dirs(proot: Path) -> list:
     specs = parse_state(proot)
     now = time.time()
     flagged: dict = {}
-    for child in sorted(changes_root.iterdir()):
+    # iterdir 容错（code-review item dbfe3c826417）：与
+    # spec_docs._archive_dir_entries / signature 对 iterdir 的既有容错口径
+    # 一致；只吞 OSError 并以 None 信号扫描失败，其余异常照常上抛。
+    try:
+        children = sorted(changes_root.iterdir())
+    except OSError:
+        return None
+    for child in children:
         if not child.is_dir():
             continue
         name = child.name
@@ -823,14 +844,23 @@ def _daily_stale_audit(proot: Path, logger=None) -> dict:
 
     Returns:
         {"fired": bool, "stale_dirs": [目录名...]}——fired=False 表示本轮在
-        24h 去重窗口内未触发盘点。
+        24h 去重窗口内未触发盘点，或本轮扫描失败未消耗去重窗口（下周期重试）。
     """
     global _daily_audit_last_ts
     now = time.time()
     if now - _daily_audit_last_ts < _DAILY_AUDIT_INTERVAL_SECONDS:
         return {"fired": False, "stale_dirs": []}
-    _daily_audit_last_ts = now
     flagged = _scan_stale_dirs(proot)
+    if flagged is None:
+        # 水位推进后置（code-review item dbfe3c826417）：仅在扫描成功返回后
+        # 推进 _daily_audit_last_ts——扫描失败不消耗去重窗口，下一周期重试，
+        # 滞留目录信号不因单轮 iterdir OSError 静默丢失 24 小时。
+        _archive_log(
+            logger, "warning",
+            "每日滞留盘点跳过: spec/changes/ 扫描失败（不消耗去重窗口）",
+        )
+        return {"fired": False, "stale_dirs": []}
+    _daily_audit_last_ts = now
     if flagged:
         parts = [f"{name}（{'+'.join(whys)}）" for name, whys in flagged]
         _archive_log(

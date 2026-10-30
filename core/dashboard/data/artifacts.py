@@ -539,7 +539,7 @@ def parse_bugs(project_root, spec_name) -> list:
                 {
                     "source": "report",
                     "severity": "major" if status in ("fail", "failed") else "critical",
-                    "scenario_ids": [sc.get("scenario_id", "?")],
+                    "scenario_ids": [sc.get("scenario_id") or "?"],
                     "assertion_type": a.get("type", "step"),
                     # or 链空值口径（对齐 run-result 回退分支）：description 显式为
                     # null 时也回落「未命名场景」，None 不直透前端（code-review 25e03b18223f）
@@ -551,7 +551,7 @@ def parse_bugs(project_root, spec_name) -> list:
                     "screenshots": screenshots,
                     "scenario_status": status,
                     # 前端卡片渲染兼容字段（bug.scenario / bug.assertion，类型单复数漂移）
-                    "scenario": str(sc.get("scenario_id", "?")),
+                    "scenario": str(sc.get("scenario_id") or "?"),
                     "assertion": a.get("type", "step"),
                 }
             )

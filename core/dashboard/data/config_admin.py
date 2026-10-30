@@ -2523,6 +2523,29 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
                         f"{verify_m['deps_mode']}"
                     )
+            # code-review item 874b7cbd3e8b：serving_reclaim 段形态复核（存量
+            # config.yaml 手工写成非 dict 真值或 dict 内 enabled 非 bool 时，
+            # 上方只查 static_scope/deps_mode、合并分支以 isinstance dict/bool
+            # 为前置静默跳过——脏值原样保留回写且 write_config 返回 ok，运行时
+            # 靠读取器缺省 True 回落。对齐 cd2fa5d312de「存量非法段统一拒绝」
+            # 口径；patch 侧已由写路径前置守卫（cbbece865318）先行拒绝，此处
+            # 兜底直连调用与存量；enabled 缺失/显式 None 按可合并缺省放行，
+            # 与前置校验「None 视为未提交」及读取器缺省同口径）
+            _sr_m = verify_m.get("serving_reclaim")
+            if _sr_m is not None and not isinstance(_sr_m, dict):
+                raise ValueError(
+                    f"verify.serving_reclaim must be an object "
+                    f"(存量非法段请先修正 config.yaml): {_sr_m!r}"
+                )
+            if (
+                isinstance(_sr_m, dict)
+                and _sr_m.get("enabled") is not None
+                and not isinstance(_sr_m["enabled"], bool)
+            ):
+                raise ValueError(
+                    f"verify.serving_reclaim.enabled must be a boolean "
+                    f"(存量非法段请先修正 config.yaml): {_sr_m['enabled']!r}"
+                )
             # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
             archive_m = merged.get("archive") or {}
             if "auto_threshold" in archive_m and archive_m["auto_threshold"] is not None:
@@ -2549,8 +2572,11 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             # 返回 ok，运行时靠读取器 fail-safe 回落缺省。对齐 a2b46547c3d6
             # 容器守卫口径统一拒绝存量非法段；patch 侧非 dict 仍由写路径前置
             # 守卫先行拒绝，此处兜底直连调用与存量）
+            # code-review item 874b7cbd3e8b：self_review 纳入同款守卫（此前仅
+            # 下方三键校验以 isinstance dict 为前置，存量非 dict 真值静默跳过，
+            # 同款残余面；None 仍按「未提交/可合并缺省」口径放行）
             if isinstance(admin_m, dict):
-                for _asub in ("code_review", "code_review_fix", "regression"):
+                for _asub in ("code_review", "code_review_fix", "regression", "self_review"):
                     _asub_v = admin_m.get(_asub)
                     if _asub_v is not None and not isinstance(_asub_v, dict):
                         raise ValueError(

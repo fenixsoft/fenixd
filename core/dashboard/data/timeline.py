@@ -243,6 +243,59 @@ def _rotated_log_files(logs_dir: Path) -> list:
     return [t[2] for t in out]
 
 
+def _spec_transition_patterns(spec_name: str):
+    """SPEC 状态转移正则对 ``(Transition 前缀, Gate transition 前缀)``。
+
+    timeline.get_spec_timeline 与 topology._scan_spec_log_events 的同源单点
+    （code-review item 6b53202b854e）：两视图状态转移口径（前缀集 + from/to
+    捕获组序）必须逐字一致，收敛于此防任一侧调整（如新增日志前缀）另一侧
+    漏改。正则只依赖循环不变的 spec_name，调用方在文件循环外编译一次。
+    """
+    esc = re.escape(spec_name)
+    pat = re.compile(r"Transition: " + esc + r"\s+([\w-]+)\s*→\s*([\w-]+)")
+    # fix-observability-gaps 3.1：Gate transition（小写 t，state_machine
+    # transition_gate 前缀）旧正则 `Transition: ` 不命中（`pat.search
+    # ('Gate transition: fix-foo verified → testing')` → False）；结构化
+    # 写侧两条前缀同判，正则兜底只覆盖 `Transition: `（旧格式无 Gate 行）。
+    gate_pat = re.compile(r"Gate transition: " + esc + r"\s+([\w-]+)\s*→\s*([\w-]+)")
+    return pat, gate_pat
+
+
+def _parse_daemon_log_line(line: str):
+    """daemon 日志 JSON 行 → ``(msg, ts, ctx)``；守卫梯队判跳过的行返回 None。
+
+    timeline.get_spec_timeline 与 topology._scan_spec_log_events 共同的逐行
+    防护梯队（同源单点，code-review item 6b53202b854e）：
+    - JSON 解析失败 → None；合法 JSON 但非对象（裸字符串/数组等）的行取
+      不到字段 → None，避免 AttributeError 令整个接口失败；
+    - message 非字符串（数字/数组等异常 JSON 行）→ None（下游 pat.search
+      会抛 TypeError）；
+    - timestamp 非字符串归一为空串：节点 time 字段与下游排序键入参恒为
+      字符串（空串走解析失败排末尾/解析失败的既定分支）；
+    - context 非 dict 归一为 {}（下方 ctx.get 的防护口径）。
+
+    内部事件字典命名 ``ev``（行级局部名）：MUST NOT 命名 ``entry``——
+    get_spec_timeline 的函数参 entry 是 STATE 条目（注记块同参透传判据），
+    遮蔽会让「不透传 entry」的调用点误附 ocr_gate。
+    """
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(ev, dict):
+        return None
+    msg = ev.get("message", "")
+    if not isinstance(msg, str):
+        return None
+    ts = ev.get("timestamp", "")
+    if not isinstance(ts, str):
+        ts = ""
+    ctx = ev.get("context") or {}
+    if not isinstance(ctx, dict):
+        ctx = {}
+    return msg, ts, ctx
+
+
 def get_spec_timeline(
     project_root, spec_name: str, created: str = "", entry: "dict | None" = None
 ) -> list:
@@ -289,13 +342,11 @@ def get_spec_timeline(
             log_files = _rotated_log_files(logs_dir)
         except OSError:
             log_files = []
-        # 状态转移正则只依赖循环不变的 spec_name，提到文件循环外只编译一次
-        pat = re.compile(r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
-        # fix-observability-gaps 3.1：Gate transition（小写 t，state_machine
-        # transition_gate 前缀）旧正则 `Transition: ` 不命中（`pat.search
-        # ('Gate transition: fix-foo verified → testing')` → False）；结构化
-        # 写侧两条前缀同判，正则兜底只覆盖 `Transition: `（旧格式无 Gate 行）。
-        gate_pat = re.compile(r"Gate transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
+        # 状态转移正则对单源委托 _spec_transition_patterns（与
+        # topology._scan_spec_log_events 同参同源，code-review item
+        # 6b53202b854e）；正则只依赖循环不变的 spec_name，提到文件循环外
+        # 只编译一次
+        pat, gate_pat = _spec_transition_patterns(spec_name)
         for lf in log_files:
             try:
                 # created 锚定窗口（原尾部 1MB 尾窗对早期事件静默截断）；
@@ -308,30 +359,14 @@ def get_spec_timeline(
             for line in content.split("\n"):
                 if spec_name not in line:
                     continue
-                try:
-                    log_entry = json.loads(line)
-                except ValueError:
+                # 逐行守卫梯队（JSON 解析→非 dict 跳过→message/timestamp 类型
+                # 归一→ctx 归一）单源委托 _parse_daemon_log_line（与
+                # topology._scan_spec_log_events 同参同源，code-review item
+                # 6b53202b854e）；None 即守卫梯队判跳过的行
+                parsed = _parse_daemon_log_line(line)
+                if parsed is None:
                     continue
-                # 合法 JSON 但非对象（裸字符串/数组等）的行取不到字段，跳过，
-                # 避免 AttributeError 令整个时间轴接口失败
-                if not isinstance(log_entry, dict):
-                    continue
-                # log_entry：行级局部名——MUST NOT 遮蔽函数参 entry（STATE 条目，
-                # 注记块同参透传判据；遮蔽会让「不透传 entry」的调用点误附 ocr_gate）
-                msg = log_entry.get("message", "")
-                # message 为非字符串（数字/数组等异常 JSON 行）时 pat.search
-                # 会抛 TypeError，跳过，避免令整个时间轴接口失败
-                if not isinstance(msg, str):
-                    continue
-                ts = log_entry.get("timestamp", "")
-                # timestamp 为非字符串（数字/数组等异常 JSON 行）时归一为空串，
-                # 与同函数 message/ctx/updates 的防护口径一致：节点 time 字段
-                # 与下游排序键入参恒为字符串（空串走解析失败排末尾的既定分支）
-                if not isinstance(ts, str):
-                    ts = ""
-                ctx = log_entry.get("context") or {}
-                if not isinstance(ctx, dict):
-                    ctx = {}
+                msg, ts, ctx = parsed
                 # ── 结构化优先（fix-observability-gaps 3.1）──
                 # 写侧（state_machine.transition / transition_gate）已带
                 # 结构化 context（channel 键 = 写侧升级标记）。同一条日志行
@@ -773,3 +808,9 @@ parse_iso_ts = _parse_iso_ts
 # 运维事件均为拓扑派生的既有 timeline 数据源，同一函数对象单源绑定。
 rotated_log_files = _rotated_log_files
 admin_events_for_spec = _admin_events_for_spec
+# 公开访问面（code-review item 6b53202b854e）：topology 组跨组消费改用公开名
+# （同上方先例）——SPEC 状态转移正则对、daemon 日志逐行守卫梯队与时间差助手
+# 为 timeline/topology 两视图共同单源，防第二份逐行副本口径漂移。
+spec_transition_patterns = _spec_transition_patterns
+parse_daemon_log_line = _parse_daemon_log_line
+ts_delta = _ts_delta
