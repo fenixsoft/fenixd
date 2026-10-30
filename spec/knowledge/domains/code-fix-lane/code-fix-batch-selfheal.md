@@ -1,9 +1,9 @@
 # 修复批失败自愈
 
-<!-- knowledge: capability=code-fix-batch-selfheal rev=5
-     sources=spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-add-codefix-failure-registration-closeout,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening -->
+<!-- knowledge: capability=code-fix-batch-selfheal rev=6
+     sources=spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-add-codefix-failure-registration-closeout,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening,spec/archive/2026-10-30-evo-codefix-release-consume-todo-block -->
 
-自动修复车道批次失败的自愈语义：失败批现场即弃与锁即释、批收尾三态与链自驱动、两层跳过与失败档案重试预算、达上限登记的闭环核销与人工解除留痕，使单批失败零人工、不堵塞车道。
+自动修复车道批次失败的自愈语义：失败批现场即弃与锁即释、批收尾三态与链自驱动、两层跳过与失败档案重试预算、达上限登记的闭环核销与解除核销两条生命周期终点对齐，使单批失败零人工、不堵塞车道。
 
 ## 规则
 
@@ -34,13 +34,17 @@
 - 两个预算常量均为模块常量而非配置键，无 Dashboard 配置义务；告警在链启动释放动作中零产生（纯日志）。
 
 ### 登记闭环核销与人工解除留痕
-- 达自动重试上限的失败批登记具备生命周期终点：周期对账发现某失败记录的被跳过条目已全部终态（`resolved`/`ignored`）时自动核销——记录写入 `consumed_at` 与终态分布注记，不再提示人工排查；对应 `code_fix_retry_budget_exhausted` 告警经 `AdminStore.mark_signal_handled` 收口，`action_taken` 附「N resolved / M ignored」终态分布。
+- 达自动重试上限的失败批登记具备生命周期终点，且解除与核销两条终点必须对齐——整批解除不得产生无人核销的孤儿登记块，部分解除不得提前核销仍在跳条目的登记块。周期对账发现某失败记录的被跳过条目已全部终态（`resolved`/`ignored`）时自动核销——记录写入 `consumed_at` 与终态分布注记，不再提示人工排查；对应 `code_fix_retry_budget_exhausted` 告警经 `AdminStore.mark_signal_handled` 收口，`action_taken` 附「N resolved / M ignored」终态分布。
 - 核销判定以台账逐 id 对账为准（登记条目全部终态即核销），挂钩两处——批收尾/合回核销点后即时检查、新链启动簿记块周期兜底；对账时台账读取失败按空集 fail-open 跳过本轮核销，不阻断批收尾/链启动主流程。
 - 被跳过条目仅部分终态时只更新记录的 `open_remaining`，不收口告警、不标记核销；重复核销幂等——不重复写注记、不重复收口告警、不报错。
 - 记录的核销字段（`consumed_at`/`consumed_note`/`open_remaining`）为只增记账字段，缺键视为未核销（存量记录无需迁移）；核销写 `fix-failed.json` 沿用该文件既有 flock 惯例（锁内不重入，告警与 todo 写走异锁通道、保持锁外）。
 - 告警收口按记录内条目集匹配未 handled 告警：告警记录无结构化 item_ids/branch/tip_sha 字段（仅 evidence 文本含 `item_ids=…` 逗号清单），经 `AdminStore.unhandled()` 过滤 signal_type 后按 evidence 内 `item_ids=<清单>` 精确子串匹配；已 handled 的告警不再改动。
-- `release_failed_batch` 人工解除跳过必须留痕：无论经 daemon 内路径还是带外脚本（todo 登记正文将带外 `python3 -c` 直调列为官方解除指引），内部无条件追加一行结构化留痕到 `.fenix/code-review/fix-failed-release.jsonl`（释放时刻、释放记录数与 item_ids 摘要），不经 daemon logger 亦可追溯；调用方传入 logger 时另写一行 daemon 日志。留痕写入失败（OSError）不阻断解除本身。
-- todo.md 登记的消费侧为重写式：核销时持 `.todo.md.lock` 将登记块重写为单行「已于某时刻被后续批消化（终态分布）」或整块移除（登记块已损毁成裸标题的残骸场景按标题行兜底移除），不依赖原位追加注记。登记块按块体「被跳过的条目集合」行的 item_ids 定位本记录对应块，只重写/移除该块；多个失败批的登记块可共存，MUST NOT 波及他批登记块。
+- `release_failed_batch` 人工解除跳过必须留痕：无论经 daemon 内路径还是带外脚本（todo 登记正文将带外 `python3 -c` 直调列为官方解除指引），内部无条件追加一行结构化留痕到 `.fenix/code-review/fix-failed-release.jsonl`（释放时刻、释放记录数、item_ids 摘要与 todo 块处理结果 `consumed`/`not_found`），不经 daemon logger 亦可追溯；调用方传入 logger 时另写一行 daemon 日志。留痕写入失败（OSError）不阻断解除本身。
+- 整批解除即同步核销登记块：`release_failed_batch` 整批删除注册表记录成功后，同一调用序列内 best-effort 核销 todo.md 对应登记块（复用重写式核销，注记写明解除时刻与 fix-failed-release.jsonl 留痕行）；todo 写失败（OSError）不阻断解除主流程，留痕行记 `not_found` 保证「解除未核销」可事后审计。核销对账按注册表记录驱动，记录出册后对账永远够不着该登记块，同步核销是其唯一核销时机。
+- 部分解除（收缩记录、剩余条目仍在册仍跳过）不核销登记块：剩余条目的人工排查登记保留，登记块由 consume 闭环在剩余条目全部终态时核销。
+- 预算内自动释放（`release_retryable_failed_batches`，新链启动簿记，打标墓碑置 `released=true` 保留在册）写 fix-failed-release.jsonl 留痕（`released_by=auto-budget`）；不触 todo 登记块——预算内记录未达登记阈值本无登记块，在册墓碑由既有 consume 闭环核销。
+- todo.md 登记的消费侧为重写式：核销时持 `.todo.md.lock` 将登记块重写为单行「已于某时刻被后续批消化（终态分布）」或整块移除，不依赖原位追加注记。登记块按块体「被跳过的条目集合」行整行精确匹配定位（条目集行尾锚），同批子集与「清单为其前缀扩展」的他批登记块不得误命中；consume 对账与整批解除两路径共用同一核销原语与定位口径，只重写/移除本记录对应块。登记块已损毁成裸标题的残骸场景按标题行兜底移除（两路径均可达）；多个失败批的登记块可共存，MUST NOT 波及他批登记块。
+- todo 锁与 fix-failed 锁是两把独立锁、不嵌套：跨文件对齐（解除 × 核销）在删除成功后的同一调用序列内完成，以 best-effort + 留痕行 todo 处理结果字段兜底崩溃窗口（最坏退回「已解除未核销」，可事后审计），不引入锁序风险。
 
 ## 溯源
 
@@ -49,3 +53,4 @@
 - 2026-10-30 evo-add-codefix-anomaly-redispatch-budget（spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget） — 修改本页：失败档案记录新增回归终局形态 `reg_form`/`reg_detail`（旧记录缺键按 mapped），失败批自动重派预算按形态分档（anomaly 1 / mapped 3）并同步作用于全部预算比较点，复燃合档以最近失败形态为准，anomaly 降档/停派经回归失败告警通道发一次性告警（记录上告警标记判重）。
 - 2026-10-30 evo-add-codefix-failure-registration-closeout（spec/archive/2026-10-30-evo-add-codefix-failure-registration-closeout） — 修改本页：新增「登记闭环核销与人工解除留痕」规则——被跳过条目全部终态即自动核销并收口触顶告警、部分终态只同步 open_remaining、核销幂等、台账读取失败 fail-open；人工解除跳过无条件落结构化 jsonl 留痕（带外调用可追溯）；todo 登记消费侧改重写式核销或整块移除，废止一次性写入永不更新的旧形态。
 - 2026-10-30 evo-codefix-zero-face-regression-hardening（spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening） — 修改本页：`reg_form` 的 anomaly 判据补入 timeout 且失败明细映射不出用例的零失败面形态（该形态自此自动套用 anomaly 预算 1 与一次性降档告警，重派侧规则不变）。
+- 2026-10-30 evo-codefix-release-consume-todo-block（spec/archive/2026-10-30-evo-codefix-release-consume-todo-block） — 修改本页：登记生命周期终点对齐——整批人工解除同调用序列内 best-effort 同步核销登记块（两把锁不嵌套）、部分解除与预算内自动释放不核销留待 consume 闭环；fix-failed-release.jsonl 留痕行增补 todo 块处理结果（consumed/not_found），预算内自动释放补 `released_by=auto-budget` 留痕；核销定位收紧为条目集整行精确匹配防前缀误命中，裸标题壳兜底向解除路径开放。

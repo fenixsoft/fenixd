@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-30 19:58 UTC+8
+> 最后更新：2026-10-30 20:06 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -17,7 +17,7 @@
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 55 | 2026-10-30 19:30 |
 | [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据 | 24 | 2026-10-15 02:25 |
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 19 | 2026-10-28 00:13 |
-| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 26 | 2026-10-30 19:58 |
+| [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 26 | 2026-10-30 20:06 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 16 | 2026-10-15 01:55 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 30 | 2026-10-30 18:20 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 13 | 2026-10-08 04:02 |

@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-10-30 19:58 UTC+8
+> 最后更新：2026-10-30 20:06 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -13,7 +13,7 @@
 | [codefix-digest-cost-metrics](codefix-digest-cost-metrics.md) | 消化链成本度量（run 工具构成指标 tool_uses/text_turns、链级 rollup 覆盖全部 run 不漏样本） | 2026-10-06 07:40 |
 | [code-fix-batch-parallel](code-fix-batch-parallel.md) | 批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底、边修复边提交收尾一次验证） | 2026-10-04 05:11 |
 | [code-fix-api-timeout-salvage](code-fix-api-timeout-salvage.md) | 批 run API 超时签名判别与失败现场抢救（salvage 提交保全、legacy 复用接续、非超时行为保形） | 2026-10-06 02:53 |
-| [code-fix-batch-selfheal](code-fix-batch-selfheal.md) | 修复批失败自愈（现场即弃〔API 超时例外走抢救〕、三态收尾、两层跳过与按回归终局形态分档的重试预算〔含 timeout 零失败面异常形态〕、登记闭环核销与解除留痕） | 2026-10-30 19:58 |
+| [code-fix-batch-selfheal](code-fix-batch-selfheal.md) | 修复批失败自愈（现场即弃〔API 超时例外走抢救〕、三态收尾、两层跳过与按回归终局形态分档的重试预算〔含 timeout 零失败面异常形态〕、登记闭环核销与解除核销终点对齐） | 2026-10-30 20:06 |
 | [codefix-night-quiet-window](codefix-night-quiet-window.md) | 夜间静默窗投递守卫（落窗与预计跨窗双形态拦截、窗末自动放行、窗次幂等武装/解除留痕、与冷却取更晚共存、手动触发同受守卫） | 2026-10-26 01:16 |
 | [code-fix-wipgate-defer](code-fix-wipgate-defer.md) | 修复批合回 WIP 阻断延迟合回（暂态零预算、现场保留+放锁、自动重试） | 2026-10-03 04:59 |
 | [code-fix-agent](code-fix-agent.md) | code-fix 修复 agent | 2026-10-03 05:23 |
