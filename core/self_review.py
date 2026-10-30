@@ -612,16 +612,34 @@ def _run_terminal_success(project_root, run_id: str) -> Optional[bool]:
 
 
 def _is_phantom_signal_failure(project_root, run_id: str, detail: str) -> bool:
-    """双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2/2.3）：
-    信号路径命中（detail 前缀 signal=）而 daemon 侧 run_metrics 终态为
-    terminal=success（正常 result 收尾即记 success，与 result 文本无关）→
-    幻影失败。collect_runs_stats（计数侧改计 succeeded）与
-    collect_failed_run_samples（样本侧排除并改写告警）共用本判定，守卫条件
-    单点维护、计数与样本口径一致：marker= 命中（假成功抓取）与 error 终态
-    失败 MUST NOT 纳入守卫；索引查不到该 run 终态时维持现状（False）计入，
-    不因缺数据改判。
+    """双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2/2.3 起建，
+    evo-self-review-phantom-failure-dual-source-veto 1.1/1.2 扩界）：产物侧
+    failed 归因 detail 落入幻影形态（三分支，形态锚定、不空泛匹配任意
+    error 文本）而 daemon 侧 run_metrics 终态为 terminal=success（正常
+    result 收尾即记 success，与 result 文本/收尾交换无关）→ 幻影失败，
+    daemon 终态权威裁决。collect_runs_stats（计数侧改计 succeeded）与
+    collect_failed_run_samples（样本侧排除并改写告警）共用本判定，守卫
+    条件单点维护、计数与样本口径一致。三分支幻影形态：
+    - signal= 前缀：结构化失败信号（首源 2026-09-25 两 run，result 文本
+      回声）；
+    - Exit code 前缀：error 终态 CLI 退出形态（第三源 evo-1792692791 实拍
+      尾行 {"type":"error","error":"Exit code: 1","exit_code":1}，detail 由
+      _classify_run error 分支的 error 文本前 140 字符截出；CLI 429 死于
+      收尾交换、产物直读按成功落地即 terminal=success——MUST NOT 空泛匹配
+      任意 error 文本，后续形态按实拍扩充）；
+    - marker= 前缀：失败词复述（第二源 2026-10-22 三现；原「marker= 与
+      error 终态 MUST NOT 纳入守卫」排除约定由本条「daemon 终态权威裁决」
+      取代，本 SPEC 显式推翻该先例）。
+    索引查不到该 run 终态时维持现状（False）计入，不因缺数据改判（宁可
+    不拦不可误伤真实失败样本）。
     """
-    return detail.startswith("signal=") and _run_terminal_success(project_root, run_id) is True
+    if not (
+        detail.startswith("signal=")
+        or detail.startswith("Exit code")
+        or detail.startswith("marker=")
+    ):
+        return False
+    return _run_terminal_success(project_root, run_id) is True
 
 
 def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> None:
@@ -629,12 +647,16 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
 
     守卫触发即意味着分类器仍有意料外误报：warning + 不 mark_handled 保证
     人工可见（聚合每日至多一轮，频度天然受控）。store 未注入时降级
-    logger.warning（守卫排除照常生效，仅少一条 admin 告警留痕）。
+    logger.warning（守卫排除照常生效，仅少一条 admin 告警留痕）。扩界后
+    detail 覆盖 signal= / Exit code（error 终态）/ marker= 三类幻影形态
+    （evo-self-review-phantom-failure-dual-source-veto 1.1/1.2），措辞按
+    「产物侧归因 + daemon 终态裁决」泛化，不再锚定信号路径。
     """
     description = (
-        f"自省分类疑幻影失败：run {run_id} 经信号路径（{detail}）判 failed，"
-        "但 daemon 侧 run_metrics terminal=success（正常 result 收尾，与 "
-        "result 文本无关）——不计入失败统计，请人工核对分类器是否仍有漏网"
+        f"自省分类疑幻影失败：run {run_id} 按产物侧归因（{detail}）判 "
+        "failed，但 daemon 侧 run_metrics terminal=success（正常 result "
+        "收尾，与产物失败归因分叉）——不计入失败统计，请人工核对分类器"
+        "是否仍有漏网"
     )
     written = False
     if store is not None:
@@ -650,9 +672,12 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
                     "description": description,
                     "evidence": f"run_id={run_id} detail={detail} terminal=success",
                     "recommended_action": (
-                        "核对 .fenix/runs 该 run 产物正文：若为成功 run 被正文"
-                        "失败词误降级，收口 _BUSINESS_FAIL_SIGNALS 词表或"
-                        "_strip_terminal_echo_lines 窗口"
+                        "核对 .fenix/runs 该 run 产物终态与 daemon 收尾链："
+                        "signal= 命中收口 _BUSINESS_FAIL_SIGNALS 词表或 "
+                        "_strip_terminal_echo_lines 窗口；marker= 失败词复述"
+                        "收口 _business_fail_marker 声明窗口；Exit code 形态"
+                        "核对 CLI 收尾交换/salvage 登记是否已按成功落地"
+                        "（terminal=success）"
                     ),
                 }
             )
@@ -726,11 +751,13 @@ def collect_runs_stats(
         # 「已退出」同样计为 succeeded）。本函数无 detail 输出通道，MUST NOT
         # 追加 _scan_run_signals 改写 category——running/dropped/timeout/
         # instant_hang 桶位保持不变。
-        # 双源交叉守卫（与样本侧共用 _is_phantom_signal_failure）：仅对信号
-        # 路径命中（detail 前缀 signal=）的 failed 比对 daemon 侧 terminal，
-        # terminal=success 即幻影失败，改计 succeeded（不计失败统计）；
-        # marker= 命中（假成功抓取）与 error 终态失败照常计入；索引查不到
-        # 该 run 终态时维持现状计入，不因缺数据改判。
+        # 双源交叉守卫（与样本侧共用 _is_phantom_signal_failure）：对幻影
+        # 形态 detail（signal= / Exit code / marker= 前缀，daemon 终态权威
+        # 裁决——evo-self-review-phantom-failure-dual-source-veto 1.1/1.2
+        # 扩界，原「marker= 命中与 error 终态失败照常计入」锁定由本条取代）
+        # 比对 daemon 侧 terminal，terminal=success 即幻影失败，改计
+        # succeeded（不计失败统计）；其余形态失败与索引查不到该 run 终态时
+        # 维持现状计入，不因缺数据改判（宁可不拦不可误伤）。
         if category == "failed" and _is_phantom_signal_failure(project_root, run_id, detail):
             category = "succeeded"
         counts["total"] += 1
@@ -769,12 +796,15 @@ def collect_failed_run_samples(
     两侧共享，消除重复的全量分类重扫）；传入时跳过窗口重扫，window_end
     亦不再参与。
 
-    双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2）：仅对信号
-    路径命中（detail 前缀 signal=）的样本查 daemon 侧 run_metrics 终态；
+    双源交叉守卫（evo-fix-self-review-phantom-failed-samples 2.2 起建，
+    evo-self-review-phantom-failure-dual-source-veto 1.1/1.2 扩界为 daemon
+    终态权威裁决）：幻影形态样本（signal= / Exit code / marker= 前缀，见
+    _is_phantom_signal_failure）查 daemon 侧 run_metrics 终态；
     terminal=success 则不计入失败样本，改写一条 self_review_phantom_failure
-    告警（warning、不自动 mark_handled）。marker= 命中（D1 假成功抓取：
-    正常 result 收尾即记 terminal=success，与 result 文本内容无关）MUST NOT
-    纳入守卫，照常计入失败。store/logger 为可选注入（SelfReviewScheduler
+    告警（warning、不自动 mark_handled）。原「marker= 命中 MUST NOT 纳入
+    守卫、照常计入失败」锁定由本条取代——marker= 失败词复述与 error 终态
+    Exit code 形态同为幻影源（正常 result 收尾即记 terminal=success，与
+    result 文本/收尾交换无关）。store/logger 为可选注入（SelfReviewScheduler
     经 collect_daily_summary 透传 self.store/self.logger）；store 未注入时
     仍排除幻影但跳过告警、降级 logger.warning。
     """
@@ -806,10 +836,10 @@ def collect_failed_run_samples(
                 detail = sig
         if category == "failed" and detail:
             # 双源交叉守卫（与计数侧共用 _is_phantom_signal_failure）：
-            # terminal=success 而信号路径判 failed → 幻影失败，不计入失败
-            # 样本、改写 phantom 告警（不自动 handled）；marker= 命中与
-            # error 终态失败不在守卫之列；索引查不到该 run 终态时维持现状
-            # 计入，不因缺数据改判。
+            # terminal=success 而幻影形态（signal= / Exit code / marker=，
+            # daemon 终态权威裁决）判 failed → 幻影失败，不计入失败样本、
+            # 改写 phantom 告警（不自动 handled）；其余形态与索引查不到该
+            # run 终态时维持现状计入，不因缺数据改判。
             if _is_phantom_signal_failure(project_root, run_id, detail):
                 _record_phantom_failure_alert(store, logger, run_id, detail)
                 continue
