@@ -165,13 +165,15 @@ class TestWindowParse(unittest.TestCase):
             _GateRunner(proot, config), proot, config=config, logger=logger)
 
     def test_default_window_value(self):
-        """缺省常量 04:15-04:45：conftest 会话级把运行时常量压成 off（防墙钟
+        """缺省常量多窗「03:00-03:15,04:15-04:45」（evo-night-window-guard-
+        coverage-closure 1.3）：conftest 会话级把运行时常量压成 off（防墙钟
         敏感 flakes），故以源码字面量固定生产缺省 + 显式 patch 断言解析。"""
         import core.code_fix as cf
 
         root = Path(__file__).resolve().parents[1]
         src = (root / "core" / "code_fix.py").read_text(encoding="utf-8")
-        self.assertIn('NIGHT_QUIET_WINDOW_DEFAULT = "04:15-04:45"', src)
+        self.assertIn(
+            'NIGHT_QUIET_WINDOW_DEFAULT = "03:00-03:15,04:15-04:45"', src)
         proot = _make_project_root()
         with mock.patch.object(cf, "NIGHT_QUIET_WINDOW_DEFAULT", "04:15-04:45"):
             # evo-add-review-night-defer-snapshot-writeoff 1.2：返回形态由单窗

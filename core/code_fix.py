@@ -3457,10 +3457,15 @@ def _epoch_iso(ts: float) -> str:
 
 # ── 每日夜间静默窗（evo-codefix-night-quiet-window 1.1）─────────────────────
 
-# 缺省窗区间（本地时刻）：死亡集中于 04:31-04:34，断窗本体 04:30:01-04:31:23
-# 加 DNS 余波；窗起点须早于批链典型批时长对应的最早在飞启动时刻。不在模板
-# 强配（与冷却 300 秒缺省同策略），空串/off 显式禁用。
-NIGHT_QUIET_WINDOW_DEFAULT = "04:15-04:45"
+# 缺省窗区间（本地时刻，多窗逗号分隔，evo-night-window-guard-coverage-closure
+# 1.1）：04:15-04:45 覆盖死亡集中于 04:31-04:34 的断窗本体
+# （04:30:01-04:31:23 加 DNS 余波）；03:00-03:15 覆盖 kern.log 保留期内观测
+# 的散布断窗波（一夜两波凌晨连杀在飞 run 的 03:00/03:01 形态）——缺省多窗
+# 即覆盖已观测散布断窗形态，全部消费点（code-fix 批守卫、周期审查顺延、
+# admin 唤起避让、自进化避让）经同一解析器生效。窗起点须早于批链典型批时
+# 长对应的最早在飞启动时刻。不在模板强配（与冷却 300 秒缺省同策略），运行
+# 时 config 显式覆盖与空串/off 显式禁用语义不变。
+NIGHT_QUIET_WINDOW_DEFAULT = "03:00-03:15,04:15-04:45"
 
 # 「预计跨窗」时长估计样本数（evo-add-night-window-inflight-guard 1.1，design
 # D1）：取同链最近 N 批 run_metrics ``duration_s`` 均值作预计批时长——近批
@@ -3501,7 +3506,9 @@ def _parse_night_quiet_windows(raw):
     多窗化（evo-add-review-night-defer-snapshot-writeoff 1.1）：上游断窗并非
     单点（kern.log 保留期内 04:30 窗外已现 6 次散布断窗），单窗模型对
     "03:00-03:15,04:15-04:45" 形态无覆盖——升级为逗号/分号分隔的多窗列表，
-    命中任一窗即避让。每段走既有单段校验（``_parse_night_quiet_hhmm``，
+    命中任一窗即避让。缺省常量自 evo-night-window-guard-coverage-closure 1.1
+    起即为本多窗形态（散布断窗纳入缺省覆盖；运行时 config 显式覆盖与空串/
+    off 禁用语义不变）。每段走既有单段校验（``_parse_night_quiet_hhmm``，
     ``HH:MM-HH:MM``；end<=start 含相等逆序非法——本场景不要求跨午夜，小时/
     分钟越界同样非法）；空段（如 ``"04:15-04:45,,"``）同按非法。任一段非法
     → 整体返回 None（宁缺毋错，不部分生效）。布尔同义化

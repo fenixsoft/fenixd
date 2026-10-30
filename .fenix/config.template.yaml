@@ -559,6 +559,14 @@ admin:
   #   # sanitization 替换为 tests/），MUST NOT 依赖消毒——参数位写法
   #   # 本身即配置错误。
   #   targeted_regression: true
+  #   # 每日夜间静默窗（可选，多窗，evo-night-window-guard-coverage-closure）：
+  #   # code-fix 批守卫、周期审查顺延、admin 唤起避让与自进化避让共用的断窗
+  #   # 避让窗（同一解析器，不设第二份窗配置）。多窗以逗号/分号分隔，每段
+  #   # HH:MM-HH:MM（本地时刻，start<end，单日不跨午夜），缺省
+  #   # "03:00-03:15,04:15-04:45"（缺省即覆盖已观测散布断窗形态，命中任一窗
+  #   # 即避让）；设为空串或 off 完全禁用（行为与无守卫一致）。沿「不在模板
+  #   # 强配」策略：此处仅文档示例，缺省不启用，需覆盖缺省时取消注释。
+  #   # night_quiet_window: "03:00-03:15,04:15-04:45"
 
   # ---- 周期性全量回归（add-test-regression-tab，可选）----
   # 设置页「质量」页签提供该开关（读/写 GET/POST /api/config 的

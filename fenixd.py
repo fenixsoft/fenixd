@@ -4539,7 +4539,7 @@ class FenixDaemon:
         "disabled": "自动修复开关处于关闭状态",
         # evo-codefix-night-quiet-window 1.3：窗内手动触发回链文案（守卫对
         # override_enabled=True 同样生效，窗末自动恢复投递）
-        "night_quiet_window": "当前处于每日夜间静默窗（默认 04:15-04:45），窗内暂缓投递自动修复，窗末自动恢复",
+        "night_quiet_window": "当前处于每日夜间静默窗（默认 03:00-03:15,04:15-04:45 多窗），窗内暂缓投递自动修复，窗末自动恢复",
         # item 6cc24b51f6b9：停机积压旧信号（created 超时效阈值）仅消费不执行
         "stale_created": "触发信号已过期未执行（积压超过 1 小时，可能为停机残留），如仍需修复请重新发起",
         # item 3ae81f8b6d0b：信号 payload 非法/损坏（已消费、无 created 可回链）
@@ -4911,6 +4911,15 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.error("fenixd", f"自进化条目保留清理失败（不影响后续派发）: {e}")
 
+            # 夜间静默窗避让（evo-night-window-guard-coverage-closure 2.1）：
+            # 守卫落在保留清理之后、单飞判定与派发之前——prune 不因窗顺延
+            # 跳过；命中任一窗即本轮跳过（reason=night_quiet_window_deferred
+            # 日志），不消费水位/就绪标记，窗后巡检自然重触。
+            defer_note = self._evolution_night_window_defer()
+            if defer_note:
+                self.logger.info("fenixd", defer_note)
+                return
+
             # 单飞判定（spec「分析 run 在途的判定基于 daemon 内部活跃 run 状态」）
             if self._evolution_in_flight:
                 return
@@ -4989,6 +4998,151 @@ class FenixDaemon:
                 )
         except Exception as e:
             self.logger.warning("fenixd", f"自进化 admin 告警写入失败（降级）: {e}")
+
+    # ── 自进化检查点跨窗顺延（evo-night-window-guard-coverage-closure 2.1）──
+
+    @staticmethod
+    def _evolution_archive_duration_mean(project_root: Path) -> Optional[float]:
+        """归档自进化 run 实测时长均值（秒）；无有效样本返回 None。
+
+        样本策略对齐周期审查同款（core/admin_monitor.py
+        ``_code_review_archive_duration_mean``）：样本源为归档尾部 run_metrics
+        行 ``duration_s``，近 ``NIGHT_QUIET_DURATION_SAMPLE_LIMIT``（=3，
+        core.code_fix 单源常量）轮均值——``.fenix/runs/archive/evo-*.jsonl``
+        按归档新→旧取最近 3 轮；历史行缺字段/负值/非有限数值一律剔除。尾部
+        读取复用 admin_monitor ``_read_tail_lines`` 单点（512KB 窗，窗口切入
+        的截断首行丢弃）；归档目录缺失/列举或读取异常一律按无样本处理——
+        顺延判定 fail-open 依据，MUST NOT 因取样阻断派发主路径。
+        """
+        from core.code_fix import NIGHT_QUIET_DURATION_SAMPLE_LIMIT
+        from core.admin_monitor import _read_tail_lines
+
+        archive_dir = Path(project_root) / ".fenix" / "runs" / "archive"
+        samples: list = []
+
+        def _archive_mtime(p: Path) -> float:
+            # stat 守卫（对齐 admin_monitor 同款）：glob 与 stat 之间归档副本
+            # 会被 runs 保留清理并发删除/移动，任一 p.stat() 抛 OSError 即沉
+            # 底 mtime 0.0（reverse 排序后由读取段既有 OSError 守卫跳过）。
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        try:
+            candidates = sorted(
+                archive_dir.glob("evo-*.jsonl"),
+                key=_archive_mtime,
+                reverse=True,
+            )
+            for path in candidates:
+                if len(samples) >= NIGHT_QUIET_DURATION_SAMPLE_LIMIT:
+                    break
+                try:
+                    first_line_truncated, tail = _read_tail_lines(path, 524288)
+                except OSError:
+                    continue
+                lines = tail.splitlines()
+                if first_line_truncated:
+                    lines = lines[1:]  # 丢弃窗口切入可能截断的首行
+                last: dict = {}
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (isinstance(rec, dict)
+                            and rec.get("type") == "run_metrics"):
+                        last = rec
+                try:
+                    dur = float(last.get("duration_s"))
+                except (TypeError, ValueError):
+                    continue
+                if dur < 0 or not math.isfinite(dur):
+                    continue
+                samples.append(dur)
+        except Exception:  # noqa: BLE001 — 取样失败按无样本回退（fail-open）
+            return None
+        if not samples:
+            return None
+        return sum(samples) / len(samples)
+
+    def _evolution_night_window_defer(self) -> Optional[str]:
+        """自进化检查点跨窗顺延判定：命中返回跳过日志文案，不命中返回 None。
+
+        判定形态对齐周期审查跨窗顺延（admin_monitor
+        ``_code_review_night_window_defer``）：
+
+        - 窗配置与解析复用 core.code_fix 单源（``_parse_night_quiet_windows``），
+          键 ``admin.code_review_fix.night_quiet_window``、缺省
+          ``NIGHT_QUIET_WINDOW_DEFAULT``（与 code-fix 批守卫/周期审查/admin
+          唤起避让同键同缺省，不引入第二份窗配置/第二键）；
+        - 时长估计取近几轮自进化归档 run 实测时长均值
+          （``_evolution_archive_duration_mean``，PROJECT_ROOT 归档）；无有效
+          样本回退仅判派发时刻落窗；
+        - 相交判定（对齐 code-fix 守卫口径）：派发时刻已落窗（任一窗
+          start<=cur<end）或预计结束越过尚未开始的窗起点（严格大于——恰压
+          线视作不相交，run 在窗起点整点前收尾）；
+        - 读取/解析/取样/导入异常一律按不命中处理（fail-open），MUST NOT
+          阻断派发主路径。
+
+        守卫只读不写：命中由调用方（``_check_evolution_checkpoint``）本轮跳
+        过（reason=night_quiet_window_deferred），不消费水位/就绪标记，窗后
+        巡检自然重触。本守卫与 skip 日志都留在宿主层 fenixd.py——
+        maintenance_runs/event_bus 有「night_quiet_window」子串缺席契约
+        （tests/test_code_fix_night_quiet_window.py assertNotIn），MUST NOT
+        下沉。
+        """
+        try:
+            from core.code_fix import (
+                NIGHT_QUIET_WINDOW_DEFAULT,
+                _parse_night_quiet_windows,
+            )
+
+            raw = ConfigLoader.get(
+                self.config,
+                "admin.code_review_fix.night_quiet_window",
+                NIGHT_QUIET_WINDOW_DEFAULT,
+            )
+            windows = _parse_night_quiet_windows(raw)
+            if not windows:
+                return None
+            lt = time.localtime()
+            cur = lt.tm_hour * 60 + lt.tm_min
+            est = self._evolution_archive_duration_mean(PROJECT_ROOT)
+            if est is None:
+                crossing = [w for w in windows if w[0] <= cur < w[1]]
+                sample_note = "无实测样本，仅判派发时刻落窗"
+            else:
+                cur_s = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+                crossing = [
+                    w for w in windows
+                    if (w[0] <= cur < w[1])
+                    or (cur < w[0] and cur_s + est > w[0] * 60)
+                ]
+                sample_note = f"近几轮实测均时长 {est:.0f} 秒"
+            if not crossing:
+                return None
+            cur_clock = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
+            if est is None:
+                span = f"{cur_clock}（派发时刻）"
+            else:
+                end_s = cur_s + int(est)
+                span = (
+                    f"{cur_clock}-"
+                    f"{(end_s // 3600) % 24:02d}:{(end_s % 3600) // 60:02d}"
+                )
+            return (
+                "自进化检查点：预计分析区间与夜间静默窗相交，本轮跳过派发"
+                f"（reason=night_quiet_window_deferred；预计区间 {span}，"
+                f"{sample_note}；窗区间 {', '.join(w[2] for w in crossing)}）；"
+                "水位与就绪扫描状态不变，窗后巡检自然重触"
+            )
+        except Exception:  # noqa: BLE001 — 判定失败按不命中处理（fail-open）
+            return None
 
     def _evolution_worker(
         self, ready_projects: list, pending_entries: list, snapshot_at: str
