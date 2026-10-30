@@ -907,6 +907,33 @@ class BrowserManager:
                 result["error_type"] = "expect_network_failed"
                 result["error"] = "; ".join(r["message"] for r in failures)
             return result
+        except Exception as e:
+            # 断言窗口内异常结构化收场（code-review item e52c3c9fdd1c）：
+            # 页面/浏览器在静默窗内被关闭时 wait_for_timeout 抛错会原样穿出
+            # execute_action，web_runner._execute_scenario 对该调用无
+            # per-step 兜底，裸异常顶到引擎 run_one 的 return_exceptions 会
+            # 把整场已积累的 step_results 证据替换成一条无定位 error——恰是
+            # 浏览器崩溃等最需要证据的时刻。比照 _execute_action_impl 顶层
+            # except 结构化返回，error_type=expect_network_window_failed
+            # （与 mock_api_failed 同款 <阶段>_failed 口径：窗口期失败的
+            # 归因对象是收窗/断言环境而非交互元素，impl 的文案子串分类在
+            # 此处反而误导），error 附窗口已捕获的请求样例供归因；不携带
+            # network_assertions 键（断言未执行，与交互失败路径同款不叠加
+            # 明细混淆归因）。只捕 Exception，KeyboardInterrupt 等
+            # BaseException 仍原样穿出交上层处理
+            samples = list(dict.fromkeys(captured))[:_EXPECT_NETWORK_SAMPLE_LIMIT]
+            _raw_target = step.get("target")
+            return {
+                "success": False,
+                "action": step.get("action", ""),
+                "target": "" if _raw_target is None else str(_raw_target),
+                "error_type": "expect_network_window_failed",
+                "error": (
+                    f"expect_network 断言窗口内异常: {type(e).__name__}: {e}"
+                    f"（窗口捕获 {len(captured)} 个请求，"
+                    f"样例: {samples if samples else '（无）'}）"
+                ),
+            }
         finally:
             # 处理器必摘：同 page 跨步骤/跨场景复用，残留监听会把后续
             # 步骤的请求计进已收窗的旧捕获列表（按捕获列表闭包隔离的
