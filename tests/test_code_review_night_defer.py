@@ -4,12 +4,16 @@
 覆盖 ``admin_monitor._run_code_review_checkpoint`` 单飞判定后新增的跨窗
 顺延判定：
 
-- 样本均值推得预计区间压窗 → reason=night_quiet_window_deferred，且同日
+- 样本最大值推得预计区间压窗 → reason=night_quiet_window_deferred，且同日
   防重状态未写（save_code_review_state 零调用）、单飞标志已复位、manifest
   未收集（判定先于副作用）；
 - 无有效样本回退仅判派发时刻落窗（窗外照常派发、窗内顺延）；
 - 预计区间与窗不相交（含恰压线窗起点）→ 照常派发；
 - 归档读取异常/损坏行降级不阻断（fail-open）。
+
+估计口径为近 3 轮 duration_s **最大值**（evo-review-night-window-resume-
+hardening 1.2：均值改 max——纯均值对时长方差与单调上行趋势系统性滞后）；
+可用样本不足 3 时取已有样本最大值。
 
 替身注入形态沿 tests/test_code_review_scope_config.py（fake run_code_review
 + code_review_executor=None 同步执行）；时间注入 patch
@@ -143,10 +147,10 @@ class _MonitorHarness:
 
 
 class TestPredictedCrossingDefers(unittest.TestCase):
-    """样本均值推得预计区间压窗 → 顺延且零副作用（task 4.2）。"""
+    """样本最大值推得预计区间压窗 → 顺延且零副作用（task 4.2 / 1.2）。"""
 
     def test_defers_without_side_effects(self):
-        # 派发 01:00:30 + 近轮均时长 7200s → 预计结束 03:00:30 越过窗起点
+        # 派发 01:00:30 + 近轮最大时长 7200s → 预计结束 03:00:30 越过窗起点
         # 03:00:00（严格大于＝相交）→ 顺延
         h = _MonitorHarness()
         try:
@@ -170,7 +174,7 @@ class TestPredictedCrossingDefers(unittest.TestCase):
             h.dispose()
 
     def test_recent_limit_takes_last_three_rounds(self):
-        # 样本窗取最近 3 轮均值：远古超长轮滚出窗口后不再参与估计
+        # 样本窗取最近 3 轮最大值：远古超长轮滚出窗口后不再参与估计
         h = _MonitorHarness()
         try:
             h.write_archive([
@@ -181,7 +185,51 @@ class TestPredictedCrossingDefers(unittest.TestCase):
             ])
             result = h.checkpoint_at(1, 0, 0)
             self.assertEqual(result["reason"], "scheduled",
-                             "近 3 轮均值 60s 不跨窗，远古样本不参与")
+                             "近 3 轮 max 60s 不跨窗，远古样本不参与")
+        finally:
+            h.dispose()
+
+    def test_max_not_mean_upward_trend_defers(self):
+        # evo-review-night-window-resume-hardening 1.2 / spec Scenario「上行
+        # 趋势下拦截穿窗派发」：近 3 轮 10893/12500/5338 秒，01:00 派发——
+        # 估计取 max 12500s（均值 9577.2s 会判不相交放行），预计结束 04:28
+        # 落入 04:15-04:45 静默窗 → 顺延
+        h = _MonitorHarness(window="04:15-04:45")
+        try:
+            h.write_archive([
+                ("code-review-1791500000", 10893.0),
+                ("code-review-1791600000", 12500.0),
+                ("code-review-1791700000", 5338.0),
+            ])
+            result = h.checkpoint_at(1, 0, 0)
+            self.assertEqual(
+                result,
+                {"triggered": False, "reason": "night_quiet_window_deferred"},
+                "max 估计 12500s 预测穿窗 MUST 顺延，不再以均值 9577s 放行")
+            joined = "\n".join(h.logger.records)
+            self.assertIn("预计区间 01:00-04:28", joined)
+            self.assertIn("窗区间 04:15-04:45", joined)
+            self.assertIn("近几轮实测最大时长 12500 秒", joined)
+        finally:
+            h.dispose()
+
+    def test_partial_samples_take_available_max(self):
+        # 可用样本不足 3 时取已有样本最大值：样本 {60, 7200} 均值 3630s
+        # 预计结束 02:00:30 不跨窗（均值口径会放行），max 7200s 预计结束
+        # 03:00:30 越过 03:00 窗起点 → 顺延
+        h = _MonitorHarness()
+        try:
+            h.write_archive([
+                ("code-review-1791500000", 60.0),
+                ("code-review-1791600000", 7200.0),
+            ])
+            result = h.checkpoint_at(1, 0, 30)
+            self.assertEqual(
+                result,
+                {"triggered": False, "reason": "night_quiet_window_deferred"},
+                "不足 3 样本取已有样本最大值 7200s，预测跨窗顺延")
+            joined = "\n".join(h.logger.records)
+            self.assertIn("近几轮实测最大时长 7200 秒", joined)
         finally:
             h.dispose()
 

@@ -1854,7 +1854,8 @@ class AdminMonitor:
         # 复位口径。
         try:
             # 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff
-            # 2.1）：派发时刻加近几轮归档 code-review run 实测时长均值得预计
+            # 2.1）：派发时刻加近几轮归档 code-review run 实测时长最大值
+            # （evo-review-night-window-resume-hardening 1.1：均值改 max）得预计
             # 在飞区间，与任一夜间静默窗相交即本轮不派发——周期审查实测约 2
             # 小时、01:00 起跑落点必然压在 03:00-04:45 断窗带上（2026-10-10
             # 03:00 断窗击杀 118 分钟 run 实证），窗前顺延留待窗末后巡检自然
@@ -1915,6 +1916,88 @@ class AdminMonitor:
                     )
                 return {"triggered": True, "ok": True, "reason": "no_files", "date": local_today_str()}
 
+            # ── writeoff-pending 锚驱动剃余续审（evo-review-night-window-
+            # resume-hardening 2.1/2.2）───────────────────────────────────
+            # 锚（error 收场抢救落账写下，见 core.code_review.write_pending_
+            # writeoff）存在时，周期审查复用 429 限流重派已有的 remaining_
+            # manifest 剃余组装路径，只在「全量清单 − 抢救已落账覆盖文件」的
+            # 剩余清单上审查——MUST NOT 整轮全量重烧（10-15/10-17 两轮断窗
+            # 死亡各烧 83/136 美元后，下一轮若再全量重烧等于三倍损失）。链路
+            # 标注复用 run_code_review 既有 redispatch_of 形参传死 run id：
+            # 收尾守卫（maintenance_runs._writeoff_coverage_guard 消费段）仅在
+            # redispatch_of 非空时按「原 run 及其链产物累计覆盖 ⊇ 原 manifest」
+            # 判定，覆盖完整解锁核销并清锚、部分覆盖维持抢救红线——MUST NOT
+            # 另起新形参（新形参会落入普通全仓分支以剩余清单为 origin_files
+            # 恒判解锁 → 部分覆盖白洗＋误清锚）。resume_of 仅作结构化日志观测
+            # 字段。无锚时行为不变（全量清单、无 redispatch_of）。
+            resume_of: str | None = None
+            try:
+                from core.code_review import read_pending_writeoff as _read_anchor
+
+                _anchor = _read_anchor(self.project_root) or {}
+            except Exception:  # noqa: BLE001 — 锚读取失败按无锚处理（fail-open）
+                _anchor = {}
+            _anchor_run = str(_anchor.get("run_id") or "")
+            if _anchor_run:
+                _full_manifest = list(manifest)
+                try:
+                    from core.code_review import (
+                        cumulative_covered_files as _cum_covered,
+                        remaining_manifest as _remaining_files,
+                    )
+
+                    _covered = _cum_covered(self.project_root, _anchor_run)
+                    manifest = _remaining_files(_full_manifest, _covered)
+                    resume_of = _anchor_run
+                except Exception as e:  # noqa: BLE001 — 剃余失败回退全量清单
+                    # 对齐 429 车道剃余失败回退口径（不因续审优化引入新失败面）；
+                    # redispatch_of 仍标注——收尾守卫按原 manifest 判覆盖，
+                    # 宁锁勿白洗。
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"code-review 续审剃余失败，回退全量清单派发: {e}",
+                    )
+                    manifest = _full_manifest
+                    resume_of = _anchor_run
+                if not manifest:
+                    # 剩余清单为空（当前清单已被抢救落账全覆盖）：无需再派
+                    # （对齐 429 车道「累计覆盖已完整无需重派」口径）。同日防重
+                    # 照写（当日不重试，对齐空 manifest 分支）；锚保持原样——
+                    # 核销解锁与清锚仍由收尾覆盖守卫按累计覆盖判定，本路径
+                    # 不派 run、不触碰核销红线（空跑派发既烧钱也无从解锁）。
+                    with self._code_review_lock:
+                        self._code_review_in_flight = False
+                    save_code_review_state(self.project_root, local_today_str())
+                    self.logger.info(
+                        "admin_monitor",
+                        f"code-review: 锚驱动续审剩余清单为空，本轮跳过派发"
+                        f"（reason=writeoff_resume, resume_of={_anchor_run}, "
+                        f"剩余 0/{len(_full_manifest)} 文件；锚保持，核销解锁"
+                        f"由收尾覆盖守卫判定）",
+                    )
+                    return {
+                        "triggered": True,
+                        "ok": True,
+                        "reason": "writeoff_resume_no_remaining",
+                        "date": local_today_str(),
+                    }
+                # 结构化续审日志（evo-review-night-window-resume-hardening
+                # 2.2 / spec「续审路径可观测」）：reason=writeoff_resume、
+                # 剩余文件数、来源 run id、已落分片数——夜间死亡复盘按
+                # reason=writeoff_resume 检索对账。
+                try:
+                    from core.code_review import shard_paths as _shard_paths
+
+                    _shards = len(_shard_paths(self.project_root, _anchor_run))
+                except Exception:  # noqa: BLE001 — 分片计数失败不影响派发
+                    _shards = -1
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review: 锚驱动剃余续审派发（reason=writeoff_resume, "
+                    f"resume_of={_anchor_run}, 剩余 {len(manifest)}/"
+                    f"{len(_full_manifest)} 文件, 死 run 已落分片 {_shards}）",
+                )
+
             # 上限截断
             max_files = cr_cfg.get("max_files", 500)
             if max_files > 0 and len(manifest) > max_files:
@@ -1932,11 +2015,16 @@ class AdminMonitor:
             def _worker():
                 nonlocal ratelimit_intent, empty_face
                 try:
+                    # 剃余续跑（evo-review-night-window-resume-hardening
+                    # 2.1/2.2）：锚驱动续审 run 经既有 redispatch_of 形参标注
+                    # 死 run id（收尾守卫据此按链式累计覆盖判定）；无锚时
+                    # resume_of 为 None，与既有派发形态逐参一致。
                     result = self.agent_runner.run_code_review(
                         manifest,
                         review_kind=review_kind,
                         window_start=window_start if review_scope == "window" else None,
                         scope=review_scope,
+                        redispatch_of=resume_of,
                     )
                     # 硬门拦截失败面（evo-review-empty-product-redispatch
                     # 1.2）：拦截时完成行透出 run id、manifest 计数与变体
@@ -1953,6 +2041,7 @@ class AdminMonitor:
                         f"code-review 周期审查完成：run_id={result.run_id}, "
                         f"inserted={result.inserted}, updated={result.updated}, "
                         f"resolved={result.resolved}, shards={result.shards}"
+                        + (f", resume_of={resume_of}" if resume_of else "")
                         + self._pending_writeoff_note()
                         + face_note
                         + (f", error={result.error}" if result.error else ""),
@@ -2039,12 +2128,16 @@ class AdminMonitor:
     # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
 
     def _code_review_archive_duration_mean(self) -> Optional[float]:
-        """归档 code-review run 实测时长均值（秒）；无有效样本返回 None。
+        """归档 code-review run 实测时长最大值（秒）；无有效样本返回 None。
 
         样本源（design D2）：``.fenix/runs/archive/code-review-*.jsonl`` 尾部
         run_metrics 行 ``duration_s``，按归档新→旧取最近
         ``NIGHT_QUIET_DURATION_SAMPLE_LIMIT``（=3，core.code_fix 单源导入，
-        对齐 code-fix 同名常量的样本策略）轮均值；历史行缺字段/负值/非有限
+        对齐 code-fix 同名常量的样本策略）轮的**最大值**（evo-review-night-
+        window-resume-hardening 1.1：均值改 max——纯均值对审查时长方差与
+        单调上行趋势系统性滞后，10-17 01:00 派发按均值 9577.2s 判不相交放行、
+        实跑 12778s 低估 33% 死于断窗；3 样本下不做 p90，取 max 形态）；可用
+        样本不足 3 时取已有样本最大值。历史行缺字段/负值/非有限
         数值一律剔除。尾部读取按 512KB 窗（run_metrics 行落 run 收尾段，全
         量转录可达数十 MB，整读无谓）；窗内截断/损坏行跳过。归档目录缺失/
         列举或读取异常一律按无样本处理——顺延判定 fail-open 依据，MUST NOT
@@ -2110,14 +2203,17 @@ class AdminMonitor:
             return None
         if not samples:
             return None
-        return sum(samples) / len(samples)
+        # max 而非 sum/len（evo-review-night-window-resume-hardening 1.1）：
+        # 估计取近几轮实测时长最大值——宁可高估顺延（审查后移窗后数小时，
+        # 周期任务不丢工作量），不可低估放行穿窗死亡（~110 美元/轮死亡期望）。
+        return max(samples)
 
     def _code_review_night_window_defer(self) -> "tuple[str, float] | None":
         """周期审查跨窗顺延判定单源：顺延返回 (日志文案, 下一可派发时刻
         epoch) 二元组，不顺延返回 None。
 
         判定（design D2）：派发时刻加近几轮归档 code-review run 实测时长
-        均值（``_code_review_archive_duration_mean``；无有效样本回退仅判
+        最大值（``_code_review_archive_duration_mean``；无有效样本回退仅判
         派发时刻落窗）得预计在飞区间，与任一夜间静默窗相交即顺延——本轮
         不派发、不写同日防重状态，留待窗末后巡检自然触发。窗配置与解析
         复用 core.code_fix 单源（``_parse_night_quiet_windows``，键
@@ -2172,7 +2268,7 @@ class AdminMonitor:
                     if (w[0] <= cur < w[1])
                     or (cur < w[0] and cur_s + est > w[0] * 60)
                 ]
-                sample_note = f"近几轮实测均时长 {est:.0f} 秒"
+                sample_note = f"近几轮实测最大时长 {est:.0f} 秒"
             if not crossing:
                 return None
             cur_clock = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
