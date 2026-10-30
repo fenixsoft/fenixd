@@ -658,6 +658,56 @@ class TestServePrototypeLifecycle:
             proc.wait(timeout=8)
             out_f.close()
 
+    def test_reuse_with_mixed_invocation_path_forms(self, tmp_path):
+        """BUG-01 回归钉死（验证轮 proto-server-lifecycle-reuse-stale-recycle）：
+        首实例以相对形态路径启动、次实例以绝对解析路径调用时，存活实例
+        MUST 仍被复用（同端口、不另起新端口、不报端口冲突）。
+
+        旧实现以 ``resolve 后绝对路径 in cmdline`` 做子串核实，而 cmdline 记录
+        调用形态路径，凡非绝对解析路径调用即确定性误判 stale 另起新端口；
+        修复口径：目录一致性以 PID 文件 resolve 口径比对，脚本身份以完整路径
+        或脚本名任一命中即可。
+        """
+        import os
+
+        proto_parent = tmp_path / "mixed"
+        proto_parent.mkdir()
+        proto = proto_parent / "proto"
+        proto.mkdir()
+        (proto / "index.html").write_text(
+            '<html><body data-proto-id="page-root"><h1>原型</h1></body></html>',
+            encoding="utf-8")
+        rel_script = os.path.relpath(SERVE_SCRIPT, proto_parent)
+        assert not Path(rel_script).is_absolute()
+
+        # 首实例：cwd=proto_parent，以相对形态路径调用（cmdline 不含绝对解析路径）
+        out_path = proto_parent / ".first.out"
+        out_f = open(out_path, "w", encoding="utf-8")
+        first_proc = subprocess.Popen(
+            [sys.executable, rel_script, "proto", "--json"],
+            cwd=proto_parent, stdout=out_f, stderr=subprocess.STDOUT)
+        try:
+            first = _wait_result(out_path)
+            assert first["action"] == "started"
+
+            # 次实例：绝对解析路径调用（调用形态与首实例不同）
+            proc2, out_f2, out_path2 = _start_server(proto)
+            try:
+                second = _wait_result(out_path2)
+                assert second["action"] == "reused", (
+                    "两次启动调用形态路径不同 MUST 仍复用存活实例，"
+                    f"实际：{second}")
+                assert second["url"] == first["url"], "复用必须同端口"
+                assert second["pid"] == first["pid"]
+                assert first_proc.poll() is None, "复用后原进程仍存活"
+            finally:
+                out_f2.close()
+        finally:
+            _stop_server(proto)
+            first_proc.wait(timeout=8)
+            out_f.close()
+        assert not (proto / ".proto-server.json").exists()
+
     def test_stale_pid_takeover_after_kill(self, tmp_path):
         proto = _make_proto_dir(tmp_path)
         proc, out_f, out_path = _start_server(proto)
