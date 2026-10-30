@@ -344,6 +344,31 @@ def _evidence_file_manifest(files: list) -> str:
     return f"文件清单({count}): {', '.join(shown)} 等{count}项"
 
 
+def _evidence_size_manifest(sizes: dict) -> str:
+    """evidence「条目体积(字节)」段生成单源（evo-fix-stray-escalation-evidence-budget 1.1）。
+
+    与 ``_evidence_file_manifest`` 同型的头部截断：超过
+    ``EVIDENCE_MANIFEST_PREVIEW_LIMIT`` 条仅展示前 50 条（按路径排序），
+    尾部附「等 N 项」截断注记与体积合计字节聚合。全量逐项体积以注册表
+    ``entry["sizes_bytes"]`` 为单源持久化（写 :1134 侧随注册表落盘），不
+    内联进 evidence——2026-10-24 事故 51054 项形态全量 join 撑出 6.6MB
+    evidence，Administrator 处置首轮即 API 400 prompt_too_long。
+    该段无解析侧消费方（全库仅写侧一处），截断不涉写读成对改造；
+    截断态下体积合计仍为注册表全量聚合（非前 50 项部分和），与段头
+    「体积合计=」字段同源可核对。阈值内形态与既有输出逐字节一致。
+    """
+    count = len(sizes)
+    if count <= EVIDENCE_MANIFEST_PREVIEW_LIMIT:
+        return f"条目体积(字节): {', '.join(f'{k}={v}' for k, v in sorted(sizes.items())) or '无'}"
+    shown = sorted(sizes.items())[:EVIDENCE_MANIFEST_PREVIEW_LIMIT]
+    total = sum(int(v) for v in sizes.values())
+    return (
+        f"条目体积(字节): {', '.join(f'{k}={v}' for k, v in shown)} "
+        f"等{count}项，合计={total}字节"
+        f"（全量逐项见注册表 sizes_bytes）"
+    )
+
+
 class MainTreeStrayWipSweeper:
     """主树散件 WIP 周期盘点器：只读建档 + 宽限升级，零触碰。
 
@@ -2074,8 +2099,7 @@ class MainTreeStrayWipSweeper:
             f"体积阈值={size_threshold}字节; 指纹={fp[:16]}; "
             f"{_evidence_file_manifest(files)}; "
             f"升级触发: {' + '.join(triggers) or '无'}; "
-            f"条目体积(字节): "
-            f"{', '.join(f'{k}={v}' for k, v in sorted(sizes.items())) or '无'}; "
+            f"{_evidence_size_manifest(sizes)}; "
             f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入; "
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
             f"告警发出前后主树工作区状态未变"

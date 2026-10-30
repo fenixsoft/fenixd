@@ -947,6 +947,75 @@ def _normalize_orphan_group_spec(spec):
     return s
 
 
+def _orphan_signal_query_spec(spec, signal_type) -> Optional[str]:
+    """孤儿处置组 → 关联 SIGNAL 记录的 spec 查询口径归一（单源）。
+
+    三种记法形态（evo-fix-stray-escalation-evidence-budget 2.1/R3）：
+
+    - 组 spec=None/"global"（daemon 级唤起占位）→ 归一 None——既有
+      ``_normalize_orphan_group_spec`` 口径，行为不变；
+    - 组 spec=<项目名> ∧ signal_type 属 ``SPEC_LESS_STORED_SIGNAL_TYPES``
+      （daemon 级散件盘点等 spec-less 信号）：SIGNAL 记录落盘固定
+      spec=None（如 ``stray_wip._append_signal`` payload ``"spec": None``），
+      项目名只在摄取唤起时经 ``evidence_project`` 解析进 signal dict /
+      DISPOSITION（``_worker`` 落 ``signal.get("spec") or disp.spec``）——
+      严格相等查询恒不命中，2026-10-24 事故（6.6MB evidence 撑爆处置，
+      46h 悬空零升级）的关联失配根因；对该类型白名单按宽口径归一 None
+      （(signal_type, 信号 spec=None) 关联）；
+    - 其余（组 spec=<spec 名> 的项目级信号）→ 原样透传，窄口径不变。
+
+    消费点：孤儿巡检的重派/升级关联判定（unhandled_signal_for /
+    unhandled_for 去重查询）；项目级信号的查询口径不受影响。
+    """
+    normalized = _normalize_orphan_group_spec(spec)
+    if normalized is None:
+        return None
+    if signal_type in SPEC_LESS_STORED_SIGNAL_TYPES:
+        return None
+    return normalized
+
+
+# prompt_too_long/api 400 终态签名的结构化 terminal_reason 词表
+# （evo-fix-stray-escalation-evidence-budget 2.1）：prompt_too_long 为 CLI
+# 结构化终态标记（2026-10-24 事故实录形态 terminal_reason=prompt_too_long
+# + api_error_status=400）；api_error 为既有结构化 API 错误终态标记
+# （provider_circuit 同名判据）。两形态叠加 api_error_status=400 判定。
+_PTL_TERMINAL_REASONS = frozenset({"prompt_too_long", "api_error"})
+
+
+def _result_event_is_prompt_too_long_api400(ev) -> bool:
+    """run 转录 result 事件是否命中 prompt_too_long/api 400 终态签名（单源判定）。
+
+    判据（design：终态签名检测，parse_api_error_status 单源）：
+    - 结构化 terminal_reason == "prompt_too_long"：CLI 对提示词超长的专属
+      终态标记，本身即 API 400 形态，直接命中（2026-10-24 事故实录）；
+    - 其余形态看 api_error_status：结构化字段优先（int/数字串均可），
+      缺失时回退 parse_api_error_status 对 result/error 文本的单源解析
+      （provider 网关 400 文本形态）；解析出 400 且 terminal_reason 在
+      词表内（或缺失）才计入——terminal_reason 与状态码双锚，防把其它
+      形态文本里的 400 误判成本签名。
+
+    处置记录 error/failure_evidence 仅 generic 文案（"claude CLI failed:
+    Exit code: 1…"），不得作为判据——本函数只消费 run 转录 result 事件。
+    """
+    if not isinstance(ev, dict):
+        return False
+    reason = str(ev.get("terminal_reason") or "")
+    if reason == "prompt_too_long":
+        return True
+    from core.agent_runner.provider_circuit import ProviderCircuit
+
+    status = ev.get("api_error_status")
+    if status is None:
+        text = "\n".join(str(ev.get(k) or "") for k in ("result", "error"))
+        status = ProviderCircuit.parse_api_error_status(text)
+    try:
+        is_400 = int(status) == 400
+    except (TypeError, ValueError):
+        return False
+    return is_400 and (not reason or reason in _PTL_TERMINAL_REASONS)
+
+
 # ── 无驱动判定（orphaned-state-signal R1 共用口径）──────────────────────
 # admin_monitor._detect_orphaned_state 与 event_bus._recover_one 的 testing
 # 恢复出口共用同一「无驱动」判定，防止双路径重复触发/口径漂移（design D6）。
@@ -5674,6 +5743,16 @@ class AdminMonitor:
 
         for rid, info in by_run.items():
             if info["final"]:
+                # evo-fix-stray-escalation-evidence-budget 2.1/R3：prompt_too_long/
+                # api 400 死亡的 final 组先走限次重派通道（终态签名命中即由通道
+                # 处置——重派/守卫让路/限次升级），未命中回落既有收敛核查。
+                # 该死亡形态由 _worker 落 final failed、组走本分支，**不会**到达
+                # interrupted 分支（_run_has_interrupted_marker 门）——重派实现
+                # MUST 在 final 组分支接入，而非只改 interrupted 分支条件。
+                if self._reschedule_prompt_too_long_final_group(
+                    rid, info, records, now, grace
+                ):
+                    continue
                 # evo-add-admin-orphan-disposition-effect-check 1.1/1.2：final
                 # 组不再无条件 continue——「组已终态 ∧ 关联底层 SIGNAL 仍未
                 # 收口」是「动作已执行、终态未落账」窗口死亡（或回写门豁免
@@ -5997,6 +6076,304 @@ class AdminMonitor:
                 "admin_monitor",
                 f"Orphaned admin disposition escalated to human: {rid}",
             )
+
+    # ── prompt_too_long 处置失败兜底（evo-fix-stray-escalation-evidence-budget）──
+
+    def _run_last_result_event(self, admin_run_id: str):
+        """读 run 产物**末个** ``type=result`` 事件（取最终终态为准）。
+
+        读侧与 ``maintenance_runs._read_terminal_message`` 同型：``_admin_run_file``
+        定位（含 archive 回退）＋尾部窗口限量读（result 事件恒落文件末行附近，
+        长转录全量读入属无谓 IO）＋ ``'"type": "result"'`` 子串预筛后解析复核
+        type 字段（转录伪命中行不复核会顶替真实事件）。文件缺失/读失败/无
+        result 事件返回 None。
+        """
+        run_file = self._admin_run_file(admin_run_id)
+        if run_file is None:
+            return None
+        try:
+            first_line_truncated, tail = _read_tail_lines(
+                run_file, _RUN_TAIL_READ_WINDOW)
+        except OSError:
+            return None
+        lines = tail.split("\n")
+        if first_line_truncated:
+            lines = lines[1:]
+        last = None
+        for line in lines:
+            line = line.strip()
+            if '"type": "result"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "result":
+                last = ev
+        return last
+
+    def _reschedule_prompt_too_long_final_group(
+        self, rid, info, records, now: float, grace: int,
+    ) -> bool:
+        """final 处置组死于 prompt_too_long/api 400 终态 → 限次重派通道。
+
+        prompt_too_long/api 400 死亡的处置 run 由 ``_worker`` 落 final
+        DISPOSITION（result="failed"），组经 ``_merge_admin_runs`` 判 final、
+        走 ``_converge_final_orphan_group``，**不会**到达 interrupted 分支——
+        既有中断形限次重派通道对该死亡形态不覆盖（2026-10-24 事故：6.6MB
+        evidence 撑爆处置提示词，run 7.4 秒即死于 API 400，死后无重派、
+        无升级，信号悬空 46h）。本方法在孤儿处置恢复巡检内把该死亡形态
+        纳入与 interrupted 分支同型的限次重派机制（``_reschedule_count_for``
+        / ``reschedule_max`` 复用），按序设防：
+
+        1. 形态门：组内 result="failed" 记录在场 ∧ run 转录末个 result 事件
+           命中 prompt_too_long/api 400 终态签名（``_result_event_is_prompt_
+           to_long_api400`` 单源判定）；不命中 → False，回落既有收敛路径；
+        2. escalate=true 终结记录在场 → 升级人工是唯一出路（与收敛 ② 同
+           口径），不再重派（False 回落，收敛 ② 同样豁免）；
+        3. grace 门（组内最新记录时刻）：与收敛 ③ 同型——终态刚落账的组给
+           在飞收尾窗口，避免与 ``_worker`` 收尾竞态；
+        4. 关联信号判定：``_orphan_signal_query_spec`` 归一后
+           ``unhandled_signal_for``（daemon 级散件信号 SIGNAL spec=None vs
+           组记录 spec=<项目名> 的记法失配在该单源内修复）；未命中 → False
+           （信号已收口 → 健康组，回落收敛路径既有判定）；
+        5. 在飞互斥：同 spec 在飞 run（exclude_run_id=本组 rid）在场 →
+           信号归在飞 run 认领，不抢先重派（False 回落，同 interrupted
+           分支守卫口径）；
+        6. 限次：``_reschedule_count_for`` ＋1 超过 ``reschedule_max`` →
+           落 severity=critical 的 ESCALATION（**不带 next_retry_at**——
+           不进入 ``_retry_due_dispatch_failures`` 派发失败自动重试扫描，
+           防止 DISPATCH_RETRY_MAX 在 reschedule_max 之外再叠加突破重派
+           总额）＋ escalate=True 终结记录（本组此后整体进入 ② 豁免，与
+           收敛 ⑥ 升级共用 unhandled_for 去重锚点，不双升）→ True；
+        7. 重派：与首次摄取唤起同源解析 daemon 级信号 spec 归属
+           （evidence「项目名=」段），evidence 经注入侧同源预算瘦身
+           （``prompt_builder._bounded_evidence``——存量肥大信号 6.6MB
+           形态重派前即截断，注入侧对重派同样兜底），写 superseded 审计
+           记录（携带 reschedule_count 新值）后 ``_invoke_administrator``
+           重新入队 → True。
+
+        返回 True = 本组已由本通道处置（重派/守卫跳过/升级），调用方
+        MUST NOT 再走 ``_converge_final_orphan_group``；False = 非本通道
+        形态或守卫让路，回落既有收敛路径（行为与旧「直接收敛」一致）。
+
+        同轮多组防重：同一信号的多个历史死亡组（重派后的 run 再次死于
+        同签名）会在同一轮巡检内先后进入本通道——重派成功即记
+        ``_ptl_rescheduled_run_ids`` 备忘（容量封顶同 DAEMON_ERROR_FP_
+        MEMORY_LIMIT 惯例），已备忘 rid 后续轮次不再进入本通道（回落
+        收敛路径），防止对同一信号每轮双开重派。
+        """
+        head = info["rec"] or {}
+        sig_type = head.get("signal_type")
+        if not sig_type:
+            return False
+        group = [
+            r for r in records
+            if r.get("kind") == DISPOSITION and r.get("admin_run_id") == rid
+        ]
+        if not any((r.get("result") or r.get("status")) == "failed" for r in group):
+            return False
+        memo = getattr(self, "_ptl_rescheduled_run_ids", None)
+        if memo is None:
+            memo = self._ptl_rescheduled_run_ids = set()
+        if rid in memo:
+            return False
+        # ② escalate=true 终结记录在场：升级人工是唯一出路，不重派
+        for r in group:
+            status = r.get("status") or r.get("result")
+            if status and status != "pending" and r.get("escalate"):
+                return False
+        # ③ grace 门（组内最新记录时刻）：给 _worker 在飞收尾留窗口
+        created_ts = []
+        for r in group:
+            dt = parse_ts(str(r.get("created") or ""))
+            if dt is not None:
+                created_ts.append(dt.timestamp())
+        if not created_ts or now - max(created_ts) < grace:
+            return False
+        # ① 终态签名：run 转录末个 result 事件判定
+        ev = self._run_last_result_event(rid)
+        if not _result_event_is_prompt_too_long_api400(ev):
+            return False
+        group_spec = head.get("spec")
+        # ④ 关联信号判定（daemon 级记法失配在 _orphan_signal_query_spec 修复）
+        sig_query = _orphan_signal_query_spec(group_spec, sig_type)
+        sig_rec = self.store.unhandled_signal_for(sig_query, sig_type)
+        if sig_rec is None:
+            return False
+        # ⑤ 在飞互斥（同 interrupted 分支口径：组 spec 原形、排除本组 rid；
+        # spec=None 哨兵退化宽口径时跳过判定）
+        if group_spec and self._has_active_admin_run_for_spec(
+            group_spec, exclude_run_id=rid
+        ):
+            self.logger.info(
+                "admin_monitor",
+                f"Skipping prompt_too_long reschedule for '{group_spec}' "
+                f"(signal {sig_type}): active admin run already in flight "
+                f"(run {rid})",
+            )
+            return False
+        next_count = self._reschedule_count_for(group_spec, sig_type) + 1
+        if next_count > self.reschedule_max:
+            # ⑥ 限次用尽：critical 升级（人工介入出口，不自动重试）。
+            # unhandled_for 去重锚点与收敛 ⑥ 升级共用——已有未处理升级
+            # （同 (spec, signal_type)）在场时不再重复成条，仅补 escalate=True
+            # 终结记录让本组进入 ② 豁免。
+            if self.store.unhandled_for(sig_query, sig_type) is None:
+                self.store.append(
+                    attach_trigger(
+                        {
+                            "kind": ESCALATION,
+                            "signal_type": sig_type,
+                            # daemon 级升级落归一后值（None）——"global"/项目名
+                            # 占位会被 unhandled_for(None,…) 类 daemon 级消费
+                            # 漏看（同 interrupted 分支升级落盘口径）
+                            "spec": sig_query,
+                            "severity": "critical",
+                            "description": (
+                                f"Administrator 处置反复失败于 prompt_too_long/api 400"
+                                f"（run {rid}）：底层信号 {sig_type} 已累计重派 "
+                                f"{next_count - 1} 次仍未处理完成，达到上限 "
+                                f"{self.reschedule_max}，停止自动重派，需人工介入"
+                            ),
+                            "evidence": (
+                                f"final disposition group admin_run_id={rid}；"
+                                f"run 转录 result 事件命中 prompt_too_long/"
+                                f"api_error_status=400 终态签名；"
+                                f"reschedule_count={next_count - 1} ≥ "
+                                f"{self.reschedule_max}"
+                            ),
+                            "action_taken": (
+                                "AdminMonitor 孤儿检测：prompt_too_long 处置失败"
+                                "-重派超限转人工升级"
+                            ),
+                            "admin_run_id": rid,
+                            "recommended_action": (
+                                "人工处置底层信号：处置反复死于提示词超长，说明信号 "
+                                "evidence 体量仍超限或提示词装配异常——先核对信号 "
+                                "evidence 与注册表落盘，再人工执行裁决或 resolve 收口"
+                            ),
+                        }
+                    )
+                )
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "status": "escalated",
+                    "signal_type": sig_type,
+                    "spec": group_spec,
+                    "admin_run_id": rid,
+                    "result": "escalated",
+                    # escalate=True 终结记录：本组此后进入 ② 豁免（升级人工是
+                    # 唯一出路，与收敛 ②/回写门 escalate 豁免同口径）
+                    "escalate": True,
+                    "actions_taken": (
+                        "AdminMonitor 孤儿检测：prompt_too_long 处置失败-重派"
+                        "超限升级人工，终结重派通道"
+                    ),
+                    "description": (
+                        f"Administrator 处置反复失败已升级人工（run {rid}），"
+                        f"终结重派通道"
+                    ),
+                }
+            )
+            self.logger.warning(
+                "admin_monitor",
+                f"Orphaned final disposition escalated to human after "
+                f"prompt_too_long reschedule limit: {rid} (signal {sig_type}, "
+                f"reschedule_count={next_count - 1})",
+            )
+            return True
+        # ⑦ 限次未用尽：重建信号并重派（不经 _handle_signal——节流会把重派
+        # 吞掉，同 interrupted 分支既有先例）
+        signal = self._rebuild_dispatch_signal(sig_rec)
+        if signal is None:
+            return False
+        # daemon 级信号 spec 归属：SIGNAL 记录 spec=None，与首次摄取唤起同源
+        # 解析（evidence「项目名=」段 evidence_project 单源）回填——重派 run 的
+        # 处置记录落同形 spec（项目名），_reschedule_count_for 按
+        # (spec, signal_type) 聚合的计数跨轮自洽
+        if not signal.get("spec") and sig_type in SPEC_LESS_STORED_SIGNAL_TYPES:
+            resolved = evidence_project(str(sig_rec.get("evidence") or "")) or None
+            if resolved:
+                signal["spec"] = resolved
+        # 重派携带瘦身 evidence：注入侧同源预算（prompt_builder._bounded_evidence
+        # 单源，延迟导入防 admin_monitor 成为 agent_runner 包链下游）——存量肥大
+        # 信号（6.6MB 事故形态）重派前即截断，注入侧 {evidence} 上限对重派
+        # 同样兜底（双保险）。
+        try:
+            from core.agent_runner.prompt_builder import _bounded_evidence
+
+            signal["evidence"] = _bounded_evidence(str(signal.get("evidence") or ""))
+        except Exception:  # noqa: BLE001 — 瘦身失败不阻断重派（注入侧仍兜底）
+            self.logger.warning(
+                "admin_monitor",
+                f"prompt_too_long reschedule evidence slimming failed (run {rid})",
+            )
+        # 预判守卫（与 interrupted 分支同点位、同「审计写入之前让路」语义）：
+        # fixture 抑制 / 信号死法冷却 / 秒挂冷却 / 夜间断窗·provider 瞬断冻结
+        # 命中即让路——superseded 审计与 reschedule_count 抬升在写痕之后无法
+        # 回退，预判未过不写痕、不耗配额，下轮巡检重评。
+        if self._fixture_invocation_suppressed(signal):
+            return False
+        _sig_cooled, _block_reasons = self._dispatch_precheck_guards(signal)
+        if _sig_cooled:
+            self.logger.info(
+                "admin_monitor",
+                f"Skipping prompt_too_long reschedule for "
+                f"'{signal.get('spec')}' (signal {sig_type}): signal-kill "
+                f"cooldown active (run {rid})",
+            )
+            return True
+        _if_cooled, _if_remaining = self._instant_fail_gate(signal.get("spec"))
+        if _if_cooled:
+            self.logger.info(
+                "admin_monitor",
+                f"Skipping prompt_too_long reschedule for "
+                f"'{signal.get('spec')}' (signal {sig_type}): instant-fail "
+                f"cooldown active, {_if_remaining}s remaining (run {rid})",
+            )
+            return True
+        if _block_reasons:
+            self.logger.info(
+                "admin_monitor",
+                f"Skipping prompt_too_long reschedule for "
+                f"'{signal.get('spec') or 'daemon'}' (signal {sig_type}): "
+                f"night window/provider break avoidance (run {rid})",
+            )
+            return True
+        # 审计留痕：superseded 记录携带 reschedule_count 新值（同 interrupted
+        # 分支形态）；非 pending 记录不影响本组既有 final 判定。
+        self.store.append(
+            {
+                "kind": DISPOSITION,
+                "status": "superseded",
+                "signal_type": sig_type,
+                "spec": group_spec,
+                "admin_run_id": rid,
+                "result": "superseded",
+                "reschedule_count": next_count,
+                "actions_taken": (
+                    "superseded by rescheduled disposition "
+                    f"(signal {sig_rec.get('id')} prompt_too_long/api 400 "
+                    f"terminal, evidence slimmed)"
+                ),
+                "description": (
+                    f"Administrator 处置死于 prompt_too_long/api 400（run {rid}），"
+                    f"底层信号 {sig_type} 仍未处理，自动重新入队 admin run"
+                    f"（第 {next_count} 次重派，携带瘦身 evidence）"
+                ),
+            }
+        )
+        memo.add(rid)
+        self.logger.warning(
+            "admin_monitor",
+            f"Rescheduling prompt_too_long-failed admin disposition for signal "
+            f"{sig_type} on '{signal.get('spec') or 'daemon'}' (superseded run "
+            f"{rid}, reschedule_count={next_count})",
+        )
+        self._invoke_administrator(signal, sig_rec)
+        return True
 
     # ── 孤儿处置收敛的生效核查补记（evo-add-admin-orphan-disposition-effect-check）──
 

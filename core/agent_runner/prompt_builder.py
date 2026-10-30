@@ -125,6 +125,32 @@ def _str_field(value) -> str:
         return str(value)
 
 
+# administrator 信号 evidence 注入防御性体量上限
+# （evo-fix-stray-escalation-evidence-budget 1.2/R2）：任意信号类型的
+# evidence 值超过该字符数时 fail-open 截断（截断优于拒绝）并附「已截断」
+# 注记，保证注入后提示词长度有界——2026-10-24 事故 6.6MB evidence 撑爆
+# Administrator 处置提示词（API 400 prompt_too_long 首轮即拒）的装配侧
+# 兜底，对存量肥大历史信号同样生效。截断发生在 ``_fill_and_scan_placeholders``
+# 单趟填充之前；注记为纯文本、不含占位符字面量（``_PLACEHOLDER_RE`` 形态），
+# 残留扫描告警语义不变。
+ADMIN_SIGNAL_EVIDENCE_MAX_CHARS = 200_000
+
+
+def _bounded_evidence(text: str) -> str:
+    """{evidence} 注入值体量上限单源：超限 fail-open 截断＋注记。
+
+    上限内原样返回（与既有输出逐字节一致）；超限截断并追加
+    「[evidence 已截断：原 N 字符]」注记——注记锚定在截断点尾部，
+    Administrator 可感知证据缩水，全量明细经注册表/落盘记录追溯。
+    """
+    if len(text) <= ADMIN_SIGNAL_EVIDENCE_MAX_CHARS:
+        return text
+    return (
+        text[:ADMIN_SIGNAL_EVIDENCE_MAX_CHARS]
+        + f" [evidence 已截断：原 {len(text)} 字符]"
+    )
+
+
 def _str_id_list(value) -> list:
     """字符串 id 列表归一：非 list 脏值作废回空 list，成员强转 str 并剔除空值。
 
@@ -527,7 +553,7 @@ class PromptBuilder:
                     # 不伪造 "major"，避免向 administrator 注入未经证实的优先级。
                     "{severity}": _str_field(sig.get("severity")) or "unknown",
                     "{description}": _str_field(sig.get("description")),
-                    "{evidence}": _str_field(sig.get("evidence")),
+                    "{evidence}": _bounded_evidence(_str_field(sig.get("evidence"))),
                     "{recommendation}": _str_field(sig.get("recommended_action")),
                     # 旧全局路径 .fenix/admin_disposition.json 已废弃不再读写
                     # （maintenance_runs.py），无 disposition_path 时留空——兜底指向
