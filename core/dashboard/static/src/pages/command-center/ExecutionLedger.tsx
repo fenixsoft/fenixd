@@ -7,7 +7,7 @@
 // 接收。KPI 数据独立加载，表格独立加载，互不拖垮。
 
 import { useEffect } from 'react';
-import { Alert, Table, Tag } from 'antd';
+import { Alert, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { commandCenterKpi, commandCenterLedger } from '@/services/dashboard';
 import type { CommandCenterKpi, CommandCenterLedger, CommandCenterLedgerRow } from '@/services/dashboard';
@@ -44,8 +44,19 @@ function KpiCell({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** KPI 条：四指标 + 网关状态徽标（配置态派生，零探测）。 */
-function KpiBar({ kpi, kpiError, onRetry }: { kpi: CommandCenterKpi | null; kpiError: string; onRetry: () => void }) {
+/** KPI 条：四指标 + 网关状态徽标（配置态派生，零探测）。初载（loading 且
+ * 无 data）显加载占位——「—」专指分母零/不可计价口径，不冒充加载态。 */
+function KpiBar({
+  kpi,
+  kpiLoading,
+  kpiError,
+  onRetry,
+}: {
+  kpi: CommandCenterKpi | null;
+  kpiLoading: boolean;
+  kpiError: string;
+  onRetry: () => void;
+}) {
   if (kpiError && !kpi) {
     return (
       <div
@@ -64,6 +75,26 @@ function KpiBar({ kpi, kpiError, onRetry }: { kpi: CommandCenterKpi | null; kpiE
         <a onClick={onRetry} style={{ color: TEXT_MAIN }}>
           重试
         </a>
+      </div>
+    );
+  }
+  // 初载占位（Spin 与 ScreenStates 同款 antd 口径）：数据未到不落「—」
+  if (kpiLoading && !kpi) {
+    return (
+      <div
+        style={{
+          border: `1px solid ${PANEL_BORDER}`,
+          borderRadius: 8,
+          padding: '10px 14px',
+          marginBottom: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          color: TEXT_SUB,
+        }}
+      >
+        <Spin size="small" />
+        <span style={{ fontSize: 12 }}>KPI 加载中…</span>
       </div>
     );
   }
@@ -186,7 +217,7 @@ export default function ExecutionLedger({
 
   return (
     <div>
-      <KpiBar kpi={kpi.data} kpiError={kpi.error} onRetry={kpi.retry} />
+      <KpiBar kpi={kpi.data} kpiLoading={kpi.loading} kpiError={kpi.error} onRetry={kpi.retry} />
       {ledgerView()}
     </div>
   );

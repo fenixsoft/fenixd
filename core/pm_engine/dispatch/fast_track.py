@@ -31,13 +31,21 @@ from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_ERROR_MARKER,
 )
+# 零变更成功哨熔断阈值自包门面导入（code-review item 2e698b1a6352）：原定义于
+# 本文件、full 车道（queue.py 零变更哨 twin 分支）以字面量 3 并列，构成四处
+# 手工同步的双维护，现单点上移至 core.pm_engine.dispatch.__init__（与
+# DEFAULT_DISPATCH_BACKOFF_SCHEDULE 同层；__init__ 内常量定义先于子模块接入
+# 行，导入无环，backoff.py 先例）。
+from core.pm_engine.dispatch import (  # noqa: E402
+    ZERO_CHANGE_BREAKER_ATTEMPTS,
+)
 from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_threshold
 
-# 零变更成功哨熔断阈值（code-review item 236ad1c6122d）：fast-track 车道
-# _handle_fast_track_zero_change 的冻结/重派 twin 分支共用本常量，阈值调整
-# 只改一处；full 车道同名哨（queue.py 零变更哨 twin 分支）与本车道是注释
-# 钉住的手工双维护，跨文件调整时仍须两文件各两处同步。
-ZERO_CHANGE_BREAKER_ATTEMPTS = 3
+# 规模降级改写失败封顶（code-review item b5c3eb608a92）：_rewrite_fast_track_
+# to_full 在降级路径连续失败达此次数后，跳过本轮重派入队（spec 保持 ready
+# 等周期扫描兜底），斩断「改写失败 → ready↔降级零间隔空转」的无界循环；
+# 改写成功即清零计数。
+SCALE_DOWNGRADE_REWRITE_FAILURE_LIMIT = 3
 
 
 class FFastTrackMixin:
@@ -104,7 +112,10 @@ class FFastTrackMixin:
           implementer（完整模式车道，预算闸门/内容完整性闸门同层生效）；
         - 本次不启动 fast-track run、不递增实现预算（_run_agent_worker 调用
           点先于 _increment_impl_run_budget_used）；
-        - 改写失败仅 WARNING（非阻塞，下轮派发仍按 fast-track 原档重试）。
+        - 改写失败仅 WARNING（非阻塞），但有界记账封顶（code-review item
+          b5c3eb608a92）：改写连续失败达 SCALE_DOWNGRADE_REWRITE_FAILURE_LIMIT
+          后跳过本轮重派入队（spec 保持 ready 等周期扫描兜底），不再零间隔
+          空转刷 WARNING/占队列轮次；改写成功即清零计数。
 
         （fix-fasttrack-recovery-resume D4 锚点要求）本路径 MUST NOT 清空
         ``branch``/``implementer_run``，MUST NOT 消费 ``_recovery_resume``——
@@ -112,9 +123,24 @@ class FFastTrackMixin:
         降级路径在 dispatch 入口的续做判定**之前** return，若此处清锚点/消费
         标记，随后的 implementer 派发将丢失可续做的保留分支。
         """
-        # _rewrite_fast_track_to_full 内部已自吞改写异常（仅记 WARNING，非阻塞，
-        # 改写失败时下轮派发仍按 fast-track 原档重试），此处无需再包 try/except。
-        self._rewrite_fast_track_to_full(spec_name)
+        # _rewrite_fast_track_to_full 内部已自吞改写异常（仅记 WARNING，非阻塞），
+        # 返回 False 表示改写失败/跳过（mode 仍为 fast-track）。
+        rewrite_ok = self._rewrite_fast_track_to_full(spec_name)
+        # 改写失败有界记账（code-review item b5c3eb608a92）：失败时下轮派发重读
+        # mode 仍为 fast-track，规模预检再次降级，形成零间隔空转循环。spec 级
+        # 内存计数（daemon 生命周期内有效，重启清零；记账为尽力而为——派发线程
+        # 并发进入同一 spec 时极端下可丢一次递增，仅影响封顶晚一轮触发，不阻塞
+        # 主流程，对齐 bump_counters 失败守卫的容忍口径）达
+        # SCALE_DOWNGRADE_REWRITE_FAILURE_LIMIT 后跳过本轮 _enqueue。
+        failures = getattr(self, "_scale_downgrade_rewrite_failures", None)
+        if failures is None:
+            failures = self._scale_downgrade_rewrite_failures = {}
+        if rewrite_ok:
+            failures.pop(spec_name, None)
+            stuck = False
+        else:
+            failures[spec_name] = failures.get(spec_name, 0) + 1
+            stuck = failures[spec_name] >= SCALE_DOWNGRADE_REWRITE_FAILURE_LIMIT
         # （fix-fasttrack-recovery-resume D4）本 update_spec 只写 status/error——
         # **不得**在此清空 branch/implementer_run，也**不得**消费 _recovery_resume：
         # 降级后走 implementer 车道，保留的锚点与标记须原样交给其派发入口消费。
@@ -125,6 +151,16 @@ class FFastTrackMixin:
                 "error": (f"fast-track 规模预检降级完整模式（scale={scale}，任务面超阈）"),
             },
         )
+        if stuck:
+            # 封顶兜底：不再入队（零间隔空转循环的「零间隔」半边在此斩断），
+            # spec 已保持 ready + error，等待周期扫描/人工通道重新派发。
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track 规模降级改写连续失败 {failures[spec_name]} 次 "
+                f"'{spec_name}'（mode 未改为 full，继续入队将零间隔空转）— "
+                f"跳过本轮 implementer 入队，spec 保持 ready 等周期扫描兜底",
+            )
+            return
         self._enqueue(spec_name, "implementer")
         self._pm.logger.warning(
             "pm_engine",
@@ -1365,13 +1401,18 @@ class FFastTrackMixin:
             spec_name, SimpleNamespace(run_id=implementer_run)
         )
 
-    def _rewrite_fast_track_to_full(self, spec_name: str) -> None:
+    def _rewrite_fast_track_to_full(self, spec_name: str) -> bool:
         """把 .spec.yaml 的 mode 从 fast-track 改写为 full（升级路径复用）。
 
-        供 ``_escalate_to_full_mode``（verdict=bug-found 升级）与
+        供 ``_escalate_to_full_mode``（verdict=bug-found 升级）、
         ``_handle_fast_track_missing_result_merge``（结果文件缺失、分支已提交
-        升级补验证）共用。写失败仅记 WARNING（非阻塞，mode 未改写时由 verifier
-        车道语义处置）。
+        升级补验证）与 ``_downgrade_fast_track_scale``（规模降级）共用。写失败
+        仅记 WARNING（非阻塞，mode 未改写时由 verifier 车道语义处置）。
+
+        返回 True 表示 mode 已就位 full（含「已是 full」幂等 no-op）或改写成功；
+        False 表示改写失败/异常跳过（mode 仍非 full）。返回值仅
+        ``_downgrade_fast_track_scale`` 的失败记账消费（code-review item
+        b5c3eb608a92），其余调用点忽略。
         """
         import yaml as _yaml
 
@@ -1387,7 +1428,7 @@ class FFastTrackMixin:
                     f"fast-track 升级跳过（.spec.yaml 不存在，mode 未改写）"
                     f" '{spec_name}'",
                 )
-                return
+                return False
             data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 self._pm.logger.warning(
@@ -1395,14 +1436,14 @@ class FFastTrackMixin:
                     f"fast-track 升级跳过（.spec.yaml 顶层载荷非 dict，mode 未改写）"
                     f" '{spec_name}': {type(data).__name__}",
                 )
-                return
+                return False
             if data.get("mode") != "fast-track":
                 self._pm.logger.debug(
                     "pm_engine",
                     f"fast-track 升级跳过（mode 已非 fast-track，无需改写）"
                     f" '{spec_name}': {data.get('mode')!r}",
                 )
-                return
+                return True
             data["mode"] = "full"
             # mkstemp 唯一临时文件 + fsync + os.replace 原子写（复用仓库
             # 统一助手 scenario_gate.atomic_write_text，code-review item
@@ -1425,11 +1466,13 @@ class FFastTrackMixin:
                 "pm_engine",
                 f"fast-track 升级: .spec.yaml mode → full " f"for '{spec_name}'",
             )
+            return True
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track 升级 .spec.yaml 失败（非阻塞） '{spec_name}': {e}",
             )
+            return False
 
     def _escalate_to_full_mode(
         self,

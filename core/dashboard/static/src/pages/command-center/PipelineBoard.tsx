@@ -97,7 +97,7 @@ export default function PipelineBoard({
   /** 项目全集上报（供壳层全局下拉合并），数据变化时回调一次 */
   onProjects?: (projects: string[]) => void;
 }) {
-  const { data, error, loading, retry } = useScreenResource<CommandCenterPipeline>(
+  const { data, error, retry } = useScreenResource<CommandCenterPipeline>(
     () => commandCenterPipeline(project || undefined),
     active,
     // 筛选切换即时重拉（project 变化经 refreshKey 触发激活 effect；BUG-01

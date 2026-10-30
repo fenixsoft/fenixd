@@ -705,8 +705,11 @@ class DshAdapter:
                 "Bundle 配置显式渲染，MUST NOT 依赖 dsh 默认档；请为该车道"
                 "分配 provider 链（模型路由），或将 agent.harness 改回 claude"
             )
-        base_url = (req.env_overrides.get("ANTHROPIC_BASE_URL") or "").strip()
-        api_key = (req.env_overrides.get("ANTHROPIC_API_KEY") or "").strip()
+        # (req.env_overrides or {}) 兜底与 build_env 同款：调用方显式传 None
+        # 时在此落下方 DshSpawnConfigError 友好报错，而非 AttributeError 把
+        # 排查方向带偏。
+        base_url = ((req.env_overrides or {}).get("ANTHROPIC_BASE_URL") or "").strip()
+        api_key = ((req.env_overrides or {}).get("ANTHROPIC_API_KEY") or "").strip()
         if not base_url or not api_key:
             raise DshSpawnConfigError(
                 "dsh 通道要求显式 provider 链分配（baseurl/apikey/model 三要"
@@ -1160,7 +1163,8 @@ class DshAdapter:
         if dump.returncode != 0:
             raise HarnessHealthError(
                 f"dsh profile {self._config.profile!r} 不存在或无法组合"
-                f"（exit {dump.returncode}）：{(dump.stderr or '').strip()[:500]}"
+                f"（exit {dump.returncode}）："
+                f"{(dump.stderr or dump.stdout or '').strip()[:500]}"
                 f"——按 dsh-bundle/README.md 部署段创建 Bundle 挂载 profile，"
                 f"或将 agent.harness 改回 claude"
             )

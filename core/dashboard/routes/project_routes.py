@@ -53,7 +53,7 @@ from core.agent_runner.harness import (
 )
 from core.agent_runner.harness.one_shot import run_one_shot
 
-logger = logging.getLogger("fenixd.dashboard.project_routes")
+logger = logging.getLogger("fenixd.dashboard.routes.project_routes")
 
 # 同项目简介生成互斥注册表（code-review item 9c8e2c44f682）：_api_project_describe
 # 在 HTTP 线程内同步等待 claude CLI 最长 120 秒，同项目并发点击会叠加占用
@@ -658,7 +658,11 @@ class H2ProjectRoutesMixin:
             readme_path = proot / "README.md"
             if readme_path.exists():
                 try:
-                    raw = readme_path.read_bytes()[:8192]  # ≤8KB 截断
+                    # open+f.read 只读取截断上限量（item 4ce0bd6b84e2）：
+                    # read_bytes() 会先把整个文件载入内存再切片，异常超大
+                    # README（误提交的日志/数据文件）造成 HTTP 线程内存尖峰。
+                    with readme_path.open("rb") as f:
+                        raw = f.read(8192)  # ≤8KB 截断
                     # errors="replace" 按设计吞掉坏字节、不会抛 UnicodeDecodeError
                     # （code-review item 61f4c7a973a6），只守卫读取失败的 OSError。
                     content = raw.decode("utf-8", errors="replace")
@@ -670,7 +674,9 @@ class H2ProjectRoutesMixin:
                     fallback_path = proot / fallback
                     if fallback_path.exists():
                         try:
-                            raw = fallback_path.read_bytes()[:4096]  # 前 4KB
+                            # 同上：只读上限量，不整文件载入后再切片
+                            with fallback_path.open("rb") as f:
+                                raw = f.read(4096)  # 前 4KB
                             # 同上：errors="replace" 不会抛 UnicodeDecodeError
                             # （code-review item 61f4c7a973a6），只守卫 OSError。
                             content = raw.decode("utf-8", errors="replace")
@@ -759,7 +765,7 @@ class H2ProjectRoutesMixin:
             # 误回显全文）无上限，原样写入会把 config.yaml 的 description 撑到
             # 任意大并随 read_effective_config 等读侧传播。与输入侧同量级截
             # 4KB：按字节截断后 errors="replace" 解码，写法与上方 README
-            # read_bytes()[:8192]/回退 [:4096] 同款；超限经服务端日志留痕。
+            # f.read(8192)/回退 f.read(4096) 的字节截断同款；超限经服务端日志留痕。
             raw_desc = description.encode("utf-8")
             if len(raw_desc) > 4096:
                 logger.warning(

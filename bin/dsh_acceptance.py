@@ -464,10 +464,24 @@ def _proc_cmdline(pid: int) -> str:
         return ""
 
 
+def _snapshot_running_agents(runner) -> List[Any]:
+    """_running_agents 在飞进程快照：该 dict 由车道驱动线程并发增删，
+    list(dict.values()) 与增删交错会抛 RuntimeError（dictionary changed
+    size during iteration），在飞采样循环若未捕获会把成功车道误判为失败
+    （假阴性）。短重试后仍冲突则返回空列表、放弃本轮采样/收割——观测窗
+    下一轮会重采样，不放大为车道失败。"""
+    for _ in range(3):
+        try:
+            return list(getattr(runner, "_running_agents", {}).values())
+        except RuntimeError:
+            time.sleep(0.05)
+    return []
+
+
 def reap_lane_processes(runner) -> None:
     """车道挂起兜底：SIGTERM→SIGKILL 两段式收割在飞进程组（与 harness.
     one_shot 清场语义同构；spawn 以 start_new_session 启动，pgid==pid）。"""
-    for proc in list(getattr(runner, "_running_agents", {}).values()):
+    for proc in _snapshot_running_agents(runner):
         if proc.poll() is not None:
             continue
         for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -688,7 +702,7 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
         lane_deadline = time.time() + timeout + 60
         while (time.time() < lane_deadline
                and "ret" not in box and "err" not in box):
-            for proc in list(runner._running_agents.values()):
+            for proc in _snapshot_running_agents(runner):
                 if proc.poll() is not None:
                     continue
                 cmdline = _proc_cmdline(proc.pid)
@@ -1844,7 +1858,7 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
         lane_deadline = time.time() + timeout + 120
         while (time.time() < lane_deadline
                and "ret" not in box and "err" not in box):
-            for proc in list(runner._running_agents.values()):
+            for proc in _snapshot_running_agents(runner):
                 if proc.poll() is not None:
                     continue
                 cmdline = _proc_cmdline(proc.pid)

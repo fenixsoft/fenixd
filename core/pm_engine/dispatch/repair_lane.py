@@ -413,7 +413,10 @@ class PRepairLaneMixin:
                 "pm_engine",
                 f"repair 轮次计数回写失败 '{spec_name}'（非阻塞）: {e}",
             )
-        self._pm.logger.warning(
+        # 常规进入属预期运维事件，INFO 口径（code-review item 9277ecde8a06）：
+        # 与 _direct_rehearsed_to_repair 等同族车道入口一致；WARNING 告警语义
+        # 留给轮次超限兜底回退（上方 MAX_REPAIR_ROUNDS_PER_FAILURE 分支）。
+        self._pm.logger.info(
             "pm_engine",
             f"进入 repair 通道 '{spec_name}'（第 {round_no}/{MAX_REPAIR_ROUNDS_PER_FAILURE} 轮，"
             f"merge 失败 streak={streak}） worktree={wt_path} branch={resolved_branch}",

@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import os
+import select
 import signal
 import subprocess
 import threading
@@ -30,6 +32,12 @@ logger = logging.getLogger("fenixd.dashboard.session_manager")
 SESSION_EVENT_BUFFER = 4000          # 事件环形缓冲上限
 SESSION_IDLE_TIMEOUT_SECONDS = 1800  # 空闲回收阈值（30 分钟）
 SESSION_TERMINATE_GRACE_SECONDS = 5  # 终止宽限：关 stdin 后等该秒数再 kill
+# 读线程放弃判定的轮询周期（秒）：select 超时粒度。会话被收割并移出映射后，
+# 管道写端若仍被逃逸进程组的孙进程持有（setsid/nohup 逃出进程组继承写端，
+# 该形态的现实性见 regression_routes._AUTODRAFT_REAP_TIMEOUT_SECONDS 注释），
+# 读端 EOF 永不到来——读线程至多再等该时长即主动退出，Session 对象随之可
+# 回收（code-review item 5e822919a5ae）。
+SESSION_READER_POLL_SECONDS = 0.5
 
 
 class SessionError(Exception):
@@ -476,69 +484,83 @@ class SessionManager:
             name=f"session-stderr-{session.session_id[:8]}",
         ).start()
 
+    def _pump_stream_lines(self, session: Session, stream_name: str, handle_line) -> None:
+        """逐行泵取子进程输出并回调（stdout/stderr 共用，按 \n 拼行）。
+
+        真实 OS 管道（生产 Popen.PIPE 恒为真实管道）走 select 超时 + os.read
+        分段读取、自行拼行：单轮至多阻塞 SESSION_READER_POLL_SECONDS，超时
+        回圈复查 _reader_abandoned。会话被收割并移出映射后，管道写端可能仍被
+        逃逸进程组的孙进程持有，读端 EOF 永不到来——原 `for line in
+        proc.stdout` 的无超时阻塞读会让读线程连同 Session 对象（事件缓冲与
+        锁）滞留至进程退出，start/stop 反复命中即逐次累积（item 5e822919a5ae，
+        滞留形态佐证见 _reader_abandoned 注）；带超时分段读 + 主动放弃堵死
+        该滞留，映射摘除与两读线程退出后 Session 即可被回收。
+        UTF-8 增量解码（errors="replace"，与 Popen 的 encoding/errors 口径
+        一致）防多字节字符被分段读错切；按 \n 拼行并剥行尾 \r，与文本模式
+        universal newlines 的逐行语义对齐（行内 \r 不受影响；EOF 残余半行
+        照发）。测试替身流无 OS fd，回退原逐行迭代语义（替身经 close()/EOF
+        事件唤醒模拟 EOF，见 tests/test_dashboard_session.py FakePipe）。
+        os.read 的 OSError（读端并发关闭等）原样上抛，由调用方 except 留痕，
+        与原逐行迭代异常面一致。
+        """
+        stream = getattr(session.proc, stream_name)
+        try:
+            fd = stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            fd = None
+        if fd is None:
+            for line in stream:
+                handle_line(line.rstrip("\n"))
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        pending = ""
+        while True:
+            if self._reader_abandoned(session):
+                return
+            # 单轮有界等待：超时无数据回圈复查放弃条件；真 EOF 会即刻就绪，
+            # 下方 os.read 立即返回 b""，正常路径无额外延迟。
+            if not select.select([fd], [], [], SESSION_READER_POLL_SECONDS)[0]:
+                continue
+            chunk = os.read(fd, 65536)  # 已就绪读不阻塞
+            if not chunk:
+                if pending:  # EOF 残余半行（无换行结尾）按文本迭代语义补发
+                    handle_line(pending.rstrip("\r"))
+                return
+            pending += decoder.decode(chunk)
+            while True:
+                nl = pending.find("\n")
+                if nl < 0:
+                    break
+                line, pending = pending[:nl], pending[nl + 1:]
+                handle_line(line.rstrip("\r"))
+
+    def _reader_abandoned(self, session: Session) -> bool:
+        """读线程是否应主动放弃：会话已移出映射且其输出不再有消费方。
+
+        映射仍指向本会话（_terminate 宽限窗内、或正常消费中）→ 继续读，不丢
+        任何输出。移出映射（被 _terminate 收割移除，或 get/start/send 按「已
+        退出/已认领」清退或顶替）后，若已认领终止或进程已退出，读端能否 EOF
+        只取决于逃逸孙进程何时关闭继承的写端（不可期）→ 放弃，残余未读输出
+        随会话终止一并丢弃。终态广播约定不受影响：认领态（terminating）由
+        _terminate 落 session_ended、读线程 finally 去重不重发；非认领态
+        （进程自行退出后被清退）读线程 finally 照常补发 process_exit。
+        调用方不持任何锁；此处取 manager._lock 短临界区（与全文件
+        session.lock / manager._lock 不嵌套持有纪律一致）。
+        """
+        with self._lock:
+            if self._sessions.get(session.project) is session:
+                return False
+            return session.terminating or session.proc.poll() is not None
+
     def _stdout_reader(self, session: Session) -> None:
         """逐行读 stdout：JSON 行解析为事件并广播；脏行进 stderr 兜底。"""
         sid = session.session_id
         try:
-            for line in session.proc.stdout:
-                line = line.rstrip("\n")
-                if not line:
-                    continue
-                # 尝试 JSON 解析
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    ev = None
-                # code-review item a1ad7f4c983b：合法 JSON 但非 object（null/数组/
-                # 字符串等）的行若放行到下方 ev.get 会抛 AttributeError，被外层
-                # except 捕获后整条读循环终止、存活会话被误按 process_exit 移除，
-                # 故与 JSONDecodeError 同走 stderr 兜底分支。
-                # 非 JSON / 非 object 行 → stderr 兜底事件（进缓冲 + 广播，前端实时可见）
-                if not isinstance(ev, dict):
-                    ev = {"type": "stderr", "line": line, "ts": time.time()}
-                    # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
-                    with session.lock:
-                        session.events.append(ev)
-                    self._hub.broadcast(
-                        {"type": "session_events", "session_id": sid, "events": [ev]},
-                        run_id=sid,
-                    )
-                    continue
-
-                # D1.1 hook 噪音过滤：丢弃 system/hook_* 事件
-                ev_type = ev.get("type", "")
-                ev_subtype = ev.get("subtype", "")
-                if ev_type == "system" and isinstance(ev_subtype, str) and ev_subtype.startswith("hook_"):
-                    continue
-
-                # add-session-composer 1.1：捕获 init 事件的 slash_commands/skills
-                # 覆盖写入 Session 缓存（commands 端点数据源），init 本身不进缓冲
-                # 不广播——有意行为变化：前端 claude-msg/runEvents.ts 的
-                # SILENT_KINDS 已含 init（零渲染依赖），SSE 消费端无可见回归。
-                if ev_type == "system" and ev_subtype == "init":
-                    session.slash_commands = [
-                        str(c) for c in (ev.get("slash_commands") or [])
-                    ]
-                    session.skills = [str(c) for c in (ev.get("skills") or [])]
-                    continue
-
-                # 补 ts 字段
-                if "ts" not in ev:
-                    ev["ts"] = time.time()
-
-                # [fenix-ignore:232cecb1ea26] 四处 events.append 均已持 session.lock（item 79d40459a39e 既有修复覆盖），本条所述未持锁状态不成立
-                # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
-                # code-review item 15da2be46889：last_activity 刷新同锁收编，
-                # 写侧不再有裸写（锁纪律总述见 Session.last_activity 注）。
-                with session.lock:
-                    session.events.append(ev)
-                    session.last_activity = time.time()
-
-                # 广播
-                self._hub.broadcast(
-                    {"type": "session_events", "session_id": sid, "events": [ev]},
-                    run_id=sid,
-                )
+            self._pump_stream_lines(
+                session,
+                "stdout",
+                lambda line: self._handle_stdout_line(session, sid, line),
+            )
         except Exception:
             logger.exception("stdout reader error: session=%s", sid)
         finally:
@@ -597,17 +619,83 @@ class SessionManager:
                 )
                 logger.info("stdout EOF: session=%s reason=process_exit", sid)
 
+    def _handle_stdout_line(self, session: Session, sid: str, line: str) -> None:
+        """单行 stdout 处理：JSON 行转事件广播，脏行转 stderr 兜底事件。"""
+        if not line:
+            return
+        # 尝试 JSON 解析
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            ev = None
+        # code-review item a1ad7f4c983b：合法 JSON 但非 object（null/数组/
+        # 字符串等）的行若放行到下方 ev.get 会抛 AttributeError，被外层
+        # except 捕获后整条读循环终止、存活会话被误按 process_exit 移除，
+        # 故与 JSONDecodeError 同走 stderr 兜底分支。
+        # 非 JSON / 非 object 行 → stderr 兜底事件（进缓冲 + 广播，前端实时可见）
+        if not isinstance(ev, dict):
+            ev = {"type": "stderr", "line": line, "ts": time.time()}
+            # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
+            with session.lock:
+                session.events.append(ev)
+            self._hub.broadcast(
+                {"type": "session_events", "session_id": sid, "events": [ev]},
+                run_id=sid,
+            )
+            return
+
+        # D1.1 hook 噪音过滤：丢弃 system/hook_* 事件
+        ev_type = ev.get("type", "")
+        ev_subtype = ev.get("subtype", "")
+        if ev_type == "system" and isinstance(ev_subtype, str) and ev_subtype.startswith("hook_"):
+            return
+
+        # add-session-composer 1.1：捕获 init 事件的 slash_commands/skills
+        # 覆盖写入 Session 缓存（commands 端点数据源），init 本身不进缓冲
+        # 不广播——有意行为变化：前端 claude-msg/runEvents.ts 的
+        # SILENT_KINDS 已含 init（零渲染依赖），SSE 消费端无可见回归。
+        if ev_type == "system" and ev_subtype == "init":
+            session.slash_commands = [
+                str(c) for c in (ev.get("slash_commands") or [])
+            ]
+            session.skills = [str(c) for c in (ev.get("skills") or [])]
+            return
+
+        # 补 ts 字段
+        if "ts" not in ev:
+            ev["ts"] = time.time()
+
+        # [fenix-ignore:232cecb1ea26] 四处 events.append 均已持 session.lock（item 79d40459a39e 既有修复覆盖），本条所述未持锁状态不成立
+        # code-review item 79d40459a39e：append 持锁（见 _terminate 同注）
+        # code-review item 15da2be46889：last_activity 刷新同锁收编，
+        # 写侧不再有裸写（锁纪律总述见 Session.last_activity 注）。
+        with session.lock:
+            session.events.append(ev)
+            session.last_activity = time.time()
+
+        # 广播
+        self._hub.broadcast(
+            {"type": "session_events", "session_id": sid, "events": [ev]},
+            run_id=sid,
+        )
+
     def _stderr_reader(self, session: Session) -> None:
         """逐行读 stderr 进 stderr_tail 环形缓冲，不广播。"""
         try:
-            for line in session.proc.stderr:
-                line = line.rstrip("\n")
-                if line:
-                    # f6396e93c224：读端 session_routes 锁内快照 stderr_tail，
-                    # 写端 append 须同锁互斥（否则并发 append 下迭代抛
-                    # RuntimeError(deque mutated during iteration)）。
-                    with session.lock:
-                        session.stderr_tail.append(line)
+            self._pump_stream_lines(
+                session, "stderr", lambda line: self._handle_stderr_line(session, line)
+            )
         except Exception:
             # code-review item bbb0cd968a89：与 _stdout_reader 的留痕纪律对齐
             logger.exception("stderr reader error: session=%s", session.session_id)
+
+    @staticmethod
+    def _handle_stderr_line(session: Session, line: str) -> None:
+        """单行 stderr 处理：进尾部环形缓冲（不广播）。"""
+        if not line:
+            return
+        # f6396e93c224：读端 session_routes 锁内快照 stderr_tail，
+        # 写端 append 须同锁互斥（否则并发 append 下迭代抛
+        # RuntimeError(deque mutated during iteration)）。
+        with session.lock:
+            session.stderr_tail.append(line)

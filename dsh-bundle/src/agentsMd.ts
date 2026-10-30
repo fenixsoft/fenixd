@@ -71,9 +71,14 @@ export function agentsMdSectionText(
   if (Buffer.byteLength(body, "utf-8") > AGENTS_MD_MAX_BYTES) {
     body = `${truncateUtf8ByBytes(body, AGENTS_MD_MAX_BYTES)}\n（AGENTS.md 超过上限 ${AGENTS_MD_MAX_BYTES} 字节，已截断）`;
   }
-  // 正文中的闭合标记须转义（仅补一个反斜杠，语义仍可读），否则会提前终结
-  // <system-reminder> 包裹，其后内容脱离注入语境。
-  const safe = body.replace(/<\/system-reminder>/g, "<\\/system-reminder>").replace(/\s+$/, "");
+  // 正文中的 system-reminder 标记须转义（仅补一个反斜杠，语义仍可读），否则会
+  // 提前终结 <system-reminder> 包裹，其后内容脱离注入语境。按宽松形态统一中性化
+  // 开启/闭合标记（大小写不敏感 + 容忍标签内空白，防变体伪造框架块或提前脱逸）。
+  // 信任边界：AGENTS.md 属工作区可信内容（约定注入载体，无额外权限边界可越），
+  // 此处转义不是安全防线，仅保注入框架形态保真。
+  const safe = body
+    .replace(/<\/?\s*system-reminder\s*>/gi, (mark) => mark.replace(/</g, "<\\"))
+    .replace(/\s+$/, "");
   return `<system-reminder>\nInstructions from: AGENTS.md\n\n${safe}\n</system-reminder>`;
 }
 

@@ -12,7 +12,7 @@ import errno
 import logging
 import re
 
-logger = logging.getLogger("fenixd.dashboard.help_routes")
+logger = logging.getLogger("fenixd.dashboard.routes.help_routes")
 
 
 class H8HelpRoutesMixin:

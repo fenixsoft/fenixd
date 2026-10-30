@@ -29,6 +29,16 @@ export function useScreenResource<T>(
   // 未过滤列表）。仿 activities 页（fix 01635701025b）loadSeqRef 口径：仅
   // 最新一次请求允许落状态，过期响应（含其失败与收尾置位）直接丢弃
   const runSeqRef = useRef(0);
+  // 卸载守卫：轮询 interval 卸载时会清理，但已在飞的 Promise 不取消——
+  // 卸载后响应返回时序号守卫仍可能通过，故收尾落状态前再核本标志，
+  // 不对已卸载组件 setData/setError/setLoading（组件卸载重挂时复位）
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [tick, setTick] = useState(0);
   const retry = useCallback(() => setTick((t) => t + 1), []);
 
@@ -37,20 +47,21 @@ export function useScreenResource<T>(
     try {
       if (initial) setLoading(true);
       const d = await loadRef.current();
-      // 写回前复核序号：过期请求不改写任何状态（data 与 loaded 标记均不覆盖）
-      if (seq !== runSeqRef.current) return;
+      // 写回前复核序号与存活：过期请求或已卸载不改写任何状态（data 与
+      // loaded 标记均不覆盖）
+      if (seq !== runSeqRef.current || !mountedRef.current) return;
       loadedRef.current = true;
       setData(d);
       setError('');
     } catch (err) {
       // 过期请求的失败同样不落状态，避免旧错误提示覆盖新请求结果
-      if (seq !== runSeqRef.current) return;
+      if (seq !== runSeqRef.current || !mountedRef.current) return;
       // 后台刷新失败：保留旧数据仅置 error（首载失败 data 保持 null → 占位）
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       // 收尾置 false 同样纳入序号守卫（对齐 activities 页 fix 9fc948945fc7）：
       // 旧请求先完成时不抢在并发中的新请求之前撤掉加载指示
-      if (seq === runSeqRef.current) setLoading(false);
+      if (seq === runSeqRef.current && mountedRef.current) setLoading(false);
     }
   }, []);
 

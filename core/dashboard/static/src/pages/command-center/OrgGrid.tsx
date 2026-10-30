@@ -241,6 +241,11 @@ function SpecPicker({
                 key={key}
                 title={key}
                 onClick={() => onPick(e)}
+                role="link"
+                tabIndex={0}
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Enter') onPick(e);
+                }}
                 onMouseEnter={() => setHoverKey(key)}
                 onMouseLeave={() => setHoverKey(null)}
                 style={{
@@ -412,18 +417,28 @@ function LaneCard({
               // run_id 空 = 旧后端形态防御（保留行但禁点，零伪造红线）
               const clickable = !!r.run_id;
               const key = `${r.seq}-${r.run_id || 'na'}`;
+              const openRun = clickable
+                ? () =>
+                    onOpenRun({
+                      project: specSel.project,
+                      spec: specSel.spec,
+                      run_id: r.run_id,
+                    })
+                : undefined;
               return (
                 <div
                   key={key}
                   title={`${r.seq} 轮 · ${fmtShortTs(r.started_ts)}`}
-                  onClick={
-                    clickable
-                      ? () =>
-                          onOpenRun({
-                            project: specSel.project,
-                            spec: specSel.spec,
-                            run_id: r.run_id,
-                          })
+                  onClick={openRun}
+                  // 键盘可达（对齐 PipelineBoard.PipelineCard 既有模式）：
+                  // 可点行补 role+tabIndex+Enter；禁点行不进 tab 序
+                  role={clickable ? 'button' : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  onKeyDown={
+                    openRun
+                      ? (e) => {
+                          if (e.key === 'Enter') openRun();
+                        }
                       : undefined
                   }
                   onMouseEnter={clickable ? () => setHoverRound(key) : undefined}
@@ -526,11 +541,23 @@ function LaneCard({
             const key = `${it.project}/${it.spec}`;
             // run_id 空 = 旧后端兜底形态（仅显名字，开不了运行记录）
             const clickable = !!it.run_id;
+            const openRun = clickable ? () => onOpenRun(it) : undefined;
             return (
               <div
                 key={key}
                 title={`${it.project}/${it.spec}`}
-                onClick={clickable ? () => onOpenRun(it) : undefined}
+                onClick={openRun}
+                // 键盘可达（对齐 PipelineBoard.PipelineCard 既有模式）：
+                // 可点行补 role+tabIndex+Enter；禁点行不进 tab 序
+                role={clickable ? 'button' : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onKeyDown={
+                  openRun
+                    ? (e) => {
+                        if (e.key === 'Enter') openRun();
+                      }
+                    : undefined
+                }
                 onMouseEnter={clickable ? () => setHoverRun(key) : undefined}
                 onMouseLeave={clickable ? () => setHoverRun(null) : undefined}
                 style={{
@@ -599,7 +626,7 @@ export default function OrgGrid({
   /** 选中态回写宿主（置 null=退出，宿主同步清 URL 参数） */
   onSpecViewChange?: (v: { project: string; spec: string } | null) => void;
 }) {
-  const { data, error, loading, retry } = useScreenResource<CommandCenterOrg>(
+  const { data, error, retry } = useScreenResource<CommandCenterOrg>(
     () => commandCenterOrg(project || undefined, win),
     active,
     // 筛选变化即时重拉（同 PipelineBoard refreshKey 口径）
