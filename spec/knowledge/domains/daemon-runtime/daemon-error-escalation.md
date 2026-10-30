@@ -1,4 +1,4 @@
-<!-- knowledge: capability=daemon-error-escalation rev=3 sources=spec/archive/2026-09-11-improve-hot-reload-robustness,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization -->
+<!-- knowledge: capability=daemon-error-escalation rev=4 sources=spec/archive/2026-09-11-improve-hot-reload-robustness,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization,spec/archive/2026-10-30-evo-add-daemon-signal-spec-attribution-dedup -->
 
 # daemon 错误升级上报
 
@@ -14,6 +14,7 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 - 指纹级重启冷却：daemon 启动后冷却窗（30 分钟，模块常量）内的「已知指纹」不计满升级阈值、不产信号、不召唤 Administrator，冷却决策记 INFO 留痕；窗后同指纹复现或全新指纹照常升级——冷却仅约束重启后首扫回放窗口（重启不清日志，首扫即命中与停机前相同指纹；重启前已召唤过一次，同批指纹短期重复召唤收益趋零）。
 - 「已知指纹」= 本生命周期内已产生过升级信号（内存时间戳在案），或告警库存有携带该指纹的 daemon_errors 记录（跨重启对账：store 无结构化指纹字段，以信号 description 的「指纹 <前 8 位>」稳定文案对账，同轮合并信号对每个指纹保留该文案）。store 读取失败按未知指纹处理（fail-open：冷却缺失的最坏后果是重启后多召唤一次，不掩盖真实新故障）。已知指纹对账仅服务冷却窗分支，冷却窗关闭后不为每个达阈指纹做全库扫描。
 - 同轮孪生指纹合并：同一轮扫描中多个指纹同时达升级阈值时按指纹聚合为一条召唤信号、一次 Administrator run，而非每指纹各产一条召唤；合并信号的沉淀状态哈希取全部指纹排序后的稳定拼接（与日志首现顺序无关）。指纹级冷却是既有 (spec, signal_type) 信号级节流的补口而非替代——孪生指纹各算各的时会绕开单条信号记录的锚定，两道判定并存、信号级节流语义不变。
+- 升级信号 evidence 携带最近一次同指纹 ERROR 原文摘录（含组件名、截断限长），单指纹与同轮合并两形态皆然；description 仍以「指纹 <fp[:8]>」开头（跨重启已知指纹对账依赖），该摘录同时是派发侧 spec 归属提取的基底，归属与在飞互查跳过语义见 [admin-dispatch-dedup](../admin-ops/admin-dispatch-dedup.md)。
 - 窗口（10 分钟）、间隔上限（5 分钟）、复现次数（2 次）、重启冷却窗（30 分钟）保持模块常量，不新增配置键（规避「新增配置项须带 Dashboard 界面」约束）；调整灵敏度通过修改模块常量实现。
 
 ## 溯源
@@ -21,3 +22,4 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 - 2026-09-11 improve-hot-reload-robustness（spec/archive/2026-09-11-improve-hot-reload-robustness） — 错误升级改为指纹复现口径，固化指纹归一化、防抖边界、缺 timestamp fail-closed 与阈值不配置化
 - 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 新增指纹级重启冷却（重启后首扫回放的已知指纹 30 分钟窗内不升级不召唤，窗后/全新指纹照常）与同轮孪生指纹合并召唤（多指纹一轮只产一条信号一次 run）
 - 2026-10-11 evo-fix-crossday-recurrence-fingerprint-normalization（spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization） — 归一化保守集补「数字.数字+单位字母」形态，仅延迟数值不同的同形错误行归并为同指纹（计数分组输入变化方向保守：同形聚合计数只增不减）；跨日复发维度另立 [crossday-recurrence-detection](crossday-recurrence-detection.md)
+- 2026-10-30 evo-add-daemon-signal-spec-attribution-dedup（spec/archive/2026-10-30-evo-add-daemon-signal-spec-attribution-dedup） — 升级信号 evidence 基底补齐（单指纹与合并形态附最近一次同指纹 ERROR 原文摘录）；派发侧归属提取与在飞互查跳过语义另立 [admin-dispatch-dedup](../admin-ops/admin-dispatch-dedup.md)
