@@ -545,7 +545,7 @@
 
 ### 浪费
 - **fenix-prototype已交付仍被闸门冻结悬置15小时**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：fenix-prototype 的 15 个任务全部完成、实现分支已合回 main、验证报告已入库，仅因唯一 1 个产品 Bug 触发升级闸门（验证连续失败即冻结等人工的闸门）「连续失败第 3 轮」计数，spec 自 10-29 16:55 冻结为 blocked 至窗末仍悬置约 15 小时，期间派出的 2 个修复载具 run 一个零修复收尾、一个被冻结打断，spec 级累计约 109 万输入 token 后处置完全停摆。
   - 证据：日志 08:55:49Z ERROR「升级闸门：'fenix-prototype' 升级闸门连续失败第 3 轮，冻结为 blocked，等待人工裁决」；升级告警（verify_fail_escalation，major）的 evidence 字段自证「repeat_rounds=[2]（与上一轮失败场景集完全相同——可能属『根因已修复但闸门仍冻结』的误置情形，建议人工核对）」；验证报告（spec/changes/fenix-prototype/verification-report.md）：17/18 场景通过，唯一失败场景 proto-server-lifecycle-reuse-stale-recycle 为 product-bug（major）且根因行级定位——serve_prototype.py L125 身份核实条件 script_path in cmdline 与 L276 的 Path(__file__).resolve() 不对称，存活实例被误判残留另起新端口；快速修复 run code-fix-fastlane-fenix-prototype-5f2586-1793264083-a1 尾部「0 items handled (fixed 0 / skipped 0)」且其引用的清单文件 fix-out-fenix-prototype.jsonl 在盘上不存在；STATE.md 记 impl run「run 因 spec 冻结被终止（进度已保全，解冻后续做）」、告警至窗末 handled=false。
   - 调查评估：问题源：fenix-prototype（UI 原型生成 skill spec）验证收尾的升级闸门处置。已核实事实：①交付实质完成——15 任务勾选、分支 fenix/fenix-prototype-1793259959 已由提交 b6e060677 合回、报告 9873c8e0d 入库；②唯一失败场景为 1 个行级定位的产品 bug，报告明示「无场景文件缺陷，无需修复场景」；③judge 两轮（451 秒+255 秒、输入合计约 25 万 token）第一轮把失败场景按场景缺陷做原地修复，第二轮确认失败集不变（产品 bug），重入仍失败；④冻结前框架派 fastlane（零修复收尾，清单文件缺失）与 impl 收尾 run（被 spec frozen 终止），修复链均未承接行级 bug；⑤升级告警至窗末未处理。根因按形态层写：升级闸门按「连续失败轮数」机械计数冻结（防无限重试烧钱，本身按设计），但对「唯一失败=少量 product-bug 且根因行级定位」的形态无自动修复分流，冻结即全停等人工；fastlane 为何 0 items（bug 未转单 vs 清单为空）证据不足、两假说并存，不出单因结论。与存量工作关系：升级闸门冻结语义无在飞 spec 覆盖自动分流面；告警悬置面由 2026-10-28#可改进#6 承载。结论：本次悬置直接损失有限（验证轮次成本低、已合回工作不丢），但「可自动修的行级 bug 也要等人工」随每个交付 spec 复现，机制清楚，值立项。
