@@ -38,6 +38,13 @@ from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_ERROR_MARKER,
 )
+# 零变更成功哨熔断阈值自包门面导入（code-review item 2e698b1a6352）：full 车道
+# 零变更哨的冻结/重派判定与 fast_track 车道同款哨共用此常量（原 full 侧以
+# 字面量 3 硬编码、与 fast_track.ZERO_CHANGE_BREAKER_ATTEMPTS 手工双维护）；
+# __init__ 内常量定义先于子模块接入行，导入无环（backoff.py 先例）。
+from core.pm_engine.dispatch import (  # noqa: E402
+    ZERO_CHANGE_BREAKER_ATTEMPTS,
+)
 from core.pm_engine.dispatch.repair_lane import _max_retries, _merge_breaker_threshold
 
 # ── WIP 延迟合回预算（evo-add-wip-defer-merge-retry-consumer 2.1/2.3）────────
@@ -100,10 +107,22 @@ def _prewrite_verifier_dispatch_stamp(pm, spec_name: str) -> None:
         tmp = target.with_name(
             f".{target.name}.dispatch-stamp-{os.getpid()}-{threading.get_ident()}.tmp"
         )
-        tmp.write_text(
-            json.dumps(stamp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        os.replace(tmp, target)
+        try:
+            tmp.write_text(
+                json.dumps(stamp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            os.replace(tmp, target)
+        finally:
+            # 失败路径清理残留 tmp（code-review item 920be9bcc760，对齐
+            # _write_ocr_findings_directive 的清理范式）：replace 成功后 tmp
+            # 已不存在（exists 判空跳过，成功路径零开销）；写/replace 抛
+            # OSError 时 unlink 残留，二次 OSError 忽略不放大——预写失败
+            # 仍只 WARNING 留痕、不阻断派发。
+            if tmp.exists():
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     except OSError as e:
         # 预写失败不阻断派发（spec 需求「预写失败不阻断」）：WARNING 留痕，
         # 派发流程照常继续。
@@ -2043,12 +2062,13 @@ class QQQueueMixin:
                         return
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                     # _zero_change_attempts 锁内原子递增（code-review item
-                    # 8eb2f7b9e6ad）：取写后值参与 attempts >= 3 判定与 error 文案，
+                    # 8eb2f7b9e6ad）：取写后值参与零变更哨阈值
+                    # （ZERO_CHANGE_BREAKER_ATTEMPTS）判定与 error 文案，
                     # 下方 update_spec / freeze_for_human 不再并写该字段（对齐
                     # _retry_count 同型站点收口形态，防并发写回互相覆盖丢增量）
                     # ——原两段式「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁
                     # 临界区，与 merge-only 重试定时器/WIP 周期消费者并发进入同一
-                    # spec 时可丢一次递增，「连续 3 次零变更」冻结转人工晚一轮触发。
+                    # spec 时可丢一次递增，零变更哨冻结转人工晚一轮触发。
                     # 记账失败不阻塞失败分类（code-review item d708ce0288a8，
                     # 对齐 _handle_merge_back_real_failure 对 _merge_streak 的
                     # 941b22736836 同款守卫）：bump_counters 是真实文件 IO，
@@ -2095,7 +2115,7 @@ class QQQueueMixin:
                         # _zero_change_attempts 已由上方 bump_counters 原子递增落盘，
                         # 不再并写（防并发写回互相覆盖丢增量）
                     }
-                    if attempts >= 3:
+                    if attempts >= ZERO_CHANGE_BREAKER_ATTEMPTS:
                         # fix-blocked-freeze-classification 3.1 同型收敛（code-review
                         # item 912ea4592630）：连续失败交人工收敛到 freeze_for_human
                         # 单一入口（frozen + 人工升级告警成对写入），与本文件同因
@@ -2157,7 +2177,7 @@ class QQQueueMixin:
                         f"零变更成功哨触发 '{spec_name}'（第 {attempts} 次）— "
                         f"run={result.run_id}",
                     )
-                    if attempts < 3:
+                    if attempts < ZERO_CHANGE_BREAKER_ATTEMPTS:
                         self._enqueue_front(spec_name, "implementer")
                     return
 

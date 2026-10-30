@@ -112,7 +112,11 @@ class VAdjudicationMixin:
         任何无法分类/读取失败时字段落最小可用值，不抛异常（诊断是附加物）。
         """
         terminal = "error"
-        if getattr(result, "cancelled", False):
+        # 判定用 `is True`（code-review item 68fc0ae30fca，对齐 fast_track.py
+        # frozen_terminated/cancelled 同款口径）：MagicMock 替身自动生成 truthy
+        # 属性，裸真值会把正常 run 误判为取消终态；生产 result.cancelled 为
+        # 显式 bool。
+        if getattr(result, "cancelled", False) is True:
             terminal = "cancelled"
         elif final_error:
             low = str(final_error).lower()

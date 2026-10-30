@@ -4,7 +4,7 @@
 本 `__init__.py` 同时承担**宿主**与**门面**两职：
 - 宿主：`Dispatcher` 类定义于此（组合 B/R/V/F/P/Q 六组 mixin，design D5 约定），
   六组方法原样搬移自各子模块（design D1 表 B）；
-- 门面：re-export 全部公开名（类、2 常量），既有 import 路径不变。
+- 门面：re-export 全部公开名（类、3 常量），既有 import 路径不变。
 
 同时暴露 `time` 到包命名空间（design D3 time 重绑缝隙）：测试
 `patch.object(_dispatch_mod.time, "time", _tick)` 修改的是 time 模块对象
@@ -16,7 +16,7 @@
 
 import time  # noqa: F401
 
-# ── 常量定义（design D1：2 常量，门面 re-export） ─────────────────────────────
+# ── 常量定义（design D1：2 常量 + 零变更哨阈值，门面 re-export） ─────────────
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
 # 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
@@ -28,6 +28,16 @@ DEFAULT_DISPATCH_BACKOFF_SCHEDULE = (30, 120, 600)
 # 同一 merge 失败事件链内 repair 最多 2 轮，超限回退 fallback 全新重派。
 # 模块常量、**不新增配置键**（规避 dashboard UI 联动义务，design D5）。
 MAX_REPAIR_ROUNDS_PER_FAILURE = 2
+
+# ── 零变更成功哨熔断阈值（code-review item 236ad1c6122d / 2e698b1a6352）─────
+# fast-track 车道 _handle_fast_track_zero_change 与 full 车道（queue.py 零变更
+# 哨 twin 分支）共用的「连续 N 次零变更报成功 → 冻结转人工」阈值：两侧的冻结
+# 判定（attempts >= N）与重派判定（attempts < N）统一从本门面导入同一常量。
+# 原常量定义于 fast_track.py、full 车道以字面量 3 并列，构成四处手工同步的
+# 双维护（漏改任一处即两车道哨位行为分裂），上移至此单点化。模块常量、
+# **不新增配置键**（规避 dashboard UI 联动义务，MAX_REPAIR_ROUNDS_PER_FAILURE
+# 先例）。
+ZERO_CHANGE_BREAKER_ATTEMPTS = 3
 
 # ── 子模块（refactor-giant-classes 逐组摘出后在此接入） ──
 

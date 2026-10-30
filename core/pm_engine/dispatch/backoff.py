@@ -185,6 +185,14 @@ class BBackoffMixin:
         提前耗尽序列触发 dispatch_stalled。cancel 对已到期/在途回调是 no-op，
         不回退已发生的恢复（对齐同文件三条冷却通道 _schedule_recovery_timer
         的幂等判重形态）。
+
+        在飞登记表 ``_backoff_timers`` 的登记移至 start 成功之后（code-review
+        item 63b3527d20ca）：锁内惰性清理按 is_alive 只摘「已跑完」的死定时器，
+        若「锁内先登记、锁外再 start」，并发线程的惰性清理会把本线程尚未 start
+        的定时器（is_alive 为 False）误摘出登记表——在飞定时器脱离对账（engine
+        属性与实际在飞定时器不一致）。改为 start 成功后入表，表内只含已 start
+        的定时器，与清理谓词口径一致；spec 判重（``_backoff_timer_specs``）仍
+        在第一锁段完成，判重不变式不变。
         """
         timer = threading.Timer(
             max(0.5, float(delay)),
@@ -209,23 +217,23 @@ class BBackoffMixin:
             # 判重不变式（_on_spec_ready 重复触发、_lock_conflict_count 虚快推进）。
             if stale is not None:
                 stale.cancel()
-            self._backoff_timers.append(timer)
+            # 登记移至 start 成功之后（code-review item 63b3527d20ca）：本表
+            # 只经下方 else 臂 append，锁内不存在「已登记尚未 start」条目，
+            # is_alive 清理谓词不会误摘其他线程在飞但尚未启动的定时器。
             pending[spec_name] = timer
         # code-review item 488e916852e4：对齐 queue.py:989 / repair_lane.py:305
         # 的线程启动守卫——start 失败（解释器关闭期 RuntimeError、线程资源
-        # 耗尽等）时摘除本 timer 登记并记 WARNING，异常不再沿
+        # 耗尽等）时回滚本 timer 的判重登记并记 WARNING，异常不再沿
         # _handle_dispatch_lock_conflict → _process_queue 外泄；本轮退避重试
         # 缺失，恢复依赖 daemon 重启后周期扫描兜底。
         try:
             timer.start()
         except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未排程」处置
             with self._queue_lock:
-                self._backoff_timers = [
-                    t for t in getattr(self, "_backoff_timers", []) if t is not timer
-                ]
                 # 判重标记同步回滚（对齐 _schedule_recovery_timer_locked）：失败
-                # 的 Timer 未运行，残留登记只占位（下轮排程会替换），摘除保持
-                # 登记表与在飞定时器一致。
+                # 的 Timer 未运行，残留登记只占位（下轮排程会替换）。timer 尚未
+                # 入 ``_backoff_timers``（start 成功后才登记，code-review item
+                # 63b3527d20ca），无需摘除。
                 if getattr(self, "_backoff_timer_specs", {}).get(spec_name) is timer:
                     self._backoff_timer_specs.pop(spec_name, None)
             self._pm.logger.warning(
@@ -233,6 +241,12 @@ class BBackoffMixin:
                 f"backoff retry timer start failed for '{spec_name}' — 已摘除"
                 f"登记（恢复依赖下轮周期扫描兜底）: {type(e).__name__}: {e}",
             )
+        else:
+            # start 成功后再入在飞登记表：与锁内惰性清理谓词（is_alive）口径
+            # 一致——表内只含已 start 的定时器，清理不会误摘在飞未启动条目，
+            # 关闭期/测试对账不再漏算（code-review item 63b3527d20ca）。
+            with self._queue_lock:
+                self._backoff_timers.append(timer)
 
     # ── 冷却恢复排程参数化共用实现（code-review item 71e4594e6d49）─────────
     # 三条冷却恢复通道（秒挂 / 信号死法 / 瞬断）的排程与到期回调收敛为以下
