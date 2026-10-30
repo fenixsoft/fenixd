@@ -316,5 +316,81 @@ class TestArchiveReadDegradation(unittest.TestCase):
             h.dispose()
 
 
+class TestBoolWindowAdminParity(unittest.TestCase):
+    """布尔入参下审查顺延守卫路径与告警对等（evo-add-night-window-bool-
+    normalization 1.3/3.2）：false 停用零告警（停用态排除）、true fail-open
+    + 与 code-fix 车道同款 WARNING（进程级去重，两消费点共享去重集）。"""
+
+    def _harness(self, window):
+        """带进程级去重集隔离的 harness（本类用例各自从空集起算）。"""
+        import core.admin_monitor as am
+
+        h = _MonitorHarness(window=window)
+        patcher = mock.patch.object(
+            am, "_NIGHT_QUIET_INVALID_WARNED", set())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(h.dispose)
+        return h
+
+    def _illegal_warnings(self, h):
+        return [r for r in h.logger.records
+                if "WARNING" in r and "夜间静默窗配置非法" in r]
+
+    def test_bool_false_window_dispatches_without_illegal_warning(self):
+        """false（YAML 裸 off 的 safe_load 形态）＝显式停用：窗内时刻审查
+        照常派发，零非法告警（停用态排除，防与「false＝显式停用」语义冲突
+        制造假告警）。"""
+        h = self._harness(False)
+        result = h.checkpoint_at(4, 30)
+        self.assertEqual(
+            result, {"triggered": True, "ok": True, "reason": "scheduled",
+                     "date": result["date"]},
+            "守卫显式停用：窗内派发时刻不顺延")
+        self.assertEqual(self._illegal_warnings(h), [])
+
+    def test_bool_true_window_fails_open_with_same_wording_warning(self):
+        """true 显式拒判为非法：审查顺延判定 fail-open（不阻断派发）+
+        与 code-fix 车道同文案 WARNING（进程级去重，二次 checkpoint 不重发）。"""
+        h = self._harness(True)
+        result = h.checkpoint_at(4, 30)
+        self.assertEqual(
+            result, {"triggered": True, "ok": True, "reason": "scheduled",
+                     "date": result["date"]},
+            "窗值非法按无窗处理，MUST NOT 阻断派发主路径")
+        warns = self._illegal_warnings(h)
+        self.assertEqual(len(warns), 1)
+        self.assertIn("'True'", warns[0])
+        self.assertIn("admin 夜间静默窗配置非法", warns[0])
+        self.assertIn("off/空串关闭", warns[0], "与 code-fix 车道同文案")
+        # 二次 checkpoint：同值进程级去重，不重复告警
+        h.checkpoint_at(4, 30)
+        self.assertEqual(len(self._illegal_warnings(h)), 1,
+                         "进程级去重：同值不重复刷屏")
+
+    def test_two_consumption_points_share_process_dedup(self):
+        """审查跨窗顺延与 admin 唤起避让两消费点共享同一去重集：同值合计
+        至多一条告警（对等口径：与 code-fix 车道单实例去重形态对齐）。"""
+        h = self._harness(True)
+        reasons = h.mon._night_dispatch_block_reasons()
+        self.assertEqual(
+            [r for r in reasons if "夜间静默窗内" in r], [],
+            "窗值非法按无窗处理，唤起不避让")
+        h.mon._code_review_night_window_defer()
+        h.mon._night_dispatch_block_reasons()
+        self.assertEqual(
+            len(self._illegal_warnings(h)), 1,
+            "两消费点共享进程级去重：同值合计至多一条")
+
+    def test_bool_false_no_warning_at_block_reasons_point(self):
+        """唤起避让消费点同款停用态排除：false 不避让、零非法告警。"""
+        h = self._harness(False)
+        with mock.patch("core.admin_monitor.time.localtime",
+                        return_value=_local(4, 30)):
+            reasons = h.mon._night_dispatch_block_reasons()
+        self.assertEqual(reasons, [], "停用态不避让")
+        self.assertEqual(self._illegal_warnings(h), [])
+
+
 if __name__ == "__main__":
     unittest.main()

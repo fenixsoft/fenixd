@@ -1409,6 +1409,44 @@ def _is_intentionally_paused(entry: dict) -> bool:
 
 
 # [fenix-ignore:a132ca295b06] 多域拆分属架构级重构（需独立设计评审与分域迁移），超出 code-fix 单条最小修复边界，擅自拆分风险大于收益
+# ── 夜间静默窗配置非法告警（evo-add-night-window-bool-normalization 1.3）──
+# 审查跨窗顺延与 admin 唤起避让两消费点此前对解析失败静默 fail-open，非法
+# 窗值零留痕（消费期 WARNING 只挂在 code-fix 车道）。进程级去重集：两消费
+# 点共享（任一点告警后另一点同值不重复刷屏），按 str(窗值) 记忆，值变更后
+# 重新告警（对齐 code-fix 车道 ``_night_quiet_warned_raw`` 口径）。
+_NIGHT_QUIET_INVALID_WARNED: set = set()
+
+
+def _warn_night_quiet_window_invalid(raw, logger) -> None:
+    """夜间静默窗配置非法的 admin 车道消费点告警（与 code-fix 车道同款对等）。
+
+    文案对齐 code-fix 车道消费期 WARNING（code_fix._night_quiet_window），车
+    道标识换 admin。停用态排除（对等口径）：显式停用（字符串 off/空串/布尔
+    false——布尔同义化后 ``_night_quiet_window_disabled`` 认原始 bool）MUST
+    NOT 出非法告警，防与「false＝显式停用」语义冲突制造假告警；缺省键走
+    合法缺省窗亦不进本函数。logger 不可用时静默返回（不入去重集，不吞后续
+    落痕机会）。复核失败（导入异常）按可能非法放行告警（保守留痕）。
+    """
+    try:
+        from .code_fix import _night_quiet_window_disabled
+
+        if _night_quiet_window_disabled(raw):
+            return
+    except Exception:  # noqa: BLE001 — 停用态复核失败按可能非法处理
+        pass
+    if logger is None:
+        return
+    key = str(raw)
+    if key in _NIGHT_QUIET_INVALID_WARNED:
+        return
+    _NIGHT_QUIET_INVALID_WARNED.add(key)
+    logger.warning(
+        "admin_monitor",
+        f"admin 夜间静默窗配置非法（{key!r}，须形如 HH:MM-HH:MM"
+        "（多窗以逗号分隔）且各段 end>start，off/空串关闭），按无窗处理",
+    )
+
+
 class AdminMonitor:
     """困境信号检测 + 节流 + 唤起调度。run_once() 为单次检测入口。"""
 
@@ -2057,6 +2095,12 @@ class AdminMonitor:
                 NIGHT_QUIET_WINDOW_DEFAULT,
             )
             windows = _parse_night_quiet_windows(raw)
+            if windows is None:
+                # 解析失败静默 fail-open 处补与 code-fix 车道同款消费期
+                # WARNING（evo-add-night-window-bool-normalization 1.3，进程
+                # 级去重）；停用态（off/空串/布尔 false）在 helper 内排除，
+                # 缺省合法窗（键缺失走缺省值）不进此分支。
+                _warn_night_quiet_window_invalid(raw, self.logger)
             if not windows:
                 return None
             lt = time.localtime()
@@ -6312,6 +6356,11 @@ class AdminMonitor:
                 NIGHT_QUIET_WINDOW_DEFAULT,
             )
             windows = _parse_night_quiet_windows(raw)
+            if windows is None:
+                # 同 _code_review_night_window_defer（1.3）：无窗静默不避让的
+                # fail-open 形态（`if windows:` 反分支）前补同款告警，进程级
+                # 去重与审查顺延消费点共享同一集合。
+                _warn_night_quiet_window_invalid(raw, self.logger)
             if windows:
                 lt = time.localtime()
                 cur = lt.tm_hour * 60 + lt.tm_min

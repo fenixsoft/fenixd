@@ -135,6 +135,26 @@ def _window_alerts(proot):
             if r.get("signal_type") == "code_fix_night_quiet_window"]
 
 
+def _mk_orch(proot, config, logger=None):
+    """编排器最小装配（沿 TestDisabledAndDegradedConfig._orch 同款）。"""
+    from core.code_fix import CodeFixOrchestrator
+
+    return CodeFixOrchestrator(
+        _GateRunner(proot, config), proot, config=config, logger=logger)
+
+
+def _reminders(proot):
+    """停用态聚合提醒记录（evo-add-night-window-bool-normalization 2.1）。"""
+    return [a for a in _window_alerts(proot)
+            if "守卫停用中" in str(a.get("description"))]
+
+
+def _armed_alerts(proot):
+    """武装窗次告警记录（「窗内暂停启动新批」语义，既有武装面）。"""
+    return [a for a in _window_alerts(proot)
+            if "窗内暂停启动新批" in str(a.get("description"))]
+
+
 class TestWindowParse(unittest.TestCase):
     """配置解析（task 1.1）：缺省值 / 禁用 / 非法降级与 WARNING 一次。"""
 
@@ -451,7 +471,10 @@ class TestDisabledAndDegradedConfig(unittest.TestCase):
             _GateRunner(proot, config), proot, config=config, logger=logger)
 
     def test_disabled_config_matches_status_quo(self):
-        """off / 空串：窗内时刻照样放行 dispatched，零告警、零窗次标识。"""
+        """off / 空串：窗内时刻照样放行 dispatched；武装窗次告警零写入
+        （既有武装语义零改动），停用态每日聚合提醒恰一条（2.1——既有
+        「零告警」断言随停用态可感知语义更新：窗值停用期间每日至多一条
+        聚合提醒，防长期悬置无人察觉）。"""
         for raw in ("off", ""):
             with self.subTest(window=raw or "empty"):
                 proot = _make_project_root()
@@ -464,7 +487,10 @@ class TestDisabledAndDegradedConfig(unittest.TestCase):
                     res = orch.checkpoint()
                 self.assertEqual(
                     res, {"triggered": True, "reason": "dispatched"})
-                self.assertEqual(_window_alerts(proot), [])
+                self.assertEqual(_armed_alerts(proot), [],
+                                 "停用态不产生武装窗次告警")
+                self.assertEqual(len(_reminders(proot)), 1,
+                                 "停用态聚合提醒恰一条")
 
     def test_invalid_config_degrades_to_no_window_and_warns(self):
         """非法配置（含 end<=start 逆序）：窗内时刻降级为无窗照常放行，且
@@ -929,6 +955,207 @@ class TestMultiWindowGate(unittest.TestCase):
                  if r[0] == "warning" and "静默窗" in r[2]]
         self.assertEqual(
             len(warns), 1, "混合非法片段整体无窗并 WARNING 一次")
+
+class TestBoolWindowNormalization(unittest.TestCase):
+    """布尔同义化（evo-add-night-window-bool-normalization 1.1/3.1）：
+    false≡off（合法显式停用）、true 显式拒判走非法告警路径，三消费点共享
+    解析单源语义。"""
+
+    def test_parse_single_source_bool_semantics(self):
+        """解析单源：bool 判定作用于原始值（str 化之前）。"""
+        from core.code_fix import (
+            _night_quiet_window_disabled,
+            _parse_night_quiet_windows,
+        )
+
+        # false 与 off 同义（合法停用）；true 不停用（调用方走非法告警路径）
+        self.assertTrue(_night_quiet_window_disabled(False))
+        self.assertFalse(_night_quiet_window_disabled(True))
+        # 字符串语义回归不变
+        self.assertTrue(_night_quiet_window_disabled("off"))
+        self.assertTrue(_night_quiet_window_disabled(" OFF "))
+        self.assertTrue(_night_quiet_window_disabled(""))
+        self.assertTrue(_night_quiet_window_disabled(None))
+        self.assertFalse(_night_quiet_window_disabled("04:15-04:45"))
+        # 解析单源：bool 两形态均无窗（禁用/非法区分由调用方完成）
+        self.assertIsNone(_parse_night_quiet_windows(False))
+        self.assertIsNone(_parse_night_quiet_windows(True))
+        # str 化陷阱回归：合法窗字符串解析不受影响
+        self.assertEqual(
+            _parse_night_quiet_windows("04:15-04:45"),
+            [(255, 285, "04:15-04:45")])
+
+    def test_bool_false_disables_without_illegal_warning(self):
+        """消费点共享：false（YAML 裸 off 的 safe_load 形态）窗内时刻放行、
+        零非法告警（不再走 split 解析出 None 的静默哑化路径的告警分支）。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        cap = _CapturingLogger()
+        orch = _mk_orch(proot, _cfg(night_quiet_window=False), logger=cap)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            self.assertEqual(
+                orch.checkpoint(), {"triggered": True, "reason": "dispatched"})
+        warns = [r for r in cap.records
+                 if r[0] == "warning" and "配置非法" in r[2]]
+        self.assertEqual(warns, [], "布尔 false＝合法停用，MUST NOT 出非法告警")
+
+    def test_bool_true_rejected_warns_once_no_reminder(self):
+        """true 显式拒判：无窗放行（不按「全天停派」语义处理）+ WARNING
+        一次（同值去重）；true 非停用态，停用态提醒 MUST NOT 触发。"""
+        from core.code_fix import read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        cap = _CapturingLogger()
+        orch = _mk_orch(proot, _cfg(night_quiet_window=True), logger=cap)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            self.assertEqual(
+                orch.checkpoint(), {"triggered": True, "reason": "dispatched"})
+            orch.checkpoint()
+        warns = [r for r in cap.records
+                 if r[0] == "warning" and "配置非法" in r[2]]
+        self.assertEqual(len(warns), 1, "同值只 WARNING 一次")
+        self.assertIn("True", warns[0][2])
+        prog = read_progress(proot)
+        self.assertIsNone(
+            prog.get("night_quiet_off_remind_date"),
+            "true 是非法形态非停用态，停用态提醒不触发")
+        self.assertEqual(_reminders(proot), [])
+
+
+class TestDisabledDailyReminder(unittest.TestCase):
+    """停用态每日聚合提醒（evo-add-night-window-bool-normalization 2.1/3.1）：
+    （窗值, 自然日）节流、值变更/跨自然日重提醒、非停用态零提醒。"""
+
+    def _checkpoint_once(self, proot, config):
+        orch = _mk_orch(proot, config)
+        with mock.patch("core.code_fix.time.localtime",
+                        return_value=_local(4, 30)):
+            return orch.checkpoint()
+
+    def test_throttle_per_day_and_value(self):
+        """同（窗值, 自然日）至多一条；节流键持久化于 fix-progress。"""
+        from core.code_fix import read_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        cfg = _cfg(night_quiet_window="off")
+        self._checkpoint_once(proot, cfg)
+        self.assertEqual(len(_reminders(proot)), 1)
+        self._checkpoint_once(proot, cfg)
+        self._checkpoint_once(proot, cfg)
+        self.assertEqual(
+            len(_reminders(proot)), 1, "同（窗值,自然日）节流不刷屏")
+        prog = read_progress(proot)
+        self.assertEqual(prog["night_quiet_off_remind_date"], "2026-10-06")
+        self.assertEqual(prog["night_quiet_off_remind_raw"], "off")
+
+    def test_value_change_re_reminds(self):
+        """窗值变更（off → 布尔 false）视为新节流键，重新提醒。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        self._checkpoint_once(proot, _cfg(night_quiet_window="off"))
+        self._checkpoint_once(proot, _cfg(night_quiet_window=False))
+        self.assertEqual(
+            len(_reminders(proot)), 2, "值变更后重新提醒（布尔 false 同为"
+            "停用态但窗值原文不同）")
+
+    def test_cross_day_re_reminds(self):
+        """跨自然日：节流键含日期，次日首 checkpoint 重新提醒。"""
+        from core.code_fix import read_progress, write_progress
+
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        cfg = _cfg(night_quiet_window="off")
+        self._checkpoint_once(proot, cfg)
+        self.assertEqual(len(_reminders(proot)), 1)
+        # 模拟日期推进：把节流日期拨回昨日
+        write_progress(proot, night_quiet_off_remind_date="2026-10-05")
+        self._checkpoint_once(proot, cfg)
+        self.assertEqual(
+            len(_reminders(proot)), 2, "跨自然日重新提醒，每日至多一条")
+        self.assertEqual(
+            read_progress(proot)["night_quiet_off_remind_date"],
+            "2026-10-06")
+
+    def test_active_or_illegal_window_no_reminder(self):
+        """有窗未命中 / 非法值：停用态提醒零触发（非法值走消费期 WARNING，
+        防双重告警源）。"""
+        proot = _make_project_root()
+        _write_items(proot, {"a": _item("a")})
+        _write_verify_yaml(proot)
+        # 合法窗、窗外时刻（10:00 不落 04:15-04:45）
+        self._checkpoint_once(proot, _cfg(night_quiet_window="04:15-04:45"))
+        # 非法值（fail-open 无窗）
+        self._checkpoint_once(proot, _cfg(night_quiet_window=True))
+        self.assertEqual(_reminders(proot), [], "非停用态零提醒")
+
+
+class TestLoadTimeLint(unittest.TestCase):
+    """配置载入期非法窗值一次性 lint（evo-add-night-window-bool-
+    normalization 1.2/3.1）：启动早期 WARNING、进程级去重、合法形态
+    （含布尔 false）静默、缺段不告警。"""
+
+    def _load(self, tmp, window_value=..., omit_key=False):
+        import yaml
+        from core.config import ConfigLoader
+
+        crf = {} if omit_key else {"night_quiet_window": window_value}
+        body = {
+            "project": {"name": "t", "type": "cli"},
+            "schedule": {}, "agents": {}, "worktree": {},
+            "gates": {}, "commands": {}, "logging": {},
+            "admin": {"code_review_fix": crf},
+        }
+        path = tmp / "config.yaml"
+        path.write_text(
+            yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+        return ConfigLoader.load(path)
+
+    def test_illegal_bool_true_warns_once_per_process(self):
+        import core.config as cfg_mod
+
+        tmp = Path(_mkdtemp("lint-"))
+        with mock.patch.object(
+                cfg_mod, "_NIGHT_QUIET_WINDOW_LINT_WARNED", False):
+            with self.assertLogs("fenixd.config", level="WARNING") as ctx:
+                self._load(tmp, True)
+                self._load(tmp, True)  # 二次载入：进程级去重
+        warns = [o for o in ctx.output if "night_quiet_window" in o]
+        self.assertEqual(len(warns), 1, "载入期一次性 WARNING（进程级去重）")
+        self.assertIn("True", warns[0])
+        self.assertIn("HH:MM-HH:MM", warns[0], "指明合法形态")
+
+    def test_illegal_string_warns(self):
+        import core.config as cfg_mod
+
+        tmp = Path(_mkdtemp("lint-"))
+        with mock.patch.object(
+                cfg_mod, "_NIGHT_QUIET_WINDOW_LINT_WARNED", False):
+            with self.assertLogs("fenixd.config", level="WARNING") as ctx:
+                self._load(tmp, "04:45-04:15")
+        warns = [o for o in ctx.output if "night_quiet_window" in o]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("'04:45-04:15'", warns[0])
+
+    def test_legal_and_missing_forms_silent(self):
+        import core.config as cfg_mod
+
+        tmp = Path(_mkdtemp("lint-"))
+        with mock.patch.object(
+                cfg_mod, "_NIGHT_QUIET_WINDOW_LINT_WARNED", False):
+            with self.assertNoLogs("fenixd.config", level="WARNING"):
+                for v in ("off", "", False, "04:15-04:45",
+                          "03:00-03:15,04:15-04:45", None):
+                    self._load(tmp, v)
+                self._load(tmp, omit_key=True)  # 缺段：守卫缺省窗合法
 
 
 if __name__ == "__main__":
