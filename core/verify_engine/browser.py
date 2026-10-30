@@ -1842,9 +1842,20 @@ class BrowserManager:
         self._screenshot_seq += 1
         path = output_dir / f"{safe_name}_{seq}.png"
         await page.screenshot(path=str(path), full_page=False)
-        from .screenshot_lab import classify_screenshot
+        # low_contrast 上限按场景感知取值（evo-visual-low-contrast-gate R1）：
+        # name 即场景 id，命中声明性子串时用放宽上限，与 visual_diff 污染门
+        # 同源判定——只放宽污染门一侧则 low_contrast 标签继续以缺省 0.08
+        # 产出，经 verdict_check 归因链维持「判 env」误判（R1 的另一半）。
+        # 普通场景缺省 0.08 行为不变，「缺标签=正常态」契约不变。
+        from .screenshot_lab import (
+            classify_screenshot,
+            low_contrast_upper_for_scenario,
+        )
 
-        labels = classify_screenshot(str(path))
+        labels = classify_screenshot(
+            str(path),
+            low_contrast_upper=low_contrast_upper_for_scenario(str(name)),
+        )
         return {"path": str(path), "labels": labels}
 
     def get_console_errors(self, context) -> list[str]:
