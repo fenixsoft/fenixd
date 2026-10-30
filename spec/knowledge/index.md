@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-30 21:26 UTC+8
+> 最后更新：2026-10-30 21:41 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -29,12 +29,12 @@
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 22 | 2026-10-07 02:45 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
 | [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 30 | 2026-10-30 19:10 |
-| [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 13 | 2026-10-30 20:51 |
+| [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 13 | 2026-10-30 21:41 |
 | [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 13 | 2026-10-27 16:48 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义 | 2 | 2026-10-07 02:58 |
 | [docs-help](domains/docs-help/_domain.md) | 帮助与文档 | 5 | 2026-10-04 05:06 |
-| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源机制与维护车道 | 10 | 2026-10-07 03:55 |
+| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源机制与维护车道 | 10 | 2026-10-30 21:41 |
 | [build-gates](domains/build-gates/_domain.md) | 构建与交叉编译门禁 | 1 | 2026-10-12 08:31 |
 
 ## 决策记录

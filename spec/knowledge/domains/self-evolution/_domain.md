@@ -1,5 +1,5 @@
 # 自省与自进化
-> 最后更新：2026-10-30 20:51 UTC+8
+> 最后更新：2026-10-30 21:41 UTC+8
 
 自省与自进化：每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent、陈旧代码自愈及其冷却保护。本域能力页清单如下。
 
@@ -18,5 +18,5 @@
 | [self-review-window-snapshot](self-review-window-snapshot.md) | 自省聚合窗口快照 | 2026-10-03 04:59 |
 | [architect-agent](architect-agent.md) | 架构师 agent（DFX 评估与重构建议） | 2026-09-27 21:15 |
 | [suggested-improvements-ui](suggested-improvements-ui.md) | 改进建议呈现（设置页「自进化」页签） | 2026-10-03 04:59 |
-| [stale-code-selfheal](stale-code-selfheal.md) | 陈旧代码自愈 | 2026-10-05 02:42 |
+| [stale-code-selfheal](stale-code-selfheal.md) | 陈旧代码自愈 | 2026-10-30 21:41 |
 | [stale-selfheal-cooldown](stale-selfheal-cooldown.md) | 自愈重启冷却 | 2026-10-03 04:59 |
