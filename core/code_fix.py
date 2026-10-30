@@ -131,6 +131,56 @@ DEFER_RETRY_MAX = 6
 # ——缺省保守：必须显式声明「误报/不值得修」才走硬出口，防 LLM 轻率清账。
 IGNORE_ELIGIBLE_SKIP_REASONS = {"false_positive", "not_worth_fixing"}
 
+# 既有 skipped 词汇表（保持 open 的模板既有出口，agents/code-fix.md）：
+# 命中白名单判定豁免硬出口之外的 skipped 行按成员静默（脱靶 warning 只收
+# 「不识别」的值，正常出口变噪音会淹没真脱靶信号）。
+SKIPPED_KEEP_OPEN_REASONS = {"unfixable", "needs_human"}
+
+
+def skip_reason_hit_whitelist(skip_reason) -> bool:
+    """skip_reason 白名单命中判定（LLM 拒绝出口，前缀归一 2026-10-17）。
+
+    整串相等快路径（裸枚举，行为与历史完全一致）+ strip 后以
+    ``IGNORE_ELIGIBLE_SKIP_REASONS`` 任一枚举值开头的前缀归一——fixer 把
+    解释文本并进 skip_reason 的过渡形态（含模板历史 ``(no_marker)`` 尾注）
+    不再脱靶空转。``skip_reason`` 缺失或非字符串按未命中处理，MUST NOT
+    抛异常（历史集合成员判定对 None 天然安全，前缀化后保持）。
+    """
+    if not isinstance(skip_reason, str):
+        return False
+    if skip_reason in IGNORE_ELIGIBLE_SKIP_REASONS:
+        return True
+    text = skip_reason.strip()
+    return any(text.startswith(v) for v in IGNORE_ELIGIBLE_SKIP_REASONS)
+
+
+def _ignored_reason_text(row: dict) -> str:
+    """命中白名单条目的 ignored 理由组装（前缀归一 + reason 字段 2026-10-17）。
+
+    skip_reason 完整原文（含后缀解释）为主；产物行可选 ``reason`` 字段
+    （模板契约对齐后的解释文本独立落点，缺省无此键）非空时以「；reason:」
+    并入。mark_ignored 把返回值原样记入 ``ignored_reason``（自由文本无接口
+    改动）；裸枚举无 reason 时返回值与历史逐字一致（向后兼容）。
+    """
+    skip = row.get("skip_reason")
+    skip_txt = skip if isinstance(skip, str) else ""
+    reason = row.get("reason")
+    reason_txt = reason.strip() if isinstance(reason, str) else ""
+    if skip_txt and reason_txt:
+        return f"{skip_txt}；reason: {reason_txt}"
+    return skip_txt or reason_txt
+
+
+def _log_split_warning(logger, msg: str) -> None:
+    """产物解析 warning 的 lenient 留痕（对齐 _log_alert_rejected 形态）：
+    logger 为 None（纯函数调用形态）跳过，日志失败无副作用。"""
+    if logger is None:
+        return
+    try:
+        logger.warning("code-fix", msg)
+    except Exception:  # noqa: BLE001 — 留痕失败不影响分区
+        pass
+
 # 进度缺省态（读侧缺文件/损坏时返回，MUST NOT 抛异常）
 FIX_PROGRESS_DEFAULT = {
     "running": False,
@@ -183,6 +233,18 @@ FIX_PROGRESS_DEFAULT = {
     # 时写入（结构见 _emit_chain_rollup）；新链启动不清除——历史链最后的
     # rollup 保持可读，直至被新链终局写点覆盖。
     "chain_rollup": None,
+    # 链级零进度护栏（evo-align-codefix-skip-reason-enum 1.3）：连续零进度
+    # （链终局 rollup 的 resolved+ignored=0，出账后链级核销计数归零故 rollup
+    # 值即逐轮增量）轮数——随各链终局写点（_chain_terminal_fields）递增，
+    # 任一轮出现进度归零（spec R4）；跨链持久（暂停拦的是「链自动重派」
+    # 循环，计数随链更替延续）。达阈值 ZERO_PROGRESS_PAUSE_ROUNDS 熔断。
+    "zero_progress_rounds": 0,
+    # 熔断暂停标记：True=该链自动重派已暂停，checkpoint 投递闸拦截
+    # （解除复核见 checkpoint 零进度护栏段）。
+    "zero_progress_paused": False,
+    # 暂停时点的台账 open 条目 id 快照（解除复核基准，spec R4「新一轮评审
+    # 产出台账变更」）：选批扫描复核发现当前 open 集合 ≠ 快照即解除暂停。
+    "zero_progress_paused_open_ids": [],
     # 同链冷却态（evo-add-codefix-conn-error-cooldown 2.1/2.2）：批次死于上游
     # 连接类 api_error 时失败收尾写入，checkpoint 投递入口守卫「下一批派发
     # 时刻不早于该 epoch 秒」。持久化（合并写）跨重启仍生效——观测期 daemon
@@ -261,6 +323,11 @@ def read_progress(project_root, synthesize: bool = True) -> dict:
     # chain_run_ids 同为 list 缺省（evo-add-codefix-digest-cost-metrics 2.2），
     # 同一防共享纪律。
     out["chain_run_ids"] = list(FIX_PROGRESS_DEFAULT["chain_run_ids"])
+    # 零进度暂停快照同为 list 缺省（evo-align-codefix-skip-reason-enum 1.3），
+    # 同一防共享纪律。
+    out["zero_progress_paused_open_ids"] = list(
+        FIX_PROGRESS_DEFAULT["zero_progress_paused_open_ids"]
+    )
     try:
         raw = _progress_path(project_root).read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -3021,20 +3088,33 @@ def read_fix_out(worktree, run_id: str) -> list:
     return rows
 
 
-def _split_fix_rows(rows: list) -> tuple:
+def _split_fix_rows(rows: list, logger=None) -> tuple:
     """批收尾产物行分区（纯函数，LLM 拒绝出口 2026-09-23）。
 
     返回 ``(fixed_ids, skip_reasons)``：
 
     - ``fixed_ids``：``status == "fixed"`` 的条目 id（保序去重）——合回后
       经 ``mark_resolved`` 核销；
-    - ``skip_reasons``：``item_id → skip_reason``，仅收录 ``status ==
-      "skipped"`` 且 skip_reason ∈ ``IGNORE_ELIGIBLE_SKIP_REASONS``（判误报/
-      不值得修，批收尾经 ``mark_ignored`` 置终态）。同条目多行时**后行覆盖
-      前行**——先按 ``item_id`` 取末行再做白名单过滤（并集口径下重试轮的
-      判定更新生效，含以普通 skipped 撤回可忽略标注）；但最终态为 fixed
-      的条目 MUST NOT 出现在 skip_reasons——「首轮 skipped 判误报、重试
-      轮 fixed」以 fixed 为准（不降级）。
+    - ``skip_reasons``：``item_id → ignored 理由文本``，仅收录 ``status ==
+      "skipped"`` 且 skip_reason 命中 ``IGNORE_ELIGIBLE_SKIP_REASONS`` 的
+      条目（判误报/不值得修，批收尾经 ``mark_ignored`` 置终态）。命中判定
+      走 ``skip_reason_hit_whitelist``（整串相等快路径 + strip 后前缀归一，
+      evo-align-codefix-skip-reason-enum 1.1：fixer 把解释文本并进
+      skip_reason 的过渡形态不再脱靶空转）；命中条目的理由由
+      ``_ignored_reason_text`` 组装（skip_reason 完整原文 + 可选 ``reason``
+      字段）。同条目多行时**后行覆盖前行**——先按 ``item_id`` 取末行再做
+      白名单过滤（并集口径下重试轮的判定更新生效，含以普通 skipped 撤回
+      可忽略标注）；但最终态为 fixed 的条目 MUST NOT 出现在 skip_reasons
+      ——「首轮 skipped 判误报、重试轮 fixed」以 fixed 为准（不降级）。
+      裸枚举（整串相等）行为与现状完全一致，向后兼容。
+
+    脱靶可观测（evo-align-codefix-skip-reason-enum 1.2）：末行 skipped 且
+    skip_reason 为非空字符串、既不命中白名单（裸值/前缀）也不属既有
+    skipped 词汇表（``SKIPPED_KEEP_OPEN_REASONS``：unfixable/needs_human）
+    时，记一条 warning（含 item_id 与 skip_reason 原文），消除静默丢弃；
+    词汇表成员与缺省（无 skip_reason）/非字符串保持现状静默——对正常出口
+    记 warning 会淹没真脱靶信号。脱靶行语义不变：仍不进豁免硬出口，条目
+    保持 open。``logger``（可选）：lenient 留痕（None 跳过、日志失败无副作用）。
     """
     fixed_ids = [r.get("item_id") for r in rows if r.get("status") == "fixed"]
     fixed_ids = list(dict.fromkeys(fixed_ids))
@@ -3043,17 +3123,28 @@ def _split_fix_rows(rows: list) -> tuple:
     # skipped（无可忽略标注）会被白名单直接丢掉，首轮陈旧 false_positive
     # 判定残留并被 mark_ignored 洗成 ignored 终态，违背缺省保守。
     last_rows = {r.get("item_id"): r for r in rows}
-    skip_reasons = {
-        item_id: last.get("skip_reason")
-        for item_id, last in last_rows.items()
-        if last.get("status") == "skipped"
-        and last.get("skip_reason") in IGNORE_ELIGIBLE_SKIP_REASONS
-        and item_id not in fixed_set
-    }
+    skip_reasons = {}
+    for item_id, last in last_rows.items():
+        if last.get("status") != "skipped" or item_id in fixed_set:
+            continue
+        raw = last.get("skip_reason")
+        if skip_reason_hit_whitelist(raw):
+            skip_reasons[item_id] = _ignored_reason_text(last)
+        elif (
+            isinstance(raw, str)
+            and raw.strip()
+            and raw not in SKIPPED_KEEP_OPEN_REASONS
+        ):
+            _log_split_warning(
+                logger,
+                "code-fix 产物行 skip_reason 脱靶（不识别且非既有出口词汇），"
+                f"按普通 skipped 处理（不进豁免硬出口、条目保持 open）: "
+                f"item_id={item_id} skip_reason={raw!r}",
+            )
     return fixed_ids, skip_reasons
 
 
-def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids) -> tuple:
+def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids, logger=None) -> tuple:
     """LLM 拒绝出口共用分区（批收尾合回路径与定向重试耗尽收口共用）。
 
     读取首轮与各定向轮产物行**并集**（定向轮产物是独立文件
@@ -3073,7 +3164,7 @@ def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids) -> tuple:
     rows = read_fix_out(wt, run_ids[0]) if run_ids else []
     for rid in run_ids[1:]:
         rows.extend(read_fix_out(wt, rid))
-    fixed_ids, skip_reasons = _split_fix_rows(rows)
+    fixed_ids, skip_reasons = _split_fix_rows(rows, logger=logger)
     batch_set = set(batch_item_ids)
     ignore_ids = [i for i in skip_reasons if i in batch_set]
     ignored = (
@@ -3599,6 +3690,56 @@ CODE_FIX_COOLDOWN_SIGNAL_TYPE = "code_fix_switch_window_deferred"
 
 # 夜间静默窗告警 signal_type（与冷却告警同 source/kind，独立类型便于过滤）
 CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE = "code_fix_night_quiet_window"
+
+# 链级零进度护栏（evo-align-codefix-skip-reason-enum 1.3，spec R4）：连续
+# 零进度轮数阈值与 admin 信号类型。阈值取 2：与 30 分钟投递闸相乘最坏约
+# 1 小时熔断（对照 dsh-plugins 5ae61ac429c4 全链空转 13 run/约 6 小时）。
+ZERO_PROGRESS_PAUSE_ROUNDS = 2
+CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE = "code_fix_zero_progress_paused"
+
+
+def _write_zero_progress_alert(
+    project_root, rounds: int, rollup: dict, logger=None,
+) -> None:
+    """链级零进度熔断告警（evo-align-codefix-skip-reason-enum 1.3，R4）。
+
+    形态参照夜静窗守卫的 AdminStore 信号写入（kind=SIGNAL、
+    source=code-fix-lane），evidence 携带连续零进度轮数与最近 rollup 关键
+    字段。「每暂停episode至多一次」的幂等由调用方（暂停标记仅 False→True
+    迁移沿终局写点发一次）保证，本函数纯写；AdminStore 拒写走
+    ``_log_alert_rejected`` 留痕。
+    """
+    from core.admin_store import AdminStore, SIGNAL
+
+    store = AdminStore(project_root, logger=None)
+    rec = store.append(
+        {
+            "kind": SIGNAL,
+            "signal_type": CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE,
+            "spec": None,
+            "severity": "warning",
+            "description": (
+                f"code-fix 修复链连续 {rounds} 轮收尾零进度"
+                "（rollup resolved+ignored=0），已暂停该链自动重派"
+                "（防零产出空转烧批）"
+            ),
+            "evidence": (
+                f"项目名={Path(project_root).name}; 连续零进度轮数={rounds}; "
+                f"最近 rollup trigger={rollup.get('trigger') or 'unknown'}; "
+                f"runs={rollup.get('runs')}; "
+                f"resolved={rollup.get('resolved')}; "
+                f"ignored={rollup.get('ignored')}"
+            ),
+            "source": "code-fix-lane",
+            "recommended_action": (
+                "人工处置：手动「立即自动修复」入口重派（即时解除），或把空转"
+                "条目在台账人工置终态；新一轮评审产出台账变更后选批扫描复核"
+                "自动解除暂停"
+            ),
+        }
+    )
+    if rec is None:
+        _log_alert_rejected(logger, CODE_FIX_ZERO_PROGRESS_SIGNAL_TYPE)
 
 
 def _write_switch_cooldown_alert(
@@ -4850,6 +4991,81 @@ class CodeFixOrchestrator:
                 )
                 return {"triggered": False, "reason": reason}
 
+            # 链级零进度护栏（evo-align-codefix-skip-reason-enum 1.3，R4）：
+            # 与冷却/静默窗守卫同闸本唯一共用投递入口（四路激活全覆盖），
+            # 拦住「终局零核销 → 重派 → 再零核销」的自动重派空转循环。触发
+            # 侧（计数/暂停标记/admin 信号/open 快照）在各链终局写点
+            # （_zero_progress_guard_fields），此处只做拦截与解除复核。
+            # 解除复核挂本入口的选批扫描（R4）：人工处置经 override_enabled
+            # 手动入口即时解除；新一轮评审产出台账变更（当前 open 集合 ≠
+            # 暂停时快照，增删均算变更）复核解除——解除即清标记/快照并归零
+            # 计数（重新武装给足新窗口），同一 checkpoint 直接放行续跑。
+            # 快照缺失/损坏按「无法确认未变更」fail-open 解除（坏档不得把
+            # 护栏变成永久锁；链仍空转时计数会在新窗口重新熔断）；台账读
+            # 失败按未变更保守维持暂停（本轮本就派不出批）。
+            if prev_chain.get("zero_progress_paused"):
+                snapshot_raw = prev_chain.get("zero_progress_paused_open_ids")
+                if isinstance(snapshot_raw, list):
+                    snapshot_ids = {str(i) for i in snapshot_raw}
+                else:
+                    snapshot_ids = None
+                ledger_changed = False
+                if snapshot_ids is not None:
+                    try:
+                        current_open = {
+                            str(iid)
+                            for iid, rec in read_items(root).items()
+                            if isinstance(rec, dict)
+                            and rec.get("status") == "open"
+                        }
+                        ledger_changed = current_open != snapshot_ids
+                    except Exception as e:  # noqa: BLE001 — 读失败维持暂停
+                        self._log(
+                            "warning",
+                            "code-fix 零进度护栏解除复核台账读失败"
+                            f"（维持暂停）: {e}",
+                        )
+                if override_enabled or ledger_changed:
+                    release_why = (
+                        "人工处置（手动重派入口）"
+                        if override_enabled
+                        else "新一轮评审产出台账变更（选批扫描复核）"
+                    )
+                    try:
+                        write_progress(
+                            root,
+                            zero_progress_paused=False,
+                            zero_progress_paused_open_ids=[],
+                            zero_progress_rounds=0,
+                            reason="",
+                            current=f"零进度护栏解除（{release_why}），"
+                            "恢复同链自动重派",
+                        )
+                    except Exception as e:  # noqa: BLE001 — 清态失败只留痕
+                        self._log(
+                            "warning",
+                            f"code-fix 零进度护栏解除态清除写盘异常: {e}",
+                        )
+                    self._log(
+                        "info",
+                        f"code-fix 零进度护栏解除（{release_why}），恢复自动重派",
+                    )
+                else:
+                    current = (
+                        "链级零进度护栏生效：连续多轮收尾零核销"
+                        "（resolved+ignored=0），已暂停自动重派"
+                        "（人工处置或新一轮评审产出台账变更后自动解除）"
+                    )
+                    # 沿用 phase=blocked 既有落盘与文案分流体系（reason 前端
+                    # 直接透传，无需前端改动）；running/链上状态不动。
+                    write_progress(
+                        root,
+                        phase="blocked",
+                        reason="zero_progress_paused",
+                        current=current,
+                    )
+                    return {"triggered": False, "reason": "zero_progress_paused"}
+
             # 进度链身份（D8）：同链沿用 activation_id，新链重算。判定
             # 前移到选批之前（selfheal）：新链启动先释放预算内失败档案并重置
             # chain_skipped——放在选批之后会让「上一链全跳过收敛」后的下一
@@ -5561,16 +5777,106 @@ class CodeFixOrchestrator:
         供各链终局 write_progress 调用点 ``**`` 展开；无链级累积时返回空
         dict（不触碰链级字段，无链 checkpoint 零开销）。归零即「出账后清账」
         ——同一链不会被后续终局写点重复出账，新链从空累积起步。
+
+        evo-align-codefix-skip-reason-enum 1.3：出账同时经
+        ``_zero_progress_guard_fields`` 维护链级零进度护栏计数（rollup 值即
+        逐轮增量）——达到阈值在同一写点落暂停标记与解除复核快照，护栏维护
+        MUST NOT 阻断链终局落盘（内部自吞异常）。
         """
         rollup = self._emit_chain_rollup(trigger)
         if rollup is None:
             return {}
-        return {
+        fields = {
             "chain_rollup": rollup,
             "chain_run_ids": [],
             "chain_resolved": 0,
             "chain_ignored": 0,
         }
+        fields.update(self._zero_progress_guard_fields(rollup))
+        return fields
+
+    def _zero_progress_guard_fields(self, rollup: dict) -> dict:
+        """链级零进度护栏字段维护（evo-align-codefix-skip-reason-enum 1.3）。
+
+        「轮」的口径：每次链终局 rollup 出账即一轮（出账后链级核销计数归零，
+        rollup 的 resolved+ignored 天然是逐轮增量）——零进度 = 当轮
+        resolved+ignored=0。连续零进度轮数随链级进度字段持久化、跨链延续
+        （暂停拦的是「链自动重派」循环）；任一轮出现 resolved>0 或
+        ignored>0 即计数归零（spec R4 归零条件）。达到
+        ``ZERO_PROGRESS_PAUSE_ROUNDS`` 时在同一终局写点：落暂停标记 +
+        暂停时台账 open 条目快照（解除复核基准）+ 经既有 AdminStore 通道发
+        admin 信号（每暂停 episode 至多一次，由暂停标记迁移沿判定保证）；
+        自动重派的实际拦截在 checkpoint 投递闸（见其零进度护栏段）。
+
+        fail-open：护栏是观测/止损面，任何异常（读进度/读台账/告警写盘）
+        只 warning 留痕并返回已算得的字段，MUST NOT 阻断链终局写点。
+        """
+        try:
+            prog = read_progress(self.project_root, synthesize=False)
+            try:
+                rounds = int(prog.get("zero_progress_rounds") or 0)
+            except (TypeError, ValueError):
+                if prog.get("zero_progress_rounds"):
+                    self._log(
+                        "warning",
+                        "code-fix 进度 zero_progress_rounds 字段形态异常"
+                        f"（非数值：{type(prog.get('zero_progress_rounds')).__name__}）"
+                        "，按 0 容错",
+                    )
+                rounds = 0
+            progressed = (
+                int(rollup.get("resolved") or 0)
+                + int(rollup.get("ignored") or 0)
+            ) > 0
+            if progressed:
+                # spec R4 归零条件：任一轮出现 resolved>0 或 ignored>0
+                return {"zero_progress_rounds": 0}
+            rounds += 1
+            fields = {"zero_progress_rounds": rounds}
+            if rounds < ZERO_PROGRESS_PAUSE_ROUNDS:
+                return fields
+            if bool(prog.get("zero_progress_paused")):
+                # 已在暂停态（防御：暂停期间 checkpoint 不派批，正常到不了
+                # 新的终局 rollup）：轮数继续累计，不重复发信号。
+                return fields
+            fields["zero_progress_paused"] = True
+            fields["zero_progress_paused_open_ids"] = self._open_item_ids()
+            self._log(
+                "warning",
+                f"code-fix 链级零进度熔断：连续 {rounds} 轮收尾零核销"
+                "（resolved+ignored=0），暂停该链自动重派",
+            )
+            self._write_zero_progress_alert_safe(rounds, rollup)
+            return fields
+        except Exception as e:  # noqa: BLE001 — 护栏失败不阻断链终局
+            self._log("warning", f"code-fix 零进度护栏维护失败（跳过本轮）: {e}")
+            return {}
+
+    def _open_item_ids(self) -> list:
+        """当前台账 open 条目 id 快照（零进度暂停的解除复核基准）。
+
+        读失败返回空列表（fail-open：解除复核侧对「快照缺失/损坏」同样
+        fail-open 解除，坏档不得把护栏变成永久锁）。
+        """
+        try:
+            items = read_items(self.project_root)
+        except Exception as e:  # noqa: BLE001 — 快照失败按空集
+            self._log("warning", f"code-fix 零进度暂停快照读台账失败: {e}")
+            return []
+        return sorted(
+            str(iid)
+            for iid, rec in items.items()
+            if isinstance(rec, dict) and rec.get("status") == "open"
+        )
+
+    def _write_zero_progress_alert_safe(self, rounds: int, rollup: dict) -> None:
+        """熔断告警写盘的 fail-safe 包装（写盘异常只留痕，不阻断终局写点）。"""
+        try:
+            _write_zero_progress_alert(
+                self.project_root, rounds, rollup, logger=self._logger
+            )
+        except Exception as e:  # noqa: BLE001 — 信号通道失败只留痕
+            self._log("warning", f"code-fix 零进度护栏告警写盘异常: {e}")
 
     def _consumed_progress(self, current: str, reason: str = "", chain_skip_ids=None) -> None:
         """consumed 失败收尾（selfheal D6）：链内跳过 + 非终态进度，链继续。
@@ -7153,7 +7459,8 @@ class CodeFixOrchestrator:
                 # NOT 随批烧 fail_count 预算/进告警名录（与 merge_back_conflict
                 # 路径 pending_ids 排除 ignored 的口径一致）。
                 exhaust_ignored, exhaust_ignore_set, _ = _apply_llm_reject_exits(
-                    root, wt, [result.run_id, *attempt_run_ids], item_ids
+                    root, wt, [result.run_id, *attempt_run_ids], item_ids,
+                    logger=self._logger,
                 )
                 if exhaust_ignored:
                     self._chain_bump(root, chain_ignored=exhaust_ignored)
@@ -7267,7 +7574,8 @@ class CodeFixOrchestrator:
         # 作废被重试重做）。产物行并集读取/分区/批界过滤/mark_ignored 走与
         # 定向重试耗尽收口共用的 _apply_llm_reject_exits（单源判定口径）。
         ignored, ignore_set, fixed_ids = _apply_llm_reject_exits(
-            root, wt, [result.run_id, *attempt_run_ids], item_ids
+            root, wt, [result.run_id, *attempt_run_ids], item_ids,
+            logger=self._logger,
         )
         # 链级核销计数累加（2.1）：以 mark_ignored 真实命中为准（条目计数与
         # 台账核销一致），rollup 时点读出。

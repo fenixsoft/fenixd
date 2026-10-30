@@ -236,7 +236,18 @@ class TestArtifactMissingBreaker(unittest.TestCase):
         logger = _RecordingLogger()
         orch = _orch(runner, proot, logger=logger)
 
-        _run_chains(orch, 4)
+        _run_chains(orch, 2)
+        # evo-align-codefix-skip-reason-enum 1.3 链级零进度护栏：连续 2 轮
+        # 零核销链（含瞬态失败链，终局 rollup 口径统一）即熔断暂停自动重派
+        # ——既有「瞬态失败跨链无限自动重试」语义按新护栏收窄：后续链经
+        # 人工处置入口（override_enabled）解除后重派。护栏是投放闸，不改
+        # 止损 streak 状态机，本用例的计数/不触发断言不受影响。
+        from core.code_fix import read_progress
+        self.assertTrue(
+            read_progress(proot)["zero_progress_paused"],
+            "连续 2 轮零核销链须熔断暂停（新护栏）")
+        orch.checkpoint(override_enabled=True)  # 人工处置解除 → 第 3 链
+        orch.checkpoint()                        # 第 4 链（成功收链）
 
         fp = frozenset({"a"})
         self.assertEqual(
@@ -244,7 +255,7 @@ class TestArtifactMissingBreaker(unittest.TestCase):
             "仅 artifact_missing 计数")
         self.assertNotIn(fp, orch._artifact_missing_skipped, "MUST NOT 触发止损")
         self.assertEqual(_stop_loss_warnings(logger), [])
-        # 三次失败全部按既有瞬态语义重派（第 4 次成功收链）
+        # 三次失败全部重派（第 4 次成功收链；第 3 链经人工处置入口解除）
         self.assertEqual(len(runner.dispatched_ids), 4)
 
     def test_stop_loss_scoped_to_fingerprint(self):
