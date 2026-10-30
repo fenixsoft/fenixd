@@ -13,9 +13,9 @@ todo 回写与 daily self-review 的提交链路在执行 git push 前 SHALL 探
 
 ### Requirement: push 恒失败聚合告警
 
-同一项目仓 push 连续失败时 SHALL 收敛为每日一条聚合告警，告警文案 SHALL 包含项目根路径与连续失败计数。
+evolution todo 回写车道（self_review 车道每日至多一次 push，无刷屏面，不聚合）同一项目仓 push 连续失败时 SHALL 收敛为同日至多一条聚合告警，告警文案 SHALL 包含项目根路径与连续失败计数；当日后续失败 SHALL 仅递增计数并降级记 DEBUG，MUST NOT 新增常规 WARNING。
 
 #### Scenario: 连续失败不刷屏
 
 - **WHEN** 同仓 push 连续第 2 次及以上失败且当日已发过聚合告警
-- **THEN** 仅递增失败计数并记常规 WARNING，不新增聚合告警；跨日重置后首败再发含最新计数的一条
+- **THEN** 仅递增失败计数并降级记 DEBUG，不新增聚合告警、也不记常规 WARNING（同仓同日 WARNING 至多一条）；跨日重置的是当日已告警标记（连续失败计数自最近一次成功 push 起累计、成功清零），次日首败再发含最新计数的一条聚合

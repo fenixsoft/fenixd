@@ -2,7 +2,7 @@
 
 ## Why
 
-自进化回写对受管项目仓就地 git push，而受管 6 项目中 dsh-plugins 与 potplayer-base 两仓零 remote，push 结构性必败：保留日志 46 条同文 WARNING（2026-10-05 至 10-27，每日 1-8 条），持续稀释 WARNING 告警通道；daily self-review 车道（core/self_review.py 的 _commit_todo）同型裸 push 同病。两零 remote 仓的 todo 回写提交无任何远端备份。实测两仓裸 push 均 exit=128「fatal: No configured push destination.」与日志逐字同文。
+自进化回写对受管项目仓就地 git push，而受管 6 项目中 dsh-plugins 与 potplayer-base 两仓零 remote，push 结构性必败：保留日志同文 WARNING 持续累积（2026-10-05 起逐日新增；2026-10-30 人工核查口径 49 条且逐日递增——替代早期冻结的 41/46/47 口径，评审实测 fenixd.log 8 条＋fenixd.log.3 45 条），stderr 逐条同文「fatal: No configured push destination.」且文案不含仓路径，持续稀释 WARNING 告警通道；daily self-review 车道（core/self_review.py 的 _commit_todo）同型裸 push 同病。两零 remote 仓的 todo 回写提交无任何远端备份。实测两仓裸 push 均 exit=128「fatal: No configured push destination.」与日志逐字同文。主仓 fenixd 自身含可用 origin（评审实测 `push --dry-run` exit=0），恒败刷屏集中于零 remote 两仓的回写链路；「有 remote 但临时失败」残余类由聚合告警收敛（同仓同日 WARNING 至多一条）。
 
 ## What Changes
 
