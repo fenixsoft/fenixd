@@ -13,5 +13,5 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_self_review_archive_stats.py：TestCollectRunFiles 新增用例——同 run 主文件+伴随流并存时计 1 次、伴随流不入 stale 桶
+- [ ] 2.1 tests/test_self_review_archive_stats.py：TestCollectRunFilesUnion 新增用例——同 run 主文件+伴随流并存时计 1 次、伴随流不入 stale 桶
 - [ ] 2.2 tests/test_self_review_archive_stats.py：断言过滤不误伤——正常命名 run 的统计行为与既有用例一致

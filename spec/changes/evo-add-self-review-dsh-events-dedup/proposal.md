@@ -8,4 +8,4 @@
 ## Impact
 - core/self_review.py（一处过滤）
 - tests/test_self_review_archive_stats.py（补用例）
-- 无误伤面：写侧 dsh_adapter.py:262 命名单源保证合法 run_id 不含该后缀
+- 无误伤面：写侧 core/agent_runner/harness/dsh_adapter.py:264（`self._dump_path = run_dir_path / f"{run_id}.dsh-events.jsonl"`）命名单源保证合法 run_id 不含该后缀
