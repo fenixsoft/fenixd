@@ -133,11 +133,12 @@ def _migrate_legacy_attribution(legacy_data: dict[str, Any]) -> dict[str, Any]:
     判定依赖该文本），同时保留独立 classification 字段并标注
     classification_fallback=True，显式标记为分类回退而非原生归因。
     """
-    # 整块归因作为单个条目。attribution/classification 须为文本字符串：judge
-    # 漂移可能把它们写成 dict/list 等非字符串真值，`or ""` 只挡 falsy，非字符
-    # 串真值会原样进入条目，而下游查重与回炉判定按文本 str 处理该字段。非字
-    # 符串一律降级为空串并留痕告警（口径同 build_requeue_manifest 条目 id 畸
-    # 形防御，code-review item fa738bf8033b）。
+    # 整块归因作为单个条目。attribution/classification/timestamp 须为文本字符串：
+    # judge 漂移可能把它们写成 dict/list 等非字符串真值，`or ""` 只挡 falsy，非字
+    # 符串真值会原样进入条目，而下游查重与回炉判定按文本 str 处理归因字段、
+    # save_attribution 契约要求 timestamp 为 ISO 字符串。非字符串一律降级为空串
+    # 并留痕告警（口径同 build_requeue_manifest 条目 id 畸形防御，code-review
+    # item fa738bf8033b）。
     attribution = legacy_data.get("attribution") or ""
     classification = legacy_data.get("classification") or ""
     if not isinstance(attribution, str):
@@ -152,11 +153,18 @@ def _migrate_legacy_attribution(legacy_data: dict[str, Any]) -> dict[str, Any]:
             type(classification).__name__,
         )
         classification = ""
+    timestamp = legacy_data.get("timestamp") or ""
+    if not isinstance(timestamp, str):
+        logger.warning(
+            "旧格式归因 timestamp 非字符串（%s），降级为空串",
+            type(timestamp).__name__,
+        )
+        timestamp = ""
     scenario_entry = {
         "id": "legacy_0",
         "attribution": attribution,
         "status": ATTRIBUTION_STATUS_ACCEPT,
-        "timestamp": legacy_data.get("timestamp") or "",
+        "timestamp": timestamp,
     }
     if not attribution and classification:
         # 旧格式仅存分类文本时，文本侧保留分类内容供查重/回炉判定读取，
@@ -324,8 +332,14 @@ def clear_requeue_manifest(project_root: Path, spec_name: str) -> None:
     path = _requeue_manifest_path(project_root, spec_name)
     try:
         path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        # 删除失败（权限/只读盘等环境故障）不影响主流程返回，但清单残留会让
+        # 下轮 judge 重复消费同一 requeue 子集，沿用本文件「降级但留痕」口径告警
+        logger.warning(
+            "回炉清单删除失败，清单残留（下轮可能重复回炉同一子集）: %s: %s",
+            path,
+            exc,
+        )
 
 
 def migrate_legacy_attribution_file(project_root: Path, spec_name: str) -> bool:

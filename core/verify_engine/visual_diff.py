@@ -87,6 +87,9 @@ class VisualDiffer:
         self.project_root = Path(project_root)
         self.config = config if isinstance(config, dict) else {}
         self.logger = logger
+        # skipped 留痕开关：每实例（=每 spec）至多一次 WARNING
+        # （code-review item 15b2f0052c4c）
+        self._skipped_warned = False
         # 构造期 base_dir 同样净化 spec_name（code-review item fd57e4dcc561）：
         # baselines/、screenshots/、baseline_streaks.json 等全部落在本前缀下，
         # 只靠 compare() 入口净化可被 spec_name 一层绕过；kebab-case 常规名
@@ -793,6 +796,50 @@ class VisualDiffer:
         except TypeError:
             log_fn("visual_diff", message)
 
+    # ── 结果构造（降级路径共用，保证结果形状单一出处）────────────
+
+    def _skipped_result(self, baseline_name: str, scenario_id: str, reason: str) -> dict:
+        """构造 skipped 结果（PIL/numpy 缺失，视觉断言未实际执行）。
+
+        skipped 虽 pass=True，但属「断言未执行却按通过计」的 fail-open 形态：
+        下游 determine_scenario_status 将其与 baseline_deferred 同待遇自然放行
+        （runner.py 显式特判注释），场景状态不反映依赖缺失；改语义须联动
+        runner/verdict 两侧词表、超出留痕边界。故此处每实例（=每 spec，web_runner
+        每 spec 构造一个 differ）至多发一次 WARNING 留痕；logger 为 None 时
+        _log_warning 静默（测试直调不受影响）。
+        """
+        if not self._skipped_warned:
+            self._skipped_warned = True
+            self._log_warning(
+                "视觉对比依赖缺失，视觉断言未实际执行而按 skipped 计（pass=True，"
+                f"每 spec 一次留痕）: {reason}"
+            )
+        return {
+            "baseline": baseline_name,
+            "status": "skipped",
+            "ssim": None,
+            "pass": True,
+            "error": reason,
+            "scenario_id": scenario_id,
+        }
+
+    def _size_mismatch_result(
+        self, baseline_name: str, scenario_id: str, detail: str
+    ) -> dict:
+        """构造 size_mismatch 结果（SSIM 与像素降级两路共用）。
+
+        detail 文案两路不同（skimage 侧含通道数、PIL 侧仅宽高），由调用方
+        计算，此处只保证结果字典形状单一出处。
+        """
+        return {
+            "baseline": baseline_name,
+            "status": "size_mismatch",
+            "ssim": None,
+            "pass": False,
+            "detail": detail,
+            "scenario_id": scenario_id,
+        }
+
     # ── SSIM 对比 ──────────────────────────────────────────────
 
     def _ssim_compare(
@@ -824,18 +871,15 @@ class VisualDiffer:
                 return desc
 
             return [
-                {
-                    "baseline": baseline_name,
-                    "status": "size_mismatch",
-                    "ssim": None,
-                    "pass": False,
-                    "detail": (
+                self._size_mismatch_result(
+                    baseline_name,
+                    scenario_id,
+                    (
                         f"尺寸不匹配: "
                         f"baseline={_shape_desc(baseline_img)}, "
                         f"current={_shape_desc(current_img)}"
                     ),
-                    "scenario_id": scenario_id,
-                }
+                )
             ]
 
         # 计算 channel-by-channel SSIM
@@ -895,29 +939,15 @@ class VisualDiffer:
         try:
             from PIL import Image
         except ImportError:
-            return [
-                {
-                    "baseline": baseline_name,
-                    "status": "skipped",
-                    "ssim": None,
-                    "pass": True,
-                    "error": "PIL 不可用，无法进行像素对比，跳过",
-                    "scenario_id": scenario_id,
-                }
-            ]
+            return [self._skipped_result(
+                baseline_name, scenario_id, "PIL 不可用，无法进行像素对比，跳过"
+            )]
         try:
             import numpy as np
         except ImportError:
-            return [
-                {
-                    "baseline": baseline_name,
-                    "status": "skipped",
-                    "ssim": None,
-                    "pass": True,
-                    "error": "numpy 不可用，无法进行像素对比，跳过",
-                    "scenario_id": scenario_id,
-                }
-            ]
+            return [self._skipped_result(
+                baseline_name, scenario_id, "numpy 不可用，无法进行像素对比，跳过"
+            )]
 
         with Image.open(baseline_path) as base_src:
             baseline = base_src.convert("RGB")
@@ -926,18 +956,15 @@ class VisualDiffer:
 
         if baseline.size != current.size:
             return [
-                {
-                    "baseline": baseline_name,
-                    "status": "size_mismatch",
-                    "ssim": None,
-                    "pass": False,
-                    "detail": (
+                self._size_mismatch_result(
+                    baseline_name,
+                    scenario_id,
+                    (
                         f"尺寸不匹配: "
                         f"baseline={baseline.size[0]}x{baseline.size[1]}, "
                         f"current={current.size[0]}x{current.size[1]}"
                     ),
-                    "scenario_id": scenario_id,
-                }
+                )
             ]
 
         b_arr = np.array(baseline)

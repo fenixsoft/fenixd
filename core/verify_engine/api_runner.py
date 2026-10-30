@@ -709,7 +709,15 @@ class ApiRunner(VerifyRunner):
                         # 败；data 与 event 名皆空的空行/连续空行不产生幻影
                         # 事件。
                         if event["data"] != "" or event["event"]:
-                            data, over = _truncate(event["data"].rstrip("\n"))
+                            # SSE 规范分发只剥 data 缓冲末尾的一个换行：
+                            # rstrip 会把「正常 data 行 + 尾部空 data: 行」的
+                            # 多行载荷（spec 语义含尾换行）多剥，损失分帧保真
+                            # 度并被 exact 断言误判（code-review item
+                            # 71354c1d74d9）。
+                            buf = event["data"]
+                            data, over = _truncate(
+                                buf[:-1] if buf.endswith("\n") else buf
+                            )
                             if over:
                                 data_truncated = True
                             events.append(
@@ -779,7 +787,10 @@ class ApiRunner(VerifyRunner):
         # sse_event_count/sse_event_matches 等事件类断言据此假失败。窗口
         # 截止/EOF 后仍有 data 或仅有 event 名的缓冲按空行分帧同口径入列。
         if event["data"] != "" or event["event"]:
-            data, over = _truncate(event["data"].rstrip("\n"))
+            # 与空行分帧分支同口径：SSE 规范分发只剥一个尾部换行，rstrip
+            # 多剥会损失多行载荷保真度（code-review item 71354c1d74d9）。
+            buf = event["data"]
+            data, over = _truncate(buf[:-1] if buf.endswith("\n") else buf)
             if over:
                 data_truncated = True
             events.append({"data": data, "event": event["event"]})

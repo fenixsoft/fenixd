@@ -1,12 +1,19 @@
 """regex_safety.py — 正则回溯安全共享层（无内部依赖）。
 
-_TimeoutRegex/_compile_regex（api/cli 断言侧）与嵌套量词高危形态预检
+TimeoutRegex/compile_regex（api/cli 断言侧）与嵌套量词高危形态预检
 （cli 侧）的原单点实现下沉至此（code-review item ee72d324ea15）：
 scenarios.py 的 expect_network URL 匹配也要同一防护口径，而 scenarios
 是被 api_assertions/cli_assertions/assertions 反向依赖的被依赖侧（它们
 只从 scenarios 取词表常量）——实现若留在 api_assertions，scenarios 反向
 import 即成环。本模块 MUST 保持零内部 import，三方（scenarios/api/cli）
 共用同一防护实现，防口径漂移。
+
+对外共用契约（code-review item 93fed01dcaa0）：``regex_lib`` /
+``TimeoutRegex`` / ``compile_regex`` / ``has_nested_quantifier`` 是本模块
+供 scenarios/api/cli 三方跨模块 import 的公共 API，命名不带下划线私有
+前缀、受「对外契约」语义保护不得随意改名；旧下划线名（``_regex_lib``/
+``_TimeoutRegex``/``_compile_regex``/``_has_nested_quantifier``）保留为
+同义别名，仅供既有消费方 import 平滑兼容，新代码一律用公共名。
 """
 
 import re
@@ -16,9 +23,13 @@ import re
 # 正则原语前科），嵌套量词类病态模式对 64KB 级 body/事件文本 search 可指数
 # 回溯长时间阻塞验证事件循环；库缺失时回退 stdlib re（行为同无防护版）。
 try:
-    import regex as _regex_lib
+    import regex as regex_lib
 except ImportError:  # pragma: no cover - 环境相关分支
-    _regex_lib = None
+    regex_lib = None
+
+# 旧下划线名别名：保住既有消费方（scenarios/api_assertions）import 兼容
+# （code-review item 93fed01dcaa0），新代码一律用公共名 regex_lib
+_regex_lib = regex_lib
 
 # 单次正则匹配的墙上时钟上限（秒）：合法断言正则对 64KB 文本远低于此值
 _REGEX_MATCH_TIMEOUT_SECONDS = 1.0
@@ -33,11 +44,11 @@ class TimeoutRegexError(re.error):
     真正的非法正则。除超时外，re/regex 合法性判定的罕见分歧（预检用
     stdlib re 放行、regex 库判定非法）也从 search 路径以此类型定向
     抛出，保住「非法正则」归因不漏成笼统「断言执行异常」；常规非法
-    正则仍在 _compile_regex 预检期返回、不以此类型抛出。
+    正则仍在 compile_regex 预检期返回、不以此类型抛出。
     """
 
 
-class _TimeoutRegex:
+class TimeoutRegex:
     """re.Pattern 的回溯安全包装：search 走 regex 库（带 timeout）防阻塞。
 
     对外只暴露与 re.Pattern 同形的 ``search(text) -> bool``，四处内容断言
@@ -53,14 +64,14 @@ class _TimeoutRegex:
         # 失败（regex 与 re 语法判定的罕见分歧）时回退模块级 search，timeout
         # 防护语义不变
         self._regex_compiled = None
-        if _regex_lib is not None:
+        if regex_lib is not None:
             try:
-                self._regex_compiled = _regex_lib.compile(source)
+                self._regex_compiled = regex_lib.compile(source)
             except Exception:
                 self._regex_compiled = None
 
     def search(self, text: str) -> bool:
-        if _regex_lib is not None:
+        if regex_lib is not None:
             compiled = self._regex_compiled
             try:
                 if compiled is not None:
@@ -71,7 +82,7 @@ class _TimeoutRegex:
                         is not None
                     )
                 return (
-                    _regex_lib.search(
+                    regex_lib.search(
                         self._source, text, timeout=_REGEX_MATCH_TIMEOUT_SECONDS
                     )
                     is not None
@@ -85,8 +96,8 @@ class _TimeoutRegex:
                     f"正则匹配超时（>{_REGEX_MATCH_TIMEOUT_SECONDS}s，"
                     f"疑似灾难性回溯）: {self._source!r}"
                 ) from None
-            except _regex_lib.error as e:
-                # re/regex 合法性判定的罕见分歧（_compile_regex 用 stdlib re
+            except regex_lib.error as e:
+                # re/regex 合法性判定的罕见分歧（compile_regex 用 stdlib re
                 # 预检放行、regex 库判定同一模式非法）走回退 search 时抛出的
                 # regex.error 不是 re.error 子类，无此层会漏进 run() 的
                 # except Exception 被归因为笼统「断言执行异常」；转抛同族
@@ -99,7 +110,12 @@ class _TimeoutRegex:
         return self._compiled.search(text) is not None
 
 
-def _compile_regex(pattern: str) -> tuple[_TimeoutRegex | None, str | None]:
+# 旧下划线名别名：既有消费方（api_assertions re-export）import 兼容
+# （code-review item 93fed01dcaa0），新代码一律用公共名 TimeoutRegex
+_TimeoutRegex = TimeoutRegex
+
+
+def compile_regex(pattern: str) -> tuple[TimeoutRegex | None, str | None]:
     """进匹配前编译预检：非法正则是确定性配置错误。
 
     此前各 regex 分支 ``except re.error: passed = False`` 静默吞错，结果与
@@ -107,14 +123,20 @@ def _compile_regex(pattern: str) -> tuple[_TimeoutRegex | None, str | None]:
     缺陷；统一预检后非法时返回带「非法正则」error 的确定性失败（口径对齐
     web 侧 _assert_text_match）。返回 (compiled, None)；非法时 (None, 文案)。
     预检仍用 stdlib re.compile（保持非法判定口径），编译产物包一层
-    _TimeoutRegex：regex 库可用时匹配带 timeout，防病态正则长时间阻塞
-    （见 _TimeoutRegex）。
+    TimeoutRegex：regex 库可用时匹配带 timeout，防病态正则长时间阻塞
+    （见 TimeoutRegex）。
     """
     try:
         compiled = re.compile(pattern)
     except re.error as e:
         return None, f"非法正则: {e}"
-    return _TimeoutRegex(pattern, compiled), None
+    return TimeoutRegex(pattern, compiled), None
+
+
+# 旧下划线名别名：既有消费方（scenarios/api_assertions/cli_assertions）
+# import 兼容（code-review item 93fed01dcaa0），新代码一律用公共名
+# compile_regex
+_compile_regex = compile_regex
 
 
 def _regex_brace_body(pattern: str, i: int) -> "str | None":
@@ -123,7 +145,7 @@ def _regex_brace_body(pattern: str, i: int) -> "str | None":
     return pattern[i + 1 : j] if j > i else None
 
 
-def _has_nested_quantifier(pattern: str) -> bool:
+def has_nested_quantifier(pattern: str) -> bool:
     """高危正则预检：检测「组内变长量词 × 组整体无上界量词」的嵌套形态
     （灾难性回溯的典型结构特征，如 ``(.+)*`` / ``(\\d+)+`` / ``(a{1,2})+``）。
 
@@ -185,3 +207,9 @@ def _has_nested_quantifier(pattern: str) -> bool:
                 group_has_variable_quant[-1] = True
         i += 1
     return False
+
+
+# 旧下划线名别名：既有消费方（scenarios/cli_assertions）import 兼容
+# （code-review item 93fed01dcaa0），新代码一律用公共名
+# has_nested_quantifier
+_has_nested_quantifier = has_nested_quantifier

@@ -99,6 +99,28 @@ def _normalize_bool_config(value, key, default, logger=None) -> bool:
     return default
 
 
+async def _safe_close_context(context, label: str, logger=None) -> None:
+    """容错关闭 BrowserContext，三处 finally 统一口径（item abaa010f774c）。
+
+    close 在浏览器进程已崩溃/连接已断时抛 TargetClosedError——execute
+    （item 9d9cfb64c2e3）与 _perform_health_check / _probe_web_push
+    （item 6fec72673aa8）的 finally 原各自手写同构 try/except 包裹，现
+    收敛为本 helper 单一出处：warning 留痕后吞掉 close 的次生异常，调用
+    方 try 体已算好的结论（场景结果/健康检查二元组/推流布尔）正常返回；
+    try 体本身已抛异常时原异常照常穿出，此处仅吞 close 的次生异常。
+    无 logger 形态（engine.py 直调 _probe_web_push 未传）静默吞。
+    label 为日志前缀（含标点，与收敛前三处文案逐字一致）。
+    """
+    try:
+        await context.close()
+    except Exception as e:
+        if logger:
+            logger.warning(
+                "verify_engine",
+                f"{label} context.close 失败: {type(e).__name__}: {e}",
+            )
+
+
 @register_runner
 class WebRunner(VerifyRunner):
     """浏览器驱动 Runner（playwright 异步 API，单浏览器多 context）。"""
@@ -246,14 +268,10 @@ class WebRunner(VerifyRunner):
             # 目。与 BrowserManager.stop 的逐步容错口径对齐：warning 留痕
             # 后吞掉，try 体的 result 正常返回；try 体本身已抛异常时原异常
             # 照常穿出（此处仅吞 close 的次生异常）。
-            try:
-                await context.close()
-            except Exception as e:
-                self.logger.warning(
-                    "verify_engine",
-                    f"场景'{scenario.id}': context.close 失败: "
-                    f"{type(e).__name__}: {e}",
-                )
+            # item abaa010f774c：容错包裹收敛到 _safe_close_context 单一出处。
+            await _safe_close_context(
+                context, f"场景'{scenario.id}':", self.logger
+            )
 
     async def _perform_health_check(self) -> tuple:
         """场景执行前健康检查：验证应用页面是否能成功加载。
@@ -323,14 +341,8 @@ class WebRunner(VerifyRunner):
                 # 连接已断时抛 TargetClosedError，finally 裸奔会顶掉 try 体
                 # 已算好的健康检查结论（True 或 False+成因文案）。与 execute
                 # 的 finally（item 9d9cfb64c2e3）同款口径：warning 留痕后吞掉。
-                try:
-                    await context.close()
-                except Exception as e:
-                    self.logger.warning(
-                        "verify_engine",
-                        f"健康检查 context.close 失败: "
-                        f"{type(e).__name__}: {e}",
-                    )
+                # item abaa010f774c：容错包裹收敛到 _safe_close_context 单一出处。
+                await _safe_close_context(context, "健康检查", self.logger)
         except Exception as e:
             self.logger.warning(
                 "verify_engine",
@@ -521,14 +533,8 @@ async def _probe_web_push(browser, logger=None) -> bool:
         # code-review item 6fec72673aa8：同款口径包裹 close 次生异常，
         # 避免顶掉 try 体的推流检查结论（True/False）。无 logger 形态
         # （engine.py 直调点未传）静默吞，结论保住为先。
-        try:
-            await context.close()
-        except Exception as e:
-            if logger:
-                logger.warning(
-                    "verify_engine",
-                    f"推流探针 context.close 失败: {type(e).__name__}: {e}",
-                )
+        # item abaa010f774c：容错包裹收敛到 _safe_close_context 单一出处。
+        await _safe_close_context(context, "推流探针", logger)
 
 
 async def probe_web_environment(

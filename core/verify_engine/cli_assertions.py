@@ -16,6 +16,7 @@ cli_assertions.py — CLI 结构化断言库（spec multi-kind-scenario-model「
 """
 
 import json
+from itertools import islice
 from pathlib import Path
 
 from .api_assertions import _MISSING, evaluate_json_path
@@ -26,6 +27,18 @@ from .scenarios import CLI_ASSERTION_LAYERS
 # 只读前 N 字节参与匹配，防全量读入撑爆验证进程内存（与 stdout 侧 64KB 证据
 # 截断纪律同旨，文件匹配留 MB 级余量）。
 _FILE_CONTENT_LIMIT = 8 * 1024 * 1024
+
+# _match 合法匹配 mode 单源（output_match / file_content / json_output 共用）：
+# 三个 handler 的 mode 预检与 _match 内校验引用同一元组，防双份枚举漂移。
+_MATCH_MODES = ("exact", "contains", "regex")
+
+# dir_contains glob 枚举上限（条数）：glob 含 ** 递归段且验证树/worktree 规模
+# 大（如含 node_modules、.git 对象库）时，全量物化+排序可达数十万条目、秒级
+# 耗时并放大内存占用。islice 只取前 N+1 条（N+1 用于判定超限）即刻停止遍历，
+# 超限按截断计数参与 min/max 裁决并在结果 truncated/note 留痕（与 file_content
+# 的截断纪律同旨：截断只作证据/性能防线并显式留痕，不静默改变常规规模下的
+# 判定语义）。
+_DIR_GLOB_LIMIT = 10_000
 
 
 class CliAssertionRunner:
@@ -179,7 +192,7 @@ class CliAssertionRunner:
         # 配置错误可见化：未知 mode 显式走断言异常通道（与 api 侧
         # sse_event_matches「未知 mode」及 run()「未知断言类型」口径对齐），
         # 不静默按 contains 匹配掩盖场景编写缺陷
-        if mode not in ("exact", "contains", "regex"):
+        if mode not in _MATCH_MODES:
             raise ValueError(f"未知 mode: {mode}")
         if mode == "exact":
             if exact_strip:
@@ -422,7 +435,14 @@ class CliAssertionRunner:
                 "pass": False,
                 "error": "glob 非法：须为相对验证树根的路径（不得为绝对路径或含 '..' 段）",
             }
-        paths = sorted(self.project_root.glob(glob)) if glob else []
+        # 枚举上限防线（见 _DIR_GLOB_LIMIT 注释）：islice 取前 N+1 条即可判定
+        # 超限并即刻停止遍历，防 ** 递归模式在大树上全量物化排序；超限时按
+        # 截断计数参与下方 min/max 裁决，并在结果 truncated/note 留痕供归因
+        hits = self.project_root.glob(glob) if glob else iter(())
+        paths = sorted(islice(hits, _DIR_GLOB_LIMIT + 1))
+        glob_truncated = len(paths) > _DIR_GLOB_LIMIT
+        if glob_truncated:
+            paths = paths[:_DIR_GLOB_LIMIT]
         # 命中条目逐个复核 symlink 逃逸：通配组件在 _resolve_under_root 只做
         # 字面量校验，逃逸出验证树的命中条目不计入计数（防树外文件参与
         # min/max 裁决），其余行为不变
@@ -468,6 +488,12 @@ class CliAssertionRunner:
             result["min"] = min_n
         if max_n is not None:
             result["max"] = max_n
+        if glob_truncated:
+            result["truncated"] = True
+            result["note"] = (
+                f"glob 命中数超过上限 {_DIR_GLOB_LIMIT}，"
+                f"仅统计前 {_DIR_GLOB_LIMIT} 条"
+            )
         if not passed:
             result["matches"] = [str(p.relative_to(self.project_root)) for p in paths[:10]]
         return result
@@ -500,7 +526,35 @@ class CliAssertionRunner:
             actual = stdout + "\n" + stderr
         expected = a.get("expected")
         mode = a.get("mode", "contains")
-        negate = self._normalize_negate(a)
+        # mode/negate 预检（口径对齐上方 stream 预检）：二者非法原经 _match /
+        # _normalize_bool_field 的 ValueError 被 run() 兜底成泛化「断言执行
+        # 异常」，丢掉 stream/expected 等定位字段，judge 无从定位是哪条输出
+        # 断言的配置错误（如 mode 拼写为 "has_text"、negate 写成脏值）——
+        # 命中即按结构化失败回显 stream/mode/expected/negate
+        if mode not in _MATCH_MODES:
+            return {
+                "type": "output_match",
+                "layer": 3,
+                "stream": stream,
+                "mode": mode,
+                "expected": expected,
+                "negate": a.get("negate", False),
+                "pass": False,
+                "error": f"mode 非法，须为 exact/contains/regex: {mode!r}",
+            }
+        try:
+            negate = self._normalize_negate(a)
+        except ValueError as e:
+            return {
+                "type": "output_match",
+                "layer": 3,
+                "stream": stream,
+                "mode": mode,
+                "expected": expected,
+                "negate": a.get("negate", False),
+                "pass": False,
+                "error": str(e),
+            }
         # 判空口径（expected is None 才算缺参）：None 恒拦——exact 缺参仍须按
         # 缺参失败，否则会滑进 _match 与 str(None)="None" 比对；空串仅拦
         # contains/regex（`"" in actual` 恒真、空正则恒匹配），exact 空串是
@@ -597,7 +651,34 @@ class CliAssertionRunner:
         # _assert_output_match 判空注释防住的失效形态
         expected = a.get("expected", _MISSING)
         mode = a.get("mode", "contains")
-        negate = self._normalize_negate(a)
+        # mode/negate 预检（口径对齐 _assert_output_match，见其注释）：二者非法
+        # 原经 _match / _normalize_bool_field 的 ValueError 被 run() 兜底成
+        # 泛化「断言执行异常」丢掉 path 定位——按结构化失败回显 path/mode/
+        # expected/negate（此处 path 已过上方非法/缺失预检，恒为可用定位字段）
+        if mode not in _MATCH_MODES:
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "mode": mode,
+                "expected": None if expected is _MISSING else expected,
+                "negate": a.get("negate", False),
+                "pass": False,
+                "error": f"mode 非法，须为 exact/contains/regex: {mode!r}",
+            }
+        try:
+            negate = self._normalize_negate(a)
+        except ValueError as e:
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "mode": mode,
+                "expected": None if expected is _MISSING else expected,
+                "negate": a.get("negate", False),
+                "pass": False,
+                "error": str(e),
+            }
         missing = expected is _MISSING or expected is None
         if missing or (expected == "" and mode != "exact"):
             # 显式失败而非静默恒真：缺 expected 时 contains 的 `"" in 内容`
@@ -758,7 +839,36 @@ class CliAssertionRunner:
         if path_missing:
             # 哨兵仅内部判定，不外泄（actual 归一为 None）
             actual = None
-        negate = self._normalize_negate(a)
+        # mode/negate 预检（口径对齐 _assert_output_match / _assert_file_content，
+        # 见其注释）：二者非法原经 _match / _normalize_bool_field 的 ValueError
+        # 被 run() 兜底成泛化「断言执行异常」丢掉 step/path 定位——按结构化
+        # 失败回显 step/path/mode/expected/negate
+        if mode not in _MATCH_MODES:
+            return {
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": path,
+                "mode": mode,
+                "expected": None if expected is _MISSING else expected,
+                "negate": a.get("negate", False),
+                "pass": False,
+                "error": f"mode 非法，须为 exact/contains/regex: {mode!r}",
+            }
+        try:
+            negate = self._normalize_negate(a)
+        except ValueError as e:
+            return {
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": path,
+                "mode": mode,
+                "expected": None if expected is _MISSING else expected,
+                "negate": a.get("negate", False),
+                "pass": False,
+                "error": str(e),
+            }
         if path_missing:
             # fail-closed：路径缺失对任何比对 mode 都显式报错（negate 下也不
             # 放行——缺失属场景/产品缺陷，须可定位），不做内容比对
