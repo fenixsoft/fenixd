@@ -1186,12 +1186,13 @@ def _repo_code_review_gate_face(
     """产物硬门详细版：返回 ``(失败文案, fail_face 摘要)``，通过时 ``(None, None)``。
 
     fail_face（evo-review-empty-product-redispatch 1.2，拦截失败面外露）：
-    ``{"run_id", "manifest_count", "variant", "shards", "sources_present",
-    "unreadable"}``——variant 三值：``artifact_missing``（主产物与全部分片
-    均不存在）/ ``unreadable_sources``（有来源存在但文件系统读取失败）/
-    ``zero_valid_rows``（来源在但零有效行）。供调用方（maintenance_runs
-    gate_err 分支）组装进完成行与升级告警字段，完整查询原文以档案 jsonl
-    为准。
+    ``{"run_id", "manifest_count", "variant", "variant_label", "shards",
+    "sources_present", "unreadable"}``——variant 三值：``artifact_missing``
+    （主产物与全部分片均不存在）/ ``unreadable_sources``（有来源存在但文件
+    系统读取失败）/ ``zero_valid_rows``（来源在但零有效行）；``variant_label``
+    为同变体的中文标注（产物缺失/读取失败/零有效行，验证场景以中文标注
+    断言变体可区分）。供调用方（maintenance_runs gate_err 分支）组装进
+    完成行与升级告警字段，完整查询原文以档案 jsonl 为准。
 
     事故取证（触发首次修复的实证）：`run_code_review` 此前**全链无任何产物门**
     ——run 退出码 0（转录 `subtype: success`）但 agent 从未写过
@@ -1269,17 +1270,23 @@ def _repo_code_review_gate_face(
     if valids <= 0:
         # 拦截失败面摘要（evo-review-empty-product-redispatch 1.2）：run id、
         # manifest 计数与命中变体，供完成行与升级告警消费（止损判定与事后
-        # 取证入口）。变体三值：全缺失 / 有来源读取失败 / 纯零行。
+        # 取证入口）。变体三值：全缺失 / 有来源读取失败 / 纯零行；
+        # ``variant_label`` 为中文标注（验证场景以中文断言三形态互异——
+        # 剔除 run id 后失败文案仍须可区分，缺失变体必带「缺失」标注）。
         if sources_present <= 0 and not unreadable:
             variant = "artifact_missing"
+            variant_label = "产物缺失"
         elif unreadable:
             variant = "unreadable_sources"
+            variant_label = "读取失败"
         else:
             variant = "zero_valid_rows"
+            variant_label = "零有效行"
         face = {
             "run_id": run_id,
             "manifest_count": len(manifest),
             "variant": variant,
+            "variant_label": variant_label,
             "shards": len(shards),
             "sources_present": sources_present,
             "unreadable": list(unreadable),
@@ -1287,17 +1294,27 @@ def _repo_code_review_gate_face(
         base = (
             f"审查产物为零有效行（repo-code-review-gate）：run {run_id} manifest "
             f"{len(manifest)} 个文件，主产物 {main.name} 与 {len(shards)} 个分片"
-            f"合计无任何有效结果行"
         )
+        if variant == "artifact_missing":
+            # 缺失变体（evo-review-empty-product-redispatch 验证修复 BUG-02）：
+            # 与纯零行变体同文会使「agent 没写文件」与「写了但全空」不可区分
+            # ——缺失形态点名「全部缺失（未落盘）」，直接指向 agent 转录/落盘
+            # 行为；剔除 run id 后与零行文案逐字互异。
+            return (
+                f"{base}全部缺失（未落盘，标注: {variant_label}）——run 退出码"
+                f"为 0 不等于审查完成，agent MUST 逐文件落结果行（主产物或"
+                f"分片均可）"
+            ), face
         if unreadable:
             return (
-                f"{base}；其中 {'、'.join(unreadable)} 存在但读取失败（OSError，"
-                f"已记 WARNING）——有来源因文件系统级异常被排除出有效行统计，"
-                f"优先排查环境侧读取错误而非 agent 转录"
+                f"{base}合计零有效行；其中 {'、'.join(unreadable)} 存在但读取失败"
+                f"（OSError，已记 WARNING，标注: {variant_label}）——有来源因"
+                f"文件系统级异常被排除出有效行统计，优先排查环境侧读取错误而非"
+                f"agent 转录"
             ), face
         return (
-            f"{base}——run 退出码为 0 不等于审查完成，agent MUST "
-            f"逐文件落结果行（主产物或分片均可）"
+            f"{base}合计无任何有效结果行（标注: {variant_label}）——run 退出码"
+            f"为 0 不等于审查完成，agent MUST 逐文件落结果行（主产物或分片均可）"
         ), face
     return None, None
 

@@ -3145,16 +3145,18 @@ class AdminMonitor:
                     + (f", error={result.error}" if result.error else ""),
                 )
                 # 重派产物仍零有效行 → 升级信号并停止自动重派（spec「重派仍
-                # 失败升级信号」）。
+                # 失败升级信号」）。升级记录透出重派链头（原 run id，验证修复
+                # BUG-03）——告警对账按链头检索，只带重派 run id 会对不上号。
                 _face = getattr(result, "fail_face", None)
                 if isinstance(_face, dict):
                     self.logger.warning(
                         "admin_monitor",
                         f"code-review 零产物重派仍被硬门拦截：run "
-                        f"{result.run_id}（variant={_face.get('variant')}）"
-                        f"——发升级信号并停止自动重派",
+                        f"{result.run_id}（variant={_face.get('variant')}，"
+                        f"原 run {original_run_id}）——发升级信号并停止自动重派",
                     )
-                    self._escalate_code_review_empty_product(_face)
+                    self._escalate_code_review_empty_product(
+                        _face, original_run_id=original_run_id)
             except Exception as e:
                 self.logger.error("admin_monitor", f"code-review 零产物重派异常: {e}")
             finally:
@@ -3171,7 +3173,9 @@ class AdminMonitor:
                 self._code_review_in_flight = False
             self.logger.error("admin_monitor", f"code-review 零产物重派投递失败: {e}")
 
-    def _escalate_code_review_empty_product(self, fail_face: dict) -> None:
+    def _escalate_code_review_empty_product(self, fail_face: dict,
+                                            original_run_id: str | None = None
+                                            ) -> None:
         """零产物升级信号（evo-review-empty-product-redispatch 1.1）。
 
         经既有 admin 升级记录通道（admin-dispatch-failure-escalation D1/D2
@@ -3179,6 +3183,11 @@ class AdminMonitor:
         的 ``append_if_absent`` 去重形态）：kind=ESCALATION、signal_type=
         ``code_review_empty_product``、按 run 去重（单 run 至多一条）。文案与
         evidence 携带失败面摘要（run id、manifest 计数、变体、工具面预检）。
+
+        ``original_run_id``（验证修复 BUG-03，重派链头透出）：零产物通道由
+        重派 worker 升级时传重派链头（原 run）id——升级记录 MUST 同时点名
+        原 run 与重派 run（spec「升级信号携带 run id」的消费侧对账按链头
+        run id 检索记录，只带重派 run id 会使告警与触发链对不上号）。
         调用即置升级标记（``_code_review_redispatch_escalated``）——两通道
         此后均不再自动重派（design 双通道配额约束第三条）；标记置位不受
         去重命中影响（记录已在位同样意味着升级已发生）。
@@ -3189,6 +3198,13 @@ class AdminMonitor:
         variant = fail_face.get("variant")
         dedup_key = f"code-review-empty-product-{run_id}"
         tf = fail_face.get("toolface")
+        # 重派链头标注（BUG-03）：升级文案与 evidence 同时携带原 run 与重派
+        # run id，供按链头检索告警记录（验证场景按首派 run id 匹配）。
+        _chain_note = ""
+        _chain_evidence = ""
+        if original_run_id and original_run_id != run_id:
+            _chain_note = f"（重派链：原 run {original_run_id} → 重派 run {run_id}）"
+            _chain_evidence = f", redispatch_of={original_run_id}"
 
         def _inflight(rec: dict) -> bool:
             return (
@@ -3207,8 +3223,8 @@ class AdminMonitor:
                 "description": (
                     f"code-review 零产物止损升级：run {run_id} 产物硬门拦截"
                     f"（variant={variant}，manifest {manifest_count} 文件），"
-                    f"重派链仍零有效行——自动重派已停止，须人工核查审查 run "
-                    f"转录定位根因（.fenix/runs/{run_id}.jsonl 与 "
+                    f"重派链仍零有效行{_chain_note}——自动重派已停止，须人工"
+                    f"核查审查 run 转录定位根因（.fenix/runs/{run_id}.jsonl 与 "
                     f".fenix/code-review/ 产物目录）"
                 ),
                 "evidence": (
@@ -3217,6 +3233,7 @@ class AdminMonitor:
                     f"sources_present={fail_face.get('sources_present')}, "
                     f"shards={fail_face.get('shards')}, "
                     f"unreadable={fail_face.get('unreadable')}"
+                    f"{_chain_evidence}"
                     + (f", toolface={tf.get('probe')}" if isinstance(tf, dict) else "")
                 ),
                 "action_taken": "零产物自动重派预算已耗尽（限次 1，生命周期合计），升级人工",

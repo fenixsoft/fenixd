@@ -1262,6 +1262,61 @@ class TestRepoCodeReviewArtifactGate(unittest.TestCase):
         self.assertIn(self.run_id, err)  # error 点名 run_id
         self.assertIn("分片", err)  # 聚合口径描述
 
+    def test_missing_variant_marked_and_distinct_from_zero_rows(self):
+        """缺失变体带「缺失」标注，与零有效行变体剔除 run id 后互异（BUG-02）。"""
+        from core.agent_runner.result_gate import _repo_code_review_gate_face
+
+        t_missing = self._gate(["core/a.py"]) or ""
+        self.assertIn("缺失", t_missing, "产物缺失变体应标注缺失")
+        # 三形态失败面：variant_label 中文标注（机器可消费的结构化标注）
+        _, face_missing = _repo_code_review_gate_face(
+            ["core/a.py"], self.proot, self.run_id)
+        self.assertEqual(face_missing["variant"], "artifact_missing")
+        self.assertEqual(face_missing["variant_label"], "产物缺失")
+        self.assertEqual(face_missing["manifest_count"], 1)
+
+    def test_variant_faces_distinct_labels(self):
+        """三形态 fail_face 互异：缺失/读取失败/零有效行各自中文标注（BUG-01/02）。"""
+        from core.agent_runner.result_gate import _repo_code_review_gate_face
+
+        # 零有效行：主产物存在但空文件
+        self.out.write_text("", encoding="utf-8")
+        err_zero, face_zero = _repo_code_review_gate_face(
+            ["core/a.py"], self.proot, self.run_id)
+        self.assertEqual(face_zero["variant"], "zero_valid_rows")
+        self.assertEqual(face_zero["variant_label"], "零有效行")
+        self.assertIn("零有效行", err_zero)
+        # 读取失败：主产物存在但 read_text 抛 OSError
+        import pathlib
+        orig_read = pathlib.Path.read_text
+
+        def fake_read(self_p, *a, **k):
+            if self_p.name == self.out.name:
+                raise OSError(13, "Permission denied")
+            return orig_read(self_p, *a, **k)
+
+        pathlib.Path.read_text = fake_read
+        try:
+            err_unread, face_unread = _repo_code_review_gate_face(
+                ["core/a.py"], self.proot, self.run_id)
+        finally:
+            pathlib.Path.read_text = orig_read
+        self.assertEqual(face_unread["variant"], "unreadable_sources")
+        self.assertEqual(face_unread["variant_label"], "读取失败")
+        self.assertIn("读取失败", err_unread)
+        # 缺失变体（无任何产物文件）
+        self.out.unlink(missing_ok=True)
+        err_missing, face_missing = _repo_code_review_gate_face(
+            ["core/a.py"], self.proot, self.run_id)
+        self.assertEqual(face_missing["variant"], "artifact_missing")
+        self.assertEqual(face_missing["variant_label"], "产物缺失")
+        self.assertIn("缺失", err_missing)
+        # 三份文案剔除 run id 后互异（验证场景口径）
+        norm = lambda t: t.replace(self.run_id, "<rid>")
+        self.assertNotEqual(norm(err_missing), norm(err_zero))
+        self.assertNotEqual(norm(err_missing), norm(err_unread))
+        self.assertNotEqual(norm(err_zero), norm(err_unread))
+
     def test_empty_main_file_fails(self):
         self.out.write_text("")
         err = self._gate(["core/a.py"])
@@ -2952,6 +3007,11 @@ class TestEmptyProductRedispatchChain(_EmptyFaceMixins, unittest.TestCase):
         self.assertIn("code-review-101", esc[0]["description"])
         self.assertIn("zero_valid_rows", esc[0]["description"])
         self.assertIn("manifest_count=2", esc[0]["evidence"])
+        # 升级记录同时点名重派链头（验证修复 BUG-03）：告警对账按首派 run id
+        # 检索记录，只带重派 run id 会使升级信号与触发链对不上号。
+        self.assertIn("code-review-100", esc[0]["description"],
+                      "升级记录须携带链头（原 run）id")
+        self.assertIn("redispatch_of=code-review-100", esc[0]["evidence"])
         # 升级后停止：标记置位 + 链登记齐全 + 配额恰耗 1
         self.assertTrue(mon._code_review_redispatch_escalated)
         self.assertEqual(mon._code_review_empty_redispatches, 1)
@@ -3163,6 +3223,83 @@ class TestTerminalSalvageAndToolfaceTrace(unittest.TestCase):
                         "result": text}, ensure_ascii=False) + "\n",
             encoding="utf-8")
 
+    def test_error_run_salvages_trace_without_result_text(self):
+        """result 事件无 result 文本时回退末轮 assistant 文本 + 原文留痕（BUG-04）。
+
+        error 收场转录形态：agent 中途死亡（429），result 事件无终局摘要，
+        结论内容（标记行）只在末轮 assistant 消息里——抢救 MUST 经 assistant
+        回退取到原文并落第二留痕（.fenix/code-review/terminal-salvage-<rid>.txt
+        或日志节选），转录本体之外可 rg 命中；红线不触发核销/code-fix 检查点。
+        """
+        from core.agent_runner import maintenance_runs as mr
+
+        marker = "REVIEW-CONCLUSION-MARKER-9d27"
+        rl = self.proot / ".fenix" / "runs" / f"{self.run_id}.jsonl"
+        rl.write_text(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text",
+                 "text": f"逐文件审查中途被限流打断。结论：{marker} "
+                         f"已审 1/2 文件，core/a.py 无缺陷"}]}}) + "\n"
+            + json.dumps({"type": "result", "subtype": "error_during_execution",
+                          "is_error": True}) + "\n",
+            encoding="utf-8")
+        checkpoint_calls = []
+        runner = self._fake_runner()
+        runner._code_fix_orchestrator = type(
+            "O", (), {"checkpoint": staticmethod(
+                lambda: checkpoint_calls.append(1))})()
+
+        def _boom(*a, **k):
+            raise RuntimeError("API Error: Request rejected (429)")
+
+        runner._run_agent = _boom
+        result = mr.run_code_review(runner, ["core/a.py"], "manual_full",
+                                    window_start=None, scope="full")
+        self.assertFalse(result.success)
+        # 抢救留痕：原文文件落盘且含标记（转录本体之外）
+        trace = self.crdir / f"terminal-salvage-{self.run_id}.txt"
+        self.assertTrue(trace.exists(), "终局消息原文应留痕 terminal-salvage-<rid>.txt")
+        self.assertIn(marker, trace.read_text(encoding="utf-8"))
+        # 红线：MUST NOT 激活 code-fix 检查点
+        self.assertEqual(checkpoint_calls, [],
+                         "error 收场抢救不激活 code-fix 检查点")
+        # 预置台账 open 条目不被误核销（无产物行 → 无 upsert → 无 resolved）
+        ledger = self.crdir / "items.jsonl"
+        if ledger.exists():
+            rows = [json.loads(x) for x in
+                    ledger.read_text(encoding="utf-8").splitlines() if x.strip()]
+            self.assertFalse(
+                [r for r in rows if r.get("status") == "resolved"
+                 or r.get("resolved_at")],
+                "error 收场 MUST NOT 触发全仓快照核销")
+
+    def test_terminal_message_falls_back_to_last_assistant_text(self):
+        """_read_terminal_message：result 文本缺失 → 回退末个 assistant 文本块。"""
+        from core.agent_runner.maintenance_runs import _read_terminal_message
+
+        marker = "ASSISTANT-FALLBACK-MARKER-4f10"
+        rl = self.proot / ".fenix" / "runs" / f"{self.run_id}.jsonl"
+        rl.write_text(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1"},
+                {"type": "text", "text": f"结论：{marker} 审查中断"}]}}) + "\n"
+            + json.dumps({"type": "result", "subtype": "error_during_execution",
+                          "is_error": True}) + "\n",
+            encoding="utf-8")
+        self.assertIn(marker, _read_terminal_message(self.proot, self.run_id))
+        # result 事件带文本时仍以 result 文本为准（不回退）
+        rl.write_text(
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": f"结论：{marker} 审查中断"}]}}) + "\n"
+            + json.dumps({"type": "result", "subtype": "success",
+                          "result": "最终结论行文本"}) + "\n",
+            encoding="utf-8")
+        self.assertEqual(
+            _read_terminal_message(self.proot, self.run_id), "最终结论行文本")
+        # 文件缺失 → 空串（不伪造）
+        self.assertEqual(
+            _read_terminal_message(self.proot, "code-review-missing"), "")
+
     def test_error_run_salvages_terminal_conclusion_rows(self):
         """error 收场且终局消息携带结论行 → 结论行被抢救落账。"""
         from core.agent_runner import maintenance_runs as mr
@@ -3279,16 +3416,73 @@ class TestTerminalSalvageAndToolfaceTrace(unittest.TestCase):
         self.assertTrue(ctx["toolface_missing"], "TOOLFACE-MISSING 分类随行留痕")
         self.assertNotIn("run-m1", runner._run_toolface, "登记消费即摘除")
 
-    def test_run_metrics_without_toolface_zero_change(self):
-        """无预检登记且未传参（提前终态路径）→ 行不带 toolface 键（零变化）。"""
+    def test_run_metrics_without_toolface_unobserved_placeholders(self):
+        """无预检登记且未传参（提前终态路径）→ 工具面键恒落、未观测占位。
+
+        （验证修复 BUG-05 改约：省略键使「预检未跑」与「预检通过」在指标行
+        上不可区分——四键恒落，未观测 None/[] 占位，事后取证零盲区。）
+        """
         runner, logger = self._metric_runner()
         runner._log_run_metrics(
             run_id="run-m2", spec_name="spec-x", agent_type="implementer",
             duration_seconds=0.0, turns=0, usage_info={}, terminal="cancelled",
             provider=None)
         self.assertEqual(len(logger.contexts), 1)
-        self.assertNotIn("toolface_probe", logger.contexts[0])
-        self.assertNotIn("toolface_missing", logger.contexts[0])
+        ctx = logger.contexts[0]
+        self.assertIsNone(ctx["toolface_probe"], "未观测以 None 占位，不省略键")
+        self.assertIsNone(ctx["toolface_declared"])
+        self.assertIsNone(ctx["toolface_tools"])
+        self.assertIsNone(ctx["toolface_missing"])
+
+    def test_run_metrics_minimal_standin_still_writes_row(self):
+        """最小替身（无 _normalize_run_id/无 _run_toolface）→ 行照常落盘。
+
+        （验证修复 BUG-05 回归钉：此前 self._normalize_run_id 裸访问在最小
+        替身上 AttributeError → except 吞成一条 warning，metric 行整体丢失，
+        run_metrics 收尾行未落盘。登记缺失只意味无预检数据，MUST NOT 击穿
+        指标落盘。形态对齐验证场景：直接以最小 self 调用未绑定方法。）
+        """
+        captured = []
+
+        class _CapLogger:
+            def info(self, component, message, context=None):
+                captured.append((component, str(message), context))
+
+            def warning(self, component, message, context=None):
+                captured.append((component, str(message), None))
+
+            error = warning
+
+        class _FakeSelf:
+            logger = _CapLogger()
+            _run_harness = {}
+
+        from core.agent_runner.runner import AgentRunner
+
+        fs = _FakeSelf()
+        AgentRunner._log_run_metrics(
+            fs,
+            run_id="code-review-17960001",
+            spec_name="code-review",
+            agent_type="code-review",
+            duration_seconds=0.1,
+            turns=2,
+            usage_info={},
+            terminal="error",
+            provider=None,
+        )
+        rows = [ctx for _c, _m, ctx in captured
+                if isinstance(ctx, dict)
+                and ctx.get("metric_type") == "run_metrics"]
+        self.assertEqual(len(rows), 1, "指标行 MUST NOT 被替身缺名击穿")
+        ctx = rows[0]
+        self.assertEqual(ctx["run_id"], "code-review-17960001")
+        self.assertEqual(ctx["terminal"], "error")
+        self.assertEqual(ctx["agent_type"], "code-review")
+        tool_keys = [k for k in ctx if ("tool" in k.lower()
+                                        or "precheck" in k.lower()
+                                        or "face" in k.lower())]
+        self.assertTrue(tool_keys, f"收尾行应携带工具面字段，实际键 {sorted(ctx)}")
 
     def test_lane_toolface_missing_classification_from_terminal_text(self):
         """TOOLFACE-MISSING 分类从终态文本补出，随车道收尾指标行转发（6.1）。"""
