@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-10-07 03:30 UTC+8
+> 最后更新：2026-10-30 23:11 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -39,3 +39,7 @@
 | [v3-spec-doc-view](v3-spec-doc-view.md) | v3 SPEC 文档查看 | 2026-10-03 04:59 |
 | [v3-activities-page](v3-activities-page.md) | v3 活动页 | 2026-10-03 04:59 |
 | [v3-settings-page](v3-settings-page.md) | v3 设置页 | 2026-10-03 04:59 |
+| [topology-bigscreen-ui](topology-bigscreen-ui.md) | SPEC 协作拓扑大屏（脱壳全屏双视图、管线视图纵轴真实时间+PM 生命周期链+并行无伪串行边、跨视图联动、下钻复用） | 2026-10-30 23:11 |
+| [collab-graph-bigscreen-ui](collab-graph-bigscreen-ui.md) | 协作图谱大屏（overview 入口、8 角色固定就位、项目筛选器、下钻明细与跨大屏跳转） | 2026-10-30 23:11 |
+| [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏、缺省行为逐字节不变） | 2026-10-30 23:11 |
+| [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |

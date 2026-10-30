@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-30 23:07 UTC+8
+> 最后更新：2026-10-30 23:11 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -62,3 +62,5 @@
 | [verify-dispatch-single-flight](verify-dispatch-single-flight.md) | verify 车道派发单飞（同 spec 在飞集合拒重、prepare 构建互斥、竞争类降级分流） | 2026-10-11 01:47 |
 | [verify-inflight-lane-reclaim](verify-inflight-lane-reclaim.md) | verified 终态在飞验证车道回收（摘队列 + 按完整 run id 取消） | 2026-10-03 04:59 |
 | [verify-result-stamp-contract](verify-result-stamp-contract.md) | 机械快道裁决产物的 role 来源戳契约 | 2026-10-03 04:59 |
+| [verifier-infra-death-triage](verifier-infra-death-triage.md) | verifier 进程级死亡分流（0 轮/存活 <60s 主判据不进 bug-found、infra 台账限次重派、超限冻结暂挂、轮数与 stderr 素材回填） | 2026-10-30 23:11 |
+| [legacy-degrade-prerequisite-gate](legacy-degrade-prerequisite-gate.md) | 新验证流程连续降级熔断（首降级照旧、第 2 次转 blocked+告警附原因链、spec 级 STATE 计数随成功/admin/解冻清零） | 2026-10-30 23:11 |

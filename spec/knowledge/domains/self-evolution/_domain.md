@@ -1,7 +1,7 @@
 # 自省与自进化
-> 最后更新：2026-10-30 22:07 UTC+8
+> 最后更新：2026-10-30 23:11 UTC+8
 
-自省与自进化：每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent、陈旧代码自愈及其冷却保护。本域能力页清单如下。
+自省与自进化：每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent、陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径即时提交。本域能力页清单如下。
 
 ## 能力页
 
@@ -21,3 +21,5 @@
 | [suggested-improvements-ui](suggested-improvements-ui.md) | 改进建议呈现（设置页「自进化」页签） | 2026-10-03 04:59 |
 | [stale-code-selfheal](stale-code-selfheal.md) | 陈旧代码自愈 | 2026-10-30 21:41 |
 | [stale-selfheal-cooldown](stale-selfheal-cooldown.md) | 自愈重启冷却 | 2026-10-03 04:59 |
+| [key-path-stale-preflight](key-path-stale-preflight.md) | 关键路径执行前陈旧代码预检（收尾提交/蒸馏派发/admin choice 三插桩点、WARNING+确保 restart_request+照常执行、路径锚定 daemon 侧） | 2026-10-30 23:11 |
+| [todo-append-commit-on-write](todo-append-commit-on-write.md) | todo.md 追加/改写写后就地提交（pathspec 限定单文件、幂等零提交、git 失败降级不阻断、git 在 flock 外） | 2026-10-30 23:11 |

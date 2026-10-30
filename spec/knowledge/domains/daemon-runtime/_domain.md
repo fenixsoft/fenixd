@@ -1,7 +1,7 @@
 # 守护进程平台
-> 最后更新：2026-10-30 22:41 UTC+8
+> 最后更新：2026-10-30 23:11 UTC+8
 
-守护进程平台域：daemon 进程生命周期、单例与托管链、启动序列与排水语义。
+守护进程平台域：daemon 进程生命周期、单例与托管链、启动序列与排水语义、结构化日志单事件读写治理。
 
 ## 能力页
 
@@ -20,3 +20,4 @@
 | [framework-install](framework-install.md) | 框架安装（依赖检查与软链装配） | 2026-09-27 17:23 |
 | [cli-process-report](cli-process-report.md) | SPEC 进度 CLI 报告（/fenix-process 数据源） | 2026-09-27 17:23 |
 | [cli-status-panel](cli-status-panel.md) | 框架状态面板报告（/fenix-status 数据源） | 2026-09-27 17:23 |
+| [daemon-log-event-governance](daemon-log-event-governance.md) | daemon 日志单事件读写治理（写侧序列化 256KB 封顶 truncated 留痕、读侧锚定窗口跳过超长行不整读入内存） | 2026-10-30 23:11 |
