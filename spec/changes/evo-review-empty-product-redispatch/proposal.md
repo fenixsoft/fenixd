@@ -2,7 +2,7 @@
 
 ## 背景
 
-2026-10-23T16:06:06Z 周期审查 run code-review-1792771331 空转 16 轮（9 次 ToolSearch、0.5535 美元）产出零结果行，产物硬门 repo-code-review-gate（core/agent_runner/result_gate.py:1200）拦下空产物入账后，链路仅记 INFO 完成行即收场：无重派、无升级信号，当晚 316 个 manifest 文件、44 个 fix 提交的复审缺口静默悬置 24 小时。硬门拦截同型「拦截后无止损」已三发（2026-09-23 两次产物缺失变体、本次零有效行变体）。
+2026-10-23T16:06:06Z 周期审查 run code-review-1792771331 空转 16 轮（9 次 ToolSearch、0.5535 美元）产出零结果行，产物硬门 repo-code-review-gate（core/agent_runner/result_gate.py:1141）拦下空产物入账后，链路仅记 INFO 完成行即收场：无重派、无升级信号，当晚 316 个 manifest 文件、44 个 fix 提交的复审缺口静默悬置 24 小时。硬门拦截同型「拦截后无止损」已三发（2026-09-23 两次产物缺失变体、本次零有效行变体）。
 
 根因核查裁决（对照前夜成功 run code-review-1792684949）：两晚 init 装配与 stderr 完全一致，前夜 agent 同样遇到 ToolSearch 对基础工具回 No matches、随后直接调 Bash 成功；失败 run 9 次调用全耗 ToolSearch、从未直调基础工具。ToolSearch 只索引延迟加载工具，对 Bash/Read/Write/Grep 等回 No matches 属按设计——失败根因是 agent 凭检索空推断工具缺失而放弃，属模型行为方差 × 提示词无自救指引的复合。
 

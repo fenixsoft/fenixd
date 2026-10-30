@@ -1,7 +1,8 @@
 # design
 
-- 止损落点：core/admin_monitor.py _run_code_review_checkpoint（:1710）持有 run 完成与硬门结果上下文，重派判定放此处；限次常量仿 RATELIMIT_REDISPATCH_MAX（=1，core/agent_runner/provider_circuit.py:76）放同模块；重派复用既有 run_code_review 调用（:1864）。
-- 变体透出：core/agent_runner/result_gate.py _check_repo_code_review_artifact（:1182-:1200）已区分「产物缺失/读取失败」与「零有效行」两变体，返回结构补 fail_face 摘要（run id、manifest 计数、变体），admin_monitor 组装进完成行与升级告警。
-- 升级信号：复用 admin 信号通道，kind 建议 repo_code_review_empty_product；升级后不再自动重派（避免与 evo-add-review-night-defer-snapshot-writeoff 的顺延/抢救面叠加震荡）。
-- 提示词：agents/code-review.md 追加自救指引段（映射关系在 core/agent_runner/prompt_builder.py:61），不改 prompt_builder 结构。
-- 测试：tests/test_code_review.py 已有门聚合口径用例（:1220-1303），新增重派链路用例（stub run 函数，不真实派发）与提示词断言；升级信号断言携带失败面字段。
+- 止损落点：core/admin_monitor.py _run_code_review_checkpoint（:1720）持有 run 完成与硬门结果上下文（硬门 fail reason 经 maintenance_runs gate_err 分支 :2131-:2140 折进 result 信封 error 字段回传，worker :1871-:1917 已观测终态），重派判定放此处（对齐既有 ratelimit_intent 消费形态 :1905-:1917）；限次常量仿 RATELIMIT_REDISPATCH_MAX（=1，core/agent_runner/provider_circuit.py:76）放同模块，重派复用既有 run_code_review 调用（worker 内 :1874）；升级信号走既有 admin 升级记录通道（admin-dispatch-failure-escalation D1/D2 先例，.fenix/admin_alerts.json）。
+- 双通道重派配额约束：零产物重派与既有 429 重派（_schedule_ratelimit_redispatch :2133，生命周期计数器 :1459）各自独立限次、同为 monitor 生命周期合计 ≤1 同款语义；两通道 MUST NOT 对同一 run 链叠加调度（同一 run 已被任一通道重派后，其后再次硬门拦截只升级不再重派）；升级信号发出后两通道均不再自动重派（避免与 evo-add-review-night-defer-snapshot-writeoff 的顺延/抢救面叠加震荡）。
+- 变体透出：core/agent_runner/result_gate.py _check_repo_code_review_artifact（:1141-:1232，拦截返回 :1216-:1231）已区分「产物缺失/读取失败」与「零有效行」两变体（unreadable 名单 vs 纯零行文案），返回结构补 fail_face 摘要（run id、manifest 计数、变体），调用方 maintenance_runs.py gate_err 分支同步消费，admin_monitor 组装进完成行与升级告警。
+- 并入增量（6dc7，dsh-plugins 实例，其 .fenix/core→/root/fenixd/core symlink，三缺口全落本仓框架代码）：① spawn 后写工具预检落 core/agent_runner/runner.py（claude CLI 子进程装配点，agent_runner 全仓现无 allowedTools 预检）；② 终局消息结论行抢救落 core/agent_runner/maintenance_runs.py error 收场段（:2330-:2356 只读 shard_paths/主产物），红线与既有抢救一致（不触发全仓快照核销、不激活 code-fix 检查点）；③ run_metrics 工具面留痕落 runner.py _log_run_metrics（:1400）。
+- 提示词：agents/code-review.md 追加自救指引段（映射关系在 core/agent_runner/prompt_builder.py:67），不改 prompt_builder 结构；纪律三要素＝基础工具直调＋select: 精确名探测＋TOOLFACE-MISSING fail-fast。
+- 测试：tests/test_code_review.py 已有门聚合口径用例（test_shards_aggregate_and_running :1473），新增重派链路用例（stub run 函数，不真实派发）、双通道限次互斥用例、提示词契约断言（参照 tests/test_prompt_lane_efficiency_sections.py 先例）与抢救/工具面字段断言；升级信号断言携带失败面字段。

@@ -4,7 +4,7 @@
 
 ### Requirement: 零有效行拦截后限次重派与升级
 
-周期审查 run 的产物硬门判定为零有效行（或产物缺失）时，系统 SHALL 自动重派审查 run 至多 1 次；重派产物仍为零有效行时，系统 SHALL 发出 admin 升级信号并停止自动重派。
+周期审查 run 的产物硬门判定为零有效行（或产物缺失）时，系统 SHALL 自动重派审查 run 至多 1 次（限次为 monitor 生命周期合计，与既有 429 重派通道同款语义；两通道 MUST NOT 对同一 run 链叠加调度）；重派产物仍为零有效行时，系统 SHALL 发出 admin 升级信号并停止自动重派。
 
 #### Scenario: 首次零产物自动重派
 
@@ -33,3 +33,17 @@
 
 - WHEN 构造周期审查 run 的提示词
 - THEN 提示词包含「No matches 属按设计、直接调用基础工具」的自救指引段
+
+### Requirement: 工具面预检留痕与终局结论行抢救
+
+spawn 装配后系统 SHALL 执行一次工具面预检并留痕，run_metrics 收尾行 SHALL 携带工具面字段；审查 run 以 error 收场时，系统 SHALL 在既有分片/主产物抢救之外尝试抢救终局消息中的结论行，且 MUST NOT 触发全仓快照核销与 code-fix 检查点（红线与既有 error 收场抢救一致）。
+
+#### Scenario: error 收场抢救终局结论行
+
+- WHEN 审查 run 以 error 收场且终局消息携带结论行
+- THEN 结论行被抢救留痕，且不触发全仓快照核销与 code-fix 检查点
+
+#### Scenario: 工具面预检留痕
+
+- WHEN 审查 run spawn 装配完成并进入收尾
+- THEN 工具面预检结果作为 run_metrics 收尾行字段留痕
