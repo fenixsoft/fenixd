@@ -143,6 +143,24 @@ CONTRACT_FILENAME = "verify.yaml"
 PREPARE_STEP_TIMEOUT = 600  # 单条构建步骤上限（秒）：构建慢是常态，600s 内完不成应修构建
 DEFAULT_READY_TIMEOUT = 60
 
+
+def _ready_timeout_or_default(value) -> int:
+    """ready 超时归一（单一兜底口径，code-review item 9390ed1d58e5）。
+
+    loader 侧已按 _positive_int_or_default 保证正整数（line 684 消费点），
+    此处兜住绕过 loader 手工构造 VerifyContract 的防御路径：非正/非数值
+    一律回退 DEFAULT_READY_TIMEOUT。validate_contract 构造
+    CommandVerifyServer、_discover_port、probe_ready 三处消费点共用同一
+    兜底下限与缺省值——旧实现同一非法值（如 0）在不同阶段分别等 60s/5s/1s，
+    行为不可预期。
+    """
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_READY_TIMEOUT
+    return timeout if timeout > 0 else DEFAULT_READY_TIMEOUT
+
+
 # worktree node_modules 供给模式（verify.yaml deps_mode > config verify.deps_mode > 默认）
 # 默认 hardlink：主树 node_modules 以 os.link 硬链接副本共享 inode，秒级且不占双倍空间。
 DEPS_MODES = ("prefer-offline", "hardlink")
@@ -321,6 +339,19 @@ class VerifyContract:
         spec 重出一期缺省模板，保住「落点在主树内受控目录」语义。
         """
         default_dir = default_evidence_dir(spec_name)
+        # 缺省模板病理复检单点前移（code-review item 86d53600e498）：旧实现
+        # 只在末尾缺省分支复检，declared 非法的早退分支直接返回 default_dir，
+        # 绕过病理 spec 名复检——两条返回路径守卫口径不一致（declared 非法
+        # 叠加 spec 名含 ".." 段时，缺省模板结果同样逃出主树却被原样返回）。
+        # 现在入口处统一复检一次，全部缺省返回都拿受控结果。
+        if _prepare_cwd_bad_reason(default_dir):
+            if logger:
+                logger.warning(
+                    "verify_contract",
+                    f"spec 名非法致缺省证据目录逃逸（按占位 spec 回退缺省"
+                    f"模板）: {spec_name!r}",
+                )
+            default_dir = DEFAULT_EVIDENCE_DIR_TEMPLATE.format(spec="_invalid_spec_")
         bad_declared = _prepare_cwd_bad_reason(self.evidence_dir)
         declared = (
             self.evidence_dir.strip() if isinstance(self.evidence_dir, str) else ""
@@ -335,16 +366,6 @@ class VerifyContract:
             return default_dir
         if declared:
             return declared
-        # 缺省模板结果复检：spec_name 病理（含 ".." 段）时模板结果同样逃出
-        # 主树——无更优回退层级，按占位 spec 重出一期缺省模板（合法相对路径）。
-        if _prepare_cwd_bad_reason(default_dir):
-            if logger:
-                logger.warning(
-                    "verify_contract",
-                    f"spec 名非法致缺省证据目录逃逸（按占位 spec 回退缺省"
-                    f"模板）: {spec_name!r}",
-                )
-            return DEFAULT_EVIDENCE_DIR_TEMPLATE.format(spec="_invalid_spec_")
         return default_dir
 
 
@@ -1173,7 +1194,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                         srv = CommandVerifyServer(
                             proc,
                             injected_port,
-                            timeout=contract.ready.timeout or 60,
+                            timeout=_ready_timeout_or_default(contract.ready.timeout),
                             legacy_hint=contract.serve.port,
                             legacy_pre=legacy_pre,
                         )
@@ -1745,7 +1766,7 @@ class CommandVerifyServer:
     def _discover_port(
         self, injected: Optional[int], timeout: int, legacy_hint: Optional[int], legacy_pre: set
     ) -> Optional[int]:
-        deadline = time.monotonic() + max(timeout, 5)
+        deadline = time.monotonic() + _ready_timeout_or_default(timeout)
 
         def _probe_in_budget(url: str) -> bool:
             # deadline 下沉到探针粒度（code-review item 65a895e36c3d）：旧实现
@@ -2295,7 +2316,7 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
     # deadline 用单调时钟（code-review item 95c98a055b78）：对齐
     # _discover_port/_probe_in_budget 的既有纪律——墙上时钟在 NTP 校时回拨时
     # 会拉长就绪等待窗、跳进时骤缩误报超时。
-    deadline = time.monotonic() + max(1, ready.timeout)
+    deadline = time.monotonic() + _ready_timeout_or_default(ready.timeout)
     last_err = ""
     while time.monotonic() < deadline:
         # 轮询按时限钳制（code-review item 3898f0d542ad）：urlopen 超时按剩余

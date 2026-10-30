@@ -288,9 +288,15 @@ def _format_escalation_age(hours: float) -> str:
     return f"{hours:.1f} 小时"
 
 
-def _render_escalation_aging_lines(aged: list, fixture: bool = False) -> List[str]:
+def _render_escalation_aging_lines(
+    aged: list,
+    fixture: bool = False,
+    threshold_hours: int = UNHANDLED_ESCALATION_AGING_HOURS,
+) -> List[str]:
     """龄期盘点明细行（evo-instant-fail-storm-alert-closeout 2.1）。
 
+    龄期文案由 ``threshold_hours`` 插值生成（缺省与判定阈值共用
+    ``UNHANDLED_ESCALATION_AGING_HOURS`` 单源，避免文案与实际过滤口径漂移）。
     空盘点返回 []（零噪音）；fixture 项目逐条带 [fixture] 标注且注明不计
     待办（与告警读侧过滤同口径，MUST NOT 删除/改写告警记录本身）。
     """
@@ -298,10 +304,11 @@ def _render_escalation_aging_lines(aged: list, fixture: bool = False) -> List[st
         return []
     tag = "[fixture] " if fixture else ""
     scope_note = "（验证噪音，不计待办）" if fixture else "（全量台账口径）"
-    lines = [f"- {tag}超 24 小时未处理提醒: {len(aged)} 条{scope_note}"]
+    hours = int(threshold_hours)
+    lines = [f"- {tag}超 {hours} 小时未处理提醒: {len(aged)} 条{scope_note}"]
     for age_hours, rec in aged[:_AGING_DETAIL_MAX_LINES]:
         lines.append(
-            f"  - {tag}[超24h] 未处理升级 [{rec.get('signal_type')}] "
+            f"  - {tag}[超{hours}h] 未处理升级 [{rec.get('signal_type')}] "
             f"spec={rec.get('spec')}: 已登记 {_format_escalation_age(age_hours)}"
             f"未处理，请核查收口路径"
         )
