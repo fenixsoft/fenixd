@@ -78,6 +78,12 @@ class _AnchorParser(HTMLParser):
         if anchor_id:
             self._record(anchor_id, tag, "")
 
+    @staticmethod
+    def _snapshot(texts: list[str]) -> str:
+        # 与 annotator.js elementSnapshot 同口径：段间空格合并后压缩空白
+        # （等价 replace(/\s+/g, " ").trim()），两工具产出可交叉比对
+        return " ".join(" ".join(texts).split())
+
     def handle_endtag(self, tag):
         if tag in _VOID_TAGS:
             return
@@ -85,9 +91,14 @@ class _AnchorParser(HTMLParser):
         for i in range(len(self._stack) - 1, -1, -1):
             if self._stack[i][0] == tag:
                 popped_tag, anchor_id, texts = self._stack[i]
-                text = "".join(texts)
                 if anchor_id:
-                    self._record(anchor_id, popped_tag, text)
+                    self._record(anchor_id, popped_tag, self._snapshot(texts))
+                # 被跨越丢弃的带锚帧（未闭合/错配时）：其 texts 按最近锚祖先
+                # 原则归属自身，回填记录避免快照静默丢失且无任何观测信号
+                for lost_tag, lost_anchor, lost_texts in self._stack[i + 1:]:
+                    if lost_anchor and lost_texts:
+                        self._record(lost_anchor, lost_tag,
+                                     self._snapshot(lost_texts))
                 del self._stack[i:]
                 return
 

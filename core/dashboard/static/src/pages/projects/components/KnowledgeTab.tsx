@@ -198,6 +198,11 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // （effect 先行 return、重试按钮仅 active 分支渲染），在飞请求作废由下方
   // effect 的 inactive 早退分支负责（code-review item 0976e6b64596）。
   const load = useCallback(async () => {
+    // 复位 SPEC 归档弹窗（code-review item a7d441e9e1fc）：load 执行期间渲染走
+    // loading/loadError/禁用早退分支，不渲染 docSpecModal；不复位则残留的
+    // docSpec 会在失败后残留、重试成功回到视图时让弹窗意外重新弹出。load 期间
+    // loading 早退使链接不可点，发起前复位即覆盖失败分支。
+    setDocSpec(null);
     const seq = ++seqRef.current;
     setLoading(true);
     try {
@@ -246,6 +251,10 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     setEnabledUnknown(true);
     setLoadError(null);
     setDocSpec(null);
+    // 清 openPage 在途守卫槽（code-review item f4391a6104d8）：槽随旧项目残留
+    // 时会吞掉新项目同路径的首次点击且无任何加载反馈；在飞响应已由 seqRef 守卫
+    // 判过期作废，清槽无副作用。
+    pageLoadingRef.current = null;
   }, [project]);
 
   // 站内相对链接拦截：spec/archive 归档链接 → 弹 SPEC 文档弹窗；真相源内

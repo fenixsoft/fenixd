@@ -103,14 +103,21 @@ def self_check() -> dict:
 # 版本与缓存
 # ---------------------------------------------------------------------------
 
-def pinned(version_range: str) -> str:
-    """``^6.6.0`` / ``~19.2.7`` / ``19.2.7`` → ``6.6.0``（按画像版本精确缓存）。"""
+def pinned(version_range: str) -> str | None:
+    """``^6.6.0`` / ``~19.2.7`` / ``19.2.7`` → ``6.6.0``（按画像版本精确缓存）。
+
+    无法从中提取精确版本的 range（如 ``>=18 <20``）返回 None：原样拼进
+    ``react@<range>`` 会产出错误的安装参数，调用方须显式跳过 npm 精确
+    安装路径再降级。
+    """
     match = re.search(r"\d+\.\d+(\.\d+)?", version_range or "")
-    return match.group(0) if match else (version_range or "").strip()
+    return match.group(0) if match else None
 
 
 def cache_key(react_version: str, antd_version: str) -> str:
-    return f"react-{pinned(react_version)}-antd-{pinned(antd_version)}"
+    # 不可精确化的 range 回退原串作缓存键，避免不同 range 共享同一缓存目录
+    return (f"react-{pinned(react_version) or react_version}"
+            f"-antd-{pinned(antd_version) or antd_version}")
 
 
 def cache_manifest_read(cache_dir: Path) -> dict | None:
@@ -306,20 +313,27 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
     npm = shutil.which("npm")
     if not npm:
         log.append("bundle-fail: npm 不可用，跳过 npm 精确安装路径")
+    react_pin = pinned(react_version)
+    antd_pin = pinned(antd_version)
+    if npm and (react_pin is None or antd_pin is None):
+        log.append(f"bundle-fail: 版本 range 不可精确化"
+                   f"（react@{react_version} antd@{antd_version}），"
+                   "跳过 npm 精确安装路径，转本地 node_modules 打包")
+        npm = None
 
     with tempfile.TemporaryDirectory(prefix="fenix-proto-vendor-") as tmp:
         tmp_dir = Path(tmp)
         if npm:
             for registry in (None, MIRROR_REGISTRY):
                 label = registry or "默认 registry"
-                log.append(f"npm-install[{label}]: react@{pinned(react_version)} "
-                           f"react-dom@{pinned(react_version)} antd@{pinned(antd_version)} "
+                log.append(f"npm-install[{label}]: react@{react_pin} "
+                           f"react-dom@{react_pin} antd@{antd_pin} "
                            f"esbuild（timeout={install_timeout:g}s）")
                 cmd = [npm, "install", "--prefix", str(tmp_dir), "--no-save", "--no-audit",
                        "--no-fund", "--loglevel=error",
-                       f"react@{pinned(react_version)}",
-                       f"react-dom@{pinned(react_version)}",
-                       f"antd@{pinned(antd_version)}",
+                       f"react@{react_pin}",
+                       f"react-dom@{react_pin}",
+                       f"antd@{antd_pin}",
                        "esbuild"]
                 if registry:
                     cmd += ["--registry", registry]
@@ -342,9 +356,9 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                                        install_timeout, log)
                 if outfile is not None:
                     return _persist_bundle(outfile), {
-                        "react": pinned(react_version),
-                        "react-dom": pinned(react_version),
-                        "antd": pinned(antd_version),
+                        "react": react_pin,
+                        "react-dom": react_pin,
+                        "antd": antd_pin,
                         "esbuild": _esbuild_version(esbuild_bin),
                     }, log
                 # 安装成功但打包失败：与 registry 无关（同入口同依赖树，结果
@@ -386,20 +400,22 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
         if outfile is None:
             return None, None, log
         return _persist_bundle(outfile), {
-            "react": pinned(local_react),
-            "react-dom": pinned(local_react),
-            "antd": pinned(local_antd),
+            "react": pinned(local_react) or local_react,
+            "react-dom": pinned(local_react) or local_react,
+            "antd": pinned(local_antd) or local_antd,
             "esbuild": _esbuild_version(esbuild_bin),
         }, log
 
 
 def cdn_urls(react_version: str, antd_version: str) -> dict[str, str]:
     """CDN ESM 兜底资源清单（importmap 用）。"""
+    react = pinned(react_version) or react_version
+    antd = pinned(antd_version) or antd_version
     return {
-        "react": f"{CDN_BASE}/react@{pinned(react_version)}",
-        "react-dom": f"{CDN_BASE}/react-dom@{pinned(react_version)}",
-        "antd": f"{CDN_BASE}/antd@{pinned(antd_version)}"
-                f"?deps=react@{pinned(react_version)},react-dom@{pinned(react_version)}",
+        "react": f"{CDN_BASE}/react@{react}",
+        "react-dom": f"{CDN_BASE}/react-dom@{react}",
+        "antd": f"{CDN_BASE}/antd@{antd}"
+                f"?deps=react@{react},react-dom@{react}",
     }
 
 
@@ -514,17 +530,32 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
             project, react_version, antd_version, install_timeout)
         degradation_path.extend(bundle_log)
         if vendor_js is not None and bundled_versions is not None:
-            entry = write_cache(cache_dir, bundled_versions, vendor_js,
-                                selfcheck["node"]["version"])
-            cache_entry = {"dir": entry, "manifest": cache_manifest_read(entry)}
-            degradation_path.append(f"vendor-cache-write: 已写入缓存 {entry.name}")
-            # 打包产物已复制入缓存，清理系统临时落点（只清系统临时目录内的）
             try:
-                vj = Path(str(vendor_js))
-                if tempfile.gettempdir() in vj.resolve().parents:
-                    vj.unlink(missing_ok=True)
-            except OSError:
-                pass
+                entry = write_cache(cache_dir, bundled_versions, vendor_js,
+                                    selfcheck["node"]["version"])
+            except (OSError, ValueError) as exc:
+                # 缓存目录不可写（权限/只读/.fenix 被普通文件占据等）不硬崩，
+                # 与「node/npm 缺失或打包失败时逐级降级」同一契约：记原因后
+                # 作废本次产物，继续 CDN / 仿样降级
+                degradation_path.append(
+                    f"vendor-cache-write-fail: 缓存写入失败"
+                    f"（{type(exc).__name__}: {exc}），本次打包产物作废，"
+                    "继续 CDN / 仿样降级")
+                try:
+                    Path(str(vendor_js)).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                vendor_js = None
+            else:
+                cache_entry = {"dir": entry, "manifest": cache_manifest_read(entry)}
+                degradation_path.append(f"vendor-cache-write: 已写入缓存 {entry.name}")
+                # 打包产物已复制入缓存，清理系统临时落点（只清系统临时目录内的）
+                try:
+                    vj = Path(str(vendor_js))
+                    if tempfile.gettempdir() in vj.resolve().parents:
+                        vj.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     cdn_ok = False
     cdn_reason = None
@@ -562,6 +593,11 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
         assets = {
             "urls": cdn_urls(react_version, antd_version),
             "snippet": cdn_importmap_snippet(react_version, antd_version),
+            # importmap 裸名导入无 integrity 属性可用（SRI 不适用于 ES module
+            # 映射），供应链风险只能显式标注供生成侧提示用户
+            "note": "CDN 资源无完整性校验（importmap 直接执行 esm.sh 返回内容，"
+                    "无 SRI）：CDN 被劫持或返回被篡改 JS 时将在浏览器执行任意代码，"
+                    "生成原型时须向用户说明该风险",
         }
 
     ignored = git_ignored(cache_dir)

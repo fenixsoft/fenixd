@@ -140,7 +140,10 @@ export default function SpecTimeline({
             // 其余状态 ocrJoinNote 返回 null 零渲染）；detail 为门禁合成同源辅助文案
             const ocrNote = ocrJoinNote(item.ocr_gate?.status);
             return {
-              color: isRollback ? '#ec835a' : 'gray',
+              // 回退圆点走语义 token.colorWarning（code-review 180d01dc3edb，对齐
+              // b64f38deac7d token 化口径）：与下方「↩ 状态回退」orange Tag 同语气；
+              // runDotColor 以 status 为输入、回退是方向语义非状态，故不直接复用
+              color: isRollback ? token.colorWarning : 'gray',
               children: (
                 <div style={cardBox(false)}>
                   <div style={headRow}>
@@ -268,19 +271,22 @@ export default function SpecTimeline({
             const vDur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
             // 统计明细（N 场景/通过/失败/错误/警告）放内容区正文行：数字着色、
             // 0 值项省略，分隔符对齐列表页 VerifyCell 悬浮汇总口径；耗时放标题行
+            // 数字着色走语义 token（code-review 180d01dc3edb，对齐 b64f38deac7d
+            // token 化口径）：通过 colorSuccess、失败/错误 colorError、警告
+            // colorWarning，随主题定制变化
             const statParts: ReactNode[] = [];
             if (item.total != null) statParts.push(<span key="total">{item.total} 场景</span>);
             if (item.passed != null) {
-              statParts.push(<span key="passed" style={{ color: '#52c41a' }}>通过 {item.passed}</span>);
+              statParts.push(<span key="passed" style={{ color: token.colorSuccess }}>通过 {item.passed}</span>);
             }
             if (!!item.failed) {
-              statParts.push(<span key="failed" style={{ color: '#ff4d4f' }}>失败 {item.failed}</span>);
+              statParts.push(<span key="failed" style={{ color: token.colorError }}>失败 {item.failed}</span>);
             }
             if (!!item.errors) {
-              statParts.push(<span key="errors" style={{ color: '#ff4d4f' }}>错误 {item.errors}</span>);
+              statParts.push(<span key="errors" style={{ color: token.colorError }}>错误 {item.errors}</span>);
             }
             if (!!item.warnings) {
-              statParts.push(<span key="warnings" style={{ color: '#faad14' }}>警告 {item.warnings}</span>);
+              statParts.push(<span key="warnings" style={{ color: token.colorWarning }}>警告 {item.warnings}</span>);
             }
             return {
               color: hasIssue || vWarn ? 'orange' : 'green',
@@ -301,7 +307,9 @@ export default function SpecTimeline({
                     <div style={{ fontSize: 14 }}>
                       {statParts.map((node, i) => (
                         <Fragment key={i}>
-                          {i > 0 && <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}> · </span>}
+                          {/* code-review 180d01dc3edb：分隔符走 colorTextQuaternary
+                              （原 rgba(0,0,0,0.45) 在暗色主题深底上几乎不可见） */}
+                          {i > 0 && <span style={{ color: token.colorTextQuaternary }}> · </span>}
                           {node}
                         </Fragment>
                       ))}

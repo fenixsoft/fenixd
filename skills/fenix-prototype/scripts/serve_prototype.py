@@ -97,6 +97,23 @@ def remove_pid_file(proto_dir: Path) -> None:
 def process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        # Windows 的 os.kill 对任意非 CTRL_* 信号值等价 TerminateProcess，
+        # 绝不能拿它做探活（PID 被复用后会误杀无辜进程）；改用 OpenProcess 查询。
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -107,7 +124,11 @@ def process_alive(pid: int) -> bool:
 
 
 def process_cmdline(pid: int) -> str:
-    """读进程命令行（Linux /proc；不可用时返回空串）。"""
+    """读进程命令行（仅 Linux /proc；不可用时返回空串）。
+
+    注意：macOS/Windows 等无 /proc 平台上恒返回空串——命令行核实整体失效，
+    调用方（probe_existing）须据此显式标注降级，而非静默判 stale。
+    """
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         return raw.replace(b"\x00", b" ").decode("utf-8", "replace")
@@ -138,8 +159,15 @@ def probe_existing(proto_dir: Path, script_path: str) -> dict:
     script_identified = script_path in cmdline or Path(script_path).name in cmdline
     if script_identified and recorded_dir == str(proto_dir.resolve()):
         return {"state": "reuse", "info": info}
+    if cmdline:
+        return {"state": "stale", "info": info,
+                "reason": f"PID {pid} 存活但非本原型服务器实例（命令行核实不符），不误杀、直接接管"}
+    # 无 /proc 平台（macOS/Windows 等）命令行核实不可用：显式标注给调用方，
+    # 而非静默判 stale（避免同目录每次重复叠加新实例、覆盖 PID 文件）。
     return {"state": "stale", "info": info,
-            "reason": f"PID {pid} 存活但非本原型服务器实例（命令行核实不符），不误杀、直接接管"}
+            "reason": f"PID {pid} 存活但命令行核实不可用（本平台无 /proc，"
+                      "无法确认为本脚本实例），保守判残留接管",
+            "cmdline_check": "unavailable"}
 
 
 def stop_server(proto_dir: Path, script_path: str) -> dict:
@@ -187,6 +215,13 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002 - 签名对齐基类
         pass
 
+    # 目录请求一律 403：原型伺服只需 HTML 入口（目录下有 index.html 时根路径
+    # 不受影响），关闭 stdlib 默认的目录列举，避免 --host 0.0.0.0 时 LAN 内
+    # 可枚举原型目录全部文件（含 feedback.json 与 .proto-server.json）。
+    def list_directory(self, path):
+        self.send_error(403, "Directory listing is not allowed")
+        return None
+
     # ── POST /feedback ────────────────────────────────────────────────
     def do_POST(self):
         if self.path.split("?")[0].rstrip("/") != "/feedback":
@@ -221,24 +256,32 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
         self._send_json(200, {"ok": True, "stored": str(path)})
 
     def _append_feedback(self, annotation: dict) -> Path:
-        """追加一条批注进 feedback.json（列表追加，锁内读改写）。"""
+        """追加一条批注进 feedback.json（锁内读改写，保留既有 dict 结构）。"""
         target = self.proto_dir / FEEDBACK_FILE_NAME
         with _FEEDBACK_LOCK:
             entries: list = []
+            doc: dict | None = None  # dict 形态（如 annotator.js 本地导出）整体保留
             if target.is_file():
                 try:
                     existing = json.loads(target.read_text(encoding="utf-8"))
                     if isinstance(existing, list):
                         entries = existing
                     elif isinstance(existing, dict) and isinstance(existing.get("feedback"), list):
+                        doc = existing
                         entries = existing["feedback"]
                 except (OSError, ValueError):
                     entries = []
             entries.append(annotation)
+            if doc is not None:
+                # dict 形态保留原结构整体回写，round 等同级字段不丢
+                doc["feedback"] = entries
+                payload: dict | list = doc
+            else:
+                payload = entries  # 裸 list 形态按现有逻辑回写数组
             # tmp 文件名带进程/线程唯一后缀：并发写各用各的 tmp，避免内容交错
             tmp = target.with_name(
                 f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                            encoding="utf-8")
             tmp.replace(target)
         return target

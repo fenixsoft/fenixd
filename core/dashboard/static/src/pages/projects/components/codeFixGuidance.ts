@@ -8,7 +8,8 @@
 //
 // 键与 core/code_fix.py 全部 blocked 写入点的 reason 同源盘点（2026-09-25）：
 //   disabled / failed_batch_retained / failed_batch_maxed / wip_gate_blocked /
-//   wip_overlap_at_select / regression_contract_missing / regression_section_missing
+//   wip_overlap_at_select / regression_contract_missing / regression_section_missing /
+//   zero_progress_paused
 // 后端新增 reason 的漂移由 blockedReasonInfo 的「宁严勿松」回退兜底
 // （显示原码 + 需人工排查，不静默、不给误导性指引）。
 
@@ -49,6 +50,10 @@ const BLOCKED_REASONS: Record<string, BlockedReasonInfo> = {
   regression_section_missing: {
     label: 'verify.yaml 缺 regression 段，链无法投批',
     guidance: '在 verify.yaml 中补写 regression 段',
+  },
+  zero_progress_paused: {
+    label: '链级零进度护栏熔断：连续多轮收尾零核销，已暂停自动重派',
+    guidance: '新一轮评审产出台账变更后自动解除恢复重派；台账持续无变更时需人工处置（手动重派入口）',
   },
 };
 
