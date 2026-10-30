@@ -1700,33 +1700,43 @@ class DistillManager:
         ok, err = self._spawn_once(proot, prompt, model)
         if ok:
             return True, None
-        if model is None and _stderr_hits_unrecognized_model(err or ""):
-            rejected = _extract_rejected_model(err or "")
-            bare = _bare_model_name(rejected) if rejected else None
-            if bare:
-                logger.warning(
-                    "knowledge-distill run 死于 unrecognized_model（生效模型名"
-                    " %s 疑为宿主别名解析产物），以裸模型名 %s 自动重试一次",
-                    rejected,
-                    bare,
-                )
-                ok_retry, err_retry = self._spawn_once(proot, prompt, bare)
-                if ok_retry:
-                    logger.info(
-                        "knowledge-distill 以裸模型名 %s 重试成功", bare
-                    )
-                    return True, None
-                return False, (
-                    f"{err_retry}；首次拒识（生效模型名 {rejected}）后已以裸"
-                    f"模型名 {bare} 自动重试一次仍失败"
-                )
-            # 裸名形态（生效名已无可剥别名后缀）或未能提取生效名：同因重试
-            # 必然再拒，直接按终态收场；reason 注明拒识形态与生效模型名。
+        if not _stderr_hits_unrecognized_model(err or ""):
+            return False, err
+        # 拒识形态命中：无论是否重试，收场 error（随 give_up 进 todo.md 台账
+        # reason）恒注明拒识形态与生效模型名——stderr 尾部截断后该事实不丢失。
+        rejected = _extract_rejected_model(err or "")
+        if model is not None:
+            # 显式传名（含配置名）仍被拒：网关侧确定性拒识（provider_circuit
+            # 既有结论：同一模型名再试必然再拒；MERGE-NOTES 2026-10-30 裸名
+            # 形态先例），MUST NOT 同因重试，直接按终态收场。
             return False, (
-                f"{err}；拒识形态 unrecognized_model（生效模型名 "
-                f"{rejected or '未知'}），无可用更裸模型名可兜底，不重试"
+                f"{err}；拒识形态 unrecognized_model（生效模型名 {model}，"
+                "显式传名仍被拒属确定性失败），不重试"
             )
-        return False, err
+        bare = _bare_model_name(rejected) if rejected else None
+        if bare:
+            logger.warning(
+                "knowledge-distill run 死于 unrecognized_model（生效模型名"
+                " %s 疑为宿主别名解析产物），以裸模型名 %s 自动重试一次",
+                rejected,
+                bare,
+            )
+            ok_retry, err_retry = self._spawn_once(proot, prompt, bare)
+            if ok_retry:
+                logger.info(
+                    "knowledge-distill 以裸模型名 %s 重试成功", bare
+                )
+                return True, None
+            return False, (
+                f"{err_retry}；拒识形态 unrecognized_model：首次拒识（生效模型"
+                f"名 {rejected}）后已以裸模型名 {bare} 自动重试一次仍失败"
+            )
+        # 裸名形态（生效名已无可剥别名后缀）或未能提取生效名：同因重试
+        # 必然再拒，直接按终态收场；reason 注明拒识形态与生效模型名。
+        return False, (
+            f"{err}；拒识形态 unrecognized_model（生效模型名 "
+            f"{rejected or '未知'}），无可用更裸模型名可兜底，不重试"
+        )
 
     def _spawn_once(self, proot: Path, prompt: str, model: "str | None") -> tuple:
         """单次 spawn claude -p 并等待结束（``model``=本次显式传名；None=不传）。"""

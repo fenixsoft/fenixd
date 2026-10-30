@@ -19,6 +19,7 @@ monkeypatch ``core.knowledge._MANAGER`` / ``_in_pytest`` / ``validate_knowledge`
 不受用户级配置漂移影响。
 """
 
+import json
 import os
 import subprocess
 import tempfile
@@ -26,7 +27,7 @@ import threading
 import time
 import unittest
 import shutil
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import sys
@@ -56,18 +57,42 @@ def _git(proot: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 class _Proc0:
-    """fake Popen：exit code 可配，prompt 经 communicate 首参回调（stdin 口径）。"""
+    """fake Popen：exit code / stderr 可配，prompt 经 communicate 首参回调（stdin 口径）。"""
 
     pid = -1
 
-    def __init__(self, returncode=0, on_prompt=None):
+    def __init__(self, returncode=0, on_prompt=None, stderr=""):
         self.returncode = returncode
         self._on_prompt = on_prompt
+        self._stderr = stderr
 
     def communicate(self, prompt=None, timeout=None):
         if self._on_prompt is not None:
             self._on_prompt(prompt or "")
-        return "", ""
+        return "", self._stderr
+
+
+class _ScriptedSpawn:
+    """fake spawn（evo-distill-model-name-fallback 3.1）：按脚本逐次返回
+    (returncode, stderr)，并记录每次 argv（--model 透传断言用）。"""
+
+    def __init__(self, script):
+        self.script = list(script)  # [(returncode, stderr), ...]
+        self.argvs = []  # 每次 spawn 收到的完整 argv
+        self.calls = 0
+
+    def __call__(self, cmd, cwd, env=None):
+        self.calls += 1
+        self.argvs.append(list(cmd))
+        rc, err = self.script.pop(0) if self.script else (0, "")
+        return _Proc0(returncode=rc, stderr=err)
+
+    def model_of(self, idx):
+        """第 idx 次 spawn 的 --model 实参（未传返回 None）。"""
+        argv = self.argvs[idx]
+        if "--model" not in argv:
+            return None
+        return argv[argv.index("--model") + 1]
 
 
 class _GateSpawn:
@@ -149,6 +174,10 @@ class DistillResumeTestBase(unittest.TestCase):
         return self._wait_until(
             lambda: not any(w.is_alive() for w in mgr._workers.values())
         )
+
+    def _set_config(self, yaml_text: str) -> None:
+        """改写项目级 config.yaml（knowledge.model 显式传名用例）。"""
+        (self.root / ".fenix" / "config.yaml").write_text(yaml_text, encoding="utf-8")
 
 
 # ── 3.1 台账生命周期 ─────────────────────────────────────────────────
@@ -444,6 +473,251 @@ class TestIdleDistillDimension(DistillResumeTestBase):
         daemon = self._daemon()
         with mock.patch.object(kn, "_get_dispatcher", side_effect=RuntimeError("boom")):
             self.assertTrue(daemon._is_idle())
+
+
+# ── evo-distill-model-name-fallback 3.1：显式模型名与拒识兜底 ────────────
+
+
+def _clear_model_warn_dedup() -> None:
+    """清掉 knowledge.model 的进程级告警去重（同进程多用例各自断言告警）。"""
+    from core import config as config_mod
+
+    for key in [
+        k for k in list(config_mod._CONFIG_READER_WARNED)
+        if k[0] == "knowledge.model"
+    ]:
+        config_mod._CONFIG_READER_WARNED.discard(key)
+
+
+class TestKnowledgeModelConfig(DistillResumeTestBase):
+    """knowledge.model 读取器：缺省/空值/非法回退不传名并告警，合法值生效。"""
+
+    def setUp(self):
+        super().setUp()
+        _clear_model_warn_dedup()
+
+    def tearDown(self):
+        _clear_model_warn_dedup()
+        super().tearDown()
+
+    def test_missing_falls_back_with_warning(self):
+        with self.assertLogs("fenixd.config", level="WARNING") as cm:
+            self.assertIsNone(
+                __import__("core.config", fromlist=["ConfigLoader"])
+                .ConfigLoader.get_knowledge_model({"knowledge": {"enabled": True}})
+            )
+        self.assertTrue(
+            any("knowledge.model 未配置" in o for o in cm.output), cm.output
+        )
+
+    def test_empty_and_invalid_fall_back_with_warning(self):
+        from core.config import ConfigLoader
+
+        with self.assertLogs("fenixd.config", level="WARNING") as cm:
+            self.assertIsNone(ConfigLoader.get_knowledge_model(
+                {"knowledge": {"model": "   "}}))
+            _clear_model_warn_dedup()
+            self.assertIsNone(ConfigLoader.get_knowledge_model(
+                {"knowledge": {"model": 123}}))
+        self.assertTrue(
+            any("knowledge.model 非法值" in o for o in cm.output), cm.output
+        )
+
+    def test_valid_value_stripped(self):
+        from core.config import ConfigLoader
+
+        self.assertEqual(
+            ConfigLoader.get_knowledge_model(
+                {"knowledge": {"model": " glm-5.3-flash "}}
+            ),
+            "glm-5.3-flash",
+        )
+
+
+class TestExplicitModelPassthrough(DistillResumeTestBase):
+    """spawn 恒传显式裸模型名：配置生效时 --model 进 argv，回退时不传。"""
+
+    def test_config_model_reaches_argv(self):
+        self._set_config("knowledge:\n  enabled: true\n  model: glm-test-bare\n")
+        spawn = _ScriptedSpawn([(0, "")])
+        mgr = DistillManager(spawn=spawn)
+        with mock.patch.object(kn, "validate_knowledge", lambda p: []):
+            mgr.dispatch(self.root, [N1])
+            self.assertTrue(self._wait_workers_done(mgr), "worker 未收尾")
+        self.assertEqual(spawn.calls, 1)
+        self.assertEqual(spawn.model_of(0), "glm-test-bare")
+
+    def test_unconfigured_spawns_without_model_flag(self):
+        # 缺省（fixture 无 model 键）：回退现行为，argv 无 --model
+        spawn = _ScriptedSpawn([(0, "")])
+        mgr = DistillManager(spawn=spawn)
+        with mock.patch.object(kn, "validate_knowledge", lambda p: []):
+            mgr.dispatch(self.root, [N1])
+            self.assertTrue(self._wait_workers_done(mgr))
+        self.assertEqual(spawn.calls, 1)
+        self.assertIsNone(spawn.model_of(0))
+
+
+class TestUnrecognizedModelFallback(DistillResumeTestBase):
+    """拒识 stderr 判别与裸模型名单次兜底重试（R2）。"""
+
+    POISON_ERR = (
+        "claude 进程非零退出（exit=1）；stderr 尾部: "
+        "[claude-code:unrecognized_model] glm-5.3-flash[1M]"
+    )
+    # 裸名形态先例（MERGE-NOTES 2026-10-30，fenixd.log:7935）：生效名无别名
+    # 后缀仍被网关拒识，stderr 命中同一 [claude-code:unrecognized_model] 形态
+    BARE_ERR = (
+        "claude 进程非零退出（exit=1）；stderr 尾部: "
+        "[claude-code:unrecognized_model] glm-5.3-flash"
+    )
+
+    def _dispatch_and_wait(self, mgr):
+        with mock.patch.object(kn, "validate_knowledge", lambda p: []):
+            mgr.dispatch(self.root, [N1])
+            self.assertTrue(self._wait_workers_done(mgr), "worker 未收尾")
+
+    def test_alias_rejection_retries_once_with_bare_name(self):
+        """拒识命中且未显式传名 → 以裸名自动重试一次并成功入账。"""
+        spawn = _ScriptedSpawn([(1, self.POISON_ERR), (0, "")])
+        mgr = DistillManager(spawn=spawn)
+        self._dispatch_and_wait(mgr)
+        self.assertEqual(spawn.calls, 2, "未以裸模型名重试（或重试不止一次）")
+        self.assertEqual(spawn.model_of(0), None)
+        self.assertEqual(spawn.model_of(1), "glm-5.3-flash")
+        self.assertTrue(self._wait_ledger_empty(), "重试成功后台账未清除")
+        # 无 todo 台账（成功收场不登）
+        todo = (self.root / ".fenix" / "todo.md")
+        if todo.exists():
+            self.assertNotIn("knowledge-distill 重试", todo.read_text(encoding="utf-8"))
+
+    def test_retry_failure_registers_todo_once(self):
+        """重试仍失败 → 走既有 give_up→登台账，台账恰一条且注明生效模型名。"""
+        spawn = _ScriptedSpawn([(1, self.POISON_ERR), (1, self.BARE_ERR)])
+        mgr = DistillManager(spawn=spawn)
+        self._dispatch_and_wait(mgr)
+        self.assertEqual(spawn.calls, 2)
+        self.assertTrue(self._wait_ledger_empty(), "give_up 清理确认后台账未清除")
+        todo = (self.root / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        self.assertEqual(
+            todo.count("knowledge-distill 重试：归档"), 1, "台账重复登记"
+        )
+        self.assertIn("glm-5.3-flash", todo, "台账未注明生效模型名")
+        self.assertIn("unrecognized_model", todo, "台账未注明拒识形态")
+        self.assertIn("自动重试一次仍失败", todo)
+
+    def test_explicit_model_rejected_no_retry(self):
+        """显式传名仍被拒 → 确定性失败不重试，直接 give_up 且注明生效模型名。"""
+        self._set_config("knowledge:\n  enabled: true\n  model: glm-test-bare\n")
+        spawn = _ScriptedSpawn([(1, self.BARE_ERR)])
+        mgr = DistillManager(spawn=spawn)
+        self._dispatch_and_wait(mgr)
+        self.assertEqual(
+            spawn.calls, 1, "显式传名被拒后发生同因重试（MUST NOT）"
+        )
+        self.assertEqual(spawn.model_of(0), "glm-test-bare")
+        todo = (self.root / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        self.assertEqual(todo.count("knowledge-distill 重试：归档"), 1)
+        self.assertIn("glm-test-bare", todo, "台账未注明生效模型名")
+        self.assertIn("不重试", todo)
+
+    def test_bare_name_rejection_no_retry(self):
+        """未传名但生效名已是裸名形态（无可剥别名后缀）→ 不重试直接收场。"""
+        spawn = _ScriptedSpawn([(1, self.BARE_ERR)])
+        mgr = DistillManager(spawn=spawn)
+        self._dispatch_and_wait(mgr)
+        self.assertEqual(
+            spawn.calls, 1, "裸名形态同因重试（重试必然再拒，MUST NOT）"
+        )
+        todo = (self.root / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        self.assertEqual(todo.count("knowledge-distill 重试：归档"), 1)
+        self.assertIn("glm-5.3-flash", todo)
+
+
+# ── evo-distill-model-name-fallback 3.1：台账龄期提醒 ────────────────────
+
+
+class TestRetryLedgerAge(DistillResumeTestBase):
+    """todo.md 重试行登记龄期扫描：超 24h 每日至多一条 admin 提醒。"""
+
+    STALE = (date.today() - timedelta(days=3)).isoformat()
+
+    def setUp(self):
+        super().setUp()
+        self._saved_marker = kn._STALE_RETRY_REMINDED_ON
+        kn._STALE_RETRY_REMINDED_ON = None
+
+    def tearDown(self):
+        kn._STALE_RETRY_REMINDED_ON = self._saved_marker
+        super().tearDown()
+
+    def _write_todo(self, stale_line: str) -> None:
+        (self.root / ".fenix" / "todo.md").write_text(
+            f"## {self.STALE}\n\n### 知识真相源\n{stale_line}\n\n"
+            f"## {TODAY}\n\n### 知识真相源\n"
+            f"- [ ] knowledge-distill 重试：归档 {N2} — 新登记欠账\n",
+            encoding="utf-8",
+        )
+
+    def _alerts(self) -> list:
+        path = self.root / ".fenix" / "admin_alerts.json"
+        if not path.exists():
+            return []
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_stale_line_alerts_once_per_day(self):
+        """超 24h 未重试 → 恰一条 SIGNAL 提醒；同日再扫描幂等不重发。"""
+        self._write_todo(
+            f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        )
+        r1 = kn.check_retry_ledger_age(self.root)
+        self.assertTrue(r1["reminded"])
+        self.assertIn(N1, r1["stale"][0])
+        alerts = self._alerts()
+        self.assertEqual(len(alerts), 1, "首次扫描应恰产生一条提醒")
+        self.assertEqual(alerts[0]["kind"], "signal")
+        self.assertEqual(
+            alerts[0]["signal_type"], "knowledge_distill_retry_stale"
+        )
+        self.assertIn(N1, alerts[0]["description"])
+        # 同日幂等（daemon 进程内当日标记）：无新失败、无台账变化，仍不重发
+        r2 = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r2["reminded"])
+        self.assertTrue(r2.get("suppressed"))
+        self.assertEqual(len(self._alerts()), 1, "同日重复提醒")
+
+    def test_periodic_scan_without_new_failures_still_triggers(self):
+        """无任何蒸馏派发（无新失败）时直接调用扫描仍产生提醒（R3 反「顺带
+        扫描」依赖）。"""
+        self._write_todo(
+            f"- [ ] knowledge-distill 重试：归档 {N1} — run 失败: 旧欠账"
+        )
+        self.assertTrue(kn.check_retry_ledger_age(self.root)["reminded"])
+        self.assertEqual(len(self._alerts()), 1)
+
+    def test_checked_line_stops_reminder(self):
+        """行被勾选后停止提醒（R3）。"""
+        self._write_todo(
+            f"- [x] knowledge-distill 重试：归档 {N1} — run 失败: 已人工处置"
+        )
+        r = kn.check_retry_ledger_age(self.root)
+        self.assertFalse(r["reminded"])
+        self.assertEqual(r["stale"], [])
+        self.assertEqual(self._alerts(), [])
+
+    def test_removed_line_and_fresh_line_no_alert(self):
+        """文件无欠账行 / 行只在当日日期节（未超 24h）→ 不提醒。"""
+        # 只有当日行：未超龄
+        (self.root / ".fenix" / "todo.md").write_text(
+            f"## {TODAY}\n\n### 知识真相源\n"
+            f"- [ ] knowledge-distill 重试：归档 {N2} — 新登记欠账\n",
+            encoding="utf-8",
+        )
+        self.assertFalse(kn.check_retry_ledger_age(self.root)["reminded"])
+        self.assertEqual(self._alerts(), [])
+        # 行移除（todo.md 恢复空）：同样静默
+        (self.root / ".fenix" / "todo.md").write_text("", encoding="utf-8")
+        self.assertFalse(kn.check_retry_ledger_age(self.root)["reminded"])
 
 
 if __name__ == "__main__":
