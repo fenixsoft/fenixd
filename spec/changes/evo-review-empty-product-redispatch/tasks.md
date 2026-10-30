@@ -44,6 +44,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-review-empty-product-redispatch/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/evo-review-empty-product-redispatch/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论=5 项产品 Bug 全部属实：result_gate 缺 variant_label 且缺失/零行变体同文、admin_monitor 零产物通道升级不带链头 run id、_read_terminal_message 仅读 result 事件（429 error 收场无文本可抢救）、_log_run_metrics 无登记时整体省略工具面键；场景断言与 spec/design 条款相符，非场景缺陷）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（修复落点：result_gate 三变体中文标注 variant_label+缺失文案独立成段「全部缺失（未落盘）」；admin_monitor._escalate_code_review_empty_product 增 original_run_id 形参、零产物重派 worker 升级透出链头（redispatch_of）；maintenance_runs._read_terminal_message assistant 末轮回退+_persist_terminal_message_trace 原文落 .fenix/code-review/terminal-salvage-<run_id>.txt；runner._log_run_metrics 工具面四键恒落+登记键归一 getattr 回退防最小替身击穿指标落盘）
+- [x] 修复后重跑验证确认通过（tests/test_code_review.py 146 项全绿；触面回归 test_run_metrics_persistence/test_admin_dispatch_escalation/test_admin_dispatch_dedup/test_self_review_terminal_crosscheck/test_run_stall_accounting 合计 218 项通过；6 失败场景映射 12 项测试逐条重跑 PASSED，证据 .fenix/verify-evidence/evo-review-empty-product-redispatch/verifyfix-rerun-scenarios.txt）

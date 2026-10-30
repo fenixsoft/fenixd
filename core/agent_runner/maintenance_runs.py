@@ -2877,6 +2877,13 @@ def _read_terminal_message(project_root, run_id: str) -> str:
     `'"type": "result"'` 子串预筛 + 解析后复核 type 字段（转录伪命中行不复核
     会顶替真实事件）。文件缺失/读失败/无 result 事件返回空串（无终局消息可
     抢救，回退不伪造）。
+
+    assistant 回退（验证修复 BUG-04）：error 收场转录的 result 事件可能**无
+    result 文本**（``{"type":"result","subtype":"error_during_execution"}``，
+    agent 中途死亡未生成终局摘要），但末轮 assistant 消息已携带结论内容——
+    result 文本为空时回退取末个 ``type=assistant`` 事件的文本块（content 为
+    block 列表取末个 ``{"type":"text"}`` 的 text，content 为字符串原样取）。
+    回退只放宽取数源，不改变下游行提取判据（非结论行形态仍不会被抢救落账）。
     """
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     try:
@@ -2888,17 +2895,37 @@ def _read_terminal_message(project_root, run_id: str) -> str:
     except OSError:
         return ""
     last_text = ""
+    last_assistant = ""
     for line in raw.splitlines():
         line = line.strip()
-        if '"type": "result"' not in line:
+        if ('"type": "result"' not in line
+                and '"type": "assistant"' not in line
+                and '"type":"result"' not in line
+                and '"type":"assistant"' not in line):
             continue
         try:
             ev = json.loads(line)
         except (json.JSONDecodeError, RecursionError):
             continue
-        if isinstance(ev, dict) and ev.get("type") == "result":
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "result":
             last_text = str(ev.get("result") or "")
-    return last_text
+        elif ev.get("type") == "assistant":
+            msg = ev.get("message")
+            blocks = msg.get("content") if isinstance(msg, dict) else msg
+            texts: list[str] = []
+            if isinstance(blocks, str):
+                texts.append(blocks)
+            elif isinstance(blocks, list):
+                for block in blocks:
+                    if (isinstance(block, dict)
+                            and block.get("type") == "text"
+                            and isinstance(block.get("text"), str)):
+                        texts.append(block["text"])
+            if texts:
+                last_assistant = texts[-1]
+    return last_text or last_assistant
 
 
 def _extract_terminal_review_rows(text: str) -> list:
@@ -2957,6 +2984,42 @@ def _extract_terminal_review_rows(text: str) -> list:
     return rows
 
 
+def _persist_terminal_message_trace(runner, run_id: str, message: str) -> str:
+    """终局消息原文留痕（evo-review-empty-product-redispatch 5.1 抢救补强）。
+
+    结论行可结构化补写进产物，叙述性结论（「已审 N/M」「core/x 无缺陷」等
+    结论行标记）无法结构化——原文落 ``.fenix/code-review/terminal-salvage-
+    <run_id>.txt``（转录本体之外的第二留痕，供人工取证与验证场景 rg 命中）
+    并记 WARNING 携节选。写失败返回空串、只记 WARNING，不改变 run 失败判定
+    （对齐既有抢救口径）；message 为空（无终局消息可留痕）返回空串零动作。
+    """
+    text = str(message or "")
+    if not text.strip():
+        return ""
+    try:
+        tdir = Path(runner.project_root) / ".fenix" / "code-review"
+        tdir.mkdir(parents=True, exist_ok=True)
+        tpath = tdir / f"terminal-salvage-{run_id}.txt"
+        tpath.write_text(text, encoding="utf-8")
+    except OSError as e:
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "code-review",
+                f"终局消息原文留痕失败（run {run_id}）: {e}",
+            )
+        return ""
+    excerpt = text.strip().replace("\n", " ")[:500]
+    _log = getattr(runner, "logger", None)
+    if _log is not None:
+        _log.warning(
+            "code-review",
+            f"终局消息结论行抢救留痕: run={run_id} 原文已落 "
+            f".fenix/code-review/terminal-salvage-{run_id}.txt（节选）: {excerpt}",
+        )
+    return str(tpath)
+
+
 def _salvage_terminal_conclusion_rows(runner, run_id: str) -> list:
     """终局消息结论行抢救（evo-review-empty-product-redispatch 5.1）。
 
@@ -2966,9 +3029,15 @@ def _salvage_terminal_conclusion_rows(runner, run_id: str) -> list:
     消息/无可识别结论行返回空 list（零动作）。调用方（run_code_review
     error 收场段）随后走既有聚合读侧 upsert——分片优先去重保证 agent 已
     落盘行不被本抢救补写的行顶替。
+
+    原文留痕（验证修复 BUG-04）：终局消息非空即先经
+    ``_persist_terminal_message_trace`` 落第二留痕（叙述性结论不可结构化，
+    结论行标记只存在于原文时，补写产物路径取不到内容）——留痕本身不触发
+    核销、不激活 code-fix 检查点（红线与既有抢救一致，run_ok 仍 False）。
     """
     try:
         message = _read_terminal_message(runner.project_root, run_id)
+        _persist_terminal_message_trace(runner, run_id, message)
         rows = _extract_terminal_review_rows(message)
         if not rows:
             return []

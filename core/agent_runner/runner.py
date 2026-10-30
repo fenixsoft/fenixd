@@ -9647,8 +9647,20 @@ class AgentRunner:
         MISSING 分类。不传参时回退取 ``_run_toolface`` 登记并**消费即摘除**
         （对齐 _run_harness 收尾摘除口径，防长驻 daemon 无界增长）；调用方
         显式传参（如车道侧从终局文本补出 TOOLFACE-MISSING 分类）时以传参为
-        准并同样摘除登记，防重复消费。两来源皆缺时省略 toolface_* 键（提前
-        终态路径 run 未 spawn，行零变化）。
+        准并同样摘除登记，防重复消费。
+
+        工具面字段**恒落键**（验证修复 BUG-05）：``toolface_probe`` /
+        ``toolface_declared`` / ``toolface_tools`` / ``toolface_missing`` 四键
+        每行都写，两来源皆缺（提前终态路径 run 未 spawn、登记未及建立、或
+        最小装配替身无登记）时以未观测值 None 占位——省略键的
+        形态会让「预检未跑」与「预检通过」在指标行上不可区分，事后取证盲区
+        （验证场景断言收尾行必含工具面键）。
+        取登记键经 ``_normalize_run_id`` 归一，但该方法对最小替身可能不存在
+        （AgentRunner.__new__ 直构的轻量上下文/独立 ``_log_run_metrics`` 调用
+        形态）——经 getattr 回退原样 run_id，登记缺失只意味着无预检数据，
+        MUST NOT 因此击穿整条指标落盘（此前 ``self._normalize_run_id`` 裸访问
+        在替身上 AttributeError → except 分支吞成一条 warning，metric 行整体
+        丢失）。
         """
         usage = usage_info or {}
         latency = latency or {}
@@ -9700,22 +9712,30 @@ class AgentRunner:
             # （spawn 装配登记）为底、调用方显式传参覆盖合流（如车道侧从终局
             # 文本补出 TOOLFACE-MISSING 分类）；消费即摘除（对齐 _run_harness
             # 收尾摘除口径，防长驻 daemon 无界增长）。分类字段 toolface_missing：
-            # TOOLFACE-MISSING fail-fast 标记的观测（bool）；两来源都不含分类、
-            # 预检亦未判装配面缺基础工具时为 None（未观测）。
+            # TOOLFACE-MISSING fail-fast 标记的观测；两来源都不含分类、预检亦
+            # 未判装配面缺基础工具时为 None（未观测）。四键恒落（未观测 None
+            # 占位，验证修复 BUG-05——省略键使「未跑预检」与「预检通过」不可
+            # 区分）。登记键归一经 getattr 回退（最小替身无 _normalize_run_id，
+            # 裸访问 AttributeError 会击穿整条指标落盘）。
             tf_registry = self.__dict__.setdefault("_run_toolface", {})
-            _tf_base = tf_registry.get(self._normalize_run_id(run_id))
+            _norm = getattr(self, "_normalize_run_id", None)
+            _tf_key = _norm(run_id) if callable(_norm) else str(run_id)
+            _tf_base = tf_registry.get(_tf_key)
             tf = dict(_tf_base) if isinstance(_tf_base, dict) else {}
             if isinstance(toolface, dict):
                 tf.update(toolface)
-            tf_registry.pop(self._normalize_run_id(run_id), None)
-            if tf:
-                metric_ctx["toolface_probe"] = tf.get("probe")
-                metric_ctx["toolface_declared"] = bool(tf.get("declared"))
-                metric_ctx["toolface_tools"] = list(tf.get("tools") or [])
-                missing = tf.get("missing")
-                if missing is None:
-                    missing = tf.get("probe") == "toolface-missing-basic-tools"
-                metric_ctx["toolface_missing"] = bool(missing)
+            tf_registry.pop(_tf_key, None)
+            _tf_missing = tf.get("missing")
+            if _tf_missing is None:
+                _tf_missing = (
+                    tf.get("probe") == "toolface-missing-basic-tools"
+                ) if tf else None
+            metric_ctx["toolface_probe"] = tf.get("probe")
+            metric_ctx["toolface_declared"] = (
+                bool(tf.get("declared")) if tf else None)
+            metric_ctx["toolface_tools"] = (
+                list(tf.get("tools") or []) if tf else None)
+            metric_ctx["toolface_missing"] = _tf_missing
             logger.info(
                 "agent_runner",
                 f"run metrics: {agent_type} {terminal} '{spec_name}'",
