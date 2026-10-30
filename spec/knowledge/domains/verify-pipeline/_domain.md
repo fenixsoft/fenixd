@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-30 21:26 UTC+8
+> 最后更新：2026-10-30 23:07 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -26,7 +26,7 @@
 | [verify-contract-autodraft-ui](verify-contract-autodraft-ui.md) | 契约 AI 生成按钮 | 2026-10-03 04:59 |
 | [verify-contract-signal-dispatch](verify-contract-signal-dispatch.md) | 验证契约信号派发 | 2026-10-03 04:59 |
 | [autodraft-dispatch-dedup](autodraft-dispatch-dedup.md) | 契约自主起草派发去重 | 2026-10-03 04:59 |
-| [verify-contract-preflight](verify-contract-preflight.md) | 契约模板态前置预检（实现期巡检提前唤起草，不阻塞验证消费点） | 2026-10-07 04:01 |
+| [verify-contract-preflight](verify-contract-preflight.md) | 契约前置预检与 serve 一致性静态检查（模板态巡检唤起草 + kind 集×serve/start 能力交叉校验三路径挂载 + 免唤起能力覆盖口径） | 2026-10-30 23:07 |
 | [verify-scenario-freeze](verify-scenario-freeze.md) | 验证场景冻结 | 2026-10-03 04:59 |
 | [verification-scenario-freeze](verification-scenario-freeze.md) | 场景冻结契约版本化 | 2026-10-03 04:59 |
 | [frozen-scenario-schema-migration](frozen-scenario-schema-migration.md) | 冻结场景结构迁移 | 2026-10-03 04:59 |
