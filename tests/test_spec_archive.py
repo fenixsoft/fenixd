@@ -345,18 +345,24 @@ class TestAutoArchiveCheck(unittest.TestCase):
         from core.config import ConfigLoader
         from core.dashboard.data import auto_archive_check
         r = auto_archive_check(self.root, ConfigLoader.resolve_config(self.root))
-        self.assertEqual(r["archived"], 2)
+        # 排水语义（evo-spec-changes-archive-drain R1）：>= 阈值即触发，单轮
+        # 按 updated 升序归档至终态目录计数低于阈值——4 条终态、阈值 2 →
+        # 归档 3 条（a/b/c），仅最晚的 d 保留（3 > 2 → 1 < 2 收敛）
+        self.assertEqual(r["archived"], 3)
+        self.assertEqual(r["target_count"], 3)
         self.assertFalse((self.root / "spec" / "changes" / "a").is_dir())
         self.assertFalse((self.root / "spec" / "changes" / "b").is_dir())
-        self.assertTrue((self.root / "spec" / "changes" / "c").is_dir())
+        self.assertFalse((self.root / "spec" / "changes" / "c").is_dir())
         self.assertTrue((self.root / "spec" / "changes" / "d").is_dir())
         # 条目已迁出至归档清单（archived_by=auto），不再滞留 STATE.md
         active = parse_state(self.root)
         self.assertNotIn("a", active)
         self.assertNotIn("b", active)
+        self.assertNotIn("c", active)
         manifest = parse_archived_state(self.root)
         self.assertEqual(manifest["a"].get("archived_by"), "auto")
         self.assertEqual(manifest["b"].get("archived_by"), "auto")
+        self.assertEqual(manifest["c"].get("archived_by"), "auto")
 
     def test_no_action_under_threshold(self):
         self._write_project({
@@ -379,7 +385,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
         self.assertEqual(r["threshold"], 0)
 
     def test_single_failure_skip_continues(self):
-        """目标已存在（conflict）→ 跳过该条，其余照常归档。"""
+        """目标已存在（conflict）→ 跳过该条，其余照常归档（失败让位补位排水）。"""
         from datetime import date
         self._write_project({
             "f1": {"status": "pushed", "updated": "2026-01-01T00:00:00+00:00"},
@@ -394,11 +400,15 @@ class TestAutoArchiveCheck(unittest.TestCase):
         from core.config import ConfigLoader
         from core.dashboard.data import auto_archive_check
         r = auto_archive_check(self.root, ConfigLoader.resolve_config(self.root))
-        self.assertEqual(r["archived"], 1)
+        # 排水语义（evo-spec-changes-archive-drain R1）：阈值 1、3 条终态 →
+        # 排水至低于阈值需 3 条；f1 冲突跳过（不减少计数），f2/f3 让位补位
+        # 全部归档，终态目录计数 0 < 1 收敛
+        self.assertEqual(r["archived"], 2)
         self.assertEqual(r["skipped"], 1)
-        # f1 不动（冲突），f2 归档
+        # f1 不动（冲突），f2、f3 归档
         self.assertTrue((self.root / "spec" / "changes" / "f1").is_dir())
         self.assertFalse((self.root / "spec" / "changes" / "f2").is_dir())
+        self.assertFalse((self.root / "spec" / "changes" / "f3").is_dir())
 
     def test_non_terminal_and_archived_not_counted(self):
         """implementing 与已归档（目录缺失）的 SPEC 不计入终态数量。"""

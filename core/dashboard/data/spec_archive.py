@@ -32,6 +32,22 @@ from .admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS  # noqa: F401
 # 统计三处共用，避免内联 ("done", "pushed") 多处漂移。
 _TERMINAL_STATUSES = ("done", "pushed")
 
+# 时效归档滞留阈值（evo-spec-changes-archive-drain R2/R3）：目录 mtime 滞留
+# ≥ 3 天（72 小时）才满足时效归档；时间基准统一为目录 mtime（目录 mtime 即
+# 内容最后变更时刻；STATE `updated` 仅用于 R1 排序，孤儿目录无 STATE 字段）。
+STALE_ARCHIVE_AGE_SECONDS = 72 * 3600
+
+# 时效归档判据的验证报告文件名（core/verify_report.py 在验证裁决放行时写盘，
+# 可作「已验证」物证；report_gate 把关）。
+_VERIFICATION_REPORT_NAME = "verification-report.md"
+
+# R4 每日滞留盘点的 24 小时去重窗口（auto_archive_check 每 300s 调用一次，
+# 去重防刷屏；design 决策 5）。
+_DAILY_AUDIT_INTERVAL_SECONDS = 24 * 3600
+
+# 每日盘点去重水位（进程内 wall-clock 时间戳；模块级变量便于测试逐用例重置）。
+_daily_audit_last_ts = 0.0
+
 
 def _rollback_nested_archive_move(
     spec_dir: Path, target: Path, moved: Path
@@ -425,7 +441,10 @@ def is_spec_archived(
     return spec_name in archived_entries
 
 
-def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
+def archive_spec(
+    project_root, spec_name: str, archived_by: str = "ui",
+    allow_unregistered: bool = False,
+) -> dict:
     """归档 SPEC：把 `spec/changes/<name>/` 移到 `spec/archive/YYYY-MM-DD-<name>/`。
 
     与 `bin/fenix_archive.py::archive_change` 相同的移动逻辑与命名规则
@@ -440,18 +459,32 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
     Args:
         project_root: 项目根目录。
         spec_name: 要归档的 SPEC 名。
-        archived_by: 迁出路径溯源（缺省 ``ui``；daemon 自动归档传 ``auto``）。
+        archived_by: 迁出路径溯源（缺省 ``ui``；daemon 自动归档传 ``auto``，
+            孤儿接管传 ``auto-orphan``）。
+        allow_unregistered: 孤儿形态入参（evo-spec-changes-archive-drain
+            design 决策 6）：True 时跳过 STATE 成员查找与终态防御校验，供
+            STATE.md 无条目的孤儿目录归档（R3，配 ``archived_by=auto-orphan``）。
+            其余机制全部保留——防穿越白名单、TOCTOU 回滚、runs 产物清理、
+            commit_archive_move 自动提交；孤儿无条目可迁出，evict 迁出环节
+            跳过，不写 STATE/清单条目（不改 STATE 语义）。孤儿判据（含验证
+            报告 + 滞留超期）由调用方承担（见 _archive_aged_specs）。归档
+            溯源以成功结果 dict 的 ``archived_by`` 字段与调用方日志为台账
+            （孤儿不落清单条目）。
 
     Returns:
         {"ok": bool, "found": bool, "from": str|null, "to": str|null, "error": str|null}
-        - spec 不在 STATE.md → {"ok": False, "found": False, ...}
-        - 非终态 → {"ok": False, "found": True, "error": "仅终态..."}
+        - spec 不在 STATE.md → {"ok": False, "found": False, ...}（孤儿形态
+          跳过该校验）
+        - 非终态 → {"ok": False, "found": True, "error": "仅终态..."}（孤儿
+          形态跳过该校验）
         - 活跃目录缺失（已归档）→ {"ok": False, "found": True, "archived_already": True}
         - 目标已存在 → {"ok": False, "found": True, "conflict": True}（不覆盖；
           含预检后并发创建的竞态冲突——能回滚则回滚后报 conflict，无法回滚时
           ``to`` 为内容实际落点、error 带落点留人工核对）
-        - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径}
-          附 ``state_evicted``（迁出成功）或 ``evict_warning``（迁出失败降级）
+        - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径,
+          "archived_by": <溯源值>}
+          附 ``state_evicted``（迁出成功）或 ``evict_warning``（迁出失败降级）；
+          孤儿形态无迁出环节，两者均不出现
 
         结构化标志（archived_already/conflict）供 HTTP 层按标志选状态码，
         与 error 展示文案无耦合。
@@ -462,7 +495,8 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
     # 先过 kebab-case 白名单，与读侧 resolve_spec_dir/get_spec_doc 同口径
     # （读侧 code-review item 91ba50839948 已确立，写侧对齐）；非法名按本函数
     # 既有「未找到」形态返回——HTTP 层 found=False → 404，daemon 自动归档路径
-    # 按 error 跳过并记日志，不引入新返回形态
+    # 按 error 跳过并记日志，不引入新返回形态。孤儿形态同样不豁免白名单
+    # （design 决策 6：防穿越白名单保留）。
     if validated_spec_name(spec_name) is None:
         return {
             "ok": False,
@@ -472,23 +506,27 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
             "error": f"spec not found: {spec_name}",
         }
     specs = parse_state(proot)
-    if spec_name not in specs:
-        return {
-            "ok": False,
-            "found": False,
-            "from": None,
-            "to": None,
-            "error": f"spec not found: {spec_name}",
-        }
-    status = specs[spec_name].get("status")
-    if status not in _TERMINAL_STATUSES:
-        return {
-            "ok": False,
-            "found": True,
-            "from": None,
-            "to": None,
-            "error": f"仅终态 spec（done/pushed）可归档，当前状态: {status}",
-        }
+    if not allow_unregistered:
+        if spec_name not in specs:
+            return {
+                "ok": False,
+                "found": False,
+                "from": None,
+                "to": None,
+                "error": f"spec not found: {spec_name}",
+            }
+        status = specs[spec_name].get("status")
+        if status not in _TERMINAL_STATUSES:
+            return {
+                "ok": False,
+                "found": True,
+                "from": None,
+                "to": None,
+                "error": f"仅终态 spec（done/pushed）可归档，当前状态: {status}",
+            }
+    # 孤儿形态（allow_unregistered=True）：跳过上方成员查找与终态防御校验
+    # （design 决策 6）——孤儿目录无 STATE 条目可查、无状态可校验，归档判据
+    # 由调用方（_archive_aged_specs 的 R3 分流）承担。
 
     change_dir = proot / "spec" / "changes" / spec_name
     if not change_dir.is_dir():
@@ -542,20 +580,27 @@ def archive_spec(project_root, spec_name: str, archived_by: str = "ui") -> dict:
             "error": error,
         }
     result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved), "error": None}
+    # 归档台账溯源：archived_by 随成功结果带回（daemon 自动归档与孤儿接管的
+    # 溯源单点）。孤儿形态不写 STATE/清单条目（design 决策 6），其「台账」
+    # 即本字段 + 调用方 _archive_log 的 info 留痕。
+    result["archived_by"] = archived_by
     # 归档成功即迁出（add-archive-state-migration D3）：目录已移入 archive/，
     # 立即把 STATE.md 条目迁出至归档清单。迁出失败降级为 evict_warning——
     # 不回滚目录移动、不改 ok 语义；条目留在 STATE.md 等待存量回填下一轮迁出。
-    from core.state_machine import StateMachine, project_state_logger
+    # 孤儿形态（allow_unregistered=True）无条目可迁出：跳过 evict 环节，
+    # 不写 STATE/清单条目（design 决策 6）。
+    if not allow_unregistered:
+        from core.state_machine import StateMachine, project_state_logger
 
-    try:
-        sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
-        ev = sm.evict_spec(spec_name, archived_by=archived_by)
-        if ev.get("ok"):
-            result["state_evicted"] = True
-        else:
-            result["evict_warning"] = ev.get("error")
-    except Exception as e:  # noqa: BLE001 fail-open：move 已成功，迁出异常只降级为告警
-        result["evict_warning"] = str(e)
+        try:
+            sm = StateMachine(proot / ".fenix" / "STATE.md", project_state_logger(proot))
+            ev = sm.evict_spec(spec_name, archived_by=archived_by)
+            if ev.get("ok"):
+                result["state_evicted"] = True
+            else:
+                result["evict_warning"] = ev.get("error")
+        except Exception as e:  # noqa: BLE001 fail-open：move 已成功，迁出异常只降级为告警
+            result["evict_warning"] = str(e)
     # remove-auto-run-cleanup：run 产物清理的唯一入口 = SPEC 归档。change 目录
     # 移动成功后，清理 .fenix/runs/ 中属于该 spec 的产物（fix-run-cleanup-
     # attach-spec-archive D1：顶层与 archive/ 归档副本一并删除，不再移档）。
@@ -648,16 +693,173 @@ def backfill_archived_entries(project_root, logger=None) -> dict:
     }
 
 
-def auto_archive_check(project_root, config: dict, logger=None) -> dict:
-    """daemon 周期自动归档检查（D4）：遍历终态未归档 SPEC，超阈值按 updated 升序归档。
+def _archive_aged_specs(project_root, logger=None) -> dict:
+    """时效归档与孤儿接管（evo-spec-changes-archive-drain R2/R3）。
 
-    设计 D4/D5：主循环每 300s 调用一次；threshold=0 或缺失时跳过**阈值归档**
-    （存量回填不受此开关约束，先回填后阈值归档，add-archive-state-migration
-    4.2）。统计完成（done/pushed）且**活跃目录仍存在**（未归档）的 SPEC 数量，
-    超过阈值时按 STATE.md `updated` 字段升序逐个归档（最久完成的先），
-    直到数量 ≤ 阈值；每条归档成功后同步迁出 STATE.md 条目（archived_by=auto，
-    迁出失败降级告警、条目留待回填）。单条失败（目标已存在等）跳过并记日志，
-    不中断循环。
+    扫描 ``spec/changes/`` 活跃目录，满足「目录含 verification-report.md +
+    目录 mtime 滞留 ≥ 3 天（72 小时）」的目录自动归档，独立于
+    ``archive.auto_threshold``（阈值是活跃区期望水位，时效规则是确定性收尾，
+    design 决策 2）：
+
+    - STATE 终态条目 + 判据成立 → 经既有 archive_spec 归档
+      （archived_by=auto，迁出 STATE 条目至归档清单）；
+    - STATE 无条目的孤儿目录 + 判据成立 → 经孤儿形态入参归档
+      （allow_unregistered=True，archived_by=auto-orphan，不写 STATE/清单
+      条目，design 决策 6）；
+    - 非终态活跃在途目录永不归档（R5）；其余目录不动作（仅每日盘点暴露，
+      见 _daily_stale_audit）。
+
+    Args:
+        project_root: 项目根目录。
+        logger: Logger 实例（可选，用于记录归档动作）。
+
+    Returns:
+        {"age_archived": int, "orphan_archived": int, "skipped": int}
+    """
+    proot = Path(project_root)
+    changes_root = proot / "spec" / "changes"
+    if not changes_root.is_dir():
+        return {"age_archived": 0, "orphan_archived": 0, "skipped": 0}
+    specs = parse_state(proot)
+    now = time.time()
+    age_archived = orphan_archived = skipped = 0
+    for child in sorted(changes_root.iterdir()):
+        if not child.is_dir():
+            continue
+        name = child.name
+        # 防穿越同口径预筛：白名单外的目录名不进入自动归档（archive_spec
+        # 入口校验同样会拒，提前跳过免无谓解析与日志噪声）。
+        if validated_spec_name(name) is None:
+            continue
+        try:
+            has_report = (child / _VERIFICATION_REPORT_NAME).is_file()
+            aged = (now - child.stat().st_mtime) >= STALE_ARCHIVE_AGE_SECONDS
+        except OSError:
+            continue  # 目录并发消失/不可读：本轮跳过，下轮再看
+        if not (has_report and aged):
+            continue
+        registered = name in specs
+        if registered and specs[name].get("status") not in _TERMINAL_STATUSES:
+            continue  # R5：非终态活跃在途目录永不归档
+        archived_by = "auto" if registered else "auto-orphan"
+        # archive_spec 内部仅捕获 OSError；其余异常兜底转失败 dict，单条
+        # 失败跳过并记日志，不中断本轮（与 R1 排水循环同口径）。
+        try:
+            result = archive_spec(
+                proot, name, archived_by=archived_by,
+                allow_unregistered=not registered,
+            )
+        except Exception as e:  # noqa: BLE001
+            result = {
+                "ok": False,
+                "found": True,
+                "from": None,
+                "to": None,
+                "error": f"归档异常: {e}",
+            }
+        if result.get("ok"):
+            if registered:
+                age_archived += 1
+            else:
+                orphan_archived += 1
+            msg = f"时效自动归档({archived_by}): {name} → {result.get('to')}"
+            if result.get("evict_warning"):
+                msg += f"（迁出告警，条目留待回填: {result['evict_warning']}）"
+            _archive_log(logger, "info", msg)
+        else:
+            skipped += 1
+            _archive_log(
+                logger, "warning", f"时效自动归档跳过 {name}: {result.get('error')}"
+            )
+    return {
+        "age_archived": age_archived,
+        "orphan_archived": orphan_archived,
+        "skipped": skipped,
+    }
+
+
+def _scan_stale_dirs(proot: Path) -> list:
+    """R4 盘点扫描（只读）：返回 [(目录名, [类别标记...])]，按目录名排序。
+
+    类别口径（evo-spec-changes-archive-drain R4）：
+    - ① 含 verification-report.md 且滞留 ≥ 3 天（目录 mtime，同 R2 判据）；
+    - ② STATE 无条目的孤儿目录（无条件列示，满足 R3 条件者归档后自然移出）；
+    - ③ STATE 终态但无 verification-report.md 的目录。
+    """
+    changes_root = proot / "spec" / "changes"
+    if not changes_root.is_dir():
+        return []
+    specs = parse_state(proot)
+    now = time.time()
+    flagged: dict = {}
+    for child in sorted(changes_root.iterdir()):
+        if not child.is_dir():
+            continue
+        name = child.name
+        try:
+            has_report = (child / _VERIFICATION_REPORT_NAME).is_file()
+            aged = (now - child.stat().st_mtime) >= STALE_ARCHIVE_AGE_SECONDS
+        except OSError:
+            continue
+        whys: list = []
+        if has_report and aged:
+            whys.append("①报告+滞留≥3天")
+        if name not in specs:
+            whys.append("②孤儿目录")
+        elif specs[name].get("status") in _TERMINAL_STATUSES and not has_report:
+            whys.append("③终态无报告")
+        if whys:
+            flagged[name] = whys
+    return sorted(flagged.items())
+
+
+def _daily_stale_audit(proot: Path, logger=None) -> dict:
+    """R4 每日滞留盘点（24 小时去重，design 决策 5）。
+
+    changes/ 存在滞留目录（_scan_stale_dirs 三类口径任一命中）时，列清单发
+    **一条** INFO 信号（复用 _archive_log 出口）；24 小时内不重复发送，防
+    300 秒周期刷盘。纯信号零动作，不受 ``archive.auto_threshold`` 开关约束
+    （threshold=0 时仍执行，作为新形态滞留的兜底可观测）。
+
+    Returns:
+        {"fired": bool, "stale_dirs": [目录名...]}——fired=False 表示本轮在
+        24h 去重窗口内未触发盘点。
+    """
+    global _daily_audit_last_ts
+    now = time.time()
+    if now - _daily_audit_last_ts < _DAILY_AUDIT_INTERVAL_SECONDS:
+        return {"fired": False, "stale_dirs": []}
+    _daily_audit_last_ts = now
+    flagged = _scan_stale_dirs(proot)
+    if flagged:
+        parts = [f"{name}（{'+'.join(whys)}）" for name, whys in flagged]
+        _archive_log(
+            logger, "info",
+            "每日滞留盘点: spec/changes/ 滞留目录 " + "、".join(parts),
+        )
+    return {"fired": True, "stale_dirs": [name for name, _ in flagged]}
+
+
+def auto_archive_check(project_root, config: dict, logger=None) -> dict:
+    """daemon 周期自动归档检查（D4 + evo-spec-changes-archive-drain R1-R4）。
+
+    主循环每 300s 调用一次，单轮内依次执行：
+
+    1. 存量回填（先回填后归档，D5；不受 auto_threshold 开关约束）；
+    2. **R1 阈值排水**：终态未归档计数 **>=** ``archive.auto_threshold`` 即
+       触发（evo-spec-changes-archive-drain R1：触发由「>」改为「>=」，消除
+       饱和点计数恰等于阈值时的恒不触发冻结），按 STATE.md ``updated`` 升序
+       持续归档可归档条目（最久完成的先；不以 verification-report.md 为
+       前置——否则无报告终态残留会让排水循环无法收敛），直至终态目录计数
+       **低于**阈值。单条失败（目标已存在等）跳过并记日志、不中断循环；
+       失败条目不减少计数，循环遍历全部候选、达标即止。
+    3. **R2/R3 时效归档**（_archive_aged_specs）：终态+含验证报告+目录 mtime
+       滞留 ≥ 3 天的目录归档（archived_by=auto）；孤儿目录同判据经孤儿形态
+       入参归档（archived_by=auto-orphan）——独立于阈值，threshold=0 时一并
+       禁用（design 决策 2：auto_threshold=0 禁用 R1/R2/R3 全部自动归档动作）。
+    4. **R4 每日滞留盘点**（_daily_stale_audit）：24 小时去重，changes/ 存在
+       滞留目录（①报告+滞留≥3天 / ②孤儿 / ③终态无报告）时发一条 INFO——
+       纯信号零动作，不受 threshold 约束。
 
     Args:
         project_root: 项目根目录
@@ -666,13 +868,17 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
 
     Returns:
         {"archived": int, "skipped": int, "target_count": int,
-         "threshold": int, "total_terminal_unarchived": int, "backfill": dict}
-        target_count 为本轮拟归档数 = max(total_terminal_unarchived -
-        threshold, 0)（code-review item 1c9a574c5356：统一三处返回口径；
+         "threshold": int, "total_terminal_unarchived": int, "backfill": dict,
+         "age_archived": int, "orphan_archived": int, "age_skipped": int,
+         "audit": dict}
+        archived/skipped 为 R1 排水计数；target_count 为本轮排水拟归档数 =
+        max(total_terminal_unarchived - threshold + 1, 0)（排水至低于阈值；
         threshold<=0 阈值归档关闭，target_count 恒 0）；
         total_terminal_unarchived 恒为回填后终态未归档真实总数，阈值关闭时
         仍照常统计（code-review item 1045349ad1a8）；
-        backfill 为本轮存量回填计数（add-archive-state-migration 4.2）。
+        backfill 为本轮存量回填计数（add-archive-state-migration 4.2）；
+        age_archived/orphan_archived/age_skipped 为 R2/R3 时效归档计数；
+        audit 为 R4 盘点结果 {"fired": bool, "stale_dirs": [...]}。
     """
     from core.config import ConfigLoader
 
@@ -686,9 +892,9 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     # 回填后重读活跃 STATE：刚迁出的条目不再进入本轮阈值统计
     specs = parse_state(proot)
 
-    # 统计终态 + 未归档（活跃目录仍存在）。阈值关闭（<=0）的早退分支同样
-    # 先完成统计（code-review item 1045349ad1a8）：total_terminal_unarchived
-    # 契约为终态未归档总数，早退直接报 0 会让基于该字段的监控/日志误判无积压
+    # 统计终态 + 未归档（活跃目录仍存在）。阈值关闭（<=0）时同样先完成统计：
+    # total_terminal_unarchived 契约为终态未归档总数，报 0 会让基于该字段的
+    # 监控/日志误判无积压（code-review item 1045349ad1a8）
     candidates = []
     for name, entry in specs.items():
         if entry.get("status") not in _TERMINAL_STATUSES:
@@ -698,64 +904,75 @@ def auto_archive_check(project_root, config: dict, logger=None) -> dict:
         candidates.append((name, entry))
 
     total = len(candidates)
-    if threshold <= 0 or total <= threshold:
-        # 阈值关闭仅跳过阈值归档动作（统计值照常返回）；未超阈值无动作
-        return {
-            "archived": 0,
-            "skipped": 0,
-            "target_count": 0,
-            "threshold": threshold,
-            "total_terminal_unarchived": total,
-            "backfill": backfill,
-        }
 
-    # 按 updated 升序（最久完成的先归档）；缺 updated 归队尾——哨兵取
-    # "9999-12-31"（updated 为 ISO 8601 字符串，字典序必小于该哨兵；空串最小
-    # 会排到队头、抢在最久完成的 spec 之前被归档，code-review item
-    # 411679cf624d）。
-    # 纯 return 无异常面，try/except 属不可达死代码（code-review item
-    # 81f539cc3de8）；updated 经哨兵归一为字符串，排序比较安全。
-    def _sort_key(item):
-        return item[1].get("updated") or "9999-12-31"
-
-    candidates.sort(key=_sort_key)
-
-    to_archive = total - threshold
+    # ── R1 阈值排水（evo-spec-changes-archive-drain）────────────────────
+    # 触发条件由「total > threshold」改为「total >= threshold」：阈值是活跃区
+    # 期望水位，计数到达水位即排水——单轮按 updated 升序持续归档可归档条目，
+    # 直至终态目录计数低于阈值（需成功归档 total - threshold + 1 条；饱和点
+    # 计数恰等于阈值时单轮只腾挪 1 条，积压主体的清空靠 R2 时效归档在同周期
+    # 完成，design 决策 1）。threshold=0 仍为禁用（语义不变）。
     archived_count = 0
     skipped_count = 0
-    for name, _entry in candidates[:to_archive]:
-        # archive_spec 内部仅捕获 OSError；其余异常（runs 归档/自动提交等环节
-        # 抛出的非 OSError）会一路上抛打断整轮循环，违背上方「单条失败跳过并
-        # 记日志，不中断循环」承诺（code-review item 7b8b81ef3a8e）。兜底转成
-        # 既有 error dict 形态走统一 skip 日志路径。
-        try:
-            result = archive_spec(proot, name, archived_by="auto")
-        except Exception as e:
-            result = {
-                "ok": False,
-                "found": True,
-                "from": None,
-                "to": None,
-                "error": f"归档异常: {e}",
-            }
-        if result.get("ok"):
-            archived_count += 1
-            msg = f"自动归档: {name} → {result['to']}"
-            if result.get("evict_warning"):
-                msg += f"（迁出告警，条目留待回填: {result['evict_warning']}）"
-            _archive_log(logger, "info", msg)
-        else:
-            skipped_count += 1
-            msg = f"自动归档跳过 {name}: {result.get('error')}"
-            if result.get("evict_warning"):
-                msg += f"（迁出告警: {result['evict_warning']}）"
-            _archive_log(logger, "warning", msg)
+    target_count = 0
+    if threshold > 0 and total >= threshold:
+        # 按 updated 升序（最久完成的先归档）；缺 updated 归队尾——哨兵取
+        # "9999-12-31"（updated 为 ISO 8601 字符串，字典序必小于该哨兵；空串最小
+        # 会排到队头、抢在最久完成的 spec 之前被归档，code-review item
+        # 411679cf624d）。
+        def _sort_key(item):
+            return item[1].get("updated") or "9999-12-31"
+
+        candidates.sort(key=_sort_key)
+        target_count = total - threshold + 1
+        for name, _entry in candidates:
+            # 达标即止：终态目录计数已低于阈值。目标已存在等单条失败跳过并
+            # 记日志（失败不减少计数，由后续候选让位补位，排水目标仍尽力
+            # 收敛）；archive_spec 内部仅捕获 OSError，其余异常兜底转既有
+            # error dict 形态走统一 skip 日志路径（code-review item
+            # 7b8b81ef3a8e）。
+            if archived_count >= target_count:
+                break
+            try:
+                result = archive_spec(proot, name, archived_by="auto")
+            except Exception as e:
+                result = {
+                    "ok": False,
+                    "found": True,
+                    "from": None,
+                    "to": None,
+                    "error": f"归档异常: {e}",
+                }
+            if result.get("ok"):
+                archived_count += 1
+                msg = f"自动归档: {name} → {result['to']}"
+                if result.get("evict_warning"):
+                    msg += f"（迁出告警，条目留待回填: {result['evict_warning']}）"
+                _archive_log(logger, "info", msg)
+            else:
+                skipped_count += 1
+                msg = f"自动归档跳过 {name}: {result.get('error')}"
+                if result.get("evict_warning"):
+                    msg += f"（迁出告警: {result['evict_warning']}）"
+                _archive_log(logger, "warning", msg)
+
+    # ── R2/R3 时效归档与孤儿接管（独立于阈值；threshold=0 禁用，design 决策 2）
+    if threshold > 0:
+        aged = _archive_aged_specs(proot, logger)
+    else:
+        aged = {"age_archived": 0, "orphan_archived": 0, "skipped": 0}
+
+    # ── R4 每日滞留盘点（24h 去重，纯信号，不受 threshold 约束）──────────
+    audit = _daily_stale_audit(proot, logger)
 
     return {
         "archived": archived_count,
         "skipped": skipped_count,
-        "target_count": to_archive,
+        "target_count": target_count,
         "threshold": threshold,
         "total_terminal_unarchived": total,
         "backfill": backfill,
+        "age_archived": aged["age_archived"],
+        "orphan_archived": aged["orphan_archived"],
+        "age_skipped": aged["skipped"],
+        "audit": audit,
     }
