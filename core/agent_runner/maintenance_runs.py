@@ -57,8 +57,12 @@ from core.code_review import (
     upsert_findings,
 )
 from core.agent_runner.run_files import append_run_line
+# evo-add-api-stall-disposition-closeout 2.3：stall 意图升级判据与分级纯函数
+# 单源（stats["max"] > STALL_ROUND_ESCALATE_SECONDS 等价 warning-escalated 档）。
+from core.agent_runner.latency import STALL_ROUND_ESCALATE_SECONDS
 from core.proc_utils import guard_killpg
 from core.self_review import REVIEW_OUT_PREFIX as _SELF_REVIEW_OUT_PREFIX
+from core.timelib import from_epoch
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
 # 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
@@ -376,6 +380,10 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         _started = time.monotonic()
         turns = 0
         usage_info: dict = {}
+        # evo-add-api-stall-disposition-closeout 1.1：_run_agent 抛出路径无
+        # stall stats，按零样本语义预置 None（与同段 turns=0/usage_info={}
+        # 预置同款，防 except 收尾路径 NameError）。
+        _stall_latency = None
         _claim_settled = True
     finally:
         if not _claim_settled:
@@ -576,6 +584,7 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         usage_info=usage_info,
         run_ok=success,
         provider_name=provider_name,
+        latency=_stall_latency,
     )
     # code-review item e3a860c68d6a：escalate/family_waiver 布尔位走类型
     # 归一助手（与 result 硬门同思路）——LLM 误写成字符串 "false" 时
@@ -845,8 +854,10 @@ def run_self_review(
         # 收尾富指标取数基线（对齐 run_administrator 361-368 同款先例）：
         # _started 量测派发→返回窗口；turns 预置 0——_run_agent 抛出路径不
         # 产生 turns（evo-add-run-metrics-lane-baseline 1.3 同款先例）。
+        # _stall_latency 同款预置 None（closeout 1.1：抛出路径零样本语义）。
         _started = time.monotonic()
         turns = 0
+        _stall_latency = None
         _claim_settled = True
     finally:
         if not _claim_settled:
@@ -939,6 +950,7 @@ def run_self_review(
         usage_info=usage_info,
         run_ok=success,
         provider_name=provider_name,
+        latency=_stall_latency,
     )
     return SelfReviewResult(
         run_id=run_id,
@@ -1320,6 +1332,7 @@ def _log_lane_run_metrics(
     run_ok: bool,
     provider_name: str | None,
     toolface: dict | None = None,
+    latency: dict | None = None,
 ) -> None:
     """maintenance 车道收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）。
 
@@ -1338,6 +1351,12 @@ def _log_lane_run_metrics(
     （TOOLFACE-MISSING 分类等），原样转发给 _log_run_metrics 与 spawn 预检
     登记合流；不传时该车道行不带工具面分类字段（预检登记仍由 _log_run_metrics
     正常消费）。
+
+    ``latency``（evo-add-api-stall-disposition-closeout 1.1）：可选承接
+    _run_agent 返回 5 元组第 5 元素（run 末延迟摘要同一 stats）；缺省 None
+    向后兼容既有调用与车道单测打桩，_run_agent 抛出路径按零样本语义传
+    None——终态 run_metrics 行 latency_* 由 runner._log_run_metrics 既有
+    零样本回退（0/0/None）兜底，五条车道收尾点不再丢失停滞过程指标。
     """
     log_metrics = getattr(runner, "_log_run_metrics", None)
     if log_metrics is None:
@@ -1357,6 +1376,7 @@ def _log_lane_run_metrics(
             terminal="success" if run_ok else "error",
             provider=provider_name,
             toolface=toolface,
+            latency=latency,
         )
     finally:
         getattr(runner, "_run_harness", {}).pop(run_id, None)
@@ -1509,6 +1529,93 @@ def _backfill_salvage_run_metrics(
     return turns, usage
 
 
+# ── API 停滞升级的受控重派意图（evo-add-api-stall-disposition-closeout 2.3）──
+# stall 意图冷却时长（秒）：登记即写进意图 dict 供消费侧（admin_monitor）算
+# Timer 延迟——provider 长尾延迟窗内立即重派大概率重演停滞（design D6），
+# 上限 1 次 + 冷却即止损边界。独立常量不并入限流冷却（PROVIDER_RATELIMIT_
+# COOLDOWN_SECONDS）：一个是 429 配额恢复窗、一个是长尾退避窗，语义互不相干。
+STALL_REDISPATCH_COOLDOWN_SECONDS = 600.0
+# stall 重派上限（次/monitor 生命周期）：与 RATELIMIT_REDISPATCH_MAX 同款
+# 防风暴语义，消费侧（admin_monitor._schedule_stall_redispatch）守卫执行。
+STALL_REDISPATCH_MAX = 1
+
+
+def _register_stall_redispatch_intent(
+    runner, *, run_id: str, provider_name: str | None, latency_max: float
+) -> "dict | None":
+    """登记 ``stall_redispatch`` 重派意图（evo-add-api-stall-disposition-closeout 2.3）。
+
+    与 ``_ratelimit_redispatch_on_terminal`` 同骨架的车道侧意图登记：run jsonl
+    幂等标注（type=stall_redispatch，同 run 只登记一次——防重复登记刷屏）+
+    意图 dict 返回值经结果信封（CodeReviewResult.stall_redispatch）上交消费侧
+    （run_code_review 唯一生产调用方 admin_monitor._worker），由其在冷却到期后
+    延迟重投递；重派上限（STALL_REDISPATCH_MAX=1）与单飞守卫由消费侧执行。
+    所有留痕写失败仅丢留痕不阻断收尾（与 ratelimit 登记同契约）。
+
+    Returns: 意图 dict（reason/provider/run_id/latency_max_seconds/cooldown_
+    until/cooldown_until_epoch/max_redispatches）；同 run 已登记过 → None。
+    """
+    run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+    # 幂等：同 run 已登记过即不再登记（重派后的 run 是新 run_id，消费侧
+    # 上限守卫兜底——这里防的是同 run 重复登记）。尾部 64KiB 窗口读取
+    #（意图行恒在文件尾部，与 _ratelimit_redispatch_on_terminal 同口径）；
+    # 子串预筛命中后复核 JSON type，防嵌入代码/回显的伪命中行误判「已登记」。
+    try:
+        if run_file.exists():
+            size = run_file.stat().st_size
+            with run_file.open("rb") as f:
+                if size > 65536:
+                    f.seek(size - 65536)
+                tail = f.read().decode("utf-8", "replace")
+            for line in tail.splitlines():
+                if '"type": "stall_redispatch"' not in line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "stall_redispatch":
+                    return None
+    except OSError:
+        pass
+    cooldown_until = time.time() + STALL_REDISPATCH_COOLDOWN_SECONDS
+    intent = {
+        "reason": "api stall escalated",
+        "provider": provider_name,
+        "run_id": run_id,
+        "latency_max_seconds": latency_max,
+        "cooldown_until": from_epoch(cooldown_until).isoformat(),
+        "cooldown_until_epoch": cooldown_until,
+        "max_redispatches": STALL_REDISPATCH_MAX,
+    }
+    try:
+        append_run_line(
+            run_file,
+            {
+                "type": "stall_redispatch",
+                "run_id": run_id,
+                "spec": "code-review",
+                "provider": provider_name,
+                "reason": "api stall escalated",
+                "latency_max_seconds": latency_max,
+                "cooldown_until": intent["cooldown_until"],
+                "cooldown_until_epoch": cooldown_until,
+                "max_redispatches": STALL_REDISPATCH_MAX,
+            },
+        )
+    except OSError:
+        pass  # 留痕写失败不阻断意图上交（对齐 ratelimit 登记口径）
+    _log = getattr(runner, "logger", None)
+    if _log is not None:
+        _log.info(
+            "code-review",
+            f"Stall redispatch intent registered (evo-add-api-stall-"
+            f"disposition-closeout) — run={run_id} latency_max={latency_max:.1f}s "
+            f"provider={provider_name!r} cooldown_until={intent['cooldown_until']}",
+        )
+    return intent
+
+
 def run_evolution(
     runner, ready_projects: list, pending_entries: list | None = None
 ) -> EvolutionResult:
@@ -1617,6 +1724,9 @@ def run_evolution(
                 pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
 
     turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
+    # evo-add-api-stall-disposition-closeout 1.1：抛出路径 stall stats 零样本
+    # 语义预置（与上方 turns=0 同款，防 except 收尾路径 NameError）。
+    _stall_latency = None
     try:
         output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
@@ -1848,6 +1958,7 @@ def run_evolution(
         usage_info=usage_info,
         run_ok=run_ok,
         provider_name=provider_name,
+        latency=_stall_latency,
     )
 
     return EvolutionResult(
@@ -2249,6 +2360,9 @@ def run_code_review(
     claude_api_error_status = None
     claude_result_text = ""
     turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
+    # evo-add-api-stall-disposition-closeout 1.1：抛出路径 stall stats 零样本
+    # 语义预置（与上方 turns=0 同款，防 except 收尾路径 NameError）。
+    _stall_latency = None
     try:
         output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
@@ -2645,6 +2759,37 @@ def run_code_review(
                         f"ratelimit_redispatch 意图登记失败（run {run_id}）: {e}",
                     )
 
+    # ── API 停滞升级的受控重派意图（evo-add-api-stall-disposition-closeout 2.3）──
+    # 触发条件收窄（design D3）：仅「warning-escalated 且 run 收尾 error（含
+    # 硬门拒绝）」——停滞本质是 provider 长尾延迟，最终成功的 run 重试是纯
+    # 浪费，停滞致败才值得救。升级判据按 stats["max"] > STALL_ROUND_ESCALATE_
+    # SECONDS 推导并与分级纯函数单源（5 元组 stats 无 grade 键、grade_counts
+    # 两级合桶且不入信封）。与 ratelimit 意图互斥（同 run 双条件 ratelimit
+    # 优先——429 有明确 provider 归因，停滞归因仍是假设）；先抢救后重派的
+    # 顺序由既有收尾结构保证（产物硬门 → error 收场抢救落账 → 意图登记），
+    # 无需新增机制。上限 1 次/monitor 生命周期由消费侧守卫。
+    stall_intent = None
+    if not run_ok and ratelimit_intent is None:
+        _stall_stats = _stall_latency if isinstance(_stall_latency, dict) else None
+        _stall_max = _stall_stats.get("max") if _stall_stats else None
+        if (isinstance(_stall_max, (int, float))
+                and not isinstance(_stall_max, bool)
+                and _stall_max > STALL_ROUND_ESCALATE_SECONDS):
+            try:
+                stall_intent = _register_stall_redispatch_intent(
+                    runner,
+                    run_id=run_id,
+                    provider_name=provider_name,
+                    latency_max=float(_stall_max),
+                )
+            except Exception as e:  # noqa: BLE001 — 意图登记失败不改变失败终态
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "code-review",
+                        f"stall_redispatch 意图登记失败（run {run_id}）: {e}",
+                    )
+
     # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
     # cost_usd，离群初筛按车道分组与成本维度自此可见（全仓扫描的大 turns/
     # 大成本 run 不再失明）。产物硬门/抢救/重派意图已定型 run_ok 后才落行。
@@ -2667,6 +2812,7 @@ def run_code_review(
         run_ok=run_ok,
         provider_name=provider_name,
         toolface=_toolface_note,
+        latency=_stall_latency,
     )
 
     result = CodeReviewResult(
@@ -2686,6 +2832,10 @@ def run_code_review(
     # 1.2，缺省 None——成功/其他失败路径恒 None，消费侧零感知）。消费侧
     # （admin_monitor）组装进完成行并驱动零产物止损（限次重派/升级）。
     result.fail_face = gate_fail_face
+    # stall 意图同款上交（evo-add-api-stall-disposition-closeout 2.3，
+    # result_gate.CodeReviewResult.stall_redispatch 缺省 None——非「停滞致败」
+    # 路径恒为 None，消费侧零感知；与 ratelimit 意图互斥由上方登记条件保证）
+    result.stall_redispatch = stall_intent
     return result
 
 
@@ -3587,6 +3737,9 @@ def run_code_fix(
         stderr_summary = ""
         # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
         turns = 0
+        # evo-add-api-stall-disposition-closeout 1.1：抛出路径 stall stats
+        # 零样本语义预置（与上方 turns=0 同款，防 except 收尾路径 NameError）。
+        _stall_latency = None
         # evo-add-codefix-conn-error-cooldown 1.3：连接类签名同纪律（非
         # _run_agent 失败异常恒 False/空，硬门/计数失败路径不携带）。
         conn_error = False
@@ -3701,6 +3854,7 @@ def run_code_fix(
             usage_info=usage_info,
             run_ok=run_ok,
             provider_name=provider_name,
+            latency=_stall_latency,
         )
 
         return CodeFixResult(

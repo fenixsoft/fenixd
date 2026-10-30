@@ -507,6 +507,23 @@ def _default_ts_parser(entry: dict):
     return _latency_default_ts_parser(entry)
 
 
+def _metrics_latency(stall_latency) -> "dict | None":
+    """终态 run_metrics 行 latency 实参归一（evo-add-api-stall-disposition-closeout 1.2）。
+
+    公共透传 helper（design D1：两条终态链同修、避免散改漂移）：把 ``_run_agent``
+    返回 5 元组第 5 元素（run 末延迟摘要 stats）归一为 ``_log_run_metrics`` 的
+    ``latency`` 实参——dict 原样透传；其余（``_run_agent`` 抛出路径的 None、
+    异常形态）一律归 None，由 ``_log_run_metrics`` 既有零样本回退
+    （latency_rounds=0 / latency_stalls=0 / latency_max=None）兜底，零样本
+    回退语义保持不变。非成功终态的全部 ``_log_run_metrics`` 调用点经本 helper
+    透传；``_run_agent`` 之前早退的调用点无样本上下文（实参即 None），同样
+    走零样本回退。
+    """
+    if isinstance(stall_latency, dict):
+        return stall_latency
+    return None
+
+
 # evo-code-fix-api-timeout-salvage 1.1：CLI 合成的单轮 API 请求超时终态文本
 # （超长单请求超时 → CLI 写出该文本并以 Exit 1 终局）。
 API_TIMEOUT_RESULT_TEXT = "Request timed out"
@@ -3369,6 +3386,12 @@ class AgentRunner:
         # 自然弃用，再败则被新异常覆写）。None 起步：未捕获到即不透传。
         last_stderr_tail = None
         last_exit_code = None
+        # evo-add-api-stall-disposition-closeout 1.2：本 run latency 统计
+        # （_run_agent 返回 5 元组第 5 元素，随每次派发覆写；末次 attempt 的
+        # stats 即收尾口径，与 turns/usage_info 的「末次值跨 attempt 留存」
+        # 同语义）。None 起步：首个 attempt 派发前早退的终态路径无样本上下文，
+        # 经 _metrics_latency 归 None 走 _log_run_metrics 零样本回退。
+        run_latency_stats = None
         # chain_cursor 不设本地别名（code-review item 41e028ab3b35）：实际
         # 读写全部经 st.chain_cursor（provider_marker / 链推进 /
         # _resolve_provider_candidate），原别名从未被消费，已删除。
@@ -3394,6 +3417,7 @@ class AgentRunner:
                 run_id=run_id, attempt=attempt, max_retries=max_retries,
                 start_time=start_time, turns=turns, usage_info=usage_info,
                 st=st, handed_off=handed_off,
+                latency=run_latency_stats,
             )
             if _early is not None:
                 return _early
@@ -3420,6 +3444,7 @@ class AgentRunner:
             provider, model, chain, _early = self._resolve_provider_candidate(
                 spec_name, agent_type, run_id, attempt_run_id, start_time,
                 turns, usage_info, st,
+                latency=run_latency_stats,
             )
             if _early is not None:
                 return _early
@@ -3437,6 +3462,7 @@ class AgentRunner:
                 provider_name=provider_name, model=model,
                 wt_path=wt_path, run_id=run_id,
                 st=st, used_wts=used_wts,
+                latency=run_latency_stats,
             )
             if _do_continue:
                 continue
@@ -3725,6 +3751,7 @@ class AgentRunner:
                         transient_budget=transient_budget,
                         start_time=start_time, turns=turns,
                         usage_info=usage_info,
+                        latency=run_latency_stats,
                     )
                     if _gate_yielded is not None:
                         return _gate_yielded
@@ -3836,6 +3863,7 @@ class AgentRunner:
                         transient_budget=transient_budget,
                         start_time=start_time, turns=turns,
                         usage_info=usage_info,
+                        latency=run_latency_stats,
                     )
                     if _yielded is not None:
                         return _yielded
@@ -3994,6 +4022,7 @@ class AgentRunner:
             cancelled_flag=cancelled_flag, shutdown_interrupted=shutdown_interrupted,
             frozen_terminated_flag=frozen_terminated_flag,
             kept_wt_path=kept_wt_path,
+            latency=run_latency_stats,
             # evo-add-verifier-infra-death-triage 1.2：末次 catch-all 捕获的
             # 结构化归因素材透传进终态结果对象（verifier 车道消费）。
             stderr_tail=last_stderr_tail, exit_code=last_exit_code,
@@ -4007,7 +4036,8 @@ class AgentRunner:
                           attempt_run_id: str, max_retries: int, start_time: float,
                           turns: int, usage_info: dict, provider_name, model,
                           wt_path, run_id: str,
-                          st: _AttemptState, used_wts: set) -> tuple:
+                          st: _AttemptState, used_wts: set,
+                          latency: dict | None = None) -> tuple:
         """worktree 复用/新建准备（等价搬移自 R3）。
 
         返回四元组 (wt_path, reuse_worktree, early_result, do_continue)：
@@ -4048,6 +4078,9 @@ class AgentRunner:
                     duration_seconds=time.time() - start_time, turns=turns,
                     usage_info=usage_info, terminal="failure",
                     provider=provider_name, model=model,
+                    # closeout 1.2：非成功终态经公共 helper 透传 latency
+                    # （早退无样本上下文时为 None → 零样本回退，下同）。
+                    latency=_metrics_latency(latency),
                 )
                 return wt_path, reuse_worktree, AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
@@ -4107,6 +4140,7 @@ class AgentRunner:
                         turns=turns, usage_info=usage_info,
                         terminal="failure", provider=provider_name,
                         model=model,
+                        latency=_metrics_latency(latency),
                     )
                     return wt_path, False, AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
@@ -4123,6 +4157,7 @@ class AgentRunner:
                     duration_seconds=time.time() - start_time, turns=turns,
                     usage_info=usage_info, terminal="failure",
                     provider=provider_name, model=model,
+                    latency=_metrics_latency(latency),
                 )
                 return wt_path, False, AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
@@ -4735,7 +4770,8 @@ class AgentRunner:
             start_time: float, turns: int, usage_info: dict,
             retry_channel: str, log_prefix: str, log_scope: str,
             design_tag: str, retry_event_extra: dict,
-            superseded_event_extra: dict) -> tuple:
+            superseded_event_extra: dict,
+            latency: dict | None = None) -> tuple:
         """原地重试共用内核：transient_retry + superseded 落盘 + 锚点 B WIP
         + sleep(backoff) + 双让位复查（两通道差异点经参数注入）。
 
@@ -4820,6 +4856,7 @@ class AgentRunner:
                 yields_reason="spec 已被接管",
                 error_reason="spec 已被接管（status 迁出预期态或 frozen/hold）",
                 design_ref="fix-verdict-dedup-resynthesis D4",
+                latency=latency,
             ), False
         # evo-add-run-stop-loss 1.2（B）：planner-plan 增查并行出题标记——
         # discarded（产物隔离/转串行收尾伴生写入）即放弃重派（本次事故的
@@ -4833,6 +4870,7 @@ class AgentRunner:
                 yields_reason="并行出题标记已 discarded（产物已隔离/转串行）",
                 error_reason="并行出题标记已 discarded（产物已隔离/转串行出题）",
                 design_ref="evo-add-run-stop-loss 1.2",
+                latency=latency,
             ), False
         return transient_retries, None, True
 
@@ -4840,7 +4878,8 @@ class AgentRunner:
                               attempt: int, attempt_run_id: str, sub_run_id: str,
                               provider_name, model, wt_path, is_transient: bool,
                               transient_retries: int, transient_budget: list,
-                              start_time: float, turns: int, usage_info: dict) -> tuple:
+                              start_time: float, turns: int, usage_info: dict,
+                              latency: dict | None = None) -> tuple:
         """瞬断原地退避重试决策（等价搬移自 R6 的 `if (is_transient ...)` 段）。
 
         返回三元组 (transient_retries, yielded, do_retry)：
@@ -4868,6 +4907,7 @@ class AgentRunner:
             log_scope=f"provider {provider_name}",
             design_tag="fix-provider-transient-backoff",
             retry_event_extra={}, superseded_event_extra={},
+            latency=latency,
         )
 
     def _append_gate_blocked(self, *, sub_run_id: str, spec_name: str,
@@ -4923,7 +4963,8 @@ class AgentRunner:
             self, spec_name: str, agent_type: str, run_id: str,
             attempt_run_id: str, provider_name, model, start_time: float,
             turns: int, usage_info: dict, retry_channel: str,
-            yields_reason: str, error_reason: str, design_ref: str):
+            yields_reason: str, error_reason: str, design_ref: str,
+            latency: dict | None = None):
         """构造退避后让位的语义化失败结果（含 warning 日志与 run metrics 记账）。
 
         - retry_channel：调用通道标签（"Provider-transient retry" /
@@ -4946,6 +4987,7 @@ class AgentRunner:
             turns=turns, usage_info=usage_info,
             terminal="failure", provider=provider_name,
             model=model,
+            latency=_metrics_latency(latency),
         )
         return AgentRunResult(
             attempt_run_id, spec_name, agent_type,
@@ -4974,7 +5016,8 @@ class AgentRunner:
                                     transient_retries: int,
                                     transient_budget: list,
                                     start_time: float, turns: int,
-                                    usage_info: dict) -> tuple:
+                                    usage_info: dict,
+                                    latency: dict | None = None) -> tuple:
         """except AgentArtifactGateError 处置（等价搬移自 R5 段）。
 
         返回五元组 (error, transient_retries, yielded_result, do_continue,
@@ -5082,6 +5125,7 @@ class AgentRunner:
                     "error": _gate_error_trunc,
                 },
                 superseded_event_extra={"error": _gate_error_trunc},
+                latency=latency,
             ))
         return error, transient_retries, _gate_yielded, _gate_retry, False
 
@@ -5092,7 +5136,8 @@ class AgentRunner:
     def _attempt_top_guards(self, spec_name: str, agent_type: str, run_id: str,
                             attempt: int, max_retries: int, start_time: float,
                             turns: int, usage_info: dict,
-                            st: _AttemptState, handed_off: set):
+                            st: _AttemptState, handed_off: set,
+                            latency: dict | None = None):
         """attempt 顶部守卫（等价搬移自 _execute_agent_inner R1）。
 
         frozen 命中 → 终止重试链返回 frozen 失败结果；取消旗标命中 → worktree
@@ -5116,6 +5161,7 @@ class AgentRunner:
                 duration_seconds=time.time() - start_time, turns=turns,
                 usage_info=usage_info, terminal="frozen",
                 provider=st.provider_name, model=st.model,
+                latency=_metrics_latency(latency),
             )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
@@ -5165,6 +5211,7 @@ class AgentRunner:
                 duration_seconds=time.time() - start_time, turns=turns,
                 usage_info=usage_info, terminal="cancelled",
                 provider=st.provider_name, model=st.model,
+                latency=_metrics_latency(latency),
             )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
@@ -5200,6 +5247,7 @@ class AgentRunner:
                 duration_seconds=time.time() - start_time, turns=turns,
                 usage_info=usage_info, terminal="failure",
                 provider=st.provider_name, model=st.model,
+                latency=_metrics_latency(latency),
             )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
@@ -5570,7 +5618,8 @@ class AgentRunner:
     def _resolve_provider_candidate(self, spec_name: str, agent_type: str,
                                     run_id: str, attempt_run_id: str,
                                     start_time: float, turns: int,
-                                    usage_info: dict, st: _AttemptState) -> tuple:
+                                    usage_info: dict, st: _AttemptState,
+                                    latency: dict | None = None) -> tuple:
         """候选链解析与选择（等价搬移，D1 R2）。
 
         无 provider 分配（chain 空）→ (None, None, [], None)（默认网关路径）；
@@ -5614,6 +5663,7 @@ class AgentRunner:
                     duration_seconds=time.time() - start_time, turns=turns,
                     usage_info=usage_info, terminal="circuit",
                     provider=first_4xx_open, model=None,
+                    latency=_metrics_latency(latency),
                 )
                 return None, None, chain, AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
@@ -5630,6 +5680,7 @@ class AgentRunner:
                 duration_seconds=time.time() - start_time, turns=turns,
                 usage_info=usage_info, terminal="chain_exhausted",
                 provider=None, model=None,
+                latency=_metrics_latency(latency),
             )
             return None, None, chain, AgentRunResult(
                 attempt_run_id, spec_name, agent_type,
@@ -5657,6 +5708,7 @@ class AgentRunner:
                 duration_seconds=time.time() - start_time, turns=turns,
                 usage_info=usage_info, terminal="circuit",
                 provider=st.provider_name, model=st.model,
+                latency=_metrics_latency(latency),
             )
             return None, None, chain, AgentRunResult(
                 attempt_run_id, spec_name, agent_type,
@@ -5680,7 +5732,8 @@ class AgentRunner:
                           shutdown_interrupted: bool = False,
                           frozen_terminated_flag: bool = False,
                           kept_wt_path=None,
-                          stderr_tail=None, exit_code=None) -> AgentRunResult:
+                          stderr_tail=None, exit_code=None,
+                          latency: dict | None = None) -> AgentRunResult:
         """全重试耗尽三型返回（等价搬移，D1 R9）：cancelled / shutdown / 全失败。
 
         evo-add-verifier-infra-death-triage 1.1/1.2：
@@ -5703,6 +5756,7 @@ class AgentRunner:
                 run_id=run_id, spec_name=spec_name, agent_type=agent_type,
                 duration_seconds=duration, turns=turns, usage_info=usage_info,
                 terminal="cancelled", provider=provider_name, model=model,
+                latency=_metrics_latency(latency),
             )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
@@ -5722,6 +5776,7 @@ class AgentRunner:
                 run_id=run_id, spec_name=spec_name, agent_type=agent_type,
                 duration_seconds=duration, turns=turns, usage_info=usage_info,
                 terminal="frozen", provider=provider_name, model=model,
+                latency=_metrics_latency(latency),
             )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
@@ -5741,6 +5796,7 @@ class AgentRunner:
                 run_id=run_id, spec_name=spec_name, agent_type=agent_type,
                 duration_seconds=duration, turns=turns, usage_info=usage_info,
                 terminal="shutdown", provider=provider_name, model=model,
+                latency=_metrics_latency(latency),
             )
             return AgentRunResult(
                 run_id, spec_name, agent_type,
@@ -5764,6 +5820,7 @@ class AgentRunner:
             run_id=run_id, spec_name=spec_name, agent_type=agent_type,
             duration_seconds=duration, turns=turns, usage_info=usage_info,
             terminal="failure", provider=provider_name, model=model,
+            latency=_metrics_latency(latency),
         )
         return AgentRunResult(
             run_id, spec_name, agent_type,
@@ -6461,6 +6518,16 @@ class AgentRunner:
             "assistant_seen": 0,
             "assistant_missing_ts": 0,
         }
+        # evo-add-api-stall-disposition-closeout 3.1：api_round_stall 留痕的
+        # provider 字段取数缓存——provider_marker 行由派发/车道侧在本 attempt
+        # 派发前写入 run jsonl（进程派发前，failover-dispatch「产物可追溯」），
+        # 首个停滞事件时惰性读一次即缓存（停滞事件稀有，读放大量可忽略）；
+        # 无 marker（默认网关/写失败/in-place 重试新文件不带 marker）时保持
+        # None，按「provider 未知」如实留痕。holder dict 形态：停滞块运行在
+        # _read_stream 读线程作用域，闭包内**赋值**裸局部名会触发
+        # UnboundLocalError（该线程函数无 nonlocal 绑定），dict 条目变更无此
+        # 问题（同 latency_state 先例）；写者仅读线程自身，GIL 下条目赋值原子。
+        _stall_provider_state = {"provider": None, "read": False}
 
         # ── fix-agent-lane-efficiency D3：run 级上下文经济性指标（纯读侧旁路）──
         # 累计 input_tokens / cache_read_input_tokens / context_peak_estimate，
@@ -6684,8 +6751,13 @@ class AgentRunner:
                                 # 判停计入线 RUN_STALL_ROUND_SECONDS 同值不
                                 # 同义，严禁合并复用。超线样本在完成时点即时
                                 # 留痕（补足「只有聚合数、无逐次现场」）；
-                                # 不 kill、不重派、不触发人工告警，样本与
-                                # stats 结果与不加告警时逐字段一致。
+                                # 不 kill、不重派、不触发人工告警（运行中
+                                # 约束不变，evo-add-api-stall-disposition-
+                                # closeout 5：升级信号由 run 收尾后
+                                # AdminMonitor 检测面按终态 run_metrics 行的
+                                # latency_max 写 api_round_stall_escalated，
+                                # 不新增运行中打断），样本与 stats 结果与
+                                # 不加告警时逐字段一致。
                                 if _sb_sample > STALL_ROUND_WARN_SECONDS:
                                     # evo-api-stall-signal-grading 1.2：先分级
                                     # 再落日志。streak 口径（design 补约定）：
@@ -6705,6 +6777,18 @@ class AgentRunner:
                                             break
                                     _stall_grade = classify_round_stall(
                                         _stall_streak, _sb_sample)
+                                    # evo-add-api-stall-disposition-closeout
+                                    # 3.1：context 补归因证据字段——当轮上下文
+                                    # 规模（本 assistant 事件 message.usage 的
+                                    # input_tokens / cache_read_input_tokens，
+                                    # 同 iteration 已由 usage 旁路解出）与
+                                    # provider（provider_marker 惰性读缓存）。
+                                    # 纯留痕扩展：不改分级判定与计数。
+                                    if not _stall_provider_state["read"]:
+                                        _stall_provider_state["provider"] = (
+                                            self._run_provider_marker_name(
+                                                run_file))
+                                        _stall_provider_state["read"] = True
                                     _stall_ctx = {
                                         "run_id": run_id,
                                         "event": "api_round_stall",
@@ -6712,6 +6796,10 @@ class AgentRunner:
                                             latency_state["samples"]),
                                         "latency_max": _sb_sample,
                                         "grade": _stall_grade,
+                                        "input_tokens": _inp,
+                                        "cache_read_input_tokens": _cr,
+                                        "provider": _stall_provider_state[
+                                            "provider"],
                                     }
                                     if _stall_grade == "info":
                                         latency_state["grade_counts"]["info"] += 1
@@ -7258,8 +7346,11 @@ class AgentRunner:
                 # 延迟观测自检（fix-run-latency-toolresult-parser design D4）：
                 # latency_rounds==0 但 turn_count>0 = 解析器失明的确定信号
                 # （有 assistant 轮次却配对不出任何样本），显式 WARNING 使盲区
-                # 不再静默。仅日志，不写 admin_alerts（延迟数据不触发独立人工
-                # 告警铁律）；rounds==0 且 turn_count==0（真空跑）不告警。
+                # 不再静默。仅日志，不写 admin_alerts（「延迟数据不触发独立
+                # 人工告警」铁律约束的是本运行中路径，约束不变；
+                # evo-add-api-stall-disposition-closeout 5：升级信号由 run
+                # 收尾后 AdminMonitor 检测面按终态 run_metrics 行的 latency_max
+                # 写 api_round_stall_escalated，不新增运行中打断）。
                 # evo-add-dsh-events-latency-timestamps 1.2：按（harness,
                 # 事件形态）实例级一次性去重——同键后续 run 不再重复告警
                 # （14 天累计 178 条刷屏根因即逐 run 无条件触发）。文案如实
@@ -7267,7 +7358,8 @@ class AgentRunner:
                 # 事件识别」误归因；保留「失明」标记与 extra 键
                 # latency_rounds/turn_count/run_id 测试锚点（tests/
                 # test_run_latency_stats.py:354-405 两用例按子串+extra 过滤，
-                # 锚点不丢则断言零改动）。
+                # 锚点不丢则断言零改动）。rounds==0 且 turn_count==0（真空跑）
+                # 不告警。
                 if stats["rounds"] == 0 and turn_count[0] > 0:
                     if latency_state["assistant_missing_ts"] > 0:
                         _blind_shape = "missing_timestamp"
@@ -9401,6 +9493,33 @@ class AgentRunner:
     # 的既有产出（add-cost-observability D1），不重复计算（任务 1.2）；
     # cost_usd 只做事件留痕，页面成本口径维持 dashboard 既有计价表
     # （任务 1.6，不叠加、不双源）。
+
+    def _run_provider_marker_name(self, run_file) -> "str | None":
+        """读 run jsonl 头部 provider_marker 行的 provider 名（stall 留痕用）。
+
+        evo-add-api-stall-disposition-closeout 3.1：provider_marker 由派发/
+        车道侧在 attempt 进程派发**前**写入（failover-dispatch「产物可追溯」），
+        故 marker 恒在本文件头部窗口内——头部 64KiB 读取足够（与尾部窗口读取
+        的 ratelimit 幂等检查同量级）。读取/解析失败与 marker 缺失一律返回
+        None（provider 未知如实留痕），MUST NOT 抛异常打断延迟采样旁路。
+        """
+        try:
+            with open(run_file, "rb") as f:
+                head = f.read(65536).decode("utf-8", "replace")
+        except OSError:
+            return None
+        for line in head.splitlines():
+            if '"type": "provider_marker"' not in line:
+                continue
+            # 子串预筛命中后复核 JSON type（防嵌入代码/回显的伪命中行）
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "provider_marker":
+                name = ev.get("provider")
+                return str(name) if name else None
+        return None
 
     def _register_run_harness(self, run_id: str, adapter) -> None:
         """把该 run 的 adapter.name 记入 run 级品牌登记（add-harness-brand-projection 2.1）。
