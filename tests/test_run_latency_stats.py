@@ -405,6 +405,193 @@ class TestRunClaudeIntegration:
         assert len(blind_warns) == 0, f"真空跑不应触发失明告警；records={rec_logger.records}"
 
 
+# ── dsh 事件流延迟配对（evo-add-dsh-events-latency-timestamps 2.2）──────
+
+
+class _FakeDshClock:
+    """dsh_adapter.time 替身：``time()`` 按预定刻度序列逐次推进（模拟事件
+    到达时刻），``monotonic`` 委托真身（adapter 其他路径不受影响）。"""
+
+    def __init__(self, ticks):
+        import time as _time_mod
+
+        self._ticks = list(ticks)
+        self._i = 0
+        self._monotonic = _time_mod.monotonic
+
+    def time(self):
+        tick = self._ticks[min(self._i, len(self._ticks) - 1)]
+        self._i += 1
+        return tick
+
+    def monotonic(self):
+        return self._monotonic()
+
+
+class TestDshEventLatencyPairing:
+    """Scenario: 投影事件带时间戳 + 延迟配对出样本。
+
+    dsh 事件流夹具经真实 DshEventProjector 投影（到达时刻由 _FakeDshClock
+    注入），投影产出事件经 latency_samples_from_events 产出与注入间隔
+    一致的延迟样本（rounds>0、stalls 与 >60s 注入间隔数一致）。
+    """
+
+    def test_dsh_projected_stream_yields_latency_samples(self, tmp_path):
+        import core.agent_runner.harness.dsh_adapter as dsh_mod
+        from core.agent_runner.harness.dsh_adapter import DshEventProjector
+
+        # 两轮 API 往返夹具：tool_result→assistant 注入间隔 4.5s（正常）
+        # 与 75.0s（>60s 停滞）。
+        lines = [
+            json.dumps({"type": "session", "sessionId": "session-lat",
+                        "cwd": str(tmp_path)}),
+            json.dumps({"type": "text", "text": "开始"}),
+            json.dumps({"type": "tool_call", "callId": "tc-1",
+                        "tool": "bash", "input": {"command": "ls"}}),
+            json.dumps({"type": "tool_result", "callId": "tc-1",
+                        "status": "completed", "result": "ok"}),
+            json.dumps({"type": "text", "text": "继续"}),
+            json.dumps({"type": "tool_call", "callId": "tc-2",
+                        "tool": "bash", "input": {"command": "ls"}}),
+            json.dumps({"type": "tool_result", "callId": "tc-2",
+                        "status": "completed", "result": "ok"}),
+            json.dumps({"type": "text", "text": "完成"}),
+            json.dumps({"type": "final", "text": "done",
+                        "reason": {"kind": "completed"}}),
+        ]
+        # 逐行到达时刻：line3 tool_result@100.0 → line4 assistant@104.5
+        # （样本 4.5s）；line6 tool_result@112.0 → line7 assistant@187.0
+        # （样本 75.0s，停滞）。
+        clock = _FakeDshClock([
+            90.0, 91.0, 92.0, 100.0, 104.5, 110.0, 112.0, 187.0, 188.0])
+        projector = DshEventProjector("dsh-lat", str(tmp_path))
+        projected = []
+        with mock.patch.object(dsh_mod, "time", clock):
+            for line in lines:
+                projected.extend(projector.ingest(line, json.loads(line)))
+        # Scenario「投影事件带时间戳」：每条投影事件含 timestamp 字段
+        assert all(
+            isinstance(e.get("timestamp"), float) and e["timestamp"] > 0
+            for e in projected)
+        user_events = [e for e in projected if e["type"] == "user"]
+        assert len(user_events) == 2
+        assert user_events[0]["timestamp"] == pytest.approx(100.0)
+        assert user_events[1]["timestamp"] == pytest.approx(112.0)
+        # Scenario「延迟配对出样本」：>0 延迟样本，间隔与注入一致
+        samples = latency_samples_from_events(projected)
+        assert samples == pytest.approx([4.5, 75.0])
+        stats = latency_stats(samples)
+        assert stats["rounds"] == 2
+        assert stats["stalls"] == 1
+        assert stats["max"] == pytest.approx(75.0)
+
+
+# ── 失明 WARNING 去重与文案契约（evo-add-dsh-events-latency-timestamps
+#    2.3 / spec「不再逐 run 刷屏」）────────────────────────────────────
+
+
+class TestLatencyBlindWarnDedup:
+    """失明 WARNING 按（harness,事件形态）实例级一次性去重；文案如实归因
+    时间戳缺失/无法配对（保留「失明」标记与 latency_rounds/turn_count/
+    run_id extra 锚点——既有两用例 :354/:387 断言零改动即应继续通过）。"""
+
+    def _make_runner(self, proot):
+        import threading
+
+        from test_agent_runner import make_runner
+        runner = make_runner(proot)
+        runner.config = {"agents": {"run_timeout_seconds": 3600}}
+        # 轮询环取消旗标所需最小实例状态（make_runner 跳过 __init__ 未初始化）
+        runner._cancel_requested = set()
+        runner._cancel_requested_lock = threading.Lock()
+        runner._cancel_meta = {}
+        return runner
+
+    _fake_subprocess = staticmethod(TestRunClaudeIntegration._fake_subprocess)
+
+    @staticmethod
+    def _blind_warns(logger):
+        """提取失明 WARNING 记录（与既有两用例同一过滤口径）。"""
+        return [
+            a for (kind, a, _) in logger.records
+            if kind == "warning"
+            and "失明" in str(a)
+            and (a[2] if len(a) >= 3 else {}).get("latency_rounds") == 0
+        ]
+
+    def test_same_instance_second_blind_run_silent(self, tmp_path):
+        """同实例两连盲 run → 恰 1 条 WARNING（同（harness,形态）键去重），
+        且首条文案契约成立（如实归因 + 三 extra 锚点保留）。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec_logger = _RecordingLogger()
+        runner.logger = rec_logger
+        events = [
+            {"type": "assistant", "timestamp": 100.0},
+            {"type": "assistant", "timestamp": 200.0},
+        ]
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError):
+                runner._run_agent("prompt", proot, "impl-blind-d1")
+            with pytest.raises(RuntimeError):
+                runner._run_agent("prompt", proot, "impl-blind-d2")
+        blind_warns = self._blind_warns(rec_logger)
+        assert len(blind_warns) == 1, (
+            f"同（harness,形态）应恰告警一次；records={rec_logger.records}")
+        _comp, msg, extra = blind_warns[0]
+        # 文案契约：如实归因（缺时间戳/无法配对），删「请检查 tool_result
+        # 事件识别」误归因；「失明」标记已由 _blind_warns 过滤保证。
+        assert "缺时间戳" in msg or "无法配对" in msg
+        assert "请检查 tool_result 事件识别" not in msg
+        assert extra.get("turn_count") == 2
+        assert extra.get("run_id") == "impl-blind-d1"
+        # 去重键 =（harness, 事件形态）：claude 流有 ts 无 tool_result 锚点
+        assert ("claude", "no_tool_result") in runner._latency_blind_warned_keys
+
+    def test_new_instance_warns_again(self, tmp_path):
+        """新 runner 实例 → 去重登记随实例丢弃、再次告警（pytest 每用例
+        新建 runner 天然隔离的机制对账；MUST NOT 模块级集合）。"""
+        events = [
+            {"type": "assistant", "timestamp": 100.0},
+            {"type": "assistant", "timestamp": 200.0},
+        ]
+        import core.agent_runner.runner as rmod
+        warns_total = 0
+        for idx in ("i1", "i2"):
+            proot = tmp_path / f"p-{idx}"
+            runner = self._make_runner(proot)
+            rec_logger = _RecordingLogger()
+            runner.logger = rec_logger
+            fake_ns, _proc = self._fake_subprocess(events)
+            with mock.patch.object(rmod, "subprocess", fake_ns):
+                with pytest.raises(RuntimeError):
+                    runner._run_agent("prompt", proot, f"impl-blind-{idx}")
+            warns_total += len(self._blind_warns(rec_logger))
+        assert warns_total == 2, "新实例应各自告警一次（实例级隔离）"
+
+    def test_missing_timestamp_shape_key(self, tmp_path):
+        """assistant 事件缺 timestamp 的失明 → 形态键 missing_timestamp，
+        与 no_tool_result 形态互不 primed（形态半边参与去重键）。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec_logger = _RecordingLogger()
+        runner.logger = rec_logger
+        events = [{"type": "assistant"}, {"type": "assistant"}]
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError):
+                runner._run_agent("prompt", proot, "impl-blind-nots")
+        blind_warns = self._blind_warns(rec_logger)
+        assert len(blind_warns) == 1
+        assert "形态=missing_timestamp" in blind_warns[0][1]
+        assert (
+            "claude", "missing_timestamp"
+        ) in runner._latency_blind_warned_keys
+
+
 # ── 期内停滞 WARNING（evo-add-api-stall-observability 1.1/1.2）──────
 
 
