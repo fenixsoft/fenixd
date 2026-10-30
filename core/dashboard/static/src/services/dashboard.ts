@@ -1324,12 +1324,15 @@ export interface CommandCenterEdge {
 
 // 产品团队汇总卡（2026-10-28 追加）：需求数量=窗口内创建的活跃 SPEC 数；
 // runs_total/duration_total/cost_total=窗口内全车道合计（时长为秒，
-// run_metrics 指标口径回退 mtime 推算；全未计价 → null → 「—」）
+// run_metrics 指标口径回退 mtime 推算；全未计价 → null → 「—」）。
+// specs=同窗活跃 SPEC 名单（add-command-center-spec-view 1.1，created 新→旧
+// 由后端排序下发；可选键——旧后端缺键时前端兜底视为空名单）
 export interface CommandCenterTeamSummary {
   spec_count: number;
   runs_total: number;
   duration_total: number;
   cost_total: number | null;
+  specs?: { project: string; spec: string }[];
 }
 
 export interface CommandCenterOrg {
@@ -1437,6 +1440,45 @@ export async function commandCenterLedger(project?: string): Promise<CommandCent
 
 export async function commandCenterInbox(project?: string): Promise<CommandCenterInbox> {
   return request<CommandCenterInbox>(`/api/command-center/inbox${ccQuery(project)}`);
+}
+
+// spec 视图轮次行（add-command-center-spec-view 3.1）：seq 为全史编号、
+// inflight 为在飞判定，均由后端单点下发、前端零推导；started_ts 为 run
+// started ISO 串。
+export interface CommandCenterSpecRound {
+  seq: number;
+  run_id: string;
+  started_ts: string | null;
+  inflight: boolean;
+}
+
+// spec 视图车道（花名册全量出列：零 run 车道也带 rounds: []）
+export interface CommandCenterSpecRunsLane {
+  lane: string;
+  zone: string;
+  rounds: CommandCenterSpecRound[];
+}
+
+// GET /api/command-center/spec-runs 响应（纯只读端点；错误契约与五端点
+// 同族：未知项目/必填缺失 → 200 + error 字典）
+export interface CommandCenterSpecRuns {
+  project: string;
+  spec: string;
+  window: string;
+  lanes: CommandCenterSpecRunsLane[];
+  error?: string;
+}
+
+export async function commandCenterSpecRuns(
+  project: string,
+  window: string | undefined,
+  spec: string,
+): Promise<CommandCenterSpecRuns> {
+  const q = new URLSearchParams();
+  q.set('project', project);
+  q.set('spec', spec);
+  if (window) q.set('window', window);
+  return request<CommandCenterSpecRuns>(`/api/command-center/spec-runs?${q.toString()}`);
 }
 
 // ── 运行流（/api/runs/<run_id> 系列端点，与 v1 run watch 同源） ──
