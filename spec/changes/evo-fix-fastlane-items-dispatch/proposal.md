@@ -9,4 +9,4 @@ fenix-prototype 交付实质完成仍被升级闸门冻结悬置（核查时刻�
 ## Impact
 - core/agent_runner/runner.py、core/pm_engine/verification/fastlane.py、core/agent_runner/prompt_builder.py、core/pm_engine/family.py
 - 新增契约测试 tests/test_fastlane_items_dispatch.py
-- 与在途 fix-verify-loop-convergence 同改 bug-found 路由面，实现时须对齐判据避免双触发
+- 与在途 fix-verify-loop-convergence 同改 bug-found 路由面，实现时须对齐判据避免双触发（其为孤儿在途、STATE 无条目不派发，落地前对齐以守卫注释形式存在，见 MERGE-NOTES.md 硬依赖）
