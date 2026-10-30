@@ -533,3 +533,93 @@ class TestRecoveryTimerReschedule:
         assert first.is_alive()               # 未被 cancel
         assert list(timers) == ["s"]          # 判重标记保留，未重排新定时器
         assert table["s"] == old_deadline     # deadline_table 保留旧正截止
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# evo-instant-fail-storm-alert-closeout 1.2/2.2/3.2：秒挂死亡取证与写入点埋点
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestInstantFailForensics:
+    """秒挂死亡取证快照（启动 stderr 尾部 + worktree 状态）与写入点埋点。
+
+    - 1.2 写入点 attach_trigger 埋点：新告警携带 terminal-only 收口条件；
+    - 2.2 取证快照：随风暴告警 evidence 留痕、有界、失败路径不阻断计数。
+    """
+
+    def _storm_alerts(self, tmp_path):
+        store = AdminStore(Path(tmp_path), RecordingLogger())
+        return [r for r in store.read_all()
+                if r.get("signal_type") == "instant_fail_storm"]
+
+    def test_write_point_attaches_terminal_trigger(self, tmp_path):
+        """1.2：写入点 attach_trigger 埋点 → 新告警携带终态收口条件。"""
+        runner, holder = _make_gate_runner(tmp_path)
+        _enter_cooldown(runner, holder)
+        alerts = self._storm_alerts(tmp_path)
+        assert len(alerts) == 1
+        trigger = alerts[0].get("trigger")
+        assert trigger is not None, "写入点必须埋点（自动收口盘点的消费前提）"
+        assert trigger["condition"] == "spec_delivered_adjudicated"
+        assert trigger["type"] == "instant_fail_storm"
+        assert trigger["spec"] == "spec-a"
+
+    def test_alert_evidence_carries_forensics(self, tmp_path):
+        """2.2：风暴告警 evidence 留存 stderr 尾部与 worktree 状态快照。"""
+        import subprocess as sp
+
+        runner, holder = _make_gate_runner(tmp_path)
+        wt = tmp_path / "wt-spec-a"
+        wt.mkdir()
+        sp.run(["git", "init", "-q", "-b", "main", str(wt)], check=True)
+        sp.run(["git", "-C", str(wt), "config", "user.email", "t@t.co"],
+               check=True)
+        sp.run(["git", "-C", str(wt), "config", "user.name", "t"], check=True)
+        (wt / "half-done.txt").write_text("wip", encoding="utf-8")
+        for _ in range(2):
+            runner._record_instant_fail(
+                "spec-a", 5.0, error="boom",
+                stderr_tail="ECONNREFUSED 127.0.0.1:443", worktree_path=wt)
+        alerts = self._storm_alerts(tmp_path)
+        assert len(alerts) == 1
+        ev = alerts[0]["evidence"]
+        assert "stderr_tail=ECONNREFUSED 127.0.0.1:443" in ev
+        assert "worktree[" in ev
+        assert "dirty=1" in ev and "half-done.txt" in ev
+
+    def test_forensics_bounded(self, tmp_path):
+        """有界留存：超长 stderr 不撑爆告警 evidence（design：不落大对象）。"""
+        runner, holder = _make_gate_runner(tmp_path)
+        long_tail = "x" * 5000
+        for _ in range(2):
+            runner._record_instant_fail(
+                "spec-a", 5.0, error="boom", stderr_tail=long_tail)
+        alerts = self._storm_alerts(tmp_path)
+        assert len(alerts) == 1
+        assert len(alerts[0]["evidence"]) < 1500
+
+    def test_forensics_failure_does_not_block_counting(self, tmp_path):
+        """失败路径不阻断计数：worktree 缺失 + 空 stderr 仍正常进冷却，
+        evidence 不写占位噪音。"""
+        runner, holder = _make_gate_runner(tmp_path)
+        missing = tmp_path / "no-such-wt"
+        for _ in range(2):
+            runner._record_instant_fail(
+                "spec-a", 5.0, error="e", stderr_tail="", worktree_path=missing)
+        assert runner.is_instant_fail_cooldown("spec-a") is True
+        assert runner._instant_fail["spec-a"]["count"] == 2
+        alerts = self._storm_alerts(tmp_path)
+        assert len(alerts) == 1
+        assert "stderr_tail" not in alerts[0]["evidence"]
+
+    def test_forensics_kept_on_state_entry(self, tmp_path):
+        """取证素材随 per-spec 状态留存（末次死亡覆盖写）。"""
+        runner, holder = _make_gate_runner(tmp_path)
+        runner._record_instant_fail("spec-a", 5.0, error="e1",
+                                    stderr_tail="first death",
+                                    worktree_path=None)
+        runner._record_instant_fail("spec-a", 5.0, error="e2",
+                                    stderr_tail="second death",
+                                    worktree_path=None)
+        st = runner._instant_fail["spec-a"]
+        assert "second death" in st["last_forensics"]

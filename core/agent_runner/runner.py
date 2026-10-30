@@ -3794,6 +3794,11 @@ class AgentRunner:
                         # evo-add-instant-fail-cooldown-full-lane-gate 2.1：
                         # 失败原文供归一化故障指纹记账（路径/端口/run id 归一化）
                         error=error,
+                        # evo-instant-fail-storm-alert-closeout 2.2：秒挂死亡
+                        # 取证素材——降噪前 stderr 原文尾行摘要（上方 catch-all
+                        # 已从异常挂载提取）＋ worktree 状态快照
+                        stderr_tail=last_stderr_tail or "",
+                        worktree_path=wt_path,
                     )
                     # add-cost-observability（D1）+ add-turn-limit-anchor-c（D4）：
                     # _run_agent 抛错（超时/kill/非 0 退出/rc==0 但 result 标记
@@ -8542,8 +8547,73 @@ class AgentRunner:
         except Exception:
             return ""
 
+    # 秒挂死亡取证快照拼接上限（evo-instant-fail-storm-alert-closeout 2.2）：
+    # 有界留存（design：不落大对象）——stderr 尾部 ≤200 字符、worktree 快照
+    # ≤300 字符，总拼接再截一道。
+    _INSTANT_FAIL_FORENSICS_MAX_CHARS = 600
+
+    def _worktree_state_snapshot(self, worktree_path) -> str:
+        """worktree 状态快照（有界）：git 是否可用 + HEAD 一行 + 脏文件概况。
+
+        evo-instant-fail-storm-alert-closeout 2.2：0 秒死亡根因取证素材——
+        死亡时 worktree 停在什么状态（有无半成品写入）。全程容错降级（路径
+        缺失/非 git 目录/命令失败/超时 → 占位文本），MUST NOT 抛出——调用方
+        在失败计数路径上，取证不得阻断计数与冷却判定。输出截断至 300 字符。
+        """
+        if not worktree_path:
+            return ""
+        try:
+            wt = Path(worktree_path)
+            if not wt.is_dir():
+                return f"{wt.name} (worktree missing)"
+            if not (wt / ".git").exists():
+                return f"{wt.name} (not a git worktree)"
+            head = subprocess.run(
+                ["git", "-C", str(wt), "log", "-1", "--format=%h %s"],
+                capture_output=True, text=True, errors="replace", timeout=5,
+            )
+            status = subprocess.run(
+                ["git", "-C", str(wt), "status", "--porcelain"],
+                capture_output=True, text=True, errors="replace", timeout=5,
+            )
+            head_line = ""
+            for ln in (head.stdout or "").splitlines():
+                if ln.strip():
+                    head_line = ln.strip()
+                    break
+            dirty = [ln for ln in (status.stdout or "").splitlines() if ln.strip()]
+            parts = [f"HEAD={head_line or 'unknown'}", f"dirty={len(dirty)}"]
+            if dirty:
+                parts.append(
+                    "files=" + ",".join(ln.strip()[:60] for ln in dirty[:3])
+                )
+            return " ".join(parts)[:300]
+        except Exception:
+            return "worktree snapshot unavailable"
+
+    def _instant_fail_forensics(self, stderr_tail: str, worktree_path) -> str:
+        """秒挂死亡取证快照拼接（有界）：启动 stderr 尾部 + worktree 状态。
+
+        evo-instant-fail-storm-alert-closeout 2.2。两段各自容错降级；空素材
+        返回空串（调用方按无取证处理，不写占位噪音）。本函数在任何输入形态
+        下都不抛出——失败计数路径不得被取证阻断。
+        """
+        try:
+            parts = []
+            tail = str(stderr_tail or "").strip()
+            if tail:
+                parts.append(f"stderr_tail={tail[:200]}")
+            snap = self._worktree_state_snapshot(worktree_path)
+            if snap:
+                parts.append(f"worktree[{snap}]")
+            return " ".join(parts)[: self._INSTANT_FAIL_FORENSICS_MAX_CHARS]
+        except Exception:
+            return ""
+
     def _record_instant_fail(self, spec_name: str, duration_seconds: float,
-                             run_file=None, error: str = "") -> None:
+                             run_file=None, error: str = "",
+                             stderr_tail: str = "",
+                             worktree_path=None) -> None:
         """attempt 失败时按进程存活时长判定秒挂并累计 spec 维度连续计数。
 
         - 框架主动 SIGTERM 的 run（产物含 interrupted 标记）不计入；
@@ -8555,6 +8625,11 @@ class AgentRunner:
           时长与翻倍次数（独立于连击 count）——到期复诵算术的状态基底。
           冷却已活跃期间的既有续写行为不变（仅重写截止，不动起点/时长/翻倍
           次数——翻倍算术的基准不被失败续写重置）。
+        - evo-instant-fail-storm-alert-closeout 2.2：秒挂死亡路径留存子进程
+          启动 stderr 尾部（``stderr_tail``，调用方取异常挂载的降噪前原文
+          尾行摘要）与 worktree 状态快照（``worktree_path``）——0 秒死亡
+          根因可取证。取证素材有界拼接，随秒挂日志与风暴告警 evidence 落账；
+          取证计算在计数临界区之外、全程容错，失败不阻断计数与冷却判定。
         """
         if not spec_name:
             return
@@ -8571,6 +8646,9 @@ class AgentRunner:
             return
 
         fingerprint = self._instant_fail_fingerprint(error)
+        # 取证计算在计数临界区之外（git 子进程调用不得阻塞派发侧锁竞争者）；
+        # 全程容错（_instant_fail_forensics 不抛出），失败路径不阻断计数。
+        forensics = self._instant_fail_forensics(stderr_tail, worktree_path)
         # setdefault+自增持锁（code-review item 557ef1ce8559）：与成功重置
         #（_reset_instant_fail）及派发侧到期复诵/清零并发时，无锁读改写互相
         # 丢失更新（对齐 _daily_run_count 先例）。
@@ -8594,6 +8672,10 @@ class AgentRunner:
             st["last_fail_at"] = now
             if fingerprint:
                 st["fingerprint"] = fingerprint
+            if forensics:
+                # 有界取证素材随状态留存（末次死亡覆盖写），供风暴告警 evidence
+                # 与排障回查；无素材（空 stderr 且 worktree 不可考）不写占位。
+                st["last_forensics"] = forensics
             cooldown_after = self._instant_fail_cooldown_after()
             cooldown_seconds = self._instant_fail_cooldown_seconds()
             reached_cooldown = st["count"] >= cooldown_after
@@ -8612,7 +8694,8 @@ class AgentRunner:
             self.logger.warning(
                 "agent_runner",
                 f"'{spec_name}' 秒挂 {st['count']}/{cooldown_after} "
-                f"（存活 {duration_seconds:.0f}s < {threshold}s 阈值）",
+                f"（存活 {duration_seconds:.0f}s < {threshold}s 阈值）"
+                + (f" — {forensics}" if forensics else ""),
             )
             return
 
@@ -8622,19 +8705,29 @@ class AgentRunner:
             f"'{spec_name}' 连续 {st['count']} 次秒挂（阈值 {cooldown_after}）— "
             f"进入 {cooldown_seconds}s 冷却，期间 implementer/fast-track/repair/"
             f"planner-plan/verifier 派发与该 spec 的管理员处置唤起被跳过；到期"
-            f"自动恢复（evo-add-instant-fail-cooldown-full-lane-gate）",
+            f"自动恢复（evo-add-instant-fail-cooldown-full-lane-gate）"
+            + (f" — {forensics}" if forensics else ""),
         )
-        self._alert_instant_fail_storm(spec_name, st["count"], cooldown_seconds)
+        self._alert_instant_fail_storm(
+            spec_name, st["count"], cooldown_seconds, forensics=forensics)
 
     def _alert_instant_fail_storm(self, spec_name: str, count: int,
-                                  cooldown_seconds: int) -> None:
+                                  cooldown_seconds: int,
+                                  forensics: str = "") -> None:
         """首次冷却触发发 major 告警（signal_type=instant_fail_storm）。
 
         重复冷却由既有 15 分钟 throttle 抑制：AdminStore.latest_signal 按
         (spec, signal_type) 在窗口内查重，窗口内已有同信号则不发第二条。
+        evo-instant-fail-storm-alert-closeout 1.2/2.2：写入点对 entry 调
+        attach_trigger 埋点（signal_type 已登记 _SIGNAL_CONDITIONS → 携带
+        spec_delivered_adjudicated 终态收口条件，新告警可走自动收口盘点）；
+        秒挂死亡取证快照（启动 stderr 尾部 + worktree 状态，有界）并入
+        evidence 字段留痕，0 秒死亡根因可回查。
         """
         try:
             from core.admin_store import AdminStore, ESCALATION
+            from core.alert_lifecycle import attach_trigger
+
             store = AdminStore(self.project_root, self.logger)
             if store.latest_signal(spec_name, "instant_fail_storm", 15) is not None:
                 self.logger.debug(
@@ -8642,7 +8735,13 @@ class AgentRunner:
                     f"instant_fail_storm 告警已 throttle（15 分钟内已有）: '{spec_name}'",
                 )
                 return
-            store.append({
+            evidence = (
+                f"spec={spec_name}; instant_fail_count={count}; "
+                f"cooldown_seconds={cooldown_seconds}"
+            )
+            if forensics:
+                evidence += f"; {forensics}"
+            entry = {
                 "kind": ESCALATION,
                 "signal_type": "instant_fail_storm",
                 "spec": spec_name,
@@ -8653,15 +8752,17 @@ class AgentRunner:
                     f"repair/planner-plan/verifier 派发与该 spec 的管理员处置唤起被"
                     f"跳过；冷却到期先复诵判定再恢复（窗内有新失败则翻倍续冷却）"
                 ),
-                "evidence": (
-                    f"spec={spec_name}; instant_fail_count={count}; "
-                    f"cooldown_seconds={cooldown_seconds}"
-                ),
+                "evidence": evidence,
                 "recommended_action": (
                     "检查 CLI/网关瞬时死亡根因（模型不兼容、token/额度不足、会话丢失等）；"
                     "冷却自动到期后恢复，无需人工干预"
                 ),
-            })
+            }
+            # 写入时埋点（evo-instant-fail-storm-alert-closeout 1.2）：trigger
+            # 按 signal_type 注册表推导；未登记类型原样返回不写 trigger，此处
+            # 已登记 → 携带终态收口条件。
+            attach_trigger(entry)
+            store.append(entry)
         except Exception as e:
             self.logger.error(
                 "agent_runner",

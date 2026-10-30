@@ -18,8 +18,12 @@ from core.admin_store import AdminStore, ESCALATION, SIGNAL, DISPOSITION
 from core.admin_monitor import AdminMonitor
 from core.alert_lifecycle import (
     AUTO_RESOLVE_BY,
+    BACKFILL_SIGNAL_TYPES,
+    CONDITION_SPEC_DELIVERED_ADJUDICATED,
     CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+    _SIGNAL_CONDITIONS,
     build_trigger,
+    evaluate_alert,
     find_resolvable,
 )
 from core.pm_engine import PMEngine
@@ -454,3 +458,142 @@ class TestResolvedPayload:
         assert rec["handled_by"] == AUTO_RESOLVE_BY
         assert rec["resolve_note"] == "spec v2-y 已到达终态 pushed"
         assert rec["handled_at"]
+
+
+# ═════════════════════════════════════════════════════════════════
+# evo-instant-fail-storm-alert-closeout：秒挂风暴告警终态收口
+# ═════════════════════════════════════════════════════════════════
+
+
+class TestInstantFailStormClosure:
+    """tasks 1.1/1.3/3.1：instant_fail_storm 接入 terminal-only 自动收口。
+
+    - 注册表登记 spec_delivered_adjudicated（仅 pushed/done/archived 闭环）；
+    - 冷却中（非终态在途）不提前收口（负例回归锚：防误挂 unblocked 条件——
+      该条件对非 blocked spec 一律判解除，会把冷却告警立即闭环）；
+    - 存量无 trigger 条目不走 BACKFILL_SIGNAL_TYPES 回填（「非 blocked 即
+      解除」语义与 terminal-only 冲突）；收口不误伤在途合理待处理条目。
+    """
+
+    def _alert(self, spec="ifs-spec", **extra) -> dict:
+        alert = {
+            "id": "ifs-1",
+            "kind": ESCALATION,
+            "signal_type": "instant_fail_storm",
+            "spec": spec,
+            "description": "连续 3 次秒挂 — 进入 300s 冷却",
+            "trigger": build_trigger("instant_fail_storm", spec),
+        }
+        alert.update(extra)
+        return alert
+
+    def test_signal_condition_registered_terminal_only(self):
+        """1.1：注册表登记 instant_fail_storm → spec_delivered_adjudicated。"""
+        assert (
+            _SIGNAL_CONDITIONS.get("instant_fail_storm")
+            == CONDITION_SPEC_DELIVERED_ADJUDICATED
+        )
+        # 写入点埋点推导同一条件（attach_trigger 经注册表统一出口）
+        assert build_trigger("instant_fail_storm", "s") == {
+            "type": "instant_fail_storm",
+            "spec": "s",
+            "condition": CONDITION_SPEC_DELIVERED_ADJUDICATED,
+        }
+
+    def test_not_in_backfill_registry(self):
+        """1.3：MUST NOT 加入 BACKFILL_SIGNAL_TYPES——回填路径「非 blocked
+        即解除」语义与 terminal-only 冲突（冷却期会被提前闭环）。"""
+        assert "instant_fail_storm" not in BACKFILL_SIGNAL_TYPES
+
+    def test_terminal_spec_auto_resolves_with_note(self, tmp_path):
+        """spec 到达终态（pushed/done/archived）后自动 resolved，留痕不删。"""
+        for status in ("pushed", "done", "archived"):
+            store = AdminStore(tmp_path / status, FakeLogger())
+            alert = make_escalation(
+                store, spec="ifs-spec", signal_type="instant_fail_storm",
+                trigger=build_trigger("instant_fail_storm", "ifs-spec"),
+                description="连续 3 次秒挂 — 进入 300s 冷却",
+            )
+            specs = {"ifs-spec": {"status": status,
+                                  "updated": "2026-10-28T01:00:00+00:00"}}
+            resolvable = find_resolvable(store.read_all(), specs)
+            assert len(resolvable) == 1, status
+            assert store.auto_resolve(resolvable) == 1
+            recs = store.read_all()
+            assert len(recs) == 1, "留痕不删：记录仍在台账"
+            rec = recs[0]
+            assert rec["handled"] is True
+            assert rec["handled_by"] == AUTO_RESOLVE_BY
+            assert rec["handled_at"]
+            # 中性泛化注记：含 signal_type + spec 名 + 终态 + 状态变更时刻
+            assert "instant_fail_storm" in rec["resolve_note"]
+            assert "ifs-spec" in rec["resolve_note"]
+            assert f"终态 {status}" in rec["resolve_note"]
+            assert "2026-10-28T01:00:00+00:00" in rec["resolve_note"]
+
+    def test_cooldown_non_terminal_not_resolved_early(self):
+        """负例回归锚：冷却中（非终态在途）不提前收口。"""
+        for status in ("ready", "blocked", "in_progress", "implementing", ""):
+            specs = {"ifs-spec": {"status": status}}
+            assert evaluate_alert(self._alert(), specs) is None, (
+                f"status={status!r} 非终态不得提前闭环（冷却告警须保持可见）"
+            )
+
+    def test_spec_not_in_state_stays(self):
+        """spec 不在状态表：无法判定，保持原状。"""
+        assert evaluate_alert(self._alert(), {}) is None
+
+    def test_handled_entry_not_overwritten(self):
+        """人工/既有处理记录不可覆盖。"""
+        alert = self._alert(handled=True)
+        assert evaluate_alert(alert, {"ifs-spec": {"status": "pushed"}}) is None
+
+    def test_legacy_triggerless_entry_not_backfilled(self, tmp_path):
+        """存量无 trigger 条目不经回填路径收口（backfill=True 亦保持原状）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        legacy = make_escalation(
+            store, spec="ifs-spec", signal_type="instant_fail_storm",
+            trigger=None,  # 存量形态：写入点未埋点
+        )
+        specs = {"ifs-spec": {"status": "pushed"}}  # 即便已终态
+        resolvable = find_resolvable(store.read_all(), specs, backfill=True)
+        assert resolvable == [], "回填路径不得收口 instant_fail_storm"
+        rec = next(r for r in store.read_all() if r["id"] == legacy["id"])
+        assert rec["handled"] is False
+
+    def test_closeout_spares_inflight_escalations(self, tmp_path):
+        """收口不误伤在途合理待处理 escalation（a58c46957e35 形态：未登记
+        信号类型无 trigger，spec 在途）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        storm = make_escalation(
+            store, spec="ifs-spec", signal_type="instant_fail_storm",
+            trigger=build_trigger("instant_fail_storm", "ifs-spec"),
+        )
+        inflight_gc = make_escalation(
+            store, spec="add-merged-branch-gc",
+            signal_type="add_merged_branch_gc",  # 未登记类型（无 trigger）
+        )
+        specs = {
+            "ifs-spec": {"status": "pushed"},       # storm 主体已终态
+            "add-merged-branch-gc": {"status": "ready"},   # 在途
+        }
+        resolvable = find_resolvable(store.read_all(), specs)
+        assert [r["id"] for r in resolvable] == [storm["id"]]
+        assert store.auto_resolve(resolvable) == 1
+        recs = {r["id"]: r for r in store.read_all()}
+        assert recs[storm["id"]]["handled"] is True
+        assert recs[inflight_gc["id"]]["handled"] is False
+
+    def test_delivered_no_content_note_neutralized_for_storm_only(self):
+        """1.1 注记泛化不回改既有语义：spec_delivered_no_content 注记同走
+        signal_type 中性文案（不再写死单类型词）。"""
+        alert = {
+            "id": "dnc-1", "kind": ESCALATION,
+            "signal_type": "spec_delivered_no_content", "spec": "dnc-spec",
+            "trigger": build_trigger("spec_delivered_no_content", "dnc-spec"),
+        }
+        note = evaluate_alert(alert, {"dnc-spec": {"status": "done"}})
+        assert note is not None
+        assert "spec_delivered_no_content" in note
+        assert "dnc-spec" in note
+        assert "人工裁决完成" not in note  # 硬编码单类型文案已泛化

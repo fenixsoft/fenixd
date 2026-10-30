@@ -243,6 +243,73 @@ def _in_window(
     return window_start <= dt <= window_end
 
 
+# 未处理 escalation 龄期提醒阈值（小时）与明细行上限
+# （evo-instant-fail-storm-alert-closeout 2.1）
+UNHANDLED_ESCALATION_AGING_HOURS = 24
+_AGING_DETAIL_MAX_LINES = 5
+
+
+def _unhandled_escalation_aging(
+    records, now_dt: datetime, threshold_hours: int = UNHANDLED_ESCALATION_AGING_HOURS
+) -> list:
+    """全量未 handled escalation 台账的登记龄期盘点（evo-instant-fail-storm-
+    alert-closeout 2.1）。
+
+    返回 [(age_hours, record)]，按龄期降序，仅含龄期 ≥ ``threshold_hours``
+    的条目。盘点对象集 MUST 是全量未 handled 台账——调度窗口为
+    [last_run_at, now] 增量，窗口内明细按构造不可能含超 24 小时条目，复用
+    窗口过滤集会使龄期提醒永不触发（design D）。``created`` 缺失/无法解析
+    的条目跳过（龄期不可判，不虚报）；非 escalation / 已 handled 条目跳过
+    （人工处理与自动收口记录不再提醒）。``now_dt`` 为 aware datetime，由
+    调用方注入（纯函数不读时钟）。
+    """
+    from .admin_store import ESCALATION  # noqa: PLC0415
+
+    aged = []
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("kind") != ESCALATION or r.get("handled"):
+            continue
+        created_dt = _iso_to_aware_dt(r.get("created"))
+        if created_dt is None:
+            continue
+        age_hours = (now_dt - created_dt).total_seconds() / 3600.0
+        if age_hours >= threshold_hours:
+            aged.append((age_hours, r))
+    aged.sort(key=lambda pair: pair[0], reverse=True)
+    return aged
+
+
+def _format_escalation_age(hours: float) -> str:
+    """龄期人性化展示：< 48h 一位小数小时；≥ 48h「N 天 M 小时」。"""
+    if hours >= 48:
+        return f"{int(hours // 24)} 天 {int(hours % 24)} 小时"
+    return f"{hours:.1f} 小时"
+
+
+def _render_escalation_aging_lines(aged: list, fixture: bool = False) -> List[str]:
+    """龄期盘点明细行（evo-instant-fail-storm-alert-closeout 2.1）。
+
+    空盘点返回 []（零噪音）；fixture 项目逐条带 [fixture] 标注且注明不计
+    待办（与告警读侧过滤同口径，MUST NOT 删除/改写告警记录本身）。
+    """
+    if not aged:
+        return []
+    tag = "[fixture] " if fixture else ""
+    scope_note = "（验证噪音，不计待办）" if fixture else "（全量台账口径）"
+    lines = [f"- {tag}超 24 小时未处理提醒: {len(aged)} 条{scope_note}"]
+    for age_hours, rec in aged[:_AGING_DETAIL_MAX_LINES]:
+        lines.append(
+            f"  - {tag}[超24h] 未处理升级 [{rec.get('signal_type')}] "
+            f"spec={rec.get('spec')}: 已登记 {_format_escalation_age(age_hours)}"
+            f"未处理，请核查收口路径"
+        )
+    if len(aged) > _AGING_DETAIL_MAX_LINES:
+        lines.append(f"  - …另有 {len(aged) - _AGING_DETAIL_MAX_LINES} 条超龄条目未逐条展开")
+    return lines
+
+
 def _parse_run_at(run_at: str, today) -> datetime:
     """把 'HH:MM' 解析为 today（本地 date）当日的本地墙钟并立即转 aware
     （design D2：人类时刻语义——本地 23:00 即当日 15:00Z，配置字面值不变，
@@ -2267,6 +2334,15 @@ class SelfReviewScheduler:
         escalations = [r for r in window_records if r.get("kind") == ESCALATION]
         dispositions = [r for r in window_records if r.get("kind") == DISPOSITION]
         unhandled = [r for r in escalations if not r.get("handled")]
+        # 未处理 escalation 龄期盘点（evo-instant-fail-storm-alert-closeout
+        # 2.1）：在全量未 handled 台账上计算（MUST NOT 复用上方窗口过滤集
+        # ——调度窗口 [last_run_at, now] 增量内的明细按构造不可能含超 24 小时
+        # 条目），窗口内统计行口径不变，龄期注记独立追加。纯报告文本：不写
+        # 新告警记录，与 admin_monitor 节流闸零交互；每日调度同日防重
+        # （last_run_date）天然幂等。窗口为空但台账存在超龄条目时仍产出提醒
+        # ——「静默多日无新告警 + 存量告警悬置」正是目标场景（秒挂风暴升级
+        # 告警悬置 >10 小时的事故形态）。
+        aging = _unhandled_escalation_aging(records, window_end)
         if _is_fixture_project(self.project_root):
             # 夹具项目（alert-noise-governance 4.1）：未处理计数不含夹具告警
             # （计 0），夹具未处理告警以 [fixture] 标注单列备查（不混入真实
@@ -2283,8 +2359,13 @@ class SelfReviewScheduler:
                     f"  - [fixture] 未处理升级 [{u.get('signal_type')}] "
                     f"spec={u.get('spec')}: {str(u.get('description') or '')[:160]}"
                 )
+            lines.extend(_render_escalation_aging_lines(aging, fixture=True))
             if not window_records:
-                return ["- （窗口内无 admin 记录）"]
+                if not aging:
+                    return ["- （窗口内无 admin 记录）"]
+                return ["- （窗口内无 admin 记录）"] + _render_escalation_aging_lines(
+                    aging, fixture=True
+                )
             return lines
         lines = [
             f"- 信号: {len(signals)} 条",
@@ -2297,8 +2378,12 @@ class SelfReviewScheduler:
                 f"  - 未处理升级 [{u.get('signal_type')}] spec={u.get('spec')}: "
                 f"{str(u.get('description') or '')[:160]}"
             )
+        # 龄期盘点注记（全量台账口径，独立于窗口统计）
+        lines.extend(_render_escalation_aging_lines(aging))
         if not window_records:
-            return ["- （窗口内无 admin 记录）"]
+            if not aging:
+                return ["- （窗口内无 admin 记录）"]
+            return ["- （窗口内无 admin 记录）"] + _render_escalation_aging_lines(aging)
         return lines
 
     def _collect_recent_commits(
