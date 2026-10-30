@@ -398,6 +398,43 @@ class TestTouchFaceMapping(unittest.TestCase):
         self.assertTrue(_is_test_path("tests/conftest.py"))
         self.assertFalse(_is_test_path("core/foo.py"))
 
+    def test_is_test_path_excludes_cache_artifacts(self):
+        """evo-add-regression-empty-result-failclosed 2.1：_is_test_path 排除
+        ``__pycache__`` 段与 ``.pyc``（tests/ 前缀支不再放行缓存产物）。"""
+        self.assertFalse(_is_test_path("tests/__pycache__/test_bar.cpython-311.pyc"))
+        self.assertFalse(_is_test_path("tests/__pycache__/test_bar.py"))
+        self.assertFalse(_is_test_path("pkg/test_x.pyc"))
+        self.assertTrue(_is_test_path("tests/test_bar.py"), "合法测试路径判别不变")
+
+    def test_poisoned_inputs_filtered_with_warning(self):
+        """evo-add-regression-empty-result-failclosed 2.1/3.2：映射输入混入
+        # 前缀、__pycache__/.pyc、不存在路径时被过滤且 WARNING 留痕（含原因）；
+        合法 targets 行为不变。"""
+        (self.root / "tests" / "test_real.py").write_text(
+            "def test_real():\n    pass\n", encoding="utf-8"
+        )
+        with self.assertLogs("fenixd.code_review", level="WARNING") as captured:
+            got = _map_fix_files_to_tests(
+                ["tests/test_bar.py",
+                 "tests/test_real.py",
+                 "#tests/test_sentinel.py",
+                 "tests/__pycache__/test_bar.cpython-311.pyc",
+                 "tests/other.pyc",
+                 "tests/test_ghost.py"],
+                self.root,
+            )
+        self.assertEqual(
+            got, ["tests/test_bar.py", "tests/test_real.py"],
+            "毒化项全被过滤，合法 targets 原样保留（排序去重）",
+        )
+        joined = "\n".join(captured.output)
+        self.assertIn("#tests/test_sentinel.py", joined)
+        self.assertIn("哨兵注释项", joined)
+        self.assertIn("__pycache__", joined)
+        self.assertIn(".pyc", joined)
+        self.assertIn("tests/test_ghost.py", joined)
+        self.assertIn("路径不存在", joined)
+
     def test_module_names(self):
         self.assertEqual(_module_names_for_file("core/foo.py"), ["foo", "core.foo"])
         self.assertEqual(_module_names_for_file("foo.py"), ["foo"])
@@ -456,6 +493,78 @@ class TestTestTargetsPlaceholder(unittest.TestCase):
         self.assertTrue(_cmd_has_test_targets(self._spec(["pytest", "{test_targets}"])))
         self.assertFalse(_cmd_has_test_targets(self._spec("pytest tests/")))
         self.assertFalse(_cmd_has_test_targets(None))
+
+    def test_sentinel_hash_not_left_in_str_cmd(self):
+        """evo-add-regression-empty-result-failclosed 2.2/3.2：``#{test_targets}``
+        声明哨兵（词首注释位）替换后 ``#`` 不残留进最终执行命令——替换值含
+        引号字符时引号会击穿注释语义、使哨兵位目标漏成 pytest 参数。"""
+        spec = self._spec(
+            "python3 -m pytest ${FENIX_TEST_TARGETS:-tests/} -q"
+            " --junit-xml=.fenix/regression/junit.xml #{test_targets}"
+        )
+        eff = _apply_test_targets(spec, ["tests/test_a.py", "tests/test_b.py"])
+        self.assertNotIn("{test_targets}", eff.cmd, "占位符已替换")
+        self.assertNotIn("#", eff.cmd, "哨兵 # 不得残留进执行命令")
+        self.assertIn(
+            "tests/test_a.py tests/test_b.py", eff.cmd,
+            "占位符位置替换为消毒后目标列表（安全字符不经 shlex 引用）",
+        )
+        self.assertIn(
+            "${FENIX_TEST_TARGETS:-tests/}", eff.cmd,
+            "env 缺省展开位置原样保留",
+        )
+
+    def test_sentinel_hash_not_left_in_list_cmd(self):
+        """list 形态哨兵消除：独立 ``#{test_targets}`` 元素吞掉 ``#`` 后按
+        元素级展开；内嵌 ``dir=#{test_targets}`` 按原样替换且无 ``#`` 残留。"""
+        eff = _apply_test_targets(
+            self._spec(["pytest", "#{test_targets}", "-q"]), ["tests/a.py"])
+        self.assertEqual(
+            eff.cmd, ["pytest", "tests/a.py", "-q"],
+            "哨兵元素吞 # 后按独立占位元素展开（argv 不经 shell）",
+        )
+        eff2 = _apply_test_targets(
+            self._spec(["pytest", "dir=#{test_targets}", "-q"]), ["tests/a.py"])
+        self.assertEqual(eff2.cmd, ["pytest", "dir=tests/a.py", "-q"])
+        self.assertNotIn("#", str(eff2.cmd))
+
+    def test_cmd_detection_ignores_sentinel_hash_form(self):
+        """_cmd_has_test_targets 探测先于替换：认 ``#{test_targets}`` 声明
+        （吞 # 只发生在替换时，探测不受影响）。"""
+        self.assertTrue(_cmd_has_test_targets(self._spec("pytest #{test_targets}")))
+        self.assertTrue(
+            _cmd_has_test_targets(self._spec(["pytest", "#{test_targets}"])))
+
+    def test_sanitized_targets_shared_by_cmd_and_env_channels(self):
+        """evo-add-regression-empty-result-failclosed 3.2：producer 单点消毒后，
+        cmd 替换与 FENIX_TEST_TARGETS env 导出两通道同源——毒化项不再经任一
+        通道进入 pytest。"""
+        root = Path(_mkdtemp("affinity-dual-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        (root / "tests").mkdir()
+        (root / "tests" / "test_ok.py").write_text(
+            "def test_ok():\n    pass\n", encoding="utf-8"
+        )
+        with self.assertLogs("fenixd.code_review", level="WARNING"):
+            targets = _map_fix_files_to_tests(
+                ["tests/test_ok.py",
+                 "#tests/test_sentinel.py",
+                 "tests/__pycache__/test_ok.cpython-311.pyc",
+                 "tests/test_ghost.py"],
+                root,
+            )
+        self.assertEqual(targets, ["tests/test_ok.py"], "producer 出口为消毒后列表")
+        # cmd 通道：毒化项不进替换值
+        spec = self._spec(
+            "python3 -m pytest ${FENIX_TEST_TARGETS:-tests/} -q #{test_targets}")
+        eff = _apply_test_targets(spec, targets)
+        for poison in ("#", "__pycache__", ".pyc", "test_ghost", "test_sentinel"):
+            self.assertNotIn(poison, eff.cmd, f"cmd 通道不含毒化项: {poison}")
+        # env 通道：同源消毒列表导出
+        with _env_helper(targets) as env_value:
+            for poison in ("#", "__pycache__", ".pyc", "test_ghost", "test_sentinel"):
+                self.assertNotIn(poison, env_value, f"env 通道不含毒化项: {poison}")
+            self.assertEqual(env_value, "tests/test_ok.py")
 
     def test_env_export_dual_channel(self):
         """同值导出 FENIX_TEST_TARGETS（{port} 占位符先例双轨）。"""
@@ -920,10 +1029,14 @@ class TestFallbackSanitization(unittest.TestCase):
         self.assertIs(eff, spec, "无占位符 spec 逐字原样（零迁移）")
         self.assertFalse(targeted)
 
-    def test_fenixd_safe_comment_form_noop(self):
+    def test_fenixd_safe_comment_form_sentinel_consumed(self):
         """④ fenixd 安全注释形态（${FENIX_TEST_TARGETS:-tests/} 缺省展开 +
-        词首 #{test_targets} 注释位）消毒为无害 no-op：注释位替换不产生
-        重复收集参数；list 两态独立占位元素展开单个目标。"""
+        词首 #{test_targets} 注释位）消毒后哨兵 # 不残留进执行命令
+        （evo-add-regression-empty-result-failclosed 2.2 收口，取代旧
+        「# 保持」契约——替换值含引号字符时引号会击穿注释语义、使哨兵位
+        目标漏成 pytest 参数）：注释位被替换且 # 被吞掉，目标以真实参数位
+        进入命令（与 env 缺省展开同集，pytest 收集去重）；list 两态独立
+        占位元素展开单个目标。"""
         safe_cmd = (
             "python3 -m pytest ${FENIX_TEST_TARGETS:-tests/} -q"
             " --junit-xml=.fenix/regression/junit.xml #{test_targets}"
@@ -933,14 +1046,14 @@ class TestFallbackSanitization(unittest.TestCase):
             self._spec(safe_cmd), self.wt, "run-1", batch_no=1, is_last_batch=True
         )
         self.assertNotIn("{test_targets}", eff.cmd, "占位符已消毒")
-        self.assertIn(" #tests/", eff.cmd, "注释位被替换、词首 # 保持（pytest 不可见）")
+        self.assertNotIn("#", eff.cmd, "哨兵 # 不残留进执行命令")
         self.assertIn(
             "${FENIX_TEST_TARGETS:-tests/}", eff.cmd,
             "POSIX 缺省展开位置原样保留",
         )
         self.assertEqual(
             eff.cmd.count("tests/"), 2,
-            "仅注释位一处替换（缺省展开位置 1 + 注释位 1），无重复收集参数",
+            "仅注释位一处替换（缺省展开位置 1 + 原注释位 1），无重复收集参数",
         )
         # list 两态：独立占位元素消毒为单个目标元素（无重复收集参数）
         eff2 = _sanitize_test_targets(

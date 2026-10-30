@@ -829,6 +829,13 @@ def run_regression(
       failed；XML 全绿仍 status: passed，不因非零退出降级，但结果附
       exit_code 字段并以 WARNING 留痕——非零退出不静默蒸发）；
     - XML 不可解析 → status: parse_error（附非空 reason）；
+    - 空结果 fail-closed（evo-add-regression-empty-result-failclosed 1.1）：
+      returncode≠0 且解析 total=0（usage error exit=4 落 0 例 XML、零收集
+      exit=5 等「命令没真实跑出用例」形态）→ status: parse_error（附
+      exit_code + reason，不判 passed）；
+    - 结果新鲜度（同 SPEC 1.2）：拟判 passed 前 junit.xml mtime 早于本次命令
+      started_at（或 mtime 不可取得）→ status: parse_error（stale_xml 留痕），
+      不采信非本次执行产出的结果；
     - 命令启动失败（Popen OSError，argv 形态可执行文件缺失等）→ status 同为
       parse_error，附 ``launch_error: True`` 结构化判别（「未起跑」≠「跑完产
       不出 XML」，code-review item 1cc2d91268e4）；不新增状态枚举，消费侧对
@@ -1012,11 +1019,82 @@ def run_regression(
         if parse_result is not None:
             cases = parse_result["cases"]
             long_tests = extract_long_tests(cases, spec.long_test_threshold_seconds)
+
+            # 空结果 fail-closed（evo-add-regression-empty-result-failclosed
+            # 1.1，主判据）：returncode≠0 且 total=0 → 命令没真实跑出用例
+            # （pytest usage error exit=4 落 0 例 XML、零收集 exit=5 等形态），
+            # 按 parse_error/infra 失败处置，MUST NOT 判 passed——2026-10-24
+            # 链 A 批 1 伪绿合回事故（targets 混入 .pyc → exit=4 + 可解析 0 例
+            # XML → 旧判定只看解析结果仍 passed）的在案先例收口。置于状态判定
+            # 之前：与在案「runner sessionfinish 崩溃」豁免形态（下方）无交集
+            # ——豁免的前提是 XML 可解析且无失败且 total>0。
+            if returncode != 0 and parse_result["total"] == 0:
+                reason = (
+                    f"空结果 fail-closed（empty_result）: 回归命令退出码 "
+                    f"{returncode} 且 JUnit XML 用例总数为 0，命令未真实跑出"
+                    f"用例，不采信该结果（按 parse_error 处置）"
+                )
+                log.warning("regression", f"{reason}: {cmd_display}")
+                return {
+                    "status": "parse_error",
+                    "cmd": cmd_display,
+                    "output": output_rel,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "duration_seconds": elapsed,
+                    "total": 0, "passed": 0, "failed": 0,
+                    "errors": 0, "skipped": 0,
+                    "failures": [], "long_tests": [],
+                    "long_test_threshold_seconds": spec.long_test_threshold_seconds,
+                    # 非零退出码结构化留痕（与既有 exit_code 字段同形），供
+                    # 消费侧判别「命令没跑成」的具体形态
+                    "exit_code": returncode,
+                    "reason": reason,
+                }
+
             # 状态判定：timeout 优先；否则按解析结果（退出码不改判——XML 全绿
             # 仍 passed，非零退出经下方 exit_code 留痕，不静默蒸发）
             if parse_result["failed"] > 0 or parse_result["errors"] > 0:
                 status = "failed"
             else:
+                # 结果新鲜度（evo-add-regression-empty-result-failclosed 1.2，
+                # 叠加维度）：拟判 passed 前校验 junit.xml mtime 不早于本次
+                # 命令 started_at——覆盖 spawn 前预清理（上方 unlink）OSError
+                # 被吞后遗留旧 XML 被采信的残余洞。started_at 为 now_iso 存储
+                # 串，比较前经 timelib.parse_ts 转时间戳；stat 失败（无法确立
+                # 新鲜度）同按 fail-closed 处置。
+                try:
+                    xml_mtime = output_abs.stat().st_mtime
+                    started_ts = timelib.parse_ts(started_at).timestamp()
+                    stale_reason = (
+                        f"陈旧结果 fail-closed（stale_xml）: JUnit XML mtime "
+                        f"（{xml_mtime:.3f}）早于本次命令 started_at"
+                        f"（{started_ts:.3f}），不采信非本次执行产出的结果"
+                        f"（按 parse_error 处置）"
+                    )
+                    stale = xml_mtime < started_ts
+                except OSError as e:
+                    stale = True
+                    stale_reason = (
+                        f"陈旧结果 fail-closed（stale_xml）: JUnit XML mtime "
+                        f"不可取得（{e}），无法确立结果新鲜度"
+                        f"（按 parse_error 处置）"
+                    )
+                if stale:
+                    log.warning("regression", f"{stale_reason}: {cmd_display}")
+                    return {
+                        "status": "parse_error",
+                        "cmd": cmd_display,
+                        "output": output_rel,
+                        "started_at": started_at,
+                        "finished_at": finished_at,
+                        "duration_seconds": elapsed,
+                        "total": 0, "passed": 0, "failed": 0,
+                        "errors": 0, "skipped": 0,
+                        "failures": [], "long_tests": [],
+                        "long_test_threshold_seconds": spec.long_test_threshold_seconds,
+                        "reason": stale_reason,
+                    }
                 status = "passed"
             result = {
                 "status": status,
