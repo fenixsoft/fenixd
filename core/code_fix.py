@@ -43,6 +43,13 @@ agent run 在独立 worktree 内修复并提交；框架在该 worktree 上跑�
   整批重派无证据价值。
   瞬态失败（agent run 失败/重试 run 失败/零有效修复）只进进度快照
   `chain_skipped`（链内跳过，新链启动重置），不烧跨轮重试预算。
+  零产物止损（evo-codefix-zero-artifact-stop-loss）：产物硬门零产物
+  （`failure_category="artifact_missing"`，run 正常退出但 out 缺失/零有效
+  行）同属瞬态失败走 chain_skipped，但同批次指纹连败达
+  `ARTIFACT_MISSING_BREAKER_THRESHOLD`（2，daemon 进程内跨链累计）即入
+  编排器实例级止损跳过集——该指纹不再入选派发并 WARNING 留痕；计数域仅
+  首轮 run 失败收尾块，与回归异常熔断（回归失败后的定向重试循环内）
+  互不干扰。
 """
 
 import calendar
@@ -1181,6 +1188,15 @@ REGRESSION_ANOMALY_BREAKER_THRESHOLD = 2
 # 全量回归与定向轮回归）MUST 经它取阈值。
 ANOMALY_BREAKER_TIMEOUT_THRESHOLD = 1
 
+# 零产物止损阈值（evo-codefix-zero-artifact-stop-loss）：同批次指纹（批条目
+# 集，与失败档案同定义）的 run 级 ``artifact_missing`` 失败（产物硬门零产物
+# ——run 正常退出但 out 缺失/零有效行，判别单源 CodeFixResult.failure_category）
+# 连败达到该次数即停止该指纹重派（进程内止损跳过集＋WARNING 留痕）。
+# 计数域与回归异常熔断（REGRESSION_ANOMALY_BREAKER_THRESHOLD，位于回归失败
+# 后的定向重试循环内）互斥：artifact_missing 发生在首轮 run 未产出、回归根本
+# 未执行之时，二者互不干扰。同上按项目约定不进受管配置。
+ARTIFACT_MISSING_BREAKER_THRESHOLD = 2
+
 
 def _anomaly_breaker_threshold(status: str) -> int:
     """按回归形态取熔断阈值（1.2）：timeout 首记即收口，其余维持既有阈值。"""
@@ -2310,18 +2326,26 @@ def count_open_items(project_root) -> int:
 
 
 def is_chain_last_batch(
-    project_root, batch_item_ids, chain_skipped=None, severity_gate=None
+    project_root, batch_item_ids, chain_skipped=None, severity_gate=None,
+    stop_loss_item_ids=None,
 ) -> bool:
     """链末批判定（add-codefix-affinity-batching 3.1，供批收尾回归分流）。
 
     与链收敛出口同判据：以链选批同口径排除（失败档案 ∪ ``chain_skipped`` ∪
-    延迟台账 ∪ severity 挂起集）后、再排除本批 ``batch_item_ids``，
-    ``select_batch`` 返回空 → 本批为末批。MUST 在核销**前**调用（核销会
-    改变 open 集）；本批条目集合从既有批上下文取得（ctx["item_ids"]）。
+    延迟台账 ∪ severity 挂起集 ∪ 零产物止损条目集）后、再排除本批
+    ``batch_item_ids``，``select_batch`` 返回空 → 本批为末批。MUST 在核销
+    **前**调用（核销会改变 open 集）；本批条目集合从既有批上下文取得
+    （ctx["item_ids"]）。
 
     severity 挂起集（evo-add-codefix-severity-batch-gate 2.1）：排除口径
     经 ``severity_gate`` 并入——select_batch 以同一门限过滤挂起条目（与
     checkpoint 选批门限同口径），挂起条目不阻链末批判定、不计 skipped/lost。
+
+    零产物止损条目集（evo-codefix-zero-artifact-stop-loss 2.2）：与
+    checkpoint 选批排除并集同口径并入（``stop_loss_item_ids``，编排器
+    ``_stop_loss_item_ids`` 展开产物）——剩余可选面全为止损跳过条目时，
+    本批仍按末批判定（全量回归兜底防线不因止损而落空，同下方 design D3
+    顾虑的镜像面）。
 
     MUST NOT 用裸 ``count_open_items`` 排除本批判定：其计数含失败档案/
     跳过/延迟等被排除 open 条目（``count_open_items`` docstring），链最后
@@ -2332,6 +2356,7 @@ def is_chain_last_batch(
         set(chain_skipped or ())
         | set(batch_item_ids or ())
         | _deferred_item_ids(project_root)
+        | set(stop_loss_item_ids or ())
     )
     # batch_size=1：装箱目标不影响空/非空判据（任一可选 open 条目都返回非空）
     return not select_batch(
@@ -3977,6 +4002,17 @@ class CodeFixOrchestrator:
         self._in_flight = False
         # 静默窗非法配置「WARNING 一次」的去重记忆（值变更后重新告警）。
         self._night_quiet_warned_raw = None
+        # 零产物止损状态（evo-codefix-zero-artifact-stop-loss 1.2/2.1，D1）：
+        # 载体 = 编排器实例级进程内状态——daemon 单例装配（fenixd.py 一处
+        # 构造）下即 daemon 进程内跨链累计，重启清零；重启后的残余重试面由
+        # 既有失败档案 fail_count/FAIL_RETRY_MAX 预算兜底（同口径，D1）。
+        # MUST NOT 复用 chain_skipped 承载——其「新链启动重置」，同指纹下一
+        # 链立即重新入选，止损对跨链/跨编排 run 连败形同虚设。
+        # _artifact_missing_streaks: 指纹（批条目集 frozenset）→
+        # {"count": 连败次数, "last_run_id": 最后失败 run id}；
+        # _artifact_missing_skipped: 已触发止损的指纹跳过集（选批排除消费）。
+        self._artifact_missing_streaks = {}
+        self._artifact_missing_skipped = set()
 
     # -- 基础 ------------------------------------------------------------
 
@@ -3987,6 +4023,60 @@ class CodeFixOrchestrator:
             getattr(self._logger, level)("code-fix", msg)
         except Exception:  # noqa: BLE001 — 日志失败不影响编排
             pass
+
+    def _stop_loss_item_ids(self) -> set:
+        """止损指纹集展开为条目 id 集（选批排除并集消费，2.2）。
+
+        止损跳过集以批指纹（条目集 frozenset）承载状态机身份；选批排除
+        并集的既有成员（失败档案/``chain_skipped``/延迟台账）均为条目 id
+        集——此处展开对齐口径：指纹内条目一律不再入选派发（同指纹必然
+        不再复现；指纹内条目混入他批同样按零产物止损排除，保守侧与失败
+        档案的条目 id 排除口径一致）。
+        """
+        ids: set = set()
+        for fp in self._artifact_missing_skipped:
+            ids |= set(fp)
+        return ids
+
+    def _record_artifact_missing_failure(self, result, item_ids) -> None:
+        """零产物止损计数（evo-codefix-zero-artifact-stop-loss 1.2/2.1）。
+
+        计数域 = 首轮 run 失败收尾块**专用**（``_run_batch_created`` 首次修复
+        run 失败分支调用）：仅 ``failure_category == "artifact_missing"``
+        （产物硬门零产物，判别单源信封字段）按批指纹（条目集，与失败档案
+        同定义）累计连败；api_error/conn_error/api_timeout 等其他失败类别
+        不计入、不改计数；定向重试轮 run 失败（``regression_retry_run_failed``
+        收尾）不进本方法——与回归异常熔断（anomaly_streak，位于回归失败后
+        的定向重试循环内）计数域互不干扰（二者执行阶段互斥：前者回归未
+        执行，后者回归已发生）。
+
+        连败达 ``ARTIFACT_MISSING_BREAKER_THRESHOLD``（2）即止损：指纹入
+        进程内止损跳过集（选批排除并集消费，2.2）＋ 恰发一条 WARNING 留痕
+        （含指纹、连败次数、最后失败 run id；去重守卫保证恰一条，不随后续
+        计数漂移刷屏）。单次失败本方法只计数不处置——既有 chain_skipped
+        瞬态重试行为由调用方原样保持（Requirement「单次失败仍瞬态重试」）。
+        """
+        if getattr(result, "failure_category", "") != "artifact_missing":
+            return
+        fp = frozenset(str(i) for i in (item_ids or ()))
+        if not fp:
+            return
+        rec = self._artifact_missing_streaks.setdefault(
+            fp, {"count": 0, "last_run_id": ""}
+        )
+        rec["count"] += 1
+        rec["last_run_id"] = str(getattr(result, "run_id", "") or "")
+        if (
+            rec["count"] >= ARTIFACT_MISSING_BREAKER_THRESHOLD
+            and fp not in self._artifact_missing_skipped
+        ):
+            self._artifact_missing_skipped.add(fp)
+            self._log(
+                "warning",
+                "code-fix 零产物止损: 批指纹 "
+                f"{sorted(fp)} 连续 {rec['count']} 次 artifact_missing 失败，"
+                f"停止该指纹重派（最后失败 run {rec['last_run_id']}）",
+            )
 
     def _get_root_config(self) -> dict:
         """解析**根形态** config（dict / callable / None→runner 运行时配置）。
@@ -4885,12 +4975,21 @@ class CodeFixOrchestrator:
             # （失败档案并集由 select_batch 内部经 _failed_item_ids 并入，不在
             # 本变量）——defer 条目在合回成功前始终是 open 且不在失败档案，不
             # 排除则下一边界 earliest-first 立即重选同批、重跑 agent。
+            # evo-codefix-zero-artifact-stop-loss 2.2：进程内止损跳过集并入选
+            # 批排除并集（失败档案 ∪ chain_skipped ∪ 延迟台账 ∪ 止损跳过集）
+            # ——触发止损的同指纹下一链不再入选派发；集合是编排器实例级（进程
+            # 内跨链存活），不受 chain_skipped 新链重置影响，链内其余指纹不受
+            # 影响；daemon 重启清零，残余面由既有 fail_count 预算兜底。
             # severity 分级门限（evo-add-codefix-severity-batch-gate 2.1）：
             # 低于门限且未到周批窗口的条目由 select_batch 同一谓词过滤（不进
             # exclude_ids——挂起集是「暂缓」而非本链排除，周批窗口到期后须
             # 自然回流可选池），regression- 前缀条目豁免。
             severity_gate = self._severity_gate()
-            exclude_ids = set(chain_skipped) | _deferred_item_ids(root)
+            exclude_ids = (
+                set(chain_skipped)
+                | _deferred_item_ids(root)
+                | self._stop_loss_item_ids()
+            )
             batch = select_batch(
                 root,
                 cfg.get("batch_size", 20),
@@ -6737,6 +6836,12 @@ class CodeFixOrchestrator:
         result = runner.run_code_fix(wt, items, run_id=run_id)
         if not result.success:
             self._log("error", f"code-fix run 失败（run {result.run_id}）: {result.error}")
+            # evo-codefix-zero-artifact-stop-loss 1.2：首轮 run 失败收尾块读取
+            # failure_category 计数（仅 artifact_missing 计入、按批指纹跨链
+            # 累计；达阈值即止损跳过集＋WARNING 留痕）。单次失败仍走下方既有
+            # chain_skipped 瞬态重试，行为不变；定向重试轮 run 失败
+            # （regression_retry_run_failed）不进本计数。
+            self._record_artifact_missing_failure(result, item_ids)
             # evo-code-fix-api-timeout-salvage 2.1：api_timeout 终局且工作区脏时
             # 先把 WIP salvage 提交到批分支，再照常 _safe_cleanup——MUST NOT 跳过
             # cleanup（漏掉则 code-review-fix:code-fix spec 锁滞留，下一批 create()
@@ -6781,6 +6886,9 @@ class CodeFixOrchestrator:
             item_ids,
             chain_skipped=ctx.get("chain_skipped"),
             severity_gate=self._severity_gate(),
+            # 零产物止损条目集同口径并入（evo-codefix-zero-artifact-stop-loss
+            # 2.2）：末批判定与链选批排除并集同口径。
+            stop_loss_item_ids=self._stop_loss_item_ids(),
         )
         eff_spec, targeted, targets = self._resolve_batch_regression_spec(
             reg_spec, wt, run_id, batch_no=batch_no, is_last_batch=is_last_batch
@@ -7512,6 +7620,9 @@ class CodeFixOrchestrator:
                     (),
                     chain_skipped=ctx.get("chain_skipped"),
                     severity_gate=self._severity_gate(),
+                    # 零产物止损条目集同口径并入（2.2）：链终局重查与选批
+                    # 排除并集同口径，止损条目不阻真实收敛判定。
+                    stop_loss_item_ids=self._stop_loss_item_ids(),
                 )
             except Exception as e:  # noqa: BLE001 — 重查失败按既有判定出账
                 self._log(

@@ -453,6 +453,12 @@ class CodeFixResult:
       与 api_timeout 的分工（design D2）：api_timeout 保持「现场抢救」触发
       语义不变，conn_error 只驱动冷却、不参与 salvage 判定；两布尔可同时为
       真（api_error 是 api_timeout 的宽判分支），互不掣肘。
+    - ``failure_category``（evo-codefix-zero-artifact-stop-loss 1.1）：产物
+      硬门零产物失败的结构化类别（唯一取值 "artifact_missing"——run 正常
+      退出但 out 缺失/零有效行），供链编排器同指纹零产物止损计数消费；
+      缺省空串＝非硬门失败（api_error/conn_error/api_timeout 等既有路径）
+      不携带类别，未走硬门的既有构造点零触碰。conn_error 语义逐位不变
+      （硬门失败路径 conn_error 恒 False 的现状保持）。
 
     与同族维护型 run 结果信封同址本模块（code-review item 08e3c8a68262）；
     原定义于 maintenance_runs.py，该模块改为导入本类，既有
@@ -473,6 +479,7 @@ class CodeFixResult:
         stderr_summary: str = "",
         conn_error: bool = False,
         result_text: str = "",
+        failure_category: str = "",
     ):
         self.run_id = run_id
         self.success = success
@@ -485,6 +492,7 @@ class CodeFixResult:
         self.stderr_summary = stderr_summary
         self.conn_error = conn_error
         self.result_text = result_text
+        self.failure_category = failure_category
 
 
 # ── 产物门族（add-judge-artifact-gate / add-planready-artifact-gate /
