@@ -131,6 +131,56 @@ DEFER_RETRY_MAX = 6
 # ——缺省保守：必须显式声明「误报/不值得修」才走硬出口，防 LLM 轻率清账。
 IGNORE_ELIGIBLE_SKIP_REASONS = {"false_positive", "not_worth_fixing"}
 
+# 既有 skipped 词汇表（保持 open 的模板既有出口，agents/code-fix.md）：
+# 命中白名单判定豁免硬出口之外的 skipped 行按成员静默（脱靶 warning 只收
+# 「不识别」的值，正常出口变噪音会淹没真脱靶信号）。
+SKIPPED_KEEP_OPEN_REASONS = {"unfixable", "needs_human"}
+
+
+def skip_reason_hit_whitelist(skip_reason) -> bool:
+    """skip_reason 白名单命中判定（LLM 拒绝出口，前缀归一 2026-10-17）。
+
+    整串相等快路径（裸枚举，行为与历史完全一致）+ strip 后以
+    ``IGNORE_ELIGIBLE_SKIP_REASONS`` 任一枚举值开头的前缀归一——fixer 把
+    解释文本并进 skip_reason 的过渡形态（含模板历史 ``(no_marker)`` 尾注）
+    不再脱靶空转。``skip_reason`` 缺失或非字符串按未命中处理，MUST NOT
+    抛异常（历史集合成员判定对 None 天然安全，前缀化后保持）。
+    """
+    if not isinstance(skip_reason, str):
+        return False
+    if skip_reason in IGNORE_ELIGIBLE_SKIP_REASONS:
+        return True
+    text = skip_reason.strip()
+    return any(text.startswith(v) for v in IGNORE_ELIGIBLE_SKIP_REASONS)
+
+
+def _ignored_reason_text(row: dict) -> str:
+    """命中白名单条目的 ignored 理由组装（前缀归一 + reason 字段 2026-10-17）。
+
+    skip_reason 完整原文（含后缀解释）为主；产物行可选 ``reason`` 字段
+    （模板契约对齐后的解释文本独立落点，缺省无此键）非空时以「；reason:」
+    并入。mark_ignored 把返回值原样记入 ``ignored_reason``（自由文本无接口
+    改动）；裸枚举无 reason 时返回值与历史逐字一致（向后兼容）。
+    """
+    skip = row.get("skip_reason")
+    skip_txt = skip if isinstance(skip, str) else ""
+    reason = row.get("reason")
+    reason_txt = reason.strip() if isinstance(reason, str) else ""
+    if skip_txt and reason_txt:
+        return f"{skip_txt}；reason: {reason_txt}"
+    return skip_txt or reason_txt
+
+
+def _log_split_warning(logger, msg: str) -> None:
+    """产物解析 warning 的 lenient 留痕（对齐 _log_alert_rejected 形态）：
+    logger 为 None（纯函数调用形态）跳过，日志失败无副作用。"""
+    if logger is None:
+        return
+    try:
+        logger.warning("code-fix", msg)
+    except Exception:  # noqa: BLE001 — 留痕失败不影响分区
+        pass
+
 # 进度缺省态（读侧缺文件/损坏时返回，MUST NOT 抛异常）
 FIX_PROGRESS_DEFAULT = {
     "running": False,
@@ -3021,20 +3071,33 @@ def read_fix_out(worktree, run_id: str) -> list:
     return rows
 
 
-def _split_fix_rows(rows: list) -> tuple:
+def _split_fix_rows(rows: list, logger=None) -> tuple:
     """批收尾产物行分区（纯函数，LLM 拒绝出口 2026-09-23）。
 
     返回 ``(fixed_ids, skip_reasons)``：
 
     - ``fixed_ids``：``status == "fixed"`` 的条目 id（保序去重）——合回后
       经 ``mark_resolved`` 核销；
-    - ``skip_reasons``：``item_id → skip_reason``，仅收录 ``status ==
-      "skipped"`` 且 skip_reason ∈ ``IGNORE_ELIGIBLE_SKIP_REASONS``（判误报/
-      不值得修，批收尾经 ``mark_ignored`` 置终态）。同条目多行时**后行覆盖
-      前行**——先按 ``item_id`` 取末行再做白名单过滤（并集口径下重试轮的
-      判定更新生效，含以普通 skipped 撤回可忽略标注）；但最终态为 fixed
-      的条目 MUST NOT 出现在 skip_reasons——「首轮 skipped 判误报、重试
-      轮 fixed」以 fixed 为准（不降级）。
+    - ``skip_reasons``：``item_id → ignored 理由文本``，仅收录 ``status ==
+      "skipped"`` 且 skip_reason 命中 ``IGNORE_ELIGIBLE_SKIP_REASONS`` 的
+      条目（判误报/不值得修，批收尾经 ``mark_ignored`` 置终态）。命中判定
+      走 ``skip_reason_hit_whitelist``（整串相等快路径 + strip 后前缀归一，
+      evo-align-codefix-skip-reason-enum 1.1：fixer 把解释文本并进
+      skip_reason 的过渡形态不再脱靶空转）；命中条目的理由由
+      ``_ignored_reason_text`` 组装（skip_reason 完整原文 + 可选 ``reason``
+      字段）。同条目多行时**后行覆盖前行**——先按 ``item_id`` 取末行再做
+      白名单过滤（并集口径下重试轮的判定更新生效，含以普通 skipped 撤回
+      可忽略标注）；但最终态为 fixed 的条目 MUST NOT 出现在 skip_reasons
+      ——「首轮 skipped 判误报、重试轮 fixed」以 fixed 为准（不降级）。
+      裸枚举（整串相等）行为与现状完全一致，向后兼容。
+
+    脱靶可观测（evo-align-codefix-skip-reason-enum 1.2）：末行 skipped 且
+    skip_reason 为非空字符串、既不命中白名单（裸值/前缀）也不属既有
+    skipped 词汇表（``SKIPPED_KEEP_OPEN_REASONS``：unfixable/needs_human）
+    时，记一条 warning（含 item_id 与 skip_reason 原文），消除静默丢弃；
+    词汇表成员与缺省（无 skip_reason）/非字符串保持现状静默——对正常出口
+    记 warning 会淹没真脱靶信号。脱靶行语义不变：仍不进豁免硬出口，条目
+    保持 open。``logger``（可选）：lenient 留痕（None 跳过、日志失败无副作用）。
     """
     fixed_ids = [r.get("item_id") for r in rows if r.get("status") == "fixed"]
     fixed_ids = list(dict.fromkeys(fixed_ids))
@@ -3043,17 +3106,28 @@ def _split_fix_rows(rows: list) -> tuple:
     # skipped（无可忽略标注）会被白名单直接丢掉，首轮陈旧 false_positive
     # 判定残留并被 mark_ignored 洗成 ignored 终态，违背缺省保守。
     last_rows = {r.get("item_id"): r for r in rows}
-    skip_reasons = {
-        item_id: last.get("skip_reason")
-        for item_id, last in last_rows.items()
-        if last.get("status") == "skipped"
-        and last.get("skip_reason") in IGNORE_ELIGIBLE_SKIP_REASONS
-        and item_id not in fixed_set
-    }
+    skip_reasons = {}
+    for item_id, last in last_rows.items():
+        if last.get("status") != "skipped" or item_id in fixed_set:
+            continue
+        raw = last.get("skip_reason")
+        if skip_reason_hit_whitelist(raw):
+            skip_reasons[item_id] = _ignored_reason_text(last)
+        elif (
+            isinstance(raw, str)
+            and raw.strip()
+            and raw not in SKIPPED_KEEP_OPEN_REASONS
+        ):
+            _log_split_warning(
+                logger,
+                "code-fix 产物行 skip_reason 脱靶（不识别且非既有出口词汇），"
+                f"按普通 skipped 处理（不进豁免硬出口、条目保持 open）: "
+                f"item_id={item_id} skip_reason={raw!r}",
+            )
     return fixed_ids, skip_reasons
 
 
-def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids) -> tuple:
+def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids, logger=None) -> tuple:
     """LLM 拒绝出口共用分区（批收尾合回路径与定向重试耗尽收口共用）。
 
     读取首轮与各定向轮产物行**并集**（定向轮产物是独立文件
@@ -3073,7 +3147,7 @@ def _apply_llm_reject_exits(root, wt, run_ids, batch_item_ids) -> tuple:
     rows = read_fix_out(wt, run_ids[0]) if run_ids else []
     for rid in run_ids[1:]:
         rows.extend(read_fix_out(wt, rid))
-    fixed_ids, skip_reasons = _split_fix_rows(rows)
+    fixed_ids, skip_reasons = _split_fix_rows(rows, logger=logger)
     batch_set = set(batch_item_ids)
     ignore_ids = [i for i in skip_reasons if i in batch_set]
     ignored = (
@@ -7153,7 +7227,8 @@ class CodeFixOrchestrator:
                 # NOT 随批烧 fail_count 预算/进告警名录（与 merge_back_conflict
                 # 路径 pending_ids 排除 ignored 的口径一致）。
                 exhaust_ignored, exhaust_ignore_set, _ = _apply_llm_reject_exits(
-                    root, wt, [result.run_id, *attempt_run_ids], item_ids
+                    root, wt, [result.run_id, *attempt_run_ids], item_ids,
+                    logger=self._logger,
                 )
                 if exhaust_ignored:
                     self._chain_bump(root, chain_ignored=exhaust_ignored)
@@ -7267,7 +7342,8 @@ class CodeFixOrchestrator:
         # 作废被重试重做）。产物行并集读取/分区/批界过滤/mark_ignored 走与
         # 定向重试耗尽收口共用的 _apply_llm_reject_exits（单源判定口径）。
         ignored, ignore_set, fixed_ids = _apply_llm_reject_exits(
-            root, wt, [result.run_id, *attempt_run_ids], item_ids
+            root, wt, [result.run_id, *attempt_run_ids], item_ids,
+            logger=self._logger,
         )
         # 链级核销计数累加（2.1）：以 mark_ignored 真实命中为准（条目计数与
         # 台账核销一致），rollup 时点读出。
