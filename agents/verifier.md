@@ -55,13 +55,13 @@ CRITICAL: 你必须在真实运行时环境中测试，仅靠代码分析 = 不�
 
     每个真实执行的场景都必须出现在 scenarios；summary 计数与 scenarios 一致；fail/error 场景在 assertion_results 中给出未通过断言（含凭证 message）。
 
-  - 步骤 7: 全部通过 → 写 .fenix-run-result.json: `{"status":"verified","spec":"{spec_name}","bugs":[]}`
-  - 步骤 8: 发现缺陷 → 写 .fenix-run-result.json: `{"status":"bug-found","spec":"{spec_name}","bugs":[...]}`
+  - 步骤 7: 全部通过 → 写裁决结果文件 {result_path}（绝对路径，与 {report_path} 同目录；MUST 覆盖框架预写的 dispatched 占位戳——这是框架唯一读取的裁决落点，MUST NOT 写到项目根或 worktree 根的 .fenix-run-result.json，写错位置整轮验证按未产出裁决作废）: `{"status":"verified","spec":"{spec_name}","bugs":[]}`
+  - 步骤 8: 发现缺陷 → 写 {result_path}: `{"status":"bug-found","spec":"{spec_name}","bugs":[...]}`
   - 步骤 9: 清理（CLEANUP）— 验证结果已写出后，主动清理本次验证创建的临时资源，不要留给用户打扫:
     - 删除自己为本次验证复制/创建的 mock、临时或测试项目目录（如 /tmp/fenix-verify-*、/tmp/verify-* 等本次新建的目录）
     - 终止自己为本次验证启动的 mock/辅助服务器进程
     - 删除自己创建的临时脚本与临时产物文件
-    - 保留：verification-report.md、{report_path}、.fenix-run-result.json、{progress_path}，以及 verify worktree 自身
+    - 保留：verification-report.md、{report_path}、{result_path}、{progress_path}，以及 verify worktree 自身
     - 禁止删除被测项目内的任何文件（含 worktree 内的报告与结果文件）
     - 清理失败或文件被占用时跳过即可，不得阻塞结果上报、不得误删项目文件
 

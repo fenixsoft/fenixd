@@ -503,7 +503,15 @@ class PromptBuilder:
         if agent_type in ("planner-plan", "planner-judge", "fast-track", "verifier"):
             values["{scenarios_path}"] = str(
                 planner_result_path(root, spec_name, "planner-plan"))
-        if agent_type in ("planner-plan", "planner-judge"):
+        # verifier 并入 {result_path} 白名单（admin-evo-refine-midflight-outlier-dims
+        # 1793369785 根治，2026-10-30）：verifier 裁决结果文件与 planner-judge 同路径
+        # （primary per-spec 裁决位，verifier 派发时 _prewrite_verifier_dispatch_stamp
+        # 预写 dispatched 戳、读侧 _read_verdict 见 primary 存在即短路）。原模板仅以
+        # 裸相对文件名引用 .fenix-run-result.json、无落位限定，legacy verifier 收尾按
+        # 文件系统先例消歧把裁决写到主树项目根（任何读侧都不消费的位置），6/6 全过
+        # 的验证轮被 not-produced fail-closed 整轮丢弃（blocked 实证）。读侧收紧时
+        # 写侧指令必须同步收紧——绝对路径注入与 planner 车道同源。
+        if agent_type in ("planner-plan", "planner-judge", "verifier"):
             values["{result_path}"] = str(
                 planner_result_path(root, spec_name, "planner-judge"))
         if agent_type == "verifier":
