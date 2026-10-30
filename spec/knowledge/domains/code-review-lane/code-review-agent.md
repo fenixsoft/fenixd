@@ -1,7 +1,7 @@
 # 周期性代码审查 agent
 
-<!-- knowledge: capability=code-review-agent rev=5
-     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at,spec/archive/2026-10-28-evo-code-review-vendored-scope -->
+<!-- knowledge: capability=code-review-agent rev=6
+     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at,spec/archive/2026-10-28-evo-code-review-vendored-scope,spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff -->
 
 项目级周期性代码审查的一等公民 agent 车道：由框架调度层按独立周期配置（触发时点缺省回退每日自省时点）派发，对主树代码逐文件审查并增量落盘，支撑质量分面台账与手动触发。
 
@@ -18,6 +18,10 @@
 - 触发时点独立生效、两车道互不连带：自省照常在其生效时点触发，code-review 在其生效时点触发；未到生效时点的巡检轮返回 `before_run_at` 不派发，任一车道触发不连带另一方。
 - 审查窗口水位由审查车道自身承载：调度收尾将本轮审查完成时刻写入 `.fenix/code_review_state.json` 的 `last_run_at`（aware ISO8601 本地时区表述，与自省状态文件口径一致；`last_run_date` 自然日防重字段保留）。scope=`window`（缺省）时 `window_start` 优先读该字段；字段缺失（首跑/存量状态）回退读 `.fenix/self_review_state.json` 的 `last_run_at`，再缺失回退 `now - 24h`。`window_kind` 映射不变：读到任一水位（审查自身或自省回退）返回 `last_run`，双缺失返回 `fallback`。
 - 巡检循环中 code-review 检查点先于自省检查点执行（自省收尾覆写自身 `last_run_at` 会退化窗口）；时点错开后两检查点在不同巡检轮各自判定，同轮相遇时该次序约束兜底。
+- 周期审查派发前做夜间静默窗跨窗顺延判定：派发时刻加近几轮归档 run 实测时长得预计在飞区间，与任一静默窗相交（派发时刻已落窗，或预计结束严格越过尚未开始的窗起点——恰压线视作不相交）即本轮顺延不派发：不写同日防重状态（写入会使顺延当日永不跑）、复位单飞标志（对齐空 manifest 分支既有复位口径），仅留日志 `reason=night_quiet_window_deferred`（含预计区间与下一可派发时刻），窗末后首轮巡检自然重新触发。
+- 顺延时长样本取 `.fenix/runs/archive/code-review-*.jsonl` 尾部 run_metrics 行的 `duration_s`，按归档新→旧取最近 3 轮（`NIGHT_QUIET_DURATION_SAMPLE_LIMIT`，与 code-fix 同源常量）样本的最大值（最大值形态：均值对审查时长方差与单调上行趋势系统性低估，10-17 实证低估 33% 死于断窗）；缺字段/负值/非有限数值剔除，可用样本不足 3 取已有样本最大值。无任何有效样本（新装/归档缺失/读取异常）回退「仅判派发时刻落窗」。
+- 顺延判定挂点在守卫链尾部、单飞置位之后、manifest 收集与同日防重写入之前：判定 MUST 先于一切副作用（收集走 git 子进程、防重写入会使顺延当日永不跑）。配置读取/解析/取样异常一律按不顺延处理（fail-open，观测失败 MUST NOT 阻断派发主路径）。
+- 顺延的窗配置与解析复用 code-fix 车道单源（同键 `admin.code_review_fix.night_quiet_window` 同缺省同解析器），不设第二份窗配置；多窗相交取最晚窗末为「下一可派发时刻」（仅日志文案，实际派发交由巡检自然到达）。与 provider 瞬断冻结不复用（冻结态另有全局冻结闸，本判定只管窗相交）。429 限流重派路径复用同一顺延判定单源，命中顺延时按下一可派发时刻重排重派 Timer，重派不落窗。
 - 审查范围经 `admin.code_review.scope` 配置，取值 `window`（缺省）| `full`；非法值（含缺失/类型错误）回退 `window`，不报错中断巡检。两档共用同一套调度守卫（生效 `run_at` 阈值、同一自然日不重复触发、单飞、开关零动作），`review_kind` 均保持 `scheduled`。两档的出题面收集共用 vendored 第三方目录排除（vendored 路径不入 manifest，见 [vendored-review-scope](vendored-review-scope.md)）。
   - scope=`window`：审查对象为 `window_start` 之后合并/产出到主树的 SPEC 所变更的文件集合。
   - scope=`full`：审查对象为全仓受控源码文件（`collect_manifest(scope="full")`），经 `max_files` 上限截断；`window_start` 以 None 参与 run，manifest 审计字段如实记录 `full`。
@@ -41,3 +45,5 @@
 - 2026-09-29 add-code-review-sharded-out（spec/archive/2026-09-29-add-code-review-sharded-out） — 产物落盘契约扩为主产物+分片双轨直写（落盘义务「谁审谁写」），追加禁 async 等待收工条款与产物硬门聚合口径；进度/台账/硬门三侧改聚合消费（读侧口径另立 code-review-progress-visibility 页）。
 - 2026-10-15 add-code-review-run-at（spec/archive/2026-10-15-add-code-review-run-at） — 触发时点与窗口水位同自省解耦：触发时点读独立键 `admin.code_review.run_at`（缺失/脏值回退自省 run_at，解析单源收口），窗口水位改由 `code_review_state.json` 的 `last_run_at` 自承载（回退自省水位、再回退 24h）；检查点先于自省的次序约束保留；设置页质量页签新增触发时点输入。
 - 2026-10-28 evo-code-review-vendored-scope（spec/archive/2026-10-28-evo-code-review-vendored-scope） — scope 两档出题面收集加装 vendored 第三方目录排除（收集层单表生效，规则细节另立 [vendored-review-scope](vendored-review-scope.md) 页），非 vendored 路径收集行为不变。
+- 2026-10-30 evo-add-review-night-defer-snapshot-writeoff（spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff） — 新增周期审查派发跨窗顺延：预计在飞区间与夜间静默窗相交即顺延（不派发、不写同日防重、复位单飞、日志 reason=night_quiet_window_deferred）、近 3 轮归档时长样本策略（对齐 code-fix 同源常量）、无样本回退仅判落窗、判定挂点先于副作用（manifest 收集与防重写入之前）。
+- 2026-10-30 evo-review-night-window-resume-hardening — 顺延时长估计由近 3 轮均值改为取最大值（均值对时长方差与上行趋势系统性低估）；writeoff-pending 待核销锚驱动剃余续审（台账侧规则详见 [code-review-items](code-review-items.md)）。
