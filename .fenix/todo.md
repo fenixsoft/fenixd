@@ -589,7 +589,7 @@
   - 建议：①手工把 night_quiet_window 改为覆盖双断点的合法多窗（零代码）；②窗解析把布尔 false 与 off 同义化并在载入时 lint 告警；③修复链停用态自动再武装或每日提醒信号；④批投递与审查派发加窗前缓冲。
 
 - **（恶化）dsh延迟失明扩散到产品spec主链，全链盲飞**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：观测面损失扩大：本窗 fenix-prototype 产品 spec 全链 run（出题 69 轮、主实现 297 轮、judge 两轮、fastlane、impl 收尾）全部 dsh 车道（自研 CLI harness）且延迟配对零样本，窗内「延迟观测疑似失明」WARNING 达 7 条——停滞与延迟维度对产品主链结构性失效，12 晚停滞序列的阈值跟踪在主链上继续哑化。
   - 证据：WARNING 7 条：08:13:21Z planner-plan-fenix-prototype（69 轮）、08:40:16Z impl 主 run（297 轮）、08:49/08:54 两个 planner-judge（42/22 轮）、08:55:08 code-fix-fastlane、08:55:50 impl-1793264083，全部 latency_rounds=0；对照：本窗审查 run code-review-1793203459 为 claude 车道、974 轮延迟样本可配对——主链 dsh 化与维护链 claude 化并存，观测面碎片化。
   - 调查评估：问题源：对 [2026-10-29#可改进#6] 的连续对账。已核实事实：①上轮「夜间主 run 迁移 dsh」本窗演化为产品 spec 主链全 dsh（fenix-prototype 全链 7 run 失明），而审查 run 本窗又回 claude（harness=claude 实测）——车道选择逐 run 波动，失明面随之漂移；②停滞损耗在 dsh run 上是否发生不可判（planner-judge 单轮输入 10 万 token 级的大 run 零样本）。与存量工作关系：本条即 [2026-10-15#可改进#2]（dsh-events 延迟配对接线）主旨的暴露面扩大实证，勿另起炉灶重复立项；与 run_metrics 写入面丢弃（本日 I1）是独立缺口。结论：dsh 配对接线落地前，停滞系列的取证判断对 dsh run 持续不可执行，维持立项优先。
