@@ -1,8 +1,10 @@
 # design
 
-- 裁决权威：daemon run_metrics 终态（_run_terminal_success，core/self_review.py:556）已存在并被 signal= 守卫消费，直接复用；不新增数据源。
-- 扩界点：_is_phantom_signal_failure（core/self_review.py:580-590）改为三分支形态判定——detail 前缀 signal=（现状）、detail 为 Exit code/CLI 错误形态（新增）、marker= 命中（新增，需把样本侧 collect_failed_run_samples 对 marker= 的排除同步放开）；docstring（:586-588）同步改写为「daemon 终态权威裁决」。
-- 消费点：计数侧 collect_runs_stats（:695-700）与样本侧 collect_failed_run_samples（:777-784）共用同一谓词，改谓词即两侧同时生效；告警复用 :593 的幻影告警通道，kind=self_review_phantom_failure。
-- 指标透传：登记点在 core/agent_runner/maintenance_runs.py:1500-1517（run_evolution 产物直读分支，run_ok=True 处），从档案 result 事件读 total_cost_usd 与轮次（context metrics 行 turns），传入既有 run_metrics 写入调用；读取失败时保持现状记 0 并 DEBUG 留痕，不阻塞落地主链。
-- 保守性：查无 run_metrics 行（索引缺失/档案缺失）一律保持 failed，与 tests/test_self_review_terminal_crosscheck.py:269 既有语义一致；daemon=error 反例（:311）不得回归。
-- 测试：tests/test_self_review_terminal_crosscheck.py 新增三夹具（error+success 否决、marker+success 否决、error+无账面行保持），夹具形态取自 evo-1792692791 档案真实尾行。
+- 裁决权威：daemon run_metrics 终态（_run_terminal_success，core/self_review.py:570）已存在并被 signal= 守卫消费，直接复用；不新增数据源。
+- 扩界点：_is_phantom_signal_failure（core/self_review.py:595-605）改为三分支形态判定——detail 前缀 signal=（现状）、detail 为 Exit code/CLI 错误形态（新增，起步锚 = detail 以「Exit code」前缀起，evo-1792692791 实拍尾行 {"type":"error","error":"Exit code: 1","exit_code":1}；MUST NOT 空泛匹配任意 error 文本，后续形态按实拍扩充）、marker= 命中（新增，需把样本侧 collect_failed_run_samples 对 marker= 的守卫排除同步放开）；docstring（:596-604）同步改写为「daemon 终态权威裁决」。
+- 消费点：计数侧 collect_runs_stats 守卫（:715-716）与样本侧 collect_failed_run_samples 守卫（:794-796）共用同一谓词，改谓词即两侧同时生效；告警复用 _record_phantom_failure_alert（:608）的幻影告警通道，kind=self_review_phantom_failure，其描述与 recommended_action 的「经信号路径」措辞随扩界泛化（marker=/error 终态 detail 亦会进入告警）。
+- 既有锁定点须同轮翻转（本 SPEC 显式推翻「marker= 与 error 终态 MUST NOT 纳入守卫」先例）：self_review.py docstring :596-604、计数侧注释 :710-714、样本侧 docstring :753-760 与守卫注释 :788-793、tests/test_self_review_terminal_crosscheck.py:248 test_marker_failed_terminal_success_still_counted 与 :301 test_stats_failed_count_consistent_with_samples 的 marker+terminal=success 断言（按新语义改写为改计 success 并写告警）。
+- 指标透传：登记点在 core/agent_runner/maintenance_runs.py 的 run_evolution 抢救/落地段（:1500-1656；CLI 非零退出但契约完整翻转 run_ok=True 在 :1621-1622）与收尾指标写入调用 _log_lane_run_metrics（:1671）——turns=0/cost=null 的成因是 _run_agent 异常路径 turns 保持 :1460 初始 0、usage_info 为空 dict。分源回填：total_cost_usd ← 档案 result 事件顶层 total_cost_usd（evo-1792692791 实测 6.756237）；turns ← daemon 日志 context metrics 行（「context metrics: turns=N」，evo-1792692791 实测 197；text_turns=21 与 result 事件 num_turns=21 为另一口径）。MUST NOT 经 core/dashboard/data/runs.load_run_metric 合并索引取 turns：索引按 run_id 后行刷新同名字段合并（runs.py:107），lane 行（后写，turns=0）会覆盖 context 行（先写，turns=197），须定向解析该 run_id 的 context metrics 日志行（主日志 → .fenixd.log.1 轮转回退，约定同 load_run_metric）；任一源查无/解析失败时保持现状记 0 并 DEBUG 留痕，不阻塞落地主链。
+- 保守性：查无 run_metrics 行（索引缺失/档案缺失）一律保持 failed，与 tests/test_self_review_terminal_crosscheck.py:269 既有语义一致；daemon=error 反例（:311-321）不得回归。
+- 测试：tests/test_self_review_terminal_crosscheck.py 新增三夹具（error+success 否决、marker+success 否决、error+无账面行保持），夹具形态取自 evo-1792692791 档案真实尾行（Exit code: 1）。
+- 串行前置：与在飞 evo-fix-self-review-phantom-running（tasks 10/10 已实现待归档，其 design 明文冻结 result/error 分支语义）串行流转——本 SPEC 实施须待其归档后开工（本 SPEC 正要改写该分支的守卫语义与其 docstring 锁定，并行实施会互相踩刚落地的终态词表/守卫代码；本文所引行号以归档后代码复核为准）。

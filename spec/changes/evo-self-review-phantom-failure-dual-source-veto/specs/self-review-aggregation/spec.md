@@ -27,12 +27,12 @@ marker= 命中（失败词复述）样本 SHALL 接入同一双源否决：daemo
 
 ### Requirement: salvage 路径指标透传
 
-产物直读 / salvage 登记路径写入的 run_metrics 行 SHALL 透传档案侧真实 turns 与 total_cost_usd，不再记 turns=0/cost=null。
+产物直读 / salvage 登记路径写入的 run_metrics 行 SHALL 透传档案侧真实值，不再记 turns=0/cost=null：total_cost_usd ← 档案 result 事件顶层 total_cost_usd；turns ← daemon 日志 context metrics 行（「context metrics: turns=N」结构化行；档案 result 事件 num_turns 为 text 轮口径，非本条目标轮次）。任一源查无/解析失败时 SHALL 保持现状记 0 并 DEBUG 留痕，不阻塞落地主链。
 
-#### Scenario: 指标行与档案一致
+#### Scenario: 指标行与档案侧一致
 
-- WHEN 产物直读路径按成功落地一个 run
-- THEN 该 run 的 run_metrics 行 turns 与 cost 等于档案 result 事件的真实值
+- WHEN 产物直读路径按成功落地一个 run（档案 result 事件含 total_cost_usd、daemon 日志含该 run 的 context metrics 行）
+- THEN 该 run 的 run_metrics 行 cost 等于档案 result 事件的 total_cost_usd，turns 等于 context metrics 行的 turns 值
 
 ### Requirement: 真实失败不受守卫影响
 
