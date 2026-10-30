@@ -6236,6 +6236,12 @@ class AgentRunner:
     # 递会误伤调用者所在组）。守卫拒绝或组已不存在（返回 False）按
     # guard_killpg 契约静默收口、不降级单 pid 直杀；宽限窗口与组长收尸
     # wait 仍由各调用点按既有口径持有（SIGTERM→宽限→SIGKILL 序列不变）。
+    # 组长身份在投递前运行期核实（os.getpgid(pid)==pid）：start_new_session
+    # 旗标只是 spawn 侧契约，若实际未成组（setsid 失败、测试替身 spawn 未
+    # 透传该旗标），killpg 以 pid 直传会打向不存在的组（ESRCH 静默无效果，
+    # 清场整体空转、轮询环挂在宽限 wait 上）——此时回退 proc.send_signal
+    # 直杀直接子进程，保证组长本身至少收到信号（回归修复：0c4d156555a2
+    # 首版盲信旗标导致 cancel/freeze/停滞收尾用例超时）。
     def _signal_attempt_child(
         self,
         proc: subprocess.Popen,
@@ -6244,10 +6250,19 @@ class AgentRunner:
         *,
         caller: str,
     ) -> None:
-        if start_new_session:
-            guard_killpg(proc.pid, sig, caller=caller, resolve=False)
-        else:
+        if not start_new_session:
             proc.send_signal(sig)
+            return
+        pid = getattr(proc, "pid", None)
+        if isinstance(pid, int) and pid > 0:
+            try:
+                pgid = os.getpgid(pid)
+            except (ProcessLookupError, OSError):
+                return  # 组已不存在：既有静默语义，逐位保持
+            if pgid == pid:
+                guard_killpg(pid, sig, caller=caller, resolve=False)
+                return
+        proc.send_signal(sig)
 
     def _run_agent(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
