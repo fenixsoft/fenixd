@@ -212,7 +212,11 @@ class TestCheckpointScopeDispatch(unittest.TestCase):
             self.assertEqual(call["args"], (["src/a.py", "src/b.py"],))
             self.assertEqual(
                 call["kwargs"],
-                {"review_kind": "scheduled", "window_start": h.window_start, "scope": "window"},
+                # redispatch_of 恒显式传递（evo-review-night-window-resume-
+                # hardening 2.2）：无锚时为 None（与缺省等价，行为不变），
+                # 锚驱动续审时标注死 run id。
+                {"review_kind": "scheduled", "window_start": h.window_start,
+                 "scope": "window", "redispatch_of": None},
             )
         finally:
             h.dispose()
@@ -229,7 +233,10 @@ class TestCheckpointScopeDispatch(unittest.TestCase):
             call = h.runner.calls[0]
             self.assertEqual(
                 call["kwargs"],
-                {"review_kind": "scheduled", "window_start": None, "scope": "full"},
+                # redispatch_of 恒显式传递（evo-review-night-window-resume-
+                # hardening 2.2）：无锚时为 None（与缺省等价，行为不变）。
+                {"review_kind": "scheduled", "window_start": None,
+                 "scope": "full", "redispatch_of": None},
             )
         finally:
             h.dispose()
