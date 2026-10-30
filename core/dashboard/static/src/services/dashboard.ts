@@ -2100,6 +2100,11 @@ export interface CodeReviewItem {
   evidence: string;
   fingerprint: string;
   status: 'open' | 'in_spec' | 'resolved' | 'ignored';
+  // 核销来源标记（evo-code-review-snapshot-writeoff-integrity R4）：仅
+  // resolved 条目携带——'code-fix-auto'=合回修复核销 / 'snapshot_closed'=
+  // 快照核销（本轮未再观测而关闭，非修复成果）；缺失=存量历史条目，前端
+  // 按快照关闭口径解读（后端不回填改写）
+  resolution?: string | null;
   spec_name: string | null;
   first_seen_at: string;
   last_seen_at: string;

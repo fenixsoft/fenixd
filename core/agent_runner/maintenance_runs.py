@@ -2447,6 +2447,12 @@ def run_code_review(
     # 读取增量产物并落账（聚合口径：分片 + 主产物，add-code-review-sharded-out
     # 2.1；产物全缺失/解析失败 → success=False 带原因）
     inserted = updated = resolved = 0
+    # 核销两计数分列（evo-code-review-snapshot-writeoff-integrity R3）：
+    # snapshot_closed=快照核销（本轮未再观测，非修复成果）、fixed=合回修复
+    # 核销（本车道恒 0 占位——合回核销计数由 code-fix 链按 mark_resolved
+    # 真实命中自行累积）。resolved 保留为 snapshot_closed 的兼容别名。
+    snapshot_closed = 0
+    fixed = 0
     shards = 0
     if run_ok:
         try:
@@ -2587,21 +2593,39 @@ def run_code_review(
                     try:
                         from core.code_review import fingerprint as _cr_fingerprint
 
-                        observed = set()
+                        # ── 观测记录集现算（evo-code-review-snapshot-
+                        # writeoff-integrity R2）：入参由指纹集合扩展为观测
+                        # 记录集（file/category/title/新指纹），供核销前
+                        # 同 file+category 归一化标题相似度对账（措辞漂移
+                        # 兜底）。findings 即观测记录：指纹缺省按同一指纹
+                        # 口径现算（与 upsert_findings 一致），同指纹重复
+                        # 观测去重（观测侧 1:1 领用唯一性）；findings 为空
+                        # 或无可归一指纹时列表为空，「observed 非空」门语义
+                        # 不变（拒绝空集核销以免误置全部 open 为 resolved）。
+                        observations = []
+                        seen_obs_fp = set()
                         for _f in findings:
                             if not isinstance(_f, dict):
                                 continue
+                            _file = str(_f.get("file") or "")
+                            _cat = str(_f.get("category") or "")
+                            _title = str(_f.get("title") or "")
                             _fp = _f.get("fingerprint")
-                            if not _fp:
-                                _file = str(_f.get("file") or "")
-                                _cat = str(_f.get("category") or "")
-                                _title = str(_f.get("title") or "")
-                                if _file and _title:
-                                    _fp = _cr_fingerprint(_file, _cat, _title)
-                            if _fp:
-                                observed.add(_fp)
-                        if observed:
-                            resolved = resolve_snapshot(runner.project_root, observed)
+                            if not isinstance(_fp, str) or not _fp:
+                                if not (_file and _title):
+                                    continue
+                                _fp = _cr_fingerprint(_file, _cat, _title)
+                            if not _fp or _fp in seen_obs_fp:
+                                continue
+                            seen_obs_fp.add(_fp)
+                            _obs = dict(_f)
+                            _obs["fingerprint"] = _fp
+                            observations.append(_obs)
+                        if observations:
+                            writeoff = resolve_snapshot(runner.project_root, observations)
+                            snapshot_closed = int(writeoff.get("snapshot_closed", 0))
+                            fixed = int(writeoff.get("fixed", 0))
+                            resolved = snapshot_closed  # 兼容别名（R3 分列前口径）
                         else:
                             _log = getattr(runner, "logger", None)
                             if _log is not None:
@@ -2821,6 +2845,10 @@ def run_code_review(
         inserted=inserted,
         updated=updated,
         resolved=resolved,
+        # 两计数分列（evo-code-review-snapshot-writeoff-integrity R3）：
+        # snapshot_closed=快照核销、fixed=合回修复核销，完成行按此分列输出
+        snapshot_closed=snapshot_closed,
+        fixed=fixed,
         error=error,
         output=output,
         shards=shards,

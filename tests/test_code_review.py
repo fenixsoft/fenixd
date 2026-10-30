@@ -218,11 +218,17 @@ class TestSnapshotResolution(unittest.TestCase):
         return fingerprint("core/a.py", category, title)
 
     def test_full_snapshot_resolves_unobserved(self):
+        # 观测记录集入参（evo-code-review-snapshot-writeoff-integrity 3.2
+        # 迁移）：入参由指纹集合扩展为观测记录（file/category/title/新指纹），
+        # 语义断言保持等价——a 命中保持 open、b 未观测被核销
         from core.code_review import read_items, resolve_snapshot
 
         a_fp = self._fp_of("correctness", "A issue")
-        n = resolve_snapshot(self.repo, {a_fp})
-        self.assertEqual(n, 1)
+        n = resolve_snapshot(self.repo, [
+            {"file": "core/a.py", "category": "correctness", "title": "A issue",
+             "fingerprint": a_fp},
+        ])
+        self.assertEqual(n, {"snapshot_closed": 1, "fixed": 0})
         items = read_items(self.repo)
         statuses = {it["status"] for it in items.values()}
         self.assertIn("resolved", statuses)
@@ -231,6 +237,8 @@ class TestSnapshotResolution(unittest.TestCase):
         resolved = [it for it in items.values() if it["status"] == "resolved"]
         self.assertEqual(resolved[0]["file"], "core/b.py")
         self.assertTrue(resolved[0].get("resolved_at"))
+        # 快照核销统一带来源标记（R4），与合回核销 code-fix-auto 区分
+        self.assertEqual(resolved[0].get("resolution"), "snapshot_closed")
 
     def test_does_not_touch_in_spec_ignored(self):
         from core.code_review import read_items, resolve_snapshot
@@ -242,8 +250,9 @@ class TestSnapshotResolution(unittest.TestCase):
         from core.code_review import write_items
 
         write_items(self.repo, items.values())
-        n = resolve_snapshot(self.repo, set())
-        self.assertEqual(n, 0)
+        # 空观测记录集（兼容裸指纹集合形态的旧调用方语义）
+        n = resolve_snapshot(self.repo, [])
+        self.assertEqual(n, {"snapshot_closed": 0, "fixed": 0})
         items2 = read_items(self.repo)
         for it in items2.values():
             self.assertIn(it["status"], ("in_spec", "ignored"))
