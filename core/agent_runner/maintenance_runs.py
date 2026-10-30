@@ -21,7 +21,9 @@ import dataclasses
 import fcntl
 import hashlib
 import json
+import math
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -1350,6 +1352,153 @@ def _log_lane_run_metrics(
         getattr(runner, "_run_harness", {}).pop(run_id, None)
 
 
+# 指标透传（evo-self-review-phantom-failure-dual-source-veto 2.1）：档案
+# result 事件尾读窗口字节数——产物 50KB 级（evo-1792692791 实测 50248 字节）
+# 整覆盖，MB 级转录也不整读。
+_SALVAGE_METRIC_TAIL_BYTES = 65536
+
+
+def _parse_context_metrics_turns(project_root, run_id: str) -> "int | None":
+    """定向解析 daemon 日志 context metrics 行取该 run 真实 turns（2.1）。
+
+    context metrics 行是 _run_agent 收尾在 daemon 日志落的结构化行
+    （message 前缀 ``context metrics: turns=N inp=…``，context 含
+    metric_type=run_metrics / run_id / turns，evo-1792692791 实测 turns=197
+    ——result 事件 num_turns=21 仅为 text 轮口径，非本条目标轮次）。
+
+    MUST NOT 经 core.dashboard.data.runs.load_run_metric 合并索引取 turns：
+    索引对同 run_id 多条 metric 行按同名字段后行刷新合并（runs.py 合并
+    语义），lane 终态行（后写，_run_agent 异常路径 turns=0）会覆盖先写的
+    context metrics 行（turns=197），合并索引读到的恒是 0。故按读该行日志
+    的约定（主日志 → .fenixd.log.1 轮转回退，同 load_run_metric）定向取
+    该 run_id 的行；主日志命中即返回（最新收尾优先），查无/解析失败返回
+    None（调用侧保持记 0 并 DEBUG 留痕）。
+    """
+    logs_dir = Path(project_root) / ".fenix" / "logs"
+    for name in ("fenixd.log", "fenixd.log.1"):
+        try:
+            with (logs_dir / name).open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "context metrics: turns=" not in line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    ctx = entry.get("context")
+                    if not isinstance(ctx, dict) or ctx.get("run_id") != run_id:
+                        continue
+                    m = re.search(
+                        r"context metrics: turns=(\d+)",
+                        str(entry.get("message") or ""),
+                    )
+                    if m:
+                        return int(m.group(1))
+        except OSError:
+            continue
+    return None
+
+
+def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
+    """读档案 run 产物 result 事件顶层 total_cost_usd（2.1 分源回填）。
+
+    run 产物（.fenix/runs/<run_id>.jsonl）的 result 终态事件最后落盘
+    （runner 读线程收尾写，保证是文件最后一行），顶层 total_cost_usd 为
+    网关回传累计成本（evo-1792692791 实测 6.756237）；旧版键名回退
+    cost_usd。只读尾部有界窗口（_SALVAGE_METRIC_TAIL_BYTES）防 MB 级转录
+    整读；解析复用 SessionTracker.extract_usage_info 归一（bool/NaN/溢出
+    钳制口径单源），延迟导入失败回退本地 float+isfinite 同口径防护。查无/
+    解析失败返回 None（调用侧保持 cost=None 并 DEBUG 留痕）。
+    """
+    run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    try:
+        with run_file.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _SALVAGE_METRIC_TAIL_BYTES))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = tail.splitlines()
+    # 尾窗起点落在行中间时首行是残段：跳过（窗口命中即 size > 窗口字节）
+    if size > _SALVAGE_METRIC_TAIL_BYTES and lines:
+        lines = lines[1:]
+    result_event = None
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result_event = event
+    if result_event is None:
+        return None
+    try:
+        from core.agent_runner.session import SessionTracker  # noqa: PLC0415
+
+        return SessionTracker.extract_usage_info(result_event).get("cost_usd")
+    except Exception:
+        # 与 _extract_usage_info 同口径的本地兜底（bool/非有限值钳制）
+        cost = result_event.get("total_cost_usd")
+        if cost is None:
+            cost = result_event.get("cost_usd")
+        if cost is None or type(cost) is bool:
+            return None
+        try:
+            cost_val = float(cost)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return cost_val if math.isfinite(cost_val) else None
+
+
+def _backfill_salvage_run_metrics(
+    runner, run_id: str, turns: int, usage_info: dict
+) -> tuple:
+    """抢救/产物直读按成功落地路径的指标透传（2.1）。
+
+    该路径走 _run_agent 异常分支：turns 保持初始 0、usage_info 为空 dict，
+    lane 收尾指标行 turns=0/cost=null 与档案侧真实值双账分裂（evo-1792692791
+    实拍：context metrics 行 turns=197、档案 result 事件
+    total_cost_usd=6.756237，lane 行 0/null）。分源回填：turns ← daemon
+    日志 context metrics 行（_parse_context_metrics_turns）；total_cost_usd
+    ← 档案 result 事件顶层字段（_extract_transcript_total_cost）。任一源
+    查无/解析失败保持现状（turns=0/cost=None）并 DEBUG 留痕，不阻塞落地
+    主链。正常收尾 run（turns>0 且 cost 已归）不触发任何读盘。
+    """
+    usage = usage_info if isinstance(usage_info, dict) else {}
+    logger = getattr(runner, "logger", None)
+    # DEBUG 留痕取 getattr 防御（口径同 _log_lane_run_metrics 的打桩宽容）：
+    # 车道单测的日志替身未必装配 debug，透传留痕是纯观测，替身缺方法时
+    # 静默跳过，MUST NOT 因留痕失败阻塞落地主链。
+    log_debug = getattr(logger, "debug", None) if logger is not None else None
+    if not turns:
+        parsed_turns = _parse_context_metrics_turns(runner.project_root, run_id)
+        if parsed_turns:
+            turns = parsed_turns
+        elif log_debug is not None:
+            log_debug(
+                "self-evolution",
+                f"run {run_id}: 指标透传 turns 源（context metrics 行）"
+                "查无/解析失败，保持记 0",
+            )
+    if usage.get("cost_usd") is None:
+        cost = _extract_transcript_total_cost(runner.project_root, run_id)
+        if cost is not None:
+            usage = {**usage, "cost_usd": cost}
+        elif log_debug is not None:
+            log_debug(
+                "self-evolution",
+                f"run {run_id}: 指标透传 total_cost_usd 源（档案 result "
+                "事件）查无/解析失败，保持记空",
+            )
+    return turns, usage
+
+
 def run_evolution(
     runner, ready_projects: list, pending_entries: list | None = None
 ) -> EvolutionResult:
@@ -1668,6 +1817,17 @@ def run_evolution(
     # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
     # cost_usd，离群初筛按车道分组与成本维度自此可见。收尾段重排/抢救已定
     # 型 run_ok 后才落行，终态与判定一致。
+    # 指标透传（evo-self-review-phantom-failure-dual-source-veto 2.1）：
+    # 抢救/产物直读按成功落地走 _run_agent 异常分支——turns 保持初始 0、
+    # usage_info 空 dict，lane 行 turns=0/cost=null 与档案侧双账分裂
+    # （evo-1792692791 实拍：context metrics 行 turns=197、档案 result 事件
+    # total_cost_usd=6.756237，lane 行 0/null）。落地主链定型后、lane 行
+    # 写入前分源回填；任一源查无/解析失败保持记 0 并 DEBUG 留痕，不阻塞
+    # 落地主链。
+    if run_ok:
+        turns, usage_info = _backfill_salvage_run_metrics(
+            runner, run_id, turns, usage_info
+        )
     _log_lane_run_metrics(
         runner,
         run_id=run_id,

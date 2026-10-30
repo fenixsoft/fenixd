@@ -13,16 +13,25 @@ daemon 不可消除。本文件锁定：
 - 3.1 幻影形态分类 succeeded 且不入失败样本（1.1 信号护栏）
 - 3.2 信号路径 failed × daemon 终态双源交叉守卫（2.1/2.2/2.3）：
   terminal=success 不计失败并产出 self_review_phantom_failure 告警
-  （warning、不自动 handled）、marker= 命中不纳守卫、索引缺失维持现状、
-  统计与样本口径一致。
+  （warning、不自动 handled）、索引缺失维持现状、统计与样本口径一致。
+- evo-self-review-phantom-failure-dual-source-veto 1.1/1.2/3.1/3.2：
+  守卫扩界为「daemon 终态权威裁决」——error 终态 Exit code 形态与
+  marker= 失败词复述同纳双源否决（terminal=success 改计 success 并写
+  self_review_phantom_failure 告警），查无账面行/daemon=error 反例保守
+  保持 failed；原「marker= 与 error 终态 MUST NOT 纳入守卫」pin 断言
+  由本轮翻转取代。
+- evo-self-review-phantom-failure-dual-source-veto 2.1：salvage/产物直读
+  路径指标透传（turns ← context metrics 行、cost ← 档案 result 事件）。
 """
 
 import json
 import os
+import types
 from datetime import datetime
 
 import pytest
 
+from core.agent_runner.maintenance_runs import _backfill_salvage_run_metrics
 from core.dashboard.data.runs import RUN_STALE_SECONDS, load_run_metric
 from core.self_review import (
     _MARKER_DECLARATION_WINDOW,
@@ -245,8 +254,11 @@ class TestTerminalCrossGuard:
         assert len(store.appended) == 1
         assert store.appended[0]["signal_type"] == "self_review_phantom_failure"
 
-    def test_marker_failed_terminal_success_still_counted(self, tmp_path):
-        """marker= 命中即使 terminal=success 仍计失败（假成功抓取语义保持），无幻影告警。"""
+    def test_marker_failed_terminal_success_vetoed_and_alerted(self, tmp_path):
+        """marker= 命中 × terminal=success → 改计 success 并写幻影告警
+        （evo-self-review-phantom-failure-dual-source-veto 1.2/3.2 同轮翻转：
+        原「假成功抓取仍计失败、无幻影告警」pin 由 daemon 终态权威裁决
+        取代——marker= 失败词复述同为幻影源）。"""
         root = tmp_path / "proj"
         root.mkdir()
         run_id = "impl-marker-catch-1790244004"
@@ -258,13 +270,19 @@ class TestTerminalCrossGuard:
 
         store = _FakeStore()
         samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
-        assert [s["run_id"] for s in samples] == [run_id]
-        assert samples[0]["detail"] == "marker=预算已耗尽"
+        assert samples == []
+        assert len(store.appended) == 1
+        alert = store.appended[0]
+        assert alert["kind"] == "escalation"
+        assert alert["signal_type"] == "self_review_phantom_failure"
+        assert alert["severity"] == "warning"
+        assert "marker=预算已耗尽" in alert["evidence"]
+        assert store.handled == []  # 不自动 mark_handled
 
+        # 统计侧同步：幻影不计失败统计（改计 succeeded）
         stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
-        assert stats["failed"] == 1
-        assert stats["succeeded"] == 0
-        assert store.appended == []  # 不产生 self_review_phantom_failure 告警
+        assert stats["failed"] == 0
+        assert stats["succeeded"] == 1
 
     def test_missing_metric_keeps_failed(self, tmp_path):
         """索引查不到该 run 终态（日志轮转出窗）→ 维持现状计入，不因缺数据改判。"""
@@ -299,10 +317,14 @@ class TestTerminalCrossGuard:
         assert any("幻影" in w for w in logger.warnings)
 
     def test_stats_failed_count_consistent_with_samples(self, tmp_path):
-        """混合窗口：失败计数与样本列表口径一致（marker/真失败计入，幻影两处皆除）。"""
+        """混合窗口：失败计数与样本列表口径一致（真失败计入，幻影两处皆除）。
+
+        evo-self-review-phantom-failure-dual-source-veto 3.2 同轮翻转：marker
+        抓取（terminal=success）由「照常计失败」改为守卫否决改计 success。
+        """
         root = tmp_path / "proj"
         root.mkdir()
-        # 1. marker 抓取（terminal=success，照常计失败）
+        # 1. marker 抓取（terminal=success，扩界后守卫否决改计 success）
         _make_run(root, "impl-mix-marker-1790244010", [
             _line(type="result", result="预算已耗尽，零交付", num_turns=2),
         ])
@@ -323,18 +345,251 @@ class TestTerminalCrossGuard:
         store = _FakeStore()
         stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
         assert stats["total"] == 4
-        assert stats["failed"] == 2  # marker 抓取 + error 终态真实失败
-        assert stats["succeeded"] == 2  # 干净成功 + 幻影改计
+        assert stats["failed"] == 1  # 仅 error 终态真实失败保持计数
+        assert stats["succeeded"] == 3  # 干净成功 + signal 幻影 + marker 否决改计
 
         samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
-        assert {s["run_id"] for s in samples} == {
+        assert {s["run_id"] for s in samples} == {"impl-mix-real-1790244012"}
+        assert {s["run_id"] for s in samples}.isdisjoint({
+            "impl-mix-phantom-1790244011",
             "impl-mix-marker-1790244010",
-            "impl-mix-real-1790244012",
+        })
+        # 幻影两源各产出一条告警（signal 幻影 + marker 否决）；真失败不产出
+        assert len(store.appended) == 2
+        assert {a["evidence"].split()[0] for a in store.appended} == {
+            "run_id=impl-mix-phantom-1790244011",
+            "run_id=impl-mix-marker-1790244010",
         }
-        assert {s["run_id"] for s in samples}.isdisjoint({"impl-mix-phantom-1790244011"})
-        # 幻影 run 恰产出一条告警；marker/真失败不产出
+
+
+def _error_terminal_run(root, run_id: str):
+    """error 终态夹具（evo-1792692791 实拍尾行形态）：CLI 死于收尾交换、
+    产物直读按成功落地（terminal=success），转录尾行为
+    {"type":"error","error":"Exit code: 1","exit_code":1}。"""
+    return _make_run(root, run_id, [
+        _line(type="system", subtype="start"),
+        _line(type="assistant", message={"role": "assistant",
+                                         "content": [{"type": "text", "text": "分析进行中"}]}),
+        _line(type="error", error="Exit code: 1", exit_code=1),
+    ])
+
+
+class TestDualSourceVetoExpansion:
+    """evo-self-review-phantom-failure-dual-source-veto 3.1/3.2：守卫扩界。
+
+    error 终态 Exit code 形态与 marker= 失败词复述同纳双源否决（daemon
+    终态权威裁决：terminal=success 改计 success 并写幻影告警）；查无账面
+    行与 daemon=error 反例保守保持 failed（宁可不拦不可误伤）。
+    """
+
+    def test_error_exit_code_terminal_success_vetoed_and_alerted(self, tmp_path):
+        """3.1：error 终态（Exit code: 1）× terminal=success → 改计 success + 幻影告警。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-1792692791"
+        _error_terminal_run(root, run_id)
+        _make_metric_log(root, {run_id: "success"})
+
+        # 分类侧：error 分支判 failed，detail 为 Exit code 前缀实拍形态
+        p = root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+        assert category == "failed"
+        assert detail == "Exit code: 1"
+
+        store = _FakeStore()
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
+        assert samples == []
         assert len(store.appended) == 1
-        assert store.appended[0]["evidence"].startswith("run_id=impl-mix-phantom-1790244011")
+        alert = store.appended[0]
+        assert alert["signal_type"] == "self_review_phantom_failure"
+        assert alert["severity"] == "warning"
+        assert f"detail={detail}" in alert["evidence"]
+        assert store.handled == []  # 不自动 mark_handled
+
+        # 统计侧同步：改计 succeeded
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["total"] == 1
+        assert stats["failed"] == 0
+        assert stats["succeeded"] == 1
+
+    def test_error_exit_code_missing_metric_keeps_failed(self, tmp_path):
+        """3.2：error 终态 + 查无账面行 → 保守保持 failed，不写告警。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-nolog-1792692792"
+        _error_terminal_run(root, run_id)
+        # 不写任何指标日志（索引缺失形态）
+
+        store = _FakeStore()
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
+        assert [s["run_id"] for s in samples] == [run_id]
+        assert samples[0]["detail"] == "Exit code: 1"
+        assert store.appended == []
+
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["failed"] == 1
+        assert stats["succeeded"] == 0
+
+    def test_error_exit_code_daemon_error_keeps_failed(self, tmp_path):
+        """3.2：daemon terminal=error 反例 → 真实失败保持 failed，不写幻影告警。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-real-1792692793"
+        _error_terminal_run(root, run_id)
+        _make_metric_log(root, {run_id: "error"})
+
+        store = _FakeStore()
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
+        assert [s["run_id"] for s in samples] == [run_id]
+        assert store.appended == []
+
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["failed"] == 1
+        assert stats["succeeded"] == 0
+
+    def test_error_terminal_arbitrary_text_not_matched(self, tmp_path):
+        """MUST NOT 空泛匹配任意 error 文本：非 Exit code 前缀的 error detail
+        即使 terminal=success 也不改判（形态锚定约束）。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-arb-1792692794"
+        _make_run(root, run_id, [
+            _line(type="system", subtype="start"),
+            _line(type="error", error="provider 429 rate limited"),
+        ])
+        _make_metric_log(root, {run_id: "success"})
+
+        store = _FakeStore()
+        samples = collect_failed_run_samples(root, datetime(2000, 1, 1, 0, 0).astimezone(), store=store)
+        assert [s["run_id"] for s in samples] == [run_id]
+        assert samples[0]["detail"] == "provider 429 rate limited"
+        assert store.appended == []
+
+
+class _BackfillLogger:
+    """logger 形状替身：记录 debug 调用（透传查无留痕通道）。"""
+
+    def __init__(self):
+        self.debugs = []
+
+    def debug(self, component, message):
+        self.debugs.append(str(message))
+
+    def info(self, component, message):
+        pass
+
+    def warning(self, component, message):
+        pass
+
+    def error(self, component, message):
+        pass
+
+
+class TestSalvageMetricsBackfill:
+    """2.1：产物直读/salvage 登记路径分源回填真实 turns 与 total_cost_usd。
+
+    场景「指标行与档案侧一致」：档案 result 事件含 total_cost_usd、daemon
+    日志含该 run 的 context metrics 行 → 回填值逐字段相等；任一源查无保持
+    现状（turns=0/cost=None）并 DEBUG 留痕；MUST NOT 经 load_run_metric
+    合并索引取 turns（lane 行 turns=0 后写会覆盖 context 行 turns=197）。
+    """
+
+    @staticmethod
+    def _write_context_metrics_log(root, run_id: str, turns: int,
+                                   name: str = "fenixd.log"):
+        """形态对齐 runner._run_agent 收尾的 context metrics 行（daemon 日志）。"""
+        log = root / ".fenix" / "logs" / name
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(
+            json.dumps({
+                "timestamp": "2026-10-22T18:44:17.146155Z",
+                "level": "INFO",
+                "component": "agent_runner",
+                "message": (
+                    f"context metrics: turns={turns} inp=48000 peak=90000 "
+                    "per_turn=4000 cr=120000 tools=210 text_turns=21"
+                ),
+                "context": {
+                    "metric_type": "run_metrics",
+                    "run_id": run_id,
+                    "turns": turns,
+                    "text_turns": 21,
+                },
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_transcript_with_result_event(root, run_id: str, cost_usd):
+        """档案转录：result 终态事件最后落盘（文件最后一行，runner 契约）。"""
+        _make_run(root, run_id, [
+            _line(type="system", subtype="start"),
+            _line(type="assistant", message="analyzing"),
+            _line(type="result", result="收工", num_turns=21,
+                  total_cost_usd=cost_usd, is_error=False, subtype="success"),
+        ])
+
+    def test_backfill_turns_and_cost_from_sources(self, tmp_path):
+        """双源齐备：turns=197 ← context metrics 行、cost ← 档案 result 事件。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-1792692791"
+        self._write_context_metrics_log(root, run_id, 197)
+        self._write_transcript_with_result_event(root, run_id, 6.756237)
+        logger = _BackfillLogger()
+        runner = types.SimpleNamespace(project_root=root, logger=logger)
+
+        turns, usage = _backfill_salvage_run_metrics(runner, run_id, 0, {})
+
+        assert turns == 197
+        assert usage["cost_usd"] == pytest.approx(6.756237)
+        assert logger.debugs == []  # 双源命中无留痕
+
+    def test_backfill_misses_keep_zero_and_debug(self, tmp_path):
+        """双源查无：保持 turns=0/cost=None 并 DEBUG 留痕，不抛异常。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-nosrc-1792692795"
+        logger = _BackfillLogger()
+        runner = types.SimpleNamespace(project_root=root, logger=logger)
+
+        turns, usage = _backfill_salvage_run_metrics(runner, run_id, 0, {})
+
+        assert turns == 0
+        assert usage.get("cost_usd") is None
+        assert len(logger.debugs) == 2
+        assert any("turns" in d for d in logger.debugs)
+        assert any("total_cost_usd" in d for d in logger.debugs)
+
+    def test_backfill_turns_rotated_log_fallback(self, tmp_path):
+        """主日志查无 → .fenixd.log.1 轮转回退命中（约定同 load_run_metric）；
+        档案 result 事件 total_cost_usd=null → cost 保持 None。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        run_id = "evo-rot-1792692796"
+        self._write_context_metrics_log(root, run_id, 197, name="fenixd.log.1")
+        self._write_transcript_with_result_event(root, run_id, None)
+        runner = types.SimpleNamespace(project_root=root, logger=_BackfillLogger())
+
+        turns, usage = _backfill_salvage_run_metrics(runner, run_id, 0, {})
+
+        assert turns == 197
+        assert usage.get("cost_usd") is None
+
+    def test_normal_run_not_touched(self, tmp_path):
+        """正常收尾（turns>0 且 cost 已归）不触发任何读盘回填。"""
+        root = tmp_path / "proj"  # 无日志、无转录
+        root.mkdir()
+        logger = _BackfillLogger()
+        runner = types.SimpleNamespace(project_root=root, logger=logger)
+
+        turns, usage = _backfill_salvage_run_metrics(
+            runner, "evo-normal-1792692797", 12, {"cost_usd": 0.5}
+        )
+
+        assert turns == 12
+        assert usage["cost_usd"] == 0.5
+        assert logger.debugs == []
 
 
 class TestLoadRunMetricAccessor:
