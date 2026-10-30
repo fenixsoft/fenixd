@@ -11,11 +11,13 @@ import os
 import functools
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import sys
 import threading
 import time
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -5998,6 +6000,141 @@ class AgentRunner:
                 f"宿主变更登记留痕读取失败（fail-open）'{spec_name}': {e}",
             )
 
+    # ── 维护车道派发前连通预检（evo-night-window-guard-coverage-closure 3.1/3.2）──
+    # 白名单：仅维护车道派发做探测顺延；dispatch 族（spec/impl/dispute-judge/
+    # spec-review）、regression 与交互式 run 不做探测顺延（proposal Out of
+    # Scope「不动 spec-review/regression 车道派发时点」）。evolution/self-
+    # review/code-review 三条维护车道直调 _run_agent 时**不传 agent_type**
+    # （maintenance_runs 五处直调仅 administrator/code-fix 带 agent_type），
+    # 按 spec_name 归一并入白名单；dispatch 族恒传 agent_type 且 spec_name
+    # 为用户 spec 名，agent_type 优先归一即天然排除。
+    _DISPATCH_PROBE_LANES = frozenset({
+        "evolution", "code-review", "code-fix", "administrator", "self-review",
+    })
+    # getaddrinfo 为阻塞调用、无原生超时参数：独立守护线程 join 判超时
+    # （设计口径 2-3 秒）；超时按失败顺延，悬挂线程随 daemon 生命周期滞留
+    # 可接受。
+    _DISPATCH_PROBE_TIMEOUT_S = 2.5
+
+    def _dispatch_probe_lane(self, agent_type, spec_name) -> Optional[str]:
+        """维护车道白名单归一：命中返回车道名，否则 None（不探测）。
+
+        agent_type 优先（administrator/code-fix 直传）；未传 agent_type 的
+        直调车道（evolution/self-review/code-review）按 spec_name 归一——
+        dispatch 族/spec 名不在此集合，恒返回 None（不探测）。
+        """
+        lane = str(agent_type or "").strip()
+        if lane:
+            return lane if lane in self._DISPATCH_PROBE_LANES else None
+        sn = str(spec_name or "").strip()
+        return sn if sn in self._DISPATCH_PROBE_LANES else None
+
+    @staticmethod
+    def _api_probe_host(env) -> str:
+        """从 spawn env 提取 API base 域名（探测目标）；无法判定返回空串。
+
+        spawn env（agent-run 口径 = os.environ 副本 + env_overrides）里的
+        ``ANTHROPIC_BASE_URL`` 即子进程实际打往的 API 入口；未配置（空串/
+        缺键/env 非 dict）时无可判定探测目标 → 返回空串由调用方 fail-open
+        放行。urlsplit 对 ``host:port`` 裸形态补 ``//`` 前缀再解析。
+        """
+        raw = ""
+        for src in (env if isinstance(env, dict) else {}, os.environ):
+            try:
+                raw = str(src.get("ANTHROPIC_BASE_URL") or "").strip()
+            except Exception:  # noqa: BLE001 — 非法 env 形态按无目标处理
+                raw = ""
+            if raw:
+                break
+        if not raw:
+            return ""
+        try:
+            parts = urllib.parse.urlsplit(raw if "//" in raw else f"//{raw}")
+            return parts.hostname or ""
+        except ValueError:
+            return ""
+
+    def _probe_dns_host(self, host: str) -> "tuple[bool, str, Optional[BaseException]]":
+        """getaddrinfo 连通探测；返回 ``(ok, reason, infra_error)`` 三元组。
+
+        - ``(True, "", None)``＝解析成功（链路连通）；
+        - ``(False, reason, None)``＝探测失败（``socket.gaierror`` DNS 解析
+          失败 ENOTFOUND/EAI_AGAIN 等，或 join 超时）→ 调用方顺延本轮派发；
+        - ``(..., infra_error)``＝探测实现自身异常（非 DNS 语义/无线程结果）
+          → 调用方 fail-open 放行派发。
+
+        getaddrinfo 为阻塞调用、无原生超时参数 → 独立守护线程执行、
+        join(2.5s) 判超时（超时按失败顺延，悬挂线程随 daemon 生命周期滞留
+        可接受）。与 provider_circuit 瞬断冻结正交：彼为事后 ENOTFOUND 熔断
+        分类，此为派发前预检。
+        """
+        holder: dict = {}
+
+        def _resolve() -> None:
+            try:
+                socket.getaddrinfo(host, 443)
+                holder["ok"] = True
+            except BaseException as exc:  # noqa: BLE001 — 分类交由调用方
+                holder["err"] = exc
+
+        worker = threading.Thread(
+            target=_resolve, name=f"dns-probe-{host}", daemon=True)
+        worker.start()
+        worker.join(self._DISPATCH_PROBE_TIMEOUT_S)
+        if worker.is_alive():
+            return False, f"timeout>{self._DISPATCH_PROBE_TIMEOUT_S:.0f}s", None
+        if holder.get("ok"):
+            return True, "", None
+        err = holder.get("err")
+        if isinstance(err, socket.gaierror):
+            return False, f"getaddrinfo failed: {err}", None
+        return False, "", err or RuntimeError("dns probe produced no result")
+
+    def _dispatch_connectivity_preflight(self, lane: str, env, run_id: str) -> None:
+        """维护车道派发前连通预检（仅挂派发前，不影响在飞 run）。
+
+        - 探测失败（DNS 解析失败/超时）→ 写含 reason 的跳过日志并抛
+          RuntimeError 顺延本轮派发（不 Popen、不产生秒死 run 与升级告警
+          噪音），由各车道既有重触发节奏自然接续；
+        - 探测自身异常 / 无可判定探测目标（未配 ANTHROPIC_BASE_URL）→ 记
+          日志后照常派发（fail-open），绝不阻断主派发路径。
+        """
+        host = ""
+        defer_reason = ""
+        try:
+            host = self._api_probe_host(env)
+            if not host:
+                return
+            ok, reason, infra = self._probe_dns_host(host)
+            if infra is not None:
+                self.logger.warning(
+                    "agent_runner",
+                    f"派发前连通预检自身异常，按 fail-open 照常派发"
+                    f"（lane={lane}; run_id={run_id}; error={infra!r}）",
+                )
+                return
+            if ok:
+                return
+            defer_reason = reason
+            self.logger.warning(
+                "agent_runner",
+                f"派发前连通预检失败，本轮派发顺延（reason=dns_probe_failed; "
+                f"lane={lane}; run_id={run_id}; host={host}; "
+                f"detail={defer_reason}）",
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-open：探测故障不阻断派发
+            self.logger.warning(
+                "agent_runner",
+                f"派发前连通预检异常，按 fail-open 照常派发"
+                f"（lane={lane}; run_id={run_id}; error={exc!r}）",
+            )
+            return
+        raise RuntimeError(
+            "dispatch deferred: connectivity preflight failed "
+            f"(reason=dns_probe_failed, lane={lane}, host={host}, "
+            f"detail={defer_reason})"
+        )
+
     def _run_agent(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
                     env_overrides: Dict[str, str] | None = None,
@@ -6143,6 +6280,16 @@ class AgentRunner:
         ))
         env = spawn_spec.env
         cmd = spawn_spec.argv
+
+        # ── 派发前连通预检（evo-night-window-guard-coverage-closure 3.1/3.2）──
+        # 仅维护车道白名单（evolution/code-review/code-fix/administrator/
+        # self-review）做探测：失败顺延本轮派发（不 Popen、无秒死 run）、
+        # 探测自身异常 fail-open 照常派发。dispatch 族（spec/impl/dispute-
+        # judge/spec-review）、regression 与交互式 run 不经此路径（proposal
+        # Out of Scope）；仅挂派发前，在飞 run 不受影响。
+        _probe_lane = self._dispatch_probe_lane(agent_type, spec_name)
+        if _probe_lane:
+            self._dispatch_connectivity_preflight(_probe_lane, env, run_id)
 
         self.logger.debug(
             "agent_runner",
