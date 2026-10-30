@@ -47,6 +47,11 @@ V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
 # 提为常量供就绪超时错误文案引用同一语义值，便于排障按因识别。
 V2_READY_TIMEOUT_SECONDS = 5.0
 
+# 端口抢注（身份不符）有界重试次数（code-review item e2e26c2a1a66）：start()
+# 检出端口被抢注后换 run_seq+offset 重新 allocate_port 并重启 dev-server 的
+# 最大重试轮数（总尝试 = 1 + 此值）。就绪超时不重试，仍按启动失败上抛。
+V2_PORT_CONFLICT_RETRIES = 2
+
 # 不可归因进程记账（fix-v2-devserver-fallback-attribution 2.1）：daemon 进程内
 # 状态，重启即失、不持久化——重启后按新进程重放一次首见告警，可接受（重启
 # 场景由 reconcile_v2_servers 启动对账兜底）。结构 {pid: 累计扫描见次}：首见
@@ -191,35 +196,10 @@ def start(
         # 自然生效。
         attribution_token = str(wt_static_root)
 
-    try:
-        # design D5：allocate_port 不再抛 V2DevServerError（耗尽回退临时端口）；
-        # 保留防御性捕获，覆盖未来新增异常形态。
-        port = allocate_port(run_seq, used_ports, logger=logger)
-    except V2DevServerError as e:
-        if logger:
-            logger.error("v2_dev_server", f"port allocation failed: {e}")
-        raise
-
     script = _dev_server_script()
     if not script.is_file():
         raise V2DevServerError(f"dev-server.mjs not found: {script}")
 
-    # 把标记字面量写入 argv，使 daemon 重启后 pgrep -f 能按完整命令行识别该子进程
-    # （标记不写入 .mjs 源码，避免干扰脚本自身参数解析）。见 cleanup_orphans。
-    cmd = [
-        _node_bin(),
-        str(script),
-        str(static_root),
-        str(port),
-        V2_DEV_SERVER_MARKER,
-    ]
-    if attribution_token:
-        # 回退形态归因标记（fix-v2-devserver-fallback-attribution 1.1）：MUST
-        # 追加在**尾部**——dev-server.mjs 按位置读 argv[2]=static_root、
-        # argv[3]=port（tests/v2/dev-server.mjs:25-26），前插会改变脚本语义；
-        # 标记只供清扫 pgrep/argv 解析消费，node 自身不读它。追加不改变既有
-        # pgrep 匹配模式（匹配键仍含 dev-server.mjs 路径与 marker 字面量）。
-        cmd.append(attribution_token)
     env = dict(os.environ)
     # 先剥离环境中已有的 --max-old-space-size=... 片段再追加，确保内存钳制
     # 取本框架设定值（不依赖 node 对重复选项的取舍行为）。
@@ -232,37 +212,75 @@ def start(
         if logger:
             getattr(logger, level)("v2_dev_server", msg)
 
-    try:
-        # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
-        # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-            # 标记写入 argv[0] 不可靠；用 cwd + marker 文件不便，改由 pgrep 匹配
-            # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
-        )
-    except OSError as e:
-        raise V2DevServerError(f"failed to spawn dev-server: {e}") from e
+    # 端口抢注有界重试（code-review item e2e26c2a1a66，模块 docstring「冲突
+    # 重试」/design D5 语义落地）：allocate_port 的 bind 探测与 node 实际 bind
+    # 之间存在竞窗，端口段 19000-19019 为全主机编译期常量、同主机多 daemon
+    # （含不同项目）共用且各 daemon 的 run_seq 从同一初值起算，抢注可现实
+    # 发生；检出后原样上抛会使唯一消费方（agent_runner.v2_server）仅 WARNING
+    # 即放弃注入、测试回退主树 8787 旧码——正是 D5 明言避免的「旧码污染验证」。
+    # 此处换 run_seq+offset 重新 allocate_port 并重启 dev-server（重试只包
+    # 「身份不符/port conflict」分支；就绪超时维持启动失败上抛），重试耗尽才
+    # 按 V2DevServerError 契约上抛。首试 offset=0 保持既有确定性端口序不变；
+    # 每轮失败子进程均按 _kill 既有清理语义回收，不残留。
+    for attempt in range(V2_PORT_CONFLICT_RETRIES + 1):
+        try:
+            # design D5：allocate_port 不再抛 V2DevServerError（耗尽回退临时端口）；
+            # 保留防御性捕获，覆盖未来新增异常形态。
+            port = allocate_port(run_seq + attempt, used_ports, logger=logger)
+        except V2DevServerError as e:
+            if logger:
+                logger.error("v2_dev_server", f"port allocation failed: {e}")
+            raise
 
-    # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
-    # 连通成功后还须做实例身份收口：allocate_port 的 bind 探测与 node 实际 bind
-    # 之间存在窗口，端口可能被他方进程抢注——node bind 失败（已退出或僵而未死）
-    # 时 connect 握手由他方 listener 应答，仅凭连通会误判就绪、把验证流量打到
-    # 异码服务上。同一 addr:port 的 LISTEN socket 唯一（node 未用 SO_REUSEPORT），
-    # 核对端口 LISTEN inode 是否归属本进程 /proc/<pid>/fd 即可确定性判定应答者
-    # 身份，取代「延迟数百毫秒再看存活」的时长启发式（进程存活≠端口归它）。
-    ready = _wait_ready(port, timeout=V2_READY_TIMEOUT_SECONDS)
-    # 身份收口仅在连通后执行（保持原 and 短路语义：超时路径不再核对端口归属）。
-    served_by_self = _port_listened_by(port, proc) if ready else False
-    if not (ready and served_by_self):
+        # 把标记字面量写入 argv，使 daemon 重启后 pgrep -f 能按完整命令行识别该子进程
+        # （标记不写入 .mjs 源码，避免干扰脚本自身参数解析）。见 cleanup_orphans。
+        cmd = [
+            _node_bin(),
+            str(script),
+            str(static_root),
+            str(port),
+            V2_DEV_SERVER_MARKER,
+        ]
+        if attribution_token:
+            # 回退形态归因标记（fix-v2-devserver-fallback-attribution 1.1）：MUST
+            # 追加在**尾部**——dev-server.mjs 按位置读 argv[2]=static_root、
+            # argv[3]=port（tests/v2/dev-server.mjs:25-26），前插会改变脚本语义；
+            # 标记只供清扫 pgrep/argv 解析消费，node 自身不读它。追加不改变既有
+            # pgrep 匹配模式（匹配键仍含 dev-server.mjs 路径与 marker 字面量）。
+            cmd.append(attribution_token)
+
+        try:
+            # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
+            # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
+                # 标记写入 argv[0] 不可靠；用 cwd + marker 文件不便，改由 pgrep 匹配
+                # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
+            )
+        except OSError as e:
+            raise V2DevServerError(f"failed to spawn dev-server: {e}") from e
+
+        # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
+        # 连通成功后还须做实例身份收口：allocate_port 的 bind 探测与 node 实际 bind
+        # 之间存在窗口，端口可能被他方进程抢注——node bind 失败（已退出或僵而未死）
+        # 时 connect 握手由他方 listener 应答，仅凭连通会误判就绪、把验证流量打到
+        # 异码服务上。同一 addr:port 的 LISTEN socket 唯一（node 未用 SO_REUSEPORT），
+        # 核对端口 LISTEN inode 是否归属本进程 /proc/<pid>/fd 即可确定性判定应答者
+        # 身份，取代「延迟数百毫秒再看存活」的时长启发式（进程存活≠端口归它）。
+        ready = _wait_ready(port, timeout=V2_READY_TIMEOUT_SECONDS)
+        # 身份收口仅在连通后执行（保持原 and 短路语义：超时路径不再核对端口归属）。
+        served_by_self = _port_listened_by(port, proc) if ready else False
+        if ready and served_by_self:
+            break
         # 失败归因二分（code-review item 76b1c9ed20c1）：就绪超时（高载下 node
         # 冷启动超窗）与端口身份不符（allocate_port bind 探测与 node 实际 bind
         # 之间被抢注 / proc 已退出）是两类现场，错误文案区分开供调用方/排障
-        # 按因识别；两类均维持既有「回收子进程后按启动失败上抛」语义，不改
-        # 启动时序。
+        # 按因识别；就绪超时维持既有「回收子进程后按启动失败上抛」语义，身份
+        # 不符回收后有界重试（item e2e26c2a1a66，见循环上方说明）。
         if not ready:
             _log(
                 "error",
@@ -274,11 +292,21 @@ def start(
                 f"dev-server on port {port} not ready within "
                 f"{V2_READY_TIMEOUT_SECONDS:.0f}s (readiness timeout)"
             )
+        # 身份不符（端口被抢注）：回收本轮子进程（_kill 清理语义不变）后换端口
+        # 重试；重试耗尽按原错误文案上抛，消费方捕获/降级形态不变。
+        _kill(proc)
+        if attempt < V2_PORT_CONFLICT_RETRIES:
+            _log(
+                "warning",
+                f"dev-server on port {port} listened by another process, "
+                f"retrying with next port "
+                f"({attempt + 1}/{V2_PORT_CONFLICT_RETRIES})",
+            )
+            continue
         _log(
             "error",
             f"dev-server on port {port} ready but port not served by it, killing",
         )
-        _kill(proc)
         raise V2DevServerError(
             f"dev-server on port {port} listened by another process (port conflict)"
         )
@@ -967,8 +995,9 @@ def register_v2_server(project_root, wt_path, pid: int, port: int, logger=None) 
 
     带 /proc starttime 快照：pid + starttime 唯一确定进程实例，重启对账据此
     做 pid 复用防误杀（纪律同 serving_registry._harvest_identity_ok）。同
-    (wt_path, pid) 已登记时幂等刷新快照。写失败仅 WARNING（调用方 logger 可
-    为 None 时静默）。
+    (wt_path, pid) 已登记时幂等刷新快照；追加新条目前顺带剔除同 wt_path 下
+    pid 已消亡的陈旧条目（bf367d5f331c，防异常重启轮次在 daemon 生命周期内
+    线性累积滞留）。写失败仅 WARNING（调用方 logger 可为 None 时静默）。
     """
 
     def _upsert(entries: list) -> None:
@@ -978,6 +1007,23 @@ def register_v2_server(project_root, wt_path, pid: int, port: int, logger=None) 
                 e["start_ticks"] = proc_start_ticks(pid)
                 e["registered_at"] = int(time.time())
                 return
+        # 条目瘦身（code-review item bf367d5f331c）：追加新条目前剔除同 wt_path
+        # 下 pid 已消亡的陈旧条目——dev-server 崩溃/异常后同 worktree 换 pid 重新
+        # launch 时，旧条目只能滞留到 daemon 重启 reconcile_v2_servers 才按 pid
+        # 消亡摘除（周期清扫不触登记面），长生命周期 daemon 内登记随异常重启
+        # 次数线性增长；对齐 _unattributed_seen 的记账瘦身纪律。只摘死条：存活
+        # 条目与形态非法条目（pid 形状不合法，身份无从判定，交由 reconcile 既有
+        # 分支处置）一律不动，防误删在服登记；判活口径与 reconcile 的消亡分支
+        # 一致（_pid_alive，Z 态视同已终止）。
+        entries[:] = [
+            e
+            for e in entries
+            if not (
+                e.get("wt_path") == str(wt_path)
+                and _registry_pid_valid(e.get("pid"))
+                and not _pid_alive(e["pid"])
+            )
+        ]
         entries.append(
             {
                 "wt_path": str(wt_path),

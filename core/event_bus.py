@@ -400,7 +400,9 @@ class EventBus:
                 self.logger.info("event_bus", f"Recovery: re-triggering bug_found for '{name}'")
                 self.pm_engine.handle_event("spec_bug_found", name, entry)
             elif status == "verified":
-                # Skip if already done (verified→done transition already happened)
+                # 无 skip 判定：已迁移者 status 已是 done 不会进入本分支；
+                # 滞留 verified 者有意每轮心跳重评门禁（见下方 D3 注释），
+                # 不得在此加防重入闸。
                 # ── fix-verified-gate-evidence-race D3：re-trigger 心跳保留 ──
                 # task-gap 拦截生效期间，re-trigger 每 30 分钟重评门禁——快照持久
                 # 后重评是确定性的（有缺口幂等再拦、人工补勾后放行 + 清 error），

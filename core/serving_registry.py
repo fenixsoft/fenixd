@@ -149,9 +149,30 @@ class ServingRegistry:
         但若该 pid 的 /proc starttime 与快照不一致（旧进程退出后 pid 被
         复用给同 spec 的新 spawn），就地刷新身份快照后写回。
 
+        无身份锚点形态拒绝登记：身份快照不可得（登记前进程已退出——如
+        兜底 spawn 命令秒退——或非 Linux 无 /proc）且 worktree 为空串
+        （_ensure_app_reachable 兜底登记形态）时不入库、记 WARNING 留痕
+        （code-review f6b48494763b）——否则条目滞留登记表后 pid 被系统
+        复用，sweep 会无任何身份锚点地对无关进程组放行 killpg。
+
         Returns: 是否发生写入（False = 已存在且快照未过期，幂等跳过；
-        写盘失败同样返回 False，但会记 warning 以便排障）。
+        或无身份锚点被拒绝登记；写盘失败同样返回 False，但会记 warning
+        以便排障）。
         """
+        # 拒绝判定在锁外完成（/proc 只读探针，不涉登记表状态）；worktree
+        # 归一口径与下方落库一致（str(worktree) if worktree else ""）。
+        if (
+            not (str(worktree) if worktree else "")
+            and _proc_start_ticks(pid) is None
+        ):
+            if self.logger:
+                self.logger.warning(
+                    "serving_registry",
+                    f"refuse register pid={pid} (spec={spec or '-'}): no "
+                    f"starttime snapshot and empty worktree — no identity "
+                    f"anchor, entry rejected to keep pid-reuse harvest safe",
+                )
+            return False
 
         def _fn(records):
             for r in records:
@@ -291,16 +312,20 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     有快照而当前读数读不到（/proc/<pid>/stat 瞬时不可读等）→ 返回 None
     （「读不到＝无法核实」，≠「核实为另一实例」）：sweep 侧跳过本轮收割
     且不摘登记、下轮重试——刚被 pid_alive 确认存活的实例不因瞬时读失败
-    被永久摘出登记、失去唯一收割通道。非 Linux 无 /proc 的登记项
-    start_ticks 快照本就为 None、不进快照分支（仍走下方 worktree/放行
-    路径），恒 None 形态不受影响。
-    两信号皆不可得（旧格式登记项且 worktree 为空、或非 Linux）→ 放行收割
-    保持既有行为：登记制收割是该形态（兜底 spawn 登记空 worktree）唯一的
-    孤儿清理通道，保守少杀等于永久放弃清算；新登记项一律带 starttime
-    快照，pid 复用主风险面已封。
+    被永久摘出登记、失去唯一收割通道。
+    两信号皆不可得（无 starttime 快照且 worktree 为空——旧格式登记项、
+    登记前进程已退出的竞态残留，或非 Linux 无 /proc）→ 同样返回 None
+    （无法核实）：sweep 跳过本轮收割且保留登记，绝不在无任何身份锚点时
+    放行 killpg——否则 pid 被系统复用后会对无关进程组投递 SIGTERM/
+    SIGKILL（code-review f6b48494763b）。该形态新登记已在 register 侧
+    拒绝入库，存量条目按无法核实保守保留；其自动收割通道就此关闭，属
+    安全优先的取舍（无锚点少杀优于清算效率）。非 Linux 无 /proc 的登记
+    项 start_ticks 快照本就为 None、不进快照分支（仍走下方 worktree/
+    无法核实路径）。
 
     Returns: True＝允许收割；False＝身份失配（摘登记不杀组）；None＝
-    无法核实（快照在而读数缺失，跳过本轮收割且保留登记）。
+    无法核实（快照在而读数缺失，或两身份信号皆不可得——跳过本轮收割
+    且保留登记）。
     """
     recorded = entry.get("start_ticks")
     # bool 是 int 子类（口径同 _pid_eq / sweep 的 pid 校验）：手改文件写入
@@ -331,7 +356,11 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
         return cwd_real is not None and (
             cwd_real == wt_real or cwd_real.startswith(wt_real + os.sep)
         )
-    return True
+    # 两信号皆不可得（无 starttime 快照且 worktree 为空）：返回 None＝
+    # 无法核实，sweep 跳过本轮收割且保留登记——无任何身份锚点时放行
+    # killpg，pid 被系统复用后会误杀无关进程组（见 docstring；该形态
+    # 新登记已在 register 侧拒绝，此处兜底存量旧格式条目）。
+    return None
 
 
 def kill_process_group(pid: int, logger=None) -> bool:
@@ -489,7 +518,8 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                     logger.warning(
                         "serving_registry",
                         f"skip harvest pid={pid} (spec={spec or '-'}) identity "
-                        f"unverifiable (proc stat unreadable) — keeping entry "
+                        f"unverifiable (proc stat unreadable or no identity "
+                        f"anchor) — keeping entry "
                         f"for next sweep",
                     )
                 continue

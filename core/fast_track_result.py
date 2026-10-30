@@ -644,16 +644,21 @@ def get_impl_wallclock_sizing_config(config: dict, logger=None) -> dict:
     section = agents.get(IMPL_WALLCLOCK_SIZING_CONFIG_KEY)
     section = section if isinstance(section, dict) else {}
 
-    def _int(sect: dict, key: str, default: int) -> int:
-        val = sect.get(key, default)
-        if isinstance(val, bool) or not isinstance(val, int):
-            return default
-        if val < IMPL_WALLCLOCK_INT_MIN or val > IMPL_WALLCLOCK_INT_MAX:
-            return default
-        return val
+    def _int(sect: dict, key: str, default_key: str) -> int:
+        # 缺省惰性求值（code-review item f617b1d6521b）：键在场且合法时
+        # 直接返回，不读 core.config 缺省，消除冗余读取与重复漂移告警。
+        if key in sect:
+            val = sect[key]
+            if (not isinstance(val, bool) and isinstance(val, int)
+                    and IMPL_WALLCLOCK_INT_MIN <= val
+                    <= IMPL_WALLCLOCK_INT_MAX):
+                return val
+        return _impl_wallclock_default(default_key, logger)
 
-    enabled = section.get(
-        IMPL_WALLCLOCK_ENABLED_KEY, _impl_wallclock_default("enabled", logger))
+    enabled = (
+        section[IMPL_WALLCLOCK_ENABLED_KEY]
+        if IMPL_WALLCLOCK_ENABLED_KEY in section
+        else _impl_wallclock_default("enabled", logger))
     if not isinstance(enabled, bool):
         enabled = _impl_wallclock_default("enabled", logger)
 
@@ -661,10 +666,10 @@ def get_impl_wallclock_sizing_config(config: dict, logger=None) -> dict:
         "enabled": enabled,
         "full_scale_threshold": _int(
             section, IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY,
-            _impl_wallclock_default("full_scale_threshold", logger)),
+            "full_scale_threshold"),
         "extra_extensions": _int(
             section, IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY,
-            _impl_wallclock_default("extra_extensions", logger)),
+            "extra_extensions"),
     }
 
 
@@ -698,15 +703,22 @@ def lifted_max_extensions_for_scale(
         生效续期预算（int）。
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    if not cfg.get(IMPL_WALLCLOCK_ENABLED_KEY,
-                   _impl_wallclock_default("enabled", logger)):
+    # 缺省惰性求值（code-review item f617b1d6521b）：键在场时不读缺省，
+    # 消除冗余读取与重复漂移告警。
+    enabled = (
+        cfg[IMPL_WALLCLOCK_ENABLED_KEY]
+        if IMPL_WALLCLOCK_ENABLED_KEY in cfg
+        else _impl_wallclock_default("enabled", logger))
+    if not enabled:
         return base_max_extensions
-    threshold = cfg.get(
-        IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY,
-        _impl_wallclock_default("full_scale_threshold", logger))
-    extra = cfg.get(
-        IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY,
-        _impl_wallclock_default("extra_extensions", logger))
+    threshold = (
+        cfg[IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY]
+        if IMPL_WALLCLOCK_FULL_SCALE_THRESHOLD_KEY in cfg
+        else _impl_wallclock_default("full_scale_threshold", logger))
+    extra = (
+        cfg[IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY]
+        if IMPL_WALLCLOCK_EXTRA_EXTENSIONS_KEY in cfg
+        else _impl_wallclock_default("extra_extensions", logger))
     if (isinstance(scale, int) and not isinstance(scale, bool)
             and isinstance(threshold, int) and not isinstance(threshold, bool)
             and isinstance(extra, int) and not isinstance(extra, bool)

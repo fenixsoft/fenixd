@@ -449,6 +449,17 @@ def is_legacy_scenario_set(scenario_set: Any) -> bool:
                 e,
             )
             break
+    else:
+        # code-review f436d3b17010：条目均为 ScenarioEntry 形态但 covers 全
+        # 空、且集级无 display_declarations——既可能是真遗留集（D2 合法跳过），
+        # 也可能是 planner 整轮仅靠文本/id 通道隐式覆盖、未写 covers 亦未声
+        # 明纯展示的新集；后者若存在未覆盖候选，契约对该轮静默失效（fail-
+        # open）。启发式无法区分二者，留痕备查（区分于上方形态漂移日志）。
+        _logger.debug(
+            "is_legacy_scenario_set: 全部条目为 ScenarioEntry 形态但 covers "
+            "全空且集级无 display_declarations，按遗留集跳过强制——若为仅靠"
+            "隐式通道覆盖的新集，交互契约本轮不生效",
+        )
     declared = getattr(scenario_set, "display_declarations", None)
     if declared:
         return False

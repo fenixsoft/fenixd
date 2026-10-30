@@ -697,7 +697,9 @@ class BackfillLedger:
     def load(cls, path: Path) -> "BackfillLedger":
         ledger = cls(path)
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
+            # errors="replace"：单字节损坏不令整台账 UnicodeDecodeError 不可读，
+            # 坏字节行退化为 json 解析失败走既有逐行跳过（对齐 build_prompt）
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()
                 if not line:
                     continue
