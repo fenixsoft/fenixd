@@ -326,6 +326,19 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
     projectRef.current = project;
   }, [project]);
 
+  // 卸载判活守卫（code-review item 1228ded8194b，比照 SuggestedImprovementsPanel
+  // 的 mountedRef 口径）：本设置页面板按 activeKey 条件渲染、切页签即卸载，而
+  // handleInstall（installOcr 慢请求）与 handleRegressionAutodraft（后端 headless
+  // 起草约数分钟）在多段 await 之后才写 state——各 setState 点统一挂判活守卫，
+  // 不让响应/收口打到已卸载实例（React 19 下虽为无害 no-op，仍恢复同族防御口径）。
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
     getOcrStatus()
@@ -371,7 +384,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
   const handleInstall = async () => {
     if (installInFlight.current) return;
     installInFlight.current = true;
-    setInstalling(true);
+    if (mountedRef.current) setInstalling(true);
     try {
       // 1) 安装调用（code-review item 52c15fcd9bc1）：必须先检查 res.ok——
       // 旧实现不看返回值，ok===false/version===null 时仍提示「安装成功」。
@@ -393,14 +406,15 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       // 也不应让 ocr 停在 stale（否则开关永久置灰）。
       try {
         const fresh = await getOcrStatus();
-        setOcr(fresh);
+        if (mountedRef.current) setOcr(fresh);
       } catch {
         // 探测失败：乐观标记为已安装（版本未知），至少解锁开关
-        setOcr({ installed: true, bin: null, version: res.version ?? null });
+        if (mountedRef.current)
+          setOcr({ installed: true, bin: null, version: res.version ?? null });
       }
     } finally {
       installInFlight.current = false;
-      setInstalling(false);
+      if (mountedRef.current) setInstalling(false);
     }
   };
 
@@ -423,7 +437,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       return;
     }
     regressionDraftInFlight.current = true;
-    setRegressionDrafting(true);
+    if (mountedRef.current) setRegressionDrafting(true);
     try {
       const res = await autodraftRegression(project);
       if (res.ok) {
@@ -438,8 +452,9 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
           .then((d) => {
             // 项目切换守卫（code-review item e884e5a8a3af）：重拉 resolve 时
             // 用户可能已切换项目（projectRef 已更新、闭包 project 未变），
-            // 只回填仍是当前项目的响应
-            if (projectRef.current === project) setRegressionCfg(d);
+            // 只回填仍是当前项目的响应；mountedRef 判活（item 1228ded8194b）
+            // 再挡一层已卸载实例的回填
+            if (mountedRef.current && projectRef.current === project) setRegressionCfg(d);
           })
           .catch(() => {
             /* 重拉失败不打断成功结论：下次进入页面 effect 会重拉 */
@@ -451,7 +466,7 @@ export default function QualityPanel({ config, onSave, project, onConfigSynced, 
       message.error(`AI 生成失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       regressionDraftInFlight.current = false;
-      setRegressionDrafting(false);
+      if (mountedRef.current) setRegressionDrafting(false);
     }
   };
 

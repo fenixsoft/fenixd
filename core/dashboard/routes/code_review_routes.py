@@ -547,7 +547,8 @@ class H11CodeReviewRoutesMixin:
         手动触发判定结果只读透传：返回 daemon 消费端写回的
         ``.fenix/code_fix_request_result.json`` 内容（``{request_created,
         triggered, reason, message, finished_at}``）。文件缺失/损坏 → 缺省态
-        ``{}``（MUST NOT 500，形态对齐 _api_code_review_fix_progress）。
+        全 null 键形态（MUST NOT 500，与 _api_code_review_run_result 缺省
+        形态一致，code-review item 351a32cc7049）。
         """
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):

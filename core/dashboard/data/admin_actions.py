@@ -2544,8 +2544,28 @@ def _exec_grant_env_exemption(project_root, spec: str, note: str = "") -> dict:
     """
     from core.admin_store import AdminStore, DISPOSITION
 
+    class _AdminStoreTagLogger:
+        """标准 logging → AdminStore ``(tag, msg)`` 双参口径适配。
+
+        AdminStore 留痕路径（损坏留底/拒写/归档写失败）以
+        ``self._logger.warning("admin_store", msg)`` 双参口径写日志（Fenix
+        项目 logger 形态）；本模块 logger 是标准 logging，直传会把
+        "admin_store" 当格式串、msg 当 % 参数——适配器折回单参格式化
+        （admin_stray_wip._StashGuardTagLogger 同形态先例）。AdminStore
+        拒写留痕走 error 级别（admin_store.py 476 行），两级别均须覆盖。
+        """
+
+        def __init__(self, base):
+            self._base = base
+
+        def warning(self, tag, msg):
+            self._base.warning("%s: %s", tag, msg)
+
+        def error(self, tag, msg):
+            self._base.error("%s: %s", tag, msg)
+
     proot = Path(project_root)
-    store = AdminStore(proot, logger)
+    store = AdminStore(proot, _AdminStoreTagLogger(logger))
     audit_note = note or "人工授予 env 豁免：失败确属环境且不可修复，放行重验"
     try:
         rec = store.append({

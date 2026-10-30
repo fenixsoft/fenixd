@@ -2260,17 +2260,18 @@ export async function getCodeReviewRunResult(
 /** 手动「自动修复」触发判定结果（add-code-fix-manual-trigger；
  *  GET /api/code-review/fix-run-result 透传 .fenix/code_fix_request_result.json）
  *
- * wire 契约：缺省态（文件缺失/损坏/未消费完）后端返回**空对象 ``{}``**——
- * 全部字段缺席（运行时 undefined），并非「全 null 字段的对象」（code-review
- * item 74c58ba954c8：类型如实声明为可选，与缺省响应形态一致）。前端以
- * ``request_created`` 真值且与本次触发返回的 ``requested_at`` 一致回链判定
- * 是否本次结果。
+ * wire 契约：缺省态（文件缺失/损坏/未消费完）后端返回**全 null 字段对象**
+ * （request_created/triggered/reason/message/finished_at 均为 null，与
+ * CodeReviewRunResult 缺省形态一致——item 351a32cc7049 统一两侧口径；
+ * 前身 74c58ba954c8 曾按空对象 {} 如实声明可选）。前端以 ``request_created``
+ * 真值且与本次触发返回的 ``requested_at`` 一致回链判定是否本次结果，
+ * null 缺省恒不匹配。
  */
 export interface CodeFixRunResult {
   request_created?: string | null;
-  triggered?: boolean;
-  reason?: string;
-  message?: string;
+  triggered?: boolean | null;
+  reason?: string | null;
+  message?: string | null;
   finished_at?: string | null;
 }
 
@@ -2806,13 +2807,12 @@ export async function getRegressionFixResult(
  *
  * 三个「手动触发 → 轮询受理判定结果」封装（getCodeReviewRunResult /
  * getCodeFixRunResult / getRegressionFixResult）的缺省态（结果文件缺失/损坏）
- * wire 契约各不相同，回链键名亦二择：
+ * wire 契约与回链键名：
  *   - CodeReviewRunResult：缺省态为**全 null 字段对象**（requested_at/status/
  *     reason/message/finished_at 均 null，运行时真值 null 而非缺席），回链键
  *     ``requested_at``；
- *   - CodeFixRunResult：缺省态为**空对象 {}**（全部字段缺席，运行时 undefined；
- *     引用 74c58ba954c8：类型曾按全 null 声明而实际为空对象，故如实声明可选），
- *     回链键 ``request_created``；
+ *   - CodeFixRunResult：缺省态同为**全 null 字段对象**（与 code-review 统一，
+ *     item 351a32cc7049），回链键 ``request_created``；
  *   - RegressionFixRunResult：缺省态为 ``{"status": "none"}``（MUST NOT 404），
  *     回链键 ``request_created``。
  * 三种缺省态在回链判读上运行时行为一致：回链键真值缺失/为 null，必然不匹配

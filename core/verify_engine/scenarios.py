@@ -14,7 +14,12 @@ import re
 from pathlib import Path
 
 from .fs_ops import atomic_write_json
-from .regex_safety import _compile_regex, _has_nested_quantifier, _regex_lib
+from .regex_safety import (
+    _compile_regex,
+    _has_nested_quantifier,
+    _regex_lib,
+    has_nested_quantifier,
+)
 
 # 旁路 getLogger 守卫（test_logger_no_bypass）：core/ 内 MUST 用 fenixd.
 # 可传播层级字面量（同 verify_engine 既有 judge_files/scenario_static_check
@@ -450,6 +455,12 @@ def url_matches_network_pattern(url: str, pattern: str) -> bool:
         return False
     if pattern.startswith(EXPECT_NETWORK_RE_PREFIX):
         body = pattern[len(EXPECT_NETWORK_RE_PREFIX):]
+        if not body.strip():
+            # 裸 `re:` 空模式体：空正则 search 恒命中任意 URL（假通过通道），
+            # 与验收期「url_pattern 正则体不得为空」同口径按不匹配收场，
+            # 守住本函数 docstring 的漏报保守不变量（code-review item
+            # e5a1b4c965da，防验收被绕过时的防御缺口）
+            return False
         # 与断言侧同款回溯安全匹配（复用下沉共享层 regex_safety，code-review
         # item ee72d324ea15）：re: 前缀 pattern 由 planner 生成（有幻觉正则
         # 原语前科），裸 stdlib re.search 对嵌套量词类病态模式在长 URL（长
@@ -511,10 +522,22 @@ def validate_expect_network_form(entries) -> tuple:
             # threshold / navigate URL 形态拦截同取向）——编译失败的模式
             # 引擎侧按不匹配收场，放行只会产出「该过判失败」的哑失败
             else:
-                try:
-                    re.compile(body)
-                except re.error as e:
-                    errors.append(f"条目{j}: url_pattern 正则编译失败: {e}")
+                # 嵌套量词高危形态预检（坏档验收期前移，与下方编译预检同
+                # 取向；code-review item f28027a1b692）：放行后 regex 库在场
+                # 每 URL 匹配点仍可烧满 1s 超时（逐 URL 累计拖慢执行）、库
+                # 缺失时引擎侧按不匹配收场产出「该过判失败」的哑失败，均
+                # 白烧整轮验证；拒绝口径与 cli_assertions regex 断言的运行
+                # 期预检一致
+                if has_nested_quantifier(body):
+                    errors.append(
+                        f"条目{j}: url_pattern 含嵌套量词高危形态"
+                        f"（灾难性回溯风险），收到 {pattern!r}"
+                    )
+                else:
+                    try:
+                        re.compile(body)
+                    except re.error as e:
+                        errors.append(f"条目{j}: url_pattern 正则编译失败: {e}")
         min_count = entry.get("min_count")
         # bool 是 int 子类，显式排除（口径同 _parse_viewport）
         if isinstance(min_count, bool) or not isinstance(min_count, int) or min_count < 1:

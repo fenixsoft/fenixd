@@ -817,7 +817,10 @@ class SummaryIndex:
             state_sig: STATE.md 的 (mtime_ns, size) 签名；变化时重新解析
                 STATE.md 快照并按 spec 增量失效（保留未变 spec 的缓存摘要）。
         """
-        key = str(Path(proot).resolve())
+        # 入口类型归一（code-review item bbcdba8851b9，对齐 invalidation_signature
+        # 同款口径）：后续 proot / ".fenix" 拼接不因字符串实参抛 TypeError
+        proot = Path(proot)
+        key = str(proot.resolve())
         # 跨组引用经门面延迟解析（D4/D8）
         import core.dashboard.data as _facade
 
@@ -916,7 +919,10 @@ class SummaryIndex:
         """
         import core.dashboard.data as _facade
 
-        key = str(Path(proot).resolve())
+        # 入口类型归一（code-review item bbcdba8851b9，对齐 invalidation_signature
+        # 同款口径）：后续 proot / ".fenix" 拼接不因字符串实参抛 TypeError
+        proot = Path(proot)
+        key = str(proot.resolve())
         with self._lock:
             state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
             state_changed = (
@@ -1257,9 +1263,14 @@ def _degraded_project(p: dict, error: str) -> dict:
     exists=True，失败原因只体现在 `error` 字段——避免 UI 把「不可读」误
     渲染成「项目不存在」（设计 D4）。
     """
+    # code-review item 1c0038d981ae：与 overview exists 假值分支同款防御归一，
+    # 降级路径自身不得再抛 KeyError/TypeError 穿透容错契约。
+    path = p.get("path")
+    if not isinstance(path, (str, os.PathLike)):
+        path = ""
     return {
-        "name": p.get("name") or (Path(p["path"]).name or p["path"]),
-        "path": p["path"],
+        "name": p.get("name") or (Path(path).name or path),
+        "path": path,
         "discovered": p.get("discovered", False),
         "exists": True,
         "daemon": "stopped",
@@ -1344,10 +1355,15 @@ def overview(registry_projects: list) -> dict:
             # 不外泄裸异常文本（与 run_routes 取消端点异常脱敏口径一致）：str(exc)
             # 可能携带服务器内部路径/errno 细节，随 /api/overview 下发浏览器；
             # 细节经服务端日志留痕，客户端收固定文案。
+            # code-review item 1c0038d981ae：异常处理器内同样不裸下标 p["path"]，
+            # 缺 path 键/非路径类型时降级路径自身不得二次抛异常。
+            path = p.get("path")
+            if not isinstance(path, (str, os.PathLike)):
+                path = ""
             logger.warning(
                 "项目摘要计算失败（project=%s path=%s）: %s: %s",
                 p.get("name"),
-                p["path"],
+                path,
                 type(exc).__name__,
                 exc,
             )

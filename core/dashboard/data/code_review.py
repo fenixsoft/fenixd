@@ -135,19 +135,33 @@ def read_code_review_request_result(project_root) -> dict:
     return read_request_result(project_root)
 
 
+# 缺省态（文件缺失/损坏/非 dict）：全键在场且值为 null——与同族
+# core.code_review.read_request_result（read_code_review_request_result 透传）
+# 的缺省形态一致，前端对两侧端点按同一「键全在但为 null」缺省判空回链
+# （code-review item 351a32cc7049）。
+_REQUEST_RESULT_DEFAULT = {
+    "request_created": None,
+    "triggered": None,
+    "reason": None,
+    "message": None,
+    "finished_at": None,
+}
+
+
 def read_code_fix_request_result(project_root) -> dict:
     """读手动「立即自动修复」触发判定结果（add-code-fix-manual-trigger 2.2）。
 
     只读透传 daemon 消费端写回的 ``.fenix/code_fix_request_result.json``
     （``{request_created, triggered, reason, message, finished_at}``）；
-    文件缺失/损坏/非 dict → 缺省态 ``{}``（读侧 MUST NOT 500，形态对齐
-    read_code_review_fix_progress）。前端以 ``request_created`` 与本次触发
-    返回的 ``requested_at`` 回链判定是否本次结果。
+    文件缺失/损坏/非 dict → 缺省态全 null 键形态（读侧 MUST NOT 500，与
+    read_code_review_request_result 的缺省形态对齐）。前端以
+    ``request_created`` 真值与本次触发返回的 ``requested_at`` 回链判定
+    是否本次结果，null 缺省恒不匹配。
     """
     path = Path(project_root) / ".fenix" / "code_fix_request_result.json"
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return dict(_REQUEST_RESULT_DEFAULT)
+    return data if isinstance(data, dict) else dict(_REQUEST_RESULT_DEFAULT)

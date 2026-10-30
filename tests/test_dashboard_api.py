@@ -1962,7 +1962,7 @@ class TestCodeFixRunAPI:
 
     fix-run 写 ``.fenix/code_fix_request.json`` 文件信号（O_CREAT|O_EXCL 独
     占创建）由 daemon 消费；fix-run-result 只读透传判定结果文件，缺失返回
-    缺省态 ``{}``（MUST NOT 500）。消费方守卫（hosting_state 判据）对齐
+    缺省态全 null 键形态（MUST NOT 500）。消费方守卫（hosting_state 判据）对齐
     POST /api/code-review/run。
     """
 
@@ -2071,14 +2071,15 @@ class TestCodeFixRunAPI:
         finally:
             srv.stop()
 
-    def test_fix_run_result_default_empty(self, tmp_path, monkeypatch):
-        """结果文件缺失 → 200 缺省态 {}（MUST NOT 500）。"""
+    def test_fix_run_result_default_all_null(self, tmp_path, monkeypatch):
+        """结果文件缺失 → 200 缺省态全 null 键形态（MUST NOT 500）。"""
         proot = make_project(tmp_path, name="proj-a", otherspec=False)
         srv = self._server_for(proot, tmp_path)
         try:
             status, body = srv.get("/api/code-review/fix-run-result?project=proj-a")
             assert status == 200
-            assert body == {}
+            assert body == {"request_created": None, "triggered": None,
+                            "reason": None, "message": None, "finished_at": None}
         finally:
             srv.stop()
 
@@ -2101,7 +2102,7 @@ class TestCodeFixRunAPI:
             srv.stop()
 
     def test_fix_run_result_corrupt_returns_default(self, tmp_path, monkeypatch):
-        """结果文件损坏 → 缺省态 {}（读侧 MUST NOT 500）。"""
+        """结果文件损坏 → 缺省态全 null 键形态（读侧 MUST NOT 500）。"""
         proot = make_project(tmp_path, name="proj-a", otherspec=False)
         result = proot / self._RESULT
         result.parent.mkdir(parents=True, exist_ok=True)
@@ -2110,7 +2111,8 @@ class TestCodeFixRunAPI:
         try:
             status, body = srv.get("/api/code-review/fix-run-result?project=proj-a")
             assert status == 200
-            assert body == {}
+            assert body == {"request_created": None, "triggered": None,
+                            "reason": None, "message": None, "finished_at": None}
         finally:
             srv.stop()
 

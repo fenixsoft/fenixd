@@ -191,8 +191,11 @@ def _run_files_since(proot: Path, since_epoch: float) -> list:
 
 def _window_runs(proot: Path, since_epoch: float, include_archive: bool = True) -> list:
     """入窗 run 行（get_runs 既有元数据口径：status/started/duration/
-    agent_type/spec；live+archive 同 stem 活跃副本优先去重）。include_archive
-    False 时仅活跃产物（「全量=未归档」窗选口径）。"""
+    agent_type/spec；live+archive 同 stem 活跃副本优先去重）。本模块消费方
+    均传 include_archive=True（终态 run 移入 runs/archive/ 后仍须入窗，
+    归档扫描恒开）；include_archive=False 仅收紧为活跃产物，「全量=未
+    归档」窗的未归档语义由调用方按 archived_names 剔除实现（见
+    aggregate_org），而非关闭归档扫描。"""
     files = _run_files_since(proot, since_epoch)
     if not files:
         return []

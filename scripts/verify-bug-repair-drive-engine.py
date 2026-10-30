@@ -51,6 +51,35 @@ except Exception as _import_err:
     }, ensure_ascii=False))
     sys.exit(1)
 
+# ── 内部接口依赖清单（code-review item 14b01a5269cb）────────────────────────
+# 本脚本为验证驱动脚本，依赖下述 core 私有接口驱动被测行为；core/pm_engine
+# 重构（改名/改签名/组合组件调整）时 MUST 同步维护本清单与下方 facade 帮助函数：
+#   1. PMEngine._family（property，core/pm_engine/engine.py，惰性构造
+#      FamilyGovernor）→ FamilyGovernor._do_spec_bug_found（实例方法，
+#      core/pm_engine/family.py）
+#   2. FamilyGovernor._fix_prefix_depth（staticmethod，core/pm_engine/family.py；
+#      PMEngine 上另有类级别别名）
+#   3. PMEngine._enqueue（core/pm_engine/dispatch/queue.py；用例打桩为 MagicMock）
+# 全部私有调用已收敛到 _trigger_bug_found / _fix_depth / _stub_enqueue 三个
+# facade 帮助函数，用例只依赖 facade，不直接触碰 engine 私有属性。
+
+
+def _trigger_bug_found(engine: PMEngine, spec_name: str) -> None:
+    """facade：驱动 engine 的 bug-found 处置（收敛 engine._family 私有调用）。"""
+    engine._family._do_spec_bug_found(spec_name)
+
+
+def _fix_depth(engine: PMEngine, name: str) -> int:
+    """facade：读取 fix- 前缀族谱深度（收敛 _family._fix_prefix_depth 私有调用）。"""
+    return engine._family._fix_prefix_depth(name)
+
+
+def _stub_enqueue(engine: PMEngine) -> MagicMock:
+    """facade：把 engine._enqueue 打桩为 MagicMock 并返回桩（收敛私有属性直读/直写）。"""
+    stub = MagicMock()
+    engine._enqueue = stub
+    return stub
+
 
 def _setup_project(tmpdir: Path) -> Path:
     """构造最小 fenix 项目：.fenix/ + spec/changes/<name>/tasks.md。"""
@@ -65,15 +94,15 @@ def _setup_project(tmpdir: Path) -> Path:
 def _case_env(config: dict):
     """收口各用例共同的装配/清理脚手架：建临时目录 → 最小项目 → SM/engine 装配 → 清理。
 
-    产出 (proot, sm, engine)；engine._enqueue 已打桩。异常（含 sys.exit）时
-    仍保证临时目录被清理。
+    产出 (proot, sm, engine)；engine._enqueue 经 _stub_enqueue 打桩。
+    异常（含 sys.exit）时仍保证临时目录被清理。
     """
     tmpdir = Path(tempfile.mkdtemp())
     try:
         proot = _setup_project(tmpdir)
         sm = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
         engine = PMEngine(sm, MagicMock(), config, proot, MagicMock())
-        engine._enqueue = MagicMock()
+        _stub_enqueue(engine)
         yield proot, sm, engine
     finally:
         shutil.rmtree(str(tmpdir), ignore_errors=True)
@@ -97,7 +126,7 @@ def _first_round(engine: PMEngine, sm: StateMachine, proot: Path, spec_name: str
     _make_buggy_spec(sm, spec_name)
     _write_tasks(proot, spec_name)
 
-    engine._family._do_spec_bug_found(spec_name)
+    _trigger_bug_found(engine, spec_name)
 
     entry = sm.read_one(spec_name) or {}
     txt = (proot / "spec" / "changes" / spec_name / "tasks.md").read_text(encoding="utf-8")
@@ -121,13 +150,13 @@ def test_second_round(spec_name: str):
         _write_tasks(proot, spec_name)
         sm.update_spec(spec_name, {"_verify_fail_rounds": 1, "status": "bug-found"})
 
-        engine._family._do_spec_bug_found(spec_name)
+        _trigger_bug_found(engine, spec_name)
 
         entry = sm.read_one(spec_name) or {}
         print(json.dumps({
             "rounds": int(entry.get("_verify_fail_rounds", 0)),
             "status": entry.get("status"),
-            "depth": engine._family._fix_prefix_depth(spec_name),
+            "depth": _fix_depth(engine, spec_name),
             "fix_spawned": sm.read_one(f"fix-{spec_name}") is not None,
         }, ensure_ascii=False))
 
@@ -136,9 +165,12 @@ def test_derive_loop(spec_name: str):
     with _case_env({"admin": {"bug_repair_mode": "derive"}}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
-        engine._family._do_spec_bug_found(spec_name)
+        _trigger_bug_found(engine, spec_name)
 
         fix_name = f"fix-{spec_name}"
+        # read_one 快照语义（StateMachine.read_one → StateParser.parse 每次从
+        # STATE.md 重新解析、返回新 dict，非活引用）：此处读出的 status 是
+        # spawn 时刻状态，下方 update/闭环不会改写本值（item ba354c4abf9f）
         fix_entry = sm.read_one(fix_name) or {}
         if not fix_entry:
             # 失败输出契约统一带 case 归因（code-review item 1752ce00a480，
@@ -154,7 +186,7 @@ def test_derive_loop(spec_name: str):
         parent = sm.read_one(spec_name) or {}
         print(json.dumps({
             "fix_spawned": True,
-            "fix_status": fix_entry.get("status"),
+            "fix_status_at_spawn": fix_entry.get("status"),
             "reverified": parent.get("status") == "implemented",
             "parent_status": parent.get("status"),
         }, ensure_ascii=False))
@@ -166,7 +198,7 @@ def test_third_round(spec_name: str):
         _write_tasks(proot, spec_name)
         sm.update_spec(spec_name, {"_verify_fail_rounds": 2, "status": "bug-found"})
 
-        engine._family._do_spec_bug_found(spec_name)
+        _trigger_bug_found(engine, spec_name)
 
         entry = sm.read_one(spec_name) or {}
         # 升级闸门告警落盘于 .fenix/admin_alerts.json（AdminStore 真实读取）
@@ -188,7 +220,7 @@ def test_restart_persist(spec_name: str):
     with _case_env({}) as (proot, sm, engine):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
-        engine._family._do_spec_bug_found(spec_name)
+        _trigger_bug_found(engine, spec_name)
 
         # 模拟重启：重建 SM + engine
         sm2 = StateMachine(proot / ".fenix" / "STATE.md", MagicMock())
@@ -202,8 +234,8 @@ def test_restart_persist(spec_name: str):
             sys.exit(1)
 
         engine2 = PMEngine(sm2, MagicMock(), {}, proot, MagicMock())
-        engine2._enqueue = MagicMock()
-        engine2._family._do_spec_bug_found(spec_name)
+        _stub_enqueue(engine2)
+        _trigger_bug_found(engine2, spec_name)
 
         entry_after = sm2.read_one(spec_name) or {}
         print(json.dumps({
@@ -218,7 +250,7 @@ def test_hot_switch(spec_name: str):
         _make_buggy_spec(sm, spec_name)
         _write_tasks(proot, spec_name)
 
-        engine._family._do_spec_bug_found(spec_name)
+        _trigger_bug_found(engine, spec_name)
         fix_spawned_first = sm.read_one(f"fix-{spec_name}") is not None
         if not fix_spawned_first:
             print(json.dumps({
@@ -232,9 +264,11 @@ def test_hot_switch(spec_name: str):
         engine.config = {}
         sm.update_spec(spec_name, {"status": "bug-found"})
         sm.remove_spec(f"fix-{spec_name}")
-        engine._enqueue.reset_mock()
+        # 重新打桩取代原 reset_mock()：新 MagicMock 同样清空 Phase 1 的调用
+        # 记录，且不再直读 engine._enqueue 私有属性（item 14b01a5269cb）
+        _stub_enqueue(engine)
 
-        engine._family._do_spec_bug_found(spec_name)
+        _trigger_bug_found(engine, spec_name)
         entry = sm.read_one(spec_name) or {}
 
         print(json.dumps({

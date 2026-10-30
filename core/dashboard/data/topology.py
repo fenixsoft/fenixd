@@ -131,10 +131,14 @@ def _scan_spec_log_events(project_root, spec_name: str, created: str):
 
     读取窗口按 created 锚定（read_log_window_from，与时间轴同参同源）；行解析
     失败/非对象/非字符串 message 一律跳过，timestamp 非字符串归一为空串
-    （transitions/verify_starts 的 time 恒为字符串），不令派生整体失败
-    （与 get_spec_timeline 的防护口径一致）。
+    （transitions/verify_starts 的 time 恒为字符串），不令派生整体失败——
+    转移正则对与逐行守卫梯队单源委托 timeline（spec_transition_patterns /
+    parse_daemon_log_line，code-review item 6b53202b854e），与时间轴逐字同源。
     """
     import core.dashboard.data as _facade
+    # timeline 组单源助手（正则对/守卫梯队/时间差）经子模块延迟解析（与上方
+    # _facade 同式规避循环导入），函数体开头统一 import，循环体内复用
+    from core.dashboard.data import timeline as _timeline
 
     logs_dir = Path(project_root) / ".fenix" / "logs"
     transitions: list = []
@@ -145,12 +149,10 @@ def _scan_spec_log_events(project_root, spec_name: str, created: str):
         log_files = _facade.rotated_log_files(logs_dir)
     except OSError:
         return transitions, verify_starts
-    pat = re.compile(
-        r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)"
-    )
-    gate_pat = re.compile(
-        r"Gate transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)"
-    )
+    # 转移正则对与逐行守卫梯队单源委托 timeline（与 get_spec_timeline 逐字
+    # 同源，code-review item 6b53202b854e）；parsed 为 None 即守卫梯队判
+    # 跳过的行，continue 语义与原内联实现逐条等价
+    pat, gate_pat = _timeline.spec_transition_patterns(spec_name)
     for lf in log_files:
         try:
             content = _facade.read_log_window_from(
@@ -161,26 +163,12 @@ def _scan_spec_log_events(project_root, spec_name: str, created: str):
         for line in content.split("\n"):
             if spec_name not in line:
                 continue
-            try:
-                ev = json.loads(line)
-            except ValueError:
+            parsed = _timeline.parse_daemon_log_line(line)
+            if parsed is None:
                 continue
-            if not isinstance(ev, dict):
-                continue
-            msg = ev.get("message", "")
-            if not isinstance(msg, str):
-                continue
-            ts = ev.get("timestamp", "")
-            # timestamp 为非字符串（数字/数组等异常 JSON 行）时归一为空串，
-            # 与 get_spec_timeline 的归一口径一致：transitions/verify_starts
-            # 的 time 字段与下游排序键入参恒为字符串（空串走解析失败的既定分支）
-            if not isinstance(ts, str):
-                ts = ""
+            msg, ts, ctx = parsed
             m = pat.search(msg) or gate_pat.search(msg)
             if m:
-                ctx = ev.get("context") or {}
-                if not isinstance(ctx, dict):
-                    ctx = {}
                 transitions.append(
                     {
                         "time": ts,
@@ -195,16 +183,6 @@ def _scan_spec_log_events(project_root, spec_name: str, created: str):
     return transitions, verify_starts
 
 
-def _delta_seconds(a: str, b: str, signed: bool = False):
-    """ISO 时间戳秒差（timelib 单源；解析失败 None；signed=True 返回 a-b）。"""
-    ta = timelib.parse_ts(str(a or ""))
-    tb = timelib.parse_ts(str(b or ""))
-    if ta is None or tb is None:
-        return None
-    delta = (ta - tb).total_seconds()
-    return delta if signed else abs(delta)
-
-
 def _verify_nodes(verify_starts: list, report: dict) -> list:
     """多轮验证逐轮节点（specs「多轮验证逐轮呈现」Requirement）。
 
@@ -216,6 +194,10 @@ def _verify_nodes(verify_starts: list, report: dict) -> list:
     - 日志行缺失退化为单节点（报告完成时刻 + 统计），与 get_spec_timeline
       的降级口径一致；report.json 缺失/损坏时节点无统计字段。
     """
+    # 时间差助手单源委托 timeline（ts_delta，code-review item 6b53202b854e；
+    # 子模块延迟解析同 _scan_spec_log_events）
+    from core.dashboard.data import timeline as _timeline
+
     rep_ts = ""
     summary = {}
     if report.get("exists") and not report.get("error"):
@@ -242,7 +224,7 @@ def _verify_nodes(verify_starts: list, report: dict) -> list:
     last_start = verify_starts[-1]
     paired = False
     if rep_ts:
-        d = _delta_seconds(rep_ts, last_start, signed=True)
+        d = _timeline.ts_delta(rep_ts, last_start, signed=True)
         # 报告时刻 >= 末轮开始（含同秒）→ 末轮产物；解析失败不配对（不伪造）
         paired = d is not None and d >= 0
     for i, start in enumerate(verify_starts):
@@ -259,7 +241,7 @@ def _verify_nodes(verify_starts: list, report: dict) -> list:
         # 轮次时长：历史轮以下一轮开始为终点；末轮以报告完成时刻为终点（配对时）
         end = verify_starts[i + 1] if not is_last else (rep_ts if paired else "")
         if end:
-            d = _delta_seconds(end, start, signed=True)
+            d = _timeline.ts_delta(end, start, signed=True)
             if d is not None and d >= 0:
                 node["duration_seconds"] = int(d)
         if is_last and paired:

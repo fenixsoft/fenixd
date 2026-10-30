@@ -505,7 +505,8 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
       1. 空/非字符串路径拒绝；
       2. 绝对路径（os.path.isabs，含 ``~`` 展开与 Windows 盘符形态）拒绝
          ——不以 project_root 为锚的路径一概不收；
-      3. normpath 折叠后仍含 ``..`` 前导段（越出 project_root 的穿越）拒绝；
+      3. normpath 折叠并统一分隔符为 ``/`` 后，仍含 ``..`` 前导段（越出
+         project_root 的穿越）拒绝；
       4. 落点不在白名单目录/文件内 → 产品代码路径，拒绝。
 
     仅做路径形态判定，不做磁盘存在性检查（夹具文件可以是新建）。符号链接
@@ -538,6 +539,11 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
         if p.startswith("~") or os.path.isabs(p) or ":" in p.split("/")[0]:
             return f"拒绝绝对路径（修订仅允许项目内相对路径）：{p}"
         norm = os.path.normpath(p)
+        # 分隔符统一为 "/" 后再做穿越判定与白名单比对（Windows 宿主上
+        # normpath 输出反斜杠分隔，按 "/" 切分会与白名单整体失配，对一切
+        # 合法夹具路径 fail-closed 全拒）；POSIX 上 os.sep 即 "/"，本替换
+        # 为空操作、行为不变。
+        norm = norm.replace(os.sep, "/")
         # ``..`` 须按整段精确匹配（code-review item e7289a7bd03e）：
         # startswith('..') 会误拒 '..data/x' 这类以两点开头、但首段并非
         # ``..`` 段、并不越出项目根的合法目录名

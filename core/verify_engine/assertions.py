@@ -230,10 +230,17 @@ class AssertionRunner:
                         }
                     )
             else:
+                # 兜底补齐定位上下文（code-review item 1947c9595d54）：
+                # 与上方异常兜底分支同口径——同一场景多条相同 type 的未知
+                # 断言仅凭 type/layer 结果完全同构，缺 selector/label 无法
+                # 区分是哪条断言、针对哪个元素。此处 assertion 已过非 dict
+                # 守卫，get 安全；非 dict 条目走上方分支，无字段可取。
                 results.append(
                     {
                         "type": a_type,
                         "layer": 0,
+                        "selector": assertion.get("selector", ""),
+                        "label": assertion.get("label", ""),
                         "pass": False,
                         "error": f"未知断言类型: {a_type}",
                     }

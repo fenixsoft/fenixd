@@ -122,6 +122,18 @@ def _verify_progress_candidates(project_root, spec_name, spec_status: str, filen
     持主树 verify-progress 写授权的车道可能直落主树），双位置兜底才不致
     implementing 态漏读。复用 tasks.py 的 worktree 优先先例（D8：经门面解析）。
     """
+    # 防穿越（code-review item b6159c3f747b）：spec_name 拼进
+    # .fenix/verify-progress/<spec_name>/<file>（下方 worktree 与主树两处）前先过
+    # kebab-case 白名单——spec_name 经 spec_summary 链来自可手工编辑的 STATE.md
+    # 小节名，本模块此前无路径成分校验，含 ``..``/分隔符的小节名会使探测落到
+    # 项目目录之外（固定文件名存在性与门禁状态外泄）。非法名返回空候选，经
+    # _read_json_candidate 按既有「无记录」fail-open 口径（exists=False）处理，
+    # 不抛异常；与读侧 resolve_spec_dir / 写侧 validated_spec_name（item
+    # 8d9727c5ef7a）同源防线。
+    import core.dashboard.data as _facade
+
+    if _facade.validated_spec_name(spec_name) is None:
+        return []
     cands = []
     # [fenix-ignore:f8c475fabe9d] 输入已由 parse_quality_gates 读取入口 strip
     # 归一化（937e5d93817b），脏空白不会漏掉 worktree 优先候选，精确比较不构成状态分歧。

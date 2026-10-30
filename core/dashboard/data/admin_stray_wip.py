@@ -17,6 +17,7 @@ signal_type 绑定守卫单源（design D4）：本族执行器是 admin 处置�
 signal_type 白名单（详见各常量注释）。
 """
 
+import fcntl
 import logging
 import os
 import re
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger("fenixd.dashboard.admin_stray_wip")
@@ -416,6 +418,14 @@ def _atomic_write_bytes(path, data: bytes) -> None:
     追加/还原路径须保留既有非 UTF-8 字节，不能经文本解码往返，而
     atomic_write_text 只收 str——本助手沿用同一原子纪律（唯一临时名防并发
     截断 + fsync + replace），供 .gitignore 字节级写回专用。
+
+    权限位保留与父目录 fsync（code-review item af658e96d7aa，对齐
+    fs_utils.atomic_write_text 同款附属纪律）：mkstemp 恒以 0600 建临时
+    文件，直接 replace 会把目标文件权限重置为 0600——.gitignore 等经追加/
+    还原回写后其他用户/工具不可读（多用户检出下忽略规则对协作面失效）。
+    替换既有文件时继承其 mode；新文件放宽到 0644。rename 后尽力而为
+    fsync 父目录（目录项持久化，掉电不回退）。chmod 与目录 fsync 失败均
+    不阻断写回主流程（权限/持久性是尽力而为的附属属性）。
     """
     path = Path(path)
     parent = path.parent
@@ -428,7 +438,30 @@ def _atomic_write_bytes(path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        try:
+            # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
+            # 「其他 OSError→跳过 chmod」（fs_utils.atomic_write_text 的
+            # item 7b94b65d0f0c 同款：exists+stat 双探测在两步间目标被
+            # 并发删除时会连带跳过 chmod）。
+            try:
+                mode = os.stat(path).st_mode & 0o777
+            except FileNotFoundError:
+                mode = 0o644
+            os.chmod(tmp_path, mode)
+        except OSError:
+            pass
         os.replace(tmp_path, path)
+        # 尽力而为 fsync 父目录（rename 的目录项变更须刷父目录才有掉电
+        # 持久化保证，item f19b8ef57ce6 同口径）；目录 fsync 个别文件系统
+        # 不支持，失败不阻断主流程。
+        try:
+            dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
@@ -453,6 +486,38 @@ def _gitignore_escape_entry(entry: str) -> str:
     return escaped
 
 
+# 项目级 .gitignore 读-改-写互斥锁（code-review item b30e2e7dbcb7）：
+# _atomic_write_bytes 只保证单次写的原子性，不串行化「读快照-追加/还原-
+# 整文件 replace」序列——两个并发处置动作（人工裁决与 AdminMonitor 自动
+# 执行同时触发 ignore/归档认领）各自基于旧快照落盘，后写者覆盖先写者，
+# 先追加的 ignore 行静默丢失（散件未被忽略、同指纹告警复发）。比照
+# AdminStore._lock 的 flock 口径为全模块 .gitignore 触碰点收口同一把锁；
+# 锁文件落 ``.git/fenix-gitignore.lock``——.git 内容对 git status 恒不可见、
+# 任何仓库（含测试临时检出）零新增散件面，落项目根或 .fenix 会在无既有
+# 忽略规则的检出里自身成为 untracked 散件。flock 同进程跨 fd 亦互斥
+# （AdminStore 同款），daemon 与 Dashboard 独立进程、ThreadingHTTPServer
+# 每请求一线程均被串行化。
+@contextmanager
+def _gitignore_lock(proot):
+    """.gitignore 读-改-写/快照还原序列的项目级排他锁（with 作用域持锁）。
+
+    锁文件创建/acquire 失败（.git 缺失或不可写等异常环境）按 OSError 上抛，
+    由调用方既有 OSError 兜底收敛为动作失败——锁不可得时放行写回会复活
+    本锁要挡的并发丢写面，不静默降级。
+    """
+    lock_path = Path(proot) / ".git" / "fenix-gitignore.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lf = open(lock_path, "w")
+    try:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+    finally:
+        lf.close()
+
+
 def _append_gitignore_entries(proot, paths) -> list:
     """把 paths 逐条追加进 .gitignore（去重），返回实际新增条目列表。
 
@@ -462,35 +527,40 @@ def _append_gitignore_entries(proot, paths) -> list:
     不增行）；``check-ignore --no-index`` 判定已被既有规则覆盖（如通配
     ``*.log``）→ 追加亦冗余，不写（复核仍传原始路径，见
     _path_already_ignored）。.gitignore 不存在则新建。
+
+    读快照-去重判定-原子写回整体收进项目级排他锁（code-review item
+    b30e2e7dbcb7，_gitignore_lock）：锁外并发追加各自基于旧快照整文件
+    replace，后写者覆盖先写者、先追加的规则行静默丢失。
     """
     gi = Path(proot) / ".gitignore"
-    # 字节级读入（code-review item 41c87143c57e）：.gitignore 可能含历史手工
-    # 编辑留下的非 UTF-8 字节，read_text(errors="replace") 再整文件回写会把
-    # 坏字节静默改写成 U+FFFD——追加只增行，既有字节须原样保留。去重判定仍
-    # 走文本口径（仅读侧比较，不回写）：合法行不受有损解码影响，比对不失真。
-    raw = gi.read_bytes() if gi.exists() else b""
-    have_lines = {
-        ln.strip() for ln in raw.decode("utf-8", errors="replace").splitlines()
-    }
-    appended: list = []
-    for p in paths:
-        # 去重按转义后的字面行（item f0d504af6cac）：.gitignore 实际存的
-        # 是转义行，按原始路径比对会漏判（如 # 开头文件名的历史行只是
-        # 注释，永远等不到字面匹配）。
-        entry = _gitignore_escape_entry(p)
-        if entry in have_lines or _path_already_ignored(proot, p):
-            continue
-        appended.append(entry)
-        have_lines.add(entry)
-    if appended:
-        sep = b"" if (not raw or raw.endswith(b"\n")) else b"\n"
-        # 原子写回（code-review item c971a8de0638）：裸 write_bytes 非原子，
-        # 进程中断/磁盘满可留下截断的 .gitignore（仓库忽略规则整体丢失面）
-        # ——gi_backup 只覆盖 _abort 显式回滚路径，不覆盖写半程中断。改走
-        # mkstemp+replace 原子字节写（atomic_write_text 同纪律的字节形态，
-        # item 41c87143c57e：既有字节不经解码往返）。
-        _atomic_write_bytes(
-            gi, raw + sep + ("\n".join(appended) + "\n").encode("utf-8"))
+    with _gitignore_lock(proot):
+        # 字节级读入（code-review item 41c87143c57e）：.gitignore 可能含历史手工
+        # 编辑留下的非 UTF-8 字节，read_text(errors="replace") 再整文件回写会把
+        # 坏字节静默改写成 U+FFFD——追加只增行，既有字节须原样保留。去重判定仍
+        # 走文本口径（仅读侧比较，不回写）：合法行不受有损解码影响，比对不失真。
+        raw = gi.read_bytes() if gi.exists() else b""
+        have_lines = {
+            ln.strip() for ln in raw.decode("utf-8", errors="replace").splitlines()
+        }
+        appended: list = []
+        for p in paths:
+            # 去重按转义后的字面行（item f0d504af6cac）：.gitignore 实际存的
+            # 是转义行，按原始路径比对会漏判（如 # 开头文件名的历史行只是
+            # 注释，永远等不到字面匹配）。
+            entry = _gitignore_escape_entry(p)
+            if entry in have_lines or _path_already_ignored(proot, p):
+                continue
+            appended.append(entry)
+            have_lines.add(entry)
+        if appended:
+            sep = b"" if (not raw or raw.endswith(b"\n")) else b"\n"
+            # 原子写回（code-review item c971a8de0638）：裸 write_bytes 非原子，
+            # 进程中断/磁盘满可留下截断的 .gitignore（仓库忽略规则整体丢失面）
+            # ——gi_backup 只覆盖 _abort 显式回滚路径，不覆盖写半程中断。改走
+            # mkstemp+replace 原子字节写（atomic_write_text 同纪律的字节形态，
+            # item 41c87143c57e：既有字节不经解码往返）。
+            _atomic_write_bytes(
+                gi, raw + sep + ("\n".join(appended) + "\n").encode("utf-8"))
     return appended
 
 
@@ -516,7 +586,10 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
       任何中止分支不残留半程改动。不打开 stash_guard「check-ignore 全须
       忽略」前置门（design D1）。不能用 ``commit -- <paths>`` 限定：路径已
       被 rm --cached 移出 index，pathspec 解析必 fatal（stash_guard 同款
-      教训），故裸 commit + staged 子集守卫。
+      教训），故裸 commit + staged 子集守卫；守卫快照与裸 commit 之间的
+      并发裹挟窗口（人工 git 操作/自动处置并发暂存）由提交后
+      ``show --name-only`` 集合复核兜底（code-review item cf800d2e5f17）：
+      越界即 ``reset --soft HEAD^`` 撤销提交并整体还原、如实报错。
 
     paths 仅供程序化调用方显式收窄作用面（MUST 为清单子集，清单外拒绝，
     零 git 写）；缺省取 store 内最新一条含可解析清单的 maintree_stray_wip_stale
@@ -641,17 +714,23 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         restore_note = ""
         if appended:
             try:
-                if gi_backup is None:
-                    gi_path.unlink(missing_ok=True)
-                else:
-                    # 原子字节写回备份原始字节（code-review item 41c87143c57e）：
-                    # 还原不经 decode/re-encode 往返——.gitignore 含非 UTF-8 字节
-                    # 时 errors="replace" 会把坏字节改写成 U+FFFD，还原结果不再
-                    # 字节级等值于备份。原子纪律沿用 item 55aaffc3e33b（与
-                    # _append_gitignore_entries 同口径）：裸 write_bytes 非原子，
-                    # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库
-                    # 忽略规则整体丢失面）。
-                    _atomic_write_bytes(gi_path, gi_backup)
+                # 还原写回同收项目级排他锁（code-review item b30e2e7dbcb7，
+                # _gitignore_lock）：基于整文件快照的回写/删除若与并发处置
+                # 的追加交错，后写者覆盖先写者、并发新增的 ignore 行静默
+                # 丢失。此处调用时刻无他锁在持（_append_gitignore_entries
+                # 已在其锁内完成写并释放），无嵌套死锁面。
+                with _gitignore_lock(proot):
+                    if gi_backup is None:
+                        gi_path.unlink(missing_ok=True)
+                    else:
+                        # 原子字节写回备份原始字节（code-review item 41c87143c57e）：
+                        # 还原不经 decode/re-encode 往返——.gitignore 含非 UTF-8 字节
+                        # 时 errors="replace" 会把坏字节改写成 U+FFFD，还原结果不再
+                        # 字节级等值于备份。原子纪律沿用 item 55aaffc3e33b（与
+                        # _append_gitignore_entries 同口径）：裸 write_bytes 非原子，
+                        # 还原时刻恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库
+                        # 忽略规则整体丢失面）。
+                        _atomic_write_bytes(gi_path, gi_backup)
             except OSError as e:
                 # 还原失败不吞中止原因（code-review item c88d597d898e，比照
                 # _append_gitignore_and_commit 还原分支同口径）：磁盘满/权限
@@ -694,6 +773,48 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         if note:
             msg += f"\n\n裁决依据：{note}"
         _git_out(proot, "commit", "-m", msg)
+        # 提交集合复核（code-review item cf800d2e5f17）：上方 staged 子集
+        # 守卫取的是 diff --cached 时刻快照，其后到裸 commit 之间的窗口内
+        # 被并发暂存的条目（人工 git 操作或 AdminMonitor 自动处置并发执行）
+        # 不参与校验，会被裸 commit 一并裹挟入库——恰是守卫要防的「索引被
+        # 裹挟」事故面。提交落地后读回实际提交集合复核，发现越界条目即
+        # ``git reset --soft HEAD^`` 撤销提交（索引回到提交前暂存态，外来
+        # 暂存保留），再走 _abort 整体还原并如实报错。
+        try:
+            committed_out = _git_out(
+                proot, "show", "--name-only", "--format=", "HEAD")
+            committed = {
+                _unquote_git_path(ln)
+                for ln in committed_out.splitlines() if ln.strip()
+            }
+            hijacked = sorted(committed - allowed)
+        except (OSError, RuntimeError) as e:
+            # 复核读取失败时提交已落库，MUST NOT 走 _abort（dd2262c17587
+            # 同款边界：回滚范围以「提交是否已落库」为界）——比照哈希回读
+            # 失败先例仅 WARNING 留痕、跳过复核按成功收尾，steps 说明。
+            # 不外泄裸异常文本（item e584a2ede367 同口径）。
+            logger.warning(
+                "untrack_stray_wip 提交集合复核读取失败（跳过复核）: %s: %s",
+                type(e).__name__, e,
+            )
+            hijacked = None
+        if hijacked:
+            try:
+                _git_out(proot, "reset", "-q", "--soft", "HEAD^")
+            except (OSError, RuntimeError) as e:
+                # 撤销失败不谎报「已回滚」：提交（含裹挟条目）已落库，如实
+                # 上报人工核查；细节日志留痕、不外泄 git stderr 原文。
+                logger.warning(
+                    "untrack_stray_wip 撤销裹挟提交失败: %s: %s",
+                    type(e).__name__, e,
+                )
+                return {"ok": False, "steps": [],
+                        "error": ("提交集合复核发现作用面之外的裹挟条目且撤销"
+                                  f"失败（提交已落库，需人工核查）: {hijacked}")}
+            return _abort(
+                "提交集合复核发现作用面之外的裹挟条目（已撤销提交并回滚）: "
+                f"{hijacked}"
+            )
     except OSError as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：OSError 可携带
         # 内部路径/errno，细节经服务端日志留痕，客户端收固定文案。
@@ -751,6 +872,9 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         steps.append(f"提交 hash: {commit_hash}")
     else:
         steps.append("提交已落库但哈希回读失败（commit hash 缺失，详见服务端日志）")
+    if hijacked is None:
+        steps.append("提交集合复核读取失败已跳过（并发裹挟防线本次未生效，"
+                     "详见服务端日志）")
     if skipped_stale:
         steps.append(
             f"清单内已不在当刻改动、跳过 {len(skipped_stale)} 个: "
@@ -891,20 +1015,25 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
         restore_note = ""
         try:
             gi = proot / ".gitignore"
-            # 字节级行过滤还原（code-review item 41c87143c57e）：还原不经
-            # 文本解码往返——.gitignore 含非 UTF-8 字节时
-            # read_text(errors="replace") 再回写会把坏字节改写成 U+FFFD。
-            # 追加行是本函数新写的完整行，按字节行精确匹配剔除即可。
-            appended_lines = {p.encode("utf-8") for p in appended}
-            kept = [
-                ln for ln in gi.read_bytes().splitlines(keepends=True)
-                if ln.strip() not in appended_lines
-            ]
-            # 原子写回（code-review item 8db336608775，与
-            # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻
-            # 恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库忽略规则
-            # 整体丢失面）。
-            _atomic_write_bytes(gi, b"".join(kept))
+            # 读-过滤-写整体收进项目级排他锁（code-review item b30e2e7dbcb7，
+            # _gitignore_lock）：字节级行过滤还原同样是基于整文件快照的回写，
+            # 锁外并发追加/他处还原会互相覆盖、先写的行静默丢失。此处调用
+            # 时刻无他锁在持（_append_gitignore_entries 已释放），无嵌套死锁面。
+            with _gitignore_lock(proot):
+                # 字节级行过滤还原（code-review item 41c87143c57e）：还原不经
+                # 文本解码往返——.gitignore 含非 UTF-8 字节时
+                # read_text(errors="replace") 再回写会把坏字节改写成 U+FFFD。
+                # 追加行是本函数新写的完整行，按字节行精确匹配剔除即可。
+                appended_lines = {p.encode("utf-8") for p in appended}
+                kept = [
+                    ln for ln in gi.read_bytes().splitlines(keepends=True)
+                    if ln.strip() not in appended_lines
+                ]
+                # 原子写回（code-review item 8db336608775，与
+                # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻
+                # 恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库忽略规则
+                # 整体丢失面）。
+                _atomic_write_bytes(gi, b"".join(kept))
         except OSError:
             restore_note = "；.gitignore 还原写回失败（保留现状）"
         if gitignore_untracked:

@@ -535,6 +535,9 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                         rules={[{ required: true, message: '请输入 API Key' }]}
                       >
                         <Input.Password
+                          // 非站点登录凭据，抑制浏览器保存密码提示与自动回填
+                          // （code-review item 23e95e5945c3）
+                          autoComplete="off"
                           // 改 API Key 即检测目标变化，旧健康结论失效，清条目
                           // （code-review item c761b15bf353）
                           onChange={() => clearHealthCard(field.key)}
