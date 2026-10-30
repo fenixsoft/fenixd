@@ -839,7 +839,18 @@ class FenixDaemon:
         # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。
         # 锁治理（improve-run-lifecycle-governance D4）：清理前先以进程表重建在册锁
         # —— 孤儿 attempt 进程仍存活的 worktree 会被跳过并重建登记，不被误删。
-        self.worktree_manager.refresh_locks()
+        # non-blocking 包裹（code-review item 2b47e31ec637）：与相邻启动步骤同
+        # 口径——refresh_locks 内部仅对快照 sorted() 容错，逐锁判活/回收路径若
+        # 在启动期抛出会击穿 start()（main() FATAL 退出，supervisor 拉起即再崩
+        # 循环）。陈锁未回收只会延后派发（保守方向），漏扫一轮由下次启动兜底，
+        # 启动序列不因清扫异常中断。
+        try:
+            self.worktree_manager.refresh_locks()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Stale lock refresh failed (non-blocking, daemon 启动继续): {e}",
+            )
 
         # ── 恢复保留判定先于孤儿清理（interrupt-recovery-preserve D6）──
         # recover_interrupted 的保留续做会把保全在册的 worktree（在场或重建）
@@ -4495,10 +4506,21 @@ class FenixDaemon:
                 # 异常不回写结果——design D1：结果文件不承载 run 终态）
                 self.logger.error("fenixd", f"code_review 手动审查异常: {e}")
 
-        def _worker_with_flag():
+        def _worker_with_flag(count_pool_stats=False):
+            _ok = False
             try:
                 _worker()
+                _ok = True
             finally:
+                # 池在途收口（code-review item c979d0ffe6f8）：与 submit 前的
+                # submitted 递增配对，completed/failed 收口保证
+                # submitted ≥ completed + failed（_is_idle 池在途推导不失真）。
+                # 仅后台池路径计数——同步兜底（admin.workers=0）同步完成无重叠
+                # 窗口不计池统计（对齐 _submit_approve_push 既有口径）。
+                if count_pool_stats:
+                    with self._admin_pool_lock:
+                        self._admin_pool_stats[
+                            "completed" if _ok else "failed"] += 1
                 # 复位与置位同锁（item d51f639c500c）：见 _singleflight_reset
                 self._singleflight_reset("_code_review_in_flight")
 
@@ -4513,7 +4535,28 @@ class FenixDaemon:
                 # 路径「先受理后执行」的既有顺序；submit 抛异常由 except 分支
                 # 补落 failed/submit_error（后写覆盖，终态仍正确）。
                 self._write_code_review_request_result(requested_at, "started", None)
-                self._admin_executor.submit(_worker_with_flag)
+                # submit 前先递增 submitted（code-review item c979d0ffe6f8，口径
+                # 对齐 _submit_admin_run / _submit_approve_push / spec_delete 的
+                # item 5786fd76ad49：worker 可领跑收尾先递增 completed/failed，
+                # 在飞推导不得转负）——手动审查在飞期 MUST 计入 _is_idle 的池
+                # 在途维度：run_code_review 把子进程登记进 _running_agents 之前
+                # 的窗口（manifest 收集/契约加载）内，陈旧自愈空闲闸不得把刚
+                # 受理的审查判为空闲写 restart_request。先增后投、被拒回滚，
+                # 任意瞬间 submitted ≥ completed + failed。
+                with self._admin_pool_lock:
+                    stats = dict(self._admin_pool_stats)
+                    stats["submitted"] += 1
+                    self._admin_pool_stats = stats
+                try:
+                    self._admin_executor.submit(_worker_with_flag, True)
+                except Exception:
+                    # 投递被拒回滚泄漏的 submitted（item 8232ac14d5d8 宽
+                    # Exception 口径）；单飞复位与 failed 留痕由外层 except 收口
+                    with self._admin_pool_lock:
+                        stats = dict(self._admin_pool_stats)
+                        stats["submitted"] -= 1
+                        self._admin_pool_stats = stats
+                    raise
             else:
                 # 无池兜底（同步执行）：受理先于执行落盘；run 终态不回写结果
                 # 文件（design D1），执行完毕后结果仍停留 started
@@ -4691,10 +4734,21 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.error("fenixd", f"回归手动执行异常: {e}")
 
-        def _worker_with_flag():
+        def _worker_with_flag(count_pool_stats=False):
+            _ok = False
             try:
                 _worker()
+                _ok = True
             finally:
+                # 池在途收口（code-review item c979d0ffe6f8）：与 submit 前的
+                # submitted 递增配对，completed/failed 收口保证
+                # submitted ≥ completed + failed（_is_idle 池在途推导不失真）。
+                # 仅后台池路径计数——同步兜底（admin.workers=0）同步完成无重叠
+                # 窗口不计池统计（对齐 _submit_approve_push 既有口径）。
+                if count_pool_stats:
+                    with self._admin_pool_lock:
+                        self._admin_pool_stats[
+                            "completed" if _ok else "failed"] += 1
                 # 复位与置位同锁（item d51f639c500c）：见 _singleflight_reset
                 self._singleflight_reset("_regression_in_flight")
 
@@ -4711,7 +4765,27 @@ class FenixDaemon:
 
         try:
             if self._admin_executor is not None:
-                self._admin_executor.submit(_worker_with_flag)
+                # submit 前先递增 submitted（code-review item c979d0ffe6f8，口径
+                # 对齐 _submit_admin_run / _submit_approve_push / spec_delete 的
+                # item 5786fd76ad49）：手动回归在飞期 MUST 计入 _is_idle 的池
+                # 在途维度——run_regression 把子进程登记进 _running_agents 之前
+                # 的窗口（快照映射/契约校验）内，陈旧自愈空闲闸不得把刚受理
+                # 的回归判为空闲写 restart_request。先增后投、被拒回滚，任意
+                # 瞬间 submitted ≥ completed + failed。
+                with self._admin_pool_lock:
+                    stats = dict(self._admin_pool_stats)
+                    stats["submitted"] += 1
+                    self._admin_pool_stats = stats
+                try:
+                    self._admin_executor.submit(_worker_with_flag, True)
+                except Exception:
+                    # 投递被拒回滚泄漏的 submitted（item 8232ac14d5d8 宽
+                    # Exception 口径）；单飞复位与留痕由外层 except 收口
+                    with self._admin_pool_lock:
+                        stats = dict(self._admin_pool_stats)
+                        stats["submitted"] -= 1
+                        self._admin_pool_stats = stats
+                    raise
             else:
                 _worker_with_flag()
         except Exception as e:
