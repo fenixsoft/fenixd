@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-30 19:30 UTC+8
+> 最后更新：2026-10-30 21:26 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -50,7 +50,7 @@
 | [verification-completion-gate](verification-completion-gate.md) | 验证完成门 | 2026-10-03 04:59 |
 | [verify-report-gate](verify-report-gate.md) | 验证报告门 | 2026-10-03 04:59 |
 | [verify-report-scenarios-sourcing](verify-report-scenarios-sourcing.md) | 验证报告场景明细读取源 | 2026-10-03 04:59 |
-| [verification-report](verification-report.md) | 验证报告落盘即入库（写盘成功即单文件提交入库，场景段渲染合并进闸门单次提交） | 2026-10-11 01:50 |
+| [verification-report](verification-report.md) | 验证报告落盘即入库（写盘成功即单文件提交入库，场景段渲染合并进闸门单次提交） | 2026-10-30 21:26 |
 | [push-closeout-report-commit](push-closeout-report-commit.md) | push 收口报告入库（done→pushed 收口单文件入库、失败降级不阻断） | 2026-10-06 06:29 |
 | [verify-progress-copyback](verify-progress-copyback.md) | 验证进度回传 | 2026-10-03 04:59 |
 | [verify-progress-sourcing](verify-progress-sourcing.md) | 验证进度读取源 | 2026-10-03 04:59 |
