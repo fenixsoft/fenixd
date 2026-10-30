@@ -1147,9 +1147,12 @@ def compute_attribution_level(scenario: dict) -> str:
     Returns:
         归因级别字符串（ATTRIBUTION_LEVELS 之一）
     """
+    # 非 dict 入参防御（code-review item 17c9397b4a3b，与 is_scenario_exemptible
+    # 同款防御口径）：scenario.get 直接抛 AttributeError，会被门禁「异常不阻断」
+    # 分支吞掉而旁路归因分级；非 dict 无证据可言，保守落 speculative 下界
+    if not isinstance(scenario, dict):
+        return ATTRIBUTION_LEVEL_SPECULATIVE
     classification = scenario.get("classification")
-    if classification == "pass":
-        return ATTRIBUTION_LEVEL_EVIDENCE_BACKED  # pass 场景不需要归因
     if classification is None:
         # 四分类未决（如 status=error 且未被归类）的非 PASS 场景不得沿用
         # evidence-backed（code-review item 383452d8eb38）：归因级别须与证据
@@ -1290,6 +1293,11 @@ def enforce_blank_screenshot_direction(scenario: dict) -> Optional[str]:
     Returns:
         新的 classification（需要改写时）或 None（不需改写）。
     """
+    # 非 dict 入参防御（code-review item 17c9397b4a3b，与 is_scenario_exemptible
+    # 同款防御口径）：scenario.get 直接抛 AttributeError，会被门禁「异常不阻断」
+    # 分支吞掉而静默跳过白屏方向强制改写（fail-open，product-bug 归因得以保留）
+    if not isinstance(scenario, dict):
+        return None
     # 归一引擎嵌套形态为扁平标签并集（code-review item fdd31d3d542d，与
     # compute_attribution_level 同款）：嵌套形态下 blank_screenshot 恒取
     # False，白屏方向强制改写恒不命中；非 dict 按空处理的既有防御
