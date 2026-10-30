@@ -58,10 +58,51 @@ def read_evolution_items(project_root, project_filter=None) -> list:
     from core.evolution import (
         read_items,
         _safe_draft_dir,
-        resolve_accepted_spec_dir,
+        _KEBAB_RE,
+        _archive_name_candidates,
     )
 
     items = read_items(project_root)
+    proot = Path(project_root)
+    # 归档清单快照（code-review item 13574ce93f9b）：此前逐条目调用
+    # resolve_accepted_spec_dir，活跃目录与全等墓碑未命中时每条都要
+    # iterdir() 全量扫描 spec/archive/，列表端点一次刷新即 N 条目 × 归档
+    # 目录数的无缓存读放大。改为单次调用内共享一份归档子目录清单（首个
+    # 落到归档回退判定的条目才触发扫描，纯草稿/活跃命中的列表零扫描），
+    # 逐条只做名字归一化比较；活跃目录与全等墓碑仍逐条 stat 判定。快照
+    # 不跨调用存活，接受/归档等写操作后无陈旧 doc_source 窗口。
+    archive_snapshot = None
+
+    def _spec_doc_resolvable(spec_name: str) -> bool:
+        """spec_name 能否解析出 SPEC 目录（布尔口径，共享归档快照）。
+
+        判定顺序与命中语义对齐 core.evolution.resolve_accepted_spec_dir
+        （kebab 白名单 → 活跃目录 → 归档全等墓碑 → 归一化候选全等），只取
+        其 ``is not None`` 布尔结果；两处判定 MUST 同步改动。
+        """
+        nonlocal archive_snapshot
+        if not _KEBAB_RE.match(spec_name):
+            return False
+        if (proot / "spec" / "changes" / spec_name).is_dir():
+            return True
+        archive_root = proot / "spec" / "archive"
+        if not archive_root.is_dir():
+            return False
+        if (archive_root / spec_name).is_dir():
+            return True
+        if archive_snapshot is None:
+            try:
+                archive_snapshot = [
+                    c for c in archive_root.iterdir() if c.is_dir()
+                ]
+            except OSError:
+                # 扫描期 IO/权限错误按无归档命中（同 OSError → None 口径）
+                archive_snapshot = []
+        return any(
+            spec_name in _archive_name_candidates(c.name)
+            for c in archive_snapshot
+        )
+
     out = []
     for rec in items.values():
         if not isinstance(rec, dict):
@@ -78,10 +119,7 @@ def read_evolution_items(project_root, project_filter=None) -> list:
         has_draft = d is not None and d.is_dir()
         if has_draft:
             doc_source = "draft"
-        elif (
-            rec.get("spec_name")
-            and resolve_accepted_spec_dir(project_root, str(rec["spec_name"])) is not None
-        ):
+        elif rec.get("spec_name") and _spec_doc_resolvable(str(rec["spec_name"])):
             doc_source = "spec"
         else:
             doc_source = None

@@ -8,6 +8,25 @@ import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
 
+// ── 同族整数校验器单源（code-review item e5ba18ad6223）────────────────
+// 两组注解表的「正整数 / 非负整数」校验器曾逐字内联重复十一份且写法已漂移
+// （TRANSIENT 组多一层 v != null 前置——Number.isInteger(null) 本为 false，
+// 语义等价），调词表/边界时易单侧漏改；比照 QualityPanel / TokenBudgetPanel
+// 的 POSITIVE_INT_RULE / NON_NEGATIVE_INT_RULE 先例抽模块级单源（各面板
+// 判据同族但文案/上下文不同，仍各自持有，不建共享模块）。
+const POSITIVE_INT_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    v != null && Number.isInteger(v) && v > 0
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为正整数')),
+};
+const NON_NEGATIVE_INT_RULE = {
+  validator: (_: unknown, v: number | undefined | null) =>
+    v != null && Number.isInteger(v) && v >= 0
+      ? Promise.resolve()
+      : Promise.reject(new Error('须为非负整数')),
+};
+
 interface SystemPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<boolean>;
@@ -44,12 +63,7 @@ const ADMIN_ANNOTATIONS: {
     label: '巡检周期',
     unit: '分钟',
     note: '自愈监视器巡检周期：每这么久扫描一次困境信号；也参与卡顿判定的宽限期计算（间隔×2）。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为正整数')),
-    }],
+    rule: [POSITIVE_INT_RULE],
   },
   {
     key: 'escalation_cooldown_minutes',
@@ -57,12 +71,7 @@ const ADMIN_ANNOTATIONS: {
     label: '唤起冷却',
     unit: '分钟',
     note: '同一 SPEC 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
   {
     key: 'stuck_silence_minutes',
@@ -70,12 +79,7 @@ const ADMIN_ANNOTATIONS: {
     label: 'stuck 处置后静默期',
     unit: '分钟',
     note: 'stuck 信号成功处置（resolved / partially-resolved）后的静默窗口：窗口内同 SPEC stuck 信号不复发，避免处置成功后短期反复触发。0=不静默。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
   {
     key: 'merge_breaker_threshold',
@@ -83,12 +87,7 @@ const ADMIN_ANNOTATIONS: {
     label: 'merge 熔断阈值',
     unit: '次',
     note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（未配置时沿用 agents 同名键，再缺省 2）。注意：本页签任意一次保存都会把回显解析值落为显式 admin.merge_breaker_threshold，此后 agents 同名键的调整不再传导到本项。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为正整数')),
-    }],
+    rule: [POSITIVE_INT_RULE],
   },
   {
     key: 'shutdown_drain_seconds',
@@ -96,12 +95,7 @@ const ADMIN_ANNOTATIONS: {
     label: '重启排水窗口',
     unit: '秒',
     note: '计划性重启排水窗口（秒）：restart_request 后等在跑任务自然收工的上限，0=立即快速停机（在飞任务标记中断、重启后续做）；supervisor 强杀等待=本值+120s。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
   {
     key: 'bug_repair_mode',
@@ -121,12 +115,7 @@ const ADMIN_ANNOTATIONS: {
     label: '叙事超时',
     unit: '秒',
     note: '告警叙事同步调用的硬超时（秒）：超时上限内告警保证落盘（超时按生成失败兜底）。转人工是低频事件，缺省 60 秒。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为正整数')),
-    }],
+    rule: [POSITIVE_INT_RULE],
   },
   {
     key: 'narrative_model',
@@ -140,12 +129,7 @@ const ADMIN_ANNOTATIONS: {
     label: '告警自愈安静窗口',
     unit: '分钟',
     note: '基础设施瞬态族告警（daemon_errors 指纹风暴 / run_infra_failure 熔断 / evo 分析失败 / 处置收敛升级）签名安静多久后自动标「已自愈」转已处理（缺省 1440，盖过跨日同刻复发节律）。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        Number.isInteger(v) && (v as number) > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为正整数')),
-    }],
+    rule: [POSITIVE_INT_RULE],
   },
 ];
 
@@ -299,12 +283,7 @@ const TRANSIENT_ANNOTATIONS: {
     label: '重派等待',
     unit: '秒',
     note: '瞬断终态（[provider-transient] 标记）后排程延迟重派秒数，不写 retries exhausted。缺省 600。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        v != null && Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
   {
     key: 'transient_break_threshold',
@@ -312,12 +291,7 @@ const TRANSIENT_ANNOTATIONS: {
     label: '熔断阈值',
     unit: '次',
     note: '全局同错误指纹在窗口内出现次数达此值触发全局派发冻结；0=关闭熔断。缺省 3。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        v != null && Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
   {
     key: 'transient_break_window_seconds',
@@ -325,12 +299,7 @@ const TRANSIENT_ANNOTATIONS: {
     label: '熔断窗口',
     unit: '秒',
     note: '全局同错误指纹计数的滑动窗口秒数。缺省 600。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        v != null && Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
   {
     key: 'transient_break_cooldown_seconds',
@@ -338,12 +307,7 @@ const TRANSIENT_ANNOTATIONS: {
     label: '熔断冷却',
     unit: '秒',
     note: '触发全局熔断后冻结新 run 派发的时长。缺省 600。',
-    rule: [{
-      validator: (_: unknown, v: number | undefined | null) =>
-        v != null && Number.isInteger(v) && (v as number) >= 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('须为非负整数')),
-    }],
+    rule: [NON_NEGATIVE_INT_RULE],
   },
 ];
 

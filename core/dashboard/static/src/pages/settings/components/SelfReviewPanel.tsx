@@ -119,7 +119,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           // 置失败标志：保存入口与「尚无 todo.md」引导文案此后均按失败态短路，
           // 不再以空草稿放行整文件覆写
           setTodoLoadFailed(true);
-          message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : e}`);
+          message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : String(e)}`);
         }
       } finally {
         if (!cancelled) setTodoLoading(false);

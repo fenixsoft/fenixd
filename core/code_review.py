@@ -1661,7 +1661,8 @@ def read_request_result(project_root) -> dict:
 
     文件缺失 / JSON 损坏 / 顶层非 dict → 返回缺省态（全 null 形态）；
     合法 dict 原样返回（消费端写什么读什么，不做白名单裁剪——与
-    ``core/dashboard/data`` 的 code-fix 结果读封装同口径）。
+    ``core/dashboard/data`` 的 code-fix 结果读封装同口径：缺省态同为
+    全 null 键形态，code-review item 351a32cc7049）。
     """
     path = Path(project_root) / CODE_REVIEW_REQUEST_RESULT
     try:
