@@ -10,7 +10,7 @@
 
 ## 目标
 
-1. instant_fail_storm 登记进条件注册表（terminal-only：pushed/done/archived 才收口），写入点调 attach_trigger 埋点，使新告警可走自动收口；存量悬置告警按所选路径收口一次。
+1. instant_fail_storm 登记进条件注册表（terminal-only：pushed/done/archived 才收口），写入点调 attach_trigger 埋点，使新告警可走自动收口；存量悬置告警按所选路径收口一次（评审修订：实测 87f72c680499 已于 2026-10-28T02:12:34Z 人工 handled，存量收口保留为台账盘点守护路径）。
 2. 每日自省未处理 escalation 明细加龄期，超 24 小时未处理标注提醒。
 3. 秒挂死亡路径留存启动 stderr 尾部与 worktree 状态快照。
 
