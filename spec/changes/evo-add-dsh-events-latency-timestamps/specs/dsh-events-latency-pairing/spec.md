@@ -12,8 +12,8 @@ DshEventProjector 投影产出的每条事件 MUST 携带到达时刻 timestamp�
 - **THEN** 产出与事件间隔一致的延迟样本（rounds>0）
 
 ### Requirement: 失明告警去重
-延迟失明 WARNING MUST 按（harness,事件形态）进程级一次性去重，并如实描述根因。
+延迟失明 WARNING MUST 按（harness,事件形态）去重、运行实例内一次性告警（生产每进程单 runner 实例拓扑下即进程内收敛），并如实描述根因（保留「失明」标记与 latency_rounds/turn_count extra 键测试锚点）。
 
 #### Scenario: 不再逐 run 刷屏
-- **WHEN** 同一（harness,事件形态）组合连续多 run 失明
-- **THEN** 进程内仅告警一次
+- **WHEN** 同一（harness,事件形态）组合在同一运行实例内连续多 run 失明
+- **THEN** 该实例内仅告警一次（生产单实例拓扑下即进程内仅一次）
