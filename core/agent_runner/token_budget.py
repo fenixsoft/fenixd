@@ -6,6 +6,7 @@
 
 from datetime import datetime, timezone
 import math
+import sys
 import threading
 
 # code-review item 7f6062e65ecb：_accumulate_token_usage 的「read_one 读旧值 →
@@ -44,7 +45,14 @@ def _to_int(value) -> int:
     code-review item c7706d3ad78d：int(float("inf")) 抛的是 OverflowError
     （usage_info 经 json 往返或网关畸形回传可携带 inf），一并入捕、回退 0，
     口径与同包 maintenance_runs._safe_int（dc8f109b8b60）对齐。
+    code-review item c7a09d3fb04e：bool 是 int 子类，int(True)=1 / int(False)=0
+    转换成功且不抛异常，网关畸形回传 token 字段 true/false 会被折成 1/0 静默
+    入账——生产路径经 _extract_usage_info 归一后 bool 已折 0，此处为调用方绕过
+    归一直传裸 dict 的纵深防御（cost 侧同款钳制见 c40186889899）。比照
+    session.py _to_int（8d5d66eb594c）同款口径：bool 前置返回 0，不计入 token 统计。
     """
+    if isinstance(value, bool):
+        return 0
     try:
         return int(value)
     except (TypeError, ValueError, OverflowError):
@@ -101,6 +109,25 @@ class TokenAccountant:
         )
         tokens_out = _to_int(usage_info.get("output_tokens", 0))
         cost = usage_info.get("cost_usd")
+
+        # code-review item f0c135be16eb：_to_int 对合法超大整数（JSON/YAML 任意
+        # 精度往返产生的 10**400 等）原样放行，一旦累进 STATE 的 _tokens_in 写回，
+        # 此后 _check_token_budget 的 tokens_in/budget_tokens 除法每轮触发
+        # OverflowError（ccbe24b883c0 已入捕不致崩），走「记 warning 后跳过本轮
+        # 预算检查」分支——该 spec 的 80%/100% 预算告警从此静默失效，且损坏的
+        # 分母值随每轮累加永久滞留、无自愈路径。比照 cost 侧 864a2142f6f3 的边界
+        # 口径：超过 float 可表示范围（sys.float_info.max）才视为畸形（合法大值
+        # 不受影响），记 warning 后跳过本轮累计，不污染 STATE；本钳制只影响新增
+        # 入账，不改写历史已污染值（后者见 _check_token_budget 溢出分支的人工
+        # 修复提示）。
+        if abs(tokens_in) > sys.float_info.max or abs(tokens_out) > sys.float_info.max:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"token 累计值畸形超大（超 float 可表示范围）'{spec_name}'"
+                f"（tokens_in={tokens_in!r}, tokens_out={tokens_out!r}），"
+                f"跳过本轮累计",
+            )
+            return
 
         # code-review item 7f6062e65ecb：同 spec 并发收工（impl-ocr 并行车道等
         # 同 spec 多 run 在飞，或 dashboard 线程同时 update_spec 同条目）时，
@@ -289,10 +316,14 @@ class TokenAccountant:
         try:
             ratio = tokens_in / budget_tokens
         except OverflowError:
+            # code-review item f0c135be16eb：新入账值已在 _accumulate_token_usage
+            # 入账前钳制，走到本分支说明 STATE 存在历史污染的超大累计值——预算
+            # 观测自此每轮静默降级且不会自愈，warning 文案中提示人工修复 STATE。
             self._pm.logger.warning(
                 "agent_runner",
                 f"token 累计值超大（预算信息不可用）'{spec_name}'"
-                f"（_tokens_in={tokens_in!r}），跳过本轮预算检查",
+                f"（_tokens_in={tokens_in!r}），跳过本轮预算检查；"
+                f"该条目累计值已损坏且不会自愈，请人工修复 STATE 中的 _tokens_in",
             )
             return
 

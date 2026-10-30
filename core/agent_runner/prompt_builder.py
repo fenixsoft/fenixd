@@ -494,7 +494,12 @@ class PromptBuilder:
             "{harness_notes}": self._harness_notes(),
         }
         if agent_type in ("planner-judge", "verifier"):
-            values["{report_path}"] = str(vp_dir / "report.json")
+            # 读点净化与写侧单源（code-review item 546b99ae29b2）：{report_path}
+            # 指向引擎 _save_report 落盘位，写方经 safe_component 净化目录成分，
+            # 注入值同走 safe_component（vp_dir 另供其余占位符，不在本条目范围内）。
+            values["{report_path}"] = str(
+                root / ".fenix" / "verify-progress" / safe_component(spec_name) / "report.json"
+            )
         if agent_type == "planner-judge":
             # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
             # 与 core/verify_engine/judge_files.py 的 JUDGE_ATTRIBUTION_FILENAME
@@ -855,15 +860,14 @@ class PromptBuilder:
         机械检出，处置前请以源码/执行证据核实」。findings 缺失/为空/损坏 →
         返回空串（零注入，prompt 与现状逐字节一致）。
         """
-        # 口径统一（code-review 0dbeb4023b01）：本文件其余各段拼 .fenix 下
-        # 路径均用裸 spec_name，此处不再单点净化——spec_name 由框架状态机
-        # 保证为安全目录名，成分净化统一由写端
-        # core/verify_engine/path_safety.safe_component 承担。
+        # 读点净化与写侧单源（code-review item 178aec94817f）：写方
+        # scenario_static_check.write_contract_findings 经 safe_component 落盘，
+        # 此处裸内插 spec_name 在病理名下恒读空，contract findings 注入失效。
         path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "contract_findings.json"
         )
         if not path.exists():
@@ -1087,11 +1091,14 @@ class PromptBuilder:
         本段自身读框架写的 directive 文件走主树路径（框架侧读，与实现者写侧
         分离），该主树路径不出现在注入文本中。
         """
+        # 读点净化与写侧单源（code-review item 178aec94817f）：写方
+        # pm_engine.dispatch.queue._write_ocr_findings_directive 经 safe_component
+        # 落盘，裸内插 spec_name 在病理名下恒读空，ocr findings 注入失效。
         directive_path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "ocr_findings_directive.json"
         )
         data = _load_json_lenient(directive_path)
@@ -1922,6 +1929,14 @@ class PromptBuilder:
                 f"进度）。\n"
             )
 
+        # 截断注记（code-review item c2e1ae217aa3）：与 _prev_error_section 同款
+        # 口径——保留头部 2000 字并注明原文总字数，不静默截断。
+        merge_error_txt = merge_error
+        if len(merge_error) > 2000:
+            merge_error_txt = (
+                f"{merge_error[:2000]}\n"
+                f"…（原始 merge 错误原文共 {len(merge_error)} 字，已尾部截断防提示词膨胀）"
+            )
         prompt = (
             f"You are the Fenix Repair Agent. You are in repair round {repair_round} "
             f"for the SPEC at {spec_dir}/.\n\n"
@@ -1931,7 +1946,7 @@ class PromptBuilder:
             f"并提交——提交是本轮 repair 的强制终点，先于测试；测试仅用于提交后的定向回归"
             f"验证。\n\n"
             f"## 原始 merge 错误\n"
-            f"```\n{merge_error[:2000]}\n```\n"
+            f"```\n{merge_error_txt}\n```\n"
             f"{conflict_section}"
             f"## 修复方向（MUST 按顺序执行）\n"
             f"1. 开场清理残留 merge：检测当前 worktree 是否残留上一轮未完成 merge——"
@@ -2149,7 +2164,13 @@ class PromptBuilder:
         # 全仓审查并发注入（add-code-review-concurrency-and-429-resilience）：
         # detail 缺失/脏值时回退读取器缺省 4，与 get_repo_code_review_concurrency
         # 单点缺省一致。
-        from core.config import ConfigLoader
+        # 惰性导入 fail-open（code-review item 47c1b275c52d）：与本文件其余惰性
+        # 导入同口径——导入异常回退缺省并发 4，软约束失败零注入/回退缺省，
+        # 不阻断 code-review prompt 构建与派发。
+        try:
+            from core.config import ConfigLoader
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open
+            ConfigLoader = None
 
         repo_concurrency = detail.get("repo_concurrency")
         if (
@@ -2157,9 +2178,12 @@ class PromptBuilder:
             or isinstance(repo_concurrency, bool)
             or repo_concurrency <= 0
         ):
-            repo_concurrency = ConfigLoader.get_repo_code_review_concurrency(
-                getattr(self._pm, "config", {}) or {}
-            )
+            if ConfigLoader is not None:
+                repo_concurrency = ConfigLoader.get_repo_code_review_concurrency(
+                    getattr(self._pm, "config", {}) or {}
+                )
+            else:
+                repo_concurrency = 4
         out_path = detail.get("out_path")
         if not out_path:
             out_path = self._pm.project_root / ".fenix" / "code-review" / f"out-{token}.jsonl"
@@ -2448,7 +2472,11 @@ class PromptBuilder:
             return f"（快照采集失败: {(res.stderr or '').strip()[:120]}）"
         if not out:
             return "（分支相对基线无独立提交）"
-        return out[:2000]
+        # 截断注记（code-review item c2e1ae217aa3）：与 _prev_error_section 同款
+        # 口径——注明原文总字数，不静默截断。
+        if len(out) > 2000:
+            return f"{out[:2000]}\n…（快照原文共 {len(out)} 字，已尾部截断防提示词膨胀）"
+        return out
 
     def _legacy_dirty_snapshot(self, wt_path: str) -> str:
         """现场采集遗产 worktree 的 ``git status --short`` 脏文件清单，截断 50 行。
@@ -3072,8 +3100,15 @@ class PromptBuilder:
 
         报告文件缺失/损坏/无遗留 → 返回空串（零注入，首轮 judge 不注入）。
         """
+        # 读点净化与写侧单源（code-review item 546b99ae29b2）：写方
+        # verify_engine._save_report 经 safe_component 净化目录成分，裸内插
+        # spec_name 在病理名下指向从未落盘的目录，截断恢复注入静默失效。
         report_path = (
-            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(spec_name)
+            / "report.json"
         )
         data = _load_json_lenient(report_path)
         if data is None:
@@ -3118,8 +3153,15 @@ class PromptBuilder:
         except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（与 _scenario_freeze_section 同族），缺段零注入
             return ""
 
+        # 读点净化与写侧单源（code-review item 546b99ae29b2）：写方
+        # verify_engine._save_report 经 safe_component 净化目录成分，裸内插
+        # spec_name 在病理名下指向从未落盘的目录，跨轮已裁决缓存注入静默失效。
         report_path = (
-            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(spec_name)
+            / "report.json"
         )
         report = _load_json_lenient(report_path)
         if report is None:
@@ -3157,10 +3199,13 @@ class PromptBuilder:
             "- 仅对本清单之外的场景做完整裁决。\n"
         ]
         for sid, entry in hits:
+            # 体量上限（code-review item 51afdd0563fd）：命中条目的
+            # evidence/assertion_triage 复用 _bounded_evidence 单源截断＋注记，
+            # 与 admin evidence 预算截断口径一致，防上轮肥大信号线性膨胀 judge prompt。
             lines.append(
                 f"  - `{sid}`: classification={entry.get('classification')}, "
-                f"evidence={json.dumps(entry.get('evidence'), ensure_ascii=False)}, "
-                f"assertion_triage={json.dumps(entry.get('assertion_triage'), ensure_ascii=False)}\n"
+                f"evidence={_bounded_evidence(json.dumps(entry.get('evidence'), ensure_ascii=False))}, "
+                f"assertion_triage={_bounded_evidence(json.dumps(entry.get('assertion_triage'), ensure_ascii=False))}\n"
             )
         return "".join(lines)
 

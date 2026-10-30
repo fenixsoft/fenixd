@@ -15,6 +15,7 @@ from core.agent_runner.run_files import (
     strip_run_id_suffixes,
 )
 from datetime import datetime, timezone
+import errno
 import glob
 import json
 import logging
@@ -36,6 +37,13 @@ _logger = logging.getLogger("fenixd.agent_runner.liveness")
 AGENT_TERMINATE_GRACE_SECONDS = 10
 
 # ── attempt 存活探测 / 超时活性监督（improve-run-lifecycle-governance）──────
+# 时钟口径（code-review item f934d4fdd44d，info 记录）：本模块监督/判活的时长
+# 判定——absolute_max 墙钟上限（now - started_at）、last_event_age、零增长
+# 窗口、_stream_recent 的 mtime cutoff——统一基于 time.time() 墙钟，并与磁盘
+# mtime / 事件时间戳直接混比。跨重启锚点与 mtime 比较必须用墙钟，纯进程内
+# 区间改 monotonic 会引入双时钟口径；代价是系统时钟大幅前跳（NTP 校正/手动
+# 改钟）会把在跑 run 批量提前判死（后跳则反向拉长监督窗口），属长驻 daemon
+# 的固有操作风险，此处记录影响面备查。
 # 进程扫描不可用时，run 流文件 mtime 在该窗口内视为 attempt 仍在活动（D4 回退判据）。
 LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
 # has_live_attempt 回退链专用窗口（code-review item d2aafa27b9ee）：pgrep 整体
@@ -43,8 +51,9 @@ LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
 # 已记载的事实——repair claude 进程长工具执行期内可数分钟不写流——pgrep 降级
 # （二进制缺失/全部前缀瞬时故障）时，正处于长工具静默期的存活 spec 其流 mtime
 # 会超出 120s 窗口被误判无存活 attempt，auto-recovery / 孤儿 ready 恢复随之重置
-# 仍在跑的 spec；故取注释自认「数分钟」的上限量级 600s。只用于回退链（526 行
-# 调用点），pgrep 命中主路径不经本窗口、判定时效不受影响；reviewer_in_flight /
+# 仍在跑的 spec；故取注释自认「数分钟」的上限量级 600s。只用于回退链
+# （has_live_attempt 的 _stream_recent 回退调用点），pgrep 命中主路径不经
+# 本窗口、判定时效不受影响；reviewer_in_flight /
 # get_extension_baseline 的 per-run 120s 口径保持不变。
 LIVE_ATTEMPT_FALLBACK_STREAM_WINDOW_SECONDS = 600
 # 超时监督默认值（D3）：单源定义于 core.config（supervision-timeout-config-consistency，
@@ -228,10 +237,12 @@ def _line_is_terminal(line: str) -> bool:
     return isinstance(entry, dict) and entry.get("type") in RUN_TERMINAL_EVENT_TYPES
 
 
-def _last_line_is_terminal_full(run_file: Path) -> bool:
-    """全量逐行读，判**末条非空行**是否为终态（尾读窗口回退分支）。
+def _last_nonempty_line_full(run_file: Path) -> "str | None":
+    """全量逐行读文件的末条非空行；空文件 / 不可读（OSError）→ None。
 
-    空文件 / 文件不可读（OSError）→ False（fail-open）。
+    原 ``_last_line_is_terminal_full``（bool 版）与 ``_last_line_of_file``
+    （str 版）两个近重复全量读助手的合并单源（code-review item
+    ec66460f919f）：终态布尔改由消费方对返回行再判，不再各自持有一份全量读。
     """
     last = ""
     try:
@@ -241,10 +252,54 @@ def _last_line_is_terminal_full(run_file: Path) -> bool:
                 if line:
                     last = line
     except OSError:
-        return False
-    if not last:
-        return False
-    return _line_is_terminal(last)
+        return None
+    return last or None
+
+
+def _last_nonempty_line(run_file: Path) -> "str | None":
+    """读 run jsonl **末条非空行**的单一尾读实现（code-review item ec66460f919f）。
+
+    内部封装「字节窗口 seek + 窗口起点行边界修正 + 末行跨窗/窗口内无完整行
+    回退全量读」的尾读范式；``_file_tail_is_terminal`` 与
+    ``file_tail_event_type`` 均消费本助手后再分别做终态布尔与事件类型判定，
+    不再各自持有一份并列复制的实现（防两份实现漂移）。
+
+    文件不存在 / 空文件 / 不可读（OSError）/ 全量读回退也无非空行 → None
+    （消费方各自 fail-open：布尔侧 False、类型侧 None）。
+    """
+    try:
+        size = run_file.stat().st_size
+    except OSError:
+        return None
+    if size <= 0:
+        return None
+    if size <= _TAIL_READ_WINDOW:
+        return _last_nonempty_line_full(run_file)
+    try:
+        with run_file.open("rb") as f:
+            # 多读窗口起点前一字节（code-review item b89929148e58）：该字节是
+            # 换行 ⇒ 起点恰落行边界，首段是完整一行不得误丢；非换行 ⇒ 首段是
+            # 从上一行中间切入的残段，必须丢弃（对齐 admin_monitor
+            # _run_terminal_status 的 item 190881dd0168 边界判定范式）。
+            f.seek(-(_TAIL_READ_WINDOW + 1), 2)
+            raw = f.read()
+    except OSError:
+        return None
+    starts_mid_line = raw[:1] != b"\n"
+    text = raw[1:].decode("utf-8", errors="replace")
+    # 窗口末字节非换行 ⇒ 末行被窗口末端截断（末行超窗或正在写入），窗口内任何
+    # 行都替代不了真实末行；窗口内无完整行同理——一律回退全量逐行读
+    # （append_run_line 保证每行以 \n 收尾，静止文件末字节必为换行；回退方向
+    # 保守，拿不准一律回退全量读）。
+    if not text.endswith("\n"):
+        return _last_nonempty_line_full(run_file)
+    segments = text.split("\n")
+    if starts_mid_line:
+        segments = segments[1:]
+    lines = [ln for ln in segments if ln.strip()]
+    if not lines:
+        return _last_nonempty_line_full(run_file)
+    return lines[-1]
 
 
 def _file_tail_is_terminal(run_file: Path) -> bool:
@@ -263,48 +318,16 @@ def _file_tail_is_terminal(run_file: Path) -> bool:
     失败方向固定为 fail-open（= 仍视为存活）：文件不可读 / 空文件 / 末行损坏
     不可解析 / 末条事件非 dict → 一律返回 False。
 
-    读取范式照 ``core/dashboard/data/runs.py`` ``_read_run_lines`` 自实现（本包
-    不反向 import core.dashboard.*，design D2）：先按字节窗口 seek 尾部读，窗口
-    起点位于行中间时首段是上一行残段必须丢弃（起点前一字节恰为换行 = 起点恰落
-    行边界，首段是完整一行须保留，code-review item b89929148e58）；末行不完整
-    （窗口末字节非换行 = 末行跨窗被截断）或窗口内无完整行时回退全量逐行读——
-    回退方向保守，拿不准一律回退全量读。
+    尾读范式（字节窗口 seek + 起点行边界修正 + 全量读回退，照
+    ``core/dashboard/data/runs.py`` ``_read_run_lines`` 口径自实现，本包不反向
+    import core.dashboard.*，design D2；item b89929148e58 边界判定）经单一
+    助手 ``_last_nonempty_line`` 提供（item ec66460f919f），与
+    ``file_tail_event_type`` 共用同一实现，不再各自复制。
     """
-    try:
-        size = run_file.stat().st_size
-    except OSError:
+    last = _last_nonempty_line(run_file)
+    if not last:
         return False
-    if size <= 0:
-        return False
-    if size <= _TAIL_READ_WINDOW:
-        return _last_line_is_terminal_full(run_file)
-    try:
-        with run_file.open("rb") as f:
-            # 多读窗口起点前一字节（code-review item b89929148e58）：该字节是
-            # 换行 ⇒ 起点恰落行边界，首段是完整一行不得误丢；非换行 ⇒ 首段是
-            # 从上一行中间切入的残段，必须丢弃（对齐 admin_monitor
-            # _run_terminal_status 的 item 190881dd0168 边界判定范式）。
-            f.seek(-(_TAIL_READ_WINDOW + 1), 2)
-            raw = f.read()
-    except OSError:
-        return False
-    starts_mid_line = raw[:1] != b"\n"
-    text = raw[1:].decode("utf-8", errors="replace")
-    # 窗口末字节非换行 ⇒ 末行被窗口末端截断（末行超窗或正在写入），窗口内任何
-    # 行都替代不了真实末行——若不回退，lines[-1] 是末行残段，JSON 解析失败会被
-    # fail-open 成「非终态」，已终态 run 被误判存活一个监督周期。回退全量读
-    # （append_run_line 保证每行以 \n 收尾，静止文件末字节必为换行）。
-    if not text.endswith("\n"):
-        return _last_line_is_terminal_full(run_file)
-    segments = text.split("\n")
-    if starts_mid_line:
-        # 窗口首行是从字节窗口切入的上一行残段，必须丢弃（见 _read_run_lines 注释）
-        segments = segments[1:]
-    lines = [ln for ln in segments if ln.strip()]
-    if not lines:
-        # 窗口内无完整行（末行超窗）→ 回退全量逐行读
-        return _last_line_is_terminal_full(run_file)
-    return _line_is_terminal(lines[-1])
+    return _line_is_terminal(last)
 
 
 def file_tail_event_type(run_file: Path) -> "str | None":
@@ -313,7 +336,8 @@ def file_tail_event_type(run_file: Path) -> "str | None":
     fix-worktree-lock-release-degrade-gate D3 判据①：acquire 早退段核对持锁
     run 存活性需读末行事件类型（终态/superseded = 持锁主已死），而
     ``_file_tail_is_terminal`` 只回答布尔、拿不到类型本身——本助手与其共用
-    同一尾读窗口实现（字节窗口 seek + 行边界修正 + 全量读回退），返回值：
+    单一尾读实现 ``_last_nonempty_line``（字节窗口 seek + 行边界修正 + 全量读
+    回退，item ec66460f919f），返回值：
 
     - 末条非空行 JSON 解析为 dict 且 type 为字符串 → 该 type（含
       ``superseded`` 等非终态类型，由调用方按判据集自行归类）；
@@ -321,47 +345,7 @@ def file_tail_event_type(run_file: Path) -> "str | None":
       type 缺失或非字符串 → None（调用方 fail-open 按未知=存活处理，
       错杀活锁 → 双派发的保守侧）。
     """
-    try:
-        size = run_file.stat().st_size
-    except OSError:
-        return None
-    if size <= 0:
-        return None
-    last_line: "str | None" = None
-    if size <= _TAIL_READ_WINDOW:
-        try:
-            with run_file.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        last_line = line
-        except OSError:
-            return None
-    else:
-        try:
-            with run_file.open("rb") as f:
-                # 多读窗口起点前一字节（code-review item b89929148e58 边界
-                # 判定范式，与 _file_tail_is_terminal 同款）：换行 ⇒ 起点恰落
-                # 行边界，首段是完整一行；非换行 ⇒ 首段是上一行残段，丢弃。
-                f.seek(-(_TAIL_READ_WINDOW + 1), 2)
-                raw = f.read()
-        except OSError:
-            return None
-        starts_mid_line = raw[:1] != b"\n"
-        text = raw[1:].decode("utf-8", errors="replace")
-        # 末行跨窗（窗口末字节非换行）或窗口内无完整行 → 回退全量逐行读
-        # （方向保守，拿不准一律回退全量读）。
-        if not text.endswith("\n"):
-            last_line = _last_line_of_file(run_file)
-        else:
-            segments = text.split("\n")
-            if starts_mid_line:
-                segments = segments[1:]
-            lines = [ln for ln in segments if ln.strip()]
-            if lines:
-                last_line = lines[-1]
-            else:
-                last_line = _last_line_of_file(run_file)
+    last_line = _last_nonempty_line(run_file)
     if not last_line:
         return None
     try:
@@ -372,20 +356,6 @@ def file_tail_event_type(run_file: Path) -> "str | None":
         return None
     value = entry.get("type")
     return value if isinstance(value, str) else None
-
-
-def _last_line_of_file(run_file: Path) -> "str | None":
-    """全量逐行读文件的末条非空行；空/不可读返回 None（尾读窗口回退分支）。"""
-    last = ""
-    try:
-        with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    last = line
-    except OSError:
-        return None
-    return last or None
 
 
 def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
@@ -648,9 +618,9 @@ class LivenessSupervisor:
         """pgrep 匹配 cmdline 含该 spec worktree 目录字面量的进程。
 
         pgrep 二进制缺失（FileNotFoundError）时提前返回 False，由流新鲜度回退
-        判定；单前缀瞬时故障（超时/OSError）只跳过该前缀继续扫描其余前缀，
-        全部前缀均不可用时才落到底部 return False——不因单前缀瞬时超时把整体
-        判定放大为漏扫。
+        判定；单前缀瞬时故障（超时/OSError/pgrep 异常退出码 ≥2）只跳过该前缀
+        继续扫描其余前缀，全部前缀均不可用时才落到底部 return False——不因
+        单前缀瞬时超时把整体判定放大为漏扫。
 
         pgrep 命中后须逐 PID 复核归属：子串 pattern ``worktrees/{prefix}-<spec>-``
         在 spec 名互为前缀时会命中他 spec 的 worktree（``fix-auth`` 的 pattern
@@ -715,8 +685,24 @@ class LivenessSupervisor:
                     f"'{spec_name}', skipping: {e}",
                 )
                 continue
+            if res.returncode >= 2:
+                # pgrep 异常退出（2=模式语法错误，3=致命错误；1=正常无匹配）：
+                # 该前缀扫描未得出定论，与上方单前缀瞬时故障（超时/OSError）
+                # 同口径 debug 留痕后跳过，且不计入 scanned_any——否则三个
+                # 前缀全部异常退出也会被当成「扫描成功只是没命中」，落不到
+                # 下方「全前缀失败」WARNING（item 2c34a72dbbc1：原先 rc!=0
+                # 与无匹配混同 continue 且 scanned_any 先置 True，全前缀异常
+                # 退出不触发降级告警，漏扫形态静默降级到流新鲜度回退不可观测）。
+                self._pm.logger.debug(
+                    "agent_runner",
+                    f"_pgrep_live_attempt scan failed for prefix '{prefix}' of "
+                    f"'{spec_name}' (pgrep rc={res.returncode}), skipping: "
+                    f"{(res.stderr or '').strip()}",
+                )
+                continue
             scanned_any = True
-            if res.returncode != 0 or not res.stdout.strip():
+            if not res.stdout.strip():
+                # rc==1＝扫描正常完成但无匹配，继续其余前缀
                 continue
             for pid_str in res.stdout.split():
                 try:
@@ -734,8 +720,9 @@ class LivenessSupervisor:
                     if run_spec_part(dirname) == spec_name:
                         return True
         if not scanned_any:
-            # 全部前缀均瞬时故障（超时/OSError）降级：WARNING 留痕
-            #（item d2aafa27b9ee），使流新鲜度回退的降级形态可观测。
+            # 全部前缀均瞬时故障（超时/OSError/pgrep 异常退出码 ≥2）降级：
+            # WARNING 留痕（item d2aafa27b9ee、2c34a72dbbc1），使流新鲜度
+            # 回退的降级形态可观测。
             self._pm.logger.warning(
                 "agent_runner",
                 f"pgrep scan failed on all prefixes, has_live_attempt for "
@@ -1271,18 +1258,32 @@ class LivenessSupervisor:
                 ),
                 timeout=timeout,
             )
-        except FileNotFoundError as e:
-            # code-review item 53d8a2f73d90：spawn 原语 FileNotFoundError＝钉死
-            # ClaudeAdapter 通道结构性不可用（argv[0] 裸 "claude" 走 PATH 解析，
-            # dsh 独立部署且宿主无 claude CLI 时恒现；cwd 为 project_root 恒
-            # 存在不构成误分类）。带 unavailable_reason 分型返回（附加键，
-            # 消费方只读 verdict/evidence 不受影响），供 _judge_liveness 免重试
-            # 直接 fail-open，不把 advancing 的 run 经 fail-closed 链路误杀。
+        except (FileNotFoundError, PermissionError) as e:
+            # code-review item 53d8a2f73d90 + 5763bc311cca：spawn 原语
+            # FileNotFoundError（argv[0] 裸 "claude" 走 PATH 解析，dsh 独立
+            # 部署且宿主无 claude CLI 时恒现）与 PermissionError（二进制存在
+            # 但不可执行：noexec 挂载/权限损坏）同属「重试无意义」的部署态
+            # 结构性故障（cwd 为 project_root 恒存在不构成误分类）。带
+            # unavailable_reason 分型返回（附加键，消费方只读 verdict/evidence
+            # 不受影响），供 _judge_liveness 免重试直接 fail-open，不把
+            # advancing 的 run 经 fail-closed 链路误杀。
             return {
                 "verdict": "stagnant",
                 "evidence": f"liveness judge unavailable: {e}",
                 "unavailable_reason": "binary_missing",
             }
+        except OSError as e:
+            if e.errno == errno.ENOEXEC:
+                # exec 格式不可执行（ENOEXEC，如架构不符/无解释器形态）：
+                # 同属二进制结构性不可用，并入 binary_missing 分型走
+                # fail-open（item 5763bc311cca）。
+                return {
+                    "verdict": "stagnant",
+                    "evidence": f"liveness judge unavailable: {e}",
+                    "unavailable_reason": "binary_missing",
+                }
+            # 其余 OSError 无法安全归类为部署态结构性故障，保留 fail-closed。
+            return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
         except Exception as e:
             return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
 

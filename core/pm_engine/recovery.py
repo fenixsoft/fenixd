@@ -401,338 +401,394 @@ class RecoveryWatch:
         with self._watch_lock:
             pending = list(self._recovery_watch.items())
         for spec_name, item in pending:
-            # due 字段类型守卫（code-review item a4b93d0d0bd7）：recovery_watch.json
-            # 被手工编辑或部分损坏时（_load_recovery_watch 只过滤非 dict 条目，
-            # 不校验字段类型）due 可为非数值字符串，裸 float() 抛 ValueError
-            # 会中止整轮复查循环，本次到期观察项之后的条目全部漏看（升级信号
-            # 静默丢失）。回退 0.0（立即到期）而非跳过：与上方 ``or 0`` 的缺失
-            # 字段既有语义一致，且升级观察项宁可提前复查也不静默漏看——复查
-            # 路径本身会 pop/顺延/升级闭环该条，提前到期无重入风险。
             try:
-                due = float(item.get("due") or 0)
-            except (TypeError, ValueError):
-                due = 0.0
-            if now < due:
-                continue
-
-            # ── 升级前复查第 1 层：pop 之前的顺延判据（D1/D2 + 重试在途）──
-            # 顺延（recovery-watch-status-recheck 1.6 落点：pop 之前检查，
-            # MUST NOT 以裸 continue 静默丢弃观察项）MUST 有界
-            # （defer_limit_minutes，1.7）：自首个 due 到期时刻起累计顺延
-            # 超限 → 回落既有 stale 判定并升级，不因「一直有重试痕迹」把
-            # 真实卡死洗成健康。有界性门施加于全部顺延分支之前。
-            defer_exhausted = self._defer_exhausted(item, now)
-            if not defer_exhausted:
-                # 过渡窗口豁免（D1/D2 既有）：该 spec 存在待合并分支（未并入
-                # main 的提交）或 succeed 痕迹在缓冲窗内 → 顺延本次判定
-                # （保留观察项、推进 due），MUST NOT 静默丢弃观察项或关闭它。
-                deferred_due = self._transition_defer_due(spec_name, now)
-                if deferred_due is not None:
-                    deferred_applied = False
-                    # due 顺延读改写 + 落盘持锁（code-review item dbf6069ef584）：
-                    # 本方法可从 daemon 定时器与 PMEngine.check_blockers 并发进入，
-                    # 无锁 RMW 会让交错巡检覆盖对方刚推进的 due（重复派发）。
-                    # 赋值前身份比对（code-review item edb1248c5e72，与下方
-                    # pop 分支 bbfc26f4c0c3 口径对齐）：锁外处理快照期间并发
-                    # register_recovery_watch 可对该 spec 整条覆盖式重新登记
-                    # （新建 dict，身份不等）——按快照条目无条件赋值会把顺延量
-                    # 写进孤儿 dict、并把不含顺延的新登记条目落盘。现值非本
-                    # 快照条目时保留现值（新登记自带新 due，无需落盘）。
-                    with self._watch_lock:
-                        if self._recovery_watch.get(spec_name) is item:
-                            item["due"] = deferred_due
-                            self._pm._save_recovery_watch()
-                            deferred_applied = True
-                    if deferred_applied:
-                        self._pm.logger.info(
-                            "pm_engine",
-                            f"Recovery watch deferred for '{spec_name}' "
-                            f"(transition window active, due={deferred_due:.0f})",
-                        )
+                # due 字段类型守卫（code-review item a4b93d0d0bd7）：recovery_watch.json
+                # 被手工编辑或部分损坏时（_load_recovery_watch 只过滤非 dict 条目，
+                # 不校验字段类型）due 可为非数值字符串，裸 float() 抛 ValueError
+                # 会中止整轮复查循环，本次到期观察项之后的条目全部漏看（升级信号
+                # 静默丢失）。回退 0.0（立即到期）而非跳过：与上方 ``or 0`` 的缺失
+                # 字段既有语义一致，且升级观察项宁可提前复查也不静默漏看——复查
+                # 路径本身会 pop/顺延/升级闭环该条，提前到期无重入风险。
+                try:
+                    due = float(item.get("due") or 0)
+                except (TypeError, ValueError):
+                    due = 0.0
+                if now < due:
                     continue
-                # 框架内重试在途（recovery-watch-status-recheck）：最近一次
-                # 归属该 spec 的 impl 流末事件 ∈ {transient_retry, superseded}
-                # 且距 now ≤ inflight_retry_minutes → 顺延本次判定（重试间隙
-                # 形态：2026-09-17 16:33:58Z 误报，16:34:55Z 重试 run 开始
-                # 输出——顺延让框架内推进先行，避免唤起无效 admin run）。
-                retry_due = self._inflight_retry_defer_due(spec_name, now)
-                if retry_due is not None:
-                    retry_applied = False
-                    # 同上：读改写 + 落盘整体持锁（code-review item dbf6069ef584）
-                    # + 赋值前身份比对（code-review item edb1248c5e72，口径同上）
+
+                # ── 升级前复查第 1 层：pop 之前的顺延判据（D1/D2 + 重试在途）──
+                # 顺延（recovery-watch-status-recheck 1.6 落点：pop 之前检查，
+                # MUST NOT 以裸 continue 静默丢弃观察项）MUST 有界
+                # （defer_limit_minutes，1.7）：自首个 due 到期时刻起累计顺延
+                # 超限 → 回落既有 stale 判定并升级，不因「一直有重试痕迹」把
+                # 真实卡死洗成健康。有界性门施加于全部顺延分支之前。
+                defer_exhausted = self._defer_exhausted(item, now)
+                if not defer_exhausted:
+                    # 过渡窗口豁免（D1/D2 既有）：该 spec 存在待合并分支（未并入
+                    # main 的提交）或 succeed 痕迹在缓冲窗内 → 顺延本次判定
+                    # （保留观察项、推进 due），MUST NOT 静默丢弃观察项或关闭它。
+                    deferred_due = self._transition_defer_due(spec_name, now)
+                    if deferred_due is not None:
+                        deferred_applied = False
+                        # due 顺延读改写 + 落盘持锁（code-review item dbf6069ef584）：
+                        # 本方法可从 daemon 定时器与 PMEngine.check_blockers 并发进入，
+                        # 无锁 RMW 会让交错巡检覆盖对方刚推进的 due（重复派发）。
+                        # 赋值前身份比对（code-review item edb1248c5e72，与下方
+                        # pop 分支 bbfc26f4c0c3 口径对齐）：锁外处理快照期间并发
+                        # register_recovery_watch 可对该 spec 整条覆盖式重新登记
+                        # （新建 dict，身份不等）——按快照条目无条件赋值会把顺延量
+                        # 写进孤儿 dict、并把不含顺延的新登记条目落盘。现值非本
+                        # 快照条目时保留现值（新登记自带新 due，无需落盘）。
+                        with self._watch_lock:
+                            if self._recovery_watch.get(spec_name) is item:
+                                item["due"] = deferred_due
+                                self._pm._save_recovery_watch()
+                                deferred_applied = True
+                        if deferred_applied:
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"Recovery watch deferred for '{spec_name}' "
+                                f"(transition window active, due={deferred_due:.0f})",
+                            )
+                        continue
+                    # 框架内重试在途（recovery-watch-status-recheck）：最近一次
+                    # 归属该 spec 的 impl 流末事件 ∈ {transient_retry, superseded}
+                    # 且距 now ≤ inflight_retry_minutes → 顺延本次判定（重试间隙
+                    # 形态：2026-09-17 16:33:58Z 误报，16:34:55Z 重试 run 开始
+                    # 输出——顺延让框架内推进先行，避免唤起无效 admin run）。
+                    retry_due = self._inflight_retry_defer_due(spec_name, now)
+                    if retry_due is not None:
+                        retry_applied = False
+                        # 同上：读改写 + 落盘整体持锁（code-review item dbf6069ef584）
+                        # + 赋值前身份比对（code-review item edb1248c5e72，口径同上）
+                        with self._watch_lock:
+                            if self._recovery_watch.get(spec_name) is item:
+                                item["due"] = retry_due
+                                self._pm._save_recovery_watch()
+                                retry_applied = True
+                        if retry_applied:
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"Recovery watch deferred for '{spec_name}' "
+                                f"(in-flight retry active, due={retry_due:.0f})",
+                            )
+                        continue
+                else:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch defer limit reached for '{spec_name}' "
+                        f"(cumulative defer > defer_limit_minutes), falling back "
+                        f"to stale check",
+                    )
+
+                # 读取先于 pop（code-review item 8af911fa12a3）：观察项此前在读取
+                # STATE 之前就被 pop 并从磁盘移除，读取失败的 except 只记 WARNING
+                # 后 continue——一次瞬态 STATE 读取失败会永久丢弃该观察项（丢失=
+                # 真实卡死从此无人告警），与本文件「MUST NOT 静默丢弃观察项」不变量
+                # 直接冲突（同族先例：_register_watch_entry/第 3 层重读均按失败
+                # 保守处理）。现改为仅读取成功后才 pop；读取失败保留观察项并顺延
+                # due（重试窗口沿用 inflight_retry_minutes 口径），下轮巡检重试。
+                try:
+                    entry = self._pm.state_machine.read_one(spec_name)
+                except Exception as e:
+                    # 有界性门（code-review item 78beed6b0814）：读取失败顺延分支
+                    # 原先不受 _defer_exhausted 约束——STATE 持续不可读（文件损坏/
+                    # 解析异常）时每轮重新把 due 推到 now + inflight_retry_minutes
+                    # 并 continue，观察项永远到不了下方升级，与上方「有界性门施加
+                    # 于全部顺延分支之前」矛盾（真实卡死从此无人告警）。本任轮
+                    # defer 已超限 → 不再顺延，升级 dispatch_stalled（evidence
+                    # 注明 STATE 不可读）；信号记录失败则保留观察项下轮重试，
+                    # 不静默丢弃。
+                    if defer_exhausted:
+                        self._pm.logger.error(
+                            "pm_engine",
+                            f"Recovery watch read-failure defer limit reached for "
+                            f"'{spec_name}' (STATE unreadable, cumulative defer > "
+                            f"defer_limit_minutes), escalating dispatch_stalled",
+                        )
+                        evidence = (
+                            f"auto-recovery/defer at {item.get('registered_at')} "
+                            f"({item.get('reason')}); STATE unreadable: read_one "
+                            f"kept failing past defer_limit_minutes so the watch "
+                            f"could not re-check spec status — escalating instead "
+                            f"of deferring indefinitely, "
+                            f"last_read_error={type(e).__name__}: {str(e)[:120]}"
+                        )
+                        try:
+                            signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
+                            if not signaled:
+                                # 写盘失败不抛出而是返回 False（code-review item
+                                # befe1e6861fa）：并入下方守卫，保留观察项下轮重试。
+                                raise RuntimeError("dispatch_stalled signal write failed")
+                        except Exception as signal_exc:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"dispatch_stalled escalation failed for "
+                                f"'{spec_name}' (watch retained for retry): "
+                                f"{type(signal_exc).__name__}: {signal_exc}",
+                            )
+                            continue
+                        # 升级成功才关闭观察项（与既有升级路径「pop + 落盘持锁」
+                        # 同款）；失败路径上方已保留观察项并 continue。pop 前做身份
+                        # 比对（code-review item bbfc26f4c0c3）：锁外处理快照期间，
+                        # 并发 register_recovery_watch 可对该 spec 整条覆盖式重新
+                        # 登记（新建 dict，身份不等）——按名无条件 pop 会误删新观察
+                        # 项，该 spec 后续卡死无人复查。现值已非本快照条目时保留现值
+                        # （dict 未变，无需落盘）。
+                        with self._watch_lock:
+                            if self._recovery_watch.get(spec_name) is item:
+                                self._recovery_watch.pop(spec_name, None)
+                                self._pm._save_recovery_watch()
+                        raised.append(spec_name)
+                        continue
+                    retry_due = now + self._inflight_retry_minutes() * 60
+                    defer_applied = False
+                    # 赋值前身份比对（code-review item e46bd875e05b，与上方
+                    # edb1248c5e72/bbfc26f4c0c3 口径对齐）：锁外 read_one 处理期间
+                    # 并发 register_recovery_watch 可对该 spec 整条覆盖式重新登记
+                    # （新建 dict，身份不等）——按快照条目无条件赋值会把顺延量写进
+                    # 孤儿 dict、实际生效的新登记条目未被顺延（新登记自带 due，无需
+                    # 顺延），且日志「保留观察项，顺延 due」与事实不符。现值非本
+                    # 快照条目时跳过赋值与落盘，日志按顺延是否实际生效输出。
                     with self._watch_lock:
                         if self._recovery_watch.get(spec_name) is item:
                             item["due"] = retry_due
                             self._pm._save_recovery_watch()
-                            retry_applied = True
-                    if retry_applied:
-                        self._pm.logger.info(
-                            "pm_engine",
-                            f"Recovery watch deferred for '{spec_name}' "
-                            f"(in-flight retry active, due={retry_due:.0f})",
-                        )
-                    continue
-            else:
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"Recovery watch defer limit reached for '{spec_name}' "
-                    f"(cumulative defer > defer_limit_minutes), falling back "
-                    f"to stale check",
-                )
-
-            # 读取先于 pop（code-review item 8af911fa12a3）：观察项此前在读取
-            # STATE 之前就被 pop 并从磁盘移除，读取失败的 except 只记 WARNING
-            # 后 continue——一次瞬态 STATE 读取失败会永久丢弃该观察项（丢失=
-            # 真实卡死从此无人告警），与本文件「MUST NOT 静默丢弃观察项」不变量
-            # 直接冲突（同族先例：_register_watch_entry/第 3 层重读均按失败
-            # 保守处理）。现改为仅读取成功后才 pop；读取失败保留观察项并顺延
-            # due（重试窗口沿用 inflight_retry_minutes 口径），下轮巡检重试。
-            try:
-                entry = self._pm.state_machine.read_one(spec_name)
-            except Exception as e:
-                # 有界性门（code-review item 78beed6b0814）：读取失败顺延分支
-                # 原先不受 _defer_exhausted 约束——STATE 持续不可读（文件损坏/
-                # 解析异常）时每轮重新把 due 推到 now + inflight_retry_minutes
-                # 并 continue，观察项永远到不了下方升级，与上方「有界性门施加
-                # 于全部顺延分支之前」矛盾（真实卡死从此无人告警）。本任轮
-                # defer 已超限 → 不再顺延，升级 dispatch_stalled（evidence
-                # 注明 STATE 不可读）；信号记录失败则保留观察项下轮重试，
-                # 不静默丢弃。
-                if defer_exhausted:
-                    self._pm.logger.error(
-                        "pm_engine",
-                        f"Recovery watch read-failure defer limit reached for "
-                        f"'{spec_name}' (STATE unreadable, cumulative defer > "
-                        f"defer_limit_minutes), escalating dispatch_stalled",
-                    )
-                    evidence = (
-                        f"auto-recovery/defer at {item.get('registered_at')} "
-                        f"({item.get('reason')}); STATE unreadable: read_one "
-                        f"kept failing past defer_limit_minutes so the watch "
-                        f"could not re-check spec status — escalating instead "
-                        f"of deferring indefinitely, "
-                        f"last_read_error={type(e).__name__}: {str(e)[:120]}"
-                    )
-                    try:
-                        signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
-                        if not signaled:
-                            # 写盘失败不抛出而是返回 False（code-review item
-                            # befe1e6861fa）：并入下方守卫，保留观察项下轮重试。
-                            raise RuntimeError("dispatch_stalled signal write failed")
-                    except Exception as signal_exc:
+                            defer_applied = True
+                    if defer_applied:
                         self._pm.logger.warning(
                             "pm_engine",
-                            f"dispatch_stalled escalation failed for "
-                            f"'{spec_name}' (watch retained for retry): "
-                            f"{type(signal_exc).__name__}: {signal_exc}",
+                            f"Recovery watch 复查读取 STATE 失败 '{spec_name}'"
+                            f"（保留观察项，顺延 due={retry_due:.0f}）: "
+                            f"{type(e).__name__}: {e}",
                         )
-                        continue
-                    # 升级成功才关闭观察项（与既有升级路径「pop + 落盘持锁」
-                    # 同款）；失败路径上方已保留观察项并 continue。pop 前做身份
-                    # 比对（code-review item bbfc26f4c0c3）：锁外处理快照期间，
-                    # 并发 register_recovery_watch 可对该 spec 整条覆盖式重新
-                    # 登记（新建 dict，身份不等）——按名无条件 pop 会误删新观察
-                    # 项，该 spec 后续卡死无人复查。现值已非本快照条目时保留现值
-                    # （dict 未变，无需落盘）。
-                    with self._watch_lock:
-                        if self._recovery_watch.get(spec_name) is item:
-                            self._recovery_watch.pop(spec_name, None)
-                            self._pm._save_recovery_watch()
-                    raised.append(spec_name)
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Recovery watch 复查读取 STATE 失败 '{spec_name}'"
+                            f"（条目已被并发重新登记取代，跳过顺延）: "
+                            f"{type(e).__name__}: {e}",
+                        )
                     continue
-                retry_due = now + self._inflight_retry_minutes() * 60
+                # pop + 落盘作为一个整体持锁（code-review item 1fa5c6b99aad）：两次
+                # 交错巡检否则会把对方刚 pop 的项写回（复活）或丢失未落盘的变更。
+                # 读取成功后才 pop（read_one 异常隔离，code-review item 3c7ed59e424d
+                # 语义保持：单条失败仅跳过该条并记 WARNING，其余观察项继续）。
+                # pop 前做身份比对（code-review item bbfc26f4c0c3）：锁外处理快照
+                # 期间，并发 register_recovery_watch 可对该 spec 整条覆盖式重新登记
+                # （新建 dict，身份不等）——按名无条件 pop 会误删新观察项，该 spec
+                # 后续卡死无人复查。现值已非本快照条目时保留现值（dict 未变，无需
+                # 落盘）。
                 with self._watch_lock:
-                    item["due"] = retry_due
-                    self._pm._save_recovery_watch()
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"Recovery watch 复查读取 STATE 失败 '{spec_name}'"
-                    f"（保留观察项，顺延 due={retry_due:.0f}）: "
-                    f"{type(e).__name__}: {e}",
-                )
-                continue
-            # pop + 落盘作为一个整体持锁（code-review item 1fa5c6b99aad）：两次
-            # 交错巡检否则会把对方刚 pop 的项写回（复活）或丢失未落盘的变更。
-            # 读取成功后才 pop（read_one 异常隔离，code-review item 3c7ed59e424d
-            # 语义保持：单条失败仅跳过该条并记 WARNING，其余观察项继续）。
-            # pop 前做身份比对（code-review item bbfc26f4c0c3）：锁外处理快照
-            # 期间，并发 register_recovery_watch 可对该 spec 整条覆盖式重新登记
-            # （新建 dict，身份不等）——按名无条件 pop 会误删新观察项，该 spec
-            # 后续卡死无人复查。现值已非本快照条目时保留现值（dict 未变，无需
-            # 落盘）。
-            with self._watch_lock:
-                if self._recovery_watch.get(spec_name) is item:
-                    self._recovery_watch.pop(spec_name, None)
-                    self._pm._save_recovery_watch()
-            if not entry:
-                continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
-            status = entry.get("status")
-            # ── 升级前复查第 2 层：blocked（含 frozen）→ 关闭观察项、不升级 ──
-            # blocked 由 admin_monitor._detect_blocked_stuck 通道
-            # （core/admin_monitor.py:690）告警，recovery watch 重复升级属
-            # 重复告警（2026-09-17 事故 16:37Z 双通道并存同一 spec）。frozen
-            # blocked 的 status 仍为 blocked（frozen 标记在 error/FROZEN_FIELD），
-            # 同一分支覆盖。观察项此处已 pop，直接 continue 即关闭。
-            if status == "blocked":
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"Recovery watch closed for '{spec_name}' "
-                    f"(status=blocked, delegated to blocked_stuck channel)",
-                )
-                continue
-            active_dispatch = False
-            dispatch_probe_exc = None
-            try:
-                active_dispatch = bool(
-                    self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
-                )
-            except Exception as _probe_err:
-                # except ... as 名字在块尾被隐式删除，须转存才能在块外引用
-                # （同下方重读失败分支口径）。探测失败按无活跃派发保守处置，
-                # 但须记 WARNING 留痕并把失败事实拼入升级 evidence，否则
-                # 误升级 dispatch_stalled 时日志无从归因（code-review item
-                # e660dbe20ce0）。
+                    if self._recovery_watch.get(spec_name) is item:
+                        self._recovery_watch.pop(spec_name, None)
+                        self._pm._save_recovery_watch()
+                if not entry:
+                    continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
+                status = entry.get("status")
+                # ── 升级前复查第 2 层：blocked（含 frozen）→ 关闭观察项、不升级 ──
+                # blocked 由 admin_monitor._detect_blocked_stuck 通道
+                # （core/admin_monitor.py:690）告警，recovery watch 重复升级属
+                # 重复告警（2026-09-17 事故 16:37Z 双通道并存同一 spec）。frozen
+                # blocked 的 status 仍为 blocked（frozen 标记在 error/FROZEN_FIELD），
+                # 同一分支覆盖。观察项此处已 pop，直接 continue 即关闭。
+                if status == "blocked":
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch closed for '{spec_name}' "
+                        f"(status=blocked, delegated to blocked_stuck channel)",
+                    )
+                    continue
                 active_dispatch = False
-                dispatch_probe_exc = _probe_err
-                self._pm.logger.warning(
+                dispatch_probe_exc = None
+                try:
+                    active_dispatch = bool(
+                        self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
+                    )
+                except Exception as _probe_err:
+                    # except ... as 名字在块尾被隐式删除，须转存才能在块外引用
+                    # （同下方重读失败分支口径）。探测失败按无活跃派发保守处置，
+                    # 但须记 WARNING 留痕并把失败事实拼入升级 evidence，否则
+                    # 误升级 dispatch_stalled 时日志无从归因（code-review item
+                    # e660dbe20ce0）。
+                    active_dispatch = False
+                    dispatch_probe_exc = _probe_err
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Active dispatch probe failed for '{spec_name}' "
+                        f"(treating as no active dispatch): "
+                        f"{type(_probe_err).__name__}: {_probe_err}",
+                    )
+                # 2.1：已恢复推进 = 已进入 ready 之后的后续态，或已有活跃派发
+                if status in RECOVERY_PROGRESS_STATUSES or active_dispatch:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch passed for '{spec_name}' "
+                        f"(status={status}, active_dispatch={active_dispatch})",
+                    )
+                    continue
+                # 2.2/2.3：尚未恢复推进 → 先就地重新派发（仅 ready 且无活跃派发
+                # 值得尝试；其余状态由各自事件路径接管，直接走信号兜底）。
+                dispatched = False
+                # active_dispatch 此处可证为 False（2.1 已对 "or active_dispatch" continue）
+                if status == "ready":
+                    dispatched = self._redispatch_stalled_ready(spec_name)
+                if dispatched:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch redispatch for '{spec_name}' succeeded "
+                        f"(in-place dispatch from ready, no alert)",
+                    )
+                    continue
+                # ── 升级前复查第 3 层：升级前重读状态（design 缺口 3）──
+                # 首次 read_one 的 status 一直用到升级；期间就地派发/闸门检查
+                # 可能变更状态——升级前重读命中「已恢复推进」（进入 ready 之后的
+                # 后续态或已有活跃派发）→ 不升级。blocked 豁免已由第 2 层按首次
+                # read_one 判定（就地重派被内容闸门冻结 blocked 属「ready 滞留
+                # 重派未成立」既有形态，仍升级——2.6/3fad3350 语义保持，见
+                # _redispatch_stalled_ready docstring）。重读失败/异常 → 保守升级
+                # （不因本机制漏报真滞留，不静默关闭）。
+                try:
+                    fresh = self._pm.state_machine.read_one(spec_name) or {}
+                    reread_exc = None
+                except Exception as _reread_err:
+                    # except ... as 名字在块尾被隐式删除，须转存才能在块外引用
+                    fresh = {}
+                    reread_exc = _reread_err
+                # 第 3 层「已有活跃派发」须**重新探测**（code-review item 838ada899c96）：
+                # 旧实现复用 `active_dispatch`——它在上方计算，且控制流能到达此处
+                # 意味着 2.1 已返回（`status ∈ RECOVERY_PROGRESS_STATUSES or
+                # active_dispatch` 为假），故此处 `active_dispatch` 可证为 False，
+                # `or active_dispatch` 恒假，docstring 声称的「升级前重读…已有活跃
+                # 派发 → 不升级」实际从未执行。就地重派窗口内 worktree 可能已变活跃，
+                # 故重读时一并重探，避免误升级。
+                reprobe_exc = None
+                try:
+                    active_dispatch_now = bool(
+                        self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
+                    )
+                except Exception as _reprobe_err:
+                    # 同第 2 层探测失败口径：按无活跃派发保守处置，记 WARNING
+                    # 留痕并把失败事实拼入下方升级 evidence（code-review item
+                    # e660dbe20ce0）。
+                    active_dispatch_now = False
+                    reprobe_exc = _reprobe_err
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Pre-escalation active dispatch re-probe failed for "
+                        f"'{spec_name}' (treating as no active dispatch): "
+                        f"{type(_reprobe_err).__name__}: {_reprobe_err}",
+                    )
+                if fresh.get("status") in RECOVERY_PROGRESS_STATUSES or active_dispatch_now:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Recovery watch passed for '{spec_name}' (status now "
+                        f"{fresh.get('status')}, active_dispatch={active_dispatch_now} "
+                        f"before escalation, no alert)",
+                    )
+                    continue
+                # 重读失败时不再复用 fresh.get('status')（空 dict 会拼出
+                # 「spec still None」，与 STATE 可读但 status 字段缺失不可区分），
+                # 改为注明 pre-escalation re-read failed + 异常类型
+                # （code-review item 53bb2d91f556）。
+                if reread_exc is not None:
+                    reread_desc = (
+                        f"pre-escalation re-read failed: {type(reread_exc).__name__}"
+                    )
+                else:
+                    reread_desc = f"spec still {fresh.get('status')}"
+                # 两层活跃派发探测失败须拼入 evidence（code-review item
+                # e660dbe20ce0）：探测失败按 False 保守处置，若升级
+                # dispatch_stalled，evidence 须能归因到探测为何失败。
+                probe_failure_desc = ""
+                if dispatch_probe_exc is not None:
+                    probe_failure_desc += (
+                        f" (layer-2 dispatch probe failed: "
+                        f"{type(dispatch_probe_exc).__name__})"
+                    )
+                if reprobe_exc is not None:
+                    probe_failure_desc += (
+                        f" (layer-3 dispatch re-probe failed: "
+                        f"{type(reprobe_exc).__name__})"
+                    )
+                evidence = (
+                    f"auto-recovery/defer at {item.get('registered_at')} "
+                    f"({item.get('reason')}); {reread_desc}"
+                    f"{probe_failure_desc} "
+                    f"with no active dispatch after followup window, in-place "
+                    f"redispatch "
+                    f"{'succeeded' if dispatched else 'not established'}, "
+                    f"error={str(fresh.get('error') or '')[:120]}"
+                )
+                self._pm.logger.error(
                     "pm_engine",
-                    f"Active dispatch probe failed for '{spec_name}' "
-                    f"(treating as no active dispatch): "
-                    f"{type(_probe_err).__name__}: {_probe_err}",
+                    f"Recovery watch failed for '{spec_name}' — not recovered, "
+                    f"escalating dispatch_stalled",
                 )
-            # 2.1：已恢复推进 = 已进入 ready 之后的后续态，或已有活跃派发
-            if status in RECOVERY_PROGRESS_STATUSES or active_dispatch:
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"Recovery watch passed for '{spec_name}' "
-                    f"(status={status}, active_dispatch={active_dispatch})",
-                )
-                continue
-            # 2.2/2.3：尚未恢复推进 → 先就地重新派发（仅 ready 且无活跃派发
-            # 值得尝试；其余状态由各自事件路径接管，直接走信号兜底）。
-            dispatched = False
-            # active_dispatch 此处可证为 False（2.1 已对 "or active_dispatch" continue）
-            if status == "ready":
-                dispatched = self._redispatch_stalled_ready(spec_name)
-            if dispatched:
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"Recovery watch redispatch for '{spec_name}' succeeded "
-                    f"(in-place dispatch from ready, no alert)",
-                )
-                continue
-            # ── 升级前复查第 3 层：升级前重读状态（design 缺口 3）──
-            # 首次 read_one 的 status 一直用到升级；期间就地派发/闸门检查
-            # 可能变更状态——升级前重读命中「已恢复推进」（进入 ready 之后的
-            # 后续态或已有活跃派发）→ 不升级。blocked 豁免已由第 2 层按首次
-            # read_one 判定（就地重派被内容闸门冻结 blocked 属「ready 滞留
-            # 重派未成立」既有形态，仍升级——2.6/3fad3350 语义保持，见
-            # _redispatch_stalled_ready docstring）。重读失败/异常 → 保守升级
-            # （不因本机制漏报真滞留，不静默关闭）。
-            try:
-                fresh = self._pm.state_machine.read_one(spec_name) or {}
-                reread_exc = None
-            except Exception as _reread_err:
-                # except ... as 名字在块尾被隐式删除，须转存才能在块外引用
-                fresh = {}
-                reread_exc = _reread_err
-            # 第 3 层「已有活跃派发」须**重新探测**（code-review item 838ada899c96）：
-            # 旧实现复用 `active_dispatch`——它在上方计算，且控制流能到达此处
-            # 意味着 2.1 已返回（`status ∈ RECOVERY_PROGRESS_STATUSES or
-            # active_dispatch` 为假），故此处 `active_dispatch` 可证为 False，
-            # `or active_dispatch` 恒假，docstring 声称的「升级前重读…已有活跃
-            # 派发 → 不升级」实际从未执行。就地重派窗口内 worktree 可能已变活跃，
-            # 故重读时一并重探，避免误升级。
-            reprobe_exc = None
-            try:
-                active_dispatch_now = bool(
-                    self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
-                )
-            except Exception as _reprobe_err:
-                # 同第 2 层探测失败口径：按无活跃派发保守处置，记 WARNING
-                # 留痕并把失败事实拼入下方升级 evidence（code-review item
-                # e660dbe20ce0）。
-                active_dispatch_now = False
-                reprobe_exc = _reprobe_err
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"Pre-escalation active dispatch re-probe failed for "
-                    f"'{spec_name}' (treating as no active dispatch): "
-                    f"{type(_reprobe_err).__name__}: {_reprobe_err}",
-                )
-            if fresh.get("status") in RECOVERY_PROGRESS_STATUSES or active_dispatch_now:
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"Recovery watch passed for '{spec_name}' (status now "
-                    f"{fresh.get('status')}, active_dispatch={active_dispatch_now} "
-                    f"before escalation, no alert)",
-                )
-                continue
-            # 重读失败时不再复用 fresh.get('status')（空 dict 会拼出
-            # 「spec still None」，与 STATE 可读但 status 字段缺失不可区分），
-            # 改为注明 pre-escalation re-read failed + 异常类型
-            # （code-review item 53bb2d91f556）。
-            if reread_exc is not None:
-                reread_desc = (
-                    f"pre-escalation re-read failed: {type(reread_exc).__name__}"
-                )
-            else:
-                reread_desc = f"spec still {fresh.get('status')}"
-            # 两层活跃派发探测失败须拼入 evidence（code-review item
-            # e660dbe20ce0）：探测失败按 False 保守处置，若升级
-            # dispatch_stalled，evidence 须能归因到探测为何失败。
-            probe_failure_desc = ""
-            if dispatch_probe_exc is not None:
-                probe_failure_desc += (
-                    f" (layer-2 dispatch probe failed: "
-                    f"{type(dispatch_probe_exc).__name__})"
-                )
-            if reprobe_exc is not None:
-                probe_failure_desc += (
-                    f" (layer-3 dispatch re-probe failed: "
-                    f"{type(reprobe_exc).__name__})"
-                )
-            evidence = (
-                f"auto-recovery/defer at {item.get('registered_at')} "
-                f"({item.get('reason')}); {reread_desc}"
-                f"{probe_failure_desc} "
-                f"with no active dispatch after followup window, in-place "
-                f"redispatch "
-                f"{'succeeded' if dispatched else 'not established'}, "
-                f"error={str(fresh.get('error') or '')[:120]}"
-            )
-            self._pm.logger.error(
-                "pm_engine",
-                f"Recovery watch failed for '{spec_name}' — not recovered, "
-                f"escalating dispatch_stalled",
-            )
-            try:
-                signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
-                if not signaled:
-                    # append 写盘失败（磁盘满/IO 错误）不抛出而是返回 False
-                    # （code-review item befe1e6861fa）：并入下方守卫——本观察项
-                    # 已在上方 pop 落盘，失败路径须恢复观察项下轮重试，不静默丢弃。
-                    raise RuntimeError("dispatch_stalled signal write failed")
-            except Exception as signal_exc:
-                # 与读取失败分支（上方升级调用）同款守卫（code-review item
-                # 96b3b5771561）：本观察项已在上方 pop 落盘，而
-                # _signal_dispatch_stalled 的模块导入 / 裸 read_one /
-                # get_admin_config 窄捕（仅 TypeError/ValueError）之外的异常
-                # 仍可向上逃逸——不接住会中止整轮复查：本条观察项已丢失、
-                # raised 未记录、其余到期观察项全部漏看。失败路径恢复观察项
-                # （due 不变，下轮重试升级；setdefault 不覆盖并发窗口内的
-                # 重新登记）后 continue，不中止整轮。
+                try:
+                    signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
+                    if not signaled:
+                        # append 写盘失败（磁盘满/IO 错误）不抛出而是返回 False
+                        # （code-review item befe1e6861fa）：并入下方守卫——本观察项
+                        # 已在上方 pop 落盘，失败路径须恢复观察项下轮重试，不静默丢弃。
+                        raise RuntimeError("dispatch_stalled signal write failed")
+                except Exception as signal_exc:
+                    # 与读取失败分支（上方升级调用）同款守卫（code-review item
+                    # 96b3b5771561）：本观察项已在上方 pop 落盘，而
+                    # _signal_dispatch_stalled 的模块导入 / 裸 read_one /
+                    # get_admin_config 窄捕（仅 TypeError/ValueError）之外的异常
+                    # 仍可向上逃逸——不接住会中止整轮复查：本条观察项已丢失、
+                    # raised 未记录、其余到期观察项全部漏看。失败路径恢复观察项
+                    # （due 不变，下轮重试升级；setdefault 不覆盖并发窗口内的
+                    # 重新登记）后 continue，不中止整轮。
+                    with self._watch_lock:
+                        self._recovery_watch.setdefault(spec_name, item)
+                        self._pm._save_recovery_watch()
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"dispatch_stalled escalation failed for "
+                        f"'{spec_name}' (watch restored for retry): "
+                        f"{type(signal_exc).__name__}: {signal_exc}",
+                    )
+                    continue
+                raised.append(spec_name)
+            except Exception as item_exc:
+                # 单条目兜底（code-review item 4b800b6e4f51）：本循环体高度依赖
+                # 逐点窄捕（6a997d8c3ad8/a4b93d0d0bd7/edb1248c5e72/dbf6069ef584/
+                # 78beed6b0814/bbfc26f4c0c3/96b3b5771561 等历史补丁），任何未被
+                # 内层窄捕覆盖的异常逃逸仍会中止整轮复查，其余到期观察项当轮
+                # 全部漏看（升级信号静默丢失）。此处把「单条失败仅影响该条」
+                # 固化为结构保证：记 WARNING、保留观察项后继续下一条。顺延写回
+                # 走身份比对守卫（同 e46bd875e05b 口径）；条目已弹出（异常发生
+                # 于 pop 之后的判定/升级路径）时按升级失败恢复同款恢复观察项
+                # （不覆盖并发重新登记）。内层既有窄捕语义不变：只有真正逃逸
+                # 的异常才落到这里。
+                retry_due = now + self._inflight_retry_minutes() * 60
+                retained = False
                 with self._watch_lock:
-                    self._recovery_watch.setdefault(spec_name, item)
-                    self._pm._save_recovery_watch()
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"dispatch_stalled escalation failed for "
-                    f"'{spec_name}' (watch restored for retry): "
-                    f"{type(signal_exc).__name__}: {signal_exc}",
-                )
+                    if self._recovery_watch.get(spec_name) is item:
+                        item["due"] = retry_due
+                        self._pm._save_recovery_watch()
+                        retained = True
+                    elif spec_name not in self._recovery_watch:
+                        self._recovery_watch[spec_name] = item
+                        self._pm._save_recovery_watch()
+                        retained = True
+                if retained:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Recovery watch item processing failed for "
+                        f"'{spec_name}' (watch retained, due deferred to "
+                        f"{retry_due:.0f}): {type(item_exc).__name__}: {item_exc}",
+                    )
+                else:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Recovery watch item processing failed for "
+                        f"'{spec_name}' (entry superseded concurrently, "
+                        f"skip defer): {type(item_exc).__name__}: {item_exc}",
+                    )
                 continue
-            raised.append(spec_name)
         return raised
 
     # ── 过渡窗口豁免（evo-recovery-watch-transition-guard D1/D2）────────────

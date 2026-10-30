@@ -146,7 +146,8 @@
     a.href = URL.createObjectURL(blob);
     a.download = "feedback.json";
     a.click();
-    URL.revokeObjectURL(a.href);
+    // 延迟回收 object URL：同步 revoke 可能中止尚未启动的下载
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     setStatus("已导出 feedback.json——把它交给 agent 即可回流批注。");
   }
 
@@ -155,15 +156,21 @@
     if (!state.selected) { setStatus("请先点选页面中的区块", true); return; }
     if (!text) { setStatus("意见不能为空", true); return; }
     var annotation = buildAnnotation(text);
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 8000);
+    setStatus("提交中…");
     fetch(FEEDBACK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(annotation),
+      signal: controller.signal,
     }).then(function (resp) {
+      clearTimeout(timer);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       remember(annotation, true);
       setStatus("已提交到服务器。");
     }).catch(function () {
+      clearTimeout(timer);
       remember(annotation, false);
       exportLocal();
     });
@@ -184,7 +191,7 @@
   document.addEventListener("click", function (ev) {
     if (!state.annotateMode) return; // 浏览模式放行原型自身交互
     var node = resolveAnchor(ev.target);
-    if (panel.contains(ev.target) || ev.target === highlight) return;
+    if (panel.contains(ev.target)) return;
     ev.preventDefault();
     ev.stopPropagation();
     if (!node) { setStatus("该区域没有 " + ANCHOR_ATTR + " 锚，请点选带锚的关键区块", true); return; }

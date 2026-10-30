@@ -11,6 +11,7 @@ import os
 import functools
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -90,6 +91,10 @@ from core.agent_runner.liveness import (
     death_kind_marker,
 )
 from core.agent_runner.session import SessionTracker
+# attempt 在飞子进程清场经自保护守卫整组收割（code-review item
+# 0c4d156555a2；ADR-291 守卫纪律，与 liveness/maintenance_runs/
+# session_manager 先例同源单点）。
+from core.proc_utils import guard_killpg
 # add-harness-adapter-layer：harness 适配层（命令构造/env 路由平移目标；
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
 from core.agent_runner.harness import (
@@ -6218,6 +6223,32 @@ class AgentRunner:
             f"detail={defer_reason})"
         )
 
+    # ── attempt 在飞子进程清场信号单点（code-review item 0c4d156555a2）──
+    # 轮询环各终止/兜底通道（冻结/取消/停滞判停/超时/轮次上限/轮询环崩溃/
+    # 线程装配失败）统一经本助手投递终止信号：start_new_session=True 下子
+    # 进程独立成组（pgid==pid），经 guard_killpg 组长 pid 直传（resolve=
+    # False）整组投递——bash/node 等工具孙进程随组接收信号，不再在组长被
+    # 杀后残留为孤儿（占端口/持 git index.lock/改写 worktree，与 attempt
+    # 层 sleep(10) 后复用同一 worktree 的下一 attempt 并行读写）；对齐
+    # ADR-291「新增清场点必须走守卫」及 liveness/maintenance_runs.
+    # _kill_ocr_process_group/session_manager 既有先例。
+    # start_new_session=False 时保持直杀直接子进程语义（无独立组，整组投
+    # 递会误伤调用者所在组）。守卫拒绝或组已不存在（返回 False）按
+    # guard_killpg 契约静默收口、不降级单 pid 直杀；宽限窗口与组长收尸
+    # wait 仍由各调用点按既有口径持有（SIGTERM→宽限→SIGKILL 序列不变）。
+    def _signal_attempt_child(
+        self,
+        proc: subprocess.Popen,
+        start_new_session: bool,
+        sig: int,
+        *,
+        caller: str,
+    ) -> None:
+        if start_new_session:
+            guard_killpg(proc.pid, sig, caller=caller, resolve=False)
+        else:
+            proc.send_signal(sig)
+
     def _run_agent(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
                     env_overrides: Dict[str, str] | None = None,
@@ -6395,9 +6426,9 @@ class AgentRunner:
             bufsize=1,  # 行缓冲，保证实时可读
             env=env,
             cwd=spawn_spec.cwd,
-            # 独立进程组启动（code-review item 28640d6b8b35：工具孙进程随组，
-            # 停机/超时清场经 guard_killpg 整组收割；terminate()/kill() 仍按
-            # 直接子进程 pid 投递，语义不变）。
+            # 独立进程组启动（code-review item 28640d6b8b35：工具孙进程随组；
+            # item 0c4d156555a2——停机清场与 runner 轮询环各终止/兜底通道均经
+            # guard_killpg 守卫整组收割，_signal_attempt_child 单点收口）。
             start_new_session=spawn_spec.start_new_session,
         )
         self._running_agents[run_id] = proc
@@ -6442,7 +6473,11 @@ class AgentRunner:
             #（管道写满后子进程永久阻塞），登记与进程组成为孤儿。先杀子进程
             # 并摘登记，再按原语义向上抛。
             try:
-                proc.kill()
+                # 整组收割（item 0c4d156555a2）：装配失败兜底同样经守卫对
+                # 进程组投递，工具孙进程不残留。
+                self._signal_attempt_child(
+                    proc, spawn_spec.start_new_session, signal.SIGKILL,
+                    caller="runner._run_agent.stdin_thread_assembly_failure")
             except Exception:
                 pass
             self._running_agents.pop(run_id, None)
@@ -6958,7 +6993,9 @@ class AgentRunner:
                     # 保全机会；无 worktree 载体/失败仅 WARNING 不阻断。
                     self._wip_checkpoint_on_forced_kill(
                         spec_name, cwd, anchor=ANCHOR_FREEZE_HOLD)
-                    proc.terminate()
+                    self._signal_attempt_child(
+                        proc, spawn_spec.start_new_session, signal.SIGTERM,
+                        caller="runner._run_agent.freeze")
                     try:
                         proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
                     except subprocess.TimeoutExpired:
@@ -6966,7 +7003,10 @@ class AgentRunner:
                             "agent_runner",
                             f"run '{base_run_id}' frozen grace 窗口内未退出，SIGKILL",
                         )
-                        proc.kill()
+                        self._signal_attempt_child(
+                            proc, spawn_spec.start_new_session,
+                            signal.SIGKILL,
+                            caller="runner._run_agent.freeze")
                         try:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
@@ -6991,7 +7031,9 @@ class AgentRunner:
                         f"run '{base_run_id}' 取消旗标命中，"
                         f"terminate 子进程（attempt {run_id}）",
                     )
-                    proc.terminate()
+                    self._signal_attempt_child(
+                        proc, spawn_spec.start_new_session, signal.SIGTERM,
+                        caller="runner._run_agent.cancel")
                     try:
                         proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
                     except subprocess.TimeoutExpired:
@@ -6999,7 +7041,10 @@ class AgentRunner:
                             "agent_runner",
                             f"run '{base_run_id}' grace 窗口内未退出，SIGKILL",
                         )
-                        proc.kill()
+                        self._signal_attempt_child(
+                            proc, spawn_spec.start_new_session,
+                            signal.SIGKILL,
+                            caller="runner._run_agent.cancel")
                         try:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
@@ -7056,7 +7101,15 @@ class AgentRunner:
                         # 强杀在即，WIP 保全挪到 kill 与读线程 join 之后的收尾段
                         # （code-review item c162e63ba9b2：对齐超时/turn-limit
                         # 锚点时序——kill 前提交可能纳入半写文件或撞 index.lock）。
-                        proc.kill()
+                        # 到点即杀、不给宽限（item 44dd57fb43f8 显式登记）：
+                        # 停滞预算判停属止损强杀、判据命中即终止整条重试链，
+                        # 不再给 SIGTERM 宽限预算——与超时/轮次上限同口径；
+                        # 信号投递经 _signal_attempt_child 整组收割
+                        #（item 0c4d156555a2）。
+                        self._signal_attempt_child(
+                            proc, spawn_spec.start_new_session,
+                            signal.SIGKILL,
+                            caller="runner._run_agent.stall_budget")
                         try:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
@@ -7150,7 +7203,14 @@ class AgentRunner:
                         )
                     if action.get("evidence"):
                         timeout_error += f" | evidence: {action['evidence']}"
-                    proc.kill()
+                    # 到点即杀、不给宽限（item 44dd57fb43f8 显式登记）：
+                    # deadline 已到点且决策矩阵已判定终止（extend 分支已优先
+                    # 消费），不再给 SIGTERM 宽限预算——与轮次上限/停滞判停
+                    # 同口径；信号投递经 _signal_attempt_child 整组收割
+                    #（item 0c4d156555a2）。
+                    self._signal_attempt_child(
+                        proc, spawn_spec.start_new_session, signal.SIGKILL,
+                        caller="runner._run_agent.timeout")
                     break
                 if max_turns and turn_count[0] >= current_turn_cap:
                     # 轮次上限活性监督（add-turn-limit-anchor-c D2/D3）：触达当前
@@ -7196,7 +7256,14 @@ class AgentRunner:
                         f"Max turns ({current_turn_cap}) reached — "
                         f"{action['evidence']}"
                     )
-                    proc.kill()
+                    # 到点即杀、不给宽限（item 44dd57fb43f8 显式登记）：轮次
+                    # 上限已触达且决策矩阵已判定终止（extend 分支已优先消费），
+                    # 不再给 SIGTERM 宽限预算——与超时/停滞判停同口径；信号
+                    # 投递经 _signal_attempt_child 整组收割
+                    #（item 0c4d156555a2）。
+                    self._signal_attempt_child(
+                        proc, spawn_spec.start_new_session, signal.SIGKILL,
+                        caller="runner._run_agent.turn_limit")
                     break
                 time.sleep(1)
             if timeout_error or turn_limit_error:
@@ -7239,7 +7306,9 @@ class AgentRunner:
             # （如崩溃源正是 proc 方法）不顶替原始异常，原样 re-raise 语义不变。
             try:
                 if proc.poll() is None:
-                    proc.terminate()
+                    self._signal_attempt_child(
+                        proc, spawn_spec.start_new_session, signal.SIGTERM,
+                        caller="runner._run_agent.poll_crash")
                     try:
                         proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
                     except subprocess.TimeoutExpired:
@@ -7248,7 +7317,10 @@ class AgentRunner:
                             f"run {run_id}: 轮询环崩溃后 grace 窗口内未退出，"
                             f"SIGKILL",
                         )
-                        proc.kill()
+                        self._signal_attempt_child(
+                            proc, spawn_spec.start_new_session,
+                            signal.SIGKILL,
+                            caller="runner._run_agent.poll_crash")
                         try:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
