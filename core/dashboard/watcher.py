@@ -59,6 +59,13 @@ SCAN_INTERVAL = 1.0  # 数据源文件轮询周期（秒）
 # overview/列表页不逐事件重拉），全量校准由前端 30s 兜底轮询承担——上方
 # docstring「30s 心跳校准」指前端该轮询，与本常量是两个节奏，勿混读。
 REFRESH_HEARTBEAT = 2.0
+# 失败告警节流窗口（秒）：「首条失败即时留痕，此后每窗至多一条」的低频告警
+# 纪律，取时/查写/窗口判定的单一来源在 FileWatcher._warn_throttled。
+WARN_THROTTLE_SECONDS = 300
+# start() 复用判活的探测 join 超时（秒）：只需覆盖「线程已读到 _running=False、
+# 正在退出但尚未终止」的收尾窗（亚毫秒级），取值远大于该窗即可；正常运行的
+# 线程不会在窗内退出，超时即按存活复用（code-review item ef54032f6647）。
+_REUSE_PROBE_SECONDS = 0.2
 
 
 def _dir_sig(p: Path):
@@ -133,9 +140,19 @@ class FileWatcher:
         # _running 条件，此时 start() 会放行另起第二个 _loop，且旧线程的
         # while self._running 又随 _running 复位继续跑，恰好落入本守卫要防的
         # 双线程并发形态（code-review item 7de4656dfa6f）。
+        # is_alive() 判活后仍有 TOCTOU 窗（code-review item ef54032f6647）：
+        # 旧线程可能已读到 _running=False、正要退出但尚未终止——此刻 is_alive()
+        # 仍为真，若直接按「复用存活线程」返回，随后旧线程退出，_loop 无人
+        # 运行而调用方以为已启动（dashboard 推送静默停摆）。故复用前先做一次
+        # 有界 join 探测：垂死线程会在窗内真正终止（join 提前返回，落到下方
+        # 新建）；正常运行的线程不可能在探测窗内退出，join 超时后仍按存活
+        # 复用——「已在跑时 no-op」语义不变，代价仅一次 _REUSE_PROBE_SECONDS
+        # 的有界等待。
         if self._thread and self._thread.is_alive():
-            # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
-            return
+            self._thread.join(timeout=_REUSE_PROBE_SECONDS)
+            if self._thread.is_alive():
+                # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
+                return
         self._thread = threading.Thread(
             target=self._loop, name="fenixd-dashboard-watcher", daemon=True
         )
@@ -153,21 +170,41 @@ class FileWatcher:
             else:
                 self._thread = None
 
+    # ── 告警节流（低频留痕纪律单一来源） ─────────────────────
+
+    @staticmethod
+    def _warn_throttled(store: dict, key, msg: str, *args) -> None:
+        """失败告警的 5 分钟节流（code-review item 457b7e24c7e5 收敛点）。
+
+        store[key] 记上次告警时刻（monotonic 秒）：缺键 = 从未告警，首条失败
+        即时留痕，此后每 WARN_THROTTLE_SECONDS 窗口至多记一条。取时、查写与
+        窗口判定此前在十余个失败点逐处复制、仅日志文案不同（调整窗口或键
+        口径需同步改多处，已现漂移风险），收敛于此；各失败点只传记账 store、
+        键与文案。store 两种用法：per-project 失败统一记 self._proj_scan_warn
+        （键为项目路径，随 _prune_stale_caches 一并清退）；_loop 内全局失败
+        用线程局部 dict（随监听线程生灭，不进清理、不与项目键混记）。
+        """
+        now = time.monotonic()
+        last_warn = store.get(key)
+        if last_warn is None or now - last_warn >= WARN_THROTTLE_SECONDS:
+            store[key] = now
+            logger.warning(msg, *args)
+
     def _loop(self):
         tick = 0
-        last_scan_warn = None  # scan_once 持续失败告警节流（monotonic 秒；None = 从未告警）
-        last_hb_warn = None  # 心跳广播失败告警节流（monotonic 秒；None = 从未告警）
+        # 本线程级节流账本（'scan'/'hb' -> 上次告警 monotonic 秒）：随监听
+        # 线程生灭，有意不记 _proj_scan_warn——那会被 _prune_stale_caches 当
+        # 失效项目键当轮清退，节流失效。
+        loop_warn = {}
         while self._running:
             try:
                 self.scan_once()
             except Exception as e:  # 监听绝不崩溃：单轮失败下轮重试
-                now = time.monotonic()
-                # 低频节流：持续失败约 5 分钟记一条（None = 从未告警，首条失败即时留痕）
-                if last_scan_warn is None or now - last_scan_warn >= 300:
-                    last_scan_warn = now
-                    logger.warning(
-                        "dashboard watcher scan_once 失败: %s: %s", type(e).__name__, e
-                    )
+                self._warn_throttled(
+                    loop_warn, "scan",
+                    "dashboard watcher scan_once 失败: %s: %s",
+                    type(e).__name__, e,
+                )
             # 周期性心跳：daemon 健康状态 / 新项目发现等变化不产生数据源文件变更，
             # scan_once 感知不到，需周期广播 refresh 让前端在心跳周期内反映
             tick += 1
@@ -176,14 +213,11 @@ class FileWatcher:
                 try:
                     self.hub.broadcast({"type": "refresh"})
                 except Exception as e:
-                    now = time.monotonic()
-                    if last_hb_warn is None or now - last_hb_warn >= 300:
-                        last_hb_warn = now
-                        logger.warning(
-                            "dashboard watcher 心跳广播失败: %s: %s",
-                            type(e).__name__,
-                            e,
-                        )
+                    self._warn_throttled(
+                        loop_warn, "hb",
+                        "dashboard watcher 心跳广播失败: %s: %s",
+                        type(e).__name__, e,
+                    )
             time.sleep(self.interval)
 
     # ── 主扫描 ───────────────────────────────────────────────
@@ -196,7 +230,6 @@ class FileWatcher:
             try:
                 self._scan_project(proj["name"], Path(proj["path"]))
             except Exception as e:  # 单项目失败不拖垮整轮；低频节流告警（同 _loop 5 分钟纪律）
-                now = time.monotonic()
                 # 键统一为项目路径（同 _prune_stale_caches 口径）；path 缺失/非法
                 # 时退化用 name 记账并照常告警（MUST NOT 把本项目异常吞成静默，
                 # 同本文件「瞬时失败不再静默」纪律）。name 键不在 live 路径集、
@@ -206,14 +239,11 @@ class FileWatcher:
                     key = Path(proj["path"]).as_posix()
                 except Exception:
                     key = proj.get("name")
-                last_warn = self._proj_scan_warn.get(key) if key else None
-                if key and (last_warn is None or now - last_warn >= 300):
-                    self._proj_scan_warn[key] = now
-                    logger.warning(
+                if key:
+                    self._warn_throttled(
+                        self._proj_scan_warn, key,
                         "dashboard watcher 扫描项目 %s 失败: %s: %s",
-                        proj["name"],
-                        type(e).__name__,
-                        e,
+                        proj["name"], type(e).__name__, e,
                     )
                 continue
         # 项目集变化后剔除消失项目的缓存（长驻进程防无界累积）
@@ -374,21 +404,15 @@ class FileWatcher:
             # 探测/枚举瞬时失败（EACCES/EMFILE 等）MUST NOT 等同「目录被清空/
             # 移除」：seen 为空会把缓存里全部 spec 误判成 removed、广播整表
             # summary:null 删除行，下轮恢复又全量推回。跳过本轮删除判定
-            # （缓存原样保留），告警按「扫描失败」同款节流（5 分钟一条）。
-            # 注意此处 MUST NOT 经 _is_dir 判断 changes：那会把探测失败也按
-            # 「非目录」吞成 seen 空集，绕开本守卫（同 iterdir 瞬时失败形态）。
-            key = proot.as_posix()
-            now = time.monotonic()
-            last_warn = self._proj_scan_warn.get(key)
-            if last_warn is None or now - last_warn >= 300:
-                self._proj_scan_warn[key] = now
-                logger.warning(
-                    "dashboard watcher 枚举项目 %s spec/changes 目录失败，"
-                    "跳过本轮删除判定: %s: %s",
-                    proot,
-                    type(e).__name__,
-                    e,
-                )
+            # （缓存原样保留），告警经 _warn_throttled 节流。注意此处 MUST NOT
+            # 经 _is_dir 判断 changes：那会把探测失败也按「非目录」吞成 seen
+            # 空集，绕开本守卫（同 iterdir 瞬时失败形态）。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 枚举项目 %s spec/changes 目录失败，"
+                "跳过本轮删除判定: %s: %s",
+                proot, type(e).__name__, e,
+            )
             return set(), set()
         for d in entries:
             try:
@@ -399,22 +423,15 @@ class FileWatcher:
                 # stale 清理随之误判该 spec 被删除并广播 summary:null 删除行、
                 # 下轮恢复又全量推回——与上方 iterdir OSError 守卫同族形态。此处
                 # 区分「探测失败」与「确实非目录」：补齐 seen（缓存原样保留、
-                # 跳过本轮删除判定，语义同 iterdir 分支），告警复用 _proj_scan_warn
-                # 节流（同项目 5 分钟一条，随 _prune_stale_caches 一并清退）。
+                # 跳过本轮删除判定，语义同 iterdir 分支），告警经 _warn_throttled
+                # 节流。
                 seen.add(d.name)
-                key = proot.as_posix()
-                now = time.monotonic()
-                last_warn = self._proj_scan_warn.get(key)
-                if last_warn is None or now - last_warn >= 300:
-                    self._proj_scan_warn[key] = now
-                    logger.warning(
-                        "dashboard watcher 项目 %s spec 条目 %s 探测失败，"
-                        "跳过本轮删除判定: %s: %s",
-                        proot,
-                        d.name,
-                        type(e).__name__,
-                        e,
-                    )
+                self._warn_throttled(
+                    self._proj_scan_warn, proot.as_posix(),
+                    "dashboard watcher 项目 %s spec 条目 %s 探测失败，"
+                    "跳过本轮删除判定: %s: %s",
+                    proot, d.name, type(e).__name__, e,
+                )
                 continue
             if not is_dir:
                 continue
@@ -459,19 +476,13 @@ class FileWatcher:
             # 「本轮无变化」与「扫描失败」必须可从日志区分，否则瞬时故障导致该轮
             # run 变化漏检且无从排查。直接返回、不动 _run_base 基线（基线保留即
             # 不会把已有 run 误判清退，语义同 _scan_spec_dirs 跳过本轮删除判定）；
-            # 节流复用 _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches
-            # 一并清退；同项目两类失败 5 分钟内合并记一条，符合本文件低频节流纪律）。
-            key = proot.as_posix()
-            now = time.monotonic()
-            last_warn = self._proj_scan_warn.get(key)
-            if last_warn is None or now - last_warn >= 300:
-                self._proj_scan_warn[key] = now
-                logger.warning(
-                    "dashboard watcher 枚举项目 %s runs 目录失败，跳过本轮 run 比对: %s: %s",
-                    proot,
-                    type(e).__name__,
-                    e,
-                )
+            # 告警经 _warn_throttled 节流（键为项目路径，随 _prune_stale_caches
+            # 清退）。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 枚举项目 %s runs 目录失败，跳过本轮 run 比对: %s: %s",
+                proot, type(e).__name__, e,
+            )
             return set()
         active = set()
         for p in run_files:
@@ -507,19 +518,13 @@ class FileWatcher:
             # 瞬时失败（EACCES/EMFILE 等）不再静默（code-review item e2decbb39a72）：
             # 「本轮无变化」与「扫描失败」必须可从日志区分，否则瞬时故障导致该轮
             # log 变化漏检且无从排查。签名缓存原样保留，下轮恢复后变化照常补检；
-            # 节流复用 _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches
-            # 一并清退；同项目两类失败 5 分钟内合并记一条，符合本文件低频节流纪律）。
-            key = proot.as_posix()
-            now = time.monotonic()
-            last_warn = self._proj_scan_warn.get(key)
-            if last_warn is None or now - last_warn >= 300:
-                self._proj_scan_warn[key] = now
-                logger.warning(
-                    "dashboard watcher 枚举项目 %s logs 目录失败，跳过本轮 log 比对: %s: %s",
-                    proot,
-                    type(e).__name__,
-                    e,
-                )
+            # 告警经 _warn_throttled 节流（键为项目路径，随 _prune_stale_caches
+            # 清退）。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 枚举项目 %s logs 目录失败，跳过本轮 log 比对: %s: %s",
+                proot, type(e).__name__, e,
+            )
             return False
         seen = set()
         for p in log_files:
@@ -557,20 +562,13 @@ class FileWatcher:
             # 索引兜底失败不再静默（code-review item 9c261607b08d）：回退全量
             # 重算的降级语义保留，但「索引故障退化为 O(N) 重算」与「索引正常
             # 命中」必须可从日志区分（口径同下方详情组装失败 item 74be430c66cb），
-            # 否则索引持续抛错时每轮静默退化、扫描成本上升且无从排查。
-            # 节流复用 scan_once 的 _proj_scan_warn 表（键同为项目路径，随
-            # _prune_stale_caches 一并清退）；同项目两类失败 5 分钟内合并记一条，
-            # 符合本文件低频节流纪律。
-            key = proot.as_posix()
-            now = time.monotonic()
-            last_warn = self._proj_scan_warn.get(key)
-            if last_warn is None or now - last_warn >= 300:
-                self._proj_scan_warn[key] = now
-                logger.warning(
-                    "dashboard watcher 索引摘要失败（回退全量重算）: %s: %s",
-                    type(e).__name__,
-                    e,
-                )
+            # 否则索引持续抛错时每轮静默退化、扫描成本上升且无从排查。告警经
+            # _warn_throttled 节流（键为项目路径，随 _prune_stale_caches 清退）。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 索引摘要失败（回退全量重算）: %s: %s",
+                type(e).__name__, e,
+            )
             summaries = [dashboard_data.spec_summary(proot, s, e) for s, e in cur.items()]
         new_map = {s.get("name"): s for s in summaries}
         prev_map = self._last_summaries.get(proot.as_posix(), {})
@@ -593,22 +591,15 @@ class FileWatcher:
                     # 详情组装失败不再静默（code-review item 74be430c66cb）：
                     # 按空 detail 降级继续的语义保留，但「解析失败」与「确实无
                     # 详情」必须可区分（口径同 event_bus.py item 586896a04cd5），
-                    # 否则仪表盘数据异常无从从日志反推原因。节流复用
-                    # _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches
-                    # 一并清退；同项目两类失败 5 分钟内合并记一条，避免 STATE.md
+                    # 否则仪表盘数据异常无从从日志反推原因（避免 STATE.md
                     # 频繁变更且某 spec 详情持续失败时每轮刷屏——与
                     # _handle_spec_change 同款失败处理对齐，item c6c944d1a694）。
-                    key = proot.as_posix()
-                    now = time.monotonic()
-                    last_warn = self._proj_scan_warn.get(key)
-                    if last_warn is None or now - last_warn >= 300:
-                        self._proj_scan_warn[key] = now
-                        logger.warning(
-                            "dashboard watcher 组装 spec %s 详情失败（详情缺省继续）: %s: %s",
-                            spec,
-                            type(e).__name__,
-                            e,
-                        )
+                    # 告警经 _warn_throttled 节流。
+                    self._warn_throttled(
+                        self._proj_scan_warn, proot.as_posix(),
+                        "dashboard watcher 组装 spec %s 详情失败（详情缺省继续）: %s: %s",
+                        spec, type(e).__name__, e,
+                    )
         # 删除：上次基线有、合并基线（SummaryIndex D4 活跃 ∪ 清单）无的 spec
         # → summary:null 标记。目录级 removed 信号（spec/changes/<name>/ 被移入
         # 归档目录）只在合并基线不含该 spec 时才算删除——迁出后基线已含归档
@@ -650,20 +641,13 @@ class FileWatcher:
             # 详情组装失败不再静默（code-review item f8e2f0e599a7）：与
             # _handle_state_change 的详情失败留痕（item 74be430c66cb）同口径，
             # 「解析失败」与「确实无详情」必须可区分，否则 detail 通道持续失败
-            # 时前端详情弹窗静默不刷新、无从从日志反推原因。节流复用
-            # _proj_scan_warn 表（键同为项目路径，随 _prune_stale_caches 一并
-            # 清退；同项目两类失败 5 分钟内合并记一条，避免每轮刷屏）。
-            key = proot.as_posix()
-            now = time.monotonic()
-            last_warn = self._proj_scan_warn.get(key)
-            if last_warn is None or now - last_warn >= 300:
-                self._proj_scan_warn[key] = now
-                logger.warning(
-                    "dashboard watcher 组装 spec %s 详情失败（detail 事件跳过推送）: %s: %s",
-                    spec,
-                    type(e).__name__,
-                    e,
-                )
+            # 时前端详情弹窗静默不刷新、无从从日志反推原因。告警经
+            # _warn_throttled 节流。
+            self._warn_throttled(
+                self._proj_scan_warn, proot.as_posix(),
+                "dashboard watcher 组装 spec %s 详情失败（detail 事件跳过推送）: %s: %s",
+                spec, type(e).__name__, e,
+            )
             return
         d["project"] = name
         self.hub.broadcast({"project": name, "type": "detail", "spec": spec, "data": d})

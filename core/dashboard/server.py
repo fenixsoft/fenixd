@@ -61,14 +61,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import data as dashboard_data
 from .registry import Registry
 from .watcher import FileWatcher
-from core.agent_runner.prompt_builder import (
-    AGENT_PROMPT_DIR,
-    AGENT_PROMPT_FILES,
-    project_agents_dir,
-)
 from core.fenix_session import start_daemon, stop_daemon
 from core.proc_utils import find_free_port as _proc_find_free_port
 
