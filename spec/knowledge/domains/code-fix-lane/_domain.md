@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-10-30 20:06 UTC+8
+> 最后更新：2026-10-30 21:01 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | [code-fix-lane](code-fix-lane.md) | 自动修复车道编排（两路激活/批循环/回归门合回/合回冲突定向救回/回归异常熔断与零失败面收口及证据留存/失败批重派预算分档/与审查车道调度解耦） | 2026-10-30 19:58 |
 | [codefix-affinity-batching](codefix-affinity-batching.md) | 选批文件亲和性装箱、波次上限自适应、批收尾回归两段式（中间批定向/末批全量兜底） | 2026-10-06 07:29 |
+| [code-review-fix-pacing](code-review-fix-pacing.md) | 审查发现分级修复节奏（severity 门限与周批：总开关缺省旁路/达门限当日批/低于门限挂起整组周批放行/regression- 豁免/双入口同门/链收敛挂起对账） | 2026-10-30 21:01 |
 | [codefix-test-targets-sanitization](codefix-test-targets-sanitization.md) | 回归占位符回退消毒（四条回退/重试路径占位符替换缺省 tests/、判别读原件、周期回归通道豁免） | 2026-10-06 07:29 |
 | [codefix-digest-cost-metrics](codefix-digest-cost-metrics.md) | 消化链成本度量（run 工具构成指标 tool_uses/text_turns、链级 rollup 覆盖全部 run 不漏样本） | 2026-10-06 07:40 |
 | [code-fix-batch-parallel](code-fix-batch-parallel.md) | 批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底、边修复边提交收尾一次验证） | 2026-10-04 05:11 |

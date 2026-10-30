@@ -1,10 +1,10 @@
 # code-fix 车道配置
 
-<!-- knowledge: capability=code-fix-config rev=3
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-04-add-codefix-affinity-batching -->
+<!-- knowledge: capability=code-fix-config rev=4
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-30-evo-add-codefix-severity-batch-gate -->
 <!-- disputed: since=2026-09-30 fps=ab9ffbf3,ee9114d2 -->
 
-`admin.code_review_fix.*` 配置段：自动修复总开关、批大小、定向重试轮上限与批收尾回归分流开关，含校验、缺省语义、Dashboard 读写与设置页 UI。
+`admin.code_review_fix.*` 配置段：自动修复总开关、批大小、定向重试轮上限、批收尾回归分流开关与发现分级门限三键（总开关/门限档位/周批天数），含校验与缺省语义；前四键另有 Dashboard 读写与设置页 UI。
 
 ## 规则
 
@@ -13,7 +13,10 @@
 - `admin.code_review_fix.batch_size`：每批条目数（选批目标规模，语义见 [codefix-affinity-batching](codefix-affinity-batching.md)），缺省 `20`，须为正整数（bool、≤0、非整数回退 `20`）。
 - `admin.code_review_fix.targeted_retry_max`：回归失败后定向重试轮上限，缺省 `3`，整数且须在 1–5 区间（bool、非整数、越界回退 `3`）；设 0 连「重试一次」语义都不保、设过大烧钱，区间即按此约束；热更新生效（下一轮定向重试读取）。编排侧每轮 run 本身失败（非回归失败）不进轮循环，按既有 chain_skipped 立即收尾。
 - `admin.code_review_fix.targeted_regression`：批收尾回归两段式开关（true=链内非末批按触碰面定向回归、链末批恒全量兜底；false=全批全量），缺省 `true`，严格 bool（非 bool 值回退 `true` 并记 warning，不抛异常、不中断批链）；分流规则见 [codefix-affinity-batching](codefix-affinity-batching.md)。
-- 读取器为 `ConfigLoader.get_code_review_fix_config(config)`（形态对齐既有 `get_code_review_config`）：段非 dict 视为缺省；段缺失不报错，返回 `{"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True}`。
+- `admin.code_review_fix.severity_batch_gate_enabled`：severity 分级门限总开关，缺省 `false`＝门限/周批整体旁路（全部发现当日处置）；严格 bool，非 bool 值回退 `false` 并记 warning。
+- `admin.code_review_fix.min_immediate_severity`：发现分级处置门限档位，缺省 `major`；须为 severity 词表四档 `critical | major | minor | info` 内取值，词表外值（含历史漂移值域 high/medium/low——配置侧不做归一，避免误把写侧漂移当合法门限）回退缺省并记 warning；分级规则见 [code-review-fix-pacing](code-review-fix-pacing.md)。
+- `admin.code_review_fix.minor_batch_cadence`：周批节奏天数，缺省 `7`；正整数（bool、非整数、非正值回退 `7` 并记 warning）。
+- 读取器为 `ConfigLoader.get_code_review_fix_config(config)`（形态对齐既有 `get_code_review_config`）：段非 dict 视为缺省；段缺失不报错，返回 `{"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True, "min_immediate_severity": "major", "minor_batch_cadence": 7, "severity_batch_gate_enabled": False}`。
 
 ### Dashboard 受管键读写
 - `_SOURCE_KEYS` 含 `"admin.code_review_fix"`；定义缺省回显常量 `_DEFAULT_CODE_REVIEW_FIX = {"enabled": False, "batch_size": 20, "targeted_retry_max": 3, "targeted_regression": True}` 并在 `read_config` 缺省段回显；`read_config` / `read_effective_config` 经 `get_code_review_fix_config` 回显生效值；`_deep_merge_managed` 支持该段合并写入。
@@ -34,3 +37,4 @@
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：enabled/batch_size 参数定义与非法回退、Dashboard 受管键读写链、模板与帮助文档同步、设置页质量页签开关与批大小。
 - 2026-10-03 2026-10-03-add-codefix-targeted-retry（spec/archive/2026-10-03-add-codefix-targeted-retry） — 新增 targeted_retry_max 参数（缺省 3、区间 1-5、非法回退）、缺省回显与合并写入校验、模板注释键与帮助文档映射行。
 - 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 新增 targeted_regression 参数（缺省 true、严格 bool 非法回退+warning）、缺省回显常量与读取器缺省字典扩键、写前 400 校验与用户级同步仅 bool 落键、模板注释键、设置页质量页签开关（缺省回填视为开）。
+- 2026-10-30 evo-add-codefix-severity-batch-gate（spec/archive/2026-10-30-evo-add-codefix-severity-batch-gate） — 新增分级门限三键：severity_batch_gate_enabled（缺省 false＝门限旁路）、min_immediate_severity（词表校验、词表外回退 major）、minor_batch_cadence（正整数、非法回退 7），读取器缺省字典同步扩键；三键无 Dashboard 设置页控件（手工通道经同一读取器取门限生效值）。
