@@ -138,6 +138,13 @@ _RUN_TIMEOUT_FALLBACK_WARNED = False
 # vs 9000s）的 WARNING，共用一个标记会让先触发者压制另一条诊断整个进程生命周期。
 _STUCK_FALLBACK_WARNED = False
 
+# night_quiet_window 非法值载入期 lint 的一次性去重标记
+# （evo-add-night-window-bool-normalization 1.2，仿 _DEPRECATED_STUCK_WARNED
+# 「首次告警、后续静默」范式）：进程生命周期内只打一次——30s 热更新逐次重载
+# 同一坏值不刷屏；消费期各消费点另有按值去重的 WARNING 接棒（值变更后重新
+# 告警由消费点负责，载入期 lint 不追值）。
+_NIGHT_QUIET_WINDOW_LINT_WARNED = False
+
 # ── improve-hot-reload-robustness D3：未知 agent 类型键降级告警去重 ──
 # 同一未知键每进程生命周期只报一次（30s 热重载重试风暴下，不去重则告警与
 # ERROR 同步刷屏）。keys 以键名字符串为准，不随进程内白名单变化失效。
@@ -753,6 +760,7 @@ class ConfigLoader:
         project["name"] = proj_name
 
         cls._validate(effective, require_project=False)
+        cls._maybe_warn_invalid_night_quiet_window(effective)
         return effective
 
     @classmethod
@@ -816,6 +824,7 @@ class ConfigLoader:
             raise ValueError(f"配置顶层必须是对象: {config_path}")
 
         cls._validate(config)
+        cls._maybe_warn_invalid_night_quiet_window(config)
         return config
 
     @classmethod
@@ -3036,6 +3045,55 @@ class ConfigLoader:
                 STUCK_GRACE_SECONDS,
             )
             _DEPRECATED_STUCK_WARNED = True
+
+    @classmethod
+    def _maybe_warn_invalid_night_quiet_window(cls, config: Dict[str, Any]) -> None:
+        """night_quiet_window 非法值载入期一次性 lint
+        （evo-add-night-window-bool-normalization 1.2）。
+
+        沿 ``_maybe_warn_deprecated_stuck_keys`` 既有模式：进程级去重
+        （``_NIGHT_QUIET_WINDOW_LINT_WARNED``，生命周期内只打一次），挂载点
+        在配置载入校验之后（``load``/``resolve_config``），使告警早于首个
+        守卫消费点（spec：启动早期一次性 WARNING）。合法形态：HH:MM-HH:MM
+        （多窗以逗号/分号分隔，各段 end>start）、空串、off、布尔 false
+        （与 off 同义，合法禁用态）；布尔 true 与其余不可解析形态告警并指明
+        合法形态。合法性判定复用 core.code_fix 解析单源（延迟局部导入——
+        config 是 code_fix 的下游依赖，模块顶层导入成环）；缺段不告警（守卫
+        缺省窗合法，无静默哑化面）。lint 自身任何失败静默返回，不阻断载入。
+        """
+        global _NIGHT_QUIET_WINDOW_LINT_WARNED
+        if _NIGHT_QUIET_WINDOW_LINT_WARNED:
+            return
+        config = config if isinstance(config, dict) else {}
+        admin = config.get("admin")
+        admin = admin if isinstance(admin, dict) else {}
+        crf = admin.get("code_review_fix")
+        crf = crf if isinstance(crf, dict) else {}
+        if "night_quiet_window" not in crf:
+            return
+        raw = crf.get("night_quiet_window")
+        try:
+            from .code_fix import (
+                _night_quiet_window_disabled,
+                _parse_night_quiet_windows,
+            )
+
+            invalid = (
+                _parse_night_quiet_windows(raw) is None
+                and not _night_quiet_window_disabled(raw)
+            )
+        except Exception:  # noqa: BLE001 — lint 失败不阻断载入
+            return
+        if not invalid:
+            return
+        _NIGHT_QUIET_WINDOW_LINT_WARNED = True
+        _logger.warning(
+            "admin.code_review_fix.night_quiet_window 非法值 %r（须形如 "
+            "HH:MM-HH:MM（多窗以逗号分隔）且各段 end>start，off/空串/布尔 "
+            "false 关闭），按无窗处理——code-fix 车道/审查跨窗顺延/admin "
+            "唤起避让三守卫消费点全部停用",
+            raw,
+        )
 
     @classmethod
     def _supervision_segment(cls, config: Dict[str, Any]) -> Optional[dict]:
