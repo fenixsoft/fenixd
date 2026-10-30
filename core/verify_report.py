@@ -87,6 +87,42 @@ def _atomic_write(path: Path, content: str) -> None:
 # ── 结构化数据读取 ────────────────────────────────────────────────
 
 
+def _scenarios_detail_usable(scenarios):
+    """scenarios 场景明细可采信判据（纯谓词，code-review a59955c007d3 自
+    _load_report_json 抽取，组合判定与真值表见该函数）：
+
+      - 非空列表且至少含一个 dict 元素 → True（明细可交叉核对）；
+      - 空列表 → False（占位/明细截断形态，须由 summary 计数门槛另行兜底）；
+      - 非空纯非 dict 元素列表（如 ["x", "y"]）→ False（写坏形态，
+        code-review 2a8e50608531：采信后 _derive_status 的场景计数兜底循环
+        对非 dict 元素 isinstance 全部跳过、循环后落到 return "verified"，
+        同样为损坏报告合成「全部场景通过」的假通过——与
+        03296ed3a49e/cbea2bb63e40/c0bc338cd2ea 同族 fail-closed）；
+      - 非列表 / 键缺失（None）→ False（非本判据对象）。
+    """
+    if not isinstance(scenarios, list) or not scenarios:
+        return False
+    return any(isinstance(sc, dict) for sc in scenarios)
+
+
+def _summary_counts_usable(summary):
+    """summary 计数可采信门槛（纯谓词，列表/键缺失两分支共用，勿单侧漂移，
+    code-review a59955c007d3 自 _load_report_json 内嵌函数上提）：须为 dict、
+    total>0 且显式声明 failed/errors 键（引擎 _build_report 恒写全套计数键，
+    合法截断报告必满足）；total 缺失/为 0/不可解析或缺声明一律 False，按占位
+    报告拒收（fail-closed）。"""
+    if not isinstance(summary, dict):
+        return False
+    try:
+        return (
+            int(summary.get("total") or 0) > 0
+            and "failed" in summary
+            and "errors" in summary
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _load_report_json(project_root, spec_name):
     """读取验证引擎 report.json；不可用返回 None（不抛出）。"""
     path = (
@@ -105,81 +141,47 @@ def _load_report_json(project_root, spec_name):
     if not isinstance(data, dict):
         return None
 
-    def _summary_usable(summary):
-        """summary 可采信门槛（列表/键缺失两分支共用，勿单侧漂移）：total>0
-        且显式声明 failed/errors 键（引擎 _build_report 恒写全套计数键，合法
-        截断报告必满足）；total 缺失/为 0/不可解析或缺声明一律 False，按占位
-        报告拒收（fail-closed）。"""
-        try:
-            return (
-                int(summary.get("total") or 0) > 0
-                and "failed" in summary
-                and "errors" in summary
-            )
-        except (TypeError, ValueError):
-            return False
-
     scenarios = data.get("scenarios")
     summary = data.get("summary")
-    # 有效性判据（fail-closed，勿放宽为「list 或 dict 即可用」）：scenarios 须为
-    # **非空**列表（且至少含一个 dict 元素），或 summary 为带计数键的 dict。
-    # 「scenarios: []」且 summary 缺失/为空是截断/写坏形态——采信它会经「空场景
-    # 集 + 无失败证据」一路推导出 verified，合成出「全部场景通过」的假通过报告，
-    # 与模块 fail-closed 哲学（不写空报告、阻断推进）相反。纯非 dict 元素列表
-    # （如 ["x", "y"]）同按写坏形态拒收（code-review 2a8e50608531）：summary
-    # 缺失时 _derive_status 的场景计数兜底循环对非 dict 元素 isinstance 全部
-    # 跳过、循环后落到 return "verified"，同样为损坏报告合成「全部场景通过」
-    # 的假通过——与 03296ed3a49e/cbea2bb63e40/c0bc338cd2ea 同族 fail-closed。
-    if (
-        isinstance(scenarios, list)
-        and scenarios
-        and any(isinstance(sc, dict) for sc in scenarios)
-    ):
+    # 有效性判据（fail-closed，勿放宽为「list 或 dict 即可用」）已抽为上方两个
+    # 纯谓词（code-review a59955c007d3），主函数只做两步组合判定。真值表
+    # （scenarios 形态 × summary 形态 → 采信/拒收）：
+    #
+    #   scenarios                       | summary                     | 结果
+    #   --------------------------------|-----------------------------|------
+    #   非空列表含 dict 元素             | 任意                        | 采信
+    #   空列表（占位/截断）              | 带计数键且 usable           | 采信
+    #   键缺失（None，合法旧形态）        | 带计数键且 usable           | 采信
+    #   非空纯非 dict 列表（写坏）        | 任意（含 usable）           | 拒收
+    #   非列表非 None（dict/str/int 等） | 任意                        | 拒收
+    #   空列表 / 键缺失                  | 非 dict/无计数键/不可用     | 拒收
+    #
+    # 共同 fail-closed 依据：「scenarios: []」且 summary 缺失/为空是截断/写坏
+    # 形态——采信它会经「空场景集 + 无失败证据」一路推导出 verified，合成出
+    # 「全部场景通过」的假通过报告，与模块 fail-closed 哲学（不写空报告、
+    # 阻断推进）相反。
+    if _scenarios_detail_usable(scenarios):
         return data
-    if isinstance(summary, dict) and any(
-        key in summary for key in ("total", "passed", "failed", "errors")
-    ):
-        # summary-present 变体同样要防：引擎验收失败/Runner 初始化失败路径写下
-        # 的占位报告（_build_report([])）正是「scenarios=[] + summary 带全套
-        # 计数键（total=0/failed=0）」形态，采信它会经「failed=0 且声明了
-        # failed 键」推出 verified——即上面注释防住的假通过形态换了变体。
-        # 故 scenarios 为空列表时要求 summary.total > 0 才可用（total>0 说明
-        # 确有场景跑过，scenarios 明细缺失属截断而非占位）；total 缺失/为 0/
-        # 不可解析一律按占位报告拒收（fail-closed）。
-        # 且须 summary 显式声明 failed 与 errors 键（引擎 _build_report 恒写
-        # 全套计数键，合法截断报告必满足）：仅带 total 的 summary 携带零失败
-        # 证据，_derive_status 的 summary 分支因未声明失败键落到场景计数兜底，
-        # 空场景集推不出 bug-found，最终仍推出 verified——「total>0 即放行」
-        # 的假通过漏网变体（code-review 03296ed3a49e），同按 fail-closed 拒收。
-        if isinstance(scenarios, list):
-            # scenarios 非空但纯非 dict 元素（如 ["x", "y"]）同按写坏拒收，
-            # 与上分支 any(isinstance(sc, dict)) 同口径（code-review
-            # 274cf309b5cb）：此形态采信后 _derive_status 的场景明细交叉核对
-            # 对非 dict 元素 isinstance 全部跳过，summary 声明零失败即落到
-            # return "verified"，合成「全部场景通过」的假通过报告。空列表
-            # 不在此列（属明细截断形态，仍按下方 _summary_usable 门槛判定）。
-            if scenarios and not any(isinstance(sc, dict) for sc in scenarios):
-                return None
-            if _summary_usable(summary):
-                return data
+    # 明细不可用时的写坏形态先行拒收（与谓词判据同口径，勿单侧漂移）：非空
+    # 纯非 dict 元素列表（code-review 274cf309b5cb）、非列表非 None
+    # （code-review cbea2bb63e40：无条件放行会绕过 total>0 与 failed/errors
+    # 键门，采信「scenarios=0 + summary 全 0」后 _derive_status 经 summary
+    # 分支推出 verified、verdict_failed_ids 对非列表 scenarios 迭代得空失败
+    # 集）一律按损坏报告拒收。
+    if isinstance(scenarios, list):
+        if scenarios:  # 非空且不含 dict 元素（空列表走下方 summary 门槛）
             return None
-        # scenarios 为非列表形态（dict/str/int 等写坏形态）同按 fail-closed
-        # 拒收：此处无条件放行会绕过上面 total>0 与 failed/errors 键门，
-        # 采信「scenarios=0 + summary 全 0」这类损坏形态后 _derive_status 经
-        # summary 分支推出 verified、verdict_failed_ids 对非列表 scenarios
-        # 迭代得空失败集，合成「全部场景通过」的假通过报告
-        # （code-review cbea2bb63e40）。
-        if scenarios is not None:
-            return None
-        # scenarios 键缺失（None，合法旧形态）分支同口径收口（code-review
-        # item c0bc338cd2ea）：键缺失不等于豁免——「scenarios 缺失 + summary
-        # 声明 failed/errors=0（total 缺失/为 0）」的截断/占位报告同样可经
-        # _derive_status 的 summary 分支推出 verified、合成「全部场景通过」
-        # 的假通过报告，与上方两个相邻变体同按 fail-closed 拒收：仅 total>0
-        # 且显式声明 failed/errors 键（与列表分支同门槛）才采信。
-        if _summary_usable(summary):
-            return data
+    elif scenarios is not None:
         return None
+    # 剩余两形态同按 summary 计数门槛兜底：空列表（引擎验收失败/Runner 初始化
+    # 失败路径写下的占位报告 _build_report([]) 正是「scenarios=[] + summary
+    # 带全套计数键（total=0/failed=0）」形态，code-review 03296ed3a49e）与
+    # 键缺失（合法旧形态，code-review c0bc338cd2ea：键缺失不等于豁免，
+    # 「scenarios 缺失 + summary 声明 failed/errors=0」同样可推出假通过）。
+    # 仅 total>0 且显式声明 failed/errors 键（合法截断报告必满足，与列表分支
+    # 同门槛）才采信，占位/截断/写坏 summary 一律拒收（fail-closed）。
+    if _summary_counts_usable(summary):
+        return data
     return None
 
 
@@ -1052,7 +1054,17 @@ def render_verification_report(
             isinstance(sc, dict) and str(sc.get("status") or "") not in ("pass", "passed")
             for sc in _resolve_scenarios(report, run_result) or []
         ):
-            count_note = "其余失败场景已豁免（见分类列）"
+            # code-review 2a41215d022b：豁免声明须核实成立——与 _derive_status
+            # summary 分支（第 522/541 行）同口径调用 _failed_scenarios_all_exempt。
+            # 全豁免（flaky/test-defect 豁免场景合法保留失败计数而终局 verified）
+            # 维持现文案；含任一不可豁免失败（如 fast-track 只重写
+            # .fenix-run-result.json 为 verified、report.json 仍为上一轮含未被
+            # 豁免失败明细的残留）时改中性表述，避免渲染无依据的豁免声明、
+            # 与场景明细表互相矛盾误导人工复核。
+            if _failed_scenarios_all_exempt(report, run_result):
+                count_note = "其余失败场景已豁免（见分类列）"
+            else:
+                count_note = "结构化数据存在失败明细，终局判定以 verification.verdict 为准"
         else:
             count_note = "全部场景通过"
     lines.append(f"## 结论：{head}")

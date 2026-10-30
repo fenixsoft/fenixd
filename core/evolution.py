@@ -1462,7 +1462,10 @@ def ingest_item(item: dict, project_root) -> str:
     # spec/changes/evo-<name> 已存在，被拒条目从未建过目录不会命中，用户的
     # 显式拒绝被静默反转。故终态（accepted/auto_accepted/rejected）记录跳过
     # 重入库、原样保留台账字段，只按原记录刷新 todo.md 处理标记（补齐缺失
-    # 标记、断掉重报循环；失败仍仅 WARNING，不影响守卫主流程）。
+    # 标记、断掉重报循环；失败仍仅 WARNING，不影响守卫主流程）。本守卫在
+    # 锁外读快照仅作快速路径，判定到最终写回之间的并发窗口由下方
+    # _guarded_write 锁内重读兜住（code-review item 34c87888f256），此处
+    # 漏判不再回退已落定的终态。
     existing = read_items(project_root).get(eid)
     if existing is not None and existing.get("status") in (
         "accepted",
@@ -1481,6 +1484,54 @@ def ingest_item(item: dict, project_root) -> str:
             commit=False,
         )
         return str(existing.get("status") or "")
+
+    def _guarded_write(record: dict, marker_disposition: Optional[str] = None) -> str:
+        """终态守卫与单条写回收进同一把 items.jsonl flock（code-review item
+        34c87888f256）：此前各回写点走 upsert_item 无条件覆盖，与上方锁外
+        快照终态判定之间无锁覆盖——判定后台账被并发接受/拒绝终态化时，陈旧
+        pending/analyzed 记录会覆盖 accepted/auto_accepted/rejected，STATE
+        已注册在途而台账状态回退。现复用 accept_item/reject_item 的锁内
+        _read_items_unlocked + _write_items_unlocked compare-and-set 范式
+        （fba717748316/7d60d7df0370）：锁内重读该条目状态，非终态才写，使
+        ingest 写回与并发处置串行化；锁内读到并发终态则跳过写回、台账原样
+        保留，只按原记录刷新 todo.md 标记（与上方守卫同口径）。标记回写放
+        锁外（不参与 CAS，c3bd82b14eed），恒传 commit=False（批量路径由编排
+        层批末合并提交）。MUST NOT 在已持 items.jsonl 锁的上下文调用（同进程
+        二次 flock 自阻塞）。
+
+        Returns: 条目状态——正常写回为本条写入状态；并发终态为既有终态。
+        """
+        path = items_path(project_root)
+
+        def _do() -> Tuple[str, Optional[dict]]:
+            items = _read_items_unlocked(path)
+            existing = items.get(eid)
+            if existing is not None and existing.get("status") in (
+                "accepted",
+                "auto_accepted",
+                "rejected",
+            ):
+                return str(existing.get("status") or ""), existing
+            items[record["id"]] = record
+            _write_items_unlocked(path, items)
+            return str(record.get("status") or ""), None
+
+        status, terminal = _with_lock(path, _do)
+        if terminal is not None:
+            _logger.warning(
+                "evolution: 条目 %s 写回前已被并发置终态 %s，跳过重入库"
+                "（保留原 created_at/decided_at/decided_by/spec_name）",
+                eid,
+                status,
+            )
+            write_todo_marker(
+                terminal,
+                disposition=_disposition_from_status(status),
+                commit=False,
+            )
+        else:
+            write_todo_marker(record, disposition=marker_disposition, commit=False)
+        return status
 
     base = {
         "id": eid,
@@ -1510,9 +1561,7 @@ def ingest_item(item: dict, project_root) -> str:
 
     if not worth_spec:
         base["status"] = "analyzed"
-        upsert_item(project_root, base)
-        write_todo_marker(base, commit=False)
-        return "analyzed"
+        return _guarded_write(base)
 
     # ── 立项价值闸门（2026-10-11 判定收紧，用户定调 A+B）──────────────
     # B1 verdict 一致性：worth_spec=true 的必要条件 = problem_exists=yes
@@ -1537,12 +1586,10 @@ def ingest_item(item: dict, project_root) -> str:
             "evolution: 条目 %s 被立项价值闸门拦下（verdict 非双 yes）: %s",
             eid, base["worth_gate_reason"],
         )
-        upsert_item(project_root, base)
         # 处置文案可区分（code-review item 82c54e2f68ac）：闸门拦下即终态
         # analyzed（accept_item 只受理 pending/accept_failed），todo.md 标记
         # 不得再渲染「处理：待处理」误导人类读者以为框架仍将立项
-        write_todo_marker(base, disposition="闸门拦下", commit=False)
-        return "analyzed"
+        return _guarded_write(base, marker_disposition="闸门拦下")
 
     # B2 同名在途：spec/changes/evo-<name>/ 已存在 → 同一问题域重复立项
     # （曾以 -<6hex> 后缀照样立项，一周内散件族 8 个、codefix 族 10 个）
@@ -1562,18 +1609,14 @@ def ingest_item(item: dict, project_root) -> str:
                 "evolution: 条目 %s 被同名在途闸门拦下: spec/changes/%s",
                 eid, inflight,
             )
-            upsert_item(project_root, base)
-            write_todo_marker(base, disposition="闸门拦下", commit=False)
-            return "analyzed"
+            return _guarded_write(base, marker_disposition="闸门拦下")
 
     d, reason = materialize_draft(base, project_root)
     if d is None:
         base["status"] = "draft_failed"
         base["draft_failed_reason"] = reason
         _logger.warning("evolution: 条目 %s 草稿落盘失败: %s", eid, reason)
-        upsert_item(project_root, base)
-        write_todo_marker(base, commit=False)
-        return "draft_failed"
+        return _guarded_write(base)
 
     violations = lint_draft(d, project_root)
     if violations:
@@ -1586,16 +1629,12 @@ def ingest_item(item: dict, project_root) -> str:
             eid,
             base["draft_failed_reason"],
         )
-        upsert_item(project_root, base)
-        write_todo_marker(base, commit=False)
-        return "draft_failed"
+        return _guarded_write(base)
 
     base["status"] = "pending"
-    upsert_item(project_root, base)
-    # pending 是 ingest_item 批量路径的第 4 处回写：同传 commit=False，
+    # pending 是 ingest_item 批量路径的收口回写：helper 恒传 commit=False，
     # 由编排层批末 commit_todo_marker 合并提交（避免逐条提交风暴）
-    write_todo_marker(base, commit=False)
-    return "pending"
+    return _guarded_write(base)
 
 
 # ── 任务 3.4：SPEC 名生成与冲突消解 ────────────────────────────────

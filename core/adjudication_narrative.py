@@ -50,7 +50,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import tempfile
 import threading
@@ -59,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from core.proc_utils import guard_killpg
+from core.proc_utils import kill_process_group
 from core.spec_naming import validate_spec_name
 # add-harness-adapter-layer 4.2：叙事通道 adapter 化（命令构造唯一入口
 # ClaudeAdapter、spawn 原语 one_shot；超时清场仍用本模块 _kill_process_group）
@@ -192,12 +191,24 @@ _MAX_ATTEMPTS = 2
 _NARRATIVE_MAX_CONCURRENCY = 2
 _narrative_slots = threading.Semaphore(_NARRATIVE_MAX_CONCURRENCY)
 
+# 排队深度上限（code-review 3ee15fc3c140）：信号量只封顶同时在飞数，突发大量
+# 告警仍会按条起等量排队线程（各自至多挂起 360s 等空位）——登记线程总数（在
+# 飞+排队）达上限即不再起线程，直接写终态侧车（与熔断跳过同款同步收口，
+# 防「调查生成中」假态语义不变）。合计 18 取量级：正常批量回归突发远低于此，
+# 仅极端风暴触发丢弃。
+_NARRATIVE_MAX_THREADS = _NARRATIVE_MAX_CONCURRENCY + 16
+
 # 2 次尝试全败的终态侧车文案（机械说明，model=null——失败告警 MUST NOT 以
 # narrative_pending 悬挂「调查生成中」假态）
 GENERATION_FAILED_TEXT = "调查未能生成（连续超时/生成失败，已放弃重试）。"
 
 # 熔断生效期跳过生成的终态侧车文案
 BREAKER_SKIP_TEXT = "调查未能生成（叙事连续失败熔断中，冷却期跳过生成）。"
+
+# 排队超限的终态侧车文案（code-review e1729c19759a/3ee15fc3c140）：排队等待
+# 超时与调度期排队饱和共用——两者均未进入生成、生成系统本身可能健康，不得
+# 复用生成失败文案向决策者宣称「连续超时/生成失败」（归因失真）。
+QUEUE_OVERFLOW_TEXT = "调查因排队超限未生成，告警机械字段仍可裁决。"
 
 # ── 连续失败熔断器（task 4.1，design D4）────────────────
 
@@ -302,51 +313,27 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """超时清扫：先对整组 SIGTERM 给短暂优雅窗口，未退再 SIGKILL 整组。
 
     子进程经 ``start_new_session=True`` 独立成组（pgid==pid），超时只杀直接
-    子进程会留下派生的孙进程孤儿继续占端口/内存（同仓库有界 spawn 惯例：
-    knowledge._kill_process_group、bin/test_for.py run_bounded、hook_engine、
-    verify_contract）。killpg 失败（进程组已退出）静默吞掉；末尾弃管道收割
-    直接子进程，不留僵尸、不让逃出进程组的孙进程悬挂管道
-    （knowledge.py code-review 44d833e20470 教训）。
+    子进程会留下派生的孙进程孤儿继续占端口/内存。击杀序列（SIGTERM →
+    wait(5s) 宽限 → 探活整组仍有成员才 SIGKILL 补刀，item 72a90eb6cb2e 的
+    「补刀不以直接子进程超时为前提」口径）已收口进
+    core/proc_utils.kill_process_group 单点（item 21d8a42c21c1；regression
+    车道同名薄适配器先例）——本函数只是调用适配，不再本地重排该序列
+    （code-review 614e441bb97a：内联副本与单点行为漂移——getpgid 失败时
+    单点按 pgid=pid 回退补刀并 WARNING 留痕，副本却整体跳过击杀，单点的
+    护栏修订不会再传导到副本）。
+    ``sigkill_only_if_group_alive=True`` 表达本车道「SIGKILL 前先探活整组、
+    组仍有成员才补刀」既有口径；caller 回传自身标识，保留守卫告警的取证
+    锚点。
 
-    SIGKILL 补刀不以直接子进程超时为前提（code-review item 72a90eb6cb2e，
-    对齐 core/regression.py 同名实现）：无论直接子进程是否在窗口内退出，
-    都探活整组（killpg(pgid, 0)），组内仍有成员（忽略 SIGTERM 的孙进程）
-    即升级 SIGKILL 补刀。
+    收尸留调用方（单点实现约定的差异化收尾）：末尾收割直接子进程不留僵尸、
+    弃管道不让逃出进程组的孙进程悬挂管道（knowledge.py code-review
+    44d833e20470 教训）。
     """
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        pgid = None  # 进程组已不存在（直接子进程已消亡），仅剩管道清理尾巴
-    # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已解析直传；
-    # 守卫拒绝（自身组/非正 pgid）＝组不可投递，与组已不存在同样跳过探活补刀。
-    if pgid is not None and not guard_killpg(
-        pgid,
-        signal.SIGTERM,
+    kill_process_group(
+        proc,
+        sigkill_only_if_group_alive=True,
         caller="adjudication_narrative._kill_process_group",
-        resolve=False,
-    ):
-        pgid = None
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
-    # 直接子进程退出 ≠ 组内已清：探活整组，仍有成员（忽略 SIGTERM 的孙
-    # 进程）则 SIGKILL 补刀；ProcessLookupError ＝ 组已清空，静默即可。
-    # pgid 复用上方捕获的值——wait 收尸后 getpgid(proc.pid) 会因进程
-    # 消失而失效。
-    # [fenix-ignore:6c966c77e867] 复用窗口≤5s 且 Linux pid 顺序分配，无关组撞同 pgid 属极低概率理论风险，guard_killpg 已挡自身组误杀，start_time 比对收益过低保持既有取舍
-    if pgid is not None:
-        try:
-            os.killpg(pgid, 0)
-        except (ProcessLookupError, OSError):
-            pgid = None  # 组已清空，无需 SIGKILL 补刀
-        else:
-            guard_killpg(
-                pgid,
-                signal.SIGKILL,
-                caller="adjudication_narrative._kill_process_group",
-                resolve=False,
-            )
+    )
     try:
         proc.wait(timeout=10)  # 收割 SIGKILL 后的子进程，不留僵尸
     except subprocess.TimeoutExpired:
@@ -785,7 +772,7 @@ def _build_prompt(
         f"- signal_type: {entry.get('signal_type', '')}",
         f"- spec: {entry.get('spec', '') or '（无）'}",
         f"- severity: {entry.get('severity', '')}",
-        f"- 描述(description): {_clip_segment(str(entry.get('description', '')), _PROMPT_FIELD_MAX_CHARS)}",
+        f"- 描述(description): {_clip_segment(str(entry.get('description', '') or '（无）'), _PROMPT_FIELD_MAX_CHARS)}",
         f"- 证据(evidence): {_clip_segment(str(entry.get('evidence', '') or '（无）'), _PROMPT_FIELD_MAX_CHARS)}",
         f"- 建议动作(recommended_action): {_clip_segment(str(entry.get('recommended_action', '') or '（无）'), _PROMPT_FIELD_MAX_CHARS)}",
         "- 选项快照(choices):",
@@ -814,7 +801,12 @@ def _build_prompt(
         lines.append(materials)
     if facts:
         lines.append("【补充事实】")
-        lines.append(_format_facts(facts))
+        # facts 全量序列化不经单字段预算（code-review d4e8c7891279）：与
+        # 【验证材料】同用总上下文预算截断，大 dict/深嵌套长串不撑破单次
+        # prompt 体量口径
+        lines.append(
+            _clip_segment(_format_facts(facts), _NARRATIVE_CONTEXT_MAX_CHARS)
+        )
     return "\n".join(lines)
 
 
@@ -1191,7 +1183,9 @@ def _narrative_worker(
         if not _narrative_slots.acquire(
             timeout=_resolve_timeout(admin_cfg) * _MAX_ATTEMPTS
         ):
-            write_narrative_sidecar(project_root, alert_id, GENERATION_FAILED_TEXT, None)
+            # 排队等待超时 ≠ 生成失败（code-review e1729c19759a）：未进入
+            # 生成、生成系统可能健康，终态侧车用专属文案区分归因
+            write_narrative_sidecar(project_root, alert_id, QUEUE_OVERFLOW_TEXT, None)
             _warn(ctx, f"叙事排队等待超时，放弃补叙并写终态侧车（alert={alert_id}）")
             return
         try:
@@ -1247,6 +1241,9 @@ def schedule_narrative(
     - 通道未装配（测试进程未注入假通道）整体惰性：零线程、零侧车；
     - 熔断生效期：零调用零延迟，同步写终态侧车（机械说明、model=null），
       失败告警不以 narrative_pending 悬挂「调查生成中」假态；
+    - 排队饱和（登记线程达 :data:`_NARRATIVE_MAX_THREADS`，code-review
+      3ee15fc3c140）：零线程，同步写终态侧车（机械说明、model=null），
+      防突发风暴创建等量近乎空转的排队线程，也不悬挂「调查生成中」假态；
     - 正常路径：启动 daemon 线程（:func:`_narrative_worker`，至多 2 次尝试
       → 补叙/终态侧车），返回线程对象（测试 ``wait_pending_narrative``
       等待用）；任何调度异常 WARNING 留痕、绝不抛出穿透发射链路。
@@ -1267,6 +1264,20 @@ def schedule_narrative(
         if _breaker_gate():
             write_narrative_sidecar(project_root, alert_id, BREAKER_SKIP_TEXT, None)
             _warn(ctx, f"叙事熔断生效，跳过生成并写终态侧车（alert={alert_id}）")
+            return None
+        # 排队上限（code-review 3ee15fc3c140）：登记集＝在飞（≤并发上限）+
+        # 排队，达上限即不再添线程，直接写终态侧车（与熔断跳过同款同步收
+        # 口，文案同为 QUEUE_OVERFLOW_TEXT），防突发风暴按条起等量近乎空转
+        # 的线程占内存与调度资源。
+        with _active_lock:
+            saturated = len(_active_threads) >= _NARRATIVE_MAX_THREADS
+        if saturated:
+            write_narrative_sidecar(project_root, alert_id, QUEUE_OVERFLOW_TEXT, None)
+            _warn(
+                ctx,
+                f"叙事排队已达上限（{_NARRATIVE_MAX_THREADS}），"
+                f"跳过补叙并写终态侧车（alert={alert_id}）",
+            )
             return None
         t = threading.Thread(
             target=_narrative_worker,

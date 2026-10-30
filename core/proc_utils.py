@@ -67,7 +67,9 @@ def is_claude_process(pid_str: str) -> bool:
         return os.path.basename(argv0.decode("utf-8", "replace")) in tuple(
             current_process_patterns()
         )
-    except (OSError, IndexError):
+    except OSError:
+        # /proc 读取失败（进程已退出、权限不足等）按非 claude 进程计。
+        # bytes.split 恒返回非空列表，[0] 不会 IndexError，无需防御分支。
         return False
 
 
@@ -303,7 +305,10 @@ def kill_process_group(
         term_sent = guard_killpg(pgid, signal.SIGTERM, caller=caller, resolve=False)
         try:
             popen.wait(timeout=term_grace)
-        except Exception:
+        except subprocess.TimeoutExpired:
+            # 宽限窗口内未优雅退出属预期时序，直接落到补刀（docstring 第 5 步
+            # 「无论 wait 成败都补一次组 SIGKILL」）；wait 路径正常只抛
+            # TimeoutExpired，其余异常不吞，避免掩盖重构引入的缺陷。
             pass
         if not term_sent and sigkill_only_if_group_alive:
             # 探活口径专用提前收口：守卫拒绝＝「组已不存在」语义（含替身

@@ -2460,6 +2460,17 @@ class StateMachine:
                 f"——保留判定不可达，清标记走普通重派（从零）",
             )
         updates: dict = {FROZEN_FIELD: False}
+        # WIP 等待标志复位（与 _recovery_preserve_spec / boot 复位写点同款清
+        # 除写点）：冻结写点（freeze_spec/mark_frozen_hold）均不清该标志，且
+        # 冻结期间 status=blocked 使 _apply_updates_entry 的 implementing→ready
+        # 中央清除不触发——解冻不清则陈旧标志随落 ready/续做进入下一轮，
+        # dispatch 在周期消费者清账前把 spec 派回 implementing（ready→implementing
+        # 写点亦不清标志）时，下一拍 _recheck_wip_deferred_merges 会按
+        # 「implementing+带标志」触发 merge-only 重试，把在飞实现 run 的半成品
+        # 分支过早合入主树。续做 resume 与普通解冻两路径共用本 updates（同一
+        # 原子写），「implementing + _wip_gate_deferred ⇒ 无在飞实现 run」
+        # 不变式在解冻链同样成立。
+        updates["_wip_gate_deferred"] = False
         if status is not None and resume_status is None and not (frozen_hold and resume_branch):
             updates["status"] = status
         resume_anchors: dict = {}

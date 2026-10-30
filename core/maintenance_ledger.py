@@ -64,7 +64,12 @@ def list_maintenance_entries(project) -> list:
     except (OSError, UnicodeDecodeError):
         return []
     entries = []
-    for line in text.splitlines():
+    # code-review item 34ace64df65c：按 \n 硬分割而非 splitlines()——写侧
+    # json.dumps(ensure_ascii=False) 不转义 U+2028/U+2029，splitlines() 会按
+    # 其边界拆行，含此类字符的登记条目裂成两个半行 JSON、双双解析失败被跳过
+    # （落盘单行内唯一的真实换行即写侧追加的 \n，json 对 \r 等控制符恒转义；
+    # 行尾 .strip() 兜住 \r\n）。
+    for line in text.split("\n"):
         line = line.strip()
         if not line:
             continue
@@ -93,7 +98,7 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     探测台账而非落申领占位：台账是纯登记簿（追加行 + 读侧全量扫描），
     run_id 只作关联键、无独立产物文件可申领。退避 run 尾段变为
     ``-<rand>-<n>``（仅 project=None 的 base 形态无随机段），
-    admin_monitor._spec_from_run_id 的 ``-\\d{9,10}(-[ar]\\d+)*$`` 尾锚不再
+    admin_monitor._spec_from_run_id 的 ``-\\d{9,}(-(?:a|r)\\d+)*$`` 尾锚不再
     命中、scope 还原返回 None（回落泛型主体），与 code-review-<epoch>-<n>
     退避先例同口径；未撞名时（绝大多数）形态与解析不变。
 
@@ -102,7 +107,7 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     探测均未命中、各取同一 base，残余竞态仍产生同 run_id。混入短随机段把
     并发撞名概率降为可忽略（固定 ``x`` 引导 + 4 位 hex，65536 取值空间）：
     ``x`` 引导保证尾段不落入 run_files.RUN_ID_SUFFIX_RE 的 ``-a<n>``/``-r<n>``
-    attempt 形态、也不满足 admin_monitor._spec_from_run_id 的 ``-\\d{9,10}``
+    attempt 形态、也不满足 admin_monitor._spec_from_run_id 的 ``-\\d{9,}``
     尾锚（与既有 ``-<n>`` 退避同口径回落泛型主体）；随机段居尾，时间前缀
     保序。探测退避保留：串行的同秒同 scope 重复登记仍走确定性
     ``-<rand>-<n>`` 防撞。

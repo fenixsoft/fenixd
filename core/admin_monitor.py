@@ -2614,13 +2614,11 @@ class AdminMonitor:
                     f"均不再自动重派（原 run {run_id}，按既有失败路径收场）",
                 )
                 return
-            # 链登记（evo-review-empty-product-redispatch 1.1）：本 run 链已被
-            # 429 通道重派——其后再次硬门拦截只升级不再重派（双通道互不叠加
-            # 调度）。登记即事实陈述（本方法随后占额排程）。惰性建集（
-            # __dict__.setdefault，对齐 _register_run_harness 惯例）。
-            if run_id:
-                self.__dict__.setdefault(
-                    "_code_review_redispatched_runs", set()).add(run_id)
+            # 链登记移至守卫全过、占额与 Timer 构造成功之后（code-review item
+            # 91602e39d491）：下方配额/Timer 占用/冷却合法性任一守卫放弃都不
+            # 发生实际重派，若在此先行登记链标记却永久留存，本 run 再遭产物
+            # 硬门拦截会被 _handle_code_review_empty_product 的链命中判定误当
+            # 「重派仍零有效行」直接升级、烧掉零产物通道唯一一次重派机会。
             if self._code_review_ratelimit_redispatches >= RATELIMIT_REDISPATCH_MAX:
                 self.logger.warning(
                     "admin_monitor",
@@ -2664,6 +2662,14 @@ class AdminMonitor:
             )
             timer.daemon = True
             self._code_review_redispatch_timer = timer
+            # 链登记（evo-review-empty-product-redispatch 1.1；item 91602e39d491）：
+            # 守卫全过、占额与 Timer 构造成功后才登记——登记即「本 run 链已被
+            # 429 通道重派」的事实陈述，其后再次硬门拦截只升级不再重派（双通道
+            # 互不叠加调度）。惰性建集（__dict__.setdefault，对齐
+            # _register_run_harness 惯例）。
+            if run_id:
+                self.__dict__.setdefault(
+                    "_code_review_redispatched_runs", set()).add(run_id)
         try:
             self.logger.info(
                 "admin_monitor",
@@ -2724,14 +2730,10 @@ class AdminMonitor:
                     f"收场）",
                 )
                 return
-            # 链登记（evo-review-empty-product-redispatch 1.1）：本 run 链已被
-            # stall 通道重派——其后再次硬门拦截只升级不再重派（跨通道互不
-            # 叠加调度，与 _schedule_ratelimit_redispatch 登记原 run_id 同一
-            # 口径）。登记即事实陈述（本方法随后占额排程）。惰性建集（
-            # __dict__.setdefault，对齐惰性回退惯例）。
-            if run_id:
-                self.__dict__.setdefault(
-                    "_code_review_redispatched_runs", set()).add(run_id)
+            # 链登记移至守卫全过、占额与 Timer 构造成功之后（item 91602e39d491，
+            # 与 _schedule_ratelimit_redispatch 同口径）：守卫放弃路径不发生实际
+            # 重派，先行登记会让本 run 再遭产物硬门拦截时被链命中判定误当
+            # 「重派仍零有效行」直接升级。
             if self._code_review_stall_redispatches >= STALL_REDISPATCH_MAX:
                 self.logger.warning(
                     "admin_monitor",
@@ -2771,6 +2773,14 @@ class AdminMonitor:
             )
             timer.daemon = True
             self._code_review_redispatch_timer = timer
+            # 链登记（evo-review-empty-product-redispatch 1.1；item 91602e39d491）：
+            # 守卫全过、占额与 Timer 构造成功后才登记——登记即「本 run 链已被
+            # stall 通道重派」的事实陈述（跨通道互不叠加调度，与 429 通道登记
+            # 原 run_id 同一口径）。惰性建集（__dict__.setdefault，对齐惰性
+            # 回退惯例）。
+            if run_id:
+                self.__dict__.setdefault(
+                    "_code_review_redispatched_runs", set()).add(run_id)
         try:
             self.logger.info(
                 "admin_monitor",
@@ -2989,18 +2999,23 @@ class AdminMonitor:
                     + self._pending_writeoff_note()
                     + (f", error={result.error}" if result.error else ""),
                 )
-                # 429 重派产物再遭产物硬门拦截（evo-review-empty-product-
+                # 重派产物再遭产物硬门拦截（evo-review-empty-product-
                 # redispatch 1.1）：链已被重派 → 只升级不再重派（spec「重派仍
-                # 失败升级信号」），升级标记同时封停两通道自动重派。
+                # 失败升级信号」），升级标记同时封停两通道自动重派。日志前缀
+                # 用 label 变量（item fe966ce60aa1：stall 通道共用本内核，
+                # 硬编码「429 重派」会归因失真）；升级透传重派链头（对齐
+                # BUG-03 修复口径，与零产物通道 worker 同款——按链头检索
+                # 告警记录才对得上号）。
                 _face = getattr(result, "fail_face", None)
                 if isinstance(_face, dict):
                     self.logger.warning(
                         "admin_monitor",
-                        f"code-review 429 重派产物仍被产物硬门拦截：run "
-                        f"{result.run_id}（variant={_face.get('variant')}）"
-                        f"——发升级信号并停止自动重派",
+                        f"code-review {label}产物仍被产物硬门拦截：run "
+                        f"{result.run_id}（variant={_face.get('variant')}，"
+                        f"原 run {original_run_id}）——发升级信号并停止自动重派",
                     )
-                    self._escalate_code_review_empty_product(_face)
+                    self._escalate_code_review_empty_product(
+                        _face, original_run_id=original_run_id)
             except Exception as e:
                 self.logger.error("admin_monitor", f"code-review {label}异常: {e}")
             finally:
@@ -3109,11 +3124,17 @@ class AdminMonitor:
 
         def _worker():
             try:
+                # redispatch_of 与 429/stall 共享内核对齐（code-review item
+                # 3ea3436a8ea0）：runner 侧核销覆盖完整性守卫按
+                # cumulative_covered_files(root, redispatch_of) 求原 run 链并集
+                # 后比对解锁；缺省则本重派 run 按链长 1 判覆盖，原 run 在产物
+                # 缺失/部分分片可读形态下的部分落账不入链，与链式口径不一致。
                 result = self.agent_runner.run_code_review(
                     manifest,
                     review_kind=review_kind,
                     window_start=window_start,
                     scope=scope,
+                    redispatch_of=original_run_id or None,
                 )
                 with self._code_review_lock:
                     self.__dict__.setdefault(
@@ -3319,6 +3340,19 @@ class AdminMonitor:
                 f"（去重键 {dedup_key}）",
             )
 
+    def _mark_api_stall_metrics_seen(self, run_id: str) -> None:
+        """api stall 扫描记忆集登记（容量封顶，code-review item f656edf637ef）。
+
+        比照 DAEMON_ERROR_FP_MEMORY_LIMIT 姊妹 memo 惯例（_daemon_fp_escalated_at、
+        _family_intake_mutex_skip_memo 同款封顶）：本集合只防重复扫描，run 文件
+        被保留规则清理归档后条目没有独立淘汰时机，长驻 daemon 下单调增长；set
+        无序、防重语义只需近窗口，超限整体清空即可（被清 run 最多重扫一轮，
+        信号侧 merge_signal 按 run 去重，不产生重复告警）。
+        """
+        if len(self._api_stall_metrics_seen) > DAEMON_ERROR_FP_MEMORY_LIMIT:
+            self._api_stall_metrics_seen.clear()
+        self._api_stall_metrics_seen.add(run_id)
+
     def _check_api_round_stall_escalated(self) -> None:
         """api_round_stall 升级信号检测面（evo-add-api-stall-disposition-closeout 2.1）。
 
@@ -3355,7 +3389,7 @@ class AdminMonitor:
             try:
                 if path.stat().st_mtime < now - _API_STALL_SCAN_MAX_AGE_SECONDS:
                     # 陈旧产物：不回灌历史信号，标记 seen 零 IO 跳过
-                    self._api_stall_metrics_seen.add(run_id)
+                    self._mark_api_stall_metrics_seen(run_id)
                     continue
                 row = _read_terminal_run_metrics(path)
             except OSError:
@@ -3365,12 +3399,12 @@ class AdminMonitor:
                 # 已失活的残留文件（崩溃未落指标行）标记 seen 防每轮空转尾读。
                 try:
                     if path.stat().st_mtime < now - _API_STALL_SCAN_INACTIVE_SECONDS:
-                        self._api_stall_metrics_seen.add(run_id)
+                        self._mark_api_stall_metrics_seen(run_id)
                 except OSError:
                     pass
                 continue
             # 终态行已落：本文件评估完毕，标记 seen（无论是否触发信号）
-            self._api_stall_metrics_seen.add(run_id)
+            self._mark_api_stall_metrics_seen(run_id)
             latency_max = row.get("latency_max")
             if (not isinstance(latency_max, (int, float))
                     or isinstance(latency_max, bool)
