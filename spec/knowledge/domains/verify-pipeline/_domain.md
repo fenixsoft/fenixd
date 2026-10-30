@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-28 10:02 UTC+8
+> 最后更新：2026-10-30 19:30 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -21,6 +21,7 @@
 | [serve-scope-matrix](serve-scope-matrix.md) | 被测实例 serve 范围矩阵 | 2026-10-03 04:59 |
 | [serving-dist-freshness-probe](serving-dist-freshness-probe.md) | verify run 前 dist 新鲜度探针与自动重建 | 2026-10-03 05:45 |
 | [verify-serving-reclaim](verify-serving-reclaim.md) | 验证服务磁盘回收 | 2026-10-03 04:59 |
+| [verify-evidence-tiered-retention](verify-evidence-tiered-retention.md) | 验证证据分级留存（契约阈值缺省 10MB + 超阈值二进制以哈希旁证替代入库） | 2026-10-30 19:30 |
 | [verify-contract-autodraft](verify-contract-autodraft.md) | 验证契约（verify.yaml）自主起草 | 2026-10-03 04:59 |
 | [verify-contract-autodraft-ui](verify-contract-autodraft-ui.md) | 契约 AI 生成按钮 | 2026-10-03 04:59 |
 | [verify-contract-signal-dispatch](verify-contract-signal-dispatch.md) | 验证契约信号派发 | 2026-10-03 04:59 |
