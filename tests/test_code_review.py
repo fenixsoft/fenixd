@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -2193,6 +2194,11 @@ class TestCodeReviewTriggerConsume(unittest.TestCase):
         daemon.agent_runner = _FakeRunner()
         daemon.admin_monitor = _FakeMonitor()
         daemon._admin_executor = executor
+        # 池统计字段（code-review item c979d0ffe6f8 后手动车道会维护池计数）：
+        # 生产 __init__ 恒装配，__new__ 裸构替身须同步补齐（与 fenixd.py:449
+        # 同构），否则池路径 submit 前递增即 AttributeError。
+        daemon._admin_pool_lock = threading.Lock()
+        daemon._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         daemon.config = {}
         daemon.logger = _FakeDaemonLogger()
         return daemon
@@ -2777,6 +2783,11 @@ class TestManualWorkerRatelimitConsume(unittest.TestCase):
         daemon.agent_runner = MagicMock()
         daemon.admin_monitor = monitor
         daemon._admin_executor = _RecExecutor()
+        # 池统计字段（code-review item c979d0ffe6f8 后手动车道会维护池计数）：
+        # 生产 __init__ 恒装配，__new__ 裸构替身须同步补齐（与 fenixd.py:449
+        # 同构），否则池路径 submit 前递增即 AttributeError。
+        daemon._admin_pool_lock = threading.Lock()
+        daemon._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         daemon.config = {}
         daemon.logger = _RecDaemonLogger()
         return daemon
