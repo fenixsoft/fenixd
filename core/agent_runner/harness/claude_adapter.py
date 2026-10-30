@@ -187,18 +187,31 @@ def ensure_agent_config_dir(
                     pass
 
     # symlink 补建提取为小函数，marker 已存在的两条早退 return 路径同样执行
-    # ——首次创建时建链失败（OSError 被吞）或事后被清理的隔离目录借此自愈，
-    # 子代理能力不再静默降级。
+    # ——首次创建时建链失败（OSError 仅 WARNING 留痕）或事后被清理的隔离
+    # 目录（含悬空链接）借此自愈，子代理能力不再静默降级。
     def _ensure_symlinks() -> None:
-        # 幂等：源目录不存在则跳过（优雅降级）；链接已在则不重建
+        # 幂等：源目录不存在则跳过（优雅降级）；链接已在则不重建。存在性
+        # 判定用 lexists（不跟随链接）：悬空 symlink（指向已清理的目标）的
+        # exists() 返回 False，但路径项仍在，symlink_to 会抛 FileExistsError
+        # ——先 unlink 摘除旧链接项再重建，自愈语义才对悬空形态生效。
         for name in ("skills", "plugins"):
             src = Path.home() / ".claude" / name
             dst = cfg_dir / name
             try:
-                if src.is_dir() and not dst.exists():
-                    dst.symlink_to(src, target_is_directory=True)
-            except OSError:
-                pass
+                if not src.is_dir():
+                    continue
+                if os.path.lexists(dst):
+                    if dst.is_symlink() and not dst.exists():
+                        dst.unlink()
+                    else:
+                        # 有效链接或真实目录已在，不重建
+                        continue
+                dst.symlink_to(src, target_is_directory=True)
+            except OSError as e:
+                logger.warning(
+                    "ensure_agent_config_dir: %s symlink 补建失败"
+                    "（子代理能力降级，无 skills/plugins）: %s", name, e,
+                )
 
     if marker.is_file():
         try:
