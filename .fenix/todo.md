@@ -294,7 +294,7 @@
 
 ### 可改进
 - **夜间审查工具面饥饿空转零产物，硬门拦下后无重派当晚覆盖归零**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：10-24 00:01 按排程派发的周期审查 run code-review-1792771331 因工具面不可用空转约 5 分钟（16 轮、9 次工具调用、0.55 美元）产出零结果行，产物硬门拦下记 error 后无重派、无 admin 信号——当晚全仓审查覆盖归零：前夜 84 条发现已被修复链全数消费、台账清零，当晚 40+ 个 fix 提交引入的变更无人复审，缺口静默悬置到下一轮审查（24 小时后）。
   - 证据：run 档案 init 事件显示 26 个工具已装配（Task/Bash/Read/Write/ToolSearch 等，permissionMode=bypassPermissions），但 9 次 ToolSearch（工具面检索）查询中 5 次对基础工具返回 No matches（含「^(Bash|Read|Write|…)」锚定式与「bash|shell」等关键词式），其余 4 次仅返回裸 tool_reference 名单（只有工具名无 schema）；agent 16 轮后自证「Run 失败报告：工具面缺失，无法开展审查」如实收场、CLI 退出码 0；日志 10-23T16:06:06Z ERROR「产物硬门拦截: manifest=316 — 审查产物为零有效行（repo-code-review-gate）」与完成行 inserted=0/updated=0/resolved=0/shards=0；其后日志无重派记录，摘要第 3 节 admin 信号 0 条。
   - 调查评估：问题源：周期审查链（夜间全仓审查，run_at=00:00 排程）当晚 run 的失败复盘。已核实事实：①守卫按设计工作——repo-code-review-gate（产物硬门，逐文件结果行核验）首现即拦住空产物入账，台账未被污染；②完成行仅 INFO 级、无重派路径、无升级信号，覆盖缺口只能靠下一轮自然恢复；③根因在形态层——工具面在会话层已装配但「发现/加载」通道不可用，三假说并存：ToolSearch 索引/匹配缺陷（对已装配工具名返回 No matches）、延迟工具加载协议失效（引用只回名不回 schema 致 agent 无法加载）、CLI unrecognized_model stderr 行在案下的装配降级，档案证据不足以裁决。与存量工作关系：evo-add-review-night-defer-snapshot-writeoff 覆盖派发顺延与抢救面，spec/changes/ 活跃区无「零产物重派」同主题在飞提案，非重复立项。结论：守卫已堵住污染面，残余缺口是「拦截后无止损、无取证、无信号」，机制清楚，值立项。
