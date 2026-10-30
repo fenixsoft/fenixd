@@ -146,6 +146,29 @@ def projects_of(*proots: Path) -> list:
     ]
 
 
+def write_state(proot: Path, specs: dict) -> None:
+    """重写 STATE.md：specs 为 {name: (status, created_iso)}（created 传 None
+    表示条目缺 created 键——脏值/缺失规则用）。"""
+    body = "# Fenix Project State\n\n## Specs\n"
+    for spec, (status, created) in specs.items():
+        body += f"\n### {spec}\n- status: {status}\n- priority: 1\n"
+        if created is not None:
+            body += f"- created: {created}\n"
+        body += f"- updated: {created or T_CREATED}\n"
+    (proot / ".fenix" / "STATE.md").write_text(body, encoding="utf-8")
+
+
+def write_archive_state(proot: Path, specs: dict) -> None:
+    """写归档清单 STATE.archive.md（specs 为 {name: created_iso}）。"""
+    body = "# Fenix Archive State\n\n## Specs\n"
+    for spec, created in specs.items():
+        body += (
+            f"\n### {spec}\n- status: pushed\n- priority: 1\n"
+            f"- created: {created}\n- updated: {created}\n"
+        )
+    (proot / ".fenix" / "STATE.archive.md").write_text(body, encoding="utf-8")
+
+
 # ── KPI 四指标（任务 1.3 Scenario 1/2） ───────────────────────────────────
 
 
@@ -402,6 +425,231 @@ class TestOrgAggregation:
         assert cc.EDGES[0]["from"] == "planner"
 
 
+# ── org 需求数量名单（add-command-center-spec-view 任务 1.1/1.2） ─────────
+
+
+class TestOrgSpecsList:
+    """org summary.specs 名单：与 spec_count 同窗同循环派生、created 降序、
+    既有键零变动。"""
+
+    def test_window_filter_and_created_desc(self, tmp_path):
+        """窗过滤与 created 降序：窗外 SPEC、已归档 SPEC 不入名单。"""
+        proot = make_proj(tmp_path, "fenixd")
+        write_state(proot, {
+            "s-3": ("implementing", _iso(NOW - 3 * 86400)),
+            "s-1": ("drafted", _iso(NOW - 86400)),
+            "s-2": ("implementing", _iso(NOW - 2 * 86400)),
+            "s-old": ("implementing", _iso(NOW - 30 * 86400)),  # 窗外
+        })
+        # 窗内创建后归档的 SPEC：入归档清单（活跃 STATE 不含）→ 不入名单
+        write_archive_state(proot, {"arch-win": _iso(NOW - 86400)})
+        data = cc.aggregate_org(projects_of(proot), now=NOW, window="7d")
+        summary = data["summary"]
+        assert summary["spec_count"] == 3
+        assert summary["specs"] == [
+            {"project": "fenixd", "spec": "s-1"},  # created 新→旧
+            {"project": "fenixd", "spec": "s-2"},
+            {"project": "fenixd", "spec": "s-3"},
+        ]
+
+    def test_created_missing_bottom_in_all_window(self, tmp_path):
+        """created 缺失/脏值：仅全量窗计入（与 spec_count 同规则）且垫底。"""
+        proot = make_proj(tmp_path, "fenixd")
+        write_state(proot, {
+            "s-a": ("implementing", _iso(NOW - 3 * 86400)),
+            "s-b": ("drafted", _iso(NOW - 86400)),
+            "s-nc": ("implementing", None),  # 缺 created 键
+        })
+        d7 = cc.aggregate_org(projects_of(proot), now=NOW, window="7d")
+        # created 缺失不计入 7d 窗（与 spec_count 同口径）
+        assert d7["summary"]["spec_count"] == 2
+        assert [s["spec"] for s in d7["summary"]["specs"]] == ["s-b", "s-a"]
+        dall = cc.aggregate_org(projects_of(proot), now=NOW, window="all")
+        assert dall["summary"]["spec_count"] == 3
+        # created 新→旧，缺失垫底
+        assert [s["spec"] for s in dall["summary"]["specs"]] == [
+            "s-b", "s-a", "s-nc",
+        ]
+
+    def test_all_projects_cross_project_same_name(self, tmp_path):
+        """全部项目视图跨项目同名双条目（project 维度随条目下发）。"""
+        pa = make_proj(tmp_path, "proj-a")
+        pb = make_proj(tmp_path, "proj-b")
+        write_state(pa, {"fix-x": ("implementing", _iso(NOW - 86400))})
+        write_state(pb, {"fix-x": ("implementing", _iso(NOW - 2 * 86400))})
+        data = cc.aggregate_org(projects_of(pa, pb), now=NOW, window="7d")
+        assert data["summary"]["spec_count"] == 2
+        assert data["summary"]["specs"] == [
+            {"project": "proj-a", "spec": "fix-x"},
+            {"project": "proj-b", "spec": "fix-x"},
+        ]
+
+    def test_org_existing_keys_unchanged(self, tmp_path):
+        """org 既有响应键与改动前等价：顶层/summary/卡片键集冻结，仅新增
+        summary.specs；既有键值语义不变。"""
+        proot = make_proj(tmp_path, "proj-a", specs={"d": "implementing"})
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        assert set(data.keys()) == {
+            "project", "projects", "window", "summary", "zones", "edges",
+        }
+        summary = data["summary"]
+        assert set(summary.keys()) == {
+            "spec_count", "specs", "runs_total", "duration_total", "cost_total",
+        }
+        assert isinstance(summary["spec_count"], int)
+        assert isinstance(summary["runs_total"], int)
+        assert isinstance(summary["duration_total"], float)
+        assert summary["cost_total"] == 0.0  # planner 派生 $0（既有口径不变）
+        assert summary["specs"] == []  # d 创建于 3 月，不在今日窗
+        card = [c for z in data["zones"] for c in z["cards"]][0]
+        assert set(card.keys()) == {
+            "lane", "zone", "status", "runs", "success_rate", "cost",
+            "activity_14d", "last_activity_ts", "attributable", "attributables",
+        }
+        assert len(data["edges"]) == 4
+
+
+# ── spec 视图轮次聚合（add-command-center-spec-view 任务 2.1/2.3） ────────
+
+
+class TestSpecRunsAggregation:
+    """spec-runs 五 Scenario：全史定序窗内出列、花名册全量出列与别名归并、
+    归档剔除与损坏行跳过、（端点错误契约见 TestCommandCenterEndpoints）。"""
+
+    def lane_of(self, data, lane):
+        hit = [l for l in data["lanes"] if l["lane"] == lane]
+        assert len(hit) == 1, f"lane missing: {lane}"
+        return hit[0]
+
+    def test_full_history_seq_and_window_out(self, tmp_path):
+        """全史定序窗内出列：judge（dispute-judge 归并）对 x 全史 5 轮、
+        today 窗仅第 5 轮落窗 → rounds 恰 1 条 {seq: 5}（非「第1轮」）。"""
+        proot = make_proj(tmp_path, "proj-a")
+        times = [
+            NOW - 4 * 86400, NOW - 3 * 86400, NOW - 2 * 86400,
+            NOW - 90000, NOW - 600,
+        ]
+        for t in times:
+            priced_run(proot, f"dispute-judge-x-{t}", "done", t, usage=None)
+        data = cc.aggregate_spec_runs(projects_of(proot), "proj-a", "x", now=NOW)
+        assert data["project"] == "proj-a"
+        assert data["spec"] == "x"
+        assert data["window"] == "today"
+        judge = self.lane_of(data, "judge")
+        assert len(judge["rounds"]) == 1
+        r = judge["rounds"][0]
+        assert r["seq"] == 5
+        assert r["run_id"] == f"dispute-judge-x-{NOW - 600}"
+        assert r["started_ts"] == _iso(NOW - 600)
+        assert r["inflight"] is False
+        # 7d 窗：5 轮全落窗 → 顶行第 5 轮、底行第 1 轮（started 降序）
+        d7 = cc.aggregate_spec_runs(
+            projects_of(proot), "proj-a", "x", now=NOW, window="7d"
+        )
+        rounds7 = self.lane_of(d7, "judge")["rounds"]
+        assert [r["seq"] for r in rounds7] == [5, 4, 3, 2, 1]
+        assert rounds7[0]["run_id"] == f"dispute-judge-x-{NOW - 600}"
+        assert rounds7[-1]["run_id"] == f"dispute-judge-x-{NOW - 4 * 86400}"
+        # all 窗 = 全史，与 7d 同集
+        dall = cc.aggregate_spec_runs(
+            projects_of(proot), "proj-a", "x", now=NOW, window="all"
+        )
+        assert [r["seq"] for r in self.lane_of(dall, "judge")["rounds"]] == [
+            5, 4, 3, 2, 1,
+        ]
+
+    def test_roster_full_output_and_alias_merge(self, tmp_path):
+        """花名册全量出列：零 run 车道 rounds 空数组、ROSTER 序；观测 run
+        按 LANE_ALIASES 归并（dispute-judge→judge、repair→code-fix）。"""
+        proot = make_proj(tmp_path, "proj-a")
+        priced_run(proot, f"dispute-judge-y-{NOW - 3000}", "done", NOW - 3000, usage=None)
+        priced_run(proot, f"repair-y-{NOW - 2000}", "done", NOW - 2000, usage=None)
+        data = cc.aggregate_spec_runs(projects_of(proot), "proj-a", "y", now=NOW)
+        roster = [lane for lanes in cc.ROSTER.values() for lane in lanes]
+        got = [l["lane"] for l in data["lanes"]]
+        assert got[: len(roster)] == roster
+        assert got[len(roster):] == []  # 无花名册外观测 lane
+        # zone 标注既有分区
+        assert self.lane_of(data, "judge")["zone"] == "质量线"
+        assert self.lane_of(data, "code-fix")["zone"] == "交付线"
+        assert self.lane_of(data, "planner")["zone"] == "需求线"
+        # 别名归并：dispute-judge 计入 judge、repair 计入 code-fix
+        assert [r["run_id"] for r in self.lane_of(data, "judge")["rounds"]] == [
+            f"dispute-judge-y-{NOW - 3000}",
+        ]
+        assert [r["run_id"] for r in self.lane_of(data, "code-fix")["rounds"]] == [
+            f"repair-y-{NOW - 2000}",
+        ]
+        # 零 run 车道空列表（花名册全量出列）
+        assert self.lane_of(data, "planner")["rounds"] == []
+
+    def test_inflight_round_listed(self, tmp_path):
+        """在飞轮次照常入列且 inflight=true（读侧 IN_FLIGHT_STATUSES 判定）。"""
+        proot = make_proj(tmp_path, "proj-a")
+        priced_run(proot, f"impl-z-{NOW - 600}", "progress", NOW - 600, usage=None)
+        data = cc.aggregate_spec_runs(projects_of(proot), "proj-a", "z", now=NOW)
+        rounds = self.lane_of(data, "implementer")["rounds"]
+        assert len(rounds) == 1
+        assert rounds[0]["seq"] == 1
+        assert rounds[0]["inflight"] is True
+        assert rounds[0]["run_id"] == f"impl-z-{NOW - 600}"
+
+    def test_archived_removed_and_corrupt_started_skipped(
+        self, tmp_path, monkeypatch
+    ):
+        """归档剔除与损坏行跳过：已归档 SPEC 名下 run 不出现在任何车道；
+        started 解析失败行跳过且不占 seq（其余轮 seq 连续）。"""
+        proot = make_proj(tmp_path, "proj-a")
+        write_archive_state(proot, {"arch-q": T_CREATED})
+        priced_run(proot, f"impl-arch-q-{NOW - 5000}", "done", NOW - 5000, usage=None)
+        t1, t2 = NOW - 8000, NOW - 3000
+        priced_run(proot, f"impl-y-{t1}", "done", t1, usage=None)
+        priced_run(proot, f"impl-y-{t2}", "done", t2, usage=None)
+        # 读侧注入一条 started 脏值行（get_runs 元数据 started 恒为合法 ISO，
+        # 该形态仅来自读层演进代差/手改产物，防御分支以最小注入验证）
+        import core.dashboard.data as dd
+
+        real_get_runs = dd.get_runs
+
+        def _with_dirty_row(proot_, spec_name=None, **kw):
+            rows = real_get_runs(proot_, spec_name, **kw)
+            if spec_name == "y" and rows:
+                rows.append(dict(rows[0], run_id="impl-y-dirty", started="not-a-ts"))
+            return rows
+
+        monkeypatch.setattr(dd, "get_runs", _with_dirty_row)
+        # 归档剔除：查询已归档 SPEC 名（window=all）→ 零轮次
+        darch = cc.aggregate_spec_runs(
+            projects_of(proot), "proj-a", "arch-q", now=NOW, window="all"
+        )
+        assert all(l["rounds"] == [] for l in darch["lanes"])
+        # 损坏行跳过不占 seq：其余轮 seq 连续 1..2，started 降序
+        dy = cc.aggregate_spec_runs(
+            projects_of(proot), "proj-a", "y", now=NOW, window="all"
+        )
+        rounds = self.lane_of(dy, "implementer")["rounds"]
+        assert [r["seq"] for r in rounds] == [2, 1]
+        assert [r["run_id"] for r in rounds] == [f"impl-y-{t2}", f"impl-y-{t1}"]
+        assert not any(
+            r["run_id"] == "impl-y-dirty"
+            for l in dy["lanes"]
+            for r in l["rounds"]
+        )
+
+    def test_unknown_project_missing_params_contract(self, tmp_path):
+        """数据层防御：project 收窄不到项目（路由契约已挡未知项目）时
+        轮次为空、lanes 仍花名册全量出列（不炸、不回落跨项目聚合）。"""
+        proot = make_proj(tmp_path, "proj-a")
+        priced_run(proot, f"impl-y-{NOW - 600}", "done", NOW - 600, usage=None)
+        data = cc.aggregate_spec_runs(
+            projects_of(proot), "no-such", "y", now=NOW
+        )
+        assert all(l["rounds"] == [] for l in data["lanes"])
+        assert len(data["lanes"]) == len(
+            [lane for lanes in cc.ROSTER.values() for lane in lanes]
+        )
+
+
 # ── 交付流水线（任务 2.5） ────────────────────────────────────────────────
 
 
@@ -650,6 +898,7 @@ class TestCommandCenterEndpoints:
         for path in (
             "/api/command-center/kpi",
             "/api/command-center/org",
+            "/api/command-center/spec-runs?project=proj-a&spec=i1",
             "/api/command-center/pipeline",
             "/api/command-center/ledger",
             "/api/command-center/inbox",
@@ -657,3 +906,57 @@ class TestCommandCenterEndpoints:
             _, first = srv.get(path)
             _, second = srv.get(path)
             assert first == second, path
+
+    # ── spec-runs 端点（add-command-center-spec-view 任务 2.2/2.3） ──────
+
+    def test_spec_runs_endpoint_registered_and_shape(self, cc_server_fx):
+        """端点注册 + 响应形态：{project, spec, window, lanes}，lanes 花名册
+        全量出列；window 非法值回落 today。"""
+        _, srv = cc_server_fx
+        status, data = srv.get("/api/command-center/spec-runs?project=proj-a&spec=i1")
+        assert status == 200
+        assert "error" not in data
+        assert data["project"] == "proj-a"
+        assert data["spec"] == "i1"
+        assert data["window"] == "today"
+        lanes = [l["lane"] for l in data["lanes"]]
+        roster = [lane for lanes in cc.ROSTER.values() for lane in lanes]
+        assert lanes[: len(roster)] == roster
+        assert set(data.keys()) == {"project", "spec", "window", "lanes"}
+        # 轮次条目形态 {seq, run_id, started_ts, inflight}
+        for l in data["lanes"]:
+            for r in l["rounds"]:
+                assert set(r.keys()) == {"seq", "run_id", "started_ts", "inflight"}
+        # window 非法值防御性回落 today（与 org 同规则）
+        status, data = srv.get(
+            "/api/command-center/spec-runs?project=proj-a&spec=i1&window=bogus"
+        )
+        assert status == 200
+        assert data["window"] == "today"
+
+    def test_spec_runs_unknown_project_error_contract(self, cc_server_fx):
+        """未知项目：200 + {"error": "project not found", ...}（同族契约）。"""
+        _, srv = cc_server_fx
+        status, data = srv.get(
+            "/api/command-center/spec-runs?project=no-such&spec=i1"
+        )
+        assert status == 200
+        assert data["error"] == "project not found"
+        assert data["project"] == "no-such"
+
+    def test_spec_runs_missing_required_params_error_contract(self, cc_server_fx):
+        """必填参数缺失/空值：200 + error 字典（与未知项目同族契约），
+        MUST NOT 回落为跨项目聚合（响应不携带 lanes）。"""
+        _, srv = cc_server_fx
+        for q in (
+            "/api/command-center/spec-runs",
+            "/api/command-center/spec-runs?spec=i1",
+            "/api/command-center/spec-runs?project=proj-a",
+            "/api/command-center/spec-runs?project=&spec=i1",
+            "/api/command-center/spec-runs?project=proj-a&spec=",
+            "/api/command-center/spec-runs?project=proj-a&spec=&window=all",
+        ):
+            status, data = srv.get(q)
+            assert status == 200, q
+            assert "error" in data, q
+            assert "lanes" not in data, q

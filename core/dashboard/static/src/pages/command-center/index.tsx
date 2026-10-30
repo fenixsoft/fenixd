@@ -21,6 +21,12 @@ import ExecutionLedger from './ExecutionLedger';
 const isTimeWindow = (v: string | null): v is TimeWindow =>
   TIME_WINDOW_OPTIONS.some((o) => o.value === v);
 
+// spec 视图选中态（add-command-center-spec-view：spec_project, spec 二元组）
+export interface SpecViewSelection {
+  project: string;
+  spec: string;
+}
+
 export default function CommandCenterPage() {
   // 默认 Tab = 组织总览（specs「导航与默认 Tab」Requirement）
   const [activeKey, setActiveKey] = useState('org');
@@ -47,6 +53,15 @@ export default function CommandCenterPage() {
   // 时间窗（今日/7日/全量）：仅组织总览有时间窗口径（流水线/台账端点无
   // window 语义），非总览页签隐藏该下拉，不留「显示但无效」的死控件
   const [orgWin, setOrgWinState] = useState<TimeWindow>(urlWin);
+  // spec 视图选中态（add-command-center-spec-view 4.1：2026-10-30 用户定稿
+  // 深链进 URL——`spec`（SPEC 名）+ `spec_project`（该 spec 所属项目）双参数
+  // 写读单点，与 project/window 同款管理；刷新/分享直达。名单校验不过
+  // （隐式退出规则）由 OrgGrid 在 org 数据到达后回调置 null 清参数）
+  const urlSpec = searchParams.get('spec') ?? '';
+  const urlSpecProject = searchParams.get('spec_project') ?? '';
+  const [specView, setSpecViewState] = useState<SpecViewSelection | null>(
+    urlSpec && urlSpecProject ? { project: urlSpecProject, spec: urlSpec } : null,
+  );
 
   // 筛选变更同步写 URL（replace：不刷历史栈）。不用 setSearchParams 的
   // 函数式更新器——本 react-router 版本下它不生效（写出的 query 恒空，
@@ -67,6 +82,24 @@ export default function CommandCenterPage() {
       setOrgWinState(v);
       const next = new URLSearchParams(searchParams);
       next.set('window', v);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+  // spec 视图选中态写 URL（add-command-center-spec-view 4.1）：置 null =
+  // 显式/隐式退出，两参数一并清除；置值 = 深链入链（spec_project 恒随选中
+  // 入链，跨项目同名消歧零歧义）
+  const setSpecView = useCallback(
+    (v: SpecViewSelection | null) => {
+      setSpecViewState(v);
+      const next = new URLSearchParams(searchParams);
+      if (v && v.spec && v.project) {
+        next.set('spec', v.spec);
+        next.set('spec_project', v.project);
+      } else {
+        next.delete('spec');
+        next.delete('spec_project');
+      }
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -156,6 +189,8 @@ export default function CommandCenterPage() {
                   project={project}
                   win={orgWin}
                   onProjects={reportProjects}
+                  specView={specView}
+                  onSpecViewChange={setSpecView}
                 />
               ),
             },

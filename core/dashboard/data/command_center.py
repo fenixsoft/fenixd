@@ -9,7 +9,9 @@
 - ``aggregate_pipeline``  交付流水线（SPEC 状态五列看板）；
 - ``aggregate_ledger``    执行台账（跨项目最近 50 条 run）；
 - ``aggregate_inbox``     裁决收件箱（admin_alerts 未决带 choices 快照条目
-                          的只读装配，执行复用既有 POST /api/alert-resolve）。
+                          的只读装配，执行复用既有 POST /api/alert-resolve）；
+- ``aggregate_spec_runs`` spec 视图轮次聚合（add-command-center-spec-view：
+                          单项目单 spec 轮次两步收集——全史定序 + 窗内出列）。
 
 约定（design D1–D6）：
 
@@ -487,9 +489,11 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
 
     响应携带 ``edges``（:data:`EDGES` 常量快照）、``projects`` 回显（与
     collab-graph 同一注入与筛选模式）、``summary``（产品团队汇总卡：需求数量
-    =窗口内创建的活跃 SPEC 数；runs_total/duration_total/cost_total=窗口内
-    全车道合计，时长为秒（run_metrics 指标口径，回退 mtime 推算），全未计价
-    → None）与 ``window`` 回显。
+    =窗口内创建的活跃 SPEC 数；``specs``=同窗活跃 SPEC 名单
+    ``[{project, spec}]``（add-command-center-spec-view 1.1，与 spec_count
+    同循环同窗口径派生，created 新→旧、缺失垫底）；runs_total/duration_total/
+    cost_total=窗口内全车道合计，时长为秒（run_metrics 指标口径，回退 mtime
+    推算），全未计价 → None）与 ``window`` 回显。
     """
     now_dt = _now_utc(now)
     day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -571,11 +575,23 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     import core.dashboard.data as _facade
 
     spec_count = 0
+    specs_list: list = []
     for p in _scoped_projects(registry_projects, project):
-        for entry in _facade.parse_state(Path(p["path"])).values():
+        pname = p["name"]
+        for spec_name, entry in _facade.parse_state(Path(p["path"])).items():
             created = _parse_ts((entry or {}).get("created"))
             if win_start is None or (created is not None and created >= win_start):
                 spec_count += 1
+                specs_list.append(
+                    {"project": pname, "spec": spec_name, "_created": created}
+                )
+    # created 新→旧（缺失垫底）；stable 排序保持同刻项目遍历序。
+    # add-command-center-spec-view 1.1：spec_count 统计循环同循环派生名单
+    # （不另扫盘），窗口过滤与 created 缺失/脏值规则与 spec_count 完全同口径。
+    specs_list.sort(
+        key=lambda s: s["_created"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     if "planner" in stats:
         stats["planner"]["runs"] = spec_count
         # 成功率固定 100%、成本固定 $0（2026-10-28 用户定稿）：规划为人机
@@ -667,12 +683,131 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
         "window": window,
         "summary": {
             "spec_count": spec_count,
+            # add-command-center-spec-view 1.1：活跃 SPEC 名单（当前项目筛选
+            # × 时间窗，与 spec_count 同窗同循环派生）；纯增量键，既有消费
+            # 零影响。仅 {project, spec} 条目形态下发（_created 内部排序键
+            # 不出网）。
+            "specs": [
+                {"project": s["project"], "spec": s["spec"]} for s in specs_list
+            ],
             "runs_total": runs_total,
             "duration_total": duration_total,
             "cost_total": round(sum(costs), 6) if costs else None,
         },
         "zones": zones,
         "edges": edges_snapshot(),
+    }
+
+
+# ── spec 视图轮次（GET /api/command-center/spec-runs 数据源） ─────────────
+
+
+def aggregate_spec_runs(
+    registry_projects, project, spec, *, now=None, window=WINDOW_TODAY
+) -> dict:
+    """spec 视图轮次聚合（add-command-center-spec-view 2.1，只读数据源）。
+
+    ``project`` 必填（spec 所属项目，单项目寻址——路由层保证非空且已存在，
+    本层按名收窄到唯一项目）、``spec`` 必填（SPEC 名，get_runs 的
+    run_spec_part 全等精确归属既有口径）。``window`` today/7d/all，缺省
+    today，非法值防御性回落 today（与 org 同规则）。
+
+    轮次收集两步（全史编号 2026-10-30 用户定稿）：
+
+    1. **全史定序**——不限窗收集该（LANE_ALIASES 归并后）车道 × 该 spec 的
+       全部 run（扫 live+archive 全量产物，不套 org 的 14 日 mtime 粗筛；
+       archived_names 剔除与 org 同口径），按 started 升序编 ``seq``
+       （1=全史最早）；started 解析失败的行跳过（无排序键不硬造轮次、
+       不占 seq，其余轮 seq 连续）。
+    2. **窗内出列**——仅 started ≥ win_start（today=UTC 日界/7d）或全史
+       （all）的轮进入响应，输出按 started 降序（最新在前）。
+
+    每轮条目 ``{seq, run_id, started_ts, inflight}``；``inflight`` 为 run
+    status ∈ :data:`IN_FLIGHT_STATUSES` 的读侧判定（编号口径与在飞判定
+    单点在后端，前端零推导）。``lanes`` 花名册全量出列（零 run 车道也带
+    ``rounds: []``，与 org 卡集合同序同全集：ROSTER 序 + 花名册外观测
+    lane 殿后）。
+
+    ``now`` 仅测试注入（冻结当前时刻，供 today/7d 窗口锚定）。
+    """
+    import core.dashboard.data as _facade
+
+    if window not in ORG_WINDOWS:
+        window = WINDOW_TODAY
+    now_dt = _now_utc(now)
+    day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    win_start = {
+        WINDOW_TODAY: day_start,
+        WINDOW_7D: now_dt - timedelta(days=7),
+        WINDOW_ALL: None,
+    }[window]
+
+    scoped = _scoped_projects(registry_projects, project)
+    proot = Path(scoped[0]["path"]) if scoped else None
+
+    # ① 全史定序：单项目单 spec（get_runs spec 全等过滤 + 既有 memo 元数据），
+    # archived_names 剔除同 org 口径（选中的是活跃 SPEC 时天然无影响）。
+    rounds_by_lane: dict = {}
+    if proot is not None and spec:
+        archived_names = set(_facade.parse_archived_state(proot))
+        collected: list = []
+        for r in _facade.get_runs(proot, spec, include_archive=True):
+            if archived_names and str(r.get("spec") or "") in archived_names:
+                continue
+            started = _parse_ts(r.get("started"))
+            if started is None:
+                continue  # 解析失败行跳过：不硬造轮次、不占 seq
+            raw_lane = r.get("agent_type") or "agent"
+            lane = LANE_ALIASES.get(raw_lane, raw_lane)
+            collected.append((started, lane, r))
+        collected.sort(key=lambda t: t[0])
+        for seq, (started, lane, r) in enumerate(collected, start=1):
+            rounds_by_lane.setdefault(lane, []).append(
+                {
+                    "seq": seq,
+                    "run_id": str(r.get("run_id") or ""),
+                    "started_dt": started,
+                    "started_ts": r.get("started"),
+                    "inflight": r.get("status") in IN_FLIGHT_STATUSES,
+                }
+            )
+
+    # ② 花名册全量出列（ROSTER 序 + 观测 lane 殿后，org 卡集合同序同全集）
+    # + 窗内出列（started 降序最新在前）。
+    roster_lanes = [lane for lanes in ROSTER.values() for lane in lanes]
+    ordered = roster_lanes + sorted(
+        lane for lane in rounds_by_lane if lane not in LANE_ZONE
+    )
+    lanes_out: list = []
+    for lane in ordered:
+        in_win = [
+            r
+            for r in rounds_by_lane.get(lane, [])
+            if win_start is None or r["started_dt"] >= win_start
+        ]
+        in_win.sort(key=lambda r: r["started_dt"], reverse=True)
+        rounds = [
+            {
+                "seq": r["seq"],
+                "run_id": r["run_id"],
+                "started_ts": r["started_ts"],
+                "inflight": r["inflight"],
+            }
+            for r in in_win
+        ]
+        lanes_out.append(
+            {
+                "lane": lane,
+                "zone": LANE_ZONE.get(lane, OTHER_ZONE),
+                "rounds": rounds,
+            }
+        )
+
+    return {
+        "project": project,
+        "spec": spec,
+        "window": window,
+        "lanes": lanes_out,
     }
 
 

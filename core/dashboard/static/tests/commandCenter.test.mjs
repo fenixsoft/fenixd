@@ -21,6 +21,13 @@ import {
   laneLabel,
   activityLineState,
   windowLabels,
+  SPEC_CELL_HOVER_BG,
+  SPEC_CELL_SELECTED_BG,
+  specRoundLabel,
+  specEntryLabel,
+  isSpecInList,
+  filterSpecEntries,
+  laneSpecRounds,
 } from '../src/pages/command-center/shared.ts';
 
 // ── null 指标格式化（null→「—」、0 保留） ────────────────────────────────
@@ -277,4 +284,81 @@ test('windowLabels：三窗标签组齐全（实例数/成功率/成本 + 团队
 
 test('windowLabels：未知窗口回落 7 日组（防御脏值）', () => {
   assert.equal(windowLabels('bogus').rate, '7 日成功率');
+});
+
+// ── spec 视图纯助手（add-command-center-spec-view 3.2）──────────────────
+
+test('specRoundLabel：`spec名 · 第N轮`（seq 全史编号后端下发）', () => {
+  assert.equal(specRoundLabel('spec-x', 10), 'spec-x · 第10轮');
+  assert.equal(specRoundLabel('fix-a', 1), 'fix-a · 第1轮');
+});
+
+test('specEntryLabel：全部项目视图 project/spec 消歧；单项目只显 spec 名', () => {
+  assert.equal(specEntryLabel({ project: 'proj-a', spec: 'fix-x' }, true), 'proj-a/fix-x');
+  assert.equal(specEntryLabel({ project: 'proj-a', spec: 'fix-x' }, false), 'fix-x');
+});
+
+test('isSpecInList：选中态与 summary.specs 匹配判定', () => {
+  const list = [
+    { project: 'proj-a', spec: 'fix-x' },
+    { project: 'proj-b', spec: 'fix-x' },
+  ];
+  assert.equal(isSpecInList(list, 'proj-a', 'fix-x'), true);
+  assert.equal(isSpecInList(list, 'proj-b', 'fix-x'), true);
+  assert.equal(isSpecInList(list, 'proj-c', 'fix-x'), false);
+  assert.equal(isSpecInList(list, 'proj-a', 'fix-y'), false);
+});
+
+test('isSpecInList：缺键兜底空名单；project/spec 空值恒 false', () => {
+  assert.equal(isSpecInList(undefined, 'proj-a', 'fix-x'), false);
+  assert.equal(isSpecInList(null, 'proj-a', 'fix-x'), false);
+  assert.equal(isSpecInList([], 'proj-a', 'fix-x'), false);
+  assert.equal(isSpecInList([{ project: 'p', spec: 's' }], '', 's'), false);
+  assert.equal(isSpecInList([{ project: 'p', spec: 's' }], 'p', ''), false);
+});
+
+test('filterSpecEntries：空查询全量返回；project/spec 拼接串大小写不敏感过滤', () => {
+  const list = [
+    { project: 'proj-a', spec: 'fix-x' },
+    { project: 'proj-b', spec: 'fix-x' },
+    { project: 'proj-a', spec: 'add-y' },
+  ];
+  assert.deepEqual(filterSpecEntries(list, ''), list);
+  assert.deepEqual(filterSpecEntries(list, '  '), list);
+  assert.deepEqual(filterSpecEntries(list, 'add'), [{ project: 'proj-a', spec: 'add-y' }]);
+  assert.deepEqual(
+    filterSpecEntries(list, 'b/fix'),
+    [{ project: 'proj-b', spec: 'fix-x' }],
+  );
+  assert.deepEqual(filterSpecEntries(list, 'FIX-X'), list.filter((e) => e.spec === 'fix-x'));
+  assert.deepEqual(filterSpecEntries(list, 'no-hit'), []);
+});
+
+test('filterSpecEntries：缺键兜底空数组；脏元素（缺 spec）剔除', () => {
+  assert.deepEqual(filterSpecEntries(undefined, ''), []);
+  assert.deepEqual(filterSpecEntries(null, ''), []);
+  assert.deepEqual(
+    filterSpecEntries([{ project: 'p', spec: 'keep' }, { project: 'p', spec: '' }], ''),
+    [{ project: 'p', spec: 'keep' }],
+  );
+});
+
+test('laneSpecRounds：按 lane 提取轮次；缺卡/缺键兜底空数组', () => {
+  const lanes = [
+    { lane: 'judge', zone: '质量线', rounds: [{ seq: 5, run_id: 'r5', started_ts: 't5', inflight: false }] },
+    { lane: 'implementer', zone: '交付线', rounds: [] },
+  ];
+  assert.deepEqual(laneSpecRounds(lanes, 'judge'), [
+    { seq: 5, run_id: 'r5', started_ts: 't5', inflight: false },
+  ]);
+  assert.deepEqual(laneSpecRounds(lanes, 'implementer'), []);
+  assert.deepEqual(laneSpecRounds(lanes, 'no-such'), []);
+  assert.deepEqual(laneSpecRounds(undefined, 'judge'), []);
+  assert.deepEqual(laneSpecRounds(null, 'judge'), []);
+});
+
+test('spec 视图派生色常量：ACCENT 同族弱底且 hover 与选中态可区分', () => {
+  assert.equal(typeof SPEC_CELL_HOVER_BG, 'string');
+  assert.equal(typeof SPEC_CELL_SELECTED_BG, 'string');
+  assert.notEqual(SPEC_CELL_HOVER_BG, SPEC_CELL_SELECTED_BG);
 });

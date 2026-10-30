@@ -291,3 +291,78 @@ export function activityLineState(card: {
   }
   return { kind: 'rest' };
 }
+
+// ── spec 视图纯助手（add-command-center-spec-view 3.2）──────────────────
+// 纯函数与派生色常量：零 react/antd import 红线不变，node --test 直测。
+
+// 需求数量格可点击态派生色（ACCENT 同族弱底：hover 纯色提亮 + 选中态底色，
+// 与车道卡 hover 口径同族——纯色切换无动画）
+export const SPEC_CELL_HOVER_BG = 'rgba(64, 169, 255, 0.10)';
+export const SPEC_CELL_SELECTED_BG = 'rgba(64, 169, 255, 0.16)';
+
+// org summary.specs 条目（{project, spec}；created 排序由后端下发）
+export interface SpecEntry {
+  project: string;
+  spec: string;
+}
+
+// spec 视图轮次行（seq 全史编号/inflight 在飞判定均由后端下发，前端零推导）
+export interface SpecRound {
+  seq: number;
+  run_id: string;
+  started_ts: string | null;
+  inflight: boolean;
+}
+
+// spec-runs 车道（花名册全量出列：零 run 车道 rounds 为空数组）
+export interface SpecRunsLane {
+  lane: string;
+  zone: string;
+  rounds: SpecRound[];
+}
+
+// 轮次行 label 组装：`spec名 · 第N轮`（N=后端下发的全史 seq，前端零推导）
+export function specRoundLabel(spec: string, seq: number): string {
+  return `${spec} · 第${seq}轮`;
+}
+
+// 下拉条目显示：全部项目视图 `project/spec` 消歧（跨项目同名），单项目
+// 视图只显 spec 名
+export function specEntryLabel(entry: SpecEntry, allProjects: boolean): string {
+  return allProjects ? `${entry.project}/${entry.spec}` : entry.spec;
+}
+
+// 选中态与 summary.specs 匹配判定：缺键兜底视为空名单（旧后端/新前端混跑
+// 不异常）；project/spec 空值恒 false（深链脏参数防御）
+export function isSpecInList(
+  list: SpecEntry[] | null | undefined,
+  project: string,
+  spec: string,
+): boolean {
+  if (!project || !spec) return false;
+  return (Array.isArray(list) ? list : []).some(
+    (e) => !!e && e.project === project && e.spec === spec,
+  );
+}
+
+// 下拉搜索框本地过滤：`project/spec` 拼接串包含匹配（大小写不敏感）；
+// 缺键兜底空数组，脏元素（缺 spec）剔除
+export function filterSpecEntries(
+  list: SpecEntry[] | null | undefined,
+  query: string,
+): SpecEntry[] {
+  const src = (Array.isArray(list) ? list : []).filter((e) => !!e && !!e.spec);
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return src;
+  return src.filter((e) => `${e.project}/${e.spec}`.toLowerCase().includes(q));
+}
+
+// 车道轮次提取：spec-runs lanes → 指定 lane 的 rounds（缺卡/缺键/脏形态
+// 兜底空数组 → 渲染端按「未运行」口径显示，零伪造）
+export function laneSpecRounds(
+  lanes: SpecRunsLane[] | null | undefined,
+  lane: string,
+): SpecRound[] {
+  const hit = (Array.isArray(lanes) ? lanes : []).find((l) => !!l && l.lane === lane);
+  return hit && Array.isArray(hit.rounds) ? hit.rounds : [];
+}
