@@ -1,5 +1,5 @@
 # 自省与自进化
-> 最后更新：2026-10-30 18:05 UTC+8
+> 最后更新：2026-10-30 20:51 UTC+8
 
 自省与自进化：每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent、陈旧代码自愈及其冷却保护。本域能力页清单如下。
 
@@ -11,7 +11,7 @@
 | [evolution-product-contract](evolution-product-contract.md) | 产物契约校验与部分接受（两级拒绝粒度、部分接受落库、失败现场留档） | 2026-10-27 22:26 |
 | [todo-marker-commit-on-write](todo-marker-commit-on-write.md) | 自进化标记回写提交（批量批末合并/单点写后即时分治、条目 id 明细对账、失败降级） | 2026-10-27 22:53 |
 | [evolution-subagent-wait-ceiling](evolution-subagent-wait-ceiling.md) | 自进化子代理等待上限（车道 env 无限等待、前台派发兜底、击杀归因嗅探） | 2026-10-11 01:53 |
-| [daily-self-review](daily-self-review.md) | 每日自省调度与增量窗口 | 2026-10-12 01:48 |
+| [daily-self-review](daily-self-review.md) | 每日自省调度、todo.md 条目纪律（证据边界归因、纠错不回改）与增量窗口 | 2026-10-30 20:51 |
 | [self-review](self-review.md) | 自省 run 统计与失败判定口径 | 2026-10-06 07:44 |
 | [self-review-run-semantics](self-review-run-semantics.md) | 自省 run 终态的业务失败语义 | 2026-10-03 04:59 |
 | [self-review-midflight-signals](self-review-midflight-signals.md) | 自省中途信号采集（车道化离群初筛、离群 run 深扫、编排救回痕迹归集） | 2026-10-30 18:05 |
