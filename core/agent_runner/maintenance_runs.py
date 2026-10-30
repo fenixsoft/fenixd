@@ -3591,6 +3591,10 @@ def run_code_fix(
         # _run_agent 失败异常恒 False/空，硬门/计数失败路径不携带）。
         conn_error = False
         result_text = ""
+        # evo-codefix-zero-artifact-stop-loss 1.1：结构化失败类别同纪律——
+        # 仅产物硬门零产物失败置 "artifact_missing"（下方硬门块），其余
+        # 失败路径（api_error/异常/计数读取失败）保持缺省空串不添噪。
+        failure_category = ""
         try:
             output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
                 prompt,
@@ -3654,6 +3658,10 @@ def run_code_fix(
             if gate_err is not None:
                 run_ok = False
                 error = gate_err
+                # evo-codefix-zero-artifact-stop-loss 1.1：零产物失败透出结构化
+                # 类别（链编排器同指纹止损的计数判别单源）；conn_error 既有
+                # 语义不变（本路径恒 False 的现状逐位保持）。
+                failure_category = "artifact_missing"
                 _log = getattr(runner, "logger", None)
                 if _log is not None:
                     _log.error(
@@ -3707,6 +3715,7 @@ def run_code_fix(
             stderr_summary=stderr_summary if not run_ok else "",
             conn_error=conn_error if not run_ok else False,
             result_text=result_text if not run_ok else "",
+            failure_category=failure_category if not run_ok else "",
         )
     finally:
         try:
