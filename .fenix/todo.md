@@ -575,7 +575,7 @@
   - 建议：①回归判 passed 前校验 junit.xml 的 mtime 不早于本次命令 started_at，不满足按 parse_error/infra 失败处理（fail-closed）；②定向 targets 替换前过滤 # 前缀、__pycache__ 缓存与不存在路径并留痕告警；③补契约测试钉住「exit=4＋陈旧 XML 不得判 passed」。
 
 - **（持续）自省聚合dsh伴随流双计未修，本窗stale再虚增6**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口持续：本窗 17 个「run」中 6 个落入 stale（无终态残留）桶位，经核实全为 dsh 车道伴随事件流文件（占 35%），真实 run 约 11 个——聚合收集面仍把每个 dsh run 的原始事件流（dsh harness 另落一份的 .dsh-events.jsonl）当独立 run 计数，每日量级判断持续失真。
   - 证据：源码 core/self_review.py:555-562 的 _collect_run_files 仍为 glob("*.jsonl") 无 .dsh-events 后缀排除、以 p.stem 当 run_id；归档清单核实：10-29 16:13-16:55 归档的 6 个 .dsh-events.jsonl（planner-plan-fenix-prototype-1793259958-a1、impl-fenix-prototype-1793259958-a1、planner-judge-1793263294-a1、planner-judge-1793263826-a1、code-fix-fastlane-1793264083-a1、impl-fenix-prototype-1793264083-a1 的伴随流）与本窗 stale=6 一一对应。
   - 调查评估：问题源：对本窗摘要「无终态残留: 6」的反常量级核查（自省消费自身聚合产物的自指核查）。已核实事实：①修复零落地（源码行级确认，窗内触碰 self_review.py 的提交均与本缺口无关）；②本窗 dsh run 全部来自 fenix-prototype 主链，伴随流随 run 等比产生；③该缺口使 stale 桶位在 dsh 车道主车道化后恒被伴随流占据，真实的无终态残留信号被淹没。与存量工作关系：evo-fix-self-review-phantom-running（在跑幻影治理家族）未覆盖伴随文件去重，维持非重复判定。结论：一处后缀过滤+一条契约测试可闭环，持续小立项。
