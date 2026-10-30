@@ -460,7 +460,7 @@
   - 建议：①_collect_run_files 排除 .dsh-events.jsonl 后缀（或按基础 run_id 去重，伴随流仅作深扫证据源）；②补契约测试：含伴随流的 dsh run 在 runs 统计中计 1 次、不入 stale。
 
 - **蒸馏车道模型名拒识击杀，归档知识缺位8小时未重试**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：归档知识蒸馏车道被模型名识别失败击杀：2026-10-27-evo-add-review-failure-attribution 的蒸馏 run 于本地 16:03 派发、6 分钟后死亡，该归档的知识蒸馏自此缺位超 8 小时（至窗末未重试），且同型失败家族在保留日志内已累计 19 次（10-24 曾击杀一个 Administrator run），复发将持续推迟知识入库。
   - 证据：日志「knowledge-distill run 非零退出（exit=1）stdout 摘要: API Error: Connection dropped (ECONNRESET) | stderr 摘要: [claude-code:unrecognized_model] {"model":"glm-5.3-flash[1M]","query_source":"sdk"}」（2026-10-27T08:09:06Z，本地 16:09）；同分「已清理 spec/knowledge/ 半成品并登重试台账」；窗内其余 6 个归档蒸馏第 1-2 轮全部成功；grep 保留日志 unrecognized_model 共 19 条（窗内 2 条属同一事件）。
   - 调查评估：问题源：[2026-10-27#知识真相源#1] 重试台账项的根因核查。已核实事实：直接死因是双因子叠加——连接重置（ECONNRESET）＋CLI 拒识带 [1M] 上下文后缀的模型名 glm-5.3-flash[1M]（主车道同模型裸名一直可用）；.fenix/config.yaml 与 core/ 均未检索到 [1M] 注入点，后缀来源未定（假说：SDK 侧 1M 上下文旗标拼接 vs 网关路由改写），不出单因结论；重试台账已登记但窗内 8 小时未自动重试，蒸馏产线对该归档静默欠账。与存量工作关系：evo-knowledge-distill-resume-guard（蒸馏恢复守卫，活跃区在飞）覆盖重试恢复面，未覆盖模型名兜底；非重复立项。结论：先补低成本取证与兜底再谈根因，值小立项。
