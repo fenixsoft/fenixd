@@ -27,6 +27,9 @@ from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager.constants import WIP_GATE_STASH_PREFIX  # noqa: E402
 from core.worktree_manager.shape import branch_shape_is_verifier  # noqa: E402
+# porcelain 渲染解析单源（code-review item 5a95e5fdb8a7）：解析规则收敛在
+# queries.parse_worktree_porcelain，本模块采集点只保留自己的投影。
+from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
 # quotePath 反转义唯一实现在 core.git_text（本模块原持有一份独立实现，已收敛
 # 委托，code-review 3e99a584fdf5）；别名沿用旧名，调用点零改动。
 from core.git_text import unquote_git_path as _unquote_git_path  # noqa: E402
@@ -1069,10 +1072,11 @@ class G4MergebackMixin:
     def _worktree_name_branch_pairs(self) -> list:
         """``git worktree list --porcelain`` → [(目录名, 路径, 分支), ...]。
 
-        与 find_worktree_by_spec 同口径的 porcelain 渲染（`worktree <path>`
-        开段、`branch refs/heads/<b>` 属段；detached 无 branch 行不计）。
-        命令失败/超时返回空表 → 识别按「零命中=无主」走（升级仅为告警，
-        误判影响有界，MUST NOT 为覆盖盲区引入主树写探测）。
+        porcelain 渲染解析统一走 queries.parse_worktree_porcelain
+        （code-review item 5a95e5fdb8a7 单源化；`worktree <path>` 开段、
+        `branch refs/heads/<b>` 剥前缀属段；detached 无 branch 行不计——
+        本方法投影时滤除）。命令失败/超时返回空表 → 识别按「零命中=无主」
+        走（升级仅为告警，误判影响有界，MUST NOT 为覆盖盲区引入主树写探测）。
         """
         try:
             # -c core.quotePath=false（code-review item 86475b8c092e）：非 ASCII
@@ -1104,21 +1108,15 @@ class G4MergebackMixin:
             return []
         if res.returncode != 0:
             return []
+        # porcelain 渲染解析统一走 queries.parse_worktree_porcelain（code-review
+        # item 5a95e5fdb8a7 单源化；worktree 行开段、branch 行剥 refs/heads/、
+        # _unquote_git_path 兜底残余引号形——da2b5dbddd85 双保险口径已随解析
+        # 规则一并收敛进 helper）。本方法只保留自己的投影：(目录名, 路径, 分支)
+        # 三元组，detached（branch=None）不计。
         pairs: list = []
-        current_path = ""
-        for line in res.stdout.splitlines():
-            if line.startswith("worktree "):
-                # quotePath=false 只豁免高位字节 C 转义，双引号/反斜杠等残余
-                # 引号形经 _unquote_git_path 兜底（对无引号行幂等），与包内
-                # queries 层 porcelain 采集点同口径双保险（da2b5dbddd85）。
-                current_path = _unquote_git_path(line[len("worktree "):].strip())
-                continue
-            if line.startswith("branch ") and current_path:
-                branch = line[len("branch "):].strip()
-                if branch.startswith("refs/heads/"):
-                    branch = branch[len("refs/heads/"):]
-                pairs.append((Path(current_path).name, current_path, branch))
-                current_path = ""
+        for listed_path, listed_branch in parse_worktree_porcelain(res.stdout):
+            if listed_branch:
+                pairs.append((Path(listed_path).name, listed_path, listed_branch))
         return pairs
 
     def _branch_changed_files(self, branch: str) -> set:

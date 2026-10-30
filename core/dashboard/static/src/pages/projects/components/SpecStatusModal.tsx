@@ -96,13 +96,14 @@ export default function SpecStatusModal({
   // 在飞期间其余写动作按钮统一 disabled（code-review item 4011bc5fcc60），使
   // 「同一时刻只有一个确认动作在跑」在 UI 层成立而非仅注释声明。
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  // 直连动作重入守卫（code-review item 1ff7a536272c，比照 SessionPanel/
-  // HooksPanel 的 savingRef 口径）：预算「保存」「恢复跟随全局」与冻结配置
-  // 「应用」三个直连入口的防重若只靠 pendingAction state 驱动的按钮
-  // disabled，setPendingAction 渲染生效存在 React 调度间隙，间隙内连点会
-  // 并发发出两次写请求；经 pendingActionRef 写读同帧原子短路，state 只负责
-  // 按钮视觉反馈。三个入口共用一把锁（同 pendingAction 单值口径：同一时刻
-  // 弹窗内只有一个确认动作在跑，交叉并发同样竞速）。
+  // 弹窗级单飞重入守卫（code-review item 1ff7a536272c，比照 SessionPanel/
+  // HooksPanel 的 savingRef 口径）：防重若只靠 pendingAction state 驱动的
+  // 按钮 disabled，setPendingAction 渲染生效存在 React 调度间隙，间隙内
+  // 连点会并发发出两次写请求；经 pendingActionRef 写读同帧原子短路，state
+  // 只负责按钮视觉反馈。全部确认动作（预算「保存」「恢复跟随全局」与冻结
+  // 配置「应用」三个直连入口 + 九个 confirm 类 onOk）共用这一把锁（同
+  // pendingAction 单值口径：同一时刻弹窗内只有一个确认动作在跑，交叉并发
+  // 同样竞速）。
   const pendingActionRef = useRef(false);
   // 预算区状态（预算动作同样走 pendingAction 单值，防与冻结等并发写竞速）
   const [budgetOverride, setBudgetOverride] = useState<number | null>(null);
@@ -159,6 +160,8 @@ export default function SpecStatusModal({
       okText: '归档',
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('archive');
         try {
           await archiveSpec(project, spec);
@@ -167,6 +170,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`归档失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -186,6 +190,8 @@ export default function SpecStatusModal({
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('freeze');
         try {
           // add-freeze-stop-inflight-agents 6.3：冻结成功后若返回
@@ -203,6 +209,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`冻结失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -217,6 +224,8 @@ export default function SpecStatusModal({
       okText: '解冻',
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('unfreeze');
         try {
           await setSpecFreezeConfig(project, spec, 'unfreeze');
@@ -225,6 +234,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`解冻失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -301,6 +311,8 @@ export default function SpecStatusModal({
       okText: '晋升',
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('promote');
         try {
           const result = await promoteSpec(project, spec);
@@ -322,6 +334,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`晋升失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -349,6 +362,8 @@ export default function SpecStatusModal({
       okText: '审批推送',
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('approve-push');
         try {
           await approveSpecPush(project, spec);
@@ -357,6 +372,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`审批推送失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -391,6 +407,8 @@ export default function SpecStatusModal({
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('reflow');
         try {
           const result = await reflowSpec(project, spec);
@@ -406,6 +424,7 @@ export default function SpecStatusModal({
           // 与外层 task-gap 错误文案 err（gapNote 用）区分，请求异常专用命名
           message.error(`回炉失败：${requestErr instanceof Error ? requestErr.message : String(requestErr)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -435,6 +454,8 @@ export default function SpecStatusModal({
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('resume');
         try {
           const result = await resumeSpec(project, spec);
@@ -464,6 +485,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`恢复失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -532,6 +554,8 @@ export default function SpecStatusModal({
       okButtonProps: { type: 'primary' },
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('activate');
         try {
           const result = await activateSpec(project, spec);
@@ -555,6 +579,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`激活失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },
@@ -574,6 +599,8 @@ export default function SpecStatusModal({
       okText: '设为待激活',
       cancelText: '取消',
       onOk: async () => {
+        if (pendingActionRef.current) return;
+        pendingActionRef.current = true;
         setPendingAction('set-manual');
         try {
           await setSpecStartAfter(project, spec, 'manual');
@@ -582,6 +609,7 @@ export default function SpecStatusModal({
         } catch (err) {
           message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
+          pendingActionRef.current = false;
           setPendingAction(null);
         }
       },

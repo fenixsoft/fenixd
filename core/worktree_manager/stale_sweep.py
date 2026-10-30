@@ -14,6 +14,9 @@ from typing import Optional
 
 from core.git_base_branch import resolve_base_branch
 from core.worktree_manager.constants import STALE_LOCK_IDLE_SECONDS
+# porcelain 渲染解析单源（code-review item 5a95e5fdb8a7）：checked_out 采集段
+# 只保留「分支名集合」投影，解析规则统一在 queries.parse_worktree_porcelain。
+from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
 
 
 class G7StaleSweepMixin:
@@ -155,7 +158,10 @@ class G7StaleSweepMixin:
         merged = {ln.strip() for ln in merged_res.stdout.splitlines() if ln.strip()}
         # worktree 占用全集（宁漏勿误：git 注册的全部 checkout，含管理器
         # 未登记的 carrier）。git 自身亦拒绝删除被 checkout 的分支，此处
-        # 预检只为跳过计数与减少无效删除尝试。
+        # 预检只为跳过计数与减少无效删除尝试。porcelain 渲染解析统一走
+        # queries.parse_worktree_porcelain（code-review item 5a95e5fdb8a7
+        # 单源化）：本采集点只保留「分支名集合」投影，detached
+        # （branch=None）不计。
         wt_res = subprocess.run(
             ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
             capture_output=True,
@@ -166,11 +172,11 @@ class G7StaleSweepMixin:
         )
         checked_out: set = set()
         if wt_res.returncode == 0:
-            for line in wt_res.stdout.splitlines():
-                if line.startswith("branch "):
-                    ref = line[len("branch "):].strip()
-                    if ref.startswith("refs/heads/"):
-                        checked_out.add(ref[len("refs/heads/"):])
+            checked_out = {
+                branch
+                for _wt_path, branch in parse_worktree_porcelain(wt_res.stdout)
+                if branch
+            }
         # STATE 条目单次读取（守卫 (ii) 用）：None（不可解析）时全部分支
         # 由守卫 (i) 的「STATE 不可解析 → 保守保留」兜住，不在此放行。
         states = self._read_state_entries()

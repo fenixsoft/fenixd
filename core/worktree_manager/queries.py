@@ -38,6 +38,51 @@ from core.worktree_manager import (  # noqa: E402
 _WT_NAME_PREFIXES = ("impl", "verify", "repair", "judge")
 
 
+# porcelain 渲染解析单源（code-review item 5a95e5fdb8a7）：包内五处采集点
+# （find_worktree_path / find_worktree_by_spec / find_worktrees_by_spec /
+# mergeback._worktree_name_branch_pairs / stale_sweep._gc_merged_branches 的
+# checked_out 采集）历史上各持一份同型解析（worktree 行开段、branch 行剥
+# refs/heads/、unquote_git_path 兜底），仅靠注释互相宣称「同口径」——格式或
+# 引号规则演进需多点同步、漏改即静默漂移。解析规则收敛于本函数，调用点只
+# 保留各自的投影（取首个 / 按 spec 过滤 / 只取路径或分支名集合）。
+def parse_worktree_porcelain(stdout: str) -> list:
+    """解析 ``git worktree list --porcelain`` 渲染 → ``[(path, branch), ...]``。
+
+    单源口径（包内五处采集点统一调用，见上方块注释）：
+
+    - ``worktree <path>`` 行开新段：路径取行尾原文，经 :func:`unquote_git_path`
+      兜底双引号/反斜杠等残余引号形（调用点叠加 ``-c core.quotePath=false``
+      构成双保险，反转义单源在 core.git_text）；
+    - ``branch refs/heads/<name>`` 行剥 ``refs/heads/`` 前缀归一为短分支名
+      （只剥一次前缀：分支名内合法含 ``refs/heads/`` 字面量不受影响）；
+    - detached worktree 无 branch 行 → ``branch=None``（五处现役用法的并集：
+      只要分支的调用点自行滤除 None；find_worktrees_by_spec 的「目录名命中
+      即收」恰恰需要计入 detached 载体，helper 不得先行丢弃）；
+    - ``HEAD <sha>`` 行只是头部提交指针，不参与 detached 判定——detached 以
+      无 branch 行为准；bare 段同样按无 branch 行处理。
+
+    每段至多产出一条目；病态输入（branch 行前无 worktree 行、空路径段）不
+    产出条目。命令执行（超时/非零退出/降级口径）留在各采集点，本函数只做
+    纯文本解析。
+    """
+    sections: list = []
+    path: Optional[str] = None
+    branch: Optional[str] = None
+    for line in stdout.splitlines():
+        if line.startswith("worktree "):
+            if path:
+                sections.append((path, branch))
+            path = unquote_git_path(line[len("worktree ") :].strip())
+            branch = None
+        elif line.startswith("branch ") and path and branch is None:
+            branch = line[len("branch ") :].strip()
+            if branch.startswith("refs/heads/"):
+                branch = branch[len("refs/heads/") :]
+    if path:
+        sections.append((path, branch))
+    return sections
+
+
 class G8QueryMixin:
     """G8 查询/枚举（纯 git 只读；唯一写入口 create_worktree_on_branch）——低耦合（design D1 表 A G8）。"""
 
@@ -439,10 +484,11 @@ class G8QueryMixin:
             return None
         try:
             # -c core.quotePath=false（code-review item 8360737f053f）：非 ASCII
-            # worktree 路径缺省按 quotePath 的 C 转义引号形输出，下方按原文
-            # 切分与 Path 实际形态失配 → is_available 误降级 REBUILDABLE；
-            # 提取处再经 unquote_git_path 兜底双引号/反斜杠等残余引号形
-            # （与 dist_conflicts 采集点同口径，单源在 core.git_text）。
+            # worktree 路径缺省按 quotePath 的 C 转义引号形输出，按原文切分
+            # 与 Path 实际形态失配 → is_available 误降级 REBUILDABLE；
+            # 渲染解析统一走模块级 parse_worktree_porcelain（5a95e5fdb8a7
+            # 单源化），unquote_git_path 兜底双引号/反斜杠等残余引号形在
+            # helper 内（与 dist_conflicts 采集点同口径，单源在 core.git_text）。
             res = subprocess.run(
                 [
                     "git",
@@ -471,17 +517,14 @@ class G8QueryMixin:
             if query_failed is not None:
                 query_failed.append(True)
             return None
-        current_path: Optional[str] = None
-        for line in res.stdout.splitlines():
-            if line.startswith("worktree "):
-                current_path = unquote_git_path(line[len("worktree ") :].strip())
-            elif line.startswith("branch "):
-                listed_branch = line[len("branch ") :].strip()
-                # porcelain 格式：branch refs/heads/<name>；HEAD <sha> 行只是
-                # 头部提交指针，不是 detached 判定——detached worktree 缺失
-                # branch 行（该 section 不会匹配具名分支，下个 worktree 行覆盖）
-                if listed_branch == f"refs/heads/{branch}" and current_path:
-                    return Path(current_path)
+        # porcelain 渲染解析统一走 parse_worktree_porcelain（5a95e5fdb8a7
+        # 单源化；branch 行剥 refs/heads/ 已在 helper 内归一）。本方法只保留
+        # 自己的投影：首个 branch 命中目标分支的 worktree 路径——同一分支
+        # git 只允许一个 worktree（见上方 docstring），首个匹配即唯一；
+        # detached（branch=None）不会命中具名分支。
+        for listed_path, listed_branch in parse_worktree_porcelain(res.stdout):
+            if listed_branch == branch:
+                return Path(listed_path)
         return None
 
     def find_worktree_by_spec(self, spec_name: str) -> Optional[tuple]:
@@ -509,9 +552,10 @@ class G8QueryMixin:
         if not spec_name:
             return None
         try:
-            # -c core.quotePath=false + 下方 unquote_git_path（code-review
+            # -c core.quotePath=false + helper 内 unquote_git_path（code-review
             # item 8360737f053f，与 find_worktree_path 同口径）：非 ASCII
             # worktree 路径不被 C 转义引号形污染，目录名归属比对不失配。
+            # 渲染解析统一走 parse_worktree_porcelain（5a95e5fdb8a7 单源化）。
             res = subprocess.run(
                 [
                     "git",
@@ -543,20 +587,15 @@ class G8QueryMixin:
             )
             return None
 
-        # porcelain 渲染：`worktree <path>` 开新段，其后属行（HEAD/branch）属于
-        # 该段；detached worktree 无 branch 行，取不到具名分支，不作保全依据。
+        # 本方法只保留自己的投影：目录名具名精确匹配的 (wt_path, branch)
+        # 候选——detached worktree 无 branch 行（helper 记 branch=None），
+        # 取不到具名分支，不作保全依据（滤除 None）。
         candidates: list = []  # (wt_path, branch) 具名精确匹配的候选
-        current_path: Optional[str] = None
-        for line in res.stdout.splitlines():
-            if line.startswith("worktree "):
-                current_path = unquote_git_path(line[len("worktree ") :].strip())
+        for listed_path, listed_branch in parse_worktree_porcelain(res.stdout):
+            if not listed_branch:
                 continue
-            if line.startswith("branch ") and current_path:
-                listed_branch = line[len("branch ") :].strip()
-                if listed_branch.startswith("refs/heads/"):
-                    listed_branch = listed_branch[len("refs/heads/") :]
-                if self._wt_name_matches_spec(Path(current_path).name, spec_name):
-                    candidates.append((current_path, listed_branch))
+            if self._wt_name_matches_spec(Path(listed_path).name, spec_name):
+                candidates.append((listed_path, listed_branch))
 
         if not candidates:
             return None
@@ -608,9 +647,10 @@ class G8QueryMixin:
         if not spec_name:
             return []
         try:
-            # -c core.quotePath=false + 下方 unquote_git_path（code-review
+            # -c core.quotePath=false + helper 内 unquote_git_path（code-review
             # item 8360737f053f，与 find_worktree_path 同口径）：非 ASCII
             # worktree 路径不被 C 转义引号形污染，目录名归属比对不失配。
+            # 渲染解析统一走 parse_worktree_porcelain（5a95e5fdb8a7 单源化）。
             res = subprocess.run(
                 [
                     "git",
@@ -640,13 +680,13 @@ class G8QueryMixin:
                 f"find_worktrees_by_spec('{spec_name}'): 非零退出→空清单 " f"(rc={res.returncode})",
             )
             return []
+        # 本方法只保留自己的投影：目录名命中即收路径——helper 对 detached
+        # 载体记 branch=None，此处不滤（「同一 spec 的多个在册 worktree」
+        # 全集口径，含 detached，与既有行为一致）。
         paths: list = []
-        current_path: Optional[str] = None
-        for line in res.stdout.splitlines():
-            if line.startswith("worktree "):
-                current_path = unquote_git_path(line[len("worktree ") :].strip())
-                if current_path and self._wt_name_matches_spec(Path(current_path).name, spec_name):
-                    paths.append(current_path)
+        for listed_path, _listed_branch in parse_worktree_porcelain(res.stdout):
+            if self._wt_name_matches_spec(Path(listed_path).name, spec_name):
+                paths.append(listed_path)
         return paths
 
     def find_branches_by_spec(self, spec_name: str) -> list:
