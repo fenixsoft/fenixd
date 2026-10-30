@@ -2,11 +2,11 @@
 
 ## 背景
 
-评审车道 API 往返停滞已连续 7 窗记录（逐窗白等 6.4~14.2 分钟，2026-10-23 窗单轮 726.3 秒创日志新高、占墙钟 89.3%），但分级事件（api_round_stall，grade=warning-escalated）发出后没有任何处置入口：仅 logger 落日志（core/agent_runner/runner.py:6395-6426，注释明写「不 kill、不重派、不触发人工告警」），admin 信号面零接入（写入函数唯一 core/admin_store.py:622 merge_signal，调用方仅 admin_monitor.py:4533/4588/4593），数据摘要 admin 面按 kind=signal 计数恒 0。warning-escalated 全日志 8 次（10-15 至 10-23）无一处置，缺口点名自 10-17 起 6 窗延续。
+评审车道 API 往返停滞已连续 7 窗记录（逐窗白等 6.4~14.2 分钟，2026-10-23 窗单轮 726.3 秒创日志新高、占墙钟 89.3%），但分级事件（api_round_stall，grade=warning-escalated）发出后没有任何处置入口：仅 logger 落日志（core/agent_runner/runner.py:6440-6519，注释明写「不 kill、不重派、不触发人工告警」:6471），admin 信号面零接入（写入函数唯一 core/admin_store.py:662 merge_signal，调用方仅 admin_monitor.py:4629/:4684/:4689），数据摘要 admin 面按 kind=signal 计数恒 0。warning-escalated 全日志 8 次（10-15 至 10-23）无一处置，缺口点名自 10-17 起 6 窗延续。
 
 叠加终态清零：终态 run_metrics 的 latency_rounds/latency_stalls/latency_max 恒 0/0/null（fenixd.log:6895），与过程指标（:6893，10 轮/2 停滞/max 726.284）同 run 自相矛盾——只读终态行的下游（预算统计、重派判定、离群初筛）完全看不到停滞。
 
-根因（evo-1792779466 复核定位）：①终态行由 core/agent_runner/maintenance_runs.py:1240-1246 _log_lane_run_metrics 调 _log_run_metrics 时不传 latency（runner.py:9063-9065 零样本回退 0/0/None），而数据经 _run_agent 返回 tuple 第 5 元素已在收尾作用域（maintenance_runs.py:1952 解包 _stall_latency 后弃用）；runner.py 内 16 个调用点也仅成功路径（:5255）透传。②停滞事件路径无任何 admin_store 调用。
+根因（evo-1792779466 复核定位）：①终态行由 core/agent_runner/maintenance_runs.py:1306-1348 _log_lane_run_metrics 调 _log_run_metrics 时不传 latency（runner.py:9111/:9145-9147 零样本回退 0/0/None），而数据经 _run_agent 返回 tuple 第 5 元素已在收尾作用域（maintenance_runs.py:387/:854/:1462/:2083/:3248 五处解包 _stall_latency 后弃用）；runner.py 内 16 个调用点也仅成功路径（:5301-5306）透传。②停滞事件路径无任何 admin_store 调用。
 
 ## 目标
 
