@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=10
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget -->
+<!-- knowledge: capability=code-fix-lane rev=11
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -68,7 +68,9 @@
 - nodeid 映射以 junit `classname` 主导重构：点分模块路径转文件路径（`tests.test_x` → `tests/test_x.py`）、余下段作 `::` 类链、末接 `::name`；`file` 属性仅当存在时参与一致性校验。pytest junitxml 不产 `file` 属性属预期形态，MUST NOT 因此判映射失败。映射失败（classname 缺失或非 Python 模块形态、同一重构结果歧义、不足以唯一重构 nodeid）时回退为全量重试并留日志（fail-closed），落盘 `fallback_full=true`。
 - 轮间注入累计失败明细：按 nodeid 去重合并（此前修过但再次失败的用例仍在集内），后轮摘要覆盖前轮；映射失败时回退注入纯文本失败摘要。定向轮回归范围为**本轮失败集**（非累计集），上一轮已通过的用例不重跑。
 - 定向轮回归 `passed` 时 MUST 按正常路径合回并核销该批条目，MUST NOT 再补跑全量回归（子集回归的实际执行用例数等于该轮失败集大小）。
-- **回归异常熔断**：回归异常类失败——回归结局 `parse_error`（junit 产物缺失/不可解析），或回归 `failed` 但失败明细为空（无可注入的失败明细，含映射失败回退全量且明细 items 为空的形态）——在同批内**连续**达到熔断阈值（模块常量 `REGRESSION_ANOMALY_BREAKER_THRESHOLD`，缺省 2，不进配置、无 Dashboard 配置义务）时，重试循环 MUST 提前终止：不再派发下一轮定向 run 与全量回归，直接按现场即弃语义进入既有收口块（入档、worktree 清理、锁释放、告警与轮数耗尽路径零分叉复用）。
+- **回归异常熔断**：回归产不出可用失败用例明细的异常形态——回归结局 `parse_error`（junit 产物缺失/不可解析）、回归 `failed` 但失败明细为空（无可注入的失败明细，含映射失败回退全量且明细 items 为空的形态）、或回归 `timeout` 且失败明细映射不出任何用例（items 为空、`fallback_full=true`）——经异常判据识别并按异常分档计账后，在同批内**连续**达到熔断阈值时重试循环 MUST 提前终止：不再派发下一轮定向 run 与全量回归，直接按现场即弃语义进入既有收口块（入档、worktree 清理、锁释放、告警与轮数耗尽路径零分叉复用）。
+- 熔断阈值按异常形态取值：`timeout` 零失败面为 1——首记即收口，同批内首记命中即提前终止本批定向重试（首轮全量回归计数点命中则不派任何定向 run；定向轮计数点命中即停），且该形态按 anomaly 预算停止自动重派；`parse_error`/`failed` 形态为 2。阈值不进配置、无 Dashboard 配置义务。timeout 零失败面取首记即停的依据：该形态每轮固定烧满回归硬超时墙钟且产不出任何进度证据，重试期望收益为负。
+- 零失败面明细档留存进度证据：回归异常（`timeout`/total=0）写 `fix-reg-failures-regression-*.json` 明细档时，MUST 在 worktree 清理前把快照 `long_tests`（超耗时阈值的用例名+耗时；快照缺失该字段时次选 `junit.xml.log` 尾段逐用例进度日志）并入明细档，使 timeout/total=0 形态的明细档可直接定位毒化源；快照与 junit.xml.log 均落 worktree 内、随清理物理销毁，故并入必须先于清理。旧快照无 `long_tests` 字段时明细档保持现形态不报错，既有消费方（`items`/`fallback_full`）不受影响（schema 扩展为新增可选键，向后兼容）。
 - 熔断计数为批 worker 局部状态，同批内连续累计、跨批跨链不累计；真实测试失败（`failed` 且明细非空）MUST NOT 进熔断计数且将计数清零（偶发环境抖动后恢复正常不应累积误杀），回归 `passed` 天然离开循环。既有 `targeted_retry_max` 轮数上限行为在熔断未触发时逐位不变。
 - 熔断收口与轮数耗尽共用同一收口点：`branch`/`tip_sha`/`reason`/`failed_at`/最后一轮失败明细引用先入档再清理（语义见下条），批收口 `reason` 按收口形态分流——熔断为 `regression_parse_error_breaker`、轮数耗尽保持 `regression_failed_twice`；收口告警 MUST 复用 `write_regression_failed_alert` 单一调用点（告警名 `regression_failed_twice` 历史兼容名不变），`retry_rounds` 按实际执行轮数如实传入，同批 MUST NOT 重复告警。熔断触发 MUST 记 WARNING 日志并包含触发判据（各轮回归 status 与明细形态），供事后区分「测试失败耗尽」与「回归没跑出结果被熔断」。
 - 重试 run 本身失败（run 层面，非回归失败）不入失败档案、不烧跨轮预算：条目入 `chain_skipped`，清理 worktree 并释放 spec 锁，链继续（与首轮 run 失败同语义）。
@@ -87,3 +89,4 @@
 - 2026-10-09 evo-add-codefix-mergeback-conflict-salvage（spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage） — 新增「合回冲突定向救回」：真冲突整批即弃前先 rebase 基线+重跑批回归救回（至多 1 次）、失败降级组粒度 cherry-pick 回收（items: 清单归属、无据保守兜底入档）、救回挂 cleanup 前单轮闭环；defer 路径零预算语义不变。
 - 2026-10-28 2026-10-28-add-codefix-parse-error-breaker（spec/archive/2026-10-28-add-codefix-parse-error-breaker） — 「回归失败定向重试与丢弃」新增回归异常熔断：parse_error/空明细类失败同批连续达阈值（缺省 2）即提前终止重试循环，收口 reason 新增 `regression_parse_error_breaker`，入档/清理/告警零分叉复用轮数耗尽收口点，真实测试失败不进计数且清零。
 - 2026-10-30 evo-add-codefix-anomaly-redispatch-budget（spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget） — 修改本页：「回归失败定向重试与丢弃」的失败档案释放与触顶条款改按记录分档生效预算取值（异常形态 1 / 真实失败面 3）；失败档案 `reg_form` 入档与预算分档全量语义归 [code-fix-batch-selfheal](code-fix-batch-selfheal.md) 页承载。
+- 2026-10-30 evo-codefix-zero-face-regression-hardening（spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening） — 修改本页：回归异常熔断判据补入 timeout 零失败面形态，熔断阈值按形态分档（timeout 首记即收口、parse_error/failed 维持 2）；新增零失败面明细档留存进度证据规则（long_tests/junit.xml.log 尾段在 worktree 清理前并入明细档，schema 向后兼容）。

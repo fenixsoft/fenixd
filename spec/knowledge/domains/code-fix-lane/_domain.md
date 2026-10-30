@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-10-30 18:30 UTC+8
+> 最后更新：2026-10-30 19:58 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -7,13 +7,13 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [code-fix-lane](code-fix-lane.md) | 自动修复车道编排（两路激活/批循环/回归门合回/合回冲突定向救回/回归异常熔断/失败批重派预算分档/与审查车道调度解耦） | 2026-10-30 11:30 |
+| [code-fix-lane](code-fix-lane.md) | 自动修复车道编排（两路激活/批循环/回归门合回/合回冲突定向救回/回归异常熔断与零失败面收口及证据留存/失败批重派预算分档/与审查车道调度解耦） | 2026-10-30 19:58 |
 | [codefix-affinity-batching](codefix-affinity-batching.md) | 选批文件亲和性装箱、波次上限自适应、批收尾回归两段式（中间批定向/末批全量兜底） | 2026-10-06 07:29 |
 | [codefix-test-targets-sanitization](codefix-test-targets-sanitization.md) | 回归占位符回退消毒（四条回退/重试路径占位符替换缺省 tests/、判别读原件、周期回归通道豁免） | 2026-10-06 07:29 |
 | [codefix-digest-cost-metrics](codefix-digest-cost-metrics.md) | 消化链成本度量（run 工具构成指标 tool_uses/text_turns、链级 rollup 覆盖全部 run 不漏样本） | 2026-10-06 07:40 |
 | [code-fix-batch-parallel](code-fix-batch-parallel.md) | 批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底、边修复边提交收尾一次验证） | 2026-10-04 05:11 |
 | [code-fix-api-timeout-salvage](code-fix-api-timeout-salvage.md) | 批 run API 超时签名判别与失败现场抢救（salvage 提交保全、legacy 复用接续、非超时行为保形） | 2026-10-06 02:53 |
-| [code-fix-batch-selfheal](code-fix-batch-selfheal.md) | 修复批失败自愈（现场即弃〔API 超时例外走抢救〕、三态收尾、两层跳过与按回归终局形态分档的重试预算、登记闭环核销与解除留痕） | 2026-10-30 18:30 |
+| [code-fix-batch-selfheal](code-fix-batch-selfheal.md) | 修复批失败自愈（现场即弃〔API 超时例外走抢救〕、三态收尾、两层跳过与按回归终局形态分档的重试预算〔含 timeout 零失败面异常形态〕、登记闭环核销与解除留痕） | 2026-10-30 19:58 |
 | [codefix-night-quiet-window](codefix-night-quiet-window.md) | 夜间静默窗投递守卫（落窗与预计跨窗双形态拦截、窗末自动放行、窗次幂等武装/解除留痕、与冷却取更晚共存、手动触发同受守卫） | 2026-10-26 01:16 |
 | [code-fix-wipgate-defer](code-fix-wipgate-defer.md) | 修复批合回 WIP 阻断延迟合回（暂态零预算、现场保留+放锁、自动重试） | 2026-10-03 04:59 |
 | [code-fix-agent](code-fix-agent.md) | code-fix 修复 agent | 2026-10-03 05:23 |

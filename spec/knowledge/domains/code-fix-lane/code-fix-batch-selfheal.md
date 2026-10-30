@@ -1,7 +1,7 @@
 # 修复批失败自愈
 
-<!-- knowledge: capability=code-fix-batch-selfheal rev=4
-     sources=spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-add-codefix-failure-registration-closeout -->
+<!-- knowledge: capability=code-fix-batch-selfheal rev=5
+     sources=spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget,spec/archive/2026-10-30-evo-add-codefix-failure-registration-closeout,spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening -->
 
 自动修复车道批次失败的自愈语义：失败批现场即弃与锁即释、批收尾三态与链自驱动、两层跳过与失败档案重试预算、达上限登记的闭环核销与人工解除留痕，使单批失败零人工、不堵塞车道。
 
@@ -26,7 +26,7 @@
 
 ### 失败档案记录与预算用尽
 - 失败档案记录含 `fail_count`（缺省 1）、`reason`、`branch`、`tip_sha`、`failed_at`，以及回归终局形态 `reg_form`（`anomaly` | `mapped`）与 `reg_detail`（anomaly_streak、mapped_rounds、重试收敛事实）；同条目集（item_id 集合相同）再次失败复用既有记录并 `fail_count` 递增、刷新其余字段，不追加重复记录，`reg_form` 与重派计数以最近一次失败为准（最近失败为真实失败面即回到 mapped 预算，为异常形态即按 anomaly 预算继续）。
-- `reg_form` 判定：`anomaly` = 回归 `parse_error`（junit 产物缺失/不可解析）或回归 `failed` 但失败明细为空（零失败面）；`mapped` = 回归 fail_items 非空（有真实失败面）。无 `reg_form` 键的历史失败记录按 `mapped` 处理，不因缺键报错。
+- `reg_form` 判定：`anomaly` = 回归产不出可用失败用例明细的形态——`parse_error`（junit 产物缺失/不可解析）、`failed` 但失败明细为空（零失败面）、或 `timeout` 且失败明细映射不出任何用例（items 为空、`fallback_full=true`）；`mapped` = 回归 fail_items 非空（有真实失败面）。无 `reg_form` 键的历史失败记录按 `mapped` 处理，不因缺键报错。
 - 失败批自动重派预算按 `reg_form` 分档：`anomaly` 预算为 1（模块常量 `ANOMALY_FAIL_RETRY_MAX`），`mapped` 保持 3（模块常量 `FAIL_RETRY_MAX`）；anomaly 预算耗尽即走既有触顶「登记待人工排查 + 跳过条目」路径。全部 `fail_count` 预算比较点——触顶入档判定（anomaly 达 1 即须触发登记待人工，否则记录悬为「保留但永不重派」）、新链释放判定、条目预检/可选池过滤、延迟批收敛判定、达上限自动核销类消费侧——一律取分档生效预算，单点沿用统一上限会出现悬挂态或分档被旁路；todo 登记与触顶告警文案中的轮数按生效预算动态呈现。
 - `fail_count` 递增至生效预算的那次入档：发一条 warning 级点名录告警（列明条目集与历次原因），并在 `.fenix/todo.md` 追加待人工清理项（指引按 `branch`/`tip_sha` 追溯，不引用已清理的 worktree 路径）；该记录此后不再被新链释放、不再触发新告警。
 - anomaly 形态触发预算降档或停派时，经既有回归失败告警通道 `write_regression_failed_alert` 发一次告警（登记 branch、`reg_form` 与被跳过条目），不新增告警类型；一次性以失败档案记录上的告警标记判重（置位后同一失败记录生命周期内不再发），与现场即弃收口的常规失败告警并存。
@@ -48,3 +48,4 @@
 - 2026-10-06 2026-10-06-evo-code-fix-api-timeout-salvage（spec/archive/2026-10-06-evo-code-fix-api-timeout-salvage） — 修改本页：现场即弃规则收窄 API 超时签名例外（命中即走 salvage 保全与同链下一批接续，不再立即物理清理），其余失败路径行为不变。
 - 2026-10-30 evo-add-codefix-anomaly-redispatch-budget（spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget） — 修改本页：失败档案记录新增回归终局形态 `reg_form`/`reg_detail`（旧记录缺键按 mapped），失败批自动重派预算按形态分档（anomaly 1 / mapped 3）并同步作用于全部预算比较点，复燃合档以最近失败形态为准，anomaly 降档/停派经回归失败告警通道发一次性告警（记录上告警标记判重）。
 - 2026-10-30 evo-add-codefix-failure-registration-closeout（spec/archive/2026-10-30-evo-add-codefix-failure-registration-closeout） — 修改本页：新增「登记闭环核销与人工解除留痕」规则——被跳过条目全部终态即自动核销并收口触顶告警、部分终态只同步 open_remaining、核销幂等、台账读取失败 fail-open；人工解除跳过无条件落结构化 jsonl 留痕（带外调用可追溯）；todo 登记消费侧改重写式核销或整块移除，废止一次性写入永不更新的旧形态。
+- 2026-10-30 evo-codefix-zero-face-regression-hardening（spec/archive/2026-10-30-evo-codefix-zero-face-regression-hardening） — 修改本页：`reg_form` 的 anomaly 判据补入 timeout 且失败明细映射不出用例的零失败面形态（该形态自此自动套用 anomaly 预算 1 与一次性降档告警，重派侧规则不变）。
