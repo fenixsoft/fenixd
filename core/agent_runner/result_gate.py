@@ -406,6 +406,13 @@ class CodeReviewResult:
         # face + 工具面预检结果），随结果信封上交消费侧（admin_monitor）
         # 组装进完成行与升级告警；通过/其他失败路径恒 None（消费侧零感知）。
         self.fail_face = None
+        # API 停滞升级重派意图（evo-add-api-stall-disposition-closeout 2.2）：
+        # 「warning-escalated 且 run 收尾 error」时由车道收尾登记（dict 形态
+        # 对齐上方 ratelimit 意图：reason/provider/run_id/latency_max_seconds/
+        # cooldown_until/cooldown_until_epoch/max_redispatches），随结果信封
+        # 上交消费侧冷却+单飞消费；与 ratelimit 意图互斥（双条件 ratelimit
+        # 优先，登记侧保证），非停滞致败路径恒 None（消费侧零感知）。
+        self.stall_redispatch = None
 
 
 class RegressionResult:

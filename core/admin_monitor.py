@@ -385,6 +385,9 @@ SIGNAL_SEVERITY = {
     # 非 critical（不阻塞链路，可人工二选一修复）、非 minor（无任何既有机制
     # 兜底其可见性）。
     "whitelist_untracked": "major",
+    # evo-add-api-stall-disposition-closeout 2.1：api 停滞升级信号
+    # （run 收尾后检测面直发，major——同 run 单条 dedup，升级线 300s 单源）
+    "api_round_stall_escalated": "major",
     # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
@@ -488,6 +491,10 @@ SIGNAL_RECOMMENDATION = {
     # 选项（不自动 git add，proposal 非目标明示「信号只唤起人工/裁决处置」），
     # 指向人工二选一。
     "whitelist_untracked": "白名单文件脱落（negation 放行即声明入库意图，放行+未跟踪＝白名单脱落，major）：人工二选一处置——① git add 恢复入库（白名单状态文件应随仓库入库，如 .fenix/verify.yaml / todo.md / config.template.yaml）；② 删除 .gitignore 对应放行规则、承认其为运行时文件（确保整体 ignore 规则覆盖）。MUST NOT 自动执行 git add 类修复动作（本信号只唤起人工/裁决处置）。文件清单与放行规则见 evidence。同指纹一次性告警，指纹消失后盘点状态自动复位",
+    # evo-add-api-stall-disposition-closeout 2.1：api 停滞升级处置建议——
+    # code-review 车道停滞致败场景已由 stall_redispatch 受控重派自动处置
+    # （上限 1 次），信号面向的是其余车道的人工判断出口。
+    "api_round_stall_escalated": "API 往返停滞升级（单轮 >300s，run 已收尾）：① 查看 evidence 的 agent_type——code-review 车道停滞致败场景由 stall_redispatch 受控重派自动处置（本生命周期上限 1 次），无需人工动作；② 其余车道结合留痕（latency_max/rounds/stalls 与 run jsonl api_round_stall 事件的 input tokens/provider）判断是否 provider 长尾（网关排队/长上下文），必要时更换 provider 或重派该 run；③ dsh 投影 0 样本行 latency_max=None 不触发本信号（勿与解析盲区混淆）",
     # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
@@ -594,6 +601,16 @@ STORED_SIGNAL_TYPES = (
     # 目标静默落空（c91213f 事故 6 天未察的机制缺口即本出口）。记录无 spec
     # （项目级盘点），证据含「项目名=」供无 spec 形态解析。
     "whitelist_untracked",
+    # evo-add-api-stall-disposition-closeout 2.1：api_round_stall 升级信号由
+    # 本监视器检测面在 run 收尾后直发（_check_api_round_stall_escalated，
+    # 数据源 run jsonl 终态 run_metrics 行 latency_max > 升级线；「延迟数据
+    # 不触发独立人工告警」铁律约束的 runner 运行中路径不变）——未收录则
+    # 记录落 store 后无人摄取、Administrator 不唤起，「停滞升级浮出为人工
+    # 可见信号」目标静默落空（铁律禁运行中告警，收尾后信号是唯一出口）。
+    # 记录固定 spec=None（周期评审 run 无 spec 归属），证据含「项目名=」
+    # 供无 spec 形态解析；同 run（含 attempt/重试产物）至多一条（dedup 键
+    # base run_id 进 hash 位），不刷屏。
+    "api_round_stall_escalated",
 )
 
 # 「signal_type → 是否 spec-less（记录固定无 spec、摄取时须从 evidence「项目名=」
@@ -626,6 +643,10 @@ SPEC_LESS_STORED_SIGNAL_TYPES = frozenset({
     # （code_fix._write_defer_orphan_alert 直发）记录固定 spec=None——
     # 内联副本时代点名的同款落空模式第 8 例。
     "mergeback_wip_orphan_stuck",
+    # evo-add-api-stall-disposition-closeout 2.1：api 停滞升级信号为 run 级
+    # 检测（周期评审 run 无 spec 归属），记录固定 spec=None——证据含
+    # 「项目名=」供无 spec 形态解析。
+    "api_round_stall_escalated",
 })
 
 # 前置探测白名单（evo-signal-preprobe-handled-writeback R1）：请求型
@@ -871,6 +892,56 @@ def _read_tail_lines(path: Path, window: int) -> tuple[bool, str]:
             first_line_truncated = f.read(1) != b"\n"
         data = f.read().decode("utf-8", "replace")
     return first_line_truncated, data
+
+
+# ── api_round_stall 升级信号检测面（evo-add-api-stall-disposition-closeout 2.1）──
+# 检测数据源：run jsonl 终态 run_metrics 行（_run_agent 收尾写入，含
+# latency_rounds/latency_stalls/latency_max，零样本回退 0/0/None）。run_metrics
+# 行落 run 收尾段、其后仅终态/意图标注行——尾部窗口读取与 admin_monitor
+# 既有 run_metrics 尾读口径（512KB 窗）一致。
+_API_STALL_TAIL_WINDOW = 256 * 1024
+# 首扫新鲜度界（秒）：daemon 停机窗口前的历史 run 产物不回灌升级信号
+# （信号价值在近窗停滞归因；陈旧产物首扫即标记 seen、零 IO 跳过）。
+_API_STALL_SCAN_MAX_AGE_SECONDS = 48 * 3600
+# 失活界（秒）：mtime 陈旧超过该值且尾部窗内仍无终态 run_metrics 行的产物
+# 视为已失活（崩溃路径未落指标行的残留文件）——标记 seen 防每轮空转尾读；
+# 在途 run 持续追加事件、mtime 恒新鲜，不受影响。
+_API_STALL_SCAN_INACTIVE_SECONDS = 1800
+# base run_id 剥后缀顺序：先 -r<n>（原地重试）再 -a<n>（attempt），剥完再补
+# 一遍 -r<n>——-r<n> 可能叠在 -a<n> 之后（-a1-r1），先剥 -a 命中不了行尾
+# （镜像 dashboard runs.py _base_run_id 的剥离顺序，避免两处口径漂移）。
+def _api_stall_base_run_id(run_id: str) -> str:
+    stripped = re.sub(r"-r\d+$", "", run_id)
+    stripped = re.sub(r"-a\d+$", "", stripped)
+    if stripped != run_id:
+        stripped = re.sub(r"-r\d+$", "", stripped)
+    return stripped or run_id
+
+
+def _read_terminal_run_metrics(path: Path) -> "dict | None":
+    """读 run jsonl 尾部窗口内最近一条终态 run_metrics 行。
+
+    返回该行 dict（零样本行 latency_max=None 也返回——「已收尾」事实成立，
+    调用方据 latency_max 判级）；终态行未落（在途 run）或尾部窗口内无该行
+    时返回 None（调用方不标记 seen、留待收尾后下一轮巡检再评估）。行级
+    JSON 解析失败/非 object 行跳过（与 dashboard run_metrics 索引同款防护
+    口径）。OSError 向上抛出由调用方按跳过处置。
+    """
+    _, data = _read_tail_lines(path, _API_STALL_TAIL_WINDOW)
+    found: dict | None = None
+    for line in data.splitlines():
+        line = line.strip()
+        if '"type": "run_metrics"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "run_metrics":
+            found = entry  # 取窗口内最近一条（同文件重试链多条时新值胜出）
+    return found
 
 # ── 孤儿处置收敛的生效核查（evo-add-admin-orphan-disposition-effect-check）──
 # global 占位记法归一：DISPOSITION 记录 spec="global"（daemon 级唤起写占位），
@@ -1587,6 +1658,17 @@ class AdminMonitor:
         self._code_review_empty_redispatches = 0
         self._code_review_redispatched_runs: set = set()
         self._code_review_redispatch_escalated = False
+        # stall 升级重派（evo-add-api-stall-disposition-closeout 2.4）：
+        # _code_review_stall_redispatches：本生命周期内已执行的 stall 重派次数
+        # （上限 STALL_REDISPATCH_MAX=1，与 ratelimit 配额各自独立、防长尾期
+        # 重派风暴）；Timer 与单飞守卫与 429 重派共用同一份骨架（同一
+        # _code_review_redispatch_timer 句柄与 _code_review_in_flight 旗标，
+        # 至多一个待发 Timer / 至多一个在飞 run 跨三类意图互斥）。
+        self._code_review_stall_redispatches = 0
+        # api_round_stall 升级信号检测（closeout 2.1）：已评估过终态
+        # run_metrics 行的 run 文件 stem 集合（单文件只评估一次——终态行落盘
+        # 后不再变化；在途 run 未落行不标记，留待收尾后下一轮巡检评估）。
+        self._api_stall_metrics_seen: set = set()
         # decouple-codefix-review-lanes：审查 run stall 看门狗状态（run_id →
         # {"mtime": 产物最新 mtime, "cpu": 进程树 CPU 秒, "since": 双判据开始
         # 同时无进展的 monotonic 时间}）。任一判据有进展即整体重置（design D2
@@ -1805,6 +1887,16 @@ class AdminMonitor:
             self._check_code_review_stall()
         except Exception as e:
             self.logger.error("admin_monitor", f"Code-review stall check failed: {e}")
+        # evo-add-api-stall-disposition-closeout 2.1：api_round_stall 升级信号
+        # 检测面（镜像 _check_code_review_stall 的节拍模式——复用巡检节拍，
+        # 不新增线程/定时器；收尾后检测，不新增运行中打断；任何异常只记日志
+        # 不阻断巡检）。
+        try:
+            self._check_api_round_stall_escalated()
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"API stall escalation check failed: {e}"
+            )
         # decouple-codefix-review-lanes 3.2：审查 run stall 看门狗（同挂载点
         # 复用巡检节拍，不新增线程/定时器；任何异常只记日志不阻断巡检）。
         try:
@@ -2080,9 +2172,11 @@ class AdminMonitor:
 
             ratelimit_intent: dict | None = None
             empty_face: dict | None = None
+            # stall 升级重派意图（evo-add-api-stall-disposition-closeout 2.4）
+            stall_intent: dict | None = None
 
             def _worker():
-                nonlocal ratelimit_intent, empty_face
+                nonlocal ratelimit_intent, empty_face, stall_intent
                 try:
                     # 剃余续跑（evo-review-night-window-resume-hardening
                     # 2.1/2.2）：锚驱动续审 run 经既有 redispatch_of 形参标注
@@ -2120,6 +2214,13 @@ class AdminMonitor:
                     # ratelimit_redispatch 意图（含最早冷却到期时刻）→ 收场复位
                     # 单飞后经 threading.Timer 延迟重投递（冷却期内 MUST NOT 重派）。
                     ratelimit_intent = getattr(result, "ratelimit_redispatch", None)
+                    # stall 升级重派意图捕获（evo-add-api-stall-disposition-
+                    # closeout 2.4）：「warning-escalated 且 run 收尾 error」时
+                    # 车道收尾随结果信封上交 stall_redispatch 意图；与 ratelimit
+                    # 意图互斥由登记侧条件保证（双条件 ratelimit 优先——429 有
+                    # 明确 provider 归因，停滞归因仍是假设），此处按 getattr
+                    # 兜底双保险（防御非互斥形态下双排程挤占唯一 Timer）。
+                    stall_intent = getattr(result, "stall_redispatch", None)
                 except Exception as e:
                     self.logger.error("admin_monitor", f"code-review 周期审查异常: {e}")
                 finally:
@@ -2144,6 +2245,29 @@ class AdminMonitor:
                     except Exception as e:
                         self.logger.error(
                             "admin_monitor", f"code-review 429 重派排程异常: {e}"
+                        )
+                elif stall_intent:
+                    # 按意图种类分派（closeout 2.4）：stall 意图走独立登记/
+                    # 排程骨架（自有配额上限，Timer 句柄与 429 共用）；消费
+                    # 回调经共享内核 _consume_code_review_redispatch（分片续跑/
+                    # 单飞守卫/夜间静默窗顺延同源）。分支次序即消费优先级：
+                    # ratelimit（429 明确 provider 归因）> stall > 零产物止损
+                    # ——stall 致败常以硬门拒绝收场（停滞零产物），同一结果
+                    # 信封 stall_intent 与 fail_face 可并存，此处分派 stall
+                    # 通道（带 600s 冷却的长尾退避重派，比立即重派保守），
+                    # empty 通道由 _code_review_redispatched_runs run 链登记
+                    # 防后续叠加调度。
+                    try:
+                        self._schedule_stall_redispatch(
+                            manifest=manifest,
+                            review_kind=review_kind,
+                            window_start=window_start if review_scope == "window" else None,
+                            scope=review_scope,
+                            intent=stall_intent,
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "admin_monitor", f"code-review stall 重派排程异常: {e}"
                         )
                 elif empty_face:
                     # 零产物止损（evo-review-empty-product-redispatch 1.1）：
@@ -2497,17 +2621,155 @@ class AdminMonitor:
                 f"已回滚重派配额与 Timer 句柄）",
             )
 
+    def _schedule_stall_redispatch(self, manifest, review_kind, window_start,
+                                   scope, intent: dict) -> None:
+        """登记 stall 重派意图并经延迟投递在冷却到期后重调 ``run_code_review`` 一次。
+
+        evo-add-api-stall-disposition-closeout 2.4：镜像
+        ``_schedule_ratelimit_redispatch`` 骨架的车道侧 stall 意图消费登记
+        （「warning-escalated 且 run 收尾 error」时由 run_code_review 收尾随
+        结果信封上交 stall_redispatch 意图）。守卫同款：
+        - 重派上限 ``STALL_REDISPATCH_MAX = 1``（maintenance_runs 常量）：
+          本 monitor 生命周期内已重派过即不再重派——重派仍停滞/仍败按既有
+          失败路径收场升级人工，MUST NOT 无限重派；与 429 重派配额各自
+          独立计数（``_code_review_stall_redispatches``），互不挤占；
+        - 至多一个待发 Timer：与 429 重派共用 ``_code_review_redispatch_timer``
+          句柄（同一时刻至多一个待发重派，跨意图互斥）；
+        - 冷却到期前 MUST NOT 重派：延迟 = max(0, cooldown_until_epoch − now)；
+        - cooldown_until_epoch 缺失/非法时放弃排程并记 WARNING（不计配额）。
+        重派以**原 manifest/参数**复调并携带 ``redispatch_of`` 标注重派缘由
+        （分片续跑/幂等保障由消费内核共享）。
+        """
+        from core.agent_runner.maintenance_runs import STALL_REDISPATCH_MAX
+
+        run_id = str(intent.get("run_id") or "")
+        with self._code_review_lock:
+            # 升级信号已发出（evo-review-empty-product-redispatch 1.1）→ 各
+            # 通道均不再自动重派（避免与夜间顺延/抢救面叠加震荡；同款守卫
+            # 见 _schedule_ratelimit_redispatch）。惰性取值（getattr 缺省
+            # False）：__new__ 测试替身未走 __init__ 也判「未升级」，对齐
+            # 本类惰性回退惯例。
+            if getattr(self, "_code_review_redispatch_escalated", False):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review stall 重派跳过：零产物升级信号已发出，各"
+                    f"通道均不再自动重派（原 run {run_id}，按既有失败路径"
+                    f"收场）",
+                )
+                return
+            # 链登记（evo-review-empty-product-redispatch 1.1）：本 run 链已被
+            # stall 通道重派——其后再次硬门拦截只升级不再重派（跨通道互不
+            # 叠加调度，与 _schedule_ratelimit_redispatch 登记原 run_id 同一
+            # 口径）。登记即事实陈述（本方法随后占额排程）。惰性建集（
+            # __dict__.setdefault，对齐惰性回退惯例）。
+            if run_id:
+                self.__dict__.setdefault(
+                    "_code_review_redispatched_runs", set()).add(run_id)
+            if self._code_review_stall_redispatches >= STALL_REDISPATCH_MAX:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review stall 重派跳过：已达上限 {STALL_REDISPATCH_MAX}"
+                    f"（原 run {run_id}，按既有失败路径收场）",
+                )
+                return
+            if self._code_review_redispatch_timer is not None:
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review stall 重派跳过：已有待发重派 Timer"
+                    f"（原 run {run_id}）",
+                )
+                return
+            # 冷却到期时刻解析/守卫与 429 登记处同款（item 2d15a48ece2a）：
+            # 缺失/非法放弃排程记 WARNING，不计配额、不排 Timer。
+            try:
+                cooldown_until_epoch = float(intent.get("cooldown_until_epoch"))
+            except (TypeError, ValueError):
+                cooldown_until_epoch = None
+            if cooldown_until_epoch is None or not math.isfinite(cooldown_until_epoch):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review stall 重派放弃：intent 无合法 "
+                    f"cooldown_until_epoch（原 run {run_id}，按既有失败路径"
+                    f"收场升级人工）",
+                )
+                return
+            # 登记即占额（防并发意图重复消耗/重复排队）；消费侧若因单飞放弃
+            # 不退额——防风暴优先（与 429 登记处同口径）。
+            self._code_review_stall_redispatches += 1
+            delay = max(0.0, cooldown_until_epoch - time.time())
+            timer = threading.Timer(
+                delay,
+                self._consume_stall_redispatch,
+                args=(manifest, review_kind, window_start, scope, run_id),
+            )
+            timer.daemon = True
+            self._code_review_redispatch_timer = timer
+        try:
+            self.logger.info(
+                "admin_monitor",
+                f"code-review stall 重派已排程：原 run {run_id}，{int(delay)}s 后"
+                f"（停滞冷却到期）以原 manifest 重派一次"
+                f"（latency_max={intent.get('latency_max_seconds')}s）",
+            )
+            timer.start()
+        except Exception as e:
+            # 投递失败回滚与 429 登记处同款（item 7e5fbd614cdd）：回滚 stall
+            # 配额占用与 Timer 句柄，防幽灵句柄永久占用本生命周期唯一机会。
+            with self._code_review_lock:
+                self._code_review_stall_redispatches -= 1
+                if self._code_review_redispatch_timer is timer:
+                    self._code_review_redispatch_timer = None
+            timer.cancel()
+            self.logger.error(
+                "admin_monitor",
+                f"code-review stall 重派排程失败: {e}（原 run {run_id}，"
+                f"已回滚重派配额与 Timer 句柄）",
+            )
+
     def _consume_ratelimit_redispatch(self, manifest, review_kind, window_start,
                                       scope, original_run_id: str) -> None:
         """冷却到期回调：以原 manifest/参数重调 ``run_code_review`` 一次（task 5.3）。
 
-        单飞守卫：车道忙时放弃本次重派（原 run 的分片产物仍被 error 收场
-        抢救落账，不因放弃而丢失）——既查本车道自有标志（新周期 run 在途），
-        也探测外部（如 Dashboard 手动）启动的 code-review run（对齐
-        _run_code_review_checkpoint 的 _running_agents 前缀探测；外部 run 的
-        置位/复位不经过本监视器自有 _worker，自有标志检测不到）。放弃不退
-        重派配额（防风暴优先，与 _schedule_ratelimit_redispatch 登记处口径
-        一致）。
+        429 意图薄包装（evo-add-api-stall-disposition-closeout 2.4）：共享
+        消费内核见 ``_consume_code_review_redispatch``（单飞守卫/夜间静默窗
+        顺延/分片续跑/executor 投递与回滚口径全部同源），本包装只锚定意图
+        种类（日志前缀「429 重派」、顺延重排目标本回调）。
+        """
+        self._consume_code_review_redispatch(
+            manifest, review_kind, window_start, scope, original_run_id,
+            intent_kind="ratelimit",
+        )
+
+    def _consume_stall_redispatch(self, manifest, review_kind, window_start,
+                                  scope, original_run_id: str) -> None:
+        """stall 意图冷却到期回调（evo-add-api-stall-disposition-closeout 2.4）。
+
+        镜像 ``_consume_ratelimit_redispatch`` 薄包装：共享消费内核
+        ``_consume_code_review_redispatch``，本包装只锚定意图种类（日志前缀
+        「stall 重派」、顺延重排目标本回调）。单飞守卫语义同源：车道忙时
+        放弃本次重派（原 run 分片产物已被 error 收场抢救落账，不因放弃而
+        丢失），放弃不退 stall 重派配额（防风暴优先）。
+        """
+        self._consume_code_review_redispatch(
+            manifest, review_kind, window_start, scope, original_run_id,
+            intent_kind="stall",
+        )
+
+    def _consume_code_review_redispatch(self, manifest, review_kind, window_start,
+                                        scope, original_run_id: str,
+                                        intent_kind: str) -> None:
+        """重派消费共享内核（429 / stall 两类意图同源，closeout 2.4）。
+
+        ``intent_kind``：``"ratelimit"``（429 配额恢复重派，task 5.3）或
+        ``"stall"``（API 停滞升级重派，closeout 2.4）——仅差日志前缀
+        （「429 重派」/「stall 重派」）与夜间静默窗顺延的重排目标（各自
+        回调，冷却时长语义由登记侧 intent 自带、顺延沿用已占配额不重复
+        占额）。单飞守卫：车道忙时放弃本次重派（原 run 的分片产物仍被
+        error 收场抢救落账，不因放弃而丢失）——既查本车道自有标志（新周期
+        run 在途），也探测外部（如 Dashboard 手动）启动的 code-review run
+        （对齐 _run_code_review_checkpoint 的 _running_agents 前缀探测；外部
+        run 的置位/复位不经过本监视器自有 _worker，自有标志检测不到）。放弃
+        不退重派配额（防风暴优先，与登记处口径一致）。
 
         夜间静默窗顺延（code-review item 19a93cd1e240）：派发前经
         _code_review_night_window_defer 做与定时审查路径同款跨窗顺延判定
@@ -2518,6 +2780,14 @@ class AdminMonitor:
         不变）；顺延到期后若因车道忙等既有守卫放弃，仍按「放弃不退额」
         既有口径收场。
         """
+        # 意图种类 → 日志前缀 / 顺延重排目标（closeout 2.4：429 与 stall
+        # 共享内核，仅这两点分叉；未知种类按 429 前缀兜底——防御性，登记侧
+        # 只产两种）。
+        label = "429 重派" if intent_kind != "stall" else "stall 重派"
+        _consume_target = (
+            self._consume_stall_redispatch if intent_kind == "stall"
+            else self._consume_ratelimit_redispatch
+        )
         # ── 分片续跑：重派前把 manifest 剃成剩余文件（evo-add-code-review-
         # ratelimit-resume 3.2）── 事故基线 code-review-1790574672：270 文件级
         # 全仓审查死于 429 时原 run 已落 4 片，既有全量重跑重烧约 14 美元。剃余
@@ -2538,7 +2808,7 @@ class AdminMonitor:
         except Exception as e:  # noqa: BLE001 — 剃余失败回退全量重派
             self.logger.warning(
                 "admin_monitor",
-                f"code-review 429 重派剃余失败，回退原 manifest 全量重派: {e}",
+                f"code-review {label}剃余失败，回退原 manifest 全量重派: {e}",
             )
             shaved_manifest = list(manifest)
         if not shaved_manifest:
@@ -2551,7 +2821,7 @@ class AdminMonitor:
                 self._code_review_redispatch_timer = None
             self.logger.info(
                 "admin_monitor",
-                f"code-review 429 重派跳过：原 run {original_run_id} 累计覆盖已"
+                f"code-review {label}跳过：原 run {original_run_id} 累计覆盖已"
                 f"完整（{len(manifest)} 文件全部落账），无需重派（核销解锁由"
                 f" maintenance_runs 收尾分支按覆盖完整性判定）",
             )
@@ -2572,7 +2842,7 @@ class AdminMonitor:
             delay = max(0.0, next_ts - time.time())
             timer = threading.Timer(
                 delay,
-                self._consume_ratelimit_redispatch,
+                _consume_target,
                 args=(manifest, review_kind, window_start, scope, original_run_id),
             )
             timer.daemon = True
@@ -2581,7 +2851,7 @@ class AdminMonitor:
             try:
                 self.logger.info(
                     "admin_monitor",
-                    f"{defer_note}；429 重派 Timer 顺延重排到窗后"
+                    f"{defer_note}；{label} Timer 顺延重排到窗后"
                     f"（原 run {original_run_id}，{int(delay)}s 后）",
                 )
                 timer.start()
@@ -2595,7 +2865,7 @@ class AdminMonitor:
                 timer.cancel()
                 self.logger.error(
                     "admin_monitor",
-                    f"code-review 429 重派顺延重排失败: {e}（原 run "
+                    f"code-review {label}顺延重排失败: {e}（原 run "
                     f"{original_run_id}，按既有放弃不退额口径收场）",
                 )
             return
@@ -2606,7 +2876,7 @@ class AdminMonitor:
             if self._code_review_in_flight:
                 self.logger.warning(
                     "admin_monitor",
-                    f"code-review 429 重派放弃：车道单飞中有在途 run"
+                    f"code-review {label}放弃：车道单飞中有在途 run"
                     f"（原 run {original_run_id}）",
                 )
                 return
@@ -2618,7 +2888,7 @@ class AdminMonitor:
                 if any(str(rid).startswith("code-review-") for rid in running):
                     self.logger.warning(
                         "admin_monitor",
-                        f"code-review 429 重派放弃：已有外部 code-review run 在跑"
+                        f"code-review {label}放弃：已有外部 code-review run 在跑"
                         f"（原 run {original_run_id}）",
                     )
                     return
@@ -2645,7 +2915,7 @@ class AdminMonitor:
                     ).add(str(result.run_id))
                 self.logger.info(
                     "admin_monitor",
-                    f"code-review 429 重派完成：redispatch_of={original_run_id}, "
+                    f"code-review {label}完成：redispatch_of={original_run_id}, "
                     f"run_id={result.run_id}, inserted={result.inserted}, "
                     f"updated={result.updated}, shards={result.shards}"
                     f"（剃余续跑 {len(shaved_manifest)}/{len(manifest)} 文件）"
@@ -2665,7 +2935,7 @@ class AdminMonitor:
                     )
                     self._escalate_code_review_empty_product(_face)
             except Exception as e:
-                self.logger.error("admin_monitor", f"code-review 429 重派异常: {e}")
+                self.logger.error("admin_monitor", f"code-review {label}异常: {e}")
             finally:
                 with self._code_review_lock:
                     self._code_review_in_flight = False
@@ -2678,7 +2948,7 @@ class AdminMonitor:
         except Exception as e:
             with self._code_review_lock:
                 self._code_review_in_flight = False
-            self.logger.error("admin_monitor", f"code-review 429 重派投递失败: {e}")
+            self.logger.error("admin_monitor", f"code-review {label}投递失败: {e}")
 
     # ── 零产物止损（evo-review-empty-product-redispatch 1.1）──────────────
     def _handle_code_review_empty_product(self, *, manifest, review_kind,
@@ -2964,6 +3234,114 @@ class AdminMonitor:
                 f"code-review 停滞告警已落：run_id={run_id}, minutes={minutes}"
                 f"（去重键 {dedup_key}）",
             )
+
+    def _check_api_round_stall_escalated(self) -> None:
+        """api_round_stall 升级信号检测面（evo-add-api-stall-disposition-closeout 2.1）。
+
+        镜像 ``_check_code_review_stall`` 的节拍模式（复用巡检节拍，不新增
+        线程/定时器）；**收尾后检测**——「延迟数据不触发独立人工告警」铁律
+        约束的 runner 运行中路径不变，本方法只读终态产物，不新增运行中打断。
+        检测数据源：run jsonl 终态 ``run_metrics`` 行的 ``latency_max``
+        （``_run_agent`` 收尾写入真实值）；升级判据
+        ``latency_max > STALL_ROUND_ESCALATE_SECONDS``（与 classify_round_stall
+        分级线单源，core/agent_runner/latency.py）。命中经
+        ``merge_signal`` 写 ``api_round_stall_escalated``：周期评审 run 无
+        spec 归属，dedup 键对 spec=null 以 base run_id 进 hash 位（admin_store
+        merge_signal 的 (spec, signal_type, status_hash) 键形态）——单 run
+        （含全部 attempt/原地重试产物）至多一条，同 run 复检仅刷 last_seen。
+        dsh 投影 0 样本行 latency_max=None 天然不触发（属 86de1c7071b6 管辖，
+        勿混入本判据）。
+        """
+        from core.agent_runner.latency import STALL_ROUND_ESCALATE_SECONDS
+
+        runs_dir = self.project_root / ".fenix" / "runs"
+        try:
+            candidates = sorted(runs_dir.glob("*.jsonl"))
+        except OSError:
+            return
+        now = time.time()
+        for path in candidates:
+            run_id = path.stem
+            if run_id in self._api_stall_metrics_seen:
+                continue
+            try:
+                if path.stat().st_mtime < now - _API_STALL_SCAN_MAX_AGE_SECONDS:
+                    # 陈旧产物：不回灌历史信号，标记 seen 零 IO 跳过
+                    self._api_stall_metrics_seen.add(run_id)
+                    continue
+                row = _read_terminal_run_metrics(path)
+            except OSError:
+                continue  # 读取失败本轮跳过，不标记（下轮重试）
+            if row is None:
+                # 终态 run_metrics 行未落：在途 run 留待收尾后评估；mtime
+                # 已失活的残留文件（崩溃未落指标行）标记 seen 防每轮空转尾读。
+                try:
+                    if path.stat().st_mtime < now - _API_STALL_SCAN_INACTIVE_SECONDS:
+                        self._api_stall_metrics_seen.add(run_id)
+                except OSError:
+                    pass
+                continue
+            # 终态行已落：本文件评估完毕，标记 seen（无论是否触发信号）
+            self._api_stall_metrics_seen.add(run_id)
+            latency_max = row.get("latency_max")
+            if (not isinstance(latency_max, (int, float))
+                    or isinstance(latency_max, bool)
+                    or latency_max <= STALL_ROUND_ESCALATE_SECONDS):
+                continue
+            base_run_id = _api_stall_base_run_id(str(row.get("run_id") or run_id))
+            # dedup 键：spec=null（周期 run 无 spec 归属）以 base run_id 进
+            # hash 位——同 run 复检 merge 刷 last_seen，不新增记录（单 run
+            # 至多一条）；不同 run 各自成条（同窗多轮停滞不互相吞并）。
+            status_hash = hashlib.sha1(
+                f"api-stall:{base_run_id}".encode("utf-8", "replace")).hexdigest()
+            agent_type = str(row.get("agent_type") or "")
+            description = (
+                f"API 往返停滞升级：run {run_id} 终态 latency_max="
+                f"{float(latency_max):.0f}s 超升级线 "
+                f"{STALL_ROUND_ESCALATE_SECONDS:.0f}s"
+                f"（agent_type={agent_type or 'unknown'}，"
+                f"rounds={row.get('latency_rounds')}，"
+                f"stalls={row.get('latency_stalls')}）"
+            )
+            record, is_new = self.store.merge_signal(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "api_round_stall_escalated",
+                    "spec": None,
+                    "severity": "major",
+                    "description": description,
+                    # 「项目名=」字段供 SPEC_LESS 摄取循环解析（格式
+                    # "项目名=<name>; ..."，evidence_project 单源解析口径）
+                    "evidence": (
+                        f"项目名={self.project_root.name}; "
+                        f"run jsonl 终态 run_metrics 行: run_id={run_id}, "
+                        f"latency_max={latency_max}, "
+                        f"latency_rounds={row.get('latency_rounds')}, "
+                        f"latency_stalls={row.get('latency_stalls')}, "
+                        f"turns={row.get('turns')}, "
+                        f"agent_type={agent_type}"
+                    ),
+                    "action_taken": (
+                        "AdminMonitor 周期节拍检测（收尾后检测面，"
+                        f"去重键 base_run_id={base_run_id}，单 run 至多一条）"
+                    ),
+                    "recommended_action": (
+                        "停滞本质为 provider 长尾延迟（网关排队/长上下文/"
+                        "本地网络归因留待留痕积累）；code-review 车道停滞致败"
+                        "场景由 stall_redispatch 受控重派（上限 1 次）自动处置，"
+                        "其余车道人工判断是否重派或更换 provider"
+                    ),
+                    "escalated": False,
+                },
+                status_hash,
+            )
+            if record is not None and is_new:
+                self.logger.info(
+                    "admin_monitor",
+                    f"api_round_stall_escalated 信号已落：run_id={run_id}, "
+                    f"latency_max={float(latency_max):.0f}s"
+                    f"（去重键 base_run_id={base_run_id}）",
+                )
 
     def _review_stall_minutes(self) -> int:
         """看门狗停滞阈值（分钟）：``admin.review_stall_minutes``，缺省 30。
