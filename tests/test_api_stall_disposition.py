@@ -46,7 +46,9 @@ from core.admin_monitor import (
     STORED_SIGNAL_TYPES,
     AdminMonitor,
     _api_stall_base_run_id,
+    _read_terminal_result_event,
     _read_terminal_run_metrics,
+    _result_event_is_success,
 )
 from core.admin_store import AdminStore
 from core.logger import Logger
@@ -152,8 +154,13 @@ def _make_runner_with_logger(tmp_path: Path, config: dict | None = None):
 
 
 def _write_run_metrics_row(runs_dir: Path, run_id: str, latency_max,
-                           agent_type="code-review") -> Path:
-    """写一份含终态 run_metrics 行的 run jsonl（2.1 检测数据源形态）。"""
+                           agent_type="code-review",
+                           terminal_result: dict | None = None) -> Path:
+    """写一份含终态 run_metrics 行的 run jsonl（2.1 检测数据源形态）。
+
+    ``terminal_result`` 非空时在其后追加 result 终态事件行（success 豁免
+    负控用；真实流中 result 事件恒落文件末行附近）。
+    """
     runs_dir.mkdir(parents=True, exist_ok=True)
     f = runs_dir / f"{run_id}.jsonl"
     rows = [
@@ -164,6 +171,8 @@ def _write_run_metrics_row(runs_dir: Path, run_id: str, latency_max,
          "latency_rounds": 5, "latency_stalls": 2, "latency_max": latency_max},
         {"type": "error", "error": "gateway timeout"},
     ]
+    if terminal_result is not None:
+        rows.append(terminal_result)
     f.write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
         encoding="utf-8")
@@ -449,6 +458,41 @@ class TestStallEscalationSignal(unittest.TestCase):
         mon._check_api_round_stall_escalated()
         self.assertEqual(_stall_signals(mon.store), [])
 
+    def test_success_terminal_no_signal(self):
+        """负控（bug-found monitor-escalated-signal-negative-controls）：
+        曾停滞但正常完成（success 终态 + latency_max 超线）→ 无信号（验收 4），
+        复检仍零信号（豁免命中与去重同样落 seen）。"""
+        runs_dir = self.proot / ".fenix" / "runs"
+        _write_run_metrics_row(
+            runs_dir, "code-review-ok-esc", 400.0,
+            terminal_result={"type": "result", "subtype": "success",
+                             "is_error": False, "result": "done"})
+        mon = _mk_monitor(self.proot)
+        mon._check_api_round_stall_escalated()
+        mon._check_api_round_stall_escalated()
+        self.assertEqual(_stall_signals(mon.store), [],
+                         "success 终态 run 不应落升级信号")
+
+    def test_error_terminal_with_result_still_signals(self):
+        """error 形态 result 终态（is_error 真值）不豁免——超线照常落信号。"""
+        runs_dir = self.proot / ".fenix" / "runs"
+        _write_run_metrics_row(
+            runs_dir, "code-review-err-esc", 420.0,
+            terminal_result={"type": "result", "subtype": "error_during_execution",
+                             "is_error": True, "result": "boom"})
+        mon = _mk_monitor(self.proot)
+        mon._check_api_round_stall_escalated()
+        signals = _stall_signals(mon.store)
+        self.assertEqual(len(signals), 1, "error 终态 run 仍应落 1 条信号")
+
+    def test_missing_result_event_still_signals(self):
+        """无 result 事件（崩溃/强杀，无成功证据）不豁免——超线照常落信号。"""
+        runs_dir = self.proot / ".fenix" / "runs"
+        _write_run_metrics_row(runs_dir, "code-review-crash-esc", 500.0)
+        mon = _mk_monitor(self.proot)
+        mon._check_api_round_stall_escalated()
+        self.assertEqual(len(_stall_signals(mon.store)), 1)
+
     def test_attempt_retry_files_dedup_by_base_run_id(self):
         """attempt/原地重试产物（-a<n>/-r<n>）各自成文件 → 按 base run_id 归并
         单条信号（dedup 键归一）。"""
@@ -506,6 +550,43 @@ class TestStallSignalHelpers(unittest.TestCase):
             self.assertIsNone(_read_terminal_run_metrics(h))
         finally:
             shutil.rmtree(str(tmp), ignore_errors=True)
+
+    def test_read_terminal_result_event_last_row_wins(self):
+        """_read_terminal_result_event：取尾部窗口内最近一条 result 事件；
+        伪命中行/无 result 事件返回 None。"""
+        tmp = Path(tempfile.mkdtemp(prefix="stall-result-"))
+        try:
+            f = tmp / "code-review-p.jsonl"
+            rows = [
+                {"type": "result", "subtype": "error", "is_error": True},
+                {"type": "assistant", "text": '"type": "result" 伪命中'},
+                {"type": "result", "subtype": "success", "is_error": False},
+            ]
+            f.write_text(
+                "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            ev = _read_terminal_result_event(f)
+            self.assertEqual(ev["subtype"], "success", "取最近一条 result 事件")
+
+            g = tmp / "code-review-q.jsonl"
+            g.write_text(json.dumps({"type": "assistant"}) + "\n",
+                         encoding="utf-8")
+            self.assertIsNone(_read_terminal_result_event(g))
+        finally:
+            shutil.rmtree(str(tmp), ignore_errors=True)
+
+    def test_result_event_is_success_mirrors_runner_semantics(self):
+        """成功判据镜像 runner 伪装成功校验：is_error 真值/error 子型判失败，
+        键缺省按 success；无事件（None）判失败（无成功证据不豁免）。"""
+        self.assertTrue(_result_event_is_success(
+            {"type": "result", "subtype": "success", "is_error": False}))
+        # subtype 键缺省 → success（对齐 runner .get("subtype", "success")）
+        self.assertTrue(_result_event_is_success({"type": "result"}))
+        self.assertFalse(_result_event_is_success(
+            {"type": "result", "subtype": "success", "is_error": True}))
+        self.assertFalse(_result_event_is_success(
+            {"type": "result", "subtype": "error_during_execution"}))
+        self.assertFalse(_result_event_is_success(None))
+        self.assertFalse(_result_event_is_success("pseudo"))
 
 
 # ═════════════════════════════════════════════════════════════════════════════

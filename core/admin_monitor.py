@@ -943,6 +943,53 @@ def _read_terminal_run_metrics(path: Path) -> "dict | None":
             found = entry  # 取窗口内最近一条（同文件重试链多条时新值胜出）
     return found
 
+
+# result 终态事件的 error 形态子型（与 runner._run_agent 终态语义校验同款
+# 白名单外判失败口径，runner.py「rc==0 但 result 标记为 error 时仍判失败」）。
+_RESULT_ERROR_SUBTYPES = frozenset({"error", "error_during_execution"})
+
+
+def _read_terminal_result_event(path: Path) -> "dict | None":
+    """读 run jsonl 尾部窗口内最近一条 ``type=result`` 终态事件。
+
+    success 终态豁免（验收 4「曾停滞但正常完成」）的取数单源：result 事件
+    由轮询环保证落文件末行附近（runner 读线程 join 后落盘），尾部窗口读取
+    语义完备。读侧防护与 ``_read_terminal_run_metrics`` 同款——
+    ``'"type": "result"'`` 子串预筛 + 解析后复核 type 字段（转录伪命中行：
+    嵌入代码/JSON 样例/prompt 回显，不复核会顶替真实事件）。无 result 事件
+    （崩溃/强杀/在途 run）返回 None——调用方按「无成功证据」不豁免处置。
+    OSError 向上抛出由调用方按跳过处置。
+    """
+    _, data = _read_tail_lines(path, _API_STALL_TAIL_WINDOW)
+    found: dict | None = None
+    for line in data.splitlines():
+        line = line.strip()
+        if '"type": "result"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(entry, dict) and entry.get("type") == "result":
+            found = entry  # 取窗口内最近一条（最终终态为准）
+    return found
+
+
+def _result_event_is_success(ev: "dict | None") -> bool:
+    """result 终态事件的成功判定（判据镜像 runner 伪装成功校验，单源语义）。
+
+    ``is_error`` 真值或 ``subtype`` ∈ error 形态集判失败；键缺省 subtype 按
+    success 处理（对齐 runner ``.get("subtype", "success")``）；无 result
+    事件（崩溃/强杀路径无成功证据）判失败——豁免只放行「确有成功终态证据」
+    的 run，滞后升级面不得因证据缺失被静默豁免。
+    """
+    if not isinstance(ev, dict):
+        return False
+    if ev.get("is_error"):
+        return False
+    return ev.get("subtype", "success") not in _RESULT_ERROR_SUBTYPES
+
+
 # ── 孤儿处置收敛的生效核查（evo-add-admin-orphan-disposition-effect-check）──
 # global 占位记法归一：DISPOSITION 记录 spec="global"（daemon 级唤起写占位），
 # SIGNAL 记录 spec=None——unhandled_signal_for 严格相等匹配须先归一，否则对
@@ -3270,7 +3317,11 @@ class AdminMonitor:
         merge_signal 的 (spec, signal_type, status_hash) 键形态）——单 run
         （含全部 attempt/原地重试产物）至多一条，同 run 复检仅刷 last_seen。
         dsh 投影 0 样本行 latency_max=None 天然不触发（属 86de1c7071b6 管辖，
-        勿混入本判据）。
+        勿混入本判据）。success 终态豁免（验收 4「曾停滞但正常完成」：无信号、
+        无重试意图）：latency_max 超线后复读 run jsonl 终态 ``result`` 事件
+        （``_read_terminal_result_event``），成功终态（判据镜像 runner 伪装
+        成功校验，``_result_event_is_success``）不落信号——停滞过程指标只在
+        run 非正常收场时才升级人工面；无 result 事件（崩溃/强杀）不豁免。
         """
         from core.agent_runner.latency import STALL_ROUND_ESCALATE_SECONDS
 
@@ -3307,6 +3358,12 @@ class AdminMonitor:
             if (not isinstance(latency_max, (int, float))
                     or isinstance(latency_max, bool)
                     or latency_max <= STALL_ROUND_ESCALATE_SECONDS):
+                continue
+            if _result_event_is_success(_read_terminal_result_event(path)):
+                # success 终态豁免（验收 4「曾停滞但正常完成」：无信号）——
+                # run 已正常收场，停滞过程指标不再升级人工面（bug-found
+                # monitor-escalated-signal-negative-controls 修复）；run 已
+                # 标记 seen，豁免命中零重复 IO。
                 continue
             base_run_id = _api_stall_base_run_id(str(row.get("run_id") or run_id))
             # dedup 键：spec=null（周期 run 无 spec 归属）以 base run_id 进
