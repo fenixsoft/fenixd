@@ -291,23 +291,70 @@ def _numstat_rename_dst(display: str) -> str:
     """``git diff --numstat`` rename 显示形路径 → 目的端待还原路径串。
 
     numstat 对 rename/copy 条目的路径列不输出真实路径，而是对齐显示形
-    （diff.c pprint_rename）：可缩写（任一侧无 quotePath 可引号字符）时为
-    brace 形 ``prefix{old_mid => new_mid}suffix``（prefix/suffix 可为空，如
-    ``dir/{old => new}/file``、``{old.bin => new.bin}``）；不可缩写时两侧
-    各自全引号 ``"old" => "new"``。目的端取最后一个 `` => `` 之后的残段：
-    命中外层 brace 形则以 prefix/suffix 拼回真实路径（目的端中段同样取
-    最后一个分隔符之后的残段）；全引号形残段保留自身引号、交调用方
-    ``_unquote_git_path`` 还原。调用方须已判 `` => `` 在场（非显示形不进
-    本函数，原样返回由 unquote 幂等兜底）。
+    （diff.c pprint_rename）：任一侧含 quotePath 可引号字符时两侧各自
+    全引号 ``"old" => "new"``，否则恒为 brace 形 ``prefix{old_mid =>
+    new_mid}suffix``（prefix/suffix 可为空，如 ``dir/{old => new}/file``、
+    ``{old.bin => new.bin}``）。解析顺序：
+
+    1. 全引号形优先（code-review item 3939b8a92b16）：按最靠右的
+       `` => `` 切分、校验两侧均整体被引号包裹（配平）才命中，残段保留
+       自身引号、交调用方 ``_unquote_git_path`` 还原——含 ``{``/``}`` 的
+       全引号形（``"a{b}.bin" => "c{d}.bin"``）不再被花括号劫持拼出畸形
+       串。brace 形不含引号字符（两侧均无可引号字符才出 brace 形），不
+       会误入本分支。
+    2. brace 形收紧：git wrapper 花括号取按嵌套配对计唯一包住 `` => ``
+       分隔符的那一对——真实路径自带的花括号成对闭合在各自段内、不包裹
+       分隔符，``dir/{weird}/{old => new}`` 据此取内层对拼回
+       ``dir/{weird}/new``（旧实现按首 ``{`` 尾 ``}`` 最外层配对会被
+       prefix 段自带花括号劫持出 ``dir/new``）。
+
+    两分支均未命中时回退取最后一个 `` => `` 之后的残段，与既有占位语义
+    一致。已知盲区：路径自身含 `` => `` 或不成对花括号时显示形天然歧义
+    （pprint_rename 不转义花括号，纯解析无法完全还原），个别形态仍可能
+    拼错残段——os.stat 失败走 unreadable 占位、该文件下轮指纹自然变化、
+    计时重起，不虚构内容哈希；彻底消除需以 ``diff --numstat -z``（真实
+    路径、无显示形）重查，留待后续。调用方须已判 `` => `` 在场（非显示
+    形不进本函数，原样返回由 unquote 幂等兜底）。
 
     （code-review item e170743ae020：显示形若被当真实路径读盘，os.stat
     恒 OSError、恒定 unreadable 占位使 rename 后二进制内容演化不改指纹、
     宽限从旧 first_seen 续算。）
     """
-    head, brace, rest = display.partition("{")
-    mid, close, tail = rest.rpartition("}")
-    if brace and close and " => " in mid:
-        return head + mid.rpartition(" => ")[2] + tail
+    # 全引号形优先：最靠右且两侧引号配平（整体被引号包裹）的 " => " 切分
+    # （右扫多候选，兼容路径段自身含 " => " 的全引号形）。
+    sep_at = display.rfind(" => ")
+    while sep_at != -1:
+        right = display[sep_at + 4 :]
+        if (
+            len(right) >= 2
+            and right[0] == right[-1] == '"'
+            and len(display[:sep_at]) >= 2
+            and display[sep_at - 1] == '"'
+            and display[0] == '"'
+        ):
+            return right
+        sep_at = display.rfind(" => ", 0, sep_at)
+    # brace 形：按嵌套配对扫描，唯一包住分隔符的 {...} 即 git wrapper，
+    # 命中则以 prefix + 新中段 + suffix 拼回真实路径。
+    sep_at = display.rfind(" => ")
+    if sep_at != -1:
+        stack: list = []
+        best_open = best_close = -1
+        for i, ch in enumerate(display):
+            if ch == "{":
+                stack.append(i)
+            elif ch == "}" and stack:
+                open_at = stack.pop()
+                if open_at < sep_at < i and (
+                    best_open == -1 or i - open_at < best_close - best_open
+                ):
+                    best_open, best_close = open_at, i
+        if best_open != -1:
+            return (
+                display[:best_open]
+                + display[sep_at + 4 : best_close]
+                + display[best_close + 1 :]
+            )
     return display.rpartition(" => ")[2]
 
 

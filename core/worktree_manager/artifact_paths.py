@@ -47,7 +47,9 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
       避免 `dist` 前缀意外匹配 `dists/`、`distfoo/`）；
     - 绝对路径（以 ``/`` 开头）或含 ``..`` 段的项丢弃；
     - 以 ``./`` 开头的项丢弃（git 树内相对路径永不以 ``./`` 开头，该前缀
-      判定恒假——判定面被静默收窄，比照含 ``*`` 尾斜杠同款丢弃）。
+      判定恒假——判定面被静默收窄，比照含 ``*`` 尾斜杠同款丢弃）；
+    - 含内部空路径段的前缀项丢弃（``dist//``、``a//b/`` 等，git 树内相对
+      路径不含空段，该前缀判定恒假——比照 ``./`` 前缀同款丢弃）。
 
     任何异常捕获后返回空列表（fail-safe **回退空集合**：空集合 = 判定恒假，
     即未裁决的保守侧——判定器自身故障 MUST NOT 让判定变宽或失效）。
@@ -108,6 +110,16 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
                 continue
 
             # 前缀形态（不含 *，以 / 结尾）
+            if "" in item[:-1].split("/"):
+                # 含内部空路径段（code-review item bfb265295435）：git 树内
+                # 相对路径不含空段（不存在 "//"），该前缀 startswith 恒 False、
+                # 判定面被无声收窄——比照 ./ 前缀同款丢弃 + WARNING，写入侧
+                # validate_build_artifact_paths 随 kept 集自动判非法提示。
+                logger.warning(
+                    "build_artifact_paths: 前缀含内部空路径段（对 git 树内"
+                    "相对路径恒不命中），丢弃: %r", item,
+                )
+                continue
             result.append(("prefix", item))
 
         return result
@@ -126,7 +138,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
 
     与 ``normalize_artifact_patterns`` 同一判定权威：顶层须为字符串列表；逐项
     strip 后仍会被 normalize 丢弃的项（非字符串、绝对路径、含 ``..`` 段、
-    以 ``./`` 开头、不含 ``*`` 又未以 ``/`` 结尾）即非法。返回的提示含丢弃项与
+    以 ``./`` 开头、不含 ``*`` 又未以 ``/`` 结尾、含内部空路径段的前缀）
+    即非法。返回的提示含丢弃项与
     合法形态示例，供前端回显；合法返回 None。
     """
     if value is None:

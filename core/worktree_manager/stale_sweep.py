@@ -336,11 +336,15 @@ class G7StaleSweepMixin:
         # 直接抛穿 cleanup_stale_worktrees，违背「失败记 WARNING，不阻塞 daemon
         # 启动」承诺（当前写入方均产出 dict，纯防御）。过滤后该记录不获豁免、
         # 照常参与孤儿清扫，与无 worktree_name 的分支模式记录同款兜底语义。
-        legacy_names = {
-            rec.get("worktree_name")
-            for rec in list(self._legacy.values())
-            if isinstance(rec, dict)
-        }
+        # 快照读持 _spec_lock_th：口径同下方 legacy_branches 快照与
+        # _gc_merged_branches 的 _legacy 持锁读（包内「_legacy 变更单一
+        # 持锁纪律」，本函数调用链不持本锁，加锁无重入风险）。
+        with self._spec_lock_th:
+            legacy_names = {
+                rec.get("worktree_name")
+                for rec in list(self._legacy.values())
+                if isinstance(rec, dict)
+            }
         # 在册 legacy 分支快照（code-review item 727d94fd7f95）：持 _spec_lock_th，
         # 口径同 _gc_merged_branches 的 _legacy 快照读（对齐 _reclaim_expired_legacy
         # 的持锁读口径）。供下方 branch -D 删除段豁免被 _legacy 登记（宽限期内续做

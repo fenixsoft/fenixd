@@ -74,7 +74,11 @@ def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
                 "--format=%h",
                 f"{merge_base}..HEAD",
                 "--",
-                rel,
+                # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
+                # _backup_untracked_spec_files / queries.file_exists_on_branch
+                # 同口径）：裸 pathspec 会被 git 按 fnmatch 通配展开，spec 名含
+                # */?/[ 等元字符时匹配超出该 spec 目录、在飞修订误报。
+                f":(literal){rel}",
             ],
             capture_output=True,
             text=True,
@@ -399,7 +403,11 @@ class G4MergebackMixin:
                     "status",
                     "--porcelain",
                     "--",
-                    rel,
+                    # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
+                    # _backup_untracked_spec_files / queries.file_exists_on_branch
+                    # 同口径）：裸 pathspec 的 glob 通配在 spec 名含 */?/[ 等
+                    # 元字符时会误收其他路径，merge-back 被误顺延。
+                    f":(literal){rel}",
                 ],
                 capture_output=True,
                 text=True,
@@ -418,12 +426,21 @@ class G4MergebackMixin:
         # /_detect_wip_overlap 等本文件路径采集点同口径）：porcelain 行首 `XY `
         # 状态前缀仅保留供展示，路径段经 _unquote_git_path 反转义，非 ASCII
         # 路径在下方日志与 MergeConflictInfo 文案中直接可读；该函数对无引号行
-        # 幂等（见 core.git_text）。
-        dirty = [
-            f"{ln[:3]}{_unquote_git_path(ln[3:])}"
-            for ln in (raw.strip() for raw in res.stdout.splitlines())
-            if ln
-        ]
+        # 幂等（见 core.git_text）。rename 条目（porcelain v1 形如
+        # ``R  old -> new``，item 9e3bbf431c34）按 rename 语义拆 old/new 分别
+        # 反转义、两条路径都进 dirty 清单，不再以 "old -> new" 合体形态误导
+        # 人工按提示处置。
+        dirty: list = []
+        for raw in res.stdout.splitlines():
+            ln = raw.strip()
+            if not ln:
+                continue
+            if " -> " in ln[3:]:
+                old, new = ln[3:].split(" -> ", 1)
+                dirty.append(f"{ln[:3]}{_unquote_git_path(old)}")
+                dirty.append(f"{ln[:3]}{_unquote_git_path(new)}")
+            else:
+                dirty.append(f"{ln[:3]}{_unquote_git_path(ln[3:])}")
         if not dirty:
             return None
         self.logger.warning(

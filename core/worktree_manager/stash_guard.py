@@ -799,13 +799,21 @@ class G6StashGuardMixin:
         # 干净判定复用 _list_dirty_tracked_files 的 tracked-only 口径（与
         # ensure_clean_tree 一致）：本模块的 autostash 只 stash tracked 修改，
         # 存在普通 untracked 文件不应让巡检无限期跳过回收；status 命令失败
-        # （rc!=0）仍按「脏」保守放弃本轮。脏判定复用上方已取回的 status
-        # 输出，不在持锁临界区内重复起同一子进程（code-review item
-        # e4d825bb770e；mergeback.py 把「逐路径起子进程线性放大持锁时长」
-        # 列为设计关注点）。
-        if status.returncode != 0 or self._list_dirty_tracked_files(
-            status_stdout=status.stdout
-        ):
+        # （rc!=0）非业务态「脏」，按 git 不可用口径记日志后同样保守放弃
+        # 本轮。脏判定复用上方已取回的 status 输出，不在持锁临界区内重复
+        # 起同一子进程（code-review item e4d825bb770e；mergeback.py 把
+        # 「逐路径起子进程线性放大持锁时长」列为设计关注点）。
+        if status.returncode != 0:
+            # status 命令本身失败（rc!=0，如 index.lock 争用）≠ 主树变脏：
+            # 与同函数其他 git 不可用路径同款日志，故障轮次留痕可查
+            self.logger.warning(
+                "worktree_manager",
+                "Stale autostash reclaim skipped (git unavailable): "
+                f"status rc={status.returncode} "
+                f"stderr={status.stderr.strip()!r}",
+            )
+            return False
+        if self._list_dirty_tracked_files(status_stdout=status.stdout):
             return False
         try:
             lst = subprocess.run(
@@ -856,8 +864,9 @@ class G6StashGuardMixin:
         # dashboard 侧进程）可能向主树落盘新改动——若与 autostash 条目触碰同一
         # 文件，pop 冲突后 _heal_unmerged_files 的 checkout -f 会把窗口内写入的
         # 未提交修改一并丢弃。pop 前重查一次 tracked 干净态（口径同函数开头：
-        # rc!=0 按「脏」保守放弃；开销为一次子进程，同 _discard_identical_local
-        # _changes 的丢弃前二次校验模式），脏则放弃本轮，条目保留交下轮巡检。
+        # rc!=0 按 git 不可用口径记日志后保守放弃；开销为一次子进程，同
+        # _discard_identical_local _changes 的丢弃前二次校验模式），脏则放弃
+        # 本轮，条目保留交下轮巡检。
         try:
             recheck = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
@@ -873,9 +882,18 @@ class G6StashGuardMixin:
                 f"Stale autostash reclaim skipped (git unavailable): {e}",
             )
             return False
-        if recheck.returncode != 0 or self._list_dirty_tracked_files(
-            status_stdout=recheck.stdout
-        ):
+        if recheck.returncode != 0:
+            # 复核命令本身失败（rc!=0，如 index.lock 争用）≠ 主树变脏：
+            # git 基础设施故障不冒充用户写入，按 git 不可用口径记日志后
+            # 保守放弃本轮，条目保留交下轮巡检
+            self.logger.warning(
+                "worktree_manager",
+                "Stale autostash reclaim aborted (git unavailable at "
+                f"TOCTOU recheck): status rc={recheck.returncode} "
+                f"stderr={recheck.stderr.strip()!r}",
+            )
+            return False
+        if self._list_dirty_tracked_files(status_stdout=recheck.stdout):
             self.logger.warning(
                 "worktree_manager",
                 "Stale autostash reclaim aborted: main tree turned dirty "

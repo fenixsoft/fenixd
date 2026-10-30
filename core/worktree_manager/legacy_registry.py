@@ -126,25 +126,34 @@ class G2LegacyRegistryMixin:
         遗产 worktree 与分支（失败后保留的半成品不再需要），使清扫器不再对其豁免。
         物理删除失败仅记 WARNING，内存态遗产仍清除以放行后续逻辑。
 
-        pop 后复核（code-review item 0a6ef391747a）：pop 到的条目若仍处宽限期内
-        （LEGACY_GRACE_SECONDS 内刚被并发车道重新登记的新遗产），放回出册位并
-        返回 None、不做物理回收——详见下方实现注。
+        pop 后复核（code-review item 0a6ef391747a，739770aec4e5 改对象同一性
+        范式）：pop 出的条目与入口快照非同一对象（间隙内被并发车道覆盖登记）
+        才放回出册位并返回 None、不做物理回收——详见下方实现注。
         """
-        # 出册与复核同锁：_legacy 以 spec 为键、无 agent_type/family 维度，本
+        # 入口持锁快照该 spec 的登记条目（对象同一性范式，同 _pop_legacy_if_current
+        # d6c32c0b63b6）：_legacy 以 spec 为键、无 agent_type/family 维度，本
         # run 成功 merge 消费遗产的同时，同 spec 另一车道（如 verifier 失败经
-        # keep_for_reuse）可能刚重新登记——pop 到宽限期内的新登记视为并发新
-        # 死亡现场而非本 run 消费的旧遗产：setdefault 放回出册位（保留清扫
-        # 豁免）并返回 None（与 _reclaim_expired_legacy 的 pop 后复核同口径
-        # 0d5c6c7e148e；临界区内只做字典读写，物理回收留锁外）。
+        # keep_for_reuse）可能并发覆盖登记——pop 出的记录与入口快照非同一对象
+        # ＝间隙内被覆盖登记的并发新死亡现场：setdefault 放回出册位（保留清扫
+        # 豁免）并返回 None；同一对象则视为本 run 要消费的旧遗产，照常物理回收。
+        # 取代原「registered_at 距今 ≤ LEGACY_GRACE_SECONDS」时间窗启发式
+        # （code-review item 739770aec4e5）：时间窗无法区分并发新登记与本 run
+        # 要消费的旧遗产——前一 run 死亡后宽限期内后继即成功 merge 的合法消费
+        # 被误拒，调用方按无遗产处理不再重试，而 _reclaim_expired_legacy 仅
+        # daemon 启动路径执行一次（见 _reclaim_expired_legacy docstring），遗产
+        # worktree 目录与分支将滞留至重启。两段临界区间隙即复核窗口（同
+        # _pop_legacy_if_current 的快照→复核结构）；临界区内只做字典读写，
+        # 物理回收留锁外。
+        with self._spec_lock_th:
+            entry_rec = self._legacy.get(spec_name)
         with self._spec_lock_th:
             rec = self._legacy.pop(spec_name, None)
             # 非 dict 记录守卫（code-review item 35dfd88369df，与
             # _register_legacy_unlocked 16a559a09f44 / _reclaim_expired_legacy
             # 873493c07398 的同表读取防御口径对齐）：isinstance 先行，异形
-            # 记录不进 rec.get 宽限期复核，落到下方锁外出口按无遗产返回。
-            if isinstance(rec, dict) and (
-                time.time() - rec.get("registered_at", 0) <= LEGACY_GRACE_SECONDS
-            ):
+            # 记录不进对象同一性复核、不放回出册，落到下方锁外出口按无遗产
+            # 返回（pop 已把异形记录清出册，维持「清除以放行后续逻辑」口径）。
+            if isinstance(rec, dict) and rec is not entry_rec:
                 self._legacy.setdefault(spec_name, rec)
                 rec = None
         if rec is None:
@@ -278,7 +287,21 @@ class G2LegacyRegistryMixin:
                 f"（wt={wt_path}），保留活动集成员身份防孤儿清扫，reuse 认领本轮不可用"
                 + (f"，agent_type '{agent_type}'" if agent_type else ""),
             )
-            self._active_reuse.pop(spec_name, None)
+            # 仅清不再指向活动集成员的残留（code-review item b249589d2069，
+            # 同 create() 097d73d377dd / cleanup finally 23e1bc091552 口径）：
+            # _active_reuse 以 spec 为键、无 agent_type 维度，同 spec 他
+            # agent_type 车道（如 verifier 收尾时 implementer 重派）刚经
+            # create()→_take_reusable_worktree 认领写入、worktree 仍在
+            # _active_worktrees 在飞的记录不得在此抹掉——否则 get_reuse_record
+            # 随后返回 None，prompt 继承说明注入丢失。记录 path 仍在活动集
+            # （其 run 在飞）则保留。
+            stale_reuse_rec = self._active_reuse.get(spec_name)
+            if (
+                stale_reuse_rec is not None
+                and str(stale_reuse_rec.get("path") or "")
+                not in self._active_worktrees
+            ):
+                self._active_reuse.pop(spec_name, None)
             self._proc_scan_cache.pop(spec_name, None)
             # 家族限定缓存键一并失效（code-review item 2354ebc55bb6，同
             # lifecycle.py cleanup finally 的 47b98315d174 口径，正常收尾
@@ -292,7 +315,20 @@ class G2LegacyRegistryMixin:
             return
         self._active_worktrees.discard(wt_str)
         self._wt_branches.pop(wt_str, None)
-        self._active_reuse.pop(spec_name, None)
+        # 仅清不再指向活动集成员的残留（code-review item b249589d2069，
+        # 同 create() 097d73d377dd / cleanup finally 23e1bc091552 口径）：
+        # _active_reuse 以 spec 为键、无 agent_type 维度，同 spec 他
+        # agent_type 车道（如 verifier 收尾时 implementer 重派）刚认领、
+        # worktree 仍在 _active_worktrees 在飞的记录不得在此抹掉——否则
+        # get_reuse_record 随后返回 None，prompt 继承说明注入丢失。本
+        # worktree 自身 path 已在上行摘出活动集，指向自身的残留照旧清除；
+        # 记录 path 仍在活动集（其 run 在飞）则保留。
+        reuse_rec = self._active_reuse.get(spec_name)
+        if (
+            reuse_rec is not None
+            and str(reuse_rec.get("path") or "") not in self._active_worktrees
+        ):
+            self._active_reuse.pop(spec_name, None)
         # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配，
         # 并按 agent_type 家族限定——见上方 lock_family 推导注释）：
         # 摘锁口径与入口时刻守卫统一收敛到 _release_spec_locks_of 单一实现。

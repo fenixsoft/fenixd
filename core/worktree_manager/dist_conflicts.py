@@ -673,11 +673,13 @@ class G5DistConflictsMixin:
                 ln[3:].split(" -> ", 1)[-1]
                 for ln in staged.stdout.splitlines()
                 # porcelain 首位（index 列）非空格＝该条目确已暂存（item
-                # 2e8df62a8f9a）：" M"/" D" 等仅工作树态条目并非 staged，不
-                # 参与 foreign 判定——正常序列下 add -A 后静态根无未暂存残
-                # 留，过滤仅为消除对「add 与探针之间无其他写手」这一时序假设
-                # 的依赖，避免未来插入写手时把未暂存路径误判越界而跳过 amend。
-                if len(ln) > 3 and ln[0] != " "
+                # 2e8df62a8f9a）：" M"/" D" 等仅工作树态条目并非 staged；
+                # "??" untracked 条目首位为 "?" 同样未暂存（item
+                # d2a54e88e9a9），一并排除不参与 foreign 判定——正常序列下
+                # add -A 后静态根无未暂存残留，过滤仅为消除对「add 与探针
+                # 之间无其他写手」这一时序假设的依赖，避免未来插入写手时把
+                # 未暂存路径误判越界而跳过 amend。
+                if len(ln) > 3 and ln[0] != " " and ln[:2] != "??"
             ]
             foreign = [
                 p for p in staged_paths
@@ -730,7 +732,7 @@ class G5DistConflictsMixin:
                 # 恢复干净：unstage + dist 回到提交版，不让脏树阻塞后续 merge。
                 # （reset 语义见 _unstage_static_root，与 foreign/upstream 同款。）
                 self._unstage_static_root()
-                subprocess.run(
+                checkout = subprocess.run(
                     [
                         "git",
                         "-C",
@@ -746,6 +748,19 @@ class G5DistConflictsMixin:
                     errors="replace",
                     timeout=60,
                 )
+                if checkout.returncode != 0:
+                    # 复位失败留痕（code-review item 5f78bd6f89c0，口径对齐
+                    # _unstage_static_root 的非零 WARNING）：静态根下无 HEAD
+                    # 跟踪文件（dist 不入库语义下常见）时 checkout 因
+                    # pathspec 无匹配而失败，「dist 回到提交版」意图静默落
+                    # 空——非阻塞记录，不改控制流（恢复分支本以「尽力复位」
+                    # 继续）。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"git checkout restore of {DASHBOARD_STATIC_ROOT} "
+                        f"failed, static-root working tree not reset: "
+                        f"{(checkout.stderr or '').strip()[:200]}",
+                    )
                 self.logger.error(
                     "worktree_manager",
                     f"dist rebuild amend failed: " f"{(amend.stderr or '').strip()[:200]}",
