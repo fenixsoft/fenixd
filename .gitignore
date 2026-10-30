@@ -72,6 +72,11 @@ core/dashboard/static/src/components/claude-msg/tailwind.gen.css
 # dsh-bundle 本地隔离
 .dsh-test/
 dsh-bundle/node_modules/
+# node_modules 探针期备份形态不入库：admin 探针/依赖切换会临时把 node_modules
+# 复制为 node_modules.bak-*（2026-10-24 bak-admin-probe 以 51054 项/895MB 触发
+# maintree_untracked_stray_escalated 升级，既有 node_modules/ 规则不覆盖改名形态，
+# 目录级一条覆盖全部未来会话）
+dsh-bundle/node_modules.bak*/
 # pnpm 安装运行态（prepare/场景装依赖生成；npm 口径锁文件 package-lock.json 才入库）
 dsh-bundle/pnpm-lock.yaml
 .superpowers/
