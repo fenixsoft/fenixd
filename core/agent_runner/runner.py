@@ -7410,6 +7410,10 @@ class AgentRunner:
                     # （缺 agent_type 的行在离群初筛侧整体折进混合组）。None
                     # 时读侧按 run_id 前缀推断兜底。
                     "agent_type": agent_type,
+                    # evo-refine-midflight-outlier-dims 2.1：实际发给网关的
+                    # 模型标识（--model 值）原样记录不归一，供轮次通胀与模型
+                    # 版本对照。
+                    "model": model_override,
                     "duration_s": _duration_s,
                     "turns": _turns,
                     "input_tokens": _inp,
@@ -7455,6 +7459,9 @@ class AgentRunner:
                         # evo-add-run-metrics-lane-baseline 1.3：兜底行补车道
                         # 归属（同转录行；None 时读侧按 run_id 前缀推断）。
                         "agent_type": agent_type,
+                        # evo-refine-midflight-outlier-dims 2.1：同转录行，
+                        # 实际模型标识原样记录。
+                        "model": model_override,
                         # evo-add-night-window-inflight-guard 1.2：与归档行同源
                         "duration_s": _duration_s,
                         "turns": _turns,
@@ -9557,6 +9564,10 @@ class AgentRunner:
                 "cost_usd": usage.get("cost_usd"),
                 "terminal": terminal,
                 "provider": provider,
+                # evo-refine-midflight-outlier-dims 2.1：接通休眠形参 model——
+                # run 实际使用的模型标识原样记录（未观测为 None），不做跨
+                # provider/harness 归一，仅供轮次通胀与模型版本对照。
+                "model": model,
                 # evo-add-api-stall-observability 1.3③：停滞指标（零样本
                 # 回退 0/0/None）。
                 "latency_rounds": int(latency.get("rounds") or 0),

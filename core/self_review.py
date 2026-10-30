@@ -950,6 +950,30 @@ MIDFLIGHT_BATCH_BASELINE_LANES = ("code-fix", "code-review")
 # 车道窗口内最近 N 个有效批（不含当前 run、排除重试轮，按时间倒序）。
 MIDFLIGHT_BASELINE_RECENT_BATCHES = 10
 
+# 摊薄维度（evo-refine-midflight-outlier-dims 1.1）：批量车道这两维按台账
+# 条目数摊薄对比（run 值与组基线统一换算为单位条目值再过 3 倍判定），
+# 消除批量 run 的绝对倍数误报——2026-10-17 窗 code-fix 修 9 条 cost 3.401
+# 对单条目组中位 0.483 标 7.05 倍、duration 521s 标 3.5 倍，摊薄后
+# 0.378/条 vs 0.483/条、57.9s/条 vs 146.9s/条（与基线批仅差 15-18%）不标。
+# turns 维已有近期批 P90 车道基线，本提案不动。
+MIDFLIGHT_DILUTED_DIMS = ("cost_usd", "duration_seconds")
+
+# 纯文本轮占比维度（evo-refine-midflight-outlier-dims 1.2）：双条件阈值判定
+# ——turns 超绝对轮数阈值「且」text_turns/turns 超占比阈值才标离群。绝对
+# 轮数条件挡小 run 高占比噪音（4 轮中 3 轮纯文本不标）；占比条件让无 API
+# 停滞的轮次通胀可观测（2026-10-17 窗 turns=204 中 125 轮无 tool_use 纯文本
+# 轮、latency_stalls=0，cost/时长/停滞三维度均不捕获）。实测偏松/偏紧调此
+# 两常量（阈值与 MIDFLIGHT_OUTLIER_* 同处收口）。
+MIDFLIGHT_TEXT_TURNS_MIN_TURNS = 100
+MIDFLIGHT_TEXT_TURNS_RATIO_THRESHOLD = 0.5
+
+# 取数坑注记（evo-refine-midflight-outlier-dims 1.2）：纯文本轮占比两值
+# MUST 取自 run 产物文件的 context metrics 行原始行值（text_turns 与 turns
+# 同一条行），MUST NOT 取 core/dashboard/data/runs.py 索引合并值——索引按
+# run_id 合并、同名字段后行胜出（runs.py :96-104），dsh run 收尾连写多条
+# run_metrics 形态行时终态行的 turns 会覆盖 context 行值而 text_turns 无
+# 同名键不被覆盖，混合行比值失真（初筛读日志/归档行而非 dashboard 索引）。
+
 # 重试轮 run_id 后缀（evo-add-run-metrics-lane-baseline 方案 3）：与
 # core/dashboard/data/runs.py _strip_run_attempt_suffix 同口径——-a<n>
 # attempt / -r<n> 原地重试，可叠加（<base>-a1-r1）。无后缀不可辨时不排除、
@@ -1114,6 +1138,111 @@ def _metrics_outlier_dims(metric: dict) -> dict:
     return values
 
 
+def _numeric_dim(v) -> bool:
+    """初筛维度数值型判定（非 bool 的 int/float），_metrics_outlier_dims 与
+    纯文本轮占比取数共用同一口径。"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _run_task_entry_count(project_root, metric: dict) -> Optional[int]:
+    """run 关联的台账条目数（evo-refine-midflight-outlier-dims 1.1）。
+
+    来源钉定为指标行 spec 字段经 core.run_task_track.parse_tasks_md 取
+    len(all)（台账总条目，与 code_fix chain rollup 的台账口径一致）；spec
+    缺失/解析失败/条目数为 0 → None（条目数不可得，参与摊薄可用性判定）。
+    解析异常按不可得降级，不抛（观测字段不阻断初筛）。
+    """
+    spec = str(metric.get("spec") or "").strip()
+    if not spec:
+        return None
+    try:
+        from core.run_task_track import parse_tasks_md  # noqa: PLC0415
+
+        all_ids, _checked = parse_tasks_md(project_root, spec)
+    except Exception:
+        return None
+    try:
+        n = len(all_ids or [])
+    except TypeError:
+        return None
+    return n if n > 0 else None
+
+
+# context metrics 行取数的产物文件尾读窗口（evo-refine-midflight-outlier-dims
+# 1.2）：context metrics 行由 _run_agent 收尾 finally 落盘、必在文件末尾数行
+# 内（其后至多再有 usage_missing warning/error 终态行）；尾读有界，避免为
+# 每个窗口 run 全量扫描数十 MB 转录（assistant 事件单行可达数百 KB）。行被
+# 窗口截断时 json 解析失败自然跳过（缺样不入组，fail-open）。
+_CONTEXT_METRICS_TAIL_BYTES = 512 * 1024
+
+
+def _read_context_metrics_row(path) -> Optional[dict]:
+    """读 run 产物文件中最后一条含数值 text_turns+turns 的 context metrics
+    转录行（type=run_metrics，_run_agent 收尾 finally 落盘）。
+
+    取数坑（1.2 常量区注记）：MUST 读产物原始行而非 dashboard 索引合并值
+    ——索引同名字段后行胜出，终态行 turns 覆盖 context 行值而 text_turns
+    不被覆盖，混合行比值失真。两字段须同一条行且均为数值（非 bool），任一
+    缺失（dsh 通道/历史行无 text_turns）→ None，该 run 该维跳过（缺样不入
+    组，与 _metrics_outlier_dims 数值>0 过滤同口径）。文件缺失/不可读 →
+    None，不抛（观测维度不阻断初筛）。
+    """
+    try:
+        with open(path, "rb") as fh:
+            try:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+            except OSError:
+                return None
+            start = max(0, size - _CONTEXT_METRICS_TAIL_BYTES)
+            fh.seek(start)
+            blob = fh.read()
+    except OSError:
+        return None
+    found: Optional[dict] = None
+    for raw_line in blob.split(b"\n"):
+        line = raw_line.strip()
+        if not line or b'"run_metrics"' not in line:
+            continue
+        try:
+            row = json.loads(line.decode("utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(row, dict) or row.get("type") != "run_metrics":
+            continue
+        t = row.get("text_turns")
+        n = row.get("turns")
+        if _numeric_dim(t) and _numeric_dim(n):
+            found = row  # 同一条 context 行原始值（末条胜出，收尾 finally 恒一条）
+    return found
+
+
+def _text_turn_ratio_outlier(ctx_row: Optional[dict]) -> Optional[Dict[str, Any]]:
+    """纯文本轮占比维度判定（evo-refine-midflight-outlier-dims 1.2）。
+
+    双条件：turns > MIDFLIGHT_TEXT_TURNS_MIN_TURNS 且 text_turns/turns >
+    MIDFLIGHT_TEXT_TURNS_RATIO_THRESHOLD 才标（绝对轮数条件挡小 run 高占比
+    噪音）。ctx_row 为 None（行缺失/字段缺失/类型不符）→ None 跳过。
+    """
+    if not isinstance(ctx_row, dict):
+        return None
+    n = ctx_row.get("turns")
+    t = ctx_row.get("text_turns")
+    if not (_numeric_dim(n) and _numeric_dim(t)) or n <= 0:
+        return None
+    if n > MIDFLIGHT_TEXT_TURNS_MIN_TURNS and (t / n) > MIDFLIGHT_TEXT_TURNS_RATIO_THRESHOLD:
+        return {
+            # value 承载占比（0-1），计数形态由渲染侧以 text_turn_count/
+            # turns_count 呈现；median 承载占比阈值（kind=纯文本轮占比阈值）。
+            "value": t / n,
+            "median": MIDFLIGHT_TEXT_TURNS_RATIO_THRESHOLD,
+            "baseline_kind": "text_turn_ratio",
+            "text_turn_count": int(t),
+            "turns_count": int(n),
+        }
+    return None
+
+
 def _collect_metrics_outliers(
     project_root, window_start: datetime, window_end: Optional[datetime] = None
 ) -> List[Dict[str, Any]]:
@@ -1136,17 +1265,34 @@ def _collect_metrics_outliers(
     重试轮）；有效批样本 < MIDFLIGHT_MIN_GROUP_SAMPLES 回退窗口中位。其余
     维度与其余车道维持窗口中位。
 
+    批量车道摊薄口径（evo-refine-midflight-outlier-dims 1.1）：批量车道的
+    cost_usd/duration_seconds 维（MIDFLIGHT_DILUTED_DIMS）按台账条目数摊薄
+    对比——run 值与组基线统一换算为单位条目值（条目数=_run_task_entry_count）
+    后再过 3 倍判定，消除批量 run 的绝对倍数误报。回退约定为整维级：组内该
+    维全部有效样本均可得条目数（>0）才启用摊薄，任一 run 缺失（spec 缺失/
+    解析失败/条目数为 0）则该维整体回退现状绝对口径——单一基线，不把摊薄值
+    与绝对值混进同一次中位计算。turns 维不摊薄（已有 P90 车道基线）。
+
+    纯文本轮占比维度（同 spec 1.2）：绝对阈值双条件（turns 超阈值且
+    text_turns/turns 超占比阈值），独立于组中位基线，数据源为 run 产物文件
+    的 context metrics 转录行原始行值（_read_context_metrics_row）；行缺
+    text_turns 字段该 run 该维跳过。
+
     Args:
         window_end: 窗口上界；调用侧（collect_daily_summary）传入口冻结快照，
             对齐 collect_runs_stats 快照化契约。None 时入口冻结兜底（直调兼容）。
 
-    Returns: [{run_id, path, agent_type, terminal, outliers: {维度: {value,
-        median[, baseline_kind]}}}]；path 为事件流文件路径（_collect_run_files
-        并集），供深扫环节复用。median 为该 run 实际参与判定的组基线（批量
-        车道 turns 维为 P90，其余为组中位），非中位口径时附 baseline_kind 注
-        明；渲染侧仅消费 value/median，既有键名不变。索引查不到的 run（旧
-        日志轮转出窗）跳过初筛，不视为离群也不报错；索引访问异常同样按缺
-        失跳过。
+    Returns: [{run_id, path, agent_type, terminal[, model], outliers: {维度:
+        {value, median[, baseline_kind][, raw_value, raw_median, task_count][,
+        text_turn_count, turns_count]}}}]；path 为事件流文件路径
+        （_collect_run_files 并集），供深扫环节复用。median 为该 run 实际参与
+        判定的组基线（批量车道 turns 维为 P90；批量车道摊薄维为单位条目值
+        中位，baseline_kind=per_task_median，附 raw_value/raw_median/task_count
+        供摊薄前后对账），缺省即组中位。text_turns 维 entry 为占比判定（
+        baseline_kind=text_turn_ratio，附计数）。model 有值时附带（2.2，供
+        轮次通胀与模型版本对照）。渲染侧既有键名 value/median 不变。索引查
+        不到的 run（旧日志轮转出窗）跳过初筛，不视为离群也不报错；索引访问
+        异常同样按缺失跳过。
     """
     if window_end is None:
         window_end = now_utc()  # 快照化兜底：直调时入口冻结
@@ -1179,18 +1325,43 @@ def _collect_metrics_outliers(
     outliers: List[Dict[str, Any]] = []
     for agent_type, runs in grouped.items():
         medians: Dict[str, float] = {}
-        for dim in MIDFLIGHT_OUTLIER_DIMS:
-            values = [
-                dims[dim]
-                for _, _, _, m in runs
-                if dim in (dims := _metrics_outlier_dims(m))
-            ]
-            if len(values) < MIDFLIGHT_MIN_GROUP_SAMPLES:
-                continue
-            medians[dim] = statistics.median(values)
-        if not medians:
-            continue
+        # 摊薄口径登记（1.1）：dim → {run_id: 条目数}；raw_medians 为同组
+        # 绝对口径中位（摘要行摊薄前后对账用）。
+        diluted_counts: Dict[str, Dict[str, int]] = {}
+        raw_medians: Dict[str, float] = {}
         batch_lane = agent_type in MIDFLIGHT_BATCH_BASELINE_LANES
+        # 台账条目数逐 run 记忆化（1.1）：同组 cost/duration 两摊薄维共用，
+        # parse_tasks_md 不重读；仅摊薄可用性判定触达的 run 才解析。
+        task_counts: Dict[str, Optional[int]] = {}
+        for dim in MIDFLIGHT_OUTLIER_DIMS:
+            samples = [
+                (rid, m, d)
+                for rid, _, _, m in runs
+                if dim in (d := _metrics_outlier_dims(m))
+            ]
+            if len(samples) < MIDFLIGHT_MIN_GROUP_SAMPLES:
+                continue
+            raw_values = [d[dim] for _rid, _m, d in samples]
+            # 批量车道摊薄维（1.1）：组内该维全部有效样本均可得条目数才启用
+            # 摊薄；任一缺失整维回退绝对口径（继续走下方绝对中位）。
+            if batch_lane and dim in MIDFLIGHT_DILUTED_DIMS:
+                counts: Dict[str, int] = {}
+                dilutable = True
+                for rid, m, _d in samples:
+                    if rid not in task_counts:
+                        task_counts[rid] = _run_task_entry_count(project_root, m)
+                    c = task_counts[rid]
+                    if not c:
+                        dilutable = False
+                        break
+                    counts[rid] = c
+                if dilutable:
+                    diluted_values = [d[dim] / counts[rid] for rid, _m, d in samples]
+                    medians[dim] = statistics.median(diluted_values)
+                    raw_medians[dim] = statistics.median(raw_values)
+                    diluted_counts[dim] = counts
+                    continue
+            medians[dim] = statistics.median(raw_values)
         # 近期批分布样本（批量车道 turns 基线，同 spec 方案 3）：排除重试轮
         # （重试轮 turns 被前序半成品抬高，入基线会抬高 P90 放跑真离群），
         # 按时间倒序排列；逐 run 取基线时再排除当前 run 自身并截取最近 N 个
@@ -1211,6 +1382,15 @@ def _collect_metrics_outliers(
                     continue
                 baseline = medians[dim]
                 kind = "median"
+                compare = v
+                entry_count = task_counts.get(run_id)
+                if dim in diluted_counts and entry_count:
+                    # 摊薄维判定（1.1）：run 值换算为单位条目值再比（基线
+                    # 已是单位条目值中位）。被判定 run 必为该维有效样本、
+                    # 计入 diluted_counts 样本集，entry_count 缺失仅在该 run
+                    # 非样本时出现（防御性回退绝对口径）。
+                    compare = v / entry_count
+                    kind = "per_task_median"
                 if batch_lane and dim == "turns":
                     peers = [
                         val
@@ -1220,23 +1400,40 @@ def _collect_metrics_outliers(
                     if len(peers) >= MIDFLIGHT_MIN_GROUP_SAMPLES:
                         baseline = _recent_batch_p90(peers)
                         kind = "p90_recent_batches"
-                if v > baseline * MIDFLIGHT_OUTLIER_MULTIPLIER:
-                    # baseline_kind 仅在基线口径非组中位（批量车道 turns P90）
-                    # 时附加：缺省即组中位，与既有行形态/既有断言兼容。
-                    entry = {"value": v, "median": baseline}
-                    if kind != "median":
+                if compare > baseline * MIDFLIGHT_OUTLIER_MULTIPLIER:
+                    # baseline_kind 仅在基线口径非组中位（批量车道 turns P90/
+                    # 批量车道摊薄维）时附加：缺省即组中位，与既有行形态/
+                    # 既有断言兼容。摊薄行附 raw_value/raw_median/task_count
+                    # （摘要行摊薄前后两对数字，人工对账用）。
+                    entry: Dict[str, Any] = {"value": compare, "median": baseline}
+                    if kind == "per_task_median":
+                        entry["baseline_kind"] = kind
+                        entry["raw_value"] = v
+                        entry["raw_median"] = raw_medians[dim]
+                        entry["task_count"] = entry_count
+                    elif kind != "median":
                         entry["baseline_kind"] = kind
                     hit[dim] = entry
+            # 纯文本轮占比维度（1.2）：绝对阈值双条件，独立于组中位基线；
+            # 数据源为产物文件 context metrics 转录行原始行值（同一条行），
+            # 行缺 text_turns 字段该 run 该维跳过（缺样不入组）。
+            ratio_entry = _text_turn_ratio_outlier(_read_context_metrics_row(path))
+            if ratio_entry:
+                hit["text_turns"] = ratio_entry
             if hit:
-                outliers.append(
-                    {
-                        "run_id": run_id,
-                        "path": str(path),
-                        "agent_type": agent_type,
-                        "terminal": metric.get("terminal"),
-                        "outliers": hit,
-                    }
-                )
+                outlier_rec: Dict[str, Any] = {
+                    "run_id": run_id,
+                    "path": str(path),
+                    "agent_type": agent_type,
+                    "terminal": metric.get("terminal"),
+                    "outliers": hit,
+                }
+                # model（2.2）：有值才附键（既有行形态零变化），供轮次通胀
+                # 与模型版本对照；取指标行原值原样记录不归一。
+                model_v = metric.get("model")
+                if isinstance(model_v, str) and model_v.strip():
+                    outlier_rec["model"] = model_v.strip()
+                outliers.append(outlier_rec)
     # 确定性输出：(agent_type, run_id) 字典序
     outliers.sort(key=lambda o: (o["agent_type"], o["run_id"]))
     return outliers
@@ -1245,10 +1442,47 @@ def _collect_metrics_outliers(
 def _outlier_baseline_label(entry: dict) -> str:
     """初筛离群行基线标签（code-review item 845de9d2971b）：按 baseline_kind
     分支，与 _collect_metrics_outliers 的注记口径对齐——批量车道 turns 维为
-    近期批 P90（p90_recent_batches），缺省即组中位。"""
-    if entry.get("baseline_kind") == "p90_recent_batches":
+    近期批 P90（p90_recent_batches）；批量车道摊薄维为单位条目值中位
+    （per_task_median，evo-refine-midflight-outlier-dims 1.1）；纯文本轮占比
+    维为阈值判定（text_turn_ratio，同 spec 1.2）；缺省即组中位。"""
+    kind = entry.get("baseline_kind")
+    if kind == "p90_recent_batches":
         return "近期批 P90"
+    if kind == "per_task_median":
+        return "摊薄组中位"
+    if kind == "text_turn_ratio":
+        return "纯文本轮占比阈值"
     return "组中位"
+
+
+def _outlier_dim_text(dim: str, d: dict, success: bool) -> str:
+    """单个离群维度的摘要行片段（evo-refine-midflight-outlier-dims 1.1/1.2）。
+
+    摊薄行同时给摊薄前后两对数字（value/median 为单位条目值，raw_value/
+    raw_median 为绝对口径原值，task_count 为摊薄分母）；纯文本轮占比行给
+    计数形态与占比及双条件阈值；其余维度维持既有形态
+    「dim=value（基线标签 median…）」。
+    """
+    success_note = "，成功收尾" if success else ""
+    kind = d.get("baseline_kind")
+    if kind == "per_task_median":
+        return (
+            f"{dim}={d['value']:.4g}/条（{_outlier_baseline_label(d)} "
+            f"{d['median']:.4g}/条，分母 {d.get('task_count')}；"
+            f"原值 {d.get('raw_value')} 对 组中位 {d.get('raw_median')}{success_note}）"
+        )
+    if kind == "text_turn_ratio":
+        ratio_pct = float(d["value"]) * 100
+        return (
+            f"{dim}={d.get('text_turn_count')}/{d.get('turns_count')}"
+            f"（占比 {ratio_pct:.1f}%，阈值 turns>"
+            f"{MIDFLIGHT_TEXT_TURNS_MIN_TURNS} 且占比>"
+            f"{MIDFLIGHT_TEXT_TURNS_RATIO_THRESHOLD * 100:.0f}%{success_note}）"
+        )
+    return (
+        f"{dim}={d['value']}（{_outlier_baseline_label(d)} "
+        f"{d['median']}{success_note}）"
+    )
 
 
 def _midflight_event_summary(entry: dict) -> str:
@@ -2213,12 +2447,18 @@ class SelfReviewScheduler:
             )
             for o in outliers:
                 success = str(o.get("terminal") or "").strip().lower() == "success"
+                # 维度片段（evo-refine-midflight-outlier-dims 1.1/1.2）：摊薄
+                # 维给摊薄前后两对数字、纯文本轮占比维给计数/占比/双条件阈值，
+                # 其余维度维持既有形态（_outlier_dim_text 单点分支）。
                 dims = "、".join(
-                    f"{dim}={d['value']}（{_outlier_baseline_label(d)} "
-                    f"{d['median']}{'，成功收尾' if success else ''}）"
+                    _outlier_dim_text(dim, d, success)
                     for dim, d in o["outliers"].items()
                 )
-                lines.append(f"- {o['run_id']}（{o['agent_type']}）：{dims}")
+                # model 附带（2.2）：指标行有模型标识时在行头注出，供轮次
+                # 通胀与模型版本对照；缺省（历史行/未观测）行形态零变化。
+                model_v = str(o.get("model") or "").strip()
+                model_note = f"，model={model_v}" if model_v else ""
+                lines.append(f"- {o['run_id']}（{o['agent_type']}{model_note}）：{dims}")
             lines.append("")
         if scans:
             lines.append("### 离群 run 事件流深扫（API 停滞与中途 error）")

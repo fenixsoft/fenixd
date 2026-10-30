@@ -11,6 +11,7 @@
   完整返回且其余五节不受影响
 """
 
+import io
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -95,17 +96,19 @@ def _write_run_file(runs_dir: Path, run_id: str, lines) -> Path:
 
 
 def _append_metric(log_path: Path, run_id: str, agent_type="implementer", turns=10,
-                   cost=None, duration=100.0, terminal="success") -> None:
+                   cost=None, duration=100.0, terminal="success", spec=None,
+                   model=None) -> None:
     """向 fenixd.log 追加一条 run_metrics 指标行（runner._log_run_metrics 同形态）。
 
     agent_type=None 时省略该字段——evo-add-run-metrics-lane-baseline 1.3 之前
     maintenance 三车道与 context metrics 兜底行的历史形态，供 run_id 前缀推断
-    分组用例使用。
+    分组用例使用。spec=None 时落 f"spec-{run_id}"（既有形态）；显式传 None 之外
+    的值供摊薄口径用例指向真实 tasks.md。model 供 2.1/2.2 落行与渲染用例。
     """
     context = {
         "metric_type": "run_metrics",
         "run_id": run_id,
-        "spec": f"spec-{run_id}",
+        "spec": spec or f"spec-{run_id}",
         "duration_seconds": duration,
         "turns": turns,
         "input_tokens": 1000,
@@ -114,13 +117,15 @@ def _append_metric(log_path: Path, run_id: str, agent_type="implementer", turns=
         "terminal": terminal,
         "provider": "test-provider",
     }
+    if model is not None:
+        context["model"] = model
     if agent_type is not None:
         context["agent_type"] = agent_type
     entry = {
         "timestamp": datetime.now().isoformat(),
         "level": "INFO",
         "component": "agent_runner",
-        "message": f"run metrics: {agent_type} {terminal} 'spec-{run_id}'",
+        "message": f"run metrics: {agent_type} {terminal} '{context['spec']}'",
         "context": context,
     }
     with log_path.open("a", encoding="utf-8") as f:
@@ -782,3 +787,449 @@ class TestRunFilesPrefixTableSameSource:
         assert spec_part == "1791395158"
         # 不得解析出真实 spec 名（新旧行为均非真实 spec 名，守卫语义不变）
         assert spec_part != "evo"
+
+
+# ── evo-refine-midflight-outlier-dims：摊薄口径 / 纯文本轮占比 / model ──
+
+
+def _write_spec_tasks(root: Path, spec_name: str, n: int) -> None:
+    """夹具项目写 spec 的 tasks.md（n 条数字任务），供 parse_tasks_md 取台账
+    条目数（len(all)）。"""
+    tasks_dir = root / "spec" / "changes" / spec_name
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(f"- [ ] {i + 1}.1 任务 {i + 1}" for i in range(n))
+    (tasks_dir / "tasks.md").write_text(
+        f"# Tasks\n\n## 1. 分组\n\n{body}\n", encoding="utf-8"
+    )
+
+
+class TestBatchLaneDilution:
+    """1.1：批量车道 cost_usd/duration_seconds 维按台账条目数摊薄对比。"""
+
+    def test_batch_run_not_flagged_after_dilution(self, env):
+        """复刻 2026-10-17 窗形态：修 9 条、cost 3.401011、521.22 秒对单条目
+        小 run 组（绝对口径 7.05×/3.55× 误标），摊薄后不标离群。"""
+        now_ts = int(datetime.now().timestamp())
+        # 组内 3 个单条目小 run：cost 中位 0.483、duration 中位 146.85
+        smalls = [(0.48, 140.0), (0.483, 146.85), (0.49, 150.0)]
+        for i, (c, d) in enumerate(smalls):
+            rid = f"code-fix-small{i}-{now_ts - 60 * (i + 3)}"
+            _write_spec_tasks(env["root"], f"spec-{rid}", 1)
+            _write_run_file(env["runs_dir"], rid, [
+                {"type": "result", "subtype": "success"},
+            ])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=30,
+                           cost=c, duration=d, spec=f"spec-{rid}")
+        # 大批 run：修 9 条（turns=45 落近批 P90 分布内，隔离 cost/duration 维）
+        big = f"code-fix-big-{now_ts - 120}"
+        _write_spec_tasks(env["root"], f"spec-{big}", 9)
+        _write_run_file(env["runs_dir"], big, [
+            {"type": "result", "subtype": "success"},
+        ])
+        _append_metric(env["log_path"], big, agent_type=None, turns=45,
+                       cost=3.401011, duration=521.22, spec=f"spec-{big}")
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        flagged = {o["run_id"] for o in outliers}
+        # 绝对口径下 3.401 > 0.483×3、521.22 > 146.85×3 必标；摊薄后
+        # 0.3779/条 vs 0.483/条、57.91s/条 vs 146.85s/条 均 < 3× → 不标
+        assert big not in flagged
+        assert not flagged
+
+    def test_diluted_outlier_still_flagged_with_per_task_entry(self, env):
+        """摊薄显著超基线的 run 仍标离群，entry 携带摊薄前后两对数字与分母。"""
+        now_ts = int(datetime.now().timestamp())
+        for i, c in enumerate([0.9, 1.0, 1.1]):
+            rid = f"code-fix-s{i}-{now_ts - 60 * (i + 3)}"
+            _write_spec_tasks(env["root"], f"spec-{rid}", 1)
+            _write_run_file(env["runs_dir"], rid, [
+                {"type": "result", "subtype": "success"},
+            ])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=30,
+                           cost=c, duration=100.0, spec=f"spec-{rid}")
+        # 大 run：2 条目、cost 30（摊薄 15/条 > 组摊薄中位 1.05×3）；duration
+        # 240（120/条 < 100×3 不标）；turns 30（P90 基线 30 不标）
+        big = f"code-fix-big-{now_ts - 120}"
+        _write_spec_tasks(env["root"], f"spec-{big}", 2)
+        _write_run_file(env["runs_dir"], big, [
+            {"type": "result", "subtype": "success"},
+        ])
+        _append_metric(env["log_path"], big, agent_type=None, turns=30,
+                       cost=30.0, duration=240.0, spec=f"spec-{big}")
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        assert [o["run_id"] for o in outliers] == [big]
+        entry = outliers[0]["outliers"]["cost_usd"]
+        assert entry["baseline_kind"] == "per_task_median"
+        assert entry["value"] == pytest.approx(15.0)
+        # 组基线=摊薄中位（含自身，窗口中位语义同现状）：median([0.9,1.0,1.1,15])
+        assert entry["median"] == pytest.approx(1.05)
+        # 摊薄前后两对数字 + 分母（摘要行人工对账用）
+        assert entry["raw_value"] == 30.0
+        assert entry["raw_median"] == pytest.approx(1.05)
+        assert entry["task_count"] == 2
+        # duration 维摊薄后不标
+        assert "duration_seconds" not in outliers[0]["outliers"]
+
+    def test_missing_entry_count_whole_dim_falls_back_absolute(self, env):
+        """组内任一 run 条目数不可得（spec 无 tasks.md）→ 该维整组回退绝对
+        口径：大批 run 按 7.05× 绝对倍数标出（单一基线不混口径）。"""
+        now_ts = int(datetime.now().timestamp())
+        for i, c in enumerate([0.48, 0.483, 0.49]):
+            rid = f"code-fix-small{i}-{now_ts - 60 * (i + 3)}"
+            if i != 1:
+                # small-1 的 spec 无 tasks.md → 条目数不可得
+                _write_spec_tasks(env["root"], f"spec-{rid}", 1)
+            _write_run_file(env["runs_dir"], rid, [
+                {"type": "result", "subtype": "success"},
+            ])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=30,
+                           cost=c, duration=146.85, spec=f"spec-{rid}")
+        big = f"code-fix-big-{now_ts - 120}"
+        _write_spec_tasks(env["root"], f"spec-{big}", 9)
+        _write_run_file(env["runs_dir"], big, [
+            {"type": "result", "subtype": "success"},
+        ])
+        _append_metric(env["log_path"], big, agent_type=None, turns=45,
+                       cost=3.401011, duration=521.22, spec=f"spec-{big}")
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        by_id = {o["run_id"]: o for o in outliers}
+        entry = by_id[big]["outliers"]["cost_usd"]
+        # 绝对口径：无 baseline_kind 注记，value/median 均为原始值（组中位含
+        # 自身：median([0.48, 0.483, 0.49, 3.401011])=0.4865）
+        assert "baseline_kind" not in entry
+        assert entry["value"] == 3.401011
+        assert entry["median"] == pytest.approx(0.4865)
+
+    def test_single_entry_run_behaves_as_absolute(self, env):
+        """单条目 run 行为与现状一致（摊薄后等于原值）：摊薄口径下仍按绝对
+        数值判定与呈现，仅基线标签注记为摊薄组中位。"""
+        now_ts = int(datetime.now().timestamp())
+        for i, c in enumerate([0.9, 1.0, 1.1]):
+            rid = f"code-fix-s{i}-{now_ts - 60 * (i + 3)}"
+            _write_spec_tasks(env["root"], f"spec-{rid}", 1)
+            _write_run_file(env["runs_dir"], rid, [
+                {"type": "result", "subtype": "success"},
+            ])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=30,
+                           cost=c, duration=100.0, spec=f"spec-{rid}")
+        # 单条目大 cost run：摊薄不改变数值
+        big = f"code-fix-big-{now_ts - 120}"
+        _write_spec_tasks(env["root"], f"spec-{big}", 1)
+        _write_run_file(env["runs_dir"], big, [
+            {"type": "result", "subtype": "success"},
+        ])
+        _append_metric(env["log_path"], big, agent_type=None, turns=30,
+                       cost=30.0, duration=100.0, spec=f"spec-{big}")
+
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        by_id = {o["run_id"]: o for o in outliers}
+        entry = by_id[big]["outliers"]["cost_usd"]
+        assert entry["value"] == 30.0
+        assert entry["raw_value"] == 30.0
+        assert entry["median"] == pytest.approx(1.05)
+        assert entry["task_count"] == 1
+
+    def test_diluted_and_model_rendered_in_summary(self, env):
+        """摘要行摊薄前后数值与 model 附带渲染（1.1 摘要 + 2.2）。"""
+        now_ts = int(datetime.now().timestamp())
+        for i, c in enumerate([0.9, 1.0, 1.1]):
+            rid = f"code-fix-s{i}-{now_ts - 60 * (i + 3)}"
+            _write_spec_tasks(env["root"], f"spec-{rid}", 1)
+            _write_run_file(env["runs_dir"], rid, [
+                {"type": "result", "subtype": "success"},
+            ])
+            _append_metric(env["log_path"], rid, agent_type=None, turns=30,
+                           cost=c, duration=100.0, spec=f"spec-{rid}")
+        big = f"code-fix-big-{now_ts - 120}"
+        _write_spec_tasks(env["root"], f"spec-{big}", 2)
+        _write_run_file(env["runs_dir"], big, [
+            {"type": "result", "subtype": "success"},
+        ])
+        _append_metric(env["log_path"], big, agent_type=None, turns=30,
+                       cost=30.0, duration=100.0, spec=f"spec-{big}",
+                       model="deepseek-v4-flash", terminal="success")
+
+        section = _make_scheduler(env["root"])._collect_midflight_section(
+            env["window_start"], env["window_end"]
+        )
+        text = "\n".join(section)
+        # 行头附 model
+        assert f"- {big}（code-fix，model=deepseek-v4-flash）：" in text
+        # 摊薄行同时给摊薄前后数值：value=15/条、基线 1.05/条、分母 2、
+        # 原值 30.0 对 组中位 1.05、成功收尾
+        assert (
+            f"cost_usd=15/条（摊薄组中位 1.05/条，分母 2；原值 30.0 对 "
+            f"组中位 1.05，成功收尾）" in text
+        )
+
+
+class TestTextTurnRatioDim:
+    """1.2：纯文本轮占比维度（双条件阈值判定，context 行原始取数）。"""
+
+    @staticmethod
+    def _ctx_metrics_row(turns, text_turns=None):
+        """context metrics 转录行形态（runner._run_agent 收尾 finally 落盘）。"""
+        row = {
+            "type": "run_metrics",
+            "run_id": "rid",
+            "duration_s": 100.0,
+            "turns": turns,
+            "text_turns": text_turns,
+            "tool_uses_total": 3,
+        }
+        if text_turns is None:
+            row.pop("text_turns")  # dsh 通道/历史行形态：整字段缺席
+        return row
+
+    def _seed(self, env, rid, turns, text_turns=None, model=None):
+        _write_run_file(env["runs_dir"], rid, [
+            self._ctx_metrics_row(turns, text_turns),
+            {"type": "result", "subtype": "success"},
+        ])
+        _append_metric(env["log_path"], rid, agent_type=None, turns=turns,
+                       model=model)
+
+    def test_high_turns_high_ratio_flags(self, env):
+        """turns=204、text_turns=125（2026-10-17 窗形态）→ 标纯文本轮占比。"""
+        now_ts = int(datetime.now().timestamp())
+        rid = f"code-fix-text-{now_ts - 60}"
+        self._seed(env, rid, turns=204, text_turns=125)
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        assert [o["run_id"] for o in outliers] == [rid]
+        entry = outliers[0]["outliers"]["text_turns"]
+        assert entry["baseline_kind"] == "text_turn_ratio"
+        assert entry["value"] == pytest.approx(125 / 204)
+        assert entry["median"] == 0.5
+        assert entry["text_turn_count"] == 125
+        assert entry["turns_count"] == 204
+
+    def test_baseline_batch_shape_not_flagged(self, env):
+        """基线批形态（turns=104、text_turns=22，占比 21%）→ 不标。"""
+        now_ts = int(datetime.now().timestamp())
+        rid = f"code-fix-base-{now_ts - 60}"
+        self._seed(env, rid, turns=104, text_turns=22)
+        assert _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        ) == []
+
+    def test_low_turns_high_ratio_not_flagged(self, env):
+        """低轮数高占比（4 轮中 3 轮纯文本）→ 不标（绝对轮数条件挡噪音）。"""
+        now_ts = int(datetime.now().timestamp())
+        rid = f"code-fix-low-{now_ts - 60}"
+        self._seed(env, rid, turns=4, text_turns=3)
+        assert _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        ) == []
+
+    def test_ratio_boundary_strictly_above(self, env):
+        """占比恰等于阈值（100/200=50%）不标；严格超阈值（101/200）标。"""
+        now_ts = int(datetime.now().timestamp())
+        at = f"code-fix-at-{now_ts - 120}"
+        self._seed(env, at, turns=200, text_turns=100)
+        assert _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        ) == []
+        above = f"code-fix-above-{now_ts - 60}"
+        self._seed(env, above, turns=200, text_turns=101)
+        outliers = _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        )
+        assert [o["run_id"] for o in outliers] == [above]
+
+    def test_missing_text_turns_field_skipped(self, env):
+        """context 行缺 text_turns 字段（dsh 通道/历史行）→ 该 run 该维跳过。"""
+        now_ts = int(datetime.now().timestamp())
+        rid = f"code-fix-dsh-{now_ts - 60}"
+        self._seed(env, rid, turns=204, text_turns=None)
+        assert _collect_metrics_outliers(
+            env["root"], env["window_start"], env["window_end"]
+        ) == []
+
+    def test_text_ratio_and_model_rendered_in_summary(self, env):
+        """摘要行纯文本轮占比形态渲染：计数/占比/双条件阈值 + model 附带。"""
+        now_ts = int(datetime.now().timestamp())
+        rid = f"code-fix-text-{now_ts - 60}"
+        self._seed(env, rid, turns=204, text_turns=125, model="glm-5.3-flash")
+        section = _make_scheduler(env["root"])._collect_midflight_section(
+            env["window_start"], env["window_end"]
+        )
+        text = "\n".join(section)
+        assert f"- {rid}（code-fix，model=glm-5.3-flash）：" in text
+        assert (
+            "text_turns=125/204（占比 61.3%，阈值 turns>100 且占比>50%，"
+            "成功收尾）" in text
+        )
+
+
+# ── 2.1 run_metrics 补 model 字段（runner 侧三行落盘断言） ─────────────
+
+
+class _MetricsCaptureLogger:
+    """捕获 info 调用的假 logger（日志侧 context metrics 行断言用）。"""
+
+    def __init__(self):
+        self.infos = []
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, *a, **k):
+        self.infos.append((a, k))
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+
+class _FakeSpawnProc:
+    """假 Popen：stdout 预载脚本化转录（StringIO 逐行 readline），秒退。
+
+    pid 取正但不可能存在（2**22 > Linux 默认 pid_max），对齐
+    add-killpg-self-guard 对替身进程组的口径（killpg 不可误伤本进程）。
+    """
+
+    UNREACHABLE_PID = 2**22
+
+    def __init__(self, out_lines):
+        self.stdout = io.StringIO("".join(line + "\n" for line in out_lines))
+        self.stderr = io.StringIO("")
+        self.stdin = io.StringIO("")  # _feed_stdin 线程写入目标，避免线程异常告警
+        self.pid = _FakeSpawnProc.UNREACHABLE_PID
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _make_metrics_runner(proot: Path, logger) -> "AgentRunner":
+    """最小 AgentRunner（__new__ 绕过 __init__），缝对齐
+    test_codefix_digest_metrics._make_runner（真实 _run_agent 可驱动）。"""
+    from core.agent_runner import AgentRunner
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = {}
+    runner.worktree_manager = None
+    runner.state_machine = None
+    runner.project_root = proot
+    runner.logger = logger
+    runner._running_agents = {}
+    runner._daily_run_count = 0
+    runner._provider_circuit._daily_reset_date = None
+    runner._provider_circuit._daily_provider_attempts = {}
+    runner._provider_circuit._daily_provider_warned = {}
+    runner._provider_circuit.provider_circuits = {}
+    runner._worktree_path_valid = lambda p: False
+    return runner
+
+
+class TestRunMetricsModelField:
+    """2.1/3.2：run_metrics 三行（转录行/日志侧 context 行/终态行）model 落行。"""
+
+    RESULT_LINE = json.dumps({
+        "type": "result", "subtype": "success", "result": "ok",
+        "num_turns": 3, "session_id": "s",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }, ensure_ascii=False)
+
+    def _drive(self, proot, run_id, model):
+        from core.agent_runner import runner as runner_module
+
+        logger = _MetricsCaptureLogger()
+        runner = _make_metrics_runner(proot, logger)
+        orig_popen = runner_module.subprocess.Popen
+        runner_module.subprocess.Popen = (
+            lambda cmd, **kw: _FakeSpawnProc([self.RESULT_LINE])
+        )
+        try:
+            runner._run_agent(
+                "prompt", proot, run_id,
+                model_override=model, max_turns=50,
+                spec_name="spec-x", agent_type="implementer",
+            )
+        finally:
+            runner_module.subprocess.Popen = orig_popen
+        return logger
+
+    def test_context_metrics_rows_carry_model(self, tmp_path):
+        """转录行（type=run_metrics）与日志侧行（metric_type=run_metrics）
+        均落实际 --model 值（原样记录不归一）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True)
+        rid = "code-fix-model-x1"
+        logger = self._drive(proot, rid, "deepseek-v4-flash")
+
+        run_file = proot / ".fenix" / "runs" / f"{rid}.jsonl"
+        rows = [
+            json.loads(line)
+            for line in run_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        metrics_rows = [r for r in rows if r.get("type") == "run_metrics"]
+        assert len(metrics_rows) == 1, "run 收尾恰落一条转录 run_metrics 行"
+        assert metrics_rows[0]["model"] == "deepseek-v4-flash"
+
+        ctx_rows = [
+            a[2]
+            for a, _k in logger.infos
+            if len(a) >= 3 and isinstance(a[2], dict)
+            and a[2].get("metric_type") == "run_metrics"
+        ]
+        assert len(ctx_rows) == 1, "日志侧恰一条 context metrics 行"
+        assert ctx_rows[0]["model"] == "deepseek-v4-flash"
+
+    def test_terminal_log_run_metrics_writes_model(self, tmp_path):
+        """终态 _log_run_metrics 接通休眠形参：context.model 落行；model=None
+        原样落 null（未观测语义）。"""
+        from core.logger import Logger
+
+        log_dir = tmp_path / ".fenix" / "logs"
+        log_dir.mkdir(parents=True)
+        runner = _make_metrics_runner(tmp_path, Logger(log_dir, "DEBUG"))
+        runner._log_run_metrics(
+            run_id="run-model-1", spec_name="spec-x", agent_type="verifier",
+            duration_seconds=1.2, turns=4, usage_info={"cost_usd": 0.01},
+            terminal="success", provider="p1", model="deepseek-v4-flash",
+        )
+        runner._log_run_metrics(
+            run_id="run-model-2", spec_name="spec-x", agent_type="verifier",
+            duration_seconds=0.8, turns=2, usage_info={},
+            terminal="failure", provider=None, model=None,
+        )
+        runner.logger.close()
+
+        log_file = log_dir / "fenixd.log"
+        ctx_rows = []
+        for raw in log_file.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            ctx = entry.get("context") or {}
+            if ctx.get("metric_type") == "run_metrics":
+                ctx_rows.append(ctx)
+        by_run = {c["run_id"]: c for c in ctx_rows}
+        assert by_run["run-model-1"]["model"] == "deepseek-v4-flash"
+        assert "model" in by_run["run-model-2"]
+        assert by_run["run-model-2"]["model"] is None
