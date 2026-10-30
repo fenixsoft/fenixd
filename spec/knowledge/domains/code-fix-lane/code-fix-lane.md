@@ -1,7 +1,7 @@
 # 自动修复车道编排
 
-<!-- knowledge: capability=code-fix-lane rev=9
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker -->
+<!-- knowledge: capability=code-fix-lane rev=10
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/archive/2026-10-03-add-codefix-commit-first-contract,spec/archive/2026-10-03-decouple-codefix-review-lanes,spec/archive/2026-10-04-add-codefix-affinity-batching,spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage,spec/archive/2026-10-28-add-codefix-parse-error-breaker,spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget -->
 
 把代码审查落账的 `open` 缺陷条目按批自动修复、经回归门后合回主树的编排车道，由 daemon 内的编排检查点驱动。
 
@@ -73,8 +73,8 @@
 - 熔断收口与轮数耗尽共用同一收口点：`branch`/`tip_sha`/`reason`/`failed_at`/最后一轮失败明细引用先入档再清理（语义见下条），批收口 `reason` 按收口形态分流——熔断为 `regression_parse_error_breaker`、轮数耗尽保持 `regression_failed_twice`；收口告警 MUST 复用 `write_regression_failed_alert` 单一调用点（告警名 `regression_failed_twice` 历史兼容名不变），`retry_rounds` 按实际执行轮数如实传入，同批 MUST NOT 重复告警。熔断触发 MUST 记 WARNING 日志并包含触发判据（各轮回归 status 与明细形态），供事后区分「测试失败耗尽」与「回归没跑出结果被熔断」。
 - 重试 run 本身失败（run 层面，非回归失败）不入失败档案、不烧跨轮预算：条目入 `chain_skipped`，清理 worktree 并释放 spec 锁，链继续（与首轮 run 失败同语义）。
 - 耗尽 `targeted_retry_max` 轮仍未 `passed` 时现场即弃：MUST NOT 合回、MUST NOT 置 `resolved`，条目保持 `open`；清理前把 `branch`、`tip_sha`、`reason`、`failed_at` 与最后一轮失败明细引用写入失败档案记录，随后清理 worktree 并释放 spec 锁（`branch`/`tip_sha` 留作 git reflog 追溯线索，不承担恢复职责）；warning 告警含条目集与失败用例摘要，措辞为「已跳过，下轮自动重试」，不得表述为「待人工处置」。
-- 失败档案条目后续检查点跳过（同链内不重复派发同一批）；新链启动按 `fail_count` 预算自动释放（`fail_count < FAIL_RETRY_MAX`），预算内条目不要求人工解除即可重试，重组批从首轮全量回归起重走门与定向轮语义。
-- 达预算上限（`fail_count ≥ FAIL_RETRY_MAX`）的条目集永久跳过；预算用尽那次入档发一次性 warning 点名录告警，并在 `.fenix/todo.md` 追加待人工清理项（指引按 `branch`/`tip_sha` 追溯，不得引用已清理的 worktree 路径）。重试预算语义见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)。
+- 失败档案条目后续检查点跳过（同链内不重复派发同一批）；新链启动按失败档案记录的分档预算自动释放（`fail_count` 未达生效预算，预算按记录回归终局形态分档），预算内条目不要求人工解除即可重试，重组批从首轮全量回归起重走门与定向轮语义。
+- 达分档生效预算上限（按记录 `reg_form` 取异常形态 1 / 真实失败面 3）的条目集永久跳过；预算用尽那次入档发一次性 warning 点名录告警，并在 `.fenix/todo.md` 追加待人工清理项（指引按 `branch`/`tip_sha` 追溯，不得引用已清理的 worktree 路径）。重试预算分档语义见 [code-fix-batch-selfheal](code-fix-batch-selfheal.md)。
 
 ## 溯源
 
@@ -86,3 +86,4 @@
 - 2026-10-04 2026-10-04-add-codefix-affinity-batching（spec/archive/2026-10-04-add-codefix-affinity-batching） — 选批由「最早优先截前 batch_size 条」改写为文件亲和性贪心装箱（batch_size 放宽为目标规模 T、硬上限 2T）；回归门范围由「首轮恒全量」改写为两段式（非末批定向、末批恒全量兜底），定向失败与全量失败同走既有定向重试轮；算法与分流细则独立成页 codefix-affinity-batching。
 - 2026-10-09 evo-add-codefix-mergeback-conflict-salvage（spec/archive/2026-10-09-evo-add-codefix-mergeback-conflict-salvage） — 新增「合回冲突定向救回」：真冲突整批即弃前先 rebase 基线+重跑批回归救回（至多 1 次）、失败降级组粒度 cherry-pick 回收（items: 清单归属、无据保守兜底入档）、救回挂 cleanup 前单轮闭环；defer 路径零预算语义不变。
 - 2026-10-28 2026-10-28-add-codefix-parse-error-breaker（spec/archive/2026-10-28-add-codefix-parse-error-breaker） — 「回归失败定向重试与丢弃」新增回归异常熔断：parse_error/空明细类失败同批连续达阈值（缺省 2）即提前终止重试循环，收口 reason 新增 `regression_parse_error_breaker`，入档/清理/告警零分叉复用轮数耗尽收口点，真实测试失败不进计数且清零。
+- 2026-10-30 evo-add-codefix-anomaly-redispatch-budget（spec/archive/2026-10-30-evo-add-codefix-anomaly-redispatch-budget） — 修改本页：「回归失败定向重试与丢弃」的失败档案释放与触顶条款改按记录分档生效预算取值（异常形态 1 / 真实失败面 3）；失败档案 `reg_form` 入档与预算分档全量语义归 [code-fix-batch-selfheal](code-fix-batch-selfheal.md) 页承载。
