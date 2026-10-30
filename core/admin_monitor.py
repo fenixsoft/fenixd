@@ -136,6 +136,14 @@ DISPATCH_RETRY_MAX = 1
 # 不再自动重派、转人工升级——防止停机循环无限重派烧钱。
 MAX_RESCHEDULE = 2
 
+# evo-review-empty-product-redispatch 1.1：code-review 零产物（产物硬门拦截）
+# 自动重派上限。仿 RATELIMIT_REDISPATCH_MAX（=1，core/agent_runner/
+# provider_circuit.py:76）先例：模块常量不入 config；限次口径为**本 monitor
+# 生命周期合计**、与既有 429 重派通道同款语义（两通道各自独立限次，但同一
+# run 链 MUST NOT 被两通道叠加调度——见 _code_review_redispatched_runs）。
+# 重派仍零有效行按 admin 升级信号收场，MUST NOT 无限重派（重派风暴防线）。
+CODE_REVIEW_EMPTY_PRODUCT_REDISPATCH_MAX = 1
+
 # admin-signal-consolidation D2：悬置强制升级的信号族（blocked_stuck + ENV 阻塞族）。
 # 悬置类信号 = spec 保持 blocked 状态过久、自动处置通道已被冷却压制——此时
 # 强制升级真人（突破 latest_signal 冷却）。其他信号类型（stuck/flapping/
@@ -1496,6 +1504,20 @@ class AdminMonitor:
         # 延迟重投递的 threading.Timer（同时存在至多一个，防重复排队）。
         self._code_review_ratelimit_redispatches = 0
         self._code_review_redispatch_timer: threading.Timer | None = None
+        # 零产物止损（evo-review-empty-product-redispatch 1.1）三件套：
+        # - _code_review_empty_redispatches：本生命周期内零产物重派已执行次数
+        #   （上限 CODE_REVIEW_EMPTY_PRODUCT_REDISPATCH_MAX=1，与 429 通道各自
+        #   独立限次、同为生命周期合计口径）；
+        # - _code_review_redispatched_runs：已被任一通道重派过的 run 链登记
+        #   （原 run_id 与重派产物 run_id 都登记）——同一 run 链已被任一通道
+        #   重派后，其后再次硬门拦截只升级不再重派（双通道互不叠加调度）；
+        # - _code_review_redispatch_escalated：升级信号已发出标记——发出后
+        #   两通道均不再自动重派（避免与 evo-add-review-night-defer-
+        #   snapshot-writeoff 的顺延/抢救面叠加震荡）。锁定：与 429 计数器同
+        #   锁（_code_review_lock）内判定+占额，防检查点/重派回调双线程竞态。
+        self._code_review_empty_redispatches = 0
+        self._code_review_redispatched_runs: set = set()
+        self._code_review_redispatch_escalated = False
         # decouple-codefix-review-lanes：审查 run stall 看门狗状态（run_id →
         # {"mtime": 产物最新 mtime, "cpu": 进程树 CPU 秒, "since": 双判据开始
         # 同时无进展的 monotonic 时间}）。任一判据有进展即整体重置（design D2
@@ -1905,9 +1927,10 @@ class AdminMonitor:
             review_kind = "scheduled"
 
             ratelimit_intent: dict | None = None
+            empty_face: dict | None = None
 
             def _worker():
-                nonlocal ratelimit_intent
+                nonlocal ratelimit_intent, empty_face
                 try:
                     result = self.agent_runner.run_code_review(
                         manifest,
@@ -1915,12 +1938,23 @@ class AdminMonitor:
                         window_start=window_start if review_scope == "window" else None,
                         scope=review_scope,
                     )
+                    # 硬门拦截失败面（evo-review-empty-product-redispatch
+                    # 1.2）：拦截时完成行透出 run id、manifest 计数与变体
+                    # （spec「完成行携带失败面」），供止损判定与事后取证入口。
+                    empty_face = getattr(result, "fail_face", None)
+                    face_note = ""
+                    if isinstance(empty_face, dict):
+                        face_note = (
+                            f"，失败面: variant={empty_face.get('variant')}, "
+                            f"manifest={empty_face.get('manifest_count')}"
+                        )
                     self.logger.info(
                         "admin_monitor",
                         f"code-review 周期审查完成：run_id={result.run_id}, "
                         f"inserted={result.inserted}, updated={result.updated}, "
                         f"resolved={result.resolved}, shards={result.shards}"
                         + self._pending_writeoff_note()
+                        + face_note
                         + (f", error={result.error}" if result.error else ""),
                     )
                     # 429 打死 run 的自动重派消费侧（add-code-review-concurrency-
@@ -1952,6 +1986,25 @@ class AdminMonitor:
                     except Exception as e:
                         self.logger.error(
                             "admin_monitor", f"code-review 429 重派排程异常: {e}"
+                        )
+                elif empty_face:
+                    # 零产物止损（evo-review-empty-product-redispatch 1.1）：
+                    # 产物硬门拦截（零有效行/产物缺失）→ 限次自动重派至多
+                    # 1 次，重派仍零有效行发 admin 升级信号并停止重派。与 429
+                    # 意图互斥消费（同 run 两意图不可共存——429 死亡走异常路径
+                    # 不过硬门；互斥分支保底防叠加）。同样排在 finally（单飞
+                    # 复位）之后：重派前要判定单飞，先排程会在锁内误判放弃。
+                    try:
+                        self._handle_code_review_empty_product(
+                            manifest=manifest,
+                            review_kind=review_kind,
+                            window_start=window_start if review_scope == "window" else None,
+                            scope=review_scope,
+                            fail_face=empty_face,
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "admin_monitor", f"code-review 零产物止损处理异常: {e}"
                         )
 
             try:
@@ -2194,6 +2247,24 @@ class AdminMonitor:
 
         run_id = str(intent.get("run_id") or "")
         with self._code_review_lock:
+            # 升级信号已发出（evo-review-empty-product-redispatch 1.1）→ 两
+            # 通道均不再自动重派（避免与夜间顺延/抢救面叠加震荡，design 双
+            # 通道配额约束第三条）。惰性取值（getattr 缺省 False）：__new__
+            # 测试替身未走 __init__ 也判「未升级」，对齐本类惰性回退惯例。
+            if getattr(self, "_code_review_redispatch_escalated", False):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 429 重派跳过：零产物升级信号已发出，两通道"
+                    f"均不再自动重派（原 run {run_id}，按既有失败路径收场）",
+                )
+                return
+            # 链登记（evo-review-empty-product-redispatch 1.1）：本 run 链已被
+            # 429 通道重派——其后再次硬门拦截只升级不再重派（双通道互不叠加
+            # 调度）。登记即事实陈述（本方法随后占额排程）。惰性建集（
+            # __dict__.setdefault，对齐 _register_run_harness 惯例）。
+            if run_id:
+                self.__dict__.setdefault(
+                    "_code_review_redispatched_runs", set()).add(run_id)
             if self._code_review_ratelimit_redispatches >= RATELIMIT_REDISPATCH_MAX:
                 self.logger.warning(
                     "admin_monitor",
@@ -2399,6 +2470,14 @@ class AdminMonitor:
                     scope=scope,
                     redispatch_of=original_run_id or None,
                 )
+                # 链登记（evo-review-empty-product-redispatch 1.1）：重派产物
+                # run_id 入已重派链集合——其后若再遭硬门拦截只升级不再重派
+                # （双通道互不叠加调度，与 _schedule_ratelimit_redispatch 登记
+                # 原 run_id 同一口径）。惰性建集（__dict__.setdefault）。
+                with self._code_review_lock:
+                    self.__dict__.setdefault(
+                        "_code_review_redispatched_runs", set()
+                    ).add(str(result.run_id))
                 self.logger.info(
                     "admin_monitor",
                     f"code-review 429 重派完成：redispatch_of={original_run_id}, "
@@ -2408,6 +2487,18 @@ class AdminMonitor:
                     + self._pending_writeoff_note()
                     + (f", error={result.error}" if result.error else ""),
                 )
+                # 429 重派产物再遭产物硬门拦截（evo-review-empty-product-
+                # redispatch 1.1）：链已被重派 → 只升级不再重派（spec「重派仍
+                # 失败升级信号」），升级标记同时封停两通道自动重派。
+                _face = getattr(result, "fail_face", None)
+                if isinstance(_face, dict):
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"code-review 429 重派产物仍被产物硬门拦截：run "
+                        f"{result.run_id}（variant={_face.get('variant')}）"
+                        f"——发升级信号并停止自动重派",
+                    )
+                    self._escalate_code_review_empty_product(_face)
             except Exception as e:
                 self.logger.error("admin_monitor", f"code-review 429 重派异常: {e}")
             finally:
@@ -2423,6 +2514,228 @@ class AdminMonitor:
             with self._code_review_lock:
                 self._code_review_in_flight = False
             self.logger.error("admin_monitor", f"code-review 429 重派投递失败: {e}")
+
+    # ── 零产物止损（evo-review-empty-product-redispatch 1.1）──────────────
+    def _handle_code_review_empty_product(self, *, manifest, review_kind,
+                                          window_start, scope, fail_face) -> None:
+        """产物硬门拦截（零有效行/产物缺失）后的限次自动重派与升级判定。
+
+        守卫（判定+占额同在 ``_code_review_lock`` 临界区内，防检查点/重派
+        回调双线程竞态；登记即占额、放弃不退额——防风暴优先，对齐 429 通道
+        口径）：
+        - 升级信号已发出 → 两通道均不再自动重派，只记日志（升级记录按 run
+          去重已落，不重复落盘）；
+        - 本 run 链已被任一通道重派（``_code_review_redispatched_runs``）→
+          「重派仍零有效行」即此形态：只升级不再重派（spec「重派仍失败升级
+          信号」，双通道互不叠加调度）；
+        - 生命周期零产物重派配额耗尽 → 记 WARNING 按既有失败路径收场（对齐
+          429 通道「已达上限」跳过口径，不升级——升级条件是「重派仍零有效
+          行」）；
+        - 车道单飞中有在途 run → 放弃本次重派（不占额，对齐 429 消费侧单飞
+          让位口径）。
+        重派以**原 manifest/参数**复调 ``run_code_review``（幂等保障既有：
+        聚合读侧按 file 去重 + 提示词「不重审」纪律），完成后登记重派事件并
+        按重派结果决定升级（见 ``_redispatch_code_review_empty_product``）。
+        """
+        run_id = str((fail_face or {}).get("run_id") or "")
+        escalate = False
+        with self._code_review_lock:
+            # 惰性取值（getattr / __dict__.setdefault）：__new__ 测试替身未走
+            # __init__ 时按「未升级 / 空链集 / 配额 0」兜底，对齐本类惰性回退
+            # 惯例（getattr(self, "_run_harness", {})）。
+            if getattr(self, "_code_review_redispatch_escalated", False):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 零产物重派跳过：升级信号已发出，两通道均不"
+                    f"再自动重派（run {run_id}，按既有失败路径收场）",
+                )
+                return
+            chain = self.__dict__.setdefault("_code_review_redispatched_runs", set())
+            if run_id and run_id in chain:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 零产物不再重派：run {run_id} 所属链已被重派"
+                    f"过（重派仍零有效行）——发升级信号并停止自动重派",
+                )
+                escalate = True
+            elif (getattr(self, "_code_review_empty_redispatches", 0)
+                    >= CODE_REVIEW_EMPTY_PRODUCT_REDISPATCH_MAX):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 零产物重派跳过：已达上限 "
+                    f"{CODE_REVIEW_EMPTY_PRODUCT_REDISPATCH_MAX}"
+                    f"（run {run_id}，按既有失败路径收场）",
+                )
+                return
+            elif self._code_review_in_flight:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"code-review 零产物重派放弃：车道单飞中有在途 run"
+                    f"（run {run_id}）",
+                )
+                return
+            else:
+                # 登记即占额 + 链登记（原 run_id 入已重派集合——重派产物仍零
+                # 有效行时经此集合判定「只升级不再重派」）。
+                self._code_review_empty_redispatches = (
+                    getattr(self, "_code_review_empty_redispatches", 0) + 1)
+                if run_id:
+                    chain.add(run_id)
+        if escalate:
+            self._escalate_code_review_empty_product(fail_face)
+            return
+        self.logger.info(
+            "admin_monitor",
+            f"code-review 零产物重派已排程：原 run {run_id}（variant="
+            f"{(fail_face or {}).get('variant')}）以原 manifest 重派一次"
+            f"（生命周期配额 {self._code_review_empty_redispatches}/"
+            f"{CODE_REVIEW_EMPTY_PRODUCT_REDISPATCH_MAX}）",
+        )
+        self._redispatch_code_review_empty_product(
+            manifest, review_kind, window_start, scope, run_id)
+
+    def _redispatch_code_review_empty_product(self, manifest, review_kind,
+                                              window_start, scope,
+                                              original_run_id: str) -> None:
+        """零产物重派执行体：以原 manifest/参数复调 ``run_code_review`` 一次。
+
+        投递形态对齐 429 消费侧（executor 优先、同步回退保逃生门、单飞标志
+        由 worker finally 复位）。完成后：重派产物 run_id 入已重派链集合、
+        向重派 run jsonl 追加重派事件标注（写失败仅丢留痕）、重派产物仍被
+        硬门拦截（fail_face）→ 发升级信号并停止两通道自动重派。
+        """
+
+        def _worker():
+            try:
+                result = self.agent_runner.run_code_review(
+                    manifest,
+                    review_kind=review_kind,
+                    window_start=window_start,
+                    scope=scope,
+                )
+                with self._code_review_lock:
+                    self.__dict__.setdefault(
+                        "_code_review_redispatched_runs", set()
+                    ).add(str(result.run_id))
+                # 重派事件留痕（spec「自动重派 1 次审查 run 并记录重派事件」）：
+                # 向重派 run 自身 jsonl 追加标注，取证可见。写失败仅丢留痕。
+                try:
+                    from core.agent_runner.run_files import append_run_line
+
+                    append_run_line(
+                        self.project_root / ".fenix" / "runs"
+                        / f"{result.run_id}.jsonl",
+                        {
+                            "type": "empty_product_redispatch",
+                            "run_id": result.run_id,
+                            "spec": "code-review",
+                            "redispatch_of": original_run_id,
+                            "reason": "empty product (repo-code-review-gate)",
+                        },
+                    )
+                except Exception:  # noqa: BLE001 — 留痕失败不阻断重派收尾
+                    pass
+                self.logger.info(
+                    "admin_monitor",
+                    f"code-review 零产物重派完成：redispatch_of={original_run_id}, "
+                    f"run_id={result.run_id}, inserted={result.inserted}, "
+                    f"updated={result.updated}, shards={result.shards}"
+                    + (f", error={result.error}" if result.error else ""),
+                )
+                # 重派产物仍零有效行 → 升级信号并停止自动重派（spec「重派仍
+                # 失败升级信号」）。
+                _face = getattr(result, "fail_face", None)
+                if isinstance(_face, dict):
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"code-review 零产物重派仍被硬门拦截：run "
+                        f"{result.run_id}（variant={_face.get('variant')}）"
+                        f"——发升级信号并停止自动重派",
+                    )
+                    self._escalate_code_review_empty_product(_face)
+            except Exception as e:
+                self.logger.error("admin_monitor", f"code-review 零产物重派异常: {e}")
+            finally:
+                with self._code_review_lock:
+                    self._code_review_in_flight = False
+
+        try:
+            if self._code_review_executor is not None:
+                self._code_review_executor.submit(_worker)
+            else:
+                _worker()
+        except Exception as e:
+            with self._code_review_lock:
+                self._code_review_in_flight = False
+            self.logger.error("admin_monitor", f"code-review 零产物重派投递失败: {e}")
+
+    def _escalate_code_review_empty_product(self, fail_face: dict) -> None:
+        """零产物升级信号（evo-review-empty-product-redispatch 1.1）。
+
+        经既有 admin 升级记录通道（admin-dispatch-failure-escalation D1/D2
+        先例，``.fenix/admin_alerts.json``——同 ``_check_code_review_stall``
+        的 ``append_if_absent`` 去重形态）：kind=ESCALATION、signal_type=
+        ``code_review_empty_product``、按 run 去重（单 run 至多一条）。文案与
+        evidence 携带失败面摘要（run id、manifest 计数、变体、工具面预检）。
+        调用即置升级标记（``_code_review_redispatch_escalated``）——两通道
+        此后均不再自动重派（design 双通道配额约束第三条）；标记置位不受
+        去重命中影响（记录已在位同样意味着升级已发生）。
+        """
+        fail_face = fail_face or {}
+        run_id = str(fail_face.get("run_id") or "unknown")
+        manifest_count = fail_face.get("manifest_count")
+        variant = fail_face.get("variant")
+        dedup_key = f"code-review-empty-product-{run_id}"
+        tf = fail_face.get("toolface")
+
+        def _inflight(rec: dict) -> bool:
+            return (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type") == "code_review_empty_product"
+                and rec.get("dedup_key") == dedup_key
+            )
+
+        rec = self.store.append_if_absent(
+            {
+                "kind": ESCALATION,
+                "signal_type": "code_review_empty_product",
+                "dedup_key": dedup_key,
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    f"code-review 零产物止损升级：run {run_id} 产物硬门拦截"
+                    f"（variant={variant}，manifest {manifest_count} 文件），"
+                    f"重派链仍零有效行——自动重派已停止，须人工核查审查 run "
+                    f"转录定位根因（.fenix/runs/{run_id}.jsonl 与 "
+                    f".fenix/code-review/ 产物目录）"
+                ),
+                "evidence": (
+                    f"fail_face: run_id={run_id}, manifest_count={manifest_count}, "
+                    f"variant={variant}, "
+                    f"sources_present={fail_face.get('sources_present')}, "
+                    f"shards={fail_face.get('shards')}, "
+                    f"unreadable={fail_face.get('unreadable')}"
+                    + (f", toolface={tf.get('probe')}" if isinstance(tf, dict) else "")
+                ),
+                "action_taken": "零产物自动重派预算已耗尽（限次 1，生命周期合计），升级人工",
+                "recommended_action": (
+                    "人工核查该 run 的 agent 转录：先看 toolface 预检字段区分"
+                    "「装配面真缺工具」与「agent 误判工具缺失」（对照 "
+                    "agents/code-review.md 自救指引是否生效），再决定是否手动"
+                    "重派审查"
+                ),
+            },
+            _inflight,
+        )
+        with self._code_review_lock:
+            self._code_review_redispatch_escalated = True
+        if rec is not None:
+            self.logger.info(
+                "admin_monitor",
+                f"code-review 零产物升级信号已落：run_id={run_id}, "
+                f"variant={variant}（去重键 {dedup_key}；两通道自动重派自"
+                f"此刻起停用）",
+            )
 
     def _check_code_review_stall(self) -> None:
         """code-review 事中零进度停滞告警（add-code-review-sharded-out 3.1/D4）。

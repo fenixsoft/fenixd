@@ -401,6 +401,11 @@ class CodeReviewResult:
         # max_redispatches），随结果信封上交消费侧（admin_monitor._worker）
         # 冷却到期后延迟重投递；非 429 失败/成功路径恒 None（消费侧零感知）。
         self.ratelimit_redispatch = None
+        # 产物硬门拦截失败面摘要（evo-review-empty-product-redispatch 1.2）：
+        # 硬门拦截时由 run_code_review 组装（_repo_code_review_gate_face 的
+        # face + 工具面预检结果），随结果信封上交消费侧（admin_monitor）
+        # 组装进完成行与升级告警；通过/其他失败路径恒 None（消费侧零感知）。
+        self.fail_face = None
 
 
 class RegressionResult:
@@ -1142,6 +1147,27 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
     """周期性代码审查 run 的产物硬门（2026-09-19 原地修复；聚合口径
     add-code-review-sharded-out 2.2/D5）。
 
+    薄封装：判定逻辑与失败面摘要单源在
+    ``_repo_code_review_gate_face``（evo-review-empty-product-
+    redispatch 1.2），本函数只取失败文案返回（既有调用方/tests 的
+    ``str | None`` 契约不变）。
+    """
+    return _repo_code_review_gate_face(manifest, project_root, run_id)[0]
+
+
+def _repo_code_review_gate_face(
+    manifest: list, project_root, run_id: str
+) -> tuple[str | None, dict | None]:
+    """产物硬门详细版：返回 ``(失败文案, fail_face 摘要)``，通过时 ``(None, None)``。
+
+    fail_face（evo-review-empty-product-redispatch 1.2，拦截失败面外露）：
+    ``{"run_id", "manifest_count", "variant", "shards", "sources_present",
+    "unreadable"}``——variant 三值：``artifact_missing``（主产物与全部分片
+    均不存在）/ ``unreadable_sources``（有来源存在但文件系统读取失败）/
+    ``zero_valid_rows``（来源在但零有效行）。供调用方（maintenance_runs
+    gate_err 分支）组装进完成行与升级告警字段，完整查询原文以档案 jsonl
+    为准。
+
     事故取证（触发首次修复的实证）：`run_code_review` 此前**全链无任何产物门**
     ——run 退出码 0（转录 `subtype: success`）但 agent 从未写过
     ``out-<run_id>.jsonl``（只写了自己切批的 ``batch_N.json``，声明要起 10 个
@@ -1178,7 +1204,7 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
     tests），后续新增调用点按此形态，勿经 runner.<方法名> 误调。
     """
     if not manifest:
-        return None
+        return None, None
     from core.code_review import out_path as cr_out_path, shard_paths
 
     main = cr_out_path(project_root, run_id)
@@ -1186,9 +1212,11 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
     sources = [*shards, main]
     valids = 0
     unreadable: list[str] = []
+    sources_present = 0
     for src in sources:
         if not src.is_file():
             continue
+        sources_present += 1
         try:
             text = src.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
@@ -1214,6 +1242,23 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
             if isinstance(rec, dict) and isinstance(rec.get("findings"), list):
                 valids += 1
     if valids <= 0:
+        # 拦截失败面摘要（evo-review-empty-product-redispatch 1.2）：run id、
+        # manifest 计数与命中变体，供完成行与升级告警消费（止损判定与事后
+        # 取证入口）。变体三值：全缺失 / 有来源读取失败 / 纯零行。
+        if sources_present <= 0 and not unreadable:
+            variant = "artifact_missing"
+        elif unreadable:
+            variant = "unreadable_sources"
+        else:
+            variant = "zero_valid_rows"
+        face = {
+            "run_id": run_id,
+            "manifest_count": len(manifest),
+            "variant": variant,
+            "shards": len(shards),
+            "sources_present": sources_present,
+            "unreadable": list(unreadable),
+        }
         base = (
             f"审查产物为零有效行（repo-code-review-gate）：run {run_id} manifest "
             f"{len(manifest)} 个文件，主产物 {main.name} 与 {len(shards)} 个分片"
@@ -1224,12 +1269,12 @@ def _check_repo_code_review_artifact(manifest: list, project_root, run_id: str) 
                 f"{base}；其中 {'、'.join(unreadable)} 存在但读取失败（OSError，"
                 f"已记 WARNING）——有来源因文件系统级异常被排除出有效行统计，"
                 f"优先排查环境侧读取错误而非 agent 转录"
-            )
+            ), face
         return (
             f"{base}——run 退出码为 0 不等于审查完成，agent MUST "
             f"逐文件落结果行（主产物或分片均可）"
-        )
-    return None
+        ), face
+    return None, None
 
 
 def _check_impl_result_artifact(
