@@ -83,13 +83,14 @@ export class TaskStore {
     const task: FenixTask = {
       taskId: this.table(sessionId).length + 1,
       subject,
-      description: optionalString(input.description),
-      activeForm: optionalString(input.activeForm),
-      metadata: input.metadata === undefined ? {} : requirePlainObject(input.metadata, "metadata"),
+      description: optionalString(input.description, "description"),
+      activeForm: optionalString(input.activeForm, "activeForm"),
+      // 入库即拷贝：与调用方传入对象解引用，调用方后续原地修改不影响 store 视角。
+      metadata: input.metadata === undefined ? {} : { ...requirePlainObject(input.metadata, "metadata") },
       status: "pending",
     };
     this.table(sessionId).push(task);
-    return task;
+    return cloneTask(task);
   }
 
   update(sessionId: string, input: TaskUpdateInput): FenixTask {
@@ -103,7 +104,7 @@ export class TaskStore {
     if (!hasField) {
       throw new Error("TaskUpdate 至少需要一个更新字段（status/subject/description/activeForm/metadata）");
     }
-    const task = this.get(sessionId, taskId);
+    const task = this.find(sessionId, taskId);
     // 两段式更新：先对全部传入字段完成校验构建补丁，再一次性应用——保证校验失败
     // 零副作用，避免边校验边改写在后置字段（如 metadata）抛错时留下部分生效的更新。
     const patch: Partial<FenixTask> = {};
@@ -114,14 +115,16 @@ export class TaskStore {
       patch.status = input.status;
     }
     if (input.subject !== undefined) patch.subject = requireNonEmptyString(input.subject, "subject");
-    if (input.description !== undefined) patch.description = optionalString(input.description);
-    if (input.activeForm !== undefined) patch.activeForm = optionalString(input.activeForm);
-    if (input.metadata !== undefined) patch.metadata = requirePlainObject(input.metadata, "metadata");
+    if (input.description !== undefined) patch.description = optionalString(input.description, "description");
+    if (input.activeForm !== undefined) patch.activeForm = optionalString(input.activeForm, "activeForm");
+    // 入库即拷贝：metadata 整体替换时与调用方传入对象解引用（口径同 create）。
+    if (input.metadata !== undefined) patch.metadata = { ...requirePlainObject(input.metadata, "metadata") };
     Object.assign(task, patch);
-    return task;
+    return cloneTask(task);
   }
 
-  get(sessionId: string, taskId: number): FenixTask {
+  /** 内部查找：返回 store 持有的活引用（仅 update 两段式改写复用，不外泄）。 */
+  private find(sessionId: string, taskId: number): FenixTask {
     const id = requireInteger(taskId, "taskId");
     const task = this.table(sessionId).find((t) => t.taskId === id);
     if (!task) {
@@ -130,8 +133,12 @@ export class TaskStore {
     return task;
   }
 
+  get(sessionId: string, taskId: number): FenixTask {
+    return cloneTask(this.find(sessionId, taskId));
+  }
+
   list(sessionId: string): FenixTask[] {
-    return [...this.table(sessionId)];
+    return this.table(sessionId).map(cloneTask);
   }
 }
 
@@ -142,8 +149,20 @@ function requireNonEmptyString(value: unknown, field: string): string {
   return value;
 }
 
-function optionalString(value: unknown): string {
-  return typeof value === "string" ? value : "";
+function cloneTask(task: FenixTask): FenixTask {
+  // 防御性拷贝（含 metadata 一层）：store 内部任务对象不外泄，外部状态只能经
+  // update 的校验路径变更，不能对 get/list/create/update 返回值原地赋值绕过校验。
+  return { ...task, metadata: { ...task.metadata } };
+}
+
+function optionalString(value: unknown, field: string): string {
+  // 与 subject 同口径的显式校验：缺省（undefined）归一空串；显式传入非字符串
+  // （如数字/null）直接抛错并回显字段名，不做静默归一（防类型错误掩盖 + 原内容无痕丢失）。
+  if (value === undefined) return "";
+  if (typeof value !== "string") {
+    throw new Error(`${field} 必须是字符串（可为空串），收到 ${JSON.stringify(value ?? null)}`);
+  }
+  return value;
 }
 
 function requirePlainObject(value: unknown, field: string): Record<string, unknown> {
