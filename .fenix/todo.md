@@ -474,7 +474,7 @@
   - 建议：①健全性门对场景名含 empty/zero-state/placeholder 或基线模板即低对比的场景豁免/放宽阈值，改按与基线模板的相对差异判 env；②env 阻塞重验前对同场景延时重截一次排除渲染时序假阳性；③首跑被判 low_contrast 的截图自动落盘 .fenix/verify-evidence/，免人工重跑探针取证。
 
 - **秒挂风暴升级告警在spec交付后悬置，未随交付自动收口**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：秒挂风暴升级告警在对应 spec 交付后仍悬置未收口：fix-scheduled-reverify-survive-restart 于 10-27 23:26 完成 verification-report 入库、状态 pushed，而其秒挂冷却升级告警 87f72c680499（major）至窗末仍 handled=false——数据摘要「升级告警 11 条（未处理 1 条）」即此条；已交付 spec 的陈旧未处理告警会持续稀释告警面并虚增未处理计数。
   - 证据：告警 87f72c680499（秒挂冷却升级，事件链 2026-10-27T14:44:49Z 连续 3 次秒挂→300 秒冷却→14:49:49Z 到期自动恢复调度）；spec 终态核实：STATE.md 记 status: pushed、tester_run: mechanical-all-green（updated 15:26:29Z），salvage 分支 eab74de29 于 22:56 合回；admin_alerts.json 中该告警 handled=false、status 空。
   - 调查评估：问题源：窗口内 admin 告警与处置记录的对账（未处理 1 条的归因）。已核实事实：秒挂冷却与全车道门控按设计工作（evo-add-instant-fail-cooldown-full-lane-gate 首次实战，派发与管理员处置唤起正确跳过、到期自动恢复，随后经 fallback repair 链修复交付）；秒挂死亡根因（进程 0 秒存活三连）无 run 产物可取证，假说并存（worktree/分支检出即死 vs 环境态残留），同日落地的 fix-worktree-lock-release-degrade-gate（worktree 锁释放与降级熔断）可能相关但未核实；缺口在告警生命周期——spec 到达 verified/pushed 终态时无自动收口或对账路径。与存量工作关系：orphaned final disposition group 对账（处置组已终态但信号未消除的同指纹复发检出）只在同指纹复发时才检出，覆盖不了「spec 交付后告警自然失效」形态，非重复立项。结论：小改动（终态联动收口＋龄期盘点），值小立项。
