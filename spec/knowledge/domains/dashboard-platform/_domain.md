@@ -1,7 +1,7 @@
 # 仪表盘服务
-> 最后更新：2026-10-30 23:11 UTC+8
+> 最后更新：2026-10-31 00:20 UTC+8
 
-跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建、按需生成类任务与协作拓扑派生/跨项目聚合端点。
+跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建、按需生成类任务、协作拓扑派生/跨项目聚合端点与指挥中心聚合。
 
 ## 能力页
 
@@ -31,3 +31,4 @@
 | [v2-legacy-coexist](v2-legacy-coexist.md) | v2 与旧版并存机制（已随壳层退役） | 2026-10-03 04:59 |
 | [topology-derivation](topology-derivation.md) | SPEC 协作拓扑派生端点（七阶段角色归列、KPI 五项口径、重试边仅连 attempt 链、多轮验证逐轮、交付终点按持久确证自适应、归档降级骨架） | 2026-10-30 23:11 |
 | [collab-graph-aggregation](collab-graph-aggregation.md) | 跨项目角色级协作图谱聚合端点（复用 derive_topology 零第二套映射、project 筛选、下钻明细内嵌、归档计 KPI 不进图） | 2026-10-30 23:11 |
+| [command-center-aggregation](command-center-aggregation.md) | 指挥中心后端聚合（KPI 四指标 7 日窗口径、组织网格静态花名册与汇报线、流水线五列桶映射、台账 50 条、收件箱只读装配复用 alert-resolve） | 2026-10-31 00:20 |

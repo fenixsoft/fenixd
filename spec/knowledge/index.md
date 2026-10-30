@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-30 23:39 UTC+8
+> 最后更新：2026-10-31 00:20 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -26,8 +26,8 @@
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 14 | 2026-10-30 23:11 |
 | [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 19 | 2026-10-06 07:14 |
 | [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 14 | 2026-10-30 23:11 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 36 | 2026-10-30 23:11 |
-| [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 24 | 2026-10-30 23:11 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 37 | 2026-10-31 00:20 |
+| [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 25 | 2026-10-31 00:20 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
 | [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 31 | 2026-10-30 22:41 |
 | [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 16 | 2026-10-30 23:11 |
