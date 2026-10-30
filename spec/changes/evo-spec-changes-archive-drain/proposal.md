@@ -2,7 +2,7 @@
 
 ## 背景与问题
 
-spec/changes/ 现存 52 目录：48 个含 verification-report.md、50 个对应 .fenix/STATE.md 终态条目（全 pushed），但归档已冻结 6 天（最后一条自动归档 2026-10-15 06:28）。根因（已核实）：自动归档 auto_archive_check（core/dashboard/data/spec_archive.py:630，fenixd.py:1122-1124 每 300 秒调用）仅当「终态+目录在 changes/ 计数 > archive.auto_threshold（默认 50，core/config.py:3312-3328）」才触发，当前计数恰为 50 → 阈值饱和、恒不归档；另有 2 个孤儿目录（evo-merge-back-wip-overlap-gate、fix-verify-loop-convergence）不在 STATE，自动归档与 backfill 均不接管。
+spec/changes/ 现存 74 目录：47 个含 verification-report.md、50 个对应 .fenix/STATE.md 终态条目（全 pushed；评审时点实测，草案时点为 52 目录/48 报告，终态计数未变），自动归档自 2026-10-15 06:28 后再无触发。根因（已核实）：自动归档 auto_archive_check（core/dashboard/data/spec_archive.py:651，fenixd.py:1154-1159 每 300 秒调用）仅当「终态+目录在 changes/ 计数 > archive.auto_threshold（默认 50，core/config.py:3514 effective_auto_archive_threshold）」才触发，当前计数恰为 50 → 阈值饱和、恒不归档；另有 2 个孤儿目录（evo-merge-back-wip-overlap-gate、fix-verify-loop-convergence）不在 STATE，自动归档与 backfill 均不接管（两目录实测均无 verification-report.md，滞留 40+ 天）。
 
 已发生实损：自进化 run evo-1792427246（1778.7 秒、136 轮）两处把已落地能力误判「在途」并据此推迟立项裁决（「spec 滞留 changes/ 未归档，同主题在途先观察效果」「同主题 evo-api-stall-signal-grading 在途未归档」）；滞留每多一天，后续每轮自进化都重复这一误判与人工核对成本。
 
