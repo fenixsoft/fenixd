@@ -243,8 +243,8 @@ function SpecPicker({
                 onClick={() => onPick(e)}
                 role="link"
                 tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') onPick(e);
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Enter') onPick(e);
                 }}
                 onMouseEnter={() => setHoverKey(key)}
                 onMouseLeave={() => setHoverKey(null)}
