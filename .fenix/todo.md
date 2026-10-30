@@ -528,7 +528,7 @@
   - 建议：①resume-guard 尽快走完合回，使积压归档自动补蒸馏；②重试台账加龄期信号（登记超 24 小时未重试发每日一条提醒）；③unrecognized_model 兜底重试（以默认网关裸模型名重试一次）照旧保留。
 
 - **evolution回写push恒败累计46次，根因收敛零remote兄弟仓**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：自进化 todo 回写的 push 步骤本窗再败 1 次（本地 01:43），保留日志累计 46 条同文 WARNING；但根因可从「两假说并存」收敛为单因：受管兄弟项目仓 /root/dsh-plugins 无任何 remote（git remote -v 输出为空），裸 git push（git -C 项目根 push）在该仓每轮回写必败，fenixd 主仓 origin 在案可成功。
   - 证据：本窗失败行 2026-10-27T17:43:55Z「evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: fatal: No configured push destination.」；代码路径核实 core/evolution.py:1107-1108 为 git -C proot push（proot 为各受管项目根）；本窗实测 /root/dsh-plugins 的 git remote -v 为空；对照同夜 fenixd 仓两个标记提交（8a5c480ee、99d1acc62）add/commit/push 正常。
   - 调查评估：问题源：[2026-10-26#可改进#4] 恒失败家族的根因收敛核查。已核实事实：daemon 为多项目服务（fenixd、dsh-plugins 等），回写按项目根就地提交推送，零 remote 的兄弟仓构成结构性必败路径——「subprocess 变量构造差异」「cwd/env 传递差异」两假说均被代码与实测排除。与存量工作关系：与 2026-10-12「幂等空转记 ERROR 稀释错误信号」同属恒失败固定噪音家族但对象不同，维持非重复。结论：根因已收敛、修复面小（探测＋跳过＋聚合告警），小立项价值上升。
