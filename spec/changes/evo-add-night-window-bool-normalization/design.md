@@ -9,7 +9,7 @@
 - Non-Goals：不改窗值语法本身；不改顺延/salvage 机制；不代做运维配置修改。
 
 ## Design
-- 同义化在 _night_quiet_window_disabled 入口判 isinstance(bool)：False 等价 off，True 记非法；_parse_night_quiet_windows 对非字符串非 off 输入返回 None 前先出载入期 lint。
+- 同义化判定作用于原始值（str 化之前）：_night_quiet_window_disabled（:3350）入口先判 isinstance(bool)——False 等价 off、True 记非法——再落既有字符串判定；_parse_night_quiet_windows（:3367）MUST 在其 :3380 `text = str(raw).strip()` 之前同判原始 bool，否则 False 已被 str 化为 "False"、经该函数的路径同义化静默失效。两解析函数保持「纯解析不告警」既有契约（code_fix.py:3378 docstring），载入期 lint 只挂 config.py（下一款），MUST NOT 下沉进解析单源——admin_monitor 两消费点（:2059/:6314）共用它，下沉即引入重复告警源。
 - 载入期 lint 挂 config.py 既有弃用键检查同点，进程级去重。
 - 审查/admin 两处 `if not windows` 前补解析失败告警（复用 :3931-3939 文案与去重集）。
 - 每日提醒按（窗值,自然日）节流。
