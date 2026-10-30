@@ -2516,15 +2516,22 @@ def _is_test_path(rel_path: str) -> bool:
 def _test_target_poison_reason(rel: str) -> str:
     """毒化目标判别（evo-add-regression-empty-result-failclosed 2.1，单源）。
 
-    返回原因串（哨兵注释项 # 前缀 / ``__pycache__`` 缓存路径 / ``.pyc`` 编译
-    缓存）；非毒化项返回空串。``_sanitize_test_target_paths``（producer 出口
-    消毒）与 ``_map_fix_files_to_tests`` 映射入口预检共用，两处规则 MUST NOT
-    漂移。
+    返回原因串（哨兵注释项 # 前缀 / 「..」穿越段 / ``__pycache__`` 缓存路径 /
+    ``.pyc`` 编译缓存）；非毒化项返回空串。``_sanitize_test_target_paths``
+    （producer 出口消毒）与 ``_map_fix_files_to_tests`` 映射入口预检共用，
+    两处规则 MUST NOT 漂移。
     """
     if rel.startswith("#"):
         return "哨兵注释项 # 前缀"
     norm = rel.replace("\\", "/")
     parts = [p for p in norm.split("/") if p and p != "."]
+    # 「..」穿越段（code-review item 6c85102acec2）：形如 tests/../../x.py
+    # 经 tests/ 前缀支判真，且 (root / rel).exists() 按 OS 对「..」的解析
+    # 判存在——只要解析目标在磁盘上真实存在即可穿透消毒，随后经 cmd 替换
+    # 与 FENIX_TEST_TARGETS 导出双通道注入，定向收集面越出声明的 tests/
+    # 语义。含穿越段即判毒化剔除，producer 与映射入口经本单源同规则收口。
+    if ".." in parts:
+        return "「..」穿越段"
     if "__pycache__" in parts:
         return "__pycache__ 缓存路径"
     if norm.endswith(".pyc"):
@@ -2536,9 +2543,9 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
     """定向回归 targets 消毒（evo-add-regression-empty-result-failclosed 2.1，
     单点 producer 出口）。
 
-    过滤四类毒化项并留痕：# 前缀哨兵注释项、路径含 ``__pycache__`` 段、
-    ``.pyc`` 编译缓存、相对 ``exec_root`` 不存在的路径；被过滤项聚合
-    WARNING 留痕（含原因）。
+    过滤五类毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
+    ``__pycache__`` 段、``.pyc`` 编译缓存、相对 ``exec_root`` 不存在的
+    路径；被过滤项聚合 WARNING 留痕（含原因）。
 
     落点 MUST 为单点 producer（``_map_fix_files_to_tests`` 返回前）：targets
     同时流向 ``_apply_test_targets`` 的 cmd 替换与 ``_with_test_targets_env``
@@ -2613,8 +2620,9 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
     （tests/ 缺失、grep 异常）只缩小定向面，MUST NOT 抛异常。
 
     出口经 ``_sanitize_test_target_paths`` 消毒（evo-add-regression-
-    empty-result-failclosed 2.1，单点 producer）：# 前缀哨兵项、
-    ``__pycache__`` 段/``.pyc`` 路径与不存在路径被过滤并 WARNING 留痕——
+    empty-result-failclosed 2.1，单点 producer）：# 前缀哨兵项、「..」
+    穿越段、``__pycache__`` 段/``.pyc`` 路径与不存在路径被过滤并
+    WARNING 留痕——
     cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道共享消毒后列表
     （2026-10-24 链 A 批 1 伪绿合回事故的 env 通道肇因收口）。grep 反查加
     ``-I``（跳过二进制）与 ``--exclude-dir=__pycache__`` 同向收口。
@@ -2636,7 +2644,7 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
         # 映射入口毒化项预检（evo-add-regression-empty-result-failclosed
         # 2.1）：缓存产物与哨兵注释项在入口即剔除并 WARNING 留痕，不入
         # direct/product 任一支——.pyc 的 stem 反查只会召回无关测试，哨兵
-        # 注释项不是真实文件。
+        # 注释项不是真实文件，「..」穿越段不外溢（6c85102acec2）。
         poison = _test_target_poison_reason(rel)
         if poison:
             _logger.warning(
@@ -2692,8 +2700,9 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass  # fail-open：反查失败只缩小定向面
     # 出口消毒（evo-add-regression-empty-result-failclosed 2.1，单点
-    # producer）：过滤 # 前缀/__pycache__/.pyc/不存在路径并 WARNING 留痕，
-    # cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道共享消毒后列表。
+    # producer）：过滤 # 前缀/「..」穿越段/__pycache__/.pyc/不存在路径并
+    # WARNING 留痕，cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道
+    # 共享消毒后列表。
     return _sanitize_test_target_paths(sorted(direct), root)
 
 
@@ -5009,6 +5018,11 @@ class CodeFixOrchestrator:
                     snapshot_ids = {str(i) for i in snapshot_raw}
                 else:
                     snapshot_ids = None
+                # 快照缺失/损坏（非列表）按「无法确认未变更」fail-open 解除
+                # （code-review item 9fe8a9bae7b5，对齐上方注释契约与
+                # _open_item_ids docstring）：坏档不得把护栏变成永久锁，链
+                # 仍空转时计数会在新窗口重新熔断。
+                snapshot_corrupted = snapshot_ids is None
                 ledger_changed = False
                 if snapshot_ids is not None:
                     try:
@@ -5025,12 +5039,16 @@ class CodeFixOrchestrator:
                             "code-fix 零进度护栏解除复核台账读失败"
                             f"（维持暂停）: {e}",
                         )
-                if override_enabled or ledger_changed:
-                    release_why = (
-                        "人工处置（手动重派入口）"
-                        if override_enabled
-                        else "新一轮评审产出台账变更（选批扫描复核）"
-                    )
+                if override_enabled or ledger_changed or snapshot_corrupted:
+                    if override_enabled:
+                        release_why = "人工处置（手动重派入口）"
+                    elif snapshot_corrupted:
+                        release_why = (
+                            "暂停快照缺失/损坏，无法确认未变更"
+                            "（fail-open 解除）"
+                        )
+                    else:
+                        release_why = "新一轮评审产出台账变更（选批扫描复核）"
                     try:
                         write_progress(
                             root,
@@ -5613,7 +5631,9 @@ class CodeFixOrchestrator:
         if not deltas:
             return
         try:
-            prev = read_progress(root)
+            # 免合成直读：只消费链级计数字段，不读 item_done 等合成派生键
+            # （code-review item afc34e44b790）。
+            prev = read_progress(root, synthesize=False)
             fields = {}
             for key, delta in deltas.items():
                 try:
@@ -5676,8 +5696,11 @@ class CodeFixOrchestrator:
         条 run_metrics 行求和——「覆盖链中全部 run 不漏样本」由清单机械达成；
         两处皆缺按零贡献。条目维度：读
         链级核销计数（chain_resolved/chain_ignored，即台账核销口径）。
+
+        免合成直读（code-review item afc34e44b790）：只消费链级 run 清单与
+        核销计数字段，不读 item_done 等合成派生键。
         """
-        prog = read_progress(self.project_root)
+        prog = read_progress(self.project_root, synthesize=False)
         # 链级 run 清单形态守卫（code-review item 28ee3c6558b0，对齐 checkpoint
         # 与 _chain_recent_duration_mean 对同字段既有守卫）：坏档非列表真值直接
         # 迭代会按字符拆出假 run_id，rollup 静默产出垃圾统计（runs=字符个数）。
@@ -5898,7 +5921,11 @@ class CodeFixOrchestrator:
             # 链；非空字符串则被逐字符拆成假 item_id 并入排除集。按「损坏不炸
             # 主流程」纪律先判 isinstance(list) 再拷贝，非列表回退空列表
             # （truthy 垃圾值 warning 留痕；None/空值静默回退）。
-            raw_ids = read_progress(self.project_root).get("chain_skipped")
+            # 免合成直读：只消费 chain_skipped 链级字段（code-review item
+            # afc34e44b790）。
+            raw_ids = read_progress(
+                self.project_root, synthesize=False
+            ).get("chain_skipped")
             if isinstance(raw_ids, list):
                 prev_ids = list(raw_ids)
             else:
@@ -6386,7 +6413,9 @@ class CodeFixOrchestrator:
                 return 0, "延迟批已合回未核销（fixed_ids 坏档，保留待人工对账）"
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
-            prog = read_progress(root)
+            # 免合成直读：只消费链级 done 字段（code-review item
+            # afc34e44b790）。
+            prog = read_progress(root, synthesize=False)
             # done 数值形态守卫（code-review item 6d719838a2d2，对齐 checkpoint
             # 链级读点 c95bc89c37d6 同款 try-int 口径）：or 0 只兜 None/空值，
             # 进度被外部写坏成非数值标量（如字符串）时裸加法抛 TypeError，被

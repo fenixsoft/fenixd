@@ -33,6 +33,50 @@ def _json_len(line: str) -> int:
 class JsonFormatter(logging.Formatter):
     """Format log records as JSON lines."""
 
+    # 键名脱敏黑名单（item 35e958d94e67）：本类是全部结构化日志的单点序列化
+    # 出口，context 原样落盘并随轮转（maxBytes=10MB/backupCount=5）明文最多
+    # 留存 6 份；仓库其他出口均各自脱敏，日志通道此前无兜底。按键名黑名单
+    # 遮蔽敏感值，遮蔽口径对齐 api_runner 的「<已脱敏:N 字符>」；子串匹配
+    # 覆盖 access_token/client_secret 等常见变体，键名小写并把 - 归一为 _
+    # 后匹配。
+    # 数值豁免：int/float（含 bool）值不遮蔽——键名含 token 的数值几乎恒为
+    # 用量计数/度量（input_tokens、cache_read_input_tokens 等 run_metrics
+    # 观测契约字段，tests/test_run_metrics_persistence.py 钉死原样落盘），
+    # 秘密值实践中恒为字符串；字符串与容器仍整值遮蔽。
+    _SENSITIVE_KEY_MARKERS = (
+        "token", "secret", "password", "passwd", "authorization",
+        "api_key", "credential", "private_key",
+    )
+
+    @classmethod
+    def _is_sensitive_key(cls, key) -> bool:
+        if not isinstance(key, str):
+            return False
+        normalized = key.lower().replace("-", "_")
+        return any(marker in normalized for marker in cls._SENSITIVE_KEY_MARKERS)
+
+    @classmethod
+    def _redact_context(cls, value):
+        """递归遮蔽 context 中键名命中敏感名单的值；无命中时逐字节不变。
+
+        递归覆盖嵌套 dict 与 list/tuple（tuple 转为 list，二者 JSON 序列化
+        产物同为数组、逐字节不变），保证嵌套结构内的敏感值同样被遮蔽；
+        键名原样保留（非法键交由 skipkeys 在序列化出口处理）。
+        """
+        if isinstance(value, dict):
+            return {
+                k: (
+                    f"<已脱敏:{len(str(v))} 字符>"
+                    if cls._is_sensitive_key(k)
+                    and not isinstance(v, (int, float))
+                    else cls._redact_context(v)
+                )
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._redact_context(v) for v in value]
+        return value
+
     def format(self, record: logging.LogRecord) -> str:
         entry = {
             # 保持 Z 后缀格式不变（utcnow 的非弃用等价写法），展示层与既有 grep 依赖该格式
@@ -41,17 +85,21 @@ class JsonFormatter(logging.Formatter):
             "component": getattr(record, "component", "unknown"),
             "message": record.getMessage(),
         }
-        # Include extra context if available
+        # Include extra context if available（写入前递归遮蔽敏感键值，
+        # item 35e958d94e67：日志通道自身的兜底脱敏，不依赖调用方自查）
         if hasattr(record, "context") and record.context:
-            entry["context"] = record.context
+            entry["context"] = self._redact_context(record.context)
         # 500 兜底等调用方以 logger.exception 约定「详情（含堆栈）留服务端日志」，
         # 缺此字段 traceback 会被静默丢弃（code-review item c175ecdbbeed）
         if record.exc_info:
             entry["exc_info"] = self.formatException(record.exc_info)
         # default=str 兜底不可序列化的 context 值（datetime/Path 等）：
         # 否则 json.dumps 抛 TypeError，整条记录被 emit→handleError 吞掉只剩
-        # stderr 提示，结构化日志静默丢失
-        line = json.dumps(entry, ensure_ascii=False, default=str)
+        # stderr 提示，结构化日志静默丢失。注意 default 只对「值」生效、对
+        # dict 键不生效（item 101ff2deb3dd）：带非 str/int/float/bool/None
+        # 键（如 tuple 键）的 context 同样在出口抛 TypeError，skipkeys=True
+        # 使非法键被丢弃而非炸掉整条记录
+        line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)
         # 单事件体积上限（improve-spec-topology-pipeline-view 1.3）：不超限
         # 路径逐字节不变（快照测试钉死），超限才进入截断防御。
         if _json_len(line) > LOG_EVENT_MAX_BYTES:
@@ -75,7 +123,9 @@ class JsonFormatter(logging.Formatter):
         ② 替换后仍超限（message/exc_info 单体超限）：对超限字段尾部截断并
         附带顶层 truncated 留痕，保证「落盘单行 ≤ 上限」在任意输入下可达。
         """
-        line = json.dumps(entry, ensure_ascii=False, default=str)
+        # skipkeys 与 format 出口同口径（item 101ff2deb3dd）：本路径同样
+        # 序列化原始 context，缺键防御会在超限防御路径上抛 TypeError
+        line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)
         total = _json_len(line)
         if "context" in entry:
             orig_ctx = entry["context"]
@@ -84,14 +134,14 @@ class JsonFormatter(logging.Formatter):
                 "orig_bytes": total,
                 "context_keys": list(orig_ctx.keys()) if isinstance(orig_ctx, dict) else [],
             }
-            line = json.dumps(entry, ensure_ascii=False, default=str)
+            line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)
             if _json_len(line) <= LOG_EVENT_MAX_BYTES:
                 return line
         # 仍超限：message/exc_info 单体超限，尾部截断（保留头部）。逐次折半
         # 保证终止（1 字符残段直接清空）；顶层 truncated 留痕标记截断形态。
         entry["truncated"] = True
         for _ in range(256):
-            line = json.dumps(entry, ensure_ascii=False, default=str)
+            line = json.dumps(entry, ensure_ascii=False, default=str, skipkeys=True)
             if _json_len(line) <= LOG_EVENT_MAX_BYTES:
                 return line
             for field in ("exc_info", "message"):

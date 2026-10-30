@@ -325,6 +325,21 @@ class AdminStore:
             # 非数组内容同样无法解读（读-改-写会以空为底抹掉全部历史）——
             # 与非法 JSON 同视为损坏，一并留底
             return [], self._quarantine_corrupt(path)
+        # code-review item 621b146a6d50：元素级脏数据留痕。合法 JSON 数组内的
+        # 非 dict 元素（外部工具/人工误写）此处被过滤丢弃、下一次 _mutate
+        # 写回即永久清除——与整文件损坏的「留底+拒写」fail-closed 口径对齐，
+        # 至少记 WARNING 让运维可感知有记录被吃掉；元素级脏数据无法定位属主，
+        # 整文件留底会连带冻结全部合法记录的写回（corrupt 分支拒写），故不
+        # 沿用 _quarantine_corrupt 路径，仅记日志。
+        dropped = [(i, type(e).__name__) for i, e in enumerate(data) if not isinstance(e, dict)]
+        if dropped and self._logger is not None:
+            preview = ", ".join(f"#{i}:{t}" for i, t in dropped[:10])
+            self._logger.warning(
+                "admin_store",
+                f"告警数组含 {len(dropped)} 个非 dict 元素已被丢弃"
+                f"（下次写回将永久清除；序号/类型: {preview}"
+                f"{' …' if len(dropped) > 10 else ''}）",
+            )
         recs = [e for e in data if isinstance(e, dict)]
         # 存量（修复前落盘）dict/list evidence 读侧归一为字符串，一次读即自愈
         # （回归 fix-alert-evidence-render-crash）：写入口修复只能挡住新写入，

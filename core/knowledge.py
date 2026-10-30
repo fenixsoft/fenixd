@@ -518,8 +518,11 @@ def validate_knowledge(project_root) -> list:
             except (OSError, UnicodeDecodeError) as e:
                 violations.append(f"{label}: 读取失败: {e}")
                 continue
+            # index 与 ADR-NNN 正文同口径校验（docstring 契约「index/_domain/adr
+            # 链接可解析且不越界」，code-review 01488c0d6abc）：蒸馏产出的 ADR
+            # 正文同样可能带死链或越出真相源的引用，不得静默过检落库。
+            _check_links(text, adr.parent, label)
             if adr.name == "index.md":
-                _check_links(text, adr.parent, label)
                 continue
             nm = _ADR_NAME_RE.match(adr.name)
             if not nm:

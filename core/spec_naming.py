@@ -23,8 +23,10 @@ KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 def validate_spec_name(spec: str) -> str | None:
     """校验 SPEC 名是否为合法 kebab-case（命名契约单源的唯一校验入口）。
 
-    判据即上方 KEBAB_RE 权威正则（^[a-z][a-z0-9]*(-[a-z0-9]+)*$）：SPEC 名已被
-    fenix_spec.py new 约束为该形态，可安全作文件名/路径成分。黑名单式拒绝
+    判据即上方 KEBAB_RE 权威正则（^[a-z][a-z0-9]*(-[a-z0-9]+)*$），外加
+    UTF-8 字节长度上限 200：SPEC 名用作目录名（spec/changes/<name>/）与
+    信号文件名（scheduling_kick/<spec>.json 等），超长输入在校验入口即拒绝，
+    不留到下游 mkdir/open 才暴露 ENAMETOOLONG。黑名单式拒绝
     （仅查空串 / `/` / `\` / `..`）会放过 `.`、前导点、含 `:` 或非 ASCII 等
     「能当文件名但不合规」的输入——正则白名单与之等价且无遗漏。
 
@@ -40,6 +42,12 @@ def validate_spec_name(spec: str) -> str | None:
         return f"spec 名必须为字符串（当前类型 {type(spec).__name__}）"
     if not spec:
         return "spec 名为空"
+    # 长度上限按 UTF-8 字节计（文件系统文件名 255 字节上限的入口预检），
+    # 200 预留 .json / 日期等后缀拼接余量；置于形态校验之前，避免超长串
+    # 整体回显进下方错误文案。
+    name_bytes = len(spec.encode("utf-8"))
+    if name_bytes > 200:
+        return f"spec 名过长（{name_bytes} 字节，上限 200）：{spec[:32]!r}…"
     if not KEBAB_RE.fullmatch(spec):
         return (
             f"spec 名不合法（须为 kebab-case，如 'fix-foo-bar'）：{spec!r}"

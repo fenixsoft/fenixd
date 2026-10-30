@@ -28,6 +28,7 @@ API（6 函数契约冻结，SPEC-B 只许 ADDITIONAL 扩展，不破坏本契�
 - ``fmt_display(value, fmt) -> str``   渲染边界：datetime | ISO 串 → 本地人读串
 """
 
+import re
 from datetime import datetime, timezone
 
 __all__ = [
@@ -50,6 +51,46 @@ def now_local() -> datetime:
     return datetime.now().astimezone()
 
 
+# 3.10 fromisoformat 归一重试用：拆解串尾「主体 + 可选小数秒 + 可选时区偏移」。
+_ISO_TAIL_RE = re.compile(
+    r"^(?P<body>.+?)(?P<frac>\.\d+)?"
+    r"(?P<off>[+-]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?|[+-]\d{4}|[+-]\d{2})?$"
+)
+
+
+def _fromiso_compat(text):
+    """3.10 内核归一重试：小数秒位数与 ±HH 偏移的扩展 ValueError 回退。
+
+    3.10 的 fromisoformat 仅认 3/6 位小数秒与 ``±HH:MM`` 带冒号偏移；对
+    3.11 可解析而 3.10 拒绝的合法 ISO 形态做一次性归一——小数秒右补零或
+    截断到 6 位（>6 位截断与 3.11 语义一致）、``±HH`` 补 ``:00``、
+    ``±HHMM`` 补冒号（同下方既有回退口径）——再解析一次；无归一改动点
+    或归一后仍非法返回 None。
+    """
+    m = _ISO_TAIL_RE.match(text)
+    if m is None:
+        return None
+    body = m.group("body")
+    frac = m.group("frac")
+    off = m.group("off")
+    new_frac = None
+    if frac is not None and len(frac) - 1 not in (3, 6):
+        new_frac = "." + frac[1:][:6].ljust(6, "0")
+    if off is None or ":" in off:
+        new_off = off
+    elif len(off) == 3:
+        new_off = off + ":00"
+    else:  # ±HHMM（len 5），既有回退同款补冒号
+        new_off = f"{off[:3]}:{off[3:]}"
+    if new_frac is None and new_off == off:
+        return None
+    frac_part = new_frac if new_frac is not None else (frac or "")
+    try:
+        return datetime.fromisoformat(f"{body}{frac_part}{new_off or ''}")
+    except ValueError:
+        return None
+
+
 def parse_ts(value):
     """唯一时间戳解析入口；失败返回 None（house 容错风格，不抛异常）。
 
@@ -57,6 +98,12 @@ def parse_ts(value):
     ``±HHMM`` 无冒号偏移（归一为 ``±HH:MM``，见下方版本差异注释）、无偏移
     naive（按**本地时区**解读——唯一策略，见模块 docstring）、纯日期串
     （``YYYY-MM-DD``，本地零点）。``None``/非字符串/空串/非法串返回 None。
+
+    3.10 内核边界（本仓最低版本）：3.10 的 fromisoformat 仅认 3/6 位小数秒
+    与 ``±HH:MM`` 带冒号偏移；1/2/4/5/7+ 位小数秒、``±HH`` 两位偏移等
+    3.11 可解析的合法形态在 3.10 下直接 ValueError，本入口在 ValueError
+    回退中做归一重试（小数秒规整 6 位、``±HH`` 补 ``:00``），归一后仍
+    非法维持 None，跨 3.10/3.11 行为对齐。
     """
     if not isinstance(value, str):
         return None
@@ -72,15 +119,21 @@ def parse_ts(value):
     except ValueError:
         # Python 3.10（本仓库最低版本，install.sh 依赖检查）的 fromisoformat
         # 不认 ±HHMM 无冒号偏移，外部工具常写出 +0800 形态 → 串尾命中
-        # [+-]dddd 时补冒号归一重试一次，其余非法串维持返回 None。
+        # [+-]dddd 时补冒号归一重试一次；仍失败再走 _fromiso_compat 的
+        # 小数秒位数/±HH 偏移归一重试（仅新增覆盖面，不改上述既有语义），
+        # 全部失败维持返回 None。
+        dt = None
         tail = text[-5:]
-        if len(text) <= 5 or tail[0] not in "+-" or not tail[1:].isdigit():
-            return None
-        try:
-            dt = datetime.fromisoformat(
-                f"{text[:-5]}{tail[0]}{tail[1:3]}:{tail[3:]}"
-            )
-        except ValueError:
+        if len(text) > 5 and tail[0] in "+-" and tail[1:].isdigit():
+            try:
+                dt = datetime.fromisoformat(
+                    f"{text[:-5]}{tail[0]}{tail[1:3]}:{tail[3:]}"
+                )
+            except ValueError:
+                pass
+        if dt is None:
+            dt = _fromiso_compat(text)
+        if dt is None:
             return None
     if dt.tzinfo is None:
         # naive → 本地 aware（astimezone() 的 naive 语义：视作系统本地时区）

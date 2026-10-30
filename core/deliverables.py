@@ -826,6 +826,27 @@ def _is_dir_safe(path) -> bool:
         return False
 
 
+def _exists_safe(path) -> bool:
+    """exists() 的 OSError 容错版（与 _is_file_safe/_is_dir_safe 同型，仿
+    core/dashboard/watcher.py:_is_dir）。
+
+    pathlib 的 exists() 对 EACCES/EIO 等非 ENOENT 类 OSError 直接上抛（部分
+    版本对 NUL 等非法路径形态还会先抛 ValueError）；lint_declared 规则 3/8/4
+    的主树存在性判定与同函数内目录判定（_is_dir_safe）容错口径须一致——
+    fail-open 契约要求单条目探测故障按「不存在」处理而非冲出 per-entry 循环
+    （外层 promotion._lint 会 fail-open 全量放行，令规则 0-12 该轮全部失守），
+    故显式吞掉按 False 处理并留 WARNING（code-review item 0952ecdc646d）。
+    """
+    try:
+        return path.exists()
+    except (OSError, ValueError) as e:
+        _resolution_logger.warning(
+            "deliverables",
+            f"存在性探测失败（按不存在处理）{path}: {e}",
+        )
+        return False
+
+
 def resolve_effective_declaration(
     spec_name, *, branch=None, worktree_path=None, project_root=None
 ) -> dict:
@@ -1977,8 +1998,12 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
         命中相对路径列表（排序）；无命中或遍历异常返回空列表（fail-open）。
     """
     root = Path(project_root)
-    name = Path(path or "").name
-    if not name:
+    try:
+        name = Path(path or "").name
+    except ValueError:
+        # NUL 等非法路径形态（部分 Python 版本构造 pathlib 即上抛）：
+        # fail-open 返回空列表（与 docstring「遍历异常返回空列表」同口径，
+        # code-review item 0952ecdc646d）
         return []
     excluded = set(_BASENAME_EXCLUDE_DIRS)
     hits: List[str] = []
@@ -2003,7 +2028,9 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
                 except ValueError:
                     continue
                 hits.append(rel)
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError：NUL 等非法路径形态在 os.walk/scandir 处上抛，fail-open
+        # 同口径返回空列表（code-review item 0952ecdc646d）
         return []
     hits.sort()
     return hits
@@ -2038,7 +2065,9 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
                 # 先于其他 git 读超时，fail-open 静默收窄 gitignored 拦截面
                 timeout=_GIT_READ_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # ValueError：候选路径含 NUL 等极端形态时 subprocess 参数构造即
+            # 上抛（item 0952ecdc646d），与 OSError 同按 fail-open 只跳当前候选
             # fail-open 只作用于当前候选：继续判下一个候选（docstring「任一
             # 被排除即 True」契约，item 505afa4a6f26——此处 return False 会让
             # 首候选异常跳过后续候选，多候选场景静默漏判）
@@ -2752,6 +2781,9 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         Non-Goal，``test_new_existing_path_pass`` 固化）。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
+    单条目判定故障同口径但收窄到该条（item 0952ecdc646d）：per-entry 循环体
+    内 try/except 记 WARNING 后跳过该条（仅该条放行），不令整轮 lint 以异常
+    收场。
     规则 0 的形态违规属「内容确定性无效」而非 lint 故障，照常返回违规。
 
     Args:
@@ -2812,192 +2844,205 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"于书写顺序），请合并为单一条目或去重后重试晋升"
             )
     for e in entries:
-        if not isinstance(e, dict):
-            violations.append(
-                f"Deliverables 声明条目必须是映射——当前为 "
-                f"{type(e).__name__}（{e!r}），条目形态为 "
-                f"`- path: <具体文件>` + `  kind: <kind>`；"
-                f"该条目等同未声明，请修正后重试晋升"
-            )
-            continue
-        path = str(e.get("path") or "").strip()
-        kind = str(e.get("kind") or "").strip().lower()
-        if not path:
-            violations.append(
-                f"Deliverables 声明条目缺 path——条目 {e!r} 无法对账，"
-                f"请补 path（具体文件路径）后重试晋升"
-            )
-            continue
-        if kind not in _DECLARED_KINDS:
-            violations.append(
-                f"[{path}] kind 非法: {kind or '（缺 kind）'}——合法值仅 "
-                f"{'/'.join(_DECLARED_KINDS)}（语义：new 产出入库 / modify 改"
-                f"既有入库文件 / delete 删除既有入库文件 / reference 既有引用"
-                f"仅审计留痕）；自造词（feature/test/chore 等）等同未声明，"
-                f"请改写为合法 kind 后重试晋升"
-            )
-            continue
-        if "<" in path or ">" in path:
-            violations.append(
-                f"[{path}] 含 <...> 模板占位符——守卫会静默跳过该条目，"
-                f"声明形同虚设，请改为具体字面路径"
-            )
-            continue
-        # 绝对路径/通配符/尾斜杠目录（code-review item f109a12eefa3）：下游
-        # _declared_entries_from_text 按 _is_filtered_declaration_path 同一谓词
-        # 逐条静默过滤（全部条目被滤空即返回 None，守卫回退正则语境猜测）——
-        # lint 放行即「声明等于不存在」，与上方占位符同型，晋升当下拒绝。
-        if _is_filtered_declaration_path(path):
-            violations.append(
-                f"[{path}] 是绝对路径/通配符/尾斜杠目录形态——下游解析器会"
-                f"静默过滤该条目（等同未声明，守卫回退正则语境猜测），"
-                f"请改为仓库内字面文件路径（尾斜杠目录请去掉尾斜杠并锚定到"
-                f"目录下确定性锚点文件，绝对路径请改为相对项目根的路径）"
-            )
-            continue
-        # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
-        candidates = [path]
-        # 规则 5（gitignored 不可满足声明，add-spec-hooks dist 守卫自伤防复发
-        # 2026-09-06）：modify/new 语义均以「文件可入 git」为前提，被 .gitignore
-        # 排除即任何分支不可满足。不 continue：目录/存在性校验相互独立，可叠加。
-        if kind in ("modify", "new") and _path_is_gitignored(project_root, candidates):
-            violations.append(
-                f"[{path}] 被 .gitignore 排除——{kind} 声明要求文件"
-                f"{'已入库可修改' if kind == 'modify' else '产出可提交入库'}，"
-                f"gitignored 文件在守卫 git 对账下任何分支不可满足"
-                f"（add-spec-hooks dist 守卫自伤同型）；请改为 kind: reference"
-                f"（仅审计留痕，不参与守卫硬校验）或从声明中移除"
-            )
-        # 规则 6（add-declaration-premechanize D3）：仓库外路径。规则 5 的
-        # gitignore 机制覆盖不到仓库外（~/x.md、../outside.md 等展开/越界后
-        # 不在项目根内）；kind: new/modify 语义均以文件在仓库内为前提，仓库外
-        # 路径任何分支不可交付。reference 放行（reference 本就是非交付物语义，
-        # 仓库外引用合法）。与规则 5 并列共存、相互独立，可叠加违规。
-        if kind in ("modify", "new") and _path_is_outside_root(project_root, candidates):
-            violations.append(
-                f"[{path}] 是仓库外路径——{kind} 声明要求文件在仓库内"
-                f"（{'修改既有仓库文件' if kind == 'modify' else '产出入库'}），"
-                f"仓库外路径不可作为 {kind} 交付物，应声明 reference"
-                f"或改为仓库内路径"
-            )
-        if kind == "modify":
-            is_dir = any(_is_dir_safe(project_root / c) for c in candidates)
-            if is_dir:
+        try:
+            if not isinstance(e, dict):
                 violations.append(
-                    f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
-                    f"请改为目录下确定性锚点文件（如 dist/index.html）"
+                    f"Deliverables 声明条目必须是映射——当前为 "
+                    f"{type(e).__name__}（{e!r}），条目形态为 "
+                    f"`- path: <具体文件>` + `  kind: <kind>`；"
+                    f"该条目等同未声明，请修正后重试晋升"
                 )
-                # 目录本身在主树存在：不落入下方存在性校验（避免重复违规）
                 continue
-        # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
-        # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
-        # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
-        # 例外一：仓库外 reference 放行（design D3：reference 本就是非交付物
-        # 语义，~/x.md/.claude/settings.json 等仓库外引用合法，软化后转
-        # reference 不应被存在性校验拦截）。
-        # 例外二：gitignored reference 放行（code-review item 18218346aefd），
-        # 与例外一同型——soften_unsatisfiable_declarations 先把「new/modify +
-        # gitignored」软化成 reference（运行时产物 .fenix/x.json、fresh clone
-        # 的 dist/index.html 等在 drafted 阶段主树必然不存在），若此处不放行，
-        # 软化的 rescue 效果被同一次 lint 抵消：spec 永久卡 drafted，且违规
-        # 文案指引改回 kind: new、再晋升又被软化，形成死循环。reference 本就是
-        # 仅审计留痕语义（缺失走软告警），不在此硬拦。
-        if kind in ("modify", "reference"):
-            if not any((project_root / c).exists() for c in candidates):
-                # reference 仓库外放行（design D3）
-                if kind == "reference" and _path_is_outside_root(project_root, candidates):
-                    continue
-                # reference gitignored 放行（item 18218346aefd，软化闭环一致）
-                if kind == "reference" and _path_is_gitignored(project_root, candidates):
-                    continue
+            path = str(e.get("path") or "").strip()
+            kind = str(e.get("kind") or "").strip().lower()
+            if not path:
                 violations.append(
-                    f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
-                    f"（必须存在，指向既有文件），请核对声明路径"
-                    f"（新建文件请用 kind: new）"
+                    f"Deliverables 声明条目缺 path——条目 {e!r} 无法对账，"
+                    f"请补 path（具体文件路径）后重试晋升"
                 )
-            continue
-        # 规则 7-10（add-deliverable-delete-kind D1）：kind: delete 四类拒绝。
-        # delete 语义即「合并后该路径不存在」，仅限入库文件，守卫反判存在性
-        # （分支 HEAD 仍有该 blob 即 undeleted）。守卫判定基准是实现分支 blob，
-        # gitignored 路径不属于任何分支 → 反判恒通过 → 静默空跑（add-stale-code-
-        # selfheal 事故同型），故以下四类确定性不可交付形态在立项当下拒绝：
-        #  7  gitignored 排除（不可入 git，删除无法落库）——处方明示运行时文件
-        #     删除不进 Deliverables 段、由人工在主树执行；
-        #  8  主树不存在（无可删，声明 vs 现实确定性矛盾）；
-        #  9  是目录（删除语义针对具体文件，tree 无法按 blob 反判）；
-        #  10 仓库外（超出守卫 git 对账范围，反判无从成立）。
-        if kind == "delete":
-            # 规则 7：gitignored——与规则 5 并列共存、相互独立，可叠加违规
-            if _path_is_gitignored(project_root, candidates):
-                violations.append(
-                    f"[{path}] 被 .gitignore 排除——delete 声明要求删除已入库"
-                    f"文件，gitignored 路径不属于任何分支，守卫反判恒通过即"
-                    f"静默空跑（add-stale-code-selfheal 事故同型）；运行时文件"
-                    f"的删除不进 Deliverables 段，由人工在主树执行"
-                )
-            # 规则 10：仓库外——与规则 7 并列共存、相互独立，可叠加违规
-            if _path_is_outside_root(project_root, candidates):
-                violations.append(
-                    f"[{path}] 是仓库外路径——delete 声明要求删除仓库内已入库"
-                    f"文件，仓库外路径超出守卫 git 对账范围（反判无从成立），"
-                    f"请改为仓库内路径或从声明中移除"
-                )
-            # 规则 9：目录——目录删除无法按 blob 反判，先于存在性判定
-            is_dir = any(_is_dir_safe(project_root / c) for c in candidates)
-            if is_dir:
-                violations.append(
-                    f"[{path}] 是目录——delete 是文件删除语义（tree 无法按 "
-                    f"blob 反判存在），请改为目录下确定性锚点文件"
-                    f"（如 dist/index.html）或从声明中移除"
-                )
-                # 目录在主树存在：不落入下方存在性校验（避免重复违规）
                 continue
-            # 规则 8：主树不存在（无可删）——零误拦确定性矛盾
-            if not any((project_root / c).exists() for c in candidates):
+            if kind not in _DECLARED_KINDS:
                 violations.append(
-                    f"[{path}] 在主树不存在——无可删（delete 声明路径必须在"
-                    f"主树存在，指向既有入库文件），请核对声明路径"
-                    f"（新建文件请用 kind: new）"
+                    f"[{path}] kind 非法: {kind or '（缺 kind）'}——合法值仅 "
+                    f"{'/'.join(_DECLARED_KINDS)}（语义：new 产出入库 / modify 改"
+                    f"既有入库文件 / delete 删除既有入库文件 / reference 既有引用"
+                    f"仅审计留痕）；自造词（feature/test/chore 等）等同未声明，"
+                    f"请改写为合法 kind 后重试晋升"
                 )
-            continue
-        # 规则 4（D1）：new 路径主树不存在时做 basename 模糊匹配，仓库内唯一
-        # 命中即判疑似笔误拒绝晋升；零命中或多命中放行（语义矛盾交由后续层）。
-        if kind == "new":
-            # 主树已存在 → 有意放行（docstring 规则 13，design Non-Goal，
-            # test_new_existing_path_pass 固化）：该形态非确定性无效，零误拦
-            # 取向不拦；早退同时避免规则 4 的 basename 匹配命中该路径自身。
-            if any((project_root / c).exists() for c in candidates):
                 continue
-            hits = match_basename_in_tree(project_root, path)
-            if len(hits) == 1:
+            if "<" in path or ">" in path:
                 violations.append(
-                    f"[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename "
-                    f"命中 [{hits[0]}]，请修正声明路径或改 kind"
+                    f"[{path}] 含 <...> 模板占位符——守卫会静默跳过该条目，"
+                    f"声明形同虚设，请改为具体字面路径"
                 )
-            elif not hits:
-                # 规则 11（deliverable-dispute-orphan-preclassify）：孤儿声明
-                # 检查——覆盖规则 4 原本放行的「basename 零命中」形态：主树
-                # 不存在 + basename 零命中 + 任务清单（全路径与 basename 皆）
-                # 零出现 + 源码面 git grep 零引用 → 拦（声明残留，拒绝晋升，
-                # 让孤儿声明在立项当下暴露）。basename 多命中沿用规则 4 的
-                # fail-open（语义矛盾需 LLM 裁决，lint 只拦确定性形态）。
-                # kind: new 不查历史（规则 2 分化结论：全历史查询对其零信息量）。
-                oc = is_orphan_declaration(
-                    project_root,
-                    Path(spec_dir).name,
-                    {"path": path, "kind": "new"},
-                    spec_dir,
+                continue
+            # 绝对路径/通配符/尾斜杠目录（code-review item f109a12eefa3）：下游
+            # _declared_entries_from_text 按 _is_filtered_declaration_path 同一谓词
+            # 逐条静默过滤（全部条目被滤空即返回 None，守卫回退正则语境猜测）——
+            # lint 放行即「声明等于不存在」，与上方占位符同型，晋升当下拒绝。
+            if _is_filtered_declaration_path(path):
+                violations.append(
+                    f"[{path}] 是绝对路径/通配符/尾斜杠目录形态——下游解析器会"
+                    f"静默过滤该条目（等同未声明，守卫回退正则语境猜测），"
+                    f"请改为仓库内字面文件路径（尾斜杠目录请去掉尾斜杠并锚定到"
+                    f"目录下确定性锚点文件，绝对路径请改为相对项目根的路径）"
                 )
-                if oc.get("orphan"):
-                    evidence = oc.get("evidence") or {}
+                continue
+            # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
+            candidates = [path]
+            # 规则 5（gitignored 不可满足声明，add-spec-hooks dist 守卫自伤防复发
+            # 2026-09-06）：modify/new 语义均以「文件可入 git」为前提，被 .gitignore
+            # 排除即任何分支不可满足。不 continue：目录/存在性校验相互独立，可叠加。
+            if kind in ("modify", "new") and _path_is_gitignored(project_root, candidates):
+                violations.append(
+                    f"[{path}] 被 .gitignore 排除——{kind} 声明要求文件"
+                    f"{'已入库可修改' if kind == 'modify' else '产出可提交入库'}，"
+                    f"gitignored 文件在守卫 git 对账下任何分支不可满足"
+                    f"（add-spec-hooks dist 守卫自伤同型）；请改为 kind: reference"
+                    f"（仅审计留痕，不参与守卫硬校验）或从声明中移除"
+                )
+            # 规则 6（add-declaration-premechanize D3）：仓库外路径。规则 5 的
+            # gitignore 机制覆盖不到仓库外（~/x.md、../outside.md 等展开/越界后
+            # 不在项目根内）；kind: new/modify 语义均以文件在仓库内为前提，仓库外
+            # 路径任何分支不可交付。reference 放行（reference 本就是非交付物语义，
+            # 仓库外引用合法）。与规则 5 并列共存、相互独立，可叠加违规。
+            if kind in ("modify", "new") and _path_is_outside_root(project_root, candidates):
+                violations.append(
+                    f"[{path}] 是仓库外路径——{kind} 声明要求文件在仓库内"
+                    f"（{'修改既有仓库文件' if kind == 'modify' else '产出入库'}），"
+                    f"仓库外路径不可作为 {kind} 交付物，应声明 reference"
+                    f"或改为仓库内路径"
+                )
+            if kind == "modify":
+                is_dir = any(_is_dir_safe(project_root / c) for c in candidates)
+                if is_dir:
                     violations.append(
-                        f"[{path}] 是孤儿声明——kind: new 路径在主树不存在，"
-                        f"任务清单（tasks.md 全部任务行）对该路径及其 basename "
-                        f"均零出现（规则 3 全路径/basename 皆零命中），源码面 "
-                        f"git grep 零引用（规则 1，排除 .fenix/spec 自身/"
-                        f".history/dist 观测面；判定证据 {evidence}）"
-                        f"— 声明残留，请从 Deliverables 段移除或补齐对应任务"
+                        f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
+                        f"请改为目录下确定性锚点文件（如 dist/index.html）"
                     )
+                    # 目录本身在主树存在：不落入下方存在性校验（避免重复违规）
+                    continue
+            # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
+            # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
+            # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
+            # 例外一：仓库外 reference 放行（design D3：reference 本就是非交付物
+            # 语义，~/x.md/.claude/settings.json 等仓库外引用合法，软化后转
+            # reference 不应被存在性校验拦截）。
+            # 例外二：gitignored reference 放行（code-review item 18218346aefd），
+            # 与例外一同型——soften_unsatisfiable_declarations 先把「new/modify +
+            # gitignored」软化成 reference（运行时产物 .fenix/x.json、fresh clone
+            # 的 dist/index.html 等在 drafted 阶段主树必然不存在），若此处不放行，
+            # 软化的 rescue 效果被同一次 lint 抵消：spec 永久卡 drafted，且违规
+            # 文案指引改回 kind: new、再晋升又被软化，形成死循环。reference 本就是
+            # 仅审计留痕语义（缺失走软告警），不在此硬拦。
+            if kind in ("modify", "reference"):
+                if not any(_exists_safe(project_root / c) for c in candidates):
+                    # reference 仓库外放行（design D3）
+                    if kind == "reference" and _path_is_outside_root(project_root, candidates):
+                        continue
+                    # reference gitignored 放行（item 18218346aefd，软化闭环一致）
+                    if kind == "reference" and _path_is_gitignored(project_root, candidates):
+                        continue
+                    violations.append(
+                        f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
+                        f"（必须存在，指向既有文件），请核对声明路径"
+                        f"（新建文件请用 kind: new）"
+                    )
+                continue
+            # 规则 7-10（add-deliverable-delete-kind D1）：kind: delete 四类拒绝。
+            # delete 语义即「合并后该路径不存在」，仅限入库文件，守卫反判存在性
+            # （分支 HEAD 仍有该 blob 即 undeleted）。守卫判定基准是实现分支 blob，
+            # gitignored 路径不属于任何分支 → 反判恒通过 → 静默空跑（add-stale-code-
+            # selfheal 事故同型），故以下四类确定性不可交付形态在立项当下拒绝：
+            #  7  gitignored 排除（不可入 git，删除无法落库）——处方明示运行时文件
+            #     删除不进 Deliverables 段、由人工在主树执行；
+            #  8  主树不存在（无可删，声明 vs 现实确定性矛盾）；
+            #  9  是目录（删除语义针对具体文件，tree 无法按 blob 反判）；
+            #  10 仓库外（超出守卫 git 对账范围，反判无从成立）。
+            if kind == "delete":
+                # 规则 7：gitignored——与规则 5 并列共存、相互独立，可叠加违规
+                if _path_is_gitignored(project_root, candidates):
+                    violations.append(
+                        f"[{path}] 被 .gitignore 排除——delete 声明要求删除已入库"
+                        f"文件，gitignored 路径不属于任何分支，守卫反判恒通过即"
+                        f"静默空跑（add-stale-code-selfheal 事故同型）；运行时文件"
+                        f"的删除不进 Deliverables 段，由人工在主树执行"
+                    )
+                # 规则 10：仓库外——与规则 7 并列共存、相互独立，可叠加违规
+                if _path_is_outside_root(project_root, candidates):
+                    violations.append(
+                        f"[{path}] 是仓库外路径——delete 声明要求删除仓库内已入库"
+                        f"文件，仓库外路径超出守卫 git 对账范围（反判无从成立），"
+                        f"请改为仓库内路径或从声明中移除"
+                    )
+                # 规则 9：目录——目录删除无法按 blob 反判，先于存在性判定
+                is_dir = any(_is_dir_safe(project_root / c) for c in candidates)
+                if is_dir:
+                    violations.append(
+                        f"[{path}] 是目录——delete 是文件删除语义（tree 无法按 "
+                        f"blob 反判存在），请改为目录下确定性锚点文件"
+                        f"（如 dist/index.html）或从声明中移除"
+                    )
+                    # 目录在主树存在：不落入下方存在性校验（避免重复违规）
+                    continue
+                # 规则 8：主树不存在（无可删）——零误拦确定性矛盾
+                if not any(_exists_safe(project_root / c) for c in candidates):
+                    violations.append(
+                        f"[{path}] 在主树不存在——无可删（delete 声明路径必须在"
+                        f"主树存在，指向既有入库文件），请核对声明路径"
+                        f"（新建文件请用 kind: new）"
+                    )
+                continue
+            # 规则 4（D1）：new 路径主树不存在时做 basename 模糊匹配，仓库内唯一
+            # 命中即判疑似笔误拒绝晋升；零命中或多命中放行（语义矛盾交由后续层）。
+            if kind == "new":
+                # 主树已存在 → 有意放行（docstring 规则 13，design Non-Goal，
+                # test_new_existing_path_pass 固化）：该形态非确定性无效，零误拦
+                # 取向不拦；早退同时避免规则 4 的 basename 匹配命中该路径自身。
+                if any(_exists_safe(project_root / c) for c in candidates):
+                    continue
+                hits = match_basename_in_tree(project_root, path)
+                if len(hits) == 1:
+                    violations.append(
+                        f"[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename "
+                        f"命中 [{hits[0]}]，请修正声明路径或改 kind"
+                    )
+                elif not hits:
+                    # 规则 11（deliverable-dispute-orphan-preclassify）：孤儿声明
+                    # 检查——覆盖规则 4 原本放行的「basename 零命中」形态：主树
+                    # 不存在 + basename 零命中 + 任务清单（全路径与 basename 皆）
+                    # 零出现 + 源码面 git grep 零引用 → 拦（声明残留，拒绝晋升，
+                    # 让孤儿声明在立项当下暴露）。basename 多命中沿用规则 4 的
+                    # fail-open（语义矛盾需 LLM 裁决，lint 只拦确定性形态）。
+                    # kind: new 不查历史（规则 2 分化结论：全历史查询对其零信息量）。
+                    oc = is_orphan_declaration(
+                        project_root,
+                        Path(spec_dir).name,
+                        {"path": path, "kind": "new"},
+                        spec_dir,
+                    )
+                    if oc.get("orphan"):
+                        evidence = oc.get("evidence") or {}
+                        violations.append(
+                            f"[{path}] 是孤儿声明——kind: new 路径在主树不存在，"
+                            f"任务清单（tasks.md 全部任务行）对该路径及其 basename "
+                            f"均零出现（规则 3 全路径/basename 皆零命中），源码面 "
+                            f"git grep 零引用（规则 1，排除 .fenix/spec 自身/"
+                            f".history/dist 观测面；判定证据 {evidence}）"
+                            f"— 声明残留，请从 Deliverables 段移除或补齐对应任务"
+                        )
+        except Exception as exc:
+            # 单条目判定故障不冲出 per-entry 循环（code-review item 0952ecdc646d）：
+            # 存在性/gitignore/树内匹配等判定对 EACCES/EIO、NUL 路径等极端形态
+            # 上抛时，仅该条按 fail-open 放行并记 WARNING，不令整轮 lint 以异常
+            # 收场——否则外层 promotion._lint fail-open 全量放行，规则 0-12 的
+            # 确定性拦截该轮全部失守，单条目故障被放大为整轮 lint 失效。
+            _resolution_logger.warning(
+                "deliverables",
+                f"lint_declared 条目判定故障（跳过该条，fail-open 放行）"
+                f"{e!r}: {exc}",
+            )
+            continue
     return violations
 
 

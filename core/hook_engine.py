@@ -1559,8 +1559,15 @@ class HookEngine:
         }
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_WEBHOOK_TIMEOUT_SECONDS)
         # 超上限收敛留痕（afb00545e096）：_num 已收敛，此处仅对原始配置超限
-        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）
-        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and cfg.get("timeout_seconds") != timeout:
+        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）。
+        # 原始值先 float 化再与上限比较（9e9a14110492）：直改 config.yaml 可写
+        # 数字字符串（"3600" 经 float() 合法且恰等于上限），跨类型 != 会把未
+        # 发生收敛的配置误记「已收敛」debug
+        try:
+            raw_timeout = float(cfg.get("timeout_seconds"))
+        except (TypeError, ValueError, OverflowError):
+            raw_timeout = 0.0
+        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and raw_timeout > MAX_HOOK_TIMEOUT_SECONDS:
             self._log_debug(
                 f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
             )
@@ -1621,8 +1628,15 @@ class HookEngine:
         command = (cfg.get("command") or "").strip()
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_SHELL_TIMEOUT_SECONDS)
         # 超上限收敛留痕（afb00545e096）：_num 已收敛，此处仅对原始配置超限
-        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）
-        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and cfg.get("timeout_seconds") != timeout:
+        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）。
+        # 原始值先 float 化再与上限比较（9e9a14110492）：直改 config.yaml 可写
+        # 数字字符串（"3600" 经 float() 合法且恰等于上限），跨类型 != 会把未
+        # 发生收敛的配置误记「已收敛」debug
+        try:
+            raw_timeout = float(cfg.get("timeout_seconds"))
+        except (TypeError, ValueError, OverflowError):
+            raw_timeout = 0.0
+        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and raw_timeout > MAX_HOOK_TIMEOUT_SECONDS:
             self._log_debug(
                 f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
             )

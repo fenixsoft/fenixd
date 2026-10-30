@@ -40,8 +40,9 @@ JUnit XML 为跨语言事实标准（pytest --junit-xml、jest-junit、
 go-junit-report、maven-surefire 均可产出；testcase@time 承载
 单个用例耗时）——框架只写一个 JUnit XML 解析器，避免为每种语言
 写解析器。单快照 Non-Goal：首版只需「最近一次结果」，历史多轮留
-待后续。进程组杀树形态对齐 core/verify_contract.py:527 与
-core/v2_dev_server.py:175——start_new_session=True 创建独立会话组，
+待后续。进程组杀树形态对齐 core/verify_contract.py 的
+kill_process_group 调用点与 core/v2_dev_server.py 的 _kill——
+start_new_session=True 创建独立会话组，
 超时后 killpg 终止整个森林；仅杀直接子进程会让 shell 形态 cmd
 派生的测试进程存活，回归名存实亡且产物锁被占。
 """
@@ -133,11 +134,84 @@ def _resolve_line(tc: ET.Element) -> int:
 # billion laughs / quadratic blowup 实体膨胀攻击无防护（官方文档明示），而
 # 本模块在 daemon 进程内同步解析被测项目侧产出的 XML（verify.yaml 与测试
 # 命令均由项目侧 author）。defusedxml 本仓库不可用（无依赖声明、无先例），
-# 故解析前探测头部：合法 JUnit XML（pytest/jest-junit/surefire/
+# 故解析前扫描 prolog：合法 JUnit XML（pytest/jest-junit/surefire/
 # go-junit-report 产出）从不携带 DOCTYPE/ENTITY 声明，命中即拒。
-_XML_ENTITY_GUARD_PROBE_BYTES = 65536
+_XML_ENTITY_GUARD_CHUNK_BYTES = 65536
+# prolog 扫描上限：XML 规范允许 DOCTYPE 之前放任意数量的注释/处理指令，
+# 固定只探头部会被超长前置注释把 <!DOCTYPE 推出探测窗口绕过（item
+# 0eb4856d3eef），故分块读至根元素起始标记为止；prolog 超上限仍无根元素
+# 起始的病态文件直接拒——合法 JUnit XML 的 prolog 只有 XML 声明，远小于
+# 该值。上限防的是被超大 prolog 拖着无界读文件。
+_XML_ENTITY_GUARD_MAX_PROLOG_BYTES = 1 << 20
 # NUL 剥离后再匹配：UTF-16 编码变体（字符间夹 NUL）同样命中。
 _XML_ENTITY_GUARD_RE = re.compile(rb"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
+# 根元素起始标记：``<`` 后跟名称首字符；``<?``（处理指令）、``<!``（注释/
+# DOCTYPE）、``</``（闭合标签）均不属根元素起始。DOCTYPE 按规范必位于
+# 根元素之前，扫到根元素即得完整 prolog 扫描窗口。
+_XML_ROOT_START_RE = re.compile(rb"<[A-Za-z_:]")
+
+
+def _find_prolog_end(data: bytes) -> Optional[int]:
+    """在 data 中定位根元素起始标记（即 prolog 结束处），返回其偏移。
+
+    逐个跳过 prolog 构造：<?...?> 处理指令、<!--...--> 注释、
+    <!DOCTYPE ...>（内部子集里的 > 会令此处提前收口，只会多扫不会漏扫，
+    方向保守安全）。注释/处理指令内容可含伪标签（如注释里的 <root>），
+    若按「首个 ``<``+名称字符」直接截断会把扫描窗口收窄到注释内部、漏掉
+    其后真正的 DOCTYPE，故必须按构造边界跳过。构造未闭合（数据不足）
+    或未见根元素起始返回 None，由调用方续读；无法识别的 ``<`` 保守前移
+    一字节继续扫（宁多扫不漏扫）。
+    """
+    i = 0
+    n = len(data)
+    while i < n:
+        lt = data.find(b"<", i)
+        if lt == -1:
+            return None
+        if _XML_ROOT_START_RE.match(data, lt):
+            return lt
+        if data.startswith(b"<?", lt):
+            end = data.find(b"?>", lt + 2)
+            if end == -1:
+                return None
+            i = end + 2
+        elif data.startswith(b"<!--", lt):
+            end = data.find(b"-->", lt + 4)
+            if end == -1:
+                return None
+            i = end + 3
+        elif data.startswith(b"<!", lt):
+            end = data.find(b">", lt + 2)
+            if end == -1:
+                return None
+            i = end + 1
+        else:
+            i = lt + 1
+    return None
+
+
+def _scan_xml_prolog(path: Path) -> Optional[bytes]:
+    """分块读取 XML prolog（至根元素起始标记为止）供实体守卫匹配。
+
+    返回 NUL 剥离后的待匹配字节（UTF-16 变体同此约定，整体剥离后单次
+    匹配，跨块边界不漏）；prolog 超过 _XML_ENTITY_GUARD_MAX_PROLOG_BYTES
+    仍未见根元素起始标记的病态文件返回 None（调用方拒解析——固定窗口
+    之外仍可能藏 DOCTYPE，故 fail-closed）。
+    """
+    buf = bytearray()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(_XML_ENTITY_GUARD_CHUNK_BYTES)
+            if not chunk:
+                break
+            buf += chunk
+            data = bytes(buf).replace(b"\x00", b"")
+            end = _find_prolog_end(data)
+            if end is not None:
+                return data[:end]
+            if len(buf) >= _XML_ENTITY_GUARD_MAX_PROLOG_BYTES:
+                return None
+    return bytes(buf).replace(b"\x00", b"")
 
 
 def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
@@ -158,17 +232,27 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"JUnit XML 不存在: {path}")
 
-    # 实体膨胀守卫（item d25b89a98831，纵深防御）：只探头部——DOCTYPE/
-    # ENTITY 声明按 XML 规范必须位于根元素之前，头部若干 KB 足以覆盖；
-    # 命中即拒并留 WARNING。FileNotFoundError 保持原契约不归一。
+    # 实体膨胀守卫（item d25b89a98831，纵深防御）：分块读至根元素起始
+    # 标记为止再整体匹配——DOCTYPE 按规范必位于根元素之前，超长前置
+    # 注释/处理指令无法把声明推出扫描窗口（item 0eb4856d3eef）；prolog
+    # 超上限仍无根元素起始的病态文件同样拒。命中即拒并留 WARNING。
+    # FileNotFoundError 保持原契约不归一。
     try:
-        with path.open("rb") as f:
-            head = f.read(_XML_ENTITY_GUARD_PROBE_BYTES)
+        prolog = _scan_xml_prolog(path)
     except FileNotFoundError:
         raise
     except OSError as e:
         raise ValueError(f"JUnit XML 无法读取: {e}") from e
-    if _XML_ENTITY_GUARD_RE.search(head.replace(b"\x00", b"")):
+    if prolog is None:
+        _logger.warning(
+            f"regression: JUnit XML prolog 超限未见根元素，拒绝解析"
+            f"（防实体膨胀）: {path}"
+        )
+        raise ValueError(
+            "JUnit XML prolog 超限且未见根元素起始标记，已拒绝解析"
+            "（防实体膨胀攻击）"
+        )
+    if _XML_ENTITY_GUARD_RE.search(prolog):
         _logger.warning(
             "regression: JUnit XML 含 DOCTYPE/ENTITY 声明，拒绝解析"
             f"（防实体膨胀）: {path}"

@@ -215,23 +215,35 @@ class ScenarioSet:
 
 
 def _validate_spec_name(spec_name: str) -> str:
-    """spec_name 形状防护：为空或含路径分隔符/「..」即抛 ValueError。
+    """spec_name 形状防护：为空/纯点成分或含路径分隔符/「..」即抛 ValueError。
 
     形状防护（code-review cd8041b34ff3）：这类 spec_name 会拼出目标目录之外
     的读写路径，不合法即拒绝、不拼逃逸路径。scenarios_path_for 与
-    read_verify_fix_section（code-review 5cb1e4a798f1）共用同一口径。
+    read_verify_fix_section（code-review 5cb1e4a798f1）共用同一口径。纯点
+    成分（仅由 ``.`` 组成，code-review 8ebd2c6f0dfb）同样拒绝——``.`` 经
+    路径归一会落到共享父目录（``.fenix/verify-progress/`` 或
+    ``spec/changes/``），伴生锁文件也随之写到共享位置；与
+    verify_engine.path_safety.safe_component 的纯点归一口径对齐（core 内
+    对 verify_engine 一律懒导入，且本防护语义是拒绝而非归一改写，故就地
+    判定、不复用其返回值）。
     """
-    if not spec_name or "/" in spec_name or "\\" in spec_name or ".." in spec_name:
-        raise ValueError(f"非法 spec 名（为空或含路径分隔符/..）: {spec_name!r}")
+    if (
+        not spec_name
+        or not spec_name.strip(".")
+        or "/" in spec_name
+        or "\\" in spec_name
+        or ".." in spec_name
+    ):
+        raise ValueError(f"非法 spec 名（为空/纯点成分或含路径分隔符/..）: {spec_name!r}")
     return spec_name
 
 
 def scenarios_path_for(project_root, spec_name: str) -> Path:
     """返回 ``.fenix/verify-progress/<spec>/scenarios.json`` 绝对路径。
 
-    形状防护（code-review cd8041b34ff3）：spec_name 为空或含路径分隔符/「..」
-    时会拼出 verify-progress 目录之外的读写路径（含伴生锁文件），不合法即抛
-    ValueError，不拼逃逸路径（校验见 :func:`_validate_spec_name`）。
+    形状防护（code-review cd8041b34ff3）：spec_name 为空/纯点成分或含路径
+    分隔符/「..」时会拼出 verify-progress 目录之外的读写路径（含伴生锁文件），
+    不合法即抛 ValueError，不拼逃逸路径（校验见 :func:`_validate_spec_name`）。
     """
     _validate_spec_name(spec_name)
     return Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
@@ -508,8 +520,8 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     """读取 tasks.md 的「## 验证修复」段全文；不存在返回 None。
 
     spec_name 形状防护与 scenarios_path_for 同口径（code-review 5cb1e4a798f1）：
-    为空或含路径分隔符/「..」即抛 ValueError，不拼 changes 目录之外的逃逸
-    读取路径（校验见 :func:`_validate_spec_name`）。
+    为空/纯点成分或含路径分隔符/「..」即抛 ValueError，不拼 changes 目录之外
+    的逃逸读取路径（校验见 :func:`_validate_spec_name`）。
     """
     _validate_spec_name(spec_name)
     tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"

@@ -1637,14 +1637,27 @@ def run_audit(
                 # 本轮若恰好也改写了 carryover 在场文件则无法拆分，该文件保持在
                 # 盘（转写段收尾 leftover 告警与 ADR 目录未提交改动报告可见），
                 # 交由下一轮体检或人工处置，不连带销毁既有未提交内容。
-                discard_paths(
-                    project_root,
-                    sorted(knowledge_dirty_files(project_root) - carryover),
-                )
-                counts["pending_manual"] += 1
-                details["manual"].append(
-                    f"机械修复引入新违规，已回滚：{new_violations[:3]}"
-                )
+                dirty_after_fix = _knowledge_dirty_files_or_none(project_root)
+                if dirty_after_fix is None:
+                    # git 状态采集失败（对齐语义段 909237f50444 口径）：fail-open
+                    # 空集会把采集失败伪装成「无改动」，discard_paths 退化为
+                    # no-op，机械修复产物滞留盘上却宣称已回滚。跳过回滚、如实
+                    # 留痕交人工核查。
+                    counts["pending_manual"] += 1
+                    details["manual"].append(
+                        "机械修复引入新违规：git 状态采集失败，本轮机械修复未回滚，"
+                        "请人工核查"
+                    )
+                else:
+                    discard_paths(
+                        project_root,
+                        sorted(dirty_after_fix - carryover),
+                        log=log,
+                    )
+                    counts["pending_manual"] += 1
+                    details["manual"].append(
+                        f"机械修复引入新违规，已回滚：{new_violations[:3]}"
+                    )
 
     # ── 语义转写（矛盾/重复 → 定向蒸馏 run；疑点台账接入豁免/去重/升级） ──
     # escalated 条目已在切片前剔除（1.1）：不进本循环、不占转写预算，也不再
@@ -1841,12 +1854,12 @@ def run_audit(
                 # 口径：与 carryover 无关的既有违规不拦——carryover 里的机械产出
                 # 下一轮体检可重建，人工在盘上的编辑不可重建，不得因既有违规
                 # 被连带销毁）。
-                discard_paths(project_root, sorted(touched))
+                discard_paths(project_root, sorted(touched), log=log)
                 new_violations = {
                     str(v) for v in (validate(project_root) or [])
                 } - before_violations
                 if dirty_now & carryover and new_violations:
-                    discard_paths(project_root, sorted(dirty_now & carryover))
+                    discard_paths(project_root, sorted(dirty_now & carryover), log=log)
                 counts["pending_manual"] += 1
                 if entry["review_rounds"] >= cfg["escalate_after_rounds"]:
                     # 连续两轮进入复核均未产出确定性判定（仍 suspected，如转写

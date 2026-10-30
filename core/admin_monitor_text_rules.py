@@ -111,7 +111,13 @@ _WAIVER_GRANT_PATTERNS = (
 _WAIVER_CURRENT_MARKERS = ("本次", "该族", "本族")
 # 赋值型 _family_waiver=true 必须与放行动词同句（_SENTENCE_SPLIT_RE 分句）才算显式放行，
 # 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
-_WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
+# 前后词边界 + 值大小写（code-review ff905118948e）：(?<![A-Za-z0-9_]) 排除
+# not_family_waiver=true 这类以 _family_waiver 结尾的更长标识符被 re.search
+# 子串误命中；true 后 (?![A-Za-z0-9_]) 防 trueful 等尾巴；(?i:true) 覆盖
+# True/TRUE 变体（消费口径 family._waiver_flag_set 本就 str().lower() 无关大小写）。
+_WAIVER_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])_family_waiver['\"]?\s*[=:：]\s*['\"]?(?i:true)(?![A-Za-z0-9_])"
+)
 
 # ── infra 回拨文本识别（evo-infra-failure-budget-exempt R3）──────────
 # Administrator 处置文本显式声明「回拨 N 轮」（实为 infra 却计入 _verify_fail_rounds

@@ -796,12 +796,26 @@ class ConfigLoader:
                 _logger.error("%s配置顶层不是对象，按空配置处理: %s", label, path)
                 return {}
             return loaded
-        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        except (yaml.YAMLError, OSError, UnicodeDecodeError, RecursionError) as e:
             # UnicodeDecodeError 是 ValueError 子类（非 OSError）：非 UTF-8 配置
             # 文件旧实现会逃出本兜底，中止 daemon 启动或 30s 热重载
             # （code-review item 40b623c7090b）。并入捕获集，兑现 docstring
             # 「任何读取/解析失败降级空 dict」。
-            _logger.error("%s配置解析失败，按空配置处理: %s (%s)", label, path, e)
+            # RecursionError 非 YAMLError 子类：嵌套结构异常深（上万层）的 YAML
+            # 会使 safe_load 递归爆栈直穿本兜底（code-review item 5721eb0286f2），
+            # 同按「解析失败」降级空 dict，不中止启动/热重载。
+            # yaml 异常 str() 会附带出错位置的源码行原文（手改文件语法错误恰好
+            # 落在 apikey 行时即泄密钥明文，code-review item f69b93b59a21），
+            # 对齐 _validate_llm 的脱敏口径：只回显异常类名与 problem_mark
+            # 行/列定位信息，不回显异常消息原文。
+            mark = getattr(e, "problem_mark", None)
+            location = ""
+            if mark is not None:
+                location = " @ line %d, column %d" % (mark.line + 1, mark.column + 1)
+            _logger.error(
+                "%s配置解析失败，按空配置处理: %s (%s%s)",
+                label, path, type(e).__name__, location,
+            )
             return {}
 
     @classmethod
@@ -3566,11 +3580,16 @@ class ConfigLoader:
         global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED, _SUPERVISION_LAST_ALIGNED
         global _SUPERVISION_RUNTIME_FLOOR_WARNED
         global _RUN_TIMEOUT_FALLBACK_WARNED, _STUCK_FALLBACK_WARNED
+        global _NIGHT_QUIET_WINDOW_LINT_WARNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
         _SUPERVISION_RUNTIME_FLOOR_WARNED = False
         _RUN_TIMEOUT_FALLBACK_WARNED = False
         _STUCK_FALLBACK_WARNED = False
+        # night_quiet_window 载入期 lint 去重标记（code-review item 0092d7545e7e
+        # 补漏）：与其余「进程级一次性告警」标记同语义，纳入本隔离清单，
+        # 使测试可重复验证「首次告警 / 二次静默」。
+        _NIGHT_QUIET_WINDOW_LINT_WARNED = False
         _SUPERVISION_LAST_ALIGNED = None
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
         _SEGMENT_DIRTY_WARNED.clear()

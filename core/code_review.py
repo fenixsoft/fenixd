@@ -1144,6 +1144,11 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
     """
     now = now or _now_iso()
     path = items_path(project_root)
+    # severity 门限生效值（锁外解析，磁盘配置读取不进 flock 临界区，同
+    # upsert_findings 口径）：对账迁移刷新 severity 后按门限维护挂起标记
+    # ——severity 刷到达门限档位时清挂起标记（apply_severity_gate_marker
+    # 成文不变量，与 upsert 落账口径对齐；code-review item c4c15d27e5be）。
+    gate = severity_gate_config(project_root)
 
     # 观测记录归一（锁外）：dict 记录补算缺失指纹并透传展示字段；裸指纹
     # 字符串包装为无对账字段的记录；同指纹重复观测只留首条（1:1 领用的
@@ -1275,6 +1280,10 @@ def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> d
                         rec[key] = normalize_severity(obs[key])
                     else:
                         rec[key] = obs[key]
+                # 挂起标记随 severity 刷新维护（同 upsert_findings 落账
+                # 口径）：迁移把 severity 刷到达门限档位时清挂起标记，防
+                # 残留 severity_deferred 使台账展示仍呈「挂起待周批」态
+                apply_severity_gate_marker(rec, gate)
                 rec["last_seen_at"] = now
                 for key in _MIGRATE_REVIEW_FIELDS:
                     if key in obs:
@@ -2646,14 +2655,16 @@ def _proposal_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        # severity/file 与 title 同属 agent 产出不受控输入（upsert_findings
-        # 对 file 仅 str()、normalize_severity 对词表外值原样透传）：含换行
-        # 会把标题行/位置行第二行起顶成裸文本，与 _tasks_md 既有口径对齐
-        # 折叠（code-review item b66daebf15f0）。
+        # severity/file/category/line 与 title 同属 agent 产出不受控输入
+        # （upsert_findings 对 file/category 仅 str()、normalize_severity 对
+        # 词表外值原样透传、line 落账恒为 int 但外部直写/手工编辑仍可能带入
+        # 换行）：含换行会把标题行/类别行/位置行第二行起顶成裸文本，顶破
+        # 「类别」行内代码与列表结构，与 _tasks_md 既有口径对齐折叠
+        # （code-review item b66daebf15f0 / 0c453d90ccfa）。
         lines.append(f"### [{_one_line(it.get('severity'))}] {_one_line(it.get('title'))}")
         lines.append("")
-        lines.append(f"- 类别：`{it.get('category')}`")
-        lines.append(f"- 位置：`{_one_line(it.get('file'))}:{it.get('line')}`")
+        lines.append(f"- 类别：`{_one_line(it.get('category'))}`")
+        lines.append(f"- 位置：`{_one_line(it.get('file'))}:{_one_line(it.get('line'))}`")
         lines.append("")
         lines.extend(_problem_lines(it))
     lines += [
@@ -2683,9 +2694,10 @@ def _spec_md(capability: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        # file/severity 经 _one_line 折叠：同 _proposal_md/_tasks_md 口径，
-        # 防多行脏值把 `####` 标题行顶破（code-review item b66daebf15f0）。
-        lines.append(f"#### `{_one_line(it.get('file'))}:{it.get('line')}` — {_one_line(it.get('title'))}")
+        # file/severity/line 经 _one_line 折叠：同 _proposal_md/_tasks_md
+        # 口径，防多行脏值把 `####` 标题行顶破
+        # （code-review item b66daebf15f0 / 0c453d90ccfa）。
+        lines.append(f"#### `{_one_line(it.get('file'))}:{_one_line(it.get('line'))}` — {_one_line(it.get('title'))}")
         lines.append("")
         lines.append(f"- 严重度：{_one_line(it.get('severity'))}")
         lines.append("")
@@ -2722,9 +2734,10 @@ def _design_md(name: str, items: List[dict]) -> str:
         "",
     ]
     for it in items:
-        # file 经 _one_line 折叠：同 _proposal_md/_spec_md/_tasks_md 口径，
-        # 防多行脏值顶破 `###` 标题行（code-review item b66daebf15f0）。
-        lines.append(f"### `{_one_line(it.get('file'))}:{it.get('line')}` — {_one_line(it.get('title'))}")
+        # file/line 经 _one_line 折叠：同 _proposal_md/_spec_md/_tasks_md
+        # 口径，防多行脏值顶破 `###` 标题行
+        # （code-review item b66daebf15f0 / 0c453d90ccfa）。
+        lines.append(f"### `{_one_line(it.get('file'))}:{_one_line(it.get('line'))}` — {_one_line(it.get('title'))}")
         lines.append("")
         lines.extend(_problem_lines(it))
     return "\n".join(lines)
@@ -2757,14 +2770,14 @@ def _tasks_md(name: str, items: List[dict]) -> str:
         # 破坏它等于任务清单在进度跟踪里静默消失（tasks.md 分组格式漂移事故）。
         # 完整内容一律以缩进子项挂在任务行下（缩进后不匹配 `^- \[`，也不
         # 参与归属校验）。
-        # file 同经 _one_line 折叠：换行会使任务行第二行起沦为裸文本、
+        # file/line 同经 _one_line 折叠：换行会使任务行第二行起沦为裸文本、
         # file:line 归属校验错位（44975cdf30fb）；与上方 deliverables path
         # 同口径折叠，两处引用保持一致。
         # 编号口径：组号固定 1、组内按条目序递增（1.1、1.2、…），符合常规
         # 「组.序」编号语义（code-review item f89dffefe985）。
         lines.append(
             f"- [ ] 1.{idx} {_one_line(it.get('title'))}"
-            f" — {_one_line(it.get('file'))}:{it.get('line')}"
+            f" — {_one_line(it.get('file'))}:{_one_line(it.get('line'))}"
         )
         lines.append("")
         lines.extend(_problem_lines(it))
