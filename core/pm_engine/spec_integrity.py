@@ -35,6 +35,7 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
 """
 
 import logging
+import re
 from pathlib import Path
 
 # 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
@@ -51,6 +52,21 @@ SPEC_DELIVERED_NO_CONTENT_SIGNAL = "spec_delivered_no_content"
 # 起草内容，故只作分类凭据、不进 spec_has_content 认可名单（见其注释）。
 _DELIVERED_REPORT_FILENAME = "verification-report.md"
 
+# spec 名路径安全白名单（code-review bf17492bd055）：STATE.md 为人工可编辑
+# 数据源，spec_name 会被直接拼进 spec/changes/<spec_name>/ 路径；放行路径
+# 分隔符或 ``..`` 成分会令内容判定探测 changes 之外的目录（越界目录恰有
+# 内容时误放行派发、或反向误冻结）。白名单比 core/spec_naming.py 的 kebab
+# 权威正则宽松（不绑定命名契约、只卡路径安全），合法 kebab 名恒通过。
+_SPEC_NAME_PATHSAFE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_safe_spec_name(spec_name) -> bool:
+    """spec 名路径合法性：仅单个安全路径成分，杜绝 ``..`` 与分隔符越界。"""
+    if not isinstance(spec_name, str) or _SPEC_NAME_PATHSAFE_RE.match(spec_name) is None:
+        return False
+    # 正则已排除路径分隔符与空名；再排除 ``..`` 成分与前导点隐藏名
+    return not spec_name.startswith(".") and ".." not in spec_name
+
 
 def spec_has_content(project_root, spec_name: str) -> bool:
     """判定 spec 目录是否含实质内容（纯函数，design D2）。
@@ -61,8 +77,18 @@ def spec_has_content(project_root, spec_name: str) -> bool:
 
     Returns:
         True = 有实质内容（或读目录异常保守放行）；
-        False = 目录不存在 / 目录为空 / 无常驻 spec 内容文件。
+        False = 目录不存在 / 目录为空 / 无常驻 spec 内容文件 /
+        spec 名含非法路径成分（不拼越界路径判定，保守按无内容）。
     """
+    if not _is_safe_spec_name(spec_name):
+        # STATE.md 人工可编辑（bf17492bd055）：含 ``..``/路径分隔符的名字不拼
+        # 路径探测，保守按「无内容」处理——闸门下游既有语义接管（blocked 短路/
+        # 终态豁免交派发层状态机拒绝/非终态冻结），不做越界冻结或放行判定。
+        _logger.warning(
+            "spec 名含非法路径成分，按无内容保守处理: %r",
+            spec_name,
+        )
+        return False
     spec_dir = Path(project_root) / "spec" / "changes" / spec_name
     try:
         if not spec_dir.is_dir():
@@ -192,6 +218,14 @@ class SpecIntegrityGate:
 
     def _has_delivered_report(self, spec_name: str) -> bool:
         """spec 目录是否存在验证链落盘的 verification-report.md（分类凭据）。"""
+        if not _is_safe_spec_name(spec_name):
+            # 同 spec_has_content（bf17492bd055）：非法名不拼路径，保守按
+            # 「无凭据」走既有冻结路径（与下方 OSError 分支同一缺省方向）
+            _logger.warning(
+                "spec 名含非法路径成分，按无验证报告保守处理: %r",
+                spec_name,
+            )
+            return False
         try:
             return (
                 Path(self._pm.project_root)

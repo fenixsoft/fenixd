@@ -989,10 +989,18 @@ class FamilyGovernor:
         # FIELD、不再对同字段预记，防 inplace 同轮双计提前触发 MAX_VERIFY_
         # FAIL_ROUNDS 冻结闸门）。改按 bump_counters 写后最新值判阈值；下方
         # 冻结/打回写不再并入该字段。
-        # 递增后移到写前复查全部通过之后（code-review item 6cc743d3b07f）：
-        # 冻结/状态漂移放弃路径不再留下已递增计数与本轮 fail_history 条目，
-        # 与 _judge_cap_frozen 分支「冻结期间计数不累积」语义对齐；MAX 上限
-        # 判定仍紧跟递增、按写后最新值判，判序不变。
+        # 递增移到第一次写前复查（上方冻结/状态漂移双查）通过之后（code-review
+        # item 6cc743d3b07f）：该次复查的放弃路径在递增前 return，不留已递增
+        # 计数与本轮 fail_history 条目，与 _judge_cap_frozen 分支「冻结期间
+        # 计数不累积」语义对齐。口径澄清（code-review item 6cbc86c86808）：
+        # 下方写前二次复查（6d600eb52e86）的放弃路径（并发冻结/状态漂移）发生
+        # 在递增与侧车追加之后，按有意取舍保留已递增计数与本轮 fail_history
+        # 条目——至多一轮预算偏差（解冻或外部推进后可能提前一轮触发升级闸门），
+        # 不做锁内回写：向并发冻结条目再写计数破坏冻结恢复语义；bump_counters
+        # 的 CAS 仅是重试前基线复核（防同一增量双计），无按期望值回退的前置
+        # 校验，delta=-1 会落在并发写者（admin infra 回拨等）改写后的新基线上；
+        # fail_history 侧车亦无弹出原语（仅 append/clear）——回写风险高于一轮
+        # 偏差。MAX 上限判定仍紧跟递增、按写后最新值判，判序不变。
         fail_rounds = self._pm.state_machine.bump_counters(
             spec_name, {"_verify_fail_rounds": 1}
         ).get("_verify_fail_rounds", 0)

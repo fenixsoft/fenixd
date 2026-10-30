@@ -108,6 +108,37 @@ def _dirty_file_fingerprint(path: Path) -> Optional[str]:
     except OSError:
         return None
 
+
+def _spec_file_fingerprint(path: Path) -> tuple:
+    """计算 SPEC 目录文件指纹，返回 ``(指纹, 是否超限降级)``；读失败返回 (None, False)。
+
+    code-review item 1088b71b2025：旧实现 _take_snapshot/_verify_snapshot 两侧
+    对 SPEC 目录文件 read_bytes 全量读入算 md5，SPEC 目录被误放入大文件（二进制
+    产物/日志）时派发与收工各同步全量重读一遍并整体驻留内存。小文件（复用
+    _DIRTY_HASH_MAX_BYTES 同款读入上限）仍返回完整内容 md5——与既有快照的纯
+    md5 格式完全一致，存量快照不失配；达到上限的大文件读入有界（分块截断），
+    指纹退化为 ``"{size}:{头部 md5}"``，degraded=True 供调用方打 WARNING 留痕
+    （硬门比对两侧同形即保持可比）。_take_snapshot 与 _verify_snapshot 必须同用
+    本函数——指纹同形才可比；读失败对齐两侧既有降级口径（静默跳过）。
+    """
+    try:
+        size = path.stat().st_size
+        if size < _DIRTY_HASH_MAX_BYTES:
+            # 小文件：与原实现逐字同款的全量读入纯 md5。
+            return hashlib.md5(path.read_bytes()).hexdigest(), False
+        h = hashlib.md5()
+        with path.open("rb") as f:
+            remaining = _DIRTY_HASH_MAX_BYTES
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                h.update(chunk)
+                remaining -= len(chunk)
+        return f"{size}:{h.hexdigest()}", True
+    except OSError:
+        return None, False
+
 # ── infra 失败指纹（evo-run-failure-classification-circuitbreaker D1）──────
 # 评审 API 批量失败（403 网关拒绝 / 402 余额不足 / 429 限流 / quota/budget 耗尽 /
 # rate limit / provider 侧熔断信号 / CLI 进程级崩溃）同属 infra——链路级问题，
@@ -1043,7 +1074,9 @@ class SpecReviewManager:
         """派发前对 SPEC 目录与工作区脏文件记录快照。
 
         返回快照 dict，包含：
-        - spec_files: {相对路径: 内容哈希}——SPEC 目录完整性硬门依据（删除即越界）
+        - spec_files: {相对路径: 内容指纹}——SPEC 目录完整性硬门依据（删除即越界；
+          单文件读入有界，小文件纯 md5、超限退化为 size:头部md5，见
+          _spec_file_fingerprint）
         - dirty_files: {相对路径: 大小+头部哈希指纹}（仅 git status --porcelain
           列出的脏文件，单文件读入有界，见 _dirty_file_fingerprint）
           ——仅供 `_verify_snapshot` 记 WARNING 留痕与「新增文件」去重，不作硬门
@@ -1056,12 +1089,21 @@ class SpecReviewManager:
         for file in spec_dir.rglob("*"):
             if file.is_file():
                 rel = str(file.relative_to(self.project_root))
-                try:
-                    content = file.read_bytes()
-                    h = hashlib.md5(content).hexdigest()
-                    snapshot["spec_files"][rel] = h
-                except OSError:
-                    pass
+                # 有界指纹替代无上界全量读入 md5（code-review item 1088b71b2025）：
+                # 小文件与原实现的纯 md5 完全一致，超限大文件读入有界并 WARNING
+                # 留痕；读失败照旧静默跳过（硬门不因 IO 故障放大）。比对侧
+                # _verify_snapshot 用同一助手同口径取指纹，两侧格式对称。
+                fp, degraded = _spec_file_fingerprint(file)
+                if fp is None:
+                    continue
+                if degraded:
+                    self.logger.warning(
+                        "spec_review",
+                        f"SPEC 目录内文件超过指纹读入上限 "
+                        f"({_DIRTY_HASH_MAX_BYTES} 字节)，降级为 size:头部md5 "
+                        f"指纹（IO 开销有界）: {rel}",
+                    )
+                snapshot["spec_files"][rel] = fp
         # 记录工作区脏文件的内容哈希
         lines = self._git_porcelain_lines()
         if lines is not None:
@@ -1136,10 +1178,11 @@ class SpecReviewManager:
             full = self.project_root / rel
             if not full.exists():
                 return f"SPEC 目录内文件被删除: {rel}"
-            try:
-                content = full.read_bytes()
-                new_hash = hashlib.md5(content).hexdigest()
-            except OSError:
+            # 有界指纹（code-review item 1088b71b2025）：与 _take_snapshot 同一
+            # 助手同口径取指纹——指纹同形才可比，小文件纯 md5 与存量快照一致；
+            # 读失败照旧降级跳过。
+            new_hash, degraded = _spec_file_fingerprint(full)
+            if new_hash is None:
                 # 读失败降级跳过（code-review item 9bfd45096446）：瞬态 IO 抖动
                 # （NFS/ESTALE、并发截断读）与评审者越界无关，旧口径直接 return
                 # 「无法读取文件」经 _check_write_boundary 归为边界错误走
@@ -1151,6 +1194,13 @@ class SpecReviewManager:
                 # spec_integrity 族既定口径）。
                 unreadable_spec.append(rel)
                 continue
+            if degraded:
+                self.logger.warning(
+                    "spec_review",
+                    f"快照比对时 SPEC 文件超过指纹读入上限 "
+                    f"({_DIRTY_HASH_MAX_BYTES} 字节)，降级为 size:头部md5 "
+                    f"指纹（IO 开销有界）: {rel}",
+                )
             if new_hash != old_hash:
                 # 文件被修改，这是允许的（repaired 状态）
                 modified_spec.append(rel)
