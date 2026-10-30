@@ -315,3 +315,30 @@ class TestObservabilityTriple:
         projector = DshEventProjector("c", str(tmp_path))
         projector.close()
         projector.close()  # 幂等
+
+    def test_projected_events_carry_timestamp(self, tmp_path):
+        """evo-add-dsh-events-latency-timestamps 2.1：投影产出的每条事件
+        （含 assistant/user）携带到达时刻 timestamp 字段（数值、正数、随
+        到达序单调不减），且 dump 旁路原始行维持原样不加字段——
+        latency_samples_from_events 对 dsh 事件流可出样本的前置。"""
+        lines = _fixture_lines()
+        projector, projected, run_file = _replay(tmp_path, lines)
+        # 全部投影事件（assistant/user/system init/result）均带 timestamp
+        assert projected, "fixtures 回放应产出投影事件"
+        ts_list = [e["timestamp"] for e in projected]
+        assert all(isinstance(ts, float) and ts > 0 for ts in ts_list)
+        assert ts_list == sorted(ts_list)  # 到达序单调不减
+        # assistant/user 形态逐键对账（任务字面锚点）
+        stampeds = [e for e in projected if e["type"] in ("assistant", "user")]
+        assert len(stampeds) >= 2  # text+tool_call 两 assistant + user 载体
+        for ev in stampeds:
+            assert isinstance(ev["timestamp"], float) and ev["timestamp"] > 0
+        # dump 旁路维持原样（原始行不加 timestamp，避免体积膨胀）
+        dump_path = Path(projector.metrics()["raw_event_dump"])
+        dump_lines = [
+            json.loads(l)
+            for l in dump_path.read_text(encoding="utf-8").splitlines()
+            if l.strip()
+        ]
+        assert dump_lines == [json.loads(l) for l in lines]
+        assert all("timestamp" not in raw for raw in dump_lines)

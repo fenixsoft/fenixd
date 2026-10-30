@@ -873,6 +873,15 @@ class AgentRunner:
         # 不读进程级全局；键空间与 _run_harness 同为 base run_id，随其同一
         # finally 外口摘除。值为 adapter 对象（区别于 _run_harness 的名串）。
         self._run_resolved_adapter: Dict[str, object] = {}
+        # 延迟失明 WARNING 一次性去重登记（evo-add-dsh-events-latency-
+        # timestamps 1.2）：键 (harness, 事件形态)。实例级集合——生产每进程
+        # 单 runner 实例拓扑下即进程内收敛（原无去重 14 天累计 178 条刷屏）；
+        # 实例级使 pytest 每用例新建 runner 天然隔离（tests/
+        # test_run_latency_stats.py:354 失明用例断言 ≥1 条 WARNING——MUST NOT
+        # 用模块级集合实现「进程级」，那会让任何更早用例触发同键告警即把它
+        # primed 掉，制造同进程收集顺序依赖；去重模式参照既有实例级日去重
+        # _daily_provider_warned）。
+        self._latency_blind_warned_keys: set = set()
         # 轮次分支基线互斥锁（code-review item 339b589c0bee）：_turn_limit_action
         # 建态侧的 24h 过期清理迭代与 _execute_agent 终态外口 forget 的摘除迭代
         # 并发互斥（协议见 _turn_branch_state_lock property 注释）。
@@ -6248,6 +6257,13 @@ class AgentRunner:
             # evo-api-stall-signal-grading 1.2：分级计数（run 结束汇总行
             # warning=N info=M 的数据源；warning 桶含 warning-escalated）。
             "grade_counts": {"warning": 0, "info": 0},
+            # evo-add-dsh-events-latency-timestamps 1.2：失明形态判定计数
+            # （读线程单写、join 后主线程读，同 samples 无竞态模式）——
+            # run 末区分「缺时间戳 / 无 tool_result 锚点 / 有锚点仍未配对」
+            # 三种失明形态，作为（harness,事件形态）去重键的形态半边。
+            "tool_result_seen": 0,
+            "assistant_seen": 0,
+            "assistant_missing_ts": 0,
         }
 
         # ── fix-agent-lane-efficiency D3：run 级上下文经济性指标（纯读侧旁路）──
@@ -6443,9 +6459,13 @@ class AgentRunner:
                         # 承载，兼容顶层 tool_result 事件）
                         e_ts = AgentRunner._parse_event_timestamp(entry)
                         if AgentRunner._entry_is_tool_result(entry):
+                            latency_state["tool_result_seen"] += 1
                             if e_ts is not None:
                                 latency_state["last_tool_result_ts"] = e_ts
                         elif entry.get("type") == "assistant":
+                            latency_state["assistant_seen"] += 1
+                            if e_ts is None:
+                                latency_state["assistant_missing_ts"] += 1
                             if (e_ts is not None
                                     and latency_state["last_tool_result_ts"] is not None):
                                 _sb_sample = (
@@ -7044,15 +7064,43 @@ class AgentRunner:
                 # （有 assistant 轮次却配对不出任何样本），显式 WARNING 使盲区
                 # 不再静默。仅日志，不写 admin_alerts（延迟数据不触发独立人工
                 # 告警铁律）；rounds==0 且 turn_count==0（真空跑）不告警。
+                # evo-add-dsh-events-latency-timestamps 1.2：按（harness,
+                # 事件形态）实例级一次性去重——同键后续 run 不再重复告警
+                # （14 天累计 178 条刷屏根因即逐 run 无条件触发）。文案如实
+                # 归因：根因是事件流缺时间戳/无法配对，删「请检查 tool_result
+                # 事件识别」误归因；保留「失明」标记与 extra 键
+                # latency_rounds/turn_count/run_id 测试锚点（tests/
+                # test_run_latency_stats.py:354-405 两用例按子串+extra 过滤，
+                # 锚点不丢则断言零改动）。
                 if stats["rounds"] == 0 and turn_count[0] > 0:
-                    self.logger.warning(
-                        "agent_runner",
-                        f"run {run_id}: 延迟观测疑似失明（latency_rounds=0 但 "
-                        f"assistant 轮次={turn_count[0]}）——有模型轮次却配对不出 "
-                        f"任何 API 往返样本，请检查 tool_result 事件识别",
-                        {"run_id": run_id, "latency_rounds": 0,
-                         "turn_count": turn_count[0]},
-                    )
+                    if latency_state["assistant_missing_ts"] > 0:
+                        _blind_shape = "missing_timestamp"
+                    elif latency_state["tool_result_seen"] == 0:
+                        _blind_shape = "no_tool_result"
+                    else:
+                        _blind_shape = "unpaired_with_timestamps"
+                    _blind_harness = str(getattr(adapter, "name", "") or "unknown")
+                    _blind_key = (_blind_harness, _blind_shape)
+                    # 惰性回退（对齐 _turn_branch_state 的 __new__ 兜底惯例）：
+                    # 测试以 AgentRunner.__new__ 绕过 __init__ 的实例在此
+                    # 原子补建，不让去重登记缺失冲出 finally。
+                    _blind_warned = getattr(
+                        self, "_latency_blind_warned_keys", None)
+                    if _blind_warned is None:
+                        _blind_warned = set()
+                        self._latency_blind_warned_keys = _blind_warned
+                    if _blind_key not in _blind_warned:
+                        _blind_warned.add(_blind_key)
+                        self.logger.warning(
+                            "agent_runner",
+                            f"run {run_id}: 延迟观测疑似失明（latency_rounds=0 但 "
+                            f"assistant 轮次={turn_count[0]}）——事件流缺时间戳/"
+                            f"无法配对出 API 往返样本（harness={_blind_harness}, "
+                            f"形态={_blind_shape}）；同 harness 同形态本实例内"
+                            f"不重复告警",
+                            {"run_id": run_id, "latency_rounds": 0,
+                             "turn_count": turn_count[0]},
+                        )
             except Exception as e:
                 self.logger.debug(
                     "agent_runner",

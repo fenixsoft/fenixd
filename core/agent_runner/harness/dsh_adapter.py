@@ -314,6 +314,19 @@ class DshEventProjector:
         projected = self._project(entry)
         if projected:
             self.projected[ev_type] += 1
+            # evo-add-dsh-events-latency-timestamps 1.1：投影产出事件统一打
+            # 到达时刻 timestamp（ingest 入口一次取时、随本行全部投影事件
+            # 透传——_project 各 handler 只管形状，时间戳在此单点收口）。
+            # 消费面三处共用同一事件形态：latency_samples_from_events
+            # （tool_result→assistant 配对取 entry['timestamp']）、在线旁路
+            # runner 内联采样、事后分析 bin/analyze_run_latency.py——dsh
+            # 事件流原全行无 timestamp、配对函数无从出样，补时间戳一改全通。
+            # dump 文件维持原样（原始行不加字段，避免体积膨胀）。到达时刻≠
+            # API 发起时刻，样本含投影排队延迟——对停滞（>60s）量级判断
+            # 影响可忽略。
+            _arrived = time.time()
+            for _ev in projected:
+                _ev["timestamp"] = _arrived
         else:
             self.ignored[ev_type] += 1
         return projected
