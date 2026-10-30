@@ -2368,6 +2368,16 @@ def wave_cap_for_groups(group_count) -> int:
 # regression.cmd 中的测试路径列表占位符（对齐 {port} 占位符先例）
 CODE_FIX_TEST_TARGETS_PLACEHOLDER = "{test_targets}"
 
+# 哨兵 # 紧邻占位符形态（.fenix/verify.yaml 声明约定 ``#{test_targets}``，
+# 词首 # 是行内注释、pytest 不可见；``_cmd_has_test_targets`` 探测只认占位符
+# 子串、先于替换，不受本正则影响）。替换时吞掉紧邻 #（含与占位符间的空白）
+# 与重复 #：替换后 # 残留居词首注释位虽通常无害，但替换值含引号字符时引号会
+# 击穿注释语义、使哨兵位目标漏成 pytest 参数，属应消除的毒化面
+#（evo-add-regression-empty-result-failclosed 2.2）。
+_CODE_FIX_SENTINEL_PLACEHOLDER_RE = re.compile(
+    r"#+\s*" + re.escape(CODE_FIX_TEST_TARGETS_PLACEHOLDER)
+)
+
 # 同值导出的环境变量名（cmd 可二选一引用占位符或环境变量）
 CODE_FIX_TEST_TARGETS_ENV = "FENIX_TEST_TARGETS"
 
@@ -2382,9 +2392,18 @@ CODE_FIX_TEST_TARGETS_FALLBACK = "tests/"
 def _is_test_path(rel_path: str) -> bool:
     """测试路径判别（spec 3.2 规则 a）：``tests/`` 下或 ``test_`` 前缀/
     ``_test`` 后缀（后缀按去扩展名后的 stem 判别——``foo_test.py`` 的
-    stem ``foo_test`` 以 ``_test`` 结尾）。"""
+    stem ``foo_test`` 以 ``_test`` 结尾）。
+
+    缓存产物排除（evo-add-regression-empty-result-failclosed 2.1）：路径含
+    ``__pycache__`` 段或 ``.pyc`` 后缀恒判 False——``tests/`` 前缀支先于一切
+    判别返回 True，排除必须落在其前（2026-10-24 链 A 批 1 伪绿合回事故：
+    tests/__pycache__/*.pyc 经前缀支放行混入 targets）。
+    """
     rel = str(rel_path or "").replace("\\", "/").strip("/")
     if not rel:
+        return False
+    parts = [p for p in rel.split("/") if p and p != "."]
+    if "__pycache__" in parts or rel.endswith(".pyc"):
         return False
     if rel == "tests" or rel.startswith("tests/"):
         return True
@@ -2394,6 +2413,69 @@ def _is_test_path(rel_path: str) -> bool:
     # stem 的；无扩展名时两者相同），保留即死条件（code-review item
     # c8dc3902df49）。
     return stem.startswith("test_") or stem.endswith("_test")
+
+
+def _test_target_poison_reason(rel: str) -> str:
+    """毒化目标判别（evo-add-regression-empty-result-failclosed 2.1，单源）。
+
+    返回原因串（哨兵注释项 # 前缀 / ``__pycache__`` 缓存路径 / ``.pyc`` 编译
+    缓存）；非毒化项返回空串。``_sanitize_test_target_paths``（producer 出口
+    消毒）与 ``_map_fix_files_to_tests`` 映射入口预检共用，两处规则 MUST NOT
+    漂移。
+    """
+    if rel.startswith("#"):
+        return "哨兵注释项 # 前缀"
+    norm = rel.replace("\\", "/")
+    parts = [p for p in norm.split("/") if p and p != "."]
+    if "__pycache__" in parts:
+        return "__pycache__ 缓存路径"
+    if norm.endswith(".pyc"):
+        return ".pyc 编译缓存"
+    return ""
+
+
+def _sanitize_test_target_paths(targets, exec_root) -> list:
+    """定向回归 targets 消毒（evo-add-regression-empty-result-failclosed 2.1，
+    单点 producer 出口）。
+
+    过滤四类毒化项并留痕：# 前缀哨兵注释项、路径含 ``__pycache__`` 段、
+    ``.pyc`` 编译缓存、相对 ``exec_root`` 不存在的路径；被过滤项聚合
+    WARNING 留痕（含原因）。
+
+    落点 MUST 为单点 producer（``_map_fix_files_to_tests`` 返回前）：targets
+    同时流向 ``_apply_test_targets`` 的 cmd 替换与 ``_with_test_targets_env``
+    环境变量导出两条注入通道，只在任一消费点过滤都会给另一条通道留毒化面
+    （2026-10-24 链 A 批 1 伪绿合回事故实测肇因即 env 通道注入 .pyc）。
+    消毒后为空集时返回空列表——调用方按既有 fail-open 语义回退全量，
+    MUST NOT 以空 targets 起跑。
+    """
+    root = Path(exec_root) if exec_root is not None else Path.cwd()
+    kept: list = []
+    dropped: list = []
+    for raw in targets or ():
+        rel = str(raw or "").strip()
+        if not rel:
+            continue  # 空白项下游本就不消费，剔除不留痕
+        poison = _test_target_poison_reason(rel)
+        if poison:
+            dropped.append(f"{rel}（{poison}）")
+            continue
+        try:
+            exists = (root / rel).exists()
+        except OSError:
+            exists = False
+        if not exists:
+            dropped.append(f"{rel}（路径不存在）")
+            continue
+        kept.append(rel)
+    if dropped:
+        detail = "; ".join(dropped)[:800]
+        _logger.warning(
+            "code-fix 定向回归 targets 消毒：剔除 "
+            f"{len(dropped)} 项毒化目标（cmd 替换与 FENIX_TEST_TARGETS "
+            f"导出双通道共享消毒后列表）: {detail}"
+        )
+    return kept
 
 
 def _module_names_for_file(rel_path: str) -> list:
@@ -2431,6 +2513,13 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
     返回排序去重后的测试路径列表（相对 exec_root，POSIX 形态）。映射不出
     任何测试路径返回空列表（调用方 fail-open 回退全量并记日志）。探测失败
     （tests/ 缺失、grep 异常）只缩小定向面，MUST NOT 抛异常。
+
+    出口经 ``_sanitize_test_target_paths`` 消毒（evo-add-regression-
+    empty-result-failclosed 2.1，单点 producer）：# 前缀哨兵项、
+    ``__pycache__`` 段/``.pyc`` 路径与不存在路径被过滤并 WARNING 留痕——
+    cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道共享消毒后列表
+    （2026-10-24 链 A 批 1 伪绿合回事故的 env 通道肇因收口）。grep 反查加
+    ``-I``（跳过二进制）与 ``--exclude-dir=__pycache__`` 同向收口。
     """
     from pathlib import PurePosixPath
 
@@ -2446,6 +2535,16 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
         if not rel or rel in seen:
             continue
         seen.add(rel)
+        # 映射入口毒化项预检（evo-add-regression-empty-result-failclosed
+        # 2.1）：缓存产物与哨兵注释项在入口即剔除并 WARNING 留痕，不入
+        # direct/product 任一支——.pyc 的 stem 反查只会召回无关测试，哨兵
+        # 注释项不是真实文件。
+        poison = _test_target_poison_reason(rel)
+        if poison:
+            _logger.warning(
+                f"code-fix 定向回归映射输入消毒：剔除毒化项 {rel}（{poison}）"
+            )
+            continue
         if _is_test_path(rel):
             direct.add(rel)
         else:
@@ -2478,7 +2577,8 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
             pattern = rf"(from|import)\s+({alt})\b"
             try:
                 proc = subprocess.run(
-                    ["grep", "-rlE", pattern, "tests"],
+                    ["grep", "-r", "-l", "-I", "-E", "--exclude-dir=__pycache__",
+                     pattern, "tests"],
                     cwd=str(root),
                     capture_output=True,
                     text=True,
@@ -2493,7 +2593,10 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
                             direct.add(rel)
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass  # fail-open：反查失败只缩小定向面
-    return sorted(direct)
+    # 出口消毒（evo-add-regression-empty-result-failclosed 2.1，单点
+    # producer）：过滤 # 前缀/__pycache__/.pyc/不存在路径并 WARNING 留痕，
+    # cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道共享消毒后列表。
+    return _sanitize_test_target_paths(sorted(direct), root)
 
 
 def _cmd_has_test_targets(spec) -> bool:
@@ -2522,6 +2625,12 @@ def _apply_test_targets(spec, test_targets: list):
     cmd 可二选一引用）：执行侧经 ``_with_test_targets_env`` 在回归窗口内
     设置。
 
+    哨兵 # 残留消除（evo-add-regression-empty-result-failclosed 2.2）：替换
+    时吞掉紧邻占位符的 ``#``（声明哨兵 ``#{test_targets}``，``_cmd_has_
+    test_targets`` 探测先于替换、不受影响）——替换值含引号字符时引号会击穿
+    注释语义、使哨兵位目标漏成 pytest 参数，``#`` MUST NOT 残留进最终执行
+    命令（``.fenix/verify.yaml`` 声明本身不改）。
+
     返回 ``dataclasses.replace`` 副本（不原地改写既有契约对象）；替换后与
     原 cmd 相同则原样返回（零副本）。
     """
@@ -2532,11 +2641,19 @@ def _apply_test_targets(spec, test_targets: list):
     raw = " ".join(targets)
     cmd = spec.cmd
     if isinstance(cmd, str):
-        new_cmd: object = cmd.replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, quoted)
+        # 哨兵 # 残留消除（evo-add-regression-empty-result-failclosed 2.2）：
+        # 先吞掉紧邻占位符的 #（声明哨兵 #{test_targets}，词首注释位），再
+        # 替换占位符——替换值含引号字符时引号会击穿注释语义、使哨兵位目标
+        # 漏成 pytest 参数，# 不得残留进最终执行命令。
+        new_cmd: object = _CODE_FIX_SENTINEL_PLACEHOLDER_RE.sub(
+            CODE_FIX_TEST_TARGETS_PLACEHOLDER, cmd
+        ).replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, quoted)
     else:
         new_list: list = []
         for el in cmd:
-            s = str(el)
+            s = _CODE_FIX_SENTINEL_PLACEHOLDER_RE.sub(
+                CODE_FIX_TEST_TARGETS_PLACEHOLDER, str(el)
+            )
             if s == CODE_FIX_TEST_TARGETS_PLACEHOLDER:
                 new_list.extend(targets)  # 元素级展开：占位元素 → 路径列表
             elif CODE_FIX_TEST_TARGETS_PLACEHOLDER in s:

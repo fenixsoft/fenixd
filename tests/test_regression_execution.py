@@ -8,6 +8,7 @@
 import datetime
 import json
 import logging
+import os
 import shutil
 import sys
 import tempfile
@@ -382,6 +383,91 @@ class TestRunRegression(unittest.TestCase):
         lt = result["long_tests"][0]
         self.assertEqual(lt["name"], "slow")
         self.assertEqual(lt["time"], 12.5)
+
+
+class TestEmptyResultFailClosed(unittest.TestCase):
+    """空结果 fail-closed 契约（evo-add-regression-empty-result-failclosed 3.1）。
+
+    钉住三个不变式：
+    - returncode≠0 且 total=0（pytest usage error exit=4 / 零收集 exit=5
+      形态）MUST NOT 判 passed，按 parse_error 处置（empty_result 留痕）；
+    - junit.xml mtime 早于本次命令 started_at 的陈旧 XML MUST NOT 采信
+      （stale_xml 留痕）；
+    - 「XML 新鲜且 total>0 的非零退出仍 passed」既有豁免不回归（exit_code
+      留痕）。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _spec(self, cmd, timeout=30):
+        return RegressionSpec(cmd=cmd, output="junit.xml",
+                              timeout_seconds=timeout,
+                              long_test_threshold_seconds=10)
+
+    # 写 0 例 testsuites XML 后以指定码退出（模拟 pytest usage error/零收集
+    # 落可解析 0 例 XML 形态）
+    _EMPTY_XML_PY = (
+        "import xml.etree.ElementTree as ET, sys;"
+        "root=ET.Element('testsuites');"
+        "suite=ET.SubElement(root,'testsuite',attrib={{'name':'t','tests':'0'}});"
+        "ET.ElementTree(root).write('junit.xml');"
+        "sys.exit({rc})"
+    )
+
+    def test_usage_error_exit4_zero_cases_not_passed(self):
+        """usage error exit=4 + 可解析 0 例 XML → parse_error，不判 passed
+        （2026-10-24 链 A 批 1 伪绿合回事故形态收口）。"""
+        result = run_regression(
+            self.tmp, self._spec(["python3", "-c", self._EMPTY_XML_PY.format(rc=4)]))
+        self.assertEqual(result["status"], "parse_error")
+        self.assertIn("empty_result", result["reason"])
+        self.assertEqual(result.get("exit_code"), 4, "非零退出码结构化留痕")
+        self.assertEqual(result["total"], 0)
+
+    def test_zero_collect_exit5_not_passed(self):
+        """零收集 exit=5 + 0 例 XML → parse_error，不判 passed。"""
+        result = run_regression(
+            self.tmp, self._spec(["python3", "-c", self._EMPTY_XML_PY.format(rc=5)]))
+        self.assertEqual(result["status"], "parse_error")
+        self.assertIn("empty_result", result["reason"])
+
+    def test_stale_xml_not_trusted(self):
+        """陈旧 XML（mtime 早于 started_at）不得采信：spawn 前预清理 unlink
+        OSError 被吞后遗留旧 XML 场景 → parse_error（stale_xml 留痕），不判
+        passed。命令退出 0 且不写 XML：若旧 XML 被采信即误判 passed。"""
+        (self.tmp / "junit.xml").write_text(PASSING_XML, encoding="utf-8")
+        # mtime 显式拨回过去（确定性：不依赖文件系统时间粒度）
+        past = time.time() - 60
+        os.utime(self.tmp / "junit.xml", (past, past))
+        real_unlink = Path.unlink
+
+        def _poisoned_unlink(path_self, *a, **k):
+            if path_self.name == "junit.xml":
+                raise OSError("simulated: pre-clean unlink failed (stale left behind)")
+            return real_unlink(path_self, *a, **k)
+
+        with patch("pathlib.Path.unlink", _poisoned_unlink):
+            result = run_regression(self.tmp, self._spec("python3 -c 'print(1)'"))
+        self.assertEqual(result["status"], "parse_error")
+        self.assertIn("stale_xml", result["reason"])
+
+    def test_fresh_nonzero_exit_green_xml_still_passed(self):
+        """既有豁免不回归：XML 新鲜且 total>0 的非零退出仍 passed
+        （exit_code 附入结果留痕，不因空结果守卫误伤）。"""
+        pycode = (
+            "import xml.etree.ElementTree as ET, sys;"
+            "root=ET.Element('testsuites');"
+            "suite=ET.SubElement(root,'testsuite',attrib={'name':'t','tests':'1'});"
+            "ET.SubElement(suite,'testcase',attrib={'classname':'c','name':'n','time':'0.1'});"
+            "ET.ElementTree(root).write('junit.xml');"
+            "sys.exit(3)"
+        )
+        result = run_regression(self.tmp, self._spec(["python3", "-c", pycode]))
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result.get("exit_code"), 3)
+        self.assertEqual(result["total"], 1)
 
 
 class TestRunScopeStamp(unittest.TestCase):
