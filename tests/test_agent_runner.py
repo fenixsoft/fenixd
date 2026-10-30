@@ -84,7 +84,8 @@ class TestTerminalHarvest:
         wt = Path("/w/impl-exc-1")
 
         def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
-                       conflict_summary=None, used_wts=None, handed_off=None):
+                       conflict_summary=None, detail=None, used_wts=None,
+                       handed_off=None):
             used_wts.add(wt)
             raise RuntimeError("unexpected boom")
 
@@ -109,7 +110,8 @@ class TestTerminalHarvest:
         wt = Path(f"/w/{run_id}")
 
         def fake_inner(spec_name, agent_type_, run_id_, pre_wt_path=None,
-                       conflict_summary=None, used_wts=None, handed_off=None):
+                       conflict_summary=None, detail=None, used_wts=None,
+                       handed_off=None):
             used_wts.add(wt)
             handed_off.add(wt)  # 成功延迟清理 → 交接 dispatch 层
             result = SimpleNamespace(success=True, worktree_path=wt)
@@ -152,7 +154,8 @@ class TestTerminalHarvest:
         wt = Path(f"/w/{run_id}")
 
         def fake_inner(spec_name, agent_type_, run_id_, pre_wt_path=None,
-                       conflict_summary=None, used_wts=None, handed_off=None):
+                       conflict_summary=None, detail=None, used_wts=None,
+                       handed_off=None):
             used_wts.add(wt)
             return inner_result
 

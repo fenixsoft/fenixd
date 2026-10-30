@@ -3144,7 +3144,8 @@ class AgentRunner:
 
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str,
                        pre_wt_path: Path | None = None,
-                       conflict_summary: dict | None = None) -> AgentRunResult:
+                       conflict_summary: dict | None = None,
+                       detail: dict | None = None) -> AgentRunResult:
         """Core agent execution logic with retry support.
 
         fix-fenix-token-waste：
@@ -3169,6 +3170,14 @@ class AgentRunner:
         （调度层解析好的实现分支载体 worktree）与 ``conflict_summary``
         （prompt 注入）。pre_wt_path 非 None 时**不创建新 worktree**，
         直接在该 worktree 内工作——repair 原地修复语义。
+
+        evo-fix-fastlane-items-dispatch 1.1：``detail`` 新参——code-fix 车道
+        与 repair 同样透传 prompt 注入 detail（fastlane 派发前把失败场景转单
+        的 items 随调用方经此注入，见 fastlane.dispatch_minor_defect_fastlane
+        / dispatch_pre_freeze_fastlane）。repair 仍走 ``conflict_summary``
+        形参（既有调用面不变）；code-fix 的 ``detail`` 直通
+        ``_build_code_fix_prompt`` 的 ``detail``（items 白名单序列化 +
+        顶层键失败上下文标记）。其余 agent_type 不消费该参数。
 
         verify-process-lifecycle（D1/D2 终态收割）：运行作用域维护 used_wts
         （本 run 创建/复用的 wt_path）与 handed_off（deliberate keep 集合——
@@ -3250,6 +3259,7 @@ class AgentRunner:
             return self._execute_agent_inner(
                 spec_name, agent_type, run_id,
                 pre_wt_path=pre_wt_path, conflict_summary=conflict_summary,
+                detail=detail,
                 used_wts=used_wts, handed_off=handed_off,
             )
         finally:
@@ -3289,6 +3299,7 @@ class AgentRunner:
     def _execute_agent_inner(self, spec_name: str, agent_type: str, run_id: str,
                              pre_wt_path: Path | None = None,
                              conflict_summary: dict | None = None,
+                             detail: dict | None = None,
                              used_wts: set | None = None,
                              handed_off: set | None = None) -> AgentRunResult:
         """派发循环主体（verify-process-lifecycle）：维护收割集合并返回结果。
@@ -3477,6 +3488,16 @@ class AgentRunner:
                         # repair prompt 注入冲突摘要（add-merge-back-repair-lane D5）
                         prompt = self._build_prompt(
                             spec_name, agent_type, detail=conflict_summary or {},
+                            wt_path=wt_path,
+                        )
+                    elif agent_type == "code-fix":
+                        # code-fix prompt 注入修复条目 detail（evo-fix-fastlane-
+                        # items-dispatch 1.1）：fastlane 派发前把失败场景转单的
+                        # items 随本参直通 _build_code_fix_prompt（items 白名单
+                        # 序列化 + 顶层键失败上下文标记）。不传（None）时行为与
+                        # 引入前一致（空 detail → 空 items 回退）。
+                        prompt = self._build_prompt(
+                            spec_name, agent_type, detail=detail or {},
                             wt_path=wt_path,
                         )
                     else:

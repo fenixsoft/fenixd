@@ -728,6 +728,78 @@ class FamilyGovernor:
             )
         return "; ".join(parts)
 
+    # ── 升级告警根因注入（evo-fix-fastlane-items-dispatch 2.2）────────────
+
+    def _collect_root_cause_lines(self, spec_name: str, limit: int = 5) -> list:
+        """收集验证裁决产物的行级根因摘要行（recommended_action 注入用）。
+
+        读取面与分流判据同源（fastlane._load_judge_bugs：verifier/judge 结果
+        文件 bugs[]，spec 戳 + status=bug-found 门），逐条「file:line [场景]
+        根因」行形态输出；产物不可读/无根因返回空清单（调用方按无根因
+        文案兜底）。截断防长文撑爆告警面板（每行 160 字、至多 limit 条）。
+        """
+        try:
+            from core.pm_engine.verification.fastlane import (
+                _load_judge_bugs,
+                _parse_line_level,
+            )
+
+            bugs = _load_judge_bugs(self._pm._verification, spec_name)
+        except Exception as e:  # noqa: BLE001 — 根因读取失败不阻断冻结主链
+            self._pm.logger.warning(
+                "pm_engine",
+                f"升级告警根因读取失败 '{spec_name}'（按无根因兜底）: {e!r}",
+            )
+            return []
+        lines: list = []
+        for bug in bugs:
+            if len(lines) >= limit:
+                break
+            if not isinstance(bug, dict):
+                continue
+            rc = str(bug.get("root_cause") or "").strip()
+            if not rc:
+                continue
+            file, line_no = _parse_line_level(bug.get("location"))
+            if not line_no:
+                file, line_no = _parse_line_level(rc)
+            loc = f"{file}:{line_no} " if file and line_no else ""
+            ids = bug.get("scenario_ids")
+            sid_text = ""
+            if isinstance(ids, list) and ids:
+                sid_text = "[" + ",".join(str(i) for i in ids[:3]) + "] "
+            lines.append(f"{loc}{sid_text}{rc[:160]}")
+        return lines
+
+    def _build_freeze_recommended_action(self, spec_name: str) -> str:
+        """组装冻结升级 recommended_action：既有文案 + 行级根因 + 裁决指引。
+
+        升级告警根因注入（evo-fix-fastlane-items-dispatch 2.2）：recommended_
+        action MUST 含验证报告行级根因摘要与「修复重验/豁免」裁决指引，降低
+        人工核对成本。既有结构化裁决 choices（continue_auto_fix /
+        manual_fixed_reverify / force_advance / abandon，adjudication_choices.py
+        由告警通道携带）不受影响——本文案只增强文字指引面。
+        """
+        lines: list = [
+            "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
+            "人工重置计数器即重新获得自动修复机会。",
+        ]
+        root_causes = self._collect_root_cause_lines(spec_name)
+        if root_causes:
+            lines.append("行级根因（验证裁决产物）：")
+            lines.extend(f"- {rc}" for rc in root_causes)
+        else:
+            lines.append(
+                "行级根因：验证裁决产物不可读或未含根因，"
+                "请直接查阅 verification-report.md。"
+            )
+        lines.append(
+            "裁决指引：按行级根因人工修复后重跑验证（manual_fixed_reverify）；"
+            "确认非缺陷可豁免/推进（force_advance）；需放弃本 SPEC 走 abandon；"
+            "维持自动修复走 continue_auto_fix。"
+        )
+        return "\n".join(lines)
+
     def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product", run_id: str = ""):
         """实际执行 bug-found 处理逻辑。
 
@@ -861,6 +933,53 @@ class FamilyGovernor:
             )
             return
 
+        # ── 冻结前定向修复分流（evo-fix-fastlane-items-dispatch 2.1/2.3）────
+        # 升级闸门冻结预算递增前，对「失败场景数 ≤3 且 judge 根因行级定位」
+        # 且本失败事件未经 minor-defect fastlane 承接派发处置的 product-bug
+        # 形态，先派一轮 fastlane 定向修复（code-fix items 转单）+ 子集重验：
+        # 收敛即本事件就地收口（不递增 _verify_fail_rounds，verified 收口按
+        # VERIFIED_RESET_FIELDS 清零计数）；仍失败沿既有路径继续——下方
+        # bump_counters 单点递增语义不变（唯一写点），分流失败不经
+        # _bump_fail_streak 记车道 streak（分流不属 minor-defect 承接车道，
+        # 见 fastlane.dispatch_pre_freeze_fastlane 记账纪律注释）。
+        # 路由互斥（2.3，守卫注释）：与既有 minor-defect 承接互斥由
+        # dispatch_pre_freeze_fastlane 内承接互斥守卫落地（承接失败回落记录
+        # + 同 failed_id 即不重复派发，同一失败事件只走一条路由）。与在途
+        # fix-verify-loop-convergence 的打回闸门互斥：该 SPEC 现为孤儿在途
+        # （STATE 无条目不派发，MERGE-NOTES.md 硬依赖），落地后其打回闸门
+        # 与本分流同处 bug-found 路由面——其打回闸门命中的失败事件 MUST NOT
+        # 再进入本分流（避免双触发/双记账），届时须在同一路由判定点登记其
+        # 打回事件标记并复用 dispatch_pre_freeze_fastlane 的互斥守卫扩展。
+        try:
+            from core.pm_engine.verification.fastlane import (
+                dispatch_pre_freeze_fastlane,
+            )
+
+            _diversion = dispatch_pre_freeze_fastlane(
+                self._pm._verification, spec_name
+            )
+        except Exception as e:
+            # 分流判定/派发异常 ≠ 真实修复失败：fail-open 回既有闸门路径
+            # （对齐 pipeline bug-found fastlane 判定异常回落先例），WARNING
+            # 留痕；冻结预算递增/冻结/打回语义与引入前完全一致。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"冻结前分流判定/派发异常 '{spec_name}'（回落既有闸门路径）: "
+                f"{e!r}",
+            )
+            _diversion = None
+        if _diversion and _diversion.get("converged"):
+            # 分流修复 + 子集重验收敛：本失败事件已收口（_apply_verified 与
+            # 整轮同一门禁链），不计入冻结预算——对齐「放弃路径不留计数与
+            # 侧车残留」纪律（code-review item 6cc743d3b07f）：递增与失败
+            # 历史侧车都在分流收敛 return 之后的既有路径，本分支零记账。
+            self._pm.logger.info(
+                "pm_engine",
+                f"冻结前分流收敛 '{spec_name}'：定向修复通过子集重验，"
+                f"跳过本轮冻结预算递增（{_diversion.get('reason')}）",
+            )
+            return
+
         # 计数递增走锁内原子原语（code-fix dd37a2be6ef6）：原先「read_one 读 →
         # 算 +1 → 并进下方 update_spec 写回」读与写分处两段，与并发写者（admin
         # infra 回拨等）在同一 spec 上时间重叠时，读旧值写回会吞掉对方刚加的
@@ -901,6 +1020,12 @@ class FamilyGovernor:
             # 递增并落盘，不再并入本次写（避免覆盖并发写者的增量）。
             history = self._pm._read_fail_history(spec_name)
             classified = self._classify_fail_history(history)
+            # recommended_action 注入验证报告行级根因与裁决指引（evo-fix-
+            # fastlane-items-dispatch 2.2），降低人工核对成本；既有结构化
+            # 裁决 choices（continue_auto_fix/manual_fixed_reverify/
+            # force_advance/abandon，adjudication_choices.py）由告警通道照常
+            # 携带，不受本文案影响。
+            _recommended_action = self._build_freeze_recommended_action(spec_name)
             self._pm.state_machine.freeze_for_human(
                 spec_name,
                 error=(
@@ -917,10 +1042,7 @@ class FamilyGovernor:
                     + self._format_fail_history_evidence(classified, fail_rounds)
                     + f"; report=spec/changes/{spec_name}/verification-report.md"
                 ),
-                recommended_action=(
-                    "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
-                    "人工重置计数器即重新获得自动修复机会"
-                ),
+                recommended_action=_recommended_action,
                 alert_callback=self._send_human_escalation_alert,
             )
             self._pm.logger.error(

@@ -78,6 +78,37 @@ _CODE_FIX_ITEM_FIELDS = (
     "title", "description", "suggestion",
 )
 
+# 空 items 告警进程级去重集合（evo-fix-fastlane-items-dispatch 1.3）：同一
+# 派发源（键 = 构造入参 run_id，fastlane 路径实为 spec 标识）只 WARNING 一次，
+# 防重派风暴刷屏；触顶裁剪防长驻进程集合无界增长。
+_EMPTY_FASTLANE_ITEMS_WARNED: set = set()
+_EMPTY_FASTLANE_ITEMS_WARNED_CAP = 512
+
+
+def _warn_empty_fastlane_items_once(key: str, dispatch_source: str) -> None:
+    """items 空但派发方声明存在待修失败场景时的 WARNING 留痕（进程级去重）。
+
+    消灭静默空转（evo-fix-fastlane-items-dispatch 1.3）：fastlane 经 detail
+    顶层键 ``has_failed_scenarios`` 声明存在待修失败场景，items 却为空说明
+    转单链路失效（历史形态：code-fix 载具恒拿 "[]" 白烧 run 且 run 归档
+    thinking 自证「The items list is empty」）。触发面以 fastlane 派发为限
+    ——其余 code-fix 消费面（code-review-fix 台账批、maintenance 车道）有意
+    不带 items 属正常形态，不注入该顶层键即不告警、零误报。
+    """
+    if key in _EMPTY_FASTLANE_ITEMS_WARNED:
+        return
+    if len(_EMPTY_FASTLANE_ITEMS_WARNED) >= _EMPTY_FASTLANE_ITEMS_WARNED_CAP:
+        _EMPTY_FASTLANE_ITEMS_WARNED.clear()
+    _EMPTY_FASTLANE_ITEMS_WARNED.add(key)
+    _logger.warning(
+        "code-fix prompt items 为空但派发方声明存在待修失败场景"
+        "（source=%s，spec/run=%s）——items 注入回退为空清单，修复条目转单"
+        "疑似失效，请核查 fastlane 转单链（evo-fix-fastlane-items-dispatch"
+        " 1.3 留痕）",
+        dispatch_source or "unknown",
+        key,
+    )
+
 
 def _str_field(value) -> str:
     """占位符填充前的字符串归一：dict/list 序列化为 JSON 串。
@@ -2144,6 +2175,14 @@ class PromptBuilder:
         """
         template = self._load_agent_template("code-fix")
         items: list = detail.get("items") or []
+        if not items and detail.get("has_failed_scenarios"):
+            # 空 items + 派发方声明存在待修失败场景（fastlane 经 detail 顶层
+            # 键注入的失败上下文标记）→ WARNING 留痕（进程级去重），替换静默
+            # 空回退（evo-fix-fastlane-items-dispatch 1.3）。触发面以 fastlane
+            # 派发为限：其余 code-fix 消费面不带 items 属正常形态不误报。
+            _warn_empty_fastlane_items_once(
+                str(run_id), str(detail.get("dispatch_source") or "unknown")
+            )
         slim_items = [
             {k: it[k] for k in _CODE_FIX_ITEM_FIELDS if it.get(k) is not None}
             for it in items if isinstance(it, dict)
