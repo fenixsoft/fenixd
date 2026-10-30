@@ -1004,6 +1004,14 @@ def _read_self_review_out(out_path: Path) -> dict:
             # str() 会把合规 dict 打成 dict-repr 字符串，渲染层四行格式
             # 失效退化为机器形态（09-08 事故）。
             data[field] = [x if isinstance(x, (dict, str)) else str(x) for x in val if x]
+    rs = data.get("resolved")
+    if not isinstance(rs, list):
+        # 非可迭代标量（LLM 误把条数写进 resolved，如 3）若直达收尾 for
+        # 会抛 TypeError——彼时 out 文件已删、当日回顾不可恢复（code-review
+        # item 17d132f9a1cf）。对齐上方同族字段归一口径置 []：空 resolved
+        # 连同其余全空字段走产物硬门失败路径而非收尾崩溃；条目级
+        # dict+非空 str id 过滤仍由 run_self_review 既有归一承担。
+        data["resolved"] = []
     sm = data.get("summary")
     if isinstance(sm, list):
         # 列表型 summary 逐元素 str 后换行合并（code-review item 0232c4dd078f，
@@ -2992,6 +3000,12 @@ def _persist_terminal_message_trace(runner, run_id: str, message: str) -> str:
     <run_id>.txt``（转录本体之外的第二留痕，供人工取证与验证场景 rg 命中）
     并记 WARNING 携节选。写失败返回空串、只记 WARNING，不改变 run 失败判定
     （对齐既有抢救口径）；message 为空（无终局消息可留痕）返回空串零动作。
+
+    留档策略（code-review item d77b681b3127）：框架侧对本留痕无自动清理
+    与保留期，每个 error 收场且终局消息非空的 run 永久新增一个
+    ``terminal-salvage-<run_id>.txt``、随失败 run 次数线性累积——留由外部
+    运维按需清理（对齐 ``_archive_failed_evolution_out`` 的 ``.failed``
+    留档取舍口径）。
     """
     text = str(message or "")
     if not text.strip():

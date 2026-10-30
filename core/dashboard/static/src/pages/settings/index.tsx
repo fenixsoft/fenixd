@@ -175,6 +175,7 @@ export default function SettingsPage() {
   // 未保存改动则先询问，拒绝则原地不动（Menu/Select 均受控，取消不掉显示态）。
   const confirmDiscardPanelEdits = (): boolean => {
     if (!anyPanelDirty()) return true;
+    // [fenix-ignore:f9165022c4ac] info 级风格权衡：window.confirm 与 PromptsPanel 切项目确认（item f2830281595d）既有口径一致，改 App.useApp() modal.confirm 需把同步布尔判定重构为异步回调且破坏该统一口径，不值得改
     return window.confirm('当前页签的修改尚未保存，切换将丢弃，确定继续？');
   };
 

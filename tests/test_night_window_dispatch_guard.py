@@ -290,7 +290,7 @@ class TestConnectivityPreflight(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _dispatch(self, agent_type=None, spec_name=None, gai_side_effect=None,
+    def _dispatch_to_spawn_point(self, agent_type=None, spec_name=None, gai_side_effect=None,
                   env_overrides=None):
         """跑 _run_agent 至 spawn 点（Popen 以标记异常中止）。
 
@@ -369,7 +369,7 @@ class TestConnectivityPreflight(unittest.TestCase):
 
     def test_probe_infra_exception_fail_open_dispatches(self):
         """探测自身抛非 DNS 异常 → 记日志后照常派发（Popen 触达）。"""
-        reached, calls, deferred = self._dispatch(
+        reached, calls, deferred = self._dispatch_to_spawn_point(
             agent_type="administrator",
             gai_side_effect=ValueError("probe infra boom"))
         self.assertTrue(reached, "探测自身异常 MUST NOT 阻断派发（fail-open）")
@@ -380,7 +380,7 @@ class TestConnectivityPreflight(unittest.TestCase):
 
     def test_whitelist_probe_by_spec_name_fallback(self):
         """未传 agent_type 的直调维护车道按 spec_name 归一（evolution 探测）。"""
-        reached, calls, deferred = self._dispatch(
+        reached, calls, deferred = self._dispatch_to_spawn_point(
             agent_type=None, spec_name="evolution",
             gai_side_effect=socket.gaierror(-2, "no dns"))
         self.assertFalse(reached, "探测失败 → 顺延（Popen 不触达）")
@@ -392,7 +392,7 @@ class TestConnectivityPreflight(unittest.TestCase):
         """administrator/code-fix 直传 agent_type 命中白名单（探测后顺延）。"""
         for agent_type in ("administrator", "code-fix"):
             with self.subTest(agent_type=agent_type):
-                reached, calls, deferred = self._dispatch(
+                reached, calls, deferred = self._dispatch_to_spawn_point(
                     agent_type=agent_type,
                     gai_side_effect=socket.gaierror(-2, "no dns"))
                 self.assertFalse(reached)
@@ -403,7 +403,7 @@ class TestConnectivityPreflight(unittest.TestCase):
     def test_dispatch_family_not_probed(self):
         """dispatch 族（agent_type=implementer 等）不探测——即使 spec_name
         撞白名单词（agent_type 优先归一）。"""
-        reached, calls, deferred = self._dispatch(
+        reached, calls, deferred = self._dispatch_to_spawn_point(
             agent_type="implementer", spec_name="code-review",
             gai_side_effect=socket.gaierror(-2, "no dns"))
         self.assertTrue(reached, "dispatch 族 MUST NOT 做探测顺延")
@@ -413,7 +413,7 @@ class TestConnectivityPreflight(unittest.TestCase):
     def test_dispatch_family_types_not_probed(self):
         for agent_type in ("spec-review", "dispute-judge", "verifier", None):
             with self.subTest(agent_type=agent_type):
-                reached, calls, _ = self._dispatch(
+                reached, calls, _ = self._dispatch_to_spawn_point(
                     agent_type=agent_type,
                     spec_name=("evo-some-user-spec"
                                if agent_type is None else None),
@@ -426,7 +426,7 @@ class TestConnectivityPreflight(unittest.TestCase):
         目标，直接放行派发、不发起探测。"""
         with mock.patch.dict("os.environ",
                              {"ANTHROPIC_BASE_URL": ""}, clear=False):
-            reached, calls, deferred = self._dispatch(
+            reached, calls, deferred = self._dispatch_to_spawn_point(
                 agent_type="code-fix", env_overrides={},
                 gai_side_effect=socket.gaierror(-2, "no dns"))
         self.assertTrue(reached, "无探测目标按 fail-open 放行派发")

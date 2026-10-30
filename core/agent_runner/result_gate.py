@@ -2471,12 +2471,14 @@ _SELFCHECK_USAGE = (
     "用法: python3 -m core.agent_runner.result_gate --selfcheck <结果文件路径>\n"
     "对 .fenix-run-result.json 执行与 daemon 侧收工硬门同源的自证校验\n"
     "（worktree 内可跑、零网络、零 daemon 依赖；只读目标文件，零副作用）。\n"
-    "退出码: 0=PASS, 1=FAIL（违规明细逐条打 stderr）, 2=用法错误。\n"
+    "退出码: 0=PASS, 1=FAIL（违规明细逐条打 stderr）, 2=用法错误, "
+    "3=自检环境故障（非产物违规，不按违规明细修复）。\n"
 )
 
 
 def run_selfcheck(result_file) -> int:
-    """结果文件收工自证（退出码 0=PASS / 1=FAIL）。
+    """结果文件收工自证（退出码 0=PASS / 1=FAIL；环境侧故障归一为退出码 3，
+    契约见 ``_SELFCHECK_USAGE``）。
 
     复用生产校验体（同一函数对象，非复制逻辑），对指定结果文件依次执行：
 
@@ -2505,13 +2507,37 @@ def run_selfcheck(result_file) -> int:
                 f"tasks.md 对账）: {path}"
             )
             spec_name = ""
+        elif "/" in spec_name or "\\" in spec_name or ".." in spec_name:
+            # 路径穿越加固（code-review item c7c0bfdbf9a0）：spec 自报值直接
+            # 参与 tasks.md 与 code-review.json 的读取路径拼接，含路径分隔符
+            # 或 ".." 时读取范围会越出 worktree。按既有「缺非空 spec 字段」
+            # 分支同型处置：记一条 spec 字段违规并按空串降级（下游 Path 空
+            # 段折叠，判据语义与缺 spec 一致，见
+            # _selfcheck_dispositions_violations 内注释）。
+            violations.append(
+                f"结果文件 spec 字段含路径分隔符或 '..'（implementer 产物硬门，"
+                f"spec 须为纯名称，禁止路径穿越）: {path}"
+            )
+            spec_name = ""
         wt_path = path.resolve().parent
-        gate_err = _check_impl_result_artifact(
-            _SelfcheckShim(wt_path), spec_name, None, wt_path)
-        if gate_err is not None:
-            violations.append(gate_err)
-        violations.extend(
-            _selfcheck_dispositions_violations(data, wt_path, spec_name))
+        try:
+            gate_err = _check_impl_result_artifact(
+                _SelfcheckShim(wt_path), spec_name, None, wt_path)
+            if gate_err is not None:
+                violations.append(gate_err)
+            violations.extend(
+                _selfcheck_dispositions_violations(data, wt_path, spec_name))
+        except Exception as e:
+            # 环境侧故障兜底（code-review item b7eb818a7d43）：shim 惰性导入
+            # （ImportError 等）或校验体未预期异常若逸出，进程以 traceback
+            # 退出且退出码恰为 1，与「1=FAIL（可修复的产物违规）」契约冲突，
+            # 会被 agent 误读为逐条违规明细而去「修复」。归一为独立退出码 3：
+            # stderr 行不复用「selfcheck FAIL」前缀、不计入违规条数，与违规
+            # 明细可区分（契约见 _SELFCHECK_USAGE）。
+            sys.stderr.write(
+                f"selfcheck 环境故障（非产物违规，勿按违规明细修复）: "
+                f"自检校验段抛出 {type(e).__name__}: {e}\n")
+            return 3
     if violations:
         for v in violations:
             sys.stderr.write(f"selfcheck FAIL: {v}\n")

@@ -18,16 +18,33 @@ import type { ConfigData } from '@/services/dashboard';
 // setFieldsValue，恰好覆盖本守卫要保护的未保存编辑。仅对键的序列化输入把
 // dayjs 字段归一为与配置同构的 'HH:mm' 字符串，使键只由配置内容决定、与
 // 求值时刻的墙钟日期无关；回填数据本身仍用 buildValues 原产物（dayjs 值），
-// 不受影响。dayjs 判定用 duck-typing（对象值且带 format 方法，Date/普通对象
-// 均无此方法），避免为此引入 dayjs 依赖。
+// 不受影响。归一递归展开数组与普通对象成员（code-review item 0ae3745d5a2e）：
+// buildValues 若把 dayjs 值嵌进数组/嵌套对象，仅处理顶层会漏归一，键仍带墙钟
+// 日期。dayjs 判定用 duck-typing（对象值且带 format 方法，Date/普通对象均无
+// 此方法），避免为此引入 dayjs 依赖；递归只深入数组与普通对象（原型为
+// Object.prototype/null），Date 等其它对象原样透传，序列化行为与此前一致。
 const toBackfillKeyValues = (values: unknown): Record<string, unknown> => {
+  const normalize = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(normalize);
+    if (typeof v === 'object' && v !== null) {
+      if (typeof (v as { format?: unknown }).format === 'function') {
+        return (v as { format: (f: string) => string }).format('HH:mm');
+      }
+      const proto = Object.getPrototypeOf(v);
+      if (proto === Object.prototype || proto === null) {
+        const nested: Record<string, unknown> = {};
+        for (const [k, item] of Object.entries(v as Record<string, unknown>)) {
+          nested[k] = normalize(item);
+        }
+        return nested;
+      }
+    }
+    return v;
+  };
   const out: Record<string, unknown> = {};
   if (typeof values !== 'object' || values === null) return out;
   for (const [k, v] of Object.entries(values)) {
-    out[k] =
-      typeof v === 'object' && v !== null && typeof (v as { format?: unknown }).format === 'function'
-        ? (v as { format: (f: string) => string }).format('HH:mm')
-        : v;
+    out[k] = normalize(v);
   }
   return out;
 };

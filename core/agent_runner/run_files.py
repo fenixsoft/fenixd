@@ -25,7 +25,7 @@ _logger = logging.getLogger("fenixd.agent_runner.run_files")
 
 # run_id 前缀 → agent 类型（唯一真源）。⚠️ 顺序敏感：更长的前缀必须排在
 # 其子串前缀之前（planner-judge-/planner-plan- 先于 planner-），首个命中即止。
-# core/dashboard/data.py:get_runs 与本模块 run_spec_part 均消费此表；
+# core/dashboard/data/runs.py:get_runs 与本模块 run_spec_part 均消费此表；
 # core/admin_monitor.py:_RUN_PREFIXES 是它的子集（只统计计入失败的前缀）。
 # 新增 run 前缀只改这里，别再复制一份——data.py 曾因漂移副本漏掉
 # spec-review-/dispute-judge-，评审 Agent 在时间线上退化为泛型 "agent"。
@@ -274,6 +274,14 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
             victim.unlink()
             cleaned += 1
             _logger.info("archive_spec_runs: SPEC 归档清理 run 产物 %s", victim.name)
+        except FileNotFoundError:
+            # 候选是顶层与 archive/ 两次独立 glob 的拼接、非原子快照（code-review
+            # item f6c9dadd698b）：runs_retention_check 若恰在其间把终态 run 从
+            # 顶层移入 archive/（文件名不变），同一文件出现在两处候选，另一路径
+            # 的 unlink 必然落空——文件实际已被清理，降级为 debug，不与真实删除
+            # 失败混淆。
+            _logger.debug("archive_spec_runs: %s 已不存在（疑似保留清理移档竞态），跳过", victim)
+            continue
         except OSError as e:
             _logger.warning("archive_spec_runs: 无法删除 %s: %s", victim, e)
             continue

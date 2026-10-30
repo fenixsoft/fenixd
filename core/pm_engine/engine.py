@@ -3906,6 +3906,8 @@ class PMEngine:
 
         「期间无成功派发」的代理判据：窗口内没有任何 run 流文件被写入即视为
         无派发活动（失败的 run 也算活动——有活动说明调度仍在工作，不是假就绪）。
+        扫描失败（OSError）＝活动不可知，保守返回 True 跳过本轮假就绪上报
+        （item 9f63271c2f36，与 budget.py 扫描失败不改判口径对齐）。
         """
         runs_dir = self.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
@@ -3932,8 +3934,21 @@ class PMEngine:
                             return True
                     except OSError:
                         continue
-        except OSError:
-            return False
+        except OSError as e:
+            # 扫描失败＝活动不可知 ≠ 确无活动（item 9f63271c2f36）：按 False
+            # 兜底会把 IO 抖动/权限异常误判为「窗口内无派发活动」，假就绪巡检
+            # （check_blockers 豁免链唯一消费点）据此触发 dispatch_stalled 假阳性
+            # 升级、空耗 Administrator run。与 budget.py _count_normal_completed_
+            # impl_runs（扫描失败返回 None 跳过对账）/ _impl_run_unmaterialized
+            # （扫描失败按未落盘保守处理）的「扫描失败＝不可知、不改判」口径
+            # 对齐：保守视为有活动，跳过本轮假就绪上报，WARNING 留痕（真饿死
+            # 仍由「Waiting in ready queue」警告可见，不被本分支掩盖）。
+            self.logger.warning(
+                "pm_engine",
+                f"Runs-dir scan failed for '{spec_name}' "
+                f"(treating as recent activity, skipping stall report): {e}",
+            )
+            return True
         return False
 
     def _dependencies_satisfied(self, spec_name: str) -> bool:

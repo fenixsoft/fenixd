@@ -2171,9 +2171,17 @@ class ProviderCircuit:
             if not st:
                 return 0.0
             try:
-                return float(st.get("cooldown_until") or 0.0)
+                until = float(st.get("cooldown_until") or 0.0)
             except (TypeError, ValueError):
                 return 0.0
+        if until <= self._pm._now():
+            # 到期未回收（条目 pop 由查询闸门 is_signal_kill_cooldown 的到期
+            # 推进负责，本读路径不清零不 pop）：与 switch_cooldown_until 同款
+            # 口径（code-review item cf76b67ccb9a）——不回写状态键，保留原时间
+            # 戳供诊断；仅对本查询返回 0.0，使按差值钳制的恢复排程消费侧
+            # （backoff._cooldown_remaining）不拿到过期时间戳。
+            return 0.0
+        return until
 
     def signal_kill_counts(self, spec_name: str) -> int:
         """当前连续信号死法次数（测试/观测辅助）。"""
