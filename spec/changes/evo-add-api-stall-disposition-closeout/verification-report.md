@@ -1,35 +1,22 @@
 # 验证报告：evo-add-api-stall-disposition-closeout
 
-> ⚠️ 本报告由框架于 2026-10-30T13:34:47Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-10-30T13:30:25.180556+00:00+run-result@mtime1793367275670138713
+> ⚠️ 本报告由框架于 2026-10-30T13:51:47Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-10-30T13:51:46.449292+00:00+run-result@mtime1793368306529273355
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 14/15 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 15/15 场景通过，0 失败，0 错误（全部场景通过）**
 
-15 场景：14 pass / 1 fail。唯一失败 monitor-escalated-signal-negative-controls 为产品缺陷（product-bug，major）：AdminMonitor 升级信号检测面缺 success 终态门控，曾停滞但正常完成的 run 被误落 api_round_stall_escalated major 信号，违反验收「无信号、无重试意图」。与上轮裁决同指纹、同根因（本轮独立复核 admin_monitor.py:3258-3310 确认仍无终态判据），分类不变；上轮两处场景文件缺陷修复后本轮复跑均转 pass。走 bug-found 派修复链：检测面补 result 终态行读取与 success 豁免，并建议同步补单测负控 success 终态用例。
+全绿快道: 15/15 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 14 |
-| 失败 | 1 |
+| 通过 | 15 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
+| 产品 Bug | 0 |
 | 本链增量 Token（输入） | 0.45M |
 | 本链增量 Token（输出） | 0.11M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· exit_code/output_match（信号负控）
-
-- 关联场景：monitor-escalated-signal-negative-controls
-- 描述：AdminMonitor api_round_stall_escalated 升级信号检测面缺 success 终态门控：曾停滞但正常完成（success 终态）且 latency_max=400s 的 run 被误落 major 升级信号并触发 Administrator 处置留痕，违反 tasks.md 验收「曾停滞但正常完成：无信号、无重试意图」，会对健康收尾 run 持续产生误报人工升级噪音
-- 根因：core/admin_monitor.py:3258-3310 _check_api_round_stall_escalated 仅校验 latency_max 类型与 >STALL_ROUND_ESCALATE_SECONDS 阈值（:3306-3310），不读 run jsonl 的 result 终态行，success/error 形态对检测面不可见；重试意图面（maintenance_runs 车道收尾）已正确门控（lane-escalated-success-no-retry pass），仅信号面缺门控
-- 证据（场景 monitor-escalated-signal-negative-controls 结构化证据，引用）：
-  - failed_assertions: [{"type": "exit_code", "selector": "负控(a) ok-escalated（success 终态+latency_max=400）", "expected": 0, "actual": 1}, {"type": "output_match", "selector": "combined contains ESC-SIGNAL-NEGATIVES-OK", "expected": "ESC-SIGNAL-NEGATIVES-OK", "actual": "AssertionError: ok-escalated: 不应落升级信号，实际落 kind=signal（escalated=True，run_id=code-review-1790006001）与 kind=escalation 留痕各 1 条，脚本中止"}]
-  - screenshots: []
-  - first_failed_step: 步骤1 run：负控(a) ok-escalated 断言失败——AdminMonitor 对 success 终态 run（latency_max=400）仍落 api_round_stall_escalated 升级信号
 
 
 ## 场景结果
@@ -46,18 +33,11 @@
 | stall-ctx-input-tokens-provider | 留痕富化：api_round_stall 事件 context（_stall_ctx）在 warning-escalated 档补当轮上下文规模（input tokens）与 provider 字段，供跨日归因积累（tasks 3.1；出处 core/agent_runner/runner.py:6492-6540、proposal.md 目标 4） | pass | 0/2 | - |
 | runner-stall-comment-consistency | 注释一致性：runner.py 发射点（不 kill、不重派）与延迟铁律两处注释按新行为更新——运行中路径不触发约束不变，指向收尾后 AdminMonitor 检测面/信号面，不再绝对化宣称不写 admin_alerts（spec 需求 5；出处 core/agent_runner/runner.py:6491、:7065） | pass | 0/2 | - |
 | monitor-escalated-signal-dedup | 升级信号与去重：error 终态 run jsonl 终态 run_metrics 行 latency_max=726.284（>300）→ AdminMonitor 巡检（run_once，节拍镜像 _check_code_review_stall）落 1 条 api_round_stall_escalated 信号（spec=null、run_id 进 hash 位）；同进程二轮与跨 monitor 实例均不新增（tasks 2.1、验收 2；出处 core/admin_monitor.py:1714/:2427、core/admin_store.py:694-720） | pass | 0/2 | - |
-| monitor-escalated-signal-negative-controls | 信号负控：曾停滞但正常完成（success 终态 + latency_max 400）、未达升级线（error + latency_max 200）、零样本投影（error + latency_max None）三类 run 均不落升级信号（tasks 2.1、验收 2/4；出处 core/agent_runner/latency.py:43 STALL_ROUND_ESCALATE_SECONDS 严格大于比较） | failed（已修正） | 2/2 | product-bug |
+| monitor-escalated-signal-negative-controls | 信号负控：曾停滞但正常完成（success 终态 + latency_max 400）、未达升级线（error + latency_max 200）、零样本投影（error + latency_max None）三类 run 均不落升级信号（tasks 2.1、验收 2/4；出处 core/agent_runner/latency.py:43 STALL_ROUND_ESCALATE_SECONDS 严格大于比较） | pass | 0/2 | - |
 | monitor-stall-redispatch-consume-cap-cooldown | 受控重试消费：AdminMonitor 对 stall_redispatch 意图按冷却+单飞骨架消费——冷却到期前不重派、到期后以原 manifest 重派恰一次且 redispatch_of 指向原 run、同生命周期第二个意图不再重派（上限 1 次）（tasks 2.4、验收 3；出处 core/admin_monitor.py:2177-2262 冷却/上限/单 Timer 守卫骨架、:2264 起消费链） | pass | 0/2 | - |
 | deliverable-tests-api-stall-disposition-pass | 交付测试文件全绿：tests/test_api_stall_disposition.py 覆盖 error 终态 latency 一致、成功终态不回归、无停滞零变化、抛出路径零样本不 NameError、信号去重、意图互斥/上限/redispatch_of 链（tasks 4.1+4.2；出处 spec/changes/evo-add-api-stall-disposition-closeout/tasks.md 第 4 节） | pass | 0/2 | - |
 | regression-grading-and-persistence-tests | 回归：既有停滞分级与 run metrics 持久化测试不回归——成功终态透传、分级纯函数、发射点级别、终态行契约均保持（验收 1 成功终态透传不回归；出处 tests/test_api_stall_signal_grading.py、tests/test_run_metrics_persistence.py） | pass | 0/2 | - |
 | regression-ratelimit-redispatch-tests | 回归：既有 429 重派登记/归因/消费与手动 worker 意图上交测试不回归——stall 意图复用同骨架不得破坏 ratelimit 通道（tasks 2.3/2.4 互斥前提；出处 tests/test_provider_failover.py、tests/test_code_review.py） | pass | 0/2 | - |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
 
 ## 本轮场景集变更
 
