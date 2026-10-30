@@ -231,15 +231,18 @@ class TestThreeArchivePaths(unittest.TestCase):
         from core.config import ConfigLoader
 
         r = auto_archive_check(self.root, ConfigLoader.resolve_config(self.root))
-        # 阈值 1、3 条终态未归档 → 归档最久 2 条，keep 保留（1 ≤ 阈值）
-        self.assertEqual(r["archived"], 2)
+        # 排水语义（evo-spec-changes-archive-drain R1）：阈值 1、3 条终态未归档
+        # → >= 阈值即触发，归档至低于阈值——3 条全部归档（keep 不再保留，
+        # 0 < 1 收敛），updated 升序 auto-1 → auto-2 → keep
+        self.assertEqual(r["archived"], 3)
         active = parse_state(self.root)
         self.assertNotIn("auto-1", active)
         self.assertNotIn("auto-2", active)
+        self.assertNotIn("keep", active)
         manifest = parse_archived_state(self.root)
         self.assertEqual(manifest["auto-1"]["archived_by"], "auto")
         self.assertEqual(manifest["auto-2"]["archived_by"], "auto")
-        self.assertIn("keep", active)
+        self.assertEqual(manifest["keep"]["archived_by"], "auto")
 
     def test_archive_rejected_does_not_evict(self):
         """目标已存在（conflict）与非终态被拒：STATE 与清单均不变。"""

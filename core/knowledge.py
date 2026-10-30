@@ -68,7 +68,7 @@ from core.knowledge_backfill import (
 # todo.md 结构正则单源（code-review item 8455037f0c1f 口径：MUST NOT 另立
 # 同值副本）——台账龄期扫描复用其日期节识别。
 from core.todo_format import TODO_DATE_RE
-from core.timelib import now_local
+from core.timelib import now_local, parse_ts
 from core.proc_utils import guard_killpg
 
 logger = logging.getLogger("fenixd.knowledge")
@@ -812,10 +812,12 @@ def _stale_distill_retry_lines(proot: Path) -> list:
         line = raw.strip()
         m = TODO_DATE_RE.match(line)
         if m:
-            try:
-                cur = date.fromisoformat(m.group(1))
-            except ValueError:
-                cur = None
+            # 日期解析走 timelib 唯一原语（add-timelib-consolidation-layer
+            # 守卫：fromisoformat 禁止出现在 timelib 之外——存量违例迁出。
+            # parse_ts 纯日期串语义与裸 fromisoformat 等价：非法串归 None，
+            # 合法 ``YYYY-MM-DD`` 归本地零点 aware，.date() 取回同一日历日）。
+            parsed = parse_ts(m.group(1))
+            cur = parsed.date() if parsed is not None else None
             continue
         if cur is not None and line.startswith("- [ ]") and (
             "knowledge-distill 重试：" in line
