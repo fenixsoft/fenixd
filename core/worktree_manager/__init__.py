@@ -22,12 +22,8 @@ import subprocess  # noqa: F401
 import threading  # noqa: F401
 import time  # noqa: F401
 
-from pathlib import Path
-
 from core.proc_utils import is_claude_process
 from core.wip_checkpoint import collapse_wip_commits
-from core.agent_runner.run_files import run_spec_part
-from core.worktree_manager.artifact_paths import ArtifactPathMatcher
 
 # 历史导入路径兼容（verify-process-lifecycle D4：判定上移至 core.proc_utils，
 # 避免 v2_dev_server 等模块 import 本模块造成循环依赖）。

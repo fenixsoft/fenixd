@@ -338,10 +338,12 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 置 progress，在「新一轮 run 已开始 / run 刚结束」窗口内可重复触发或取消到
   // 错误 review_id。用独立的 pending 态在这两个动作进行期间禁用按钮。
   const [actionPending, setActionPending] = useState(false);
+  const actionPendingRef = useRef(false);
   // 「自动修复」独立 pending 门控（add-code-fix-manual-trigger 4.1）：
   // 触发流程含最长 20s 的结果轮询，不复用 actionPending——否则轮询期间
   // 其余动作按钮被连带禁用 20s。
   const [fixRunPending, setFixRunPending] = useState(false);
+  const fixRunPendingRef = useRef(false);
   // 触发成功重启信号（code-review item 62f764043d88）：CodeFixProgressCard
   // 随 Tab 常驻挂载、轮询停即死；触发成功递增本计数作为 restartKey 传入，
   // 重启其轮询以接管新修复链的进度展示（触发成功不额外操作的既有契约不变）。
@@ -362,6 +364,25 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // actionPending——后者语义是「HTTP 请求进行中」，会连带禁用取消与自动
   // 修复按钮。
   const [ackPending, setAckPending] = useState(false);
+  const ackPendingRef = useRef(false);
+  // 在途态 ref 镜像（code-review item 086a8a10e39d，对齐 RegressionTab
+  // 3c9de7427788 的 mark* 范式）：useState 置位到下一次渲染前不生效，同一
+  // 事件循环内连点两个动作按钮时，后一个 handler 的入口守卫读到的仍是旧
+  // false，两份触发 POST 并发下发——入口守卫改读同步写入的 ref；置位与
+  // 复位（含 finally）都经下方 mark* 同步写双份，避免在途态卡死。渲染口径
+  // （loading/disabled）仍读 state。
+  const markActionPending = (v: boolean) => {
+    actionPendingRef.current = v;
+    setActionPending(v);
+  };
+  const markFixRunPending = (v: boolean) => {
+    fixRunPendingRef.current = v;
+    setFixRunPending(v);
+  };
+  const markAckPending = (v: boolean) => {
+    ackPendingRef.current = v;
+    setAckPending(v);
+  };
   // 忽略操作独立 pending 门控（code-review item 717b2251caaa）：行级忽略与
   // 批量「全部忽略」共用该门控——请求进行中禁用/呈 loading 入口按钮并防连点，
   // 避免 Promise.allSettled 期间对同一批 item_id 重复发请求、叠加多条 toast。
@@ -625,8 +646,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 页签/切项目置位哨兵立即停止轮询且不弹提示。
   const handleTrigger = async (scope: 'full' | 'window') => {
     const label = scope === 'full' ? '全库审查' : '当期审查';
-    if (actionPending || ackPending) return; // pending 门控（code-review item 133cba8a5748）
-    setActionPending(true);
+    if (actionPendingRef.current || ackPendingRef.current) return; // pending 门控（code-review item 133cba8a5748）
+    markActionPending(true);
     ackPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     let wantedAt: string | undefined;
     try {
@@ -690,11 +711,11 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         message.error(`${label}失败: ${errMsg}`);
       }
     } finally {
-      setActionPending(false);
+      markActionPending(false);
     }
     if (!wantedAt) return; // 触发未受理（catch 分支已反馈），不进入受理等待态
 
-    setAckPending(true);
+    markAckPending(true);
     try {
       // 第 1 段：等结果（1s 间隔，上限 120s）
       const deadline = Date.now() + ACK_RESULT_POLL_BUDGET_MS;
@@ -785,7 +806,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         message.info('审查已受理但启动较慢，请稍后在进度卡片或 daemon 日志确认');
       }
     } finally {
-      setAckPending(false);
+      markAckPending(false);
     }
   };
 
@@ -795,8 +816,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // request_created 回链本次 requested_at 的结果；触发成功不额外操作——
   // CodeFixProgressCard 既有 2s 轮询自动接管进度展示。
   const handleTriggerFixRun = async () => {
-    if (fixRunPending || actionPending) return; // pending 门控防连点
-    setFixRunPending(true);
+    if (fixRunPendingRef.current || actionPendingRef.current) return; // pending 门控防连点
+    markFixRunPending(true);
     fixRunPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     try {
       const res = await triggerCodeFixRun(project);
@@ -858,7 +879,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
         message.error(`自动修复失败: ${errMsg}`);
       }
     } finally {
-      setFixRunPending(false);
+      markFixRunPending(false);
     }
   };
 
@@ -875,7 +896,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       message.warning('进度信息尚未就绪（缺 review_id），请稍后重试');
       return;
     }
-    if (actionPending) return;
+    if (actionPendingRef.current) return;
     // 弹窗停留期间 progress 可能被 SSE/轮询刷新：onOk 用开框前捕获的
     // reviewId，不再读闭包里的 progress（同 handleGenerate 的 ref 复核思路，
     // 取消目标在确认时已锁定）。
@@ -887,7 +908,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       cancelText: '不取消',
       okButtonProps: { danger: true },
       onOk: async () => {
-        setActionPending(true);
+        markActionPending(true);
         try {
           await cancelRun(project, reviewId);
           message.success('已受理取消请求，审查将停止');
@@ -899,7 +920,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
             message.error(`取消失败: ${errMsg}`);
           }
         } finally {
-          setActionPending(false);
+          markActionPending(false);
         }
       },
     });

@@ -378,6 +378,14 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 出界（2026-09-25 移动端越界实测：整表 913px / 视口 390px）。
   const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<RegressionResult | null>(null);
+  // 快照 ref 镜像（code-review item e8b493096141，同步写于 setSnapshot 各写
+  // 入点）：handleTrigger/handleTriggerIssues 受理成功后取 started_at 基线
+  // 时，渲染期闭包捕获的 snapshot 可能已滞后——POST 往返期间某次 loadResult
+  // 已把更新的 started_at 写进 state，闭包仍是旧值，基线与 state 不同源会让
+  // started_at 推进 effect 把旧基线判为「已推进」，本次回归尚未启动即清除
+  // 等待过渡态。读侧经 snapshotRef.current 取与 state 同源的最新快照；渲染
+  // 口径仍读 state。
+  const snapshotRef = useRef<RegressionResult | null>(null);
   const [triggering, setTriggering] = useState(false);
   const triggeringRef = useRef(false);
   // 受理已提交、daemon 尚未 mark_running 的过渡态：点击受理到服务端 running
@@ -437,6 +445,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     try {
       const data = await getRegressionResult(project);
       if (seq !== seqRef.current) return;
+      snapshotRef.current = data; // ref 镜像同步写（e8b493096141）
       setSnapshot(data);
       setPollFailed(false);
       // 运行中 → 轮询快照（2s）；回落即停止（task 5.6：以服务端 running 为准）
@@ -507,6 +516,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // effect 之前：project 变化时清空先于新请求响应执行，不会误清新项目刚取到
   // 的数据。
   useEffect(() => {
+    snapshotRef.current = null; // ref 镜像同步写（e8b493096141）
     setSnapshot(null);
     setAwaitingStart(false);
   }, [project]);
@@ -635,8 +645,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       message.success('已受理，daemon 将开始执行全量回归');
       // 受理成功 → 等待启动过渡态（动画条即时反馈，running 置位后由
       // 真实进度接管；见 awaitingStart 注释）。记录受理时刻快照基线，供
-      // started_at 推进清除 effect 判定本次回归已启动
-      baselineStartedAtRef.current = snapshot?.started_at ?? null;
+      // started_at 推进清除 effect 判定本次回归已启动。经 snapshotRef 取
+      // 最新快照（e8b493096141）：闭包捕获的 snapshot 在 POST 往返期间可能
+      // 已被 loadResult 更新，基线须与 state 同源，否则推进 effect 会把旧
+      // 基线判为「已推进」、本次回归尚未启动即清除过渡态
+      baselineStartedAtRef.current = snapshotRef.current?.started_at ?? null;
       setAwaitingStart(true);
       // 触发成功立即刷新：新一轮运行中态（running=true）由服务端 marker 提供，
       // 轮询接管（task 5.6）。经 ref 调最新闭包（code-review item 7a7ce4f87987）：
@@ -763,8 +776,9 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       message.success('已受理，daemon 将只重跑失败/错误/长耗时的用例（无法定向时自动回退全量）');
       // 受理成功 → 等待启动过渡态（同 handleTrigger，running 置位后由真实
       // 进度接管；受理时刻快照基线同 handleTrigger）；经 ref 调最新闭包
-      // （7a7ce4f87987，切项目防旧闭包后发先至）
-      baselineStartedAtRef.current = snapshot?.started_at ?? null;
+      // （7a7ce4f87987，切项目防旧闭包后发先至）；基线同样经 snapshotRef
+      // 取最新快照（e8b493096141，保证与 state 同源）
+      baselineStartedAtRef.current = snapshotRef.current?.started_at ?? null;
       setAwaitingStart(true);
       void loadResultRef.current();
     } catch (e) {

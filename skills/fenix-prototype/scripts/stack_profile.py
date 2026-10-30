@@ -96,20 +96,36 @@ class ReactAntdProbe(StackProbe):
 
     name = "react-antd"
 
+    #: 与 bootstrap_vendor.pinned 同口径：能从中提取 ``X.Y[.Z]`` 的 range 才可精确化
+    _PINNABLE_VERSION = re.compile(r"\d+\.\d+(\.\d+)?")
+
     def detect(self, deps: dict[str, str]) -> dict | None:
         if "react" not in deps or "antd" not in deps:
             return None
         react_version = deps["react"]
+        antd_version = deps["antd"]
         confidence = "high" if "react-dom" in deps else "low"
         framework = {"name": "react", "version": react_version}
         if "react-dom" in deps:
             framework["dom_version"] = deps["react-dom"]
-        return {
+        unpinnable = [
+            f"{dep}@{version}" for dep, version in (
+                ("react", react_version), ("antd", antd_version),
+            ) if not self._PINNABLE_VERSION.search(version)
+        ]
+        detected = {
             "profile": self.name,
             "framework": framework,
-            "component_library": {"name": "antd", "version": deps["antd"]},
+            "component_library": {"name": "antd", "version": antd_version},
             "confidence": confidence,
         }
+        if unpinnable:
+            # 画像层面标注形态，避免下游 vendor/CDN 降级被笼统的安装失败掩盖
+            detected["warnings"] = [
+                "版本 range 不可精确化（" + "、".join(unpinnable)
+                + "）：vendor/CDN 路径可能降级",
+            ]
+        return detected
 
 
 #: 探针注册表（顺序即优先级）。扩展新栈在此追加，不改判定主流程。
@@ -147,16 +163,36 @@ def _iter_source_files(
         yield path
 
 
-def _walk_source_files(project: Path) -> list[Path]:
-    """单次全树遍历，产出跳过 SKIP_DIRS 的文件清单（顺序稳定，尽力而为）。"""
-    files: list[Path] = []
-    for path in sorted(project.rglob("*")):
+def _walk_source_files(project: Path) -> tuple[list[Path], bool]:
+    """单次受控遍历，产出跳过 SKIP_DIRS 的文件清单（顺序稳定，尽力而为）。
+
+    遍历即按扩展名分桶（仅收集下游收集器消费的样式/代码两类）并套用
+    ``MAX_FILES_PER_CATEGORY`` 上限，不把整棵文件树物化进内存；桶内按路径
+    排序保证确定性。返回 ``(清单, 是否因上限截断)``。
+    """
+    style: list[Path] = []
+    code: list[Path] = []
+    truncated = False
+    for path in project.rglob("*"):
         if not path.is_file():
             continue
         if any(part in SKIP_DIRS for part in path.relative_to(project).parts):
             continue
-        files.append(path)
-    return files
+        suffix = path.suffix.lower()
+        if suffix in STYLE_EXTS:
+            bucket = style
+        elif suffix in CODE_EXTS:
+            bucket = code
+        else:
+            continue
+        if len(bucket) >= MAX_FILES_PER_CATEGORY:
+            truncated = True
+            continue
+        bucket.append(path)
+        if (len(style) >= MAX_FILES_PER_CATEGORY
+                and len(code) >= MAX_FILES_PER_CATEGORY):
+            break
+    return sorted(style) + sorted(code), truncated
 
 
 #: 只提取「视觉约束相关」的 CSS 自定义属性（前缀命中即收，防 token 表爆炸）。
@@ -283,11 +319,16 @@ def build_profile(project: Path) -> dict:
             ["依赖清单未识别出受支持的浏览器组件库（v1 支持 React+antd）"],
         )
 
-    # 一次全树遍历，三类收集器共享（侦察是尽力而为，不为全仓遍历烧三遍时间）
-    walked = _walk_source_files(project)
+    # probe 在 detect 阶段标记的形态提示（如版本 range 不可精确化）并入画像 warnings
+    warnings.extend(detected.get("warnings") or [])
+
+    # 一次受控遍历，三类收集器共享（侦察是尽力而为，不为全仓遍历烧三遍时间）
+    walked, walk_truncated = _walk_source_files(project)
     css_tokens, css_sources = extract_css_custom_props(project, walked)
     antd_tokens, antd_sources = extract_antd_tokens(project, walked)
     design_doc = extract_design_doc(project)
+    if walk_truncated:
+        warnings.append("源文件扫描达到类别上限，主题/样例收集已截断（侦察尽力而为）")
 
     profile = {
         "schema": SCHEMA_VERSION,

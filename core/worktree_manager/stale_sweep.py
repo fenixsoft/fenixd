@@ -14,6 +14,9 @@ from typing import Optional
 
 from core.git_base_branch import resolve_base_branch
 from core.worktree_manager.constants import STALE_LOCK_IDLE_SECONDS
+# porcelain 渲染解析单源（code-review item 5a95e5fdb8a7）：checked_out 采集段
+# 只保留「分支名集合」投影，解析规则统一在 queries.parse_worktree_porcelain。
+from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
 
 
 class G7StaleSweepMixin:
@@ -155,7 +158,10 @@ class G7StaleSweepMixin:
         merged = {ln.strip() for ln in merged_res.stdout.splitlines() if ln.strip()}
         # worktree 占用全集（宁漏勿误：git 注册的全部 checkout，含管理器
         # 未登记的 carrier）。git 自身亦拒绝删除被 checkout 的分支，此处
-        # 预检只为跳过计数与减少无效删除尝试。
+        # 预检只为跳过计数与减少无效删除尝试。porcelain 渲染解析统一走
+        # queries.parse_worktree_porcelain（code-review item 5a95e5fdb8a7
+        # 单源化）：本采集点只保留「分支名集合」投影，detached
+        # （branch=None）不计。
         wt_res = subprocess.run(
             ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
             capture_output=True,
@@ -166,11 +172,11 @@ class G7StaleSweepMixin:
         )
         checked_out: set = set()
         if wt_res.returncode == 0:
-            for line in wt_res.stdout.splitlines():
-                if line.startswith("branch "):
-                    ref = line[len("branch "):].strip()
-                    if ref.startswith("refs/heads/"):
-                        checked_out.add(ref[len("refs/heads/"):])
+            checked_out = {
+                branch
+                for _wt_path, branch in parse_worktree_porcelain(wt_res.stdout)
+                if branch
+            }
         # STATE 条目单次读取（守卫 (ii) 用）：None（不可解析）时全部分支
         # 由守卫 (i) 的「STATE 不可解析 → 保守保留」兜住，不在此放行。
         states = self._read_state_entries()
@@ -336,11 +342,15 @@ class G7StaleSweepMixin:
         # 直接抛穿 cleanup_stale_worktrees，违背「失败记 WARNING，不阻塞 daemon
         # 启动」承诺（当前写入方均产出 dict，纯防御）。过滤后该记录不获豁免、
         # 照常参与孤儿清扫，与无 worktree_name 的分支模式记录同款兜底语义。
-        legacy_names = {
-            rec.get("worktree_name")
-            for rec in list(self._legacy.values())
-            if isinstance(rec, dict)
-        }
+        # 快照读持 _spec_lock_th：口径同下方 legacy_branches 快照与
+        # _gc_merged_branches 的 _legacy 持锁读（包内「_legacy 变更单一
+        # 持锁纪律」，本函数调用链不持本锁，加锁无重入风险）。
+        with self._spec_lock_th:
+            legacy_names = {
+                rec.get("worktree_name")
+                for rec in list(self._legacy.values())
+                if isinstance(rec, dict)
+            }
         # 在册 legacy 分支快照（code-review item 727d94fd7f95）：持 _spec_lock_th，
         # 口径同 _gc_merged_branches 的 _legacy 快照读（对齐 _reclaim_expired_legacy
         # 的持锁读口径）。供下方 branch -D 删除段豁免被 _legacy 登记（宽限期内续做

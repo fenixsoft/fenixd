@@ -460,6 +460,30 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     }
   };
 
+  // 分面保持激活的跨项目切换清态（code-review item d3d445f9153c，口径同
+  // QualityTab 1189a998e8c1 / RegressionTab 0efd50f9753f）：本组件随 Tabs
+  // 常驻挂载（list.tsx 的 project 来自 useParams、activeTab 持久化），
+  // project 变化只重启下方 [active, project] 主 effect、组件不重挂载，唯一
+  // 清态 effect 仅依赖 [active]——新项目 getSession 响应到达前，events/
+  // started/error/truncated 与补全候选仍渲染上一项目内容。project 变化即
+  // 清空内容态并复位 sessionIdRef：onmessage 的 session_events 帧以
+  // sessionIdRef 比对守卫，复位即天然拦截在飞帧继续追加；事件经 syncEvents
+  // 清空以同步重建 eventsRef 与 uuid 去重集合（只清 state 会被 appendEvents
+  // 从 eventsRef 复活旧事件）。声明序在主 effect 之前：先清空再接回（主
+  // effect 随 project 变化重跑的 loadAll 负责，不在此主动触发）。
+  useEffect(() => {
+    sessionIdRef.current = null;
+    syncEvents([]);
+    setStarted(false);
+    setEnded(false);
+    setTruncated(false);
+    setError('');
+    setSlashCommands([]);
+    setSkills([]);
+    setFiles([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
+
   // 拉全量 + 建立 SSE（分面激活时执行；切离后重新接回）
   useEffect(() => {
     if (!active || !project) return;

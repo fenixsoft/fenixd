@@ -27,6 +27,9 @@ from core.wip_checkpoint import collapse_wip_commits  # noqa: E402
 from core.worktree_manager.types import MergeConflictInfo, WipOccupantInfo
 from core.worktree_manager.constants import WIP_GATE_STASH_PREFIX  # noqa: E402
 from core.worktree_manager.shape import branch_shape_is_verifier  # noqa: E402
+# porcelain 渲染解析单源（code-review item 5a95e5fdb8a7）：解析规则收敛在
+# queries.parse_worktree_porcelain，本模块采集点只保留自己的投影。
+from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
 # quotePath 反转义唯一实现在 core.git_text（本模块原持有一份独立实现，已收敛
 # 委托，code-review 3e99a584fdf5）；别名沿用旧名，调用点零改动。
 from core.git_text import unquote_git_path as _unquote_git_path  # noqa: E402
@@ -74,7 +77,11 @@ def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
                 "--format=%h",
                 f"{merge_base}..HEAD",
                 "--",
-                rel,
+                # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
+                # _backup_untracked_spec_files / queries.file_exists_on_branch
+                # 同口径）：裸 pathspec 会被 git 按 fnmatch 通配展开，spec 名含
+                # */?/[ 等元字符时匹配超出该 spec 目录、在飞修订误报。
+                f":(literal){rel}",
             ],
             capture_output=True,
             text=True,
@@ -399,7 +406,11 @@ class G4MergebackMixin:
                     "status",
                     "--porcelain",
                     "--",
-                    rel,
+                    # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
+                    # _backup_untracked_spec_files / queries.file_exists_on_branch
+                    # 同口径）：裸 pathspec 的 glob 通配在 spec 名含 */?/[ 等
+                    # 元字符时会误收其他路径，merge-back 被误顺延。
+                    f":(literal){rel}",
                 ],
                 capture_output=True,
                 text=True,
@@ -418,12 +429,21 @@ class G4MergebackMixin:
         # /_detect_wip_overlap 等本文件路径采集点同口径）：porcelain 行首 `XY `
         # 状态前缀仅保留供展示，路径段经 _unquote_git_path 反转义，非 ASCII
         # 路径在下方日志与 MergeConflictInfo 文案中直接可读；该函数对无引号行
-        # 幂等（见 core.git_text）。
-        dirty = [
-            f"{ln[:3]}{_unquote_git_path(ln[3:])}"
-            for ln in (raw.strip() for raw in res.stdout.splitlines())
-            if ln
-        ]
+        # 幂等（见 core.git_text）。rename 条目（porcelain v1 形如
+        # ``R  old -> new``，item 9e3bbf431c34）按 rename 语义拆 old/new 分别
+        # 反转义、两条路径都进 dirty 清单，不再以 "old -> new" 合体形态误导
+        # 人工按提示处置。
+        dirty: list = []
+        for raw in res.stdout.splitlines():
+            ln = raw.strip()
+            if not ln:
+                continue
+            if " -> " in ln[3:]:
+                old, new = ln[3:].split(" -> ", 1)
+                dirty.append(f"{ln[:3]}{_unquote_git_path(old)}")
+                dirty.append(f"{ln[:3]}{_unquote_git_path(new)}")
+            else:
+                dirty.append(f"{ln[:3]}{_unquote_git_path(ln[3:])}")
         if not dirty:
             return None
         self.logger.warning(
@@ -1052,10 +1072,11 @@ class G4MergebackMixin:
     def _worktree_name_branch_pairs(self) -> list:
         """``git worktree list --porcelain`` → [(目录名, 路径, 分支), ...]。
 
-        与 find_worktree_by_spec 同口径的 porcelain 渲染（`worktree <path>`
-        开段、`branch refs/heads/<b>` 属段；detached 无 branch 行不计）。
-        命令失败/超时返回空表 → 识别按「零命中=无主」走（升级仅为告警，
-        误判影响有界，MUST NOT 为覆盖盲区引入主树写探测）。
+        porcelain 渲染解析统一走 queries.parse_worktree_porcelain
+        （code-review item 5a95e5fdb8a7 单源化；`worktree <path>` 开段、
+        `branch refs/heads/<b>` 剥前缀属段；detached 无 branch 行不计——
+        本方法投影时滤除）。命令失败/超时返回空表 → 识别按「零命中=无主」
+        走（升级仅为告警，误判影响有界，MUST NOT 为覆盖盲区引入主树写探测）。
         """
         try:
             # -c core.quotePath=false（code-review item 86475b8c092e）：非 ASCII
@@ -1087,21 +1108,15 @@ class G4MergebackMixin:
             return []
         if res.returncode != 0:
             return []
+        # porcelain 渲染解析统一走 queries.parse_worktree_porcelain（code-review
+        # item 5a95e5fdb8a7 单源化；worktree 行开段、branch 行剥 refs/heads/、
+        # _unquote_git_path 兜底残余引号形——da2b5dbddd85 双保险口径已随解析
+        # 规则一并收敛进 helper）。本方法只保留自己的投影：(目录名, 路径, 分支)
+        # 三元组，detached（branch=None）不计。
         pairs: list = []
-        current_path = ""
-        for line in res.stdout.splitlines():
-            if line.startswith("worktree "):
-                # quotePath=false 只豁免高位字节 C 转义，双引号/反斜杠等残余
-                # 引号形经 _unquote_git_path 兜底（对无引号行幂等），与包内
-                # queries 层 porcelain 采集点同口径双保险（da2b5dbddd85）。
-                current_path = _unquote_git_path(line[len("worktree "):].strip())
-                continue
-            if line.startswith("branch ") and current_path:
-                branch = line[len("branch "):].strip()
-                if branch.startswith("refs/heads/"):
-                    branch = branch[len("refs/heads/"):]
-                pairs.append((Path(current_path).name, current_path, branch))
-                current_path = ""
+        for listed_path, listed_branch in parse_worktree_porcelain(res.stdout):
+            if listed_branch:
+                pairs.append((Path(listed_path).name, listed_path, listed_branch))
         return pairs
 
     def _branch_changed_files(self, branch: str) -> set:
