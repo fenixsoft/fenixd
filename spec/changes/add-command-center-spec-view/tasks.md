@@ -30,7 +30,7 @@
 
 - [ ] 2.1 `core/dashboard/data/command_center.py` 新增 spec-runs 聚合函数：两步收集——①全史定序（不限窗扫 live+archive 全量产物、LANE_ALIASES 归并、archived_names 剔除同口径、started 升序编 seq=1..N）；②窗内出列（started ≥ win_start 或 all 全史、输出 started 降序）；每轮 `{seq, run_id, started_ts, inflight}`（inflight=IN_FLIGHT_STATUSES 读侧判定）；started 解析失败行跳过不占 seq；lanes 花名册全量出列（零 run 也出、ROSTER 序+观测 lane 殿后）
 - [ ] 2.2 `core/dashboard/routes/command_center_routes.py` 新增 `GET /api/command-center/spec-runs`：mixin 方法 + `_API_GET_ROUTES` 表驱动追加；project/spec 必填寻址复用 `_command_center_scope` 既有契约（未知项目 200+error 字典）、window 缺省 today 非法值回落
-- [ ] 2.3 后端测试覆盖 spec-runs 四 Scenario：全史定序窗内出列（today 窗 1 轮显 seq=全史末轮）、花名册全量出列与 dispute-judge→judge / repair→code-fix 归并、归档剔除与损坏行跳过不占 seq、未知项目错误契约
+- [ ] 2.3 后端测试覆盖 spec-runs 五 Scenario：全史定序窗内出列（today 窗 1 轮显 seq=全史末轮）、花名册全量出列与 dispute-judge→judge / repair→code-fix 归并、归档剔除与损坏行跳过不占 seq、未知项目错误契约、必填参数缺失同族错误契约（不回落跨项目聚合）
 
 ## 3. 前端：服务层与纯函数
 

@@ -16,7 +16,7 @@
 
 ### Requirement: spec-runs 轮次聚合
 
-系统 MUST 提供只读端点 `GET /api/command-center/spec-runs?project&spec&window`（`project` 必填=spec 所属项目，寻址语义复用既有 `_command_center_scope` 口径：未知/不存在项目返回 200+error 字典；`window` 可选 today/7d/all，缺省 today，非法值防御性回落 today）。响应 MUST 含 `{project, spec, window, lanes}`；`lanes` 为花名册全量出列（零 run 车道也带 `rounds: []`，与 org 卡集合同序同全集：ROSTER 序 + 花名册外观测 lane 殿后；LANE_ALIASES 归并同口径）。轮次收集 MUST 两步：①全史定序——不限窗收集该（车道归并别名后）× 该 spec 的全部 run（扫 live+archive 全量产物，不套 14 日 mtime 粗筛；archived_names 剔除同口径保留），按 started 升序编 `seq`（1=全史最早）；②窗内出列——仅 started ≥ win_start（today/7d）或全史（all）的轮进入响应，按 started 降序输出（最新在前）。每轮条目 MUST 含 `{seq, run_id, started_ts, inflight}`；`inflight` 为 run status ∈ IN_FLIGHT_STATUSES 的读侧判定。started 解析失败的行 MUST 跳过（不硬造轮次、不占 seq）。端点 MUST 纯只读（不新增 POST，遵守本模块既有约定）。
+系统 MUST 提供只读端点 `GET /api/command-center/spec-runs?project&spec&window`（`project` 必填=spec 所属项目，寻址语义复用既有 `_command_center_scope` 口径：未知/不存在项目返回 200+error 字典；`project` 或 `spec` 参数缺失/空值同样返回 200+error 字典（同族契约），MUST NOT 回落跨项目聚合；`window` 可选 today/7d/all，缺省 today，非法值防御性回落 today）。响应 MUST 含 `{project, spec, window, lanes}`；`lanes` 为花名册全量出列（零 run 车道也带 `rounds: []`，与 org 卡集合同序同全集：ROSTER 序 + 花名册外观测 lane 殿后；LANE_ALIASES 归并同口径）。轮次收集 MUST 两步：①全史定序——不限窗收集该（车道归并别名后）× 该 spec 的全部 run（扫 live+archive 全量产物，不套 14 日 mtime 粗筛；archived_names 剔除同口径保留），按 started 升序编 `seq`（1=全史最早）；②窗内出列——仅 started ≥ win_start（today/7d）或全史（all）的轮进入响应，按 started 降序输出（最新在前）。每轮条目 MUST 含 `{seq, run_id, started_ts, inflight}`；`inflight` 为 run status ∈ IN_FLIGHT_STATUSES 的读侧判定。started 解析失败的行 MUST 跳过（不硬造轮次、不占 seq）。端点 MUST 纯只读（不新增 POST，遵守本模块既有约定）。
 
 #### Scenario: 全史定序窗内出列
 
@@ -37,3 +37,8 @@
 
 - **WHEN** `project` 指向不存在项目
 - **THEN** 返回 200 + `{"error": "project not found", "project": ...}` 字典（与既有五端点同族契约）
+
+#### Scenario: 必填参数缺失错误契约
+
+- **WHEN** `project` 或 `spec` 任一参数缺失/为空值
+- **THEN** 返回 200 + error 字典（与未知项目同族契约），MUST NOT 回落为跨项目聚合
