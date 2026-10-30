@@ -3622,6 +3622,50 @@ class ConfigLoader:
         return {"enabled": enabled}
 
     @classmethod
+    def get_knowledge_model(cls, config: Dict[str, Any]) -> "str | None":
+        """读取 ``knowledge.model`` 蒸馏车道显式裸模型名
+        （evo-distill-model-name-fallback 1.1）。
+
+        蒸馏车道此前无任何模型配置键：spawn 不传 ``--model``，生效模型名由
+        claude CLI 按宿主 env 别名（``ANTHROPIC_DEFAULT_*_MODEL``）解析——
+        宿主 settings.json 毒化（带 ``[1M]`` 后缀）时蒸馏 run 恒死于
+        unrecognized_model。本键给蒸馏车道显式传名的配置入口（隔离宿主别名）。
+
+        返回裸模型名 str；None = 回退现行为（spawn 不传名）：
+        - 键缺失 / None：回退 None 并 WARNING（design 口径「未配置/非法/空值
+          回退必告警」——提示蒸馏车道仍裸奔在宿主别名解析下）；
+        - 非空 str：strip 后非空才生效（strip 后空串按空值回退）；
+        - 非法类型 / 空值：WARNING 后回退 None。
+        告警经 _warn_reader_once 进程级去重（30s 热更新不刷屏，回退行为不变）。
+
+        所有消费方（蒸馏 spawn 显式传名）MUST 经本助手读取生效值，而非直读
+        原始配置——保证非法值不流入 spawn 参数。
+        """
+        knowledge = cls._segment_or_empty(config, "knowledge")
+        val = knowledge.get("model")
+        if val is None:
+            cls._warn_reader_once(
+                "knowledge.model",
+                None,
+                _logger.warning,
+                "knowledge.model 未配置：蒸馏 spawn 不传显式模型名，生效名由"
+                "宿主 ANTHROPIC_DEFAULT_*_MODEL 别名解析（宿主 settings 毒化"
+                "时蒸馏 run 恒死于 unrecognized_model）；建议配置裸模型名隔离",
+            )
+            return None
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        cls._warn_reader_once(
+            "knowledge.model",
+            val,
+            _logger.warning,
+            "knowledge.model 非法值 %r（应为非空字符串），回退现行为"
+            "（spawn 不传显式模型名）",
+            val,
+        )
+        return None
+
+    @classmethod
     def get_impl_code_review_enabled(cls, config: Dict[str, Any]) -> bool:
         """读取 ``verify.impl_code_review`` 开关（impl-code-review-gate）。
 

@@ -1028,6 +1028,10 @@ class FenixDaemon:
         # （300s 节拍对齐自动归档挂载；检查点内部按自然日防重，每日只跑一次，
         # audit → graph 先后共用同一唤醒）。
         knowledge_check_ts = time.time()
+        # evo-distill-model-name-fallback 2.1：蒸馏重试台账龄期提醒独立计时
+        # （300s 节拍对齐知识维护检查点同款挂载；扫描内部按自然日幂等，同日
+        # 至多一条 admin 提醒）。
+        ledger_age_check_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -1186,6 +1190,19 @@ class FenixDaemon:
                         knowledge_daily_check(PROJECT_ROOT, self.config, self.logger)
                     except Exception as e:
                         self.logger.error("fenixd", f"Knowledge maintenance check failed: {e}")
+                # 蒸馏重试台账龄期提醒（evo-distill-model-name-fallback 2.1）：
+                # 每 300s 唤醒一次（与知识维护检查点同款挂载，不新建线程），
+                # 扫描内部按自然日幂等——同日至多一条 admin 提醒。不依赖新失败
+                # 发生：蒸馏车道长期无新失败时欠账提醒仍照常产生（R3）。
+                # dashboard --serve 不接入。异常捕获记日志不中断主循环。
+                if time.time() - ledger_age_check_ts >= 300:
+                    ledger_age_check_ts = time.time()
+                    try:
+                        from core.knowledge import check_retry_ledger_age
+
+                        check_retry_ledger_age(PROJECT_ROOT, logger=self.logger)
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Distill retry ledger age check failed: {e}")
                 # 定时调度到期检测（add-spec-scheduling-controls D3）：每 60s
                 # 检查 auto 解冻（frozen_until 到期）与定时拾取（start_after
                 # 到期唤起派发）。周期扫描（full_scan）作为兜底，二者先后到达

@@ -40,7 +40,7 @@ import threading
 import time
 import urllib.parse
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
@@ -54,12 +54,20 @@ from core.agent_runner.harness.one_shot import (
     OneShotCommunicateError,
     run_one_shot,
 )
+# evo-distill-model-name-fallback 1.2：拒识判别 pattern **只读复用**（裸子串
+# 形态常量；其 agent 车道瞬态收窄分类语义不随导入迁移——蒸馏车道仅在非零
+# 退出分支对 stderr 做裸子串判别，不改该常量任何语义）。
+from core.agent_runner.provider_circuit import UNRECOGNIZED_MODEL_TEXT_PATTERNS
 from core.knowledge_backfill import (
     append_todo_line,
     atomic_write_text,
     ledger_has_pending,
+    null_logger,
     register_archive_pending,
 )
+# todo.md 结构正则单源（code-review item 8455037f0c1f 口径：MUST NOT 另立
+# 同值副本）——台账龄期扫描复用其日期节识别。
+from core.todo_format import TODO_DATE_RE
 from core.timelib import now_local
 from core.proc_utils import guard_killpg
 
@@ -684,6 +692,213 @@ def _register_todo_retry(proot: Path, archived_names: list, reason: str) -> None
             logger.info("knowledge-distill 重试台账已存在同文本条目，跳过重复登记")
     except Exception as e:  # noqa: BLE001 — fail-open：台账失败不影响主流程
         logger.warning("knowledge-distill 重试台账登记失败（todo.md 写入异常）: %s", e)
+
+
+# ── 拒识判别与裸模型名派生（evo-distill-model-name-fallback 1.2）───────────
+
+# stderr 中被拒生效模型名的候选提取形态（容忍两种已知报错排布，提取失败不
+# 阻断判别——只决定「能否派生裸名重试」）：
+# 1) 标签/短语后直接跟名：[claude-code:unrecognized_model] glm-5.3-flash[1M]
+# 2) 先名后短语：Model "glm-5.3-flash[1M]" is not recognized / unknown model
+_UNRECOGNIZED_MODEL_NAME_RES = (
+    re.compile(
+        r"unrecognized[_ ]model\]?\s*[:：]?\s*[\"'`]?"
+        r"([^\s\"'`，,；;）)】]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"[\"'`]?([^\s\"'`，,；;）)【]+)[\"'`]?\s+"
+        r"(?:is\s+)?(?:unrecognized|unrecognised|unknown|not\s+recognized)",
+        re.IGNORECASE,
+    ),
+)
+
+# 生效名尾部的会话档位别名后缀（``[1M]`` 等）：剥掉即裸模型名（proposal 实测
+# 形态 glm-5.3-flash[1M] → 裸名 glm-5.3-flash）。
+_MODEL_ALIAS_SUFFIX_RE = re.compile(r"(?:\[[^\]\[\s]+\])+\s*$")
+
+
+def _spawn_model_from_config(proot: Path) -> "str | None":
+    """解析蒸馏车道显式裸模型名（``knowledge.model``；fail-open 回退 None）。
+
+    None = 配置未提供可用名（未配置/非法/空值/解析失败），spawn 回退现行为
+    不传名——回退告警由 ConfigLoader.get_knowledge_model 承担（回退必告警），
+    解析异常在此留痕。
+    """
+    try:
+        from core.config import ConfigLoader
+
+        return ConfigLoader.get_knowledge_model(ConfigLoader.resolve_config(proot))
+    except Exception as e:  # noqa: BLE001 — 配置面失败不阻蒸馏派发
+        logger.warning("knowledge.model 配置解析失败（回退不传显式模型名）: %s", e)
+        return None
+
+
+def _stderr_hits_unrecognized_model(stderr_text: str) -> bool:
+    """非零退出 stderr 是否命中拒识形态（UNRECOGNIZED_MODEL_TEXT_PATTERNS
+    裸子串全量匹配，只读复用；仅在非零退出分支调用——该形态行在 glm/deepseek
+    链成功 run 的启动期 stderr 同样在场，对全量 stderr 恒匹配会把一切失败误
+    归因拒识，非零退出前置把误报面收窄到已失败 run）。"""
+    if not stderr_text:
+        return False
+    low = stderr_text.lower()
+    return any(p.lower() in low for p in UNRECOGNIZED_MODEL_TEXT_PATTERNS)
+
+
+def _extract_rejected_model(stderr_text: str) -> "str | None":
+    """从拒识 stderr 提取被拒生效模型名（提取不到返回 None，调用方按
+    「无法派生裸名」收口不重试）。"""
+    for rx in _UNRECOGNIZED_MODEL_NAME_RES:
+        m = rx.search(stderr_text or "")
+        if m:
+            name = m.group(1).strip("\"'`，,；;)】")
+            if name:
+                return name
+    return None
+
+
+def _bare_model_name(rejected: str) -> "str | None":
+    """剥掉生效名尾部会话档位别名后缀得裸模型名；无后缀（已是裸名形态，
+    MERGE-NOTES 2026-10-30：裸名也会被网关拒识）返回 None——同因重试必然
+    再拒，不构成可用兜底名。"""
+    bare = _MODEL_ALIAS_SUFFIX_RE.sub("", rejected or "").strip()
+    return bare if bare and bare != (rejected or "").strip() else None
+
+
+# ── 重试台账龄期提醒（evo-distill-model-name-fallback 2.1）────────────────
+
+# 登记龄期阈值：todo.md 重试行所在日期节超 24 小时未重试即提醒（R3）。登记
+# 时刻由行归位的日期节（## YYYY-MM-DD）承载（_register_todo_retry 既有口径），
+# 按日期节本地零点起算。
+RETRY_STALE_AFTER = timedelta(hours=24)
+# 周期扫描节拍由挂载侧（fenixd.py 主循环 300s 检查点，对齐知识维护检查点
+# 同款挂载）控制，本模块不设独立线程/定时器；dashboard --serve 不接入（对齐
+# recover_pending 单进程口径）。MUST NOT 仅依赖新失败发生时顺带扫描——蒸馏
+# 车道长期无新失败时欠账提醒仍须照常产生（恰为本 SPEC 主张实例的场景）。
+
+# 同日幂等标记（daemon 进程内当日标记：常驻即每日至多一条提醒；重启重发至
+# 多一条可接受——design 落点 2）。测试经重置本模块属性隔离。
+_STALE_RETRY_REMINDED_ON: "date | None" = None
+
+# todo.md 重试行的归档名提取（_register_todo_retry 登记形态：
+# "- [ ] knowledge-distill 重试：归档 {names} — {reason}"）。
+_RETRY_LINE_NAMES_RE = re.compile(
+    r"^- \[ \] knowledge-distill 重试：归档 (?P<names>.+?) — "
+)
+
+
+def _section_midnight(now, d: date):
+    """日期节登记时刻起算点：该日期的本地零点（aware；日期节仅承载天粒度，
+    零点起算为保守口径）。"""
+    return datetime.combine(d, datetime.min.time(), tzinfo=now.tzinfo)
+
+
+def _stale_distill_retry_lines(proot: Path) -> list:
+    """解析 todo.md 未勾选的知识蒸馏重试行，返回 ``[(行文本, 登记日期)]``。
+
+    登记日期取行归位的日期节（``## YYYY-MM-DD``，结构正则单源
+    core.todo_format.TODO_DATE_RE）；已勾选（``[x]``）或已移除的行不计入
+    （R3「行被勾选/移除后停止」）。文件缺失/不可读/行不在任何日期节下
+    fail-open 返回空表。
+    """
+    todo_path = Path(proot) / ".fenix" / "todo.md"
+    try:
+        text = todo_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    cur: "date | None" = None
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        m = TODO_DATE_RE.match(line)
+        if m:
+            try:
+                cur = date.fromisoformat(m.group(1))
+            except ValueError:
+                cur = None
+            continue
+        if cur is not None and line.startswith("- [ ]") and (
+            "knowledge-distill 重试：" in line
+        ):
+            out.append((line, cur))
+    return out
+
+
+def check_retry_ledger_age(project_root, logger=None) -> dict:
+    """蒸馏重试台账龄期扫描（R3）：登记超 24 小时未重试时每日至多一条提醒。
+
+    通道：``AdminStore.append(kind=SIGNAL)``（既有先例 core/code_fix.py
+    write_regression_failed_alert，不发明新通道）；同日幂等以 daemon 进程内
+    当日标记（模块属性 _STALE_RETRY_REMINDED_ON）承载。扫描由 daemon 周期
+    维护循环（fenixd.py 主循环 300s 检查点）触发，不依赖新失败发生；
+    dashboard --serve 不接入。行被勾选/移除后无 stale 条目自然停发。
+    拒写（AdminStore 返回 None）不置当日标记，下一周期重试。
+
+    Returns:
+        {"reminded": bool, "stale": [names...]}，幂等跳过时附
+        ``"suppressed": True``。
+    """
+    global _STALE_RETRY_REMINDED_ON
+    proot = Path(project_root)
+    log = logger or null_logger()
+    now = now_local()
+    stale = [
+        (line, d)
+        for line, d in _stale_distill_retry_lines(proot)
+        if (now - _section_midnight(now, d)) > RETRY_STALE_AFTER
+    ]
+    if not stale:
+        return {"reminded": False, "stale": []}
+    names = []
+    for line, d in stale:
+        m = _RETRY_LINE_NAMES_RE.match(line)
+        names.append(
+            f"{m.group('names') if m else line[:80]}（登记 {d.isoformat()}）"
+        )
+    today = now.date()
+    if _STALE_RETRY_REMINDED_ON == today:
+        return {"reminded": False, "stale": names, "suppressed": True}
+    brief = "；".join(names[:5]) + ("…" if len(names) > 5 else "")
+    description = (
+        f"knowledge-distill 重试台账欠账超 24 小时未重试（{len(stale)} 条）："
+        f"{brief}"
+    )
+    recommended = (
+        "查 fenixd.log 对应蒸馏失败原因（unrecognized_model 拒识时先核对宿主"
+        " ANTHROPIC_DEFAULT_*_MODEL 别名与 knowledge.model 配置）；人工处置后"
+        "勾选/移除 .fenix/todo.md 对应重试行"
+    )
+    try:
+        from core.admin_store import AdminStore, SIGNAL
+
+        rec = AdminStore(proot, logger=None).append(
+            {
+                "kind": SIGNAL,
+                "signal_type": "knowledge_distill_retry_stale",
+                "spec": None,
+                "severity": "warning",
+                "description": description,
+                "evidence": (
+                    f"todo.md={proot / '.fenix' / 'todo.md'}; "
+                    f"stale_entries={brief}"
+                ),
+                "source": "knowledge-distill",
+                "recommended_action": recommended,
+            }
+        )
+    except Exception as e:  # noqa: BLE001 — 提醒失败不阻主循环
+        log.warning("knowledge", f"蒸馏重试台账龄期提醒写入失败（不阻断）: {e}")
+        return {"reminded": False, "stale": names}
+    if rec is None:
+        # 拒写（文件损坏留底保护等）：不置当日标记，下一周期重试
+        log.warning("knowledge", "蒸馏重试台账龄期提醒被拒写（未落盘），下一周期重试")
+        return {"reminded": False, "stale": names}
+    _STALE_RETRY_REMINDED_ON = today
+    log.warning(
+        "knowledge",
+        f"蒸馏重试台账欠账提醒（{len(stale)} 条超 24h 未重试）：{brief}",
+    )
+    return {"reminded": True, "stale": names}
 
 
 def _git(proot: Path, args: list, timeout: int = 60):
@@ -1473,6 +1688,48 @@ class DistillManager:
         Returns:
             (ok, error)：ok=True 进程已退出且退出码 0（产物合法性交校验脚本）。
         """
+        # evo-distill-model-name-fallback 1.1：spawn 恒传显式裸模型名（取
+        # knowledge.model 配置；未配置/非法/空值回退现行为不传名并告警——
+        # 告警在 ConfigLoader 读取器内），隔离宿主 ANTHROPIC_DEFAULT_*_MODEL
+        # 别名毒化。1.2：非零退出且 stderr 命中 unrecognized_model 时，仅当
+        # 本次未显式传名（生效名是宿主别名解析产物）且能从报错派生出与生效名
+        # 不同的裸模型名，才以该裸名自动重试一次；显式传名仍被拒为确定性失败
+        # （同因重试必然再拒），不重试。重试收拢在本方法内（对外仍是单一
+        # (ok, err)），上游 give_up→登台账路径天然不重复登记。
+        model = _spawn_model_from_config(proot)
+        ok, err = self._spawn_once(proot, prompt, model)
+        if ok:
+            return True, None
+        if model is None and _stderr_hits_unrecognized_model(err or ""):
+            rejected = _extract_rejected_model(err or "")
+            bare = _bare_model_name(rejected) if rejected else None
+            if bare:
+                logger.warning(
+                    "knowledge-distill run 死于 unrecognized_model（生效模型名"
+                    " %s 疑为宿主别名解析产物），以裸模型名 %s 自动重试一次",
+                    rejected,
+                    bare,
+                )
+                ok_retry, err_retry = self._spawn_once(proot, prompt, bare)
+                if ok_retry:
+                    logger.info(
+                        "knowledge-distill 以裸模型名 %s 重试成功", bare
+                    )
+                    return True, None
+                return False, (
+                    f"{err_retry}；首次拒识（生效模型名 {rejected}）后已以裸"
+                    f"模型名 {bare} 自动重试一次仍失败"
+                )
+            # 裸名形态（生效名已无可剥别名后缀）或未能提取生效名：同因重试
+            # 必然再拒，直接按终态收场；reason 注明拒识形态与生效模型名。
+            return False, (
+                f"{err}；拒识形态 unrecognized_model（生效模型名 "
+                f"{rejected or '未知'}），无可用更裸模型名可兜底，不重试"
+            )
+        return False, err
+
+    def _spawn_once(self, proot: Path, prompt: str, model: "str | None") -> tuple:
+        """单次 spawn claude -p 并等待结束（``model``=本次显式传名；None=不传）。"""
         # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：claude
         # 命令构造唯一入口在 claude_adapter.build_spawn_spec——提示词经 stdin
         # 传入（SpawnRequest 缺省传输形态；不走 argv：argv 全文驻留
@@ -1496,6 +1753,10 @@ class DistillManager:
                     # 现状形态无 --output-format（裸文本 stdout 留痕），显式
                     # None 压掉 SpawnRequest 的 stream-json 缺省
                     output_format=None,
+                    # evo-distill-model-name-fallback 1.1：显式裸模型名经既有
+                    # SpawnRequest.model→claude_adapter --model 透传链路下发；
+                    # None = 不传 flag（回退现行为，生效名由 CLI 按别名解析）
+                    model=model,
                     permission_mode="bypassPermissions",
                     env_mode=ENV_MODE_CLEAN,
                     project_root=str(proot),
