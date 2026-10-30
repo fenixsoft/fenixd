@@ -1,11 +1,13 @@
-// 立项原话引用块渲染单测（add-timeline-origin-request 任务 3.3）。
+// 立项原话展示块渲染单测（add-timeline-origin-request 任务 3.3；2026-10-30
+// 样式改版：由次级灰色引用形态改为 run 节点 Agent 输出总结盒同款盒式卡片，
+// 断言随行更新）。
 // 运行：cd core/dashboard/static && node --test tests/specTimelineOriginRequest.test.mjs
 // 无 jsdom：经 esbuild 把 SpecTimeline（tsx 依赖链）打包为临时 ESM（react/
 // react-dom/antd/dayjs/@ant-design/icons 保持 external），services/dashboard
 // 以 onResolve 插件指向桩模块（SSR 不跑 effect，桩只为模块链完整）；
 // react-dom/server SSR 渲染断言：state 节点携带非空 origin_request 时渲染
-// 原话引用块（.spec-origin-request-quote，pre-wrap 保留换行 + 次级引用边框），
-// 字段缺失/空字符串/其余节点不携带时不渲染任何引用块结构。
+// 原话展示块（.spec-origin-request-quote，pre-wrap 保留换行 + token 盒式边框
+// + 默认正文色），字段缺失/空字符串/其余节点不携带时不渲染任何展示块结构。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -122,14 +124,21 @@ async function renderTimelineHtml(items) {
   );
 }
 
-test('state 节点携带非空 origin_request：渲染引用块（pre-wrap + 引用边框 + 原文全文）', async () => {
+test('state 节点携带非空 origin_request：渲染展示块（pre-wrap + Agent 输出盒式边框 + 原文全文）', async () => {
   const html = await renderTimelineHtml([stateNode({ origin_request: ORIGIN_TEXT })]);
-  assert.ok(html.includes(QUOTE), '引用块容器（spec-origin-request-quote）必须渲染');
-  assert.ok(html.includes('给时间轴加上立项原话展示'), '引用块含原话首行');
-  assert.ok(html.includes('第二行保持换行'), '引用块含原话次行');
+  assert.ok(html.includes(QUOTE), '展示块容器（spec-origin-request-quote）必须渲染');
+  assert.ok(html.includes('给时间轴加上立项原话展示'), '展示块含原话首行');
+  assert.ok(html.includes('第二行保持换行'), '展示块含原话次行');
   assert.ok(html.includes('\n'), 'SSR 输出保留原文换行');
   assert.ok(html.includes('white-space:pre-wrap'), '多行原文以 pre-wrap 保留换行');
-  assert.ok(html.includes('border-left:3px solid'), '次级引用边框（与回退 reason 行视觉分层）');
+  assert.ok(html.includes('border:1px solid'), 'Agent 输出同款盒式边框（token 着色）');
+  assert.ok(!html.includes('border-left:3px solid'), '旧次级引用边框形态不得残留');
+  // 展示块内的正文不再是 secondary 灰（取展示块片段断言，不跨全文档误伤）
+  const quoteSeg = html.slice(html.indexOf(QUOTE), html.indexOf(QUOTE) + 600);
+  assert.ok(!quoteSeg.includes('secondary'), '展示块正文不再用 secondary 灰');
+  // 用户定调（2026-10-30）：完整展示不限高，容器不得出现 max-height/overflow 滚动
+  assert.ok(!quoteSeg.includes('max-height'), '展示块不限高（无 max-height）');
+  assert.ok(!quoteSeg.includes('overflow'), '展示块无 overflow 滚动容器');
 });
 
 test('字段缺失：不渲染任何引用块结构', async () => {

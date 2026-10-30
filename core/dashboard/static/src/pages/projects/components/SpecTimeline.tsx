@@ -153,26 +153,28 @@ export default function SpecTimeline({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     {statusSeq}
                   </div>
-                  {/* 立项原话引用块（add-timeline-origin-request 任务 3.2）：首个
+                  {/* 立项原话展示块（add-timeline-origin-request 任务 3.2）：首个
                       state 节点（含折叠链）携带非空 origin_request 时，在 from→to
-                      状态行下方渲染原文引用——次级引用样式（左侧引用边框+浅底）
-                      与回退 reason 行视觉分层；多行原文 white-space: pre-wrap
-                      保留换行完整显示；字段缺失或空字符串不渲染任何引用块结构。
-                      超长异常数据由容器限高滚动兜底（design D3），展示不截断 */}
+                      状态行下方渲染原文——样式与 run 节点 Agent 输出总结盒同源
+                      （token 边框/底色盒式卡片 + 默认正文色，用户定调弃用此前的
+                      次级灰色小字引用形态，顺带消除硬编码浅色在暗色主题下的
+                      亮色补丁）；多行原文 white-space: pre-wrap 保留换行完整显示；
+                      字段缺失或空字符串不渲染任何展示块结构。
+                      用户定调（2026-10-30）不限高不滚动，原文完整撑开展示
+                      （覆盖 design D3 的限高滚动兜底） */}
                   {item.origin_request && (
                     <div
                       className="spec-origin-request-quote"
                       style={{
                         marginTop: 10,
-                        maxHeight: 200,
-                        overflow: 'auto',
-                        padding: '6px 10px',
-                        borderLeft: '3px solid #d9d9d9',
-                        background: 'rgba(0, 0, 0, 0.02)',
-                        borderRadius: 4,
+                        padding: '8px 12px',
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                        borderRadius: 8,
+                        background: token.colorBgContainer,
+                        fontSize: 13,
                       }}
                     >
-                      <Typography.Text type="secondary" style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>
+                      <Typography.Text style={{ whiteSpace: 'pre-wrap' }}>
                         {item.origin_request}
                       </Typography.Text>
                     </div>
