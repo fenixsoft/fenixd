@@ -12,8 +12,10 @@
 """
 
 import json
+import os
 from datetime import datetime
 
+from core.dashboard.data.runs import RUN_STALE_SECONDS
 from core.self_review import (
     _collect_run_files,
     collect_failed_run_samples,
@@ -71,6 +73,77 @@ class TestCollectRunFilesUnion:
         assert len(files) == 1
         assert files[0] == cur
         assert files[0] != arc
+
+    # ── evo-add-self-review-dsh-events-dedup 2.1/2.2 ─────────────────────
+    # dsh 车道每个 run 同侧落 <run_id>.dsh-events.jsonl 伴随事件流（投影层
+    # 取证产物、事件词表无终态类型），裸 glob 会把它当独立 run 计数并入
+    # stale 桶。以下用例锁定：收集面统一排除该后缀、伴随流不入 stale、
+    # 正常命名 run 零误伤。
+
+    def test_dsh_events_companion_counted_once(self, tmp_path):
+        """2.1 主文件+伴随流并存 → 收集集仅主文件、runs 统计计 1 次。"""
+        root = tmp_path / "proj"
+        root.mkdir()
+        _make_run(root, "impl-dsh-1", [
+            _line(type="result", result="任务完成，验证通过", num_turns=2),
+        ], in_archive=True)
+        # 伴随流：dsh_adapter 同侧落盘形态（尾部无终态事件）
+        companion = root / ".fenix" / "runs" / "archive" / "impl-dsh-1.dsh-events.jsonl"
+        companion.write_text('{"type":"assistant"}\n', encoding="utf-8")
+        files = _collect_run_files(root / ".fenix" / "runs")
+        assert [f.stem for f in files] == ["impl-dsh-1"]
+        assert not any(f.name.endswith(".dsh-events.jsonl") for f in files)
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["total"] == 1
+        assert stats["succeeded"] == 1
+        assert stats["running"] == 0
+
+    def test_dsh_events_companion_not_in_stale_bucket(self, tmp_path):
+        """2.1 孤儿伴随流（无终态 + mtime 陈旧）不得落入 stale 桶。
+
+        修复前形态：伪 run_id 尾行无终态 → _classify_run 判 running →
+        _reconcile_running_run（mtime 超 RUN_STALE_SECONDS 且指标查无）
+        改判 stale——正是 10-30/10-29 两窗 stale 全为伴随流的实拍。
+        """
+        root = tmp_path / "proj"
+        root.mkdir()
+        arc = root / ".fenix" / "runs" / "archive"
+        arc.mkdir(parents=True)
+        companion = arc / "impl-dsh-orphan-1.dsh-events.jsonl"
+        companion.write_text('{"type":"assistant"}\n', encoding="utf-8")
+        # mtime 以 os.utime 注入（测试不 sleep），触发修复前 stale 对账路径
+        stale_mtime = datetime.now().astimezone().timestamp() - RUN_STALE_SECONDS - 60
+        os.utime(companion, (stale_mtime, stale_mtime))
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["total"] == 0
+        assert stats["stale"] == 0
+        assert stats["running"] == 0
+
+    def test_filter_no_false_positive_on_normal_runs(self, tmp_path):
+        """2.2 过滤不误伤：正常命名 run 的统计行为与既有用例一致。
+
+        run_id 中段含 dsh-events 字样（判式锚定 stem 尾部、不误伤）与
+        当前目录伴随流并存（两处 glob 一次覆盖）两种形态均保持既有行为。
+        """
+        root = tmp_path / "proj"
+        root.mkdir()
+        _make_run(root, "impl-dsh-events-probe-1", [
+            _line(type="result", result="任务完成", num_turns=2),
+        ])
+        _make_run(root, "impl-plain-1", [
+            _line(type="result", result="任务完成", num_turns=2),
+        ], in_archive=True)
+        # 当前目录伴随流同样被排除
+        (root / ".fenix" / "runs" / "impl-plain-1.dsh-events.jsonl").write_text(
+            '{"type":"assistant"}\n', encoding="utf-8"
+        )
+        files = _collect_run_files(root / ".fenix" / "runs")
+        assert {f.stem for f in files} == {"impl-dsh-events-probe-1", "impl-plain-1"}
+        stats = collect_runs_stats(root, datetime(2000, 1, 1, 0, 0).astimezone())
+        assert stats["total"] == 2
+        assert stats["succeeded"] == 2
+        assert stats["stale"] == 0
+        assert stats["running"] == 0
 
 
 class TestCollectRunsStatsArchive:

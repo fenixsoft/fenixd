@@ -549,7 +549,25 @@ def _collect_run_files(runs_dir: Path) -> list:
 
     归档目录不存在时退化为仅当前目录。返回按 run_id 去重后的 Path 列表
     （run_id = p.stem）。只读遍历，不触发任何写操作。
+
+    dsh 伴随事件流排除（evo-add-self-review-dsh-events-dedup）：dsh 车道
+    每个 run 同侧落 ``<run_id>.dsh-events.jsonl`` 取证旁路 dump（dsh_adapter
+    写侧命名单源保证合法 run_id 不含该后缀），它是投影层取证产物、非 run
+    产物——裸 glob 会把每个已完结 dsh run 的伴随流当独立 run 计数（虚增
+    total），且其事件词表无终态类型、经 _reconcile_running_run 对账落入
+    stale 桶（信号 100% 失真）。合并点统一按 liveness._is_dsh_events_dump
+    判式过滤（该判式已被 liveness/run_files/dashboard runs 三处消费，本处
+    第四处同源引用防名单漂移），两处 glob 一次覆盖；文件本体不动，仍可作
+    后续深扫证据源。
     """
+    try:
+        # 延迟导入对齐本模块风格（避免加载序副作用；liveness 顶层拉入
+        # harness/one_shot 链，不宜上提模块级）。
+        from core.agent_runner.liveness import _is_dsh_events_dump  # noqa: PLC0415
+    except Exception:  # pragma: no cover - 加载序异常回退同语义本地判式
+        def _is_dsh_events_dump(run_file: Path) -> bool:
+            return run_file.stem.endswith(".dsh-events")
+
     files: list = []
     try:
         files = list(runs_dir.glob("*.jsonl"))
@@ -564,7 +582,8 @@ def _collect_run_files(runs_dir: Path) -> list:
                     files.append(p)
         except OSError:
             pass
-    return files
+    # 合并点统一过滤：两处 glob 一次覆盖，伴随流不产伪 run_id
+    return [f for f in files if not _is_dsh_events_dump(f)]
 
 
 def _run_terminal_success(project_root, run_id: str) -> Optional[bool]:
