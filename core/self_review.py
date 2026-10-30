@@ -2665,6 +2665,11 @@ class SelfReviewScheduler:
         D4：worktree 从 main 分出，未提交文件对后续 agent 不可见——「新 agent
         据此提出 spec」要求条目入库。提交仅含 todo.md 路径。push 失败降级
         WARNING（与归档自动提交同策略，不影响下次追加）。返回是否完成 commit。
+
+        push 前经 ``core.evolution._git_has_remote`` 探测 remote（两车道共用
+        探测助手，evo-fix-evolution-push-remote-probe-skip）：零 remote 记
+        DEBUG（含项目根路径）跳过 push，commit 语义不变。本车道每日至多一次
+        push，无刷屏面，不做聚合告警（design 规定聚合仅 evolution 车道）。
         """
         git = ["git", "-C", str(self.project_root)]
         try:
@@ -2718,6 +2723,17 @@ class SelfReviewScheduler:
                     f"git commit todo.md 失败: {output[:200]}",
                 )
             return False
+        # push 前探测 remote（与 evolution 车道共用探测助手）：零 remote 仓
+        # push 结构性必败（fatal: No configured push destination.），跳过
+        # push 记 DEBUG（含项目根路径），commit 语义不变。延迟导入避免模块
+        # 环（knowledge_backfill 复用 _commit_todo_marker 同先例）。
+        from core.evolution import _git_has_remote  # noqa: PLC0415
+
+        if not _git_has_remote(git):
+            self.logger.debug(
+                "self_review", f"零 remote，跳过 push: {self.project_root}"
+            )
+            return True
         try:
             push = subprocess.run(
                 git + ["push"],
@@ -2727,12 +2743,17 @@ class SelfReviewScheduler:
                 timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
-            self.logger.warning("self_review", f"git push 失败（降级 WARNING）: {e}")
+            self.logger.warning(
+                "self_review",
+                f"git push 失败（降级 WARNING）: {self.project_root}: {e}",
+            )
             return True
         if push.returncode != 0:
             self.logger.warning(
                 "self_review",
-                f"git push 失败（降级 WARNING，commit 已产生）: {push.stderr.strip()[:200]}",
+                f"git push 失败（降级 WARNING，commit 已产生）: "
+                # stderr 尾部（[-200:]）：尾部保留最终 fatal 行，失败可逐条归仓
+                f"{self.project_root}: {push.stderr.strip()[-200:]}",
             )
         return True
 

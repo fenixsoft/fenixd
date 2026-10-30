@@ -1004,6 +1004,86 @@ def _git_c_env() -> dict:
     return env
 
 
+# ── 回写 push 前探测与恒失败聚合（evo-fix-evolution-push-remote-probe-skip）──
+# 进程内聚合状态：项目根字符串 → {"consecutive": int, "alerted_on": str}。
+# 仅进程内存活，重启归零（与 config 线协议守卫告警同款限制）；连续失败计数
+# 自最近一次成功 push 起累计、成功清零；当日已告警标记跨日重置（计数不清零）。
+_push_aggr_state: Dict[str, Dict[str, Any]] = {}
+
+
+def _git_has_remote(git: List[str]) -> bool:
+    """探测目标仓 remote 配置：零 remote 返回 False（push 应跳过）。
+
+    evolution todo 回写与 self_review ``_commit_todo`` 两车道共用本探测
+    助手（单点收口避免实现漂移；knowledge_backfill 的 append/upsert 写入
+    链经延迟导入共享 ``_commit_todo_marker`` 自动获得同一语义）。``git``
+    为含 ``-C <repo>`` 的命令前缀。
+
+    受管仓零 remote 时 push 结构性必败（``fatal: No configured push
+    destination.``），调用方据 False 跳过 push。探测自身故障（git 异常/
+    超时/非零退出）按「有 remote」保守处理——不因探测故障改变 push 语义，
+    失败仍走既有 push 降级路径。
+    """
+    try:
+        probe = subprocess.run(
+            git + ["remote"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_git_c_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if probe.returncode != 0:
+        return True
+    return bool(probe.stdout.strip())
+
+
+def _todo_push_fail_reset(proot) -> None:
+    """push 成功：清零该项目根的连续失败计数。
+
+    当日已告警标记不动——同仓同日 WARNING 至多一条，成功后再失败仍等次日
+    才再聚合（标记只跨日重置）。
+    """
+    state = _push_aggr_state.get(str(proot))
+    if state is not None:
+        state["consecutive"] = 0
+
+
+def _todo_push_fail_note(proot, detail: str) -> None:
+    """evolution 车道 push 失败聚合记录：同仓同日 WARNING 至多一条。
+
+    当日首败发一条聚合 WARNING（含项目根路径、连续失败计数、stderr 尾部）；
+    当日后续失败不再记常规 WARNING，仅递增计数并降级记 DEBUG（含 stderr
+    尾部，诊断细节不丢失）。零 remote 的结构性必败在 push 之前已被
+    ``_git_has_remote`` 探测跳过，不进本函数。
+    """
+    state = _push_aggr_state.setdefault(
+        str(proot), {"consecutive": 0, "alerted_on": ""}
+    )
+    state["consecutive"] += 1
+    today = timelib.now_local().strftime("%Y-%m-%d")
+    if state["alerted_on"] != today:
+        # 当日首败（含跨日首败）：发聚合 WARNING 并重置当日已告警标记
+        # （连续失败计数不清零，跨日累计）
+        state["alerted_on"] = today
+        _logger.warning(
+            "evolution: todo.md git push 失败（降级 WARNING，commit 已产生；"
+            "连续第 %d 次失败）: %s: %s",
+            state["consecutive"],
+            proot,
+            detail[-200:],
+        )
+    else:
+        _logger.debug(
+            "evolution: todo.md git push 失败（当日已告警，降级 DEBUG；"
+            "连续失败计数 %d）: %s: %s",
+            state["consecutive"],
+            proot,
+            detail[-200:],
+        )
+
+
 def _commit_todo_marker(
     proot,
     message_suffix: Optional[str] = None,
@@ -1028,7 +1108,11 @@ def _commit_todo_marker(
 
     - todo.md 未被 git 跟踪（含 ls-files 非零退出——目录非 git 仓库）→ 跳过
       提交，行为与不提交时一致，不报错；
-    - push 失败降级 WARNING 不重试（commit 已产生，与 _commit_todo 同策略）；
+    - push 前探测 remote（``_git_has_remote``，与 self_review 车道共用）：
+      零 remote 记 DEBUG（含项目根路径）跳过 push，commit 语义不变（commit
+      已产生是既有行为）；
+    - push 失败降级为聚合告警不重试（commit 已产生）：同仓同日 WARNING 至多
+      一条（``_todo_push_fail_note``），文案含项目根路径与 stderr 尾部；
     - 提交失败（含 index.lock 竞争）降级为日志留痕，不抛错、不回滚已写入
       内容、不做自动重试（下一次写入自然再试）。返回是否完成 commit。
     """
@@ -1103,6 +1187,13 @@ def _commit_todo_marker(
                 output[:200],
             )
         return False
+    # push 前探测 remote（evo-fix-evolution-push-remote-probe-skip）：零
+    # remote 仓 push 结构性必败（fatal: No configured push destination.），
+    # 跳过 push 记 DEBUG（含项目根路径），commit 语义不变（commit 已产生
+    # 是既有行为，函数仍报成功）
+    if not _git_has_remote(git):
+        _logger.debug("evolution: todo.md 零 remote，跳过 push: %s", proot)
+        return True
     try:
         push = subprocess.run(
             git + ["push"],
@@ -1112,13 +1203,12 @@ def _commit_todo_marker(
             env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        _logger.warning("evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: %s", e)
+        _todo_push_fail_note(proot, str(e))
         return True
     if push.returncode != 0:
-        _logger.warning(
-            "evolution: todo.md git push 失败（降级 WARNING，commit 已产生）: %s",
-            push.stderr.strip()[:200],
-        )
+        _todo_push_fail_note(proot, push.stderr.strip())
+    else:
+        _todo_push_fail_reset(proot)
     return True
 
 
