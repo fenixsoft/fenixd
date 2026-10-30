@@ -389,8 +389,10 @@ _GUARD_MODULE = "core/proc_utils.py"
 # 值＝该文件内探活调用点数量（漂移即须人工核对并同步本清单）。
 # regression 车道的整组探活已并入 core.proc_utils.kill_process_group 单点
 # （item b090579ac5a0），经 guard_killpg 信号 0 表达，不再有本文件探活点。
+# adjudication_narrative 的同款探活亦已并入该单点（item 614e441bb97a，
+# 薄适配器 kill_process_group(sigkill_only_if_group_alive=True) 形态），
+# 本文件不再有探活点，故不列。
 _PROBE_EXEMPT = {
-    "core/adjudication_narrative.py": 1,  # 同款探活
     "core/serving_registry.py": 2,  # kill_process_group 组空判定（pgid 路径 + 孤儿组接管路径）
 }
 

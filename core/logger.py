@@ -39,6 +39,10 @@ class JsonFormatter(logging.Formatter):
     # 遮蔽敏感值，遮蔽口径对齐 api_runner 的「<已脱敏:N 字符>」；子串匹配
     # 覆盖 access_token/client_secret 等常见变体，键名小写并把 - 归一为 _
     # 后匹配。
+    # 数值豁免：int/float（含 bool）值不遮蔽——键名含 token 的数值几乎恒为
+    # 用量计数/度量（input_tokens、cache_read_input_tokens 等 run_metrics
+    # 观测契约字段，tests/test_run_metrics_persistence.py 钉死原样落盘），
+    # 秘密值实践中恒为字符串；字符串与容器仍整值遮蔽。
     _SENSITIVE_KEY_MARKERS = (
         "token", "secret", "password", "passwd", "authorization",
         "api_key", "credential", "private_key",
@@ -64,6 +68,7 @@ class JsonFormatter(logging.Formatter):
                 k: (
                     f"<已脱敏:{len(str(v))} 字符>"
                     if cls._is_sensitive_key(k)
+                    and not isinstance(v, (int, float))
                     else cls._redact_context(v)
                 )
                 for k, v in value.items()

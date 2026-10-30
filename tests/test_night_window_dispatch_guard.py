@@ -10,6 +10,7 @@
 """
 
 import json
+import os
 import shutil
 import socket
 import tempfile
@@ -455,10 +456,16 @@ class TestApiProbeHost(unittest.TestCase):
     def test_missing_or_blank(self):
         from core.agent_runner.runner import AgentRunner
 
-        self.assertEqual(AgentRunner._api_probe_host({}), "")
-        self.assertEqual(
-            AgentRunner._api_probe_host({"ANTHROPIC_BASE_URL": "  "}), "")
-        self.assertEqual(AgentRunner._api_probe_host(None), "")
+        # 本用例验证「spawn env 无目标 → 空串」；_api_probe_host 对缺键会
+        # 按设计回退 os.environ（test_falls_back_to_os_environ 钉死该回退），
+        # 故须临时摘除环境变量保证用例封闭（daemon 以 ANTHROPIC_BASE_URL
+        # 运行时，未摘除会误报 fallback 命中）。
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_BASE_URL", None)
+            self.assertEqual(AgentRunner._api_probe_host({}), "")
+            self.assertEqual(
+                AgentRunner._api_probe_host({"ANTHROPIC_BASE_URL": "  "}), "")
+            self.assertEqual(AgentRunner._api_probe_host(None), "")
 
     def test_falls_back_to_os_environ(self):
         from core.agent_runner.runner import AgentRunner
