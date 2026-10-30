@@ -849,7 +849,9 @@ class TestStaleConfigDefaults(unittest.TestCase):
         """节缺失 → 缺省值生效：enabled: true / idle_confirm_seconds: 600
         （evo-reduce-stale-code-selfheal-noise 3.2，原 120；冷却五键于
         evo-stale-selfheal-restart-cooldown 1.1 加入，缺省一并生效；
-        max_dangling_seconds 于 evo-add-stale-code-dangling-deadline 1.1 加入）。"""
+        max_dangling_seconds 于 evo-add-stale-code-dangling-deadline 1.1 加入；
+        coalesce_idle_seconds 于 evo-stale-selfheal-restart-coalescing 1.2
+        加入）。"""
         cfg = ConfigLoader.get_stale_code_selfheal_config({})
         assert cfg == {
             "enabled": True,
@@ -860,6 +862,7 @@ class TestStaleConfigDefaults(unittest.TestCase):
             "self_triggered_window_seconds": 300,
             "self_triggered_threshold": 3,
             "max_dangling_seconds": 14400,
+            "coalesce_idle_seconds": 1800,
         }
 
     def test_invalid_values_fallback_no_raise(self):

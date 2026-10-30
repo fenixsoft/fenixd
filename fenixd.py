@@ -505,6 +505,23 @@ class FenixDaemon:
         # 重复堆积；循环断裂处（streak 归零/陈旧解除）一并复位，下一循环不受
         # 旧标记压制。以 getattr 读取，容忍未走 initialize 的裸对象。
         self._selfheal_loop_alerted = False
+        # 跨批次合流态（evo-stale-selfheal-restart-coalescing 1.1）：
+        # _coalesce_edge_count 为本合流期已检出的陈旧边沿数（假→真跳变记一次；
+        # 首个边沿按基础闸 idle_confirm_seconds 确认，其后边沿在合流静止期届满
+        # 前按合流闸 coalesce_idle_seconds 等待）；_coalesce_last_edge_ts /
+        # _coalesce_last_restart_ts 为合流静止期的两个参考时刻（取较晚者）。
+        # 按闸重启导致的悬置消化不复位合流态——否则重启后新进程 baseline 即
+        # 刷新、下一批（实测距上批重启仅 9-17 分钟）将重回基础闸，五连重启
+        # 形态复现；复位仅由「悬置消化且静止期届满」触发。进程更替丢失内存态
+        # 时由 restart_history 最近自愈重启记录幂等推导（_coalesce_derived 每
+        # 进程至多推导一次）；_coalesce_prev_stale 承载边沿检测（上一 tick 观测
+        # 的 _code_stale）。均以 getattr 读取，容忍未走 initialize 的裸对象
+        # （既有测试形态）。
+        self._coalesce_edge_count = 0
+        self._coalesce_last_edge_ts = None
+        self._coalesce_last_restart_ts = None
+        self._coalesce_prev_stale = False
+        self._coalesce_derived = False
         # 收口幂等守卫（fix-supervisor-hosting-chain 验证修复 BUG-01）：supervisor
         # 见 stop flag 会主动 SIGTERM daemon（停止协作），与 stop_daemon 的 SIGTERM
         # 可能叠加成双重信号。Python 信号处理器在字节码边界打断主线程——若在第一次
@@ -2425,6 +2442,129 @@ class FenixDaemon:
                 return True
         return False
 
+    # ── 陈旧自愈跨批次合流（evo-stale-selfheal-restart-coalescing 1.1）──
+
+    def _coalesce_idle_seconds(self) -> int:
+        """合流静止闸值（stale_code_selfheal.coalesce_idle_seconds，缺省 1800）。
+
+        容错口径与 _maybe_stale_selfheal_tick 的兜底字典一致：配置读取异常或
+        值非法时回退 ConfigLoader 缺省常量（MUST NOT 硬编码字面量，防两套
+        缺省漂移，item c79caa073d87 同款纪律）。
+        """
+        try:
+            value = ConfigLoader.get_stale_code_selfheal_config(
+                getattr(self, "config", None) or {}
+            ).get("coalesce_idle_seconds")
+        except Exception:  # noqa: BLE001 — 配置读取异常按缺省合流闸处理
+            value = None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            return ConfigLoader.STALE_CODE_SELFHEAL_COALESCE_IDLE_SECONDS_DEFAULT
+        return int(value)
+
+    def _coalesce_state_active(self) -> bool:
+        """合流态是否在场（边沿计数非零或存在按闸自愈重启参考时刻）。"""
+        return (
+            int(getattr(self, "_coalesce_edge_count", 0) or 0) > 0
+            or getattr(self, "_coalesce_last_restart_ts", None) is not None
+        )
+
+    def _coalesce_reference_ts(self) -> Optional[float]:
+        """合流静止期参考时刻：最近一次陈旧边沿 / 最近一次按闸自愈重启，取较晚者。"""
+        candidates = [
+            ts
+            for ts in (
+                getattr(self, "_coalesce_last_edge_ts", None),
+                getattr(self, "_coalesce_last_restart_ts", None),
+            )
+            if isinstance(ts, (int, float))
+        ]
+        return max(candidates) if candidates else None
+
+    def _coalesce_derive_from_history(self) -> None:
+        """进程更替致内存合流态丢失时的幂等推导（每进程至多一次，双向防错）。
+
+        restart_history.jsonl 仅自愈路径写入（ts 即按闸自愈重启时刻）：最近
+        记录在合流静止期内 → 新进程延续合流态（记 1 次边沿 + 重启参考时刻，
+        防状态丢失后误回退基础闸）；记录超窗/无记录 → 按新周期基础闸（防把
+        陈旧重启史误算进当前合流期）。内存态已在场（同进程后续 tick）或已
+        推导过时不重复推导。
+        """
+        if getattr(self, "_coalesce_derived", False):
+            return
+        self._coalesce_derived = True
+        if self._coalesce_state_active():
+            return
+        history = self._read_restart_history(time.time())
+        if not history:
+            return
+        last_ts = history[-1]["ts"]
+        if (time.time() - last_ts) < self._coalesce_idle_seconds():
+            self._coalesce_edge_count = 1
+            self._coalesce_last_restart_ts = last_ts
+
+    def _coalesce_maybe_expire(self) -> None:
+        """复位判定：悬置消化（调用方已判 ``_code_stale`` 为假）且静止期届满。
+
+        仅当「距最近一次陈旧边沿或最近一次按闸自愈重启（取较晚者）达
+        coalesce_idle_seconds 无新边沿」时复位合流态，下一次陈旧重新按基础闸。
+        """
+        if not self._coalesce_state_active():
+            return
+        ref = self._coalesce_reference_ts()
+        if ref is None:
+            return
+        coalesce_seconds = self._coalesce_idle_seconds()
+        if (time.time() - ref) < coalesce_seconds:
+            return
+        edges = int(getattr(self, "_coalesce_edge_count", 0) or 0)
+        self._coalesce_edge_count = 0
+        self._coalesce_last_edge_ts = None
+        self._coalesce_last_restart_ts = None
+        self.logger.info(
+            "fenixd",
+            f"stale coalesce: 合流期复位（悬置已消化且静止期届满：距最近边沿/"
+            f"重启已超 {coalesce_seconds}s，本周期共 {edges} 次边沿），"
+            "下一次陈旧边沿重新按基础闸确认",
+        )
+
+    def _coalesce_effective_confirm(self, base_confirm: int) -> int:
+        """当前生效的空闲确认闸：合流期内首个边沿按基础闸，其后边沿按合流闸。"""
+        if int(getattr(self, "_coalesce_edge_count", 0) or 0) >= 2:
+            return self._coalesce_idle_seconds()
+        return base_confirm
+
+    def _coalesce_note_edge(self, now: float, base_confirm: int) -> int:
+        """登记本 tick 观测的陈旧状态并返回当前生效闸值。
+
+        假→真跳变记一次合流期边沿（计数 + 最近边沿时刻 + info 留痕：第 N 次
+        边沿、当前生效闸值）；真→真延续不重复计数。返回值供空闲确认处作为
+        本次触发阈值（首个边沿 = 基础闸，其后 = 合流闸）。
+        """
+        prev = bool(getattr(self, "_coalesce_prev_stale", False))
+        self._coalesce_prev_stale = True
+        if prev:
+            return self._coalesce_effective_confirm(base_confirm)
+        self._coalesce_edge_count = (
+            int(getattr(self, "_coalesce_edge_count", 0) or 0) + 1
+        )
+        self._coalesce_last_edge_ts = now
+        gate = self._coalesce_effective_confirm(base_confirm)
+        self.logger.info(
+            "fenixd",
+            f"stale coalesce: 第 {self._coalesce_edge_count} 次边沿等待，"
+            f"闸值 {gate}s",
+        )
+        return gate
+
+    def _coalesce_note_restart(self, now: float) -> None:
+        """按闸自愈重启登记：刷新合流静止期参考时刻（重启亦属合流期事件）。
+
+        进程实际更替后内存态丢失，由 _coalesce_derive_from_history 依据
+        restart_history 记录（含本次）幂等延续；本登记覆盖「写请求与进程
+        更替之间」的窗口及同进程测试推演形态。
+        """
+        self._coalesce_last_restart_ts = now
+
     def _maybe_stale_selfheal_tick(self) -> None:
         """陈旧自愈触发（add-stale-code-selfheal 2.2/2.3，主循环 1s 粒度轮询）。
 
@@ -2447,8 +2587,23 @@ class FenixDaemon:
             只记一次 WARNING、不写 restart_request（本周期标记自触发），窗口
             过期后照常重启并在写历史时累计 streak，达阈值升
             stale_selfheal_loop critical 告警。
+
+        evo-stale-selfheal-restart-coalescing 增量（插在配置解析之后、阻断
+        判定之前登记边沿，生效点在末段空闲确认）：
+          - 幂等推导：tick 入口按 restart_history 最近自愈重启记录恢复合流态
+            （每进程一次，进程更替后内存态丢失的双向防错）。
+          - 边沿登记：假→真跳变记一次合流期边沿（info 留痕：第 N 次边沿、
+            当前生效闸值）；首个边沿按 idle_confirm_seconds 确认，其后边沿
+            在合流静止期届满前按 coalesce_idle_seconds 等待——「N 批连发」
+            收敛为「末批后一次重启」。
+          - 悬置消化且静止期届满（距最近边沿/按闸重启达 coalesce_idle_seconds
+            无新边沿）才复位合流态；按闸重启导致的消化不复位。
         """
         req = PROJECT_ROOT / ".fenix" / "restart_request"
+        # 合流态幂等推导（evo-stale-selfheal-restart-coalescing 1.1）：须先于
+        # 陈旧早退——进程更替后首 tick 可能在悬置消化期（baseline 刷新后
+        # _code_stale 为假），推导不依赖陈旧在场。
+        self._coalesce_derive_from_history()
         if not self._code_stale:
             # 状态解除：清零计时与边沿记忆，恢复正常（自触发周期随陈旧一并收尾）；
             # stale_selfheal_loop 去重标记一并复位（循环随陈旧解除终结）
@@ -2461,6 +2616,11 @@ class FenixDaemon:
             self._dangling_timeout_fired = False
             self._dangling_timeout_alert_fired = False
             self._selfheal_loop_alerted = False
+            # 合流态维护（evo-stale-selfheal-restart-coalescing 1.1）：边沿
+            # 检测基准复位（下次假→真跳变记新边沿）；悬置已消化，静止期届满
+            # 即复位合流态（按闸重启导致的消化不在此列——复位还须静止期届满）。
+            self._coalesce_prev_stale = False
+            self._coalesce_maybe_expire()
             return
 
         now = time.time()
@@ -2481,6 +2641,9 @@ class FenixDaemon:
                 "enabled": True,
                 "idle_confirm_seconds": (
                     ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
+                ),
+                "coalesce_idle_seconds": (
+                    ConfigLoader.STALE_CODE_SELFHEAL_COALESCE_IDLE_SECONDS_DEFAULT
                 ),
                 "max_dangling_seconds": (
                     ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT
@@ -2513,6 +2676,11 @@ class FenixDaemon:
             "self_triggered_threshold",
             ConfigLoader.STALE_CODE_SELFHEAL_SELF_TRIGGERED_THRESHOLD_DEFAULT,
         )
+        # 合流期边沿登记（evo-stale-selfheal-restart-coalescing 1.1/1.3）：
+        # 置于阻断/冷却判定之前——阻断期（code-fix 批/评审车道在跑等）检出的
+        # 边沿同样属本合流期，闸值升格不因阻断漏记。返回值为当前生效闸值
+        # （首个边沿 = 基础闸，其后 = 合流闸），供末段空闲确认使用。
+        effective_confirm = self._coalesce_note_edge(now, confirm_seconds)
         if not enabled:
             reason = "disabled"
         else:
@@ -2710,6 +2878,10 @@ class FenixDaemon:
                     window=self_triggered_window,
                     threshold=self_triggered_threshold,
                 )
+                # 强转重启同属按闸自愈重启：刷新合流静止期参考时刻（与
+                # restart_history 幂等推导口径一致，evo-stale-selfheal-
+                # restart-coalescing 1.1）
+                self._coalesce_note_restart(now)
             return
 
         self._heal_block_reason = None
@@ -2722,7 +2894,11 @@ class FenixDaemon:
             self._stale_idle_since = now
             return
         waited = now - self._stale_idle_since
-        if waited >= confirm_seconds:
+        # 生效闸值（evo-stale-selfheal-restart-coalescing 1.1）：合流期内首个
+        # 边沿 = 基础闸 idle_confirm_seconds；其后边沿（合流静止期届满前检出）
+        # = 合流闸 coalesce_idle_seconds——4h 悬空强转在上方分支已优先收尾，
+        # 不经本闸（合流闸 MUST NOT 拦截强转兜底）。
+        if waited >= effective_confirm:
             if self_triggered_now:
                 # 自触发窗口内不写 restart_request（仅告警）；不清零计时——窗口过期后
                 # 由同一段连续空闲立即收尾，本周期标记在收尾重启时转为 streak
@@ -2732,12 +2908,28 @@ class FenixDaemon:
                 req.parent.mkdir(parents=True, exist_ok=True)
                 req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
                 wrote = True
-                self.logger.warning(
-                    "fenixd",
-                    f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
-                    f"（阈值 {confirm_seconds}s），已 touch .fenix/restart_request，"
-                    "supervisor 将执行优雅重启使新代码生效",
+                coalesce_edges = int(
+                    getattr(self, "_coalesce_edge_count", 0) or 0
                 )
+                if coalesce_edges >= 2:
+                    # 合流收敛结果（evo-stale-selfheal-restart-coalescing 1.3）：
+                    # 本周期 N 次陈旧边沿合并为 1 次重启
+                    self.logger.warning(
+                        "fenixd",
+                        f"陈旧自愈触发（合流收敛）：daemon 持旧代码且连续空闲 "
+                        f"{waited:.0f}s（合流闸 {effective_confirm}s），本合流"
+                        f"周期共 {coalesce_edges} 次陈旧边沿、合并为 1 次重启，"
+                        "已 touch .fenix/restart_request，supervisor 将执行"
+                        "优雅重启使新代码生效",
+                    )
+                else:
+                    self.logger.warning(
+                        "fenixd",
+                        f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
+                        f"（阈值 {effective_confirm}s），已 touch "
+                        ".fenix/restart_request，"
+                        "supervisor 将执行优雅重启使新代码生效",
+                    )
             except OSError as e:
                 # evo-reduce-stale-code-selfheal-noise 2.3：自愈动作失败的升级点。
                 # 原先仅 logger.error——写失败意味着自动收敛通道已断（空闲确认
@@ -2757,6 +2949,10 @@ class FenixDaemon:
                     window=self_triggered_window,
                     threshold=self_triggered_threshold,
                 )
+                # 按闸自愈重启刷新合流静止期参考时刻（evo-stale-selfheal-
+                # restart-coalescing 1.1：重启导致的悬置消化不复位合流态，
+                # 静止期自重启时刻重新起算）
+                self._coalesce_note_restart(now)
 
     def _admin_monitor_loop(self):
         """周期运行健康检查（间隔 admin.interval_minutes）。
