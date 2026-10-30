@@ -168,6 +168,10 @@ function checkRequiredHeaders(url, headers) {
  */
 function severityFromStatus(status) {
   if (status >= 500) return 'external-service';  // 外部服务异常，不计为代码缺陷
+  // 429 限流是对端容量/风控决策，与 5xx 同属外部服务行为，不计为代码缺陷
+  //（否则目标站点限流会让功能完好的扩展被误判验证失败）；402 需付费多为
+  // 账户/配额配置问题，仍指向可修原因，保留 high
+  if (status === 429) return 'external-service';
   if (status === 403) return 'high';              // 403 通常是配置问题
   if (status === 401) return 'high';
   if (status === 404) return 'medium';
