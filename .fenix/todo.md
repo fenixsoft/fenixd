@@ -615,3 +615,5 @@
   - 证据：admin_alerts.json（管理告警台账）：告警 87f72c680499 handled=true、handled_at=2026-10-28T02:12:34Z、action_taken=null、result=null（人工点掉无留痕处置）；fenix-prototype 的 verify_fail_escalation 告警 handled=false（本窗数据摘要「未处理 1 条」即此条）；窗内无任何 spec 终态联动收口日志。
   - 调查评估：问题源：[2026-10-28#可改进#6] 的连续对账与本窗新实例。已核实事实：①人工置 handled 不构成机制修复（动作与结果字段全空、无处置留痕）；②fenix-prototype 告警的悬置与 spec 冻结同步发生——告警生命周期与 spec 状态完全解耦，若 spec 后续被解冻交付，告警也将无人收口（87f72c680499 形态复刻）。与存量工作关系：orphaned final disposition group 对账（处置组已终态但信号未消除的同指纹复发检出）只在同指纹复发时检出，覆盖不了「spec 交付后告警自然失效」形态，维持非重复判定。结论：小改动（终态联动收口+龄期盘点），维持立项。
   - 建议：①spec 进入 verified/pushed/done 终态时自动把其 spec 作用域 escalation 告警置 resolved（留痕不删）；②未处理升级告警加每日龄期盘点（超 24 小时未处理升提醒）。
+### 知识真相源
+- [ ] knowledge-distill 重试：归档 2026-10-30-evo-maintree-stray-attribution-log-dedup, 2026-10-30-evo-self-review-todo-head-restore — run 失败: claude 进程非零退出（exit=1）；stderr 尾部: [claude-code:unrecognized_model] {"model":"glm-5.3-flash[1M]","query_source":"sdk"}
