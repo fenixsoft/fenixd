@@ -117,7 +117,13 @@ class _Fixture(unittest.TestCase):
     # cooldown/自触发/历史语义（idle 缺省本身由 test_stale_selfheal_idle.py
     # 与 test_stale_code_selfheal.py 覆盖），夹具显式钉住旧缺省 120s 保持
     # 既有触发节奏（130s 空闲可达阈值），不随缺省漂移。
-    _CFG_BASE = {"idle_confirm_seconds": 120}
+    # evo-stale-selfheal-restart-coalescing：合流闸一并钉到最小合法值 1s——
+    # 本文件 plant_history 的「距今数百秒重启记录」在缺省 1800s 合流静止窗内
+    # 会被幂等推导延续成合流态、把首个陈旧边沿推到 1800s 闸（那是合流 SPEC
+    # 的场景，本文件不合用）；钉 1s 使植入记录均在窗外，冷却/自触发语义
+    # 回到本文件既有触发节奏。合流闸自身由 test_stale_selfheal_coalescing.py
+    # 覆盖。
+    _CFG_BASE = {"idle_confirm_seconds": 120, "coalesce_idle_seconds": 1}
 
     def cfg(self, **overrides):
         """写入 stale_code_selfheal 配置（未覆盖键回退夹具基线）。"""

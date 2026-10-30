@@ -2217,6 +2217,16 @@ class ConfigLoader:
     # （4 小时——白天 code-fix 高频节律下最多损失一个批次的排水重跑）。
     # 0 = 关闭升级（只保留空闲自愈路径）；负值/非整数/bool 回退缺省。
     STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT = 14400
+    # evo-stale-selfheal-restart-coalescing 1.2：跨批次合流静止闸缺省。
+    # 动机（2026-10-18 五连重启窗）：code-fix 链 17-27 分钟一批连发合入时，
+    # 600s 收编窗盖不住分钟级十位的批间隔——每批各走一轮 600s 空闲确认+重启，
+    # 109 分钟内 5 连重启、每批加载版本 9-17 分钟即被下一批作废。合流闸把
+    # 「N 批连发」收敛为「末批后一次重启」：首批仍按 idle_confirm_seconds
+    # 确认，其后边沿须连续空闲达本闸才再重启。1800s 恰覆盖该窗实测 20-28
+    # 分钟批间隔上限，同时远小于 4h 悬空强转与既有 1800s 冷却滑窗，不产生
+    # 新的循环风险。项目级 stale_code_selfheal.coalesce_idle_seconds 覆盖
+    # 语义同 idle_confirm_seconds（正整数，非法回退缺省，0 不等效关闭）。
+    STALE_CODE_SELFHEAL_COALESCE_IDLE_SECONDS_DEFAULT = 1800
 
     @classmethod
     def _stale_selfheal_positive_int(cls, section: Dict[str, Any], key: str, default: int) -> int:
@@ -2277,6 +2287,10 @@ class ConfigLoader:
         - max_dangling_seconds: 非负整数秒，缺省 14400（4 小时），0 = 关闭
           升级；负值/非整数/bool 回退缺省（evo-add-stale-code-dangling-deadline
           1.1，校验语义与正整数键不同，见 _stale_selfheal_dangling_seconds）
+        - coalesce_idle_seconds: 正整数秒，缺省 1800（evo-stale-selfheal-
+          restart-coalescing 1.2，跨批次合流静止闸：合流期内首个陈旧边沿按
+          idle_confirm_seconds 确认，其后边沿须连续空闲达本闸才再重启；
+          非整数/负数/0 回退缺省，bool 陷阱同 idle_confirm_seconds 排除）
 
         节缺失、键缺失或值非法时不抛异常、不使 daemon 启动失败；读取走既有
         config 对象，30s 配置热更新自然生效（下一检测周期起采用新值）。
@@ -2350,6 +2364,13 @@ class ConfigLoader:
                 section,
                 "max_dangling_seconds",
                 cls.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT,
+            ),
+            # evo-stale-selfheal-restart-coalescing 1.2：跨批次合流静止闸
+            # （与同段正整数键共用 _stale_selfheal_positive_int 归一口径）
+            "coalesce_idle_seconds": pos(
+                section,
+                "coalesce_idle_seconds",
+                cls.STALE_CODE_SELFHEAL_COALESCE_IDLE_SECONDS_DEFAULT,
             ),
         }
 
