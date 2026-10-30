@@ -1,5 +1,5 @@
 # 中断恢复与续做
-> 最后更新：2026-10-08 04:02 UTC+8
+> 最后更新：2026-10-30 23:34 UTC+8
 
 中断恢复与续做域：覆盖 daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置、恢复监视告警、取消保持恢复与验证断点。
 
@@ -18,5 +18,6 @@
 | [取消保持 SPEC 的恢复运行动作](cancelled-spec-resume.md) | 界面一键恢复：复位 ready 按保留分支续做或降级重派 | 2026-10-08 04:02 |
 | [取消保持的持久化与恢复尊重](cancel-holdstate-durability.md) | `_cancelled_hold` 持久标记与恢复/监测豁免 | 2026-10-03 04:59 |
 | [快车道恢复续做](fasttrack-recovery-resume.md) | fast-track 入口同源消费恢复标记、载体贯通与出口锚点矩阵 | 2026-10-03 04:59 |
+| [排程重验跨重启存活](scheduled-reverify-restart-durability.md) | 排程三字段同原子写持久化、恢复路径排程等待门、周期扫描到点消费与三处成对清零 | 2026-10-30 23:34 |
 | [验证断点续跑](verifier-checkpoint-resume.md) | verifier 重验从已完成场景之后继续 | 2026-10-03 04:59 |
 | [失败重试续跑](retry-resume.md) | 失败重试复用 worktree 与 session 从失败处续跑 | 2026-10-03 04:59 |
