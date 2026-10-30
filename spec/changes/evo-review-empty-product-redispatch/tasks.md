@@ -41,3 +41,9 @@
 ## 6. run_metrics 工具面留痕（6dc7 并入增量③）
 
 - [x] 6.1 core/agent_runner/runner.py：run_metrics 收尾（_log_run_metrics，:1400）补工具面字段留痕（预检结果、TOOLFACE-MISSING 分类等），供事后取证
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-review-empty-product-redispatch/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
