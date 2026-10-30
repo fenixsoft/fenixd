@@ -2,7 +2,7 @@
 
 ## 问题
 
-视觉健全性门的低对比判定用固定阈值（LOW_CONTRAST_STD_UPPER=0.08，core/verify_engine/screenshot_lab.py:30）无法区分「真空白渲染失败」与「合法低对比画面」：大屏/空态类页面天然 pixel_std 在 0.06-0.094 区间贴近阈值，真实渲染被误判 low_contrast。家族已三例：
+视觉健全性门的低对比判定用固定阈值（LOW_CONTRAST_STD_UPPER=0.08，core/verify_engine/screenshot_lab.py:32）无法区分「真空白渲染失败」与「合法低对比画面」：大屏/空态类页面天然 pixel_std 在 0.06-0.094 区间贴近阈值，真实渲染被误判 low_contrast。家族已三例：
 
 1. 10-14 add-dashboard-embed-mode：3 场景 low_contrast（pixel_std 0.063-0.080）判 env，合并人工豁免。
 2. 10-25 add-spec-topology-bigscreen：空状态场景 0.0773 触发洗白门禁＋env blocked，烧 admin run 425.5s/67 轮（fenixd.log:541-544）。
@@ -12,7 +12,7 @@
 
 ## 目标
 
-1. 场景感知阈值：场景名含 empty/zero-state/placeholder 或声明低对比的场景使用放宽上限，其余场景默认不变。
+1. 场景感知阈值：场景名含 empty/zero-state/placeholder 或声明低对比（场景 id 含 low-contrast/low_contrast 保留标记）的场景使用放宽上限，且放宽覆盖全部带场景上下文的判定调用侧（基线防污染门与截图标注路径），其余场景默认不变。
 2. 门内收敛复核：首跑污染门命中先做一次延时重截复测，收敛（复测通过）则按正常流程固化/放行，仍污染才 baseline_rejected。
 3. 证据自动落盘：污染门命中分支把当轮截图复制到 .fenix/verify-evidence/<spec>/，免人工重跑探针取证。
 
