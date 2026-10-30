@@ -643,8 +643,16 @@ class ArchitectureManager:
                 proot,
                 _status_payload("generating", started_at=started_at, stage=stage),
             )
-        except OSError:
-            pass
+        except Exception as exc:  # noqa: BLE001 — item c51307f7d48d：只捕
+            # OSError 会放走 _write_status 的非 OSError 异常（如 json.dumps
+            # 序列化类），穿出后被 _run_generation 兜底把整轮生成判 failed，
+            # 违背本助手「写失败不中断生成」承诺；宽捕口径对齐 refresh()/
+            # _finish()（item 7c1787f26168/1e7127422a27），BaseException 仍
+            # 照常穿出不吞，warning 留痕不静默。
+            logger.warning(
+                f"架构图阶段状态写入失败（stage={stage}）: "
+                f"{type(exc).__name__}: {exc!r}",
+            )
 
     def _run_stage(
         self,

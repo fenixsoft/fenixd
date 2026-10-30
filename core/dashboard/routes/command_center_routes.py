@@ -11,7 +11,7 @@ view 2.2 追加的纯只读新端点，遵守本模块「不新增 POST」约定
 error 字典渲染提示，改 404 会翻转成整页错误）。聚合路径跳过 fixture 项目
 与不存在项目（夹具项目为验证噪音，不进人工聚合视图）。
 
-路由注册：五条目沿用 routes/base.py ``_API_GET_ROUTES`` 表驱动分派链既有
+路由注册：六条目沿用 routes/base.py ``_API_GET_ROUTES`` 表驱动分派链既有
 条目形态（exact + 模块级适配函数），在本模块导入时追加进同一张表——
 add-command-center 任务 5.2 零改动红线（既有 routes 模块仅 server.py 注册
 行新增）要求既有 base.py 保持不动，故条目追加单点落在本新模块（server.py
@@ -39,9 +39,9 @@ logger = logging.getLogger("fenixd.dashboard.routes.command_center_routes")
 
 
 class H17CommandCenterRoutesMixin:
-    """H17 指挥中心（只读五端点）。"""
+    """H17 指挥中心（只读六端点：kpi/org/spec-runs/pipeline/ledger/inbox）。"""
 
-    # 五端点共用的项目寻址/范围收窄单点（与 _api_alerts 的 ?project 分支
+    # 六端点共用的项目寻址/范围收窄单点（与 _api_alerts 的 ?project 分支
     # 同口径）：显式 ?project= 单项目寻址（fixture 也照常聚合）；缺省聚合全部
     # 非 fixture 且 exists 的项目。未知/不存在项目返回 200+error 字典。
     # data 层聚合入口按 (registry_projects, project) 注入模式自行收窄数据
