@@ -2,12 +2,12 @@
 
 ## 问题
 
-10-26 凌晨 code-fix 台账修复链在 dsh 车道连续 3 个编排 run 空转失败（code-fix-1792952924/1792953101/1792953322，fenixd.log:1177/1192/1210）：主代理后台派发 8 组子代理后以「结束回合等完成通知」收尾（claude 车道语义），dsh 会话随主回合终止，修复产物 out 文件从未写出，产物硬门 _check_code_fix_artifact（core/agent_runner/maintenance_runs.py:2905-2952，拦截点 :3172-3183）连拦 3 次；第四个 run code-fix-1792953479 同型收尾仅 1 组落盘却过硬门。四 run 合计 36 次子代理派发约 35 组作废，链首 fully-productive 收尾推迟 43 分钟。
+10-26 凌晨 code-fix 台账修复链在 dsh 车道连续 3 个编排 run 空转失败（code-fix-1792952924/1792953101/1792953322，fenixd.log:1177/1192/1210）：主代理后台派发 8 组子代理后以「结束回合等完成通知」收尾（claude 车道语义），dsh 会话随主回合终止，修复产物 out 文件从未写出，产物硬门 _check_code_fix_artifact（core/agent_runner/maintenance_runs.py run_code_fix 收尾「产物硬门」块；行号随主干并发演进漂移，实现以符号定位）连拦 3 次；第四个 run code-fix-1792953479 同型收尾仅 1 组落盘却过硬门。四 run 合计 36 次子代理派发约 35 组作废，链首 fully-productive 收尾推迟 43 分钟。
 
 当晚 Administrator 已用 commit 9ccf90158/4c2fc3a9d 将 agents/code-fix.md:45-56 改为同步并发派发契约（「回合结束 = run 终止」「MUST 用 run_in_background: false」）止血，后续 code-fix-1792954299/1792955804 两个 dsh run 全量成功。但残留两个系统性缺口：
 
 1. 该契约是纯模板文本，无任何测试锚定——模板漂移即静默复发（同类先例 tests/test_prompt_lane_efficiency_sections.py:73-81 锚定 implementer/fast-track 后台等待段，code-fix 无对应物）。
-2. 重试环路对「会话正常结束但产物缺失」形态无同指纹止损：硬门失败信封 conn_error 恒 False（core/agent_runner/maintenance_runs.py:3226-3230），首轮失败一律按 chain_skipped 瞬态继续推进（core/code_fix.py:6413-6447），同配置连派 3 次全靠随机性过关；唯一的连败熔断是回归 parse-error 域（core/code_fix.py:6499-6510），不覆盖 run 级零产物。
+2. 重试环路对「会话正常结束但产物缺失」形态无同指纹止损：硬门失败信封 conn_error 恒 False（CodeFixResult 信封 conn_error 缺省 False、仅 api_error 异常路径置真——类定义 core/agent_runner/result_gate.py、maintenance_runs 失败收尾初始化），首轮失败一律按 chain_skipped 瞬态继续推进（core/code_fix.py CodeFixChain._run_batch_inner 首轮 run 失败收尾块），同配置连派 3 次全靠随机性过关；唯一的连败熔断是回归 parse-error 域（core/code_fix.py 回归异常熔断 anomaly_streak，位于回归失败后的定向重试循环内），不覆盖 run 级零产物。
 
 ## 目标
 
