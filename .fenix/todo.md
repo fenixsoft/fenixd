@@ -509,12 +509,14 @@
 
 ### 浪费
 - **并行出题超时连取消三个在飞run，79分钟出题作废**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：并行出题（testing 阶段等待双 planner 竞速生成验证场景的机制）等待超时后连取消 3 个在飞出题 run：合计约 4722 秒（78.7 分钟）墙钟、440 轮的已跑工作被隔离作废，随后各自转串行重出（替代 run 再花 1456-2464 秒才完成），单 spec 出题总墙钟被拉到约 84 分钟。
   - 证据：三条并行出题超时取消告警 cf973953f889（18:18）、74d1f98b888d（21:35）、658cc0da3cce（21:51，reason 均为「并行出题等待超时，取消后转串行重出」、by=parallel-plan-lane）对应：planner-plan-add-command-center-spec-view-1793352894-a1（247 轮、2594.7 秒）、planner-plan-evo-refine-midflight-outlier-dims-1793366130-a1（77 轮、1197.9 秒）、planner-plan-evo-visual-low-contrast-gate-1793367336-a1（116 轮、929.3 秒），三 run 归档终态均 cancelled（run_metrics cost 未入账）；core/pm_engine/verification/pipeline.py:2992 等待超时缺省 900 秒，超时出口直接 lane.stop+quarantine（3089-3099 行）；替代 run planner-plan-evo-visual-low-contrast-gate-1793373256 实跑 1456 秒成功、add-command-center-spec-view 重出 run 2463.7 秒成功——均超 900 秒阈值。
   - 调查评估：问题源：三个 spec 验证链出题阶段同窗三连取消。已核实事实：等待超时阈值缺省 900 秒（pipeline.py:2992），超时出口虽有「取消前重读标记防竞窗」防护（code-review item f0aa2cd44923/305dcbb105c3），但无完成宽限——run 仍存活推进也一律取消隔离；本窗三个被取消 run 时长 929-2595 秒全部越过 900 秒，且成功的替代 run 实测 1456/2464 秒同样超阈值，说明 dsh 车道（自研 CLI harness）出题单跑时长已常态性超过该阈值，取消是结构必然而非偶发。根因：900 秒缺省按 claude 车道出题节奏设定，车道迁移后未自适应；[2026-10-15#浪费#1] 所提「join 完成宽限窗＋取消绑定采信事件」建议至今未落地，本窗为其量化复发。与存量工作关系：spec/changes/ 活跃区无同主题在飞提案，非重复立项。结论：阈值自适应＋宽限窗两处小改可消除大部分弃产物，值立项。
   - 建议：①等待超时按车道自适应（取近 3 轮同车道出题时长 p90，缺省至少覆盖 dsh 实测 2500 秒量级）；②超时触发先进 N 秒宽限窗，压线完成即采信而非按半成品隔离；③另一 racer 的取消绑定「采信事件」而非固定时钟。
 
 - **evo-refine验证链脱轨冻结，交付停滞2小时未收口**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：evo-refine-midflight-outlier-dims 实现已于当晚 20:57 合回 main，但验证链连环脱轨：裁决结果写错位置→冻结场景文件被写坏→场景计划争议连续 2 轮→22:52 冻结转人工，交付停滞 2 小时以上至窗末仍 blocked（frozen），期间烧掉 3 个 Administrator 处置 run（其一 149 轮、纯文本轮占比 55% 被新离群维度点名）并挂起 3 条未处理 critical 升级告警。
   - 证据：22:00 legacy verifier（旧版验证降级通道）未产出机器可读裁决置 blocked（critical 告警 d87515292c49）；22:31 处置组已终态但 blocked_stuck（blocked 滞留信号）未收口→孤儿处置组生效核查 fail-closed 升级人工（告警 320acd10e145，处置 run admin-evo-refine-midflight-outlier-dims-1793369785 即离群 run：149 轮/82 纯文本轮）；22:46 处置选项 revise_scenario_reverify 执行失败（该 choice 未在 manual-intervention 信号注册选项集，日志 14:52:46Z）；22:52 场景计划争议 2 轮冻结转人工（critical 告警 89f0e56672fb），腐蚀根因见告警 a75890959e3d「冻结场景文件 test_scenarios.json 被 legacy verifier 误写为顶层 dict 计划摘要（非契约场景集）」——实测该文件至今仍为 dict（键 spec/total/scenarios），spec 处于 frozen。
   - 调查评估：问题源：evo-refine-midflight-outlier-dims 验证收尾对账。已核实事实：①新验证流程因 worktree 创建失败降级到 legacy verifier（13:35:35Z gave up，按 fix-worktree-lock-release-degrade-gate 语义计数降级）；②裁决落位歧义（写侧把裁决写到主树根 .fenix-run-result.json、读侧只消费 verify-progress 下文件）已由根治提交 61870d050（22:30）修复，但 daemon 未重启未装载（另条复盘），同窗 evo-visual-low-contrast-gate 即因此复发阻塞；③dict 腐蚀触发场景争议后 admin 处置链未奏效，转人工冻结。根因按形态层：legacy verifier 降级通道对冻结场景文件无写侧契约（把计划摘要当场景集覆写），叠加处置选项注册缺口，均为系统性缺口。与存量工作关系：fix-frozen-scenario-dict-salvage（dict 腐蚀打捞）10-27 立项、在飞 3 天未合回，本次即其射程内复发；fix-verify-loop-convergence、fix-unfreeze-judge-counter-reset 同族在飞。结论：同族三日两发，打捞件应优先合回，并补写侧契约防再腐蚀。
@@ -522,6 +524,7 @@
 
 ### 失误
 - **（当日无）**
+  - 自进化：问题不成立 / 建议合理 / — 不需要
   - 影响：窗内 118 个 run 成功 112、真实失败仅 1（断连窗击杀的批修复 run，环境性），无执行层失误造成损失。
   - 证据：数据摘要第 2 节：成功 112、失败 1、秒挂 0、超时 0；唯一失败 code-fix-1793305048（批 4）04:32 死于断连窗、salvage（api_timeout 终局把未提交现场提交批分支的抢救机制）同秒保全、链 rollup 05:26 完成 resolved=97；11:29 秒挂三连被秒挂冷却（连续秒挂暂停派发的熔断）按设计止血，repair 链语义冲突回退后该 spec 当晚 21:51 交付（VR 入库 8e8a89df8）。
   - 调查评估：逐项复核当日事件：断连击杀归环境（kern.log 04:30:02/04:31:21 双断在案）；legacy verifier 写坏场景文件与重启排空滞后属框架系统性缺口（分别入改进条目复盘）；蒸馏模型名拒识属宿主配置环境（改进条目）；worktree 创建失败两次均被降级熔断按设计接管。当日无可判定为执行错误的条目。
@@ -529,30 +532,35 @@
 
 ### 可改进
 - **（持续）断窗守卫真空第五次击杀，守卫仍为合法关闭态**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：每日 04:30 断连窗第 5 次实战击杀在飞 run：批 4 修复 run 跑约 909 秒、149 轮后死于 04:32:37（api_timeout 即 API 往返超时终局），同链下批被连接冷却顺延 300 秒；salvage 保住未提交现场，链 rollup 05:26 完成（6 run、resolved 97），净损失即被杀 run 一轮与 300 秒投递延迟。复发敞口仍在：守卫现为合法「off」关闭态即零防御，断窗每夜准点复发（10-30 另有 09:42、10:39 两次日间秒断）。
   - 证据：kern.log 10-30 04:30:02/04:31:21 两次 enp42s0 Link is Down；告警 7941e330fd64（code-fix 批死于上游连接类 api_error，同链下批推迟 300 秒）与 51d2ae3d67fb（冷却到期恢复投递）；fenixd.log.1:7935-7936 死亡与 salvage 行；.fenix/config.yaml:302 现值 night_quiet_window: "off"（10-30 17:22 由非法布尔 false 手工改正，载入 lint 告警随之消失）。守卫布尔同义化已落地：提交 2731032a6（10-30 18:11，布尔同义化、载入期 lint、消费点告警对等与停用态每日提醒），evo-add-night-window-bool-normalization 已验证。
   - 调查评估：问题源：[2026-10-28#可改进#1]/[2026-10-29#可改进#3]/[2026-10-30#可改进#4] 断窗守卫真空的连续对账。已核实事实：①击杀时点与断窗咬合、salvage 与冷却按设计止损；②既有建议中「布尔同义化+载入 lint+停用每日提醒」已落地且 config 同日改为合法值，非法值告警噪音消除；③但 off 语义仍是零防御——跨窗顺延守卫（预计 run 区间与静默窗相交则不派）与批投递闸继续哑化，本次击杀发生在改正前一日晨守卫仍处非法值期间；④停用态每日提醒本窗未见触发记录（未核实，可能触发时点未到）。与存量工作关系：evo-add-night-window-bool-normalization 已交付，残余收敛为一行配置动作。结论：零代码动作悬置 11 天后条件已齐备，继续跟进。
   - 建议：①把 night_quiet_window 配为覆盖 04:30 双断点的合法多窗（如 "04:22-04:40"，多窗解析 _parse_night_quiet_windows 已上线零代码）；②核对停用态每日提醒是否如期触发，未触发则查其触发时点配置。
 
 - **陈旧代码重启排空饥饿超5天，根治修复延迟装载复发阻塞**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：daemon（后台守护进程）带陈旧代码运行超过 5 天：保留日志内「检测到进程代码陈旧…已请求重启」最早出现于 10-25 13:36Z，至本窗仍持续 27 条，实际重启直到 10-30 23:00:45 才完成——22:30 落地的裁决落位根治修复延迟约 30 分钟装载，期间同根阻塞复发一次、多烧一轮 admin 处置与重出题重验；陈旧码窗口另有 10 条 provider 校验 ERROR 噪音。
   - 证据：fenixd.log 内 27 条陈旧告警（12:47-14:52Z，横跨 verification-report 收尾/蒸馏派发/admin 处置 choice 执行三通道）；fenixd.log.1 同文告警最早 2026-10-25T13:36:17Z；进程核实 fenixd.py 实际启动时刻 10-30 23:00:45-23:02:04（ps lstart）；告警 f5a87e2ab81a（23:02，evo-visual-low-contrast-gate 裁决落位阻塞）自述「根因写侧落位修复 commit 61870d050 已提交而 daemon 未重启加载旧代码复发」，该 spec 因此 blocked 超 19 分钟、靠 admin 处置复位+重出题+重验至 23:39 才交付；14:20:06Z 连发 10 条「agents.models.*.provider 引用了不存在的 provider inferaiapi.com」而 config agents.providers 首项即定义该名，重启后零复发。
   - 调查评估：问题源：evo-visual-low-contrast-gate 重复阻塞的部署面对账。已核实事实：重启排空（drain，等在飞 run 收尾再重启）全天面对 118 个 run 的近连续负载，restart 请求自 10-25 起累积至 10-30 23:00 才兑现；期间根治提交 61870d050 落地后同根复发（evo-visual blocked 19 分钟）；provider 校验误报仅见于旧码窗口、重启后零复发，指向旧码校验查找域与新配置形态的代差（形态层结论，查找域细节未核实）。根因：排空无龄期上限，近连续负载下可无限期饥饿（是否存在人工抑制未核实，不作单因结论）。与存量工作关系：现有 restart_request 机制仅有「已在、不重复写入」去重，无截止语义；活跃区无同主题提案。结论：机制清楚（排空加龄期上限+检查点重启），值立项。
   - 建议：①restart 请求加龄期上限（如 60 分钟未兑现且无关键在飞即检查点后强制排空重启）；②关键根治类提交支持 expedited（加速装载）标记；③补契约测试：陈旧告警持续超 N 小时必须留有重启落地记录。
 
 - **（持续）蒸馏模型拒识复发积压3条，修复件已落地缺一行配置**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：知识蒸馏（knowledge-distill，归档知识提取入库车道）当晚再次被模型名拒识击杀一次：21:22 两个新归档（evo-maintree-stray-attribution-log-dedup 与 evo-self-review-todo-head-restore）蒸馏放弃，stderr 拒识 glm-5.3-flash[1M]；积压增至 3 条（另一条 2026-10-27-evo-add-review-failure-attribution 龄期已 3 天以上），归档知识持续缺位。对照面：当晚 21 个新归档蒸馏全部一轮成功。
   - 证据：日志 13:22:30Z「knowledge-distill 放弃产出（两归档）…stderr 尾部 [claude-code:unrecognized_model] glm-5.3-flash[1M]；已清理 spec/knowledge/ 半成品并登重试台账」；15:07:14Z 新 lint 自证根因链「knowledge.model 未配置：蒸馏 spawn 不传显式模型名，生效名由宿主 ANTHROPIC_DEFAULT_*_MODEL 别名解析（宿主 settings 毒化时蒸馏 run 恒死于 unrecognized_model）；建议配置裸模型名隔离」；龄期信号已落地并实测触发：告警 b2646053c79d（23:07「重试台账欠账超 24 小时未重试（1 条）：2026-10-27-evo-add-review-failure-attribution」）；evo-distill-model-name-fallback 已交付（VR 入库 3b6a2d1f1）、evo-knowledge-distill-resume-guard 归档后即时自动派发新归档蒸馏（13:41:27Z 实证）。
   - 调查评估：问题源：[2026-10-28#可改进#4] 与 [2026-10-30#可改进#6] 的合并对账。已核实事实：①三项既有建议全部落地——模型名兜底 spec（10-30 17:30 交付）、resume-guard（归档即补蒸馏）、龄期提醒（当日实测触发）；②拒识仍复发于 21:22——lint 证实地域：蒸馏 spawn 不传显式模型名→宿主别名解析→宿主 settings 带 [1M] 后缀即恒死，防死亡的最后一步是 config 配置 knowledge.model 裸模型名，当前未配置；③resume-guard 只覆盖新归档即时蒸馏，积压 3 条的消费路径仍只有 todo 台账人工催办（knowledge-distill-pending.json batches=[] 双轨空转）。与存量工作关系：三个修复件均已交付，残余为配置动作+积压消费路径。结论：一行配置+一处 backlog 扫描扩展即可闭环，继续跟进。
   - 建议：①config 配置 knowledge.model 为裸模型名（如 glm-5.3-flash，不带 [1M] 后缀）隔离宿主别名毒化；②resume-guard 扩展积压扫描（重试台账登记龄期>0 的归档纳入自动补蒸馏）；③以本例验收：积压 3 条在一日内清零。
 
 - **质量门枚举写读漂移，单次验证十连契约外告警**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：evo-add-api-stall-disposition-closeout 验证收尾时，quality-gates.json（质量门结果文件）写侧与读侧枚举漂移引发 10 条契约外告警同秒连发（info 级）：gate-id 写成下划线形态、status 写成 pass，宽松对账放行未阻塞交付，但每次同型验证都会重放这批噪音，稀释告警面价值。
   - 证据：03:28:38-39Z 十条告警（d038405e5709 等）：「gate-id='full_suite'（宽松对账，合法集 ['full-suite','frontend-build','interaction-contract']）」「status='pass' 不在枚举（合法值 ['passed','failed','running','skipped']）」，均指 .fenix/verify-progress/evo-add-api-stall-disposition-closeout/quality-gates.json；该 spec 当晚正常交付（VR 入库 8e8a89df8、归档 841f22993）。
   - 调查评估：问题源：该 spec 验证产物与质量门读侧的对账告警盘点。已核实事实：写侧产出下划线 gate-id 与 pass 状态值，读侧合法集为连字符形态与 passed——宽松对账按设计兜住交付，但单次 10 条同文告警无去重。根因按形态层：写读两侧枚举无单一真源（共享常量/枚举），各自硬编码漂移。与存量工作关系：spec/changes/ 活跃区无同主题提案，非重复立项。结论：小改动（读侧归一映射+同键去重，或两侧共享枚举常量），值小立项。
   - 建议：①quality-gates 读侧做枚举归一（下划线↔连字符、pass→passed 映射）后再对账；②同 spec 同类契约外告警去重为一条；③写读两侧共享枚举常量并补契约测试。
 
 - **（持续）处置已收口告警handled不翻转，未处理计数虚高**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：告警台账（admin_alerts）中已实际收口的告警 handled 标记不翻转：本窗「升级告警 7 条（未处理 4 条）」中，evo-visual-low-contrast-gate 的裁决阻塞告警在 spec 已于 23:39 交付后仍挂未处理，属账面虚高（另 3 条 critical 属 evo-refine-midflight-outlier-dims，spec 仍冻结，为真未处理）；fenix-prototype 冻结告警已执行解冻处置（result=success）且 spec 已交付，handled 同样为 false——每次日报与人工盘点都重数这些条目。
   - 证据：告警 45438cb95c9b（evo-visual-low-contrast-gate verdict_result_unreadable，critical）handled=False，而该 spec 已交付（merge f44205570、VR 入库 493174f89）；告警 0ee9440ef5a8（fenix-prototype 升级闸门冻结）action_taken=「解冻并清零实现预算与验证链重试计数…BLOCKED→READY 回实现通道」、result=success、handled=False；对照正例：evo-instant-fail-storm-alert-closeout（秒挂风暴告警终态收口 spec，10-30 交付）已为 instant_fail_storm 信号接通 spec_delivered 终态收口（STATE _impl_diagnosis 记载，并自动补写存量悬置告警 056891b5f1e0），但仅限该信号类型。
   - 调查评估：问题源：[2026-10-30#可改进#8]（spec 终态不联动收口告警）的连续对账与本窗新实证。已核实事实：①框架执行处置成功时只写 action_taken/result，不回写 handled——处置语义已收口而账面未收口，两账分叉；②spec 交付联动收口目前只注册了 instant_fail_storm 一种信号（_SIGNAL_CONDITIONS 中性架构已就位、注册面未扩）；③本窗未处理升级 4 条中 1 条属交付后失效的虚高。与存量工作关系：evo-instant-fail-storm-alert-closeout 的注册机制可直接复用扩展，非重复立项。结论：小改动（处置成功与 spec 终态两路触发 handled 翻转，留痕不删），维持立项。
