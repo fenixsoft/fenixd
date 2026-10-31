@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, Tooltip, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
@@ -331,6 +331,9 @@ function FilteredFailuresBlock({
   spec: string;
   collapsed: boolean;
 }) {
+  // 硬编码浅色主题色值改随主题 token（code-review item 8c78ce04ebcc，同
+  // SpecTimeline.tsx b64f38deac7d 修法）；useToken 只能在组件内调用
+  const { token } = theme.useToken();
   const body = (
     <div>
       {filtered.map((f, idx) => (
@@ -344,8 +347,8 @@ function FilteredFailuresBlock({
           style={{
             padding: '8px 12px',
             marginBottom: 8,
-            background: '#fafafa',
-            border: '1px solid #f0f0f0',
+            background: token.colorBgLayout,
+            border: `1px solid ${token.colorBorderSecondary}`,
             borderRadius: 6,
           }}
         >
@@ -381,7 +384,7 @@ function FilteredFailuresBlock({
                   height={100}
                   style={{
                     objectFit: 'cover',
-                    border: '1px solid #d9d9d9',
+                    border: `1px solid ${token.colorBorderSecondary}`,
                     borderRadius: 4,
                   }}
                   preview={{ mask: '点击查看' }}
@@ -533,6 +536,9 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
   const location = useLocation();
+  // 页面多处硬编码浅色主题色值改随主题 token（code-review item 8c78ce04ebcc，
+  // 同 SpecTimeline.tsx b64f38deac7d 修法）；useToken 只能在组件内调用
+  const { token } = theme.useToken();
   const isMobile = useIsMobile();
   const [detail, setDetail] = useState<SpecDetail | null>(null);
   const [specAlerts, setSpecAlerts] = useState<AlertItem[]>([]);
@@ -821,8 +827,8 @@ export default function SpecDetailPage() {
       style={{
         width: 360,
         maxWidth: 'calc(100vw - 32px)',
-        background: '#fff',
-        border: '1px solid #f0f0f0',
+        background: token.colorBgContainer,
+        border: `1px solid ${token.colorBorderSecondary}`,
         borderRadius: 8,
         boxShadow: '0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12)',
         overflow: 'hidden',
@@ -1115,8 +1121,8 @@ export default function SpecDetailPage() {
                             style={{
                               padding: '4px 8px',
                               marginBottom: 4,
-                              background: '#fff2f0',
-                              border: '1px solid #ffccc7',
+                              background: token.colorErrorBg,
+                              border: `1px solid ${token.colorErrorBorder}`,
                               borderRadius: 4,
                             }}
                           >
@@ -1150,8 +1156,8 @@ export default function SpecDetailPage() {
                               style={{
                                 padding: '4px 8px',
                                 marginBottom: 4,
-                                background: ok ? '#f6ffed' : '#fff2f0',
-                                border: `1px solid ${ok ? '#b7eb8f' : '#ffccc7'}`,
+                                background: ok ? token.colorSuccessBg : token.colorErrorBg,
+                                border: `1px solid ${ok ? token.colorSuccessBorder : token.colorErrorBorder}`,
                                 borderRadius: 4,
                               }}
                             >
@@ -1243,7 +1249,7 @@ export default function SpecDetailPage() {
                       style={{
                         padding: '8px 12px',
                         marginBottom: 8,
-                        background: '#f5f5f5',
+                        background: token.colorFillTertiary,
                         borderRadius: 4,
                         fontFamily: 'monospace',
                         fontSize: 13,
@@ -1655,7 +1661,7 @@ export default function SpecDetailPage() {
                 style={{
                   fontSize: 13,
                   lineHeight: 1.65,
-                  color: 'rgba(0, 0, 0, 0.65)',
+                  color: token.colorTextSecondary,
                   marginBottom: 10,
                 }}
               >
@@ -1684,7 +1690,7 @@ export default function SpecDetailPage() {
                     <Checkbox checked={task.done} disabled style={{ marginRight: 8 }} />
                     <Typography.Text
                       style={{
-                        color: task.done ? undefined : '#999',
+                        color: task.done ? undefined : token.colorTextQuaternary,
                       }}
                     >
                       <code style={{ marginRight: 6 }}>{task.id}</code>

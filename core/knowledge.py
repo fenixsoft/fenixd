@@ -927,17 +927,21 @@ def _discard_output(proot: Path, before=None) -> bool:
 
     基线感知（code-review 4d1e46fa795c）：``before`` 为本次 run 前的
     ``_git_status_paths`` 快照。仅当 spec/knowledge/ 下当前脏路径相对基线
-    确为本次 run 新增（基线中不存在）时才整目录 restore/clean；基线中已有
-    同路径改动说明用户在合法写面内有未提交的手工策展，整目录回滚会连带
-    吞掉它们——降级为 WARNING 留痕交人工处理（与 _audit_stray_writes
-    「不吞用户未提交改动」同一尺度）。基线不可用（git 失败/非 git 仓库）
-    时同样保守跳过。
+    确为本次 run 新增（基线中不存在）时才回滚，且回滚收敛为文件粒度
+    （code-review fb19dedc8045）——只对相对基线的差集（本次 run 产出路径集）
+    restore/clean，不做整目录操作：蒸馏 run 可长达数十分钟，期间用户在
+    知识目录的新改动同样不落在基线内、下方交集保护甄别不到，整目录口径
+    会连带吞掉它们。基线中已有同路径改动说明用户在合法写面内有未提交的
+    手工策展，回滚会连带吞掉——降级为 WARNING 留痕交人工处理（与
+    _audit_stray_writes「不吞用户未提交改动」同一尺度）。基线不可用
+    （git 失败/非 git 仓库）时同样保守跳过。
 
     Returns:
-        True = 回滚清理已执行且残留复查确认干净；False = 保守跳过（基线已有
-        路径或基线不可用）或回滚未确认（restore/clean 失败、残留复查不可用、
-        复查仍有残留）。调用方须把 False 按「回滚未确认」口径落日志与台账，
-        不得当作已清理干净。
+        True = 本次 run 产出路径的回滚清理已执行且残留复查确认干净；False =
+        保守跳过（基线已有路径或基线不可用）或回滚未确认（restore/clean
+        失败、残留复查不可用、产出路径复查仍有残留）。调用方须把 False 按
+        「回滚未确认」口径落日志与台账，不得当作已清理干净。基线之外非产出
+        的新增路径（如 run 进行中的用户改动）不回滚、告警留痕，不影响 True。
     """
     after = _git_status_paths(proot)
     if before is None or after is None:
@@ -966,44 +970,78 @@ def _discard_output(proot: Path, before=None) -> bool:
     if overlap:
         logger.warning(
             "knowledge-distill 放弃产出：spec/knowledge/ 下改动含 run 前基线"
-            "已有路径（疑似用户未提交的手工策展），跳过整目录回滚以免吞掉"
+            "已有路径（疑似用户未提交的手工策展），跳过回滚以免吞掉"
             "用户改动，请人工核查: %s",
             ", ".join(overlap),
         )
         return False
-    try:
-        restore = _git(proot, ["restore", "--", KNOWLEDGE_DIR])
-        if restore.returncode != 0:
-            # code-review 37565545ea29：非零退出（index.lock 占用、路径规格
-            # 异常等）必须留痕。注意 pathspec 在索引零命中（产出全为新建
-            # 未跟踪文件、无可 restore 的 tracked 改动）时 restore 也退出
-            # 非零——这是良性态，是否「未确认」交由下方残留复查裁决，
-            # 不在此处直接判失败
-            logger.warning(
-                "knowledge-distill git restore 退出码 %d（stderr: %s），"
-                "tracked 改动回滚结果待残留复查确认",
-                restore.returncode,
-                (restore.stderr or "").strip()[-300:] or "（空）",
+    # 回滚收敛为文件粒度（code-review fb19dedc8045）：仅对相对基线的差集
+    # （本次 run 产出路径集）操作，不再整目录 restore/clean。run 进行中用户
+    # 在知识目录的新改动同样不落在基线内、上方交集保护甄别不到，整目录口径
+    # 会把它们连带吞掉；文件粒度把破坏面压到快照时点已甄别为本次产出的路径，
+    # 快照之后才出现的改动一律不碰。
+    produced = after_k - baseline_k
+    if produced:
+        # tracked 改动（含删除）与 untracked 新文件须各用各的命令口径：
+        # restore 的 pathspec 混入 untracked 路径会报 pathspec 未命中并整体
+        # 退出非零、tracked 一并漏回滚，先用 ls-files 把产出里的 tracked
+        # 路径甄别出来。
+        try:
+            probe = _git(
+                proot,
+                ["--no-optional-locks", "ls-files", "-z", "--"] + sorted(produced),
             )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("knowledge-distill git restore 失败: %s", e)
-    try:
-        # -d（code-review e2029f25ad5b）：clean 缺省不进未跟踪目录，run 新建的
-        # 域目录（spec/knowledge/domains/<新域>/ 等）乃至整个 spec/knowledge/
-        # 会整体滞留工作区，滞留半成品会被下批 _commit_output 一并提交进
-        # 知识库真相源
-        clean = _git(proot, ["clean", "-fd", "--", KNOWLEDGE_DIR])
-        if clean.returncode != 0:
+        except (OSError, subprocess.TimeoutExpired) as e:
             logger.warning(
-                "knowledge-distill git clean 退出码 %d（stderr: %s），"
-                "未跟踪半成品清理结果待残留复查确认",
-                clean.returncode,
-                (clean.stderr or "").strip()[-300:] or "（空）",
+                "knowledge-distill 放弃产出：git ls-files 甄别 tracked 路径"
+                "失败（%s），无法安全拆分 tracked/untracked 回滚口径，跳过"
+                "本次回滚，请人工核查",
+                e,
             )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("knowledge-distill git clean 失败: %s", e)
-    # 残留复查（code-review e2029f25ad5b）：restore/clean 未覆盖的路径（如被
-    # ignore 的文件）滞留即告警留痕，不让「不留半成品」静默失约
+            return False
+        if probe.returncode != 0:
+            logger.warning(
+                "knowledge-distill 放弃产出：git ls-files 退出码 %d（stderr: %s），"
+                "无法安全拆分 tracked/untracked 回滚口径，跳过本次回滚，"
+                "请人工核查",
+                probe.returncode,
+                (probe.stderr or "").strip()[-300:] or "（空）",
+            )
+            return False
+        tracked_set = set(probe.stdout.split("\0"))
+        produced_tracked = sorted(p for p in produced if p in tracked_set)
+        if produced_tracked:
+            try:
+                restore = _git(proot, ["restore", "--"] + produced_tracked)
+                if restore.returncode != 0:
+                    # code-review 37565545ea29：非零退出（index.lock 占用、
+                    # 路径规格异常等）必须留痕，是否「未确认」交由下方残留
+                    # 复查裁决，不在此处直接判失败
+                    logger.warning(
+                        "knowledge-distill git restore 退出码 %d（stderr: %s），"
+                        "tracked 改动回滚结果待残留复查确认",
+                        restore.returncode,
+                        (restore.stderr or "").strip()[-300:] or "（空）",
+                    )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                logger.warning("knowledge-distill git restore 失败: %s", e)
+        try:
+            # clean 只动未跟踪文件（tracked 路径入 pathspec 无副作用）；
+            # -f 足够——produced 已是文件粒度路径，无需 -d 进未跟踪目录
+            # （code-review e2029f25ad5b 的目录滞留关切对文件粒度不成立：
+            # 清空后滞留的空目录壳不进 git status，不构成可提交半成品）
+            clean = _git(proot, ["clean", "-f", "--"] + sorted(produced))
+            if clean.returncode != 0:
+                logger.warning(
+                    "knowledge-distill git clean 退出码 %d（stderr: %s），"
+                    "未跟踪半成品清理结果待残留复查确认",
+                    clean.returncode,
+                    (clean.stderr or "").strip()[-300:] or "（空）",
+                )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.warning("knowledge-distill git clean 失败: %s", e)
+    # 残留复查（code-review e2029f25ad5b）：restore/clean 未清干净的本次产出
+    # 路径滞留即告警留痕，不让「不留半成品」静默失约
     residue = _git_status_paths(proot)
     if residue is None:
         # code-review 37565545ea29：复查不可用 ≠ 无残留，显式告警并按
@@ -1023,14 +1061,25 @@ def _discard_output(proot: Path, before=None) -> bool:
             "spec/knowledge/ 清理结果未确认，请人工核查"
         )
         return False
-    left = sorted(residue_k)
+    # 残留只按本次产出路径集口径判定：快照之后才出现的路径（如 run 进行中
+    # 用户的未提交改动）不回滚也不计入残留——它们不是半成品，回滚它们正是
+    # 本函数要避免的「吞用户改动」
+    left = sorted(residue_k & produced)
     if left:
         logger.warning(
-            "knowledge-distill 放弃产出：回滚后 spec/knowledge/ 仍有残留半成品，"
+            "knowledge-distill 放弃产出：回滚后本次产出路径仍有残留半成品，"
             "请人工核查: %s",
             ", ".join(left),
         )
         return False
+    preserved = sorted(residue_k - produced)
+    if preserved:
+        logger.warning(
+            "knowledge-distill 放弃产出：回滚后 spec/knowledge/ 下存在不属于"
+            "本次产出的新增路径（疑似 run 进行中的用户未提交改动），未回滚"
+            "留工作区，请人工核查: %s",
+            ", ".join(preserved),
+        )
     return True
 
 

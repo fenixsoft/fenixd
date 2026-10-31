@@ -5,7 +5,7 @@
 // 泳道标签中文与状态着色投影），跨语言不强行单源。状态语义色与角色标签经
 // @/utils/runVisual 单源消费（与 SpecTimeline 同源，等价迁移背书）。
 
-import { runDotColor, STATUS_HEX } from '@/utils/runVisual';
+import { formatUsd, runDotColor, STATUS_HEX } from '@/utils/runVisual';
 import type { TopologyLane, TopologyStage } from '@/services/dashboard';
 
 // 语义色名 → 十六进制投影消费方需同时判定分支（失败红/中止橙/弃置灰），
@@ -62,11 +62,12 @@ export function runDotHex(status: string): string {
   return STATUS_HEX[runDotColor(status)] ?? STATUS_HEX.green;
 }
 
-/** 大屏成本展示：null（全不可计价）显式「不可计价」，不渲染 $0.00 伪装可计价。 */
+/** 大屏成本展示：null（全不可计价）显式「不可计价」，不渲染 $0.00 伪装可计价。
+ * 金额口径（两位/三位小数、非有限值守卫）单源复用 runVisual.formatUsd，
+ * 不再内联 toFixed 分支（code-review item cff901c50e19：两份实现已守卫漂移）。 */
 export function fmtCost(v: number | null | undefined): string {
   if (v == null) return '不可计价';
-  if (v > 0 && v < 0.01) return `$${v.toFixed(3)}`;
-  return `$${v.toFixed(2)}`;
+  return formatUsd(v);
 }
 
 /** ISO 时刻 → epoch ms；无效/缺失返回 null（泳道时间轴跳过无时刻节点）。 */

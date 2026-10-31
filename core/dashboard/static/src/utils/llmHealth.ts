@@ -75,7 +75,11 @@ export interface HealthCheckDisplay {
 
 /** 后端检测结果 → 标题栏/行内展示形态（耗时秒一位小数）。 */
 export function toHealthDisplay(r: LlmHealthCheckResult): HealthCheckDisplay {
-  const seconds = `${(r.latency_ms / 1000).toFixed(1)}s`;
+  // 非有限值（NaN/±Infinity）防御（code-review item cb2dde8cbbcc）：latency_ms
+  // 缺失/非数值时耗时段回退「—」，不向展示层透传「正常 · NaNs」（对齐
+  // @/utils/duration、@/utils/percent 的既有防御口径）。
+  const ms = Number.isFinite(r.latency_ms) ? r.latency_ms : null;
+  const seconds = ms === null ? '—' : `${(ms / 1000).toFixed(1)}s`;
   if (r.ok) {
     return {
       kind: 'ok',
