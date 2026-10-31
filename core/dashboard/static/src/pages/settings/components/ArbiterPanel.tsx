@@ -19,6 +19,11 @@ const ARBITER_DEFAULTS = {
   max_consecutive_failures: 2,
 };
 
+// budget_tokens 缺省展示文案由数值派生（千分位），避免与 ARBITER_DEFAULTS
+// 双份字面量漏改分叉。
+const ARBITER_TOKENS_DEFAULT_TEXT =
+  ARBITER_DEFAULTS.budget_tokens.toLocaleString('en-US');
+
 // 四键表单映射单源（config 取值 ?? 缺省）：initialValues 与回填 effect 共用
 // （BranchGcPanel 同款范式，避免两份映射漏改一处导致初值与回填值分叉）
 function buildArbiterFormValues(cfg: ConfigData['arbiter'] | undefined) {
@@ -214,5 +219,3 @@ export default function ArbiterPanel({ config, onSave, project }: ArbiterPanelPr
     </div>
   );
 }
-
-const ARBITER_TOKENS_DEFAULT_TEXT = '1,000,000';

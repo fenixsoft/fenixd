@@ -73,14 +73,14 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
     const val = seg[key];
     if (val !== undefined && (typeof val !== "number" || !Number.isInteger(val) || val <= 0)) {
       throw new Error(
-        `模型未显式配置：config.model.${key} 必须是正整数——当前值类型 ${typeof val}（${String(val)}）非法。`,
+        `模型配置非法：config.model.${key} 必须是正整数——当前值类型 ${typeof val}（${String(val)}）非法。`,
       );
     }
   }
   const api = seg.api;
   if (api !== undefined && typeof api !== "string") {
     throw new Error(
-      `模型未显式配置：config.model.api 必须是字符串（线协议名，如 openai-completions）——` +
+      `模型配置非法：config.model.api 必须是字符串（线协议名，如 openai-completions）——` +
         `当前值类型 ${typeof api}（${String(api)}）非法。`,
     );
   }
@@ -88,14 +88,14 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
   if (headers !== undefined) {
     if (typeof headers !== "object" || headers === null || Array.isArray(headers)) {
       throw new Error(
-        `模型未显式配置：config.model.headers 必须是 string→string 的纯对象——当前值类型 ` +
+        `模型配置非法：config.model.headers 必须是 string→string 的纯对象——当前值类型 ` +
           `${Array.isArray(headers) ? "array" : typeof headers} 非法。`,
       );
     }
     for (const [headerKey, headerVal] of Object.entries(headers)) {
       if (typeof headerVal !== "string") {
         throw new Error(
-          `模型未显式配置：config.model.headers.${headerKey} 的值必须是字符串——当前值类型 ${typeof headerVal}（${String(headerVal)}）非法。`,
+          `模型配置非法：config.model.headers.${headerKey} 的值必须是字符串——当前值类型 ${typeof headerVal}（${String(headerVal)}）非法。`,
         );
       }
     }
