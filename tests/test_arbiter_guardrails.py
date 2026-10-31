@@ -154,7 +154,7 @@ class TestRedLineContract:
         pb._pm = MagicMock()
         pb._pm.project_root = tmp_path
         detail = {
-            "signal_type": "verify_fail_escalation",
+            "signal_type": "verify_env_blocked",
             "spec": "spec-a",
             "severity": "major",
             "description": "d",
@@ -167,7 +167,7 @@ class TestRedLineContract:
                       "{evidence}", "{recommendation}", "{dash_script}",
                       "{run_id}", "{report_path}"):
             assert token not in prompt, f"残留占位符 {token}"
-        assert "verify_fail_escalation" in prompt
+        assert "verify_env_blocked" in prompt
         assert str(arbiter_report_path(tmp_path, "arbiter-spec-a-123")) in prompt
 
     def test_injection_matches_framework_read_side(self, tmp_path):
@@ -185,10 +185,10 @@ class TestRecurrenceEscalation:
         report = {**GOOD_REPORT}
         runner = FakeRunner(tmp_path, script={"run": report})
         lane = make_lane(tmp_path, runner=runner)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         runs_after_first = len(runner.run_agent_calls)
-        out = lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        out = lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert out == "recurrence-escalated"
         assert len(runner.run_agent_calls) == runs_after_first
 
@@ -203,7 +203,7 @@ class TestWhitelistOutNoTouch:
         (tmp_path / ".fenix" / "tmp").mkdir(parents=True, exist_ok=True)
         (tmp_path / ".fenix" / "tmp" / "junk").write_text("x", encoding="utf-8")
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         assert sm.unfreeze_calls == [], "升级路径 MUST NOT 解冻"
         kinds = [r["kind"] for r in load_arbiter_ledger(tmp_path)]
@@ -233,7 +233,7 @@ class TestZeroNoiseFinalization:
         store = AdminStore(tmp_path, None)
         rec = store.append({
             "kind": ESCALATION,
-            "signal_type": "verify_fail_escalation",
+            "signal_type": "verify_env_blocked",
             "spec": "spec-a",
             "severity": "major",
             "description": "d",
@@ -248,7 +248,7 @@ class TestZeroNoiseFinalization:
         runner = FakeRunner(tmp_path, script={"run": {**GOOD_REPORT}})
         sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation",
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                     alert_id=alert_id)
         assert drain(lane)
         store = AdminStore(tmp_path, None)
@@ -268,7 +268,7 @@ class TestZeroNoiseFinalization:
         alert_id = self._append_alert(tmp_path, handled=True)
         runner = FakeRunner(tmp_path, script={"run": {**ESCALATE_REPORT}})
         lane = make_lane(tmp_path, runner=runner)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation",
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                     alert_id=alert_id)
         assert drain(lane)
         store = AdminStore(tmp_path, None)
@@ -302,7 +302,7 @@ class TestDisabledZeroIntrusion:
         # 清掉可能被其它测试污染的单例（project_root 不同会重建）
         set_lane(None)
         assert narrative_yielded_to_arbiter(
-            "verify_fail_escalation",
+            "verify_env_blocked",
             {"project_root": tmp_path, "logger": None},
         ) is False
 
@@ -310,7 +310,7 @@ class TestDisabledZeroIntrusion:
         """enabled=true + 触发面内 signal → 让位 True。"""
         set_lane(None)
         assert narrative_yielded_to_arbiter(
-            "verify_fail_escalation",
+            "verify_env_blocked",
             {"project_root": tmp_path, "logger": None},
         ) is True
 
@@ -325,7 +325,7 @@ class TestDisabledZeroIntrusion:
     def test_disabled_lane_no_writes_on_submit(self, tmp_path):
         """关闭态 submit：零派发、零台账、零侧车（s8 关闭态零侵扰）。"""
         lane = make_lane(tmp_path, config={"enabled": False})
-        assert lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation",
+        assert lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                            alert_id="a-1") == "disabled"
         assert load_arbiter_ledger(tmp_path) == []
         assert load_narrative_sidecars(tmp_path) == {}
@@ -335,10 +335,10 @@ class TestLedgerCompleteness:
     def test_all_kinds_carry_five_segments(self, tmp_path):
         """各 kind 台账条目五段结构完整（处置/升级/死人开关）。"""
         for script, signal in (
-            ({"run": {**GOOD_REPORT}}, "verify_fail_escalation"),
-            ({"run": {**ESCALATE_REPORT}}, "verify_fail_escalation"),
-            ({"run": "raise"}, "verify_fail_escalation"),
-            ({"run": "raise"}, "verify_fail_escalation"),
+            ({"run": {**GOOD_REPORT}}, "verify_env_blocked"),
+            ({"run": {**ESCALATE_REPORT}}, "verify_env_blocked"),
+            ({"run": "raise"}, "verify_env_blocked"),
+            ({"run": "raise"}, "verify_env_blocked"),
         ):
             runner = FakeRunner(tmp_path, script=script)
             lane = make_lane(tmp_path, runner=runner)
@@ -377,7 +377,7 @@ class TestLaneMetricsRow:
         report = {**GOOD_REPORT, "status_after": "ready"}
         runner = MetricsRunner(tmp_path, script={"run": report})
         result = run_arbiter(runner, {"spec": "spec-a",
-                                      "signal_type": "verify_fail_escalation"})
+                                      "signal_type": "verify_env_blocked"})
         assert result["ok"] is True
         assert result["report"]["outcome"] == "resolved"
         assert len(rows) == 1
@@ -393,7 +393,7 @@ class TestLaneMetricsRow:
         """硬门：run 正常退出但未写报告 → fail-closed 判失败。"""
         runner = FakeRunner(tmp_path, script={"run": None})  # 不写文件
         result = run_arbiter(runner, {"spec": "spec-a",
-                                      "signal_type": "verify_fail_escalation"})
+                                      "signal_type": "verify_env_blocked"})
         assert result["ok"] is False
         assert "未写调查报告" in result["error"]
 
@@ -401,14 +401,14 @@ class TestLaneMetricsRow:
         """硬门：outcome 非法 → fail-closed 判失败。"""
         runner = FakeRunner(tmp_path, script={"run": {"outcome": "done"}})
         result = run_arbiter(runner, {"spec": "spec-a",
-                                      "signal_type": "verify_fail_escalation"})
+                                      "signal_type": "verify_env_blocked"})
         assert result["ok"] is False
         assert "outcome 非法" in result["error"]
 
     def test_pinned_model_no_assignment(self, tmp_path):
         """无 model 分配 → 钉死 glm-5.3-flash。"""
         runner = FakeRunner(tmp_path, script={"run": {**GOOD_REPORT}})
-        run_arbiter(runner, {"spec": "spec-a", "signal_type": "verify_fail_escalation"})
+        run_arbiter(runner, {"spec": "spec-a", "signal_type": "verify_env_blocked"})
         assert runner.observed_models == [ARBITER_PINNED_MODEL]
 
 
@@ -508,7 +508,7 @@ class TestNarrativeYieldIsolation:
         set_lane(None)
         before_ledger = load_arbiter_ledger(tmp_path)
         narrative_yielded_to_arbiter(
-            "verify_fail_escalation",
+            "verify_env_blocked",
             {"project_root": tmp_path, "logger": None})
         assert load_arbiter_ledger(tmp_path) == before_ledger == []
         assert load_narrative_sidecars(tmp_path) == {}
@@ -544,7 +544,7 @@ class TestFrozenAlertPathIntegration:
         adj_mod.schedule_narrative = lambda *a, **k: scheduled.append(a)
         try:
             governor._send_human_escalation_alert(
-                "spec-a", "verify_fail_escalation", "major", "d", "e", "r",
+                "spec-a", "verify_env_blocked", "major", "d", "e", "r",
             )
         finally:
             adj_mod.schedule_narrative = orig_sched

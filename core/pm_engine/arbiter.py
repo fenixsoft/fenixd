@@ -64,12 +64,28 @@ ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT = 2
 # 即排除）；本词表覆盖 _send_human_escalation_alert 直发信号的政策/数据完
 # 整性类——留 narrative 与人类（与 design §7 白名单外清单一致）。
 # 触发面正向白名单（spec「仅 blocked/frozen/争议类 condition 进触发面」）：
-# verify_fail_escalation 是唯一的「冻结+告警」成对争议类信号（场景计划争议
-# 连续 N 轮 freeze_for_human）。judge_rerun_cap/verify_uniform_failure/
-# verifier_infra_death/inconclusive_loop 等属 stop-loss/自愈在先类，沿用
-# 既有 narrative 人工路径（tests/test_adjudication_narrative.py 在案契约）；
+# 白名单取生产发射词汇（见下方常量定义处逐发射点注释）。judge_rerun_cap/
+# verify_uniform_failure/verifier_infra_death/inconclusive_loop 等属
+# stop-loss/自愈在先类，沿用既有 narrative 人工路径
+# （tests/test_adjudication_narrative.py 在案契约）；
 # 排除表（ARBITER_EXCLUDED_SIGNAL_TYPES）继续兜底政策/数据完整性类。
-ARBITER_TRIGGER_SIGNAL_TYPES = frozenset({"verify_fail_escalation"})
+# 触发面白名单 = 生产发射词汇（2026-11-01 修正：曾锚历史回填词汇
+# verify_fail_escalation——该名仅存在于 alert_lifecycle BACKFILL 分类器，
+# 无任何生产发射点，白名单锚它即事件/回扫两路径整车道空转，evo-refine
+# 存量回扫候选=0 实证）。四个信号名的发射点：
+# - verify_env_blocked：freeze_for_human 冻结配对告警（escalation.py，
+#   「验证环境阻塞」与「场景计划争议」两族同此名）
+# - verdict_result_unreadable：pipeline 裁决缺失 fail-closed
+# - blocked_stuck：admin_monitor blocked 超阈值未处理
+# - manual-intervention：Administrator 处置请求（转人工边）
+ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
+    {
+        "verify_env_blocked",
+        "verdict_result_unreadable",
+        "blocked_stuck",
+        "manual-intervention",
+    }
+)
 ARBITER_EXCLUDED_SIGNAL_TYPES = frozenset(
     {
         # token/实现预算政策类（预算政策属白名单外裁决，Arbiter 不拍板）
@@ -247,9 +263,10 @@ class ArbiterLane:
     def in_trigger_surface(signal_type: str) -> bool:
         """signal 维度触发面判定：正向白名单命中且不落排除表才进。
 
-        白名单=blocked/frozen/争议类（verify_fail_escalation）；排除表
-        （token 预算/spec_integrity/queue 异常类）为第二道保险——白名单
-        漏放政策类时排除表仍拦（spec MUST-NOT 清单零违反优先于多放行）。
+        白名单=blocked/frozen/争议类的生产发射词汇（ARBITER_TRIGGER_
+        SIGNAL_TYPES 常量定义处有逐发射点注释）；排除表（token 预算/
+        spec_integrity/queue 异常类）为第二道保险——白名单漏放政策类时
+        排除表仍拦（spec MUST-NOT 清单零违反优先于多放行）。
         """
         sig = (signal_type or "").strip()
         return (
@@ -426,7 +443,8 @@ class ArbiterLane:
         """pending（未处理）机器升级告警索引：spec → 最新一条。
 
         机器升级告警 = kind=escalation ∧ 未 handled ∧ signal_type 在触发面
-        白名单（verify_fail_escalation「冻结+告警」成对语义的告警半边）。
+        白名单（ARBITER_TRIGGER_SIGNAL_TYPES，生产发射词汇——「冻结+告警」
+        成对语义的告警半边）。
         freeze_spec 人工冻结不产告警对——无索引命中即天然排除（回扫判据
         反查侧）。read_all 最新在前，首个命中即该 spec 最新 pending 告警
         （同 spec 多条历史告警只取最新，回扫描述以最新现场为准）。

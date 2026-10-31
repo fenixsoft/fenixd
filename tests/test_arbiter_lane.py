@@ -188,7 +188,7 @@ class TestTriggerSurface:
             ok = sm.freeze_for_human(
                 "spec-a",
                 error="验证连续失败",
-                signal_type="verify_fail_escalation",
+                signal_type="verify_env_blocked",
                 severity="major",
                 description="d",
                 evidence="e",
@@ -260,12 +260,34 @@ class TestTriggerSurface:
         ):
             assert sig in ARBITER_EXCLUDED_SIGNAL_TYPES
             assert lane.in_trigger_surface(sig) is False
-        assert lane.in_trigger_surface("verify_fail_escalation") is True
+        assert lane.in_trigger_surface("verify_env_blocked") is True
+
+    def test_production_signal_vocabulary_in_surface(self):
+        """触发面白名单 MUST 锚定生产发射词汇（2026-11-01 回扫候选=0 根因修复）。
+
+        发射点实证：verify_env_blocked=freeze_for_human 冻结配对告警
+        （escalation.py，场景计划争议/验证环境阻塞两族同此名）；
+        verdict_result_unreadable=pipeline 裁决缺失 fail-closed；
+        blocked_stuck=admin_monitor blocked 超阈值未处理；
+        manual-intervention=Administrator 处置请求（转人工边）。
+        历史回填词汇 verify_env_blocked（alert_lifecycle BACKFILL）无任何
+        生产发射点——白名单锚它即整车道空转。
+        """
+        lane = ArbiterLane(Path("/tmp"), None)
+        for sig in (
+            "verify_env_blocked",
+            "verdict_result_unreadable",
+            "blocked_stuck",
+            "manual-intervention",
+        ):
+            assert lane.in_trigger_surface(sig) is True, sig
+        # 历史回填词汇（alert_lifecycle BACKFILL）非生产发射名：不在触发面
+        assert lane.in_trigger_surface("verify_" + "fail_escalation") is False
 
     def test_disabled_lane_returns_disabled(self, tmp_path):
         """enabled=false：submit 返回 disabled，零写入零派发。"""
         lane = make_lane(tmp_path, config={"enabled": False})
-        assert lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation") == "disabled"
+        assert lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked") == "disabled"
         assert lane._queue.qsize() == 0
         assert load_arbiter_ledger(tmp_path) == []
 
@@ -276,11 +298,11 @@ class TestDedupAndRecurrence:
     def test_double_throat_single_dispatch_with_alert_bind(self, tmp_path):
         """双咽喉同签名：首个 queued、第二个 deduped 且 alert 补绑。"""
         lane = make_lane(tmp_path)
-        out1 = lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation",
+        out1 = lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                            alert_id=None)
         assert out1 == "queued"
         out2 = lane.submit_for_alert(
-            None, {"spec": "spec-a", "signal_type": "verify_fail_escalation"},
+            None, {"spec": "spec-a", "signal_type": "verify_env_blocked"},
             "alert-1",
         )
         assert out2 == "deduped"
@@ -298,13 +320,13 @@ class TestDedupAndRecurrence:
         sm = FakeStateMachine()
         lane = make_lane(tmp_path, runner=runner, sm=sm)
         # 第一轮：自主处置成功（sig 进 _dispositioned）
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         first_runs = len(runner.run_agent_calls)
         assert first_runs >= 1
         # 同根因复发（新触发、同签名）：不再自主处置，直接升级
         out = lane.submit_for_alert(
-            None, {"spec": "spec-a", "signal_type": "verify_fail_escalation",
+            None, {"spec": "spec-a", "signal_type": "verify_env_blocked",
                    "description": "再次冻结"},
             "alert-2",
         )
@@ -325,11 +347,11 @@ class TestSingleFlight:
         outcomes = []
         for i in range(8):  # ARBITER_QUEUE_MAX
             outcomes.append(
-                lane.submit_trigger(spec=f"spec-{i}", signal_type="verify_fail_escalation")
+                lane.submit_trigger(spec=f"spec-{i}", signal_type="verify_env_blocked")
             )
         assert all(o == "queued" for o in outcomes)
         with pytest.raises(RuntimeError, match="队列已满"):
-            lane.submit_trigger(spec="spec-overflow", signal_type="verify_fail_escalation")
+            lane.submit_trigger(spec="spec-overflow", signal_type="verify_env_blocked")
 
     def test_worker_consumes_serially(self, tmp_path):
         """worker 串行消费：多触发依次处理，全部终态后 _active 清空。"""
@@ -343,7 +365,7 @@ class TestSingleFlight:
                                                       "status_after": "ready"}})
         sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         assert len(runner.run_agent_calls) == 1
         assert lane._active == set()
@@ -362,22 +384,22 @@ class TestDeadManSwitch:
         """连败 2 次（缺省阈值）→ dead-man 升级。"""
         runner = FakeRunner(tmp_path, script={"run": "raise"})
         lane = make_lane(tmp_path, runner=runner)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation",
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                     alert_id="alert-1")
         assert drain(lane)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation",
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                     alert_id="alert-1")
         assert drain(lane)
         self._escalation_targets(tmp_path, lane)
         # 第三次同签名：复发语义（不派发）——_dispatched 已含
-        out = lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        out = lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert out == "recurrence-escalated"
 
     def test_single_failure_retries_without_deadman(self, tmp_path):
         """单次失败留重试余量：不升级、台账 kind=failed。"""
         runner = FakeRunner(tmp_path, script={"run": "raise"})
         lane = make_lane(tmp_path, runner=runner)
-        lane.submit_trigger(spec="spec-b", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-b", signal_type="verify_env_blocked")
         assert drain(lane)
         kinds = [rec["kind"] for rec in load_arbiter_ledger(tmp_path)]
         assert "failed" in kinds
@@ -407,7 +429,7 @@ class TestDeadManSwitch:
             return result
 
         lane._run_investigation = fake_investigation
-        lane.submit_trigger(spec="spec-c", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-c", signal_type="verify_env_blocked")
         assert drain(lane)
         self._escalation_targets(tmp_path, lane)
 
@@ -432,7 +454,7 @@ class TestDeadManSwitch:
             return result
 
         lane._run_investigation = fake_investigation
-        lane.submit_trigger(spec="spec-d", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-d", signal_type="verify_env_blocked")
         assert drain(lane)
         self._escalation_targets(tmp_path, lane)
         recs = load_arbiter_ledger(tmp_path)
@@ -455,7 +477,7 @@ class TestDeadManSwitch:
         sm = FakeStateMachine({"spec-e": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm,
                          config={"budget_tokens": 1000})
-        lane.submit_trigger(spec="spec-e", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-e", signal_type="verify_env_blocked")
         assert drain(lane)
         recs = load_arbiter_ledger(tmp_path)
         kinds = [r["kind"] for r in recs]
@@ -478,7 +500,7 @@ class TestExplicitStatusUnfreeze:
                                                       "status_after": "testing"}})
         sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         assert sm.unfreeze_calls == [("spec-a", "testing")]
 
@@ -487,7 +509,7 @@ class TestExplicitStatusUnfreeze:
         runner = FakeRunner(tmp_path, script={"run": dict(self.REPORT)})
         sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         assert sm.unfreeze_calls == []
         kinds = [rec["kind"] for rec in load_arbiter_ledger(tmp_path)]
@@ -499,7 +521,7 @@ class TestExplicitStatusUnfreeze:
                                                       "status_after": "ready"}})
         sm = FakeStateMachine({"spec-a": {"status": "ready"}})
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         assert sm.unfreeze_calls == []
 
@@ -507,7 +529,7 @@ class TestExplicitStatusUnfreeze:
         """无 model 分配 → 钉死 glm-5.3-flash（不回落默认网关模型）。"""
         runner = FakeRunner(tmp_path, script={"run": dict(self.REPORT)})
         lane = make_lane(tmp_path, runner=runner)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         assert runner.observed_models == ["glm-5.3-flash"]
 
@@ -577,7 +599,7 @@ class TestLedgerSegments:
             "actions_taken": ["a1"], "evidence_refs": ["ref1"],
             "status_after": "ready"}})
         lane = make_lane(tmp_path, runner=runner)
-        lane.submit_trigger(spec="spec-a", signal_type="verify_fail_escalation")
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         recs = load_arbiter_ledger(tmp_path)
         assert recs and ledger_entry_complete(recs[-1])

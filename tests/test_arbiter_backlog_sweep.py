@@ -171,7 +171,7 @@ def blocking_lane(tmp_path, **kw):
     return lane, gate, investigations
 
 
-def write_pending_alert(project_root, spec, signal_type="verify_fail_escalation",
+def write_pending_alert(project_root, spec, signal_type="verify_env_blocked",
                         severity="critical", handled=False):
     """真实 AdminStore 写一条机器升级告警（freeze_for_human 成对告警形态）。"""
     store = AdminStore(project_root)
@@ -216,7 +216,7 @@ class TestBacklogSweepDispatch:
         assert summary["scanned"] == 1
         assert summary["dispatched"] == [
             arbiter_failure_signature("evo-refine-midflight-outlier-dims",
-                                      "verify_fail_escalation")
+                                      "verify_env_blocked")
         ]
         assert drain(lane)
         # 调查 run 消费走既有管线（单飞 worker 串行），台账落处置终态
@@ -366,7 +366,7 @@ class TestBacklogSweepIdempotence:
         assert len(lane.sweep_backlog()["dispatched"]) == 1
         # 事件触发（告警咽喉形态）后到：同签名 dedup 只补绑不派发
         outcome = lane.submit_for_alert(
-            None, {"spec": "spec-a", "signal_type": "verify_fail_escalation"},
+            None, {"spec": "spec-a", "signal_type": "verify_env_blocked"},
             "alert-late",
         )
         assert outcome == "deduped"
@@ -513,8 +513,8 @@ assert "sweep_on_startup()" in src
 fenixd_src = open({json.dumps(str(root / "fenixd.py"))}, encoding="utf-8").read()
 assert "observe_enabled_transition()" in fenixd_src
 assert "arbiter_failure_signature" in arb.__dict__
-sig = arbiter_failure_signature("s", "verify_fail_escalation")
-assert sig == "s::verify_fail_escalation"
+sig = arbiter_failure_signature("s", "verify_env_blocked")
+assert sig == "s::verify_env_blocked"
 # restart_request 信号（仓库根 JSON：reason/origin/date）
 req = json.load(open({json.dumps(str(root / "restart_request"))}))
 assert {{"reason", "origin", "date"}} <= set(req)
