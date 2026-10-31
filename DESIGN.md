@@ -14,26 +14,35 @@
   spec/archive/2026-10-31-add-command-center specs/command-center-console-ui「无动画
   /插画」Scenario + design.md D6；docs/superpowers/specs/2026-10-25-agent-topology-
   bigscreen-design.md）
-- null 口径红线：数据缺口（null / undefined / 口径不可得）一律显示「—」，颜色与
-  数字都不得伪装缺口——MUST NOT 显示 0（0 与「口径不可得」语义不同）。（出处：
+- null 口径红线：数值 / 指标类数据缺口（null / undefined / 口径不可得）一律显示
+  「—」，颜色与数字都不得伪装缺口——MUST NOT 显示 0（0 与「口径不可得」语义不同）；
+  文本型未知值可用中文限定词（「未知 run」「时长未知」），不强制「—」。（出处：
   command-center-console-ui spec「null 指标 MUST 显示『—』而非 0」+ shared.ts 常量
-  表注记）
+  表注记；2026-10-31 用户裁决 C2 措辞澄清，首轮审计文本占位核对）
 - 配色单源红线：界面颜色只准取自本宪法 token 表（一般域 antd token，大屏域四色单源
   + 派生色），MUST NOT 散落硬编码新色值。（出处：shared.ts 常量表「集中管理、组件内
   不散落硬编码色值」注记，2026-10-28 LaneCard 重设计定稿）
-- 字号与数字排版：数值指标一律 tabular-nums 等宽字体排版，保证纵向可比对齐。
-  （出处：shared.ts OrgGrid 注记 2026-10-28 定稿；2026-10-31 定稿 §3.1 收录）
+- 字号与数字排版：数值指标一律 tabular-nums 等宽字体排版，保证纵向可比对齐；
+  适用范围全域强制（含一般域浅色页数值列，存量缺样式的列补
+  fontVariantNumeric，列改代码清单）。（出处：shared.ts OrgGrid 注记 2026-10-28
+  定稿；2026-10-31 用户裁决 #3 全域强制，首轮审计 a-5）
 - antd 陷阱红线（反模式族，涉布局 / 表单 / 样式，踩中即返工）：① Row 会吞
   draggable（拖拽交互勿放 Row 内）；② Form label inline-flex 两栏对齐陷阱；
   ③ css-in-js 特异性压制既有样式；④ 移动端视口「改布局不改宽度」。（出处：
   2026-10-31 定稿 §3.1，事故记忆沉淀；④ 另见
   spec/archive/2026-09-13-fix-mobile-breakpoint-hook-tables）
+- 迁移件豁免：经用户裁决豁免的第三方迁移组件族保留其原视觉语言，不适用静态渲染
+  红线；豁免族清单在本条登记，新迁移件入族须走修正案程序。现有豁免族：
+  claude-msg / claude-composer（迁移自 claudecodeui，含 tailwind transition-* 类）。
+  （出处：2026-10-31 用户裁决 C1 豁免；首轮审计 a-1 发现；SessionComposer.tsx:2-4 /
+  ToolCard.tsx:1-2 迁移注记）
 
 ## 通用条款（跨域共享）
 
-- 字号阶纪律：字号只准取自既定阶，MUST NOT 随手夹中间值；具体阶值见待裁决段 #1
-  （现状普查已呈报，裁决后经修正案入本条）。（出处：2026-10-31 定稿 §3.1 收录
-  「字号阶」为通用条款主题）
+- 字号阶纪律：字号只准取自既定阶 11 / 12 / 13 / 14 / 16 / 18 / 28（11-12 副文本 /
+  13-14 正文 / 16-18 区块标题与强调 / 28 大数值指标），MUST NOT 随手夹 15 / 17 /
+  20 / 24 等阶外值（存量脱阶散值合计 6 处，列改代码清单收敛）。（出处：2026-10-31
+  用户裁决 #1 宽阶定稿；现状普查 scan-type-null.txt，首轮审计）
 - 数据墨水优先：界面以数据为主语，小号标签 + 静态细线 + 高密度排布；灰字走 antd
   token colorTextTertiary，不手写灰色。（出处：command-center-console-ui spec 风格
   条款；app.tsx 注记「灰字走 colorTextTertiary 适配未来暗色主题」）
@@ -42,10 +51,10 @@
 
 - 基线：antd 浅色 token（默认算法）为基，不另起色板；状态色沿用 antd 语义色
   （success / error / warning / info）。（出处：2026-10-31 定稿 §3.2「antd 浅色
-  token 为基」定稿）
-- 浅灰卡片定制：settings 页卡片底 #f6f6f6、卡头 #efefef。（出处：2026-10-31 定稿
-  §3.2 收录；core/dashboard/static/src/global.less settings 页实证；适用范围见
-  待裁决段 #2）
+  token 为基」定稿；2026-10-31 用户裁决 #4 明示沿用默认色板）
+- 浅灰卡片定制：settings 页卡片底 #f6f6f6、卡头 #efefef；适用范围明示仅 settings
+  页，不推广一般域，其余页维持 antd 默认卡底。（出处：2026-10-31 定稿 §3.2 收录；
+  core/dashboard/static/src/global.less settings 页实证；2026-10-31 用户裁决 #2）
 - 布局惯例：导航 + 分区卡片 + 表格为主干；页面级抽风风格创新不做，与既有页协调。
   （出处：fenix-dashboard 归档系列定稿现状；2026-10-29-ui-prototype-loop-design.md
   「与画像既有布局惯例协调」）
@@ -87,15 +96,8 @@
 
 ## 待裁决段（普查无出处条目，留用户逐条裁决；裁决后经修正案入正式条款）
 
-1. 字号阶具体取值：现状普查 fontSize 分布 11/12/13/14/16/18/20/24/28（12 与 14 为
-   主力）。提案：12 副文本 / 14 正文 / 16-18 区块标题 / 28 大数值指标，11/13/15/17
-   视为脱阶待收敛。（无定稿出处，2026-11 首轮审计现状普查）
-2. 浅灰卡片定制 #f6f6f6 / #efefef 的适用范围：现状仅 settings 页实证；是否推广为
-   一般域全部页卡统一卡底，待裁决。（无明示范围定稿）
-3. tabular-nums 的适用范围：定稿收录为通用条款，但现状仅 command-center OrgGrid 与
-   claude-msg ToolCard 实证；一般域浅色页数值列是否全域强制，待裁决。
-4. 一般域语义色是否直接沿用 antd 默认 success/error/warning/info 色板（现状 mostly
-   是，但无明示裁决），待裁决。
+（当前为空：首轮 4 条已于 2026-10-31 经用户裁决转入正式条款，见各条出处注记；
+后续审计新发现的无出处条目按本段机制继续登记。）
 
 ## 附则：修正案程序与偏离声明
 
