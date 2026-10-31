@@ -31,11 +31,13 @@ export type HarnessBrandValue = {
 
 // 首字母徽标（未知 harness 回退）：内联小组件，不依赖图标资产。
 // 工厂闭包捕获 harness 名与首字母（每未注册值一个品牌实例）。
+// 尺寸约定与 ClaudeLogo/DshLogo 同族：className 整体替换且是唯一尺寸来源
+// （内部不固定尺寸，缺省 w-5 h-5），避免缺省类与内部固定类互相冲突。
 function makeInitialLetterBrand(name: string, letter: string): HarnessBrandValue {
   const InitialLetterBadge = ({ className = 'w-5 h-5' }: { className?: string }) => (
     <div
       aria-label={name}
-      className={`flex h-full w-full items-center justify-center rounded-full bg-gray-500 text-sm font-medium text-white ${className}`}
+      className={`flex items-center justify-center rounded-full bg-gray-500 text-sm font-medium text-white ${className}`}
     >
       {letter}
     </div>
