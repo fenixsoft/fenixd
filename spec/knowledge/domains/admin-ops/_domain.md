@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-10-30 22:41 UTC+8
+> 最后更新：2026-10-31 16:31 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与告警自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -24,9 +24,9 @@
 | [add-spec-manual-admin-invoke](add-spec-manual-admin-invoke.md) | SPEC 菜单发起管理员手工介入 | 2026-10-03 04:59 |
 | [manual-invoke-signal-passthrough](manual-invoke-signal-passthrough.md) | 手工触发信号类型透传 | 2026-10-03 04:59 |
 | [adjudication-actions](adjudication-actions.md) | 裁决动词与选择执行器（三个 spec 作用域动词 + commit_stray_wip/untrack_stray_wip 主树散件提交与根治执行器） | 2026-10-27 23:33 |
-| [adjudication-choices-registry](adjudication-choices-registry.md) | 裁决选择题注册表 | 2026-10-27 23:33 |
+| [adjudication-choices-registry](adjudication-choices-registry.md) | 裁决选择题注册表（选项声明 spec_scoped 作用域与 requires_payload 载荷要求，判定收敛注册表单源） | 2026-10-31 16:31 |
 | [adjudication-ui](adjudication-ui.md) | 人工裁决操作界面 | 2026-10-03 04:59 |
-| [admin-choices-contract](admin-choices-contract.md) | 裁决选择题 admin 侧契约（含复发型主树散件当场根治铁律） | 2026-10-27 23:33 |
+| [admin-choices-contract](admin-choices-contract.md) | 裁决选择题 admin 侧契约（choice_payload 载荷通道与缺载荷 fail-closed 硬门、场景修订禁越道手改、复发型主树散件当场根治铁律） | 2026-10-31 16:31 |
 | [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md) | 裁决 choice 作用域守卫与结果前置回写（全局信号拒 spec 作用域动作、写副作用动作绑定 signal_type 收口、失败记 failed 保留待重审） | 2026-10-26 13:52 |
 | [adjudication-alert-narrative](adjudication-alert-narrative.md) | 转人工裁决告警异步调查叙事（四段式+侧车补叙） | 2026-10-09 02:02 |
 | [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解，升级与信号双 kind 皆然＋瞬态族签名安静自愈） | 2026-10-27 15:28 |

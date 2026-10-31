@@ -1,7 +1,7 @@
 # 工作树与版本控制
-> 最后更新：2026-10-31 16:23 UTC+8
+> 最后更新：2026-10-31 16:31 UTC+8
 
-实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律，主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
+实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律，主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
 
 ## 能力页
 
@@ -36,3 +36,4 @@
 | [receiver-debug-artifact-ignore](receiver-debug-artifact-ignore.md) | 调试产物目录 ignore 豁免（.debug/ 目录级条目、check-ignore 命中即全链免疫、现场零扰动） | 2026-10-30 23:11 |
 | [stray-first-sight-prevention](stray-first-sight-prevention.md) | 散件首现预防提示（目录集合首现一次 info 提示带 ignore 草案、不升级不唤起、复位后再现重提示）+ 交付落盘覆盖检查点 | 2026-10-30 23:11 |
 | [worktree-lock-terminal-release](worktree-lock-terminal-release.md) | worktree spec 锁终态释放与陈锁清扫（owner 归属、失败终态即释、superseded 不释防双派发、acquire 死亡判据清扫含弃置件） | 2026-10-30 23:11 |
+| [merged-branch-gc](merged-branch-gc.md) | 已合并 fenix 分支自动回收（stale_sweep 内四条件判定、`-d` 语义硬边界、活跃豁免两守卫并集、宽限期与开关配置） | 2026-10-31 16:31 |
