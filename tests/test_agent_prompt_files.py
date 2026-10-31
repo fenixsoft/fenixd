@@ -80,7 +80,14 @@ class TestFileLoadAndPlaceholders:
             else:
                 assert str(vp / ".fenix-run-result.json") in prompt
         if "{report_path}" in template:
-            assert str(vp / "report.json") in prompt
+            if agent_type == "arbiter":
+                # add-arbiter-lane：arbiter 的 {report_path} 是裁决报告路径
+                # （run_arbiter 硬门读侧同源），非 verify-progress/report.json
+                from core.pm_engine.arbiter import arbiter_report_path
+
+                assert str(arbiter_report_path(proot, "demo")) in prompt
+            else:
+                assert str(vp / "report.json") in prompt
         if "{progress_path}" in template:
             if agent_type == "verifier":
                 assert str(proot / ".fenix" / "verify-progress" / "demo.json") in prompt
