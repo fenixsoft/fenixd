@@ -455,6 +455,9 @@ def _get_knowledge_index(s, p, q, m):
 def _get_knowledge_file(s, p, q, m):
     s._api_knowledge_file(q)
 
+def _get_arbiter_status(s, p, q, m):
+    s._api_arbiter_status_get(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -704,6 +707,9 @@ _API_GET_ROUTES = [
     # graph 下发端点已随 graphify 功能取消下线）
     ("exact", "/api/knowledge/index", _get_knowledge_index),
     ("exact", "/api/knowledge/file",   _get_knowledge_file),
+    # Arbiter 车道运行时状态（add-arbiter-lane 5.2：设置页 arbiter 面板
+    # 状态区只读数据源——开关/预算/队列/台账摘要）
+    ("exact", "/api/arbiter/status",   _get_arbiter_status),
 ]
 
 _API_POST_ROUTES = [

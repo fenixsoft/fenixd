@@ -1830,6 +1830,50 @@ export interface SelfEvolutionConfig {
   spec_run_at?: string | null;
 }
 
+// ── Arbiter 全局决策者车道（add-arbiter-lane）───────────────────────
+
+/** arbiter 配置节（四键，与 ConfigLoader.get_arbiter_config 归一值一致） */
+export interface ArbiterConfig {
+  /** 总开关（缺省 true）：false 时冻结/升级边走既有 narrative+人工路径，
+   * 全路径与引入 Arbiter 之前一致（关闭态零侵扰） */
+  enabled?: boolean;
+  /** 单次调查 run 墙钟预算秒（缺省 1800） */
+  budget_wallclock_s?: number;
+  /** 单次调查 run token 预算（缺省 1000000） */
+  budget_tokens?: number;
+  /** 同触发连败死人开关阈值（缺省 2） */
+  max_consecutive_failures?: number;
+}
+
+/** Arbiter 车道运行时状态（GET /api/arbiter/status） */
+export interface ArbiterStatus {
+  config?: ArbiterConfig;
+  lane?: {
+    enabled?: boolean;
+    queue_depth?: number;
+    active_signatures?: string[];
+    failure_counts?: Record<string, number>;
+    dispositioned_total?: number;
+    deadmanned_total?: number;
+    error?: string;
+  } | null;
+  ledger?: {
+    total?: number;
+    kinds?: Record<string, number>;
+    recent?: Array<{
+      id?: string;
+      created?: string;
+      kind?: string;
+      spec?: string;
+      signature?: string;
+      alert_id?: string;
+      run_id?: string;
+    }>;
+    error?: string;
+  };
+  project?: string | null;
+}
+
 /** 建议改进项摘要（GET /api/evolution/items 列表元素） */
 export interface EvolutionItem {
   id: string;
@@ -1870,6 +1914,12 @@ export type EvolutionDoc = typeof EVOLUTION_DOCS[number];
 export async function getEvolutionItems(project?: string): Promise<{ items: EvolutionItem[] }> {
   const q = project ? `?project=${encodeURIComponent(project)}` : '';
   return request<{ items: EvolutionItem[] }>(`/api/evolution/items${q}`);
+}
+
+/** Arbiter 车道运行时状态（GET /api/arbiter/status，add-arbiter-lane 5.2） */
+export async function getArbiterStatus(project?: string): Promise<ArbiterStatus> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<ArbiterStatus>(`/api/arbiter/status${q}`);
 }
 
 export async function getEvolutionAnalysis(
@@ -2031,6 +2081,9 @@ export interface ConfigData {
   };
   /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
   self_evolution?: SelfEvolutionConfig;
+  /** add-arbiter-lane：全局决策者车道四键（经 get_arbiter_config 归一——
+   * 非法值回退缺省，回显与生效值一致） */
+  arbiter?: ArbiterConfig;
   /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
    *  设置页「质量」页签读写；项目页「代码审查」分面只读触发按钮与进度） */
   code_review?: CodeReviewConfig;

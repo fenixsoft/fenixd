@@ -28,6 +28,8 @@ const AGENT_LABELS: Record<string, string> = {
   'code-review': 'Code-Review（代码审查）',
   // add-code-review-auto-fix：新增 code-fix（自动修复车道，可改码）
   'code-fix': 'Code-Fix（自动修复）',
+  // add-arbiter-lane：新增 arbiter（全局决策者车道——冻结/升级事件自动派发）
+  arbiter: 'Arbiter（全局决策）',
 };
 
 interface PromptsPanelProps {
