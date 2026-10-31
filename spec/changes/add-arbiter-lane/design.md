@@ -42,3 +42,10 @@ Dashboard 设置页 arbiter 配置段遵循既有设置页模式；设计约束�
 - 台账文件 schema 对照 admin 处置五段模板扩展。
 - 单飞队列实现自行权衡，但必须避开 scheduling_kick 单槽位「写侧吞 conflict 报假成功」前科。
 - 首期白名单可按成本降级（见 Risks 2），在实现说明中注明即可。
+
+## 实现说明（add-arbiter-lane 实现者注记）
+
+- **首期白名单降级声明（Risks 2 允许的降级，不视为缩水）**：本期落地 ①冻结场景文件拯救、③验证侧计数冻结复位、④worktree 陈锁清扫 三类全量处置（框架侧直执行收尾：`unfreeze_spec` 显式 status——附带重启重验计数清零——与 `cleanup_paths` 白名单有界删除）；②裁决落位/verdict 缺失考古、⑤WIP 门/在飞闸门分拣提交 只产裁决包不处置（考古/分拣结论进调查报告，`outcome=escalate` 人工终审）。降级理由：②⑤的鉴定成本（verdict 语义重建、WIP 逻辑变更分拣）远超①③④的机械鉴定链，且误判代价更高——与升级偏向（假阳性危险）一致。
+- **咽喉层钩子形态**：回调注册（`state_machine.set_arbiter_freeze_hook`，回调解耦——state_machine 不 import pm_engine，生产接线点 `pm_engine.arbiter.install_freeze_hook`）；告警咽喉直接 `ArbiterLane.submit_for_alert`（告警已落盘，裁决包/终态化可原位挂靠）。
+- **台账 schema**：`.fenix/arbiter_ledger.jsonl`（append-only），五段键 `scene_snapshot`/`forensic_timeline`/`root_cause`/`action_or_upgrade`/`evidence_refs`（`LEDGER_SEGMENT_KEYS` 单源），kind ∈ disposition/escalation/dead-man/failed/recurrence-escalation/spec-proposed/proposal-dedup/proposal-throttled。
+- **单飞实现**：`queue.Queue(maxsize=8)` + daemon worker 串行消费；`put_nowait` 命中 Full 显式抛 RuntimeError（调用方回落既有 narrative 路径），对齐 scheduling_kick 前科规避。
