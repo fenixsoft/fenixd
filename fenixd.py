@@ -1519,6 +1519,19 @@ class FenixDaemon:
             "fenixd",
             "Configuration hot-reloaded (user/project config.yaml changed)",
         )
+        # add-arbiter-backlog-sweep 1.1：arbiter disabled→enabled 热更新跃迁
+        # 的存量回扫（车道内判跃迁与「每条跃迁至多一次」；enabled 未变/关闭
+        # 态零开销，回扫只读 STATE/告警 + 入队，调查消费由单飞 worker 异步）。
+        try:
+            from core.pm_engine.arbiter import get_lane
+
+            lane = get_lane()
+            if lane is not None:
+                lane.observe_enabled_transition()
+        except Exception as e:
+            self.logger.error(
+                "fenixd", f"arbiter 回扫跃迁检查失败（非阻塞）: {e}"
+            )
         # supervision-timeout-config-consistency：热更新完成校验后持久化自动对齐值
         #（校验层已把低于配置层下限的 absolute_max 抬升至下限，内存生效）。
         self._maybe_persist_supervision_alignment()

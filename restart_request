@@ -1,5 +1,5 @@
 {
-  "reason": "add-arbiter-lane: arbiter 车道注册（run_files.RUN_ID_AGENT_PREFIXES / runner WRAPUP_GRACE_AGENT_TYPES+_DISPATCH_PROBE_LANES+facade / prompt_builder AGENT_PROMPT_FILES / state_machine freeze hook / admin_monitor 处置族判定）需 daemon 重启加载；配置热更新不覆盖代码级注册面",
-  "origin": "spec/changes/add-arbiter-lane",
-  "date": "2026-11-02"
+  "reason": "add-arbiter-backlog-sweep: arbiter 存量回扫需 daemon 重启加载（ArbiterLane 启动回扫入口 sweep_on_startup / 热更新跃迁观察 observe_enabled_transition，及 PMEngine 启动装配、fenixd 热更新主循环接线）",
+  "origin": "spec/changes/add-arbiter-backlog-sweep",
+  "date": "2026-10-31"
 }

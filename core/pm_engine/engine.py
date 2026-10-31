@@ -409,6 +409,11 @@ class PMEngine:
                 lane.set_runner(agent_runner)
                 lane.set_state_machine(state_machine)
             install_freeze_hook()
+            # add-arbiter-backlog-sweep 1.1：启动存量回扫（daemon 装配后一次，
+            # enabled=false 时内部短路零扫描零写入；只读 STATE/告警 + 入队，
+            # 调查消费由单飞 worker 异步串行，不阻塞本构造）。
+            if lane is not None:
+                lane.sweep_on_startup()
         except Exception as e:
             if logger is not None:
                 try:
