@@ -86,6 +86,12 @@ ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
         "manual-intervention",
     }
 )
+
+# 遗留机器冻结菜单文案（2026-11-01 回扫机器证据第三半边）：标记字段
+# （_frozen_source，freeze_for_human 写入）上线前的存量冻结标本，其 error
+# 由框架冻结路径生成、内嵌「处置选项：①…②…」结构化菜单——人工冻结
+# （freeze_spec）只写自由文本 reason，不含该菜单，据此回填分类。
+ARBITER_LEGACY_MACHINE_FREEZE_MENU = "处置选项：①"
 ARBITER_EXCLUDED_SIGNAL_TYPES = frozenset(
     {
         # token/实现预算政策类（预算政策属白名单外裁决，Arbiter 不拍板）
@@ -501,9 +507,37 @@ class ArbiterLane:
                 continue
             spec = str(name)
             alert = alert_index.get(spec)
-            if alert is None:
-                continue
-            signal_type = str(alert.get("signal_type") or "")
+            if alert is not None:
+                signal_type = str(alert.get("signal_type") or "")
+                severity = str(alert.get("severity") or "major")
+                description = str(alert.get("description") or "")
+                evidence = str(alert.get("evidence") or "")
+                recommended_action = str(alert.get("recommended_action") or "")
+                alert_id = str(alert.get("id") or "")
+            else:
+                # 机器证据第二/三半边（2026-11-01）：告警半边随生命周期衰减
+                # （escalation 会被自愈收口置 handled），frozen 却无限期持续
+                # ——陈旧欠账必须靠不衰减的持久证据回扫。持久半边=咽喉标记
+                # （freeze_for_human 写 _frozen_source/_frozen_signal_type）
+                # 与遗留机器冻结菜单文案（标记上线前的存量标本，evo-refine
+                # 候选=0 二段根因实证）。
+                frozen_signal = str(e.get("_frozen_signal_type") or "")
+                has_marker = (
+                    str(e.get("_frozen_source") or "") == "machine"
+                    and bool(frozen_signal)
+                )
+                has_legacy_menu = (
+                    ARBITER_LEGACY_MACHINE_FREEZE_MENU
+                    in str(e.get("error") or "")
+                )
+                if not has_marker and not has_legacy_menu:
+                    continue
+                signal_type = frozen_signal or "verify_env_blocked"
+                severity = "major"
+                description = str(e.get("error") or "")[:200]
+                evidence = ""
+                recommended_action = ""
+                alert_id = ""
             sig = arbiter_failure_signature(spec, signal_type)
             if sig in ledger_sigs:
                 continue
@@ -520,11 +554,11 @@ class ArbiterLane:
                     "spec": spec,
                     "signal_type": signal_type,
                     "signature": sig,
-                    "severity": str(alert.get("severity") or "major"),
-                    "description": str(alert.get("description") or ""),
-                    "evidence": str(alert.get("evidence") or ""),
-                    "recommended_action": str(alert.get("recommended_action") or ""),
-                    "alert_id": str(alert.get("id") or ""),
+                    "severity": severity,
+                    "description": description,
+                    "evidence": evidence,
+                    "recommended_action": recommended_action,
+                    "alert_id": alert_id,
                 }
             )
         return out

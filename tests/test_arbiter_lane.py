@@ -562,8 +562,8 @@ assert hasattr(admin_store.AdminStore, "arbiter_upgrade")
 assert hasattr(adj, "narrative_yielded_to_arbiter")
 cfg = config_mod.ConfigLoader.get_arbiter_config({{}})
 assert cfg == {{"enabled": True, "budget_wallclock_s": 1800, "budget_tokens": 1000000, "max_consecutive_failures": 2}}, cfg
-req = json.load(open({json.dumps(str(Path(__file__).resolve().parents[1] / "restart_request"))}))
-assert {{"reason", "origin", "date"}} <= set(req)
+# restart_request 为运行时瞬时产物（supervisor 消费即删除）——不进常驻断言
+# （2026-11-01：曾断言根路径文件存在，消费后永久失败=时间炸弹）
 assert mr.ARBITER_REPORT_OUTCOMES == ("resolved", "escalate")
 print("REHEARSAL-OK")
 """

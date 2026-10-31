@@ -515,14 +515,88 @@ assert "observe_enabled_transition()" in fenixd_src
 assert "arbiter_failure_signature" in arb.__dict__
 sig = arbiter_failure_signature("s", "verify_env_blocked")
 assert sig == "s::verify_env_blocked"
-# restart_request 信号（仓库根 JSON：reason/origin/date）
-req = json.load(open({json.dumps(str(root / "restart_request"))}))
-assert {{"reason", "origin", "date"}} <= set(req)
-assert "arbiter" in req["reason"] and "回扫" in req["reason"]
-assert req["origin"] == "spec/changes/add-arbiter-backlog-sweep"
+# restart_request 信号为运行时瞬时产物（supervisor 消费即删除）——不进
+# 常驻断言（2026-11-01：曾断言根路径文件存在，消费后永久失败=时间炸弹）
 print("REHEARSAL-OK")
 """
         proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                               text=True, timeout=120)
         assert proc.returncode == 0, proc.stderr
         assert "REHEARSAL-OK" in proc.stdout
+
+
+# ── 机器证据三半边（2026-11-01 修复：告警半边随生命周期衰减）────────
+# 实证：evo-refine 存量冻结的 escalation 告警已被告警生命周期自愈收口
+# （handled=True），「frozen ∧ pending 告警」判据对陈旧欠账恒空转。
+# 机器证据补两半：咽喉持久标记（freeze_for_human 写 _frozen_source/
+# _frozen_signal_type）+ 遗留菜单文案回填（标记上线前的存量标本）。
+
+class TestMachineEvidenceBackfill:
+    def test_aged_alert_with_legacy_menu_error_swept(self, tmp_path):
+        """告警已衰减（handled=True）+ 遗留机器冻结菜单文案 → 仍回扫。
+
+        evo-refive 型陈旧欠账：冻结长期挂着，配对告警早被生命周期收口。
+        """
+        spec = "evo-refine-midflight-outlier-dims"
+        write_pending_alert(tmp_path, spec, handled=True)  # 已衰减
+        entries = evo_refine_entries(extra={
+            "error": ("用户指令冻结：场景计划争议连续 2 轮，admin 处置未奏效，"
+                      "转人工 — 冻结场景文件损坏或验收失败。处置选项：① 确认"
+                      "场景集已过时 → 删除 test_scenarios.json 批准重新出题"),
+        })
+        runner = FakeRunner(tmp_path, script={"run": dict(RESOLVED_REPORT)})
+        lane = make_lane(tmp_path, runner=runner, sm=FakeStateMachine(entries))
+        summary = lane.sweep_backlog(source="startup")
+        assert summary["dispatched"] == [
+            arbiter_failure_signature(spec, "verify_env_blocked")
+        ]
+        assert drain(lane)
+
+    def test_frozen_source_marker_swept_without_alert(self, tmp_path):
+        """_frozen_source=machine 持久标记 → 无告警也回扫（管未来新冻结）。"""
+        runner = FakeRunner(tmp_path, script={"run": dict(RESOLVED_REPORT)})
+        lane = make_lane(tmp_path, runner=runner, sm=FakeStateMachine({
+            "spec-a": {"status": "blocked", "frozen": True,
+                       "_frozen_source": "machine",
+                       "_frozen_signal_type": "blocked_stuck"},
+        }))
+        summary = lane.sweep_backlog()
+        assert summary["dispatched"] == [
+            arbiter_failure_signature("spec-a", "blocked_stuck")
+        ]
+        assert drain(lane)
+
+    def test_human_freeze_form_excluded(self, tmp_path):
+        """人工冻结形态（无告警/无标记/无菜单文案）→ 不回扫。"""
+        runner = FakeRunner(tmp_path, script={"run": dict(RESOLVED_REPORT)})
+        lane = make_lane(tmp_path, runner=runner, sm=FakeStateMachine({
+            "spec-a": {"status": "blocked", "frozen": True,
+                       "error": "用户指令冻结：人工暂停观察"},
+        }))
+        summary = lane.sweep_backlog()
+        assert summary["dispatched"] == []
+        assert drain(lane) is not None  # 队列空，无 run
+
+    def test_throat_writes_machine_marker_and_unfreeze_clears(self, tmp_path):
+        """freeze_for_human 咽喉写持久标记；unfreeze 清理；freeze_spec 不写。"""
+        from core.state_machine import StateMachine
+        state = tmp_path / ".fenix" / "STATE.md"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("# Fenix Project State\n## Specs\n", encoding="utf-8")
+        sm = StateMachine(state, MagicMock())
+        sm.add_spec("spec-a", {"status": "testing"})
+        assert sm.freeze_for_human(
+            "spec-a", error="e（原状态 testing）", signal_type="verify_env_blocked",
+            severity="critical", description="d", evidence="e",
+            recommended_action="r", alert_callback=None,
+        ) is True
+        entry = sm.read_all()["spec-a"]
+        assert entry.get("_frozen_source") == "machine"
+        assert entry.get("_frozen_signal_type") == "verify_env_blocked"
+        # 人工冻结路径不写标记
+        sm.add_spec("spec-b", {"status": "implementing"})
+        sm.freeze_spec("spec-b", reason="人工暂停")
+        assert sm.read_all()["spec-b"].get("_frozen_source") is None
+        # 解冻清理标记（防 machine→人工 重冻结被误判）
+        assert sm.unfreeze_spec("spec-a", status="testing") is True
+        assert sm.read_all()["spec-a"].get("_frozen_source") is None

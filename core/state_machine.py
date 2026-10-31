@@ -2238,6 +2238,13 @@ class StateMachine:
             "status": SpecStatus.BLOCKED,
             FROZEN_FIELD: True,
             "error": error,
+            # 机器来源持久标记（2026-11-01 回扫机器证据半边）：配对告警会被
+            # 生命周期自愈收口（handled），frozen 却无限期持续——arbiter 回扫
+            # 判据需要不衰减的机器证据。_frozen_signal_type 供回扫签名归类；
+            # 二者随 unfreeze_spec 同一原子写清理（防 machine→人工 重冻结被
+            # 误判为机器冻结）。freeze_spec 人工冻结不写这两键。
+            "_frozen_source": "machine",
+            "_frozen_signal_type": str(signal_type or ""),
         }
         if extra_updates:
             # 防误用：error/status/frozen 三键只应由本方法自身设定——携带
@@ -2589,6 +2596,10 @@ class StateMachine:
         # _inconclusive_attempts / ENV_BLOCK_ROUNDS_FIELD 同款「同一原子写清零」）。
         updates[REDISPATCH_SAME_CAUSE_STREAK_FIELD] = 0
         updates["_redispatch_cause_fp"] = None
+        # 机器冻结来源标记随解冻清理（2026-11-01）：防 machine 解冻后人工
+        # 重冻结被回扫按陈旧标记误判为机器冻结（与上方各清零同一原子写）。
+        updates["_frozen_source"] = None
+        updates["_frozen_signal_type"] = None
         # 全场景同因失败哨计数随人工解冻清零（与上方各验证计数同一原子写）：
         # admin 按推荐动作「拨回 implemented 重验」/解冻人工修复后，同因失败
         # 观察窗从 1 重新起算；否则解冻后首轮同因失败 attempts 即 ≥4 立即
