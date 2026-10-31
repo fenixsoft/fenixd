@@ -812,6 +812,69 @@ class AdminStore:
 
         return self._mutate(mutate, skip_unchanged=True)
 
+    # ── Arbiter 零噪音分层（add-arbiter-lane 4.3）───────────────────────
+
+    def arbiter_resolve(self, alert_id: str, *, summary: str, evidence_ref: str,
+                        run_id: str = "") -> bool:
+        """Arbiter 自主处置成功：原告警原位终态化（resolved_by=arbiter）。
+
+        只改写既有 ESCALATION 条目的闭环字段（handled/handled_at/handled_by/
+        resolved_by/action_taken/arbiter），MUST NOT 新增告警条目、不进 pending
+        （零噪音：处置成功对用户不可感知，design「自主处置零用户可感知告警」）。
+        条目本就 handled 时幂等返回 False（同 mark_handled 口径）。
+        """
+
+        def mutate(records):
+            changed = False
+            for rec in records:
+                if rec.get("id") == alert_id and rec.get("kind") == ESCALATION:
+                    if not rec.get("handled"):
+                        rec["handled"] = True
+                        rec["handled_at"] = _utcnow_iso()
+                        rec["handled_by"] = "arbiter"
+                        rec["resolved_by"] = "arbiter"
+                        rec["action_taken"] = str(summary or "")[:2000]
+                        rec["arbiter_evidence"] = str(evidence_ref or "")[:2000]
+                        if run_id:
+                            rec["arbiter_run_id"] = str(run_id)
+                        changed = True
+            return changed
+
+        return self._mutate(mutate, skip_unchanged=True)
+
+    def arbiter_upgrade(self, alert_id: str, *, summary: str,
+                        recommended_action: str, run_id: str = "",
+                        reason: str = "") -> bool:
+        """Arbiter 升级：裁决包同 alert_id 原位静默更新 + 推 pending。
+
+        只改写既有条目（MUST NOT 新增告警条目）：调查报告摘要/推荐动作/
+        arbiter 元数据注入原条目，handled 翻回 False 使条目进入 pending 人工
+        队列（原 minor 级 mark_handled 的知情闭环被升级推翻——升级语义压过
+        知情语义）。调查报告全文在 narrative 槽位 sidecar（write_narrative_sidecar
+        model="arbiter"），本方法只落摘要与指针，防告警存储被全文撑爆。
+        """
+
+        def mutate(records):
+            changed = False
+            for rec in records:
+                if rec.get("id") == alert_id and rec.get("kind") == ESCALATION:
+                    rec["handled"] = False
+                    rec.pop("handled_at", None)
+                    rec["arbiter_upgrade"] = {
+                        "summary": str(summary or "")[:2000],
+                        "recommended_action": str(recommended_action or "")[:2000],
+                        "reason": str(reason or "")[:500],
+                        "run_id": str(run_id or ""),
+                        "upgraded_at": _utcnow_iso(),
+                        "resolved_by": "arbiter",
+                    }
+                    if str(recommended_action or "").strip():
+                        rec["recommended_action"] = str(recommended_action)[:2000]
+                    changed = True
+            return changed
+
+        return self._mutate(mutate, skip_unchanged=True)
+
     def mark_escalated(self, alert_id: str) -> bool:
         """将某条信号标记为已唤起 Administrator（escalated=True）。
 

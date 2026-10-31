@@ -115,6 +115,34 @@ _APPLIED_TRACEBACK_KEYS = frozenset({
 START_AFTER_FIELD = "start_after"
 FROZEN_UNTIL_FIELD = "frozen_until"
 
+
+# ── Arbiter 派发回调（add-arbiter-lane 1.1，回调解耦）────────────────────
+# freeze_for_human 咽喉挂全局决策者（Arbiter）派发：机器「冻结+告警」成对单一
+# 入口处把触发交给注入的可调用（生产接线点 pm_engine.arbiter.install_freeze_hook
+# → ArbiterLane.submit）。回调可缺省（None = 关闭态/测试场景），None 与回调
+# 内部 disabled 短路都保持升级边行为与本 SPEC 合入前逐字节一致（s8）。
+# 排除表在咽喉层天然落地：freeze_spec（人工冻结）、mark_frozen_hold（冻结终止
+# 簿记）、frozen_until 定时冻结三路径不经过本咽喉、不触碰回调——人工/簿记/
+# 定时自愈在场场景 Arbiter 插手是噪音且与在飞 run 竞态（design §9）。
+_ARBITER_FREEZE_HOOK = None
+
+
+def set_arbiter_freeze_hook(hook) -> None:
+    """注册 Arbiter 冻结派发回调（幂等覆盖；None 注销）。
+
+    hook 契约：``hook(**kwargs)``，kwargs 含 spec_name/signal_type/severity/
+    description/evidence/recommended_action（与 freeze_for_human 形参同构）；
+    回调内部自行消化 enabled=false（禁触发）与排队登记失败（显式报错留痕），
+    不得向冻结写盘路径抛异常（触发面故障不回滚冻结本身，与告警回调容错同口径）。
+    """
+    global _ARBITER_FREEZE_HOOK
+    _ARBITER_FREEZE_HOOK = hook
+
+
+def get_arbiter_freeze_hook():
+    """读当前注册的 Arbiter 冻结回调（消费预演自检/测试断言用）。"""
+    return _ARBITER_FREEZE_HOOK
+
 # 手工激活哨兵（add-spec-manual-activation D1）：start_after 取值域的第三态。
 # 值为 "manual" 时表示「永不到期，须人工激活后方可被调度器拾取」——与定时值
 # （ISO8601 UTC）互斥，与 null（无限制）语义相反。哨兵是合法值而非脏值，
@@ -2246,6 +2274,11 @@ class StateMachine:
                 f"(signal_type={signal_type}) but no alert_callback supplied — "
                 f"静默冻结（仅单测允许，生产 MUST 提供非 None 回调）",
             )
+            self._notify_arbiter_machine_freeze(
+                spec_name=spec_name, signal_type=signal_type, severity=severity,
+                description=description, evidence=evidence,
+                recommended_action=recommended_action,
+            )
             return ok
         try:
             alert_callback(
@@ -2264,7 +2297,46 @@ class StateMachine:
                 f"冻结人工升级告警发送失败 '{spec_name}'（signal_type="
                 f"{signal_type}，非阻塞）: {e}",
             )
+        # add-arbiter-lane 1.1：机器冻结咽喉的 Arbiter 派发（回调解耦）。
+        # 告警回调之后触发——同签名会再经 _send_human_escalation_alert 咽喉
+        # 报一次，lane 侧 dedup 保证只派发一次（alert 落地后补绑告警）；
+        # enabled=false 时回调内部短路零写入（s8 关闭态零侵扰）。派发失败
+        # 不回滚冻结（与上方告警容错同口径）。
+        self._notify_arbiter_machine_freeze(
+            spec_name=spec_name, signal_type=signal_type, severity=severity,
+            description=description, evidence=evidence,
+            recommended_action=recommended_action,
+        )
         return ok
+
+    @staticmethod
+    def _notify_arbiter_machine_freeze(*, spec_name: str, signal_type: str,
+                                       severity: str, description: str,
+                                       evidence: str, recommended_action: str) -> None:
+        """冻结咽喉的 Arbiter 派发回调（未注册时零开销直返——关闭态等价）。"""
+        hook = _ARBITER_FREEZE_HOOK
+        if hook is None:
+            return
+        try:
+            hook(
+                spec_name=spec_name,
+                signal_type=signal_type,
+                severity=severity,
+                description=description,
+                evidence=evidence,
+                recommended_action=recommended_action,
+            )
+        except Exception as e:
+            # 触发面故障不回滚冻结本身；无 logger 的病态装配下静默（hook
+            # 内部已自带显式报错留痕路径，此处是最后防线）
+            try:
+                import logging
+
+                logging.getLogger("fenixd.state_machine").warning(
+                    "arbiter 冻结派发回调异常（非阻塞）: %s", e,
+                )
+            except Exception:
+                pass
 
     def mark_frozen_hold(self, spec_name: str, error: str = "") -> bool:
         """冻结终止的独立保持标记写入（add-freeze-stop-inflight-agents D3）。
