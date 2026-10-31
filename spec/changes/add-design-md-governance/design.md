@@ -37,7 +37,9 @@
 7. **frontend-design 替代 ui-ux-pro-max**（用户定稿）：两遍式流程原生产出候选 token
    系统 + 反 AI 俗套自批判；接入点写进 fenix-prototype 生成契约（§3.3 画像主题注入
    邻位），宪法摘录约束优先。
-8. **fenix-new 接线加在起草契约段**：UI SPEC 引用 DESIGN.md + 涉偏离写声明段；
+8. **fenix-new 接线加在 §1.7「界面改动判定与原型衔接」段**（评审勘误：SKILL.md 无
+   「起草契约」字面段落，该段是起草期 UI 契约所在段）：UI SPEC 引用 DESIGN.md +
+   涉偏离写声明段；
    `add-timeline-origin-request` 等 fenix-new 既有行为 SPEC 不受影响（本变更是新增
    约定，非改既有 Requirement）。
 

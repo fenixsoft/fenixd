@@ -109,8 +109,9 @@ MUST 核对 DESIGN.md 例外域条款是否同步覆盖，缺失的走修正案�
 
 ### Requirement: fenix-new 起草接线
 
-`skills/fenix-new/SKILL.md` 的起草契约 MUST 增补：UI 相关 SPEC 起草时 MUST 引用
-`DESIGN.md` 作为设计约束来源；涉及偏离宪法的 SPEC MUST 按偏离声明格式写入设计文档。
+`skills/fenix-new/SKILL.md` 的 SPEC 起草契约（§1.7「界面改动判定与原型衔接」段）
+MUST 增补：UI 相关 SPEC 起草时 MUST 引用 `DESIGN.md` 作为设计约束来源；涉及偏离
+宪法的 SPEC MUST 按偏离声明格式写入设计文档。
 
 #### Scenario: UI SPEC 引用宪法
 
