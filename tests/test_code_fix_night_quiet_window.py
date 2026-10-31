@@ -473,10 +473,9 @@ class TestDisabledAndDegradedConfig(unittest.TestCase):
             _GateRunner(proot, config), proot, config=config, logger=logger)
 
     def test_disabled_config_matches_status_quo(self):
-        """off / 空串：窗内时刻照样放行 dispatched；武装窗次告警零写入
-        （既有武装语义零改动），停用态每日聚合提醒恰一条（2.1——既有
-        「零告警」断言随停用态可感知语义更新：窗值停用期间每日至多一条
-        聚合提醒，防长期悬置无人察觉）。"""
+        """off / 空串：窗内时刻照样放行 dispatched；停用态全程零告警
+        （停用态每日聚合提醒已按用户裁决整体拆除——显式停用属有意配置，
+        非法值的消费期 WARNING 一次纪律不受影响，仍防配置错误静默吞掉）。"""
         for raw in ("off", ""):
             with self.subTest(window=raw or "empty"):
                 proot = _make_project_root()
@@ -491,8 +490,8 @@ class TestDisabledAndDegradedConfig(unittest.TestCase):
                     res, {"triggered": True, "reason": "dispatched"})
                 self.assertEqual(_armed_alerts(proot), [],
                                  "停用态不产生武装窗次告警")
-                self.assertEqual(len(_reminders(proot)), 1,
-                                 "停用态聚合提醒恰一条")
+                self.assertEqual(_reminders(proot), [],
+                                 "停用态零提醒告警")
 
     def test_invalid_config_degrades_to_no_window_and_warns(self):
         """非法配置（含 end<=start 逆序）：窗内时刻降级为无窗照常放行，且
@@ -1005,9 +1004,7 @@ class TestBoolWindowNormalization(unittest.TestCase):
 
     def test_bool_true_rejected_warns_once_no_reminder(self):
         """true 显式拒判：无窗放行（不按「全天停派」语义处理）+ WARNING
-        一次（同值去重）；true 非停用态，停用态提醒 MUST NOT 触发。"""
-        from core.code_fix import read_progress
-
+        一次（同值去重）；true 是非法形态非停用态，零提醒告警。"""
         proot = _make_project_root()
         _write_items(proot, {"a": _item("a")})
         _write_verify_yaml(proot)
@@ -1022,82 +1019,7 @@ class TestBoolWindowNormalization(unittest.TestCase):
                  if r[0] == "warning" and "配置非法" in r[2]]
         self.assertEqual(len(warns), 1, "同值只 WARNING 一次")
         self.assertIn("True", warns[0][2])
-        prog = read_progress(proot)
-        self.assertIsNone(
-            prog.get("night_quiet_off_remind_date"),
-            "true 是非法形态非停用态，停用态提醒不触发")
         self.assertEqual(_reminders(proot), [])
-
-
-class TestDisabledDailyReminder(unittest.TestCase):
-    """停用态每日聚合提醒（evo-add-night-window-bool-normalization 2.1/3.1）：
-    （窗值, 自然日）节流、值变更/跨自然日重提醒、非停用态零提醒。"""
-
-    def _checkpoint_once(self, proot, config):
-        orch = _mk_orch(proot, config)
-        with mock.patch("core.code_fix.time.localtime",
-                        return_value=_local(4, 30)):
-            return orch.checkpoint()
-
-    def test_throttle_per_day_and_value(self):
-        """同（窗值, 自然日）至多一条；节流键持久化于 fix-progress。"""
-        from core.code_fix import read_progress
-
-        proot = _make_project_root()
-        _write_items(proot, {"a": _item("a")})
-        _write_verify_yaml(proot)
-        cfg = _cfg(night_quiet_window="off")
-        self._checkpoint_once(proot, cfg)
-        self.assertEqual(len(_reminders(proot)), 1)
-        self._checkpoint_once(proot, cfg)
-        self._checkpoint_once(proot, cfg)
-        self.assertEqual(
-            len(_reminders(proot)), 1, "同（窗值,自然日）节流不刷屏")
-        prog = read_progress(proot)
-        self.assertEqual(prog["night_quiet_off_remind_date"], "2026-10-06")
-        self.assertEqual(prog["night_quiet_off_remind_raw"], "off")
-
-    def test_value_change_re_reminds(self):
-        """窗值变更（off → 布尔 false）视为新节流键，重新提醒。"""
-        proot = _make_project_root()
-        _write_items(proot, {"a": _item("a")})
-        _write_verify_yaml(proot)
-        self._checkpoint_once(proot, _cfg(night_quiet_window="off"))
-        self._checkpoint_once(proot, _cfg(night_quiet_window=False))
-        self.assertEqual(
-            len(_reminders(proot)), 2, "值变更后重新提醒（布尔 false 同为"
-            "停用态但窗值原文不同）")
-
-    def test_cross_day_re_reminds(self):
-        """跨自然日：节流键含日期，次日首 checkpoint 重新提醒。"""
-        from core.code_fix import read_progress, write_progress
-
-        proot = _make_project_root()
-        _write_items(proot, {"a": _item("a")})
-        _write_verify_yaml(proot)
-        cfg = _cfg(night_quiet_window="off")
-        self._checkpoint_once(proot, cfg)
-        self.assertEqual(len(_reminders(proot)), 1)
-        # 模拟日期推进：把节流日期拨回昨日
-        write_progress(proot, night_quiet_off_remind_date="2026-10-05")
-        self._checkpoint_once(proot, cfg)
-        self.assertEqual(
-            len(_reminders(proot)), 2, "跨自然日重新提醒，每日至多一条")
-        self.assertEqual(
-            read_progress(proot)["night_quiet_off_remind_date"],
-            "2026-10-06")
-
-    def test_active_or_illegal_window_no_reminder(self):
-        """有窗未命中 / 非法值：停用态提醒零触发（非法值走消费期 WARNING，
-        防双重告警源）。"""
-        proot = _make_project_root()
-        _write_items(proot, {"a": _item("a")})
-        _write_verify_yaml(proot)
-        # 合法窗、窗外时刻（10:00 不落 04:15-04:45）
-        self._checkpoint_once(proot, _cfg(night_quiet_window="04:15-04:45"))
-        # 非法值（fail-open 无窗）
-        self._checkpoint_once(proot, _cfg(night_quiet_window=True))
-        self.assertEqual(_reminders(proot), [], "非停用态零提醒")
 
 
 class TestLoadTimeLint(unittest.TestCase):

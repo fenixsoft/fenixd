@@ -262,12 +262,6 @@ FIX_PROGRESS_DEFAULT = {
     # 武装时窗区间配置原文快照：解除告警 evidence 引用武装时的区间，配置中途
     # 变更/关闭不使解除记录失真；随窗次标识一并清除。
     "night_quiet_armed_text": None,
-    # 停用态每日聚合提醒节流键（evo-add-night-window-bool-normalization 2.1）：
-    # 窗值显式停用（off/空串/布尔 false）期间提醒按（窗值, 自然日）至多一条，
-    # 两键记录上次提醒的窗值原文与本地日期——持久化（合并写）跨重启仍每日至多
-    # 一条；值变更或跨自然日重新提醒。null=近期无停用态提醒。
-    "night_quiet_off_remind_raw": None,
-    "night_quiet_off_remind_date": None,
 }
 
 
@@ -3895,47 +3889,6 @@ def _write_night_quiet_window_release_alert(
         _log_alert_rejected(logger, CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE)
 
 
-def _write_night_quiet_window_disabled_reminder(
-    project_root, window_raw: str, today: str, logger=None,
-) -> None:
-    """静默窗停用态每日聚合提醒（evo-add-night-window-bool-normalization 2.1）。
-
-    形态复用 ``_write_night_quiet_window_alert`` 的 AdminStore SIGNAL 通道
-    （同 signal_type 家族、source=code-fix-lane），写函数与文案为停用态专用
-    ——武装告警「批投递进入每日夜间静默窗」的语义 MUST NOT 字面复用，既有
-    武装/解除告警语义零改动。按（窗值, 自然日）至多一条的节流由调用方
-    （checkpoint 守卫读 ``night_quiet_off_remind_raw``/``_date`` 进度键）
-    保证，本函数纯写；AdminStore 拒写走 ``_log_alert_rejected`` 留痕。
-    """
-    from core.admin_store import AdminStore, SIGNAL
-
-    store = AdminStore(project_root, logger=None)
-    rec = store.append(
-        {
-            "kind": SIGNAL,
-            "signal_type": CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE,
-            "spec": None,
-            "severity": "warning",
-            "description": (
-                "code-fix 夜间静默窗守卫停用中（night_quiet_window 显式关闭），"
-                "每日夜间断窗期投递无守卫保护（聚合提醒，每日至多一条）"
-            ),
-            "evidence": (
-                f"项目名={Path(project_root).name}; 窗值={window_raw}; "
-                f"提醒日={today}"
-            ),
-            "source": "code-fix-lane",
-            "recommended_action": (
-                "如需恢复断窗保护，将 admin.code_review_fix.night_quiet_window "
-                "配置为合法窗区间（形如 HH:MM-HH:MM，多窗以逗号分隔）；"
-                "确认有意停用可忽略本提醒"
-            ),
-        }
-    )
-    if rec is None:
-        _log_alert_rejected(logger, CODE_FIX_NIGHT_QUIET_SIGNAL_TYPE)
-
-
 def _write_retry_exhausted_alert(
     project_root, item_ids, reason, branch, tip_sha, logger=None,
     budget: int = FAIL_RETRY_MAX,
@@ -4493,54 +4446,6 @@ class CodeFixOrchestrator:
         except Exception as e:  # noqa: BLE001 — 武装态写盘失败下轮重试
             self._log("warning", f"code-fix 静默窗武装态写盘异常: {e}")
 
-    def _maybe_remind_night_quiet_disabled(self, prev_chain) -> None:
-        """窗值停用（显式 off/空串/布尔 false）期间每日至多一条聚合提醒
-        （evo-add-night-window-bool-normalization 2.1）。
-
-        守卫判空路径（``_night_quiet_state`` 返回 None）共用本入口：方法内
-        部按「原始值显式停用」复核（``_night_quiet_window_disabled``，布尔
-        同义化后认原始 bool）——仅停用态提醒；非法值已有消费期 WARNING 覆盖
-        （防双重告警源），有窗未命中零动作。节流键（窗值, 自然日）持久化于
-        fix-progress（``night_quiet_off_remind_raw``/``_date``），跨重启仍
-        每日至多一条，值变更或跨自然日重新提醒。提醒/节流态写盘异常均只留
-        痕不劫持投递（同守卫纪律）；提醒写失败不记节流态，下一 checkpoint
-        重试。
-        """
-        try:
-            raw = ConfigLoader.get(
-                self._get_root_config(),
-                "admin.code_review_fix.night_quiet_window",
-                NIGHT_QUIET_WINDOW_DEFAULT,
-            )
-        except (TypeError, ValueError):
-            return
-        if not _night_quiet_window_disabled(raw):
-            return
-        prev = prev_chain if isinstance(prev_chain, dict) else {}
-        today = time.strftime("%Y-%m-%d", time.localtime())
-        raw_text = str(raw)
-        if (prev.get("night_quiet_off_remind_date") == today
-                and prev.get("night_quiet_off_remind_raw") == raw_text):
-            return
-        try:
-            _write_night_quiet_window_disabled_reminder(
-                self.project_root,
-                window_raw=raw_text,
-                today=today,
-                logger=self._logger,
-            )
-        except Exception as e:  # noqa: BLE001 — 提醒通道失败只留痕
-            self._log("warning", f"code-fix 静默窗停用态提醒写盘异常: {e}")
-            return
-        try:
-            write_progress(
-                self.project_root,
-                night_quiet_off_remind_raw=raw_text,
-                night_quiet_off_remind_date=today,
-            )
-        except Exception as e:  # noqa: BLE001 — 节流态写盘失败下轮重试
-            self._log("warning", f"code-fix 静默窗停用态节流标识写盘异常: {e}")
-
     def _arm_switch_cooldown(self, result) -> None:
         """连接类失败收尾置同链冷却态（2.1/2.3）：持久化冷却字段 + 触发告警。
 
@@ -4910,12 +4815,6 @@ class CodeFixOrchestrator:
                     )
                 except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
                     self._log("warning", f"code-fix 静默窗残留态清除写盘异常: {e}")
-            if quiet_window is None:
-                # 停用态每日聚合提醒（evo-add-night-window-bool-normalization
-                # 2.1）：守卫判空的两条路径（窗值显式停用 / 有窗未命中）共用
-                # 此入口，方法内部按「原始值显式停用」复核——仅停用态提醒，
-                # 非法值走消费期 WARNING（防双重告警源），有窗未命中零动作。
-                self._maybe_remind_night_quiet_disabled(prev_chain)
             if cooldown_until > 0 and not cooldown_active:
                 # 到期：本 checkpoint 即「冷却到期后首个通过守卫的 checkpoint」
                 # ——补写解除告警（evidence 携带实际推迟时长）并清冷却态，
