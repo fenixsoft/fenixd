@@ -1655,13 +1655,55 @@ class FamilyGovernor:
             else:
                 if not severity_needs_human(severity):
                     store.mark_handled(rec["id"])
-                from core.adjudication_narrative import schedule_narrative
+                # add-arbiter-lane 1.2/5.1：blocked/frozen/争议类 condition 的
+                # 升级边改道——让位判定与派发均收敛本咽喉（告警落地后有
+                # alert_id，裁决包/终态化才可原位挂靠）。让位命中时不调
+                # schedule_narrative（blocked 类调查内容由 Arbiter 报告替代，
+                # 报告经 narrative 槽位原位写入）；关闭态/排除表命中/触发登记
+                # 失败（队列满显式报错）一律回落既有 narrative 路径。
+                arbiter_lane = None
+                try:
+                    from core.adjudication_narrative import (
+                        narrative_yielded_to_arbiter,
+                    )
 
-                schedule_narrative(rec["id"], entry, self._pm, facts=facts)
-            self._pm.logger.warning(
-                "pm_engine",
-                f"human-escalation-alert: {signal_type} for '{spec_name}'",
-            )
+                    if narrative_yielded_to_arbiter(signal_type, self._pm):
+                        from core.pm_engine.arbiter import get_lane
+
+                        arbiter_lane = get_lane(
+                            self._pm.project_root, self._pm.logger
+                        )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"arbiter 改道判定异常（回落 narrative 路径）: {e}",
+                    )
+                dispatched = None
+                if arbiter_lane is not None:
+                    try:
+                        dispatched = arbiter_lane.submit_for_alert(
+                            self._pm, entry, rec["id"]
+                        )
+                    except RuntimeError as e:
+                        # 排队登记失败显式报错（MUST NOT 报假成功），回落
+                        # 既有 narrative 路径——告警本体已落盘不受影响
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"arbiter 触发登记失败（回落 narrative 路径）: {e}",
+                        )
+                if dispatched in (None, "disabled", "excluded"):
+                    from core.adjudication_narrative import schedule_narrative
+
+                    schedule_narrative(rec["id"], entry, self._pm, facts=facts)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"human-escalation-alert: {signal_type} for '{spec_name}'"
+                    + (
+                        f"（arbiter: {dispatched}）"
+                        if dispatched not in (None, "disabled", "excluded")
+                        else ""
+                    ),
+                )
         except Exception as e:
             self._pm.logger.error(
                 "pm_engine",

@@ -20,6 +20,8 @@ export const PAGE_LABELS = {
   misc: '归档',
   system: '系统',
   'self-evolution': '自进化',
+  // add-arbiter-lane：全局决策者车道页签
+  arbiter: '仲裁',
   'self-review': '自省',
   'project-profile': '项目',
   hook: 'Hook',

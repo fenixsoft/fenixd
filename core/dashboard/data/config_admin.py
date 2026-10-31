@@ -118,6 +118,11 @@ _SOURCE_KEYS = [
     # add-stale-code-selfheal：陈旧自愈配置节两键
     "stale_code_selfheal.enabled",
     "stale_code_selfheal.idle_confirm_seconds",
+    # add-arbiter-lane：全局决策者车道四键（设置页 arbiter 面板可编辑）
+    "arbiter.enabled",
+    "arbiter.budget_wallclock_s",
+    "arbiter.budget_tokens",
+    "arbiter.max_consecutive_failures",
     # add-framework-self-evolution：self_evolution 全局（用户级）三键
     "self_evolution.auto_accept",
     "self_evolution.max_items_per_run",
@@ -525,6 +530,16 @@ def _managed_key_sources(raw: dict) -> dict:
         _scs_idle = scs_raw.get("idle_confirm_seconds")
         if isinstance(_scs_idle, int) and not isinstance(_scs_idle, bool) and _scs_idle > 0:
             sources["stale_code_selfheal.idle_confirm_seconds"] = "project"
+    # add-arbiter-lane：arbiter 节四键合法类型才标注（enabled 严格 bool、
+    # 三正整数——对齐 stale_code_selfheal 同款）
+    arb_raw = raw.get("arbiter")
+    if isinstance(arb_raw, dict):
+        if isinstance(arb_raw.get("enabled"), bool):
+            sources["arbiter.enabled"] = "project"
+        for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
+            _aval = arb_raw.get(_akey)
+            if isinstance(_aval, int) and not isinstance(_aval, bool) and _aval > 0:
+                sources[f"arbiter.{_akey}"] = "project"
     # add-framework-self-evolution：self_evolution 节（全局用户级键）——项目级
     # 写入被 write_config 前置校验拒绝；此处仅当手工残留/历史遗留时标注来源。
     # code-review item 90136be31282：合法类型才标注（auto_accept 严格 bool、
@@ -764,6 +779,10 @@ def _default_echo_view(scope: str) -> dict:
         # max_items_per_run=20 / spec_run_at=null 立即执行；code-review item
         # 42b017717b1e：两读路径统一含 spec_run_at，早退路径形状不缺键）
         "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
+        # add-arbiter-lane：arbiter 四键缺省经读取器取（与 verify/stale_code_
+        # selfheal 块同款单源——避免设置页以旧值回填表单、用户保存即把旧
+        # 缺省显式写入项目配置、静默覆盖新缺省）
+        "arbiter": _CLICRT.get_arbiter_config({}),
         # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
         # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
         # add-merged-branch-gc：branch_gc 两键缺省经读取器取（code-review item
@@ -927,6 +946,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # add-framework-self-evolution：self_evolution 节回显（经 get_self_evolution_config
     # 生效值——非法值回退缺省，回显与生效值一致；用户级全局键）
     result["self_evolution"] = ConfigLoader.get_self_evolution_config(raw)
+    # add-arbiter-lane：arbiter 节回显（经 ConfigLoader 生效值——非法值回退
+    # 缺省，回显与生效值一致）
+    result["arbiter"] = ConfigLoader.get_arbiter_config(raw)
     # evo-merge-back-wip-artifact-scope：产物路径回显（worktree_config_view，
     # 非法形态回显空列表 = 未配置，与解析侧 fail-safe 一致）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
@@ -1085,6 +1107,9 @@ def read_effective_config(project_root) -> dict:
     # add-framework-self-evolution：self_evolution 用户级生效值透出（项目级视图
     # 只读展示全局键，面板在项目级作用域下据此置只读）
     result["self_evolution"] = ConfigLoader.get_self_evolution_config(effective)
+    # add-arbiter-lane：arbiter 节生效值回显（与 read_config 同型——非法值
+    # 回退缺省，设置页回显与生效值一致）
+    result["arbiter"] = ConfigLoader.get_arbiter_config(effective)
     # evo-merge-back-wip-artifact-scope：产物路径回显（有效合并视图，非法形态回显空列表）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
 
@@ -1447,6 +1472,19 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["stale_code_selfheal"]["enabled"] = scs["enabled"]
         if scs.get("idle_confirm_seconds") is not None:
             merged["stale_code_selfheal"]["idle_confirm_seconds"] = scs["idle_confirm_seconds"]
+    # add-arbiter-lane：arbiter 节四键合并（前置校验已拒绝非法值，此处只
+    # 应用合法值；缺省透传由 get_arbiter_config 兜底）。显式 null 与「未提交」
+    # 同义（前置校验对 None 放行），不落盘以免读侧归一回缺省静默翻转存量值
+    # （code-review item 87cc1fcac728 同款）
+    if "arbiter" in patch and isinstance(patch["arbiter"], dict):
+        if not isinstance(merged.get("arbiter"), dict):
+            merged["arbiter"] = {}
+        arb_p = patch["arbiter"]
+        if arb_p.get("enabled") is not None:
+            merged["arbiter"]["enabled"] = arb_p["enabled"]
+        for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
+            if arb_p.get(_akey) is not None:
+                merged["arbiter"][_akey] = arb_p[_akey]
     # add-framework-self-evolution：self_evolution 三键合并（项目级被拒，此处仅用户级）
     if "self_evolution" in patch and isinstance(patch["self_evolution"], dict):
         if not isinstance(merged.get("self_evolution"), dict):
@@ -2099,6 +2137,20 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     f"integer: {_scs_v!r}"
                 )
 
+    # add-arbiter-lane：arbiter 四键前置校验（enabled 严格 bool、三正整数；
+    # bool 是 int 子类须显式排除——非法值直接拒绝 400 不静默落盘）
+    if isinstance(config_patch.get("arbiter"), dict):
+        _arb_p = config_patch["arbiter"]
+        if "enabled" in _arb_p and _arb_p["enabled"] is not None and not isinstance(_arb_p["enabled"], bool):
+            return fail(f"arbiter.enabled must be a boolean: {_arb_p['enabled']!r}")
+        for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
+            if _akey in _arb_p and _arb_p[_akey] is not None:
+                _av = _arb_p[_akey]
+                if isinstance(_av, bool) or not isinstance(_av, (int, float)) or _av <= 0:
+                    return fail(
+                        f"arbiter.{_akey} must be a positive integer: {_av!r}"
+                    )
+
     # add-framework-self-evolution：self_evolution 三键校验 + 项目级作用域拒绝
     # （全局用户级键，项目级提交 400 不写盘，用户级非法值直接拒绝 400）
     if "self_evolution" in config_patch:
@@ -2162,6 +2214,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         "stale_code_selfheal",
         "worktree",
         "knowledge",
+        "arbiter",
     ):
         if _ck in config_patch and not isinstance(config_patch[_ck], dict):
             return fail(f"{_ck} must be an object: {config_patch[_ck]!r}")
@@ -2273,6 +2326,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 "stale_code_selfheal",
                 "self_evolution",
                 "worktree",
+                "arbiter",
             ):
                 _seg_v = merged.get(_seg)
                 if _seg_v is not None and not isinstance(_seg_v, dict):
@@ -2683,6 +2737,25 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                             f"stale_code_selfheal.idle_confirm_seconds must be a positive "
                             f"integer: {_sv!r}"
                         )
+            # add-arbiter-lane：arbiter merged 视图校验（兜底防绕过前置校验的
+            # 直连调用，与 stale_code_selfheal 同模式）
+            arb_m = merged.get("arbiter")
+            if isinstance(arb_m, dict):
+                if (
+                    "enabled" in arb_m
+                    and arb_m["enabled"] is not None
+                    and not isinstance(arb_m["enabled"], bool)
+                ):
+                    raise ValueError(
+                        f"arbiter.enabled must be a boolean: {arb_m['enabled']!r}"
+                    )
+                for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
+                    if _akey in arb_m and arb_m[_akey] is not None:
+                        _av = arb_m[_akey]
+                        if isinstance(_av, bool) or not isinstance(_av, (int, float)) or _av <= 0:
+                            raise ValueError(
+                                f"arbiter.{_akey} must be a positive integer: {_av!r}"
+                            )
         except ValueError as e:
             return fail(str(e))
 

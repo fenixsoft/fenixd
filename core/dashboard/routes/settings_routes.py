@@ -173,6 +173,79 @@ class H5SettingsRoutesMixin:
         self._json(config)
 
 
+    def _api_arbiter_status_get(self, query):
+        """GET /api/arbiter/status — Arbiter 车道运行时状态（add-arbiter-lane 5.2）。
+
+        设置页 arbiter 面板状态区只读数据源（恒 200 自含 JSON）：
+        - config：四键生效值（经 ConfigLoader 归一，与 /api/config 回显同源）；
+        - lane：车道运行时面（enabled/队列深度/在飞签名/连败计数——经
+          ArbiterLane 单例快照；车道未装配时 enabled=false 零侵扰形态）；
+        - ledger：处置台账摘要（总条数 + 各 kind 计数 + 最近 5 条五段元数据）。
+        本端点只读，不触碰车道状态、不落任何文件。
+        """
+        project, project_param = self._project_or_user_scope(query)
+        if project_param and project is None:
+            return
+        root = Path(project["path"]) if project else Path.cwd()
+        try:
+            from core.config import ConfigLoader
+
+            config = ConfigLoader.get_arbiter_config(
+                ConfigLoader.resolve_config(root)
+            )
+        except Exception as e:
+            config = {"error": str(e)}
+        lane_view = None
+        try:
+            from core.pm_engine.arbiter import get_lane
+
+            lane = get_lane(root)
+            if lane is not None:
+                with lane._lock:
+                    lane_view = {
+                        "enabled": lane.enabled,
+                        "queue_depth": lane._queue.qsize(),
+                        "active_signatures": sorted(lane._active),
+                        "failure_counts": dict(lane._failure_counts),
+                        "dispositioned_total": len(lane._dispositioned),
+                        "deadmanned_total": len(lane._deadmanned),
+                    }
+        except Exception as e:
+            lane_view = {"error": str(e)}
+        ledger_summary = {"total": 0, "kinds": {}, "recent": []}
+        try:
+            from core.pm_engine.arbiter import load_arbiter_ledger
+
+            entries = load_arbiter_ledger(root)
+            ledger_summary["total"] = len(entries)
+            for rec in entries:
+                kind = str(rec.get("kind") or "unknown")
+                ledger_summary["kinds"][kind] = (
+                    ledger_summary["kinds"].get(kind, 0) + 1
+                )
+            for rec in entries[-5:]:
+                ledger_summary["recent"].append(
+                    {
+                        "id": rec.get("id"),
+                        "created": rec.get("created"),
+                        "kind": rec.get("kind"),
+                        "spec": rec.get("spec"),
+                        "signature": rec.get("signature"),
+                        "alert_id": rec.get("alert_id"),
+                        "run_id": rec.get("run_id"),
+                    }
+                )
+        except Exception as e:
+            ledger_summary = {"error": str(e)}
+        self._json(
+            {
+                "config": config,
+                "lane": lane_view,
+                "ledger": ledger_summary,
+                "project": project["name"] if project else None,
+            }
+        )
+
     def _api_config_llm_health_check_post(self, query):
         """POST /api/config/llm-health-check — LLM Provider 健康检测
         （add-provider-health-check，纯探测无副作用）。

@@ -396,6 +396,29 @@ class PMEngine:
         self.project_root = project_root
         self.logger = logger
 
+        # add-arbiter-lane：全局决策者车道装配（install_freeze_hook 幂等）——
+        # 车道单例注入 project_root/logger、调查 run 门面（agent_runner）与
+        # 立项写点（state_machine），并把机器冻结咽喉的派发回调注册进
+        # state_machine（回调解耦，arbiter.enabled=false 时回调内部短路零
+        # 写入）。装配故障不阻断 PMEngine 构建（车道缺席 = 关闭态等价）。
+        try:
+            from core.pm_engine.arbiter import get_lane, install_freeze_hook
+
+            lane = get_lane(project_root, logger)
+            if lane is not None:
+                lane.set_runner(agent_runner)
+                lane.set_state_machine(state_machine)
+            install_freeze_hook()
+        except Exception as e:
+            if logger is not None:
+                try:
+                    logger.warning(
+                        "pm_engine",
+                        f"arbiter 车道装配失败（按关闭态降级）: {e}",
+                    )
+                except Exception:
+                    pass
+
         # 评审在飞查询回路注入（fix-spec-review-blocking-dispatch 3.7）：_
         # active_reviews 由 DispatchQueue 持有，reviewer_in_flight（agent_runner
         # 侧组件）需经 pm_engine 门面查询（agent_runner 不持 pm_engine）。

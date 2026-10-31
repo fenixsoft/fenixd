@@ -31,6 +31,19 @@ _logger = logging.getLogger("fenixd.agent_runner.run_files")
 # spec-review-/dispute-judge-，评审 Agent 在时间线上退化为泛型 "agent"。
 RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("admin-", "administrator"),
+    # add-arbiter-lane 2.1：arbiter- 独立前缀（全局决策者车道 run_id 形如
+    # arbiter-<spec>-<ts>，core/agent_runner/maintenance_runs.run_arbiter），
+    # 与既有前缀无子串冲突（顺序无关，放 admin- 相邻处便于横向检索）。
+    # 消费方核对（仿 evo-/maintenance- 先例，bc3c07e8 跨类型漏配前科逐点
+    # 核查）：get_runs 时间线归属 agent→arbiter（预期修复）；run_spec_part
+    # 剥出真实 spec 段（全等守卫不变）；admin_monitor._RUN_PREFIXES 同步
+    # 收录（处置 run 失败还原到被处置 spec 计数，同 admin- 先例）；
+    # admin_monitor._is_admin_run_id 将 arbiter 与 administrator 同判
+    # 「处置者」——驱动证据判定排除（Arbiter 处置活动不是被处置 SPEC 的
+    # 驱动，排除否则恢复路径永不推进，fix-recovery-path-blockers D1 同坑）；
+    # pm_engine 归属/取消/活动判定不新增误命中（arbiter run 不进 dispatch
+    # 家族，spec 维度在飞互斥守卫按 dispatch 前缀归一不受扰）。
+    ("arbiter-", "arbiter"),
     ("dispute-judge-", "dispute-judge"),
     ("spec-review-", "spec-review"),
     # add-code-review-agent-and-quality-tab：code-review- 独立前缀，与既有

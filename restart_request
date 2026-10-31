@@ -1,0 +1,5 @@
+{
+  "reason": "add-arbiter-lane: arbiter 车道注册（run_files.RUN_ID_AGENT_PREFIXES / runner WRAPUP_GRACE_AGENT_TYPES+_DISPATCH_PROBE_LANES+facade / prompt_builder AGENT_PROMPT_FILES / state_machine freeze hook / admin_monitor 处置族判定）需 daemon 重启加载；配置热更新不覆盖代码级注册面",
+  "origin": "spec/changes/add-arbiter-lane",
+  "date": "2026-11-02"
+}

@@ -700,9 +700,25 @@ _BASELINE_KEYS = (
 
 
 def _pm_engine(tmp_path, config=None):
-    """最小 PMEngine（test_alert_lifecycle 同款 __new__ 姿势）。"""
+    """最小 PMEngine（test_alert_lifecycle 同款 __new__ 姿势）。
+
+    add-arbiter-lane：项目级 config 写 ``arbiter.enabled: false``——本文件
+    守护的是 narrative 补叙既有契约（upgrade-narrative-to-investigation）；
+    arbiter 触发面内信号（verify_fail_escalation）在车道启用时改道 Arbiter
+    优先、narrative 槽位让位（specs/human-escalation-alerts MODIFIED
+    Requirements）。legacy 接线回归统一在车道关闭态下验证（车道配置走
+    ConfigLoader.resolve_config 文件链，非 engine 内存 config——故必须写
+    项目级 config 文件而非 engine.config），arbiter 侧行为归
+    tests/test_arbiter_guardrails.py。
+    """
+    from pathlib import Path as _P
+
     from core.pm_engine import PMEngine
 
+    cfg_dir = _P(tmp_path) / ".fenix"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.yaml").write_text(
+        "arbiter:\n  enabled: false\n", encoding="utf-8")
     engine = PMEngine.__new__(PMEngine)
     engine.project_root = tmp_path
     engine.logger = RecordingLogger()

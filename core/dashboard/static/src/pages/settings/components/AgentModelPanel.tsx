@@ -45,6 +45,9 @@ const AGENT_ROLES = [
   // commit_archive_move 单点派发；模型链 agents.models.knowledge-distiller →
   // 回退默认网关（无中间回退级）
   { key: 'knowledge-distiller', label: 'Knowledge-Distiller（知识蒸馏）' },
+  // add-arbiter-lane：arbiter（全局决策者车道），模型链 agents.models.arbiter
+  // → 未分配时钉死 bigmodel/glm-5.3-flash（不回落默认网关）
+  { key: 'arbiter', label: 'Arbiter（全局决策）' },
 ];
 
 // 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}；

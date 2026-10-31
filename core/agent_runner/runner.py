@@ -167,6 +167,7 @@ from core.agent_runner.maintenance_runs import (
     _unique_code_review_run_id,
     admin_disposition_path,
     run_administrator,
+    run_arbiter,
     run_code_review,
     run_code_fix,
     run_evolution,
@@ -312,8 +313,11 @@ _PLANNER_THROTTLE_CANCEL_POLL_SECONDS = 5.0
 # code-review.json 在 worktree（门读 wt_path、_copyback 单向 worktree→主树）、
 # repair 与 implementer 同工作区、spec-review 写 .fenix/spec-review/。主树
 # `<project_root>/.fenix/verify-progress` 不是它们的工作区，_run_agent 不再为
-# 它们注入 `--add-dir`，只给 verifier/planner/fast-track/dispute-judge/administrator
-# 等确有主树 verify-progress 落点的车道保留。
+# 它们注入 `--add-dir`，只给 verifier/planner/fast-track/dispute-judge/
+# administrator/arbiter 等确有主树 verify-progress 落点的车道保留
+# （add-arbiter-lane 2.1：arbiter 全链视野取证——daemon 日志/run 归档转录/
+# STATE/主树 spec 目录——本就工作在主树，主树 --add-dir 是其职责前提，与
+# administrator 同口径；核查点注释清单见 admin_monitor 互斥守卫三处）。
 _NO_MAIN_TREE_VERIFY_PROGRESS_LANES = ("implementer", "repair", "spec-review")
 
 
@@ -440,6 +444,10 @@ IMPL_LANE_AGENT_TYPES = ("implementer", "fast-track")
 # 宽于实际触发面（planner/verifier 等极少建任务的车道天然不触发）。
 WRAPUP_GRACE_AGENT_TYPES = (
     "administrator",
+    # add-arbiter-lane 2.1：全局决策者车道同属处置族（非实现车道）——调查
+    # 报告收尾与 admin 处置记录同享一次性收尾宽限；不在 IMPL_LANE_AGENT_TYPES
+    # （两集合不相交，design「与 D6 早停不互相触发」）。
+    "arbiter",
     "dispute-judge",
     "spec-review",
     "self-review",
@@ -714,6 +722,11 @@ class AgentRunner:
         "_supervision_deadline_action": ("_liveness", "_supervision_deadline_action"),
         "wait_for_running_agents": ("_liveness", "wait_for_running_agents"),
         "run_administrator": run_administrator,
+        # add-arbiter-lane 2.1：全局决策者车道同走门面（对齐 run_administrator
+        # 先例——orchestrator 侧经 runner.run_arbiter(trigger) 派发，测试以
+        # 实例属性打桩有效）。run_arbiter 实现同迁 maintenance_runs.py，
+        # 车道终态指标行由其内部 _log_lane_run_metrics 收尾。
+        "run_arbiter": run_arbiter,
         "run_self_review": run_self_review,
         "run_evolution": run_evolution,
         "run_code_review": run_code_review,
@@ -6098,6 +6111,10 @@ class AgentRunner:
     # 为用户 spec 名，agent_type 优先归一即天然排除。
     _DISPATCH_PROBE_LANES = frozenset({
         "evolution", "code-review", "code-fix", "administrator", "self-review",
+        # add-arbiter-lane 2.1：全局决策者车道直调 _run_agent（agent_type 直
+        # 传），与 admin 同款派发前连通预检——网关瞬断时顺延本轮派发（不
+        # Popen、无秒死 run），预检失败不计入 arbiter 死人开关连败计数。
+        "arbiter",
     })
     # getaddrinfo 为阻塞调用、无原生超时参数：独立守护线程 join 判超时
     # （设计口径 2-3 秒）；超时按失败顺延，悬挂线程随 daemon 生命周期滞留
@@ -8077,7 +8094,22 @@ class AgentRunner:
         ``agents.run_timeout_seconds`` 全局默认；全局缺失回退 3600。
         """
         from core.config import ConfigLoader
-        return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
+        timeout = ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
+        # add-arbiter-lane 2.1/4.1：arbiter 车道墙钟预算封顶（budget_wallclock_s，
+        # 缺省 1800）——覆盖链取值后取 min，调查 run 绝不越过车道预算
+        # （spec「预算耗尽升级」：超墙钟预算 → run 终止 → 半成品包升级）。
+        if agent_type == "arbiter":
+            try:
+                budget = float(
+                    ConfigLoader.get_arbiter_config(self.config).get(
+                        "budget_wallclock_s")
+                    or 0
+                )
+                if budget > 0:
+                    timeout = min(timeout, budget)
+            except Exception:
+                pass  # 配置链故障回退覆盖链原值（fail-open）
+        return timeout
 
     # ── impl run 轮数预算 sizing（evo-add-impl-run-budget-sizing 1.2）──────
 

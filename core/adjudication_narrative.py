@@ -75,6 +75,39 @@ from core.agent_runner.harness.one_shot import (  # noqa: E402
 # 日志组件名（logger.warning(component, message) 口径）
 COMPONENT = "adjudication_narrative"
 
+
+# ── Arbiter 让位判定（add-arbiter-lane 5.1）─────────────────────────────
+
+def narrative_yielded_to_arbiter(signal_type: str, ctx: Any = None) -> bool:
+    """blocked/frozen 类告警的后台补叙是否让位 Arbiter 报告（5.1 单源判定）。
+
+    让位 = 三条件同时成立：
+    1. ``arbiter.enabled``（总开关热更新读取；关闭时 narrative 照旧——
+       「关闭态零侵扰」s8：全路径行为与合入前逐字节一致）；
+    2. signal 在 Arbiter 触发面（正向白名单=blocked/frozen/争议类，现为
+       verify_fail_escalation；排除表——token 预算耗尽 / spec_integrity
+       内容缺失 / queue 异常类政策与数据完整性告警——留 narrative 与人类）；
+    3. 车道可装配（project_root 缺失的病态上下文按不让位降级）。
+
+    非阻塞类 signal（排除表命中）恒 False——narrative 行为不变（5.1 边界）。
+    本函数只做判定零副作用；调用方（pm_engine._send_human_escalation_alert）
+    据此二选一：让位 → ArbiterLane.submit_for_alert（报告经 narrative 槽位
+    原位写入）；不让位 → schedule_narrative（既有路径不变）。
+    """
+    try:
+        from core.pm_engine.arbiter import get_lane
+
+        project_root = _ctx_get(ctx, "project_root")
+        if project_root is None:
+            return False
+        lane = get_lane(project_root, _ctx_get(ctx, "logger"))
+        if lane is None or not lane.enabled:
+            return False
+        return lane.in_trigger_surface(signal_type)
+    except Exception:
+        # 判定异常按不让位降级（narrative 既有路径兜底，fail-open）
+        return False
+
 # 四段固定段落标题（D3）：顺序固定。生成后机械校验齐全（且顺序不倒置），
 # 缺失视为本次生成失败走兜底——旧三段输出判失败是故意的（三段输出意味着
 # 模型没读到新指令，落机械文案比落半截调查更诚实）。

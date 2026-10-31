@@ -67,6 +67,9 @@ AGENT_PROMPT_FILES = {
     "code-review": "code-review.md",
     # add-code-review-auto-fix：新增 code-fix（自动修复车道 agent，可改码）。
     "code-fix": "code-fix.md",
+    # add-arbiter-lane：新增 arbiter（全局决策者车道——冻结/升级事件自动
+    # 派发的跨车道验尸者，agents/arbiter.md 载权限红线与处置白名单）。
+    "arbiter": "arbiter.md",
 }
 
 # code-fix prompt {items} 注入字段白名单（09-23 提速）：台账原始行的框架
@@ -573,6 +576,30 @@ class PromptBuilder:
                     # 废弃位置会把管理员导向永不被告知读取的写入点。
                     "{disp_path}": _str_field(sig.get("disposition_path")),
                     "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
+                }
+            )
+        # add-arbiter-lane 3.1：arbiter 模板复用信号八键（{sig_type}/{sig_spec}/
+        # {severity}/{description}/{evidence}/{recommendation}/{dash_script}）
+        # + 车道专属 {report_path}（调查报告实例文件，注入值 = 框架读侧路径
+        # 同源防漂移，run_arbiter 硬门读同一路径）与 {run_id}（报告契约段
+        # 回填用）。与 admin 同白名单纪律：键仅 arbiter 模板引用。
+        if agent_type == "arbiter":
+            from core.pm_engine.arbiter import arbiter_report_path
+
+            _arb_run_id = _str_field(sig.get("run_id"))
+            values.update(
+                {
+                    "{sig_type}": _str_field(sig.get("signal_type")) or "unknown",
+                    "{sig_spec}": _str_field(sig.get("spec")) or spec_name,
+                    "{severity}": _str_field(sig.get("severity")) or "unknown",
+                    "{description}": _str_field(sig.get("description")),
+                    "{evidence}": _bounded_evidence(_str_field(sig.get("evidence"))),
+                    "{recommendation}": _str_field(sig.get("recommended_action")),
+                    "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
+                    "{run_id}": _arb_run_id,
+                    "{report_path}": str(
+                        arbiter_report_path(root, _arb_run_id or spec_name)
+                    ),
                 }
             )
         # 一次性多模式替换（code-review item 7975ab14dbe7）：逐键 str.replace 会把

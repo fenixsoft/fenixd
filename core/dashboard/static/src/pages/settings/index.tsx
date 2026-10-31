@@ -25,6 +25,8 @@ import SelfReviewPanel from './components/SelfReviewPanel';
 import HooksPanel from './components/HooksPanel';
 import StaleCodeSelfhealPanel from './components/StaleCodeSelfhealPanel';
 import BranchGcPanel from './components/BranchGcPanel';
+// add-arbiter-lane：全局决策者车道面板（arbiter 四键 + 运行时状态）
+import ArbiterPanel from './components/ArbiterPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
 
@@ -52,6 +54,8 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   // add-framework-self-evolution：页签「自愈」改名「自进化」（内部 key 同步改名，
   // 默认选中态与其它页签不受影响）
   { key: 'self-evolution', label: PAGE_LABELS['self-evolution'] },
+  // add-arbiter-lane：全局决策者车道配置页签
+  { key: 'arbiter', label: PAGE_LABELS.arbiter },
 ];
 
   // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -485,6 +489,16 @@ export default function SettingsPage() {
                         保存按钮，保存走同一 handleSave 写回通道 */}
                     <BranchGcPanel config={config} onSave={handleSave} />
                   </>
+                )}
+                {activeKey === 'arbiter' && (
+                  // add-arbiter-lane：全局决策者车道面板（arbiter 四键 + 运行时
+                  // 状态只读摘要），独立 Form 与保存按钮，保存走同一 handleSave
+                  // 写回通道
+                  <ArbiterPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                  />
                 )}
                 {activeKey === 'quality' && (
                   <QualityPanel
