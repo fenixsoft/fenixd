@@ -1,0 +1,1 @@
+按已定稿设计文档立项：docs/superpowers/specs/2026-10-31-design-md-governance-design.md —— DESIGN.md 治理体系（界面设计宪法）：普查既有设计裁决成文根 DESIGN.md（一般域+例外域分层结构）、修正案程序（用户定稿→AI提案→用户确认→写入）、SPEC 级偏离声明格式、首轮偏离审计三分类清单、新界面流程接线（fenix-prototype 双注入 DESIGN.md+frontend-design）。只做文档层，不做门禁。
