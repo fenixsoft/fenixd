@@ -276,7 +276,13 @@ export default function PipelineView({
     const svg = e.currentTarget.ownerSVGElement;
     if (svg) {
       const rect = svg.getBoundingClientRect();
-      setHoverPos({ x: e.clientX - rect.left + 14, y: e.clientY - rect.top + 10 });
+      // 边界钳制：节点靠近 svg 右缘/下缘时把卡片收回容器内，避免越界撑大 overflow:auto 滚动区
+      const cardW = 380;
+      const cardH = 220;
+      setHoverPos({
+        x: Math.max(0, Math.min(e.clientX - rect.left + 14, rect.width - cardW - 8)),
+        y: Math.max(0, Math.min(e.clientY - rect.top + 10, rect.height - cardH - 8)),
+      });
     }
   };
 
