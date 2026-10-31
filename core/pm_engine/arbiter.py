@@ -11,6 +11,11 @@
 - 触发面（双咽喉改道）：state_machine.freeze_for_human 咽喉（经
   ``install_freeze_hook`` 回调解耦注册）与 pm_engine._send_human_escalation_alert
   （直接调 :meth:`ArbiterLane.submit_for_alert`）。
+- 存量回扫（add-arbiter-backlog-sweep）：事件驱动的触发面对已发生的存量
+  冻结无效（事件在 Arbiter 存在前已流过咽喉）——:meth:`ArbiterLane.sweep_on_startup`
+  （daemon 启动后一次）与 :meth:`ArbiterLane.observe_enabled_transition`
+  （config 热更新 disabled→enabled 跃迁时一次）补存量回扫，命中者走
+  同一 dedup/单飞/预算管线，不建第二套派发路径。
 - 排除表：freeze_spec（人工冻结）/mark_frozen_hold（簿记）/frozen_until
   （定时自愈赛跑）在 state_machine 侧零接触（不挂钩即排除）；token 预算耗尽 /
   spec_integrity 内容缺失 / queue 异常类 signal 显式排除（本模块词表）。
@@ -209,6 +214,12 @@ class ArbiterLane:
         self._budget_ledger: Dict[str, dict] = {}
         # 在飞触发的迟到 alert 补绑表（签名 → alert_id；worker 取到触发时合并）
         self._pending_binds: Dict[str, str] = {}
+        # 存量回扫（add-arbiter-backlog-sweep 1.1）跃迁记账：
+        # _startup_swept——启动回扫每进程至多一次（重复调用幂等短路）；
+        # _last_seen_enabled——热更新跃迁观察基线（None=未观测，False→True
+        # 跃迁时回扫一次；True→False 不回扫，下次 False→True 再回扫一次）。
+        self._startup_swept = False
+        self._last_seen_enabled: Optional[bool] = None
 
     # ── 配置读取（热更新语义：每次触发/run 读取时即时解析）─────────────
 
@@ -366,6 +377,218 @@ class ArbiterLane:
             alert_id=alert_id,
             source="escalation-alert",
         )
+
+    # ── 存量回扫（add-arbiter-backlog-sweep 1.1）─────────────────────
+
+    def sweep_on_startup(self) -> dict:
+        """启动回扫入口：daemon 装配后调用一次（每进程至多一次）。
+
+        ``arbiter.enabled=true`` 时执行一次存量回扫并把 enabled 基线落位
+        （此后热更新跃迁观察以此为起点）；enabled=false 时只落基线零扫描
+        零写入（关闭态零侵扰，s8 同口径）。重复调用幂等短路（不再扫描）。
+        """
+        with self._lock:
+            if self._startup_swept:
+                return {"status": "already-swept", "source": "startup"}
+            self._startup_swept = True
+        enabled = self.enabled
+        with self._lock:
+            self._last_seen_enabled = enabled
+        if not enabled:
+            self._log("info", "arbiter 启动回扫跳过（enabled=false，仅落跃迁基线）")
+            return {"status": "disabled", "source": "startup"}
+        return self.sweep_backlog(source="startup")
+
+    def observe_enabled_transition(self) -> dict:
+        """热更新跃迁观察：config disabled→enabled 跃迁时回扫一次。
+
+        由 30s 配置热更新周期调用（fenixd._maybe_reload_config 接线）。观测
+        当次 enabled 与上次基线：False→True 跃迁 → 执行一次存量回扫；
+        True→False / 无跃迁 / 基线未落位（None→True，启动态由
+        sweep_on_startup 负责）→ 不回扫。每条跃迁至多回扫一次（基线随即
+        更新），派发层幂等另由同签名 dedup 兜底。
+        """
+        enabled = self.enabled
+        with self._lock:
+            prev = self._last_seen_enabled
+            self._last_seen_enabled = enabled
+        if prev is False and enabled:
+            self._log("info", "arbiter 检测到 disabled→enabled 热更新跃迁，执行存量回扫")
+            return self.sweep_backlog(source="hot-reload")
+        return {
+            "status": "no-transition",
+            "source": "hot-reload",
+            "previous": prev,
+            "current": enabled,
+        }
+
+    def _pending_machine_alerts(self) -> Dict[str, dict]:
+        """pending（未处理）机器升级告警索引：spec → 最新一条。
+
+        机器升级告警 = kind=escalation ∧ 未 handled ∧ signal_type 在触发面
+        白名单（verify_fail_escalation「冻结+告警」成对语义的告警半边）。
+        freeze_spec 人工冻结不产告警对——无索引命中即天然排除（回扫判据
+        反查侧）。read_all 最新在前，首个命中即该 spec 最新 pending 告警
+        （同 spec 多条历史告警只取最新，回扫描述以最新现场为准）。
+        """
+        try:
+            from core.admin_store import AdminStore, ESCALATION
+
+            records = AdminStore(self.project_root, self.logger).read_all()
+        except Exception as e:
+            self._log("warning", f"arbiter 回扫告警索引读取失败（按空集降级）: {e}")
+            return {}
+        out: Dict[str, dict] = {}
+        for rec in records:
+            if not isinstance(rec, dict) or rec.get("kind") != ESCALATION:
+                continue
+            if rec.get("handled"):
+                continue
+            signal_type = str(rec.get("signal_type") or "")
+            if not self.in_trigger_surface(signal_type):
+                continue
+            spec = str(rec.get("spec") or "")
+            if spec and spec not in out:
+                out[spec] = rec
+        return out
+
+    def _backlog_candidates(self, sm) -> List[dict]:
+        """存量回扫候选判定：frozen=true ∧ 同 spec pending 机器升级告警。
+
+        - ``frozen_until`` 非空（定时冻结）显式排除（scheduled-unfreeze 自愈
+          在先，与事件触发面同口径）；
+        - 无成对 pending 告警的 frozen 条目（人工冻结形态）排除；
+        - 签名已在处置台账（任意 kind——disposition/escalation/failed/
+          dead-man/recurrence 都代表 Arbiter 已调查过该签名）排除：跨重启
+          幂等兜底（进程内存 dedup 集合随重启清空，台账是既有持久层，
+          不另记回扫簿）；
+        - spec 名路径不安全（内插 run_id/路径前科防御）排除。
+        """
+        try:
+            specs = sm.read_all() or {}
+        except Exception as e:
+            self._log("warning", f"arbiter 回扫 STATE 读取失败（按空集降级）: {e}")
+            return {}
+        alert_index = self._pending_machine_alerts()
+        ledger_sigs = {
+            str(rec.get("signature") or "")
+            for rec in load_arbiter_ledger(self.project_root)
+        }
+        out: List[dict] = []
+        for name, entry in specs.items():
+            e = entry or {}
+            if not e.get("frozen"):
+                continue
+            if str(e.get("frozen_until") or "").strip():
+                continue
+            spec = str(name)
+            alert = alert_index.get(spec)
+            if alert is None:
+                continue
+            signal_type = str(alert.get("signal_type") or "")
+            sig = arbiter_failure_signature(spec, signal_type)
+            if sig in ledger_sigs:
+                continue
+            from core.pm_engine.verification.serving import _spec_name_path_error
+
+            if _spec_name_path_error(spec):
+                self._log(
+                    "warning",
+                    f"arbiter 回扫跳过路径不安全 spec={spec!r}",
+                )
+                continue
+            out.append(
+                {
+                    "spec": spec,
+                    "signal_type": signal_type,
+                    "signature": sig,
+                    "severity": str(alert.get("severity") or "major"),
+                    "description": str(alert.get("description") or ""),
+                    "evidence": str(alert.get("evidence") or ""),
+                    "recommended_action": str(alert.get("recommended_action") or ""),
+                    "alert_id": str(alert.get("id") or ""),
+                }
+            )
+        return out
+
+    def sweep_backlog(self, *, source: str = "backlog-sweep") -> dict:
+        """执行一次存量回扫：命中者经既有 dedup/单飞/预算管线入队派发。
+
+        判据见 :meth:`_backlog_candidates`。派发复用 :meth:`submit_trigger`
+        （同签名 dedup / 单飞队列 / 预算随触发携带，不建第二套派发路径）；
+        与事件触发竞写同签名时 submit_trigger 侧 dedup 兜底不重复派发。
+        单个候选排队登记失败（队列满）不中断整轮回扫——其余候选继续，
+        失败项显式记入返回摘要（不吞错报假成功）。
+        """
+        cfg = self.config()
+        if not cfg.get("enabled"):
+            self._log("info", f"arbiter 存量回扫跳过（enabled=false）source={source}")
+            return {
+                "status": "disabled",
+                "source": source,
+                "dispatched": [],
+                "deduped": [],
+                "skipped": [],
+                "failed": [],
+            }
+        sm = self._resolve_state_machine()
+        if sm is None:
+            self._log("warning", "arbiter 存量回扫不可用（state_machine 未装配），跳过")
+            return {
+                "status": "unavailable",
+                "source": source,
+                "dispatched": [],
+                "deduped": [],
+                "skipped": [],
+                "failed": [],
+            }
+        candidates = self._backlog_candidates(sm)
+        dispatched: List[str] = []
+        deduped: List[str] = []
+        skipped: List[dict] = []
+        failed: List[dict] = []
+        for cand in candidates:
+            sig = str(cand.get("signature") or "")
+            try:
+                outcome = self.submit_trigger(
+                    spec=str(cand.get("spec") or "global"),
+                    signal_type=str(cand.get("signal_type") or ""),
+                    severity=str(cand.get("severity") or "major"),
+                    description=str(cand.get("description") or ""),
+                    evidence=str(cand.get("evidence") or ""),
+                    recommended_action=str(cand.get("recommended_action") or ""),
+                    alert_id=str(cand.get("alert_id") or "") or None,
+                    source=source,
+                )
+            except RuntimeError as e:
+                failed.append({"signature": sig, "error": str(e)[:300]})
+                continue
+            except Exception as e:  # 单候选故障不中断整轮（不吞：记摘要）
+                failed.append({"signature": sig, "error": f"回扫派发异常: {e}"[:300]})
+                continue
+            if outcome == "queued":
+                dispatched.append(sig)
+            elif outcome == "deduped":
+                deduped.append(sig)
+            else:
+                # disabled/excluded/recurrence-escalated：白名单判据下不应
+                # 出现，显式记录供审计（不静默丢弃）
+                skipped.append({"signature": sig, "outcome": outcome})
+        summary = {
+            "status": "ok",
+            "source": source,
+            "scanned": len(candidates),
+            "dispatched": dispatched,
+            "deduped": deduped,
+            "skipped": skipped,
+            "failed": failed,
+        }
+        self._log(
+            "info",
+            f"arbiter 存量回扫完成 source={source} 候选={len(candidates)} "
+            f"派发={len(dispatched)} dedup={len(deduped)} 失败={len(failed)}",
+        )
+        return summary
 
     def _bind_alert(self, sig: str, alert_id: str):
         """把后落地的 alert_id 绑到已在飞/排队的同签名触发上。
