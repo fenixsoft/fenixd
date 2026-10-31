@@ -20,6 +20,7 @@ import {
   Table,
   Tabs,
   Tag,
+  theme,
   Tooltip,
   Typography,
 } from 'antd';
@@ -81,8 +82,6 @@ import type { ListTab, ListTypeFilter as TypeFilter } from './listFilters';
 const PATCH_COALESCE_MS = 1000;
 // 搜索/筛选输入防抖
 const SEARCH_DEBOUNCE_MS = 300;
-// 未完成（非 done/pushed 终态）spec 行底色：浅蓝紫提示仍在进行中
-const ROW_INCOMPLETE_BG = 'rgb(250, 250, 255)';
 
 // add-spec-review-gate D8（code-review item 1b64add9823d）：评审 blocked 前缀
 // 清单——与后端 re_review 白名单（core/pm_engine/spec_review.py
@@ -90,15 +89,29 @@ const ROW_INCOMPLETE_BG = 'rgb(250, 250, 255)';
 // handleReReview 注释均以此为准，后端扩展前缀时仅需同步本清单。
 const SPEC_REVIEW_BLOCKED_PREFIXES = ['spec-review-rejected:', 'spec-review-incomplete:'];
 
-// 状态圆点配色（table-list 风格：色点 + 文字，不用标签）
-const TONE_DOT: Record<string, string> = {
-  muted: '#bfbfbf',
-  info: '#1677ff',
-  warning: '#faad14',
-  critical: '#ff4d4f',
-  good: '#52c41a',
-  aqua: '#13c2c2',
-};
+// 状态圆点配色（table-list 风格：色点 + 文字，不用标签）。走 antd 语义 token
+// 派生表（code-review item 615f6f350d58）：原硬编码十六进制在暗色主题下不变
+// 暗，token 化后随主题自适应——亮色下各 token 默认值与原十六进制逐一对应
+// （muted #bfbfbf≈colorTextQuaternary、info #1677ff=colorPrimary、
+// warning #faad14=colorWarning、critical #ff4d4f=colorError、
+// good #52c41a=colorSuccess）；aqua 在 v6 token 类型面无 alias 对应，沿用
+// Badge 预设色名 'cyan'（= cyan-6，同 ModeTag.tsx 口径，随主题算法变色）。
+// useToken 只能在组件内调用，故以 hook 形式供 SpecListPage / SpecCardList
+// 两处共用（同 SessionPanel.tsx 惯例）。
+function useToneDot(): Record<string, string> {
+  const { token } = theme.useToken();
+  return useMemo(
+    () => ({
+      muted: token.colorTextQuaternary,
+      info: token.colorPrimary,
+      warning: token.colorWarning,
+      critical: token.colorError,
+      good: token.colorSuccess,
+      aqua: 'cyan',
+    }),
+    [token],
+  );
+}
 
 function progressText(progress: number) {
   return progress >= 100 ? '已完成' : `${progress}%`;
@@ -320,6 +333,9 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
 }
 
 function VerifyCell({ project, record }: { project: string; record: SpecSummary }) {
+  // 占位符文字色走 token（code-review item 615f6f350d58）：原 rgba(0,0,0,0.45)
+  // 硬编码在暗色主题下近乎不可见，colorTextQuaternary 随主题自适应
+  const { token } = theme.useToken();
   // 防抖/哨卫/卸载清理走共享 useHoverFetch（code-review item c7f6a8ebf9d8，与
   // SpecNameCell 同款）；「有结论才弹」过滤并入取数函数（v.exists 之外返回
   // null，hook 不回写），行为与原内联实现一致
@@ -330,7 +346,7 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染纯文本
   // 占位符 —，避免「尚无验证数据」被误读为 0/0 计数；无结论可读，不包 Popover。
   if (!record.verify_total) {
-    return <span style={{ fontSize: 13, color: 'rgba(0, 0, 0, 0.45)' }}>—</span>;
+    return <span style={{ fontSize: 13, color: token.colorTextQuaternary }}>—</span>;
   }
 
   const sum = verdict?.summary;
@@ -554,6 +570,8 @@ interface SpecCardListProps {
 // 移动端（<768px）卡片形态：字段与桌面表格列一一对应，扁平化树并按层级缩进。
 // 仅在 md 断点以下渲染，桌面 Table 分支不受影响。
 function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError, archivedOnly }: SpecCardListProps) {
+  // 状态点配色走 token 派生表（code-review item 615f6f350d58）
+  const toneDot = useToneDot();
   type FlatNode = { record: SpecSummary; level: number };
   const flat = useMemo<FlatNode[]>(() => {
     const out: FlatNode[] = [];
@@ -586,7 +604,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
           <List.Item style={{ paddingLeft: level > 0 ? 16 * level : undefined }}>
             <div style={{ width: '100%', minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Badge color={TONE_DOT[m.tone]} text={m.label} />
+                <Badge color={toneDot[m.tone]} text={m.label} />
                 <StatusWaitGroup record={record} />
                 {/* 模式标记单源 ModeTag（code-review item 504cf2d4b647）：存量无
                     mode 字段的 spec 按缺省 full 展示「完整模式」等价标记 */}
@@ -659,6 +677,11 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
 export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
   const isMobile = useIsMobile();
+  // 行底色/状态点/验证中文案色走 token（code-review item 615f6f350d58）：原
+  // 硬编码色值在暗色主题下亮底刺眼，改随语义 token 自适应；useToken 只能在
+  // 组件内调用（同 SessionPanel.tsx 惯例）
+  const { token } = theme.useToken();
+  const toneDot = useToneDot();
   const { message, modal } = App.useApp();
   // add-spec-list-filter-stickiness：过滤状态持久化到 URL 查询参数（replace 写回）
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1248,7 +1271,7 @@ export default function SpecListPage() {
         const m = statusMeta(v || '');
         return (
           <Space size={4} wrap>
-            <Badge color={TONE_DOT[m.tone]} text={m.label} />
+            <Badge color={toneDot[m.tone]} text={m.label} />
             <StatusWaitGroup record={record} />
           </Space>
         );
@@ -1378,7 +1401,9 @@ export default function SpecListPage() {
               </div>
             ) : null}
             {isVerify && record.verify_current ? (
-              <div style={{ fontSize: 12, lineHeight: '18px', color: '#52c41a' }}>
+              // 验证进行中文案走 colorSuccess（code-review item 615f6f350d58）：
+              // 与状态点 good tone 同源，暗色随 token
+              <div style={{ fontSize: 12, lineHeight: '18px', color: token.colorSuccess }}>
                 {record.verify_current}
               </div>
             ) : null}
@@ -1544,11 +1569,13 @@ export default function SpecListPage() {
             rowKey="name"
             tableLayout="fixed"
             // 未完成（非 done/pushed 终态）行加浅蓝底：内联样式落在 tr 上，
-            // antd 的 cell 级 hover 背景（cell-row-hover）不受影响照常生效
+            // antd 的 cell 级 hover 背景（cell-row-hover）不受影响照常生效。
+            // 底色走 colorPrimaryBg（code-review item 615f6f350d58）：原硬编码
+            // rgb(250,250,255) 在暗色主题下整行亮底刺眼，随 token 自适应
             onRow={(record) => ({
               style: PRIORITY_TERMINAL.has(record.status || '')
                 ? undefined
-                : { backgroundColor: ROW_INCOMPLETE_BG },
+                : { backgroundColor: token.colorPrimaryBg },
             })}
           columns={columns}
           dataSource={tree}
