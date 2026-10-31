@@ -7014,7 +7014,11 @@ class AgentRunner:
                 # 字段（_spec_is_frozen fail-open：读取异常不终止）。
                 # 自然收工探测（上方 poll）先于本检查：已退出进程按自然收工
                 # 处理，不误判为冻结终止（code-review item 68d36b0b6942）。
-                if self._spec_is_frozen(spec_name):
+                # arbiter 车道豁免（2026-11-01）：冻结 spec 的在案调查者就是
+                # Arbiter 本身——回扫派发的 arbiter run 曾被本环 0 轮击杀
+                # （run frozen-terminated，死人开关白烧计数）。arbiter 调查
+                # 冻结现场属设计内动作，不受冻结终止约束。
+                if agent_type != "arbiter" and self._spec_is_frozen(spec_name):
                     self.logger.info(
                         "agent_runner",
                         f"spec '{spec_name}' frozen — 终止在飞 agent 子进程"

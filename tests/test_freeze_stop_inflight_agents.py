@@ -81,11 +81,14 @@ def _mk_sm(tmpdir: str) -> StateMachine:
 
 
 def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
-                   cancel_requested: bool = False, state_read_error: bool = False):
+                   cancel_requested: bool = False, state_read_error: bool = False,
+                   agent_type: str = "implementer", run_id: str | None = None):
     proot = tmp_path / "proj"
     (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
     runner = make_runner(proot)
     runner.config = {"agents": {"run_timeout_seconds": 3600}}
+    if run_id is None:
+        run_id = "impl-x-123-a1"
 
     sm = MagicMock()
 
@@ -130,9 +133,9 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
     def worker():
         try:
             runner._run_agent(
-                "prompt", proot, "impl-x-123-a1",
+                "prompt", proot, run_id,
                 model_override="m", max_turns=50,
-                spec_name="x", agent_type="implementer",
+                spec_name="x", agent_type=agent_type,
             )
             outcome["result"] = "returned"
         except FrozenTerminatedError as e:
@@ -146,9 +149,9 @@ def _spawn_polling(tmp_path, monkeypatch, *, frozen: bool = True,
     t = threading.Thread(target=worker, daemon=True)
     t.start()
     deadline = time.time() + 5
-    while time.time() < deadline and "impl-x-123-a1" not in runner._running_agents:
+    while time.time() < deadline and run_id not in runner._running_agents:
         time.sleep(0.05)
-    assert "impl-x-123-a1" in runner._running_agents
+    assert run_id in runner._running_agents
     frozen_gate["armed"] = True  # 注册已观察 → 下一轮询周期命中 frozen
 
     if cancel_requested:
@@ -584,3 +587,25 @@ def test_hold_without_frozen_not_protected(tmp_path):
     })
     kept, _ = G7StaleSweepMixin._branch_protected_by_state(wm, "fenix/s1-123")
     assert kept is False
+
+
+def test_arbiter_lane_exempt_from_frozen_kill(tmp_path, monkeypatch):
+    """arbiter 车道豁免冻结击杀（2026-11-01 三段实证）。
+
+    冻结 spec 的在案调查者就是 Arbiter 本身——回扫派发的 arbiter run 曾被
+    冻结轮询环 0 轮击杀（run frozen-terminated），死人开关白烧计数。豁免后
+    arbiter run 在 frozen 态下自然存活至收工。
+    """
+    runner, t, outcome, proot = _spawn_polling(
+        tmp_path, monkeypatch, frozen=True,
+        agent_type="arbiter", run_id="arbiter-x-123-a1")
+    # frozen 已布防（夹具在注册观察后置位）：等 ≥2 个轮询周期（1s/周期），
+    # 豁免生效则不出现 frozen 终止
+    time.sleep(2.5)
+    assert outcome.get("result") != "frozen", outcome
+    # run 仍在飞（未被杀、未自然收工——假进程 sleep 30s）
+    assert "arbiter-x-123-a1" in runner._running_agents
+    # 收尾：人工取消走既有取消路径
+    runner.cancel_run("arbiter-x-123", reason="测试收尾", by="admin")
+    t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 5)
+    assert outcome.get("result") == "cancelled", outcome
