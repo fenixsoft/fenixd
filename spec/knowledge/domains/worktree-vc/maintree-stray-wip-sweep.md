@@ -1,7 +1,7 @@
 # 主树散件 WIP 周期盘点与滞留升级
 
-<!-- knowledge: capability=maintree-stray-wip-sweep rev=4
-     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation -->
+<!-- knowledge: capability=maintree-stray-wip-sweep rev=5
+     sources=spec/archive/2026-10-08-evo-add-maintree-stray-wip-sweep,spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup -->
 
 daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件），机械归因持有者，无主且宽限耗尽时以一次性 major 告警浮出——散件滞留由分钟级机械巡检检出，而非 LLM 复盘车道的偶然检出。
 
@@ -24,6 +24,13 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 - 归因三分支：在飞车道命中 → status=holder 不计时不告警；活交互会话归因命中 → 受 `admin.maintree_session_attribution_action` 采信，缺省 info 降级 status=session-attributed 留痕（不计时、不派 major、不触发 admin 代查），keep 则视同零命中；真零命中 → 无主，自指纹首次出现时刻起算宽限。
 - 归因盲区随证据留痕：活交互会话之外的主树直改形态（非活跃会话遗留、主树内构建产物）仍零命中，一律按无主走宽限升级，升级仅为告警、误判影响有界，禁为覆盖盲区引入主树写探测。
 - 持有者命中期间持续 defer 不告警（与合回 WIP 协调的事件驱动等待同语义），在飞车道长期不终态不构成升级条件。
+
+### 会话归因留痕状态收敛
+
+- 「tracked WIP 归因到主树活交互会话」的 info 留痕按状态变化驱动：同一文件集（路径排序）且同一占用者会话仅在首次出现时落全量行；任一文件增删或占用者会话标识变更视为状态变化、落一条新留痕；状态未变的盘点轮次不落逐轮日志。
+- 稳定期小时聚合：自上次留痕满 60 分钟落 1 条聚合行，含重复计数（「近 1h 重复归因 N 次，归因未变: <文件集>」），随后计数与窗口起点重置；留痕级别维持 info。
+- 归因解除闭环：归因解除（文件消失、占用者清空、归因迁至在飞车道等迁移；宽限升级处置接管必先经归因消失轮）时补一条解除行；解除判定单点挂在归因分支之前，不依赖归因分支本轮被执行；解除后再归因按首次落全量行。
+- 去重状态（上次归因键＝文件集+占用者会话标识、抑制轮计数、上次留痕时间戳）为进程内内存态：不持久化，daemon 重启后首轮按首次落行（允许一条重复）；不新增 AdminStore signal_type、不进人工队列。
 
 ### 宽限与一次性升级告警
 
@@ -53,3 +60,4 @@ daemon 周期只读盘点主树流水线外的 tracked 未提交改动（散件�
 - 2026-10-09 evo-add-maintree-interactive-session-attribution（spec/archive/2026-10-09-evo-add-maintree-interactive-session-attribution） — 修改本页：占用归因由二分支扩为三分支——车道归因零命中后归因器追加主树活交互会话只读探测，会话归因散件缺省降级 status=session-attributed info 留痕（不派 major 不触发代查），`admin.maintree_session_attribution_action=keep` 回退现状无主宽限升级；归因源与采信规则收敛至 maintree-wip-attribution 页。
 - 2026-10-26 evo-add-commit-stray-wip-choice（spec/archive/2026-10-26-evo-add-commit-stray-wip-choice） — 修改本页：宽限升级告警落库记录自带 choices 快照，recommended_action 带出裁决选项 commit_stray_wip 并与 SIGNAL_RECOMMENDATION 同文同步；盘点与升级链路零触碰边界不变（提交动作在裁决执行链、不自动触发）
 - 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — 修改本页：新增复发识别段——同文件历史处置轮数以 AdminStore 既有 SIGNAL 记录为台账检索（清单段解析单源、失败按 0 轮不阻断发射），复发型告警 evidence 带「已 N 度处置」计数与根治指引、recommended_action 换根治优先口径（untrack_stray_wip），检测与触发逻辑本身不动；choices 快照与零触碰条款补记 untrack 选项
+- 2026-10-30 evo-maintree-stray-attribution-log-dedup（spec/archive/2026-10-30-evo-maintree-stray-attribution-log-dedup） — 修改本页：会话归因 info 留痕由逐轮重写收敛为状态变化驱动（首现/变化落全量行、稳定期 60 分钟聚合行带重复计数、归因解除补解除行闭环），去重状态进程内内存态不持久化（动因实测：归因结论稳定时每轮重写同文案，5 天积累 5267 条、字节占比 57.9%）

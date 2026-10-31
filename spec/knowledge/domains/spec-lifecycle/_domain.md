@@ -1,5 +1,5 @@
 # SPEC 生命周期
-> 最后更新：2026-10-11 03:32 UTC+8
+> 最后更新：2026-10-31 16:23 UTC+8
 
 SPEC 生命周期。本域能力页清单如下。
 
@@ -14,7 +14,7 @@ SPEC 生命周期。本域能力页清单如下。
 | [spec-review-agent](spec-review-agent.md) | 方案评审 agent | 2026-10-03 04:59 |
 | [spec-review-recovery](spec-review-recovery.md) | 评审结论消费与中断恢复 | 2026-10-11 02:08 |
 | [spec-review-rejection-schema](spec-review-rejection-schema.md) | 评审拒绝结果的结构化模式 | 2026-10-03 04:59 |
-| [spec-review-infra-attribution](spec-review-infra-attribution.md) | 评审供给失败归因（结构化桥接/在飞上限/冻结文案红线） | 2026-10-11 02:08 |
+| [spec-review-infra-attribution](spec-review-infra-attribution.md) | 评审供给失败归因（结构化桥接+失败行归因括注/熔断成功清零/在飞上限/冻结文案红线） | 2026-10-31 16:23 |
 | [spec-manual-activation](spec-manual-activation.md) | SPEC 手工激活 | 2026-10-03 04:59 |
 | [scheduled-spec-pickup](scheduled-spec-pickup.md) | SPEC 定时拾取（start_after） | 2026-10-03 04:59 |
 | [scheduled-spec-unfreeze](scheduled-spec-unfreeze.md) | SPEC 定时解冻 | 2026-10-03 04:59 |

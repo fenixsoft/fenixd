@@ -1,4 +1,4 @@
-<!-- knowledge: capability=daemon-error-escalation rev=4 sources=spec/archive/2026-09-11-improve-hot-reload-robustness,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization,spec/archive/2026-10-30-evo-add-daemon-signal-spec-attribution-dedup -->
+<!-- knowledge: capability=daemon-error-escalation rev=5 sources=spec/archive/2026-09-11-improve-hot-reload-robustness,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization,spec/archive/2026-10-30-evo-add-daemon-signal-spec-attribution-dedup,spec/archive/2026-10-27-evo-add-review-failure-attribution -->
 
 # daemon 错误升级上报
 
@@ -7,7 +7,8 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 ## 现行规则
 
 - 升级口径：最近 10 分钟窗口内同指纹 ERROR 复现 ≥2 次，且最近两次同指纹条目间隔 ≤5 分钟，产生 `daemon_errors` critical signal；中间被 INFO/WARNING 或其他错误打断不影响同指纹复现计数。
-- 错误指纹为 component 与归一化 message 的组合 hash。归一化采用保守集：ISO-8601 时间戳、UUID、≥16 位 hex 串、纯数字序列、「数字.数字+单位字母」形态（延迟数值如 23.4s）替换为占位符——仅延迟数值不同的同形错误行指纹一致；路径与文字骨架不归一化。非 JSON 格式日志行回退为 raw 行归一化 hash，解析失败不崩溃。
+- 错误指纹为 component 与归一化 message 的组合 hash。归一化采用保守集：ISO-8601 时间戳、UUID、≥16 位 hex 串、纯数字序列、「数字.数字+单位字母」形态（延迟数值如 23.4s）替换为占位符——仅延迟数值不同的同形错误行指纹一致；路径与文字骨架不归一化（唯一例外见下条按组件窄化的 SPEC 名剥离）。非 JSON 格式日志行回退为 raw 行归一化 hash，解析失败不崩溃。
+- SPEC 名剥离（按组件窄化）：spec_review 组件的「评审 run 执行失败: <spec>: …」失败行模板剥离内嵌 SPEC 名段——不同 SPEC 的同型评审失败（如同为限流的 0 成功轮）归一化后指纹相同，可跨日追踪并触发既有同指纹升级召唤；其余组件错误文字骨架不动，不同骨架不误聚。
 - 防抖边界：单次错误不升级；同指纹两次出现间隔 >5 分钟不升级（视为孤立抖动）；较早一次超出 10 分钟窗口不升级——恢复靠窗口滑动自然过期，无需显式清零。
 - timestamp 缺失或解析失败的 ERROR 行仍计入指纹桶（间隔约束按满足处理），方向为宁可多告警不漏告警。
 - 升级命中继续经过既有同 (spec, signal_type) 冷却节流，冷却期内再次满足升级条件仅记录、不重复唤起 administrator。
@@ -23,3 +24,4 @@ AdminMonitor 巡检 `fenixd.log`，把「同指纹 ERROR 短窗复现」升级�
 - 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 新增指纹级重启冷却（重启后首扫回放的已知指纹 30 分钟窗内不升级不召唤，窗后/全新指纹照常）与同轮孪生指纹合并召唤（多指纹一轮只产一条信号一次 run）
 - 2026-10-11 evo-fix-crossday-recurrence-fingerprint-normalization（spec/archive/2026-10-11-evo-fix-crossday-recurrence-fingerprint-normalization） — 归一化保守集补「数字.数字+单位字母」形态，仅延迟数值不同的同形错误行归并为同指纹（计数分组输入变化方向保守：同形聚合计数只增不减）；跨日复发维度另立 [crossday-recurrence-detection](crossday-recurrence-detection.md)
 - 2026-10-30 evo-add-daemon-signal-spec-attribution-dedup（spec/archive/2026-10-30-evo-add-daemon-signal-spec-attribution-dedup） — 升级信号 evidence 基底补齐（单指纹与合并形态附最近一次同指纹 ERROR 原文摘录）；派发侧归属提取与在飞互查跳过语义另立 [admin-dispatch-dedup](../admin-ops/admin-dispatch-dedup.md)
+- 2026-10-27 evo-add-review-failure-attribution（spec/archive/2026-10-27-evo-add-review-failure-attribution） — 归一化按组件窄化补 SPEC 名剥离：spec_review 评审失败行剥 SPEC 名段使同型失败跨 SPEC 聚合同指纹（其余组件文字骨架不动）；失败行就地归因括注落 [spec-review-infra-attribution](../spec-lifecycle/spec-review-infra-attribution.md) 页

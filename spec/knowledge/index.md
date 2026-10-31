@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-10-31 00:20 UTC+8
+> 最后更新：2026-10-31 16:23 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -11,7 +11,7 @@
 | --- | --- | --- | --- |
 | [project-management](domains/project-management/_domain.md) | 项目接入与生命周期 | 8 | 2026-10-08 04:02 |
 | [planning-generation](domains/planning-generation/_domain.md) | 规划与出题 | 6 | 2026-10-03 04:59 |
-| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 24 | 2026-10-11 03:32 |
+| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 生命周期 | 24 | 2026-10-31 16:23 |
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | 调度与派发 | 9 | 2026-10-30 23:11 |
 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道与交付物 | 28 | 2026-10-14 18:51 |
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线 | 58 | 2026-10-30 23:39 |
@@ -22,15 +22,15 @@
 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入 | 5 | 2026-10-30 23:11 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 30 | 2026-10-30 18:20 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 14 | 2026-10-30 23:34 |
-| [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 29 | 2026-10-30 23:11 |
-| [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 14 | 2026-10-30 23:11 |
+| [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 29 | 2026-10-31 16:23 |
+| [daemon-runtime](domains/daemon-runtime/_domain.md) | 守护进程平台 | 14 | 2026-10-31 16:23 |
 | [provider-models](domains/provider-models/_domain.md) | 模型网关与配置 | 19 | 2026-10-06 07:14 |
 | [cost-observability](domains/cost-observability/_domain.md) | 成本与可观测 | 14 | 2026-10-30 23:11 |
 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 仪表盘前端 | 37 | 2026-10-31 00:20 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 仪表盘服务 | 25 | 2026-10-31 00:20 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | 移动端适配 | 6 | 2026-10-03 04:59 |
 | [admin-ops](domains/admin-ops/_domain.md) | 管理员运营与告警 | 31 | 2026-10-30 22:41 |
-| [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 16 | 2026-10-30 23:11 |
+| [self-evolution](domains/self-evolution/_domain.md) | 自省与自进化 | 17 | 2026-10-31 16:23 |
 | [test-engineering](domains/test-engineering/_domain.md) | 测试工程 | 13 | 2026-10-27 16:48 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | 代码结构治理 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义 | 2 | 2026-10-07 02:58 |

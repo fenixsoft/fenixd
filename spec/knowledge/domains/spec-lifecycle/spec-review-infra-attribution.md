@@ -1,6 +1,6 @@
 # 评审供给失败归因与车道韧性
-<!-- knowledge: capability=spec-review-infra-attribution rev=1
-     sources=spec/archive/2026-10-11-evo-fix-spec-review-infra-attribution-bridge -->
+<!-- knowledge: capability=spec-review-infra-attribution rev=2
+     sources=spec/archive/2026-10-11-evo-fix-spec-review-infra-attribution-bridge,spec/archive/2026-10-27-evo-add-review-failure-attribution -->
 
 spec_review 车道对供给类失败（限流、连接错误）的结构化归因传递、infra/content
 二分处置（不烧评审预算 + 熔断冷却）、在飞并发上限与冻结文案红线。
@@ -8,17 +8,26 @@ spec_review 车道对供给类失败（限流、连接错误）的结构化归�
 ## 规则
 
 - **结构化归因传递**：spec_review 派发的 run 失败时，单轮 API 错误的结构化
-  归因（`api_error_status`、连接类标记 `conn_error`）作为 `AgentRunResult`
-  的字段随结果对象传递到失败处理层；`run_spec_review` 的 catch-all 从异常
-  回填这两个字段。失败分类（`_classify_run_failure`）优先消费结构化归因：
+  归因（`api_error_status`、连接类标记 `conn_error`、stderr 摘要
+  `stderr_tail`）作为 `AgentRunResult` 的字段随结果对象传递到失败处理层；
+  `run_spec_review` 的 catch-all 从异常回填 api_error_status 与 conn_error。
+  失败分类（`_classify_run_failure`）优先消费结构化归因：
   `api_error_status=429` 或 `conn_error` 命中即判 infra；结构化字段缺席时
   回退既有文本指纹分类（`_INFRA_FINGERPRINTS` 词表与 429 数字正则），回退
   路径判定结果与既有口径一致。归因不得依赖经降噪的 stderr 文本——降噪后
   仅剩 `Exit code: 1`，文本匹配恒不命中。
+- **失败行就地归因括注**：评审 run 失败的 ERROR 日志行 MUST 附加
+  `[api_error_status=… exit_code=… stderr_tail: …]` 归因括注，形态与
+  code-fix 车道一致；stderr_tail 复用既有 stderr 摘要助手读取异常
+  stderr_lines——限流等供给类失败无须翻归档 run 文件即可就地归因。
 - **infra 分支语义**：分类为 infra（供给瞬态）的失败不递增 `_review_attempts`
   （不计入 3 次评审尝试预算）、不进入冻结路径；由 infra 熔断器记账（阈值 3、
   冷却 30 分钟），达阈值武装冷却，冷却期内 `dispatch_review` 入口短路跳过
   派发，冷却期满自动重派。供给瞬态的自动恢复载体是熔断冷却，不转人工。
+  评审 run 成功收工时调用 `record_success` 清零连续失败计数——「连续 infra
+  失败」为窗口内连续语义，距上次成功多日后的偶发单次失败从 0 起算、不误触
+  熔断；清零接线在评审链路收工点（语义是「链路证明可用」），熔断冷却短路
+  期间未实际派发的尝试不计成功。
 - **content 短退避**：content（评审质量）类失败重派前施加一档短延迟退避
   （秒级，判重 Timer 防重复定时器），两次重派间隔不再秒级连发；infra 分支
   不加退避——其节奏由熔断冷却负责，两类互不干扰。
@@ -52,3 +61,4 @@ spec_review 车道对供给类失败（限流、连接错误）的结构化归�
 ## 溯源
 
 - 2026-10-11 evo-fix-spec-review-infra-attribution-bridge（spec/archive/2026-10-11-evo-fix-spec-review-infra-attribution-bridge） — 新增本页：结构化归因桥接（api_error_status/conn_error 优先、文本回退）、infra 分支不烧预算靠熔断冷却、content 重派短退避、评审在飞上限（可配缺省 2-3）、评审自动冻结文案三红线与 FREEZE_ERROR_PREFIX 不可动
+- 2026-10-27 evo-add-review-failure-attribution（spec/archive/2026-10-27-evo-add-review-failure-attribution） — 修改本页：评审失败 ERROR 行补 api_error_status/exit_code/stderr_tail 就地归因括注（AgentRunResult 透传 stderr_tail）；infra 熔断计数接通成功清零（评审收工调 record_success，「连续」恢复窗口内连续语义，冷却短路期未派发不计成功）
