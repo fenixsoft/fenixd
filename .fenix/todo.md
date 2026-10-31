@@ -418,7 +418,6 @@
 ## 2026-10-27
 
 ### 知识真相源
-- [ ] knowledge-distill 重试：归档 2026-10-27-evo-add-review-failure-attribution — run 失败: claude 进程非零退出（exit=1）；stderr 尾部: [claude-code:unrecognized_model] {"model":"glm-5.3-flash[1M]","query_source":"sdk"}
 
 ## 2026-10-28
 
@@ -503,7 +502,6 @@
   - 建议：①spec 进入 verified/pushed/done 终态时自动把其 spec 作用域 escalation 告警置 resolved（留痕不删）；②未处理升级告警加每日龄期盘点（超 24 小时未处理升提醒）。
 
 ### 知识真相源
-- [ ] knowledge-distill 重试：归档 2026-10-30-evo-maintree-stray-attribution-log-dedup, 2026-10-30-evo-self-review-todo-head-restore — run 失败: claude 进程非零退出（exit=1）；stderr 尾部: [claude-code:unrecognized_model] {"model":"glm-5.3-flash[1M]","query_source":"sdk"}
 
 ## 2026-10-31
 
