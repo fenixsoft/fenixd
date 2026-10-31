@@ -689,6 +689,8 @@ PREPROBE_SIGNAL_TYPES = (
 # 在其子串前缀 "impl-" 之前（_spec_from_run_id 首命中即止，同真源顺序敏感
 # 约束），口径由 tests/test_admin.py::TestFailurePrefixSubset 锁定。
 # [fenix-ignore:847c916d468e] design 1 拆分约束口径即「裸 planner-/test- 不计、细前缀 planner-plan-/planner-judge- 自初版即计」（TestFailurePrefixSubset 锁定），上方注释已逐项区分并写明 admin- 收录理由，注释与代码一致
+# add-arbiter-lane 2.1：arbiter- 同步收录（处置 run 失败同样还原到被处置
+# spec 计数，同 admin- 先例；bc3c07e8 跨类型漏配前科核查点⑤）。
 _RUN_PREFIXES = (
     "impl-ocr-",
     "impl-",
@@ -699,8 +701,14 @@ _RUN_PREFIXES = (
     "dispute-judge-",
     "spec-review-",
     "admin-",
+    "arbiter-",
     "maintenance-",
 )
+
+# 处置族 agent_type 集合（add-arbiter-lane 2.1 核查点④单源）：驱动证据判定
+# （_is_admin_run_id）排除的处置者类型。Administrator 与 Arbiter 的处置活动
+# 都不是被处置 SPEC 的驱动证据（fix-recovery-path-blockers D1 同口径）。
+_DISPOSER_AGENT_TYPES = frozenset({"administrator", "arbiter"})
 
 # ── daemon-error-escalation D6：错误指纹归一化（保守集）────────────
 # 只归一化四类：ISO-8601 时间戳→@、UUID→~、≥16 位 hex→~、纯数字序列→#。
@@ -1188,23 +1196,28 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
 
 
 def _is_admin_run_id(stem: str) -> bool:
-    """run 文件 stem 是否属于 Administrator 处置 run（admin- 前缀）。
+    """run 文件 stem 是否属于处置者 run（administrator / arbiter 前缀）。
 
     单点定义，两处委托（模块级 ``_has_recent_spec_run`` 与
-    ``AdminMonitor._has_recent_progress``），勿二次漂移。admin run
-    是**处置者**的活动，不是被处置 SPEC 的验证/实现驱动证据
-    （fix-recovery-path-blockers D1）——驱动判定 MUST 排除它，否则
-    Administrator 处置全过程该 spec 永恒满足「有近期写活动」→恢复路径
-    永不推进（2026-09-18 add-spec-manual-activation 事故：预算耗尽停
-    testing 后 75 分钟无任何恢复动作）。归属取用 ``RUN_ID_AGENT_PREFIXES``
-    真源（run_files.py），按其携带的 agent_type 判定、不复刻 admin- 前缀
-    字面量（前缀改名不致静默失效），禁硬编码散落。
+    ``AdminMonitor._has_recent_progress``），勿二次漂移。处置 run 是**处置
+    者**的活动，不是被处置 SPEC 的验证/实现驱动证据
+    （fix-recovery-path-blockers D1）——驱动判定 MUST 排除它，否则处置者
+    工作全过程该 spec 永恒满足「有近期写活动」→恢复路径永不推进
+    （2026-09-18 add-spec-manual-activation 事故：预算耗尽停 testing 后
+    75 分钟无任何恢复动作）。归属取用 ``RUN_ID_AGENT_PREFIXES``
+    真源（run_files.py），按其携带的 agent_type 判定、不复刻前缀字面量
+    （前缀改名不致静默失效），禁硬编码散落。
+
+    add-arbiter-lane 2.1（bc3c07e8 跨类型漏配前科核查点④）：arbiter 车道
+    与 administrator 同属处置族——本判定从单类型等值改为处置族集合成员
+    判定，漏改此处会让 Arbiter 处置全过程被误判为「spec 有驱动」，恢复
+    路径在 Arbiter 调查期间全跳过（与 2026-09-18 事故同根因）。
     """
     from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
 
     for prefix, agent_type in RUN_ID_AGENT_PREFIXES:
         if stem.startswith(prefix):
-            return agent_type == "administrator"
+            return agent_type in _DISPOSER_AGENT_TYPES
     return False
 
 
@@ -4131,6 +4144,14 @@ class AdminMonitor:
             # 语义保留），在飞 run 结束后的下一巡检周期由本摄取循环自然重评
             # （再武装路径）；落点必须在 mark_escalated 之前。
             if spec and self._has_active_admin_run_for_spec(spec, records=records):
+                # add-arbiter-lane 2.1 互斥守卫核查点①（摄取唤起，bc3c07e8 跨
+                # 类型漏配前科逐点核查）：本守卫按 spec 单键宽口径（任意
+                # signal_type）匹配 DISPOSITION 记录——arbiter 车道不写 admin
+                # DISPOSITION 记录（处置台账独立 .fenix/arbiter_ledger.jsonl），
+                # admin 摄取唤起与在飞 arbiter run 的互斥由 arbiter 侧单飞队列
+                # 自治；反向（admin 在飞时 arbiter 是否插手）由触发面咽喉层
+                # dedup 自治。两车道互不吞并发记录 = 核查确认无需扩大匹配面，
+                # arbiter 类型无需纳入本守卫（纳入反是误扩：处置权独立）。
                 self.logger.warning(
                     "admin_monitor",
                     f"{stype}: 已有在飞处置，跳过本次摄取唤起 '{spec}'"
@@ -5746,6 +5767,10 @@ class AdminMonitor:
         # spec 键互斥分支的日志/留痕文案与字段逐字不动。
         _mutex_spec = spec or self._extract_daemon_signal_spec(signal)
         if _mutex_spec and self._has_active_admin_run_for_spec(_mutex_spec):
+            # add-arbiter-lane 2.1 互斥守卫核查点②（即时唤起，bc3c07e8 前科
+            # 逐点核查）：同核查点①口径——arbiter run 不落 DISPOSITION 记录、
+            # 由 arbiter 单飞队列自治互斥，本宽口径守卫无需纳入 arbiter 类型
+            # （确认项留痕，防跨类型守卫漂移复发时此处有据可查）。
             if spec:
                 self.logger.warning(
                     "admin_monitor",
@@ -6081,6 +6106,10 @@ class AdminMonitor:
             if _retry_mutex_spec and self._has_active_admin_run_for_spec(
                 _retry_mutex_spec
             ):
+                # add-arbiter-lane 2.1 互斥守卫核查点③（到期重派，bc3c07e8
+                # 前科逐点核查）：同核查点①口径——arbiter run 不落
+                # DISPOSITION 记录、单飞队列自治互斥，本守卫无需纳入 arbiter
+                # 类型（确认项留痕）。
                 self.logger.info(
                     "admin_monitor",
                     f"Skipping dispatch retry for '{_retry_mutex_spec}' (signal "

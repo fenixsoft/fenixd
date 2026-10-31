@@ -644,8 +644,187 @@ def _delete_admin_disposition(disp_path: Path):
         pass
 
 
+# ── Arbiter 调查车道（add-arbiter-lane 2.1/4.1）─────────────────────────
+
+# 调查报告 outcome 合法枚举（硬门第二道门的取值口径；agents/arbiter.md
+# 报告契约段同词表）：resolved=处置成功（框架侧解冻/清计数收尾）；escalate=
+# 产裁决包升级人工。缺省/非法值一律 fail-closed 折算失败（死人开关计数）。
+ARBITER_REPORT_OUTCOMES = ("resolved", "escalate")
+
+
+def run_arbiter(runner, trigger: dict) -> dict:
+    """全局决策者（Arbiter）调查 run（add-arbiter-lane 4.1 主流程的 run 段）。
+
+    触发消费 → 调查 run 启动（dsh 车道， ArbiterLane 单飞队列串行调用本函数）
+    → 报告读回 + 双道产物硬门 → 车道终态指标行。返回信封 dict（非
+    AdminDisposition——消费方是 ArbiterLane 结果分类，不是 admin 终态回写）：
+    ``{"ok", "run_id", "report", "error", "usage_info", "elapsed_s"}``。
+
+    与 run_administrator 同款骨架（claim→组装→_run_agent→硬门→指标收尾），
+    差异点：
+    - run 命名 ``arbiter-<spec>-<ts>``（O_EXCL 申领同 _unique_admin_run_id）；
+    - model 链：``agents.models.arbiter`` assignment → 钉死 glm-5.3-flash
+      （不回落 DEFAULT_GATEWAY_MODEL——10-09 narrative 车道 [1M] 别名前科）；
+    - 墙钟预算在 ``_effective_run_timeout`` 对 arbiter 取 min 封顶（2.1）；
+    - 不落 admin DISPOSITION pending 记录（处置台账独立 arbiter_ledger.jsonl，
+      在飞状态由 ArbiterLane._active 集合自治——互斥守卫核查点①~③口径）；
+    - 硬门双道：报告文件缺失/不可解析、outcome 非法，均折算失败（fail-closed，
+      死人开关计数口径），MUST NOT 把空跑折算成处置成功。
+    """
+    spec = str((trigger or {}).get("spec") or "global")
+    empty = {"ok": False, "run_id": "", "report": {}, "error": "", "usage_info": {}, "elapsed_s": 0.0}
+    # spec 名路径校验（同 run_administrator 先例：spec 直接内插 run_id/路径）
+    from core.pm_engine.verification.serving import _spec_name_path_error
+
+    unsafe = _spec_name_path_error(spec)
+    if unsafe:
+        return {**empty, "error": unsafe}
+
+    from core.pm_engine.arbiter import ARBITER_PINNED_MODEL, arbiter_report_path
+
+    runs_dir = runner.project_root / ".fenix" / "runs"
+    run_id_base = f"arbiter-{spec}-{int(time.time())}"
+    run_id = _claim_run_path(
+        runner, run_id_base, runs_dir, "{}.jsonl", probe=None, placeholder=None
+    )
+    claim_placeholder = runs_dir / f"{run_id}.jsonl"
+    _claim_settled = False
+    try:
+        report_path = arbiter_report_path(runner.project_root, run_id)
+        prompt_detail = dict(trigger or {})
+        prompt_detail["run_id"] = run_id
+        prompt_detail["report_path"] = str(report_path)
+        prompt = runner._build_prompt(spec, "arbiter", detail=prompt_detail)
+        # model 解析链（Administrator 同构）：assignment → 钉死模型
+        assignment = runner._get_agent_model_assignment("arbiter")
+        env_overrides: Dict[str, str] = {}
+        provider_name = None
+        if assignment:
+            provider, model_override = assignment[0]
+            provider_name = provider.get("name")
+            _apply_provider_env(env_overrides, provider, model_override, runner)
+            _write_lane_provider_marker(runner, run_id, spec, "arbiter", assignment)
+        else:
+            model_override = ARBITER_PINNED_MODEL
+        _started = time.monotonic()
+        turns = 0
+        usage_info: dict = {}
+        _stall_latency = None
+        _claim_settled = True
+    finally:
+        if not _claim_settled:
+            try:
+                claim_placeholder.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    _log = getattr(runner, "logger", None)
+    try:
+        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
+            prompt,
+            runner.project_root,
+            run_id,
+            model_override,
+            env_overrides,
+            max_turns=runner._get_config("agents.max_turns", 300),
+            spec_name=spec,
+            agent_type="arbiter",
+        )
+        success = True
+        error = ""
+    except Exception as e:
+        output = ""
+        success = False
+        error = str(e)
+        # 信号死法来源判定（闭集）与 run_administrator 同款：daemon 关停 →
+        # [shutdown-interrupted]；框架强杀被 _record_signal_kill_or_label 内部
+        # 排除；其余 143/负信号 → [signal-kill: …] 标签 + spec 维度信号冷却。
+        run_file = runner.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        if getattr(runner, "shutting_down", False) or runner._run_was_interrupted(
+                run_file):
+            error = f"[shutdown-interrupted] {error}"
+        else:
+            error = runner._record_signal_kill_or_label(
+                spec, error, getattr(e, "exit_code", None))
+        failure_evidence = _admin_failure_evidence(runner, run_id, e)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Arbiter run {run_id} failed: {error}",
+                {"run_id": run_id, "error": error, "failure_evidence": failure_evidence},
+            )
+
+    # ── 产物硬门（fail-closed，同 admin 车道先例）────────────────────
+    report = _read_arbiter_report(report_path)
+    if success and not report:
+        success = False
+        error = (
+            f"arbiter 未写调查报告: run 正常退出但 {report_path.name} 缺失或"
+            "不可解析，零产物判失败（fail-closed，死人开关计数）"
+        )
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Arbiter run {run_id} 产物硬门拦截: {error}",
+                {"run_id": run_id, "spec": spec},
+            )
+    if success and str(report.get("outcome") or "").strip().lower() not in (
+        ARBITER_REPORT_OUTCOMES
+    ):
+        _raw = report.get("outcome")
+        success = False
+        error = (
+            f"arbiter 调查报告 outcome 非法: {report_path.name} 可解析但 outcome "
+            f"缺失或不在合法枚举（resolved/escalate，实际值 {_raw!r}），"
+            "残缺产物判失败（fail-closed）"
+        )
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Arbiter run {run_id} 产物硬门拦截: {error}",
+                {"run_id": run_id, "spec": spec},
+            )
+    # 读取即清理自身实例文件（内容已捕获进返回信封；admin 车道同范式）
+    _delete_admin_disposition(report_path)
+    # 收尾富指标行（车道终态指标行验收口径：_log_lane_run_metrics 收尾咽喉）
+    elapsed = time.monotonic() - _started
+    _log_lane_run_metrics(
+        runner,
+        run_id=run_id,
+        spec_name=spec,
+        agent_type="arbiter",
+        started_monotonic=_started,
+        turns=turns,
+        usage_info=usage_info,
+        run_ok=success,
+        provider_name=provider_name,
+        latency=_stall_latency,
+    )
+    return {
+        "ok": success,
+        "run_id": run_id,
+        "report": report,
+        "error": error,
+        "usage_info": usage_info or {},
+        "elapsed_s": round(elapsed, 3),
+    }
+
+
+def _read_arbiter_report(report_path: Path) -> dict:
+    """读取 Arbiter 按 prompt 写入的调查报告（实例文件，路径按 run 注入）。
+
+    文件缺失/损坏/非 dict 返回空 dict（调用方硬门折算失败）。
+    """
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _read_admin_disposition(disp_path: Path) -> dict:
     """读取管理员按 prompt 写入的处置记录（实例文件，路径按 run 注入）。
+
 
     文件缺失/损坏返回空 dict（调用方用信号详情兜底）。
     """

@@ -188,7 +188,10 @@ agents:
   transient_break_cooldown_seconds: 600
 
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
-  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track | code-review | code-fix
+  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track | code-review | code-fix | arbiter
+  # arbiter 为全局决策者车道（add-arbiter-lane）：冻结/升级事件自动派发的跨
+  #   车道验尸者。未分配时钉死 bigmodel/glm-5.3-flash（不回落默认网关——
+  #   官方模型别名链在网关侧易踩 [1M] 别名拒绝）。
   # self-review 为每日自省与框架自进化（evolution）共用的分配。
   # code-review 为周期性仓库级代码审查（add-code-review-agent-and-quality-tab）：
   #   模型链回退 code-review → self-review → administrator → 默认网关。
@@ -240,6 +243,9 @@ agents:
   #   code-fix:
   #     provider: "volc-engine"
   #     model: "deepseek-v4-flash"
+  #   arbiter（add-arbiter-lane：全局决策者车道，建议直连 bigmodel）:
+  #     provider: "bigmodel.cn"
+  #     model: "glm-5.3-flash"
 
 # ---- Worktree Configuration ----
 worktree:
@@ -618,6 +624,21 @@ pm:
     # max_depth: 3
     # 同根未完成 fix 子代数量上限（缺省 2）
     # max_width: 2
+
+# ---- Arbiter（add-arbiter-lane：全局决策者车道）----
+arbiter:
+  # 总开关。false = 关闭态零侵扰：冻结/升级边走既有 narrative+人工路径，
+  # 全部行为与本 SPEC 合入前逐字节一致（不派发、不落台账、不改告警形态）。
+  enabled: true
+  # 单次调查 run 墙钟预算（秒）：runner 侧对 arbiter run 超时取 min 封顶；
+  # 超限 → run 终止 → 半成品调查包升级人工（不静默死亡）。
+  budget_wallclock_s: 1800
+  # 单次调查 run token 预算：usage 四键累计事后记账；超限 → 停止自主尝试、
+  # 半成品调查包升级人工。
+  budget_tokens: 1000000
+  # 同触发连败死人开关阈值：同 spec 同失败签名连续失败达本次数后停止自主
+  # 尝试，半成品调查包升级人工（缺省 2——第一次失败留重试余量）。
+  max_consecutive_failures: 2
 
 # ---- Project-Specific Commands ----
 commands:

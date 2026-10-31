@@ -264,6 +264,10 @@ class ConfigLoader:
         # _hash_gate 静默跳过 agents.models.knowledge-distiller 并回退默认网关
         # ——复用「未登记 agent 无回退链」的教训，立项即登记（零成本）。
         "knowledge-distiller",
+        # add-arbiter-lane：arbiter（全局决策者车道）。不登记会被 _hash_gate
+        # 静默跳过 agents.models.arbiter 并回退钉死模型——分配面板角色集
+        # （前端 AGENT_ROLES）与模型白名单必须同步登记（dispute-judge 前科）。
+        "arbiter",
     ]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
@@ -2395,6 +2399,56 @@ class ConfigLoader:
     # 的读取窗口。retention_days 非法值回退默认 7（与 stale_code_selfheal
     # 的容错口径一致）；节存在但类型非法（非 dict / 字段类型错）时按既有
     # 容错口径回退默认值，不抛异常不进入硬失败。
+    # ── arbiter 车道四键（add-arbiter-lane 2.2）──────────────────────────
+    # enabled: 总开关（关闭态零侵扰 s8：触发面咽喉短路，全路径与合入前一致）
+    # budget_wallclock_s: 单次调查 run 墙钟预算（runner._effective_run_timeout
+    #   对 arbiter 取 min 封顶；超限 → run 终止 → 半成品包升级）
+    # budget_tokens: 单次调查 run token 预算（usage_info 四键累计事后记账；
+    #   超限 → 停止自主尝试、半成品包升级）
+    # max_consecutive_failures: 同触发连败死人开关阈值（缺省 2：第二次同签名
+    #   失败即升级，不无限自主重试烧预算）
+    ARBITER_ENABLED_DEFAULT = True
+    ARBITER_BUDGET_WALLCLOCK_S_DEFAULT = 1800
+    ARBITER_BUDGET_TOKENS_DEFAULT = 1_000_000
+    ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT = 2
+
+    @classmethod
+    def get_arbiter_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``arbiter`` 段四键，缺失/非法值回退缺省（不抛异常）。
+
+        - enabled: 布尔，缺省 True（非布尔回退缺省——布尔缺省语义下非法即
+          用缺省，与 stale_code_selfheal.enabled 同口径）
+        - budget_wallclock_s: 正整数秒，缺省 1800（bool 是 int 子类显式排除，
+          0/负数/非整值浮点回退缺省——与 _normalize_int_value 同范式）
+        - budget_tokens: 正整数，缺省 1_000_000（同上）
+        - max_consecutive_failures: 正整数，缺省 2（同上）
+
+        节缺失、键缺失或值非法时不抛异常；读取走既有 config 对象，30s 配置
+        热更新自然生效（下一触发判定即采用新值）。
+        """
+        section = cls._segment_or_empty(config, "arbiter")
+        enabled = section.get("enabled", cls.ARBITER_ENABLED_DEFAULT)
+        if not isinstance(enabled, bool):
+            enabled = cls.ARBITER_ENABLED_DEFAULT
+        return {
+            "enabled": enabled,
+            "budget_wallclock_s": cls._normalize_int_value(
+                section.get("budget_wallclock_s"),
+                cls.ARBITER_BUDGET_WALLCLOCK_S_DEFAULT,
+                positive=True,
+            ),
+            "budget_tokens": cls._normalize_int_value(
+                section.get("budget_tokens"),
+                cls.ARBITER_BUDGET_TOKENS_DEFAULT,
+                positive=True,
+            ),
+            "max_consecutive_failures": cls._normalize_int_value(
+                section.get("max_consecutive_failures"),
+                cls.ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT,
+                positive=True,
+            ),
+        }
+
     BRANCH_GC_ENABLED_DEFAULT = True
     BRANCH_GC_RETENTION_DAYS_DEFAULT = 7
     # retention_days 最小值 1（0/负数无语义：当天即删，宽限期形同虚设）。
