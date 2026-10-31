@@ -16,4 +16,4 @@
 
 ## 2. 测试
 
-- [ ] 2.1 tests/test_arbiter_backlog_sweep.py：存量冻结回扫派发（evo-refine 型现场：frozen=true+同 spec pending 机器升级告警→入队派发）；回扫排除语义三态（frozen_until 非空定时冻结 / frozen 但无成对 pending 告警的人工冻结形态 / enabled=false）；幂等（二次回扫与事件触发先后命中同签名不重复派发）；回扫入口每进程每跃迁至多一次
+- [x] 2.1 tests/test_arbiter_backlog_sweep.py：存量冻结回扫派发（evo-refine 型现场：frozen=true+同 spec pending 机器升级告警→入队派发）；回扫排除语义三态（frozen_until 非空定时冻结 / frozen 但无成对 pending 告警的人工冻结形态 / enabled=false）；幂等（二次回扫与事件触发先后命中同签名不重复派发）；回扫入口每进程每跃迁至多一次
