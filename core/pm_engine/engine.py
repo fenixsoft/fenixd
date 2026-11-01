@@ -4111,6 +4111,16 @@ class PMEngine:
 
         Returns a dict with blocker details if any found.
         """
+        # 幽灵条目对账清退（fix-legacy-ghost-spec-entry-reclaim 2.1）先于本轮
+        # 扫描执行：daemon 启动首轮 full_scan（初扫=启动回填期）与周期扫描
+        # 均经本咽喉到达，命中条目在下方逐条扫描前已结构性移除，不再进入
+        # blocker/warning 判定烧日志；对账自身幂等（零命中零副作用零噪音），
+        # 失败整体兜底不阻断 blocker 扫描（与下方 recovery watch 同款包裹）。
+        try:
+            self.reclaim_ghost_entries()
+        except Exception as e:
+            self.logger.error("pm_engine", f"Ghost entry reclaim failed: {e}")
+
         # read_all None 防御与 backfill_push_residuals 同款（code-review item
         # 47f06a001297）：STATE 读取异常路径返回 None 时不得中断整轮 blocker 扫描。
         all_specs = self.state_machine.read_all() or {}
@@ -4743,6 +4753,16 @@ class PMEngine:
             inst = SpecIntegrityGate(self)
             self.__dict__["_spec_integrity_instance"] = inst
         return inst
+
+    def reclaim_ghost_entries(self) -> dict:
+        """幽灵条目对账清退（fix-legacy-ghost-spec-entry-reclaim D4 门面）。
+
+        挂点：``check_blockers`` 先于本轮 blocker 扫描调用——daemon 启动首轮
+        full_scan（启动回填期）与 EventBus 周期扫描均到达，满足「启动回填期
+        一次 + full_scan 周期复扫」；配置开关 ``gates.ghost_entry_reclaim``
+        （默认 on）在组件入口读取，off 直接返回零副作用。
+        """
+        return self._spec_integrity.reclaim_ghost_entries()
 
     # ── 组合组件委托（阶段 4：family/budget 已迁组件，门面保持调用路径）──
 

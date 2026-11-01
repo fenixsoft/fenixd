@@ -13,6 +13,7 @@
   召唤一次 Administrator agent run（实测 run 产物 309KB/348KB，纯 token 浪费）
 """
 
+import json
 import logging
 import shutil
 import sys
@@ -34,7 +35,16 @@ from core.alert_lifecycle import (
     evaluate_alert,
 )
 from core.state_machine import StateMachine
-from core.pm_engine.spec_integrity import spec_has_content, SpecIntegrityGate
+from core.pm_engine.spec_integrity import (
+    GHOST_ENTRY_FRESHNESS_MINUTES,
+    GHOST_RECLAIM_LEDGER_FILENAME,
+    GHOST_RECLAIM_LEDGER_KIND,
+    GHOST_RECLAIM_SIGNAL_TYPE,
+    git_path_has_commits,
+    ghost_reclaim_ledger_path,
+    spec_has_content,
+    SpecIntegrityGate,
+)
 
 
 def _mk_engine(project_root, logger, config=None):
@@ -653,6 +663,339 @@ class TestFrozenReplayGuards(unittest.TestCase):
             if c.args == ("ready-spec", "implementer")
         ]
         self.assertEqual(impl_calls, [("ready-spec", "implementer")])
+
+
+# ═══════════════════════════════════════════════════════════════════
+# fix-legacy-ghost-spec-entry-reclaim：幽灵指纹判定与结构性清退
+# （design D2 三条件 AND / D3 清退动作与留痕 / D4 挂点与配置）
+# ═══════════════════════════════════════════════════════════════════
+
+
+class _GhostBase(_Base):
+    """幽灵清退测试基座：真实 git 仓库 + created 回拨 + 台账/告警读取。"""
+
+    def setUp(self):
+        super().setUp()
+        self._git_init()
+
+    def _git_init(self):
+        """项目根初始化为含一次初始提交的真实 git 仓库（历史探测走真实 git）。"""
+        import os
+        import subprocess
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+
+        def git(*args):
+            subprocess.run(
+                ["git", "-C", str(self.project_root), *args],
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        (self.project_root / "README.md").write_text("x\n", encoding="utf-8")
+        git("add", "README.md")
+        git("commit", "-q", "-m", "init")
+
+    def _backdate(self, name: str, minutes: float):
+        created = (datetime.now(timezone.utc) - timedelta(minutes=minutes))
+        self.sm.update_spec(name, {"created": created.isoformat()})
+
+    def _mk_entry(self, name: str, minutes=60, extra=None):
+        """注册条目并回拨 created（默认 60 分钟前，过新鲜度窗）。"""
+        fields = {"priority": 5}
+        if minutes is not None:
+            fields["created"] = (
+                datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            ).isoformat()
+        if extra:
+            fields.update(extra)
+        self.sm.add_spec(name, fields)
+        return name
+
+    def _ledger_entries(self) -> list:
+        path = ghost_reclaim_ledger_path(self.project_root)
+        if not path.is_file():
+            return []
+        out = []
+        for line in path.read_text(encoding="utf-8").split("\n"):
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+        return out
+
+    def _ghost_alerts(self) -> list:
+        return [
+            a for a in AdminStore(self.project_root, self.logger).read_all()
+            if a.get("signal_type") == GHOST_RECLAIM_SIGNAL_TYPE
+        ]
+
+
+class TestGhostFingerprintTruthTable(_GhostBase):
+    """3.1：指纹真值表——三条件各自翻转即不命中；全中即命中；
+    blocked+frozen 全中亦命中（冻结不豁免）。"""
+
+    def test_freshness_window_constant_is_30(self):
+        # task 1.2：新鲜度窗模块常量（30 分钟）
+        self.assertEqual(GHOST_ENTRY_FRESHNESS_MINUTES, 30)
+
+    def test_all_three_conditions_hit(self):
+        self._mk_entry("ghost-spec")
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual([h["spec"] for h in verdict["hits"]], ["ghost-spec"])
+        self.assertEqual(verdict["skipped"], [])
+        hit = verdict["hits"][0]
+        # 每项含三项指纹证据
+        self.assertIn("created", hit)
+        self.assertIn("dir_evidence", hit)
+        self.assertIn("git_evidence", hit)
+        self.assertIn("零提交", hit["git_evidence"])
+        self.assertGreaterEqual(hit["age_minutes"], 30)
+
+    def test_content_condition_flip_not_hit(self):
+        # 条件 1 翻转：物化过 proposal.md（7f7ee45e2 范式）→ 不命中
+        self._mk_entry("content-spec")
+        _mk_spec_dir(self.project_root, "content-spec", ["proposal.md"])
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual(
+            [h["spec"] for h in verdict["hits"] if h["spec"] == "content-spec"],
+            [],
+        )
+
+    def test_git_history_condition_flip_not_hit(self):
+        # 条件 2 翻转：曾立项提交过、目录后被误删 → git 历史仍在 → 不命中
+        name = "committed-spec"
+        d = _mk_spec_dir(self.project_root, name, ["proposal.md"])
+        import os
+        import subprocess
+        subprocess.run(
+            ["git", "-C", str(self.project_root), "add", f"spec/changes/{name}"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project_root), "commit", "-q", "-m", name],
+            check=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@example.com",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@example.com",
+            },
+        )
+        shutil.rmtree(d)  # 模拟目录被误删（历史仍在）
+        self._mk_entry(name)
+        self.assertFalse(spec_has_content(self.project_root, name))
+        self.assertTrue(git_path_has_commits(self.project_root, name))
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual(
+            [h["spec"] for h in verdict["hits"] if h["spec"] == name], []
+        )
+
+    def test_freshness_condition_flip_not_hit(self):
+        # 条件 3 翻转：新注册条目（< 30 分钟）→ 不命中
+        self._mk_entry("fresh-spec", minutes=None)  # created=now
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual(
+            [h["spec"] for h in verdict["hits"] if h["spec"] == "fresh-spec"],
+            [],
+        )
+
+    def test_missing_created_conservative_not_hit(self):
+        # created 缺失/非法（判龄失败）保守不清退
+        self.sm.add_spec("no-ts-spec", {"priority": 5, "created": ""})
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual(
+            [h["spec"] for h in verdict["hits"] if h["spec"] == "no-ts-spec"],
+            [],
+        )
+
+    def test_pushed_terminal_exempt(self):
+        # 终态豁免（design D2 字面：pushed 豁免）
+        self._mk_entry("pushed-spec", extra={"status": "pushed"})
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual(
+            [h["spec"] for h in verdict["hits"] if h["spec"] == "pushed-spec"],
+            [],
+        )
+
+    def test_blocked_frozen_hit_frozen_not_exempt(self):
+        # 冻结不豁免（design D3）：孪生条目形态 blocked+frozen 全中即命中
+        self._mk_entry(
+            "frozen-ghost", extra={"status": "blocked", "frozen": True}
+        )
+        verdict = self.engine._spec_integrity.detect_ghost_entries()
+        hits = [h for h in verdict["hits"] if h["spec"] == "frozen-ghost"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["status"], "blocked")
+
+
+class TestGhostExemptions(_GhostBase):
+    """3.2：新鲜度豁免、非法名跳过、物化 proposal 条目不命中。"""
+
+    def test_fresh_entry_not_reclaimed(self):
+        # < 30 分钟不清退，留待下一轮对账
+        self._mk_entry("fresh-ghost", minutes=None)
+        result = self.engine.reclaim_ghost_entries()
+        self.assertEqual(result["reclaimed"], [])
+        self.assertIsNotNone(self.sm.read_one("fresh-ghost"))
+        self.assertEqual(self._ledger_entries(), [])
+
+    def test_materialized_proposal_entry_not_hit(self):
+        # arbiter 7f7ee45e2 范式：最小成文 proposal.md 即有内容，不命中不清退
+        self._mk_entry("materialized-spec")
+        _mk_spec_dir(self.project_root, "materialized-spec", ["proposal.md"])
+        result = self.engine.reclaim_ghost_entries()
+        self.assertEqual(result["reclaimed"], [])
+        self.assertIsNotNone(self.sm.read_one("materialized-spec"))
+        self.assertEqual(self._ghost_alerts(), [])
+
+    def test_unsafe_name_skipped_not_reclaimed(self):
+        # 非法路径成分名：不进命中清单、另入跳过清单待告警、绝不清退
+        entry = {
+            "status": "ready",
+            "created": (
+                datetime.now(timezone.utc) - timedelta(hours=2)
+            ).isoformat(),
+        }
+        with patch.object(
+            self.sm, "read_all", return_value={"../evil": entry}
+        ):
+            verdict = self.engine._spec_integrity.detect_ghost_entries()
+        self.assertEqual(verdict["hits"], [])
+        self.assertEqual(verdict["skipped"], ["../evil"])
+
+        with patch.object(
+            self.sm, "read_all", return_value={"../evil": entry}
+        ):
+            result = self.engine.reclaim_ghost_entries()
+        self.assertEqual(result["reclaimed"], [])
+        self.assertEqual(result["skipped"], ["../evil"])
+        # 保守跳过仍要告警待人工（spec Requirement 2）
+        alerts = self._ghost_alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("../evil", alerts[0]["description"])
+
+    def test_normal_entries_silent_zero_noise(self):
+        # 有内容/新鲜的正常条目零命中零副作用零日志噪音
+        self._mk_entry("normal-spec")
+        _mk_spec_dir(self.project_root, "normal-spec", ["tasks.md"])
+        result = self.engine.reclaim_ghost_entries()
+        self.assertEqual(result["reclaimed"], [])
+        self.assertEqual(result["skipped"], [])
+        self.assertFalse(result["alerted"])
+        self.assertEqual(self._ghost_alerts(), [])
+        self.assertEqual(self._ledger_entries(), [])
+
+
+class TestGhostReclaimActions(_GhostBase):
+    """3.3：清退断言——remove_spec 被调、条目消失、台账 kind 与证据、
+    聚合告警单条含全清单。"""
+
+    def test_reclaim_removes_entry_and_writes_ledger(self):
+        self._mk_entry("ghost-spec")
+        with patch.object(
+            self.sm, "remove_spec", wraps=self.sm.remove_spec
+        ) as mock_rm:
+            result = self.engine.reclaim_ghost_entries()
+        mock_rm.assert_called_once_with("ghost-spec")
+        # STATE 条目消失
+        self.assertIsNone(self.sm.read_one("ghost-spec"))
+        self.assertEqual(
+            [h["spec"] for h in result["reclaimed"]], ["ghost-spec"]
+        )
+        # 台账 kind 与三项证据字段
+        ledger = self._ledger_entries()
+        self.assertEqual(len(ledger), 1)
+        rec = ledger[0]
+        self.assertEqual(rec["kind"], GHOST_RECLAIM_LEDGER_KIND)
+        self.assertEqual(rec["spec"], "ghost-spec")
+        self.assertEqual(rec["status_at_reclaim"], "drafted")
+        ev = rec["evidence"]
+        self.assertIn("created", ev)
+        self.assertIn("age_minutes", ev)
+        self.assertIn("dir_probe", ev)
+        self.assertIn("git_log", ev)
+        self.assertIn("零提交", ev["git_log"])
+
+    def test_aggregate_alert_single_contains_full_list(self):
+        # 一轮至多一条聚合告警，列出全部清退条目与证据
+        self._mk_entry("ghost-a")
+        self._mk_entry("ghost-b")
+        result = self.engine.reclaim_ghost_entries()
+        self.assertEqual(len(result["reclaimed"]), 2)
+        alerts = self._ghost_alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["kind"], ESCALATION)
+        self.assertEqual(alerts[0]["severity"], "major")
+        self.assertIn("ghost-a", alerts[0]["description"])
+        self.assertIn("ghost-b", alerts[0]["description"])
+        # 证据随告警可审计
+        self.assertIn("零提交", alerts[0]["evidence"])
+        self.assertIn(GHOST_RECLAIM_LEDGER_FILENAME, alerts[0]["evidence"])
+
+    def test_check_blockers_hook_reclaims_ghost(self):
+        # 2.1 挂点：check_blockers（full_scan 咽喉）先清退再扫描
+        self._mk_entry("ghost-spec")
+        self.engine.check_blockers()
+        self.assertIsNone(self.sm.read_one("ghost-spec"))
+        self.assertEqual(len(self._ledger_entries()), 1)
+
+    def test_check_blockers_zero_hit_no_state_change(self):
+        # 幂等：正常条目零副作用
+        self._mk_entry("normal-spec")
+        _mk_spec_dir(self.project_root, "normal-spec", ["tasks.md"])
+        self.engine.check_blockers()
+        self.assertEqual(self.sm.read_one("normal-spec")["status"], "drafted")
+        self.assertEqual(self._ledger_entries(), [])
+        self.assertEqual(self._ghost_alerts(), [])
+
+
+class TestGhostIdempotentAndConfig(_GhostBase):
+    """3.4：幂等重放（第二轮零清退、告警不重复）；开关 off 全跳过。"""
+
+    def test_second_round_zero_reclaim_no_duplicate_alert(self):
+        self._mk_entry("ghost-spec")
+        first = self.engine.reclaim_ghost_entries()
+        self.assertEqual(len(first["reclaimed"]), 1)
+        second = self.engine.reclaim_ghost_entries()
+        self.assertEqual(second["reclaimed"], [])
+        self.assertFalse(second["alerted"])
+        self.assertEqual(len(self._ghost_alerts()), 1)
+        self.assertEqual(len(self._ledger_entries()), 1)
+        self.assertIsNone(self.sm.read_one("ghost-spec"))
+
+    def test_config_off_skips_everything(self):
+        from core.pm_engine import PMEngine
+        cfg_engine = PMEngine(
+            self.sm,
+            MagicMock(),
+            {"gates": {"ghost_entry_reclaim": False}},
+            self.project_root,
+            self.logger,
+        )
+        self._mk_entry("ghost-spec")
+        result = cfg_engine.reclaim_ghost_entries()
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["reclaimed"], [])
+        # 零副作用：条目仍在、无台账、无告警
+        self.assertIsNotNone(self.sm.read_one("ghost-spec"))
+        self.assertEqual(self._ledger_entries(), [])
+        self.assertEqual(self._ghost_alerts(), [])
+        # check_blockers 挂点同样被开关短路
+        cfg_engine.check_blockers()
+        self.assertIsNotNone(self.sm.read_one("ghost-spec"))
 
 
 if __name__ == "__main__":
