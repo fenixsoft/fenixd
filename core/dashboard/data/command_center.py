@@ -66,11 +66,17 @@ ROSTER = {
 LANE_ZONE = {lane: zone for zone, lanes in ROSTER.items() for lane in lanes}
 
 # 观测 lane → 编制内 lane 归并（2026-10-28 用户定稿）：dispute-judge 计入
-# 质量裁决（judge）、repair 计入修复（code-fix）。仅组织网格聚合消费；
-# 时间线/拓扑屏保持原生 agent_type（各有角色映射单源）。
+# 质量裁决（judge）、repair 计入修复（code-fix）。
+# 2026-11-01（add-arbiter-quality-display）新增 arbiter→judge：arbiter 是
+# 「质量裁决」编制的执行面（与 dispute-judge→judge 同族），run 计数/成本/
+# 在飞归属并入 judge 卡统一显示「质量裁决」，不再单独出「其他」卡。
+# 消费面边界：仅组织网格聚合与 spec 视图轮次（aggregate_org/
+# aggregate_spec_runs 两处既有消费点）消费本表；时间线/拓扑屏保持原生
+# agent_type（各有角色映射单源）的定稿口径不变。
 LANE_ALIASES = {
     "dispute-judge": "judge",
     "repair": "code-fix",
+    "arbiter": "judge",
 }
 
 # 时间窗（2026-10-28 时间下拉「今日/7 日/全量」）：today=UTC 日界起；
