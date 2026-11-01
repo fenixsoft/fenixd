@@ -417,11 +417,27 @@ export default function PipelineView({
             const pa = e.type === 'dispatch' ? dispatchSource(b.id) : nodeCenter(a);
             const pb = nodeCenter(b);
             if (!pa || !pb) return null;
-            const sameCol = pa.x === pb.x;
-            const x1 = sameCol ? pa.x + COL_W / 2 + 6 : pa.x + (pb.x > pa.x ? COL_W / 2 : -COL_W / 2);
-            const x2 = sameCol ? pb.x + COL_W / 2 + 6 : pb.x + (pb.x > pa.x ? -COL_W / 2 : COL_W / 2);
+            // dispatch 边源点恒取规划列生命周期链节点（x = nodeX('plan') + 8 + TR_W/2），
+            // 与规划列 run 节点中心 x（nodeX('plan') + COL_W/2）恒不相等——按像素
+            // 相等判同列恒为 false、落入跨列分支以半列宽偏移算出 x1 > x2，贝塞尔
+            // 自 tr 节点右侧横穿规划列向左进入 run 节点左缘（箭头朝左形似回卷）。
+            // 锚定规划列的 dispatch 改按逻辑列判同列：tr 右缘（8 + TR_W）已落入
+            // run 节点水平跨度（0..COL_W），横向右指连线不成立，改以 tr 节点中心
+            // x 画列内竖连（tr 下缘 → run 上缘，箭头朝下）；dispatch_anchor 缺省
+            // 回退的 PMEngine 主节点（stage='plan'，中心 x 与目标相等走原同列
+            // 竖连分支）与跨列 dispatch 几何均保持原样
+            const trDispatch =
+              e.type === 'dispatch'
+              && b.stage === 'plan'
+              && b.dispatch_anchor != null
+              && layout.trByKey.get(b.dispatch_anchor) != null;
+            const sameCol = trDispatch || pa.x === pb.x;
+            const x1 = trDispatch ? pa.x : sameCol ? pa.x + COL_W / 2 + 6 : pa.x + (pb.x > pa.x ? COL_W / 2 : -COL_W / 2);
+            const x2 = trDispatch ? pa.x : sameCol ? pb.x + COL_W / 2 + 6 : pb.x + (pb.x > pa.x ? -COL_W / 2 : COL_W / 2);
+            const y1 = trDispatch ? pa.y + TR_H / 2 : pa.y;
+            const y2 = trDispatch ? pb.y - NODE_H / 2 : pb.y;
             const midX = (x1 + x2) / 2;
-            const d = `M ${x1} ${pa.y} C ${midX} ${pa.y}, ${midX} ${pb.y}, ${x2} ${pb.y}`;
+            const d = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
             const isRetry = e.type === 'retry';
             const isApprove = e.type === 'approve';
             return (
