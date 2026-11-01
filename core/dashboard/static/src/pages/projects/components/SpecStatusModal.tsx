@@ -551,7 +551,6 @@ export default function SpecStatusModal({
         </div>
       ),
       okText: '激活',
-      okButtonProps: { type: 'primary' },
       cancelText: '取消',
       onOk: async () => {
         if (pendingActionRef.current) return;

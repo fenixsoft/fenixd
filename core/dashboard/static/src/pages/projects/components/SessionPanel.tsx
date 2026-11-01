@@ -492,6 +492,15 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // 新连接在 onopen 前不算连接态（跨 effect 运行残留的 true 会让 watch 重试
     // 成功路径误判 SSE 已恢复而提前清失败态）
     sseConnectedRef.current = false;
+    // 重建连接即作废旧 cid（code-review item 5df1e12d7eeb）：下方清理函数只
+    // 关旧连接（es.close）不清 cidRef——分面保持激活的项目切换（本 effect 因
+    // project 变化重跑，[active] 切离清态路径不执行）后、新 hello 到达前，
+    // cidRef 仍持旧连接已失效的 cid，此窗口内空态「开始会话」的补注册会拿它
+    // 按新项目名注册 → 服务端按 cid 查不到连接 404 → console.error，污染
+    // no_console_error 断言。置 null 由新 hello 回填（onmessage hello 分支），
+    // afterHello 注册不受影响；不放在清理函数里做：清理按声明序先于 [active]
+    // effect 的清理执行，会抢走后者注销 watch 所需的 cid。
+    cidRef.current = null;
 
     // ── SSE 断流降级（code-review item 2303508d27ff）──
     // onerror 只靠「原生自动重连」不够：非 200 响应（连接数满 503 等）会让

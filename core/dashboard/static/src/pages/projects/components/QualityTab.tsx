@@ -383,10 +383,22 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     ackPendingRef.current = v;
     setAckPending(v);
   };
+  // 409 二次确认等待独立门控（code-review item 416cd96bd32d）：确认弹窗可被
+  // 用户无限期搁置，等待期间 actionPending 已释放（不连带禁用取消/自动修复
+  // 按钮，语义口径见下方 ackPending 注释），以本 ref 同步拦住重入——否则
+  // 确认等待中的再次点击会开出第二个确认框
+  const confirmGateRef = useRef(false);
   // 忽略操作独立 pending 门控（code-review item 717b2251caaa）：行级忽略与
   // 批量「全部忽略」共用该门控——请求进行中禁用/呈 loading 入口按钮并防连点，
   // 避免 Promise.allSettled 期间对同一批 item_id 重复发请求、叠加多条 toast。
   const [ignorePending, setIgnorePending] = useState(false);
+  // 在途态 ref 镜像（code-review item 2920db7991e0，同上方 mark* 范式）：
+  // 入口守卫读同步写入的 ref，state 仅负责渲染（loading/disabled）
+  const ignorePendingRef = useRef(false);
+  const markIgnorePending = (v: boolean) => {
+    ignorePendingRef.current = v;
+    setIgnorePending(v);
+  };
   // 请求序号守卫（code-review item 103bd502bd1e）：loadItems 会被 SSE 回调、
   // 30s 心跳、轮询结束兜底与 filter 变化并发触发，较慢的早期响应会覆盖较新数据。
   const loadSeqRef = useRef(0);
@@ -646,7 +658,8 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 页签/切项目置位哨兵立即停止轮询且不弹提示。
   const handleTrigger = async (scope: 'full' | 'window') => {
     const label = scope === 'full' ? '全库审查' : '当期审查';
-    if (actionPendingRef.current || ackPendingRef.current) return; // pending 门控（code-review item 133cba8a5748）
+    if (actionPendingRef.current || ackPendingRef.current || confirmGateRef.current)
+      return; // pending 门控（code-review item 133cba8a5748 + 416cd96bd32d）
     markActionPending(true);
     ackPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     let wantedAt: string | undefined;
@@ -663,20 +676,33 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           e.code === 'code_review_open_backlog' &&
           scope === 'full'
         ) {
-          const go = await new Promise<boolean>((resolve) => {
-            modal.confirm({
-              title: '上一轮全仓审查可能未消化完',
-              content: e.message,
-              okText: '仍要开始全仓审查',
-              cancelText: '取消',
-              onOk: () => resolve(true),
-              onCancel: () => resolve(false),
+          // 确认等待可长达任意久（code-review item 416cd96bd32d）：先释放
+          // actionPending——其语义是「HTTP 请求进行中」（见 ackPending 注释），
+          // 弹窗搁置期间不得连带禁用取消/自动修复按钮；另以 confirmGateRef
+          // 拦住重入（确认等待中的再次触发会开出第二个确认框），用户确认放行
+          // 后再重新置位发起重发，重发失败仍走外层 catch/finally 复位
+          markActionPending(false);
+          confirmGateRef.current = true;
+          let go: boolean;
+          try {
+            go = await new Promise<boolean>((resolve) => {
+              modal.confirm({
+                title: '上一轮全仓审查可能未消化完',
+                content: e.message,
+                okText: '仍要开始全仓审查',
+                cancelText: '取消',
+                onOk: () => resolve(true),
+                onCancel: () => resolve(false),
+              });
             });
-          });
+          } finally {
+            confirmGateRef.current = false;
+          }
           if (!go) {
             message.info('已取消全仓审查触发');
             return;
           }
+          markActionPending(true);
           res = await triggerCodeReview(project, scope, true);
         } else {
           throw e;
@@ -1084,13 +1110,13 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 用 Promise.allSettled 并发跑完整批，不因单条失败中断其余；结束后统一
   // 提示成功/失败计数并刷新列表（不做逐条 toast，避免刷屏）。
   const handleIgnoreAll = async () => {
-    if (ignorePending) return; // pending 门控防连点（code-review item 717b2251caaa）
+    if (ignorePendingRef.current) return; // pending 门控防连点（code-review item 717b2251caaa，经 ref 镜像读）
     const targets = items.filter((it) => selectedKeys.includes(it.item_id) && it.status === 'open');
     if (targets.length === 0) {
       message.warning('选中条目中没有可忽略的 open 问题');
       return;
     }
-    setIgnorePending(true);
+    markIgnorePending(true);
     try {
       const results = await Promise.allSettled(
         targets.map((it) => setCodeReviewItemStatus(project, it.item_id, 'ignored')),
@@ -1109,7 +1135,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 是最新值，loadItems 的 seq 过期守卫拦不住。
       void loadItemsRef.current();
     } finally {
-      setIgnorePending(false);
+      markIgnorePending(false);
     }
   };
 
