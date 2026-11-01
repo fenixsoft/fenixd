@@ -58,7 +58,7 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'arbiter', label: PAGE_LABELS.arbiter },
 ];
 
-  // 作用域 Select 的值编码：'user' 或 'project:<name>'
+// 作用域 Select 的值编码：'user' 或 'project:<name>'
 const USER_SCOPE = 'user';
 
 // 仅项目级存在的页签：切回用户级作用域时若停留在这些页签上，菜单项会消失、

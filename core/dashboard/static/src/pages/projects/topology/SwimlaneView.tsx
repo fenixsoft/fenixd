@@ -81,11 +81,11 @@ export default function SwimlaneView({
     );
   }
 
-  const { t0, t1, contentW, x, blocks, marks, arrows } = model;
+  const { t0, t1, contentW, x, blocks, marks, arrows, unknownLaneCount } = model;
   const svgH = HEADER_H + LANE_ORDER.length * LANE_H + 12;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
+    <div style={{ position: 'relative', display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
       {/* 泳道标签列（固定宽度，随外层滚动保持可见） */}
       <svg width={LABEL_W} height={svgH} style={{ flex: '0 0 auto', display: 'block' }}>
         {LANE_ORDER.map((lane, li) => (
@@ -241,6 +241,28 @@ export default function SwimlaneView({
           );
         })}
       </svg>
+
+      {/* 未知泳道兜底计数提示（与 PipelineView unknownStageCount 同源同款防线：
+          色块已显式跳过，计数呈现告知用户而非静默消失） */}
+      {unknownLaneCount > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 8,
+            bottom: 8,
+            zIndex: 30,
+            border: '1px solid rgba(250, 140, 22, 0.45)',
+            background: 'rgba(8, 18, 34, 0.9)',
+            color: '#fa8c16',
+            fontSize: 11,
+            lineHeight: '18px',
+            borderRadius: 4,
+            padding: '0 7px',
+          }}
+        >
+          {unknownLaneCount} 个未知泳道节点未展示
+        </div>
+      )}
     </div>
   );
 }
@@ -273,6 +295,7 @@ interface SwimModel {
   marks: Mark[];
   userMarks: { x: number; label: string }[];
   arrows: { d: string }[];
+  unknownLaneCount: number;
 }
 
 function buildModel(data: SpecTopology): SwimModel | null {
@@ -331,9 +354,16 @@ function buildModel(data: SpecTopology): SwimModel | null {
     else perLane.set(lane, [item]);
   }
   const blocks: Block[] = [];
+  // 未知 lane 兜底（与 PipelineView unknownStageCount 同源防线）：后端扩充泳道
+  // 而前端 LANE_ORDER 未跟上时显式跳过整组色块，避免 indexOf 返回 -1 静默丢节点；
+  // 跳过节点数由计数提示兜底呈现（计数口径=节点数，与 PipelineView 一致）
+  let unknownLaneCount = 0;
   for (const [lane, items] of perLane) {
     const laneIdx = LANE_ORDER.indexOf(lane as never);
-    if (laneIdx < 0) continue;
+    if (laneIdx < 0) {
+      unknownLaneCount += items.length;
+      continue;
+    }
     const rows = assignRows(items);
     items.forEach((it, i) => {
       const n = it.node;
@@ -383,5 +413,5 @@ function buildModel(data: SpecTopology): SwimModel | null {
     });
   }
 
-  return { t0, t1, spanS, contentW, x, ticks, blocks, marks, userMarks, arrows };
+  return { t0, t1, spanS, contentW, x, ticks, blocks, marks, userMarks, arrows, unknownLaneCount };
 }
