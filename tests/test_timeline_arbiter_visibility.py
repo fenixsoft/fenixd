@@ -85,7 +85,7 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_ledger(self, entries: list) -> None:
+    def _seed_ledger(self, entries: list) -> None:
         (self.root / ".fenix" / "arbiter_ledger.jsonl").write_text(
             "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n",
             encoding="utf-8",
@@ -107,7 +107,7 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
 
         rid = "arbiter-demo-1793464000"
         _run_file(self.root, rid, "2026-11-01T08:00:00+00:00")
-        self._write_ledger(
+        self._seed_ledger(
             [
                 _ledger_entry(
                     rid,
@@ -136,7 +136,7 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
 
         rid = "arbiter-demo-1793464001"
         _run_file(self.root, rid, "2026-11-01T08:01:00+00:00", outcome="error")
-        self._write_ledger(
+        self._seed_ledger(
             [_ledger_entry(rid, "escalation", "2026-11-01T09:01:00+00:00",
                            action_or_upgrade="需人工审批重启 daemon")]
         )
@@ -151,7 +151,7 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
 
         rid = "arbiter-demo-1793464002"
         _run_file(self.root, rid, "2026-11-01T08:02:00+00:00")
-        self._write_ledger(
+        self._seed_ledger(
             [
                 _ledger_entry(None, "spec-proposed", "2026-11-01T09:02:00+00:00"),
                 _ledger_entry(rid, "dead-man", "2026-11-01T09:03:00+00:00"),
@@ -202,7 +202,7 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
 
         rid = "arbiter-demo-1793464005"
         _run_file(self.root, rid, "2026-11-01T08:05:00+00:00")
-        self._write_ledger(
+        self._seed_ledger(
             [
                 _ledger_entry(rid, "disposition", "2026-11-01T09:06:00+00:00",
                               root_cause="旧条目"),
@@ -225,7 +225,7 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
         impl_rid = "impl-demo-1793464000"
         _run_file(self.root, arb_rid, "2026-11-01T08:06:00+00:00")
         _run_file(self.root, impl_rid, "2026-11-01T07:00:00+00:00")
-        self._write_ledger(
+        self._seed_ledger(
             [
                 _ledger_entry(arb_rid, "disposition", "2026-11-01T09:07:00+00:00"),
                 _ledger_entry(impl_rid, "escalation", "2026-11-01T09:08:00+00:00"),
