@@ -688,6 +688,10 @@ export default function ClaudeOutputPane({
         width={880}
         // antd v6 Modal 无 data-testid 透传面：定位钩子用 rootClassName
         rootClassName="prompt-modal-root"
+        // 关闭即卸载内容（add-run-prompt-viewer 3.3 spec 字面口径）：antd 缺省
+        // 隐藏后保留子树，切 run / 重开易串显旧内容——强制隐藏即卸载，配合
+        // closePrompt 的状态清零双保险
+        destroyOnHidden
         footer={[
           <Typography.Text key="prompt-count" type="secondary" style={{ float: 'left', fontSize: 12, lineHeight: '24px' }} data-testid="prompt-count">
             共 {(promptData?.prompt ?? '').length.toLocaleString()} 字符
