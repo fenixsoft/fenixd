@@ -58,6 +58,9 @@ from core.agent_runner.harness.one_shot import (
 # 形态常量；其 agent 车道瞬态收窄分类语义不随导入迁移——蒸馏车道仅在非零
 # 退出分支对 stderr 做裸子串判别，不改该常量任何语义）。
 from core.agent_runner.provider_circuit import UNRECOGNIZED_MODEL_TEXT_PATTERNS
+# add-distill-run-artifacts 1.1：蒸馏批 run 产物行追加复用既有原语（O_APPEND
+# 单行原子性与 \udXXX UTF-8 预清洗防御同口径），MUST NOT 手写 open("a") 文本追加。
+from core.agent_runner.run_files import append_run_error, append_run_line
 from core.knowledge_backfill import (
     append_todo_line,
     atomic_write_text,
@@ -1473,6 +1476,106 @@ def _pending_ledger_lock(proot: Path):
             fh.close()
 
 
+# ── 蒸馏批 run 产物（add-distill-run-artifacts 1.1）─────────────────────
+# 一批 = 一个 run（对齐「1 run = 1 车道派发」口径）：批开始（首个 spawn 前）
+# 在 .fenix/runs/ 建产物写开始事件行，批收尾按批结果写终态行（result/error）。
+# 合成事件流形态（design D1 备选 B）：spawn stdout/stderr 保持裸文本不改诊断
+# 摘要语义，读侧 classify_run 只看末行 type，合成行与原生行在读侧完全等价。
+# 全链 fail-open（design D2 三道防线）：产物创建/事件行追加全吞 OSError，
+# 终态行收口自身不抛——蒸馏结果与台账行为与无产物形态完全一致，蒸馏的正确性
+# 优先级恒高于观测。单 worker 线程逐批消费，单写者无交错。
+
+
+def _distill_run_artifact_open(proot: Path, archived_names: list) -> "Path | None":
+    """创建蒸馏批 run 产物并写开始事件行；OSError fail-open 返回 None。
+
+    run_id = ``knowledge-distiller-<首归档名>-<int(time.time())>``：一批多
+    归档时中段取首归档名（人类可读溯源）、批内全名单进开始行 ``archived``
+    字段数组；归档目录名自带日期前缀含点号，run_id 白名单
+    ``run_files._RUN_ID_RE``（``[A-Za-z0-9._-]``）允许，合法。
+    """
+    run_file = (
+        proot
+        / ".fenix"
+        / "runs"
+        / f"knowledge-distiller-{archived_names[0]}-{int(time.time())}.jsonl"
+    )
+    try:
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        run_file.touch(exist_ok=True)
+        append_run_line(
+            run_file,
+            {
+                "type": "started",
+                "archived": list(archived_names),
+                "rounds": 0,
+                "timestamp": now_local().isoformat(timespec="seconds"),
+            },
+        )
+    except OSError as e:  # 与 runner.py run_file.touch 既有防御口径一致
+        logger.warning("knowledge-distill run 产物创建失败（fail-open）: %s", e)
+        return None
+    return run_file
+
+
+def _distill_run_artifact_round(
+    run_file: "Path | None", rounds: int, ok: bool, violations: int
+) -> None:
+    """批内单轮 spawn 收尾追加 round 事件行（产物行数随修正轮数递增）。
+
+    非终态行：daemon 中途断尾时读侧按末行非终态 + mtime 停更 stale 兜底
+    （design D2 防线 3）；正常路径由终态行收口，无 stale 窗口。
+    """
+    if run_file is None:
+        return
+    try:
+        append_run_line(
+            run_file,
+            {
+                "type": "round",
+                "rounds": rounds,
+                "ok": bool(ok),
+                "violations": int(violations),
+                "timestamp": now_local().isoformat(timespec="seconds"),
+            },
+        )
+    except OSError as e:
+        logger.warning("knowledge-distill run 产物轮次行写入失败（fail-open）: %s", e)
+
+
+def _distill_run_artifact_close(run_file: "Path | None", result: dict) -> None:
+    """按批结果写终态行（ok→``result`` / 其余→``error`` 附 reason 摘要）。
+
+    四个 return 路径（成功/失败 give_up/提交失败滞留/校验违规放弃）统一在此
+    收口（design D1：不逐点插桩）；终态行写入自身 MUST NOT 抛（design D2
+    防线 2）——写失败静默放弃产物，蒸馏 result 照常返回。
+    """
+    if run_file is None:
+        return
+    try:
+        if result.get("ok"):
+            append_run_line(
+                run_file,
+                {
+                    "type": "result",
+                    "names": result.get("names"),
+                    "commit": result.get("commit"),
+                    "rounds": result.get("rounds"),
+                    "timestamp": now_local().isoformat(timespec="seconds"),
+                },
+            )
+        else:
+            append_run_error(
+                run_file,
+                str(result.get("error") or "蒸馏批失败（无错误摘要）"),
+                exit_code=1,
+            )
+    except Exception as e:  # noqa: BLE001 — finally 收口不抛，写失败放弃产物
+        logger.warning(
+            "knowledge-distill run 产物终态行写入失败（fail-open）: %s", e
+        )
+
+
 class DistillManager:
     """蒸馏 run 管理器（进程内单例）。
 
@@ -1648,6 +1751,34 @@ class DistillManager:
 
     # ── 一批蒸馏：run → 校验 → 修正（≤2 轮）→ 提交/放弃 ─────────────
     def _run_batch(self, proot: Path, archived_names: list) -> dict:
+        # add-distill-run-artifacts 1.1：批生命周期产物包装——批开始（首个
+        # spawn 前）建产物写开始行；批唯一生命周期入口（_worker 与 pending
+        # 台账恢复重派路径都汇聚于此），四个 return 路径与异常路径统一经
+        # finally 收口终态行（design D1 不逐点插桩）。fail-open：产物缺失/
+        # 写失败不影响蒸馏主流程（_distill_run_artifact_* 全吞 OSError）。
+        run_file = _distill_run_artifact_open(proot, archived_names)
+        result: dict | None = None
+        try:
+            result = self._run_batch_core(proot, archived_names, run_file)
+            return result
+        except BaseException as exc:  # noqa: BLE001 — 异常也落终态行后原样上抛
+            # worker 层吞单批异常并登 todo.md 台账；此处只为产物补 error 终态
+            # 行（断尾由读侧 stale 兜底，正常异常路径终态行照写不留 stale 窗口）。
+            result = {
+                "ok": False,
+                "names": ", ".join(archived_names),
+                "rounds": 0,
+                "commit": None,
+                "error": f"批执行异常: {exc}",
+            }
+            raise
+        finally:
+            if result is not None:
+                _distill_run_artifact_close(run_file, result)
+
+    def _run_batch_core(
+        self, proot: Path, archived_names: list, run_file: "Path | None"
+    ) -> dict:
         names = ", ".join(archived_names)
         prompt = build_distill_prompt(proot, archived_names)
         violations = None
@@ -1671,6 +1802,11 @@ class DistillManager:
                 )
             status_before = _git_status_paths(proot)
             ok, err = self._spawn_and_wait(proot, prompt)
+            # add-distill-run-artifacts 1.1：批内单轮收尾 round 行（修正轮是
+            # 同一派发的内部重试，不另开产物；产物行数随修正轮数递增）。
+            _distill_run_artifact_round(
+                run_file, result["rounds"], ok, len(violations) if violations else 0
+            )
             if not ok:
                 result["error"] = err
                 self._give_up(proot, archived_names, f"run 失败: {err}", before=run_baseline)

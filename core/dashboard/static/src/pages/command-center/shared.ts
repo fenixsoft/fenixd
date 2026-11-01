@@ -169,6 +169,8 @@ export const LANE_LABELS: Record<string, string> = {
   'self-review': '自省',
   administrator: '运维管理',
   evolution: '自改进',
+  // add-distill-run-artifacts 3.2：蒸馏车道收编运营线（后端 ROSTER 同步追加）
+  'knowledge-distiller': '知识蒸馏',
   ocr: 'OCR 识别',
 };
 

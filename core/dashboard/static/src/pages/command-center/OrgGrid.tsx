@@ -28,6 +28,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, Input, Popover } from 'antd';
 import {
   BulbOutlined,
+  BookOutlined,
   BugOutlined,
   CheckCircleOutlined,
   CodeOutlined,
@@ -104,6 +105,9 @@ const LANE_ICONS: Record<string, typeof CodeOutlined> = {
   'self-review': EyeOutlined,
   administrator: SettingOutlined,
   evolution: RiseOutlined,
+  // add-distill-run-artifacts 3.2：蒸馏产出知识资产页，BookOutlined 语义贴切
+  // （@ant-design/icons 6.3.2 已核实存在；花名册内车道不落 FileUnknownOutlined 兜底）
+  'knowledge-distiller': BookOutlined,
   ocr: FileTextOutlined,
 };
 
