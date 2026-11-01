@@ -57,6 +57,11 @@ import {
 const screenshotUrl = (project: string, spec: string, file: string) =>
   `/screenshots/${encodeURIComponent(project)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`;
 
+// remarkPlugins 提为模块级常量（code-review item 25305c3b66d9，比照 SpecDocModal
+// SPEC_DOC_REMARK_PLUGINS 先例）：验证结论/任务背景描述两处 Markdown 共用同一
+// 数组标识，避免 SSE 驱动的高频重渲染每帧重建数组触发整篇重新 parse
+const DETAIL_REMARK_PLUGINS = [remarkGfm];
+
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
 // 避免与 AntD Tag 的配色语义重复；产品Bug>0 → error，环境问题>0 → warning，其余 → success。
@@ -295,7 +300,7 @@ function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']>
       )}
       {verdict.conclusion && (
         <div style={{ marginBottom: 0 }}>
-          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          <Markdown remarkPlugins={DETAIL_REMARK_PLUGINS} components={markdownComponents}>
             {verdict.conclusion}
           </Markdown>
         </div>
@@ -589,6 +594,10 @@ export default function SpecDetailPage() {
   // 已清除的信息条写回。以 ref 提升到组件作用域，两类写入共享同一防回跳守卫
   // （code-review item bb989e8b9dff）
   const applyDetailRef = useRef<(data: SpecDetail) => void>(() => {});
+  // 告警「清除」在飞防重守卫（code-review item 03dafe97efab，比照 SessionPanel
+  // sendingRef 同帧原子短路口径）：网络往返窗口内连点/回车只放行首个调用，
+  // 不并发重复 markAlertHandled、不多次 loadSpecAlerts
+  const markHandledInFlightRef = useRef(false);
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -957,13 +966,19 @@ export default function SpecDetailPage() {
 
   // 格式化函数见 @/utils/tokens（fmtMillions / fmtInputTokens）
 
-  // 告警标记人工已处理（同 overview 横幅）；成功后刷新本 SPEC 告警
+  // 告警标记人工已处理（同 overview 横幅）；成功后刷新本 SPEC 告警。
+  // 在飞即短路（markHandledInFlightRef 同帧原子判断+置位，code-review item
+  // 03dafe97efab），finally 复位后仍照常刷新一次告警列表
   const handleMarkAlertHandled = async (a: AlertItem) => {
+    if (markHandledInFlightRef.current) return;
+    markHandledInFlightRef.current = true;
     try {
       await markAlertHandled(a.project, a.id);
       message.success('已标记处理');
     } catch (err) {
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      markHandledInFlightRef.current = false;
     }
     loadSpecAlerts();
   };
@@ -1273,7 +1288,9 @@ export default function SpecDetailPage() {
                           height={100}
                           style={{
                             objectFit: 'cover',
-                            border: '1px solid #d9d9d9',
+                            // 硬编码浅色边框随主题 token（code-review item 99c497187038，
+                            // 同 FilteredFailuresBlock 口径）
+                            border: `1px solid ${token.colorBorderSecondary}`,
                             borderRadius: 4,
                           }}
                           preview={{ mask: '点击预览' }}
@@ -1346,7 +1363,9 @@ export default function SpecDetailPage() {
                       height={100}
                       style={{
                         objectFit: 'cover',
-                        border: '1px solid #d9d9d9',
+                        // 硬编码浅色边框随主题 token（code-review item 99c497187038，
+                        // 同 FilteredFailuresBlock 口径）
+                        border: `1px solid ${token.colorBorderSecondary}`,
                         borderRadius: 4,
                         cursor: 'pointer',
                       }}
@@ -1665,7 +1684,7 @@ export default function SpecDetailPage() {
                   marginBottom: 10,
                 }}
               >
-                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                <Markdown remarkPlugins={DETAIL_REMARK_PLUGINS} components={markdownComponents}>
                   {proposalWhy}
                 </Markdown>
               </div>

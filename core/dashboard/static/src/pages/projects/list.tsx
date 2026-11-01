@@ -83,6 +83,11 @@ const PATCH_COALESCE_MS = 1000;
 // 搜索/筛选输入防抖
 const SEARCH_DEBOUNCE_MS = 300;
 
+// remarkPlugins 提为模块级常量（code-review item eb6fed2eec3a，比照 SpecDocModal
+// SPEC_DOC_REMARK_PLUGINS 先例）：名称列/验证列两处 Markdown 共用同一数组标识，
+// 避免 SSE 增量 patch / 心跳整表重渲染下每单元格重建数组触发整篇重新 parse
+const LIST_REMARK_PLUGINS = [remarkGfm];
+
 // add-spec-review-gate D8（code-review item 1b64add9823d）：评审 blocked 前缀
 // 清单——与后端 re_review 白名单（core/pm_engine/spec_review.py
 // SpecReviewManager.re_review）逐字同源；specMenuItems 菜单判据与
@@ -232,13 +237,19 @@ function useHoverFetch<T>(fetcher: () => Promise<T | null>) {
     // fetch。清理口径与 onLeave / 卸载路径一致。
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      void fetcher().then((v) => {
-        if (!aliveRef.current || !hoveredRef.current) return;
-        if (v) {
-          setValue(v);
-          setOpen(true);
-        }
-      });
+      // fetcher 错误语义自洽（code-review item 6795829c24e2）：失败静默不弹。
+      // 现状两个消费方均内部吞错返回 null 无触发路径，此处防御后续接入会
+      // reject 的取数函数产生 unhandled rejection 污染 no_console_error 断言
+      void fetcher().then(
+        (v) => {
+          if (!aliveRef.current || !hoveredRef.current) return;
+          if (v) {
+            setValue(v);
+            setOpen(true);
+          }
+        },
+        () => {},
+      );
     }, 200);
   };
   const onLeave = () => {
@@ -269,7 +280,7 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
       placement="topLeft"
       content={
         <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
-          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{why}</Markdown>
+          <Markdown remarkPlugins={LIST_REMARK_PLUGINS} components={markdownComponents}>{why}</Markdown>
         </div>
       }
     >
@@ -364,7 +375,7 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
             <div style={{ whiteSpace: 'pre-wrap' }}>{verdict.status_detail}</div>
           ) : null}
           {verdict?.conclusion ? (
-            <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            <Markdown remarkPlugins={LIST_REMARK_PLUGINS} components={markdownComponents}>
               {verdict.conclusion}
             </Markdown>
           ) : null}
