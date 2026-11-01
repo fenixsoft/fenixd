@@ -629,6 +629,10 @@ class TestProposalMaterialization:
         spec_dir = tmp_path / "spec" / "changes" / added[0]
         proposal = spec_dir / "proposal.md"
         assert proposal.exists(), f"提案未物化目录: {spec_dir}"
+        # 脚手架复用原生生成器：.spec.yaml 必在（schema/created 同源，
+        # 缺它=脚手架不完整——fenix-new §5 补写纪律对齐）
+        meta = (spec_dir / ".spec.yaml").read_text(encoding="utf-8")
+        assert "schema: spec-driven" in meta and "created:" in meta
         text = proposal.read_text(encoding="utf-8")
         assert "arbiter" in text and "r1" in text  # 来源可追溯
         assert "schema 自检" in text or "schema selfcheck" in text  # rationale 入文

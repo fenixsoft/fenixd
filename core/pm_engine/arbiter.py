@@ -1370,14 +1370,17 @@ class ArbiterLane:
         """把提案物化为 spec/changes/<name>/proposal.md（对齐 evolution 立项范式：
         先物化并提交目录，后 add_spec——裸 STATE 注册必产幽灵条目）。
 
-        proposal.md 为最小诚实成文（Why=rationale、来源=触发签名/run_id），
-        无 tasks.md/specs——晋升 lint 会拦住自动晋升，条目停 drafted 待人工
-        成文补全（design「落 drafted 即止」语义在本仓 auto-promote 配置下的
-        落地形态）。重放幂等：proposal.md 已存在即跳过。物化后 best-effort
-        单目录提交（对齐 fenix-new spec hook / admin 主树 spec 目录提交先例），
-        提交失败仅 WARNING 不阻断（未跟踪目录不干扰 STATE 语义）。
+        脚手架复用原生生成器 ``core.spec_gen.new_change``（名称校验 + .spec.yaml
+        同源，2026-11-01 补：自 mkdir 缺 .spec.yaml 脚手架不完整）。proposal.md
+        为最小诚实成文（Why=rationale、来源=触发签名/run_id），无 tasks.md/
+        specs——晋升 lint 会拦住自动晋升，条目停 drafted 待人工成文补全
+        （design「落 drafted 即止」语义在本仓 auto-promote 配置下的落地形态）。
+        重放幂等：proposal.md 已存在即跳过。物化后 best-effort 单目录提交
+        （对齐 fenix-new spec hook / admin 主树 spec 目录提交先例），提交失败
+        仅 WARNING 不阻断（未跟踪目录不干扰 STATE 语义）。
         """
         from core.pm_engine.verification.serving import _spec_name_path_error
+        from core.spec_gen import new_change
 
         path_err = _spec_name_path_error(spec_name)
         if path_err:
@@ -1386,7 +1389,14 @@ class ArbiterLane:
         proposal_path = spec_dir / "proposal.md"
         if proposal_path.exists():
             return  # 重放幂等
-        spec_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            new_change(Path(self.project_root), spec_name)
+        except ValueError:
+            if not spec_dir.exists():
+                raise  # 非重名错误（名称非法等）原样抛出
+            # 重名但目录在且无 proposal.md：继续物化（new_change 判重失败
+            # 但实体目录存在的窗口形态，与上方 exists 短路互补）
+            spec_dir.mkdir(parents=True, exist_ok=True)
         created = datetime.now(timezone.utc).isoformat()
         proposal_path.write_text(
             "# " + topic + "\n\n"
