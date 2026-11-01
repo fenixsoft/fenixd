@@ -47,9 +47,11 @@ class TestSystemAdminReadBack(unittest.TestCase):
                 "bug_repair_mode": "inplace",
                 # evo-stuck-signal-hygiene D4：stuck 处置后静默期默认 120 分钟
                 "stuck_silence_minutes": 120,
-                # add-adjudication-alert-narrative：叙事三键缺省（回显白名单）
+                # add-adjudication-alert-narrative：叙事三键缺省（回显白名单；
+                # timeout 经 _ADMIN_DEFAULTS 引
+                # core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS 单源 180）
                 "narrative_enabled": True,
-                "narrative_timeout_seconds": 60,
+                "narrative_timeout_seconds": 180,
                 "narrative_model": "",
                 # add-alert-self-heal-marking 5.2：自愈安静窗口缺省 1440 分钟
                 # （与 _ADMIN_DEFAULTS / ConfigLoader.get_admin_config 同源）

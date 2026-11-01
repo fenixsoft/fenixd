@@ -10,7 +10,9 @@ api_runner.py — ApiRunner：httpx 驱动的 API 场景执行（spec verify-run
 响应捕获：步骤 ``as`` 命名、断言 ``response`` 字段引用（缺省=最近一次），
 支撑多请求流（create→get→delete）。每个 http_request 捕获
 ``{status, headers, body, json, latency_ms}``；sse_connect 捕获
-``{type: "sse", events, duration}``。证据 64KB 截断纪律与 CLI 同源。
+``{type: "sse", events, duration}``。latency_ms 口径＝请求发起到响应体
+全部下载完成（含建连与传输时长，见 http_request 计时点注释），非纯
+服务器处理延迟。证据 64KB 截断纪律与 CLI 同源。
 
 连接失败类（httpx.ConnectError 等）＝环境候选：不判产品缺陷，交由引擎
 环境门对契约 base_url 执行就绪探针、探针确认失联后降级 blocked-env。
@@ -401,6 +403,12 @@ class ApiRunner(VerifyRunner):
                     or getattr(resp, "encoding", None)
                     or "utf-8"
                 )
+                # latency_ms 计时口径（code-review item 2b2865714191）：t0 在
+                # client.stream 发起前取、本计时点在 aiter_bytes 块式读入结束后，
+                # 故该值＝建连+服务器处理+完整响应体传输的总时长，并非纯服务器
+                # 处理延迟。大响应体/慢速下载端点按「服务器延迟」语义设的
+                # latency_under 上限会因下载波动非确定性失败——场景作者应按
+                # 本口径放宽上限（词表 help 已注明）。
                 latency_ms = int((time.monotonic() - t0) * 1000)
         except httpx.ConnectError as e:
             return {

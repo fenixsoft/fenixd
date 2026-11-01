@@ -163,7 +163,7 @@ class RecoveryWatch:
         self._pm = pm  # 门面回引（design D3 规则 3：组件 → 门面 单向）
 
         # 恢复闭环复查（improve-run-lifecycle-governance D6）：
-        # {spec: {"fingerprint", "due", "registered_at", "reason"}}，镜像到
+        # {spec: {"due", "registered_at", "reason"}}，镜像到
         # .fenix/recovery_watch.json，daemon 重启后续查。
         self._recovery_watch: dict = {}
         # 观察项读写互斥（code-review item 1fa5c6b99aad）：check_recovery_watch
@@ -336,7 +336,6 @@ class RecoveryWatch:
             )
             entry = {}
         self._recovery_watch[spec_name] = {
-            "fingerprint": self._pm._spec_fingerprint(entry),
             "due": due,
             "registered_at": time.time(),
             # 顺延有界性起算点（recovery-watch-status-recheck D4）= 首个 due

@@ -3517,6 +3517,16 @@ class PMEngine:
                     "回退默认退避 [300, 900]",
                 )
                 backoff_seconds = [300, 900]
+        else:
+            # 形式防御留痕（code-review item 98434a366233，与上方元素非法分支
+            # 同口径）：非 list（字符串/None 等）或长度不足 2 的配置在此静默
+            # 回退默认退避，会让「形式错误但意图明确」的配置排障时无任何指向
+            # 配置不匹配的线索——WARNING 留痕后沿用默认 [300, 900]。
+            self.logger.warning(
+                "pm_engine",
+                f"pm.push.retry_backoff_seconds 非 list 或长度不足 2 {cfg_backoff}，"
+                "回退默认退避 [300, 900]",
+            )
 
         attempts = self._get_push_retry_count(spec) + 1
         error_base = f"git push failed ({ref}): {error_msg}"
@@ -4104,6 +4114,7 @@ class PMEngine:
 
     # ── Blocker Detection & Health Reporting ───────────────────────
 
+    # [fenix-ignore:c8de4fbf0ad7] 结构性异味非缺陷：方法在 EventBus full-scan 主路径上行为正确，约 500 行大拆分在本批最小改动语境下回归风险大于收益，blocker scan / recovery apply 拆分留待后续 refactor 批次
     def check_blockers(self) -> dict:
         """
         Scan all SPECs for blocking/stuck conditions and generate a health report.

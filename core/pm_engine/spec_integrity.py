@@ -549,8 +549,16 @@ class SpecIntegrityGate:
 
         防重（幂等）：存在任一同 signal_type 未处理升级告警时不再追加
         （对齐 _handle_delivered_no_content 的 ``unhandled_for`` 先例），
-        否则每轮 full_scan（30 分钟周期）重复追加 major 告警。
+        否则每轮 full_scan（30 分钟周期）重复追加 major 告警。配套地，本
+        告警以 ``spec=None`` 哨兵落盘（daemon 级清单型告警无单一归属 spec，
+        清单完整保留在 description/evidence）——``unhandled_for(None, …)``
+        预查只匹配 spec=None 记录，写非 None spec 会使幂等防重永不生效
+        （对齐 admin_monitor restart_failed 先例）。
         """
+        if not reclaimed and not skipped:
+            # 竞态空转（code-review item 9d66dd115abd）：检出后条目被并发
+            # 写者全部移除，零副作用零清单——不发零条目 major 告警
+            return False
         names = [h["spec"] for h in reclaimed] + [str(s) for s in skipped]
         spec_ref = names[0] if len(names) == 1 else ",".join(names)
         try:
@@ -590,8 +598,12 @@ class SpecIntegrityGate:
             f"幽灵条目对账清退：{len(reclaimed)} 条清退 / "
             f"{len(skipped)} 条跳过待人工（{spec_ref}）",
         )
+        # code-review item ff509339a250：spec 哨兵写 None——unhandled_for
+        # (None, …) 幂等预查只匹配 spec=None 记录，写非 None 的 spec_ref
+        # 会使防重永不生效、每轮 full_scan 重复追加（对齐 admin_monitor
+        # restart_failed 先例）；清单完整进 description/evidence。
         self._pm._send_human_escalation_alert(
-            spec_name=spec_ref,
+            spec_name=None,
             signal_type=GHOST_RECLAIM_SIGNAL_TYPE,
             severity="major",
             description=(

@@ -20,7 +20,9 @@ from typing import Any
 # 侧从 scenarios 导入层词表的模式）：各 handler 内硬编码的 layer 是第二
 # 副本，run() 出口统一按词表覆盖（code-review item d2b223e5f4dc），任一侧
 # 调整层归属或新增断言类型时不再静默漂移。
-from .scenarios import WEB_ASSERTION_LAYERS
+# ASSERTIONS_REQUIRING_SELECTOR 同源导入（code-review item 4346bf27eb50）：
+# run() 分派前的 selector 缺参兜底复用该单源集合，不另立类型清单漂移面。
+from .scenarios import ASSERTIONS_REQUIRING_SELECTOR, WEB_ASSERTION_LAYERS
 
 # 第三方 regex 库（环境可用时）为 regex 模式提供 timeout 参数，防灾难性
 # 回溯正则挂起整个验证执行；库缺失时退回 stdlib re（无超时保护）。
@@ -191,6 +193,30 @@ class AssertionRunner:
             handler_name = f"_assert_{a_type}"
             handler = getattr(self, handler_name, None)
             if handler:
+                if a_type in ASSERTIONS_REQUIRING_SELECTOR and not assertion.get(
+                    "selector"
+                ):
+                    # selector 缺参运行期兜底（code-review item 4346bf27eb50）：
+                    # 十余个 handler 直取 a["selector"]，键缺失时 KeyError 落入
+                    # 下方 except 被包成「断言执行异常」类泛化失败，judge 需从
+                    # 异常文本反推是场景漏写 selector；比照 text_match 的
+                    # expected 缺参预检口径，在分派前定向拦截。集合复用
+                    # scenarios 的验收侧单源表，判空 truthiness 与验收侧
+                    # `not a.selector` 同口径（缺失/空串/None 均拦）；仅覆盖
+                    # 确实消费 selector 的类型，text_contains（selector 可选）
+                    # 与 no_console_error 等页面级断言不受影响；词表外新增
+                    # handler 保持既有 KeyError 兜底行为，不引入新风险。
+                    results.append(
+                        {
+                            "type": a_type,
+                            "layer": WEB_ASSERTION_LAYERS.get(a_type, 0),
+                            "selector": assertion.get("selector", ""),
+                            "label": assertion.get("label", ""),
+                            "pass": False,
+                            "error": "缺少 selector 字段",
+                        }
+                    )
+                    continue
                 try:
                     result = await handler(page, assertion)
                     result.setdefault("type", a_type)

@@ -271,11 +271,7 @@ class VerifyEngine:
             more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
             msg = f"场景验收失败（{head}{more}）"
             self.logger.error("verify_engine", msg)
-            self._write_progress(0, len(normalized), msg)
-            report = self._build_report([])
-            report["env_error"] = msg
-            self._save_report(report)
-            return report
+            return self._abort_with_env_error(msg, len(normalized))
 
         # add-verify-parallel-backoff / design D3：降档轮（inconclusive 重验
         # 由 pm_engine 以 `_verify_parallel_override` 覆盖 max_parallel 后置位
@@ -300,11 +296,7 @@ class VerifyEngine:
         if not normalized:
             msg = "场景集为空/全部条目无法解析（无可验证场景）"
             self.logger.error("verify_engine", msg)
-            self._write_progress(0, len(normalized), msg)
-            report = self._build_report([])
-            report["env_error"] = msg
-            self._save_report(report)
-            return report
+            return self._abort_with_env_error(msg, len(normalized))
 
         # ── lazy setup：仅对场景集中实际出现的 kind 执行 ──
         kinds = {s.kind for s in normalized}
@@ -340,11 +332,7 @@ class VerifyEngine:
                 # 与验收失败路径对称：早退也落一条进度，覆盖上一轮残留的
                 # 「验证完成」等陈旧内容，避免仪表盘与当轮实际状态不符
                 # （code-review 6b80ad1277a0）。
-                self._write_progress(0, len(normalized), msg)
-                report = self._build_report([])
-                report["env_error"] = msg
-                self._save_report(report)
-                return report
+                return self._abort_with_env_error(msg, len(normalized))
             setup_done.append(kind)
 
         # 执行起点进度（fix-verify-progress-granularity）：此前首个写点在批次
@@ -933,3 +921,18 @@ class VerifyEngine:
             "verify_engine",
             f"📊 报告已保存: {report_path}",
         )
+
+    def _abort_with_env_error(self, msg: str, total: int) -> dict:
+        """env_error 早退的公共出口：写进度、建报告、落盘并返回。
+
+        验收失败、零场景守卫、Runner setup 失败三处早退共用同一尾部序列
+        （code-review item 9d46aaa98972，同 fs_ops.atomic_write_json 的收敛
+        先例）；各调用点保留差异化日志与 teardown 后改调本方法。total 为
+        本轮场景总数，进度以 0 写入以覆盖上一轮残留内容（code-review
+        6b80ad1277a0）。
+        """
+        self._write_progress(0, total, msg)
+        report = self._build_report([])
+        report["env_error"] = msg
+        self._save_report(report)
+        return report

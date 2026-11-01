@@ -988,7 +988,8 @@ def _run_tail_insights(
     assistant 文本。llm 取最后一个 provider_marker 事件（attempt 启动时写入，
     failover 切换产生多个，取最后 = 实际完成 run 的网关）。usage 取 result 事件
     的 usage 字段（add-model-billing-cost-display D2，成本本地计算数据源；
-    result 是流终态必在尾窗内，无 result → None）。reason 取终态事件的人类
+    result 是流终态必为文件末行、正常落尾窗内，恰跨界/单行超窗被 skip_first
+    丢弃时由全量回读兜底补采，无 result → None）。reason 取终态事件的人类
     可读原因（error 事件的 error 字段 / interrupted、cancelled 事件的 reason
     字段；终态后置不变量保证末行即终态，遍历顺序天然取末行生效），时间轴
     run 节点据此展示失败/中止原因，无终态或成功 run 为空串。只读文件尾部
@@ -1013,6 +1014,7 @@ def _run_tail_insights(
         result_text = last_asst = llm = ""
         usage = None
         reason = ""
+        saw_result = saw_body = False
         for line in lines:
             line = line.strip()
             if not line:
@@ -1033,11 +1035,18 @@ def _run_tail_insights(
             # 一致）
             if not isinstance(t, str):
                 continue
+            # ec3936680967：非终态完整行在窗（body 在场）证明被 skip_first
+            # 丢弃的残段行已在窗内收尾——其后所有行（含末行 result 终态）必
+            # 整行在窗内，result 不可能丢失；丢失只发生在窗内无非终态行时
+            # （见下方全量回读兜底）
+            if t not in _RUN_TERMINAL_STATUS_MAP:
+                saw_body = True
             if t == "provider_marker":
                 m, p = e.get("model"), e.get("provider")
                 if m and p:
                     llm = f"{m}@{p}"
             elif t == "result":
+                saw_result = True
                 rt = e.get("result")
                 if isinstance(rt, str) and rt.strip():
                     result_text = rt.strip()
@@ -1061,9 +1070,29 @@ def _run_tail_insights(
                 # 终态原因：error 事件原因在 error 字段，interrupted/cancelled
                 # 在 reason 字段；末行终态后处理，天然取末行生效
                 reason = str(e.get("error") or e.get("reason") or "").strip()
-        return result_text or last_asst, llm, usage, reason
+        return result_text or last_asst, llm, usage, reason, saw_result, saw_body
 
-    summary, llm, usage, reason = parse_chunk(data, skip_first=size > tail_bytes)
+    summary, llm, usage, reason, saw_result, saw_body = parse_chunk(
+        data, skip_first=size > tail_bytes)
+    # code-review ec3936680967：result 终态行恰跨越 size - tail_bytes 边界或
+    # 单行超窗时，skip_first 丢弃的残段正是该行，summary/usage/reason 整行
+    # 静默丢失——对齐 _read_run_lines 的兜底口径：尾窗既无 result 也无任何
+    # 非终态完整行（证明末行被切在窗口边界之外）时回退一次全量逐行读补采
+    # （正常路径零额外开销；全量读成本以 _read_run_lines 既有先例为准），
+    # 复用 _read_run_lines_full，末 3 条事件覆盖末行 result 与紧随其后的
+    # cancelled（终态后置次序）；llm 由下方 marker 回扫负责，不在此补采
+    if size > tail_bytes and not saw_result and not saw_body:
+        for e in _read_run_lines_full(run_file, 3):
+            t = e.get("type")
+            if t == "result":
+                rt = e.get("result")
+                if isinstance(rt, str) and rt.strip():
+                    summary = rt.strip()
+                u = e.get("usage")
+                if isinstance(u, dict) and u:
+                    usage = u
+            elif t in _RUN_TERMINAL_STATUS_MAP:
+                reason = str(e.get("error") or e.get("reason") or "").strip()
     if not llm and size > tail_bytes:
         chunk = 262144
         floor = max(0, size - tail_bytes - marker_scan_cap)
@@ -1082,7 +1111,7 @@ def _run_tail_insights(
                     # 块末尾，raw + carry 复原整行，避免边界行两侧同时解析
                     # 失败被静默跳过
                     merged = raw + carry
-                    _, llm, _, _ = parse_chunk(merged, skip_first=start > 0)
+                    _, llm, _, _, _, _ = parse_chunk(merged, skip_first=start > 0)
                     # code-review 206a0485a7e8：skip_first 丢弃的 merged 首行
                     # 在 start 恰落行边界时是完整行——中间块尚可靠 carry 于
                     # 下一轮复原重析，末块（start == floor）后无下一轮，

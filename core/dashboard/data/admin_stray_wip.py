@@ -506,7 +506,12 @@ def _gitignore_lock(proot):
     本锁要挡的并发丢写面，不静默降级。
     """
     lock_path = Path(proot) / ".git" / "fenix-gitignore.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # 不主动 mkdir（code-review item 73752e2d42ce）：mkdir(parents=True) 会在
+    # .git 缺失（非 git 检出/路径传错）时凭空造出空 .git 目录再落锁文件，
+    # 与上述「按 OSError 上抛、不静默降级」契约相悖。open() 自身即给出精确
+    # 失败口径：.git 缺失→FileNotFoundError；.git 是文件（worktree gitdir
+    # 链接形态，mkdir 路径下本就以 FileExistsError 失败）→NotADirectoryError
+    # ——均为 OSError 子类，调用方兜底口径不变；.git 是目录→正常落锁文件。
     lf = open(lock_path, "w")
     try:
         fcntl.flock(lf, fcntl.LOCK_EX)
@@ -1092,7 +1097,11 @@ def _stray_manifest_path_escapes(proot, paths) -> list:
             bad.append(p)
             continue
         norm = os.path.normpath(p)
-        if norm == "." or norm.startswith(".."):
+        # 精确判定父级穿越（code-review item 81b87b774ad9）：裸 startswith("..")
+        # 会误伤首段名字本身以 .. 开头的合法路径（如 ..data/config.json），
+        # 使其在 archive/ignore/delete 执行器被永久剔除；其余越界形态由下方
+        # realpath 前缀锚定兜底。
+        if norm == "." or norm == ".." or norm.startswith(".." + os.sep):
             bad.append(p)
             continue
         # realpath 前缀断言：解析后必须仍落在项目根之内（顺带挡住中间目录为

@@ -324,8 +324,10 @@ class VisualDiffer:
                         suffix=f"_r{self.POLLUTION_RECHECK_MAX}",
                     )
                 # 工作副本不留盘（入选内容已回写标准路径+证据目录，
-                # 与重拍循环「未入选轮次文件不留盘」同纪律）
-                recheck_shot.unlink(missing_ok=True)
+                # 与重拍循环「未入选轮次文件不留盘」同纪律）；清理尽力
+                # 而为（code-review item 0f4f42b45dd4）：权限/只读盘等
+                # OSError 记 warning 降级，不穿出掩盖已收敛的复测结果
+                self._unlink_best_effort(recheck_shot, "复测件")
 
                 if not recheck_converged:
                     # 仍污染（或复测未完成）：baseline_rejected 早返回
@@ -511,9 +513,11 @@ class VisualDiffer:
                 # 未入选轮次文件不留盘（入选内容已复制回标准路径）；
                 # 截图/对比中途抛异常（页面崩溃/连接断开）时同样清理
                 # （code-review item fd9393af89ee），异常穿出 compare 后
-                # 轮次命名文件不残留累积占盘
-                retake_shot.unlink(missing_ok=True)
-                retake_diff.unlink(missing_ok=True)
+                # 轮次命名文件不残留累积占盘；清理尽力而为
+                # （code-review item 0f4f42b45dd4）：finally 内 OSError 记
+                # warning 降级，不替换比对轮正常结果或原始异常
+                self._unlink_best_effort(retake_shot, "重拍截图")
+                self._unlink_best_effort(retake_diff, "重拍差异图")
 
         final = _evidence_fields(best)
 
@@ -795,6 +799,18 @@ class VisualDiffer:
             log_fn(f"[visual_diff] {message}")
         except TypeError:
             log_fn("visual_diff", message)
+
+    def _unlink_best_effort(self, path: Path, label: str) -> None:
+        """轮次命名工作文件清理：尽力而为，清理不引入新故障。
+
+        missing_ok 只兜 FileNotFoundError；权限/只读盘等 OSError 记
+        warning 降级（残留文件不影响判定语义，轮次命名文件下轮重拍
+        可复用/覆盖），不穿出 compare 打断验证轮或替换在飞异常。
+        """
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            self._log_warning(f"{label}清理失败（非阻塞）: {e}")
 
     # ── 结果构造（降级路径共用，保证结果形状单一出处）────────────
 

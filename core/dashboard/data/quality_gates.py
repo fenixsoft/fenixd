@@ -138,8 +138,6 @@ def _verify_progress_candidates(project_root, spec_name, spec_status: str, filen
     # [fenix-ignore:f8c475fabe9d] 输入已由 parse_quality_gates 读取入口 strip
     # 归一化（937e5d93817b），脏空白不会漏掉 worktree 优先候选，精确比较不构成状态分歧。
     if spec_status == "implementing":
-        import core.dashboard.data as _facade
-
         wt = _facade.find_implementer_worktree(project_root, spec_name)
         if wt:
             cands.append(

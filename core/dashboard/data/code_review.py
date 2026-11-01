@@ -69,7 +69,17 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
     # 缺失按快照关闭口径解读）。本读侧不做 resolution 归一/回填——存量
     # resolution=None 的历史 resolved 条目按原样透出，由前端按快照关闭口径
     # 解读（存量不回填改写，design 决策 3）。
-    rows = [rec for rec in items.values() if rec.get("status") in wanted]
+    # status 过滤键 str() 归一（code-review item d891ab8e2c3d）：台账行
+    # status 若为不可哈希脏形态（历史/手写行的 list/dict，json.loads 可合法
+    # 产出），裸 ``in`` set 成员测试抛 TypeError 使整个列表端点 500——与
+    # _line_key / severity 归一 / 排序键 str() 同口径的读侧容错。wanted 元素
+    # 生产路径全为 str（{"open"} 字面量或 routes 层 query 解析产物），归一
+    # 只需对读取键做。
+    rows = [
+        rec
+        for rec in items.values()
+        if str(rec.get("status") or "") in wanted
+    ]
     # severity 读侧归一（2026-09-23）：写侧 normalize_severity 只能治愈新写入/
     # upsert 刷新的条目，台账存量漂移行（ocr 透传的 high/medium/low）在本处
     # 统一映射，使排序与前端过滤/色系按四档生效——零数据迁移，漂移行随下次

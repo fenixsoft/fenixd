@@ -170,7 +170,8 @@ def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
         probe_healthy: 该轮验证的环境探针结果（True=实例在线推流正常）。
 
     Returns:
-        有效状态: pass / warning / fail / blocked-env。
+        非 fail 档原样返回（含 error 及未知档位）；仅 fail 候选可能被
+        改判为 blocked-env，否则维持 fail。
     """
     status = scenario_result.get("status", "pass")
     if status != "fail":

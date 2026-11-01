@@ -883,7 +883,9 @@ ASSERTION_REQUIRED_FIELDS: dict = {
         {
             "key": "expected",
             "short": "expected",
-            "help": "毫秒上限",
+            # 口径注明（code-review item 2b2865714191）：latency_ms 含完整
+            # 响应体传输时长，上限须按该口径放宽
+            "help": "毫秒上限（含响应体传输时长）",
             "example": "500",
             "mode": "include_zero",
         },
@@ -1431,12 +1433,27 @@ class TestScenario:
         assertions = d.get("assertions", [])
         if not isinstance(assertions, list):
             assertions = []
+        # 顶层字符串字段归一（code-review item e3d586852810）：description/
+        # visual_baseline 直取原值且 validate_scenario 及 per-kind 校验均不查
+        # 其类型，冻结文件被手工修坏成 dict/数值等非字符串形态可穿透验收：
+        # description 以 dict/数值原样进 report 正文（cli/web/api runner 与
+        # engine 直接回填），visual_baseline 以 repr 串参与基线文件命名污染
+        # 取证路径。口径沿 _parse_resource_group 的顶层可选字符串字段严格
+        # 读法：非 str（含显式 null，原 d.get(…, "") 会透传 None）一律归一
+        # 空串=字段未提供，不制造新验收失败模式；不采用 str(raw) 强转——
+        # repr 串仍会进 report/基线命名，所述危害不消除。
+        description = d.get("description")
+        if not isinstance(description, str):
+            description = ""
+        visual_baseline = d.get("visual_baseline")
+        if not isinstance(visual_baseline, str):
+            visual_baseline = ""
         return cls(
             id=d["id"],
-            description=d.get("description", ""),
+            description=description,
             steps=[TestStep.from_dict(s) for s in steps],
             assertions=[Assertion.from_dict(a) for a in assertions],
-            visual_baseline=d.get("visual_baseline", ""),
+            visual_baseline=visual_baseline,
             # 显式 null 归一空列表（与 env/headers 的 or {} 同款，code-review
             # item 301443cb108c）：None 会存活到 engine 编排期迭代才 TypeError。
             depends_on=d.get("depends_on") or [],

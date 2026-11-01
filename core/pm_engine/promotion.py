@@ -29,7 +29,8 @@ def promote_drafted(
         （调用方须按 next_status 决定 transition 目标再派发；取值由评审门禁判定：
         should_skip_review 判定跳过评审（gates.spec_review_mode / fast-track）→ "ready"，
         否则 → "reviewing"；config 为 None 时不做评审判定，恒 "ready"）
-        {"ok": False, "violations": [...], "error_written": True} — lint 违规，
+        {"ok": False, "violations": [...], "error_written": True} — lint 违规
+        （含 SPEC 目录缺失，见第 1.5 步入口拦截），
         STATE error 已写入
         {"ok": False, "violations": [...], "error_written": False} — lint 违规，
         但写前复查放弃 error 直写：写盘前重读发现 spec 已冻结（冻结现场保留
@@ -47,6 +48,17 @@ def promote_drafted(
     status = entry.get("status", "")
     if status != "drafted":
         return {"ok": False, "reason": f"spec '{spec_name}' status is '{status}', not 'drafted'"}
+
+    # 1.5 SPEC 目录存在性校验（code-review item aea24eef0e8e）：STATE drafted
+    #     条目对应的 SPEC 目录缺失（已删除 / 归档竞态遗留）时，_lint 执行器
+    #     对缺失目录 fail-open 返回空列表，两项晋升门禁空转放行；
+    #     should_skip_review 对目录缺失保守返回 False 仅使其落 reviewing，
+    #     STATE error 无违规可写，人工与看板拿不到「目录已缺失」诊断。
+    #     此处在入口显式判定，缺失时于第 3 步合成一条 lint 违规，交由第 4 步
+    #     既有违规处理（冻结/状态写前复查 + STATE error 直写 + violations
+    #     返回）统一收口，三条调用通道（engine 自动晋升 / CLI promote /
+    #     Dashboard promote_spec）无差别消费，不再空转放行。
+    spec_dir_missing = not (project_root / "spec" / "changes" / spec_name).is_dir()
 
     # 2. 晋升前软化（soften_unsatisfiable_declarations + DisputeAuditStore 审计）
     #    软化编排异常降级 warning（fail-safe，不阻塞晋升流程）
@@ -116,6 +128,13 @@ def promote_drafted(
     # 3. 晋升 lint（deliverables 声明形态校验 + tasks.md 可解析性校验）
     violations = _lint_deliverable_declarations(project_root, spec_name, logger)
     tasks_violations = _lint_tasks_parseable(project_root, spec_name, logger)
+    # 1.5 步判定目录缺失：两项 lint 对缺失目录必返回空（fail-open），此处
+    # 显式合成违规条目交由第 4 步统一处理（写前复查 + error 直写 + violations 返回）
+    if spec_dir_missing:
+        violations = [
+            f"SPEC 目录缺失：spec/changes/{spec_name}/ 不存在"
+            "（STATE 残留或归档竞态遗留），两项晋升 lint 门禁无法执行",
+        ] + list(violations)
 
     # 4. 违规判定：有违规 → 写 STATE error + 返回失败
     if violations or tasks_violations:

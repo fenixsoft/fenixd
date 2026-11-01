@@ -184,7 +184,10 @@ class CliAssertionRunner:
             terminal 输出/文件内容常带首尾空白（如尾换行），strip 更宽容。
         exact_strip=False（json_output）：exact 直接结构相等比较——actual 是
             JSON 子树，可为 int/bool/None/list/dict，字符串化会改变语义
-            （如 5.0 == 5 成立而 "5.0" != "5"），故不做 str() 也不 strip。
+            （如 5.0 == 5 成立而 "5.0" != "5"），故不做 str() 也不 strip；
+            bool 与非 bool（含 int）交叉判不等——bool 是 int 子类，
+            True == 1 会被 == 判等，布尔字段 true→1 的类型回归须显式失败，
+            不属 5.0 == 5 那类数值等价的有意口径。
         contains/regex：actual 为 str 时原样参与（既有调用方传入恒为 str，
             与原 `actual or ""` 兜底等价），非 str（仅 json_output）先 str()
             字符串化（与既有 json_output 行为一致）。
@@ -198,7 +201,10 @@ class CliAssertionRunner:
             if exact_strip:
                 m = (actual or "").strip() == str(expected).strip()
             else:
-                m = actual == expected
+                # bool 交叉拦截：bool 是 int 子类，True == 1 / False == 0 会被
+                # == 判等，布尔语义字段（如 enabled）true→1 的类型回归会被
+                # json_output exact 静默放过——一侧为 bool 另一侧非 bool 即判不等
+                m = actual == expected and isinstance(actual, bool) == isinstance(expected, bool)
         else:
             text = actual if isinstance(actual, str) else str(actual)
             if mode == "regex":
@@ -818,7 +824,7 @@ class CliAssertionRunner:
         # 哨兵区分「路径不存在」与「显式 null」（与 api 侧 _assert_json_path
         # 口径对齐）：expected=null 且路径缺失时 None==None 会假通过
         try:
-            actual = evaluate_json_path(data, path, missing=_MISSING) if path else data
+            actual = evaluate_json_path(data, path, missing=_MISSING)
         except ValueError as e:
             # 路径非法可见化（口径对齐 api 侧 _assert_json_path）：畸形 path
             # （空段/裸引号段/引号未闭合/畸形括号段）按结构化定向失败回显
