@@ -28,8 +28,10 @@
   事件行；写点包 try/OSError pass（容错口径与 throttled-wait 写点一致），无
   车道白名单（所有经 `_run_agent` 的车道全覆盖）
 - [ ] 1.2 权威测试回归并按需更新「首事件/事件集合」类断言：跑
-  `tests/test_run_claude_poll_loop_crash_writes_error_terminal`、
-  `tests/test_characterization_agent_runner.py` 与 prompt_builder 快照测试；
+  `tests/test_daemon_lifecycle_races.py::TestRuntimeDanglingRunSweep::test_run_claude_poll_loop_crash_writes_error_terminal`、
+  `tests/test_characterization_agent_runner.py`、
+  `tests/test_harness_claude_snapshot.py`（锁 argv/env/stdin 快照）与
+  提示词构建相关测试（`tests/test_agent_prompt_files.py` 等）；
   禁止弱化 run_metrics/终态行序断言
 - [ ] 1.3 新增 `tests/test_run_prompt_event.py` 锚定：impl 派发产物含恰一行
   type:"prompt" 且位于首个 CLI 事件之前；写入 OSError 不阻断派发（monkeypatch
@@ -71,7 +73,9 @@
 ## 4. 收尾验证
 
 - [ ] 4.1 后端相关测试全量回归（`python3 -m pytest tests/test_run_prompt_event.py
-  tests/test_run_claude_poll_loop_crash_writes_error_terminal
+  tests/test_daemon_lifecycle_races.py
   tests/test_characterization_agent_runner.py tests/test_run_artifact_retention.py`
-  及 admin_monitor 既有文本规则测试）；汇总前后端验证结果与权威测试断言更新
-  清单
+  及 admin_monitor 既有测试 `tests/test_admin_monitor_spec_amendment.py`）；
+  其中 run_metrics/终态行序契约锚点为
+  `TestRuntimeDanglingRunSweep::test_run_claude_poll_loop_crash_writes_error_terminal`；
+  汇总前后端验证结果与权威测试断言更新清单

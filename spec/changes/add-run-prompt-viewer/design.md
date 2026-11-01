@@ -34,9 +34,11 @@ run 产物 `.fenix/runs/<run_id>.jsonl` 是 CLI stream-json 事件 + daemon 自�
   写自有行」的成熟先例。total_events 计数 +1（「共 M 条事件」含 prompt 行）
   属可接受展示噪声，不做剔除特判。
 - **行序契约**：权威测试 `test_run_claude_poll_loop_crash_writes_error_terminal`
+  （tests/test_daemon_lifecycle_races.py 内
+  TestRuntimeDanglingRunSweep 的测试方法，非独立测试文件）
   锁定的是 run_metrics/终态行次序，prompt 行写在 spawn 前（流头部、任何 CLI
-  事件之前），不触碰被锁区间；实现后必须跑该权威测试 + prompt_builder 快照
-  测试确认。
+  事件之前），不触碰被锁区间；实现后必须跑该权威测试 + harness spawn 快照测试
+  `tests/test_harness_claude_snapshot.py`（锁 argv/env/stdin 金样本）确认。
 
 ### D2. 写点：`_run_agent` 内 run_file 解析后、Popen 前（runner.py）
 
@@ -87,8 +89,10 @@ run 产物 `.fenix/runs/<run_id>.jsonl` 是 CLI stream-json 事件 + daemon 自�
   尾读窗口（64KB）与流式扫描不受影响（prompt 行在流头部）。接受。
 - **[行序测试]** 既有权威测试若断言「首个事件」形态（如 init 前无行）可能
   需要更新断言 —— 实现时跑
-  `tests/test_run_claude_poll_loop_crash_writes_error_terminal`、
-  `tests/test_characterization_agent_runner.py`、prompt_builder 快照测试，
+  `tests/test_daemon_lifecycle_races.py::TestRuntimeDanglingRunSweep::test_run_claude_poll_loop_crash_writes_error_terminal`、
+  `tests/test_characterization_agent_runner.py`、
+  `tests/test_harness_claude_snapshot.py` 与提示词构建相关测试
+  （`tests/test_agent_prompt_files.py` 等），
   仅允许更新「事件集合/首行」类断言，MUST NOT 弱化 run_metrics/终态行序断言。
 - **[admin_monitor 文本规则]** 自有事件行进入转录后，文本规则扫描按行 JSON
   解析分发，prompt 正文理论上可能命中规则关键词 —— 现状 `provider_marker`/

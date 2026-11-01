@@ -32,9 +32,10 @@
 
 ### 受影响既有能力
 
-- 无活跃既有能力受影响。归档能力 `run-stream-noise-reduction`（2026-09-27 归档）
-  的静默名单将新增 `prompt` 一项，该扩展由本 change 的 run-prompt-viewer 能力
-  自带 Requirement 承载。
+- 无活跃既有能力受影响。归档能力 `add-run-record-readability`（2026-09-27 归档，
+  spec/archive/2026-09-27-add-run-record-readability；其 1.5 交付引入
+  runEvents.ts 的 SILENT_KINDS 静默名单）将新增 `prompt` 一项，该扩展由本
+  change 的 run-prompt-viewer 能力自带 Requirement 承载。
 
 ## Impact
 
