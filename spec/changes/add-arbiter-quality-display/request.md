@@ -1,0 +1,1 @@
+1.在指挥中心中，arbiter与judge的agent合并显示（均显示未质量裁决Agent）。2.在SPEC运行时间轴中，要能看见arbiter的处理记录
