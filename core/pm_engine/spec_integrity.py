@@ -36,7 +36,10 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
 
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
+
+from core.timelib import parse_ts
 
 # 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
 # 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
@@ -51,6 +54,23 @@ SPEC_DELIVERED_NO_CONTENT_SIGNAL = "spec_delivered_no_content"
 # 写入 spec/changes/<spec>/verification-report.md）。它是验证产物而非 spec
 # 起草内容，故只作分类凭据、不进 spec_has_content 认可名单（见其注释）。
 _DELIVERED_REPORT_FILENAME = "verification-report.md"
+
+# ── 存量幽灵条目结构性清退（fix-legacy-ghost-spec-entry-reclaim）──────
+# 常量名单点定义（对齐 IMPL_RUN_BUDGET_USED_FIELD 家族惯例：模块级大写常量
+# + 注释块，pm_engine 与测试断言同源引用，避免字面量漂移）：
+# - GHOST_ENTRY_FRESHNESS_MINUTES：幽灵指纹新鲜度豁免窗（design D2 条件 3）
+#   ——条目 created 距今不足该窗的豁免不清退：物化与注册间存在理论竞态窗口，
+#   新条目不立即清退、留待下一轮对账（零误杀取向）。
+# - GHOST_RECLAIM_LEDGER_KIND：台账留痕 kind 字面量（写侧与测试断言同源）。
+# - GHOST_RECLAIM_SIGNAL_TYPE：聚合告警 signal_type（幂等防重判据同源；
+#   未注册闭环条件 → 永不自动闭环，人工 handled 收口，保守默认）。
+# - GHOST_RECLAIM_LEDGER_FILENAME：台账落盘文件名（<project>/.fenix/ 下
+#   append-only jsonl，对齐 maintenance_log.jsonl / arbiter_ledger.jsonl
+#   既有台账先例；.fenix 运行时目录不入库）。
+GHOST_ENTRY_FRESHNESS_MINUTES = 30
+GHOST_RECLAIM_LEDGER_KIND = "ghost-entry-reclaimed"
+GHOST_RECLAIM_SIGNAL_TYPE = "ghost_entry_reclaimed"
+GHOST_RECLAIM_LEDGER_FILENAME = "ghost_reclaim_ledger.jsonl"
 
 # spec 名路径安全白名单（code-review bf17492bd055）：STATE.md 为人工可编辑
 # 数据源，spec_name 会被直接拼进 spec/changes/<spec_name>/ 路径；放行路径
@@ -117,6 +137,60 @@ def spec_has_content(project_root, spec_name: str) -> bool:
             spec_dir,
         )
         return True
+
+
+def ghost_reclaim_ledger_path(project_root) -> Path:
+    """幽灵清退台账路径（<project>/.fenix/ghost_reclaim_ledger.jsonl）。"""
+    return Path(project_root) / ".fenix" / GHOST_RECLAIM_LEDGER_FILENAME
+
+
+def git_path_has_commits(project_root, spec_name: str) -> bool:
+    """git 全历史对 ``spec/changes/<spec_name>`` 是否有过提交（design D2 条件 2）。
+
+    判据即 design 字面：``git -C <project_root> log --all --
+    spec/changes/<name>`` 输出为空 = 全历史零提交。已归档/曾提交后目录被误删
+    的条目历史仍在（输出非空），不会命中指纹——只清退「从未立项过」的裸注册
+    产物。
+
+    Returns:
+        True = 有提交（指纹条件 2 不成立，不清退）；
+        False = 零提交（条件成立）；
+        git 不可用 / 超时 / 非零退出（含非 git 目录）时保守返回 True——
+        「无法证明零提交」不得作为清退依据（零误杀取向）。
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "log",
+                "--all",
+                "--",
+                f"spec/changes/{spec_name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # git 缺失（FileNotFoundError）/超时等：保守按「有历史」不清退
+        return True
+    if proc.returncode != 0:
+        # 非 git 目录 / 裸仓库无提交等：输出空但失败原因不可辨，保守不清退
+        return True
+    return bool(proc.stdout.strip())
+
+
+def entry_age_minutes(entry, now: datetime) -> "float | None":
+    """STATE 条目 created 距今分钟数；created 缺失/非法返回 None（不可判龄）。"""
+    created = parse_ts(str(entry.get("created") or ""))
+    if created is None:
+        return None
+    return (now - created).total_seconds() / 60.0
 
 
 class SpecIntegrityGate:
@@ -303,6 +377,238 @@ class SpecIntegrityGate:
                 "录说明预期空 spec）后人工 handled 收口；② 确认废弃则将 spec "
                 "置终态（done/archived），本告警经 spec_delivered_adjudicated "
                 "条件自动闭环。裁决前派发持续被拦，不会盲目重实现"
+            ),
+        )
+        return True
+
+    # ── 存量幽灵条目结构性清退（fix-legacy-ghost-spec-entry-reclaim）──
+
+    def detect_ghost_entries(self, now=None) -> dict:
+        """幽灵指纹判定（design D2 三条件 AND，零误杀取向）。
+
+        对 STATE 全部条目逐条判定，任何一条不成立 → 不命中（维持既有链路，
+        零日志噪音）：
+
+        0. 非法路径成分 spec 名（``_is_safe_spec_name`` 拒绝，与
+           spec_has_content 同谓词保守语义）：不进命中清单、另入跳过清单待
+           告警（task 1.1）；
+        1. 终态豁免：终态条目（权威口径复用 alert_lifecycle 终态常量，含
+           design D2 字面的 ``pushed``——状态机唯一终态）不参与判定；
+        2. ``spec_has_content(project_root, name)`` 为 True 不命中：物化过
+           最小 proposal 的条目（7f7ee45e2 范式）恒为 True，天然不命中；
+        3. 新鲜度豁免：created 距今不足
+           ``GHOST_ENTRY_FRESHNESS_MINUTES``（30 分钟）不命中；created 缺失
+           或不可解析（判龄失败）保守视为未过窗、不清退；
+        4. ``git_path_has_commits`` 为 True（git 全历史有提交）不命中。
+
+        三条件（2∧3∧4）同时成立才判幽灵——与幽灵定义（「从未物化立项」）
+        重合，误杀前提收敛为「目录从未存在且从未提交且注册已超 30 分钟」。
+
+        Returns:
+            ``{"hits": [...], "skipped": [...]}``：hits 每项含 spec 名、命中
+            时状态与三项指纹证据（created/age、目录探测、git log 空输出）；
+            skipped 为非法路径成分名清单（保守跳过待人工，不清退）。
+        """
+        now = now or datetime.now(timezone.utc)
+        hits: list = []
+        skipped: list = []
+        # [fenix-ignore:e55afea2a5a6] read_one 经 read_all → _normalize_entries 已过滤非 dict 条目（core/state_machine.py read_all 防御层），read_all 同源；entry.get 不会抛 AttributeError（非 dict 再防御同 check_blockers 先例）
+        all_specs = self._pm.state_machine.read_all() or {}
+        # 终态口径复用 alert_lifecycle 权威常量（done/pushed + spec 文本
+        # archived 向前兼容拼写），不手抄副本——与 check_spec_content_missing
+        # 同源引用，权威集合扩容时自动跟随。
+        from core.alert_lifecycle import (
+            DELIVERED_ADJUDICATED_TERMINAL_STATUSES as _TERMINAL,
+        )
+
+        for name, entry in all_specs.items():
+            if not isinstance(entry, dict):
+                continue
+            if not _is_safe_spec_name(name):
+                # 非法路径成分（``..``/分隔符/隐藏名）：保守跳过不清退，
+                # 只入跳过清单待人工告警（design D3 / spec Requirement 2）
+                skipped.append(name)
+                continue
+            status = entry.get("status")
+            if status in _TERMINAL:
+                # 终态豁免（design D2：终态 pushed 豁免）
+                continue
+            if spec_has_content(self._pm.project_root, name):
+                # 条件 1 不成立：有实质内容，静默跳过（零日志噪音）
+                continue
+            age = entry_age_minutes(entry, now)
+            if age is None or age < GHOST_ENTRY_FRESHNESS_MINUTES:
+                # 条件 3 不成立：新条目豁免 / 判龄失败保守不清退
+                continue
+            if git_path_has_commits(self._pm.project_root, name):
+                # 条件 2 不成立：git 全历史有提交（曾立项，目录可能被误删）
+                continue
+            hits.append(
+                {
+                    "spec": name,
+                    "status": status,
+                    "created": str(entry.get("created") or ""),
+                    "age_minutes": round(age, 1),
+                    "dir_evidence": (
+                        f"spec/changes/{name}/ 无实质内容"
+                        "（proposal.md/design.md/tasks.md/specs/**/*.md 全缺）"
+                    ),
+                    "git_evidence": (
+                        f"git -C {self._pm.project_root} log --all -- "
+                        f"spec/changes/{name} 输出为空（全历史零提交）"
+                    ),
+                }
+            )
+        return {"hits": hits, "skipped": skipped}
+
+    def reclaim_ghost_entries(self) -> dict:
+        """幽灵条目对账清退入口（design D3/D4：先收集全部命中再批量执行）。
+
+        配置开关 ``gates.ghost_entry_reclaim``（默认 on，task 2.2）关闭时
+        直接返回零副作用。单轮至多一条聚合告警列出全部清退/跳过条目
+        （替代逐条 freeze→escalate 的人工通道）；防重对齐
+        ``_handle_delivered_no_content`` 的未处理告警先例（本文件
+        spec_delivered_no_content 分支——同指纹未处理告警在场时不重复告警）。
+
+        Returns:
+            ``{"enabled", "reclaimed", "skipped", "alerted"}``；reclaimed 为
+            实际完成 remove_spec + 台账留痕的命中清单。
+        """
+        if not self._pm._get_config("gates.ghost_entry_reclaim", True):
+            # 开关 off：对账入口直接返回（design D4），零判定零副作用
+            return {
+                "enabled": False,
+                "reclaimed": [],
+                "skipped": [],
+                "alerted": False,
+            }
+
+        verdict = self.detect_ghost_entries()
+        hits = verdict["hits"]
+        skipped = verdict["skipped"]
+        if not hits and not skipped:
+            # 零命中：幂等空转（零副作用、零日志噪音——design D4）
+            return {
+                "enabled": True,
+                "reclaimed": [],
+                "skipped": [],
+                "alerted": False,
+            }
+
+        reclaimed: list = []
+        for hit in hits:
+            name = hit["spec"]
+            if not self._pm.state_machine.remove_spec(name):
+                # 竞争消失（他写者已移除）：不算本轮清退，不留痕
+                continue
+            reclaimed.append(hit)
+            self._append_ghost_reclaim_ledger(name, hit)
+
+        alerted = self._send_ghost_reclaim_alert(reclaimed, skipped)
+        return {
+            "enabled": True,
+            "reclaimed": reclaimed,
+            "skipped": skipped,
+            "alerted": alerted,
+        }
+
+    def _append_ghost_reclaim_ledger(self, name: str, hit: dict) -> None:
+        """逐条台账留痕（design D3）：kind=ghost-entry-reclaimed + 三项证据。
+
+        append-only jsonl（对齐 maintenance_ledger 的 ``append_run_line``
+        原子追加约定）；写入失败不阻断清退主流程（留痕尽力，宁清退不回滚
+        ——移除本身已原子完成，台账失败仅记 WARNING）。
+        """
+        from core.agent_runner.run_files import append_run_line
+        from core.timelib import now_utc, to_storage
+
+        record = {
+            "ts": to_storage(now_utc()),
+            "kind": GHOST_RECLAIM_LEDGER_KIND,
+            "spec": name,
+            "status_at_reclaim": hit.get("status"),
+            "evidence": {
+                "created": hit.get("created"),
+                "age_minutes": hit.get("age_minutes"),
+                "dir_probe": hit.get("dir_evidence"),
+                "git_log": hit.get("git_evidence"),
+            },
+        }
+        try:
+            path = ghost_reclaim_ledger_path(self._pm.project_root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            append_run_line(path, record)
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"幽灵清退台账写入失败（清退已生效，留痕缺失）'{name}': {e}",
+            )
+
+    def _send_ghost_reclaim_alert(self, reclaimed: list, skipped: list) -> bool:
+        """单条聚合告警（design D3）：列出本轮全部清退/跳过条目与证据。
+
+        防重（幂等）：存在任一同 signal_type 未处理升级告警时不再追加
+        （对齐 _handle_delivered_no_content 的 ``unhandled_for`` 先例），
+        否则每轮 full_scan（30 分钟周期）重复追加 major 告警。
+        """
+        names = [h["spec"] for h in reclaimed] + [str(s) for s in skipped]
+        spec_ref = names[0] if len(names) == 1 else ",".join(names)
+        try:
+            from core.admin_store import AdminStore
+
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            if store.unhandled_for(None, GHOST_RECLAIM_SIGNAL_TYPE) is not None:
+                # 幂等命中：聚合告警在案待人工，不重复追加
+                self._pm.logger.debug(
+                    "pm_engine",
+                    "幽灵条目聚合告警在案，本轮不重复告警"
+                    f"（清退 {len(reclaimed)} 条 / 跳过 {len(skipped)} 条）",
+                )
+                return False
+        except Exception as e:
+            # 幂等预检失败不阻断告警写入（宁多一条不漏告警）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"幽灵清退告警幂等预检失败（继续写入）: {e}",
+            )
+
+        lines = []
+        for hit in reclaimed:
+            lines.append(
+                f"- {hit['spec']}（status={hit.get('status')}）：已 remove_spec "
+                f"清退；created={hit.get('created')}（距今 "
+                f"{hit.get('age_minutes')} 分钟）；{hit.get('dir_evidence')}；"
+                f"{hit.get('git_evidence')}"
+            )
+        for name in skipped:
+            lines.append(
+                f"- {name}：spec 名含非法路径成分，保守跳过不清退，待人工处置"
+            )
+        detail = "\n".join(lines)
+        self._pm.logger.warning(
+            "pm_engine",
+            f"幽灵条目对账清退：{len(reclaimed)} 条清退 / "
+            f"{len(skipped)} 条跳过待人工（{spec_ref}）",
+        )
+        self._pm._send_human_escalation_alert(
+            spec_name=spec_ref,
+            signal_type=GHOST_RECLAIM_SIGNAL_TYPE,
+            severity="major",
+            description=(
+                f"幽灵条目对账清退：本轮结构性移除 {len(reclaimed)} 条「从未"
+                f"立项」的裸注册条目（remove_spec + 台账留痕，替代逐条 "
+                f"freeze→escalate），另有 {len(skipped)} 条非法名条目保守跳过"
+                f"待人工。清单：\n{detail}"
+            ),
+            evidence=(
+                f"指纹=三条件 AND（spec_has_content False + git 全历史零提交"
+                f"+ 注册超 {GHOST_ENTRY_FRESHNESS_MINUTES} 分钟）；台账="
+                f".fenix/{GHOST_RECLAIM_LEDGER_FILENAME}；明细：\n{detail}"
+            ),
+            recommended_action=(
+                "核对清单证据确认清退无误后人工 handled 收口；如需保留某条目"
+                "（如手工误判），物化 spec/changes/<name>/ 实质内容后正常重"
+                "立项即可，本告警不自动闭环"
             ),
         )
         return True
