@@ -517,6 +517,24 @@ def _read_jsonl_entries(path: Path) -> Tuple[List[Dict[str, Any]], int]:
     return entries, bad_lines
 
 
+# runner 自有 daemon 事件行（与 runner._run_agent 的 provider_marker /
+# throttled-wait / add-run-prompt-viewer prompt 行同族）：它们是 runner 写进
+# run jsonl 的自有事件行，消费方按 type 字段分发、不依赖「物理首行」位置；
+# prompt 行固定落盘于流头部（Popen 之前），dsh 投影的 system/init 首事件行
+# 因此顺延为物理第 2 行。证据采集取「首个非 runner 自有行」＝投影首事件。
+_RUNNER_OWNED_LINE_TYPES = frozenset(
+    {"prompt", "provider_marker", "throttled-wait"})
+
+
+def _first_projection_entry(
+        entries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """返回首个投影事件行（跳过 runner 自有 daemon 行），全被跳过时 None。"""
+    for entry in entries:
+        if entry.get("type") not in _RUNNER_OWNED_LINE_TYPES:
+            return entry
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 车道驱动（≥3 车道假端点全链；各车道终态/在飞判定/产物硬门）
 # ══════════════════════════════════════════════════════════════════════
@@ -749,9 +767,10 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     run_file = runs_dir / f"{run_id}.jsonl"
     ev["run_jsonl_path"] = str(run_file)
     entries, ev["run_jsonl_bad_lines"] = _read_jsonl_entries(run_file)
-    ev["run_jsonl_first"] = {"type": entries[0].get("type"),
-                             "harness": entries[0].get("harness")} \
-        if entries else None
+    first = _first_projection_entry(entries)
+    ev["run_jsonl_first"] = {"type": first.get("type"),
+                             "harness": first.get("harness")} \
+        if first else None
     ev["run_jsonl_last_type"] = entries[-1].get("type") if entries else None
     ev["tool_use_names"] = sorted({
         blk.get("name") for e in entries if e.get("type") == "assistant"
@@ -1898,7 +1917,7 @@ def _real_agent_lane(lane: str, adapter, fixture: Dict[str, Any],
     # 真实车道判定面补采（与 smoke 同判据同形状）：run jsonl 首行/tool 面、
     # 原始事件 dump 旁路（投影器按 run 目录无条件落盘）、verifier 报告落盘
     run_entries, ev["run_jsonl_bad_lines"] = _read_jsonl_entries(run_file)
-    first = run_entries[0] if run_entries else None
+    first = _first_projection_entry(run_entries)
     ev["run_jsonl_first"] = {"type": first.get("type"),
                              "harness": first.get("harness")} \
         if first else None

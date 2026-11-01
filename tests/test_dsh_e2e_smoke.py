@@ -244,7 +244,11 @@ def _run_smoke_chain(tmp_path, dsh_home, port, log_file, result_path, wt):
     run_file = proot / ".fenix" / "runs" / f"impl-{SPEC}-a1.jsonl"
     entries = [json.loads(l) for l in
                run_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert entries[0]["type"] == "system" and entries[0]["harness"] == "dsh"
+    # add-run-prompt-viewer 1.1：runner 自有 prompt 行固定落流头部（消费方
+    # 按 type 分发、不依赖物理首行位置），投影首事件 system/init 顺延其后
+    projection_entries = [e for e in entries if e["type"] != "prompt"]
+    assert projection_entries[0]["type"] == "system" \
+        and projection_entries[0]["harness"] == "dsh"
     assert entries[-1]["type"] == "result"
     # Bundle 工具注册面：TaskCreate 真实调用投影为 assistant tool_use
     tool_names = [blk.get("name") for e in entries if e["type"] == "assistant"

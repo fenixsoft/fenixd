@@ -135,8 +135,11 @@ def _make_runner(proot: Path, logger: RecLogger):
 
 def _run_file_entries(proot: Path, run_id: str):
     rf = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
-    return [json.loads(l) for l in
-            rf.read_text(encoding="utf-8").splitlines() if l.strip()]
+    # add-run-prompt-viewer 1.1：runner 自有 prompt 行固定落流头部（消费方
+    # 按 type 分发、不依赖物理首行位置），投影事件断言按 type 过滤掉它
+    entries = [json.loads(l) for l in
+               rf.read_text(encoding="utf-8").splitlines() if l.strip()]
+    return [e for e in entries if e.get("type") != "prompt"]
 
 
 _ENV_OVERRIDES = {
