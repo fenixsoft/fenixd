@@ -1526,24 +1526,60 @@ class MainTreeStrayWipSweeper:
         ``signal_type=maintree_untracked_stray_first_sight``：admin_monitor
         仅两表登记（SIGNAL_SEVERITY=info / SIGNAL_RECOMMENDATION），MUST
         NOT 收录 STORED_SIGNAL_TYPES（不自动唤起 admin run）。evidence 携带
-        条目清单、总体积与预防性 .gitignore 条目草案（含成因注释，对齐
-        913f41b/151ff6e 预防性 ignore 先例的注释风格）。建议面语义：不自动
-        执行 ignore 动作（盘点零写副作用）。AdminStore 拒写时返回 False
-        （不计首现登记，下轮重试），不让提示静默蒸发。
+        条目清单、总体积与处置建议段：普通运行时产物目录附预防性
+        .gitignore 条目草案（含成因注释，对齐 913f41b/151ff6e 预防性
+        ignore 先例的注释风格）。交付物豁免（fix-review-disposition-
+        stray-channel 1.1）：``spec``/``spec/`` 前缀目录是 SPEC 交付物
+        目录——evidence MUST NOT 携带 gitignore 草案（人工按 recommended_
+        action 采纳草案行会把交付物目录永久遮蔽出 git 与散件盘点），改
+        携带交付物注记；首现提示本身保留（提醒人工提交的信号价值仍在）。
+        建议面语义：不自动执行任何工作区动作（盘点零写副作用）。AdminStore
+        拒写时返回 False（不计首现登记，下轮重试），不让提示静默蒸发。
         """
         files = list(entries)
+        # 交付物形态判据（1.1）：spec 交付物根目录（spec 本身或 spec/ 前缀）。
+        is_deliverable_dir = dir_path == "spec" or dir_path.startswith("spec/")
         draft_line = f"{dir_path}/"
         draft_comment = (
             f"主树 untracked 散件首现自动起草：运行时产物目录，"
             f"{len(files)} 个未跟踪 entry（{int(total_bytes)} 字节）滞留，"
             "预防性 ignore 后不再产生散件告警"
         )
+        if is_deliverable_dir:
+            # 交付物形态：无草案行，改交付物注记；建议提交入库/迁出，
+            # 不提追加 .gitignore（掐断「误 ignore 交付物目录」的开药方面）。
+            disposition_segment = (
+                "交付物注记: spec/ 交付物目录不应 ignore，应提交入库"
+            )
+            disposition_tail = "仅建议核对归属后提交入库"
+            disposition_action = (
+                "建议面（info 级只提示不处置，不唤起人工）：人工核对"
+                "目录归属后提交入库（spec/ 交付物目录不应 ignore），"
+                "或按产物真实落点迁出 spec/；本提示不自动执行任何"
+                "工作区动作（提交/迁移仍走对应车道或人工）。同目录"
+                "仅提示一次，目录消失复位后再现视为新首现"
+            )
+        else:
+            disposition_segment = (
+                f"gitignore草案: {draft_line}（成因注释: {draft_comment}）"
+            )
+            disposition_tail = "仅建议预防性 ignore"
+            disposition_action = (
+                "建议面（info 级只提示不处置，不唤起人工）：人工核对"
+                "目录归属后，将 evidence 中 gitignore 草案行（含成因"
+                "注释）追加至 .gitignore（预防性 ignore，一行消除该"
+                "目录后续散件告警），或将默认落盘路径移出仓库树/挪入"
+                "证据落位目录 .fenix/verify-evidence/<spec>/；本提示"
+                "不自动执行 ignore 动作（ignore 仍走既有裁决执行器或"
+                "人工）。同目录仅提示一次，目录消失复位后再现视为新"
+                "首现"
+            )
         evidence = (
             f"项目名={self.project_root.name}; "
             f"目录集合={dir_path}; "
             f"条目数={len(files)}; 体积合计={int(total_bytes)}字节; "
             f"{_evidence_file_manifest(files)}; "
-            f"gitignore草案: {draft_line}（成因注释: {draft_comment}）; "
+            f"{disposition_segment}; "
             f"豁免注记: .fenix/ negation 放行项与已 ignore 路径不计入"
             f"（本集合未被 .gitignore 覆盖，否则不入散件清单）; "
             f"零触碰注记: 本盘点只读（未执行 stash/checkout/clean/reset），"
@@ -1557,20 +1593,11 @@ class MainTreeStrayWipSweeper:
                 f"不处置）：目录型产物集合 {dir_path} 首次出现 "
                 f"{len(files)} 个 untracked entry。同目录仅提示一次"
                 "（集合内容增长不重提示），目录消失复位后再现视为新"
-                "首现；本提示不启动升级时钟、不派生任何自动处置，仅"
-                "建议预防性 ignore"
+                "首现；本提示不启动升级时钟、不派生任何自动处置，"
+                f"{disposition_tail}"
             ),
             evidence=evidence,
-            recommended_action=(
-                "建议面（info 级只提示不处置，不唤起人工）：人工核对"
-                "目录归属后，将 evidence 中 gitignore 草案行（含成因"
-                "注释）追加至 .gitignore（预防性 ignore，一行消除该"
-                "目录后续散件告警），或将默认落盘路径移出仓库树/挪入"
-                "证据落位目录 .fenix/verify-evidence/<spec>/；本提示"
-                "不自动执行 ignore 动作（ignore 仍走既有裁决执行器或"
-                "人工）。同目录仅提示一次，目录消失复位后再现视为新"
-                "首现"
-            ),
+            recommended_action=disposition_action,
             reject_log=(
                 f"{UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE}: 提示写入被拒"
                 f"（AdminStore 拒写），未落盘——本轮不计首现登记，下轮盘点"
@@ -1579,11 +1606,20 @@ class MainTreeStrayWipSweeper:
         )
         if rec is None:
             return False
+        if is_deliverable_dir:
+            scale = (
+                f"{len(files)} entry / {int(total_bytes)} 字节，"
+                "spec/ 交付物目录建议提交入库（无 gitignore 草案）"
+            )
+        else:
+            scale = (
+                f"{len(files)} entry / {int(total_bytes)} 字节，"
+                f"gitignore 草案: {draft_line}"
+            )
         self._log(
             "info",
             f"{UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE}: 目录型产物集合首现提示"
-            f"（{len(files)} entry / {int(total_bytes)} 字节，gitignore 草案: "
-            f"{draft_line}）已发一次性 info 提示: {', '.join(files)}",
+            f"（{scale}）已发一次性 info 提示: {', '.join(files)}",
         )
         return True
 
