@@ -4,7 +4,7 @@
 
 ### Requirement: 组织网格数据派生
 
-指挥中心聚合层 SHALL 提供组织网格数据（`GET /api/command-center/org`）：车道卡按部门分区（zone）归组，分区与车道花名册为模块级静态常量（MUST NOT 做成用户配置项）；运行中观测到花名册外的 lane 时 SHALL 归入「其他」分区。观测 lane → 编制内 lane 的归并表 `LANE_ALIASES` SHALL 含 `arbiter → judge`（与既有 `dispute-judge → judge`、`repair → code-fix` 同族）：arbiter 的窗内 run 计数、成功率、成本、时长、在飞归属与 14 日活动并入 judge 卡（质量线「质量裁决」），MUST NOT 在「其他」分区单独出卡。时间线/拓扑屏保持原生 agent_type 的既有定稿口径不变（归并仅组织网格聚合与 spec 视图轮次消费）。
+指挥中心聚合层 SHALL 提供组织网格数据（`GET /api/command-center/org`）：车道卡按部门分区（zone）归组，分区与车道花名册为模块级静态常量（MUST NOT 做成用户配置项），预置分区：需求线（planner、spec-review）、交付线（implementer、code-fix）、质量线（code-review、judge、testing）、运营线（administrator、self-review、scan、ocr）；运行中观测到花名册外的 lane 时 SHALL 归入「其他」分区。每张车道卡 SHALL 继续包含既有字段集（`lane`、`zone`、`status`（working/idle 既有在飞判定口径）、`runs_today`、`success_rate_7d`、`cost_7d`、`activity_14d`（长度 14 旧→新）、`last_activity_ts`、`attributable`），花名册内车道即使窗内零 run 也 MUST 出卡；静态汇报线 `edges`（4 条模块常量）语义不变。观测 lane → 编制内 lane 的归并表 `LANE_ALIASES` SHALL 含 `arbiter → judge`（与既有 `dispute-judge → judge`、`repair → code-fix` 同族）：arbiter 的窗内 run 计数、成功率、成本、时长、在飞归属与 14 日活动并入 judge 卡（质量线「质量裁决」），MUST NOT 在「其他」分区单独出卡。时间线/拓扑屏保持原生 agent_type 的既有定稿口径不变（归并仅组织网格聚合与 spec 视图轮次消费）。
 
 #### Scenario: arbiter 并入 judge 卡
 

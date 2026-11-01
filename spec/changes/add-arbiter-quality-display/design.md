@@ -18,7 +18,7 @@ add-arbiter-lane（fbeb3f104，2026-10-31）把「框架外验尸者」制度化
 
 - **D1 归并走既有单点 `LANE_ALIASES`（后端一行）**：`core/dashboard/data/command_center.py` 归并表加 `"arbiter": "judge"`。组织网格与 spec 视图轮次自动同口径（两处既有消费点）；时间线/拓扑屏保持原生 agent_type 的既有定稿口径不动（归并表注释已明示消费面边界，不扩散）。前端零改动即可显示「质量裁决」（judge 的 `LANE_LABELS` 已是「质量裁决」，OrgGrid 图标映射消费 judge lane 不变）。
 - **D2 前端标签补条目于单源 `runVisual.ts`**：`AGENT_LABEL` 加 `arbiter: '质量裁决 Agent'`；`RUN_ID_PREFIX_LABEL` 加 `['arbiter-', '质量裁决 Agent']` 前缀兜底（防 agent_type 泛型化退化——spec-review 前缀漂移事故先例）。两表同改，标签不落第二份。
-- **D3 台账联查在后端（timeline.py），前端只渲染**：`get_spec_timeline` 对 agent_type=arbiter 的 run 节点联查 `.fenix/arbiter_ledger.jsonl`（按 run_id 全等匹配，取 disposition/escalation 条目），节点附 `arbiter: {kind, root_cause, action_or_upgrade, signal_type}`（root_cause/action_or_upgrade 截断 200 字符下发，防巨型行——巨型行破锚定窗前科）。前端 SpecTimeline run 节点卡片加条件渲染块。台账读取 fail-open（文件缺失/行损坏/未命中 → 静默省略），对齐 `_ocr_lane_summary` 的 lane_summary 既有模式；spec-proposed 条目（run_id 为空）天然不命中 run_id 全等匹配。
+- **D3 台账联查在后端（timeline.py），前端只渲染**：`get_spec_timeline` 对 agent_type=arbiter 的 run 节点联查 `.fenix/arbiter_ledger.jsonl`（按 run_id 全等匹配，取 disposition/escalation 条目；读侧复用 `core.pm_engine.arbiter.load_arbiter_ledger` 单源防双实现漂移，每请求整台账读入一次、循环内内存匹配），节点附 `arbiter: {kind, root_cause, action_or_upgrade, signal_type}`（root_cause/action_or_upgrade 截断 200 字符下发，防巨型行——巨型行破锚定窗前科）。前端 SpecTimeline run 节点卡片加条件渲染块。台账读取 fail-open（文件缺失/行损坏/未命中 → 静默省略），对齐 `_ocr_lane_summary` 的 lane_summary 既有模式；spec-proposed 条目（run_id 为空）天然不命中 run_id 全等匹配。
 - **D4 快速车道（fast-track）**：单模块（dashboard 前后端）小改、无迁移、场景 ≤6，单个 Agent 一次完成实现与验证（用户 2026-11-01 确认）。
 - **D5 daemon 重启信号随 SPEC 交付**：聚合层与时间轴是 daemon 内存代码，`restart_request` 落位仓库根（JSON：reason/origin/date），实际重启由 supervisor 消费信号完成（dashboard 类 SPEC 既有纪律）。
 

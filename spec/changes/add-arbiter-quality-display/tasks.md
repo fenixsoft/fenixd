@@ -31,7 +31,7 @@
 ## 2. SPEC 时间轴：arbiter 标签与处理记录富展示
 
 - [ ] 2.1 `core/dashboard/static/src/utils/runVisual.ts`：`AGENT_LABEL` 加 `arbiter: '质量裁决 Agent'`、`RUN_ID_PREFIX_LABEL` 加 `['arbiter-', '质量裁决 Agent']` 前缀兜底（排在与前缀表顺序敏感性不冲突处）；新增纯函数（如 `arbiterOutcomeLabel(kind)`：disposition→「自主处置」/escalation→「升级人工」/其余→原样透出）供渲染层单源消费
-- [ ] 2.2 `core/dashboard/data/timeline.py`：`get_spec_timeline` 运行节点循环内对 agent_type=arbiter 的 run 联查 `.fenix/arbiter_ledger.jsonl`（run_id 全等匹配、kind 限 disposition/escalation、同 run_id 多条取 created 最新、逐行解析容错损坏行），命中时节点附 `arbiter: {kind, root_cause, action_or_upgrade, signal_type}`（root_cause/action_or_upgrade 截断 200 字符下发）；台账文件缺失/未命中 fail-open 静默省略（对齐 lane_summary 模式），spec-proposed 条目（run_id 空）不命中
+- [ ] 2.2 `core/dashboard/data/timeline.py`：`get_spec_timeline` 对 agent_type=arbiter 的 run 节点联查处置台账——台账读侧 MUST 复用 `core.pm_engine.arbiter.load_arbiter_ledger` 单源（自带文件缺失/损坏行 fail-open，防双实现漂移），每次时间轴请求整台账读入一次、循环内内存匹配（MUST NOT 逐 run 重读文件）；run_id 全等匹配、kind 限 disposition/escalation、同 run_id 多条取 created 最新，命中时节点附 `arbiter: {kind, root_cause, action_or_upgrade, signal_type}`（root_cause/action_or_upgrade 截断 200 字符下发）；未命中 fail-open 静默省略（对齐 lane_summary 模式），spec-proposed 条目（run_id=null）不命中
 - [ ] 2.3 `core/dashboard/static/src/pages/projects/components/SpecTimeline.tsx`：run 节点卡片条件渲染 arbiter 块——结论行（`arbiterOutcomeLabel` 着色区分自主处置/升级人工）+ 根因摘要行 + 处置动作/升级理由摘要行（字段缺失静默省略对应行）；无 `arbiter` 字段的节点渲染逐字节等价现状
 - [ ] 2.4 测试配套：`core/dashboard/static/tests/runVisual.test.mjs` 补 agentLabel arbiter 两路（agent_type 直配 + 前缀兜底）与 arbiterOutcomeLabel 三分支；新增 `tests/test_timeline_arbiter_visibility.py`（临时工程伪造台账与 run 产物）：disposition/escalation 命中附块且文本截断、spec-proposed 不命中、文件缺失 fail-open、损坏行容错跳过、同 run_id 多条取 created 最新、非 arbiter run 节点零新增字段
 
