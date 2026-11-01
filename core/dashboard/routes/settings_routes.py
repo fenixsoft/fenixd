@@ -201,15 +201,9 @@ class H5SettingsRoutesMixin:
 
             lane = get_lane(root)
             if lane is not None:
-                with lane._lock:
-                    lane_view = {
-                        "enabled": lane.enabled,
-                        "queue_depth": lane._queue.qsize(),
-                        "active_signatures": sorted(lane._active),
-                        "failure_counts": dict(lane._failure_counts),
-                        "dispositioned_total": len(lane._dispositioned),
-                        "deadmanned_total": len(lane._deadmanned),
-                    }
+                # 快照组装（含锁纪律）由属主 ArbiterLane.snapshot() 承担，
+                # 本端点只消费返回值（code-review 21372fd6d003）
+                lane_view = lane.snapshot()
         except Exception as e:
             lane_view = {"error": str(e)}
         ledger_summary = {"total": 0, "kinds": {}, "recent": []}

@@ -451,6 +451,25 @@ class ArbiterLane:
             "current": enabled,
         }
 
+    def snapshot(self) -> dict:
+        """运行时只读快照：车道运行时面单帧视图（routes 读侧消费）。
+
+        返回 dict 即 ``/api/arbiter/status`` 的 lane 段 schema（settings_
+        routes 消费方，键集与形状不得变更）。锁内组装保证各计数同帧一致；
+        此前该端点跨模块直读 _queue/_active 等私有结构（code-review
+        21372fd6d003），现由数据属主统一封装，车道内部结构变更不再静默
+        破坏读侧端点。
+        """
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "queue_depth": self._queue.qsize(),
+                "active_signatures": sorted(self._active),
+                "failure_counts": dict(self._failure_counts),
+                "dispositioned_total": len(self._dispositioned),
+                "deadmanned_total": len(self._deadmanned),
+            }
+
     def _pending_machine_alerts(self) -> Dict[str, dict]:
         """pending（未处理）机器升级告警索引：spec → 最新一条。
 
