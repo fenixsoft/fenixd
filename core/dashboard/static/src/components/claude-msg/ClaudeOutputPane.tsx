@@ -701,7 +701,7 @@ export default function ClaudeOutputPane({
           >
             复制全文
           </Button>,
-          <Button key="prompt-close" size="small" onClick={closePrompt}>
+          <Button key="prompt-close" size="small" data-testid="prompt-close-btn" onClick={closePrompt}>
             关闭
           </Button>,
         ]}
@@ -716,7 +716,7 @@ export default function ClaudeOutputPane({
         ) : promptError ? (
           <div className="flex flex-col items-start gap-3 py-4" data-testid="prompt-error">
             <Typography.Text type="danger">加载提示词失败：{promptError}</Typography.Text>
-            <Button size="small" onClick={() => void loadPrompt()}>重试</Button>
+            <Button size="small" data-testid="prompt-retry-btn" onClick={() => void loadPrompt()}>重试</Button>
           </div>
         ) : promptData?.prompt ? (
           <pre
