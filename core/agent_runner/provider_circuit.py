@@ -1184,6 +1184,27 @@ class ProviderCircuit:
             events = self._transient_break_events.setdefault(fingerprint, [])
             if window is not None and window > 0:
                 events = [t for t in events if now - t.at <= window]
+                # 有界化（code-review item a6e9a4b5a328）：本字典此前的唯一回收点
+                # 是 is_global_transient_break 到期分支的 clear()——而到期分支只在
+                # 熔断曾触发后才运行，熔断从未触发的进程里未达阈值的指纹条目（含
+                # 事件列表）按指纹只增不删、驻留到重启。到期临界区对本字典无增量
+                # 可做（clear() 已整表清空），故照 item 67f98b3ae41d 在既有临界区
+                # 内顺手回收的先例，落在本窗口化记账路径巡检：弹出空列表与「末位
+                # 事件也已滑出窗口」的他指纹条目——事件按写入序追加、单调钟下 at
+                # 递增，末位陈旧即整条陈旧（与既有滑窗剔除同口径）；本指纹刚
+                # append 保温不会命中。已冻结早退分支（window=None）不做本回收，
+                # 其「不剔除」是 design D1 有意契约（见本 docstring），冻结期残留
+                # 由到期 clear() 整体承接。纯内存回收：被删条目全部事件本就在窗口
+                # 外，阈值判定只消费本助手锁内返回的快照（item f678576e5bd7）、
+                # 不锁外直读本字典；条目在回收后本就不在字典中，到期聚合口径
+                # （不按窗口预过滤，item adb881074970）不受影响。
+                stale_fps = [
+                    fp
+                    for fp, evs in self._transient_break_events.items()
+                    if fp != fingerprint and (not evs or now - evs[-1].at > window)
+                ]
+                for fp in stale_fps:
+                    self._transient_break_events.pop(fp, None)
             # 墙钟时刻与单调 now 一并固化：告警上下文展示用 at_wall（真实时钟），
             # 滑窗用 at（单调，防时钟回拨）。code-review item cbaa42ed2281。
             events.append(
