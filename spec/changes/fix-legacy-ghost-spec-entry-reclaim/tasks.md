@@ -21,7 +21,7 @@
 ## 4. 验证
 
 - [x] 4.1 `python3 -m pytest tests/test_spec_content_integrity.py -q` 通过
-- [ ] 4.2 孪生条目判定验证（dry-run）：以主树 STATE 快照只读跑指纹判定，命中清单应恰含 `fix-planner-scenario-entry-schema-selfcheck`；本条目（已物化 proposal.md）不命中。实盘清退由 daemon 合并后首轮对账自动完成，不由实现 run 执行（以孪生 recorded 指纹形态重建只读 dry-run 替代验收：孪生条目已不在主树 STATE——proposal 落盘后经人工通道移除，admin_alerts 仅存 2026-10-31 升级记录；替代验证=重建 blocked+frozen/created 2026-10-31/目录缺失/git 零提交形态跑生产判定函数命中恰含孪生、本条目不命中，零提交条件另对真实主树 git 历史直接核实；证据 .fenix/verify-evidence/fix-legacy-ghost-spec-entry-reclaim/twin-dryrun-substitute.json）
+- [x] 4.2 孪生条目判定验证（dry-run）：以主树 STATE 快照只读跑指纹判定，命中清单应恰含 `fix-planner-scenario-entry-schema-selfcheck`；本条目（已物化 proposal.md）不命中。实盘清退由 daemon 合并后首轮对账自动完成，不由实现 run 执行（以孪生 recorded 指纹形态重建只读 dry-run 替代验收：孪生条目已不在主树 STATE——proposal 落盘后经人工通道移除，admin_alerts 仅存 2026-10-31 升级记录；替代验证=重建 blocked+frozen/created 2026-10-31/目录缺失/git 零提交形态跑生产判定函数命中恰含孪生、本条目不命中，零提交条件另对真实主树 git 历史直接核实；证据 .fenix/verify-evidence/fix-legacy-ghost-spec-entry-reclaim/twin-dryrun-substitute.json）
 - [x] 4.3 回归：`python3 -m pytest tests/test_pm_recovery.py tests/test_run_lifecycle_governance.py -q` 通过，正常流转条目零影响
 
 ## Deliverables
