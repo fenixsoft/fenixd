@@ -552,7 +552,10 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
                 # 打包产物已复制入缓存，清理系统临时落点（只清系统临时目录内的）
                 try:
                     vj = Path(str(vendor_js))
-                    if tempfile.gettempdir() in vj.resolve().parents:
+                    # macOS 上 gettempdir() 返回 /var/folders/... 而 resolve()
+                    # 解析符号链接后为 /private/var/folders/...，两侧须统一
+                    # resolve 后再比对，否则前缀恒不匹配、临时文件泄漏
+                    if Path(tempfile.gettempdir()).resolve() in vj.resolve().parents:
                         vj.unlink(missing_ok=True)
                 except OSError:
                     pass

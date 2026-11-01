@@ -82,6 +82,44 @@ def _build_request(provider: dict) -> dict:
     }
 
 
+# 响应体读取有界性（code-review item 2c32a36e73e5）：urlopen(timeout=) 是
+# socket 单次操作超时而非总时限，探针直连的待诊断网关行为本不可信——若其以
+# 慢速滴漏方式返回响应体（每次读取间隔小于 timeout），裸 resp.read() 永不
+# 返回，两轮探测协议被无限期悬挂；响应体也无大小上限，超大 body 无界占用
+# 内存。改为分块读取 + 总 deadline + 字节封顶兜底，超限抛 ValueError，由
+# probe() 的 except 分支按既有网络/HTTP/解析异常同款归入失败轮（裁决落
+# unknown、exit 1），不改变模块错误分类口径。
+MAX_BODY_BYTES = 1 << 20  # 1 MiB：探针响应体（JSON usage 摘要）远小于此量级
+BODY_READ_DEADLINE_SECONDS = 120  # 与 urlopen timeout 同口径的总时限
+
+
+def _read_bounded(resp) -> bytes:
+    """有界读取响应体：字节封顶 MAX_BODY_BYTES，总时限 BODY_READ_DEADLINE_SECONDS。
+
+    单次 socket 操作超时仍由 urlopen(timeout=) 把守，这里补的是「多次操作
+    累计」维度：慢速滴漏响应会先撞总 deadline，超大 body 先撞字节上限，
+    两者都以 ValueError 收场，读入内存至多封顶值 + 单块。
+    """
+    deadline = time.monotonic() + BODY_READ_DEADLINE_SECONDS
+    chunks = []
+    total = 0
+    while True:
+        if time.monotonic() >= deadline:
+            raise ValueError(
+                f"响应体读取超出总时限 {BODY_READ_DEADLINE_SECONDS}s，按失败轮处理"
+            )
+        # 多读 1 字节以便响应体恰好等于上限时仍能探测 EOF（避免把恰在上限的
+        # 合法 body 误判成超限）。
+        chunk = resp.read(min(65536, MAX_BODY_BYTES - total + 1))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > MAX_BODY_BYTES:
+            raise ValueError(f"响应体超过 {MAX_BODY_BYTES} 字节上限，按失败轮处理")
+    return b"".join(chunks)
+
+
 def _post_once(provider: dict, body: dict) -> tuple:
     """向 provider 的 messages 端点发一次请求，返回 (parsed_response_body, raw)。
 
@@ -92,7 +130,8 @@ def _post_once(provider: dict, body: dict) -> tuple:
     回退伪 dict，使解析失败轮被当成全零 usage 成功轮、裁决违背 probe() 的
     unknown 契约；上抛后由调用方 except 分支归入失败轮）。
 
-    使用 stdlib urllib，避免依赖 requests；超时 120s。
+    使用 stdlib urllib，避免依赖 requests；超时 120s。响应体经 _read_bounded
+    有界读取（字节封顶 + 总 deadline），超限抛 ValueError 归入失败轮。
     """
     import urllib.error
     import urllib.request
@@ -112,7 +151,7 @@ def _post_once(provider: dict, body: dict) -> tuple:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
+        raw = _read_bounded(resp).decode("utf-8", errors="replace")
     # 解析异常一并上抛（code-review item c744bef56b6d）：JSONDecodeError 由
     # probe() 的 except 分支按既有网络/HTTP 异常同款归入失败轮，裁决落 unknown。
     parsed = json.loads(raw)

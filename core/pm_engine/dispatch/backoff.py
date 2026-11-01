@@ -52,24 +52,16 @@ class BBackoffMixin:
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         out = []
         for x in sched:
-            try:
-                v = float(x)
-            except (TypeError, ValueError, OverflowError):
-                # OverflowError 同按脏值跳过（code-review item 64c2ae5ae4b9）：
-                # YAML 任意精度巨型 int（如 10**400）送 float() 抛 OverflowError
-                # 不在原捕获族内，沿 _handle_dispatch_lock_conflict 向派发主链
-                # 外泄——口径对齐 _transient_redispatch_delay /
-                # _infra_retry_redispatch_delay（item 851ba3eeed41）。下方
-                # isfinite 守卫在 float() 转换之后，拦不住该异常。
-                continue
-            # code-review item e2d87491cc64：非有限浮点（.inf/.nan，YAML 合法
-            # 字面量）按脏值跳过——``.inf`` 使 threading.Timer 永不到期（退避
-            # 恢复通道失去唯一驱动），``int(now + delay)`` 对 inf 抛
-            # OverflowError 沿派发主链外泄，``.nan`` 经 max(0.0, nan) 落 0.0
-            # 造成零间隔自旋重试；isfinite 须在 max 夹紧之前施加（max 会把
-            # nan 吸收成 0.0），口径对齐 infra_breaker cooldown_minutes 同构
-            # 守卫（item d0a328355581）。
-            if not math.isfinite(v):
+            # 元素级折算转调共享原语 _coerce_finite_delay（float 捕
+            # OverflowError → isfinite，code-review item 64c2ae5ae4b9 /
+            # e2d87491cc64，口径对齐 infra_breaker cooldown_minutes 同构守卫
+            # d0a328355581）：脏值（不可转换/YAML 巨型 int 抛 OverflowError/
+            # .inf 使 Timer 永不到期/.nan 经 max 夹紧落 0.0 零间隔自旋）按脏
+            # 值跳过。isfinite 在 max 夹紧之前施加（max 会把 nan 吸收成 0.0）。
+            # 布尔守卫仅施于上方整体标量配置；元素级维持既有折算语义不加
+            # 守卫（行为逐位不变）。
+            v = self._coerce_finite_delay(x)
+            if v is None:
                 continue
             out.append(max(0.0, v))
         return out or list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
@@ -109,9 +101,21 @@ class BBackoffMixin:
         # spec 保持 ready、无错误派发）；竞态安全的同 episode 判重须跨读判据+
         # bump+update_spec 持进程锁（无锁时间窗判重有 TOCTOU），引入非重入锁序
         # 风险，故接受现状不判重。
-        count = self._pm.state_machine.bump_counters(
-            spec_name, {"_lock_conflict_count": 1}
-        ).get("_lock_conflict_count", 0)
+        # 写盘异常不穿透派发主链（code-review item 5e42c83261da，对齐
+        # adjudication._redispatch_with_retry 91dc42d762c6 口径）：STATE 瞬态
+        # IO/锁异常仅 WARNING 留痕，本轮按 0 计后照常走排程/升级分支；与上方
+        # fenix-ignore 的并发双 bump 档位虚快推进取舍属不同问题。
+        try:
+            count = self._pm.state_machine.bump_counters(
+                spec_name, {"_lock_conflict_count": 1}
+            ).get("_lock_conflict_count", 0)
+        except Exception as werr:  # noqa: BLE001 — 环境性写失败按「非阻塞」处置
+            count = 0
+            self._pm.logger.warning(
+                "pm_engine",
+                f"锁冲突计数递增失败 '{spec_name}'（非阻塞，本轮按 0 计）: "
+                f"{type(werr).__name__}: {werr}",
+            )
         schedule = self._pm._dispatch_backoff_schedule()
 
         now = time.time()
@@ -132,17 +136,27 @@ class BBackoffMixin:
             f"worktree already active (lock conflict); backoff until {until_iso}"
         )
 
-        # 不翻转状态：spec 保持 ready，仅记录退避元数据
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "error": error_text,
-                # _lock_conflict_count 已由上方 bump_counters 原子递增落盘，
-                # 此处不再并写（防并发写回互相覆盖丢增量）
-                "_dispatch_backoff_until": until,
-                "_last_lock_conflict_at": conflict_at,
-            },
-        )
+        # 不翻转状态：spec 保持 ready，仅记录退避元数据。写失败不穿透派发
+        # 主链（code-review item 5e42c83261da，对齐 91dc42d762c6 口径）：仅
+        # WARNING 留痕后照常走排程/升级分支，本轮退避元数据缺失时恢复依赖
+        # 周期扫描兜底。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": error_text,
+                    # _lock_conflict_count 已由上方 bump_counters 原子递增落盘，
+                    # 此处不再并写（防并发写回互相覆盖丢增量）
+                    "_dispatch_backoff_until": until,
+                    "_last_lock_conflict_at": conflict_at,
+                },
+            )
+        except Exception as werr:  # noqa: BLE001 — 环境性写失败按「非阻塞」处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"锁冲突退避元数据写盘失败 '{spec_name}'（非阻塞）: "
+                f"{type(werr).__name__}: {werr}",
+            )
 
         if exhausted:
             # 序列耗尽后不再排程任何恢复定时器——此处语义是等待人工处置而非
@@ -267,41 +281,66 @@ class BBackoffMixin:
             return None
         return float(until) - time.monotonic()
 
-    def _transient_redispatch_delay(self, spec_name: str) -> float:
-        """瞬断重派等待秒数（``agents.transient_redispatch_delay_seconds``）。
+    def _delay_config_value(self, key: str, default: float) -> float:
+        """标量延时配置的脏值容错单一读取器（``(key, default) -> float``）。
 
-        配置容错（与 _dispatch_backoff_schedule 同口径）：非法配置值回退
-        缺省 600s，不得中断瞬断恢复排程。``spec_name`` 仅用于对齐
-        ``resolve_delay`` 签名（该通道等待时长与 spec 无关）。
+        ``_transient_redispatch_delay`` / ``_infra_retry_redispatch_delay``
+        的同构容错样板（布尔守卫 → float 捕 OverflowError → isfinite →
+        回退缺省）收敛于此，口径调整单点生效（code-review item
+        5bba2dbb5e8c，先例同 repair_lane._max_retries 三车道单一落点）：
+
+        - bool 显式拒绝（bool 是 int 子类，item 88ef37e3e57e，对齐
+          _dispatch_backoff_schedule 7b529d5446f4 布尔守卫）：float(True)=1.0
+          会被 isfinite 守卫误判为合法延时（经 min_delay 夹紧后偏离声明
+          缺省），按脏配置 WARNING 留痕回退缺省；
+        - float() 捕 OverflowError（YAML 巨型 int，item 851ba3eeed41）；
+        - 非有限浮点（.inf/.nan）按脏值回退缺省（item e2d87491cc64，口径
+          对齐 infra_breaker cooldown_minutes 同构守卫 d0a328355581）。
         """
-        raw = self._pm._get_config(
-            "agents.transient_redispatch_delay_seconds", 600
-        )
+        raw = self._pm._get_config(key, default)
         if isinstance(raw, bool):
-            # bool 是 int 子类（code-review item 88ef37e3e57e，对齐
-            # _dispatch_backoff_schedule 7b529d5446f4 布尔守卫）：
-            # float(True)=1.0 会被 isfinite 守卫误判为合法延时（经 min_delay
-            # 夹紧后偏离声明缺省），按脏配置回退缺省并 WARNING 留痕。
             self._pm.logger.warning(
                 "pm_engine",
-                "配置 agents.transient_redispatch_delay_seconds 非法（布尔不合法），"
-                f"回退缺省 600s: {raw!r}",
+                f"配置 {key} 非法（布尔不合法），"
+                f"回退缺省 {default:g}s: {raw!r}",
             )
-            return 600.0
+            return default
+        val = self._coerce_finite_delay(raw)
+        return default if val is None else val
+
+    @staticmethod
+    def _coerce_finite_delay(raw) -> float | None:
+        """标量折算原语：``float()``（捕 OverflowError）→ isfinite 守卫。
+
+        非法（不可转换/非有限）返回 None，合法返回 float。标量读取器
+        （经 ``_delay_config_value``）与 ``_dispatch_backoff_schedule`` 的
+        元素级容错共用，口径调整单点生效（code-review item 5bba2dbb5e8c）。
+        """
         try:
             val = float(raw)
         except (TypeError, ValueError, OverflowError):
-            # code-review item 851ba3eeed41：巨大 int（YAML 任意精度）送 float()
-            # 抛 OverflowError 同按脏值回退缺省（口径同 infra_breaker threshold，
-            # item 8c2855513307）。
-            return 600.0
-        # code-review item e2d87491cc64：非有限浮点（.inf/.nan）穿透按脏值回退
-        # 缺省——``.inf`` 使瞬断重派 Timer 永不到期（恢复通道失去唯一驱动），
-        # ``.nan`` 使排程退化为零间隔自旋；口径对齐 infra_breaker
-        # cooldown_minutes 同构守卫（item d0a328355581）。
+            # 巨大 int（YAML 任意精度）送 float() 抛 OverflowError 同按脏值
+            # 处置（item 851ba3eeed41，口径同 infra_breaker threshold
+            # 8c2855513307）。
+            return None
+        # 非有限浮点（.inf/.nan，YAML 合法字面量）按脏值处置（item
+        # e2d87491cc64）：``.inf`` 使 Timer 永不到期（恢复通道失去唯一驱动），
+        # ``.nan`` 使排程退化为零间隔自旋。
         if not math.isfinite(val):
-            return 600.0
+            return None
         return val
+
+    def _transient_redispatch_delay(self, spec_name: str) -> float:
+        """瞬断重派等待秒数（``agents.transient_redispatch_delay_seconds``）。
+
+        配置容错（与 _dispatch_backoff_schedule 同口径）转调单一读取器
+        ``_delay_config_value``：非法配置值回退缺省 600s，不得中断瞬断
+        恢复排程。``spec_name`` 仅用于对齐 ``resolve_delay`` 签名（该通道
+        等待时长与 spec 无关）。
+        """
+        return self._delay_config_value(
+            "agents.transient_redispatch_delay_seconds", 600.0
+        )
 
     def _schedule_recovery_timer(
         self,
@@ -367,7 +406,9 @@ class BBackoffMixin:
           engine._instant_fail_cooldown_until / _signal_kill_cooldown_until
           未冷却时恒返回 0.0——两者均视为「通道未设截止」：此时旧定时器
           保留，到期自会兜底重入派发链）；
-        - ``resolve_delay`` 返回 None 则本此不排程；
+        - ``resolve_delay`` 返回 None 则本此不排程；回调抛异常同样按「本轮
+          不排程」处置（对齐同函数 resolve_deadline 防护口径，item
+          81c30a0d3023）；
         - 延迟下限 ``min_delay``；
         - ``scheduled_log`` 非空时于定时器启动后记 INFO，模板可用
           ``{spec_name}`` / ``{delay}``（后者已取 int）占位。
@@ -400,10 +441,18 @@ class BBackoffMixin:
                     # 旧回调幂等（摘标记+重入派发链），至多多一次重入。
                     pass
             timers.discard(spec_name)
-        raw_delay = resolve_delay(spec_name)
-        if raw_delay is None:
+        # resolve_delay 回调与折算同施 except Exception 防护（code-review
+        # item 81c30a0d3023，对齐同函数两处 resolve_deadline 的防护口径——
+        # 回调可能失败）：失败按「本轮不排程」return，恢复靠周期扫描兜底，
+        # 异常不再沿 _schedule_recovery_timer → queue 处理链外泄
+        # （如 _cooldown_remaining 对 None 截止 `until <= 0` 抛 TypeError）。
+        try:
+            raw_delay = resolve_delay(spec_name)
+            if raw_delay is None:
+                return
+            delay = max(min_delay, float(raw_delay))
+        except Exception:  # noqa: BLE001 — 回调失败按「本轮不排程」处置
             return
-        delay = max(min_delay, float(raw_delay))
         timer = threading.Timer(delay, callback, args=(spec_name,))
         timer.daemon = True
         timers.add(spec_name)
@@ -595,33 +644,14 @@ class BBackoffMixin:
     def _infra_retry_redispatch_delay(self, spec_name: str) -> float:
         """infra-retry 重派等待秒数（``verify.infra_retry_redispatch_delay_seconds``）。
 
-        配置容错（与 _transient_redispatch_delay 同口径）：非法配置值回退缺省
-        5s，不得中断重派排程。``spec_name`` 仅用于对齐 ``resolve_delay`` 签名
-        （该通道等待时长与 spec 无关）。
+        配置容错（与 _transient_redispatch_delay 同口径）转调单一读取器
+        ``_delay_config_value``：非法配置值回退缺省 5s，不得中断重派排程。
+        ``spec_name`` 仅用于对齐 ``resolve_delay`` 签名（该通道等待时长与
+        spec 无关）。
         """
-        raw = self._pm._get_config(
-            "verify.infra_retry_redispatch_delay_seconds", 5
+        return self._delay_config_value(
+            "verify.infra_retry_redispatch_delay_seconds", 5.0
         )
-        if isinstance(raw, bool):
-            # bool 是 int 子类（code-review item 88ef37e3e57e，对齐
-            # _dispatch_backoff_schedule 7b529d5446f4 布尔守卫）：
-            # float(True)=1.0 会被 isfinite 守卫误判为合法延时（经 min_delay
-            # 夹紧后偏离声明缺省），按脏配置回退缺省并 WARNING 留痕。
-            self._pm.logger.warning(
-                "pm_engine",
-                "配置 verify.infra_retry_redispatch_delay_seconds 非法（布尔不合法），"
-                f"回退缺省 5s: {raw!r}",
-            )
-            return 5.0
-        try:
-            val = float(raw)
-        except (TypeError, ValueError, OverflowError):
-            # 巨大 int（YAML 任意精度）送 float() 抛 OverflowError 同按脏值回退
-            # 缺省（口径同 _transient_redispatch_delay，item 851ba3eeed41）。
-            return 5.0
-        if not math.isfinite(val):
-            return 5.0
-        return val
 
     def _schedule_infra_retry_redispatch(
         self, spec_name: str, lock_held: bool = False

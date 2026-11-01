@@ -65,21 +65,21 @@ def _ocr_version(ocr_bin: str) -> str | None:
 
     首行形如 "open-code-review v1.12.5 (189be5b024) linux/amd64"，原样返回该行
     （UI 直接展示，不再二次解析版本号格式，避免与上游输出格式耦合）。
+
+    经 `_run_captured` 走 start_new_session + 超时进程组清扫（code-review item
+    8741456ba304）：ocr 是外部 npm 包装器，是否派生常驻孙进程未核实——
+    subprocess.run 超时只 kill 直接子进程，孙进程继承并长期持有 stdout/stderr
+    管道会使 run() 超时后的收尾排空被无限期阻塞，探测调用永不返回（dashboard
+    同步路由线程被永久占住，并发探测按 MAX_SERVER_THREADS 上限逐步耗尽请求
+    槽位）。复用与 _run_npm_install 同款清扫纪律（item 1984565d20b3）：超时
+    先组杀再排空管道；TimeoutExpired 属 SubprocessError，既有 except 分支
+    原样降级 None，调用方无感知。
     """
     try:
-        r = subprocess.run(
+        r = _run_captured(
             [ocr_bin, "--version"],
-            capture_output=True,
-            # 非交互：不继承 daemon 的 stdin，避免探测进程等待输入
-            stdin=subprocess.DEVNULL,
-            # 显式 UTF-8：text=True 缺省按 locale 解码，LC_ALL=C 启动的 daemon
-            # 遇 UTF-8 输出会抛 UnicodeDecodeError（不被下方 OSError/SubprocessError
-            # 捕获）。errors=replace 保证坏字节不再中断探测（code-review item
-            # fb2757a60715）。
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_VERSION_TIMEOUT,
+            _VERSION_TIMEOUT,
+            caller="ocr_status._ocr_version",
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -132,28 +132,33 @@ def install_ocr(timeout: int = _INSTALL_TIMEOUT) -> dict:
         _INSTALL_LOCK.release()
 
 
-def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
-    """npm install 执行（start_new_session + 超时进程组清扫）。
+def _run_captured(argv: list, timeout: int, caller: str) -> subprocess.CompletedProcess:
+    """捕获式子进程执行（start_new_session + 超时进程组清扫）——本模块
+    `_ocr_version`（code-review item 8741456ba304）与 `_run_npm_install`
+    （item 1984565d20b3）共用的单点实现。
 
-    subprocess.run(timeout=...) 超时只终止直接子进程 npm，npm 派生的 node
-    孙进程未经收组残留，可继续写全局前缀的 node_modules（半解包/EEXIST，
-    与本模块并发安装互斥锁要防的形态同型，code-review item 1984565d20b3）。
-    按 core/verify_contract.py ``_run_npm_provision`` 同款组清扫纪律：
-    start_new_session 使 leader 即进程组长（pgid == p.pid），提前取定句柄
-    防 wait 回收 leader 后 getpgid 失效；超时 SIGTERM 组 → wait(5) →
-    SIGKILL 组补刀 → 补 communicate 排空管道收尸，随后按 subprocess.run 同
-    约定向调用方抛 TimeoutExpired（既有超时分支的 _partial_output 诊断继续
-    生效）。Popen 的 OSError 同样交由调用方捕获。
+    subprocess.run(timeout=...) 超时只终止直接子进程，孙进程继承并长期持有
+    stdout/stderr 管道时，run() 超时后的收尾 communicate 排空会被孙进程无限期
+    阻塞（调用线程永久挂起）。按 core/verify_contract.py ``_run_npm_provision``
+    同款组清扫纪律：start_new_session 使 leader 即进程组长（pgid == p.pid），
+    提前取定句柄防 wait 回收 leader 后 getpgid 失效；超时 SIGTERM 组 →
+    wait(5) → SIGKILL 组补刀 → 补 communicate 排空管道收尸，随后按
+    subprocess.run 同约定向调用方抛 TimeoutExpired（既有超时分支的
+    _partial_output 诊断继续生效）。Popen 的 OSError 同样交由调用方捕获。
+
+    ``caller``：守卫告警中的调用点标识（guard_killpg WARNING 的取证锚点）。
     """
     p = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        # 非交互：npm 首次运行可能弹交互确认，读 DEVNULL 使其走非交互
-        # 分支/立即失败，不挂起到超时、不消费 daemon 终端输入
+        # 非交互：不继承 daemon 的 stdin，避免子进程等待输入；npm 首次运行
+        # 可能弹交互确认，读 DEVNULL 使其走非交互分支/立即失败，不挂起到
+        # 超时、不消费 daemon 终端输入
         stdin=subprocess.DEVNULL,
-        # 同 _ocr_version：显式 UTF-8 + replace，免 locale 依赖解码
-        # （code-review item fb2757a60715）。
+        # 显式 UTF-8 + replace：缺省按 locale 解码，LC_ALL=C 启动的 daemon
+        # 遇 UTF-8 输出会抛 UnicodeDecodeError；errors=replace 保证坏字节
+        # 不再中断（code-review item fb2757a60715）。
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -168,9 +173,7 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
             pgid = p.pid
         # 击杀最后一跳经自保护守卫（add-killpg-self-guard）：pgid 已提前取定
         # 直传；守卫拒绝（自身组/非正 pgid）与组已不存在同样静默。
-        guard_killpg(
-            pgid, signal.SIGTERM, caller="ocr_status._run_npm_install", resolve=False
-        )
+        guard_killpg(pgid, signal.SIGTERM, caller=caller, resolve=False)
         try:
             p.wait(timeout=5)
         except Exception:
@@ -178,9 +181,7 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
         # 组清扫补刀：leader 退出不等于组内已清——忽略 SIGTERM 的孙进程
         # （npm 派生的 node）会残留继续写全局前缀，无论 wait 成败都补一次
         # SIGKILL；ProcessLookupError＝组已清空，静默即可。
-        guard_killpg(
-            pgid, signal.SIGKILL, caller="ocr_status._run_npm_install", resolve=False
-        )
+        guard_killpg(pgid, signal.SIGKILL, caller=caller, resolve=False)
         # 收尸：补一次 communicate 排空 stdout/stderr 管道并回收退出状态，并把
         # 取回的尾部输出挂回异常（code-review item a203fe415b80）：Popen.
         # communicate 超时抛出的 TimeoutExpired 其 stdout/stderr 恒为 None
@@ -201,6 +202,17 @@ def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
             e.stderr = _as_text(e.stderr) + _as_text(err2)
         raise
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
+def _run_npm_install(argv: list, timeout: int) -> subprocess.CompletedProcess:
+    """npm install 执行（超时进程组清扫，实现委托 `_run_captured` 单点）。
+
+    subprocess.run 超时只终止直接子进程 npm，npm 派生的 node 孙进程未经收组
+    残留，可继续写全局前缀的 node_modules（半解包/EEXIST，与本模块并发安装
+    互斥锁要防的形态同型，code-review item 1984565d20b3）；清扫纪律详见
+    `_run_captured`（item 8741456ba304 的 `ocr --version` 探测一并复用）。
+    """
+    return _run_captured(argv, timeout, caller="ocr_status._run_npm_install")
 
 
 def _install_ocr_locked(timeout: int) -> dict:

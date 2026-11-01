@@ -18,8 +18,16 @@ import shlex
 import time
 from datetime import datetime, timezone
 
+import logging
+
 from core.pm_engine.dispatch.queue import WIP_DEFER_WINDOW_MINUTES, WIP_DEFER_MAX_ROUNDS
 from core.state_machine import FROZEN_FIELD
+
+# 模块级 logger（code-review item ba44c6896ccf）：``_dispatch_backoffed`` 是
+# staticmethod（admin_monitor 类直调 + engine 别名复用），无 self._pm.logger
+# 可用；非法退避值回退的留痕经此通道发出（形态对齐 spec_integrity/
+# serving_reclaim 的模块级 ``fenixd.*`` logger 先例）。
+_logger = logging.getLogger("fenixd.pm_engine.dispatch.rollback")
 
 
 class RRollbackMixin:
@@ -75,6 +83,10 @@ class RRollbackMixin:
         queue.py（超出本修复边界），故保留双落点并把时间基准写法统一为
         ``time.time()``（与 queue 侧同式，消除表达式漂移）；字段语义或过期
         判定调整时两点 MUST 同步。
+
+        字段缺失（falsy）与字段非法（float() 失败）均按未退避放行；前者是
+        正常缺省形态无留痕，后者经模块级 ``_logger`` WARNING 留痕（本方法
+        为 staticmethod、无 self._pm.logger，见模块头部说明）。
         """
         until = spec.get("_dispatch_backoff_until")
         if not until:
@@ -82,6 +94,17 @@ class RRollbackMixin:
         try:
             return float(until) > time.time()
         except (TypeError, ValueError):
+            # 字段非法留痕（code-review item ba44c6896ccf）：回退 False（按
+            # 未退避放行）方向合理——True 会因持续损坏造成永久停派——但
+            # 静默吞掉会让防振荡窗失效且事后无法从日志区分「字段缺失」（
+            # 上方 falsy 提前返回，正常缺省形态）与「字段损坏已放行」。
+            # 与本文件 _dispatch_rollback_backoff_seconds 的非法值 WARNING
+            # 口径对齐（01c0160765d2 可诊断性）。
+            _logger.warning(
+                "spec %r 的 _dispatch_backoff_until 非法（%r，%s），"
+                "按未退避放行本轮派发（防振荡窗对该条目失效）",
+                spec.get("name"), until, type(until).__name__,
+            )
             return False
 
     def _dispatch_rollback_backoff_seconds(self) -> int:
@@ -311,17 +334,10 @@ class RRollbackMixin:
                 # 入队独立守卫（code-review item 01bfb767effe，与 implementer 分支
                 # 同款）：_enqueue 若裸露在大 try 内，队列写入抛错（锁/IO）会跳到
                 # 外层 except 记误导性「State rollback failed」（尽管上方 update_spec
-                # 已把 spec 复位 implemented）且重派条目静默丢失。单独守卫：失败
+                # 已把 spec 复位 implemented）且重派条目静默丢失。守卫实现收敛进
+                # _requeue_after_rollback（code-review item d4b93ed8ad92）：失败
                 # 如实记 ERROR，不覆盖状态复位成果（full_scan recovery 兜底）。
-                try:
-                    self._enqueue(spec_name, "verifier")
-                except Exception as enqueue_exc:  # noqa: BLE001 —— 入队失败不吞回滚成果
-                    self._pm.logger.error(
-                        "pm_engine",
-                        f"Redispatch enqueue failed for '{spec_name}' "
-                        f"(state rolled back to implemented, pending full_scan "
-                        f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
-                    )
+                self._requeue_after_rollback(spec_name, "verifier", "implemented")
             elif agent_type == "spec-review" and status == "reviewing":
                 # 评审 worker 异常回滚（fix-spec-review-blocking-dispatch 1.8
                 # 双保险）：四步链之外异常（构造失败/快照路径异常）时 spec 可能
@@ -485,17 +501,10 @@ class RRollbackMixin:
                 # try 内任何守卫外——队列写入抛错（锁/IO）会跳到外层 except 记
                 # 误导性「State rollback failed」（尽管上方 update_spec 已把 spec
                 # 复位 ready）且重派条目静默丢失，正是本方法要修复的卡死状态
-                # （只剩 full_scan recovery 兜底）。单独守卫：失败如实记 ERROR，
-                # 不覆盖状态复位成果。
-                try:
-                    self._enqueue(spec_name, agent_type)
-                except Exception as enqueue_exc:  # noqa: BLE001 —— 入队失败不吞回滚成果
-                    self._pm.logger.error(
-                        "pm_engine",
-                        f"Redispatch enqueue failed for '{spec_name}' "
-                        f"(state rolled back to ready, pending full_scan "
-                        f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
-                    )
+                # （只剩 full_scan recovery 兜底）。守卫实现收敛进
+                # _requeue_after_rollback（code-review item d4b93ed8ad92）：失败
+                # 如实记 ERROR，不覆盖状态复位成果。
+                self._requeue_after_rollback(spec_name, agent_type, "ready")
             else:
                 # 未覆盖 (agent_type, status) 组合（code-review item 01c0160765d2）：
                 # 旧 if/elif 链无兜底——静默返回、无日志、无回滚，残余卡死形态在
@@ -507,6 +516,32 @@ class RRollbackMixin:
                 )
         except Exception as e2:
             self._pm.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
+
+    def _requeue_after_rollback(
+        self, spec_name: str, agent_type: str, rolled_back_to: str
+    ) -> None:
+        """回滚复位成功后的重派入队独立守卫（code-review item d4b93ed8ad92）。
+
+        verifier 分支（01bfb767effe）与 implementer/fast-track 分支
+        （9842741702fe）原各自维护同构的 try/_enqueue/except ERROR 守卫块，
+        仅 agent_type 与 rolled_back_to 文案一词之差、分属两次独立修复，
+        守卫语义调整时需两处同步、漂移即两车道回滚收尾行为分叉——收敛于
+        此（与 ``_emit_mergeback_alert`` 消除复制粘贴脚手架的思路一致）。
+
+        _enqueue 若裸露在调用方大 try 内，队列写入抛错（锁/IO）会跳到外层
+        except 记误导性「State rollback failed」（尽管状态已复位）且重派
+        条目静默丢失——单独守卫：失败如实记 ERROR（``rolled_back_to`` 逐字
+        拼入既有文案），不覆盖状态复位成果（full_scan recovery 兜底）。
+        """
+        try:
+            self._enqueue(spec_name, agent_type)
+        except Exception as enqueue_exc:  # noqa: BLE001 —— 入队失败不吞回滚成果
+            self._pm.logger.error(
+                "pm_engine",
+                f"Redispatch enqueue failed for '{spec_name}' "
+                f"(state rolled back to {rolled_back_to}, pending full_scan "
+                f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
+            )
 
     def _emit_mergeback_alert(
         self,
@@ -626,7 +661,17 @@ class RRollbackMixin:
             wm = self._pm.agent_runner.worktree_manager
             with wm._main_tree_lock:
                 fate = dict(wm.last_stash_entry_fate)
-        except Exception:
+        except Exception as fate_exc:
+            # 读取失败留痕（code-review item 6e8f445caa22）：下方告警文案与
+            # 找回指引按保守默认「保留在栈中（git stash show/list 可见）」
+            # 生成，实际条目去向不明——无留痕时人工按告警指引核对会扑空，
+            # 且日志无从判别「fate 读取失败、文案基于保守默认」与真实保留。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"stash 条目去向读取失败 '{spec_name}'，告警按保守默认"
+                f"「保留在栈中」生成（人工核对指引可能不适用）: "
+                f"{type(fate_exc).__name__}: {fate_exc}",
+            )
             fate = {"kept": True, "sha": ""}
         sha = fate.get("sha", "") or ""
         short_sha = sha[:12] if sha else ""

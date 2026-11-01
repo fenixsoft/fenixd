@@ -45,6 +45,7 @@ FEEDBACK_FILE_NAME = "feedback.json"
 PORT_RETRY_ATTEMPTS = 5
 RANDOM_PORT_RANGE = (49200, 65499)
 MAX_FEEDBACK_BODY_BYTES = 1 << 20  # 1MB
+MAX_FEEDBACK_FILE_BYTES = 8 << 20  # 8MB：feedback.json 总量上限，超限拒绝写入
 STOP_WAIT_SEC = 5
 # 跨请求共享的批注写入锁：ThreadingHTTPServer 每个连接新建 handler 实例，
 # 实例级锁没有跨连接互斥，并发 POST /feedback 会互相覆盖丢批注。
@@ -202,10 +203,21 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
 # HTTP 服务
 # ---------------------------------------------------------------------------
 
+class FeedbackWriteRejected(Exception):
+    """feedback.json 拒绝写入（携带 HTTP 状态码），文案直接回给客户端。"""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
 class PrototypeHandler(SimpleHTTPRequestHandler):
     """静态伺服原型目录 + POST /feedback 落 feedback.json。"""
 
     protocol_version = "HTTP/1.1"
+    # 慢客户端（声明 Content-Length 却缓慢发送 / 半开连接）会让 rfile.read
+    # 无限期阻塞并占住 ThreadingHTTPServer 的 handler 线程；超时由基类断开。
+    timeout = 30
 
     def __init__(self, *args, proto_dir: Path | None = None, **kwargs):
         self.proto_dir = proto_dir
@@ -252,7 +264,11 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
             self._send_json(400, {"ok": False,
                                   "error": "批注必须含非空 anchor 与 text 字段"})
             return
-        path = self._append_feedback(annotation)
+        try:
+            path = self._append_feedback(annotation)
+        except FeedbackWriteRejected as exc:
+            self._send_json(exc.status, {"ok": False, "error": str(exc)})
+            return
         self._send_json(200, {"ok": True, "stored": str(path)})
 
     def _append_feedback(self, annotation: dict) -> Path:
@@ -269,6 +285,12 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
                     elif isinstance(existing, dict) and isinstance(existing.get("feedback"), list):
                         doc = existing
                         entries = existing["feedback"]
+                    elif isinstance(existing, dict):
+                        # dict 但无 feedback 列表（手工整理等其他合法 JSON object）：
+                        # 无法安全并入，拒绝写入而非按空数组起步整体覆盖丢历史。
+                        raise FeedbackWriteRejected(
+                            409, "feedback.json 是不含 feedback 列表的 JSON object，"
+                                 "拒绝追加；请先归档或手工合并该文件后重试")
                 except (OSError, ValueError):
                     entries = []
             entries.append(annotation)
@@ -278,11 +300,16 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
                 payload: dict | list = doc
             else:
                 payload = entries  # 裸 list 形态按现有逻辑回写数组
+            text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            if len(text.encode("utf-8")) > MAX_FEEDBACK_FILE_BYTES:
+                # 文件无界增长会占满磁盘：超总量上限拒绝写入，提示归档
+                raise FeedbackWriteRejected(
+                    507, f"feedback.json 超过 {MAX_FEEDBACK_FILE_BYTES}B 总量上限，"
+                         "拒绝写入；请归档历史批注后重试")
             # tmp 文件名带进程/线程唯一后缀：并发写各用各的 tmp，避免内容交错
             tmp = target.with_name(
                 f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                           encoding="utf-8")
+            tmp.write_text(text, encoding="utf-8")
             tmp.replace(target)
         return target
 

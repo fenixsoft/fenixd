@@ -6,7 +6,7 @@ GET /api/quality/ocr-status、POST /api/quality/ocr-install 两个 HTTP 端点�
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -29,17 +29,17 @@ class TestCheckOcrInstalled:
         assert check_ocr_installed() == {"installed": False, "bin": None, "version": None}
 
     def test_installed_parses_version_first_line(self, monkeypatch):
-        """已装：which 命中 + ocr --version 首行作为 version。"""
+        """已装：which 命中 + ocr --version 首行作为 version（item 8741456ba304
+        后探测走 _run_captured 的 Popen，替身缝从 subprocess.run 迁来）。"""
         monkeypatch.setattr(ocr_status.shutil, "which", lambda _: "/usr/bin/ocr")
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             assert argv[0] == "/usr/bin/ocr"
-            r = MagicMock()
-            r.returncode = 0
-            r.stdout = "open-code-review v1.12.5 (189be5b0) linux/amd64\nbuilt at: ...\n"
-            return r
+            return _FakeNpmProc(
+                out="open-code-review v1.12.5 (189be5b0) linux/amd64\nbuilt at: ...\n"
+            )
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         out = check_ocr_installed()
         assert out["installed"] is True
         assert out["bin"] == "/usr/bin/ocr"
@@ -49,13 +49,10 @@ class TestCheckOcrInstalled:
         """已装但 --version 非零退出 → installed 仍 True，version=None。"""
         monkeypatch.setattr(ocr_status.shutil, "which", lambda _: "/usr/bin/ocr")
 
-        def fake_run(argv, **kwargs):
-            r = MagicMock()
-            r.returncode = 1
-            r.stdout = ""
-            return r
+        def fake_popen(argv, **kwargs):
+            return _FakeNpmProc(returncode=1, out="")
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         out = check_ocr_installed()
         assert out["installed"] is True
         assert out["version"] is None
@@ -64,10 +61,10 @@ class TestCheckOcrInstalled:
         """已装但 --version 抛 OSError → installed 仍 True，version=None。"""
         monkeypatch.setattr(ocr_status.shutil, "which", lambda _: "/usr/bin/ocr")
 
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             raise OSError("boom")
 
-        monkeypatch.setattr(ocr_status.subprocess, "run", fake_run)
+        monkeypatch.setattr(ocr_status.subprocess, "Popen", fake_popen)
         assert check_ocr_installed()["installed"] is True
 
 
@@ -75,8 +72,9 @@ class TestCheckOcrInstalled:
 
 
 class _FakeNpmProc:
-    """``ocr_status._run_npm_install`` 的 Popen 替身（item 1984565d20b3 后实现
-    走 start_new_session + 进程组清扫的 Popen，替身缝从 subprocess.run 迁来）。
+    """``ocr_status._run_captured`` 的 Popen 替身（item 1984565d20b3 后实现
+    走 start_new_session + 进程组清扫的 Popen，替身缝从 subprocess.run 迁来；
+    item 8741456ba304 后 `_ocr_version` 探测同走此缝，共用本替身）。
 
     pid 用不存在的值：超时清扫路径 os.getpgid/os.killpg 对其抛
     ProcessLookupError，走静默分支，不会波及真实进程组。

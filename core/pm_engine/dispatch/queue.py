@@ -627,46 +627,42 @@ class QQQueueMixin:
         # _merge_retry_* 读取器同款走 _normalized_*_config 严格归一——原裸
         # 真值判定/float()/int() 直转会把带引号的 "false" 误开启老化、把
         # true 折成 1、非整值浮点静默截断采信。enabled 非布尔 fail-closed
-        # 回缺省关闭；数值非法 WARNING 留痕回缺省；try/except 保留为最后
-        # 兜底（畸形配置不炸派发循环）。
+        # 回缺省关闭；数值非法 WARNING 留痕回缺省。
         # enabled 读取独立包 try（code-review item be649b434782）：读取抛
-        # TypeError/ValueError 时若落入外层 except，会按缺省参数（30/15 分钟、
-        # 4 档）继续计算老化——等效把 enabled 当 true 处理，与「enabled 非布尔
-        # fail-closed 回缺省关闭」方向相反。异常时与非法布尔同向直接 return 0
-        # （写法对齐 _normalized_int_config/_normalized_float_config 的读取
-        # try 形态）。
+        # TypeError/ValueError 时按缺省布尔继续判定会等效把 enabled 当 true
+        # 处理，与「enabled 非布尔 fail-closed 回缺省关闭」方向相反。异常时
+        # 与非法布尔同向直接 return 0（写法对齐 _normalized_int_config/
+        # _normalized_float_config 的读取 try 形态）。
         try:
             enabled = self._pm._get_config("pm.dispatch.aging.enabled", False)
         except (TypeError, ValueError):
             return 0
         if not isinstance(enabled, bool) or not enabled:
             return 0
-        try:
-            # 注意：数值键不能用 `or 默认值` 取参 —— 0（initial_wait/
-            # step_down）合法且常见，0 为假值会被误替换为默认值（归一读取器
-            # None 判空回缺省同口径）。
-            initial_wait = (
-                max(0.0, _normalized_float_config(
-                    self._pm, "pm.dispatch.aging.initial_wait_minutes", 30
-                )) * 60.0
-            )
-            step_down = (
-                max(0.0, _normalized_float_config(
-                    self._pm, "pm.dispatch.aging.step_down_minutes", 15
-                )) * 60.0
-            )
-            floor_levels = max(
-                0,
-                _normalized_int_config(
-                    self._pm, "pm.dispatch.aging.floor_levels", 4
-                ),
-            )
-        except (TypeError, ValueError):
-            # 畸形配置（如非数值字符串）只降级回缺省值，不炸派发循环
-            #（口径对齐 _merge_retry_* 读取器）。
-            initial_wait = 30 * 60.0
-            step_down = 15 * 60.0
-            floor_levels = 4
+        # 数值键无外层 try/except 兜底（code-review item ff957ff057be）：
+        # _normalized_float_config/_normalized_int_config 内部已对
+        # TypeError/ValueError 全量归一（WARNING 留痕回缺省、不外抛），原
+        # except 分支不可达且其缺省字面量与下方读取器调用点双份维护——缺省
+        # 唯一定义收口到各读取器调用的 default 实参。
+        # 注意：数值键不能用 `or 默认值` 取参 —— 0（initial_wait/
+        # step_down）合法且常见，0 为假值会被误替换为默认值（归一读取器
+        # None 判空回缺省同口径）。
+        initial_wait = (
+            max(0.0, _normalized_float_config(
+                self._pm, "pm.dispatch.aging.initial_wait_minutes", 30
+            )) * 60.0
+        )
+        step_down = (
+            max(0.0, _normalized_float_config(
+                self._pm, "pm.dispatch.aging.step_down_minutes", 15
+            )) * 60.0
+        )
+        floor_levels = max(
+            0,
+            _normalized_int_config(
+                self._pm, "pm.dispatch.aging.floor_levels", 4
+            ),
+        )
         elapsed = max(0.0, now - (enqueued_at or now))
         if step_down <= 0 or elapsed < initial_wait:
             return 0
@@ -4850,6 +4846,18 @@ class QQQueueMixin:
     def _ocr_join_clear_pending(self, spec_name: str) -> None:
         """清 pending 停等标记（放行/裁决完成时调用；失败静默）。"""
         try:
+            # 先读后写（code-review item 2dc1c42f4984）：pending 不在场时跳过
+            # update_spec——写 {None, None} 仍按有效字段落盘（applied 非空即
+            # 全量 flock+read_all+write_all），各 pass 出口在字段本已为 None
+            # 时每次都白付一次 STATE 全量重写；读侧判空语义与
+            # _on_impl_ocr_lane_finished 的 entry.get("_ocr_join_wait") 守卫
+            # 对齐。条目不在册（read_one 为 None）时保持原路径交 update_spec
+            # 幂等拒写；读失败按在场处理（保守写一次，清理语义不变）。读写
+            # 之间的并发窗口无害：最多多一次无效写或晚一拍清，本方法本就是
+            # 幂等收尾。
+            entry = self._pm.state_machine.read_one(spec_name)
+            if entry is not None and not entry.get("_ocr_join_wait"):
+                return
             self._pm.state_machine.update_spec(
                 spec_name, self._ocr_join_pending_cleared()
             )
@@ -4914,12 +4922,14 @@ class QQQueueMixin:
         return "defer"
 
     def _ocr_join_reject(self, spec_name: str, entry: dict, actionable: list,
-                         rounds: int, artifact: dict) -> str:
+                         rounds: int, artifact: dict,
+                         origin: str = "planner-judge") -> str:
         """gate 档打回（任务 4.4）：testing → bug-found → 修复轮重派。
 
         与验证失败既有打回同通道（零新状态）：transition bug-found →
         error 注明 ocr findings → ``_ocr_fix_rounds`` 递增持久化 → 写修复轮
         directive（任务 5.1 join 侧写点）→ ``_on_spec_bug_found`` 原地打回重派。
+        ``origin`` 仅用于打回 transition 的审计 agent_type 分流（见下）。
         """
         sm = self._pm.state_machine
         lane_run_id = str(artifact.get("run_id") or "")
@@ -4933,10 +4943,19 @@ class QQQueueMixin:
         # 残留反而更糟。否则冻结 error（内嵌「原状态 X」供 parse_orig_status
         # 解冻还原）被覆写、修复轮计数被改写、打回链照常启动，冻结保护被绕过。
         # 返回 "defer"（调用方语义=停止推进）：gate 侧不再动作。
+        # agent_type 随 join 起源分流（code-review item ed51305209e6）：
+        # pipeline 起源记 "planner-judge"（对齐 verification/pipeline.py
+        # bug-found 打回的既有审计口径）、fast-track 起源记 "fast-track"
+        # （对齐 fast_track.py 全车道 transition 恒记 fast-track 的口径），
+        # 未知 origin 回退 planner-judge——fast-track spec 的 ocr 打回在
+        # STATE 审计/归因里不再被记成 planner-judge 发起。
         if not sm.transition(
             spec_name, "bug-found",
             trigger_run_id=entry.get("tester_run") or None,
-            agent_type="planner-judge", channel="auto",
+            agent_type=(
+                "fast-track" if origin == "fast-track" else "planner-judge"
+            ),
+            channel="auto",
         ):
             self._pm.logger.warning(
                 "pm_engine",
@@ -4997,9 +5016,23 @@ class QQQueueMixin:
             f"ocr join gate 打回 '{spec_name}': {len(actionable)} 条 findings，"
             f"修复轮 {rounds + 1}/1（lane run {lane_run_id}）",
         )
-        self._pm._on_spec_bug_found(
-            spec_name, failure_class="product", run_id=lane_run_id
-        )
+        # 重派调用非阻塞守卫（code-review item 7df355652a13）：至此 spec 已落
+        # bug-found、修复轮已记账、directive 已写——重派失败仅 WARNING 留痕
+        # （含 run_id 与已记账轮次）后照常返回 "reject"，由 recovery/巡检通道
+        # 按 bug-found 态拾取重派，与上方各写点的非阻塞守卫口径一致；否则
+        # 异常在 pipeline 路径沿验证管线外溢、在 ocr 车道回调线程被吞成无
+        # 现场 WARNING。
+        try:
+            self._pm._on_spec_bug_found(
+                spec_name, failure_class="product", run_id=lane_run_id
+            )
+        except Exception as e:  # noqa: BLE001
+            self._pm.logger.warning(
+                "pm_engine",
+                f"ocr join gate 打回重派失败 '{spec_name}'（bug-found 态由 "
+                f"recovery/巡检通道拾取，修复轮 {rounds + 1}/1 已记账，"
+                f"lane run {lane_run_id}）: {type(e).__name__}: {e}",
+            )
         return "reject"
 
     def _write_ocr_findings_directive(self, spec_name: str, findings: list,
@@ -5208,7 +5241,7 @@ class QQQueueMixin:
             rounds = self._parse_int_field(entry, "_ocr_fix_rounds", 0)
             if rounds < 1:
                 return self._ocr_join_reject(
-                    spec_name, entry, actionable, rounds, artifact
+                    spec_name, entry, actionable, rounds, artifact, origin
                 )
             # 任务 4.5：修复轮上限（_ocr_fix_rounds >= 1）仍出现的 findings
             # 全部转台账（status=open、spec 归属本 spec），join 放行防死循环。

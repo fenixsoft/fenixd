@@ -52,6 +52,7 @@ class _AnchorParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         # id -> {"id","tag","text","count"}（保持首现顺序）
         self.anchors: dict[str, dict] = {}
+        self.unclosed_count = 0
         self._stack: list[tuple[str, str | None, list[str]]] = []
 
     @staticmethod
@@ -72,11 +73,12 @@ class _AnchorParser(HTMLParser):
         self._stack.append((tag, anchor_id, []))
 
     def handle_startendtag(self, tag, attrs):
-        # 自闭合（xhtml 风格 / void 带斜杠，均走本回调而非 starttag）不进栈；
-        # 带锚直接记录（无后代文本，快照置空串）
-        anchor_id = self._anchor_from_attrs(attrs)
-        if anchor_id:
-            self._record(anchor_id, tag, "")
+        # 自闭合（xhtml 风格 / void 带斜杠，均走本回调而非 starttag）。
+        # HTML5 语义下非 void 元素的自闭合斜杠被忽略、元素照常容纳子内容，
+        # 故按 starttag 同款处理（压栈，子文本仍归属该锚，闭合时记录快照，
+        # 与 annotator.js 运行时快照口径一致）；void 元素本无子内容，
+        # starttag 分支即在开始标签处按空快照记录
+        self.handle_starttag(tag, attrs)
 
     @staticmethod
     def _snapshot(texts: list[str]) -> str:
@@ -111,17 +113,35 @@ class _AnchorParser(HTMLParser):
                 texts.append(data.strip())
                 return
 
-    def _record(self, anchor_id: str, tag: str, text: str) -> None:
+    def _record(self, anchor_id: str, tag: str, text: str,
+                source: str | None = None) -> None:
         entry = self.anchors.get(anchor_id)
         if entry is None:
-            self.anchors[anchor_id] = {
+            record = {
                 "id": anchor_id,
                 "tag": tag,
                 "text": text[:TEXT_SNAPSHOT_LIMIT],
                 "count": 1,
             }
+            if source:
+                record["source"] = source
+            self.anchors[anchor_id] = record
         else:
             entry["count"] += 1
+
+    def close(self) -> None:
+        # 先冲刷解析缓冲，让尾部文本仍归属栈内锚帧，再收尾 EOF 残帧
+        super().close()
+        # 文档结束时仍滞留解析栈的带锚帧（未闭合元素）：其帧永不弹栈，
+        # 按上方 lost-frame 同款口径回填记录，避免锚静默丢失被 diff 误判
+        # dropped、verify_unaffected 机械门假阳性；附 source 标记便于人工核对
+        for lost_tag, lost_anchor, lost_texts in self._stack:
+            if lost_anchor:
+                self._record(lost_anchor, lost_tag, self._snapshot(lost_texts),
+                             source="unclosed")
+        self.unclosed_count = sum(
+            1 for _, anchor_id, _ in self._stack if anchor_id)
+        self._stack.clear()
 
 
 def extract_anchors(html: str) -> dict[str, dict]:
@@ -241,7 +261,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "extract":
         anchors = extract_anchors(_read_or_die(args.html))
-        print(json.dumps({"ok": True, "anchors": list(anchors.values())},
+        values = list(anchors.values())
+        print(json.dumps({"ok": True,
+                          "unclosed_count": sum(1 for a in values
+                                                if a.get("source") == "unclosed"),
+                          "anchors": values},
                          ensure_ascii=False, indent=2))
         return 0
 

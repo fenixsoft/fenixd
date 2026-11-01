@@ -82,7 +82,8 @@ OUTPUT_READBACK_LIMIT_BYTES = 64 * 1024 * 1024
 # 文件后再截断主文件（POSIX ftruncate 只能保留头部、就地截断恰丢最新写入
 # 的尾部，而 FAILED 摘要与 faulthandler 栈集中在输出后段，故先快照后截断）：
 # 被截区间留稀疏洞、不占实际磁盘块（tmpfs 亦不占页），主文件磁盘占用上界
-# ≈ 窗口 + 单个轮询周期内的新增写入，伴生文件 ≤ 窗口。窗口 ≥ 回读上限
+# ≈ 窗口 + 单个轮询周期内的新增写入，伴生文件 ≤ 窗口 + 收割窗内的增量
+# 续接（见 _drain_output_disk）。窗口 ≥ 回读上限
 # （4 倍冗余），_read_back_output 拼接「伴生尾窗 + 截断后新增」的尾部回读
 # 不受影响。
 OUTPUT_DISK_KEEP_BYTES = 4 * OUTPUT_READBACK_LIMIT_BYTES
@@ -279,6 +280,32 @@ def _copy_tail_snapshot(fd, tail_file, size: int, keep: int, chunk=1024 * 1024) 
     tail_file.flush()
 
 
+# 收割窗竞态（code-review item 1aecd9823293）收敛的增量续接轮次封顶：常规
+# 1 轮即追平（fstat 显示无新增即止）；封顶只为防失控输出方持续快于快照
+# 速度时本线程无限空转、磁盘收割停摆（此时按已快照边界截断）。
+_DRAIN_EXTEND_ROUNDS = 4
+
+
+def _append_tail_snapshot(fd, tail_file, start: int, end: int, chunk=1024 * 1024) -> None:
+    """把主文件 [start, end) 增量续接到伴生尾窗文件尾部（延展既有快照窗口）。
+
+    供 _drain_output_disk 在整窗快照（_copy_tail_snapshot）之后、截断之前
+    收敛收割窗竞态：整窗拷贝期间子进程仍在追加写入，把快照边界之后的新增
+    区间接续到伴生文件尾部，快照窗口即可追平当前文件长度，保证被截区间
+    ⊆ 已快照区间。读侧 os.pread / 写侧单线程访问的并发约束同
+    _copy_tail_snapshot；续接后同样立即冲刷（原因见彼处注释）。
+    """
+    tail_file.seek(0, os.SEEK_END)
+    pos = start
+    while pos < end:
+        block = os.pread(fd, min(chunk, end - pos), pos)
+        if not block:
+            break
+        tail_file.write(block)
+        pos += len(block)
+    tail_file.flush()
+
+
 def _drain_output_disk(
     fds, stop_event, keep=OUTPUT_DISK_KEEP_BYTES, poll_seconds=1.0,
     tail_files=None, snapshots=None,
@@ -292,13 +319,19 @@ def _drain_output_disk(
     旧数据、子进程续写偏移不回退、被截区间成稀疏洞）——就地截断丢弃的恰是
     最新写入的末端，而 FAILED 摘要与 faulthandler 栈集中在输出后段，正是
     不能丢的证据。故每轮先经 _copy_tail_snapshot 把末尾 keep 字节存入伴生
-    尾窗文件（tail_files，与 fds 一一对应），快照落定并记入 snapshots
+    尾窗文件（tail_files，与 fds 一一对应），再经 _append_tail_snapshot 增量
+    续接整窗拷贝期间子进程的新增写入（反复 fstat 直至快照边界追平当前文件
+    长度，轮次封顶 _DRAIN_EXTEND_ROUNDS），快照落定并记入 snapshots
     （fd → 截断前 size，供 _read_back_output 拼接边界之后的新增写入）后才
     ftruncate 主文件：尾部块已存伴生、丢弃安全，头部保留为稀疏洞夹旧数据、
-    不占实际块，磁盘占用仍有界（主文件 ≈ 窗口 + 单轮询周期新增，伴生 ≤ 窗口）。
+    不占实际块，磁盘占用仍有界（主文件 ≈ 窗口 + 单轮询周期新增，
+    伴生 ≤ 窗口 + 收割窗内增量续接）。
 
-    顺序纪律：先快照、后截断——任一步异常直接停机（fail-open 退化为「磁盘
-    维度无界」的现状，不干扰主流程），绝不出现「截断了却没快照」的证据丢失。
+    顺序纪律：先快照（整窗 + 增量收敛追平）、后截断——任一步异常直接停机
+    （fail-open 退化为「磁盘维度无界」的现状，不干扰主流程），绝不出现
+    「截断了却没快照」的证据丢失（残余竞态窗收窄到末次 fstat 与 ftruncate
+    两个相邻系统调用之间；轮次封顶触发且未收敛时按已快照边界截断，丢失面
+    收窄到末轮续接之后的新增，仍远小于原先整窗拷贝期间的增量）。
     tail_files/snapshots 缺省 None 时退化为就地截断（无伴生文件的调用方，
     不保留尾部窗口之外的语义承诺）。
     """
@@ -312,6 +345,21 @@ def _drain_output_disk(
                     _copy_tail_snapshot(fd, tail_files[i], size, keep)
                     if snapshots is not None:
                         snapshots[fd] = size
+                    # 收敛收割窗竞态（code-review item 1aecd9823293）：整窗
+                    # 拷贝可达秒级，期间子进程新写入的 [size, 当前长度) 既不
+                    # 在快照内、又会被紧随的 ftruncate 一并截掉，从两份文件中
+                    # 永久消失。截断前反复 fstat 并把新增区间增量续接进伴生
+                    # 尾窗，直至快照边界追平当前文件长度再截断，保证被截区间
+                    # ⊆ 已快照区间；轮次封顶 _DRAIN_EXTEND_ROUNDS 防失控输出
+                    # 持续快于快照速度时永不收敛、磁盘收割停摆。
+                    for _ in range(_DRAIN_EXTEND_ROUNDS):
+                        latest = os.fstat(fd).st_size
+                        if latest <= size:
+                            break
+                        _append_tail_snapshot(fd, tail_files[i], size, latest)
+                        size = latest
+                        if snapshots is not None:
+                            snapshots[fd] = size
                 os.ftruncate(fd, size - keep)
         except Exception:
             return
@@ -407,9 +455,10 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         stop_drain.set()
         if drainer is not None:
             drainer.join(timeout=5)
-        # join 超时时收割线程可能仍停在 _copy_tail_snapshot 的整窗重写中
-        # （truncate(0) 后逐块覆写，窗口上限 OUTPUT_DISK_KEEP_BYTES，慢盘/
-        # 高负载下可超 5s）——此时回读伴生尾窗会与该重写并发，读到撕裂尾部。
+        # join 超时时收割线程可能仍停在伴生尾窗写入中（_copy_tail_snapshot
+        # 的整窗重写 truncate(0) 后逐块覆写，窗口上限 OUTPUT_DISK_KEEP_BYTES，
+        # 慢盘/高负载下可超 5s；或其后的增量续接）——此时回读伴生尾窗会与
+        # 该写入并发，读到撕裂尾部。
         # 放弃伴生路径（tail_stream/tail_start 均置 None），退化为直接回读主
         # 文件尾部（语义与未收割一致；主文件侧与残余 ftruncate 并发至多短读，
         # 不产生撕裂内容），与收割线程「起不来/中途异常均 fail-open 退化、不

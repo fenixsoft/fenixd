@@ -18,12 +18,13 @@
     3. pyproject.toml（含 [build-system] 或 [tool.poetry]）→ 检查根级 dist/、_build/
     4. 项目目录结构：根级 dist/、build/、out/ 目录（独立信息源，仅项目根级，
        不递归子级；Python 项目不列 build/；dist/ 已由 pyproject 分支归因时不重复记源）
-    5. 根级产物文件：release-*.zip、*.tar.gz 等命名的产物文件（写入具体文件名）
+    5. 根级产物文件：release-*.zip、*.tar.gz 等命名的产物文件（版本段折叠为
+       通配形态落候选，如 release-1.0.zip → release-*.zip）
 
 输出（JSON）：
     {
       "has_build_artifacts": true,
-      "build_artifact_paths": ["dist/", "release-1.0.zip"],
+      "build_artifact_paths": ["dist/", "release-*.zip"],
       "sources": ["package.json scripts.build", "dist/ 存在"],
       "status": "success"
     }
@@ -59,6 +60,35 @@ sys.path.insert(0, str(FRAMEWORK_ROOT))
 # package.json 构建脚本键白名单（code-review item 0c0caf5199e6）：判存在与列
 # 键名共用同一元组（单一事实源），避免两处字面量须同步演进、漏改一处漂移
 _BUILD_SCRIPT_KEYS = ("build", "dist", "release", "bundle")
+
+
+def _artifact_file_glob(name: str) -> str:
+    """把源 5 命中的具体产物文件名折叠为合法通配形态（含 *）。
+
+    写入侧 validate_build_artifact_paths（判定权威 normalize_artifact_patterns）
+    只收「以 / 结尾的前缀」或「含 * 的通配」，具体文件名（如 release-1.0.zip，
+    无 * 且不以 / 结尾）恒判非法，--write 必被「候选路径校验未通过」拒绝
+    （code-review item fc3bd7b4a282）。故落候选前折叠为通配：版本段（数字串
+    及点号分隔版本组）折叠为 *，release-1.0.zip → release-*.zip；无版本数字
+    的命中（如 release-notes.zip，经 release- 前缀或边界关键词分支命中）截到
+    边界关键词折叠词干余部，保证产出必含 *（与判定权威合法形态对齐）。
+    折叠产物不含 / 时 ArtifactPathMatcher 只命中仓库根级相对路径，与「根级
+    产物文件」语义一致，且能覆盖同模式后续构建（release-2.0.zip 等）。
+    """
+    # 版本段折叠：release-1.0.zip → release-*.zip；v1.2.3.tar.gz → v*.tar.gz
+    globbed = re.sub(r"\d+(?:\.\d+)*", "*", name)
+    if "*" in globbed:
+        return globbed
+    ext = ".tar.gz" if name.endswith(".tar.gz") else ".zip"
+    stem = name[: len(name) - len(ext)]
+    # 边界关键词与探测分支同词表（release/build/dist），[-_]? 吸收其后分隔符，
+    # 使 release-notes.zip → release-*.zip（保留分隔符、不过宽到 releasex*.zip）
+    m = re.search(r"(?:^|[-_])(?:release|build|dist)[-_]?", stem)
+    if m:
+        return stem[: m.end()] + "*" + ext
+    # 兜底（不可达：探测分支保证 name 必命中前缀或边界关键词其一）——仍须产出
+    # 含 * 的合法形态；末缀 * 至少保底命中原文件名自身（* 可匹配空串）
+    return name + "*"
 
 
 def detect_build_artifacts(project_root: Path) -> dict:
@@ -167,7 +197,7 @@ def detect_build_artifacts(project_root: Path) -> dict:
         except OSError:
             pass  # 该目录不可读（权限/挂载异常）时只跳过本目录，不阻塞探测
 
-    # ── 5. 根级产物文件（release-*.zip 等命名 → 写入具体文件名）──────────────
+    # ── 5. 根级产物文件（release-*.zip 等命名 → 版本段折叠为通配落候选）──────
     try:
         # 一次性物化枚举（code-review item 74ac90941c60）：iterdir 是惰性生成器，
         # 中途失败会丢弃剩余文件；物化后枚举失败按该信息源整段跳过（单源
@@ -195,11 +225,14 @@ def detect_build_artifacts(project_root: Path) -> dict:
                         or re.search(r"(?:^|[-_])v\d", name)
                     )
                 ):
-                    paths_found.add(name)  # 具体文件名（如 release-1.0.zip），非通配
+                    # 折叠为通配形态（code-review item fc3bd7b4a282）：具体文件名
+                    # 无 * 且不以 / 结尾，写入侧 validate_build_artifact_paths
+                    # 恒判非法 → --write 必被拒绝；落候选须与判定权威对齐
+                    paths_found.add(_artifact_file_glob(name))
                     sources.append(f"根级通配产物: {name}")
 
     # ── 汇总 ─────────────────────────────────────────────────────────────────
-    # 目录前缀保留 / 尾缀，文件为具体文件名（不生成通配模式）
+    # 目录前缀保留 / 尾缀，文件折叠为含 * 的通配形态（与写入侧校验权威对齐）
     final_paths = sorted(paths_found)
     if final_paths:
         result["has_build_artifacts"] = True

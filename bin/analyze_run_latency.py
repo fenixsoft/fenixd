@@ -21,6 +21,7 @@ latency_stats / format_latency_summary，见 design D3「复用公共解析函�
 import argparse
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -77,6 +78,11 @@ def expand_globs(paths) -> list:
     """展开脚本内 glob（shell 未展开时兜底）；缺失路径与目录等非文件跳过并告警。"""
     out: list = []
     for raw in paths:
+        # 带波浪线前缀的输入（shell 引号内不会被展开）：Path.exists/glob 均不
+        # 解析 ~，不先展开必然落入无匹配告警；与 fenix_archive.py/fenix_spec.py
+        # 的 expanduser 约定对齐
+        if raw.startswith("~"):
+            raw = os.path.expanduser(raw)
         p = Path(raw)
         if p.exists():
             out.append(p)

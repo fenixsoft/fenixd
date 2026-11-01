@@ -1160,7 +1160,12 @@ class PromptBuilder:
             severity = str(f.get("severity") or "info")
             content = str(f.get("content") or f.get("description") or "").strip()
             if len(content) > 600:
-                content = content[:600] + "…"
+                # 截断注记（code-review item b5759f3e7e00）：与 _prev_error_section
+                # 同款口径——静默「…」截断让修复 agent 无法感知 finding 内容缩水。
+                content = (
+                    f"{content[:600]}…"
+                    f"（finding 原文共 {len(content)} 字，已尾部截断）"
+                )
             lines.append(
                 f"{i}. `{loc}:{start_line}` [{severity}/{category}] {content}\n"
             )

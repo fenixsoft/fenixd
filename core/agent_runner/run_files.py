@@ -157,7 +157,7 @@ def append_run_line(run_file: Path, entry: dict) -> None:
     # 解析出的孤立代理符——dumps(ensure_ascii=False) 本身成功，而 UTF-8 编码
     # 抛 UnicodeEncodeError 并沿调用链上抛（可终止 runner 的 stdout 读线程、
     # 丢终态行）。此处一次性把 line 预清洗为合法 UTF-8 文本（不可编码符降级
-    # 为 U+FFFD），文本路径与二进制路径共用同一 line/data，两处同时免疫；
+    # 为 ?），文本路径与二进制路径共用同一 line/data，两处同时免疫；
     # 不改变「整行原子落盘」契约。
     line = line.encode("utf-8", "replace").decode("utf-8")
     data = line.encode("utf-8")

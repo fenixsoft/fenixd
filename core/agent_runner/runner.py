@@ -8696,19 +8696,27 @@ class AgentRunner:
 
         143 = 128 + SIGTERM（CLI 自身把 SIGTERM 转写为退出码 143，见既有
         Exit 143 秒挂实测注释）；负信号为 -<信号号>（-9=SIGKILL / -15=SIGTERM）。
+        128+N 正数形态与负信号同语义收编（code-review item f609e4595090）：
+        shell 中转/其他 harness 适配器可能以 129=SIGHUP、131=SIGQUIT、
+        137=SIGKILL（OOM kill）、139=SIGSEGV 上报信号死法，缺失该形态会把
+        连续信号死法链误判为普通退出而 reset 冷却链。收编范围取标准信号
+        闭集 129..159（signum 1..31）；128 本身与 ≥160（非标准信号形态，
+        多为程序自选退出码，如 255）不视为信号死法，维持 None。
         无法映射的信号号标 unknown 并如实带 returncode（不得猜测信号发出者）。
         """
-        if exit_code == 143:
-            return "[signal-kill: SIGTERM/143]"
-        if exit_code == 130:
-            return "[signal-kill: SIGINT/130]"
-        if isinstance(exit_code, int) and exit_code < 0:
-            name = {1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL",
-                    15: "SIGTERM"}.get(-exit_code)
-            if name:
-                return f"[signal-kill: {name}/{exit_code}]"
-            return f"[signal-kill: unknown/{exit_code}]"
-        return None
+        if not isinstance(exit_code, int) or exit_code == 0:
+            return None
+        if exit_code < 0:
+            signum = -exit_code
+        elif 129 <= exit_code <= 159:
+            signum = exit_code - 128
+        else:
+            return None
+        name = {1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL",
+                15: "SIGTERM"}.get(signum)
+        if name:
+            return f"[signal-kill: {name}/{exit_code}]"
+        return f"[signal-kill: unknown/{exit_code}]"
 
     def _record_signal_kill_or_label(self, spec_name: str, error: str,
                                      exit_code,
@@ -9018,7 +9026,12 @@ class AgentRunner:
             self._instant_fail.pop(spec_name, None)
 
     def _instant_fail_counts(self, spec_name: str) -> int:
-        """当前连续秒挂次数（测试/观测辅助）。"""
+        """当前连续秒挂次数（测试/观测辅助）。
+
+        仅观测、禁止作为判定输入（code-review item c397520d5e74）：本方法
+        无锁读表，读到写临界区中间态属预期；判定 MUST 走持锁的
+        ``is_instant_fail_cooldown``，禁止在此无锁读点上叠加判定逻辑。
+        """
         st = self._instant_fail.get(spec_name)
         return int(st.get("count", 0)) if st else 0
 
@@ -9103,7 +9116,13 @@ class AgentRunner:
         return False
 
     def instant_fail_cooldown_until(self, spec_name: str) -> float:
-        """该 spec 秒挂冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。"""
+        """该 spec 秒挂冷却到期单调秒（未冷却/无条目返回 0；派发恢复排程用）。
+
+        仅观测、禁止作为判定输入（code-review item c397520d5e74）：本方法
+        无锁读表，可能读到过期值；唤醒路径 MUST 经持锁的
+        ``is_instant_fail_cooldown`` 复核（现有做法），禁止在此无锁读点上
+        直接叠加判定逻辑。
+        """
         st = self._instant_fail.get(spec_name)
         if not st:
             return 0.0

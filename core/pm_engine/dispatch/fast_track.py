@@ -415,6 +415,13 @@ class FFastTrackMixin:
                 # error + 入队原地重派，达封顶时已 freeze_for_human（按其契约
                 # MUST 终止重派）；本形态分支恒零提交，不得再落零变更哨双计
                 # _retry_count/_zero_change_attempts 两套熔断、覆写冻结锚点。
+                # relint 有意豁免（code-review item 471de47686b8，与上方硬校验
+                # 补防线不同源）：本形态分支恒零提交 → 本 run 未改 tasks.md，
+                # worktree 内版本即基线遗留，损伤非本 run 产物；此处接
+                # _tasks_md_relint_from_worktree 复检命中只会把合法的验证确认
+                # 完成打回一轮修正重派（徒增一轮），与「零提交 = 合法收口不重派」
+                # 的分支语义相抵。行首格式契约由后续 verified→done 门禁读
+                # impl-result 快照兜底，故不在此复检。
                 if ft_result.get("status") == "partial" and honest_exit_gap:
                     # 零提交诚实退出（code-review item 061d42a50990）：partial
                     # + 缺口全申报的结果文件必然不含合法 verification 段（本
@@ -1221,7 +1228,7 @@ class FFastTrackMixin:
                     # 写侧（planner-plan/fast-track 车道按注入 schema）仅产出
                     # 顶层数组形态，dict 包裹等漂移形态不做隐式解包，拒绝采信。
                     degrade_reason = f"顶层载荷为 {type(sc_data).__name__} 非数组"
-            except (OSError, json.JSONDecodeError) as e:
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
                 # 覆盖门降级 MUST 留痕（code-review item 75770d2d2cc6）：静默
                 # 吞掉会使 designed_ids 保持空 → validate 按 None 跳过全量执行
                 # 比对，fail-closed 硬校验无声退化为仅结构校验。
