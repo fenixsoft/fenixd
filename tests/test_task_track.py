@@ -312,8 +312,22 @@ class TestPromotionLintTasks(unittest.TestCase):
         self.logger.warning.assert_called()
 
     def test_missing_tasks_md_promotes(self):
+        # tasks.md 缺失不拦晋升（fast-track 前置 spec 允许后补，core.deliverables
+        # lint_tasks_parseable 契约）；目录须存在——目录整体缺失是另一独立判定
+        # （code-review item aea24eef0e8e），见 test_missing_spec_dir_blocks_promotion
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
         self.engine._on_spec_drafted("demo")
         self.assertEqual(self._entry()["status"], "ready")
+
+    def test_missing_spec_dir_blocks_promotion(self):
+        # SPEC 目录缺失（STATE 残留/归档竞态遗留）：两项 lint 门禁对缺失目录
+        # fail-open 空转，晋升入口显式合成违规拦截并写 STATE error
+        # （code-review item aea24eef0e8e）
+        self.engine._on_spec_drafted("demo")
+        entry = self._entry()
+        self.assertEqual(entry["status"], "drafted")
+        self.assertIn("目录缺失", entry["error"])
+        self.engine._on_spec_ready.assert_not_called()
 
 
 class TestExistingSpecsZeroMisfire(unittest.TestCase):
