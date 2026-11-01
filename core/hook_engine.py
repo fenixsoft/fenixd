@@ -200,8 +200,28 @@ def _num(value, default: float) -> float:
     # 量级上限（code-review item afb00545e096）：有限大值可穿透上方守卫，
     # communicate(timeout)/urlopen(timeout) 会如实阻塞该时长、在飞标记长期
     # 不释放——收敛到上限（收敛 ≠ 报错，直改 config.yaml 的存量配置不因
-    # 执行侧硬失败）；超限留痕由 _action_webhook/_action_shell 记 debug 日志
+    # 执行侧硬失败）；超限留痕由 _log_timeout_capped 单点收口（webhook/shell
+    # 共用）
     return min(v, MAX_HOOK_TIMEOUT_SECONDS)
+
+
+def _log_timeout_capped(engine: "HookEngine", cfg: dict, timeout: float) -> None:
+    """超上限收敛留痕（afb00545e096）单点实现：_num 已收敛，此处仅对原始配置
+    超限的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）。
+
+    原始值先 float 化再与上限比较（9e9a14110492）：直改 config.yaml 可写
+    数字字符串（"3600" 经 float() 合法且恰等于上限），跨类型 != 会把未
+    发生收敛的配置误记「已收敛」debug。_action_webhook / _action_shell
+    共用，防两处收敛口径漂移（code-review 393daca2904f）。
+    """
+    try:
+        raw_timeout = float(cfg.get("timeout_seconds"))
+    except (TypeError, ValueError, OverflowError):
+        raw_timeout = 0.0
+    if timeout >= MAX_HOOK_TIMEOUT_SECONDS and raw_timeout > MAX_HOOK_TIMEOUT_SECONDS:
+        engine._log_debug(
+            f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
+        )
 
 
 def _tail_combined(stdout: Optional[str], stderr: Optional[str]) -> str:
@@ -1062,7 +1082,7 @@ class HookEngine:
         「无 supervisor，重启请求不会被消费」。
         """
         try:
-            from core.fenix_session import supervisor_running
+            from .fenix_session import supervisor_running
         except ImportError:
             supervisor_running = None
         if supervisor_running is not None:
@@ -1215,7 +1235,7 @@ class HookEngine:
         # a28282d49539）。按文件粒度短临界区、锁内不嵌套其他锁；config_admin
         # 不可导入时退化为无锁清扫并记警告（不因导入失败阻断清扫语义）。
         try:
-            from core.dashboard.data.config_admin import _CONFIG_WRITE_LOCK
+            from .dashboard.data.config_admin import _CONFIG_WRITE_LOCK
         except Exception as e:
             _CONFIG_WRITE_LOCK = None
             self._log_warning(f"config 写锁不可用，清扫退化为无锁读改写: {e}")
@@ -1558,19 +1578,9 @@ class HookEngine:
             "project": self.project_name,
         }
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_WEBHOOK_TIMEOUT_SECONDS)
-        # 超上限收敛留痕（afb00545e096）：_num 已收敛，此处仅对原始配置超限
-        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）。
-        # 原始值先 float 化再与上限比较（9e9a14110492）：直改 config.yaml 可写
-        # 数字字符串（"3600" 经 float() 合法且恰等于上限），跨类型 != 会把未
-        # 发生收敛的配置误记「已收敛」debug
-        try:
-            raw_timeout = float(cfg.get("timeout_seconds"))
-        except (TypeError, ValueError, OverflowError):
-            raw_timeout = 0.0
-        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and raw_timeout > MAX_HOOK_TIMEOUT_SECONDS:
-            self._log_debug(
-                f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
-            )
+        # 超上限收敛留痕（afb00545e096 / 9e9a14110492）单点实现，口径见
+        # _log_timeout_capped（webhook/shell 两动作共用防漂移）
+        _log_timeout_capped(self, cfg, timeout)
         # 执行侧复检 scheme（校验只把守配置写入路径，直改 config.yaml 可绕过）
         scheme = urllib.parse.urlparse(url).scheme.lower()
         if scheme not in WEBHOOK_ALLOWED_SCHEMES:
@@ -1627,19 +1637,9 @@ class HookEngine:
         """bash -c <command>，注入事件环境变量，超时按进程组强杀。"""
         command = (cfg.get("command") or "").strip()
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_SHELL_TIMEOUT_SECONDS)
-        # 超上限收敛留痕（afb00545e096）：_num 已收敛，此处仅对原始配置超限
-        # 的形态记 debug（缺省值远低于上限，合法配置不命中；不产审计/告警）。
-        # 原始值先 float 化再与上限比较（9e9a14110492）：直改 config.yaml 可写
-        # 数字字符串（"3600" 经 float() 合法且恰等于上限），跨类型 != 会把未
-        # 发生收敛的配置误记「已收敛」debug
-        try:
-            raw_timeout = float(cfg.get("timeout_seconds"))
-        except (TypeError, ValueError, OverflowError):
-            raw_timeout = 0.0
-        if timeout >= MAX_HOOK_TIMEOUT_SECONDS and raw_timeout > MAX_HOOK_TIMEOUT_SECONDS:
-            self._log_debug(
-                f"timeout_seconds 超过上限 {MAX_HOOK_TIMEOUT_SECONDS:g} 秒，已收敛到上限"
-            )
+        # 超上限收敛留痕（afb00545e096 / 9e9a14110492）单点实现，口径见
+        # _log_timeout_capped（webhook/shell 两动作共用防漂移）
+        _log_timeout_capped(self, cfg, timeout)
         env = dict(os.environ)
         env["FENIX_HOOK_EVENT"] = to_status
         env["FENIX_HOOK_SPEC"] = spec

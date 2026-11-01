@@ -100,23 +100,28 @@ _WAIVER_NEGATION_PHRASES = (
     "不必同意放行",
     "未经评估放行",
 )
+# true 值匹配片段（code-review 937fb4a54954：动词型/赋值型对 _family_waiver
+# 的值匹配口径单源复用，防两处漂移）：(?i:true) 覆盖 True/TRUE 变体（消费口径
+# family._waiver_flag_set 本就 str().lower() 无关大小写）；true 后词边界
+# (?![A-Za-z0-9_]) 防 truthful 等尾巴；true 前词边界排除 untrue 等前缀。
+_WAIVER_TRUE_FRAGMENT = r"(?<![A-Za-z0-9_])(?i:true)(?![A-Za-z0-9_])"
 _WAIVER_GRANT_PATTERNS = (
     r"同意放行",
     r"放行一次",
     r"经评估放行",
-    r"设置\s*_family_waiver\s*为?\s*true",  # 设置 _family_waiver 为 true
+    # 设置 _family_waiver 为 true（值口径与 _WAIVER_ASSIGN_RE 同源）
+    r"设置\s*_family_waiver\s*为?\s*" + _WAIVER_TRUE_FRAGMENT,
 )
 # 动词型放行模式命中句的「本次处置」限定词：命中句须含其一（或与本次父 SPEC 名
 # 同现）才算本次放行——他族谱/历史放行的叙述提及不构成对本次对象的放行。
 _WAIVER_CURRENT_MARKERS = ("本次", "该族", "本族")
 # 赋值型 _family_waiver=true 必须与放行动词同句（_SENTENCE_SPLIT_RE 分句）才算显式放行，
 # 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
-# 前后词边界 + 值大小写（code-review ff905118948e）：(?<![A-Za-z0-9_]) 排除
+# 前后词边界（code-review ff905118948e）：(?<![A-Za-z0-9_]) 排除
 # not_family_waiver=true 这类以 _family_waiver 结尾的更长标识符被 re.search
-# 子串误命中；true 后 (?![A-Za-z0-9_]) 防 trueful 等尾巴；(?i:true) 覆盖
-# True/TRUE 变体（消费口径 family._waiver_flag_set 本就 str().lower() 无关大小写）。
+# 子串误命中；true 值的边界/大小写口径见 _WAIVER_TRUE_FRAGMENT（与动词型单源复用）。
 _WAIVER_ASSIGN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])_family_waiver['\"]?\s*[=:：]\s*['\"]?(?i:true)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])_family_waiver['\"]?\s*[=:：]\s*['\"]?" + _WAIVER_TRUE_FRAGMENT
 )
 
 # ── infra 回拨文本识别（evo-infra-failure-budget-exempt R3）──────────
