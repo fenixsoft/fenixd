@@ -1023,3 +1023,124 @@ class TestCommandCenterEndpoints:
             assert status == 200, q
             assert "error" in data, q
             assert "lanes" not in data, q
+
+
+# ── add-distill-run-artifacts 3.3：蒸馏车道花名册收编出卡 ─────────────────
+
+
+class TestDistillerLaneAggregation:
+    """knowledge-distiller 进 ROSTER 运营线后经既有 aggregate_org 出卡：
+
+    - done 终态蒸馏产物 → 运营线出卡（lane/zone/runs/success_rate 正确）；
+    - 零 run → 编制内出空卡（runs=0、working=false）；
+    - 无 usage 产物 → 成本/tokens 按 None 透传不伪显 0；
+    - 「今日/7 日/全量」三窗口口径一致。
+    """
+
+    def card_of(self, data, lane):
+        hit = [c for z in data["zones"] for c in z["cards"] if c["lane"] == lane]
+        assert len(hit) == 1, f"lane card missing: {lane}"
+        return hit[0]
+
+    @staticmethod
+    def distill_run(proot: Path, stem: str, outcome: str, start_epoch: int) -> Path:
+        """写一条蒸馏合成产物（started 开始行 + 终态行；无 usage 数据）。"""
+        events = [
+            {
+                "type": "started",
+                "archived": ["2026-10-25-demo"],
+                "timestamp": _iso(start_epoch),
+            },
+        ]
+        if outcome == "done":
+            events.append({"type": "result", "result": "ok"})
+        else:
+            events.append({"type": "error", "error": "gateway rejected model"})
+        return write_run_file(proot, stem, events, mtime_epoch=start_epoch + 60)
+
+    def test_done_run_card_in_ops_zone(self, tmp_path):
+        proot = make_proj(tmp_path, "proj-d", specs={})
+        self.distill_run(
+            proot,
+            f"knowledge-distiller-2026-10-25-demo-{NOW - 3600}",
+            "done",
+            NOW - 3600,
+        )
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        card = self.card_of(data, "knowledge-distiller")
+        assert card["zone"] == "运营线"
+        assert card["runs"] == 1
+        assert card["success_rate"] == 1.0  # 1 done / (1 done + 0 error)
+        assert card["status"] == "idle"  # 终态产物无在飞
+        assert card["activity_14d"][13] == 1  # 今日落桶（index 13 = 今天）
+        # 分区固定序不因扩员变化（运营线在需求/设计/交付/质量之后）
+        assert [z["zone"] for z in data["zones"]][-1] == "运营线" or data["zones"][-1][
+            "zone"
+        ] == "运营线"
+
+    def test_zero_run_roster_card(self, tmp_path):
+        """零 run 编制内出卡：runs=0、working=false、成功率/成本缺失。"""
+        proot = make_proj(tmp_path, "proj-d0", specs={})
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        card = self.card_of(data, "knowledge-distiller")
+        assert card["runs"] == 0
+        assert card["status"] == "idle"
+        assert card["success_rate"] is None
+        assert card["cost"] is None
+        assert card["activity_14d"] == [0] * 14
+
+    def test_no_usage_cost_missing_not_zero(self, tmp_path):
+        """无 usage 产物（裸 stdout 形态）：成本按 None 透传显示缺失，不伪显 0。"""
+        proot = make_proj(tmp_path, "proj-dc", specs={})
+        enable_billing(proot)  # 计价表在场：缺失读数走产物尾窗 → 无 usage → None
+        self.distill_run(
+            proot,
+            f"knowledge-distiller-2026-10-25-demo-{NOW - 3600}",
+            "done",
+            NOW - 3600,
+        )
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        card = self.card_of(data, "knowledge-distiller")
+        assert card["cost"] is None
+        # 汇总合计不含蒸馏 run 成本：仅 planner 派生固定 $0（既有语义），
+        # 蒸馏无 usage 不贡献；蒸馏卡自身按 None 透传不伪显 0
+        assert data["summary"]["cost_total"] == pytest.approx(0.0)
+
+    def test_error_run_counts_in_success_denom(self, tmp_path):
+        proot = make_proj(tmp_path, "proj-de", specs={})
+        self.distill_run(
+            proot,
+            f"knowledge-distiller-2026-10-25-demo-{NOW - 3600}",
+            "error",
+            NOW - 3600,
+        )
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        card = self.card_of(data, "knowledge-distiller")
+        assert card["runs"] == 1
+        assert card["success_rate"] == 0.0  # 0 done / (0 done + 1 error)
+
+    def test_three_windows_consistent(self, tmp_path):
+        """「今日/7 日/全量」三窗口口径一致：今日 1 ⊆ 7 日 2 ⊆ 全量 2。"""
+        proot = make_proj(tmp_path, "proj-dw", specs={})
+        self.distill_run(
+            proot,
+            f"knowledge-distiller-2026-10-25-demo-{NOW - 3600}",
+            "done",
+            NOW - 3600,
+        )
+        # 昨日（7 日窗内、今日窗外）
+        self.distill_run(
+            proot,
+            f"knowledge-distiller-2026-10-24-demo-{NOW - 90000}",
+            "done",
+            NOW - 90000,
+        )
+        d_today = cc.aggregate_org(projects_of(proot), now=NOW)
+        d_7d = cc.aggregate_org(projects_of(proot), now=NOW, window="7d")
+        d_all = cc.aggregate_org(projects_of(proot), now=NOW, window="all")
+        assert self.card_of(d_today, "knowledge-distiller")["runs"] == 1
+        assert self.card_of(d_7d, "knowledge-distiller")["runs"] == 2
+        assert self.card_of(d_all, "knowledge-distiller")["runs"] == 2
+        # 三窗口均落运营线出卡
+        for d in (d_today, d_7d, d_all):
+            assert self.card_of(d, "knowledge-distiller")["zone"] == "运营线"

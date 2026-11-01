@@ -818,6 +818,21 @@ class TestDistillManager(KnowledgeTestBase):
         stat = self._git("show", "--name-only", "--format=").stdout
         touched = {ln.strip() for ln in stat.splitlines() if ln.strip()}
         self.assertTrue(all(t.startswith(KNOWLEDGE_DIR) for t in touched))
+        # add-distill-run-artifacts 4.1：批生命周期产物断言——批成功 → 产物
+        # 落盘（恰一个），首行 started 带 timestamp、末行 result 终态
+        artifacts = list((self.root / ".fenix" / "runs").glob("knowledge-distiller-*.jsonl"))
+        self.assertEqual(len(artifacts), 1)
+        lines = [
+            json.loads(l)
+            for l in artifacts[0].read_text(encoding="utf-8").splitlines()
+            if l.strip()
+        ]
+        self.assertEqual(lines[0]["type"], "started")
+        self.assertIn("timestamp", lines[0])
+        self.assertEqual(lines[-1]["type"], "result")
+        from core.dashboard.data.runs import classify_run
+
+        self.assertEqual(classify_run(lines), "done")
 
     def test_two_round_fix_then_pass(self):
         self._git("init", "-q")

@@ -95,6 +95,17 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     ("repair-", "repair"),
     ("verify-", "verifier"),
     ("test-", "tester"),
+    # add-distill-run-artifacts 2.1：knowledge-distiller- 独立前缀（蒸馏批
+    # run_id 形如 knowledge-distiller-<首归档名>-<ts>，core/knowledge.py
+    # DistillManager 批生命周期合成产物），与既有前缀无子串冲突（顺序无关，
+    # 放此处便于横向检索）。消费方核对（仿 arbiter- 先例 bc3c07e8 纪律）：
+    # get_runs/run_spec_part 经本表自动归属与剥段（蒸馏 spec 段=带日期前缀
+    # 的归档目录名，如 2026-10-31-add-command-center，非活跃 spec 名，全等
+    # 守卫天然不命中）；admin_monitor._RUN_PREFIXES **不收录**（蒸馏 spec
+    # 已归档，失败计数无活跃 spec 可还原，同 evo-/review- 口径）；
+    # pm_engine 归属/取消/活动判定按活跃 spec 全等匹配不新增误命中；
+    # _distill_lane_busy 在飞判定读队列不读产物，不受影响。
+    ("knowledge-distiller-", "knowledge-distiller"),
 )
 
 

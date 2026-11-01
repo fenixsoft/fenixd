@@ -321,3 +321,114 @@ class TestSoftDeleteRunningProtection:
         _write_run(proot / ".fenix" / "runs", f"impl-fix-x-{TS}-a1-r2")
         res = soft_delete_spec(proot, "fix-x")
         assert res.get("running") is True
+
+
+# ── 9. add-distill-run-artifacts 2.2：knowledge-distiller- 前缀边界 ────
+
+
+DISTILL_RUN_ID = "knowledge-distiller-2026-10-31-demo-spec-1789000000"
+
+
+class TestKnowledgeDistillerPrefix:
+    """add-distill-run-artifacts 2.2：前缀归属正确 + 消费面边界两侧锁定。
+
+    - 归属侧：infer_run_agent_type / run_spec_part 对蒸馏产物自动归属；
+    - 边界侧：admin_monitor 失败计数不还原、pm_engine 归属不误命中、
+      aggregate_org 归档剔除不吞蒸馏 run（形态错位耦合锁定）。
+    """
+
+    def test_infer_agent_type_attribution(self):
+        from core.agent_runner.run_files import infer_run_agent_type
+
+        agent, rest = infer_run_agent_type(DISTILL_RUN_ID)
+        assert agent == "knowledge-distiller"
+        assert rest == "2026-10-31-demo-spec-1789000000"
+
+    def test_run_spec_part_strips_prefix_and_ts(self):
+        from core.agent_runner.run_files import run_spec_part
+
+        # 剥前缀 + 时间戳段 → 带日期前缀的归档目录名（原始 SPEC 名为
+        # demo-spec，剥离结果含日期前缀 ≠ 原始名——全等守卫天然不命中）
+        assert run_spec_part(DISTILL_RUN_ID) == "2026-10-31-demo-spec"
+
+    def test_admin_monitor_does_not_restore_failure_to_spec(self):
+        """admin_monitor._RUN_PREFIXES 不收录该前缀：error 终态蒸馏产物不
+        还原到活跃 spec 失败计数（同 evo-/review- 口径，spec 已归档无可还原）。"""
+        from core.admin_monitor import AdminMonitor, _RUN_PREFIXES
+
+        assert "knowledge-distiller-" not in _RUN_PREFIXES
+        # 失败还原判定点显式传 _RUN_PREFIXES 子集 → 蒸馏 run_id 还原不出 spec
+        assert AdminMonitor._spec_from_run_id(DISTILL_RUN_ID, _RUN_PREFIXES) is None
+        # 默认全量前缀真源可剥段（归属与计数口径分离的既有语义）
+        assert AdminMonitor._spec_from_run_id(DISTILL_RUN_ID) == "2026-10-31-demo-spec"
+
+    def test_pm_engine_attribution_no_misattribution(self, tmp_path):
+        """伪造活跃 spec 与蒸馏 run_id 同名单（demo-spec 出现在 run_id 中段）：
+        pm_engine 归属判定按 run_spec_part 全等匹配——蒸馏 run 的 spec 段为
+        带日期前缀归档目录名，对活跃 spec「demo-spec」不命中。"""
+        proot = _mk_project(tmp_path)
+        engine, _ = _mk_engine(proot, MagicMock())
+        _write_run(proot / ".fenix" / "runs", DISTILL_RUN_ID)
+        assert engine._spec_has_recent_run_activity("demo-spec", 60) is False
+        # 正向对照：归属机制本身工作——按剥段结果（归档目录名）可命中
+        assert engine._spec_has_recent_run_activity("2026-10-31-demo-spec", 60) is True
+
+    def test_aggregate_org_archive_filter_not_hit(self, tmp_path, monkeypatch):
+        """归档剔除过滤不吞蒸馏 run（design D3 形态错位耦合锁定）：
+
+        STATE.archive.md 清单键=原始 SPEC 名（demo-spec，无日期前缀）；
+        蒸馏 run 的 spec 段=归档目录名（2026-10-31-demo-spec）。剔除按清单键
+        全等匹配，形态错位不命中 → 运营线蒸馏卡 runs>=1。run_id 中段若改用
+        原始 SPEC 名，剥段结果与清单键全等 → 全部蒸馏 run 被静默吞掉，本测试即红。
+        """
+        import os
+        import time
+        from datetime import datetime, timezone
+
+        # 用户级配置隔离（成本读路径不触宿主 ~/.fenix）
+        user_dir = tmp_path / "user-config"
+        user_dir.mkdir()
+        monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_dir)
+        import core.dashboard.data as dd
+
+        monkeypatch.setattr(dd, "USER_CONFIG_PATH", user_dir / "config.yaml")
+
+        proot = _mk_project(tmp_path)
+        # 清单含首归档 SPEC 原始名（2026-10-31 已归档 demo-spec）
+        (proot / ".fenix" / "STATE.archive.md").write_text(
+            "# Fenix Archive State\n\n## Specs\n"
+            "\n### demo-spec\n- status: pushed\n- priority: 1\n"
+            "- created: 2026-10-30T00:00:00+00:00\n"
+            "- updated: 2026-10-31T00:00:00+00:00\n",
+            encoding="utf-8",
+        )
+        # done 终态蒸馏产物（mtime/started 钉当下，任意窗口均入窗）
+        now = int(time.time())
+        started = (
+            datetime.fromtimestamp(now - 600, tz=timezone.utc).isoformat()
+        )
+        rid = f"knowledge-distiller-2026-10-31-demo-spec-{now - 600}"
+        p = proot / ".fenix" / "runs" / f"{rid}.jsonl"
+        p.write_text(
+            json.dumps({"type": "started", "timestamp": started}) + "\n"
+            + json.dumps({"type": "result", "result": "ok"}) + "\n",
+            encoding="utf-8",
+        )
+        os.utime(p, (now, now))
+        from core.dashboard.data import command_center as cc
+
+        data = cc.aggregate_org(
+            [{"name": "proj", "path": str(proot), "exists": True}], window="all"
+        )
+        cards = [
+            c
+            for z in data["zones"]
+            for c in z["cards"]
+            if c["lane"] == "knowledge-distiller"
+        ]
+        assert len(cards) == 1
+        assert cards[0]["runs"] >= 1
+        # 形态错位耦合的直接陈述：剥段结果（归档目录名）≠ 清单键（原始名）
+        from core.agent_runner.run_files import run_spec_part
+
+        assert run_spec_part(rid) != "demo-spec"

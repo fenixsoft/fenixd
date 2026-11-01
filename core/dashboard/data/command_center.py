@@ -59,7 +59,12 @@ ROSTER = {
     ZONE_DESIGN: ("planner-plan", "planner-judge"),
     ZONE_DELIVERY: ("implementer", "code-fix", "verifier"),
     ZONE_QUALITY: ("judge", "code-review", "self-review"),
-    ZONE_OPS: ("administrator", "evolution"),
+    # 2026-11-01（add-distill-run-artifacts 3.1）收编 knowledge-distiller：
+    # 蒸馏产出 spec/knowledge/ 知识资产页，归运营线（知识资产运营，非质量
+    # 裁决——design D4）。数据源=本轮新增的蒸馏批 run 产物（写侧
+    # core/knowledge.py 批生命周期合成产物 + run_id 前缀真源收录），经既有
+    # aggregate_org 聚合自动出卡，零聚合代码改动。
+    ZONE_OPS: ("administrator", "evolution", "knowledge-distiller"),
 }
 
 # lane → zone 反查表（花名册派生，勿手工维护第二份）
