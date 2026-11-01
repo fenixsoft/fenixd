@@ -17,6 +17,16 @@ from pathlib import Path
 _EMPTY_VALUE_MARKERS = ("n/a", "-", "--", "—")
 
 
+def _is_empty_value(val: str) -> bool:
+    """两路共用的占位值判定：字面排除表 + 连字符/em dash 占位串。
+
+    连字符形态不逐一枚举（md 表格占位常写 "---" 及任意长），统一 fullmatch
+    判定，避免排除表演进时出现「三连字符透传进计数」的遗漏面。
+    """
+    v = val.strip().lower()
+    return v in _EMPTY_VALUE_MARKERS or bool(re.fullmatch(r"[-—]+", v))
+
+
 # fix-deferred-findings CYC-1：parse_verify_progress 已迁入中性模块
 # core.signals（pm_engine 侧消费点不再反向 import dashboard.data），
 # 此处 re-export 保住既有门面导入路径。
@@ -161,7 +171,7 @@ def _fold_summary(summary: dict, key: str, val: str) -> dict:
     键名先剥离括号别名（如「通过 (PASS)」「产品缺陷 (BUG)」，v3 验证报告方言）
     再匹配；全角/半角括号均支持。
     """
-    if val.lower() in _EMPTY_VALUE_MARKERS:
+    if _is_empty_value(val):
         return summary
     k = key.lower()
     k = re.sub(r"[（(][^（）)]*[）)]", "", k)
@@ -392,7 +402,7 @@ def parse_verdict(project_root, spec_name) -> dict:
             # 字符类含 em dash「—」：与 _EMPTY_VALUE_MARKERS 同源覆盖，em dash 占位值
             # 捕获后由下方共享排除表过滤（原字符类不含时该项在兜底路不可达）
             mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+—]+)", content, re.I)
-            if mm and mm.group(1).strip().lower() not in _EMPTY_VALUE_MARKERS:
+            if mm and not _is_empty_value(mm.group(1)):
                 summary[field] = mm.group(1).strip()
 
     return {

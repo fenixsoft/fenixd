@@ -12,8 +12,6 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 写操作职责
 import json
 import logging
 import os
-import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -841,7 +839,10 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
       "Cancel-hold resume"）解析保留分支，通过则单次原子写续做集
       （收口字段集与 ``state_machine.py`` ``_recovery_preserve_spec`` 续做
       先例同集），携带 status 即由 update_spec 自动清 ``_cancelled_hold``
-      （既有 D4 语义），后写 scheduling_kick 即时唤醒派发；
+      （既有 D4 语义），后写 scheduling_kick 即时唤醒派发；锚点在续做
+      判定后被并发改写时放弃锚点回写、续做集照常落盘（branch 是 git 解析
+      值不能锁内复原），冲突经 ``anchor_conflict: true`` + ``warning``
+      显式透传，不再只留服务端 WARNING（item e1e47cdf3e3e）；
     - 降级：共享判定**真正运行过**且不通过（三层锚点均不可得 / 分支零提交 /
       载体不可用）→ WARNING 留痕 + 原子写降级集（branch/implementer_run
       清空、不置 ``_recovery_resume``），返回 ``degraded: true`` + 原因；
@@ -982,6 +983,18 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
                 f"防陈旧锚点复活",
             )
         result = {"ok": True, "found": True, "spec": spec, "degraded": False}
+        if anchor_recheck:
+            # 冲突显式透传（code-review item e1e47cdf3e3e，与降级分支的
+            # 整体放弃口径对齐为「调用方可见」）：命中分支锚点冲突时续做集
+            # 已照常落盘，整体放弃须回滚已写状态、代价更高故不取；冲突不再
+            # 只留服务端 WARNING——返回 dict 携带 anchor_conflict/warning
+            # 键，路由侧原样透传，前端据此提示刷新核对 SPEC 状态。
+            result["anchor_conflict"] = True
+            result["warning"] = (
+                "branch/implementer_run 锚点在续做判定后被并发改写，"
+                "本次续做已放弃锚点回写（status=ready 已落盘）；"
+                "请刷新后核对 SPEC 状态"
+            )
     else:
         # 降级：共享判定已实际运行且给出「不可保留」结论 → 普通全新重派。
         # _resolve_preserved_branch 各失败层内已有 WARNING 留痕；此处写降级集
@@ -1494,13 +1507,19 @@ def clear_spec_error(project_root, spec: str) -> dict:
     守卫与 {ok: False, error: 原因} 拒绝形状）。
 
     豁免标记守卫（code-review item 582624e4c92a）：admin_monitor 的
-    blocked_stuck 豁免除 frozen 字段与「用户指令冻结：」前缀外，还认 error
-    前缀 ``frozen:`` 与「用户指令」子串两种存量文本标记（人工冻结/暂停的
-    历史文案，词形漂移不一）。blocked 态清空 error 会连带抹掉这些标记、
-    使豁免失效——有意等待态 spec 满冷却阈值即被反复误报唤起 admin（真实
-    事故：清除错误整段抹掉 error 连带冻结标记 → 15 分钟循环误报；清除
-    error ≠ 要求重派）。故 blocked 态 error 携带任一豁免标记时同样拒绝；
-    判据须与 admin_monitor._detect_blocked_stuck 保持同步，勿单侧增删。
+    blocked_stuck 豁免对存量文本标记的判据是 error 前缀 ``frozen:`` 与
+    显式冻结/暂停短语（人工写入的历史文案，词形漂移不一；item
+    d5143302506e 已由裸「用户指令」子串收窄为 _INTENTIONAL_PAUSE_MARKERS
+    三短语——裸子串会误命中恰好提及「用户指令」的普通错误文案，把已被
+    admin_monitor 正常告警的 blocked spec 卡死在本侧无法经官方通道清除）。
+    blocked 态清空 error 会连带抹掉这些标记、使豁免失效——有意等待态 spec
+    满冷却阈值即被反复误报唤起 admin（真实事故：清除错误整段抹掉 error
+    连带冻结标记 → 15 分钟循环误报；清除 error ≠ 要求重派）。故 blocked 态
+    error 命中任一标记时同样拒绝；标记清单单源复用
+    admin_monitor._INTENTIONAL_PAUSE_MARKERS（code-review item
+    d7ff45774696），与 _is_intentionally_paused 的文本判据同源，本侧不再
+    单独持有裸子串副本（frozen 字段半边由上方 is_spec_frozen 守卫先行
+    覆盖）。
 
     退避标记摘取（code-review item bbba88d8e6af）：done 态 spec 的 error
     携带 push 退避/重试计数的机器可读标记（``[push_backoff next_retry_at=…]``
@@ -1535,8 +1554,17 @@ def clear_spec_error(project_root, spec: str) -> dict:
         }
     entry = specs[spec]
     err_text = str(entry.get("error") or "")
+    # 单源豁免标记清单（code-review item d7ff45774696）：admin_monitor 已由
+    # 裸「用户指令」子串收窄为 _INTENTIONAL_PAUSE_MARKERS 显式短语，此处复用
+    # 同一清单，与 _is_intentionally_paused 的文本判据（frozen: 前缀 + 三
+    # 短语）同源——本侧若仍按裸子串判定，会把 admin_monitor 已不认其为豁免、
+    # 正常告警的普通错误文案 spec 卡死在本侧无法经官方通道清除。frozen 字段
+    # 半边由上方 is_spec_frozen 守卫覆盖。函数内延迟导入：admin_monitor 侧
+    # 对本模块同为函数级懒导入，顶层互引无必要。
+    from core.admin_monitor import _INTENTIONAL_PAUSE_MARKERS
     if entry.get("status") == "blocked" and (
-        err_text.startswith("frozen:") or "用户指令" in err_text
+        err_text.startswith("frozen:")
+        or any(m in err_text for m in _INTENTIONAL_PAUSE_MARKERS)
     ):
         return {
             "ok": False,
@@ -2652,7 +2680,9 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
          ``test_scenarios.json`` 与 ``_scenarios_full.json``（防对账回填旧
          定义，fix-frozen-scenario-shell-truncation 同款成对纪律）。
          逐文件写前快照，任一步失败按快照回滚本轮已写文件（不留半改状态
-         与成对撕裂对，code-review item 97da350709f7）；
+         与成对撕裂对，code-review item 97da350709f7）；回滚只还原文件
+         本体，本轮 ``mkdir`` 新建的空父目录不回收——对 git 无 untracked
+         散件面，仅留目录残留（item f390ce821d9b 注明的既有残留语义）；
       6. STATE：修订计数 +1、置 ``_scenario_revision_reverify_pending``
          （修订 re-entry 先于升级——下轮再失败时升级停车入口见旗标追加
          一次重验而非直接升级）、清 env 阻塞/inconclusive 停车字段

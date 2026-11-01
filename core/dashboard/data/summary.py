@@ -55,6 +55,7 @@ def daemon_health(project_root) -> str:
         status = "running" if _facade._is_running(key) else "stopped"
     except Exception:
         status = "stopped"
+    # [fenix-ignore:1c2a47e633fa] GIL 下 len/clear/单键写各自原子，最坏仅 TTL 内重复检测或丢一条缓存项，无数据损坏，暂不加锁
     if len(_DAEMON_HEALTH_CACHE) > 256:
         _DAEMON_HEALTH_CACHE.clear()
     _DAEMON_HEALTH_CACHE[key] = (status, now)
@@ -86,6 +87,7 @@ def hosting_state(project_root) -> str:
         state = _fs_hosting_state(key)
     except Exception:
         state = "stopped"
+    # [fenix-ignore:1c2a47e633fa] 同 daemon_health：GIL 下各 dict 操作原子，最坏仅 TTL 内重复扫描或丢一条缓存项，无数据损坏，暂不加锁
     if len(_HOSTING_STATE_CACHE) > 256:
         _HOSTING_STATE_CACHE.clear()
     _HOSTING_STATE_CACHE[key] = (state, now)

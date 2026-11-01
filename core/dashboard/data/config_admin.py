@@ -14,6 +14,14 @@ from pathlib import Path
 import yaml
 
 from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET, IMPL_RUN_BUDGET_MAX_DEFAULT
+# add-adjudication-alert-narrative：叙事超时缺省单源（code-review item
+# 3471a91830ec：_ADMIN_DEFAULTS 曾手写字面量 60，运行时缺省已上调 180——
+# 回显 60 / 生效 180，且保存会把回显值显式落盘压过新缺省）。本链模块级
+# 依赖（proc_utils / spec_naming / agent_runner.harness）不回指 dashboard，
+# 无循环 import（_ADMIN_DEFAULTS 是模块级常量，无法走函数内延迟 import）
+from core.adjudication_narrative import (
+    DEFAULT_TIMEOUT_SECONDS as _NARRATIVE_DEFAULT_TIMEOUT,
+)
 
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / verify.*） ──
 
@@ -505,7 +513,11 @@ def _managed_key_sources(raw: dict) -> dict:
             "self_heal_quiet_minutes",
         ):
             _v = admin_raw.get(_k)
-            if isinstance(_v, int) and not isinstance(_v, bool):
+            # code-review item 10a004925a9a：类型合法之外再按范围谓词判定
+            # （_ADMIN_RANGE_MIN 单源，与写路径前置校验同口径）——范围脏值
+            # 此前仍标 project，而读回显/运行时生效值均已回退缺省，徽标与
+            # 展示值互相矛盾
+            if isinstance(_v, int) and not isinstance(_v, bool) and _in_admin_range(_k, _v):
                 sources[f"admin.{_k}"] = "project"
         if admin_raw.get("bug_repair_mode") in ("inplace", "derive"):
             sources["admin.bug_repair_mode"] = "project"
@@ -614,15 +626,40 @@ _ADMIN_DEFAULTS = {
     # stuck-signal-hygiene D4：stuck 处置后静默期（分钟，缺省 120，
     # 与 ConfigLoader.get_admin_config 缺省一致）
     "stuck_silence_minutes": 120,
-    # add-adjudication-alert-narrative：叙事三键缺省（与
-    # ConfigLoader.get_admin_config / config.template.yaml 同源）
+    # add-adjudication-alert-narrative：叙事三键缺省（enabled/model 与
+    # ConfigLoader.get_admin_config / config.template.yaml 同源；timeout 经
+    # core.adjudication_narrative.DEFAULT_TIMEOUT_SECONDS 单源取缺省——
+    # code-review item 3471a91830ec：曾手写字面量 60，运行时缺省已上调 180，
+    # 字面量镜像停在旧值致「回显 60 / 生效 180」，且保存会把回显值显式落盘
+    # 压过新缺省）
     "narrative_enabled": True,
-    "narrative_timeout_seconds": 60,
+    "narrative_timeout_seconds": _NARRATIVE_DEFAULT_TIMEOUT,
     "narrative_model": "",
     # add-alert-self-heal-marking 5.2：自愈安静窗口缺省（与
     # ConfigLoader.get_admin_config / config.template.yaml 同源 1440）
     "self_heal_quiet_minutes": 1440,
 }
+
+# code-review item 10a004925a9a：admin 数值键范围谓词单源（键: (下界, 含下界)），
+# 与写路径前置校验 / 合并视图校验 / sync 预检登记三处内联谓词同口径——写路径
+# 只挡 Dashboard 写入，手工编辑 config.yaml 的范围脏值（如 interval_minutes:
+# -3）绕过校验：回显若只校验类型则原样透出、来源标注仍标 project，而运行时
+# 归一化（≤0 回缺省 / 负数夹 0）取的是另一个值，「来源徽标 / 回显值 / 生效值」
+# 三方矛盾。回显与来源标注均按本表判定：范围非法回退缺省、不标 project。
+_ADMIN_RANGE_MIN = {
+    "interval_minutes": (0, False),            # > 0
+    "escalation_cooldown_minutes": (0, True),  # >= 0
+    "merge_breaker_threshold": (1, True),      # >= 1
+    "shutdown_drain_seconds": (0, True),       # >= 0
+    "stuck_silence_minutes": (0, True),        # >= 0
+    "narrative_timeout_seconds": (0, False),   # > 0
+    "self_heal_quiet_minutes": (0, False),     # > 0
+}
+
+def _in_admin_range(key: str, val) -> bool:
+    """数值键范围谓词（_ADMIN_RANGE_MIN 单源）；NaN 比较恒 False → 判非法。"""
+    lower, inclusive = _ADMIN_RANGE_MIN[key]
+    return val >= lower if inclusive else val > lower
 
 def _managed_admin_keys(config: dict) -> dict:
     """受管 admin.* 键提取：全部受管键 + 缺省填充，不透传未知 admin 键/self_review 子段。
@@ -667,6 +704,12 @@ def _managed_admin_keys(config: dict) -> dict:
                 if not _is_int_not_bool(val):
                     val = default
             elif not isinstance(val, (int, float)) or isinstance(val, bool):
+                val = default
+            # code-review item 10a004925a9a：补范围谓词（_ADMIN_RANGE_MIN
+            # 单源，与写路径前置校验同口径）——类型合法但范围非法的手工
+            # 脏值（如 interval_minutes: -3）此前原样透出，与运行时归一化
+            # （≤0 回缺省 / 负数夹 0）互相矛盾；范围非法回退缺省
+            if key in _ADMIN_RANGE_MIN and not _in_admin_range(key, val):
                 val = default
             out[key] = val
     return out
