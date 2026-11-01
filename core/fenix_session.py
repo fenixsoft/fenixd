@@ -34,6 +34,11 @@ LEGACY_SESSION = "fenixd"
 START_DAEMON_PROBE_ATTEMPTS = 50
 START_DAEMON_PROBE_INTERVAL_SECONDS = 0.1
 
+# 「supervisor 在跑但 daemon 本体缺席」警示文案：幂等门分支与新拉起轮询
+# 复核分支共用（两处口径成对维护，见 code-review item e17df2678564 /
+# 87bdc3d2f2b9），提常量防只改一处致文案漂移（item ee095cec8da0）。
+SUPERVISOR_ONLY_WARNING = "supervisor 在跑但未检测到 daemon 进程（可能处于启动退避、熔断或停止流程中），请查看 .fenix/logs/supervisor.log"
+
 
 def _tmux_env() -> dict:
     """tmux 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
@@ -379,6 +384,31 @@ def _is_daemon_cmdline(pid) -> bool:
     return script_path.name == "fenixd.py" and script_path.parent.name == ".fenix"
 
 
+def _is_snapshot_proc_cmdline(pid, root: Path):
+    """快照 pid 补杀前复核：cmdline 是否仍是本项目 daemon/supervisor 形态。
+
+    stop_daemon 超时 SIGKILL 兜底专用（code-review item 8cf4db59080d）：
+    30 秒等待窗内快照进程退出、pid 被内核复用给无关进程（含另一项目的
+    daemon/supervisor）时，_alive_pids 的 kill(pid, 0) 探活仍判存活，盲杀
+    会误杀复用者。判据与入口快照 _fenix_pids_under 完全同款
+    （_is_daemon_proc / _is_supervisor_proc：cwd + argv 结构化解析 + 项目根
+    锚定，故复用者为另一项目 daemon 时同样判不过）；只对快照 pid 自身
+    复核、不重扫项目（不违反 aea5d1c9400d 契约）。返回三态：
+    True＝仍是本项目 daemon/supervisor，可补杀；False＝/proc 可读但已非
+    本项目形态（疑似 pid 复用），跳过补杀；None＝/proc 读取失败（进程已
+    退出/不可读），复核不可判——照旧尝试补杀，进程确已退出由 os.kill 的
+    ProcessLookupError 兜底，无害。
+    """
+    try:
+        cwd = Path(os.readlink(f"/proc/{pid}/cwd")).expanduser().resolve()
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    argv = [token for token in raw.split("\x00") if token]
+    return _is_daemon_proc(cwd, argv, root) or _is_supervisor_proc(cwd, argv, root)
+
+
 def hosting_state(root: str | None = None) -> str:
     """daemon 托管态三态判定：managed / unmanaged / stopped。
 
@@ -465,7 +495,7 @@ def start_daemon(root: str | None = None) -> dict:
             "error": None,
             "session": session,
             "already": True,
-            "warning": "supervisor 在跑但未检测到 daemon 进程（可能处于启动退避、熔断或停止流程中），请查看 .fenix/logs/supervisor.log",
+            "warning": SUPERVISOR_ONLY_WARNING,
         }
 
     # 陈旧 stop 标记清理（3.3）：is_running 为假（已幂等返回）且 supervisor 也未
@@ -535,7 +565,7 @@ def start_daemon(root: str | None = None) -> dict:
                 "error": None,
                 "session": session,
                 "already": False,
-                "warning": "supervisor 在跑但未检测到 daemon 进程（可能处于启动退避、熔断或停止流程中），请查看 .fenix/logs/supervisor.log",
+                "warning": SUPERVISOR_ONLY_WARNING,
             }
         time.sleep(START_DAEMON_PROBE_INTERVAL_SECONDS)
     # 探测窗口耗尽后区分两种情况：/proc 不可判但会话仍存活 → 维持宽容成功；
@@ -661,7 +691,8 @@ def stop_daemon(root: str | None = None) -> dict:
 
     并发安全（fix-supervisor-hosting-chain 验证修复 BUG-01）：停止目标 pid
     在入口一次快照；SIGTERM 与超时 SIGKILL 只作用快照中的 pid（SIGKILL 前经
-    kill(pid, 0) 探活），超时路径绝不重新扫描——否则一次并发的 stop/install
+    kill(pid, 0) 探活＋cmdline 结构化复核，防等待窗内 pid 复用误杀，见
+    _is_snapshot_proc_cmdline），超时路径绝不重新扫描——否则一次并发的 stop/install
     在兜底时刻会把另一路刚拉起的新 supervisor/daemon 当作「残留」误杀，
     致托管永远无法成立。
 
@@ -729,6 +760,17 @@ def stop_daemon(root: str | None = None) -> dict:
                 pass
             sigkilled = []
             for pid in remaining:
+                # 补杀前复核（code-review item 8cf4db59080d）：kill(pid, 0) 探活
+                # 分不清「快照进程仍在」与「pid 已被复用给无关进程」，复核判
+                # False（cmdline 已非本项目 daemon/supervisor，疑似 pid 复用）
+                # 时跳过并计入 error，不盲杀；None（进程已退出/不可读）照旧
+                # 尝试，由 ProcessLookupError 兜底。
+                if _is_snapshot_proc_cmdline(pid, proot) is False:
+                    kill_errors.append(
+                        f"SIGKILL pid {pid} 补杀前复核失败"
+                        "（cmdline 已非本项目 daemon/supervisor，疑似 pid 复用），跳过补杀"
+                    )
+                    continue
                 try:
                     os.kill(int(pid), signal.SIGKILL)
                     sigkilled.append(pid)
