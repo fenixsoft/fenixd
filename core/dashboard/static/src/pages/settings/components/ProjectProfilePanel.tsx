@@ -93,13 +93,19 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     onConsumedRef.current = onConsumed;
   }, [onConsumed]);
 
+  // 聚焦信号待消费镜像（写 ref 落 effect、渲染保持纯净，同 onConsumedRef
+  // 纪律 code-review item 2ff25e77442c）：记录最新信号值（含复位后的 0），
+  // 供下方卸载清理判断是否仍有未消费信号
+  const pendingFocusSignalRef = useRef(0);
+
   // 聚焦信号到达：滚到 verify.yaml 卡片并把光标送入编辑框（延迟等待页签
   // 切换后本面板真正挂载渲染完成）
   useEffect(() => {
+    pendingFocusSignalRef.current = focusVerifySignal;
     if (!focusVerifySignal) return;
     // 信号一次性消费（code-review item ff9fbfa71d51）：复位必须安排在聚焦
     // 落地之后——父级提前置 0 会令本 effect 因依赖变更走清理路径、取消尚未
-    // 执行的聚焦定时器；消费置于聚焦定时器回调与卸载清理两处
+    // 执行的聚焦定时器；消费置于聚焦定时器回调与下方卸载清理两处
     const consume = () => onConsumedRef.current?.();
     verifySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     const t = setTimeout(() => {
@@ -113,15 +119,29 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
           /* setSelectionRange 对特定 type 可能抛错，聚焦已达成即可 */
         }
       }
+      // 先摘待消费标记再通知父级：随后到达的卸载清理不再重复复位
+      pendingFocusSignalRef.current = 0;
       consume();
     }, 300);
+    // 依赖变更的清理只取消本实例定时器、不复位信号（code-review item
+    // ec0e0b195b6d）：依赖变更含「新信号顶替旧信号」，此处 consume 会把
+    // 父级信号复位为 0，复位引发的下一轮提交依赖变 0 再次清理，新信号刚
+    // 排下的聚焦定时器被清掉——信号被消费、聚焦却永不落地。卸载消费由
+    // 下方独立 effect 凭待消费镜像承担
     return () => {
       clearTimeout(t);
-      // 提前卸载（含 300ms 内切走页签）同样消费：信号已不可能再被本实例
-      // 消费，复位后重挂载不会重放聚焦
-      consume();
     };
   }, [focusVerifySignal]);
+
+  // 卸载消费（code-review item ff9fbfa71d51）：信号已不可能再被本实例消费，
+  // 复位后重挂载不会拿旧时间戳重放聚焦；信号已被定时器回调消费或被父级
+  // 显式复位时镜像已归零，此处不再重复通知
+  useEffect(
+    () => () => {
+      if (pendingFocusSignalRef.current) onConsumedRef.current?.();
+    },
+    [],
+  );
 
   const handleSave = async () => {
     if (saving) return; // 渲染生效后的连点短路（视觉反馈层，非重入守卫）
