@@ -719,6 +719,19 @@ export default function OrgGrid({
 
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
   if (!data) return <ScreenLoading hint="组织网格加载中" />;
+  // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
+  // 兼容契约：改 404 会翻转成整页错误），useScreenResource 只透传 HTTP 层
+  // error——内嵌 error 字段在此消费并整页透出，避免错误响应落入分区
+  // 「无卡片」空态被静默吞掉（错误体不带 zones，不得进下方渲染）
+  // （code-review e8779917ea12，同 PipelineBoard data.error 先例）
+  if (data.error) {
+    return (
+      <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`组织网格查询失败：${data.error}`} />
+    );
+  }
+  // 团队卡四格标签与 LaneCard 的 L 同口径取一次复用，不再四处重复求值
+  // windowLabels(win)（code-review 8ec64a33e3b3）
+  const L = windowLabels(win);
   return (
     <div>
       {/* 后台刷新失败保留旧数据（静默轮询恢复），内联提示不阻塞视图 */}
@@ -733,6 +746,18 @@ export default function OrgGrid({
           type="warning"
           showIcon
           message={`spec 视图轮次刷新失败：${specRunsError}`}
+        />
+      ) : null}
+      {/* spec-runs 响应内嵌 error 字典（未知项目/必填缺失的 200 同族契约）：
+          与 specRunsError 同形态内联透出，否则静默落「加载中」占位空态；
+          specRunsForSel 一致性守卫已保证错误体不进 lanes 渲染
+          （code-review e8779917ea12） */}
+      {specSel && specRuns?.error ? (
+        <Alert
+          style={{ marginBottom: 12 }}
+          type="warning"
+          showIcon
+          message={`spec 视图轮次查询失败：${specRuns.error}`}
         />
       ) : null}
       {/* 双向滚动容器（2026-10-28 定稿：五线不换行，宽度不足出横向滚动条；
@@ -817,7 +842,7 @@ export default function OrgGrid({
                 >
                   <MetricCell
                     value={fmtMetric(data.summary?.spec_count)}
-                    label={windowLabels(win).teamSpecs}
+                    label={L.teamSpecs}
                     center
                     clickHint
                     selected={!!specSel}
@@ -826,19 +851,19 @@ export default function OrgGrid({
               </Popover>
               <MetricCell
                 value={fmtMetric(data.summary?.runs_total)}
-                label={windowLabels(win).teamRuns}
+                label={L.teamRuns}
                 divided
                 center
               />
               <MetricCell
                 value={fmtDurationSeconds(data.summary?.duration_total)}
-                label={windowLabels(win).teamDuration}
+                label={L.teamDuration}
                 divided
                 center
               />
               <MetricCell
                 value={fmtUsd(data.summary?.cost_total)}
-                label={windowLabels(win).teamCost}
+                label={L.teamCost}
                 divided
                 center
               />

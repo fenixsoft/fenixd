@@ -13,6 +13,7 @@ import type { RunEvent, RunPrompt } from '@/services/dashboard';
 
 import { runEventsToChatMessages } from './runEvents';
 import ClaudeMessageList from './ClaudeMessageList';
+import { copyToClipboard } from './Markdown';
 
 interface ClaudeOutputPaneProps {
   runId: string;
@@ -408,10 +409,13 @@ export default function ClaudeOutputPane({
   const copyPrompt = useCallback(async () => {
     const text = promptData?.prompt ?? '';
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
+    // 复用 Markdown.tsx 的 copyToClipboard（item 397f7bcb4975）：带 execCommand
+    // 降级路径，非安全上下文（http://<局域网IP> 访问 dashboard，navigator.clipboard
+    // 为 undefined）下复制不再恒报失败，与消息气泡复制行为一致
+    const ok = await copyToClipboard(text);
+    if (ok) {
       message.success('提示词已复制到剪贴板');
-    } catch {
+    } else {
       message.error('复制失败：剪贴板不可用');
     }
   }, [promptData, message]);

@@ -6,7 +6,7 @@
 // 2026-10-28 上移壳层页签右侧全局下拉（与流水线屏同批），本屏经 props
 // 接收。KPI 数据独立加载，表格独立加载，互不拖垮。
 
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Alert, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { commandCenterKpi, commandCenterLedger } from '@/services/dashboard';
@@ -192,6 +192,24 @@ export default function ExecutionLedger({
     if (ledger.data?.projects) onProjects?.(ledger.data.projects);
   }, [ledger.data, onProjects]);
 
+  // rowKey 撞键防御：后端台账行无 run 维度唯一标识（aggregate_ledger 投影
+  // 丢弃 _run_id，started_at 口径允许 null），project/started_at/spec/lane
+  // 四字段拼接在 started_at 缺失或同刻同值时可能重复——按行序首见保留原
+  // 键、重复键追加序号；映射在渲染前一次性构建，rowKey 内只查表（无跨
+  // 渲染残留的可变状态），以行对象身份为索引与 dataSource 逐行对应
+  const ledgerRows = ledger.data?.rows;
+  const ledgerRowKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    const keys = new Map<CommandCenterLedgerRow, string>();
+    (ledgerRows ?? []).forEach((r) => {
+      const base = `${r.project}/${r.started_at ?? ''}/${r.spec}/${r.lane}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      keys.set(r, n === 0 ? base : `${base}#${n}`);
+    });
+    return keys;
+  }, [ledgerRows]);
+
   const ledgerView = () => {
     if (ledger.error && !ledger.data) {
       return <ScreenErrorPlaceholder error={ledger.error} onRetry={ledger.retry} />;
@@ -204,7 +222,7 @@ export default function ExecutionLedger({
         ) : null}
         <Table<CommandCenterLedgerRow>
           size="small"
-          rowKey={(r) => `${r.project}/${r.started_at ?? ''}/${r.spec}/${r.lane}`}
+          rowKey={(r) => ledgerRowKeys.get(r) ?? ''}
           columns={columns}
           dataSource={ledger.data.rows}
           // 单页纯展示（后端台账恒 ≤50 行，specs「执行台账派生」）；不分页
