@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -580,6 +581,98 @@ def _check_artifact_json_file(
     return (None, data)
 
 
+# ── spec-review 车道成文留痕收尾提交（fix-review-disposition-stray-channel 2.1）──
+# spec/changes/<spec>/ 是评审处置留痕的成文落点（评审 agent 写权限边界即该
+# 目录）；arbiter 物化提交缺口窗口（物化 best-effort 失败、daemon 版本代差
+# 期旧代码无提交逻辑）会让该目录滞留 untracked——散件首现告警且首现草案
+# 曾把交付物目录误归类为「运行时产物目录」。本钩子在评审结果文件成功落盘
+# 后补一次 best-effort 单目录提交（对齐 core/pm_engine/arbiter.py
+# _materialize_proposal 先例），缩短滞留窗口；与散件草案豁免（stray_wip.py
+# 1.1）两层互为冗余。
+_SPEC_REVIEW_DOCS_DIRNAME = "spec/changes"
+# git 子进程统一超时（对齐 _materialize_proposal 先例的 30s）。
+_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS = 30
+
+
+def commit_spec_review_docs(project_root, spec_name: str) -> bool:
+    """spec-review 车道成文留痕收尾 best-effort 单目录提交（2.1）。
+
+    评审结果文件成功落盘（产物硬门放行，终态 approved/repaired/rejected
+    无关）后调用：对主树 ``spec/changes/<spec_name>/`` 先
+    ``git status --porcelain`` 取证——有变更/未跟踪条目才 ``git add``
+    该目录并单目录 commit（提交信息注明评审成文，形态对齐 arbiter
+    ``_materialize_proposal`` 先例）；porcelain 为空即跳过（幂等，不产
+    空提交）。
+
+    失败语义：任何 git 失败（锁冲突/identity 缺失/超时/非 git 仓）仅经
+    模块标准 logging 通道记 WARNING（caplog 可断言），MUST NOT 影响评审
+    结果文件交付、进程退出码或评审终态判定。MUST NOT 抛异常。
+
+    Returns: True=执行了提交且成功；False=跳过（spec 名形态守卫/目录
+    缺失/porcelain 空）或提交失败（失败形态已 WARNING 留痕）。
+    """
+    name = str(spec_name or "")
+    # spec 名形态守卫（路径注入面）：空名/含路径分隔/相对上跳一律跳过
+    # （上游 STATE 侧已校验，此处防御性兜底）。
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return False
+    root = Path(project_root)
+    spec_rel = f"{_SPEC_REVIEW_DOCS_DIRNAME}/{name}"
+    spec_dir = root / _SPEC_REVIEW_DOCS_DIRNAME / name
+    if not spec_dir.is_dir():
+        return False  # 本 run 未触碰成文目录（如 rejected 未修补形态）
+    git = ["git", "-C", str(root)]
+    try:
+        probe = subprocess.run(
+            git + ["status", "--porcelain", "--", spec_rel],
+            capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
+        )
+        if probe.returncode != 0:
+            # stderr 形态容错：capture_output 下为 bytes，但外部桩/变体调用
+            # 可能给 str——日志装配 MUST NOT 因形态抛异常（本钩子不抛异常契约）。
+            stderr_text = probe.stderr
+            if isinstance(stderr_text, bytes):
+                stderr_text = stderr_text.decode("utf-8", "replace")
+            _logger.warning(
+                "spec-review 成文留痕收尾跳过（git status 失败，"
+                "不阻断评审交付）: spec=%s rc=%s stderr=%s",
+                name, probe.returncode, str(stderr_text or "").strip()[:200],
+            )
+            return False
+        if not (probe.stdout or b"").strip():
+            return False  # porcelain 空：无变更不产空提交（幂等）
+        subprocess.run(
+            git + ["add", "--", spec_rel],
+            capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
+            check=True,
+        )
+        subprocess.run(
+            git + ["commit", "-m",
+                   f"[fenix] spec: {name}"
+                   "（spec-review 评审成文留痕收尾提交）"
+                   "\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>"],
+            capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except subprocess.SubprocessError as e:
+        _logger.warning(
+            "spec-review 成文留痕收尾提交失败（best-effort，不阻断评审交付）"
+            ": spec=%s err=%s", name, e,
+        )
+        return False
+    except OSError as e:
+        _logger.warning(
+            "spec-review 成文留痕收尾提交失败（best-effort，不阻断评审交付）"
+            ": spec=%s err=%s", name, e,
+        )
+        return False
+    _logger.info(
+        "spec-review 成文留痕收尾提交完成（散件滞留窗口收口）: spec=%s dir=%s",
+        name, spec_rel,
+    )
+    return True
+
+
 def _check_agent_result_artifact(
     runner,
     spec_name: str,
@@ -614,6 +707,13 @@ def _check_agent_result_artifact(
                 f"exit 0 但结果文件 status='{status}' 不在白名单"
                 f"（{agent_type} 产物硬门）: {path}"
             )
+        # fix-review-disposition-stray-channel 2.1：结果文件成功落盘（硬门
+        # 放行）后，对本 run 触碰过的主树 spec/changes/<spec>/ 执行
+        # best-effort 单目录收尾提交——approved/repaired/rejected 三态统一
+        # 走此收尾（终态无关，判定点在终态分支之前）；任何 git 失败仅
+        # WARNING，MUST NOT 影响结果交付与退出码（失败语义见
+        # commit_spec_review_docs）。
+        commit_spec_review_docs(runner.project_root, spec_name)
         return None
     if agent_type not in ("planner-judge", "planner-plan"):
         # 兜底分支本就放行（verifier / self-review 等无结果文件契约的车道合法
