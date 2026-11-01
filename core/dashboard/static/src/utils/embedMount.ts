@@ -36,9 +36,10 @@ function readSearch(): string {
 // 安全约束：apiBase 拼进全部 fetch URL/STREAM_URL/iframe src（写请求载荷含
 // apikey 等敏感配置），只接受宿主注入的反代路径前缀——以单个 '/' 开头且次字
 // 符不为 '/' 或 '\'（协议相对 `//host`、`/\host` 会被 URL 解析当 authority 接
-// 管全部 API 流量）；其余形态（含 scheme 的绝对 URL、裸相对路径）一律回退 ''
+// 管全部 API 流量），且不含 '\'、'?'、'#'（query/fragment 会截断 withApiBase
+// 拼接路径）；其余形态（含 scheme 的绝对 URL、裸相对路径）一律回退 ''
 // 恒等缺省，同源行为不受影响。
-const SAFE_API_BASE = /^\/(?![\/\\])[^\\]*$/;
+const SAFE_API_BASE = /^\/(?![\/\\])[^\\?#]*$/;
 
 function sanitizeApiBase(raw: string): string {
   return SAFE_API_BASE.test(raw) ? raw : '';
