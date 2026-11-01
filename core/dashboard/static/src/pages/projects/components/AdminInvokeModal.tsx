@@ -456,7 +456,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
               if (enterSendTimerRef.current !== null) {
                 window.clearTimeout(enterSendTimerRef.current);
               }
-              enterSendTimerRef.current = window.setTimeout(() => {
+              enterSendTimerRef.current = setTimeout(() => {
                 enterSendTimerRef.current = null;
                 void handleSend();
               }, 0);
