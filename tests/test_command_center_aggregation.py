@@ -650,6 +650,69 @@ class TestSpecRunsAggregation:
         )
 
 
+# ── 观测 lane 归并（add-arbiter-quality-display 任务 1.2）：arbiter→judge ──
+
+
+class TestArbiterMergeAggregation:
+    """arbiter 归并质量裁决（LANE_ALIASES 新增 arbiter→judge）：org 网格
+    judge 卡计数/在飞归属并入、「其他」分区不再单独出卡；spec 视图轮次同
+    口径归并出列。"""
+
+    def card_of(self, data, lane):
+        hit = [c for z in data["zones"] for c in z["cards"] if c["lane"] == lane]
+        assert len(hit) == 1, f"lane card missing: {lane}"
+        return hit[0]
+
+    def test_org_arbiter_merges_into_judge_card(self, tmp_path):
+        """含 arbiter run 观测：zones 无 lane=arbiter 卡、「其他」无 arbiter；
+        judge 卡 runs 计入 arbiter run。"""
+        proot = make_proj(tmp_path, "proj-arb", specs={"demo": "implementing"})
+        # 窗内 1 条 done arbiter run
+        priced_run(proot, f"arbiter-demo-{NOW - 3000}", "done", NOW - 3000, usage=None)
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        # 无 lane=arbiter 卡（全 zones 扫描）
+        all_lanes = [c["lane"] for z in data["zones"] for c in z["cards"]]
+        assert "arbiter" not in all_lanes
+        # 「其他」分区无 arbiter 卡（本 fixture 花名册外零观测 → 分区可整体缺省）
+        other = [z for z in data["zones"] if z["zone"] == "其他"]
+        if other:
+            assert all(c["lane"] != "arbiter" for c in other[0]["cards"])
+        # judge 卡（质量线）runs 计入 arbiter run
+        judge = self.card_of(data, "judge")
+        assert judge["runs"] == 1
+        assert judge["zone"] == "质量线"
+
+    def test_org_arbiter_inflight_attributable_to_judge(self, tmp_path):
+        """arbiter run 在飞：judge 卡 status=working、attributables 含该 run
+        的 {project, spec, run_id}；arbiter 无独立卡片。"""
+        proot = make_proj(tmp_path, "proj-arb2", specs={"live": "implementing"})
+        priced_run(
+            proot, f"arbiter-live-{NOW - 500}", "progress", NOW - 500, usage=None
+        )
+        data = cc.aggregate_org(projects_of(proot), now=NOW)
+        judge = self.card_of(data, "judge")
+        assert judge["status"] == "working"
+        assert judge["attributables"] == [
+            {"project": "proj-arb2", "spec": "live", "run_id": f"arbiter-live-{NOW - 500}"}
+        ]
+        assert "arbiter" not in [
+            c["lane"] for z in data["zones"] for c in z["cards"]
+        ]
+
+    def test_spec_runs_arbiter_round_under_judge_lane(self, tmp_path):
+        """spec-runs 轮次同口径归并：arbiter run 以 judge 车道出列，不出现
+        名为 arbiter 的 lane 条目。"""
+        proot = make_proj(tmp_path, "proj-arb3", specs={"x": "implementing"})
+        priced_run(proot, f"arbiter-x-{NOW - 4000}", "done", NOW - 4000, usage=None)
+        priced_run(proot, f"impl-x-{NOW - 5000}", "done", NOW - 5000, usage=None)
+        data = cc.aggregate_spec_runs(projects_of(proot), "proj-arb3", "x", now=NOW)
+        lane_names = [l["lane"] for l in data["lanes"]]
+        assert "arbiter" not in lane_names
+        judge = [l for l in data["lanes"] if l["lane"] == "judge"][0]
+        assert [r["run_id"] for r in judge["rounds"]] == [f"arbiter-x-{NOW - 4000}"]
+        assert judge["zone"] == "质量线"
+
+
 # ── 交付流水线（任务 2.5） ────────────────────────────────────────────────
 
 
