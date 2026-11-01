@@ -61,6 +61,7 @@
   var highlight = el("div", "fpa-highlight");
   var highlightLabel = el("div", "fpa-highlight-label", "");
   highlight.appendChild(highlightLabel);
+  var hoveredNode = null; // 最近悬停的带锚元素，scroll/resize 后重算高亮位置用
 
   function moveHighlight(node) {
     var rect = node.getBoundingClientRect();
@@ -69,6 +70,14 @@
     highlight.style.width = rect.width + "px";
     highlight.style.height = rect.height + "px";
     highlightLabel.textContent = node.getAttribute(ANCHOR_ATTR) || "(无锚)";
+  }
+
+  // 高亮框按 getBoundingClientRect 的视口坐标定位 position:fixed，
+  // 页面滚动（滚轮不触发 mousemove）或窗口缩放后须按最近悬停元素重算，
+  // 否则高亮框停留在旧视口位置与实际元素错位
+  function refreshHighlight() {
+    if (!state.annotateMode || !hoveredNode) return;
+    moveHighlight(hoveredNode);
   }
 
   // ── 面板（意见输入 + 意见列表）──────────────────────────────────────
@@ -168,13 +177,13 @@
       clearTimeout(timer);
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       remember(annotation, true);
+      textarea.value = ""; // 仅在确认送达后清空；失败时保留原文便于用户修正重试
       setStatus("已提交到服务器。");
     }).catch(function () {
       clearTimeout(timer);
       remember(annotation, false);
       exportLocal();
     });
-    textarea.value = "";
   }
 
   submitBtn.addEventListener("click", submit);
@@ -183,10 +192,14 @@
   // ── 全局交互（批注模式拦截点击，浏览模式放行）──────────────────────
   document.addEventListener("mousemove", function (ev) {
     if (!state.annotateMode) return;
-    var node = resolveAnchor(ev.target);
-    if (node) { moveHighlight(node); highlight.style.display = "block"; }
+    hoveredNode = resolveAnchor(ev.target);
+    if (hoveredNode) { moveHighlight(hoveredNode); highlight.style.display = "block"; }
     else { highlight.style.display = "none"; }
   }, true);
+
+  // scroll 用捕获监听：内部滚动容器的 scroll 事件不冒泡，捕获阶段可统一接住
+  window.addEventListener("scroll", refreshHighlight, true);
+  window.addEventListener("resize", refreshHighlight);
 
   document.addEventListener("click", function (ev) {
     if (!state.annotateMode) return; // 浏览模式放行原型自身交互
@@ -202,6 +215,7 @@
   modeBtn.addEventListener("click", function () {
     state.annotateMode = !state.annotateMode;
     modeBtn.textContent = state.annotateMode ? "浏览模式" : "批注模式";
+    hoveredNode = null;
     highlight.style.display = "none";
     setStatus(state.annotateMode ? "批注模式：点选区块即选中。" : "浏览模式：原型可正常点击。");
   });

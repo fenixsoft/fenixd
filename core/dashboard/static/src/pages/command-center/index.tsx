@@ -9,7 +9,7 @@
 // 深色 antd token 与协作图谱大屏同一色系（design D6：样式作为场景复用，
 // 不新增样式配置）。
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from '@umijs/max';
 import { ConfigProvider, Select, Space, Tabs, theme } from 'antd';
 import { TEXT_MAIN, TIME_WINDOW_OPTIONS, TimeWindow } from './shared';
@@ -34,6 +34,15 @@ export default function CommandCenterPage() {
   // 特定视图；依赖服务端 SPA fallback——无扩展名非 api GET 路径回 index.html）。
   // 变更经 setSearchParams replace 写回（不刷历史栈）；初值仅读一次。
   const [searchParams, setSearchParams] = useSearchParams();
+  // 最新 searchParams 暂存 ref（同 tick 双写竞态兜底）：下方三个 setter 闭包
+  // 直读的 searchParams 是渲染期快照，同一 tick 内连续触发两个 setter 时，
+  // 第二个会用旧快照构造参数冲掉第一个的写入；setter 统一从本 ref 构造新
+  // 参数并在写后回填，链式写不再互冲。searchParams 变化（含浏览器侧导航）
+  // 经 effect 同步回 ref。
+  const latestParamsRef = useRef(searchParams);
+  useEffect(() => {
+    latestParamsRef.current = searchParams;
+  }, [searchParams]);
   const urlProject = searchParams.get('project') ?? '';
   const urlWin: TimeWindow = isTimeWindow(searchParams.get('window'))
     ? (searchParams.get('window') as TimeWindow)
@@ -65,26 +74,29 @@ export default function CommandCenterPage() {
 
   // 筛选变更同步写 URL（replace：不刷历史栈）。不用 setSearchParams 的
   // 函数式更新器——本 react-router 版本下它不生效（写出的 query 恒空，
-  // 会把另一参数一并冲掉）；闭包直读 searchParams 构造完整新参数，交叉
-  // 保留另一参数。searchParams 进 deps 保证闭包新鲜。
+  // 会把另一参数一并冲掉）；从 latestParamsRef 构造完整新参数，交叉保留
+  // 其余参数，写后回填 ref——同 tick 连续触发两个 setter 时第二个也能读
+  // 到第一个的写入（闭包 searchParams 是渲染期快照，双写会互冲）。
   const setProject = useCallback(
     (v: string) => {
       setProjectState(v);
-      const next = new URLSearchParams(searchParams);
+      const next = new URLSearchParams(latestParamsRef.current);
       if (v) next.set('project', v);
       else next.delete('project');
+      latestParamsRef.current = next;
       setSearchParams(next, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [setSearchParams],
   );
   const setOrgWin = useCallback(
     (v: TimeWindow) => {
       setOrgWinState(v);
-      const next = new URLSearchParams(searchParams);
+      const next = new URLSearchParams(latestParamsRef.current);
       next.set('window', v);
+      latestParamsRef.current = next;
       setSearchParams(next, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [setSearchParams],
   );
   // spec 视图选中态写 URL（add-command-center-spec-view 4.1）：置 null =
   // 显式/隐式退出，两参数一并清除；置值 = 深链入链（spec_project 恒随选中
@@ -92,7 +104,7 @@ export default function CommandCenterPage() {
   const setSpecView = useCallback(
     (v: SpecViewSelection | null) => {
       setSpecViewState(v);
-      const next = new URLSearchParams(searchParams);
+      const next = new URLSearchParams(latestParamsRef.current);
       if (v && v.spec && v.project) {
         next.set('spec', v.spec);
         next.set('spec_project', v.project);
@@ -100,9 +112,10 @@ export default function CommandCenterPage() {
         next.delete('spec');
         next.delete('spec_project');
       }
+      latestParamsRef.current = next;
       setSearchParams(next, { replace: true });
     },
-    [searchParams, setSearchParams],
+    [setSearchParams],
   );
 
   return (

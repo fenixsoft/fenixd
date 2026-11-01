@@ -575,9 +575,12 @@ def _read_verdict(pipeline, spec_name: str) -> VerdictReadResult:
                 "not-produced",
                 f"{primary}: 派发预写戳原样（role=verifier, status=dispatched）",
             )
-        return _read_verifier_result(
-            pipeline, primary, data=stamp_probe if isinstance(stamp_probe, dict) else None
-        )
+        # 合法 JSON 非 dict 形态（数组/字符串/数字等）同样直传，交由
+        # _read_verifier_result 既有 isinstance(data, dict) 分支按 parse 口径
+        # 归因，单次读取承诺覆盖全部合法 JSON 形态（code-review item
+        # 9b5a5a63d6b9）；仅首次读取抛 OSError/解码失败（stamp_probe=None）
+        # 保留 data=None 重读回退。
+        return _read_verifier_result(pipeline, primary, data=stamp_probe)
 
     if not shared.exists():
         return VerdictReadResult.failure("missing", f"{shared}")

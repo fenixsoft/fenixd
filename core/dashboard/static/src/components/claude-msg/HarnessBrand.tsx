@@ -3,9 +3,7 @@
 // claude-msg 组件族不再字面耦合 'Claude'：消息头标签与头像图标经
 // useHarnessBrand() 取得品牌值（{ name, Logo }），由 run 视图层
 // （RunRecordModal / AdminRunModal）按 run meta 的 harness 字段经
-// HarnessBrandProvider 外部投影注入。context 缺省值 = Claude 品牌——
-// 未注入 Provider 的使用点（自由会话 SessionPanel 等 claude 专用车道）
-// 行为与改造前逐字一致（spec「缺省品牌等于现状」）。
+// HarnessBrandProvider 外部投影注入。
 //
 // 回退链（design Decision 3；2026-10-29 用户定稿修正）：run 视图注入点无
 // harness 字段 → 中性「AI Assistant」（AI 首字母徽标——无 meta 的 run 可能

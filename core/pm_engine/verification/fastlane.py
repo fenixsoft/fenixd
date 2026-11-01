@@ -459,7 +459,7 @@ def record_decision(pipeline, spec_name: str, decision: dict) -> None:
         atomic_write_text(
             path, json.dumps(payload, ensure_ascii=False, indent=2)
         )
-    except OSError as e:
+    except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine", f"fastlane 判定记录落盘失败 '{spec_name}'（不阻断）: {e}"
         )

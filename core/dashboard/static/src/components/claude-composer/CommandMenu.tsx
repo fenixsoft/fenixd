@@ -139,12 +139,14 @@ const getMenuPosition = (position: {
     MENU_EDGE_GAP,
     window.innerHeight - MENU_EDGE_GAP - MENU_MIN_HEIGHT,
   );
+  // anchorBottom clamp 在移动端/桌面两分支逐字一致，提到分支外单处计算
+  // （code-review item 4b1be7141185），分支内只保留布局差异。
+  const anchorBottom = Math.min(
+    Math.max(MENU_EDGE_GAP, position.bottom ?? DEFAULT_ANCHOR_BOTTOM),
+    maxAnchorBottom,
+  );
   // 移动端（<640px）：全宽锚定输入区上方（spec：移动端补全菜单全宽锚定）
   if (window.innerWidth < 640) {
-    const anchorBottom = Math.min(
-      Math.max(MENU_EDGE_GAP, position.bottom ?? DEFAULT_ANCHOR_BOTTOM),
-      maxAnchorBottom,
-    );
     return {
       position: 'fixed',
       bottom: `${anchorBottom}px`,
@@ -155,10 +157,6 @@ const getMenuPosition = (position: {
       maxHeight: `min(54vh, calc(100vh - ${anchorBottom}px - ${MENU_EDGE_GAP}px))`,
     };
   }
-  const anchorBottom = Math.min(
-    Math.max(MENU_EDGE_GAP, position.bottom ?? DEFAULT_ANCHOR_BOTTOM),
-    maxAnchorBottom,
-  );
   const clampedLeft = Math.max(
     MENU_EDGE_GAP,
     Math.min(position.left, window.innerWidth - MENU_WIDTH - MENU_EDGE_GAP),

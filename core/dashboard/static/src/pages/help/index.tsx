@@ -502,9 +502,12 @@ export default function HelpPage() {
     // 尚未生效（docData 仍归属上一篇）：一律按加载中渲染，避免闪现
     // 「文档内容为空」空态或上一篇的陈旧内容（docData.name 由后端原样回显请求名）
     if (!docData || docData.name !== currentDoc) return <Skeleton active paragraph={{ rows: 8 }} />;
+    // fix 6c038d5dcf22：接口 200 但 content 为空串时显式渲染空态（口径同空清单
+    // 的 Empty），避免正文区域完全空白、无从区分「文档确实为空」与「渲染异常」
+    if (!docData.content) return <Empty description="文档内容为空" />;
     return (
       <Markdown remarkPlugins={HELP_REMARK_PLUGINS} components={helpComponents}>
-        {docData.content || ''}
+        {docData.content}
       </Markdown>
     );
   };

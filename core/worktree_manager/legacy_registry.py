@@ -141,12 +141,14 @@ class G2LegacyRegistryMixin:
         # 要消费的旧遗产——前一 run 死亡后宽限期内后继即成功 merge 的合法消费
         # 被误拒，调用方按无遗产处理不再重试，而 _reclaim_expired_legacy 仅
         # daemon 启动路径执行一次（见 _reclaim_expired_legacy docstring），遗产
-        # worktree 目录与分支将滞留至重启。两段临界区间隙即复核窗口（同
-        # _pop_legacy_if_current 的快照→复核结构）；临界区内只做字典读写，
+        # worktree 目录与分支将滞留至重启。快照→pop→同一性复核在单一持锁段
+        # 内完成（code-review item ea06af4fba82，合并原两段背靠背临界区：段
+        # 间无线程内工作，合并消除间隙窗口内并发覆盖登记致「pop 到新记录→
+        # setdefault 放回→本轮空手而归」的多余重试路径；对象同一性复核与
+        # setdefault 放回逻辑逐条保留为防御）；临界区内只做字典读写，
         # 物理回收留锁外。
         with self._spec_lock_th:
             entry_rec = self._legacy.get(spec_name)
-        with self._spec_lock_th:
             rec = self._legacy.pop(spec_name, None)
             # 非 dict 记录守卫（code-review item 35dfd88369df，与
             # _register_legacy_unlocked 16a559a09f44 / _reclaim_expired_legacy

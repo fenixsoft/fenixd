@@ -118,10 +118,23 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
     // 与求值时刻的墙钟日期无关；回填仍写原 next
     const key = JSON.stringify(toBackfillKeyValues(next));
     if (key === lastBackfillRef.current) return;
-    if (onBackfill) {
-      onBackfill(next, () => form.setFieldsValue(next));
-    } else {
-      form.setFieldsValue(next);
+    // 回填异常兜底（code-review item 83842c2b2344）：onBackfill 前置逻辑、
+    // apply 或缺省 setFieldsValue 抛异常时不再穿透 effect（React 对 render/
+    // effect 阶段逃逸的异常会卸载整棵组件树，设置页白屏），降级为 warning
+    // 提示；catch 后直接 return、key 不落 lastBackfillRef，沿用下方「ref
+    // 记账移到回填成功之后」的重试语义——依赖下次变化时同样的配置内容仍会
+    // 重试回填，表单停留在旧值而非整页卸载。
+    try {
+      if (onBackfill) {
+        onBackfill(next, () => form.setFieldsValue(next));
+      } else {
+        form.setFieldsValue(next);
+      }
+    } catch (error) {
+      // toast 实例经 App.useApp() 取上下文（口径见上方 message 注释），与
+      // handleSave 的失败反馈同族，避免退化为无声失败
+      message.warning(`配置回填失败：${error instanceof Error ? error.message : String(error)}`);
+      return;
     }
     // ref 记账移到回填成功之后（code-review item 51e106646c29）：onBackfill
     // 的 apply 前置清理（如 LlmProviderPanel 健康徽标缓存清理）或 setFieldsValue

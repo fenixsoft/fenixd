@@ -12,26 +12,27 @@ export const TEXT_SUB = '#7f9cba';
 
 // null 指标占位：分母零/不可计价/数据缺口一律「—」（MUST NOT 显示 0——0 与
 // 「口径不可得」语义不同，specs「验收与红线」节）；数值原样字符串化（0 保留）。
+// 非有限值（NaN/Infinity）同归「—」占位，不透出 "NaN" 类文案（同 sparklineHeights 防护）。
 export function fmtMetric(v: number | null | undefined): string {
-  if (v === null || v === undefined) return '—';
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   return String(v);
 }
 
-// 比率格式化：null/undefined → 「—」；数值 → 百分比（1 位小数，0 → 0.0%）。
+// 比率格式化：null/undefined/非有限 → 「—」；数值 → 百分比（1 位小数，0 → 0.0%）。
 export function fmtRate(v: number | null | undefined): string {
-  if (v === null || v === undefined) return '—';
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   return `${(v * 100).toFixed(1)}%`;
 }
 
-// 成本格式化：null/undefined → 「—」；数值 → $ 千分位两位小数。
+// 成本格式化：null/undefined/非有限 → 「—」；数值 → $ 千分位两位小数。
 export function fmtUsd(v: number | null | undefined): string {
-  if (v === null || v === undefined) return '—';
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   return `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// tokens 格式化：null/undefined → 「—」；数值千分位。
+// tokens 格式化：null/undefined/非有限 → 「—」；数值千分位。
 export function fmtTokens(v: number | null | undefined): string {
-  if (v === null || v === undefined) return '—';
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   return v.toLocaleString('en-US');
 }
 
@@ -348,12 +349,12 @@ export function isSpecInList(
 }
 
 // 下拉搜索框本地过滤：`project/spec` 拼接串包含匹配（大小写不敏感）；
-// 缺键兜底空数组，脏元素（缺 spec）剔除
+// 缺键兜底空数组，脏元素（缺 project/spec，与 isSpecInList 空值防御同口径）剔除
 export function filterSpecEntries(
   list: SpecEntry[] | null | undefined,
   query: string,
 ): SpecEntry[] {
-  const src = (Array.isArray(list) ? list : []).filter((e) => !!e && !!e.spec);
+  const src = (Array.isArray(list) ? list : []).filter((e) => !!e && !!e.project && !!e.spec);
   const q = (query || '').trim().toLowerCase();
   if (!q) return src;
   return src.filter((e) => `${e.project}/${e.spec}`.toLowerCase().includes(q));

@@ -116,7 +116,7 @@ class WipOccupantInfo:
             for h in self.holders:
                 parts.append(
                     f"spec={h.get('spec') or '?'} branch={h.get('branch') or '?'}"
-                    f" run={','.join(h.get('run_ids') or []) or '?'}"
+                    f" run={','.join(str(r) for r in (h.get('run_ids') or [])) or '?'}"
                     f" 命中{len(h.get('files') or [])}文件"
                 )
             # 兜底：holder=True 语义上应伴随非空 holders，构造不当（holders

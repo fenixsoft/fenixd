@@ -365,6 +365,13 @@ class G7StaleSweepMixin:
                 for rec in list(self._legacy.values())
                 if isinstance(rec, dict)
             } - {None, ""}
+        # STATE 条目单次读取（code-review item 74139324aa4f）：供下方 branch -D
+        # 删除段的静态活跃清单守卫复用——与 _gc_merged_branches 守卫 (ii) 同条件
+        # （_BRANCH_GC_ACTIVE_STATUSES + 同轮 _read_state_entries 快照），整轮清扫
+        # 至多解析一次 STATE。None（STATE 不可解析）不在此放行豁免：该窗口由
+        # _branch_protected_by_state 自身的「不可解析 → 保守保留」兜住
+        # （kept=True 走不到 -D 段），此处 None 仅意味着清单守卫不追加豁免。
+        state_entries = self._read_state_entries()
         # 迭代前物化列表（sorted）：循环体内会删除 base_dir 的子目录
         # （git worktree remove / shutil.rmtree），边扫边删的目录遍历行为未定义，
         # 物化后删除不再作用于正在扫描的目录流。
@@ -534,6 +541,31 @@ class G7StaleSweepMixin:
                     # STATE 不可解析时保守处理（保留分支 + WARNING），
                     # MUST NOT 按「无引用」放行删除。
                     kept, reason = self._branch_protected_by_state(branch)
+                    if not kept:
+                        # ── 静态活跃清单补位（code-review item 74139324aa4f）──
+                        # _branch_protected_by_state (a) 的状态集不含 reviewing
+                        # （仅 implementing/implemented/testing/带恢复标记的
+                        # ready），而本段是不可逆 branch -D（且不要求已合并）——
+                        # GC 路径（_gc_merged_branches 守卫 (ii)）对 reviewing
+                        # 分支即便已合并都保留，本路径保护反而更弱、方向倒挂。
+                        # 对齐 GC 同条件：同轮 state_entries 快照 +
+                        # _BRANCH_GC_ACTIVE_STATUSES 静态清单命中即保留分支
+                        # （worktree 目录照常已删），分支留待 reviewing 车道
+                        # 收口/合回，避免续做降级为从零重派。
+                        branch_spec = self._spec_from_branch(branch)
+                        branch_entry = (
+                            state_entries.get(branch_spec)
+                            if isinstance(state_entries, dict) and branch_spec
+                            else None
+                        )
+                        if isinstance(branch_entry, dict) and branch_entry.get(
+                            "status", ""
+                        ) in self._BRANCH_GC_ACTIVE_STATUSES:
+                            kept = True
+                            reason = (
+                                f"STATE 活跃状态引用（{branch_spec}: "
+                                f"{branch_entry.get('status', '')}）"
+                            )
                     if kept:
                         self.logger.warning(
                             "worktree_manager",
