@@ -342,6 +342,20 @@ def _get_runs_watch(s, p, q, m):
     else:
         s._json(s._api_run(run_id, q))
 
+def _get_run_prompt(s, p, q, m):
+    """GET /api/runs/<run_id>/prompt（add-run-prompt-viewer 2.2）。
+
+    注册在 ^/api/runs/(.+)$ 之前的更具体参数化路由（_dispatch_table 按注册
+    顺序首中即派发）。空 id 与尾斜杠变体显式 400，与 _get_runs_watch 同款
+    防线（run_id 白名单排除路径分隔符，合法 id 既不为空也不以 / 结尾）。
+    """
+    run_id = urllib.parse.unquote(m.group(1))
+    if not run_id or run_id.endswith("/"):
+        s._error(400, "Invalid run id")
+        return
+    s._json(s._api_run_prompt(run_id, q))
+
+
 def _get_events(s, p, q, m):
     s._json(s._api_events(q))
 
@@ -659,6 +673,10 @@ _API_GET_ROUTES = [
     # SPEC 协作拓扑派生图（add-spec-topology-bigscreen 2.1，只读、detail 同族
     # 单键寻址；自含响应 handler，条目第 4 位挂 ETag 签名）
     ("regex", r"^/api/specs/([^/]+)/topology$", _get_spec_topology, _sig_spec_topology),
+    # run 注入提示词读取（add-run-prompt-viewer 2.2）：更具体参数化路由
+    # 必须注册在 ^/api/runs/(.+)$ 之前（_dispatch_table 按注册顺序首中即派发，
+    # 兜底条目 (.+) 会吞掉 /prompt 后缀路径）
+    ("regex", r"^/api/runs/(.+)/prompt$", _get_run_prompt),
     ("regex", r"^/api/runs/(.+)$",     _get_runs_watch),
     ("exact", "/api/events",           _get_events),
     ("exact", "/api/alerts",           _get_alerts, _sig_alerts),

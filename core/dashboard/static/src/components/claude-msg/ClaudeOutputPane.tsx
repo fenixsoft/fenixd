@@ -4,10 +4,12 @@
 //
 // add-run-record-readability：头部「显示思考过程」开关（默认关闭，3.2）与
 // 「显示尾部 N / 共 M 条事件」计数 + 「加载更早事件」向前分页（D5）。
+// add-run-prompt-viewer 3.3：工具条「查看提示词」按钮 + Modal（注入提示词
+// 全文只读展示，含字符数与一键复制；历史 run 无记录时展示明确提示）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Spin, Switch, Typography } from 'antd';
-import { getRunTail, registerRunWatch, STREAM_URL } from '@/services/dashboard';
-import type { RunEvent } from '@/services/dashboard';
+import { App, Button, Modal, Spin, Switch, Typography } from 'antd';
+import { getRunPrompt, getRunTail, registerRunWatch, STREAM_URL } from '@/services/dashboard';
+import type { RunEvent, RunPrompt } from '@/services/dashboard';
 
 import { runEventsToChatMessages } from './runEvents';
 import ClaudeMessageList from './ClaudeMessageList';
@@ -187,6 +189,12 @@ export default function ClaudeOutputPane({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  // 查看提示词弹窗（add-run-prompt-viewer 3.3）：按钮点击按需拉取（非轮询），
+  // 关闭即卸载内容（promptData/promptError 归零，切 run 重开不串显）
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptData, setPromptData] = useState<RunPrompt | null>(null);
+  const [promptError, setPromptError] = useState('');
   // 分页失败/零进展的瞬时反馈（code-review item 1717797b5fc1）：初载路径有
   // error 态兜底，「加载更早事件」此前只 console.error，点击无任何可见反馈
   const { message } = App.useApp();
@@ -248,6 +256,12 @@ export default function ClaudeOutputPane({
     setTotalEvents(0);
     setError('');
     setLoadingMore(false);
+    // 提示词弹窗内容态一并清零（add-run-prompt-viewer 3.3）：无 key 复用
+    // 实例切换 run 时 Modal 关闭且内容卸载，重开拉取的是新 run 的数据
+    setPromptOpen(false);
+    setPromptLoading(false);
+    setPromptData(null);
+    setPromptError('');
     tailSnapAppliedRef.current = 0;
   }, [runId, project]);
 
@@ -351,6 +365,57 @@ export default function ClaudeOutputPane({
   }, [runId, project, tail, events, loadingMore]);
 
   // run watch 注册移入 SSE onmessage 的 hello 分支（需要服务端分配的连接 cid）
+
+  // ── 查看提示词（add-run-prompt-viewer 3.3）────────────────────────
+  // 按钮点击按需拉取（非轮询）；币值守卫与初载/分页同款——无 key 复用实例
+  // 切 run 后旧 run 的在飞响应不写入弹窗。
+  const loadPrompt = useCallback(async () => {
+    if (!runId || !project) return;
+    const reqRunId = runId;
+    const reqProject = project;
+    setPromptLoading(true);
+    setPromptError('');
+    try {
+      const data = await getRunPrompt(reqRunId, reqProject);
+      if (!isMountedRef.current || activeRunIdRef.current !== reqRunId || activeProjectRef.current !== reqProject) return;
+      setPromptData(data);
+    } catch (e) {
+      if (!isMountedRef.current || activeRunIdRef.current !== reqRunId || activeProjectRef.current !== reqProject) return;
+      setPromptError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
+        setPromptLoading(false);
+      }
+    }
+  }, [runId, project]);
+
+  const openPrompt = useCallback(() => {
+    // 重开先清上一轮内容态，让 loading 态接管（旧 run 内容不闪现）
+    setPromptData(null);
+    setPromptError('');
+    setPromptOpen(true);
+    void loadPrompt();
+  }, [loadPrompt]);
+
+  const closePrompt = useCallback(() => {
+    setPromptOpen(false);
+    // 关闭即卸载内容（spec）：内容态一并清零，切 run / 重开不串显
+    setPromptData(null);
+    setPromptError('');
+    setPromptLoading(false);
+  }, []);
+
+  const copyPrompt = useCallback(async () => {
+    const text = promptData?.prompt ?? '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success('提示词已复制到剪贴板');
+    } catch {
+      message.error('复制失败：剪贴板不可用');
+    }
+  }, [promptData, message]);
+
 
   // 监听 SSE 事件（run_events）
   useEffect(() => {
@@ -606,12 +671,86 @@ export default function ClaudeOutputPane({
         >
           加载更早事件
         </Button>
+        {/* 查看提示词（add-run-prompt-viewer 3.3）：常驻可点——是否含记录由
+            端点返回决定，不因 run 历史状态禁用 */}
+        <Button size="small" data-testid="view-prompt-btn" onClick={openPrompt}>
+          查看提示词
+        </Button>
         <span className="ml-auto flex items-center gap-1.5">
           显示思考过程
           <Switch size="small" checked={thinkingVisible} onChange={setThinkingVisible} />
         </span>
       </div>
       <ClaudeMessageList messages={messages} showThinking={thinkingVisible} />
+      <Modal
+        open={promptOpen}
+        onCancel={closePrompt}
+        title={`注入提示词（${runId}）`}
+        width={880}
+        // antd v6 Modal 无 data-testid 透传面：定位钩子用 rootClassName
+        rootClassName="prompt-modal-root"
+        // 关闭即卸载内容（add-run-prompt-viewer 3.3 spec 字面口径）：antd 缺省
+        // 隐藏后保留子树，切 run / 重开易串显旧内容——强制隐藏即卸载，配合
+        // closePrompt 的状态清零双保险
+        destroyOnHidden
+        footer={[
+          <Typography.Text key="prompt-count" type="secondary" style={{ float: 'left', fontSize: 12, lineHeight: '24px' }} data-testid="prompt-count">
+            共 {(promptData?.prompt ?? '').length.toLocaleString()} 字符
+          </Typography.Text>,
+          <Button
+            key="prompt-copy"
+            size="small"
+            disabled={!promptData?.prompt}
+            data-testid="prompt-copy-btn"
+            onClick={() => void copyPrompt()}
+          >
+            复制全文
+          </Button>,
+          <Button key="prompt-close" size="small" data-testid="prompt-close-btn" onClick={closePrompt}>
+            关闭
+          </Button>,
+        ]}
+      >
+        {promptLoading ? (
+          <div className="flex items-center justify-center py-10" data-testid="prompt-loading">
+            <Spin />
+            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+              加载提示词...
+            </Typography.Text>
+          </div>
+        ) : promptError ? (
+          <div className="flex flex-col items-start gap-3 py-4" data-testid="prompt-error">
+            <Typography.Text type="danger">加载提示词失败：{promptError}</Typography.Text>
+            <Button size="small" data-testid="prompt-retry-btn" onClick={() => void loadPrompt()}>重试</Button>
+          </div>
+        ) : promptData?.prompt ? (
+          <pre
+            data-testid="prompt-text"
+            style={{
+              margin: 0,
+              padding: 12,
+              borderRadius: 6,
+              background: 'rgba(127, 127, 127, 0.08)',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+              fontSize: 12,
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: '60vh',
+              overflow: 'auto',
+              userSelect: 'text',
+            }}
+          >
+            {promptData.prompt}
+          </pre>
+        ) : (
+          <div className="py-8 text-center" data-testid="prompt-empty">
+            <Typography.Text type="secondary">
+              该 run 无提示词记录（早于功能上线，注入提示词未落盘）
+            </Typography.Text>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

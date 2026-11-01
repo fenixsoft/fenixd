@@ -175,6 +175,7 @@ from .runs import (
     read_run_lines,
     _parse_run_lines,
     get_run_events,
+    get_run_prompt,
     read_run_events_between,
     active_run_count,
     _run_tail_insights,

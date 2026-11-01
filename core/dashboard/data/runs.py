@@ -876,6 +876,69 @@ def get_run_events(project_root, run_id: str, tail: int = 300, offset_from_end: 
     }
 
 
+def get_run_prompt(project_root, run_id: str) -> dict:
+    """读取 run 注入提示词（add-run-prompt-viewer 2.1）。
+
+    扫描 run 产物中首个 daemon 自有事件行 ``{"type": "prompt", ...}``
+    （runner.py _run_agent spawn 前写入），返回:
+    {run_id, exists, prompt, recorded_at, error}
+
+    - 文件不存在（含 run_id 白名单不通过的哨兵路径）→ exists=False、
+      prompt/recorded_at=None、error=None（路由层 200 + prompt:null，前端按
+      「无记录」提示，与 get_run_events 的缺失分支同哲学）。
+    - 头→尾单遍扫描，首个 type=="prompt" 行命中即 early-exit（prompt 行写在
+      流头部，实际扫描通常数行内命中）；逐行 json.loads 容错（坏行/非 dict
+      行跳过，errors="replace" 解码），不因产物尾部损坏行阻断。
+    - OSError（权限/并发归档窗口等读取失败）→ exists=True、prompt=None、
+      error="unreadable"，口径对齐 get_run_events。
+    """
+    run_file = _resolve_run_file(project_root, run_id)
+    if not run_file.exists():
+        return {
+            "run_id": run_id,
+            "exists": False,
+            "prompt": None,
+            "recorded_at": None,
+            "error": None,
+        }
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                # 非 dict 行（裸数字/字符串/数组）跳过，与
+                # _parse_run_metric_stream 6fd55ebbc869 防护口径一致
+                if isinstance(entry, dict) and entry.get("type") == "prompt":
+                    return {
+                        "run_id": run_id,
+                        "exists": True,
+                        "prompt": entry.get("text"),
+                        "recorded_at": entry.get("timestamp"),
+                        "error": None,
+                    }
+    except OSError:
+        return {
+            "run_id": run_id,
+            "exists": True,
+            "prompt": None,
+            "recorded_at": None,
+            "error": "unreadable",
+        }
+    # 文件存在但无 prompt 行（功能上线前的历史 run）
+    return {
+        "run_id": run_id,
+        "exists": True,
+        "prompt": None,
+        "recorded_at": None,
+        "error": None,
+    }
+
+
 def read_run_events_between(
     project_root, run_id: str, start_offset: int
 ) -> "tuple[list, int] | None":

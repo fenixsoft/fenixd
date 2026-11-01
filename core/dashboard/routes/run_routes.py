@@ -157,6 +157,32 @@ class H4RunRoutesMixin:
         return run
 
 
+    def _api_run_prompt(self, run_id: str, query) -> dict:
+        """GET /api/runs/<run_id>/prompt?project=<name>（add-run-prompt-viewer 2.2）。
+
+        读取 run 注入提示词（数据层 get_run_prompt，含 archive 回退）。
+        响应形状：{"ok": true, "run_id", "prompt", "recorded_at", "project"}；
+        prompt 为 null（历史 run / 文件不存在）时前端按「无记录」提示，
+        沿用 _api_run 的 200 字典契约（非 404）。项目未知 → 同款
+        {"error": "unknown project"} 200 字典契约。
+        """
+        project = self._project_from_query(query)
+        # 200+error 字典契约与 _api_run 同哲学（前端 request 层仅在非 2xx
+        # 才抛 ApiError），不 404
+        if project is None:
+            return {"error": "unknown project"}
+        if not project.get("exists"):
+            return {"error": "project not found"}
+        result = dashboard_data.get_run_prompt(Path(project["path"]), run_id)
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "prompt": result.get("prompt"),
+            "recorded_at": result.get("recorded_at"),
+            "project": project["name"],
+            "error": result.get("error"),
+        }
+
     def _api_run_watch(self, run_id: str, query, watch: bool) -> dict:
         """注册/取消某条 SSE 连接的 run 增量订阅（弹窗打开/关闭时调用）。"""
         # 最小防御（code-review item 9d6e8392b667）：空 run_id 会静默注册成

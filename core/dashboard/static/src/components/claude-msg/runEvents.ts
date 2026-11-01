@@ -31,6 +31,10 @@ function normalizedKind(ev: RunEvent): string {
 const SILENT_KINDS = new Set([
   'background_tasks_changed',
   'commands_changed',
+  // daemon 自有提示词事件行（add-run-prompt-viewer 3.1）：runner spawn 前落盘
+  // 的 {"type":"prompt",...}，只经「查看提示词」按钮按需展示，不产生可见行、
+  // 不打断连续工具分组
+  'prompt',
   'run_metrics',
   'init',
   'status',
