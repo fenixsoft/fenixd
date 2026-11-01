@@ -6444,6 +6444,25 @@ class AgentRunner:
             {"run_id": run_id, "run_file": str(run_file)},
         )
 
+        # ── add-run-prompt-viewer 1.1：注入提示词落盘为 run 自有事件行 ─────
+        # spawn 前向产物追加一行 {"type":"prompt","text":...,"timestamp":...}
+        # （提案 Why：提示词经 stdin 喂给 CLI 全程不落盘，事后无法取证「这一棒
+        # 的输入到底是什么」）。写点在 Popen 之前，保证 prompt 行位于流头部、
+        # 任何 CLI 事件之前；权威测试锁定的 run_metrics/终态行序区间不受影响。
+        # 与 provider_marker/throttled-wait 同为 daemon 自有事件行，消费方按
+        # type 字段分发（前端 SILENT_KINDS 静默、不依赖「物理首行」位置）。
+        # 无车道白名单：所有经 _run_agent 的车道（dispatch 家族/maintenance/
+        # admin/dispute-judge/spec-review/交互式）全覆盖。容错口径与
+        # throttled-wait 写点一致：OSError 只放弃落盘、不阻断派发。
+        try:
+            append_run_line(run_file, {
+                "type": "prompt",
+                "text": prompt,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except OSError:
+            pass
+
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
