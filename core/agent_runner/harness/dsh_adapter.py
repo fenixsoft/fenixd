@@ -427,14 +427,16 @@ class DshEventProjector:
                 rendered = f"dsh turn_end error: {message}"
                 if code:
                     rendered = f"dsh: {code}: {message}"
-                return [
-                    {
-                        "type": "error",
-                        "error": rendered,
-                        "exit_code": 1,
-                        "harness": "dsh",
-                    }
-                ]
+                out = {
+                    "type": "error",
+                    "error": rendered,
+                    "exit_code": 1,
+                    "harness": "dsh",
+                }
+                # truncated 透传与其余投影 handler 同口径（code-review item
+                # a18064d08f34）：错误归因关键行若被上游截断，标记静默丢弃
+                # 会丢诊断信息、over_limit_truncated 坏事件计数漏账。
+                return [self._with_truncated(entry, out)]
             return []
         # turn_start / step_start：进度噪音，读侧无消费方
         return []
@@ -697,6 +699,20 @@ class DshAdapter:
                 f"不支持的 prompt_transport 值：{req.prompt_transport!r}"
                 f"（dsh 通道仅支持 {PROMPT_TRANSPORT_STDIN!r}：任务经 stdin"
                 f" 载荷，argv 形态无对应语义）"
+            )
+        # env_mode=inherit 构造期 fail-fast（code-review item 3dced6fc48ee，
+        # 与三要素缺失同口径）：inherit 口径下 build_env 直接返回 None——
+        # ANTHROPIC_*/CLAUDE_* 防串扰剔除、FENIX_DSH_PROVIDER_API_KEY 凭据
+        # 桥接与 DSH_HOME 注入全部被静默跳过，ambient 继承的 ANTHROPIC_* 键
+        # （本模块口径属串扰噪音源）原样进子进程，dsh 运行期才以
+        # MISSING_CREDENTIAL 失败（不进熔断）——失败时点后移、归因变难。
+        if req.env_mode == ENV_MODE_INHERIT:
+            raise DshSpawnConfigError(
+                f"dsh 通道不支持 env_mode={ENV_MODE_INHERIT!r}：该口径下防串"
+                "扰剔除、凭据桥接（FENIX_DSH_PROVIDER_API_KEY）与 DSH_HOME 注"
+                "入全部跳过，dsh 运行期才以 MISSING_CREDENTIAL 失败——请用 "
+                f"{ENV_MODE_AGENT_RUN!r}（主车道）或 {ENV_MODE_CLEAN!r}"
+                "（一次性 spawn）"
             )
         model = (req.model or "").strip()
         if not model:

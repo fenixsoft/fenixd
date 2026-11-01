@@ -381,7 +381,7 @@ class G4MergebackMixin:
         在 ``_main_tree_lock`` 内、``_wip_overlap_gate`` 之后、
         ``ensure_clean_tree`` 之前调用。对 ``spec/changes/<spec>/`` 整个目录
         （含 ``specs/**``、proposal/design/tasks）执行 ``git status --porcelain
-        -- <rel>`` 检测未提交改动（含 untracked）。
+        -z -- <rel>`` 检测未提交改动（含 untracked）。
 
         Returns:
             - ``MergeConflictInfo``（``spec_dir_inflight=True``，``success=False``）
@@ -405,6 +405,7 @@ class G4MergebackMixin:
                     str(self.project_root),
                     "status",
                     "--porcelain",
+                    "-z",
                     "--",
                     # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
                     # _backup_untracked_spec_files / queries.file_exists_on_branch
@@ -425,25 +426,33 @@ class G4MergebackMixin:
             return None
         if res.returncode != 0:
             return None
-        # 逐行反转义 quotePath 转义形（item 349ab4652215，与 _branch_changed_files
-        # /_detect_wip_overlap 等本文件路径采集点同口径）：porcelain 行首 `XY `
-        # 状态前缀仅保留供展示，路径段经 _unquote_git_path 反转义，非 ASCII
-        # 路径在下方日志与 MergeConflictInfo 文案中直接可读；该函数对无引号行
-        # 幂等（见 core.git_text）。rename 条目（porcelain v1 形如
-        # ``R  old -> new``，item 9e3bbf431c34）按 rename 语义拆 old/new 分别
-        # 反转义、两条路径都进 dirty 清单，不再以 "old -> new" 合体形态误导
-        # 人工按提示处置。
+        # NUL 流解析（item 411c1a4cf8a8）：此前文本形态按 " -> " 拆 rename 的
+        # old/new，路径自身含 " -> "（如文件名 a -> b.md）时拆分错位、dirty
+        # 清单与下方文案里「哪个文件在飞」的路径失真。-z 口径下 rename/copy
+        # 条目为 ``XY new\0old\0`` 两字段（X∈R/C 后跟无前缀的原路径裸字段），
+        # 按 NUL 切分即无歧义；且 -z 不做 quotePath 引号转义、无需再过
+        # _unquote_git_path（与 _backup_untracked_spec_files 的 ls-files -z
+        # 先例同口径——对 -z 路径再 unquote 反会破坏字面量以引号起止的路径）。
+        # `XY ` 状态前缀仍仅保留供展示；rename 两条路径都进 dirty 清单、不再
+        # 以 "old -> new" 合体形态误导人工按提示处置（item 9e3bbf431c34 语义
+        # 不变）。
         dirty: list = []
-        for raw in res.stdout.splitlines():
-            ln = raw.strip()
-            if not ln:
+        fields = res.stdout.split("\0")
+        i = 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if not entry:
                 continue
-            if " -> " in ln[3:]:
-                old, new = ln[3:].split(" -> ", 1)
-                dirty.append(f"{ln[:3]}{_unquote_git_path(old)}")
-                dirty.append(f"{ln[:3]}{_unquote_git_path(new)}")
+            prefix = entry[:3]
+            if entry[0] in "RC" and i < len(fields):
+                # rename/copy 条目：紧随的 NUL 字段是原路径（无 XY 前缀）
+                origin = fields[i]
+                i += 1
+                dirty.append(f"{prefix}{origin}")
+                dirty.append(f"{prefix}{entry[3:]}")
             else:
-                dirty.append(f"{ln[:3]}{_unquote_git_path(ln[3:])}")
+                dirty.append(f"{prefix}{entry[3:]}")
         if not dirty:
             return None
         self.logger.warning(

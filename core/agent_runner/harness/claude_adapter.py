@@ -493,7 +493,8 @@ class ClaudeAdapter(HarnessAdapter):
             }
         return {
             "observed": True,
-            "output": last.get("result") or "",
+            # 与 result_text 同口径：str 归一，保证 run 终态产物恒为字符串
+            "output": str(last.get("result") or ""),
             "turns": last.get("num_turns", 0),
             "session_id": last.get("session_id"),
             "usage_info": SessionTracker.extract_usage_info(last),
