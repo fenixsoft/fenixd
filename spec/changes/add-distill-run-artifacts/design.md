@@ -57,6 +57,7 @@
 | `admin_monitor._RUN_PREFIXES` | 蒸馏 spec 已归档，失败计数无活跃 spec 可还原（同 evo-/review- 口径） | **不收录** |
 | `admin_monitor._is_admin_run_id` / 处置者判定 | knowledge-distiller 非处置族 | 无改动 |
 | `pm_engine` 归属/取消/活动判定 | 按活跃 spec 全等匹配；蒸馏 spec 段恒为已归档名 | 不新增误命中，单测锁定 |
+| `aggregate_org` 归档剔除过滤（command_center.py:536-541，已归档 SPEC 名下 run 全窗 continue） | 实测不命中：剔除键 = `parse_archived_state` 清单键 = 原始 SPEC 名（无日期前缀，如 `add-command-center`，STATE.archive.md 条目头实测）；蒸馏 run 的 spec 段 = 归档目录名（带日期前缀，如 `2026-09-02-add-command-center`），形态错位不进剔除集。「零改动自动亮卡」依赖此前提 | 保持不命中；形态耦合脆弱（run_id 中段若改用原始 SPEC 名即被静默全窗剔除、蒸馏卡灭），单测锁定（tasks 2.2） |
 | `_distill_lane_busy`（fenixd.py:1938） | 读队列+线程，不读产物 | 保持不变 |
 | `runs_retention_check` | 终态产物移 archive/ 后走「无主产物天龄兜底」删除 | 符合有界性，无改动 |
 | WRAPUP_GRACE_AGENT_TYPES（runner.py:462） | 蒸馏已注册，无 runner 实例路径不受产物影响 | 无改动 |

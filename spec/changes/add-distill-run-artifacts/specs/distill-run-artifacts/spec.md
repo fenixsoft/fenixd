@@ -30,6 +30,7 @@
 - `admin_monitor._RUN_PREFIXES` MUST NOT 收录该前缀（蒸馏 spec 已归档，失败计数无活跃 spec 可还原，同 evo-/review- 口径）；
 - `pm_engine` 归属/取消/活动判定按活跃 spec 全等匹配，蒸馏 run 的 spec 段恒为已归档名，MUST 不新增误命中；
 - 蒸馏车道在飞判定（`_distill_lane_busy`）MUST 保持读队列口径，不消费 run 产物。
+- `aggregate_org` 的「已归档 SPEC 名下 run 全窗剔除」过滤（command_center.py 归档剔除）MUST NOT 命中蒸馏产物：剔除按 `.fenix/STATE.archive.md` 清单键（原始 SPEC 名，无日期前缀）全等匹配，蒸馏 run 的 spec 段为归档目录名（带日期前缀），形态错位天然不命中——该形态耦合由单测锁定，run_id 中段命名形态变化时 MUST 同步复核本条。
 
 #### Scenario: get_runs 归属正确
 
@@ -45,6 +46,11 @@
 
 - **WHEN** 蒸馏批次在飞（产物末行非终态）但队列已空（批已出队进入 spawn）
 - **THEN** `_distill_lane_busy` 返回值与无产物形态一致（按队列+线程判定），不因产物存在而改变
+
+#### Scenario: 归档剔除过滤不吞蒸馏 run
+
+- **WHEN** `.fenix/STATE.archive.md` 清单已含本批首归档 SPEC 名（原始名形态，如 `add-command-center`）且今日窗口内存在 done 终态蒸馏产物（spec 段为带日期前缀的归档目录名，如 `2026-10-31-add-command-center`）
+- **THEN** `aggregate_org` 运营线蒸馏卡 runs 计 1——归档剔除过滤以清单键全等匹配，形态错位不命中剔除集
 
 ### Requirement: 指挥中心花名册收编知识蒸馏车道
 
