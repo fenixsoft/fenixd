@@ -38,6 +38,7 @@ export const STREAM_URL = '/api/stream';
 export const statusMeta = (status) => ({ label: status || '未知', tone: 'muted' });
 export const getSpecDoc = async () => ({ content: '', missing: true });
 export const getRunTail = async () => ({ events: [], total: 0 });
+export const getRunPrompt = async () => ({ run_id: '', prompt: null, recorded_at: null, project: '' });
 export const registerRunWatch = () => () => {};
 export const fixRegression = async () => ({ ok: true });
 export const getRegressionFixResult = async () => ({ status: 'none' });
