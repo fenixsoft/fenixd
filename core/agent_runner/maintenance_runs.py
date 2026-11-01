@@ -673,14 +673,47 @@ def run_arbiter(runner, trigger: dict) -> dict:
     """
     spec = str((trigger or {}).get("spec") or "global")
     empty = {"ok": False, "run_id": "", "report": {}, "error": "", "usage_info": {}, "elapsed_s": 0.0}
-    # spec 名路径校验（同 run_administrator 先例：spec 直接内插 run_id/路径）
-    from core.pm_engine.verification.serving import _spec_name_path_error
+    _log = getattr(runner, "logger", None)
+    # code-review item 2631620c91b8：入口两处惰性 import 纳入 try 保护——原
+    # 位于任何 try 之外，模块损坏/装配成环时 ImportError 直接穿透 run_arbiter，
+    # 调用方 ArbiterLane 拿到异常而非 docstring 承诺的失败信封。对齐同文件
+    # admin 收尾段先例（run_administrator 产物硬门注册表 import 的
+    # try/except + WARNING 降级）：import 失败折算 empty 信封返回（error 注明
+    # import 失败），此刻尚未申领 run 路径，提前返回无占位残留。
+    try:
+        # spec 名路径校验（同 run_administrator 先例：spec 直接内插 run_id/路径）
+        from core.pm_engine.verification.serving import _spec_name_path_error
+    except Exception as e:
+        error = (
+            "arbiter 入口模块 import 失败（verification.serving）: "
+            f"{type(e).__name__}: {e}"
+        )
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Arbiter run 入口 import 失败，折算失败信封返回: {error}",
+                {"run_id": "", "spec": spec},
+            )
+        return {**empty, "error": error}
 
     unsafe = _spec_name_path_error(spec)
     if unsafe:
         return {**empty, "error": unsafe}
 
-    from core.pm_engine.arbiter import ARBITER_PINNED_MODEL, arbiter_report_path
+    try:
+        from core.pm_engine.arbiter import ARBITER_PINNED_MODEL, arbiter_report_path
+    except Exception as e:
+        error = (
+            "arbiter 入口模块 import 失败（pm_engine.arbiter）: "
+            f"{type(e).__name__}: {e}"
+        )
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"Arbiter run 入口 import 失败，折算失败信封返回: {error}",
+                {"run_id": "", "spec": spec},
+            )
+        return {**empty, "error": error}
 
     runs_dir = runner.project_root / ".fenix" / "runs"
     run_id_base = f"arbiter-{spec}-{int(time.time())}"
@@ -1424,11 +1457,19 @@ def _normalize_cost_usd(value):
 
     仅放行 int/float（bool 剔除——非成本语义），其余转 None（与 session.py
     「网关未回传 → None」缺省一致），不可序列化异型不再直达 json.dumps 抛
-    TypeError。_token_usage_fields 与 _accumulate_impl_ocr_tokens 两车道
-    共用（input_tokens 口径两车道有差异，留在各自调用点），归一口径演进
-    （如接受 Decimal）只改此处。
+    TypeError。float 侧非有限值（NaN/Infinity）同样钳为 None（code-review
+    item 537a697a218b）：json.loads 本身接受这些字面量、json.dumps 缺省
+    allow_nan=True 会原样写进归账文件（非 RFC JSON，严格解析器读侧失败或
+    NaN 传染成本聚合），对齐 _extract_transcript_total_cost 本地兜底与
+    SessionTracker.extract_usage_info 的「bool/NaN/溢出钳制」既立口径。
+    isfinite 只作用于 float 分支——int 恒有限，巨 int 走 math 转换反抛
+    OverflowError，不设该门。_token_usage_fields 与 _accumulate_impl_ocr_tokens
+    两车道共用（input_tokens 口径两车道有差异，留在各自调用点），归一口径
+    演进（如接受 Decimal）只改此处。
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
 
@@ -1566,7 +1607,16 @@ def _log_lane_run_metrics(
             latency=latency,
         )
     finally:
-        getattr(runner, "_run_harness", {}).pop(run_id, None)
+        # code-review item f60e64e6c6c7：getattr 缺省值仅在属性缺失时生效——
+        # 打桩 runner 把 _run_harness 设为 None（或属性存在但非 dict）时
+        # .pop 抛 AttributeError，本行位于 finally 内会顶替 log_metrics 的
+        # 异常并中断车道收尾指标行。取值后判 dict 再操作（对齐本 helper 对
+        # log_metrics 的 None 判定与 _write_lane_provider_marker 对 marker_fn
+        # 的 callable 判定口径）；run_code_review 硬门分支同型 getattr 取值
+        # 已同步改判。
+        harness = getattr(runner, "_run_harness", None)
+        if isinstance(harness, dict):
+            harness.pop(run_id, None)
 
 
 # 指标透传（evo-self-review-phantom-failure-dual-source-veto 2.1）：档案
@@ -2613,8 +2663,14 @@ def run_code_review(
                 "run_id": run_id, "manifest_count": len(manifest),
                 "variant": "unknown",
             })
-            tf = getattr(runner, "_run_toolface", {}).get(
-                getattr(runner, "_normalize_run_id", lambda r: r)(run_id))
+            # code-review item f60e64e6c6c7 同型：getattr 缺省值仅在属性缺失
+            # 时生效，_run_toolface 被打桩为 None 时 .get 抛 AttributeError；
+            # 取值后判 dict 再读（与 _log_lane_run_metrics 收尾摘除同口径）。
+            _toolface_reg = getattr(runner, "_run_toolface", None)
+            tf = None
+            if isinstance(_toolface_reg, dict):
+                tf = _toolface_reg.get(
+                    getattr(runner, "_normalize_run_id", lambda r: r)(run_id))
             if isinstance(tf, dict):
                 face["toolface"] = tf
             gate_fail_face = face
@@ -4916,19 +4972,38 @@ def run_impl_ocr(
                         "ocr 原始报告缺失或不可解析（exit 0 但无有效 JSON）"
                     )
                 else:
-                    # ── 成功路径：规范化 findings + carry-forward + 记账 ──
-                    # 游标推进不在此处就地执行（code-review item 9201a12579c2）：
-                    # 先推游标后落盘时，主产物落盘失败会留下「游标已越过本区间、
-                    # code-review.json 仍是上一轮陈旧内容」的盘面，本区间发现
-                    # 永久漏审；改为置位延迟到尾段，主产物 durable 后才推进，
-                    # 保证「游标前移 ⇒ 本轮结果已 durable」。
-                    findings = _normalize_impl_ocr_findings(raw.get("comments"))
-                    findings.extend(_carry_forward_ocr_findings(prev_findings, findings))
-                    artifact["status"] = "completed"
-                    artifact["findings"] = findings
-                    artifact["reason"] = ""
-                    _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
-                    cursor_advance_pending = True
+                    # code-review item 344865ecda82：顶层键 comments 无回退也无
+                    # 缺失告警（对照 finding 级键名 path/file、start_line/line、
+                    # content/description/message 的多级回退；_normalize 的注释
+                    # 自述「具体键名以现场跑出的原始报告为准」，外部 ocr 工具
+                    # 格式确有漂移前科）——comments 缺失/漂移时 raw.get 返回
+                    # None、_normalize 返回空列表，artifact 会以 completed+
+                    # findings=[] 收尾并推进游标，本轮审查区间被记「零发现」，
+                    # 漂移期间真实缺陷永久漏审。合法 comments 列表（含空的
+                    # []，零发现本属合法结果）不在拦截面；否则按「报告不可
+                    # 解析」同门折算 unavailable（reason 注明缺 comments 键），
+                    # 游标不置位，下轮回退全量重审本区间。
+                    if not isinstance(raw.get("comments"), list):
+                        artifact["reason"] = (
+                            "ocr 报告不可解析（exit 0 但无合法 comments 列表"
+                            "——顶层键缺失或漂移），本区间留待重审"
+                        )
+                    else:
+                        # ── 成功路径：规范化 findings + carry-forward + 记账 ──
+                        # 游标推进不在此处就地执行（code-review item 9201a12579c2）：
+                        # 先推游标后落盘时，主产物落盘失败会留下「游标已越过本区间、
+                        # code-review.json 仍是上一轮陈旧内容」的盘面，本区间发现
+                        # 永久漏审；改为置位延迟到尾段，主产物 durable 后才推进，
+                        # 保证「游标前移 ⇒ 本轮结果已 durable」。
+                        findings = _normalize_impl_ocr_findings(raw.get("comments"))
+                        findings.extend(
+                            _carry_forward_ocr_findings(prev_findings, findings)
+                        )
+                        artifact["status"] = "completed"
+                        artifact["findings"] = findings
+                        artifact["reason"] = ""
+                        _accumulate_impl_ocr_tokens(runner, run_id, raw.get("summary"))
+                        cursor_advance_pending = True
     except Exception as e:  # noqa: BLE001 — 车道内部异常折算 unavailable（任务 3.3）
         artifact["status"] = "unavailable"
         artifact["reason"] = f"车道内部异常: {type(e).__name__}: {e}"
