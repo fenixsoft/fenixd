@@ -467,7 +467,8 @@ def stop_all_claude_watchdogs() -> int:
     teardown）不应被 5s 轮询间隔拖住，线程最迟一个 interval 内自行退出。
     """
     with _ACTIVE_WATCHDOG_LOCK:
-        entries, _ACTIVE_WATCHDOG_STOPS[:] = _ACTIVE_WATCHDOG_STOPS[:], []
+        entries = list(_ACTIVE_WATCHDOG_STOPS)
+        _ACTIVE_WATCHDOG_STOPS.clear()
     stopped = 0
     for event, thread in entries:
         event.set()
