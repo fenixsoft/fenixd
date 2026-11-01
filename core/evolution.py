@@ -99,7 +99,11 @@ _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 _ENTRY_ID_RE = re.compile(r"^[0-9a-f]{12}\Z")
 
 # .spec.yaml 模板（内容 schema/created/mode 三行）
-SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
+# mode 写 fast-track（2026-11-01 放松，原为 full）：evo spec 出生进快速车道，
+# 依赖派发前规模预检（scale > full_threshold → full）与运行期 bug-found
+# 升级（_escalate_to_full_mode）两道兜底超限回 full；promotion 侧 evo-
+# 前缀评审排除（should_skip_review 条件 4）不受影响，草稿评审门保持。
+SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: fast-track\n"
 
 # 条目保留策略常量（保留最近 N 天 ∪ 最近 M 条，取较多数者）
 # 超出并集部分硬删（由 daemon 周期执行）
@@ -1299,7 +1303,7 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     → 返回 ``(None, 原因)`` 且 MUST NOT 半写文件。校验全部通过后才依次写
     ``proposal.md`` / ``specs/<capability>/spec.md`` / ``design.md`` /
     ``tasks.md`` / ``.spec.yaml``（``schema: spec-driven`` + ``created:
-    <YYYY-MM-DD>`` + ``mode: full``）。
+    <YYYY-MM-DD>`` + ``mode: fast-track``）。
 
     Returns: ``(draft_dir, "")`` 成功；``(None, 原因)`` 失败。3.1
     """

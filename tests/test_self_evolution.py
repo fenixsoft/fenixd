@@ -684,7 +684,7 @@ class TestEvolutionMaterializeDraft(unittest.TestCase):
         self.assertTrue((d / "tasks.md").is_file())
         spec_yaml = (d / ".spec.yaml").read_text(encoding="utf-8")
         self.assertIn("schema: spec-driven", spec_yaml)
-        self.assertIn("mode: full", spec_yaml)
+        self.assertIn("mode: fast-track", spec_yaml)
 
     def test_materialize_draft_no_spec(self):
         """无 spec 字段 → None + reason。"""

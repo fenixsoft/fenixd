@@ -2037,8 +2037,13 @@ _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 def _spec_yaml_content(created: str) -> str:
     """生成 .spec.yaml 内容（f-string 组装；`.format()` 实参为关键字、
-    arity-guard 无法解析会误报「实参必填位不足」，故用 f-string 展开）。"""
-    return f"schema: spec-driven\ncreated: {created}\nmode: full\n"
+    arity-guard 无法解析会误报「实参必填位不足」，故用 f-string 展开）。
+
+    mode 写 fast-track（2026-11-01 放松，原为 full，与 evolution
+    SPEC_YAML_TEMPLATE 同步）：fix-cr 修复 SPEC 出生进快速车道，规模预检
+    与 bug-found 升级两道兜底超限仍回 full。
+    """
+    return f"schema: spec-driven\ncreated: {created}\nmode: fast-track\n"
 
 
 def _slugify(text: str) -> str:
