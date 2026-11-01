@@ -646,11 +646,14 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
             capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
             check=True,
         )
+        # commit 加 pathspec 与 porcelain 探测面对齐：只提交本 spec 目录的
+        # 变更，避免并发车道滞留在主树索引里的已暂存变更被卷进本收尾提交。
         subprocess.run(
             git + ["commit", "-m",
                    f"[fenix] spec: {name}"
                    "（spec-review 评审成文留痕收尾提交）"
-                   "\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>"],
+                   "\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>",
+                   "--", spec_rel],
             capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
             check=True,
         )
