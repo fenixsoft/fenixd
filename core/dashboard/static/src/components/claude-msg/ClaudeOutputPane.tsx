@@ -190,9 +190,10 @@ export default function ClaudeOutputPane({
   // 分页失败/零进展的瞬时反馈（code-review item 1717797b5fc1）：初载路径有
   // error 态兜底，「加载更早事件」此前只 console.error，点击无任何可见反馈
   const { message } = App.useApp();
-  // 显示思考过程开关：默认关闭（thinking 占比 14-19% 且恒为折叠态，关闭后
-  // 不再以「已思考数秒」噪声行打断工具聚合）；无正文兜底见 runEvents
-  const [thinkingVisible, setThinkingVisible] = useState(false);
+  // 显示思考过程开关：默认开启（2026-11-01 用户定调：thinking 默认可见）；
+  // 关闭后 thinking 不再以「已思考数秒」噪声行打断工具聚合；无正文兜底见
+  // runEvents
+  const [thinkingVisible, setThinkingVisible] = useState(true);
   const isMountedRef = useRef(true);
   // 响应币值守卫（code-review item 5dbf7b6044bf）：detail.tsx / AdminRunModal.tsx
   // 等无 key 调用点在 runId 切换时复用本组件实例（不卸载），仅 isMountedRef
