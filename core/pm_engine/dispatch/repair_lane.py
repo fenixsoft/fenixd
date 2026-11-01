@@ -153,6 +153,44 @@ def _max_retries(pm) -> int:
         return 3
 
 
+def _read_repair_round(pm, spec_name) -> int:
+    """读取 spec 的 ``_repair_round`` 轮次记账并归一（单一落点）。
+
+    code-review item b908297584cb：``read_one`` 容错 + ``int(...) or 0`` 归一
+    + WARNING 留痕的同构块曾在本文件三处复制（``_should_enter_repair`` /
+    ``_dispatch_repair_lane`` / ``_repair_conflict_summary``），归一规则调整
+    需同步改三处，任一处漂移即 repair 轮次上限判定、派发兜底与 prompt 冲突
+    摘要各持不同轮次视图——收编于此，对齐 queue.py ``_parse_int_field``
+    （queue.py 单一落点先例）确立的方向。
+
+    统一口径（历史三处差异一并收口，先例引用：
+    34f9abe6a1c4 / c878d3945dbe）：``except Exception`` 宽口径——read_one
+    底层是状态文件 IO（flock+read），瞬时 OSError 与脏值解析失败同按 0
+    降级，不外溢（窄口径会让 IO 异常外溢放大为 fallback 全新重派）；读取
+    失败 WARNING 留痕（logger 取 getattr 守卫，兼容仅注入 state_machine
+    的测试替身）。归一规则调整只改此处。
+
+    Args:
+        pm: 宿主 PM/Dispatcher 实例（state_machine + logger 经属性链访问）。
+        spec_name: spec 名称。
+
+    Returns: 归一后的 int 轮次；读取/解析失败回退 0，不抛异常。
+    """
+    try:
+        return int(
+            (pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
+        )
+    except Exception as e:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按 0 降级，不外溢
+        logger = getattr(pm, "logger", None)
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"读取 '{spec_name}' 的 _repair_round 失败，按 0 处理: "
+                f"{type(e).__name__}: {e}",
+            )
+        return 0
+
+
 class PRepairLaneMixin:
     """P merge-back 修复车道（design D1 表 B P 组）。"""
 
@@ -256,10 +294,12 @@ class PRepairLaneMixin:
             return False
         if streak >= breaker_threshold:
             return False
-        try:
-            repair_round = int(spec_entry.get("_repair_round", 0) or 0)
-        except (TypeError, ValueError):
-            repair_round = 0
+        # 轮次读取与归一收编模块级 _read_repair_round 单一落点（code-review
+        # item b908297584cb）：此前为窄口径 TypeError/ValueError 且不 WARNING
+        # 的独立复制块，read_one 容错与归一规则已由读取器统一承载。降级语义：
+        # 读取失败按 0 视为「未开轮」放行，超预算由 _dispatch_repair_lane
+        # 的兜底轮次上限二次校验拦截。
+        repair_round = _read_repair_round(self._pm, spec_name)
         return repair_round < MAX_REPAIR_ROUNDS_PER_FAILURE
 
     def _dispatch_repair_lane(
@@ -303,16 +343,11 @@ class PRepairLaneMixin:
             )
             self._schedule_signal_kill_recovery(spec_name)
             return False
-        try:
-            repair_round = int(
-                (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
-            )
-        except Exception:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按 0 处理，与 _should_enter_repair 对同一数据源的降级口径对齐（code-review item 34f9abe6a1c4：窄口径使 IO 异常外溢放大为 fallback 全新重派）
-            self._pm.logger.warning(
-                "pm_engine",
-                f"读取 '{spec_name}' 的 _repair_round 失败，按 0 处理（本轮照常派发 repair）",
-            )
-            repair_round = 0
+        # 轮次读取与归一收编模块级 _read_repair_round 单一落点（code-review
+        # item b908297584cb；read_one 宽口径容错先例 34f9abe6a1c4：窄口径使
+        # IO 异常外溢放大为 fallback 全新重派）。降级语义：读取失败按 0
+        # 处理，本轮照常派发 repair。
+        repair_round = _read_repair_round(self._pm, spec_name)
         # 兜底轮次上限（code-review item 2a26974066a9）：正常路径由
         # _should_enter_repair 前置拦截；此处防御直呼/旁路调用不得超预算。
         if repair_round >= MAX_REPAIR_ROUNDS_PER_FAILURE:
@@ -1035,7 +1070,17 @@ class PRepairLaneMixin:
         派发下一轮 repair（``{spec}:repair`` 锁由新轮重新认领，worker 的
         finally 不得释放）；False 表示未续链（熔断/顺延/fallback，锁可释放）。
         """
-        merge_error = getattr(remerge_info, "error", "") or str(remerge_info)
+        # merge_error 取值口径对齐 queue.py 的 merge-back 返回值解包约定
+        # （code-review item 442fb2b9e48c）：merge-back 返回值可为
+        # MergeConflictInfo（结构化属性）或裸 (bool, str) 元组（同消费点
+        # _run_repair_worker 即按 ``remerge_ok, remerge_error = remerge_info``
+        # 解包）——先元组解包、解包失败再回退 getattr 属性读取；元组形态
+        # 不再走 str(remerge_info) 把整体 repr 混入 merge_error（该文本会
+        # 进入下方 _merge_fingerprint 输入与 STATE 错误文案）。
+        try:
+            _, merge_error = remerge_info
+        except (TypeError, ValueError):
+            merge_error = getattr(remerge_info, "error", "") or str(remerge_info)
         # ── WIP 重叠闸门阻塞旁路（evo-merge-back-wip-overlap-gate D3）──
         # repair 后 re-merge-back 同样可能被主树 WIP 重叠闸门阻塞（repair 期间
         # 主树出现新 WIP 与分支改动重叠）：阻塞是前置拦截而非 merge 失败，主树
@@ -1091,7 +1136,7 @@ class PRepairLaneMixin:
             return False
         # 入口读取守卫（code-review item af519c42ee6f，与下方 bump_counters
         # 守卫 2917c609d8ad 同款论证）：read_one 同为 STATE 文件 IO（flock+read，
-        # 同 _dispatch_repair_lane 读取 _repair_round 处 noqa 注释的认知），瞬时
+        # 同模块级 _read_repair_round 读取 _repair_round 处 noqa 注释的认知），瞬时
         # OSError 沿 _run_repair_worker 外层 except 逃逸会把「re-merge 已真实
         # 失败」现场兜底成 _fallback_after_repair 全新重派，fp/streak 记账、
         # 熔断分类与续链 repair 整体被跳过、多烧一轮实现 run，MUST NOT 放大。
@@ -1310,8 +1355,11 @@ class PRepairLaneMixin:
         # 在 worker 的 except 兜底内），裸调的 OSError 会从异常处理器中再冒
         # 出，跳过下方 freeze_for_human/update_spec/_enqueue_front 全部收尾
         # （finally 只摘锁），spec 悬置 implementing 且无队列条目、无冻结
-        # 标记。故记账失败仅 WARNING、retries 回退读取侧旧值继续收尾
-        # （读侧也失败则按 0 走 ready 重派兜底，熔断晚一轮触发不丢账）。
+        # 标记。故记账失败仅 WARNING、retries 按读取侧旧值+1 内存继续收尾
+        # （code-review item 5356078592ec，与 queue.py 失败分类豁免记账的
+        # 读侧兜底统一口径——bump 失败但读侧成功时本轮递增仍计数，retry
+        # 熔断不再比 queue 链晚一轮；读侧也失败则按 0 走 ready 重派兜底，
+        # 熔断晚一轮触发不丢账）。
         try:
             retries = self._pm.state_machine.bump_counters(
                 spec_name, {"_retry_count": 1}
@@ -1319,7 +1367,8 @@ class PRepairLaneMixin:
         except Exception as bump_exc:  # noqa: BLE001 —— 记账失败不阻塞 fallback 收尾
             self._pm.logger.warning(
                 "pm_engine",
-                f"repair fallback 记账失败 '{spec_name}'（按未递增继续收尾）: "
+                f"repair fallback 记账失败 '{spec_name}'"
+                f"（按读取侧旧值+1 继续收尾）: "
                 f"{type(bump_exc).__name__}: {bump_exc}",
             )
             try:
@@ -1328,7 +1377,7 @@ class PRepairLaneMixin:
                         "_retry_count", 0
                     )
                     or 0
-                )
+                ) + 1
             except Exception:
                 retries = 0
         base_error = merge_error or "merge-back failed"
@@ -1527,17 +1576,12 @@ class PRepairLaneMixin:
         （_build_repair_prompt）据此增补「主树在飞修订根因」段；旧形态
         merge_info（测试替身/无字段）按未命中空列表处理。
         """
-        try:
-            repair_round = int(
-                (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
-            )
-        except Exception:  # noqa: BLE001 —— read_one 底层是状态文件 IO（flock+read），瞬时 OSError 等与解析失败同按 0 处理，与 _dispatch_repair_lane / _should_enter_repair 对同一数据源的降级口径对齐（code-review item c878d3945dbe：窄口径使 IO 异常沿调用点 _run_repair_worker 内层 try 外溢，被当成 repair agent 派发异常放大为 fallback 全新重派）
-            self._pm.logger.warning(
-                "pm_engine",
-                f"读取 '{spec_name}' 的 _repair_round 失败，冲突摘要按 0 处理"
-                f"（不影响 repair 派发）",
-            )
-            repair_round = 0
+        # 轮次读取与归一收编模块级 _read_repair_round 单一落点（code-review
+        # item b908297584cb；read_one 宽口径容错先例 c878d3945dbe：窄口径使
+        # IO 异常沿调用点 _run_repair_worker 内层 try 外溢，被当成 repair
+        # agent 派发异常放大为 fallback 全新重派）。降级语义：读取失败按 0，
+        # 冲突摘要不受影响、不阻塞 repair 派发。
+        repair_round = _read_repair_round(self._pm, spec_name)
         return {
             "spec": spec_name,
             "merge_error": getattr(merge_info, "error", "") or "",
