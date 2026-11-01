@@ -2080,9 +2080,10 @@ def _deferred_item_ids(project_root) -> set:
     return ids
 
 
-def _deferred_entry_alive(entry) -> bool:
-    """台账条目的磁盘真相（D5 再认领判据）：worktree 目录在且记录的 tip_sha
-    仍可经该 worktree HEAD 解析（分支被删/目录被清/漂移均判死）。
+def _deferred_entry_liveness(entry):
+    """台账条目的磁盘真相三态（D5 再认领判据）：True 确认存活 / False 确认
+    判死（worktree 目录不在，或 HEAD 可解析且与 tip_sha 不等＝漂移）/
+    None 判据不可得（``_worktree_head`` 返回空串）。
 
     空 tip_sha（登记时 ``_worktree_head`` 瞬时失败所致）不直接判死：现场
     补解析 HEAD，能解析即视为存活（merge_back 不依赖记账的 tip_sha），
@@ -2092,21 +2093,35 @@ def _deferred_entry_alive(entry) -> bool:
     超时/OSError/非零退出时 ``_worktree_head`` 返回空串，与 tip_sha 比对必
     不等——会把瞬时故障窗口内带修复提交的有效条目误判死，reclaim 与
     _retry_one_deferred 随即移出台账并清理在盘现场。空串只说明「此刻解析
-    不到 HEAD」，保守按存活保留条目待下一链边界重试（同
-    ``_worktree_commit_count`` 侧 e992bc1af898/b0c5cf011d29 口径）；仅
-    HEAD 可解析且与 tip_sha 不等才确认漂移判死。
+    不到 HEAD」（同 ``_worktree_commit_count`` 侧 e992bc1af898/b0c5cf011d29
+    口径），三态里的 None 供调用方按各自语义消化：reclaim 保守按存活保留
+    条目（``_deferred_entry_alive`` 布尔投影）；_retry_one_deferred 进一步
+    跳过本轮 merge（code-review item 8a5970c40fec——判活通过后同一故障窗内
+    merge_back 大概率同因失败为普通失败，下方失败分支会烧 fail_count 并
+    清理现场，判活的保守保护只深一层即被抵消）。
     """
     wt = Path(str(entry.get("worktree") or ""))
     tip_sha = str(entry.get("tip_sha") or "")
     if not wt.name or not wt.exists():
         return False
     head = _worktree_head(wt)
-    # 判据不可得：空串不构成 HEAD 证据，保守存活（详见上方 docstring）。
+    # 判据不可得：空串不构成 HEAD 证据，返回 None 由调用方消化（详见上方
+    # docstring）。
     if not head:
-        return True
+        return None
     if not tip_sha:
         return True
     return head == tip_sha
+
+
+def _deferred_entry_alive(entry) -> bool:
+    """台账条目保守存活口径（三态判据的布尔投影）：非确认判死即视为存活。
+
+    供 reclaim 等只关心「留不留」的调用方使用；需要区分「判据不可得」以
+    跳过本轮动作的调用方（``_retry_one_deferred``）直接消费三态
+    ``_deferred_entry_liveness``。
+    """
+    return _deferred_entry_liveness(entry) is not False
 
 
 def reclaim_deferred_batches(project_root) -> int:
@@ -2578,7 +2593,8 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
 
 
 def _module_names_for_file(rel_path: str) -> list:
-    """产品文件的候选 import 模块名（``core/foo.py`` → ``["core.foo", "foo"]``）。
+    """产品文件的候选 import 模块名（``core/foo.py`` → ``["foo", "core.foo"]``，
+    裸 stem 在前；顺序无契约含义，消费方自行排序）。
 
     带上裸 stem（去目录形态）：测试文件从仓库根与包内目录两个 sys.path 形态
     import 均常见；多召回方向是「多跑测试」（fail-open 侧，design 风险节）。
@@ -2750,6 +2766,12 @@ def _apply_test_targets(spec, test_targets: list):
             CODE_FIX_TEST_TARGETS_PLACEHOLDER, cmd
         ).replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, quoted)
     else:
+        # tuple 形态先归一为 list 再比较/替换（code-review item 0c780b5e5edd）：
+        # 不归一则 new_list（list）== 原 tuple 恒 False，下方零副本短路在该
+        # 形态永不生效，且 dataclasses.replace 会把 cmd 字段静默改型
+        # （RegressionSpec 契约只有 str|list，此分支纯防御）；归一后同值仍
+        # 原样返回原 spec（原对象上的 tuple 不动）。
+        cmd = list(cmd)
         new_list: list = []
         for el in cmd:
             s = _CODE_FIX_SENTINEL_PLACEHOLDER_RE.sub(
@@ -3136,7 +3158,11 @@ def _split_fix_rows(rows: list, logger=None) -> tuple:
         elif (
             isinstance(raw, str)
             and raw.strip()
-            and raw not in SKIPPED_KEEP_OPEN_REASONS
+            # 成员判断用 strip 后值（code-review item bf292d75cf62）：与上方
+            # 白名单路径 strip 口径对齐——agent 产物带首尾空白的词汇表成员
+            # （如 "unfixable "）按原文匹配必脱靶，对正常出口记 warning 淹没
+            # 真脱靶信号；warning 文案仍展示 raw 原文以便排查。
+            and raw.strip() not in SKIPPED_KEEP_OPEN_REASONS
         ):
             _log_split_warning(
                 logger,
@@ -6160,7 +6186,8 @@ class CodeFixOrchestrator:
         # 判死移出台账的同时回收仍在 _active_worktrees 在册的 worktree
         # （sweeper 扫孤儿跳过在册目录）：不清理则带修复提交的目录成孤儿，
         # 永无人合回也永无人回收；目录已不在磁盘时跳过（只省噪音日志）。
-        if not _deferred_entry_alive(entry):
+        _liveness = _deferred_entry_liveness(entry)
+        if _liveness is False:
             if wt.name and wt.exists():
                 _safe_cleanup(wm, wt, success=False, logger=self._logger)
             # 按记录身份移除（code-review item b6fac1d8f6cf）：坏档 item_ids
@@ -6173,6 +6200,20 @@ class CodeFixOrchestrator:
                 f"（条目保持 open，可被重新选批）: {wt}",
             )
             return 0, ""
+        # 判据不可得（code-review item 8a5970c40fec）：git 瞬时故障窗内 HEAD
+        # 解析不到，判活保守按存活通过，但随即 merge_back 大概率同因失败为
+        # 普通失败（非 wip_gate_blocked、无 conflict_paths）——下方失败分支
+        # 会按真冲突烧 fail_count、清理现场并移出台账，把判活的保守保护只
+        # 深一层即被下一条语句抵消。本轮直接跳过 merge：台账条目与 worktree
+        # 原样保留等下一链边界重试（「等待窗口 ≠ 失败」，不烧预算）；预算
+        # 时间门/次数门在故障恢复后的边界照常兜底。
+        if _liveness is None:
+            self._log(
+                "warning",
+                f"code-fix 延迟批 HEAD 判据不可得（git 瞬时故障？），本轮跳过"
+                f"合回，台账条目与现场保留待下一链边界（branch={branch}）",
+            )
+            return 0, "延迟批 HEAD 判据不可得，本轮跳过合回（保留待下链边界）"
 
         # 预算时间门（D6/3.1，先到为准）：超时即降级，不再尝试 merge_back。
         if _defer_time_budget_exhausted(entry):
