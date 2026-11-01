@@ -16,6 +16,7 @@ import {
   RUN_ID_PREFIX_LABEL,
   STATUS_HEX,
   agentLabel,
+  arbiterOutcomeLabel,
   formatUsd,
   reasonTone,
   runDotColor,
@@ -124,4 +125,29 @@ test('formatUsd 小额三位小数、其余两位', () => {
   assert.equal(formatUsd(0.01), '$0.01');
   assert.equal(formatUsd(1.5), '$1.50');
   assert.equal(formatUsd(0), '$0.00');
+});
+
+// ── arbiter 标签两路 + 处置结论标签三分支（add-arbiter-quality-display 2.4） ──
+
+test('agentLabel arbiter：agent_type 直配命中 AGENT_LABEL', () => {
+  assert.equal(AGENT_LABEL.arbiter, '质量裁决 Agent');
+  assert.equal(agentLabel({ agent_type: 'arbiter', run_id: 'arbiter-demo-1793464069' }), '质量裁决 Agent');
+  // agent_type 命中时优先于前缀（即便前缀指向同一角色，不额外走表）
+  assert.equal(agentLabel({ agent_type: 'arbiter', run_id: '' }), '质量裁决 Agent');
+});
+
+test('agentLabel arbiter：泛型/缺失 agent_type 回落 arbiter- 前缀兜底', () => {
+  assert.equal(agentLabel({ agent_type: 'agent', run_id: 'arbiter-demo-1793464069' }), '质量裁决 Agent');
+  assert.equal(agentLabel({ run_id: 'arbiter-evo-refine-midflight-outlier-dims-1793464069' }), '质量裁决 Agent');
+  // 不被相邻前缀（admin-）误吞
+  assert.notEqual(agentLabel({ run_id: 'arbiter-demo-1793464069' }), '运维 Agent');
+});
+
+test('arbiterOutcomeLabel 三分支', () => {
+  assert.equal(arbiterOutcomeLabel('disposition'), '自主处置');
+  assert.equal(arbiterOutcomeLabel('escalation'), '升级人工');
+  // 其余/未知 kind 原样透出（不掩盖未知形态；spec-proposed 等不挂节点，
+  // 但纯函数对任意输入行为确定）
+  assert.equal(arbiterOutcomeLabel('spec-proposed'), 'spec-proposed');
+  assert.equal(arbiterOutcomeLabel(''), '');
 });

@@ -1,5 +1,5 @@
 {
-  "reason": "add-arbiter-backlog-sweep: arbiter 存量回扫需 daemon 重启加载（ArbiterLane 启动回扫入口 sweep_on_startup / 热更新跃迁观察 observe_enabled_transition，及 PMEngine 启动装配、fenixd 热更新主循环接线）",
-  "origin": "spec/changes/add-arbiter-backlog-sweep",
-  "date": "2026-10-31"
+  "reason": "add-arbiter-quality-display: 指挥中心 arbiter 归并（LANE_ALIASES arbiter→judge）与 SPEC 时间轴 arbiter 富展示（台账联查附 arbiter 字段 + 前端标签/处置块渲染）为 daemon 内存代码（dashboard 聚合层/时间轴派生），需重启加载；前端 dist 随重启一并换新",
+  "origin": "spec/changes/add-arbiter-quality-display",
+  "date": "2026-11-03"
 }

@@ -1019,6 +1019,15 @@ export interface SpecDetail {
     // ocr 车道 run 节点（add-timeline-ocr-lane-visibility）：审查对象摘要
     // （转录 start 事件 message：分支与 from..to 审查区间；缺失不下发不渲染）
     lane_summary?: string;
+    // arbiter run 节点（add-arbiter-quality-display）：处置台账联查命中时
+    // 下发的结构化处理记录（root_cause/action_or_upgrade 后端已截断 200
+    // 字符；台账缺失/未命中 fail-open 不下发，前端零渲染）
+    arbiter?: {
+      kind: string;
+      root_cause?: string;
+      action_or_upgrade?: string;
+      signal_type?: string;
+    };
     // 最新「→ testing」状态节点（add-timeline-ocr-lane-visibility）：ocr 门
     // 当前状态（与质量门禁 Card 同源合成；非 running 前端零渲染注记）
     ocr_gate?: { status: string; detail?: string };

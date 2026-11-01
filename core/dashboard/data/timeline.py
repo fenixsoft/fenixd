@@ -197,6 +197,70 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
     return ""
 
 
+def _arbiter_ledger_index(project_root) -> dict:
+    """arbiter 处置台账联查索引（add-arbiter-quality-display 任务 2.2）。
+
+    整台账读入**一次**（读侧复用 ``core.pm_engine.arbiter.load_arbiter_ledger``
+    单源，自带文件缺失/损坏行 fail-open，防双实现漂移；MUST NOT 逐 run 重读
+    文件——调用方在 run 循环外取一次索引、循环内内存匹配），归并出
+    ``run_id → 条目``：
+    - kind 限 disposition（自主处置）/ escalation（升级人工）——dead-man/
+      failed/spec-proposed 等其余 kind 不挂节点；
+    - run_id 全等匹配且非空（spec-proposed 条目 run_id 为空天然不命中）；
+    - 同 run_id 多条取 created 最新（防御重放/修补条目翻倍渲染；created
+      解析失败的条目按原串比较兜底，仅求可判定先后）。
+
+    读侧任何异常 fail-open 返回空索引（时间轴零新增字段，对齐 lane_summary
+    模式）。
+    """
+    try:
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        entries = load_arbiter_ledger(project_root)
+    except Exception:  # noqa: BLE001 —— 台账联查失败不阻断时间轴
+        return {}
+    best: dict = {}
+    for e in entries:
+        if not isinstance(e, dict) or e.get("kind") not in ("disposition", "escalation"):
+            continue
+        rid = e.get("run_id")
+        if not rid:
+            continue
+        cur = best.get(rid)
+        if cur is None or _ledger_created_key(e) > _ledger_created_key(cur):
+            best[rid] = e
+    return best
+
+
+def _ledger_created_key(entry: dict):
+    """台账条目 created 排序键（解析成功 → (1, aware dt)；失败 → (0, 原串)）。
+
+    首元 int 使两类元组互比时只在 int 层决出（ISO 合法性优先于原串），
+    同类内 dt/dt 与 str/str 各自可比较。
+    """
+    created = str(entry.get("created") or "")
+    dt = _parse_iso_ts(created)
+    if dt is None:
+        return (0, created)
+    return (1, dt)
+
+
+# 台账长文本下发截断（design D3：防巨型行破锚定窗前科）
+_ARBITER_FIELD_TRUNCATE = 200
+
+
+def _arbiter_node_payload(entry: dict) -> dict:
+    """命中条目 → run 节点 ``arbiter`` 附加字段（截断 200 字符下发）。"""
+    return {
+        "kind": str(entry.get("kind") or ""),
+        "root_cause": str(entry.get("root_cause") or "")[:_ARBITER_FIELD_TRUNCATE],
+        "action_or_upgrade": str(entry.get("action_or_upgrade") or "")[
+            :_ARBITER_FIELD_TRUNCATE
+        ],
+        "signal_type": entry.get("signal_type"),
+    }
+
+
 _DAEMON_LOG_RE = re.compile(r"fenixd.*\.log(?:\.(\d+))?")
 # 日期命名历史产物（fenixdYYYY-MM-DD.log，旧版 logger 非轮转命名）：
 # 统一排到最旧端——code-review item 691c672d8ad5
@@ -426,6 +490,13 @@ def get_spec_timeline(
     # cost_usd（None 不下发）；表空时整条时间轴无成本字段（前端不渲染）。
     billing_table = _load_billing_config(project_root)
     runs = _facade.get_runs(project_root, spec_name, include_archive=True)
+    # arbiter 处置台账联查（add-arbiter-quality-display 任务 2.2）：仅存在
+    # arbiter run 时整台账读入一次（run 循环外、内存匹配——MUST NOT 逐 run
+    # 重读文件）；无 arbiter run 的 spec 零台账读。命中节点附 ``arbiter``
+    # 结构化字段，未命中/缺文件/损坏行 fail-open 静默省略（零新增字段）。
+    arbiter_index: dict = {}
+    if any(r.get("agent_type") == "arbiter" for r in runs):
+        arbiter_index = _arbiter_ledger_index(project_root)
     for r in runs:
         insights = _facade.run_tail_insights(_facade.resolve_run_file(project_root, r["run_id"]))
         node = {
@@ -449,6 +520,10 @@ def get_spec_timeline(
             lane_summary = _ocr_lane_summary(project_root, r["run_id"])
             if lane_summary:
                 node["lane_summary"] = lane_summary
+        if r.get("agent_type") == "arbiter":
+            hit = arbiter_index.get(r["run_id"])
+            if hit:
+                node["arbiter"] = _arbiter_node_payload(hit)
         if billing_table:
             model, provider = _facade.split_llm_marker(insights["llm"])
             cost = _facade.compute_run_cost(insights["usage"], model, provider, billing_table)

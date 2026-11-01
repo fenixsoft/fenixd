@@ -22,7 +22,7 @@ import { fmtDuration } from '@/utils/duration';
 // 常量与纯函数单源自 utils/runVisual，渲染输出与迁移前严格等价
 // （tests/runVisual.test.mjs 纯函数单测背书）；formatUsd 以 re-export 保持
 // detail.tsx 既有 import 路径零改动。
-import { agentLabel, formatUsd, reasonTone, runDotColor } from '@/utils/runVisual';
+import { agentLabel, arbiterOutcomeLabel, formatUsd, reasonTone, runDotColor } from '@/utils/runVisual';
 import { ocrJoinNote } from '../qualityGates';
 import { markdownComponents } from './SpecDocModal';
 
@@ -41,6 +41,22 @@ export { formatUsd };
 
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
+
+// arbiter 处置结论着色（add-arbiter-quality-display 任务 2.3）：自主处置绿
+// （框架已收敛）、升级人工橙（待人工接管）；未知 kind 走中性 default Tag。
+// 分支选择以 if/else 表达（code-review item 7471b4865219：禁止嵌套三元）。
+function arbiterOutcomeTone(kind: string): string {
+  if (kind === 'disposition') return 'green';
+  if (kind === 'escalation') return 'orange';
+  return 'default';
+}
+
+// 处置动作/升级理由行的字段标签（escalation 语义为「升级理由」，其余为
+// 「处置动作」；同样 if/else 表达）。
+function arbiterActionFieldLabel(kind: string): string {
+  if (kind === 'escalation') return '升级理由';
+  return '处置动作';
+}
 
 // 状态转移节点的输出信息用默认黑色正文（此前 secondary 灰色不易读），链接分支保留可点
 function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: () => void }) {
@@ -425,6 +441,43 @@ export default function SpecTimeline({
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
                       {item.lane_summary}
                     </Typography.Text>
+                  </div>
+                )}
+                {/* arbiter 处置台账联查块（add-arbiter-quality-display 任务 2.3）：
+                    命中台账条目的 arbiter run 节点渲染「结论 Tag（着色区分自主
+                    处置/升级人工）+ 根因摘要行 + 处置动作/升级理由摘要行」；
+                    字段缺失静默省略对应行；无 arbiter 字段的节点零渲染（与
+                    现状逐字节等价）。纯展示块，无任何交互形态。 */}
+                {item.arbiter && (
+                  <div
+                    style={{
+                      marginBottom: 8,
+                      padding: '8px 12px',
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                      borderRadius: 8,
+                      background: token.colorBgContainer,
+                      fontSize: 13,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Tag color={arbiterOutcomeTone(item.arbiter.kind)} style={{ marginInlineEnd: 0 }}>
+                        {arbiterOutcomeLabel(item.arbiter.kind)}
+                      </Tag>
+                    </div>
+                    {!!item.arbiter.root_cause && (
+                      <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        <Typography.Text style={{ fontSize: 13 }}>
+                          根因：{item.arbiter.root_cause}
+                        </Typography.Text>
+                      </div>
+                    )}
+                    {!!item.arbiter.action_or_upgrade && (
+                      <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                        <Typography.Text style={{ fontSize: 13 }}>
+                          {arbiterActionFieldLabel(item.arbiter.kind)}：{item.arbiter.action_or_upgrade}
+                        </Typography.Text>
+                      </div>
+                    )}
                   </div>
                 )}
                 {/* ClaudeCode 最后一条总结（result 字段，markdown）：不展开运行记录即可掌握结论 */}
