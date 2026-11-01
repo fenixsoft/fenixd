@@ -87,10 +87,35 @@ export function resolveKnowledgePath(
 }
 
 /** 剥离 Markdown 中的 HTML 注释：marker（capability/rev/sources）是机器
- *  接口，对人类读者隐形（渲染层剥离，源文件不动）。 */
+ *  接口，对人类读者隐形（渲染层剥离，源文件不动）。
+ *  围栏感知（code-review item 9fc2a050b3ae）：``` / ~~~ 围栏开合跟踪与
+ *  utils/proposalWhy.ts extractProposalWhy 同口径（闭栏=同字符、长度不小于
+ *  开栏的裸标记行），围栏内不剥离——代码示例讲解 HTML 注释写法时示例保持
+ *  完整，仅对围栏外文本执行注释剥离。 */
 export function stripHtmlComments(md: string): string {
-  return md
-    .replace(/<!--[\s\S]*?-->/g, '')
+  const lines: string[] = [];
+  let fenceChar = '';
+  let fenceLen = 0;
+  for (const line of md.split('\n')) {
+    const bare = line.trim();
+    if (fenceChar) {
+      // 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
+      if (bare.length >= fenceLen && bare.split('').every((c) => c === fenceChar)) {
+        fenceChar = '';
+      }
+      lines.push(line);
+    } else if (bare.startsWith('```') || bare.startsWith('~~~')) {
+      lines.push(line);
+      fenceChar = bare[0];
+      let run = 0;
+      while (run < bare.length && bare[run] === fenceChar) run++;
+      fenceLen = run;
+    } else {
+      lines.push(line.replace(/<!--[\s\S]*?-->/g, ''));
+    }
+  }
+  return lines
+    .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

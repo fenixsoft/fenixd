@@ -188,9 +188,20 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
 
     switch (currentEntry.status) {
       case 'loading':
+        // 在途挂死兜底（code-review item 11f9bc3fec20）：条目只有请求 settle
+        // （found/!found/catch）才离开 loading，请求长期挂起时原形态是无任何
+        // 出口的永久 Spin（cacheRef 跨打开常驻，仅整页刷新可恢复）；提供
+        // 「重新加载」入口复用 handleRetry（delete 缓存条目 + loadDoc，打破
+        // loading 在途早退去重），原挂死请求迟到时经请求序号复核丢弃，不与
+        // 重试竞态
         return (
           <div style={{ textAlign: 'center', padding: 32 }}>
             <Spin />
+            <div>
+              <Button type="link" onClick={handleRetry}>
+                重新加载
+              </Button>
+            </div>
           </div>
         );
       case 'empty':

@@ -4,6 +4,8 @@
 // - active 门控：仅在选中本分面时拉取 GET /api/architecture/status，未选中零
 //   请求（对齐 QualityTab/RegressionTab 按需加载语义）；系统不在任何时机自动
 //   触发生成（spec「不自动生成」，纯手动按钮）。
+// - 首载占位：首个状态响应返回前 status 为 null 时渲染 Spin 而非 none 引导态
+//   （避免 ready 项目在窗口内被可点的刷新按钮误触重生成覆盖旧图）；
 // - 四态渲染（后端状态机 none/generating/ready/failed）：
 //   1) none：空态文案 + 「刷新架构图」按钮（首次手动触发）；
 //   2) generating：生成中提示 + 按钮置灰 + 3s 轮询状态；
@@ -53,6 +55,10 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<ArchitectureStatus | null>(null);
+  // 状态请求在途标志（code-review item b61807ad6400）：loadStatus 入口置位、
+  // 全部在飞落定后复位（见 finally）；status 仍为 null 时渲染 Spin 占位而非
+  // none 引导态。用 state 而非 loadInFlightRef：ref 不触发重渲染。
+  const [statusLoading, setStatusLoading] = useState(false);
   const [triggering, setTriggering] = useState(false);
   // 最近一次状态读取失败的可见错误态（code-review item 55aea63bbe02）：轮询
   // 止损只停定时器的话，本地 status 停在最后一次成功快照，generating 态会
@@ -86,6 +92,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
     if (!active || !project) return;
     const seq = ++seqRef.current;
     loadInFlightRef.current += 1;
+    setStatusLoading(true);
     try {
       const data = await getArchitectureStatus(project);
       // seq 之外再复核最新 active：请求在途时切离分面则直接放弃，否则
@@ -131,6 +138,9 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
       // 提前放行仍在飞的新请求）。失败路径止损会停定时器，递减仅影响后续
       // 手动重试读取；成功路径归零后下一 tick 恢复放行。
       loadInFlightRef.current -= 1;
+      // 占位复位（b61807ad6400）沿用同一计数口径：归零才复位，先落定的旧
+      // 请求不提前解除仍在飞新请求的首载占位
+      if (loadInFlightRef.current === 0) setStatusLoading(false);
     }
   }, [active, project, message]);
 
@@ -204,6 +214,23 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
   };
 
   if (!active) return null;
+
+  // ── 首载在途占位（code-review item b61807ad6400）────────────────
+  // status 为 null 且状态请求在途时渲染 Spin，不出 none 引导态：否则进入分面
+  // 首个 getArchitectureStatus 响应返回前（网络慢时秒级）ready 项目会短暂呈现
+  // 「尚未生成架构图」且刷新按钮可点，窗口内误触直接触发 refreshArchitecture
+  // 重生成并覆盖旧图（后端 409 单飞只保护 generating 中，不保护 ready 覆盖）。
+  // 请求失败时 statusLoading 已复位，回落 none 引导态 + readErrorBanner 呈现
+  // 错误与重试入口。
+  if (status === null && statusLoading) {
+    return (
+      <Card variant="borderless">
+        <div style={{ textAlign: 'center', padding: 32 }}>
+          <Spin />
+        </div>
+      </Card>
+    );
+  }
 
   const state = status?.state ?? 'none';
   const generating = state === 'generating';
