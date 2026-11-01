@@ -21,18 +21,18 @@ fast-track 车道 merge-back 被 WIP 重叠闸门阻塞（`wip_gate_blocked=True
 
 ## 方案（D2）
 
-1. `fast_track.py` 的 `wip_gate_blocked` 分支（调用 `_report_mergeback_wip_overlap` 处）：在阻塞返回前经 `state_machine.update_spec(spec_name, {"branch": result.branch, "implementer_run": result.run_id})` 落锚点（与 `_wip_overlap_updates` 的 error/记账同一窗口写入或紧随其后，非阻塞包裹）。
-2. 或等价方案：把锚点并入 `rollback._report_mergeback_wip_overlap` 的 `_wip_overlap_updates`（需把 branch/run_id 传参进来），单次原子写入更优。
+1. **首选（spec-review 评审修订）**：`fast_track.py` `_reconcile_and_merge` 的 branch 非空分支（现仅写 `_ocr_base_commit` 处，fast_track.py:669 一带）：merge-back 执行前与 `_ocr_base_commit` 同批 `update_spec` 落 `branch` + `implementer_run`（full 车道同构写点 queue.py:2399-2406），写入失败非阻塞（WARNING）。统一提前落点使 WIP 阻断、spec_dir_inflight 顺延 Timer 链、归档残留自愈重放三条 `_retry_merge_back_only` 消费链全部拿到锚点——仅修 wip_gate_blocked 分支会留下 spec_dir_inflight 链同型缺口（该链同样从 STATE 读锚点，见边界第 3 条）。
+2. 备选（覆盖面不足，仅当实现受阻时降级使用）：仅 `wip_gate_blocked` 分支返回前落锚点，或并入 `rollback._report_mergeback_wip_overlap` 的 `_wip_overlap_updates`（branch 参数已传入，run_id 需新增传参）单次原子写入——两者均只覆盖 WIP 一条链。
 3. 成功收口（`fast_track.py:962` 一带）的既有锚点写点保持不变（幂等重写同值无害）。
-4. 回归测试：fast-track run 成功 + merge-back WIP 阻断 → 断言 STATE 落 branch/implementer_run 锚点、模拟周期消费者重试可走通 merge-only；full 车道既有测试不回归。
+4. 回归测试：fast-track run 成功 + merge-back WIP 阻断 → 断言 STATE 落 branch/implementer_run 锚点、模拟周期消费者重试可走通 merge-only；fast-track spec_dir_inflight 顺延 → 排程重试按 STATE 锚点完成合并；full 车道既有测试不回归。
 
 ## 边界（D3/D4）
 
 - 不改变 WIP 重叠闸门本身的阻塞语义与告警（`mergeback_wip_overlap` 告警保留）。
 - 不动 full 车道已正确的锚点写点。
-- spec_dir_inflight 顺延路径（`_defer_merge_back`）不受影响（该路径显式传 branch，本就可用）。
+- spec_dir_inflight 顺延路径（`_defer_merge_back`）：显式传 branch 仅覆盖当次告警参数；其排程的 merge-only 重试链（`_schedule_merge_retry` → `_retry_merge_back_only`）从 STATE 读锚点（queue.py:3781），fast-track 在飞不落锚点时同型触发 `mergeback_branch_anchor_missing`（`_defer_merge_back` docstring「保留 branch/implementer_run 锚点」的前提正是锚点已在）——评审实测修正：该路径并非不受影响，方案 1 的统一提前落点顺带治好该链。
 
 ## 验收
 
-1. 单测：fast-track WIP 阻断后 STATE 含 branch 锚点；周期消费者单拍内完成 merge-only 成功路径（mock）。
+1. 单测：fast-track WIP 阻断后 STATE 含 branch 锚点；周期消费者单拍内完成 merge-only 成功路径（mock）；spec_dir_inflight 顺延的重试按 STATE 锚点完成合并（同 mock 范式）。
 2. 实证复现路径不再出现 `mergeback_branch_anchor_missing` 告警。
