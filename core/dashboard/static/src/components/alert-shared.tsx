@@ -180,7 +180,7 @@ function AlertNarrativePending() {
 /**
  * 告警明细字段区（描述/叙事/证据/处置/建议/解决依据），六段行单源只写一份，
  * 布局差异按 variant 保留、isPage 仅在真实差异点分支（两变体渲染输出逐字等价）：
- * - 描述行：page 有描述才独占一行渲染，banner 恒渲染并入 📌 spec 前缀；
+ * - 描述行：page 有描述才独占一行渲染，banner 并入 📌 spec 前缀（两字段均空则不渲染）；
  * - 叙事行：仅承载失败终态机械说明与「调查生成中」占位；正式调查报告的
  *   「查看调查报告」入口在操作按钮列（AlertReportButton + AlertActionColumn）；
  * - 证据行：page 外包一层 div，banner 直接内联；
@@ -198,9 +198,9 @@ export function AlertLines({ item, variant }: { item: AlertItem; variant: AlertS
     item.description ? (
       <div>{item.description}</div>
     ) : null
-  ) : (
+  ) : item.spec || item.description ? (
     <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
-  );
+  ) : null;
   const evidenceLine = evidenceText ? (
     <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
   ) : null;
