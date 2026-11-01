@@ -663,17 +663,37 @@ class FFastTrackMixin:
             # MUST 在 merge 前捕获（merge 后 merge-base(main, branch) 恒为
             # branch head），随锚点同批持久化——与 queue 主路径同语义。
             _ocr_base = None
-            if self._impl_ocr_enabled():
+            _ocr_enabled = self._impl_ocr_enabled()
+            if _ocr_enabled:
                 _ocr_base = self._git_merge_base_main(branch)
-                try:
-                    self._pm.state_machine.update_spec(
-                        spec_name, {"_ocr_base_commit": _ocr_base}
-                    )
-                except Exception as e:  # noqa: BLE001 — 非阻塞（缺失以 head 兜底）
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"ocr base 捕获落盘失败 '{spec_name}'（非阻塞）: {e}",
-                    )
+            try:
+                # fix-fasttrack-wip-defer-branch-anchor（任务 1.1）：锚点统一
+                # 提前落盘——branch 非空即与 _ocr_base_commit 同批写 branch +
+                # implementer_run（full 车道同构写点 queue.py:2399-2406），
+                # 使 merge-back 被 WIP 重叠闸门 / spec_dir_inflight 顺延 /
+                # 归档残留自愈阻断后，接手链（_recheck_wip_deferred_merges、
+                # _schedule_merge_retry → _retry_merge_back_only 从 STATE 读
+                # 锚点）能直接完成 merge-only 重试，消除
+                # mergeback_branch_anchor_missing 死循环告警（该出口降级为
+                # 最后兜底）。写入失败非阻塞（WARNING）；MUST NOT 在此新增
+                # 清锚点——merge 失败不代表 stale 锚点（见下方失败三岔注释）。
+                _anchor_updates = {
+                    "branch": branch,
+                    "implementer_run": result.run_id,
+                }
+                if _ocr_enabled:
+                    _anchor_updates["_ocr_base_commit"] = _ocr_base
+                self._pm.state_machine.update_spec(spec_name, _anchor_updates)
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"锚点已提前落盘（fast-track）'{spec_name}': "
+                    f"branch={branch}, implementer_run={result.run_id}",
+                )
+            except Exception as e:  # noqa: BLE001 — 非阻塞（ocr base 缺失以 head 兜底）
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 锚点提前落盘失败 '{spec_name}'（非阻塞）: {e}",
+                )
             merge_info = wm.merge_back_from_branch(branch)
             merge_ok, merge_error = merge_info
             if not merge_ok:
