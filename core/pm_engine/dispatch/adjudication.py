@@ -507,6 +507,15 @@ class VAdjudicationMixin:
         # 「从未提交」的声明：旧路径凭据核销（D4）与复发计数（D5）双双失锚，
         # 死循环换个形态继续。
         tasks_file = Path(wb["spec_dir"]) / "tasks.md"
+        # 改写前存在性快照（code-review item c6965d68b0ad）：下方 before_bytes
+        # 把「文件不存在」与「读取失败」合并为 None，回滚删除分支若仅凭
+        # exists() 判「改写前不存在的新建文件」，已存在但读取失败（权限/瞬态
+        # IO）的 tasks.md 会被误 unlink。快照时刻先行判存，判存失败按「已
+        # 存在」保守处置——回滚只告警交人工，绝不删除既有声明。
+        try:
+            before_existed = tasks_file.is_file()
+        except Exception:
+            before_existed = True
         try:
             before_bytes = tasks_file.read_bytes()
         except Exception:
@@ -514,14 +523,29 @@ class VAdjudicationMixin:
 
         def _rollback(reason: str) -> None:
             if before_bytes is None:
+                if before_existed:
+                    # 改写前文件已存在、仅快照读取失败（权限/瞬态 IO）：声明
+                    # 并非新建，unlink 会把既有 tasks.md 当「半写残留」误删
+                    # （code-review item c6965d68b0ad）。降级 ERROR 交人工核对，
+                    # 不做删除——内置 apply_fn 读声明段失败即上抛不落盘时，
+                    # 写回层磁盘上仍是原文件，删除反而制造缺件。
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"声明改写回滚跳过删除 '{spec_name}'（改写前 tasks.md "
+                        f"已存在但快照读取失败，MUST NOT unlink 既有声明，"
+                        f"需人工核对写回层声明内容是否残留改写）"
+                        f"（{wb.get('source')} 层改写/提交失败）: {reason}",
+                    )
+                    return
                 # 快照缺失 ≠ 无需回滚（code-review item c48b885e16b4）：
-                # tasks.md 改写前不存在/读取失败时，apply_fn 若在该状态下仍
+                # tasks.md 改写前不存在时，apply_fn 若在该状态下仍
                 # 产生了写入（如新建文件），写回层会残留「从未提交」的半写
                 # 声明——守卫（同源读取该层）下一轮读到它，凭据核销（D4）
                 # 与复发计数（D5）即失锚。此时以删除代替还原，使「快照缺失」
                 # 与「无需回滚」可区分；当前内置 apply_fn（soften/replace/
                 # remove）均先读声明段后写、文件缺失即上抛不落盘，本分支属
-                # 防御性兜底而非现行可达路径。
+                # 防御性兜底而非现行可达路径（「读取失败」成因已由上方
+                # before_existed 判存分支隔离，code-review item c6965d68b0ad）。
                 try:
                     if tasks_file.exists():
                         tasks_file.unlink()
@@ -2413,7 +2437,28 @@ class VAdjudicationMixin:
                             "judge-actual-path",
                         )
                         if not ok:
-                            verdict_by_element[m] = {"verdict": "unclear"}
+                            # 重定位执行失败 → 执行层改写为 unclear 转人工：
+                            # 与同方法 typo 缺 actual_path / delete-kind reference
+                            # 拒绝分支同型收口（code-review item 8c369d6f4750，
+                            # 对齐 89b2076a7b9f 口径）——登记 executed_verdicts
+                            # （带 judge_original/rewrite_reason），防本轮全部
+                            # 条目都走失败路径时 executed_verdicts 为空、dispute
+                            # 审计块整块跳过，「judge 曾判 typo」与「执行层改写
+                            # 为 unclear」不可追溯（失败细节以 _relocate_or_register
+                            # 内部 WARNING 为准，此处不重复告警）。
+                            verdict_by_element[m] = {
+                                "verdict": "unclear",
+                                "judge_original": "typo",
+                                "rewrite_reason": "stale-typo-relocate-failed",
+                            }
+                            executed_verdicts.append(
+                                {
+                                    "element": m,
+                                    "verdict": "unclear",
+                                    "judge_original": "typo",
+                                    "rewrite_reason": "stale-typo-relocate-failed",
+                                }
+                            )
                             continue
                         if cred_only:
                             # 凭据登记回执（未发生 tasks.md 文本改写）：与
@@ -2696,8 +2741,25 @@ class VAdjudicationMixin:
                         f"，复检通过）",
                     )
             except Exception as e:
-                # 声明段修正失败（并发改写/格式漂移）→ 该条等价 unclear（D6）
-                verdict_by_element[m] = {"verdict": "unclear"}
+                # 声明段修正失败（并发改写/格式漂移）→ 该条等价 unclear（D6）：
+                # 同型补 executed_verdicts 登记（带 judge_original/rewrite_reason，
+                # code-review item 8c369d6f4750，对齐 89b2076a7b9f 口径）——防
+                # 本轮全部条目都走此路径时 executed_verdicts 为空、dispute 审计
+                # 块整块跳过，judge 原始 verdicts 与「执行层改写为 unclear」
+                # 完全不入审计。
+                verdict_by_element[m] = {
+                    "verdict": "unclear",
+                    "judge_original": verdict,
+                    "rewrite_reason": "declaration-rewrite-failed",
+                }
+                executed_verdicts.append(
+                    {
+                        "element": m,
+                        "verdict": "unclear",
+                        "judge_original": verdict,
+                        "rewrite_reason": "declaration-rewrite-failed",
+                    }
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"dispute judge 裁决执行失败 '{spec_name}'（{m} 等价 unclear）: {e}",
