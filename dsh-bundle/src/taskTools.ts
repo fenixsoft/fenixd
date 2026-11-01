@@ -85,7 +85,8 @@ export class TaskStore {
       subject,
       description: optionalString(input.description, "description"),
       activeForm: optionalString(input.activeForm, "activeForm"),
-      // 入库即拷贝：与调用方传入对象解引用，调用方后续原地修改不影响 store 视角。
+      // 入库即拷贝（仅首层解引用）：嵌套对象/数组仍与调用方共享引用，调用方原地
+      // 修改嵌套内容会影响 store 视角；首层赋值/替换则不影响。
       metadata: input.metadata === undefined ? {} : { ...requirePlainObject(input.metadata, "metadata") },
       status: "pending",
     };
@@ -117,7 +118,8 @@ export class TaskStore {
     if (input.subject !== undefined) patch.subject = requireNonEmptyString(input.subject, "subject");
     if (input.description !== undefined) patch.description = optionalString(input.description, "description");
     if (input.activeForm !== undefined) patch.activeForm = optionalString(input.activeForm, "activeForm");
-    // 入库即拷贝：metadata 整体替换时与调用方传入对象解引用（口径同 create）。
+    // 入库即拷贝（仅首层解引用）：metadata 整体替换时首层与调用方传入对象解引用，
+    // 嵌套内容仍共享引用（口径同 create）。
     if (input.metadata !== undefined) patch.metadata = { ...requirePlainObject(input.metadata, "metadata") };
     Object.assign(task, patch);
     return cloneTask(task);
