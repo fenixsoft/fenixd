@@ -1654,7 +1654,22 @@ class FamilyGovernor:
                 )
             else:
                 if not severity_needs_human(severity):
-                    store.mark_handled(rec["id"])
+                    # code-review item 17b8a2696bc8：降噪 handled 标记独立
+                    # 隔离——告警本体已 append 成功落盘，mark_handled 失败
+                    # （磁盘满/store 文件锁抖动等）若落外层兜底会被误记为
+                    # 「Failed to send escalation alert」误导排障方向，且
+                    # 按降噪分级（见上方 docstring）本不进人工队列的
+                    # warning/minor 条目因缺 handled 标记滞留待处理列表。
+                    # 失败仅 WARNING，不与同分支后续 narrative 调度共用兜底。
+                    try:
+                        store.mark_handled(rec["id"])
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"降噪 handled 标记写入失败（告警已落盘、"
+                            f"降噪标记未写，条目将滞留待处理列表）: "
+                            f"{rec['id']}: {e}",
+                        )
                 # add-arbiter-lane 1.2/5.1：blocked/frozen/争议类 condition 的
                 # 升级边改道——让位判定与派发均收敛本咽喉（告警落地后有
                 # alert_id，裁决包/终态化才可原位挂靠）。让位命中时不调

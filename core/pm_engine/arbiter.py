@@ -702,6 +702,19 @@ class ArbiterLane:
         with self._lock:
             self._pending_binds.setdefault(sig, alert_id)
 
+    def _consume_pending_bind(self, sig: str, trigger: dict):
+        """处置终点回捞迟到补绑（调用方须已持 ``self._lock``）。
+
+        _worker_loop 只在出队瞬间消费一次 _pending_binds；空闲 worker 微秒级
+        出队后告警才落盘（freeze 咽喉先于 alert 咽喉数秒），迟到的 alert_id
+        若不在处理终点回捞，处置成功/升级/死人开关永远拿不到原位挂靠目标
+        （原告警滞留 pending 不终态化），且滞留条目会在同签名失败重试时被
+        误绑到新触发上。锁内 pop 后合并，剩余滞留清零。
+        """
+        bind = self._pending_binds.pop(sig, None)
+        if bind and not trigger.get("alert_id"):
+            trigger["alert_id"] = bind
+
     # ── worker（全局单飞串行消费）────────────────────────────────────
 
     def _ensure_worker(self):
@@ -830,6 +843,7 @@ class ArbiterLane:
             self._failure_counts.pop(sig, None)
             self._active.discard(sig)
             self._dispositioned.add(sig)
+            self._consume_pending_bind(sig, trigger)
         report = result.get("report") or {}
         side = self._apply_disposition_side_effects(trigger, report)
         alert_id = trigger.get("alert_id")
@@ -942,9 +956,13 @@ class ArbiterLane:
         except ValueError:
             return None
         parts = rel.parts
-        if len(parts) >= 2 and parts[0] == ".claude" and parts[1] == "worktrees":
+        # 白名单只放行根目录之下的具体子路径（len >= 3）：与
+        # .claude/worktrees、.fenix/tmp 完全相等的根目录本身不算「无主坏
+        # 产物位置」，两级前缀放行即等于整树删除（code-review item
+        # e38465a2a91e）。
+        if len(parts) >= 3 and parts[0] == ".claude" and parts[1] == "worktrees":
             return path
-        if len(parts) >= 2 and parts[0] == ".fenix" and parts[1] == "tmp":
+        if len(parts) >= 3 and parts[0] == ".fenix" and parts[1] == "tmp":
             return path
         return None
 
@@ -953,6 +971,7 @@ class ArbiterLane:
         sig = str(trigger.get("signature") or "")
         with self._lock:
             self._active.discard(sig)
+            self._consume_pending_bind(sig, trigger)
         report = result.get("report") or {}
         self._write_ledger(
             trigger,
@@ -994,6 +1013,7 @@ class ArbiterLane:
             count = self._failure_counts.get(sig, 0) + 1
             self._failure_counts[sig] = count
             self._active.discard(sig)
+            self._consume_pending_bind(sig, trigger)
         reason = str(result.get("error") or "run 失败")
         half_report = {
             "summary": str((result.get("report") or {}).get("summary") or ""),
@@ -1126,9 +1146,15 @@ class ArbiterLane:
         path = arbiter_ledger_path(self.project_root)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(entry, ensure_ascii=False)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            # 原子追加收口（code-review item ddd7e93a1d1d）：台账单行含
+            # 4000 字符截断段，UTF-8 常超 4096 字节，文本 open("a") 长行会
+            # 裂成多次 raw write，与并发写者（worker 线程 + submit_trigger
+            # 复发路径）交错出半行 JSON 被读侧 fail-open 跳过——沿用
+            # run_files/维护台账的成文约定（append_run_line：超阈值走二进
+            # 制单次 os.write，O_APPEND 下由内核串行化）。
+            from core.agent_runner.run_files import append_run_line
+
+            append_run_line(path, entry)
         except OSError as e:
             self._log("error", f"arbiter 台账写入失败（kind={kind}）: {e}")
         return entry
