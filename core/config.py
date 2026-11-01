@@ -2030,6 +2030,7 @@ class ConfigLoader:
         # 让下方 float()/int() 抛 ValueError/TypeError 而非回退默认。仅兜转换
         # 失败，各字段既有取值语义不变（stuck_silence/shutdown_drain 的显式 0
         # 合法、drain 负数仍由 max(0, …) 夹 0），回退值与原缺省逐字一致。
+        # [fenix-ignore:2070a1f79287] 数字字符串（"180"）放行是 _num 既有取值语义（docstring 已声明「仅兜转换失败、既有取值语义不变」），收敛到 _normalize_int_value 口径属语义变更、须单列评审
         def _num(value, default, conv):
             # bool 排除（code-review item 611268328575）：bool 是 int 子类，
             # conv(True)=1.0 / conv(False)=0.0 不抛异常——interval_minutes: true
@@ -2612,7 +2613,7 @@ class ConfigLoader:
           不受该开关约束——用户显式点击即执行，与 admin.self_review 的
           「开关只管周期调度」语义一致）
         - max_files: 500（全仓审查 manifest 上限；窗口审查按窗口收集。
-          非法值（非正整数/类型错误）回退缺省）
+          非法值（非正整数/类型错误）回退缺省；整值浮点按整数接受）
         - scope: "window"（add-code-review-scope-config：周期审查范围两档）
           - "window"（缺省）：窗口审查——只审 window_start（自省同源）之后
             变更文件；
@@ -2623,7 +2624,7 @@ class ConfigLoader:
           巡检路径 MUST NOT 因配置脏值中断，且缺省即历史行为（向后兼容）。
         - stall_alert_minutes: 15（add-code-review-sharded-out：事中零进度
           停滞告警阈值，分钟；消费方 core.code_review.check_progress_stall。
-          非法值（非正整数/类型错误/bool）回退缺省）
+          非法值（非正整数/类型错误/bool）回退缺省；整值浮点按整数接受）
         - run_at: 回退 admin.self_review.run_at（add-code-review-run-at D1：
           周期审查触发时点独立键，本地时间 HH:MM）。cr 段存在且恰能被
           _HHMM_RE（与 _validated_run_at / _parse_run_at 同一格式口径）解析
@@ -2641,11 +2642,13 @@ class ConfigLoader:
         # （code-review item 762bf6bb8c9d）。
         cr = cls._sub_segment_or_empty(admin, "code_review")
         max_files = cr.get("max_files", 500)
-        if (
-            not isinstance(max_files, int)
-            or isinstance(max_files, bool)
-            or max_files <= 0
-        ):
+        # 归一收敛 _normalize_int_value（code-review item ba37c8fec01a，与
+        # run_infra_breaker.threshold / _positive_int_reader 同族口径一致）：
+        # 整值浮点（500.0）按整数接受；bool/非整值浮点/非数值/≤0 仍回缺省
+        # 并经 _warn_reader_once 留痕——归一结果与原值不等即非法回退，整值
+        # 浮点数值相等（500 == 500.0）静默接受不告警。
+        normalized = cls._normalize_int_value(max_files, 500, positive=True)
+        if normalized != max_files:
             cls._warn_reader_once(
                 "admin.code_review.max_files",
                 max_files,
@@ -2654,7 +2657,7 @@ class ConfigLoader:
                 "回退缺省 500",
                 max_files,
             )
-            max_files = 500
+        max_files = normalized
         # scope 白名单：恰为 "full" 才取 full，其余（缺失/window/非法字面量/
         # 非字符串类型）一律回退 "window"（add-code-review-scope-config D1）
         scope = cr.get("scope", "window")
@@ -2674,14 +2677,12 @@ class ConfigLoader:
                 enabled,
             )
             enabled = False
-        # 停滞告警阈值（分钟，正整数，缺省 15）：bool 是 int 子类显式排除
-        #（与 max_files 同款守卫）；非法回退缺省。
+        # 停滞告警阈值（分钟，正整数，缺省 15）：守卫同上方 max_files——
+        # _normalize_int_value 口径（整值浮点按整数接受，item ba37c8fec01a）；
+        # 非法回退缺省留痕。
         stall_alert_minutes = cr.get("stall_alert_minutes", 15)
-        if (
-            not isinstance(stall_alert_minutes, int)
-            or isinstance(stall_alert_minutes, bool)
-            or stall_alert_minutes <= 0
-        ):
+        normalized = cls._normalize_int_value(stall_alert_minutes, 15, positive=True)
+        if normalized != stall_alert_minutes:
             cls._warn_reader_once(
                 "admin.code_review.stall_alert_minutes",
                 stall_alert_minutes,
@@ -2690,18 +2691,19 @@ class ConfigLoader:
                 "回退缺省 15",
                 stall_alert_minutes,
             )
-            stall_alert_minutes = 15
+        stall_alert_minutes = normalized
         # 手动全仓审查叠加防护阈值（evo-add-code-review-ratelimit-resume 4.1）：
         # 台账 open 条数超过该阈值时手动 full 触发回 409 确认态（对齐
         # trigger-ack 409 守卫先例），body 携带 confirm=true 二次确认后才派发。
         # 缺省 30；显式 0 = 关闭守卫（直接派发，回退历史行为）；负数/bool/
         # 非整数回退缺省。
         manual_full_open_warn = cr.get("manual_full_open_warn", 30)
-        if (
-            not isinstance(manual_full_open_warn, int)
-            or isinstance(manual_full_open_warn, bool)
-            or manual_full_open_warn < 0
-        ):
+        # 归一同上方口径（code-review item ba37c8fec01a）：显式 0 仍合法
+        #（关闭守卫）故取 positive=False（仅 <0 回缺省）；bool/负数/非整值
+        # 浮点/非数值回缺省留痕，整值浮点（30.0）按整数接受。
+        normalized = cls._normalize_int_value(
+            manual_full_open_warn, 30, positive=False)
+        if normalized != manual_full_open_warn:
             cls._warn_reader_once(
                 "admin.code_review.manual_full_open_warn",
                 manual_full_open_warn,
@@ -2710,7 +2712,7 @@ class ConfigLoader:
                 "（负数/bool/非整数），回退缺省 30",
                 manual_full_open_warn,
             )
-            manual_full_open_warn = 30
+        manual_full_open_warn = normalized
         # 触发时点（add-code-review-run-at D1）：合法 HH:MM 才生效，其余一切
         # （键缺失/非法字面量/非字符串类型）回退自省 run_at——缺省＝历史行为
         # 逐位一致；_HHMM_RE 与 self_review._parse_run_at 的格式口径同源。
@@ -2746,11 +2748,12 @@ class ConfigLoader:
         默认值（add-code-review-auto-fix D9）：
         - enabled: False（总开关；关闭 = 全链路零动作——不选批、不派 run、
           不写进度。严格 bool：非 bool 值（如字符串/数字）回退 False）
-        - batch_size: 20（每批条目数；必须为正整数，bool / ≤0 / 非整数
-          回退 20）
+        - batch_size: 20（每批条目数；必须为正整数（整值浮点按整数接受），
+          bool / ≤0 / 非整数回退 20）
         - targeted_retry_max: 3（add-codefix-targeted-retry 2.4；回归失败
           后定向重试轮上限，注释约束合理区间 1-5，bool / 非整数 / 越界
-          回退 3——过大烧钱、0 会让「重试一次」的现状语义都保不住）
+          回退 3——过大烧钱、0 会让「重试一次」的现状语义都保不住；
+          整值浮点按整数接受）
         - targeted_regression: True（add-codefix-affinity-batching 4.1；
           批收尾回归两段式：true=链内非末批按触碰面定向回归 + 链末批恒
           全量兜底，false=全批全量。严格 bool，非法值回退缺省 True 并记
@@ -2762,7 +2765,8 @@ class ConfigLoader:
           归一，避免误把写侧漂移当合法门限）回退缺省并记 warning）
         - minor_batch_cadence: 7（evo-add-codefix-severity-batch-gate 1.1；
           周批节奏天数：低于门限条目挂起距首挂起锚达该天数后整组放行。
-          正整数；bool/非整数/非正值回退缺省并记 warning）
+          正整数（整值浮点按整数接受）；bool/非整数/非正值回退缺省并记
+          warning）
         - severity_batch_gate_enabled: False（2026-10-11；severity 分级门限
           总开关。缺省关闭＝当天发现的所有内容当天处理（不挂起、不积累
           周批），关闭语义在 gate 解析层（severity_gate_from_config_segment
@@ -2789,11 +2793,12 @@ class ConfigLoader:
             )
             enabled = False
         batch_size = crf.get("batch_size", 20)
-        if (
-            not isinstance(batch_size, int)
-            or isinstance(batch_size, bool)
-            or batch_size <= 0
-        ):
+        # 归一收敛 _normalize_int_value（code-review item ba37c8fec01a，与
+        # max_files 等同族读取器口径一致）：整值浮点（30.0）按整数接受；
+        # bool/非整值浮点/非数值/≤0 仍回缺省并经 _warn_reader_once 留痕
+        #（归一结果与原值不等即非法回退，整值浮点数值相等静默接受）。
+        normalized = cls._normalize_int_value(batch_size, 20, positive=True)
+        if normalized != batch_size:
             cls._warn_reader_once(
                 "admin.code_review_fix.batch_size",
                 batch_size,
@@ -2802,13 +2807,12 @@ class ConfigLoader:
                 "回退缺省 20",
                 batch_size,
             )
-            batch_size = 20
+        batch_size = normalized
         targeted_retry_max = crf.get("targeted_retry_max", 3)
-        if (
-            not isinstance(targeted_retry_max, int)
-            or isinstance(targeted_retry_max, bool)
-            or not 1 <= targeted_retry_max <= 5
-        ):
+        # 归一同上方口径（code-review item ba37c8fec01a）：整值浮点按整数
+        # 接受；bool/非整数/非整值浮点回缺省留痕；越界 1-5 仍回缺省 3。
+        normalized = cls._normalize_int_value(targeted_retry_max, 3, positive=True)
+        if normalized != targeted_retry_max or not 1 <= normalized <= 5:
             cls._warn_reader_once(
                 "admin.code_review_fix.targeted_retry_max",
                 targeted_retry_max,
@@ -2817,7 +2821,8 @@ class ConfigLoader:
                 "（bool/非整数/越界 1-5），回退缺省 3",
                 targeted_retry_max,
             )
-            targeted_retry_max = 3
+            normalized = 3
+        targeted_retry_max = normalized
         targeted_regression = crf.get("targeted_regression", True)
         if not isinstance(targeted_regression, bool):
             cls._warn_reader_once(
@@ -2842,14 +2847,12 @@ class ConfigLoader:
                 min_immediate_severity,
             )
             min_immediate_severity = "major"
-        # 周批节奏天数：严格正整数（bool 是 int 子类显式排除，与 batch_size
-        # 同款守卫）；非法回退缺省不抛异常。
+        # 周批节奏天数：正整数（守卫同上方 batch_size——_normalize_int_value
+        # 口径，整值浮点按整数接受，item ba37c8fec01a）；非法回退缺省不抛
+        # 异常、留痕。
         minor_batch_cadence = crf.get("minor_batch_cadence", 7)
-        if (
-            not isinstance(minor_batch_cadence, int)
-            or isinstance(minor_batch_cadence, bool)
-            or minor_batch_cadence <= 0
-        ):
+        normalized = cls._normalize_int_value(minor_batch_cadence, 7, positive=True)
+        if normalized != minor_batch_cadence:
             cls._warn_reader_once(
                 "admin.code_review_fix.minor_batch_cadence",
                 minor_batch_cadence,
@@ -2858,7 +2861,7 @@ class ConfigLoader:
                 "（非正整数），回退缺省 7",
                 minor_batch_cadence,
             )
-            minor_batch_cadence = 7
+        minor_batch_cadence = normalized
         # severity 分级门限总开关（2026-10-11）：缺省关闭（当天内容当天
         # 处理）；严格 bool，非法回退 False（视同关闭）。
         severity_batch_gate_enabled = crf.get(
