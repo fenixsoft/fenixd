@@ -120,6 +120,8 @@ _STAMP_CELL_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 _INDEX_TITLE = "知识真相源"
 _INDEX_TABLE_HEADER = "| 能力域 | 简介 | 能力数量 | 更新时间 |"
 _DOMAIN_TABLE_HEADER = "| 能力页 | 简介 | 更新时间 |"
+# 表格列数的中文数词（校验文案用：缺 N 列表与行违规文案同形）
+_COL_COUNT_WORDS = {3: "三", 4: "四"}
 
 
 def local_now_stamp() -> tuple:
@@ -362,6 +364,36 @@ def validate_knowledge(project_root) -> list:
                 f"或 <目标> 尖括号包裹）: {target}"
             )
 
+    # index.md 四列 / _domain.md 三列导航表的行校验共用一处（code-review
+    # 238b61831c9d）：表格契约调整（时间列格式/新增列）只改本函数，不再
+    # index/_domain 双处同步。
+    def _check_stamp_table(
+        lines: list, header: str, kind: str, ts_col_idx: int, label: str
+    ) -> list:
+        """定位 ``header`` 表头并逐行校验行末更新时间列，返回违规列表。"""
+        expected_cols = ts_col_idx + 1
+        num = _COL_COUNT_WORDS[expected_cols]
+        try:
+            header_pos = lines.index(header)
+        except ValueError:
+            return [f"{label}: 缺{kind}{num}列表（表头须为 {header}）"]
+        out: list = []
+        for row in lines[header_pos + 1:]:
+            if not row.startswith("|"):
+                break  # 表格结束
+            # 切列豁免单元格内转义竖线（code-review 4de27e2e7876）：裸
+            # split 按竖线逐字切开会把合法的 ``\\|`` 一并切开，列数虚增或
+            # 时间列下标错位，合法表格被误判更新时间违规、白烧修正轮。
+            cells = [c.strip() for c in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
+            if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
+                continue
+            if len(cells) != expected_cols or not _STAMP_CELL_RE.match(cells[ts_col_idx]):
+                out.append(
+                    f"{label}: {kind}行更新时间缺失或格式非法"
+                    f"（{num}列，末列 YYYY-MM-DD HH:MM）: {row}"
+                )
+        return out
+
     # ── 能力页（domains/<域>/<能力>.md，_domain.md 为导航层另行处理）──
     domains_dir = kroot / "domains"
     if domains_dir.is_dir():
@@ -388,24 +420,9 @@ def validate_knowledge(project_root) -> list:
                         "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC+8）"
                     )
                 # 能力页表三列：表头恒定，行末列更新时间格式合法
-                try:
-                    dom_header_pos = lines.index(_DOMAIN_TABLE_HEADER)
-                except ValueError:
-                    violations.append(
-                        f"{label}: 缺能力页三列表（表头须为 {_DOMAIN_TABLE_HEADER}）"
-                    )
-                else:
-                    for row in lines[dom_header_pos + 1:]:
-                        if not row.startswith("|"):
-                            break  # 表格结束
-                        cells = [c.strip() for c in row.strip().strip("|").split("|")]
-                        if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
-                            continue
-                        if len(cells) != 3 or not _STAMP_CELL_RE.match(cells[2]):
-                            violations.append(
-                                f"{label}: 能力页行更新时间缺失或格式非法"
-                                f"（三列，末列 YYYY-MM-DD HH:MM）: {row}"
-                            )
+                violations.extend(
+                    _check_stamp_table(lines, _DOMAIN_TABLE_HEADER, "能力页", 2, label)
+                )
                 _check_links(text, page.parent, label)
                 continue
             # 布局契约：能力页须为 domains/<域>/<能力>.md 三级结构（code-review
@@ -491,24 +508,9 @@ def validate_knowledge(project_root) -> list:
                     f"{index_label}: 缺少「最后更新」盖戳行"
                     "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC+8，紧随标题）"
                 )
-            try:
-                header_pos = index_lines.index(_INDEX_TABLE_HEADER)
-            except ValueError:
-                violations.append(
-                    f"{index_label}: 缺能力域四列表（表头须为 {_INDEX_TABLE_HEADER}）"
-                )
-            else:
-                for row in index_lines[header_pos + 1:]:
-                    if not row.startswith("|"):
-                        break  # 表格结束
-                    cells = [c.strip() for c in row.strip().strip("|").split("|")]
-                    if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
-                        continue
-                    if len(cells) != 4 or not _STAMP_CELL_RE.match(cells[3]):
-                        violations.append(
-                            f"{index_label}: 能力域行更新时间缺失或格式非法"
-                            f"（四列，末列 YYYY-MM-DD HH:MM）: {row}"
-                        )
+            violations.extend(
+                _check_stamp_table(index_lines, _INDEX_TABLE_HEADER, "能力域", 3, index_label)
+            )
 
     # ── ADR（三段式 / 不可变 / supersede 链）────────────────────────
     adr_dir = kroot / "adr"

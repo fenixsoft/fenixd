@@ -104,7 +104,7 @@ _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 _GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
 _ADR_NAME_RE = re.compile(r"ADR-(\d{3})")
-_STATUS_WORD_RE = re.compile(r"\b(accepted|superseded)\b")
+_STATUS_WORD_RE = re.compile(r"\b(accepted|superseded)\b", re.IGNORECASE)
 
 
 # ── 状态文件（自然日防重 + 规模趋势基线） ────────────────────────────────
@@ -428,6 +428,22 @@ def _annotation_insert_index(lines: list[str]) -> int:
     return pos
 
 
+def _read_text_for_rewrite(path: Path) -> Optional[str]:
+    """「读入后整页回写」路径的读入辅助（code-review cbd86b36d5c1）。
+
+    此前各回写路径以 ``errors="replace"`` 读入：页面含非 UTF-8 字节时读取
+    阶段即被整体替换成 U+FFFD，任何一次单行机械修复都会把同页无关内容以
+    损坏形态落盘并随 audit fix 自动提交——为修一行悬空引用损坏整页。改用
+    strict 解码（缺省 errors 口径）：不可解码页返回 None，调用方按既有
+    「盘面已变转待人工」口径跳过回写，不为修一行损坏整页；OSError 同样
+    折算 None，「防盘面并发变化中断整轮体检」的原意保持不变。
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _sync_disputed_annotations(
     project_root: Path,
     desired: dict[str, str],
@@ -452,9 +468,11 @@ def _sync_disputed_annotations(
         path = Path(project_root) / rel
         if not path.is_file():
             continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        # 读入走 strict 辅助（code-review cbd86b36d5c1）：非 UTF-8 页跳过注记
+        # 同步，不把 replace 出的 U+FFFD 损坏面随回写落盘；OSError 口径不变
+        # （静默跳过，本函数无 manual 登记通道）。
+        text = _read_text_for_rewrite(path)
+        if text is None:
             continue
         lines = text.splitlines()
         idx = next((i for i, ln in enumerate(lines) if _DISPUTED_RE.search(ln)), None)
@@ -1052,25 +1070,32 @@ def _adr_status_slot(ln: str) -> Optional[tuple[int, int, str]]:
 
     状态比对与改写都必须锚定状态槽位本身：整行首次出现的匹配会被编号链接
     slug 或标题/摘要里的 accepted/superseded 字样抢走——比对错位、改写污染
-    标题，且大写形式能被小写化的 search 命中却不会被大小写敏感的 sub 替换。
+    标题，且大写形式能被忽略大小写的匹配命中，比对/回写仍须以规范小写形
+    为准。
     - 表格行（``|`` 分列）：状态列整列即状态词（真实 index 列序「编号、状态、
       摘要」），取内容恰为 accepted/superseded 的列；
     - 非表格行（列表项「— accepted」尾缀形态）：状态词缀在行尾，取整行
       **末次**出现，同理避开标题用词。
+
+    匹配直接在原行/原列上做（``_STATUS_WORD_RE`` 为 IGNORECASE，code-review
+    207f63fc872e）：先 ``lower()`` 再取偏移，会在 str.lower() 变长字符
+    （如 U+0130 "İ"）下与原行错位，替换切片落在错误位置、污染标题/摘要列。
+    group(1) 仍对齐为规范小写形返回，与 ``_adr_entry_status``/expected 的
+    比对口径不变。
     """
     if "|" in ln:
         offset = 0
         for col in ln.split("|"):
             if col.strip().lower() in ("accepted", "superseded"):
-                m = _STATUS_WORD_RE.search(col.lower())
-                return (offset + m.start(), offset + m.end(), m.group(1))
+                m = _STATUS_WORD_RE.search(col)
+                return (offset + m.start(), offset + m.end(), m.group(1).lower())
             offset += len(col) + 1
         return None
-    matches = list(_STATUS_WORD_RE.finditer(ln.lower()))
+    matches = list(_STATUS_WORD_RE.finditer(ln))
     if not matches:
         return None
     m = matches[-1]
-    return (m.start(), m.end(), m.group(1))
+    return (m.start(), m.end(), m.group(1).lower())
 
 
 def _adr_file_exists(adr_dir: Path, name: str) -> bool:
@@ -1288,15 +1313,14 @@ def _apply_mechanical(
         # 落盘、后续每个检查点重复失败。读不到按「盘面已变、转待人工」计入
         # manual 明细，不中断本轮机械修复与其余页面处置（对齐 _page_text_by_rel
         # 的 is_file 防护口径）。
-        orig_text: Optional[str] = None
-        if item["path"].is_file():
-            try:
-                orig_text = item["path"].read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                orig_text = None
+        # 读入走 strict 辅助（code-review cbd86b36d5c1）：非 UTF-8 页不整页回写
+        orig_text = (
+            _read_text_for_rewrite(item["path"]) if item["path"].is_file() else None
+        )
         if orig_text is None:
             manual.append(
-                f"{item['rel']}：盘面已变（文件不可读或已删除），悬空溯源转待人工"
+                f"{item['rel']}：盘面已变（文件不可读、已删除或非 UTF-8 编码），"
+                "悬空溯源转待人工"
             )
             continue
         lines = orig_text.splitlines()
@@ -1375,15 +1399,13 @@ def _apply_mechanical(
     for rel in scan["format"]:
         path = Path(project_root) / rel
         # 同悬空段口径：扫描后盘面已变（文件不可读/已删除）时转待人工，
-        # 不让 OSError 中断本轮机械修复（code-review 00f39dd6903d）。
-        text: Optional[str] = None
-        if path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                text = None
+        # 不让 OSError 中断本轮机械修复（code-review 00f39dd6903d）；读入走
+        # strict 辅助（code-review cbd86b36d5c1），非 UTF-8 页不整页回写。
+        text = _read_text_for_rewrite(path) if path.is_file() else None
         if text is None:
-            manual.append(f"{rel}：盘面已变（文件不可读或已删除），格式清理转待人工")
+            manual.append(
+                f"{rel}：盘面已变（文件不可读、已删除或非 UTF-8 编码），格式清理转待人工"
+            )
             continue
         # 只剥脏行尾空白，保留恰好两个空格的 Markdown 硬换行（与扫描同口径）
         cleaned = "\n".join(
@@ -1402,15 +1424,14 @@ def _apply_mechanical(
     mismatches = scan["adr"]["status_mismatch"]
     if mismatches and index_path.is_file():
         # 同悬空段/格式段口径：扫描后盘面已变（文件不可读/已删除）时转待人工，
-        # 不让 OSError 中断本轮机械修复（code-review 174ffbb6ce28）。
-        lines: Optional[list[str]] = None
-        try:
-            lines = index_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            lines = None
+        # 不让 OSError 中断本轮机械修复（code-review 174ffbb6ce28）；读入走
+        # strict 辅助（code-review cbd86b36d5c1），非 UTF-8 的 index 不整页回写。
+        raw = _read_text_for_rewrite(index_path) if index_path.is_file() else None
+        lines: Optional[list[str]] = raw.splitlines() if raw is not None else None
         if lines is None:
             manual.append(
-                "adr/index.md：盘面已变（文件不可读或已删除），索引状态对齐转待人工"
+                "adr/index.md：盘面已变（文件不可读、已删除或非 UTF-8 编码），"
+                "索引状态对齐转待人工"
             )
         else:
             wrote = False
