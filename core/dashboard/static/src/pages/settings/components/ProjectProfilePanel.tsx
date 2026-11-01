@@ -101,7 +101,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 聚焦信号到达：滚到 verify.yaml 卡片并把光标送入编辑框（延迟等待页签
   // 切换后本面板真正挂载渲染完成）
   useEffect(() => {
-    pendingFocusSignalRef.current = focusVerifySignal;
+    pendingFocusSignalRef.current = focusVerifySignal ?? 0;
     if (!focusVerifySignal) return;
     // 信号一次性消费（code-review item ff9fbfa71d51）：复位必须安排在聚焦
     // 落地之后——父级提前置 0 会令本 effect 因依赖变更走清理路径、取消尚未
