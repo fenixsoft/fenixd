@@ -91,6 +91,11 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
     <Alert banner type="error" showIcon message={`人工告警加载失败：${loadError}`} />
   ) : null;
 
+  // 横幅只为未处理告警服务（item 063beec37773）：未处理清零时整条横幅连同
+  // 「已解决」折叠区一并退场——resolved 仍有近期记录也不再展示，属有意的
+  // 横幅退场设计而非遗漏；如需保留近期已解决历史，可放宽早退条件为
+  // `!alerts.length && !resolved.length`（行为变更，涉及 dashboard 验证场景
+  // 对横幅退场的断言，不在本次修复范围）。
   if (!alerts.length) {
     return errorBanner ? <div style={{ marginBottom: 16 }}>{errorBanner}</div> : null;
   }

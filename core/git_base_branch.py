@@ -3,9 +3,11 @@
 框架所有「分支相对基线的未合并提交数」类判定的基线来源单点。解析顺序：
 
 1. ``git symbolic-ref --short refs/remotes/origin/HEAD``（``origin/<branch>``
-   形态，去前缀取本地分支名并 ``rev-parse --verify`` 校验本地存在，缺失则
+   形态，去前缀取本地分支名并 ``rev-parse --verify refs/heads/<branch>``
+   校验本地存在（显式 ref 形态，防同名 tag 经 DWIM 搜索序误判），缺失则
    落入下述候选，兼容含 ``/`` 的分支名）；
-2. 本地存在 ``main``（``git rev-parse --verify --quiet main``，退出码判定）；
+2. 本地存在 ``main``（``git rev-parse --verify --quiet refs/heads/main``，
+   退出码判定）；
 3. 本地存在 ``master``（同法）；
 4. 回退常量 ``"main"``（与既有 PRESERVE_AHEAD_BASE_BRANCH 一致）。
 
@@ -104,18 +106,23 @@ def resolve_base_branch(
         # origin/HEAD 只保证符号引用可解析，不保证去前缀后的分支在本地
         # 可解析（remote 默认分支改名后未建本地分支、单分支 fetch 配置等
         # 环境下 refs/heads/<name> 缺失）：与下方 main/master 候选同法
-        # rev-parse --verify 校验本地存在，失败继续走候选与 fallback——
-        # 调用方拿裸分支名拼 rev-list，DWIM 解析不到 refs/remotes/origin/
-        # <name>，返回本地不存在的基线即 potplayer-base 同型事故。
+        # rev-parse --verify 校验本地存在（显式 refs/heads/<name> 形态——
+        # 裸名走 git 标准 ref 搜索序，同名 tag 可被 DWIM 误判作本地分支，
+        # 基线静默漂移出 refs/heads，item 0e6abca406c6），失败继续走候选
+        # 与 fallback——调用方拿裸分支名拼 rev-list，DWIM 解析不到
+        # refs/remotes/origin/<name>，返回本地不存在的基线即 potplayer-base
+        # 同型事故。
         if name and _git_output(
-            project_root, ["rev-parse", "--verify", "--quiet", name], timeout,
+            project_root,
+            ["rev-parse", "--verify", "--quiet", f"refs/heads/{name}"], timeout,
         ) is not None:
             branch = name
     # 2)/3) 本地 main → master（--verify --quiet 退出码判定，一次子进程）。
     if branch is None:
         for cand in ("main", "master"):
             if _git_output(
-                project_root, ["rev-parse", "--verify", "--quiet", cand], timeout,
+                project_root,
+                ["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"], timeout,
             ) is not None:
                 branch = cand
                 break

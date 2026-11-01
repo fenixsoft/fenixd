@@ -45,7 +45,13 @@ def validate_spec_name(spec: str) -> str | None:
     # 长度上限按 UTF-8 字节计（文件系统文件名 255 字节上限的入口预检），
     # 200 预留 .json / 日期等后缀拼接余量；置于形态校验之前，避免超长串
     # 整体回显进下方错误文案。
-    name_bytes = len(spec.encode("utf-8"))
+    try:
+        name_bytes = len(spec.encode("utf-8"))
+    except UnicodeEncodeError:
+        # 含未配对代理字符（lone surrogate，如 surrogateescape 解码出的畸形
+        # 文件名）无法按 UTF-8 计长，按返回值契约归入「不合法」描述而非外抛
+        # （item f21056e28beb）；截断回显口径与下方超长分支一致。
+        return f"spec 名含非法字符（无法按 UTF-8 编码）：{spec[:32]!r}…"
     if name_bytes > 200:
         return f"spec 名过长（{name_bytes} 字节，上限 200）：{spec[:32]!r}…"
     if not KEBAB_RE.fullmatch(spec):

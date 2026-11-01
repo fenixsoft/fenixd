@@ -42,6 +42,12 @@ export { formatUsd };
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
 
+// remarkPlugins 提为模块级常量（code-review item 0a666cf57a47）：比照 SpecDocModal
+// SPEC_DOC_REMARK_PLUGINS / KnowledgeTab KNOWLEDGE_REMARK_PLUGINS 先例复用同一引用，
+// 避免每次渲染（SSE 增量刷新、父页状态变化引发的时间轴整体重渲染）新建数组
+// 导致 react-markdown 对 run summary 重新 parse
+const TIMELINE_REMARK_PLUGINS = [remarkGfm];
+
 // arbiter 处置结论着色（add-arbiter-quality-display 任务 2.3）：自主处置绿
 // （框架已收敛）、升级人工橙（待人工接管）；未知 kind 走中性 default Tag。
 // 分支选择以 if/else 表达（code-review item 7471b4865219：禁止嵌套三元）。
@@ -492,7 +498,7 @@ export default function SpecTimeline({
                       fontSize: 13,
                     }}
                   >
-                    <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    <Markdown remarkPlugins={TIMELINE_REMARK_PLUGINS} components={markdownComponents}>
                       {item.summary}
                     </Markdown>
                   </div>

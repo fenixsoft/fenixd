@@ -90,14 +90,17 @@ def _read_h1_title(path: Path) -> str | None:
     in_fence = False
     fence_marker = ""
     for line in text.splitlines():
-        # 轻量围栏状态机：行首（容忍缩进与 ```bash 等尾随信息符）
-        # ``` / ~~~ 开启围栏；围栏内仅同符号围栏行可闭合，异符号行视为
-        # 代码内容（对齐 help_routes._help_doc_title 口径，避免「```
-        # 围栏内嵌 ~~~ 行」的语法示例提前闭合外层围栏，code-review
-        # da69388c7533）。围栏内行不参与 _H1_TITLE_RE 匹配
-        stripped = line.lstrip()
-        if stripped.startswith(("```", "~~~")):
-            marker = stripped[:3]
+        # 轻量围栏状态机（缩进口径与 help_routes._help_doc_title 对齐，
+        # code-review ad41ed96b20a：缩进≤3 空格的 ``` / ~~~ 行才开启围栏，
+        # 缩进≥4 行按缩进代码块处理不开围栏，两处取题行为不再分叉）；
+        # ```bash 等尾随信息符照收；围栏内仅同符号围栏行可闭合，异符号行
+        # 视为代码内容（避免「``` 围栏内嵌 ~~~ 行」的语法示例提前闭合
+        # 外层围栏，code-review da69388c7533）。围栏内行不参与 _H1_TITLE_RE
+        # 匹配
+        bare = line.lstrip(" ")
+        indent = len(line) - len(bare)
+        if indent <= 3 and bare.startswith(("```", "~~~")):
+            marker = bare[:3]
             if not in_fence:
                 in_fence, fence_marker = True, marker
             elif marker == fence_marker:

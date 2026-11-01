@@ -536,8 +536,12 @@ def _load_verify_contract_with_raw(
         # 后按空 root 处理：static 模式缺 root 由既有链路大声失败
         # （validate_contract 经 _raw_serve_section_errors 报「serve.root 为空」
         # 走 FAIL_SERVE_INVALID，selfcheck_contract_light 同文案自证失败且
-        # fail-fast 阻断场景执行），不再进入静态服务。就地写回使 raw_data 与
-        # 解析结果同口径（serve_data 即 data["serve"] 同一对象）。
+        # fail-fast 阻断场景执行），不再进入静态服务。归一后等于 "." 的纯
+        # "." 段（``root: .`` / ``./``）同口径拒绝（code-review item
+        # da39113f486a）：URL 空间根=项目根会把 .fenix/（config.yaml、状态
+        # 文件、runs 档案）与全部源码经 loopback HTTP 暴露给本机任意进程。
+        # 就地写回使 raw_data 与解析结果同口径（serve_data 即 data["serve"]
+        # 同一对象）。
         if serve_data["kind"] == "static":
             raw_root = serve_data.get("root")
             cand = raw_root.strip() if isinstance(raw_root, str) else ""
@@ -546,6 +550,11 @@ def _load_verify_contract_with_raw(
                 bad_reason = "绝对路径（须为相对项目根的路径）"
             elif ".." in cand.split("/"):
                 bad_reason = '含 ".." 段（不得逃出项目根）'
+            elif cand and os.path.normpath(cand) == ".":
+                bad_reason = (
+                    "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
+                    "经 loopback HTTP 暴露给本机任意进程）"
+                )
             if bad_reason:
                 if logger:
                     logger.warning(
@@ -1662,10 +1671,18 @@ class StaticVerifyServer:
         return self._thread.is_alive()
 
     def stop(self):
+        # shutdown 与 server_close 分开捕获（code-review item cf72a77b397f）：
+        # shutdown() 在被 serve_forever 同一线程调用时抛 ValueError（stdlib
+        # 契约），旧实现仅捕 OSError 会让非 OSError 异常跳过 server_close()
+        # （socket/fd 释放）——宽口径对齐 validate_contract 各 stop 调用点的
+        # except Exception，shutdown 失败仍执行 server_close。
         try:
             self._httpd.shutdown()
+        except Exception:
+            pass
+        try:
             self._httpd.server_close()
-        except OSError:
+        except Exception:
             pass
 
 
@@ -2262,8 +2279,10 @@ def _probe_vacuity_note(
     add-spec-hooks 第 1 轮 4 个 web 场景白屏 env 事故防复发（2026-09-06）：
     SPA fallback 对任意路径在 HTTP 服务一监听时即回同一 HTML，探针同秒通过
     而「就绪」未发生——探针被 fallback 吞掉，无法区分就绪/未就绪。判定法：
-    探针通过后再请求一个随机不存在路径，状态码与 body（截断 4KB）完全一致
-    即判探针无鉴别力（确定性无效形态，与晋升 lint 同哲学）。任意路径 404
+    探针通过后再请求一个随机不存在路径，状态码与 body（截断 64KB，code-review
+    item fb3484712e44：旧 4KB 窗口下「共享模板前缀、差异落在窗口之后」的
+    合法页面会被确定性误判为无鉴别力，对齐 _evidence._truncate 口径）完全
+    一致即判探针无鉴别力（确定性无效形态，与晋升 lint 同哲学）。任意路径 404
     等 HTTPError ＝ 路径有鉴别力；自检自身异常一律放行（fail-open，不因自检
     网络抖动牵连主判定）。
 
@@ -2286,7 +2305,10 @@ def _probe_vacuity_note(
         ) as resp:
             if resp.status != ready.expect:
                 return ""
-            body = resp.read(4096)
+            # 64KB 比较窗口（item fb3484712e44，对齐 _evidence._truncate）：
+            # 与 probe_ready 侧同窗，前缀相同而差异在窗口之后的合法页面不再
+            # 被误判为「完全一致」
+            body = resp.read(65536)
     except Exception:
         return ""
     if body != probe_body:
@@ -2328,7 +2350,9 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
             req = Request(url, method="GET", headers={"User-Agent": "fenix-verify-contract"})
             with urlopen(req, timeout=min(3.0, budget)) as resp:
                 if resp.status == ready.expect:
-                    body = resp.read(4096)
+                    # 64KB 比较窗口（item fb3484712e44，与 _probe_vacuity_note
+                    # 侧同窗）
+                    body = resp.read(65536)
                     vacuity = _probe_vacuity_note(base_url, ready, body, deadline)
                     if vacuity:
                         return False, vacuity

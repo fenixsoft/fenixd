@@ -73,6 +73,15 @@ class H17CommandCenterRoutesMixin:
             return scope["error"]
         return aggregate_kpi(scope["projects"], project=scope["project"])
 
+    # org / spec-runs 共用的 ?window 解析单点（code-review a92d9ef47ade）：
+    # 缺省 today；不在 ORG_WINDOWS 的非法值防御性回落 today。窗口枚举或
+    # 回落策略调整只改此处，两端点不再各自内联同段三行逻辑。
+    def _org_window(self, query) -> str:
+        window = query.get("window", [WINDOW_TODAY])[0] or WINDOW_TODAY
+        if window not in ORG_WINDOWS:
+            window = WINDOW_TODAY
+        return window
+
     def _api_command_center_org(self, query) -> dict:
         """GET /api/command-center/org —— 组织网格车道卡 + 产品团队汇总（只读）。
 
@@ -82,9 +91,7 @@ class H17CommandCenterRoutesMixin:
         scope = self._command_center_scope(query)
         if "error" in scope:
             return scope["error"]
-        window = query.get("window", [WINDOW_TODAY])[0] or WINDOW_TODAY
-        if window not in ORG_WINDOWS:
-            window = WINDOW_TODAY
+        window = self._org_window(query)
         return aggregate_org(scope["projects"], project=scope["project"], window=window)
 
     def _api_command_center_spec_runs(self, query) -> dict:
@@ -108,9 +115,7 @@ class H17CommandCenterRoutesMixin:
         scope = self._command_center_scope(query)
         if "error" in scope:
             return scope["error"]
-        window = query.get("window", [WINDOW_TODAY])[0] or WINDOW_TODAY
-        if window not in ORG_WINDOWS:
-            window = WINDOW_TODAY
+        window = self._org_window(query)
         return aggregate_spec_runs(
             scope["projects"], project_name, spec_name, window=window
         )

@@ -70,6 +70,12 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   // 帧共享且在 handleSend 入口同步读写才拦得住，sending state 仅负责 loading
   // 渲染（code-review item 61645635a2a4）
   const sendingRef = useRef(false);
+  // 回车延后发送的定时器句柄（code-review item e29ba13e11c4）：Enter 经
+  // setTimeout 延后一拍触发 handleSend，句柄未追踪时用户回车后同帧关弹窗，
+  // 回调仍会在下一宏任务执行——彼时 sendingRef/inProgressRef 均已复位、
+  // promptRef 仍持输入文本（ref 不随卸载复位），全部守卫通过即静默发起一次
+  // 有成本的服务端处置；记录句柄并在关闭/卸载路径 clearTimeout 作废
+  const enterSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 本轮发起的服务端时刻锚点（ms，取 invoke 响应携带的 created）：轮询只采用此后
   // 产生的 run，避免 daemon 尚未落 pending 时取到历史 run；409（已有处置进行中）
   // 时放宽为接受现有最新 run。容差只留 1 秒（两侧 created 同为 daemon 主机时钟，
@@ -108,9 +114,16 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   ];
 
   // 打开时重置，并探测该 spec 是否已有进行中的 Admin 处置（自动重连）；
-  // 关闭时无需清理（定时器均已移除）
+  // 关闭时作废延后发送定时器（code-review item e29ba13e11c4），其余轮询类
+  // 定时器均已随各自 effect 清理移除
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      if (enterSendTimerRef.current !== null) {
+        window.clearTimeout(enterSendTimerRef.current);
+        enterSendTimerRef.current = null;
+      }
+      return;
+    }
     setPrompt('');
     setSending(false);
     sendingRef.current = false;
@@ -147,6 +160,12 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     })();
     return () => {
       stopped = true;
+      // 卸载（或 project/spec 变化重开重置）时作废尚未触发的延后发送
+      // （code-review item e29ba13e11c4）
+      if (enterSendTimerRef.current !== null) {
+        window.clearTimeout(enterSendTimerRef.current);
+        enterSendTimerRef.current = null;
+      }
     };
   }, [open, project, spec]);
 
@@ -431,8 +450,14 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
               // antd6 AutoComplete 不支持 onPressEnter（属性被静默忽略）；
-              // 延后一拍发送，让下拉中回车选中模板时的 onChange 先回写最新值
-              window.setTimeout(() => {
+              // 延后一拍发送，让下拉中回车选中模板时的 onChange 先回写最新值。
+              // 句柄记录进 enterSendTimerRef，弹窗关闭/组件卸载时作废
+              //（code-review item e29ba13e11c4）
+              if (enterSendTimerRef.current !== null) {
+                window.clearTimeout(enterSendTimerRef.current);
+              }
+              enterSendTimerRef.current = setTimeout(() => {
+                enterSendTimerRef.current = null;
                 void handleSend();
               }, 0);
             }

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from core.dashboard import data as dashboard_data
 
-logger = logging.getLogger("fenixd.dashboard.run_routes")
+logger = logging.getLogger("fenixd.dashboard.routes.run_routes")
 
 
 class H4RunRoutesMixin:

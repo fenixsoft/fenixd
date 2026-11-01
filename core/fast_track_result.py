@@ -271,8 +271,11 @@ def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
             )
         # .get 访问（code-review item 4b2acae9e21a）：resolve_effective_declaration
         # 契约漂移致键缺失时直接下标会抛 KeyError、被下方 except 吞成 file_count=0
-        # 静默低估规模分——与回退路径的 .get 口径对齐，缺键交由 KeyError 分支
-        # 显式记「疑似契约漂移」。
+        # 静默低估规模分——与回退路径的 .get 口径对齐。注意 .get 缺键返回 None
+        # 不抛 KeyError（item 5e990e0db615）：本段缺键实际静默落入下方
+        # extract_declared / extract_paths_typed 回退重解析，与「无标准布局 /
+        # 无声明段」不可区分、无「疑似契约漂移」告警；下方 except KeyError
+        # 只覆盖回退路径的条目下标形态（如条目缺 path/kind 键）。
         if declared is None or (
             not declared.get("deliverables") and not declared.get("references")
         ):

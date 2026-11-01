@@ -1041,7 +1041,17 @@ def upsert_findings(
             category = str(finding.get("category") or "")
             title = str(finding.get("title") or "")
             if not file_ or not title:
-                # 缺关键字段的发现跳过（不整批失败）
+                # 缺关键字段的发现跳过（不整批失败），但按 (review_id, 缺失
+                # 字段名) warn-once 留痕（item c638f1b27bea）：agent 产出格式
+                # 漂移（如 title 字段改名/漏出）时整轮发现被无声丢弃、台账零
+                # 增长无从排查——与 read_review_out_rows 缺 file 行的 WARNING
+                # 同口径，不打断本批其余发现的入账。
+                for field, value in (("file", file_), ("title", title)):
+                    if not value and _warn_once(("upsert-skip-field", review_id, field)):
+                        _logger.warning(
+                            "code_review: run %s 有发现缺关键字段 %s，已跳过（不整批失败）",
+                            review_id, field,
+                        )
                 continue
             fp = fingerprint(file_, category, title)
             rec = by_fp.get(fp)

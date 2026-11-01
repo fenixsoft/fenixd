@@ -3131,8 +3131,8 @@ class StateMachine:
 
     def _finish_transition(self, outcome: dict, result: bool, spec_name: str,
                            new_status: str, *, label: str, verb: str,
-                           trigger_run_id: str | None = None,
-                           agent_type: str | None = None,
+                           trigger_run_id: Optional[str] = None,
+                           agent_type: Optional[str] = None,
                            channel: str = "auto") -> bool:
         """transition / transition_gate 共用的锁外出口分支（code-review 14e0ba4fccce）。
 
@@ -3217,8 +3217,8 @@ class StateMachine:
         return result
 
     def transition(self, spec_name: str, new_status: str,
-                   *, trigger_run_id: str | None = None,
-                   agent_type: str | None = None,
+                   *, trigger_run_id: Optional[str] = None,
+                   agent_type: Optional[str] = None,
                    channel: str = "auto") -> bool:
         """Transition a SPEC to a new status. Validates the transition is legal.
 
@@ -3249,8 +3249,8 @@ class StateMachine:
         return to_status in VALID_TRANSITIONS.get(from_status, [])
 
     def transition_gate(self, spec_name: str, new_status: str,
-                        *, trigger_run_id: str | None = None,
-                        agent_type: str | None = None,
+                        *, trigger_run_id: Optional[str] = None,
+                        agent_type: Optional[str] = None,
                         channel: str = "auto") -> bool:
         """门禁自动路径专用转换（verifier-judgment-integrity D7 逃生门）。
 

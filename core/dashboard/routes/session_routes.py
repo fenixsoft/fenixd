@@ -10,7 +10,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-logger = logging.getLogger("fenixd.dashboard.session_routes")
+logger = logging.getLogger("fenixd.dashboard.routes.session_routes")
 
 # ── add-session-composer 1.2：files 端点模块常量（不新增受管配置键） ──────
 SESSION_FILES_LIMIT = 5000           # 返回条数上限，超出截断

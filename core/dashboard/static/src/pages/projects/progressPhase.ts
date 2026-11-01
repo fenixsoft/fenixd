@@ -4,6 +4,10 @@
 // 的映射抽到此纯函数模块（零 import，node 与 Vite 双端可直接加载）；
 // list.tsx 原地 import 替换本地定义，调用点零改动（impl/verify 分支行为由
 // qualityGates.test.mjs 的零回归用例钉住）。
+//
+// 配色口径注记（code-review item f31cd6e3e587）：下方底轨/描边均为 spec/用户
+// 指定浅色常量，暗色场景有意不随主题 token 派生（调暗会破坏「与进度色同
+// ramp、空条可辨」的指定语义），非遗漏。
 
 export const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
 export const TRACK_GREEN = 'rgb(225, 236, 215)'; // 淡绿底轨（用户指定色），verify 阶段空条可辨

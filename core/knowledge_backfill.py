@@ -1081,13 +1081,12 @@ def default_spawn(project_root: Path) -> SpawnFn:
             # 通信期异常按既有语义透传原始异常类型（fail-open 调用方只看
             # 异常消息文本，类型保真不改变其 except Exception 口径）
             raise e.original from e.original
-        if outcome.timed_out:
-            raise RuntimeError(
-                f"claude -p 回填 run {run_id} 超时（>{SPAWN_TIMEOUT_SECONDS}s），"
-                "已终止进程组"
-            )
         stdout, stderr = outcome.stdout, outcome.stderr
-        # stdout/stderr 落盘留痕：run 失败可取证，不再依赖调用方是否消费返回值
+        # stdout/stderr 落盘留痕：run 失败可取证，不再依赖调用方是否消费返回值。
+        # 置于超时判断之前（code-review ea7f02036bf8）：超时恰是取证价值最高的
+        # 失败路径（one_shot 超时经二次 communicate 已带回部分输出），先 raise
+        # 会令超时 run 不留任何 .out 文件；超时收割后 returncode 为负信号值或
+        # None，照实呈现即可。
         try:
             runs_dir = project_root / ".fenix" / "runs"
             runs_dir.mkdir(parents=True, exist_ok=True)
@@ -1098,6 +1097,11 @@ def default_spawn(project_root: Path) -> SpawnFn:
             )
         except OSError:
             pass
+        if outcome.timed_out:
+            raise RuntimeError(
+                f"claude -p 回填 run {run_id} 超时（>{SPAWN_TIMEOUT_SECONDS}s），"
+                "已终止进程组"
+            )
         if outcome.returncode != 0:
             tail = _failure_attribution_tail(stdout, stderr)
             msg = f"claude -p 回填 run {run_id} 退出码 {outcome.returncode}"
@@ -1393,16 +1397,16 @@ def scale_stats(project_root: Path, log=None) -> dict[str, int]:
                 )
                 continue
             lines += len(text.splitlines())
-    for nav in (kdir / "index.md",):
-        if nav.is_file():
-            try:
-                text = nav.read_text(encoding="utf-8", errors="replace")
-            except OSError as e:
-                log.warning(
-                    "knowledge",
-                    f"回填规模统计：index.md 读取失败（计 0 行跳过）：{e}",
-                )
-                continue
+    index_md = kdir / "index.md"
+    if index_md.is_file():
+        try:
+            text = index_md.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            log.warning(
+                "knowledge",
+                f"回填规模统计：index.md 读取失败（计 0 行跳过）：{e}",
+            )
+        else:
             lines += len(text.splitlines())
     adrs = 0
     try:

@@ -1079,7 +1079,11 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
     - pid 存活但 starttime 快照失配 → 先复查判活（a9776777a028）：判活与
       starttime 读取窗口内进程恰好退出属竞态消失，静默摘登记；复查仍存活
       才是 pid 已被复用，告警留痕后仅摘登记**不杀**（误杀无关进程的代价
-      远高于漏清，同 serving_registry 身份核对纪律）；
+      远高于漏清，同 serving_registry 身份核对纪律）；「复查仍存活」中
+      starttime 读取瞬时失败（proc_start_ticks 对 /proc stat 不可读/畸形
+      一律返回 None，item 47d198ff1e2e）的情形单独处置——既未消亡也无复用
+      证据，保留登记条目留待下次对账重试，独立文案告警（不断言 pid 复用、
+      不杀）；仅读到有效值且与快照不同才判定 pid 复用并摘登记；
     - pid 存活但快照缺失/非法（如 register 时 proc 刚 spawn 即死，
       proc_start_ticks 返回 None）→ 身份无法核实，仅摘登记**不杀**（同上
       纪律，防 pid 复用后误杀无关进程）；
@@ -1135,12 +1139,33 @@ def reconcile_v2_servers(project_root, logger=None) -> int:
                     f"killing",
                 )
             continue  # 身份无法核实：摘登记不杀
-        if proc_start_ticks(pid) != snapshot:
+        ticks = proc_start_ticks(pid)
+        if ticks is None and _pid_alive(pid):
+            # 读取瞬时失败（code-review item 47d198ff1e2e）：proc_start_ticks
+            # 对 /proc stat 不可读/畸形一律返回 None，进程仍存活且确为登记
+            # 进程时 None != snapshot 同样命中失配分支——但此刻既未消亡也无
+            # 复用证据，摘登记会丢掉本函数自称覆盖的这条唯一归属线索（后续
+            # 孤儿清扫无法经登记收割），「pid likely reused」文案亦会带偏
+            # 排障方向。保留条目留待下次对账重试，以独立文案告警留痕
+            #（不断言 pid 复用、不杀）。
+            if logger:
+                logger.warning(
+                    "v2_dev_server",
+                    f"reconcile keep pid={pid} (wt={wt_text or '-'}) "
+                    f"start_ticks read failed while process alive — "
+                    f"keeping registry entry for next reconcile",
+                )
+            kept.append(entry)
+            continue  # 身份待下次对账复核：保留登记不杀
+        if ticks != snapshot:
             # 竞态复查（a9776777a028）：判活（上方 _pid_alive）与 starttime
             # 读取之间的窗口内进程恰好退出时读取返回 None（与快照失配），
             # 真实根因是进程消失而非 pid 复用——复查已消亡则静默摘登记
             # （与上方已消亡分支同口径），仅复查仍存活才报 pid reused，
-            # 避免告警文案把按指纹排障的方向带偏。
+            # 避免告警文案把按指纹排障的方向带偏。「仍存活但读取失败」的
+            # None 已由上方分支先行处置：走到这里要么读到有效值且与快照
+            # 不同（pid 确被复用），要么读取 None 且复查已消亡（竞态消失，
+            # 静默摘登记）。
             if _pid_alive(pid) and logger:
                 logger.warning(
                     "v2_dev_server",

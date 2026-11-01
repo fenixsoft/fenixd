@@ -154,10 +154,18 @@ class EventBus:
         # 数值归一（code-review 67c654146188）：与 _periodic_scan_loop 的热读
         # 归一同口径（float 转换 + isfinite 校验，异常回退 30.0），脏值不再以
         # None/字符串原样进入启动日志文案与兜底参数。
+        # bool 短路（code-review dad135f3082a）：bool 是 int 子类，
+        # float(True)=1.0 且通过 isfinite，YAML ``poll_interval_minutes: true``
+        # 会以 1 分钟间隔跑周期扫描而非回缺省 30.0——加载层（config._validate）
+        # 对该键硬拒 bool，此处兜住绕过加载校验直改 config dict 的旁路，与
+        # fast_track_result / config 层的既有 bool 拒绝口径对齐。
         try:
-            poll_interval = float(poll_interval)
-            if not math.isfinite(poll_interval):
+            if isinstance(poll_interval, bool):
                 poll_interval = 30.0
+            else:
+                poll_interval = float(poll_interval)
+                if not math.isfinite(poll_interval):
+                    poll_interval = 30.0
         except (TypeError, ValueError, OverflowError):
             poll_interval = 30.0
         # 同上存活复用守卫（code-review item de45aae4e422）：join 超时后仍存活
@@ -972,11 +980,18 @@ class EventBus:
             #   穿透 max()，sleep(nan) 抛 ValueError）与 ±inf（YAML .inf /
             #   1e400 溢出字面量），与 config.py 既有 isfinite 防御范式同口径。
             try:
-                interval = float(
-                    self.config.get("schedule", {}).get("poll_interval_minutes", interval_minutes)
-                )
-                if not math.isfinite(interval):
+                # bool 短路（code-review dad135f3082a）：float(True)=1.0 且过
+                # isfinite，bool 脏值会以 1 分钟间隔跑扫描而非回缺省 30.0——
+                # 加载层对该键硬拒 bool，此处兜直改 config dict 的旁路（与
+                # start() 及 fast_track_result / config 层 bool 拒绝口径对齐）。
+                raw_interval = self.config.get("schedule", {}).get(
+                    "poll_interval_minutes", interval_minutes)
+                if isinstance(raw_interval, bool):
                     interval = 30.0
+                else:
+                    interval = float(raw_interval)
+                    if not math.isfinite(interval):
+                        interval = 30.0
             except (TypeError, ValueError, AttributeError, OverflowError):
                 interval = 30.0
             time.sleep(max(float(interval), 0.5) * 60)
