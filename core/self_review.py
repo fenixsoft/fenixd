@@ -407,8 +407,19 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
                 start = max(0, size - window)
                 f.seek(start)
                 chunk = f.read()
-                raw = chunk.decode("utf-8", errors="replace").splitlines()
-                del chunk  # decode 后立即释放 bytes 引用（避免 bytes+str 双份驻留）
+                # 物理行切分再逐段 decode（code-review item 33d13f2e888b，口径
+                # 对齐 _read_context_metrics_row 的 split(b"\n")）：str.splitlines
+                # 会按 U+2028/U+2029/\x85 等通用换行把行内含这些字面字符的转录
+                # 行撕成两段坏行（json 解析双双失败、result 终态行落残段被
+                # _classify_run 误判 running）；split(b"\n") 只按落盘换行符切，
+                # 行内容原样保留。decode 容错形态同旧（errors="replace"）。
+                raw = [
+                    seg.decode("utf-8", errors="replace")
+                    for seg in chunk.split(b"\n")
+                ]
+                del chunk  # 切行后立即释放 bytes 引用（避免 bytes+str 双份驻留）
+                if raw and not raw[-1]:
+                    raw.pop()  # 文件以 \n 收尾的尾空段不产出（同 splitlines 口径）
                 if start == 0:
                     # 窗口已覆盖全文件：全量行、不丢首片段（同旧整文件口径）
                     return _parse_run_tail_lines(raw[-max_lines:])
@@ -421,8 +432,14 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
                     # （语义同旧实现扩窗到 start==0 的全文件口径）。
                     f.seek(0)
                     chunk = f.read()
-                    raw = chunk.decode("utf-8", errors="replace").splitlines()
+                    # 整文件兜底分支同上物理行切分口径（item 33d13f2e888b）。
+                    raw = [
+                        seg.decode("utf-8", errors="replace")
+                        for seg in chunk.split(b"\n")
+                    ]
                     del chunk
+                    if raw and not raw[-1]:
+                        raw.pop()  # 文件以 \n 收尾的尾空段不产出（同 splitlines 口径）
                     return _parse_run_tail_lines(raw[-max_lines:])
                 window = min(
                     window * _RUN_TAIL_WINDOW_GROWTH, _RUN_TAIL_WINDOW_MAX_BYTES
@@ -1823,6 +1840,12 @@ def _collect_rescue_traces(
     每组至多 _RESCUE_TRACE_SAMPLE_MAX 条样本（时间戳 + message 截断）。不按
     run_id 关联（部分行只有 spec 名，强行关联引入第三个解析口径）。
 
+    行数无上限为接受的有意取舍（code-review item ac8d222d834e，与
+    MIDFLIGHT_SCAN_MAX_LINES 有界扫描纪律的有意分叉）：内存为流式逐行有界、
+    每日至多一次，且与 collect_log_errors 同属既有六源无界扫描模式；日志在
+    两次轮转间膨胀时 CPU 随日志体积线性放大属潜在开销而非故障，故不加上限
+    与 truncated 注记。
+
     Returns: {关键词: {count, samples: ["<ts> [<component>] <message截断>"]}}；
     日志缺失/读取失败降级空 dict（不阻断自省）。
     """
@@ -3154,7 +3177,8 @@ class SelfReviewScheduler:
         degraded_out（code-review item 1312883c52e6）：传列表则状态文件回读
         失败（IO 故障/JSON 损坏，文件缺失不算）时报入，供调用方区分
         「原本就无锚点」与「回读失败」；raw 是字符串但内容非法（手改/外部
-        写手损坏，JSON 本身合法）同样报入（code-review item 47db622f27e7）
+        写手损坏，JSON 本身合法）或非字符串形态（epoch 整数等，item
+        5239633ca980）同样报入（code-review item 47db622f27e7）
         ——该形态窗口同样静默回退 24h，不留痕则真实锚点在数日前时
         [真实锚点, 24h 前] 区间的窗口内容当日不被审查且无任何 WARNING。
         """
@@ -3162,8 +3186,20 @@ class SelfReviewScheduler:
         raw = self._load_state(degraded_out=state_degraded).get("last_run_at")
         if degraded_out is not None:
             degraded_out.extend(state_degraded)
-        if not isinstance(raw, str) or not raw:
-            # 字段缺失/非 str/空＝原本就无锚点（首跑/旧格式状态文件），良性形态
+        if raw is None or (isinstance(raw, str) and not raw):
+            # 字段缺失/空 str＝原本就无锚点（首跑/旧格式状态文件），良性形态
+            return None
+        if not isinstance(raw, str):
+            # 非 str 脏值（code-review item 5239633ca980）：手改/外部写手可能
+            # 把 last_run_at 落成 epoch 整数等形态，窗口同样静默回退 24h——
+            # 留痕口径对齐下方 str 形态脏值（47db622f27e7），否则真实锚点在
+            # 数日前时 [真实锚点, 24h 前] 区间的窗口内容当日不被审查且无任何
+            # WARNING。repr 截断同下（防超长脏值刷屏）。
+            if degraded_out is not None:
+                degraded_out.append(
+                    f"TypeError: last_run_at 非字符串值"
+                    f"({type(raw).__name__}): {repr(raw)[:120]}"
+                )
             return None
         parsed = _iso_to_aware_dt(raw)
         if parsed is None:
