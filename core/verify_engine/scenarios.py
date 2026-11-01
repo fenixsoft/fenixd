@@ -883,7 +883,9 @@ ASSERTION_REQUIRED_FIELDS: dict = {
         {
             "key": "expected",
             "short": "expected",
-            "help": "毫秒上限",
+            # 口径注明（code-review item 2b2865714191）：latency_ms 含完整
+            # 响应体传输时长，上限须按该口径放宽
+            "help": "毫秒上限（含响应体传输时长）",
             "example": "500",
             "mode": "include_zero",
         },

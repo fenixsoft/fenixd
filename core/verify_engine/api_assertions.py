@@ -629,9 +629,11 @@ class ApiAssertionRunner:
                 "error": "缺少 header 字段",
             }
         actual = None
+        found = False
         for k, v in (resp.get("headers") or {}).items():
             if k.lower() == str(header).lower():
                 actual = v
+                found = True
                 break
         passed = False
         error = None
@@ -657,6 +659,13 @@ class ApiAssertionRunner:
                     passed = bool(pattern.search(str(actual)))
                 else:
                     error = regex_error
+        elif found:
+            # 头存在但值为显式 null（手写 capture / 异常 mock 形态
+            # headers={'X': None}）≠「头缺失」：共用「不存在」文案会把结构
+            # 性脏值误导为产品未返回该头，judge 误归因；口径对齐 json_path
+            # 缺失分支的「区别于显式 null」定向报错（不按空串归一参与比较，
+            # 否则 exact+空期望会把 null 头假绿）
+            error = f"响应头 '{header}' 存在但值为 null"
         else:
             # 头不存在与值不匹配区分归因（与 json_path 缺失分支口径对齐），
             # judge 无须从 actual=None 自行推断
@@ -910,7 +919,12 @@ class ApiAssertionRunner:
     # ═══════════════════════════════════════════════════════════════
 
     async def _assert_latency_under(self, resp, a: dict) -> dict:
-        """断言响应延迟低于毫秒上限（启发式，慢环境不判产品缺陷）。"""
+        """断言响应延迟低于毫秒上限（启发式，慢环境不判产品缺陷）。
+
+        latency_ms 口径＝请求发起到响应体全部下载完成（含建连与传输时长，
+        非纯服务器处理延迟，见 api_runner http_request 计时点注释），expected
+        上限应按该口径设定，大响应体端点勿按服务器延迟语义设过紧上限。
+        """
         expected = a.get("expected")
         actual = resp.get("latency_ms")
         # fail-closed：expected 缺失或非数字时不得让 int() 抛 TypeError 被

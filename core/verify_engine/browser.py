@@ -1467,6 +1467,26 @@ class BrowserManager:
                         ),
                     }
 
+            # 分流白名单兜底（code-review item 7d4699f66deb）：上方分支已完整
+            # 消费 window/body × scroll/type 的全部路径（含脏值结构化失败），
+            # 仍携带 window/body 穿透到此处说明动作不在白名单内——window 不是
+            # DOM 元素，locator("window") 必然 5-10s 超时并被顶层 except 归为
+            # element_not_found_or_not_actionable；body 虽可定位但非表单/下拉
+            # 元素，clear/select 等元素级动作同样必然报错——窗口级语义用错
+            # 动作属配置错误，按 invalid_type_target 同款结构化失败呈现，
+            # 而非「元素不存在」误导 judge 归因为产品缺陷/场景时序问题
+            if target in ("window", "body"):
+                return {
+                    "success": False,
+                    "action": action,
+                    "target": target,
+                    "error_type": "invalid_type_target",
+                    "error": (
+                        f"window/body 目标仅支持 scroll（滚轮位移）与 type"
+                        f"（键盘按键）语义，不支持动作 {action!r}"
+                    ),
+                }
+
             # 等待目标元素可交互（.first 避免 strict mode violation）
             locator = page.locator(target).first
             # wait 动作跳过此前置等待（code-review item a7938c87ef82）：

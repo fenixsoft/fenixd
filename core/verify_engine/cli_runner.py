@@ -46,6 +46,11 @@ _OUTPUT_READ_LIMIT = 8 * 1024 * 1024
 # 超限时跳过 json.loads——解析对象树与原文同时驻留会放大内存峰值，json 输出
 # 类断言按「非 JSON」口径失败，结果带标注供 judge 归因。
 _RUN_JSON_PARSE_LIMIT = 1024 * 1024
+# stdin 注入上限（比照 _OUTPUT_READ_LIMIT 读入侧口径）：场景 stdin 被误塞
+# 大文本（整份日志/文件内容）时 str 与 encode 后 bytes 双份驻留，且
+# _pump_stdin 一次性 write 全量进传输层缓冲，内存峰值不受约束——执行前
+# 超限即结构化打回，不进执行期注入（code-review item 895096ef7bd4）。
+_STDIN_LIMIT = 8 * 1024 * 1024
 
 
 @register_runner
@@ -293,6 +298,21 @@ class CliRunner(VerifyRunner):
                 "action": "run",
                 "error_level": "error",
                 "error": "stdin 不得含无法编码的孤立代理符",
+            }
+        if len(stdin) > _STDIN_LIMIT:
+            # 场景 stdin 超过注入上限：_pump_stdin 会把全量内容一次性 write
+            # 进传输层缓冲（str 与 encode 后 bytes 双份驻留），内存峰值不受
+            # 约束——比照 _OUTPUT_READ_LIMIT 读入侧硬上限，执行前结构化打回
+            # （code-review item 895096ef7bd4，与 stdin 非 str/孤立代理符
+            # 同规），判 error 与 cwd 缺失同口径：场景定义缺陷不进
+            # product-bug 管道（item 74368415e965）
+            return {
+                "success": False,
+                "action": "run",
+                "error_level": "error",
+                "error": (
+                    f"stdin 超过注入上限（{len(stdin)} 字符 > 上限 {_STDIN_LIMIT}），拒绝注入"
+                ),
             }
         try:
             # 区分「键缺失」与「显式 0」：or 兜底会把显式 0（立即超时）静默
