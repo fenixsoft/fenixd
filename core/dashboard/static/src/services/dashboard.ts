@@ -1524,6 +1524,26 @@ export interface RunDetail {
   total_events: number;
 }
 
+// run 注入提示词读取响应（add-run-prompt-viewer 3.2）：prompt 为 null 表示
+// 无记录（历史 run 早于功能上线 / 产物缺失），error 非空表示读取失败
+//（数据层 unreadable 口径），两者由弹窗分别呈现
+export interface RunPrompt {
+  ok?: boolean;
+  run_id: string;
+  prompt: string | null;
+  recorded_at: string | null;
+  project: string;
+  error?: string;
+}
+
+// 读取 run 注入提示词（add-run-prompt-viewer 3.2）：按钮点击按需调用
+//（非轮询），端点 200 字典契约——prompt:null（无记录）不抛错，由弹窗提示
+export async function getRunPrompt(runId: string, project: string): Promise<RunPrompt> {
+  return request<RunPrompt>(
+    `/api/runs/${encodeURIComponent(runId)}/prompt?project=${encodeURIComponent(project)}`,
+  );
+}
+
 // 读取 run 尾部窗口：tail=尾部条数（默认 300），offsetFromEnd=窗口右端距流尾的
 // 偏移（add-run-record-readability 4.3 向前分页；缺省 0 = 既有尾部截取语义）。
 // 返回 total_events 为 run 流总事件行数（面板计数「共 M 条」）。
