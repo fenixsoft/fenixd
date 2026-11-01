@@ -89,6 +89,17 @@ def _path_git_ignored(wt_path, rel: str) -> bool:
     return out.returncode == 0
 
 
+# info/exclude 追加段进程内互斥锁（code-review item d527064eead0）：并发
+# create() 供给不同 worktree 的同一 rel 时，无锁读-追加可让两线程各自读到
+# 「不含 rel」的旧内容并先后追加，info/exclude 出现重复注释/规则行（规则
+# 幂等、对 git 忽略语义无害，纯文件整洁问题）。模块级而非实例级：本函数是
+# 模块函数无 self，且 dashboard 侧会另起独立 WorktreeManager 实例，模块级
+# 锁才能覆盖同进程全部调用方；临界区仅文件 I/O——两个子进程探测
+# （_wt_repo_common_dir / _path_git_ignored）都在调用方于本函数之外执行，
+# 无长临界区持锁跑子进程的死锁/放大风险。
+_git_exclude_lock = threading.Lock()
+
+
 def _ensure_git_exclude(common_dir, rel: str) -> bool:
     """把 rel 幂等追加进仓库 common dir 的 info/exclude；失败返回 False。
 
@@ -101,17 +112,21 @@ def _ensure_git_exclude(common_dir, rel: str) -> bool:
     excl = Path(common_dir) / "info" / "exclude"
     try:
         excl.parent.mkdir(parents=True, exist_ok=True)
-        existing = excl.read_text(encoding="utf-8") if excl.exists() else ""
-        if any(line.strip() == rel for line in existing.splitlines()):
-            return True
-        with excl.open("a", encoding="utf-8") as f:
-            if existing and not existing.endswith("\n"):
-                f.write("\n")
-            f.write(
-                "# fenix worktree provisioning: v2 dev-server static root"
-                " (provisioned, do not track)\n"
-                f"{rel}\n"
-            )
+        # 复读-判定-追加同持 _git_exclude_lock（code-review item d527064eead0）：
+        # check-then-append 原子化，并发供给不再各自基于「不含 rel」的旧快照
+        # 重复追加；锁内三次 write 也不会在并发交错中穿插行序。
+        with _git_exclude_lock:
+            existing = excl.read_text(encoding="utf-8") if excl.exists() else ""
+            if any(line.strip() == rel for line in existing.splitlines()):
+                return True
+            with excl.open("a", encoding="utf-8") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(
+                    "# fenix worktree provisioning: v2 dev-server static root"
+                    " (provisioned, do not track)\n"
+                    f"{rel}\n"
+                )
         return True
     except OSError:
         return False

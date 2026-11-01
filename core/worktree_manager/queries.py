@@ -955,7 +955,11 @@ class G8QueryMixin:
                     str(self.project_root),
                     "for-each-ref",
                     "--format=%(refname:short)",
-                    *[f"refs/heads/{p}" for p in sorted(prefixes)],
+                    # 前缀套 glob.escape（与 find_branches_by_spec 同源同口径，
+                    # item e1018ad143ef）：prefix 来自配置 implement_branch_prefix
+                    # 原样内插，含 * ? [ 时被 for-each-ref 按 fnmatch 展开/失配
+                    # 致候选遗漏；普通字面量经 escape 原样返回，无行为变化。
+                    *[f"refs/heads/{glob.escape(p)}" for p in sorted(prefixes)],
                 ],
                 capture_output=True,
                 text=True,

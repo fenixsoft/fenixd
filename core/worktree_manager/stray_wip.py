@@ -274,6 +274,9 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
     untracked 散件流与白名单脱落流的共同候选源（两流共用同一份 porcelain
     解析，``-uall`` 保证目录不折叠成 ``dir/``、entry 级判定成立）。``?? ``
     行按「反转义后末列」取路径（quoted-form 还原，与 mergeback 同款）。
+    路径段不 strip：porcelain 对含首/尾空格的文件名不做 quotePath 引号
+    （空格非可引号字符），strip 会截掉文件名自身的首尾空白、与 mergeback
+    侧反转义口径漂移（code-review f59571853e2b）。
     """
     from core.worktree_manager.mergeback import _unquote_git_path
 
@@ -281,7 +284,7 @@ def _porcelain_untracked_paths(status_stdout: str) -> list:
     for line in status_stdout.splitlines():
         if not line.startswith("?? "):
             continue
-        raw = line[3:].strip()
+        raw = line[3:]
         if raw:
             paths.append(_unquote_git_path(raw))
     return paths

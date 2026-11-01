@@ -16,7 +16,7 @@ import { commandCenterPipeline } from '@/services/dashboard';
 import type { CommandCenterPipeline, CommandCenterPipelineCard } from '@/services/dashboard';
 import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
-import { BG, PANEL_BORDER, TEXT_MAIN, TEXT_SUB, columnLabel, fmtShortTs } from './shared';
+import { BG, GREEN, PANEL_BORDER, TEXT_MAIN, TEXT_SUB, columnLabel, fmtShortTs } from './shared';
 
 // 原生 SpecStatus 中文标签（列内卡片展示；未知值原样透出）
 const STATUS_LABELS: Record<string, string> = {
@@ -74,7 +74,7 @@ function PipelineCard({
         <div
           style={{
             fontSize: 12,
-            color: '#52c41a',
+            color: GREEN,
             borderTop: `1px solid ${PANEL_BORDER}`,
             paddingTop: 6,
           }}
@@ -110,6 +110,21 @@ export default function PipelineBoard({
   }, [data, onProjects]);
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
   if (!data) return <ScreenLoading hint="交付流水线加载中" />;
+  // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
+  // 兼容契约：改 404 会翻转成整页错误），useScreenResource 只透传 HTTP 层
+  // error——内嵌 error 字段在此消费并内联透出，避免错误响应落入五列「暂无」
+  // 空态与「无卡片」混淆（错误体不带 columns，不得进下方列渲染）
+  // （code-review 2fa6c691401c）
+  if (data.error) {
+    return (
+      <Alert
+        style={{ marginBottom: 12, flexShrink: 0 }}
+        type="warning"
+        showIcon
+        message={`交付流水线查询失败：${data.error}`}
+      />
+    );
+  }
   return (
     // 定高屏（与组织总览同款 78px 口径=页面 padding-top 8 + 页签条 70）：
     // 页面 body 不滚动，滚动下沉到各赛道——哪条赛道卡片超高，哪条赛道自己

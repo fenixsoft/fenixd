@@ -6138,16 +6138,20 @@ class FenixDaemon:
             try:
                 if self.worktree_manager:
                     worktrees = self.worktree_manager.find_worktrees_by_spec(spec)
+                    # 回退查询同纳入逐条隔离（code-review item 61b80aacb960）：
+                    # find_worktree_path 内部仅捕获 subprocess 超时/OSError，
+                    # porcelain 解析段在其 try 之外，解析抛错会穿出本方法并
+                    # 中断停机收口——与主查询同口径降级（WARNING + 置空）。
+                    if not worktrees and branch:
+                        wt = self.worktree_manager.find_worktree_path(branch)
+                        if wt:
+                            worktrees = [str(wt)]
             except Exception as e:
                 self.logger.warning(
                     "fenixd",
                     f"Preserve (spec-driven): 在册 worktree 查询失败 " f"'{spec}'（非阻塞）: {e}",
                 )
                 worktrees = []
-            if not worktrees and branch and self.worktree_manager:
-                wt = self.worktree_manager.find_worktree_path(branch)
-                if wt:
-                    worktrees = [str(wt)]
             ahead = _ahead_commit_count(branch) if branch else 0
             # 每个「在册 worktree」各追加一条保全条目并全量并入返回值
             # （code-review item a368f2d36516）：旧实现只取 worktrees[0]，

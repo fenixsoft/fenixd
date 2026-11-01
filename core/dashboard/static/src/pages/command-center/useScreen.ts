@@ -75,6 +75,7 @@ export function useScreenResource<T>(
   // 60s 静默轮询仅在激活屏运行（非激活屏不产生请求）
   useEffect(() => {
     if (!active) return;
+    // [fenix-ignore:5804d9ccd738] 在飞请求无互斥不成立：底层 request 封装（services/dashboard.ts）有统一 30s 超时（REQUEST_TIMEOUT_MS，AbortController 且覆盖到 body 消费完毕），短于 60s 轮询周期，后端长挂时请求必在下轮触发前以 timeout 错误 settle，连接不会叠加（序号守卫另防旧响应写状态）
     const hb = setInterval(() => void run(false), SCREEN_POLL_MS);
     return () => clearInterval(hb);
   }, [active, run]);
