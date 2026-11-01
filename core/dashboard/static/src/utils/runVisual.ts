@@ -21,6 +21,9 @@ export const AGENT_LABEL: Record<string, string> = {
   'planner-judge': '判定结果 Agent',
   'spec-review': '需求评审 Agent',
   'dispute-judge': '争议裁决 Agent',
+  // add-arbiter-quality-display：全局决策者车道（add-arbiter-lane）中文标签，
+  // 消除时间轴「未知 Agent」
+  arbiter: '质量裁决 Agent',
   repair: '修复 Agent',
   verifier: '验证 Agent',
   tester: '测试 Agent',
@@ -35,6 +38,10 @@ export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
   ['planner-judge-', '判定结果 Agent'],
   ['planner-plan-', '生成场景 Agent'],
   ['dispute-judge-', '争议裁决 Agent'],
+  // add-arbiter-quality-display：arbiter- 前缀兜底（防 agent_type 泛型化
+  // 退化——spec-review 前缀漂移事故先例）；与 admin-/dispute- 等前缀互不
+  // 包含，顺序不敏感处插入
+  ['arbiter-', '质量裁决 Agent'],
   ['spec-review-', '需求评审 Agent'],
   ['impl-ocr-', '代码审查 Agent'],
   ['impl-', '开发 Agent'],
@@ -53,6 +60,17 @@ export function agentLabel(item: { agent_type?: string; run_id?: string }): stri
     if (rid.startsWith(prefix)) return label;
   }
   return AGENT_LABEL[t] || '未知 Agent';
+}
+
+/** arbiter 台账处置结论的呈现标签（add-arbiter-quality-display 任务 2.1）。
+ *
+ * disposition（框架自主处置）→「自主处置」；escalation（升级人工）→
+ * 「升级人工」；其余/未知 kind 原样透出（不掩盖未知形态）。渲染层单源
+ * 消费，MUST NOT 在组件内内联重复该映射。 */
+export function arbiterOutcomeLabel(kind: string): string {
+  if (kind === 'disposition') return '自主处置';
+  if (kind === 'escalation') return '升级人工';
+  return kind;
 }
 
 /** run 终态原因行的呈现（add-timeline-gate-failure-display D5）：语气 + 前缀。
