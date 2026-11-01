@@ -1303,6 +1303,28 @@ class ArbiterLane:
                 self._throttle_ledger(trigger, topic, f"周配额 {PROPOSAL_WEEKLY_QUOTA} 已满")
                 continue
             spec_name = name or self._proposal_spec_name(topic)
+            # 物化草稿目录（2026-11-01 幽灵条目修复）：裸 STATE 注册产「目录
+            # 不存在」幽灵——spec-review 冻结（fix-planner 实证）且 spec 列表
+            # UI 只枚举目录、幽灵条目用户不可见。对齐 evolution 立项范式：
+            # 先物化 proposal.md 并提交，再 add_spec。物化失败 → 跳过立项只
+            # 记台账（不产第二个幽灵）。
+            try:
+                self._materialize_proposal(spec_name, topic, rationale, trigger)
+            except Exception as e:
+                self._log(
+                    "error",
+                    f"arbiter 提案物化失败 spec={spec_name}: {e}（跳过立项）",
+                )
+                self._write_ledger(
+                    trigger, {"run_id": trigger.get("run_id"), "error": ""},
+                    kind="proposal-materialize-failed",
+                    report={"summary": f"提案「{topic}」物化 spec 目录失败，未立项: {e}",
+                            "evidence_refs": [".fenix/STATE.md"]},
+                    budget={},
+                    action_or_upgrade=f"物化失败跳过立项: {spec_name}",
+                    status_after="",
+                )
+                continue
             entry = {
                 "status": "drafted",
                 "priority": 5,
@@ -1342,6 +1364,62 @@ class ArbiterLane:
 
     def set_state_machine(self, sm):
         self._state_machine_ref = sm
+
+    def _materialize_proposal(self, spec_name: str, topic: str,
+                              rationale: str, trigger: dict) -> None:
+        """把提案物化为 spec/changes/<name>/proposal.md（对齐 evolution 立项范式：
+        先物化并提交目录，后 add_spec——裸 STATE 注册必产幽灵条目）。
+
+        proposal.md 为最小诚实成文（Why=rationale、来源=触发签名/run_id），
+        无 tasks.md/specs——晋升 lint 会拦住自动晋升，条目停 drafted 待人工
+        成文补全（design「落 drafted 即止」语义在本仓 auto-promote 配置下的
+        落地形态）。重放幂等：proposal.md 已存在即跳过。物化后 best-effort
+        单目录提交（对齐 fenix-new spec hook / admin 主树 spec 目录提交先例），
+        提交失败仅 WARNING 不阻断（未跟踪目录不干扰 STATE 语义）。
+        """
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
+        path_err = _spec_name_path_error(spec_name)
+        if path_err:
+            raise ValueError(f"spec 名路径不安全: {path_err}")
+        spec_dir = Path(self.project_root) / "spec" / "changes" / spec_name
+        proposal_path = spec_dir / "proposal.md"
+        if proposal_path.exists():
+            return  # 重放幂等
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        created = datetime.now(timezone.utc).isoformat()
+        proposal_path.write_text(
+            "# " + topic + "\n\n"
+            "## Why\n\n" + (rationale or topic) + "\n\n"
+            "## What Changes\n\n"
+            "- （arbiter 提案待人工成文：本文件为调查报告提案的最小诚实成文，"
+            "补全 What Changes / Capabilities / Impact 后走既有晋升流程）\n\n"
+            "## Capabilities\n\n"
+            "### New Capabilities\n\n"
+            "- `<capability>`: （待成文）\n\n"
+            "### Modified Capabilities\n\n"
+            "（无）\n\n"
+            "## Impact\n\n"
+            "（待成文）\n\n"
+            "---\n\n"
+            f"- 立项来源：Arbiter 调查（run_id={trigger.get('run_id')}，"
+            f"signature={trigger.get('signature')}，source={trigger.get('source')}）\n"
+            f"- 立项时间：{created}\n",
+            encoding="utf-8",
+        )
+        try:
+            import subprocess as _sp
+
+            git = ["git", "-C", str(self.project_root)]
+            _sp.run(git + ["add", f"spec/changes/{spec_name}"],
+                    capture_output=True, timeout=30)
+            _sp.run(git + ["commit", "-m",
+                           f"[fenix] spec: {spec_name}（arbiter 提案最小成文，待人工补全）"
+                           "\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>"],
+                    capture_output=True, timeout=30)
+        except Exception as e:  # noqa: BLE001
+            self._log("warning",
+                      f"arbiter 提案目录提交失败（留未跟踪，不阻断）: {e}")
 
     def _drafted_pool(self, sm) -> tuple:
         """读 drafted/reviewing 在池 SPEC 名集与全名拼接串（主题级匹配用）。"""

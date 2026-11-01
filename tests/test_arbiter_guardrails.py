@@ -606,3 +606,29 @@ class TestArbiterStatusEndpoint:
         payload = sent.get("payload") or {}
         assert "config" in payload and "ledger" in payload
         assert payload["config"].get("enabled") is True  # 缺省开启
+
+
+class TestProposalMaterialization:
+    def test_proposal_materializes_spec_dir(self, tmp_path):
+        """立项 MUST 物化 spec/changes/<name>/proposal.md 再注册（2026-11-01
+        幽灵条目修复：裸 STATE 注册→目录缺失→评审冻结 spec-review-incomplete，
+        fix-planner-scenario-entry-schema-selfcheck 实证；且 spec 列表 UI 只
+        枚举目录，幽灵条目用户不可见）。"""
+        runner = FakeRunner(tmp_path)
+        sm = FakeStateMachine({})
+        lane = make_lane(tmp_path, runner=runner, sm=sm)
+        lane._apply_proposals(
+            {"spec": "spec-a", "signature": "sig-a", "run_id": "r1",
+             "enqueued_at": "", "source": "startup"},
+            {"proposals": [
+                {"topic": "planner scenario entry schema selfcheck",
+                 "rationale": "冻结现场实证场景条目 schema 无自检门"},
+            ]})
+        added = [e for e in sm.entries if e.startswith("arb-")]
+        assert len(added) == 1
+        spec_dir = tmp_path / "spec" / "changes" / added[0]
+        proposal = spec_dir / "proposal.md"
+        assert proposal.exists(), f"提案未物化目录: {spec_dir}"
+        text = proposal.read_text(encoding="utf-8")
+        assert "arbiter" in text and "r1" in text  # 来源可追溯
+        assert "schema 自检" in text or "schema selfcheck" in text  # rationale 入文
