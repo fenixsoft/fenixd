@@ -15,6 +15,7 @@ worker 为 daemon 线程：确定性等待以 queue.unfinished_tasks 轮询（�
 """
 
 import json
+import re
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -263,26 +264,56 @@ class TestTriggerSurface:
         assert lane.in_trigger_surface("verify_env_blocked") is True
 
     def test_production_signal_vocabulary_in_surface(self):
-        """触发面白名单 MUST 锚定生产发射词汇（2026-11-01 回扫候选=0 根因修复）。
+        """触发面白名单 MUST 覆盖全部生产冻结/升级信号词汇（2026-11-01 两段修复）。
 
-        发射点实证：verify_env_blocked=freeze_for_human 冻结配对告警
-        （escalation.py，场景计划争议/验证环境阻塞两族同此名）；
-        verdict_result_unreadable=pipeline 裁决缺失 fail-closed；
-        blocked_stuck=admin_monitor blocked 超阈值未处理；
-        manual-intervention=Administrator 处置请求（转人工边）。
-        历史回填词汇 verify_env_blocked（alert_lifecycle BACKFILL）无任何
-        生产发射点——白名单锚它即整车道空转。
+        词汇分裂实证：verify_fail_escalation=family.py 冻结路径；verify_env_
+        blocked=pipeline 争议/环境阻塞路径——任一单点锚定都是部分词汇（第一段
+        修错方向、第二段补齐后又漏 spec-review 族=fix-planner 冻结未被接走）。
+        唯一可靠口径=freeze_for_human 全调用点机械枚举 ∪ 事件/回扫旁路名，
+        见 test_trigger_surface_covers_all_freeze_throat_signal_types 机械守卫。
         """
         lane = ArbiterLane(Path("/tmp"), None)
         for sig in (
-            "verify_env_blocked",
-            "verdict_result_unreadable",
-            "blocked_stuck",
-            "manual-intervention",
+            # freeze_for_human 九族（机械枚举在案）
+            "verify_fail_escalation",     # family.py 冻结路径
+            "verify_env_blocked",         # pipeline 争议/环境阻塞（evo-refine 实证）
+            "spec-review-incomplete",     # spec_review 评审不完整（fix-planner 实证）
+            "spec-review-rejected",       # spec_review 方案连续否决
+            "judge_rerun_cap",            # judge 重跑上限（计数复位配方族）
+            "verify_uniform_failure",     # 全场景同因失败
+            "verifier_infra_death",       # 验证基础设施死亡
+            # 事件/回扫旁路名（非 freeze_for_human 直发）
+            "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
+            "blocked_stuck",              # admin_monitor blocked 超阈值
+            "manual-intervention",        # Administrator 处置请求
         ):
             assert lane.in_trigger_surface(sig) is True, sig
-        # 历史回填词汇（alert_lifecycle BACKFILL）非生产发射名：不在触发面
-        assert lane.in_trigger_surface("verify_" + "fail_escalation") is False
+
+    def test_trigger_surface_covers_all_freeze_throat_signal_types(self):
+        """机械守卫：freeze_for_human 全调用点 signal_type 必须落在白名单∪排除表。
+
+        防词汇漂移复发——新增冻结族忘记进触发面时本测试红。扫描 core/ 全源
+        （跳过 def 定义行），signal_type 字面量经白名单/排除表双向核对。
+        """
+        import glob
+        from core.pm_engine.arbiter import ARBITER_EXCLUDED_SIGNAL_TYPES
+        lane = ArbiterLane(Path("/tmp"), None)
+        found = set()
+        for fp in glob.glob("core/**/*.py", recursive=True):
+            src = open(fp, encoding="utf-8").read()
+            for m in re.finditer(r"freeze_for_human\(", src):
+                if src[max(0, m.start() - 4):m.start()].rstrip().endswith("def"):
+                    continue  # 定义行
+                seg = src[m.end():m.end() + 500]
+                sm = re.search(r'signal_type\s*=\s*["\']?([A-Za-z][\w-]*)', seg)
+                if sm:
+                    found.add(sm.group(1))
+        assert found, "机械枚举扫描零命中——扫描器本身坏了"
+        for sig in sorted(found):
+            assert (
+                lane.in_trigger_surface(sig)
+                or sig in ARBITER_EXCLUDED_SIGNAL_TYPES
+            ), f"冻结族 '{sig}' 未进触发面白名单也未入排除表（词汇漂移复发）"
 
     def test_disabled_lane_returns_disabled(self, tmp_path):
         """enabled=false：submit 返回 disabled，零写入零派发。"""

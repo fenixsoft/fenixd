@@ -63,27 +63,33 @@ ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT = 2
 # mark_frozen_hold / frozen_until 三路径在 state_machine 侧零接触（不挂钩
 # 即排除）；本词表覆盖 _send_human_escalation_alert 直发信号的政策/数据完
 # 整性类——留 narrative 与人类（与 design §7 白名单外清单一致）。
-# 触发面正向白名单（spec「仅 blocked/frozen/争议类 condition 进触发面」）：
-# 白名单取生产发射词汇（见下方常量定义处逐发射点注释）。judge_rerun_cap/
-# verify_uniform_failure/verifier_infra_death/inconclusive_loop 等属
-# stop-loss/自愈在先类，沿用既有 narrative 人工路径
-# （tests/test_adjudication_narrative.py 在案契约）；
-# 排除表（ARBITER_EXCLUDED_SIGNAL_TYPES）继续兜底政策/数据完整性类。
-# 触发面白名单 = 生产发射词汇（2026-11-01 修正：曾锚历史回填词汇
-# verify_fail_escalation——该名仅存在于 alert_lifecycle BACKFILL 分类器，
-# 无任何生产发射点，白名单锚它即事件/回扫两路径整车道空转，evo-refine
-# 存量回扫候选=0 实证）。四个信号名的发射点：
-# - verify_env_blocked：freeze_for_human 冻结配对告警（escalation.py，
-#   「验证环境阻塞」与「场景计划争议」两族同此名）
-# - verdict_result_unreadable：pipeline 裁决缺失 fail-closed
-# - blocked_stuck：admin_monitor blocked 超阈值未处理
-# - manual-intervention：Administrator 处置请求（转人工边）
+# 触发面正向白名单（spec「仅 blocked/frozen/争议类 condition 进触发面」）。
+# 词汇唯一可靠口径 = freeze_for_human 全调用点 signal_type 机械枚举 ∪
+# 事件/回扫旁路名（tests/test_arbiter_lane.py::
+# test_trigger_surface_covers_all_freeze_throat_signal_types 机械守卫钉死，
+# 新增冻结族漏注册即红）。
+# 词汇分裂教训（2026-11-01 两段修复）：单点锚定必是部分词汇——首版锚
+# family.py 单点（verify_fail_escalation）漏 pipeline 争议族（evo-refine
+# 回扫候选=0）；二版锚观测样本反向漏 family.py 与 spec-review 族
+# （fix-planner 冻结未被接走，候选=1 派发=0 实证）。排除表继续兜底
+# 政策/数据完整性/队列类（impl_budget_exhausted/spec_content_missing/
+# redispatch_loop_detected 三族留 narrative 与人类）。
 ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
     {
-        "verify_env_blocked",
-        "verdict_result_unreadable",
-        "blocked_stuck",
-        "manual-intervention",
+        # ── freeze_for_human 九族（机械枚举在案，2026-11-01）──
+        "verify_fail_escalation",     # family.py 冻结路径
+        "verify_env_blocked",         # pipeline 争议/环境阻塞（evo-refine 实证）
+        "spec-review-incomplete",     # spec_review 评审不完整（fix-planner 实证）
+        "spec-review-rejected",       # spec_review 方案连续否决
+        "judge_rerun_cap",            # judge 重跑上限（计数复位配方族）
+        "verify_uniform_failure",     # 全场景同因失败
+        "verifier_infra_death",       # 验证基础设施死亡
+        # impl_budget_exhausted/spec_content_missing/redispatch_loop_detected
+        # 三族入排除表（下方），不入白名单
+        # ── 事件/回扫旁路名（非 freeze_for_human 直发）──
+        "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
+        "blocked_stuck",              # admin_monitor blocked 超阈值未处理
+        "manual-intervention",        # Administrator 处置请求（转人工边）
     }
 )
 
@@ -638,7 +644,10 @@ class ArbiterLane:
         self._log(
             "info",
             f"arbiter 存量回扫完成 source={source} 候选={len(candidates)} "
-            f"派发={len(dispatched)} dedup={len(deduped)} 失败={len(failed)}",
+            f"派发={len(dispatched)} dedup={len(deduped)} 失败={len(failed)} "
+            f"跳过={len(skipped)}"
+            + (f" {[(s['signature'], s['outcome']) for s in skipped]}"
+               if skipped else ""),
         )
         return summary
 

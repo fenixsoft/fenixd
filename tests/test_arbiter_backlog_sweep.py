@@ -600,3 +600,24 @@ class TestMachineEvidenceBackfill:
         # 解冻清理标记（防 machine→人工 重冻结被误判）
         assert sm.unfreeze_spec("spec-a", status="testing") is True
         assert sm.read_all()["spec-a"].get("_frozen_source") is None
+
+
+class TestExcludedAccounting:
+    def test_excluded_signal_candidate_accounted(self, tmp_path):
+        """排除表信号候选计入 summary['excluded']——不落三零假象
+        （fix-planner 候选=1 派发=0 dedup=0 失败=0 实证：excluded 落空计数）。"""
+        lane = make_lane(
+            tmp_path,
+            runner=FakeRunner(tmp_path, script={"run": dict(RESOLVED_REPORT)}),
+            sm=FakeStateMachine({
+                "spec-a": {"status": "blocked", "frozen": True,
+                           "_frozen_source": "machine",
+                           "_frozen_signal_type": "spec_content_missing"},
+            }),
+        )
+        summary = lane.sweep_backlog()
+        assert summary["dispatched"] == []
+        assert summary.get("skipped") == [
+            {"signature": arbiter_failure_signature("spec-a", "spec_content_missing"),
+             "outcome": "excluded"}
+        ]
