@@ -126,8 +126,16 @@ _DELIVERABLE_PREFIXES = ("core/", "tests/", ".fenix/", "scripts/")
 # 只认三字符会让内层 ``` 被误判为闭栏、块边界错位截断（item 575b928f818a）。
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
-# 「路径：」/「路径:」前缀行（中文/英文冒号，前后允许空白与装饰）。
-_PATH_LABEL_RE = re.compile(r"^\s*[·•\-*•]?\s*路径\s*[:：]\s*(?P<rest>.+?)\s*$")
+# 「路径：」/「路径:」前缀行（中文/英文冒号，前后允许空白与装饰）。标签可被
+# Markdown 加粗包裹（``**路径：core/x.py**``）：行首第二个 ``*`` 由可选
+# ``(?:\*\*)?`` 前缀组吃掉（旧实现仅单字符装饰类 + ``\s*``，加粗行不命中、
+# 该行零候选产出），行尾闭合 ``**`` 由 rest 后的同款可选组剥除——否则
+# ``*`` 进 token 会被通配符排除通道（_WILDCARD_RE）丢弃，加粗形态等于没修
+# （code-review item 1849508dc4a3）。锚定仍是「路径：」类标签，普通加粗
+# 文本行不会因此变成路径候选。
+_PATH_LABEL_RE = re.compile(
+    r"^\s*[·•\-*•]?\s*(?:\*\*)?\s*路径\s*[:：]\s*(?P<rest>.+?)\s*(?:\*\*)?\s*$"
+)
 
 # 反引号包裹的单条路径（去除行内其它字符，仅取反引号内 token）。
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
@@ -744,12 +752,49 @@ def _is_unsafe_spec_name(spec_name) -> bool:
     )
 
 
+def _is_unsafe_git_ref_name(branch) -> bool:
+    """branch 引用名守卫（单点谓词，两处 git 只读封装同用防漂移）。
+
+    branch 在 ``_git_show_tasks_text`` / ``_git_object_exists_on_branch`` 被
+    直接拼进 ``rev:path`` 实参（``<branch>:spec/changes/<spec>/tasks.md`` 与
+    ``cat-file -e <branch>:<path>``），以 ``-`` 开头时 git 会把该实参解析为
+    命令行选项而非引用名（选项注入）。拒绝面为 git check-ref-format 规则的
+    子集：空值、前导 ``-``、空白/控制字符、``..``、rev/glob 语法保留字符
+    （``*?[]~^:`` 与反斜杠）、``.``/``.lock`` 结尾、``@{``——``origin/main``、
+    ``HEAD``、``fenix/impl-…`` 等框架正常形态全部放行。判定不安全由调用方按
+    各自 fail-safe 语义回退（分支版本不可用 None / 存在性未知 None），对齐
+    stderr 判别对 invalid object name「维持归 None 保守处置」的既有取向
+    （code-review item 84a9c7068ca3）。
+    """
+    s = branch if isinstance(branch, str) else str(branch or "")
+    return bool(
+        not s
+        or s.startswith("-")
+        or ".." in s
+        or "\0" in s
+        or any(c in s for c in "*?[]~^:\\")
+        or any(c.isspace() or ord(c) < 0x20 or c == "\x7f" for c in s)
+        or s.endswith(".")
+        or s.endswith(".lock")
+        or "@{" in s
+    )
+
+
 def _git_show_tasks_text(branch: str, spec_name: str, project_root) -> "str | None":
     """只读 ``git show <branch>:spec/changes/<spec>/tasks.md``（D1 分支来源）。
 
     fail-safe：非零退出（路径不存在）/超时/异常 → None（分支版本不可用，
     调用方回退下一来源）。纯对象库读取，不触发 LLM / 测试 / 网络。
     """
+    if _is_unsafe_git_ref_name(branch):
+        # 与 spec_name 同口径的防线（item 84a9c7068ca3）：非法分支名按
+        # 「分支版本不可用」既有语义回退下一来源
+        _resolution_logger.warning(
+            "deliverables",
+            f"resolve_effective_declaration 分支名非法（回退下一来源）"
+            f"'{spec_name}'@{branch!r}",
+        )
+        return None
     try:
         proc = subprocess.run(
             [
@@ -1242,11 +1287,15 @@ def _git_object_exists_on_branch(branch, path, project_root) -> "bool | None":
         True = 确定存在；False = git 成功执行且确定不存在（退出码非零且
         stderr 命中「确定不存在」文案集合
         ``_GIT_OBJECT_ABSENT_STDERR_MARKERS`` 之一）；None = git 不可用
-        （超时/无法执行/非仓库/分支对象名无效）。退出码 128 同时覆盖「路径
-        不存在」与「非仓库」，单看 returncode 无法区分（code-review item
-        d5da82df85c3），故按 stderr 形态三态判别；无法识别的失败一律归
-        不可用（None），由调用方按各自 fail-safe 语义处置。
+        （超时/无法执行/非仓库/分支名非法或分支对象名无效）。退出码 128
+        同时覆盖「路径不存在」与「非仓库」，单看 returncode 无法区分
+        （code-review item d5da82df85c3），故按 stderr 形态三态判别；无法
+        识别的失败一律归不可用（None），由调用方按各自 fail-safe 语义处置。
     """
+    if _is_unsafe_git_ref_name(branch):
+        # rev:path 实参防选项注入（item 84a9c7068ca3）：非法分支名与
+        # 「git 不可用」同归 None（存在性未知，调用方保守处置）
+        return None
     try:
         r = subprocess.run(
             ["git", "-C", str(project_root), "cat-file", "-e", f"{branch}:{path}"],
