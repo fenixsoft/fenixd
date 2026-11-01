@@ -1,6 +1,8 @@
 """token_budget.py — TokenAccountant：token 用量累计/预算检查/告警/验证链侧车（refactor-core-packages 阶段 2）。
 
-无状态组件：STATE 累计与告警都实时经门面回引（self._pm.state_machine 等），
+STATE 累计与告警实时经门面回引（self._pm.state_machine 等），仅保留
+unobserved DEBUG 留痕计数的实例内存态（可能随 _token_accountant 惰性
+property 并发首次访问分裂，见 _UNOBSERVED_GUARD 注释），
 测试在构造后替换 runner.state_machine / runner.logger 的路径保持有效。
 """
 
