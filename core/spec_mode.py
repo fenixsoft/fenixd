@@ -45,7 +45,8 @@ def read_spec_mode(project_root, spec_name: str) -> str:
         ``"full"``。
     """
     if (
-        not spec_name
+        not isinstance(spec_name, str)
+        or not spec_name
         or spec_name == "."
         or "/" in spec_name
         or ".." in spec_name
@@ -54,6 +55,9 @@ def read_spec_mode(project_root, spec_name: str) -> str:
         # 保守拒绝路径成分：防止名称拼接过 spec/changes 越界读到其他目录；
         # NUL 字节则会让 stat()/resolve() 抛 ValueError（embedded null byte，
         # 非 OSError，except OSError 兜不住），同样在入口拒绝以守住「不抛异常」契约。
+        # 非 str 入参（int/list 等）会让成员测试抛 TypeError，先于守卫链
+        # 拒绝，类型防御口径对齐 spec_naming.validate_spec_name
+        # （item aa0fdc867986）。
         return DEFAULT_SPEC_MODE
     yaml_path = Path(project_root) / "spec" / "changes" / spec_name / ".spec.yaml"
     try:

@@ -37,9 +37,9 @@ def load_schema() -> Dict[str, Any]:
 
     Raises:
         ValueError: schema 缺 'artifacts'，某 artifact 条目缺必需键
-            （id/generates/template），或 artifact id 重复。在加载期集中校验，
-            让 schema 漂移可直读定位，而非散落在 status/instructions 里以裸
-            KeyError 失败。
+            （id/generates/template），或 artifact id 重复/非字符串。在加载期
+            集中校验，让 schema 漂移可直读定位，而非散落在 status/instructions
+            里以裸 KeyError 失败。
         FileNotFoundError: schema.yaml 文件缺失。
     """
     schema_path = SCHEMA_DIR / "schema.yaml"
@@ -67,12 +67,20 @@ def load_schema() -> Dict[str, Any]:
                 f"Invalid schema: artifact '{label}' missing required keys "
                 f"{missing}: {schema_path}"
             )
-        first_index = seen_ids.setdefault(artifact["id"], index)
+        artifact_id = artifact["id"]
+        if not isinstance(artifact_id, str):
+            # 非字符串 id（list/dict 等不可哈希值直落下方 setdefault 会抛裸
+            # TypeError）也归入加载期集中校验，文案与上方分支同形态定位到
+            # 具体条目（code-review item 23ee8e95490c）。
+            raise ValueError(
+                f"Invalid schema: artifact '#{index}' has non-string id: {schema_path}"
+            )
+        first_index = seen_ids.setdefault(artifact_id, index)
         if first_index != index:
             # 重复 id 会让依赖建键静默覆盖、_artifact_by_id 恒取首条、isComplete
             # 永假，各处行为不一致且无报错指向漂移点（code-review item 226ad92bfa8d）。
             raise ValueError(
-                f"Invalid schema: duplicate artifact id '{artifact['id']}' at "
+                f"Invalid schema: duplicate artifact id '{artifact_id}' at "
                 f"artifacts[{first_index}] and artifacts[{index}]: {schema_path}"
             )
     return schema
@@ -257,7 +265,9 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
     """计算 change 的 artifact 完成状态，输出状态 JSON（与上游 vendored schema 的 `status --json` 同构）。
 
     Raises:
-        ValueError: 名称非 kebab-case，或 change 不存在。
+        ValueError: 名称非 kebab-case，change 不存在，或 schema 校验失败
+            （经 load_schema 抛出）。
+        FileNotFoundError: schema.yaml 缺失（经 load_schema 抛出）。
     """
     # 与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
     # 路径，含 ../ 时 change_dir 可越出项目根。
