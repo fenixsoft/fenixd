@@ -886,13 +886,16 @@ def apply_severity_gate_marker(rec, gate) -> bool:
         return True
     sev = str(rec.get("severity") or "")
     if sev and sev not in _SEVERITY_NORMALIZE:
-        # 未知档位告警（design §5）：fail-open 挂起而非误修
-        _logger.warning(
-            "code_review: 条目 %s severity %r 非 severity 词表值，"
-            "按低于门限挂起（周批窗口后放行）",
-            rec.get("item_id"),
-            sev,
-        )
+        # 未知档位告警（design §5）：fail-open 挂起而非误修。warn-once 节流
+        # （item d339113aea96）：词表外档位 fail-open 原样透传会长期留存，
+        # 每轮 upsert/迁移都走到这里——同键（条目+档位）进程内至多放行一次。
+        if _warn_once(("unknown-severity", rec.get("item_id"), sev)):
+            _logger.warning(
+                "code_review: 条目 %s severity %r 非 severity 词表值，"
+                "按低于门限挂起（周批窗口后放行）",
+                rec.get("item_id"),
+                sev,
+            )
     changed = False
     if rec.get(SEVERITY_DEFERRED_FIELD) is None:
         rec[SEVERITY_DEFERRED_FIELD] = True
@@ -1012,7 +1015,9 @@ def upsert_findings(
     review_kind / reviewed_at；spec_name 仅原值为空且本轮有关联时补写）；
     不存在 → 插入新条目（status=open，first_seen_at == last_seen_at == now）。
 
-    Returns: ``{"inserted": n, "updated": n}``
+    Returns: ``{"inserted": n, "updated": n}``；读降级拒写轮次追加
+    ``"degraded": True``——拒写与本轮零发现在 inserted/updated 上同为零值，
+    消费方凭该信号程序化区分（item d3d0203509b1）。
     """
     spec_map = spec_map or {}
     now = _now_iso()
@@ -1020,6 +1025,9 @@ def upsert_findings(
     path = items_path(project_root)
     inserted = 0
     updated = 0
+    # mutator 是否真正执行（item d3d0203509b1）：degraded_note 拒写路径下
+    # _mutate_items_unlocked 不进 mutator，以此区分「落账被拒」与「零发现」。
+    mutator_ran = False
     # severity 门限生效值（evo-add-codefix-severity-batch-gate 2.1）：锁外
     # 解析（磁盘配置读取不进 flock 临界区）。挂起标记随落账维护——低于
     # 门限条目首次观测即带挂起锚（首个 severity_deferred_since），选批/
@@ -1028,7 +1036,8 @@ def upsert_findings(
     gate = severity_gate_config(project_root)
 
     def _apply(current: Dict[str, dict]) -> bool:
-        nonlocal inserted, updated
+        nonlocal inserted, updated, mutator_ran
+        mutator_ran = True
         by_fp: Dict[str, dict] = {}
         for rec in current.values():
             fp = rec.get("fingerprint")
@@ -1104,7 +1113,12 @@ def upsert_findings(
     # 读降级拒写（code-review item 9a358bba128c）：台账完整性未知，拒绝本次
     # 全量替换保持台账原样——瞬时读故障窗口内的全量替换会把既有条目整体清掉
     _with_lock(path, lambda: _mutate_items_unlocked(path, _apply, degraded_note="本轮审查发现跳过落账"))
-    return {"inserted": inserted, "updated": updated}
+    result = {"inserted": inserted, "updated": updated}
+    if not mutator_ran:
+        # 读降级拒写（item d3d0203509b1）：追加显式信号，既有键不变以兼容
+        # 现有调用方。
+        result["degraded"] = True
+    return result
 
 
 def resolve_snapshot(project_root, observations, now: Optional[str] = None) -> dict:
@@ -1568,10 +1582,32 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
         # 仍会进入全仓清单，按工作树存在性剔除，兑现与下方 window scope
         # 同款「不让审查对已删除文件空转」的排除语义。
         # code-review item 3b306434100d。
-        files = [
-            line for line in raw.split("\0")
-            if line.strip() and (Path(project_root) / line.strip()).is_file()
-        ]
+        # 「确认缺失 vs 访问失败」分口（对齐 shard_paths，item
+        # f3c3699dd0ac）：is_file() 对 stat 层异常（权限漂移、NFS 句柄失效）
+        # 同样回 False，瞬时访问失败不得与真删除混同静默剔除出审查清单
+        # ——OSError 记 WARNING（warn-once 节流）留痕后按缺失剔除；仅
+        # FileNotFoundError 确认缺失维持静默。stat 成功后的 is_file() 兜底
+        # 保留（非普通文件仍按缺失剔除）。
+        files = []
+        for line in raw.split("\0"):
+            line = line.strip()
+            if not line:
+                continue
+            p = Path(project_root) / line
+            try:
+                p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                if _warn_once(("manifest-stat", str(project_root))):
+                    _logger.warning(
+                        "code_review: 访问文件 %s 失败（收集全仓清单时），"
+                        "按缺失剔除出审查清单: %s",
+                        p, e,
+                    )
+                continue
+            if p.is_file():
+                files.append(line)
     else:
         # 窗口：window_start 之后变更的文件（--since 走本地时间）。
         # 加 --diff-filter=ACMR：排除 D（删除）与其它无内容形态——已删除文件
@@ -1602,8 +1638,27 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
         files = [line for line in raw.split("\0") if line.strip()]
         # --diff-filter=ACMR 按单次提交的变更类型过滤，挡不住窗口内先增/改、
         # 随后又删除的路径（A/M 事件仍会把已消失的文件列入清单）。按工作树
-        # 存在性二次剔除，兑现上方「不让审查对已删除文件空转」的排除语义。
-        files = [f for f in files if (Path(project_root) / f.strip()).is_file()]
+        # 存在性二次剔除，兑现上方「不让审查对已删除文件空转」的排除语义；
+        # 「确认缺失 vs 访问失败」分口同上方 full scope（item f3c3699dd0ac）。
+        present: List[str] = []
+        for f in files:
+            f = f.strip()
+            p = Path(project_root) / f
+            try:
+                p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                if _warn_once(("manifest-stat", str(project_root))):
+                    _logger.warning(
+                        "code_review: 访问文件 %s 失败（收集窗口清单时），"
+                        "按缺失剔除出审查清单: %s",
+                        p, e,
+                    )
+                continue
+            if p.is_file():
+                present.append(f)
+        files = present
     seen: set = set()
     out: List[str] = []
     for f in files:
