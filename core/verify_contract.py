@@ -1720,6 +1720,9 @@ class CommandVerifyServer:
         self._proc = proc
         self.failure_note = ""
         self._boot_log = boot_log
+        # 邻近扫描命中后被进程归属复核跳过的外来端口（item 60f892598baf）；
+        # 须在 _discover_port 调用前初始化（端口发现在此同步进行）
+        self._foreign_ports_skipped = []
         self._port = self._discover_port(injected_port, timeout, legacy_hint, legacy_pre or set())
 
     @staticmethod
@@ -1780,6 +1783,55 @@ class CommandVerifyServer:
                     continue
         return ports
 
+    @staticmethod
+    def _port_owned_by_group(
+        port: int, pgid: Optional[int], timeout: float = 5.0
+    ) -> Optional[bool]:
+        r"""邻近扫描命中端口的进程归属复核（三态：True 本组/False 外来/None 未知）。
+
+        code-review item 60f892598baf：legacy 邻近扫描只排除 legacy_pre 与
+        注入端口，无法区分「本实例启动后才出现监听的本实例端口」与「快照
+        之后才起监听的外来进程端口」。命中后经 ``ss -tlnp`` 复核属主 pid 的
+        进程组：任一属主 pid 属本组 → True；有 pid 信息但均不属本组 → False
+        （确认外来，调用方跳过并记入 ``_foreign_ports_skipped``）；ss 不可用、
+        监听行无 pid（无权限等）或 pgid 未知 → None（无法判定，fail-open
+        维持现状不跳过，对齐 ``_owned_listening_ports`` 的失明口径——守护化
+        脱离进程组的服务本就交由邻近扫描兜底）。
+
+        ss 解析与 _owned_listening_ports 单点同款（LISTEN 行取本地地址端口、
+        pid=(\d+) 提取属主），同一端口多监听行（IPv4/IPv6）时任一行属本组
+        即判 True。
+        """
+        if pgid is None:
+            return None
+        try:
+            r = subprocess.run(
+                ["ss", "-tlnp"], capture_output=True, text=True, timeout=timeout
+            )
+        except Exception:
+            return None
+        saw_pid = False
+        for line in (r.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[0] != "LISTEN":
+                continue
+            try:
+                if int(parts[3].rsplit(":", 1)[1]) != port:
+                    continue
+            except (IndexError, ValueError):
+                continue
+            pids = re.findall(r"pid=(\d+)", line)
+            if not pids:
+                continue
+            saw_pid = True
+            for m in pids:
+                try:
+                    if os.getpgid(int(m)) == pgid:
+                        return True
+                except OSError:
+                    continue
+        return False if saw_pid else None
+
     def _discover_port(
         self, injected: Optional[int], timeout: int, legacy_hint: Optional[int], legacy_pre: set
     ) -> Optional[int]:
@@ -1823,6 +1875,20 @@ class CommandVerifyServer:
                     if p in legacy_pre or p == injected:
                         continue
                     if _probe_in_budget(f"http://127.0.0.1:{p}/"):
+                        # 命中后进程归属复核（code-review item 60f892598baf）：
+                        # 窗口期内落在 hint..hint+50 并响应 HTTP 的外来服务会
+                        # 被误认领为被测实例——属主 pid 确认不属本进程组的端口
+                        # 跳过并记入诊断；None（ss 不可用/无 pid/pgid 未知）时
+                        # fail-open 维持现状不跳过，legacy 兜底语义不变。ss
+                        # 超时按剩余预算取 min（下限 0.5s），对齐第 2 段口径。
+                        owned = self._port_owned_by_group(
+                            p,
+                            pgid,
+                            timeout=min(5.0, max(0.5, deadline - time.monotonic())),
+                        )
+                        if owned is False:
+                            self._foreign_ports_skipped.append(p)
+                            continue
                         return p
             if self._proc.poll() is not None:
                 self.failure_note = (
@@ -1833,11 +1899,19 @@ class CommandVerifyServer:
                 return None
             # 睡眠同样不越过 deadline（剩余不足 1s 时按剩余睡）
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-        self.failure_note = (
+        note = (
             f"验证命令实例未就绪：注入端口 {injected} 未被消费，进程归属与"
             "邻近扫描亦未发现 HTTP 监听——检查 serve.cmd 是否引用 {port} "
             "占位符或 $FENIX_VERIFY_PORT 环境变量"
         )
+        if self._foreign_ports_skipped:
+            # 归属复核跳过的外来端口只进失败诊断（本类无 logger 通道，类内
+            # 诊断惯例是 failure_note）；成功认领其他端口时不额外告警
+            note += (
+                "（邻近扫描命中但按进程归属复核跳过的外来端口: "
+                f"{', '.join(map(str, self._foreign_ports_skipped))}）"
+            )
+        self.failure_note = note
         return None
 
     @property
@@ -1937,14 +2011,57 @@ def _cleanup_partial_node_modules(target: Path, logger=None) -> None:
 # 残缺，先清残壳再重装。标记落在 gitignore 的 node_modules 内，不入库。
 PROVISION_OK_MARKER = ".fenix-provision-ok"
 
+# 标记写失败差异化处理（code-review item c91fd0c91726）：磁盘满/只读文件
+# 系统等持续性原因下标记每次都写失败，而供给入口以「目录存在且标记在」判定
+# 完整——缺标记判定会把每次刚装好的完整 node_modules 整目录 rmtree 再全量
+# 重装（npm ci 上限 NPM_PROVISION_TIMEOUT=900s）且永不收敛。连续写失败达限
+# 后视为标记机制不可用：记一次明确告警，「缺标记即清残壳」判定改为按完整
+# 放行，斩断无界删装循环。计数为模块内进程生命周期状态，不持久化；任一次
+# 写成功即复位（磁盘恢复后自动回归正常判定）。
+_PROVISION_MARKER_FAIL_LIMIT = 3
+_marker_write_fail_streak = 0
+_marker_write_fail_gate_warned = False
+
 
 def _write_provision_ok_marker(nm: Path, logger=None) -> None:
-    """供给成功后补写完成标记；失败只留痕、不判供给整体失败（best-effort）。"""
+    """供给成功后补写完成标记；失败只留痕、不判供给整体失败（best-effort）。
+
+    失败同时累加模块级连续失败计数（item c91fd0c91726，见
+    ``_provision_marker_gate_active``）：持续写失败时由供给入口跳过「缺标记
+    即清残壳」判定，防止 node_modules 无界删装循环；任一次写成功即复位。
+    """
+    global _marker_write_fail_streak, _marker_write_fail_gate_warned
     try:
         (nm / PROVISION_OK_MARKER).write_text("", encoding="utf-8")
     except OSError as e:
+        _marker_write_fail_streak += 1
         if logger:
             logger.warning("verify_contract", f"供给完成标记写入失败（{nm}）: {e}")
+    else:
+        _marker_write_fail_streak = 0
+        _marker_write_fail_gate_warned = False
+
+
+def _provision_marker_gate_active(where: str, logger=None) -> bool:
+    """连续多次标记写失败 → True：供给入口跳过「缺标记即清残壳」判定。
+
+    触达 ``_PROVISION_MARKER_FAIL_LIMIT`` 时只记一次明确告警（闸门标记在写
+    恢复复位前不重复刷屏）。返回 False 时判定照常执行，主路径语义不变。
+    """
+    global _marker_write_fail_gate_warned
+    if _marker_write_fail_streak < _PROVISION_MARKER_FAIL_LIMIT:
+        return False
+    if not _marker_write_fail_gate_warned:
+        _marker_write_fail_gate_warned = True
+        if logger:
+            logger.warning(
+                "verify_contract",
+                f"供给完成标记已连续 {_marker_write_fail_streak} 次写入失败"
+                f"（疑似磁盘满/只读文件系统，发生于 {where}）——跳过「缺标记即"
+                "清残壳」判定，避免 node_modules 无界删装循环；磁盘恢复后自动"
+                "回归正常判定",
+            )
+    return True
 
 
 def _discard_incomplete_node_modules(nm: Path, label: str, logger=None) -> None:
@@ -2065,6 +2182,11 @@ def provision_worktree_node_modules(
         nm = wt_dir / "node_modules"
         if nm.exists():
             if (nm / PROVISION_OK_MARKER).is_file():
+                continue
+            # 标记机制疑不可用（连续写失败达限，item c91fd0c91726）：目录按
+            # 完整放行——清残壳重装会在下一轮原样复发（装好→写标记失败→下轮
+            # 再判残缺），无界删装循环的代价高于放行可能漏判的残缺目录
+            if _provision_marker_gate_active(sub, logger):
                 continue
             # exists() 短路只认「目录存在」，外部中断（SIGKILL/断电）残缺须靠
             # 完成标记识别（item 5c56bc946124）——清残壳后落到下方正常供给重装
@@ -2229,6 +2351,11 @@ def _ensure_main_tree_deps_unlocked(
         nm = target / "node_modules"
         if nm.exists():
             if (nm / PROVISION_OK_MARKER).is_file():
+                continue
+            # 标记机制疑不可用（连续写失败达限，item c91fd0c91726）：目录按
+            # 完整放行——清残壳重装会在下一轮原样复发（装好→写标记失败→下轮
+            # 再判残缺），无界删装循环的代价高于放行可能漏判的残缺目录
+            if _provision_marker_gate_active(sub, logger):
                 continue
             # exists() 短路只认「目录存在」，外部中断（SIGKILL/断电）残缺须靠
             # 完成标记识别（item 5c56bc946124）——清残壳后落到下方 npm 重装
@@ -2890,7 +3017,15 @@ def selfcheck_contract_light(
         ready_probe = ReadyProbe(
             url=contract.ready.url,
             expect=contract.ready.expect,
-            timeout=min(contract.ready.timeout, SELFCHECK_READY_TIMEOUT),
+            # 先归一再钳制（code-review item dd33b998179d）：绕过 loader 手工
+            # 构造的契约对象 ready.timeout 可为 0/负数，min(0, 5)=0 会在
+            # probe_ready 内部被 _ready_timeout_or_default 回放成
+            # DEFAULT_READY_TIMEOUT=60s——轻量自证在验证关键路径上退化为
+            # 最长一分钟阻塞。钳制前先经同一兜底口径归一，任意入路下自证
+            # 窗口都不超过 SELFCHECK_READY_TIMEOUT。
+            timeout=min(
+                _ready_timeout_or_default(contract.ready.timeout), SELFCHECK_READY_TIMEOUT
+            ),
         )
         ok, note = probe_ready(base_url, ready_probe)
         if not ok:
