@@ -256,10 +256,10 @@ export default function SessionComposer({
                  播报、容器靠 aria-controls 关联；undefined 时 React 移除属性
                  （菜单关闭或空候选），避免悬空引用。id 随实例级前缀拼装
                  （code-review item 707ee867fcfb），与 CommandMenu 同源防断链。 */
+              /* aria-controls 菜单打开即关联、含空态（code-review item 5a2414cafff3）：
+                 CommandMenu 空态分支保留同一 listbox id，无候选时反而断链。 */
               aria-controls={
-                composer.showCommandMenu && composer.filteredCommands.length > 0
-                  ? commandMenuIds.listbox
-                  : undefined
+                composer.showCommandMenu ? commandMenuIds.listbox : undefined
               }
               aria-activedescendant={
                 composer.showCommandMenu &&
