@@ -150,7 +150,9 @@ def _post_once(provider: dict, body: dict) -> tuple:
         headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(
+        req, timeout=BODY_READ_DEADLINE_SECONDS
+    ) as resp:
         raw = _read_bounded(resp).decode("utf-8", errors="replace")
     # 解析异常一并上抛（code-review item c744bef56b6d）：JSONDecodeError 由
     # probe() 的 except 分支按既有网络/HTTP 异常同款归入失败轮，裁决落 unknown。
@@ -249,22 +251,40 @@ def probe(provider_name: str, config_path: Path) -> dict:
             errors.append(f"round{i}: {e!r}")
             rounds.append({"round": i, "error": f"{e!r}"})
         else:
-            # usage 归一化在守卫外（code-review item 14a31e7379a3）：int() 遇
-            # 非数值 usage 属编程/数据错误，应向上抛真实异常——收窄守卫区域
-            # 到网络调用后不再被静默记成网络型轮错误、掩盖缺陷仍产出裁决。
+            # usage 归一化口径（code-review item 14a31e7379a3）：守卫区域收窄
+            # 到网络调用，网络失败按网络型轮错误记录、不静默产出裁决。
+            # 4ec7141a6b35 修订：usage 数据来自被探针直连的待诊断网关
+            # （_read_bounded 注释已承认该网关行为不可信），truthy 非字典或
+            # token 字段不可 int() 属**外部数据错误**而非本模块编程错误——
+            # 按失败轮记 error 并保留 raw 供诊断，维持「确定性 JSON 判据 +
+            # 契约退出码」；本模块编程错误（如键名笔误抛的 AttributeError）
+            # 仍裸上抛，不与外部数据错误混为一谈。
             usage = parsed.get("usage") or {}
-            rounds.append(
-                {
-                    "round": i,
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "cache_read_input_tokens": int(
-                        usage.get("cache_read_input_tokens") or 0
-                    ),
-                    "cache_creation_input_tokens": int(
-                        usage.get("cache_creation_input_tokens") or 0
-                    ),
-                }
-            )
+            if not isinstance(usage, dict):
+                err = f"usage 不是 JSON 对象（{type(usage).__name__}）"
+                errors.append(f"round{i}: {err}")
+                rounds.append({"round": i, "error": err, "raw": _raw})
+                continue
+            try:
+                input_tokens = int(usage.get("input_tokens") or 0)
+                cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
+                cache_creation_tokens = int(
+                    usage.get("cache_creation_input_tokens") or 0
+                )
+            except (TypeError, ValueError) as e:
+                # token 字段为不可 int() 的值（如 "1e3"、列表）：外部数据错误
+                # 同款归失败轮，raw 原文随轮保留供诊断。
+                errors.append(f"round{i}: {e!r}")
+                rounds.append({"round": i, "error": f"{e!r}", "raw": _raw})
+            else:
+                rounds.append(
+                    {
+                        "round": i,
+                        "input_tokens": input_tokens,
+                        "cache_read_input_tokens": cache_read_tokens,
+                        "cache_creation_input_tokens": cache_creation_tokens,
+                    }
+                )
 
     # cache_supported 判据：第二轮 cache_read 达到相对阈值（不低于 max(
     # MIN_CACHE_HIT_TOKENS, 当轮 input_tokens × CACHE_HIT_INPUT_RATIO)）；
