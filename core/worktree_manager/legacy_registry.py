@@ -202,12 +202,30 @@ class G2LegacyRegistryMixin:
         # 陈锁兜底的覆盖登记交错时，get 到的旧 dict 已被顶出册，置位丢失、
         # reuse 认领失效退化为全新建树。_spec_lock_th 为 threading.Lock 非重入，
         # 锁内只做字典读判定与写，不调用任何会重复取锁的方法。
+        malformed_type: Optional[str] = None
         with self._spec_lock_th:
             rec = self._legacy.get(spec_name)
+            # 非 dict 记录守卫（code-review item 7a89d7509660，与同表其余
+            # 读取点 16a559a09f44/4ef804ffdd27/35dfd88369df/7fdbff295c15/
+            # 873493c07398 的防御口径对齐）：isinstance 先行，异形记录按
+            # 无在册遗产返回 False，不让 rec["reuse"] 置位在守卫/relint
+            # 打回路径 TypeError 穿出。
             if rec is None:
                 return False
-            rec["reuse"] = True
-            return True
+            if not isinstance(rec, dict):
+                malformed_type = type(rec).__name__
+            else:
+                rec["reuse"] = True
+                return True
+        if malformed_type is not None:
+            # 异形记录留痕移出锁外（同 consume_legacy「锁内只做字典读写」
+            # 纪律），文案与 get_legacy / consume_legacy 同款。
+            self.logger.warning(
+                "worktree_manager",
+                f"Legacy record for '{spec_name}' is not a dict "
+                f"({malformed_type}) — treated as no legacy",
+            )
+        return False
 
     def keep_for_reuse(self, spec_name: str, wt_path: Path, agent_type: str = "") -> None:
         """保留 worktree 目录与分支，登记供下轮重派继承。
@@ -272,7 +290,12 @@ class G2LegacyRegistryMixin:
         # 分支与留痕日志均留在锁外。
         with self._spec_lock_th:
             rec = self._legacy.get(spec_name)
-            if rec is not None and rec.get("path") == wt_str:
+            # 非 dict 记录守卫（code-review item 7a89d7509660，与同表其余
+            # 读取点的防御口径对齐）：isinstance 先行，异形记录不触达
+            # rec.get/rec["reuse"]，落入下方 else → rec = None，按「登记
+            # 未生效」出口处置（WARNING 留痕 + 保留活动集成员身份 + 摘锁
+            # 后降级收尾），维持收尾路径不因异形记录 AttributeError 中断。
+            if isinstance(rec, dict) and rec.get("path") == wt_str:
                 rec["reuse"] = True
             else:
                 rec = None
