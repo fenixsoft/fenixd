@@ -48,7 +48,21 @@ class BBackoffMixin:
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         if isinstance(sched, (int, float)):
             sched = [sched]
-        if not isinstance(sched, (list, tuple)) or not sched:
+        if not isinstance(sched, (list, tuple)):
+            # code-review item 4efa48c5b904：bool 之外的其它脏类型（如误把
+            # YAML 序列写成逗号字符串、dict 等）此前同样静默回默认，脏配置只
+            # 表现为退避行为悄然变成默认值、排障缺线索——与上方 bool 分支
+            # 同款格式 WARNING 留痕。None 维持静默（未配置/显式 null 已由
+            # _get_config 落到默认序列，正常不会抵达本分支，守卫仅防语义漂移）。
+            if sched is not None:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    "配置 pm.dispatch_backoff_schedule 非法（非序列类型），"
+                    f"回退默认 {list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)}: "
+                    f"{sched!r}",
+                )
+            return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
+        if not sched:
             return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
         out = []
         for x in sched:
@@ -399,8 +413,9 @@ class BBackoffMixin:
           「截止时刻变化即按新截止重排」（evo-add-instant-fail-cooldown-full-
           lane-gate 2.3）——复诵翻倍/续写冷却把 cooldown_until 改写后，旧定时器
           按旧截止排程，不重排则翻倍窗无对应定时器（恢复只能靠周期扫描兜底）。
-          截止未变化仍幂等早退（既有语义不变）；截止变化先 cancel 旧 Timer、
-          摘判重标记后按新截止重排；
+          截止未变化仍幂等早退（既有语义不变）；截止变化按新截止重排，旧
+          Timer 的 cancel 与判重摘除推迟到新定时器 start 成功之后（重排中途
+          resolve_delay 失败/启动失败时旧定时器保留兜底，item 6126d4f5e8f4）；
         - ``resolve_deadline``：``(spec_name) -> float | None``，返回该通道当前
           冷却截止单调秒（未设截止——None 或已清零的 0.0；真实冷却通道
           engine._instant_fail_cooldown_until / _signal_kill_cooldown_until
@@ -413,6 +428,12 @@ class BBackoffMixin:
         - ``scheduled_log`` 非空时于定时器启动后记 INFO，模板可用
           ``{spec_name}`` / ``{delay}``（后者已取 int）占位。
         """
+        # 重排路径的旧定时器现场（item 6126d4f5e8f4）：仅在截止变化分支填充，
+        # 新排程路径（spec 不在 timers）保持 None——下方 start 失败回滚分支
+        # 据此区分是否须恢复旧登记。本方法全程在 _queue_lock 内执行（_locked
+        # 后缀，调用方已持锁），现场恢复与 cancel 推迟均不引入新锁序。
+        old_timer = None
+        old_deadline = None
         if spec_name in timers:
             if resolve_deadline is None or deadline_table is None:
                 return
@@ -428,19 +449,22 @@ class BBackoffMixin:
                 # 幂等早退，旧定时器保留，到期自会重入派发链（闸门查询侧
                 # 届时按现状判定）。
                 return
-            # 截止时刻变化（冷却被续写/翻倍）：cancel 旧 Timer、摘判重标记，
-            # 落到下方按新截止重排。
+            # 截止时刻变化（冷却被续写/翻倍）：落表新截止后按新截止重排。
+            # 旧 Timer 的 cancel 与判重摘除推迟到新 Timer start 成功之后
+            # （code-review item 6126d4f5e8f4）：原先「先 cancel/discard 再
+            # resolve_delay/排程」在 resolve_delay 抛异常/返回 None（冷却截止
+            # 被并发清除的竞态窗、cooldown_until_fn 内部异常）时，该 spec 同时
+            # 失去在飞定时器与判重标记，通道再无任何重试动作，恢复完全依赖
+            # 周期扫描兜底——比上方幂等早退分支「旧定时器保留、到期自会兜底
+            # 重入」的保守姿态倒退。改为旧定时器全程保活：新 Timer start 成功
+            # 后才 cancel（旧回调幂等（摘标记+重入派发链），双飞窗口至多多
+            # 一次重入，与原 cancel 守卫同口径）；start 失败则恢复旧登记，旧
+            # 定时器仍是通道唯一在飞驱动。
             deadline_table[spec_name] = float(current_deadline)
             old_timer = (
-                handle_table.pop(spec_name, None) if handle_table else None
+                handle_table.get(spec_name) if handle_table else None
             )
-            if old_timer is not None:
-                try:
-                    old_timer.cancel()
-                except Exception:  # noqa: BLE001 — 已到期/竞态取消失败无碍：
-                    # 旧回调幂等（摘标记+重入派发链），至多多一次重入。
-                    pass
-            timers.discard(spec_name)
+            old_deadline = live_deadline
         # resolve_delay 回调与折算同施 except Exception 防护（code-review
         # item 81c30a0d3023，对齐同函数两处 resolve_deadline 的防护口径——
         # 回调可能失败）：失败按「本轮不排程」return，恢复靠周期扫描兜底，
@@ -481,12 +505,36 @@ class BBackoffMixin:
                 deadline_table.pop(spec_name, None)
             if handle_table is not None:
                 handle_table.pop(spec_name, None)
+            if old_timer is not None or old_deadline is not None:
+                # 重排路径（item 6126d4f5e8f4）：旧 Timer 的 cancel 已推迟到
+                # start 成功之后，此刻旧定时器仍在飞——上方回滚摘掉的是新
+                # Timer 的登记，须恢复调用前现场（判重标记+句柄+旧截止），
+                # 旧定时器继续作为通道唯一在飞驱动；旧截止落回表内，下次
+                # 截止变化仍可重排。
+                timers.add(spec_name)
+                if old_timer is not None and handle_table is not None:
+                    handle_table[spec_name] = old_timer
+                if old_deadline is not None and deadline_table is not None:
+                    deadline_table[spec_name] = old_deadline
             self._pm.logger.warning(
                 "pm_engine",
-                f"recovery timer start failed for '{spec_name}' — 判重标记已"
-                f"回滚（恢复依赖下轮周期扫描兜底）: {type(e).__name__}: {e}",
+                f"recovery timer start failed for '{spec_name}' — "
+                + (
+                    "旧定时器登记已恢复（恢复由在飞旧定时器驱动）"
+                    if old_timer is not None or old_deadline is not None
+                    else "判重标记已回滚（恢复依赖下轮周期扫描兜底）"
+                )
+                + f": {type(e).__name__}: {e}",
             )
             return
+        # start 成功后才 cancel 旧 Timer（item 6126d4f5e8f4）：新定时器确已
+        # 在飞，重排中途的任何失败都不再吞掉旧定时器。
+        if old_timer is not None:
+            try:
+                old_timer.cancel()
+            except Exception:  # noqa: BLE001 — 已到期/竞态取消失败无碍：
+                # 旧回调幂等（摘标记+重入派发链），至多多一次重入。
+                pass
         if scheduled_log is not None:
             self._pm.logger.info(
                 "pm_engine",
