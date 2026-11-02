@@ -457,7 +457,8 @@ class FenixDaemon:
         self.hook_engine = None
         # 框架自进化检查点（add-framework-self-evolution D3 单飞）：
         # _evolution_in_flight 在派发即置位、worker 收尾复位——与 _running_agents
-        # 的 evo- 前缀判定互补（派发与子进程登记之间的窗口由本标记兜底）。
+        # 的 evo- 前缀判定互补（派发与子进程登记之间的窗口由本标记兜底）；
+        # 亦作 _is_idle 第⑦维在飞判据（code-review item 1d065db52bf7）。
         self._evolution_in_flight = False
         # 宿主守卫去重（add-framework-self-evolution D1/5.2）：非自托管部署
         # 只记一次日志，不刷屏。
@@ -1785,8 +1786,7 @@ class FenixDaemon:
             # evo-add-stale-code-dangling-deadline 2.1：基线恢复新鲜 → 悬空起点
             # 清零、超时防重复写/告警边沿标志复位（下一悬空周期从零计量）。
             self._code_stale_since = None
-            self._dangling_timeout_fired = False
-            self._dangling_timeout_alert_fired = False
+            self._reset_dangling_timeout_flags()
             self._stale_check_fresh_seen = True
             self.logger.info(
                 "fenixd",
@@ -1859,10 +1859,14 @@ class FenixDaemon:
         worker 池无在途任务 **且** ⑤无在飞 impl-ocr 车道（fix-fasttrack-implemented-
         deadstate 2.2，``pm_engine.ocr_lane_busy()`` 为假）**且** ⑥无在飞知识蒸馏
         批次（evo-knowledge-distill-resume-guard R4，``_distill_lane_busy`` 为假
-        ——worker 线程存活或进程内队列非空，容错口径见该方法）。任一非空即判
-        非空闲；``_admin_executor`` 为 None（admin.workers=0 同步回退）时该维度
-        视为空闲。admin 池在途数 = submitted - completed - failed（
-        ``_admin_pool_stats`` 计数，独立成法便于单测隔离）。
+        ——worker 线程存活或进程内队列非空，容错口径见该方法）**且** ⑦无在飞
+        自进化分析 run（code-review item 1d065db52bf7，``_evolution_in_flight``
+        为假——worker 线程从 submit 到 run_evolution 把子进程登记进
+        ``_running_agents`` 之间存在窗口，期间其余维度均为空，恰逢陈旧空闲确认
+        达临界会误写 restart_request 触发排水重启、杀掉刚派发的在飞 evo run）。
+        任一非空即判非空闲；``_admin_executor`` 为 None（admin.workers=0 同步
+        回退）时该维度视为空闲。admin 池在途数 = submitted - completed - failed
+        （``_admin_pool_stats`` 计数，独立成法便于单测隔离）。
 
         ②为加强项（fix-state-atomicity-and-selfheal-restart D3）：评审 run
         **从不计入 ``_active_runs``**（``dispatch/queue.py`` 对 spec-review 派发
@@ -1931,6 +1935,17 @@ class FenixDaemon:
         # 队列），不读 .fenix/knowledge-distill-pending.json——死台账不钉住
         # 自愈（恢复前窗口 worker 未起不判非空闲）。
         if self._distill_lane_busy():
+            return False
+        # ⑦ code-review item 1d065db52bf7：自进化分析 run 在飞维度（范式同 ⑥）。
+        # evo worker spawn 的子进程从 submit 到 run_evolution→_run_agent 登记
+        # _running_agents 之间前六维度全盲（线程调度 + run_id 生成/模型解析等
+        # 前置），_evolution_in_flight 派发即置位、worker finally 复位
+        # （_check_evolution_checkpoint / _evolution_worker），比「先增后投」
+        # 池计数口径更早闭合该窗口且无须改 _evolution_worker 的收尾记账（兄弟
+        # 车道的 submitted 计数与本维度不互斥，属等价保护的第二道）。getattr
+        # 容忍未走 initialize 的裸对象（既有测试形态）；executor=None 同步回退
+        # 时标记亦在场，但检查点占主循环线程、本方法与其不并发执行，无误判面。
+        if getattr(self, "_evolution_in_flight", False):
             return False
         return True
 
@@ -2593,6 +2608,386 @@ class FenixDaemon:
         """
         self._coalesce_last_restart_ts = now
 
+    # ── 陈旧自愈闸门族（code-review item 1b476109df4b 结构收敛）──────────
+    # _maybe_stale_selfheal_tick 的多套闸门（阻断/自触发/冷却/悬空/合流 +
+    # 空闲确认触发）各自内聚为独立判定方法，入口只做闸门串联。状态属性仍
+    # 集中声明于 __init__ 且属性名保持原样——tests/test_stale_*.py 以
+    # FenixDaemon.__new__ 裸对象直拨这些属性出题/断言，属性名即测试契约，
+    # MUST NOT 改名或收进子对象（收进子对象须同步引入属主转发层，超出
+    # 语义等价重构的安全边界）。复位点收敛：悬空双标志由
+    # _reset_dangling_timeout_flags 单点复位；陈旧解除分支集中为
+    # _reset_stale_selfheal_on_clear；各闸门内部的复位随闸门方法内聚。
+
+    def _reset_dangling_timeout_flags(self) -> None:
+        """悬空周期收尾：超时防重复写标志 + 窗口内告警边沿标志一并复位。
+
+        两标志曾因语义混淆出缺陷（item a6fb64ba17d4：前者闸收尾重启写请求
+        并被 _stale_selfheal_healthy 健康谓词读取，后者只闸告警入口），且
+        复位点分散在 ``_update_stale_code_state`` 基线恢复新鲜分支与
+        ``_maybe_stale_selfheal_tick`` 陈旧解除分支两处——收敛为本方法后，
+        新增悬空周期标志只需进本方法一处，不必再人工对齐全部复位点。
+        """
+        self._dangling_timeout_fired = False
+        self._dangling_timeout_alert_fired = False
+
+    def _reset_stale_selfheal_on_clear(self) -> None:
+        """陈旧解除（``_code_stale`` 真→假）时各闸门周期态的集中复位。
+
+        code-review item 1b476109df4b：本函数族散落在状态转换分支的复位点
+        收敛入口——空闲计时、阻断边沿记忆、自触发周期、悬空超时双标志、
+        循环告警去重、合流边沿基准在此一处复位；后续新增闸门标志只需进本
+        方法，不必再对齐多个状态转换分支。
+        """
+        self._stale_idle_since = None
+        self._heal_block_reason = None
+        # 状态解除：自触发周期随陈旧一并收尾；stale_selfheal_loop 去重标记
+        # 一并复位（循环随陈旧解除终结）
+        self._self_triggered_cycle = False
+        # evo-add-stale-code-dangling-deadline 2.3：悬空周期收尾，超时防重复
+        # 写标志（含自触发窗口内告警边沿标志，item a6fb64ba17d4）一并复位
+        # （下一悬空周期允许再次超时触发）。
+        self._reset_dangling_timeout_flags()
+        self._selfheal_loop_alerted = False
+        # 合流态维护（evo-stale-selfheal-restart-coalescing 1.1）：边沿
+        # 检测基准复位（下次假→真跳变记新边沿）；悬置已消化，静止期届满
+        # 即复位合流态（按闸重启导致的消化不在此列——复位还须静止期届满）。
+        self._coalesce_prev_stale = False
+        self._coalesce_maybe_expire()
+
+    def _stale_selfheal_cfg(self) -> dict:
+        """自愈配置解析：读取异常按缺省启用的兜底字典处理。
+
+        兜底缺省引用 ConfigLoader 常量（evo-reduce-stale-code-selfheal-noise：
+        原硬编码 120 与新缺省 600 漂移会放大重启节律；item c79caa073d87：兜底
+        字典全部键与其余键同口径引用常量，MUST NOT 硬编码字面量——
+        ConfigLoader 侧调缺省时兜底值不随之更新会分裂出两套缺省）。
+        """
+        try:
+            return ConfigLoader.get_stale_code_selfheal_config(self.config)
+        except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
+            return {
+                "enabled": True,
+                "idle_confirm_seconds": (
+                    ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
+                ),
+                "coalesce_idle_seconds": (
+                    ConfigLoader.STALE_CODE_SELFHEAL_COALESCE_IDLE_SECONDS_DEFAULT
+                ),
+                "max_dangling_seconds": (
+                    ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT
+                ),
+            }
+
+    def _stale_selfheal_block_reason(self, req, enabled) -> Optional[str]:
+        """阻断原因判定（纯判定，不落任何状态）：无阻断返回 None。
+
+        取值 disabled / unmanaged / in-flight / ocr-lane / code-fix。托管
+        存在性先于请求在场判定（code-review item 4be85f1655c1）：
+        supervisor 崩溃退出而未消费 restart_request 时文件会残留
+        （bin/fenixd_supervisor.py 对 pending 请求亦有 preserved 留痕），
+        若先判 req.exists() 会把无人消费的陈旧请求误归因「重启在途」，
+        与启动自检 supervisor_missing 告警「restart_request 不会被消费」
+        的口径相互矛盾——未托管时优先归因 unmanaged（两种状态功能上都
+        阻断自愈，差异仅在归因与日志口径）；in-flight 分支自此必然处于
+        托管期，确有 supervisor 在消费该请求。
+        """
+        if not enabled:
+            return "disabled"
+        try:
+            from core.fenix_session import supervisor_running
+
+            supervised = supervisor_running(PROJECT_ROOT)
+        except Exception:
+            supervised = False  # /proc 不可读等：按未托管处理，宁紧勿松
+        if not supervised:
+            return "unmanaged"
+        if req.exists():
+            return "in-flight"
+        if self._ocr_lane_selfheal_block():
+            # fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道
+            # 挂入阻断原因体系——车道跑着不自愈（重启会 SIGTERM 杀掉在飞
+            # 车道 run），空闲计时一并清零，车道收尾后重新累计。
+            return "ocr-lane"
+        if self._codefix_selfheal_block():
+            # 09-23 批5/6 烧毁事故：code-fix 批在飞期间自愈重启会把回归
+            # 进行中/收尾中的批 worker 连带杀掉（supervisor 排水 SIGKILL），
+            # agent 已产出的批结果随 worktree 孤儿清扫整批作废——镜像
+            # ocr-lane 模式挂入阻断体系，空闲计时一并清零。
+            return "code-fix"
+        return None
+
+    def _apply_stale_selfheal_block(self, reason: str) -> None:
+        """阻断处置：原因边沿留痕（仅原因变化时打一次明示，避免 1s 粒度
+        刷屏）并清零空闲计时。"""
+        if reason != self._heal_block_reason:
+            self._heal_block_reason = reason
+            if reason == "disabled":
+                self.logger.info(
+                    "fenixd",
+                    "陈旧自愈已被配置关闭（stale_code_selfheal.enabled: false），"
+                    "不触发重启（陈旧状态与告警仍保持）",
+                )
+            elif reason == "unmanaged":
+                self.logger.info(
+                    "fenixd",
+                    "未受 supervisor 托管，自愈跳过（restart_request 无人消费，"
+                    "陈旧告警维持，等待恢复托管）",
+                )
+            elif reason == "ocr-lane":
+                self.logger.info(
+                    "fenixd",
+                    "impl-ocr 车道在飞，自愈跳过（不杀在飞车道 run），"
+                    "空闲计时清零，待车道收尾后重新累计",
+                )
+            elif reason == "code-fix":
+                self.logger.info(
+                    "fenixd",
+                    "code-fix 批在飞，自愈跳过（不杀批 worker/回归），"
+                    "空闲计时清零，待批收尾后重新累计",
+                )
+            else:  # in-flight
+                self.logger.info(
+                    "fenixd",
+                    "restart_request 已在，重启在途，自愈不重复写入"
+                    "（当前受 supervisor 托管、由其在消费该请求；未托管场景"
+                    "已优先归因 unmanaged，与 supervisor_missing 告警口径"
+                    "对齐，item 4be85f1655c1）",
+                )
+        self._stale_idle_since = None
+
+    def _note_self_triggered_stale(self, history: list, now: float, window) -> bool:
+        """自触发型 stale 判定与标记（FR-3），返回 self_triggered_now。
+
+        距上次自愈重启 < self_triggered_window_seconds 时陈旧再现 → 本轮
+        陈旧是上一轮重启的自触发产物（重启后 5 分钟内再次检测到 stale），
+        本周期标记为自触发并落一次 WARNING；窗口过期前不写 restart_request
+        （此刻重启只会延长循环），窗口过期后由同一连续空闲收尾重启，收尾时
+        按标记累计持久化 streak。调用时序约束：MUST 早于冷却早退——否则窗口
+        计数达冷却阈值后永远到不了标记分支，self_triggered_streak 恒不可达
+        阈值（缺省阈值下 critical 告警永不触发）。
+        """
+        last_restart = history[-1]["ts"] if history else None
+        self_triggered_now = (
+            last_restart is not None and (now - last_restart) < window
+        )
+        if self_triggered_now and not getattr(self, "_self_triggered_cycle", False):
+            self._self_triggered_cycle = True
+            self.logger.warning(
+                "fenixd",
+                f"检测到自触发型陈旧：距上次自愈重启仅 {now - last_restart:.0f}s"
+                f"（< {int(window)}s 窗口）陈旧再现，本周期仅告警、"
+                "不触发重启（待窗口过期后由后续周期收尾）；若反复出现说明存在"
+                "重启循环（见 stale_selfheal_loop 告警）",
+            )
+        return self_triggered_now
+
+    def _cooldown_blocks_restart(self, cfg: dict, history: list, now: float) -> bool:
+        """冷却闸：窗口计数达阈 OR 锁存未到期，任一成立即拦截（返回 True）。
+
+        冷却键的读取缺省引用 ConfigLoader 常量（item c79caa073d87：与
+        idle_confirm_seconds 既有口径对齐——两条读取路径 MUST 共用同一套
+        缺省，防 ConfigLoader 侧调缺省后此处漂移）。首次进入冷却（边沿）
+        置锁存起点 + 一次告警/日志；两条件均转假（冷却整体退出）清锁存，
+        下次进入重新按边沿告警。拦截时清零空闲计时。
+        """
+        cooldown_window = cfg.get(
+            "cooldown_window_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_WINDOW_SECONDS_DEFAULT,
+        )
+        cooldown_threshold = cfg.get(
+            "cooldown_threshold",
+            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_THRESHOLD_DEFAULT,
+        )
+        cooldown_duration = cfg.get(
+            "cooldown_duration_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_DURATION_SECONDS_DEFAULT,
+        )
+        cooldown_started = getattr(self, "_cooldown_started_at", None)
+        latched = (
+            cooldown_started is not None
+            and (now - cooldown_started) < cooldown_duration
+        )
+        recent_restarts = len(
+            [e for e in history if (now - e["ts"]) <= cooldown_window]
+        )
+        # [fenix-ignore:81d7b258e3b5] 误报：_cooldown_started_at 在整段冷却（锁存 OR 窗口计数超阈）持续期内保持非 None，下方清锁存仅在两条件均转假（冷却整体退出）时才执行，锁存到期而计数仍超阈的 tick 走 if 体但不满足 is None 边沿条件，不会重复告警（tests/test_stale_selfheal_cooldown.py::test_cooldown_alert_is_edge_only 已锁定该行为）
+        if latched or recent_restarts >= cooldown_threshold:
+            if cooldown_started is None:
+                # 首次进入冷却（边沿）：置锁存起点 + 一次告警/日志，后续 tick 不重复
+                self._cooldown_started_at = now
+                self._alert_selfheal_cooldown(
+                    recent_restarts, cooldown_threshold, cooldown_window, cooldown_duration
+                )
+            self._stale_idle_since = None
+            return True
+        # 冷却已退出：清锁存起点，使下次进入重新按边沿告警
+        self._cooldown_started_at = None
+        return False
+
+    def _dangling_timeout_tick(
+        self, cfg: dict, self_triggered_now: bool, history: list,
+        now: float, req, window, threshold,
+    ) -> bool:
+        """悬空超时闸（evo-add-stale-code-dangling-deadline 2.2/2.3）。
+
+        _code_stale 持续超过 stale_code_selfheal.max_dangling_seconds（缺省
+        4h，0 = 关闭升级）时不再等待空闲：当前负载形态几乎不产生连续空闲
+        窗口，无限期悬空等于已合回修复被静默（2026-09-24 单日实测 2.1h
+        停摆）。本闸位于冷却/自触发闸门之后（冷却窗口/锁存期内到不了
+        这里，仍受闸门约束）、_is_idle 之前——忙时也直接写 restart_request，
+        在飞 run 由 supervisor planned_restart 排水兜底（60s 宽限 + checkpoint
+        保全 + 断点续做）。
+
+        缺省配置下悬空超时触发时距上次自愈重启必然已超
+        self_triggered_window_seconds（重启即刷新 baseline，_code_stale 归零
+        重新起算）；但 max_dangling_seconds 是独立可配的非负整数、允许配成
+        小于自触发窗口，此时悬空时限可能在窗口内到期——由 self_triggered_now
+        守卫拦下不写请求（code-review item 74da2c8c7864，FR-3「窗口内不写
+        请求」语义优先于悬空升级）。本闸不触碰 _self_triggered_cycle（不强制
+        置真），_record_selfheal_restart 按既有语义如实记录。
+
+        返回 True 表示本 tick 已被本闸收口（触发 / 窗口内告警 / 防重复写
+        早退），调用方直接返回；False 表示未达悬空超限，继续走空闲确认。
+        """
+        max_dangling = cfg.get(
+            "max_dangling_seconds",
+            ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT,
+        )
+        stale_since = getattr(self, "_code_stale_since", None)
+        dangling_seconds = (
+            (now - stale_since.timestamp())
+            if stale_since is not None
+            else None
+        )
+        if not (
+            max_dangling
+            and max_dangling > 0
+            and dangling_seconds is not None
+            and dangling_seconds > max_dangling
+        ):
+            return False
+        if self_triggered_now:
+            # FR-3 语义守卫（code-review item 74da2c8c7864）：max_dangling_seconds
+            # 允许配成小于 self_triggered_window_seconds，悬空超时可能在
+            # 自触发窗口内到期——窗口内仅落升级告警不写 restart_request
+            # （避免延长重启循环），窗口过期后由后续 tick 在此收尾触发
+            # （dangling_seconds 只增不减，无需重新起算）。
+            # 边沿控制（code-review item a6fb64ba17d4）：_alert_dangling_timeout
+            # 入口的 logger.warning 在 admin 侧 60 分钟窗口去重判断之前无条件
+            # 执行，1s 粒度下本分支不加防重复会在自触发窗口（缺省 300s）内
+            # 每秒打一条同文 WARNING——此处以独立边沿标志保证告警与 WARNING
+            # 仅本悬空周期首次命中执行、后续 tick 直接 return。MUST NOT 复用
+            # _dangling_timeout_fired：那会把窗口过期后的收尾重启一并拦下
+            # （下方防重复写守卫读的是同一标志）。
+            if getattr(self, "_dangling_timeout_alert_fired", False):
+                return True
+            self._dangling_timeout_alert_fired = True
+            self._alert_dangling_timeout(dangling_seconds, max_dangling)
+            return True
+        if getattr(self, "_dangling_timeout_fired", False):
+            # 防重复写（2.3）：本悬空周期已成功触发过，1s tick 直接跳过。
+            # req 已在场的情形由上方 in-flight 阻断覆盖（req.exists() →
+            # reason="in-flight" 早退），本标志兜底 supervisor 秒级消费
+            # request 后、SIGTERM 到来前的窗口，避免重复 touch/重复告警。
+            return True
+        self._stale_idle_since = None
+        wrote = False
+        try:
+            req.parent.mkdir(parents=True, exist_ok=True)
+            req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+            wrote = True
+            self.logger.warning(
+                "fenixd",
+                f"陈旧悬空超时触发：daemon 持旧代码已 {dangling_seconds:.0f}s"
+                f"（超过 stale_code_selfheal.max_dangling_seconds "
+                f"{int(max_dangling)}s）且系统不再等待空闲，已 touch "
+                ".fenix/restart_request，supervisor 将执行规划性重启"
+                "（planned_restart 排水：在飞宽限收尾/checkpoint 保全/断点续做）",
+            )
+        except OSError as e:
+            self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+        if wrote:
+            # 触发成功才置防重复标志 + 写升级告警 + 落历史；写失败仅记
+            # error 日志，标志未置位，下个 tick 自动重试。
+            self._dangling_timeout_fired = True
+            self._alert_dangling_timeout(dangling_seconds, max_dangling)
+            self._record_selfheal_restart(
+                history=history,
+                window=window,
+                threshold=threshold,
+            )
+            # 强转重启同属按闸自愈重启：刷新合流静止期参考时刻（与
+            # restart_history 幂等推导口径一致，evo-stale-selfheal-
+            # restart-coalescing 1.1）
+            self._coalesce_note_restart(now)
+        return True
+
+    def _fire_idle_confirm_restart(
+        self, req, effective_confirm, self_triggered_now: bool,
+        history: list, now: float, waited: float, window, threshold,
+    ) -> None:
+        """空闲确认达闸：touch .fenix/restart_request 收尾（写失败升级告警）。
+
+        生效闸值（evo-stale-selfheal-restart-coalescing 1.1）：合流期内首个
+        边沿 = 基础闸 idle_confirm_seconds；其后边沿（合流静止期届满前检出）
+        = 合流闸 coalesce_idle_seconds——4h 悬空强转在悬空超时闸已优先收尾，
+        不经本闸（合流闸 MUST NOT 拦截强转兜底）。
+        """
+        if self_triggered_now:
+            # 自触发窗口内不写 restart_request（仅告警）；不清零计时——窗口过期后
+            # 由同一段连续空闲立即收尾，本周期标记在收尾重启时转为 streak
+            return
+        wrote = False
+        try:
+            req.parent.mkdir(parents=True, exist_ok=True)
+            req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+            wrote = True
+            coalesce_edges = int(
+                getattr(self, "_coalesce_edge_count", 0) or 0
+            )
+            if coalesce_edges >= 2:
+                # 合流收敛结果（evo-stale-selfheal-restart-coalescing 1.3）：
+                # 本周期 N 次陈旧边沿合并为 1 次重启
+                self.logger.warning(
+                    "fenixd",
+                    f"陈旧自愈触发（合流收敛）：daemon 持旧代码且连续空闲 "
+                    f"{waited:.0f}s（合流闸 {effective_confirm}s），本合流"
+                    f"周期共 {coalesce_edges} 次陈旧边沿、合并为 1 次重启，"
+                    "已 touch .fenix/restart_request，supervisor 将执行"
+                    "优雅重启使新代码生效",
+                )
+            else:
+                self.logger.warning(
+                    "fenixd",
+                    f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
+                    f"（阈值 {effective_confirm}s），已 touch "
+                    ".fenix/restart_request，"
+                    "supervisor 将执行优雅重启使新代码生效",
+                )
+        except OSError as e:
+            # evo-reduce-stale-code-selfheal-noise 2.3：自愈动作失败的升级点。
+            # 原先仅 logger.error——写失败意味着自动收敛通道已断（空闲确认
+            # 达成却发不出重启请求），升级 escalation 提请人工知悉；复用
+            # _alert_dangling_timeout 的 append + latest_signal 去重范式，
+            # signal_type 仍取 stale_code（与 info 留痕同受 60 分钟窗口互斥
+            # 成条，不刷屏）。陈旧状态保持，空闲计时已在 finally 复位——
+            # 下个 tick 重新累计 idle_confirm_seconds 后自动重试。
+            self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+            self._alert_selfheal_write_failure(e)
+        finally:
+            self._stale_idle_since = None
+        if wrote:
+            # 成功触发后才落历史（写失败仅记日志，不回滚重启）
+            self._record_selfheal_restart(
+                history=history,
+                window=window,
+                threshold=threshold,
+            )
+            # 按闸自愈重启刷新合流静止期参考时刻（evo-stale-selfheal-
+            # restart-coalescing 1.1：重启导致的悬置消化不复位合流态，
+            # 静止期自重启时刻重新起算）
+            self._coalesce_note_restart(now)
+
     def _maybe_stale_selfheal_tick(self) -> None:
         """陈旧自愈触发（add-stale-code-selfheal 2.2/2.3，主循环 1s 粒度轮询）。
 
@@ -2603,6 +2998,15 @@ class FenixDaemon:
         语义）并记录触发日志（含触发原因与等待时长）。任一阻断/非空闲信号
         出现立即清零计时。阻断原因按状态边沿记日志（原因变化时打一次），
         不刷屏。
+
+        闸门串联次序（code-review item 1b476109df4b 结构收敛：五套闸门各自
+        内聚为独立判定方法，本入口只做串联与参数解析；判定顺序与各状态复位
+        时机是外部可观察契约，MUST NOT 互换）：
+          ①合流幂等推导 → ②陈旧解除集中复位（_reset_stale_selfheal_on_clear）
+          → ③合流边沿登记 → ④阻断闸（_stale_selfheal_block_reason /
+          _apply_stale_selfheal_block）→ ⑤自触发标记（_note_self_triggered_stale）
+          → ⑥冷却闸（_cooldown_blocks_restart）→ ⑦悬空超时闸
+          （_dangling_timeout_tick）→ ⑧空闲确认触发（_fire_idle_confirm_restart）。
 
         evo-stale-selfheal-restart-cooldown 增量（插在 in-flight 阻断之后、
         _is_idle 之前，不影响首次触发流程）：
@@ -2633,69 +3037,24 @@ class FenixDaemon:
         # _code_stale 为假），推导不依赖陈旧在场。
         self._coalesce_derive_from_history()
         if not self._code_stale:
-            # 状态解除：清零计时与边沿记忆，恢复正常（自触发周期随陈旧一并收尾）；
-            # stale_selfheal_loop 去重标记一并复位（循环随陈旧解除终结）
-            self._stale_idle_since = None
-            self._heal_block_reason = None
-            self._self_triggered_cycle = False
-            # evo-add-stale-code-dangling-deadline 2.3：悬空周期收尾，超时防重复
-            # 写标志（含自触发窗口内告警边沿标志，item a6fb64ba17d4）一并复位
-            # （下一悬空周期允许再次超时触发）。
-            self._dangling_timeout_fired = False
-            self._dangling_timeout_alert_fired = False
-            self._selfheal_loop_alerted = False
-            # 合流态维护（evo-stale-selfheal-restart-coalescing 1.1）：边沿
-            # 检测基准复位（下次假→真跳变记新边沿）；悬置已消化，静止期届满
-            # 即复位合流态（按闸重启导致的消化不在此列——复位还须静止期届满）。
-            self._coalesce_prev_stale = False
-            self._coalesce_maybe_expire()
+            # 状态解除：各闸门周期态集中复位（自触发周期与 stale_selfheal_loop
+            # 去重标记随陈旧一并收尾——循环随陈旧解除终结）
+            self._reset_stale_selfheal_on_clear()
             return
 
         now = time.time()
         # 重启历史（冷却窗口计数 / 自触发窗口 / streak 累计的数据源），入口清理
         history = self._read_restart_history(now)
-
-        # 阻断原因判定（边沿日志：仅原因变化时打一次明示，避免 1s 粒度刷屏）
-        reason = None
-        try:
-            cfg = ConfigLoader.get_stale_code_selfheal_config(self.config)
-        except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
-            # 兜底缺省引用 ConfigLoader 常量（evo-reduce-stale-code-selfheal-
-            # noise：原硬编码 120 与新缺省 600 漂移会放大重启节律；item
-            # c79caa073d87：兜底字典全部键与下方冷却/自触发五键同口径引用
-            # 常量，MUST NOT 硬编码字面量——ConfigLoader 侧调缺省时兜底值
-            # 不随之更新会分裂出两套缺省）
-            cfg = {
-                "enabled": True,
-                "idle_confirm_seconds": (
-                    ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
-                ),
-                "coalesce_idle_seconds": (
-                    ConfigLoader.STALE_CODE_SELFHEAL_COALESCE_IDLE_SECONDS_DEFAULT
-                ),
-                "max_dangling_seconds": (
-                    ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT
-                ),
-            }
-        enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
+        cfg = self._stale_selfheal_cfg()
+        enabled = bool(cfg.get("enabled", True))
+        confirm_seconds = cfg.get(
             "idle_confirm_seconds",
             ConfigLoader.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT,
         )
-        # 冷却/自触发五键的读取缺省同样引用 ConfigLoader 常量（item
-        # c79caa073d87：与上方 idle_confirm_seconds 既有口径对齐——两条读取
-        # 路径 MUST 共用同一套缺省，防 ConfigLoader 侧调缺省后此处漂移）
-        cooldown_window = cfg.get(
-            "cooldown_window_seconds",
-            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_WINDOW_SECONDS_DEFAULT,
-        )
-        cooldown_threshold = cfg.get(
-            "cooldown_threshold",
-            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_THRESHOLD_DEFAULT,
-        )
-        cooldown_duration = cfg.get(
-            "cooldown_duration_seconds",
-            ConfigLoader.STALE_CODE_SELFHEAL_COOLDOWN_DURATION_SECONDS_DEFAULT,
-        )
+        # 自触发键的读取缺省同样引用 ConfigLoader 常量（item c79caa073d87：
+        # 与 idle_confirm_seconds 既有口径对齐——两条读取路径 MUST 共用同一套
+        # 缺省，防 ConfigLoader 侧调缺省后此处漂移；冷却三键同款纪律见
+        # _cooldown_blocks_restart）
         self_triggered_window = cfg.get(
             "self_triggered_window_seconds",
             ConfigLoader.STALE_CODE_SELFHEAL_SELF_TRIGGERED_WINDOW_SECONDS_DEFAULT,
@@ -2709,207 +3068,37 @@ class FenixDaemon:
         # 边沿同样属本合流期，闸值升格不因阻断漏记。返回值为当前生效闸值
         # （首个边沿 = 基础闸，其后 = 合流闸），供末段空闲确认使用。
         effective_confirm = self._coalesce_note_edge(now, confirm_seconds)
-        if not enabled:
-            reason = "disabled"
-        else:
-            # 托管存在性先于请求在场判定（code-review item 4be85f1655c1）：
-            # supervisor 崩溃退出而未消费 restart_request 时文件会残留
-            # （bin/fenixd_supervisor.py 对 pending 请求亦有 preserved 留痕），
-            # 若先判 req.exists() 会把无人消费的陈旧请求误归因「重启在途」，
-            # 与启动自检 supervisor_missing 告警「restart_request 不会被消费」
-            # 的口径相互矛盾——未托管时优先归因 unmanaged（两种状态功能上都
-            # 阻断自愈，差异仅在归因与日志口径）；in-flight 分支自此必然处于
-            # 托管期，确有 supervisor 在消费该请求。
-            try:
-                from core.fenix_session import supervisor_running
 
-                supervised = supervisor_running(PROJECT_ROOT)
-            except Exception:
-                supervised = False  # /proc 不可读等：按未托管处理，宁紧勿松
-            if not supervised:
-                reason = "unmanaged"
-            elif req.exists():
-                reason = "in-flight"
-            elif self._ocr_lane_selfheal_block():
-                # fix-fasttrack-implemented-deadstate 2.2：在飞 impl-ocr 车道
-                # 挂入阻断原因体系——车道跑着不自愈（重启会 SIGTERM 杀掉在飞
-                # 车道 run），空闲计时一并清零，车道收尾后重新累计。
-                reason = "ocr-lane"
-            elif self._codefix_selfheal_block():
-                # 09-23 批5/6 烧毁事故：code-fix 批在飞期间自愈重启会把回归
-                # 进行中/收尾中的批 worker 连带杀掉（supervisor 排水 SIGKILL），
-                # agent 已产出的批结果随 worktree 孤儿清扫整批作废——镜像
-                # ocr-lane 模式挂入阻断体系，空闲计时一并清零。
-                reason = "code-fix"
-
+        # 闸门 1 阻断：任一阻断信号 → 原因边沿留痕 + 清零空闲计时
+        # （阻断原因判定按边沿记日志：仅原因变化时打一次明示，避免 1s 粒度刷屏）
+        reason = self._stale_selfheal_block_reason(req, enabled)
         if reason is not None:
-            # 阻断 → 清零空闲计时；边沿日志明示原因
-            if reason != self._heal_block_reason:
-                self._heal_block_reason = reason
-                if reason == "disabled":
-                    self.logger.info(
-                        "fenixd",
-                        "陈旧自愈已被配置关闭（stale_code_selfheal.enabled: false），"
-                        "不触发重启（陈旧状态与告警仍保持）",
-                    )
-                elif reason == "unmanaged":
-                    self.logger.info(
-                        "fenixd",
-                        "未受 supervisor 托管，自愈跳过（restart_request 无人消费，"
-                        "陈旧告警维持，等待恢复托管）",
-                    )
-                elif reason == "ocr-lane":
-                    self.logger.info(
-                        "fenixd",
-                        "impl-ocr 车道在飞，自愈跳过（不杀在飞车道 run），"
-                        "空闲计时清零，待车道收尾后重新累计",
-                    )
-                elif reason == "code-fix":
-                    self.logger.info(
-                        "fenixd",
-                        "code-fix 批在飞，自愈跳过（不杀批 worker/回归），"
-                        "空闲计时清零，待批收尾后重新累计",
-                    )
-                else:  # in-flight
-                    self.logger.info(
-                        "fenixd",
-                        "restart_request 已在，重启在途，自愈不重复写入"
-                        "（当前受 supervisor 托管、由其在消费该请求；未托管场景"
-                        "已优先归因 unmanaged，与 supervisor_missing 告警口径"
-                        "对齐，item 4be85f1655c1）",
-                    )
-            self._stale_idle_since = None
+            self._apply_stale_selfheal_block(reason)
             return
 
-        # 自触发型 stale 判定与标记（FR-3）：距上次自愈重启 < self_triggered_window_seconds
-        # 时陈旧再现 → 本轮陈旧是上一轮重启的自触发产物（重启后 5 分钟内再次检测到
-        # stale），本周期标记为自触发并落一次 WARNING；窗口过期前不写 restart_request
-        # （此刻重启只会延长循环），窗口过期后由同一连续空闲收尾重启，收尾时按标记
-        # 累计持久化 streak。
-        # 位置约束：MUST 早于冷却早退——否则窗口计数达冷却阈值后永远到不了标记分支，
-        # self_triggered_streak 恒不可达阈值（缺省阈值下 critical 告警永不触发）。
-        last_restart = history[-1]["ts"] if history else None
-        self_triggered_now = (
-            last_restart is not None and (now - last_restart) < self_triggered_window
+        # 闸门 2 自触发标记（FR-3）：位置约束——MUST 早于冷却早退（否则窗口
+        # 计数达冷却阈值后永远到不了标记分支，self_triggered_streak 恒不可达
+        # 阈值，缺省阈值下 critical 告警永不触发）
+        self_triggered_now = self._note_self_triggered_stale(
+            history, now, self_triggered_window
         )
-        if self_triggered_now and not getattr(self, "_self_triggered_cycle", False):
-            self._self_triggered_cycle = True
-            self.logger.warning(
-                "fenixd",
-                f"检测到自触发型陈旧：距上次自愈重启仅 {now - last_restart:.0f}s"
-                f"（< {int(self_triggered_window)}s 窗口）陈旧再现，本周期仅告警、"
-                "不触发重启（待窗口过期后由后续周期收尾）；若反复出现说明存在"
-                "重启循环（见 stale_selfheal_loop 告警）",
-            )
 
-        # 冷却检查（窗口计数 OR 锁存未到期）：两个条件任一成立即不触发重启。
-        # 放此位置：in-flight 阻断之后、_is_idle 之前——不影响正常的首次触发流程。
-        cooldown_started = getattr(self, "_cooldown_started_at", None)
-        latched = (
-            cooldown_started is not None
-            and (now - cooldown_started) < cooldown_duration
-        )
-        recent_restarts = len(
-            [e for e in history if (now - e["ts"]) <= cooldown_window]
-        )
-        # [fenix-ignore:81d7b258e3b5] 误报：_cooldown_started_at 在整段冷却（锁存 OR 窗口计数超阈）持续期内保持非 None，下方清锁存仅在两条件均转假（冷却整体退出）时才执行，锁存到期而计数仍超阈的 tick 走 if 体但不满足 is None 边沿条件，不会重复告警（tests/test_stale_selfheal_cooldown.py::test_cooldown_alert_is_edge_only 已锁定该行为）
-        if latched or recent_restarts >= cooldown_threshold:
-            if cooldown_started is None:
-                # 首次进入冷却（边沿）：置锁存起点 + 一次告警/日志，后续 tick 不重复
-                self._cooldown_started_at = now
-                self._alert_selfheal_cooldown(
-                    recent_restarts, cooldown_threshold, cooldown_window, cooldown_duration
-                )
-            self._stale_idle_since = None
+        # 闸门 3 冷却（窗口计数 OR 锁存未到期）：放此位置——阻断之后、
+        # _is_idle 之前，不影响正常的首次触发流程
+        if self._cooldown_blocks_restart(cfg, history, now):
             return
-        # 冷却已退出：清锁存起点，使下次进入重新按边沿告警
-        self._cooldown_started_at = None
 
-        # ── 悬空超时分支（evo-add-stale-code-dangling-deadline 2.2/2.3）────
-        # _code_stale 持续超过 stale_code_selfheal.max_dangling_seconds（缺省
-        # 4h，0 = 关闭升级）时不再等待空闲：当前负载形态几乎不产生连续空闲
-        # 窗口，无限期悬空等于已合回修复被静默（2026-09-24 单日实测 2.1h
-        # 停摆）。本分支位于冷却/自触发闸门之后（冷却窗口/锁存期内到不了
-        # 这里，仍受闸门约束）、_is_idle 之前——忙时也直接写 restart_request，
-        # 在飞 run 由 supervisor planned_restart 排水兜底（60s 宽限 + checkpoint
-        # 保全 + 断点续做）。缺省配置下悬空超时触发时距上次自愈重启必然已超
-        # self_triggered_window_seconds（重启即刷新 baseline，_code_stale 归零
-        # 重新起算）；但 max_dangling_seconds 是独立可配的非负整数、允许配成
-        # 小于自触发窗口，此时悬空时限可能在窗口内到期——由下方
-        # self_triggered_now 守卫拦下不写请求（code-review item 74da2c8c7864，
-        # FR-3「窗口内不写请求」语义优先于悬空升级）。本分支不触碰
-        # _self_triggered_cycle（不强制置真），_record_selfheal_restart 按既有
-        # 语义如实记录。
-        max_dangling = cfg.get(
-            "max_dangling_seconds",
-            ConfigLoader.STALE_CODE_SELFHEAL_MAX_DANGLING_SECONDS_DEFAULT,
-        )
-        stale_since = getattr(self, "_code_stale_since", None)
-        dangling_seconds = (
-            (now - stale_since.timestamp())
-            if stale_since is not None
-            else None
-        )
-        if (
-            max_dangling
-            and max_dangling > 0
-            and dangling_seconds is not None
-            and dangling_seconds > max_dangling
+        # 闸门 4 悬空超时：冷却/自触发闸门之后、_is_idle 之前——忙时也直接
+        # 收尾触发（在飞 run 由 supervisor planned_restart 排水兜底）
+        if self._dangling_timeout_tick(
+            cfg,
+            self_triggered_now,
+            history,
+            now,
+            req,
+            self_triggered_window,
+            self_triggered_threshold,
         ):
-            if self_triggered_now:
-                # FR-3 语义守卫（code-review item 74da2c8c7864）：max_dangling_seconds
-                # 允许配成小于 self_triggered_window_seconds，悬空超时可能在
-                # 自触发窗口内到期——窗口内仅落升级告警不写 restart_request
-                # （避免延长重启循环），窗口过期后由后续 tick 在此收尾触发
-                # （dangling_seconds 只增不减，无需重新起算）。
-                # 边沿控制（code-review item a6fb64ba17d4）：_alert_dangling_timeout
-                # 入口的 logger.warning 在 admin 侧 60 分钟窗口去重判断之前无条件
-                # 执行，1s 粒度下本分支不加防重复会在自触发窗口（缺省 300s）内
-                # 每秒打一条同文 WARNING——此处以独立边沿标志保证告警与 WARNING
-                # 仅本悬空周期首次命中执行、后续 tick 直接 return。MUST NOT 复用
-                # _dangling_timeout_fired：那会把窗口过期后的收尾重启一并拦下
-                # （下方防重复写守卫读的是同一标志）。
-                if getattr(self, "_dangling_timeout_alert_fired", False):
-                    return
-                self._dangling_timeout_alert_fired = True
-                self._alert_dangling_timeout(dangling_seconds, max_dangling)
-                return
-            if getattr(self, "_dangling_timeout_fired", False):
-                # 防重复写（2.3）：本悬空周期已成功触发过，1s tick 直接跳过。
-                # req 已在场的情形由上方 in-flight 阻断覆盖（req.exists() →
-                # reason="in-flight" 早退），本标志兜底 supervisor 秒级消费
-                # request 后、SIGTERM 到来前的窗口，避免重复 touch/重复告警。
-                return
-            self._stale_idle_since = None
-            wrote = False
-            try:
-                req.parent.mkdir(parents=True, exist_ok=True)
-                req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
-                wrote = True
-                self.logger.warning(
-                    "fenixd",
-                    f"陈旧悬空超时触发：daemon 持旧代码已 {dangling_seconds:.0f}s"
-                    f"（超过 stale_code_selfheal.max_dangling_seconds "
-                    f"{int(max_dangling)}s）且系统不再等待空闲，已 touch "
-                    ".fenix/restart_request，supervisor 将执行规划性重启"
-                    "（planned_restart 排水：在飞宽限收尾/checkpoint 保全/断点续做）",
-                )
-            except OSError as e:
-                self.logger.error("fenixd", f"restart_request 写入失败: {e}")
-            if wrote:
-                # 触发成功才置防重复标志 + 写升级告警 + 落历史；写失败仅记
-                # error 日志，标志未置位，下个 tick 自动重试。
-                self._dangling_timeout_fired = True
-                self._alert_dangling_timeout(dangling_seconds, max_dangling)
-                self._record_selfheal_restart(
-                    history=history,
-                    window=self_triggered_window,
-                    threshold=self_triggered_threshold,
-                )
-                # 强转重启同属按闸自愈重启：刷新合流静止期参考时刻（与
-                # restart_history 幂等推导口径一致，evo-stale-selfheal-
-                # restart-coalescing 1.1）
-                self._coalesce_note_restart(now)
             return
 
         self._heal_block_reason = None
@@ -2922,65 +3111,18 @@ class FenixDaemon:
             self._stale_idle_since = now
             return
         waited = now - self._stale_idle_since
-        # 生效闸值（evo-stale-selfheal-restart-coalescing 1.1）：合流期内首个
-        # 边沿 = 基础闸 idle_confirm_seconds；其后边沿（合流静止期届满前检出）
-        # = 合流闸 coalesce_idle_seconds——4h 悬空强转在上方分支已优先收尾，
-        # 不经本闸（合流闸 MUST NOT 拦截强转兜底）。
+        # 闸门 5 空闲确认触发（生效闸值口径见 _fire_idle_confirm_restart）
         if waited >= effective_confirm:
-            if self_triggered_now:
-                # 自触发窗口内不写 restart_request（仅告警）；不清零计时——窗口过期后
-                # 由同一段连续空闲立即收尾，本周期标记在收尾重启时转为 streak
-                return
-            wrote = False
-            try:
-                req.parent.mkdir(parents=True, exist_ok=True)
-                req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
-                wrote = True
-                coalesce_edges = int(
-                    getattr(self, "_coalesce_edge_count", 0) or 0
-                )
-                if coalesce_edges >= 2:
-                    # 合流收敛结果（evo-stale-selfheal-restart-coalescing 1.3）：
-                    # 本周期 N 次陈旧边沿合并为 1 次重启
-                    self.logger.warning(
-                        "fenixd",
-                        f"陈旧自愈触发（合流收敛）：daemon 持旧代码且连续空闲 "
-                        f"{waited:.0f}s（合流闸 {effective_confirm}s），本合流"
-                        f"周期共 {coalesce_edges} 次陈旧边沿、合并为 1 次重启，"
-                        "已 touch .fenix/restart_request，supervisor 将执行"
-                        "优雅重启使新代码生效",
-                    )
-                else:
-                    self.logger.warning(
-                        "fenixd",
-                        f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
-                        f"（阈值 {effective_confirm}s），已 touch "
-                        ".fenix/restart_request，"
-                        "supervisor 将执行优雅重启使新代码生效",
-                    )
-            except OSError as e:
-                # evo-reduce-stale-code-selfheal-noise 2.3：自愈动作失败的升级点。
-                # 原先仅 logger.error——写失败意味着自动收敛通道已断（空闲确认
-                # 达成却发不出重启请求），升级 escalation 提请人工知悉；复用
-                # _alert_dangling_timeout 的 append + latest_signal 去重范式，
-                # signal_type 仍取 stale_code（与 info 留痕同受 60 分钟窗口互斥
-                # 成条，不刷屏）。陈旧状态保持，空闲计时已在 finally 复位——
-                # 下个 tick 重新累计 idle_confirm_seconds 后自动重试。
-                self.logger.error("fenixd", f"restart_request 写入失败: {e}")
-                self._alert_selfheal_write_failure(e)
-            finally:
-                self._stale_idle_since = None
-            if wrote:
-                # 成功触发后才落历史（写失败仅记日志，不回滚重启）
-                self._record_selfheal_restart(
-                    history=history,
-                    window=self_triggered_window,
-                    threshold=self_triggered_threshold,
-                )
-                # 按闸自愈重启刷新合流静止期参考时刻（evo-stale-selfheal-
-                # restart-coalescing 1.1：重启导致的悬置消化不复位合流态，
-                # 静止期自重启时刻重新起算）
-                self._coalesce_note_restart(now)
+            self._fire_idle_confirm_restart(
+                req,
+                effective_confirm,
+                self_triggered_now,
+                history,
+                now,
+                waited,
+                self_triggered_window,
+                self_triggered_threshold,
+            )
 
     def _admin_monitor_loop(self):
         """周期运行健康检查（间隔 admin.interval_minutes）。
