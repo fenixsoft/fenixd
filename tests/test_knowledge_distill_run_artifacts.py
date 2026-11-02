@@ -16,6 +16,8 @@ Scenario：
 
 import json
 import sys
+import threading
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -24,10 +26,17 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.agent_runner.run_files import (
+    append_run_line as _real_append_line,
     infer_run_agent_type,
     run_spec_part,
 )
-from core.dashboard.data.runs import RUN_STALE_SECONDS, classify_run
+from core.dashboard.data.runs import (
+    RUN_STALE_SECONDS,
+    _is_run_archivable,
+    classify_run,
+    get_runs,
+    runs_retention_check,
+)
 from core.knowledge import DistillManager
 from test_knowledge import (
     GOOD_PAGE,
@@ -240,6 +249,281 @@ class TestDistillRunArtifacts(KnowledgeTestBase):
         lines = self._lines(artifact)
         self.assertEqual(lines[0]["archived"], [a1, a2])
         self.assertEqual(lines[-1]["type"], "error")
+
+
+class TestDistillBatchHeartbeat(KnowledgeTestBase):
+    """fix-distill-observation-gaps 2.2：蒸馏批心跳保活。
+
+    覆盖 specs/distill-observation-fixes「蒸馏批心跳保活」Requirement 全部
+    Scenario：
+
+    - 长跑批（spawn 阻塞超 stale 阈值档位）→ 产物出现非终态心跳行、读侧判
+      running 非 stale、retention 可归档判定 False（不被提前移出活跃目录）；
+    - 批收尾终态行成为末行（classify_run 判 done/error 正确，心跳不扰终态）；
+    - 心跳追加 OSError → 静默放弃本轮，批行为与无心跳形态一致；
+    - 产物创建 fail-open（run_file=None）→ 不启动心跳线程；
+    - 批异常路径线程不留存活。
+
+    时间注入：替身 spawn 阻塞（Event 等待）模拟长跑，``_DISTILL_HEARTBEAT_SECONDS``
+    打小值令心跳在测试时窗内真实落盘；读侧 stale 判定按真实墙钟 mtime——
+    心跳行持续刷新 mtime 即「停更未超时」的真实证明。
+    """
+
+    HB_INTERVAL = 0.05  # 心跳间隔注入值（秒）：测试时窗内必落多行
+
+    def _git_init(self):
+        self._git("init", "-q")
+        self._git("config", "user.name", "t")
+        self._git("config", "user.email", "t@t")
+        self._git("commit", "-q", "--allow-empty", "-m", "init")
+
+    def _prompt(self):
+        return GOOD_PAGE.format(
+            archive=self._archive_name(), today=date.today().isoformat()
+        )
+
+    def _index(self):
+        return (
+            f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+        )
+
+    def _domain(self):
+        return (
+            f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n"
+            "| --- | --- | --- |\n"
+            "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 | 2026-09-29 15:02 |\n"
+        )
+
+    def _good_versions(self):
+        return {
+            f"{KNOWLEDGE_DIR}/index.md": self._index(),
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md": self._domain(),
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md": self._prompt(),
+        }
+
+    def _artifact_path(self):
+        runs = self.root / ".fenix" / "runs"
+        files = sorted(runs.glob("knowledge-distiller-*.jsonl"))
+        self.assertEqual(len(files), 1, f"蒸馏产物应恰一个，实际 {files}")
+        return files[0]
+
+    @staticmethod
+    def _lines(path):
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    @staticmethod
+    def _try_lines(path):
+        """并发读产物（写侧持续 append）：半行窗口容忍，读失败返回 None 重试。"""
+        try:
+            return [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _wait_heartbeat(self, artifact, timeout=10.0):
+        """轮询直至产物出现心跳行（阻塞 spawn 期间的心跳落盘），返回行列表。"""
+        deadline = time.time() + timeout
+        lines = None
+        while time.time() < deadline:
+            lines = self._try_lines(artifact) if artifact.exists() else None
+            if lines and any(l.get("type") == "heartbeat" for l in lines):
+                return lines
+            time.sleep(0.02)
+        self.fail(f"阻塞 spawn 期间产物未出现心跳行：{lines}")
+
+    def _hb_thread_alive(self):
+        return any(
+            th.name == "distill-run-heartbeat" for th in threading.enumerate()
+        )
+
+    def _blocking_spawn(self, started, release, returncode=0):
+        """替身 spawn：阻塞在 release 事件上模拟超 stale 阈值的长跑。"""
+
+        def spawn(cmd, cwd, env=None):
+            started.set()
+            release.wait(timeout=30)
+            return _FakeProc(returncode)
+
+        return spawn
+
+    # ── Scenario: 长跑批不被判 stale ─────────────────────────────────
+
+    def test_long_spawn_heartbeat_running_not_stale_retention_holds(self):
+        self._git_init()
+        started, release = threading.Event(), threading.Event()
+        mgr = DistillManager(max_fix_rounds=0)
+        # 失败批（returncode=1）即可覆盖 give_up 路径的 error 终态收口
+        mgr._spawn = self._blocking_spawn(started, release, returncode=1)
+        box = {}
+
+        def batch():
+            box["result"] = mgr._run_batch(self.root, [self._archive_name()])
+
+        with mock.patch(
+            "core.knowledge._DISTILL_HEARTBEAT_SECONDS", self.HB_INTERVAL
+        ):
+            t = threading.Thread(target=batch)
+            t.start()
+            self.assertTrue(started.wait(timeout=10))
+            artifact = self._artifact_path()
+            lines = self._wait_heartbeat(artifact)
+            self.assertEqual(lines[0]["type"], "started")
+            # 末行心跳非终态 → 读侧判 running 非 stale（真实墙钟 mtime 新鲜）
+            self.assertEqual(lines[-1]["type"], "heartbeat")
+            self.assertEqual(classify_run(lines), "running")
+            rows = get_runs(self.root)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "running")
+            self.assertNotEqual(rows[0]["status"], "stale")
+            # retention 可归档判定 False：running 且停更未超时不移出活跃目录
+            self.assertFalse(_is_run_archivable(artifact))
+            retention = runs_retention_check(self.root)
+            self.assertEqual(retention["moved"], 0)
+            self.assertTrue(artifact.exists())
+            release.set()
+            t.join(timeout=30)
+        self.assertFalse(t.is_alive())
+        # 失败批 result 形态与无心跳口径一致
+        result = box["result"]
+        self.assertFalse(result["ok"])
+        # 批收尾 error 终态行成为末行（覆盖心跳行的 running 判定）
+        lines = self._lines(artifact)
+        self.assertEqual(lines[-1]["type"], "error")
+        self.assertTrue(any(l["type"] == "heartbeat" for l in lines))
+        self.assertEqual(classify_run(lines), "error")
+        # 线程生命周期严格限于批执行窗口：收尾后不留存活
+        self.assertFalse(self._hb_thread_alive())
+
+    # ── Scenario: 终态覆盖心跳（done 路径）────────────────────────────
+
+    def test_terminal_result_last_over_heartbeats_done(self):
+        self._git_init()
+        started, release = threading.Event(), threading.Event()
+
+        def spawn(cmd, cwd, env=None):
+            started.set()
+            release.wait(timeout=30)
+            # 释放后写合法知识页 → 正常提交收口 result 终态
+            for rel, text in self._good_versions().items():
+                p = Path(cwd) / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+            return _FakeProc(0)
+
+        mgr = DistillManager(max_fix_rounds=0)
+        mgr._spawn = spawn
+        with mock.patch(
+            "core.knowledge._DISTILL_HEARTBEAT_SECONDS", self.HB_INTERVAL
+        ):
+            t = threading.Thread(
+                target=lambda: mgr._run_batch(self.root, [self._archive_name()])
+            )
+            t.start()
+            self.assertTrue(started.wait(timeout=10))
+            self._wait_heartbeat(self._artifact_path())
+            release.set()
+            t.join(timeout=30)
+        self.assertFalse(t.is_alive())
+        lines = self._lines(self._artifact_path())
+        # 行形态：started + 心跳*/round*/终态 result（终态行 MUST 为末行；
+        # round 与心跳的相对顺序随线程时序浮动，不作强断言）
+        self.assertEqual(lines[0]["type"], "started")
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertTrue(any(l["type"] == "heartbeat" for l in lines))
+        self.assertTrue(any(l["type"] == "round" for l in lines))
+        self.assertEqual(classify_run(lines), "done")
+        self.assertFalse(self._hb_thread_alive())
+
+    # ── Scenario: 心跳写失败不阻断批 ─────────────────────────────────
+
+    def test_heartbeat_oserror_fail_open_batch_identical(self):
+        """心跳追加 OSError → 静默放弃本轮，批行为与无心跳形态完全一致。"""
+        self._git_init()
+        started, release = threading.Event(), threading.Event()
+        def raising_append(run_file, entry):
+            if entry.get("type") == "heartbeat":
+                raise OSError("产物目录不可写")
+            return _real_append_line(run_file, entry)
+
+        mgr = DistillManager(max_fix_rounds=0)
+
+        def spawn(cmd, cwd, env=None):
+            started.set()
+            release.wait(timeout=30)
+            return _FakeProc(1)  # 失败批：error 终态照写
+
+        mgr._spawn = spawn
+        with mock.patch(
+            "core.knowledge.append_run_line", side_effect=raising_append
+        ):
+            with mock.patch(
+                "core.knowledge._DISTILL_HEARTBEAT_SECONDS", self.HB_INTERVAL
+            ):
+                t = threading.Thread(
+                    target=lambda: mgr._run_batch(self.root, [self._archive_name()])
+                )
+                t.start()
+                self.assertTrue(started.wait(timeout=10))
+                # 阻塞期间心跳多轮 OSError 全部静默（等待 > 若干间隔无异常外泄）
+                time.sleep(self.HB_INTERVAL * 6)
+                release.set()
+                t.join(timeout=30)
+        self.assertFalse(t.is_alive())
+        lines = self._lines(self._artifact_path())
+        # 心跳行全部写失败 → 产物无 heartbeat 行；started/round/error 形态
+        # 与无心跳批完全一致
+        self.assertFalse(any(l["type"] == "heartbeat" for l in lines))
+        self.assertEqual(
+            [l["type"] for l in lines], ["started", "round", "error"]
+        )
+        self.assertEqual(classify_run(lines), "error")
+
+    # ── 产物创建 fail-open（run_file=None）不启动心跳线程 ─────────────
+
+    def test_open_fail_no_heartbeat_thread(self):
+        self._git_init()
+        mgr = DistillManager(max_fix_rounds=0)
+        mgr._spawn = lambda cmd, cwd, env=None: _FakeProc(1)
+        with mock.patch(
+            "core.knowledge.append_run_line", side_effect=OSError("disk full")
+        ):
+            result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertFalse(result["ok"])
+        self.assertIn("非零退出", result["error"])
+        # 产物创建 fail-open（run_file=None）→ 心跳线程未启动（无残留）；
+        # 产物文件仅 touch 空壳、零事件行（started 行写入即失败，无心跳行）
+        runs = self.root / ".fenix" / "runs"
+        files = list(runs.glob("*.jsonl"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].read_text(encoding="utf-8"), "")
+        self.assertFalse(self._hb_thread_alive())
+
+    # ── 批异常路径线程不留存活 ────────────────────────────────────────
+
+    def test_batch_exception_no_lingering_heartbeat_thread(self):
+        self._git_init()
+        mgr = DistillManager(max_fix_rounds=0)
+        mgr._spawn = lambda cmd, cwd, env=None: _FakeProc(0)
+        with mock.patch(
+            "core.knowledge.validate_knowledge",
+            side_effect=RuntimeError("validate boom"),
+        ):
+            with self.assertRaises(RuntimeError):
+                mgr._run_batch(self.root, [self._archive_name()])
+        lines = self._lines(self._artifact_path())
+        self.assertEqual(lines[-1]["type"], "error")
+        self.assertIn("validate boom", lines[-1]["error"])
+        self.assertFalse(self._hb_thread_alive())
 
 
 if __name__ == "__main__":

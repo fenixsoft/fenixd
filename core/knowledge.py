@@ -1609,7 +1609,10 @@ def _pending_ledger_lock(proot: Path):
 # 摘要语义，读侧 classify_run 只看末行 type，合成行与原生行在读侧完全等价。
 # 全链 fail-open（design D2 三道防线）：产物创建/事件行追加全吞 OSError，
 # 终态行收口自身不抛——蒸馏结果与台账行为与无产物形态完全一致，蒸馏的正确性
-# 优先级恒高于观测。单 worker 线程逐批消费，单写者无交错。
+# 优先级恒高于观测。单 worker 线程逐批消费；产物写者=worker 主线程 + 批级
+# 心跳线程双写者（fix-distill-observation-gaps 2.1：spawn 等待期心跳保活，
+# 防长跑批被读侧 mtime 停更判 stale、被 retention 提前移走致终态行写空），
+# append_run_line 的 O_APPEND 原子追加契约覆盖并发写交错。
 
 
 def _distill_run_artifact_open(proot: Path, archived_names: list) -> "Path | None":
@@ -1700,6 +1703,40 @@ def _distill_run_artifact_close(run_file: "Path | None", result: dict) -> None:
         logger.warning(
             "knowledge-distill run 产物终态行写入失败（fail-open）: %s", e
         )
+
+
+# 心跳间隔（fix-distill-observation-gaps 2.1）：读侧 stale 阈值
+# （runs.py ``_RUN_STALE_SECONDS``=1800s）的一半——任一 1800s 停更窗口内必有
+# ≥1 次心跳写入，既不密到污染产物（900s × 30min spawn 超时上限 ≈ 每批 ≤3 行，
+# 且读侧 ``_read_run_lines(max_lines=3)`` 只看尾窗）也不松到撞 stale。
+_DISTILL_HEARTBEAT_SECONDS = 900
+
+
+def _distill_run_artifact_heartbeat_loop(run_file: Path, stop: threading.Event) -> None:
+    """批级心跳线程体（fix-distill-observation-gaps 2.1）：spawn 等待期间定期
+    向批产物追加非终态 heartbeat 事件行保活。
+
+    - 非终态：``type: "heartbeat"`` 不在读侧 ``_RUN_TERMINAL_STATUS_MAP`` →
+      classify_run 判 running（在飞语义正确）；strip_run_id_suffixes/
+      run_spec_part/时间线读侧不解析行内容，零影响。
+    - fail-open：线程体内全捕获异常（OSError 与其余异常一致静默）——心跳是
+      纯观测，绝不让观测线程杀死蒸馏批。
+    - 可中断停：``Event.wait(interval)`` 语义，``stop.set()`` 立即打断当前
+      等待、循环退出（批 finally 先停线程再写终态行，保证终态行为末行）。
+    """
+    while not stop.wait(_DISTILL_HEARTBEAT_SECONDS):
+        try:
+            append_run_line(
+                run_file,
+                {
+                    "type": "heartbeat",
+                    "timestamp": now_local().isoformat(timespec="seconds"),
+                },
+            )
+        except Exception as e:  # noqa: BLE001 — 纯观测心跳全异常吞掉（fail-open）
+            logger.warning(
+                "knowledge-distill run 产物心跳行写入失败（fail-open）: %s", e
+            )
 
 
 class DistillManager:
@@ -1882,8 +1919,24 @@ class DistillManager:
         # 台账恢复重派路径都汇聚于此），四个 return 路径与异常路径统一经
         # finally 收口终态行（design D1 不逐点插桩）。fail-open：产物缺失/
         # 写失败不影响蒸馏主流程（_distill_run_artifact_* 全吞 OSError）。
+        # fix-distill-observation-gaps 2.1：spawn 等待期由批级心跳线程定期
+        # 追加非终态 heartbeat 行保活（防长跑批被读侧判 stale、被 retention
+        # 提前移走致收尾终态行写空）；产物创建 fail-open 失败（run_file=None）
+        # 不启动心跳线程。所有 return/异常路径统一在 finally 先停心跳线程
+        # （event.set + join，Event.wait 可中断必收敛）再写终态行——顺序保证
+        # 终态行为末行（读侧 classify_run 只看末行，覆盖心跳的 running 判定）。
         run_file = _distill_run_artifact_open(proot, archived_names)
         result: dict | None = None
+        hb_stop = threading.Event()
+        hb_thread: threading.Thread | None = None
+        if run_file is not None:
+            hb_thread = threading.Thread(
+                target=_distill_run_artifact_heartbeat_loop,
+                args=(run_file, hb_stop),
+                name="distill-run-heartbeat",
+                daemon=True,  # 进程退出不阻塞（join 超时兜底极端 IO 卡顿）
+            )
+            hb_thread.start()
         try:
             result = self._run_batch_core(proot, archived_names, run_file)
             return result
@@ -1899,6 +1952,9 @@ class DistillManager:
             }
             raise
         finally:
+            hb_stop.set()
+            if hb_thread is not None:
+                hb_thread.join(timeout=10)
             if result is not None:
                 _distill_run_artifact_close(run_file, result)
 

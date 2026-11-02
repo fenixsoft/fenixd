@@ -538,13 +538,27 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
         import core.dashboard.data as _facade
 
         billing = _facade.load_billing_config(proot)
-        # 已归档 SPEC（STATE.archive.md 清单）名下的 run 全窗剔除——归档
-        # SPEC 是完结历史，不进现役车道统计（含「全量=未归档」窗）
         archived_names = set(_facade.parse_archived_state(proot))
         for r in rows:
-            if archived_names and str(r.get("spec") or "") in archived_names:
-                continue
+            # fix-distill-observation-gaps 1.1：豁免判定须在剔除检查点取 raw
+            # agent_type（现行代码剔除在前、LANE_ALIASES 归一在后，不得因
+            # 重排序引入行为变化——归档名 run 原本进不了 lane 统计，挪后会让
+            # 蒸馏外的未知归档名 lane 冒出「其他」卡）。取出的 raw_lane 供
+            # 下方归一复用（消除重复取值）。
             raw_lane = r.get("agent_type") or "agent"
+            # 已归档 SPEC（STATE.archive.md 清单）名下的 run 全窗剔除——归档
+            # SPEC 是完结历史，不进现役车道统计（含「全量=未归档」窗）。
+            # fix-distill-observation-gaps 1.1：knowledge-distiller lane 豁免——
+            # 蒸馏 run 的 spec 段由派发名直出（push 触发时代以原始 SPEC 名
+            # 派发，剥段结果与清单键全等），SPEC 归档后剔除会把蒸馏 run 在
+            # 全部窗口静默吞掉（蒸馏是现役知识运营活动，非归档 SPEC 的完结
+            # 实现过程）；豁免按 raw lane 判定、与 spec 段名形态无关。
+            if (
+                archived_names
+                and raw_lane != "knowledge-distiller"
+                and str(r.get("spec") or "") in archived_names
+            ):
+                continue
             lane = LANE_ALIASES.get(raw_lane, raw_lane)
             st = stats.get(lane)
             if st is None:
