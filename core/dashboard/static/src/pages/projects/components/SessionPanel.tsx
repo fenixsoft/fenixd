@@ -155,29 +155,37 @@ const STREAM_DOWN_BAR_STYLE: CSSProperties = {
   padding: '4px 2px',
 };
 
-export default function SessionPanel({ project, active }: SessionPanelProps) {
-  const { message } = App.useApp();
-  const isMobile = useIsMobile();
+// 快照应用串行链（code-review item e3b97bedcb43：自主 effect 局部闭包提升到
+// 组件级；81d64a6bb1b0 收拢为 useSnapshotChain 自定义 hook）：原链只在主
+// effect 内可见，handleStart 的快照拉取不经该链——用户在激活后立即点「开始
+// 会话」时，afterHello 在途的旧快照（GET 发起于 startSession 完成之前）可晚于
+// handleStart 的快照应用，applySnapshot 整表替换把面板翻回空态（started=false、
+// events 清空）、uuid 去重集合按旧快照重建，窗口内事件丢失，需用户再次点击才
+// 恢复。链提升后，effect 内 loadAll / afterHello 与 handleStart 的快照统一经
+// 本链按发起顺序串行落盘。
+function useSnapshotChain(): (task: () => Promise<void>) => Promise<void> {
+  const loadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const enqueueSnapshotLoad = (task: () => Promise<void>): Promise<void> => {
+    // 返回挂接 catch 之前的 promise：任务自身的失败（handleStart 的 getSession
+    // 报错）仍沿返回值抛给调用方的既有 catch（→ setError）；链本体经 catch 续接，
+    // 单次失败不断链（loadAll / afterHello 的任务内部自吞错，行为不变）。
+    const run = loadChainRef.current.then(task);
+    loadChainRef.current = run.catch(() => {});
+    return run;
+  };
+  return enqueueSnapshotLoad;
+}
+
+// 会话数据流 hook（code-review item 81d64a6bb1b0）：把原单组件内混杂的
+// 「SSE 订阅 + watch 注册有限次退避重试 + 断流降级轮询 + 快照串行链 + 会话
+// 内容态」整体收拢，SessionPanel 只保留渲染分支与用户动作 handler，缩小
+// 单点回归面。行为契约零变更：hook 内 effect 声明序与迁移前一致
+// （projectRef 镜像 → [project] 清态 → [active, project] 主连接 → [active]
+// 切离释放）；组件侧同依赖拆出的补全候选清态与在途守卫复位 effect 操作的
+// 状态与本 hook 不相交，先后不可观察。
+function useSessionStream(project: string, active: boolean) {
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [loading, setLoading] = useState(false);
-  const [sending, setSending] = useState(false);
-  // 停止请求在途防重（code-review item 4c0da5acbb6f）：ended 要等 stopSession
-  // 响应返回才置位，网络往返窗口内连点会并发发出多次 stop 请求（首次成功
-  // 移除会话后后续请求命中服务端无会话判定而报错）。在途期间禁用按钮，
-  // finally 复位——失败也复位，保留重试能力。
-  const [stopping, setStopping] = useState(false);
-  // 发送/停止重入守卫（code-review item 3ea48a0e30b5，比照 HooksPanel/
-  // useGatedFormPanel 的 savingRef 口径）：setSending/setStopping 渲染生效存在
-  // React 调度间隙，防重若只靠 sending/stopping state（SessionComposer 按钮
-  // disabled 同样消费这两个 state），间隙内连点或 Enter 连发会并发发出两次
-  // sendSessionMessage/stopSession 请求；经 sendingRef/stoppingRef 写读同帧
-  // 原子短路，state 只负责按钮视觉反馈。
-  const sendingRef = useRef(false);
-  const stoppingRef = useRef(false);
-  // 启动重入守卫（code-review item 038d04ea5c2e，同上 sendingRef/stoppingRef
-  // 口径）：handleStart 只靠 setLoading(true) 的渲染反馈间接防重，「开始会话」
-  // 空态按钮未接 loading disabled，调度间隙内连点可并发发出两次 startSession。
-  const startRef = useRef(false);
   const [ended, setEnded] = useState(false);
   const [started, setStarted] = useState(false); // 会话是否已启动（session: null 时空态）
   const [truncated, setTruncated] = useState(false);
@@ -194,10 +202,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 失败态若先由 onerror 置位（SSE 仍断流、兜底轮询在跑），随后的 REST 注册
   // 成功不代表事件通道恢复，不得清除提示，等 onopen 再清。
   const sseConnectedRef = useRef(false);
-  // 补全候选（add-session-composer 3.1/3.2）：端点封装已吞错降级为空数组
-  const [slashCommands, setSlashCommands] = useState<string[]>([]);
-  const [skills, setSkills] = useState<string[]>([]);
-  const [files, setFiles] = useState<string[]>([]);
   // 事件 uuid 去重集合：GET 全量重拉时清空重建，SSE 增量跳过已见项；
   // 无 uuid 的事件（stderr / session_ended 本地合成）不进集合
   const seenUuidsRef = useRef<Set<string>>(new Set());
@@ -230,44 +234,20 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 退避重试（重试目标取注册时刻的 cidRef.current，即当前连接 hello 分配的
   // cid，非失效闭包捕获）。
   const scheduleWatchRetryRef = useRef<(() => void) | null>(null);
-  // 分面激活态镜像（code-review item 58ec4693e77c）：handleStart 等事件回调
-  // 跨 await 续跑时，闭包捕获的 active 是点击当帧快照——用户点「开始会话」后
-  // 立即切离分面，切离清理 effect 已清空 sessionIdRef/ended 等状态并释放订阅，
-  // 续跑若照旧写入会把活跃状态回落到非激活面板（直到下次激活 loadAll 重置才
-  // 自愈）。经本 ref 读取最新激活态，供 handleStart 在各 await 后校验，失配
-  // 即中止后续注册与状态写入。
-  const activeRef = useRef(active);
-  useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
   // 项目名镜像（code-review item cefe51c864ea）：切离/卸载注销 watch 的 effect
   // 依赖仅 [active]（下方 eslint-disable），project 不在依赖中——分面保持激活
   // 跨项目切换（list.tsx 的 project 来自 useParams、组件不重挂载）时该 effect
   // 不重跑，闭包 project 停留旧项目，切离/卸载时会对旧项目名配 cidRef 中新
   // 项目的 cid 发 DELETE /api/session/watch，服务端查不到 → 注销静默失效
   // （rejection 被调用点吞掉）、旧项目 watch 无人注销。经本 ref 读取最新
-  // 项目名，与 cid 同源（与上方 activeRef 同一规避模式）。
+  // 项目名，与 cid 同源（与 activeRef 同一规避模式）。
   const projectRef = useRef(project);
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
-
-  // 快照应用串行链（code-review item e3b97bedcb43：自主 effect 局部闭包提升到
-  // 组件级）：原链只在主 effect 内可见，handleStart 的快照拉取不经该链——用户
-  // 在激活后立即点「开始会话」时，afterHello 在途的旧快照（GET 发起于
-  // startSession 完成之前）可晚于 handleStart 的快照应用，applySnapshot 整表
-  // 替换把面板翻回空态（started=false、events 清空）、uuid 去重集合按旧快照
-  // 重建，窗口内事件丢失，需用户再次点击才恢复。链提升后，effect 内 loadAll /
-  // afterHello 与 handleStart 的快照统一经本链按发起顺序串行落盘。
-  const loadChainRef = useRef<Promise<void>>(Promise.resolve());
-  const enqueueSnapshotLoad = (task: () => Promise<void>): Promise<void> => {
-    // 返回挂接 catch 之前的 promise：任务自身的失败（handleStart 的 getSession
-    // 报错）仍沿返回值抛给调用方的既有 catch（→ setError）；链本体经 catch 续接，
-    // 单次失败不断链（loadAll / afterHello 的任务内部自吞错，行为不变）。
-    const run = loadChainRef.current.then(task);
-    loadChainRef.current = run.catch(() => {});
-    return run;
-  };
+  // 快照串行链单源（81d64a6bb1b0）：链本体（loadChainRef）在 useSnapshotChain
+  // 内，effect 内 loadAll / afterHello 与组件级 handleStart 均取本函数入链。
+  const enqueueSnapshotLoad = useSnapshotChain();
 
   const syncEvents = (next: SessionEvent[]) => {
     // 全量重拉：以快照 uuids 重建去重集合（code-review item 12c190b15530）——
@@ -465,12 +445,13 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   // 常驻挂载（list.tsx 的 project 来自 useParams、activeTab 持久化），
   // project 变化只重启下方 [active, project] 主 effect、组件不重挂载，唯一
   // 清态 effect 仅依赖 [active]——新项目 getSession 响应到达前，events/
-  // started/error/truncated 与补全候选仍渲染上一项目内容。project 变化即
+  // started/error/truncated 仍渲染上一项目内容。project 变化即
   // 清空内容态并复位 sessionIdRef：onmessage 的 session_events 帧以
   // sessionIdRef 比对守卫，复位即天然拦截在飞帧继续追加；事件经 syncEvents
   // 清空以同步重建 eventsRef 与 uuid 去重集合（只清 state 会被 appendEvents
   // 从 eventsRef 复活旧事件）。声明序在主 effect 之前：先清空再接回（主
   // effect 随 project 变化重跑的 loadAll 负责，不在此主动触发）。
+  // 补全候选的清态在组件侧同依赖 effect（81d64a6bb1b0 拆分：状态不相交）。
   useEffect(() => {
     sessionIdRef.current = null;
     syncEvents([]);
@@ -478,9 +459,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     setEnded(false);
     setTruncated(false);
     setError('');
-    setSlashCommands([]);
-    setSkills([]);
-    setFiles([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
@@ -597,13 +575,10 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
     // 空态补注册失败与 afterHello 同口径走有限次退避重试
     scheduleWatchRetryRef.current = scheduleWatchRetry;
 
-    // 快照加载串行化（code-review item 112623f4c6ed）：挂载时 loadAll 与
-    // hello 触发的 afterHello 重载并发执行、各自带全量快照调 syncEvents、无
-    // 排序守卫——早发出者后返回时旧快照覆盖新快照，中间送达的事件从渲染
-    // 列表丢失。经 promise 链按发起顺序串行应用快照（后应用的必然是更晚
-    // 发起的加载，包含更新的服务端状态）。链本体在组件级（loadChainRef，
-    // item e3b97bedcb43）：handleStart 的快照应用须并入同一链。
-
+    // 快照加载串行化（code-review item 112623f4c6ed）：loadAll / afterHello /
+    // handleStart 的快照统一经 useSnapshotChain 的组件级 promise 链按发起
+    // 顺序串行应用，机制与链定义见上方 useSnapshotChain（item e3b97bedcb43）
+    // ——8a4354fd77a0：文档单源化，effect 内不再复述长注释。
 
     const loadAll = () =>
       enqueueSnapshotLoad(async () => {
@@ -749,7 +724,9 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
   }, [active, project]);
 
   // 切离分面：注销 watch（需服务端 cid）+ 清空本地状态，切回重新接回；
-  // 仅释放订阅，MUST NOT 终止会话进程本身
+  // 仅释放订阅，MUST NOT 终止会话进程本身。（发送/停止/启动在途守卫的复位
+  // 拆到组件侧同依赖 effect——81d64a6bb1b0：两侧操作的状态不相交，同一提交
+  // 内同步执行，先后不可观察。）
   useEffect(() => {
     if (!active) {
       const cid = cidRef.current;
@@ -767,14 +744,6 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       // 切页签草稿保留）
       sessionIdRef.current = null;
       setEnded(false);
-      // ref 与 state 同步复位（code-review item 3ea48a0e30b5）：在飞请求的
-      // finally 也会复位 ref，但晚于切离时刻——切回分面立即重发会被残留的
-      // ref 误拦，与上方 setSending/setStopping(false) 同口径就地清掉。
-      sendingRef.current = false;
-      stoppingRef.current = false;
-      startRef.current = false;
-      setSending(false);
-      setStopping(false);
       // loading 复位（code-review item 9c07fe612f2d）：loadAll 的 finally 以
       // !disposed 守卫复位，切离中断的在途加载不再回落——不补复位的话，
       // inactive 期间（面板仍被渲染的形态）会持续显示「加载会话...」
@@ -796,6 +765,115 @@ export default function SessionPanel({ project, active }: SessionPanelProps) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
+  return {
+    events,
+    loading,
+    started,
+    ended,
+    truncated,
+    error,
+    streamDown,
+    setLoading,
+    setStarted,
+    setEnded,
+    setError,
+    sessionIdRef,
+    cidRef,
+    watchRegisteredRef,
+    projectRef,
+    scheduleWatchRetryRef,
+    reloadRef,
+    enqueueSnapshotLoad,
+    applySnapshot,
+    applySnapshotCarried,
+  };
+}
+
+export default function SessionPanel({ project, active }: SessionPanelProps) {
+  const { message } = App.useApp();
+  const isMobile = useIsMobile();
+  // 会话数据流（SSE 订阅 / watch 注册重试 / 断流降级轮询 / 快照串行链 / 会话
+  // 内容态）整体来自 useSessionStream（code-review item 81d64a6bb1b0），组件
+  // 只保留渲染分支与用户动作 handler。
+  const {
+    events,
+    loading,
+    started,
+    ended,
+    truncated,
+    error,
+    streamDown,
+    setLoading,
+    setStarted,
+    setEnded,
+    setError,
+    sessionIdRef,
+    cidRef,
+    watchRegisteredRef,
+    projectRef,
+    scheduleWatchRetryRef,
+    reloadRef,
+    enqueueSnapshotLoad,
+    applySnapshot,
+    applySnapshotCarried,
+  } = useSessionStream(project, active);
+  const [sending, setSending] = useState(false);
+  // 停止请求在途防重（code-review item 4c0da5acbb6f）：ended 要等 stopSession
+  // 响应返回才置位，网络往返窗口内连点会并发发出多次 stop 请求（首次成功
+  // 移除会话后后续请求命中服务端无会话判定而报错）。在途期间禁用按钮，
+  // finally 复位——失败也复位，保留重试能力。
+  const [stopping, setStopping] = useState(false);
+  // 发送/停止重入守卫（code-review item 3ea48a0e30b5，比照 HooksPanel/
+  // useGatedFormPanel 的 savingRef 口径）：setSending/setStopping 渲染生效存在
+  // React 调度间隙，防重若只靠 sending/stopping state（SessionComposer 按钮
+  // disabled 同样消费这两个 state），间隙内连点或 Enter 连发会并发发出两次
+  // sendSessionMessage/stopSession 请求；经 sendingRef/stoppingRef 写读同帧
+  // 原子短路，state 只负责按钮视觉反馈。
+  const sendingRef = useRef(false);
+  const stoppingRef = useRef(false);
+  // 启动重入守卫（code-review item 038d04ea5c2e，同上 sendingRef/stoppingRef
+  // 口径）：handleStart 只靠 setLoading(true) 的渲染反馈间接防重，「开始会话」
+  // 空态按钮未接 loading disabled，调度间隙内连点可并发发出两次 startSession。
+  const startRef = useRef(false);
+  // 补全候选（add-session-composer 3.1/3.2）：端点封装已吞错降级为空数组
+  const [slashCommands, setSlashCommands] = useState<string[]>([]);
+  const [skills, setSkills] = useState<string[]>([]);
+  const [files, setFiles] = useState<string[]>([]);
+  // 分面激活态镜像（code-review item 58ec4693e77c）：handleStart 等事件回调
+  // 跨 await 续跑时，闭包捕获的 active 是点击当帧快照——用户点「开始会话」后
+  // 立即切离分面，切离清理 effect 已清空 sessionIdRef/ended 等状态并释放订阅，
+  // 续跑若照旧写入会把活跃状态回落到非激活面板（直到下次激活 loadAll 重置才
+  // 自愈）。经本 ref 读取最新激活态，供 handleStart 在各 await 后校验，失配
+  // 即中止后续注册与状态写入。
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
+
+  // 跨项目切换清空补全候选（code-review item d3d445f9153c 的补全候选部分；
+  // 会话内容态清空在 useSessionStream 内同依赖 effect——81d64a6bb1b0 拆分，
+  // 两侧操作的状态不相交，先后不可观察）
+  useEffect(() => {
+    setSlashCommands([]);
+    setSkills([]);
+    setFiles([]);
+  }, [project]);
+
+  // 切离分面：复位发送/停止/启动在途守卫（订阅释放与会话内容清空在
+  // useSessionStream 内同依赖 effect；code-review item 3ea48a0e30b5 口径）。
+  useEffect(() => {
+    if (!active) {
+      // ref 与 state 同步复位（code-review item 3ea48a0e30b5）：在飞请求的
+      // finally 也会复位 ref，但晚于切离时刻——切回分面立即重发会被残留的
+      // ref 误拦，与 setSending/setStopping(false) 同口径就地清掉。
+      sendingRef.current = false;
+      stoppingRef.current = false;
+      startRef.current = false;
+      setSending(false);
+      setStopping(false);
+    }
   }, [active]);
 
   // 开始会话：显式创建（唯一允许启动进程的端点），成功后拉全量。
