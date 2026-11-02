@@ -148,8 +148,12 @@
     list.appendChild(item);
   }
 
+  // 导出口径：仅导出 delivered !== "server" 的条目——已确认送达服务器的批注
+  // 不再重复写入导出文件，避免 agent 侧回流时需自行去重
   function exportLocal() {
-    var blob = new Blob([JSON.stringify({ round: state.round, feedback: state.pending },
+    var undelivered = state.pending.filter(function (a) { return a.delivered !== "server"; });
+    if (!undelivered.length) { setStatus("没有未送达服务器的批注可导出。"); return; }
+    var blob = new Blob([JSON.stringify({ round: state.round, feedback: undelivered },
                                         null, 2)], { type: "application/json" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -167,6 +171,7 @@
     var annotation = buildAnnotation(text);
     var controller = new AbortController();
     var timer = setTimeout(function () { controller.abort(); }, 8000);
+    submitBtn.disabled = true; // 在飞防重：8 秒超时窗口内重复点击不再重复 POST
     setStatus("提交中…");
     fetch(FEEDBACK_URL, {
       method: "POST",
@@ -179,10 +184,18 @@
       remember(annotation, true);
       textarea.value = ""; // 仅在确认送达后清空；失败时保留原文便于用户修正重试
       setStatus("已提交到服务器。");
-    }).catch(function () {
+      submitBtn.disabled = false;
+    }).catch(function (err) {
       clearTimeout(timer);
+      // 失败归因：区分超时中止 / HTTP 非 2xx / 网络不可达，便于用户对症重试
+      var reason;
+      if (err && err.name === "AbortError") reason = "提交超时（8 秒无响应）";
+      else if (err && err.message && err.message.indexOf("HTTP ") === 0) reason = err.message;
+      else reason = "网络不可达";
       remember(annotation, false);
       exportLocal();
+      setStatus("提交失败（" + reason + "），已导出未送达批注 feedback.json，可修正后重试。", true);
+      submitBtn.disabled = false;
     });
   }
 
@@ -255,7 +268,19 @@
     ".fpa-item-text{color:#555;}",
   ].join("");
   document.head.appendChild(style);
-  document.body.appendChild(highlight);
-  document.body.appendChild(panel);
-  setStatus("批注模式：点选区块 → 输入意见 → 提交（轮次 " + state.round + "）。");
+
+  // 注入约定是 <script defer>（保证 body 已解析）；若被放进 <head> 且漏写
+  // defer，此处 document.body 尚为 null——降级为 DOMContentLoaded 后挂载，
+  // 并在控制台提示注入偏差，避免整个批注器静默失效
+  function mount() {
+    document.body.appendChild(highlight);
+    document.body.appendChild(panel);
+    setStatus("批注模式：点选区块 → 输入意见 → 提交（轮次 " + state.round + "）。");
+  }
+  if (document.body) {
+    mount();
+  } else {
+    console.warn("[fenix-prototype] annotator.js 应以 <script defer> 注入（当前 body 未解析），已延迟至 DOMContentLoaded 挂载。");
+    document.addEventListener("DOMContentLoaded", mount);
+  }
 })();
