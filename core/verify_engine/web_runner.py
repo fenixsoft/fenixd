@@ -78,13 +78,20 @@ def _normalize_bool_config(value, key, default, logger=None) -> bool:
     """verify_engine 布尔型配置键归一读值（code-review item 278aa4c0a8e5）。
 
     JSON 合法写入 "headless": "false" 时裸真值判定得 True——非空字符串
-    恒为真，期望的有头调试形态静默失效。口径：bool 直通；字符串按小写
-    白名单（true/1/yes、false/0/no，与 dashboard normalize_bool_flag 同款
-    白名单思路）；其余未识别形态 WARNING 留痕后回退缺省。本模块为叶子，
-    不反向依赖 dashboard 包，就地实现同口径。
+    恒为真，期望的有头调试形态静默失效。口径：bool 直通；整数按 0→
+    False、非零→True 归一（code-review item 382ff842892a：与字符串
+    "0"/"1" 同语义，用户手写 JSON 的数字 0/1 笔误形态不再与字符串形态
+    行为相反）；字符串按小写白名单（true/1/yes、false/0/no，与
+    dashboard normalize_bool_flag 同款白名单思路）；其余未识别形态
+    WARNING 留痕后回退缺省。本模块为叶子，不反向依赖 dashboard 包，
+    就地实现同口径。
     """
     if isinstance(value, bool):
         return value
+    # bool 是 int 子类，上方 bool 分支已先行直通；此处显式排除 bool，
+    # 防止 True/False 被 int 分支二次归一（行为等价但取向含糊）。
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value != 0
     if isinstance(value, str):
         low = value.strip().lower()
         if low in ("true", "1", "yes"):
@@ -174,6 +181,22 @@ class WebRunner(VerifyRunner):
             labels = ss.get("labels") if isinstance(ss.get("labels"), dict) else {}
             return path, labels
         return ss or "", {}
+
+    def _record_screenshot(self, path, labels, screenshots, screenshot_labels, warn_msg) -> None:
+        """取证截图入账（code-review item 56a797a882e0）。
+
+        _extract_screenshot_result 对 dict 形态缺/空 path 键容忍为空串、
+        旧形态 None 亦归一为空串；入账时空 path WARNING 留痕后跳过，
+        screenshots 列表只含有效路径、screenshot_labels 不出现空串键，
+        下游 judge/校验器按路径读取证文件不会拿到无效条目。两处入账点
+        （关键步骤截图 / 断言失败取证）统一走本 helper 单一出处。
+        """
+        if not path:
+            self.logger.warning("verify_engine", warn_msg)
+            return
+        screenshots.append(path)
+        if labels:
+            screenshot_labels.setdefault(path, {}).update(labels)
 
     # ── 场景验收 ───────────────────────────────────────────────
 
@@ -387,9 +410,10 @@ class WebRunner(VerifyRunner):
                         page, f"{scenario.id}_step{i}", screenshot_dir
                     )
                     path, labels = self._extract_screenshot_result(ss)
-                    screenshots.append(path)
-                    if labels:
-                        screenshot_labels.setdefault(path, {}).update(labels)
+                    self._record_screenshot(
+                        path, labels, screenshots, screenshot_labels,
+                        f"场景'{scenario.id}': 关键步骤截图取证返回空路径，跳过该条目",
+                    )
                 except Exception as exc:
                     self.logger.warning(
                         "verify_engine",
@@ -428,17 +452,20 @@ class WebRunner(VerifyRunner):
 
             # 断言真正执行且至少一个失败 → 截图取证（真实产品缺陷）。
             # 断言全部通过则不截图。步骤失败已在上方 break，不进入此分支。
-            # 非 dict 条目（上游畸形）视为有失败、触发取证，与
-            # determine_scenario_status 的非 dict 按 fail 兜底取向一致。
-            if any(not (isinstance(a, dict) and a.get("pass", True)) for a in assertion_results):
+            # 取证触发缺省与 determine_scenario_status 完全同款（code-review
+            # item 48c972a8e287）：dict 条目缺 pass 键按 fail 兜底（缺省
+            # False）、非 dict 条目（上游畸形）亦按 fail 兜底——状态被判
+            # fail 的场景必有断言失败取证截图，judge/复核链不缺证据。
+            if any(not (isinstance(a, dict) and a.get("pass", False)) for a in assertion_results):
                 try:
                     ss = await self.browser.screenshot(
                         page, f"{scenario.id}_assert_fail", screenshot_dir
                     )
                     path, labels = self._extract_screenshot_result(ss)
-                    screenshots.append(path)
-                    if labels:
-                        screenshot_labels.setdefault(path, {}).update(labels)
+                    self._record_screenshot(
+                        path, labels, screenshots, screenshot_labels,
+                        f"场景'{scenario.id}': 断言失败取证截图返回空路径，跳过该条目",
+                    )
                 except Exception as exc:
                     self.logger.warning(
                         "verify_engine",

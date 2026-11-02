@@ -46,10 +46,11 @@ _OUTPUT_READ_LIMIT = 8 * 1024 * 1024
 # 超限时跳过 json.loads——解析对象树与原文同时驻留会放大内存峰值，json 输出
 # 类断言按「非 JSON」口径失败，结果带标注供 judge 归因。
 _RUN_JSON_PARSE_LIMIT = 1024 * 1024
-# stdin 注入上限（比照 _OUTPUT_READ_LIMIT 读入侧口径）：场景 stdin 被误塞
-# 大文本（整份日志/文件内容）时 str 与 encode 后 bytes 双份驻留，且
-# _pump_stdin 一次性 write 全量进传输层缓冲，内存峰值不受约束——执行前
-# 超限即结构化打回，不进执行期注入（code-review item 895096ef7bd4）。
+# stdin 注入上限（按 encode 后 UTF-8 字节数判定，比照 _OUTPUT_READ_LIMIT
+# 读入侧字节口径）：场景 stdin 被误塞大文本（整份日志/文件内容）时 str 与
+# encode 后 bytes 双份驻留，且 _pump_stdin 一次性 write 全量进传输层缓冲，
+# 内存峰值不受约束——执行前超限即结构化打回，不进执行期注入
+# （code-review item 895096ef7bd4；字节口径 item 9bbaf5192f95）。
 _STDIN_LIMIT = 8 * 1024 * 1024
 
 
@@ -299,7 +300,13 @@ class CliRunner(VerifyRunner):
                 "error_level": "error",
                 "error": "stdin 不得含无法编码的孤立代理符",
             }
-        if len(stdin) > _STDIN_LIMIT:
+        # 上限按 encode 后 UTF-8 字节数判定（code-review item 9bbaf5192f95）：
+        # 字符数口径在全多字节内容（如全中文）下放行的实际注入字节数可达上限
+        # 的 4 倍，与 _OUTPUT_READ_LIMIT/_RUN_JSON_PARSE_LIMIT 的字节口径
+        # 不一致；孤立代理符已由上方守卫拦截，此处 encode 不会失败，errors=
+        # "replace" 仅作兜底。注入逻辑本身不变
+        stdin_size = len(stdin.encode("utf-8", errors="replace"))
+        if stdin_size > _STDIN_LIMIT:
             # 场景 stdin 超过注入上限：_pump_stdin 会把全量内容一次性 write
             # 进传输层缓冲（str 与 encode 后 bytes 双份驻留），内存峰值不受
             # 约束——比照 _OUTPUT_READ_LIMIT 读入侧硬上限，执行前结构化打回
@@ -311,7 +318,7 @@ class CliRunner(VerifyRunner):
                 "action": "run",
                 "error_level": "error",
                 "error": (
-                    f"stdin 超过注入上限（{len(stdin)} 字符 > 上限 {_STDIN_LIMIT}），拒绝注入"
+                    f"stdin 超过注入上限（{stdin_size} 字节 > 上限 {_STDIN_LIMIT}），拒绝注入"
                 ),
             }
         try:
@@ -376,7 +383,7 @@ class CliRunner(VerifyRunner):
                 "success": False,
                 "action": "run",
                 "error_level": "error",
-                "error": f"timeout 超过上限 {MAX_STEP_TIMEOUT:g} 秒（30 分钟）"
+                "error": f"timeout 超过上限 {MAX_STEP_TIMEOUT:g} 秒（{MAX_STEP_TIMEOUT / 60:g} 分钟）"
                 f": {step_dict.get('timeout')!r}",
             }
         name = str(step_dict.get("as") or "")
@@ -455,7 +462,16 @@ class CliRunner(VerifyRunner):
                 "error": f"命令启动失败（{'shell' if use_shell else 'argv'} 形态）: {e}",
             }
 
-        async def _read_capped(stream):
+        # 输出累积容器挂在闭包外层（code-review item 7568acfb1ded）：超时
+        # 路径 wait_for 取消 _collect 连带取消 _read_capped 任务后，任务
+        # 局部的 chunks 列表（上限可达 _OUTPUT_READ_LIMIT）会随之不可达——
+        # 外层容器让已从管道读走的输出前缀在取消后仍可读回。append 在每次
+        # read 返回后同步发生，取消只在 await 点送达，取值时同步读容器、
+        # 不等待任务，所见即已读全量
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+
+        async def _read_capped(stream, chunks):
             # 读入侧硬上限：先收下当前块再判触顶，与 api_runner capture 的
             # 「append 后判 >=」同口径——恰好越界的那个读取块保留在证据前缀
             # 里，最终字节量至多为 limit + 一个读取块，触顶标注在收下越界块
@@ -463,7 +479,6 @@ class CliRunner(VerifyRunner):
             # 输出写满管道阻塞子进程、把退出语义改写成「写阻塞超时被强杀」，
             # 归因失真；排空丢弃只约束内存驻留，不改变子进程行为。触顶标注
             # 随结果透出供 judge 归因（code-review item cba7e5aca858）。
-            chunks = []
             total = 0
             read_truncated = False
             while True:
@@ -495,8 +510,8 @@ class CliRunner(VerifyRunner):
                     pass
 
         readers = [
-            asyncio.ensure_future(_read_capped(proc.stdout)),
-            asyncio.ensure_future(_read_capped(proc.stderr)),
+            asyncio.ensure_future(_read_capped(proc.stdout, stdout_chunks)),
+            asyncio.ensure_future(_read_capped(proc.stderr, stderr_chunks)),
         ]
         if stdin_data and proc.stdin is not None:
             readers.append(asyncio.ensure_future(_pump_stdin()))
@@ -527,11 +542,29 @@ class CliRunner(VerifyRunner):
             # 取消时传输层缓冲仍在 StreamReader 里，SIGKILL 后管道随即 EOF、
             # read 会很快返回——丢弃会让排障看不到子进程超时前打印了什么
             # （code-review item 728aacc5729c）。回收是尽力而为：读不到就
-            # 放弃（不因回收证据引入新故障），附进结果沿用 64KB 证据纪律
-            stdout_b = await self._drain_after_kill(proc.stdout)
-            stderr_b = await self._drain_after_kill(proc.stderr)
+            # 放弃（不因回收证据引入新故障），附进结果沿用 64KB 证据纪律。
+            # 回收两段叠加（code-review item 7568acfb1ded）：① _read_capped
+            # 已从管道读走、累积在闭包外层容器的前缀（reader 任务随 _collect
+            # 被 wait_for 取消，容器仍可达，取值不等待任务）；② 传输层缓冲
+            # 残余。已读走的前缀不再在缓冲里，两段不重叠；只靠②会丢掉上限
+            # 可达 _OUTPUT_READ_LIMIT 的前缀、judge 归因 hang 类缺陷时只看到
+            # 极小尾部。拼接与截断口径不变（_OUTPUT_READ_LIMIT 前缀 + 64KB
+            # 证据纪律）
+            stdout_b = b"".join(stdout_chunks) + await self._drain_after_kill(
+                proc.stdout
+            )
+            stderr_b = b"".join(stderr_chunks) + await self._drain_after_kill(
+                proc.stderr
+            )
             stdout, stdout_truncated = _truncate(stdout_b.decode(errors="replace"))
             stderr, stderr_truncated = _truncate(stderr_b.decode(errors="replace"))
+            # 两条前缀容器均为空＝超时前已读走的输出未能回收、证据只剩强杀
+            # 后缓冲残余（可能不完整），如实标注供 judge 归因，不冒充完整证据
+            evidence_note = (
+                "（输出证据为强杀后残余，可能不完整）"
+                if not stdout_chunks and not stderr_chunks
+                else ""
+            )
             return {
                 "success": False,
                 "action": "run",
@@ -539,6 +572,7 @@ class CliRunner(VerifyRunner):
                 "stdout": stdout,
                 "stderr": stderr,
                 "error": f"命令超时（>{timeout}s），已强杀进程组: {cmd}"
+                + evidence_note
                 + ("（stdout 已截断 64KB）" if stdout_truncated else "")
                 + ("（stderr 已截断 64KB）" if stderr_truncated else ""),
             }
