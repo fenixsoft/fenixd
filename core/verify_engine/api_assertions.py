@@ -18,6 +18,7 @@ jsonschema 依赖：json_schema 断言在验收期检查依赖（缺失=验收�
 jsonschema 缺失时 json_schema 断言在验收期报错打回）。
 """
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -55,7 +56,60 @@ from .regex_safety import (  # noqa: F401 - re-export 供既有引用面使用
     _compile_regex,
     _regex_lib,
     TimeoutRegexError,
+    has_nested_quantifier,
 )
+
+
+# ── json_schema 断言防护（pattern 回溯预检 + 校验超时兜底）────────
+
+# jsonschema.validate 的墙上时钟上限（秒）：schema 的 pattern/patternProperties
+# 正则由 jsonschema 内部用 stdlib re 无超时执行，病态 pattern（嵌套量词）对
+# 最长 1MB（api_runner._JSON_PARSE_LIMIT）的响应体可指数回溯、同步阻塞验证
+# 事件循环（本断言是 async 方法内的同步阻塞调用）；主防线是 validate 前的
+# 嵌套量词预检（_find_risky_schema_pattern），此处上限是兜底封顶——合法
+# schema 对 1MB 载荷的整体校验远低于此值（口径参考 regex_safety 单次正则
+# 匹配 1s 上限，整体校验是多次匹配之和故放宽一个量级）
+_JSON_SCHEMA_VALIDATE_TIMEOUT_SECONDS = 10.0
+
+
+def _find_risky_schema_pattern(node: Any, seen: "set[int] | None" = None) -> "str | None":
+    """递归遍历 schema 结构，返回首个嵌套量词高危形态的 pattern 正则。
+
+    JSON Schema 的正则载体是 ``pattern`` 键的值与 ``patternProperties`` 键
+    的键名；对 dict/list 无差别递归即覆盖 items/properties/
+    additionalProperties/allOf 等全部嵌套层，无须理解 schema 语义。命中按
+    「schema 非法」定向失败（fail-closed），与 regex_safety 对场景自有正则
+    的防护纪律对齐（code-review item 0e57ece6909c）。seen 以 id() 去重防环：
+    场景 YAML 的递归锚点（``&a {x: *a}``）经 safe_load 会产出自引用结构，
+    无环检测则预检在 run() 的 try 之外 RecursionError，比既有 validate 兜底
+    口径更糟。
+    """
+    if seen is None:
+        seen = set()
+    if isinstance(node, dict):
+        if id(node) in seen:
+            return None
+        seen.add(id(node))
+        for key, value in node.items():
+            if key == "pattern" and isinstance(value, str):
+                if has_nested_quantifier(value):
+                    return value
+            elif key == "patternProperties" and isinstance(value, dict):
+                for pat in value:
+                    if isinstance(pat, str) and has_nested_quantifier(pat):
+                        return pat
+            found = _find_risky_schema_pattern(value, seen)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        if id(node) in seen:
+            return None
+        seen.add(id(node))
+        for item in node:
+            found = _find_risky_schema_pattern(item, seen)
+            if found is not None:
+                return found
+    return None
 
 
 # ── JSONPath 求值（点路径子集）──────────────────────────────────
@@ -802,9 +856,40 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": error,
             }
+        risky = _find_risky_schema_pattern(schema)
+        if risky is not None:
+            # validate 前定向拦截：schema 的 pattern 正则由 jsonschema 内部用
+            # stdlib re 无超时执行，嵌套量词形态对最长 1MB 响应体可指数回溯、
+            # 挂起整个验证事件循环（口径对齐 regex_safety 对场景自有正则的
+            # 防护纪律；code-review item 0e57ece6909c）
+            return {
+                "type": "json_schema",
+                "pass": False,
+                "error": (
+                    "schema 非法: pattern 存在嵌套量词高危形态"
+                    f"（灾难性回溯）: {risky!r}"
+                ),
+            }
         try:
-            jsonschema.validate(payload, schema)
+            # 校验放线程 + 墙上时钟上限（兜底）：预检只拦结构典型的嵌套量词
+            # 形态，重叠分支等不典型病态 schema 仍可能长时间回溯；to_thread +
+            # wait_for 封顶阻塞窗口，超时后校验线程仍会跑完但事件循环不再被
+            # 阻塞（code-review item 0e57ece6909c）
+            await asyncio.wait_for(
+                asyncio.to_thread(jsonschema.validate, payload, schema),
+                timeout=_JSON_SCHEMA_VALIDATE_TIMEOUT_SECONDS,
+            )
             return {"type": "json_schema", "pass": True}
+        except asyncio.TimeoutError:
+            return {
+                "type": "json_schema",
+                "pass": False,
+                "error": (
+                    "schema 校验超时（>"
+                    f"{_JSON_SCHEMA_VALIDATE_TIMEOUT_SECONDS}s，疑似 schema "
+                    "pattern 灾难性回溯），已中止以保住验证事件循环"
+                ),
+            }
         except jsonschema.ValidationError as e:
             return {
                 "type": "json_schema",
@@ -940,6 +1025,14 @@ class ApiAssertionRunner:
                 limit = int(expected)
             except (TypeError, ValueError):
                 limit = None
+            else:
+                # 非整数值 float（如 100.5）显式拦下：int() 会静默向下截断、
+                # 实际生效上限被悄悄放宽，而同值字符串形态（"100.5"）走
+                # ValueError 报「非数字」——同一配置值两种书写形态裁决分叉；
+                # 整数值 float（100.0）放行，int() 对其无截断语义损失
+                # （code-review item b043b129be2c）
+                if isinstance(expected, float) and limit != expected:
+                    limit = None
         # fail-closed：非正上限（<=0）对任意非负延迟恒假（负上限恒假、0 上限
         # 对 latency_ms >= 0 恒假），静默 pass=False 且无定向归因会逼 judge 从
         # expected 自行推断是场景配置错误；口径对齐 sse_event_count 的负/零
@@ -970,6 +1063,14 @@ class ApiAssertionRunner:
             if non_positive_limit:
                 result["error"] = (
                     f"latency_under 的 expected 须为正整数毫秒（延迟上限）: {expected!r}"
+                )
+            elif isinstance(expected, float):
+                # 非整数值 float 的定向归因（口径对照下方「非数字」分支的
+                # fail-closed 结构）：文案点明截断放宽语义，作者可定位书写形态
+                # 问题（code-review item b043b129be2c）
+                result["error"] = (
+                    "latency_under 的 expected 须为整数毫秒（延迟上限），"
+                    f"非整数值浮点会被 int() 截断放宽上限: {expected!r}"
                 )
             else:
                 result["error"] = (

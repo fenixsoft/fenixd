@@ -710,6 +710,7 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         load_scenario_set,
         render_first_write_section,
     )
+    from core.verify_report import verification_report_path
 
     if diff is None:
         persisted = load_scenario_set(pipeline._context.project_root, spec_name)
@@ -720,13 +721,7 @@ def _render_scenario_change_section_to_report(pipeline, spec_name: str) -> None:
         section = render_change_section(diff)
     if not section.strip():
         return
-    report_path = (
-        Path(pipeline._context.project_root)
-        / "spec"
-        / "changes"
-        / spec_name
-        / "verification-report.md"
-    )
+    report_path = verification_report_path(pipeline._context.project_root, spec_name)
     if not report_path.exists():
         return
     try:

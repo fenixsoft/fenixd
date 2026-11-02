@@ -262,6 +262,11 @@ function useHoverFetch<T>(fetcher: () => Promise<T | null>) {
 }
 
 function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
+  // 可点击名称文字色走 token（code-review item 0bcd835938ef）：原硬编码
+  // #1677ff 是 colorPrimary 的亮色默认值，自定义主题换主色后与按钮/链接等
+  // token 驱动元素脱节；随 token 自适应（口径对齐 615f6f350d58，useToken
+  // 只能在组件内调用）
+  const { token } = theme.useToken();
   // 防抖/哨卫/卸载清理走共享 useHoverFetch（code-review item c7f6a8ebf9d8），
   // 本单元格只差取数函数（proposal ## Why 段）与浮层渲染
   const { open, value: why, onEnter, onLeave } = useHoverFetch<string>(
@@ -298,7 +303,7 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
             handleClick();
           }
         }}
-        style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#1677ff' }}
+        style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: token.colorPrimary }}
       >
         {record.name}
       </span>
@@ -398,7 +403,8 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
         tabIndex={0}
         onFocus={onEnter}
         onBlur={onLeave}
-        style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1677ff' }}
+        // 可点击文字色走 token（code-review item 0bcd835938ef，同 SpecNameCell）
+        style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: token.colorPrimary }}
       >
         {record.verify_done}/{record.verify_total}
       </span>
@@ -492,6 +498,9 @@ function PriorityCell({
   // 不再绕过菜单仍开优先级弹窗。
   editable?: boolean;
 }) {
+  // 可点击文字色走 token（code-review item 0bcd835938ef，同 SpecNameCell）；
+  // useToken MUST 在早退分支之前调用（hook 规则）
+  const { token } = theme.useToken();
   if (!editable || PRIORITY_TERMINAL.has(record.status || '')) {
     return muted ? (
       <Typography.Text type="secondary">P{record.priority ?? '?'}</Typography.Text>
@@ -512,7 +521,7 @@ function PriorityCell({
           onEdit(record);
         }
       }}
-      style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1677ff' }}
+      style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: token.colorPrimary }}
     >
       P{record.priority ?? '?'}
     </span>
@@ -685,14 +694,392 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
   );
 }
 
+// ── 「功能开发」分面视图（code-review item 99be1f625d52）──────────────────
+// 过滤条 + 桌面表格/移动卡片编排 + 列定义抽为 DevTab 子组件：主组件
+// SpecListPage 只保留数据流（SSE patch 队列 / URL 过滤写回 / 展开树闩锁）、
+// 弹窗状态与全部动作 handler，经 props 下行（回调收窄为 (record) => void、
+// state 与 setter 直传，形态与 SpecCardListProps 同款），行为零变化。
+interface DevTabProps {
+  project: string;
+  isMobile: boolean;
+  /** 加载失败提示：非空时本分面顶部渲染 Alert */
+  error: string;
+  q: string;
+  onQueryChange: (q: string) => void;
+  statusList: string[];
+  onStatusListChange: (v: string[]) => void;
+  type: TypeFilter;
+  onTypeChange: (v: TypeFilter) => void;
+  archivedOnly: boolean;
+  onArchivedOnlyChange: (v: boolean) => void;
+  tree: SpecSummaryNode[];
+  loading: boolean;
+  expandedKeys: readonly Key[];
+  onExpandedKeysChange: (keys: readonly Key[]) => void;
+  onDocView: (spec: string) => void;
+  onEditPriority: (record: SpecSummary) => void;
+  onMenu: (record: SpecSummary, key: string) => void;
+  menuItems: (record: SpecSummary) => MenuProps['items'];
+  onClearError: (record: SpecSummary) => void;
+}
+
+function DevTab({
+  project,
+  isMobile,
+  error,
+  q,
+  onQueryChange,
+  statusList,
+  onStatusListChange,
+  type,
+  onTypeChange,
+  archivedOnly,
+  onArchivedOnlyChange,
+  tree,
+  loading,
+  expandedKeys,
+  onExpandedKeysChange,
+  onDocView,
+  onEditPriority,
+  onMenu,
+  menuItems,
+  onClearError,
+}: DevTabProps) {
+  // 行底色/状态点/验证中文案色走 token（code-review item 615f6f350d58）：
+  // useToken 只能在组件内调用（同 SessionPanel.tsx 惯例）
+  const { token } = theme.useToken();
+  const toneDot = useToneDot();
+
+  // 九列 width 合计归一 100%（code-review item dafbe62b7e29）：原合计 110%
+  // （12+9+28+7+13+15+8+8+10），tableLayout='fixed' 且未启用 scroll.x 时超
+  // 额定宽依赖浏览器按比例归一；等比缩到 11+8+25+6+12+14+8+8+8=100，
+  // 列宽视觉权重不变。
+  const columns: ColumnsType<SpecSummary> = [
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: '11%',
+      sorter: (a: SpecSummary, b: SpecSummary) => (a.status || '').localeCompare(b.status || ''),
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      render: (v: string | null, record: SpecSummary) => {
+        const m = statusMeta(v || '');
+        return (
+          <Space size={4} wrap>
+            <Badge color={toneDot[m.tone]} text={m.label} />
+            <StatusWaitGroup record={record} />
+          </Space>
+        );
+      },
+    },
+    {
+      title: '模式',
+      dataIndex: 'mode',
+      key: 'mode',
+      width: '8%',
+      sorter: (a: SpecSummary, b: SpecSummary) => (a.mode || '').localeCompare(b.mode || ''),
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      // add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
+      // （code-review item 504cf2d4b647），fast-track 与 full 可辨识，存量无
+      // mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
+      render: (v: string | null | undefined) => <ModeTag mode={v} />,
+    },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: '25%',
+      sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
+      render: (_: string, record: SpecSummary) => (
+        <SpecNameCell project={project} record={record} />
+      ),
+    },
+    {
+      title: '优先级',
+      dataIndex: 'priority',
+      key: 'priority',
+      width: '6%',
+      sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
+      render: (_: number | null, record: SpecSummary) => (
+        <PriorityCell
+          record={record}
+          editable={!archivedOnly}
+          onEdit={onEditPriority}
+        />
+      ),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created',
+      key: 'created',
+      width: '12%',
+      sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
+      render: (v: string | null) => {
+        const d = v ? dayjs(v) : null;
+        return d && d.isValid() ? (
+          d.format('YYYY-MM-DD HH:mm:ss')
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        );
+      },
+    },
+    {
+      title: '任务进度',
+      key: 'task',
+      width: '14%',
+      // add-task-progress-verify-phase：排序键跟随显示值——verify 阶段按验证完成度，
+      // impl 阶段按任务完成度，消除「显示 A 排序按 B」错位。
+      // code-review item c3df4a612450：gen 出题阶段排序键同步 renderPercent
+      // （含 generation 分支），与单元格显示值一致。
+      sorter: (a: SpecSummary, b: SpecSummary) => progressSortPct(a) - progressSortPct(b),
+      render: (_: unknown, record: SpecSummary) => {
+        // 阶段感知推导单点在 phaseProgressOf（code-review item e1f8a359480d）：
+        // 与移动端卡片、排序键共用，本列不再各自内联 gen/计数分支。
+        const { percent: p, counter, isVerify, isGates, gen } = phaseProgressOf(record);
+        // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
+        // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
+        // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
+        // 仅 impl 分支参与渲染——verify 阶段 impl run 已结束，线索无意义。
+        const rp = record.run_progress;
+        const runAhead = !!rp && rp.done > record.task_done;
+        // run-progress-current：done=0 阶段也有进行中任务的观感
+        const runCurrent = rp?.current && rp.current.length > 0 ? rp.current : null;
+        // 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate；
+        // 该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，实现期间 agent 未必
+        // 立刻建 Task、历史 run 也可能无事件。run_activity 用「产物是否仍在写」
+        // 提供不依赖任务工具的存活线索，仅在无更细粒度线索（current）时兜底显示。
+        const runActive = !isVerify && !runCurrent && !!record.run_activity?.active;
+        // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
+        // 底轨随阶段同 ramp：verify 阶段 0/0 空条靠底轨读出「淡绿=验证未开始」，
+        // 否则与 impl 蓝色空条同观感，误读成任务没完成（add-task-progress-verify-phase 补充）。
+        return (
+          <div style={{ minWidth: 0 }}>
+            <Progress
+              percent={p}
+              size="small"
+              showInfo={false}
+              strokeColor={strokeColorFor(!!gen, isVerify, isGates)}
+              trailColor={trailColorFor(!!gen, isVerify, isGates)}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
+              {/* add-quality-gates-visibility：gates 阶段计数=门禁完成度，
+                  run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
+                  落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系。
+                  计数文案统一来自 phaseProgressOf 的 counter（阶段已分流）。 */}
+              <Typography.Text type="secondary" data-testid="task-progress-cell">
+                {counter}
+              </Typography.Text>
+              {/* 完成态文案与移动端卡片同口径（code-review item cf0a2e1103b9）：
+                  progress >= 100 显示「已完成」，两形态不再分叉 */}
+              <Typography.Text type="secondary">{progressText(p)}</Typography.Text>
+            </div>
+            {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
+              // run 层线索与计数换行分离（与 verify_current/gates_current 同款
+              // 二行结构统一）；marginLeft 4 保留 run 已汇报与进行中并存时的间距
+              <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                {runAhead && rp ? (
+                  <Typography.Text type="warning">
+                    run {rp.done}/{rp.total} 已汇报
+                  </Typography.Text>
+                ) : null}
+                {runCurrent ? (
+                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                    进行中 {runCurrent.join('、')}
+                  </Typography.Text>
+                ) : null}
+                {runActive ? (
+                  <Typography.Text type="warning" data-testid="run-activity-active">
+                    进行中
+                  </Typography.Text>
+                ) : null}
+              </div>
+            ) : null}
+            {isVerify && record.verify_current ? (
+              // 验证进行中文案走 colorSuccess（code-review item 615f6f350d58）：
+              // 与状态点 good tone 同源，暗色随 token
+              <div style={{ fontSize: 12, lineHeight: '18px', color: token.colorSuccess }}>
+                {record.verify_current}
+              </div>
+            ) : null}
+            {isGates && record.gates_current ? (
+              // add-quality-gates-visibility：gates 阶段辅助文案（running 门或
+              // failed 归因，后端非空才返回），橙字与进度条同色系（复用常量防漂移）
+              <div style={{ fontSize: 12, lineHeight: '18px', color: GATES_STROKE }}>
+                {record.gates_current}
+              </div>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    {
+      title: '验证',
+      key: 'verify',
+      width: '8%',
+      sorter: (a: SpecSummary, b: SpecSummary) =>
+        pct(a.verify_done, a.verify_total) - pct(b.verify_done, b.verify_total),
+      render: (_: unknown, record: SpecSummary) =>
+        record.verify_error ? (
+          <Tooltip title={record.verify_error}>
+            <Typography.Text type="danger">⚠ 验证异常</Typography.Text>
+          </Tooltip>
+        ) : (
+          <VerifyCell project={project} record={record} />
+        ),
+    },
+    {
+      title: '耗时',
+      dataIndex: 'total_duration',
+      key: 'duration',
+      width: '8%',
+      // 空值兜底（code-review item 826c6a25ac54）：total_duration 可选，
+      // 直接相减得 NaN 使排序不可预期；?? 0 归一。
+      sorter: (a: SpecSummary, b: SpecSummary) =>
+        (a.total_duration ?? 0) - (b.total_duration ?? 0),
+      render: (v: number) => fmtDuration(v),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: '8%',
+      onCell: () => ({ style: { paddingInline: 0 } }),
+      render: (_: unknown, record: SpecSummary) => (
+        <Space size={2}>
+          <Button type="link" size="small" onClick={() => onDocView(record.name)}>
+            文档
+          </Button>
+          <Dropdown
+            menu={{ items: menuItems(record), onClick: ({ key }) => onMenu(record, key) }}
+            placement="bottomRight"
+            trigger={['click']}
+          >
+            <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
+          </Dropdown>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <>
+      {error ? (
+        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
+      ) : null}
+      <Card variant="borderless">
+        <div
+          style={{
+            marginBottom: 16,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <Space wrap size={8}>
+            <Input.Search
+              placeholder="搜索名称…"
+              allowClear
+              value={q}
+              onChange={(e) => onQueryChange(e.target.value)}
+              style={{ width: 200 }}
+            />
+            <Select
+              mode="multiple"
+              showSearch={false}
+              allowClear
+              placeholder="全部状态"
+              maxTagCount="responsive"
+              value={statusList}
+              onChange={onStatusListChange}
+              style={{ minWidth: 200, maxWidth: 300 }}
+              options={LIST_STATUSES.map((k) => ({ value: k, label: statusMeta(k).label }))}
+            />
+            <Radio.Group
+              optionType="button"
+              size="middle"
+              value={type}
+              onChange={(e) => onTypeChange(e.target.value as TypeFilter)}
+              options={[
+                { label: '全部', value: '' },
+                { label: '进行中', value: 'active' },
+                { label: '已完成', value: 'completed' },
+              ]}
+            />
+          </Space>
+          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤；靠右显示 */}
+          <Radio.Group
+            style={{ marginLeft: 'auto' }}
+            optionType="button"
+            size="middle"
+            value={archivedOnly}
+            onChange={(e) => onArchivedOnlyChange(Boolean(e.target.value))}
+            options={[
+              { label: '未归档', value: false },
+              { label: '已归档', value: true },
+            ]}
+          />
+        </div>
+        {isMobile ? (
+          <SpecCardList
+            data={tree}
+            project={project}
+            loading={loading}
+            onDocView={onDocView}
+            onMenu={onMenu}
+            menuItems={menuItems}
+            onClearError={onClearError}
+            archivedOnly={archivedOnly}
+          />
+        ) : (
+          <Table
+            rowKey="name"
+            tableLayout="fixed"
+            // 未完成（非 done/pushed 终态）行加浅蓝底：内联样式落在 tr 上，
+            // antd 的 cell 级 hover 背景（cell-row-hover）不受影响照常生效。
+            // 底色走 colorPrimaryBg（code-review item 615f6f350d58）：原硬编码
+            // rgb(250,250,255) 在暗色主题下整行亮底刺眼，随 token 自适应
+            onRow={(record) => ({
+              style: PRIORITY_TERMINAL.has(record.status || '')
+                ? undefined
+                : { backgroundColor: token.colorPrimaryBg },
+            })}
+            columns={columns}
+            dataSource={tree}
+            loading={loading}
+            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+            expandable={{
+              columnWidth: 28,
+              expandedRowKeys: expandedKeys,
+              onExpandedRowsChange: onExpandedKeysChange,
+              // 额外信息（error）行内下方展开，含清除按钮（对齐 v1 spec-info-row）
+              expandedRowRender: (record: SpecSummary) =>
+                record.error ? (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                      信息
+                    </Tag>
+                    <Typography.Text style={{ flex: 1 }}>{record.error}</Typography.Text>
+                    <Button size="small" onClick={() => void onClearError(record)}>
+                      清除
+                    </Button>
+                  </div>
+                ) : null,
+              rowExpandable: (record: SpecSummary) => !!record.error,
+            }}
+          />
+        )}
+      </Card>
+    </>
+  );
+}
+
 export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
   const isMobile = useIsMobile();
-  // 行底色/状态点/验证中文案色走 token（code-review item 615f6f350d58）：原
-  // 硬编码色值在暗色主题下亮底刺眼，改随语义 token 自适应；useToken 只能在
-  // 组件内调用（同 SessionPanel.tsx 惯例）
-  const { token } = theme.useToken();
-  const toneDot = useToneDot();
+  // 行底色/状态点/验证中文案色的 token 消费随「功能开发」分面视图下沉
+  // DevTab（code-review item 99be1f625d52），主组件不再直接读 token
   const { message, modal } = App.useApp();
   // add-spec-list-filter-stickiness：过滤状态持久化到 URL 查询参数（replace 写回）
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1269,214 +1656,6 @@ export default function SpecListPage() {
     }
   };
 
-  const columns: ColumnsType<SpecSummary> = [
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: '12%',
-      sorter: (a: SpecSummary, b: SpecSummary) => (a.status || '').localeCompare(b.status || ''),
-      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      render: (v: string | null, record: SpecSummary) => {
-        const m = statusMeta(v || '');
-        return (
-          <Space size={4} wrap>
-            <Badge color={toneDot[m.tone]} text={m.label} />
-            <StatusWaitGroup record={record} />
-          </Space>
-        );
-      },
-    },
-    {
-      title: '模式',
-      dataIndex: 'mode',
-      key: 'mode',
-      width: '9%',
-      sorter: (a: SpecSummary, b: SpecSummary) => (a.mode || '').localeCompare(b.mode || ''),
-      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      // add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
-      // （code-review item 504cf2d4b647），fast-track 与 full 可辨识，存量无
-      // mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
-      render: (v: string | null | undefined) => <ModeTag mode={v} />,
-    },
-    {
-      title: '名称',
-      dataIndex: 'name',
-      key: 'name',
-      width: '28%',
-      sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
-      render: (_: string, record: SpecSummary) => (
-        <SpecNameCell project={name} record={record} />
-      ),
-    },
-    {
-      title: '优先级',
-      dataIndex: 'priority',
-      key: 'priority',
-      width: '7%',
-      sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
-      render: (_: number | null, record: SpecSummary) => (
-        <PriorityCell
-          record={record}
-          editable={!archivedOnly}
-          onEdit={(r) => setPriorityEdit({ spec: r.name, value: r.priority ?? 5 })}
-        />
-      ),
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created',
-      key: 'created',
-      width: '13%',
-      sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
-      render: (v: string | null) => {
-        const d = v ? dayjs(v) : null;
-        return d && d.isValid() ? (
-          d.format('YYYY-MM-DD HH:mm:ss')
-        ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
-        );
-      },
-    },
-    {
-      title: '任务进度',
-      key: 'task',
-      width: '15%',
-      // add-task-progress-verify-phase：排序键跟随显示值——verify 阶段按验证完成度，
-      // impl 阶段按任务完成度，消除「显示 A 排序按 B」错位。
-      // code-review item c3df4a612450：gen 出题阶段排序键同步 renderPercent
-      // （含 generation 分支），与单元格显示值一致。
-      sorter: (a: SpecSummary, b: SpecSummary) => progressSortPct(a) - progressSortPct(b),
-      render: (_: unknown, record: SpecSummary) => {
-        // 阶段感知推导单点在 phaseProgressOf（code-review item e1f8a359480d）：
-        // 与移动端卡片、排序键共用，本列不再各自内联 gen/计数分支。
-        const { percent: p, counter, isVerify, isGates, gen } = phaseProgressOf(record);
-        // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
-        // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
-        // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
-        // 仅 impl 分支参与渲染——verify 阶段 impl run 已结束，线索无意义。
-        const rp = record.run_progress;
-        const runAhead = !!rp && rp.done > record.task_done;
-        // run-progress-current：done=0 阶段也有进行中任务的观感
-        const runCurrent = rp?.current && rp.current.length > 0 ? rp.current : null;
-        // 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate；
-        // 该工具族虽经 CLAUDE_CODE_ENABLE_TODO_TOOLS=1 恢复，实现期间 agent 未必
-        // 立刻建 Task、历史 run 也可能无事件。run_activity 用「产物是否仍在写」
-        // 提供不依赖任务工具的存活线索，仅在无更细粒度线索（current）时兜底显示。
-        const runActive = !isVerify && !runCurrent && !!record.run_activity?.active;
-        // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
-        // 底轨随阶段同 ramp：verify 阶段 0/0 空条靠底轨读出「淡绿=验证未开始」，
-        // 否则与 impl 蓝色空条同观感，误读成任务没完成（add-task-progress-verify-phase 补充）。
-        return (
-          <div style={{ minWidth: 0 }}>
-            <Progress
-              percent={p}
-              size="small"
-              showInfo={false}
-              strokeColor={strokeColorFor(!!gen, isVerify, isGates)}
-              trailColor={trailColorFor(!!gen, isVerify, isGates)}
-            />
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-              {/* add-quality-gates-visibility：gates 阶段计数=门禁完成度，
-                  run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
-                  落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系。
-                  计数文案统一来自 phaseProgressOf 的 counter（阶段已分流）。 */}
-              <Typography.Text type="secondary" data-testid="task-progress-cell">
-                {counter}
-              </Typography.Text>
-              {/* 完成态文案与移动端卡片同口径（code-review item cf0a2e1103b9）：
-                  progress >= 100 显示「已完成」，两形态不再分叉 */}
-              <Typography.Text type="secondary">{progressText(p)}</Typography.Text>
-            </div>
-            {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
-              // run 层线索与计数换行分离（与 verify_current/gates_current 同款
-              // 二行结构统一）；marginLeft 4 保留 run 已汇报与进行中并存时的间距
-              <div style={{ fontSize: 12, lineHeight: '18px' }}>
-                {runAhead && rp ? (
-                  <Typography.Text type="warning">
-                    run {rp.done}/{rp.total} 已汇报
-                  </Typography.Text>
-                ) : null}
-                {runCurrent ? (
-                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
-                    进行中 {runCurrent.join('、')}
-                  </Typography.Text>
-                ) : null}
-                {runActive ? (
-                  <Typography.Text type="warning" data-testid="run-activity-active">
-                    进行中
-                  </Typography.Text>
-                ) : null}
-              </div>
-            ) : null}
-            {isVerify && record.verify_current ? (
-              // 验证进行中文案走 colorSuccess（code-review item 615f6f350d58）：
-              // 与状态点 good tone 同源，暗色随 token
-              <div style={{ fontSize: 12, lineHeight: '18px', color: token.colorSuccess }}>
-                {record.verify_current}
-              </div>
-            ) : null}
-            {isGates && record.gates_current ? (
-              // add-quality-gates-visibility：gates 阶段辅助文案（running 门或
-              // failed 归因，后端非空才返回），橙字与进度条同色系（复用常量防漂移）
-              <div style={{ fontSize: 12, lineHeight: '18px', color: GATES_STROKE }}>
-                {record.gates_current}
-              </div>
-            ) : null}
-          </div>
-        );
-      },
-    },
-    {
-      title: '验证',
-      key: 'verify',
-      width: '8%',
-      sorter: (a: SpecSummary, b: SpecSummary) =>
-        pct(a.verify_done, a.verify_total) - pct(b.verify_done, b.verify_total),
-      render: (_: unknown, record: SpecSummary) =>
-        record.verify_error ? (
-          <Tooltip title={record.verify_error}>
-            <Typography.Text type="danger">⚠ 验证异常</Typography.Text>
-          </Tooltip>
-        ) : (
-          <VerifyCell project={name} record={record} />
-        ),
-    },
-    {
-      title: '耗时',
-      dataIndex: 'total_duration',
-      key: 'duration',
-      width: '8%',
-      // 空值兜底（code-review item 826c6a25ac54）：total_duration 可选，
-      // 直接相减得 NaN 使排序不可预期；?? 0 归一。
-      sorter: (a: SpecSummary, b: SpecSummary) =>
-        (a.total_duration ?? 0) - (b.total_duration ?? 0),
-      render: (v: number) => fmtDuration(v),
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: '10%',
-      onCell: () => ({ style: { paddingInline: 0 } }),
-      render: (_: unknown, record: SpecSummary) => (
-        <Space size={2}>
-          <Button type="link" size="small" onClick={() => setDocView(record.name)}>
-            文档
-          </Button>
-          <Dropdown
-            menu={{ items: specMenuItems(record), onClick: ({ key }) => onSpecMenu(record, key) }}
-            placement="bottomRight"
-            trigger={['click']}
-          >
-            <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
-          </Dropdown>
-        </Space>
-      ),
-    },
-  ];
-
   return (
     <PageContainer
       breadcrumbRender={false}
@@ -1506,115 +1685,31 @@ export default function SpecListPage() {
             key: 'dev',
             label: '功能开发',
             children: (
-              <>
-                {error ? (
-                  <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
-                ) : null}
-                <Card variant="borderless">
-        <div
-          style={{
-            marginBottom: 16,
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
-          <Space wrap size={8}>
-          <Input.Search
-            placeholder="搜索名称…"
-            allowClear
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            style={{ width: 200 }}
-          />
-          <Select
-            mode="multiple"
-            showSearch={false}
-            allowClear
-            placeholder="全部状态"
-            maxTagCount="responsive"
-            value={statusList}
-            onChange={setStatusList}
-            style={{ minWidth: 200, maxWidth: 300 }}
-            options={LIST_STATUSES.map((k) => ({ value: k, label: statusMeta(k).label }))}
-          />
-          <Radio.Group
-            optionType="button"
-            size="middle"
-            value={type}
-            onChange={(e) => setType(e.target.value as TypeFilter)}
-            options={[
-              { label: '全部', value: '' },
-              { label: '进行中', value: 'active' },
-              { label: '已完成', value: 'completed' },
-            ]}
-          />
-          </Space>
-          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤；靠右显示 */}
-          <Radio.Group
-            style={{ marginLeft: 'auto' }}
-            optionType="button"
-            size="middle"
-            value={archivedOnly}
-            onChange={(e) => setArchivedOnly(Boolean(e.target.value))}
-            options={[
-              { label: '未归档', value: false },
-              { label: '已归档', value: true },
-            ]}
-          />
-        </div>
-        {isMobile ? (
-          <SpecCardList
-            data={tree}
-            project={name}
-            loading={loading}
-            onDocView={setDocView}
-            onMenu={onSpecMenu}
-            menuItems={specMenuItems}
-            onClearError={handleClearError}
-            archivedOnly={archivedOnly}
-          />
-        ) : (
-          <Table
-            rowKey="name"
-            tableLayout="fixed"
-            // 未完成（非 done/pushed 终态）行加浅蓝底：内联样式落在 tr 上，
-            // antd 的 cell 级 hover 背景（cell-row-hover）不受影响照常生效。
-            // 底色走 colorPrimaryBg（code-review item 615f6f350d58）：原硬编码
-            // rgb(250,250,255) 在暗色主题下整行亮底刺眼，随 token 自适应
-            onRow={(record) => ({
-              style: PRIORITY_TERMINAL.has(record.status || '')
-                ? undefined
-                : { backgroundColor: token.colorPrimaryBg },
-            })}
-          columns={columns}
-          dataSource={tree}
-          loading={loading}
-          pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-          expandable={{
-            columnWidth: 28,
-            expandedRowKeys: expandedKeys,
-            onExpandedRowsChange: (keys) => setExpandedKeys(keys),
-            // 额外信息（error）行内下方展开，含清除按钮（对齐 v1 spec-info-row）
-            expandedRowRender: (record: SpecSummary) =>
-              record.error ? (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-                    信息
-                  </Tag>
-                  <Typography.Text style={{ flex: 1 }}>{record.error}</Typography.Text>
-                  <Button size="small" onClick={() => void handleClearError(record)}>
-                    清除
-                  </Button>
-                </div>
-              ) : null,
-            rowExpandable: (record: SpecSummary) => !!record.error,
-          }}
-        />
-        )}
-              </Card>
-              </>
+              // 「功能开发」分面视图抽为 DevTab（code-review item 99be1f625d52）：
+              // 过滤条/表格/移动卡片编排与列定义随子件下沉，主组件只保留数据流
+              // 与动作 handler，经 props 下行
+              <DevTab
+                project={name}
+                isMobile={isMobile}
+                error={error}
+                q={q}
+                onQueryChange={setQ}
+                statusList={statusList}
+                onStatusListChange={setStatusList}
+                type={type}
+                onTypeChange={setType}
+                archivedOnly={archivedOnly}
+                onArchivedOnlyChange={setArchivedOnly}
+                tree={tree}
+                loading={loading}
+                expandedKeys={expandedKeys}
+                onExpandedKeysChange={setExpandedKeys}
+                onDocView={setDocView}
+                onEditPriority={(r) => setPriorityEdit({ spec: r.name, value: r.priority ?? 5 })}
+                onMenu={onSpecMenu}
+                menuItems={specMenuItems}
+                onClearError={handleClearError}
+              />
             ),
           },
           {

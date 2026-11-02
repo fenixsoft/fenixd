@@ -1089,7 +1089,8 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
 
     映射约定（键名严格按 prompt_builder._CODE_FIX_ITEM_FIELDS 白名单）：
     - 场景 ID → item_id
-    - 涉及文件 → file（bug 行级定位文件优先，judge 影响面/归因兜底）
+    - 涉及文件 → file（bug 行级定位文件优先，judge 影响面兜底仅限唯一失败
+      场景；多场景 file 留空，完整影响面清单随 description 携带）
     - 根因行号 → line（自 bugs[].location / root_cause 行级定位解析，无行级省略）
     - 根因说明 → description（bugs[].root_cause 优先，场景 attribution 兜底，
       拼接 bug 描述与证据）
@@ -1101,7 +1102,7 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
     bugs = _load_judge_bugs(pipeline, spec_name)
     scenarios = _report_scenario_map(pipeline, spec_name)
     items: list = []
-    for idx, sid in enumerate(failed_ids):
+    for sid in failed_ids:
         sid = str(sid)
         if not sid:
             continue
@@ -1111,12 +1112,16 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
         file, line = _parse_line_level(bug.get("location"))
         if not line:
             file, line = _parse_line_level(root_cause)
-        if not file:
-            if len(affected) == len(failed_ids):
-                file = affected[idx]
-            elif affected:
-                file = affected[0]
         description_parts = []
+        if not file:
+            # 影响面文件与失败场景无位置对应关系（code-review 5084894b255d）：
+            # 仅唯一失败场景可安全共享 affected[0]（单场景归并影响面）；多场景
+            # 时放弃按位对位猜测——数量巧合相等≠顺序/归属一致，file 留空、
+            # 由 description 携带完整影响面清单，避免给 code-fix 注入伪定位。
+            if len(failed_ids) == 1 and affected:
+                file = affected[0]
+            elif affected:
+                description_parts.append("影响面：" + "、".join(affected))
         if root_cause:
             description_parts.append(f"根因：{root_cause}")
         bug_desc = str(bug.get("description") or "").strip()
@@ -1357,12 +1362,21 @@ def dispatch_pre_freeze_fastlane(pipeline, spec_name) -> dict:
         _execute_agent = ctx.agent_runner._execute_agent
     except AttributeError as e:
         # 接线故障（对齐 minor-defect 承接同款口径）：ERROR 留痕后回落既有
-        # 闸门路径，不递增任何计数器（family 回落路径单点记账）。
+        # 闸门路径，不递增任何计数器（family 回落路径单点记账）。判定记录
+        # 与同函数其余回落分支同落盘（code-review af7452b5d571）：曾尝试
+        # 分流但因接线故障回落须留审计痕迹，不脱离判定文件数据面。
         ctx.logger.error(
             "pm_engine",
             f"冻结前分流接线故障 '{spec_name}': ctx.agent_runner 不可用（{e!r}）"
             "——回落既有闸门路径，请检查 PipelineContext.agent_runner 绑定",
         )
+        record_decision(pipeline, spec_name, {
+            "eligible": True,
+            "path": "full-round",
+            "stage": "pre-freeze-failed",
+            "reason": f"冻结前分流接线故障: {e!r}（回落闸门路径）",
+            "failed_id": failed_ids[0] if failed_ids else None,
+        })
         return {"dispatched": False, "converged": False, "matched": True,
                 "reason": f"接线故障: {e!r}"}
     try:

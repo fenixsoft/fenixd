@@ -141,10 +141,13 @@ class VerifyEngine:
             # memoize 命中同样刷新 base_url（code-review item 502246108731）：
             # 与 run() 入口重置探针 memoize 的复用纪律对齐——引擎实例复用跑
             # 第二轮时，首轮注入的地址已 stale（首轮无实例为空串而复用轮有
-            # 实例、或两轮实例地址变化），按新建分支同口径重注入，复用
-            # Runner 不带旧/空地址执行。
-            if self.base_url:
-                self._runners[kind].base_url = self.base_url
+            # 实例、两轮实例地址变化、或首轮有实例而复用轮无实例），按新建
+            # 分支同口径重注入。此处无条件赋值：空串与新建分支 __init__ 缺省
+            # 等价（各 Runner 对空 base_url 的改写/注入均为无害空操作——
+            # cli _build_env 的 if base_url 守卫、api rewrite_origin 空串直
+            # 返原 URL），「有→无」序列由此回落为空操作注入，复用 Runner
+            # 不带旧地址执行（code-review item 2e5b7ffe9151）。
+            self._runners[kind].base_url = self.base_url
         return self._runners[kind]
 
     # ── 主入口 ────────────────────────────────────────────────
@@ -653,6 +656,9 @@ class VerifyEngine:
         overall_healthy = bool(probe.get("healthy", True))
         per_kind = probe.get("per_kind") or {}
         blocked_env = 0
+        # 本轮真被降级（原 status==fail → blocked-env）的上游 id：依赖失败
+        # 传播下游口径统一标注的判定源（code-review item 38d274684a9a）。
+        downgraded_ids: set[str] = set()
         for r in results:
             # 混合 kind 候选集按各自 kind 的探针结论结算（逐组套用，避免
             # 单一探针裁决全部候选）；该 kind 未单独探针时回落整轮汇总结论。
@@ -665,10 +671,38 @@ class VerifyEngine:
             )
             effective = finalize_scenario_status(r, healthy)
             if effective == "blocked-env":
+                # 赋值前判定原档位：预先 blocked-env 的合成跳过结果
+                # （dependency_skipped）非本次降级，不进 downgraded_ids。
+                was_fail = r.get("status") == "fail"
                 r["status"] = "blocked-env"
                 r["env_blocked"] = True
                 r["env_probe_detail"] = detail
                 blocked_env += 1
+                if was_fail:
+                    downgraded_ids.add(str(r.get("scenario_id", "")))
+
+        # 依赖失败传播下游口径统一（code-review item 38d274684a9a）：上游
+        # fail 在此被降级 blocked-env 后，_execute_parallel 合成的下游跳过
+        # 结果 error 文案仍断言「依赖场景失败，未执行」，归因表述与上游
+        # 最终定性矛盾，judge/人工需二次核对两字段才能还原真相。此处向
+        # 级联链条上的下游追加结构化标注 upstream_blocked_env（沿
+        # skipped_depends_on 闭包传递，覆盖多级级联），供判读方直接识别
+        # 「依赖失败实为环境阻塞」；不改写既有文案——归一化管道的依赖级
+        # 联同文豁免依赖该文案逐字相同（tests 已钉），文案层失真由标注补偿。
+        if downgraded_ids:
+            changed = True
+            while changed:
+                changed = False
+                for d in results:
+                    if not d.get("dependency_skipped") or d.get("upstream_blocked_env"):
+                        continue
+                    if any(
+                        dep in downgraded_ids
+                        for dep in (d.get("skipped_depends_on") or [])
+                    ):
+                        d["upstream_blocked_env"] = True
+                        downgraded_ids.add(str(d.get("scenario_id", "")))
+                        changed = True
 
         self.logger.info(
             "verify_engine",

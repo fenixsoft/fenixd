@@ -3202,7 +3202,29 @@ class VerificationPipeline:
         return True, len(scenarios)
 
     def _run_three_stage_verification(self, spec_name: str, _repair_depth: int = 0):
-        """三步验证流水线主逻辑。"""
+        """三步验证流水线主逻辑（入口包装，code-review item 91a5a6198931）。
+
+        主体在 _run_three_stage_verification_body：其早退 return 十余处，三个按
+        spec_name 键控的实例字典侧车（_stage2_scenarios_override /
+        _stage2_user_blocked / _replan_error_format_class）此前依赖各早退分支
+        逐点手动 pop，已两度漏补（code-review item 88d58ec1565d 补漏）。本包装
+        以 try/finally 在唯一出口一次性清位——任何早退/异常路径之后三个侧车
+        不再残留该 spec 的键，对不再进入验证轮的 spec 不再随行携带整份场景
+        列表侧车常驻进程内存。轮内消费语义零变化：三个侧车在本流程内的全部
+        读点（_load_frozen_or_escalate 写入 → _execute_stage2 入口一次性消费、
+        _replan_feedback_text 格式类分支读取、B4 门禁 user_blocked 读取）均
+        发生在 finally 触发之前；读侧缺省兜底、消费点入口 pop 与散布的防御性
+        pop/set 全部保留（与 finally 清位幂等共存）。
+        """
+        try:
+            return self._run_three_stage_verification_body(spec_name, _repair_depth)
+        finally:
+            self.__dict__.get("_stage2_scenarios_override", {}).pop(spec_name, None)
+            self.__dict__.get("_stage2_user_blocked", {}).pop(spec_name, None)
+            self.__dict__.get("_replan_error_format_class", {}).pop(spec_name, None)
+
+    def _run_three_stage_verification_body(self, spec_name: str, _repair_depth: int = 0):
+        """三步验证流水线主逻辑（主体；早退侧车清位由入口包装 finally 承担）。"""
         # 入口状态判据：非 testing → 丢弃本流水线结果（D6，见 _check_entry_status）
         if not self._check_entry_status(spec_name):
             return

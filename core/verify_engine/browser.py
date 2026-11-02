@@ -1511,6 +1511,7 @@ class BrowserManager:
                             "success": False,
                             "action": action,
                             "target": target,
+                            "error_type": "invalid_dialog_mode",
                             "error": f"dialog 模式无效: {dialog_mode}（应为 accept/dismiss）",
                         }
                     self._register_dialog_handler(
@@ -1596,6 +1597,7 @@ class BrowserManager:
                         "success": False,
                         "action": action,
                         "target": target,
+                        "error_type": "invalid_drag_config",
                         "error": "drag 缺少目标选择器（value 或 value.to）",
                     }
                 via_sel = cfg.get("via", "")
@@ -1668,6 +1670,7 @@ class BrowserManager:
                         "success": False,
                         "action": action,
                         "target": target,
+                        "error_type": "element_not_found_or_not_actionable",
                         "error": f"源元素不可见: {target}",
                     }
                 to_locator = page.locator(to_sel).first
@@ -1678,6 +1681,7 @@ class BrowserManager:
                         "success": False,
                         "action": action,
                         "target": target,
+                        "error_type": "element_not_found_or_not_actionable",
                         "error": f"目标元素不可见: {to_sel}",
                     }
 
@@ -1730,6 +1734,7 @@ class BrowserManager:
                     "success": False,
                     "action": action,
                     "target": target,
+                    "error_type": "unsupported_action",
                     "error": f"不支持的操作: {action}",
                 }
 

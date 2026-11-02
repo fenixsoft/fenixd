@@ -574,18 +574,22 @@ def _atomic_write_text(path: Path, data: str) -> None:
         raise
 
 
+def _progress_dir(project_root: Path, spec_name: str) -> Path:
+    """verify-progress 下该 spec 的落盘目录（净化口径同 path_safety.safe_component）。"""
+    return (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+    )
+
+
 def write_findings(project_root: Path, spec_name: str, findings: Sequence[StaticFinding]) -> None:
     """findings 覆盖写 ``.fenix/verify-progress/<spec>/scenario_static_findings.json``。
 
     写失败仅 WARNING，不阻断验证（fail-open）。
     """
-    target = (
-        Path(project_root)
-        / ".fenix"
-        / "verify-progress"
-        / safe_component(spec_name)
-        / "scenario_static_findings.json"
-    )
+    target = _progress_dir(project_root, spec_name) / "scenario_static_findings.json"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = [f.to_dict() for f in findings]
@@ -602,13 +606,7 @@ def load_findings(project_root: Path, spec_name: str) -> list[dict]:
 
     文件缺失/损坏/非 list → 返回空列表（零注入，fail-open）。
     """
-    path = (
-        Path(project_root)
-        / ".fenix"
-        / "verify-progress"
-        / safe_component(spec_name)
-        / "scenario_static_findings.json"
-    )
+    path = _progress_dir(project_root, spec_name) / "scenario_static_findings.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
@@ -822,13 +820,7 @@ def write_contract_findings(project_root: Path, spec_name: str, findings: Sequen
     与 scenario 静态 findings 文件名分离（design D4：命名空间隔离比混表干净，
     注入段各自独立）。写失败仅 WARNING，不阻断出题（fail-open）。
     """
-    target = (
-        Path(project_root)
-        / ".fenix"
-        / "verify-progress"
-        / safe_component(spec_name)
-        / CONTRACT_FINDINGS_FILENAME
-    )
+    target = _progress_dir(project_root, spec_name) / CONTRACT_FINDINGS_FILENAME
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(

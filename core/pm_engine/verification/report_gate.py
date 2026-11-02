@@ -260,8 +260,10 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     _primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
     try:
         require_role = result_path.resolve() == _shared.resolve()
-    except OSError:
-        # resolve 失败（如父目录被并发删除）→ 无法确认路径归属时按更严的
+    except (OSError, RuntimeError):
+        # resolve 失败（如父目录被并发删除）或符号链接循环（Python 3.6+
+        # non-strict resolve 对 symlink loop 抛 RuntimeError 而非 OSError，
+        # 本仓 Python 3.10 实测）→ 无法确认路径归属时按更严的
         # 共享文件口径要求 role=verifier（fail-closed，code-review item
         # c82fa3056ecc）：宽松豁免会让 role 门在异常路径整体失效，与 R1
         # 「共享文件 role≠verifier/缺 role 一律不采信」方向相反。

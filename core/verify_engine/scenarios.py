@@ -15,10 +15,9 @@ from pathlib import Path
 
 from .fs_ops import atomic_write_json
 from .regex_safety import (
-    _compile_regex,
-    _has_nested_quantifier,
-    _regex_lib,
+    compile_regex,
     has_nested_quantifier,
+    regex_lib,
 )
 
 # 旁路 getLogger 守卫（test_logger_no_bypass）：core/ 内 MUST 用 fenixd.
@@ -467,9 +466,9 @@ def url_matches_network_pattern(url: str, pattern: str) -> bool:
         # query 串等）上可指数回溯，长时间占住引擎事件循环。regex 库可用时
         # search 带 1s 时限，超时按不匹配收场；库缺失时回退嵌套量词高危形态
         # 预检拒绝（与 cli_assertions 同款），再退 stdlib re。
-        if _regex_lib is None and _has_nested_quantifier(body):
+        if regex_lib is None and has_nested_quantifier(body):
             return False
-        compiled, _regex_error = _compile_regex(body)
+        compiled, _regex_error = compile_regex(body)
         if compiled is None:
             # 编译失败（非法正则）：按不匹配收场，引擎侧永不抛（防御契约）
             return False
@@ -1823,14 +1822,30 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
                     f"场景'{scenario.id}': depends_on[{i}] 必须为场景ID字符串，"
                     f"收到 {type(dep).__name__}"
                 )
-    # steps 为 None 的直构守卫（code-review item d47577e9058f）：数据类缺省
-    # 与 from_dict 读端均归一空列表，None 只能来自直构实例——下方 per-kind
-    # 词表校验的 enumerate(scenario.steps) 会对 None 抛 TypeError 穿出 run()
-    # 验收门，此处补字段级报错后立即返回，走「场景验收失败」出口落报告
-    # （code-review item d2631ff09933：缺提前 return 时报错追加后仍在
-    # enumerate(None) 处抛 TypeError，守卫承诺的出口实际不生效）。
-    if scenario.steps is None:
-        errors.append(f"场景'{scenario.id}': steps 必须为步骤列表，收到 None")
+    # steps 形态守卫（code-review item d47577e9058f None 守卫、3544bfd68ff0
+    # 升级为非 list 形态守卫）：数据类缺省与 from_dict 读端均归一空列表，
+    # 非 list 只能来自直构实例显式置空/修坏——None 时下方 per-kind 词表校验
+    # 的 enumerate(scenario.steps) 抛 TypeError，dict/str 时迭代键/字符后取
+    # .action 抛 AttributeError，均穿出 run() 验收门、不落「场景验收失败」
+    # 报告。非 list 一律字段级报错后立即返回（口径同 depends_on 的
+    # 301443cb108c；code-review item d2631ff09933：缺提前 return 时守卫承诺
+    # 的出口实际不生效）。
+    if not isinstance(scenario.steps, list):
+        errors.append(
+            f"场景'{scenario.id}': steps 必须为步骤列表，"
+            f"收到 {type(scenario.steps).__name__}"
+        )
+        return errors
+    # assertions 形态守卫（code-review item 3544bfd68ff0）：from_dict 读端
+    # 归一空列表，非 list 只能来自直构实例——dict/str 会在下方 per-kind
+    # 词表校验的 enumerate(scenario.assertions) 迭代键/字符后取属性抛
+    # AttributeError 穿出 run() 验收门。与 steps/depends_on 防线同口径：
+    # 非 list 一律字段级报错后立即返回，走「场景验收失败」出口落报告。
+    if not isinstance(scenario.assertions, list):
+        errors.append(
+            f"场景'{scenario.id}': assertions 必须为断言列表，"
+            f"收到 {type(scenario.assertions).__name__}"
+        )
         return errors
     # kind 形态守卫（code-review item c74c42575c7c）：kind 为 dict/list 等不
     # 可哈希形态（冻结文件被手工修坏）时，对 set 求成员先抛 TypeError，被

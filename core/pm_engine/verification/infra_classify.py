@@ -262,6 +262,10 @@ def _read_infra_retry_max(pipeline) -> int:
         # is_verifier_process_death 同款防御口径（bool 虽为 int 子类不参与）。
         if isinstance(value, bool):
             return INFRA_RETRY_MAX_DEFAULT
+        # 数字字符串经 int() 放行（"3"→3）、浮点截断（3.7→3）属配置面宽容
+        # 口径，与 is_verifier_process_death / _summary_real_int 的结果脏值面
+        # 严格口径有意区分（来源是 config 而非 mock 脏值，方向上仅影响廉价
+        # 重派预算的取整，code-review item 9f29ffe23ad1）。
         n = int(value)
     except Exception as e:
         pipeline._context.logger.warning(
@@ -465,6 +469,30 @@ def _summary_real_int(summary: dict, key: str) -> int:
     raise TypeError(f"summary.{key} 非真实 int 脏值: {type(value).__name__}")
 
 
+def _uniform_failure_evidence(signature: str, fail_total: int) -> str:
+    """verify_uniform_failure 信号与冻结告警共用的 evidence 单源构造。"""
+    return f"signature={signature[:120]}; failed={fail_total}"
+
+
+def _uniform_recommended_action(frozen: bool) -> str:
+    """verify_uniform_failure 两处处置指引单源构造（code-review item 72f27c9727b4）。
+
+    未达阈值轮 store.append 的 SIGNAL 与达阈值轮 freeze_for_human 的告警共用
+    同一段处置指引，仅尾句差异化（frozen=False「将自动 blocked」/ True「已冻结
+    等待人工」）——单源生成，防止两处文案演进时单侧漂移。
+    """
+    tail = (
+        f"已连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} 轮同因，spec 已冻结等待人工。"
+        if frozen
+        else f"连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} 轮同因将自动 blocked。"
+    )
+    return (
+        "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
+        "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "
+        f"缺陷 → 人工处置。{tail}"
+    )
+
+
 def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bool:
     """全场景同因失败哨：pass=0 且全部失败场景（fail/error）错误签名一致 → 疑环境/场景问题。
 
@@ -579,13 +607,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
                 "spec": spec_name,
                 "severity": "major",
                 "description": note,
-                "evidence": f"signature={signature[:120]}; failed={fail_total}",
-                "recommended_action": (
-                    "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
-                    "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "
-                    f"缺陷 → 人工处置。连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} "
-                    "轮同因将自动 blocked。"
-                ),
+                "evidence": _uniform_failure_evidence(signature, fail_total),
+                "recommended_action": _uniform_recommended_action(frozen=False),
             }
         )
         # code-review item 551c66ae82db：文件损坏留底被下限保护拒写时 append
@@ -620,13 +643,8 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
             signal_type="verify_uniform_failure",
             severity="major",
             description=note,
-            evidence=f"signature={signature[:120]}; failed={fail_total}",
-            recommended_action=(
-                "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
-                "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "
-                f"缺陷 → 人工处置。已连续 {_UNIFORM_SAME_CAUSE_BLOCK_THRESHOLD} "
-                "轮同因，spec 已冻结等待人工。"
-            ),
+            evidence=_uniform_failure_evidence(signature, fail_total),
+            recommended_action=_uniform_recommended_action(frozen=True),
             alert_callback=pipeline._context.escalation_notifier,
             extra_updates={"tester_run": None},
         )

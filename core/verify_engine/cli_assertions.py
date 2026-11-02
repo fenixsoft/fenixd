@@ -20,7 +20,7 @@ from itertools import islice
 from pathlib import Path
 
 from .api_assertions import _MISSING, evaluate_json_path
-from .regex_safety import _compile_regex, _has_nested_quantifier
+from .regex_safety import compile_regex, has_nested_quantifier
 from .scenarios import CLI_ASSERTION_LAYERS
 
 # 文件内容断言读取上限（MB 级）：场景断言 path 误指向构建产物/日志等大文件时，
@@ -39,6 +39,14 @@ _MATCH_MODES = ("exact", "contains", "regex")
 # 的截断纪律同旨：截断只作证据/性能防线并显式留痕，不静默改变常规规模下的
 # 判定语义）。
 _DIR_GLOB_LIMIT = 10_000
+
+# output_match 命中片段硬上限（字符口径，与本文件 160/200 字符 snippet 先例
+# 同基）：actual 侧已被 cli_runner 按 64KB 截断（实际可控），但命中片段窗口
+# 终点随 expected 长度线性放大——expected 超长（场景作者粘贴大段文本）时
+# 片段会被撑到 len(expected)+160 入 report.json 与 judge 归因上下文。超限仅
+# 对写入结果截断并留 truncated 标注，判定已基于完整 actual 完成（与
+# dir_contains/file_content 的截断纪律同旨：显式留痕，不静默截断）。
+_OUTPUT_SNIPPET_LIMIT = 1024
 
 
 class CliAssertionRunner:
@@ -212,19 +220,19 @@ class CliAssertionRunner:
                 # 长时间占住断言协程。显式拒绝走断言异常通道而非静默执行（与
                 # 下方非法正则的口径对齐；预检保守宁少拦不误拦，见函数
                 # docstring）
-                if _has_nested_quantifier(str(expected)):
+                if has_nested_quantifier(str(expected)):
                     raise ValueError(
                         f"正则含嵌套量词高危形态（组内变长量词再被无上界量词"
                         f"化，灾难性回溯风险），已拒绝执行: {expected!r}；"
                         f"改写建议：把无上界量词上提为顶层有界重复，如 "
                         f"(?:\\d{{1,3}}\\.)* → (?:[0-9]{{1,3}}\\.){{0,20}}"
                     )
-                # 复用 api 侧 _compile_regex/_TimeoutRegex 包装匹配：regex 库
+                # 复用 regex_safety 公共名 compile_regex/TimeoutRegex 包装匹配：regex 库
                 # 可用时 search 带 1s 时限，预检刻意漏拦的不典型回溯形态（如
                 # 重叠分支）由超时收口而非无限占住断言协程（超时按 re.error
                 # fail-closed，走下方非法正则同一异常通道）；库缺失时回退
                 # stdlib re，行为同无防护版
-                pattern, regex_error = _compile_regex(str(expected))
+                pattern, regex_error = compile_regex(str(expected))
                 if regex_error is not None:
                     # 非法正则是场景编写缺陷，显式走断言异常通道（与
                     # _assert_exit_code 对非法 expected 对齐），不令 m=False
@@ -582,8 +590,10 @@ class CliAssertionRunner:
                 "error": "缺少 expected 字段",
             }
         passed = self._match(actual, expected, mode, negate)
-        # 证据纪律：报告只保留命中片段（64KB 内、前后文截断），不膨胀
+        # 证据纪律：报告只保留命中片段（前后文各 80 字符，整体受
+        # _OUTPUT_SNIPPET_LIMIT 硬上限截断 + truncated 留痕），不膨胀
         snippet = ""
+        snippet_truncated = False
         # is not None 判空：数值 expected（如 0）匹配失败时也带命中片段证据
         if not passed and expected is not None:
             idx = actual.find(str(expected))
@@ -591,7 +601,14 @@ class CliAssertionRunner:
                 snippet = actual[max(0, idx - 80) : idx + len(str(expected)) + 80]
             else:
                 snippet = actual[:160]
-        return {
+            # 硬上限截断（命中窗口/未命中前缀同一出口统一收口，两侧口径不分叉）：
+            # expected 超长时窗口会被放大到 len(expected)+160，与证据截断纪律
+            # 不符；判定已基于完整 actual 完成，仅对写入结果截断（留痕形态
+            # 对齐 json_output 的 actual_truncated 先例，不静默截断）
+            if len(snippet) > _OUTPUT_SNIPPET_LIMIT:
+                snippet = snippet[:_OUTPUT_SNIPPET_LIMIT]
+                snippet_truncated = True
+        result = {
             "type": "output_match",
             "layer": 3,
             "stream": stream,
@@ -601,6 +618,9 @@ class CliAssertionRunner:
             "pass": passed,
             "actual_snippet": snippet,
         }
+        if snippet_truncated:
+            result["actual_snippet_truncated"] = True
+        return result
 
     async def _assert_file_content(self, a: dict) -> dict:
         """断言文件内容匹配（path 相对验证树根；mode/negate）。"""
@@ -704,7 +724,20 @@ class CliAssertionRunner:
                 "pass": False,
                 "error": "缺少 expected 字段",
             }
-        size = path.stat().st_size
+        # TOCTOU 兜底：上方 is_file 预检与本次读取之间验证树可能被并发清理/
+        # 构建产物滚动删除，stat/open 抛 OSError 若不接住会被 run() 兜底成
+        # 泛化「断言执行异常」丢掉 path 定位——按上方「文件不存在」同款
+        # 结构化失败返回（判定语义不变仍为失败，仅保住定向归因信息）
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "pass": False,
+                "error": f"文件不存在: {path}",
+            }
         if mode == "exact" and size > _FILE_CONTENT_LIMIT:
             return {
                 "type": "file_content",
@@ -717,8 +750,19 @@ class CliAssertionRunner:
                 "error": f"文件过大（{size} 字节 > 上限 {_FILE_CONTENT_LIMIT}），exact 模式不做截断比对，判失败",
             }
         truncated = size > _FILE_CONTENT_LIMIT
-        with path.open("rb") as fh:
-            content = fh.read(_FILE_CONTENT_LIMIT).decode("utf-8", errors="replace")
+        try:
+            with path.open("rb") as fh:
+                content = fh.read(_FILE_CONTENT_LIMIT).decode("utf-8", errors="replace")
+        except OSError:
+            # stat 已过但 open 前文件仍可能被删除（同一 TOCTOU 窗口的后半段），
+            # 按同款「文件不存在」结构化失败返回
+            return {
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "pass": False,
+                "error": f"文件不存在: {path}",
+            }
         if truncated and negate:
             # 大文件超限 + negate：只读前 N 字节的截断样本无法完整反证「不包含
             # expected」，截断点之后的真实出现会被漏检而静默假绿（truncated 标记
