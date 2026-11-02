@@ -1301,9 +1301,21 @@ def schedule_narrative(
         # 排队上限（code-review 3ee15fc3c140）：登记集＝在飞（≤并发上限）+
         # 排队，达上限即不再添线程，直接写终态侧车（与熔断跳过同款同步收
         # 口，文案同为 QUEUE_OVERFLOW_TEXT），防突发风暴按条起等量近乎空转
-        # 的线程占内存与调度资源。
+        # 的线程占内存与调度资源。饱和检查与登记线程收进同一临界区（item
+        # 043fb508c7e1）：分离的两段锁会让并发发射的告警双双过检后各自登
+        # 记，瞬时突破上限；t.start() 仍留锁外，start 失败摘牌兜底不变。
         with _active_lock:
-            saturated = len(_active_threads) >= _NARRATIVE_MAX_THREADS
+            if len(_active_threads) >= _NARRATIVE_MAX_THREADS:
+                saturated = True
+            else:
+                saturated = False
+                t = threading.Thread(
+                    target=_narrative_worker,
+                    args=(alert_id, entry, ctx, admin_cfg, facts, project_root),
+                    daemon=True,
+                    name=f"narrative-{_safe_alert_id(alert_id)}",
+                )
+                _active_threads.add(t)
         if saturated:
             write_narrative_sidecar(project_root, alert_id, QUEUE_OVERFLOW_TEXT, None)
             _warn(
@@ -1312,15 +1324,7 @@ def schedule_narrative(
                 f"跳过补叙并写终态侧车（alert={alert_id}）",
             )
             return None
-        t = threading.Thread(
-            target=_narrative_worker,
-            args=(alert_id, entry, ctx, admin_cfg, facts, project_root),
-            daemon=True,
-            name=f"narrative-{_safe_alert_id(alert_id)}",
-        )
         try:
-            with _active_lock:
-                _active_threads.add(t)
             t.start()
         except BaseException:
             # start 失败（线程数耗尽等）时 worker 的 finally 自摘永不执行，
