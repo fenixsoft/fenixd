@@ -1221,6 +1221,12 @@ class FamilyGovernor:
                     f"Fix SPEC '{fix_spec_name}' 处于 '{guard_status}' "
                     f"— bug-found 重发幂等守卫：跳过重置，保留状态与 run 字段",
                 )
+                # 本轮未派生任何调度（不重置、不入队、不新建），与下方冻结/
+                # 状态漂移放弃路径同款提前 return 收口：不得落到方法尾部
+                # 无条件项目日志，否则「scheduling legacy」所述调度行为实际
+                # 未发生，PROJECT_LOG 审计者会被误导（code-review item
+                # 33581b8263a3）。
+                return
             else:
                 self._pm.logger.info(
                     "pm_engine",

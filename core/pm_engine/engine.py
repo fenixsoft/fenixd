@@ -121,8 +121,8 @@ def _parse_superseded_named_targets(text: str) -> list:
 
     ``spec/changes/<name>/`` 路径形态与裸 ``<name>`` inline code 归一为目录名；
     排除 ``spec/changes/`` 前缀之外的无斜杠 token（非 spec 目录点名）、空 token
-    与不含目录名字符集（字母数字/连字符/点）的 token（如中文叙述夹带的反引号
-    片段）。
+    与不含目录名字符集（字母数字/下划线/连字符/点）的 token（如中文叙述夹带
+    的反引号片段）。
 
     Returns:
         点名目录名列表（去重、保序）；无点名/解析异常返回 []。
@@ -141,8 +141,11 @@ def _parse_superseded_named_targets(text: str) -> list:
             name = tok
         else:
             continue
-        # 目录名字符集校验（spec 目录名形态：字母数字开头，仅字母数字/连字符/点）
-        if not re.fullmatch(r"[A-Za-z0-9][\w.-]*", name or ""):
+        # 目录名字符集校验（spec 目录名形态：字母数字开头，仅字母数字/下划线/
+        # 连字符/点；显式 ASCII 类而非 \w——Python 3 str 模式下 \w 默认匹配
+        # Unicode 单词字符，会把中文等宽接受进来；ASCII spec 名见
+        # spec_integrity._SPEC_NAME_PATHSAFE_RE）
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name or ""):
             continue
         if name and name not in names:
             names.append(name)

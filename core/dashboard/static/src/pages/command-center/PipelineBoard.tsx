@@ -12,26 +12,11 @@
 import { useEffect } from 'react';
 import { history } from '@umijs/max';
 import { Alert, Tag } from 'antd';
-import { commandCenterPipeline } from '@/services/dashboard';
+import { commandCenterPipeline, statusMeta } from '@/services/dashboard';
 import type { CommandCenterPipeline, CommandCenterPipelineCard } from '@/services/dashboard';
 import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
 import { BG, GREEN, PANEL_BORDER, TEXT_MAIN, TEXT_SUB, columnLabel, fmtShortTs } from './shared';
-
-// 原生 SpecStatus 中文标签（列内卡片展示；未知值原样透出）
-const STATUS_LABELS: Record<string, string> = {
-  drafted: '草稿',
-  reviewing: '评审中',
-  ready: '就绪',
-  implementing: '实现中',
-  'bug-found': '有缺陷',
-  blocked: '受阻',
-  implemented: '已实现',
-  testing: '测试中',
-  verified: '已验证',
-  done: '完成',
-  pushed: '已推送',
-};
 
 function PipelineCard({
   card,
@@ -68,7 +53,8 @@ function PipelineCard({
         <Tag style={{ marginInlineEnd: 0 }}>{card.project}</Tag>
       </div>
       <div style={{ fontSize: 12, color: TEXT_SUB }}>
-        {STATUS_LABELS[card.status] ?? card.status}
+        {/* 权威单点：services/dashboard.ts statusMeta()（未知状态原样透出） */}
+        {statusMeta(card.status).label}
       </div>
       {card.running ? (
         <div
@@ -130,11 +116,17 @@ export default function PipelineBoard({
     // 页面 body 不滚动，滚动下沉到各赛道——哪条赛道卡片超高，哪条赛道自己
     // 出纵向滚动条（2026-10-28 用户定稿）
     <div
+      className="cmdcenter-hscroll"
       style={{
         height: 'calc(100vh - 78px)',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        // 横向滚动兜底（与组织总览 OrgGrid 同款容器口径）：列宽
+        // minmax(220px,1fr) + 网格 minWidth(=5*220+4*12 列间距=1148)，
+        // 视口不足 1148px 时五列不再被挤压换行，改由本层出横向滚动条；
+        // 纵向仍按 2026-10-28 定稿下沉到各赛道内部滚动
+        overflowX: 'auto',
+        overflowY: 'hidden',
       }}
     >
       {error ? (
@@ -150,8 +142,10 @@ export default function PipelineBoard({
           flex: 1,
           minHeight: 0,
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+          gridTemplateColumns: 'repeat(5, minmax(220px, 1fr))',
           gap: 12,
+          // 5 列 ×220px 下限 + 4×12 间距；不足时外层 cmdcenter-hscroll 承接横向滚动
+          minWidth: 1148,
         }}
       >
         {data.columns.map((col) => (

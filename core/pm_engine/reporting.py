@@ -105,8 +105,11 @@ class ReportBuilder:
             status = _status_of(entry)
             icon = status_icons.get(status, "❓")
             # priority 键存在但值为 None（YAML 空值形态）时 .get 默认值不
-            # 生效，行内展示 PNone；归一 "?" 与 _status_of 同口径。
-            priority = entry.get("priority")
+            # 生效，行内展示 PNone；非数字值（经 STATE 往返的 str 或畸形
+            # 形态）还会渲染 "Phigh" 等。经 _coerce_int 归一，缺失/非法
+            # 一律 "?"，P 后恒为数字，与 _priority_key 同口径
+            # （code-review item d6290b004f66）。
+            priority = _coerce_int(entry.get("priority"))
             priority = "?" if priority is None else priority
             lines.append(f"- {icon} **{name}** (P{priority}): {status}")
 

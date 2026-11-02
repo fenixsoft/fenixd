@@ -50,6 +50,7 @@ export default function CommandCenterPage() {
   // 全局项目筛选（2026-10-28 页签右侧）：驱动组织总览/交付流水线/执行台账
   // 三屏（三端点均收 project），状态提升至宿主；各屏上报 projects 全集在此
   // 合并——任一屏到过数据即撑起下拉，不依赖先访组织总览
+  // [fenix-ignore:89d7af3f7510] 初值仅读一次为有意取舍（上方注释已声明），浏览器侧导航（前进/后退/改地址栏）致 URL 与筛选 state 失同步是已声明边界
   const [project, setProjectState] = useState(urlProject);
   const [allProjects, setAllProjects] = useState<string[]>([]);
   // 上报合并（同引用短路防上报环；useCallback 稳定身份配下游 effect deps）
