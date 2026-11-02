@@ -124,6 +124,18 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=N
                 "残留待 push 尾部兜底收口",
                 changes_side,
             )
+        elif _has_head_tracked_files(proot, changes_side):
+            # 索引已无该路径而 HEAD 仍跟踪（git ls-files 读的是索引）＝删除
+            # 已被外部流程（merge-back、人工 git add -A 等）预先 staged。该侧
+            # 仍剔除出本次 pathspec（对索引为空、工作区不存在的路径 git add
+            # 会 fatal），提交只含 archive 新增侧、与实际目录移动不一致，
+            # staged 删除滞留索引；留 warning 与上方探测失败分支同口径，让
+            # 排查成对/单侧残留报警时能找到该侧被剔除的原因。
+            logger.warning(
+                "changes 删除侧已被预先 staged（%s 索引已无该路径、HEAD 仍跟踪），"
+                "本次归档提交不含该侧，staged 删除滞留索引待 push 尾部兜底收口",
+                changes_side,
+            )
     if not paths:
         return _fail("归档路径均无可提交内容，跳过归档提交")
 
@@ -221,6 +233,29 @@ def _has_tracked_files(proot: Path, pathspec: str) -> bool | None:
     try:
         r = subprocess.run(
             ["git", "ls-files", "--", pathspec],
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())
+
+
+def _has_head_tracked_files(proot: Path, pathspec: str) -> bool | None:
+    """pathspec 在 HEAD 树下是否有跟踪文件（「曾入库」判据）。
+
+    与 _has_tracked_files（读索引）配套：索引已无该路径而 HEAD 仍有时，说明
+    删除已被预先 staged。True/False = 探测成功（HEAD 有/无跟踪文件）；
+    None = 探测失败（ls-tree 超时/OSError/非零退出，含 unborn HEAD），调用方
+    按「无法判定」处理（不告警，维持既有静默剔除）。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "ls-tree", "-r", "HEAD", "--", pathspec],
             cwd=str(proot),
             capture_output=True,
             text=True,
