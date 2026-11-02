@@ -596,13 +596,15 @@ _IMPL_WALLCLOCK_FALLBACK_DEFAULTS = {
 def _impl_wallclock_default(key: str, logger=None):
     """读墙钟 sizing 单点缺省（core.config；惰性导入避免模块环）。
 
-    KeyError/ImportError 回退硬编码字面缺省：本模块
+    KeyError/ImportError/TypeError 回退硬编码字面缺省：本模块
     get_impl_wallclock_sizing_config / lifted_max_extensions_for_scale 声明
     「非法值逐项回退缺省、不抛异常」，core.config 侧常量键漂移时不让
     KeyError 穿透读侧（与 estimate_spec_scale 的 KeyError 分支口径对齐，
     显式记「疑似上游契约漂移」）；常量整体缺失/改名时导入失败同样回退，
     不让 ImportError 沿配置归一化路径向上传播（code-review item
-    dc3ffe79dbda）。
+    dc3ffe79dbda）；常量整体类型漂移（非 dict）与 enabled 缺省值非 bool
+    同款回退，不让 TypeError 沿读侧冲穿「不抛异常」承诺（code-review
+    item aad447b74899）。
 
     Args:
         key: 缺省键（enabled / full_scale_threshold / extra_extensions）。
@@ -614,8 +616,26 @@ def _impl_wallclock_default(key: str, logger=None):
     """
     try:
         from core.config import IMPL_WALLCLOCK_SIZING_DEFAULTS
-        return IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
-    except (ImportError, KeyError) as e:
+        # 类型漂移防御（code-review item aad447b74899）：常量整体漂移为
+        # str/list/None 时下标抛 TypeError、沿读侧冲穿「不抛异常」承诺
+        # ——先取常量校验 dict，非 dict 记「疑似上游契约漂移」后走字面
+        # 缺省（对齐 estimate_spec_scale 的 deliverables 类型漂移防御口径，
+        # item 3d2f5380eeb7）。
+        if not isinstance(IMPL_WALLCLOCK_SIZING_DEFAULTS, dict):
+            raise TypeError(
+                "IMPL_WALLCLOCK_SIZING_DEFAULTS 应为 dict，实际 "
+                f"{type(IMPL_WALLCLOCK_SIZING_DEFAULTS).__name__}")
+        value = IMPL_WALLCLOCK_SIZING_DEFAULTS[key]
+        # enabled 缺省值漂移防御（同 item）：读侧 isinstance 校验
+        # （get_impl_wallclock_sizing_config）失败后回读同一漂移源，非
+        # bool 会原样透传，消费方 ``if not enabled`` 对非空字符串判真、
+        # 语义反转——回传前先校验，非 bool 回退字面缺省。
+        if (key == IMPL_WALLCLOCK_ENABLED_KEY
+                and not isinstance(value, bool)):
+            raise TypeError(
+                f"enabled 缺省应为 bool，实际 {type(value).__name__}")
+        return value
+    except (ImportError, KeyError, TypeError) as e:
         message = ("fast-track 墙钟 sizing 缺省读取失败"
                    f"（疑似上游契约漂移，回退硬编码字面缺省）: {e}")
         if logger is not None:
