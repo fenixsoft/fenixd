@@ -16,8 +16,8 @@
 
 用法::
 
-    python3 anchor_tools.py extract <原型.html> [--json]
-    python3 anchor_tools.py diff <旧.html> <新.html> [--affected id1,id2] [--json]
+    python3 anchor_tools.py extract <原型.html>
+    python3 anchor_tools.py diff <旧.html> <新.html> [--affected id1,id2]
 
 退出码：0 = 完成；``diff --affected`` 时若未波及锚未全部保持以 1 退出（可作
 生成管线的机械门）；2 = 用法/文件错误。
@@ -52,7 +52,6 @@ class _AnchorParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         # id -> {"id","tag","text","count"}（保持首现顺序）
         self.anchors: dict[str, dict] = {}
-        self.unclosed_count = 0
         self._stack: list[tuple[str, str | None, list[str]]] = []
 
     @staticmethod
@@ -139,8 +138,6 @@ class _AnchorParser(HTMLParser):
             if lost_anchor:
                 self._record(lost_anchor, lost_tag, self._snapshot(lost_texts),
                              source="unclosed")
-        self.unclosed_count = sum(
-            1 for _, anchor_id, _ in self._stack if anchor_id)
         self._stack.clear()
 
 

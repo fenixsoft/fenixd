@@ -144,6 +144,27 @@ export default function SpecStatusModal({
     prevOpenRef.current = open;
   }, [open, summary]);
 
+  // 九个 confirm 类 onOk（code-review item 93bcc49c9893）共用的不变样板收口：
+  // 单飞守卫（ref 判重 → 置位 → setPendingAction）+ 异常文案 + finally 复位。
+  // 动作专属的 API 调用、成功/降级/拒绝分支与 onDone 时机留在各 handler 的
+  // action 闭包内；errorPrefix 须带全角冒号，与既有「XX失败：{err}」文案逐字一致。
+  const runAction = useCallback(
+    async (key: string, errorPrefix: string, action: () => Promise<void>) => {
+      if (pendingActionRef.current) return;
+      pendingActionRef.current = true;
+      setPendingAction(key);
+      try {
+        await action();
+      } catch (err) {
+        message.error(`${errorPrefix}${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        pendingActionRef.current = false;
+        setPendingAction(null);
+      }
+    },
+    [message],
+  );
+
   // ── 归档（终态 done/pushed） ───────────────────────
   const handleArchive = useCallback(() => {
     if (!summary) return;
@@ -159,23 +180,14 @@ export default function SpecStatusModal({
       ),
       okText: '归档',
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('archive');
-        try {
+      onOk: () =>
+        runAction('archive', '归档失败：', async () => {
           await archiveSpec(project, spec);
           message.success(`SPEC「${spec}」已归档`);
           onDone();
-        } catch (err) {
-          message.error(`归档失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, summary, onDone, message, appModal]);
+  }, [project, spec, summary, onDone, message, appModal, runAction]);
 
   // ── 冻结（非终态：未冻结→冻结） ────────────────────
   const handleFreeze = useCallback(() => {
@@ -189,11 +201,8 @@ export default function SpecStatusModal({
       okText: '冻结',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('freeze');
-        try {
+      onOk: () =>
+        runAction('freeze', '冻结失败：', async () => {
           // add-freeze-stop-inflight-agents 6.3：冻结成功后若返回
           // stopped_agents > 0 提示已停止的在跑 agent 计数与续做语义；
           // 为 0 或缺省时不提示（无在跑 agent，交互与现状一致）。
@@ -206,15 +215,9 @@ export default function SpecStatusModal({
             message.success(`SPEC「${spec}」已冻结，daemon 停止调度`);
           }
           onDone();
-        } catch (err) {
-          message.error(`冻结失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, onDone, message, appModal]);
+  }, [project, spec, onDone, message, appModal, runAction]);
 
   // ── 解冻（已冻结→立即解冻） ────────────────────────
   const handleUnfreeze = useCallback(() => {
@@ -223,23 +226,14 @@ export default function SpecStatusModal({
       content: `确认立即解冻 SPEC「${spec}」？解冻后恢复到冻结前的状态。`,
       okText: '解冻',
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('unfreeze');
-        try {
+      onOk: () =>
+        runAction('unfreeze', '解冻失败：', async () => {
           await setSpecFreezeConfig(project, spec, 'unfreeze');
           message.success(`SPEC「${spec}」已解冻`);
           onDone();
-        } catch (err) {
-          message.error(`解冻失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, onDone, message, appModal]);
+  }, [project, spec, onDone, message, appModal, runAction]);
 
   // ── 切换冻结模式（永久↔定时） ─────────────────────
   // code-review item 931e241c6437：「切换为永久冻结」会清除既有定时解冻时间、把对
@@ -310,11 +304,8 @@ export default function SpecStatusModal({
       ),
       okText: '晋升',
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('promote');
-        try {
+      onOk: () =>
+        runAction('promote', '晋升失败：', async () => {
           const result = await promoteSpec(project, spec);
           if (result.ok) {
             message.success(`SPEC「${spec}」已晋升 ready，等待调度`);
@@ -331,15 +322,9 @@ export default function SpecStatusModal({
             );
             message.error('晋升失败：存在 lint 违规，明细见晋升区块');
           }
-        } catch (err) {
-          message.error(`晋升失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, onDone, message, appModal]);
+  }, [project, spec, onDone, message, appModal, runAction]);
 
   // ── 审批推送（done，add-spec-approve-push-modal） ──────────
   // done 态的唯一闭环动作：确认后写 .fenix/approve_push_request.json 文件信号，
@@ -361,23 +346,14 @@ export default function SpecStatusModal({
       ),
       okText: '审批推送',
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('approve-push');
-        try {
+      onOk: () =>
+        runAction('approve-push', '审批推送失败：', async () => {
           await approveSpecPush(project, spec);
           message.success('已提交推送，daemon 执行中');
           onDone();
-        } catch (err) {
-          message.error(`审批推送失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, summary, onDone, message, appModal]);
+  }, [project, spec, summary, onDone, message, appModal, runAction]);
 
   // ── 回炉（verified + task-gap 错误，fix-impl-tasks-completion-gate P1′） ──
   // task-gap 拦截（verified→done 任务完成度门禁检出未完成任务）滞留 verified 的
@@ -406,11 +382,8 @@ export default function SpecStatusModal({
       okText: '回炉',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('reflow');
-        try {
+      onOk: () =>
+        runAction('reflow', '回炉失败：', async () => {
           const result = await reflowSpec(project, spec);
           if (result.ok) {
             message.success(`SPEC「${spec}」已复位 ready，等待重新派发实现`);
@@ -420,16 +393,9 @@ export default function SpecStatusModal({
             const reason = result.reason || result.error || '回炉被拒绝';
             message.error(`回炉被拒绝：${reason}`);
           }
-        } catch (requestErr) {
-          // 与外层 task-gap 错误文案 err（gapNote 用）区分，请求异常专用命名
-          message.error(`回炉失败：${requestErr instanceof Error ? requestErr.message : String(requestErr)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, summary, onDone, message, appModal]);
+  }, [project, spec, summary, onDone, message, appModal, runAction]);
 
   // ── 恢复运行（取消保持态，add-cancelled-spec-resume-action D4） ──────────
   // 取消保持态（_cancelled_hold: true）是「有意等待」：全部自动恢复链路对其
@@ -453,17 +419,15 @@ export default function SpecStatusModal({
       okText: '恢复运行',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('resume');
-        try {
+      onOk: () =>
+        runAction('resume', '恢复失败：', async () => {
           const result = await resumeSpec(project, spec);
           if (result.ok) {
             if (result.degraded) {
-              message.warning(
-                `SPEC「${spec}」无可保留分支，已降级全新重派：${result.reason || ''}`,
-              );
+              // reason 缺失时回退，避免消息尾部悬空冒号（code-review item
+              // a9385102d8f7）；回退链口径与 handleReflow 拒绝分支一致
+              const reason = result.reason || result.error || '后端未返回原因';
+              message.warning(`SPEC「${spec}」无可保留分支，已降级全新重派：${reason}`);
             } else if (result.warning) {
               // fix-scheduling-kick-single-slot D3 对齐（code-review item
               // f3cf514cacb9）：即时唤醒信号写出失败时如实告知（warning 自带
@@ -482,15 +446,9 @@ export default function SpecStatusModal({
           } else {
             message.error(`恢复被拒绝：${result.reason || '该 SPEC 并非取消保持态'}`);
           }
-        } catch (err) {
-          message.error(`恢复失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, summary, onDone, message, appModal]);
+  }, [project, spec, summary, onDone, message, appModal, runAction]);
 
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
@@ -552,11 +510,8 @@ export default function SpecStatusModal({
       ),
       okText: '激活',
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('activate');
-        try {
+      onOk: () =>
+        runAction('activate', '激活失败：', async () => {
           const result = await activateSpec(project, spec);
           if (result.ok) {
             // fix-scheduling-kick-single-slot D3：激活成功但即时唤醒信号写出失败时
@@ -575,15 +530,9 @@ export default function SpecStatusModal({
           } else {
             message.error(`激活被拒绝：${result.reason || '该 SPEC 并非待激活态'}`);
           }
-        } catch (err) {
-          message.error(`激活失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, frozen, onDone, message, appModal]);
+  }, [project, spec, frozen, onDone, message, appModal, runAction]);
 
   const handleSetManual = useCallback(() => {
     appModal.confirm({
@@ -597,23 +546,14 @@ export default function SpecStatusModal({
       ),
       okText: '设为待激活',
       cancelText: '取消',
-      onOk: async () => {
-        if (pendingActionRef.current) return;
-        pendingActionRef.current = true;
-        setPendingAction('set-manual');
-        try {
+      onOk: () =>
+        runAction('set-manual', '操作失败：', async () => {
           await setSpecStartAfter(project, spec, 'manual');
           message.success(`SPEC「${spec}」已设为待激活，daemon 停止自动调度`);
           onDone();
-        } catch (err) {
-          message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
-        } finally {
-          pendingActionRef.current = false;
-          setPendingAction(null);
-        }
-      },
+        }),
     });
-  }, [project, spec, onDone, message, appModal]);
+  }, [project, spec, onDone, message, appModal, runAction]);
 
   // Modal 常挂载（code-review item 4dec1650864f）：关闭只交给 open prop，让 antd
   // 走标准关闭流程播放淡出动画（与 SpecDocModal 一致）。summary 为空时各区块

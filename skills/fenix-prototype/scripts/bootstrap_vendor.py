@@ -115,9 +115,13 @@ def pinned(version_range: str) -> str | None:
 
 
 def cache_key(react_version: str, antd_version: str) -> str:
-    # 不可精确化的 range 回退原串作缓存键，避免不同 range 共享同一缓存目录
-    return (f"react-{pinned(react_version) or react_version}"
-            f"-antd-{pinned(antd_version) or antd_version}")
+    # 不可精确化的 range 回退原串作缓存键，避免不同 range 共享同一缓存目录；
+    # 兜底串先净化为单级安全目录名——原串来自目标工程的版本声明（不受信），
+    # 含 / 或 .. 时原样拼接会在 cache_root 下构造越界多级路径
+    def _fallback(v: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]", "_", v)
+    return (f"react-{pinned(react_version) or _fallback(react_version)}"
+            f"-antd-{pinned(antd_version) or _fallback(antd_version)}")
 
 
 def cache_manifest_read(cache_dir: Path) -> dict | None:
@@ -350,10 +354,23 @@ def bundle_with_node(project: Path, react_version: str, antd_version: str,
                                % (proc.returncode, " / ".join(tail) or "无输出"))
                     continue
                 esbuild_bin = tmp_dir / "node_modules" / ".bin" / "esbuild"
+                if not esbuild_bin.is_file():
+                    log.append(f"bundle-fail[{label}]: npm install 后无 esbuild "
+                               "可执行文件，转本地 node_modules 路径")
+                    break
                 entry = tmp_dir / "vendor-entry.js"
-                entry.write_text(VENDOR_ENTRY_JS, encoding="utf-8")
-                outfile = _run_esbuild(esbuild_bin, entry, tmp_dir / "vendor.js",
-                                       install_timeout, log)
+                try:
+                    entry.write_text(VENDOR_ENTRY_JS, encoding="utf-8")
+                    outfile = _run_esbuild(esbuild_bin, entry, tmp_dir / "vendor.js",
+                                           install_timeout, log)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    # .bin/esbuild 缺失或不可执行（esbuild 平台二进制包装安装
+                    # 脚本部分失败、/tmp 以 noexec 挂载等）的 OSError 与本地
+                    # 路径（下方）同型防护：不向上穿透硬崩，转下一降级路径
+                    log.append(f"bundle-fail[{label}]: npm 路径执行异常"
+                               f"（{type(exc).__name__}: {exc}），"
+                               "转本地 node_modules 路径")
+                    break
                 if outfile is not None:
                     return _persist_bundle(outfile), {
                         "react": react_pin,
@@ -414,6 +431,10 @@ def cdn_urls(react_version: str, antd_version: str) -> dict[str, str]:
     return {
         "react": f"{CDN_BASE}/react@{react}",
         "react-dom": f"{CDN_BASE}/react-dom@{react}",
+        # React 18 起 createRoot 仅由 react-dom/client 子路径导出，包根入口
+        # 无该具名导出：importmap 的 "react-dom/client" 须映射到 /client 子
+        # 路径入口，映射到包根会让模块脚本加载即抛 SyntaxError（cdn 层失效）
+        "react-dom/client": f"{CDN_BASE}/react-dom@{react}/client",
         "antd": f"{CDN_BASE}/antd@{antd}"
                 f"?deps=react@{react},react-dom@{react}",
     }
@@ -422,16 +443,23 @@ def cdn_urls(react_version: str, antd_version: str) -> dict[str, str]:
 def cdn_probe(react_version: str, antd_version: str, timeout: float = CDN_TIMEOUT_SEC,
               _opener=None) -> tuple[bool, str | None]:
     """探测 CDN ESM 可达性（GET 主资源，读少量字节即断开）。失败返回 (False, 原因)。"""
-    url = cdn_urls(react_version, antd_version)["antd"]
+    urls = cdn_urls(react_version, antd_version)
+    # 除 antd 主资源外再探 react-dom/client 子路径入口：importmap 的
+    # createRoot 依赖该子路径，仅探 antd 无法发现子路径映射缺失或错误
+    probe_urls = (urls["antd"], urls["react-dom/client"])
     try:
-        if _opener is not None:
-            with _opener(url, timeout=timeout) as resp:
-                ok = 200 <= resp.status < 300
-            return (ok, None if ok else f"HTTP 状态非 2xx")
-        req = urllib.request.Request(url, headers={"User-Agent": "fenix-prototype-bootstrap"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            ok = 200 <= resp.status < 300
-        return (ok, None if ok else "HTTP 状态非 2xx")
+        for url in probe_urls:
+            if _opener is not None:
+                with _opener(url, timeout=timeout) as resp:
+                    ok = 200 <= resp.status < 300
+            else:
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "fenix-prototype-bootstrap"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    ok = 200 <= resp.status < 300
+            if not ok:
+                return False, "HTTP 状态非 2xx"
+        return True, None
     except Exception as exc:  # 网络层任何失败都只降级，不硬崩
         return False, f"{type(exc).__name__}: {exc}"
 
@@ -467,7 +495,7 @@ def cdn_importmap_snippet(react_version: str, antd_version: str) -> str:
         "{\n"
         '  "imports": {\n'
         f'    "react": "{urls["react"]}",\n'
-        f'    "react-dom/client": "{urls["react-dom"]}",\n'
+        f'    "react-dom/client": "{urls["react-dom/client"]}",\n'
         f'    "antd": "{urls["antd"]}"\n'
         "  }\n"
         "}\n"

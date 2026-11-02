@@ -1566,8 +1566,13 @@ class QQQueueMixin:
                         self._rollback_dispatch_slot(base_prio, entry_to_dispatch)
                     elif agent_type == "spec-review":
                         self._active_reviews.discard(spec_name)
+                        # 豁免车道条目保留（重入队待下轮重派，与闸门段/线程
+                        # 启动段及下方「保留条目」日志承诺一致；code-review
+                        # item 52ad4dab7c31 / bcd672009e41）
+                        self._requeue_exempt_entry(entry_to_dispatch)
                     elif agent_type == "planner-plan":
                         self._active_parallel_plans.discard(spec_name)
+                        self._requeue_exempt_entry(entry_to_dispatch)
                 suppressed.add((spec_name, agent_type))
                 self._pm.logger.warning(
                     "pm_engine",
@@ -2077,15 +2082,12 @@ class QQQueueMixin:
                             spec_name, {"_zero_change_attempts": 1}
                         ).get("_zero_change_attempts", 0)
                     except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"零变更计数记账递增失败 '{spec_name}'"
-                            f"（按读取侧旧值+1 继续失败分类）: "
-                            f"{type(e).__name__}: {e}",
+                        # 读侧兜底/WARNING 模板统一走 _bump_fallback_count
+                        # （code-review item 87b65fe8c1fd，守卫单一落点）
+                        attempts = self._bump_fallback_count(
+                            spec_name, "_zero_change_attempts", e,
+                            entry=spec_entry, warn_label="零变更计数",
                         )
-                        attempts = self._parse_int_field(
-                            spec_entry, "_zero_change_attempts", 0
-                        ) + 1
                     # fix-zero-change-blindspot：区分「真空转」与「有工作未提交」。
                     # cleanup 前取证的 worktree_dirty 非空 = agent 确实动过文件
                     # （如用 Bash 写文件而非 Edit/Write），只是没 commit——不是空转，
@@ -2159,11 +2161,10 @@ class QQQueueMixin:
                                 },
                             )
                         except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
-                            self._pm.logger.error(
-                                "pm_engine",
-                                f"零变更三连冻结转人工失败 '{spec_name}'"
-                                f"（放弃本分支收尾，交由恢复/周期通道接手）: "
-                                f"{type(e).__name__}: {e}",
+                            # 留痕统一走 _log_freeze_for_human_failure（code-
+                            # review item ad24a537a716，守卫单一落点）
+                            self._log_freeze_for_human_failure(
+                                spec_name, e, warn_label="零变更三连",
                             )
                             return
                     else:
@@ -2470,24 +2471,14 @@ class QQQueueMixin:
                                 spec_name, {"_retry_count": 1}
                             ).get("_retry_count", 0)
                         except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-                            self._pm.logger.warning(
-                                "pm_engine",
-                                f"契约违反重试记账递增失败 '{spec_name}'"
-                                f"（按读取侧旧值+1 继续失败分类）: "
-                                f"{type(e).__name__}: {e}",
+                            # 本分支手头无 read_one 快照 → entry 缺省走
+                            # _bump_fallback_count 的重新 read_one 形态，读侧
+                            # 也失败按 0 继续分类（原两段 try 语义等价；
+                            # code-review item 87b65fe8c1fd）
+                            retries = self._bump_fallback_count(
+                                spec_name, "_retry_count", e,
+                                warn_label="契约违反重试",
                             )
-                            try:
-                                retries = int(
-                                    (
-                                        self._pm.state_machine.read_one(
-                                            spec_name
-                                        )
-                                        or {}
-                                    ).get("_retry_count", 0)
-                                    or 0
-                                ) + 1
-                            except Exception:  # noqa: BLE001 —— 读侧也失败按 0 继续分类
-                                retries = 0
                         if retries >= max_r:
                             spec_entry = (
                                 self._pm.state_machine.read_one(spec_name) or {}
@@ -2528,11 +2519,8 @@ class QQQueueMixin:
                                     alert_callback=self._pm._send_human_escalation_alert,
                                 )
                             except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
-                                self._pm.logger.error(
-                                    "pm_engine",
-                                    f"契约违反重试耗尽冻结转人工失败 '{spec_name}'"
-                                    f"（放弃本分支收尾，交由恢复/周期通道接手）: "
-                                    f"{type(e).__name__}: {e}",
+                                self._log_freeze_for_human_failure(
+                                    spec_name, e, warn_label="契约违反重试耗尽",
                                 )
                                 return
                             self._pm.logger.error(
@@ -2830,15 +2818,10 @@ class QQQueueMixin:
                                 spec_name, {"_retry_count": 1}
                             ).get("_retry_count", 0)
                         except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-                            self._pm.logger.warning(
-                                "pm_engine",
-                                f"通用失败重试记账递增失败 '{spec_name}'"
-                                f"（按读取侧旧值+1 继续失败分类）: "
-                                f"{type(e).__name__}: {e}",
+                            retries = self._bump_fallback_count(
+                                spec_name, "_retry_count", e,
+                                entry=spec_entry, warn_label="通用失败重试",
                             )
-                            retries = self._parse_int_field(
-                                spec_entry, "_retry_count", 0
-                            ) + 1
                         # agents.max_retries 归一收敛三车道单一读取器（code-review
                         # item 84d793a3ac41 → 8b26fd7980ce 收敛）：字符串配置裸用于
                         # 比较抛 TypeError 中断失败重派处置，非法值回退缺省 3；
@@ -2887,15 +2870,10 @@ class QQQueueMixin:
                                 ).get("_redispatch_same_cause_streak", 0)
                                 streak_bumped = True
                             except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-                                self._pm.logger.warning(
-                                    "pm_engine",
-                                    f"同因熔断 streak 记账递增失败 '{spec_name}'"
-                                    f"（按读取侧旧值+1 继续失败分类）: "
-                                    f"{type(e).__name__}: {e}",
+                                streak = self._bump_fallback_count(
+                                    spec_name, "_redispatch_same_cause_streak", e,
+                                    entry=spec_entry, warn_label="同因熔断 streak",
                                 )
-                                streak = self._parse_int_field(
-                                    spec_entry, "_redispatch_same_cause_streak", 0
-                                ) + 1
                                 streak_bumped = False
                         else:
                             streak = 1
@@ -2958,11 +2936,8 @@ class QQQueueMixin:
                                     },
                                 )
                             except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
-                                self._pm.logger.error(
-                                    "pm_engine",
-                                    f"同因重派熔断冻结转人工失败 '{spec_name}'"
-                                    f"（放弃本分支收尾，交由恢复/周期通道接手）: "
-                                    f"{type(e).__name__}: {e}",
+                                self._log_freeze_for_human_failure(
+                                    spec_name, e, warn_label="同因重派熔断",
                                 )
                                 return
                             self._pm.logger.error(
@@ -3006,11 +2981,8 @@ class QQQueueMixin:
                                     alert_callback=self._pm._send_human_escalation_alert,
                                 )
                             except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
-                                self._pm.logger.error(
-                                    "pm_engine",
-                                    f"重试耗尽冻结转人工失败 '{spec_name}'"
-                                    f"（放弃本分支收尾，交由恢复/周期通道接手）: "
-                                    f"{type(e).__name__}: {e}",
+                                self._log_freeze_for_human_failure(
+                                    spec_name, e, warn_label="重试耗尽",
                                 )
                                 return
                             self._pm.logger.error(
@@ -3264,6 +3236,63 @@ class QQQueueMixin:
             first_f = now
         return count, first_f
 
+    def _bump_fallback_count(
+        self, spec_name: str, field: str, err: Exception, entry=None,
+        warn_label: str = "",
+        warn_tail: str = "按读取侧旧值+1 继续失败分类",
+    ) -> int:
+        """bump_counters 记账失败的读取侧兜底单一落点（code-review item
+        87b65fe8c1fd）。
+
+        「try bump_counters 取写后值 → except 记 WARNING、按读取侧旧值+1 继续
+        失败分类」的记账守卫此前在失败分类各出口重复七处以上、读侧兜底形态不
+        一（多数 ``_parse_int_field(entry)``，契约违反分支改 read_one 再包一层
+        try 并以 0 兜底），容错规则调整需逐处同步。本助手收敛 except 侧三件
+        事：WARNING 文案模板（warn_label/warn_tail 参数化，渲染文案与既有各站
+        点逐字等价）、读侧旧值+1 兜底、二次读取失败的兜底口径。try 侧
+        bump_counters 调用与写入键字面量保留在各调用点（写入键是站点特有信息，
+        且 tests/test_fast_track_failure_chain_contract 的 AST 结构契约要求该
+        调用名与 ``_retry_count`` 键留在 implementer 分支子树内）。
+
+        读侧兜底两种形态的语义差异（调用方 MUST 按手头状态选对，MUST NOT 混
+        传）：传 ``entry``（调用方手头已有的 read_one 快照，多数站点）→
+        ``_parse_int_field`` 解析 +1，无额外 IO；``entry=None``（调用方手头无
+        快照，如契约违反分支）→ 重新 ``read_one`` 解析 +1，读侧也失败按 0 继续
+        分类（熔断/重试晚一轮触发，不丢账）。
+        """
+        self._pm.logger.warning(
+            "pm_engine",
+            f"{warn_label}记账递增失败 '{spec_name}'（{warn_tail}）: "
+            f"{type(err).__name__}: {err}",
+        )
+        if entry is None:
+            try:
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception:  # noqa: BLE001 —— 读侧也失败按 0 继续分类
+                return 0
+        return self._parse_int_field(entry, field, 0) + 1
+
+    def _log_freeze_for_human_failure(
+        self, spec_name: str, err: Exception, warn_label: str
+    ) -> None:
+        """freeze_for_human 冻结收尾失败的留痕单一落点（code-review item
+        ad24a537a716，沿 _bump_fallback_count 的 except 侧收敛方向再收敛一步）。
+
+        失败分类四段冻结出口（零变更哨/契约违反重试耗尽/同因熔断/重试耗尽）
+        此前各自复制「裸调 IO 瞬时异常沿 worker 外层 except 逃逸会跳过本分支
+        冻结分类——MUST NOT 放大；logger.error 记审计后放弃本分支收尾」的同型
+        except 块，本助手统一文案模板（warn_label 参数化，渲染文案与既有各站
+        点逐字等价）。freeze_for_human 调用本体保留在各调用点（冻结入参各站点
+        不同，且 AST 结构契约要求该调用名留在 implementer 分支子树内），调用方
+        在 except 侧调用本助手后按既有语义 return 放弃本分支收尾。
+        """
+        self._pm.logger.error(
+            "pm_engine",
+            f"{warn_label}冻结转人工失败 '{spec_name}'"
+            f"（放弃本分支收尾，交由恢复/周期通道接手）: "
+            f"{type(err).__name__}: {err}",
+        )
+
     def _defer_merge_back(
         self, spec_name: str, merge_info, branch: str, merge_error: str,
         cause: str = "spec_dir_inflight",
@@ -3318,12 +3347,11 @@ class QQQueueMixin:
                 spec_name, {"_merge_retry_count": 1}
             ).get("_merge_retry_count", 0)
         except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-            self._pm.logger.warning(
-                "pm_engine",
-                f"顺延轮数记账递增失败 '{spec_name}'（按读取侧旧值+1 继续）: "
-                f"{type(e).__name__}: {e}",
+            count = self._bump_fallback_count(
+                spec_name, "_merge_retry_count", e,
+                entry=entry, warn_label="顺延轮数",
+                warn_tail="按读取侧旧值+1 继续",
             )
-            count = self._parse_int_field(entry, "_merge_retry_count", 0) + 1
         # 成因标签（code-review item a9a96d9d650e）：未知键原样透传，不因映射
         # 缺项吞掉成因信息。置于 try 外——超限 stuck 告警（try 之外）也要消费。
         cause_label = self._MERGEBACK_DEFER_CAUSES.get(cause, cause)
@@ -4021,12 +4049,11 @@ class QQQueueMixin:
                 spec_name, {"_merge_retry_count": 1}
             ).get("_merge_retry_count", 0)
         except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-            self._pm.logger.warning(
-                "pm_engine",
-                f"WIP 等待轮数记账递增失败 '{spec_name}'（按读取侧旧值+1 继续）: "
-                f"{type(e).__name__}: {e}",
+            count = self._bump_fallback_count(
+                spec_name, "_merge_retry_count", e,
+                entry=entry, warn_label="WIP 等待轮数",
+                warn_tail="按读取侧旧值+1 继续",
             )
-            count = self._parse_int_field(entry, "_merge_retry_count", 0) + 1
         overlap = list(getattr(merge_info, "wip_overlap", []) or [])
         try:
             self._pm.state_machine.update_spec(
@@ -4100,6 +4127,27 @@ class QQQueueMixin:
                 f"mergeback_wip_overlap 告警闭环失败 '{spec_name}'（非阻塞）: {e}",
             )
 
+    def _merge_audit_agent_type(self, spec_name: str) -> str:
+        """merge 失败熔断/成功收口审计 transition 的 agent_type 分流（code-review
+        item a2f42d8b2b50）。
+
+        _handle_merge_back_real_failure 与 _finalize_merge_success 被 worker
+        失败链与 merge-only 重试链共享，后者的条目来源还包括 fast-track/repair
+        车道的 _defer_merge_back（判据与 _handle_merge_back_real_failure ready
+        降级分支的 _enqueue_front 车道分流同款）：fast-track mode spec 的审计
+        归因记 "fast-track"（与 fast_track.py 全车道 transition 恒记 fast-track
+        的既有口径一致），其余维持 "implementer"。仅影响 STATE 审计归因，不影
+        响状态机行为；读侧异常按保守默认回 "implementer"。
+        """
+        try:
+            from core.spec_mode import read_spec_mode
+
+            if read_spec_mode(self._pm.project_root, spec_name) == "fast-track":
+                return "fast-track"
+        except Exception:
+            pass
+        return "implementer"
+
     def _handle_merge_back_real_failure(
         self, spec_name: str, merge_info, merge_error: str, branch: str
     ) -> None:
@@ -4139,12 +4187,10 @@ class QQQueueMixin:
                 ).get("_merge_streak", 0)
                 streak_bumped = True
             except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"merge 熔断 streak 记账递增失败 '{spec_name}'"
-                    f"（按读取侧旧值+1 继续失败分类）: {type(e).__name__}: {e}",
+                streak = self._bump_fallback_count(
+                    spec_name, "_merge_streak", e,
+                    entry=spec_entry, warn_label="merge 熔断 streak",
                 )
-                streak = self._parse_int_field(spec_entry, "_merge_streak", 0) + 1
                 streak_bumped = False
         else:
             streak = 1
@@ -4205,7 +4251,13 @@ class QQQueueMixin:
             # 覆盖后人工解冻无法还原原状态，_retry_count 清零抹掉现场计数。
             if not self._pm.state_machine.transition(
                 spec_name, "blocked",
-                trigger_run_id=None, agent_type="implementer", channel="auto",
+                trigger_run_id=None,
+                # 审计归因按 spec 实现模式分流（code-review item a2f42d8b2b50，
+                # _merge_audit_agent_type 注释详述）：merge-only 重试链条目可
+                # 来自 fast-track/repair 车道顺延，fast-track spec 不再记失真
+                # 的 implementer。
+                agent_type=self._merge_audit_agent_type(spec_name),
+                channel="auto",
             ):
                 self._pm.logger.warning(
                     "pm_engine",
@@ -4291,12 +4343,10 @@ class QQQueueMixin:
                     spec_name, {"_retry_count": 1}
                 ).get("_retry_count", 0)
             except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"ready 降级 _retry_count 记账递增失败 '{spec_name}'"
-                    f"（按读取侧旧值+1 继续失败分类）: {type(e).__name__}: {e}",
+                retries = self._bump_fallback_count(
+                    spec_name, "_retry_count", e,
+                    entry=spec_entry, warn_label="ready 降级 _retry_count",
                 )
-                retries = self._parse_int_field(spec_entry, "_retry_count", 0) + 1
             ready_updates: dict = {
                 "status": "ready",
                 "error": final_error,
@@ -4456,6 +4506,11 @@ class QQQueueMixin:
         （error/_retry_count/_merge_fp/_merge_streak/锁冲突计数/顺延记账）→
         pop 冲突告警 → 任务进度回写 → consume_legacy → verifier 入队。
         """
+        # 审计 agent_type 按 spec 实现模式分流（code-review item a2f42d8b2b50，
+        # _merge_audit_agent_type 注释详述）：本方法被 worker 成功收口链与
+        # merge-only 重试链共享，后者条目来源还包括 fast-track/repair 车道的
+        # 顺延，fast-track spec 的审计归因不再失真为 implementer。
+        audit_agent_type = self._merge_audit_agent_type(spec_name)
         # fix-observability-gaps 2.2：implementer merge 成功收口
         # 合并收尾 ready 态兜底（evo-spec-concurrency-flight-guard
         # D3）：status=ready（评审收尾竞态回退残留）时先补记合法转移
@@ -4464,7 +4519,7 @@ class QQQueueMixin:
         self._pm._merge_ready_fallback(
             spec_name,
             run_id,
-            "implementer",
+            audit_agent_type,
             branch,
         )
         # transition 返回值校验（code-review item f3a8a1249ede，对齐
@@ -4479,7 +4534,7 @@ class QQQueueMixin:
         if not self._pm.state_machine.transition(
             spec_name, "implemented",
             trigger_run_id=run_id,
-            agent_type="implementer", channel="auto",
+            agent_type=audit_agent_type, channel="auto",
         ):
             self._pm.logger.warning(
                 "pm_engine",
