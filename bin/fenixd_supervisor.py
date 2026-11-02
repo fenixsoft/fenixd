@@ -39,6 +39,19 @@ def _resolve_project_root() -> tuple:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--project-root", dest="project_root", default=None)
     args, unknown = parser.parse_known_args()
+    # code-review 1522e1224d6a：add_help=False 使 -h/--help 落入 unknown 且不
+    # 命中下方拼写近似检测——按惯例查询用法的运维会看到 supervisor 在
+    # cwd/FENIX_PROJECT_ROOT 解析出的项目上直接拉起 daemon（前台阻塞，Ctrl+C
+    # 才优雅停机）。对请求性旗标显式打印一行用法后退出（argparse 惯例：帮助
+    # 输出走 stdout、exit 0，与同目录标准 argparse 脚本的 --help 体验一致）；
+    # 保持 parse_known_args 轻量口径，不引入完整 argparse。
+    if "-h" in unknown or "--help" in unknown:
+        print(
+            "用法: fenixd_supervisor.py [--project-root <项目根>]\n"
+            "  本脚本仅识别 --project-root；缺省时按 FENIX_PROJECT_ROOT 环境变量\n"
+            "  或当前工作目录（cwd）解析目标项目根。",
+        )
+        sys.exit(0)
     # code-review 8acd5e209ae2：parse_known_args 会把拼错的 --project-root
     # （如 --project-roots / --projet-root）静默丢弃并回退 FENIX_PROJECT_ROOT /
     # cwd 解析——cwd 恰为另一个已初始化的 fenixd 项目时，supervisor 会成功
