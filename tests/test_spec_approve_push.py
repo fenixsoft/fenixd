@@ -3,11 +3,16 @@ Tests for SPEC 审批推送（add-spec-approve-push-modal）。
 
 Task 5.1：request_spec_approve_push 全分支 + _check_approve_push_requests 消费逻辑。
 Task 5.3：幂等与竞态核对（连续两次 409、spec 已 pushed 后消费无 ERROR）。
+move-distill-trigger-to-push 1.3：approve_push 成功转移后的蒸馏派发契约。
 """
 import json
+import shutil
 import sys
+import tempfile
+import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -350,3 +355,120 @@ class TestApprovePushIdempotency:
         assert approve_push_called == ["pushed-spec"]
         assert not req_path.exists()
         assert not logger.errors
+
+
+# ── move-distill-trigger-to-push 1.3：approve_push 蒸馏派发 ──────────────
+
+class TestApprovePushDistillDispatch(unittest.TestCase):
+    """approve_push 成功转移（done→pushed 落账后）的蒸馏派发契约。
+
+    - 成功转移 → dispatch_distill 以该 SPEC 名被调用恰一次；
+    - 幂等回放 / 非 done / 退避期 / SPEC 不存在 → 不派发；
+    - 派发抛异常 → approve_push 返回值与状态转移不变（fail-open）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger)
+        # 隔离 push 内外部链路（对齐 test_daemon_lifecycle_races 同款口径）
+        self.engine._is_push_backoffed = MagicMock(return_value=False)
+        self.engine._resolve_push_branch = MagicMock(return_value="fenix/spec-a")
+        self.engine._push_branch_best_effort = MagicMock()
+        self.engine._archive_auto_commit = MagicMock()
+        self.engine._append_project_log = MagicMock()
+        self.engine._git_push_ref = MagicMock(return_value=(True, ""))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_spec(self, status="done", name="spec-a"):
+        self.sm.add_spec(name, {"status": status, "branch": f"fenix/{name}"})
+
+    def test_success_transition_dispatches_once_with_spec_name(self):
+        """done→pushed 成功 → distill 以 (project_root, spec 名) 被调用恰一次。"""
+        self._make_spec()
+        calls = []
+
+        def fake_distill(proot, name):
+            calls.append((Path(proot).resolve(), name))
+            return {"dispatched": True, "reason": None}
+
+        ok = self.engine.approve_push("spec-a", distill=fake_distill)
+        self.assertTrue(ok)
+        self.assertEqual(
+            calls, [(Path(self.tmpdir).resolve(), "spec-a")]
+        )
+        self.assertEqual(self.sm.read_one("spec-a")["status"], "pushed")
+
+    def test_dispatch_after_transition_accounted(self):
+        """派发点在状态转移落账之后：distill 执行时 spec 已是 pushed。"""
+        self._make_spec()
+        seen = {}
+
+        def fake_distill(proot, name):
+            seen["status"] = self.sm.read_one(name)["status"]
+
+        self.engine.approve_push("spec-a", distill=fake_distill)
+        self.assertEqual(seen["status"], "pushed")
+
+    def test_idempotent_replay_no_dispatch(self):
+        """已 pushed 幂等回放 → 早退分支不派发（同一 pushed 生命周期至多一次）。"""
+        self._make_spec(status="pushed")
+        calls = []
+        ok = self.engine.approve_push("spec-a", distill=lambda p, n: calls.append(n))
+        self.assertTrue(ok)
+        self.assertEqual(calls, [])
+        self.engine._git_push_ref.assert_not_called()
+
+    def test_non_done_no_dispatch(self):
+        """非 done 状态（转移被拒）→ 不派发。"""
+        self._make_spec(status="ready")
+        calls = []
+        ok = self.engine.approve_push("spec-a", distill=lambda p, n: calls.append(n))
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+
+    def test_backoff_active_no_dispatch(self):
+        """push 退避期内跳过 → 不派发。"""
+        self._make_spec()
+        self.engine._is_push_backoffed = MagicMock(return_value=True)
+        calls = []
+        ok = self.engine.approve_push("spec-a", distill=lambda p, n: calls.append(n))
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+
+    def test_spec_not_found_no_dispatch(self):
+        """SPEC 不存在 → 不派发。"""
+        calls = []
+        ok = self.engine.approve_push("ghost", distill=lambda p, n: calls.append(n))
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+
+    def test_transition_rejected_no_dispatch(self):
+        """transition 被外部状态变化拒绝 → 不派发。"""
+        self._make_spec()
+        self.sm.transition = MagicMock(return_value=False)
+        calls = []
+        ok = self.engine.approve_push("spec-a", distill=lambda p, n: calls.append(n))
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.sm.read_one("spec-a")["status"], "done")
+
+    def test_dispatch_exception_fail_open(self):
+        """派发抛异常 → approve_push 返回值与状态转移不变，仅告警留痕。"""
+
+        def boom(proot, name):
+            raise RuntimeError("蒸馏网关不可用")
+
+        self._make_spec()
+        ok = self.engine.approve_push("spec-a", distill=boom)
+        self.assertTrue(ok)  # fail-open：主流程返回值不变
+        self.assertEqual(self.sm.read_one("spec-a")["status"], "pushed")
+        warn_texts = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("知识蒸馏派发异常", warn_texts)
+        self.assertIn("spec-a", warn_texts)
