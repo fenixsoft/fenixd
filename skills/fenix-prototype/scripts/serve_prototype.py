@@ -253,7 +253,19 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
             self._send_json(413, {"ok": False,
                                   "error": f"请求体为空或超过 {MAX_FEEDBACK_BODY_BYTES}B 上限"})
             return
-        raw = self.rfile.read(length)
+        try:
+            raw = self.rfile.read(length)
+        except (TimeoutError, OSError):
+            # 慢客户端读体超时（handler timeout=30 到点）/ 连接中断：回 408 并
+            # 断开，不让未处理异常沿 socketserver 默认 handle_error 刷整栈
+            # stderr（与 log_message 静默化「原型伺服不刷日志」的意图一致）。
+            self.close_connection = True
+            try:
+                self._send_json(408, {"ok": False,
+                                      "error": "请求体读取超时或连接中断"})
+            except OSError:
+                pass  # 响应写入本身也可能失败（对端已断）：尽力而为
+            return
         try:
             annotation = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -265,18 +277,26 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
                                   "error": "批注必须含非空 anchor 与 text 字段"})
             return
         try:
-            path = self._append_feedback(annotation)
+            path, note = self._append_feedback(annotation)
         except FeedbackWriteRejected as exc:
             self._send_json(exc.status, {"ok": False, "error": str(exc)})
             return
-        self._send_json(200, {"ok": True, "stored": str(path)})
+        payload = {"ok": True, "stored": str(path)}
+        if note:
+            payload["warning"] = note
+        self._send_json(200, payload)
 
-    def _append_feedback(self, annotation: dict) -> Path:
-        """追加一条批注进 feedback.json（锁内读改写，保留既有 dict 结构）。"""
+    def _append_feedback(self, annotation: dict) -> tuple[Path, str | None]:
+        """追加一条批注进 feedback.json（锁内读改写，保留既有 dict 结构）。
+
+        返回 (落盘路径, 非致命提示)；提示非 None 时随响应告知客户端
+        （如原文件损坏已被隔离为 .bak）。
+        """
         target = self.proto_dir / FEEDBACK_FILE_NAME
         with _FEEDBACK_LOCK:
             entries: list = []
             doc: dict | None = None  # dict 形态（如 annotator.js 本地导出）整体保留
+            corrupt = False  # 原文件损坏/不可读：覆盖前先改名隔离，防丢可恢复历史
             if target.is_file():
                 try:
                     existing = json.loads(target.read_text(encoding="utf-8"))
@@ -292,7 +312,11 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
                             409, "feedback.json 是不含 feedback 列表的 JSON object，"
                                  "拒绝追加；请先归档或手工合并该文件后重试")
                 except (OSError, ValueError):
+                    # 非法 JSON（ValueError）或读取失败（OSError）：文件里可能
+                    # 仍有手工可恢复的批注历史，不能当空文件整体覆盖——标记待
+                    # 隔离，写入前先改名 .bak（见 _isolate_corrupt_feedback）。
                     entries = []
+                    corrupt = True
             entries.append(annotation)
             if doc is not None:
                 # dict 形态保留原结构整体回写，round 等同级字段不丢
@@ -306,12 +330,48 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
                 raise FeedbackWriteRejected(
                     507, f"feedback.json 超过 {MAX_FEEDBACK_FILE_BYTES}B 总量上限，"
                          "拒绝写入；请归档历史批注后重试")
+            note: str | None = None
+            if corrupt:
+                # 放在所有拒绝路径之后：仅在实际即将覆盖原文件时才动它
+                note = self._isolate_corrupt_feedback(target)
             # tmp 文件名带进程/线程唯一后缀：并发写各用各的 tmp，避免内容交错
             tmp = target.with_name(
                 f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(target)
-        return target
+            try:
+                tmp.write_text(text, encoding="utf-8")
+                tmp.replace(target)
+            except OSError as exc:
+                # 写盘失败（磁盘满/目录只读/目标被占用等）：尽力清理残留 tmp
+                # 后转 FeedbackWriteRejected，走既有结构化错误通道回包，而非
+                # 沿 do_POST 抛未处理异常栈且客户端收不到任何 JSON 响应。
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise FeedbackWriteRejected(
+                    500, f"feedback.json 写入失败：{exc}") from exc
+        return target, note
+
+    def _isolate_corrupt_feedback(self, target: Path) -> str | None:
+        """把损坏/不可读的 feedback.json 改名隔离为 .bak，返回客户端提示。
+
+        隔离动作本身失败不阻塞新批注写入：降级为 stderr 提示并返回 None。
+        """
+        import time
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        # 隔离名带进程/线程唯一标识：时间戳秒级粒度内两次隔离也不重名覆盖
+        backup = target.with_name(
+            f"{target.name}.corrupt-{stamp}."
+            f"{os.getpid()}.{threading.get_ident()}.bak")
+        try:
+            target.replace(backup)
+        except OSError as exc:
+            print(f"feedback-corrupt-isolate-failed: 无法隔离损坏的 "
+                  f"{target.name}（{exc}），原内容将被新批注数组覆盖",
+                  file=sys.stderr)
+            return None
+        return (f"原 {FEEDBACK_FILE_NAME} 无法解析（疑似损坏），"
+                f"已隔离为 {backup.name}；请手工检查恢复其中的历史批注")
 
     def _send_json(self, code: int, payload: dict):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
