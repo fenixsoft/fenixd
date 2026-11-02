@@ -30,6 +30,57 @@ from core.state_machine import FROZEN_FIELD
 _logger = logging.getLogger("fenixd.pm_engine.dispatch.rollback")
 
 
+def _normalized_positive_float_value(cfg, key: str, default, pm):
+    """浮点配置值级归一（本文件唯一归一落点）。
+
+    自 ``_dispatch_rollback_backoff_seconds`` 的内联守卫链收敛而来
+    （code-review item e486efb62fee）：bool 显式拒绝（f56862fd7372——
+    float() 把布尔 true 折成 1.0 绕过非正/NaN/inf 全部守卫、false 走
+    非正回退，行为不对称）、无法转数值拒绝、NaN/inf/非正数拒绝，非法值
+    一律 WARNING 留痕回缺省（logger getattr 守卫，兼容仅注入 _get_config
+    的测试替身；f5024c77c6e3 可诊断性）。
+
+    与 ``queue.py`` ``_normalized_float_config`` 同一归一口径（该版
+    docstring 亦自注与本读取器同口径），未直接复用因其存在可观察差异，
+    合并时须参数化：WARNING 文案（共享版单条合并文案，本侧分原因三段式
+    既有格式保持不变）；读取异常宽度（共享版仅捕 TypeError/ValueError，
+    本侧读取器宽 except，b59a54cc9ed1）与下限策略（``max(1, int(v))``，
+    77be0cfcbe43）不属值级归一、留在读取器/消费点。与 repair_lane
+    ``_max_retries``/``_merge_breaker_threshold`` 读取器的 illegal 分支
+    同款——归一规则多落点（queue int/float 两版、repair_lane 两读取器、
+    本助手）调整时 MUST 同步，跨文件收敛超出本修复边界。
+    """
+    logger = getattr(pm, "logger", None)
+    if isinstance(cfg, bool):
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（布尔不合法），"
+                f"回退缺省 {default}: {cfg!r}",
+            )
+        return default
+    try:
+        v = float(cfg)
+    except (TypeError, ValueError):
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（无法转数值），"
+                f"回退缺省 {default}: {cfg!r}",
+            )
+        return default
+    if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法"
+                "（NaN/inf/非正数均不合法），"
+                f"回退缺省 {default}: {cfg!r}",
+            )
+        return default
+    return v
+
+
 class RRollbackMixin:
     """R 失败回滚/诊断上报（design D1 表 B R 组）。"""
 
@@ -115,63 +166,36 @@ class RRollbackMixin:
         ``pm.dispatch_backoff_schedule`` 双源不统一，调参/行为诊断困难）。
         非正数/非法值回退缺省；布尔显式拒绝（对齐 repair_lane
         ``_merge_breaker_threshold`` 归一口径）。
+
+        值级归一守卫链单点收敛在模块级 ``_normalized_positive_float_value``
+        （本文件唯一归一落点，与 ``queue._normalized_float_config`` 的口径
+        关系及未复用原因见其 docstring）；本方法只保留两条差异轴——读取
+        层宽 except（b59a54cc9ed1）与消费点下限 ``max(1, int(v))``
+        （77be0cfcbe43）。
         """
         default = 300
+        key = "pm.dispatch_rollback_backoff_seconds"
         try:
-            cfg = self._pm._get_config("pm.dispatch_rollback_backoff_seconds", default)
+            cfg = self._pm._get_config(key, default)
         # 配置读取层任何异常（IO/键结构等，不限值错误）均不阻断回滚主流程
         # （code-review item b59a54cc9ed1）：此前仅捕 TypeError/ValueError，
         # 其余异常会从 _rollback_failed_dispatch 调用点冒泡到外层 except，
         # 被记成泛化「State rollback failed」，状态复位与重派入队整段中止。
+        # （读取异常宽度是本读取器与 queue._normalized_float_config 的差异
+        # 轴之一：共享版仅捕 TypeError/ValueError，此处有意放宽。）
         except Exception as cfg_exc:  # noqa: BLE001 —— 读取异常回退缺省
             logger = getattr(self._pm, "logger", None)
             if logger is not None:
                 logger.warning(
                     "pm_engine",
-                    "配置 pm.dispatch_rollback_backoff_seconds 读取异常，"
+                    f"配置 {key} 读取异常，"
                     f"回退缺省 {default}: {type(cfg_exc).__name__}: {cfg_exc}",
                 )
             return default
-        # bool 显式拒绝（code-review item f56862fd7372）：float() 把 YAML 布尔
-        # true 折算成 1.0，绕过下方非正/NaN/inf 全部守卫，防振荡窗被静默从
-        # 缺省 300s 缩成 1s；false 走 v<=0 回退缺省，true/false 行为不对称。
-        # 非法值（布尔/无法转数值/NaN/inf/非正数）一律 WARNING 留痕回退缺省
-        # （logger getattr 守卫，兼容仅注入 _get_config 的测试替身；与
-        # repair_lane _max_retries/_merge_breaker_threshold 的 illegal 分支
-        # 同款——code-review item f5024c77c6e3：非布尔非法值此前静默回退
-        # 无留痕，调参者无从诊断，与 01c0160765d2 可诊断性口径不一致）。
-        if isinstance(cfg, bool):
-            logger = getattr(self._pm, "logger", None)
-            if logger is not None:
-                logger.warning(
-                    "pm_engine",
-                    "配置 pm.dispatch_rollback_backoff_seconds 非法（布尔不合法），"
-                    f"回退缺省 {default}: {cfg!r}",
-                )
-            return default
-        try:
-            v = float(cfg)
-        except (TypeError, ValueError):
-            logger = getattr(self._pm, "logger", None)
-            if logger is not None:
-                logger.warning(
-                    "pm_engine",
-                    "配置 pm.dispatch_rollback_backoff_seconds 非法（无法转数值），"
-                    f"回退缺省 {default}: {cfg!r}",
-                )
-            return default
-        if v != v or v in (float("inf"), float("-inf")) or v <= 0:
-            logger = getattr(self._pm, "logger", None)
-            if logger is not None:
-                logger.warning(
-                    "pm_engine",
-                    "配置 pm.dispatch_rollback_backoff_seconds 非法"
-                    "（NaN/inf/非正数均不合法），"
-                    f"回退缺省 {default}: {cfg!r}",
-                )
-            return default
-        # 亚秒正值下限保护（code-review item 77be0cfcbe43）：int 截断会把
+        # 下限在消费点收口（与 queue 归一版消费点的 max(下限, ·) 同式）：
+        # 亚秒正值下限保护（code-review item 77be0cfcbe43），int 截断会把
         # 0<v<1 压成 0，退避窗立即过期、防振荡静默失效，故至少保留 1 秒。
+        v = _normalized_positive_float_value(cfg, key, default, self._pm)
         return max(1, int(v))
 
     def _rollback_frozen_recheck(self, spec_name: str, agent_type: str) -> bool:
