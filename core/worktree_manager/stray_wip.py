@@ -650,7 +650,19 @@ class MainTreeStrayWipSweeper:
                     "conservative abandon, entries kept)",
                 )
                 return None
-        files = list(wm._list_dirty_tracked_files(status_stdout=status))
+        # 与 identify_wip_occupant 同款防御（code-review item be32b52b6f91）：
+        # 组装形态缺该方法（测试装配/未来重构拆分）时 AttributeError 会贯穿
+        # sweep，此处按保守放弃本轮降级，维持「git 查询失败按放弃本轮」的
+        # 流内容错一致性。
+        list_dirty = getattr(wm, "_list_dirty_tracked_files", None)
+        if not callable(list_dirty):
+            self._log(
+                "warning",
+                "Stray WIP sweep skipped (_list_dirty_tracked_files unavailable; "
+                "conservative abandon, entries kept)",
+            )
+            return None
+        files = list(list_dirty(status_stdout=status))
         result = self._tracked_sweep_locked(files, running_run_ids)
         if result is None:
             # tracked 侧放弃本轮（diff 失败/识别器缺失）：untracked 条目同轮
@@ -1371,9 +1383,13 @@ class MainTreeStrayWipSweeper:
                 # code-review item 80b3fd45d00c: porcelain -uall 也会把管道/设备文件
                 # （含指向 /dev/zero 等无限流的符号链接目标）列为 untracked 条目，
                 # 读之会让哈希循环无限挂起、长期占用 _main_tree_lock 临界区——
-                # 读前先 stat 判普通文件，非普通文件与下方 OSError 同取
+                # 读前先 lstat 判普通文件，非普通文件与下方 OSError 同取
                 # unreadable 占位参与哈希。
-                if not stat.S_ISREG(os.stat(self.project_root / rel).st_mode):
+                # code-review item d0bc909897b8: stat 会解引用符号链接，指向
+                # 仓库外普通文件的链接会被跨界读取——改用 lstat（不跟随链接），
+                # 符号链接本身（含指向普通文件的）一律按非普通文件取
+                # unreadable 占位，不越界读盘。
+                if not stat.S_ISREG(os.lstat(self.project_root / rel).st_mode):
                     content_fp = "unreadable"
                 else:
                     with open(self.project_root / rel, "rb") as fh:
@@ -2320,8 +2336,6 @@ class MainTreeStrayWipSweeper:
         ``mergeback_wip_orphan_stuck`` 同款批语义适配）。AdminStore 拒写时
         返回 False（escalated_at 不落、下轮重试），不让告警静默蒸发。
         """
-        from core.worktree_manager.types import WipOccupantInfo
-
         files = list(entry.get("files") or [])
         evidence = (
             f"项目名={self.project_root.name}; "
@@ -2375,13 +2389,26 @@ class MainTreeStrayWipSweeper:
                 "按无主升级，升级仅为告警）。同指纹一次性告警，改动消失后"
                 "盘点状态自动复位"
             )
+        # code-review item bae007d37fb5：description 按归因形态分档措辞（对齐
+        # _untracked_attribution_probe 的注记分档）——进宽限升级流的两形态里，
+        # keep 回退形态 evidence 的「归因证据: info.describe()」写「占用者=
+        # 主树活交互会话」，description 若仍写死「零命中」则同记录两段证据
+        # 互相打架、admin 按 description 判读会误归因为无主。
+        if info.is_session_attribution():
+            attribution_clause = (
+                "命中活交互会话但配置 "
+                "admin.maintree_session_attribution_action=keep 回退，"
+                "按无主升级"
+            )
+        else:
+            attribution_clause = "在飞实现车道分支改动集零命中"
         rec = self._append_signal(
             signal_type=SIGNAL_TYPE,
             severity="major",
             description=(
                 "主树 tracked 未提交改动（散件 WIP）经周期盘点确认为无主"
                 f"滞留：{len(files)} 个文件自 first_seen 起超过宽限 "
-                f"{grace:g} 分钟无人认领（在飞实现车道分支改动集零命中）。"
+                f"{grace:g} 分钟无人认领（{attribution_clause}）。"
                 "盘点只读零触碰，等待人工提交或 stash 处置"
             ),
             evidence=evidence,
