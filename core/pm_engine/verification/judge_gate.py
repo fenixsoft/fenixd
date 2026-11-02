@@ -437,11 +437,18 @@ def _judge_dispatch_gate(pipeline, spec_name: str):
         cap = _read_int_config(
             pipeline, "verify_engine.inconclusive_max_attempts", 2
         )
-        count = _judge_inconclusive_dispatches_read(pipeline, spec_name)
-        if count >= cap:
+        # 先 bump 后判定（code-review item bb1f09ccbeb9，与 _judge_rerun_count
+        # 分支及 infra_classify.resolve_infra_retry_decision 同口径）：原先读与
+        # 递增分属两次独立 STATE 访问，两次并发重入可同时读到未超限旧值而
+        # 双双放行，独立上限兜底在窗口内失真；改为锁内原子递增取回
+        # post-increment 计数再比较（count > cap 等价于旧口径 prev >= cap，
+        # 预算语义不变）。写失败 -1 与 _judge_rerun_count 分支同容错（-1 > cap
+        # 恒假 → 不误触到顶停车、放行派发）；到顶拒绝路径不回滚计数（该分支
+        # 同样不回滚，post-increment count 照传入升级文案）。
+        count = _judge_inconclusive_dispatches_bump(pipeline, spec_name)
+        if count > cap:
             _judge_inconclusive_cap_escalate(pipeline, spec_name, count, cap)
             return False
-        count = _judge_inconclusive_dispatches_bump(pipeline, spec_name)
     else:
         count = pipeline._judge_rerun_count(spec_name, delta=1)
         if count > _MAX_JUDGE_RERUNS:

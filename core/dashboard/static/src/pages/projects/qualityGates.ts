@@ -12,6 +12,12 @@
 //   pending  灰色
 //   skipped  勾选 +「不适用」标识
 //   unknown  「无记录」灰色
+//
+// 配色口径注记（code-review item f75679cd1b28）：gateTextColor 返回的 #cf1322 /
+// #999 为有意豁免的浅色常量，非遗漏——本模块零 import 供 node type-stripping
+// 直载，不能引 antd theme token；且 qualityGates.test.mjs 已把这三个返回值
+// （#cf1322 / #999 / undefined）逐值钉为模块契约，改「语义档位 + 调用方映射」
+// 须同步改该测试，超出本文件单方可变更范围（同 progressPhase.ts 头部豁免注记口径）。
 
 export type GateItem = {
   id: string;

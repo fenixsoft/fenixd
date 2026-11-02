@@ -517,6 +517,11 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
       setConfig(cfg);
       message.success('保存成功');
     } catch (e) {
+      // 在飞期间已切换 SPEC：失败提示与成功路径同口径静默丢弃（不再弹
+      // message.error）——错误文案指向旧 SPEC，弹在已切换后的页面会让提示
+      // 与当前页面不一致（code-review item 1ba3cd3fac5f）；return 仍走
+      // finally 的 setSaving(false)
+      if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
       message.error(`保存失败：${e instanceof Error ? e.message : e}`);
     } finally {
       setSaving(false);
@@ -534,6 +539,310 @@ function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec
         auditLoading={auditLoading}
         readOnly={readOnly}
       />
+    </div>
+  );
+}
+
+// ── spec 详情页内容页签子组件（code-review item 00ecaf2a9bac）──────────────
+// 场景结果 / Bug 列表两大页签的内容渲染自 SpecDetailPage 抽出（延续
+// SpecTimeline / FilteredFailuresBlock 的模块级抽取节奏），tabItems 只保留
+// 页签编排与计数徽标。子组件必须定义在模块级：定义在组件体内会每渲染生成
+// 新组件身份，Tabs 已挂载页签整树重挂载（截图预览等内部状态丢失）。
+// 交互态（scenarioFilter）仍留在主组件——SPEC 快速切换时主 effect 的归零
+// 复位（code-review item 3c54c109b5f6）必须够得到它，经 props 注入。
+
+// 场景结果状态过滤值（'' = 全部）
+type ScenarioStatusFilter = 'pass' | 'warning' | 'fail' | 'error' | '';
+
+// 场景结果页签：状态过滤条 + 场景卡片列表（v1 scenarioCard 同款：状态 +
+// 场景 ID + 描述 + 失败步骤/断言明细）
+function ScenariosTabPane({
+  scenarios,
+  reportError,
+  filter,
+  onFilterChange,
+}: {
+  scenarios?: SpecDetail['scenarios'];
+  reportError?: string | null;
+  filter: ScenarioStatusFilter;
+  onFilterChange: (next: ScenarioStatusFilter) => void;
+}) {
+  // useToken 只能在组件内调用（FilteredFailuresBlock 同款）
+  const { token } = theme.useToken();
+  return (
+    <div style={{ padding: '20px 0' }}>
+      {scenarios?.length ? (
+        <div>
+          {/* 状态过滤条（点击筛选，再点取消；计数取自场景数组本身） */}
+          <div style={{ marginBottom: 16 }}>
+            <Space size={8} wrap>
+              {(
+                [
+                  { key: 'pass', label: '通过', color: 'success' },
+                  { key: 'warning', label: '警告', color: 'warning' },
+                  { key: 'fail', label: '失败', color: 'error' },
+                  { key: 'error', label: '错误', color: 'error' },
+                ] as const
+              ).map((c) => {
+                const active = filter === c.key;
+                return (
+                  <Tag
+                    key={c.key}
+                    color={active ? c.color : 'default'}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => onFilterChange(active ? '' : c.key)}
+                  >
+                    {c.label} {scenarios.filter((s) => s.status === c.key).length}
+                  </Tag>
+                );
+              })}
+            </Space>
+          </div>
+
+          {/* 场景卡片列表（v1 scenarioCard 同款：状态 + 场景 ID + 描述 + 失败步骤/断言明细） */}
+          {(filter
+            ? scenarios.filter((s) => s.status === filter)
+            : scenarios
+          ).map((scenario, idx) => {
+            const failedSteps = (scenario.step_results || []).filter((s) => !s.success);
+            const assertions = scenario.assertion_results || [];
+            return (
+              <Card
+                // SSE 增量刷新可能在既有条目之间增删（场景重跑），索引 key 会
+                // 按位置错位复用节点；kind 缺省按 web 拼前缀保证跨 kind 唯一，
+                // 索引仅作同型重复条目 tie-breaker
+                // （code-review item 92d9f4c54ba9）
+                key={`${scenario.kind || 'web'}-${scenario.scenario_id}-${idx}`}
+                size="small"
+                style={{ marginBottom: 12 }}
+                title={
+                  <Space size={8}>
+                    <Tag color={scenarioStatusColor(scenario.status)}>
+                      {scenarioStatusLabel(scenario.status)}
+                    </Tag>
+                    <KindBadge kind={scenario.kind} />
+                    <Typography.Text strong>{scenario.scenario_id}</Typography.Text>
+                  </Space>
+                }
+              >
+                {/* 场景内容放正文，14px */}
+                {scenario.description && (
+                  <Typography.Text style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>
+                    {scenario.description}
+                  </Typography.Text>
+                )}
+
+                {/* 失败步骤明细（仅未成功步骤，v1 同款） */}
+                {failedSteps.length > 0 && (
+                  <div style={{ marginBottom: assertions.length ? 8 : 0 }}>
+                    <Typography.Text style={{ display: 'block', marginBottom: 4 }}>
+                      失败步骤:
+                    </Typography.Text>
+                    {failedSteps.map((step, sIdx) => (
+                      <div
+                        // 复合稳定 key（code-review item 81564d8b530d，口径同
+                        // 下方断言行）：场景重跑/SSE 整表替换在中间增删时避免
+                        // 按位置复用错位，内容拼前缀、索引仅作 tie-breaker
+                        key={`${step.action || ''}-${step.description || ''}-${sIdx}`}
+                        style={{
+                          padding: '4px 8px',
+                          marginBottom: 4,
+                          background: token.colorErrorBg,
+                          border: `1px solid ${token.colorErrorBorder}`,
+                          borderRadius: 4,
+                        }}
+                      >
+                        <Typography.Text type="danger">
+                          ✗ {step.action || '?'} {step.description || ''} {step.error || step.detail || ''}
+                        </Typography.Text>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 断言明细（失败标红，v1 同款） */}
+                {assertions.length > 0 && (
+                  <div>
+                    <Typography.Text style={{ display: 'block', marginBottom: 4 }}>
+                      断言:
+                    </Typography.Text>
+                    {assertions.map((a, aIdx) => {
+                      const ok = a.pass !== false;
+                      const detailText = assertionDetail(a);
+                      const failReason = a.message || a.detail || a.error || '';
+                      return (
+                        <div
+                          // SSE 增量刷新可能在既有条目间增删（重跑），索引 key
+                          // 会按位置错位复用节点（Tooltip 悬停态等内部状态串到
+                          // 语义已变的条目）。后端断言无稳定 id，取类型+内容
+                          // 复合稳定前缀，索引仅作同型重复条目 tie-breaker
+                          // （对齐 Bug 卡片口径 code-review item 9c754a9839af，
+                          // 本条 2c4fbd8964f8）
+                          key={`assertion-${a.type || ''}-${a.label || a.message || a.detail || ''}-${aIdx}`}
+                          style={{
+                            padding: '4px 8px',
+                            marginBottom: 4,
+                            background: ok ? token.colorSuccessBg : token.colorErrorBg,
+                            border: `1px solid ${ok ? token.colorSuccessBorder : token.colorErrorBorder}`,
+                            borderRadius: 4,
+                          }}
+                        >
+                          <Typography.Text type={ok ? undefined : 'danger'}>
+                            {ok ? '✓' : '✗'}{' '}
+                            <Tooltip title={`断言类型: ${a.type || '?'}`}>
+                              {assertionLabel(a.type)}
+                            </Tooltip>
+                            {/* 明细/失败原因拼接为空时跳过分隔符，避免通过断言
+                                （如 element_visible 无附加字段）渲染「元素可见 : 」
+                                尾随冒号或孤立的「—」（code-review item 32bb6c687d10） */}
+                            {detailText ? `: ${detailText}` : ''}
+                            {!ok && failReason ? ` — ${failReason}` : ''}
+                          </Typography.Text>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      ) : reportError ? (
+        <Empty description="report.json 损坏或不可读" />
+      ) : (
+        <Empty description="暂无场景结果" />
+      )}
+    </div>
+  );
+}
+
+// Bug 列表页签：Bug 卡片列表（严重度 + 来源 + 描述 + 关联场景/断言/证据/截图）
+// + 被裁决过滤场景摘要（FilteredFailuresBlock，bugs 空与非空两分支各一形态）
+function BugsTabPane({
+  bugs,
+  filteredFailures,
+  name,
+  spec,
+}: {
+  bugs?: SpecDetail['bugs'];
+  filteredFailures?: SpecDetail['filtered_failures'];
+  name: string;
+  spec: string;
+}) {
+  // useToken 只能在组件内调用（FilteredFailuresBlock 同款）
+  const { token } = theme.useToken();
+  return (
+    <div style={{ padding: '20px 0' }}>
+      {bugs && bugs.length > 0 ? (
+        <div>
+          {bugs.map((bug, idx) => (
+            <Card
+              // SSE 增量刷新可能在既有条目间增删（重跑产生新 Bug），索引 key
+              // 会按位置错位复用节点（截图 Image 预览等内部状态串到语义已变
+              // 的条目）。后端 report 分支 bug 无 id（artifacts.py parse_bugs
+              // 仅 run-result 回退分支带 id 且可为空），取 scenario+断言+描述
+              // 复合稳定前缀，索引仅作同型重复条目 tie-breaker（对齐场景列表
+              // 口径 code-review item 92d9f4c54ba9，本条 9c754a9839af）
+              key={`bug-${bug.scenario || ''}-${bug.assertion || ''}-${bug.description}-${idx}`}
+              size="small"
+              style={{ marginBottom: 12 }}
+              title={
+                <Space size={8}>
+                  <Tag color={SEVERITY_TAG_COLOR[bug.severity] ?? 'blue'}>
+                    {bug.severity || 'major'}
+                  </Tag>
+                  <Typography.Text type="secondary">{bug.source || 'report'}</Typography.Text>
+                </Space>
+              }
+            >
+              <Typography.Paragraph style={{ marginBottom: 8 }}>
+                {bug.description}
+              </Typography.Paragraph>
+
+              {/* 关联场景 */}
+              {bug.scenario && (
+                <div style={{ marginBottom: 8 }}>
+                  <Typography.Text type="secondary">关联场景: </Typography.Text>
+                  <Typography.Text>{bug.scenario}</Typography.Text>
+                </div>
+              )}
+
+              {/* 断言类型 */}
+              {bug.assertion && (
+                <div style={{ marginBottom: 8 }}>
+                  <Typography.Text type="secondary">断言类型: </Typography.Text>
+                  <Tooltip title={assertionLabel(bug.assertion) !== bug.assertion ? bug.assertion : ''}>
+                    <Typography.Text>{assertionLabel(bug.assertion)}</Typography.Text>
+                  </Tooltip>
+                </div>
+              )}
+
+              {/* 证据 */}
+              {bug.evidence && (
+                <div
+                  style={{
+                    padding: '8px 12px',
+                    marginBottom: 8,
+                    background: token.colorFillTertiary,
+                    borderRadius: 4,
+                    fontFamily: 'monospace',
+                    fontSize: 13,
+                  }}
+                >
+                  <Typography.Text>{bug.evidence}</Typography.Text>
+                </div>
+              )}
+
+              {/* 截图缩略图 */}
+              {bug.screenshots && bug.screenshots.length > 0 && (
+                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {bug.screenshots.map((file, sIdx) => (
+                    <Image
+                      // 文件名即稳定 key：索引 key 在 SSE 增量刷新下错位复用
+                      // Image 实例，预览等内部状态串到语义已变的截图
+                      key={file}
+                      src={screenshotUrl(name, spec, file)}
+                      alt={`Bug ${idx + 1} 截图 ${sIdx + 1}`}
+                      width={150}
+                      height={100}
+                      style={{
+                        objectFit: 'cover',
+                        // 硬编码浅色边框随主题 token（code-review item 99c497187038，
+                        // 同 FilteredFailuresBlock 口径）
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                        borderRadius: 4,
+                      }}
+                      preview={{ mask: '点击预览' }}
+                    />
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+          {/* fix-verify-verdict-visibility：bugs 非空时被过滤场景摘要折叠为次级区块 */}
+          {filteredFailures && filteredFailures.length > 0 && (
+            <FilteredFailuresBlock
+              filtered={filteredFailures}
+              name={name}
+              spec={spec}
+              collapsed
+            />
+          )}
+        </div>
+      ) : (
+        <div>
+          {/* filtered_failures 为空时行为与现状完全一致：仅「无遗留 Bug」空态 */}
+          <Empty description="无遗留 Bug" />
+          {filteredFailures && filteredFailures.length > 0 && (
+            <FilteredFailuresBlock
+              filtered={filteredFailures}
+              name={name}
+              spec={spec}
+              collapsed={false}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -572,7 +881,7 @@ export default function SpecDetailPage() {
     resolvingAlerts, alertResolveMsgs,
   } = adj;
   // 场景结果状态过滤（'' = 全部）
-  const [scenarioFilter, setScenarioFilter] = useState<'pass' | 'warning' | 'fail' | 'error' | ''>('');
+  const [scenarioFilter, setScenarioFilter] = useState<ScenarioStatusFilter>('');
   // 任务背景描述 = proposal 文档 ## Why 段（spec 列表悬停同名内容），懒加载
   const [proposalWhy, setProposalWhy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -596,8 +905,10 @@ export default function SpecDetailPage() {
   const applyDetailRef = useRef<(data: SpecDetail) => void>(() => {});
   // 告警「清除」在飞防重守卫（code-review item 03dafe97efab，比照 SessionPanel
   // sendingRef 同帧原子短路口径）：网络往返窗口内连点/回车只放行首个调用，
-  // 不并发重复 markAlertHandled、不多次 loadSpecAlerts
-  const markHandledInFlightRef = useRef(false);
+  // 不并发重复 markAlertHandled、不多次 loadSpecAlerts。按告警 id 分键而非
+  // 全局单布尔（code-review item 75bcd3ef3540）：单布尔会把在飞窗口内另一条
+  // 告警的清除点击静默吞掉，分键后不同告警互不阻塞、同告警仍只放行首个
+  const markHandledInFlightRef = useRef<Record<string, boolean>>({});
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -967,18 +1278,19 @@ export default function SpecDetailPage() {
   // 格式化函数见 @/utils/tokens（fmtMillions / fmtInputTokens）
 
   // 告警标记人工已处理（同 overview 横幅）；成功后刷新本 SPEC 告警。
-  // 在飞即短路（markHandledInFlightRef 同帧原子判断+置位，code-review item
-  // 03dafe97efab），finally 复位后仍照常刷新一次告警列表
+  // 同一告警在飞即短路（markHandledInFlightRef 按告警 id 分键判断+置位，
+  // code-review item 03dafe97efab / 75bcd3ef3540），finally 复位后仍照常
+  // 刷新一次告警列表
   const handleMarkAlertHandled = async (a: AlertItem) => {
-    if (markHandledInFlightRef.current) return;
-    markHandledInFlightRef.current = true;
+    if (markHandledInFlightRef.current[a.id]) return;
+    markHandledInFlightRef.current[a.id] = true;
     try {
       await markAlertHandled(a.project, a.id);
       message.success('已标记处理');
     } catch (err) {
       message.error(`标记失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      markHandledInFlightRef.current = false;
+      delete markHandledInFlightRef.current[a.id];
     }
     loadSpecAlerts();
   };
@@ -1058,150 +1370,15 @@ export default function SpecDetailPage() {
           <Badge count={detail?.scenarios?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
         </span>
       ),
+      // 内容渲染抽至 ScenariosTabPane（code-review item 00ecaf2a9bac）：
+      // scenarioFilter 仍留在主组件（SPEC 切换归零复位必须够得到），经 props 注入
       children: (
-        <div style={{ padding: '20px 0' }}>
-          {detail?.scenarios?.length ? (
-            <div>
-              {/* 状态过滤条（点击筛选，再点取消；计数取自场景数组本身） */}
-              <div style={{ marginBottom: 16 }}>
-                <Space size={8} wrap>
-                  {(
-                    [
-                      { key: 'pass', label: '通过', color: 'success' },
-                      { key: 'warning', label: '警告', color: 'warning' },
-                      { key: 'fail', label: '失败', color: 'error' },
-                      { key: 'error', label: '错误', color: 'error' },
-                    ] as const
-                  ).map((c) => {
-                    const active = scenarioFilter === c.key;
-                    return (
-                      <Tag
-                        key={c.key}
-                        color={active ? c.color : 'default'}
-                        style={{ cursor: 'pointer' }}
-                        onClick={() => setScenarioFilter(active ? '' : c.key)}
-                      >
-                        {c.label} {detail.scenarios.filter((s) => s.status === c.key).length}
-                      </Tag>
-                    );
-                  })}
-                </Space>
-              </div>
-
-              {/* 场景卡片列表（v1 scenarioCard 同款：状态 + 场景 ID + 描述 + 失败步骤/断言明细） */}
-              {(scenarioFilter
-                ? detail.scenarios.filter((s) => s.status === scenarioFilter)
-                : detail.scenarios
-              ).map((scenario, idx) => {
-                const failedSteps = (scenario.step_results || []).filter((s) => !s.success);
-                const assertions = scenario.assertion_results || [];
-                return (
-                  <Card
-                    // SSE 增量刷新可能在既有条目之间增删（场景重跑），索引 key 会
-                    // 按位置错位复用节点；kind 缺省按 web 拼前缀保证跨 kind 唯一，
-                    // 索引仅作同型重复条目 tie-breaker
-                    // （code-review item 92d9f4c54ba9）
-                    key={`${scenario.kind || 'web'}-${scenario.scenario_id}-${idx}`}
-                    size="small"
-                    style={{ marginBottom: 12 }}
-                    title={
-                      <Space size={8}>
-                        <Tag color={scenarioStatusColor(scenario.status)}>
-                          {scenarioStatusLabel(scenario.status)}
-                        </Tag>
-                        <KindBadge kind={scenario.kind} />
-                        <Typography.Text strong>{scenario.scenario_id}</Typography.Text>
-                      </Space>
-                    }
-                  >
-                    {/* 场景内容放正文，14px */}
-                    {scenario.description && (
-                      <Typography.Text style={{ fontSize: 14, display: 'block', marginBottom: 8 }}>
-                        {scenario.description}
-                      </Typography.Text>
-                    )}
-
-                    {/* 失败步骤明细（仅未成功步骤，v1 同款） */}
-                    {failedSteps.length > 0 && (
-                      <div style={{ marginBottom: assertions.length ? 8 : 0 }}>
-                        <Typography.Text style={{ display: 'block', marginBottom: 4 }}>
-                          失败步骤:
-                        </Typography.Text>
-                        {failedSteps.map((step, sIdx) => (
-                          <div
-                            // 复合稳定 key（code-review item 81564d8b530d，口径同
-                            // 下方断言行）：场景重跑/SSE 整表替换在中间增删时避免
-                            // 按位置复用错位，内容拼前缀、索引仅作 tie-breaker
-                            key={`${step.action || ''}-${step.description || ''}-${sIdx}`}
-                            style={{
-                              padding: '4px 8px',
-                              marginBottom: 4,
-                              background: token.colorErrorBg,
-                              border: `1px solid ${token.colorErrorBorder}`,
-                              borderRadius: 4,
-                            }}
-                          >
-                            <Typography.Text type="danger">
-                              ✗ {step.action || '?'} {step.description || ''} {step.error || step.detail || ''}
-                            </Typography.Text>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* 断言明细（失败标红，v1 同款） */}
-                    {assertions.length > 0 && (
-                      <div>
-                        <Typography.Text style={{ display: 'block', marginBottom: 4 }}>
-                          断言:
-                        </Typography.Text>
-                        {assertions.map((a, aIdx) => {
-                          const ok = a.pass !== false;
-                          const detailText = assertionDetail(a);
-                          const failReason = a.message || a.detail || a.error || '';
-                          return (
-                            <div
-                              // SSE 增量刷新可能在既有条目间增删（重跑），索引 key
-                              // 会按位置错位复用节点（Tooltip 悬停态等内部状态串到
-                              // 语义已变的条目）。后端断言无稳定 id，取类型+内容
-                              // 复合稳定前缀，索引仅作同型重复条目 tie-breaker
-                              // （对齐 Bug 卡片口径 code-review item 9c754a9839af，
-                              // 本条 2c4fbd8964f8）
-                              key={`assertion-${a.type || ''}-${a.label || a.message || a.detail || ''}-${aIdx}`}
-                              style={{
-                                padding: '4px 8px',
-                                marginBottom: 4,
-                                background: ok ? token.colorSuccessBg : token.colorErrorBg,
-                                border: `1px solid ${ok ? token.colorSuccessBorder : token.colorErrorBorder}`,
-                                borderRadius: 4,
-                              }}
-                            >
-                              <Typography.Text type={ok ? undefined : 'danger'}>
-                                {ok ? '✓' : '✗'}{' '}
-                                <Tooltip title={`断言类型: ${a.type || '?'}`}>
-                                  {assertionLabel(a.type)}
-                                </Tooltip>
-                                {/* 明细/失败原因拼接为空时跳过分隔符，避免通过断言
-                                    （如 element_visible 无附加字段）渲染「元素可见 : 」
-                                    尾随冒号或孤立的「—」（code-review item 32bb6c687d10） */}
-                                {detailText ? `: ${detailText}` : ''}
-                                {!ok && failReason ? ` — ${failReason}` : ''}
-                              </Typography.Text>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </Card>
-                );
-              })}
-            </div>
-          ) : detail?.report?.error ? (
-            <Empty description="report.json 损坏或不可读" />
-          ) : (
-            <Empty description="暂无场景结果" />
-          )}
-        </div>
+        <ScenariosTabPane
+          scenarios={detail?.scenarios}
+          reportError={detail?.report?.error}
+          filter={scenarioFilter}
+          onFilterChange={setScenarioFilter}
+        />
       ),
     },
     {
@@ -1212,119 +1389,14 @@ export default function SpecDetailPage() {
           <Badge count={detail?.bugs?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
         </span>
       ),
+      // 内容渲染抽至 BugsTabPane（code-review item 00ecaf2a9bac），此处只保留编排
       children: (
-        <div style={{ padding: '20px 0' }}>
-          {detail?.bugs && detail.bugs.length > 0 ? (
-            <div>
-              {detail.bugs.map((bug, idx) => (
-                <Card
-                  // SSE 增量刷新可能在既有条目间增删（重跑产生新 Bug），索引 key
-                  // 会按位置错位复用节点（截图 Image 预览等内部状态串到语义已变
-                  // 的条目）。后端 report 分支 bug 无 id（artifacts.py parse_bugs
-                  // 仅 run-result 回退分支带 id 且可为空），取 scenario+断言+描述
-                  // 复合稳定前缀，索引仅作同型重复条目 tie-breaker（对齐场景列表
-                  // 口径 code-review item 92d9f4c54ba9，本条 9c754a9839af）
-                  key={`bug-${bug.scenario || ''}-${bug.assertion || ''}-${bug.description}-${idx}`}
-                  size="small"
-                  style={{ marginBottom: 12 }}
-                  title={
-                    <Space size={8}>
-                      <Tag color={SEVERITY_TAG_COLOR[bug.severity] ?? 'blue'}>
-                        {bug.severity || 'major'}
-                      </Tag>
-                      <Typography.Text type="secondary">{bug.source || 'report'}</Typography.Text>
-                    </Space>
-                  }
-                >
-                  <Typography.Paragraph style={{ marginBottom: 8 }}>
-                    {bug.description}
-                  </Typography.Paragraph>
-
-                  {/* 关联场景 */}
-                  {bug.scenario && (
-                    <div style={{ marginBottom: 8 }}>
-                      <Typography.Text type="secondary">关联场景: </Typography.Text>
-                      <Typography.Text>{bug.scenario}</Typography.Text>
-                    </div>
-                  )}
-
-                  {/* 断言类型 */}
-                  {bug.assertion && (
-                    <div style={{ marginBottom: 8 }}>
-                      <Typography.Text type="secondary">断言类型: </Typography.Text>
-                      <Tooltip title={assertionLabel(bug.assertion) !== bug.assertion ? bug.assertion : ''}>
-                        <Typography.Text>{assertionLabel(bug.assertion)}</Typography.Text>
-                      </Tooltip>
-                    </div>
-                  )}
-
-                  {/* 证据 */}
-                  {bug.evidence && (
-                    <div
-                      style={{
-                        padding: '8px 12px',
-                        marginBottom: 8,
-                        background: token.colorFillTertiary,
-                        borderRadius: 4,
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                      }}
-                    >
-                      <Typography.Text>{bug.evidence}</Typography.Text>
-                    </div>
-                  )}
-
-                  {/* 截图缩略图 */}
-                  {bug.screenshots && bug.screenshots.length > 0 && (
-                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {bug.screenshots.map((file, sIdx) => (
-                        <Image
-                          // 文件名即稳定 key：索引 key 在 SSE 增量刷新下错位复用
-                          // Image 实例，预览等内部状态串到语义已变的截图
-                          key={file}
-                          src={screenshotUrl(name, spec, file)}
-                          alt={`Bug ${idx + 1} 截图 ${sIdx + 1}`}
-                          width={150}
-                          height={100}
-                          style={{
-                            objectFit: 'cover',
-                            // 硬编码浅色边框随主题 token（code-review item 99c497187038，
-                            // 同 FilteredFailuresBlock 口径）
-                            border: `1px solid ${token.colorBorderSecondary}`,
-                            borderRadius: 4,
-                          }}
-                          preview={{ mask: '点击预览' }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </Card>
-              ))}
-              {/* fix-verify-verdict-visibility：bugs 非空时被过滤场景摘要折叠为次级区块 */}
-              {detail?.filtered_failures && detail.filtered_failures.length > 0 && (
-                <FilteredFailuresBlock
-                  filtered={detail.filtered_failures}
-                  name={name}
-                  spec={spec}
-                  collapsed
-                />
-              )}
-            </div>
-          ) : (
-            <div>
-              {/* filtered_failures 为空时行为与现状完全一致：仅「无遗留 Bug」空态 */}
-              <Empty description="无遗留 Bug" />
-              {detail?.filtered_failures && detail.filtered_failures.length > 0 && (
-                <FilteredFailuresBlock
-                  filtered={detail.filtered_failures}
-                  name={name}
-                  spec={spec}
-                  collapsed={false}
-                />
-              )}
-            </div>
-          )}
-        </div>
+        <BugsTabPane
+          bugs={detail?.bugs}
+          filteredFailures={detail?.filtered_failures}
+          name={name}
+          spec={spec}
+        />
       ),
     },
     {

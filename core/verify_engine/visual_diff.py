@@ -992,9 +992,10 @@ class VisualDiffer:
         diff_pixels = int(diff_mask.sum())
         total_pixels = int(b_arr.shape[0] * b_arr.shape[1])
         if total_pixels == 0:
-            # 0 像素图（0x0）除零：ZeroDivisionError 不在 _compare_once 兜底
-            # (OSError, ValueError) 范围内，会击穿对比轮，提前返回与解码
-            # 失败同型的结构化 error 结果
+            # 0 像素图（0x0）除零：ZeroDivisionError 属 Exception，会被
+            # _compare_once 的 except Exception 笼统兜底接住（不击穿对比轮），
+            # 但 detail 只会归因为「截图读取/解码失败」的泛化文案；提前返回
+            # 带专属 detail 的同型结构化 error 结果，保住 0 像素归因信息
             return [
                 {
                     "baseline": baseline_name,

@@ -511,20 +511,45 @@ class ApiRunner(VerifyRunner):
                 json_parse_recursion_failed = True
         resp_body, truncated = _truncate(resp_text)
 
+        # 响应头脱敏（脱敏名单内的头只留键名、值遮蔽——长度保留供归因——其余
+        # 头原样入证据）与重复头聚合（code-review item 14c42a0dfa65）：
+        # httpx 的 resp.headers.items() 对重复响应头（同一响应多个 Set-Cookie、
+        # 多个 Via/Warning 等）按出现逐项产出，dict 推导同键后项覆盖前项会
+        # 静默丢证据——非脱敏重复头连值都只剩最后一条，脱敏头的「存在几个
+        # 会话头」信息失真，且无任何覆盖标注（body/事件侧同类截断均有显式
+        # 标注先例）。仅在检测到重复键时按 HTTP 可合并头语义把各次出现逗号
+        # 合并（脱敏头先逐条遮蔽再合并，各次出现的长度在合并值中仍可判别），
+        # 并在 capture 顶层附 duplicate_headers 出现次数标注（口径对齐下方
+        # json_parse_skipped/read_truncated 标注形态）；无重复头的常态路径
+        # 逐键与原 dict 推导一致（键序、大小写、脱敏格式均不变），
+        # response_header 断言取首个命中键的路径零变化。
+        headers_capture: dict = {}
+        duplicate_header_counts: dict = {}
+        for header_name, header_value in resp.headers.items():
+            header_out = (
+                f"<已脱敏:{len(header_value)} 字符>"
+                if header_name.lower() in _EVIDENCE_REDACT_HEADERS
+                else header_value
+            )
+            if header_name in headers_capture:
+                headers_capture[header_name] = (
+                    f"{headers_capture[header_name]}, {header_out}"
+                )
+                duplicate_header_counts[header_name] = (
+                    duplicate_header_counts.get(header_name, 1) + 1
+                )
+            else:
+                headers_capture[header_name] = header_out
         capture = {
             "status": resp.status_code,
-            # 脱敏名单内的头只留键名、值遮蔽（长度保留供归因），其余头原样入证据
-            "headers": {
-                k: (
-                    f"<已脱敏:{len(v)} 字符>" if k.lower() in _EVIDENCE_REDACT_HEADERS else v
-                )
-                for k, v in resp.headers.items()
-            },
+            "headers": headers_capture,
             "body": resp_body,
             "json": resp_json,
             "latency_ms": latency_ms,
             "truncated": truncated,
         }
+        if duplicate_header_counts:
+            capture["duplicate_headers"] = duplicate_header_counts
         if json_parse_skipped:
             capture["json_parse_skipped"] = (
                 f"响应体超大未解析（{resp_text_bytes} 字节 > 上限 {_JSON_PARSE_LIMIT}）"
