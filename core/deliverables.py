@@ -2348,7 +2348,10 @@ def _git_grep_zero_refs(project_root, path: str, spec_name: str):
             text=True,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+        # ValueError：候选路径含 NUL 等非法形态时 subprocess 参数构造即抛
+        # （item ff641220bb1f，与 _path_is_gitignored 容错口径对齐），
+        # 同按 fail-open 处置：引用面未知，不判孤儿。
         return {"hit": True, "matches": [], "error": str(e)}
     if proc.returncode == 1:
         # 无匹配 → 零引用（确定性）
@@ -2381,7 +2384,10 @@ def _git_log_path_history(project_root, path: str):
             text=True,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+        # ValueError：候选路径含 NUL 等非法形态时 subprocess 参数构造即抛
+        # （item ff641220bb1f，与 _path_is_gitignored 容错口径对齐），
+        # 同按 fail-open 处置：历史未知，不判孤儿。
         return {"hit": True, "commits": [], "error": str(e)}
     if proc.returncode != 0:
         # git 错误（非仓库等）→ fail-open：历史未知，不判孤儿
@@ -2540,6 +2546,17 @@ def _git_branch_merge_base(project_root, branch) -> "str | None":
     （调用方 fail-open 回人工，不机械改写）。
     """
     if not branch:
+        return None
+    if _is_unsafe_git_ref_name(branch):
+        # code-review item 99ecdf32d213：与 _git_show_tasks_text /
+        # _git_object_exists_on_branch 同口径的引用名守卫——拒收以 - 开头
+        # 等非法引用名，防 branch 被 git 解析为命令行选项（--is-ancestor
+        # 改变输出语义、非法选项恒失败）。fail-safe 回 None（调用方本就
+        # 回人工，不机械改写）。
+        _resolution_logger.warning(
+            "deliverables",
+            f"merge-base 分支名非法（拒绝作为 git 实参）: {branch!r}",
+        )
         return None
     try:
         proc = subprocess.run(
