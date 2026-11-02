@@ -256,7 +256,8 @@ class VAdjudicationMixin:
 
         对 proposal.md/design.md/tasks.md/specs/**/*.md：以缺件路径为关键词
         抽取命中行 ±2 行上下文（每文档独立段落清单，specs 文档以相对
-        specs/ 的相对路径为键）；tasks.md 的声明段经
+        specs/ 的相对路径为键）；相邻/间隔 ≤ 窗口宽的命中行先合并为连续
+        区间再切窗（防重叠窗口块冗余送入 judge）。tasks.md 的声明段经
         ``extract_declared_entries`` 结构化摘录。读取失败逐文件跳过并留痕
         （fail-open，单文件失败不中断其余收集）。
 
@@ -329,14 +330,28 @@ class VAdjudicationMixin:
         excerpts = {}
         for name, text in docs.items():
             lines = text.splitlines()
+            # 命中行先合并相邻区间再切窗口（code-review item 03cc8519e8bc）：
+            # 同一文档相邻/间隔 ≤ 窗口宽（±2 即 5 行）的多条命中（声明段常见：
+            # 同一声明的 path 行与 kind 行连续命中）各自产出的 ±2 行窗口大面积
+            # 重叠，整块字符串精确去重挡不住——按行号间距 ≤ 5 合并为连续区间
+            # 后再切窗，重叠窗口并成单块；单命中行为逐字节不变（末次精确去重
+            # 保留，防重复文本行产生的同串窗口）。
+            hit_lines = [
+                i for i, line in enumerate(lines) if any(m in line for m in missing)
+            ]
+            intervals: list = []
+            for i in hit_lines:
+                if intervals and i - intervals[-1][1] <= 5:
+                    intervals[-1][1] = i
+                else:
+                    intervals.append([i, i])
             hits: list = []
-            for i, line in enumerate(lines):
-                if any(m in line for m in missing):
-                    start = max(0, i - 2)
-                    end = min(len(lines), i + 3)
-                    block = "\n".join(lines[start:end])
-                    if block not in hits:
-                        hits.append(block)
+            for a, b in intervals:
+                start = max(0, a - 2)
+                end = min(len(lines), b + 3)
+                block = "\n".join(lines[start:end])
+                if block not in hits:
+                    hits.append(block)
             if hits:
                 excerpts[name] = hits
 
@@ -2189,17 +2204,28 @@ class VAdjudicationMixin:
             try:
                 gate_recheck = self._pm._deliverable_gate_missing(spec_name, result)
             except Exception as e:
-                self._pm.state_machine.update_spec(
-                    spec_name,
-                    {
-                        "status": "blocked",
-                        "tester_run": None,
-                        "error": (
-                            "交付物守卫缺件对账异常（预分类后剩余清单为空）— "
-                            f"已 blocked 待人工裁决: {type(e).__name__}: {e}"
-                        ),
-                    },
-                )
+                # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d，
+                # 对齐同方法守卫重跑/复发熔断/unclear 转人工各终态写盘点口径）：
+                # 失败仅 WARNING，避免异常令 spec 滞留临时 blocked「LLM 终审
+                # 进行中」僵尸文案；归因以 ERROR 日志为准。
+                try:
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "status": "blocked",
+                            "tester_run": None,
+                            "error": (
+                                "交付物守卫缺件对账异常（预分类后剩余清单为空）— "
+                                f"已 blocked 待人工裁决: {type(e).__name__}: {e}"
+                            ),
+                        },
+                    )
+                except Exception as werr:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"空剩余缺件对账置 blocked 写盘失败 '{spec_name}'（非阻塞）: "
+                        f"{type(werr).__name__}: {werr}",
+                    )
                 self._pm.logger.error(
                     "pm_engine",
                     f"空剩余缺件守卫对账异常 '{spec_name}'（等价 unclear 转人工）: "
@@ -2313,6 +2339,31 @@ class VAdjudicationMixin:
         # 复发计数（D5）识别「typo 裁决过但读取基准仍判 missing」的条目集。
         deferred_typo_elements: list = []
         diff_by_element: dict = {}
+
+        def _register_unclear_rewrite(
+            m: str, judge_original, rewrite_reason: str
+        ) -> None:
+            # unclear 改写登记单点收口（code-review item e9af61bf5733，与
+            # _entry_by_path/_all_clear_proceed/_redispatch_with_retry 防复制
+            # 漂移口径一致）：typo 缺 actual_path / 陈日重定位失败 / delete-kind
+            # reference 拒绝 / 通用异常兜底四处「verdict_by_element[m] 赋值 +
+            # executed_verdicts 登记（带 judge_original/rewrite_reason）」双写
+            # 字面量收敛——后续给登记 dict 增补字段不再逐处扫齐。dict 键序与
+            # 赋值/登记顺序与提取前逐字一致。
+            verdict_by_element[m] = {
+                "verdict": "unclear",
+                "judge_original": judge_original,
+                "rewrite_reason": rewrite_reason,
+            }
+            executed_verdicts.append(
+                {
+                    "element": m,
+                    "verdict": "unclear",
+                    "judge_original": judge_original,
+                    "rewrite_reason": rewrite_reason,
+                }
+            )
+
         # 生效声明上下文（改写目标 spec_dir + 条目级 kind/陈日判定基准）
         try:
             effective_resolved = self._effective_declaration(spec_name, result)
@@ -2376,18 +2427,8 @@ class VAdjudicationMixin:
                         # executed_verdicts 为空、dispute 审计块整块跳过，
                         # 「judge 曾判 typo」与「执行层改写为 unclear」完全
                         # 不可追溯。
-                        verdict_by_element[m] = {
-                            "verdict": "unclear",
-                            "judge_original": "typo",
-                            "rewrite_reason": "typo-missing-actual-path",
-                        }
-                        executed_verdicts.append(
-                            {
-                                "element": m,
-                                "verdict": "unclear",
-                                "judge_original": "typo",
-                                "rewrite_reason": "typo-missing-actual-path",
-                            }
+                        _register_unclear_rewrite(
+                            m, "typo", "typo-missing-actual-path"
                         )
                         self._pm.logger.warning(
                             "pm_engine",
@@ -2446,18 +2487,8 @@ class VAdjudicationMixin:
                             # 审计块整块跳过，「judge 曾判 typo」与「执行层改写
                             # 为 unclear」不可追溯（失败细节以 _relocate_or_register
                             # 内部 WARNING 为准，此处不重复告警）。
-                            verdict_by_element[m] = {
-                                "verdict": "unclear",
-                                "judge_original": "typo",
-                                "rewrite_reason": "stale-typo-relocate-failed",
-                            }
-                            executed_verdicts.append(
-                                {
-                                    "element": m,
-                                    "verdict": "unclear",
-                                    "judge_original": "typo",
-                                    "rewrite_reason": "stale-typo-relocate-failed",
-                                }
+                            _register_unclear_rewrite(
+                                m, "typo", "stale-typo-relocate-failed"
                             )
                             continue
                         if cred_only:
@@ -2653,18 +2684,8 @@ class VAdjudicationMixin:
                     # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
                     # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
                     # 静默消失）；审计记录保留 judge 原始 verdict 与改写事实。
-                    verdict_by_element[m] = {
-                        "verdict": "unclear",
-                        "judge_original": "reference",
-                        "rewrite_reason": "delete-kind-reference-rejected",
-                    }
-                    executed_verdicts.append(
-                        {
-                            "element": m,
-                            "verdict": "unclear",
-                            "judge_original": "reference",
-                            "rewrite_reason": "delete-kind-reference-rejected",
-                        }
+                    _register_unclear_rewrite(
+                        m, "reference", "delete-kind-reference-rejected"
                     )
                     self._pm.logger.warning(
                         "pm_engine",
@@ -2747,19 +2768,7 @@ class VAdjudicationMixin:
                 # 本轮全部条目都走此路径时 executed_verdicts 为空、dispute 审计
                 # 块整块跳过，judge 原始 verdicts 与「执行层改写为 unclear」
                 # 完全不入审计。
-                verdict_by_element[m] = {
-                    "verdict": "unclear",
-                    "judge_original": verdict,
-                    "rewrite_reason": "declaration-rewrite-failed",
-                }
-                executed_verdicts.append(
-                    {
-                        "element": m,
-                        "verdict": "unclear",
-                        "judge_original": verdict,
-                        "rewrite_reason": "declaration-rewrite-failed",
-                    }
-                )
+                _register_unclear_rewrite(m, verdict, "declaration-rewrite-failed")
                 self._pm.logger.warning(
                     "pm_engine",
                     f"dispute judge 裁决执行失败 '{spec_name}'（{m} 等价 unclear）: {e}",

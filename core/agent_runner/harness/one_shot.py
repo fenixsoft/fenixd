@@ -165,7 +165,15 @@ def run_one_shot(
         if on_timeout is not None:
             try:
                 on_timeout(proc)
-            except Exception:  # noqa: BLE001
+            except BaseException:  # noqa: BLE001
+                # 含 BaseException（如交互式 CLI 停机时 KeyboardInterrupt 贯穿）：
+                # 只捕 Exception 时回调内 BaseException 会沿本 TimeoutExpired
+                # 处理器向上传播——外层 BaseException 分支只覆盖 communicate
+                # 本体、不覆盖已进入的超时处理器分支，杀组与二次 communicate
+                # 收割均被跳过，start_new_session 独立进程组残留为孤儿
+                # （code-review item 38c1e1c50f6a）；与 docstring「回调自身
+                # 异常……不向上传播」承诺一致：记日志、回退缺省两段式清场
+                # 后吞掉，不 re-raise
                 logger.exception("on_timeout 清场回调异常，回退缺省两段式清场")
                 _kill_process_group(proc, terminate_grace_seconds)
         else:

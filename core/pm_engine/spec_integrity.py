@@ -36,6 +36,7 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,6 +72,15 @@ GHOST_ENTRY_FRESHNESS_MINUTES = 30
 GHOST_RECLAIM_LEDGER_KIND = "ghost-entry-reclaimed"
 GHOST_RECLAIM_SIGNAL_TYPE = "ghost_entry_reclaimed"
 GHOST_RECLAIM_LEDGER_FILENAME = "ghost_reclaim_ledger.jsonl"
+
+# - _GHOST_GIT_PROBE_BUDGET_S：单轮对账 git 探测总量预算（code-review
+#   f07703eed1e6）——detect_ghost_entries 在循环内逐条串行 spawn
+#   ``git log --all``（timeout=15/次），存量异常项目（大量空占位 spec）叠加
+#   git 缺失/仓库异常时每条都等满超时，单轮最坏耗时 = 候选数 × 15s，经
+#   full_scan 周期调用拉长整轮扫描。累计探测耗时超预算后剩余候选本轮跳过
+#   （保守不清退，下轮对账继续）。实际仓库 git 正常时单次毫秒级，预算仅
+#   封顶异常形态。
+_GHOST_GIT_PROBE_BUDGET_S = 30.0
 
 # spec 名路径安全白名单（code-review bf17492bd055）：STATE.md 为人工可编辑
 # 数据源，spec_name 会被直接拼进 spec/changes/<spec_name>/ 路径；放行路径
@@ -383,6 +393,32 @@ class SpecIntegrityGate:
 
     # ── 存量幽灵条目结构性清退（fix-legacy-ghost-spec-entry-reclaim）──
 
+    def _spec_has_active_worktree(self, spec_name: str) -> bool:
+        """归属 worktree 是否仍活跃（框架锚定豁免探测，code-review 216a09577e1a）。
+
+        ``has_active_worktree`` 用 ``is True`` 严格判定（对齐 recovery.py D1
+        ``has_pending_merge`` 的 mock 替身回归先例）：既有夹具的
+        ``agent_runner`` 为 MagicMock（``bool(MagicMock()) is True``），裸真值
+        判定会把替身误判为「worktree 活跃」而豁免全部候选、令指纹判定整体
+        失效；生产实现（worktree_manager.lifecycle）恒返回真实 bool。
+
+        Returns:
+            True = 仍有活跃 worktree（条目仍被框架锚定，豁免清退）；
+            探测链任一环节缺失/异常按 False 保守处置（implementer_run/branch
+            锚点字段豁免仍兜底，不阻断本轮对账）。
+        """
+        try:
+            wm = getattr(
+                getattr(self._pm, "agent_runner", None),
+                "worktree_manager",
+                None,
+            )
+            if wm is not None and wm.has_active_worktree(spec_name) is True:
+                return True
+        except Exception:
+            pass
+        return False
+
     def detect_ghost_entries(self, now=None) -> dict:
         """幽灵指纹判定（design D2 三条件 AND，零误杀取向）。
 
@@ -399,19 +435,35 @@ class SpecIntegrityGate:
         3. 新鲜度豁免：created 距今不足
            ``GHOST_ENTRY_FRESHNESS_MINUTES``（30 分钟）不命中；created 缺失
            或不可解析（判龄失败）保守视为未过窗、不清退；
-        4. ``git_path_has_commits`` 为 True（git 全历史有提交）不命中。
+        4. 框架锚定豁免（code-review 216a09577e1a）：``implementer_run`` /
+           ``branch`` 锚点非空、或归属 worktree 仍活跃
+           （``_spec_has_active_worktree``）的条目不参与判定、入 skipped
+           留痕——「无内容 + 零提交 + 超窗」对在途实施中的 spec 同样可能
+           成立（旧数据或绕过内容闸门的外部写入流程 + 目录被清空），结构性
+           清退会孤儿化在飞 run 并丢失 STATE 锚点；
+        5. ``git_path_has_commits`` 为 True（git 全历史有提交）不命中；
+           git 探测受单轮总量预算约束（``_GHOST_GIT_PROBE_BUDGET_S``，
+           code-review f07703eed1e6）：累计耗时超预算后剩余候选本轮跳过
+           （保守不清退，下轮对账继续），避免候选多且 git 异常时单轮对账
+           耗时无上界。
 
-        三条件（2∧3∧4）同时成立才判幽灵——与幽灵定义（「从未物化立项」）
-        重合，误杀前提收敛为「目录从未存在且从未提交且注册已超 30 分钟」。
+        三条件（2∧3∧5）同时成立且未触发 1/4 豁免才判幽灵——与幽灵定义
+        （「从未物化立项」）重合，误杀前提收敛为「目录从未存在且从未提交
+        且注册已超 30 分钟且已不被框架锚定」。
 
         Returns:
-            ``{"hits": [...], "skipped": [...]}``：hits 每项含 spec 名、命中
-            时状态与三项指纹证据（created/age、目录探测、git log 空输出）；
-            skipped 为非法路径成分名清单（保守跳过待人工，不清退）。
+            ``{"hits": [...], "skipped": [...], "anchored": [...]}``：hits
+            每项含 spec 名、命中时状态与三项指纹证据（created/age、目录
+            探测、git log 空输出）；skipped 为保守跳过名清单（非法路径成分
+            待人工 + 框架锚定豁免，不清退），anchored 子清单单列后者供告警
+            侧区分措辞并豁免升级。
         """
         now = now or datetime.now(timezone.utc)
         hits: list = []
         skipped: list = []
+        anchored: list = []
+        git_probe_spent_s = 0.0
+        git_probe_over_budget = False
         # [fenix-ignore:e55afea2a5a6] read_one 经 read_all → _normalize_entries 已过滤非 dict 条目（core/state_machine.py read_all 防御层），read_all 同源；entry.get 不会抛 AttributeError（非 dict 再防御同 check_blockers 先例）
         all_specs = self._pm.state_machine.read_all() or {}
         # 终态口径复用 alert_lifecycle 权威常量（done/pushed + spec 文本
@@ -440,8 +492,39 @@ class SpecIntegrityGate:
             if age is None or age < GHOST_ENTRY_FRESHNESS_MINUTES:
                 # 条件 3 不成立：新条目豁免 / 判龄失败保守不清退
                 continue
-            if git_path_has_commits(self._pm.project_root, name):
-                # 条件 2 不成立：git 全历史有提交（曾立项，目录可能被误删）
+            # 条件 4 框架锚定豁免（216a09577e1a）：锚点判定零 IO，置于 git
+            # 子进程探测之前——命中即免一次 ``git log --all``（同步节约
+            # f07703eed1e6 的探测预算）。可空字段解析（StateParser nullable
+            # 归一清单）保证 implementer_run/branch 读回 None 或真实值，
+            # ``str(x or "")`` 口径对齐 budget 锚点读取先例。
+            if (
+                str(entry.get("implementer_run") or "").strip()
+                or str(entry.get("branch") or "").strip()
+                or self._spec_has_active_worktree(name)
+            ):
+                # 仍被派发链路锚定（在途实施中属正常形态）：不清退，入既有
+                # skipped 留痕清单；仅框架锚定豁免不升级人工（见
+                # _send_ghost_reclaim_alert 的 anchored 区分）
+                skipped.append(name)
+                anchored.append(name)
+                continue
+            if git_probe_over_budget:
+                # 条件 5 预算已耗尽：剩余候选本轮跳过探测、保守不清退，下轮
+                # 对账继续（耗尽日志在越过阈值时记一次，见下）
+                continue
+            _probe_started = time.monotonic()
+            has_commits = git_path_has_commits(self._pm.project_root, name)
+            git_probe_spent_s += time.monotonic() - _probe_started
+            if git_probe_spent_s > _GHOST_GIT_PROBE_BUDGET_S:
+                git_probe_over_budget = True
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"幽灵对账 git 探测累计耗时 {git_probe_spent_s:.1f}s 超预算 "
+                    f"{_GHOST_GIT_PROBE_BUDGET_S:.0f}s，本轮剩余候选跳过探测"
+                    f"（保守不清退，下轮对账继续）",
+                )
+            if has_commits:
+                # 条件 5 不成立：git 全历史有提交（曾立项，目录可能被误删）
                 continue
             hits.append(
                 {
@@ -459,7 +542,7 @@ class SpecIntegrityGate:
                     ),
                 }
             )
-        return {"hits": hits, "skipped": skipped}
+        return {"hits": hits, "skipped": skipped, "anchored": anchored}
 
     def reclaim_ghost_entries(self) -> dict:
         """幽灵条目对账清退入口（design D3/D4：先收集全部命中再批量执行）。
@@ -486,6 +569,9 @@ class SpecIntegrityGate:
         verdict = self.detect_ghost_entries()
         hits = verdict["hits"]
         skipped = verdict["skipped"]
+        # 框架锚定豁免子清单（216a09577e1a）：skipped 成员，告警侧据此区分
+        # 措辞且仅锚定豁免的轮次不升级人工
+        anchored = verdict.get("anchored") or []
         if not hits and not skipped:
             # 零命中：幂等空转（零副作用、零日志噪音——design D4）
             return {
@@ -504,7 +590,7 @@ class SpecIntegrityGate:
             reclaimed.append(hit)
             self._append_ghost_reclaim_ledger(name, hit)
 
-        alerted = self._send_ghost_reclaim_alert(reclaimed, skipped)
+        alerted = self._send_ghost_reclaim_alert(reclaimed, skipped, anchored)
         return {
             "enabled": True,
             "reclaimed": reclaimed,
@@ -544,7 +630,9 @@ class SpecIntegrityGate:
                 f"幽灵清退台账写入失败（清退已生效，留痕缺失）'{name}': {e}",
             )
 
-    def _send_ghost_reclaim_alert(self, reclaimed: list, skipped: list) -> bool:
+    def _send_ghost_reclaim_alert(
+        self, reclaimed: list, skipped: list, anchored=()
+    ) -> bool:
         """单条聚合告警（design D3）：列出本轮全部清退/跳过条目与证据。
 
         防重（幂等）：存在任一同 signal_type 未处理升级告警时不再追加
@@ -554,12 +642,29 @@ class SpecIntegrityGate:
         清单完整保留在 description/evidence）——``unhandled_for(None, …)``
         预查只匹配 spec=None 记录，写非 None spec 会使幂等防重永不生效
         （对齐 admin_monitor restart_failed 先例）。
+
+        ``anchored``（216a09577e1a）：skipped 中框架锚定豁免条目的子清单，
+        渲染措辞与非法名条目区分；仅锚定豁免（无清退、无非法名）的轮次属
+        在途正常形态，只 debug 留痕不升级人工（防告警噪音）。
         """
-        if not reclaimed and not skipped:
+        anchored_set = set(anchored)
+        # 需要人工介入的跳过条目 = 非法路径成分名（锚定豁免名排除在外）
+        alertable_skipped = [s for s in skipped if s not in anchored_set]
+        if not reclaimed and not alertable_skipped:
+            if skipped:
+                # 仅框架锚定豁免（在途实施中属正常形态）：debug 留痕即止，
+                # 不发零清退 major 告警
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"幽灵对账本轮无清退，仅 {len(skipped)} 条框架锚定豁免"
+                    f"（在途正常形态，不升级）：{','.join(str(s) for s in skipped)}",
+                )
             # 竞态空转（code-review item 9d66dd115abd）：检出后条目被并发
             # 写者全部移除，零副作用零清单——不发零条目 major 告警
             return False
-        names = [h["spec"] for h in reclaimed] + [str(s) for s in skipped]
+        names = (
+            [h["spec"] for h in reclaimed] + [str(s) for s in alertable_skipped]
+        )
         spec_ref = names[0] if len(names) == 1 else ",".join(names)
         try:
             from core.admin_store import AdminStore
@@ -570,7 +675,7 @@ class SpecIntegrityGate:
                 self._pm.logger.debug(
                     "pm_engine",
                     "幽灵条目聚合告警在案，本轮不重复告警"
-                    f"（清退 {len(reclaimed)} 条 / 跳过 {len(skipped)} 条）",
+                    f"（清退 {len(reclaimed)} 条 / 跳过 {len(alertable_skipped)} 条）",
                 )
                 return False
         except Exception as e:
@@ -589,14 +694,26 @@ class SpecIntegrityGate:
                 f"{hit.get('git_evidence')}"
             )
         for name in skipped:
-            lines.append(
-                f"- {name}：spec 名含非法路径成分，保守跳过不清退，待人工处置"
-            )
+            if name in anchored_set:
+                lines.append(
+                    f"- {name}：仍被框架锚定（implementer_run/branch 锚点或"
+                    f"活跃 worktree 在场，在途实施中），本轮不清退（正常形态，"
+                    f"无需人工处置）"
+                )
+            else:
+                lines.append(
+                    f"- {name}：spec 名含非法路径成分，保守跳过不清退，待人工处置"
+                )
         detail = "\n".join(lines)
+        anchored_note = (
+            f"；另 {len(anchored_set)} 条框架锚定条目豁免清退（在途正常形态）"
+            if anchored_set
+            else ""
+        )
         self._pm.logger.warning(
             "pm_engine",
             f"幽灵条目对账清退：{len(reclaimed)} 条清退 / "
-            f"{len(skipped)} 条跳过待人工（{spec_ref}）",
+            f"{len(alertable_skipped)} 条跳过待人工（{spec_ref}）",
         )
         # code-review item ff509339a250：spec 哨兵写 None——unhandled_for
         # (None, …) 幂等预查只匹配 spec=None 记录，写非 None 的 spec_ref
@@ -609,13 +726,14 @@ class SpecIntegrityGate:
             description=(
                 f"幽灵条目对账清退：本轮结构性移除 {len(reclaimed)} 条「从未"
                 f"立项」的裸注册条目（remove_spec + 台账留痕，替代逐条 "
-                f"freeze→escalate），另有 {len(skipped)} 条非法名条目保守跳过"
-                f"待人工。清单：\n{detail}"
+                f"freeze→escalate），另有 {len(alertable_skipped)} 条非法名条目"
+                f"保守跳过待人工{anchored_note}。清单：\n{detail}"
             ),
             evidence=(
                 f"指纹=三条件 AND（spec_has_content False + git 全历史零提交"
-                f"+ 注册超 {GHOST_ENTRY_FRESHNESS_MINUTES} 分钟）；台账="
-                f".fenix/{GHOST_RECLAIM_LEDGER_FILENAME}；明细：\n{detail}"
+                f"+ 注册超 {GHOST_ENTRY_FRESHNESS_MINUTES} 分钟，且不被框架"
+                f"锚定）；台账=.fenix/{GHOST_RECLAIM_LEDGER_FILENAME}；明细："
+                f"\n{detail}"
             ),
             recommended_action=(
                 "核对清单证据确认清退无误后人工 handled 收口；如需保留某条目"

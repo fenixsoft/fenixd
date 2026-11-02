@@ -328,6 +328,16 @@ def build_env(req: SpawnRequest) -> Optional[Dict[str, str]]:
     return env
 
 
+def _to_int(value: Any) -> int:
+    """容错整数化（语义对齐 dsh_adapter._to_int，同包各持私有副本、
+    不跨模块收敛——session.py/_to_int 既有约定）：假值兜底 0；
+    inf 经 OverflowError 一并入捕。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 class ClaudeAdapter(HarnessAdapter):
     """claude CLI harness adapter（ADR-271：现状全量平移，行为零变化）。"""
 
@@ -466,7 +476,8 @@ class ClaudeAdapter(HarnessAdapter):
 
             observed        是否有可消费的 result 事件（False = unobserved）
             output          result 文本（无 result 时 ""）
-            turns           num_turns（无 result/缺键时 0）
+            turns           num_turns（无 result/缺键/非数值时 0，_to_int
+                            容错归一，与 dsh 通道口径一致）
             session_id      会话 id（无 result 时 None）
             usage_info      SessionTracker.extract_usage_info 产物（unobserved
                             时四数值键 0 + unobserved=True 观测兜底）
@@ -495,7 +506,7 @@ class ClaudeAdapter(HarnessAdapter):
             "observed": True,
             # 与 result_text 同口径：str 归一，保证 run 终态产物恒为字符串
             "output": str(last.get("result") or ""),
-            "turns": last.get("num_turns", 0),
+            "turns": _to_int(last.get("num_turns")),
             "session_id": last.get("session_id"),
             "usage_info": SessionTracker.extract_usage_info(last),
             "is_error": last.get("is_error", False),
