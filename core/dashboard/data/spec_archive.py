@@ -32,6 +32,33 @@ from .admin_actions import SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS  # noqa: F401
 # 统计三处共用，避免内联 ("done", "pushed") 多处漂移。
 _TERMINAL_STATUSES = ("done", "pushed")
 
+
+def _rewrite_knowledge_sources(project_root, spec_name: str, archive_path) -> list:
+    """归档溯源改写 pass（move-distill-trigger-to-push 3.2，本模块三调用点共用）。
+
+    目录移动成功后、归档提交前调用：把 ``spec/knowledge/`` 全页中该 SPEC 的
+    ``spec/changes/<名>`` 溯源引用批量改写为当次实际归档目录（实现单源在
+    ``core.knowledge.rewrite_source_links_to_archive``，本壳层只做延迟导入与
+    fail-open——软删除命名 ``<名>-<Unix秒>`` 同样按实际归档目录名注入）。
+    改写异常只留痕不阻塞归档：返回空清单，归档照常（此时知识页出现死链，由
+    knowledge audit 链接门在下一轮审计兜底暴露）。延迟导入保持与 runs 清理
+    等环节同口径。
+    """
+    try:
+        from core.knowledge import rewrite_source_links_to_archive
+
+        return rewrite_source_links_to_archive(
+            project_root, spec_name, Path(archive_path).name
+        )
+    except Exception as e:  # noqa: BLE001 — 改写失败不阻塞归档（fail-open）
+        fallback_log(
+            None,
+            "warning",
+            f"[fenix] archive: 知识页溯源改写失败（spec={spec_name}，"
+            f"归档照常）: {type(e).__name__}: {e}",
+        )
+        return []
+
 # 时效归档滞留阈值（evo-spec-changes-archive-drain R2/R3）：目录 mtime 滞留
 # ≥ 3 天（72 小时）才满足时效归档；时间基准统一为目录 mtime（目录 mtime 即
 # 内容最后变更时刻；STATE `updated` 仅用于 R1 排序，孤儿目录无 STATE 字段）。
@@ -383,7 +410,8 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         # 的归档目录将永久未入库。fail-open：提交失败仅追加告警字段，不吞原
         # 错误信息（对齐成功路径与 archive_spec 的提交写法）。
         if archived:
-            cr = commit_archive_move(proot, spec, archive_path)
+            rewritten = _rewrite_knowledge_sources(proot, spec, archive_path)
+            cr = commit_archive_move(proot, spec, archive_path, extra_paths=rewritten)
             result["committed"] = cr["committed"]
             if cr["warning"]:
                 result["commit_warning"] = cr["warning"]
@@ -399,9 +427,12 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         # 等待循环把 running_ids 置空后仍可引用）；无在跑时为 None
         "stopped": initial_running_count if initial_running_count else None,
     }
-    # 归档自动提交：目录确实移动成功才提交（fail-open，见 core/archive_commit.py）
+    # 归档自动提交：目录确实移动成功才提交（fail-open，见 core/archive_commit.py）。
+    # 提交前先做知识页溯源改写 pass（move-distill-trigger-to-push 3.2），改写
+    # 文件与归档两侧并入同一 [fenix] archive: 提交。
     if archived:
-        cr = commit_archive_move(proot, spec, archive_path)
+        rewritten = _rewrite_knowledge_sources(proot, spec, archive_path)
+        cr = commit_archive_move(proot, spec, archive_path, extra_paths=rewritten)
         result["committed"] = cr["committed"]
         if cr["warning"]:
             result["commit_warning"] = cr["warning"]
@@ -619,8 +650,11 @@ def archive_spec(
         result["runs_archived"] = _facade.archive_spec_runs(proot / ".fenix" / "runs", spec_name)
     except Exception as e:  # noqa: BLE001 fail-open：runs 清理失败只降级为告警
         result["runs_archive_warning"] = str(e)
-    # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
-    cr = commit_archive_move(proot, spec_name, moved)
+    # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）。
+    # 提交前先做知识页溯源改写 pass（move-distill-trigger-to-push 3.2，daemon
+    # R1/R2/R3 自动归档主线经此），改写文件与归档两侧并入同一提交。
+    rewritten = _rewrite_knowledge_sources(proot, spec_name, moved)
+    cr = commit_archive_move(proot, spec_name, moved, extra_paths=rewritten)
     result["committed"] = cr["committed"]
     if cr["warning"]:
         result["commit_warning"] = cr["warning"]
