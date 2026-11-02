@@ -814,7 +814,7 @@ def _diff_planner_output_impl(
         entries = [
             ScenarioEntry(
                 id=sid,
-                description=str(s.get("description", "")),
+                description=str(s.get("description") or ""),
                 added_in_round=current_round,
                 covers=_covers_of(s),
                 kind=_kind_of(s),
@@ -943,7 +943,7 @@ def _diff_planner_output_impl(
         new_entries.append(
             ScenarioEntry(
                 id=sid,
-                description=str(s.get("description", "")),
+                description=str(s.get("description") or ""),
                 added_in_round=current_round,
                 covers=_covers_of(s),
                 kind=_kind_of(s),
