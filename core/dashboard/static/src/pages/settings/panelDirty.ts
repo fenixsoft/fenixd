@@ -19,7 +19,8 @@ interface PanelDirtyEntry {
   // snapshotPanelDirty 区分「发起保存前的既有脏」与「在飞保存期间的同面板
   // 再编辑」。所有置脏都经 usePanelDirty 返回的单个 setDirty 写入（面板侧
   // 无其他脏标记写点），单点记录即全覆盖；Date.now() 同一 JS 运行时单调
-  // 可比，快照与再置脏之间隔至少一个事件循环任务，同毫秒碰撞不可达。
+  // 可比，但毫秒分辨率下快照与再置脏虽隔至少一个事件循环任务仍可落于同一
+  // 毫秒（code-review item eccce22c019b），复位比较须用 >= 兜住该碰撞。
   lastDirtyAt: number;
 }
 
@@ -48,7 +49,7 @@ export function anyPanelDirty(): boolean {
  * 用户仍可在被保存面板上继续编辑并 setDirty(true)，若成功回调无条件复位，
  * 这批未落盘的再编辑会被抹脏、后续切页签静默丢弃。复位前比对 lastDirtyAt：
  * 仅复位「快照后未再置脏」的条目——快照时刻已脏且此后未再置脏（编辑确已
- * 落盘）才复位；快照后新置脏（lastDirtyAt > 快照时刻）的一律保留。快照
+ * 落盘）才复位；快照后新置脏（lastDirtyAt >= 快照时刻）的一律保留。快照
  * 时刻未脏的条目本就无脏可清，复位与否行为等价，无需逐条目记录快照时值。
  * probe 型面板 reset 本为 no-op，脏状态由面板自身归零，不受此门禁影响。
  */
@@ -58,8 +59,12 @@ export function snapshotPanelDirty(): () => void {
   return () => {
     for (const entry of armed) {
       if (!entries.has(entry)) continue;
-      // 在飞保存期间的同面板再编辑不被复位（code-review item e52769cbc6c5）
-      if (entry.lastDirtyAt > snapshotAt) continue;
+      // 在飞保存期间的同面板再编辑不被复位（code-review item e52769cbc6c5）。
+      // 用 >= 而非 >（code-review item eccce22c019b）：毫秒分辨率下快照与
+      // 快照后的编辑事件虽隔至少一个任务仍可落于同一毫秒，严格大于会把这批
+      // 新编辑漏判成既有脏一并复位；快照前的既有脏必然严格早于快照时刻写入
+      // lastDirtyAt，复位语义不受影响。
+      if (entry.lastDirtyAt >= snapshotAt) continue;
       entry.reset();
     }
   };
