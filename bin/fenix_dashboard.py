@@ -230,6 +230,7 @@ def get_verify_progress():
     return results
 
 
+# [fenix-ignore:b96710a29bbb] 误报：全部 disp_width 调用点（footer/标题/节标题）实际用到的 emoji（🚀🎯🔨🤖 等）east_asian_width 实测均为 W，已按 2 列计数，pad 不会偏大
 def disp_width(text):
     """文本终端显示宽度：东亚洲宽字符（W/F）计 2 列，其余计 1 列"""
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
