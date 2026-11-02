@@ -1144,3 +1144,73 @@ class TestDistillerLaneAggregation:
         # 三窗口均落运营线出卡
         for d in (d_today, d_7d, d_all):
             assert self.card_of(d, "knowledge-distiller")["zone"] == "运营线"
+
+    # ── fix-distill-observation-gaps 1.2：归档清单剔除豁免蒸馏车道 ────────
+
+    def test_archived_spec_distill_exempt_original_name(self, tmp_path):
+        """已归档 SPEC 原始名形态（push 触发时代）蒸馏 done 产物豁免剔除：
+
+        run_id 中段直出派发名 → run_spec_part 剥段结果与 STATE.archive.md
+        清单键全等（豁免前该形态在全部窗口被剔除——本次修复的缺陷本体）；
+        豁免后运营线蒸馏卡 runs=1、成功率含分母、last_activity 更新。
+        """
+        from core.agent_runner.run_files import run_spec_part
+
+        proot = make_proj(tmp_path, "proj-dar", specs={})
+        write_archive_state(proot, {"demo": T_CREATED})
+        stem = f"knowledge-distiller-demo-{NOW - 3600}"
+        # 前置锚点：剥段结果与清单键全等（剔除条件确实命中该形态）
+        assert run_spec_part(stem) == "demo"
+        self.distill_run(proot, stem, "done", NOW - 3600)
+        for win in ("today", "7d", "all"):
+            data = cc.aggregate_org(projects_of(proot), now=NOW, window=win)
+            card = self.card_of(data, "knowledge-distiller")
+            assert card["runs"] == 1, win
+            assert card["success_rate"] == 1.0, win  # 成功率分母含该 run
+        card = self.card_of(
+            cc.aggregate_org(projects_of(proot), now=NOW, window="all"),
+            "knowledge-distiller",
+        )
+        assert card["last_activity_ts"] == _iso(NOW - 3600)
+        assert card["status"] == "idle"  # 终态产物无在飞
+
+    def test_archived_spec_distill_exempt_date_prefixed_name(self, tmp_path):
+        """带日期前缀归档目录名形态（归档触发时代）蒸馏 done 产物同样计数——
+        豁免按 raw lane 判定、与 spec 段名形态无关（形态无关性锚点，与
+        tests/test_run_spec_prefixed_attribution.py::test_aggregate_org_archive_filter_not_hit
+        同口径互证）。"""
+        proot = make_proj(tmp_path, "proj-dap", specs={})
+        write_archive_state(proot, {"demo": T_CREATED})
+        self.distill_run(
+            proot,
+            f"knowledge-distiller-2026-10-25-demo-{NOW - 3600}",
+            "done",
+            NOW - 3600,
+        )
+        data = cc.aggregate_org(projects_of(proot), now=NOW, window="all")
+        card = self.card_of(data, "knowledge-distiller")
+        assert card["runs"] == 1
+        assert card["zone"] == "运营线"
+
+    def test_archived_spec_non_distill_lanes_still_removed(self, tmp_path):
+        """非蒸馏 lane 不回归：已归档 SPEC 名下 impl- 产物与 LANE_ALIASES
+        归一 lane（dispute-judge→judge）产物仍被全窗剔除，「其他」分区不收
+        归档名 run（豁免不得重排序改变 lane 收集时机）。"""
+        proot = make_proj(tmp_path, "proj-dnx", specs={})
+        write_archive_state(proot, {"arch-q": T_CREATED})
+        priced_run(proot, f"impl-arch-q-{NOW - 3600}", "done", NOW - 3600, usage=None)
+        priced_run(
+            proot,
+            f"dispute-judge-arch-q-{NOW - 3600}",
+            "done",
+            NOW - 3600,
+            usage=None,
+        )
+        data = cc.aggregate_org(projects_of(proot), now=NOW, window="all")
+        assert self.card_of(data, "implementer")["runs"] == 0
+        assert self.card_of(data, "judge")["runs"] == 0  # dispute-judge 归并卡
+        # 「其他」分区零计数（归档名 run 不进任何 lane 统计）
+        other_cards = [
+            c for z in data["zones"] if z["zone"] == cc.OTHER_ZONE for c in z["cards"]
+        ]
+        assert other_cards == []
