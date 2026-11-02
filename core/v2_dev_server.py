@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from core.admin_store import fsync_parent_dir
 from core.proc_utils import (
     find_free_port,
     guard_killpg,
@@ -979,6 +980,11 @@ def _rewrite_v2_server_entries(project_root, entries: list) -> bool:
                     pass
         os.replace(str(tmp_path), str(path))
         tmp_path = None
+        # code-review item 15e48e7b31e6：rename 后补父目录 fsync（复用
+        # admin_store.fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持的
+        # OSError、永不上抛），防掉电后 rename 已生效而目录项未持久；与本仓
+        # 其余原子写（state_machine/serving_registry/verdict_check 等）口径拉齐。
+        fsync_parent_dir(path)
         return True
     except OSError:
         return False
