@@ -1253,16 +1253,18 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
 
 
 def _git_c_env() -> dict:
-    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
+    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``（薄委托）。
 
     消除「路径确定不存在」三态判别对 stderr 英文文案（``does not exist``）的
     本地化依赖（code-review item 77767180a566：LC_MESSAGES/LANG 非英文环境下
     git gettext 输出本地化文案，文案匹配恒失配、确定性不存在被误判为 git
-    不可用）。合并而非整体替换，保留调用方的 PATH 等既有环境。
+    不可用）。单点实现收口于 :mod:`core.fs_utils` 的 ``git_c_env``（item
+    7ceb4ed0fe0f：与 evolution 车道共用同一环境口径，防两处漂移），本文件
+    惰性 import 引用（先例见下方 atomic_write_text 的复用形态）。
     """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    return env
+    from core.fs_utils import git_c_env
+
+    return git_c_env()
 
 
 # 「确定不存在」stderr 文案容忍集合（小写匹配，code-review item 03edd97d523c）。

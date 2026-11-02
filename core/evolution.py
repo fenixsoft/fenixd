@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -997,15 +998,15 @@ def write_todo_marker(
 def _git_c_env() -> dict:
     """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
 
-    消除 ``_commit_todo_marker`` 良性无变更文案（``nothing to commit`` /
-    ``nothing added to commit``）匹配对运行环境本地化的依赖（本地化 git
-    环境下输出翻译文案，良性无变更被误记 WARNING；code-review item
-    9a333cd43cd0，与 ``deliverables._git_c_env`` 同源手法）。合并而非整体
-    替换，保留调用方的 PATH 等既有环境。
+    单点实现收口于 ``core.fs_utils.git_c_env``：本模块原私有实现与
+    ``deliverables._git_c_env`` 逐字重复，环境口径演进存在两处漏改面
+    （code-review item 7ceb4ed0fe0f）。本壳仅薄委托，保留既有调用面；合并
+    而非整体替换，保留调用方的 PATH 等既有环境。历史动机留档：消除
+    ``_commit_todo_marker`` 良性无变更文案（``nothing to commit`` /
+    ``nothing added to commit``）匹配对运行环境本地化的依赖（code-review
+    item 9a333cd43cd0）。
     """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    return env
+    return fs_utils.git_c_env()
 
 
 # ── 回写 push 前探测与恒失败聚合（evo-fix-evolution-push-remote-probe-skip）──
@@ -1333,29 +1334,61 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     d = _safe_draft_dir(project_root, eid)
     if d is None:
         return None, f"条目 id 非法（草稿路径越界风险）: {eid!r}"
+    # code-review item 20c3b66a2507：唯一临时目录写满 → 原子 rename 顶替。
+    # 此前「rmtree 整体删除重建 + 逐文件写入」全程在 items.jsonl 锁外，并发
+    # ingest 同一 eid（多 daemon 实例 / 落库重放窗口）时一方 rmtree 会删掉
+    # 另一方正在写入的目录，对方 write_text 抛 FileNotFoundError 被归因
+    # 「草稿落盘失败」置终态 draft_failed（不在 auto_accept_pending 受理面、
+    # known_ids 又挡住重分析，无自动恢复），失败清理还会互删对方已写文件。
+    # 改为先写 drafts 基目录下 mkdtemp 唯一临时目录（同父保证 rename 同文件
+    # 系统原子），写满再把旧目录原子挪到同父唯一路径后顶入：各方只写自己的
+    # 临时目录互不触碰，d 路径上要么缺位要么完整，accept 的 copytree 不再见
+    # 半写目录；85e167859717 的「旧 capability 子目录/杂散文件不混存」语义
+    # 由整体顶替保持。临时/挪出目录用点前缀命名，不被按 eid 寻址的草稿消费
+    # 方（accept/reject/delete 的 _safe_draft_dir 路径）误认。
+    tmp: Optional[Path] = None
+    old: Optional[Path] = None
     try:
-        # code-review item 85e167859717：已存在的草稿目录先整体删除重建——
-        # 上次写入中途被杀等留下的旧 capability 子目录或杂散文件若混存，
-        # accept 的 copytree 会原样带入 spec/changes 污染立项产物。
-        if d.is_dir():
-            shutil.rmtree(d)
-        d.mkdir(parents=True, exist_ok=True)
-        spec_sub = d / "specs" / capability
+        d.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(
+            tempfile.mkdtemp(prefix=f".{d.name}.", suffix=".tmp", dir=str(d.parent))
+        )
+        spec_sub = tmp / "specs" / capability
         spec_sub.mkdir(parents=True, exist_ok=True)
-        (d / "proposal.md").write_text(spec["proposal_md"], encoding="utf-8")
+        (tmp / "proposal.md").write_text(spec["proposal_md"], encoding="utf-8")
         (spec_sub / "spec.md").write_text(spec["spec_md"], encoding="utf-8")
-        (d / "design.md").write_text(spec["design_md"], encoding="utf-8")
-        (d / "tasks.md").write_text(spec["tasks_md"], encoding="utf-8")
-        (d / ".spec.yaml").write_text(
+        (tmp / "design.md").write_text(spec["design_md"], encoding="utf-8")
+        (tmp / "tasks.md").write_text(spec["tasks_md"], encoding="utf-8")
+        (tmp / ".spec.yaml").write_text(
             SPEC_YAML_TEMPLATE.format(created=datetime.now(timezone.utc).strftime("%Y-%m-%d")),
             encoding="utf-8",
         )
+        # 顶替：os.replace 的目标名须不存在，旧目录先原子挪到唯一 old 路径。
+        # 挪走与顶入之间存在毫秒级窗口，并发输家在此落 draft_failed（与此前
+        # 整段逐文件写入的暴露窗口相比可忽略），且其清理只触自己的临时/挪出
+        # 目录，不损赢家的完整落盘。
+        if d.is_dir():
+            old = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{d.name}.old.", suffix=".tmp", dir=str(d.parent)
+                )
+            )
+            old.rmdir()
+            os.replace(d, old)
+        os.replace(tmp, d)
     except (OSError, UnicodeEncodeError) as e:
         # UnicodeEncodeError 非 OSError：spec 文本来自 agent 产出 JSON，可含
         # \ud800 类孤立代理转义，write_text 编码时抛出——裸穿透会跳过清理
-        # 分支残留半写草稿，条目无标记下轮重试同一异常（a1e2bb031dae）
-        shutil.rmtree(d, ignore_errors=True)
+        # 分支残留半写草稿，条目无标记下轮重试同一异常（a1e2bb031dae）。
+        # 清理面＝自己的临时目录与已挪出的旧目录（tmp 顶入成功路径不会进
+        # 本分支）；d 路径上不再有半写残留，与旧实现的 rmtree(d) 清理等价。
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if old is not None:
+            shutil.rmtree(old, ignore_errors=True)
         return None, f"草稿落盘失败: {e}"
+    if old is not None:
+        shutil.rmtree(old, ignore_errors=True)
     return d, ""
 
 
