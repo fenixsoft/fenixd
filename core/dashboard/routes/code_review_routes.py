@@ -90,6 +90,39 @@ class _SignalWriteError(Exception):
     """信号文件独占写失败（FileExistsError 之外的失败，调用方映射 500）。"""
 
 
+def _fill_signal_fd(fd, payload):
+    """填充已独占打开的信号 fd（fdopen→json.dump→flush→fsync→收尾关 fd）。
+
+    _write_signal_exclusive 主路径与 link 不支持文件系统回退路径共用的
+    单点实现（code-review item ac4b9f9a5617）：此前两处各持一份逐行相同
+    的收尾拷贝（且 71d502440d3b 的 fdopen 失败兜底已在两份各补一次），
+    任何写入收尾语义修正都需同步两处，属漂移温床，收拢于此。
+
+    语义（逐行保现状）：
+    - fdopen 失败路径显式关 fd（item 71d502440d3b，先例 regression_routes
+      item 655c860e2e6e）：fdopen() 自身抛错时裸 fd 未被包装也无人关闭
+      （with 的 close 只在 fdopen 成功后才生效）——请求线程描述符泄漏。
+      f 为 None（fdopen 未成功）时兜底 os.close；成功后统一经 finally
+      close（等价 with 语义）。
+    - close 失败不吞（item 885b6ebbff70）：异常原样上抛，由调用方统一
+      清残留并包装为 _SignalWriteError，本函数不包装不吞。
+    """
+    f = None
+    try:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    finally:
+        if f is not None:
+            f.close()
+        else:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def _write_signal_exclusive(req_path, payload):
     """三步原子写「dashboard → daemon」文件信号（run / fix-run 端点共用，
     item 422ae03395de 去重——此前 _api_code_review_run 与
@@ -136,25 +169,10 @@ def _write_signal_exclusive(req_path, payload):
     except OSError as exc:
         raise _SignalWriteError(str(exc)) from exc
     try:
-        # fdopen 失败路径显式关 fd（code-review item 71d502440d3b，先例
-        # regression_routes item 655c860e2e6e）：fdopen() 自身抛错时裸 fd
-        # 未被包装也无人关闭（with 的 close 只在 fdopen 成功后才生效）——
-        # 请求线程描述符泄漏。改为显式接管：f 为 None（fdopen 未成功）时
-        # 兜底 os.close；成功后统一经 finally close（等价 with 语义）。
-        f = None
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        finally:
-            if f is not None:
-                f.close()
-            else:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+        # 填充与 close 兜底收尾单点化（code-review item ac4b9f9a5617）：
+        # fdopen 失败关 fd（71d502440d3b）/close 失败上抛语义见
+        # _fill_signal_fd；异常原样穿出，在此统一清临时文件并包装
+        _fill_signal_fd(fd, payload)
     except Exception as exc:
         # 写中途失败：清掉临时文件（轮询路径尚未创建，无半写残留可误消费）
         try:
@@ -183,30 +201,17 @@ def _write_signal_exclusive(req_path, payload):
             return None
         except OSError as oexc:
             raise _SignalWriteError(str(oexc)) from oexc
-        f = None
         try:
-            try:
-                f = os.fdopen(fd, "w", encoding="utf-8")
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                # fdopen 失败路径显式关 fd（同上方 71d502440d3b 先例）；
-                # close 失败不吞（item 885b6ebbff70）：交外层 except 统一
-                # 清 req_path 并包装，与主路径异常契约一致，不再以裸
-                # OSError 逃逸
-                if f is not None:
-                    f.close()
-                else:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
+            # 填充与 close 兜底收尾同主路径共用 _fill_signal_fd（item
+            # ac4b9f9a5617）：fdopen 失败关 fd（71d502440d3b）/close 失败
+            # 不吞（885b6ebbff70，交外层 except 统一清 req_path 并包装，
+            # 与主路径异常契约一致，不再以裸 OSError 逃逸）
+            _fill_signal_fd(fd, payload)
         except Exception as wexc:
             # 回退路径写中途失败（含 close 失败）：轮询路径上的半写文件若
             # 残留，daemon 重启时会被误消费成一次用户并未请求的触发——
-            # best effort 清掉后照常上报（fd 尚在内层 finally 关闭，unlink
-            # 打开中的文件合法）
+            # best effort 清掉后照常上报（fd 尚在 _fill_signal_fd 内层
+            # finally 关闭，unlink 打开中的文件合法）
             try:
                 os.unlink(str(req_path))
             except OSError:
