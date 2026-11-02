@@ -265,7 +265,11 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
         monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(daemon_pid), str(supervisor_pid)])
         # 41111 是 daemon（cmdline 含 .fenix/fenixd.py）；42222 是 supervisor
-        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
+        # 替身签名跟产品对齐（root 形参，item 33a5a217f420）：stop_daemon 以
+        # (pid, proot) 双参复核，单参 lambda 会 TypeError 被 stop_daemon 兜底
+        # 吞成 ok=False——替身失真，非产品缺陷。
+        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline",
+                            lambda pid, root=None: pid == str(daemon_pid))
         # 模拟快照进程快速全退（首轮即空）→ 不触发 30s 真实等待
         monkeypatch.setattr(fenix_session, "_alive_pids", lambda pids: [])
         killed = []
@@ -289,7 +293,9 @@ class TestStartStopHosted:
         daemon_pid, supervisor_pid = 44111, 44222
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
         monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(daemon_pid), str(supervisor_pid)])
-        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
+        # 替身签名对齐产品的 (pid, root=None) 双参形态（item 33a5a217f420）
+        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline",
+                            lambda pid, root=None: pid == str(daemon_pid))
         # 首轮：daemon 已死、supervisor 仍在（等它检查 stop flag 后退出）；次轮全退
         alive_seq = {"n": 0}
 
@@ -318,7 +324,9 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
         monkeypatch.setattr(fenix_session, "_fenix_pids_under",
                             lambda root: [str(daemon_pid), str(supervisor_pid)])
-        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
+        # 替身签名对齐产品的 (pid, root=None) 双参形态（item 33a5a217f420）
+        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline",
+                            lambda pid, root=None: pid == str(daemon_pid))
         # 替身语义：SIGKILL 命中即消亡。补杀后复核（SIGKILL 短轮询确认死亡）
         # 按替身状态判 ok；此前的恒存活替身会让复核把已补杀进程判成「仍存活」
         # → ok=False，替身失真而非产品缺陷。
@@ -374,7 +382,9 @@ class TestStartStopHosted:
             return [str(old_daemon), str(old_supervisor)]
 
         monkeypatch.setattr(fenix_session, "_fenix_pids_under", _scan)
-        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(old_daemon))
+        # 替身签名对齐产品的 (pid, root=None) 双参形态（item 33a5a217f420）
+        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline",
+                            lambda pid, root=None: pid == str(old_daemon))
         # 快照进程在补杀前恒存活 → 走超时兜底路径；SIGKILL 命中即消亡
         # （补杀后复核按替身状态判 ok，恒存活替身会替成「仍存活」假失败）
         killed = []

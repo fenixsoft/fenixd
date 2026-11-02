@@ -89,8 +89,10 @@ def commit_wip_checkpoint(
     - ``git status --porcelain`` 为空 → 跳过（不产生空提交，幂等）
     - ``git add -A``（尊重 worktree gitignore）+ ``git commit``
     - 每个 git 操作限时 ``timeout`` 秒；失败/超时 → WARNING 留痕、返回 False
-    - index 回滚（git reset）仅在 ``git add`` 已实际发出后的失败/超时路径
-      执行；status 阶段失败/超时不动 index，不误撤销 agent 既有 staged 现场
+    - index 回滚（git reset）仅在 ``git add`` 已实际发出且 index 确被改写
+      后的失败/超时路径执行（超时路径先经只读 status 复核判别 add 是否已
+      完成索引落盘，无法确认时不动 index）；status 阶段失败/超时不动
+      index，不误撤销 agent 既有 staged 现场
     - 子树已在 git 内不可见/目录丢失等，一律按失败降级
 
     Returns: True 表示产生了一次提交；False 表示跳过（无变更）或失败。
@@ -179,15 +181,54 @@ def commit_wip_checkpoint(
             f"lock conflicts, inspect and remove it manually",
         )
         # 超时可能落在 status / add / commit 任一阶段：仅当 add 已实际发出
-        # （added=True）后 index 才被本函数改写过（add 已完成、commit 卡住/
-        # 被杀的窗口内为全量 staged 态，与上方 commit 失败分支要防的现场
-        # 一致——被 keep_for_reuse 后继继承后使以 HEAD 为基准的留证链路
-        # 判读失真），此刻补一次尽力而为的 mixed reset 回滚；status 阶段
-        # 超时则 index 仍是 agent 既有现场（staged 删除、intent-to-add 等
-        # 摘索引形态），reset 会误撤销之——直接留痕返回。本分支已在原 try
-        # 的 except 内，reset 自身的二次超时/OS/解码异常须就地兜住，失败
-        # 仅追加留痕，不改返回值。
+        # （added=True）后 index 才可能被本函数改写。但 added 只证明 add 已
+        # 发出、不证明其已完成索引改写——add 的索引更新在收尾经 index.lock
+        # 原子落盘，超时可能落在 add 运行中（子进程被杀、索引未写），此刻
+        # index 仍是 agent 既有现场（staged 删除、intent-to-add 等摘索引
+        # 形态），与 status 阶段超时同型，reset 会误撤销之。故先以只读复核
+        # 判别：重跑一次 status --porcelain 与 add 前快照（st）比对——一致
+        # 说明 index 未被 add 改写，按 status 超时同口径留痕返回、不 reset；
+        # 不一致（条目已呈 staged 形态）才认定 index 已被本函数改写（add 已
+        # 完成、commit 卡住/被杀的窗口，全量 staged 态与上方 commit 失败分支
+        # 要防的现场一致——被 keep_for_reuse 后继继承后使以 HEAD 为基准的
+        # 留证链路判读失真），此刻补一次尽力而为的 mixed reset 回滚。只读
+        # 复核自身失败（二次超时/OS/解码异常）时无法区分，按保守口径留痕
+        # 返回、不误撤销。本分支已在原 try 的 except 内，reset 自身的二次
+        # 超时/OS/解码异常同样就地兜住，失败仅追加留痕，不改返回值。
         if not added:
+            return False
+        try:
+            st_after = _git(["status", "--porcelain"], path, timeout)
+        except (subprocess.TimeoutExpired, OSError, ValueError) as probe_err:
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed "
+                f"out after {timeout}s in '{path}'; index rewrite state "
+                f"unverifiable ({probe_err}) — skip index rollback "
+                f"(non-blocking, agent staged state preserved)",
+            )
+            return False
+        if st_after.returncode != 0:
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed "
+                f"out after {timeout}s in '{path}'; status recheck failed "
+                f"({st_after.stderr.strip() or st_after.stdout.strip()}) — "
+                f"cannot confirm index rewrite, skip index rollback "
+                f"(non-blocking, agent staged state preserved)",
+            )
+            return False
+        if st_after.stdout == st.stdout:
+            # 与 add 前快照逐字一致：add 未完成索引改写（运行中被杀形态），
+            # index 仍是 agent 既有现场，按 status 超时同口径留痕返回。
+            logger.warning(
+                "wip_checkpoint",
+                f"WIP checkpoint (anchor '{anchor}', spec '{spec}') timed "
+                f"out after {timeout}s in '{path}' during add — status "
+                f"recheck identical to pre-add snapshot, index not "
+                f"rewritten; skip index rollback (non-blocking, agent "
+                f"staged state preserved)",
+            )
             return False
         try:
             reset = _git(["reset", "-q"], path, timeout)

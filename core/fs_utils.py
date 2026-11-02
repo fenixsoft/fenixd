@@ -15,6 +15,11 @@ verify_report 与 verify_scenarios 此前各持一份近乎相同的 ``_atomic_w
 self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
 ``_with_lock`` 被外部 import，提升于此公共归属（item 1a8a9328767b）。
 
+另收口 ``git_c_env``：evolution 与 deliverables 此前各持一份逐字相同的
+私有 ``_git_c_env``（git 子进程环境，强制 ``LC_ALL=C`` 消除文案判别对
+运行环境本地化的依赖），环境口径演进存在两处漏改面（item 7ceb4ed0fe0f），
+单点维护于此。
+
 只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
@@ -108,3 +113,19 @@ def with_file_lock(path: Path, fn):
             return fn()
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
+def git_c_env() -> dict:
+    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``（单点实现）。
+
+    evolution（todo 回写 commit/push 的良性无变更文案判别，item
+    9a333cd43cd0）与 deliverables（「路径确定不存在」stderr 文案判别，item
+    77767180a566）的 git 文案匹配都依赖 C locale 下的英文输出。两车道此前
+    各持一份逐字相同的私有 ``_git_c_env``，任何一侧调整环境口径（如补
+    GIT_CONFIG_NOSYSTEM）另一侧易漏，届时两车道判别行为分叉（item
+    7ceb4ed0fe0f），收口于此；两车道薄委托引用。合并而非整体替换，保留
+    调用方的 PATH 等既有环境。
+    """
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    return env

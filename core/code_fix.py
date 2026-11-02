@@ -2584,11 +2584,16 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
         kept.append(rel)
     if dropped:
         detail = "; ".join(dropped)[:800]
-        _logger.warning(
-            "code-fix 定向回归 targets 消毒：剔除 "
-            f"{len(dropped)} 项毒化目标（cmd 替换与 FENIX_TEST_TARGETS "
-            f"导出双通道共享消毒后列表）: {detail}"
-        )
+        # 留痕守卫（同 _log_split_warning「日志失败无副作用」惯例）：消毒主
+        # 流程 MUST NOT 因日志通道故障（handler 异常/flush 失败）上穿抛异常。
+        try:
+            _logger.warning(
+                "code-fix 定向回归 targets 消毒：剔除 "
+                f"{len(dropped)} 项毒化目标（cmd 替换与 FENIX_TEST_TARGETS "
+                f"导出双通道共享消毒后列表）: {detail}"
+            )
+        except Exception:  # noqa: BLE001 — 留痕失败不影响消毒
+            pass
     return kept
 
 
@@ -2657,9 +2662,14 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
         # 注释项不是真实文件，「..」穿越段不外溢（6c85102acec2）。
         poison = _test_target_poison_reason(rel)
         if poison:
-            _logger.warning(
-                f"code-fix 定向回归映射输入消毒：剔除毒化项 {rel}（{poison}）"
-            )
+            # 留痕守卫（同 _log_split_warning 惯例）：本方法契约「探测失败
+            # MUST NOT 抛异常」，日志通道故障同样不得上穿。
+            try:
+                _logger.warning(
+                    f"code-fix 定向回归映射输入消毒：剔除毒化项 {rel}（{poison}）"
+                )
+            except Exception:  # noqa: BLE001 — 留痕失败不影响映射
+                pass
             continue
         if _is_test_path(rel):
             direct.add(rel)
@@ -2786,12 +2796,17 @@ def _apply_test_targets(spec, test_targets: list):
                 # 整串替换契约由冻结单测钉住（兼容既有 cmd 写法），此处
                 # warning 显式点名限制，消除静默畸形 argv。
                 if len(targets) > 1:
-                    _logger.warning(
-                        "code-fix regression.cmd list 形态元素内嵌 "
-                        f"{CODE_FIX_TEST_TARGETS_PLACEHOLDER} 占位符（元素 "
-                        f"{s!r}）仅支持单目标，本批目标数 {len(targets)} 将"
-                        "整串替换为含空格的单参数（独立占位元素可多目标展开）"
-                    )
+                    # 留痕守卫（同 _log_split_warning「日志失败无副作用」惯例）：
+                    # 占位符替换主流程不受日志通道故障影响。
+                    try:
+                        _logger.warning(
+                            "code-fix regression.cmd list 形态元素内嵌 "
+                            f"{CODE_FIX_TEST_TARGETS_PLACEHOLDER} 占位符（元素 "
+                            f"{s!r}）仅支持单目标，本批目标数 {len(targets)} 将"
+                            "整串替换为含空格的单参数（独立占位元素可多目标展开）"
+                        )
+                    except Exception:  # noqa: BLE001 — 留痕失败不影响替换
+                        pass
                 new_list.append(s.replace(CODE_FIX_TEST_TARGETS_PLACEHOLDER, raw))
             else:
                 new_list.append(el)
@@ -4014,8 +4029,9 @@ def _write_defer_expired_alert(
             "spec": None,
             "severity": "warning",
             "description": (
-                f"code-fix 延迟批合回超预算（90 分钟或 {DEFER_RETRY_MAX} 次重试"
-                "仍被主树未提交改动挡住），已降级入失败档案，待人工处置主树"
+                f"code-fix 延迟批合回超预算（{DEFER_BUDGET_SECONDS // 60} 分钟"
+                f"或 {DEFER_RETRY_MAX} 次重试仍被主树未提交改动挡住），"
+                "已降级入失败档案，待人工处置主树"
             ),
             "evidence": (
                 f"项目名={Path(project_root).name}; branch={branch or 'unknown'}; "
@@ -6550,8 +6566,8 @@ class CodeFixOrchestrator:
         )
         self._log(
             "warning",
-            f"code-fix 延迟批合回超预算（90 分钟或 {DEFER_RETRY_MAX} 次重试），"
-            f"降级入失败档案: branch={branch}",
+            f"code-fix 延迟批合回超预算（{DEFER_BUDGET_SECONDS // 60} 分钟或 "
+            f"{DEFER_RETRY_MAX} 次重试），降级入失败档案: branch={branch}",
         )
 
     def _defer_merge_back(
@@ -6660,14 +6676,23 @@ class CodeFixOrchestrator:
             f"code-fix 第 {batch_no} 批检测到搁浅（产物声明 fixed 但分支零提交、"
             f"worktree 有未提交改动），已 salvage 兜底提交：{message}",
         )
-        write_progress(
-            self.project_root,
-            reason="",
-            current=(
-                f"第 {batch_no} 批搁浅兜底：分支零提交但工作区有未提交改动，"
-                f"编排已 salvage 提交（{message}）"
-            ),
-        )
+        # 中途进度写点守卫（同下方成功收尾写点先例「写盘失败不得劫持收尾」）：
+        # salvage 提交已完成，写盘异常上穿会把批在进度面翻转成 failed 并中断链。
+        try:
+            write_progress(
+                self.project_root,
+                reason="",
+                current=(
+                    f"第 {batch_no} 批搁浅兜底：分支零提交但工作区有未提交改动，"
+                    f"编排已 salvage 提交（{message}）"
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 — 写盘失败只留痕不上穿
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批 salvage 兜底进度写盘失败"
+                f"（salvage 提交已完成）: {e}",
+            )
         return True
 
     def _salvage_api_timeout_wip(self, wt, result, batch_no: int) -> bool:
@@ -6774,10 +6799,19 @@ class CodeFixOrchestrator:
                     "info",
                     f"code-fix 第 {batch_no} 批救回 rebase 到基线 {base} 成功，重跑批回归",
                 )
-                write_progress(
-                    root, phase="regressing", reason="",
-                    current=f"第 {batch_no} 批合回冲突救回中（rebase 后重跑回归）",
-                )
+                # 中途进度写点守卫（同成功收尾写点先例「写盘失败不得劫持收尾」）：
+                # 异常上穿会沿批 worker 兜底把救回中的批翻转成 failed 并中断链。
+                try:
+                    write_progress(
+                        root, phase="regressing", reason="",
+                        current=f"第 {batch_no} 批合回冲突救回中（rebase 后重跑回归）",
+                    )
+                except Exception as e:  # noqa: BLE001 — 写盘失败只留痕不上穿
+                    self._log(
+                        "warning",
+                        f"code-fix 第 {batch_no} 批救回进度写盘失败"
+                        f"（救回流程不受影响）: {e}",
+                    )
                 with _with_test_targets_env(targets):
                     reg = runner.run_regression(
                         eff_spec, reason="code-fix", project_root=wt, lock_root=root
@@ -6937,11 +6971,20 @@ class CodeFixOrchestrator:
                 )
         if not picked:
             return _give_up("零提交组被回收", carrier=carrier)
-        write_progress(
-            root, phase="regressing", reason="",
-            current=f"第 {batch_no} 批合回冲突救回中（组粒度回收集回归，"
-                    f"回收 {len(picked)}/{len(commits)} 组）",
-        )
+        # 中途进度写点守卫（同成功收尾写点先例「写盘失败不得劫持收尾」）：
+        # 异常上穿会沿批 worker 兜底把救回中的批翻转成 failed 并中断链。
+        try:
+            write_progress(
+                root, phase="regressing", reason="",
+                current=f"第 {batch_no} 批合回冲突救回中（组粒度回收集回归，"
+                        f"回收 {len(picked)}/{len(commits)} 组）",
+            )
+        except Exception as e:  # noqa: BLE001 — 写盘失败只留痕不上穿
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批组粒度回收进度写盘失败"
+                f"（回收集已就绪，救回流程不受影响）: {e}",
+            )
         with _with_test_targets_env(targets):
             reg = runner.run_regression(
                 eff_spec, reason="code-fix", project_root=wt, lock_root=root

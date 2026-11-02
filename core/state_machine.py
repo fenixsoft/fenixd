@@ -837,8 +837,14 @@ def _spec_sort_key(item: Tuple[str, dict]) -> Tuple[int, str]:
     （serialize 兜 ``""`` 排最前、_sort_by_priority 兜 ``"z"`` 排最后），
     同键双兜底漂移。统一兜 ``"z"``——ISO 8601 时间戳以数字开头，ASCII 序
     恒小于 ``"z"``，异常条目排最后；正常数据的既有顺序不受影响。
+
+    code-review item b8c465861383：``get("created", "z")`` 只防键缺失、
+    不防显式 None（add_spec 的 setdefault 不替换已存在的 None 键、
+    update_spec 可传 created=None），同 priority 条目间拿 None 与 str
+    比较抛 TypeError，中断本次 STATE.md 全量回写。改 ``or "z"``——缺失、
+    显式 None 与空串同口径排最后（写侧归一见 add_spec/_apply_updates_entry）。
     """
-    return (item[1].get("priority", 999), item[1].get("created", "z"))
+    return (item[1].get("priority", 999), item[1].get("created") or "z")
 
 
 def _normalize_priority_int(value) -> int:
@@ -2005,6 +2011,14 @@ class StateMachine:
         # 比较时抛 TypeError，中断 STATE.md 全量回写。
         if "priority" in local:
             local["priority"] = _normalize_priority_int(local["priority"])
+        # created 显式 None 归一（code-review item b8c465861383）：与读侧
+        # _spec_sort_key 的 ``or "z"`` 兜底同口径——created=None 原样落盘
+        # 会让下一次 serialize 的 sorted(_spec_sort_key) 在同 priority 条目
+        # 间拿 None 与 str 比较抛 TypeError，中断 STATE.md 全量回写。置为
+        # 当前时间（与 add_spec 的 created 生成方式同源），不抛异常拒绝；
+        # 仅显式携带 created 的更新才归一，未携带时不动既有值。
+        if "created" in local and local["created"] is None:
+            local["created"] = datetime.now(timezone.utc).isoformat()
         # 单字段形状守卫（evo-fix-verify-parallel-override-type 2.1a）：
         # _verify_parallel_override 契约 int|None（降档并行度 int 或复位
         # null）。布尔或非 int 形状（'False'/'true' 等字符串、float 等）拒绝
@@ -2720,7 +2734,14 @@ class StateMachine:
             # priority 形状归一（code-review item 18afef1d8d99）：调用方传入
             # 非整型 priority 不得原样落盘（详见 _normalize_priority_int）。
             new_entry["priority"] = _normalize_priority_int(new_entry["priority"])
-            new_entry.setdefault("created", datetime.now(timezone.utc).isoformat())
+            # created 显式 None 归一（code-review item b8c465861383）：
+            # setdefault 不替换已存在的 None 键，调用方显式传 created=None
+            # 会原样落盘——下一次 serialize 的 sorted(_spec_sort_key) 在同
+            # priority 条目间拿 None 与 str 比较抛 TypeError，中断本次
+            # STATE.md 全量回写。缺失与显式 None 同口径置当前时间（与既有
+            # created 生成方式同源），不抛异常拒绝。
+            if new_entry.get("created") is None:
+                new_entry["created"] = datetime.now(timezone.utc).isoformat()
             new_entry.setdefault("updated", datetime.now(timezone.utc).isoformat())
             new_entry.setdefault("implementer_run", None)
             new_entry.setdefault("tester_run", None)

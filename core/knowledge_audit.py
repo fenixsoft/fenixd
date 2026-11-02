@@ -1637,8 +1637,11 @@ def run_audit(
         before_violations = {str(v) for v in (validate(project_root) or [])}
         # carryover：机械段开始前 spec/knowledge/ 已有的未提交改动（上一轮提交
         # 失败 fail-open 留盘的已验证产出、人工在盘上的编辑）。回滚纪律与语义
-        # 段同款：只还原本轮触达的文件，不得全目录连带清除。
-        carryover = knowledge_dirty_files(project_root)
+        # 段同款：只还原本轮触达的文件，不得全目录连带清除。用严格变体采集
+        # （code-review b4537a2d3256，对齐语义段 909237f50444）：fail-open 空
+        # 集会把采集失败伪装成「无 carryover」，回滚差集随即把进锁前已在场的
+        # 未提交改动当本轮产出连带清除；基线不可得时在回滚分支跳过差集回滚。
+        carryover = _knowledge_dirty_files_or_none(project_root)
         fixed, manual_fixes, rewritten_rels, fix_cats = _apply_mechanical(
             project_root, scan
         )
@@ -1695,6 +1698,17 @@ def run_audit(
                     details["manual"].append(
                         "机械修复引入新违规：git 状态采集失败，本轮机械修复未回滚，"
                         "请人工核查"
+                    )
+                elif carryover is None:
+                    # 回滚基线不可得（code-review b4537a2d3256）：机械段开始前
+                    # carryover 采集失败时按空集继续，差集会把进锁前已在场的
+                    # 未提交改动（前序 fail-open 留盘产出、人工编辑）当本轮
+                    # 产出连带清除。对齐语义段口径跳过差集回滚、转待人工
+                    # 留痕，不执行 discard_paths。
+                    counts["pending_manual"] += 1
+                    details["manual"].append(
+                        "机械修复引入新违规：进锁前回滚基线采集失败，本轮机械"
+                        "修复未回滚以免连带清除既有未提交改动，请人工核查"
                     )
                 else:
                     discard_paths(

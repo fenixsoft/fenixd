@@ -124,15 +124,28 @@ def _summary_counts_usable(summary):
     """summary 计数可采信门槛（纯谓词，列表/键缺失两分支共用，勿单侧漂移，
     code-review a59955c007d3 自 _load_report_json 内嵌函数上提）：须为 dict、
     total>0 且显式声明 failed/errors 键（引擎 _build_report 恒写全套计数键，
-    合法截断报告必满足）；total 缺失/为 0/不可解析或缺声明一律 False，按占位
-    报告拒收（fail-closed）。"""
+    合法截断报告必满足）；total 缺失/为 0/不可解析、failed/errors 声明了键
+    但值不可 int 解析（code-review ccfd626c7df9，与 total 的解析门槛对齐）
+    或缺声明一律 False，按占位/损坏报告拒收（fail-closed）。"""
     if not isinstance(summary, dict):
         return False
+
+    def _parsable(val):
+        # 与 total 门同口径：falsy 折 0 后须可 int 解析（键存在但值为
+        # "abc"/dict 等不可解析形态 → summary 不可用，拒绝采信）
+        try:
+            int(val or 0)
+        except (TypeError, ValueError):
+            return False
+        return True
+
     try:
         return (
             int(summary.get("total") or 0) > 0
             and "failed" in summary
             and "errors" in summary
+            and _parsable(summary.get("failed"))
+            and _parsable(summary.get("errors"))
         )
     except (TypeError, ValueError):
         return False
@@ -193,8 +206,11 @@ def _load_report_json(project_root, spec_name):
     # 带全套计数键（total=0/failed=0）」形态，code-review 03296ed3a49e）与
     # 键缺失（合法旧形态，code-review c0bc338cd2ea：键缺失不等于豁免，
     # 「scenarios 缺失 + summary 声明 failed/errors=0」同样可推出假通过）。
-    # 仅 total>0 且显式声明 failed/errors 键（合法截断报告必满足，与列表分支
-    # 同门槛）才采信，占位/截断/写坏 summary 一律拒收（fail-closed）。
+    # 仅 total>0 且显式声明 failed/errors 键且声明值可 int 解析（合法截断
+    # 报告必满足，与列表分支同门槛；code-review ccfd626c7df9：声明了键但值
+    # 不可解析的损坏 summary 同样拒收，否则 _derive_status 旧实现的 None
+    # 短路会把它合成 verified）才采信，占位/截断/写坏 summary 一律拒收
+    # （fail-closed）。
     if _summary_counts_usable(summary):
         return data
     return None
@@ -487,7 +503,9 @@ def _derive_status(run_result, report) -> str:
     summary 先做豁免轮形态
     判定（``_failed_scenarios_all_exempt``），豁免轮合法保留失败计数而终局
     verified，与 ``render_verification_report`` 的「其余失败场景已豁免」
-    count_note 同一形态（code-review item efb8b1419948）。
+    count_note 同一形态（code-review item efb8b1419948）；summary 声明了
+    failed/errors 键但值不可 int 解析时判 bug-found（code-review
+    ccfd626c7df9，键缺失仍宽松按 0 回退，二者取向不同见分支内注释）。
     """
     if run_result:
         # fast-track 形态优先（item 3b6791cdcc2a）：verification.verdict 在
@@ -523,13 +541,28 @@ def _derive_status(run_result, report) -> str:
     if isinstance(report, dict):
         summary = report.get("summary")
         if isinstance(summary, dict):
-            try:
-                declared_failures = int(summary.get("failed", 0) or 0) + int(
-                    summary.get("errors", 0) or 0
-                )
-            except (TypeError, ValueError):
-                declared_failures = None
-            if declared_failures is not None and declared_failures > 0:
+            # code-review ccfd626c7df9：区分「键缺失」（宽松按 0 回退，既有
+            # `or 0` 口径不变）与「键存在但不可解析」（如 failed="abc"）。旧
+            # 实现把不可解析折成 declared_failures=None、下方两分支全跳过，
+            # 落到场景计数兜底循环——场景明细缺失时循环体不执行、末行
+            # return "verified"，把损坏 summary 合成 ✅ 假通过（
+            # 03296ed3a49e/cbea2bb63e40/c0bc338cd2ea 同族漏网形态）。改
+            # fail-closed：任一声明键不可解析即判 bug-found，绝不经不可解析
+            # 计数推出 verified。
+            declared_failures = 0
+            has_declared_key = False
+            for _key in ("failed", "errors"):
+                if _key not in summary:
+                    continue
+                has_declared_key = True
+                _raw = summary.get(_key)
+                if not _raw and not isinstance(_raw, (int, float)):
+                    continue  # None/空串等 falsy 值按 0（与 `or 0` 口径一致）
+                try:
+                    declared_failures += int(_raw)
+                except (TypeError, ValueError):
+                    return "bug-found"
+            if declared_failures > 0:
                 # code-review item efb8b1419948：豁免轮形态（失败场景全部被
                 # 豁免、终局 verified 合法保留失败计数）不得判 bug-found——
                 # 否则 _report_is_superseded 在 run_result 缺失（status 无法
@@ -540,7 +573,7 @@ def _derive_status(run_result, report) -> str:
                     return "verified"
                 return "bug-found"
             # 显式声明过 failed/errors 键且值非 0 已被上分支拦截 → 判定有据
-            if declared_failures == 0 and ("failed" in summary or "errors" in summary):
+            if declared_failures == 0 and has_declared_key:
                 # code-review 204b96ec3147：summary 低报零失败而场景明细含非
                 # pass 场景时不得直接合成 ✅——渲染侧与豁免轮判定都承认 summary
                 # 与场景明细可并存矛盾，判定侧在此同样先按豁免轮口径核对（全部
@@ -705,12 +738,19 @@ def _md_declared_verdict(content):
             verdict = "bug-found"
         elif "通过" in head or "✅" in head or "verified" in head:
             verdict = "verified"
-    counts = {}
+    counts: dict = {}
     for label, raw in _MD_COUNT_RE.findall(content or ""):
         try:
-            counts[label] = int(raw)
+            value = int(raw)
         except (TypeError, ValueError):
             continue
+        # 首见可解析值优先（code-review 5ce9ff04bcb4）：框架自渲染的汇总表
+        # 位于文首，旧实现 dict 后写覆盖使排在真计数行之后的注入行（run-result
+        # bug 描述等自由文本携带的「| 失败 | 0 |」，经渲染入库跨轮存活）反转
+        # 失败/错误计数，把上一轮残留报告误判「与本轮一致」present 放行。
+        # 首见锁定后同标签后继行不再覆盖，注入行盖不掉框架计数。
+        if label not in counts:
+            counts[label] = value
     return verdict, counts.get("失败"), counts.get("错误")
 
 
@@ -760,34 +800,46 @@ def _report_is_superseded(project_root, spec_name, content) -> bool:
 
 
 def _failed_assertion_count(scenario) -> str:
-    """场景失败断言数「x/y」，无断言数据返回 '-'。"""
+    """场景失败断言数「x/y」，无断言数据返回 '-'。
+
+    缺 pass 键的断言条目按 fail 计入（code-review dd142789daf2），与
+    runner.determine_scenario_status / web_runner 取证分支的缺省 False
+    兜底取向一致——场景因畸形断言条目被判 fail 时，计数列按通过统计会
+    低报失败面，误导人工按表复核。
+    """
     ars = scenario.get("assertion_results")
     if not isinstance(ars, list) or not ars:
         return "-"
-    failed = sum(1 for a in ars if isinstance(a, dict) and not a.get("pass", True))
+    failed = sum(1 for a in ars if isinstance(a, dict) and not a.get("pass", False))
     return f"{failed}/{len(ars)}"
 
 
 def _render_evidence(evidence) -> list:
-    """把 bug 证据渲染为 Markdown 行（dict/list/str 尽力展开）。"""
+    """把 bug 证据渲染为 Markdown 行（dict/list/str 尽力展开）。
+
+    key 与标量值同为 run-result 侧自由文本，经 _md_cell 转义换行与竖线
+    （code-review 5ce9ff04bcb4），防注入行落到行首伪造汇总计数/结论标题；
+    dict/list 走 json.dumps（字符串内换行已转义为 \\n 字面量，无真实换行，
+    不构成行首注入通道）保持原样。
+    """
     lines = []
     if isinstance(evidence, dict):
         for key, val in evidence.items():
             if isinstance(val, (dict, list)):
                 rendered = json.dumps(val, ensure_ascii=False)
             else:
-                rendered = str(val)
-            lines.append(f"  - {key}: {rendered}")
+                rendered = _md_cell(val)
+            lines.append(f"  - {_md_cell(key)}: {rendered}")
     elif isinstance(evidence, list):
         for item in evidence:
             rendered = (
                 json.dumps(item, ensure_ascii=False)
                 if isinstance(item, (dict, list))
-                else str(item)
+                else _md_cell(item)
             )
             lines.append(f"  - {rendered}")
     elif evidence is not None:
-        lines.append(f"  - {evidence}")
+        lines.append(f"  - {_md_cell(evidence)}")
     return lines
 
 
@@ -803,17 +855,22 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
     for i, bug in enumerate(bugs, 1):
         if not isinstance(bug, dict):
             continue
-        severity = bug.get("severity") or "unspecified"
-        assertion = bug.get("assertion_type") or "-"
+        # code-review 5ce9ff04bcb4：severity/关联场景/描述/根因均为 run-result
+        # 侧自由文本，原样插入 list-item 时换行会让注入行落到行首（如「| 失败
+        # | 0 |」汇总行、「## 结论：」标题行），被 _md_declared_verdict 与
+        # dashboard parse_verdict 当作报告自声明计数/结论。统一走 _md_cell
+        # 转义（换行折叠 + 竖线转义），正常单行文本渲染不变。
+        severity = _md_cell(bug.get("severity") or "unspecified")
+        assertion = _md_cell(bug.get("assertion_type") or "-")
         lines.append(f"### BUG-{i:02d}（severity={severity}）· {assertion}")
         lines.append("")
         scenario_ids = bug.get("scenario_ids")
         if isinstance(scenario_ids, list) and scenario_ids:
-            lines.append("- 关联场景：" + "、".join(str(s) for s in scenario_ids))
-        description = bug.get("description")
+            lines.append("- 关联场景：" + "、".join(_md_cell(s) for s in scenario_ids))
+        description = _md_cell(bug.get("description"))
         if description:
             lines.append(f"- 描述：{description}")
-        root_cause = bug.get("root_cause")
+        root_cause = _md_cell(bug.get("root_cause"))
         if root_cause:
             lines.append(f"- 根因：{root_cause}")
         # 优先引用 report.json 的场景结构化证据（引用而非重复渲染）
@@ -1102,7 +1159,17 @@ def render_verification_report(
     # ── 结论正文（parse_verdict 的 conclusion 来源）──
     judge_summary = (run_result or {}).get("summary")
     if isinstance(judge_summary, str) and judge_summary.strip():
-        lines.append(judge_summary.strip())
+        # code-review 5ce9ff04bcb4：judge 自由叙述逐行转义行首 | 与 #——
+        # 伪造「| 失败 | 0 |」汇总行 / 「## 结论：」标题行会被
+        # _md_declared_verdict / dashboard parse_verdict 当作报告自声明的
+        # 计数/结论。保留既有换行段落结构（Dashboard markdown 渲染依赖
+        # 段落，不做整段折叠），正常单行文本逐字不变。
+        lines.append(
+            "\n".join(
+                re.sub(r"^(\s*)([|#])", r"\1\\\2", ln)
+                for ln in judge_summary.strip().split("\n")
+            )
+        )
         lines.append("")
 
     # ── 汇总表格（parse_verdict 的 summary 来源）──

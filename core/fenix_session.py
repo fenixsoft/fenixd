@@ -353,21 +353,28 @@ def _fenix_pids_under(root: Path) -> list:
         return []
 
 
-def _is_daemon_cmdline(pid) -> bool:
+def _is_daemon_cmdline(pid, root: Path | None = None) -> bool:
     """pid 是否**正在执行** .fenix/fenixd.py（daemon，而非 supervisor）。
 
     fix-supervisor-hosting-chain 3.2：stop_daemon 的 SIGTERM 只发给 daemon
     （supervisor 见 stop flag 后自行退出，无需也不应杀它）。子串假阳性事故
     （2026-09-13）后判据同快照侧 _is_daemon_proc：Python 解释器 + 脚本 token
-    解析——仅「命令行里提到该路径」的进程（grep/cat/sha256sum）不再满足。
-    项目根锚定比较由快照侧统一承担：本函数只对 _fenix_pids_under 快照中的
-    pid 调用（stop_daemon 做 daemon/supervisor 区分），入选者已被
-    root/.fenix/fenixd.py 锚定本项目，此处复核对脚本 token 的结构判据
-    （.fenix/ 下的 fenixd.py）；supervisor 脚本名是 fenixd_supervisor.py，
-    不会误中。此前在此重复 cwd 锚定比较，daemon 以非项目根 cwd + 绝对脚本
-    路径启动时能进快照却过不了本函数，SIGTERM 被跳过、优雅停机降级为
-    30 秒空等 + 强杀（code-review item 9f0426156676）。读取失败（进程已
-    退出）返回 False。
+    解析——仅「命令行里提到该路径」的进程（grep/cat/sha256sum）不再满足；
+    supervisor 脚本名是 fenixd_supervisor.py，不会误中。
+
+    传入 root 时补项目根锚定复核（code-review item 33a5a217f420）：入口快照
+    （_fenix_pids_under）到 SIGTERM 之间快照 pid 可能已退出并被内核复用为
+    另一项目的 daemon，快照侧锚定管不住复用后的进程，仅凭「脚本名
+    fenixd.py 且父目录 .fenix」的结构判据会把复用者误判为本项目目标杀掉。
+    锚定判据与快照侧完全同款（cwd + 脚本 token 归一化比较
+    root/.fenix/fenixd.py，复用者 cwd/脚本不指向本项目必判不过），与超时
+    SIGKILL 路径 _is_snapshot_proc_cmdline 的复核口径对齐，消除两条杀灭
+    路径的防护差。daemon 以非项目根 cwd + 绝对脚本路径启动时
+    Path(cwd) / 绝对路径 仍归一化到脚本自身，不回归此前「SIGTERM 被跳过、
+    优雅停机降级为 30 秒空等 + 强杀」的事故（code-review item
+    9f0426156676）。cwd/cmdline 读取失败（进程可能已退出）返回 False：
+    确已退出则无需信号，仍存活则由超时兜底路径复核补杀。root 缺省 None
+    时保留纯结构判据，兼容既有无 root 调用点。
     """
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
@@ -381,7 +388,17 @@ def _is_daemon_cmdline(pid) -> bool:
     if script is None:
         return False
     script_path = Path(script)
-    return script_path.name == "fenixd.py" and script_path.parent.name == ".fenix"
+    if not (script_path.name == "fenixd.py" and script_path.parent.name == ".fenix"):
+        return False
+    if root is None:
+        return True
+    # 项目根锚定（item 33a5a217f420）：_is_daemon_proc 的 cwd/script 归一化
+    # 判据与快照侧逐字同款，绝对脚本路径启动仍能通过（item 9f0426156676）。
+    try:
+        cwd = Path(os.readlink(f"/proc/{pid}/cwd")).expanduser().resolve()
+    except (OSError, ValueError):
+        return False
+    return _is_daemon_proc(cwd, argv, root)
 
 
 def _is_snapshot_proc_cmdline(pid, root: Path):
@@ -723,9 +740,11 @@ def stop_daemon(root: str | None = None) -> dict:
 
     try:
         # ② SIGTERM 该项目 daemon 进程（仅快照中的 cwd/--project-root 锚定且为
-        # daemon 的进程——supervisor 见 stop flag 后自行退出，SIGTERM 不发给它）
+        # daemon 的进程——supervisor 见 stop flag 后自行退出，SIGTERM 不发给它；
+        # 复核传 proot 做项目根锚定，防快照到 SIGTERM 之间 pid 被复用为其他
+        # 项目 daemon 时误杀，code-review item 33a5a217f420）
         for pid in target_pids:
-            if _is_daemon_cmdline(pid):
+            if _is_daemon_cmdline(pid, proot):
                 try:
                     os.kill(int(pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
@@ -756,6 +775,24 @@ def stop_daemon(root: str | None = None) -> dict:
                     text=True,
                     timeout=5,
                 )
+            except Exception:
+                pass
+            # 旧版固定会话兜底（code-review item 7254a6ea802b）：is_running 的
+            # tmux 回退仍兼容旧版固定 session `fenixd`（_legacy_session_matches），
+            # /proc 不可用的退化路径（快照为空）下 daemon 可能仍以该会话方式
+            # 运行，仅 kill 唯一名会话打不中它，退化路径将失去强制清理手段。
+            # 先经 _legacy_session_matches 确认会话存在且归属本项目（pane cwd
+            # 匹配，与 is_running 回退同口径）再补杀——不存在的会话不打、
+            # 他项目的旧版会话不误杀；异常吞掉与上方 kill-session 同风格，
+            # 是否真停由下方退化路径复核 is_running 计入 error，不谎报 ok。
+            try:
+                if _legacy_session_matches(proot):
+                    subprocess.run(
+                        ["tmux", "kill-session", "-t", LEGACY_SESSION],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
             except Exception:
                 pass
             sigkilled = []

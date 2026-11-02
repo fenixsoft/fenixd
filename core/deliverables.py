@@ -1253,16 +1253,18 @@ def load_declaration_baseline(spec_name, project_root) -> "dict | None":
 
 
 def _git_c_env() -> dict:
-    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
+    """git 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``（薄委托）。
 
     消除「路径确定不存在」三态判别对 stderr 英文文案（``does not exist``）的
     本地化依赖（code-review item 77767180a566：LC_MESSAGES/LANG 非英文环境下
     git gettext 输出本地化文案，文案匹配恒失配、确定性不存在被误判为 git
-    不可用）。合并而非整体替换，保留调用方的 PATH 等既有环境。
+    不可用）。单点实现收口于 :mod:`core.fs_utils` 的 ``git_c_env``（item
+    7ceb4ed0fe0f：与 evolution 车道共用同一环境口径，防两处漂移），本文件
+    惰性 import 引用（先例见下方 atomic_write_text 的复用形态）。
     """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    return env
+    from core.fs_utils import git_c_env
+
+    return git_c_env()
 
 
 # 「确定不存在」stderr 文案容忍集合（小写匹配，code-review item 03edd97d523c）。
@@ -2346,7 +2348,10 @@ def _git_grep_zero_refs(project_root, path: str, spec_name: str):
             text=True,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+        # ValueError：候选路径含 NUL 等非法形态时 subprocess 参数构造即抛
+        # （item ff641220bb1f，与 _path_is_gitignored 容错口径对齐），
+        # 同按 fail-open 处置：引用面未知，不判孤儿。
         return {"hit": True, "matches": [], "error": str(e)}
     if proc.returncode == 1:
         # 无匹配 → 零引用（确定性）
@@ -2379,7 +2384,10 @@ def _git_log_path_history(project_root, path: str):
             text=True,
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+        # ValueError：候选路径含 NUL 等非法形态时 subprocess 参数构造即抛
+        # （item ff641220bb1f，与 _path_is_gitignored 容错口径对齐），
+        # 同按 fail-open 处置：历史未知，不判孤儿。
         return {"hit": True, "commits": [], "error": str(e)}
     if proc.returncode != 0:
         # git 错误（非仓库等）→ fail-open：历史未知，不判孤儿
@@ -2538,6 +2546,17 @@ def _git_branch_merge_base(project_root, branch) -> "str | None":
     （调用方 fail-open 回人工，不机械改写）。
     """
     if not branch:
+        return None
+    if _is_unsafe_git_ref_name(branch):
+        # code-review item 99ecdf32d213：与 _git_show_tasks_text /
+        # _git_object_exists_on_branch 同口径的引用名守卫——拒收以 - 开头
+        # 等非法引用名，防 branch 被 git 解析为命令行选项（--is-ancestor
+        # 改变输出语义、非法选项恒失败）。fail-safe 回 None（调用方本就
+        # 回人工，不机械改写）。
+        _resolution_logger.warning(
+            "deliverables",
+            f"merge-base 分支名非法（拒绝作为 git 实参）: {branch!r}",
+        )
         return None
     try:
         proc = subprocess.run(
