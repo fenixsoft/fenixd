@@ -57,7 +57,6 @@ class Session:
     """单个会话实例状态。"""
 
     project: str          # 项目别名（registry 的 name）
-    project_path: Path
     proc: subprocess.Popen
     session_id: str       # 本地生成，仅作 SSE 订阅键与前端句柄
     events: deque = field(default_factory=lambda: deque(maxlen=SESSION_EVENT_BUFFER))
@@ -190,7 +189,6 @@ class SessionManager:
 
             session = Session(
                 project=project_name,
-                project_path=project_path,
                 proc=proc,
                 session_id=session_id,
             )
@@ -655,10 +653,20 @@ class SessionManager:
         # 不广播——有意行为变化：前端 claude-msg/runEvents.ts 的
         # SILENT_KINDS 已含 init（零渲染依赖），SSE 消费端无可见回归。
         if ev_type == "system" and ev_subtype == "init":
-            session.slash_commands = [
-                str(c) for c in (ev.get("slash_commands") or [])
-            ]
-            session.skills = [str(c) for c in (ev.get("skills") or [])]
+            # code-review item 8d7ffbe73364：字段形状设防——非 list 的真值
+            # （如数字）若放行到列表推导会抛 TypeError 穿出回调，被
+            # _stdout_reader 的 except 捕获后整条读循环终止（a1ad7f4c983b
+            # 同款失效模式），故仅 list 才推导，其余按空列表处理。
+            slash_commands = ev.get("slash_commands")
+            skills = ev.get("skills")
+            session.slash_commands = (
+                [str(c) for c in slash_commands]
+                if isinstance(slash_commands, list)
+                else []
+            )
+            session.skills = (
+                [str(c) for c in skills] if isinstance(skills, list) else []
+            )
             return
 
         # 补 ts 字段
