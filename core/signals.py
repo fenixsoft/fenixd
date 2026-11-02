@@ -157,8 +157,12 @@ def request_admin_invoke(
     placeholder_fd = None
     placeholder_ino = None
     try:
+        # 占位权限 0o600（code-review item b0f3f1a8f743）：内容经 mkstemp
+        # （0600）+ os.replace 原子换入，rename 后 req_path 的 inode 即临时
+        # 文件 inode，最终落盘权限恒为 0600——占位声明须与之一致（私有语义，
+        # 消费方同用户），不得声明误导性的 0o644。
         placeholder_fd = os.open(
-            req_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+            req_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
         )
         # 经 fd 留存自家占位 inode（code-review item 02d635e05daf）：
         # 若走 close 后的 req_path.stat()，消费侧在此间隙 rename 走占位、
@@ -343,6 +347,27 @@ def write_scheduling_kick(project_root, spec: str) -> dict:
     return {"ok": True, "file": str(req_path), "error": None}
 
 
+def _progress_result(total, done, current, step, error, source) -> dict:
+    """构造 parse_verify_progress 的 exists: True 七键返回体（code-review
+    item 9af4da5de0a8）：键集契约见 parse_verify_progress docstring，各分支
+    仅在此一处收敛构造，避免多份手写字面量键集漂移。
+    """
+    return {
+        "exists": True,
+        "total": total,
+        "done": done,
+        "current": current,
+        "step": step,
+        "error": error,
+        "source": source,
+    }
+
+
+def _corrupt_progress() -> dict:
+    """corrupt 分支统一返回体：计数归零、current 置空，step/error/source 置 None。"""
+    return _progress_result(0, 0, "", None, None, None)
+
+
 def parse_verify_progress(project_root, spec_name) -> dict:
     """解析 .fenix/verify-progress/<spec>.json；损坏/非对象以 error 字段标记。
 
@@ -375,23 +400,22 @@ def parse_verify_progress(project_root, spec_name) -> dict:
     except FileNotFoundError:
         text = None
     except (OSError, UnicodeDecodeError):
-        return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
+        return _corrupt_progress()
     if text is not None:
         try:
             data = json.loads(text)
             if not isinstance(data, dict):
-                return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
-            return {
-                "exists": True,
-                "total": int(data.get("total", 0) or 0),
-                "done": int(data.get("done", 0) or 0),
-                "current": data.get("current", "") or "",
-                "step": data.get("step"),
-                "error": data.get("error"),
-                "source": "file",
-            }
+                return _corrupt_progress()
+            return _progress_result(
+                int(data.get("total", 0) or 0),
+                int(data.get("done", 0) or 0),
+                data.get("current", "") or "",
+                data.get("step"),
+                data.get("error"),
+                "file",
+            )
         except (json.JSONDecodeError, TypeError, ValueError):
-            return {"exists": True, "error": "corrupt", "total": 0, "done": 0, "current": "", "step": None, "source": None}
+            return _corrupt_progress()
     # 进度文件缺失：fast-track 回退合成（场景为空维持空态，不抛异常）
     from core.dashboard.data.artifacts import parse_run_result_scenarios
 
@@ -418,12 +442,4 @@ def parse_verify_progress(project_root, spec_name) -> dict:
         current = f"验证完成: {passed}通过, {failed}失败, {errors}错误"
     else:
         current = f"验证中: {done}/{total}"
-    return {
-        "exists": True,
-        "total": total,
-        "done": done,
-        "current": current,
-        "step": None,
-        "error": None,
-        "source": "run-result",
-    }
+    return _progress_result(total, done, current, None, None, "run-result")
