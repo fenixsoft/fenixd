@@ -499,7 +499,12 @@ def run_suite(
         cmd = list(cmd_override)
     else:
         cmd = _with_basetemp(list(PYTEST_BASE_ARGS), project_root, unique=basetemp_unique)
-    rc, out, err, timed_out = run_command(cmd, timeout, cwd=project_root, env=env or _suite_env())
+    # 仅未提供（None）时才兜底注入端口段环境（code-review item 1cb625a8e0a1）：
+    # ``env or ...`` 会把 env={} 与未提供混同、静默替换成全量环境，空环境
+    # 无法按调用方原义透传给 Popen。
+    rc, out, err, timed_out = run_command(
+        cmd, timeout, cwd=project_root, env=env if env is not None else _suite_env()
+    )
     elapsed = round(time.time() - started, 1)
     hanging = extract_hanging_test(err) if timed_out else None
     # 失败集合须在截断**前**从完整原始输出提取（code-review item c00c0572529d）：
@@ -874,10 +879,16 @@ def main(argv=None) -> int:
             # 主机锁只护住一半。锁获取失败时 baseline 与主套件同样回退 pid 唯一
             # basetemp。
             if args.baseline:
-                base = run_baseline_comparison(
-                    project_root, args.baseline, args.timeout,
-                    basetemp_unique=not lock.acquired, log=log,
-                )
+                # 当前套件已挂起时跳过基线（code-review item 80475fde9cf1）：
+                # current-hang 归类不消费基线结果，照跑基线只会在最该快速收口
+                # 的场景再等最长 min(BASELINE_TIMEOUT_SECONDS, timeout*2) 秒。
+                if current.get("timed_out"):
+                    base = None
+                else:
+                    base = run_baseline_comparison(
+                        project_root, args.baseline, args.timeout,
+                        basetemp_unique=not lock.acquired, log=log,
+                    )
     except OSError as exc:
         result = {"error": f"套件启动失败: {exc}", "exit_code": 1}
         if args.json:
@@ -908,6 +919,9 @@ def main(argv=None) -> int:
             # 机器值同口径，脚本消费者不必解析中文展示文案。
             result["classification_key"] = "current-hang"
             result["classification"] = "当前套件挂起（无完整失败集合对比）"
+            # 基线在锁作用域内已因当前挂起跳过（code-review item 80475fde9cf1）。
+            if base is None:
+                result["baseline_skipped"] = "因当前套件挂起未执行基线对比"
         else:
             # baseline 自身错误态显式处置（code-review item 33596cced7f6）：
             # worktree 创建失败时 baseline_failures 为空集，直接归类会把每个
@@ -953,7 +967,8 @@ def main(argv=None) -> int:
             log("[run_full_suite] 当前失败清单:")
             for f in current_failed:
                 log(f"  FAILED {f}")
-        if base["baseline_failures"]:
+        # base 为 None（当前挂起跳过基线）时不得下标访问（80475fde9cf1）。
+        if base and base.get("baseline_failures"):
             log("[run_full_suite] 基线失败清单:")
             for f in base["baseline_failures"]:
                 log(f"  BASELINE_FAILED {f}")
