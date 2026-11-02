@@ -8,11 +8,14 @@
 读取侧容错（design D2）：字段缺失 / 值非法 / 文件不存在 / 解析失败，
 一律返回 ``"full"``——存量 spec 零迁移，行为与引入本能力之前完全一致。
 
-纯函数模块，无外部依赖（仅 yaml），daemon 派发路径与 Dashboard data 层共用。
+纯函数模块（仅依赖 yaml 与命名契约单源 core.spec_naming，后者 stdlib-only
+不回指本模块、无循环障碍），daemon 派发路径与 Dashboard data 层共用。
 """
 
 import yaml
 from pathlib import Path
+
+from core.spec_naming import validate_spec_name
 
 # 合法模式取值
 VALID_SPEC_MODES = ("fast-track", "full")
@@ -40,24 +43,22 @@ def read_spec_mode(project_root, spec_name: str) -> str:
 
     Returns:
         ``"fast-track"`` 或 ``"full"``。文件缺失 / 无 mode 字段 / 值非法 /
-        解析失败均返回 ``"full"``（读侧容错，不抛异常）。``spec_name`` 含
-        路径成分（空值、``.``、``..``、路径分隔符或 NUL 字节）时同样返回
-        ``"full"``。
+        解析失败均返回 ``"full"``（读侧容错，不抛异常）。``spec_name`` 未通过
+        spec_naming.validate_spec_name 命名契约（含空值、路径成分、NUL 字节、
+        非 str 类型、非 kebab-case 形态、超 200 字节）时同样返回 ``"full"``。
     """
-    if (
-        not isinstance(spec_name, str)
-        or not spec_name
-        or spec_name == "."
-        or "/" in spec_name
-        or ".." in spec_name
-        or "\0" in spec_name
-    ):
-        # 保守拒绝路径成分：防止名称拼接过 spec/changes 越界读到其他目录；
-        # NUL 字节则会让 stat()/resolve() 抛 ValueError（embedded null byte，
-        # 非 OSError，except OSError 兜不住），同样在入口拒绝以守住「不抛异常」契约。
-        # 非 str 入参（int/list 等）会让成员测试抛 TypeError，先于守卫链
-        # 拒绝，类型防御口径对齐 spec_naming.validate_spec_name
-        # （item aa0fdc867986）。
+    if validate_spec_name(spec_name) is not None:
+        # 命名守卫复用 spec_naming 单源（item d71d640e2ef1，勿另立同值副本）：
+        # kebab-case 白名单天然覆盖旧黑名单的全部拒绝面——空值、``.``、``..``、
+        # 路径分隔符均不匹配 ^[a-z][a-z0-9]*(-[a-z0-9]+)*$，NUL 字节亦然（不
+        # 在 [a-z0-9-] 内，无须额外保留黑名单分支），由此守住「防止拼接过
+        # spec/changes 越界读其他目录」与「NUL 会让 stat()/resolve() 抛
+        # ValueError（embedded null byte，except OSError 兜不住）」两条既有
+        # 防线；单源还额外拦下 'Fix_Foo'、'.foo'、超 200 字节等旧黑名单放过、
+        # 能走到 stat/read 的输入。非 str 入参（int/list 等）会让成员测试抛
+        # TypeError、lone surrogate 会让文件名编码抛 UnicodeEncodeError，均在
+        # 单源入口先拒绝（类型防御口径对齐 item aa0fdc867986）。不合法一律
+        # 按读侧容错返回缺省模式，行为契约不变。
         return DEFAULT_SPEC_MODE
     yaml_path = Path(project_root) / "spec" / "changes" / spec_name / ".spec.yaml"
     try:
