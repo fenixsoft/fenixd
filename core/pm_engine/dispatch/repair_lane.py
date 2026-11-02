@@ -26,131 +26,127 @@ from core.pm_engine.dispatch import (
 )
 
 
+def _normalize_int_config_value(
+    value, key: str, default: int, logger=None, *, min: int | None = None
+) -> int:
+    """本文件两整型配置读取器的单点归一实现（code-review item 2f29faa4e7a8）。
+
+    ``_merge_breaker_threshold`` / ``_max_retries`` 与 queue.py
+    ``_normalized_int_value`` 曾是三套并行同族实现，边界口径各异且靠
+    docstring 交叉引用互相同步；本函数收口本文件两读取器的归一核心，
+    下限策略以 ``min`` 参数表达。queue.py 的第三套不在本文件所有权内、
+    不在此改写，口径关系注明：queue 版值级归一对负数照常放行、由调用点
+    各自 clamp；本函数 ``min`` 缺省时对负数按非法处置（WARNING 留痕回
+    缺省），边界口径不再靠注释互引维护。
+
+    归一口径：
+    - None 判空回缺省而非 ``or`` 兜底（合法配置 0 不被吞成缺省，
+      c54ffbef69c5）；
+    - bool 显式拒绝（裸 ``int()`` 把 true/false 截成 1/0 静默生效，
+      637ed7beaee1）；整值浮点按整数接受、非整值浮点拒绝（裸 ``int()``
+      截断静默采信，4b349f62101e/b5544dd00582）；其余值按
+      ``int(str(value).strip())`` 解析、解析失败拒绝——拒绝一律 WARNING
+      留痕回缺省（logger 由调用方 getattr 守卫传入，兼容仅注入
+      _get_config 的测试替身）；
+    - 下限策略：``min`` 非 None → 归一结果（含缺省路径）统一
+      ``max(result, min)`` 收敛（熔断阈值 ``min=1``，负数/0 配置无意义）；
+      ``min`` 为 None → 负数按非法 WARNING 留痕回缺省（重试上限
+      0=不自动重试为合法语义，负值无意义，此前被静默采信）。
+
+    永不抛异常（两读取器消费点全在失败收尾链）。归一规则调整只改此处。
+    """
+    default = int(default)
+    reason = ""
+    if value is None:
+        normalized = default
+    elif isinstance(value, bool):
+        reason = "布尔不合法"
+    elif isinstance(value, int):
+        normalized = value
+    elif isinstance(value, float):
+        # 小数拒绝——int() 截断会静默改写配置语义（item 4b349f62101e）。
+        if value.is_integer():
+            normalized = int(value)
+        else:
+            reason = "小数不合法"
+    else:
+        try:
+            normalized = int(str(value).strip())
+        except (TypeError, ValueError):
+            reason = "非数字不合法"
+    if reason:
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（应为整数，{reason}）: {value!r}，"
+                f"回退缺省 {default}",
+            )
+        return default
+    if min is not None:
+        # 下限保护：min 策略由调用方表达，负数/超下限配置收敛到下限。
+        return max(normalized, min)
+    if normalized < 0:
+        # 负数边界单点收口（2f29faa4e7a8）：无下限策略的键对负数不静默
+        # 采信（如 max_retries=-1 使首次失败即冻结转人工），留痕回缺省。
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（应为整数，负值不合法）: {value!r}，"
+                f"回退缺省 {default}",
+            )
+        return default
+    return normalized
+
+
 def _merge_breaker_threshold(pm) -> int:
     """``agents.merge_breaker_threshold`` 读取与归一（单一落点）。
 
-    归一规则（code-review item bba1be087ad5）：None 判空而非 or 兜底（对齐
-    fast_track c54ffbef69c5，合法配置 0 不被 or 吞成缺省 2）→ 读取
-    异常回退缺省 2（初为窄口径 TypeError/ValueError，code-review item
-    a8c4f9dfc7a0；50bc7b7d8e07 统一与 ``_max_retries`` 同族宽口径：两读取器
-    消费点同在失败收尾链——本文件 _handle_remerge_failure/_direct_rehearsed_
-    to_repair 与 queue/fast_track 同键读取点，异常会打断 update_spec/熔断/
-    fallback 收尾；``_get_config`` 现为 ConfigLoader.get 内存读、实际外溢面
-    窄，但异常面非契约，不据此收窄防御）→ ``max(..., 1)`` 下限保护（负数
-    配置无意义，收敛到 1）。bool/小数显式拒绝（code-review item 4b349f62101e，
-    对齐
-    config._normalize_transient_seconds 归一口径）：裸 ``int()`` 会把
-    ``true`` 截成 1、``1.5`` 截成 1，配置写坏静默改写熔断阈值——整值浮点
-    （``2.0``）按整数接受，非法值回退缺省并经 ``pm.logger`` WARNING 留痕
-    （logger 取 getattr 守卫，兼容仅注入 _get_config 的测试替身）。归一
-    规则调整只改此处。
+    ``_get_config`` 读取（异常按 None 降级——消费点同在失败收尾链，异常
+    会打断 update_spec/熔断/fallback 收尾，不外溢；``_get_config`` 现为
+    ConfigLoader.get 内存读、实际外溢面窄，但异常面非契约，不据此收窄
+    防御，a8c4f9dfc7a0/50bc7b7d8e07）后交 ``_normalize_int_config_value``
+    单点归一：拒绝值回退缺省 2，下限策略 ``min=1``（负数/0 配置对熔断
+    阈值无意义，收敛到 1）。
 
-    注：queue.py ``_handle_merge_back_real_failure`` 的同型第三处复制亦已
-    改为本读取器的调用点（code-review item bba1be087ad5），三处调用点同源。
+    queue.py ``_handle_merge_back_real_failure`` 与 fast_track 同键读取点
+    经模块顶部导入本读取器（bba1be087ad5 收敛三处复制），三处调用点同源；
+    归一规则调整只改共享归一函数，不再多处分写（2f29faa4e7a8）。
     """
-    default = 2
     try:
         cfg_threshold = pm._get_config("agents.merge_breaker_threshold", 2)
     except Exception:  # noqa: BLE001 —— 与 _max_retries 同族同宽（失败收尾链防御，回退缺省不抛穿）
         cfg_threshold = None
-    threshold = default
-    illegal = False
-    # [fenix-ignore:e2ec7ebc8aed] 清单快照过期：布尔/小数拒绝已由 item 4b349f62101e 在下方 isinstance 守卫落地（回退缺省 2），与 config.get_admin_config 同口径。
-    if cfg_threshold is not None and not isinstance(cfg_threshold, bool):
-        if isinstance(cfg_threshold, int):
-            threshold = cfg_threshold
-        elif isinstance(cfg_threshold, float):
-            # 小数拒绝——int() 截断会静默改写熔断阈值（item 4b349f62101e）。
-            if cfg_threshold.is_integer():
-                threshold = int(cfg_threshold)
-            else:
-                illegal = True
-        else:
-            try:
-                threshold = int(str(cfg_threshold).strip())
-            except (TypeError, ValueError):
-                illegal = True
-    elif cfg_threshold is not None:
-        illegal = True
-    if illegal:
-        logger = getattr(pm, "logger", None)
-        if logger is not None:
-            logger.warning(
-                "pm_engine",
-                "配置 agents.merge_breaker_threshold 非法（应为整数，"
-                f"布尔/小数/非数字均不合法）: {cfg_threshold!r}，回退缺省 {default}",
-            )
-    # 下限保护：负数配置无意义，收敛到 1。
-    return max(threshold, 1)
+    # [fenix-ignore:e2ec7ebc8aed] 清单快照过期：布尔/小数拒绝已落地（原 isinstance 守卫，自 2f29faa4e7a8 起收敛进共享归一 _normalize_int_config_value），与 config.get_admin_config 同口径。
+    return _normalize_int_config_value(
+        cfg_threshold,
+        "agents.merge_breaker_threshold",
+        2,
+        getattr(pm, "logger", None),
+        min=1,
+    )
 
 
 def _max_retries(pm) -> int:
     """``agents.max_retries`` 读取与归一（三条车道单一落点）。
 
-    归一规则（code-review item 8b26fd7980ce）：同一配置键的归一曾在三条
-    车道分裂——queue.py 两处读取点 int 归一后追加 ``max(..., 1)`` 下限，
-    本文件 ``_fallback_after_repair`` 与 fast_track.py 两处读取点均无下限，
-    配置写 0 时 full 车道按 1 生效（仍允许一轮重试）、fast-track/repair
-    按 0 生效（首次失败即冻结转人工），同键跨车道语义互相矛盾。收敛于此：
+    ``_get_config`` 读取（异常按 None 降级——消费点全在失败收尾链，异常
+    会打断 update_spec/冻结收尾，不外溢，74317ab4a77a）后交
+    ``_normalize_int_config_value`` 单点归一：bool/小数/非数字/负值一律
+    WARNING 留痕回缺省 3；**无下限**——0 的语义以 fast_track 既有注释为
+    准（0=不自动重试为合法语义，首次失败即冻结转人工），``max(..., 1)``
+    会违背之，故 ``min`` 不传、负值按非法回退缺省（此前负数被静默采信、
+    无留痕，2f29faa4e7a8 边界口径单点收口）。
 
-    - None 判空回缺省 3，而非 ``or`` 兜底（合法配置 0 不被吞成缺省，
-      code-review item c54ffbef69c5）；
-    - 解析异常回退缺省 3（字符串/null 配置裸用于 ``retries >= max_r``
-      比较抛 TypeError，code-review item 74317ab4a77a；``except Exception``
-      宽口径沿用原 queue.py 通用失败分支与本文件 fallback 的防御姿态——
-      本读取器的消费点全在失败收尾链，异常会打断 update_spec/冻结收尾）；
-    - **下限策略：无下限**——0 的语义以 fast_track.py 既有注释为准
-      （0=不自动重试为合法语义，首次失败即冻结转人工），``max(..., 1)``
-      会违背之。归一规则调整只改此处，三条车道共用（queue/fast_track
-      经模块顶部导入本读取器，与 ``_merge_breaker_threshold`` 同型）。
+    queue/fast_track 经模块顶部导入本读取器（8b26fd7980ce 收敛三车道
+    同键跨车道下限语义分裂），归一规则调整只改共享归一函数。
     """
     try:
         cfg_max_r = pm._get_config("agents.max_retries", 3)
     except Exception:  # noqa: BLE001 —— 失败收尾链防御，回退缺省不抛穿
         cfg_max_r = None
-    if cfg_max_r is None:
-        return 3
-    # bool 显式拒绝（code-review item 637ed7beaee1，与 _merge_breaker_threshold
-    # 同族归一）：裸 int() 把 true/false 截成 1/0 静默生效——true 使重试上限
-    # 变 1（首次失败即冻结转人工）、false 得 0，配置写坏被无声采信且无留痕。
-    if isinstance(cfg_max_r, bool):
-        logger = getattr(pm, "logger", None)
-        if logger is not None:
-            logger.warning(
-                "pm_engine",
-                "配置 agents.max_retries 非法（布尔不合法），"
-                f"回退缺省 3: {cfg_max_r!r}",
-            )
-        return 3
-    # 小数显式拒绝（code-review item b5544dd00582，对齐 _merge_breaker_threshold
-    # 的 float 分支）：裸 int() 把 2.5 截成 2 静默采信且无留痕，而字符串
-    # "2.5" 走下方异常分支回退缺省 3——同值不同型行为分裂。整值浮点
-    # （2.0）按整数接受，非整值 WARNING 留痕回退缺省 3。
-    if isinstance(cfg_max_r, float):
-        if cfg_max_r.is_integer():
-            return int(cfg_max_r)
-        logger = getattr(pm, "logger", None)
-        if logger is not None:
-            logger.warning(
-                "pm_engine",
-                "配置 agents.max_retries 非法（应为整数，小数不合法），"
-                f"回退缺省 3: {cfg_max_r!r}",
-            )
-        return 3
-    try:
-        return int(cfg_max_r)
-    except Exception:  # noqa: BLE001 —— 同上
-        # 字符串等 int() 失败（如配置写坏成 "abc"）同样 WARNING 留痕，
-        # 与上方布尔/浮点分支及 _merge_breaker_threshold 的 illegal 分支同款
-        # （code-review item db36b8d8fa7a：静默回退使排障无迹可寻）。
-        logger = getattr(pm, "logger", None)
-        if logger is not None:
-            logger.warning(
-                "pm_engine",
-                "配置 agents.max_retries 非法（应为整数，非整数值不合法），"
-                f"回退缺省 3: {cfg_max_r!r}",
-            )
-        return 3
+    return _normalize_int_config_value(
+        cfg_max_r, "agents.max_retries", 3, getattr(pm, "logger", None)
+    )
 
 
 def _read_repair_round(pm, spec_name) -> int:
@@ -1011,6 +1007,20 @@ class PRepairLaneMixin:
                 "pm_engine",
                 f"repair git 事实查询异常（fail-open 防误拦）'{spec_name}': {e}",
             )
+        # 返回值形态守卫（code-review item acede72c9e5f）：实现/测试替身不抛
+        # 异常但返回 None/非 dict（签名标注 -> dict 的契约外形态）时，下方
+        # facts.get 会抛 AttributeError、被 _run_repair_worker 外层兜底成
+        # _fallback_after_repair 整轮全新重派——恰把已成功的 repair 放大。
+        # 与同文件 merge_info 各字段 getattr 守卫同款防御口径：非 dict 按
+        # 无事实处理（空 dict → 无未合并/MERGE_HEAD → 复核通过，fail-open），
+        # 不放大重派；未完成的 repair 仍由 re-merge-back 真实执行兜底。
+        if not isinstance(facts, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair git 事实查询返回非 dict（fail-open 防误拦）"
+                f"'{spec_name}': {type(facts).__name__}",
+            )
+            facts = {}
         unmerged = list(facts.get("unmerged") or [])
         merge_head = bool(facts.get("merge_head"))
         # ── 冲突残留 / MERGE_HEAD 是硬事实，任一出问题即判未完成 ──
