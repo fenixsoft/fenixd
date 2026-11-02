@@ -205,6 +205,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Fenix CLI 工具集（人工操作子命令）",
     )
+    parser.add_argument(
+        "--project",
+        "-p",
+        default=None,
+        help="项目根目录（默认当前目录，子命令前后位置均可）",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_promote = subparsers.add_parser(
@@ -212,11 +218,14 @@ def main():
         help="晋升 drafted SPEC → ready/reviewing（按评审判定分流，软化+lint+transition）",
     )
     p_promote.add_argument("spec", help="要晋升的 SPEC 名称")
+    # --project 同时挂在顶层与各子 parser 上，使其置于子命令之前或之后均可；
+    # 子 parser 侧用 SUPPRESS 默认值，避免未传参时以 None 覆盖顶层已解析值
+    # （与 fenix_spec.py 同构）。
     p_promote.add_argument(
         "--project",
         "-p",
-        default=None,
-        help="项目根目录（默认当前目录）",
+        default=argparse.SUPPRESS,
+        help="项目根目录（等价于顶层 --project，子命令前后位置均可）",
     )
 
     p_review = subparsers.add_parser(
@@ -227,8 +236,8 @@ def main():
     p_review.add_argument(
         "--project",
         "-p",
-        default=None,
-        help="项目根目录（默认当前目录，挂在 review 子解析器下）",
+        default=argparse.SUPPRESS,
+        help="项目根目录（等价于顶层 --project，子命令前后位置均可）",
     )
 
     p_reflow = subparsers.add_parser(
@@ -239,8 +248,8 @@ def main():
     p_reflow.add_argument(
         "--project",
         "-p",
-        default=None,
-        help="项目根目录（默认当前目录）",
+        default=argparse.SUPPRESS,
+        help="项目根目录（等价于顶层 --project，子命令前后位置均可）",
     )
 
     p_activate = subparsers.add_parser(
@@ -251,8 +260,8 @@ def main():
     p_activate.add_argument(
         "--project",
         "-p",
-        default=None,
-        help="项目根目录（默认当前目录）",
+        default=argparse.SUPPRESS,
+        help="项目根目录（等价于顶层 --project，子命令前后位置均可）",
     )
 
     args = parser.parse_args()
