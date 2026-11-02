@@ -443,21 +443,12 @@ class FFastTrackMixin:
                 merged = self._reconcile_and_merge(spec_name, result)
                 if not merged:
                     return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
-                try:
-                    self._pm._write_impl_result_snapshot(spec_name, ft_result)
-                except Exception as e:
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"fast-track 确认型 no-op impl-result 快照写入失败 "
-                        f"'{spec_name}'（非阻塞）: {e}",
-                    )
-                self._pm._cleanup_shared_result_file(spec_name)
-                if verification.get("verdict") == "bug-found":
-                    # 与正常成功路径同语义（zero-change no-op 判 bug-found 不得
-                    # 直推 verified）：升级完整模式补独立验证/修复。
-                    self._escalate_to_full_mode(spec_name, result, verification)
-                    return
-                self._fast_track_advance_to_verified(spec_name, result)
+                # merge 后收尾与主成功路径共用同一段（code-review item
+                # af70282d2f51）：快照/清共享文件/bug-found 分岔/verified 推进。
+                self._fast_track_finalize_after_merge(
+                    spec_name, result, ft_result, verification,
+                    "fast-track 确认型 no-op",
+                )
                 return
             self._handle_fast_track_zero_change(spec_name, result)
             return
@@ -529,35 +520,13 @@ class FFastTrackMixin:
         merged = self._reconcile_and_merge(spec_name, result)
         if not merged:
             return
-
-        # ── impl-result per-spec 快照（fast-track 车道与 full 车道同语义）──
-        # merge 成功即快照，供 verified→done 门禁 _task_completion_blocker 读取。
-        # fast-track 的 verified→done 虽与本收口同周期同步执行，但 spec 可因门禁
-        # 拦截（未勾任务）滞留 verified 跨周期——此窗口内共享文件
-        # .fenix/.fenix-run-result.json 会被其它 spec 成功覆盖，无快照则门禁
-        # fail-closed 误报「run 证据缺失」（2026-09-10 add-planready-artifact-gate
-        # 实证）。快照写失败仅 WARNING 不阻塞（fail-open，门禁 fail-closed 兜底）；
-        # 重派后新成功原子覆盖旧快照（幂等）。
-        try:
-            self._pm._write_impl_result_snapshot(spec_name, ft_result)
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"fast-track impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
-            )
-        # ── 消费后清理共享结果文件（fix-fasttrack-resultfile-missing-redispatch D4）──
-        # 本次采信消费 + 快照落盘之后删除主树共享 .fenix/.fenix-run-result.json
-        # （仅当 stamp 严格匹配本 spec 即正是本文件被消费时删除），避免已消费
-        # 残留跨 spec 存留对后续死亡判定/读侧的误拦与噪声。删除失败仅 WARNING
-        # 不阻塞（fail-open，残留由 stamp 严格校验兜底拒绝）。
-        self._pm._cleanup_shared_result_file(spec_name)
-
-        if verification.get("verdict") == "bug-found":
-            self._escalate_to_full_mode(spec_name, result, verification)
-            return
-
-        # ── verified → implemented → testing → verified → _on_spec_verified ──
-        self._fast_track_advance_to_verified(spec_name, result)
+        # merge 后收尾（快照 + 清共享文件 + bug-found 分岔 + verified 推进）与
+        # 零变更哨确认型 no-op 分支共用同一段（code-review item af70282d2f51，
+        # 仿 _fast_track_finalize_after_testing 先例——禁止复制粘贴状态推进
+        # 序列，清零点/收尾字段集漂移即事故）。
+        self._fast_track_finalize_after_merge(
+            spec_name, result, ft_result, verification, "fast-track"
+        )
 
     def _fast_track_honest_exit_converge(
         self, spec_name: str, result, ft_result: dict, honest_exit_gap: list
@@ -581,16 +550,13 @@ class FFastTrackMixin:
                 "降级完整模式补独立验证",
             },
         )
-        # impl-result per-spec 快照 + 共享结果文件清理（与其余成功收口同语义）
-        try:
-            self._pm._write_impl_result_snapshot(spec_name, ft_result)
-        except Exception as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"fast-track 诚实退出收敛 impl-result 快照写入失败 "
-                f"'{spec_name}'（非阻塞）: {e}",
-            )
-        self._pm._cleanup_shared_result_file(spec_name)
+        # impl-result per-spec 快照 + 共享结果文件清理（与其余成功收口同语义，
+        # code-review item af70282d2f51 收敛共用段；本收敛尾部是 enqueue
+        # verifier 且 merge 后有 mode 改写/原因落盘插入，与成功收口的
+        # bug-found 分岔 + verified 推进差异大，故只收敛快照+清理两步）
+        self._fast_track_snapshot_and_cleanup(
+            spec_name, ft_result, "fast-track 诚实退出收敛"
+        )
         self._enqueue(spec_name, "verifier")
         self._pm.logger.warning(
             "pm_engine",
@@ -598,6 +564,61 @@ class FFastTrackMixin:
             f"申报 {honest_exit_gap} —— 降级完整模式，入队 verifier 补独立验证",
         )
 
+    def _fast_track_snapshot_and_cleanup(
+        self, spec_name: str, ft_result: dict, warn_prefix: str
+    ) -> None:
+        """merge 成功收口共用段：impl-result per-spec 快照落盘 + 共享结果文件清理。
+
+        fast-track 车道与 full 车道同语义。merge 成功即快照，供 verified→done
+        门禁 ``_task_completion_blocker`` 读取：fast-track 的 verified→done 虽与
+        收口同周期同步执行，但 spec 可因门禁拦截（未勾任务）滞留 verified 跨
+        周期——此窗口内共享文件 ``.fenix/.fenix-run-result.json`` 会被其它 spec
+        成功覆盖，无快照则门禁 fail-closed 误报「run 证据缺失」（2026-09-10
+        add-planready-artifact-gate 实证）。快照写失败仅 WARNING 不阻塞
+        （fail-open，门禁 fail-closed 兜底）；重派后新成功原子覆盖旧快照（幂等）。
+        清理（fix-fasttrack-resultfile-missing-redispatch D4）：本次采信消费 +
+        快照落盘之后删除主树共享 ``.fenix/.fenix-run-result.json``（仅当 stamp
+        严格匹配本 spec 即正是本文件被消费时删除），避免已消费残留跨 spec 存留
+        对后续死亡判定/读侧的误拦与噪声；删除失败仅 WARNING 不阻塞（fail-open，
+        残留由 stamp 严格校验兜底拒绝）。
+
+        ``warn_prefix`` 参数化快照写失败的 WARNING 文案前缀（各收口点现状文案
+        不同，收敛不改写文案——code-review item af70282d2f51）。
+        """
+        try:
+            self._pm._write_impl_result_snapshot(spec_name, ft_result)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"{warn_prefix} impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm._cleanup_shared_result_file(spec_name)
+
+    def _fast_track_finalize_after_merge(
+        self,
+        spec_name: str,
+        result,
+        ft_result: dict,
+        verification: dict,
+        warn_prefix: str,
+    ) -> None:
+        """merge 成功后的统一收尾：快照 + 清共享文件 + bug-found 分岔 + verified 推进。
+
+        自主成功路径与零变更哨确认型 no-op 分支抽取的共用收口段（code-review
+        item af70282d2f51，仿 ``_fast_track_finalize_after_testing`` 先例——
+        **禁止**复制粘贴状态推进序列）。调用前提：``_reconcile_and_merge`` 已
+        返回 True（失败时调用点必须早退——否则会继续走 verified 推进把 error
+        踩成 None 伪 verified）、``_hard_check_fast_track`` 已产出 verification
+        （bug-found 分岔依据）。
+        """
+        self._fast_track_snapshot_and_cleanup(spec_name, ft_result, warn_prefix)
+        if verification.get("verdict") == "bug-found":
+            # 与确认型 no-op 分支同语义（判 bug-found 不得直推 verified）：
+            # 升级完整模式补独立验证/修复。
+            self._escalate_to_full_mode(spec_name, result, verification)
+            return
+        # ── verified → implemented → testing → verified → _on_spec_verified ──
+        self._fast_track_advance_to_verified(spec_name, result)
 
     def _harvest_fast_track_worktree(self, spec_name: str, result) -> None:
         """fast-track 异常兜底（verify-process-lifecycle D3）：回收 dev-server。
@@ -1506,8 +1527,10 @@ class FFastTrackMixin:
         spec_name: str,
         result,
         verification: dict,
+        error_text: str | None = None,
+        log_message: str | None = None,
     ) -> None:
-        """fast-track verdict=bug-found 时升级为完整模式（add-fast-track-mode D5）。
+        """fast-track 升级为完整模式（add-fast-track-mode D5）。
 
         - mode 改写为 full（同步 .spec.yaml）
         - spec 保持 implemented，派发完整模式 verifier 流水线
@@ -1518,36 +1541,50 @@ class FFastTrackMixin:
         分支）本出口仅改写 mode + enqueue verifier，对 branch/implementer_run/
         _recovery_resume 均**不触碰**——实现成果保留、不新增清锚点、不消费
         恢复标记（spec 已 implemented，恢复链不再针对本分支续做）。
+
+        error_text / log_message（code-review item b27e786a3d07）：触发因非
+        bug-found 的复用点（``_handle_fast_track_missing_result_merge`` 结果
+        文件缺失升级）以参数覆盖 error 与 WARNING 文案——升级序列收敛为一份，
+        文案仍由各调用点自持；缺省 None 时维持 bug-found 文案拼装（此时
+        verification 的 bugs 段被消费）。
         """
         # 1. .spec.yaml 写 mode: full
         self._rewrite_fast_track_to_full(spec_name)
-        # 2. 记录升级原因
-        bugs_summary = (
-            "; ".join(
-                # 防 TypeError（code-review item 58abca526f2e）：bugs 条目是半受信
-                # agent 输出，上游 parse 只校验 bugs 是 list，不保证 description
-                # 是 str（{"description": null} 形态 None[:80] 抛 TypeError）。
-                # 调用点在 merge 成功推进 implemented 之后，异常沿 flow→worker
-                # 外层 except 转 _rollback_failed_dispatch，会把正常 bug-found
-                # 升级误成对已合并 spec 的回滚重派。
-                str(b.get("description") or "")[:80]
-                for b in (verification.get("bugs") or [])
-                if isinstance(b, dict)
+        # 2. 记录升级原因（error_text 覆盖时跳过 bug-found 文案拼装——触发因
+        # 非 bug 的复用点与 bugs 无关）
+        if error_text is None:
+            bugs_summary = (
+                "; ".join(
+                    # 防 TypeError（code-review item 58abca526f2e）：bugs 条目是半受信
+                    # agent 输出，上游 parse 只校验 bugs 是 list，不保证 description
+                    # 是 str（{"description": null} 形态 None[:80] 抛 TypeError）。
+                    # 调用点在 merge 成功推进 implemented 之后，异常沿 flow→worker
+                    # 外层 except 转 _rollback_failed_dispatch，会把正常 bug-found
+                    # 升级误成对已合并 spec 的回滚重派。
+                    str(b.get("description") or "")[:80]
+                    for b in (verification.get("bugs") or [])
+                    if isinstance(b, dict)
+                )
+                or "fast-track 判定 bug-found"
             )
-            or "fast-track 判定 bug-found"
-        )
+            error_payload = f"fast-track 升级完整模式：{bugs_summary[:200]}"
+        else:
+            error_payload = error_text
         self._pm.state_machine.update_spec(
             spec_name,
             {
-                "error": f"fast-track 升级完整模式：{bugs_summary[:200]}",
+                "error": error_payload,
             },
         )
         # 3. 派发完整模式 verifier 流水线
         self._enqueue(spec_name, "verifier")
         self._pm.logger.warning(
             "pm_engine",
-            f"fast-track 升级完整模式 '{spec_name}'：verdict=bug-found，"
-            f"实现保留，完整模式 verifier 流水线接管",
+            log_message
+            or (
+                f"fast-track 升级完整模式 '{spec_name}'：verdict=bug-found，"
+                f"实现保留，完整模式 verifier 流水线接管"
+            ),
         )
 
     def _handle_fast_track_missing_result_merge(
@@ -1561,7 +1598,8 @@ class FFastTrackMixin:
         不回退预算、不 reset ready。merge 复用 ``_reconcile_and_merge``（失败时
         其内部已处置：保留 worktree + 重派/熔断，此处必须早退）；合并成功后改写
         .spec.yaml mode→full 并 enqueue 完整模式 verifier 补齐缺失的 verdict
-        （复用 ``_escalate_to_full_mode`` 的 mode-改写 + enqueue 语义），后续走
+        （直接复用 ``_escalate_to_full_mode`` 升级序列，error/日志文案以参数
+        覆盖，code-review item b27e786a3d07），后续走
         既有 verified→done 门。缺失的逐场景 fail-closed 校验整体移交完整模式
         verifier 的既有门（verify.yaml 契约 + verdict evidence），不损失校验强度。
         """
@@ -1569,21 +1607,20 @@ class FFastTrackMixin:
         merged = self._reconcile_and_merge(spec_name, result)
         if not merged:
             return
-        # 改写 mode=full + enqueue 完整模式 verifier（复用升级语义，触发因不同）
-        self._rewrite_fast_track_to_full(spec_name)
-        # 原因写入 spec entry（供人工审计：为何从 fast-track 转完整模式）
-        self._pm.state_machine.update_spec(
+        # 改写 mode=full + 原因写入 spec entry（供人工审计：为何从 fast-track
+        # 转完整模式）+ enqueue 完整模式 verifier：复用 _escalate_to_full_mode
+        # 升级序列（触发因不同，error/日志文案以参数覆盖，文案现状各自维护）；
+        # 无 verification 场景传空 dict 占位（error_text 已覆盖，不消费 bug 拼装）。
+        self._escalate_to_full_mode(
             spec_name,
-            {
-                "error": "结果文件缺失，分支已提交，升级补验证",
-            },
-        )
-        self._enqueue(spec_name, "verifier")
-        self._pm.logger.warning(
-            "pm_engine",
-            f"fast-track 结果文件缺失、分支已提交 '{spec_name}'：merge 完成，"
-            f"升级完整模式 verifier 补验证（不豁免预算、不 reset ready），"
-            f"后续走既有 verified→done 门",
+            result,
+            {},
+            error_text="结果文件缺失，分支已提交，升级补验证",
+            log_message=(
+                f"fast-track 结果文件缺失、分支已提交 '{spec_name}'：merge 完成，"
+                f"升级完整模式 verifier 补验证（不豁免预算、不 reset ready），"
+                f"后续走既有 verified→done 门"
+            ),
         )
 
     def _handle_fast_track_failure(
