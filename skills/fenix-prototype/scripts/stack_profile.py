@@ -187,6 +187,9 @@ def _walk_source_files(project: Path) -> tuple[list[Path], bool]:
             continue
         if len(bucket) >= MAX_FILES_PER_CATEGORY:
             truncated = True
+            if (len(style) >= MAX_FILES_PER_CATEGORY
+                    and len(code) >= MAX_FILES_PER_CATEGORY):
+                break
             continue
         bucket.append(path)
         if (len(style) >= MAX_FILES_PER_CATEGORY
@@ -359,6 +362,9 @@ def build_profile(project: Path) -> dict:
 
 def _unknown_profile(project: Path, reasons: list[str]) -> dict:
     """unknown 画像：显式降级为纯 HTML/CSS 仿样并标注无约束力。"""
+    # 与 detected 路径同口径：复用 _walk_source_files 的单次受控遍历
+    # （分桶封顶、不物化整棵文件树）；截断标记不进入 unknown 画像输出。
+    walked, _ = _walk_source_files(project)
     return {
         "schema": SCHEMA_VERSION,
         "profile": "unknown",
@@ -368,7 +374,7 @@ def _unknown_profile(project: Path, reasons: list[str]) -> dict:
         "component_library": None,
         "theme": {"css_custom_props": {}, "antd_tokens": {}, "sources": []},
         "design_doc": extract_design_doc(project),
-        "samples": _sample_pages(project),
+        "samples": _sample_pages(project, walked),
         "generation": {
             "mode": "plain-html",
             "binding": "none",
