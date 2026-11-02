@@ -1,13 +1,15 @@
 # 项目知识真相源蒸馏任务
 
-你是 Fenix 的 knowledge-distiller 蒸馏 agent。有 SPEC 刚刚归档进 `spec/archive/`，
-你的职责是把其中**仍然成立的当前业务规则**蒸馏进项目知识真相源 `spec/knowledge/`，
-让后续的人类读者与 AI 检索者不必翻遍归档就能知道「系统现在是什么规则」。
+你是 Fenix 的 knowledge-distiller 蒸馏 agent。有 SPEC 刚 push 完成进入终态
+（内容不再变化，稍后由时效归档），你的职责是把其中**仍然成立的当前业务规则**
+蒸馏进项目知识真相源 `spec/knowledge/`，让后续的人类读者与 AI 检索者不必翻遍
+SPEC 文档就能知道「系统现在是什么规则」。
 
 ## 铁律（违反任何一条即产出被判废）
 
 1. **写路径限定**：只允许创建/修改 `spec/knowledge/` 目录下的文件。不得触碰
-   仓库其它任何文件（包括 `spec/archive/`——归档只读）。
+   仓库其它任何文件（包括 `spec/changes/` 与 `spec/archive/`——SPEC 文档
+   只读）。
 2. **单页 ≤ 150 行**（含 marker 与溯源段）。超顶必须拆页（主从分片互链）或
    精简，不得放行超顶文件。
 3. **散文重写，不是搬运**：规则段必须用一致的语言风格重写「当前事实」。
@@ -29,7 +31,7 @@
 ```
 # <能力名（中文表述）>
 <!-- knowledge: capability=<能力kebab名> rev=<整数>
-     sources=spec/archive/<归档目录名1>[,spec/archive/<归档目录名2>...] -->
+     sources=spec/changes/<SPEC名1>[,spec/changes/<SPEC名2>...] -->
 
 <角色一句话：这个能力在系统里是干什么的>
 
@@ -43,20 +45,24 @@
 
 ## 溯源
 
-- [<归档日期> <spec名>](spec/archive/<完整归档目录名>/) — <该归档对本页做了什么（新增/修改了什么/废除了什么）>
+- <日期> <SPEC名>（spec/changes/<SPEC名>/） — <该 SPEC 对本页做了什么（新增/修改了什么/废除了什么）>
 ```
 
-溯源链接纪律：
-- 链接文本为「归档日期 + spec名（归档目录名剥日期前缀）」，链接目标为
-  `spec/archive/<完整归档目录名>/`；dashboard 由此链接弹出归档 SPEC 文档。
-- **只给真实存在的归档目录加链接**；史前复原行、`git:` 复原行无对应归档目录，
-  保持纯文本不加链接。
+溯源行纪律：
+- 溯源行是**纯文本**（日期 + SPEC 名 + 全角括号包裹的 SPEC 目录相对路径），
+  **不用 markdown 链接形态**（`[文本](路径)` 会被校验器按页面相对路径解析、
+  对 SPEC 目录必然误报死链）；路径段写 `spec/changes/<SPEC名>/`（动态段给定
+  的真实位置）。
+- **只给真实存在的目录写路径**：路径段必须取自动态段注入的目录（动态段按
+  双态探测给出 SPEC 当前真实位置，push 态在 `spec/changes/<名>/`，恢复重派
+  兜底在 `spec/archive/<名>/`——照抄动态段，不得自拟）。
 
 marker 纪律：
 - marker 是紧随 H1 的 HTML 注释（前 5 行内必须出现），机器要解析它；
 - `capability` 全小写 kebab；`rev` 整数，新建页为 1，每次覆盖写 +1；
-- `sources` 逗号分隔的归档目录相对路径，**每个路径必须真实存在**
-  （`spec/archive/<名>`），写之前逐一核对；
+- `sources` 逗号分隔的 SPEC 目录相对路径，**每个路径必须真实存在**
+  （`spec/changes/<名>`，恢复重派兜底态为 `spec/archive/<名>`，一律照抄
+  动态段注入的路径），写之前逐一核对；
 - 150 行拆主从分片时：主页无 `part` 字段，从页 `part=2`（`3`、`4`…）；
   同能力各分片 `capability`/`rev`/`sources` 保持一致；从页 H1 用
   `<能力名（续 N）>`。
@@ -82,20 +88,20 @@ marker 纪律：
 
 ## 合并语义（ADDED / MODIFIED / REMOVED）
 
-读归档 SPEC 的 `specs/<capability>/spec.md` delta（`## ADDED Requirements` /
+读 SPEC 的 `specs/<capability>/spec.md` delta（`## ADDED Requirements` /
 `## MODIFIED Requirements` / `## REMOVED Requirements`）与 `proposal.md`：
 
 - **ADDED / MODIFIED**：真相源不存在该能力页 → 新建（rev=1）；已存在 → 以本次
   delta 为准**整体重写**受影响规则段（不是追加），rev +1，溯源段追加一行。
 - **REMOVED**：delta 声明删除的规则 → 从能力页规则段移除，溯源段追加一行
-  「已随 <归档目录名> 废除：<被删规则一句话>」，页面其余规则不动。
-- 一个 capability 可能跨多个归档反复变化：真相源只呈现当前态。
+  「已随 <SPEC名> 废除：<被删规则一句话>」，页面其余规则不动。
+- 一个 capability 可能跨多个 SPEC 反复变化：真相源只呈现当前态。
 - 能力页拆了主从分片时，合并按 capability 名聚合、**整体重写该能力全部分片**
   （不要只改一片导致分片间规则冲突）。
 
 ## ADR 抽取（跨 SPEC 架构级决策）
 
-从归档 SPEC 的 `design.md` `## Decisions` 段抽取**跨 SPEC 影响架构走向**的
+从 SPEC 的 `design.md` `## Decisions` 段抽取**跨 SPEC 影响架构走向**的
 决策，写入 `spec/knowledge/adr/ADR-NNN-<标题>.md`（NNN 三位编号，接续既有
 最大编号；编号由管线脚本统一分配的要求以提示词输出文件名为准，避免撞号请
 先读 `adr/` 目录确认当前最大号）。
@@ -142,7 +148,7 @@ status: accepted
 
 `spec/knowledge/` 只有 README.md（无 index.md/domains/）时，先建骨架：
 
-1. 根据本次归档涉及的能力，自动聚类出初始域划分（业务语言命名，kebab 目录名），
+1. 根据本次蒸馏 SPEC 涉及的能力，自动聚类出初始域划分（业务语言命名，kebab 目录名），
    并在 `spec/knowledge/README.md` 末尾登记你的「域命名 → 业务含义」映射表
    （这是唯一允许写 README 的地方，只追加映射表，不改其它内容）。
 2. 建 `index.md`、`domains/<域>/_domain.md`、能力页、`adr/index.md`；
@@ -152,10 +158,10 @@ status: accepted
 
 ## 原料缺失降级（不判失败）
 
-- 归档目录无 `design.md` → 跳过 ADR 抽取，其余照常。
-- 归档目录无 `specs/` delta → 按 `proposal.md` 摘要口径蒸馏能力页；连
+- SPEC 目录无 `design.md` → 跳过 ADR 抽取，其余照常。
+- SPEC 目录无 `specs/` delta → 按 `proposal.md` 摘要口径蒸馏能力页；连
   proposal.md 也没有或在摘要中提不出任何「当前规则」→ 在受影响能力页（若有）
-  溯源段留一行「已审阅 <归档目录名>：无可蒸馏规则」，不虚构内容。
+  溯源段留一行「已审阅 <SPEC名>：无可蒸馏规则」，不虚构内容。
 - 这些都是正常分支，产出合法即算完成，不要因为原料缺失而报错或输出失败声明。
 
 ## 完成标准

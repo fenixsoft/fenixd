@@ -722,3 +722,88 @@ class TestRetryLedgerAge(DistillResumeTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── move-distill-trigger-to-push 4.1：恢复重派蒸馏源双态 ────────────────
+
+
+class TestRecoverPendingDoubleState(DistillResumeTestBase):
+    """recover_pending 的蒸馏源目录双态（push 触发时代）。
+
+    - push 态（SPEC 仍在 spec/changes/，push 触发的失败批重启恢复）：门控放行，
+      prompt 指向 changes/ 绝对路径；
+    - 归档态（仅 archive/ 存在，软删除/时效归档兜底）：行为不变，prompt 兜底
+      指归档路径；
+    - 双缺（两态均无该 SPEC 目录）：恢复跳过不复活，reason 字面量原样入日志。
+    """
+
+    N_PUSH = "changes-spec"  # push 态 SPEC（只在 spec/changes/，不在 archive/）
+
+    def _seed_ledger(self, entries):
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        kn._write_pending_ledger(self.root, entries)
+
+    def _make_changes_dir(self, name):
+        (self.root / "spec" / "changes" / name).mkdir(parents=True, exist_ok=True)
+
+    def test_recover_push_state_batch_dispatches_with_changes_path(self):
+        self._make_changes_dir(self.N_PUSH)
+        self._seed_ledger([{"names": [self.N_PUSH], "queued_at": TS}])
+        spawn = _GateSpawn()
+        mgr = DistillManager(spawn=spawn)
+        with mock.patch.object(kn, "_MANAGER", mgr), \
+                mock.patch.object(kn, "validate_knowledge", lambda p: []):
+            with self.assertLogs("fenixd.knowledge", level="INFO") as cm:
+                n = mgr.recover_pending(self.root)
+            self.assertEqual(n, 1)
+            self.assertTrue(
+                any("恢复重派（1 批" in o for o in cm.output), cm.output
+            )
+            self.assertTrue(self._wait_until(lambda: spawn.prompts), "prompt 未产出")
+        prompt = spawn.prompts[0]
+        self.assertIn("本次待蒸馏的 SPEC", prompt)
+        self.assertIn(
+            str(self.root / "spec" / "changes" / self.N_PUSH), prompt
+        )
+        spawn.release.set()
+        self.assertTrue(self._wait_ledger_empty(), "恢复批次完成后条目未移除")
+        self.assertTrue(self._wait_workers_done(mgr))
+
+    def test_recover_archive_state_batch_prompt_falls_back(self):
+        """归档态（仅 archive/ 有，setUp 建 N2）：恢复重派 prompt 兜底指归档路径。"""
+        self._seed_ledger([{"names": [N2], "queued_at": TS}])
+        spawn = _GateSpawn()
+        mgr = DistillManager(spawn=spawn)
+        with mock.patch.object(kn, "_MANAGER", mgr), \
+                mock.patch.object(kn, "validate_knowledge", lambda p: []):
+            n = mgr.recover_pending(self.root)
+            self.assertEqual(n, 1)
+            self.assertTrue(self._wait_until(lambda: spawn.prompts), "prompt 未产出")
+        self.assertIn(
+            str(self.root / "spec" / "archive" / N2), spawn.prompts[0]
+        )
+        spawn.release.set()
+        self.assertTrue(self._wait_ledger_empty())
+        self.assertTrue(self._wait_workers_done(mgr))
+
+    def test_recover_double_missing_reject_reason_literal(self):
+        """双缺（changes/ 与 archive/ 均无）→ 恢复跳过，reason 字面量原样入日志。"""
+        self._seed_ledger([
+            {"names": [N_GONE], "queued_at": TS},
+            {"names": [N3], "queued_at": TS},
+        ])
+        spawn = _GateSpawn()
+        mgr = DistillManager(spawn=spawn)
+        with mock.patch.object(kn, "_MANAGER", mgr), \
+                mock.patch.object(kn, "validate_knowledge", lambda p: []):
+            with self.assertLogs("fenixd.knowledge", level="INFO") as cm:
+                n = mgr.recover_pending(self.root)
+            self.assertEqual(n, 1)  # 仅 N3（归档在盘）放行
+            skip = [o for o in cm.output if "恢复跳过" in o]
+            self.assertTrue(skip, cm.output)
+            self.assertIn("archive-dir-missing", " ".join(skip))
+            ledger = self._wait_ledger_contains(N3)
+            self.assertEqual([tuple(b["names"]) for b in ledger], [(N3,)])
+            spawn.release.set()
+            self.assertTrue(self._wait_ledger_empty())
+        self.assertTrue(self._wait_workers_done(mgr))

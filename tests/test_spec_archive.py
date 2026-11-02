@@ -687,3 +687,91 @@ class TestArchiveAutoCommit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 归档溯源改写 pass（move-distill-trigger-to-push 3.2/3.4） ─────────────
+
+class TestArchiveKnowledgeRewrite(unittest.TestCase):
+    """归档移动成功后、提交前的知识页溯源改写：改写文件与归档两侧并入同一
+    [fenix] archive: 提交；软删除命名（<名>-<Unix秒>）按实际归档目录名注入。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        self.git_env = {**os.environ,
+                        "GIT_CONFIG_GLOBAL": "/dev/null",
+                        "GIT_CONFIG_SYSTEM": "/dev/null"}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _git(self, *args) -> str:
+        r = subprocess.run(["git", "-C", str(self.root), *args],
+                           env=self.git_env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, f"git {args} failed: {r.stderr}")
+        return r.stdout
+
+    def _make_git_project_with_knowledge(self, name="spec-k"):
+        """git 项目 + push 态知识页（sources/溯源行指向 spec/changes/<name>）。"""
+        _make_project(self.root, {name: {"status": "pushed"}})
+        (self.root / "spec" / "changes" / name / "tasks.md").write_text("# T", encoding="utf-8")
+        page = self.root / "spec" / "knowledge" / "domains" / "d" / "cap.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(
+            "# 拣选\n\n"
+            "<!-- knowledge: capability=cap rev=1\n"
+            f"     sources=spec/changes/{name} -->\n\n"
+            "## 溯源\n\n"
+            f"- {date.today().isoformat()} {name}（spec/changes/{name}/） — 新建\n",
+            encoding="utf-8",
+        )
+        self._git("init", "-q")
+        self._git("config", "user.name", "test")
+        self._git("config", "user.email", "test@example.com")
+        self._git("add", "--", ".")
+        self._git("commit", "-q", "-m", "init")
+
+    def test_archive_spec_rewrites_knowledge_links_same_commit(self):
+        from core.knowledge import validate_knowledge
+
+        name = "spec-k"
+        self._make_git_project_with_knowledge(name)
+        result = archive_spec(self.root, name)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["committed"], result)
+        arch = f"{date.today().isoformat()}-{name}"
+        page = self.root / "spec" / "knowledge" / "domains" / "d" / "cap.md"
+        text = page.read_text(encoding="utf-8")
+        self.assertIn(f"spec/archive/{arch}", text)
+        self.assertNotIn(f"spec/changes/{name}", text)
+        # 同一提交：归档侧 + 知识页
+        touched = {
+            ln.strip()
+            for ln in self._git("show", "--name-only", "--no-renames", "--format=").splitlines()
+            if ln.strip()
+        }
+        self.assertIn(f"spec/archive/{arch}/tasks.md", touched)
+        self.assertIn("spec/knowledge/domains/d/cap.md", touched)
+        # 改写后链接门零违规（两态收敛）
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_soft_delete_rewrites_with_actual_archive_name(self):
+        """软删除命名 <名>-<Unix秒>：改写按实际归档目录名注入、命名无关。"""
+        from core.dashboard.data import soft_delete_spec
+        from core.knowledge import validate_knowledge
+
+        name = "spec-sd"
+        self._make_git_project_with_knowledge(name)
+        result = soft_delete_spec(self.root, name)
+        self.assertTrue(result["archived"], result)
+        self.assertIsNone(result["error"], result)
+        self.assertTrue(result.get("committed"), result)
+        archive_path = Path(result["archive_path"])
+        self.assertTrue(archive_path.is_dir())
+        page = self.root / "spec" / "knowledge" / "domains" / "d" / "cap.md"
+        text = page.read_text(encoding="utf-8")
+        # 改写到软删除实际归档目录名（带 Unix 秒后缀）
+        self.assertIn(f"spec/archive/{archive_path.name}", text)
+        self.assertNotIn(f"spec/changes/{name}", text)
+        self.assertEqual(validate_knowledge(self.root), [])

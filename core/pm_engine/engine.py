@@ -3232,7 +3232,7 @@ class PMEngine:
             return False, str(e)
 
     # [fenix-ignore:5d8daba9a294] 推送退避域完整拆分属架构演进任务，非本批最小改动范畴；四方法与 _push_lock/推送辅助/测试打桩（tests 直接 patch engine._push_branch_best_effort 依赖 self 直呼）强耦合，迁独立组件的回归风险大于收益
-    def approve_push(self, spec_name: str) -> bool:
+    def approve_push(self, spec_name: str, distill=None) -> bool:
         """Approve and push a done SPEC (main 先行 + 分支尽力 + SHA 去重)。
 
         推送顺序（design D1）：
@@ -3246,6 +3246,18 @@ class PMEngine:
         成功后的同步直调（_on_spec_verified）与 event_bus spec_done 事件双路径
         并发进入时，第二流在锁上排队，进入后见 pushed 即幂等跳过（返回 True），
         不再双 push / 重复 project log / 触发 pushed→pushed ERROR。
+
+        知识蒸馏派发（move-distill-trigger-to-push 1.1）：done→pushed 成功转移
+        落账后单点 fail-open 派发 ``dispatch_distill``（pushed=交付确认点，蒸馏
+        紧跟交付节奏；归档侧挂载已移除，无双触发）。幂等 skip / 非 done / 退避期
+        / SPEC 不存在各早退分支在本派发点之前 return，均不派发——同一 pushed
+        生命周期至多一次触发。
+
+        Args:
+            spec_name: SPEC 名
+            distill: 蒸馏派发替身（测试隔离，仿 archive_commit 既有模式）。
+                None = 延迟导入 ``core.knowledge.dispatch_distill`` 走真实派发
+                （内部另有 knowledge.enabled 门控与 pytest 环境守卫）。
         """
         # 全临界区持锁（check-then-act 原子化）。锁内不调用任何会再次获取
         # _push_lock 的路径（approve_push 自身不可重入调用），锁范围最小化。
@@ -3382,6 +3394,25 @@ class PMEngine:
                 "pm_engine",
                 f"SPEC pushed: {spec_name} (main ok, branch={branch})",
             )
+
+            # ── 知识蒸馏派发（move-distill-trigger-to-push 1.1）──────────
+            # pushed 落账后、返回前的单点挂载（人工 fenix-approve 与
+            # _auto_approve 双路汇聚于 approve_push）。fail-open：派发任何
+            # 异常只告警，不影响本函数返回值与已落定的 pushed 状态（口径同
+            # 归档触发时代）。distill= 替身注入时绕过 pytest 守卫的语义由
+            # dispatch_distill 自身承担；延迟导入避免模块级依赖环。
+            try:
+                if distill is None:
+                    from core.knowledge import dispatch_distill
+
+                    distill = dispatch_distill
+                distill(self.project_root, spec_name)
+            except Exception as e:  # noqa: BLE001 — 派发任何异常不阻断 pushed
+                self.logger.warning(
+                    "pm_engine",
+                    f"知识蒸馏派发异常 '{spec_name}'（不阻断 pushed 终态）: "
+                    f"{type(e).__name__}: {e}",
+                )
             return True
 
     # ── 归档自动提交（archive-auto-commit）──────────────────────────

@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.knowledge import (
     KNOWLEDGE_DIR,
     DistillManager,
+    build_distill_prompt,
     parse_marker,
     validate_knowledge,
 )
@@ -179,7 +180,7 @@ class TestValidateKnowledge(KnowledgeTestBase):
             GOOD_PAGE.format(archive="1999-01-01-gone", today=date.today().isoformat()),
         )
         v = validate_knowledge(self.root)
-        self.assertTrue(any("不存在的归档目录" in x for x in v))
+        self.assertTrue(any("不存在的目录" in x for x in v))
 
     def test_over_150_lines(self):
         body = "\n".join(f"规则行 {i}" for i in range(160))
@@ -396,7 +397,7 @@ class TestValidateKnowledge(KnowledgeTestBase):
             GOOD_PAGE.format(archive="1999-01-01-gone", today=date.today().isoformat()),
         )
         v = validate_knowledge(self.root)
-        self.assertTrue(any("不存在的归档目录" in x for x in v))
+        self.assertTrue(any("不存在的目录" in x for x in v))
 
     # ── ADR ──────────────────────────────────────────────────────────
     def _commit_all(self):
@@ -672,12 +673,12 @@ class TestBackfillQueueGate(KnowledgeTestBase):
         self.assertEqual(calls, [[self._archive_name()]])
 
 
-class TestCommitArchiveMoveMount(KnowledgeTestBase):
-    """task 2.3：commit_archive_move 单点挂载（注入替身 + 既有测试隔离）。
+class TestCommitArchiveMoveNoDispatch(KnowledgeTestBase):
+    """move-distill-trigger-to-push 1.2：归档不再触发蒸馏。
 
-    fixture 复刻真实移动：spec/changes/<名>/ 已入库 → shutil.move 到
-    spec/archive/<归档名>/（setUp 建的空目录先摘掉），再调 commit_archive_move
-    ——两侧 pathspec 均有内容，提交必然成功。
+    蒸馏挂载迁至 approve_push 后：commit_archive_move 不再调用
+    dispatch_distill，返回结构保留 ``distill: None`` 键兼容既有消费方；
+    ``extra_paths``（知识页溯源改写产物）并入同一 ``[fenix] archive:`` 提交。
     """
 
     def _prepare_moved_project(self):
@@ -695,43 +696,56 @@ class TestCommitArchiveMoveMount(KnowledgeTestBase):
         self._git("commit", "-q", "-m", "init")
         shutil.move(str(changes), str(archive_path))
 
-    def test_injected_fake_receives_archive_name(self):
+    def test_distill_key_is_none_and_no_dispatch(self):
         from core.archive_commit import commit_archive_move
 
         self._prepare_moved_project()
-        got = {}
-
-        def fake_distill(proot, archived_name):
-            got["name"] = archived_name
-            return {"dispatched": True, "reason": None}
-
-        r = commit_archive_move(self.root, "demo-spec", self.root / "spec" / "archive" / self._archive_name(), distill=fake_distill)
+        r = commit_archive_move(
+            self.root, "demo-spec", self.root / "spec" / "archive" / self._archive_name()
+        )
         self.assertTrue(r["committed"])
-        self.assertEqual(got["name"], self._archive_name())
-        self.assertEqual(r["distill"], {"dispatched": True, "reason": None})
+        self.assertIsNone(r["distill"])  # 键保留（消费方兼容），恒 None
 
-    def test_distill_raise_does_not_block_commit(self):
+    def test_extra_paths_commit_in_same_archive_commit(self):
         from core.archive_commit import commit_archive_move
 
         self._prepare_moved_project()
-
-        def boom(proot, archived_name):
-            raise RuntimeError("x")
-
-        r = commit_archive_move(self.root, "demo-spec", self.root / "spec" / "archive" / self._archive_name(), distill=boom)
-        self.assertTrue(r["committed"])  # 归档提交不受蒸馏异常影响
-        self.assertFalse(r["distill"]["dispatched"])
-        self.assertIn("error", r["distill"]["reason"])
-
-    def test_existing_tests_isolated_by_pytest_guard(self):
-        """既有 tests/test_spec_archive.py 直接调用（不注入替身）→ pytest
-        环境守卫拦截真实派发，distill.reason = test-environment。"""
-        from core.archive_commit import commit_archive_move
-
-        self._prepare_moved_project()
-        r = commit_archive_move(self.root, "demo-spec", self.root / "spec" / "archive" / self._archive_name())
+        page = self.root / KNOWLEDGE_DIR / "domains" / "x" / "cap.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text("# 拣选\n", encoding="utf-8")
+        r = commit_archive_move(
+            self.root,
+            "demo-spec",
+            self.root / "spec" / "archive" / self._archive_name(),
+            extra_paths=["spec/knowledge/domains/x/cap.md"],
+        )
         self.assertTrue(r["committed"])
-        self.assertEqual(r["distill"]["reason"], "test-environment")
+        touched = {
+            ln.strip()
+            for ln in self._git("show", "--name-only", "--no-renames", "--format=").stdout.splitlines()
+            if ln.strip()
+        }
+        self.assertIn("spec/knowledge/domains/x/cap.md", touched)
+
+    def test_extra_paths_unsafe_or_missing_dropped_not_blocking(self):
+        """附加路径非法/已消失 → 剔除留痕，归档提交照常（fail-open）。"""
+        from core.archive_commit import commit_archive_move
+
+        self._prepare_moved_project()
+        r = commit_archive_move(
+            self.root,
+            "demo-spec",
+            self.root / "spec" / "archive" / self._archive_name(),
+            extra_paths=["../evil", "spec/knowledge/gone.md"],
+        )
+        self.assertTrue(r["committed"])
+        touched = {
+            ln.strip()
+            for ln in self._git("show", "--name-only", "--no-renames", "--format=").stdout.splitlines()
+            if ln.strip()
+        }
+        self.assertNotIn("../evil", touched)
+        self.assertNotIn("spec/knowledge/gone.md", touched)
 
 
 class _FakeProc:
@@ -986,3 +1000,191 @@ class TestDistillManager(KnowledgeTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDistillSourceDoubleState(KnowledgeTestBase):
+    """move-distill-trigger-to-push 2.3：蒸馏输入目录双态解析。
+
+    push 态（changes/ 存在）门控放行 + prompt 路径正确；归档态（仅 archive/
+    存在，恢复重派兜底）放行 + prompt 路径兜底；双缺拒绝 reason 保留
+    archive-dir-missing 字面量。
+    """
+
+    def _cfg(self):
+        return {"knowledge": {"enabled": True}}
+
+    def _make_changes_spec(self, name="demo-spec"):
+        (self.root / "spec" / "changes" / name).mkdir(parents=True, exist_ok=True)
+
+    def test_push_state_gate_passes_and_prompt_points_to_changes(self):
+        import shutil
+
+        # 摘掉 archive 目录，模拟 push 态（SPEC 只在 changes/）
+        shutil.rmtree(self.root / "spec" / "archive" / self._archive_name())
+        self._make_changes_spec()
+        got = {}
+
+        class Fake:
+            def dispatch(self, proot, names):
+                got["names"] = list(names)
+
+        from core.knowledge import dispatch_distill
+
+        r = dispatch_distill(
+            self.root, "demo-spec", self._cfg(), dispatcher=Fake()
+        )
+        self.assertTrue(r["dispatched"])
+        self.assertEqual(got["names"], ["demo-spec"])
+        prompt = build_distill_prompt(self.root, ["demo-spec"])
+        self.assertIn("本次待蒸馏的 SPEC", prompt)
+        self.assertIn(str(self.root / "spec" / "changes" / "demo-spec"), prompt)
+        self.assertNotIn("spec/archive/demo-spec", prompt)
+
+    def test_archive_state_fallback_gate_passes_and_prompt_fallback(self):
+        """归档态（changes/ 无、archive/ 有，恢复重派兜底）放行 + 路径兜底。"""
+        import shutil
+
+        shutil.rmtree(self.root / "spec" / "archive" / self._archive_name())
+        # setUp 重建 archive 目录（changes/ 不建）——直接用 setUp 既有目录
+        (self.root / "spec" / "archive" / self._archive_name()).mkdir(parents=True)
+        got = {}
+
+        class Fake:
+            def dispatch(self, proot, names):
+                got["names"] = list(names)
+
+        from core.knowledge import dispatch_distill
+
+        r = dispatch_distill(
+            self.root, self._archive_name(), self._cfg(), dispatcher=Fake()
+        )
+        self.assertTrue(r["dispatched"])
+        prompt = build_distill_prompt(self.root, [self._archive_name()])
+        self.assertIn(
+            str(self.root / "spec" / "archive" / self._archive_name()), prompt
+        )
+
+    def test_both_missing_rejected_with_literal_reason(self):
+        from core.knowledge import dispatch_distill
+
+        r = dispatch_distill(
+            self.root, "1999-01-01-gone", self._cfg(), dispatcher=object()
+        )
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(r["reason"], "archive-dir-missing")  # 字面量兼容消费方
+
+    def test_both_missing_batch_reason_lists_names(self):
+        from core.knowledge import _gate_distill
+
+        r = _gate_distill(
+            self.root, ["gone-a", "gone-b"], self._cfg()
+        )
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(r["reason"], "archive-dir-missing: gone-a, gone-b")
+
+
+class TestTemplateCheckerConsistency(KnowledgeTestBase):
+    """move-distill-trigger-to-push 2.3：模板契约段与 _check_links 一致性。
+
+    模板是蒸馏 agent 的唯一契约载体：溯源行保持全角括号纯文本形态、路径段
+    指 spec/changes/<名>/；不得引入 markdown 链接形态的 spec/ 路径（_check_links
+    按页面相对路径解析必然误报死链）。按模板示例写出的页面过校验零违规。
+    """
+
+    def _template(self):
+        from core.knowledge import load_distill_prompt
+
+        return load_distill_prompt()
+
+    def test_template_no_markdown_link_to_spec_paths(self):
+        """模板内不得出现 ](spec/...) markdown 链接形态（防第三种链接形态）。"""
+        import re
+
+        for m in re.finditer(r"\[[^\]]*\]\(([^)]*)\)", self._template()):
+            self.assertFalse(
+                m.group(1).startswith("spec/"),
+                f"模板引入了 markdown 链接形态的 spec 路径: {m.group(0)}",
+            )
+
+    def test_template_trace_form_is_plain_text_with_changes_path(self):
+        import re
+
+        tpl = self._template()
+        self.assertIn("spec/changes/<SPEC名>/", tpl)
+        self.assertIn("sources=spec/changes/<SPEC名1>", tpl)
+        # 溯源行纪律段要求纯文本 + 只写真实存在目录
+        self.assertIn("纯文本", tpl)
+        self.assertIn("真实存在", tpl)
+        # 模板不再教 agent 写 archive 路径（改写 pass 负责归档态迁移）
+        self.assertNotIn("](spec/archive/", tpl)
+
+    def test_page_per_template_example_passes_validate_changes_state(self):
+        """按模板溯源行示例（changes 态）写出的页面过 validate_knowledge 零违规。"""
+        name = "demo-spec"
+        (self.root / "spec" / "changes" / name).mkdir(parents=True, exist_ok=True)
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            (
+                "# 定时拣选\n\n"
+                f"<!-- knowledge: capability=scheduled-spec-pickup rev=1\n"
+                f"     sources=spec/changes/{name} -->\n\n"
+                "按周期把已完成 SPEC 拣选进归档。\n\n"
+                "## 规则\n\n- 轮询间隔 300 秒。\n\n"
+                "## 溯源\n\n"
+                f"- {date.today().isoformat()} {name}（spec/changes/{name}/） — 新建本页\n"
+            ),
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_changes_state_sources_pass_and_archive_state_unchanged(self):
+        """3.5 两态 sources：changes 态过校验；archive 态行为不变（存量锁定）。"""
+        name = "demo-spec"
+        (self.root / "spec" / "changes" / name).mkdir(parents=True, exist_ok=True)
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/d/changes-sourced.md",
+            (
+                "# 变更源能力\n\n"
+                f"<!-- knowledge: capability=changes-sourced rev=1\n"
+                f"     sources=spec/changes/{name} -->\n\n"
+                "规则一句。\n\n## 溯源\n\n"
+                f"- {date.today().isoformat()} {name}（spec/changes/{name}/） — 新建\n"
+            ),
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+        # archive 态（setUp 已建 archive/<date-demo-spec>）：既有形态零回归
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/d/archive-sourced.md",
+            GOOD_PAGE.format(archive=self._archive_name(), today=date.today().isoformat()),
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_sources_two_state_boundary_still_enforced(self):
+        """两态放宽不降防穿透强度：目录缺失与 ".." 越界照样报违规。"""
+        name = "demo-spec"
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/d/dangling-changes.md",
+            (
+                "# 悬空源\n\n"
+                "<!-- knowledge: capability=dangling-changes rev=1\n"
+                f"     sources=spec/changes/{name} -->\n\n"
+                "规则一句。\n\n## 溯源\n\n- x\n"
+            ),
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("不存在的目录" in x for x in v))
+        # changes 态 ".." 越界复核（changes/ 与 archive/ 均在盘也不放行）：
+        # demo-spec/../../../ = 项目根（changes→spec→根），elsewhere 在根下
+        (self.root / "spec" / "changes" / name).mkdir(parents=True, exist_ok=True)
+        escaped = self.root / "elsewhere"
+        escaped.mkdir(exist_ok=True)
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/d/escape-changes.md",
+            (
+                "# 越界源\n\n"
+                "<!-- knowledge: capability=escape-changes rev=1\n"
+                f"     sources=spec/changes/{name}/../../../elsewhere -->\n\n"
+                "规则一句。\n\n## 溯源\n\n- x\n"
+            ),
+        )
+        v = validate_knowledge(self.root)
+        self.assertTrue(any("越出" in x for x in v))

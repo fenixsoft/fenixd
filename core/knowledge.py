@@ -3,24 +3,32 @@
 蒸馏管线核心，三块职责：
 
 1. **确定性收尾校验** ``validate_knowledge``（非 LLM）：对 ``spec/knowledge/``
-   逐条契约对账——能力页 marker 可解析、sources 指向真实归档目录、单页
-   150 行硬顶、index/_domain/adr 链接可解析且不越界、ADR 三段式与不可变性
-   （tracked ADR 正文与 HEAD diff）、Superseded by 指向存在条目。返回违规
-   字符串列表，空列表 = 通过。
+   逐条契约对账——能力页 marker 可解析、sources 指向真实的 SPEC/归档目录
+   （两态：``spec/changes/<名>`` 或 ``spec/archive/<名>``，move-distill-
+   trigger-to-push 3.5）、单页 150 行硬顶、index/_domain/adr 链接可解析且不
+   越界、ADR 三段式与不可变性（tracked ADR 正文与 HEAD diff）、Superseded by
+   指向存在条目。返回违规字符串列表，空列表 = 通过。
 
-2. **派发入口** ``dispatch_distill``：归档移动成功后由
-   ``core/archive_commit.commit_archive_move`` 单点调用（双路径共同漏斗）。
-   ``knowledge.enabled`` 门控、归档目录存在性检查、fail-open（异常只记日志
-   与重试台账，不影响归档返回值）。测试环境（PYTEST_CURRENT_TEST）恒不
-   派发——既有单测直接调用 commit_archive_move 不得触发真实蒸馏（task 2.3
-   测试隔离；替身经 dispatcher 参数注入）。
+2. **派发入口** ``dispatch_distill``：SPEC 经 ``PmEngine.approve_push`` 成功
+   转移 done→pushed 后单点 fail-open 调用（move-distill-trigger-to-push 1.1，
+   pushed=交付确认点；归档侧挂载已迁出）。``knowledge.enabled`` 门控、蒸馏源
+   目录双态存在性检查（changes/ 优先、archive/ 兜底）、fail-open（异常只记
+   日志与重试台账，不影响调用方返回值）。测试环境（PYTEST_CURRENT_TEST）恒
+   不派发——既有单测不得触发真实蒸馏（替身经 dispatcher 参数注入）。
 
 3. **执行器** ``DistillManager``（进程内单例 + 跨进程 flock 单飞）：后台
    线程 spawn ``claude -p``（cwd 主树、注入 core/knowledge_prompts/distill.md
    提示词），run 结束跑 validate_knowledge，违规回反馈修正（≤2 轮），通过后
    pathspec 限定 ``spec/knowledge/`` 自动提交；修正轮耗尽仍违规则放弃产出
    （``git restore`` + 清理未跟踪新增，不留半成品）；失败登 todo.md 重试
-   台账。同 project 归档事件在队列中串行，积压条目合并为一次批量 run。
+   台账。同 project 蒸馏事件在队列中串行，积压条目合并为一次批量 run。
+
+4. **溯源改写器** ``rewrite_source_links_to_archive``（move-distill-trigger-
+   to-push 3.1）：归档移动成功后由归档链路（CLI / dashboard 双路径）调用，
+   把 ``spec/knowledge/`` 全页中该 SPEC 的 ``spec/changes/<名>`` 溯源引用
+   精确改写为实际归档目录 ``spec/archive/<date-name>``（带名字右边界，防前缀
+   同名误伤），改写文件并入同一 ``[fenix] archive:`` 提交——知识页链接任何
+   时刻指向真实存在的路径。
 
 写路径限定 ``spec/knowledge/`` 一个目录（design D2 爆炸半径可控）；主树直跑
 （spec 元数据层非产品代码，无 merge-back）。该写面约束除提示词承载外，run
@@ -80,6 +88,7 @@ logger = logging.getLogger("fenixd.knowledge")
 
 KNOWLEDGE_DIR = "spec/knowledge"
 ARCHIVE_DIR = "spec/archive"
+CHANGES_DIR = "spec/changes"
 PROMPT_FILE = "knowledge_prompts/distill.md"  # 相对 core/ 包
 
 # 单页 150 行硬顶（spec knowledge-atlas-directory「单页行数硬顶」）。
@@ -124,6 +133,23 @@ _DOMAIN_TABLE_HEADER = "| 能力页 | 简介 | 更新时间 |"
 _COL_COUNT_WORDS = {3: "三", 4: "四"}
 
 
+def _distill_source_dir(proot: Path, name: str) -> "Path | None":
+    """蒸馏源目录双态解析（move-distill-trigger-to-push D2）。
+
+    push 触发时代蒸馏源是 ``spec/changes/<名>``（push 时刻 SPEC 恒在
+    changes/，读到的即终态内容）；pending 台账恢复重派时 SPEC 可能已被时效
+    归档，兜底 ``spec/archive/<名>``。changes/ 优先、archive/ 兜底，两态均
+    缺返回 None（由调用方拒绝派发/展示兜底路径）。
+    """
+    changes = proot / CHANGES_DIR / name
+    if changes.is_dir():
+        return changes
+    archive = proot / ARCHIVE_DIR / name
+    if archive.is_dir():
+        return archive
+    return None
+
+
 def local_now_stamp() -> tuple:
     """当前本地时间与展示后缀（``("2026-09-30 10:33", "UTC+8")``）。
 
@@ -158,9 +184,10 @@ MAX_FIX_ROUNDS = 2
 def _in_pytest() -> bool:
     """是否处于 pytest 运行环境（测试隔离保险层）。
 
-    蒸馏派发是归档动作的自动副作用，MUST NOT 在单测里 spawn 真实 claude；
-    替身经 dispatcher 参数注入（完全绕开本守卫），本守卫只防「测试直接调
-    commit_archive_move / dispatch_distill 未注入替身」的误触发。
+    蒸馏派发是 push（approve_push）的自动副作用，MUST NOT 在单测里 spawn
+    真实 claude；替身经 dispatcher/distill 参数注入（完全绕开本守卫），本
+    守卫只防「测试直接调 approve_push / dispatch_distill 未注入替身」的
+    误触发。
     """
     return "PYTEST_CURRENT_TEST" in os.environ
 
@@ -444,25 +471,43 @@ def validate_knowledge(project_root) -> list:
             if marker is None:
                 violations.append(f"{label}: marker 字段非法（capability/rev/sources）")
                 continue
-            # sources 按 origin 分支校验（fix-knowledge-backfill-reconstruction）
+            # sources 按 origin 分支校验（fix-knowledge-backfill-reconstruction；
+            # move-distill-trigger-to-push 3.5 两态放宽）
             origin = marker.get("origin") or ORIGIN_ARCHIVE
             if origin == ORIGIN_ARCHIVE:
-                # 归档页：sources 指向真实归档目录
+                # 两态等价（move-distill-trigger-to-push 3.5）：push 触发蒸馏页
+                # 的 sources 指向 spec/changes/<名>（push 时刻 SPEC 真实位置），
+                # 归档改写 pass 之后指向 spec/archive/<date-name>——两前缀均
+                # 合法。目录存在性与越界复核保留（防穿透强度不降）：缺失目录
+                # 与 ".." 相对段越出两根目录的照样报违规。
                 for src in marker["sources"]:
-                    if not src.startswith(ARCHIVE_DIR + "/"):
-                        violations.append(f"{label}: sources 非归档路径: {src}")
+                    if not src.startswith((ARCHIVE_DIR + "/", CHANGES_DIR + "/")):
+                        violations.append(
+                            f"{label}: sources 非归档/SPEC 路径（须 "
+                            f"{ARCHIVE_DIR}/ 或 {CHANGES_DIR}/ 前缀）: {src}"
+                        )
                         continue
                     if not (proot / src).is_dir():
-                        violations.append(f"{label}: sources 指向不存在的归档目录: {src}")
+                        violations.append(f"{label}: sources 指向不存在的目录: {src}")
                         continue
                     # 归一化复核（code-review b349a3a0000a）：src 含 ".." 相对
-                    # 段时上两道检查均通过，OS 层解析后实际指向归档目录之外的
-                    # 真实目录；resolve 后复核仍在归档目录内（与本函数
-                    # _check_links 的越界判定及 _gate_distill 拒绝 ".." 同强度）。
-                    try:
-                        (proot / src).resolve().relative_to(arch_root.resolve())
-                    except ValueError:
-                        violations.append(f"{label}: sources 越出归档目录: {src}")
+                    # 段时上两道检查均通过，OS 层解析后实际指向两根目录之外的
+                    # 真实目录；resolve 后复核仍在归档或 changes 目录内（与本
+                    # 函数 _check_links 的越界判定及 _gate_distill 拒绝 ".."
+                    # 同强度）。
+                    resolved = (proot / src).resolve()
+                    in_root = False
+                    for root in (arch_root, proot / CHANGES_DIR):
+                        try:
+                            resolved.relative_to(root.resolve())
+                        except ValueError:
+                            continue
+                        in_root = True
+                        break
+                    if not in_root:
+                        violations.append(
+                            f"{label}: sources 越出归档/SPEC 目录: {src}"
+                        )
             elif origin == ORIGIN_PREHISTORIC:
                 # 史前页：sources 允许 git 区间锚点（不要求归档目录存在）
                 for src in marker["sources"]:
@@ -575,6 +620,73 @@ def validate_knowledge(project_root) -> list:
     return violations
 
 
+# ── 溯源改写器（move-distill-trigger-to-push 3.1）────────────────────
+
+# 名字字符集与 archive_commit._SAFE_PATH_RE 同口径（SPEC 名/归档目录名的
+# 合法字符集）；改写匹配在其上加名字右边界（见 rewrite_source_links_to_
+# archive 的正则组装）。
+_SOURCE_NAME_CLS = r"[A-Za-z0-9._-]"
+
+
+def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_name: str) -> list:
+    """归档溯源改写 pass：知识页中该 SPEC 的 changes/ 引用批量改到归档路径。
+
+    归档移动成功后（单点、双路径共用本函数，禁复制粘贴实现）调用：扫描
+    ``spec/knowledge/`` 全页（含 index/_domain/能力页/ADR/README），把
+    ``spec/changes/<spec_name>`` 精确替换为 ``spec/archive/<archive_dir_name>``
+    ——sources 行与正文溯源行（现行全角括号纯文本形态）均为纯文本命中，
+    无须感知结构。
+
+    匹配 MUST 带名字右边界：命中 ``spec/changes/<spec_name>`` 后随非名字
+    字符（``[A-Za-z0-9._-]`` 之外）或串尾方算命中——防前缀同名 SPEC 误伤
+    （真实在库例：``merge-back`` ↔ ``merge-back-precheck``，无边界时改写
+    前者会把后者的引用串改坏）。
+
+    Args:
+        project_root: 项目根目录
+        spec_name: SPEC 名（changes/ 下目录名）
+        archive_dir_name: 当次实际归档目录名（``YYYY-MM-DD-<名>`` 或软删除
+            ``<名>-<Unix秒>``——按实际注入，与命名方案无关）
+
+    Returns:
+        实际发生替换的文件相对路径清单（posix 形态、相对项目根），供调用方
+        并入归档提交的 pathspec。无命中的知识页不改写不写盘（无 mtime 噪声）。
+
+    Raises:
+        读页/写盘等异常原样抛给调用方——fail-open（告警留痕、归档照常）的
+        决策在调用方，本函数不做吞异常。
+    """
+    proot = Path(project_root)
+    kroot = proot / KNOWLEDGE_DIR
+    if not kroot.is_dir():
+        return []
+    # 右边界： (?![A-Za-z0-9._-]) ——命中名后随名字字符即否决（前缀同名保护）；
+    # 边界零宽不消费，尾随的 ``/`` ``）`` ``，`` 或串尾均放行
+    pattern = re.compile(
+        re.escape(f"spec/changes/{spec_name}") + rf"(?!{_SOURCE_NAME_CLS})"
+    )
+    replacement = f"spec/archive/{archive_dir_name}"
+    rewritten: list = []
+    for page in sorted(kroot.rglob("*.md")):
+        try:
+            text = page.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # 单页不可读：与 validate_knowledge 的读取防御同口径按跳过处理，
+            # 不让一个坏页阻断整批改写（调用方的 fail-open 针对整体异常）
+            continue
+        if f"spec/changes/{spec_name}" not in text:
+            continue  # 快速预筛：无命中不读写盘
+        new_text = pattern.sub(lambda _m: replacement, text)
+        if new_text == text:
+            continue  # 仅前缀同名命中（右边界全否决），不改写
+        # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
+        if not page.is_file():
+            continue
+        page.write_text(new_text, encoding="utf-8")
+        rewritten.append(page.relative_to(proot).as_posix())
+    return rewritten
+
+
 # ── 派发与执行器 ──────────────────────────────────────────────────────
 
 def load_distill_prompt() -> str:
@@ -584,11 +696,23 @@ def load_distill_prompt() -> str:
 
 
 def build_distill_prompt(proot: Path, archived_names: list) -> str:
-    """组装蒸馏 run 提示词：模板全文 + 动态段（归档清单与绝对路径）。"""
+    """组装蒸馏 run 提示词：模板全文 + 动态段（SPEC 清单与绝对路径）。
+
+    形参名 ``archived_names`` 保留不改（跨 dispatch/mgr/worker/测试替身的
+    签名面大，move-distill-trigger-to-push D2），语义已是「蒸馏源名」：push
+    触发时代指 ``spec/changes/<名>`` 下的 SPEC 名，pending 恢复重派兜底指
+    归档目录名。动态段按双态探测（``_distill_source_dir``）结果给真实绝对
+    路径，蒸馏 agent 据此读取输入。
+    """
     tpl = load_distill_prompt()
-    archive_items = "\n".join(
-        f"- {name}（目录：{proot / ARCHIVE_DIR / name}）" for name in archived_names
-    )
+    items = []
+    for name in archived_names:
+        src = _distill_source_dir(proot, name)
+        # 门控放行后两态必有一处；防御兜底展示 archive 路径（两态均缺时蒸馏
+        # agent 读不到输入自然失败，不虚构存在的路径）
+        path = src if src is not None else proot / ARCHIVE_DIR / name
+        items.append(f"- {name}（目录：{path}）")
+    archive_items = "\n".join(items)
     stamp, tz = local_now_stamp()
     return (
         f"{tpl}\n\n---\n\n"
@@ -598,7 +722,7 @@ def build_distill_prompt(proot: Path, archived_names: list) -> str:
         f"当前本地时间：{stamp}（时区 {tz}）。index.md 与受影响域 _domain.md 的"
         f"「最后更新」盖戳行、各表更新时间列一律以此时间为准，盖戳行写为"
         f"`> 最后更新：{stamp} {tz}`\n\n"
-        f"本次待蒸馏的归档：\n{archive_items}\n"
+        f"本次待蒸馏的 SPEC：\n{archive_items}\n"
     )
 
 
@@ -2101,10 +2225,12 @@ def _get_dispatcher() -> DistillManager:
 
 
 def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None:
-    """单条/批量派发共用的门控链（enabled → 归档存在 → 回填期排队）。
+    """单条/批量派发共用的门控链（enabled → 蒸馏源目录存在 → 回填期排队）。
 
     双入口共用同一实现，避免门控规则漂移出现单条/批量行为不一致
-    （code-review f58075519410）。
+    （code-review f58075519410）。目录存在性为双态解析（move-distill-
+    trigger-to-push D2）：``spec/changes/<名>`` 优先、``spec/archive/<名>``
+    兜底（push 后 3 天内失败的批恢复重派时可能已归档）。
 
     Returns:
         None = 全部放行；否则返回 ``{"dispatched": False, "reason": ...}``。
@@ -2124,10 +2250,10 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
         logger.warning("knowledge-distill 配置解析失败，跳过派发: %s", e)
         return {"dispatched": False, "reason": f"config-error: {e}"}
 
-    # 归档目录存在性（蒸馏只读归档；软删除路径命名同样落 spec/archive/）。
-    # 防御（code-review b00585e3c85b）：归档名须为单一路径成分——含路径
-    # 分隔符或为 . / .. 时，存在性检查与蒸馏上下文拼出的路径会越出归档
-    # 目录，一律按缺失拒绝。
+    # 蒸馏源目录存在性（双态：changes/ 优先、archive/ 兜底——move-distill-
+    # trigger-to-push D2）。防御（code-review b00585e3c85b）：蒸馏源名须为
+    # 单一一路径成分——含路径分隔符或为 . / .. 时，存在性检查与蒸馏上下文
+    # 拼出的路径会越出目录，一律按缺失拒绝。
     missing = [
         n
         for n in archived_names
@@ -2135,9 +2261,17 @@ def _gate_distill(proot: Path, archived_names: list, config=None) -> dict | None
         or n in (".", "..")
         or os.sep in n
         or "/" in n
-        or not (proot / ARCHIVE_DIR / n).is_dir()
+        or _distill_source_dir(proot, n) is None
     ]
     if missing:
+        # reason 保留既有 archive-dir-missing 字面量兼容既有消费方（解析该
+        # 值的台账/测试/文案）；双态说明走日志文案以资区分（两态均无目录
+        # 才会到这，字面量本身是历史名）。
+        logger.info(
+            "knowledge-distill 拒绝派发（蒸馏源目录双态均缺失：changes/ 与 "
+            "archive/ 均无该 SPEC 目录）: %s",
+            ", ".join(missing),
+        )
         if len(archived_names) == 1:
             return {"dispatched": False, "reason": "archive-dir-missing"}
         return {
@@ -2195,14 +2329,16 @@ def _dispatch_via_mgr(mgr: DistillManager, proot: Path, names: list) -> dict:
 
 
 def dispatch_distill(project_root, archived_name, config=None, *, dispatcher=None) -> dict:
-    """归档蒸馏派发入口（task 2.1；commit_archive_move 单点挂载的漏斗）。
+    """蒸馏派发入口（move-distill-trigger-to-push 1.1；approve_push 单点挂载）。
 
     Args:
         project_root: 项目根目录
-        archived_name: 归档目录名（``spec/archive/<日期-名>`` 的目录名部分；
-            软删除路径的 ``<名>-<Unix秒>`` 同样兼容）
+        archived_name: 蒸馏源名（形参名保留不改，见 build_distill_prompt
+            docstring）：push 触发时代 = ``spec/changes/<名>`` 的 SPEC 名；
+            恢复重派兜底 = ``spec/archive/<日期-名>`` 的目录名（软删除路径
+            的 ``<名>-<Unix秒>`` 同样兼容）——门控按双态解析，两态均放行。
         config: 有效配置 dict；None 时经 ``ConfigLoader.resolve_config``
-            现场解析（归档低频，解析成本可接受）
+            现场解析（派发低频，解析成本可接受）
         dispatcher: 注入替身（测试隔离用；None = 进程内单例）
 
     Returns:

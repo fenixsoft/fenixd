@@ -151,11 +151,25 @@ def archive_change(project_root: Path, name: str) -> dict:
     except Exception as e:  # fail-open：move 已成功，任意异常只降级为告警不改变整体结果
         result["runs_archive_warning"] = str(e)
 
+    # 归档溯源改写 pass（move-distill-trigger-to-push 3.2）：目录移动成功后、
+    # 归档提交前，把 spec/knowledge/ 全页中该 SPEC 的 spec/changes/<名> 溯源
+    # 引用批量改写为实际归档目录（实现单源 core.knowledge），改写文件与归档
+    # 两侧并入同一 [fenix] archive: 提交。fail-open：move 已成功，改写异常仅
+    # 告警留痕不阻断归档（此时知识页出现死链，由 knowledge audit 链接门在
+    # 下一轮审计兜底暴露）。core 从框架根导入（FRAMEWORK_ROOT 先例）。
+    rewritten_pages = []
+    try:
+        from core.knowledge import rewrite_source_links_to_archive
+
+        rewritten_pages = rewrite_source_links_to_archive(project_root, name, moved.name)
+    except Exception as e:  # fail-open：move 已成功，改写失败只降级为告警
+        result["rewrite_warning"] = str(e)
+
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
     try:
         from core.archive_commit import commit_archive_move
 
-        cr = commit_archive_move(project_root, name, moved)
+        cr = commit_archive_move(project_root, name, moved, extra_paths=rewritten_pages)
         result["committed"] = cr["committed"]
         if cr.get("warning"):
             result["commit_warning"] = cr["warning"]
@@ -192,6 +206,7 @@ def main():
             "evict_warning",
             "runs_archived",
             "runs_archive_warning",
+            "rewrite_warning",
             "committed",
             "commit_warning",
         ):

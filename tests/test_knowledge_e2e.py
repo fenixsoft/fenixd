@@ -1,13 +1,14 @@
 """test-knowledge-e2e — 蒸馏管线端到端（add-knowledge-atlas 5.1）。
 
 全链（真实代码路径，fake spawn 替身不触真实网关）：
-构造 fixture change → shutil.move 归档 → commit_archive_move 真实挂载 →
-dispatch_distill（knowledge.enabled 门控 + 归档存在性，config 缺省即 enabled）
-→ DistillManager 队列/flock → spawn（fake：按 distill.md 契约写产物）→
+构造 fixture change → shutil.move 归档 → commit_archive_move（归档不再挂载
+派发，move-distill-trigger-to-push 1.2）→ dispatch_distill 直调（push 触发
+等价派发；knowledge.enabled 门控 + 蒸馏源目录双态存在性）→
+DistillManager 队列/flock → spawn（fake：按 distill.md 契约写产物）→
 validate_knowledge → pathspec 限定自动提交。
 
 覆盖断言：
-- dispatch_distill 被触发（result["distill"]["dispatched"]）
+- dispatch_distill 被触发（push 触发等价直调，返回 dispatched）
 - 蒸馏产出经校验落盘（能力页 rev+1、规则更新、validate_knowledge 零违规）
 - index/域清单同步更新（链接全部可解析）
 - REMOVED 语义删规则留痕（溯源段「已随 <归档名> 废除：…」）
@@ -254,7 +255,7 @@ class KnowledgeE2E(unittest.TestCase):
             time.sleep(0.2)
         return False
 
-    def test_archive_triggers_distill_pipeline(self):
+    def test_push_triggers_distill_pipeline(self):
         from core.archive_commit import commit_archive_move
         import core.knowledge as kn
 
@@ -262,16 +263,21 @@ class KnowledgeE2E(unittest.TestCase):
         mgr._spawn = self._fake_spawn
         with mock.patch.object(kn, "_in_pytest", lambda: False), \
                 mock.patch.object(kn, "_MANAGER", mgr):
-            # 归档移动（真实 move + 真实挂载派发）
+            # 归档移动（真实 move；move-distill-trigger-to-push 1.2：归档不再
+            # 触发蒸馏，distill 键恒 None）
             archive_dir = self.root / "spec" / "archive" / ARCHIVE_NAME
             shutil.move(
                 str(self.root / "spec" / "changes" / "demo-spec"), str(archive_dir)
             )
             r = commit_archive_move(self.root, "demo-spec", archive_dir)
+            self.assertTrue(r["committed"], r)
+            self.assertIsNone(r["distill"])
+            # 蒸馏派发入口直调（approve_push 成功转移后的真实挂载点）：SPEC 已
+            # 归档 → 门控双态探测兜底命中 archive/，批正常执行
+            d = kn.dispatch_distill(self.root, ARCHIVE_NAME)
         self.archive_committed.set()
 
-        self.assertTrue(r["committed"], r)
-        self.assertTrue(r["distill"]["dispatched"], r)
+        self.assertTrue(d["dispatched"], d)
         self.assertTrue(
             self._wait_distill_commit(), "蒸馏 run 未在超时内提交成功"
         )
@@ -328,7 +334,8 @@ class KnowledgeE2E(unittest.TestCase):
         self.assertEqual(mgr.pending(self.root), 0)
 
     def test_disabled_config_skips_dispatch(self):
-        """knowledge.enabled=false：归档照常提交、蒸馏不派发。"""
+        """knowledge.enabled=false：归档照常提交（不再挂载派发）、蒸馏派发入口
+        按 disabled 门控拒绝。"""
         from core.archive_commit import commit_archive_move
         import core.knowledge as kn
 
@@ -344,10 +351,13 @@ class KnowledgeE2E(unittest.TestCase):
                 str(self.root / "spec" / "changes" / "demo-spec"), str(archive_dir)
             )
             r = commit_archive_move(self.root, "demo-spec", archive_dir)
+            self.assertTrue(r["committed"])
+            self.assertIsNone(r["distill"])  # 归档不再触发蒸馏
+            # 派发入口（push 触发点经此）在 disabled 门控下拒绝
+            d = kn.dispatch_distill(self.root, ARCHIVE_NAME)
 
-        self.assertTrue(r["committed"])
-        self.assertFalse(r["distill"]["dispatched"])
-        self.assertEqual(r["distill"]["reason"], "disabled")
+        self.assertFalse(d["dispatched"])
+        self.assertEqual(d["reason"], "disabled")
         self.assertEqual(self.prompts, [])
 
 

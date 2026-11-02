@@ -884,11 +884,27 @@ def _existing_archives(project_root: Path) -> Optional[set[str]]:
 
 
 def _source_base(src: str) -> str:
-    """marker sources 项归一为归档基名，供与 ``_existing_archives`` 的基名集合
-    比对。真相源契约里 sources 是全路径（``spec/archive/<名>``，core.knowledge
-    校验器强制该前缀），不归一直接比对会恒判悬空 → ``_clean_sources`` 把
-    sources 清空 → 校验报 marker 非法 → 整轮机械自修被回滚。"""
+    """marker sources 项归一为蒸馏源基名，供与 ``_existing_archives`` 的基名
+    集合及 changes/ 在盘目录比对。真相源契约里 sources 是全路径（两态：
+    ``spec/archive/<名>`` 或 push 态 ``spec/changes/<名>``，core.knowledge
+    校验器两前缀均合法，move-distill-trigger-to-push 3.5），基名在两态命名
+    下一致（归档目录名带日期前缀的以改写后的全名比对），不归一直接比对会
+    恒判悬空 → ``_clean_sources`` 把 sources 清空 → 校验报 marker 非法 →
+    整轮机械自修被回滚。"""
     return Path(src.strip().rstrip("/")).name
+
+
+def _source_target_exists(project_root: Path, src: str, archives: Optional[set]) -> bool:
+    """sources 项指向的 SPEC 目录在两态下真实存在（move-distill-trigger-to-
+    push 3.3 两态等价）。
+
+    archive 态：基名命中 ``_existing_archives`` 在盘归档集合；push 态（归档
+    改写 pass 之前）：``spec/changes/<基名>`` 在盘。两态任一成立即非悬空。
+    """
+    base = _source_base(src)
+    if base in archives:
+        return True
+    return (Path(project_root) / "spec" / "changes" / base).is_dir()
 
 
 def _archive_ref_bare(capture: str) -> str:
@@ -961,10 +977,16 @@ def _scan_pages(project_root: Path) -> dict:
                 # sources 全部悬空待人工」误报并推高 pending_manual。
                 missing_sources = [s for s in names if not _GIT_ANCHOR_RE.match(s.strip())]
             else:
-                missing_sources = [s for s in names if _source_base(s) not in archives]
+                # 两态等价（move-distill-trigger-to-push 3.3）：sources 指向
+                # archive/ 在盘目录或 changes/ 在盘目录均非悬空
+                missing_sources = [
+                    s for s in names
+                    if not _source_target_exists(project_root, s, archives)
+                ]
         # marker 跨度行不进 drop_lines（code-review 0b78fcd778e3）：marker 的
-        # sources 项是全路径 ``spec/archive/<名>``（core.knowledge 校验器强制
-        # 该前缀），归档目录被删后 marker 行自身就会命中 _ARCHIVE_REF_RE；若
+        # sources 项是全路径（archive 态 ``spec/archive/<名>``、push 态
+        # ``spec/changes/<名>``），归档目录被删后 marker 行自身就会命中
+        # _ARCHIVE_REF_RE；若
         # 按行删除会把 marker（或其 sources 字段）整行移除，validate_knowledge
         # 随即报「marker 缺失/字段非法」新违规，run_audit 的提交闸门会把本轮
         # 全部机械修复回滚。marker 行的 sources 悬空剔除只交给
@@ -1355,7 +1377,12 @@ def _apply_mechanical(
             if not sm:
                 return mm.group(0)
             names = [s for s in re.split(r"[,，]", sm.group(1)) if s]
-            kept_names = [s for s in names if _source_base(s) in archives]
+            # 两态等价（move-distill-trigger-to-push 3.3，与 _scan_pages 同一
+            # 判据单源 _source_target_exists）：archive/ 或 changes/ 在盘均保留
+            kept_names = [
+                s for s in names
+                if _source_target_exists(project_root, s, archives)
+            ]
             if not kept_names:
                 # sources 全悬空时保留原值不剔除：清空会产出 ``sources=`` 空值，
                 # marker 字段正则要求非空，校验将报「marker 字段非法」——该字符

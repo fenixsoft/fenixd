@@ -361,10 +361,8 @@ class TestPreciseAddAndRecheck(_BaseSelfheal):
         arch = self._move_to_archive()
         from core.archive_commit import commit_archive_move
 
-        done = commit_archive_move(
-            self.repo, "spec-x", arch,
-            distill=lambda proot, name: {"dispatched": False, "reason": "test"},
-        )
+        # move-distill-trigger-to-push 1.2：归档不再挂载蒸馏派发（无 distill 参数）
+        done = commit_archive_move(self.repo, "spec-x", arch)
         self.assertTrue(done["committed"], done)
         commits_before = git(self.repo, "log", "--format=%H").stdout.strip().splitlines()
         self.wm.merge_back_from_branch.return_value = MergeConflictInfo(True, "")
