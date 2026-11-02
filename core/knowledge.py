@@ -682,7 +682,9 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
         # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
         if not page.is_file():
             continue
-        page.write_text(new_text, encoding="utf-8")
+        # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
+        # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
+        atomic_write_text(page, new_text)
         rewritten.append(page.relative_to(proot).as_posix())
     return rewritten
 
