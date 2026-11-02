@@ -444,7 +444,10 @@ class TestResolveIgnoredModifyDeleteConflicts:
         wm = make_wm(root)
         with patch("core.worktree_manager.subprocess.run") as mock_sub:
             mock_sub.return_value = MagicMock(returncode=0, stdout="M  modified.txt\n")
-            assert wm._resolve_ignored_modify_delete_conflicts() is False
+            healed, aborted = wm._resolve_ignored_modify_delete_conflicts()
+            # 纯校验失败（无 DU 路径）：未产生变更、未自行 abort
+            assert healed is False
+            assert aborted is False
 
     def test_du_conflict_self_heal_success(self, tmp_path):
         """DU 冲突（主树删除、分支修改）+ 被 ignore → rm --cached + commit 成功 → True。"""
@@ -468,7 +471,10 @@ class TestResolveIgnoredModifyDeleteConflicts:
                     return MagicMock(returncode=0, stdout="", stderr="")
                 return MagicMock(returncode=0, stdout="", stderr="")
             mock_sub.side_effect = side_effect
-            assert wm._resolve_ignored_modify_delete_conflicts() is True
+            healed, aborted = wm._resolve_ignored_modify_delete_conflicts()
+            # 全部通过：merge 已提交、未中途 abort
+            assert healed is True
+            assert aborted is False
 
     def test_non_du_conflict_returns_false(self, tmp_path):
         """非 DU 冲突（如 UU）→ False，不自愈。"""
@@ -477,10 +483,13 @@ class TestResolveIgnoredModifyDeleteConflicts:
         wm = make_wm(root)
         with patch("core.worktree_manager.subprocess.run") as mock_sub:
             mock_sub.return_value = MagicMock(returncode=0, stdout="UU conflict.txt\n")
-            assert wm._resolve_ignored_modify_delete_conflicts() is False
+            healed, aborted = wm._resolve_ignored_modify_delete_conflicts()
+            # 非 DU 冲突：纯校验失败、未产生变更、未自行 abort
+            assert healed is False
+            assert aborted is False
 
     def test_du_conflict_not_ignored_abort(self, tmp_path):
-        """DU 冲突但路径未被 ignore → abort + False。"""
+        """DU 冲突但路径未被 ignore → abort + (False, aborted_midway=True)。"""
         root = tmp_path / "repo"
         init_repo(root)
         wm = make_wm(root)
@@ -496,7 +505,11 @@ class TestResolveIgnoredModifyDeleteConflicts:
                     return MagicMock(returncode=0, stdout="", stderr="")
                 return MagicMock(returncode=0, stdout="", stderr="")
             mock_sub.side_effect = side_effect
-            assert wm._resolve_ignored_modify_delete_conflicts() is False
+            healed, aborted = wm._resolve_ignored_modify_delete_conflicts()
+            assert healed is False
+            # 未被 ignore 的 DU 冲突已产生 rm --cached 变更：自行 abort，
+            # 调用方据此跳过采空的冲突分类（item 636abf350e2b）
+            assert aborted is True
             # 验证调用了 merge --abort
             abort_calls = [c for c in mock_sub.call_args_list if "--abort" in c.args[0]]
             assert abort_calls, "未被 ignore 的 DU 冲突应调用 merge --abort"

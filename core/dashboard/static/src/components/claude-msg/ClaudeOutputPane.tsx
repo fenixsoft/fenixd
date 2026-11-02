@@ -332,7 +332,12 @@ export default function ClaudeOutputPane({
         // 重同步静默覆盖，用户无从分辨「已取到」还是「没生效」（同 item
         // 1717797b5fc1 的零进展/失败路径提示），列表已被重同步快照整体覆盖、
         // canLoadOlder 仍可重试
-        message.info('本轮加载更早事件被运行流重同步覆盖，请稍后重试');
+        // 丢弃分支与写回分支同款三重币值守卫（code-review item 55aad362be13）：
+        // 无 key 复用实例切 run（或跨项目同名 run）后，旧 run 迟到的分页响应
+        // 即使注定丢弃，也不再给正在看新 run 的用户弹无关提示，静默丢弃
+        if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {
+          message.info('本轮加载更早事件被运行流重同步覆盖，请稍后重试');
+        }
         return;
       }
       if (isMountedRef.current && activeRunIdRef.current === reqRunId && activeProjectRef.current === reqProject) {

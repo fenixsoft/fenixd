@@ -16,7 +16,7 @@
 // 生命周期小节点为纯展示（任务 3.2 仅定义渲染形态，不可点击/无悬浮）。
 
 import { useMemo, useState } from 'react';
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
+import type { CSSProperties, FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { statusMeta } from '@/services/dashboard';
 import type { SpecTopology, TopologyEdgeType, TopologyNode, TopologyStage } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
@@ -31,6 +31,7 @@ import {
   STAGE_LABELS,
   STAGE_ORDER,
   STATUS_HEX,
+  svgNodeKeyDown,
 } from './shared';
 
 // ── 布局常量（确定性坐标，无布局引擎） ──
@@ -108,6 +109,34 @@ function edgeStroke(type: TopologyEdgeType): string {
   if (type === 'retry') return '#fa8c16';
   if (type === 'approve') return '#fadb14';
   return '#3b6ea5';
+}
+
+/** 边端点横向坐标（具名函数承载原嵌套三元，与本文件 nodeBorderColor 等具名
+ * 单源风格对齐——code-review item b35a7876b4bd「禁止嵌套三元」）：
+ * trDispatch（规划列内 dispatch 竖连）端点恒取 tr 节点中心 x；sameCol 同列
+ * 竖连自节点中心右移 6px 错开竖线；跨列时 source 端向目标方向、target 端
+ * 向来向各偏移半列宽，使贝塞尔端点落在节点边缘。target=false 取 source 端
+ * （pa），true 取 target 端（pb）。 */
+function edgeEndpointX(
+  pa: { x: number },
+  pb: { x: number },
+  trDispatch: boolean,
+  sameCol: boolean,
+  target: boolean,
+): number {
+  if (trDispatch) return pa.x;
+  const selfX = target ? pb.x : pa.x;
+  if (sameCol) return selfX + COL_W / 2 + 6;
+  const sign = pb.x > pa.x ? 1 : -1;
+  return selfX + sign * (target ? -COL_W / 2 : COL_W / 2);
+}
+
+/** 节点描边宽度（具名函数承载原嵌套三元——code-review item b35a7876b4bd）：
+ * 选中 2.2 强调；失败红/中止橙/在飞 1.6 加重；常态 1。 */
+function nodeStrokeWidth(selected: boolean, tone: string, isRunning: boolean): number {
+  if (selected) return 2.2;
+  if (tone === 'red' || tone === 'orange' || isRunning) return 1.6;
+  return 1;
 }
 
 // PMEngine 生命周期小节点（纯展示；id 与后端 dispatch_anchor 编号规则一致：
@@ -286,6 +315,24 @@ export default function PipelineView({
     }
   };
 
+  // 键盘 focus 时悬浮卡锚定节点包围盒（focus 事件无鼠标坐标，取元素自身
+  // getBoundingClientRect 换算；下钻信息路径补键盘可达，悬浮卡与 hover 同卡
+  // 展示——code-review item d3f8d7432245）
+  const handleFocus = (n: TopologyNode, e: ReactFocusEvent<SVGGElement>) => {
+    setHover(n);
+    const svg = e.currentTarget.ownerSVGElement;
+    if (svg) {
+      const rect = svg.getBoundingClientRect();
+      const box = e.currentTarget.getBoundingClientRect();
+      const cardW = 380;
+      const cardH = 220;
+      setHoverPos({
+        x: Math.max(0, Math.min(box.right - rect.left + 14, rect.width - cardW - 8)),
+        y: Math.max(0, Math.min(box.top - rect.top + 10, rect.height - cardH - 8)),
+      });
+    }
+  };
+
   const stageCount = (s: TopologyStage) => data.nodes.filter((n) => n.stage === s).length;
 
   return (
@@ -432,8 +479,8 @@ export default function PipelineView({
               && b.dispatch_anchor != null
               && layout.trByKey.get(b.dispatch_anchor) != null;
             const sameCol = trDispatch || pa.x === pb.x;
-            const x1 = trDispatch ? pa.x : sameCol ? pa.x + COL_W / 2 + 6 : pa.x + (pb.x > pa.x ? COL_W / 2 : -COL_W / 2);
-            const x2 = trDispatch ? pa.x : sameCol ? pb.x + COL_W / 2 + 6 : pb.x + (pb.x > pa.x ? -COL_W / 2 : COL_W / 2);
+            const x1 = edgeEndpointX(pa, pb, trDispatch, sameCol, false);
+            const x2 = edgeEndpointX(pa, pb, trDispatch, sameCol, true);
             const y1 = trDispatch ? pa.y + TR_H / 2 : pa.y;
             const y2 = trDispatch ? pb.y - NODE_H / 2 : pb.y;
             const midX = (x1 + x2) / 2;
@@ -514,8 +561,13 @@ export default function PipelineView({
                 key={n.id}
                 transform={`translate(${nodeX(n.stage)}, ${y})`}
                 style={{ cursor: 'pointer' }}
+                role="button"
+                tabIndex={0}
                 onMouseEnter={(e) => handleEnter(n, e)}
                 onClick={() => onSelect(n)}
+                onFocus={(e) => handleFocus(n, e)}
+                onBlur={() => setHover(null)}
+                onKeyDown={(e) => svgNodeKeyDown(e, () => onSelect(n))}
               >
                 <rect
                   width={COL_W}
@@ -523,7 +575,7 @@ export default function PipelineView({
                   rx={8}
                   fill="rgba(10, 22, 40, 0.92)"
                   stroke={border}
-                  strokeWidth={selectedId === n.id ? 2.2 : tone === 'red' || tone === 'orange' || isRunning ? 1.6 : 1}
+                  strokeWidth={nodeStrokeWidth(selectedId === n.id, tone, isRunning)}
                   filter={isRunning ? 'url(#topo-glow)' : undefined}
                 >
                   {isRunning && (

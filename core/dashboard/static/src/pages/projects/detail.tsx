@@ -25,7 +25,7 @@ import RunCancelModal from './components/RunCancelModal';
 import SpecTimeline, { formatUsd } from './components/SpecTimeline';
 // 「任务进度」同款进度条控件 2026-09-23 抽出共享（CodeFixProgressCard 复用），原内联定义已删
 import ProgressBarTile from './components/ProgressBarTile';
-import { OutlinedTag } from '@/components/StatusTag';
+import { OutlinedTag, TONE_TAG_COLOR } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
 // 告警裁决交互共享 hook + 执行按钮（与 overview AlertBanner 同源，
 // code-review item f86171cc149d）
@@ -87,19 +87,6 @@ const VERDICT_COUNTS: Array<[keyof NonNullable<SpecDetail['verdict']>['summary']
   ['product_bugs', '产品Bug'],
   ['env_issues', '环境问题'],
 ];
-
-// 头部状态 Tag 的 tone→antd 预设色映射（code-review item 7d6e6be9876c：原先只
-// 区分 good/critical，implementing(warning)/implemented·reviewing(aqua) 等一律
-// 误染蓝色 processing）。键覆盖 services/dashboard STATUS_META 全部 6 种 tone，
-// 色相与列表页 TONE_DOT / OutlinedTag 同语义（warning 橙、aqua 青、info 蓝）。
-const TONE_TAG_COLOR: Record<string, string> = {
-  muted: 'default',
-  info: 'processing',
-  warning: 'warning',
-  critical: 'error',
-  good: 'success',
-  aqua: 'cyan',
-};
 
 // 断言类型中文标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）
 const ASSERTION_LABELS: Record<string, string> = {

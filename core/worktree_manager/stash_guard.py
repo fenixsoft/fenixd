@@ -629,8 +629,20 @@ class G6StashGuardMixin:
         checkout_failed: list = []
         for f in remaining:
             try:
+                # :(literal) 钉死字面量匹配（code-review item a889b35d764c，
+                # 与 mergeback._backup_untracked_spec_files 同款纪律）：路径含
+                # [ ] * ? 通配元字符时裸 pathspec 被 glob 展开、目标自身欠配，
+                # 自愈降级（失败方向保守，仅损失自愈收益）
                 co = subprocess.run(
-                    ["git", "-C", str(self.project_root), "checkout", "--theirs", "--", f],
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "checkout",
+                        "--theirs",
+                        "--",
+                        f":(literal){f}",
+                    ],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -672,7 +684,10 @@ class G6StashGuardMixin:
             )
         try:
             add = subprocess.run(
-                ["git", "-C", str(self.project_root), "add", "--", *conflict_files],
+                # :(literal) 钉死字面量匹配（code-review item a889b35d764c）：
+                # 含通配元字符的路径欠配会使自愈降级
+                ["git", "-C", str(self.project_root), "add", "--"]
+                + [f":(literal){p}" for p in conflict_files],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -843,11 +858,12 @@ class G6StashGuardMixin:
             )
             return False
         rev_rc, rev_out = rev
-        # sha_before 即时取自当前栈顶（stash list 已确认栈顶带 AUTOSTASH 前缀），
-        # 钉取与 pop 之间无任何语句，不再紧邻二次复核（code-review item
-        # fd53642a6ddc：紧邻复核无插队窗口、防护空转，白付一次持锁临界区内的
-        # 子进程开销）；实际防线是下方 TOCTOU 干净重查、pop 输出 sha 核对与
-        # drop 前的 sha 复核。
+        # sha_before 即时取自当前栈顶（stash list 已确认栈顶带 AUTOSTASH 前缀）；
+        # 钉取与 pop 之间隔有下方 TOCTOU 干净重查（窗口=一次 status 子进程），
+        # 紧邻二次复核已省略（code-review item fd53642a6ddc：紧邻复核无插队
+        # 窗口、防护空转，白付一次持锁临界区内的子进程开销）；实际防线是
+        # 下方 TOCTOU 干净重查、pop 输出 sha 核对与 drop 前的 sha 复核
+        # （code-review item 9a1a53693bb4）。
         sha_before = rev_out.strip() if rev_rc == 0 else ""
         if rev_rc != 0:
             # 栈非空（stash list 有前缀条目）却核不出栈顶 sha——git 异常态，
@@ -1377,8 +1393,15 @@ class G6StashGuardMixin:
                         f"compare — possible real local work",
                     )
                     return False
+            # :(literal) 钉死字面量匹配（code-review item a889b35d764c，与
+            # mergeback._backup_untracked_spec_files 同款纪律）：checkout HEAD
+            # 形态若被 glob 展开（路径含 [ ] * ?）是破坏性过配——同目录无关脏
+            # 文件被恢复为 HEAD 版，既不在字节比对也不在备份清单（TOCTOU 复核
+            # 只覆盖具名路径），未提交改动被静默丢弃；:(literal) 把恢复收窄到
+            # 具名路径
             co = subprocess.run(
-                ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", *identical],
+                ["git", "-C", str(self.project_root), "checkout", "HEAD", "--"]
+                + [f":(literal){p}" for p in identical],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1565,7 +1588,7 @@ class G6StashGuardMixin:
         except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
             pass
 
-    def _resolve_ignored_modify_delete_conflicts(self) -> bool:
+    def _resolve_ignored_modify_delete_conflicts(self) -> tuple:
         """在 merge 冲突挂起状态下自愈 modify/delete 冲突（仅限被忽略的路径）。
 
         场景：run-result 类运行时草稿在移出版本控制前派生的旧分支上被改动，
@@ -1585,7 +1608,14 @@ class G6StashGuardMixin:
         路径后统一 abort——此处提前 abort 会让调用方的冲突分类采空。全部
         通过则 ``git commit --no-edit`` 完成 merge。
 
-        Returns: True 表示冲突已全部解决且 merge 已提交。
+        Returns: ``(healed, aborted_midway)`` 元组（code-review item
+        636abf350e2b）。``healed`` 为 True 表示冲突已全部解决且 merge 已提交；
+        ``aborted_midway`` 为 True 表示本函数已在变更后失败出口就地执行过
+        ``merge --abort``——挂起合并态连同 unmerged 冲突路径清单已随 abort
+        清除，调用方据此跳过冲突路径采集（在已回净的主树上只能采到空集）
+        并在归因文案注明，让下游可区分「真实语义冲突但清单被自愈中止清空」
+        （命中形态恰是真实交付物 DU 冲突这类最需转 repair 车道的语义冲突，
+        此前调用方无从区分，结构化分类被静默采空为 conflict_paths=[]）。
         """
         try:
             # -c core.quotePath=false（code-review item 4ce10509fde4）：非 ASCII
@@ -1610,7 +1640,7 @@ class G6StashGuardMixin:
                 timeout=30,
             )
             if status.returncode != 0:
-                return False
+                return False, False
             du_paths = []
             # 精确的 unmerged 状态码集合：两位均非空格才是冲突
             # （"A "/“M ”等已暂存条目不能误判，否则 merge 中正常并入的新文件会中断自愈）
@@ -1620,7 +1650,7 @@ class G6StashGuardMixin:
                 if xy in unmerged_codes:
                     # 只处理 DU（主树删除、分支修改）
                     if xy != "DU":
-                        return False
+                        return False, False
                     # 反转义口径对齐 _list_dirty_tracked_files（code-review item
                     # b9381c0972e3）：quotePath=false 只豁免高位字节，路径含双引号/
                     # 反斜杠/控制字符时输出仍是 C-quote 转义形，直接拼入下方
@@ -1629,7 +1659,7 @@ class G6StashGuardMixin:
                     # quotePath=false 以减少转义面
                     du_paths.append(unquote_git_path(line[3:].strip()))
             if not du_paths:
-                return False
+                return False, False
             for path in du_paths:
                 rm = subprocess.run(
                     ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
@@ -1649,8 +1679,10 @@ class G6StashGuardMixin:
                     # item af9f0b134011）：此刻索引已滞留部分 DU 路径的 staged
                     # 删除、其余路径仍 UU、MERGE_HEAD 未消，不能把半合并态留给
                     # 调用方兜底；abort 幂等，调用方重复 abort 无害。
+                    # aborted_midway=True：挂起态已随就地 abort 清除，调用方
+                    # 跳过冲突路径采集（item 636abf350e2b）
                     self._abort_pending_merge_best_effort()
-                    return False
+                    return False, True
             for path in du_paths:
                 chk = subprocess.run(
                     ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
@@ -1675,7 +1707,7 @@ class G6StashGuardMixin:
                         f"'{path}': {(chk.stderr or chk.stdout).strip()}",
                     )
                     self._abort_pending_merge_best_effort()
-                    return False
+                    return False, True
                 if chk.returncode == 1:
                     # 未被忽略 → 疑似真实交付物冲突，不自愈，交回 abort 路径
                     self.logger.warning(
@@ -1684,7 +1716,7 @@ class G6StashGuardMixin:
                         f"gitignored — not a runtime draft",
                     )
                     self._abort_pending_merge_best_effort()
-                    return False
+                    return False, True
             commit = subprocess.run(
                 ["git", "-C", str(self.project_root), "commit", "--no-edit"],
                 capture_output=True,
@@ -1703,12 +1735,12 @@ class G6StashGuardMixin:
                 # staged 删除、MERGE_HEAD 未消，commit 失败同样不把半合并态
                 # 留给调用方兜底（code-review item c5248bd14a6e）。
                 self._abort_pending_merge_best_effort()
-                return False
-            return True
+                return False, True
+            return True, False
         except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
             # TimeoutExpired / OSError（含解码异常）可能发生在 rm / check-ignore
             # 循环中途（git 卡死超时的场景恰易出现在这里）：与上方各失败分支
             # 同口径先尽力就地 abort，不把同类半合并态滞留给调用方
             # （code-review item c5248bd14a6e）。
             self._abort_pending_merge_best_effort()
-            return False
+            return False, True

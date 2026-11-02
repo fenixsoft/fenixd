@@ -552,6 +552,14 @@ class TestAllDoneEvent(unittest.TestCase):
             self.assertTrue(self._wait_for(
                 lambda: (self.proot / ".fenix" / "restart_request").exists()),
                 "全部 SPEC 终态后未触发 all-done hook（restart_request 未写入）")
+        # 审计 append 落在 restart_request 之后（动作线程还要走 one-shot 清理
+        # 标记的 fcntl 锁+rename），全量回归高负载下该间隔可超过 _wait_for 的
+        # 50ms 轮询宽限，此处断言即与动作线程竞态读出 0 条——同步点对齐
+        # test_fires_once_until_spec_leaves_terminal：等审计条目到位再断言
+        self.assertTrue(self._wait_for(
+            lambda: len([a for a in read_hook_audit(self.proot)
+                         if a.get("event") == "all-done"]) == 1),
+            "all-done 已触发但审计未落盘（动作线程未完成）")
         audit = [a for a in read_hook_audit(self.proot) if a.get("event") == "all-done"]
         self.assertEqual(len(audit), 1)
         self.assertEqual(audit[0]["status"], STATUS_SUCCESS)

@@ -294,8 +294,9 @@ export default function SettingsPage() {
         message.warning('请先修正表单校验错误');
         return;
       }
+      // 上方 undefined/null 双守卫已中止空元素，无需再做空值兜底
       const merged = parts.reduce<Partial<ConfigData>>(
-        (acc, p) => ({ ...acc, ...(p ?? {}) }),
+        (acc, p) => ({ ...acc, ...p }),
         {},
       );
       if (Object.keys(merged).length === 0) {

@@ -23,6 +23,8 @@ import {
 import type { SpecTopology, TopologyNode } from '@/services/dashboard';
 import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fmtDuration } from '@/utils/duration';
+// 状态 tone→antd 预设色映射消费单源（与 detail.tsx 同款，code-review item 5f88cf8a2a02）
+import { TONE_TAG_COLOR } from '@/components/StatusTag';
 import RunRecordModal from '@/pages/projects/components/RunRecordModal';
 import PipelineView from './PipelineView';
 import SwimlaneView from './SwimlaneView';
@@ -229,12 +231,7 @@ export default function SpecTopologyPage() {
         >
           <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: 0.3 }}>{spec}</span>
           {data && (
-            <Tag
-              color={
-                { good: 'green', critical: 'red', warning: 'orange', info: 'blue', aqua: 'cyan', muted: 'default' }[
-                  statusMeta(data.status ?? '').tone
-                ]
-              }
+            <Tag color={TONE_TAG_COLOR[statusMeta(data.status ?? '').tone] || 'default'}
               style={{ marginInlineEnd: 0 }}
             >
               {statusMeta(data.status ?? '').label}
@@ -275,7 +272,10 @@ export default function SpecTopologyPage() {
             description="以下为状态骨架（PMEngine 状态转移 / 验证轮次 / 运维事件与交付终点）；完整协作明细（run 转录、成本、耗时）已随 SPEC 归档清理，不可回看。"
           />
         )}
-        {!data?.archived && error && (
+        {/* 错误横幅与归档横幅并列渲染（code-review item a393eff5eaf8）：归档 SPEC
+            仍可能携带数据级 error，原 !data?.archived 门卫会让该组合下错误对
+            用户完全不可见（画布区留白） */}
+        {error && (
           <Alert style={{ marginTop: 12 }} type="error" showIcon message={`拓扑数据加载失败：${error}`} />
         )}
 

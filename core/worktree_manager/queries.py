@@ -218,7 +218,18 @@ class G8QueryMixin:
             return False
         except subprocess.TimeoutExpired:
             return False
-        except Exception:
+        except Exception as e:
+            # 意外异常降级留痕（code-review item 7d41064eae86，与文件内
+            # 其余采集点「异常降级必 WARNING」惯例对齐）：False 是交付守卫
+            # 的 fail-closed 安全方向，但意外异常与「真缺件」在返回值上
+            # 不可区分——不落痕时系统性异常形态（如 git 别名劫持、参数
+            # 序列化错误）表现为所有 spec 持续性「缺件打回」循环且无线索
+            # 可循。不收窄异常面（fail-closed 语义不变），仅补留痕。
+            self.logger.warning(
+                "worktree_manager",
+                f"file_exists_on_branch('{branch}', '{rel_path}') 意外异常"
+                f"降级 False: {e}",
+            )
             return False
 
     def is_available(self, wt_path=None, branch=None, known_registered=None) -> str:

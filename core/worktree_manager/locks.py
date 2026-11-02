@@ -345,6 +345,16 @@ class G3LockMixin:
         解析（``{prefix}-{spec}-<纯数字>`` 同一尾部形状）；收紧只少误报，
         真实 agent cmdline 引用的目录名恒接时间戳，不引入漏报。
         """
+        # spec 名字符白名单（code-review item de0ae18cadf3）：re.escape 按
+        # Python 正则语法生成转义，其中 -、[、{ 等的反斜杠形在 pgrep 的
+        # POSIX ERE 中语义未定义（glibc 容忍口径与文档不一致），spec 名含
+        # 这类字符时 pattern 最坏被 pgrep 整体拒绝（returncode 非 0 → 按无
+        # 进程处理，方向保守不误放）。为消除跨正则方言的隐式依赖，spec 名
+        # 含白名单（[A-Za-z0-9._-]，spec/worktree 目录名 slug 口径）外字符
+        # 即不走 pgrep，按无进程返回——与 pgrep 不可用的既有保守语义一致，
+        # 调用方以 run 流新鲜度做二次确认兜底。
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", spec_name):
+            return False
         for prefix in prefixes:
             pattern = (
                 f"worktrees/{prefix}-{re.escape(spec_name)}"
@@ -491,7 +501,19 @@ class G3LockMixin:
         单看前缀无效：前缀按构造是基目录的父目录）：经 realpath 归一后等于
         本项目 token_real 才认，解析到他处即否决；argv 只含裸相对
         token（无绝对路径证据可判异）时维持命中即入候选的既有语义。cwd 分支
-        以 token_real 锚定本项目，本就精确，保持直入候选。
+        以 token_real 锚定本项目，本就精确，但候选资格另经命令名白名单过滤
+        （见下）。
+
+        cwd 命中的命令名白名单（code-review item de55d604e087）：cwd 分支
+        原语义「cwd 落在 worktree 内的一切非 claude 进程即杀」会把开发者/
+        运维在 worktree 内打开的 vim/less/交互 shell 等一并误杀（不可逆）。
+        本函数的设计意图是清 agent 收工后残留的测试子进程，故 cwd 独立命中
+        （argv 不含 worktree 路径）的候选收紧为 argv[0] basename 属白名单：
+        node/npm/npx/vite（dev-server 及 npm 链路——v2 dev-server 由本框架
+        以 ``node <dev-server.mjs>`` 起停）、pytest/python（agent 验证遗留
+        的测试进程，含 python3.11 等解释器版本后缀形态）。cmdline 命中
+        （argv 显式引用 worktree 路径，指向的即残留进程本身）不经此过滤。
+        日志按 cmdline/cwd 归因分组，便于事后排查误杀/漏杀。
         """
         me = os.getpid()
         token = f"worktrees/{wt_name}"
@@ -503,6 +525,9 @@ class G3LockMixin:
         foreign_pattern = re.compile(
             r"(/[^\s\"']*)" + re.escape(token) + r"(?:[/\s\"']|$)"
         )
+        # cwd 独立命中候选的 argv[0] basename 白名单（口径见 docstring）；
+        # cmdline 命中不经此过滤
+        cwd_whitelist = ("node", "npm", "npx", "vite", "pytest", "python", "python3")
         candidates: list = []
         try:
             for pid_str in os.listdir("/proc"):
@@ -520,7 +545,15 @@ class G3LockMixin:
                     argv = (proc_dir / "cmdline").read_bytes().split(b"\0")
                     argv_text = " ".join(a.decode("utf-8", "replace") for a in argv if a)
                 except OSError:
+                    argv = []
                     argv_text = ""
+                # argv[0] basename（cwd 命中白名单过滤用）；读取失败留空，
+                # cwd 命中分支按不在白名单处理
+                argv0_name = ""
+                if argv and argv[0]:
+                    argv0_name = (
+                        argv[0].decode("utf-8", "replace").rsplit("/", 1)[-1]
+                    )
                 cmdline_hit = re.search(
                     re.escape(token) + r"(?:[/\s\"']|$)", argv_text
                 )
@@ -549,19 +582,39 @@ class G3LockMixin:
                         if ref_real != token_real:
                             foreign_hit = True
                             break
-                if (
-                    (cmdline_hit and not foreign_hit)
-                    or cwd_real == token_real
-                    or cwd_real.startswith(token_real + os.sep)
+                cmdline_match = cmdline_hit and not foreign_hit
+                cwd_match = cwd_real == token_real or cwd_real.startswith(
+                    token_real + os.sep
+                )
+                if not (cmdline_match or cwd_match):
+                    continue
+                # cwd 独立命中的保守过滤（code-review item de55d604e087）：
+                # 仅 argv[0] 属白名单（node/npm 等已知易残留形态）才入候选，
+                # 开发者的 vim/less/交互 shell 不再被清扫；argv[0] 不可得按
+                # 不在白名单处理（失败方向保守：漏杀可由下次清扫重试，误杀
+                # 不可逆）。cmdline 命中（argv 显式引用 worktree 路径）不经
+                # 此过滤维持直入候选。
+                if cwd_match and not cmdline_match and not any(
+                    argv0_name == name or argv0_name.startswith(name + ".")
+                    for name in cwd_whitelist
                 ):
-                    candidates.append(pid)
+                    continue
+                if cmdline_match and cwd_match:
+                    reason = "cmdline+cwd"
+                elif cmdline_match:
+                    reason = "cmdline"
+                else:
+                    reason = "cwd"
+                candidates.append((pid, reason))
         except OSError:
             return []
         killed = []
-        for pid in candidates:
+        killed_by_reason: dict = {}
+        for pid, reason in candidates:
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed.append(pid)
+                killed_by_reason.setdefault(reason, []).append(pid)
             except OSError:
                 continue
         if killed:
@@ -579,9 +632,16 @@ class G3LockMixin:
                     except OSError:
                         continue
         if killed:
+            # 归因分组日志（code-review item de55d604e087）：cmdline=argv
+            # 显式引用 worktree 路径；cwd=仅 cwd 落在 worktree 内（白名单
+            # 过滤后），便于事后排查误杀/漏杀
+            reasons_text = "; ".join(
+                f"{reason}={killed_by_reason[reason]}"
+                for reason in sorted(killed_by_reason)
+            )
             self.logger.warning(
                 "worktree_manager",
-                f"Killed stray worktree processes for '{wt_name}': {killed}",
+                f"Killed stray worktree processes for '{wt_name}': {reasons_text}",
             )
         return killed
 
@@ -595,9 +655,20 @@ class G3LockMixin:
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
-        """/proc 存活探针（kill 0）：进程存在即存活（僵尸差异可接受）。"""
+        """/proc 存活探针（kill 0）：进程存在即存活（僵尸差异可接受）。
+
+        errno 区分（code-review item 4b55c542613d）：目标进程存活但无信号
+        权限（EPERM，如异 uid 进程）时 os.kill 抛 PermissionError，与死亡
+        （ESRCH）同为 OSError 子类——一律按死亡处理会让 _kill_worktree_strays
+        的 SIGKILL 兜底把实际仍存活的残留进程当已退出而跳过补杀。故仅
+        ProcessLookupError（ESRCH）判定死亡，其余 OSError（EPERM 等探针
+        失效）保守按存活返回：误判存活至多多发一次无害 SIGKILL（兜底循环
+        已吞异常），误判死亡则漏杀不可逆。
+        """
         try:
             os.kill(pid, 0)
             return True
-        except OSError:
+        except ProcessLookupError:
             return False
+        except OSError:
+            return True

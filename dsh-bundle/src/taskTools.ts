@@ -54,6 +54,7 @@ export class TaskStore {
   /** 会话（agent）id → 该会话的任务表；taskId 从 1 递增，不复用。 */
   private readonly sessions = new Map<string, FenixTask[]>();
 
+  /** 取表（惰性创建空表落键）——仅写路径（create）调用。 */
   private table(sessionId: string): FenixTask[] {
     let table = this.sessions.get(sessionId);
     if (!table) {
@@ -61,6 +62,16 @@ export class TaskStore {
       this.sessions.set(sessionId, table);
     }
     return table;
+  }
+
+  /**
+   * 只读取表：不存在即按空表处理、不落键——读路径零副作用。否则一次查空的
+   * TaskGet/TaskUpdate（抛 not found）或空会话 TaskList 会在 sessions 里留下
+   * 空表，让 isPristine 误报「跨 run 任务残留」（守卫错误信息声称存在任务残留、
+   * 实际一条任务都没建过），误导排障方向。
+   */
+  private peekTable(sessionId: string): FenixTask[] {
+    return this.sessions.get(sessionId) ?? [];
   }
 
   /** 丢弃会话状态表（无任务时也清键，防跨 run 残留）。 */
@@ -128,7 +139,7 @@ export class TaskStore {
   /** 内部查找：返回 store 持有的活引用（仅 update 两段式改写复用，不外泄）。 */
   private find(sessionId: string, taskId: number): FenixTask {
     const id = requireInteger(taskId, "taskId");
-    const task = this.table(sessionId).find((t) => t.taskId === id);
+    const task = this.peekTable(sessionId).find((t) => t.taskId === id);
     if (!task) {
       throw new Error(`Task with taskId ${id} not found`);
     }
@@ -140,7 +151,7 @@ export class TaskStore {
   }
 
   list(sessionId: string): FenixTask[] {
-    return this.table(sessionId).map(cloneTask);
+    return this.peekTable(sessionId).map(cloneTask);
   }
 }
 

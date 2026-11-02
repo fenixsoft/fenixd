@@ -366,7 +366,8 @@ class G7StaleSweepMixin:
                 if isinstance(rec, dict)
             } - {None, ""}
         # STATE 条目单次读取（code-review item 74139324aa4f）：供下方 branch -D
-        # 删除段的静态活跃清单守卫复用——与 _gc_merged_branches 守卫 (ii) 同条件
+        # 删除段复用（静态活跃清单守卫 + _branch_protected_by_state 在飞引用
+        # 守卫传参共用）——静态清单与 _gc_merged_branches 守卫 (ii) 同条件
         # （_BRANCH_GC_ACTIVE_STATUSES + 同轮 _read_state_entries 快照），整轮清扫
         # 至多解析一次 STATE。None（STATE 不可解析）不在此放行豁免：该窗口由
         # _branch_protected_by_state 自身的「不可解析 → 保守保留」兜住
@@ -540,7 +541,14 @@ class G7StaleSweepMixin:
                     # 命中则保留分支（worktree 目录照常已删）并打 WARNING；
                     # STATE 不可解析时保守处理（保留分支 + WARNING），
                     # MUST NOT 按「无引用」放行删除。
-                    kept, reason = self._branch_protected_by_state(branch)
+                    # 传快照复用（code-review item ced059f3dd1c，口径对齐
+                    # _gc_merged_branches 守卫 (i)）：state_entries 非 None 时
+                    # 在飞引用守卫与静态清单守卫共用同一轮快照，消除逐目录
+                    # 重复解析 STATE 与双快照不一致窗口；None 时守卫侧兼作
+                    # 「未传快照」缺省哨兵、自行重读后保守保留，行为不变。
+                    kept, reason = self._branch_protected_by_state(
+                        branch, states=state_entries
+                    )
                     if not kept:
                         # ── 静态活跃清单补位（code-review item 74139324aa4f）──
                         # _branch_protected_by_state (a) 的状态集不含 reviewing

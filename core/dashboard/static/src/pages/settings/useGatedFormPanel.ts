@@ -113,17 +113,26 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
   // 对 buildValues 产物做序列化比较，只在内容真变化时回填。
   const lastBackfillRef = useRef('');
   useEffect(() => {
-    const next = buildValues();
-    // 键经归一副本序列化（code-review item f112a7c0c231，见助手注释），
-    // 与求值时刻的墙钟日期无关；回填仍写原 next
-    const key = JSON.stringify(toBackfillKeyValues(next));
+    // 回填异常兜底（code-review item 83842c2b2344）：buildValues、键序列化、
+    // onBackfill 前置逻辑、apply 或缺省 setFieldsValue 抛异常时不再穿透 effect
+    // （React 对 render/effect 阶段逃逸的异常会卸载整棵组件树，设置页白屏），
+    // 降级为 warning 提示；catch 后直接 return、key 不落 lastBackfillRef，沿用
+    // 下方「ref 记账移到回填成功之后」的重试语义——依赖下次变化时同样的配置
+    // 内容仍会重试回填，表单停留在旧值而非整页卸载。
+    let next: TValues;
+    let key: string;
+    try {
+      next = buildValues();
+      // 键经归一副本序列化（code-review item f112a7c0c231，见助手注释），
+      // 与求值时刻的墙钟日期无关；回填仍写原 next
+      key = JSON.stringify(toBackfillKeyValues(next));
+    } catch (error) {
+      // toast 口径与下方回填写入失败同族（message 经 App.useApp() 取上下文，
+      // 见上方 message 注释），避免退化为无声失败
+      message.warning(`配置回填失败：${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     if (key === lastBackfillRef.current) return;
-    // 回填异常兜底（code-review item 83842c2b2344）：onBackfill 前置逻辑、
-    // apply 或缺省 setFieldsValue 抛异常时不再穿透 effect（React 对 render/
-    // effect 阶段逃逸的异常会卸载整棵组件树，设置页白屏），降级为 warning
-    // 提示；catch 后直接 return、key 不落 lastBackfillRef，沿用下方「ref
-    // 记账移到回填成功之后」的重试语义——依赖下次变化时同样的配置内容仍会
-    // 重试回填，表单停留在旧值而非整页卸载。
     try {
       if (onBackfill) {
         onBackfill(next, () => form.setFieldsValue(next));

@@ -49,15 +49,19 @@ export function approvalPatchEntries(): Array<Record<string, unknown>> {
   ];
 }
 
-/** 校验审批策略处于无人值守安全值；不满足抛错（零交互阻塞的构造性保证）。 */
-export function assertUnattendedSafe(policy: string): string {
+/**
+ * 校验审批策略处于无人值守安全值；任何非 "never" 值（含字段存在但非字符串的形态，
+ * 如 --patch 误写 0/对象/null）一律抛错（零交互阻塞的构造性保证，对值类型封闭）。
+ */
+export function assertUnattendedSafe(policy: unknown): string {
   if (policy !== EXPECTED_APPROVAL_POLICY) {
     throw new Error(
       `fenix-dsh-bundle 要求审批策略为 "${EXPECTED_APPROVAL_POLICY}"（无人值守零交互阻塞），` +
         `收到 "${policy}"。交互确认会阻塞 headless 运行，禁止以 ask 策略挂载本 Bundle。`,
     );
   }
-  return policy;
+  // 只有严格等于 "never" 才能到达此处，policy 实际必为 string。
+  return policy as string;
 }
 
 /** 校验沙箱模式处于无人值守安全值；不满足抛错（与 assertUnattendedSafe 对称的构造性保证）。 */
@@ -79,10 +83,11 @@ export const name = "fenix-approval";
 /**
  * 插件入口：读取组合后的审批策略（approval.policy）并断言无人值守安全值。
  * 策略由本 bundle 的 cordis.patch.yml（approvalPatchEntries 的落盘形态）设置
- * 为 never；若上层 --patch 覆盖成 ask，这里在启动期即抛错（而非让会话中途
- * 阻塞/被拒）。policy 不可读（服务形态变化）时不在启动期硬拦，降级为
- * 宿主 logger 通道的 warning 诊断（非 stderr，见 warnUnreadable）——patch
- * 已写死 never，7.1 端到端冒烟对「写入不阻塞」的演示是行为面兜底。
+ * 为 never；若上层 --patch 覆盖成 ask（含字段存在但非字符串的形态），这里在
+ * 启动期即抛错（而非让会话中途阻塞/被拒）。policy 完全缺失（服务缺失/字段
+ * 形态变化）时不在启动期硬拦，降级为宿主 logger 通道的 warning 诊断
+ * （非 stderr，见 warnUnreadable）——patch 已写死 never，7.1 端到端冒烟对
+ * 「写入不阻塞」的演示是行为面兜底。
  *
  * 沙箱面（sandbox-policy.mode）不在此读取：apply 期 ctx.get("sandbox-policy")
  * 实测不可读（见文件头注），无从校验——沙箱期望值由 patch 写死，校验走
@@ -93,18 +98,22 @@ export function apply(ctx: {
   /** 宿主诊断通道（cordis LoggerService）：降级 warning 走这里，不写 stderr。 */
   logger?: { warn(...args: unknown[]): unknown };
 }): void {
-  const approval = ctx.get("approval") as { policy?: string; config?: { policy?: string } } | undefined;
+  const approval = ctx.get("approval") as { policy?: unknown; config?: { policy?: unknown } } | undefined;
+  // 归一只区分「值存在」与「值缺失」：存在即交给 assertUnattendedSafe（含非字符串
+  // 形态，安全断言对值类型封闭——若降级 warning 会带着非 never 策略继续启动，
+  // headless 会话中途被 ask 确认阻塞的风险就漏过了启动期拦截）；缺失（undefined/
+  // 服务缺失）才维持文档化 warning 降级。
   const policy =
-    typeof approval?.policy === "string"
+    approval?.policy !== undefined
       ? approval.policy
-      : typeof approval?.config?.policy === "string"
+      : approval?.config?.policy !== undefined
         ? approval.config.policy
         : undefined;
-  if (policy !== undefined) {
-    assertUnattendedSafe(policy);
-  } else {
+  if (policy === undefined) {
     warnUnreadable(ctx.logger);
+    return;
   }
+  assertUnattendedSafe(policy);
 }
 
 /**

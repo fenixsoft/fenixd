@@ -11,6 +11,20 @@ const TONE_HEX = {
   aqua: '#13c2c2',
 } as const;
 
+// tone→antd 预设色映射（单源：detail.tsx 头部状态 Tag 与 topology/index.tsx
+// 大屏状态 Tag 共同消费，避免各页内联副本取值风格漂移——code-review item
+// 5f88cf8a2a02）。键覆盖 services/dashboard STATUS_META 全部 6 种 tone，色相
+// 与 TONE_HEX / 列表页 TONE_DOT 同语义（warning 橙、aqua 青、info 蓝；
+// item 7d6e6be9876c）。
+export const TONE_TAG_COLOR: Record<string, string> = {
+  muted: 'default',
+  info: 'processing',
+  warning: 'warning',
+  critical: 'error',
+  good: 'success',
+  aqua: 'cyan',
+};
+
 export function OutlinedTag({
   tone,
   children,

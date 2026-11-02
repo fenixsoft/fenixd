@@ -259,7 +259,10 @@ export default function CommandMenu({
     frequentCommandOccurrences.set(key, occurrence + 1);
 
     const commandIndexes = commandIndexesByKey.get(key) ?? [];
-    return commandIndexes[occurrence] ?? commandIndexes[0] ?? -1;
+    // 超出该命令在 commands 中出现次数的 occurrence 返回 -1 交由过滤丢弃
+    // （code-review item 52f265bead5a）：兜底 commandIndexes[0] 会渲染两行
+    // 指向同一 commandIndex 的选项，键盘选中/播报歧义。
+    return occurrence < commandIndexes.length ? commandIndexes[occurrence] : -1;
   };
 
   const groupedCommands = commands.reduce<Record<string, CommandMenuRow[]>>(

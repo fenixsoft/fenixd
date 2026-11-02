@@ -233,6 +233,15 @@ async function request<T>(
       // 且与 200 路径「每次拿全新对象」的透明度对齐。
       return cloneCached(cachedEntry.data) as T;
     }
+    // 304 但无缓存条目（code-review item 42bfcbe6a921）：请求未携带
+    // If-None-Match 时服务端回 304 属违反 HTTP 语义的异常形态（纯防御，
+    // 现网不可达），此时无缓存数据可返回；若落入下方 !res.ok 分支会透出
+    // 裸「HTTP 304」且 classifyHttpKind 归 'unknown'，语义不明。显式按
+    // 「缓存失效」抛出（kind 归 'server'，与上方 204/205 无体响应的纯
+    // 防御分支同理：异常形态责任在服务端）。
+    if (res.status === 304) {
+      throw new ApiError('缓存失效：未携带 If-None-Match 的请求收到 304', 304, 'server');
+    }
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       let code: string | undefined;
