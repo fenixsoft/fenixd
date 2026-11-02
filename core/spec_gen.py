@@ -127,6 +127,26 @@ def _validate_name(name: str) -> Optional[str]:
     return None
 
 
+def _resolve_change_dir(project_root: Path, name: str) -> Path:
+    """校验 kebab-case 名称并定位已存在的 change 目录，status/instructions 共用。
+
+    与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
+    路径，含 ../ 时 change_dir 可越出项目根。抽出共用前置块，避免两处错误文案
+    与校验口径人工同步漂移（code-review item ddaf75e87ba9）。
+
+    Raises:
+        ValueError: 名称非 kebab-case，或 change 目录不存在。
+    """
+    error = _validate_name(name)
+    if error:
+        raise ValueError(error)
+
+    change_dir = project_root / "spec" / "changes" / name
+    if not change_dir.is_dir():
+        raise ValueError(f"Change '{name}' not found at {change_dir}")
+    return change_dir
+
+
 # ── change 脚手架 ──────────────────────────────────────────────────
 
 
@@ -269,15 +289,8 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
             （经 load_schema 抛出）。
         FileNotFoundError: schema.yaml 缺失（经 load_schema 抛出）。
     """
-    # 与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
-    # 路径，含 ../ 时 change_dir 可越出项目根。
-    error = _validate_name(name)
-    if error:
-        raise ValueError(error)
-
-    change_dir = project_root / "spec" / "changes" / name
-    if not change_dir.is_dir():
-        raise ValueError(f"Change '{name}' not found at {change_dir}")
+    # 名称校验 + change 目录定位收口 _resolve_change_dir（code-review item ddaf75e87ba9）。
+    change_dir = _resolve_change_dir(project_root, name)
 
     schema = load_schema()
     completed = _detect_completed(change_dir, schema)
@@ -349,15 +362,8 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
         FileNotFoundError: schema.yaml 或 artifact 模板文件缺失
             （分别经 load_schema/_load_template 抛出）。
     """
-    # 与 new_change 同口径校验（code-review item d708be010937）：name 未校验即拼
-    # 路径，含 ../ 时 change_dir 可越出项目根。
-    error = _validate_name(name)
-    if error:
-        raise ValueError(error)
-
-    change_dir = project_root / "spec" / "changes" / name
-    if not change_dir.is_dir():
-        raise ValueError(f"Change '{name}' not found at {change_dir}")
+    # 名称校验 + change 目录定位收口 _resolve_change_dir（code-review item ddaf75e87ba9）。
+    change_dir = _resolve_change_dir(project_root, name)
 
     schema = load_schema()
     schema_name = schema.get("name", DEFAULT_SCHEMA)
@@ -376,20 +382,22 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
                 "id": req,
                 "done": req in completed,
                 "path": dep["generates"] if dep else req,
-                "description": dep.get("description", "") if dep else "",
+                "description": (dep.get("description") or "") if dep else "",
             }
         )
 
     unlocks = sorted(a["id"] for a in schema["artifacts"] if artifact_id in a.get("requires", []))
 
+    # description/instruction 用 `or ""` 归一（code-review item c8754f670984）：
+    # `get(key, "")` 只兜键缺失，YAML 写作 `description:` 的显式空值会以 None 透传。
     return {
         "changeName": name,
         "artifactId": artifact_id,
         "schemaName": schema_name,
         "changeDir": str(change_dir.resolve()),
         "outputPath": artifact["generates"],
-        "description": artifact.get("description", ""),
-        "instruction": artifact.get("instruction", ""),
+        "description": (artifact.get("description") or ""),
+        "instruction": (artifact.get("instruction") or ""),
         "template": template,
         "dependencies": dependencies,
         "unlocks": unlocks,
