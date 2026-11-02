@@ -1175,7 +1175,9 @@ class EventBus:
         # PMEngine；复用已读入的 current_specs 字典，不额外读盘的百量级遍历）。
         for accepted_name in accepted_names:
             try:
-                dependents = EventBus._find_dependents(current_specs, accepted_name)
+                dependents = EventBus._find_dependents(
+                    current_specs, accepted_name, self.logger
+                )
                 if dependents:
                     self.pm_engine._wakeup_dependents(accepted_name, dependents)
                 # 无 dependents → 零副作用、零日志（Task 1.4）
@@ -1271,7 +1273,7 @@ class EventBus:
         return events, accepted_names, hook_events
 
     @staticmethod
-    def _find_dependents(current_specs: dict, dep_name: str) -> list:
+    def _find_dependents(current_specs: dict, dep_name: str, logger=None) -> list:
         """反查 dependents（dispatch-dependency-wakeup 1.2）。
 
         遍历本轮已读入的 ``current_specs`` 字典，匹配 ``depends_on`` 字段含
@@ -1281,6 +1283,13 @@ class EventBus:
         ``depends_on`` 的规范形态是逗号分隔的 SPEC 名列表（见
         PMEngine._dependencies_satisfied 的解析口径）；此处沿用逐名解析做
         **精确匹配**，避免「B」被「B2」子串误配。
+
+        形态归一（code-review item 248d00806e40）：``depends_on`` 为
+        list/tuple 时按元素 str() 展开——``str()`` 直接作用于列表会得到
+        ``"['a', 'b']"``，split(",") 产出脏名使精确匹配恒失败，依赖定向
+        唤醒对该 spec 静默失效；归一同时留 WARNING 指明书写形态非法。
+        ``logger`` 可选注入（调用方传 ``self.logger``），缺省 None 时静默
+        归一，保持 staticmethod 无副作用契约。
         """
         dependents = []
         for name, entry in current_specs.items():
@@ -1291,7 +1300,18 @@ class EventBus:
             # （code-review 56f1aefd2823），此处只需判空。
             if not deps:
                 continue
-            dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
+            if isinstance(deps, (list, tuple)):
+                # YAML 列表形态非法（code-review item 248d00806e40）：按元素
+                # str() 归一，与逗号串形态同一逐名解析口径。
+                if logger is not None:
+                    logger.warning(
+                        "event_bus",
+                        f"SPEC '{name}' 的 depends_on 是 {type(deps).__name__} 列表形态，"
+                        f"规范形态为逗号分隔 SPEC 名字符串：{deps!r}（已按元素归一处理）",
+                    )
+                dep_names = [d.strip() for d in map(str, deps) if d.strip()]
+            else:
+                dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
             if dep_name in dep_names:
                 dependents.append(name)
         return dependents
