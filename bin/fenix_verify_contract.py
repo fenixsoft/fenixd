@@ -2,7 +2,7 @@
 """fenix_verify_contract.py — 验证契约校验 CLI（Administrator 自证入口）。
 
 用法:
-    python bin/fenix_verify_contract.py [项目根目录]
+    python3 bin/fenix_verify_contract.py [项目根目录]
 
     项目根目录缺省为当前目录。校验 .fenix/verify.yaml 三段契约（prepare/serve/ready），
     输出逐段结果，全通退出码 0。含 regression 段时额外做一次**可选**自证：按
@@ -20,13 +20,13 @@
 
 示例:
     # 校验当前项目契约
-    python bin/fenix_verify_contract.py
+    python3 bin/fenix_verify_contract.py
 
     # 校验指定项目契约
-    python bin/fenix_verify_contract.py /path/to/project
+    python3 bin/fenix_verify_contract.py /path/to/project
 
     # 作为 Administrator 自证入口：草稿写临时路径后运行此 CLI，全通才落位
-    python bin/fenix_verify_contract.py /path/to/project
+    python3 bin/fenix_verify_contract.py /path/to/project
     if [ $? -eq 0 ]; then
         cp /tmp/draft-verify.yaml /path/to/project/.fenix/verify.yaml
     fi
