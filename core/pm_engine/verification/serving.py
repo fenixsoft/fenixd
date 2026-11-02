@@ -1251,6 +1251,26 @@ def _probe_url(u: str, timeout: float = 2.0, http_error_ok: bool = False) -> boo
         return False
 
 
+def _probe_urls_responding(urls) -> bool:
+    """并发探测一组 URL 是否全部应答（code-review 008dd10afffc 单点收敛）。
+
+    _ensure_app_reachable 首轮探活与 _legacy_selfheal_start 探活环原本各自
+    内联 ThreadPoolExecutor(max_workers=16) + all(pool.map(...)) 同款骨架，
+    收敛到本助手后 max_workers 与 http_error_ok 口径单点维护（对齐端口维度
+    _probe_ports_responding 先例）。每个 URL 探测结果独立（_probe_url 无共享
+    状态），并发仅缩短墙钟，判定语义与原串行 all(...) 一致：全部 URL 应答
+    才算可达；空集 all() 恒真（两个调用点均先把空 urls 分流，不依赖此语义）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    # 口径同 _probe_ports_responding：入口归一为 list，不隐式依赖传入对象
+    # 的可重复迭代性（pool.map 调用时即耗尽传入对象建 futures）。
+    urls = list(urls)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return all(pool.map(lambda u: _probe_url(u, http_error_ok=True), urls))
+
+
 def _prepare_in_main_tree(pipeline, contract):
     """主树契约 prepare 共同序列（纯 cli 分支/契约主树分支单一出处）。
 
@@ -1360,6 +1380,17 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
                 return False, False, note
         return True, False, "纯 cli 场景集，跳过 serve/ready（无实例形态）"
     if not kinds:
+        # code-review 8eb65feb9eb6：根是数组但条目全非 dict（如字符串数组）
+        # 与上方根非数组同属「场景集损坏」形态——isinstance 过滤后 kinds
+        # 恒空落到本分支，原先无任何日志静默放行，排障时无法区分「损坏放
+        # 行」与「正常放行」。仅非空数组判损坏（空数组 [] 是零场景形态，
+        # 维持静默），同级 WARNING 留痕后按既有放行语义返回。
+        if data:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"验证场景条目全非对象（场景集损坏），可达性门禁跳过: "
+                f"{scenarios_path}",
+            )
         return True, False, ""
 
     # 收集场景实例入口 URL（web navigate / api http_request、sse_connect），
@@ -1433,11 +1464,11 @@ def _ensure_app_reachable(pipeline, spec_name: str) -> tuple:
     # 结果独立（_probe_url 无共享状态），并发仅缩短墙钟，判定语义与原串行
     # all(...) 一致（全部 URL 应答才算可达）。
     else:
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=16) as pool:
-            if all(pool.map(lambda u: _probe_url(u, http_error_ok=True), urls)):
-                return True, False, ""
+        # code-review 008dd10afffc：并发骨架收敛到 _probe_urls_responding
+        # 单点（与 _legacy_selfheal_start 探活环共用同一份 max_workers/
+        # http_error_ok 口径）
+        if _probe_urls_responding(urls):
+            return True, False, ""
 
     # 2) 自愈：无契约路径（契约 command 分支已在上方 return），
     # 直接回退 commands.start（旧行为）——整段拆为模块级助手
@@ -1636,15 +1667,16 @@ def _legacy_selfheal_start(
     # 独吃 2s：N 个 URL 时单轮最坏 1+2N 秒、30 轮最坏远超名义 30s 占住验证
     # 主流程；并发后单轮最坏墙钟收敛到 1+单探针 timeout。每个 URL 探测结果
     # 独立（_probe_url 无共享状态），并发仅缩短墙钟，判定语义与原串行
-    # all(...) 一致（全部 URL 应答才算可达）。pool 提到环外只建一次。
-    from concurrent.futures import ThreadPoolExecutor
-
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        for _ in range(LEGACY_START_PROBE_ATTEMPTS):
-            time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
-            if all(pool.map(lambda u: _probe_url(u, http_error_ok=True), urls)):
-                boot_log.close()
-                return True, False, "已自动启动应用服务"
+    # all(...) 一致（全部 URL 应答才算可达）。
+    # code-review 008dd10afffc：并发骨架收敛到 _probe_urls_responding 单点
+    # （与 _ensure_app_reachable 首轮探活共用同一份 max_workers/
+    # http_error_ok 口径；原「pool 提到环外只建一次」随之取消——线程按
+    # 提交惰性创建，逐轮构造成本相对 1s 探测间隔可忽略）。
+    for _ in range(LEGACY_START_PROBE_ATTEMPTS):
+        time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
+        if _probe_urls_responding(urls):
+            boot_log.close()
+            return True, False, "已自动启动应用服务"
 
     # 场景 URL 端口 ≠ commands.start 端口（场景声明端口与框架分配端口不一致，
     # 如 3000 vs 8787）：应用已在 base_port 可达时，错的是场景端口而非应用——

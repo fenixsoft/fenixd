@@ -70,6 +70,21 @@ _REPORT_ADD_TIMEOUT = 60
 _REPORT_COMMIT_TIMEOUT = 120
 
 
+def verification_report_path(project_root, spec_name) -> Path:
+    """verification-report.md 路径单源助手（code-review 2158017c3b51）。
+
+    ``spec/changes/<spec>/verification-report.md`` 的全部读写点——本模块
+    合成（synthesize_verification_report）、闸门（ensure_verification_report）、
+    入库 pathspec（_commit_verification_report）与 pm_engine scenario_gate
+    场景变更小节追加——统一经本助手取路径，层级调整只改这一处，杜绝四处
+    手写拼接漂移导致的读写错位。
+
+    spec_name 不过 safe_component：spec/changes 侧路径须与既有 spec 目录名
+    逐字一致（见模块头导入处注释），属有意设计而非遗漏。
+    """
+    return Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
+
+
 def _atomic_write(path: Path, content: str) -> None:
     """mkstemp 唯一临时文件 + fsync + os.replace 原子写（core.fs_utils 单一实现）。
 
@@ -1217,7 +1232,7 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
         degrade_annotation=degrade_annotation,
         source_fingerprint=current_round_fingerprint(project_root, spec_name),
     )
-    out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
+    out_path = verification_report_path(project_root, spec_name)
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         # mkstemp 唯一临时文件原子写（_atomic_write）：进程中途崩溃不会留下截断
@@ -1300,7 +1315,9 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
       得反复落 WARNING 制造告警噪声。
     """
     proot = Path(project_root)
-    rel_path = f"spec/changes/{spec_name}/verification-report.md"
+    # git pathspec 保持仓库相对路径（与既有调用逐字等价）：从单源绝对路径
+    # 剥掉 proot 前缀即得，纯词法操作。
+    rel_path = str(verification_report_path(proot, spec_name).relative_to(proot))
 
     def _warn(msg: str) -> None:
         if logger is not None:
@@ -1426,7 +1443,7 @@ def ensure_verification_report(project_root, spec_name, logger=None, pre_commit=
     UnicodeDecodeError）或可读但为空白（0 字节/纯空白，如 agent 写报告
     截断后崩溃）时同样走重新合成——残缺报告不得以 present 放行。
     """
-    out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
+    out_path = verification_report_path(project_root, spec_name)
 
     def _run_pre_commit() -> None:
         # pre-commit 挂点：仅回调异常兜底（渲染/入库自身的降级由回调内建），

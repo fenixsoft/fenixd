@@ -37,7 +37,8 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
 
     Returns:
         ``check_batch_attribution_dedup_scenario`` 的查重结果；分级计算自身
-        异常时返回 None（→ 调用方走既有「跳过分级照常采纳」语义）。查重门
+        异常时返回 None（→ 调用方走既有「跳过分级照常采纳」语义）；结果
+        非 dict 非 None（契约违约形态）同样归一为 None（同上语义）。查重门
         本体与分级共用同一 try、同一 fail-open 出口（code-review
         db86e983a4fa）：查重门自身抛异常同样返回 None 按「跳过照常采纳」
         放行——与下方缓存打标的单独兜底不同，不折算独立失败；「宁可不推进
@@ -98,6 +99,19 @@ def _run_attribution_gate(pipeline, spec_name: str, report: dict, lane_label: st
             "pm_engine",
             f"归因分级校验异常跳过{lane_label}'{spec_name}'"
             f"（不阻断裁决）: {type(e).__name__}: {e}",
+        )
+        return None
+    # [fenix-code-fix:6965388a9c22] 形态归一（与 _parse_resynthesis_counts 的
+    # isinstance(prior, dict) 防御先例同口径）：查重结果非 dict 非 None（契约
+    # 违约，如 list）时记 WARNING 返回 None，走既有「跳过分级照常采纳」语义
+    # ——不以裸形态流向各查重拒绝门的 dedup.get(...)（L181 位于 try 之外），
+    # 否则 AttributeError 会从 _verify_verdict_evidence 裸外溢（engine 层
+    # except 降级旧版 verifier、整体旁路查重门）。
+    if dedup is not None and not isinstance(dedup, dict):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"批量归因查重结果形态异常跳过{lane_label}'{spec_name}'"
+            f"（非 dict，按跳过分级照常采纳）: {type(dedup).__name__}",
         )
         return None
     # 豁免决策留痕（add-attribution-dedup-cascade-exemption 1.2）：豁免=
@@ -503,9 +517,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # 场景级回炉 episode 若按 dispatch_failed 语义保留过 directive
             # （_handle_attr_dedup_rejection 分支），blocked 处置后残留的
             # directive/manifest 仍会锚定下一 episode 首 judge，一并补清。
-            pipeline._clear_resynthesis_directive(spec_name)
-            pipeline._clear_requeue_manifest(spec_name)
-            pipeline._clear_verdict_violations(spec_name)
+            _clear_verdict_injection_files(pipeline, spec_name)
             return re_judge
         report2 = load_report(pipeline._context.project_root, spec_name)
         if report2 is None:
@@ -515,9 +527,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
             # 「强制修复」纪律锚定）。
             # code-review 86583b22e80a：同口径补清 directive/manifest
             # （e92461050ae5 三件套纪律，理由同上方派发失败出口）。
-            pipeline._clear_resynthesis_directive(spec_name)
-            pipeline._clear_requeue_manifest(spec_name)
-            pipeline._clear_verdict_violations(spec_name)
+            _clear_verdict_injection_files(pipeline, spec_name)
             return {
                 "ok": False,
                 "cause": "report_missing",
@@ -558,9 +568,7 @@ def _verify_verdict_evidence(pipeline, spec_name: str, retry_judge: bool = False
         # 若按 dispatch_failed 语义保留过 directive（_handle_attr_dedup_rejection
         # 分支），blocked 处置后残留的 directive/manifest 仍会锚定下一
         # episode 首 judge，一并补清（理由同上方两终局出口）。
-        pipeline._clear_resynthesis_directive(spec_name)
-        pipeline._clear_requeue_manifest(spec_name)
-        pipeline._clear_verdict_violations(spec_name)
+        _clear_verdict_injection_files(pipeline, spec_name)
         return {
             "ok": False,
             "cause": "violations",
@@ -895,6 +903,26 @@ def _parse_resynthesis_counts(
     return attempts, rejection_round
 
 
+def _clear_verdict_injection_files(pipeline, spec_name: str) -> None:
+    """终局出口三件套注入文件清除单源（directive / manifest / violations）。
+
+    各终局出口（派发失败 / report_missing / 二次违规 / frozen·cancelled
+    让位 / 重合成预算耗尽升级）须同点同口径清除 resynthesis_directive、
+    requeue_manifest、verdict_violations 三份 prompt 注入文件——历史事故
+    正是每个新增出口漏清其一，stale 文件被 prompt_builder 各注入段按
+    「文件在场」无条件注入、锚定新 episode 首 judge，事后逐个补齐
+    （e92461050ae5 / 86583b22e80a / a72a0164a729 / 2aa137fa6fcb /
+    bdfac9e49a2c）；收敛本助手后，后续新增终局出口只依赖单一入口，不再
+    人肉同步三行（code-review item ab709f1b18b6）。三清各自 fail-open
+    （unlink missing_ok / OSError 静默，文件缺失不报错），调用顺序
+    directive → manifest → violations 与既有出口逐字一致。合规采纳路径走
+    _adopt_report（violations 先清），不经本助手。
+    """
+    pipeline._clear_resynthesis_directive(spec_name)
+    pipeline._clear_requeue_manifest(spec_name)
+    pipeline._clear_verdict_violations(spec_name)
+
+
 def _escalate_dedup_resynthesis(
     pipeline, spec_name: str, rejection_round: int, violations: list
 ) -> dict:
@@ -922,20 +950,20 @@ def _escalate_dedup_resynthesis(
     # 首轮拒绝即再升级，重合成自愈通道对此 spec 永久失效（预算跨人工
     # 接管周期「永久累计」而非「连续 2 轮」）；同时避免 stale 指令被
     # judge prompt 注入段误读。合规采纳路径的清除语义不变。
-    pipeline._clear_resynthesis_directive(spec_name)
     # code-review 2aa137fa6fcb：同点同 fail-open 口径清回炉清单——否则
     # blocked 解除后新一轮 judge 派发经 prompt_builder._requeue_manifest_section
     # 仍被上一 episode 的「只重做 requeue 子集、其余场景 MUST NOT 重写」约束
     # （该段逐轮无条件注入），与 directive 侧 stale 隐患同型同治；
     # _adopt_report 采纳路径本就两者同清。
-    pipeline._clear_requeue_manifest(spec_name)
     # code-review bdfac9e49a2c：同点同 fail-open 口径清裁决驳回清单——否则
     # blocked 解除后的全新 judge 派发经 prompt_builder._verdict_rejection_section
     # 仍按「文件在场」注入上一 episode 的「强制修复 / 轻量重合成禁止复现与改判定」
     # 旧纪律（该段无新鲜度判据），把新轮 judge 锁死在对旧被拒清单的轻量改写上；
     # 计数已随 error/告警留痕，清清单不丢事实，新轮再被拒时
     # _handle_attr_dedup_rejection 会重新写盘本轮清单，注入闭环不受影响。
-    pipeline._clear_verdict_violations(spec_name)
+    # 三清收敛 _clear_verdict_injection_files 单源（item ab709f1b18b6），
+    # 顺序 directive → manifest → violations 与原出口逐字一致。
+    _clear_verdict_injection_files(pipeline, spec_name)
     pipeline._context.state_machine.update_spec(
         spec_name,
         {
@@ -1073,9 +1101,7 @@ def _handle_attr_dedup_rejection(
         # 非人工接管（引擎将重派同一 spec），保留 directive 以延续重合成预算
         # 与差异化素材——两分支差异依据见此。
         if re_judge.get("cause") in ("dispatch_frozen", "dispatch_cancelled"):
-            pipeline._clear_resynthesis_directive(spec_name)
-            pipeline._clear_requeue_manifest(spec_name)
-            pipeline._clear_verdict_violations(spec_name)
+            _clear_verdict_injection_files(pipeline, spec_name)
         return re_judge
 
     # 4) 重合成产物回灌完整校验链（与 _verify_verdict_evidence 既有路径同源）
@@ -1088,9 +1114,7 @@ def _handle_attr_dedup_rejection(
         # 注入上一 episode 旧纪律，resynthesis_attempts 亦跨接管周期永久累计、
         # 截断新 episode 本应从零计的自愈预算；明细已随本返回 dict 交调用方
         # blocked 留痕，清文件不丢事实（清点均 fail-open，文件缺失不报错）。
-        pipeline._clear_resynthesis_directive(spec_name)
-        pipeline._clear_requeue_manifest(spec_name)
-        pipeline._clear_verdict_violations(spec_name)
+        _clear_verdict_injection_files(pipeline, spec_name)
         return {
             "ok": False,
             "cause": "report_missing",
@@ -1111,9 +1135,7 @@ def _handle_attr_dedup_rejection(
         # violations/directive/manifest 旧纪律锚定（prompt_builder 各注入段
         # 均按「文件在场」无条件注入、无新鲜度判据），attempts 亦不得跨接管
         # 周期永久累计；明细已随本返回 dict 留痕，清文件不丢事实。
-        pipeline._clear_resynthesis_directive(spec_name)
-        pipeline._clear_requeue_manifest(spec_name)
-        pipeline._clear_verdict_violations(spec_name)
+        _clear_verdict_injection_files(pipeline, spec_name)
         return {
             "ok": False,
             "cause": "violations",

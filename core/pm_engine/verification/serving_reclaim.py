@@ -172,6 +172,21 @@ def is_within_grace_period(wt_path: Path) -> bool:
         return True
 
 
+def _pid_alive(pid) -> bool:
+    """/proc/<pid> 存在性直查（最小私有助手，供空 worktree 登记项的
+    存活复核使用；本文件 has_live_process 是全 /proc argv/cwd 扫描，
+    无法按登记 pid 定点探测）。
+
+    异常（pid 非数值/探测出错）一律返回 True（fail-safe 保留方向）。
+    pid 复用会让已亡实例被无关新进程「顶活」——本助手只作保留判据，
+    失败方向是多保留一份证据日志而非误删，可接受。
+    """
+    try:
+        return Path(f"/proc/{int(pid)}").exists()
+    except Exception:
+        return True
+
+
 def is_spec_registered_in_servers(spec: str, project_root: Path) -> bool:
     """判据 2（spec 前缀匹配，boot.log 维度）：servers.json 存在 worktree
     目录名解析为该 spec 的登记项。
@@ -179,12 +194,21 @@ def is_spec_registered_in_servers(spec: str, project_root: Path) -> bool:
     boot.log 无对应目录可做路径全等匹配（is_registered_in_servers），
     退而按登记 worktree 名 {spec}-{时间戳后缀}（≥10 位数字，与
     parse_spec_from_worktree_name 同一契约）解析出 spec 后比对。
+    worktree 为空串的登记项（主树 command 实例，_serve_command_in_main
+    登记时不传 wt_path）按登记 spec 全等 + pid 存活复核命中保留
+    （code-review 9430b0ca76a2：原样跳过使判据 2 对该形态恒不命中，
+    spec 已归档且 boot.log 静默超宽限期时仍存活实例的证据日志会被
+    unlink——fd 继续写已删 inode，证据不可再读）。
     无法判定时返回 True（fail-safe）。
     """
     try:
         for entry in ServingRegistry(project_root, logger=None).entries():
             registered_path = entry.get("worktree", "")
             if not registered_path:
+                # 空串 worktree 形态：spec 全等且登记 pid 仍存活 → 命中保留
+                # （_pid_alive 异常/复用均落在保留方向，见其 docstring）
+                if entry.get("spec") == spec and _pid_alive(entry.get("pid")):
+                    return True
                 continue
             if parse_spec_from_worktree_name(Path(registered_path).name) == spec:
                 return True

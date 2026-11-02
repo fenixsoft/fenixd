@@ -304,6 +304,343 @@ def _block_legacy_verdict(
         )
 
 
+def _attribute_and_record_infra(
+    pipeline, spec_name, error_text, ledger_run_id, at_label,
+):
+    """统一失败归因入口（verdict bug-found 与进程失败两分支共用实现，
+    code-review item 4f442d07f61d）。
+
+    enrich_failure_class 比上游早期 infra 门（_verifier_error_is_infra：
+    熔断/链耗尽/切换类）多匹配 worktree/merge conflict/tree dirty 标记，
+    verifier error 含这些文本时判 infra——MUST 在 bug-found transition 之前
+    调用（code-review item 12bd5b177792 / 0d478d8f37ce）：若先流转
+    bug-found 再归因，infra 分支「不流转 bug-found」即失效（spec 停在
+    bug-found 却不派生 fix，状态回退只能靠 recovery 兜底）。
+
+    判 infra 时在本函数内完成 WARNING + ``_record_infra_failure`` 记账并
+    返回 ``"infra"``（调用方直接 return：不流转 bug-found、不派生 fix），
+    其余原样返回 failure_class 供调用方继续采纳流程。
+
+    ``at_label``：两分支唯一差异文案，同时嵌入日志前缀（「归因入口判 infra
+    （<at_label>）」）与台账 reason（``infra at attribution entry
+    (<at_label>)``）——verdict bug-found 分支传 ``"legacy"``、进程失败分支
+    传 ``"legacy 进程失败"``；``ledger_run_id``：attempt run id 只作台账
+    事件标识（不作预算退款锚点，退款锚点回退 implementer_run）。
+    """
+    failure_class = pipeline.enrich_failure_class(
+        spec_name,
+        error_text=error_text,
+    )
+    if failure_class == "infra":
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"归因入口判 infra（{at_label}）：'{spec_name}' 按 infra 记账，"
+            f"不流转 bug-found、不派生 fix",
+        )
+        pipeline._record_infra_failure(
+            spec_name,
+            f"infra at attribution entry ({at_label})",
+            # 退款锚点回退 implementer_run（不传 run_id）；attempt
+            # run id 只作台账事件标识（attempt run id 不作预算退款锚点）。
+            ledger_run_id=ledger_run_id,
+        )
+    return failure_class
+
+
+def _apply_bug_found_adoption_updates(state_machine, spec_name, run_id, error_text):
+    """bug-found 采纳写点（verdict bug-found 与进程失败两分支共用实现，
+    code-review item 4f442d07f61d）。
+
+    两入口此前各自重复维护同一组复位字段写，改一处漏另一处会使两条入口
+    行为分叉且难以从单侧测试发现（本仓库同类双写点有多次单侧漏改前科，
+    fastlane.VERIFIED_RESET_FIELDS 注释自述的清零清单漂移史即同型问题）——
+    ``_inconclusive_attempts: 0`` 与 ``_verify_parallel_override: None`` 的
+    复位收敛于此，后续给 bug-found 采纳点增删复位字段只改本函数。
+    tester_run/error 两分支文案不同，由调用方传参。
+    """
+    state_machine.update_spec(
+        spec_name,
+        {
+            "tester_run": run_id,
+            "error": error_text,
+            # 进程失败属「验证没能发生」，inconclusive 暂停语义不应跨迁移
+            # 残留（code-review item f7a38d6f8f25）：escalation 的
+            # inconclusive 重派先写非零 _inconclusive_attempts 再派
+            # verifier（escalation 写点），若该在飞 run 走到任一 bug-found
+            # 采纳点（verdict bug-found 分支或进程失败分支），残留计数会令
+            # event_bus 两个自动重验恢复出口（_inconclusive_paused）按
+            # 「暂停自动重验、等待人工处置」跳过。与主路径采纳点同款复位。
+            "_inconclusive_attempts": 0,
+            # add-verify-parallel-backoff / design D2：bug-found 属健康轮，
+            # 降档并行度同轮复位（legacy 路径同语义）。
+            "_verify_parallel_override": None,
+        },
+    )
+
+
+def _consume_unreadable_verdict(
+    pipeline, spec_name, result, run_result_path, verifier_result,
+    verifier_result_stale,
+):
+    """结果不可读 / status 白名单外裁决的消费分派（code-review item
+    aa548c9ac9d5 从 _run_legacy_verification success 分支整体搬移，纯结构
+    搬移零行为变化）。
+
+    调用前置条件：``verifier_result.ok`` 为 False（_read_verdict 已判不可
+    采信）且环境失联门（_handle_env_blocked_inconclusive）已按原序消费。
+    按 reason 分派四类 fail-closed 处置，全路径终局收口（等价搬移前内联
+    控制流的「每分支各自 return」）：
+
+    - not-produced：本轮未产出裁决（预写戳原样）→ _residue_fail_closed
+      （archive=False）
+    - foreign-role / foreign-stamp：异归属残留 → 归档 .stale-<ts> 后
+      _residue_fail_closed（archive=True）
+    - unknown-status：先过陈旧/归属护栏（stale → 归档 fail-closed），新鲜
+      则「status 白名单外」blocked
+    - 其余（缺失/非法 JSON）：「结果不可读」blocked（D5 直接送人工）
+
+    ``verifier_result_stale``：调用方前置计算的同一陈旧/归属护栏布尔
+    （单一观测口径，不重复观测——code-review item eb06c288c3c7 /
+    f8ad8f7cd7ae 的既定收敛；搬移后仍由调用方单点计算传入）。
+    """
+    # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
+    # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
+    # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性
+    # 异常而非偶发——自动重派整轮 verifier 只会烧钱，交人工。例外：status 白
+    # 名单外（如 implementer 共享残留的 "success"）文件本身可读，须先走既有
+    # 陈旧/归属护栏（foreign-spec 残留 → re-dispatch）再决定 blocked。
+    if verifier_result.reason == "not-produced":
+        # fix-verify-verdict-run-attribution D2 分支②：文件仍为本次
+        # 派发预写戳原样（role=verifier、status=dispatched）——本轮
+        # 未产出裁决。走既有 fail-closed（blocked + critical 告警，
+        # 文案「本轮未产出机器可读裁决」），不引用任何残留内容作为
+        # 裁决；丢弃当轮成果前按 D4 保全 report.json（archive=False：
+        # 预写戳是本轮派发自己的产物，非跨 run 残留，不作 .stale 归档）。
+        _residue_fail_closed(
+            pipeline, spec_name, result, run_result_path, verifier_result,
+            "not-produced", archive=False,
+        )
+        return
+    if verifier_result.reason in ("foreign-role", "foreign-stamp"):
+        # _read_verdict 已定性：主树共享文件 role≠verifier/缺 role
+        # （implementer 残留 status=success 等）或 spec 戳不符——
+        # 文件可读但归属不明，一律不采信为验证裁决。
+        # fix-verify-verdict-run-attribution D2 分支③：异归属残留
+        # 先归档 .stale-<ts> 再 fail-closed（blocked + critical 告警），
+        # MUST NOT 沿用「stale/foreign 重放」语义把当轮 verify 成果
+        # 判为他人重放、不再自动整轮重派（re-dispatch 处置已移除）。
+        _residue_fail_closed(
+            pipeline, spec_name, result, run_result_path, verifier_result,
+            verifier_result.reason, archive=True,
+        )
+        return
+    if verifier_result.reason == "unknown-status":
+        # 白名单外 status：文件可读，可能是共享文件中的其它 spec 残留
+        # 或 implementer 残留——先走既有陈旧/归属护栏（检测 spec stamp
+        # 不符 / mtime 陈旧）。
+        # code-review item eb06c288c3c7：复用调用方前置计算的同一
+        # 布尔（单一观测口径），不重复观测。
+        if verifier_result_stale:
+            # stale 命中 → D2 分支③：归档残留 + 保全成果 + fail-closed
+            # （不再 re-dispatch，语义见 _residue_fail_closed）。
+            _residue_fail_closed(
+                pipeline, spec_name, result, run_result_path, verifier_result,
+                "unknown-status+stale", archive=True,
+            )
+            return
+        # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
+        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+        # run_verifier 期间状态可能已漂移（stale-result 拨回 implemented /
+        # 人工复位 / 冻结接管）→ DEBUG 丢弃，不覆写较新状态（与
+        # bug-found/verified/process-failure 分支同款复核，判据单点
+        # 收敛于 _discard_if_not_testing）。
+        if _discard_if_not_testing(pipeline, spec_name, result, "unknown-status"):
+            return
+        # ── verified 一次性放行门（judge-rerun-stability R2）──
+        # 「legacy unknown-status 不得改判」：已 verified 且场景集
+        # 未变时，白名单外 status（implementer 残留 success 等）不
+        # 得把 verified 覆盖为 blocked——verified 门读自有
+        # verdict_stability.json（已 verified），共享文件 status 残留
+        # 只是污染不是裁决，放行门继续拒绝降级。
+        if pipeline._verified_gate_refuses(spec_name, "blocked"):
+            return
+        _block_legacy_verdict(
+            pipeline, spec_name, result, run_result_path, verifier_result,
+            reason_label="status 白名单外",
+            recommended_action=(
+                "检查旧版 verifier 结果文件 status 是否在 "
+                "verified/bug-found/plan-ready/scenario-repaired "
+                "白名单内；修复后人工重置验证"
+            ),
+        )
+        return
+    # 缺失 / 非法 JSON → D5 直接 blocked（不可读属结构性异常，
+    # 自动重派整轮 verifier 只会烧钱，交人工）。
+    # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+    # run_verifier 期间状态可能已漂移（stale-result 拨回 implemented /
+    # 人工复位 / 冻结接管）→ DEBUG 丢弃，不覆写较新状态（与
+    # bug-found/verified/process-failure 分支同款复核，判据单点
+    # 收敛于 _discard_if_not_testing）。
+    if _discard_if_not_testing(pipeline, spec_name, result, "unreadable"):
+        return
+    # ── verified 一次性放行门（judge-rerun-stability R2）──
+    # 已 verified 且场景集未变时，结果不可读不得把 verified 覆盖为
+    # blocked（与 unknown-status 分支同理由：verified 门读自有
+    # verdict_stability.json，裁决以稳定性缓存为准）。
+    if pipeline._verified_gate_refuses(spec_name, "blocked"):
+        return
+    _block_legacy_verdict(
+        pipeline, spec_name, result, run_result_path, verifier_result,
+        reason_label="结果不可读",
+        recommended_action=(
+            "检查旧版 verifier 是否以合法 JSON 写入结果文件；修复后人工重置验证"
+        ),
+    )
+    return
+
+
+def _bug_found_guards_pass(pipeline, spec_name, result) -> bool:
+    """bug-found 采纳前守卫链（code-review item aa548c9ac9d5 从
+    _run_legacy_verification verdict bug-found 分支整体搬移，纯结构搬移
+    零行为变化）。
+
+    依序消费：在飞结果状态复核（闸门写点前置复核）→ 验证报告产物闸门 →
+    二次状态复核 → 归因分级门禁（speculative）→ judge 自述环境守卫 →
+    verified 一次性放行门 → 统一失败归因入口（infra 记账）→ 守卫二
+    spawn 抑制 → inconclusive 重验旗标清除。任一守卫命中即已在函数内完成
+    对应处置（丢弃/阻断写点/infra 记账/跳过派生写点）并返回 False，调用方
+    直接 return；全链通过返回 True，调用方继续 transition + 采纳写点
+    （transition 前仍保留同款复核收敛 TOCTOU 窗口，见调用方注释）。
+    """
+    # ── 在飞 verify 结果状态判据·闸门写点前置复核（code-review
+    # 12f6974d3d88）──
+    # 复核前移到各闸门写点之前（与 unknown-status/unreadable 分支同
+    # 序）：run_verifier 期间 spec 已漂移出 testing 时，报告闸门/洗白
+    # 门阻断路径的 update_spec 不得覆写 error/tester_run（正是
+    # process-failure 分支注释承认的 error 覆写抹掉 frozen 标记性
+    # error 的事故同款风险）。transition 前仍保留同款复核收敛 TOCTOU
+    # 窗口。
+    if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
+        return False
+    # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
+    report_blocker = pipeline._ensure_verification_report(spec_name)
+    if report_blocker:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                # 对齐 verified 分支同构闸门阻断：写 tester_run
+                # 供 dashboard/审计在报告闸门阻断时仍可见触发本轮的 run
+                # （code-review item a0eff51179fd）。
+                "tester_run": result.run_id,
+                "error": report_blocker,
+            },
+        )
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
+        )
+        return False
+
+    # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+    # 结果应用前 spec 已非 testing（stale-result 防护拨回 implemented /
+    # 并发新 attempt 已接管 / 其它状态漂移）→ DEBUG 丢弃，不走失败迁移
+    # 与 fallback 重派（拆除旧 reconcile：implemented→testing→bug-found
+    # 回放 + 重复派发整轮 verifier）。正常路径 spec 恒为 testing。
+    # 判据与文案单点收敛于 _discard_if_not_testing（05d216e0182d）。
+    if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
+        return False
+
+    # ── 归因分级门禁（legacy 路径同门禁，add-verdict-credibility-gate / D2）──
+    if pipeline._speculative_bug_found_gate(spec_name):
+        return False
+    # ── judge 自述环境问题守卫（2026-08-28 伪 fix 级联事故防线，
+    # 与主路径 pipeline._apply_bug_found 同序：speculative 门之后）──
+    # judge 自己把全部 bug 根因描述为环境/基础设施问题时，属「验证没
+    # 能发生」而非「验证发现了缺陷」，不得流转 bug-found 派生伪 fix
+    # 级联。读的正是 legacy verifier 同样落盘的 verify-progress/<spec>/
+    # .fenix-run-result.json primary 产物（见本文件上方 _read_verdict
+    # 注释），经门面转发注册表（__getattr__ partial）复用 escalation
+    # 实现，与既有 pipeline._handle_env_blocked_inconclusive 同一接入
+    # 惯例；命中即按 inconclusive 处置（回 implemented 重验/超限升级）。
+    if pipeline._judge_bugs_declare_env(spec_name) and pipeline._handle_judge_env_declared(
+        spec_name
+    ):
+        return False
+    # ── 场景缺陷改道门豁免（有意缺位，记录豁免理由）──
+    # 主路径 bug-found 的 _scenario_defect_reroute_gate（纯场景缺陷
+    # 定向重派 judge 走 scenario-repaired 原地修复通道）在 legacy 车
+    # 道维持豁免：legacy 降级车道无 scenario-repaired 重入通道（见
+    # _run_legacy_verification else 分支注释——plan-ready/scenario-repaired
+    # 裁决只能保持 testing 由 full_scan recovery 兜底重验），改道重派
+    # 动作无处落地。
+    # ── verified 一次性放行门（judge-rerun-stability R2）──
+    # 已 verified 且场景集未变 → 拒绝降级为 bug-found（legacy 路径
+    # 同门禁；复用自有 verdict_stability.json 而非共享 .fenix-run-
+    # result.json——后者会被 implementer status=success 残留污染，
+    # 读它会错误判为「非 verified」而漏拦）。
+    if pipeline._verified_gate_refuses(spec_name, "bug-found"):
+        return False
+    # ── 统一失败归因入口（legacy 同门，evo-infra-failure-budget-exempt
+    # R1/R3；两分支共用实现收敛于 _attribute_and_record_infra，
+    # code-review item 4f442d07f61d）──
+    # MUST 在 bug-found transition 之前（code-review item 12bd5b177792）：
+    # enrich_failure_class 比上游早期 infra 门多匹配 worktree/merge
+    # conflict/tree dirty 标记，verifier error 含这些文本时判 infra——
+    # 若先流转 bug-found 再归因，infra 分支「不流转 bug-found」即失效
+    # （spec 停在 bug-found 却不派生 fix，状态回退只能靠 recovery 兜底）。
+    if _attribute_and_record_infra(
+        pipeline,
+        spec_name,
+        error_text=getattr(result, "error", "") or "",
+        ledger_run_id=getattr(result, "run_id", "") or "",
+        at_label="legacy",
+    ) == "infra":
+        return False
+    # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
+    # 被验对象为 fix spec 且自身 ready/implementing（重实现在飞）时
+    # 修复由在飞重实现承载。MUST 在 bug-found transition 之前：命中即
+    # 不流转、直接 return（若先流转再抑制，spec 已迁入 bug-found，
+    # 状态与「由在飞重实现承载」语义不一致）。
+    # 与主路径的决策差异（code-review item f18ca78e5203）：主路径
+    # _apply_bug_found 已按 e1d3410c1e73 将本守卫整段移除（transition
+    # 返回 True 后状态只可能 testing/bug-found，ready/implementing
+    # 结构性不可达）；legacy 此处读的是 transition 前状态，该论证不
+    # 直接迁移，防御性判据保留成本为零，故不同步移除、仅收敛其写点
+    # 复核（见下）。
+    if pipeline._context.is_fix_spec(spec_name):
+        cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
+        if cur in ("ready", "implementing"):
+            pipeline._context.logger.info(
+                "pm_engine",
+                f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
+                f"（重实现在飞）——跳过派生子 fix（legacy 路径）",
+            )
+            # cur 读取与本 update_spec 之间存在 TOCTOU 窗口：窗口内
+            # spec 被并发拨回/冻结时，本次 error 覆写会抹掉冻结标记性
+            # error（本文件多处注释承认的同款事故风险）→ 与其余写点
+            # 同款，复核收敛于 _discard_if_not_testing（code-review
+            # item f18ca78e5203——此前全文件唯一未复核写点）。
+            if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
+                return False
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": "修复由在飞重实现承载，跳过派生子 fix",
+                },
+            )
+            return False
+    # fix-env-exemption-exit-reachability D3（legacy 同语义，code-review
+    # item 5ab0a792d828）：守卫链全过、即将按 bug-found 路由 → 清除
+    # inconclusive 重验旗标恢复 judge 生命周期正计。legacy 车道入口
+    # _handle_env_blocked_inconclusive 置位的旗标此前在本分支无清除点，
+    # 后续轮 judge 派发持续分流 _judge_inconclusive_dispatches 独立
+    # 计数器、_judge_rerun_count 生命周期账不累计。与主路径
+    # _apply_bug_found 入口清除点同序；存在才写盘、写失败仅 WARNING，
+    # 收口见 escalation._clear_inconclusive_reverify_flag。
+    pipeline._clear_inconclusive_reverify_flag(spec_name)
+    return True
+
+
 def _run_legacy_verification(pipeline, spec_name: str):
     """降级方案：使用旧版单体 Verifier Agent。"""
     # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
@@ -461,99 +798,15 @@ def _run_legacy_verification(pipeline, spec_name: str):
         if not verifier_result_stale:
             if pipeline._handle_env_blocked_inconclusive(spec_name, report):
                 return
-        # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
-        # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
-        # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性
-        # 异常而非偶发——自动重派整轮 verifier 只会烧钱，交人工。例外：status 白
-        # 名单外（如 implementer 共享残留的 "success"）文件本身可读，须先走既有
-        # 陈旧/归属护栏（foreign-spec 残留 → re-dispatch）再决定 blocked。
+        # fix-verdict-read-failclosed D5（legacy 同门）消费分派：旧版 verifier
+        # 结果不可读（缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不
+        # 晋级 verified。四类 reason 的 fail-closed 处置收敛于
+        # _consume_unreadable_verdict（code-review item aa548c9ac9d5，纯结构
+        # 搬移），全路径终局收口，此处消费完直接 return。
         if not verifier_result.ok:
-            if verifier_result.reason == "not-produced":
-                # fix-verify-verdict-run-attribution D2 分支②：文件仍为本次
-                # 派发预写戳原样（role=verifier、status=dispatched）——本轮
-                # 未产出裁决。走既有 fail-closed（blocked + critical 告警，
-                # 文案「本轮未产出机器可读裁决」），不引用任何残留内容作为
-                # 裁决；丢弃当轮成果前按 D4 保全 report.json（archive=False：
-                # 预写戳是本轮派发自己的产物，非跨 run 残留，不作 .stale 归档）。
-                _residue_fail_closed(
-                    pipeline, spec_name, result, run_result_path, verifier_result,
-                    "not-produced", archive=False,
-                )
-                return
-            if verifier_result.reason in ("foreign-role", "foreign-stamp"):
-                # _read_verdict 已定性：主树共享文件 role≠verifier/缺 role
-                # （implementer 残留 status=success 等）或 spec 戳不符——
-                # 文件可读但归属不明，一律不采信为验证裁决。
-                # fix-verify-verdict-run-attribution D2 分支③：异归属残留
-                # 先归档 .stale-<ts> 再 fail-closed（blocked + critical 告警），
-                # MUST NOT 沿用「stale/foreign 重放」语义把当轮 verify 成果
-                # 判为他人重放、不再自动整轮重派（re-dispatch 处置已移除）。
-                _residue_fail_closed(
-                    pipeline, spec_name, result, run_result_path, verifier_result,
-                    verifier_result.reason, archive=True,
-                )
-                return
-            if verifier_result.reason == "unknown-status":
-                # 白名单外 status：文件可读，可能是共享文件中的其它 spec 残留
-                # 或 implementer 残留——先走既有陈旧/归属护栏（检测 spec stamp
-                # 不符 / mtime 陈旧）。
-                # code-review item eb06c288c3c7：复用上方 :330 前置计算的同一
-                # 布尔（单一观测口径，与 :431-433 声明一致），不重复观测。
-                if verifier_result_stale:
-                    # stale 命中 → D2 分支③：归档残留 + 保全成果 + fail-closed
-                    # （不再 re-dispatch，语义见 _residue_fail_closed）。
-                    _residue_fail_closed(
-                        pipeline, spec_name, result, run_result_path, verifier_result,
-                        "unknown-status+stale", archive=True,
-                    )
-                    return
-                # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
-                # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
-                # run_verifier 期间状态可能已漂移（stale-result 拨回 implemented /
-                # 人工复位 / 冻结接管）→ DEBUG 丢弃，不覆写较新状态（与
-                # bug-found/verified/process-failure 分支同款复核，判据单点
-                # 收敛于 _discard_if_not_testing）。
-                if _discard_if_not_testing(pipeline, spec_name, result, "unknown-status"):
-                    return
-                # ── verified 一次性放行门（judge-rerun-stability R2）──
-                # 「legacy unknown-status 不得改判」：已 verified 且场景集
-                # 未变时，白名单外 status（implementer 残留 success 等）不
-                # 得把 verified 覆盖为 blocked——verified 门读自有
-                # verdict_stability.json（已 verified），共享文件 status 残留
-                # 只是污染不是裁决，放行门继续拒绝降级。
-                if pipeline._verified_gate_refuses(spec_name, "blocked"):
-                    return
-                _block_legacy_verdict(
-                    pipeline, spec_name, result, run_result_path, verifier_result,
-                    reason_label="status 白名单外",
-                    recommended_action=(
-                        "检查旧版 verifier 结果文件 status 是否在 "
-                        "verified/bug-found/plan-ready/scenario-repaired "
-                        "白名单内；修复后人工重置验证"
-                    ),
-                )
-                return
-            # 缺失 / 非法 JSON → D5 直接 blocked（不可读属结构性异常，
-            # 自动重派整轮 verifier 只会烧钱，交人工）。
-            # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
-            # run_verifier 期间状态可能已漂移（stale-result 拨回 implemented /
-            # 人工复位 / 冻结接管）→ DEBUG 丢弃，不覆写较新状态（与
-            # bug-found/verified/process-failure 分支同款复核，判据单点
-            # 收敛于 _discard_if_not_testing）。
-            if _discard_if_not_testing(pipeline, spec_name, result, "unreadable"):
-                return
-            # ── verified 一次性放行门（judge-rerun-stability R2）──
-            # 已 verified 且场景集未变时，结果不可读不得把 verified 覆盖为
-            # blocked（与 unknown-status 分支 243 行同理由：verified 门读
-            # 自有 verdict_stability.json，裁决以稳定性缓存为准）。
-            if pipeline._verified_gate_refuses(spec_name, "blocked"):
-                return
-            _block_legacy_verdict(
-                pipeline, spec_name, result, run_result_path, verifier_result,
-                reason_label="结果不可读",
-                recommended_action=(
-                    "检查旧版 verifier 是否以合法 JSON 写入结果文件；修复后人工重置验证"
-                ),
+            _consume_unreadable_verdict(
+                pipeline, spec_name, result, run_result_path,
+                verifier_result, verifier_result_stale,
             )
             return
         # 结果文件新鲜度/归属护栏：共享单文件会被任何 spec 的后续运行覆写，
@@ -572,139 +825,14 @@ def _run_legacy_verification(pipeline, spec_name: str):
             )
             return
         if verifier_status == "bug-found":
-            # ── 在飞 verify 结果状态判据·闸门写点前置复核（code-review
-            # 12f6974d3d88）──
-            # 复核前移到各闸门写点之前（与 unknown-status/unreadable 分支同
-            # 序）：run_verifier 期间 spec 已漂移出 testing 时，报告闸门/洗白
-            # 门阻断路径的 update_spec 不得覆写 error/tester_run（正是
-            # process-failure 分支注释承认的 error 覆写抹掉 frozen 标记性
-            # error 的事故同款风险）。transition 前仍保留同款复核收敛 TOCTOU
-            # 窗口。
-            if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
+            # ── 采纳前守卫链（在飞结果状态复核·闸门写点前置/报告闸门/
+            # 二次复核/speculative 门/judge env 守卫/verified 一次性放行门/
+            # 统一失败归因入口/守卫二 spawn 抑制/inconclusive 旗标清除）
+            # 收敛于 _bug_found_guards_pass（code-review item aa548c9ac9d5，
+            # 纯结构搬移零行为变化）：False = 守卫已在函数内处置完毕
+            # （丢弃/阻断写点/infra 记账/跳过派生写点），直接 return。
+            if not _bug_found_guards_pass(pipeline, spec_name, result):
                 return
-            # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
-            report_blocker = pipeline._ensure_verification_report(spec_name)
-            if report_blocker:
-                pipeline._context.state_machine.update_spec(
-                    spec_name,
-                    {
-                        # 对齐 verified 分支同构闸门阻断（460-466）：写 tester_run
-                        # 供 dashboard/审计在报告闸门阻断时仍可见触发本轮的 run
-                        # （code-review item a0eff51179fd）。
-                        "tester_run": result.run_id,
-                        "error": report_blocker,
-                    },
-                )
-                pipeline._context.logger.error(
-                    "pm_engine",
-                    f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
-                )
-                return
-
-            # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
-            # 结果应用前 spec 已非 testing（stale-result 防护拨回 implemented /
-            # 并发新 attempt 已接管 / 其它状态漂移）→ DEBUG 丢弃，不走失败迁移
-            # 与 fallback 重派（拆除旧 reconcile：implemented→testing→bug-found
-            # 回放 + 重复派发整轮 verifier）。正常路径 spec 恒为 testing。
-            # 判据与文案单点收敛于 _discard_if_not_testing（05d216e0182d）。
-            if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
-                return
-
-            # ── 归因分级门禁（legacy 路径同门禁，add-verdict-credibility-gate / D2）──
-            if pipeline._speculative_bug_found_gate(spec_name):
-                return
-            # ── judge 自述环境问题守卫（2026-08-28 伪 fix 级联事故防线，
-            # 与主路径 pipeline._apply_bug_found 同序：speculative 门之后）──
-            # judge 自己把全部 bug 根因描述为环境/基础设施问题时，属「验证没
-            # 能发生」而非「验证发现了缺陷」，不得流转 bug-found 派生伪 fix
-            # 级联。读的正是 legacy verifier 同样落盘的 verify-progress/<spec>/
-            # .fenix-run-result.json primary 产物（见本文件上方 _read_verdict
-            # 注释），经门面转发注册表（__getattr__ partial）复用 escalation
-            # 实现，与既有 pipeline._handle_env_blocked_inconclusive 同一接入
-            # 惯例；命中即按 inconclusive 处置（回 implemented 重验/超限升级）。
-            if pipeline._judge_bugs_declare_env(spec_name) and pipeline._handle_judge_env_declared(
-                spec_name
-            ):
-                return
-            # ── 场景缺陷改道门豁免（有意缺位，记录豁免理由）──
-            # 主路径 bug-found 的 _scenario_defect_reroute_gate（纯场景缺陷
-            # 定向重派 judge 走 scenario-repaired 原地修复通道）在 legacy 车
-            # 道维持豁免：legacy 降级车道无 scenario-repaired 重入通道（见下
-            # 方 else 分支注释——plan-ready/scenario-repaired 裁决只能保持
-            # testing 由 full_scan recovery 兜底重验），改道重派动作无处落地。
-            # ── verified 一次性放行门（judge-rerun-stability R2）──
-            # 已 verified 且场景集未变 → 拒绝降级为 bug-found（legacy 路径
-            # 同门禁；复用自有 verdict_stability.json 而非共享 .fenix-run-
-            # result.json——后者会被 implementer status=success 残留污染，
-            # 读它会错误判为「非 verified」而漏拦）。
-            if pipeline._verified_gate_refuses(spec_name, "bug-found"):
-                return
-            # ── 统一失败归因入口（legacy 同门，evo-infra-failure-budget-exempt R1/R3）──
-            # MUST 在 bug-found transition 之前（code-review item 12bd5b177792）：
-            # enrich_failure_class 比上游早期 infra 门多匹配 worktree/merge
-            # conflict/tree dirty 标记，verifier error 含这些文本时判 infra——
-            # 若先流转 bug-found 再归因，infra 分支「不流转 bug-found」即失效
-            # （spec 停在 bug-found 却不派生 fix，状态回退只能靠 recovery 兜底）。
-            failure_class = pipeline.enrich_failure_class(
-                spec_name,
-                error_text=getattr(result, "error", "") or "",
-            )
-            if failure_class == "infra":
-                pipeline._context.logger.warning(
-                    "pm_engine",
-                    f"归因入口判 infra（legacy）：'{spec_name}' 按 infra 记账，"
-                    f"不流转 bug-found、不派生 fix",
-                )
-                pipeline._record_infra_failure(
-                    spec_name,
-                    "infra at attribution entry (legacy)",
-                    # 退款锚点回退 implementer_run（不传 run_id）；attempt
-                    # run id 只作台账事件标识（attempt run id 不作预算退款锚点）。
-                    ledger_run_id=getattr(result, "run_id", "") or "",
-                )
-                return
-            # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
-            # 被验对象为 fix spec 且自身 ready/implementing（重实现在飞）时
-            # 修复由在飞重实现承载。MUST 在 bug-found transition 之前：命中即
-            # 不流转、直接 return（若先流转再抑制，spec 已迁入 bug-found，
-            # 状态与「由在飞重实现承载」语义不一致）。
-            # 与主路径的决策差异（code-review item f18ca78e5203）：主路径
-            # _apply_bug_found 已按 e1d3410c1e73 将本守卫整段移除（transition
-            # 返回 True 后状态只可能 testing/bug-found，ready/implementing
-            # 结构性不可达）；legacy 此处读的是 transition 前状态，该论证不
-            # 直接迁移，防御性判据保留成本为零，故不同步移除、仅收敛其写点
-            # 复核（见下）。
-            if pipeline._context.is_fix_spec(spec_name):
-                cur = (pipeline._context.state_machine.read_one(spec_name) or {}).get("status", "")
-                if cur in ("ready", "implementing"):
-                    pipeline._context.logger.info(
-                        "pm_engine",
-                        f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
-                        f"（重实现在飞）——跳过派生子 fix（legacy 路径）",
-                    )
-                    # cur 读取与本 update_spec 之间存在 TOCTOU 窗口：窗口内
-                    # spec 被并发拨回/冻结时，本次 error 覆写会抹掉冻结标记性
-                    # error（本文件多处注释承认的同款事故风险）→ 与其余写点
-                    # 同款，复核收敛于 _discard_if_not_testing（code-review
-                    # item f18ca78e5203——此前全文件唯一未复核写点）。
-                    if _discard_if_not_testing(pipeline, spec_name, result, "bug-found"):
-                        return
-                    pipeline._context.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "error": "修复由在飞重实现承载，跳过派生子 fix",
-                        },
-                    )
-                    return
-            # fix-env-exemption-exit-reachability D3（legacy 同语义，code-review
-            # item 5ab0a792d828）：守卫链全过、即将按 bug-found 路由 → 清除
-            # inconclusive 重验旗标恢复 judge 生命周期正计。legacy 车道入口
-            # _handle_env_blocked_inconclusive 置位的旗标此前在本分支无清除点，
-            # 后续轮 judge 派发持续分流 _judge_inconclusive_dispatches 独立
-            # 计数器、_judge_rerun_count 生命周期账不累计。与主路径
-            # _apply_bug_found 入口清除点同序；存在才写盘、写失败仅 WARNING，
-            # 收口见 escalation._clear_inconclusive_reverify_flag。
-            pipeline._clear_inconclusive_reverify_flag(spec_name)
             # transition 返回值校验（与 spec_review.py consume_review_result 同款）：
             # 前置守卫链与 transition 之间存在 TOCTOU 窗口，窗口内 spec 被
             # 人工冻结/并发接管致非法转移被拒时，保留原状——不覆写 error/
@@ -720,16 +848,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
                     f"'{spec_name}' — 保留原状，不覆写字段、不派生 fix",
                 )
                 return
-            pipeline._context.state_machine.update_spec(
+            # bug-found 采纳写点（verdict/进程失败两入口复位字段共用收敛于
+            # _apply_bug_found_adoption_updates，code-review item 4f442d07f61d）
+            _apply_bug_found_adoption_updates(
+                pipeline._context.state_machine,
                 spec_name,
-                {
-                    "tester_run": result.run_id,
-                    "error": "Verification found bugs — see verification report",
-                    "_inconclusive_attempts": 0,
-                    # add-verify-parallel-backoff / design D2：bug-found 属健康轮，
-                    # 降档并行度同轮复位（legacy 路径同语义）。
-                    "_verify_parallel_override": None,
-                },
+                result.run_id,
+                "Verification found bugs — see verification report",
             )
             # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
             pipeline._record_verdict_adoption(spec_name, "bug-found", report)
@@ -1043,23 +1168,15 @@ def _run_legacy_verification(pipeline, spec_name: str):
         # 若直接流转 bug-found 即重演「先流转再归因」失效（spec 停在 bug-found
         # 却不派生 fix，状态回退只能靠 recovery 兜底）。MUST 在 bug-found
         # transition 之前：infra 命中按 infra 记账退款并保持原状态。
-        failure_class = pipeline.enrich_failure_class(
+        # 实现与 infra 记账两分支单点收敛于 _attribute_and_record_infra
+        # （code-review item 4f442d07f61d）。
+        if _attribute_and_record_infra(
+            pipeline,
             spec_name,
             error_text=getattr(result, "error", "") or "",
-        )
-        if failure_class == "infra":
-            pipeline._context.logger.warning(
-                "pm_engine",
-                f"归因入口判 infra（legacy 进程失败）：'{spec_name}' 按 infra 记账，"
-                f"不流转 bug-found、不派生 fix",
-            )
-            pipeline._record_infra_failure(
-                spec_name,
-                "infra at attribution entry (legacy process-failure)",
-                # 退款锚点回退 implementer_run（不传 run_id）；attempt
-                # run id 只作台账事件标识（attempt run id 不作预算退款锚点）。
-                ledger_run_id=getattr(result, "run_id", "") or "",
-            )
+            ledger_run_id=getattr(result, "run_id", "") or "",
+            at_label="legacy 进程失败",
+        ) == "infra":
             return
         # transition 返回值校验（与 bug-found/verified 分支同款）：前置守卫链
         # 与 transition 之间存在 TOCTOU 窗口，窗口内 spec 被人工冻结/并发接管
@@ -1077,24 +1194,13 @@ def _run_legacy_verification(pipeline, spec_name: str):
             )
             return
         # [fenix-ignore:25628c32f523] 失败台账非失明：bug-found 采纳后与 fix 派生同理依赖 recovery 兜底——event_bus full_scan 对滞留 bug-found 态 re-trigger spec_bug_found（无时间门槛）→ _do_spec_bug_found 同一调用内 bump _verify_fail_rounds 并 _append_fail_history（failure_class=product，family.py :780-786，升级分型读账晚于该追加），derive/cap/子 fix 守卫对两条 bug-found 入口对称生效，回拨参考台账含本轮。
-        pipeline._context.state_machine.update_spec(
+        # 采纳写点与 verdict bug-found 分支共用收敛于
+        # _apply_bug_found_adoption_updates（code-review item 4f442d07f61d）。
+        _apply_bug_found_adoption_updates(
+            pipeline._context.state_machine,
             spec_name,
-            {
-                "tester_run": result.run_id,
-                "error": f"Verifier agent failed: {result.error or ''}",
-                # code-review item f7a38d6f8f25：进程失败属「验证没能发生」，
-                # inconclusive 暂停语义不应跨迁移残留——escalation 的
-                # inconclusive 重派先写非零 _inconclusive_attempts 再派
-                # verifier（escalation 写点），若该在飞 run 进程失败走到本
-                # 分支，残留计数会令 event_bus 两个自动重验恢复出口
-                # （_inconclusive_paused）按「暂停自动重验、等待人工处置」
-                # 跳过。与同目标 verdict bug-found 分支（上方 :584-587）及
-                # 主路径采纳点同款复位。
-                "_inconclusive_attempts": 0,
-                # add-verify-parallel-backoff / design D2：bug-found 属健康轮，
-                # 降档并行度同轮复位（legacy 路径同语义）。
-                "_verify_parallel_override": None,
-            },
+            result.run_id,
+            f"Verifier agent failed: {result.error or ''}",
         )
         # fix 派生有意依赖 recovery 兜底，非遗漏（code-review 90e23fbbec42）：
         # 此处不调用 on_spec_bug_found——event_bus full_scan 对滞留 bug-found
