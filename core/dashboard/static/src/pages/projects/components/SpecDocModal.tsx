@@ -154,9 +154,12 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
       if (!revalidate) {
         setCacheEntry(cacheRef.current, key, { status: 'error' }, keyReqSeqRef.current);
       }
-    } finally {
-      setCacheVersion((v) => v + 1);
     }
+    // bump 不放 finally（code-review item d0a34c3de35e）：过期响应已在上方
+    // return，仅为无缓存变化的自增会空触发一次 currentEntry 重算与重渲染；
+    // 实际写缓存（found/!found/catch 落盘）及保留旧内容的 revalidate 失败
+    // 都会落到此处 bump，真实更新不丢
+    setCacheVersion((v) => v + 1);
   }, [project, spec, activeTab]);
 
   useEffect(() => {
@@ -179,9 +182,19 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
 
   const renderContent = () => {
     if (!currentEntry) {
+      // 无条目兜底（code-review item 211371d0f320）：正常流程 loadDoc 先落
+      // loading 条目再发请求，本分支只该出现在首帧间隙；但当前文档条目可能被
+      // setCacheEntry 的 LRU 淘汰（长会话浏览超上限连带删其 reqSeq），淘汰后
+      // loadDoc 不会被 effect 重触发，裸 Spin 将常驻且无任何出口——比照
+      // loading 分支提供「重新加载」，handleRetry 的 delete+loadDoc 可重建条目
       return (
         <div style={{ textAlign: 'center', padding: 32 }}>
           <Spin />
+          <div>
+            <Button type="link" onClick={handleRetry}>
+              重新加载
+            </Button>
+          </div>
         </div>
       );
     }
