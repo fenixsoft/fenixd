@@ -754,7 +754,7 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
         try:
             from .admin_store import ESCALATION  # noqa: PLC0415
 
-            store.append(
+            rec = store.append(
                 {
                     "kind": ESCALATION,
                     "signal_type": "self_review_phantom_failure",
@@ -772,7 +772,11 @@ def _record_phantom_failure_alert(store, logger, run_id: str, detail: str) -> No
                     ),
                 }
             )
-            written = True
+            # code-review item b2cc66e886cb：append 被下限保护拒写时返回
+            # None 且记录未落盘（admin_store.append 契约），按未落地处理
+            # 回退 logger.warning 留痕，与写侧 _record_failure_alert 的
+            # 防御口径对齐（守卫告警留痕不整体丢失）。
+            written = rec is not None
         except Exception:
             written = False
     if not written and logger is not None:
@@ -1357,11 +1361,19 @@ def _collect_metrics_outliers(
         # 台账条目数逐 run 记忆化（1.1）：同组 cost/duration 两摊薄维共用，
         # parse_tasks_md 不重读；仅摊薄可用性判定触达的 run 才解析。
         task_counts: Dict[str, Optional[int]] = {}
+        # 维度解析逐 run 记忆化（code-review item aaf319e81f42）：同一 run
+        # 的维度值被维度样本构建 / 近期批基线收集 / 逐 run 判定三处消费，
+        # _metrics_outlier_dims 纯函数预计算一次共享缓存（run_id 经
+        # _collect_run_files 并集去重唯一，可作键），判定行为不变，后续
+        # 新增维度单点改。
+        dims_by_run: Dict[str, dict] = {
+            rid: _metrics_outlier_dims(m) for rid, _p, _ts, m in runs
+        }
         for dim in MIDFLIGHT_OUTLIER_DIMS:
             samples = [
-                (rid, m, d)
+                (rid, m, dims_by_run[rid])
                 for rid, _, _, m in runs
-                if dim in (d := _metrics_outlier_dims(m))
+                if dim in dims_by_run[rid]
             ]
             if len(samples) < MIDFLIGHT_MIN_GROUP_SAMPLES:
                 continue
@@ -1395,11 +1407,11 @@ def _collect_metrics_outliers(
             for rid, _p, rts, m in sorted(runs, key=lambda r: r[2], reverse=True):
                 if _is_retry_run(rid):
                     continue
-                d = _metrics_outlier_dims(m)
+                d = dims_by_run[rid]
                 if "turns" in d:
                     recent_batches.append((rid, d["turns"]))
         for run_id, path, _ts, metric in runs:
-            dims = _metrics_outlier_dims(metric)
+            dims = dims_by_run[run_id]
             hit: Dict[str, Dict[str, Any]] = {}
             for dim, v in dims.items():
                 if dim not in medians:
@@ -2397,7 +2409,16 @@ class SelfReviewScheduler:
 
         # 3. admin 告警与处置记录
         lines.append("## 3. admin 告警与处置记录（窗口内）")
-        lines.extend(self._collect_admin_summary(window_start, window_end))
+        # 降级护栏（code-review item 4aa06562afc8）：对齐「任一源读取失败
+        # 降级为空段（不阻断自省）」契约——_collect_admin_summary 内
+        # admin_store 常量延迟导入等在无 try 路径上执行，异常上穿会把整份
+        # 日报连坐记为当日失败；此处与第 6 节同款降级空段 + warning，
+        # 单源失败不连坐其余五节。
+        try:
+            lines.extend(self._collect_admin_summary(window_start, window_end))
+        except Exception as e:
+            self.logger.warning("self_review", f"admin 记录聚合异常（降级空段）: {e}")
+            lines.append("- （admin 记录聚合失败）")
         lines.append("")
 
         # 4. 日志 ERROR 聚合
