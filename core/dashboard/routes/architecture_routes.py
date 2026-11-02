@@ -1002,13 +1002,6 @@ class H13ArchitectureRoutesMixin:
             self._error(404, "project not found")
             return
         proot = Path(project["path"])
-        state = self._architecture_manager().status(proot).get("state")
-        if state != "ready":
-            self._json(
-                {"error": "架构图尚未生成", "code": "architecture_not_generated"},
-                404,
-            )
-            return
         diagram_path = proot / ARCHITECTURE_DIR / DIAGRAM_FILENAME
         # code-review item 277eb5753256：diagram.html 由 claude 原地覆写（非
         # tmp+rename），落盘是生成侧提示词驱动、代码侧无法原子化，读侧收敛为
