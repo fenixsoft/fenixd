@@ -67,6 +67,22 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
         "（铁律，承袭 narrative 网关别名事故）。",
     );
   }
+  // baseURL 形态守卫（与下方可选字段守卫同型，收口在校验期）：缺 scheme
+  // （如 "127.0.0.1:18787/v1"）或含空格等畸形值若放行，会经 buildProviderSegment
+  // 原样透传进 providers 配置、首个 LLM 请求期才失败——定位成本远高于启动期拦截。
+  let parsedBaseURL: URL;
+  try {
+    parsedBaseURL = new URL(seg.baseURL as string);
+  } catch {
+    throw new Error(
+      `模型配置非法：config.model.baseURL 必须是可解析的 http(s) URL——当前值「${seg.baseURL}」无法解析为 URL。`,
+    );
+  }
+  if (parsedBaseURL.protocol !== "http:" && parsedBaseURL.protocol !== "https:") {
+    throw new Error(
+      `模型配置非法：config.model.baseURL 的协议必须是 http/https——当前值「${seg.baseURL}」协议为 ${parsedBaseURL.protocol} 非法。`,
+    );
+  }
   // 可选字段类型守卫：字段存在但形态非法即在校验期 fail-fast（缺省路径行为不变），
   // 避免异常值经 buildProviderSegment 原样透传进 dsh providers 配置、推迟到请求期才暴露。
   for (const key of ["contextWindow", "maxTokens"] as const) {
