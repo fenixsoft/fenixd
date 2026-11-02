@@ -18,6 +18,11 @@ SPEC 状态经 `approve_push` 成功转移 done→pushed 后，MUST fail-open �
 - **WHEN** approve_push 被并发/回放再次调用且 SPEC 已是 pushed
 - **THEN** 幂等 skip 分支返回且不派发蒸馏（同一 pushed 生命周期至多一次触发）
 
+#### Scenario: 打回重做后再次 push 重新蒸馏
+
+- **WHEN** 一个已 pushed 且已蒸馏的 SPEC 被打回重做，再次经 approve_push 成功转移为 pushed
+- **THEN** 作为新一次 pushed 生命周期再次派发蒸馏，知识页按幂等更新语义覆盖更新
+
 #### Scenario: 归档不再触发
 
 - **WHEN** 任一路径（CLI / dashboard 手动 / daemon 自动归档）完成归档移动
@@ -25,7 +30,7 @@ SPEC 状态经 `approve_push` 成功转移 done→pushed 后，MUST fail-open �
 
 ### Requirement: 蒸馏输入目录双态解析
 
-蒸馏链路（`_gate_distill` 存在性检查、`build_distill_prompt` 输入路径、`recover_pending` 恢复重派）MUST 按双态解析蒸馏源目录：`spec/changes/<名>` 优先、`spec/archive/<名>` 兜底（push 后 3 天内蒸馏失败入 pending 台账、恢复重派时 SPEC 可能已归档）。两态下门控放行、prompt 动态段路径、蒸馏 agent 可读输入 MUST 一致成立；目录两态均缺失时 MUST 拒绝派发（reason 区分于既有 archive-dir-missing 语义）。
+蒸馏链路（`_gate_distill` 存在性检查、`build_distill_prompt` 输入路径、`recover_pending` 恢复重派）MUST 按双态解析蒸馏源目录：`spec/changes/<名>` 优先、`spec/archive/<名>` 兜底（push 后 3 天内蒸馏失败入 pending 台账、恢复重派时 SPEC 可能已归档）。两态下门控放行、prompt 动态段路径、蒸馏 agent 可读输入 MUST 一致成立；目录两态均缺失时 MUST 拒绝派发（reason 保留既有 archive-dir-missing 字面量以兼容消费方，文案补双态说明以资区分）。
 
 #### Scenario: push 触发读 changes 目录
 

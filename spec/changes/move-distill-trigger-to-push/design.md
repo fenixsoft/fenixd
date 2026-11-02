@@ -50,15 +50,17 @@ pushed 写点侦察结论：`PmEngine.approve_push`（core/pm_engine/engine.py:3
 
 - 备选 A（否决）：知识页记裸 SPEC 名、dashboard/audit 读侧动态解析位置——契约级改动扩散到 dashboard 弹窗、`_check_links`、knowledge_audit 检查器与全部存量知识页（memory：审计链接门是本仓已知痛点，读侧契约变更风险最大）。
 - 备选 B（否决）：归档后重蒸馏一次（让 agent 自己改链接）——一次蒸馏 = 一次 claude -p + 修正轮，纯路径替换用 agent 是浪费且引入新的失败面。
-- 改写点覆盖义务：归档移动的物理单点在双路径（`bin/fenix_archive.py` 与 `core/dashboard/data/spec_archive.py` 的 archive_spec）各自移动成功后——与 `commit_archive_move` 时代「双路径共同漏斗」同构，改写器做成单函数（core/knowledge.py 或独立小模块）双路径调用，禁止复制粘贴两份实现。
+- 改写点覆盖义务：`commit_archive_move` 的物理调用点全集共四处——`bin/fenix_archive.py`（CLI，1 处）与 `core/dashboard/data/spec_archive.py`（archive_spec 1 处 + soft_delete_spec 2 处）——改写器在各自目录移动成功后、归档提交前调用。soft_delete_spec（软删除命名 `<名>-<unix>`）同列入：软删除也是归档移动，push 态已蒸馏页面的 changes/ 链接同样会断；改写器按「实际归档目录名」注入，与命名方案无关。改写器做成单函数（core/knowledge.py 或独立小模块）多点调用，禁止复制粘贴实现。
+- 改写对象形态：现行知识页溯源引用为全角括号纯文本（如 `（spec/archive/<名>）`）与 marker sources 行，无 markdown 链接形态（memory：全角括号引用形态事故）；精确字符串替换对两种形态同时生效，无须感知结构。
 - 改写并提交的方式：复用归档提交流程——移动 + 知识页改写同批 `git add`（`spec/archive/` 删除侧 + 新增侧 + `spec/knowledge/`），单一 `[fenix] archive:` 提交。改写器在 git add 之前完成文件替换即可；异常 fail-open（告警留痕，归档照常——此时知识页出现死链，由 knowledge audit 链接门在下一轮审计兜底暴露）。
-- ** sources 行的日期前缀**：归档目录名带日期前缀（`2026-11-02-<name>`），改写按「changes 名 → 当次实际归档目录名」映射精确替换，不做模糊 glob。
+- ** sources 行的日期前缀**：归档目录名带日期前缀（`2026-11-02-<name>`），改写按「changes 名 → 当次实际归档目录名」映射精确替换，不做模糊 glob。替换匹配 MUST 带名字右边界（命中 `spec/changes/<名>` 后随非 `[A-Za-z0-9._-]` 字符或串尾方算命中），防前缀同名 SPEC 被前缀误伤（真实在库例：`merge-back` ↔ `merge-back-precheck`——无边界时改写前者会把后者的引用串改坏）。
 
 ### D4：校验/审计两态兼容（核对义务）
 
-- `validate_knowledge._check_links`（knowledge.py:287）：剔除代码块后逐链接「可解析 + 不越出真相源目录」——`spec/changes/<名>/` 与 `spec/archive/<名>/` 同为仓库根相对路径，机制上两态等价；任务中以用例锁定（changes 态链接不报违规）。
+- `validate_knowledge._check_links`（knowledge.py:287）：只扫 markdown 链接（`_LINK_RE`）并按页面相对路径解析 + kroot 边界复核；现行溯源引用是全角括号纯文本，不参与该通道——保持纯文本形态即天然两态等价，任务中以用例锁定。
+- `validate_knowledge` sources 分支（knowledge.py:447-465，本变更最易漏改的锚定点）：origin=archive 页的 marker sources 被三道硬锚定——`spec/archive/` 前缀（:452）+ 目录存在（:455）+ 越界复核（:463）。push 触发蒸馏写 `spec/changes/<名>` sources 会被判「sources 非归档路径」，是蒸馏批修正轮的直接误报源（修正轮耗尽即 give_up 回滚）。MUST 放宽为两态：changes/ 与 archive/ 前缀均合法，目录存在性与越界复核保留（防穿透强度不降）。
 - `core/knowledge_audit.py`：溯源检查若存在 `spec/archive/` 前缀锚定（模板时代的 sources 契约），需放宽为「链接目标目录存在」——**实现前先 grep 该文件对 ARCHIVE_DIR 的引用，逐点核对**（防修复引入新误报，memory：模板段位误报家族）。
-- distill.md 模板改动面：开篇语境（「刚归档进 spec/archive/」→「刚 push 完成进入终态，稍后将归档」）、sources 行格式（`spec/changes/<名>`）、溯源链接格式与「只给真实存在的目录加链接」守则（changes/ 语境）。模板是蒸馏 agent 的唯一契约载体，改写须与 `_check_links`/audit 的实际检查逻辑互相对照（勿引入第三种形态——memory：全角括号引用形态事故）。
+- distill.md 模板改动面：开篇语境（「刚归档进 spec/archive/」→「刚 push 完成进入终态，稍后将归档」）、sources 行格式（`spec/changes/<名>`）、溯源链接格式与「只给真实存在的目录加链接」守则（changes/ 语境）。模板是蒸馏 agent 的唯一契约载体，改写须与 `_check_links`/audit 的实际检查逻辑互相对照（勿引入第三种形态——memory：全角括号引用形态事故）。溯源行保持现行全角括号纯文本形态、仅改路径段——现行模板 line 46 展示的 markdown 链接形态与在库真实页面不符（在库页面均无 `](spec/archive/...)` 链接），MUST NOT 借机「统一」成 markdown 链接（`_check_links` 按页面相对路径解析必然误报死链）。
 
 ### D5：语义边界全集
 
