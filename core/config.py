@@ -1286,7 +1286,7 @@ class ConfigLoader:
             if dedup_key not in _VALIDATE_SOFT_WARNED:
                 _VALIDATE_SOFT_WARNED.add(dedup_key)
                 _logger.error(
-                    "admin.self_review 段非法（应为对象）：%r，按空段降级"
+                    "admin.self_review 段非法（应为对象）：%s，按空段降级"
                     "（enabled 缺省 false）；其余配置照常生效",
                     type(sr).__name__,
                 )
@@ -3863,17 +3863,17 @@ class ConfigLoader:
 
     @classmethod
     def get_impl_code_review_timeout_sec(cls, config: Dict[str, Any]) -> int:
-        """读取 ``verify.impl_code_review_timeout_sec``：ocr LLM 单请求超时秒（写入 run 级 ocr provider 配置），缺省 600，仅正整数 int（add-impl-code-review-tuning）。"""
+        """读取 ``verify.impl_code_review_timeout_sec``：ocr LLM 单请求超时秒（写入 run 级 ocr provider 配置），缺省 600，正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-impl-code-review-tuning）。"""
         return cls._positive_int_reader(config, "impl_code_review_timeout_sec", 600)
 
     @classmethod
     def get_impl_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
-        """读取 ``verify.impl_code_review_concurrency``：ocr 并发子任务上限（车道命令 ``--concurrency <n>``），缺省 4（add-impl-ocr-parallel-lane D7 由 2 上调），仅正整数 int（add-impl-code-review-tuning）。"""
+        """读取 ``verify.impl_code_review_concurrency``：ocr 并发子任务上限（车道命令 ``--concurrency <n>``），缺省 4（add-impl-ocr-parallel-lane D7 由 2 上调），正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-impl-code-review-tuning）。"""
         return cls._positive_int_reader(config, "impl_code_review_concurrency", 4)
 
     @classmethod
     def get_repo_code_review_concurrency(cls, config: Dict[str, Any]) -> int:
-        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 4，仅正整数 int（add-code-review-concurrency-and-429-resilience）。"""
+        """读取 ``verify.repo_code_review_concurrency``：全仓审查并行审查度（提示词侧并行扇出上限与 ``ocr scan --concurrency <n>`` 一键两用），缺省 4，正整数（整值浮点按整数接受），口径见 _positive_int_reader（add-code-review-concurrency-and-429-resilience）。"""
         return cls._positive_int_reader(config, "repo_code_review_concurrency", 4)
 
     @classmethod
