@@ -9,6 +9,13 @@ Usage:
     python3 bin/test_for.py <file1> [file2 ...]     # Run affected tests
     python3 bin/test_for.py --dry-run <file1> ...    # List tests without running
     python3 bin/test_for.py --all                     # Run all tests
+
+并发隔离声明（concurrent-suite-isolation）：本工具不承诺并发隔离——不注入
+FENIX_SUITE_PORT_BASE 端口段环境变量，也不参与 .fenix/full-suite.lock 主机级
+互斥（两者均只在 bin/run_full_suite.py / core/regression.py 全量入口实现）。
+增量选测与 --all 两条 pytest 路径继承父环境直接起子进程，选中的用例同样会拉起
+固定端口（19000-19019 全主机编译期常量段）的 dev server/daemon 类集成测试，
+与并发执行的全量套件或其他增量跑存在撞端口风险：请勿与全量入口并发使用。
 """
 
 import argparse
@@ -405,6 +412,9 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> int:
     stacks on hangs) and a subprocess hard timeout that kills the whole
     process group (孙进程一并中止，同 ``bin/run_full_suite.py``); on timeout
     a hint points to ``bin/run_full_suite.py`` for hanging-test triage.
+
+    与该入口的同构仅限有界运行纪律；本路径不注入端口段、不参与主机锁（见
+    模块 docstring 的并发隔离声明），勿与全量套件并发使用。
 
     Returns:
         pytest 子进程退出码（dry-run/无测试为 0）。负值 = 被信号终止，调用方

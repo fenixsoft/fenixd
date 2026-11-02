@@ -11,8 +11,8 @@ import { usePanelDirty } from '../panelDirty';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-// key 集合与后端 AGENT_PROMPT_FILES 严格一致（含 code-review 共 12 个 agent，
-// 勿增删；code-review item f62e36d1531f：旧注释写 10 个，已漂移）
+// key 集合与后端 AGENT_PROMPT_FILES 严格一致（agent 数量以本对象实际键数为准，
+// 勿增删；写死计数已两次漂移：f62e36d1531f 修 10→12，其后追加 code-fix、arbiter 又漂移）
 const AGENT_LABELS: Record<string, string> = {
   implementer: 'Implementer（实现）',
   verifier: 'Verifier（验证）',

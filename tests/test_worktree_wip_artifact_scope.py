@@ -245,7 +245,65 @@ class TestWipOverlapGateArtifactScope:
             ]
             assert len(checkout_calls) == 1, f"产物应单次批量对齐: {checkout_calls}"
             flat = [item for call in checkout_calls for item in call]
-            assert "dist/index.html" in flat and "fenix-newtab-v1.0.0.zip" in flat
+            # :(literal) 钉死字面量匹配（item c27d00b7a648）：对齐 pathspec 以
+            # :(literal) 前缀形态下达——裸路径会被 git 按 fnmatch 通配展开，
+            # 产物路径含 glob 元字符时误伤无关文件的未提交改动。
+            assert ":(literal)dist/index.html" in flat
+            assert ":(literal)fenix-newtab-v1.0.0.zip" in flat
+
+    def test_gate_alignment_pathspec_literal_metachar(self, tmp_path):
+        """含 glob 元字符的产物重叠路径（如 dist/[param].txt）→ 对齐仅命中该
+        字面路径，不按通配展开恢复无关脏文件（item c27d00b7a648 回归）。
+
+        裸 pathspec 下 `checkout HEAD -- dist/[param].txt` 的 [param] 字符类
+        会匹配单字符 'p'，连带把不在重叠集合内的 dist/p.txt 的未提交改动一并
+        恢复为 HEAD——不可逆数据丢失。:(literal) 形态下 p.txt 必须原样保留。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        dist = root / "dist"
+        dist.mkdir()
+        (dist / "[param].txt").write_text("META-BASE\n", encoding="utf-8")
+        (dist / "p.txt").write_text("P-BASE\n", encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "main.py").write_text("SRC-BASE\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] seed metachar dist")
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        # 分支只改 [param].txt（使之成为产物重叠）；p.txt 分支侧不动
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (dist / "[param].txt").write_text("META-BRANCH\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch edits metachar artifact")
+        git(root, "checkout", "-q", base_sha)
+        # 主树两侧都脏：[param].txt ∈ 重叠（产物），p.txt 是分支未触碰的无关脏文件
+        (dist / "[param].txt").write_text("META-WIP\n", encoding="utf-8")
+        (dist / "p.txt").write_text("P-WIP-UNRELATED\n", encoding="utf-8")
+
+        with patch(
+            "core.worktree_manager.mergeback.subprocess.run",
+            wraps=subprocess.run,
+        ) as mock_run:
+            wm = make_wm(
+                root, build_artifact_paths=["dist/"], has_build_artifacts=True
+            )
+            blocked, overlap = wm._wip_overlap_gate("fenix/impl")
+            assert blocked is None
+            assert overlap == [], f"纯产物重叠应被排除: {overlap}"
+        checkout_args = [
+            c.args[0]
+            for c in mock_run.call_args_list
+            if isinstance(c.args[0], list)
+            and c.args[0][3:5] == ["checkout", "HEAD"]
+        ]
+        flat = [item for call in checkout_args for item in call]
+        assert ":(literal)dist/[param].txt" in flat, \
+            f"对齐 pathspec 应以 :(literal) 形态下达: {checkout_args}"
+        # 关键断言：无关脏文件未被 pathspec 通配误伤（WIP 内容原样保留）
+        assert (dist / "p.txt").read_text(encoding="utf-8") == "P-WIP-UNRELATED\n", \
+            "含元字符重叠路径的对齐 MUST NOT 通配展开恢复无关文件的未提交改动"
+        # 重叠产物本身已对齐 HEAD（base 内容）
+        assert (dist / "[param].txt").read_text(encoding="utf-8") == "META-BASE\n"
 
     def test_semantic_overlap_still_gated(self, tmp_path):
         """语义文件（src/...）重叠仍计入闸门（产物配置不影响语义路径）。"""

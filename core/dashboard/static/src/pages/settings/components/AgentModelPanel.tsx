@@ -21,7 +21,7 @@ import { useGatedFormPanel } from '../useGatedFormPanel';
 const { Text } = Typography;
 
 // 与后端 KNOWN_AGENT_TYPES 严格一致（含 code-review/code-fix/knowledge-distiller
-// 共 12 个角色，勿增删；code-review item f62e36d1531f：旧注释写 9 个，已漂移——
+// 共 13 个角色，勿增删；code-review item f62e36d1531f：旧注释写 9 个，已漂移——
 // 后端新增角色时此处必须同步，tests/test_agent_prompt_files.py 有守卫）
 const AGENT_ROLES = [
   { key: 'implementer', label: 'Implementer（执行）' },

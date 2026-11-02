@@ -194,7 +194,10 @@ class H5SettingsRoutesMixin:
                 ConfigLoader.resolve_config(root)
             )
         except Exception as e:
-            config = {"error": str(e)}
+            # 错误文案口径（code-review item 25436bdc6686）：异常原文含
+            # 服务器绝对路径，logger 留痕、不随响应透出
+            logger.warning("arbiter 配置读取失败: %s", e)
+            config = {"error": "arbiter 配置读取失败"}
         lane_view = None
         try:
             from core.pm_engine.arbiter import get_lane
@@ -205,7 +208,8 @@ class H5SettingsRoutesMixin:
                 # 本端点只消费返回值（code-review 21372fd6d003）
                 lane_view = lane.snapshot()
         except Exception as e:
-            lane_view = {"error": str(e)}
+            logger.warning("arbiter 车道状态读取失败: %s", e)
+            lane_view = {"error": "arbiter 车道状态读取失败"}
         ledger_summary = {"total": 0, "kinds": {}, "recent": []}
         try:
             from core.pm_engine.arbiter import load_arbiter_ledger
@@ -230,7 +234,8 @@ class H5SettingsRoutesMixin:
                     }
                 )
         except Exception as e:
-            ledger_summary = {"error": str(e)}
+            logger.warning("arbiter 台账读取失败: %s", e)
+            ledger_summary = {"error": "arbiter 台账读取失败"}
         self._json(
             {
                 "config": config,

@@ -414,7 +414,12 @@ def render_report(project_root, spec_name: str) -> str:
         elif cost_summary:
             total_cost = cost_summary.get("computed_usd")
             if total_cost is not None:
-                lines.append(f"时间轴计费成本: ${float(total_cost):.2f}")
+                try:
+                    lines.append(f"时间轴计费成本: ${float(total_cost):.2f}")
+                except (TypeError, ValueError):
+                    # 同预算字段口径：computed_usd 非数值时降级为提示行，
+                    # 不中断报告（code-review item a8d524542199）
+                    lines.append("成本: 不可用（计费数据非数值）")
             else:
                 lines.append("成本: 不可用（计费开启但无可计价 run）")
         else:

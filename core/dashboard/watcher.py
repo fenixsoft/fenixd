@@ -256,7 +256,15 @@ class FileWatcher:
         变化）后旧键不再残留，同目录更名也不会导致基线失效重建。仍在 registry
         但 exists=False 的项目保留缓存，路径恢复后基线继续有效。
         """
-        live = {Path(p["path"]).as_posix() for p in projects if p.get("path")}
+        live = set()
+        for p in projects:
+            if not p.get("path"):
+                continue
+            try:
+                live.add(Path(p["path"]).as_posix())
+            except Exception:  # path 非字符串真值等异常形态：跳过出 live 集即
+                continue       # 可（同 scan_once 记账键的退化口径），不让单条
+                               # 异常 path 逃出 scan_once 中断整轮清退
         for cache in (
             self._top_sigs,
             self._spec_dirs,

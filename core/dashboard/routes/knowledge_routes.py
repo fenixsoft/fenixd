@@ -146,9 +146,10 @@ class H14KnowledgeRoutesMixin:
         返回 ``{project, initialized, index_md, domains, adrs, titles}``；
         domains 为 ``[{name, pages, nav_exists}]``（pages 为域内能力页文件名清单，
         不含 _domain.md）；adrs 为 ``[{file, title, status, superseded_by}]``
-        （按文件名排序，ADR 列表视图的编号/标题/状态标签数据源。title 取
-        ADR 文件首标题 ``# ADR-NNN：<标题>``，缺失时以 adr/index.md 表格
-        标题列兜底，仍缺为 null）。titles 为「页路径剥 .md → 首 H1 标题」
+        （按文件名排序，前端仅消费 adrs[].title 组装面包屑；status/
+        superseded_by 为解析原值下发、暂无消费方。title 取 ADR 文件首标题
+        ``# ADR-NNN：<标题>``，缺失时以 adr/index.md 表格标题列兜底，
+        仍缺为 null）。titles 为「页路径剥 .md → 首 H1 标题」
         映射（前端面包屑中文名数据源）：域键 ``domains/<域>`` 取 _domain.md
         首 H1，能力页键 ``domains/<域>/<页>`` 取页首 H1；无 H1/读取失败为
         null（前端回退 slug 展示）。ADR 标题不在 titles 重复下发，前端经

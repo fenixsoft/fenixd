@@ -70,16 +70,29 @@ export default function ArbiterPanel({ config, onSave, project }: ArbiterPanelPr
 
   // 运行时状态只读摘要（恒 200 自含端点，失败静默为空态——非关键数据）
   const [status, setStatus] = useState<ArbiterStatus | null>(null);
-  const loadStatus = useCallback(async () => {
+  // 过期响应守卫（code-review item 11b113c23fe1，比照 QualityPanel 的 effect
+  // alive 口径）：loadStatus 由 useCallback([project]) 驱动、effect 随之重跑，
+  // 仅凭依赖链挡不住「旧项目请求后到」——项目 A 的响应慢于项目 B 时，A 的
+  // 处置台账/队列数据会覆盖 B 的「运行时状态（只读）」卡片。effect 挂 per-effect
+  // alive（cleanup 置 false）并经判活回调传入 loadStatus，写 status 前判活，
+  // 被项目切换取代/已卸载实例的响应一律丢弃；不传回调的调用语义不变。
+  const loadStatus = useCallback(async (isStale?: () => boolean) => {
     if (!project) return;
     try {
-      setStatus(await getArbiterStatus(project));
+      const next = await getArbiterStatus(project);
+      if (isStale?.()) return;
+      setStatus(next);
     } catch {
+      if (isStale?.()) return;
       setStatus(null);
     }
   }, [project]);
   useEffect(() => {
-    void loadStatus();
+    let alive = true;
+    void loadStatus(() => !alive);
+    return () => {
+      alive = false;
+    };
   }, [loadStatus]);
 
   const ledger = status?.ledger;

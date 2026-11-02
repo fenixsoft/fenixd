@@ -464,7 +464,10 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
     # 这两种形态；无 PyYAML 走到此处没有任何权威复查，故写盘前对旧文本做一次宽松
     # 扫描：任一非注释行含 has_build_artifacts: 键且值为显式布尔（别名集与
     # _read_existing_config 同口径）即中止写入——宁可漏写，不覆盖人工设置。
-    for row in old_lines:
+    def _is_block_item(s: str) -> bool:
+        return s == "-" or s.startswith("- ")
+
+    for idx, row in enumerate(old_lines):
         s = row.strip()
         if not s or s.startswith("#"):
             continue
@@ -482,6 +485,23 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
                 "wrote": False,
                 "reason": "worktree 段形态无法安全解析（内联映射/标量/段头行尾注释），请人工处置",
             }
+        # 中止条件三（code-review item c0ece1e2ea66）：裸 worktree: 段头下直接挂
+        # 块式序列（worktree:\n  - a，YAML 合法，safe_load 解析为列表）时，下方
+        # 段内循环把序列项走 else 分支原样保留，随后仍会在序列项之后追加两键，
+        # 产出「序列项后跟映射键」的非法 YAML，daemon/ConfigLoader 整份解析失败
+        # ——宁可漏写，中止写入交人工处置（有 PyYAML 时 worktree 段非映射的
+        # isinstance 检查已兜住同形态，此处对齐同口径）
+        if not row.startswith((" ", "\t")) and s == "worktree:":
+            for sub in old_lines[idx + 1 :]:
+                s2 = sub.strip()
+                if not s2 or s2.startswith("#"):
+                    continue
+                if _is_block_item(s2):
+                    return {
+                        "wrote": False,
+                        "reason": "worktree 段为序列形态（块式列表项），无法安全解析，请人工处置",
+                    }
+                break  # 首个内容行是普通键行：值是映射，不在本条处置范围
         _, sep, val = s.partition("has_build_artifacts:")
         if not sep:
             continue
@@ -491,9 +511,6 @@ def write_config_if_unresolved(project_root: Path, detection: dict) -> dict:
         val = re.split(r"[,}\[#]", val, maxsplit=1)[0].strip()
         if val.lower() in ("true", "1", "yes", "on", "false", "0", "no", "off"):
             return {"wrote": False, "reason": "has_build_artifacts 已显式配置，跳过"}
-
-    def _is_block_item(s: str) -> bool:
-        return s == "-" or s.startswith("- ")
 
     # 既有缩进探测（code-review item 458df4aabd1d）：has_line/paths_line 若按
     # 固定 2 空格缩进落进 4 空格（或其他深度）缩进的既有 worktree 段，原位替换

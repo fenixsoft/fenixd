@@ -1127,7 +1127,10 @@ def compare_baseline(lanes: List[Dict[str, Any]],
                           "现场采集同夹具 claude 车道"}
     try:
         baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        # 非 UTF-8/二进制基线文件在读取阶段抛 UnicodeDecodeError（ValueError
+        # 族，不被 OSError 覆盖）：同款降级 unavailable 不裸抛 traceback
+        # （code-review item d11a2ef679dd）
         return {"status": "unavailable", "reason": f"基线文件不可读：{e}"}
     base_lanes = baseline.get("lanes") if isinstance(baseline, dict) else None
     if not isinstance(base_lanes, dict) and isinstance(baseline, dict):
@@ -1783,19 +1786,29 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
             baseline_ev["elapsed_seconds"] = round(
                 time.perf_counter() - started_lane, 3)
             evidence["lanes"].append(baseline_ev)
-            evidence["baseline"] = {
-                "status": "available", "source": "同夹具 claude 车道现场采集",
-                "rows": [{"lane": "implementer",
-                          "claude_seconds": baseline_ev.get("elapsed_seconds"),
-                          "dsh_seconds": next(
-                              (e.get("elapsed_seconds") for e in
-                               evidence["lanes"] if e.get("lane") == "implementer"),
-                              None)}],
-            }
-            evidence["baseline"]["rows"][0]["ratio"] = round(
-                (evidence["baseline"]["rows"][0]["dsh_seconds"] or 0) /
-                baseline_ev["elapsed_seconds"], 3) \
-                if baseline_ev.get("elapsed_seconds") else None
+            if baseline_ev.get("error"):
+                # 失败基线车道（error/超时收割）elapsed_seconds 只是收割前
+                # 部分耗时：照常标 available 会以部分耗时算倍率，误导第四节
+                # 与第六节翻转决策——与 smoke 侧 compare_baseline 失败车道
+                # 置 None 纪律对齐（code-review item 3c05b58cf78a、
+                # 7285055c3075）；error 进 reason 使失败信息在报告中可见
+                evidence["baseline"] = {
+                    "status": "unavailable",
+                    "reason": f"claude 基线车道失败：{baseline_ev['error']}"}
+            else:
+                evidence["baseline"] = {
+                    "status": "available", "source": "同夹具 claude 车道现场采集",
+                    "rows": [{"lane": "implementer",
+                              "claude_seconds": baseline_ev.get("elapsed_seconds"),
+                              "dsh_seconds": next(
+                                  (e.get("elapsed_seconds") for e in
+                                   evidence["lanes"] if e.get("lane") == "implementer"),
+                                  None)}],
+                    }
+                evidence["baseline"]["rows"][0]["ratio"] = round(
+                    (evidence["baseline"]["rows"][0]["dsh_seconds"] or 0) /
+                    baseline_ev["elapsed_seconds"], 3) \
+                    if baseline_ev.get("elapsed_seconds") else None
         else:
             evidence["baseline"] = {
                 "status": "unavailable",

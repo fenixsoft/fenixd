@@ -18,6 +18,12 @@ from core.dashboard import data as dashboard_data
 
 logger = logging.getLogger("fenixd.dashboard.routes.evolution_routes")
 
+# item 0fd61150e50b：accept/reject/delete 三端点共用守卫骨架的动作级哨兵——
+# 动作闭包已自行写响应（accept 的 start_after 非法 400）时返回它，助手据此收工。
+# 不用 None 表达「已响应」：动作结果恒为 dict，返回 None 的路径须继续走助手内
+# 的 result 判定，与去重前各端点的行为逐点一致。
+_EVOLUTION_ACTION_RESPONDED = object()
+
 
 class H7EvolutionRoutesMixin:
     """H7 evolution suggestions（design D1 表 C H7）。"""
@@ -34,6 +40,45 @@ class H7EvolutionRoutesMixin:
             _server_mod.FRAMEWORK_ROOT / ".fenix" / "STATE.md",
             project_state_logger(_server_mod.FRAMEWORK_ROOT),
         )
+
+
+    def _evolution_item_action(self, action_fn, *, error_message, log_message):
+        """accept/reject/delete 三 POST 端点共用的守卫骨架（item 0fd61150e50b 去重）。
+
+        手法对齐 hosting_guard._guard_hosting_state 先例——守卫规则变化（错误码
+        调整、新增参数校验、异常兜底）单点同修，调用方只留动作与文案：
+        读 JSON body（``_read_json_body`` 失败已自行写 400/413 并返回 None）→
+        item_id 类型校验 400 → try/except 泛化 500 → status 为 None 且 error
+        时 404 → 200 + result JSON。
+
+        ``action_fn(item_id, body)`` 承载各端点动作，动作所需额外参数（框架根、
+        状态机、start_after）经闭包捕获；动作已自行写响应时返回
+        ``_EVOLUTION_ACTION_RESPONDED`` 哨兵。``error_message``/``log_message``
+        为 500 泛化文案与异常日志文案——三端点仅「接受/拒绝/删除」一词之差。
+
+        不外泄裸异常文本（code-review item 1f7996c07aa7）：裸 ``{e}`` 会把内部
+        路径/存储细节透给 HTTP 客户端，与 code_review_routes 已确立的泛化文案
+        策略同款——细节降级经服务端日志留痕。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        item_id = body.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        try:
+            result = action_fn(item_id, body)
+        except Exception:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
+            logger.exception(log_message, item_id)
+            self._error(500, error_message)
+            return
+        if result is _EVOLUTION_ACTION_RESPONDED:
+            return
+        if result.get("status") is None and result.get("error"):
+            self._error(404, result["error"])
+            return
+        self._json(result)
 
 
     def _api_evolution_items(self, query):
@@ -110,48 +155,36 @@ class H7EvolutionRoutesMixin:
         预填并可临时改）决定，端点不做配置解释；格式非法 400。
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
-        body = self._read_json_body()
-        if body is None:
-            return
-        item_id = body.get("item_id")
-        if not isinstance(item_id, str) or not item_id:
-            self._error(400, "缺少 item_id 参数")
-            return
-        raw_start_after = body.get("start_after")
-        start_after = None
-        if raw_start_after not in (None, ""):
-            if isinstance(raw_start_after, str) and raw_start_after.strip().lower() == "manual":
-                # D5 哨兵分支：立项即为待激活（经 accept_item 原样落入 entry，
-                # parse_utc 不参与——哨兵不是时间）
-                start_after = "manual"
-            else:
-                from core.state_machine import parse_utc  # 时间解析单点（design D6）
-
-                if not isinstance(raw_start_after, str) or parse_utc(raw_start_after) is None:
-                    self._error(400, f"start_after 非法（应为 UTC ISO8601 / manual）: {raw_start_after!r}")
-                    return
-                start_after = raw_start_after
         from core.evolution import accept_item
 
-        try:
-            result = accept_item(
+        def _accept(item_id, body):
+            raw_start_after = body.get("start_after")
+            start_after = None
+            if raw_start_after not in (None, ""):
+                if isinstance(raw_start_after, str) and raw_start_after.strip().lower() == "manual":
+                    # D5 哨兵分支：立项即为待激活（经 accept_item 原样落入 entry，
+                    # parse_utc 不参与——哨兵不是时间）
+                    start_after = "manual"
+                else:
+                    from core.state_machine import parse_utc  # 时间解析单点（design D6）
+
+                    if not isinstance(raw_start_after, str) or parse_utc(raw_start_after) is None:
+                        self._error(400, f"start_after 非法（应为 UTC ISO8601 / manual）: {raw_start_after!r}")
+                        return _EVOLUTION_ACTION_RESPONDED
+                    start_after = raw_start_after
+            return accept_item(
                 item_id,
                 _server_mod.FRAMEWORK_ROOT,
                 self._evolution_state_machine(),
                 decided_by="manual",
                 start_after=start_after,
             )
-        except Exception:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
-            # 不外泄裸异常文本（code-review item 1f7996c07aa7）：裸 `{e}` 会把
-            # 内部路径/存储细节透给 HTTP 客户端，与 code_review_routes 已确立
-            # 的泛化文案策略同款——细节降级经服务端日志留痕。
-            logger.exception("接受建议项异常（item_id=%s）", item_id)
-            self._error(500, "接受失败（详见服务端日志）")
-            return
-        if result.get("status") is None and result.get("error"):
-            self._error(404, result["error"])
-            return
-        self._json(result)
+
+        self._evolution_item_action(
+            _accept,
+            error_message="接受失败（详见服务端日志）",
+            log_message="接受建议项异常（item_id=%s）",
+        )
 
 
     def _api_evolution_reject(self):
@@ -160,27 +193,13 @@ class H7EvolutionRoutesMixin:
         成功返回 200 + {ok, status}；缺参 400；未知条目 404。
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
-        body = self._read_json_body()
-        if body is None:
-            return
-        item_id = body.get("item_id")
-        if not isinstance(item_id, str) or not item_id:
-            self._error(400, "缺少 item_id 参数")
-            return
         from core.evolution import reject_item
 
-        try:
-            result = reject_item(item_id, _server_mod.FRAMEWORK_ROOT)
-        except Exception:  # noqa: BLE001
-            # 不外泄裸异常文本（code-review item 1f7996c07aa7），同 accept 端点：
-            # 泛化文案 + 服务端 logger.exception 留痕。
-            logger.exception("拒绝建议项异常（item_id=%s）", item_id)
-            self._error(500, "拒绝失败（详见服务端日志）")
-            return
-        if result.get("status") is None and result.get("error"):
-            self._error(404, result["error"])
-            return
-        self._json(result)
+        self._evolution_item_action(
+            lambda item_id, _body: reject_item(item_id, _server_mod.FRAMEWORK_ROOT),
+            error_message="拒绝失败（详见服务端日志）",
+            log_message="拒绝建议项异常（item_id=%s）",
+        )
 
 
     def _api_evolution_delete(self):
@@ -191,27 +210,13 @@ class H7EvolutionRoutesMixin:
         分析 run 重新入库（前端确认弹窗已向用户明示）。
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙
-        body = self._read_json_body()
-        if body is None:
-            return
-        item_id = body.get("item_id")
-        if not isinstance(item_id, str) or not item_id:
-            self._error(400, "缺少 item_id 参数")
-            return
         from core.evolution import delete_item
 
-        try:
-            result = delete_item(item_id, _server_mod.FRAMEWORK_ROOT)
-        except Exception:  # noqa: BLE001
-            # 不外泄裸异常文本（code-review item 1f7996c07aa7），同 accept 端点：
-            # 泛化文案 + 服务端 logger.exception 留痕。
-            logger.exception("删除建议项异常（item_id=%s）", item_id)
-            self._error(500, "删除失败（详见服务端日志）")
-            return
-        if result.get("status") is None and result.get("error"):
-            self._error(404, result["error"])
-            return
-        self._json(result)
+        self._evolution_item_action(
+            lambda item_id, _body: delete_item(item_id, _server_mod.FRAMEWORK_ROOT),
+            error_message="删除失败（详见服务端日志）",
+            log_message="删除建议项异常（item_id=%s）",
+        )
 
 
     def _api_evolution_clear_todo(self):

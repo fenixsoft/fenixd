@@ -25,7 +25,7 @@ class SSEConnection:
         self.id = cid
         self.queue = queue.Queue(maxsize=256)
         self.watched_runs = set()  # 该连接打开的 run 弹窗（增量推送目标）
-        self.dropped = 0  # 队列满丢弃最旧事件的累计计数（观测用，不改变背压行为）
+        self.dropped = 0  # 队列满丢弃最旧事件的累计计数（暂无消费方，仅备用；不改变背压行为）
 
     def send(self, event: dict):
         if self.queue.full():

@@ -636,13 +636,45 @@ async function runUITests(context, page, consoleErrors = []) {
 
   try {
     // 测试 1: 页面标题
+    // 裸 title 判定对不接管 newtab 的扩展形态（popup/选项页等）恒以 about:blank
+    // 空标题 fail，网络与功能证据再好也判失败（code-review item c53d2943201d）。
+    // 复用测试 2 的替代命中面：title 为空但页面已有实质内容（URL 非 about:blank
+    // 或元素/shadow root/文本非零）时降级为 warn（不进 hasUiTestFailures/uiTestFailures，
+    // 同口径见测试 3），detail 标注启发式局限；title 为空且 about:blank 无内容
+    // 仍 fail（真加载失败不放松）。
     try {
       const title = await page.title();
-      results.push({
-        test: '页面加载',
-        status: title ? 'pass' : 'fail',
-        detail: title ? `页面标题: ${title}` : '页面无标题',
-      });
+      if (title) {
+        results.push({ test: '页面加载', status: 'pass', detail: `页面标题: ${title}` });
+      } else {
+        const alt = await page.evaluate(() => {
+          let shadowRoots = 0;
+          for (const el of document.querySelectorAll('*')) {
+            if (el.shadowRoot) shadowRoots++;
+          }
+          const body = document.body;
+          const textLen = body && body.textContent ? body.textContent.trim().length : 0;
+          return {
+            isBlank: location.href === 'about:blank',
+            shadowRoots,
+            elementCount: document.querySelectorAll('body *').length,
+            textLen,
+          };
+        });
+        if (!alt.isBlank || alt.elementCount > 0 || alt.shadowRoots > 0 || alt.textLen > 0) {
+          results.push({
+            test: '页面加载',
+            status: 'warn',
+            detail: `页面无标题，但页面已有实质内容（URL ${alt.isBlank ? '仍为 about:blank' : '非 about:blank'}、元素 ${alt.elementCount} 个、shadow root ${alt.shadowRoots} 个、文本 ${alt.textLen} 字符）；标题判据对不接管 newtab 的扩展形态（popup/选项页）不适用，不作为失败依据`,
+          });
+        } else {
+          results.push({
+            test: '页面加载',
+            status: 'fail',
+            detail: '页面无标题且无实质内容（about:blank 空页，页面疑似未加载）',
+          });
+        }
+      }
     } catch (e) {
       results.push({ test: '页面加载', status: 'error', detail: e.message });
     }

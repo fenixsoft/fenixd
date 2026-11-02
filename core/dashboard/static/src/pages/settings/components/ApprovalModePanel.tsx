@@ -61,7 +61,10 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
   // （gatesFormValues）与保存载荷组装（gates 四键）。
   const { saving, initialValues, handleSave } = useGatedFormPanel({
     form,
-    buildValues: () => gatesFormValues(config.gates),
+    // gates 段空值防护（item 3c4ad5353e36，比照 AgentModelPanel 的 agents 兜底
+    // 口径）：降级响应可能缺 gates 段，直接传入会在 gatesFormValues 内解引用
+    // 抛 TypeError 首帧白屏，`?? {}` 交给缺省兜底（GatesConfig 全字段可选）
+    buildValues: () => gatesFormValues(config.gates ?? {}),
     backfillDeps: [config.gates],
     onSave,
     buildPayload: (values): Partial<ConfigData> => ({
