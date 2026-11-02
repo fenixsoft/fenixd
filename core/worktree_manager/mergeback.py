@@ -35,6 +35,54 @@ from core.worktree_manager.queries import parse_worktree_porcelain  # noqa: E402
 from core.git_text import unquote_git_path as _unquote_git_path  # noqa: E402
 
 
+def _git_output_items(project_root, args: list, *, nul: bool = False) -> "list[str] | None":
+    """mergeback git 采集单源 helper（code-review item 198a795d56e6）。
+
+    ``git -C <project_root> <args>`` 文本输出 → 非空条目清单；命令失败
+    （returncode != 0）、超时（TimeoutExpired）或 OSError 返回 ``None``。
+    此前 detect_spec_amended_inflight / _detect_wip_overlap /
+    _branch_changed_files / _backup_untracked_spec_files 四处采集点各自持有一
+    份同型 subprocess 构造（显式 UTF-8 + errors=replace + timeout=30 +
+    quotePath 反转义），仅筛选条件不同——任何一处补 locale 固化或路径防护都
+    须同步改多处（漂移实例：D3b checkout 的 pathspec 缺 :(literal)，item
+    c27d00b7a648）。现收敛于此，后续口径调整只改本函数。
+
+    - ``nul=False``（缺省）：按行拆分、strip 后经 _unquote_git_path 反转义
+      （--name-only / --format=%h 等行式输出口径；反转义对无引号普通行幂等
+      零开销——哈希行、裸 ASCII 路径照原样返回）。
+    - ``nul=True``：按 NUL 拆分、不 strip 不反转义（``-z`` 输出不经
+      quotePath 转义，再反转义反会破坏字面量，见 _check_spec_dir_inflight
+      的 -z 注释）。
+
+    重构硬要求（行为零变化）：rev_range 构造、pathspec 形态与筛选条件仍由
+    各调用点自持，本 helper 只内聚采集口径，不改变任何判定结果。
+    """
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(project_root), *args],
+            capture_output=True,
+            text=True,
+            # 显式 UTF-8（item 3903036ee5c2 / 6f235c189552 先例收口）：text=True
+            # 缺省按 locale strict 解码，非 ASCII 路径/译文坏字节抛
+            # UnicodeDecodeError（ValueError 子类），不在下方 except 范围内，
+            # 会穿出 merge-back 闸门段。
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if res.returncode != 0:
+        return None
+    if nul:
+        return [f for f in res.stdout.split("\0") if f]
+    return [
+        _unquote_git_path(ln.strip())
+        for ln in res.stdout.splitlines()
+        if ln.strip()
+    ]
+
+
 def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
     """spec/changes/<spec>/ 已提交在飞修订检测（evo-inflight-spec-amendment-watch 1.1）。
 
@@ -50,54 +98,32 @@ def detect_spec_amended_inflight(project_root, branch: str, spec: str) -> list:
     if not project_root or not branch or not spec:
         return []
     rel = f"spec/changes/{spec}"
-    try:
-        mb = subprocess.run(
-            ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
-            capture_output=True,
-            text=True,
-            # 显式 UTF-8（item 3903036ee5c2，与本文件 6f235c189552 先例同款）：
-            # text=True 缺省按 locale strict 解码，本地化 git 的 stderr 带非
-            # ASCII 坏字节时抛 UnicodeDecodeError（ValueError 子类），不在下方
-            # except 范围内，会穿出 merge-back 闸门段。
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-        # merge-base 失败（分支不存在/已清理/仓库异常）→ 静默跳过（关键约束：
-        # 检测依赖实现分支存活，缺分支不报错、不告警）。
-        if mb.returncode != 0 or not mb.stdout.strip():
-            return []
-        merge_base = mb.stdout.strip()
-        log = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "log",
-                "--format=%h",
-                f"{merge_base}..HEAD",
-                "--",
-                # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
-                # _backup_untracked_spec_files / queries.file_exists_on_branch
-                # 同口径）：裸 pathspec 会被 git 按 fnmatch 通配展开，spec 名含
-                # */?/[ 等元字符时匹配超出该 spec 目录、在飞修订误报。
-                f":(literal){rel}",
-            ],
-            capture_output=True,
-            text=True,
-            # 显式 UTF-8（item 3903036ee5c2，对齐上方 merge-base 与本文件
-            # 6f235c189552 先例）：stderr 坏字节按 replace 降级，不再逃逸下方
-            # 仅捕 (TimeoutExpired, OSError) 的 except。
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-        if log.returncode != 0:
-            return []
-    except (subprocess.TimeoutExpired, OSError):
+    # 采集口径单源 _git_output_items（item 198a795d56e6：显式 UTF-8/超时/
+    # 反转义内聚在 helper，命令失败/超时统一返回 None）。
+    mb = _git_output_items(project_root, ["merge-base", "HEAD", branch])
+    # merge-base 失败（分支不存在/已清理/仓库异常）→ 静默跳过（关键约束：
+    # 检测依赖实现分支存活，缺分支不报错、不告警）。
+    if not mb:
+        return []
+    merge_base = mb[0]
+    log_lines = _git_output_items(
+        project_root,
+        [
+            "log",
+            "--format=%h",
+            f"{merge_base}..HEAD",
+            "--",
+            # :(literal) 钉死字面量匹配（item 3aa4104dbb44，与
+            # _backup_untracked_spec_files / queries.file_exists_on_branch
+            # 同口径）：裸 pathspec 会被 git 按 fnmatch 通配展开，spec 名含
+            # */?/[ 等元字符时匹配超出该 spec 目录、在飞修订误报。
+            f":(literal){rel}",
+        ],
+    )
+    if log_lines is None:
         return []
     # git log 按时间倒序输出（新→旧）；倒转为时间正序，便于人工按序追修订。
-    commits = [ln.strip() for ln in log.stdout.splitlines() if ln.strip()]
+    commits = list(log_lines)
     commits.reverse()
     return commits
 
@@ -637,7 +663,14 @@ class G4MergebackMixin:
                 batch = subprocess.run(
                     [
                         "git", "-C", str(self.project_root),
-                        "checkout", "HEAD", "--", *artifact_overlap,
+                        "checkout", "HEAD", "--",
+                        # :(literal) 钉死字面量匹配（item c27d00b7a648，与
+                        # _backup_untracked_spec_files 的 ls-files 采集点同口径）：
+                        # 裸 pathspec 会被 git 按 fnmatch 通配展开，产物路径含
+                        # glob 元字符（如 [param]、*.snap、?）时会把所有匹配路径
+                        # 的工作区未提交改动一并恢复为 HEAD——对不在重叠集合内的
+                        # 无关文件是不可逆数据丢失。
+                        *[f":(literal){p}" for p in artifact_overlap],
                     ],
                     capture_output=True,
                     text=True,
@@ -658,7 +691,9 @@ class G4MergebackMixin:
                         result = subprocess.run(
                             [
                                 "git", "-C", str(self.project_root),
-                                "checkout", "HEAD", "--", p,
+                                "checkout", "HEAD", "--",
+                                # :(literal) 同批量对齐口径（item c27d00b7a648）
+                                f":(literal){p}",
                             ],
                             capture_output=True,
                             text=True,
@@ -889,44 +924,21 @@ class G4MergebackMixin:
             dirty = self._list_dirty_tracked_files()
             if not dirty:
                 return []
-            mb = subprocess.run(
-                ["git", "-C", str(self.project_root), "merge-base", "HEAD", branch],
-                capture_output=True,
-                text=True,
-                # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
-                # 先例）：非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError
-                # 子类）逃逸下方 except；本函数处于 merge_back_from_branch 闸门段。
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
+            # 采集口径单源 _git_output_items（item 198a795d56e6：merge-base
+            # 两点式 + --name-only 行清单的编码/超时/反转义内聚在 helper；
+            # 失败/超时返回 None，本函数处于 merge_back_from_branch 闸门段）。
+            mb = _git_output_items(
+                self.project_root, ["merge-base", "HEAD", branch]
             )
-            if mb.returncode != 0 or not mb.stdout.strip():
+            if not mb:
                 return []
-            diff = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "diff",
-                    "--name-only",
-                    mb.stdout.strip(),
-                    branch,
-                ],
-                capture_output=True,
-                text=True,
-                # 同上方 merge-base 口径（item 6f235c189552）：显式 UTF-8 免坏
-                # 字节 UnicodeDecodeError 逃逸 except。
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
+            diff = _git_output_items(
+                self.project_root,
+                ["diff", "--name-only", mb[0], branch],
             )
-            if diff.returncode != 0:
+            if diff is None:
                 return []
-            branch_files = {
-                _unquote_git_path(ln.strip())
-                for ln in diff.stdout.splitlines()
-                if ln.strip()
-            }
+            branch_files = set(diff)
             overlap = sorted(set(dirty) & branch_files)
             # 闸门作用域（evo-merge-back-wip-overlap-gate D2）：排除 spec/changes/**
             # ——见上方 docstring，纳入闸门会分别导致「收纳无效」与「几乎每次
@@ -1136,34 +1148,15 @@ class G4MergebackMixin:
         反转义 quotePath 转义形。命令失败/超时返回空集（该车道按零命中处理，
         保守方向 = 宁可按无主宽限升级告警，不可误标在飞持有者跳过升级）。
         """
-        try:
-            res = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "diff",
-                    "--name-only",
-                    f"HEAD...{branch}",
-                ],
-                capture_output=True,
-                text=True,
-                # 显式 UTF-8（item 6f235c189552，对齐 _worktree_name_branch_pairs
-                # 先例）：非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError
-                # 子类）逃逸下方 except。
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError):
+        # 采集口径单源 _git_output_items（item 198a795d56e6：三点式 diff 的
+        # 编码/超时/反转义内聚在 helper；失败/超时返回 None 按空集处理，
+        # 保守方向不变 = 宁可按无主宽限升级告警）。
+        lines = _git_output_items(
+            self.project_root, ["diff", "--name-only", f"HEAD...{branch}"]
+        )
+        if lines is None:
             return set()
-        if res.returncode != 0:
-            return set()
-        return {
-            _unquote_git_path(ln.strip())
-            for ln in res.stdout.splitlines()
-            if ln.strip()
-        }
+        return set(lines)
 
     # ── 主树活交互会话只读探测（evo-add-maintree-interactive-session-attribution 1.1）──
 
@@ -1582,17 +1575,25 @@ class G4MergebackMixin:
         运行时草稿」。
 
         与 abort 后 ``_resolve_ignored_modify_delete_conflicts``（仅处理 DU——
-        主树删除、分支修改）口径一致：主树已删除该路径时它在 HEAD 索引中不
-        存在，``git check-ignore`` 判定可靠；反向（分支删除、主树修改）路径仍
-        tracked → check-ignore 不命中 → 判为语义冲突直通，真合并中该自愈
-        （仅接受 DU 状态码）同样不适用。
+        主树删除、分支修改）口径衔接：合法的可忽略形态是主树侧**已提交删除**
+        （DU），此时该路径不在 HEAD 索引中。
 
         批量口径（item 2bde1727f26c，对齐 _backup_untracked_spec_files）：本
         分类在 _rehearse_merge_from_branch 持 _main_tree_lock 期间执行，逐路径
         起子进程的数量随冲突路径线性增长会无谓拉长主树全局合并锁持锁时长，
         收敛为单条 ``check-ignore -z --stdin``（NUL 分隔免路径歧义、-z 免
-        core.quotePath 转义；不带 -q 以便按输出回填命中子集）。任一路径判定
-        失败保守返回 False（与旧单路径版命令失败语义一致）。
+        core.quotePath 转义；不带 -q 以便按输出回填命中子集）。
+
+        tracked 复核（code-review item ca06c56b595b）：``git check-ignore`` 只
+        对照忽略规则、不查索引——被跟踪却命中 .gitignore 规则的路径若在预演中
+        产生冲突（如 UU：主树修改 × 分支修改），单看 check-ignore 会被误判为
+        「被忽略 DU 草稿」而放行。故对 check-ignore 全命中子集再以单条
+        ``ls-files -z -- :(literal)...``（与 _backup_untracked_spec_files 同款
+        批量采集，复用 item 198a795d56e6 helper）复核索引：仅「check-ignore
+        命中 **且** 不在索引」才视为可忽略草稿；仍 tracked 的路径判为语义冲突
+        直通——真合并中 ``_resolve_ignored_modify_delete_conflicts`` 仅接受 DU
+        状态码，同样不适用（多耗一轮 merge、归因链路变长，但不再误放行）。
+        任一命令失败/超时保守返回 False（与旧单路径版命令失败语义一致）。
         """
         if not paths:
             return True
@@ -1611,7 +1612,18 @@ class G4MergebackMixin:
         if chk.returncode not in (0, 1):
             return False
         ignored = {ln for ln in chk.stdout.split("\0") if ln}
-        return all(p in ignored for p in paths)
+        if not all(p in ignored for p in paths):
+            return False
+        # tracked 复核（item ca06c56b595b）：check-ignore 不查索引，被跟踪却
+        # 命中忽略规则的路径不能放行。ls-files 失败按无法判定保守返回 False。
+        tracked = _git_output_items(
+            self.project_root,
+            ["ls-files", "-z", "--"] + [f":(literal){p}" for p in paths],
+            nul=True,
+        )
+        if tracked is None:
+            return False
+        return not set(tracked).intersection(paths)
 
     def rehearsal_conflict_paths(self, branch: str) -> list:
         """救回路径的冲突文件集查询（evo-add-codefix-mergeback-conflict-salvage 1.2）。
@@ -2066,45 +2078,26 @@ class G4MergebackMixin:
         3. 将命中的文件移入 `.fenix/merge-backup/<epoch秒>/`（保持仓库相对路径结构）。
 
         检测范围不限于 spec/changes/，覆盖任意产物路径（如 core/dashboard/static/v2/）。
-        集合为空、或交集为空时返回 None 且不创建备份目录（零开销跳过）。
+        集合为空、或交集为空时返回 None 且不创建备份目录（零开销跳过）；候选
+        文件在过滤与移动之间全部消失、或全部移开失败（零移入）时同样返回
+        None（code-review item 1ca7a00c3ca7——返回值恒为「实际承载了备份文件
+        的目录路径」，消费方无需再靠 is_dir 兜底不存在的路径）。
 
-        返回备份目录路径（无冲突文件时返回 None）。merge 成功后调用 _drop_backup
+        返回备份目录路径（无实际移入文件时返回 None）。merge 成功后调用 _drop_backup
         决定备份去留；merge 失败调用 _restore_backup 移回（不丢数据）。
         """
-        try:
-            added = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.project_root),
-                    "diff",
-                    "--name-only",
-                    "--diff-filter=A",
-                    f"HEAD...{branch}",
-                ],
-                capture_output=True,
-                text=True,
-                # 显式 UTF-8（item 6f235c189552）：与下方 ls-files 已修先例同款
-                # ——非 ASCII 路径坏字节抛 UnicodeDecodeError（ValueError 子类）
-                # 逃逸下方 except。
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            # OSError 与 TimeoutExpired 同待降级（code-review item af581068b80d）：
-            # 备份探测不可用（git 二进制缺失等）不该上抛到调用方大 try 被当成
-            # 整次 merge-back 失败，与文件内其余 git 探测调用容错口径统一。
+        # 采集口径单源 _git_output_items（item 198a795d56e6：--diff-filter=A
+        # 三点式 diff 的编码/超时/反转义内聚在 helper）。helper 对 OSError 与
+        # TimeoutExpired 同待降级（code-review item af581068b80d）：备份探测
+        # 不可用（git 二进制缺失等）不上抛到调用方大 try 被当成整次 merge-back
+        # 失败，与文件内其余 git 探测调用容错口径统一——返回 None 即该降级。
+        added = _git_output_items(
+            self.project_root,
+            ["diff", "--name-only", "--diff-filter=A", f"HEAD...{branch}"],
+        )
+        if not added:
             return None
-        if added.returncode != 0:
-            return None
-        added_paths = [
-            _unquote_git_path(ln.strip())
-            for ln in added.stdout.splitlines()
-            if ln.strip()
-        ]
-        if not added_paths:
-            return None
+        added_paths = added
 
         # 主树中存在该路径、且未被 index 跟踪（untracked）才纳入备份。
         # 批量口径（code-review item d307bc3bd39e）：主树存在性是纯文件系统
@@ -2119,26 +2112,16 @@ class G4MergebackMixin:
         ]
         if not existing:
             return None
-        try:
-            ls = subprocess.run(
-                ["git", "-C", str(self.project_root), "ls-files", "-z", "--"]
-                + [f":(literal){rel}" for rel in existing],
-                capture_output=True,
-                text=True,
-                # 显式 UTF-8：-z 输出原始字节路径不转义，text=True 缺省按
-                # locale strict 解码，坏字节文件名抛 UnicodeDecodeError
-                # （ValueError 子类，逃逸下方 except；对齐 repair_site.py 同款惯例）
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            # 同上方 diff 探测降级口径（item af581068b80d）：备份探测不可用
-            # 不上抛被调用方当成整次 merge-back 失败。
+        # 同款采集单源（item 198a795d56e6）：-z NUL 口径经 nul=True 走同一
+        # helper（不 strip 不反转义，与原逐字节解析一致；失败降级同上方口径）。
+        ls = _git_output_items(
+            self.project_root,
+            ["ls-files", "-z", "--"] + [f":(literal){rel}" for rel in existing],
+            nul=True,
+        )
+        if ls is None:
             return None
-        if ls.returncode != 0:
-            return None
-        tracked = {p for p in ls.stdout.split("\0") if p}
+        tracked = set(ls)
         rels = [rel for rel in existing if rel not in tracked]
 
         if not rels:
@@ -2159,6 +2142,12 @@ class G4MergebackMixin:
             while backup.exists():
                 backup = backup_root / f"{base_name}-{ms}-{n}"
                 n += 1
+        # 实际移入计数（code-review item 1ca7a00c3ca7）：候选文件可能在过滤与
+        # 移动之间全部消失（src.exists() 为假被 continue）——此时备份目录从未
+        # mkdir、从未承载文件，返回路径会与「备份目录路径」语义不符、只能靠
+        # 下游 _drop_backup/_restore_backup 的 is_dir 兜底。统计成功移入数，
+        # 零移入返回 None（与 docstring「无冲突文件时返回 None」对齐）。
+        moved = 0
         for rel in rels:
             src = self.project_root / rel
             dst = backup / rel
@@ -2167,15 +2156,23 @@ class G4MergebackMixin:
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
+                moved += 1
             except OSError as e:
                 # 移开失败留痕（code-review item de36430769eb）：该文件未入备份
-                # 清单，merge 随后大概率在别处因 untracked 冲突失败——失败不计数、
-                # 不影响返回值与主流程，仅对齐 _restore_backup 的失败必 WARNING 口径。
+                # 清单，merge 随后大概率在别处因 untracked 冲突失败——失败不计入
+                # moved，仅对齐 _restore_backup 的失败必 WARNING 口径。
                 self.logger.warning(
                     "worktree_manager",
                     f"merge-back 备份移开失败：rel='{rel}' → '{dst}'：{e}",
                 )
                 continue
+        if not moved:
+            # 零移入返回 None（item 1ca7a00c3ca7）：下游 _drop_backup /
+            # _restore_backup 对 None 均已早退（消费侧无需新增防护）。全部移开
+            # 失败的极端情形可能已为首个失败条目 mkdir 出空目录，残留无害——
+            # 同名冲突后缀机制兼容已存在目录，且此处不 rmtree（防误删跨进程
+            # 同秒复用同名目录的另一进程备份）。
+            return None
         return backup
 
     def _drop_backup(self, backup) -> None:
