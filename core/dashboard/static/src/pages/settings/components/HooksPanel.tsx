@@ -23,8 +23,9 @@ import { saveHooksSection } from '@/services/hooksSection';
 const { Text } = Typography;
 
 interface HooksPanelProps {
-  /** 设置页统一保存回调（写回 /api/config） */
+  /** 当前项目级配置数据（config.hooks 供本面板读写） */
   config: ConfigData;
+  /** 设置页统一保存回调（写回 /api/config） */
   onSave: (values: Partial<ConfigData>) => Promise<void> | void;
   /** 项目级作用域的项目名（本面板仅项目级可达） */
   project: string;
