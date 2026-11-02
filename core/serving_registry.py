@@ -324,8 +324,8 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     无法核实路径）。
 
     Returns: True＝允许收割；False＝身份失配（摘登记不杀组）；None＝
-    无法核实（快照在而读数缺失，或两身份信号皆不可得——跳过本轮收割
-    且保留登记）。
+    无法核实（快照在而读数缺失、worktree 分支 cwd 读不到/空串，或两
+    身份信号皆不可得——跳过本轮收割且保留登记）。
     """
     recorded = entry.get("start_ticks")
     # bool 是 int 子类（口径同 _pid_eq / sweep 的 pid 校验）：手改文件写入
@@ -350,12 +350,20 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
         # 判身份会整组误杀；真实例 spawn 即 cwd=worktree（见
         # serving._serve_command_in_worktree），cwd 单信号足以核身。
         try:
-            cwd_real = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+            cwd_link = os.readlink(f"/proc/{pid}/cwd")
         except OSError:
-            cwd_real = None
-        return cwd_real is not None and (
-            cwd_real == wt_real or cwd_real.startswith(wt_real + os.sep)
-        )
+            cwd_link = ""
+        if not cwd_link:
+            # cwd 读不到＝无法核实，与上方 starttime 快照分支同口径返回
+            # None（sweep 跳过本轮收割且保留登记、下轮重试）：一次瞬时读
+            # 失败（权限边界/exec 窗口/mount namespace 差异）若按失配处理，
+            # 会把仍存活实例永久摘出登记、失去唯一收割通道（command 型
+            # serve 无 marker pgrep 兜底）。僵尸形态 readlink 返回空串也在
+            # 此拦下——realpath("") 会折算成读取进程自身 cwd，对登记
+            # worktree 恒为异域；空串不是有效 cwd 证据，不得据此判失配。
+            return None
+        cwd_real = os.path.realpath(cwd_link)
+        return cwd_real == wt_real or cwd_real.startswith(wt_real + os.sep)
     # 两信号皆不可得（无 starttime 快照且 worktree 为空）：返回 None＝
     # 无法核实，sweep 跳过本轮收割且保留登记——无任何身份锚点时放行
     # killpg，pid 被系统复用后会误杀无关进程组（见 docstring；该形态
