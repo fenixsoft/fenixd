@@ -30,7 +30,7 @@
 ## 1. 触发点迁移
 
 - [x] 1.1 `core/pm_engine/engine.py` `approve_push` 成功转移（done→pushed 落账后）挂载 `dispatch_distill(proot, spec_name)`：延迟导入+`distill=` 替身参数（仿 archive_commit 既有模式）；fail-open（异常只告警不影响返回值）；幂等 skip/非 done/退避期/不存在各早退分支均不派发
-- [ ] 1.2 `core/archive_commit.py` 移除蒸馏挂载段（`commit_archive_move` 不再调用 dispatch_distill，返回结构保留 `distill: None` 键兼容既有消费方），docstring 同步更新触发语义
+- [x] 1.2 `core/archive_commit.py` 移除蒸馏挂载段（`commit_archive_move` 不再调用 dispatch_distill，返回结构保留 `distill: None` 键兼容既有消费方），docstring 同步更新触发语义
 - [ ] 1.3 `tests/test_spec_approve_push.py`：成功转移→派发被调用一次；幂等回放/非 done/退避期→不派发；派发抛异常→approve_push 返回值与状态转移不变
 
 ## 2. 蒸馏输入双态解析

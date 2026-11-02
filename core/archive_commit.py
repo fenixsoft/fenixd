@@ -3,13 +3,18 @@
 归档移动（``spec/changes/<name>/`` → ``spec/archive/<dir>/``）成功后立即在
 项目仓库产生一次 pathspec 限定的提交，不再等 push 流程尾部收口：
 
-- 仅提交归档两条路径（changes 删除侧 + archive 新增侧）：``git add --`` +
+- 仅提交归档路径与随批改写的知识页（``extra_paths``，move-distill-trigger-
+  to-push 3.2 溯源改写产物）：``git add --`` +
   ``git commit -m ... --`` 同一 pathspec（--only 语义），不吞索引中无关
   staged 内容、不扫进 spec/ 下其它正在修改的文件；
 - fail-open：非 git 仓库 / git 失败一律以 ``warning`` 返回，不抛异常、
   不回滚已成功的目录移动，归档本体不受影响；
 - 只 commit 不 push：push 仍由人工门禁（fenix-approve）与 push 流程负责；
   pm_engine push 尾部的归档收口保留为兜底（有残留才动作）。
+
+知识蒸馏派发已迁出本模块（move-distill-trigger-to-push 1.2）：归档不再触发
+蒸馏，蒸馏由 ``PmEngine.approve_push``（done→pushed 成功转移）单点派发；
+返回结构保留 ``distill: None`` 键兼容既有消费方。
 
 本模块的 warning 走裸 ``logging.getLogger("fenixd.archive_commit")`` 通道（经
 传播汇入全局 "fenixd" 日志器）。多项目同进程下该通道无自有 handler，记录会
@@ -34,28 +39,35 @@ _COMMIT_TIMEOUT = 120
 _SAFE_PATH_RE = re.compile(r"^(?!\.?\.$)[A-Za-z0-9._-]+$")
 
 
-def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None) -> dict:
-    """提交一次归档移动（只 commit，不 push），并单点挂载蒸馏派发。
+def commit_archive_move(project_root, spec_name: str, archive_dir, extra_paths=None) -> dict:
+    """提交一次归档移动（只 commit，不 push）。
+
+    蒸馏派发已迁出（move-distill-trigger-to-push 1.2）：归档移动不再触发
+    ``dispatch_distill``，触发点在 ``PmEngine.approve_push`` 成功转移后。
 
     Args:
         project_root: 项目根目录
         spec_name: SPEC 名（用于提交信息）
         archive_dir: 移动后的归档目录路径（Path/str）
-        distill: 蒸馏派发替身（task 2.3 测试隔离）。None = 延迟导入
-            ``core.knowledge.dispatch_distill`` 走真实派发（内部另有
-            knowledge.enabled 门控与 pytest 环境守卫——既有单测直接调用
-            本函数不会触发真实蒸馏）。
+        extra_paths: 随本次归档一并入库的附加文件相对路径清单（可 None）。
+            move-distill-trigger-to-push 3.2：调用方在目录移动成功后、提交前
+            完成知识页溯源改写（``core.knowledge.rewrite_source_links_to_
+            archive``），把改写过的 ``spec/knowledge/`` 文件传入，与归档两侧
+            并入同一 ``[fenix] archive:`` 提交（改写与移动原子落库，知识页
+            链接任何时刻指向真实存在的路径）。逐段过 pathspec 白名单，非法
+            或磁盘上已不存在的条目剔除留痕（fail-open，不阻塞归档主路径）。
 
     Returns:
         {"committed": bool, "commit": str|null, "warning": str|null,
-         "distill": {"dispatched": bool, "reason": str|null}|null}
+         "distill": None}
         - committed=True：提交成功，commit 为本次提交的全量 hash
           （哈希读取失败时为 null，提交本身已落库）；
         - committed=False：warning 说明原因（非 git 仓库 / git 失败 / 无可提交内容）；
-        - distill 为 None 仅当 git 探测失败提前返回（派发只在 git 仓库内进行）。
+        - distill 恒为 None（键保留兼容既有消费方；蒸馏不再由归档触发）。
     """
     proot = Path(project_root)
-    # distill 预置 None：git 探测失败的提前返回路径也要兑现 docstring 承诺的键
+    # distill 恒 None：归档不再触发蒸馏（触发点已迁至 approve_push），
+    # 键保留兼容既有消费方（含 git 探测失败的提前返回路径）
     result = {"committed": False, "commit": None, "warning": None, "distill": None}
 
     def _fail(msg: str) -> dict:
@@ -78,25 +90,6 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
             )
     except (OSError, subprocess.TimeoutExpired) as e:
         return _fail(f"git 探测失败，跳过归档提交: {e}")
-
-    # ── 知识蒸馏派发（add-knowledge-atlas task 2.3，双路径单点漏斗）──────
-    # 归档移动成功即触发（不依赖本次提交成败）。fail-open：派发异常只记日志
-    # 与重试台账，不影响归档提交主流程；内部 knowledge.enabled 门控与
-    # pytest 守卫由 dispatch_distill 承担。延迟导入避免模块级依赖环。
-    try:
-        if distill is None:
-            from core.knowledge import dispatch_distill
-
-            distill = dispatch_distill
-        result["distill"] = distill(proot, Path(archive_dir).name)
-    except Exception as e:  # noqa: BLE001 — 派发任何异常不阻塞归档
-        logger.warning(
-            "知识蒸馏派发异常（archive=%s）: %s: %s",
-            Path(archive_dir).name,
-            type(e).__name__,
-            e,
-        )
-        result["distill"] = {"dispatched": False, "reason": f"error: {e}"}
 
     # pathspec 安全：spec_name / 归档目录名直接拼入 git pathspec，glob（* ? []）
     # 会被按模式匹配解释而可能误匹配计划外路径；白名单不通过时 fail-open 跳过提交。
@@ -133,6 +126,22 @@ def commit_archive_move(project_root, spec_name: str, archive_dir, distill=None)
             )
     if not paths:
         return _fail("归档路径均无可提交内容，跳过归档提交")
+
+    # 附加路径（知识页溯源改写产物，move-distill-trigger-to-push 3.2）：逐段
+    # 过 pathspec 白名单（含目录段，同一危险字符口径），非法条目剔除留痕；
+    # 磁盘上已不存在的条目同样剔除——git add 对 matches nothing 的 pathspec
+    # 会 fatal 退出。附加路径并入同一 ``[fenix] archive:`` 提交（--only
+    # pathspec 语义不变，不吞索引中无关 staged 内容）。
+    for extra in extra_paths or []:
+        segs = Path(extra).parts
+        if not segs or not all(_SAFE_PATH_RE.fullmatch(s) for s in segs):
+            logger.warning("归档提交忽略 pathspec 危险的附加路径: %r", extra)
+            continue
+        extra_rel = Path(extra).as_posix()
+        if not (proot / extra_rel).exists():
+            logger.warning("归档提交忽略已不存在的附加路径: %s", extra_rel)
+            continue
+        paths.append(extra_rel)
 
     commit_msg = f"[fenix] archive: {spec_name} 归档入库"
     try:
