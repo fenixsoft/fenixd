@@ -43,7 +43,7 @@
 
 - [x] 3.1 新增溯源改写器单函数（core/knowledge.py 内，多调用点共用禁复制粘贴）：输入（proot, spec 名, 实际归档目录名），扫描 `spec/knowledge/` 全页将 `spec/changes/<名>` 精确替换为 `spec/archive/<date-name>`（含 sources 行与正文溯源行，两种形态均为纯文本命中），返回替换文件清单；替换匹配 MUST 带名字右边界（命中后随非 `[A-Za-z0-9._-]` 字符或串尾），防前缀同名 SPEC 误伤（真实在库例：merge-back ↔ merge-back-precheck），`tests/test_move_distill_trigger_to_push.py` 补前缀同名不误伤用例；异常抛给调用方（fail-open 决策在调用方）
 - [x] 3.2 改写器全调用点接线（commit_archive_move 四处物理调用点同覆盖）：`bin/fenix_archive.py`（CLI）、`core/dashboard/data/spec_archive.py` 的 archive_spec（daemon R1/R2/R3 自动归档主线经此）与 soft_delete_spec（软删除命名 `<名>-<unix>`，改写器按实际归档目录名注入、命名无关）在目录移动成功后、归档提交前调用改写器，知识页改动并入同一 `[fenix] archive:` 提交；改写异常告警留痕不阻塞归档
-- [ ] 3.3 `core/knowledge_audit.py` 溯源检查核对：grep 对 ARCHIVE_DIR 的路径锚定引用，放宽为「链接目标目录存在」两态等价（若检查器已无锚定则仅在测试锁定，不硬改）
+- [x] 3.3 `core/knowledge_audit.py` 溯源检查核对：grep 对 ARCHIVE_DIR 的路径锚定引用，放宽为「链接目标目录存在」两态等价（若检查器已无锚定则仅在测试锁定，不硬改）
 - [ ] 3.4 `tests/test_spec_archive.py` + `tests/test_move_distill_trigger_to_push.py`（new）：归档→改写落库同提交；改写异常→归档照常+告警；知识页链接指向 changes/ 时 `validate_knowledge` 与 audit 均零违规（两态等价锁定）
 - [x] 3.5 `core/knowledge.py` `validate_knowledge` sources 分支（origin=archive 锚定，knowledge.py:447-465）：sources 前缀校验放宽为 changes/ 与 archive/ 两态均合法（目录存在性与越界复核保留，防穿透强度不降），防 push 态蒸馏页被判「sources 非归档路径」烧尽修正轮；`tests/test_knowledge.py` 补两态 sources 用例（changes 态 sources 过校验、archive 态行为不变）
 
