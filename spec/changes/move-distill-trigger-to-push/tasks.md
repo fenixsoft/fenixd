@@ -50,4 +50,4 @@
 ## 4. 恢复重派与端到端回归
 
 - [x] 4.1 `tests/test_knowledge_distill_resume.py`：pending 批恢复重派时 SPEC 已归档→双态兜底命中 archive/、批正常执行；SPEC 仍在 changes/→按 changes/ 执行
-- [ ] 4.2 端到端回归：蒸馏族全量（test_knowledge*.py）+ 归档族（test_spec_archive*.py/test_spec_approve_push.py）零回归；`python3 -m compileall core/ bin/` 通过；全仓 grep `commit_archive_move` 消费方确认返回结构兼容（distill 键恒存在）
+- [x] 4.2 端到端回归：蒸馏族全量（test_knowledge*.py）+ 归档族（test_spec_archive*.py/test_spec_approve_push.py）零回归；`python3 -m compileall core/ bin/` 通过；全仓 grep `commit_archive_move` 消费方确认返回结构兼容（distill 键恒存在）
