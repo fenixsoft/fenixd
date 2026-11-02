@@ -145,6 +145,7 @@ def _apply_target_mode(tmp_path: Path, target: Path) -> None:
         if target.exists():
             os.chmod(str(tmp_path), stat.S_IMODE(os.stat(str(target)).st_mode))
         else:
+            # [fenix-ignore:39c5a5d1d2b4] docstring 已记载 0644 为未来只读监控账号部署预留下的有意权衡（单用户运行无实际暴露面），收紧需 umask 启动期缓存（跨文件）或 0640 改权限语义与部署预案，风险大于收益
             os.chmod(str(tmp_path), 0o644)
     except OSError:
         pass
