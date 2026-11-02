@@ -1010,14 +1010,17 @@ class DshAdapter:
         }
         return {
             "observed": True,
-            "output": last.get("result") or "",
+            # str 归一（口径同 claude 通道 extract_result）：result 真值非
+            # str（误喂 claude 形状 result 事件/契约漂移成 dict/list）时不
+            # 原样穿透，保证 run 终态产物恒为字符串（同上方 usage 判型守卫）。
+            "output": str(last.get("result") or ""),
             "turns": _to_int(last.get("num_turns")),
             "session_id": last.get("session_id"),
             "usage_info": usage_info,
             "is_error": bool(last.get("is_error")),
             "subtype": last.get("subtype") or "",
             "api_error_status": last.get("api_error_status"),
-            "result_text": last.get("result") or "",
+            "result_text": str(last.get("result") or ""),
             "usage_source": last.get("usage_source") or "available",
         }
 
@@ -1139,7 +1142,10 @@ class DshAdapter:
             if stripped:
                 first_line = stripped.splitlines()[0].strip()
                 break
-        candidates = re.findall(r"\d+\.\d+\.\d+[-\w.]*", first_line)
+        # 尾缀收窄为 ``(-\w+)*(\.\w+)*`` 形态：紧随版本号的行尾标点（句点/
+        # 连字符）天然截断候选，不吞入比对串（如「dsh 0.2.0-rc.2.」提取
+        # ``0.2.0-rc.2`` 而非 ``0.2.0-rc.2.``）。
+        candidates = re.findall(r"\d+\.\d+\.\d+(?:-\w+)*(?:\.\w+)*", first_line)
         version = next(
             (c for c in candidates if c in DSH_VERSION_WHITELIST),
             candidates[0] if candidates else first_line,

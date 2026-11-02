@@ -36,9 +36,9 @@ export function fmtTokens(v: number | null | undefined): string {
   return v.toLocaleString('en-US');
 }
 
-// 耗时格式化：秒 → 紧凑可读时长（<1m 取整秒；<1h 分秒；否则时分）；null → 「—」。
+// 耗时格式化：秒 → 紧凑可读时长（<1m 取整秒；<1h 分秒；否则时分）；null/非有限 → 「—」。
 export function fmtDurationSeconds(v: number | null | undefined): string {
-  if (v === null || v === undefined) return '—';
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   // [fenix-ignore:712fbb46dbbd] 现行实现已将取整提前到秒级判断之前（59.5~60 取整得 60 后进位输出 1m），所述秒级输出 60s 的问题不存在。
   // 先对总秒数取整再判进位：59.5~60 区间 round 后得 60，若按秒级输出即「60s」
   // 不向分钟进位（v=60 才是「1m」）；分秒拆分同理会让余秒进成 60 出「59m60s」。
@@ -257,7 +257,7 @@ export function windowLabels(w: TimeWindow): {
 // 活动行状态三分（2026-10-28 设计 §3.2；2026-10-29 多 spec 并行滚动显示改
 // 列表口径）：working+在飞归属 → specs 列表（点击 spec 名开运行记录弹窗）；
 // working 无归属 → 「执行中」；idle（含未知状态，与 laneBadge 非 working
-// 即 idle 口径同源）→ 待命。脏元素（缺 spec/run_id）防御性剔除——后端已
+// 即 idle 口径同源）→ 待命。脏元素（缺 project/spec/run_id）防御性剔除——后端已
 // 过滤，此处兜底 UI 不出死行。纯函数零依赖，node --test 直测。
 export interface AttributableRun {
   project: string;
@@ -279,7 +279,9 @@ export function activityLineState(card: {
   attributable?: { project: string; spec: string } | null;
 }): ActivityLineState {
   if (card.status === 'working') {
-    const items = (card.attributables ?? []).filter((a) => !!a && !!a.spec && !!a.run_id);
+    const items = (card.attributables ?? []).filter(
+      (a) => !!a && !!a.project && !!a.spec && !!a.run_id,
+    );
     if (items.length) {
       return { kind: 'specs', items };
     }

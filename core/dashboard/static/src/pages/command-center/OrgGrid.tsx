@@ -203,17 +203,23 @@ function MetricCell({
 /** spec 选择下拉内容（add-command-center-spec-view 4.2）：搜索框本地过滤
  * + 限高滚动列表（.cmdcenter-lanescroll 深色滚动条；静态红线无动画）。
  * 条目排序由后端 summary.specs 下发（created 新→旧）；全部项目视图条目
- * `project/spec` 消歧、单项目只显 spec 名（shared.specEntryLabel）。 */
+ * `project/spec` 消歧、单项目只显 spec 名（shared.specEntryLabel）。
+ * 搜索词受控于调用方（code-review feca3dc3ae8d）：Popover 隐藏不销毁内容，
+ * 内部 state 会跨开合保留残词，由调用方在打开分支重置保证每次打开从全量
+ * 名单开始。 */
 function SpecPicker({
   entries,
   allProjects,
+  query,
+  onQueryChange,
   onPick,
 }: {
   entries: SpecEntry[];
   allProjects: boolean;
+  query: string;
+  onQueryChange: (q: string) => void;
   onPick: (entry: SpecEntry) => void;
 }) {
-  const [query, setQuery] = useState('');
   const [hoverKey, setHoverKey] = useState<string | null>(null);
   const filtered = filterSpecEntries(entries, query);
   return (
@@ -223,7 +229,7 @@ function SpecPicker({
         placeholder="搜索 SPEC"
         allowClear
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => onQueryChange(e.target.value)}
       />
       <div
         className="cmdcenter-lanescroll"
@@ -673,6 +679,9 @@ export default function OrgGrid({
       : null;
   // 需求数量格下拉开合（受控 Popover；选中态点击=退出而非重开下拉）
   const [pickerOpen, setPickerOpen] = useState(false);
+  // 下拉搜索词受控提升至此（code-review feca3dc3ae8d）：Popover 隐藏不销毁
+  // 内容，SpecPicker 内部 state 跨开合保留残词——打开分支重置，见 onOpenChange
+  const [pickerQuery, setPickerQuery] = useState('');
   const [specCellHover, setSpecCellHover] = useState(false);
   // 运行记录弹窗（2026-10-29 多 spec 并行）：点击活动行 spec 名打开，复用
   // spec 时间轴「查看运行记录」的 RunRecordModal（harness 元数据不带，品牌
@@ -690,9 +699,14 @@ export default function OrgGrid({
   const [links, setLinks] = useState<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
 
   // 产品团队卡 → 五线连接线：静态一次性量取（禁动画红线，无 transition/
-  // animation；数据每次刷新（轮询换 data 引用）与窗口 resize 时重量）。
-  // hooks 置于早退分支前（rules of hooks）；量取在 layout effect 内、
-  // setLinks 触发的重渲染不再进本 effect（deps=[data]），无回环。
+  // animation；数据每次刷新（轮询换 data 引用）、窗口 resize 与 spec 视图
+  // 切换时重量——specSel 切换改变 LaneCard 活动区高度，当前锚点（团队卡
+  // 底部/分区顶）虽不受影响，随切换重量一次，避免后续布局演进让锚点依赖
+  // 卡片列内容高度时连接线静默错位）。
+  // hooks 置于早退分支前（rules of hooks）；specSel 以序列化标量入 deps
+  // （对象身份不可稳定比较，标量与 spec-runs refreshKey 同口径）；量取在
+  // layout effect 内、setLinks 触发的重渲染不再进本 effect，无回环。
+  const specSelKey = specSel ? `${specSel.project}|${specSel.spec}` : '';
   useLayoutEffect(() => {
     if (!data) return;
     const measure = () => {
@@ -715,7 +729,7 @@ export default function OrgGrid({
     measure();
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
-  }, [data]);
+  }, [data, specSelKey]);
 
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
   if (!data) return <ScreenLoading hint="组织网格加载中" />;
@@ -810,12 +824,17 @@ export default function OrgGrid({
                     if (o) onSpecViewChange?.(null);
                     return;
                   }
+                  // 打开分支重置搜索词（code-review feca3dc3ae8d）：残词过滤
+                  // 会让下次打开的残集被误读为「无活跃 SPEC」空态
+                  if (o) setPickerQuery('');
                   setPickerOpen(o);
                 }}
                 content={
                   <SpecPicker
                     entries={specsList ?? []}
                     allProjects={!project}
+                    query={pickerQuery}
+                    onQueryChange={setPickerQuery}
                     onPick={(e) => {
                       onSpecViewChange?.({ project: e.project, spec: e.spec });
                       setPickerOpen(false);

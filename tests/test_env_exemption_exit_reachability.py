@@ -486,11 +486,14 @@ class TestJudgeBudgetIsolation(unittest.TestCase):
         gate = self.engine._verification._judge_dispatch_gate
         gate("s1")
         gate("s1")
-        result = gate("s1")  # count=2 >= cap=2 → 停车
+        result = gate("s1")  # bump→count=3 > cap=2 → 停车
         self.assertIs(result, False, "到顶应停止派发（返回 False 让位）")
         entry = self._entry()
-        self.assertEqual(int(entry.get("_judge_inconclusive_dispatches") or 0), 2,
-                         "到顶后不再递增")
+        # bb1f09ccbeb9 先 bump 后判定：停车调用按 post-increment 口径自身记账
+        # 一次（拒绝路径不回滚，与 _judge_rerun_count 分支同口径），计数终值 =
+        # cap+1；预算语义不变——真实派发仍停在 cap（本次未派发）。
+        self.assertEqual(int(entry.get("_judge_inconclusive_dispatches") or 0), 3,
+                         "停车调用自身记账一次（post-increment 不回滚），真实派发停在 cap")
         self.assertNotEqual(entry.get("status"), "blocked", "不冻结（保持可处置）")
         self.assertFalse(_is_flag_true({"_judge_cap_frozen":
                                         entry.get("_judge_cap_frozen")}),

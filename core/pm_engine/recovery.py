@@ -108,7 +108,12 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
     # 失效；与下方按 b"\n" 的字节级完整性判据同口径（裸 \r 不可能出现在
     # 物理行尾：写侧 dumps 已把 \r 转义为 \\r），全量回退路径同口径。
     lines = [ln for ln in text.split("\n") if ln.strip()]
-    if not lines:
+    # 块内无非空行（code-review item 1a61d51121e0）：start == 0（整文件已读）
+    # → 确无非空行，返回 ""；start > 0 → 最后一个非空行可能位于块外（尾部块
+    # 恰为整块连续空行），提前返回 "" 会让在途重试豁免静默失效（调用方按
+    # 「无重试痕迹 → 不豁免」保守处理，可能误升级 dispatch_stalled）——
+    # 回退全量读（与下方末行完整性判据不成立的回退同款路径）。
+    if not lines and start == 0:
         return ""
     # 末行完整判据：尾部块正好从行首开始（start == 0，整文件已读）→ 末行必
     # 完整；否则须同时满足「文件末字节为 \n」（末行已收尾）且块内存在位于末行
@@ -119,9 +124,9 @@ def _read_last_nonempty_line(path, chunk_size: int = 65536) -> str:
     # run 静默失效）；末行尚在写入（无结尾 \n）且跨过块边界时，块内的 \n 属于
     # 更早的完整行，同样不构成末行完整证据 → 回退全量读（code-review item
     # 6c9681da1cfe）。
-    if start == 0 or (raw.endswith(b"\n") and b"\n" in raw.rstrip(b"\n")):
+    if lines and (start == 0 or (raw.endswith(b"\n") and b"\n" in raw.rstrip(b"\n"))):
         return lines[-1]
-    # 整个块是被截断的单行 → 回退全量读
+    # 整个块是被截断的单行（或块内无非空行且 start > 0）→ 回退全量读
     full = path.read_text(encoding="utf-8", errors="replace").split("\n")
     nonempty = [ln for ln in full if ln.strip()]
     return nonempty[-1] if nonempty else ""
@@ -412,6 +417,14 @@ class RecoveryWatch:
                     due = float(item.get("due") or 0)
                 except (TypeError, ValueError):
                     due = 0.0
+                # 非有限 due 守卫（code-review item afaa44a20ba8）：json.loads/
+                # json.dumps 均合法接受 Infinity，inf 使 now < due 恒真、条目永不
+                # 进入判定（真实卡死静默漏看）。按 0.0（立即到期）处理，与上方
+                # 类型守卫回退口径一致——宁可提前复查也不静默漏看；与下方
+                # _signal_dispatch_stalled / _parse_event_timestamp 的 isfinite
+                # 守卫同口径。
+                if not math.isfinite(due):
+                    due = 0.0
                 if now < due:
                     continue
 
@@ -449,6 +462,16 @@ class RecoveryWatch:
                                 f"Recovery watch deferred for '{spec_name}' "
                                 f"(transition window active, due={deferred_due:.0f})",
                             )
+                        else:
+                            # 留痕（code-review item 9741c3f0bdc0）：身份比对失败 =
+                            # 条目已被并发重新登记取代（新登记自带新 due），跳过本次
+                            # 顺延；与下方读取失败顺延分支的 WARNING 同形态，避免
+                            # 「观察项为何没顺延」排查无迹可循。
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Recovery watch 过渡窗口顺延 '{spec_name}'"
+                                f"（条目已被并发重新登记取代，跳过顺延）",
+                            )
                         continue
                     # 框架内重试在途（recovery-watch-status-recheck）：最近一次
                     # 归属该 spec 的 impl 流末事件 ∈ {transient_retry, superseded}
@@ -470,6 +493,15 @@ class RecoveryWatch:
                                 "pm_engine",
                                 f"Recovery watch deferred for '{spec_name}' "
                                 f"(in-flight retry active, due={retry_due:.0f})",
+                            )
+                        else:
+                            # 留痕（code-review item 9741c3f0bdc0）：口径同上方
+                            # 过渡窗口顺延分支——条目已被并发重新登记取代，跳过
+                            # 本次顺延，记 WARNING 留排查痕迹。
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Recovery watch 重试在途顺延 '{spec_name}'"
+                                f"（条目已被并发重新登记取代，跳过顺延）",
                             )
                         continue
                 else:
@@ -836,6 +868,12 @@ class RecoveryWatch:
             )
         except (TypeError, ValueError):
             grace = float(DEFAULT_TRANSITION_GRACE_MINUTES)
+        # 非有限配置守卫（code-review item afaa44a20ba8）：1e999 等经 json 解析
+        # 即为 inf 且合法进入配置链路，inf grace 使有界性比较恒不触发（观察项
+        # 被永久顺延）。回落权威缺省，与 _signal_dispatch_stalled 的
+        # math.isfinite(cooldown) 守卫同口径（下方各助手同此）。
+        if not math.isfinite(grace):
+            grace = float(DEFAULT_TRANSITION_GRACE_MINUTES)
         try:
             followup = max(
                 0.0,
@@ -858,7 +896,7 @@ class RecoveryWatch:
         register_recovery_watch / _transition_grace_minutes 同源读取。
         """
         try:
-            return max(
+            followup = max(
                 0.0,
                 float(
                     self._pm._get_config(
@@ -867,7 +905,11 @@ class RecoveryWatch:
                 ),
             )
         except (TypeError, ValueError):
-            return float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
+            followup = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
+        # 非有限配置守卫（code-review item afaa44a20ba8，口径见 _transition_grace_minutes）
+        if not math.isfinite(followup):
+            followup = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
+        return followup
 
     def _defer_limit_minutes(self) -> float:
         """顺延累计上限（分钟）：pm.recovery.defer_limit_minutes（缺省 30）。
@@ -888,6 +930,9 @@ class RecoveryWatch:
                 ),
             )
         except (TypeError, ValueError):
+            defer = float(DEFAULT_DEFER_LIMIT_MINUTES)
+        # 非有限配置守卫（code-review item afaa44a20ba8，口径见 _transition_grace_minutes）
+        if not math.isfinite(defer):
             defer = float(DEFAULT_DEFER_LIMIT_MINUTES)
         followup = self._followup_check_minutes()
         if defer <= followup:
@@ -914,6 +959,9 @@ class RecoveryWatch:
             )
         except (TypeError, ValueError):
             retry = float(DEFAULT_INFLIGHT_RETRY_MINUTES)
+        # 非有限配置守卫（code-review item afaa44a20ba8，口径见 _transition_grace_minutes）
+        if not math.isfinite(retry):
+            retry = float(DEFAULT_INFLIGHT_RETRY_MINUTES)
         defer = self._defer_limit_minutes()
         if retry >= defer:
             retry = max(0.0, defer - 1)
@@ -927,14 +975,23 @@ class RecoveryWatch:
         daemon 重启后续算不随当前配置漂移；旧格式观察项（本机制上线前登记）
         回退 ``registered_at + 当前 followup``，再回退 ``due``。
         """
+        # 非有限字段守卫（code-review item afaa44a20ba8）：inf recheck_deadline
+        # 使 now > 截止 恒 False、_defer_exhausted 永不触发（有界性失效、观察项
+        # 被永久顺延）。非有限时跳过该回退层级、顺延到下一级（与上方
+        # check_recovery_watch / _signal_dispatch_stalled 的 isfinite 守卫同口径；
+        # nan 因 `> 0` 恒 False 本就跳过，此处为 inf 补齐）。
         rd = item.get("recheck_deadline")
-        if isinstance(rd, (int, float)) and rd > 0:
+        if isinstance(rd, (int, float)) and math.isfinite(rd) and rd > 0:
             return float(rd)
         registered = item.get("registered_at")
-        if isinstance(registered, (int, float)) and registered > 0:
+        if (
+            isinstance(registered, (int, float))
+            and math.isfinite(registered)
+            and registered > 0
+        ):
             return float(registered) + self._followup_check_minutes() * 60
         due = item.get("due")
-        if isinstance(due, (int, float)) and due > 0:
+        if isinstance(due, (int, float)) and math.isfinite(due) and due > 0:
             return float(due)
         return 0.0
 

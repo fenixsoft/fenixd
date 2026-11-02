@@ -28,6 +28,7 @@ from core.agent_runner.prompt_builder import (
     spec_review_result_path,
     SPEC_REVIEW_RESULT_STATUS_WHITELIST,
 )
+from core.pm_engine.spec_integrity import _is_safe_spec_name
 
 _logger = logging.getLogger("fenixd.pm_engine.spec_review")
 
@@ -319,6 +320,19 @@ class SpecReviewManager:
 
         Returns: True 表示评审 run 已执行收工；False 表示被拒或 run 执行失败。
         """
+        # spec 名路径安全校验（code-review item 8783bd5dca37）：STATE.md 为人工
+        # 可编辑数据源（spec_integrity bf17492bd055 同款威胁模型），含 ``..``/
+        # 路径分隔符的名字会被下方快照目录拼装（.fenix/spec-review/<spec_name>，
+        # mkdir parents=True 逐级越界建目录）、结果文件读写与 _check_write_
+        # boundary 的 allowed_dir 拼装直接内插——越界读写 .fenix/spec-review
+        # 之外的文件。复用 spec_integrity 既有白名单（合法 kebab 名恒通过），
+        # 非法名记 WARNING 拒派，与既有早退分支同形态 return False。
+        if not _is_safe_spec_name(spec_name):
+            self.logger.warning(
+                "spec_review",
+                f"spec 名含非法路径成分，拒派评审: {spec_name!r}",
+            )
+            return False
         # 链路级熔断短路（evo-run-failure-classification-circuitbreaker D2）：
         # spec-review 链路熔断窗口内直接返回不派发；冷却到期自动恢复重试。
         breaker = getattr(self.pm_engine, "infra_breaker", None)
@@ -647,8 +661,14 @@ class SpecReviewManager:
             # 1.3）：run 失败结果可能携带 api_error_status / conn_error（runner
             # catch-all 从异常回填），分类层优先消费——异常路径 result=None 时
             # getattr 缺省 None，自然回退文本分类。
+            # run_started_at 与上方 _artifact_landed_valid 共用同一强锚点
+            # （code-review item 1893aa06aaa7）：缺省 None 时分类器内 artifact
+            # 复查回落 reviewer_run 尾段 epoch（早于 attempt_started_at，判据
+            # 更宽松），且 artifact 分支回流消费不带新鲜度校验——上一轮 attempt
+            # 残留的合法产物可能被当本轮结论消费。
             self._handle_review_failure(
                 spec_name, f"评审 run 执行失败: {run_err}{_attribution}",
+                run_started_at=attempt_started_at,
                 api_error_status=getattr(result, "api_error_status", None),
                 conn_error=getattr(result, "conn_error", None),
             )
@@ -714,9 +734,26 @@ class SpecReviewManager:
             return False
         # 公开契约调用（code-review item 9e1197a61f51）：硬门入口经
         # _runner_result_gate 解析，不再直取 runner 下划线私有方法。
-        err = _runner_result_gate(self.agent_runner)(
-            spec_name, "spec-review", run_started_at=run_started_at
-        )
+        # 硬门入口异常收口（code-review item 02a009f51047）：同方法其余失败面
+        # （结果文件读取/JSON 解析/顶层非对象/写入边界）均收口进
+        # _handle_review_failure，硬门调用自身若在 runner 未覆盖路径抛出未预期
+        # 异常（瞬态 IO 等）会逃出本方法——锚点保留、不递增尝试、不排重试。
+        # 按硬门校验失败同款收口：allow_artifact=False + content_failure=True
+        # 恒归 content 走重试预算——分类器不回读产物（spec_name=None）、content
+        # 分支只入队重试，不存在「gate 异常 → 分类 → 回读产物 → 再进 gate」的
+        # 递归路径（4b9f59b8717f 同形防递归口径，与下方 err 非空分支同参形态）。
+        try:
+            err = _runner_result_gate(self.agent_runner)(
+                spec_name, "spec-review", run_started_at=run_started_at
+            )
+        except Exception as e:  # noqa: BLE001 — 硬门异常按失败分类收口，不逃出
+            err = f"结果硬门校验异常: {type(e).__name__}: {e}"
+            self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
+            self._handle_review_failure(
+                spec_name, err, allow_artifact=False, run_started_at=run_started_at,
+                content_failure=True,
+            )
+            return False
         if err is not None:
             self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
             # allow_artifact=False（code-review item 6aca929144e4）：硬门失败本身

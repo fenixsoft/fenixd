@@ -331,6 +331,12 @@ class ArbiterLane:
         if not self.in_trigger_surface(signal_type):
             return "excluded"
         sig = arbiter_failure_signature(spec, signal_type)
+        # 跨重启 dedup 兜底：进程内存 dedup 集合随重启清空，而 dead-man/
+        # disposition 已落台账（与回扫侧 ledger_sigs 同源单实现）——不并入
+        # 判定则重启后同签名再触发会被当首次触发重新自主处置，违背
+        # design D6（同签名只自主处置一次）。台账读一次即可，读失败按
+        # 空集 fail-open（load_arbiter_ledger 自带降级）。
+        persisted_settled = self._ledger_sigs(kinds={"dead-man", "disposition"})
         with self._lock:
             if sig in self._active:
                 # 同签名在飞/排队：只绑 alert（原位挂靠目标），不重复派发
@@ -341,7 +347,11 @@ class ArbiterLane:
                     f"arbiter 触发 dedup（同签名在飞/排队）: sig={sig} alert={alert_id}",
                 )
                 return "deduped"
-            if sig in self._deadmanned or sig in self._dispositioned:
+            if (
+                sig in self._deadmanned
+                or sig in self._dispositioned
+                or sig in persisted_settled
+            ):
                 # 同签名复发/停机后复发：不再自主处置，直接产裁决包升级
                 # （design D6）
                 self._log(
@@ -501,6 +511,24 @@ class ArbiterLane:
                 out[spec] = rec
         return out
 
+    def _ledger_sigs(self, kinds: Optional[set] = None) -> set:
+        """台账签名集（回扫与事件触发面共用的跨重启 dedup 单实现）。
+
+        kinds=None 取全部 kind（回扫口径：任何 kind 都代表 Arbiter 已
+        调查过该签名）；传入 kind 集合时只取命中者（事件触发面口径：
+        dead-man/disposition 才代表已自主处置/停机过、不得再次自主处置）。
+        load_arbiter_ledger 自带 fail-open（IO 失败/坏行按空集降级），
+        读失败按无台账处理照旧放行。
+        """
+        records = load_arbiter_ledger(self.project_root)
+        if kinds is None:
+            return {str(rec.get("signature") or "") for rec in records}
+        return {
+            str(rec.get("signature") or "")
+            for rec in records
+            if rec.get("kind") in kinds
+        }
+
     def _backlog_candidates(self, sm) -> List[dict]:
         """存量回扫候选判定：frozen=true ∧ 同 spec pending 机器升级告警。
 
@@ -513,16 +541,15 @@ class ArbiterLane:
           不另记回扫簿）；
         - spec 名路径不安全（内插 run_id/路径前科防御）排除。
         """
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
         try:
             specs = sm.read_all() or {}
         except Exception as e:
             self._log("warning", f"arbiter 回扫 STATE 读取失败（按空集降级）: {e}")
             return {}
         alert_index = self._pending_machine_alerts()
-        ledger_sigs = {
-            str(rec.get("signature") or "")
-            for rec in load_arbiter_ledger(self.project_root)
-        }
+        ledger_sigs = self._ledger_sigs()
         out: List[dict] = []
         for name, entry in specs.items():
             e = entry or {}
@@ -566,8 +593,6 @@ class ArbiterLane:
             sig = arbiter_failure_signature(spec, signal_type)
             if sig in ledger_sigs:
                 continue
-            from core.pm_engine.verification.serving import _spec_name_path_error
-
             if _spec_name_path_error(spec):
                 self._log(
                     "warning",
@@ -869,13 +894,13 @@ class ArbiterLane:
             resolved = self._finalize_alert(
                 alert_id,
                 summary=str(report.get("summary") or ""),
-                evidence_ref=evidence_ref or str(entry.get("ledger_id") or ""),
+                evidence_ref=evidence_ref or str(entry.get("id") or ""),
                 run_id=str(result.get("run_id") or ""),
             )
         self._log(
             "info",
             f"arbiter 自主处置完成 spec={trigger.get('spec')} sig={sig} "
-            f"alert_finalized={resolved} ledger={entry.get('ledger_id')} side={side}",
+            f"alert_finalized={resolved} ledger={entry.get('id')} side={side}",
         )
         self._apply_proposals(trigger, report)
 
@@ -1424,6 +1449,7 @@ class ArbiterLane:
         （对齐 fenix-new spec hook / admin 主树 spec 目录提交先例），提交失败
         仅 WARNING 不阻断（未跟踪目录不干扰 STATE 语义）。
         """
+        from core.fs_utils import atomic_write_text
         from core.pm_engine.verification.serving import _spec_name_path_error
         from core.spec_gen import new_change
 
@@ -1443,7 +1469,11 @@ class ArbiterLane:
             # 但实体目录存在的窗口形态，与上方 exists 短路互补）
             spec_dir.mkdir(parents=True, exist_ok=True)
         created = datetime.now(timezone.utc).isoformat()
-        proposal_path.write_text(
+        # 原子写（fsync + os.replace，与仓库写点纪律同源）：exists 短路作
+        # 幂等判据要求「文件存在=文件完整」，裸 write_text 半截残稿会被
+        # 重放静默接受
+        atomic_write_text(
+            proposal_path,
             "# " + topic + "\n\n"
             "## Why\n\n" + (rationale or topic) + "\n\n"
             "## What Changes\n\n"
@@ -1460,7 +1490,6 @@ class ArbiterLane:
             f"- 立项来源：Arbiter 调查（run_id={trigger.get('run_id')}，"
             f"signature={trigger.get('signature')}，source={trigger.get('source')}）\n"
             f"- 立项时间：{created}\n",
-            encoding="utf-8",
         )
         try:
             import subprocess as _sp
