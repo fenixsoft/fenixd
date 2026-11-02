@@ -57,7 +57,7 @@ def is_task_id(value) -> bool:
     return isinstance(value, str) and _TASK_ID_FULL_RE.fullmatch(value) is not None
 
 
-def parse_unattainable(data: dict) -> "tuple[set, list]":
+def parse_unattainable(data: dict) -> tuple[set, list]:
     """解析结果文件顶层 ``unattainable`` 申报（诚实退出机制，2026-09-16）。
 
     ``unattainable`` 是结果文件（``.fenix-run-result.json``）顶层可选数组，
@@ -159,7 +159,7 @@ def tasks_md_path(project_root, spec_name) -> Path:
     return Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
 
 
-def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
+def parse_tasks_md(project_root, spec_name) -> tuple[list, set]:
     """解析 tasks.md 数字任务的勾选状态（D2 单一实现点，中性模块）。
 
     逐行匹配 ``^- \[(x| )\] (\d+\.\d+[a-z]?)``：``[x]`` 记已勾选，``[ ]`` 记未勾选。
@@ -194,7 +194,7 @@ def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     return all_ids, checked_ids
 
 
-def gap_from_result(data, project_root, spec_name) -> "list[str]":
+def gap_from_result(data, project_root, spec_name) -> list[str]:
     """partial 收工的**真实缺口 id 清单**（诚实退出三处消费的统一口径）。
 
     fix-robustness-edge-cases 事故（2026-09-17）：诚实退出的三处消费
@@ -247,7 +247,7 @@ def gap_from_result(data, project_root, spec_name) -> "list[str]":
     return []
 
 
-def honest_exit_convergence_gap(data, project_root, spec_name) -> "list[str]":
+def honest_exit_convergence_gap(data, project_root, spec_name) -> list[str]:
     """诚实退出收敛判定**单点实现**（fix-redispatch-loop-governance D1/D2b/D4）。
 
     收敛成立 ⟺ ``impl_status == "partial"``（调用方判定）且
@@ -285,7 +285,7 @@ def honest_exit_convergence_gap(data, project_root, spec_name) -> "list[str]":
     return []
 
 
-def _collect_impl_runs(project_root, spec_name, files=None) -> "list[tuple[float, Path]]":
+def _collect_impl_runs(project_root, spec_name, files=None) -> list[tuple[float, Path]]:
     """impl-<spec>-*.jsonl 运行产物的收集单点（item f69bd0bb4fbf）。
 
     find_impl_run_file 与 parse_run_task_done_cumulative 共用：目录 glob（或
@@ -447,7 +447,7 @@ def _run_epoch(run_file: Path) -> str:
     return m.group(1) if m else run_file.name
 
 
-def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool]":
+def _scan_run_events(run_file: Path) -> tuple[list, set, dict, str | None, bool]:
     """单遍扫描 run 产物：Task 记账 + init ``session_id`` + 异常终态标记。
 
     解析循环单点实现（原 _scan_task_create_update 的循环收口于此并扩展两路
@@ -474,7 +474,7 @@ def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool
     created_ordered: list = []
     completed_idx: set = set()
     last_update_status: dict = {}  # taskId-1 → 最近一次 TaskUpdate status
-    session_id: "str | None" = None
+    session_id: str | None = None
     init_seen = False
     ended_abnormally = False
     try:
@@ -533,7 +533,7 @@ def _scan_run_events(run_file: Path) -> "tuple[list, set, dict, str | None, bool
     return created_ordered, completed_idx, last_update_status, session_id, ended_abnormally
 
 
-def _scan_task_create_update(run_file: Path) -> "tuple[list, set, dict]":
+def _scan_task_create_update(run_file: Path) -> tuple[list, set, dict]:
     """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（解析循环单点实现）。
 
     parse_run_task_done 与 parse_run_task_done_cumulative 均消费本扫描结果，
