@@ -157,7 +157,14 @@ _TASKS_ITEM_RE = re.compile(r"^-\s\[[ x]\]\s+([^\s]+)")
 # 英文句末标点是合法边界，须保持既有命中。
 _VP_ARTIFACT_RE = re.compile(
     r"\.fenix/verify-progress/[^/\s]+/(?:"
-    + "|".join(re.escape(k) for k in VERIFICATION_ARTIFACT_OWNERS)
+    # 多选分支按 key 长度降序拼接，与 _match_artifact_key 同一防御口径
+    # （code-review item 8a0f86b11ec7）：scenarios.json 是 test_scenarios.json
+    # 的子串，按归属表插入序拼接会隐式依赖 dict 顺序——短 key 误排到前时
+    # test_scenarios.json 引用在「test_」前缀处整体失配漏判。
+    + "|".join(
+        re.escape(k)
+        for k in sorted(VERIFICATION_ARTIFACT_OWNERS, key=len, reverse=True)
+    )
     + r")(?![A-Za-z0-9_])(?!\.[A-Za-z0-9])"
 )
 
