@@ -178,7 +178,15 @@ def _truncate(text: str, limit: int = DETAIL_LIMIT) -> str:
     if text is None:
         return ""
     text = str(text)
-    return text if len(text) <= limit else text[:limit] + "…(截断)"
+    if len(text) <= limit:
+        return text
+    marker = "…(截断)"
+    keep = limit - len(marker)
+    if keep <= 0:
+        # limit 放不下截断标记：退化为标记前缀（limit≤0 时空串），恒不超限
+        return marker[: max(limit, 0)]
+    # 正文与标记合计恰为 limit，保证返回值恒 ≤ limit（D6 契约字面口径）
+    return text[:keep] + marker
 
 
 def _num(value, default: float) -> float:
