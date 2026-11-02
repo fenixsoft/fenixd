@@ -364,8 +364,10 @@ def _progress_result(total, done, current, step, error, source) -> dict:
 
 
 def _corrupt_progress() -> dict:
-    """corrupt 分支统一返回体：计数归零、current 置空，step/error/source 置 None。"""
-    return _progress_result(0, 0, "", None, None, None)
+    """corrupt 分支统一返回体：计数归零、current 置空，error 标 "corrupt"、
+    step/source 置 None（契约同 parse_verify_progress docstring；error 值是
+    report_gate.py 与 dashboard 前端消费的真实信号，不得置 None）。"""
+    return _progress_result(0, 0, "", None, "corrupt", None)
 
 
 def parse_verify_progress(project_root, spec_name) -> dict:

@@ -189,10 +189,19 @@ class TestRewriteSourceLinks(RewriteTestBase):
         self.assertEqual(page2.read_text(encoding="utf-8"), before)
 
     def test_write_error_propagates_to_caller(self):
-        """写盘异常上抛调用方（fail-open 决策在调用方，本函数不吞）。"""
-        with mock.patch.object(
-            Path, "write_text", side_effect=OSError("disk full")
-        ):
+        """写盘异常上抛调用方（fail-open 决策在调用方，本函数不吞）。
+
+        写通道已收敛到 atomic_write_text（tmp+os.replace 原子落盘，code-review
+        c03e0a119818），Path.write_text 不再是写路径原语——注入点移到其底层
+        os.fdopen：mkstemp 占位成功后打开即失败，OSError 须原样上穿
+        fs_utils 写实现与 atomic_write_text 门面抵达调用方，本函数不吞。
+        """
+
+        def _fdopen_raises(fd, *args, **kwargs):
+            os.close(fd)
+            raise OSError("disk full")
+
+        with mock.patch("os.fdopen", side_effect=_fdopen_raises):
             with self.assertRaises(OSError):
                 rewrite_source_links_to_archive(
                     self.root, self.spec, self._archive_name()
