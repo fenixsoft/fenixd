@@ -1,6 +1,6 @@
 ## Why
 
-add-distill-run-artifacts 端到端实证暴露两个观测缺陷：(1) `aggregate_org` 的「已归档 SPEC 名下 run 全窗剔除」规则误吞蒸馏 run——蒸馏 run 的 spec 段按定义恒为已归档 SPEC 名（蒸馏恰发生在归档/交付之后），导致指挥中心「知识蒸馏」卡在有真实完成批的情况下恒显 runs=0（fenix-prototype 批 11:44 完成、get_runs 正确返回 done，卡片仍 0）；(2) 蒸馏合成产物批中间无写入，spawn 超过 `_RUN_STALE_SECONDS`（1800s）即被读侧判 stale、被 retention 提前移走，批收尾的 error 终态行 fail-open 写空——超时失败在观测上变 stale，成功率分母漏计（fix-frozen-scenario 批实证）。
+观测实证与机制核对暴露两个观测缺陷：(1) `aggregate_org` 的「已归档 SPEC 名下 run 全窗剔除」规则将吞蒸馏 run——蒸馏 run 的 spec 段由派发名直出（core/knowledge.py:1627 run_id 中段 = archived_names[0]），push 触发时代（move-distill-trigger-to-push 1.1；其 1.2 移除归档挂载后为唯一生产触发）以 `spec/changes/<名>` 原始 SPEC 名派发（engine.py:3409），run_spec_part 剥段结果与 STATE.archive.md 清单键（原始名）全等，SPEC 随后归档（时效归档/软删除/手动）即被剔除（command_center.py:545 全等匹配、先于窗口过滤，全部窗口生效）——时效归档最终归档一切 SPEC，稳态下知识蒸馏卡趋恒 0。形态边界：归档触发时代历史产物中段为带日期前缀归档目录名（knowledge-distiller-2026-11-02-fenix-prototype-…），与原始名清单键形态错位而偶然漏剔（add-distill-run-artifacts D3 锁定测试所锁即该偶然逃逸；实测 aggregate_org window=all 对两批真实产物计数 runs=2，本草案初稿引「fenix-prototype 批卡片仍 0」为证不成立，已更正为机制归因）；(2) 蒸馏合成产物批中间无写入，spawn 超过 `_RUN_STALE_SECONDS`（1800s）即被读侧判 stale、被 retention 提前移走，批收尾的 error 终态行 fail-open 写空——超时失败在观测上变 stale，成功率分母漏计（fix-frozen-scenario 批实证）。
 
 ## What Changes
 

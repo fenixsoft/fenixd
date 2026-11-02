@@ -6,7 +6,7 @@
 
 #### Scenario: 已归档 SPEC 的完成批出卡
 
-- **WHEN** 今日窗口内存在一条 done 终态的 knowledge-distiller 产物，且其 spec 段（如 `2026-11-02-fenix-prototype`）在归档清单中
+- **WHEN** 今日窗口内存在一条 done 终态的 knowledge-distiller 产物，且其 spec 段在归档清单中（push 触发时代原始名形态 run_id 的剥段结果与清单键全等；归档触发时代的日期前缀形态不命中清单键，豁免后同样计数）
 - **THEN** 运营线「知识蒸馏」卡 runs 计 1、成功率分母含该 run、last_activity 更新——与该产物在 get_runs 的归属/终态一致
 
 #### Scenario: 非蒸馏 lane 剔除不回归

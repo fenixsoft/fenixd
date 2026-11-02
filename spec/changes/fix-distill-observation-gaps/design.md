@@ -4,7 +4,7 @@
 
 add-distill-run-artifacts 落地后的首次真实批次端到端（2026-11-02 fenix-prototype 时效归档触发）暴露两个缺陷，均属「验证夹具与生产形态错位」类盲区：
 
-1. **聚合剔除误吞**：`aggregate_org`（command_center.py:543-546）按 `STATE.archive.md` 归档清单剔除「已归档 SPEC 名下」的 run——语义是剔除完结 SPEC 的实现过程 run（impl/review/verify），但蒸馏 run 的 spec 段恒为已归档 SPEC 名（蒸馏由归档/交付触发），天然命中剔除。验证时伪造产物的 spec 段不在归档清单，Scenario 假绿。实证：fenix-prototype 批 done 终态 + get_runs 正确返回，卡片 runs=0。
+1. **聚合剔除误吞（名称形态二相性）**：`aggregate_org`（command_center.py:543-546）按 `STATE.archive.md` 归档清单剔除「已归档 SPEC 名下」的 run——语义是剔除完结 SPEC 的实现过程 run（impl/review/verify）。蒸馏 run 的 spec 段 = run_id 中段直出（core/knowledge.py:1627）＝派发名，随触发时代呈两态：归档触发时代（历史产物）派发名为带日期前缀归档目录名（`2026-11-02-fenix-prototype`），与清单键（原始名 `fenix-prototype`，STATE.archive.md:20454）形态错位而**偶然漏剔**（tests/test_run_spec_prefixed_attribution.py::test_aggregate_org_archive_filter_not_hit 所锁即该偶然逃逸；实测 window=all 两批真实产物 runs=2）；push 触发时代（move-distill-trigger-to-push 1.2 移除归档挂载后为**唯一生产触发**，engine.py:3409 以原始 spec_name 派发）派发名 = `spec/changes/<名>` 原始名，run_spec_part（runs.py:669,689 读侧唯一归属真源）剥段结果与清单键全等，SPEC 归档后该 run 在**全部窗口**（剔除先于窗口过滤，含 today/7d）被静默吞掉——时效归档最终归档一切 SPEC，稳态恒 0。本变更早期草案引「fenix-prototype 批 done 终态、卡片 runs=0」为实证，经实测证伪（该批 spec 段带日期前缀、不命中剔除、卡片计数为 2），已按机制推演 + 代码证据更正归因；豁免方案不受影响。
 2. **无心跳 stale 误判**：合成产物仅批开始/收尾两个写点，spawn 超过 1800s（`_RUN_STALE_SECONDS`）即末行非终态+停更超时 → stale → `runs_retention_check` 移入 archive → 批收尾终态行 fail-open 写空（文件已不在原路径）。实证：fix-frozen-scenario 批（bigmodel stall 慢跑 30 分钟超时 give_up）产物停 started、error 终态丢失、pending 台账滞留。
 
 ## Goals / Non-Goals
@@ -19,6 +19,7 @@ add-distill-run-artifacts 落地后的首次真实批次端到端（2026-11-02 f
 - 不回填历史失真产物（用户已定调不回填；archive/ 里停 started 的旧产物由天龄兜底自然清理）
 - 不动剔除规则本体语义（其余 lane 行为不变）
 - 不给蒸馏 run 补 run_metrics 指标（维持 add-distill-run-artifacts Non-Goals 口径）
+- 不豁免 spec 视图轮次的同族剔除点 `aggregate_spec_runs`（command_center.py:766-770）：归档 SPEC 的轮次时间线维持既有「全史剔除」定稿语义（org 卡与 spec 视图消费面分离）；若未来需要豁免该点，另行立项
 
 ## Decisions
 
@@ -33,6 +34,8 @@ if archived_names and raw_lane != "knowledge-distiller" and str(r.get("spec") or
 ```
 
 后续 `raw_lane` 复用（消除重复取值），LANE_ALIASES 归一逻辑与位置不动。备选（否决）：把剔除整体挪到 lane 归一之后按 lane 判断——重排序会改变「其他」分区的观测 lane 收集时机（归档名 run 原本进不了 lane 统计，挪后蒸馏外的未知归档名 lane 会冒出「其他」卡），行为面扩大不可控；内联条件是唯一最小改动。
+
+豁免按 raw lane 判定、与 spec 段名形态无关：带日期前缀归档目录名形态（偶然漏剔）与原始名形态（命中剔除）统一放行；`tests/test_run_spec_prefixed_attribution.py::test_aggregate_org_archive_filter_not_hit` 断言蒸馏卡 runs>=1，豁免后语义不变仍绿（本变更不改该文件）。
 
 ### D2：心跳=后台 daemon 线程定期 append（仿 planner throttled-wait 心跳语义）
 
