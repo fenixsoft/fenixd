@@ -1799,7 +1799,10 @@ class G4MergebackMixin:
             # 且全部冲突路径都是 .gitignore 忽略的运行时草稿时，采纳主树侧的删除。
             # 场景：run-result 类草稿在移出版本控制前派生的旧分支上被改动，与主树的
             # 删除相撞——被忽略的草稿不是交付物，不应让 merge-back 死锁。
-            if self._resolve_ignored_modify_delete_conflicts():
+            healed, heal_aborted_midway = (
+                self._resolve_ignored_modify_delete_conflicts()
+            )
+            if healed:
                 # 自愈返回 True 即 merge 已提交（code-review item 40eb004b263b）：
                 # 辅助步骤与主成功路径同口径（_post_merge_finalize 单一实现）。
                 self._post_merge_finalize(backup, head_before, "ignored-DU 自愈后")
@@ -1819,7 +1822,29 @@ class G4MergebackMixin:
             # unmerged 冲突路径清单，并判定是否仍含语义冲突。返回的
             # MergeConflictInfo 携带结构化分类，供调度层决定是否进入 repair 通道；
             # 主树 abort 后保持干净（merge --abort 本身幂等，重复 abort 无害）。
-            conflict_paths = self._collect_conflict_paths()
+            if heal_aborted_midway:
+                # 自愈失败出口已就地 merge --abort（code-review item
+                # 636abf350e2b）：挂起合并态连同 unmerged 冲突路径清单已随
+                # abort 清除，此刻采集只能得到空集——跳过采集，结构化分类
+                # 置空并在 error 文案注明，让下游可区分归因（命中形态恰是
+                # 「真实交付物 DU 冲突」这类最需转 repair 车道的语义冲突，
+                # 不能静默呈现为「无冲突信息」）。下方 merge --abort 兜底
+                # 仍执行：自愈侧 abort 是 best-effort，万一残留半合并态由此
+                # 清掉（幂等，重复 abort 无害）。
+                conflict_paths = []
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Ignored-DU self-heal aborted in place for branch "
+                    f"'{branch}' — unmerged conflict paths were cleared with "
+                    f"the abort, conflict classification unavailable",
+                )
+                error += (
+                    "; ignored-DU self-heal aborted in place: unmerged "
+                    "conflict paths were cleared with the abort, conflict "
+                    "classification unavailable"
+                )
+            else:
+                conflict_paths = self._collect_conflict_paths()
             self_heal_applicable = bool(conflict_paths) and all(
                 self._artifacts.is_artifact(p) for p in conflict_paths
             )
