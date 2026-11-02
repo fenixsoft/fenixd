@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-10-30 23:39 UTC+8
+> 最后更新：2026-11-02 13:25 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -30,13 +30,14 @@
 | [verify-scenario-freeze](verify-scenario-freeze.md) | 验证场景冻结 | 2026-10-03 04:59 |
 | [verification-scenario-freeze](verification-scenario-freeze.md) | 场景冻结契约版本化 | 2026-10-03 04:59 |
 | [frozen-scenario-schema-migration](frozen-scenario-schema-migration.md) | 冻结场景结构迁移 | 2026-10-03 04:59 |
+| [frozen-scenario-salvage](frozen-scenario-salvage.md) | 冻结场景 dict 包裹机械拯救（冻结装载读端解包止损再装载、不可拯救转人工） | 2026-11-02 13:25 |
 | [scenario-schema-single-source](scenario-schema-single-source.md) | 场景结构单源 | 2026-10-03 04:59 |
 | [scenario-write-schema-gate](scenario-write-schema-gate.md) | 场景写入结构门 | 2026-10-03 04:59 |
 | [scenario-static-defect-scan](scenario-static-defect-scan.md) | 场景静态缺陷扫描（模式表含端口残留/双汉字选择器/夹具打标） | 2026-10-27 16:48 |
 | [scenario-defect-reroute-gate](scenario-defect-reroute-gate.md) | 场景缺陷改道门 | 2026-10-03 04:59 |
 | [scenario-defect-reroute-stoploss](scenario-defect-reroute-stoploss.md) | 场景缺陷改道止损 | 2026-10-03 04:59 |
 | [scenario-replan-consumption-gate](scenario-replan-consumption-gate.md) | 重规划场景消费门 | 2026-10-03 04:59 |
-| [scenario-product-toplevel](scenario-product-toplevel.md) | 场景产物顶层契约（纯数组顶层 + dict 包裹机械解包 + 拒收反馈分类） | 2026-10-27 23:28 |
+| [scenario-product-toplevel](scenario-product-toplevel.md) | 场景产物顶层契约（纯数组顶层 + dict 包裹机械解包 + 拒收反馈分类） | 2026-11-02 13:25 |
 | [multi-kind-scenario-model](multi-kind-scenario-model.md) | 多类型验证场景模型 | 2026-10-03 04:59 |
 | [multi-kind-planning-guidance](multi-kind-planning-guidance.md) | 多类型场景规划指引 | 2026-10-03 04:59 |
 | [multi-kind-report-compat](multi-kind-report-compat.md) | 多类型验证报告兼容 | 2026-10-03 04:59 |

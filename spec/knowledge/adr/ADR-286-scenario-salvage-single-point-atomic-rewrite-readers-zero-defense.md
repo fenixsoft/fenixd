@@ -1,7 +1,8 @@
 # ADR-286：场景顶层拯救单点接入 + 原子重写落地 + 读端零防御
 
 date: 2026-10-27
-status: accepted
+status: superseded
+Superseded by: ADR-312(冻结装载读端接入场景拯救——接入判据改时序暴露面)
 
 ## Context
 
