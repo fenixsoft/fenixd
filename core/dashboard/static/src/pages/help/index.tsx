@@ -170,7 +170,7 @@ function githubSlug(text: string): string {
 
 // 重复标题 slug 去重计数（GitHub 规则：同名依次追加 -1、-2…）。
 // 计数 Map 由 buildHelpComponents 在闭包内每轮新建（不写模块级可变量，
-// 消除渲染期对模块态的副作用）；heading 内以 useRef 缓存首次分配结果，重渲染不重复递增。
+// 消除渲染期对模块态的副作用）；heading 内以 useState 惰性初始化缓存首次分配结果，重渲染不重复递增。
 function allocHeadingId(counts: Map<string, number>, base: string): string {
   const n = counts.get(base) ?? 0;
   counts.set(base, n + 1);
@@ -189,13 +189,15 @@ function scrollToAnchor(anchor: string) {
 /** heading 组件工厂：保留原字号样式，注入 GitHub slug id（重复标题按 -1/-2 去重，锚点跳转目标）。 */
 function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: CSSProperties, slugCounts: Map<string, number>) {
   return function Heading({ children }: { children?: ReactNode }) {
-    // slug 仅分配一次并缓存于 ref：重渲染不重复递增计数，id 保持稳定
-    const idRef = useRef<string | null>(null);
+    // slug 仅分配一次：useState 惰性初始化每实例只执行一次且属挂载期副作用语义，
+    // 重渲染不重复递增计数。不用渲染期写 ref 并递增闭包 slugCounts——ref 写入不
+    // 回滚，并发渲染丢弃重放一轮渲染时会重复计数，重复标题的 -1/-2 序号与实际
+    // 挂载顺序错位（code-review item 3b810b5fda58）
     // ReactNode 无法结构匹配 MdNodeLike（React 19 下元素 props 为 unknown），此处按
     // nodeText 的鸭子类型口径断言入参（运行时形状不变，编译期检查在 nodeText 内完成）
-    if (idRef.current === null) idRef.current = allocHeadingId(slugCounts, githubSlug(nodeText(children as MdNodeLike)));
+    const [id] = useState(() => allocHeadingId(slugCounts, githubSlug(nodeText(children as MdNodeLike))));
     return (
-      <Tag id={idRef.current} style={{ ...style, scrollMarginTop: 76 }}>
+      <Tag id={id} style={{ ...style, scrollMarginTop: 76 }}>
         {children}
       </Tag>
     );
@@ -253,12 +255,14 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
       // 其管线不给标题生成 id，锚点分支仅拦截原生跳转不做滚动定位（见 SpecDocModal
       // 注释），本管线已注入 heading slug id，须做真实平滑滚动
       if (href && isPageAnchor(href)) {
+        // {...rest} 前置：href/onClick 置于展开之后，拦截逻辑不被同名透传属性覆盖
+        // （code-review item 5499a5f0770e）
         return (
           <a
+            {...rest}
             href={href}
             onClick={(e) => { e.preventDefault(); scrollToAnchor(href.slice(1)); }}
             style={{ color: 'var(--ant-color-primary)', cursor: 'pointer' }}
-            {...rest}
           >
             {children}
           </a>
@@ -282,12 +286,14 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
           if (docNames.has(cleaned)) target = cleaned;
         }
         if (target) {
+          // {...rest} 前置：href/onClick 置于展开之后，拦截逻辑不被同名透传属性覆盖
+          // （code-review item 5499a5f0770e）
           return (
             <a
+              {...rest}
               href={`#${window.location.hash.split('?')[0].replace('#', '')}?doc=${encodeURIComponent(target)}`}
               onClick={(e) => { e.preventDefault(); onNavigate(target!, anchor || undefined); }}
               style={{ color: 'var(--ant-color-primary)', cursor: 'pointer' }}
-              {...rest}
             >
               {children}
             </a>
