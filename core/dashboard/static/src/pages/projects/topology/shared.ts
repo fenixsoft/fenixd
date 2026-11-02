@@ -5,6 +5,7 @@
 // 泳道标签中文与状态着色投影），跨语言不强行单源。状态语义色与角色标签经
 // @/utils/runVisual 单源消费（与 SpecTimeline 同源，等价迁移背书）。
 
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { formatUsd, runDotColor, STATUS_HEX } from '@/utils/runVisual';
 import type { TopologyLane, TopologyStage } from '@/services/dashboard';
 
@@ -107,4 +108,18 @@ export function fmtTick(ms: number, spanS: number): string {
   if (spanS <= 2 * 3600) return `${hh}:${mm}`;
   const day = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
   return spanS <= 48 * 3600 ? `${day} ${hh}:${mm}` : day;
+}
+
+/** 可点击 SVG 节点键盘可达辅助（PipelineView/SwimlaneView 共用单源，两视图
+ * 不再各自实现——code-review item b5b9d15b3e29/d3f8d7432245）：Enter/Space
+ * 触发与 onClick 相同的回调，preventDefault 防空格滚动页面（detail.tsx
+ * 告警链接 item 5c90f027199a 同口径）。 */
+export function svgNodeKeyDown(
+  e: ReactKeyboardEvent<SVGGElement>,
+  onActivate: () => void,
+): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    onActivate();
+  }
 }

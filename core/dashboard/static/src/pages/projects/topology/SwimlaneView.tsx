@@ -22,6 +22,7 @@ import {
   fmtTick,
   pickTickStep,
   STATUS_HEX,
+  svgNodeKeyDown,
 } from './shared';
 
 const LANE_H = 64; // 泳道行高
@@ -81,7 +82,7 @@ export default function SwimlaneView({
     );
   }
 
-  const { t0, t1, contentW, x, blocks, marks, arrows, unknownLaneCount } = model;
+  const { contentW, ticks, blocks, marks, userMarks, arrows, unknownLaneCount } = model;
   const svgH = HEADER_H + LANE_ORDER.length * LANE_H + 12;
 
   return (
@@ -126,7 +127,7 @@ export default function SwimlaneView({
             stroke="rgba(59, 110, 165, 0.30)"
           />
         ))}
-        {model.ticks.map((tk) => (
+        {ticks.map((tk) => (
           <g key={tk.ms}>
             <line x1={tk.x} y1={HEADER_H - 6} x2={tk.x} y2={svgH - 8} stroke="rgba(143, 184, 221, 0.25)" strokeDasharray="2 4" />
             <text x={tk.x} y={20} textAnchor="middle" fill="#6f93b8" fontSize={10.5}>
@@ -176,7 +177,7 @@ export default function SwimlaneView({
         ))}
 
         {/* 用户泳道人工动作标记 */}
-        {model.userMarks.map((m, i) => (
+        {userMarks.map((m, i) => (
           <g key={`u${i}`}>
             <circle cx={m.x} cy={HEADER_H + LANE_H / 2} r={5} fill={STATUS_HEX.blue} />
             <text x={m.x} y={HEADER_H + LANE_H / 2 - 10} textAnchor="middle" fill="#8fb8dd" fontSize={9.5}>
@@ -194,7 +195,10 @@ export default function SwimlaneView({
             <g
               key={b.node.id}
               style={{ cursor: 'pointer' }}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelect(b.node)}
+              onKeyDown={(e) => svgNodeKeyDown(e, () => onSelect(b.node))}
             >
               <title>
                 {b.node.label}
@@ -341,6 +345,7 @@ function buildModel(data: SpecTopology): SwimModel | null {
   const ticks: { ms: number; x: number; label: string }[] = [];
   for (let ms = Math.ceil(t0 / stepMs) * stepMs; ms <= t1; ms += stepMs) {
     ticks.push({ ms, x: x(ms), label: fmtTick(ms, spanS) });
+    if (ticks.length > 200) break; // 上限保护（档位选择下不可达；与 PipelineView buildTimeLayout 同款防线，item d8977e9721cd）
   }
 
   // run/verify 色块
@@ -357,7 +362,10 @@ function buildModel(data: SpecTopology): SwimModel | null {
   // 未知 lane 兜底（与 PipelineView unknownStageCount 同源防线）：后端扩充泳道
   // 而前端 LANE_ORDER 未跟上时显式跳过整组色块，避免 indexOf 返回 -1 静默丢节点；
   // 跳过节点数由计数提示兜底呈现（计数口径=节点数，与 PipelineView 一致）
-  let unknownLaneCount = 0;
+  // 缺 lane 字段的 run 节点无法归泳道（lane 为后端补充字段可能缺失），不经
+  // perLane 也不进下方 indexOf<0 组，同口径计入兜底计数而非静默消失
+  // （code-review item a98be0f8fd0e）
+  let unknownLaneCount = timed.filter((p) => p.n.kind === 'run' && !p.n.lane).length;
   for (const [lane, items] of perLane) {
     const laneIdx = LANE_ORDER.indexOf(lane as never);
     if (laneIdx < 0) {
