@@ -191,6 +191,33 @@ def is_spec_attached_signal(alert: dict, backfill: bool = False) -> bool:
     )
 
 
+def _self_heal_channel_applies(alert: dict) -> "tuple[bool, bool]":
+    """记录是否落入自愈通道准入（add-alert-self-heal-marking 1.2），返回 (applies, backfill)。
+
+    口径与两侧通道判定端同一：kind ∈ (escalation, signal) 且
+    signal_type ∈ SELF_HEAL_SIGNAL_TYPES（注册表外类型，含 inconclusive_loop
+    env 握手族，永不自愈），且既有条件未在册——trigger 已识别（_recognized）
+    则排除，归既有条件判定通道，不双重判定（specs/alert-lifecycle 排除项）。
+    backfill=无 trigger 字段（存量形态按回填语义判定）；自愈注册表与回填
+    注册表 BACKFILL_SIGNAL_TYPES 互斥（无交集），故 backfill=True 时不存
+    在「按回填推断既有条件」的路径。``now`` 门与 ``handled`` 门不属准入
+    判据，由各调用方自持，语义不动。供 evaluate_alert 自愈分支与
+    find_self_healable 过滤循环共用，防两侧口径漂移（提炼思路与
+    is_spec_attached_signal 对齐）。
+    """
+    if not isinstance(alert, dict):
+        return False, False
+    if alert.get("kind") not in ("escalation", "signal"):
+        return False, False
+    if alert.get("signal_type") not in SELF_HEAL_SIGNAL_TYPES:
+        return False, False
+    trigger = alert.get("trigger")
+    has_trigger = isinstance(trigger, dict) and trigger
+    if has_trigger and _recognized(trigger.get("condition")):
+        return False, False  # 既有条件在册：归 find_resolvable 通道，不双重判定
+    return True, not has_trigger
+
+
 # ── 自愈判定助手（add-alert-self-heal-marking 1.1）────────────────────────
 
 
@@ -355,24 +382,18 @@ def evaluate_alert(
     condition = trigger.get("condition") if has_trigger else None
 
     # ── 自愈分支（add-alert-self-heal-marking 1.2）────────────────────
-    # 以 signal_type 注册表为门：注册表外类型（含 inconclusive_loop env
-    # 握手族）永不自愈。spec 附着族命中既有条件枚举（trigger 已识别）→
-    # 既有条件判定，不双重判定（specs/alert-lifecycle 排除项）。
-    # 自愈注册表与回填注册表 BACKFILL_SIGNAL_TYPES 互斥（无交集），故
-    # 此处不存在「无 trigger 按回填推断」的既有条件路径。
-    if (
-        now is not None
-        and kind in ("escalation", "signal")
-        and signal_type in SELF_HEAL_SIGNAL_TYPES
-    ):
-        existing_applies = has_trigger and _recognized(condition)
-        if not existing_applies:
+    # 准入判据（kind/注册表/trigger 已识别排除/backfill=无 trigger）与
+    # find_self_healable 共用 _self_heal_channel_applies，防两侧口径漂移；
+    # ``now`` 门由本侧自持（既有调用方不传 now 时自愈分支整体不启用）。
+    if now is not None:
+        self_heal_applies, self_heal_backfill = _self_heal_channel_applies(alert)
+        if self_heal_applies:
             return _evaluate_self_heal(
                 alert,
                 now=now,
                 records=records,
                 quiet_minutes=quiet_minutes,
-                backfill=not has_trigger,
+                backfill=self_heal_backfill,
             )
 
     # kind 门（evo-add-signal-subject-terminal-close 1.1）：escalation 一律走
@@ -467,19 +488,17 @@ def find_self_healable(
             continue
         if alert.get("handled"):
             continue
-        if alert.get("kind") not in ("escalation", "signal"):
+        # 准入判据与 evaluate_alert 自愈分支共用 _self_heal_channel_applies
+        #（kind/注册表/trigger 已识别排除/backfill），防两侧口径漂移。
+        applies, no_trigger = _self_heal_channel_applies(alert)
+        if not applies:
             continue
-        if alert.get("signal_type") not in SELF_HEAL_SIGNAL_TYPES:
-            continue
-        trigger = alert.get("trigger")
-        if isinstance(trigger, dict) and trigger and _recognized(trigger.get("condition")):
-            continue  # 既有条件在册：归 find_resolvable 通道，不双重判定
         note = _evaluate_self_heal(
             alert,
             now=now,
             records=records,
             quiet_minutes=quiet_minutes,
-            backfill=not (isinstance(trigger, dict) and trigger),
+            backfill=no_trigger,
         )
         if note is None:
             continue
