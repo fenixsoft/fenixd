@@ -1670,6 +1670,22 @@ def knowledge_distill_lock(project_root: Path):
             fh.close()
 
 
+def _safe_validate(project_root: Path, validate: Callable) -> tuple[bool, list[str]]:
+    """校验器安全包装：返回 (ok, violations)。
+
+    validate_knowledge 内部仅对部分子检查做了异常捕获，真相源中的畸形内容
+    仍可能触发未预期异常；run_backfill 各段的裸调会让异常沿车道上抛——
+    批次循环中后续批次的派发/提交/台账落盘全部不再执行，与本文件「单段
+    失败不阻塞车道」的 fail-open 纪律相悖（code-review 4b72c899e0ef）。
+    ok=False 时 violations 为单条「校验器异常：…」，由调用方按所在段既有
+    失败分支处置（登记 todo/差集回滚/计失败批次）。
+    """
+    try:
+        return True, [str(v) for v in (validate(project_root) or [])]
+    except Exception as e:  # noqa: BLE001 - 校验器异常 fail-open，不掀翻车道
+        return False, [f"校验器异常：{e}"]
+
+
 # ── 车道主入口 ───────────────────────────────────────────────────────────
 
 
@@ -1831,8 +1847,26 @@ def run_backfill(
             _clean_untracked_knowledge(project_root, log)
             # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规，真相源既有
             # 无关违规不拦提交（差集口径对齐 knowledge_audit，code-review
-            # 84727f16ab35）
-            before_violations = {str(v) for v in (validate(project_root) or [])}
+            # 84727f16ab35）。校验器异常按段失败分支 fail-open：本段尚未派发
+            # run、无产出可回滚，登记 todo 待人工后退出本段，不掀翻车道
+            baseline_ok, baseline_violations = _safe_validate(project_root, validate)
+            if not baseline_ok:
+                log.warning(
+                    "knowledge",
+                    f"回填自举段校验器异常，本段跳过待人工重跑：{baseline_violations[0]}",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填聚类自举段校验器异常（{baseline_violations[0]}），"
+                    "本段未执行，请人工检查后重跑回填",
+                    log,
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "bootstrap-validate-crashed",
+                }
+            before_violations = set(baseline_violations)
             chain_caps = sorted(chain_index)
             # 修正环复用同一基础提示词（同能力批/ADR 批段的 base_prompt 用法，
             # 不二次构建，code-review 879ec62ecbad）
@@ -1903,12 +1937,15 @@ def run_backfill(
             # 须在提交前再拦一次，不随坏状态落库（code-review 6736a158bcf4）
             _prune_stale_domains(project_root, domain_map, log)
             # 剪枝闸门同差集口径：只否决剪枝新引入的违规（域删除导致的
-            # index/跨页链接断裂），既有无关违规不拦提交
-            prune_violations = [
-                str(v)
-                for v in (validate(project_root) or [])
-                if str(v) not in before_violations
-            ]
+            # index/跨页链接断裂），既有无关违规不拦提交；校验器异常视为
+            # 闸门未过（无法确认剪枝后状态合法），走同款放弃产出分支
+            # （code-review 4b72c899e0ef）
+            prune_ok, prune_all = _safe_validate(project_root, validate)
+            prune_violations = (
+                prune_all
+                if not prune_ok
+                else [v for v in prune_all if v not in before_violations]
+            )
             if prune_violations:
                 discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
@@ -2019,8 +2056,28 @@ def run_backfill(
                     "ok": False,
                     "reason": "prehistoric-baseline-unavailable",
                 }
-            # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
-            before_violations = {str(v) for v in (validate(project_root) or [])}
+            # 本段 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）。
+            # 校验器异常同自举段口径 fail-open：本段尚未派发 run、无产出可回滚，
+            # 登记 todo 待人工后退出本段，不掀翻车道（code-review 4b72c899e0ef）
+            baseline_ok, baseline_violations = _safe_validate(project_root, validate)
+            if not baseline_ok:
+                log.warning(
+                    "knowledge",
+                    f"回填史前复原段校验器异常，本段跳过待人工重跑："
+                    f"{baseline_violations[0]}",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填史前复原段校验器异常（{baseline_violations[0]}），"
+                    "本段未执行，请人工检查后重跑回填",
+                    log,
+                )
+                return {
+                    "triggered": True,
+                    "ok": False,
+                    "reason": "prehistoric-validate-crashed",
+                }
+            before_violations = set(baseline_violations)
             # 修正环复用同一基础提示词（同自举段/两批次段的 base_prompt 用法，
             # 不二次构建，code-review af33cd1a66a5）
             base_prompt = build_prehistoric_prompt(project_root, chain_index)
@@ -2184,8 +2241,31 @@ def run_backfill(
                 continue
             # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规，真相源既有
             # 无关违规不拦提交（差集口径对齐 knowledge_audit，code-review
-            # 84727f16ab35）
-            before_violations = {str(v) for v in (validate(project_root) or [])}
+            # 84727f16ab35）。校验器异常按本批 run 前失败分支 fail-open（同上方
+            # 脏文件基线采集失败口径：本批未派发、无产出可回滚，留痕计失败后
+            # 继续后续批，不掀翻车道；code-review 4b72c899e0ef）
+            baseline_ok, baseline_violations = _safe_validate(project_root, validate)
+            if not baseline_ok:
+                log.warning(
+                    "knowledge",
+                    f"回填批次 {i}/{total} 校验器异常，本批跳过："
+                    f"{baseline_violations[0]}",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填批次 {i}/{total} 校验器异常，本批未执行，"
+                    "请人工检查后重跑回填",
+                    log,
+                )
+                failed_batches.append(
+                    {
+                        "batch": i,
+                        "capabilities": batch,
+                        "violations": baseline_violations,
+                    }
+                )
+                continue
+            before_violations = set(baseline_violations)
             base_prompt = build_prompt(
                 "batch",
                 batch=batch,
@@ -2312,7 +2392,8 @@ def run_backfill(
         a for a in todo_adr
         if not (project_root / "spec" / "archive" / a / "design.md").is_file()
     ]
-    with_design = [a for a in todo_adr if a not in set(no_design)]
+    no_design_set = set(no_design)
+    with_design = [a for a in todo_adr if a not in no_design_set]
     for a in no_design:
         # 无 design.md 无决策可抽：直接标 distilled 留痕跳过（对齐既有口径），
         # 否则 adr 条目永久 pending——回填无法收敛且排队门不释放
@@ -2372,8 +2453,32 @@ def run_backfill(
                     }
                 )
                 continue
-            # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）
-            before_violations = {str(v) for v in (validate(project_root) or [])}
+            # 本批 run 前的违规基线：提交闸门只否决本轮新引入的违规（同自举段）。
+            # 校验器异常按本批 run 前失败分支 fail-open（同能力批次口径：本批
+            # 未派发、无产出可回滚，留痕计失败后继续后续批，不掀翻车道；
+            # code-review 4b72c899e0ef）
+            baseline_ok, baseline_violations = _safe_validate(project_root, validate)
+            if not baseline_ok:
+                log.warning(
+                    "knowledge",
+                    f"回填 ADR 批次 {i}/{adr_total} 校验器异常，本批跳过："
+                    f"{baseline_violations[0]}",
+                )
+                _append_todo_fail_open(
+                    project_root,
+                    f"回填 ADR 批次 {i}/{adr_total} 校验器异常，本批未执行，"
+                    "请人工检查后重跑回填",
+                    log,
+                )
+                adr_failed.append(
+                    {
+                        "batch": i,
+                        "archives": batch,
+                        "violations": baseline_violations,
+                    }
+                )
+                continue
+            before_violations = set(baseline_violations)
             base_prompt = build_prompt("adr", batch=batch)
             run_id = f"kb-adr{i}-{int(time.time())}"
             try:
