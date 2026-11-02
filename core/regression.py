@@ -723,8 +723,15 @@ def read_progress(project_root) -> Dict[str, Any]:
     try:
         last = read_result(project_root)
         if isinstance(last, dict) and last.get("status") not in ("never_run", "parse_error"):
-            info["total_estimate"] = last.get("total")
-            info["last_duration_seconds"] = last.get("duration_seconds")
+            # code-review item 800c5ab1da3c：定向子集（run_scope=issues）结果
+            # 同样覆盖写 last-run.json（design D5 单快照），其 total/duration
+            # 是子集量级——拿来做全量运行的估算分母会把估算百分比提前冲顶、
+            # total_estimate 显示子集量级。run_scope 非 None 时跳过估算回填
+            # （估算与真实进度自然回落未知口径）；真实进度 tail 不受影响：
+            # output 指向的日志路径各轮共用，当前轮的真实进度标记照常可读。
+            if last.get("run_scope") is None:
+                info["total_estimate"] = last.get("total")
+                info["last_duration_seconds"] = last.get("duration_seconds")
             output_rel = last.get("output")
     except Exception:
         pass
@@ -1149,14 +1156,29 @@ def run_regression(
                 # 新鲜度）同按 fail-closed 处置。
                 try:
                     xml_mtime = output_abs.stat().st_mtime
-                    started_ts = timelib.parse_ts(started_at).timestamp()
-                    stale_reason = (
-                        f"陈旧结果 fail-closed（stale_xml）: JUnit XML mtime "
-                        f"（{xml_mtime:.3f}）早于本次命令 started_at"
-                        f"（{started_ts:.3f}），不采信非本次执行产出的结果"
-                        f"（按 parse_error 处置）"
-                    )
-                    stale = xml_mtime < started_ts
+                    # code-review item ac46efd91832：parse_ts 契约是失败返回
+                    # None 不抛异常，链式 .timestamp() 会在 None 上抛
+                    # AttributeError 且不被下方 except OSError 捕获——与
+                    # is_regression_running/read_progress 的同源消费点口径
+                    # 对齐：解析失败按 fail-closed 处置（防御纵深，当前
+                    # started_at 为自产 ISO 串恒可解析）。
+                    parsed_started = timelib.parse_ts(started_at)
+                    if parsed_started is None:
+                        stale = True
+                        stale_reason = (
+                            f"陈旧结果 fail-closed（stale_xml）: 本次命令 "
+                            f"started_at（{started_at}）时间戳解析失败，"
+                            f"无法确立结果新鲜度（按 parse_error 处置）"
+                        )
+                    else:
+                        started_ts = parsed_started.timestamp()
+                        stale_reason = (
+                            f"陈旧结果 fail-closed（stale_xml）: JUnit XML mtime "
+                            f"（{xml_mtime:.3f}）早于本次命令 started_at"
+                            f"（{started_ts:.3f}），不采信非本次执行产出的结果"
+                            f"（按 parse_error 处置）"
+                        )
+                        stale = xml_mtime < started_ts
                 except OSError as e:
                     stale = True
                     stale_reason = (
