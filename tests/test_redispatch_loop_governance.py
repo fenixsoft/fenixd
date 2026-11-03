@@ -62,6 +62,9 @@ def _make_engine(root, logger=None):
     from core.state_machine import StateMachine
 
     (root / ".fenix").mkdir(parents=True, exist_ok=True)
+    from helpers import disable_escalation_chain
+
+    disable_escalation_chain(root)
     logger = logger or MagicMock()
     sm = StateMachine(root / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), {}, root, logger)

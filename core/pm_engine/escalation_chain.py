@@ -49,6 +49,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.timelib import parse_ts
+
 # 日志组件名（logger.warning(component, message) 口径）
 COMPONENT = "pm_engine.escalation_chain"
 
@@ -203,9 +205,9 @@ def _utcnow_iso() -> str:
 
 
 def _days_since(ts_iso: str, now: Optional[datetime] = None) -> Optional[float]:
-    try:
-        then = datetime.fromisoformat(str(ts_iso))
-    except (TypeError, ValueError):
+    """距 ts_iso 的天数（解析收拢 timelib.parse_ts 单入口；非法/空值 None）。"""
+    then = parse_ts(str(ts_iso))
+    if then is None:
         return None
     if then.tzinfo is None:
         then = then.replace(tzinfo=timezone.utc)
@@ -334,8 +336,12 @@ class ChainQuotaStore:
 
         return bool(self._mutate(_reset))
 
-    def touch(self, sig: str) -> None:
-        """复现时刻刷新 last_seen（复位窗计时锚点）。"""
+    def record_recurrence(self, sig: str) -> None:
+        """复现登记：刷新 last_seen（复位窗计时锚点）。
+
+        命名避开 ``touch``——全仓方法名 seam 索引会把 pathlib ``.touch()``
+        0 参调用误判为 arity 违例（test_callsite_arity_guard 自伤）。
+        """
         def _touch(state):
             ent = state["signatures"].setdefault(
                 sig, {"admin_attempts": 0, "arbiter_rulings": 0}
@@ -627,9 +633,11 @@ class EscalationChain:
         quota_cfg = self.config()
         window_days = int(quota_cfg.get("reset_window_days") or 7)
 
-        # 复现登记与配额复位（复位窗 / spec 状态迁移清零；dead-man 例外不复位）
-        self._quota.touch(sig)
+        # 复现登记与配额复位（复位窗 / spec 状态迁移清零；dead-man 例外不复位）。
+        # 窗复位 MUST 先于 touch：touch 把 last_seen 刷到当下，先 touch 后复位
+        # 则 idle 恒 ≈0，静默满窗清零永不触发（复位窗死代码）。
         self._quota.apply_window_reset(sig, window_days)
+        self._quota.record_recurrence(sig)
         sm = self._resolve_state_machine()
         if sm is not None and spec and spec != "global":
             try:
@@ -735,6 +743,9 @@ class EscalationChain:
                 "error": str(disp.error or "")[:400],
                 "escalate": bool(disp.escalate),
             }
+            choice_id = str(getattr(disp, "choice_id", "") or "").strip()
+            if choice_id:
+                record["choice_id"] = choice_id[:120]
             handoff = str(getattr(disp, "handoff", "") or "").strip().lower()
             if handoff:
                 record["handoff"] = handoff
@@ -763,6 +774,32 @@ class EscalationChain:
                     getattr(disp, "handoff_reason", "") or ""
                 )
                 return trail, "handoff"
+            # 越界 choice 复核（task 2.4 防线：prompt 注入白名单之外的产出
+            # 拦截）——预算/豁免类人类拍板面 choice 视同超范围转单，不计
+            # 失败（与 handoff:arbiter 同口径）。白名单读取失败 fail-open
+            # （None=跳过复核，不因注册表故障拦死链上处置）。
+            if choice_id:
+                allowed = self._admin_choice_allowlist(
+                    str(item.get("signal_type") or "")
+                )
+                if allowed is not None and choice_id not in allowed:
+                    reason = f"choice 越界（人类拍板面专属）: {choice_id}"
+                    self._log(
+                        "info",
+                        f"Admin 产出越界 choice 转单 Arbiter（不计失败）: "
+                        f"sig={sig} {reason}",
+                    )
+                    self._write_chain_event(
+                        item,
+                        kind="chain-handoff",
+                        action_or_upgrade=(
+                            f"Admin 产出越界 choice（{choice_id}），转单 "
+                            f"Arbiter（Admin 尝试 {attempts}/{admin_quota} 不计失败）"
+                        ),
+                        extra={"handoff_reason": reason[:400]},
+                    )
+                    item["admin_handoff_reason"] = reason
+                    return trail, "handoff"
             if disp.success and disp.result in ("resolved", "partially-resolved") and not disp.escalate:
                 closed = self._close_chain_success(item, disp)
                 self._log(
@@ -806,6 +843,21 @@ class EscalationChain:
         except Exception as e:
             self._log("warning", f"Admin 在飞互斥判定异常（按无在飞放行）: {e}")
             return False
+
+    def _admin_choice_allowlist(self, signal_type: str):
+        """链上 Admin 拍板面白名单 id 集（task 2.4 单源；失败返回 None 跳过复核）。"""
+        try:
+            from core.dashboard.data.adjudication_choices import (
+                choices_for_admin_chain,
+            )
+
+            return {
+                str(choice.get("id") or "")
+                for choice in choices_for_admin_chain(signal_type)
+            }
+        except Exception as e:
+            self._log("warning", f"链上 Admin 拍板面白名单读取失败（跳过复核）: {e}")
+            return None
 
     def _dispatch_admin(self, item: dict):
         """派发一次 Administrator 处置 run（同步；产物经 AdminDisposition）。"""

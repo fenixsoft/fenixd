@@ -116,6 +116,11 @@ class TestResultClassesChar:
             "suggested_choice": "",
             # fix-admin-choice-payload-and-scenario-pairing 2.1：载荷通道进 to_dict
             "choice_payload": "",
+            # add-escalation-chain-admin-arbiter 2.2：链上转单与显式解冻语义
+            # 进 to_dict（链头消费 handoff/handoff_reason/status_after）
+            "handoff": "",
+            "handoff_reason": "",
+            "status_after": "",
         }
         assert a.family_waiver is True  # 内部字段，不进 to_dict
 

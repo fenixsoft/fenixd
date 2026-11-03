@@ -543,7 +543,10 @@ class TestVerifyRedoFreezeAlerts(unittest.TestCase):
     """
 
     def setUp(self):
+        from helpers import disable_escalation_chain
+
         self.tmpdir = tempfile.mkdtemp()
+        disable_escalation_chain(Path(self.tmpdir))
         (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
         self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()

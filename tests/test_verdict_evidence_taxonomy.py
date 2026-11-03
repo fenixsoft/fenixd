@@ -277,9 +277,12 @@ class _PMEngineBase(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         from core.state_machine import StateMachine
+        from helpers import disable_escalation_chain
+
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
+        disable_escalation_chain(self.project_root)
         (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
         self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(

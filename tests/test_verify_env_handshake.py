@@ -59,6 +59,9 @@ def _mk_engine(tmpdir, escalate_attempts=4, max_attempts=3):
     """构造 PMEngine 实例（临时 STATE + 真实 StateMachine + AdminStore）。"""
     project_root = Path(tmpdir)
     (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+    from helpers import disable_escalation_chain
+
+    disable_escalation_chain(project_root)
     logger = _FakeLogger()
     sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     config = {"verify_engine": {
