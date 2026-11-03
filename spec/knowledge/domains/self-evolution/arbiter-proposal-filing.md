@@ -1,7 +1,7 @@
 # arbiter 处置立项与提案物化（已退役）
 
-<!-- knowledge: capability=arbiter-proposal-filing rev=2
-     sources=spec/archive/fix-arbiter-proposal-materialize-spec-dir-1793497541,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
+<!-- knowledge: capability=arbiter-proposal-filing rev=3
+     sources=spec/archive/fix-arbiter-proposal-materialize-spec-dir-1793497541,spec/changes/add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
 
 arbiter 车道不设自动立项通道（权限红线禁立项，详见 admin-ops 域 [arbiter-lane](../admin-ops/arbiter-lane.md)）；本页只承载该退役面的台账历史兼容语义与 STATE 注册通用纪律。
 
@@ -15,3 +15,4 @@ arbiter 车道不设自动立项通道（权限红线禁立项，详见 admin-op
 
 - 2026-11-01 fix-arbiter-proposal-materialize-spec-dir-1793497541（spec/archive/fix-arbiter-proposal-materialize-spec-dir-1793497541） — 处置留痕归档（非方案成文，原条目系幽灵条目的清退载体）：固化 arbiter 立项物化契约（先物化后注册、物化失败跳过立项只记台账、重放幂等）与幽灵条目缺陷形态。
 - 2026-11-03 arbiter-filing-retire-gap-todo-routing（spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md） — 折叠 arbiter 立项通道整体退役：提案物化/消费写点与节流常量删除，原物化契约规则（先物化后注册、物化失败跳过立项、重放幂等、提案最小成文）随通道退役失效，本页改写为退役态（台账历史兼容 + 幽灵条目教训通用化为 STATE 注册纪律）。
+- 2026-11-03 add-arbiter-gap-todo-routing（spec/changes/add-arbiter-gap-todo-routing/） — 通道退役的落地 SPEC：`_materialize_proposal` 与节流常量删除且不留 config 开关，`spec-proposed`/`proposal-dedup`/`proposal-throttled` 台账 kind 随写点退役不再产生（存量 append-only 保留）；退役态规则改写与上一行折叠同源，本行挂 SPEC 正式溯源。

@@ -1,5 +1,5 @@
 # 自省与自进化
-> 最后更新：2026-11-03 23:25 UTC+8
+> 最后更新：2026-11-03 23:39 UTC+8
 
 自省与自进化：每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent、陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径即时提交与清空 HEAD 自愈防护、arbiter 立项通道退役注记。本域能力页清单如下。
 
@@ -24,4 +24,4 @@
 | [key-path-stale-preflight](key-path-stale-preflight.md) | 关键路径执行前陈旧代码预检（收尾提交/蒸馏派发/admin choice 三插桩点、WARNING+确保 restart_request+照常执行、路径锚定 daemon 侧） | 2026-10-30 23:11 |
 | [todo-append-commit-on-write](todo-append-commit-on-write.md) | todo.md 追加/改写写后就地提交（pathspec 限定单文件、幂等零提交、git 失败降级不阻断、git 在 flock 外） | 2026-10-30 23:11 |
 | [todo-ledger-loss-guard](todo-ledger-loss-guard.md) | 自省台账清空防护（todo.md 回写前 HEAD 自愈、todo_head_restore 豁免开关、dashboard 覆写端点持锁留痕收敛） | 2026-10-31 16:23 |
-| [arbiter-proposal-filing](arbiter-proposal-filing.md) | arbiter 立项通道退役注记（台账历史兼容、先物化后注册通用纪律） | 2026-11-03 23:25 |
+| [arbiter-proposal-filing](arbiter-proposal-filing.md) | arbiter 立项通道退役注记（台账历史兼容、先物化后注册通用纪律） | 2026-11-03 23:39 |

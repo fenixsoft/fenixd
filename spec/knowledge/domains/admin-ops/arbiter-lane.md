@@ -1,7 +1,7 @@
 # Arbiter 自主裁决车道
 
-<!-- knowledge: capability=arbiter-lane rev=3
-     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
+<!-- knowledge: capability=arbiter-lane rev=4
+     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/changes/add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
 
 Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)。
 
@@ -33,3 +33,4 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 触发面白名单枚举改黑名单制默认入链；同签名「只派发一次」改配额治理（2 次/签名+复位窗，dead-man 永久单次例外）；白名单③放开 impl run 预算上调（预算豁免拍板面承接）；回扫管线接入链头 Admin
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（配额语义与复位通道不变）
 - 2026-11-03 arbiter-filing-retire-gap-todo-routing（spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md） — 折叠 arbiter 立项通道整体退役与 gaps→todo 路由：权限红线禁止清单五类扩六类（新增禁立项）、立项节流三限废止移除、框架缺口改走 gaps 数组→todo.md 唯一出口（含 todo 条目契约、gap-noted 台账与同主题轻量去重）
+- 2026-11-03 add-arbiter-gap-todo-routing（spec/changes/add-arbiter-gap-todo-routing/） — 新增「禁立项红线与框架缺口 todo 路由」需求并废除本页立项节流规则：立项写点/目录物化/节流三限整体退役且不留 config 开关，报告 proposals 改语义 gaps 逐条记 todo.md、台账 kind 演进 gap-noted 与切换窗旧字段 WARNING 容错、白名单处置面不受扰；规则改写与上一行折叠同源，本行挂 SPEC 正式溯源
