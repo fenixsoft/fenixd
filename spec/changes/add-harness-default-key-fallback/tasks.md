@@ -18,13 +18,13 @@
 ## 1. dsh 适配器回落路径
 
 - [ ] 1.1 放宽 `build_spawn_spec` 三要素预检：`env_overrides` 完全无 provider 链键（baseurl/apikey 均空且 model 空的「无分配」形态）不再抛 `DshSpawnConfigError`，转落回落分支；含任一链键但三要素不全的形态保留报错（笔误防护）
-- [ ] 1.2 回落分支实现：不写 patch 文件、argv 不携带 `--patch`；`build_env` 无 apikey 时不桥接 `FENIX_DSH_PROVIDER_API_KEY`；`--profile` 与反串扰环境清除语义不变
+- [ ] 1.2 回落分支实现：不写 patch 文件、argv 不携带 `--patch`；`build_env` 无 apikey 时不桥接 `FENIX_DSH_PROVIDER_API_KEY`；`--profile` 与反串扰环境清除语义不变；同步更新 `build_spawn_spec` docstring 与 `DshSpawnConfigError` 文案中「绝不回退 dsh 默认档」（D9 旧纪律）表述——该纪律已被 2026-11-03 用户裁定取代（评审修补：`dsh_adapter.py:686` docstring 与 `:719-723` 现文案与新语义直接矛盾，不更新会误导后人且部分链报错场景的文案断言将失配）
 - [ ] 1.3 单测：无分配形态 argv/env 断言（无 `--patch`、无桥接键）、部分链形态仍报错、显式全链形态 spawn spec 与现行为逐字节一致
 
 ## 2. 对称 WARN 钩子与归因标记
 
 - [ ] 2.1 进程级一次性 WARN：claude/dsh 两 adapter 回落形态生效时发一次「未分配 provider 链，回落 harness 默认配置」WARNING（进程×adapter 去重，锁纪律与 `get_current_adapter` 同型），不拒 spawn
-- [ ] 2.2 run metrics 归因标记：回落 run 的 metrics 上下文写 `provider_source: "harness-default"`（显式链 run 无此键），读侧缺省兼容
+- [ ] 2.2 run metrics 归因标记：回落 run 的 metrics 上下文写 `provider_source: "harness-default"`（显式链 run 无此键），读侧缺省兼容；回落判定信号=该 Agent 无 provider 链分配（`_get_agent_model_assignment` 返回空，runner.py:1642-1662 既有模式），与 adapter 内三要素全空判定同源（评审修补：补判定信号约定，避免 runner 侧另立判定口径）
 - [ ] 2.3 单测：同进程 3 次回落 spawn 仅 1 条 WARNING；metrics 标记存在性两形态断言
 
 ## 3. 回归与验收
