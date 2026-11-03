@@ -42,6 +42,11 @@ from core.state_machine import (
 from core.fs_utils import atomic_write_text
 from core.timelib import parse_ts
 
+# 改道指令落盘目录成分净化（code-review item c6d32fd8ff1e）：与 prompt_builder
+# _scenario_reroute_directive_section 读侧单源同口径——两侧都不净化时功能自洽，
+# 但任一侧单方补净化即互通失效；本模块只引标准库依赖的 path_safety，无反向依赖
+from core.verify_engine.path_safety import safe_component
+
 # fix-recovery-path-blockers D3：预算耗尽重验延时常量（30 分钟，
 # 与 schedule.poll_interval_minutes 缺省对齐）。定时器管准点、周期扫描管兜底
 # ——daemon 重启后定时器丢失，靠 `_dispatch_backoff_until` 兜底
@@ -1335,12 +1340,15 @@ def _scenario_defect_reroute_gate(
     # 写当前失败集留存（覆盖改道前，含写入轮次；写失败仅告警，不阻断改道）
     _write_scenario_reroute_stoploss(pipeline, spec_name, _repair_depth, dist["failed_ids"])
 
-    # 写改道指令文件（prompt_builder _scenario_reroute_directive_section 读取）
+    # 写改道指令文件（prompt_builder _scenario_reroute_directive_section 读取；
+    # 目录成分经 safe_component 净化与读侧单源，code-review item c6d32fd8ff1e
+    # ——病理 spec 名下裸内插会嵌套子目录，与 report.json 等同族目录分裂成
+    # 清理盲区，读写互通也随读侧补净化而失效）
     directive_path = (
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "scenario_reroute_directive.json"
     )
     try:

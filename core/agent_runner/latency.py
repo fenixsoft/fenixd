@@ -129,6 +129,13 @@ def _entry_is_tool_result(entry: dict) -> bool:
     return False
 
 
+# code-review item 93f37786f70d：跨模块复用统一走公开名，模块边界不依赖
+# 下划线私有符号（admin_store 对 fsync_parent_dir 的公开别名同款纪律）。
+# 私有名保留给模块内部调用（延迟采样读侧），runner/liveness/tests 经公开名
+# 消费。别名直引同一实现，签名与行为随本体，无任何包装差异。
+entry_is_tool_result = _entry_is_tool_result
+
+
 def latency_samples_from_events(entries, parser=None) -> list:
     """从事件序列提取 API 往返样本（tool_result → 下一个 assistant 间隔）。
 

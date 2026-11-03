@@ -19,10 +19,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.agent_runner.latency import entry_is_tool_result
 from core.agent_runner.runner import (
     LATENCY_STALL_SECONDS,
     STALL_ROUND_WARN_SECONDS,
-    _entry_is_tool_result,
     format_latency_summary,
     latency_samples_from_events,
     latency_stats,
@@ -93,27 +93,27 @@ class TestToolResultDetection:
     """Scenario: 流转录 tool_result 事件统一识别（单一真源判定）。"""
 
     def test_user_wrapped_tool_result_block_true(self):
-        assert _entry_is_tool_result(_user_tool_result_evt(100.0))
+        assert entry_is_tool_result(_user_tool_result_evt(100.0))
 
     def test_plain_text_user_event_false(self):
-        assert not _entry_is_tool_result(_user_text_evt(100.0))
+        assert not entry_is_tool_result(_user_text_evt(100.0))
 
     def test_top_level_tool_result_compat_true(self):
-        assert _entry_is_tool_result(_evt("tool_result", 100.0))
+        assert entry_is_tool_result(_evt("tool_result", 100.0))
 
     def test_multi_block_user_event_true(self):
-        assert _entry_is_tool_result(_user_tool_result_evt(100.0, n_blocks=3))
+        assert entry_is_tool_result(_user_tool_result_evt(100.0, n_blocks=3))
 
     def test_other_event_types_false(self):
         for etype in ("assistant", "system", "result", "tool_progress",
                       "stderr", "provider_marker"):
-            assert not _entry_is_tool_result(_evt(etype, 100.0))
+            assert not entry_is_tool_result(_evt(etype, 100.0))
 
     def test_string_content_user_event_false(self):
         # message.content 为字符串（非 block 列表）不得误判
         entry = {"type": "user", "timestamp": 100.0,
                  "message": {"content": "plain string"}}
-        assert not _entry_is_tool_result(entry)
+        assert not entry_is_tool_result(entry)
 
 
 # ── 真实 stream-json 形态样本提取（fix-run-latency-toolresult-parser）──

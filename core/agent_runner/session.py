@@ -2,7 +2,17 @@
 
 from pathlib import Path
 import json
+import logging
 import math
+
+# session 事件提取窗口（code-review item 18321ea53e1c）：run jsonl 物理首行是
+# prompt 自有行而非 system/init（prompt-viewer 契约），head 窗口须容纳超长
+# prompt 行之后的 init 事件，取 256KiB；tail 窗口只取结尾 result 事件，保持
+# 64KiB 与 runner 侧「尾部 64KiB 同口径」读取一致。
+_SESSION_HEAD_WINDOW_BYTES = 262144
+_SESSION_TAIL_WINDOW_BYTES = 65536
+
+_logger = logging.getLogger("fenixd.agent_runner.session")
 
 
 def _to_int(value) -> int:
@@ -74,16 +84,19 @@ class SessionTracker:
         结尾的 result 事件。max_turns/超时强杀时 CLI 不会输出 result 事件，
         必须从 init 事件取，否则 resume 在 Max turns 场景失效（fix）。
         文件不存在/损坏返回 None。
+        head 窗口取 256KiB：超长 prompt 行会把 init 事件挤出更小的窗口，
+        强杀路径（无 result 事件）下两窗口均无 session 事件会静默退化成
+        全新会话——返回 None 前记 WARNING 留痕（code-review item 18321ea53e1c）。
         """
         try:
             size = run_file.stat().st_size
             with run_file.open("rb") as f:
-                if size > 65536:
+                if size > _SESSION_TAIL_WINDOW_BYTES:
                     # [fenix-ignore:3d4f7f1b7a20] 证伪：seek 目标受上方守卫恒为 size-65536≥1 不可能为负；并发截断后正偏移绝对 seek 越界合法（读到 EOF 返回空，不抛错），负向目标在本平台也抛 OSError（EINVAL，已被下方捕获），ValueError 无触发路径
-                    f.seek(size - 65536)
+                    f.seek(size - _SESSION_TAIL_WINDOW_BYTES)
                 tail = f.read().decode("utf-8", "replace")
                 f.seek(0)
-                head = f.read(65536).decode("utf-8", "replace")
+                head = f.read(_SESSION_HEAD_WINDOW_BYTES).decode("utf-8", "replace")
         except OSError:
             return None
         for chunk in (head, tail):
@@ -98,6 +111,15 @@ class SessionTracker:
                     return e["session_id"]
                 if e.get("type") == "system" and e.get("subtype") == "init" and e.get("session_id"):
                     return e["session_id"]
+        # 文件可读但两窗口均无含 session_id 的事件：留痕区分「窗口外截断」与
+        # 「文件损坏」（code-review item 18321ea53e1c）；OSError 路径已在上方单独返回。
+        _logger.warning(
+            f"extract_session_id: run 文件两窗口均未发现含 session_id 的事件"
+            f"（size={size}, head={_SESSION_HEAD_WINDOW_BYTES}B,"
+            f" tail={_SESSION_TAIL_WINDOW_BYTES}B,"
+            f" head 覆盖全文件={size <= _SESSION_HEAD_WINDOW_BYTES}）: {run_file}"
+            "——本次 attempt 将退化为全新会话（疑窗口外截断或文件损坏）"
+        )
         return None
 
     @staticmethod

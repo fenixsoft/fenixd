@@ -63,6 +63,15 @@ TASK_GATE_ERROR_PREFIX = "[task-gate]"
 # 非法 JSON 等）不计数、不降级。计数在门禁干净通过时或全新派发时清零。
 TASK_GATE_DEGRADE_THRESHOLD = 2
 
+# 模块唯一标准 logging 通道（add-quality-gates-visibility 任务 3.2 引入的
+# soft-gate 告警与 salvage 捞回共用；历史 _salvage_logger / _soft_gate_logger /
+# _SELFCHECK_LOGGER 三别名已合并为单常量，避免误读为三条独立通道）。caplog
+# 可断言；MUST NOT 走 runner.logger（测试替身无法被 caplog 捕获）。
+# （code-review item e39994e42a3d：定义置模块常量区——commit_spec_review_docs
+# 等文件前部函数运行期即引用本名，定义滞留文件尾部属前向引用，阅读易误判
+# NameError，且模块加载期调用方踩中。）
+_logger = logging.getLogger("fenixd.agent_runner.result_gate")
+
 # fix-verdict-read-failclosed D2（新鲜度宽限，秒）：planner 产物硬门 mtime 新鲜度
 # 校验的容差。文件系统 mtime 写入存在滞后（tmpfs 实测 ~6ms），紧邻
 # attempt_started_at 后写入的高速度假 run 会被严格 mtime 校验误标陈旧。宽限远小于
@@ -559,10 +568,14 @@ def _check_artifact_json_file(
     try:
         if not path.is_file():
             return (f"exit 0 但{_ARTIFACT_ERR_MISSING}（{agent_type} 产物硬门）: {path}", None)
-        if path.stat().st_size == 0:
+        # 单次 stat 取 (st_size, st_mtime) 后统一判定（code-review item
+        # 0a2766b69b0e）：两次独立 stat 之间文件若被并发改写，大小与 mtime
+        # 可能取自不同代，产生一次性误判——与门族其余 fail-closed 判据同严谨度。
+        st = path.stat()
+        if st.st_size == 0:
             return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}", None)
         if run_started_at is not None and not is_resumed_worktree:
-            mtime = path.stat().st_mtime
+            mtime = st.st_mtime
             if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
                 return (
                     f"exit 0 但结果文件早于本轮启动（{_ARTIFACT_ERR_STALE}残留，{agent_type} "
@@ -1334,7 +1347,32 @@ def _repo_code_review_gate_face(
     """
     if not manifest:
         return None, None
-    from core.code_review import out_path as cr_out_path, shard_paths
+    try:
+        from core.code_review import out_path as cr_out_path, shard_paths
+    except Exception as e:  # noqa: BLE001
+        # code-review item 49ec7524e153：与本文件其余门族懒导入（ConfigLoader /
+        # AdminStore / dashboard 常量）同口径——导入失败不得以未捕获异常从产物
+        # 硬门逸出；也不得静默按未启用降级（本门的存在意义正是拦「空跑被当
+        # 成功」，fail-open 会复现该事故）。按环境侧读取失败变体 fail-closed：
+        # 记 WARNING 留痕后走既有 unreadable_sources 归因通道（face 形态与三
+        # 变体契约兼容，调用方 gate_err 分支零改动），交由重试/升级处置。
+        _logger.warning(
+            "repo-code-review-gate 产物路径助手导入失败（fail-closed）"
+            ": %s: %s", type(e).__name__, e,
+        )
+        return (
+            f"审查产物硬门环境侧故障（repo-code-review-gate）：run {run_id} 的产物"
+            f"路径助手（core.code_review）导入失败，无法探测主产物与分片在否——"
+            f"按拦截处置，优先排查环境侧导入错误而非 agent 转录"
+        ), {
+            "run_id": run_id,
+            "manifest_count": len(manifest),
+            "variant": "unreadable_sources",
+            "variant_label": "读取失败",
+            "shards": 0,
+            "sources_present": 0,
+            "unreadable": [],
+        }
 
     main = cr_out_path(project_root, run_id)
     shards = shard_paths(project_root, run_id)
@@ -1698,12 +1736,6 @@ def _check_host_changes_summary_soft(
 # agent_type 分派；调用点（runner.py）MUST 在拷回块之前执行。
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
-# 模块唯一标准 logging 通道（add-quality-gates-visibility 任务 3.2 引入的
-# soft-gate 告警与 salvage 捞回共用；历史 _salvage_logger / _soft_gate_logger /
-# _SELFCHECK_LOGGER 三别名已合并为单常量，避免误读为三条独立通道）。caplog
-# 可断言；MUST NOT 走 runner.logger（测试替身无法被 caplog 捕获）。
-_logger = logging.getLogger("fenixd.agent_runner.result_gate")
-
 
 def salvage_result_from_transcript(
     project_root,
@@ -1751,6 +1783,13 @@ def salvage_result_from_transcript(
         return False
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     last_text = ""
+    # code-review item c7e74ae9da82：last_text 是否仍取自转录中**最后一条**
+    # assistant 事件。末条 assistant 只含 tool_use 无 text 块（超时强杀/崩溃
+    # 路径，恰是捞回被调用的主场景）时，全文件扫出的 last_text 实际来自更早
+    # 的消息——其中白名单载荷可能是中途起草/复述的示例，代写会把未收工 run
+    # 伪造成合法终态。只认「最后一条 assistant 事件确含 text 块」（其后仅
+    # tool_result/user/result 类事件不影响——本判据只看 assistant 事件序列）。
+    last_text_is_final = False
     try:
         with run_file.open(encoding="utf-8") as f:
             for line in f:
@@ -1776,17 +1815,28 @@ def salvage_result_from_transcript(
                 # TypeError，与 msg 同口径归一为 None，守住「转录损坏不抛异常」。
                 if not isinstance(content, list):
                     content = None
+                event_has_text = False
                 for c in content or []:
                     if isinstance(c, dict) and c.get("type") == "text":
+                        event_has_text = True
                         # text 为真值非字符串（列表/数字/对象等 json.loads 可
                         # 产出的损坏形态）时与上方 msg/content 同口径归一为空
                         # 串，防 _FENCED_JSON_RE.findall 对非 str 抛 TypeError
                         # 逸出本函数「转录损坏不抛异常」的防御序列。
                         t = c.get("text")
                         last_text = t if isinstance(t, str) else ""
+                # 每条 assistant 事件都刷新末轮判据：事件含 text 块 → last_text
+                # 即来自当前（迄今最后一条）assistant 事件；不含 → last_text
+                # 沦为更早消息的残留，判据置 False。
+                last_text_is_final = event_has_text
     except (OSError, UnicodeDecodeError):
         # 转录含无效 UTF-8 视为「不可读」（同 _check_artifact_json_file 口径），
         # 不抛异常、不落盘返回 False。
+        return False
+    if not last_text_is_final:
+        # 末条 assistant 事件无 text 块 → last_text 是更早消息的残留，按
+        # 「末轮无文本」放弃捞回（与上方 last_text 为空同口径静默返回 False），
+        # 交由既有重试/归因通道处置，不代写结果文件。
         return False
     if not last_text:
         return False

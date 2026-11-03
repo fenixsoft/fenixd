@@ -75,7 +75,7 @@ from core.agent_runner.latency import (  # noqa: F401
     STALL_ROUND_WARN_SECONDS,
     STALL_ROUND_ESCALATE_SECONDS,
     _default_ts_parser as _latency_default_ts_parser,
-    _entry_is_tool_result,
+    entry_is_tool_result as _entry_is_tool_result,
     _percentile,
     classify_round_stall,
     format_latency_summary,
