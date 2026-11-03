@@ -2633,6 +2633,24 @@ def run_backfill(
         _write_report(project_root, summary)
     except OSError as e:
         log.warning("knowledge", f"回填收敛报告落盘失败（fail-open）：{e}")
+    # 编年账 backfill 行（add-knowledge-inbox-pipeline 4.2）：写入主体为
+    # daemon 代码侧轮收尾（依据批统计，不依赖车道 LLM 写 log.md）；fail-open
+    # 不改变车道结论。core.knowledge 单源、延迟导入取用（车道可降级装载，
+    # 与上方 load_knowledge_core 守卫同口径）。
+    try:
+        from core.knowledge import _commit_log_line, append_knowledge_log
+
+        if append_knowledge_log(
+            project_root,
+            "backfill",
+            f"回填轮（能力批 {len(ok_batches)}/{total} 成功、"
+            f"{len(failed_batches)} 失败；ADR 批 {adr_ok}/{adr_total} 成功、"
+            f"{len(adr_failed)} 失败；"
+            + ("已收敛" if converged else "未收敛"),
+        ):
+            _commit_log_line(project_root, "backfill 回填轮留痕")
+    except Exception as e:  # noqa: BLE001 — 编年账失败不改变车道结论
+        log.warning("knowledge", f"回填编年账落账失败（fail-open）：{e}")
     log.info(
         "knowledge",
         f"回填车道收敛汇报：能力批 {len(ok_batches)}/{total} 成功、"

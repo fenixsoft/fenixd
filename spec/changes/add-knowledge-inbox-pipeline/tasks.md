@@ -67,7 +67,7 @@
       `## [YYYY-MM-DD HH:MM UTC+8] <操作> | <主题>`（操作 ∈ distill/fold/backfill/
       lint），本地时区显式标注，追加并发安全（文件锁或复用 ADR-234 单写者纪律），
       并发追加不丢行有测试
-- [ ] 4.2 distill/audit/backfill 轮收尾追加对应行（折叠轮先 fold 行后 distill 行）；
+- [x] 4.2 distill/audit/backfill 轮收尾追加对应行（折叠轮先 fold 行后 distill 行）；
       写入主体 MUST 为 daemon 代码侧轮收尾逻辑（依据 run 产物中的折叠/轮次结果
       报告，如 status 行扩展段），MUST NOT 依赖车道 LLM 在轮内直接写 `log.md`
       （写面纪律与并发安全在代码侧收口）；测试覆盖轮次收尾留痕 Scenario

@@ -970,3 +970,45 @@ def test_commit_runs_after_flock_release(tracked_todo_proj, monkeypatch):
     assert git_idx, events  # 提交链路确实执行了 git 子命令（ls-files/add/commit/push）
     release_idx = events.index("flock-release")
     assert min(git_idx) > release_idx  # 全部 git 调用都在 flock 释放之后
+
+
+# ── 编年账 backfill 行（add-knowledge-inbox-pipeline 4.2） ────────────────
+
+
+@pytest.fixture
+def install_core_with_log(monkeypatch):
+    """替身模块挂真实编年账函数：轮收尾 backfill 行走真实 log.md 链路。"""
+
+    def _install(core_obj, with_commit=True):
+        from core.knowledge import _commit_log_line, append_knowledge_log
+
+        mod = types.ModuleType("core.knowledge")
+        mod.validate_knowledge = core_obj.validate_knowledge
+        if with_commit:
+            mod.commit_knowledge = core_obj._commit
+        mod.append_knowledge_log = append_knowledge_log
+        mod._commit_log_line = _commit_log_line
+        import core as core_pkg
+
+        monkeypatch.setitem(sys.modules, "core.knowledge", mod)
+        monkeypatch.setattr(core_pkg, "knowledge", mod, raising=False)
+        return core_obj
+
+    return _install
+
+
+def test_backfill_log_row_appended(proj, install_core_with_log):
+    """4.2：回填轮收尾由 daemon 代码侧落 backfill 行（批统计 + 收敛态）并
+    独立提交；替身模块缺 append_knowledge_log 时 fail-open 跳过（既有用例
+    全部在该形态下通过，即降级装载不硬导入的回归覆盖）。"""
+    core = install_core_with_log(FakeCore(proj))
+    spawn = Recorder(proj, on_call=default_on_call)
+    summary = kb.run_backfill(proj, spawn=spawn)
+
+    assert summary["triggered"] is True
+    assert summary["converged"] is True
+    log = (proj / "spec/knowledge/log.md").read_text(encoding="utf-8")
+    assert "backfill |" in log
+    assert "回填轮" in log
+    assert "已收敛" in log
+    assert "[fenix] knowledge: log" in _git(proj, "log", "--format=%s")
