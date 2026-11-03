@@ -200,6 +200,11 @@ DAEMON_ERROR_RESTART_COOLDOWN_MINUTES = 30
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
+# spec 终态集（fix-escalation-chain-watchdog-yield-gaps 2.3：deferred 件信号
+# 收口判定——spec 迁移终态即底层闭环，看护扫描仅清条目不重派；与
+# escalation_chain.migrate_legacy_pending 的终态口径一致）
+_SPEC_TERMINAL_STATUSES = frozenset({"done", "pushed", "abandoned"})
+
 # admin-signal-consolidation D2：blocked 悬置强制升级阈值（模块常量不入 config，
 # 对齐本模块既有常量做法，规避"新增配置项必须带 Dashboard UI"约束）。
 # 悬置时长口径 = now − spec.updated（spec 保持同一 blocked 状态的时长），
@@ -1928,6 +1933,14 @@ class AdminMonitor:
             self._reap_chain_inflight()
         except Exception as e:
             self.logger.error("admin_monitor", f"Chain in-flight reaping failed: {e}")
+        # fix-escalation-chain-watchdog-yield-gaps 2.3：deferred 让行条目扫描
+        # 重派（与 _reap_chain_inflight 同拍挂既有巡检循环）——被让行 run 已
+        # 终态且信号未收口时回喂链派发，消除「让行静默挂起等复发」缺口
+        # （首例事件链空转 5 分钟至 daemon 重启回扫）。
+        try:
+            self._scan_deferred_chain_items()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Deferred-chain rescan failed: {e}")
         try:
             self._detect_restart_failure(now)
         except Exception as e:
@@ -6597,6 +6610,24 @@ class AdminMonitor:
                 )
                 continue
 
+            # fix-escalation-chain-watchdog-yield-gaps 2.1：孤儿升级开火前查
+            # 链痕——同签名链在办（admin/arbiter 相）/deferred 让行留痕/arbiter
+            # 单飞在飞任一命中即抑制升级（不产生告警、不终结 pending，保持
+            # 原状待链痕消失后下一轮巡检重判）：链已接管该件时看护重复出件，
+            # 违背「人工只是链终点失败后的例外出口」（首例事件 19:28 看护
+            # critical 早于链终点裁决包 3 分钟实证）。签名与链侧同源构造
+            # （chain_signature 单源；daemon 级 DISPOSITION 记 spec="global"
+            # 与链侧 spec=None 同落 type 级 global 签名）。链缺席/查询异常按
+            # 零命中放行升级（fail-open，对齐既有链缺席口径——看护是链的
+            # 电路保护器，链死了的报警不能因链状态查询故障而静默）。
+            if self._chain_trace_hit(sig_query, sig_type):
+                continue
+
+            # fix-escalation-chain-watchdog-yield-gaps 2.2：归因按 run 终态
+            # 实证生成（废弃「疑似 daemon 重启/崩溃连带杀死 admin」固定模板
+            # ——首例事件 run 终态 frozen-terminated 与模板归因不符，误导
+            # 排查方向）。interrupted 已知中断口径原样前置（上方分支）。
+            attribution, terminal_excerpt = self._orphan_run_attribution(rid)
             self.store.append(
                 attach_trigger(
                     {
@@ -6610,10 +6641,13 @@ class AdminMonitor:
                         "severity": "critical",
                         "description": (
                             f"Administrator 处置中断（run {rid}）：被唤起后未在 "
-                            f"{int(grace / 60)} 分钟内完成处置，疑似 daemon 重启/崩溃连带杀死 "
-                            f"admin，需人工介入"
+                            f"{int(grace / 60)} 分钟内完成处置，归因：{attribution}，"
+                            f"需人工介入"
                         ),
-                        "evidence": f"pending disposition 超时无最终结果（admin_run_id={rid}）",
+                        "evidence": (
+                            f"pending disposition 超时无最终结果（admin_run_id={rid}）"
+                            + (f"；run 终态摘录：{terminal_excerpt}" if terminal_excerpt else "")
+                        ),
                         "action_taken": "AdminMonitor 孤儿检测：pending 超时自动升级",
                         "admin_run_id": rid,
                         "recommended_action": (
@@ -6641,6 +6675,185 @@ class AdminMonitor:
                 "admin_monitor",
                 f"Orphaned admin disposition escalated to human: {rid}",
             )
+
+    # ── 孤儿升级链痕抑制与归因取证（fix-escalation-chain-watchdog-yield-gaps）──
+
+    def _chain_trace_hit(self, spec_query, signal_type: str) -> bool:
+        """同签名链痕在场判定（task 2.1 孤儿升级抑制门；fail-open False=不抑制）。
+
+        经链单例 :meth:`EscalationChain.chain_traces` 只读聚合（design D1 共用
+        查询口，monitor 不直读状态文件内部结构）：同签名链在办条目、deferred
+        让行留痕、arbiter 单飞在飞任一命中即 True。链未装配（单测/链级失能）
+        或查询异常一律 False——升级兜底放行（看护是链的电路保护器，链状态
+        查询故障不能让链死讯静默）。
+        """
+        try:
+            from core.pm_engine.escalation_chain import chain_signature, get_chain
+
+            chain = get_chain(self.project_root, self.logger)
+            if chain is None:
+                return False
+            sig, _granularity = chain_signature(str(spec_query or ""), signal_type)
+            traces = chain.chain_traces(sig)
+            return bool(
+                traces.get("in_flight")
+                or traces.get("deferred")
+                or traces.get("arbiter_active")
+            )
+        except Exception:
+            return False
+
+    def _orphan_run_attribution(self, admin_run_id: str) -> tuple:
+        """按 run 文件末事件终态生成孤儿升级归因（task 2.2；返回 (归因文案, 终态摘录)）。
+
+        复用 ``_run_last_result_event`` 同型尾部窗口读法读**末行事件**（终态
+        后置不变式——``_run_file_has_terminal_state`` 已确认末行终态才到达升级
+        判定，末行即死因证据）。映射词表：frozen-terminated（spec 冻结击杀，
+        附 reason）／cancelled（取消击杀，附 by 来源）／error（报错退出）／
+        gate-blocked（交付门拦截）／result（处置结论非成功）；读失败/无终态
+        证据保守兜底「死因不明（run 证据缺失）」（宁多告警不漏告警——归因
+        读法不影响升级与终结行为）。
+        """
+        default = ("死因不明（run 证据缺失）", "")
+        run_file = self._admin_run_file(admin_run_id)
+        if run_file is None:
+            return default
+        try:
+            first_line_truncated, tail = _read_tail_lines(
+                run_file, _RUN_TAIL_READ_WINDOW)
+        except OSError:
+            return default
+        lines = tail.split("\n")
+        if first_line_truncated:
+            lines = lines[1:]
+        last = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                last = entry
+        if not isinstance(last, dict):
+            return default
+        excerpt = json.dumps(last, ensure_ascii=False)[:400]
+        ev_type = str(last.get("type") or "")
+        if ev_type == "frozen-terminated":
+            reason = str(last.get("reason") or "")
+            return (
+                "spec 冻结击杀（frozen-terminated 终态"
+                + (f"，reason={reason[:120]}" if reason else "")
+                + "）",
+                excerpt,
+            )
+        if ev_type == "cancelled":
+            by = str(last.get("by") or "")
+            return (
+                "run 被取消/击杀（cancelled 终态"
+                + (f"，by={by[:80]}" if by else "")
+                + "）",
+                excerpt,
+            )
+        if ev_type == "error":
+            return ("run 报错退出（error 终态）", excerpt)
+        if ev_type == "gate-blocked":
+            return ("run 被交付门拦截终止（gate-blocked 终态）", excerpt)
+        if ev_type == "result":
+            return ("run 以 result 终态退出但处置未完成（非成功结论）", excerpt)
+        return default
+
+    # ── deferred 让行条目扫描重派（fix-escalation-chain-watchdog-yield-gaps 2.3）──
+
+    def _scan_deferred_chain_items(self) -> int:
+        """deferred 让行条目扫描重派（挂既有巡检循环、与 _reap_chain_inflight 同拍）。
+
+        链让行留痕（phase=deferred）从「静默丢弃等复发」改为「看护扫描唤醒」：
+
+        - 被让行 run（yield_to）已终态且信号未收口 → 调链派发器入口重派
+          （链单飞 dedup/互斥守卫生效，MUST NOT 绕过——重派风暴由同签名
+          dedup 天然限流，最坏每轮巡检一次重派尝试）；
+        - frozen 预检件（yield_to 空）：按「spec 已解冻」作为重派条件（仍
+          冻结时重派即被链头预检拦回，无谓烧一轮）；
+        - spec 已迁移终态（信号收口）→ 仅清条目不重派。
+
+        deferred 条目的超时清理不在此处——stale_in_flight 既有超时 reap 按
+        started_at 一视同仁（reap_stale_inflight 同拍先行，不因 phase 特判
+        放行）。链缺席/异常按零处理降级（不阻断巡检）。防自环不变：重派是
+        链内转单边的恢复动作，签名沿用留痕原值（resubmit_deferred 内单源）。
+        """
+        try:
+            from core.pm_engine.escalation_chain import get_chain
+
+            chain = get_chain(self.project_root, self.logger)
+            if chain is None:
+                return 0
+            resumed = 0
+            for entry in chain.deferred_in_flight():
+                chain_id = str(entry.get("chain_id") or "")
+                if not chain_id:
+                    continue
+                spec = str(entry.get("spec") or "")
+                if self._deferred_signal_closed(spec):
+                    chain.clear_in_flight(chain_id)  # 信号已收口：仅清条目
+                    continue
+                yield_to = str(entry.get("yield_to") or "")
+                if yield_to:
+                    # 被让行 admin run 已终态才回喂（仍在飞 → 让行理由存续，等）
+                    if not self._yielded_run_finished(yield_to):
+                        continue
+                elif self._spec_still_frozen(spec):
+                    # frozen 预检件：仍冻结 → 等解冻
+                    continue
+                if chain.resubmit_deferred(entry) in ("queued", "deduped"):
+                    resumed += 1
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"Deferred chain item resumed: chain_id={chain_id} "
+                        f"spec={spec or 'daemon'} yield_to={yield_to or '(frozen)'}",
+                    )
+            return resumed
+        except Exception as e:
+            # fail-open 降级不阻断巡检，但 MUST 留痕——静默吞掉会让扫描通道
+            # 自身缺陷（如链面代理方法缺失）表现为「永远零重派」无可观测信号
+            self.logger.warning(
+                "admin_monitor", f"Deferred chain scan failed: {e}"
+            )
+            return 0
+
+    def _deferred_signal_closed(self, spec: str) -> bool:
+        """deferred 件信号收口判定：spec 已迁移终态（底层闭环即收口）。"""
+        if not spec or spec == "global":
+            return False
+        try:
+            entry = (self.state_machine.read_all() or {}).get(spec) or {}
+        except Exception:
+            return False
+        return str(entry.get("status") or "") in _SPEC_TERMINAL_STATUSES
+
+    def _yielded_run_finished(self, run_id: str) -> bool:
+        """被让行 admin run 已终态判定（复用孤儿路径 run 末事件终态读法）。
+
+        文件存在 → 委托 ``_run_file_has_terminal_state``（末行终态口径，与
+        孤儿死亡证据门同源）；文件已清理/从未落盘 → 按已终态处理（无在写
+        证据——让行对象死亡/消失不再等待，重派经链单飞/互斥守卫兜底不产生
+        风暴）。
+        """
+        if self._admin_run_file(run_id) is None:
+            return True
+        return bool(self._run_file_has_terminal_state(run_id))
+
+    def _spec_still_frozen(self, spec: str) -> bool:
+        """spec 冻结态判定（frozen 预检件重派条件=已解冻）。fail-open False。"""
+        if not spec or spec == "global":
+            return False
+        try:
+            entry = (self.state_machine.read_all() or {}).get(spec) or {}
+            return bool(entry.get("frozen"))
+        except Exception:
+            return False
 
     # ── prompt_too_long 处置失败兜底（evo-fix-stray-escalation-evidence-budget）──
 

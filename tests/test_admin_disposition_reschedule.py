@@ -17,6 +17,8 @@
 """
 
 import json
+import time
+from unittest.mock import MagicMock, patch
 
 from core.admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from core.admin_monitor import AdminMonitor
@@ -461,3 +463,292 @@ class TestRescheduleIntegration:
         superseded = [r for r in recs
                       if (r.get("status") or r.get("result")) == "superseded"]
         assert len(superseded) == 1  # 只重派一次
+
+
+class TestChainTraceSuppressionAndAttribution:
+    """fix-escalation-chain-watchdog-yield-gaps 3.2：看护侧新行为用例。
+
+    覆盖 tasks 3.2 字面清单：链在飞抑制不告警不终结 / 链痕消失兜底升级 /
+    归因按 run 终态实证（frozen-terminated、cancelled 击杀、死因不明；
+    interrupted 口径由 TestRescheduleIntegration::test_no_signal 终结既有
+    用例覆盖，不重复）/ deferred 重派触发与单飞守卫限流。
+
+    seam 策略：链实例与 monitor 共享 proot（chain_state 文件同源），链痕
+    直写状态文件构造（chain_signature 单源构签，与 monitor 查询同口径）；
+    链派发缝 _dispatch_admin 替身只记录调用。
+    """
+
+    SPECS = {"spec-a": {"status": "blocked", "frozen": False}}
+
+    def _install_chain(self, proot):
+        from core.pm_engine.escalation_chain import EscalationChain, set_chain
+
+        chain = EscalationChain(proot, FakeLogger())
+        chain.set_state_machine(FakeSM(self.SPECS))
+        chain.set_runner(MagicMock())
+        chain.set_pm(MagicMock())  # 链闭环收口走 pm 门面：替身零人工落盘
+        set_chain(chain)
+        return chain
+
+    def _write_chain_state(self, proot, in_flight):
+        from core.pm_engine.escalation_chain import save_chain_state
+
+        save_chain_state(proot, {
+            "version": 1, "signatures": {}, "meta": {},
+            "in_flight": in_flight,
+        })
+
+    def _write_run(self, proot, run_id, events):
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{run_id}.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
+        )
+
+    def _orphan_fixture(self, tmp_path, run_id="admin-spec-a-1"):
+        """孤儿升级前提装置：超时 pending + run 文件末行 error 终态。"""
+        proot, mon, store = make_monitor(tmp_path, self.SPECS, config={
+            "admin": {"escalation_cooldown_minutes": 15}})
+        _append_pending(store, run_id=run_id, created_ago_minutes=20)
+        self._write_run(proot, run_id, [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "error", "error": "boom"},
+        ])
+        return proot, mon, store
+
+    def _chain_state_sig(self, proot):
+        from core.pm_engine.escalation_chain import chain_signature
+
+        sig, _gran = chain_signature("spec-a", "stuck")
+        return sig
+
+    def _dispositions(self, store):
+        from core.admin_store import DISPOSITION
+
+        return [r for r in store.read_all() if r.get("kind") == DISPOSITION]
+
+    # ── 链在飞抑制：不告警不终结 ────────────────────────────────────
+
+    def test_chain_inflight_suppresses_orphan_escalation(self, tmp_path):
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        chain = self._install_chain(proot)
+        self._write_chain_state(proot, [{
+            "chain_id": "chain-live", "signature": self._chain_state_sig(proot),
+            "spec": "spec-a", "phase": "admin", "started_at": utcnow_iso(),
+        }])
+        mon._recover_orphaned_dispositions()
+        assert _escalations(store) == []  # 零告警
+        # pending 未被终结（无新增非 pending 处置记录）
+        assert [r for r in self._dispositions(store)
+                if r.get("status") != "pending"] == []
+
+    def test_deferred_trace_also_suppresses(self, tmp_path):
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        self._install_chain(proot)
+        self._write_chain_state(proot, [{
+            "chain_id": "chain-def", "signature": self._chain_state_sig(proot),
+            "spec": "spec-a", "phase": "deferred", "yield_to": "admin-x",
+            "started_at": utcnow_iso(), "deferred_at": utcnow_iso(),
+            "item_signal": {"spec": "spec-a", "signal_type": "stuck"},
+        }])
+        mon._recover_orphaned_dispositions()
+        assert _escalations(store) == []
+
+    def test_arbiter_active_trace_suppresses(self, tmp_path):
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        self._install_chain(proot)
+        sig = self._chain_state_sig(proot)
+
+        class _Lane:
+            def snapshot(self):
+                return {"active_signatures": [sig]}
+
+        with patch("core.pm_engine.arbiter.get_lane", lambda *a, **k: _Lane()):
+            mon._recover_orphaned_dispositions()
+        assert _escalations(store) == []
+
+    def test_trace_gone_proceeds_escalation(self, tmp_path):
+        # 兜底语义：链痕全部消失（本用例不写链痕）→ 照常升级 + 终结
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        self._install_chain(proot)
+        mon._recover_orphaned_dispositions()
+        esc = _escalations(store)
+        assert len(esc) == 1
+        finals = [r for r in self._dispositions(store)
+                  if r.get("status") == "escalated"]
+        assert len(finals) == 1  # 升级即终结
+
+    def test_chain_absent_fail_open(self, tmp_path):
+        # 链未装配（不 set_chain）→ fail-open 零命中 → 升级照常
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        mon._recover_orphaned_dispositions()
+        assert len(_escalations(store)) == 1
+
+    # ── 归因按 run 终态实证（三态 + 摘录）─────────────────────────
+
+    def _attribution_case(self, tmp_path, events, expected_word):
+        proot, mon, store = make_monitor(tmp_path, self.SPECS, config={
+            "admin": {"escalation_cooldown_minutes": 15}})
+        _append_pending(store, run_id="admin-spec-a-attr", created_ago_minutes=20)
+        self._write_run(proot, "admin-spec-a-attr", events)
+        mon._recover_orphaned_dispositions()
+        esc = _escalations(store)
+        assert len(esc) == 1
+        desc = str(esc[0].get("description") or "")
+        assert expected_word in desc
+        evidence = str(esc[0].get("evidence") or "")
+        assert "admin-spec-a-attr" in evidence
+        assert "run 终态摘录" in evidence
+        return desc
+
+    def test_attribution_frozen_terminated(self, tmp_path):
+        self._attribution_case(tmp_path, [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "frozen-terminated", "reason": "spec frozen"},
+        ], "spec 冻结击杀")
+
+    def test_attribution_cancelled(self, tmp_path):
+        self._attribution_case(tmp_path, [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "cancelled", "by": "user"},
+        ], "被取消/击杀")
+
+    def test_attribution_unknown_death(self, tmp_path):
+        # 归因词表保守兜底：末行非映射词表（文件证据异常/解析失败防御面）。
+        # 方法级直测——巡检路径上有死亡证据门（末行须终态才到升级），终态
+        # 词表全类各有专归因（interrupted 走既有已知中断分支），真实巡检流
+        # 无法自然构造「过门但无词」形态，直测归因函数的兜底出口。
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        # 末行 assistant（非终态事件）：不误归因为任何击杀词表
+        self._write_run(proot, "admin-spec-a-plain", [
+            {"type": "assistant", "message": {"content": []}},
+        ])
+        attribution, _ = mon._orphan_run_attribution("admin-spec-a-plain")
+        assert attribution == "死因不明（run 证据缺失）"
+        # run 文件缺失同兜底
+        attribution2, _ = mon._orphan_run_attribution("admin-no-such-run")
+        assert attribution2 == "死因不明（run 证据缺失）"
+
+    def test_attribution_error_and_gate_blocked_and_result(self, tmp_path):
+        # 归因映射词表其余三态（方法级直测）
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        self._write_run(proot, "run-err", [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "error", "error": "boom"},
+        ])
+        self._write_run(proot, "run-gate", [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "gate-blocked", "gate": "deliverable"},
+        ])
+        self._write_run(proot, "run-result", [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "result", "subtype": "error_max_turns"},
+        ])
+        assert "error 终态" in mon._orphan_run_attribution("run-err")[0]
+        assert "gate-blocked 终态" in mon._orphan_run_attribution("run-gate")[0]
+        assert "非成功结论" in mon._orphan_run_attribution("run-result")[0]
+
+    # ── deferred 重派触发与等待条件 ─────────────────────────────────
+
+    def _deferred_fixture(self, tmp_path, *, yield_to, sig_overrides=None):
+        """deferred 留痕 + 共享链实例装置；返回 (proot, mon, store, chain, sent)。"""
+        proot, mon, store = make_monitor(tmp_path, self.SPECS, config={
+            "admin": {"escalation_cooldown_minutes": 15}})
+        chain = self._install_chain(proot)
+        sent = []
+        chain._dispatch_admin = lambda item: sent.append(dict(item)) or AdminDisposition(
+            run_id="admin-resumed", spec="spec-a", success=True,
+            problem="p", actions_taken="a", result="resolved",
+            summary="诊断结论：x；处置时间线：y；结果：已解决。",
+        )
+        snap = {
+            "spec": "spec-a", "signal_type": "stuck", "severity": "critical",
+            "description": "信号 stuck", "evidence": "e", "recommended_action": "r",
+            "source": "unit-test", "signature": self._chain_state_sig(proot),
+        }
+        snap.update(sig_overrides or {})
+        self._write_chain_state(proot, [{
+            "chain_id": "chain-def-1", "signature": self._chain_state_sig(proot),
+            "spec": "spec-a", "phase": "deferred", "yield_to": yield_to,
+            "started_at": utcnow_iso(), "deferred_at": utcnow_iso(),
+            "item_signal": snap,
+        }])
+        return proot, mon, store, chain, sent
+
+    def _drain(self, chain, timeout_s=10.0):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if chain._queue.unfinished_tasks == 0 and not chain._active:
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_deferred_rescan_resumes_after_yielded_run_dies(self, tmp_path):
+        proot, mon, store, chain, sent = self._deferred_fixture(
+            tmp_path, yield_to="admin-spec-a-dead")
+        self._write_run(proot, "admin-spec-a-dead", [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "error", "error": "boom"},  # 被让行 run 已死（终态）
+        ])
+        assert mon._scan_deferred_chain_items() == 1  # 重派触发
+        assert self._drain(chain)
+        assert len(sent) == 1  # 链头照常派发（互斥无活 run）
+        from core.pm_engine.escalation_chain import load_chain_state
+
+        # 留痕条目已被 resubmit 清除（处置成功闭环）
+        assert load_chain_state(proot)["in_flight"] == []
+
+    def test_deferred_rescan_waits_while_yielded_run_alive(self, tmp_path):
+        proot, mon, store, chain, sent = self._deferred_fixture(
+            tmp_path, yield_to="admin-spec-a-live")
+        self._write_run(proot, "admin-spec-a-live", [
+            {"type": "assistant", "message": {"content": []}},  # 非终态=仍在飞
+        ])
+        assert mon._scan_deferred_chain_items() == 0  # 让行理由存续，等
+        assert len(sent) == 0
+        from core.pm_engine.escalation_chain import load_chain_state
+
+        assert len(load_chain_state(proot)["in_flight"]) == 1  # 条目保留
+
+    def test_deferred_rescan_frozen_item_waits_unfreeze(self, tmp_path):
+        proot, mon, store, chain, sent = self._deferred_fixture(
+            tmp_path, yield_to="")  # frozen 预检件（无被让行对象）
+        self.SPECS["spec-a"]["frozen"] = True  # 仍冻结（FakeSM 直改）
+        assert mon._scan_deferred_chain_items() == 0  # 等
+        assert len(sent) == 0
+        self.SPECS["spec-a"]["frozen"] = False  # 解冻 → 重派条件满足
+        assert mon._scan_deferred_chain_items() == 1
+        assert self._drain(chain)
+        assert len(sent) == 1
+
+    def test_deferred_rescan_signal_closed_clears_only(self, tmp_path):
+        self.SPECS["spec-a"]["status"] = "pushed"  # 信号收口（spec 终态）
+        try:
+            proot, mon, store, chain, sent = self._deferred_fixture(
+                tmp_path, yield_to="admin-spec-a-dead")
+            assert mon._scan_deferred_chain_items() == 0  # 仅清条目不重派
+            assert len(sent) == 0
+            from core.pm_engine.escalation_chain import load_chain_state
+
+            assert load_chain_state(proot)["in_flight"] == []
+        finally:
+            self.SPECS["spec-a"]["status"] = "blocked"
+
+    def test_deferred_rescan_queue_full_keeps_entry(self, tmp_path):
+        # 单飞守卫限流：链队列满（submit_entry 撞 RuntimeError）→
+        # resubmit_deferred 返回 queue-full → 留痕条目保留待下轮。
+        # 缝在 submit_entry 抛单飞满载异常（worker 异步消费使真实满载
+        # 无法确定性维持），resubmit 的限流分支与 scan 的 queue-full
+        # 处理真实执行。
+        from core.pm_engine.escalation_chain import load_chain_state
+
+        proot, mon, store, chain, sent = self._deferred_fixture(
+            tmp_path, yield_to="admin-spec-a-dead")
+        with patch(
+            "core.pm_engine.escalation_chain.EscalationChain.submit_entry",
+            side_effect=RuntimeError("处置链单飞队列已满（maxsize=8）"),
+        ):
+            assert mon._scan_deferred_chain_items() == 0  # 限流：零重派
+        assert len(sent) == 0
+        # deferred 留痕条目保留待下轮
+        assert len(load_chain_state(proot)["in_flight"]) == 1
