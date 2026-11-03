@@ -74,7 +74,7 @@
 3. **链头派发机制**：事件驱动直派——对齐 Arbiter lane 单飞队列形态（同签名 dedup + 复用在飞互斥守卫 + 队列深度上限），不走 admin_monitor 5 分钟巡检（巡检延迟与 backoff 会吃满两级链延迟）。admin_monitor 保留既有兜底看护：pending 超时升级语义不变，看护对象扩展为全链在办件。
 4. **Admin 超范围的机器可读通道**：disposition 产出新增结构化字段（`handoff: arbiter` + `handoff_reason`），不重载 `result=escalate`（现语义「需人工决策」的既有消费者不破坏）；Administrator prompt 契约段同步更新（改 prompt 先 merge main）。
 5. **既有「同签名只自主处置一次」纪律（D6）被新配额制正式取代**：`_dispositioned`/`_ledger_sigs` 的永久跳过与回扫排除逻辑随配额状态改写（相关机械守卫测试同步改写）。例外：dead-man/停机类基础设施死亡签名维持永久单次、不适用 7 天复位（反复停机是工程问题，不是可反复拍板的运营决策）。
-6. **dsh harness 形态的回落**：dsh 适配器维持「无分配即预检失败」的既有纪律（不跨 harness 回落、不继承环境——反串扰是显式选择 dsh 的代价）。无分配 + dsh harness 判定为**车道失能**（链级降级判定，非逐件失败）：该链 fail-open 直达人工 + 每项目一次性 WARN（文案指引配置 `agents.models` 分配或切回 claude），配额不烧。
+6. **dsh harness 形态的回落（2026-11-03 用户裁定，推翻本文件初版「车道失能」判定）**：回落语义对 harness 对称——dsh 适配器无分配时**省略 `--patch`**，由 dsh 按 profile 自身配置的默认模型启动（「dsh 本身配了模型就用 dsh 的」），与 claude 的环境继承/CLI 默认档完全同构；不再强制预检 fail-fast。归因降级对称接受（provider=null + `harness-default` 标记，观察钩子补齐）；dsh 自身也未配置模型时属 harness 级失败，走既有失败轨（不预检拒绝）。反串扰的 `ANTHROPIC_*`/`CLAUDE_*` 环境清除与此无关、照旧保留。
 7. **spec=null 信号的签名粒度**：签名遵循用户「同一个问题」语义——主体键优先（从信号 payload 提取：蒸馏欠账的归档名、triage 的场景集指纹等），提取不到主体时退化为类型级并在台账标注粒度。
 8. **存量 pending 告警迁移**：上线时一次性迁移——能判定「底层已闭环」（同签名 spec 已终态/处置已 resolved）的自动收口（附 `close_cause=migrated`），其余留人工一次性清理；不回填入链（旧问题不烧新链配额）。
 
@@ -85,7 +85,7 @@
 | 升级发射咽喉落人工 | `core/pm_engine/family.py:1587` `_send_human_escalation_alert`；freeze_for_human 双咽喉 | 改道：默认派发 Admin（入链头）；人工队列写入仅在 Arbiter 失败上升时发生，上升件天然携带 Admin/Arbiter 关联键（修 11-02 闭环缺口） |
 | 白名单触发面 | `core/pm_engine/arbiter.py:77`（白名单 10 信号）、`:101`（排除表 5 信号）、`core/adjudication_narrative.py:81` `narrative_yielded_to_arbiter` | 触发面反转：默认全入链，黑名单配置化（初始空）；让位判定方向反转 |
 | Arbiter 让位判定 | `narrative_yielded_to_arbiter` 三条件（enabled/触发面/可装配） | 改为链头派发判定（Admin 在前）；降级路径保留 narrative |
-| provider 链预检 | `core/agent_runner/harness/dsh_adapter.py:715-735`（三要素 fail-fast）；`claude_adapter` 环境继承 | 「无分配=合法态」：adapter 缺分配时回落 harness 默认解析（claude=环境继承/CLI 默认配置）；`agents.models` 校验放宽；WARN+留痕 |
+| provider 链预检 | `core/agent_runner/harness/dsh_adapter.py:715-735`（三要素 fail-fast）；`claude_adapter` 环境继承 | 「无分配=合法态」且两 harness 对称：claude 缺分配=环境继承/CLI 默认档；dsh 缺分配=省略 `--patch` 按 profile 默认档启动（归因降级 provider=null+`harness-default` 标记）；`agents.models` 校验放宽；WARN+留痕对称适用 |
 | Arbiter 钉死模型 | `core/pm_engine/arbiter.py` `ARBITER_PINNED_MODEL`（「MUST NOT 回落默认档」D9 决策） | 语义修正：钉死值=未分配时的开箱默认 model（不再是「禁止回落」），分配存在时用分配值 |
 | 预算拍板权 | `core/pm_engine/budget.py`（`impl_run_budget_override` 等 spec 字段；豁免现依赖人工/override 配置） | Arbiter 新动作面：落预算豁免（写 override 字段 + 台账留痕）；Admin choices 白名单不含预算/豁免类 |
 | Admin 处置面 | `core/dashboard/data/adjudication_choices.py` choices 注册表；admin run 处置包 | 明确 Admin 拍板面=注册表的环境运维子集；超范围自判转 Arbiter |
@@ -118,8 +118,8 @@
 2. Admin 2 次失败 → Arbiter 接单 → 拍板成功（如预算豁免）→ 闭环，台账+时间轴可见，人工队列始终为空。
 3. Arbiter 拍板 2 次后同签名第 3 次复现 → 上升人工，告警附全链痕迹与 choices；人工处置后闭环收口。
 4. Arbiter run 崩溃 → 同签名重试 1/2 → 仍败 → 上升人工（半成品调查包附上）。
-5. 无 `agents.models` 分配的项目：Admin/Arbiter spawn 成功（回落 harness 默认 key），WARN 留痕一次。
+5. 无 `agents.models` 分配的项目：Admin/Arbiter spawn 成功——claude 回落环境继承/CLI 默认档，dsh 省略 `--patch` 按 profile 默认档；两形态均 WARN 留痕一次，metrics 归因降级带 `harness-default` 标记。
 6. kill switch / `arbiter.enabled=false`：行为与合入前逐字节一致（升级边直达人工队列，narrative 补叙）。
 7. SPEC 时间轴：上述各场景的 Admin/Arbiter 节点均可见且台账联查命中；非 spec 信号在处置链视图可见。
 8. 链成员不自环：Admin 处置中产出「超范围」转单直达 Arbiter（不重入链头、不计失败）；框架自指类信号（如 `admin_dispatch_programming_error`）正常入链头。
-9. 链级失能：dsh harness + 无分配的项目，信号不烧配额，直接 fail-open 人工 + 一次性 WARN；切回 claude 或补分配后自动恢复入链。
+9. 链级对称回落：claude 与 dsh 两 harness 在无分配时均开箱 spawn 成功（各自回落自身默认配置）；dsh 自身也未配置模型时走既有失败轨（不预检拒绝），WARN 与失败证据可归因。
