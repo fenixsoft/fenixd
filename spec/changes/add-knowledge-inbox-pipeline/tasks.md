@@ -108,6 +108,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-knowledge-inbox-pipeline/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-knowledge-inbox-pipeline/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：BUG-01 restart_request 属真实产品缺口——提交 950f0d777 从未触碰该文件、内容停留上一 SPEC；api-knowledge-index-inbox-baseline 链属 test-defect，裁决已原地修复 preclean，端点行为本身无产品缺陷）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（restart_request 已补写根路径 JSON：reason/origin/date，origin=spec/changes/add-knowledge-inbox-pipeline）
+- [x] 修复后重跑验证确认通过（本地全新进程复跑 cli-prompts-migrated-agents 全断言集 15/15 全绿：4 文件在位 / prompts 目录消失 / 残留清零 / 三车道加载点实读成功 / restart_request 可解析且 origin 关联本 SPEC；冻结场景链复跑由框架合回后执行）
