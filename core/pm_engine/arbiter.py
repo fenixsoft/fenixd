@@ -32,8 +32,10 @@
 - 告警零噪音分层：处置成功→原告警终态化 resolved_by=arbiter（不推送不进
   pending）；升级→同 alert_id 原位静默更新（报告进 narrative 槽位、choices/
   推荐注入原条目）并推 pending；两路径均不新增告警条目。
-- 立项节流：同主题 drafted 在池不重复、单次调查至多 2 条、周配额 5
-  （超配额只记台账）；立项一律 status 落 drafted。
+- 框架缺口路由（add-arbiter-gap-todo-routing）：立项通道已退役——调查报告
+  gaps 数组逐条记 .fenix/todo.md（自省队列，走既有 todo 锁与结构契约，
+  来源标记 arbiter+签名+run_id），由框架自进化车道按既有 todo 消费机制
+  统一评估立项；切换窗旧 proposals 字段容错（WARNING 台账后丢弃）。
 
 权限边界（用户裁定）：提示词红线+台账审计，不做机械强制——见
 agents/arbiter.md 置顶红线段；本模块不建白名单动作执行器、不建 per-run
@@ -44,9 +46,10 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -123,9 +126,15 @@ ARBITER_LEDGER_FILENAME = "arbiter_ledger.jsonl"
 # 默认网关官方模型名。
 ARBITER_PINNED_MODEL = "glm-5.3-flash"
 
-# 立项节流三限（design D7）
-PROPOSAL_MAX_PER_RUN = 2
-PROPOSAL_WEEKLY_QUOTA = 5
+# gap 记 todo 的落点小节（add-arbiter-gap-todo-routing）：自省 todo.md 的
+# 「可改进」小节——evolution 解析侧只收集 TODO_SECTIONS 三值小节条目
+# （浪费/失误/可改进），未知小节条目被跳过；gap 必须被自进化接手统一立项，
+# 故落消费面可达的「可改进」，不落 knowledge_backfill 的 chores 登记小节。
+# 形态与 self_review._append_todo 写入侧逐字一致（``### {section}``，:2061）：
+# parse_todo_entries 的小节正则只认 ``### `` 前缀行，裸「可改进」不更新
+# current_section → 条目 section 为空被收集面跳过（路由断链 + 自家 dedup
+# 失灵）。
+GAP_TODO_SECTION = "### 可改进"
 
 # 单飞队列深度上限：决策点是低频高价值动作，深度 8 已远超正常积压；
 # 满队列 = 显式报错（排队登记失败 MUST NOT 吞 conflict 报假成功）。
@@ -203,13 +212,6 @@ def ledger_entry_complete(entry: dict) -> bool:
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _week_start_iso(now: Optional[datetime] = None) -> str:
-    """当前 ISO 周一 00:00 的 UTC ISO 串（周配额窗口锚点）。"""
-    now = now or datetime.now(timezone.utc)
-    monday = now - timedelta(days=now.weekday())
-    return monday.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
 
 class ArbiterLane:
@@ -1028,7 +1030,8 @@ class ArbiterLane:
             f"arbiter 自主处置完成 spec={trigger.get('spec')} sig={sig} "
             f"alert_finalized={resolved} ledger={entry.get('id')} side={side}",
         )
-        self._apply_proposals(trigger, report)
+        # 框架缺口路由（gap→todo；禁立项红线，add-arbiter-gap-todo-routing）
+        self._apply_gaps(trigger, report)
 
     def _apply_disposition_side_effects(self, trigger: dict, report: dict) -> dict:
         """处置动作框架侧直执行（4.1 ①③类收尾；解冻含验证计数清零语义）。
@@ -1190,7 +1193,8 @@ class ArbiterLane:
             "warning",
             f"arbiter 产裁决包升级 spec={trigger.get('spec')} sig={sig} reason={reason[:120]}",
         )
-        self._apply_proposals(trigger, report)
+        # 框架缺口路由（gap→todo；禁立项红线，add-arbiter-gap-todo-routing）
+        self._apply_gaps(trigger, report)
 
     def _on_run_failed(self, trigger: dict, result: dict, budget: dict) -> str:
         """失败路径：连败计数 → 死人开关（半成品包升级）/ 留待下次触发重试。
@@ -1517,109 +1521,247 @@ class ArbiterLane:
                 reason="复现配额耗尽/dead-man 例外",
             )
 
-    # ── 立项节流写点（4.4）───────────────────────────────────────────
+    # ── 框架缺口 gap→todo 路由（add-arbiter-gap-todo-routing）────────────
 
-    def _apply_proposals(self, trigger: dict, report: dict):
-        """消费调查报告的立项提案（三限节流；立项一律 status 落 drafted）。
+    def _apply_gaps(self, trigger: dict, report: dict):
+        """消费调查报告 gaps 数组（框架缺口发现）逐条记 .fenix/todo.md。
 
-        同主题 drafted 在池（主题/capability 级匹配）不重复立项；单次至多
-        PROPOSAL_MAX_PER_RUN 条；ISO 周配额 PROPOSAL_WEEKLY_QUOTA 条，超配额
-        只记台账不落池。
+        立项通道已退役（add-arbiter-gap-todo-routing）：arbiter MUST NOT 立项
+        ——无写点、无目录物化、无 add_spec，todo.md 即框架缺口的唯一出口。
+        缺口记自省队列，由框架自进化车道按既有 todo 消费机制统一评估立项；
+        gaps 缺席/为空时本方法零动作。
+
+        切换窗容错（design D1）：旧 prompt 的在飞 run 产出仍带 proposals 数组
+        → 记 WARNING 台账（gap-noted 附退役说明）后丢弃，不抛异常不落池。
         """
-        proposals = report.get("proposals") or []
-        if not isinstance(proposals, list) or not proposals:
+        run_id = str(trigger.get("run_id") or "")
+        legacy = report.get("proposals")
+        if isinstance(legacy, list) and legacy:
+            self._log(
+                "warning",
+                f"arbiter 报告带已退役 proposals 字段（切换窗旧 run 产物 "
+                f"run_id={run_id}）：记台账留痕后丢弃，不落 todo 不落池",
+            )
+            self._write_ledger(
+                trigger, {"run_id": run_id, "error": ""},
+                kind="gap-noted",
+                report={
+                    "summary": (
+                        "报告带已退役 proposals 字段（切换窗旧 prompt 产物）：立项"
+                        "通道已退役（add-arbiter-gap-todo-routing），字段内容不落 "
+                        "todo 不落池，缺口发现待下次触发重新调查上报。"
+                    ),
+                    "evidence_refs": [],
+                },
+                budget={},
+                action_or_upgrade=(
+                    "旧字段 proposals 已退役：WARNING 台账留痕后丢弃"
+                    "（切换窗容错，不静默丢失）"
+                ),
+                status_after="",
+            )
             return
-        sm = self._resolve_state_machine()
-        if sm is None:
-            self._log("warning", "arbiter 立项写点不可用（state_machine 未装配），提案只记台账")
+        gaps = report.get("gaps")
+        if not isinstance(gaps, list) or not gaps:
             return
-        drafted_names, drafted_blob = self._drafted_pool(sm)
-        week_anchor = _week_start_iso()
-        weekly_used = sum(
-            1
-            for rec in load_arbiter_ledger(self.project_root)
-            if rec.get("kind") == "spec-proposed" and str(rec.get("created") or "") >= week_anchor
-        )
-        accepted = 0
-        for prop in proposals:  # 全量遍历：超限提案逐条记台账（不静默丢弃）
-            topic = str((prop or {}).get("topic") or "").strip()
-            name = str((prop or {}).get("spec_name") or "").strip()
-            rationale = str((prop or {}).get("rationale") or "").strip()
+        for gap in gaps:
+            if not isinstance(gap, dict):
+                continue
+            topic = str(gap.get("topic") or "").strip()
             if not topic:
                 continue
-            hit = self._topic_in_pool(topic, drafted_names, drafted_blob)
-            if hit:
-                self._write_ledger(
-                    trigger, {"run_id": trigger.get("run_id"), "error": ""},
-                    kind="proposal-dedup",
-                    report={"summary": f"提案主题「{topic}」与 drafted 在池 SPEC「{hit}」同主题，不重复立项。",
-                            "evidence_refs": [".fenix/STATE.md"]},
-                    budget={},
-                    action_or_upgrade=f"同主题 drafted 在池不立项（关联指向 {hit}）",
-                    status_after="",
-                )
-                continue
-            if accepted >= PROPOSAL_MAX_PER_RUN:
-                self._throttle_ledger(trigger, topic, "单次调查至多 2 条")
-                continue
-            if weekly_used >= PROPOSAL_WEEKLY_QUOTA:
-                self._throttle_ledger(trigger, topic, f"周配额 {PROPOSAL_WEEKLY_QUOTA} 已满")
-                continue
-            spec_name = name or self._proposal_spec_name(topic)
-            # 物化草稿目录（2026-11-01 幽灵条目修复）：裸 STATE 注册产「目录
-            # 不存在」幽灵——spec-review 冻结（fix-planner 实证）且 spec 列表
-            # UI 只枚举目录、幽灵条目用户不可见。对齐 evolution 立项范式：
-            # 先物化 proposal.md 并提交，再 add_spec。物化失败 → 跳过立项只
-            # 记台账（不产第二个幽灵）。
             try:
-                self._materialize_proposal(spec_name, topic, rationale, trigger)
-            except Exception as e:
+                self._note_gap_todo(trigger, topic, gap)
+            except Exception as e:  # noqa: BLE001 —— 单条 gap 失败不连坐其余条目
                 self._log(
-                    "error",
-                    f"arbiter 提案物化失败 spec={spec_name}: {e}（跳过立项）",
+                    "error", f"arbiter gap 记 todo 失败 topic={topic}: {e}（跳过该条）"
                 )
-                self._write_ledger(
-                    trigger, {"run_id": trigger.get("run_id"), "error": ""},
-                    kind="proposal-materialize-failed",
-                    report={"summary": f"提案「{topic}」物化 spec 目录失败，未立项: {e}",
-                            "evidence_refs": [".fenix/STATE.md"]},
-                    budget={},
-                    action_or_upgrade=f"物化失败跳过立项: {spec_name}",
-                    status_after="",
-                )
+
+    def _note_gap_todo(self, trigger: dict, topic: str, gap: dict) -> None:
+        """单条框架缺口记 todo.md（D2 既有锁与结构契约；D3 轻量同主题去重）。
+
+        - 结构契约：条目渲染复用自省侧 ``SelfReviewScheduler._render_entry_lines``
+          单源（标题行 + FIELD_LABELS 四字段嵌套行，与 evolution 解析侧逐字
+          一致，不新增第五字段标签）；落「可改进」小节（TODO_SECTIONS 三值
+          枚举内，自进化消费面可达）；标题带 ``[arbiter:<签名前8>]`` 来源前缀，
+          证据段带触发 run_id，按「可直接起草 SPEC」粒度填写。
+        - 锁与写盘：读-去重-插-写整段置于 fs_utils ``with_file_lock``（todo.md
+          同一把 .todo.md.lock，与 self_review/evolution/knowledge_backfill
+          互斥）内，原子落盘，回写前 HEAD 自愈（todo-ledger-loss-guard 同款
+          防护）；git 就地提交在锁外（todo-append-commit-on-write 同款，
+          pathspec 限定单文件、失败降级不阻断）。
+        - 台账：记入与去重跳过均落 gap-noted（含 topic 与 todo 行号/已存在
+          条目指引）。
+        """
+        run_id = str(trigger.get("run_id") or "")
+        entry_lines = self._render_gap_entry_lines(trigger, topic, gap)
+        todo_path = Path(self.project_root) / ".fenix" / "todo.md"
+        from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与既有 todo 写方共用同一把锁
+
+        outcome: Dict[str, Any] = {}
+
+        def _do() -> None:
+            existing = self._todo_existing_text(todo_path)
+            hit = self._todo_topic_hit(topic, existing)
+            if hit is not None:
+                outcome["dedup_hit"] = hit
+                return
+            new_text, line_no = _todo_block_insert(
+                existing, time.strftime("%Y-%m-%d"), "\n".join(entry_lines)
+            )
+            from core.fs_utils import atomic_write_text  # noqa: PLC0415 —— 与仓库写点纪律同源
+
+            atomic_write_text(todo_path, new_text)
+            outcome["line_no"] = line_no
+
+        with_file_lock(todo_path, _do)
+        if "dedup_hit" in outcome:
+            hit_title, hit_line = outcome["dedup_hit"]
+            self._log(
+                "info",
+                f"arbiter gap「{topic}」同主题条目已在 todo.md（{hit_title}），跳过记入",
+            )
+            self._write_ledger(
+                trigger, {"run_id": run_id, "error": ""},
+                kind="gap-noted",
+                report={
+                    "summary": (
+                        f"框架缺口「{topic}」同主题条目已存在 todo.md（{hit_title}，"
+                        f"第 {hit_line} 行），按轻量同主题去重跳过记入。"
+                    ),
+                    "evidence_refs": [".fenix/todo.md"],
+                },
+                budget={},
+                action_or_upgrade=f"gap 去重跳过（topic={topic}）：已存在条目「{hit_title}」",
+                status_after="",
+            )
+            return
+        line_no = int(outcome.get("line_no") or 0)
+        try:
+            # 写后就地提交（ADR-060 写入点即时提交；锁外执行，untracked/失败
+            # 降级不阻断——复用 knowledge_backfill 收口单点，pathspec 限定单文件）
+            from core.knowledge_backfill import _commit_todo_after_write  # noqa: PLC0415
+
+            _commit_todo_after_write(self.project_root, f"arbiter gap: {topic}")
+        except Exception as e:  # noqa: BLE001 —— 提交降级不阻断记入主流程
+            self._log("warning", f"arbiter gap todo 就地提交失败（降级留痕）: {e}")
+        where = f"第 {line_no} 行" if line_no else ""
+        tail = f" {where}" if where else ""
+        self._log(
+            "info",
+            f"arbiter 框架缺口记 todo topic={topic}{tail}（自进化统一立项）",
+        )
+        evidence = [".fenix/todo.md"]
+        if run_id:
+            evidence.append(f".fenix/runs/{run_id}.jsonl")
+        self._write_ledger(
+            trigger, {"run_id": run_id, "error": ""},
+            kind="gap-noted",
+            report={
+                "summary": (
+                    f"框架缺口「{topic}」记入 todo.md{where}"
+                    "（自省队列，由自进化车道按既有 todo 消费机制统一评估立项）。"
+                ),
+                "evidence_refs": evidence,
+            },
+            budget={},
+            action_or_upgrade=f"gap 记 todo（topic={topic}{('，' + where) if where else ''}）",
+            status_after="",
+        )
+
+    def _render_gap_entry_lines(self, trigger: dict, topic: str, gap: dict) -> List[str]:
+        """单条 gap → todo 条目渲染行（复用自省渲染单源，四字段标签逐字一致）。
+
+        字段映射（可立项粒度）：影响=影响面、证据=证据+触发 run_id 来源、
+        调查评估=触发信号语境（报告可带 analysis 显式值覆盖）、建议=候选方向。
+        """
+        from core.self_review import SelfReviewScheduler  # noqa: PLC0415 —— 渲染单源复用
+
+        sig = str(trigger.get("signature") or "")
+        run_id = str(trigger.get("run_id") or "")
+        evidence_parts = [str(gap.get("evidence") or "").strip()]
+        evidence_parts.append(
+            f"触发 run_id={run_id or '未知'}（签名 {sig or '未知'}，"
+            f"来源 {trigger.get('source') or '未知'}）"
+        )
+        context = str(trigger.get("description") or "").strip()
+        analysis = str(gap.get("analysis") or "").strip() or (
+            f"触发信号 {trigger.get('signal_type') or '未知'}"
+            f"（spec={trigger.get('spec') or 'global'}）"
+            + (f"：{context[:300]}" if context else "")
+            + "。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，"
+            "超出处置白名单，记 todo 由自进化统一立项。"
+        )
+        item = {
+            "title": f"[arbiter:{sig[:8] or 'nosig'}] {topic}",
+            "impact": str(gap.get("impact") or "").strip(),
+            "evidence": "；".join(p for p in evidence_parts if p),
+            "analysis": analysis,
+            "suggestion": str(
+                gap.get("candidates") or gap.get("candidate")
+                or gap.get("direction") or ""
+            ).strip(),
+        }
+        return SelfReviewScheduler._render_entry_lines(item) or [f"- {item['title']}"]
+
+    def _todo_existing_text(self, todo_path: Path) -> str:
+        """读 todo.md 现状基线；为空/缺失而 HEAD 版非空时自 HEAD 恢复（回写前
+        自愈，todo-ledger-loss-guard 同款防护；恢复+写同在调用方所持锁内）。
+
+        todo_head_restore=false（有意清空豁免开关）与 self_review 同源读取。
+        """
+        from core.config import ConfigLoader  # noqa: PLC0415
+        from core.self_review import _load_existing_with_head_rescue  # noqa: PLC0415
+
+        try:
+            raw = ConfigLoader.resolve_config(self.project_root)
+            restore = bool(
+                ConfigLoader.get_self_review_config(raw).get("todo_head_restore", True)
+            )
+        except Exception:  # noqa: BLE001 —— 配置链故障按缺省开启降级
+            restore = True
+        return _load_existing_with_head_rescue(
+            todo_path, self.project_root, restore,
+            self.logger if self.logger is not None else _QuietTodoLogger(),
+        )
+
+    @staticmethod
+    def _todo_topic_hit(topic: str, existing_text: str) -> Optional[tuple]:
+        """轻量同主题去重（D3）：既有未消费条目标题的关键词包含判定。
+
+        解析复用 evolution ``parse_todo_entries`` 单源（只收集未消费、三值
+        小节内条目——arbiter 条目落「可改进」，天然在收集面内）；主题词
+        （空白/连字符/下划线切分，长度≥2）去来源前缀后任一命中条目标题即
+        视为同主题。宁轻勿重（design D3）：误跳少记可由台账人工补，重复记
+        可由自省合并。
+        Returns: (命中条目标题, todo.md 1 基行号)；未命中返回 None。
+        """
+        if not existing_text.strip():
+            return None
+        from core.evolution import parse_todo_entries  # noqa: PLC0415 —— 解析单源
+
+        tokens = [t for t in re.split(r"[\s\-_]+", topic) if len(t) >= 2]
+        if not tokens:
+            return None
+        all_lines = existing_text.splitlines()
+        for entry in parse_todo_entries(existing_text):
+            title = str(entry.get("title") or "").strip()
+            if not title:
                 continue
-            entry = {
-                "status": "drafted",
-                "priority": 5,
-                "error": f"arbiter 立项: {rationale}"[:500],
-            }
-            ok = False
-            try:
-                ok = sm.add_spec(spec_name, entry)
-            except Exception as e:
-                self._log("error", f"arbiter 立项写入失败 spec={spec_name}: {e}")
-            accepted += 1 if ok else 0
-            if ok:
-                weekly_used += 1
-                self._write_ledger(
-                    trigger, {"run_id": trigger.get("run_id"), "error": ""},
-                    kind="spec-proposed",
-                    report={"summary": f"立项 {spec_name}（topic={topic}）status=drafted，走既有 evo ready 人审门。",
-                            "evidence_refs": [".fenix/STATE.md"]},
-                    budget={},
-                    action_or_upgrade=f"立项落 drafted: {spec_name}",
-                    status_after="drafted",
+            # 去来源前缀（[arbiter:<sig8>] 等 [] 前缀不参与主题匹配，防
+            # 「arbiter」关键字与来源标记自身误命中）
+            bare = title
+            if bare.startswith("[") and "]" in bare:
+                bare = bare.split("]", 1)[1].strip()
+            blob = (bare or title).lower()
+            if any(t.lower() in blob for t in tokens):
+                literal = f"- **{title}**"
+                line_no = next(
+                    (i + 1 for i, ln in enumerate(all_lines) if ln.strip() == literal),
+                    0,
                 )
-            else:
-                self._write_ledger(
-                    trigger, {"run_id": trigger.get("run_id"), "error": ""},
-                    kind="proposal-dedup",
-                    report={"summary": f"提案 {spec_name} 已在池（add_spec 查重拒绝）。",
-                            "evidence_refs": [".fenix/STATE.md"]},
-                    budget={},
-                    action_or_upgrade="同主题 drafted 在池不立项（add_spec 存在性查重命中）",
-                    status_after="",
-                )
+                return (title, line_no)
+        return None
 
     def _resolve_state_machine(self):
         sm = getattr(self, "_state_machine_ref", None)
@@ -1628,127 +1770,52 @@ class ArbiterLane:
     def set_state_machine(self, sm):
         self._state_machine_ref = sm
 
-    def _materialize_proposal(self, spec_name: str, topic: str,
-                              rationale: str, trigger: dict) -> None:
-        """把提案物化为 spec/changes/<name>/proposal.md（对齐 evolution 立项范式：
-        先物化并提交目录，后 add_spec——裸 STATE 注册必产幽灵条目）。
 
-        脚手架复用原生生成器 ``core.spec_gen.new_change``（名称校验 + .spec.yaml
-        同源，2026-11-01 补：自 mkdir 缺 .spec.yaml 脚手架不完整）。proposal.md
-        为最小诚实成文（Why=rationale、来源=触发签名/run_id），无 tasks.md/
-        specs——晋升 lint 会拦住自动晋升，条目停 drafted 待人工成文补全
-        （design「落 drafted 即止」语义在本仓 auto-promote 配置下的落地形态）。
-        重放幂等：proposal.md 已存在即跳过。物化后 best-effort 单目录提交
-        （对齐 fenix-new spec hook / admin 主树 spec 目录提交先例），提交失败
-        仅 WARNING 不阻断（未跟踪目录不干扰 STATE 语义）。
-        """
-        from core.fs_utils import atomic_write_text
-        from core.pm_engine.verification.serving import _spec_name_path_error
-        from core.spec_gen import new_change
+class _QuietTodoLogger:
+    """todo 回写自愈日志的静默兜底（lane.logger 未装配时；fenixd (component, message) 签名）。"""
 
-        path_err = _spec_name_path_error(spec_name)
-        if path_err:
-            raise ValueError(f"spec 名路径不安全: {path_err}")
-        spec_dir = Path(self.project_root) / "spec" / "changes" / spec_name
-        proposal_path = spec_dir / "proposal.md"
-        if proposal_path.exists():
-            return  # 重放幂等
-        try:
-            new_change(Path(self.project_root), spec_name)
-        except ValueError:
-            if not spec_dir.exists():
-                raise  # 非重名错误（名称非法等）原样抛出
-            # 重名但目录在且无 proposal.md：继续物化（new_change 判重失败
-            # 但实体目录存在的窗口形态，与上方 exists 短路互补）
-            spec_dir.mkdir(parents=True, exist_ok=True)
-        created = datetime.now(timezone.utc).isoformat()
-        # 原子写（fsync + os.replace，与仓库写点纪律同源）：exists 短路作
-        # 幂等判据要求「文件存在=文件完整」，裸 write_text 半截残稿会被
-        # 重放静默接受
-        atomic_write_text(
-            proposal_path,
-            "# " + topic + "\n\n"
-            "## Why\n\n" + (rationale or topic) + "\n\n"
-            "## What Changes\n\n"
-            "- （arbiter 提案待人工成文：本文件为调查报告提案的最小诚实成文，"
-            "补全 What Changes / Capabilities / Impact 后走既有晋升流程）\n\n"
-            "## Capabilities\n\n"
-            "### New Capabilities\n\n"
-            "- `<capability>`: （待成文）\n\n"
-            "### Modified Capabilities\n\n"
-            "（无）\n\n"
-            "## Impact\n\n"
-            "（待成文）\n\n"
-            "---\n\n"
-            f"- 立项来源：Arbiter 调查（run_id={trigger.get('run_id')}，"
-            f"signature={trigger.get('signature')}，source={trigger.get('source')}）\n"
-            f"- 立项时间：{created}\n",
+    def warning(self, *_args) -> None:
+        pass
+
+
+def _todo_block_insert(text: str, today: str, block: str) -> tuple:
+    """把 ``block``（多行条目块）归位插入 todo.md 今日日期节的「可改进」小节下。
+
+    结构与 ``knowledge_backfill._todo_subsection_insert`` 同款：今日节边界 =
+    下一个 ``## `` 日期节或文件尾；小节缺失在小节清单尾部补建、日期节缺失
+    在文件尾部新建（空文件直接落今日节骨架）。差异仅两点——插入物是多行块
+    （块内行原样落位，既有内容不动）；小节名固定「可改进」（
+    ``GAP_TODO_SECTION``，evolution 消费面可达）。
+
+    Returns: (回写全文, 块首行在回写全文中的 1 基行号；定位失败为 0)。
+    """
+    lines = text.splitlines() if text.strip() else []
+    header = f"## {today}"
+    today_idx = next((i for i, ln in enumerate(lines) if ln.strip() == header), None)
+    if today_idx is None:
+        if lines:
+            lines += ["", header, GAP_TODO_SECTION]
+        else:
+            lines = [header, "", GAP_TODO_SECTION]
+        lines.append(block)
+    else:
+        end = next(
+            (i for i in range(today_idx + 1, len(lines)) if lines[i].startswith("## ")),
+            len(lines),
         )
-        try:
-            import subprocess as _sp
-
-            git = ["git", "-C", str(self.project_root)]
-            _sp.run(git + ["add", f"spec/changes/{spec_name}"],
-                    capture_output=True, timeout=30)
-            _sp.run(git + ["commit", "-m",
-                           f"[fenix] spec: {spec_name}（arbiter 提案最小成文，待人工补全）"
-                           "\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>"],
-                    capture_output=True, timeout=30)
-        except Exception as e:  # noqa: BLE001
-            self._log("warning",
-                      f"arbiter 提案目录提交失败（留未跟踪，不阻断）: {e}")
-
-    def _drafted_pool(self, sm) -> tuple:
-        """读 drafted/reviewing 在池 SPEC 名集与全名拼接串（主题级匹配用）。"""
-        names: List[str] = []
-        try:
-            specs = sm.read_all() or {}
-            for name, entry in specs.items():
-                if str((entry or {}).get("status") or "") in ("drafted", "reviewing"):
-                    names.append(str(name))
-        except Exception as e:
-            self._log("warning", f"arbiter drafted 池读取失败（按空池降级）: {e}")
-        return set(names), " ".join(names).lower()
-
-    @staticmethod
-    def _topic_in_pool(topic: str, drafted_names: set, drafted_blob: str) -> str:
-        """主题/capability 级匹配：主题词（去空白切分，长度≥2）任一命中在池
-        SPEC 名即视为同主题。保守匹配（宁 dedup 不重复立项）。"""
-        tokens = [t for t in topic.replace("-", " ").replace("_", " ").split() if len(t) >= 2]
-        blob = drafted_blob.lower()
-        for token in tokens:
-            if token.lower() in blob:
-                for name in sorted(drafted_names):
-                    if token.lower() in name.lower():
-                        return name
-        return ""
-
-    @staticmethod
-    def _proposal_spec_name(topic: str) -> str:
-        """由主题合成 spec 名（小写连字符、截 48 字符，非法字符折叠为 -）。"""
-        cleaned = []
-        for ch in topic.lower():
-            if ch.isalnum() or ch == "-":
-                cleaned.append(ch)
-            else:
-                # 空白/下划线/路径分隔/非 ASCII 一律折叠为 -（非 ASCII 主题
-                # 经折叠仍保留 token 结构，可读且不撞 spec 名路径校验）
-                cleaned.append("-")
-        name = "".join(cleaned)
-        while "--" in name:
-            name = name.replace("--", "-")
-        return f"arb-{name.strip('-')[:48] or 'gap'}"
-
-    def _throttle_ledger(self, trigger: dict, topic: str, reason: str):
-        self._write_ledger(
-            trigger, {"run_id": trigger.get("run_id"), "error": ""},
-            kind="proposal-throttled",
-            report={"summary": f"提案「{topic}」超立项节流（{reason}），只记台账不落池。",
-                    "evidence_refs": []},
-            budget={},
-            action_or_upgrade=f"立项节流（{reason}）",
-            status_after="",
-        )
+        seg = lines[today_idx:end]
+        if not any(ln.strip() == GAP_TODO_SECTION for ln in seg):
+            seg = seg + ["", GAP_TODO_SECTION]
+        seg.append(block)
+        lines[today_idx:end] = seg
+    new_text = "\n".join(lines).rstrip("\n") + "\n"
+    if not block:
+        return new_text, 0
+    anchor = block.splitlines()[0]
+    line_no = next(
+        (i + 1 for i, ln in enumerate(new_text.splitlines()) if ln == anchor), 0
+    )
+    return new_text, line_no
 
 
 # ── 模块级单例与装配 ─────────────────────────────────────────────────────

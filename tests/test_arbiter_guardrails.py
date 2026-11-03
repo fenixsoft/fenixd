@@ -8,7 +8,8 @@
   升级同 alert_id 原位静默更新 + 推 pending + narrative 槽位裁决包；
 - 关闭态零侵扰：enabled=false 时 narrative 让位判定 False、freeze 咽喉短路
   零写入；
-- 台账五段完整、_log_lane_run_metrics 指标行落盘、立项节流三限、narrative
+- 台账五段完整、_log_lane_run_metrics 指标行落盘、禁立项红线与 gaps 上报
+  契约（add-arbiter-gap-todo-routing：立项节流三限已退役）、narrative
   让位与非阻塞类不受扰。
 
 复用 tests/test_arbiter_lane.py 的替身组件（FakeRunner/FakeStateMachine），
@@ -32,8 +33,6 @@ from core.agent_runner.maintenance_runs import run_arbiter
 from core.pm_engine.arbiter import (
     ARBITER_EXCLUDED_SIGNAL_TYPES,
     ARBITER_PINNED_MODEL,
-    PROPOSAL_MAX_PER_RUN,
-    PROPOSAL_WEEKLY_QUOTA,
     arbiter_report_path,
     get_lane,
     load_arbiter_ledger,
@@ -116,8 +115,12 @@ class TestRedLineContract:
         assert "假阴性无害" in tpl and "假阳性危险" in tpl
         assert "MUST 只产裁决包" in tpl
 
-    def test_five_class_whitelist_and_throttle(self):
-        """五类白名单鉴定要点 + 立项节流三限段落存在。"""
+    def test_five_class_whitelist_and_no_filing_red_line(self):
+        """五类白名单鉴定要点 + 禁立项红线与 gaps 上报纪律段存在。
+
+        add-arbiter-gap-todo-routing：立项节流三限段退役——prompt MUST 断言
+        「MUST NOT 立项」红线在位、旧节流词目不在位（防回潮）。
+        """
         tpl = self._template()
         assert "首期自主处置白名单" in tpl
         for item in (
@@ -128,10 +131,14 @@ class TestRedLineContract:
             "WIP 门/在飞闸门分拣提交",
         ):
             assert item in tpl, f"白名单缺类: {item}"
-        assert "立项节流三限" in tpl
-        assert "同主题 drafted" in tpl
-        assert "至多 2 条" in tpl
-        assert "周配额" in tpl
+        assert "MUST NOT 立项" in tpl
+        assert "框架缺口上报纪律" in tpl
+        for key in ("topic", "evidence", "impact", "candidates"):
+            assert key in tpl, f"gaps 上报粒度缺键: {key}"
+        # 退役词目防回潮：旧节流三限与「或立项」半句 MUST NOT 复活
+        assert "立项节流三限" not in tpl
+        assert "周配额" not in tpl
+        assert "或立项" not in tpl
 
     def test_report_contract_section(self):
         """调查报告五段格式与裁决包契约段存在（prompt 文件化纪律）。"""
@@ -140,8 +147,10 @@ class TestRedLineContract:
         for key in ("outcome", "scene_snapshot", "forensic_timeline",
                     "root_cause", "cleanup_paths", "evidence_refs",
                     "status_after", "escalation_reason", "recommended_action",
-                    "proposals"):
+                    "gaps"):
             assert f'"{key}"' in tpl, f"报告契约缺键: {key}"
+        # 退役字段防回潮：proposals 键 MUST NOT 复活（消费端按容错丢弃）
+        assert '"proposals"' not in tpl
         for section in ("发生了什么", "调查结论", "为什么需要你决策",
                         "处置时间线", "证据回链"):
             assert f"## {section}" in tpl, f"五段模板缺段: {section}"
@@ -445,89 +454,6 @@ class TestLaneMetricsRow:
         assert runner.observed_models == [ARBITER_PINNED_MODEL]
 
 
-class TestProjectProposalThrottle:
-    REPORT_TPL = {
-        "summary": "s", "root_cause": "r", "scene_snapshot": "snap",
-        "forensic_timeline": [], "actions_taken": ["a"],
-        "evidence_refs": ["e"], "status_after": "ready",
-    }
-
-    def _resolved(self, proposals):
-        return {"run": {**self.REPORT_TPL, "outcome": "resolved",
-                        "proposals": proposals}}
-
-    def test_draft_pool_dedup_and_status_drafted(self, tmp_path):
-        """同主题 drafted 在池不重复立项；新提案落池 status=drafted。"""
-        runner = FakeRunner(tmp_path)
-        sm = FakeStateMachine({"existing-auth-retry": {
-            "status": "drafted", "priority": 5}})
-        lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane._apply_proposals(
-            {"spec": "spec-a", "signature": "sig", "run_id": "r1",
-             "enqueued_at": "", "source": "t"},
-            {"proposals": [
-                {"topic": "auth retry 退避", "rationale": "同主题已在池"},
-                {"topic": "completely-new-thing", "rationale": "新"},
-            ]})
-        # 主题 token "auth"/"retry" 命中在池名 existing-auth-retry → dedup
-        added = [e for e in sm.entries if e.startswith("arb-")]
-        assert added == ["arb-completely-new-thing"]
-        assert sm.entries["arb-completely-new-thing"]["status"] == "drafted"
-        kinds = [r["kind"] for r in load_arbiter_ledger(tmp_path)]
-        assert "proposal-dedup" in kinds
-        assert "spec-proposed" in kinds
-
-    def test_max_two_per_run(self, tmp_path):
-        """单次调查至多 2 条：第 3 条起只记台账。"""
-        runner = FakeRunner(tmp_path)
-        lane = make_lane(tmp_path, runner=runner)
-        lane._apply_proposals(
-            {"spec": "spec-a", "signature": "sig", "run_id": "r1",
-             "enqueued_at": "", "source": "t"},
-            {"proposals": [
-                {"topic": "alpha-one", "rationale": "r"},
-                {"topic": "beta-two", "rationale": "r"},
-                {"topic": "gamma-three", "rationale": "r"},
-                {"topic": "delta-four", "rationale": "r"},
-            ]})
-        kinds = [r["kind"] for r in load_arbiter_ledger(tmp_path)]
-        assert kinds.count("spec-proposed") == PROPOSAL_MAX_PER_RUN
-        assert "proposal-throttled" in kinds
-
-    def test_weekly_quota_five(self, tmp_path):
-        """周配额 5：超配额提案只记台账不落池。"""
-        runner = FakeRunner(tmp_path)
-        lane = make_lane(tmp_path, runner=runner)
-        trigger = {"spec": "spec-a", "signature": "sig", "run_id": "r1",
-                   "enqueued_at": "", "source": "t"}
-        # 预置本周已 5 条 spec-proposed 台账（周窗口锚定取本周周一，
-        # seed 用当前时间才落在真窗口内）
-        from datetime import datetime, timezone
-
-        from core.pm_engine.arbiter import arbiter_ledger_path
-
-        ledger = arbiter_ledger_path(tmp_path)
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        now_iso = datetime.now(timezone.utc).isoformat()
-        with ledger.open("a", encoding="utf-8") as f:
-            for i in range(PROPOSAL_WEEKLY_QUOTA):
-                f.write(json.dumps({
-                    "id": f"seed-{i}", "created": now_iso,
-                    "kind": "spec-proposed",
-                }, ensure_ascii=False) + "\n")
-        lane._apply_proposals(trigger, {"proposals": [
-            {"topic": "quota-test-topic", "rationale": "r"}]})
-        recs = load_arbiter_ledger(tmp_path)
-        kinds = [r["kind"] for r in recs]
-        assert "proposal-throttled" in kinds
-        # 仅有预置的 5 条 spec-proposed（seed），超配额提案不落池
-        assert kinds.count("spec-proposed") == PROPOSAL_WEEKLY_QUOTA
-        assert not [r for r in recs
-                    if r["kind"] == "spec-proposed"
-                    and r["id"].startswith("arb-ledger-")], \
-            "超配额提案 MUST NOT 落池（不新增 spec-proposed 台账）"
-
-
 class TestNarrativeYieldIsolation:
     def test_non_blocked_family_signal_unaffected(self, tmp_path):
         """非阻塞类（排除表）信号：narrative 让位判定 False——既有路径不受扰。"""
@@ -644,31 +570,7 @@ class TestArbiterStatusEndpoint:
         assert payload["config"].get("enabled") is True  # 缺省开启
 
 
-class TestProposalMaterialization:
-    def test_proposal_materializes_spec_dir(self, tmp_path):
-        """立项 MUST 物化 spec/changes/<name>/proposal.md 再注册（2026-11-01
-        幽灵条目修复：裸 STATE 注册→目录缺失→评审冻结 spec-review-incomplete，
-        fix-planner-scenario-entry-schema-selfcheck 实证；且 spec 列表 UI 只
-        枚举目录，幽灵条目用户不可见）。"""
-        runner = FakeRunner(tmp_path)
-        sm = FakeStateMachine({})
-        lane = make_lane(tmp_path, runner=runner, sm=sm)
-        lane._apply_proposals(
-            {"spec": "spec-a", "signature": "sig-a", "run_id": "r1",
-             "enqueued_at": "", "source": "startup"},
-            {"proposals": [
-                {"topic": "planner scenario entry schema selfcheck",
-                 "rationale": "冻结现场实证场景条目 schema 无自检门"},
-            ]})
-        added = [e for e in sm.entries if e.startswith("arb-")]
-        assert len(added) == 1
-        spec_dir = tmp_path / "spec" / "changes" / added[0]
-        proposal = spec_dir / "proposal.md"
-        assert proposal.exists(), f"提案未物化目录: {spec_dir}"
-        # 脚手架复用原生生成器：.spec.yaml 必在（schema/created 同源，
-        # 缺它=脚手架不完整——fenix-new §5 补写纪律对齐）
-        meta = (spec_dir / ".spec.yaml").read_text(encoding="utf-8")
-        assert "schema: spec-driven" in meta and "created:" in meta
-        text = proposal.read_text(encoding="utf-8")
-        assert "arbiter" in text and "r1" in text  # 来源可追溯
-        assert "schema 自检" in text or "schema selfcheck" in text  # rationale 入文
+# 立项路径用例（TestProjectProposalThrottle / TestProposalMaterialization）
+# 已随立项通道退役移除（add-arbiter-gap-todo-routing）：路由/退役断言由
+# tests/test_arbiter_lane.py 的 TestFilingRetirement / TestGapTodoRouting /
+# TestGapSchemaConsistency 承接。
