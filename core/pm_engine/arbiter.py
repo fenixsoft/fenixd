@@ -292,11 +292,15 @@ class ArbiterLane:
             return None
 
     def _arbiter_rulings_quota(self) -> int:
-        """Arbiter 复现配额上限（chain.arbiter_rulings，缺省 2）。"""
+        """Arbiter 复现配额上限（chain.arbiter_rulings，缺省单源
+        ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT，现值 3）。"""
         try:
-            return int(self._chain_cfg().get("arbiter_rulings") or 2)
+            from core.config import ConfigLoader
+
+            default = ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT
+            return int(self._chain_cfg().get("arbiter_rulings") or default)
         except (TypeError, ValueError):
-            return 2
+            return 3
 
     def in_trigger_surface(self, signal_type: str) -> bool:
         """signal 维度触发面判定（处置链反转后）：非黑名单即入。

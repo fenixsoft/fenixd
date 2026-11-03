@@ -2469,7 +2469,9 @@ class ConfigLoader:
     # blacklist: 黑名单信号清单（kill switch——名单内信号绕过全链直达人工队列，
     #   初始空集；原 arbiter 白名单/排除表机制取消，排除表语义并入此键）
     CHAIN_ADMIN_ATTEMPTS_DEFAULT = 2
-    CHAIN_ARBITER_RULINGS_DEFAULT = 2
+    # 2→3（2026-11-03 用户定调）：第二次裁决仍白名单外时留第三次自主处置
+    # 机会，不提前落人工
+    CHAIN_ARBITER_RULINGS_DEFAULT = 3
     CHAIN_RESET_WINDOW_DAYS_DEFAULT = 7
     CHAIN_BLACKLIST_DEFAULT: list = []
 
@@ -2478,7 +2480,7 @@ class ConfigLoader:
         """Return the ``chain`` 段四键，缺失/非法值回退缺省（不抛异常）。
 
         - admin_attempts: 正整数，缺省 2（bool 是 int 子类显式排除）
-        - arbiter_rulings: 正整数，缺省 2
+        - arbiter_rulings: 正整数，缺省 3
         - reset_window_days: 正整数天，缺省 7
         - blacklist: 字符串列表（非 list 或含非字符串项的脏值逐项过滤，
           全非法回退缺省空集）

@@ -253,9 +253,11 @@ class ChainQuotaStore:
             raw = ConfigLoader.resolve_config(self.project_root)
             return ConfigLoader.get_chain_config(raw)
         except Exception:
+            # 兜底字面量与 ConfigLoader.CHAIN_*_DEFAULT 单源对齐（现值
+            # arbiter_rulings=3，2026-11-03 用户定调 2→3）
             return {
                 "admin_attempts": 2,
-                "arbiter_rulings": 2,
+                "arbiter_rulings": 3,
                 "reset_window_days": 7,
                 "blacklist": [],
             }

@@ -11,10 +11,12 @@ const { Text } = Typography;
 
 // add-escalation-chain-admin-arbiter 5.3：chain 配置节缺省与
 // ConfigLoader.get_chain_config 缺省一致（admin_attempts=2 /
-// arbiter_rulings=2 / reset_window_days=7 / blacklist=[]）。
+// arbiter_rulings=3 / reset_window_days=7 / blacklist=[]）。
+// arbiter_rulings 缺省 2→3（2026-11-03 用户定调）：第二次裁决仍白名单外时
+// 留第三次自主处置机会，不提前落人工。
 const CHAIN_DEFAULTS: Required<ChainConfig> = {
   admin_attempts: 2,
-  arbiter_rulings: 2,
+  arbiter_rulings: 3,
   reset_window_days: 7,
   blacklist: [],
 };
