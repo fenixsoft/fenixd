@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-03 20:22 UTC+8
+> 最后更新：2026-11-03 20:35 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -16,7 +16,7 @@
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | SPEC 并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复。即时唤醒信号与事件投递完整性、秒挂冷却派发门控也在此域。 | 9 | 2026-10-30 23:11 |
 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道的任务协议与交付物门禁：tasks.md 进度同步/回写、验收偏差申报、结果文件契约与自检、回归委托。交付物声明与归属仲裁（声明分诊/争议治理/搬迁回写）、WIP 检查点与任务产物归属也在此域。 | 28 | 2026-10-14 18:51 |
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线全链：runner 引擎与场景生命周期、验证环境预检与依赖供给、serve 范围矩阵与实例回收。场景冻结/打捞/schema 单源、多形态场景模型（web/cli/api）与资源互斥、视觉基线与并行回退、验证报告门与证据分级留存也在此域。 | 59 | 2026-11-02 13:25 |
-| [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据：裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义。查重与重合成、缓存复验、env 类失败的豁免握手与场景修订处置出口，以及裁决在 Dashboard 的可见性。 | 26 | 2026-10-30 23:11 |
+| [verdict-adjudication](domains/verdict-adjudication/_domain.md) | 验证裁决与证据：裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义。查重与重合成、缓存复验、env 类失败的豁免握手与场景修订处置出口、judge 场景修复写回受理门，以及裁决在 Dashboard 的可见性。 | 27 | 2026-11-03 20:35 |
 | [code-review-lane](domains/code-review-lane/_domain.md) | 周期性代码审查车道：注册/调度（夜间静默窗跨窗顺延）、scope 两档、分片直写落盘、进度聚合与停滞看门狗。审查发现台账与质量分面（快照核销/三态分派）、发现转修复 SPEC 生成、全仓审查并发约束与限流终局续跑。实现期收尾 ocr 审查（异步车道 + join 门）及其配置调优。 | 19 | 2026-10-30 21:56 |
 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复车道：两路激活与批循环编排、批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底）、批收尾回归门与失败明细映射。回归异常熔断与零失败面收口、修复批自愈重试预算分档、合回冲突定向救回、夜间静默窗投递守卫、审查发现分级修复节奏与轻微缺陷快车道。 | 27 | 2026-10-30 21:56 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。 | 16 | 2026-10-15 01:55 |
