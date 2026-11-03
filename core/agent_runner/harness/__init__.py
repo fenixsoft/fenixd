@@ -99,6 +99,9 @@ __all__ = [
     "get_current_adapter",
     "current_process_patterns",
     "current_worktree_pgrep_patterns",
+    # 回落 WARN（add-harness-default-key-fallback 2.1）
+    "warn_harness_default_fallback",
+    "reset_harness_default_fallback_warned",
 ]
 
 # agent.harness 合法值（config 校验/settings_routes/config_admin 三处共用单源；
@@ -216,3 +219,40 @@ def current_process_patterns() -> List[str]:
 def current_worktree_pgrep_patterns(spec_name: str) -> List[str]:
     """当前 harness 的 worktree 存活 pgrep patterns（admin_monitor/event_bus 消费）。"""
     return get_current_adapter().worktree_pgrep_patterns(spec_name)
+
+
+# ── 回落 WARN 一次性去重（add-harness-default-key-fallback 2.1）──────────
+# 进程×adapter 粒度（键=adapter 名）。模块级 set + 锁（锁纪律与 _current_adapter
+# 同型：锁仅护「检查-登记」竞态，已登记的读取路径无锁短路）；不做持久化去重
+# （design D3——daemon 重启后提醒一次是可接受的观察成本）。
+_HARNESS_DEFAULT_FALLBACK_WARNED: set = set()
+_HARNESS_DEFAULT_FALLBACK_WARNED_LOCK = threading.Lock()
+
+
+def warn_harness_default_fallback(adapter_name: str, agent_role: str = "") -> None:
+    """回落形态生效时发一次性 WARNING 留痕（不拒 spawn）。
+
+    SpawnRequest 无 provider 链分配（env_overrides 无 ANTHROPIC_BASE_URL/
+    ANTHROPIC_API_KEY）时 claude/dsh 两 adapter 均按 harness 自身配置启动
+    （claude=环境继承/CLI 默认档；dsh=省略 --patch 按 profile 默认档）。
+    每 daemon 进程每 adapter 至多一条 WARNING（锁内双检查去重），后续回落
+    spawn 静默放行——10-09 CLI 默认档别名拒识教训的观察面，仅留痕不拦派发。
+    """
+    if adapter_name in _HARNESS_DEFAULT_FALLBACK_WARNED:
+        return
+    with _HARNESS_DEFAULT_FALLBACK_WARNED_LOCK:
+        if adapter_name in _HARNESS_DEFAULT_FALLBACK_WARNED:
+            return
+        _HARNESS_DEFAULT_FALLBACK_WARNED.add(adapter_name)
+    _logger.warning(
+        "harness %s 未分配 provider 链，回落 harness 默认配置（role=%s）——"
+        "按 harness 自身配置启动；如需显式链请为该角色分配模型路由；"
+        "本进程内同一 harness 不再重复提醒",
+        adapter_name, agent_role or "<unknown>",
+    )
+
+
+def reset_harness_default_fallback_warned() -> None:
+    """复位去重登记（测试隔离用：进程级语义在 pytest 单进程内跨用例残留）。"""
+    with _HARNESS_DEFAULT_FALLBACK_WARNED_LOCK:
+        _HARNESS_DEFAULT_FALLBACK_WARNED.clear()

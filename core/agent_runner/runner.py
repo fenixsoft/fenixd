@@ -912,6 +912,16 @@ class AgentRunner:
         # _run_harness 摘除口径：不摘则长驻 daemon 下登记无界增长）。惰性
         # 回退（__dict__.setdefault）对齐 _register_run_harness 惯例。
         self._run_toolface: Dict[str, dict] = {}
+        # run 级回落归因登记（add-harness-default-key-fallback 2.2）：
+        # {base_run_id: "harness-default"}——_run_agent spawn 装配时判定
+        # SpawnRequest 无 provider 链（env_overrides 链键缺席，与 adapter 内
+        # 三要素链键判定同源）登记，_log_run_metrics 收尾消费（消费即摘除，
+        # 对齐 _run_toolface 摘除口径）写入 run_metrics 行 provider_source 键；
+        # 显式链 run 不登记、metrics 行无该键（读侧缺省=显式链，不重载既有
+        # provider/model 键语义）。键空间与 _run_toolface 同为归一化 base
+        # run_id；全车道必经 _run_agent，判定单点覆盖 dispatch 家族与直调
+        # 一次性车道（无分配 else 分支无需各自登记）。
+        self._run_provider_source: Dict[str, str] = {}
         # 本 run 派发点解析的 adapter 实例（code-review item bb55449a1a7b）：
         # _run_agent spawn 装配按 _normalize_run_id(run_id) 查此登记取值，
         # 不读进程级全局；键空间与 _run_harness 同为 base run_id，随其同一
@@ -6409,11 +6419,17 @@ class AgentRunner:
         # 一次性车道 id 无该后缀形态，归一化幂等，登记键与各收尾摘除键一致
         # （本方法不摘——摘早了车道收尾的 run_metrics 行就取不到值）。
         self._register_run_harness(self._normalize_run_id(run_id), adapter)
+        # 回落归因登记（add-harness-default-key-fallback 2.2）：SpawnRequest
+        # 无 provider 链（env_overrides 链键缺席，与 adapter 内判定同源）即
+        # 回落形态，登记供 _log_run_metrics 收尾消费；spawn 前登记（WARN 钩
+        # 子经 SpawnRequest agent_role 透传角色名，adapter 层无其他角色上下文）。
+        self._register_run_provider_source(run_id, env_overrides)
         spawn_spec = adapter.build_spawn_spec(SpawnRequest(
             prompt=prompt,
             cwd=str(cwd),
             output_format="stream-json",
             model=model_override,
+            agent_role=agent_type,
             resume_session_id=resume_session_id,
             permission_mode="bypassPermissions",
             env_overrides=dict(env_overrides or {}),
@@ -9714,6 +9730,26 @@ class AgentRunner:
         if run_id not in registry:
             registry[run_id] = getattr(adapter, "name", "") or "claude"
 
+    def _register_run_provider_source(
+        self, run_id: str, env_overrides: Dict[str, str] | None,
+    ) -> None:
+        """回落形态判定与归因登记（add-harness-default-key-fallback 2.2）。
+
+        SpawnRequest 原料无 provider 链（env_overrides 无 ANTHROPIC_BASE_URL/
+        ANTHROPIC_API_KEY，与 adapter 内链键缺席判定同源）即回落形态——登记
+        ``_run_provider_source[base_run_id] = "harness-default"``，供
+        _log_run_metrics 收尾消费（消费即摘除，对齐 _run_toolface 口径）写入
+        run_metrics 行 ``provider_source`` 键；显式链 run 不登记、metrics 行
+        无该键（读侧缺省=显式链，不重载既有 provider/model 键语义）。全车道
+        必经 _run_agent，判定单点覆盖 dispatch 家族与直调一次性车道。
+        """
+        _eo = env_overrides or {}
+        if ((_eo.get("ANTHROPIC_BASE_URL") or "").strip()
+                or (_eo.get("ANTHROPIC_API_KEY") or "").strip()):
+            return
+        registry = self.__dict__.setdefault("_run_provider_source", {})
+        registry[self._normalize_run_id(run_id)] = "harness-default"
+
     # spawn 面基础工具名单（evo-review-empty-product-redispatch 4.1）：预检
     # 判定「显式 allowedTools 是否覆盖基础工具」的基准集——agent 审查/实现
     # 依赖这六件的可用性（2026-10-23 事故：agent 对基础工具做 ToolSearch 回
@@ -9875,6 +9911,17 @@ class AgentRunner:
             harness = getattr(self, "_run_harness", {}).get(run_id)
             if harness:
                 metric_ctx["harness"] = harness
+            # 回落归因标记（add-harness-default-key-fallback 2.2）：回落 run
+            # （spawn 装配时无 provider 链）写 provider_source=harness-default；
+            # 显式链 run 不登记、行无该键（读侧缺省=显式链）。消费即摘除
+            # （对齐 _run_toolface 口径——同 base run_id 的重试 attempt 每次
+            # spawn 重新登记，metrics 行与行不串）。
+            _ps_registry = self.__dict__.setdefault("_run_provider_source", {})
+            _ps_norm = getattr(self, "_normalize_run_id", None)
+            _ps_key = _ps_norm(run_id) if callable(_ps_norm) else str(run_id)
+            _ps = _ps_registry.pop(_ps_key, None)
+            if _ps:
+                metric_ctx["provider_source"] = _ps
             # 工具面留痕（evo-review-empty-product-redispatch 6.1）：预检结果
             # （spawn 装配登记）为底、调用方显式传参覆盖合流（如车道侧从终局
             # 文本补出 TOOLFACE-MISSING 分类）；消费即摘除（对齐 _run_harness

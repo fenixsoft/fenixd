@@ -372,6 +372,18 @@ class ClaudeAdapter(HarnessAdapter):
                 f"不支持的 prompt_transport 值：{req.prompt_transport!r}"
                 f"（合法值：{PROMPT_TRANSPORT_STDIN!r}/{PROMPT_TRANSPORT_ARGV!r}）"
             )
+        # 回落留痕（add-harness-default-key-fallback 2.1）：SpawnRequest 无
+        # provider 链（env_overrides 无 ANTHROPIC_BASE_URL/API_KEY）即回落
+        # 形态——claude 现状环境继承 + CLI 默认档天然工作，行为零变化（快照
+        # 锁定），仅对称发一次进程级 WARN 留痕（10-09 CLI 默认档别名拒识
+        # 教训的观察面；进程×adapter 去重见 warn_harness_default_fallback）。
+        if not (
+            ((req.env_overrides or {}).get("ANTHROPIC_BASE_URL") or "").strip()
+            or ((req.env_overrides or {}).get("ANTHROPIC_API_KEY") or "").strip()
+        ):
+            from core.agent_runner.harness import warn_harness_default_fallback
+
+            warn_harness_default_fallback(self.name, req.agent_role or "")
         argv: List[str] = ["claude", "-p"]
         if req.prompt_transport == PROMPT_TRANSPORT_ARGV:
             argv.append(req.prompt)
