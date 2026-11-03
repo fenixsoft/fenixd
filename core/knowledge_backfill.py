@@ -79,9 +79,9 @@ LEDGER_RELPATH = ".fenix/knowledge_backfill.jsonl"
 DOMAIN_MAP_RELPATH = ".fenix/knowledge_backfill_domains.json"
 REPORT_RELPATH = ".fenix/knowledge_backfill_report.md"
 KNOWLEDGE_DIR = "spec/knowledge"
-PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "backfill.md"
+PROMPT_PATH = Path(__file__).parent.parent / "agents" / "knowledge-backfill.md"
 # 史前复原（prehistoric bootstrap）：归档目录全部始于该日，此前为史前窗口
-PREHISTORIC_PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "prehistoric.md"
+PREHISTORIC_PROMPT_PATH = Path(__file__).parent.parent / "agents" / "knowledge-prehistoric.md"
 PREHISTORIC_UNTIL = "2026-09-02"
 PREHISTORIC_JSON_RELPATH = ".fenix/knowledge_backfill_prehistoric.json"
 
@@ -1113,7 +1113,7 @@ def default_spawn(project_root: Path) -> SpawnFn:
     return _spawn
 
 
-# ── 提示词拼装（core/knowledge_prompts/backfill.md 的动态段） ────────────
+# ── 提示词拼装（agents/knowledge-backfill.md 的动态段） ────────────
 
 
 def _violations_block(violations: list[str]) -> str:
@@ -1236,7 +1236,7 @@ def _batch_list_block(
     return "\n".join(lines) or "（空）"
 
 
-# ── 史前复原 run 提示词（core/knowledge_prompts/prehistoric.md） ─────────
+# ── 史前复原 run 提示词（agents/knowledge-prehistoric.md） ─────────
 
 
 def first_commit_ref(project_root: Path) -> str:
@@ -1767,7 +1767,7 @@ def run_backfill(
         )
         _append_todo_fail_open(
             project_root,
-            "回填提示词模板读取失败，请检查 core/knowledge_prompts/ 后重跑回填",
+            "回填提示词模板读取失败，请检查 agents/knowledge-backfill.md 后重跑回填",
             log,
         )
         return {"triggered": False, "reason": "prompt-template-unreadable"}
@@ -2633,6 +2633,24 @@ def run_backfill(
         _write_report(project_root, summary)
     except OSError as e:
         log.warning("knowledge", f"回填收敛报告落盘失败（fail-open）：{e}")
+    # 编年账 backfill 行（add-knowledge-inbox-pipeline 4.2）：写入主体为
+    # daemon 代码侧轮收尾（依据批统计，不依赖车道 LLM 写 log.md）；fail-open
+    # 不改变车道结论。core.knowledge 单源、延迟导入取用（车道可降级装载，
+    # 与上方 load_knowledge_core 守卫同口径）。
+    try:
+        from core.knowledge import _commit_log_line, append_knowledge_log
+
+        if append_knowledge_log(
+            project_root,
+            "backfill",
+            f"回填轮（能力批 {len(ok_batches)}/{total} 成功、"
+            f"{len(failed_batches)} 失败；ADR 批 {adr_ok}/{adr_total} 成功、"
+            f"{len(adr_failed)} 失败；"
+            + ("已收敛" if converged else "未收敛"),
+        ):
+            _commit_log_line(project_root, "backfill 回填轮留痕")
+    except Exception as e:  # noqa: BLE001 — 编年账失败不改变车道结论
+        log.warning("knowledge", f"回填编年账落账失败（fail-open）：{e}")
     log.info(
         "knowledge",
         f"回填车道收敛汇报：能力批 {len(ok_batches)}/{total} 成功、"

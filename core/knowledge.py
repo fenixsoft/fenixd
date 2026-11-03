@@ -17,7 +17,7 @@
    不派发——既有单测不得触发真实蒸馏（替身经 dispatcher 参数注入）。
 
 3. **执行器** ``DistillManager``（进程内单例 + 跨进程 flock 单飞）：后台
-   线程 spawn ``claude -p``（cwd 主树、注入 core/knowledge_prompts/distill.md
+   线程 spawn ``claude -p``（cwd 主树、注入 agents/knowledge-distill.md
    提示词），run 结束跑 validate_knowledge，违规回反馈修正（≤2 轮），通过后
    pathspec 限定 ``spec/knowledge/`` 自动提交；修正轮耗尽仍违规则放弃产出
    （``git restore`` + 清理未跟踪新增，不留半成品）；失败登 todo.md 重试
@@ -89,7 +89,18 @@ logger = logging.getLogger("fenixd.knowledge")
 KNOWLEDGE_DIR = "spec/knowledge"
 ARCHIVE_DIR = "spec/archive"
 CHANGES_DIR = "spec/changes"
-PROMPT_FILE = "knowledge_prompts/distill.md"  # 相对 core/ 包
+PROMPT_FILE = "knowledge-distill.md"  # 相对仓库根 agents/（7.1 归位迁移）
+
+# 知识候选区（add-knowledge-inbox-pipeline 1.2/2.1）：交互会话投递自由格式
+# 候选的目录，validate/audit 扫描显式豁免；`done/` 为折叠成功后的溯源永久
+# 保留区，marker sources 对该前缀放行（file 形态，2.1）。编年账 log.md 与
+# 候选区同受归档改写豁免（5.1）。
+INBOX_DIRNAME = "_inbox"
+INBOX_DONE_PREFIX = f"{KNOWLEDGE_DIR}/{INBOX_DIRNAME}/done/"
+LOG_FILE_REL = f"{KNOWLEDGE_DIR}/log.md"
+# 积压提醒阈值（6.1）：条目数或最老滞留天数任一命中即提醒
+INBOX_BACKLOG_COUNT_THRESHOLD = 10
+INBOX_BACKLOG_AGE_DAYS = 7
 
 # 单页 150 行硬顶（spec knowledge-atlas-directory「单页行数硬顶」）。
 # 仅约束能力页（domains/<域>/<能力>.md）——导航层 _domain.md 与 index.md
@@ -426,6 +437,11 @@ def validate_knowledge(project_root) -> list:
     if domains_dir.is_dir():
         for page in sorted(domains_dir.rglob("*.md")):
             rel = page.relative_to(kroot)
+            if INBOX_DIRNAME in rel.parts:
+                # 候选区显式豁免（add-knowledge-inbox-pipeline 1.2）：_inbox
+                # 为自由格式区，不守能力页契约，扫描范围未来变更时本守卫钉死
+                # 豁免不误伤（现状 domains/ rglob 天然不含，防的是误伤）
+                continue
             label = f"{KNOWLEDGE_DIR}/{rel.as_posix()}"
             try:
                 text = page.read_text(encoding="utf-8")
@@ -481,6 +497,24 @@ def validate_knowledge(project_root) -> list:
                 # 合法。目录存在性与越界复核保留（防穿透强度不降）：缺失目录
                 # 与 ".." 相对段越出两根目录的照样报违规。
                 for src in marker["sources"]:
+                    if src.startswith(INBOX_DONE_PREFIX):
+                        # 候选原文溯源（add-knowledge-inbox-pipeline 2.1）：
+                        # file 形态——目录存在性检查换文件存在性；越界复核
+                        # 收口在 done/ 目录内（防 ".." 相对段穿透，与下方
+                        # 归档/两态分支同强度）。
+                        if not (proot / src).is_file():
+                            violations.append(
+                                f"{label}: sources 指向不存在的文件: {src}"
+                            )
+                            continue
+                        resolved = (proot / src).resolve()
+                        try:
+                            resolved.relative_to((proot / INBOX_DONE_PREFIX).resolve())
+                        except ValueError:
+                            violations.append(
+                                f"{label}: sources 越出候选溯源目录: {src}"
+                            )
+                        continue
                     if not src.startswith((ARCHIVE_DIR + "/", CHANGES_DIR + "/")):
                         violations.append(
                             f"{label}: sources 非归档/SPEC 路径（须 "
@@ -668,6 +702,13 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
     replacement = f"spec/archive/{archive_dir_name}"
     rewritten: list = []
     for page in sorted(kroot.rglob("*.md")):
+        page_rel = page.relative_to(kroot)
+        # 编年账与候选区显式豁免（add-knowledge-inbox-pipeline 5.1）：候选
+        # 原文「永久可考」要求逐字节冻结——含 ``spec/changes/<名>`` 历史形态
+        # 文本的条目不改写（接受指向已消失目录的历史文本，静默改写才是真
+        # 违背承诺）；log.md 同冻结。
+        if page_rel.as_posix() == "log.md" or INBOX_DIRNAME in page_rel.parts:
+            continue
         try:
             text = page.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -689,11 +730,235 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
     return rewritten
 
 
+# ── 编年账 log.md（add-knowledge-inbox-pipeline 4.1）──────────────────
+# 追加式编年账：distill/fold/backfill/lint 轮收尾由 daemon 代码侧追加一行
+# （MUST NOT 依赖车道 LLM 在轮内直接写——写面纪律与并发安全在代码侧收口），
+# 行前缀 `## [YYYY-MM-DD HH:MM UTC+8] <操作> | <主题>`，时间随真相源人类可读
+# 惯例走本地时区显式标注（2026-11-03 裁决），运行时链路仍全链 UTC 不变。
+# 并发安全：追加窗口持跨进程 flock（`.fenix/knowledge-log.lock`），与 pending
+# 台账锁同款纪律、不同文件互不阻塞。
+
+LOG_HEADER = (
+    "# 知识真相源编年账\n"
+    "\n"
+    "> 追加式编年账：蒸馏/折叠/回填/体检轮收尾由 daemon 代码侧在本文件末尾追加\n"
+    "> `## [YYYY-MM-DD HH:MM <时区>] <操作> | <主题>` 行（操作 ∈ distill/fold/\n"
+    "> backfill/lint），时间随真相源人类可读惯例走本地时区。unix 工具可按日期\n"
+    "> 前缀 grep；历史行禁删改。\n"
+)
+LOG_OPS = ("distill", "fold", "backfill", "lint")
+LOG_LINE_RE = re.compile(
+    r"^## \[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC[+-]\d{1,2}(?::\d{2})?\] "
+    r"(distill|fold|backfill|lint) \| "
+)
+# 编年账就地提交的信息前缀（失败/回滚收尾路径无法搭车产出提交时，log.md
+# 追加以独立小提交落库，保持真相源工作区干净——滞留的脏 log.md 会污染后续
+# 批次的基线甄别）
+LOG_COMMIT_PREFIX = "[fenix] knowledge: log"
+
+
+def knowledge_log_path(project_root) -> Path:
+    return Path(project_root) / LOG_FILE_REL
+
+
+@contextmanager
+def _knowledge_log_lock(proot: Path):
+    """log.md 追加窗口的进程间互斥（flock，``.fenix/knowledge-log.lock``）。
+
+    追加模式单次小写入本身近原子，但「缺失建头 + 追加」是 check-then-act
+    段，且 distill 与 audit 车道可能分属 daemon / dashboard --serve 两进程，
+    持锁串行保证并发追加不丢行（4.1 契约）。
+    """
+    import fcntl
+
+    lock_dir = Path(proot) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge-log.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def _log_subject_safe(text, limit: int = 160) -> str:
+    """主题清洗：压平换行、去控制字符、截断——行前缀契约要求单行可 grep。"""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", str(text)).strip()
+    return cleaned[:limit] or "(空)"
+
+
+def append_knowledge_log(project_root, op: str, subject: str, detail: "str | None" = None) -> bool:
+    """追加一行编年账（flock 进程间互斥，并发追加不丢行）；fail-open。
+
+    Args:
+        op: 操作名（distill/fold/backfill/lint，越界 ValueError——调用方
+            传错操作名属代码缺陷，不静默吞）。
+        subject: 主题（单行，控制字符压平截断）。
+        detail: 可选明细行（同样压平为单行，附在主题行下一行）。
+
+    Returns:
+        True=已追加；False=写失败（调用方照常继续主流程，编年账缺失不阻断
+        任何车道）。
+    """
+    if op not in LOG_OPS:
+        raise ValueError(f"log 操作非法: {op}（须为 {'/'.join(LOG_OPS)}）")
+    proot = Path(project_root)
+    stamp, tz = local_now_stamp()
+    body = f"## [{stamp} {tz}] {op} | {_log_subject_safe(subject)}\n"
+    if detail:
+        body += _log_subject_safe(detail, 400) + "\n"
+    path = knowledge_log_path(proot)
+    try:
+        with _knowledge_log_lock(proot):
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(path, LOG_HEADER)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(body)
+        return True
+    except OSError as e:
+        logger.warning("knowledge-log 编年账追加失败（%s）: %s", _log_subject_safe(f"{op} {subject}", 80), e)
+        return False
+
+
+def _commit_log_line(proot: Path, subject: str) -> None:
+    """编年账追加后的就地提交（pathspec 限定 log.md 单文件，fail-open）。
+
+    蒸馏产出提交可搭车时（fold 行在折叠提交前追加）不经本函数；失败/回滚
+    收尾路径产出已回滚或未生成，只能独立小提交。提交失败时 reset 退栈并
+    WARNING 留痕（滞留脏 log.md 的代价 < staged 悬置），不阻断调用方。
+    """
+    try:
+        st = _git(proot, ["--no-optional-locks", "status", "--porcelain", "--", LOG_FILE_REL])
+        if st.returncode != 0 or not st.stdout.strip():
+            return  # 干净（搭车提交已带走）或 status 不可用：无事可做
+        add = _git(proot, ["add", "--", LOG_FILE_REL])
+        if add.returncode != 0:
+            logger.warning("knowledge-log 编年账 git add 失败: %s", add.stderr.strip())
+            return
+        commit = _git(
+            proot,
+            ["commit", "-m", f"{LOG_COMMIT_PREFIX} {_log_subject_safe(subject, 80)}", "--", LOG_FILE_REL],
+            timeout=60,
+        )
+        if commit.returncode != 0:
+            _git(proot, ["reset", "--", LOG_FILE_REL])
+            logger.warning(
+                "knowledge-log 编年账 git commit 失败（已 reset 退栈，log.md 滞留工作区）: %s",
+                commit.stderr.strip() or f"exit {commit.returncode}",
+            )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("knowledge-log 编年账提交异常: %s", e)
+
+
+# ── 候选区 _inbox（add-knowledge-inbox-pipeline 1.2/2.1/3.1/6.1）────────
+
+def inbox_entries(project_root) -> list:
+    """候选区存量条目（`_inbox/` 顶层 ``*.md``，排除 README 与 ``done/``）。
+
+    目录缺失/不可读按空表 fail-open（折叠前置段、积压检测与面板计数都不因
+    目录缺席报错）。"""
+    inbox = Path(project_root) / KNOWLEDGE_DIR / INBOX_DIRNAME
+    if not inbox.is_dir():
+        return []
+    try:
+        return sorted(
+            p for p in inbox.iterdir()
+            if p.is_file() and p.suffix == ".md" and p.name != "README.md"
+        )
+    except OSError as e:
+        logger.warning("knowledge-inbox 候选区列举失败，按空表处理: %s", e)
+        return []
+
+
+def inbox_backlog(project_root, now=None) -> dict:
+    """候选区积压画像（6.1 提醒检测与 6.2 面板计数共用单源）。
+
+    Returns:
+        ``{"count": 条目数, "oldest_stay_days": 最老条目滞留整天数（mtime
+        起算；空区恒 0）}``。
+    """
+    entries = inbox_entries(project_root)
+    if not entries:
+        return {"count": 0, "oldest_stay_days": 0}
+    now_ts = (now or now_local()).timestamp()
+    oldest = None
+    for p in entries:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue  # 单条 stat 失败不拖垮画像（该条不计入最老判定）
+        if oldest is None or mtime < oldest:
+            oldest = mtime
+    if oldest is None:
+        return {"count": len(entries), "oldest_stay_days": 0}
+    return {
+        "count": len(entries),
+        "oldest_stay_days": max(0, int((now_ts - oldest) // 86400)),
+    }
+
+
+def inbox_backlog_hit(project_root, now=None) -> "dict | None":
+    """积压提醒阈值判定（6.1）：≥10 条或最老条目滞留 ≥7 天任一命中。"""
+    info = inbox_backlog(project_root, now=now)
+    if (
+        info["count"] >= INBOX_BACKLOG_COUNT_THRESHOLD
+        or info["oldest_stay_days"] >= INBOX_BACKLOG_AGE_DAYS
+    ):
+        return info
+    return None
+
+
+def build_inbox_fold_prompt(proot: Path, entry_name: str) -> str:
+    """组装 inbox 折叠前置 run 提示词：折叠模式动态段前置 + 蒸馏模板全文。
+
+    模板全文复用（能力页契约/铁律/盖戳纪律单源，7.1 增补的折叠段与本动态段
+    同源），动态段置顶声明本轮模式，SPEC 蒸馏任务段不适用。
+    """
+    tpl = load_distill_prompt()
+    stamp, tz = local_now_stamp()
+    entry_path = (proot / KNOWLEDGE_DIR / INBOX_DIRNAME / entry_name).resolve()
+    done_rel = f"{KNOWLEDGE_DIR}/{INBOX_DIRNAME}/done/{entry_name}"
+    return (
+        f"## 本轮模式：inbox 折叠前置段（不做 SPEC 蒸馏）\n\n"
+        f"本轮是蒸馏车道的折叠前置段（piggyback）：``spec/knowledge/_inbox/``\n"
+        f"存量候选逐条折叠入库。本轮**只处理下面这一条**，完成后即收工；下方\n"
+        f"模板中的「合并语义（ADDED/MODIFIED/REMOVED）/ ADR 抽取 / 首跑自举 /\n"
+        f"原料缺失降级」等 SPEC 蒸馏任务段对本轮不适用，不要执行。\n\n"
+        f"- 待折叠条目（自由格式 markdown 候选，绝对路径）：{entry_path}\n"
+        f"- 折叠成功后条目移动到（``done/`` 为溯源永久保留区）：\n"
+        f"  `{done_rel}`（mkdir -p 后 mv，不改写条目内容）\n"
+        f"- 当前本地时间（盖戳用）：{stamp}（时区 {tz}）\n\n"
+        f"折叠要求（模板铁律全部适用，写路径仍限定 ``spec/knowledge/``）：\n\n"
+        f"1. 读条目，提取其中**仍然成立的当前业务规则**，按模板能力页契约折叠\n"
+        f"   进最相关的能力页（无可挂靠页则新建能力页，并同步所在域\n"
+        f"   `_domain.md` 与 index 表登记）。条目是自由格式，由你折叠成合规\n"
+        f"   能力页内容；条目代表最新交互结论，与既有规则冲突时按「后写覆盖\n"
+        f"   前写」覆盖旧规则，旧规则从规则段消失。\n"
+        f"2. 散文重写、禁止历史叙述措辞、单页 ≤ 150 行（超顶拆主从分片互链）：\n"
+        f"   与 SPEC 蒸馏同纪律。\n"
+        f"3. 折叠涉及的每个能力页：marker ``rev`` +1、刷新盖戳行与所在域\n"
+        f"   `_domain.md`/index 表的更新时间；marker ``sources`` 追加\n"
+        f"   `{done_rel}`（file 形态，机器校验对该前缀只查文件真实存在）；\n"
+        f"   溯源段追加一行（纯文本形态、不加链接）：\n"
+        f"   `- <日期> <条目名>（{done_rel}） — <折叠了什么>`。\n"
+        f"4. 折叠完成后把条目文件移动到 ``{done_rel}``。折叠中途失败时不要\n"
+        f"   移动条目，并把已改动页面恢复原样（条目滞留原地待下轮重试）。\n"
+        f"5. 自查（能力页 marker 紧随 H1、sources 路径逐一真实存在、行数、\n"
+        f"   链接、盖戳，同模板完成标准）通过后，输出一行\n"
+        f"   ``KNOWLEDGE_DISTILL_DONE``（stdout 最后一行）。\n"
+        f"\n---\n\n{tpl}"
+    )
+
+
 # ── 派发与执行器 ──────────────────────────────────────────────────────
 
 def load_distill_prompt() -> str:
-    """读蒸馏提示词模板（core/knowledge_prompts/distill.md）。"""
-    path = Path(__file__).resolve().parent / PROMPT_FILE
+    """读蒸馏提示词模板（agents/knowledge-distill.md）。"""
+    path = Path(__file__).resolve().parent.parent / "agents" / PROMPT_FILE
     return path.read_text(encoding="utf-8")
 
 
@@ -1053,7 +1318,7 @@ def _git(proot: Path, args: list, timeout: int = 60):
     )
 
 
-def _discard_output(proot: Path, before=None) -> bool:
+def _discard_output(proot: Path, before=None, exclude=None) -> bool:
     """放弃产出：restore tracked + 清理未跟踪新增（不留半成品）。
 
     基线感知（code-review 4d1e46fa795c）：``before`` 为本次 run 前的
@@ -1066,6 +1331,11 @@ def _discard_output(proot: Path, before=None) -> bool:
     手工策展，回滚会连带吞掉——降级为 WARNING 留痕交人工处理（与
     _audit_stray_writes「不吞用户未提交改动」同一尺度）。基线不可用
     （git 失败/非 git 仓库）时同样保守跳过。
+
+    ``exclude``（add-knowledge-inbox-pipeline 3.1）：从两侧快照中先行剔除的
+    路径集（折叠失败回滚传条目原位路径——移动到 done/ 是任务语义而非用户
+    策展，原位路径在条目未被移动时恒同时出现在基线与现状两侧，不剔除会
+    触发 overlap 保守跳过、折叠半成品滞留）。
 
     Returns:
         True = 本次 run 产出路径的回滚清理已执行且残留复查确认干净；False =
@@ -1097,6 +1367,9 @@ def _discard_output(proot: Path, before=None) -> bool:
             "无法可靠甄别基线交集，跳过回滚，请人工核查"
         )
         return False
+    if exclude:
+        after_k = after_k - set(exclude)
+        baseline_k = baseline_k - set(exclude)
     overlap = sorted(p for p in after_k if p in baseline_k)
     if overlap:
         logger.warning(
@@ -1353,15 +1626,18 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
     """
     surface: set = set()
     kn_prefix = KNOWLEDGE_DIR + "/"
+    folded_inside: list = []  # knowledge 目录内部的折叠条目（目录前缀）
     need_probe = False
     for p in paths:
         if p.startswith(kn_prefix):
             if p.endswith("/"):
+                folded_inside.append(p)
                 need_probe = True  # knowledge 目录内部整目录折叠
             else:
                 surface.add(p)
         elif p.endswith("/") and kn_prefix.startswith(p):
-            need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）
+            need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）：knowledge
+            # 全表面都在折叠子树内，probe 结果原样收纳
     if need_probe:
         probe = _git(
             proot,
@@ -1372,7 +1648,20 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
             ],
         )
         if probe.returncode == 0:
-            surface.update(tok for tok in probe.stdout.split("\0") if tok)
+            untracked = [tok for tok in probe.stdout.split("\0") if tok]
+            if folded_inside:
+                # 只收纳折叠条目子树内的文件（add-knowledge-inbox-pipeline
+                # 3.1 回滚场景修复）：快照里的折叠条目只代表它自己子树的
+                # untracked 面，ls-files 枚举的是**当下**盘面——折叠失败回滚
+                # 展开基线快照时，run 产出（非折叠子树的文件级新增）会被误
+                # 充基线，与现状快照恒交集 → overlap 保守跳过、半成品滞留。
+                # 非折叠子树的文件级路径由快照原样承载，不靠当下枚举。
+                surface.update(
+                    f for f in untracked
+                    if any(f.startswith(d) for d in folded_inside)
+                )
+            else:
+                surface.update(untracked)
         else:
             logger.warning(
                 "knowledge-distill 未跟踪文件枚举失败，无法可靠判定基线差集"
@@ -1381,8 +1670,12 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
     return surface
 
 
-def _commit_output(proot: Path, archived_names: list, baseline=None) -> str | None:
+def _commit_output(proot: Path, archived_names: list, baseline=None, msg: "str | None" = None) -> str | None:
     """pathspec 限定自动提交（复用 archive_commit 的 fail-open 哲学）。
+
+    ``msg``（add-knowledge-inbox-pipeline 3.1）：折叠前置段的逐条提交复用本
+    函数的基线甄别与 fail-open 口径，仅换提交信息（``[fenix] knowledge: fold
+    <条目>``）；缺省 None 保持蒸馏提交信息不变。
 
     基线甄别（code-review 50251dbfd0c1）：``baseline`` 为本批 run 前的
     ``_git_status_paths`` 快照（_run_batch 的 run_baseline），与
@@ -1400,7 +1693,7 @@ def _commit_output(proot: Path, archived_names: list, baseline=None) -> str | No
         warning，视为 ok）；None（提交失败，已记 warning）。
     """
     names = ", ".join(archived_names)
-    commit_msg = f"{COMMIT_PREFIX} {names}"
+    commit_msg = msg or f"{COMMIT_PREFIX} {names}"
     try:
         # 基线差集（code-review 50251dbfd0c1）：after - baseline 即本次 run
         # 新增路径（含未跟踪新建与 tracked 改/删）；与 baseline 的交集疑似
@@ -1692,6 +1985,10 @@ def _distill_run_artifact_close(run_file: "Path | None", result: dict) -> None:
                     "names": result.get("names"),
                     "commit": result.get("commit"),
                     "rounds": result.get("rounds"),
+                    # add-knowledge-inbox-pipeline 4.2：折叠前置段计数随终态
+                    # 行下发（读侧不解析未知键，纯增量观测）
+                    "folded": result.get("folded", 0),
+                    "fold_failed": result.get("fold_failed", 0),
                     "timestamp": now_local().isoformat(timespec="seconds"),
                 },
             )
@@ -1958,15 +2255,161 @@ class DistillManager:
             if hb_thread is not None:
                 hb_thread.join(timeout=10)
             if result is not None:
+                # 编年账 distill 行（add-knowledge-inbox-pipeline 4.2）：成功批
+                # 已在 _run_batch_core 提交前置行随产出搭车落库（_log_written
+                # 置位即跳过，不留独立 log 提交顶掉蒸馏提交的 HEAD 位），此处
+                # 只兜底失败/异常/提交失败批——追加失败行并独立小提交保持
+                # spec/knowledge/ 工作区干净。先于终态行收口并吞异常，保证
+                # 终态行必为末行（读侧 classify_run 只看末行）。折叠行已由
+                # 前置段按条先行落账。
+                try:
+                    self._log_distill_finish(proot, result)
+                except Exception as exc:  # noqa: BLE001 — 留痕失败不吞终态行
+                    logger.warning("knowledge-distill 批收尾留痕异常: %s", exc)
                 _distill_run_artifact_close(run_file, result)
+
+    # ── inbox 折叠前置段（add-knowledge-inbox-pipeline 3.1/3.2）──────────
+
+    def _fold_inbox_entries(self, proot: Path) -> dict:
+        """逐条消化 `_inbox/` 存量（按条目顺序、每条独立提交可中断）。
+
+        每条：独立 spawn 折叠 run（动态段注入条目路径，模板铁律/能力页契约
+        照常约束）→ 实时 ``validate_knowledge``（落库前校验门，3.2）→ 通过
+        即独立提交（fold 行随提交搭车落库）；run 失败或校验违规即回滚本条
+        改动、条目滞留原地不丢弃，继续消化后续条目。
+
+        Returns:
+            ``{"folded": 成功数, "fold_failed": 失败数, "entries": [明细]}``。
+        """
+        summary = {"folded": 0, "fold_failed": 0, "entries": []}
+        entries = inbox_entries(proot)
+        if not entries:
+            return summary
+        logger.info("knowledge-distill 折叠前置段：_inbox 存量 %d 条", len(entries))
+        for entry in entries:
+            name = entry.name
+            origin_rel = f"{KNOWLEDGE_DIR}/{INBOX_DIRNAME}/{name}"
+            try:
+                snapshot = entry.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning(
+                    "knowledge-distill 折叠前置段：条目 %s 不可读（%s），"
+                    "本轮跳过滞留原地",
+                    name,
+                    e,
+                )
+                summary["fold_failed"] += 1
+                summary["entries"].append({"entry": name, "ok": False, "reason": "条目不可读"})
+                continue
+            status_before = _git_status_paths(proot)
+            ok, err = self._spawn_and_wait(proot, build_inbox_fold_prompt(proot, name))
+            violations = validate_knowledge(proot) if ok else None
+            if ok and not violations:
+                # fold 行先追加（随本条折叠提交搭车落库，4.2 顺序契约：
+                # 折叠轮先 fold 行后 distill 行）
+                append_knowledge_log(proot, "fold", f"{name} 折叠入库")
+                commit = _commit_output(
+                    proot,
+                    [name],
+                    baseline=status_before,
+                    msg=f"{COMMIT_PREFIX.replace('distill', 'fold')} {name}",
+                )
+                if commit is not None:
+                    summary["folded"] += 1
+                    summary["entries"].append({"entry": name, "ok": True})
+                    logger.info(
+                        "knowledge-distill 折叠入库：%s（commit=%s）",
+                        name,
+                        commit or "无变更",
+                    )
+                    continue
+                err = "校验通过但自动提交失败"
+            reason = err or "；".join(violations[:3])
+            self._rollback_failed_fold(proot, status_before, name, snapshot, origin_rel)
+            append_knowledge_log(
+                proot, "fold", f"{name} 折叠失败滞留：{_log_subject_safe(reason, 120)}"
+            )
+            _commit_log_line(proot, f"fold {name} 失败留痕")
+            summary["fold_failed"] += 1
+            summary["entries"].append(
+                {"entry": name, "ok": False, "reason": _log_subject_safe(reason, 200)}
+            )
+            logger.warning(
+                "knowledge-distill 折叠失败（%s），条目滞留原地待下轮重试: %s",
+                name,
+                _log_subject_safe(reason, 200),
+            )
+        return summary
+
+    def _rollback_failed_fold(
+        self, proot: Path, before, name: str, snapshot: str, origin_rel: str
+    ) -> None:
+        """折叠失败回滚：页面/落点恢复 + 条目原位恢复（滞留原地语义）。
+
+        条目原位路径经 ``exclude`` 剔除出基线甄别（移动是任务语义非用户策展），
+        ``done/`` 落点按 produced 集清理（untracked clean / tracked restore）；
+        条目原位内容从快照恢复（未被移动时覆盖掉 run 内的原位改写）。回滚
+        未确认时 WARNING 留痕交人工，与蒸馏放弃产出同一口径。
+        """
+        discarded = _discard_output(proot, before, exclude={origin_rel})
+        origin = proot / origin_rel
+        try:
+            current = origin.read_text(encoding="utf-8") if origin.exists() else None
+        except (OSError, UnicodeDecodeError):
+            current = None
+        if current != snapshot:
+            try:
+                origin.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(origin, snapshot)
+            except OSError as e:
+                logger.warning(
+                    "knowledge-distill 折叠失败回滚：条目 %s 原位恢复失败: %s",
+                    name,
+                    e,
+                )
+        if not discarded:
+            logger.warning(
+                "knowledge-distill 折叠失败回滚未确认（%s），spec/knowledge/ "
+                "可能残留半成品，请人工核查",
+                name,
+            )
+
+    def _log_distill_finish(self, proot: Path, result: dict) -> None:
+        """批收尾编年账 distill 行兜底（4.2）：daemon 代码侧留痕，fail-open。
+
+        成功批由 ``_run_batch_core`` 在 ``_commit_output`` 前置行随产出提交
+        搭车（经 pop 识别 ``_log_written`` 后跳过，避免独立 log 提交改变
+        HEAD）；本方法只兜底失败/异常/提交双失败批——追加失败行并独立小
+        提交，保持 spec/knowledge/ 工作区干净。
+        """
+        piggybacked = result.pop("_log_written", False)
+        if piggybacked:
+            return
+        subject = f"{result.get('names', '')} 失败：{result.get('error') or '未知原因'}"
+        if append_knowledge_log(proot, "distill", subject):
+            _commit_log_line(proot, f"distill {result.get('names', '')}")
 
     def _run_batch_core(
         self, proot: Path, archived_names: list, run_file: "Path | None"
     ) -> dict:
         names = ", ".join(archived_names)
+        # 折叠前置段（add-knowledge-inbox-pipeline 3.1，piggyback-only）：每轮
+        # distill 先消化 `_inbox/` 存量再蒸当轮 SPEC。挂点在批级 flock 单写者
+        # 之内（_run_with_lock → _run_batch → 本方法），与队列台账单写者
+        # （ADR-234）兼容，不引入双写者（3.2）；`_inbox` 非空不构成独立派发
+        # 条件——本段只在已有蒸馏批内执行，无 fold-only run 形态。
+        fold = self._fold_inbox_entries(proot)
         prompt = build_distill_prompt(proot, archived_names)
         violations = None
-        result = {"ok": False, "names": names, "rounds": 0, "commit": None, "error": None}
+        result = {
+            "ok": False,
+            "names": names,
+            "rounds": 0,
+            "commit": None,
+            "error": None,
+            "folded": fold.get("folded", 0),
+            "fold_failed": fold.get("fold_failed", 0),
+        }
 
         # 批次级 run 前基线快照（code-review 4d1e46fa795c）：放弃产出时据此
         # 判别 spec/knowledge/ 下哪些改动是用户 run 前既有的未提交改动，避免
@@ -1998,6 +2441,17 @@ class DistillManager:
                 return result
             violations = validate_knowledge(proot)
             if not violations:
+                # distill 行随产出提交搭车落库（add-knowledge-inbox-pipeline
+                # 4.2）：先写 log.md 再 _commit_output（baseline 甄别把 log.md
+                # 收进本提交），不留独立 log 提交顶掉蒸馏提交的 HEAD 位；行内
+                # 不落 commit 摘要（写入时 hash 未定，git 历史相邻可查）。
+                extra = f"，折叠入库 {result['folded']} 条" if result["folded"] else ""
+                append_knowledge_log(
+                    proot,
+                    "distill",
+                    f"{names}（第 {result['rounds']} 轮，自动提交落库{extra}）",
+                )
+                result["_log_written"] = True
                 commit = _commit_output(proot, archived_names, baseline=run_baseline)
                 if commit is None:
                     # 提交失败当轮重试一次（index.lock 撞车等瞬态失败常可恢复）；
@@ -2024,6 +2478,11 @@ class DistillManager:
                 # 会把它连带回滚（code-review 0f5f648d54f4 静默丢失链）；
                 # 登台账留痕，保持「未落库」状态由人工/重试兜底。
                 result["error"] = "校验通过但自动提交失败（产出滞留工作区未落库）"
+                # 清搭车 flag：前置的 distill 行（措辞「自动提交落库」）已随
+                # 产出滞留 dirty log.md，交 finally 兜底追加失败行并独立提交
+                # ——纠正行紧随其后落库，账面自洽（罕见瞬态路径，index.lock
+                # 持续占用等）。
+                result["_log_written"] = False
                 logger.warning(
                     "knowledge-distill 校验通过但自动提交失败（%s），产出滞留"
                     "工作区未落库，已登重试台账",

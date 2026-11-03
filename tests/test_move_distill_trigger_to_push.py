@@ -208,6 +208,42 @@ class TestRewriteSourceLinks(RewriteTestBase):
                 )
 
 
+class TestRewriteInboxExemption(RewriteTestBase):
+    """add-knowledge-inbox-pipeline 5.1：归档溯源改写器对候选区与编年账豁免。
+
+    候选原文「永久可考」要求逐字节冻结——含 ``spec/changes/<名>`` 历史形态
+    文本的条目与 log.md 不改写（接受指向已消失目录的历史文本，静默改写才是
+    真违背承诺）；能力页照常改写对照豁免不是整体失效。
+    """
+
+    def test_inbox_entry_log_and_done_frozen_byte_for_byte(self):
+        entry = self._write_page(
+            "_inbox/old-session-note.md",
+            (
+                "# 排查结论\n\n"
+                "现场证据见 spec/changes/demo-spec/proposal.md；历史形态引用\n"
+                f"spec/changes/{self.spec} 在归档后指向已消失目录，保持原样。\n"
+            ),
+        )
+        done = self._write_page("_inbox/done/old-note.md", "# 已折叠原文（同样冻结）\n")
+        log = self._write_page(
+            "log.md",
+            "## [%s 10:00 UTC+8] distill | demo-spec（第 1 轮，自动提交落库）\n"
+            % TODAY,
+        )
+        before = {p: p.read_bytes() for p in (entry, done, log)}
+        rewritten = rewrite_source_links_to_archive(
+            self.root, self.spec, self._archive_name()
+        )
+        # 能力页照常改写；候选区与编年账不在改写清单
+        self.assertEqual(
+            rewritten,
+            ["spec/knowledge/domains/pickup/scheduled-spec-pickup.md"],
+        )
+        for p, blob in before.items():
+            self.assertEqual(p.read_bytes(), blob, f"{p} 应逐字节冻结")
+
+
 class _ArchiveIntegrationBase(RewriteTestBase):
     """归档接线共用：git 项目 + STATE 条目 + 知识页（push 态 changes/ 溯源）。"""
 

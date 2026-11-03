@@ -455,6 +455,18 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
             </Typography.Text>
           ) : (
             <>
+              {/* 候选区积压提醒（add-knowledge-inbox-pipeline 6.2）：有滞留
+                  候选时提示，空区不渲染（画像失败 null 同样不渲染）。 */}
+              {indexData?.inbox_backlog && indexData.inbox_backlog.count > 0 && (
+                <Typography.Text
+                  type="warning"
+                  data-testid="knowledge-inbox-backlog"
+                >
+                  候选区滞留 {indexData.inbox_backlog.count} 条
+                  （最老 {indexData.inbox_backlog.oldest_stay_days} 天）：
+                  等待下一次蒸馏轮折叠入库（spec/knowledge/_inbox/）。
+                </Typography.Text>
+              )}
               <div data-testid="knowledge-index-md">
                 <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
                   {stripHtmlComments(indexData?.index_md || '')}

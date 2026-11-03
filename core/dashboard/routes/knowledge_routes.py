@@ -52,7 +52,7 @@ _ALLOWED_PREFIXES = ("domains/", "adr/")
 def _parse_adr_head(text: str) -> tuple[str, str | None, str | None]:
     """解析 ADR 头部 ``(status, superseded_by, title)``；无 status 行回 'unknown'。
 
-    契约见 core/knowledge_prompts/distill.md：status 行在 "## Context" 之前
+    契约见 agents/knowledge-distill.md：status 行在 "## Context" 之前
     的头部；supersede 只标不改时头部追加 ``Superseded by: ADR-NNN(...)`` 行；
     首标题为 ``# ADR-NNN：<标题>``（半/全角冒号均收）。无标题行回 None
     （调用方以 adr/index.md 表格标题列兜底）。
@@ -166,6 +166,16 @@ class H14KnowledgeRoutesMixin:
         proot = Path(project["path"])
         kroot = proot / KNOWLEDGE_DIR
         index_md = kroot / "index.md"
+        # 候选区积压画像（add-knowledge-inbox-pipeline 6.2）：单源 core.
+        # knowledge.inbox_backlog（count + oldest_stay_days）。延迟导入降级：
+        # core.knowledge 缺席/异常时字段回 null，面板其余内容不受影响。
+        try:
+            from core.knowledge import inbox_backlog
+
+            inbox_info = inbox_backlog(proot)
+        except Exception as exc:  # noqa: BLE001 — 画像失败不阻断总目录下发
+            logger.warning("knowledge inbox 积压画像失败（%s）: %s", project["name"], exc)
+            inbox_info = None
         payload = {
             "project": project["name"],
             "initialized": index_md.is_file(),
@@ -173,6 +183,7 @@ class H14KnowledgeRoutesMixin:
             "domains": [],
             "adrs": [],
             "titles": {},
+            "inbox_backlog": inbox_info,
         }
         if index_md.is_file():
             try:

@@ -3144,6 +3144,13 @@ export interface KnowledgeAdrEntry {
   superseded_by: string | null;
 }
 
+/** 候选区（spec/knowledge/_inbox/）积压画像：count=滞留候选条数，
+ *  oldest_stay_days=最老条目滞留整天数（mtime 起算；空区恒 0）。 */
+export interface KnowledgeInboxBacklog {
+  count: number;
+  oldest_stay_days: number;
+}
+
 /** 项目知识总目录（GET /api/knowledge/index；未初始化 initialized=false）。 */
 export interface KnowledgeIndexData {
   project?: string;
@@ -3155,6 +3162,9 @@ export interface KnowledgeIndexData {
    *  null。仅域与能力页（domains/<域>、domains/<域>/<页>）；ADR 标题经
    *  adrs[].title 另取。 */
   titles: Record<string, string | null>;
+  /** 候选区积压画像（add-knowledge-inbox-pipeline 6.2）；画像失败为 null
+   *  （降级，不阻断总目录下发）。 */
+  inbox_backlog: KnowledgeInboxBacklog | null;
 }
 
 /** 读取项目知识总目录（分面 active 门控；未初始化为占位结构，非错误）。 */

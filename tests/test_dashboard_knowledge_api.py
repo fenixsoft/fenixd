@@ -64,6 +64,32 @@ class TestKnowledgeIndexAPI:
             assert body["index_md"] is None
             assert body["domains"] == []
             assert body["titles"] == {}
+            # 候选区积压画像（add-knowledge-inbox-pipeline 6.2）：空区恒
+            # {count: 0, oldest_stay_days: 0}
+            assert body["inbox_backlog"] == {"count": 0, "oldest_stay_days": 0}
+        finally:
+            srv.stop()
+
+    def test_inbox_backlog_counted(self, tmp_path):
+        """积压画像随 payload 下发：滞留候选计数与最老滞留天数。"""
+        proot = make_project(tmp_path)
+        _write_knowledge(proot)
+        inbox = proot / "spec" / "knowledge" / "_inbox"
+        inbox.mkdir()
+        (inbox / "note-a.md").write_text("# 候选 A\n", encoding="utf-8")
+        import time
+
+        stamp = time.time() - 2.5 * 86400
+        note_b = inbox / "note-b.md"
+        note_b.write_text("# 候选 B\n", encoding="utf-8")
+        import os
+
+        os.utime(note_b, (stamp, stamp))
+        srv = _server(tmp_path, proot)
+        try:
+            status, body = srv.get("/api/knowledge/index?project=proj-a")
+            assert status == 200
+            assert body["inbox_backlog"] == {"count": 2, "oldest_stay_days": 2}
         finally:
             srv.stop()
 
