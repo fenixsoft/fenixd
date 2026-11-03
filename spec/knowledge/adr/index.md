@@ -318,3 +318,4 @@ superseded 条目保留在列供溯源。编号接续本目录既有最大号。
 | [ADR-310](ADR-310-prototype-binding-dual-channel-spec-declaration-plus-prompt-contract.md) | accepted | 原型绑定力双通道：SPEC Scenario UI 真相源声明为主通道、implementer/code-review 条件式契约段为对照通道（开关恒为声明本身），冲突仲裁用户裁决＞原型＞升级，评审禁自行放行 |
 | [ADR-311](ADR-311-prototype-annotation-data-proto-id-stable-anchor-no-raw-selector.md) | accepted | 批注以 data-proto-id 稳定锚为主键禁挂裸 selector：重生成未波及区块 MUST 沿用原锚、波及区块允许换锚靠文本快照人工核对，锚兼作评审对照键，后续原型相关 SPEC 同受此通道约束 |
 | [ADR-312](ADR-312-frozen-load-read-tap-salvage-timing-exposure-criterion.md) | accepted | 冻结装载读端接入场景顶层 dict 拯救：拯救实现保持单源，读端接入判据由「一律不接」改为时序暴露面（读取可能先于拯救点的读端必须接、之后的读端维持零防御），不可拯救一律落回既有 corrupt→env_blocked；后续新增场景读端按时序判据归类（取代 ADR-286 的验收归因单点拓扑） |
+| [ADR-313](ADR-313-harness-symmetric-default-fallback-partial-chain-guard.md) | accepted | harness 对称无分配回落合法化（claude 环境继承/dsh 省略 --patch 按 profile 默认档），回落与配置笔误以 env 链键存在性划界（req.model 不参与）；归因走降级新键 provider_source 禁重载既有键，可观测=进程×adapter 一次性 WARN；恢复无分配报错或重载归因键须显式 supersede |

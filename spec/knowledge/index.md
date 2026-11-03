@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-02 13:25 UTC+8
+> 最后更新：2026-11-03 10:59 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -20,7 +20,7 @@
 | [code-review-lane](domains/code-review-lane/_domain.md) | 代码审查 | 19 | 2026-10-30 21:56 |
 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复 | 27 | 2026-10-30 21:56 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 运行时 | 16 | 2026-10-15 01:55 |
-| [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入 | 5 | 2026-10-30 23:11 |
+| [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入 | 6 | 2026-11-03 10:59 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性 | 30 | 2026-10-30 18:20 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做 | 14 | 2026-10-30 23:34 |
 | [worktree-vc](domains/worktree-vc/_domain.md) | 工作树与版本控制 | 30 | 2026-10-31 16:31 |
