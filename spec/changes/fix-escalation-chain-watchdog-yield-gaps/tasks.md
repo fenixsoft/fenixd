@@ -32,5 +32,5 @@
 
 ## 4. 收尾
 
-- [ ] 4.1 全量回归通过 + compileall 自证
-- [ ] 4.2 落位 restart_request 信号文件（根路径，JSON：reason/origin/date）并冒烟预演（全新进程 + 消费方 import + 链/看护核心 API）；实际重启由 supervisor 消费该信号完成
+- [x] 4.1 全量回归通过 + compileall 自证
+- [x] 4.2 落位 restart_request 信号文件（根路径，JSON：reason/origin/date）并冒烟预演（全新进程 + 消费方 import + 链/看护核心 API）；实际重启由 supervisor 消费该信号完成
