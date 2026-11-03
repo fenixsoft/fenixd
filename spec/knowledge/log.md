@@ -9,3 +9,4 @@
 ## [2026-11-03 20:18 UTC+8] fold | zn-inbox-entry-2.md 折叠入库
 ## [2026-11-03 20:22 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
 ## [2026-11-03 20:26 UTC+8] distill | register-revise-scenario-choice-on-intervention-signals（第 1 轮，自动提交落库，折叠入库 4 条）
+## [2026-11-03 20:28 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
