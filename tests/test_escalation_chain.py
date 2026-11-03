@@ -9,6 +9,7 @@
 """
 
 import glob
+import json
 import re
 import shutil
 import tempfile
@@ -21,10 +22,13 @@ from unittest.mock import MagicMock, patch
 from core.pm_engine.escalation_chain import (
     ChainQuotaStore,
     EscalationChain,
+    entry_phase,
     load_chain_state,
     reset_chain,
+    save_chain_state,
     set_chain,
 )
+from tests.helpers import utcnow_iso as _utcnow_iso
 
 
 def _scan_call_sites(pattern: str, directory: str = "core") -> list:
@@ -414,8 +418,11 @@ class TestAcceptanceScenarios(unittest.TestCase):
     def _mk_sm(self):
         from core.state_machine import StateMachine
 
+        # fix-escalation-chain-watchdog-yield-gaps 1.3：链头派发前 frozen 预检
+        # 生效——夹具默认非冻结（frozen 形态由预检/deferred 专测按需
+        # freeze_spec 构造），保证既有派发处置场景语义不变。
         sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
-        sm.add_spec("spec-a", {"status": "blocked", "frozen": True})
+        sm.add_spec("spec-a", {"status": "blocked", "frozen": False})
         return sm
 
     def _fake_dispatch(self, item):
@@ -485,9 +492,11 @@ class TestAcceptanceScenarios(unittest.TestCase):
         assert recs[prior["id"]]["handled"] is True
         assert recs[prior["id"]]["close_cause"] == CLOSED_BY_CHAIN
         assert recs[prior["id"]]["handled_by"] == AUTO_RESOLVE_BY
-        # 显式 status 解冻（拒绝 parse 兜底的正面路径）
+        # 非冻结件闭环：spec 保持可运行态（frozen=False 件处置成功不解冻——
+        # 显式 status 解冻 side-effects 由冻结件分支承载，专测见
+        # TestDeferredYieldAndFrozenPrecheck.test_close_chain_success_unfreezes）
         entry = self.chain._resolve_state_machine().read_one("spec-a")
-        assert entry["frozen"] is False and entry["status"] == "ready"
+        assert entry["frozen"] is False
         # 成功处置不计失败配额
         assert self._quota().admin_attempts(_SIG) == 0
         assert "chain-closed" in self._ledger_kinds()
@@ -737,14 +746,28 @@ class TestAcceptanceScenarios(unittest.TestCase):
     # ── 在飞互斥：同 spec 已有 admin run 在飞 → 本件让行不双派 ──────
 
     def test_s13_deferred_when_admin_run_in_flight(self):
+        # fix-escalation-chain-watchdog-yield-gaps 1.2：互斥守卫命中从「整条
+        # 清除」改为「deferred 留痕」（yield_to=被让行 run_id + 信号快照），
+        # 看护扫描在被让行 run 终态后回喂重派（不再静默丢弃等复发）。
+        # 守卫单源已收拢 _merge_admin_runs（_active_admin_run_id 消费）。
         with patch(
-            "core.admin_monitor._spec_has_active_admin_run", lambda *a, **k: True
+            "core.admin_monitor._merge_admin_runs",
+            lambda *a, **k: {"admin-spec-a-live": {
+                "final": False, "has_pending": True, "rec": {}}},
         ):
             assert self._submit() == "queued"
             assert _drain_chain(self.chain)
         assert self.dispatch_calls == []      # 互斥守卫命中不双派
-        assert self.pm.alerts == []           # 让行不上升（复发由下次触发重新入链）
-        assert load_chain_state(self.tmp)["in_flight"] == []  # 让行后登记清零
+        assert self.pm.alerts == []           # 让行不上升（等看护扫描回喂）
+        inflight = load_chain_state(self.tmp)["in_flight"]
+        assert len(inflight) == 1             # 让行后整条清除改为 deferred 留痕
+        entry = inflight[0]
+        assert entry["phase"] == "deferred"
+        assert entry["yield_to"] == "admin-spec-a-live"   # 被让行对象标识
+        assert entry["deferred_at"]                       # 让行时间戳
+        assert entry["started_at"]                        # 既有字段保留（reap 口径）
+        assert entry["signature"] == _SIG
+        assert entry["item_signal"]["signal_type"] == "verify_env_blocked"  # 重派快照
 
     # ── 车道缺席终点：Arbiter 车道不可用 → 上升 arbiter-unavailable ─
 
@@ -822,8 +845,10 @@ class TestChainObservabilityScenarios(unittest.TestCase):
     def _mk_sm(self):
         from core.state_machine import StateMachine
 
+        # fix-escalation-chain-watchdog-yield-gaps 1.3：预检生效后夹具默认
+        # 非冻结（同 TestAcceptanceScenarios 口径）
         sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
-        sm.add_spec("spec-a", {"status": "blocked", "frozen": True})
+        sm.add_spec("spec-a", {"status": "blocked", "frozen": False})
         return sm
 
     def _fake_dispatch(self, item):
@@ -994,8 +1019,10 @@ class TestDegradedAlertPathParity(unittest.TestCase):
     def _mk_sm(self):
         from core.state_machine import StateMachine
 
+        # fix-escalation-chain-watchdog-yield-gaps 1.3：预检生效后夹具默认
+        # 非冻结（同 TestAcceptanceScenarios 口径）
         sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
-        sm.add_spec("spec-a", {"status": "blocked", "frozen": True})
+        sm.add_spec("spec-a", {"status": "blocked", "frozen": False})
         return sm
 
     def _write_project_config(self, arbiter_enabled=True, blacklist=False):
@@ -1163,3 +1190,510 @@ class TestDegradedAlertPathParity(unittest.TestCase):
         assert self._fire() == []  # 复开 + 车道重建 → 恢复入链零落盘
         self._drain_singleton()
         assert self._fire() == []
+
+
+class TestDeferredYieldAndFrozenPrecheck(unittest.TestCase):
+    """fix-escalation-chain-watchdog-yield-gaps 3.1：链侧五组新行为用例。
+
+    覆盖 tasks 3.1 字面清单：frozen 预检不烧配额 / 冻结击杀空壳不计尝试 /
+    让行留痕形态（phase/yield_to/deferred_at）/ deferred 超时 reap /
+    新旧条目形态混合兼容。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  admin_attempts: 2\n  arbiter_rulings: 2\n"
+            "  reset_window_days: 7\n",
+            encoding="utf-8",
+        )
+        reset_chain()
+        from core.state_machine import StateMachine
+
+        self.chain = EscalationChain(self.tmp, MagicMock())
+        self.chain.set_runner(MagicMock())
+        self.sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
+        self.sm.add_spec("spec-a", {"status": "blocked", "frozen": False})
+        self.chain.set_state_machine(self.sm)
+        self.pm = _FakePm(self.tmp)
+        self.chain.set_pm(self.pm)
+        self.lane = _FakeArbiterLane(self.tmp)
+        self._lane_patcher = patch(
+            "core.pm_engine.arbiter.get_lane", lambda *a, **k: self.lane
+        )
+        self._lane_patcher.start()
+        self.dispatch_calls = []
+        self._dispatch_script = []
+        self.chain._dispatch_admin = self._fake_dispatch
+
+    def tearDown(self):
+        self._lane_patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        reset_chain()
+
+    def _fake_dispatch(self, item):
+        self.dispatch_calls.append(dict(item))
+        return self._dispatch_script.pop(0) if self._dispatch_script else _disp()
+
+    def _freeze(self, frozen=True):
+        self.sm.update_spec("spec-a", {"frozen": frozen})
+
+    def _submit(self, **kw):
+        params = dict(
+            spec="spec-a",
+            signal_type="verify_env_blocked",
+            severity="major",
+            description="验证环境阻塞",
+            evidence="env log",
+            recommended_action="修复环境",
+            source="unit-test",
+        )
+        params.update(kw)
+        return self.chain.submit_entry(**params)
+
+    def _in_flight(self):
+        return load_chain_state(self.tmp)["in_flight"]
+
+    def _deferred_entries(self):
+        return [x for x in self._in_flight() if entry_phase(x) == "deferred"]
+
+    def _write_run(self, run_id, events):
+        runs = self.tmp / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{run_id}.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
+        )
+
+    def _age_started_at(self, hours):
+        state = load_chain_state(self.tmp)
+        old = datetime.now(timezone.utc) - timedelta(hours=hours)
+        for x in state["in_flight"]:
+            x["started_at"] = old.isoformat()
+        save_chain_state(self.tmp, state)
+
+    # ── frozen 预检：不派发、不烧配额、转 deferred 留痕 ──────────────
+
+    def test_frozen_precheck_defers_zero_dispatch_zero_quota(self):
+        self.sm.update_spec("spec-a", {"frozen": True})
+        assert self._submit() == "queued"
+        assert _drain_chain(self.chain)
+        assert self.dispatch_calls == []  # 预检拦截：零派发
+        sig = self.chain._quota.snapshot().get(_SIG) or {}
+        assert not sig.get("admin_attempts")  # 零配额消耗
+        deferred = self._deferred_entries()
+        assert len(deferred) == 1
+        assert deferred[0]["yield_to"] == ""  # 冻结预检件无被让行对象
+        assert deferred[0]["item_signal"]["spec"] == "spec-a"
+        assert deferred[0]["item_signal"]["signal_type"] == "verify_env_blocked"
+
+    def test_frozen_deferred_resubmits_after_unfreeze(self):
+        # 预检 deferred → 解冻 → 看护扫描重派（resubmit_deferred 直驱）
+        self._freeze(True)
+        assert self._submit() == "queued"
+        assert _drain_chain(self.chain)
+        self._freeze(False)  # spec 解冻（重派条件满足）
+        self._dispatch_script = [
+            _disp(run_id="adm-ok", result="resolved", success=True,
+                  status_after="ready")
+        ]
+        entry = self._deferred_entries()[0]
+        assert self.chain.resubmit_deferred(entry) == "queued"
+        assert _drain_chain(self.chain)
+        assert len(self.dispatch_calls) == 1  # 解冻后照常派发
+        assert self._in_flight() == []  # 处置成功闭环、登记清零
+        assert self.pm.alerts == []
+
+    # ── 冻结击杀空壳：0 assistant 轮次 + frozen-terminated 终态不计尝试 ──
+
+    def test_frozen_killed_empty_shell_not_counted(self):
+        self._dispatch_script = [_disp(run_id="adm-shell")]
+        self._write_run(
+            "adm-shell",
+            [{"type": "system"},
+             {"type": "frozen-terminated", "reason": "spec frozen"}],
+        )
+        assert self._submit() == "queued"
+        assert _drain_chain(self.chain)
+        sig = self.chain._quota.snapshot().get(_SIG) or {}
+        assert not sig.get("admin_attempts")  # 空壳不计尝试
+        deferred = self._deferred_entries()
+        assert len(deferred) == 1
+        assert deferred[0]["yield_to"] == ""
+
+    def test_shell_exemption_requires_zero_api_rounds(self):
+        # 跑过轮次（有 assistant 事件）后遭 frozen-terminated：正常计尝试
+        self._dispatch_script = [_disp(run_id="adm-ran")]
+        self._write_run(
+            "adm-ran",
+            [{"type": "assistant", "message": {"content": [{"type": "text"}]}},
+             {"type": "frozen-terminated", "reason": "spec frozen"}],
+        )
+        assert self._submit() == "queued"
+        assert _drain_chain(self.chain)
+        # 非空壳：照常计配额（首次失败计 1；cap=2 下链自动第二次尝试耗默认
+        # 失败替身计 2 → exhausted 转 Arbiter——失败计点路径与空壳豁免互斥）
+        sig = self.chain._quota.snapshot().get(_SIG) or {}
+        assert sig.get("admin_attempts") == 2
+        assert sig.get("arbiter_rulings") == 1  # 链终点已走 Arbiter 拍板
+        assert self._deferred_entries() == []
+
+    # ── 让行留痕形态：phase/yield_to/deferred_at/item_signal ─────────
+
+    def test_yield_deferred_trace_form(self):
+        # 同 spec 活 admin run 在飞（manual-intervention 等非链成员通道）
+        with patch(
+            "core.admin_monitor._merge_admin_runs",
+            return_value={"admin-manual-live": {
+                "final": False, "has_pending": True, "rec": {}}},
+        ):
+            assert self._submit() == "queued"
+            assert _drain_chain(self.chain)
+        assert self.dispatch_calls == []  # 让行：不派发
+        deferred = self._deferred_entries()
+        assert len(deferred) == 1
+        entry = deferred[0]
+        assert entry["phase"] == "deferred"
+        assert entry["yield_to"] == "admin-manual-live"  # 被让行 run_id 留痕
+        assert entry["deferred_at"]
+        assert entry["started_at"]  # 既有字段保留（reap 口径）
+        snap = entry["item_signal"]
+        assert snap["signature"] == _SIG
+        assert snap["severity"] == "major"
+        assert snap["description"] == "验证环境阻塞"
+
+    def test_yielded_run_death_enables_resubmit(self):
+        # 让行留痕 → 被让行 run 死（文件终态）→ resubmit 回喂照常派发
+        with patch(
+            "core.admin_monitor._merge_admin_runs",
+            return_value={"admin-manual-dead": {
+                "final": False, "has_pending": True, "rec": {}}},
+        ):
+            assert self._submit() == "queued"
+            assert _drain_chain(self.chain)
+        assert len(self._deferred_entries()) == 1
+        self._write_run(
+            "admin-manual-dead",
+            [{"type": "assistant", "message": {"content": []}},
+             {"type": "error", "error": "boom"}],  # 末行终态 = 死亡证据
+        )
+        self._dispatch_script = [
+            _disp(run_id="adm-2", result="resolved", success=True,
+                  status_after="ready")
+        ]
+        entry = self._deferred_entries()[0]
+        assert self.chain.resubmit_deferred(entry) == "queued"
+        assert _drain_chain(self.chain)
+        assert len(self.dispatch_calls) == 1
+
+    # ── deferred 超时 reap：与 admin 相条目同拍按 started_at 回收 ─────
+
+    def test_deferred_stale_reaped_with_admin_entries(self):
+        self.sm.update_spec("spec-a", {"frozen": True})
+        assert self._submit() == "queued"
+        assert _drain_chain(self.chain)  # 产生 deferred 条目
+        # 再手工放一条旧形态 admin 相条目（无 phase 键——存量形态）
+        state = load_chain_state(self.tmp)
+        state["in_flight"].append({
+            "chain_id": "chain-legacy", "signature": "spec-x::stuck",
+            "spec": "spec-x", "started_at": _utcnow_iso(),
+        })
+        save_chain_state(self.tmp, state)
+        self._age_started_at(hours=7)  # 超过 CHAIN_INFLIGHT_STALE_S=6h
+        stale = self.chain._quota.stale_in_flight()
+        assert {x["chain_id"] for x in stale} >= {
+            x["chain_id"] for x in self._in_flight()
+        }  # deferred 与 admin 相一视同仁
+        assert self.chain.reap_stale_inflight() >= 2
+        assert self._in_flight() == []
+
+    # ── 新旧条目形态混合兼容 ────────────────────────────────────────
+
+    def test_mixed_legacy_entry_compat(self):
+        state = load_chain_state(self.tmp)
+        # 旧形态：无 phase 键（存量 in_flight）+ phase="admin"（显式旧值）
+        state["in_flight"] = [
+            {"chain_id": "chain-old-1", "signature": _SIG, "spec": "spec-a",
+             "started_at": _utcnow_iso()},
+            {"chain_id": "chain-old-2", "signature": "spec-x::stuck",
+             "spec": "spec-x", "phase": "admin",
+             "started_at": _utcnow_iso()},
+        ]
+        save_chain_state(self.tmp, state)
+        assert entry_phase(state["in_flight"][0]) == "admin"  # 缺 phase 归一
+        assert entry_phase(state["in_flight"][1]) == "admin"
+        assert entry_phase({"phase": "nonsense"}) == "admin"  # 非法值归一
+        assert self.chain._quota.deferred_in_flight() == []  # 不误判为 deferred
+        # 新形态 deferred 与旧形态并存：读侧各归各位
+        self.sm.update_spec("spec-a", {"frozen": True})
+        assert self._submit() == "queued"
+        assert _drain_chain(self.chain)
+        phases = sorted(entry_phase(x) for x in self._in_flight())
+        assert phases == ["admin", "admin", "deferred"]
+        assert len(self.chain._quota.deferred_in_flight()) == 1
+
+
+class TestFirstIncidentTimeline(unittest.TestCase):
+    """fix-escalation-chain-watchdog-yield-gaps 3.3：端到端时序用例。
+
+    复刻首例事件时间轴（design 提案的取证蓝本）：
+
+      T0 冻结竞态：验证冻结瞬间链件照常派发 → frozen-terminated 空壳烧配额
+      T1 让行留痕：解冻后重派 → 同 spec 活 admin run（manual-intervention
+         等非链成员通道）在飞 → 链头让行、deferred 留痕
+      T2 被让行 run 死：manual run 落终态 → 看护扫描回喂重派（旧实现此处置
+         留痕被整条清除 → 静默挂起，信号永不收口）
+      T3 链终点：互斥放行 → Admin 烧满配额 → Arbiter escalated → 链终点
+         人工上升件落盘
+      T4 抑制窗口：链在办期间孤儿看护巡检对链头死 run 的 pending 不告警
+         不终结（首例 19:28 看护 critical 早于链终点裁决包 3 分钟的重复
+         出件被消除）
+
+    终态断言：链终点上升件是该事件的唯一人工作品，全程人工队列零重复条目。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  admin_attempts: 2\n  arbiter_rulings: 2\n"
+            "  reset_window_days: 7\n",
+            encoding="utf-8",
+        )
+        reset_chain()
+        from core.state_machine import StateMachine
+
+        self.sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
+        self.sm.add_spec("spec-a", {"status": "blocked", "frozen": True})
+        self.chain = EscalationChain(self.tmp, MagicMock())
+        self.chain.set_runner(MagicMock())
+        self.chain.set_state_machine(self.sm)
+        self.pm = _FakePm(self.tmp)
+        self.chain.set_pm(self.pm)
+        self.lane = _FakeArbiterLane(self.tmp)
+        self._lane_patcher = patch(
+            "core.pm_engine.arbiter.get_lane", lambda *a, **k: self.lane
+        )
+        self._lane_patcher.start()
+        # monitor 与链共享 store / state machine / project_root（端到端同源）
+        from core.admin_monitor import AdminMonitor
+        from core.admin_store import AdminStore
+        from tests.helpers import FakeLogger
+
+        self.store = AdminStore(self.tmp, FakeLogger())
+        self.mon = AdminMonitor(
+            {"admin": {"escalation_cooldown_minutes": 15}},
+            self.sm, self.tmp, FakeLogger(), store=self.store,
+        )
+        set_chain(self.chain)  # 看护抑制/重派经链单例消费
+
+    def tearDown(self):
+        self._lane_patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        reset_chain()
+
+    # ── 时序装置 ────────────────────────────────────────────────────
+
+    def _write_run(self, run_id, events):
+        runs = self.tmp / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{run_id}.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
+        )
+
+    def _append_run_line(self, run_id, event):
+        runs = self.tmp / ".fenix" / "runs"
+        with (runs / f"{run_id}.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+
+    def _append_pending_aged(self, run_id, signal_type, minutes):
+        """落 pending disposition 并拨回 minutes 前（超看护 grace）。"""
+        from core.admin_store import DISPOSITION
+        from tests.helpers import iso_ago
+
+        rec = self.store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": signal_type, "spec": "spec-a",
+            "admin_run_id": run_id,
+        })
+        alerts_path = self.store.alerts_path
+        alerts = json.loads(alerts_path.read_text(encoding="utf-8"))
+        for r in alerts:
+            if r.get("id") == rec["id"]:
+                r["created"] = iso_ago(minutes)
+        alerts_path.write_text(json.dumps(alerts), encoding="utf-8")
+
+    def _escalations(self):
+        from core.admin_store import ESCALATION
+
+        return [r for r in self.store.read_all()
+                if r.get("kind") == ESCALATION]
+
+    def _deferred_entries(self):
+        return self.chain._quota.deferred_in_flight()
+
+    def _wait_until(self, pred, timeout_s=10.0):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if pred():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def _drain(self, timeout_s=15.0):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.chain._queue.unfinished_tasks == 0 and not self.chain._active:
+                return True
+            time.sleep(0.01)
+        return False
+
+    # ── 首例时间轴全程 ──────────────────────────────────────────────
+
+    def test_first_incident_full_timeline(self):
+        """冻结竞态 → 让行留痕 → 被让行 run 死 → 看护重派 → 链终点唯一
+        人工作品，全程人工队列零重复条目。"""
+        import threading
+
+        from core.agent_runner import AdminDisposition
+
+        gate = threading.Event()
+        dispatch_calls = []
+
+        def fake_dispatch(item):
+            """链头 Admin 派发替身：真落 pending + 死亡形态 run 文件
+            （链路径 run_administrator 唤起前落 pending、链头不落 final
+            ——孤儿形态由它承载），二次调用阻塞构造「链在办」窗口。"""
+            n = len(dispatch_calls) + 1
+            dispatch_calls.append(dict(item))
+            run_id = f"adm-{n}"
+            self._append_pending_aged(run_id, "verify_env_blocked", 20)
+            self._write_run(run_id, [
+                {"type": "assistant", "message": {"content": []}},
+                {"type": "error", "error": "boom"},
+            ])
+            if n == 2:
+                assert gate.wait(timeout=30), "dispatch gate 超时"
+            return AdminDisposition(
+                run_id=run_id, spec="spec-a", success=False,
+                problem="环境阻塞", actions_taken="尝试修复失败",
+                result="failed",
+                summary="诊断结论：环境阻塞；处置时间线：尝试修复失败；结果：失败。",
+            )
+
+        self.chain._dispatch_admin = fake_dispatch
+
+        # ── T0 冻结竞态：冻结态下信号入链 → 预检拦（零派发零配额）────
+        assert self.chain.submit_entry(
+            spec="spec-a", signal_type="verify_env_blocked", severity="major",
+            description="验证环境阻塞", evidence="env log",
+            recommended_action="修复环境", source="incident-e2e",
+        ) == "queued"
+        assert self._drain()
+        assert dispatch_calls == []  # T0 零派发（旧实现此时照常派发→空壳烧配额）
+        assert not (self.chain._quota.snapshot().get(_SIG) or {}).get("admin_attempts")
+        deferred = self._deferred_entries()
+        assert len(deferred) == 1 and deferred[0]["yield_to"] == ""
+
+        # ── T1 解冻 + 看护首扫：重派 → 互斥命中活 manual run → 让行 ──
+        self.sm.update_spec("spec-a", {"frozen": False})
+        self._append_pending_aged("admin-manual-1", "manual-intervention", 0)
+        self._write_run("admin-manual-1", [
+            {"type": "assistant", "message": {"content": [{"type": "text"}]}},
+        ])  # 非终态 = manual run 在飞
+        assert self.mon._scan_deferred_chain_items() == 1  # 看护扫描回喂
+        assert self._wait_until(lambda: (
+            len(self._deferred_entries()) == 1
+            and self._deferred_entries()[0]["yield_to"] == "admin-manual-1"
+        ))  # 让行留痕（旧实现整条清除 → 静默挂起）
+        assert len(dispatch_calls) == 0  # 让行不派发
+
+        # ── T2 被让行 run 死：manual run 落终态 → 看护再扫 → 互斥放行 ──
+        self._append_run_line("admin-manual-1", {
+            "type": "error", "error": "manual run crashed"})
+        assert self.mon._scan_deferred_chain_items() == 1
+        assert self._wait_until(lambda: len(dispatch_calls) == 1)
+        # adm-1 的 pending 残留（run 已死）不占互斥面（自证在飞死锁豁免）
+        # → 链头第二次尝试放行、烧满配额 → Arbiter
+        assert self._wait_until(lambda: len(dispatch_calls) == 2)
+        gate.set()  # 放行第二次派发（T4 窗口构造点）
+        assert self._drain()
+
+        # ── T3 链终点：Admin 烧满 2 次 → Arbiter escalated → 人工上升件 ──
+        quota = self.chain._quota.snapshot().get(_SIG) or {}
+        assert quota.get("admin_attempts") == 2
+        assert len(self.lane.calls) == 1  # Arbiter 接手一次
+        assert len(self.pm.alerts) == 1  # 链终点人工上升件
+        assert self.pm.alerts[0]["chain_context"]["chain_id"]
+        assert self._in_flight_all_cleared()
+        assert self._deferred_entries() == []
+
+        # ── T4 终局对账：全程人工队列零重复条目 ─────────────────────
+        esc = self._escalations()
+        assert len(esc) == 1  # 链终点件是唯一落盘人工作品
+        assert esc[0].get("chain")  # 链关联键在场（与看护出件形态区分）
+        # 看护复扫（链痕已全消）：adm-N pending 已由链终点收口语义覆盖，
+        # 孤儿兜底升级不得再产出同签名第二件——T4 窗口已验证抑制，此处
+        # 断言全链路终态人工面收敛
+        assert self.mon._scan_deferred_chain_items() == 0  # 无残留可重派
+
+    def test_suppression_window_during_chain_inflight(self):
+        """T4 独立验证：链在办窗口内孤儿看护对链头死 run 的 pending
+        不告警不终结（首例「看护 critical 早于链终点裁决包 3 分钟」的
+        重复出件被消除）。"""
+        import threading
+
+        from core.agent_runner import AdminDisposition
+
+        gate = threading.Event()
+        dispatch_calls = []
+
+        def fake_dispatch(item):
+            n = len(dispatch_calls) + 1
+            dispatch_calls.append(dict(item))
+            run_id = f"adm-{n}"
+            self._append_pending_aged(run_id, "verify_env_blocked", 20)
+            self._write_run(run_id, [
+                {"type": "assistant", "message": {"content": []}},
+                {"type": "error", "error": "boom"},
+            ])
+            if n == 2:
+                assert gate.wait(timeout=30)
+            return AdminDisposition(
+                run_id=run_id, spec="spec-a", success=False,
+                problem="p", actions_taken="a", result="failed",
+                summary="诊断结论：x；处置时间线：y；结果：失败。",
+            )
+
+        self.chain._dispatch_admin = fake_dispatch
+        # T0 冻结 → 解冻直派（无 manual 竞争）→ Admin 第一败
+        self.sm.update_spec("spec-a", {"frozen": False})
+        assert self.chain.submit_entry(
+            spec="spec-a", signal_type="verify_env_blocked", severity="major",
+            description="验证环境阻塞", evidence="env log",
+            recommended_action="修复环境", source="incident-e2e",
+        ) == "queued"
+        assert self._wait_until(lambda: len(dispatch_calls) == 2)
+        # 此时链 worker 阻塞在第二次派发内：adm-1 pending 超时 + run 死 +
+        # 链 in_flight 在办 → 看护巡检必须抑制
+        assert self._wait_until(lambda: len(self._deferred_entries()) == 0)
+        in_flight_admin = self._wait_until(lambda: any(
+            entry_phase(x) == "admin"
+            for x in load_chain_state(self.tmp)["in_flight"]
+        ))
+        assert in_flight_admin  # 链在办痕迹在场（抑制依据）
+        self.mon._recover_orphaned_dispositions()
+        assert self._escalations() == []  # 链在办：零看护告警
+        disps = [r for r in self.store.read_all()
+                 if r.get("kind") == "disposition" and r.get("status") != "pending"]
+        assert disps == []  # 零终结（pending 原状保留）
+        gate.set()
+        assert self._drain()
+        assert len(self.pm.alerts) == 1  # 链终点唯一人工作品
+
+    def _in_flight_all_cleared(self):
+        from core.pm_engine.escalation_chain import load_chain_state
+
+        return load_chain_state(self.tmp)["in_flight"] == []
