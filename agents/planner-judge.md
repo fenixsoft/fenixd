@@ -147,4 +147,13 @@
 3. report.json 中被修复场景分类标 `test-defect`，evidence 写明「场景文件缺陷：<改了什么、为什么>」
 4. {result_path} 写 `{"status": "scenario-repaired", "scenario_repair": {"repaired_ids": [...], "added_ids": [...], "removed": [{"id": "...", "reason": "..."}], "summary": "修复说明"}}`。**不写 verified/bug-found**，框架会确定性校验并重执行场景后再次裁决；同样 MUST 为合法 JSON（以代码 `json.dump` 生成，勿手工拼接文本）
 
+## 写回门约束（机械受理门 + 申报前自校验）
+
+框架受理 `scenario-repaired` 时，会对 {scenarios_path} 盘上场景集做**整批结构校验**（`validate_scenario_dicts`，逐条检查 JSON 形态 / 必填字段 id+kind+steps+assertions / per-kind 词表），任一条非法即**拒收本轮修复**——场景集不收编、不重执行，error 带逐条错误清单回传下轮按清单定向重修（消耗一轮修复预算）。per-kind 词表易错点：**api 场景步骤动作仅 `http_request`/`sse_connect`，不得混入 `run`/`click`/`navigate` 等其它 kind 动作**；web 场景首个步骤须 `navigate`；cli 场景用 `run`。
+
+**申报前自校验义务**：写回 {scenarios_path} 后、申报 `scenario-repaired` 前，先自行核验——
+1. `json.load` 重读文件确认合法 JSON 且顶层为纯数组（勿 dict 包裹）；
+2. 逐条（尤其本轮改动/新增的条目）对照：必填字段齐全、步骤动作与断言类型属于该场景 `kind` 的词表、`remove_reason` 仅用于移除声明条目；
+3. 确认零违规再申报——带病申报会被门拒收并空耗一轮修复预算。
+
 IMPORTANT: 不要修改 .fenix/STATE.md。

@@ -54,8 +54,16 @@ def _atomic_write_text(
 atomic_write_text = _atomic_write_text
 
 
-def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
+def _apply_scenario_freeze(pipeline, spec_name: str,
+                           pair_writeback: bool = False) -> dict:
     """应用场景集冻结：planner 产出 vs 持久化集 diff，写回 scenarios.json。
+
+    judge-repair-scenario-writeback-gate D3：``pair_writeback=True``（judge
+    scenario-repaired 受理采纳路径专用）时写回须满足成对纪律——
+    ``test_scenarios.json`` 与 ``_scenarios_full.json`` 同版本戳成对覆盖
+    （声明移除轮也更新备份、补齐写回后备份跟随最终写回集），MUST NOT 留
+    「主文件已更新而备份停留旧集」撕裂窗口（旧备份定义可经后续无理由缺场景
+    回补复活）。缺省 False（planner 产出收编路径）维持既有备份语义零变化。
 
     design D3：确定性、纯 Python，planner 无法通过输出文本绕过。
     在场景执行前调用（_run_three_stage_verification 阶段1 之后）。
@@ -346,6 +354,33 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                     f"全量场景备份写回失败 '{spec_name}'（_scenarios_full.json "
                     f"未更新，缺场景补齐将失去恢复源）: {e}",
                 )
+    elif pair_writeback and not diff.unreasoned_missing and not rejected:
+        # judge-repair-scenario-writeback-gate 受理成对模式：声明移除轮
+        # （diff.removed 非空、judge 协议第 1 步明确允许）也把备份更新为
+        # 修复后集合——受理采纳成对落盘要求主文件与备份同版本戳成对一致，
+        # MUST NOT 留「主文件已更新而备份停留旧集」撕裂窗口（旧备份定义
+        # 可经后续 replan 无理由缺场景回补复活，本次事故端口漂移潜伏形态）。
+        # 被移除场景已退出持久化集，备份不再保留其定义（reconcile 不可达，
+        # 无恢复面损失）。planner 收编路径（pair_writeback=False）维持既有
+        # 「有删减不更新备份」语义零变化；rejected 非空时维持存毒即拒更新
+        # 语义（预检通过后不可达，防御保留）。
+        full_backup = verify_dir / "_scenarios_full.json"
+        try:
+            _atomic_write_text(
+                full_backup,
+                json.dumps(
+                    prepare_scenarios_for_write(valid_planner),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+        except OSError as e:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"全量场景备份成对写回失败 '{spec_name}'（_scenarios_full.json "
+                f"停留旧集，与 test_scenarios.json 形成撕裂对，缺场景补齐将"
+                f"失去恢复源）: {e}",
+            )
     pipeline._context.logger.info(
         "pm_engine",
         f"场景集冻结 '{spec_name}'（第 {current_round} 轮）：稳定集 "
@@ -527,6 +562,30 @@ def _apply_scenario_freeze(pipeline, spec_name: str) -> dict:
                 "total": len(planner_scenarios),
                 "path": str(scenarios_path),
             }
+        if pair_writeback:
+            # judge-repair-scenario-writeback-gate 受理成对模式：补齐写回也按
+            # 「先 _scenarios_full 后 test_scenarios」固定顺序成对覆盖（同
+            # _exec_revise_scenario_reverify 步骤 5b 形态）——备份此刻已读取
+            # 消费完、不再是补回恢复源，覆盖不损失回补面；后写主文件使中断
+            # 撕裂对以主文件（对账权威源）收敛回旧一致态。消灭「主文件已更新
+            # 而备份停留旧集」撕裂窗口。planner 收编路径（pair_writeback=False）
+            # 维持既有「补齐轮不动备份」语义零变化。写回集为空的 abort 已在
+            # 上方提前 return，此处 write_valid 恒非空。
+            try:
+                _atomic_write_text(
+                    verify_dir / "_scenarios_full.json",
+                    json.dumps(
+                        prepare_scenarios_for_write(write_valid),
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                )
+            except OSError as e:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"补齐轮备份成对写回失败 '{spec_name}'（_scenarios_full.json "
+                    f"停留旧集，与 test_scenarios.json 形成撕裂对）: {e}",
+                )
         try:
             # frozen-scenario-schema-migration 2.1：补齐写回同样恒定写入
             # schema_version（备份取回条目可能为旧 schema，先迁移再落盘）

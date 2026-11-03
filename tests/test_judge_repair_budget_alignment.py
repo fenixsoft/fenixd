@@ -164,7 +164,10 @@ class TestRepairGateRejectsWhenExhausted(unittest.TestCase):
         self.sm.update_spec("demo-spec", {"_scenario_repair_exhausted_rounds": 0})
         rv = self.pipe._handle_scenario_repaired("demo-spec", "scenario-repaired", 0)
         self.assertTrue(rv)
-        self.pipe._apply_scenario_freeze.assert_called_once_with("demo-spec")
+        # judge-repair-scenario-writeback-gate D3：受理采纳路径改传
+        # pair_writeback=True（成对落盘模式）；冻结收编 + 重入行为本身不变
+        self.pipe._apply_scenario_freeze.assert_called_once_with(
+            "demo-spec", pair_writeback=True)
         self.pipe._run_three_stage_verification.assert_called_once()
         self.assertEqual(
             self.pipe._run_three_stage_verification.call_args.kwargs.get("_repair_depth"), 1)
