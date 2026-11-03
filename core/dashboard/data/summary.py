@@ -82,9 +82,13 @@ def hosting_state(project_root) -> str:
     if cached is not None and now - cached[1] < _HOSTING_STATE_TTL:
         return cached[0]
     try:
-        from core.fenix_session import hosting_state as _fs_hosting_state
+        # D8：经门面延迟解析（code-review item eb79f93c3752，与 daemon_health
+        # 同打桩口径：patch("core.dashboard.data._fs_hosting_state") 生效）。
+        # 不能复用门面的 hosting_state 名——门面该名已 re-export 本函数自身，
+        # 经门面访问会自引用递归，故绑定别名 _fs_hosting_state。
+        import core.dashboard.data as _facade
 
-        state = _fs_hosting_state(key)
+        state = _facade._fs_hosting_state(key)
     except Exception:
         state = "stopped"
     # [fenix-ignore:1c2a47e633fa] 同 daemon_health：GIL 下各 dict 操作原子，最坏仅 TTL 内重复扫描或丢一条缓存项，无数据损坏，暂不加锁
@@ -1260,12 +1264,14 @@ def _token_recent_entries(entries: dict, project_name: str) -> list:
     return out
 
 
-def _degraded_project(p: dict, error: str) -> dict:
+def _degraded_project(p: dict, error: str, exists: bool = True) -> dict:
     """聚合阶段失败项目的降级摘要（复用既有 error 键 schema）。
 
-    `exists` 语义保持为 True：路径本身可解析（发现层 is_dir 已通过）即
+    `exists` 默认 True：路径本身可解析（发现层 is_dir 已通过）即
     exists=True，失败原因只体现在 `error` 字段——避免 UI 把「不可读」误
-    渲染成「项目不存在」（设计 D4）。
+    渲染成「项目不存在」（设计 D4）；路径确实不存在（overview 的
+    exists=False 分支，code-review item b95e817617c2）时由调用方显式传
+    exists=False，两条降级路径共用本构造单点，防字段漂移。
     """
     # code-review item 1c0038d981ae：与 overview exists 假值分支同款防御归一，
     # 降级路径自身不得再抛 KeyError/TypeError 穿透容错契约。
@@ -1276,7 +1282,7 @@ def _degraded_project(p: dict, error: str) -> dict:
         "name": p.get("name") or (Path(path).name or path),
         "path": path,
         "discovered": p.get("discovered", False),
-        "exists": True,
+        "exists": exists,
         "daemon": "stopped",
         "hosting": "stopped",
         "error": error,
@@ -1313,23 +1319,12 @@ def overview(registry_projects: list) -> dict:
     token_entries = []
     for p in registry_projects:
         if not p.get("exists"):
-            # code-review item 166b049de1f7：与 _degraded_project 同款防御归一——
-            # registry 条目缺 name/path 键或 path 非 Path 可接受类型时，本项目
-            # 降级为 error 摘要，不穿透「函数不得抛出」容错契约成整页 500。
-            path = p.get("path")
-            if not isinstance(path, (str, os.PathLike)):
-                path = ""
-            projects.append(
-                {
-                    "name": p.get("name") or (Path(path).name or path),
-                    "path": path,
-                    "discovered": p.get("discovered", False),
-                    "exists": False,
-                    "daemon": "stopped",
-                    "hosting": "stopped",
-                    "error": "项目路径不存在",
-                }
-            )
+            # code-review item 166b049de1f7：registry 条目缺 name/path 键或
+            # path 非 Path 可接受类型时，本项目降级为 error 摘要，不穿透
+            # 「函数不得抛出」容错契约成整页 500。
+            # code-review item b95e817617c2：防御归一收拢进 _degraded_project，
+            # 本分支与异常分支共用同一构造单点，防两处字段漂移。
+            projects.append(_degraded_project(p, "项目路径不存在", exists=False))
             continue
         try:
             # D8：parse_state / project_summary 经门面解析（tests monkeypatch 门面同名）

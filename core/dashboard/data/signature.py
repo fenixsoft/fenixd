@@ -196,10 +196,10 @@ def config_signature(project_root=None) -> str:
     import core.dashboard.data as _facade
 
     sources = [_facade.USER_CONFIG_PATH]
+    proot = Path(project_root) if project_root is not None else Path.home()
     if project_root is not None:
-        proot = Path(project_root)
         sources.append(proot / ".fenix" / "config.yaml")
-    return data_signature(proot if project_root is not None else Path.home(), sources)
+    return data_signature(proot, sources)
 
 
 def spec_detail_signature(proot, spec: str) -> str:

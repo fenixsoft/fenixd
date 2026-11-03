@@ -967,7 +967,11 @@ def read_run_events_between(
     except OSError:
         return None
     text = raw.decode("utf-8", errors="replace")
-    return _parse_run_lines(text.splitlines()), end_offset
+    # 按 \n 切行（与模块内 rb 逐行迭代 / _read_run_lines 尾窗口径一致）：
+    # str.splitlines 会在 U+2028/U+2029 等 Unicode 行边界额外切分，JSON 字符串
+    # 合法携带未转义的 U+2028/U+2029 时会在串中间被切成伪行双双解析失败丢事件；
+    # split 产生的尾随空串由 _parse_run_lines 的空行过滤吸收，语义不变。
+    return _parse_run_lines(text.split("\n")), end_offset
 
 
 # ── 聚合视图（供 Web API / 概览 / 详情） ──────────────────────────

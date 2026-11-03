@@ -164,9 +164,11 @@ def read_code_fix_request_result(project_root) -> dict:
     只读透传 daemon 消费端写回的 ``.fenix/code_fix_request_result.json``
     （``{request_created, triggered, reason, message, finished_at}``）；
     文件缺失/损坏/非 dict → 缺省态全 null 键形态（读侧 MUST NOT 500，与
-    read_code_review_request_result 的缺省形态对齐）。前端以
-    ``request_created`` 真值与本次触发返回的 ``requested_at`` 回链判定
-    是否本次结果，null 缺省恒不匹配。
+    read_code_review_request_result 的缺省形态对齐）。前端以本结果文件的
+    ``request_created`` 与触发受理响应返回的受理时刻比对回链判定是否
+    本次结果（响应键名沿同族叫 ``requested_at``，取值即信号 ``created``；
+    落入本结果文件时键名为 ``request_created``——本文件无 ``requested_at``
+    键），null 缺省恒不匹配。
     """
     path = Path(project_root) / ".fenix" / "code_fix_request_result.json"
     try:

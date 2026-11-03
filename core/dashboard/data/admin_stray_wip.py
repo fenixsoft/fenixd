@@ -183,6 +183,26 @@ def _latest_stray_wip_manifest(project_root, signal_type: str) -> list:
     return []
 
 
+def _resolve_stray_paths_candidates(manifest, paths) -> tuple:
+    """显式 paths 白名单校验共用前置（commit/untrack/claim 三执行器单源）。
+
+    paths 仅供程序化调用方显式收窄执行范围（MUST 为清单子集，清单外路径
+    拒绝，design D2）；缺省（None）取整个清单。Returns: (candidates, error)
+    —— error 非空时调用方按各自结果形态原样返回失败结果（零 git 写、零
+    文件触碰），拒绝文案三执行器同源（code-review item 5db655e2f555 收敛
+    三点逐字重复的前置段）。
+    """
+    if paths is None:
+        return list(manifest), ""
+    requested = [str(p).strip() for p in paths if str(p).strip()]
+    outside = [p for p in requested if p not in manifest]
+    if outside:
+        return [], ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
+                    f"design D2）：{', '.join(outside)}；"
+                    f"信号清单({len(manifest)}): {', '.join(manifest)}")
+    return requested, ""
+
+
 def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                            paths=None) -> dict:
     """commit_stray_wip：提交主树信号清单内的散件 WIP（全局信号专用）。
@@ -230,25 +250,16 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                       "不执行 git 写"),
         }
 
-    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）。
-    if paths is not None:
-        requested = [str(p).strip() for p in paths if str(p).strip()]
-        outside = [p for p in requested if p not in manifest]
-        if outside:
-            return {
-                "ok": False, "steps": [],
-                "error": ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
-                          f"design D2）：{', '.join(outside)}；"
-                          f"信号清单({len(manifest)}): {', '.join(manifest)}"),
-            }
-        candidates = requested
-    else:
-        candidates = list(manifest)
+    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）——三执行器共用
+    # 前置助手单源（code-review item 5db655e2f555，拒绝文案同源）。
+    candidates, paths_error = _resolve_stray_paths_candidates(manifest, paths)
+    if paths_error:
+        return {"ok": False, "steps": [], "error": paths_error}
 
     # 与当刻 git status 求交：清单中已不在当刻 status 的文件跳过不报错。
     try:
         dirty = _git_status_paths(proot)
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
         # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
         # 路径，细节经服务端日志留痕，客户端收固定文案。
@@ -285,7 +296,7 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     # 幂等跳过），此处提示不报错。
     try:
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：同上，git stderr
         # 原文经服务端日志留痕，客户端收固定文案。
         logger.warning(
@@ -311,7 +322,7 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
         if note:
             msg += f"\n\n裁决依据：{note}"
         _git_out(proot, "commit", "-m", msg, "--", *to_commit)
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：同上，git stderr
         # 原文经服务端日志留痕，客户端收固定文案。
         logger.warning(
@@ -625,20 +636,11 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
                       "不执行 git 写"),
         }
 
-    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）。
-    if paths is not None:
-        requested = [str(p).strip() for p in paths if str(p).strip()]
-        outside = [p for p in requested if p not in manifest]
-        if outside:
-            return {
-                "ok": False, "steps": [],
-                "error": ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
-                          f"design D2）：{', '.join(outside)}；"
-                          f"信号清单({len(manifest)}): {', '.join(manifest)}"),
-            }
-        candidates = requested
-    else:
-        candidates = list(manifest)
+    # 显式 paths 白名单校验：清单外路径拒绝（零 git 写）——三执行器共用
+    # 前置助手单源（code-review item 5db655e2f555，拒绝文案同源）。
+    candidates, paths_error = _resolve_stray_paths_candidates(manifest, paths)
+    if paths_error:
+        return {"ok": False, "steps": [], "error": paths_error}
 
     # 与当刻 git status / 索引求交：三态分流。
     try:
@@ -965,19 +967,9 @@ def _claim_untracked_manifest(project_root, signal_type: str, paths=None) -> dic
                       "（清单解析自记录 evidence「文件清单(N):」段），"
                       "不执行认领写"),
         }
-    if paths is not None:
-        requested = [str(p).strip() for p in paths if str(p).strip()]
-        outside = [p for p in requested if p not in manifest]
-        if outside:
-            return {
-                "manifest": [], "candidates": [],
-                "error": ("拒绝清单外路径（文件来源 MUST 限信号记录清单，"
-                          f"design D2）：{', '.join(outside)}；"
-                          f"信号清单({len(manifest)}): {', '.join(manifest)}"),
-            }
-        candidates = requested
-    else:
-        candidates = list(manifest)
+    candidates, paths_error = _resolve_stray_paths_candidates(manifest, paths)
+    if paths_error:
+        return {"manifest": [], "candidates": [], "error": paths_error}
     return {"manifest": manifest, "candidates": candidates, "error": ""}
 
 
@@ -992,6 +984,12 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
 
     Returns: {"appended": [...], "commit_hash": str, "error": str}
     """
+    # .gitignore 前置存在性快照（code-review item e4455cf5f180，对齐
+    # _exec_untrack_stray_wip 的 gi_backup 形态）：原不存在时本函数经
+    # _append_gitignore_entries 新建文件，提交失败后的还原分支须 unlink
+    # 删除而非按行过滤回写——否则全部追加行被剔除后仍回写空文件，给前置
+    # 态本无 .gitignore 的检出残留一个新建的 0 字节文件。
+    gi_existed = (proot / ".gitignore").exists()
     appended = _append_gitignore_entries(proot, entries)
     if not appended:
         return {"appended": [], "commit_hash": "", "error": ""}
@@ -1008,11 +1006,15 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             _git_out(proot, "add", "--", ".gitignore")
         msg = f"[fenix] admin: {header}（{len(appended)} 条）"
         _git_out(proot, "commit", "-m", msg, "--", ".gitignore")
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
         # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
         # 路径，细节经服务端日志留痕，客户端（认领裁决 alert-resolve 端点）
-        # 收固定文案。
+        # 收固定文案。OSError（如 git 二进制缺失 FileNotFoundError）同样
+        # 收进本分支：还原追加行的逻辑只在这里，OSError 穿透到
+        # execute_adjudication_choice 的宽 except 会留「规则已追加、提交未
+        # 落地」半程态（code-review item 6c5aafc876e6，对齐哈希回读点
+        # 337/860 与 untrack 执行器 823 的既有口径）。
         logger.warning(
             "_append_gitignore_and_commit 提交失败（header=%s）: %s: %s",
             header, type(e).__name__, e,
@@ -1025,26 +1027,32 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
             # 锁外并发追加/他处还原会互相覆盖、先写的行静默丢失。此处调用
             # 时刻无他锁在持（_append_gitignore_entries 已释放），无嵌套死锁面。
             with _gitignore_lock(proot):
-                # 字节级行过滤还原（code-review item 41c87143c57e）：还原不经
-                # 文本解码往返——.gitignore 含非 UTF-8 字节时
-                # read_text(errors="replace") 再回写会把坏字节改写成 U+FFFD。
-                # 追加行是本函数新写的完整行，按字节行精确匹配剔除即可。
-                appended_lines = {p.encode("utf-8") for p in appended}
-                kept = [
-                    ln for ln in gi.read_bytes().splitlines(keepends=True)
-                    if ln.strip() not in appended_lines
-                ]
-                # 原子写回（code-review item 8db336608775，与
-                # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻
-                # 恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库忽略规则
-                # 整体丢失面）。
-                _atomic_write_bytes(gi, b"".join(kept))
+                if not gi_existed:
+                    # 前置态本无 .gitignore（code-review item e4455cf5f180，
+                    # 对齐 _exec_untrack_stray_wip._abort 的 gi_backup is None
+                    # 分支）：unlink 删除还原，不留新建的空文件。
+                    gi.unlink(missing_ok=True)
+                else:
+                    # 字节级行过滤还原（code-review item 41c87143c57e）：还原不经
+                    # 文本解码往返——.gitignore 含非 UTF-8 字节时
+                    # read_text(errors="replace") 再回写会把坏字节改写成 U+FFFD。
+                    # 追加行是本函数新写的完整行，按字节行精确匹配剔除即可。
+                    appended_lines = {p.encode("utf-8") for p in appended}
+                    kept = [
+                        ln for ln in gi.read_bytes().splitlines(keepends=True)
+                        if ln.strip() not in appended_lines
+                    ]
+                    # 原子写回（code-review item 8db336608775，与
+                    # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻
+                    # 恰逢进程被杀/磁盘满会留下截断的 .gitignore（仓库忽略规则
+                    # 整体丢失面）。
+                    _atomic_write_bytes(gi, b"".join(kept))
         except OSError:
             restore_note = "；.gitignore 还原写回失败（保留现状）"
         if gitignore_untracked:
             try:
                 _git_out(proot, "reset", "-q", "--", ".gitignore")
-            except RuntimeError as reset_err:
+            except (OSError, RuntimeError) as reset_err:
                 logger.warning(
                     "_append_gitignore_and_commit 撤销 .gitignore 暂存失败: "
                     "%s: %s", type(reset_err).__name__, reset_err,
@@ -1064,7 +1072,7 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
         commit_hash = _git_out(
             proot, "log", "-1", "--format=%H", "--", ".gitignore",
         ).strip()
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         logger.warning(
             "_append_gitignore_and_commit 提交已落库但哈希回读失败"
             "（header=%s）: %s: %s",

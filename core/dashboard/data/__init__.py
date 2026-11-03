@@ -38,6 +38,8 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                          code-review 850b89f106d6),
     merge_dispositions_by_run (admin_alerts.py，timeline.py 经门面解析；
                                code-review 55336c2a40af),
+    admin_events_for_spec (timeline.py，topology.py 经门面解析；
+                           code-review aba5c5dd1e75),
     compute_run_cost      (runs.py，timeline.py 经门面解析),
     count_scenarios       (spec_docs.py，summary.py 经门面解析),
     daemon_health         (summary.py),
@@ -47,7 +49,11 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                            summary.py 经门面解析),
     get_spec_start_after  (admin_actions.py，summary.py 经门面解析),
     get_spec_timeline     (timeline.py，summary.py 经门面解析),
+    get_unhandled_alerts  (admin_alerts.py，command_center.py 经门面解析；
+                           code-review aba5c5dd1e75),
     hosting_state         (summary.py),
+    _fs_hosting_state    (core/fenix_session.py hosting_state 别名，summary.py
+                         经门面解析；code-review eb79f93c3752),
     is_spec_archived      (spec_archive.py，summary.py 经门面解析),
     is_spec_frozen        (admin_actions.py，summary.py 经门面解析),
     list_screenshots      (artifacts.py，summary.py 经门面解析),
@@ -63,6 +69,8 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     read_effective_config (config_admin.py，timeline.py、summary.py
                            经门面解析),
     resolve_spec_dir      (spec_docs.py，tasks.py、summary.py 经门面解析),
+    rotated_log_files     (timeline.py，topology.py 经门面解析；
+                           code-review aba5c5dd1e75),
     run_activity          (runs.py，summary.py 经门面解析),
     run_task_progress     (tasks.py，summary.py 经门面解析),
     spec_generation_progress (spec_docs.py，summary.py 经门面解析),
@@ -97,6 +105,9 @@ from core.agent_runner.run_files import archive_spec_runs
 from core.archive_commit import commit_archive_move
 from core.config import USER_CONFIG_DIR  # 单源锚定：用户级配置目录唯一定义于 core/config.py
 from core.fenix_session import is_running as _is_running
+# D8：summary.hosting_state 内经 _facade._fs_hosting_state 延迟解析（不能绑定
+# hosting_state 名——门面该名已 re-export summary 同名函数，经门面访问会自引用）。
+from core.fenix_session import hosting_state as _fs_hosting_state
 from core.state_machine import (
     FREEZE_ERROR_PREFIX,
     FROZEN_FIELD,
