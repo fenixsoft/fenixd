@@ -185,7 +185,9 @@ def _spec_total_duration(entry: dict, runs: list) -> int:
         if raw is not None:
             try:
                 persisted = int(raw)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError：非有限浮点（STATE.md 为 YAML 方言、字段被手写成
+                # .inf 时解析为 float inf），同 _judge_stat_or_none/_int_or_zero 口径。
                 persisted = None
     if persisted is None:
         # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的

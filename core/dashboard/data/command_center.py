@@ -75,9 +75,10 @@ LANE_ZONE = {lane: zone for zone, lanes in ROSTER.items() for lane in lanes}
 # 2026-11-01（add-arbiter-quality-display）新增 arbiter→judge：arbiter 是
 # 「质量裁决」编制的执行面（与 dispute-judge→judge 同族），run 计数/成本/
 # 在飞归属并入 judge 卡统一显示「质量裁决」，不再单独出「其他」卡。
-# 消费面边界：仅组织网格聚合与 spec 视图轮次（aggregate_org/
-# aggregate_spec_runs 两处既有消费点）消费本表；时间线/拓扑屏保持原生
-# agent_type（各有角色映射单源）的定稿口径不变。
+# 消费面边界：组织网格聚合、spec 视图轮次与交付流水线在飞标记
+# （aggregate_org/aggregate_spec_runs/aggregate_pipeline 三处消费点）消费
+# 本表；时间线/拓扑屏保持原生 agent_type（各有角色映射单源）的定稿口径
+# 不变。
 LANE_ALIASES = {
     "dispute-judge": "judge",
     "repair": "code-fix",
@@ -702,7 +703,13 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     # 脏值仅在全量窗计入）；运行总数/总成本=窗口内全车道合计（含 planner
     # 派生计数；全未计价 → None，读侧按「—」红线显示）。
     runs_total = sum(c["runs"] for c in cards)
-    costs = [c["cost"] for c in cards if c["cost"] is not None]
+    # 成本合计排除 planner 派生卡（code-review item 2246f2571d89）：planner
+    # 被上方派生口径强制 cost_priced=True/cost=0.0，计入则 costs 恒非空、
+    # 「全未计价 → None」分支永不可达（真实车道全未计价时汇总卡误显
+    # $0.00）。planner 贡献恒为 0，排除只影响 None 判定、不改变合计数值。
+    costs = [
+        c["cost"] for c in cards if c["lane"] != "planner" and c["cost"] is not None
+    ]
     duration_total = round(sum(st["duration"] for st in stats.values()), 1)
 
     return {
@@ -890,8 +897,12 @@ def aggregate_pipeline(registry_projects, project=None, *, now=None) -> dict:
 
                 if runs:
                     latest = max(runs, key=_start_key)
+                    # 在飞 lane 经 LANE_ALIASES 归并（code-review item
+                    # 3df182cc9d24）：与组织网格/spec 视图同口径，避免同一
+                    # 指挥中心内车道命名跨卡漂移（repair vs code-fix 等）。
+                    raw_lane = latest.get("agent_type")
                     card["running"] = {
-                        "lane": latest.get("agent_type"),
+                        "lane": LANE_ALIASES.get(raw_lane, raw_lane),
                         "started_at": latest.get("started"),
                     }
             col_by_key[col_key]["cards"].append(card)

@@ -332,8 +332,13 @@ def _read_log_tail_window(proot: Path, log_path: Path, max_bytes=LOG_INDEX_TAIL_
     start = max(0, min(start, size))
     try:
         with log_path.open("rb") as f:
-            f.seek(start)
-            return f.read(size - start)
+            # 超长行防御（code-review item bf7d7fd49c7f）：超长行直达文件尾（无
+            # 换行）时 _sample_block_boundary 以 offsets.append(offsets[-1]) 落
+            # 重复项，start 指向巨型行之前的行首，f.read(size - start) 会把整条
+            # 存量巨型行一次读入内存（写侧 LOG_EVENT_MAX_BYTES 只封顶新增行）；
+            # 改走锚定路径同款 _read_lines_bounded，超长行区间以 seek 越过，
+            # 常规日志读出内容与整读逐字节一致。
+            return _read_lines_bounded(f, start, size)
     except OSError:
         return b""
 
@@ -619,6 +624,7 @@ def record_project_event(
         }
         if context:
             entry["context"] = context
+        # [fenix-ignore:3a4ea2594eec] 误报：单次 f.write(str) 经 TextIOWrapper+BufferedWriter 合并为一次 write() 系统调用整行落盘，超缓冲走直写路径不拆分，O_APPEND 下内核串行化——同 core/logger.py:161 strace 实测先例（两进程并发 1100 条 120–180KB 大行逐行解析 0 撕裂），「O_APPEND 追加互不覆盖」表述成立，不修
         with (logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
             # default=str 兜底：context 含 Path/datetime 等不可序列化对象时
             # 序列化为字符串而非抛 TypeError 穿透（写日志失败静默降级的承诺）

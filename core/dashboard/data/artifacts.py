@@ -166,12 +166,21 @@ def list_screenshots(project_root, spec_name) -> list:
 
 
 def _fold_summary(summary: dict, key: str, val: str) -> dict:
-    """把表格/行内的计数键值折进汇总字典；非计数键忽略。
+    """把表格/行内的计数键值折进汇总字典；非计数键/非计数值忽略。
 
     键名先剥离括号别名（如「通过 (PASS)」「产品缺陷 (BUG)」，v3 验证报告方言）
     再匹配；全角/半角括号均支持。
     """
     if _is_empty_value(val):
+        return summary
+    # 纯计数门（code-review item 24ad9cfaf1d7）：表格正则（parse_verdict m3）对
+    # md 内任意两列表格行生效、不限「结论」章节，非汇总表的明细行（如 bug 清单
+    # 「| 错误 | 页面白屏 |」）首列恰与计数键同名时，第二列自由文本会被原样折进
+    # summary 污染契约。收紧为「键 | 计数」形态才入桶：值须为纯数字（容一个
+    # 加号前缀，对齐行内计数字符类 [＋+]；小数容之无害）；占位空值已由上方
+    # 排除表先行放行（保持 None=「未知/不展示」语义），行内 m4 与兜底两路的值
+    # 本就被字符类限定为计数形态，此门对它们仅是冗余防线。
+    if not re.fullmatch(r"[＋+]?[0-9]+(?:[.][0-9]+)?", val.strip()):
         return summary
     k = key.lower()
     k = re.sub(r"[（(][^（）)]*[）)]", "", k)

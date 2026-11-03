@@ -590,19 +590,9 @@ def derive_topology(project_root, spec_name: str, entry: "dict | None" = None) -
         if len(members) > 1 or any(n["status"] in ("superseded", "stale") for n in members)
     )
     # total_duration：done/pushed 优先读 STATE 固化快照（不随产物清理归零），
-    # 其余实时求和——与 summary._spec_total_duration 列表/详情共用口径一致
-    persisted = None
-    if entry.get("status") in ("done", "pushed"):
-        raw = entry.get("total_duration")
-        if raw is not None:
-            try:
-                persisted = int(raw)
-            except (TypeError, ValueError):
-                persisted = None
-    if persisted is None:
-        total_duration = sum(int(n.get("duration_seconds") or 0) for n in run_nodes)
-    else:
-        total_duration = persisted
+    # 其余实时求和——单点消费 summary._spec_total_duration（列表/详情/拓扑共用
+    # 同一口径，OverflowError 等脏值防护随单点同源演进）
+    total_duration = _facade._spec_total_duration(entry, run_nodes)
     # total_cost_usd：全部 run 不可计价时为 null（与 cost_summary_from_timeline
     # 同语义：至少一个可计价 run 才求和非 None）
     priced = [n["cost_usd"] for n in run_nodes if n.get("cost_usd") is not None]

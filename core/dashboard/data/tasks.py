@@ -122,7 +122,7 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
             # 自有 parse_tasks。
             m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
-                current_group = {"title": m.group(1), "tasks": [], "done": 0, "total": 0}
+                current_group = {"title": m.group(1).strip(), "tasks": [], "done": 0, "total": 0}
                 groups.append(current_group)
                 continue
             m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
