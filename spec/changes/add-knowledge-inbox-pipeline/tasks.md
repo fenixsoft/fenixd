@@ -37,7 +37,7 @@
 
 ## 1. 候选区地基
 
-- [ ] 1.1 创建 `spec/knowledge/_inbox/README.md`：投递契约（自由格式 markdown，
+- [x] 1.1 创建 `spec/knowledge/_inbox/README.md`：投递契约（自由格式 markdown，
       含背景/结论/证据段即可，不守能力页契约）、折叠成功移 `done/`、校验失败滞留
       原地待下轮重试、`done/` 为溯源永久保留区
 - [x] 1.2 扫描范围显式排除 `_inbox/**`（现状天然体外，补显式排除防未来扫描范围
@@ -100,8 +100,8 @@
 
 ## 8. 验证收尾
 
-- [ ] 8.1 端到端测试：合成夹具 `_inbox` 条目 → 驱动 distill 轮 → 断言能力页折叠
+- [x] 8.1 端到端测试：合成夹具 `_inbox` 条目 → 驱动 distill 轮 → 断言能力页折叠
       内容、marker sources 校验通过、条目移 `done/`、`log.md` fold+distill 行齐备
-- [ ] 8.2 存量知识车道测试全绿（`tests/test_knowledge*.py` 族），跑全量
+- [x] 8.2 存量知识车道测试全绿（`tests/test_knowledge*.py` 族），跑全量
       `validate_knowledge` 对 fenixd 主树知识库无回归违规；Scenario 全量静态对账
       结论写入收工报告

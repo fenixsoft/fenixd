@@ -1443,6 +1443,76 @@ class TestInboxFoldStage(KnowledgeTestBase):
         self.assertFalse(r["dispatched"])
         self.assertEqual(dispatched, [])
 
+    def test_e2e_fold_then_distill_full_chain(self):
+        """add-knowledge-inbox-pipeline 8.1：端到端闭环。
+
+        合成夹具 `_inbox` 条目 → 驱动 distill 轮（真实编排：折叠前置段 →
+        实时校验门 → 折叠独立提交 → 蒸馏轮 → 代码侧编年账）→ 断言能力页
+        折叠内容在场、marker sources 机器校验通过（``validate_knowledge``
+        全树零违规）、条目移 `done/`、`log.md` fold+distill 行齐备。
+        """
+        self._seed()
+        arch = self._archive_name()
+        fold_rule = "- 折叠规则：候选区条目按顺序逐条消化入库。"
+
+        def fold_ok(root):
+            # LLM 子进程字节替身：能力页规则段追加折叠规则句 + sources 追加
+            # done/ 前缀溯源 + 变更记录行 + 条目移 done/（与真实折叠产出同构）
+            self._fold_ok(root)
+            page = root / f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md"
+            text = page.read_text(encoding="utf-8")
+            text = text.replace("- 轮询间隔 300 秒。", f"- 轮询间隔 300 秒。\n{fold_rule}")
+            page.write_text(text, encoding="utf-8")
+
+        versions = self._distill_versions()
+
+        def distill(root):
+            # 真实蒸馏是增量修改（拿到含折叠内容的当前树），替身只更新
+            # index/_domain 盖戳版本，不重写能力页——保留折叠内容
+            for rel in (f"{KNOWLEDGE_DIR}/index.md", f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md"):
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(versions[rel], encoding="utf-8")
+
+        mgr = self._manager_split(fold_ok, distill)
+        result = mgr._run_batch(self.root, [arch])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["folded"], 1)
+        self.assertEqual(result["fold_failed"], 0)
+
+        # ① 条目移 done/：原位消失、done/ 落位、原文逐字节保留
+        self.assertFalse((self.root / KNOWLEDGE_DIR / "_inbox" / "raw-note.md").exists())
+        done_entry = self.root / INBOX_DONE_PREFIX / "raw-note.md"
+        self.assertTrue(done_entry.is_file())
+        self.assertIn("轮询间隔 300 秒是当前事实", done_entry.read_text(encoding="utf-8"))
+
+        # ② 能力页折叠内容在场：规则段新句 + sources done/ 溯源 + 变更行
+        page = (self.root / f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(fold_rule, page)
+        self.assertIn(f"sources=spec/archive/{arch},{INBOX_DONE_PREFIX}raw-note.md", page)
+        self.assertIn("折叠候选规则", page)
+
+        # ③ marker sources 机器校验通过：全树 validate_knowledge 零违规
+        self.assertEqual(validate_knowledge(self.root), [])
+
+        # ④ log.md fold+distill 行齐备：行前缀形态合法（LOG_LINE_RE）、
+        # 本地时区显式标注、行序 fold 先于 distill（4.2 顺序契约）
+        log = self._log_text()
+        fold_line = next(ln for ln in log.splitlines() if "fold |" in ln)
+        distill_line = next(ln for ln in log.splitlines() if "distill |" in ln)
+        self.assertLess(log.index(fold_line), log.index(distill_line))
+        self.assertTrue(LOG_LINE_RE.match(fold_line), fold_line)
+        self.assertTrue(LOG_LINE_RE.match(distill_line), distill_line)
+        self.assertIn("raw-note.md 折叠入库", fold_line)
+        self.assertIn("折叠入库 1 条", distill_line)
+
+        # ⑤ 提交序：蒸馏提交在 HEAD，折叠独立提交在先
+        subjects = self._git("log", "--format=%s").stdout.splitlines()
+        self.assertEqual(subjects[0], f"[fenix] knowledge: distill {arch}")
+        self.assertIn("[fenix] knowledge: fold raw-note.md", subjects[1:])
+
 
 if __name__ == "__main__":
     unittest.main()
