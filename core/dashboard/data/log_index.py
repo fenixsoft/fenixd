@@ -336,8 +336,8 @@ def _read_log_tail_window(proot: Path, log_path: Path, max_bytes=LOG_INDEX_TAIL_
             # 换行）时 _sample_block_boundary 以 offsets.append(offsets[-1]) 落
             # 重复项，start 指向巨型行之前的行首，f.read(size - start) 会把整条
             # 存量巨型行一次读入内存（写侧 LOG_EVENT_MAX_BYTES 只封顶新增行）；
-            # 改走锚定路径同款 _read_lines_bounded，超长行区间以 seek 越过，
-            # 常规日志读出内容与整读逐字节一致。
+            # 改走锚定路径同款 _read_lines_bounded，超长行内容按阈值判弃、
+            # 读取 I/O 恰为窗口一遍，常规日志读出内容与整读逐字节一致。
             return _read_lines_bounded(f, start, size)
     except OSError:
         return b""
@@ -435,39 +435,44 @@ def _skip_leading_giant_lines(f, start: int, size: int) -> int:
 
 
 def _read_lines_bounded(f, start: int, end: int) -> bytes:
-    """逐行读取 [start, end)，超长行以 seek 越过（improve-spec-topology-pipeline-view 1.5）。
+    """顺序单遍读取 [start, end)，超长行按阈值判弃（improve-spec-topology-pipeline-view 1.5）。
 
     行长度 > LOG_LINE_SKIP_THRESHOLD 的行（存量巨型行，如 admin_monitor 单行
-    6.6MB）内容不读入内存——仅以 ≤ LOG_INDEX_BLOCK 探测窗扫描行界定位行尾，
-    随后 seek 越过整行字节区间继续读后续行；常规行照常读入。单请求读取字节
-    数有界（阈值常量 + 窗口上限双重约束），不出现一次性读入超长行全文的内存
-    峰值。窗口末端截在行中间的残行语义与整读实现一致（由调用方逐行
-    json.loads 失败跳过）。
+    6.6MB）内容不进入返回值——行前缀缓冲超过阈值即判超长并丢弃，仅继续顺序
+    探测行界越过该行字节区间；常规行照常读入。读取 I/O 恰为窗口字节数一遍
+    （不逐行回退重探测，尾窗高频路径的读取总量有界），单请求内存峰值以
+    「阈值 + 单块」为界，不出现一次性读入超长行全文的内存峰值（code-review
+    item bf7d7fd49c7f）。窗口末端截在行中间的残行语义与整读实现一致（由
+    调用方逐行 json.loads 失败跳过）。
     """
     parts: list = []
+    f.seek(start)
     pos = start
-    line_start = start
+    buf = b""      # 当前行已读前缀（未遇行界期间累积，≤ 阈值 + 单块）
+    giant = False  # 当前行已判超长：内容已弃，仅继续探测行界
     while pos < end:
-        f.seek(pos)
         chunk = f.read(min(LOG_INDEX_BLOCK, end - pos))
         if not chunk:
             break
+        pos += len(chunk)
+        if giant:
+            nl = chunk.find(b"\n")
+            if nl != -1:
+                giant = False
+                buf = chunk[nl + 1:]
+            continue
         nl = chunk.find(b"\n")
         if nl != -1:
-            line_len = pos + nl - line_start
-            if line_len <= LOG_LINE_SKIP_THRESHOLD:
-                f.seek(line_start)
-                parts.append(f.read(line_len + 1))  # 含行尾 \n，保持逐行切分形态
-            # 超长行：整行字节区间跳过（不 append），继续下一行
-            line_start = pos + nl + 1
-            pos = line_start
+            if len(buf) + nl <= LOG_LINE_SKIP_THRESHOLD:
+                parts.append(buf + chunk[:nl] + b"\n")  # 含行尾 \n，保持逐行切分形态
+            buf = chunk[nl + 1:]
         else:
-            # 本探测窗内无行界：窗口末端残行（≤ 阈值）照读；否则属超长行
-            # 中段，seek 越过 [line_start, end) 剩余区间
-            if end - line_start <= LOG_LINE_SKIP_THRESHOLD:
-                f.seek(line_start)
-                parts.append(f.read(end - line_start))
-            pos = end
+            buf += chunk
+            if len(buf) > LOG_LINE_SKIP_THRESHOLD:
+                giant = True
+                buf = b""
+    if buf and len(buf) <= LOG_LINE_SKIP_THRESHOLD:
+        parts.append(buf)  # 末端残行（窗口截在行中间的 ≤ 阈值残段）
     return b"".join(parts)
 
 

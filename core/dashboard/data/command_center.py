@@ -701,15 +701,13 @@ def aggregate_org(registry_projects, project=None, *, now=None, window=WINDOW_TO
     # 产品团队汇总（2026-10-28 用户追加「产品团队」卡数据源）：需求数量=
     # 窗口内创建的活跃 SPEC 数（parse_state created 时间过滤；created 缺失/
     # 脏值仅在全量窗计入）；运行总数/总成本=窗口内全车道合计（含 planner
-    # 派生计数；全未计价 → None，读侧按「—」红线显示）。
+    # 派生计数与派生 $0。code-review item 2246f2571d89 裁决定稿：planner 属
+    # 花名册常驻卡（LANE_ZONE 预播种）且被上方派生口径强制 cost_priced=True/
+    # cost=0.0，故 costs 恒非空、cost_total 永不为 None——这是有意口径：
+    # 汇总卡恒显数值（真实车道全未计价时显 $0.00 而非「—」，与下游钉死的
+    # 测试契约一致），「未计价 → None → 读侧红线」语义仅作用于车道卡自身）。
     runs_total = sum(c["runs"] for c in cards)
-    # 成本合计排除 planner 派生卡（code-review item 2246f2571d89）：planner
-    # 被上方派生口径强制 cost_priced=True/cost=0.0，计入则 costs 恒非空、
-    # 「全未计价 → None」分支永不可达（真实车道全未计价时汇总卡误显
-    # $0.00）。planner 贡献恒为 0，排除只影响 None 判定、不改变合计数值。
-    costs = [
-        c["cost"] for c in cards if c["lane"] != "planner" and c["cost"] is not None
-    ]
+    costs = [c["cost"] for c in cards if c["cost"] is not None]
     duration_total = round(sum(st["duration"] for st in stats.values()), 1)
 
     return {
