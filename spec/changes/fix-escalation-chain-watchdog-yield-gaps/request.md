@@ -1,0 +1,1 @@
+合并立项 fix SPEC：处置链首例实证三缺口——(1) 孤儿看护对链在办件重复出件（开火前查链痕抑制 + 告警归因取 run 终态证据）；(2) 冻结×链头派发竞态烧配额；(3) deferred 让行无唤醒静默挂起。修改点集中在 core/pm_engine/escalation_chain.py 让行/入链段与 core/admin_monitor.py 孤儿接管路径，取证与候选修法见 spec/knowledge/_inbox/escalation-chain-orphan-watchdog-double-path.md
