@@ -83,6 +83,39 @@ _MANUAL_FIXED_REVERIFY = {
     "spec_scoped": True,
 }
 
+# register-revise-scenario-choice-on-intervention-signals 1.1：场景修订重验
+# 出口提为模块级单源——原仅内联于 inconclusive_loop 桶，现三桶按引用复用
+# （inconclusive_loop / manual-intervention / verify_env_blocked；两新桶的
+# 立项来源见其桶头注释）。desc 无信号特定措辞（「上限 2 次，超限转人工」
+# 对三桶同样成立），满足共享常量的单源前提（头注约定：仅 desc 带信号特定
+# 文案的同名选项保持就地声明）。跨桶 id/action/spec_scoped/destructive/
+# requires_payload 一致性由 import 期 _assert_registry_consistency fail-fast
+# 钉死，任何单侧漂移直接拒绝启动。
+_REVISE_SCENARIO_REVERIFY = {
+    # evo-fix-env-exemption-gate-conflict-… 2.1：场景修订重验出口。
+    # 失败确属场景定义不可行/夹具供给缺失（judge 或人工诊断结论）
+    # 时，修订场景定义与夹具供给层文件并重置重验——先于升级的
+    # re-entry 通道（修订后的重验轮再失败才升级停车）。修订次数有
+    # 上限（SCENARIO_REVISION_MAX_COUNT，默认 2），超限拒绝并冻结
+    # 转人工。载荷经 note 传 JSON：{"scenarios": [...], "reason":
+    # "...", "fixture_files": [{"path", "content"}]}；文件路径仅限
+    # 夹具供给层白名单（validate_scenario_revision_paths），产品
+    # 代码路径拒绝。
+    # requires_payload=True（fix-admin-choice-payload-and-
+    # scenario-pairing 1.1）：该选项动作执行 MUST 以 JSON 载荷为输入
+    # ——载荷经处置记录 choice_payload（Administrator 自动路径）或
+    # 人工裁决 note（alert-resolve 端点）传入执行器；缺载荷时处置
+    # 产物硬门判失败、自动执行通道跳过，不再产生「resolved 但执行
+    # 必失败」的假收口。
+    "id": "revise_scenario_reverify",
+    "label": "修订场景·重验",
+    "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具"
+    "供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
+    "action": "revise_scenario_reverify",
+    "spec_scoped": True,
+    "requires_payload": True,
+}
+
 # fix-global-signal-choice-execution 1.3：全局形态信号的非作用域收口动作。
 # 全局信号（spec 为空或占位 'global'，如 daemon_errors——注册表无此桶）被
 # 执行守卫拒入 spec 作用域动作后，仍须有非作用域动作可收口，不滞留 pending
@@ -230,30 +263,11 @@ _ADJUDICATION_REGISTRY: dict = {
             "action": "grant_env_exemption",
             "spec_scoped": True,
         },
-        {
-            # evo-fix-env-exemption-gate-conflict-… 2.1：场景修订重验出口。
-            # 失败确属场景定义不可行/夹具供给缺失（judge 或人工诊断结论）
-            # 时，修订场景定义与夹具供给层文件并重置重验——先于升级的
-            # re-entry 通道（修订后的重验轮再失败才升级停车）。修订次数有
-            # 上限（SCENARIO_REVISION_MAX_COUNT，默认 2），超限拒绝并冻结
-            # 转人工。载荷经 note 传 JSON：{"scenarios": [...], "reason":
-            # "...", "fixture_files": [{"path", "content"}]}；文件路径仅限
-            # 夹具供给层白名单（validate_scenario_revision_paths），产品
-            # 代码路径拒绝。
-            # requires_payload=True（fix-admin-choice-payload-and-
-            # scenario-pairing 1.1）：该选项动作执行 MUST 以 JSON 载荷为输入
-            # ——载荷经处置记录 choice_payload（Administrator 自动路径）或
-            # 人工裁决 note（alert-resolve 端点）传入执行器；缺载荷时处置
-            # 产物硬门判失败、自动执行通道跳过，不再产生「resolved 但执行
-            # 必失败」的假收口。
-            "id": "revise_scenario_reverify",
-            "label": "修订场景·重验",
-            "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具"
-            "供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
-            "action": "revise_scenario_reverify",
-            "spec_scoped": True,
-            "requires_payload": True,
-        },
+        # register-revise-scenario-choice-on-intervention-signals 1.2：本桶
+        # 内联声明提为模块常量 _REVISE_SCENARIO_REVERIFY（字段逐字不变，
+        # 行为零变化），与新注册的 manual-intervention / verify_env_blocked
+        # 两桶按引用共享同一单源。
+        _REVISE_SCENARIO_REVERIFY,
         _MANUAL_FIXED_REVERIFY,
         _ABANDON,
     ),
@@ -269,6 +283,23 @@ _ADJUDICATION_REGISTRY: dict = {
         _FORCE_ADVANCE,
         _ABANDON,
     ),
+    # ── 场景争议升级族（register-revise-scenario-choice-on-intervention-
+    # signals 1.3）────────────────────────────────────────────────
+    # 场景争议类升级实际流经的两信号：manual-intervention（Administrator
+    # 处置请求转人工边，arbiter.py ARBITER_TRIGGER_SIGNAL_TYPES）、
+    # verify_env_blocked（pipeline 争议/环境阻塞，arbiter.py / engine.py）。
+    # 立项来源（两次实弹发作，结构性缺口同族）：2026-10-30
+    # evo-refine-midflight-outlier-dims、2026-11-03 add-knowledge-inbox-
+    # pipeline——revise_scenario_reverify 此前仅注册于 inconclusive_loop 桶，
+    # resolve_choice 对 spec_scoped 动作的未注册信号返回 scoped-no-reverse
+    # （有意防御，不拆），载荷完美也必被拒，每次烧满 admin run 预算后冻结
+    # 转人工。两桶按引用复用 _REVISE_SCENARIO_REVERIFY 单源常量，
+    # requires_payload 载荷门（处置产物硬门 / 自动执行通道）原样生效。
+    # 单选项桶是有意收窄：不追加 grant_env_exemption 等其他选项（无实弹
+    # 证据支撑，两次事故均为 revise_scenario_reverify），自由处置
+    # （choice_id=None）通道不受影响，注册面不扩权。
+    "manual-intervention": (_REVISE_SCENARIO_REVERIFY,),
+    "verify_env_blocked": (_REVISE_SCENARIO_REVERIFY,),
     # ── 评审族 ───────────────────────────────────────────────────
     "spec-review-rejected": (
         {

@@ -55,6 +55,10 @@ _EXPECTED_CHOICE_IDS = {
     "maintree_untracked_stray_escalated": {
         "archive_untracked_stray", "ignore_untracked_stray", "delete_untracked_stray",
     },
+    # register-revise-scenario-choice-on-intervention-signals 1.3：场景争议
+    # 升级两信号获得裁决选项集（revise_scenario_reverify 三桶单源共享）
+    "manual-intervention": {"revise_scenario_reverify"},
+    "verify_env_blocked": {"revise_scenario_reverify"},
 }
 # 桶 0（知情/自愈类）：注册表不覆盖，告警不携 choices
 _BUCKET0_SIGNAL_TYPES = ("stale_code", "transient_break_storm", "run_infra_failure", "run_cancelled")
@@ -113,9 +117,11 @@ def _entry(proot: Path, spec: str) -> dict:
 
 
 class TestRegistry:
-    def test_covers_exactly_11_signal_types(self):
+    def test_covers_exactly_13_signal_types(self):
+        # register-revise-scenario-choice-on-intervention-signals：11 → 13
+        # （新增 manual-intervention / verify_env_blocked 两桶）
         assert set(registered_signal_types()) == set(_EXPECTED_CHOICE_IDS)
-        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 11
+        assert len(ADJUDICATION_CHOICES) == len(_EXPECTED_CHOICE_IDS) == 13
 
     def test_per_signal_choice_id_sets(self):
         for sig, expected in _EXPECTED_CHOICE_IDS.items():
@@ -775,14 +781,20 @@ class TestRequiresPayloadChoice:
         assert choice_requires_payload("", "inconclusive_loop") is False
 
     def test_only_revise_scenario_reverify_declares_payload(self):
-        """初始仅 revise_scenario_reverify 置 true：全表遍历恰一处声明。"""
+        """全表仅 revise_scenario_reverify 置 true：三桶共享同一单源常量
+        （register-revise-scenario-choice-on-intervention-signals 1.3），
+        恰三处 (sig, id) 声明且 id 同一，无第四处。"""
         declared = {
             (sig, c["id"])
             for sig, choices in ADJUDICATION_CHOICES.items()
             for c in choices
             if c.get("requires_payload")
         }
-        assert declared == {("inconclusive_loop", "revise_scenario_reverify")}
+        assert declared == {
+            ("inconclusive_loop", "revise_scenario_reverify"),
+            ("manual-intervention", "revise_scenario_reverify"),
+            ("verify_env_blocked", "revise_scenario_reverify"),
+        }
 
     def test_declaration_is_pure_static_bool(self):
         """注册表保持纯静态：声明位为模块常量内的布尔静态声明。"""
@@ -802,6 +814,57 @@ class TestRequiresPayloadChoice:
         monkeypatch.setattr(mod, "resolve_choice", boom)
         assert mod.choice_requires_payload(
             "revise_scenario_reverify", "inconclusive_loop") is False
+
+
+class TestScenarioDisputeSignalBuckets:
+    """register-revise-scenario-choice-on-intervention-signals 2.1-2.4：
+    manual-intervention / verify_env_blocked 两信号桶注册场景修订重验出口
+    ——Administrator 自动处置通道经 resolve_choice 桶内精确解析可达，不再因
+    scoped-no-reverse 被拒（2026-10-30 evo-refine-midflight-outlier-dims、
+    2026-11-03 add-knowledge-inbox-pipeline 两次实弹缺口）。"""
+
+    _NEW_BUCKETS = ("manual-intervention", "verify_env_blocked")
+
+    def test_resolve_hits_new_buckets_with_payload_gate(self):
+        """2.1：两新桶内精确命中，返回 dict 拷贝且 requires_payload /
+        spec_scoped 置位（载荷门与作用域语义与 inconclusive_loop 逐字一致）。"""
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        for sig in self._NEW_BUCKETS:
+            choice, reason = resolve_choice("revise_scenario_reverify", sig)
+            assert reason == "", f"{sig} 应命中"
+            assert isinstance(choice, dict)
+            assert choice["id"] == "revise_scenario_reverify"
+            assert choice["action"] == "revise_scenario_reverify"
+            assert choice["requires_payload"] is True
+            assert choice["spec_scoped"] is True
+
+    def test_three_buckets_resolve_identically(self):
+        """2.2：三桶解析返回的选项 dict 逐项相等（跨桶单源不漂移）。"""
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        base = resolve_choice("revise_scenario_reverify", "inconclusive_loop")
+        assert base[1] == "" and base[0] is not None
+        for sig in self._NEW_BUCKETS:
+            got = resolve_choice("revise_scenario_reverify", sig)
+            assert got == base, f"{sig} 解析与 inconclusive_loop 漂移: {got}"
+
+    def test_guards_do_not_regress(self):
+        """2.3：未注册信号解析该 id 仍 scoped-no-reverse（全表反查收紧语义
+        与注册前一致）；已注册桶内不含该 id 仍 not-in-bucket（不跨信号放行）。"""
+        from core.dashboard.data.adjudication_choices import resolve_choice
+
+        assert resolve_choice("revise_scenario_reverify", "daemon_errors") == (
+            None, "scoped-no-reverse")
+        assert resolve_choice("revise_scenario_reverify", "spec-review-rejected") == (
+            None, "not-in-bucket")
+
+    def test_choice_requires_payload_true_on_new_buckets(self):
+        """2.4：载荷门单源判定在两新桶均为 True。"""
+        from core.dashboard.data.adjudication_choices import choice_requires_payload
+
+        for sig in self._NEW_BUCKETS:
+            assert choice_requires_payload("revise_scenario_reverify", sig) is True
 
 
 # ── 6. alert-resolve 端点闭环 ────────────────────────────────────────────
