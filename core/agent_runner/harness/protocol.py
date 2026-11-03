@@ -60,6 +60,11 @@ class SpawnRequest:
     output_format: Optional[str] = "stream-json"
     # --model 显式传递；None = 不传（用 CLI/网关默认档）
     model: Optional[str] = None
+    # agent 角色名（dispatch 车道的 agent_type，如 implementer/arbiter；一次性
+    # spawn 无角色概念传 None）。仅作回落 WARN 文案的角色留痕随行
+    # （add-harness-default-key-fallback 2.1：adapter 层无其他角色上下文），
+    # 不进 argv/env——SpawnSpec 输出形态不变（快照测试锁定）。
+    agent_role: Optional[str] = None
     # --resume 会话续跑；None = 全新会话
     resume_session_id: Optional[str] = None
     # --settings 显式路径；None = agent-run 口径由 adapter 按 project_root 推导

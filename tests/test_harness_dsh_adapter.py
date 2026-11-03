@@ -185,17 +185,63 @@ class TestSpawnContract:
         assert "FENIX_RUN_WORKTREE" not in spec.env
         assert spec.env[DSH_API_KEY_ENV] == "sk-test-key"
 
-    def test_spawn_fail_fast_missing_provider_chain(self):
-        """三要素缺失 fail-fast（绝不回退 dsh 默认档，错误含修复指引）。"""
+    def test_spawn_default_fallback_no_patch_no_bridge(self, monkeypatch):
+        """无分配形态（env_overrides 完全无链键，baseurl/apikey 均空）回落
+        profile 默认档：argv 不含 --patch、env 不桥接 FENIX_DSH_PROVIDER_API_KEY
+        （add-harness-default-key-fallback 1.3；2026-11-02 dsh-plugins arbiter
+        run 0.001s/0 tokens 秒败形态的修复）。model 传网关模型名（runner 无
+        分配车道现状，如 DEFAULT_GATEWAY_MODEL）不参与回落判定——回落无
+        patch 消费点；--profile/--json 段与反串扰清除语义不变。"""
+        monkeypatch.setenv("FENIX_DSH_PROVIDER_API_KEY", "sk-stale")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-inherited")
+        for model in (None, "claude-sonnet-5"):
+            spec = _make_adapter().build_spawn_spec(
+                _make_request(model=model, env_overrides={}))
+            assert spec.argv[:3] == ["dsh", "--profile", "fenix"]
+            assert "--patch" not in spec.argv
+            assert spec.argv[3] == "--json"
+            assert DSH_API_KEY_ENV not in spec.env
+            assert "ANTHROPIC_API_KEY" not in spec.env
+            assert spec.stdin_payload == "实现任务 1.1：build_spawn_spec"
+
+    def test_spawn_fail_fast_partial_chain_baseurl_only(self):
+        """部分链（仅 baseurl，缺 apikey/model）仍报错（笔误防护保留，
+        spec「dsh 部分链仍报错」）。"""
         with pytest.raises(DshSpawnConfigError) as ei:
-            _make_adapter().build_spawn_spec(
-                _make_request(env_overrides={}))
-        assert "provider" in str(ei.value)
-        assert "claude" in str(ei.value)
+            _make_adapter().build_spawn_spec(_make_request(env_overrides={
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:18787/v1"}))
+        assert "provider 链不完整" in str(ei.value)
+
+    def test_spawn_fail_fast_partial_chain_apikey_only(self):
+        """部分链（仅 apikey，缺 baseurl/model）仍报错。"""
+        with pytest.raises(DshSpawnConfigError):
+            _make_adapter().build_spawn_spec(_make_request(env_overrides={
+                "ANTHROPIC_API_KEY": "sk-test-key"}))
 
     def test_spawn_fail_fast_missing_model(self):
-        with pytest.raises(DshSpawnConfigError):
+        """显式链 baseurl/apikey 已配但缺 model 仍报错（三要素完整性，
+        错误文案已随回落语义更新——不再含「绝不回退」旧纪律表述）。"""
+        with pytest.raises(DshSpawnConfigError) as ei:
             _make_adapter().build_spawn_spec(_make_request(model=None))
+        assert "provider 链不完整" in str(ei.value)
+        assert "绝不回退" not in str(ei.value)
+
+    def test_spawn_explicit_chain_unchanged(self):
+        """显式全链形态 spawn spec 与现行为一致（1.3 回归红线）：argv 序
+        （--patch 紧跟 --profile、--json 收尾）与凭据桥接不变——快照用例
+        test_spawn_snapshot_* 全绿即逐字节一致，此处补回落形态的负空间对照
+        （两形态仅差 --patch 段）。"""
+        adapter = _make_adapter()
+        spec_e = adapter.build_spawn_spec(_make_request())
+        assert spec_e.argv[:3] == ["dsh", "--profile", "fenix"]
+        assert "--json" in spec_e.argv
+        assert spec_e.argv.index("--json") == spec_e.argv.index("--patch") + 2
+        assert spec_e.env[DSH_API_KEY_ENV] == "sk-test-key"
+        spec_f = adapter.build_spawn_spec(
+            _make_request(env_overrides={}, model=None))
+        assert [a for a in spec_f.argv] == \
+            [a for a in spec_e.argv if a != "--patch"
+             and a != spec_e.argv[spec_e.argv.index("--patch") + 1]]
 
     def test_spawn_same_request_byte_stable(self):
         """对同一请求逐字节稳定（protocol SpawnSpec 契约；patch 文件路径除
