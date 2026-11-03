@@ -63,7 +63,7 @@
 
 ## 4. log.md 编年账
 
-- [ ] 4.1 新增 `spec/knowledge/log.md` 追加机制：行前缀常量
+- [x] 4.1 新增 `spec/knowledge/log.md` 追加机制：行前缀常量
       `## [YYYY-MM-DD HH:MM UTC+8] <操作> | <主题>`（操作 ∈ distill/fold/backfill/
       lint），本地时区显式标注，追加并发安全（文件锁或复用 ADR-234 单写者纪律），
       并发追加不丢行有测试

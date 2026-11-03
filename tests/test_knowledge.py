@@ -17,8 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.knowledge import (
     KNOWLEDGE_DIR,
+    LOG_HEADER,
+    LOG_LINE_RE,
     DistillManager,
+    _log_subject_safe,
+    append_knowledge_log,
     build_distill_prompt,
+    knowledge_log_path,
     parse_marker,
     validate_knowledge,
 )
@@ -832,6 +837,14 @@ class TestDistillManager(KnowledgeTestBase):
         stat = self._git("show", "--name-only", "--format=").stdout
         touched = {ln.strip() for ln in stat.splitlines() if ln.strip()}
         self.assertTrue(all(t.startswith(KNOWLEDGE_DIR) for t in touched))
+        # add-knowledge-inbox-pipeline 4.2：distill 行随产出提交搭车——touched
+        # 含 log.md，且无独立 log 提交顶掉蒸馏提交的 HEAD 位
+        self.assertIn(f"{KNOWLEDGE_DIR}/log.md", touched)
+        log_text = (self.root / KNOWLEDGE_DIR / "log.md").read_text(encoding="utf-8")
+        self.assertTrue(
+            any(LOG_LINE_RE.match(ln) and "distill |" in ln for ln in log_text.splitlines())
+        )
+        self.assertNotIn("[fenix] knowledge: log", self._git("log", "--format=%s").stdout)
         # add-distill-run-artifacts 4.1：批生命周期产物断言——批成功 → 产物
         # 落盘（恰一个），首行 started 带 timestamp、末行 result 终态
         artifacts = list((self.root / ".fenix" / "runs").glob("knowledge-distiller-*.jsonl"))
@@ -906,9 +919,18 @@ class TestDistillManager(KnowledgeTestBase):
         mgr = self._manager(self._spawn_writer(versions), max_fix_rounds=2)
         result = mgr._run_batch(self.root, [self._archive_name()])
         self.assertFalse(result["ok"])
-        # 半成品被清理：tracked 回 HEAD 态、未跟踪新增被清
+        # 半成品被清理：tracked 回 HEAD 态、未跟踪新增被清。
+        # add-knowledge-inbox-pipeline 4.2：失败批由 daemon 代码侧兜底追加
+        # distill 失败行并独立小提交（保持工作区干净），tracked 集恰新增
+        # 编年账 log.md。
         self.assertEqual(self._git("status", "--porcelain", "--", KNOWLEDGE_DIR).stdout.strip(), "")
-        self.assertEqual(self._git("ls-files", KNOWLEDGE_DIR).stdout, tracked_before)
+        self.assertEqual(
+            self._git("ls-files", KNOWLEDGE_DIR).stdout,
+            tracked_before + f"{KNOWLEDGE_DIR}/log.md\n",
+        )
+        log_text = (self.root / KNOWLEDGE_DIR / "log.md").read_text(encoding="utf-8")
+        self.assertIn("distill", log_text)
+        self.assertIn("失败", log_text)
         page = (self.root / KNOWLEDGE_DIR / "domains/pickup/scheduled-spec-pickup.md").read_text(
             encoding="utf-8"
         )
@@ -996,6 +1018,68 @@ class TestDistillManager(KnowledgeTestBase):
         self.assertIn("超时", result["error"])
         todo = (self.root / ".fenix" / "todo.md").read_text(encoding="utf-8")
         self.assertIn("knowledge-distill", todo)
+
+
+class TestKnowledgeLog(KnowledgeTestBase):
+    """add-knowledge-inbox-pipeline 4.1：spec/knowledge/log.md 编年账机制。
+
+    缺失建头（恰一次）、并发 flock 串行不丢行、越界 op 拒绝（代码缺陷不
+    静默吞）、主题清洗单行契约（行前缀可 grep）。
+    """
+
+    def test_append_creates_header_once_then_appends(self):
+        p = knowledge_log_path(self.root)
+        self.assertTrue(append_knowledge_log(self.root, "distill", "首条"))
+        self.assertTrue(append_knowledge_log(self.root, "fold", "第二条"))
+        text = p.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith(LOG_HEADER))
+        self.assertEqual(text.count(LOG_HEADER), 1)
+        rows = [ln for ln in text.splitlines() if LOG_LINE_RE.match(ln)]
+        self.assertEqual(len(rows), 2)
+        self.assertIn("distill | 首条", rows[0])
+        self.assertIn("fold | 第二条", rows[1])
+
+    def test_append_concurrent_no_lost_lines(self):
+        # flock 进程间互斥（同进程不同 fd 亦互斥）：16 线程 × 4 次 = 64 行全在
+        n_threads, per_thread = 16, 4
+
+        def worker(tid):
+            for i in range(per_thread):
+                self.assertTrue(append_knowledge_log(self.root, "lint", f"t{tid}-{i}"))
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        text = knowledge_log_path(self.root).read_text(encoding="utf-8")
+        rows = [ln for ln in text.splitlines() if LOG_LINE_RE.match(ln)]
+        self.assertEqual(len(rows), n_threads * per_thread)
+        for t in range(n_threads):
+            for i in range(per_thread):
+                self.assertIn(f"lint | t{t}-{i}", text)
+
+    def test_append_invalid_op_rejected(self):
+        with self.assertRaises(ValueError):
+            append_knowledge_log(self.root, "fold-only", "x")
+
+    def test_append_detail_and_subject_sanitized(self):
+        # 主题/明细压平为单行（换行/控制字符→空格），行前缀契约要求单行可 grep
+        self.assertTrue(
+            append_knowledge_log(
+                self.root, "backfill", "主题一\n主题二\x07尾", detail="明一\n明二"
+            )
+        )
+        text = knowledge_log_path(self.root).read_text(encoding="utf-8")
+        self.assertIn("backfill | 主题一 主题二 尾", text)
+        self.assertIn("明一 明二", text)
+        rows = [ln for ln in text.splitlines() if "backfill |" in ln]
+        self.assertEqual(len(rows), 1)
+
+    def test_subject_safe_helper(self):
+        self.assertEqual(_log_subject_safe("a\nb\x00c"), "a b c")
+        self.assertEqual(_log_subject_safe("x" * 300), "x" * 160)
+        self.assertEqual(_log_subject_safe("   \n\t "), "(空)")
 
 
 if __name__ == "__main__":
