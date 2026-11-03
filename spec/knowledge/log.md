@@ -18,3 +18,4 @@
 ## [2026-11-03 21:45 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
 ## [2026-11-03 21:52 UTC+8] distill | fix-escalation-chain-watchdog-yield-gaps（第 1 轮，自动提交落库，折叠入库 3 条）
 ## [2026-11-03 23:00 UTC+8] fold | chain-arbiter-rulings-default-3.md 折叠入库
+## [2026-11-03 23:02 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
