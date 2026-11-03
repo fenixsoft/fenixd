@@ -674,16 +674,28 @@ class DshAdapter:
     def build_spawn_spec(self, req: SpawnRequest) -> SpawnSpec:
         """SpawnRequest → SpawnSpec（spec「DshAdapter spawn 契约」）。
 
-        argv ``dsh --profile <p> --patch <yml> --json [--session-id <id>]``
+        argv ``dsh --profile <p> [--patch <yml>] --json [--session-id <id>]``
         （**不含裸任务词**：``--profile`` 即 app 选择，argv 里的裸
         ``headless`` 会被解析为任务 positional、令 stdin prompt 被忽略，
         见 DSH_APP_NAME 注记）；prompt 全文经 stdin 载荷——prompt_transport
         **仅支持 stdin**（argv 形态无对应语义：任务 positional 槽已被
         ``--profile``/``--patch`` 占用，非 stdin 值与 claude_adapter 同口径
         fail-fast）；cwd=worktree；env
-        段按 dsh 口径清除 ANTHROPIC_*/CLAUDE_* 防串扰键；模型经 Bundle
-        patch 显式渲染（provider 链 name/baseurl/apikey/model），缺任一要素
-        fail-fast（DshSpawnConfigError），绝不回退 dsh 默认档。
+        段按 dsh 口径清除 ANTHROPIC_*/CLAUDE_* 防串扰键。
+
+        模型配置两形态（add-harness-default-key-fallback，2026-11-03 用户
+        裁定取代原「绝不回退 dsh 默认档」纪律 D9）：
+
+        - **显式链**（provider 链 baseurl/apikey/model 三要素齐全）：模型经
+          Bundle patch 显式渲染（``--patch <yml>``）；
+        - **无分配**（env_overrides 完全无链键，baseurl/apikey 均空）：省略
+          ``--patch``（不写 patch 文件），由 dsh 按 profile 自身配置的默认档
+          启动；``build_env`` 不桥接 ``FENIX_DSH_PROVIDER_API_KEY``（无
+          apikey 可桥）。req.model 即使非空（runner 无分配车道传的网关/钉死
+          模型名）也无 patch 消费点，不参与回落判定；
+        - **部分链**（任一链键存在但三要素不全）：fail-fast
+          （DshSpawnConfigError，笔误防护保留）——区分「无分配（合法回落）」
+          与「配了一半（配置错误）」。
 
         provider 链三要素来源（runner 既有 Provider 路由的 env_overrides）：
         ANTHROPIC_BASE_URL → baseURL、ANTHROPIC_API_KEY → apikey（经
@@ -715,33 +727,54 @@ class DshAdapter:
                 "（一次性 spawn）"
             )
         model = (req.model or "").strip()
-        if not model:
-            raise DshSpawnConfigError(
-                "dsh 通道要求显式模型（SpawnRequest.model 为空）——模型经 "
-                "Bundle 配置显式渲染，MUST NOT 依赖 dsh 默认档；请为该车道"
-                "分配 provider 链（模型路由），或将 agent.harness 改回 claude"
-            )
         # (req.env_overrides or {}) 兜底与 build_env 同款：调用方显式传 None
         # 时在此落下方 DshSpawnConfigError 友好报错，而非 AttributeError 把
         # 排查方向带偏。
         base_url = ((req.env_overrides or {}).get("ANTHROPIC_BASE_URL") or "").strip()
         api_key = ((req.env_overrides or {}).get("ANTHROPIC_API_KEY") or "").strip()
-        if not base_url or not api_key:
-            raise DshSpawnConfigError(
-                "dsh 通道要求显式 provider 链分配（baseurl/apikey/model 三要"
-                "素由 fenixd provider 链渲染）：当前 SpawnRequest 缺 "
-                "ANTHROPIC_BASE_URL 或 ANTHROPIC_API_KEY 覆盖——请为该车道配"
-                "置模型路由（assignment），或将 agent.harness 改回 claude"
-            )
+        if not base_url and not api_key:
+            # 无 provider 链分配（add-harness-default-key-fallback 1.1/1.2）：
+            # env_overrides 完全无链键（baseurl/apikey 均空）→ 回落 dsh
+            # profile 自身配置的默认档——不写 patch 文件、argv 不携带
+            # --patch（design D1：dsh 侧「无 patch=profile 默认档」是 profile
+            # 系统原生语义，写空 patch 反而引入「空值渲染」歧义）；build_env
+            # 无 apikey 桥接。「无分配」的权威信号是链键缺席（与 runner 侧
+            # _get_agent_model_assignment 空判定同源，tasks 2.2）。
+            from core.agent_runner.harness import warn_harness_default_fallback
 
-        patch_path = self._write_model_patch(model=model, base_url=base_url)
+            warn_harness_default_fallback(self.name, req.agent_role or "")
+            patch_path = None
+        else:
+            # 显式链（含部分链）：三要素完整性校验（笔误防护保留，design D2）
+            # ——「配了一半」是配置错误不是回落形态。
+            if not model:
+                raise DshSpawnConfigError(
+                    "dsh 通道 provider 链不完整：已配 ANTHROPIC_BASE_URL/"
+                    "ANTHROPIC_API_KEY 但 SpawnRequest.model 为空——显式链"
+                    "三要素（model/baseurl/apikey）须经 Bundle 配置显式渲"
+                    "染齐全；确要回落 profile 默认档请清空该角色的链分配"
+                    "（baseurl/apikey 一并清空）"
+                )
+            if not base_url or not api_key:
+                raise DshSpawnConfigError(
+                    "dsh 通道 provider 链不完整（部分链=配置笔误）：显式链"
+                    "三要素 model/baseurl/apikey 须齐全或全缺——当前 "
+                    "SpawnRequest 缺 ANTHROPIC_BASE_URL 或 ANTHROPIC_API_KEY"
+                    " 覆盖；确要回落 profile 默认档请清空该角色的链分配"
+                    "（模型路由 assignment）"
+                )
+            patch_path = self._write_model_patch(model=model, base_url=base_url)
 
         argv: List[str] = [
             self._config.dsh_bin,
             "--profile",
             self._config.profile,
-            "--patch",
-            patch_path,
+        ]
+        # 回落形态不携带 --patch（无 patch=profile 默认档，argv 省略该参数）；
+        # 显式链 --patch 紧跟 --profile 之后（既有 argv 序，快照锁定）。
+        if patch_path is not None:
+            argv += ["--patch", patch_path]
+        argv += [
             # 注意：此处 MUST NOT 插入裸 "headless"（DSH_APP_NAME 注记）——
             # 它会占用任务 positional 槽位，stdin prompt 被忽略。
             "--json",
