@@ -523,6 +523,11 @@ def _run_meta_cached(p: Path, stat, now: float,
     # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
     # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
     # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
+    # 此处**有意**维持 9-10 位上限、不随 run_spec_part/admin_monitor 放宽到
+    # \d{9,}（code-review item e606e1478397）：本处提取的是 unix 秒刻度，
+    # dispute-judge 车道 run_id 携带的 19 位 time_ns() 纳秒串不是秒级时刻——
+    # 放宽会令纳秒被当秒解析出荒谬 started；不匹配即走事件时间/mtime 兜底，
+    # spec 归属走 run_spec_part（已同口径放宽），不受本处影响。
     tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
     start_ts = int(tm.group(1)) if tm else stat.st_mtime
     # started 优先取产物首行事件时间戳（真实启动时刻）：run_id 内嵌时间戳

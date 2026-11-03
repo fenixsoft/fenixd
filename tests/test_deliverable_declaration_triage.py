@@ -427,6 +427,28 @@ class TestDisputeJudgeRunPrefixOwnership(unittest.TestCase):
         self.assertEqual(
             AdminMonitor._spec_from_run_id(f"dispute-judge-myspec-{ts}"), "myspec")
 
+    def test_dispute_judge_time_ns_form_same_caliber(self):
+        """dispute-judge time_ns() 形态两处解析同口径（code-review e606e1478397）。
+
+        judge run_id 时间戳为 19 位纳秒（adjudication.py time.time_ns() 组装），
+        run_spec_part 与 admin_monitor._spec_from_run_id MUST 同口径剥出真实
+        spec 名——旧 9-10 位上限对其剥不出时间戳，返回伪 spec 段
+        <spec>-<纳秒串>，全等归属与 archive_spec_runs 全等清理对该车道永不
+        命中。dashboard get_runs 的 spec 列经 run_spec_part 单源消费，随本
+        断言一并锁定。
+        """
+        import time as _time
+
+        from core.admin_monitor import AdminMonitor
+        from core.agent_runner.run_files import run_spec_part
+
+        for rid in (
+            f"dispute-judge-myspec-{_time.time_ns()}",
+            f"dispute-judge-myspec-{_time.time_ns()}-a1",
+        ):
+            self.assertEqual(run_spec_part(rid), "myspec")
+            self.assertEqual(AdminMonitor._spec_from_run_id(rid), "myspec")
+
     def test_spec_from_run_id_retry_suffix(self):
         """瞬态重试后缀 -r<n>（fix-provider-transient-backoff）不得破坏 spec 名还原。
 
