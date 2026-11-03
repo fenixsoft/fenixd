@@ -6,7 +6,7 @@
 ## 判定与处置
 
 1. 通读下方给出的两处上下文（必要时可读 `spec/knowledge/` 内其他页核实）；
-2. **判矛盾成立**：按增量蒸馏契约（`core/knowledge_prompts/distill.md`：合并语义
+2. **判矛盾成立**：按增量蒸馏契约（`agents/knowledge-distill.md`：合并语义
    ADDED/MODIFIED/REMOVED、marker 格式、150 行硬顶、溯源段）重写受影响的能力页——
    以更可信/更新的陈述为最终态规则，rev 加 1，溯源段追加一行说明本次纠偏
    （按 distill.md 溯源行链接格式）；

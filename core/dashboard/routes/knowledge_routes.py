@@ -52,7 +52,7 @@ _ALLOWED_PREFIXES = ("domains/", "adr/")
 def _parse_adr_head(text: str) -> tuple[str, str | None, str | None]:
     """解析 ADR 头部 ``(status, superseded_by, title)``；无 status 行回 'unknown'。
 
-    契约见 core/knowledge_prompts/distill.md：status 行在 "## Context" 之前
+    契约见 agents/knowledge-distill.md：status 行在 "## Context" 之前
     的头部；supersede 只标不改时头部追加 ``Superseded by: ADR-NNN(...)`` 行；
     首标题为 ``# ADR-NNN：<标题>``（半/全角冒号均收）。无标题行回 None
     （调用方以 adr/index.md 表格标题列兜底）。

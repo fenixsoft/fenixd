@@ -17,7 +17,7 @@
    不派发——既有单测不得触发真实蒸馏（替身经 dispatcher 参数注入）。
 
 3. **执行器** ``DistillManager``（进程内单例 + 跨进程 flock 单飞）：后台
-   线程 spawn ``claude -p``（cwd 主树、注入 core/knowledge_prompts/distill.md
+   线程 spawn ``claude -p``（cwd 主树、注入 agents/knowledge-distill.md
    提示词），run 结束跑 validate_knowledge，违规回反馈修正（≤2 轮），通过后
    pathspec 限定 ``spec/knowledge/`` 自动提交；修正轮耗尽仍违规则放弃产出
    （``git restore`` + 清理未跟踪新增，不留半成品）；失败登 todo.md 重试
@@ -89,7 +89,7 @@ logger = logging.getLogger("fenixd.knowledge")
 KNOWLEDGE_DIR = "spec/knowledge"
 ARCHIVE_DIR = "spec/archive"
 CHANGES_DIR = "spec/changes"
-PROMPT_FILE = "knowledge_prompts/distill.md"  # 相对 core/ 包
+PROMPT_FILE = "knowledge-distill.md"  # 相对仓库根 agents/（7.1 归位迁移）
 
 # 知识候选区（add-knowledge-inbox-pipeline 1.2/2.1）：交互会话投递自由格式
 # 候选的目录，validate/audit 扫描显式豁免；`done/` 为折叠成功后的溯源永久
@@ -957,8 +957,8 @@ def build_inbox_fold_prompt(proot: Path, entry_name: str) -> str:
 # ── 派发与执行器 ──────────────────────────────────────────────────────
 
 def load_distill_prompt() -> str:
-    """读蒸馏提示词模板（core/knowledge_prompts/distill.md）。"""
-    path = Path(__file__).resolve().parent / PROMPT_FILE
+    """读蒸馏提示词模板（agents/knowledge-distill.md）。"""
+    path = Path(__file__).resolve().parent.parent / "agents" / PROMPT_FILE
     return path.read_text(encoding="utf-8")
 
 

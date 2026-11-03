@@ -88,8 +88,8 @@
 
 ## 7. 蒸馏 prompt 归位
 
-- [ ] 7.1 四个 prompt 迁移到 `agents/` 平铺：agents/knowledge-distill.md、agents/knowledge-audit.md、agents/knowledge-backfill.md、agents/knowledge-prehistoric.md（与既有 agents 命名一致，内容分别来自 `core/knowledge_prompts/` 下同名文件）；先 merge main 再迁移（prompt 契约段纪律）；agents/knowledge-distill.md 增补 inbox 折叠段（与任务 3.1 代码行为一致）；知识车道加载点全部改为 `agents/` 新路径
-- [ ] 7.2 删除 `core/knowledge_prompts/` 全部四个文件（合并后目录不存在），旧路径
+- [x] 7.1 四个 prompt 迁移到 `agents/` 平铺：agents/knowledge-distill.md、agents/knowledge-audit.md、agents/knowledge-backfill.md、agents/knowledge-prehistoric.md（与既有 agents 命名一致，内容分别来自 `core/knowledge_prompts/` 下同名文件）；先 merge main 再迁移（prompt 契约段纪律）；agents/knowledge-distill.md 增补 inbox 折叠段（与任务 3.1 代码行为一致）；知识车道加载点全部改为 `agents/` 新路径
+- [x] 7.2 删除 `core/knowledge_prompts/` 全部四个文件（合并后目录不存在），旧路径
       残留引用清零——grep 验收范围＝活代码与活文档（`core/`、`tests/`、`agents/`、
       `core/dashboard/static/src/`、`docs/`），MUST 显式豁免 `spec/changes/**` 与
       `spec/archive/**`（历史流转记录不可篡改）及 `spec/knowledge/**`（能力页对

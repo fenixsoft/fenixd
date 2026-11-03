@@ -62,7 +62,7 @@ STATE_RELPATH = ".fenix/knowledge_audit_state.json"
 # 疑点台账（add-knowledge-audit-finding-ledger）：语义疑点判定历史与状态，
 # 指纹为键、原子写；no-conflict 豁免 / 同批去重 / 升级待人工都以此为准据。
 FINDINGS_RELPATH = ".fenix/knowledge_audit_findings.json"
-PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "audit.md"
+PROMPT_PATH = Path(__file__).parent.parent / "agents" / "knowledge-audit.md"
 KNOWLEDGE_DIR = "spec/knowledge"
 # 知识候选区（add-knowledge-inbox-pipeline 1.2/6.1）：扫描豁免与积压检测用。
 # 与 core.knowledge.INBOX_DIRNAME / INBOX_DONE_PREFIX 同值——audit 车道须在

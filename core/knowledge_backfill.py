@@ -79,9 +79,9 @@ LEDGER_RELPATH = ".fenix/knowledge_backfill.jsonl"
 DOMAIN_MAP_RELPATH = ".fenix/knowledge_backfill_domains.json"
 REPORT_RELPATH = ".fenix/knowledge_backfill_report.md"
 KNOWLEDGE_DIR = "spec/knowledge"
-PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "backfill.md"
+PROMPT_PATH = Path(__file__).parent.parent / "agents" / "knowledge-backfill.md"
 # 史前复原（prehistoric bootstrap）：归档目录全部始于该日，此前为史前窗口
-PREHISTORIC_PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "prehistoric.md"
+PREHISTORIC_PROMPT_PATH = Path(__file__).parent.parent / "agents" / "knowledge-prehistoric.md"
 PREHISTORIC_UNTIL = "2026-09-02"
 PREHISTORIC_JSON_RELPATH = ".fenix/knowledge_backfill_prehistoric.json"
 
@@ -1113,7 +1113,7 @@ def default_spawn(project_root: Path) -> SpawnFn:
     return _spawn
 
 
-# ── 提示词拼装（core/knowledge_prompts/backfill.md 的动态段） ────────────
+# ── 提示词拼装（agents/knowledge-backfill.md 的动态段） ────────────
 
 
 def _violations_block(violations: list[str]) -> str:
@@ -1236,7 +1236,7 @@ def _batch_list_block(
     return "\n".join(lines) or "（空）"
 
 
-# ── 史前复原 run 提示词（core/knowledge_prompts/prehistoric.md） ─────────
+# ── 史前复原 run 提示词（agents/knowledge-prehistoric.md） ─────────
 
 
 def first_commit_ref(project_root: Path) -> str:
@@ -1767,7 +1767,7 @@ def run_backfill(
         )
         _append_todo_fail_open(
             project_root,
-            "回填提示词模板读取失败，请检查 core/knowledge_prompts/ 后重跑回填",
+            "回填提示词模板读取失败，请检查 agents/knowledge-backfill.md 后重跑回填",
             log,
         )
         return {"triggered": False, "reason": "prompt-template-unreadable"}

@@ -5,7 +5,7 @@
 
 ## 契约单源
 
-目录契约、marker 格式与合并语义以 `core/knowledge_prompts/distill.md` 为准，本文件不重复
+目录契约、marker 格式与合并语义以 `agents/knowledge-distill.md` 为准，本文件不重复
 定义，只追加回填模式附加段。要点重申（与 distill.md 冲突时以 distill.md 为准）：
 
 - 真相源目录：`spec/knowledge/index.md`、`spec/knowledge/domains/<域>/_domain.md`、
