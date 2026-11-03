@@ -1,7 +1,7 @@
 
 ## 2026-11-02
 ### 知识真相源
-- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 34 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
+- audit 疑点升级待人工（聚合）：10 条待人工仲裁（最长龄期 35 天），请人工按指纹在 .fenix/knowledge_audit_arbitration.json 登记仲裁决定（fingerprint/decision/decided_at/note），框架检查点自动消费后恢复自动复核
 
 ## 2026-11-03
 
@@ -35,3 +35,9 @@
   - 证据：run_metrics 原始行 turns=105/text_turns=53/duration_s=676.9/latency_stalls=0（code-fix-1793561792）；evo-refine-midflight-outlier-dims（离群维度细化 spec，在 spec/changes/ 未归档）proposal 背景段载 10-17 窗 code-fix turns=204 中 125 轮纯文本（61%）同型记录；该 spec 三组任务已全勾、verification-report.md 在。
   - 调查评估：在 code-fix 台账修复车道暴露，由新落地的纯文本轮离群维度首报命中。已核实事实：本窗命中行与 10-17 窗形态同型，均无 API 停滞伴生（stalls=0），指向模型输出行为漂移假说（该 spec 原文口径），根因未定不预设。token 面不可量化：该车道 run_metrics 的 input_tokens=0，计量缺失。与存量关系：检测端已闭环（维度细化 spec 全勾待归档），提案自述命中后「仅进自省摘要」零自动动作——响应端无定义；该 spec 任务 2.1 已落 run_metrics model 字段，可支撑模型版本对照。结论：观测闭环、响应缺口，值得随归档收尾补一跳。
   - 建议：为 text_turns 维命中定义最小响应：连续 ≥2 窗同车道命中时按 model 字段对照模型版本并做提示词收敛试验，单窗命中仅留痕；可并入 evo-refine-midflight-outlier-dims 归档收尾或独立小 spec。
+- **arbiter 手工唤起 Administrator 与 spec 冻结竞态无预检，run 秒死空壳产噪声**
+  - 自进化：问题成立 / 建议合理 / — 不需要
+  - 影响：manual-intervention 唤起 Administrator 处置时，spec 恰处 frozen 态（或唤起与冻结同窗竞态）则 run 派发即被 frozen-terminated（0 轮空壳），留 pending disposition → 孤儿看护兜底升级人工告警（噪声）。已合并的 fix-escalation-chain-watchdog-yield-gaps 只治链头派发路径（_run_admin_phase frozen 预检）与链成员空壳不计配额；手工唤起路径不在链上，未覆盖。
+  - 证据：fenixd.log 2026-11-03T11:13:05-06Z 两次 frozen-terminated 空壳（11:13:05.198 链头派发 4385、11:13:06.021 manual-intervention 唤起 4386，均 0 轮即被冻结击杀）；admin_alerts.json id=36ce0eb408ea（孤儿升级告警）/58a6bebc956d（4386 残留 pending）；arbiter 台账 arb-ledger-1793705465700 scene_snapshot「两个 admin run（4385/4386）为 frozen-terminated 空壳」。
+  - 调查评估：候选方向——(a) 唤起入口加 frozen 预检（与链头预检同型闸门，frozen 时拒绝派发并明确回执）；(b) 竞态窗内 frozen-terminated 空壳不产 pending disposition（视为未尝试）。改动点在 manual-intervention 唤起入口（fenixd 手工唤起 Administrator 路径）。注意与 arbiter 禁立项治理（add-arbiter-gap-todo-routing）边界互补：本条是唤起通道自身防护，非 arbiter 动作面。
+  - 建议：立项小 spec 治手工唤起路径 frozen 预检（方向 a 优先，b 作防御纵深），消 pending 空壳与孤儿告警噪声。
