@@ -2582,7 +2582,9 @@ def _archive_name_candidates(dirname: str) -> List[str]:
     return list(candidates)
 
 
-def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
+def resolve_accepted_spec_dir(
+    project_root, spec_name: str, archive_dirs_cache: Optional[List] = None
+) -> Optional[Path]:
     """以条目记录中 ``spec_name`` 为权威名解析 SPEC 当前位置（D5）。
 
     1. ``spec_name`` 不满足 ``_KEBAB_RE``（含 ``..``/``/`` 穿越）→ 返回
@@ -2591,6 +2593,13 @@ def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
     3. 否则遍历 ``spec/archive/``，对每个目录名生成归一化候选集并判定
        ``spec_name`` **全等**比较，命中多个取 ``sorted()[-1]``；
     4. 无命中返回 ``None``。
+
+    ``archive_dirs_cache``：可选的单元素缓存盒（调用方持 ``[None]`` 传入），
+    到达步骤 3 的归档扫描时盒内仍为 ``None`` 则扫描 ``spec/archive/`` 子目
+    录清单并回填，同盒后续调用直接复用——dashboard 列表端点据此让 N 条目
+    共享一次扫描（item 13574ce93f9b 读放大治理），活跃/全等墓碑命中不触扫
+    描仍零扫描；``None``（默认）＝每次调用自行扫描，既有行为不变。布尔判
+    定方与目录解析共用本函数单一实现，MUST NOT 再派生平行判定副本。
 
     **MUST NOT 使用前缀匹配**：本仓库存在互为前缀的 spec 名
     （``evo-add-fast-track-scale-precheck`` 与
@@ -2620,16 +2629,24 @@ def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
     exact = archive_root / spec_name
     if exact.is_dir():
         return exact
-    hits: List[Path] = []
-    try:
-        for child in archive_root.iterdir():
-            if not child.is_dir():
-                continue
-            candidates = _archive_name_candidates(child.name)
-            if spec_name in candidates:
-                hits.append(child)
-    except OSError:
-        return None
+    def _scan_archive_dirs() -> List[Path]:
+        """归档子目录清单快照（IO/权限错误 → 空清单，同无归档命中口径）。"""
+        try:
+            return [child for child in archive_root.iterdir() if child.is_dir()]
+        except OSError:
+            return []
+
+    if archive_dirs_cache is None:
+        children = _scan_archive_dirs()
+    else:
+        if archive_dirs_cache[0] is None:
+            archive_dirs_cache[0] = _scan_archive_dirs()
+        children = archive_dirs_cache[0]
+    hits = [
+        child
+        for child in children
+        if spec_name in _archive_name_candidates(child.name)
+    ]
     if not hits:
         return None
     # 归一化命中多个取 sorted()[-1]（目录名字典序）

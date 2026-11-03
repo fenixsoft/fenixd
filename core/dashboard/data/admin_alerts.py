@@ -182,8 +182,17 @@ def alerts_summary(project_root) -> dict:
 
     max_severity 取未处理告警中最高严重度（critical > major > minor）；
     latest 为最新一条未处理告警。无未处理时三者为空/0。
+
+    直连 read_all + _unhandled_records + _summary_from_unhandled，不经
+    get_unhandled_alerts 的叙事侧车合并（code-review item 90e30c16a030）：
+    摘要只消费 count/severity/latest，合并出的 narrative/narrative_pending
+    本就被丢弃，Dashboard 高频轮询无需为此扫描侧车目录。
     """
-    return _summary_from_unhandled(get_unhandled_alerts(project_root))
+    from core.admin_store import AdminStore
+
+    return _summary_from_unhandled(
+        _unhandled_records(AdminStore(project_root).read_all())
+    )
 
 
 def alerts_overview(project_root, resolved_limit: int = 50) -> dict:

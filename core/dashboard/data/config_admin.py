@@ -269,9 +269,10 @@ def _echo_verify_view(config: dict) -> dict:
     from core.config import ConfigLoader
 
     out = {}
-    if verify_section.get("static_scope") in ("main", "worktree"):
+    # code-review item d8305136d3f6：两枚举词表改引 ConfigLoader.VALID_* 单源
+    if verify_section.get("static_scope") in ConfigLoader.VALID_STATIC_SCOPES:
         out["static_scope"] = verify_section["static_scope"]
-    if verify_section.get("deps_mode") in ("prefer-offline", "hardlink"):
+    if verify_section.get("deps_mode") in ConfigLoader.VALID_DEPS_MODES:
         out["deps_mode"] = verify_section["deps_mode"]
     # add-planner-efficiency（planner-generation-throttle 2.3）：节流上限读回。
     # 与写路径（write_config merge_verify）白名单对称——写了能读回来（BUG-01 修复）。
@@ -434,9 +435,10 @@ def _managed_key_sources(raw: dict) -> dict:
         # _echo_verify_view 同谓词，对齐 90136be31282 已建立口径）——存在性
         # 判定会把手工脏值标成 project，而读侧回显已回退缺省，徽标与展示值
         # 互相矛盾
-        if verify_src.get("static_scope") in ("main", "worktree"):
+        # code-review item d8305136d3f6：两枚举词表改引 ConfigLoader.VALID_* 单源
+        if verify_src.get("static_scope") in ConfigLoader.VALID_STATIC_SCOPES:
             sources["verify.static_scope"] = "project"
-        if verify_src.get("deps_mode") in ("prefer-offline", "hardlink"):
+        if verify_src.get("deps_mode") in ConfigLoader.VALID_DEPS_MODES:
             sources["verify.deps_mode"] = "project"
         _pmc_src = verify_src.get("planner_max_concurrent")
         if isinstance(_pmc_src, int) and not isinstance(_pmc_src, bool) and _pmc_src >= 0:
@@ -977,8 +979,13 @@ def read_config(scope_root, scope: str = "project") -> dict:
         # 回显，与 code_review 同形态：顶层独立子键、不进 _managed_admin_keys
         # 键集——未知 admin 键由白名单狭窄回显，读不懂写入值）
         result["regression"] = ConfigLoader.get_regression_config(raw)
-        # add-settings-system-tab：受管 admin 键提取（含缺省填充，不透传未知键）
-        result["admin"] = _managed_admin_keys(raw)
+    # add-settings-system-tab：受管 admin 键提取（含缺省填充，不透传未知键）
+    # code-review item ed2d95ed11a4：改为无条件调用，与 read_effective_config
+    # 对齐——admin 段缺失时此前整块跳过，merge_breaker_threshold 的
+    # admin→agents→2 回退链失效（回显落缺省视图硬编码 2，与运行时
+    # get_admin_config 的 agents 回退生效值矛盾）；本函数对缺失/非 dict
+    # admin 段本就按空段容错，无条件调用不引入新失败面
+    result["admin"] = _managed_admin_keys(raw)
     # add-spec-hooks：hooks 段原样透传（读回 UI 编辑视图）
     hooks_raw = raw.get("hooks")
     if isinstance(hooks_raw, dict):
@@ -1172,8 +1179,12 @@ def read_effective_config(project_root) -> dict:
     # 项目文件读取/解析失败的错误视图不缓存（错误视图每次现读现返回，
     # 瞬时故障在下一次请求自然恢复，不被文件签名钉死）
     if result["error"] is None:
-        if len(_EFFECTIVE_CONFIG_CACHE) > _EFFECTIVE_CONFIG_CACHE_MAX:
-            _EFFECTIVE_CONFIG_CACHE.clear()
+        # code-review item 2ee7175b2aeb：超限改为逐出最早写入条目（dict 保序
+        # FIFO），不再整体 clear()——多项目并发下全清会让下一轮请求集体落回
+        # resolve_config 全量解析（突发重解析刺峰）；`>=` 判定使缓存稳态
+        # 收敛于 _EFFECTIVE_CONFIG_CACHE_MAX 条，边界语义明确
+        if len(_EFFECTIVE_CONFIG_CACHE) >= _EFFECTIVE_CONFIG_CACHE_MAX:
+            _EFFECTIVE_CONFIG_CACHE.pop(next(iter(_EFFECTIVE_CONFIG_CACHE)), None)
         _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
     return result
 
@@ -1305,11 +1316,14 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     if "verify" in patch and isinstance(patch["verify"], dict):
         if not isinstance(merged.get("verify"), dict):
             merged["verify"] = {}
+        # code-review item d8305136d3f6：两枚举词表改引 ConfigLoader.VALID_* 单源
+        from core.config import ConfigLoader
+
         for vk in ("static_scope", "deps_mode"):
             if (
-                patch["verify"].get(vk) in ("main", "worktree")
+                patch["verify"].get(vk) in ConfigLoader.VALID_STATIC_SCOPES
                 if vk == "static_scope"
-                else patch["verify"].get(vk) in ("prefer-offline", "hardlink")
+                else patch["verify"].get(vk) in ConfigLoader.VALID_DEPS_MODES
             ):
                 merged["verify"][vk] = patch["verify"][vk]
         sr_patch = patch["verify"].get("serving_reclaim")
@@ -1880,19 +1894,19 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         if (
             "static_scope" in v_patch
             and v_patch["static_scope"] is not None
-            and v_patch["static_scope"] not in ("main", "worktree")
+            and v_patch["static_scope"] not in ConfigLoader.VALID_STATIC_SCOPES
         ):
             return fail(
-                f"verify.static_scope must be one of ['main', 'worktree']: "
+                f"verify.static_scope must be one of {ConfigLoader.VALID_STATIC_SCOPES}: "
                 f"{v_patch['static_scope']}"
             )
         if (
             "deps_mode" in v_patch
             and v_patch["deps_mode"] is not None
-            and v_patch["deps_mode"] not in ("prefer-offline", "hardlink")
+            and v_patch["deps_mode"] not in ConfigLoader.VALID_DEPS_MODES
         ):
             return fail(
-                f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
+                f"verify.deps_mode must be one of {ConfigLoader.VALID_DEPS_MODES}: "
                 f"{v_patch['deps_mode']}"
             )
         # add-planner-efficiency：planner 生成节流上限——非负整数（0=不节流）。
@@ -2608,16 +2622,18 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
                     )
             verify_m = merged.get("verify") or {}
+            # code-review item d8305136d3f6：两枚举词表改引 ConfigLoader.VALID_*
+            # 单源（错误消息串同引常量生成，与上方 gates 四键同写法）
             if "static_scope" in verify_m and verify_m["static_scope"] is not None:
-                if verify_m["static_scope"] not in ("main", "worktree"):
+                if verify_m["static_scope"] not in ConfigLoader.VALID_STATIC_SCOPES:
                     raise ValueError(
-                        f"verify.static_scope must be one of ['main', 'worktree']: "
+                        f"verify.static_scope must be one of {ConfigLoader.VALID_STATIC_SCOPES}: "
                         f"{verify_m['static_scope']}"
                     )
             if "deps_mode" in verify_m and verify_m["deps_mode"] is not None:
-                if verify_m["deps_mode"] not in ("prefer-offline", "hardlink"):
+                if verify_m["deps_mode"] not in ConfigLoader.VALID_DEPS_MODES:
                     raise ValueError(
-                        f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
+                        f"verify.deps_mode must be one of {ConfigLoader.VALID_DEPS_MODES}: "
                         f"{verify_m['deps_mode']}"
                     )
             # code-review item 874b7cbd3e8b：serving_reclaim 段形态复核（存量
@@ -2996,13 +3012,15 @@ from core.config import ConfigLoader
 
 _SYNC_PAGE_APPLY_PREDICATES = {
     "verify": {
+        # code-review item d8305136d3f6：两枚举词表改引 ConfigLoader.VALID_* 单源
+        # （谓词与消息串同引常量，消息渲染文本与原字面量逐字一致）
         "static_scope": (
-            lambda v: v in ("main", "worktree"),
-            "must be one of ['main', 'worktree']",
+            lambda v: v in ConfigLoader.VALID_STATIC_SCOPES,
+            f"must be one of {ConfigLoader.VALID_STATIC_SCOPES}",
         ),
         "deps_mode": (
-            lambda v: v in ("prefer-offline", "hardlink"),
-            "must be one of ['prefer-offline', 'hardlink']",
+            lambda v: v in ConfigLoader.VALID_DEPS_MODES,
+            f"must be one of {ConfigLoader.VALID_DEPS_MODES}",
         ),
         "serving_reclaim": (
             lambda v: isinstance(v, dict) and isinstance(v.get("enabled"), bool),

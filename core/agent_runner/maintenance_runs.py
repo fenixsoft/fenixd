@@ -3121,6 +3121,16 @@ def _read_terminal_message(project_root, run_id: str) -> str:
     会顶替真实事件）。文件缺失/读失败/无 result 事件返回空串（无终局消息可
     抢救，回退不伪造）。
 
+    截断扩窗（code-review item 294026170e16）：终局事件由 append_run_line
+    单行 JSON 落盘，单行超 64KiB（大 manifest 全仓审查把整段结论连同大对象
+    写进一行）时尾部窗口必然截出半行 JSON——其尾部片段甚至不含 type 标记
+    子串，预筛直接放过，解析侧无从失败，抢救与留痕整体落空。故在「窗口
+    首行是解析失败的半行 JSON（seek 切在行中部）」时逐级扩窗重扫（64KiB
+    起 4 倍递增、16MiB 封顶/全文件）；扩窗穷尽仍无可解析事件、但存在截断/
+    畸形嫌疑行时，返回该原始截断片段（封顶 1MiB，防畸形巨行灌爆留痕文件）
+    ——经 ``_persist_terminal_message_trace`` 落第二留痕供人工排查；下游行
+    提取判据不变（片段非结论行形态不会被抢救落账）。
+
     assistant 回退（验证修复 BUG-04）：error 收场转录的 result 事件可能**无
     result 文本**（``{"type":"result","subtype":"error_during_execution"}``，
     agent 中途死亡未生成终局摘要），但末轮 assistant 消息已携带结论内容——
@@ -3131,44 +3141,79 @@ def _read_terminal_message(project_root, run_id: str) -> str:
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     try:
         size = run_file.stat().st_size
-        with run_file.open("rb") as f:
-            if size > 65536:
-                f.seek(size - 65536)
-            raw = f.read().decode("utf-8", "replace")
     except OSError:
         return ""
+    # code-review item 294026170e16：尾部窗口截断扩窗重扫 + 原始截断片段
+    # 兜底留痕（详见上方 docstring「截断扩窗」段）。window 4 倍递增、16MiB
+    # 封顶；窗口首行能完整解析说明 seek 切在行界、窗内各行皆完整，确无
+    # result 事件时扩窗无益（维持 64KiB 窗口径，不做无谓的全量读入）。
     last_text = ""
     last_assistant = ""
-    for line in raw.splitlines():
-        line = line.strip()
-        if ('"type": "result"' not in line
-                and '"type": "assistant"' not in line
-                and '"type":"result"' not in line
-                and '"type":"assistant"' not in line):
-            continue
+    fragment = ""  # 命中预筛却解析失败的嫌疑行（截断半行/畸形），兜底留痕
+    window = 65536
+    while True:
         try:
-            ev = json.loads(line)
+            with run_file.open("rb") as f:
+                if size > window:
+                    f.seek(size - window)
+                raw = f.read().decode("utf-8", "replace")
+        except OSError:
+            return ""
+        last_text = ""
+        last_assistant = ""
+        fragment = ""
+        lines = raw.splitlines()
+        for raw_line in lines:
+            line = raw_line.strip()
+            if ('"type": "result"' not in line
+                    and '"type": "assistant"' not in line
+                    and '"type":"result"' not in line
+                    and '"type":"assistant"' not in line):
+                continue
+            try:
+                ev = json.loads(line)
+            except (json.JSONDecodeError, RecursionError):
+                # 截断半行/畸形 JSON：记最大片段，扩窗穷尽仍无可解析事件时
+                # 兜底返回（经调用方 _persist_terminal_message_trace 留痕）
+                if len(line) > len(fragment):
+                    fragment = line
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") == "result":
+                last_text = str(ev.get("result") or "")
+            elif ev.get("type") == "assistant":
+                msg = ev.get("message")
+                blocks = msg.get("content") if isinstance(msg, dict) else msg
+                texts: list[str] = []
+                if isinstance(blocks, str):
+                    texts.append(blocks)
+                elif isinstance(blocks, list):
+                    for block in blocks:
+                        if (isinstance(block, dict)
+                                and block.get("type") == "text"
+                                and isinstance(block.get("text"), str)):
+                            texts.append(block["text"])
+                if texts:
+                    last_assistant = texts[-1]
+        if last_text:
+            break
+        # 窗口首行半行探测：seek 切在行中部时首行是半行 JSON（整行 JSON
+        # 必然解析失败），被切的恰可能是超大单行终局事件——其尾部片段不含
+        # type 标记子串、预筛命中不了记不进 fragment，故单独记下该半行供
+        # 穷尽后兜底留痕。
+        head = lines[0].strip() if lines else ""
+        head_cut = False
+        try:
+            json.loads(head)
         except (json.JSONDecodeError, RecursionError):
-            continue
-        if not isinstance(ev, dict):
-            continue
-        if ev.get("type") == "result":
-            last_text = str(ev.get("result") or "")
-        elif ev.get("type") == "assistant":
-            msg = ev.get("message")
-            blocks = msg.get("content") if isinstance(msg, dict) else msg
-            texts: list[str] = []
-            if isinstance(blocks, str):
-                texts.append(blocks)
-            elif isinstance(blocks, list):
-                for block in blocks:
-                    if (isinstance(block, dict)
-                            and block.get("type") == "text"
-                            and isinstance(block.get("text"), str)):
-                        texts.append(block["text"])
-            if texts:
-                last_assistant = texts[-1]
-    return last_text or last_assistant
+            head_cut = size > window
+            if head_cut and len(head) > len(fragment):
+                fragment = head
+        if not head_cut or size <= window or window >= 16777216:
+            break
+        window = min(window * 4, size, 16777216)
+    return last_text or last_assistant or fragment[:1048576]  # 封顶 1MiB
 
 
 def _extract_terminal_review_rows(text: str) -> list:
@@ -4699,18 +4744,55 @@ def run_impl_ocr(
     ``_ocr_join_wait`` 有意等待豁免——该字段无 boot 恢复，重启场景恰恰依赖
     orphaned_state 兜底）。
     """
-    from core.config import ConfigLoader
+    # code-review item 5c991d3db365：入口两处惰性 import 纳入 try 保护——
+    # 原位于任何 try 之外，模块缺失/装配成环时 ImportError 直接穿透本函数，
+    # 违反 docstring「MUST NOT 抛未捕获异常（任务 3.3）」契约。对齐同文件
+    # run_arbiter 先例（入口 import 显式 try/except + WARNING 降级，失败
+    # 折算信封返回）：此刻尚未派生 run_id、写 run 事件、建检出，提前返回
+    # unavailable 产物无占位残留（run_id 留空由调用方既有缺省分支兜底，
+    # 同下方非法 spec 名分支口径）。
+    _import_target = "core.config"
+    try:
+        from core.config import ConfigLoader
 
-    # ── spec 名路径分量校验（code-review item 8eb9572741c4，对齐 serving
-    # 2c579adb670f 同款守卫，判定单点复用 _spec_name_path_error，先例
-    # run_task_track/verdict_evidence 的惰性导入形态）── spec_name 直接内插
-    # verify-progress 子目录、runs 事件流文件名（经 run_id）与 verify-serving
-    # worktree 目录名，含路径分隔符或 ``..`` 分量的名字会把车道产物与
-    # detached 检出引到目标目录之外。上游 add_spec 无字符集约束且存在
-    # spec/changes 目录名等旁路，故在任何路径拼点/盘面落点之前按分量拒绝：
-    # 不派生 run_id、不写 run 事件、不建检出，折算 unavailable 产物直接
-    # 返回（盘面零写入，run_id 留空由调用方既有缺省分支兜底）。
-    from core.pm_engine.verification.serving import _spec_name_path_error
+        # ── spec 名路径分量校验（code-review item 8eb9572741c4，对齐 serving
+        # 2c579adb670f 同款守卫，判定单点复用 _spec_name_path_error，先例
+        # run_task_track/verdict_evidence 的惰性导入形态）── spec_name 直接内插
+        # verify-progress 子目录、runs 事件流文件名（经 run_id）与 verify-serving
+        # worktree 目录名，含路径分隔符或 ``..`` 分量的名字会把车道产物与
+        # detached 检出引到目标目录之外。上游 add_spec 无字符集约束且存在
+        # spec/changes 目录名等旁路，故在任何路径拼点/盘面落点之前按分量拒绝：
+        # 不派生 run_id、不写 run 事件、不建检出，折算 unavailable 产物直接
+        # 返回（盘面零写入，run_id 留空由调用方既有缺省分支兜底）。
+        _import_target = "core.pm_engine.verification.serving"
+        from core.pm_engine.verification.serving import _spec_name_path_error
+    except Exception as e:
+        reason = (
+            f"impl-ocr 入口模块 import 失败（{_import_target}）: "
+            f"{type(e).__name__}: {e}"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner",
+                f"impl-ocr 车道入口 import 失败，折算 unavailable 产物返回: {reason}",
+            )
+        return {
+            "status": "unavailable",
+            "spec": spec_name,
+            "run_id": "",
+            "kind": "impl-ocr-lane",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "fingerprint": {
+                "branch": branch,
+                "merge_base": base_commit,
+                "head_commit": head_commit,
+            },
+            "review_range": {},
+            "llm": {},
+            "findings": [],
+            "reason": reason,
+        }
 
     unsafe = _spec_name_path_error(spec_name)
     if unsafe:

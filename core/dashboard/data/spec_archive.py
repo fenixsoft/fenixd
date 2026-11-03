@@ -339,6 +339,12 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 只能手工修复），并以返回码而非裸异常告知调用方。
     # 条目仅在清单（已迁出）时 remove_spec 无条目可剔（返回 False 幂等），
     # 改为移除清单小节；双源并存（迁出中间态）时两处都清。
+    # in_manifest 复核（code-review item 438a77769e78）：上方快照取自
+    # stop_callback 有界等待前，等待期间条目可能已被同周期的
+    # backfill_archived_entries 并发迁出（STATE 条目进了清单），按陈旧快照
+    # 会跳过清单小节移除，软删除以成功形态返回后归档清单残留该 spec 条目。
+    # 与 f57d00940d1d 对 specs 快照的处置对齐：进入清理段前重新判定。
+    in_manifest = spec in parse_archived_state(proot)
     state_entry_removed = False
     try:
         if spec in specs:

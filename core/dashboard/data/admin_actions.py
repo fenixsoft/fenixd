@@ -357,6 +357,9 @@ def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
     tmp+rename+fsync（与 request_run_cancel 同构）。
 
     前置校验（对齐 request_spec_approve_push 契约）：
+    - spec 名不合法（validate_scheduling_kick_spec 白名单：非 kebab-case/
+      路径分隔符/超长/非字符串）→ 直接拒绝不落信号（对齐 reset_verification
+      同防线，code-review item 2891c4bbf55a）；
     - daemon 未受 supervisor 托管（hosting_state != "managed"）→ 信号无人
       消费，返回 unmanaged/daemon_down 拒绝；
     - 已存在未消费信号 → conflict 409（对齐 request_run_cancel 语义）。
@@ -371,6 +374,17 @@ def request_spec_delete(project_root, spec: str, stopping: int = 0) -> dict:
          "error"}
     """
     proot = Path(project_root)
+    # spec 形态白名单前置（code-review item 2891c4bbf55a，对齐同模块
+    # request_run_cancel 的 run_id 守卫与 reset_verification 的
+    # validate_scheduling_kick_spec 前置门）：畸形名（路径分隔符/「..」/
+    # 非 kebab-case/非字符串）原样落信号会被 daemon 消费侧
+    # _reject_invalid_spec_name 纵深拦截，但已白白消耗一轮信号消费并留
+    # WARNING——写侧直接拒绝，不落信号。
+    spec_shape_error = validate_scheduling_kick_spec(spec)
+    if spec_shape_error:
+        return {"ok": False, "conflict": False, "unmanaged": False,
+                "daemon_down": False, "file": None, "created": None,
+                "error": spec_shape_error}
     # stopping 类型守卫（code-review item 206652e81943，对齐 set_spec_budget/
     # reclassify_infra_rounds 的数值参数口径）：bool 是 int 子类须先排除；
     # 非数值（如 "abc"）会令下方 int() 抛未捕获 ValueError 穿透为 500——
@@ -597,7 +611,7 @@ def promote_spec(project_root, spec_name: str) -> dict:
     """人工晋升 drafted SPEC：调用共享晋升函数（软化+lint+判定）。
 
     - spec 不存在 → {ok: False, found: False, error: ...}
-    - spec 非 drafted → {ok: False, found: True, ok: False, reason: ...}
+    - spec 非 drafted → {ok: False, found: True, reason: ...}
     - lint 违规 → {ok: False, found: True, violations: [...], error: ...}
     - 转移被拒（promote_drafted 后 spec 被并发改写/软删除/转移非法）→
       {ok: False, found: True, error: ...}（spec 实际停留 drafted）
@@ -2005,6 +2019,17 @@ def reset_verification(project_root, spec: str, note: str = "", signal_type: str
     reset_error = None
     if entry2.get("status") != "blocked":
         steps.append(f"spec 已不在 blocked（当前 {entry2.get('status')}），无需复位转换")
+        if parking_form:
+            # 如实注明重派窗口（code-review item da6daa174e46）：停车形态复位
+            # 后 status 保持 implemented、无状态转换，写调度唤醒信号在此无效
+            # ——kick 消费经 _on_spec_ready 唤起的是 implementer 车道，
+            # _queue_entry_ready 状态守卫对 implemented 条目拒绝派发，唤不起
+            # verifier。重验由事件总线周期全扫重派（implemented 分支判据
+            # tester_run 置空 + _inconclusive_attempts=0，复位侧均已满足），
+            # 步骤明示等待窗口，不让操作者误以为已即时重派。
+            steps.append("重验将由事件总线周期扫描重派"
+                         "（最长约一个扫描周期，poll_interval_minutes 缺省"
+                         " 30 分钟）")
         target = entry2.get("status")
     else:
         path = resolve_env_blocked_reset_path(entry2, proot)

@@ -75,7 +75,7 @@ from core.agent_runner.latency import (  # noqa: F401
     STALL_ROUND_WARN_SECONDS,
     STALL_ROUND_ESCALATE_SECONDS,
     _default_ts_parser as _latency_default_ts_parser,
-    _entry_is_tool_result,
+    entry_is_tool_result as _entry_is_tool_result,
     _percentile,
     classify_round_stall,
     format_latency_summary,
@@ -8254,7 +8254,9 @@ class AgentRunner:
         的既有钳制写法——ConfigLoader.get 不做类型归一化，配置误写成字符串
         （如 max_turns: "300"）传进 _run_agent 后，轮询环 ``turn_count[0] >=
         current_turn_cap`` 在 int 与 str 之间比较抛 TypeError，run 收口为与
-        真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300。
+        真实死因（配置非法）无关的错误形态。非法值统一回落缺省 300；非正
+        整数（0/负数）同为非法回落，对齐 instant_fail 系列读点的
+        max(1, v) 下限钳制惯例。
 
         消费方 run_dispute_judge / run_spec_review / _impl_turn_budget——钳制
         块此前三处逐字复制，收敛为单点防后续单独改动产生行为漂移（code-review
@@ -8262,9 +8264,13 @@ class AgentRunner:
         """
         value = self._get_config("agents.max_turns", default)
         try:
-            return int(value)
+            turns = int(value)
         except (TypeError, ValueError):
             return default
+        # 非正整数（0/负数）同为非法：cap<=0 时轮询环首轮即触轮数上限、
+        # 扩容步长恒 0 空转——回落缺省，对齐 instant_fail 系列读点
+        # max(1, v) 下限钳制惯例。
+        return turns if turns > 0 else default
 
     def _impl_turn_budget(self, spec_name: Optional[str],
                           agent_type: Optional[str]) -> tuple:

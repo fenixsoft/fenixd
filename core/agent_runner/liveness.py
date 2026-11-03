@@ -8,7 +8,7 @@ from pathlib import Path
 # tool_result 事件识别单一真源（design D1：禁止在真源之外再次硬编码事件类型比较），
 # 本模块经类内 staticmethod 别名委托复用（与 runner.py 同型），不保留本地副本。
 from core.timelib import from_epoch
-from core.agent_runner.latency import _entry_is_tool_result
+from core.agent_runner.latency import entry_is_tool_result
 from core.agent_runner.run_files import (
     append_run_line,
     run_spec_part,
@@ -1119,7 +1119,7 @@ class LivenessSupervisor:
     # tool_result 事件识别委托 latency.py _entry_is_tool_result 单一真源
     # （design D1：不得在真源之外再次硬编码事件类型比较）；staticmethod 别名
     # 保持 self._is_tool_result_event 调用点与原方法名不变。
-    _is_tool_result_event = staticmethod(_entry_is_tool_result)
+    _is_tool_result_event = staticmethod(entry_is_tool_result)
 
     @staticmethod
     def _summarize_snapshot(snapshot: dict) -> str:

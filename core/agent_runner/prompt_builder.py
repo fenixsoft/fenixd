@@ -3298,11 +3298,15 @@ class PromptBuilder:
              补齐，不视为冻结违规）。
         文件缺失/损坏 → 返回空串（零注入，非改道轮 prompt 与现状逐字节一致）。
         """
+        # 读点净化与写侧单源（code-review item c6d32fd8ff1e）：写方
+        # escalation 改道指令落盘同走 safe_component 净化目录成分，此处
+        # 裸内插 spec_name 在病理名下会嵌套子目录、与 report.json 等同族
+        # 目录分裂（清理盲区），且恒读空、改道定向注入静默失效。
         directive_path = (
             self._pm.project_root
             / ".fenix"
             / "verify-progress"
-            / spec_name
+            / safe_component(spec_name)
             / "scenario_reroute_directive.json"
         )
         if not directive_path.exists():

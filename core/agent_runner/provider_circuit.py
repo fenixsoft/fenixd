@@ -49,7 +49,16 @@ PROVIDER_SWITCH_COOLDOWN_SECONDS = 300
 SWITCH_ERROR_TEXT_PATTERNS = (
     r"unrecognized_model",
     r"unrecognized model",
-    r"model.*not.*found",
+    # 第三条收窄（code-review item 86524e70841b）：原先 model/not/found 三词以
+    # . * 放宽连接，「model file not found」等与网关无关的本地错误也会被判切换类
+    # （触发 provider switch 冷却并推进 failover 链 + classify_transient_error
+    # 通道 1 瞬断记账）。现要求 not found 前的 model 后缀只能是「空 / 引号模型名 /
+    # 含 - . / : 分隔符的模型 id」（真实模型名几乎必带分隔符），已登记网关样例
+    # （tests/test_provider_failover「model not found: deepseek-v4-flash」、
+    # tests/test_harness_dsh_adapter「Model "x" not found」「Model not found」、
+    # OpenAI 错误码形态 model_not_found）保持命中；正/反例 fixture 断言见
+    # tests/test_transient_backoff.py TestClassifyTransientError。
+    r"model[_\s]+(?:\"[^\"]*\"|'[^']*'|[\w.\-/:]*[\-./:][\w.\-/:]*)?[_\s]*not[_\s]{0,2}found",
 )
 # ── 429 限流分类与限流冷却（add-code-review-concurrency-and-429-resilience D3）──
 # 2026-09-24 事故：bigmodel 网关 429（`API Error: Request rejected (429) ·
@@ -331,6 +340,27 @@ def annotate_model_chain_unavailable(error_text: str, provider_name, model,
     if error_text:
         return f"{MODEL_CHAIN_UNAVAILABLE_MARKER} {detail} ｜ {error_text}"
     return f"{MODEL_CHAIN_UNAVAILABLE_MARKER} {detail}"
+
+
+def _finite_float(value) -> float | None:
+    """把配置值容错归一为有限浮点数；不可解析/bool/非有限 → None。
+
+    code-review item ef88fcaa2f3f：bool 排除（item 76e7fc3007a0）、OverflowError
+    兜底（item 413cec9ddf39，float 对数百位超大 int 抛 OverflowError）与 NaN/inf
+    排除此前在 _positive_number / _nonneg_number / _positive_int_config /
+    _record_daily_provider_attempt 内联块四处各手写一份（该重复已两次逼出
+    7ff98f1589cd / 413cec9ddf39 的逐点补齐），收口至此单边维护；0 值语义与
+    int 转换仍由各消费点自定。
+    """
+    if type(value) is bool:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
+        return None
+    return v
 
 
 class TransientAttempt:
@@ -895,23 +925,11 @@ class ProviderCircuit:
             # 为默认值，会复活显式关闭的告警）。
             warn: int | None = None
             if raw_warn is not None and type(raw_warn) is not bool:
-                # inf/NaN 前置排除（code-review item 7ff98f1589cd，与
-                # _positive_int_config 同款）：int(float('inf')) 抛 OverflowError
-                # 不在下方 except 族内，yaml 误写 .inf 会让 attempt 记账在
-                # _provider_circuit_lock 临界区内以未捕获异常中断而非按畸形回
-                # 缺省。非有限值回 PROVIDER_DAILY_ATTEMPTS_WARN；有限值仍走原
-                # int() 转换（数字字符串/浮点的既有口径不变）。
-                try:
-                    fv = float(raw_warn)
-                except (TypeError, ValueError):
-                    fv = None
-                except OverflowError:
-                    # 超大 int 前置排除（code-review item 413cec9ddf39，补
-                    # 7ff98f1589cd 只堵 .inf 字面量的缺口）：float 对数百位超大
-                    # int 抛 OverflowError 不在原 except 族内。归一为 inf 并入
-                    # 下方非有限值分支按畸形回缺省，不落入 else 的 int() 转换。
-                    fv = float("inf")
-                if fv is not None and (fv != fv or fv in (float("inf"), float("-inf"))):
+                # inf/NaN/超大 int 前置排除统一走 _finite_float（code-review item
+                # ef88fcaa2f3f，接替 7ff98f1589cd / 413cec9ddf39 的逐处手写）：
+                # 非法与非有限值按畸形回 PROVIDER_DAILY_ATTEMPTS_WARN，有限值
+                # 仍走原 int() 转换（数字字符串/浮点/0 的既有口径不变）。
+                if _finite_float(raw_warn) is None:
                     warn = PROVIDER_DAILY_ATTEMPTS_WARN
                 else:
                     try:
@@ -1101,6 +1119,7 @@ class ProviderCircuit:
                 # 不引入新锁序。
                 if self._transient_break_until > 0:
                     return False
+                # [fenix-ignore:c5a53c8e61c1] or 非死兜底：_positive_number 放行正小数、int() 截断可得 0（如配置 0.5），右支实际可达
                 self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
                 # 重新熔断 → 解封中间态全部作废（design D3：hold/观察窗期间在飞 run
                 # 失败再次触发熔断时按冻结语义重计，闸门先查冻结即天然满足；此处
@@ -1258,6 +1277,9 @@ class ProviderCircuit:
         admin_alerts.json 的 MAX_RECORDS=150 环形裁剪（core/admin_store.py:34,
         193-194）与人工/Dashboard 处置承接——本仓库不存在按时间的告警清理机制。
         """
+        # 首行无锁快读仅作快速否决（code-review item 86150c46223a）：float 属性读
+        # 原子，他线程刚置位冻结的一瞬间至多漏判一次、随后查询自愈；锁内复检兜底，
+        # 读写纪律仍以 _unseal_lock 临界区为准。
         if self._transient_break_until <= 0:
             return False
         now = self._pm._now() if now is None else now
@@ -1409,21 +1431,11 @@ class ProviderCircuit:
         以 0 表达「禁用」（回到到期即全量放行 / 错峰不节拍），必须保留 0 而非
         回缺省（_positive_number 把 0 归一为缺省会复活禁用的开关）。
         """
-        # bool 排除（code-review item 76e7fc3007a0）：同 _positive_number /
-        # _signal_kill_cooldown_after 的口径——float(True)=1.0 会让 yaml 误写布尔
-        # true 的 transient_unseal_* 键被收成 1，bool 按畸形回缺省，其余兜底不变。
-        if type(value) is bool:
-            return float(default)
-        try:
-            v = float(value)
-        except (TypeError, ValueError, OverflowError):
-            # OverflowError（code-review item 413cec9ddf39）：float 对数百位超大
-            # int 会抛 OverflowError，与下方 NaN/inf 同族按畸形回缺省，不在
-            # except 族内会让失败路径以未捕获异常中断。
-            return float(default)
-        if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
-            return float(default)
-        if v < 0:
+        # bool/OverflowError/NaN/inf 防御统一走 _finite_float（code-review item
+        # ef88fcaa2f3f：原四处手写收口单边维护，item 76e7fc3007a0 / 413cec9ddf39
+        # 的历史口径由该助手承接）；本助手只保留 0=禁用语义（0 保留，负数归缺省）。
+        v = _finite_float(value)
+        if v is None or v < 0:
             return float(default)
         return v
 
@@ -2239,22 +2251,13 @@ class ProviderCircuit:
         # （负数钳 1/非法串兜缺省）不变。
         if raw == 0 or raw == "0":
             raw = 0
-        # inf/NaN 前置排除（code-review item 9be89a3bb96d）：与 _positive_number
-        # 同款——int(float('inf')) 抛 OverflowError 不在下方 except 族内，yaml 误写
-        # .inf 的 signal_kill_cooldown_* 键会让信号死法记账/派发闸门路径以未捕获
-        # 异常中断而非按畸形回缺省。仅排除非有限值，有限值仍走原 int() 转换
-        # （如 "600.5" 串的 ValueError 兜缺省口径不变）。
-        try:
-            fv = float(raw)
-        except (TypeError, ValueError):
-            fv = None
-        except OverflowError:
-            # 超大 int 前置排除（code-review item 413cec9ddf39）：float 对数百位
-            # 超大 int 抛 OverflowError 不在原 except 族内；超出 float 有限范围
-            # 与 inf 同族，按畸形回缺省（不可落下方 int() 转换——int(超大 int)
-            # 合法，会把天文数字当合法配置收下）。
-            return default
-        if fv is not None and (fv != fv or fv in (float("inf"), float("-inf"))):
+        # inf/NaN 前置排除（code-review item 9be89a3bb96d）与超大 int 排除
+        # （item 413cec9ddf39）统一走 _finite_float（code-review item ef88fcaa2f3f：
+        # 原四处手写收口单边维护）。bool/非有限值/超出 float 有限范围一律回缺省，
+        # MUST NOT 落下方 int() 转换（int(超大 int) 合法，会把天文数字当合法配置
+        # 收下）；有限值仍走原 int() 转换（如 "600.5" 串的 ValueError 兜缺省口径
+        # 不变，字符串 "0" 归一与 0 值兜缺省语义不变）。
+        if _finite_float(raw) is None:
             return default
         try:
             v = int(raw or default)
@@ -2383,22 +2386,11 @@ class ProviderCircuit:
         非数值（字符串）会让滑窗过滤在失败路径抛 TypeError，0/负数则让熔断瞬间
         失效。此处统一钳制——不可解析或 <= 0 时回落常量缺省，保证熔断语义始终成立。
         """
-        # bool 排除（code-review item 76e7fc3007a0）：同 _signal_kill_cooldown_after
-        # 的口径——yaml 误写布尔 true 时 float(True)=1.0 会被当合法配置，把
-        # provider_circuit_*/transient_* 键收成 1（首个 4xx 即触发熔断），bool 按
-        # 畸形回缺省，其余兜底不变。
-        if type(value) is bool:
-            return float(default)
-        try:
-            v = float(value)
-        except (TypeError, ValueError, OverflowError):
-            # OverflowError（code-review item 413cec9ddf39）：float 对数百位超大
-            # int 会抛 OverflowError，与下方 NaN/inf 同族按畸形回缺省，不在
-            # except 族内会让失败路径以未捕获异常中断。
-            return float(default)
-        if v != v or v in (float("inf"), float("-inf")):  # NaN / inf 兜底
-            return float(default)
-        if v <= 0:
+        # bool/OverflowError/NaN/inf 防御统一走 _finite_float（code-review item
+        # ef88fcaa2f3f：原四处手写收口单边维护，item 76e7fc3007a0 / 413cec9ddf39
+        # 的历史口径由该助手承接）；本助手只保留「非正数归缺省」语义。
+        v = _finite_float(value)
+        if v is None or v <= 0:
             return float(default)
         return v
 

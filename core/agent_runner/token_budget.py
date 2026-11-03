@@ -157,6 +157,18 @@ class TokenAccountant:
                     f"（{type(entry).__name__}），跳过本轮累计",
                 )
                 return
+            if not entry:
+                # code-review item 28e3bafaae13：docstring 承诺「STATE 条目缺失
+                # 不写」须落在本函数实现上，而非依赖 update_spec 内部的
+                # SPEC not found 拒绝（若未来写入口改为 upsert 语义，缺失条目
+                # 会被静默建账）。与上方读失败（67824f1f7c03）/类型异常
+                # （1cacd875677d）留痕口径对齐：记 warning 后跳过本轮累计。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 累计 STATE 条目缺失 '{spec_name}'"
+                    f"（spec 未注册或已被移除），跳过本轮累计",
+                )
+                return
             prev_in = _to_int(entry.get("_tokens_in", 0))
             prev_out = _to_int(entry.get("_tokens_out", 0))
             new_in = prev_in + tokens_in

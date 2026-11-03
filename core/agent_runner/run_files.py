@@ -59,7 +59,7 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     # 此前缺条目使自省 run 在时间线/初筛分组退化为泛型 "agent"、spec 列残留
     # 整个 run_id。消费方核对（仿 evo-/maintenance- 先例）：get_runs 时间线
     # 归属 agent→self-review（预期修复）；run_spec_part 剥出的伪 spec 段为
-    # <date>[-<n>]（时间戳正则 -\d{9,10}$ 不吞 -YYYY-MM-DD），非真实 spec 名、
+    # <date>[-<n>]（时间戳正则 -\d{9,}$ 不吞 -YYYY-MM-DD），非真实 spec 名、
     # 全等守卫不受影响；admin_monitor._RUN_PREFIXES 失败计数不同步收录
     # （run_id 不携带 spec 段、无 spec 失败可还原，同 evo- 口径）；pm_engine
     # 活动/归属判定按 review-<spec>-* glob + run_spec_part 全等，review-<date>
@@ -107,6 +107,22 @@ RUN_ID_AGENT_PREFIXES: tuple[tuple[str, str], ...] = (
     # _distill_lane_busy 在飞判定读队列不读产物，不受影响。
     ("knowledge-distiller-", "knowledge-distiller"),
 )
+
+# 加载期自检（code-review item e73c94b4cd3e）：把上方「更长前缀必须排在其
+# 子串短前缀之前」的顺序敏感约束从注释升级为机器校验——任意后条前缀不得以
+# 先条前缀开头，否则该长前缀车道 run_id 会被先命中的短前缀吞并、时间线与
+# 归属解析静默退化为错误类型。本表历史上多次追加条目，短前缀误插到长前缀
+# 之前时导入即报错，不再依赖人工逐对核对。
+for _i in range(len(RUN_ID_AGENT_PREFIXES)):
+    for _j in range(_i + 1, len(RUN_ID_AGENT_PREFIXES)):
+        _earlier = RUN_ID_AGENT_PREFIXES[_i][0]
+        _later = RUN_ID_AGENT_PREFIXES[_j][0]
+        if _later.startswith(_earlier):
+            raise RuntimeError(
+                "RUN_ID_AGENT_PREFIXES 顺序违约：前缀 "
+                f"{_later!r} 以先出现的 {_earlier!r} 开头"
+                "（更长的前缀必须排在其子串短前缀之前）"
+            )
 
 
 def infer_run_agent_type(run_id: str) -> tuple[str, str]:
@@ -221,19 +237,22 @@ def run_spec_part(run_id: str) -> str:
     ``spec-review-<spec>-<6hex>-<unix秒>`` 形态），时间戳剥离后 spec 名仍带
     尾巴、family 全等匹配失败 → 拓扑/时间轴/运行记录全部丢节点。仅当 agent
     前缀为 ``spec-review-`` 时对该尾巴剥除（uuid 段唯一写入方即 spec_review，
-    其余前缀不触碰）；剥后非空才生效。已知限制与 9-10 位数字时间戳同级：
+    其余前缀不触碰）；剥后非空才生效。已知限制与时间戳剥离（``\d{9,}``）同级：
     spec 名合法以 6hex 结尾且走 spec-review 通道的极边界场景会误剥。
 
     前缀表 = 本模块 ``RUN_ID_AGENT_PREFIXES``（唯一真源，见其定义处注释）。
     """
     agent_type, spec_part = infer_run_agent_type(run_id)
     spec_part = strip_run_id_suffixes(spec_part)
-    # 时间戳剥离限定 9-10 位数字（code-review item 6c089e65a080）：spec 名以
-    # 9-10 位数字结尾时会被误剥（如 spec-123456789 → spec）。属极边界场景，
-    # 与 fenixd._spec_from_run_id 的解析互为补充；此处保持既有口径（与
-    # get_runs 的推断对齐），仅记录该已知限制，不扩大改动面。
-    m = re.match(r"^(.*)-\d{9,10}$", spec_part)
-    if m:
+    # 时间戳剥离下限 9 位、不设上限（与 admin_monitor._spec_from_run_id 同
+    # 口径，code-review item e606e1478397）：dispute-judge run_id 的时间戳取
+    # time.time_ns()（pm_engine/dispatch/adjudication.py 组装 judge run）为
+    # 19 位纳秒，旧 9-10 位上限对其剥不出时间戳、返回伪 spec 段 <spec>-<纳
+    # 秒串>，archive_spec_runs 全等清理与 liveness/pm_engine 等按 run_spec_part
+    # 全等归属的消费方对该车道永不命中。保留 6c089e65a080 的保护意图：下限
+    # 仍 9 位（更短数字尾缀的 spec 名依旧不剥），且剥后段非空才生效。
+    m = re.match(r"^(.*)-\d{9,}$", spec_part)
+    if m and m.group(1):
         spec_part = m.group(1)
     if agent_type == "spec-review":
         # uuid 段剥除严格限定 spec-review 前缀形态（design D1）：6 位 hex 段
@@ -265,9 +284,10 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
     # 上游；记 WARNING 留痕，返回 0 不阻断归档主流程。
     # 机制勘误（code-review item e3968bc0450c）：维护类 run（前缀+纯
     # 时间戳，如 code-review-1791219794）经 run_spec_part 归一后 spec 段
-    # 并非空串——剥前缀后只剩纯时间戳，时间戳剥离正则 ^(.*)-\d{9,10}$
-    # 要求前置连字符故不剥，归一结果是时间戳串；空段仅在 run_id 呈
-    # 「前缀+空 spec 段+时间戳」双连字符形态（如 admin--<ts>）时出现。
+    # 并非空串——剥前缀后只剩纯时间戳，时间戳剥离正则 ^(.*)-\d{9,}$
+    # 要求前置连字符故不剥，归一结果是时间戳串；空段仅 run_id 呈
+    # 「前缀+空 spec 段+时间戳」双连字符形态（如 admin--<ts>）时出现过，
+    # e606e1478397 起剥后段非空守卫使其归一为「-<时间戳串>」，不再产生空段。
     # 守卫为防御性兜底，保留。
     if not spec_name:
         _logger.warning("archive_spec_runs: spec_name 为空，跳过清理（防止误删维护类 run 产物）")

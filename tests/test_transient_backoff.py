@@ -191,6 +191,31 @@ class TestClassifyTransientError:
         # 但 classify_transient_error 看原始 stderr，应判瞬断
         assert ProviderCircuit.classify_transient_error(stderr, 1, False) is True
 
+    # ── 切换类词表第三条收窄边界（code-review item 86524e70841b）─────────────
+    # 正例：已登记网关「model not found」形态必须保持命中（均不含 unrecognized_model
+    # 字样，由收窄后的第三条独占命中）；反例：本地错误文本 MUST NOT 驱动链前进/
+    # 瞬断记账，防止未来再放宽。
+
+    def test_switch_model_not_found_gateway_forms_match(self):
+        """网关 model-not-found 形态（含 model_not_found 错误码串）→ 切换类。"""
+        for text in (
+            "model not found: deepseek-v4-flash",  # tests/test_provider_failover.py 登记样例
+            "Model not found",  # tests/test_harness_dsh_adapter.py 登记样例
+            'API Error: 404 {"code":"model_not_found"}',  # OpenAI 错误码形态
+        ):
+            assert ProviderCircuit.classify_switch_error(text) is True, text
+
+    def test_switch_model_not_found_local_forms_not_matched(self):
+        """本地错误文本（词间夹普通词/长路径）MUST NOT 判切换类/瞬断。"""
+        for text in (
+            "model file not found",  # 本地模型文件缺失
+            "model directory /opt/cache/very/long/path/segments was not found",
+            "checkpoint not found for model training",
+        ):
+            assert ProviderCircuit.classify_switch_error(text) is False, text
+            assert ProviderCircuit.classify_transient_error(
+                [text], 1, False) is False, text
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 真实故障文本 fixture 回放（Task 6.4 前置）

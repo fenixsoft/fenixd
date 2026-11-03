@@ -297,6 +297,16 @@ class ConfigLoader:
     # full = 同时约束晋升/评审入口（SPEC 停在 drafted，到期/激活才晋升并评审）。
     VALID_START_AFTER_SCOPES = ["full", "dispatch"]
 
+    # Valid verify static scopes（verify.static_scope：worktree 服务范围档；
+    # code-review item d8305136d3f6：与 verify.deps_mode 词表一同单源化——
+    # dashboard 回显/来源标注/合并/校验各处改引本常量，对齐上方 gates 四键
+    # 既有写法，杜绝枚举扩充时硬编码处先漂移）
+    VALID_STATIC_SCOPES = ["main", "worktree"]
+
+    # Valid verify deps modes（verify.deps_mode：worktree node_modules 供给
+    # 模式，词表与 core.verify_contract.DEPS_MODES 保持一致）
+    VALID_DEPS_MODES = ["prefer-offline", "hardlink"]
+
     # ── 瞬断治理配置（fix-provider-transient-backoff D6 / transient-controls-ui）──
     # 五键缺省值（design D6 表）。消费方（runner/provider_circuit/dispatch）经
     # _get_config 读取，非法值由本类防御式规范化回退缺省。
