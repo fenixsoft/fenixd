@@ -27,6 +27,7 @@ description: Use when the user wants to check detailed progress of a specific SP
 - **冻结 / start_after** → 有意等待，归入「按计划」，不算问题；解冻/拾取时间转本地时区表述
 - **成本**：累计成本与 token 量异常大时提示（结合重试轮次解释成因）
 - **下一步动作映射**：done → `/fenix-approve`；drafted → `/fenix-ready`（manual 模式）；bug-found → 等待 fix SPEC 或人工处置；blocked → 确认冻结原因或解冻
+- **知识对账（index-first，add-knowledge-consumption-discipline）**：分诊涉及具体能力面的 SPEC 时，先读 `spec/knowledge/index.md` 定位相关能力域并下钻能力页，对账其「当前生效规则」与本 SPEC 的实际行为/进度表述是否一致；发现规则漂移在「需要关注」中提示蒸馏回填。项目尚无 `spec/knowledge/` 目录时静默跳过。
 
 ## 步骤
 
