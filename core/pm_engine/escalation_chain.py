@@ -204,6 +204,22 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# in_flight 条目 phase 合法值（fix-escalation-chain-watchdog-yield-gaps 1.2：
+# 新增 "deferred" 让行留痕形态；读侧对缺 phase 条目按 "admin" 兼容——防御性
+# 保留历史残留混合形态）
+_ENTRY_PHASES = ("admin", "arbiter", "deferred")
+
+
+def entry_phase(entry: dict) -> str:
+    """in_flight 条目 phase 归一（读侧兼容单源）。
+
+    缺 phase / 非法值的历史条目按 "admin" 相待（与现行 mark_in_flight 的
+    admin/arbiter 二值形态向后兼容）；"deferred" 让行条目原样返回。
+    """
+    phase = str((entry or {}).get("phase") or "").strip().lower()
+    return phase if phase in _ENTRY_PHASES else "admin"
+
+
 def _days_since(ts_iso: str, now: Optional[datetime] = None) -> Optional[float]:
     """距 ts_iso 的天数（解析收拢 timelib.parse_ts 单入口；非法/空值 None）。"""
     then = parse_ts(str(ts_iso))
@@ -383,6 +399,43 @@ class ChainQuotaStore:
             ]
 
         self._mutate(_drop)
+
+    def defer_in_flight(
+        self, chain_id: str, sig: str, spec: str,
+        yield_to: str = "", item_signal: Optional[dict] = None,
+    ) -> bool:
+        """在办登记改写为 deferred 让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2）。
+
+        让行路径从「整条清除」改为「改写 phase」：phase→"deferred"，附被让行
+        对象标识 ``yield_to``（同 spec 在飞 admin run 的 run_id；frozen 预检件
+        为空）与让行时间戳 ``deferred_at``。``item_signal`` 快照链件信号详情，
+        供看护扫描重派时还原 submit_entry 入参（MUST NOT 作为新信号重新计签
+        ——重派沿用留痕原签名）。条目不存在（已被并发清除）返回 False 无副作用。
+
+        读侧兼容：缺 yield_to/deferred_at 的既有条目按 admin/arbiter 相待
+        （entry_phase 单源归一）；deferred 条目纳入既有 stale_in_flight 超时
+        reap（按 started_at 一视同仁，不因 phase 特判放行）。
+        """
+        def _defer(state):
+            for x in state["in_flight"]:
+                if x.get("chain_id") == chain_id:
+                    x["phase"] = "deferred"
+                    x["yield_to"] = str(yield_to or "")
+                    x["deferred_at"] = _utcnow_iso()
+                    if item_signal:
+                        x["item_signal"] = dict(item_signal)
+                    return True
+            return False
+
+        return bool(self._mutate(_defer))
+
+    def deferred_in_flight(self) -> list:
+        """deferred 让行条目（看护扫描重派消费；只读投影）。"""
+        state = load_chain_state(self.project_root)
+        return [
+            dict(x) for x in state["in_flight"]
+            if entry_phase(x) == "deferred"
+        ]
 
     def stale_in_flight(self, stale_s: float = CHAIN_INFLIGHT_STALE_S) -> list:
         """超时在办件（巡检消费：admin_monitor 看护对象扩展全链在办件）。"""
@@ -659,17 +712,27 @@ class EscalationChain:
 
         self._quota.mark_in_flight(chain_id, sig, spec, "admin")
         admin_trail, phase = self._run_admin_phase(item, quota_cfg)
+        if phase == "deferred":
+            # 让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2/1.3）：
+            # 互斥守卫命中（yield_to=被让行 admin run）或 frozen 预检件
+            # （yield_to 空）——整条清除改为 deferred 形态改写，附信号详情
+            # 快照；看护巡检扫描重派（被让行 run 终态/spec 解冻后），不再
+            # 「静默丢弃等复发」。
+            yield_to = str(item.pop("defer_yield_to", "") or "")
+            self._quota.defer_in_flight(
+                chain_id, sig, spec,
+                yield_to=yield_to,
+                item_signal=self._deferred_signal_snapshot(item),
+            )
+            self._log(
+                "info",
+                f"处置链让行留痕（deferred，等看护扫描重派）: sig={sig} "
+                f"yield_to={yield_to or '(frozen 预检件)'}",
+            )
+            return
         self._quota.clear_in_flight(chain_id)
         if phase == "closed":
             return  # Admin 处置成功闭环（side-effects 已在 _run_admin_phase 落）
-        if phase == "deferred":
-            # 同 spec 在飞 admin run（互斥守卫命中）：本件让行，不双派。
-            # 信号若复发由下一次触发重新入链。
-            self._log(
-                "info",
-                f"处置链让行（同 spec 在飞 admin run）: sig={sig}",
-            )
-            return
 
         # Arbiter 级配额闸门（复现配额耗尽 → 强制上升人工，task 3.3）
         rulings = self._quota.arbiter_rulings(sig)
@@ -720,7 +783,10 @@ class EscalationChain:
         - phase="closed"：处置成功，链闭环（side-effects 已落）；
         - phase="handoff"：超范围转单（不计失败），带尝试痕；
         - phase="exhausted"：尝试配额耗尽，转单 Arbiter，带尝试痕；
-        - phase="deferred"：同 spec 在飞 admin run（互斥守卫），本件让行。
+        - phase="deferred"：让行留痕出口（fix-escalation-chain-watchdog-yield-gaps
+          1.2/1.3/1.4）——同 spec 在飞 admin run（互斥守卫，item["defer_yield_to"]
+          携带被让行 run_id）或 spec 冻结预检/空壳击杀豁免（defer_yield_to 空），
+          本件让行不派发不计配额。
         """
         spec = str(item.get("spec") or "")
         sig = str(item.get("signature") or "")
@@ -732,8 +798,18 @@ class EscalationChain:
             if runner is None:
                 self._log("warning", "处置链 Admin 派发不可用（runner 缺席），转单 Arbiter")
                 return trail, "exhausted"
-            # 在飞互斥守卫复用（task 1.2）：同 spec 已有在飞 admin run 不双派
-            if self._admin_run_in_flight(spec):
+            # frozen 预检（fix-escalation-chain-watchdog-yield-gaps 1.3）：spec
+            # 冻结时派发即被 frozen-terminated 秒杀烧配额（首例竞态实证——冻结
+            # 落盘早于链头 spawn ~100ms）。派发前预检：frozen 不派发不计配额，
+            # 转 deferred 留痕（yield_to 空，重派条件=spec 解冻，看护扫描消费）。
+            if self._spec_frozen(spec):
+                item["defer_yield_to"] = ""
+                return trail, "deferred"
+            # 在飞互斥守卫复用（task 1.2）：同 spec 已有在飞 admin run 不双派，
+            # 让行并留痕（yield_to=被让行对象标识，看护扫描重派消费）
+            active_run = self._active_admin_run_id(spec)
+            if active_run:
+                item["defer_yield_to"] = active_run
                 return trail, "deferred"
             disp = self._dispatch_admin(item)
             record = {
@@ -808,6 +884,19 @@ class EscalationChain:
                     f"unfrozen={closed.get('unfrozen')}",
                 )
                 return trail, "closed"
+            # frozen-terminated 空壳豁免（fix-escalation-chain-watchdog-yield-gaps
+            # 1.4）：0 API 轮次 + 终态 frozen-terminated 双条件 → 派发即被 spec
+            # 冻结终止的空壳（冻结×派发竞态），视为未尝试不计失败——配额计数
+            # 不变，该件按 deferred 留痕处理（与预检同出口）。跑过轮次后被冻结
+            # 击杀的文件含 assistant 事件 → 不命中仍计失败（防误伤真实失败）。
+            if self._frozen_killed_empty_shell(str(disp.run_id or "")):
+                self._log(
+                    "warning",
+                    f"Admin run frozen-terminated 空壳击杀（0 轮，不计失败）: "
+                    f"sig={sig} run={disp.run_id}——转 deferred 留痕",
+                )
+                item["defer_yield_to"] = ""
+                return trail, "deferred"
             # 失败计一次（run 崩溃/超时/终态失败）
             attempts = self._quota.count_admin_attempt(sig)
             self._log(
@@ -825,24 +914,223 @@ class EscalationChain:
         )
         return trail, "exhausted"
 
-    def _admin_run_in_flight(self, spec: str) -> bool:
-        """Admin 在飞互斥守卫（复用 admin_monitor 单源判定，fail-open False）。
+    def _run_file_has_terminal(self, run_id: str) -> bool:
+        """run 产物末行终态判定（链侧只读；文件缺失/读失败按 False）。
 
-        首参是 store 实例（admin_monitor 模块级单实现签名：``(store, spec,
-        logger, ...)``）——链派发与 admin_monitor 巡检共用同一归并判定，
-        不复制第二份在飞判定。
+        委托 liveness ``_file_tail_is_terminal`` 末行终态原语（与
+        admin_monitor._run_file_has_terminal_state 同一底层单源，不复制解析）；
+        顶层缺席回退 archive（runs 保留规则归档形态）。
         """
-        if not spec or spec == "global":
+        if not run_id:
+            return False
+        runs_dir = self.project_root / ".fenix" / "runs"
+        path = runs_dir / f"{run_id}.jsonl"
+        if not path.is_file():
+            path = runs_dir / "archive" / f"{run_id}.jsonl"
+        if not path.is_file():
             return False
         try:
-            from core.admin_monitor import _spec_has_active_admin_run
+            from core.agent_runner.liveness import _file_tail_is_terminal
+
+            return bool(_file_tail_is_terminal(path))
+        except Exception:
+            return False
+
+    def _active_admin_run_id(self, spec: str) -> str:
+        """同 spec **活** admin run 的 run_id（互斥守卫单源归并，fail-open ""）。
+
+        复用 admin_monitor ``_merge_admin_runs`` 单一归并实现（某 admin_run_id
+        组 has_pending 且无终结兄弟记录才算在飞——不复制第二份在飞判定）；
+        返回首个在飞 run_id 供 deferred 留痕（yield_to=被让行对象标识，看护
+        扫描重派据其终态判定回喂时机）。
+
+        run 文件已终态的 pending 组是「已死未终结」残留（链路径派发的 run 不
+        落 final 记录，死后 pending 由孤儿看护收尾）——不占互斥面（让行对象
+        语义=SPEC 场景「manual-intervention 等非链成员通道**在飞**件」）：
+        不排除则链头第二次尝试会被自己前次死 run 的 pending 永久拦住（自证
+        在飞死锁，配额 2 次语义与看护重派回喂双双失效）。无在飞/判定异常
+        （fail-open 放行）/spec 空（daemon 级无互斥面）返回 ""。
+        """
+        if not spec or spec == "global":
+            return ""
+        try:
+            from core.admin_monitor import _merge_admin_runs
             from core.admin_store import AdminStore
 
             store = AdminStore(self.project_root, self.logger)
-            return bool(_spec_has_active_admin_run(store, spec, self.logger))
+            by_run = _merge_admin_runs(store.read_all(), spec=spec)
+            for rid, info in by_run.items():
+                if not (info["has_pending"] and not info["final"]):
+                    continue
+                if self._run_file_has_terminal(str(rid)):
+                    continue  # 已死未终结残留：不占互斥面
+                return str(rid)
+            return ""
         except Exception as e:
             self._log("warning", f"Admin 在飞互斥判定异常（按无在飞放行）: {e}")
+            return ""
+
+    def _spec_frozen(self, spec: str) -> bool:
+        """spec 冻结态判定（fix-escalation-chain-watchdog-yield-gaps 1.3）。
+
+        走既有 ``_resolve_state_machine`` 通路（与 _process observe_spec_status /
+        _close_chain_success 同源），读 spec entry 的 frozen 键。fail-open False
+        （状态机缺席/读取异常按未冻结放行——链可用性优先，误放行由 1.4 空壳
+        豁免兜底）。
+        """
+        if not spec or spec == "global":
             return False
+        sm = self._resolve_state_machine()
+        if sm is None:
+            return False
+        try:
+            entry = (sm.read_all() or {}).get(spec) or {}
+            return bool(entry.get("frozen"))
+        except Exception:
+            return False
+
+    def _frozen_killed_empty_shell(self, run_id: str) -> bool:
+        """frozen-terminated 空壳击杀判定（fix-escalation-chain-watchdog-yield-gaps 1.4）。
+
+        双条件：① run 文件全文零 assistant 事件（0 API 轮次）；② 末行终态
+        事件 type=frozen-terminated（冻结终止专属终态，add-freeze-stop-inflight-
+        agents 落盘口径）。命中 = 派发即被 spec 冻结终止的空壳（竞态烧配额
+        首例形态）。遇首个 assistant 事件提前返回 False（跑过轮次后被冻结
+        击杀仍计失败——防误伤）；读失败/文件缺失 → False（保守计失败，宁多
+        计不漏计）。
+        """
+        if not run_id:
+            return False
+        runs_dir = self.project_root / ".fenix" / "runs"
+        path = runs_dir / f"{run_id}.jsonl"
+        if not path.is_file():
+            path = runs_dir / "archive" / f"{run_id}.jsonl"
+        if not path.is_file():
+            return False
+        last = None
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("type") == "assistant":
+                        return False  # 有 API 轮次：不豁免
+                    last = entry
+        except OSError:
+            return False
+        return isinstance(last, dict) and last.get("type") == "frozen-terminated"
+
+    def _deferred_signal_snapshot(self, item: dict) -> dict:
+        """deferred 留痕的信号详情快照（重派时还原 submit_entry 入参）。
+
+        签名与粒度一并快照——重派是链内转单边的恢复动作（防自环不变），
+        MUST NOT 作为新信号重新计签；submit_entry 按同输入重算签名，与留痕
+        原签名一致（同 spec/signal_type/payload → 同签名，dedup 语义成立）。
+        """
+        return {
+            "spec": str(item.get("spec") or ""),
+            "signal_type": str(item.get("signal_type") or ""),
+            "severity": str(item.get("severity") or "major"),
+            "description": str(item.get("description") or ""),
+            "evidence": str(item.get("evidence") or ""),
+            "recommended_action": str(item.get("recommended_action") or ""),
+            "trigger": dict(item.get("trigger") or {}),
+            "payload": dict(item.get("payload") or {}),
+            "source": str(item.get("source") or ""),
+            "signature": str(item.get("signature") or ""),
+            "granularity": str(item.get("granularity") or ""),
+        }
+
+    def deferred_in_flight(self) -> list:
+        """deferred 让行条目投影（代理 quota 单源；monitor 扫描重派消费）。"""
+        return self._quota.deferred_in_flight()
+
+    def clear_in_flight(self, chain_id: str) -> None:
+        """在办登记清除（代理 quota 单源；monitor 信号收口清理消费）。"""
+        self._quota.clear_in_flight(chain_id)
+
+    def resubmit_deferred(self, entry: dict) -> str:
+        """deferred 条目重派（看护扫描消费；fix-escalation-chain-watchdog-yield-gaps 2.3）。
+
+        走 :meth:`submit_entry` 既有单飞/互斥守卫（MUST NOT 绕过——重派风暴
+        由同签名 dedup 天然限流）；重派件重新经历链头全流程（配额复位/预检/
+        互斥守卫），防自环规则不变：恢复动作不作为新信号重新计签。返回
+        submit_entry 处置字；``"queued"/"deduped"`` 时清除该 deferred 条目
+        （deduped=同签名已在飞/排队，留痕冗余）；blacklisted/disabled/队列满
+        异常保留条目待下轮重试。旧形态条目（无信号快照，daemon 滚动窗口混合
+        形态）无法还原入参：按收口清理（防永久滞留，信号复发自会重新入链）。
+        """
+        snap = dict(entry.get("item_signal") or {})
+        if not snap or not str(snap.get("signal_type") or ""):
+            self._quota.clear_in_flight(str(entry.get("chain_id") or ""))
+            return "stale-cleared"
+        try:
+            disposition = self.submit_entry(
+                spec=str(snap.get("spec") or ""),
+                signal_type=str(snap.get("signal_type") or ""),
+                severity=str(snap.get("severity") or "major"),
+                description=str(snap.get("description") or ""),
+                evidence=str(snap.get("evidence") or ""),
+                recommended_action=str(snap.get("recommended_action") or ""),
+                trigger=dict(snap.get("trigger") or {}),
+                payload=dict(snap.get("payload") or {}),
+                source=f"chain-deferred-resume:{snap.get('source') or ''}",
+            )
+        except RuntimeError as e:
+            # 队列满：留条目待下轮重试（不吞 conflict——日志留痕）
+            self._log("warning", f"deferred 重派登记失败（队列满，留痕待下轮）: {e}")
+            return "queue-full"
+        if disposition in ("queued", "deduped"):
+            self._quota.clear_in_flight(str(entry.get("chain_id") or ""))
+        return disposition
+
+    def chain_traces(self, sig: str) -> dict:
+        """链痕只读聚合（fix-escalation-chain-watchdog-yield-gaps 1.1；design D1）。
+
+        看护抑制与重派判定共用查询口：输入签名，输出三态——
+
+        - ``in_flight``：in_flight 区同签名在办条目（phase=admin/arbiter，
+          deferred 不算在办——它是「等唤醒」态，另列 deferred）；
+        - ``deferred``：同签名 deferred 让行条目列表；
+        - ``arbiter_active``：arbiter 单飞队列同签名在飞（经 lane.snapshot()
+          既有注册只读访问，不新建注册表）。
+
+        链状态文件缺失/损坏按零命中降级（load_chain_state fail-open，对齐
+        看护既有链缺席口径）；arbiter 车道读取异常按 False 降级。
+        """
+        state = load_chain_state(self.project_root)
+        in_flight = False
+        deferred: List[dict] = []
+        for x in state["in_flight"]:
+            if str(x.get("signature") or "") != sig:
+                continue
+            if entry_phase(x) == "deferred":
+                deferred.append(dict(x))
+            else:
+                in_flight = True
+        arbiter_active = False
+        try:
+            from core.pm_engine.arbiter import get_lane
+
+            lane = get_lane(self.project_root, self.logger)
+            if lane is not None:
+                arbiter_active = sig in set(
+                    lane.snapshot().get("active_signatures") or []
+                )
+        except Exception:
+            arbiter_active = False
+        return {
+            "in_flight": in_flight,
+            "deferred": deferred,
+            "arbiter_active": arbiter_active,
+        }
 
     def _admin_choice_allowlist(self, signal_type: str):
         """链上 Admin 拍板面白名单 id 集（task 2.4 单源；失败返回 None 跳过复核）。"""
