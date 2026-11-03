@@ -45,7 +45,9 @@
 `spec/knowledge/index.md` 的每个能力域行 MUST 具备能独立支撑「任务 ↔ 域」判断的
 简介：2~3 句、覆盖该域主要能力面；素材取自各域 `_domain.md` 既有简介与能力清单，
 不引入新事实；文件顶部盖戳行刷新为更新时刻（本地时区 `UTC+8` 形态）；域行结构与
-能力数量列保持不变。
+能力数量列保持不变。目录契约页 `spec/knowledge/domains/knowledge-atlas/knowledge-atlas-directory.md`
+中 index 简介的表述（「一行简介」）MUST 同步对齐增厚后形态——该页是蒸馏 run 维护
+`index.md` 的契约依据，不同步则增厚会被下次蒸馏回退。
 
 #### Scenario: 仅凭 index 可定位相关域
 

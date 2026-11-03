@@ -21,6 +21,8 @@
   kind: modify
 - path: spec/knowledge/index.md
   kind: modify
+- path: spec/knowledge/domains/knowledge-atlas/knowledge-atlas-directory.md
+  kind: modify
 ```
 
 ## 1. 车道纪律段
@@ -47,7 +49,13 @@
 
 - [ ] 3.1 逐一读取 29 个 `spec/knowledge/domains/<域>/_domain.md`，将 `index.md`
       每域简介列增厚为 2~3 句（覆盖主要能力面，不引入新事实），域行结构与能力数量
-      列不变，顶部盖戳行刷新为当前本地时区 `UTC+8` 形态
+      列不变，顶部盖戳行刷新为当前本地时区 `UTC+8` 形态；简介列保持单行单元格且
+      不含裸竖线 `|`（`core/knowledge.py` `_check_stamp_table` 按竖线切列校验
+      四列结构与末列时间格式，简介含裸竖线或换行会确定性触发更新时间格式违规）
+- [ ] 3.2 同步更新目录契约页 `spec/knowledge/domains/knowledge-atlas/knowledge-atlas-directory.md`：
+      将 index.md「列全部能力域与一行简介」的简介表述对齐为增厚后形态（2~3 句），
+      并刷新该页盖戳行——该页是蒸馏 run 维护 `index.md` 的契约依据（导航层由
+      蒸馏 run 维护），不同步则下次蒸馏会按旧契约把增厚简介回退为一句话
 
 ## 4. 自验
 
