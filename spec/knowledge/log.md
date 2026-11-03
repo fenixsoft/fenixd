@@ -24,3 +24,4 @@
 ## [2026-11-03 23:10 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
 ## [2026-11-03 23:14 UTC+8] fold | zn-inbox-entry-2.md 折叠入库
 ## [2026-11-03 23:16 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
+## [2026-11-03 23:25 UTC+8] distill | add-knowledge-inbox-pipeline（第 1 轮，自动提交落库，折叠入库 3 条）
