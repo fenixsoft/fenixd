@@ -576,6 +576,20 @@ class PromptBuilder:
                     # 废弃位置会把管理员导向永不被告知读取的写入点。
                     "{disp_path}": _str_field(sig.get("disposition_path")),
                     "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
+                    # add-escalation-chain-admin-arbiter 2.2/2.4：链上处置上下文
+                    # ——chain_choices 环境运维拍板面子集（JSON 数组字面量，
+                    # 单源 choices_for_admin_chain）。非链派发（admin_monitor
+                    # 人工唤起通道）该键缺席 → 空串，模板段按「处置面不受限」
+                    # 语义叙述，双通道共用同一模板。
+                    "{chain_choices}": (
+                        json.dumps(
+                            sig.get("chain_choices") or [],
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                        if sig.get("chain_choices")
+                        else ""
+                    ),
                 }
             )
         # add-arbiter-lane 3.1：arbiter 模板复用信号八键（{sig_type}/{sig_spec}/
@@ -600,6 +614,21 @@ class PromptBuilder:
                     "{report_path}": str(
                         arbiter_report_path(root, _arb_run_id or spec_name)
                     ),
+                    # add-escalation-chain-admin-arbiter 3.1：转单载荷注入——
+                    # Admin 尝试痕（逐 run 的 run_id/result/error/choice/
+                    # handoff_reason 结构化数组）与转单理由进调查 prompt。非
+                    # 转单触发（事件/回扫直派）两键为空串，模板段按「无链上
+                    # 前科」语义叙述，单/双通道共用同一模板。
+                    "{chain_trail}": (
+                        json.dumps(
+                            sig.get("admin_trail") or [],
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                        if sig.get("admin_trail")
+                        else ""
+                    ),
+                    "{handoff_reason}": _str_field(sig.get("admin_handoff_reason")),
                 }
             )
         # 一次性多模式替换（code-review item 7975ab14dbe7）：逐键 str.replace 会把

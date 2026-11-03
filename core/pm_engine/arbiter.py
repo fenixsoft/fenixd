@@ -271,20 +271,46 @@ class ArbiterLane:
     def enabled(self) -> bool:
         return bool(self.config().get("enabled"))
 
-    @staticmethod
-    def in_trigger_surface(signal_type: str) -> bool:
-        """signal 维度触发面判定：正向白名单命中且不落排除表才进。
+    # ── 链配置/配额存取（add-escalation-chain-admin-arbiter 3.3）────────
 
-        白名单=blocked/frozen/争议类的生产发射词汇（ARBITER_TRIGGER_
-        SIGNAL_TYPES 常量定义处有逐发射点注释）；排除表（token 预算/
-        spec_integrity/queue 异常类）为第二道保险——白名单漏放政策类时
-        排除表仍拦（spec MUST-NOT 清单零违反优先于多放行）。
+    def _chain_cfg(self) -> dict:
+        """链配置段读取（经链配额层单源；失败回空 dict=全缺省+空黑名单）。"""
+        try:
+            from core.pm_engine.escalation_chain import ChainQuotaStore
+
+            return ChainQuotaStore(self.project_root, self.logger).quota_config()
+        except Exception:
+            return {}
+
+    def _chain_quota(self):
+        """链配额层实例（失败返回 None——配额判定按「配额未耗尽」fail-open）。"""
+        try:
+            from core.pm_engine.escalation_chain import ChainQuotaStore
+
+            return ChainQuotaStore(self.project_root, self.logger)
+        except Exception:
+            return None
+
+    def _arbiter_rulings_quota(self) -> int:
+        """Arbiter 复现配额上限（chain.arbiter_rulings，缺省 2）。"""
+        try:
+            return int(self._chain_cfg().get("arbiter_rulings") or 2)
+        except (TypeError, ValueError):
+            return 2
+
+    def in_trigger_surface(self, signal_type: str) -> bool:
+        """signal 维度触发面判定（处置链反转后）：非黑名单即入。
+
+        白名单+排除表机制被黑名单 kill switch 取代（add-escalation-chain-
+        admin-arbiter）：``chain.blacklist`` 配置内的信号不进 Arbiter、也不进
+        链（直达人工队列）；名单外信号默认在触发面（升级边默认自动化处置，
+        政策类/数据完整性类人工兜底改由黑名单显式圈定）。黑名单经链配置单源
+        （ConfigLoader.get_chain_config，热更新即时生效），读取失败按空名单
+        fail-open（放行方向——历史白名单漏放信号的旧病不再以配置故障形态复发）。
         """
         sig = (signal_type or "").strip()
-        return (
-            sig in ARBITER_TRIGGER_SIGNAL_TYPES
-            and sig not in ARBITER_EXCLUDED_SIGNAL_TYPES
-        )
+        blacklist = set(self._chain_cfg().get("blacklist") or [])
+        return sig not in blacklist
 
     def _log(self, level: str, message: str, context: Optional[dict] = None):
         log = getattr(self, "logger", None)
@@ -329,14 +355,21 @@ class ArbiterLane:
         if not cfg.get("enabled"):
             return "disabled"
         if not self.in_trigger_surface(signal_type):
+            # 黑名单 kill switch 命中（触发面反转后 excluded=黑名单）：不进
+            # Arbiter 也不进链，调用方走既有落盘路径（直达人工 + narrative）
             return "excluded"
         sig = arbiter_failure_signature(spec, signal_type)
-        # 跨重启 dedup 兜底：进程内存 dedup 集合随重启清空，而 dead-man/
-        # disposition 已落台账（与回扫侧 ledger_sigs 同源单实现）——不并入
-        # 判定则重启后同签名再触发会被当首次触发重新自主处置，违背
-        # design D6（同签名只自主处置一次）。台账读一次即可，读失败按
-        # 空集 fail-open（load_arbiter_ledger 自带降级）。
-        persisted_settled = self._ledger_sigs(kinds={"dead-man", "disposition"})
+        # 跨重启配额判定（D6 单次纪律的配额制取代，add-escalation-chain-
+        # admin-arbiter 3.3）：已自主处置次数 = 拍板计数（chain 配额状态文件
+        # 持久化，跨重启有效）＋台账 dead-man 永久例外（单次停机不复位——
+        # 「dead-man/停机类签名维持永久单次」）。配额未耗尽的签名复位窗/
+        # 状态迁移清零由链配额层负责（此处只读判定，不复位不计数——拍板
+        # 计数在 _on_disposition_success 落）。台账 dead-man 读失败按空集
+        # fail-open（load_arbiter_ledger 自带降级）。
+        persisted_deadmanned = self._ledger_sigs(kinds={"dead-man"})
+        quota = self._chain_quota()
+        rulings = quota.arbiter_rulings(sig) if quota is not None else 0
+        rulings_cap = self._arbiter_rulings_quota()
         with self._lock:
             if sig in self._active:
                 # 同签名在飞/排队：只绑 alert（原位挂靠目标），不重复派发
@@ -349,14 +382,15 @@ class ArbiterLane:
                 return "deduped"
             if (
                 sig in self._deadmanned
-                or sig in self._dispositioned
-                or sig in persisted_settled
+                or sig in persisted_deadmanned
+                or rulings >= rulings_cap
             ):
-                # 同签名复发/停机后复发：不再自主处置，直接产裁决包升级
-                # （design D6）
+                # 复现配额耗尽 / dead-man 永久例外：不再自主处置，直接产裁
+                # 决包升级（第 rulings+1 次复现强制上升——拍板 rulings/cap）
                 self._log(
                     "warning",
-                    f"arbiter 同签名复发，跳过自主处置直接升级: sig={sig}",
+                    f"arbiter 复现配额耗尽（{rulings}/{rulings_cap}）或 dead-man "
+                    f"例外，跳过自主处置直接升级: sig={sig}",
                 )
                 self._record_recurrence_escalation(
                     spec=spec,
@@ -366,6 +400,8 @@ class ArbiterLane:
                     description=description,
                     evidence=evidence,
                     alert_id=alert_id,
+                    rulings_used=rulings,
+                    rulings_cap=rulings_cap,
                 )
                 return "recurrence-escalated"
             trigger = {
@@ -549,7 +585,16 @@ class ArbiterLane:
             self._log("warning", f"arbiter 回扫 STATE 读取失败（按空集降级）: {e}")
             return {}
         alert_index = self._pending_machine_alerts()
-        ledger_sigs = self._ledger_sigs()
+        # 回扫排除配额制（add-escalation-chain-admin-arbiter 3.3）：旧「签名在
+        # 台账（任意 kind）即排除」的单次纪律改为配额制——只排除（a）dead-man
+        # 永久例外（台账 kind=dead-man，跨重启单次，例外不复位）与（b）复现
+        # 配额已耗尽的签名（拍板计数 chain 状态文件持久化，跨重启有效）。
+        # 配额未耗尽的签名重启后重新可扫（冻结核据仍在、信号未闭环——配额
+        # 剩余次数内重试是配额制的本义）；进程内 dedup 由 submit_trigger 的
+        # _active/dedup 兜底，不会同轮重复派发。
+        deadman_ledger = self._ledger_sigs(kinds={"dead-man"})
+        quota = self._chain_quota()
+        rulings_cap = self._arbiter_rulings_quota()
         out: List[dict] = []
         for name, entry in specs.items():
             e = entry or {}
@@ -591,7 +636,9 @@ class ArbiterLane:
                 recommended_action = ""
                 alert_id = ""
             sig = arbiter_failure_signature(spec, signal_type)
-            if sig in ledger_sigs:
+            if sig in deadman_ledger or sig in self._deadmanned:
+                continue
+            if quota is not None and quota.arbiter_rulings(sig) >= rulings_cap:
                 continue
             if _spec_name_path_error(spec):
                 self._log(
@@ -810,6 +857,65 @@ class ArbiterLane:
                 budget,
             )
 
+    # ── 链同步接单（add-escalation-chain-admin-arbiter 3.1/3.4）────────
+
+    def process_chain_handoff(self, trigger: dict) -> str:
+        """处置链第二级同步接单：一次调查 run 的同步驱动与分类。
+
+        与异步队列路径（submit_trigger → worker → _process_trigger）共用同
+        一套调查机器（_run_investigation + 结果分类三出口），差异仅在驱动
+        形态：链 worker 串行直调本方法并按返回值推进链序——
+        ``"resolved"``=链闭环（拍板成功、side-effects 已落）；
+        ``"escalated"``=Arbiter 自判须人类拍板，链终点上升；
+        ``"dead-man"``=死人开关触发（半成品包已升级），链终点上升；
+        ``"failed"``=未达阈值，链内循环重派（重派上限由链侧 bounded by
+        max_consecutive_failures，车道内部连败计数自然收敛到 dead-man）。
+
+        触发 dict 约定（链传入）：标准字段（signature/spec/signal_type/
+        severity/description/evidence/recommended_action）＋转单载荷
+        （admin_trail=Admin 尝试痕、admin_handoff_reason，经 prompt_builder
+        {chain_trail} 注入调查 prompt，task 3.1）＋收集器
+        （_chain_ledger_ids 列表，_write_ledger 回填台账条目 id 供链终点
+        上升件携带台账回链）。_chain_unfrozen/_chain_endpoint_kind/
+        _chain_endpoint_reason/_chain_run_id 由本方法与三出口回填、链读侧
+        消费。不经单飞队列（链 worker 自身串行），不写 _active（链在飞
+        记账归链状态文件 in_flight 区管）。
+        """
+        sig = str(trigger.get("signature") or "")
+        with self._lock:
+            self._consume_pending_bind(sig, trigger)
+        try:
+            result = self._run_investigation(trigger)
+        except Exception as e:
+            result = {"ok": False, "error": f"arbiter run 派发异常: {e}", "report": {}}
+        trigger["_chain_run_id"] = str(result.get("run_id") or "")
+        report = result.get("report") or {}
+        budget = result.get("budget") or {}
+        if not result.get("ok"):
+            return self._on_run_failed(trigger, result, budget)
+        outcome = str(report.get("outcome") or "").strip().lower()
+        if outcome == "resolved":
+            self._on_disposition_success(trigger, result, budget)
+            return "resolved"
+        if outcome == "escalate":
+            self._on_escalate(
+                trigger,
+                result,
+                budget,
+                reason=str(report.get("escalation_reason") or "arbiter 判定须人类拍板"),
+            )
+            return "escalated"
+        # 产物硬门外的语义失败（outcome 非法/缺失）按失败计（死人开关）
+        return self._on_run_failed(
+            trigger,
+            {
+                "ok": False,
+                "error": f"arbiter 报告 outcome 非法: {outcome!r}",
+                "report": report,
+            },
+            budget,
+        )
+
     def _run_investigation(self, trigger: dict) -> dict:
         """启动一次 dsh 车道调查 run（run_arbiter；预算记账贯穿 run 生命周期）。
 
@@ -862,15 +968,29 @@ class ArbiterLane:
     # ── 结果分类三出口 ────────────────────────────────────────────────
 
     def _on_disposition_success(self, trigger: dict, result: dict, budget: dict):
-        """处置成功：框架侧直执行收尾 + 告警零噪音终态化 + 台账五段 + 清零。"""
+        """处置成功：框架侧直执行收尾 + 告警零噪音终态化 + 台账五段 + 配额记账。"""
         sig = str(trigger.get("signature") or "")
         with self._lock:
             self._failure_counts.pop(sig, None)
             self._active.discard(sig)
             self._dispositioned.add(sig)
             self._consume_pending_bind(sig, trigger)
+        # 复现配额记账（add-escalation-chain-admin-arbiter 3.3）：拍板一次计
+        # 一次（持久化 chain 状态文件；配额耗尽后同签名复发由 submit_trigger
+        # 判定强制上升）。进程内 _dispositioned 集合保留仅供 snapshot() 水位
+        # 展示，不再参与派发判定。
+        quota = self._chain_quota()
+        if quota is not None:
+            try:
+                quota.count_arbiter_ruling(sig)
+            except Exception as e:
+                self._log("warning", f"拍板配额计数失败（fail-open）: sig={sig} {e}")
         report = result.get("report") or {}
         side = self._apply_disposition_side_effects(trigger, report)
+        # 链注记（escalation_chain._run_arbiter_phase 消费）：解冻结果回写
+        # 触发 dict，链据此判断闭环 side-effects 是否已含解冻。
+        if side.get("unfrozen"):
+            trigger["_chain_unfrozen"] = True
         alert_id = trigger.get("alert_id")
         evidence_ref = "; ".join(str(x) for x in (report.get("evidence_refs") or []))
         action_text = self._render_actions(report)
@@ -880,6 +1000,8 @@ class ArbiterLane:
             action_text += f"；解冻未执行（{side['unfreeze_error']}）"
         if side.get("cleaned_paths"):
             action_text += f"；清理无主产物 {len(side['cleaned_paths'])} 项"
+        if side.get("budget_override") is not None:
+            action_text += f"；预算 override→{side['budget_override']}"
         entry = self._write_ledger(
             trigger,
             result,
@@ -915,6 +1037,11 @@ class ArbiterLane:
           D3）——③验证计数清零由该调用一并完成，不另设清零写点。
         - 清理（②删除无主坏产物）：报告 cleanup_paths 经 ``_safe_cleanup_path``
           白名单过滤后删除（越界/敏感路径一律拒绝）。
+        - 预算 override（add-escalation-chain-admin-arbiter 3.2 预算豁免拍板
+          动作面）：报告 budget_override 非空时写入 spec 预算覆盖字段（复用
+          ``impl_run_budget_override`` 既有字段，不新增 schema；夹紧口径与
+          闸门/Dashboard 同源 clamp_impl_run_budget）。非法值/写失败只留
+          WARNING 不阻断解冻主流程。
         """
         spec = str(trigger.get("spec") or "")
         side: Dict[str, Any] = {"unfrozen": False, "cleaned_paths": []}
@@ -943,6 +1070,27 @@ class ArbiterLane:
             except Exception as e:
                 side["unfreeze_error"] = f"解冻执行异常: {e}"
                 self._log("error", f"arbiter 解冻执行异常 spec={spec}: {e}")
+            # 预算豁免拍板动作面（3.2）：budget_override 拍板值落 per-spec
+            # 预算覆盖（既有字段，无则写、有则更新——拍板即最新意志）
+            override_raw = report.get("budget_override")
+            if override_raw is not None and str(override_raw).strip() != "":
+                try:
+                    from core.pm_engine.budget import apply_budget_override
+
+                    applied = apply_budget_override(sm, spec, override_raw)
+                    if applied is not None:
+                        side["budget_override"] = applied
+                    else:
+                        self._log(
+                            "warning",
+                            f"arbiter 预算 override 非法未落盘 spec={spec}: "
+                            f"{override_raw!r}",
+                        )
+                except Exception as e:
+                    self._log(
+                        "warning",
+                        f"arbiter 预算 override 写入失败（不阻断解冻）spec={spec}: {e}",
+                    )
         for raw in (report.get("cleanup_paths") or []):
             path = self._safe_cleanup_path(raw)
             if path is None:
@@ -997,6 +1145,20 @@ class ArbiterLane:
         with self._lock:
             self._active.discard(sig)
             self._consume_pending_bind(sig, trigger)
+        # 升级裁决同样计拍板配额（add-escalation-chain-admin-arbiter 3.3）：
+        # 拍板=一次完整调查的裁决（resolved/escalate 皆算）——升级终态签名
+        # 若不计数，重启回扫会在配额外无限重派升级件（人工噪音放大器）。
+        # 计数失败 fail-open（与 _on_disposition_success 同口径）。
+        quota = self._chain_quota()
+        if quota is not None:
+            try:
+                quota.count_arbiter_ruling(sig)
+            except Exception as e:
+                self._log("warning", f"升级拍板配额计数失败（fail-open）: sig={sig} {e}")
+        # 链注记（escalation_chain._run_arbiter_phase 消费）：Arbiter 自判
+        # 须人类拍板（escalate）——链终点以裁决包理由上升。
+        trigger["_chain_endpoint_kind"] = "arbiter-escalated"
+        trigger["_chain_endpoint_reason"] = str(reason or "")[:400]
         report = result.get("report") or {}
         self._write_ledger(
             trigger,
@@ -1026,8 +1188,14 @@ class ArbiterLane:
         )
         self._apply_proposals(trigger, report)
 
-    def _on_run_failed(self, trigger: dict, result: dict, budget: dict):
-        """失败路径：连败计数 → 死人开关（半成品包升级）/ 留待下次触发重试。"""
+    def _on_run_failed(self, trigger: dict, result: dict, budget: dict) -> str:
+        """失败路径：连败计数 → 死人开关（半成品包升级）/ 留待下次触发重试。
+
+        返回终态字（add-escalation-chain-admin-arbiter 3.4 失败双轨的链消费
+        口径）：``"dead-man"``（死人开关触发，半成品包已升级）或 ``"failed"``
+        （未达阈值，等待同签名下次触发重试）。链同步驱动按返回值决定循环
+        重派或终点上升（半成品调查包已附台账）。
+        """
         sig = str(trigger.get("signature") or "")
         cfg = self.config()
         max_fail = int(
@@ -1044,11 +1212,16 @@ class ArbiterLane:
             "summary": str((result.get("report") or {}).get("summary") or ""),
             "evidence_refs": (result.get("report") or {}).get("evidence_refs") or [],
         }
+        trigger["_chain_failure_reason"] = reason[:400]
         if count >= max_fail or budget.get("tokens_exhausted") or budget.get(
             "wallclock_exhausted"
         ):
             with self._lock:
                 self._deadmanned.add(sig)
+            trigger["_chain_endpoint_kind"] = "arbiter-dead-man"
+            trigger["_chain_endpoint_reason"] = (
+                f"死人开关触发（连败 {count}/{max_fail} 或预算耗尽）: {reason[:300]}"
+            )
             switch = (
                 f"连败 {count}/{max_fail}"
                 if count >= max_fail
@@ -1084,6 +1257,7 @@ class ArbiterLane:
                 f"arbiter 死人开关触发 spec={trigger.get('spec')} sig={sig} "
                 f"({switch})，半成品包升级 alert={alert_id}",
             )
+            return "dead-man"
         else:
             self._write_ledger(
                 trigger,
@@ -1099,6 +1273,7 @@ class ArbiterLane:
                 f"arbiter run 失败 spec={trigger.get('spec')} sig={sig} "
                 f"({count}/{max_fail}): {reason[:160]}",
             )
+            return "failed"
 
     # ── 处置台账（4.2）───────────────────────────────────────────────
 
@@ -1168,6 +1343,13 @@ class ArbiterLane:
             "budget": dict(budget or {}),
             "failure_reason": failure_reason,
         }
+        # 链台账回链（add-escalation-chain-admin-arbiter 3.4）：链驱动路径
+        # （trigger 带 _chain_ledger_ids 收集器）把每次写账的条目 id 回填进
+        # 触发 dict——链终点上升件据此携带「台账回链」关联键（人工可从上升
+        # 件直达每一段调查台账）。
+        _chain_ids = trigger.get("_chain_ledger_ids")
+        if isinstance(_chain_ids, list):
+            _chain_ids.append(str(entry.get("id") or ""))
         path = arbiter_ledger_path(self.project_root)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1281,8 +1463,10 @@ class ArbiterLane:
         description: str,
         evidence: str,
         alert_id: Optional[str],
+        rulings_used: int = 0,
+        rulings_cap: int = 2,
     ) -> None:
-        """同签名复发：不经 run 直接产裁决包挂新告警升级。"""
+        """复现配额耗尽/dead-man 例外：不经 run 直接产裁决包挂新告警升级。"""
         trigger = {
             "spec": spec,
             "signal_type": signal_type,
@@ -1298,13 +1482,17 @@ class ArbiterLane:
             {"run_id": None, "error": ""},
             kind="recurrence-escalation",
             report={
-                "summary": f"同签名 {sig} 此前已自主处置过一次，处置后复发——按 design D6 不再自主处置。",
+                "summary": (
+                    f"签名 {sig} 复现配额已耗尽（已拍板 {rulings_used}/{rulings_cap}）"
+                    "或属 dead-man 永久例外——第 "
+                    f"{rulings_used + 1} 次复现强制上升人工。"
+                ),
                 "evidence_refs": [evidence] if evidence else [],
             },
             budget={},
             action_or_upgrade=(
-                "同签名复发直接升级（同 spec 同失败签名只自主处置一次，"
-                "10-31 第 2 轮同根因复发教训）"
+                f"复现配额耗尽强制升级（拍板 {rulings_used}/{rulings_cap} 后第 "
+                f"{rulings_used + 1} 次复现；dead-man 永久单次例外不复位）"
             ),
             status_after="",
         )
@@ -1313,15 +1501,16 @@ class ArbiterLane:
                 alert_id,
                 report={
                     "summary": (
-                        f"同签名复发（{sig}）：Arbiter 此前已自主处置过一次，"
-                        "按「同签名只自主处置一次」纪律本次不再处置，直接升级人工。"
+                        f"同签名复现（{sig}）：Arbiter 已拍板 {rulings_used}/{rulings_cap} 次，"
+                        "复现配额耗尽（或属 dead-man 永久例外），本次不再自主处置，"
+                        "直接升级人工。"
                     ),
                     "root_cause": str(description or "")[:2000],
                     "evidence_refs": [evidence] if evidence else [],
                 },
                 recommended=str(description or ""),
                 run_id="",
-                reason="同签名复发（design D6）",
+                reason="复现配额耗尽/dead-man 例外",
             )
 
     # ── 立项节流写点（4.4）───────────────────────────────────────────
@@ -1591,11 +1780,14 @@ def reset_lane() -> None:
 # ── state_machine 咽喉回调解耦（1.1 的注册端）────────────────────────────
 
 def install_freeze_hook() -> None:
-    """把 freeze_for_human 咽喉的 Arbiter 派发回调注册进 state_machine。
+    """把 freeze_for_human 咽喉的链/Arbiter 派发回调注册进 state_machine。
 
     幂等（重复安装零副作用）；回调解耦——state_machine 不 import 本模块，
-    只持有可调用。enabled=false 时回调内部短路（submit 返回 disabled，
-    零写入），升级边行为与现状逐字节一致（s8）。
+    只持有可调用。add-escalation-chain-admin-arbiter 1.3：咽喉改道链优先
+    ——链可用（arbiter.enabled ∧ 车道装配完备）且信号非黑名单时入链头
+    （链内 dedup 与告警咽喉同签名 dedup 单源：冻结先入队、告警随后 dedup
+    零落盘）；链失能/黑名单命中回落既有 Arbiter 直派（arbiter.enabled=false
+    时回调内部短路 disabled 零写入，关闭态零侵扰语义不变）。
     """
     from core import state_machine as _sm
 
@@ -1603,6 +1795,41 @@ def install_freeze_hook() -> None:
         lane = get_lane()
         if lane is None:
             return
+        # 链优先派发（链单例以车道装配为锚——project_root/logger 同源）。
+        # 链 absent/失能/黑名单一律回落直派，判定异常同样回落（冻结派发
+        # 故障不回滚冻结本身，与告警容错同口径）。
+        try:
+            from core.pm_engine.escalation_chain import get_chain
+
+            chain = get_chain(lane.project_root, lane.logger)
+        except Exception:
+            chain = None
+        if chain is not None:
+            try:
+                outcome = chain.submit_entry(
+                    spec=str(kwargs.get("spec_name") or "global"),
+                    signal_type=str(kwargs.get("signal_type") or ""),
+                    severity=str(kwargs.get("severity") or "major"),
+                    description=str(kwargs.get("description") or ""),
+                    evidence=str(kwargs.get("evidence") or ""),
+                    recommended_action=str(kwargs.get("recommended_action") or ""),
+                    source="freeze_for_human",
+                )
+                if outcome in ("queued", "deduped"):
+                    return  # 已入链（告警咽喉随后的同签名触发将 dedup 零落盘）
+                # blacklisted/disabled：回落既有直派（disabled 时下方
+                # submit_trigger 亦短路 disabled，零写入）
+            except RuntimeError as e:
+                # 链队列满显式报错：留痕回落直派（不吞成「已入链」）
+                if lane.logger is not None:
+                    lane.logger.warning(
+                        COMPONENT, f"处置链冻结触发登记失败（回落直派）: {e}"
+                    )
+            except Exception as e:
+                if lane.logger is not None:
+                    lane.logger.warning(
+                        COMPONENT, f"处置链冻结触发异常（回落直派，非阻塞）: {e}"
+                    )
         try:
             lane.submit_trigger(
                 spec=str(kwargs.get("spec_name") or "global"),
