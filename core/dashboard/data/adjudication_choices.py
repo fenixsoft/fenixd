@@ -460,6 +460,37 @@ def is_adjudicable(signal_type) -> bool:
     return _norm_signal_type(signal_type) in ADJUDICATION_CHOICES
 
 
+# add-escalation-chain-admin-arbiter 2.4：链上 Admin 拍板面排除集——预算/
+# 豁免/进度/闸门类属人类拍板专属，环境运维子集之外的注册表选项不进 Admin
+# 车道的 chain_choices 注入面，链侧对产出 choice_id 复核同集。维护约定：
+# 新增人类拍板专属选项时同步收录；链侧复核（escalation_chain._run_admin_
+# phase 越界转单）与 prompt 注入（escalation_chain._dispatch_admin）共用本
+# 单源，不复制第二份名单。链上预算调整不走 raise_budget——Arbiter 车道的
+# budget_override 动作面（task 3.2）是唯一的链内预算变更通道。
+ADMIN_CHAIN_EXCLUDED_CHOICE_IDS: frozenset = frozenset({
+    "abandon",              # 弃单（spec 终态裁决，人类专属）
+    "force_advance",        # 进度强推（状态机越权，人类专属）
+    "freeze_stop_loss",     # 熔断冻结（止损拍板，人类专属）
+    "grant_env_exemption",  # 环境豁免（重验计数豁免，人类专属）
+    "raise_budget",         # 预算上调（成本拍板，人类专属）
+    "revise_reproposal",    # 方案重提案（spec 内容裁决，人类专属）
+    "skip_review_gate",     # 评审闸门跳过（质量闸门裁决，人类专属）
+})
+
+
+def choices_for_admin_chain(signal_type) -> tuple:
+    """链上 Admin 拍板面（环境运维子集）：注册表全量滤除人类拍板专属项。
+
+    add-escalation-chain-admin-arbiter 2.4。未注册信号返回空元组（与
+    choices_for 同口径——链上自由处置不受注册表收束，排除集只过滤注册表
+    选项的表达）；返回逐项浅拷贝（消费方可就地改写不污染注册表）。
+    """
+    return tuple(
+        dict(choice) for choice in choices_for(signal_type)
+        if str(choice.get("id") or "") not in ADMIN_CHAIN_EXCLUDED_CHOICE_IDS
+    )
+
+
 def registered_signal_types() -> tuple:
     """注册表覆盖的全部 signal_type（发射点接线测试清单）。"""
     return tuple(ADJUDICATION_CHOICES.keys())

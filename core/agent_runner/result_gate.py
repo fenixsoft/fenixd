@@ -257,6 +257,9 @@ class AdminDisposition:
         choice_id: str = "",
         suggested_choice: str = "",
         choice_payload: str = "",
+        handoff: str = "",
+        handoff_reason: str = "",
+        status_after: str = "",
     ):
         self.run_id = run_id
         self.spec = spec
@@ -289,6 +292,15 @@ class AdminDisposition:
         # 由 _apply_choice_execution 以原文整体直传执行器 note。可选键缺省
         # 空串，存量处置记录（无该键）零迁移。
         self.choice_payload = choice_payload or ""
+        # add-escalation-chain-admin-arbiter 2.2：链上处置的结构化转单表达
+        # ——handoff="arbiter" 表示管理员自判超出环境运维拍板面（预算/豁免/
+        # 进度类），转单 Arbiter 调查；独立字段不重载 result=escalate（既有
+        # 人工升级通道语义不变）。handoff_reason 供 Arbiter 调查 prompt 注入。
+        self.handoff = (handoff or "").strip().lower()
+        self.handoff_reason = handoff_reason or ""
+        # 2.3：处置成功后的显式解冻目标状态（链侧按 SpecStatus.ALL 校验，
+        # 拒绝 parse 兜底——缺显式 status 留冻结待人工，与 Arbiter 同型纪律）。
+        self.status_after = (status_after or "").strip()
 
     def to_dict(self) -> dict:
         return {
@@ -305,6 +317,9 @@ class AdminDisposition:
             "choice_id": self.choice_id,
             "suggested_choice": self.suggested_choice,
             "choice_payload": self.choice_payload,
+            "handoff": self.handoff,
+            "handoff_reason": self.handoff_reason,
+            "status_after": self.status_after,
         }
 
 

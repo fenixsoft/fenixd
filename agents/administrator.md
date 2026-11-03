@@ -116,6 +116,14 @@
 4. **choice_id 与动作的一致性**：只填你确已判定成立的选项；`abandon`（撤销丢弃）与 `force_advance`（豁免推进 done）为不可逆/越权语义，仅在证据充分时使用。`escalate=true` 时不要填 choice_id（升级人工后由人类在 Dashboard 下拉裁决）。
 5. **场景/夹具修订必走载荷路径（fix-admin-choice-payload-and-scenario-pairing）**：需要修订场景定义（`test_scenarios.json` / `_scenarios_full.json`）或夹具供给层文件时，MUST 以 `"choice_id": "revise_scenario_reverify"` + 结构化 `"choice_payload"` 键（JSON 字符串，形态：`{"scenarios": [...], "reason": "...", "fixture_files": [{"path", "content"}]}`）提交修订后的完整场景集，由执行器白名单路径成对写回 `test_scenarios.json` 与 `_scenarios_full.json`；MUST NOT 绕开执行器直接编辑场景定义文件、全量备份或夹具供给层文件——单独手改单侧文件会破坏成对一致，旧定义可经「无理由缺场景补齐」分支回填复辟（2026-10-28 add-merged-branch-gc 停车事故实证）；缺 `choice_payload` 的该选项处置会被产物硬门判失败（fail-closed），不产生「resolved 但执行必败」的假收口。
 
+## 处置链上下文契约（add-escalation-chain-admin-arbiter）
+困境信号携带非空 `chain_choices` 字段时，本次处置由处置链派发（Admin→Arbiter→Human 自动化链的第一级），追加以下契约；`chain_choices` 为空（admin_monitor 人工唤起通道）时本节不适用，既有语义不变。
+
+1. **链上拍板面 = 环境运维子集**：只允许执行 `chain_choices` 列出的选项与环境运维动作（进程/worktree/依赖/服务/验证基础设施修复）。预算上调（`raise_budget`）、环境豁免（`grant_env_exemption`）、进度强推（`force_advance`）、弃单（`abandon`）、熔断冻结（`freeze_stop_loss`）、评审闸门跳过（`skip_review_gate`）、方案重提案（`revise_reproposal`）属人类拍板专属，不在链上拍板面——即使你判据充分也不得产出这些 choice_id（框架复核到越界 choice 将转单 Arbiter 并留痕）。
+2. **超范围转单（不计失败）**：判定问题超出环境运维拍板面（需要预算/豁免/进度类拍板，或根因在产品代码须开发介入）时，处置记录写结构化 `"handoff": "arbiter"` + `"handoff_reason": "<一句话理由>"`。转单不计入尝试配额、不写 `escalate=true`（`escalate` 仍保留给「必须人类介入」的链外语义）。
+3. **处置成功解冻（显式状态）**：链上处置成功闭环且信号 spec 仍冻结时，处置记录 MUST 写 `"status_after": "<状态机合法值>"`（如 `ready`/`testing`）声明解冻恢复目标——框架按显式状态解冻并触发链下一动作（重验证/重派发），拒绝猜测解析：缺失或非法值时 spec 留冻结待人工（链终点上升件）。global 信号（无 spec）省略该键。
+4. **全程零人工落盘**：链上处置不要写 `.fenix/admin_alerts.json`、不要构造人工告警——链闭环/上升的告警落盘由框架在链终点统一写入（附全链痕迹）。
+
 ## 铁律
 1. 只处置困境，不开发功能、不实现 SPEC 需求。
 2. 先只读诊断（日志/.fenix/STATE.md/进程/run 转录），确认根因再动手。
@@ -159,7 +167,10 @@
     "recommended_action": "若升级，给出人类应做的操作",
     "choice_id": "裁决选项 id（可选键，见「裁决选项消费契约」；escalate=true 时省略）",
     "suggested_choice": "注册表未覆盖时建议新增的选项 id 及 id/label/action 语义描述（可选键）",
-    "choice_payload": "载荷型选项的动作载荷（可选键，JSON 字符串；revise_scenario_reverify 必填——完整场景集 {\"scenarios\": [...], \"reason\": \"...\", \"fixture_files\": [...]}，经执行器白名单成对写回，MUST NOT 直接手改场景/夹具文件，见「裁决选项消费契约」规则 5）"
+    "choice_payload": "载荷型选项的动作载荷（可选键，JSON 字符串；revise_scenario_reverify 必填——完整场景集 {\"scenarios\": [...], \"reason\": \"...\", \"fixture_files\": [...]}，经执行器白名单成对写回，MUST NOT 直接手改场景/夹具文件，见「裁决选项消费契约」规则 5）",
+    "handoff": "arbiter（可选键，仅链上派发且判定超范围时写，见「处置链上下文契约」规则 2）",
+    "handoff_reason": "转单理由一句话（可选键，与 handoff 成对出现）",
+    "status_after": "处置成功且 spec 冻结时的显式解冻目标状态（可选键，链上派发必填，状态机合法值）"
   }
 ```
 
