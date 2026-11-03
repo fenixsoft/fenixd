@@ -1594,6 +1594,7 @@ class FamilyGovernor:
         recommended_action: str,
         trigger: Optional[dict] = None,
         facts: Optional[dict] = None,
+        chain_context: Optional[dict] = None,
     ):
         """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
 
@@ -1608,11 +1609,62 @@ class FamilyGovernor:
 
         降噪分级（2026-09-01 用户决策）：仅 critical/major 进人工待处理队列；
         warning/minor 写入即标记 handled，只留历史记录不弹横幅。
+
+        add-escalation-chain-admin-arbiter 1.3 咽喉改道：升级边信号默认入
+        处置链（Admin→Arbiter→人工）而非直接落人工队列——链接单（queued/
+        deduped）时**零落盘零推送**直接返回，人工队列只收链终点上升件。
+        链级失能（arbiter.enabled=false/装配缺席）或黑名单命中时退回既有
+        落盘路径（降噪分级原样保留——「降级态保留原降噪」）。chain_context
+        非空 = 本调用来自链终点（EscalationChain._endpoint_escalate）：防自
+        环不再入链，直接落盘并把全链痕迹（Admin 尝试痕/台账回链/链 run_id
+        关联键）并入条目 ``chain`` 字段。
         """
         from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
 
         try:
+            # ── 链头派发（在告警落盘之前：链接单即零人工痕迹）────────────
+            if chain_context is None:
+                try:
+                    from core.pm_engine.escalation_chain import get_chain
+
+                    chain = get_chain(
+                        self._pm.project_root, self._pm.logger, pm=self._pm
+                    )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine", f"处置链派发判定异常（回落既有落盘路径）: {e}"
+                    )
+                    chain = None
+                if chain is not None:
+                    try:
+                        disposition = chain.submit_entry(
+                            spec=str(spec_name or "global"),
+                            signal_type=str(signal_type or ""),
+                            severity=str(severity or "major"),
+                            description=str(description or ""),
+                            evidence=str(evidence or ""),
+                            recommended_action=str(recommended_action or ""),
+                            trigger=trigger,
+                            source="escalation-alert",
+                        )
+                    except RuntimeError as e:
+                        # 队列满显式报错（MUST NOT 报假成功）：回落既有落盘
+                        # 路径——告警本体落盘 + narrative 让位判定照常
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"处置链触发登记失败（回落既有落盘路径）: {e}",
+                        )
+                    else:
+                        if disposition in ("queued", "deduped"):
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"升级信号已入处置链（链内自动化处置，零人工落盘）: "
+                                f"{signal_type} for '{spec_name}'（disposition={disposition}）",
+                            )
+                            return
+                        # blacklisted/disabled：落既有路径（降噪分级/narrative
+                        # 让位判定按降级语义原样生效）
             store = AdminStore(self._pm.project_root, self._pm.logger)
             if trigger is None:
                 trigger = build_trigger(signal_type, spec_name)
@@ -1627,6 +1679,13 @@ class FamilyGovernor:
             }
             if trigger:
                 entry["trigger"] = trigger
+            # 链终点上升件的全链痕迹（add-escalation-chain-admin-arbiter 1.3/
+            # 4.1 关联键）：Admin 尝试痕（逐 run 的 run_id/result/error/
+            # handoff）、Arbiter 台账回链（ledger ids）、链 run_id 关联键、
+            # 配额水位与终点归因——人工读上升件即可还原全链处置史。链未
+            # 经过（降级态直落）时无该字段，条目形态与合入前一致。
+            if chain_context:
+                entry["chain"] = dict(chain_context)
             # add-human-adjudication-choices 2.1-2.5：桶 2 发射点接线（D1「发射点
             # 只引用注册表」+ D2「写告警时快照」）——按 signal_type 从裁决选项
             # 注册表取 choices 并入告警记录。本单点是全部 ESCALATION 告警的
@@ -1676,12 +1735,13 @@ class FamilyGovernor:
                             f"降噪标记未写，条目将滞留待处理列表）: "
                             f"{rec['id']}: {e}",
                         )
-                # add-arbiter-lane 1.2/5.1：blocked/frozen/争议类 condition 的
-                # 升级边改道——让位判定与派发均收敛本咽喉（告警落地后有
-                # alert_id，裁决包/终态化才可原位挂靠）。让位命中时不调
-                # schedule_narrative（blocked 类调查内容由 Arbiter 报告替代，
-                # 报告经 narrative 槽位原位写入）；关闭态/排除表命中/触发登记
-                # 失败（队列满显式报错）一律回落既有 narrative 路径。
+                # add-arbiter-lane 1.2/5.1 → add-escalation-chain-admin-arbiter
+                # 1.3：让位判定方向反转——`narrative_yielded_to_arbiter` 从
+                # 「白名单命中让位」改为「非黑名单即链头派发判定」（链可用 ∧
+                # 非黑名单）。能走到此处的告警必是降级件（链失能/黑名单/链
+                # 队列满回落）：链失能与黑名单判定为 False（narrative 照旧）；
+                # 链队列满回落时判定为 True，既有 Arbiter 直派作为兜底车道
+                # （告警落地后有 alert_id，裁决包/终态化才可原位挂靠）。
                 arbiter_lane = None
                 try:
                     from core.adjudication_narrative import (

@@ -76,34 +76,42 @@ from core.agent_runner.harness.one_shot import (  # noqa: E402
 COMPONENT = "adjudication_narrative"
 
 
-# ── Arbiter 让位判定（add-arbiter-lane 5.1）─────────────────────────────
+# ── Arbiter/处置链让位判定（add-arbiter-lane 5.1 → add-escalation-chain-
+# admin-arbiter 1.3 反转）─────────────────────────────────────────────────
 
 def narrative_yielded_to_arbiter(signal_type: str, ctx: Any = None) -> bool:
-    """blocked/frozen 类告警的后台补叙是否让位 Arbiter 报告（5.1 单源判定）。
+    """升级告警的后台补叙是否让位自动化处置（5.1 单源判定，链反转后口径）。
+
+    原语义（白名单命中让位）已反转为**链头派发判定**：处置链可用
+    （arbiter.enabled ∧ 链装配完备——runner/state_machine 注入齐备）且信号
+    非黑名单 → True。升级边信号默认走自动化处置链，人工叙事只在降级态
+    （链失能/黑名单命中/链队列满回落）生成——判定为 False 时调用方走
+    schedule_narrative 既有路径，行为与合入前逐字节一致（关闭态零侵扰）。
 
     让位 = 三条件同时成立：
-    1. ``arbiter.enabled``（总开关热更新读取；关闭时 narrative 照旧——
-       「关闭态零侵扰」s8：全路径行为与合入前逐字节一致）；
-    2. signal 在 Arbiter 触发面（正向白名单=blocked/frozen/争议类，现为
-       verify_fail_escalation；排除表——token 预算耗尽 / spec_integrity
-       内容缺失 / queue 异常类政策与数据完整性告警——留 narrative 与人类）；
-    3. 车道可装配（project_root 缺失的病态上下文按不让位降级）。
+    1. 链级可用（:meth:`EscalationChain.chain_active`——总开关与装配判定
+       单源；关闭时 narrative 照旧）；
+    2. signal 不在黑名单（``chain.blacklist`` kill switch——名单内信号留
+       narrative 与人类，不走自动化）；
+    3. project_root 可解析（病态上下文按不让位降级）。
 
-    非阻塞类 signal（排除表命中）恒 False——narrative 行为不变（5.1 边界）。
     本函数只做判定零副作用；调用方（pm_engine._send_human_escalation_alert）
-    据此二选一：让位 → ArbiterLane.submit_for_alert（报告经 narrative 槽位
-    原位写入）；不让位 → schedule_narrative（既有路径不变）。
+    据此二选一：让位 → ArbiterLane.submit_for_alert（队列满回落时的兜底
+    直派，报告经 narrative 槽位原位写入）；不让位 → schedule_narrative。
+    判定异常按不让位降级（narrative 既有路径兜底，fail-open）。
     """
     try:
-        from core.pm_engine.arbiter import get_lane
+        from core.pm_engine.escalation_chain import get_chain
 
         project_root = _ctx_get(ctx, "project_root")
         if project_root is None:
             return False
-        lane = get_lane(project_root, _ctx_get(ctx, "logger"))
-        if lane is None or not lane.enabled:
+        chain = get_chain(project_root, _ctx_get(ctx, "logger"))
+        if chain is None:
             return False
-        return lane.in_trigger_surface(signal_type)
+        if chain.blacklisted(signal_type):
+            return False
+        return bool(chain.chain_active())
     except Exception:
         # 判定异常按不让位降级（narrative 既有路径兜底，fail-open）
         return False

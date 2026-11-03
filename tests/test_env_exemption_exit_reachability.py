@@ -63,10 +63,18 @@ def _mk_engine(tmpdir, config=None):
     """构造 PMEngine 实例（临时 STATE + 真实 StateMachine + AdminStore）。
 
     config 缺省为空 dict——走生产缺省值（inconclusive_max_attempts=2 等），
-    显式传入以便隔离考察单一路径。
+    显式传入以便隔离考察单一路径。arbiter/处置链默认关闭（add-escalation-
+    chain-admin-arbiter 后升级边信号默认入链零落盘，会吞掉本文件断言的
+    人工告警落盘路径）——本文件考察的是 env 豁免/judge 计数语义而非链路
+    由，降级态=合入前行为；链语义由 tests/test_escalation_chain.py 专测。
+    车道/链配置读盘口径（ConfigLoader.resolve_config：用户级+项目级），
+    故须写项目级 config.yaml 覆盖（引擎 config dict 不进该读取链）。
     """
     project_root = Path(tmpdir)
     (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+    cfg_path = project_root / ".fenix" / "config.yaml"
+    if not cfg_path.exists():
+        cfg_path.write_text("arbiter:\n  enabled: false\n", encoding="utf-8")
     logger = _FakeLogger()
     sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     config = dict(config or {})

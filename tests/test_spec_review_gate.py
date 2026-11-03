@@ -207,6 +207,10 @@ class TestReviewFreezeClassification(unittest.TestCase):
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
         (self.tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
+        # 处置链会截胡升级信号（零人工落盘）；本类断言遗留告警落盘路径，
+        # 须以项目级配置禁用 arbiter（项目级覆盖用户级 enabled:true）。
+        (self.tmpdir / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: false\n", encoding="utf-8")
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
