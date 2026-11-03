@@ -1,5 +1,5 @@
 {
-  "reason": "add-arbiter-quality-display: 指挥中心 arbiter 归并（LANE_ALIASES arbiter→judge）与 SPEC 时间轴 arbiter 富展示（台账联查附 arbiter 字段 + 前端标签/处置块渲染）为 daemon 内存代码（dashboard 聚合层/时间轴派生），需重启加载；前端 dist 随重启一并换新",
-  "origin": "spec/changes/add-arbiter-quality-display",
+  "reason": "add-knowledge-inbox-pipeline: 知识车道提示词迁移 agents/ 平铺（core/knowledge_prompts/{distill,audit,backfill,prehistoric}.md → agents/knowledge-*.md，加载点 core/knowledge.py load_distill_prompt、core/knowledge_audit.py、core/knowledge_backfill.py 同步改造）与 inbox 折叠管线、积压计数（core/knowledge*.py + dashboard knowledge_routes.py + KnowledgeTab dist）均为 daemon 内存代码，需重启加载新 prompt 路径与折叠/计数逻辑",
+  "origin": "spec/changes/add-knowledge-inbox-pipeline",
   "date": "2026-11-03"
 }
