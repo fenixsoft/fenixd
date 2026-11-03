@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-11-03 22:56 UTC+8
+> 最后更新：2026-11-03 23:25 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与告警自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、Arbiter 自主裁决车道。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -32,7 +32,7 @@
 | [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解，升级与信号双 kind 皆然＋瞬态族签名安静自愈） | 2026-10-27 15:28 |
 | [alert-resolve](alert-resolve.md) | 告警人工消解闭环 | 2026-10-03 04:59 |
 | [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警（链终点例外出口：全链痕迹落盘、降噪分级、孤儿链痕抑制升级口径、归因按 run 终态证据生成） | 2026-11-03 21:45 |
-| [arbiter-lane](arbiter-lane.md) | Arbiter 自主裁决车道（触发面黑名单制与单飞配额、权限红线、处置白名单、五段台账、零噪音分层、立项节流） | 2026-11-03 22:56 |
+| [arbiter-lane](arbiter-lane.md) | Arbiter 自主裁决车道（触发面黑名单制与单飞配额、权限红线含禁立项、处置白名单、五段台账、零噪音分层、框架缺口 gaps→todo 路由） | 2026-11-03 23:25 |
 | [escalation-chain](escalation-chain.md) | 升级处置链（Admin→Arbiter→人工）路由与配额语义（frozen 预检、frozen-terminated 不计尝试、Arbiter 复现配额缺省 3）、防自环、链痕单源协调、让行留痕与看护扫描唤醒、失败双轨上升、黑名单 kill switch 与 fail-open 降级、存量迁移、看护豁免通道 | 2026-11-03 22:56 |
 | [chain-observability](chain-observability.md) | 处置链可观测与配置（时间轴全链节点、Dashboard 处置链视图、链配置设置界面） | 2026-11-03 16:05 |
 | [blocked-disposition-classification](blocked-disposition-classification.md) | blocked 冻结/阻塞二分类机械化 | 2026-10-03 04:59 |

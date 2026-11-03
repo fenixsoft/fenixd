@@ -1,7 +1,7 @@
 # Arbiter 自主裁决车道
 
-<!-- knowledge: capability=arbiter-lane rev=2
-     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md -->
+<!-- knowledge: capability=arbiter-lane rev=3
+     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
 
 Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)。
 
@@ -15,10 +15,13 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 - 自主处置白名单五类：①冻结场景文件拯救（无主产物鉴定：加载器校验失败+归属查证非 planner 产物→删除+显式 status 解冻）；②裁决落位/verdict 缺失考古；③验证侧计数冻结复位（impl run 预算上调由预算豁免拍板动作面承接）；④worktree 陈锁清扫；⑤WIP 门/在飞闸门分拣提交。②⑤鉴定成本过高时允许降级为「首期落地①③④，②⑤只产裁决包不处置」并在 design.md 注明。
 - 白名单外（产品缺陷终裁、无考古证据的场景集语义取舍、逻辑矛盾）只产裁决包（报告+选项+推荐），不擅动状态；预算政策类由 Arbiter 预算豁免拍板动作面承接（写 spec 预算 override 字段+台账留痕）。
 - run 预算封顶：墙钟与 token 双预算约束（缺省 1800 秒 / 1000000）；同签名失败连续达阈值（缺省 2 次）或预算耗尽时停止继续自主尝试，半成品调查包按裁决包挂靠语义升级人类，不静默死亡（不落账不通知）。
-- 权限红线（提示词级+台账审计，不做机械强制）：`agents/arbiter.md` 载明许可清单（显式 status 解冻、端点四步语义直执行、验证计数清零、删除经鉴定无主坏产物、复位重派、主树 spec 目录在飞改动提交六类知情违规）与永不可碰五类（runs 归档/记忆目录/admin_alerts 归档等证据源只读；禁伪造 run 产出形态文件；禁 push、禁改 main 产品代码、禁手工 merge 产品分支；禁绕过 flock 直写 STATE；禁动 daemon.lock/supervisor）。解冻必须经 `StateMachine.unfreeze_spec(name, status=...)` 显式传状态，禁止依赖缺省状态解析。
+- 权限红线（提示词级+台账审计，不做机械强制）：`agents/arbiter.md` 载明许可清单（显式 status 解冻、端点四步语义直执行、验证计数清零、删除经鉴定无主坏产物、复位重派、主树 spec 目录在飞改动提交六类知情违规）与永不可碰六类（**禁立项**——MUST NOT 创建、注册任何 SPEC，无 `spec/changes` 目录物化、无 STATE 条目写入；runs 归档/记忆目录/admin_alerts 归档等证据源只读；禁伪造 run 产出形态文件；禁 push、禁改 main 产品代码、禁手工 merge 产品分支；禁绕过 flock 直写 STATE；禁动 daemon.lock/supervisor）。既有处置白名单面（解冻/重验/载荷落地/陈锁清扫/分拣提交）不受禁立项扰动，红线只收走立项。解冻必须经 `StateMachine.unfreeze_spec(name, status=...)` 显式传状态，禁止依赖缺省状态解析。
 - 每次调查（无论处置还是升级）产出五段处置台账：现场快照/取证时间轴/根因/处置动作或升级理由/证据回链，报告回链归档转录、STATE 条目、git 证据等来源。
 - 告警零噪音分层：自主处置成功时原告警由处置结果直接终态化（resolved_by=arbiter，附处置摘要与证据回链），运维界面仅存一条已处理记录，不推送、不进 pending；处置不了/白名单外/死人开关触发时，裁决包同 alert_id 原位静默更新（报告进 narrative 槽位、choices/推荐注入原条目）并推入 pending，告警总条数不变。
-- 立项节流三限：同主题 drafted 在池即不再立项；单次调查至多 2 条；周配额缺省 5 条（超配额只记台账不落池）。立项一律落 drafted，走既有 evo ready 人审门。
+- 框架缺口出口唯一：机制/车道/注册表/代码面缺陷（修复成文涉及框架代码或产品面裁量，超出 arbiter 只修 SPEC 问题的车道边界）不上报 proposals，调查报告 `gaps` 数组逐条按「可直接起草 SPEC」粒度填 topic/evidence/impact/candidates；消费端 `_apply_gaps` 逐条记入 `.fenix/todo.md`「### 可改进」小节，由自进化车道按既有 todo 消费机制统一评估立项——todo.md 是框架缺口的唯一出口。
+- 缺口 todo 条目契约：复用自省渲染单源 `SelfReviewScheduler._render_entry_lines`（四字段标签与 evolution 解析侧逐字一致，MUST NOT 新增第五字段），标题带 `[arbiter:<签名前8>]` 来源前缀、证据段带触发 run_id；读写整段置于 fs_utils `with_file_lock`，与 self_review/evolution 共用同一把 `.todo.md.lock`。
+- 缺口台账留痕：记 todo 与同主题去重跳过均落 `gap-noted`（`action_or_upgrade` 含 topic 与行号/已存在条目指引）；调查报告若带退役通道的 `proposals` 字段，记 WARNING 台账（gap-noted 附通道退役说明）后丢弃——不落 todo、不落池、不抛异常。
+- 记 todo 前做轻量同主题去重：主题词（空白/连字符/下划线切分、长度≥2）任一命中既有条目标题（去 `[]` 来源前缀后）即跳过，宁轻勿重——误跳可由台账人工补录、重复可由自省合并。并发写测试的 topic 入参须彼此零共享 token，否则会被该去重按设计跳过（既定去重行为，非锁失效）。
 - 配置四键带 Dashboard 设置界面：`arbiter.enabled`（缺省 true）、`arbiter.budget_wallclock_s`（缺省 1800）、`arbiter.budget_tokens`（缺省 1000000）、`arbiter.max_consecutive_failures`（缺省 2），保存后按热更新语义生效。
 - 关闭态零侵扰：`arbiter.enabled: false` 时升级边行为与无 Arbiter 时代逐字节一致——不派发、不改道、不拦截告警、不产生 Arbiter 台账。
 - 车道注册全套：runner 车道表、`--add-dir` 注入白名单、config provider 段（bigmodel，model 钉 glm-5.3-flash）、`_log_lane_run_metrics` 终态指标行；在飞互斥守卫的摄取/重派匹配面逐点核查纳入 arbiter 类型（防跨类型漏配）；运行时配置模板（`.fenix/config.template.yaml`）同步补段。生效依赖 daemon 重启，交付项含 `restart_request` 信号落位与消费预演，实际重启由 supervisor 完成。
@@ -29,3 +32,4 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 - 2026-10-31 add-arbiter-backlog-sweep（spec/changes/add-arbiter-backlog-sweep/） — 触发面扩增存量冻结回扫（daemon 启动与热更新跃迁各一次，幂等回扫）
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 触发面白名单枚举改黑名单制默认入链；同签名「只派发一次」改配额治理（2 次/签名+复位窗，dead-man 永久单次例外）；白名单③放开 impl run 预算上调（预算豁免拍板面承接）；回扫管线接入链头 Admin
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（配额语义与复位通道不变）
+- 2026-11-03 arbiter-filing-retire-gap-todo-routing（spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md） — 折叠 arbiter 立项通道整体退役与 gaps→todo 路由：权限红线禁止清单五类扩六类（新增禁立项）、立项节流三限废止移除、框架缺口改走 gaps 数组→todo.md 唯一出口（含 todo 条目契约、gap-noted 台账与同主题轻量去重）
