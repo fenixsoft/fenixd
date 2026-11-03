@@ -105,3 +105,9 @@
 - [x] 8.2 存量知识车道测试全绿（`tests/test_knowledge*.py` 族），跑全量
       `validate_knowledge` 对 fenixd 主树知识库无回归违规；Scenario 全量静态对账
       结论写入收工报告
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-knowledge-inbox-pipeline/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
