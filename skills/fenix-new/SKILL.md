@@ -95,6 +95,14 @@ SPEC——你定。」
    范围 Y 屏」；偏离审计以「未声明偏离」为真违规判据，已声明偏离须核对 DESIGN.md
    例外域条款是否同步覆盖（缺的走修正案补录）。
 
+### 1.8 立项前先查相关知识域（index-first，add-knowledge-consumption-discipline）
+
+起草 proposal 前，先读 `spec/knowledge/index.md`（知识真相源总目录，按能力域组织）识别
+本需求命中的能力域：命中相关域则 MUST 下钻 `spec/knowledge/domains/<域>/_domain.md`
+与相关能力页，核对既有能力的当前规则——proposal 引用既有能力页，避免重复立项或
+与现状脱节的设计。未命中可跳过，MUST NOT 为走流程而全量阅读；项目尚无
+`spec/knowledge/` 目录时静默跳过。
+
 ### 2. 生成 kebab-case 名称
 
 从需求描述中提取简洁的 kebab-case 名称：
