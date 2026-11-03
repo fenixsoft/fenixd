@@ -648,3 +648,211 @@ class TestLedgerSegments:
         assert drain(lane)
         recs = load_arbiter_ledger(tmp_path)
         assert recs and ledger_entry_complete(recs[-1])
+
+
+# ── 禁立项红线与 gaps→todo 路由（add-arbiter-gap-todo-routing）─────────
+
+_GAP_REPORT_BASE = {
+    "outcome": "resolved", "summary": "s", "root_cause": "r",
+    "scene_snapshot": "snap", "forensic_timeline": [],
+    "actions_taken": ["a"], "evidence_refs": ["e"], "status_after": "ready",
+}
+
+# 立项通道退役后的立项类台账 kind（MUST NOT 再出现）
+_FILING_KINDS = {"spec-proposed", "proposal-dedup", "proposal-throttled"}
+
+
+def _gap_topic_report(gaps):
+    report = dict(_GAP_REPORT_BASE)
+    report["gaps"] = gaps
+    return report
+
+
+class TestFilingRetirement:
+    """退役断言（tasks 3.1）：立项写点不存在；调查完结零 drafted SPEC。"""
+
+    def test_retired_symbols_absent(self, tmp_path):
+        """立项方法/物化/节流常量在模块与 lane 实例上均不存在（防回潮）。"""
+        import core.pm_engine.arbiter as arb_mod
+
+        for sym in ("_apply_proposals", "_materialize_proposal",
+                    "PROPOSAL_MAX_PER_RUN", "PROPOSAL_WEEKLY_QUOTA"):
+            assert not hasattr(arb_mod, sym), f"退役符号仍在模块上: {sym}"
+        lane = make_lane(tmp_path)
+        for sym in ("_apply_proposals", "_materialize_proposal"):
+            assert not hasattr(lane, sym), f"退役方法仍在 lane 上: {sym}"
+
+    def test_resolved_report_never_drafts_spec(self, tmp_path):
+        """带 gaps 的 resolved 报告全链完结后：无 add_spec、无 spec/changes
+        目录物化、台账无立项类 kind——todo.md 是框架缺口唯一出口。"""
+        runner = FakeRunner(tmp_path, script={"run": _gap_topic_report([
+            {"topic": "registry-gap-probe", "evidence": "e",
+             "impact": "i", "candidates": "c"},
+        ])})
+        sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
+        lane = make_lane(tmp_path, runner=runner, sm=sm)
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
+        assert drain(lane)
+        assert sm.added_specs == [], "调查完结 MUST NOT 立项（无 add_spec）"
+        assert sm.unfreeze_calls == [("spec-a", "ready")]  # 白名单解冻不受扰
+        changes_dir = tmp_path / "spec" / "changes"
+        assert not changes_dir.exists() or not any(changes_dir.iterdir()), \
+            "立项目录物化 MUST NOT 发生"
+        kinds = {rec["kind"] for rec in load_arbiter_ledger(tmp_path)}
+        assert not _FILING_KINDS & kinds
+        assert "gap-noted" in kinds            # 缺口经 todo 路由留痕
+        assert (tmp_path / ".fenix" / "todo.md").exists()
+
+    def test_gaps_absent_report_zero_filing(self, tmp_path):
+        """gaps 缺席的报告：台账无立项类 kind、无 todo 落盘（零动作）。"""
+        runner = FakeRunner(tmp_path, script={"run": dict(_GAP_REPORT_BASE)})
+        lane = make_lane(tmp_path, runner=runner)
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
+        assert drain(lane)
+        kinds = {rec["kind"] for rec in load_arbiter_ledger(tmp_path)}
+        assert not _FILING_KINDS & kinds
+        assert "gap-noted" not in kinds
+        assert not (tmp_path / ".fenix" / "todo.md").exists()
+
+
+class TestGapTodoRouting:
+    """路由断言（tasks 3.2）：gaps 逐条落 todo.md；同主题去重；台账
+    gap-noted 三形态（记入/去重跳过/旧字段容错）。"""
+
+    @staticmethod
+    def _trigger():
+        return {"spec": "spec-a", "signature": "sig-a", "run_id": "r1",
+                "enqueued_at": "", "source": "test",
+                "signal_type": "verify_env_blocked"}
+
+    def test_gap_lands_with_contract(self, tmp_path):
+        """单条 gap：结构契约条目落「可改进」小节（来源前缀/run_id/四字段）。"""
+        lane = make_lane(tmp_path)
+        lane._apply_gaps(self._trigger(), _gap_topic_report([
+            {"topic": "adjudication-registry-gap",
+             "evidence": "注册表缺 X 项",
+             "impact": "升级链断链",
+             "candidates": "补注册表单源"},
+        ]))
+        todo = (tmp_path / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "### 可改进" in todo                     # 自进化消费面小节
+        assert "- **[arbiter:sig-a] adjudication-registry-gap**" in todo
+        assert "run_id=r1" in todo                      # 正文带触发 run_id
+        for label in ("影响：", "证据：", "调查评估：", "建议："):
+            assert label in todo, f"四字段标签缺失: {label}"
+        assert "补注册表单源" in todo                    # 候选方向入建议段
+        recs = load_arbiter_ledger(tmp_path)
+        assert [r["kind"] for r in recs] == ["gap-noted"]
+        assert "adjudication-registry-gap" in recs[-1]["action_or_upgrade"]
+
+    def test_same_topic_dedup_skips_and_ledgers(self, tmp_path):
+        """同主题去重命中跳过：todo 单条目；台账记入+跳过两条 gap-noted。"""
+        lane = make_lane(tmp_path)
+        lane._apply_gaps(self._trigger(), _gap_topic_report([
+            {"topic": "registry-gap", "evidence": "e1", "impact": "i1",
+             "candidates": "c1"}]))
+        lane._apply_gaps(self._trigger(), _gap_topic_report([
+            {"topic": "registry-gap followup", "evidence": "e2",
+             "impact": "i2", "candidates": "c2"}]))
+        todo = (tmp_path / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert todo.count("- **[arbiter:sig-a]") == 1   # 第二条被去重
+        recs = load_arbiter_ledger(tmp_path)
+        assert [r["kind"] for r in recs] == ["gap-noted", "gap-noted"]
+        assert "已存在" in recs[-1]["action_or_upgrade"]  # 跳过条附指引
+
+    def test_legacy_proposals_field_tolerated(self, tmp_path):
+        """切换窗旧 proposals 字段：WARNING 台账 gap-noted 后丢弃，不落 todo。"""
+        lane = make_lane(tmp_path)
+        legacy = dict(_GAP_REPORT_BASE)
+        legacy["proposals"] = [{"topic": "old-prompt-topic", "rationale": "r"}]
+        lane._apply_gaps(self._trigger(), legacy)       # MUST NOT 抛异常
+        assert not (tmp_path / ".fenix" / "todo.md").exists()
+        recs = load_arbiter_ledger(tmp_path)
+        assert [r["kind"] for r in recs] == ["gap-noted"]
+        assert "proposals" in recs[-1]["action_or_upgrade"]
+        warnings = [rec for rec in lane.logger.records if rec[0] == "warning"]
+        assert any("proposals" in rec[2] for rec in warnings)
+
+    def test_empty_or_missing_gaps_zero_action(self, tmp_path):
+        """gaps 缺席/空数组/非列表：零动作零台账。"""
+        lane = make_lane(tmp_path)
+        for gaps in (None, [], "not-a-list"):
+            report = dict(_GAP_REPORT_BASE)
+            if gaps is not None:
+                report["gaps"] = gaps
+            lane._apply_gaps(self._trigger(), report)
+        assert not (tmp_path / ".fenix" / "todo.md").exists()
+        assert load_arbiter_ledger(tmp_path) == []
+
+    def test_lock_mutex_under_concurrency(self, tmp_path):
+        """锁互斥：并发多线程记入不同 topic，条目全落且无撕裂。
+
+        topic 取彼此零共享 token 的单词——D3 关键词包含去重按设计生效，
+        共享 token 的并发入参会被判同主题跳过（那是去重断言的职责，不是
+        锁断言的职责）。
+        """
+        import threading
+
+        lane = make_lane(tmp_path)
+        topics = ["zeta", "kappa", "sigma", "delta", "omega", "lambda",
+                  "theta", "rho"]
+        threads = [
+            threading.Thread(
+                target=lane._apply_gaps,
+                args=(self._trigger(),
+                      _gap_topic_report([{"topic": t, "evidence": "e",
+                                          "impact": "i", "candidates": "c"}])))
+            for t in topics
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        todo = (tmp_path / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        for t in topics:
+            assert f"[arbiter:sig-a] {t}" in todo, f"并发记入丢条: {t}"
+        recs = load_arbiter_ledger(tmp_path)
+        assert len([r for r in recs if r["kind"] == "gap-noted"]) == 8
+
+
+class TestGapPromptConsumerConsistency:
+    """tasks 3.3：prompt 报告 schema（gaps）与消费端解析一致性；白名单
+    处置动作回归不受扰。"""
+
+    PROMPT_PATH = Path(__file__).resolve().parents[1] / "agents" / "arbiter.md"
+
+    def test_prompt_gaps_schema_parseable_by_consumer(self, tmp_path):
+        """prompt 声明的 gaps 四粒度键构造样例 → 消费端可解析落 todo。"""
+        tpl = self.PROMPT_PATH.read_text(encoding="utf-8")
+        assert '"gaps"' in tpl                          # schema 字段在位
+        for key in ("topic", "evidence", "impact", "candidates"):
+            assert key in tpl, f"prompt gaps 粒度键缺失: {key}"
+        lane = make_lane(tmp_path)
+        lane._apply_gaps(
+            {"spec": "spec-a", "signature": "sig-abc12345", "run_id": "r9",
+             "enqueued_at": "", "source": "test",
+             "signal_type": "verify_env_blocked"},
+            _gap_topic_report([{
+                "topic": "prompt-schema-roundtrip",
+                "evidence": "arbiter.md 报告契约段",
+                "impact": "消费端解析面",
+                "candidates": "契约对齐测试",
+            }]))
+        todo = (tmp_path / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- **[arbiter:sig-abc1] prompt-schema-roundtrip**" in todo
+        assert "arbiter.md 报告契约段" in todo
+
+    def test_whitelist_unfreeze_regression_with_gaps(self, tmp_path):
+        """解冻白名单动作与 gaps 路由同报告不互扰（行为与落地前一致）。"""
+        runner = FakeRunner(tmp_path, script={"run": _gap_topic_report([
+            {"topic": "coexists-with-unfreeze", "evidence": "e",
+             "impact": "i", "candidates": "c"}])})
+        sm = FakeStateMachine({"spec-a": {"status": "blocked", "frozen": True}})
+        lane = make_lane(tmp_path, runner=runner, sm=sm)
+        lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
+        assert drain(lane)
+        assert sm.unfreeze_calls == [("spec-a", "ready")]   # 解冻照常
+        todo = (tmp_path / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "coexists-with-unfreeze" in todo             # 路由照常
+        kinds = {r["kind"] for r in load_arbiter_ledger(tmp_path)}
+        assert {"disposition", "gap-noted"} <= kinds
