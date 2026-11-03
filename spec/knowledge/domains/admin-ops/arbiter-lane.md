@@ -1,7 +1,7 @@
 # Arbiter 自主裁决车道
 
 <!-- knowledge: capability=arbiter-lane rev=1
-     sources=spec/changes/add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter -->
+     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter -->
 
 Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)。
 
@@ -25,6 +25,6 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 
 ## 溯源
 
-- 2026-10-31 add-arbiter-lane（spec/changes/add-arbiter-lane/） — 新增本页基线：触发面注册与单飞、run 预算封顶、权限红线许可清单、自主处置白名单、五段处置台账、告警零噪音分层、立项节流、配置与关闭态、车道注册
+- 2026-10-31 add-arbiter-lane（spec/archive/2026-11-03-add-arbiter-lane/） — 新增本页基线：触发面注册与单飞、run 预算封顶、权限红线许可清单、自主处置白名单、五段处置台账、告警零噪音分层、立项节流、配置与关闭态、车道注册
 - 2026-10-31 add-arbiter-backlog-sweep（spec/changes/add-arbiter-backlog-sweep/） — 触发面扩增存量冻结回扫（daemon 启动与热更新跃迁各一次，幂等回扫）
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 触发面白名单枚举改黑名单制默认入链；同签名「只派发一次」改配额治理（2 次/签名+复位窗，dead-man 永久单次例外）；白名单③放开 impl run 预算上调（预算豁免拍板面承接）；回扫管线接入链头 Admin
