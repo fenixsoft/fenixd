@@ -1974,11 +1974,56 @@ class VerificationPipeline:
                 f"test-defect 仅记录于裁决产物）",
             )
             return True
+        # ── judge-repair-scenario-writeback-gate D1/D2：受理预检（fail-closed
+        # 整批结构校验门）──
+        # judge 原地修复协议直改 test_scenarios.json，写入瞬间无任何校验；本
+        # 预检在采纳前对盘上场景集原始 JSON 数组过与结构化写端
+        # （_exec_revise_scenario_reverify 步骤 4）同源的 validate_scenario_dicts
+        # 整批校验，任一条非法（含 per-kind 词表违规，如 run 步骤入 api 场景）
+        # 即拒收本轮修复——不沿用 _apply_scenario_freeze 的「剔除继续」语义
+        # （修订通道预算有限，带病采纳=把潜伏问题推迟到验收期，本次事故实证
+        # 形态），不再等验收期才拦。
+        # 接线形态照抄上方耗尽拒收分支先例：error 留痕（含「写端校验失败拒收」
+        # 文案 + 错误清单前 3 条，裁剪口径同 admin_actions）、spec 保持 testing、
+        # 记账 rejected=True、返回 True（MUST NOT 返回 False——调用方平铺尾段
+        # 依赖「scenario-repaired 已由专门分支消费」前提，返回 False 会穿透
+        # 守卫未重执行即假收敛为 verified）；错误清单经既有 prev-error 注入链
+        # 回传下轮 judge 定向重修，预算口径不变（消耗既有修复轮，不新增轮次）。
+        # 优先级：耗尽拒收（上方）> 本门预检——耗尽持久态下仍是无修复纯归因
+        # 模式语义，不受本门影响。
+        precheck_errors = self._precheck_repaired_scenarios(spec_name)
+        if precheck_errors:
+            _record_repair_claim(self, spec_name, rejected=True)
+            reject_detail = "；".join(precheck_errors[:3])
+            self._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": (
+                        "judge 修复写端校验失败拒收（validate_scenario_dicts 共 "
+                        f"{len(precheck_errors)} 条违规，前 3 条: {reject_detail}）"
+                        "— 本轮修复不采纳、场景集不收编、不重入执行，保持 "
+                        "testing，按错误清单定向重修后重新申报"
+                    ),
+                },
+            )
+            self._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' judge scenario-repaired 申报被写端校验门拒收 "
+                f"（共 {len(precheck_errors)} 条违规，场景集不收编、不重入执行）: "
+                f"{reject_detail}",
+            )
+            return True
         # 受理：生命周期修复申报计数照常递增（受理与拒收均计，D3/D4 预算
         # 口径字段）+ 最近申报摘要留痕；失败不阻断既有受理路径。
         _record_repair_claim(self, spec_name, rejected=False)
         try:
-            freeze_result = self._apply_scenario_freeze(spec_name)
+            # judge-repair-scenario-writeback-gate D3：受理采纳成对落盘——
+            # pair_writeback=True 要求受理采纳写回满足成对纪律（备份与主文件
+            # 同版本戳成对覆盖，含声明移除轮）；planner 产出收编路径（
+            # pipeline 内另一调用点）不传该参、剔除继续语义零变化。
+            freeze_result = self._apply_scenario_freeze(
+                spec_name, pair_writeback=True
+            )
         except Exception as e:
             # 冻结记账属辅助治理，异常不阻断修复重入
             self._context.logger.warning(
@@ -2016,6 +2061,53 @@ class VerificationPipeline:
         # 尾递归调用保持原样——调用者 MUST return 以终止当前调用
         self._run_three_stage_verification(spec_name, _repair_depth=_repair_depth + 1)
         return True
+
+    def _precheck_repaired_scenarios(self, spec_name: str) -> list:
+        """受理预检（judge-repair-scenario-writeback-gate D1）：盘上修复集整批校验。
+
+        读 ``test_scenarios.json`` 原始 JSON 数组（冻结复用读点同款容错口径）
+        逐条过 ``validate_scenario_dicts``（与结构化写端
+        ``_exec_revise_scenario_reverify`` 步骤 4 同源，含旧 schema 迁移与
+        per-kind 词表），返回逐条错误清单供拒收分支留痕与回传重修。
+
+        空列表 = 预检通过或不适用——文件不存在 / 解析失败 / 顶层非数组时不在
+        此拒收（维持既有 corrupt → env_blocked 语义不变，由冻结加载通道统一
+        处置）。携带非空 ``remove_reason`` 的声明条目豁免逐条校验（与
+        ``_apply_scenario_freeze`` 3.3 移除声明豁免同口径：声明形态本就不是
+        可执行场景，planner-judge.md 原地修复协议第 1 步明确允许 judge 写回
+        此类条目，冻结收编按移除声明消费）——其余条目任一非法即错误清单非空，
+        调用方据此拒收本轮修复。
+        """
+        # 延迟导入防环（与 scenario_gate 消费 verify_progress_dir 同款）
+        from core.pm_engine.verification.report_gate import verify_progress_dir
+        from core.verify_engine.scenarios import validate_scenario_dicts
+
+        scenarios_path = verify_progress_dir(self, spec_name) / "test_scenarios.json"
+        if not scenarios_path.is_file():
+            return []
+        try:
+            raw = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        errors: list = []
+        for idx, item in enumerate(raw):
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("remove_reason"), str)
+                and item["remove_reason"]
+            ):
+                continue
+            errs = validate_scenario_dicts([item])
+            if not errs:
+                continue
+            if isinstance(item, dict):
+                item_id = str(item.get("id") or f"[{idx}]")
+                errors.append(f"{item_id}（{'；'.join(errs[:2])}）")
+            else:
+                errors.append(f"[{idx}]非对象({type(item).__name__})")
+        return errors
 
     # ── 修复轮重验场景集裁剪（add-verify-lane-throughput 4.2，design 决策 6）──
     # 前提三条件（任一不满足即全量，fail-open）：非首轮（_verify_fail_rounds>0）、
