@@ -28,6 +28,14 @@ export default [
     component: './command-center',
   },
   {
+    // 处置链视图（add-escalation-chain-admin-arbiter 5.2）：Admin→Arbiter→Human
+    // 自动处置链观测面（在办/队列/配额水位/上升件，只读）。
+    path: '/chain',
+    name: '处置链',
+    icon: 'apartment',
+    component: './chain',
+  },
+  {
     path: '/projects/:name/:spec',
     component: './projects/detail',
   },

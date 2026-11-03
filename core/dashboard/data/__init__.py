@@ -299,6 +299,7 @@ from .admin_alerts import (
     get_admin_activities,
     get_archived_activities,
     merge_dispositions_by_run,
+    chain_overview,
 )
 
 # ── tasks 组 ──

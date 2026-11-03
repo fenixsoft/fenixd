@@ -237,6 +237,86 @@ class TestTimelineArbiterVisibility(unittest.TestCase):
         arb_node = self._node_of(timeline, arb_rid)
         self.assertIn("arbiter", arb_node)
 
+    # ── 处置链全链节点（add-escalation-chain-admin-arbiter 5.1）─────────
+
+    def _chain_entry(
+        self,
+        kind: str,
+        created: str,
+        spec: str = "demo",
+        action: str = "链事件",
+        chain_id: str = "chain-1",
+    ) -> dict:
+        return {
+            "id": f"chain-ev-{created}",
+            "created": created,
+            "kind": kind,
+            "spec": spec,
+            "signal_type": "verify_env_blocked",
+            "signature": f"{spec}::verify_env_blocked",
+            "chain_id": chain_id,
+            "run_id": "",
+            "scene_snapshot": "现场",
+            "root_cause": "granularity=spec",
+            "action_or_upgrade": action,
+            "evidence_refs": [],
+        }
+
+    @staticmethod
+    def _chain_nodes(timeline) -> list:
+        return [e for e in timeline if e.get("kind") == "chain"]
+
+    def test_8_chain_events_derive_standalone_nodes_in_order(self):
+        """chain-* 台账 → 独立链节点（created 升序，全字段投影、摘要截断）。"""
+        from core.dashboard.data import get_spec_timeline
+
+        long_action = "转单理由：" + "细节" * 200
+        self._seed_ledger(
+            [
+                self._chain_entry("chain-escalated", "2026-11-02T09:00:00+00:00"),
+                self._chain_entry(
+                    "chain-handoff", "2026-11-02T08:30:00+00:00", action=long_action
+                ),
+                self._chain_entry("chain-dispatch", "2026-11-02T08:00:00+00:00"),
+                _ledger_entry(None, "disposition", "2026-11-02T07:00:00+00:00"),
+            ]
+        )
+        timeline = get_spec_timeline(self.root, "demo")
+        nodes = self._chain_nodes(timeline)
+        self.assertEqual([n["chain_kind"] for n in nodes],
+                         ["chain-dispatch", "chain-handoff", "chain-escalated"],
+                         "链节点必须 created 升序（链叙事顺序）且不含非链 kinds")
+        self.assertTrue(all(n["chain_id"] == "chain-1" for n in nodes))
+        self.assertTrue(all(n["signature"] == "demo::verify_env_blocked" for n in nodes))
+        self.assertEqual(nodes[1]["summary"], long_action[:200], "摘要必须截断 200")
+
+    def test_9_chain_events_spec_scoped_and_fail_open(self):
+        """链节点 spec 归并：他 spec 事件不泄漏；台账缺失/损坏行零节点零报错。"""
+        from core.dashboard.data import get_spec_timeline
+
+        self._seed_ledger(
+            [
+                self._chain_entry("chain-closed", "2026-11-02T09:00:00+00:00",
+                                  spec="other"),
+            ]
+        )
+        self.assertEqual(self._chain_nodes(get_spec_timeline(self.root, "demo")), [])
+        # 损坏行混入：有效链事件照常派生
+        (self.root / ".fenix" / "arbiter_ledger.jsonl").write_text(
+            "{broken json\n"
+            + json.dumps(self._chain_entry("chain-recurrence",
+                                           "2026-11-02T09:30:00+00:00"),
+                         ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        nodes = self._chain_nodes(get_spec_timeline(self.root, "demo"))
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["chain_kind"], "chain-recurrence")
+        # 台账文件缺失：fail-open 零节点
+        (self.root / ".fenix" / "arbiter_ledger.jsonl").unlink()
+        self.assertEqual(self._chain_nodes(get_spec_timeline(self.root, "demo")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

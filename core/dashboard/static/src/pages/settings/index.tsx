@@ -27,6 +27,8 @@ import StaleCodeSelfhealPanel from './components/StaleCodeSelfhealPanel';
 import BranchGcPanel from './components/BranchGcPanel';
 // add-arbiter-lane：全局决策者车道面板（arbiter 四键 + 运行时状态）
 import ArbiterPanel from './components/ArbiterPanel';
+// add-escalation-chain-admin-arbiter 5.3：处置链面板（chain 四键 + 运行时水位）
+import ChainPanel from './components/ChainPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
 
@@ -56,6 +58,8 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'self-evolution', label: PAGE_LABELS['self-evolution'] },
   // add-arbiter-lane：全局决策者车道配置页签
   { key: 'arbiter', label: PAGE_LABELS.arbiter },
+  // add-escalation-chain-admin-arbiter 5.3：处置链配置页签
+  { key: 'chain', label: PAGE_LABELS.chain },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -496,6 +500,16 @@ export default function SettingsPage() {
                   // 状态只读摘要），独立 Form 与保存按钮，保存走同一 handleSave
                   // 写回通道
                   <ArbiterPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                  />
+                )}
+                {activeKey === 'chain' && (
+                  // add-escalation-chain-admin-arbiter 5.3：处置链面板（chain 四键
+                  // 配额/复位窗/黑名单 + 运行时水位 30s 轮询），独立 Form 与保存
+                  // 按钮，保存走同一 handleSave 写回通道
+                  <ChainPanel
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}

@@ -22,6 +22,8 @@ export const PAGE_LABELS = {
   'self-evolution': '自进化',
   // add-arbiter-lane：全局决策者车道页签
   arbiter: '仲裁',
+  // add-escalation-chain-admin-arbiter 5.3：处置链配置页签
+  chain: '处置链',
   'self-review': '自省',
   'project-profile': '项目',
   hook: 'Hook',

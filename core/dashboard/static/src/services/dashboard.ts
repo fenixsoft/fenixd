@@ -556,6 +556,79 @@ export function clearAllAlerts() {
   return request('/api/alerts/clear', { method: 'POST' });
 }
 
+// ── 处置链视图（/api/chain，add-escalation-chain-admin-arbiter 5.2，只读） ──
+
+/** 链在办件（escalation_chain_state.json in_flight 区，admin_monitor 兜底看护同源） */
+export interface ChainInFlightItem {
+  chain_id: string;
+  signature: string;
+  spec?: string | null;
+  phase: string;
+  started_at?: string;
+  /** 跨项目聚合时注入的来源项目名 */
+  project?: string;
+}
+
+/** 签名配额水位（spec=null 信号附 subject/granularity 主体键投影） */
+export interface ChainSignatureQuota {
+  signature: string;
+  spec?: string;
+  subject?: string;
+  granularity: 'spec' | 'subject' | 'type';
+  admin_attempts: number;
+  admin_cap: number;
+  arbiter_rulings: number;
+  arbiter_cap: number;
+  exhausted: boolean;
+  last_seen?: string;
+  last_spec_status?: string;
+  project?: string;
+}
+
+/** 链关联上升件（链终点直写、携带 chain 关联键；close_cause 区分收口来源） */
+export interface ChainEscalationItem {
+  id: string;
+  project?: string;
+  spec?: string | null;
+  signal_type?: string;
+  severity?: string;
+  created?: string;
+  description?: string;
+  handled?: boolean;
+  handled_by?: string;
+  handled_at?: string;
+  close_cause?: string | null;
+  chain?: { signature?: string; chain_id?: string };
+}
+
+export interface ChainSummary {
+  in_flight: number;
+  signatures: number;
+  quota_exhausted: number;
+  escalations: number;
+  queue: number;
+}
+
+export interface ChainOverviewData {
+  project?: string;
+  summary: ChainSummary;
+  in_flight: ChainInFlightItem[];
+  signatures: ChainSignatureQuota[];
+  escalations: ChainEscalationItem[];
+  queue: ChainEscalationItem[];
+  /** 缺省跨项目聚合分支的逐项目摘要与总额（?project 单项目分支不下发） */
+  total?: ChainSummary;
+  projects?: { name: string; summary: ChainSummary }[];
+  /** ?project 不存在/未就绪时的**有意 200** 错误体（调用方按 error 分支） */
+  error?: string;
+}
+
+/** 读取处置链视图（只读；缺省跨项目聚合） */
+export async function getChainOverview(project?: string): Promise<ChainOverviewData> {
+  const qs = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<ChainOverviewData>(`/api/chain${qs}`);
+}
+
 // ── 项目 SPEC 列表（/api/specs，与 v1 项目视图同源） ──
 
 export interface SpecSummary {
@@ -1883,6 +1956,19 @@ export interface ArbiterConfig {
   max_consecutive_failures?: number;
 }
 
+/** 处置链配置节（add-escalation-chain-admin-arbiter 5.3，四键经
+ * get_chain_config 归一——非法值回退缺省，回显与生效值一致） */
+export interface ChainConfig {
+  /** Admin 尝试配额（次/签名，缺省 2） */
+  admin_attempts?: number;
+  /** Arbiter 拍板配额（次/签名，缺省 2） */
+  arbiter_rulings?: number;
+  /** 配额复位窗（天，缺省 7；SPEC 状态翻转即时清零不待窗满） */
+  reset_window_days?: number;
+  /** 信号黑名单（kill switch：命中信号绕过处置链直达人工，缺省空） */
+  blacklist?: string[];
+}
+
 /** Arbiter 车道运行时状态（GET /api/arbiter/status） */
 export interface ArbiterStatus {
   config?: ArbiterConfig;
@@ -2122,6 +2208,9 @@ export interface ConfigData {
   /** add-arbiter-lane：全局决策者车道四键（经 get_arbiter_config 归一——
    * 非法值回退缺省，回显与生效值一致） */
   arbiter?: ArbiterConfig;
+  /** add-escalation-chain-admin-arbiter 5.3：处置链四键（经 get_chain_config
+   * 归一——非法值回退缺省，回显与生效值一致） */
+  chain?: ChainConfig;
   /** add-code-review-agent-and-quality-tab：周期性代码审查（admin.code_review 两键，
    *  设置页「质量」页签读写；项目页「代码审查」分面只读触发按钮与进度） */
   code_review?: CodeReviewConfig;

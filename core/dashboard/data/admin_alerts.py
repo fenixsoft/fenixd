@@ -224,6 +224,103 @@ def alerts_overview(project_root, resolved_limit: int = 50) -> dict:
     }
 
 
+def _chain_subject(signature: str) -> dict:
+    """链签名 → 归组投影（add-escalation-chain-admin-arbiter 5.2）。
+
+    三形态（chain_signature 单源）：``<spec>::<信号>``（spec 粒度）、
+    ``null:<主体键>::<信号>``（spec=null 主体键粒度）、``global::<信号>``
+    （类型级退化）。返回 ``{"spec", "subject", "granularity"}``——视图按
+    签名本身归组，本投影只提供展示字段（spec=null 按主体键展示）。
+    """
+    head = str(signature or "").split("::", 1)[0]
+    if head.startswith("null:"):
+        return {
+            "spec": "",
+            "subject": head[len("null:"):],
+            "granularity": "subject",
+        }
+    if head == "global":
+        return {"spec": "", "subject": "", "granularity": "type"}
+    return {"spec": head, "subject": "", "granularity": "spec"}
+
+
+def chain_overview(project_root) -> dict:
+    """处置链单读聚合（add-escalation-chain-admin-arbiter 5.2，只读）。
+
+    为 Dashboard 处置链视图而设：一次读齐链状态文件与 admin 告警存储两源
+    （配额上限即时解析项目级配置，与链头热更新同源），派生四视图——
+
+    - ``in_flight``：链在办件（admin_monitor 兜底看护同源，phase=admin/arbiter）；
+    - ``signatures``：配额水位（逐签名 attempts/rulings + cap + exhausted 标记）；
+    - ``escalations``：链关联上升件全量（链终点直写、携带 ``chain.signature``
+      关联键；含已收口，close_cause=closed-by-chain/migrated 区分）；
+    - ``queue``：未收口上升件（escalations 的未 handled 子集，人工队列）。
+
+    fail-open：状态文件缺失/损坏按空态派生（load_chain_state 兜底）、配置
+    解析失败回落缺省 cap（quota_config 同语义）、admin 存储读失败上升件置
+    空——视图是观测面，读路径异常不得反向扰动链运行，也不得让页面 5xx。
+
+    spec=null 信号按主体键归组：签名即归组键，signatures 条目附 subject
+    投影（_chain_subject）供前端在无 spec 归属时按主体键展示。
+    """
+    from core.admin_store import AdminStore
+    from core.pm_engine.escalation_chain import ChainQuotaStore, load_chain_state
+
+    state = load_chain_state(project_root)
+    cfg = ChainQuotaStore(project_root).quota_config()
+    admin_cap = int(cfg.get("admin_attempts") or 0)
+    arbiter_cap = int(cfg.get("arbiter_rulings") or 0)
+    in_flight = [dict(x) for x in state["in_flight"]]
+
+    signatures = []
+    for sig, ent in sorted(state["signatures"].items()):
+        if not isinstance(ent, dict):
+            ent = {}
+        attempts = int(ent.get("admin_attempts") or 0)
+        rulings = int(ent.get("arbiter_rulings") or 0)
+        signatures.append(
+            {
+                "signature": sig,
+                **_chain_subject(sig),
+                "admin_attempts": attempts,
+                "admin_cap": admin_cap,
+                "arbiter_rulings": rulings,
+                "arbiter_cap": arbiter_cap,
+                "exhausted": attempts >= admin_cap and rulings >= arbiter_cap,
+                "last_seen": str(ent.get("last_seen") or ""),
+                "last_spec_status": str(ent.get("last_spec_status") or ""),
+            }
+        )
+
+    escalations = []
+    try:
+        records = AdminStore(project_root).read_all()
+    except Exception:
+        records = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        chain_ref = rec.get("chain")
+        if not isinstance(chain_ref, dict) or not str(chain_ref.get("signature") or ""):
+            continue
+        escalations.append(dict(rec))
+    queue = [r for r in escalations if not r.get("handled")]
+
+    return {
+        "summary": {
+            "in_flight": len(in_flight),
+            "signatures": len(signatures),
+            "quota_exhausted": sum(1 for s in signatures if s["exhausted"]),
+            "escalations": len(escalations),
+            "queue": len(queue),
+        },
+        "in_flight": in_flight,
+        "signatures": signatures,
+        "escalations": escalations,
+        "queue": queue,
+    }
+
+
 def merge_dispositions_by_run(records) -> dict:
     """DISPOSITION 记录按 admin_run_id 挑代表记录（best_by_run 归并单点）。
 
