@@ -83,7 +83,7 @@
 - [x] 6.1 audit 周期轮积压检测：积压 ≥10 条或最老条目滞留 ≥7 天（mtime 起算）落
       `log.md` lint 提醒行，同轮幂等去重，MUST NOT 写 AdminStore（测试断言无人工
       告警产生）
-- [ ] 6.2 dashboard 积压计数：`knowledge_routes.py` 返回 `_inbox/` 积压计数与最老
+- [x] 6.2 dashboard 积压计数：`knowledge_routes.py` 返回 `_inbox/` 积压计数与最老
       滞留天数，`KnowledgeTab.tsx` 展示；跑构建产出 dist 并确认锚点文件更新
 
 ## 7. 蒸馏 prompt 归位
