@@ -1184,6 +1184,266 @@ class TestInboxCandidateArea(KnowledgeTestBase):
         self.assertTrue(any("越出" in v for v in violations), violations)
 
 
+class TestInboxFoldStage(KnowledgeTestBase):
+    """add-knowledge-inbox-pipeline 3.1/3.2/3.3：distill 折叠前置段。
+
+    fake spawn 按调用序分流（折叠前置段先于蒸馏轮，单条目即 spawn#1=fold、
+    spawn#2=distill），覆盖折叠闭环（独立提交 + done/ 移动 + 行序）、校验
+    失败滞留（条目原位不丢弃）、超顶产物被校验门拦下、无条目零动作、
+    piggyback-only（候选区非空不产生独立 run）。
+    """
+
+    def _seed(self):
+        """已入库知识基线三件套 + 一个候选条目。"""
+        self._git("init", "-q")
+        self._git("config", "user.name", "t")
+        self._git("config", "user.email", "t@t")
+        self._seed_good_core()
+        self._git("add", "--", ".")
+        self._git("commit", "-q", "-m", "init")
+        self._write(
+            f"{KNOWLEDGE_DIR}/_inbox/raw-note.md",
+            "# 候选：排查结论\n\n结论：轮询间隔 300 秒是当前事实。\n",
+        )
+
+    def _seed_good_core(self):
+        self._write(
+            f"{KNOWLEDGE_DIR}/index.md",
+            (
+                f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+                "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+                "| --- | --- | --- | --- |\n"
+                "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+            ),
+        )
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            (
+                f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n| --- | --- | --- |\n"
+                "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 | 2026-09-29 15:02 |\n"
+            ),
+        )
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            GOOD_PAGE.format(archive=self._archive_name(), today=date.today().isoformat()),
+        )
+
+    def _distill_versions(self):
+        return {
+            f"{KNOWLEDGE_DIR}/index.md": (
+                f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+                "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+                "| --- | --- | --- | --- |\n"
+                "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 16:02 |\n"
+            ),
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md": (
+                f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n| --- | --- | --- |\n"
+                "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 | 2026-09-29 16:02 |\n"
+            ),
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md": GOOD_PAGE.format(
+                archive=self._archive_name(), today=date.today().isoformat()
+            ),
+        }
+
+    def _fold_ok(self, root):
+        """折叠成功替身：既有页追加 done/ 溯源 + 条目移 done/。"""
+        page = root / f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md"
+        arch = self._archive_name()
+        text = page.read_text(encoding="utf-8")
+        text = text.replace(
+            f"sources=spec/archive/{arch}",
+            f"sources=spec/archive/{arch},{INBOX_DONE_PREFIX}raw-note.md",
+        )
+        text = text.replace(
+            f"- {date.today().isoformat()} {arch} — 新建本页",
+            f"- {date.today().isoformat()} {arch} — 新建本页\n"
+            f"- {date.today().isoformat()} raw-note（{INBOX_DONE_PREFIX}raw-note.md）"
+            " — 折叠候选规则",
+        )
+        page.write_text(text, encoding="utf-8")
+        done = root / INBOX_DONE_PREFIX
+        done.mkdir(parents=True, exist_ok=True)
+        (root / f"{KNOWLEDGE_DIR}/_inbox/raw-note.md").rename(done / "raw-note.md")
+
+    def _manager_split(self, fold_fn, distill_fn):
+        """spawn 按调用序分流：spawn#1 折叠前置段、spawn#2+ 蒸馏轮。"""
+        state = {"n": 0}
+        lock = threading.Lock()
+
+        def on_spawn(cmd, cwd, env=None):
+            with lock:
+                n = state["n"]
+                state["n"] += 1
+            (fold_fn if n == 0 else distill_fn)(Path(cwd))
+            return _FakeProc(0)
+
+        mgr = DistillManager(max_fix_rounds=2)
+
+        def spawn(cmd, cwd, env=None):
+            return on_spawn(cmd, cwd, env)
+
+        mgr._spawn = spawn
+        return mgr
+
+    def _log_text(self):
+        return (self.root / KNOWLEDGE_DIR / "log.md").read_text(encoding="utf-8")
+
+    def test_fold_success_closed_loop(self):
+        self._seed()
+        mgr = self._manager_split(self._fold_ok, lambda root: None)
+        versions = self._distill_versions()
+
+        def distill(root):
+            for rel, text in versions.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+
+        mgr = self._manager_split(self._fold_ok, distill)
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["folded"], 1)
+        self.assertEqual(result["fold_failed"], 0)
+        # 条目移 done/，原位消失
+        self.assertFalse((self.root / KNOWLEDGE_DIR / "_inbox" / "raw-note.md").exists())
+        self.assertTrue((self.root / INBOX_DONE_PREFIX / "raw-note.md").is_file())
+        # 折叠独立提交在蒸馏提交之前（HEAD 仍是 distill 本体）
+        subjects = self._git("log", "--format=%s").stdout.splitlines()
+        self.assertEqual(subjects[0], f"[fenix] knowledge: distill {self._archive_name()}")
+        self.assertIn("[fenix] knowledge: fold raw-note.md", subjects[1:])
+        # 4.2 行序契约：fold 行先于 distill 行
+        log = self._log_text()
+        self.assertLess(log.index("fold |"), log.index("distill |"))
+
+    def test_fold_validate_fail_entry_stays(self):
+        self._seed()
+        snapshot = (self.root / KNOWLEDGE_DIR / "_inbox" / "raw-note.md").read_text(
+            encoding="utf-8"
+        )
+
+        def fold_bad(root):
+            # 毁页且不移动条目：实时校验违规 → 回滚
+            page = root / f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md"
+            page.write_text("# 毁坏\n\n没有 marker\n", encoding="utf-8")
+
+        versions = self._distill_versions()
+
+        def distill(root):
+            for rel, text in versions.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+
+        mgr = self._manager_split(fold_bad, distill)
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        # 折叠失败不阻断批：蒸馏照常收工
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["folded"], 0)
+        self.assertEqual(result["fold_failed"], 1)
+        # 条目滞留原地且内容未被改动
+        entry = self.root / KNOWLEDGE_DIR / "_inbox" / "raw-note.md"
+        self.assertTrue(entry.is_file())
+        self.assertEqual(entry.read_text(encoding="utf-8"), snapshot)
+        # 工作区干净（失败行已独立小提交，不污染后续批基线甄别）；候选条目
+        # untracked（?? _inbox/）是自由区常态，豁免不计
+        residual = [
+            ln
+            for ln in self._git("status", "--porcelain", "--", KNOWLEDGE_DIR).stdout.splitlines()
+            if "_inbox" not in ln
+        ]
+        self.assertEqual(residual, [])
+        log = self._log_text()
+        self.assertIn("折叠失败滞留", log)
+        # 失败留痕独立提交在案
+        self.assertIn("[fenix] knowledge: log", self._git("log", "--format=%s").stdout)
+
+    def test_fold_overcap_rejected_and_entry_stays(self):
+        self._seed()
+        snapshot = (self.root / KNOWLEDGE_DIR / "_inbox" / "raw-note.md").read_text(
+            encoding="utf-8"
+        )
+
+        def fold_overcap(root):
+            # 新建超 150 行页：150 行硬顶在校验门拦下（拆页指令被无视的形态）
+            body = (
+                "<!-- knowledge: capability=overflow-cap rev=1\n"
+                f"     sources=spec/archive/{self._archive_name()} -->\n"
+                "# overflow\n\n## 规则\n\n" + "- 填充规则\n" * 160
+            )
+            p = root / f"{KNOWLEDGE_DIR}/domains/pickup/overflow-cap.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+
+        versions = self._distill_versions()
+
+        def distill(root):
+            for rel, text in versions.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+
+        mgr = self._manager_split(fold_overcap, distill)
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["fold_failed"], 1)
+        entry = self.root / KNOWLEDGE_DIR / "_inbox" / "raw-note.md"
+        self.assertEqual(entry.read_text(encoding="utf-8"), snapshot)
+        # 超顶产物被清理，无残留半成品
+        self.assertFalse(
+            (self.root / KNOWLEDGE_DIR / "domains/pickup/overflow-cap.md").exists()
+        )
+        self.assertIn("150", self._log_text())
+
+    def test_no_inbox_no_fold(self):
+        self._git("init", "-q")
+        self._git("config", "user.name", "t")
+        self._git("config", "user.email", "t@t")
+        self._seed_good_core()
+        self._git("add", "--", ".")
+        self._git("commit", "-q", "-m", "init")
+        versions = self._distill_versions()
+
+        def distill(root):
+            for rel, text in versions.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+
+        mgr = self._manager_split(lambda root: None, distill)
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["folded"], 0)
+        self.assertNotIn("[fenix] knowledge: fold", self._git("log", "--format=%s").stdout)
+
+    def test_fold_prompt_pins_split_and_done_directives(self):
+        from core.knowledge import build_inbox_fold_prompt
+
+        prompt = build_inbox_fold_prompt(self.root, "raw-note.md")
+        # 拆页指令与 done/ 语义、收尾标记在折叠提示词单源钉死
+        self.assertIn("150 行", prompt)
+        self.assertIn("拆主从分片", prompt)
+        self.assertIn(f"{KNOWLEDGE_DIR}/_inbox/done/raw-note.md", prompt)
+        self.assertIn("KNOWLEDGE_DISTILL_DONE", prompt)
+        self.assertIn("本轮模式：inbox 折叠前置段", prompt)
+
+    def test_backlog_alone_triggers_no_run(self):
+        # piggyback-only（3.3）：_inbox 非空 + 无蒸馏批次 → 不产生任何 run
+        from core.knowledge import dispatch_distill_batch
+
+        self._seed()
+        dispatched = []
+
+        class Fake:
+            def dispatch(self, proot, names):
+                dispatched.append(names)
+                return {"dispatched": True}
+
+        cfg = {"knowledge_distill_enabled": True}
+        r = dispatch_distill_batch(self.root, [], cfg, dispatcher=Fake())
+        self.assertFalse(r["dispatched"])
+        self.assertEqual(dispatched, [])
+
+
 if __name__ == "__main__":
     unittest.main()
 

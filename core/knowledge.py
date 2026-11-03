@@ -1626,15 +1626,18 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
     """
     surface: set = set()
     kn_prefix = KNOWLEDGE_DIR + "/"
+    folded_inside: list = []  # knowledge 目录内部的折叠条目（目录前缀）
     need_probe = False
     for p in paths:
         if p.startswith(kn_prefix):
             if p.endswith("/"):
+                folded_inside.append(p)
                 need_probe = True  # knowledge 目录内部整目录折叠
             else:
                 surface.add(p)
         elif p.endswith("/") and kn_prefix.startswith(p):
-            need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）
+            need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）：knowledge
+            # 全表面都在折叠子树内，probe 结果原样收纳
     if need_probe:
         probe = _git(
             proot,
@@ -1645,7 +1648,20 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
             ],
         )
         if probe.returncode == 0:
-            surface.update(tok for tok in probe.stdout.split("\0") if tok)
+            untracked = [tok for tok in probe.stdout.split("\0") if tok]
+            if folded_inside:
+                # 只收纳折叠条目子树内的文件（add-knowledge-inbox-pipeline
+                # 3.1 回滚场景修复）：快照里的折叠条目只代表它自己子树的
+                # untracked 面，ls-files 枚举的是**当下**盘面——折叠失败回滚
+                # 展开基线快照时，run 产出（非折叠子树的文件级新增）会被误
+                # 充基线，与现状快照恒交集 → overlap 保守跳过、半成品滞留。
+                # 非折叠子树的文件级路径由快照原样承载，不靠当下枚举。
+                surface.update(
+                    f for f in untracked
+                    if any(f.startswith(d) for d in folded_inside)
+                )
+            else:
+                surface.update(untracked)
         else:
             logger.warning(
                 "knowledge-distill 未跟踪文件枚举失败，无法可靠判定基线差集"

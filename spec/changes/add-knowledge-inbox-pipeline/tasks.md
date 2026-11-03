@@ -52,13 +52,13 @@
 
 ## 3. piggyback 折叠管线
 
-- [ ] 3.1 distill 车道入口新增 inbox 折叠前置段：逐条消化 `_inbox/` 存量（按条目
+- [x] 3.1 distill 车道入口新增 inbox 折叠前置段：逐条消化 `_inbox/` 存量（按条目
       顺序、每条独立提交可中断），按能力页契约折叠进相关能力页或新建能力页，
       超 150 行拆页（主从分片互链），成功条目移 `_inbox/done/` 并改写能力页
       marker sources 指向 `done/` 路径，失败条目滞留原地不丢弃
-- [ ] 3.2 折叠落盘前跑实时 `validate_knowledge`，失败不落盘（测试覆盖校验失败
+- [x] 3.2 折叠落盘前跑实时 `validate_knowledge`，失败不落盘（测试覆盖校验失败
       滞留形态）；折叠挂点与队列台账单写者（ADR-234）兼容，不引入双写者
-- [ ] 3.3 测试覆盖 Scenario：候选折叠闭环 / 超顶拆页 / 无 SPEC 批次不派发
+- [x] 3.3 测试覆盖 Scenario：候选折叠闭环 / 超顶拆页 / 无 SPEC 批次不派发
       （piggyback-only 语义断言：`_inbox` 非空不产生独立 run）
 
 ## 4. log.md 编年账
