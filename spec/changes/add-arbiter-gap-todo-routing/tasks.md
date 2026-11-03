@@ -13,7 +13,7 @@
 
 ## 1. 立项通道退役（arbiter.py）
 
-- [ ] 1.1 移除调查报告提案消费写点（三限节流+同主题查重+物化+add_spec 全链）与 `_materialize_proposal`；删除常量 `PROPOSAL_MAX_PER_RUN` / `PROPOSAL_WEEKLY_QUOTA` 及孤立 import；gaps 为空时报告处理零动作
+- [ ] 1.1 移除调查报告提案消费写点（三限节流+同主题查重+物化+add_spec 全链）与 `_materialize_proposal`（`_apply_proposals` 定义于 arbiter.py:1518）；摘除 `_apply_proposals` 全部两处调用点（arbiter.py:1027 与 :1189，防 AttributeError 残留、compileall 不可见）；删除常量 `PROPOSAL_MAX_PER_RUN` / `PROPOSAL_WEEKLY_QUOTA`（:127-128）及孤立 import；gaps 为空时报告处理零动作
 - [ ] 1.2 gaps→todo 路由：消费 `gaps` 数组逐条记 todo.md（走 fs_utils todo 锁 + todo_format 结构契约，标题带 `[arbiter:<签名前8>]` 来源前缀、正文带触发 run_id，按可立项粒度五字段标签）；记录前做轻量同主题去重（标题关键词包含判定，命中跳过）
 - [ ] 1.3 台账 kind 演进：记 todo 与去重跳过落 `gap-noted`（含 topic、todo 行号或已存在条目指引）；切换窗检测到旧 `proposals` 字段记 WARNING `gap-noted` 后丢弃（不抛异常不落池）；既有 `spec-proposed` 台账条目不清洗
 
@@ -32,4 +32,4 @@
 
 - [ ] 4.1 全量回归通过 + compileall 自证
 - [ ] 4.2 知识治理投递：`spec/knowledge/_inbox/arbiter-filing-retire-gap-todo-routing.md`（arbiter-proposal-filing 页退役注记 + arbiter-lane 页立项节流→禁立项红线改写素材，含本 SPEC 溯源）
-- [ ] 4.3 落位 restart_request 信号文件（根路径，JSON：reason/origin/date）并冒烟预演（全新进程 + 消费方 import + arbiter 报告消费链核心 API）；实际重启由 supervisor 消费该信号完成
+- [ ] 4.3 落位 restart_request 信号文件（权威路径：daemon 仓库 `.fenix/restart_request`，即 `core/code_stale_flag.py:31` 的 `DAEMON_ROOT/.fenix/restart_request`；优先走既有写入 API 的「已存在不重复写、不刷 mtime」防重语义而非裸写文件；JSON：reason/origin/date）并冒烟预演（全新进程 + 消费方 import + arbiter 报告消费链核心 API）；实际重启由 supervisor 消费该信号完成

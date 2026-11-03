@@ -33,7 +33,10 @@ arbiter 立项通道（`core/pm_engine/arbiter.py` :1516 起的提案消费写�
 
 **D2 todo 写入复用既有锁与结构契约**：`core/fs_utils` 的 todo.md 锁（原为
 evolution 私有、已升公共归属）+ `core/todo_format.py` 结构契约单源；条目字段
-沿用既有五标签（影响/证据/调查评估/建议 + 自进化评估占位），来源标记以
+沿用既有四字段标签（影响/证据/调查评估/建议，`todo_format.FIELD_LABELS`，与
+evolution 解析侧逐字一致）+ 标题行；MUST NOT 新增第五字段标签（两侧逐字一致
+契约，改任一侧即坏；「自进化评估」是 evolution 消费侧语义、非 todo 字段），
+来源标记以
 `[arbiter:<签名前8>]` 前缀落在条目标题行，正文带触发 run_id。自省侧
 `_append_todo` 的锁原语直接复用，不改 todo_format（现有标签够用）。
 

@@ -45,7 +45,7 @@ ADDED 新需求；`arbiter-proposal-filing` 能力在 spec 层无既有需求块
 - `core/pm_engine/arbiter.py`：立项写点/物化/节流常量移除，gaps→todo 路由，
   台账 kind 演进
 - `agents/arbiter.md`：红线与报告 schema 改写（prompt 契约段，merge 纪律注意）
-- `tests/test_arbiter_lane.py`：立项路径测试改造为 todo 路由断言
+- `tests/test_arbiter_lane.py`：新增退役断言与 todo 路由断言（实测评审注：既有套件无立项路径测试，grep proposal/materialize/立项 均零命中立项主题，纯新增不改既有用例）
 - `spec/knowledge/_inbox/`：两页知识改写素材投递（蒸馏折叠）
 - daemon 行为变更，合并后需重启生效（restart_request 交付项）
 - 不动：spec-review 晋升 lint 的缺 tasks.md 放行语义（fast-track 依赖）、
