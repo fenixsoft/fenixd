@@ -131,6 +131,12 @@ _SOURCE_KEYS = [
     "arbiter.budget_wallclock_s",
     "arbiter.budget_tokens",
     "arbiter.max_consecutive_failures",
+    # add-escalation-chain-admin-arbiter 5.3：处置链配置四键（设置页处置链
+    # 面板可编辑；链头每次判定即时解析项目级配置，保存即热更新）
+    "chain.admin_attempts",
+    "chain.arbiter_rulings",
+    "chain.reset_window_days",
+    "chain.blacklist",
     # add-framework-self-evolution：self_evolution 全局（用户级）三键
     "self_evolution.auto_accept",
     "self_evolution.max_items_per_run",
@@ -614,6 +620,18 @@ def _managed_key_sources(raw: dict) -> dict:
     _ar_th = ar_raw.get("auto_threshold") if isinstance(ar_raw, dict) else None
     if isinstance(_ar_th, int) and not isinstance(_ar_th, bool) and _ar_th >= 0:
         sources["archive.auto_threshold"] = "project"
+    # add-escalation-chain-admin-arbiter 5.3：chain 节四键合法类型才标注
+    # （三正整数——对齐 arbiter 同款；blacklist 字符串列表非空才标注，空列表
+    # 与缺省等价不构成「项目级显式覆盖」信号）
+    ch_raw = raw.get("chain")
+    if isinstance(ch_raw, dict):
+        for _ckey in ("admin_attempts", "arbiter_rulings", "reset_window_days"):
+            _cval = ch_raw.get(_ckey)
+            if isinstance(_cval, int) and not isinstance(_cval, bool) and _cval > 0:
+                sources[f"chain.{_ckey}"] = "project"
+        _cbl = ch_raw.get("blacklist")
+        if isinstance(_cbl, list) and _cbl:
+            sources["chain.blacklist"] = "project"
     return sources
 
 
@@ -828,6 +846,10 @@ def _default_echo_view(scope: str) -> dict:
         # selfheal 块同款单源——避免设置页以旧值回填表单、用户保存即把旧
         # 缺省显式写入项目配置、静默覆盖新缺省）
         "arbiter": _CLICRT.get_arbiter_config({}),
+        # add-escalation-chain-admin-arbiter 5.3：chain 四键缺省经读取器取
+        # （与 arbiter 块同款单源——避免设置页以旧值回填表单、用户保存即把
+        # 旧缺省显式写入项目配置、静默覆盖新缺省）
+        "chain": _CLICRT.get_chain_config({}),
         # evo-merge-back-wip-artifact-scope / fix-artifact-paths-hardcoded-default：
         # worktree 产物键缺省（空列表=未配置；has_build_artifacts 缺省 None=未裁决）
         # add-merged-branch-gc：branch_gc 两键缺省经读取器取（code-review item
@@ -999,6 +1021,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # add-arbiter-lane：arbiter 节回显（经 ConfigLoader 生效值——非法值回退
     # 缺省，回显与生效值一致）
     result["arbiter"] = ConfigLoader.get_arbiter_config(raw)
+    # add-escalation-chain-admin-arbiter 5.3：chain 节回显（经 get_chain_config
+    # 生效值——非法值回退缺省，回显与生效值一致）
+    result["chain"] = ConfigLoader.get_chain_config(raw)
     # evo-merge-back-wip-artifact-scope：产物路径回显（worktree_config_view，
     # 非法形态回显空列表 = 未配置，与解析侧 fail-safe 一致）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
@@ -1160,6 +1185,9 @@ def read_effective_config(project_root) -> dict:
     # add-arbiter-lane：arbiter 节生效值回显（与 read_config 同型——非法值
     # 回退缺省，设置页回显与生效值一致）
     result["arbiter"] = ConfigLoader.get_arbiter_config(effective)
+    # add-escalation-chain-admin-arbiter 5.3：chain 节生效值回显（与 read_config
+    # 同型——非法值回退缺省，设置页回显与生效值一致）
+    result["chain"] = ConfigLoader.get_chain_config(effective)
     # evo-merge-back-wip-artifact-scope：产物路径回显（有效合并视图，非法形态回显空列表）
     from core.worktree_manager.artifact_paths import worktree_config_view as _wtcv
 
@@ -1542,6 +1570,20 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
             if arb_p.get(_akey) is not None:
                 merged["arbiter"][_akey] = arb_p[_akey]
+    # add-escalation-chain-admin-arbiter 5.3：chain 节四键合并（前置校验已拒绝
+    # 非法值，此处只应用合法值；缺省透传由 get_chain_config 兜底）。显式 null
+    # 与「未提交」同义（前置校验对 None 放行），不落盘以免读侧归一回缺省静默
+    # 翻转存量值（code-review item 87cc1fcac728 同款）。blacklist 空列表是有意
+    # 显式值（清空黑名单），须穿透落盘——None 守卫只挡「未提交」
+    if "chain" in patch and isinstance(patch["chain"], dict):
+        if not isinstance(merged.get("chain"), dict):
+            merged["chain"] = {}
+        ch_p = patch["chain"]
+        for _ckey in ("admin_attempts", "arbiter_rulings", "reset_window_days"):
+            if ch_p.get(_ckey) is not None:
+                merged["chain"][_ckey] = ch_p[_ckey]
+        if ch_p.get("blacklist") is not None:
+            merged["chain"]["blacklist"] = list(ch_p["blacklist"])
     # add-framework-self-evolution：self_evolution 三键合并（项目级被拒，此处仅用户级）
     if "self_evolution" in patch and isinstance(patch["self_evolution"], dict):
         if not isinstance(merged.get("self_evolution"), dict):
@@ -2208,6 +2250,25 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                         f"arbiter.{_akey} must be a positive integer: {_av!r}"
                     )
 
+    # add-escalation-chain-admin-arbiter 5.3：chain 四键前置校验（三正整数 +
+    # blacklist 字符串列表；bool 是 int 子类须显式排除——非法值直接拒绝 400
+    # 不静默落盘，同 arbiter 同款契约）
+    if isinstance(config_patch.get("chain"), dict):
+        _chn_p = config_patch["chain"]
+        for _ckey in ("admin_attempts", "arbiter_rulings", "reset_window_days"):
+            if _ckey in _chn_p and _chn_p[_ckey] is not None:
+                _cv = _chn_p[_ckey]
+                if isinstance(_cv, bool) or not isinstance(_cv, (int, float)) or _cv <= 0:
+                    return fail(f"chain.{_ckey} must be a positive integer: {_cv!r}")
+        if "blacklist" in _chn_p and _chn_p["blacklist"] is not None:
+            _cbl = _chn_p["blacklist"]
+            if not isinstance(_cbl, list) or any(
+                not isinstance(item, str) or not item.strip() for item in _cbl
+            ):
+                return fail(
+                    f"chain.blacklist must be a list of non-empty strings: {_cbl!r}"
+                )
+
     # add-framework-self-evolution：self_evolution 三键校验 + 项目级作用域拒绝
     # （全局用户级键，项目级提交 400 不写盘，用户级非法值直接拒绝 400）
     if "self_evolution" in config_patch:
@@ -2272,6 +2333,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         "worktree",
         "knowledge",
         "arbiter",
+        "chain",
     ):
         if _ck in config_patch and not isinstance(config_patch[_ck], dict):
             return fail(f"{_ck} must be an object: {config_patch[_ck]!r}")
@@ -2815,6 +2877,27 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                             raise ValueError(
                                 f"arbiter.{_akey} must be a positive integer: {_av!r}"
                             )
+            # add-escalation-chain-admin-arbiter 5.3：chain merged 视图校验
+            # （兜底防绕过前置校验的直连调用，与 arbiter 同模式）
+            ch_m = merged.get("chain")
+            if isinstance(ch_m, dict):
+                for _ckey in ("admin_attempts", "arbiter_rulings", "reset_window_days"):
+                    if _ckey in ch_m and ch_m[_ckey] is not None:
+                        _cv = ch_m[_ckey]
+                        if isinstance(_cv, bool) or not isinstance(_cv, (int, float)) or _cv <= 0:
+                            raise ValueError(
+                                f"chain.{_ckey} must be a positive integer: {_cv!r}"
+                            )
+                if "blacklist" in ch_m and ch_m["blacklist"] is not None:
+                    _cbl_m = ch_m["blacklist"]
+                    if not isinstance(_cbl_m, list) or any(
+                        not isinstance(item, str) or not item.strip()
+                        for item in _cbl_m
+                    ):
+                        raise ValueError(
+                            f"chain.blacklist must be a list of non-empty strings: "
+                            f"{_cbl_m!r}"
+                        )
         except ValueError as e:
             return fail(str(e))
 

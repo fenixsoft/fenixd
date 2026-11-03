@@ -1918,6 +1918,16 @@ class AdminMonitor:
             self._recover_orphaned_dispositions()
         except Exception as e:
             self.logger.error("admin_monitor", f"Orphaned-disposition recovery failed: {e}")
+        # add-escalation-chain-admin-arbiter 1.2（design 决策 1）：兜底看护对象
+        # 扩展全链在办件——处置链在办登记（.fenix/escalation_chain_state.json
+        # in_flight 区）超时清除挂既有巡检循环（不新增线程/定时器）；底层
+        # pending disposition 的孤儿接管语义不变（仍走上方
+        # _recover_orphaned_dispositions 既有路径）。链缺席/配置性缺失按零
+        # 清除降级（fail-open，不阻断巡检）。
+        try:
+            self._reap_chain_inflight()
+        except Exception as e:
+            self.logger.error("admin_monitor", f"Chain in-flight reaping failed: {e}")
         try:
             self._detect_restart_failure(now)
         except Exception as e:
@@ -6241,6 +6251,26 @@ class AdminMonitor:
         return best
 
     # ── 兜底升级（fix-admin-self-heal） ──────────────────────────
+
+    def _reap_chain_inflight(self) -> int:
+        """处置链在办件超时清除（add-escalation-chain-admin-arbiter 1.2）。
+
+        兜底看护对象扩展全链在办件（design 决策 1）：链状态文件 in_flight 区
+        的登记残留（chain worker 死亡后无人清）由本巡检周期性回收——清除动
+        作与告警留痕委托链单例 :meth:`EscalationChain.reap_stale_inflight`
+        （数据属主封装，monitor 不直读状态文件内部结构）。链未装配（单测/
+        链级失能）按零清除静默降级——不产生 WARN 噪音，不阻断巡检。
+        """
+        try:
+            from core.pm_engine.escalation_chain import get_chain
+
+            chain = get_chain(self.project_root, self.logger)
+            if chain is None:
+                return 0
+            return int(chain.reap_stale_inflight())
+        except Exception:
+            # 链模块缺失/状态文件损坏等：看护增量故障不阻断巡检主流程
+            return 0
 
     def _recover_orphaned_dispositions(self):
         """检测「admin 被唤起但未完成处置」（pending 无最终结果）→ 升级人工。

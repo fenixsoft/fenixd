@@ -427,6 +427,30 @@ class PMEngine:
                 except Exception:
                     pass
 
+        # add-escalation-chain-admin-arbiter 4.2：处置链装配 + 存量迁移
+        # （daemon 启动 hook，版本哨兵 meta.migration_version 防重跑）。链
+        # 单例注入 project_root/logger、调查 run 门面（agent_runner）、状态
+        # 机与引擎回引（pm）；存量 pending 升级件一次性迁移（底层已闭环的
+        # 旧 pending 自动收口 close_cause=migrated，不回填入链）。装配故障
+        # 不阻断 PMEngine 构建（链缺席 = 既有落盘路径等价）。
+        try:
+            from core.pm_engine.escalation_chain import get_chain
+
+            chain = get_chain(project_root, logger, pm=self)
+            if chain is not None:
+                chain.set_runner(agent_runner)
+                chain.set_state_machine(state_machine)
+                chain.migrate_legacy_pending()
+        except Exception as e:
+            if logger is not None:
+                try:
+                    logger.warning(
+                        "pm_engine",
+                        f"处置链装配失败（按既有落盘路径降级）: {e}",
+                    )
+                except Exception:
+                    pass
+
         # 评审在飞查询回路注入（fix-spec-review-blocking-dispatch 3.7）：_
         # active_reviews 由 DispatchQueue 持有，reviewer_in_flight（agent_runner
         # 侧组件）需经 pm_engine 门面查询（agent_runner 不持 pm_engine）。

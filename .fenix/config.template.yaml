@@ -640,6 +640,27 @@ arbiter:
   # 尝试，半成品调查包升级人工（缺省 2——第一次失败留重试余量）。
   max_consecutive_failures: 2
 
+# ---- Escalation Chain（add-escalation-chain-admin-arbiter：处置链）----
+# 升级边信号默认进入自动处置链 Admin→Arbiter→Human（human 为例外出口）：
+# Admin 拍板面自治处置（配额内）→ 超出拍板面/配额耗尽自动转单 Arbiter 调查
+# 拍板 → 链终点失败才落人工告警（携全链痕）。链上成功即信号收口 + 显式状态
+# 解冻，零人工可感知告警。四键均为项目级配置，设置页「处置链」页签可编辑；
+# 链每次判定即时解析本配置（保存即热更新，无需重启）。
+chain:
+  # Admin 尝试配额（次/签名，缺省 2）：同签名 Admin 拍板尝试达本次数后自动
+  # 转单 Arbiter，不再重复同一拍板面。
+  admin_attempts: 2
+  # Arbiter 拍板配额（次/签名，缺省 2）：同签名 Arbiter 复现信号达本次数后
+  # 不再重派（死人开关单次豁免另计），强制升级人工。
+  arbiter_rulings: 2
+  # 配额复位窗（天，缺省 7）：签名静默满窗配额清零；SPEC 状态翻转即时清零，
+  # 不待窗满。
+  reset_window_days: 7
+  # 信号黑名单（kill switch，缺省空 = 全信号入链）：命中信号绕过处置链直达
+  # 人工，告警路径与合入前逐字节一致。示例：
+  # blacklist: ["verify_env_blocked"]
+  blacklist: []
+
 # ---- Project-Specific Commands ----
 commands:
   # Test command (how to run the test suite)

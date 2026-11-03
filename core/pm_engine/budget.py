@@ -96,6 +96,39 @@ def clamp_impl_run_budget(raw, max_value: int = IMPL_RUN_BUDGET_MAX_DEFAULT) -> 
     return val
 
 
+def apply_budget_override(state_machine, spec_name: str, raw, max_value: int | None = None) -> int | None:
+    """把 Arbiter 预算豁免拍板值写入 per-spec 覆盖字段（add-escalation-chain-
+    admin-arbiter 3.2 预算豁免拍板动作面的框架侧执行单点）。
+
+    复用 ``impl_run_budget_override`` 既有字段（不新增 schema，与人工
+    Dashboard 设置同一写点语义）；夹紧口径与闸门/Dashboard 同源
+    （:func:`clamp_impl_run_budget`，上限 ``agents.impl_run_budget_max``——
+    未显式传入时从项目 config 现读，读不到回缺省）。写入经 ``update_spec``
+    （文件锁原子写）。返回夹紧后的生效值；非法值（非整数）返回 None 且不
+    落盘（调用方留 WARNING）。state_machine 缺席或写失败上抛由调用方容错
+    （不阻断处置主流程）。
+    """
+    if max_value is None:
+        max_value = IMPL_RUN_BUDGET_MAX_DEFAULT
+        try:
+            from core.config import ConfigLoader
+
+            root = state_machine.state_path.parent.parent
+            cfg = ConfigLoader.load(Path(root) / ".fenix" / "config.yaml")
+            max_value = effective_impl_budget_max(
+                cfg if isinstance(cfg, dict) else {}
+            )
+        except Exception:
+            max_value = IMPL_RUN_BUDGET_MAX_DEFAULT
+    applied = clamp_impl_run_budget(raw, max_value)
+    if applied is None:
+        return None
+    state_machine.update_spec(
+        spec_name, {IMPL_RUN_BUDGET_OVERRIDE_FIELD: applied}
+    )
+    return applied
+
+
 # 持久化字段名：当前 spec 已累计启动的实现 run 次数。
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────────────

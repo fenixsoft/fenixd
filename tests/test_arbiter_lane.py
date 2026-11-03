@@ -249,19 +249,24 @@ class TestTriggerSurface:
         finally:
             sm_mod.set_arbiter_freeze_hook(None)
 
-    def test_excluded_signal_types(self):
-        """condition 排除表：token 预算 / spec_integrity / queue 异常类不进。"""
-        lane = ArbiterLane(Path("/tmp"), None)
-        for sig in (
-            "impl_budget_exhausted",      # token 预算
-            "impl_budget_exempt_loop",
-            "spec_content_missing",       # spec_integrity
-            "spec_delivered_no_content",
-            "redispatch_loop_detected",   # queue 异常
-        ):
-            assert sig in ARBITER_EXCLUDED_SIGNAL_TYPES
-            assert lane.in_trigger_surface(sig) is False
+    def test_excluded_signal_types(self, tmp_path):
+        """黑名单 kill switch：chain.blacklist 内 signal 不进链不进 Arbiter。
+
+        触发面反转（add-escalation-chain-admin-arbiter 3.3）：旧「白名单+排除
+        表」被 chain.blacklist 取代（初始为空——升级边默认自动化处置）；名单
+        内信号直达人工队列。读取失败按空名单 fail-open（放行方向）。
+        """
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  blacklist: [impl_budget_exhausted, spec_content_missing]\n",
+            encoding="utf-8")
+        lane = ArbiterLane(tmp_path, None)
+        for sig in ("impl_budget_exhausted", "spec_content_missing"):
+            assert lane.in_trigger_surface(sig) is False, sig
+        # 名单外默认在触发面——含旧排除表词汇（反转后可进链自动化处置）
         assert lane.in_trigger_surface("verify_env_blocked") is True
+        assert lane.in_trigger_surface("redispatch_loop_detected") is True
 
     def test_production_signal_vocabulary_in_surface(self):
         """触发面白名单 MUST 覆盖全部生产冻结/升级信号词汇（2026-11-01 两段修复）。
@@ -342,7 +347,16 @@ class TestDedupAndRecurrence:
         # _process_trigger 结果为准，这里只断言补绑生效不抛）
 
     def test_recurrence_escalates_without_run(self, tmp_path):
-        """同签名处置成功后复发：不再派发，直接产裁决包升级（design D6）。"""
+        """同签名拍板配额耗尽后复发：不再派发，直接产裁决包升级（D6 配额制）。
+
+        旧「同签名仅一次」单发纪律被配额制取代（add-escalation-chain-
+        admin-arbiter 3.3）：拍板 arbiter_rulings 次内复现正常重派（配额内
+        自愈），耗尽后第 rulings+1 次复现强制上升。此处 cap=1：首拍即耗尽。
+        """
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\nchain:\n  arbiter_rulings: 1\n",
+            encoding="utf-8")
         report = {"outcome": "resolved", "summary": "s", "root_cause": "r",
                   "scene_snapshot": "snap", "forensic_timeline": [],
                   "actions_taken": ["a"], "evidence_refs": ["e"],
@@ -350,12 +364,12 @@ class TestDedupAndRecurrence:
         runner = FakeRunner(tmp_path, script={"run": report})
         sm = FakeStateMachine()
         lane = make_lane(tmp_path, runner=runner, sm=sm)
-        # 第一轮：自主处置成功（sig 进 _dispositioned）
+        # 第一轮：自主处置成功（拍板计数 1/1 落 chain 状态文件）
         lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         first_runs = len(runner.run_agent_calls)
         assert first_runs >= 1
-        # 同根因复发（新触发、同签名）：不再自主处置，直接升级
+        # 同根因复发（新触发、同签名）：配额耗尽，不再自主处置，直接升级
         out = lane.submit_for_alert(
             None, {"spec": "spec-a", "signal_type": "verify_env_blocked",
                    "description": "再次冻结"},

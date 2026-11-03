@@ -78,6 +78,12 @@ HUMAN_SEVERITIES = ("critical", "major")
 # 记录即经典条件族自动闭环（字段缺省语义）。
 CLOSED_BY_DISPOSITION = "closed-by-disposition"
 
+# add-escalation-chain-admin-arbiter 4.1：处置链闭环自动收口的 close_cause
+# 字段值。链上任一级（Admin/Arbiter）成功闭环时，本签名此前升到人工队列的
+# 在队上升件随之自动收口（零人工感知闭环的收尾半边）。与随处置收口
+# （CLOSED_BY_DISPOSITION）、条件族自动闭环（无 close_cause）三分审计。
+CLOSED_BY_CHAIN = "closed-by-chain"
+
 
 def severity_needs_human(severity: str) -> bool:
     return (severity or "").lower() in HUMAN_SEVERITIES
@@ -1024,6 +1030,40 @@ class AdminStore:
                     # 显式成因标记（6aec6b094174）：handled_by 与 auto_resolve
                     # 同署，审计按本字段区分随处置收口与条件族自动闭环
                     rec["close_cause"] = CLOSED_BY_DISPOSITION
+                    changed += 1
+            return changed
+
+        return self._mutate(mutate, skip_unchanged=True)
+
+    def close_escalations_by_chain(self, signature: str, resolve_note: str) -> int:
+        """收口某链签名名下的全部未处理上升件（处置链闭环自动收口）。
+
+        add-escalation-chain-admin-arbiter 4.1：链上任一级后续成功闭环时，
+        本签名此前升到人工队列的在队上升件随之自动收口。匹配口径 = 记录
+        ``chain.signature`` 关联键（链终点写入，add-escalation-chain-admin-
+        arbiter 1.3）——精确对账本链处置史，不按 spec/signal_type 宽匹配
+        （避免误收口同 spec 其他信号族的人工件）。close_cause=CLOSED_BY_CHAIN
+        与随处置收口（CLOSED_BY_DISPOSITION）、条件族自动闭环（无
+        close_cause）三分审计。已处理条目不可覆盖。返回关闭数量。
+        """
+        if not signature:
+            return 0
+
+        def mutate(records):
+            changed = 0
+            closed_at = _utcnow_iso()
+            for rec in records:
+                if (
+                    rec.get("kind") == ESCALATION
+                    and not rec.get("handled")
+                    and str((rec.get("chain") or {}).get("signature") or "") == signature
+                ):
+                    rec["handled"] = True
+                    rec["handled_by"] = AUTO_RESOLVE_BY
+                    rec["handled_at"] = closed_at
+                    rec["resolve_note"] = resolve_note
+                    # 显式成因标记：审计按本字段区分链上收口与随处置收口
+                    rec["close_cause"] = CLOSED_BY_CHAIN
                     changed += 1
             return changed
 

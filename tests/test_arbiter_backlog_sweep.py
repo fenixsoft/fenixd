@@ -307,13 +307,24 @@ class TestBacklogSweepExclusions:
         assert lane.sweep_backlog()["scanned"] == 0
 
     def test_out_of_surface_signal_excluded(self, tmp_path):
-        """pending 告警 signal_type 在触发面白名单外：不回扫（留 narrative）。"""
+        """黑名单 kill switch 命中的 pending 告警：不构成机器升级告警半边，
+        候选阶段即剔除（不进链不进 Arbiter，直达人工队列）。
+
+        触发面反转后（add-escalation-chain-admin-arbiter 3.3）默认全信号在面
+        （黑名单初始为空）；人工兜底信号由 chain.blacklist 显式圈定。
+        """
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  blacklist: [impl_budget_exhausted]\n", encoding="utf-8")
         write_pending_alert(tmp_path, "spec-a", signal_type="impl_budget_exhausted")
         lane = make_lane(
             tmp_path,
             sm=FakeStateMachine({"spec-a": {"frozen": True}}),
         )
-        assert lane.sweep_backlog()["scanned"] == 0
+        summary = lane.sweep_backlog()
+        assert summary["scanned"] == 0
+        assert summary["dispatched"] == []
 
     def test_not_frozen_excluded(self, tmp_path):
         """有 pending 告警但 spec 未冻结：不回扫。"""
@@ -374,12 +385,17 @@ class TestBacklogSweepIdempotence:
         assert len(runner.run_agent_calls) == 1
 
     def test_sweep_after_restart_no_redispatch(self, tmp_path):
-        """跨重启幂等：新 lane（进程内存 dedup 清空）+ 台账已记账 → 不再派发。
+        """跨重启幂等：新 lane（进程内存 dedup 清空）+ 拍板配额已耗尽 → 不再派发。
 
-        模拟：上一进程回扫派发 → 调查终态（升级）落台账 → 重启后新 lane
-        再回扫——签名已在既有处置台账，回扫不重复派发（不另记回扫簿，
-        台账即持久幂等层）。
+        模拟：上一进程回扫派发 → 调查终态（升级裁决）落台账并计拍板配额 →
+        重启后新 lane 再回扫——配额制幂等层（add-escalation-chain-admin-
+        arbiter 3.3）：升级裁决也计拍板（cap=1 一次即耗尽），候选阶段即剔除
+        （chain 状态文件持久化，不另记回扫簿）。
         """
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\nchain:\n  arbiter_rulings: 1\n",
+            encoding="utf-8")
         write_pending_alert(tmp_path, "spec-a")
         runner = FakeRunner(tmp_path, script={"run": {
             "outcome": "escalate", "summary": "s", "root_cause": "r",
@@ -396,7 +412,7 @@ class TestBacklogSweepIdempotence:
         second = make_lane(tmp_path, runner=runner2,
                            sm=FakeStateMachine({"spec-a": {"frozen": True}}))
         summary = second.sweep_backlog(source="startup")
-        assert summary["scanned"] == 0  # 台账命中 → 候选阶段即剔除
+        assert summary["scanned"] == 0  # 拍板配额耗尽 → 候选阶段即剔除
         assert summary["dispatched"] == []
         assert drain(second)
         assert runner2.run_agent_calls == []
@@ -604,8 +620,12 @@ class TestMachineEvidenceBackfill:
 
 class TestExcludedAccounting:
     def test_excluded_signal_candidate_accounted(self, tmp_path):
-        """排除表信号候选计入 summary['excluded']——不落三零假象
+        """黑名单命中候选计入 summary['skipped']——不落三零假象
         （fix-planner 候选=1 派发=0 dedup=0 失败=0 实证：excluded 落空计数）。"""
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  blacklist: [spec_content_missing]\n", encoding="utf-8")
         lane = make_lane(
             tmp_path,
             runner=FakeRunner(tmp_path, script={"run": dict(RESOLVED_REPORT)}),

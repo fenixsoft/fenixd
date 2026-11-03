@@ -168,6 +168,63 @@ class H6AlertRoutesMixin:
             "resolved": all_resolved,
         }
 
+    def _api_chain(self, query) -> dict:
+        """处置链只读视图（add-escalation-chain-admin-arbiter 5.2）。
+
+        ?project=<name> → 该项目链聚合（data 层 chain_overview 单读）；
+        缺省 → 跨项目聚合（同 _api_alerts 缺省分支口径：跳过 fixture/
+        不存在项目，在办件/签名水位/上升件逐条注入 ``project`` 字段，
+        summary 逐项累加）。
+
+        错误契约同 _api_alerts（**有意 200**）：?project 指向不存在/未就绪
+        项目时返回 ``{"error": "project not found"}`` 字典（HTTP 仍 200，
+        调用方按 body.error 判错）。零写动作——视图是观测面，本端点不提供
+        任何链状态变更入口（链状态只由链运行时与管理配置通道演进）。
+        """
+        project_name = query.get("project", [None])[0]
+        if project_name:
+            project = self.server.project_by_name(project_name)
+            if project is None or not project.get("exists"):
+                return {"error": "project not found"}
+            proot = Path(project["path"])
+            return {"project": project["name"], **dashboard_data.chain_overview(proot)}
+
+        projects_out = []
+        summary_keys = ("in_flight", "signatures", "quota_exhausted", "escalations", "queue")
+        totals = {k: 0 for k in summary_keys}
+        in_flight = []
+        signatures = []
+        escalations = []
+        for p in self._aggregatable_projects():
+            proot = Path(p["path"])
+            view = dashboard_data.chain_overview(proot)
+            projects_out.append({"name": p["name"], **view["summary"]})
+            for key in summary_keys:
+                totals[key] += int(view["summary"].get(key) or 0)
+            for section, bucket in (
+                ("in_flight", in_flight),
+                ("signatures", signatures),
+                ("escalations", escalations),
+            ):
+                for item in view[section]:
+                    row = dict(item)
+                    row["project"] = p["name"]
+                    bucket.append(row)
+        escalations.sort(
+            key=lambda r: _activity_created_ts(r.get("created")), reverse=True
+        )
+        in_flight.sort(
+            key=lambda r: _activity_created_ts(r.get("started_at")), reverse=True
+        )
+        return {
+            "total": totals,
+            "projects": projects_out,
+            "in_flight": in_flight,
+            "signatures": signatures,
+            "escalations": escalations,
+            "queue": [r for r in escalations if not r.get("handled")],
+        }
+
 
     def _api_admin_activities(self, query) -> dict:
         """读取 Administrator 活动记录（运维记录时间线）。

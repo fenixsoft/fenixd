@@ -362,6 +362,9 @@ def _get_events(s, p, q, m):
 def _get_alerts(s, p, q, m):
     s._json(s._api_alerts(q))
 
+def _get_chain(s, p, q, m):
+    s._json(s._api_chain(q))
+
 def _get_admin_activities(s, p, q, m):
     s._json(s._api_admin_activities(q))
 
@@ -680,6 +683,9 @@ _API_GET_ROUTES = [
     ("regex", r"^/api/runs/(.+)$",     _get_runs_watch),
     ("exact", "/api/events",           _get_events),
     ("exact", "/api/alerts",           _get_alerts, _sig_alerts),
+    # 处置链只读视图（add-escalation-chain-admin-arbiter 5.2，GET 无副作用；
+    # 人观测频率页面，未挂 ETag 签名——3 元组条目，_dispatch_table 容错解包）
+    ("exact", "/api/chain",            _get_chain),
     ("exact", "/api/admin-activities", _get_admin_activities, _sig_admin_activities),
     # config 是自含响应 handler（_api_config_get 自写 _json/_error）——其 304
     # 短路与 200 的 ETag 头同样经适配层（_dispatch_table 短路在 handler 调用

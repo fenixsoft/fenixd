@@ -181,13 +181,24 @@ class TestRedLineContract:
 
 class TestRecurrenceEscalation:
     def test_recurrence_goes_straight_to_upgrade(self, tmp_path):
-        """同签名处置后复发 → 直接升级，不再自主处置（design D6）。"""
+        """同签名拍板配额耗尽后复发 → 直接升级，不再自主处置（D6 配额制）。
+
+        旧「同签名仅一次」单发纪律被配额制取代（add-escalation-chain-
+        admin-arbiter 3.3）：拍板 arbiter_rulings 次内复现走正常重处置
+        （配额内自愈），耗尽后第 rulings+1 次复现强制上升。此处 cap=1：
+        首拍即耗尽，第二次触发直接 recurrence-escalated。
+        """
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\nchain:\n  arbiter_rulings: 1\n",
+            encoding="utf-8")
         report = {**GOOD_REPORT}
         runner = FakeRunner(tmp_path, script={"run": report})
         lane = make_lane(tmp_path, runner=runner)
         lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert drain(lane)
         runs_after_first = len(runner.run_agent_calls)
+        assert runs_after_first >= 1
         out = lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked")
         assert out == "recurrence-escalated"
         assert len(runner.run_agent_calls) == runs_after_first
@@ -307,20 +318,42 @@ class TestDisabledZeroIntrusion:
         ) is False
 
     def test_yield_gate_enabled_blocked_signal_true(self, tmp_path):
-        """enabled=true + 触发面内 signal → 让位 True。"""
-        set_lane(None)
-        assert narrative_yielded_to_arbiter(
-            "verify_env_blocked",
-            {"project_root": tmp_path, "logger": None},
-        ) is True
+        """链激活（enabled + runner/state_machine 就绪）+ 触发面内 signal → True。"""
+        from core.pm_engine.escalation_chain import reset_chain
 
-    def test_yield_gate_excluded_signal_false(self, tmp_path):
-        """enabled=true 但排除表 signal（token 预算/spec_integrity）→ False。"""
         set_lane(None)
-        for sig in ("impl_budget_exhausted", "spec_content_missing",
-                    "redispatch_loop_detected"):
+        reset_chain()
+        lane = make_lane(tmp_path)
+        set_lane(lane)
+        try:
             assert narrative_yielded_to_arbiter(
-                sig, {"project_root": tmp_path, "logger": None}) is False
+                "verify_env_blocked",
+                {"project_root": tmp_path, "logger": None},
+            ) is True
+        finally:
+            set_lane(None)
+            reset_chain()
+
+    def test_yield_gate_blacklisted_signal_false(self, tmp_path):
+        """黑名单 kill switch：名单内 signal 即使链激活也让位 False（直达人工）。"""
+        from core.pm_engine.escalation_chain import reset_chain
+
+        set_lane(None)
+        reset_chain()
+        (tmp_path / ".fenix").mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  blacklist: [verify_env_blocked]\n", encoding="utf-8")
+        lane = make_lane(tmp_path)
+        set_lane(lane)
+        try:
+            assert narrative_yielded_to_arbiter(
+                "verify_env_blocked",
+                {"project_root": tmp_path, "logger": None},
+            ) is False
+        finally:
+            set_lane(None)
+            reset_chain()
 
     def test_disabled_lane_no_writes_on_submit(self, tmp_path):
         """关闭态 submit：零派发、零台账、零侧车（s8 关闭态零侵扰）。"""
@@ -516,11 +549,13 @@ class TestNarrativeYieldIsolation:
 
 class TestFrozenAlertPathIntegration:
     def test_family_throat_yields_and_dispatches(self, tmp_path):
-        """1.2 集成面：_send_human_escalation_alert 改道经 lane.submit_for_alert
-        （让位命中 → dispatched ∈ queued/deduped/recurrence-escalated）。"""
+        """1.3 集成面：_send_human_escalation_alert 链优先改道
+        chain.submit_entry（链接单 → 零人工落盘、零 narrative 补叙）。"""
         from core.pm_engine.family import FamilyGovernor
+        from core.pm_engine.escalation_chain import get_chain, reset_chain
 
-        lane = make_lane(tmp_path)
+        reset_chain()
+        chain = get_chain(tmp_path, FakeLogger())
 
         class FakePM:
             project_root = tmp_path
@@ -528,13 +563,11 @@ class TestFrozenAlertPathIntegration:
 
         captured = {}
 
-        def fake_submit_for_alert(pm, entry, alert_id):
-            captured["entry"] = entry
-            captured["alert_id"] = alert_id
+        def fake_submit_entry(**kwargs):
+            captured.update(kwargs)
             return "queued"
 
-        lane.submit_for_alert = fake_submit_for_alert
-        set_lane(lane)
+        chain.submit_entry = fake_submit_entry
         governor = FamilyGovernor.__new__(FamilyGovernor)
         governor._pm = FakePM()
         import core.adjudication_narrative as adj_mod
@@ -548,9 +581,12 @@ class TestFrozenAlertPathIntegration:
             )
         finally:
             adj_mod.schedule_narrative = orig_sched
-            set_lane(None)
-        assert captured.get("alert_id"), "告警咽喉必须携带 alert_id 派发"
-        assert captured["entry"]["spec"] == "spec-a"
+            reset_chain()
+        assert captured.get("spec") == "spec-a"
+        assert captured.get("signal_type") == "verify_env_blocked"
+        assert captured.get("source") == "escalation-alert"
+        assert AdminStore(tmp_path, FakeLogger()).read_all() == [], \
+            "链接单后 MUST NOT 落人工告警（链内自动化处置零人工感知）"
         assert scheduled == [], "让位命中时 narrative MUST 跳过（不双重补叙）"
 
 

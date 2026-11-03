@@ -2460,6 +2460,62 @@ class ConfigLoader:
             ),
         }
 
+    # ── 处置链四键（add-escalation-chain-admin-arbiter 1.5）──────────────
+    # enabled 无独立键：链总开关复用 arbiter.enabled（spec「arbiter.enabled=
+    # false 或链失能时整体退回现状」，单一开关防两处状态漂移）。
+    # admin_attempts: Admin 尝试配额/签名（run 崩溃/超时计一次；超范围转单不计）
+    # arbiter_rulings: Arbiter 复现配额/签名（第 N+1 次复现强制上升人工）
+    # reset_window_days: 配额复位窗（连续 N 天无复现清零；spec 状态迁移也清零）
+    # blacklist: 黑名单信号清单（kill switch——名单内信号绕过全链直达人工队列，
+    #   初始空集；原 arbiter 白名单/排除表机制取消，排除表语义并入此键）
+    CHAIN_ADMIN_ATTEMPTS_DEFAULT = 2
+    CHAIN_ARBITER_RULINGS_DEFAULT = 2
+    CHAIN_RESET_WINDOW_DAYS_DEFAULT = 7
+    CHAIN_BLACKLIST_DEFAULT: list = []
+
+    @classmethod
+    def get_chain_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``chain`` 段四键，缺失/非法值回退缺省（不抛异常）。
+
+        - admin_attempts: 正整数，缺省 2（bool 是 int 子类显式排除）
+        - arbiter_rulings: 正整数，缺省 2
+        - reset_window_days: 正整数天，缺省 7
+        - blacklist: 字符串列表（非 list 或含非字符串项的脏值逐项过滤，
+          全非法回退缺省空集）
+
+        节缺失、键缺失或值非法时不抛异常；30s 配置热更新自然生效（每次
+        触发判定即时解析）。
+        """
+        section = cls._segment_or_empty(config, "chain")
+        raw_blacklist = section.get("blacklist", cls.CHAIN_BLACKLIST_DEFAULT)
+        if not isinstance(raw_blacklist, (list, tuple)):
+            raw_blacklist = cls.CHAIN_BLACKLIST_DEFAULT
+        blacklist = sorted(
+            {
+                str(item).strip()
+                for item in raw_blacklist
+                if isinstance(item, str) and str(item).strip()
+            }
+        )
+        return {
+            "admin_attempts": cls._normalize_int_value(
+                section.get("admin_attempts"),
+                cls.CHAIN_ADMIN_ATTEMPTS_DEFAULT,
+                positive=True,
+            ),
+            "arbiter_rulings": cls._normalize_int_value(
+                section.get("arbiter_rulings"),
+                cls.CHAIN_ARBITER_RULINGS_DEFAULT,
+                positive=True,
+            ),
+            "reset_window_days": cls._normalize_int_value(
+                section.get("reset_window_days"),
+                cls.CHAIN_RESET_WINDOW_DAYS_DEFAULT,
+                positive=True,
+            ),
+            "blacklist": blacklist,
+        }
+
     BRANCH_GC_ENABLED_DEFAULT = True
     BRANCH_GC_RETENTION_DAYS_DEFAULT = 7
     # retention_days 最小值 1（0/负数无语义：当天即删，宽限期形同虚设）。

@@ -40,6 +40,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/alerts/<id>/handled?project=<name> → 标记升级告警已处理
     POST /api/alerts/clear → 清理所有事件：全部项目未处理告警一次标记已处理
     GET /api/admin-activities?project=<name> → Administrator 活动记录（运维记录时间线，未处理升级关联置顶）
+    GET /api/chain?project=<name> → 处置链只读视图（在办/队列/配额水位/上升件，缺省跨项目聚合）
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
 
     ……以上仅为代表性摘录：spec-freeze / spec-activate / spec-resume /

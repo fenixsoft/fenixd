@@ -102,6 +102,21 @@ class FakeLogger:
         pass
 
 
+def disable_escalation_chain(project_root) -> None:
+    """升级边告警路径测试的链降级开关（项目级 arbiter.enabled=false）。
+
+    add-escalation-chain-admin-arbiter 1.3 咽喉改道后框架信号默认入处置链
+    （queued 零人工落盘）；断言「告警落 admin store」既有语义的测试族须在
+    装配 PMEngine 前调用本助手，走咽喉回落路径（降级态与合入前逐字节一致，
+    参见 test_escalation_chain.TestDegradedAlertPathParity）。
+    """
+    cfg_dir = Path(project_root) / ".fenix"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.yaml").write_text(
+        "arbiter:\n  enabled: false\n", encoding="utf-8"
+    )
+
+
 def make_runner(proot: Path, config: dict | None = None):
     """构造最小 AgentRunner 实例（绕过真实 __init__ 的 worktree/state_machine 依赖）。
 

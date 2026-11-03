@@ -245,6 +245,44 @@ def _ledger_created_key(entry: dict):
     return (1, dt)
 
 
+# 处置链事件 kinds（add-escalation-chain-admin-arbiter 5.1）：链事件台账
+# 与 Arbiter 处置台账同文件（escalation_chain._write_chain_event 落），
+# 时间轴按 spec 归并派生独立链节点（链叙事：派发→转单/拍板/复现→闭环/上升）。
+_CHAIN_EVENT_KINDS = frozenset(
+    {
+        "chain-dispatch",
+        "chain-handoff",
+        "chain-closed",
+        "chain-escalated",
+        "chain-recurrence",
+    }
+)
+
+
+def _chain_events_for_spec(project_root, spec_name: str) -> list:
+    """处置链事件联查（add-escalation-chain-admin-arbiter 5.1）。
+
+    台账单源 ``load_arbiter_ledger`` 读入一次（自带文件缺失/损坏行
+    fail-open），过滤 chain-* kinds ∧ spec 全等，created 升序（链叙事顺序）。
+    读侧任何异常 fail-open 返回空列表（时间轴零新增节点）。
+    """
+    try:
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        entries = load_arbiter_ledger(project_root)
+    except Exception:  # noqa: BLE001 —— 链事件联查失败不阻断时间轴
+        return []
+    out = [
+        e
+        for e in entries
+        if isinstance(e, dict)
+        and e.get("kind") in _CHAIN_EVENT_KINDS
+        and str(e.get("spec") or "") == str(spec_name)
+    ]
+    out.sort(key=_ledger_created_key)
+    return out
+
+
 # 台账长文本下发截断（design D3：防巨型行破锚定窗前科）
 _ARBITER_FIELD_TRUNCATE = 200
 
@@ -530,6 +568,29 @@ def get_spec_timeline(
             if cost is not None:
                 node["cost_usd"] = cost
         events.append(node)
+
+    # 处置链全链节点（add-escalation-chain-admin-arbiter 5.1）：链事件台账
+    # 联查（chain-* kinds ∧ spec 全等），逐条派生独立链节点——Admin 尝试
+    # （chain-dispatch）/转单（chain-handoff，handoff_reason 摘要随
+    # action_or_upgrade 下发）/Arbiter 拍板与复现计数（chain-closed/
+    # chain-recurrence）/上升件（chain-escalated）。台账缺失/损坏行 fail-open
+    # 静默省略（对齐 arbiter 台账联查模式）；global 信号不落 spec 时间轴
+    # （spec_name 为空零联查）。
+    if spec_name:
+        for ev in _chain_events_for_spec(project_root, spec_name):
+            events.append(
+                {
+                    "time": str(ev.get("created") or ""),
+                    "kind": "chain",
+                    "chain_kind": str(ev.get("kind") or ""),
+                    "chain_id": str(ev.get("chain_id") or ""),
+                    "signature": str(ev.get("signature") or ""),
+                    "signal_type": ev.get("signal_type"),
+                    "summary": str(ev.get("action_or_upgrade") or "")[
+                        :_ARBITER_FIELD_TRUNCATE
+                    ],
+                }
+            )
 
     # ── 验证执行节点：verify_engine 是确定性引擎而非 agent run（不产生
     # runs/*.jsonl），时间轴原本不可见——full 模式 testing→verified 之间无节点

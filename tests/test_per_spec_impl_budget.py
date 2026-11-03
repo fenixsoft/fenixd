@@ -32,6 +32,9 @@ from core.state_machine import StateMachine
 
 def _mk_engine(project_root, logger, config=None):
     from core.pm_engine import PMEngine
+    from helpers import disable_escalation_chain
+
+    disable_escalation_chain(project_root)
     sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), config or {}, project_root, logger)
     engine.handle_event = MagicMock()

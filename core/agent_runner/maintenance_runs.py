@@ -620,6 +620,13 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         # 透传（缺键缺省空串，存量记录零迁移；随 AdminDisposition 进 final
         # 记录落盘，载荷型选项经 _apply_choice_execution 原文直传执行器）
         choice_payload=str(disp.get("choice_payload") or ""),
+        # add-escalation-chain-admin-arbiter 2.2：链上处置结构化转单字段透传
+        # （handoff/handoff_reason 独立于 result=escalate 通道；status_after
+        # 显式解冻目标，链侧按 SpecStatus.ALL 校验）。缺键缺省空串，存量
+        # 处置记录零迁移。
+        handoff=str(disp.get("handoff") or ""),
+        handoff_reason=str(disp.get("handoff_reason") or ""),
+        status_after=str(disp.get("status_after") or ""),
     )
 
 
