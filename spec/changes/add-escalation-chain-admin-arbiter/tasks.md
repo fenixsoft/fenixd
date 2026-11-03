@@ -33,8 +33,8 @@
   kind: modify
 - path: core/dashboard/static/dist/index.html
   kind: reference
-- path: .fenix/config.yaml
-  kind: reference
+- path: .fenix/config.template.yaml
+  kind: modify
 - path: tests/test_escalation_chain.py
   kind: new
 - path: tests/test_arbiter_lane.py
@@ -46,8 +46,8 @@
 ## 1. 链入口与派发器
 
 - [ ] 1.1 清点 `_send_human_escalation_alert` 与 `freeze_for_human` 全部调用点并标注来源（框架/链成员），链入口按来源判定：框架信号入链头，链成员产出转单不重入（防自环清单落测试）
-- [ ] 1.2 新建 `core/pm_engine/escalation_chain.py`：链级派发器（事件驱动直派、同签名 dedup、复用 Admin 在飞互斥守卫、队列深度上限、黑名单 kill switch 判定、链级失能 fail-open 判定+一次性 WARN）
-- [ ] 1.3 咽喉改道：升级边默认调链派发器而非落 admin_alerts；人工告警写入收敛为链终点专属路径（附链上下文：Admin 尝试痕/台账回链/链 run_id 关联键）
+- [ ] 1.2 新建 `core/pm_engine/escalation_chain.py`：链级派发器（事件驱动直派、同签名 dedup、复用 Admin 在飞互斥守卫、队列深度上限、黑名单 kill switch 判定、链级失能 fail-open 判定+一次性 WARN）；`core/admin_monitor.py` 兜底看护对象扩展全链在办件（design 决策 1，pending 超时升级语义不变）
+- [ ] 1.3 咽喉改道：`core/pm_engine/family.py` 升级边默认调链派发器而非落 admin_alerts；`core/adjudication_narrative.py` 让位判定方向反转（`narrative_yielded_to_arbiter` 从白名单命中让位改为非黑名单即链头派发判定，消费点 family.py:1688）；人工告警写入收敛为链终点专属路径（附链上下文：Admin 尝试痕/台账回链/链 run_id 关联键）
 - [ ] 1.4 配额状态文件 `.fenix/escalation_chain_state.json`（daemon 运行时写，代码交付读写层）：签名键（复用 `arbiter_failure_signature` + spec=null 主体键提取）、双车道计数、7 天/状态迁移复位、dead-man 永久单次例外
 - [ ] 1.5 新配置键入 `core/config.py`（admin 链配额/复位窗/黑名单清单）+ 单测
 
@@ -61,7 +61,7 @@
 ## 3. Arbiter 接单与拍板面
 
 - [ ] 3.1 转单载荷注入：Admin 尝试痕（run 摘要/失败原因/handoff_reason）进 Arbiter 调查 prompt（`agents/arbiter.md` 契约段 + prompt_builder）
-- [ ] 3.2 预算豁免拍板动作面：Arbiter 处置 side-effects 写 spec 预算 override 字段（复用 `impl_run_budget_override` 等，不新增 schema）+ 台账留痕
+- [ ] 3.2 预算豁免拍板动作面：Arbiter 处置 side-effects 写 spec 预算 override 字段（复用 `impl_run_budget_override` 等，不新增 schema；`core/pm_engine/budget.py` 消费侧与 `core/state_machine.py` 既有字段先例对齐）+ 台账留痕
 - [ ] 3.3 Arbiter 复现配额 2 次/签名：拍板计数、第 3 次复现强制上升；`_dispositioned`/`_ledger_sigs` 单次纪律与回扫排除逻辑改写为配额制（dead-man 例外保留），`test_arbiter_lane.py` 机械守卫同步改写并断言新语义
 - [ ] 3.4 失败双轨：自判失败/尝试无效/run 崩溃重试 1/2 次后上升（半成品调查包附上）——沿用既有失败重试骨架接线到上升件路径
 
