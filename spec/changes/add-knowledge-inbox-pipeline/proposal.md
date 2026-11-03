@@ -12,6 +12,9 @@ SPEC A（`add-knowledge-consumption-discipline`）打通消费后，生产侧仍
 3. 无 `log.md` 编年账——蒸馏/折叠事件不可回溯、不可 grep。
 4. `rewrite_source_links_to_archive` 对 `spec/knowledge/` 全量 `*.md` 做归档路径改写，
    未来引入的候选原文与编年账会被静默篡改。
+5. distill 铁律「sources 路径逐一真实存在」是机器检查项；现行 sources 仅接受
+   `spec/changes/<SPEC名>` 与 `spec/archive/<date-名>` 两态目录形态，无 file 形态，
+   候选原文不可作溯源目标。
 
 ## What Changes
 

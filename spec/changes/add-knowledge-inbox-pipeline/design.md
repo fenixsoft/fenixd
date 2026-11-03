@@ -11,7 +11,8 @@
 - `rewrite_source_links_to_archive`（`core/knowledge.py:670`）当前对
   `spec/knowledge/` 下全部 `*.md` 改写 `spec/changes/<名>` → `spec/archive/<date-名>`。
 - distill 铁律「sources 路径逐一真实存在」是机器检查项；现行 sources 仅接受
-  `spec/changes/<SPEC名>` 目录形态。
+  `spec/changes/<SPEC名>` 与 `spec/archive/<date-名>` 两态目录形态（origin 分支校验），
+  无 file 形态。
 - distill 触发点：SPEC push 终态；队列台账单写者见 ADR-234
   （`backfill-distill-queue-ledger-registration-single-writer`）。
 

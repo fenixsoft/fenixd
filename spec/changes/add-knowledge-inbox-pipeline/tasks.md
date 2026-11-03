@@ -5,6 +5,8 @@
   kind: modify
 - path: core/knowledge_audit.py
   kind: modify
+- path: core/knowledge_backfill.py
+  kind: modify
 - path: core/dashboard/routes/knowledge_routes.py
   kind: modify
 - path: core/dashboard/static/src/pages/projects/components/KnowledgeTab.tsx
@@ -38,9 +40,10 @@
 - [ ] 1.1 创建 `spec/knowledge/_inbox/README.md`：投递契约（自由格式 markdown，
       含背景/结论/证据段即可，不守能力页契约）、折叠成功移 `done/`、校验失败滞留
       原地待下轮重试、`done/` 为溯源永久保留区
-- [ ] 1.2 `core/knowledge.py` 的 validate/audit 扫描范围显式排除 `_inbox/**`
-      （现状天然体外，补显式排除防未来扫描范围变更误伤），新增测试断言：含 marker
-      缺失/超行数/失效链接的 `_inbox` 夹具不产生任何违规
+- [ ] 1.2 扫描范围显式排除 `_inbox/**`（现状天然体外，补显式排除防未来扫描范围
+      变更误伤）：validate 侧在 `core/knowledge.py`（domains/index/adr 遍历点），
+      audit 侧在 `core/knowledge_audit.py`（候选集 rglob 收集点，现仅扫 `domains/`）；
+      新增测试断言：含 marker 缺失/超行数/失效链接的 `_inbox` 夹具不产生任何违规
 
 ## 2. marker sources 契约扩展
 
@@ -64,8 +67,10 @@
       `## [YYYY-MM-DD HH:MM UTC+8] <操作> | <主题>`（操作 ∈ distill/fold/backfill/
       lint），本地时区显式标注，追加并发安全（文件锁或复用 ADR-234 单写者纪律），
       并发追加不丢行有测试
-- [ ] 4.2 distill/audit/backfill 轮收尾追加对应行（折叠轮先 fold 行后 distill 行），
-      测试覆盖轮次收尾留痕 Scenario
+- [ ] 4.2 distill/audit/backfill 轮收尾追加对应行（折叠轮先 fold 行后 distill 行）；
+      写入主体 MUST 为 daemon 代码侧轮收尾逻辑（依据 run 产物中的折叠/轮次结果
+      报告，如 status 行扩展段），MUST NOT 依赖车道 LLM 在轮内直接写 `log.md`
+      （写面纪律与并发安全在代码侧收口）；测试覆盖轮次收尾留痕 Scenario
 
 ## 5. 归档改写豁免
 
@@ -84,8 +89,12 @@
 ## 7. 蒸馏 prompt 归位
 
 - [ ] 7.1 四个 prompt 迁移到 `agents/` 平铺：agents/knowledge-distill.md、agents/knowledge-audit.md、agents/knowledge-backfill.md、agents/knowledge-prehistoric.md（与既有 agents 命名一致，内容分别来自 `core/knowledge_prompts/` 下同名文件）；先 merge main 再迁移（prompt 契约段纪律）；agents/knowledge-distill.md 增补 inbox 折叠段（与任务 3.1 代码行为一致）；知识车道加载点全部改为 `agents/` 新路径
-- [ ] 7.2 删除 `core/knowledge_prompts/` 全部四个文件（合并后目录不存在），全仓
-      grep 无旧路径残留引用（含测试、注释、文档），落位 `restart_request`
+- [ ] 7.2 删除 `core/knowledge_prompts/` 全部四个文件（合并后目录不存在），旧路径
+      残留引用清零——grep 验收范围＝活代码与活文档（`core/`、`tests/`、`agents/`、
+      `core/dashboard/static/src/`、`docs/`），MUST 显式豁免 `spec/changes/**` 与
+      `spec/archive/**`（历史流转记录不可篡改）及 `spec/knowledge/**`（能力页对
+      run 形态的历史描述由 distill 车道后续蒸馏自然更新，不入本 SPEC 验收）；
+      落位 `restart_request`
       交付物（根路径 JSON：reason/origin/date）并冒烟预演（全新进程 + 知识车道
       prompt 加载 + validate_knowledge），实际重启由 supervisor 消费信号完成
 
