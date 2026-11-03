@@ -1,7 +1,7 @@
 # 裁决选项静态注册表
 
-<!-- knowledge: capability=adjudication-choices-registry rev=6
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing -->
+<!-- knowledge: capability=adjudication-choices-registry rev=7
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/changes/register-revise-scenario-choice-on-intervention-signals -->
 
 按 signal_type 映射裁决选项集的纯静态注册表（`core/dashboard/data/adjudication_choices.py`），是人工下拉处置与 Administrator 自动处置共用的裁决空间。
 
@@ -16,6 +16,8 @@
 | `judge_rerun_cap` | manual_fixed_reverify / force_advance / abandon |
 | `verify_fail_escalation`（验证失败升级闸门） | continue_auto_fix（解冻+重置失败轮计数）/ manual_fixed_reverify / force_advance / abandon |
 | `inconclusive_loop`（env 豁免握手 inconclusive 升级停车） | grant_env_exemption（确认失败属环境且不可修复：写 spec 级 STATE 豁免落放行+重置重验，下轮 verified 合法生效带豁免回链）/ revise_scenario_reverify（修订场景定义与夹具供给层文件·重验，白名单路径，上限 2 次超限冻结转人工；唯一 requires_payload 选项）/ manual_fixed_reverify / abandon |
+| `manual-intervention`（Administrator 处置请求转人工边，携带具体 spec） | revise_scenario_reverify（唯一选项，与 inconclusive_loop 桶共享同一单源条目，语义同上） |
+| `verify_env_blocked`（pipeline 争议/环境阻塞转人工边，携带具体 spec） | revise_scenario_reverify（同上） |
 | `redispatch_loop_detected` | continue_auto_fix（解冻+清同因计数）/ manual_fixed_reverify / force_advance / abandon |
 | `spec-review-rejected`（评审否决达上限） | revise_reproposal（按否决意见改方案重评）/ force_advance / abandon |
 | `spec-review-incomplete`（评审器连坏） | retry_review（解冻重派评审）/ skip_review_gate / abandon |
@@ -28,10 +30,14 @@
 - `maintree_stray_wip_stale` 落库记录自带 choices 快照（照 mergeback 先例），`recommended_action` 文案带出选项 id，并与 `admin_monitor.py` 的 SIGNAL_RECOMMENDATION 同文同步（防双处漂移）。
 - 桶 0 知情/自愈类信号（`stale_code`、`transient_break_storm`、`run_infra_failure` 自动恢复、`run_cancelled`、误报类）不携带 `choices`，前端按「知道了」类渲染。
 - `choices` 字段可缺省：无该字段的存量告警记录，读取与渲染路径兼容（按无选项处理）。
+- 快照与实时解析双通道：前端人工下拉对存量告警维持发稿时 choices 快照集，注册表后续扩桶不回溯旧记录（记录缺快照时回退 `choices_for` 实时表）；Administrator 自动处置通道走 `resolve_choice` 实时解析、不受快照限制——新注册桶注册即对自动处置可达。
 - 查询未注册的 signal_type 返回空选项集，不抛异常。
 - 每个选项显式声明可选字段 `spec_scoped`：True=spec 作用域动作（动作语义针对具体 spec 的状态机，如 retry_review/force_advance/abandon），False=非作用域（不绑定具体 spec 状态机：确认/观察/写项目配置，乃至对主树工作区的受限 git 写如 commit_stray_wip）；字段缺省按 True 保守处理。可能全局形态的已注册桶，其选项集必须至少含一个非 spec_scoped 选项，否则全局信号下该桶选项永远无法执行。
 - 每个选项声明可选布尔键 `requires_payload`：true=该选项的动作执行 MUST 以 JSON 载荷为输入（载荷经处置记录 `choice_payload` 或人工裁决 note 传入），未声明按 false。`requires_payload` 为与 id/label/desc/action 同级同源的纯静态声明（无 LLM 生成、无运行时写入）；载荷要求判定收敛注册表单源——消费侧（处置产物硬门、自动执行通道）从 `resolve_choice` 解析结果读取该位，MUST NOT 各自硬编码选项名单（新增载荷型选项时双处漏改即复发）。当前仅 `revise_scenario_reverify` 置 true。
 - 全局形态判定单源 `is_global_spec`：spec 为 None/空串，或被占位符 `'global'` 顶替（`maintenance_runs` 以 `'global'` 占位空 spec；大小写与空白变体同判），对具体 spec 名判假。
+- `revise_scenario_reverify` 注册于 `inconclusive_loop` / `manual-intervention` / `verify_env_blocked` 三桶，跨桶以模块级单源常量按引用复用：id/action/spec_scoped/destructive/requires_payload 三桶逐项相等由 import 期注册表一致性自检 `_assert_registry_consistency` 钉死，任一单侧漂移在模块导入即抛 AssertionError 拒绝启动。场景争议类升级经两新信号抵达时，Administrator 自动处置通道经 `resolve_choice` 桶内精确解析可达场景修订重验出口（载荷与执行链见 [admin-choices-contract](admin-choices-contract.md)）；未注册 signal_type 的 `scoped-no-reverse` 全表反查收紧守卫维持不变。
+- 跨信号逐字共享的选项一律提为模块级单源常量、各信号元组按引用复用（字段演进只改一处）；desc 带信号特定文案的同名选项保持就地声明。
+- 单选项桶是有意收窄：注册面只收录有实弹证据支撑的出口，不为信号追加无证据选项；注册面不扩权——choice_id=None 的自由处置通道不受注册面限制，admin/人工仍可自由裁量。
 - 解析单源 `resolve_choice(choice_id, signal_type)`：注册桶内精确匹配，未命中返回 `not-in-bucket`（不跨信号放行）→ signal_type 未注册时全表反查，spec_scoped 动作拒绝（`scoped-no-reverse`，不兜底放行）、非作用域动作返回拷贝 → 全表无此 id 返回 `unknown-choice`。执行器与消费端守卫共用本函数防解析漂移；返回选项为逐项拷贝（含 spec_scoped/requires_payload 声明位），就地改写不污染注册表。
 - `ack_self_heal`（确认自愈·继续观察，非作用域收口动作）声明在可能全局形态的 `build_artifact_paths_missing` 桶末位，未注册 signal_type 经全表反查可达，保证全局信号执行收口不断路。
 - `commit_stray_wip` 是注册表中首个带主树 git 写副作用的动作：执行器以 signal_type 绑定守卫收口（仅受理 `maintree_stray_wip_stale`，未注册信号与姊妹 info 信号一律拒绝），未注册信号经全表反查通道可达本动作但不获执行授权（守卫细节见 [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md)，执行语义见 [adjudication-actions](adjudication-actions.md)）。
@@ -46,3 +52,4 @@
 - 2026-10-26 evo-add-commit-stray-wip-choice（spec/archive/2026-10-26-evo-add-commit-stray-wip-choice） — maintree_stray_wip_stale 桶新增 commit_stray_wip 提交散件选项（spec_scoped=False 全局作用域、与 stash 类动作互斥），为注册表首个主树 git 写动作；发射点 stray_wip 落库记录附 choices 快照、recommended_action 带出选项 id 并与 SIGNAL_RECOMMENDATION 同文同步
 - 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — maintree_stray_wip_stale 桶新增 untrack_stray_wip 根治·散件出库选项（git rm --cached + .gitignore 追加 + 独立提交），沿 commit_stray_wip 双保险形态（spec_scoped=False + 执行器 signal_type 绑定守卫），与提交选项同桶并存
 - 2026-10-31 fix-admin-choice-payload-and-scenario-pairing（spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing） — 选项新增可选布尔键 requires_payload（纯静态声明、缺省 false），载荷要求判定收敛注册表单源（消费侧从 resolve_choice 解析结果读取、禁各自硬编码选项名单），当前仅 revise_scenario_reverify 置 true
+- 2026-11-03 register-revise-scenario-choice-on-intervention-signals（spec/changes/register-revise-scenario-choice-on-intervention-signals/） — 新增 manual-intervention 与 verify_env_blocked 两信号桶（单选项桶，各含单源共享的 revise_scenario_reverify，inconclusive_loop 桶内联声明引用化、字段逐字不变；import 期 _assert_registry_consistency 钉死三桶逐项相等），场景修订重验出口经 admin 自动处置通道可达；scoped-no-reverse 反查收紧守卫与载荷通道维持不变
