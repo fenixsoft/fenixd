@@ -32,11 +32,15 @@
 既有注册（`pm_engine/arbiter` 队列状态的只读访问，不新建注册表）。链状态文件
 缺失/损坏按零命中降级（fail-open，对齐看护既有链缺席口径）。
 
-**D2 deferred 留痕形态**：in_flight 区条目扩展 `phase: "deferred"` +
-`yield_to`（被让行对象标识：admin_run_id 或通道标记）+ `deferred_at`。现行
-`mark_in_flight` 写的条目视为 `phase: "admin"`（缺字段向后兼容）。让行分支从
-「clear 整条」改为「改写 phase」；reap 逻辑按既有超时阈值一视同仁清理（不因
-phase 特判放行）。
+**D2 deferred 留痕形态**：in_flight 区条目已持久化 `phase` 字段（现行取值
+"admin"/"arbiter"，`escalation_chain.py` `mark_in_flight` 写入），本变更新增
+取值 `"deferred"` 并扩展 `yield_to`（被让行对象标识：admin_run_id 或通道标记）
++ `deferred_at` 两个新字段；读侧对缺 `yield_to`/`deferred_at` 的既有条目按
+admin/arbiter 相待（历史残留缺 `phase` 条目按 "admin" 兼容，防御性保留）。让行
+路径从「clear 整条」改为「改写 phase」——注意现行 clear 点在 `_process_item`
+主流程（`_run_admin_phase` 返回后无条件 `clear_in_flight`），须按返回 phase
+条件化：deferred 时改写条目、其余照常清除。reap 逻辑按既有超时阈值一视同仁
+清理（不因 phase 特判放行）。
 
 **D3 重派挂看护巡检节拍**：不新增线程/定时器（对齐本仓「挂既有巡检循环」范式）。
 AdminMonitor 巡检中、`_reap_chain_inflight` 同拍新增 deferred 扫描：被让行 run
@@ -60,8 +64,10 @@ spec 已解冻且信号已收口 → 仅清条目。frozen 预检转 deferred �
   巡检节拍；最坏情况是每轮巡检一次重派尝试，可接受
 - **签名口径漂移**：deferred 留痕、看护查询、重派入参三处必须同源构造签名
   （复用链派发器既有签名函数），评审重点
-- **旧形态兼容**：daemon 滚动窗口内状态文件可能同时存在新旧条目形态，读侧按
-  缺 phase=「admin」兼容；测试覆盖混合形态
+- **旧形态兼容**：daemon 滚动窗口内状态文件可能同时存在新旧条目形态（差异在
+  新增 `yield_to`/`deferred_at` 字段；`phase` 字段现行已持久化），读侧对缺新
+  字段条目按 admin/arbiter 相待、缺 phase 条目按「admin」兼容（防御）；测试
+  覆盖混合形态
 - **误伤计失败**：frozen-terminated 判据用「0 轮」硬条件兜底，避免把「跑了大半
   被冻结终止」的真实失败也豁免
 

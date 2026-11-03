@@ -14,7 +14,7 @@
 ## 1. 链痕单源与 deferred 留痕（escalation_chain.py）
 
 - [ ] 1.1 新增链痕查询函数（输入签名，输出 in_flight/deferred/arbiter_active 三态只读聚合；arbiter 单飞队列经既有注册只读访问，不新建注册表；链状态文件缺失/损坏按零命中 fail-open 降级）
-- [ ] 1.2 deferred 留痕：让行分支从整条清除改为改写 `phase: "deferred"`（含 yield_to 与 deferred_at）；mark_in_flight 条目缺 phase 字段读侧按 "admin" 兼容（新旧形态混合共存）
+- [ ] 1.2 deferred 留痕：让行路径从整条清除改为改写 `phase: "deferred"`（含新增 yield_to 与 deferred_at；现行条目已持久化 phase="admin"/"arbiter"，clear 点在 _process_item 主流程、须按返回 phase 条件化）；读侧对缺 yield_to/deferred_at 的既有条目按 admin/arbiter 相待、缺 phase 条目按 "admin" 兼容（防御，新旧形态混合共存）
 - [ ] 1.3 frozen 预检：_run_admin_phase 派发前查 spec 冻结态，frozen=True 不派发不计配额，转 deferred 留痕（yield_to 空，重派条件=spec 解冻）
 - [ ] 1.4 frozen-terminated 不计配额：Admin 失败计点处判「0 API 轮次 + 终态 frozen-terminated」双条件，命中视为未尝试不计失败（跑过轮次后被冻结击杀仍计失败）
 

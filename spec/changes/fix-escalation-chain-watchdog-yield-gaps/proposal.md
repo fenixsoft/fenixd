@@ -51,7 +51,7 @@ daemon 重启回扫才恢复（本例空转 5 分钟）。三缺口共享修改�
 - `core/admin_monitor.py`：孤儿接管链痕抑制、让行条目扫描重派、告警归因生成
 - `.fenix/escalation_chain_state.json` in_flight 区条目形态扩展（运行时文件，
   gitignored，向后兼容读旧形态）
-- 测试：`tests/test_escalation_chain.py`、`tests/test_admin_dispatch_escalation.py`
+- 测试：`tests/test_escalation_chain.py`、`tests/test_admin_disposition_reschedule.py`
   （孤儿路径既有用例归属）扩展竞态/抑制/重派/归因用例
 - daemon 行为变更，合并后需重启生效（restart_request 交付项）
 - 取证与候选修法全文：`spec/knowledge/_inbox/escalation-chain-orphan-watchdog-double-path.md`
