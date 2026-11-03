@@ -11,8 +11,10 @@ fake spawn 替身 + 注入的 core.knowledge 替身，覆盖：
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import time
 import types
 from datetime import date, timedelta
 from pathlib import Path
@@ -760,3 +762,121 @@ def test_knowledge_lane_config_ledger_keys():
         assert cfg["escalate_after_rounds"] == 2, bad
     cfg = ConfigLoader.get_knowledge_lane_config({"knowledge": {"no_conflict_exempt": "yes"}})
     assert cfg["no_conflict_exempt"] is True
+
+
+# ── 候选区豁免与积压提醒（add-knowledge-inbox-pipeline 1.2/2.1/6.1）────────
+
+
+def test_inbox_subdir_exempt_from_audit_collection(proj):
+    note = proj / "spec/knowledge/domains/dom-a/_inbox/raw-note.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("自由候选（无 marker、超行数、坏链接均不适用契约）\n", encoding="utf-8")
+    pages = ka._collect_pages(proj)
+    assert all("_inbox" not in p["rel"] for p in pages)
+
+
+def test_source_target_exists_inbox_done_file_form(proj):
+    done = proj / "spec/knowledge/_inbox/done/raw-note.md"
+    done.parent.mkdir(parents=True)
+    done.write_text("# 已折叠候选原文\n", encoding="utf-8")
+    assert ka._source_target_exists(proj, "spec/knowledge/_inbox/done/raw-note.md", set())
+    assert not ka._source_target_exists(proj, "spec/knowledge/_inbox/done/ghost-note.md", set())
+
+
+def _zero_defect_root(tmp_path):
+    """零病灶 git 夹具（不装 FakeCore，走真实 core.knowledge 编年账链路）。"""
+    root = tmp_path / "clean"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    kdom = root / "spec" / "knowledge" / "domains" / "dom-a"
+    kdom.mkdir(parents=True)
+    (root / "spec" / "archive" / "arc-good").mkdir(parents=True)
+    (kdom / "alpha.md").write_text(
+        "<!-- knowledge: capability=alpha rev=1 sources=arc-good -->\n"
+        "# alpha\n\n## 规则\n\n- 超时:300 秒。\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+def _seed_inbox(root, n: int, oldest_days: float = 0) -> None:
+    inbox = root / "spec" / "knowledge" / "_inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        p = inbox / f"note-{i:02d}.md"
+        p.write_text(f"# 候选 {i}\n", encoding="utf-8")
+        if oldest_days:
+            stamp = time.time() - oldest_days * 86400
+            os.utime(p, (stamp, stamp))
+
+
+def test_mechanical_clean_sources_keeps_inbox_done(tmp_path):
+    """done/ 溯源 file 形态不被机械自修当悬空剔除（2.1：_clean_sources 经
+    _source_target_exists 同一判据）。"""
+    root = tmp_path / "main"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    (root / "spec" / "archive" / "arc-good").mkdir(parents=True)
+    (root / "spec" / "archive" / "arc-good" / "proposal.md").write_text("x\n")
+    done = root / "spec" / "knowledge" / "_inbox" / "done"
+    done.mkdir(parents=True)
+    (done / "raw-note.md").write_text("# 已折叠候选原文\n", encoding="utf-8")
+    kdom = root / "spec" / "knowledge" / "domains" / "dom-a"
+    kdom.mkdir(parents=True)
+    (root / "spec" / "knowledge" / "index.md").write_text(
+        "# 真相源\n\n- [alpha](domains/dom-a/alpha.md)\n"
+    )
+    (kdom / "alpha.md").write_text(
+        "<!-- knowledge: capability=alpha rev=1 "
+        "sources=spec/archive/arc-good,spec/knowledge/_inbox/done/raw-note.md -->\n"
+        "# alpha\n\n## 规则\n\n- 超时:300 秒。\n\n## 溯源\n\n"
+        "- spec/archive/arc-good\n- spec/archive/arc-ghost\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "init")
+
+    result = ka.run_audit(root, spawn=lambda p, r: "ok")
+
+    assert result["counts"]["fixed"] >= 1
+    alpha = (kdom / "alpha.md").read_text(encoding="utf-8")
+    assert "spec/knowledge/_inbox/done/raw-note.md" in alpha  # done/ 溯源保留
+    assert "arc-ghost" not in alpha  # 悬空归档行照常删
+
+
+def test_backlog_hit_appends_lint_row(tmp_path):
+    """6.1：积压 ≥10 条 → run_audit 收尾落 lint 积压提醒行 + 独立提交。"""
+    root = _zero_defect_root(tmp_path)
+    _seed_inbox(root, 10)
+    ka.run_audit(root, spawn=lambda p, r: "ok")
+    log = (root / "spec/knowledge/log.md").read_text(encoding="utf-8")
+    assert "lint |" in log
+    assert "积压提醒" in log
+    assert "10 条滞留" in log
+    assert "[fenix] knowledge: log" in _git(root, "log", "--format=%s")
+
+
+def test_backlog_age_threshold_hits(tmp_path):
+    """最老条目滞留 ≥7 天亦命中（9 条未到条数阈值）。"""
+    root = _zero_defect_root(tmp_path)
+    _seed_inbox(root, 9, oldest_days=8.5)
+    ka.run_audit(root, spawn=lambda p, r: "ok")
+    log = (root / "spec/knowledge/log.md").read_text(encoding="utf-8")
+    assert "积压提醒" in log
+    assert "最老 8 天" in log
+
+
+def test_below_threshold_no_backlog_row(tmp_path):
+    """9 条且全新鲜：无积压行，体检留痕行照常落账。"""
+    root = _zero_defect_root(tmp_path)
+    _seed_inbox(root, 9)
+    ka.run_audit(root, spawn=lambda p, r: "ok")
+    log = (root / "spec/knowledge/log.md").read_text(encoding="utf-8")
+    assert "积压提醒" not in log
+    assert "audit 体检" in log

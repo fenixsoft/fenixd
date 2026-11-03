@@ -64,6 +64,12 @@ STATE_RELPATH = ".fenix/knowledge_audit_state.json"
 FINDINGS_RELPATH = ".fenix/knowledge_audit_findings.json"
 PROMPT_PATH = Path(__file__).parent / "knowledge_prompts" / "audit.md"
 KNOWLEDGE_DIR = "spec/knowledge"
+# 知识候选区（add-knowledge-inbox-pipeline 1.2/6.1）：扫描豁免与积压检测用。
+# 与 core.knowledge.INBOX_DIRNAME / INBOX_DONE_PREFIX 同值——audit 车道须在
+# core.knowledge 缺席时降级装载（load_knowledge_core 守卫），不能模块级硬
+# 导入，故按本文件 _GIT_ANCHOR_RE 先例持同值副本、单源在 core.knowledge。
+INBOX_DIRNAME = "_inbox"
+INBOX_DONE_PREFIX = "spec/knowledge/_inbox/done/"
 
 # 单页 150 行硬顶（前置 SPEC 目录契约定稿，本车道只消费）
 LINE_CAP = 150
@@ -835,6 +841,11 @@ def _collect_pages(
     for path in candidates:
         if not path.is_file():
             continue
+        # 候选区显式豁免（add-knowledge-inbox-pipeline 1.2）：_inbox 为自由
+        # 格式区不守能力页契约，收集范围未来变更时本守卫钉死豁免不误伤
+        # （现状候选集只有 index.md 与 domains/ rglob，天然不含，防的是误伤）
+        if INBOX_DIRNAME in path.relative_to(kdir).parts:
+            continue
         rel = path.relative_to(project_root).as_posix()
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -900,7 +911,12 @@ def _source_target_exists(project_root: Path, src: str, archives: Optional[set])
 
     archive 态：基名命中 ``_existing_archives`` 在盘归档集合；push 态（归档
     改写 pass 之前）：``spec/changes/<基名>`` 在盘。两态任一成立即非悬空。
+    候选原文溯源前缀（add-knowledge-inbox-pipeline 2.1）按 file 形态校验文件
+    真实存在——校验器放行的前缀本判定必须同等放行，否则机械自修
+    ``_clean_sources`` 会把合法 done/ 溯源当悬空剔除。
     """
+    if src.startswith(INBOX_DONE_PREFIX):
+        return (Path(project_root) / src).is_file()
     base = _source_base(src)
     if base in archives:
         return True
@@ -2172,6 +2188,41 @@ def run_audit(
         state = _read_state(project_root)
         state["last_scale"] = scale
         _write_state(project_root, state)
+
+    # ── 编年账 lint 行 + 候选区积压提醒（add-knowledge-inbox-pipeline 4.2/6.1）──
+    # audit 轮收尾由 daemon 代码侧追加 lint 行（MUST NOT 依赖车道 LLM 在轮内
+    # 直接写 log.md）；积压提醒（≥10 条或最老条目滞留 ≥7 天）随周期轮落一行，
+    # 本函数单次调用至多一次（同轮幂等去重）。提醒面 ONLY log.md + dashboard
+    # 知识页签计数：MUST NOT 写 AdminStore 人工告警（人工告警降噪偏好，
+    # 2026-11-03 裁决）。全段 fail-open，编年账/提醒缺失不改变体检结论。
+    append_log = getattr(core, "append_knowledge_log", None)
+    commit_log = getattr(core, "_commit_log_line", None)
+    backlog_hit = getattr(core, "inbox_backlog_hit", None)
+    if callable(append_log) and callable(commit_log):
+        try:
+            if append_log(
+                project_root,
+                "lint",
+                f"audit 体检（修 {counts['fixed']} / 转写 {counts['rewritten']} / "
+                f"待人工 {counts['pending_manual']} / 过 {counts['passed']}）",
+            ):
+                commit_log(project_root, "audit 体检留痕")
+        except Exception as e:  # noqa: BLE001 — 编年账失败不改变体检结论
+            log.warning("knowledge", f"audit 编年账 lint 行追加失败（fail-open）：{e}")
+        if callable(backlog_hit):
+            try:
+                info = backlog_hit(project_root)
+                if info:
+                    if append_log(
+                        project_root,
+                        "lint",
+                        f"_inbox 积压提醒：{info['count']} 条滞留"
+                        f"（最老 {info['oldest_stay_days']} 天），等待 distill 轮折叠",
+                    ):
+                        commit_log(project_root, "_inbox 积压提醒")
+            except Exception as e:  # noqa: BLE001 — 提醒失败不改变体检结论
+                log.warning("knowledge", f"_inbox 积压提醒落账失败（fail-open）：{e}")
+
     log.info(
         "knowledge",
         f"audit 体检完成：修 {counts['fixed']} / 转写 {counts['rewritten']} / "

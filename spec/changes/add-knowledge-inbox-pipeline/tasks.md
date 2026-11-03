@@ -40,14 +40,14 @@
 - [ ] 1.1 创建 `spec/knowledge/_inbox/README.md`：投递契约（自由格式 markdown，
       含背景/结论/证据段即可，不守能力页契约）、折叠成功移 `done/`、校验失败滞留
       原地待下轮重试、`done/` 为溯源永久保留区
-- [ ] 1.2 扫描范围显式排除 `_inbox/**`（现状天然体外，补显式排除防未来扫描范围
+- [x] 1.2 扫描范围显式排除 `_inbox/**`（现状天然体外，补显式排除防未来扫描范围
       变更误伤）：validate 侧在 `core/knowledge.py`（domains/index/adr 遍历点），
       audit 侧在 `core/knowledge_audit.py`（候选集 rglob 收集点，现仅扫 `domains/`）；
       新增测试断言：含 marker 缺失/超行数/失效链接的 `_inbox` 夹具不产生任何违规
 
 ## 2. marker sources 契约扩展
 
-- [ ] 2.1 sources 机器校验放行 `spec/knowledge/_inbox/done/` 前缀（file 形态校验
+- [x] 2.1 sources 机器校验放行 `spec/knowledge/_inbox/done/` 前缀（file 形态校验
       文件存在），其余前缀行为不变；测试覆盖放行与文件缺失拒绝双形态
 
 ## 3. piggyback 折叠管线
@@ -74,13 +74,13 @@
 
 ## 5. 归档改写豁免
 
-- [ ] 5.1 `rewrite_source_links_to_archive` 显式排除 `spec/knowledge/log.md` 与
+- [x] 5.1 `rewrite_source_links_to_archive` 显式排除 `spec/knowledge/log.md` 与
       `spec/knowledge/_inbox/**`（含 `done/`），新增测试：夹具候选原文含
       `spec/changes/<名>` 字符串，归档改写后逐字节不变、能力页照常改写
 
 ## 6. 积压提醒
 
-- [ ] 6.1 audit 周期轮积压检测：积压 ≥10 条或最老条目滞留 ≥7 天（mtime 起算）落
+- [x] 6.1 audit 周期轮积压检测：积压 ≥10 条或最老条目滞留 ≥7 天（mtime 起算）落
       `log.md` lint 提醒行，同轮幂等去重，MUST NOT 写 AdminStore（测试断言无人工
       告警产生）
 - [ ] 6.2 dashboard 积压计数：`knowledge_routes.py` 返回 `_inbox/` 积压计数与最老

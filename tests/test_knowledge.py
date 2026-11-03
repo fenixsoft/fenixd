@@ -20,6 +20,7 @@ from core.knowledge import (
     LOG_HEADER,
     LOG_LINE_RE,
     DistillManager,
+    INBOX_DONE_PREFIX,
     _log_subject_safe,
     append_knowledge_log,
     build_distill_prompt,
@@ -1080,6 +1081,107 @@ class TestKnowledgeLog(KnowledgeTestBase):
         self.assertEqual(_log_subject_safe("a\nb\x00c"), "a b c")
         self.assertEqual(_log_subject_safe("x" * 300), "x" * 160)
         self.assertEqual(_log_subject_safe("   \n\t "), "(空)")
+
+
+class TestInboxCandidateArea(KnowledgeTestBase):
+    """add-knowledge-inbox-pipeline 1.2/2.1：候选区 _inbox 扫描豁免与 done/
+    溯源 file 形态。豁免守卫钉死扫描范围未来变更不误伤（marker/盖戳/行数
+    顶/链接检查均不适用自由格式候选）。"""
+
+    def _seed_good_core(self):
+        self._write(
+            f"{KNOWLEDGE_DIR}/index.md",
+            (
+                f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
+                "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+                "| --- | --- | --- | --- |\n"
+                "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+            ),
+        )
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md",
+            (
+                f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n| --- | --- | --- |\n"
+                "| [定时拣选](scheduled-spec-pickup.md) | 按周期拣选 | 2026-09-29 15:02 |\n"
+            ),
+        )
+        return self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            GOOD_PAGE.format(archive=self._archive_name(), today=date.today().isoformat()),
+        )
+
+    def _page_with_sources(self, sources):
+        page = GOOD_PAGE.format(archive=self._archive_name(), today=date.today().isoformat())
+        return page.replace(
+            f"sources=spec/archive/{self._archive_name()}", f"sources={sources}"
+        )
+
+    # ── 1.2 扫描豁免 ─────────────────────────────────────────────────────
+
+    def test_inbox_subdir_freeform_exempt_from_domain_scan(self):
+        # 域目录内嵌 _inbox（守卫真实命中路径）：自由格式候选零违规
+        self._seed_good_core()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/_inbox/raw-note.md",
+            "# 无 marker 无盖戳的自由候选\n\n"
+            + "- 填充规则\n" * 160
+            + "溯源：spec/changes/ghost-spec（不存在目录）\n",
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_inbox_toplevel_freeform_not_validated(self):
+        # 真实候选区位置（KNOWLEDGE_DIR/_inbox/）：同样零违规
+        self._seed_good_core()
+        self._write(
+            f"{KNOWLEDGE_DIR}/_inbox/raw-note.md",
+            "自由文本，无 marker：候选区不受能力页契约约束。\n",
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    # ── 2.1 sources 放行/拒绝 ────────────────────────────────────────────
+
+    def test_sources_inbox_done_accepted_when_file_exists(self):
+        self._seed_good_core()
+        self._write(f"{INBOX_DONE_PREFIX}raw-note.md", "# 已折叠候选原文\n")
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            self._page_with_sources(f"{INBOX_DONE_PREFIX}raw-note.md"),
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_sources_mixed_archive_and_done_accepted(self):
+        # 折叠真实形态：归档目录 + done 文件并存（sources 追加语义）
+        self._seed_good_core()
+        self._write(f"{INBOX_DONE_PREFIX}raw-note.md", "# 已折叠候选原文\n")
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            self._page_with_sources(
+                f"spec/archive/{self._archive_name()},{INBOX_DONE_PREFIX}raw-note.md"
+            ),
+        )
+        self.assertEqual(validate_knowledge(self.root), [])
+
+    def test_sources_inbox_done_missing_rejected(self):
+        self._seed_good_core()
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            self._page_with_sources(f"{INBOX_DONE_PREFIX}ghost-note.md"),
+        )
+        violations = validate_knowledge(self.root)
+        self.assertTrue(any("不存在" in v for v in violations), violations)
+
+    def test_sources_inbox_done_escape_rejected(self):
+        # ".." 相对段穿透：目标文件真实在盘但 resolve 后越出 done/ 目录 →
+        # 越界违规（与归档分支同强度）
+        self._seed_good_core()
+        self._write(f"{INBOX_DONE_PREFIX}raw-note.md", "# 已折叠候选原文\n")
+        escape = f"{INBOX_DONE_PREFIX}../../domains/pickup/scheduled-spec-pickup.md"
+        self._write(
+            f"{KNOWLEDGE_DIR}/domains/pickup/scheduled-spec-pickup.md",
+            self._page_with_sources(escape),
+        )
+        violations = validate_knowledge(self.root)
+        self.assertTrue(any("越出" in v for v in violations), violations)
 
 
 if __name__ == "__main__":
