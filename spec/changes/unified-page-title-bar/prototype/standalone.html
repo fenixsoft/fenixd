@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>统一标题栏原型 · standalone（顶栏承载）</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+  * { box-sizing: border-box; }
+  #root { min-height: 100vh; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var C = antd;
+
+  // ── 主题：theme.ts dshAlignedTheme 全量真值注入（宪法单源，零新色）──
+  var TOKEN = {
+    colorPrimary: '#0f1115',
+    colorPrimaryHover: '#43454a',
+    colorPrimaryActive: '#2c2c2e',
+    colorLink: '#4176e6',
+    colorInfo: '#4176e6',
+    colorSuccess: '#22c55e',
+    colorError: '#ec1313',
+    colorWarning: '#f59e0b',
+    colorText: '#0f1115',
+    colorTextSecondary: '#61666b',
+    colorTextTertiary: '#81858c',
+    colorTextQuaternary: '#adb2b8',
+    colorBgLayout: '#ffffff',
+    colorBorder: 'rgba(0, 0, 0, 0.16)',
+    colorBorderSecondary: 'rgba(0, 0, 0, 0.10)',
+    colorSplit: 'rgba(0, 0, 0, 0.08)',
+    controlItemBgActive: '#f5f6f7',
+    controlItemBgActiveHover: '#f5f6f7',
+    controlHeight: 32,
+    controlHeightSM: 28,
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+  };
+  var COMPONENTS = {
+    Select: { optionActiveBg: '#f5f6f7', optionSelectedBg: '#f5f6f7', optionSelectedColor: '#0f1115', activeBorderColor: '#4176e6', activeOutlineColor: 'rgba(65, 118, 230, 0.12)', hoverBorderColor: 'rgba(0, 0, 0, 0.28)' },
+    Input: { activeBorderColor: '#4176e6', activeShadow: '0 0 0 2px rgba(65, 118, 230, 0.12)', hoverBorderColor: 'rgba(0, 0, 0, 0.28)' },
+    Button: { primaryShadow: 'none', defaultShadow: 'none', dangerShadow: 'none' },
+    Table: { headerBg: '#f9fafb', headerColor: '#61666b', headerSplitColor: 'transparent', rowHoverBg: '#f5f6f7' },
+    Menu: { itemHeight: 36, itemSelectedBg: 'rgba(38, 49, 72, 0.10)', itemSelectedColor: '#0f1115', itemHoverBg: 'rgba(38, 49, 72, 0.06)', itemActiveBg: 'rgba(38, 49, 72, 0.10)' },
+  };
+
+  var LOGO = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAyJpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMy1jMDExIDY2LjE0NTY2MSwgMjAxMi8wMi8wNi0xNDo1NjoyNyAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNiAoV2luZG93cykiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6Q0JBM0M0QzFBNkFFMTFGMTgzQUY4QTY4RUZFMDVCQUIiIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6Q0JBM0M0QzJBNkFFMTFGMTgzQUY4QTY4RUZFMDVCQUIiPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDpDQkEzQzRCRkE2QUUxMUYxODNBRjhBNjhFRkUwNUJBQiIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDpDQkEzQzRDMEE2QUUxMUYxODNBRjhBNjhFRkUwNUJBQiIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/PrVGrRkAABvYSURBVHja7HsJkF3l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';
+  var INK = '#0f1115', INK2 = '#61666b', INK3 = '#81858c', SOFT = '#f9fafb', MODULE = '#f5f6f7';
+  var SPLIT = 'rgba(0, 0, 0, 0.08)';
+  var PAD_INLINE = 15;           // dshLayoutToken 留白单源
+  var TOPBAR_H = 56;             // 现状顶栏高
+
+  // ── 统一标题控件的数据面：每页只声明 title / subtitle / filters ──
+  // （原型里 TopBarTitle 即「统一控件」；SPEC 实现为共享组件，页面零自画 div）
+  var PROJECT_OPTIONS = [
+    { value: '', label: '全部项目' },
+    { value: 'fenixd', label: 'fenixd' },
+    { value: 'dsh-plugins', label: 'dsh-plugins' },
+    { value: 'potplayer', label: 'potplayer' },
+  ];
+  var META = {
+    overview: { key: 'overview', title: '跨项目概览', subtitle: [{ t: '监控 ' }, { t: '4', num: true }, { t: ' 个项目' }] },
+    project:  { key: 'project', title: 'fenixd', back: true, subtitle: [{ t: '共 ' }, { t: '13', num: true }, { t: ' 个 SPEC' }] },
+    settings: { key: 'settings', title: '设置', filterLabel: '作用域：', filters: ['scope'] },
+    activities: { key: 'activities', title: '运维记录', subtitle: [{ t: '跨项目 Administrator 活动' }] },
+    commandcenter: { key: 'commandcenter', title: '指挥中心', filters: ['project', 'win'] },
+    help: { key: 'help', title: '帮助' },
+  };
+
+  function numSpan(s) { return h('span', { style: { fontVariantNumeric: 'tabular-nums' } }, s); }
+
+  // ── 统一标题控件（standalone 壳位：渲染进顶栏，位于 Fenix Harness 品牌之后）──
+  function TitleBar(props) {
+    var meta = META[props.page];
+    var kids = [];
+    if (meta.back) {
+      kids.push(h('span', {
+        'data-proto-id': 'titlebar-back',
+        onClick: function () { props.onPage('overview'); },
+        style: { cursor: 'pointer', display: 'inline-flex', alignItems: 'center', marginRight: 6, color: INK2 },
+      }, h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none' },
+        h('path', { d: 'M9 2.5 4.5 7 9 11.5', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))));
+    }
+    kids.push(h('span', { 'data-proto-id': 'titlebar-pagetitle', style: { fontSize: 18, fontWeight: 700, color: INK, lineHeight: '24px' } }, meta.title));
+    if (meta.subtitle) {
+      kids.push(h('span', { 'data-proto-id': 'titlebar-subtitle', style: { fontSize: 12, fontWeight: 400, color: INK3 } },
+        meta.subtitle.map(function (p, i) { return p.num ? numSpan(p.t) : h('span', { key: i }, p.t); })));
+    }
+    var filterNodes = [];
+    if (meta.filterLabel) filterNodes.push(h('span', { style: { fontSize: 13, color: INK2 } }, meta.filterLabel));
+    (meta.filters || []).forEach(function (k) {
+      if (k === 'scope') {
+        filterNodes.push(h(antd.Select, {
+          key: k, size: 'small', value: props.scope, onChange: props.setScope, style: { minWidth: 120 },
+          options: [{ value: 'global', label: '全局' }, { value: 'fenixd', label: 'fenixd' }, { value: 'dsh-plugins', label: 'dsh-plugins' }],
+        }));
+      } else if (k === 'project') {
+        filterNodes.push(h(antd.Select, { key: k, size: 'small', value: props.project, onChange: props.setProject, style: { minWidth: 128 }, options: PROJECT_OPTIONS }));
+      } else if (k === 'win') {
+        filterNodes.push(h(antd.Select, {
+          key: k, size: 'small', value: props.win, onChange: props.setWin, style: { minWidth: 84 },
+          options: [{ value: '24h', label: '24h' }, { value: '7d', label: '7d' }, { value: '30d', label: '30d' }],
+        }));
+      }
+    });
+    return h('div', { style: { flex: 1, display: 'flex', alignItems: 'center', minWidth: 0 } }, [
+      h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 10, paddingLeft: 16, minWidth: 0 } }, kids),
+      h('div', { 'data-proto-id': 'titlebar-filters', style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, paddingRight: PAD_INLINE } }, filterNodes),
+    ]);
+  }
+
+  // ── 顶栏壳（brand 区 208px 与侧栏同宽；顶栏底缘 DSH_SPLIT 细线）──
+  function TopBar(props) {
+    return h('div', {
+      'data-proto-id': 'shell-topbar',
+      style: { height: TOPBAR_H, display: 'flex', alignItems: 'center', background: '#ffffff', borderBottom: '1px solid ' + SPLIT, position: 'sticky', top: 0, zIndex: 20 },
+    }, [
+      h('div', {
+        'data-proto-id': 'shell-brand',
+        style: { width: 208, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 16 },
+      }, [
+        h('img', { src: LOGO, alt: 'logo', style: { width: 22, height: 22, display: 'block' } }),
+        h('span', { style: { fontSize: 16, fontWeight: 700, letterSpacing: 0.3, color: INK } },
+          [h('span', { key: 'f' }, 'Fenix'), h('span', { key: 'h', style: { fontWeight: 400, marginLeft: 6, color: INK3 } }, 'Harness')]),
+      ]),
+      h(TitleBar, props),
+    ]);
+  }
+
+  // ── 侧栏（Menu 行高 36 / 选中冷灰 10%，theme.ts Menu 覆写同值）──
+  function Sider(props) {
+    return h('div', {
+      'data-proto-id': 'shell-sider',
+      style: { width: 208, flexShrink: 0, borderRight: '1px solid ' + SPLIT, background: '#ffffff', minHeight: 'calc(100vh - ' + (TOPBAR_H + 1) + 'px)', paddingTop: 8 },
+    },
+      h(antd.Menu, {
+        mode: 'inline', selectedKeys: [props.page],
+        onClick: function (i) { props.onPage(i.key); },
+        style: { borderRight: 0, width: 208 },
+        items: [
+          { key: 'overview', label: '概览' },
+          { key: 'project', label: '项目 · fenixd' },
+          { key: 'settings', label: '设置' },
+          { key: 'activities', label: '运维' },
+          { key: 'commandcenter', label: '指挥中心' },
+          { key: 'help', label: '帮助' },
+        ],
+      }));
+  }
+
+  // ── 各页内容（真组件假数据；内容区不再有标题行）──
+  function statCard(title, value) {
+    return h(antd.Card, { size: 'small', style: { flex: 1 } },
+      h(antd.Statistic, { title: title, value: value, valueStyle: { fontVariantNumeric: 'tabular-nums', fontSize: 28, fontWeight: 600 } }));
+  }
+
+  function OverviewContent() {
+    var cols = [
+      { title: '项目', dataIndex: 'name' },
+      { title: 'SPEC 总数', dataIndex: 'specs', align: 'right' },
+      { title: '进行中', dataIndex: 'active', align: 'right' },
+      { title: '活跃运行', dataIndex: 'runs', align: 'right' },
+      { title: '今日成本', dataIndex: 'cost', align: 'right' },
+    ];
+    var rows = [
+      { key: 1, name: 'fenixd', specs: 13, active: 4, runs: 2, cost: '$8.10' },
+      { key: 2, name: 'dsh-plugins', specs: 9, active: 2, runs: 2, cost: '$2.75' },
+      { key: 3, name: 'potplayer', specs: 6, active: 0, runs: 1, cost: '$1.05' },
+      { key: 4, name: 'fenix-desktop', specs: 3, active: 1, runs: 0, cost: '$0.50' },
+    ];
+    return h('div', { 'data-proto-id': 'content-overview' }, [
+      h('div', { 'data-proto-id': 'content-overview-cards', style: { display: 'flex', gap: 12, marginBottom: 16 } },
+        [statCard('SPEC 总数', 31), statCard('进行中', 7), statCard('活跃运行', 5), statCard('今日成本', '$12.40')]),
+      h(antd.Card, { size: 'small' },
+        h(antd.Table, {
+          'data-proto-id': 'content-overview-table',
+          size: 'middle', pagination: false, columns: cols, dataSource: rows,
+          style: { fontVariantNumeric: 'tabular-nums' },
+        })),
+    ]);
+  }
+
+  function ProjectContent() {
+    var seg = h(antd.Segmented, {
+      'data-proto-id': 'content-project-tabs',
+      options: ['功能开发', '代码审查', '测试回归', '会话接入'], defaultValue: '功能开发', style: { marginBottom: 16 },
+    });
+    function tag(color, text) { return h(antd.Tag, { color: color, style: { marginInlineEnd: 0 } }, text); }
+    var cols = [
+      { title: 'SPEC', dataIndex: 'spec' },
+      { title: '状态', dataIndex: 'status', render: function (_, r) { return tag(r.c, r.status); } },
+      { title: '优先级', dataIndex: 'pri', align: 'right' },
+      { title: '更新时间', dataIndex: 'upd', align: 'right' },
+    ];
+    var rows = [
+      { key: 1, spec: 'fix-escalation-chain-watchdog-yield-gaps', status: 'implementing', c: 'processing', pri: 5, upd: '11-04 16:32' },
+      { key: 2, spec: 'add-knowledge-inbox-pipeline', status: 'verifying', c: 'warning', pri: 5, upd: '11-04 15:08' },
+      { key: 3, spec: 'fix-chain-admin-disposition-ledger-gap', status: 'ready', c: 'success', pri: 7, upd: '11-03 22:41' },
+      { key: 4, spec: 'add-spec-manual-activation', status: 'drafted', c: 'default', pri: 5, upd: '11-02 09:17' },
+    ];
+    return h('div', { 'data-proto-id': 'content-project' }, [
+      seg,
+      h(antd.Card, { size: 'small' },
+        h(antd.Table, { 'data-proto-id': 'content-project-table', size: 'middle', pagination: false, columns: cols, dataSource: rows, style: { fontVariantNumeric: 'tabular-nums' } })),
+    ]);
+  }
+
+  function SettingsContent() {
+    var inner = ['全局', '模型与网关', '链配置', '自省', '项目', 'Hook'];
+    var cardStyle = { background: '#f6f6f6', marginBottom: 12 };
+    return h('div', { 'data-proto-id': 'content-settings', style: { display: 'flex', gap: 16 } }, [
+      h('div', { 'data-proto-id': 'content-settings-menu', style: { width: 160, flexShrink: 0 } },
+        h(antd.Menu, {
+          mode: 'inline', defaultSelectedKeys: ['全局'], style: { borderRight: 0 },
+          items: inner.map(function (t) { return { key: t, label: t }; }),
+        })),
+      h('div', { style: { flex: 1, minWidth: 0 } }, [
+        h(antd.Card, { size: 'small', title: '扫描节律', style: cardStyle },
+          h(antd.Space, { size: 12 },
+            h('span', null, '每日自省启动时刻'),
+            h(antd.Select, { size: 'small', defaultValue: '00:00', style: { width: 110 }, options: [{ value: '00:00' }, { value: '02:00' }] }),
+            h('span', null, '静默窗'),
+            h(antd.Select, { size: 'small', defaultValue: 'off', style: { width: 110 }, options: [{ value: 'off', label: '关闭' }, { value: '01:00-07:00' }] }))),
+        h(antd.Card, { size: 'small', title: '告警与升级', style: cardStyle },
+          h(antd.Space, { size: 12 },
+            h('span', null, '升级冷却'),
+            h(antd.Input, { size: 'small', defaultValue: '60', style: { width: 90 }, suffix: '分钟' }),
+            h('span', null, '孤儿宽限'),
+            h(antd.Input, { size: 'small', defaultValue: '60', style: { width: 90 }, suffix: '分钟' }))),
+      ]),
+    ]);
+  }
+
+  function ActivitiesContent() {
+    return h('div', { 'data-proto-id': 'content-activities' }, [
+      h(antd.Radio.Group, { defaultValue: '全部', optionType: 'button', options: ['全部', 'Admin', 'Arbiter', '人工'], size: 'small', style: { marginBottom: 16 } }),
+      h(antd.Card, { size: 'small' },
+        h(antd.Timeline, {
+          'data-proto-id': 'content-activities-timeline',
+          items: [
+            { children: '11-04 16:40 Admin 处置：链告警 escalation_stalled 已按预案重启链（fenixd）' },
+            { children: '11-04 15:02 Arbiter 裁决：minor 批次 retian 放行（dsh-plugins）' },
+            { children: '11-04 09:30 Admin 维护：分支 GC 宽限期回收 3 条（fenixd）' },
+          ],
+        })),
+    ]);
+  }
+
+  function CmdCenterContent() {
+    return h('div', { 'data-proto-id': 'content-cmdcenter' },
+      h(antd.Tabs, {
+        'data-proto-id': 'content-cmdcenter-tabs',
+        defaultActiveKey: 'org',
+        items: [{
+          key: 'org', label: '组织总览',
+          children: h('div', null, [
+            h('div', { 'data-proto-id': 'content-cmdcenter-kpi', style: { display: 'flex', gap: 12, marginBottom: 16 } },
+              [statCard('在办链', 3), statCard('队列水位', 6), statCard('24h 处置', 18), statCard('人工升级', 2)]),
+            h('div', { style: { display: 'flex', gap: 12 } }, [
+              h(antd.Card, { size: 'small', title: 'implementer ×4', style: { flex: 1 } }, '批量并行：cap 4 · 全部健康'),
+              h(antd.Card, { size: 'small', title: 'code-fix ×2', style: { flex: 1 } }, '批内并行：回归门排队 1'),
+            ]),
+          ]),
+        }, {
+          key: 'pipe', label: '交付流水线',
+          children: h('div', { style: { color: INK3, fontSize: 13, padding: '24px 0' } }, '（流水线泳道视图——原型仅示顶栏与过滤位，屏体不展开）'),
+        }],
+      }));
+  }
+
+  function HelpContent() {
+    var toc = ['快速开始', 'SPEC 生命周期', '处置链', '知识真相源', '常见问题'];
+    return h('div', { 'data-proto-id': 'content-help', style: { display: 'flex', gap: 16 } }, [
+      h('div', { style: { width: 160, flexShrink: 0 } },
+        h(antd.Menu, { mode: 'inline', defaultSelectedKeys: ['SPEC 生命周期'], style: { borderRight: 0 }, items: toc.map(function (t) { return { key: t, label: t }; }) })),
+      h(antd.Card, { size: 'small', style: { flex: 1 }, title: 'SPEC 生命周期' },
+        h('div', { 'data-proto-id': 'content-help-doc', style: { fontSize: 14, lineHeight: '24px', color: INK } }, [
+          h('p', { key: 1, style: { margin: '0 0 12px' } }, 'SPEC 从 drafted（起草）经 ready（晋升）进入调度，daemon 按优先级与依赖关系派发实现 Agent；实现完成后进入验证管线与代码审查。'),
+          h('p', { key: 2, style: { margin: 0 } }, '人工干预点：起草评审门（spec-review）与批准推送门（fenix-approve）。其余环节由框架自动推进。'),
+        ])),
+    ]);
+  }
+
+  function App() {
+    var st = React.useState({ page: 'settings', scope: 'global', project: '', win: '24h' });
+    var state = st[0], setState = st[1];
+    var setPage = function (key) { setState(Object.assign({}, state, { page: key })); };
+    var content = {
+      overview: OverviewContent, project: ProjectContent, settings: SettingsContent,
+      activities: ActivitiesContent, commandcenter: CmdCenterContent, help: HelpContent,
+    }[state.page];
+    return h(antd.ConfigProvider, { theme: { token: TOKEN, components: COMPONENTS } }, [
+      h(TopBar, {
+        key: 'topbar', page: state.page, onPage: setPage,
+        scope: state.scope, setScope: function (v) { setState(Object.assign({}, state, { scope: v })); },
+        project: state.project, setProject: function (v) { setState(Object.assign({}, state, { project: v })); },
+        win: state.win, setWin: function (v) { setState(Object.assign({}, state, { win: v })); },
+      }),
+      h('div', { key: 'body', style: { display: 'flex' } }, [
+        h(Sider, { key: 'sider', page: state.page, onPage: setPage }),
+        h('div', { key: 'content', style: { flex: 1, minWidth: 0, padding: '16px ' + PAD_INLINE + 'px 24px' } }, h(content)),
+      ]),
+    ]);
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>

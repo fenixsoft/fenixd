@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>统一标题栏原型 · 导航</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #0f1115; }
+  * { box-sizing: border-box; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 24px; }
+  h1 { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
+  .sub { font-size: 12px; color: #81858c; margin-bottom: 32px; }
+  a.card {
+    display: block; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 8px;
+    padding: 20px 24px; margin-bottom: 16px; text-decoration: none; color: #0f1115;
+  }
+  a.card:hover { border-color: rgba(0, 0, 0, 0.28); }
+  .t { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  .d { font-size: 13px; color: #61666b; line-height: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>统一标题栏原型（unified-page-title-bar）</h1>
+  <div class="sub">本页为原型导航装置，非设计对象 · vendor 层真组件、具约束力 · 主题取 theme.ts 单源真值</div>
+  <a class="card" href="standalone.html">
+    <div class="t">standalone — 独立访问形态</div>
+    <div class="d">顶栏承载：Fenix Harness 品牌之后 = 页面标题 + 灰字副标题随迁；过滤项在顶栏右上角；面包屑移除；内容区无标题行。左侧菜单可切换 6 页看全部标题/过滤形态。</div>
+  </a>
+  <a class="card" href="embed.html">
+    <div class="t">embed — dsh web 嵌入形态</div>
+    <div class="d">顶栏不存在，统一标题控件自动渲染为内容区首行（48px，同一控件同构排布），贴视口顶全幅呈现。左下角悬浮「演示导航」为切页装置，非设计对象。</div>
+  </a>
+</div>
+</body>
+</html>
