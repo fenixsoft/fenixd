@@ -1,5 +1,5 @@
 # 工作树与版本控制
-> 最后更新：2026-11-04 15:55 UTC+8
+> 最后更新：2026-11-04 16:11 UTC+8
 
 实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律，主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
 
@@ -13,7 +13,7 @@
 | [worktree-hygiene](worktree-hygiene.md) | worktree 卫生与复用 | 2026-10-03 04:59 |
 | [run-isolation](run-isolation.md) | run 工作树隔离与冲突恢复（锁归属诊断；锁冲突告警=重复派发判读、归属禁 glob 前缀） | 2026-11-04 15:55 |
 | [worktree-acquire](worktree-acquire.md) | worktree 获取退避等待与降级计数（自适应预算封顶 + 竞争类降级分流留痕） | 2026-10-11 01:47 |
-| [merge-back](merge-back.md) | merge-back 合并回主树 | 2026-10-13 18:00 |
+| [merge-back](merge-back.md) | merge-back 合并回主树（闸门链与自愈链、自愈覆盖边界、上游 spec 目录自动提交夹带面） | 2026-11-04 16:11 |
 | [merge-back-precheck](merge-back-precheck.md) | merge-back 预检（WIP 交集升级拦截） | 2026-10-03 04:59 |
 | [wip-defer-merge-retry](wip-defer-merge-retry.md) | WIP 阻断延迟合回（等待标志 + 周期自动合回） | 2026-10-03 04:59 |
 | [mergeback-wip-active-coordination](mergeback-wip-active-coordination.md) | 合回 WIP 占用者识别与事件驱动重试（无主宽限升级） | 2026-10-09 03:24 |

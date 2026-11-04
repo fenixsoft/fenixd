@@ -52,3 +52,4 @@
 ## [2026-11-04 12:03 UTC+8] distill | add-systemd-hosting 失败：claude 进程非零退出（exit=1）；stderr 尾部: Claude Code doesn't recognize the model "glm-5.3-flash", so it assumes a context window of 200k tokens. 
 ## [2026-11-04 15:55 UTC+8] fold | memory-distill-agent-prompt-rules.md 折叠入库
 ## [2026-11-04 16:11 UTC+8] fold | memory-distill-diagnostic-signatures.md 折叠入库
+## [2026-11-04 16:11 UTC+8] fold | memory-distill-open-gaps-hazards.md 折叠入库

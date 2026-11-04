@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-03 23:16 UTC+8
+> 最后更新：2026-11-04 16:11 UTC+8
 
 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力，加存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律。归档 SPEC 承担历史职责，真相源只装当前生效的业务规则，两者以溯源链接互指。本域能力页清单如下。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [knowledge-atlas-directory](knowledge-atlas-directory.md) | 真相源目录契约与能力页格式（marker 机器接口、溯源链接、150 行硬顶） | 2026-11-03 15:39 |
 | [knowledge-consumption-discipline](knowledge-consumption-discipline.md) | 车道/CLAUDE.md/skill 三面 index-first 消费指路（条件 MUST、存在性条件、`_inbox/` 回填预告）与 index 简介增厚质量要求 | 2026-11-03 15:39 |
-| [knowledge-distill-pipeline](knowledge-distill-pipeline.md) | 归档触发蒸馏管线（单点挂载、合并语义、收尾校验与自动提交、pending 台账与重启续跑） | 2026-11-03 23:16 |
+| [knowledge-distill-pipeline](knowledge-distill-pipeline.md) | 归档触发蒸馏管线（单点挂载、合并语义、收尾校验与自动提交、pending 台账与重启续跑、产物心跳保活、放弃清理半径） | 2026-11-04 16:11 |
 | [knowledge-inbox-pipeline](knowledge-inbox-pipeline.md) | `_inbox/` 候选区回填管道（自由格式投递与扫描豁免、distill piggyback 折叠、sources file 形态扩展、log.md 编年账、归档改写豁免、积压提醒、知识车道 prompt 归位） | 2026-11-03 23:16 |
 | [knowledge-adr-index](knowledge-adr-index.md) | ADR 决策索引（抽取判据、三段式不可变、supersede 只标不改） | 2026-10-05 03:23 |
 | [knowledge-dashboard-tab](knowledge-dashboard-tab.md) | 项目知识页签（按需加载、只读 API、index/ADR 视图） | 2026-10-05 03:23 |

@@ -1,7 +1,7 @@
 # 归档触发蒸馏管线
 
-<!-- knowledge: capability=knowledge-distill-pipeline rev=4
-     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/archive/2026-10-30-evo-knowledge-distill-resume-guard -->
+<!-- knowledge: capability=knowledge-distill-pipeline rev=5
+     sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/archive/2026-10-30-evo-knowledge-distill-resume-guard,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md -->
 
 SPEC 归档完成后自动派发蒸馏 run，把归档 delta 蒸馏进真相源能力页的增量车道：合并语义、确定性对账、自动提交一体完成；批次在飞全程落盘在册，daemon 重启可续跑。
 
@@ -14,8 +14,9 @@ SPEC 归档完成后自动派发蒸馏 run，把归档 delta 蒸馏进真相源�
 - 台账生命周期与批次收尾对账：成功收尾（提交落库或判定无变更可提交）后移除条目；放弃产出且工作区清理确认后移除；「校验通过但自动提交失败」「执行异常」「run 失败且回滚未确认」三条滞留路径必须保留条目，并照旧登记 todo 重试台账、注明由 daemon 重启续跑接管，不得静默清除。合并批次收尾按本批 names 并集一次清除全部对应条目（防漏清陈旧条目在重启后对已入库归档触发重蒸）；清除为整文件重读-过滤-原子回写，避免与并发入队互相覆盖丢条目。
 - daemon 启动恢复：daemon 初始化末尾扫描 pending 台账，存在条目即先清空台账文件、再经恢复入口逐条走既有门控链重新入队——顺序必须先清空后入队（恢复重派会经写点立即重新落盘；若先入队后清空会把刚重写的条目一并抹掉，恢复期间台账裸奔）。门控放行的条目由写点立即重新落盘、收尾前始终在册（运行中再崩溃可再次恢复）；门控拒绝的条目随清空消失、不复活。恢复动作只重新入队、不执行蒸馏（实际 run 仍走既有 flock 单飞与 worker 串行消费）；恢复批次数落日志；恢复入口仅 daemon 启动路径接入，dashboard --serve 进程不做恢复（避免双进程竞争）；恢复异常降级 WARNING，不阻塞 daemon 启动。
 - run 形态：daemon spawn `claude -p` 后台线程，cwd 主树直跑（真相源是 spec 元数据层非产品代码，无 merge-back），注入 `agents/knowledge-distill.md` 提示词；每轮先经折叠前置段逐条消化 `_inbox/` 存量（每条一个折叠子 run，语义见 knowledge-inbox-pipeline 页）再蒸当轮 SPEC；写路径限定 `spec/knowledge/`（及 `.fenix/` 台账），run 前后 `git status` 对账越界写面——合法写面外的新增改动记 WARNING 留痕、不自动回滚（避免吞掉用户未提交改动）。
+- 产物心跳保活：蒸馏批产物在 spawn 等待期由批级心跳线程按 900 秒间隔追加非终态 heartbeat 事件行（读侧 stale 阈值 1800 秒，保证每个 stale 判定窗内至少一次写入；900s × 30min spawn 上限 ≈ 每批 ≤3 行，不污染产物）；心跳线程 fail-open（线程体内异常全吞、只留日志），批收尾先 join 心跳线程再写终态行，保证产物末行是终态。
 - 合并语义（后写覆盖前写）：读归档 `specs/<capability>/spec.md` delta 与 proposal 摘要处理每个 capability——真相源无该页则新建（rev=1）；已有则按本次 delta 整体重写受影响规则段（rev+1、溯源追加一行），旧规则从规则段消失；REMOVED 规则从规则段移除、溯源留「已随 <归档名> 废除」行，页面其余规则不动；主从分片按 capability 名聚合、整体重写全部分片。
-- 收尾对账（确定性脚本，非 LLM）：`core/knowledge.py::validate_knowledge` 校验 marker 可解析、sources 指向真实归档目录、单页 ≤150 行、index/_domain/adr 链接可解析且不越界、ADR 三段式与 accepted 正文不可变、Superseded by 指向存在条目；违规清单回反馈给 run 修正（≤2 轮），仍违规则放弃产出——daemon 侧 `git restore` 真相源目录并清理未跟踪新增，不留半成品；放弃按批次级基线快照判别，不吞用户 run 前既有的未提交改动。
+- 收尾对账（确定性脚本，非 LLM）：`core/knowledge.py::validate_knowledge` 校验 marker 可解析、sources 指向真实归档目录、单页 ≤150 行、index/_domain/adr 链接可解析且不越界、ADR 三段式与 accepted 正文不可变、Superseded by 指向存在条目；违规清单回反馈给 run 修正（≤2 轮），仍违规则放弃产出——daemon 侧 `git restore` 真相源目录并清理未跟踪新增，不留半成品；放弃按批次级基线快照判别，不吞用户 run 前既有的未提交改动。放弃清理的半径覆盖工作区全部未提交真相源内容：`git restore` + 清理未跟踪新增不只清 run 自身产出，恢复/核查会话刚写出的能力页、ADR 等 untracked 文件同样在半径内（脏工作区实证复发）——恢复工作完成后的第一动作是 commit 入库（已提交内容不在 restore/clean 半径），恢复与提交之间不留窗口。
 - 自动提交：校验全过后 pathspec 限定 `spec/knowledge/` 提交，commit 形如 `[fenix] knowledge: distill <归档名>`；无变更（如重复蒸馏同批归档）跳过空提交、按 ok 处理；提交失败 fail-open 记 warning，pending 条目保留交重启续跑。
 - 原料缺失降级（不判 run 失败）：归档无 `design.md` 跳过 ADR 抽取；无 `specs/` delta 按 proposal 摘要口径蒸馏能力页，或提不出任何当前规则时在能力页溯源段留一行「已审阅 <归档名>：无可蒸馏规则」，不虚构内容。
 
@@ -25,3 +26,4 @@ SPEC 归档完成后自动派发蒸馏 run，把归档 delta 蒸馏进真相源�
 - 2026-10-05 fix-knowledge-backfill-reconstruction（spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction/） — 门控链增回填期排队门：台账有 pending 时增量蒸馏登记回填台账不派发、收敛后放行、判定故障 fail-open
 - 2026-10-30 evo-knowledge-distill-resume-guard（spec/archive/2026-10-30-evo-knowledge-distill-resume-guard/） — 批次从派发即内存态改为在飞全程在册：新增 pending 台账落盘与收尾对账（三条滞留路径保留、合并批并集清除）、daemon 启动先清空后入队恢复（dashboard 不接恢复）、门控拒绝路径不入账
 - 2026-11-03 add-knowledge-inbox-pipeline（spec/changes/add-knowledge-inbox-pipeline/） — 修订 run 形态：知识车道 prompt 归位 `agents/knowledge-distill.md`（`core/knowledge_prompts/` 目录废除、路径变更须 daemon 重启生效），蒸馏轮入口前置折叠段逐条消化 `_inbox/` 存量
+- 2026-11-04 memory-distill-open-gaps-hazards（spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md） — 折叠批产物心跳保活（900s 心跳间隔快于 1800s stale 阈值、收尾先 join 再写终态）与放弃清理半径处方（恢复新建的 untracked 产物同在清理半径、恢复后第一动作 commit 入库不留窗口）
