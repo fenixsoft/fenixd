@@ -1,4 +1,4 @@
-<!-- knowledge: capability=supervisor-hosting rev=2 sources=spec/archive/2026-09-18-fix-supervisor-hosting-chain,spec/knowledge/_inbox/done/host-wide-sigkill-hosting-chain-wipeout.md -->
+<!-- knowledge: capability=supervisor-hosting rev=3 sources=spec/archive/2026-09-18-fix-supervisor-hosting-chain,spec/knowledge/_inbox/done/host-wide-sigkill-hosting-chain-wipeout.md,spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md -->
 
 # supervisor 托管链
 
@@ -17,9 +17,11 @@ daemon 由 supervisor 托管运行：tmux 仅作脱离终端的承载手段，�
 - 安装托管操作：Dashboard `POST /api/projects/<name>/install-hosting` 对 `unmanaged` 项目执行「停止裸 daemon → 经 supervisor 启动」转入 `managed`，对 `managed` 项目幂等返回不重启，对 `stopped` 项目等价于启动；必须复用 `stop_daemon`/`start_daemon`、不得绕过直接操作进程或 tmux；成功时广播 SSE `refresh`。
 - 托管链的宿主级暴露面：supervisor→daemon→dashboard 整条托管链只承载于 tmux 会话，不注册任何 systemd unit。宿主机级全用户态进程死亡事件（如全量 SIGKILL，内核与 systemd 本身存活）发生后，只有 systemd 管理的服务会被自动重启，托管链三进程无人拉起、整链停机直至人工恢复；supervisor 看门狗自身也在事件中死亡——看门狗没有更高层看护，是托管链停机时长的放大器。整链连坐死亡有两个已知变体：单独杀 tmux server 与宿主机级事件，后果同构。识别形态：supervisor.log 无 exited 收尾行、daemon 日志停在正常周期内容、tmux 会话整体消失（区别于优雅停机）。
 - 托管链整链死亡后的人工重建：supervisor 会话以 `python3 .fenix/bin/fenix_session.py name <项目根>` 生成会话名，在其中以 `python3 .fenix/bin/fenixd_supervisor.py --project-root <项目根>` 拉起 supervisor（配方以 skills/fenix-setup/SKILL.md 为准）；dashboard 常驻会话（fenix-dashboard）以 `env -u CLAUDE_PID` 剥离环境后重建。重建完成后按五点判据验证：`.fenix/supervisor_runtime.json` 已刷新（新 pid 与新 script_hash）、daemon 全量扫描正常消化积压事件、dashboard 端口 curl 返回 200、真实 python 进程的 environ 无 `CLAUDE_PID`、dashboard dist 构建产物不落后于 src。
+- 代码改动生效语义：daemon 进程的代码改动须经重启才生效（模块启动时加载），单测通过不等于生产生效；在飞 run 期间不重启，等空窗再重启。诊断「修复无效」先核对 `.fenix/daemon_started`（daemon 启动时刻锚点）与修复提交时间的先后，再归因代码。
 
 ## 溯源
 
 - 2026-09-02 史前复原（git:44e1443ba-..2026-09-02） — 迁移期已存在的基线：daemon 由 tmux/supervisor 托管：重启走 env -u CLAUDE_PID 协议，杀 tmux server 会连带杀 daemon，须重建托管链
 - 2026-09-18 fix-supervisor-hosting-chain（spec/archive/2026-09-18-fix-supervisor-hosting-chain） — 固化项目根解析守卫与五键运行时自报、托管态三态判定、唯一托管启动/停止语义、supervisor_missing 告警、restart-daemon 与审批推送的消费方校验、install-hosting 端点
 - 2026-11-04 host-wide-sigkill-hosting-chain-wipeout（spec/knowledge/_inbox/done/host-wide-sigkill-hosting-chain-wipeout.md） — 折叠宿主级全用户态 SIGKILL 事件实录：新增托管链宿主级暴露面规则（全链只住 tmux 无 systemd unit、宿主机级事件连坐死亡无人拉起、两变体与识别形态）与整链人工重建配方及五点验证判据
+- 2026-11-04 memory-distill-agent-prompt-rules（spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md） — 折叠代码改动生效语义：daemon 代码改动重启才生效（单测通过≠生产生效、在飞期间不重启等空窗、「修复无效」先核对 daemon_started 与修复提交时间）

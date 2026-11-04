@@ -1,5 +1,5 @@
 # 实现车道与交付物
-> 最后更新：2026-10-14 18:51 UTC+8
+> 最后更新：2026-11-04 15:41 UTC+8
 
 实现车道与交付物。本域能力页清单如下。
 
@@ -32,6 +32,6 @@
 | [writepoint-semantic-anchor](writepoint-semantic-anchor.md) | 状态写点语义锚定 | 2026-10-03 04:59 |
 | [task-progress-sync](task-progress-sync.md) | 任务进度同步链路 | 2026-10-03 04:59 |
 | [task-progress-writeback](task-progress-writeback.md) | 任务进度回写兜底 | 2026-10-03 04:59 |
-| [tasks-md-tracking](tasks-md-tracking.md) | tasks.md 任务清单跟踪 | 2026-10-03 04:59 |
+| [tasks-md-tracking](tasks-md-tracking.md) | tasks.md 任务清单跟踪（含 agent 勾选写入纪律） | 2026-11-04 15:41 |
 | [tasks-md-relint](tasks-md-relint.md) | tasks.md 重 lint 门 | 2026-10-03 04:59 |
 | [spec-task-reflow-action](spec-task-reflow-action.md) | tasks 任务重排动作 | 2026-10-03 04:59 |

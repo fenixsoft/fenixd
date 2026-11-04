@@ -1,4 +1,4 @@
-<!-- knowledge: capability=tasks-md-tracking rev=1 sources=spec/archive/2026-09-10-task-track -->
+<!-- knowledge: capability=tasks-md-tracking rev=2 sources=spec/archive/2026-09-10-task-track,spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md -->
 
 # tasks.md 任务清单跟踪
 
@@ -14,7 +14,9 @@ tasks.md 任务清单可跟踪性的三层治理：写入端分组标题格式�
   - dashboard 后端 SPEC 详情 `tasks_note` 字段为非空提示文本（含「未解析出任务」字样）；
   - dashboard 前端任务清单 Card 在 `tasks_note` 非空时显示 warning 级提示。
   无 tasks.md 文件时维持「暂无任务清单」空态，不打印警告、`tasks_note` 为空。
+- 勾选写入纪律（agent 侧）：以 sed 等文本替换勾选 tasks.md 时，replacement 端不得对 `^` 误转义——产生 `^-` 前缀行会破坏任务清单格式，下游解析为空；写入后自检 grep 计数为 0 或与预期任务数不符时，必须停下核实原因，不得强行提交收工。
 
 ## 溯源
 
 - 2026-09-10 2026-09-10-task-track（spec/archive/2026-09-10-task-track） — 分组标题 `## <编号>. <标题>` MUST 契约写入生成指引；drafted→ready 可解析性 lint（0 分组拒晋升、fail-open）；CLI 警告行、dashboard `tasks_note` 字段与前端 warning 空态提示落地
+- 2026-11-04 memory-distill-agent-prompt-rules（spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md） — 折叠 agent 侧勾选写入纪律：sed replacement 端 `^` 误转义防坑、自检计数为 0 时停下核实而非强行收工
