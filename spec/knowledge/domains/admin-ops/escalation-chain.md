@@ -1,7 +1,7 @@
 # 升级处置链（Admin→Arbiter→人工）
 
-<!-- knowledge: capability=escalation-chain rev=4
-     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md -->
+<!-- knowledge: capability=escalation-chain rev=5
+     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
@@ -21,6 +21,11 @@
 - 链派发器事件驱动直派（`core/pm_engine/escalation_chain.py`），对齐 arbiter lane 单飞队列形态（同签名 dedup + 复用在飞互斥守卫 + 队列深度上限），不走 admin_monitor 5 分钟巡检；admin_monitor 保留兜底看护——pending 超时升级语义不变；链感知钩子（`_reap_chain_inflight`）负责在办登记超时清除与 deferred 扫描重派。
 - 链痕单源查询口：看护升级抑制与 deferred 重派判定共用同一查询函数（输入签名，输出 in_flight/deferred/arbiter_active 三态命中）；in_flight/deferred 读链状态文件同名区，arbiter 在飞读 arbiter 单飞队列既有注册（只读访问，不新建注册表）；链状态文件缺失/损坏按零命中降级（fail-open，对齐看护链缺席既有口径）。
 - 链让行留痕与唤醒：链在办互斥守卫命中（同 spec 在飞 admin run 且该 run 非本链成员）时链让行（deferred），in_flight 区留 `phase: deferred` 条目（含被让行对象标识 `yield_to` 与让行时间戳 `deferred_at`），不整条清除登记。看护巡检扫描 deferred 条目：被让行 run 已终态且该签名信号未收口（spec 仍 blocked/冻结或 pending 告警在场）时重新触发该件链派发——走链派发器既有单飞/互斥守卫，不绕过；信号已收口仅清条目。frozen 预检转入的条目（`yield_to` 为空）以「spec 已解冻」为重派条件，同一扫描覆盖。deferred 条目纳入既有 in_flight 超时 reap，超时无进展照常清理，不产生永久滞留条目。
+- 链路由 admin run 的处置台账闭合责任分两径、仅一径尽责：admin run 派发时无条件落一条 pending DISPOSITION 记录，闭合由消费路径负责——直接信号路径在收尾写带 `admin_run_id` 的 final 处置记录，`_merge_admin_runs` 的 by_run 归并按「非 pending 记录带同 run id」判 run 已终结，pending 不再孤儿；链路由路径的全部出口（closed/handoff/exhausted/deferred）都不写 final 处置记录——链闭环副作用只有解冻恢复 spec 状态、收口在队上升件、写链事件三件事，不含处置台账闭合，pending 自派发起即为永久孤儿。
+- 链路由 pending 孤儿是结构性误报源：孤儿看护按 `admin.escalation_cooldown_minutes` 宽限（代码缺省 60 分钟，本项目配置 15 分钟）后扫到「pending 超时 + run 文件终态 + 链痕三态全无」——链 success 时已清 in_flight，链痕抑制不命中——升级 critical「处置中断」。每例链路由 admin run（成功或转单）在派发宽限到期后必然产出一条假「处置中断」。
+- 「处置中断」告警排查判据：先查该 run 名下有无 final 处置记录与链状态文件终态——有 final 即直接路径已正常收尾（健康）；无 final 且链已闭环/转单即链路由孤儿 pending（结构性误报），勿信告警 description 归因文案。
+- 链成功路径不执行 choice 载荷：链上对 `disp.choice_id` 只做越界复核（注册表 allowlist 之外转单 Arbiter），无载荷执行等效物——payload 型 choice 的真实修复动作只有直接信号路径执行。信号若仅经链路由单通道处置，链闭环后修复动作被静默跳过：spec 停滞且零告警，是比误报告警更重的功能缺口。
+- 逐动作 DISPOSITION 记录不带 `admin_run_id`（同秒 final 记录带）：逐动作记录不能终结 pending；逐动作记录先于 final 落盘而 final 因故缺失时，by_run 归并同样断裂。
 - 链状态文件条目形态向后兼容：in_flight 区条目 `phase` 取值 admin/arbiter/deferred；缺 `yield_to`/`deferred_at` 的既有条目按 admin/arbiter 相待，缺 `phase` 的历史残留按 admin 兼容。
 - 失败双轨上升：(a) Arbiter 自判无法处理/无法决策/尝试无效（含 run 崩溃超时，沿用同签名失败重试 1/2 次与半成品调查包机制）；(b) 复现配额耗尽（缺省 3 次拍板后第 4 次复现）。
 - 上升件必附全链痕迹（Admin 尝试痕、Arbiter 台账五段、剩余 choices）与全链关联键（链 run_id 族）；上升件在人工队列期间，链上任一级后续成功闭环时自动收口（`close_cause` 族标记，含 `CLOSED_BY_CHAIN`），不滞留。
@@ -35,3 +40,4 @@
 - 2026-11-03 escalation-chain-orphan-watchdog-double-path（spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md） — 折叠首例链路事件结论：孤儿看护第三发射通道豁免定性、看护链盲重复出件、链 deferred 无唤醒路径静默挂起、冻结×链头派发竞态烧配额（三缺口治理立项 fix-escalation-chain-watchdog-yield-gaps）
 - 2026-11-03 fix-escalation-chain-watchdog-yield-gaps（spec/changes/fix-escalation-chain-watchdog-yield-gaps/） — 三缺口收口：Admin 配额语义收窄（frozen 预检不派发不计尝试 + frozen-terminated 空壳视为未尝试）、deferred 让行由静默丢弃改为 in_flight 留痕 + 看护扫描重派或超时清理、链痕单源查询口确立（看护抑制与重派共用）
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（第二次裁决仍白名单外时留第三次自主处置机会，不提前落人工）：缺省单源 CHAIN_ARBITER_RULINGS_DEFAULT、两处运行时兜底与 ChainPanel 同值对齐；Admin 尝试配额 2 与复位窗 7 天不变
+- 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠链路由处置台账缺口取证（链上线首日 4 例同根因）：链全出口不写 final 处置记录致 pending 永久孤儿（宽限后必然假「处置中断」）、链成功路径不执行 choice 载荷（单通道修复静默跳过）、逐动作记录无 run id 的 by_run 归并盲区、排查判据=run 名下有无 final

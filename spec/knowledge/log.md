@@ -32,3 +32,4 @@
 ## [2026-11-03 23:43 UTC+8] distill | add-arbiter-gap-todo-routing（第 1 轮，自动提交落库，折叠入库 4 条）
 ## [2026-11-04 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 1 / 过 8）
 ## [2026-11-04 00:03 UTC+8] lint | _inbox 积压提醒：3 条滞留（最老 20 天），等待 distill 轮折叠
+## [2026-11-04 09:33 UTC+8] fold | escalation-chain-disposition-ledger-gap.md 折叠入库
