@@ -1,7 +1,7 @@
 # 代码审查问题台账（items.jsonl）
 
-<!-- knowledge: capability=code-review-items rev=3
-     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume,spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff -->
+<!-- knowledge: capability=code-review-items rev=4
+     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume,spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
 
 代码审查发现跨轮持久化的唯一台账：以 JSONL 逐条记录问题、按指纹去重、按全仓快照核销，向修复 SPEC 生成与 code-fix 车道供料。
 
@@ -10,7 +10,8 @@
 - 台账路径 `.fenix/code-review/items.jsonl`，每行一条 JSON。
 - 每条至少含字段：`item_id`、`project`、`review_id`、`review_kind`、`reviewed_at`、`spec`、`file`、`line`、`severity`、`category`、`title`、`description`、`suggestion`、`evidence`、`fingerprint`、`status`、`spec_name`、`first_seen_at`、`last_seen_at`。
 - `review_kind` 取值 `scheduled`（周期自省）/ `manual_full`（手动全仓）/ `manual_window`（手动本周期）。
-- `severity` 取值 `critical | major | minor | info`。
+- `severity` 取值 `critical | major | minor | info`；写读双归一：写侧 `normalize_severity()`（`core/code_review.py:657`，口径同 artifacts.py severity_map：high/medium→major、low→minor、空→info、四档之外未知值透传 fail-open）接入 `upsert_findings`，读侧 `read_code_review_items` 返回前就地归一——存量漂移行零迁移治愈，随下次 upsert 自然刷新盘上值。
+- severity 不参与 `fingerprint`（归一不影响去重）；出现四档之外未知值在 `_SEVERITY_NORMALIZE` 表补值，MUST NOT 改消费端逐处适配。
 - `status` 取值 `open | in_spec | resolved | ignored`。
 - `item_id` 唯一且稳定（同一问题重复观测不变）。
 - 指纹去重权威：`fingerprint = sha1(file + category + 归一化 title)[:12]`；`title` 归一化规则稳定可复现（去首尾空白、折叠内部空白、大小写统一），保证同一问题跨轮指纹一致、判为同一条目。
@@ -21,7 +22,7 @@
 - 锚清除点：任一 run 收尾执行了全仓快照核销，或覆盖完整成功收尾（核销解锁分支走完）时清除；部分覆盖锁定分支保持锚在位，等剩余文件补齐后由后续收尾清除。清锚失败只留痕，不改变收尾终态。
 - 锚存在期间，审查完成日志两处落账文案追加「部分覆盖待核销（run_id=…）」标注：观测走日志，不加告警、不进 dashboard 新页；标注读取异常按无锚处理，不影响完成日志主路径。
 - 锚驱动剃余续审：锚存在时，周期审查下一轮按「全量清单 − 抢救已落账覆盖文件」的剩余清单派发（复用 429 限流重派既有 `redispatch_of` 形参传锚 run id，收尾守卫按原 run 及其链产物累计覆盖判解锁——MUST NOT 整轮全量重烧，MUST NOT 另起新形参绕过守卫落普通分支）；剩余清单为空则本轮跳过派发（照写同日防重、锚保持原样，核销解锁仍由收尾守卫判定）；剃余失败回退全量清单派发但仍标注 `redispatch_of`（守卫按原 manifest 判覆盖）。结构化留痕 `reason=writeoff_resume`（含剩余文件数与来源 run id）。
-- `ignored` 由用户在 Dashboard 显式标记，标记后不出现在默认问题列表。
+- `ignored` 置入出口两处：用户在 Dashboard 显式标记；code-fix agent 拒绝出口（产物行 `skip_reason` ∈ false_positive/not_worth_fixing）经 `mark_ignored` 降级——仅 `open` 可降（`in_spec`/`resolved` 不触碰），记 `ignored_by`/`ignored_reason`/`ignored_at` 供人工重开。标记后不出现在默认问题列表。
 - `in_spec` 在条目被用于生成修复 SPEC 时自动置入，并记录 `spec_name`；`resolved` 由全仓快照核销置入。
 - 状态流转幂等：重复标记为同一状态不报错、不产生副作用。
 
@@ -31,3 +32,4 @@
 - 2026-10-06 add-code-review-ratelimit-resume（spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume） — 全仓快照核销加装覆盖完整性门：累计覆盖不完整（含重派链口径）不核销，宁锁勿白洗。
 - 2026-10-30 evo-add-review-night-defer-snapshot-writeoff（spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff） — 核销资格从「仅 manual_full」放宽为「manual_full 或全仓收集的 scheduled（window_start=None）」（窗口档与一切 error 收场绝不核销红线不变）；error 收场抢救落账写 pending-writeoff 待核销锚（覆盖写、核销执行或覆盖完整收尾清锚）；审查完成日志追加部分覆盖待核销标注（观测走日志）。
 - 2026-10-30 evo-review-night-window-resume-hardening — 待核销锚驱动剃余续审（剩余清单派发、空剩余跳过派发、剃余失败回退全量但仍标注 redispatch_of）；调度侧跨窗顺延时长估计均值改 max（详见 [code-review-agent](code-review-agent.md)）。
+- 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — severity 写读双归一（写侧 normalize_severity 接入 upsert_findings、读侧返回前就地归一治愈存量漂移、不参与指纹）；ignored 增 code-fix 拒绝出口（mark_ignored 仅 open 可降、记 ignored_by/reason/at）。

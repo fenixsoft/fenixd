@@ -1,7 +1,7 @@
 # 指挥中心后端聚合
 
-<!-- knowledge: capability=command-center-aggregation rev=1
-     sources=spec/archive/2026-10-31-add-command-center -->
+<!-- knowledge: capability=command-center-aggregation rev=2
+     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
 
 面向管理层演示叙事（组织、交付、裁决、执行四个切面）的第三块大屏数据面：对 dashboard 托管项目跨项目聚合出 KPI 四指标、组织网格、交付流水线、执行台账与裁决收件箱，全部只读。
 
@@ -18,7 +18,7 @@
   - 三个比率/均值指标分母为 0 时返回 `null`（0 冒充被禁止），`delivered_specs_7d` 空窗为 0。
 - **网关健康为配置态派生**：`/kpi` 响应携带 `gateway_health`（`configured` 布尔 + 已配置 provider 数），复用项目配置只读读取路径；`core.dashboard.llm_health` 是按需主动探测工具、无缓存结果，MUST NOT 调用，KPI 链路 MUST NOT 发起任何网络探测。
 - **窗口聚合即时计算**：窗口指标从既有 run 文件与目录名即时聚合，不建预聚合缓存表或定时任务；复用 run metric index 既有 memo 缓存，并按 run 文件 mtime 粗筛入窗文件，窗外文件不读内容。
-- **组织网格静态花名册**：`/org` 车道卡按分区（zone）归组，分区与车道花名册为模块级静态常量 ROSTER，MUST NOT 做成用户配置项。预置分区：需求线（planner、spec-review）、交付线（implementer、code-fix）、质量线（code-review、judge、testing）、运营线（administrator、self-review、scan、ocr）；观测到花名册外 lane 归入「其他」分区，编制内外车道都不丢。
+- **组织网格静态花名册**：`/org` 车道卡按分区（zone）归组，分区与车道花名册为模块级静态常量 ROSTER，MUST NOT 做成用户配置项。预置五线分区：需求线（planner、spec-review）、设计线（planner-plan、planner-judge）、交付线（implementer、code-fix、verifier）、质量线（judge、code-review、self-review）、运营线（administrator、evolution、knowledge-distiller）；testing 与 scan 不出卡（测试在实现/修复 run 内部执行、扫描由代码评审承担，两车道从未派发），ocr 未划线（观测到才落「其他」）。观测到花名册外 lane 归入「其他」分区，编制内外车道都不丢。
 - **车道卡字段**：`lane`、`zone`、`status`（`working`=该 lane 存在在飞 run，复用 runs.py 既有在飞判定；否则 `idle`）、`runs_today`（UTC 日界）、`success_rate_7d`、`cost_7d`、`activity_14d`（长度 14 的按日 run 计数数组，旧→新，按开始时间落桶）、`last_activity_ts`、`attributable`（`{project, spec}` 或 `null`：取该 lane 最近一条在飞 run 的归属 SPEC，不可得 MUST 为 `null`，供前端钻取）。花名册内车道即使窗内零 run 也出卡。
 - **汇报线为静态常量**：`/org` 响应 `edges` 恒为模块常量 4 条：planner→implementer、implementer→code-review、code-review→judge、code-fix→code-review。
 - **交付流水线五列桶映射**：`/pipeline` 跨项目收集活跃 SPEC 按五列归组，桶映射 MUST 覆盖 `SpecStatus` 全量（含侧挂 blocked）：`drafted`←{drafted, reviewing}（单证评审属需求阶段）；`ready`←{ready}；`implementing`←{implementing, bug-found, blocked}（侧挂暂停归在制列）；`verifying`←{implemented, testing, verified}；`pushed`←{done, pushed}（终态未归档仍为活跃 SPEC）。每卡携带原生 `status`；implementing 列卡存在在飞 run 时附 `running`（含 lane 与开始时间）。
@@ -28,3 +28,4 @@
 ## 溯源
 
 - 2026-10-31 add-command-center（spec/archive/2026-10-31-add-command-center） — 新增本能力：五个只读聚合端点（KPI 四指标 7 日窗精确口径、组织网格静态花名册与汇报线常量、流水线五列桶映射覆盖全量 SpecStatus、台账 50 条倒序 trigger 允许 null、收件箱只读装配复用 alert-resolve）
+- 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 组织网格花名册刷新为现行五线划分（设计线 planner-plan/planner-judge、verifier 入交付线、self-review 归质量线、knowledge-distiller 收编运营线），testing/scan 不出卡、ocr 未划线。

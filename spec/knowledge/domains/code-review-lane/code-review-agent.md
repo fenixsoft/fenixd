@@ -1,7 +1,7 @@
 # 周期性代码审查 agent
 
-<!-- knowledge: capability=code-review-agent rev=6
-     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at,spec/archive/2026-10-28-evo-code-review-vendored-scope,spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff -->
+<!-- knowledge: capability=code-review-agent rev=7
+     sources=spec/archive/2026-09-24-add-code-review-agent-and-quality-tab,spec/archive/2026-09-27-add-code-review-scope-config,spec/archive/2026-09-29-add-code-review-sharded-out,spec/archive/2026-10-15-add-code-review-run-at,spec/archive/2026-10-28-evo-code-review-vendored-scope,spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
 
 项目级周期性代码审查的一等公民 agent 车道：由框架调度层按独立周期配置（触发时点缺省回退每日自省时点）派发，对主树代码逐文件审查并增量落盘，支撑质量分面台账与手动触发。
 
@@ -34,9 +34,9 @@
 - 收到 `Async agent launched` 类元数据后，主 agent 不得以「等待批次完成通知」为由结束 run：非交互模式下 turn 结束即主进程退出，异步批次结果不可回收。主 agent 必须轮询分片落盘进度并同步推进自己的未派发批次，或不派子代理、全自行逐文件审查。
 - 产物硬门（`repo-code-review-gate`）按聚合口径判存在性：主产物与全部分片的有效结果行合计为零（或全部缺失）判整轮失败；任一来源存在至少一行有效行即通过存在性校验（manifest 覆盖率校验口径不变）。
 - 消费侧统一经唯一聚合入口取「分片 + 主产物」行，任何一侧不自写 glob 或另立读取口径（聚合与去重细节见 [code-review-progress-visibility](code-review-progress-visibility.md)）。
-- `ocr` 可作为辅助审查手段；`ocr` 缺失或不可达时降级以 LLM 审查继续，不因辅助工具缺失整轮失败。
+- 周期审查为纯 LLM 逐文件审查：MUST NOT 调用 `ocr` 或 `bin/ocr_review.py`（该包装器仅供实现期收尾等其他车道使用）；不存在任何「等外部扫描产物」的等待步骤，审完即落盘、全部文件落行即收工。
 - 进度结构为 `{running, review_id, review_kind, total, done, current}`；`running` 判定基于该 run 产物 `.fenix/runs/<review_id>.jsonl` 末行是否属终态集合（对齐 runs 口径全量：`result`/`error`/`interrupted`/`cancelled`/`frozen-terminated`/`superseded`/`gate-blocked`），非终态再叠加 stale 阈值兜底；不以「产物/manifest 文件是否存在」近似判定（否则已取消/停机的 run 永远显示运行中，手动触发 409 守卫恒真）。
-- 取消复用既有 run 取消机制（写 `.fenix/cancel_run_request.json` 旗标由 daemon 消费），不另立通道；取消后 run 终止，已落盘的部分结果保留。
+- 取消复用既有 run 取消机制（写 `.fenix/cancel_run_request.json` 旗标由 daemon 消费），不另立通道；取消后 run 终止，已落盘的部分结果保留。cancel 终态不做产物抢救（框架不自动补账）；人工 cancel 后带完整产物时先验证 out 文件再动手补账——走 `_read_code_review_out(None, root, run_id)` 读取 + `upsert_findings(review_kind="scheduled")` 落账，`scheduled` 不触发快照核销，无白洗风险。
 
 ## 溯源
 
@@ -47,3 +47,4 @@
 - 2026-10-28 evo-code-review-vendored-scope（spec/archive/2026-10-28-evo-code-review-vendored-scope） — scope 两档出题面收集加装 vendored 第三方目录排除（收集层单表生效，规则细节另立 [vendored-review-scope](vendored-review-scope.md) 页），非 vendored 路径收集行为不变。
 - 2026-10-30 evo-add-review-night-defer-snapshot-writeoff（spec/archive/2026-10-30-evo-add-review-night-defer-snapshot-writeoff） — 新增周期审查派发跨窗顺延：预计在飞区间与夜间静默窗相交即顺延（不派发、不写同日防重、复位单飞、日志 reason=night_quiet_window_deferred）、近 3 轮归档时长样本策略（对齐 code-fix 同源常量）、无样本回退仅判落窗、判定挂点先于副作用（manifest 收集与防重写入之前）。
 - 2026-10-30 evo-review-night-window-resume-hardening — 顺延时长估计由近 3 轮均值改为取最大值（均值对时长方差与上行趋势系统性低估）；writeoff-pending 待核销锚驱动剃余续审（台账侧规则详见 [code-review-items](code-review-items.md)）。
+- 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 周期审查规则改写为纯 LLM 逐文件审查（废除「ocr 辅助手段可降级」条款，MUST NOT 调用 ocr/bin/ocr_review.py）；取消条款补 cancel 终态不自动抢救与人工补账路径（验证 out 后 _read_code_review_out + upsert_findings(scheduled)）。

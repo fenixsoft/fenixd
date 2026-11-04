@@ -1,7 +1,7 @@
 # code-fix 修复 agent
 
-<!-- knowledge: capability=code-fix-agent rev=2
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-10-03-add-codefix-targeted-retry -->
+<!-- knowledge: capability=code-fix-agent rev=3
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-10-03-add-codefix-targeted-retry,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
 
 一等公民 agent 类型 `code-fix`：在隔离 worktree 内逐条修复审查台账条目并落盘处置结果。
 
@@ -29,7 +29,14 @@
 - 仅处理注入清单中的条目，不得顺手重构清单外代码。
 - 产物缺失判失败：退出码 0 但 out 文件不存在或零有效行时，该批判失败（不合回、不置条目 `resolved`），不得把空跑当成功。
 
+### LLM 拒绝出口（skip_reason）
+- 产物行 `status=skipped` 时 `skip_reason` 决定条目去向：`false_positive` / `not_worth_fixing` 命中拒绝白名单 → 框架 `mark_ignored` 置台账终态 `ignored`（不再跨链重修，留痕字段见 [code-review-items](../code-review-lane/code-review-items.md)）；`unfixable` / `needs_human` / 无标注 → 维持 `open` 链内跳过、跨链可重试。缺省保守：必须显式声明「误报/不值得修」才走硬出口，防 LLM 轻率清账。
+- 白名单命中判定带前缀归一（整串相等快路径 + strip 后以枚举值开头）：解释文本并入 `skip_reason` 的过渡形态仍可命中硬出口，但提示词契约 MUST 写裸枚举、解释一律写 `reason` 字段。
+- 同条目跨轮「首轮 skipped、重试轮 fixed」以 `fixed` 为准（纯函数分区并集口径）。
+- 全批降级（整批 skipped）批无代码改动，按完成收尾继续推进下一批（consumed 语义，非 halt 非整批失败）。
+
 ## 溯源
 
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：agent 类型四处注册点、模型链缺省回退 code-review、worktree 写权限与逐条 out 文件产物契约（产物缺失判失败）。
 - 2026-10-03 2026-10-03-add-codefix-targeted-retry（spec/archive/2026-10-03-add-codefix-targeted-retry） — 新增定向重试轮契约段：只修失败用例相关问题禁扩面、修复对象可为产品代码或测试本身（agent 判定）、修测试产物行 fix_scope=test 标注。
+- 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 新增 LLM 拒绝出口段：skip_reason 白名单（false_positive/not_worth_fixing 经 mark_ignored 置终态 ignored，unfixable/needs_human/无标注维持 open 链内跳过）、跨轮 skipped/fixed 以 fixed 为准、全批降级按完成收尾。
