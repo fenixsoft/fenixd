@@ -106,6 +106,19 @@ def _validate_name(name: str) -> Optional[str]:
         return f"Change name must be a string, got {type(name).__name__}"
     if not name:
         return "Change name cannot be empty"
+    # 与单源 validate_spec_name 同款 UTF-8 字节 ≤200 预检（item 5129708366fa）：
+    # 创建侧不放行超长名——否则消费侧（write_scheduling_kick 信号文件名、
+    # parse_verify_progress 路径穿越防护）会拒绝已创建的 spec，且 >255 字节
+    # 名走到 mkdir 时以裸 OSError(ENAMETOOLONG) 冒出而非本函数调用方按契约
+    # 兜住的 ValueError。上限字面量与 spec_naming 保持同值，文案按本模块
+    # 英文风格就地输出（item 9ead5b045f00），不透传单源中文消息。
+    try:
+        name_bytes = len(name.encode("utf-8"))
+    except UnicodeEncodeError:
+        # 含未配对代理字符无法按 UTF-8 计长，与单源同口径归入「不合法」。
+        return f"Change name contains invalid characters (not UTF-8 encodable): {name[:32]!r}…"
+    if name_bytes > 200:
+        return f"Change name too long ({name_bytes} bytes, limit 200): {name[:32]!r}…"
     if not KEBAB_RE.fullmatch(name):
         if re.search(r"[A-Z]", name):
             return "Change name must be lowercase (use kebab-case)"

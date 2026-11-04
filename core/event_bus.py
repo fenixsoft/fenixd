@@ -37,6 +37,17 @@ def _admin_run_id_matches_spec(run_id, spec: str) -> bool:
     return m is not None and m.group("spec") == spec
 
 
+# ── 线程复用守卫的有界 join 探测窗（code-review item 6b19b00fad85）──────────
+# 对齐姊妹文件 core/dashboard/watcher.py 的同名先例（_REUSE_PROBE_SECONDS，
+# 其注释引用 code-review item ef54032f6647）：is_alive() 命中后先做一次有界
+# join 探测，垂死线程（已读到 _running=False、正处退出收尾）在窗内真正终止
+# 则落到新建分支，超时才按存活复用。只需覆盖「正在退出但尚未终止」的亚毫秒
+# 级收尾窗，取值远大于该窗即可；正常运行的线程不会在窗内退出。不跨模块导入
+# dashboard 层常量（core 不反向依赖 dashboard），与先例同值同义、两侧取值
+# 须同改。
+_REUSE_PROBE_SECONDS = 0.2
+
+
 class EventBus:
     """
     Monitor STATE.md for changes and dispatch events to PM Engine.
@@ -76,6 +87,25 @@ class EventBus:
         # 直接锁内 read_all）——锁外预读的快照可能被另一线程的整轮派发甩开，
         # 对陈旧读数 diff 会产生「快照新 → 读数旧」的逆向迁移事件。
         self._state_lock = threading.RLock()
+
+    def _probe_thread_reusable(self, thread) -> bool:
+        """is_alive() 复用守卫的有界 join 探测（code-review item 6b19b00fad85）。
+
+        对齐 dashboard/watcher.start() 先例（其注释引用 item ef54032f6647）：
+        is_alive() 为真只说明线程尚未终止——旧线程可能已读到 _running=False、
+        正处退出收尾，此刻直接按「复用存活线程」返回，随后旧线程终止，
+        watch/scan/初扫循环无人运行而调用方以为已启动。故复用前先做一次
+        ``_REUSE_PROBE_SECONDS`` 有界 join：垂死线程在窗内真正终止 → 返回
+        False，调用方落到新建分支照常补起；正常运行的线程不可能在探测窗内
+        退出（watch 2s 一轮、scan 睡满整段 poll_interval、初扫为整轮扫描），
+        join 超时后仍按存活复用。``thread`` 为 None 或已退出 → 返回 False。
+        三处复用守卫（start 的 _watch_thread/_scan_thread 与
+        start_initial_scan 的 _initial_scan_thread）单点共用本判定，防口径漂移。
+        """
+        if thread is None or not thread.is_alive():
+            return False
+        thread.join(timeout=_REUSE_PROBE_SECONDS)
+        return thread.is_alive()
 
     def start(self):
         """Start monitoring STATE.md for changes."""
@@ -128,8 +158,11 @@ class EventBus:
         # 先例同口径：stop() 已把 _running 置 False 而旧线程仍指向存活线程，若
         # 叠加 _running 条件会恰好放行双跑形态）；两条线程独立判定，仅存活者
         # 复用，已退出的一条照常补起。
-        if self._watch_thread and self._watch_thread.is_alive():
-            # 复用存活旧线程：_running 已置回 True，旧线程继续循环。
+        if self._watch_thread and self._probe_thread_reusable(self._watch_thread):
+            # 复用存活旧线程：_running 已置回 True，旧线程继续循环。is_alive()
+            # 命中后已经 _probe_thread_reusable 有界 join 探测收窄 TOCTOU 窗
+            # （code-review item 6b19b00fad85，先例 watcher.py item
+            # ef54032f6647）：垂死线程在探测窗内终止则落新建分支照常补起。
             self.logger.info("event_bus", "Watcher thread still alive, reusing it")
         else:
             self._watch_thread = threading.Thread(
@@ -169,8 +202,10 @@ class EventBus:
         except (TypeError, ValueError, OverflowError):
             poll_interval = 30.0
         # 同上存活复用守卫（code-review item de45aae4e422）：join 超时后仍存活
-        # 的旧扫描线程复用，不再另起第二条。
-        if self._scan_thread and self._scan_thread.is_alive():
+        # 的旧扫描线程复用，不再另起第二条。is_alive() 命中后同样经
+        # _probe_thread_reusable 有界 join 探测收窄 TOCTOU 窗（code-review
+        # item 6b19b00fad85）。
+        if self._scan_thread and self._probe_thread_reusable(self._scan_thread):
             # 复用存活旧线程：_running 已置回 True，旧线程睡醒后继续循环。
             self.logger.info("event_bus", "Scanner thread still alive, reusing it")
         else:
@@ -243,8 +278,12 @@ class EventBus:
         # 初扫线程仅 join(timeout=1)，长扫描下 join 超时后线程仍存活；同一实例
         # stop() 后再 start()+start_initial_scan() 若无条件另起，会与旧初扫线程
         # 并发双跑 _run_full_scan_body（dispatch + recovery 翻倍）。守卫只看线程
-        # 存活、不看 _running（与 start() 先例同口径）。
-        if self._initial_scan_thread and self._initial_scan_thread.is_alive():
+        # 存活、不看 _running（与 start() 先例同口径）。is_alive() 命中后同样
+        # 经 _probe_thread_reusable 有界 join 探测收窄 TOCTOU 窗（code-review
+        # item 6b19b00fad85）：垂死线程在探测窗内终止则落到下方新建分支。
+        if self._initial_scan_thread and self._probe_thread_reusable(
+            self._initial_scan_thread
+        ):
             self.logger.info("event_bus", "Initial scan thread still alive, reusing it")
             return
         self._initial_scan_thread = threading.Thread(

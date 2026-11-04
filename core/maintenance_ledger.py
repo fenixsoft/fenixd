@@ -100,7 +100,8 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     ``-<rand>-<n>``（仅 project=None 的 base 形态无随机段），
     admin_monitor._spec_from_run_id 的 ``-\\d{9,}(-(?:a|r)\\d+)*$`` 尾锚不再
     命中、scope 还原返回 None（回落泛型主体），与 code-review-<epoch>-<n>
-    退避先例同口径；未撞名时（绝大多数）形态与解析不变。
+    退避先例同口径；item 8a1e2c8bfa1e 起凡 project 非 None 的 run id 恒带
+    ``-x<rand>`` 尾段（见下段），该尾锚恒不命中、还原一律回落泛型主体。
 
     code-review item 8a1e2c8bfa1e：探测与实际 append 之间无互斥/原子申领，
     两进程（执行者进程与 daemon 可并存并发写）同秒同 scope 并发落账时双方
