@@ -18,7 +18,6 @@ import {
   TEXT_MAIN,
   TEXT_SUB,
   fmtDurationSeconds,
-  fmtMetric,
   fmtRate,
   fmtShortTs,
   fmtTokens,
@@ -98,6 +97,15 @@ function KpiBar({
       </div>
     );
   }
+  // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
+  // 兼容契约），useScreenResource 只透传 HTTP 层 error——内嵌 error 字段在此
+  // 消费并整条透出，避免错误响应落入各格「—」/空值形态被静默吞掉（code-review
+  // 61a3e8ab425a，同 OrgGrid/PipelineBoard data.error 先例）
+  if (kpi?.error) {
+    return (
+      <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`KPI 查询失败：${kpi.error}`} />
+    );
+  }
   const gh = kpi?.gateway_health;
   return (
     <div>
@@ -156,8 +164,10 @@ const columns: ColumnsType<CommandCenterLedgerRow> = [
   { title: 'tokens', dataIndex: 'tokens', key: 'tokens', render: (v) => fmtTokens(v) },
   { title: '成本', dataIndex: 'cost', key: 'cost', render: (v) => fmtUsd(v) },
   { title: '开始时间', dataIndex: 'started_at', key: 'started_at', render: (v) => fmtShortTs(v) },
-  // trigger 为既有调度记录数据缺口（后端口径允许 null 不硬造）
-  { title: 'trigger', dataIndex: 'trigger', key: 'trigger', render: (v) => fmtMetric(v) },
+  // trigger 为既有调度记录数据缺口（后端口径允许 null 不硬造）；字符串
+  // 原样透出（fmtMetric 数值口径对字符串恒返「—」，后端补真实 trigger
+  // 值时会被整体吃成占位符——code-review 39e3bca2d260）
+  { title: 'trigger', dataIndex: 'trigger', key: 'trigger', render: (v) => v ?? '—' },
 ];
 
 export default function ExecutionLedger({
@@ -215,6 +225,21 @@ export default function ExecutionLedger({
       return <ScreenErrorPlaceholder error={ledger.error} onRetry={ledger.retry} />;
     }
     if (!ledger.data) return <ScreenLoading hint="执行台账加载中" />;
+    // 后端对未知项目返回 200+error 字典（routes/command_center_routes.py 有意
+    // 兼容契约），useScreenResource 只透传 HTTP 层 error——内嵌 error 字段在此
+    // 消费并内联透出，避免错误响应落入台账「暂无数据」空态被静默吞掉（错误体
+    // 不带 rows/projects，不得进下方表格渲染）（code-review 61a3e8ab425a，
+    // 同 OrgGrid/PipelineBoard data.error 先例）
+    if (ledger.data.error) {
+      return (
+        <Alert
+          style={{ marginBottom: 12 }}
+          type="warning"
+          showIcon
+          message={`执行台账查询失败：${ledger.data.error}`}
+        />
+      );
+    }
     return (
       <div>
         {ledger.error ? (

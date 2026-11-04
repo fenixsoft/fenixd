@@ -1012,7 +1012,14 @@ class PMEngine:
                         "已冻结——放弃 blocked 写与派发，冻结现场保留待人工解冻",
                     )
                     return
-                self.state_machine.update_spec(
+                # 写后核对（code-review item 40a5a4df868c，对齐
+                # _emit_mergeback_alert 4a5f706c9053 的写后核对口径）：
+                # update_spec 返回 False＝条目缺失/原子写失败，blocked 未落盘
+                # ——本次派发已 return 跳过，spec 实际停留 ready 会被下轮重新
+                # 派发，照记「已 blocked」ERROR 与真实状态矛盾，事后对账会把
+                # 「状态未写」误读为「已 blocked 等人工收敛」。改记「复位未
+                # 生效」WARNING，收敛义务留待后续周期重评。
+                write_ok = self.state_machine.update_spec(
                     spec_name,
                     {
                         "status": "blocked",
@@ -1020,6 +1027,14 @@ class PMEngine:
                         "error": convergence.get("error") or "同源草案收敛义务未满足",
                     },
                 )
+                if not write_ok:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"同源草案收敛拦截复位未生效：'{spec_name}' update_spec "
+                        "返回 False（条目缺失/原子写失败，blocked 未落盘）——"
+                        "收敛义务留待后续周期重评",
+                    )
+                    return
                 self.logger.error(
                     "pm_engine",
                     f"同源草案收敛义务拦截派发 '{spec_name}'（含 SUPERSEDED.md）— "
@@ -2749,7 +2764,25 @@ class PMEngine:
                 self._note_unattainable_todos(spec_name, result)
                 self._clear_task_gap_error(spec_name)
                 return None  # 缺口全部已诚实申报 → 放行
-            gap = _gap_from_result(result, self.project_root, spec_name)
+            # code-review item 76d826d7bf59：与上方 _honest_convergence_gap
+            # （833f70ceec3a）及 _partial_attribution 容错口径对齐的 fail-closed
+            # 包裹——result dict 来自 agent 写的 .fenix-run-result.json（半受信
+            # 输入），tasks.md 读取/结果字段解析异常不得沿 _task_completion_blocker
+            # → _on_spec_verified 穿透中断当轮 verified 收口，按失败处置返回带
+            # 异常摘要的拦截串（走 task-gap blocker 通道供人工裁决）。
+            try:
+                gap = _gap_from_result(result, self.project_root, spec_name)
+            except Exception as e:  # noqa: BLE001 — 判定异常按失败处置（fail-closed）
+                self.logger.warning(
+                    "pm_engine",
+                    f"任务缺口解析异常 '{spec_name}'（fail-closed 拦截）: "
+                    f"{type(e).__name__}: {e}",
+                )
+                return (
+                    TASK_GAP_ERROR_PREFIX
+                    + "任务缺口解析异常（按失败处置）："
+                    + f"{type(e).__name__}: {e}"
+                )
             # D2b 审计：非法申报项在归因文案中显式标注（不静默）。
             _unat_ids, _inv = _parse_unattainable(result)
             _inv_note = f"（且含 {len(_inv)} 个非法 unattainable 申报项）" if _inv else ""
@@ -4401,283 +4434,324 @@ class PMEngine:
 
             # Auto-recovery: reset stuck SPECs to previous state so they get retried
             for b in blockers:
-                spec_name = b["spec"]
-                stuck_status = b["status"]
-                if stuck_status == "ready":
-                    # 假就绪滞留（D6）：不重置状态（本就 ready），上报信号唤醒处置。
-                    self._signal_dispatch_stalled(
-                        spec_name,
-                        f"ready stall {b['elapsed_minutes']}m without dispatch activity; "
-                        f"error={str(b.get('error') or '')[:120]}",
-                    )
-                    continue
-                # ── 恢复一致性（improve-run-lifecycle-governance D4）：重置前必须
-                # 核验该 spec 是否仍有存活的 attempt 子进程。存活则跳过本次恢复并
-                # 保留全部跟踪字段——2026-08-27 事故：BLOCKER CHECK 对仍有存活
-                # resume 子进程的 spec 执行 auto-recovery，把 spec 重置为 ready 并
-                # 清空跟踪，与真实运行态失配后卡死近 1 小时。
-                if self._attempt_still_alive(spec_name):
-                    self.logger.warning(
-                        "pm_engine",
-                        f"recovery deferred, live child present: '{spec_name}' "
-                        f"(was {stuck_status}, {b['elapsed_minutes']} min) — "
-                        f"tracking fields preserved",
-                    )
-                    # defer 也登记观察项：子进程意外长寿/僵死时由闭环复查接管，
-                    # 不进入「每轮 defer」死循环。
-                    self.register_recovery_watch(
-                        spec_name, "auto-recovery deferred (live child present)"
-                    )
-                    continue
-                # fix-verified-gate-evidence-race D3：task-gap 前缀的 blocker 是
-                # 门禁结论（任务缺口待人工裁决），recovery 不得触发 auto-recover
-                # 状态突变——缺口不因恢复而消失，恢复只会造成状态机扰动。持续列
-                # 入 blocker 清单即告警通道；人工补勾后由 event_bus re-trigger
-                # 门禁放行（确定性重评，幂等）。
-                if isinstance(b.get("error"), str) and b.get("error").startswith(
-                    TASK_GAP_ERROR_PREFIX
-                ):
-                    self.logger.info(
-                        "pm_engine",
-                        f"task-gap blocker，不 auto-recover：'{spec_name}' "
-                        f"(reason={b.get('reason')})",
-                    )
-                    continue
-                if stuck_status == "implementing":
-                    # 写前重读复核（code-review item 313f93a4c7c1，对齐
-                    # check_scheduling_deadlines 定时解冻「竞争后到者视为无需
-                    # 操作」的幂等先例）：轮首快照到本分支之间隔着逐 spec 文件
-                    # 系统探针（_attempt_still_alive 等），窗口内该 run 可能已
-                    # 合法收工完成 implementing→implemented 转移，盲写会把合法
-                    # 进度覆写回 ready 并孤儿化 run 结果——状态不再是卡死态即
-                    # 跳过本轮恢复（含下方的预算豁免，均以复核确认为前提）。
-                    fresh = self.state_machine.read_one(spec_name) or {}
-                    if fresh.get("status") != "implementing":
-                        self.logger.info(
-                            "pm_engine",
-                            f"auto-recovery 竞争后到者：'{spec_name}' 状态已为 "
-                            f"'{fresh.get('status')}'，跳过本轮恢复",
+                # 逐条隔离（code-review item 48648ac193a4，对齐
+                # check_scheduling_deadlines c6bbdd83cd61 的逐条捕获先例）：
+                # 单条 blocker 的恢复链路（_enqueue 队列写入、
+                # register_recovery_watch 落盘等）抛错只记 WARNING 跳过本条，
+                # 不中断同轮其余 stuck spec 的恢复与 dispatch_stalled 上报
+                # （原裸露形态会被 event_bus 整体包裹吞成一条「Blocker check
+                # failed」，剩余条目静默跳过一整轮）。
+                try:
+                    spec_name = b["spec"]
+                    stuck_status = b["status"]
+                    if stuck_status == "ready":
+                        # 假就绪滞留（D6）：不重置状态（本就 ready），上报信号唤醒处置。
+                        self._signal_dispatch_stalled(
+                            spec_name,
+                            f"ready stall {b['elapsed_minutes']}m without dispatch activity; "
+                            f"error={str(b.get('error') or '')[:120]}",
                         )
                         continue
-                    self.logger.info(
-                        "pm_engine",
-                        f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
-                    )
-                    # 实现卡住且可能从未运行（implementer_run=null）：不得伪标 implemented
-                    # 直接推给 verifier——「无实现即验证」会产出伪 bug 并派生 fix 级联
-                    # （本事故 5 代 fix 链的肇因）。回 ready 重新排队实现器。
-                    # 死亡 run 豁免（fix-budget-counting-semantics D1）：恢复链路在此
-                    # 确认 run 异常死亡（滞留 implementing 超阈值且无存活子进程＝无收工
-                    # 结果产出），回退本次启动的预算计数并递增豁免侧车。
-                    # fix-run-hang-amplification D2：run_reason 传入豁免判据，
-                    # 此路径为基础设施性死亡（无存活子进程/无 run-result），应豁免。
-                    # 豁免返回值必须接收（code-review item bb5ff51ff512，对齐
-                    # rollback.py 的 exempt_applied/exempt_result 同款口径）：
-                    # _exempt_dead_run_budget 对拒绝/幂等跳过/记账异常均静默
-                    # 返回指纹、不抛异常，忽略返回值会把未生效的豁免当已豁免。
-                    exempt_result = self._exempt_dead_run_budget(
-                        spec_name,
-                        f"auto-recovery: stuck implementing "
-                        f"{b['elapsed_minutes']}m, no live child (no run-result)",
-                        run_reason=f"auto-recovery: stuck implementing " f"{b['elapsed_minutes']}m",
-                    )
-                    exempt_applied = exempt_result == "applied"
-                    self.logger.info(
-                        "pm_engine",
-                        f"budget_exempt_audit: spec={spec_name}, "
-                        f"auto-recovery stuck implementing, "
-                        f"exempt_applied={exempt_applied}, "
-                        f"exempt_result={exempt_result}, "
-                        f"elapsed_minutes={b['elapsed_minutes']}",
-                    )
-                    # （fix-fasttrack-recovery-resume D5 区分注释）本处清锚点属**有意
-                    # 重置**——判据已确认「滞留 implementing 超阈值且无存活子进程」
-                    # （上方 _attempt_still_alive 已核验）即 run 已死，拉回 ready 全新
-                    # 派发。MUST NOT 消费 `_recovery_resume`：它不由本路径产出，且此时
-                    # 不存在可续做的在飞 run——消费会使随后的正常派发失去续做判定资格。
-                    # 写前冻结复查（code-review item 54d679a82fc7，对齐
-                    # dispatch/rollback._rollback_frozen_recheck 先例）：上方
-                    # status 复核到此写之间隔着 _exempt_dead_run_budget 的状态
-                    # 文件 I/O（豁免有幂等锚点，冻结后重复进入也只
-                    # idempotent_skip、无重复退款），窗口内并发冻结时 frozen
-                    # 条目的 update_spec 只剥 status 键——error 覆写与
-                    # implementer_run/branch 锚点清空照常生效，人工解冻后只能
-                    # 降级为全新重派。发现冻结即放弃本次恢复写，留待下一轮
-                    # 周期重评。
-                    latest = self.state_machine.read_one(spec_name) or {}
-                    if latest.get(FROZEN_FIELD):
-                        self.logger.info(
+                    # ── 恢复一致性（improve-run-lifecycle-governance D4）：重置前必须
+                    # 核验该 spec 是否仍有存活的 attempt 子进程。存活则跳过本次恢复并
+                    # 保留全部跟踪字段——2026-08-27 事故：BLOCKER CHECK 对仍有存活
+                    # resume 子进程的 spec 执行 auto-recovery，把 spec 重置为 ready 并
+                    # 清空跟踪，与真实运行态失配后卡死近 1 小时。
+                    if self._attempt_still_alive(spec_name):
+                        self.logger.warning(
                             "pm_engine",
-                            f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
-                            "——放弃 stuck implementing 恢复写，留待解冻后重评",
+                            f"recovery deferred, live child present: '{spec_name}' "
+                            f"(was {stuck_status}, {b['elapsed_minutes']} min) — "
+                            f"tracking fields preserved",
+                        )
+                        # defer 也登记观察项：子进程意外长寿/僵死时由闭环复查接管，
+                        # 不进入「每轮 defer」死循环。
+                        self.register_recovery_watch(
+                            spec_name, "auto-recovery deferred (live child present)"
                         )
                         continue
-                    # 同一快照顺带复核 status（code-review item f89d7a5c9b7a，对齐
-                    # _on_spec_ready 收敛拦截 3281b7c66515 的 status+frozen 双查
-                    # 口径）：上方 fresh status 复核到此写之间隔着
-                    # _exempt_dead_run_budget 的锚点文件 I/O 与多条日志，窗口内
-                    # run 可能已合法收工完成 implementing→implemented 转移，盲写
-                    # 会把合法进度覆写回 ready 并清空 implementer_run/tester_run
-                    # 锚点、孤儿化 run 结果。状态已漂移即与冻结命中同样跳过本轮
-                    # 恢复写。
-                    if latest.get("status") != "implementing":
+                    # fix-verified-gate-evidence-race D3：task-gap 前缀的 blocker 是
+                    # 门禁结论（任务缺口待人工裁决），recovery 不得触发 auto-recover
+                    # 状态突变——缺口不因恢复而消失，恢复只会造成状态机扰动。持续列
+                    # 入 blocker 清单即告警通道；人工补勾后由 event_bus re-trigger
+                    # 门禁放行（确定性重评，幂等）。
+                    if isinstance(b.get("error"), str) and b.get("error").startswith(
+                        TASK_GAP_ERROR_PREFIX
+                    ):
                         self.logger.info(
                             "pm_engine",
-                            f"auto-recovery 写盘前 status 复查：'{spec_name}' 状态已为 "
-                            f"'{latest.get('status')}'——放弃 stuck implementing "
-                            "恢复写，让位于在飞进度，留待下轮周期重评",
+                            f"task-gap blocker，不 auto-recover：'{spec_name}' "
+                            f"(reason={b.get('reason')})",
                         )
                         continue
-                    self.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "status": "ready",
-                            "implementer_run": None,
-                            "tester_run": None,
-                            "branch": None,
-                            "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
-                        },
-                    )
-                    # add-fast-track-mode（task 3.1）：实现态恢复按 mode 派发对应 agent
-                    from core.spec_mode import read_spec_mode
-
-                    _at = (
-                        "fast-track"
-                        if read_spec_mode(self.project_root, spec_name) == "fast-track"
-                        else "implementer"
-                    )
-                    self._enqueue(spec_name, _at)
-                    self.register_recovery_watch(
-                        spec_name, f"auto-recovered from stuck {stuck_status}"
-                    )
-                elif stuck_status == "testing":
-                    # 写前重读复核（code-review item 313f93a4c7c1，与上方
-                    # implementing 分支及 check_scheduling_deadlines 定时解冻
-                    # 先例同口径）：状态已不是 testing（如 verifier 竞争收工）
-                    # 即跳过本轮恢复，防盲写覆写合法进度。
-                    fresh = self.state_machine.read_one(spec_name) or {}
-                    if fresh.get("status") != "testing":
-                        self.logger.info(
-                            "pm_engine",
-                            f"auto-recovery 竞争后到者：'{spec_name}' 状态已为 "
-                            f"'{fresh.get('status')}'，跳过本轮恢复",
-                        )
-                        continue
-                    # [fenix-ignore:b33341a8f31b] 问题已修复（commit bffc1407）：下方已按 is_fast_track 分流短路，fast-track spec 走 _fasttrack_recovery_reentry 恢复收尾、不再回 implemented+入队 verifier，当前树问题不成立
-                    # code-review item b33341a8f31b：fast-track 分流——单 run 全包
-                    # 不设 verifier 车道（与 _on_spec_implemented 同一防线，
-                    # fasttrack-orphan-planner-race），回 implemented + 入队
-                    # verifier 会与 _fast_track_advance_to_verified 竞态、对已终态
-                    # spec 派出孤儿 planner run 白跑。走恢复重入收尾（testing 搁浅
-                    # 形态由 _fasttrack_recovery_reentry 判定并分派
-                    # _resume_fast_track_after_restart(already_testing=True)）；其
-                    # 三条件不全成立时维持短路（宁紧勿松），不得落入下方 verifier
-                    # 车道，留痕待下轮复查重评。
-                    from core.spec_mode import is_fast_track
-
-                    if is_fast_track(self.project_root, spec_name):
-                        if self._fasttrack_recovery_reentry(spec_name):
-                            self.register_recovery_watch(
-                                spec_name, f"auto-recovered from stuck {stuck_status}"
-                            )
-                        else:
+                    if stuck_status == "implementing":
+                        # 写前重读复核（code-review item 313f93a4c7c1，对齐
+                        # check_scheduling_deadlines 定时解冻「竞争后到者视为无需
+                        # 操作」的幂等先例）：轮首快照到本分支之间隔着逐 spec 文件
+                        # 系统探针（_attempt_still_alive 等），窗口内该 run 可能已
+                        # 合法收工完成 implementing→implemented 转移，盲写会把合法
+                        # 进度覆写回 ready 并孤儿化 run 结果——状态不再是卡死态即
+                        # 跳过本轮恢复（含下方的预算豁免，均以复核确认为前提）。
+                        fresh = self.state_machine.read_one(spec_name) or {}
+                        if fresh.get("status") != "implementing":
                             self.logger.info(
                                 "pm_engine",
-                                f"testing 卡死恢复跳过（fast-track 无 verifier 车道）:"
-                                f" '{spec_name}' ({b['elapsed_minutes']} min) — "
-                                f"恢复重入判据不全成立，维持短路待下轮复查",
-                            )
-                        continue
-                    # code-review item 54075e1dda03：ocr join 停等豁免——fresh
-                    # （上方写前重读快照，item 923637148926：轮首 entry 快照
-                    # 可能滞后于标记落盘致豁免判据为假、误走重置）带
-                    # ``_ocr_join_wait`` 且 ocr 车道在飞（``ocr_lane_busy``）时，
-                    # spec 处于 queue._ocr_join_await_lane 承诺的「MUST 停止推进
-                    # （tester 不重派）」停等态，此处 reset implemented+重派
-                    # verifier 会打断该契约（唤醒回调 _on_impl_ocr_lane_finished
-                    # 见状态非 testing 即幂等空转，损失整轮重验证），跳过本轮
-                    # 恢复、留痕待车道完成回调唤醒 join 重评（与
-                    # _fasttrack_recovery_reentry / admin_monitor 孤儿探针把
-                    # _ocr_join_wait 当合法等待判据同口径）。
-                    # 豁免 MUST 以车道在飞为条件而非停等标记单边：daemon 重启后
-                    # 在飞登记（_ocr_lane_inflight）即丢、车道线程已死，停等标记
-                    # 无 boot 恢复路径——标记单边豁免会把这类 spec 永久钉在
-                    # testing。ocr_lane_busy 判定异常按在飞处理（宁紧勿松）。
-                    # 本豁免的安全性依赖如下隐式阈值序（特此声明，无处校验）：
-                    # 车道硬超时 verify.impl_code_review_lane_timeout_sec（缺省
-                    # 2400s，ConfigLoader.get_impl_code_review_lane_timeout_sec）
-                    # MUST < stuck 阈值 effective_stuck_threshold_seconds（=
-                    # agents.run_timeout_seconds+600s，回退 9600s）——车道先于本
-                    # 分支阈值超时收尾并触发回调/停等清账；运行方若把车道超时配到
-                    # ≥ stuck 阈值，停等 spec 会在超阈值后被本分支每轮 defer，
-                    # 直到车道硬超时兜底为止。
-                    if fresh.get("_ocr_join_wait"):
-                        try:
-                            _lane_busy = self.ocr_lane_busy(spec_name)
-                        except Exception:  # noqa: BLE001 — 判定异常按在飞（宁紧勿松）
-                            _lane_busy = True
-                        if _lane_busy:
-                            self.logger.info(
-                                "pm_engine",
-                                f"testing 卡死恢复豁免（ocr join 停等中）: "
-                                f"'{spec_name}' ({b['elapsed_minutes']} min) — "
-                                f"车道在飞，待完成回调唤醒 join 重评",
+                                f"auto-recovery 竞争后到者：'{spec_name}' 状态已为 "
+                                f"'{fresh.get('status')}'，跳过本轮恢复",
                             )
                             continue
-                    self.logger.info(
-                        "pm_engine",
-                        f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
-                    )
-                    # 验证卡住：实现已完成，回 implemented 重新派发 verifier
-                    # 写前冻结复查（code-review item 54d679a82fc7，与上方
-                    # implementing 分支同款，对齐 dispatch/rollback
-                    # ._rollback_frozen_recheck 先例）：status 复核到此写之间
-                    # 并发冻结时，frozen 条目的 update_spec 只剥 status 键，
-                    # error 覆写与 tester_run 清空照常生效、破坏冻结现场。
-                    # 发现冻结即放弃本次恢复写，留待下一轮周期重评。
-                    latest = self.state_machine.read_one(spec_name) or {}
-                    if latest.get(FROZEN_FIELD):
                         self.logger.info(
                             "pm_engine",
-                            f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
-                            "——放弃 stuck testing 恢复写，留待解冻后重评",
+                            f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
                         )
-                        continue
-                    # 同一快照顺带复核 status（code-review item f89d7a5c9b7a，对齐
-                    # _on_spec_ready 收敛拦截 3281b7c66515 的 status+frozen 双查
-                    # 口径）：上方 fresh status 复核到此写之间隔着 fast-track
-                    # 分流判读、ocr 车道在飞判定等 I/O 与多条日志，窗口内
-                    # verifier 可能已竞争收工完成 testing→verified 转移，盲写会
-                    # 把合法进度覆写回 implemented 并清空 tester_run 锚点、孤儿
-                    # 化 run 结果。状态已漂移即与冻结命中同样跳过本轮恢复写。
-                    if latest.get("status") != "testing":
+                        # 实现卡住且可能从未运行（implementer_run=null）：不得伪标 implemented
+                        # 直接推给 verifier——「无实现即验证」会产出伪 bug 并派生 fix 级联
+                        # （本事故 5 代 fix 链的肇因）。回 ready 重新排队实现器。
+                        # 死亡 run 豁免（fix-budget-counting-semantics D1）：恢复链路在此
+                        # 确认 run 异常死亡（滞留 implementing 超阈值且无存活子进程＝无收工
+                        # 结果产出），回退本次启动的预算计数并递增豁免侧车。
+                        # fix-run-hang-amplification D2：run_reason 传入豁免判据，
+                        # 此路径为基础设施性死亡（无存活子进程/无 run-result），应豁免。
+                        # 豁免返回值必须接收（code-review item bb5ff51ff512，对齐
+                        # rollback.py 的 exempt_applied/exempt_result 同款口径）：
+                        # _exempt_dead_run_budget 对拒绝/幂等跳过/记账异常均静默
+                        # 返回指纹、不抛异常，忽略返回值会把未生效的豁免当已豁免。
+                        exempt_result = self._exempt_dead_run_budget(
+                            spec_name,
+                            f"auto-recovery: stuck implementing "
+                            f"{b['elapsed_minutes']}m, no live child (no run-result)",
+                            run_reason=f"auto-recovery: stuck implementing " f"{b['elapsed_minutes']}m",
+                        )
+                        exempt_applied = exempt_result == "applied"
                         self.logger.info(
                             "pm_engine",
-                            f"auto-recovery 写盘前 status 复查：'{spec_name}' 状态已为 "
-                            f"'{latest.get('status')}'——放弃 stuck testing "
-                            "恢复写，让位于在飞进度，留待下轮周期重评",
+                            f"budget_exempt_audit: spec={spec_name}, "
+                            f"auto-recovery stuck implementing, "
+                            f"exempt_applied={exempt_applied}, "
+                            f"exempt_result={exempt_result}, "
+                            f"elapsed_minutes={b['elapsed_minutes']}",
                         )
-                        continue
-                    self.state_machine.update_spec(
-                        spec_name,
-                        {
-                            "status": "implemented",
-                            "tester_run": None,
-                            "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
-                        },
-                    )
-                    self._enqueue(spec_name, "verifier")
-                    self.register_recovery_watch(
-                        spec_name, f"auto-recovered from stuck {stuck_status}"
-                    )
-                elif stuck_status == "verified":
-                    # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
-                    # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
-                    # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。
-                    self.logger.info(
+                        # （fix-fasttrack-recovery-resume D5 区分注释）本处清锚点属**有意
+                        # 重置**——判据已确认「滞留 implementing 超阈值且无存活子进程」
+                        # （上方 _attempt_still_alive 已核验）即 run 已死，拉回 ready 全新
+                        # 派发。MUST NOT 消费 `_recovery_resume`：它不由本路径产出，且此时
+                        # 不存在可续做的在飞 run——消费会使随后的正常派发失去续做判定资格。
+                        # 写前冻结复查（code-review item 54d679a82fc7，对齐
+                        # dispatch/rollback._rollback_frozen_recheck 先例）：上方
+                        # status 复核到此写之间隔着 _exempt_dead_run_budget 的状态
+                        # 文件 I/O（豁免有幂等锚点，冻结后重复进入也只
+                        # idempotent_skip、无重复退款），窗口内并发冻结时 frozen
+                        # 条目的 update_spec 只剥 status 键——error 覆写与
+                        # implementer_run/branch 锚点清空照常生效，人工解冻后只能
+                        # 降级为全新重派。发现冻结即放弃本次恢复写，留待下一轮
+                        # 周期重评。
+                        latest = self.state_machine.read_one(spec_name) or {}
+                        if latest.get(FROZEN_FIELD):
+                            self.logger.info(
+                                "pm_engine",
+                                f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
+                                "——放弃 stuck implementing 恢复写，留待解冻后重评",
+                            )
+                            continue
+                        # 同一快照顺带复核 status（code-review item f89d7a5c9b7a，对齐
+                        # _on_spec_ready 收敛拦截 3281b7c66515 的 status+frozen 双查
+                        # 口径）：上方 fresh status 复核到此写之间隔着
+                        # _exempt_dead_run_budget 的锚点文件 I/O 与多条日志，窗口内
+                        # run 可能已合法收工完成 implementing→implemented 转移，盲写
+                        # 会把合法进度覆写回 ready 并清空 implementer_run/tester_run
+                        # 锚点、孤儿化 run 结果。状态已漂移即与冻结命中同样跳过本轮
+                        # 恢复写。
+                        if latest.get("status") != "implementing":
+                            self.logger.info(
+                                "pm_engine",
+                                f"auto-recovery 写盘前 status 复查：'{spec_name}' 状态已为 "
+                                f"'{latest.get('status')}'——放弃 stuck implementing "
+                                "恢复写，让位于在飞进度，留待下轮周期重评",
+                            )
+                            continue
+                        self.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "status": "ready",
+                                "implementer_run": None,
+                                "tester_run": None,
+                                "branch": None,
+                                "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
+                            },
+                        )
+                        # add-fast-track-mode（task 3.1）：实现态恢复按 mode 派发对应 agent
+                        from core.spec_mode import read_spec_mode
+
+                        _at = (
+                            "fast-track"
+                            if read_spec_mode(self.project_root, spec_name) == "fast-track"
+                            else "implementer"
+                        )
+                        # 入队独立守卫（code-review item 48648ac193a4，对齐
+                        # rollback._requeue_after_rollback d4b93ed8ad92 同款）：
+                        # 状态复位已落盘后队列写入抛错（锁/IO）不得把恢复成果
+                        # 吞进通用异常文案——单独守卫，失败如实记 ERROR
+                        # （full_scan recovery 兜底）。
+                        try:
+                            self._enqueue(spec_name, _at)
+                        except Exception as enqueue_exc:  # noqa: BLE001 — 入队失败不吞恢复成果
+                            self.logger.error(
+                                "pm_engine",
+                                f"Redispatch enqueue failed for '{spec_name}' "
+                                f"(state reset to ready, pending full_scan "
+                                f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
+                            )
+                        self.register_recovery_watch(
+                            spec_name, f"auto-recovered from stuck {stuck_status}"
+                        )
+                    elif stuck_status == "testing":
+                        # 写前重读复核（code-review item 313f93a4c7c1，与上方
+                        # implementing 分支及 check_scheduling_deadlines 定时解冻
+                        # 先例同口径）：状态已不是 testing（如 verifier 竞争收工）
+                        # 即跳过本轮恢复，防盲写覆写合法进度。
+                        fresh = self.state_machine.read_one(spec_name) or {}
+                        if fresh.get("status") != "testing":
+                            self.logger.info(
+                                "pm_engine",
+                                f"auto-recovery 竞争后到者：'{spec_name}' 状态已为 "
+                                f"'{fresh.get('status')}'，跳过本轮恢复",
+                            )
+                            continue
+                        # [fenix-ignore:b33341a8f31b] 问题已修复（commit bffc1407）：下方已按 is_fast_track 分流短路，fast-track spec 走 _fasttrack_recovery_reentry 恢复收尾、不再回 implemented+入队 verifier，当前树问题不成立
+                        # code-review item b33341a8f31b：fast-track 分流——单 run 全包
+                        # 不设 verifier 车道（与 _on_spec_implemented 同一防线，
+                        # fasttrack-orphan-planner-race），回 implemented + 入队
+                        # verifier 会与 _fast_track_advance_to_verified 竞态、对已终态
+                        # spec 派出孤儿 planner run 白跑。走恢复重入收尾（testing 搁浅
+                        # 形态由 _fasttrack_recovery_reentry 判定并分派
+                        # _resume_fast_track_after_restart(already_testing=True)）；其
+                        # 三条件不全成立时维持短路（宁紧勿松），不得落入下方 verifier
+                        # 车道，留痕待下轮复查重评。
+                        from core.spec_mode import is_fast_track
+
+                        if is_fast_track(self.project_root, spec_name):
+                            if self._fasttrack_recovery_reentry(spec_name):
+                                self.register_recovery_watch(
+                                    spec_name, f"auto-recovered from stuck {stuck_status}"
+                                )
+                            else:
+                                self.logger.info(
+                                    "pm_engine",
+                                    f"testing 卡死恢复跳过（fast-track 无 verifier 车道）:"
+                                    f" '{spec_name}' ({b['elapsed_minutes']} min) — "
+                                    f"恢复重入判据不全成立，维持短路待下轮复查",
+                                )
+                            continue
+                        # code-review item 54075e1dda03：ocr join 停等豁免——fresh
+                        # （上方写前重读快照，item 923637148926：轮首 entry 快照
+                        # 可能滞后于标记落盘致豁免判据为假、误走重置）带
+                        # ``_ocr_join_wait`` 且 ocr 车道在飞（``ocr_lane_busy``）时，
+                        # spec 处于 queue._ocr_join_await_lane 承诺的「MUST 停止推进
+                        # （tester 不重派）」停等态，此处 reset implemented+重派
+                        # verifier 会打断该契约（唤醒回调 _on_impl_ocr_lane_finished
+                        # 见状态非 testing 即幂等空转，损失整轮重验证），跳过本轮
+                        # 恢复、留痕待车道完成回调唤醒 join 重评（与
+                        # _fasttrack_recovery_reentry / admin_monitor 孤儿探针把
+                        # _ocr_join_wait 当合法等待判据同口径）。
+                        # 豁免 MUST 以车道在飞为条件而非停等标记单边：daemon 重启后
+                        # 在飞登记（_ocr_lane_inflight）即丢、车道线程已死，停等标记
+                        # 无 boot 恢复路径——标记单边豁免会把这类 spec 永久钉在
+                        # testing。ocr_lane_busy 判定异常按在飞处理（宁紧勿松）。
+                        # 本豁免的安全性依赖如下隐式阈值序（特此声明，无处校验）：
+                        # 车道硬超时 verify.impl_code_review_lane_timeout_sec（缺省
+                        # 2400s，ConfigLoader.get_impl_code_review_lane_timeout_sec）
+                        # MUST < stuck 阈值 effective_stuck_threshold_seconds（=
+                        # agents.run_timeout_seconds+600s，回退 9600s）——车道先于本
+                        # 分支阈值超时收尾并触发回调/停等清账；运行方若把车道超时配到
+                        # ≥ stuck 阈值，停等 spec 会在超阈值后被本分支每轮 defer，
+                        # 直到车道硬超时兜底为止。
+                        if fresh.get("_ocr_join_wait"):
+                            try:
+                                _lane_busy = self.ocr_lane_busy(spec_name)
+                            except Exception:  # noqa: BLE001 — 判定异常按在飞（宁紧勿松）
+                                _lane_busy = True
+                            if _lane_busy:
+                                self.logger.info(
+                                    "pm_engine",
+                                    f"testing 卡死恢复豁免（ocr join 停等中）: "
+                                    f"'{spec_name}' ({b['elapsed_minutes']} min) — "
+                                    f"车道在飞，待完成回调唤醒 join 重评",
+                                )
+                                continue
+                        self.logger.info(
+                            "pm_engine",
+                            f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
+                        )
+                        # 验证卡住：实现已完成，回 implemented 重新派发 verifier
+                        # 写前冻结复查（code-review item 54d679a82fc7，与上方
+                        # implementing 分支同款，对齐 dispatch/rollback
+                        # ._rollback_frozen_recheck 先例）：status 复核到此写之间
+                        # 并发冻结时，frozen 条目的 update_spec 只剥 status 键，
+                        # error 覆写与 tester_run 清空照常生效、破坏冻结现场。
+                        # 发现冻结即放弃本次恢复写，留待下一轮周期重评。
+                        latest = self.state_machine.read_one(spec_name) or {}
+                        if latest.get(FROZEN_FIELD):
+                            self.logger.info(
+                                "pm_engine",
+                                f"auto-recovery 写盘前冻结复查：'{spec_name}' 已冻结"
+                                "——放弃 stuck testing 恢复写，留待解冻后重评",
+                            )
+                            continue
+                        # 同一快照顺带复核 status（code-review item f89d7a5c9b7a，对齐
+                        # _on_spec_ready 收敛拦截 3281b7c66515 的 status+frozen 双查
+                        # 口径）：上方 fresh status 复核到此写之间隔着 fast-track
+                        # 分流判读、ocr 车道在飞判定等 I/O 与多条日志，窗口内
+                        # verifier 可能已竞争收工完成 testing→verified 转移，盲写会
+                        # 把合法进度覆写回 implemented 并清空 tester_run 锚点、孤儿
+                        # 化 run 结果。状态已漂移即与冻结命中同样跳过本轮恢复写。
+                        if latest.get("status") != "testing":
+                            self.logger.info(
+                                "pm_engine",
+                                f"auto-recovery 写盘前 status 复查：'{spec_name}' 状态已为 "
+                                f"'{latest.get('status')}'——放弃 stuck testing "
+                                "恢复写，让位于在飞进度，留待下轮周期重评",
+                            )
+                            continue
+                        self.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "status": "implemented",
+                                "tester_run": None,
+                                "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
+                            },
+                        )
+                        # 入队独立守卫（code-review item 48648ac193a4，对齐
+                        # rollback._requeue_after_rollback d4b93ed8ad92 同款）：
+                        # 状态复位已落盘后队列写入抛错（锁/IO）不得把恢复成果
+                        # 吞进通用异常文案——单独守卫，失败如实记 ERROR
+                        # （full_scan recovery 兜底）。
+                        try:
+                            self._enqueue(spec_name, "verifier")
+                        except Exception as enqueue_exc:  # noqa: BLE001 — 入队失败不吞恢复成果
+                            self.logger.error(
+                                "pm_engine",
+                                f"Redispatch enqueue failed for '{spec_name}' "
+                                f"(state reset to implemented, pending full_scan "
+                                f"recovery): {type(enqueue_exc).__name__}: {enqueue_exc}",
+                            )
+                        self.register_recovery_watch(
+                            spec_name, f"auto-recovered from stuck {stuck_status}"
+                        )
+                    elif stuck_status == "verified":
+                        # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
+                        # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
+                        # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。
+                        self.logger.info(
+                            "pm_engine",
+                            f"verified 卡死仅上报不恢复：'{spec_name}' "
+                            f"({b['elapsed_minutes']} min) — 等 spec_verified 门禁重触发放行",
+                        )
+                except Exception as item_exc:  # noqa: BLE001 — 单条异常隔离，不中断整轮
+                    self.logger.warning(
                         "pm_engine",
-                        f"verified 卡死仅上报不恢复：'{spec_name}' "
-                        f"({b['elapsed_minutes']} min) — 等 spec_verified 门禁重触发放行",
+                        f"auto-recovery 条目 '{b.get('spec')}' 处理异常（跳过本条，"
+                        f"不中断同轮其余 blocker 恢复与上报）: "
+                        f"{type(item_exc).__name__}: {item_exc}",
                     )
 
         return {"blockers": blockers, "warnings": warnings, "checked_at": now.isoformat()}

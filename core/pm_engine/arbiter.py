@@ -16,9 +16,11 @@
   （daemon 启动后一次）与 :meth:`ArbiterLane.observe_enabled_transition`
   （config 热更新 disabled→enabled 跃迁时一次）补存量回扫，命中者走
   同一 dedup/单飞/预算管线，不建第二套派发路径。
-- 排除表：freeze_spec（人工冻结）/mark_frozen_hold（簿记）/frozen_until
-  （定时自愈赛跑）在 state_machine 侧零接触（不挂钩即排除）；token 预算耗尽 /
-  spec_integrity 内容缺失 / queue 异常类 signal 显式排除（本模块词表）。
+- 触发面：freeze_spec（人工冻结）/mark_frozen_hold（簿记）/frozen_until
+  （定时自愈赛跑）在 state_machine 侧零接触（不挂钩即排除）；signal 维度
+  触发面为黑名单制（add-escalation-chain-admin-arbiter）——非黑名单即入
+  链（含 token 预算耗尽 / spec_integrity 内容缺失 / queue 异常类，预算政
+  策类由预算豁免拍板动作面承接），chain.blacklist 配置内信号直达人工队列。
 - dedup：同 spec 同失败签名在飞只派发一次；处置成功后签名复发直接升级
   （design D6「处置后同根因复发」——失败不属复发，走死人开关连败计数）。
 - 单飞：全局单飞队列串行——同一时刻至多一个 Arbiter run，后续触发排队；
@@ -62,21 +64,18 @@ ARBITER_BUDGET_WALLCLOCK_S_DEFAULT = 1800
 ARBITER_BUDGET_TOKENS_DEFAULT = 1_000_000
 ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT = 2
 
-# 触发面排除表（design §9「不进」清单的 signal 维度）。freeze_spec /
-# mark_frozen_hold / frozen_until 三路径在 state_machine 侧零接触（不挂钩
-# 即排除）；本词表覆盖 _send_human_escalation_alert 直发信号的政策/数据完
-# 整性类——留 narrative 与人类（与 design §7 白名单外清单一致）。
-# 触发面正向白名单（spec「仅 blocked/frozen/争议类 condition 进触发面」）。
-# 词汇唯一可靠口径 = freeze_for_human 全调用点 signal_type 机械枚举 ∪
-# 事件/回扫旁路名（tests/test_arbiter_lane.py::
+# 触发面信号词表（freeze_for_human 词汇机械枚举基线）。signal 维度触发面
+# 判定已反转为黑名单制（add-escalation-chain-admin-arbiter）：
+# ``in_trigger_surface`` 只读 chain.blacklist 配置（缺省空集=全部升级边信号
+# 默认入链；原白名单+排除表机制取消、排除表语义并入 blacklist 键——政策/
+# 数据完整性/队列类不再硬编码排除，预算政策类由预算豁免拍板动作面承接）。
+# 本词表保留作词汇机械枚举基线（tests/test_arbiter_lane.py::
 # test_trigger_surface_covers_all_freeze_throat_signal_types 机械守卫钉死，
 # 新增冻结族漏注册即红）。
 # 词汇分裂教训（2026-11-01 两段修复）：单点锚定必是部分词汇——首版锚
 # family.py 单点（verify_fail_escalation）漏 pipeline 争议族（evo-refine
 # 回扫候选=0）；二版锚观测样本反向漏 family.py 与 spec-review 族
-# （fix-planner 冻结未被接走，候选=1 派发=0 实证）。排除表继续兜底
-# 政策/数据完整性/队列类（impl_budget_exhausted/spec_content_missing/
-# redispatch_loop_detected 三族留 narrative 与人类）。
+# （fix-planner 冻结未被接走，候选=1 派发=0 实证）。
 ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
     {
         # ── freeze_for_human 九族（机械枚举在案，2026-11-01）──
@@ -88,7 +87,7 @@ ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
         "verify_uniform_failure",     # 全场景同因失败
         "verifier_infra_death",       # 验证基础设施死亡
         # impl_budget_exhausted/spec_content_missing/redispatch_loop_detected
-        # 三族入排除表（下方），不入白名单
+        # 三族不在本词表（黑名单制后默认即在触发面，无需登记）
         # ── 事件/回扫旁路名（非 freeze_for_human 直发）──
         "verdict_result_unreadable",  # pipeline 裁决缺失 fail-closed
         "blocked_stuck",              # admin_monitor blocked 超阈值未处理
@@ -101,18 +100,6 @@ ARBITER_TRIGGER_SIGNAL_TYPES = frozenset(
 # 由框架冻结路径生成、内嵌「处置选项：①…②…」结构化菜单——人工冻结
 # （freeze_spec）只写自由文本 reason，不含该菜单，据此回填分类。
 ARBITER_LEGACY_MACHINE_FREEZE_MENU = "处置选项：①"
-ARBITER_EXCLUDED_SIGNAL_TYPES = frozenset(
-    {
-        # token/实现预算政策类（预算政策属白名单外裁决，Arbiter 不拍板）
-        "impl_budget_exhausted",
-        "impl_budget_exempt_loop",
-        # spec_integrity 内容缺失族（数据完整性，留 narrative 与人类）
-        "spec_content_missing",
-        "spec_delivered_no_content",
-        # 派发队列基础设施异常（同因重派熔断——queue 异常类，留人类）
-        "redispatch_loop_detected",
-    }
-)
 
 # 车道命名（runner 车道表同源：run_files.RUN_ID_AGENT_PREFIXES "arbiter-" 行）
 ARBITER_RUN_PREFIX = "arbiter-"
@@ -217,9 +204,11 @@ def _utcnow_iso() -> str:
 class ArbiterLane:
     """全局决策者车道单例（每项目一个）：触发面 / dedup / 单飞 / 死人开关。
 
-    生命周期：PMEngine 装配时 :func:`configure_lane` 注入 project_root 与
-    logger；worker 线程懒启动（首个触发入队时拉起，daemon 线程不阻塞退出）。
-    测试经 :func:`reset_lane` 清单例。
+    生命周期：``get_lane(project_root, logger)`` 惰性建单例（PMEngine 装配
+    与 family.py 咽喉侧各取一次），运行时依赖再由装配方注入——
+    :meth:`set_runner`（agent_runner）与 :meth:`set_state_machine`（engine.py
+    装配点一并注入）；worker 线程懒启动（首个触发入队时拉起，daemon 线程
+    不阻塞退出）。测试经 :func:`reset_lane` 清单例。
     """
 
     def __init__(self, project_root, logger=None):
@@ -348,7 +337,8 @@ class ArbiterLane:
 
         - ``"disabled"``：arbiter.enabled=false（关闭态零侵扰——调用方应走
           既有 narrative/人工路径，本方法不做任何写入）；
-        - ``"excluded"``：signal 在排除表（留 narrative 与人类）；
+        - ``"excluded"``：signal 在 chain.blacklist 黑名单（留 narrative 与
+          人类——不进 Arbiter 也不进链，直达人工队列）；
         - ``"deduped"``：同签名已派发/在飞——本次触发只绑 alert 不再派发；
         - ``"recurrence-escalated"``：同签名已派发过（复发）——按 design D6
           直接产裁决包升级，不再自主处置；
@@ -1031,6 +1021,11 @@ class ArbiterLane:
             f"alert_finalized={resolved} ledger={entry.get('id')} side={side}",
         )
         # 框架缺口路由（gap→todo；禁立项红线，add-arbiter-gap-todo-routing）
+        # 触发 run_id 回填（与 process_chain_handoff 回填 _chain_run_id 对齐）：
+        # trigger 本身无 run_id 写点（run_arbiter 只写 prompt_detail 拷贝），
+        # 不回填则 gap 条目证据段「触发 run_id=未知」、gap-noted 台账 run_id
+        # 恒为空串，缺口发现无法回溯到产出它的调查 run。
+        trigger["run_id"] = str(result.get("run_id") or trigger.get("run_id") or "")
         self._apply_gaps(trigger, report)
 
     def _apply_disposition_side_effects(self, trigger: dict, report: dict) -> dict:
@@ -1194,6 +1189,8 @@ class ArbiterLane:
             f"arbiter 产裁决包升级 spec={trigger.get('spec')} sig={sig} reason={reason[:120]}",
         )
         # 框架缺口路由（gap→todo；禁立项红线，add-arbiter-gap-todo-routing）
+        # 触发 run_id 回填（同 _on_disposition_success：trigger 无 run_id 写点）
+        trigger["run_id"] = str(result.get("run_id") or trigger.get("run_id") or "")
         self._apply_gaps(trigger, report)
 
     def _on_run_failed(self, trigger: dict, result: dict, budget: dict) -> str:

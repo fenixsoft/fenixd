@@ -1605,7 +1605,10 @@ class FamilyGovernor:
         facts 为可选结构化增强参数位（upgrade-narrative-to-investigation 1.2：
         发射点内存中独有、事后难重建的信息如 judge 派发台账；本期缺省不传
         不注入，prompt【补充事实】段存在时才注入），不参与 trigger/choices
-        既有落盘形态。
+        既有落盘形态。主体级签名接线（code-review item 552832619d22）：
+        spec=null（global）信号入链时 facts 兼作链 payload 主体键载体——
+        链签名按 escalation_chain._SUBJECT_KEY_PRIORITY 词表从中提取主体
+        键（如蒸馏欠账归档名/triage 场景集指纹），未供给时按契约退化类型级。
 
         降噪分级（2026-09-01 用户决策）：仅 critical/major 进人工待处理队列；
         warning/minor 写入即标记 handled，只留历史记录不弹横幅。
@@ -1637,6 +1640,22 @@ class FamilyGovernor:
                     )
                     chain = None
                 if chain is not None:
+                    # 主体键 payload 组装（code-review item 552832619d22）：
+                    # spec=null 信号的链签名按契约含主体键（escalation-chain
+                    # 知识页「同一个问题」语义），但本咽喉此前恒不传 payload
+                    # ——global 信号恒退化类型级，主体级签名/配额在生产入口
+                    # 不可达。spec 绑定信号走 spec 级签名、payload 不参与，
+                    # 故仅 global 信号组装：既有结构化增强参数 facts 即发射
+                    # 点的结构化素材参数位，透传为 payload 后发射点按
+                    # _SUBJECT_KEY_PRIORITY 词表供给主体键即获主体级签名；
+                    # 未供给时按契约退化类型级（当前发射点均不传 facts，
+                    # payload=None，入链调用形态与既有逐字节一致）。
+                    chain_payload: Optional[dict] = None
+                    if (
+                        not str(spec_name or "").strip()
+                        or str(spec_name) == "global"
+                    ) and isinstance(facts, dict) and facts:
+                        chain_payload = dict(facts)
                     try:
                         disposition = chain.submit_entry(
                             spec=str(spec_name or "global"),
@@ -1646,6 +1665,7 @@ class FamilyGovernor:
                             evidence=str(evidence or ""),
                             recommended_action=str(recommended_action or ""),
                             trigger=trigger,
+                            payload=chain_payload,
                             source="escalation-alert",
                         )
                     except RuntimeError as e:

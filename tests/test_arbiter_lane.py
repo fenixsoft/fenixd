@@ -23,7 +23,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.pm_engine.arbiter import (
-    ARBITER_EXCLUDED_SIGNAL_TYPES,
     ArbiterLane,
     arbiter_failure_signature,
     arbiter_report_path,
@@ -295,13 +294,13 @@ class TestTriggerSurface:
             assert lane.in_trigger_surface(sig) is True, sig
 
     def test_trigger_surface_covers_all_freeze_throat_signal_types(self):
-        """机械守卫：freeze_for_human 全调用点 signal_type 必须落在白名单∪排除表。
+        """机械守卫：freeze_for_human 全调用点 signal_type 必须落在触发面。
 
-        防词汇漂移复发——新增冻结族忘记进触发面时本测试红。扫描 core/ 全源
-        （跳过 def 定义行），signal_type 字面量经白名单/排除表双向核对。
+        防词汇漂移复发——新增冻结族未进触发面时本测试红。扫描 core/ 全源
+        （跳过 def 定义行），signal_type 字面量经触发面判定核对（黑名单制：
+        非黑名单即入，缺省空黑名单下全部放行）。
         """
         import glob
-        from core.pm_engine.arbiter import ARBITER_EXCLUDED_SIGNAL_TYPES
         lane = ArbiterLane(Path("/tmp"), None)
         found = set()
         for fp in glob.glob("core/**/*.py", recursive=True):
@@ -315,10 +314,10 @@ class TestTriggerSurface:
                     found.add(sm.group(1))
         assert found, "机械枚举扫描零命中——扫描器本身坏了"
         for sig in sorted(found):
-            assert (
-                lane.in_trigger_surface(sig)
-                or sig in ARBITER_EXCLUDED_SIGNAL_TYPES
-            ), f"冻结族 '{sig}' 未进触发面白名单也未入排除表（词汇漂移复发）"
+            assert lane.in_trigger_surface(sig), (
+                f"冻结族 '{sig}' 未进触发面（黑名单制：非黑名单即入，"
+                "词汇漂移复发）"
+            )
 
     def test_disabled_lane_returns_disabled(self, tmp_path):
         """enabled=false：submit 返回 disabled，零写入零派发。"""

@@ -88,7 +88,12 @@ export default function SwimlaneView({
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'stretch', overflowX: 'auto' }}>
       {/* 泳道标签列（固定宽度，随外层滚动保持可见） */}
-      <svg width={LABEL_W} height={svgH} style={{ flex: '0 0 auto', display: 'block' }}>
+      {/* sticky 左定位使横向滚动时标签列保持可见（code-review item c2131e354ff2） */}
+      <svg
+        width={LABEL_W}
+        height={svgH}
+        style={{ position: 'sticky', left: 0, zIndex: 1, flex: '0 0 auto', display: 'block' }}
+      >
         {LANE_ORDER.map((lane, li) => (
           <g key={lane}>
             <rect
@@ -336,7 +341,9 @@ function buildModel(data: SpecTopology): SwimModel | null {
   const spanS = (t1 - t0) / 1000;
   // 内容宽随跨度线性伸缩：目标 1 分钟 ≈ 14px（自适应档：短跨度密、长跨度疏），
   // 不设上限 → 长跨度横向滚动（泳道标签固定左列保持可见）
-  const plotW = Math.max(MIN_CONTENT_W - LABEL_W, (t1 - t0) / 60000 * 14);
+  // 绘图区下限 = 内容最小宽 − 左右内边距（保证 contentW ≥ MIN_CONTENT_W，
+  // code-review item 3686cdc4a73f：原扣 LABEL_W 与 contentW = plotW + PAD_X*2 口径错位）
+  const plotW = Math.max(MIN_CONTENT_W - PAD_X * 2, (t1 - t0) / 60000 * 14);
   const contentW = plotW + PAD_X * 2;
   const x = (ms: number) => PAD_X + ((ms - t0) / (t1 - t0)) * plotW;
 
