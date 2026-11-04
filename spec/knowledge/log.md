@@ -43,3 +43,4 @@
 ## [2026-11-04 10:31 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
 ## [2026-11-04 10:39 UTC+8] distill | fix-escalation-chain-ledger-closure（第 1 轮，自动提交落库，折叠入库 3 条）
 ## [2026-11-04 11:32 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
+## [2026-11-04 11:35 UTC+8] fold | zn-inbox-entry-2.md 折叠失败滞留：claude 进程非零退出（exit=1）；stderr 尾部: Claude Code doesn't recognize the model "glm-5.3-flash", so it assumes a context window
