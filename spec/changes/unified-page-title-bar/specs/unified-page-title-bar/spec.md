@@ -3,7 +3,7 @@
 > **界面原型（UI 真相源）**：`spec/changes/unified-page-title-bar/specs/unified-page-title-bar/prototype/`（standalone.html = 独立访问形态，embed.html = dsh web 嵌入形态，双整页截图随原型入库）。相关界面 Scenario 的布局、排布、尺寸观感以 prototype/ 为准，冲突须升级用户裁决。
 
 ### Requirement: 统一标题栏控件双壳位
-dashboard 前端 SHALL 提供唯一的全站标题栏控件（含**标题 / 副标题 / 返回箭头 / 过滤项**四类声明槽位），各常规页只声明数据、MUST NOT 逐页自画同类型标题 div。控件按运行环境自选壳位：独立访问（无 `embed=1`）且视口 ≥768px 时渲染进顶部标题栏（Fenix Harness 品牌之后，标题 18px/700、副标题 12px 三级灰基线随迁，过滤项落顶栏右上角）；`embed=1`（dsh web 面板桥）或视口 <768px 时顶栏不承载，控件 SHALL 自动渲染为内容区首行标题栏（48px、白底、底缘分隔细线，排布与顶栏壳位同构）。壳位判定 MUST 收敛在控件内部，页面侧零环境分支。
+dashboard 前端 SHALL 提供唯一的全站标题栏控件（含**标题 / 副标题 / 返回箭头 / 过滤项**四类声明槽位），各常规页只声明数据、MUST NOT 逐页自画同类型标题 div。控件按运行环境自选壳位：独立访问（无 `embed=1`）且视口 ≥768px 时渲染进顶部标题栏（Fenix Harness 品牌之后，标题 18px/700、副标题 12px 三级灰基线随迁，过滤项落顶栏右上角）；`embed=1`（dsh web 面板桥）或视口 <768px 时顶栏不承载，控件 SHALL 自动渲染为内容区首行标题栏（48px、白底、底缘分隔细线，排布与顶栏壳位同构）。壳位判定 MUST 收敛在控件内部，页面侧零环境分支；判定 MUST 单源互斥——同一时刻标题栏仅渲染于一处壳位，视口宽度跨 768px 阈值切换时退出侧壳位（顶栏注册或行壳位节点）MUST 清理，不出现双标题并存或残留。
 
 #### Scenario: 顶栏承载（standalone）
 - **WHEN** 独立访问（无 `embed=1`）以 ≥768px 视口打开设置页
@@ -16,6 +16,10 @@ dashboard 前端 SHALL 提供唯一的全站标题栏控件（含**标题 / 副�
 #### Scenario: 移动端壳位降级
 - **WHEN** 独立访问以 390px 视口（<768px）打开设置页
 - **THEN** 顶栏仅渲染品牌（不承载标题与过滤项），统一标题栏整体渲染在内容区首行（与 embed 壳位同款载体），页面 `scrollWidth` 不超过视口宽，无横向溢出
+
+#### Scenario: 视口跨阈值壳位互斥
+- **WHEN** 独立访问下视口宽度在 ≥768px 与 <768px 之间来回切换（resize）
+- **THEN** 任一时刻页面标题仅渲染于一处壳位（顶栏或内容区首行），切换后另一侧无残留，不出现双标题并存
 
 ### Requirement: 内容区标题栏退役
 全部常规页（跨项目概览、项目列表、SPEC 详情、设置、运维记录、处置链、指挥中心、帮助）SHALL 摘除 PageContainer 页头（`header` 配置与页头渲染），内容区不再渲染标题行；页面内容直接从首屏卡片/表格起。无壳的脱壳页（SPEC 协作拓扑大屏 `layout:false`）不在本控件适用范围；菜单「项目」父项落点 `/projects` 的兜底占位页（`PagePlaceholder`，项目列表就绪后自动重定向、仅空列表时兜底可见）同为豁免面——保留其占位页头，不迁移本控件。
@@ -55,7 +59,7 @@ dashboard 前端 SHALL 提供唯一的全站标题栏控件（含**标题 / 副�
 
 #### Scenario: 项目页返回箭头
 - **WHEN** 从概览下钻打开项目列表页（standalone）
-- **THEN** 顶栏渲染「← fenixd + 共 N 个 SPEC」，点击返回箭头回到 `/overview`，行为与本变更前一致
+- **THEN** 顶栏渲染「← {项目名} + 共 N 个 SPEC」（原型中 fenixd 为示例项目名的具象值，title 槽位渲染当前路由项目名，原型字面文案不构成对具体项目名的约束），点击返回箭头回到 `/overview`，行为与本变更前一致
 
 ### Requirement: SPEC 详情富标题整体迁移
 SPEC 详情页标题区富组合（返回箭头 + SPEC 名 + 模式 Tag + 状态 Tag + 快速切换下拉）SHALL 作为整体随标题迁入统一标题栏控件；快速切换下拉 MUST 保持渲染在 SPEC 名旁（spec-detail-quick-switch 契约延续），切换行为不变。

@@ -26,7 +26,7 @@ dashboard 前端（umi + ProLayout mix 布局 + antd v6）现状：8 个常规�
 
 **D1 统一控件 = 单组件 + 壳位内聚**：新建 `src/components/PageTitleBar.tsx`，props 仅四槽位（`title` ReactNode、`subtitle?` ReactNode、`back?` 回调、`filters?` ReactNode）。壳位判定（`isEmbedMode() || 视口 <768` → 行壳位；否则顶栏壳位）收敛在控件内部。*备选*：每页自渲染两种形态（否——正是用户点名禁止的「每页画一个相类似的 div」）；全局路由表配标题（否——过滤项/富标题是页内状态，路由表装不下）。
 
-**D2 顶栏挂载机制：声明-注册-插槽**。页面以 `usePageTitleBar(meta)`（context 注册，或等价轻量单源）在挂载时把 `{title, subtitle, back, filters}` 报给布局层；`app.tsx` 布局配置消费：品牌区之后追加标题区渲染（ProLayout `headerContentRender` 或等价 header 插槽属性，实现者按 antd v6 / ProLayout 实际 API 选型），过滤项渲染进 `actionsRender`（替换原 `HeaderCrumb` 槽位）。*理由*：ProLayout 的 header 插槽在布局配置层，页内组件无法直接塞节点，须经共享状态桥接；注册制让页面保持「只声明数据」。**硬约束**：顶栏无该页注册内容时渲染空（不残留上一页内容）——注册须随卸载清理，路由切换即换页换标题。
+**D2 顶栏挂载机制：声明-注册-插槽**。页面以 `usePageTitleBar(meta)`（context 注册，或等价轻量单源）在挂载时把 `{title, subtitle, back, filters}` 报给布局层；`app.tsx` 布局配置消费：品牌区之后追加标题区渲染（ProLayout `headerContentRender` 或等价 header 插槽属性，实现者按 antd v6 / ProLayout 实际 API 选型），过滤项渲染进 `actionsRender`（替换原 `HeaderCrumb` 槽位）。*理由*：ProLayout 的 header 插槽在布局配置层，页内组件无法直接塞节点，须经共享状态桥接；注册制让页面保持「只声明数据」。**硬约束**：顶栏无该页注册内容时渲染空（不残留上一页内容）——注册须随卸载清理，路由切换即换页换标题。壳位判定单源互斥：同一 meta 任一时刻只渲染于一处壳位（顶栏插槽消费注册态渲染时，页内行壳位节点不渲染，反之亦然）；视口宽度跨 768px 阈值 resize 时退出侧清理（撤销注册或卸载行壳位节点），MUST NOT 双标题并存或切换后残留。
 
 **D3 面包屑直接退役不保留**（用户裁决）：`HeaderCrumb` 组件、`crumbItems` 映射、`global-header-crumb` 样式锚点及 `global.less` 窄屏隐藏规则一并清理。*备选*：面包屑保留在过滤项左侧（用户已否）；移入行壳位（否——行壳位标题已表达位置）。
 
