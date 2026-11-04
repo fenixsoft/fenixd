@@ -147,28 +147,7 @@ class TestHostingState:
             assert fenix_session.supervisor_running("/any/root") is False
 
 
-class TestSessionNameNormalization:
-    """session_name 归一化口径（code-review item 12e5e201a1c3）。"""
-
-    def test_dot_in_dirname_folded_to_hyphen(self, tmp_path):
-        """目录名含内部点号 → 派生名不含点号。
-
-        tmux 对会话名静默把 `.` 替换为 `_`，且 has-session 解析带点号目标时
-        把点号当窗格分隔符而查找失败——派生名与 tmux 实际会话名必须同口径，
-        否则启动复核 / tmux 回退 / stop 兜底全部误判。
-        """
-        proot = tmp_path / "my.project"
-        proot.mkdir()
-        name = fenix_session.session_name(str(proot))
-        assert "." not in name
-        assert name.startswith("fenixd-my-project-")
-
-
 # ── 3.4 唯一托管启停路径 ──────────────────────────────────────────────
-
-# env 形参对齐 start_daemon 的 env=_tmux_env() 调用形态，替身签名缺该 kwarg 会让启动路径误入 tmux 异常分支。
-def _fake_tmux_run(cmd, capture_output=False, text=False, timeout=None, env=None):
-    return mock.Mock(returncode=0, stdout="", stderr="")
 
 
 class TestStartStopHosted:
@@ -180,41 +159,51 @@ class TestStartStopHosted:
         return proot
 
     def test_start_daemon_uses_supervisor_command(self, tmp_path, monkeypatch):
-        """start_daemon 在 tmux session 内拉起 supervisor 托管入口而非直启 fenixd.py。"""
+        """start_daemon 经 unit 安装（enable --now）拉起 supervisor 托管而非 tmux/直启。
+
+        systemd 承载（add-systemd-hosting）：ExecStart=supervisor --project-root
+        的断言在 unit 渲染层（test_systemd_hosting.TestUnitTemplates）；此处断言
+        start_daemon 消费 install_project_unit 且不再创建 tmux session。
+        """
         proot = self._make_proj(tmp_path)
-        calls = []
-        monkeypatch.setattr(fenix_session.subprocess, "run", lambda *a, **kw: calls.append(a[0]) or mock.Mock(returncode=0))
-        monkeypatch.setattr(fenix_session, "is_running", lambda root=None: len(calls) > 0)
+        install_calls = []
+
+        def fake_install(root):
+            install_calls.append(root)
+            return {"ok": True, "unit": "fenixd-proj-a-x.service", "already": False}
+
+        monkeypatch.setattr(fenix_session, "install_project_unit", fake_install)
+        monkeypatch.setattr(fenix_session, "is_running", lambda root=None: len(install_calls) > 0)
+        monkeypatch.setattr(fenix_session, "_daemon_proc_running", lambda root: True)
         result = fenix_session.start_daemon(str(proot))
         assert result["ok"] is True
         assert result["already"] is False
-        assert len(calls) == 1
-        cmd = calls[0]
-        assert cmd[0] == "tmux"
-        # 命令主体必须是 supervisor 托管入口，且显式携带 --project-root
-        session_cmd = cmd[-1]
-        assert "fenixd_supervisor.py" in session_cmd
-        assert "--project-root" in session_cmd
-        assert str(proot) in session_cmd
-        # MUST NOT 再直启 .fenix/fenixd.py 作为 session 主命令
-        assert "python3 .fenix/fenixd.py" not in session_cmd.split("&&")[-1]
+        assert install_calls == [proot]
+
+    def test_tmux_session_naming_retired(self):
+        """tmux 会话名体系退役（3.4）：session_name 不复存在，会话名口径由
+        systemd_hosting.unit_name_for 承接（其安全化见 test_systemd_hosting）。"""
+        assert not hasattr(fenix_session, "session_name")
 
     def test_start_daemon_idempotent_already(self, tmp_path, monkeypatch):
-        """重复启动：is_running 为真 → already=True，不创建第二个 session。"""
+        """重复启动：daemon 在跑 → already=True，不重复安装/拉起。"""
         proot = self._make_proj(tmp_path)
         monkeypatch.setattr(fenix_session, "is_running", lambda root=None: True)
+        monkeypatch.setattr(fenix_session, "_daemon_proc_running", lambda root: True)
         calls = []
-        monkeypatch.setattr(fenix_session.subprocess, "run", lambda *a, **kw: calls.append(a))
+        monkeypatch.setattr(fenix_session, "install_project_unit",
+                            lambda root: calls.append(root) or {"ok": True})
         result = fenix_session.start_daemon(str(proot))
         assert result["ok"] is True and result["already"] is True
         assert calls == []
 
     def test_start_daemon_invalid_project(self, tmp_path, monkeypatch):
-        """缺少 .fenix/ → 返回可读错误且不产生进程。"""
+        """缺少 .fenix/ → 返回可读错误且不产生进程、不写 unit。"""
         proot = tmp_path / "proj-invalid"
         proot.mkdir()
         calls = []
-        monkeypatch.setattr(fenix_session.subprocess, "run", lambda *a, **kw: calls.append(a))
+        monkeypatch.setattr(fenix_session, "install_project_unit",
+                            lambda root: calls.append(root) or {"ok": True})
         result = fenix_session.start_daemon(str(proot))
         assert result["ok"] is False
         assert "缺少 .fenix" in (result["error"] or "")
@@ -227,10 +216,13 @@ class TestStartStopHosted:
         stop_flag.touch()
         monkeypatch.setattr(fenix_session, "is_running", lambda root=None: False)
         monkeypatch.setattr(fenix_session, "supervisor_running", lambda root=None: False)
-        monkeypatch.setattr(fenix_session.subprocess, "run", _fake_tmux_run)
-        # is_running 恒假 → 走满轮询等待；注入小步长避免真等 5s。
+        monkeypatch.setattr(fenix_session, "install_project_unit",
+                            lambda root: {"ok": True, "unit": "u.service", "already": False})
+        # is_running 恒假 → 走满轮询等待；注入小步长避免真等 5s；
+        # 窗口耗尽走 unit_active 复核（unit 活跃 = /proc 探测失效的宽容成功）。
         monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_ATTEMPTS", 1)
         monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(fenix_session, "unit_active", lambda unit: True)
         result = fenix_session.start_daemon(str(proot))
         assert result["ok"] is True
         assert not stop_flag.exists()
@@ -242,9 +234,11 @@ class TestStartStopHosted:
         stop_flag.touch()
         monkeypatch.setattr(fenix_session, "is_running", lambda root=None: False)
         monkeypatch.setattr(fenix_session, "supervisor_running", lambda root=None: True)
-        monkeypatch.setattr(fenix_session.subprocess, "run", _fake_tmux_run)
+        monkeypatch.setattr(fenix_session, "install_project_unit",
+                            lambda root: {"ok": True, "unit": "u.service", "already": False})
         monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_ATTEMPTS", 1)
         monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(fenix_session, "unit_active", lambda unit: True)
         fenix_session.start_daemon(str(proot))
         assert stop_flag.exists()
 
@@ -257,12 +251,13 @@ class TestStartStopHosted:
         assert not (proot / ".fenix" / "stop").exists()
 
     def test_stop_daemon_graceful_order(self, tmp_path, monkeypatch):
-        """优雅收口：写 stop → 仅 SIGTERM daemon（不 SIGTERM supervisor）→ 快照全退后清除 stop。"""
+        """优雅收口（managed-but-no-unit 直接信号链）：写 stop → 仅 SIGTERM daemon（不 SIGTERM supervisor）→ 快照全退后清除 stop。"""
         proot = self._make_proj(tmp_path)
         stop_flag = proot / ".fenix" / "stop"
         daemon_pid, supervisor_pid = 41111, 42222
         # 调用序：入口快照（_fenix_pids_under）→ SIGTERM → 轮询 _alive_pids
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        monkeypatch.setattr(fenix_session, "unit_installed", lambda unit: False)
         monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(daemon_pid), str(supervisor_pid)])
         # 41111 是 daemon（cmdline 含 .fenix/fenixd.py）；42222 是 supervisor
         # 替身签名跟产品对齐（root 形参，item 33a5a217f420）：stop_daemon 以
@@ -292,6 +287,7 @@ class TestStartStopHosted:
         stop_flag = proot / ".fenix" / "stop"
         daemon_pid, supervisor_pid = 44111, 44222
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        monkeypatch.setattr(fenix_session, "unit_installed", lambda unit: False)
         monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(daemon_pid), str(supervisor_pid)])
         # 替身签名对齐产品的 (pid, root=None) 双参形态（item 33a5a217f420）
         monkeypatch.setattr(fenix_session, "_is_daemon_cmdline",
@@ -316,17 +312,24 @@ class TestStartStopHosted:
         assert (int(daemon_pid), fenix_session.signal.SIGTERM) in killed
         assert not any(pid == supervisor_pid and sig == fenix_session.signal.SIGTERM for pid, sig in killed)
 
-    def test_stop_daemon_timeout_kill_session_no_orphan(self, tmp_path, monkeypatch):
-        """收口超时：kill-session + 仅对快照中仍存活的残留补 SIGKILL，无孤儿。"""
+    def test_stop_daemon_timeout_sigkill_snapshot_no_orphan(self, tmp_path, monkeypatch):
+        """收口超时（systemd 主轨）：systemctl stop --no-block 后等待窗耗尽，
+        仅对快照中仍存活的残留补 SIGKILL，无孤儿；kill-session 兜底已退役。"""
         proot = self._make_proj(tmp_path)
         stop_flag = proot / ".fenix" / "stop"
         daemon_pid, supervisor_pid = 43111, 43222
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        monkeypatch.setattr(fenix_session, "unit_installed", lambda unit: True)
+        stop_calls = []
+        monkeypatch.setattr(fenix_session, "stop_unit_no_block",
+                            lambda unit: stop_calls.append(unit))
         monkeypatch.setattr(fenix_session, "_fenix_pids_under",
                             lambda root: [str(daemon_pid), str(supervisor_pid)])
         # 替身签名对齐产品的 (pid, root=None) 双参形态（item 33a5a217f420）
         monkeypatch.setattr(fenix_session, "_is_daemon_cmdline",
                             lambda pid, root=None: pid == str(daemon_pid))
+        # 补杀前复核（_is_snapshot_proc_cmdline）对替身 pid 返回 None（/proc
+        # 不可读语义）→「照旧尝试」放行补杀，由 ProcessLookupError 兜底。
         # 替身语义：SIGKILL 命中即消亡。补杀后复核（SIGKILL 短轮询确认死亡）
         # 按替身状态判 ok；此前的恒存活替身会让复核把已补杀进程判成「仍存活」
         # → ok=False，替身失真而非产品缺陷。
@@ -341,11 +344,9 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session.os, "kill", _kill)
         monkeypatch.setattr(fenix_session, "_alive_pids",
                             lambda pids: [p for p in pids if int(p) not in sigkilled])
-        tmux_calls = []
-        monkeypatch.setattr(fenix_session.subprocess, "run",
-                            lambda *a, **kw: tmux_calls.append(a) or mock.Mock(returncode=0))
+        monkeypatch.setattr(fenix_session, "_is_snapshot_proc_cmdline", lambda pid, root: None)
         # 时间推进：单调递增且步进 > 30s，让等待窗口（deadline=首调+30）即时常量耗尽，
-        # 立即进入 kill-session + SIGKILL 兜底路径（不真实等待 30 秒）
+        # 立即进入 SIGKILL 兜底路径（不真实等待 30 秒）
         t0 = time.time()
         ticks = {"n": 0}
 
@@ -356,8 +357,9 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session.time, "time", _time_side)
         result = fenix_session.stop_daemon(str(proot))
         assert result["ok"] is True
-        # 超时路径：kill-session 被调、残留（快照中仍存活）补 SIGKILL
-        assert any("kill-session" in c[0] for c in tmux_calls)
+        # 超时路径：systemctl stop --no-block 已排队、残留（快照中仍存活）补 SIGKILL；
+        # kill-session 兜底已退役（tmux 承载退役，无回退）
+        assert stop_calls and stop_calls[0].endswith(".service")
         assert (daemon_pid, fenix_session.signal.SIGKILL) in killed
         assert (supervisor_pid, fenix_session.signal.SIGKILL) in killed
         assert not stop_flag.exists()
@@ -374,6 +376,7 @@ class TestStartStopHosted:
         old_daemon, old_supervisor = 45111, 45222       # 本路快照（旧进程）
         new_daemon, new_supervisor = 45333, 45444       # 他路新拉起（must not 被杀）
         monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        monkeypatch.setattr(fenix_session, "unit_installed", lambda unit: False)
         # 入口快照：只含旧进程；重扫（若发生）会返回 4 个——断言扫描只发生一次
         scan_calls = {"n": 0}
 
@@ -398,8 +401,7 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session.os, "kill", _kill)
         monkeypatch.setattr(fenix_session, "_alive_pids",
                             lambda pids: [p for p in pids if int(p) not in sigkilled])
-        monkeypatch.setattr(fenix_session.subprocess, "run",
-                            lambda *a, **kw: mock.Mock(returncode=0))
+        monkeypatch.setattr(fenix_session, "_is_snapshot_proc_cmdline", lambda pid, root: None)
         t0 = time.time()
         ticks = {"n": 0}
 

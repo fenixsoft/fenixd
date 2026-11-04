@@ -14,7 +14,7 @@ Fenix 提供 7 个 `/fenix-*` 斜杠命令（skill）与若干 `bin/` 辅助脚�
 
 ### /fenix-setup — 初始化与启动
 
-第一次在项目上启用 Fenix 时使用。命令检查 Python/Git/Node/tmux 依赖是否就绪，创建 `.fenix/` 目录与配置、生成 `.fenix/config.yaml`（项目尚未初始化时自动运行 fenix-init 生成完整工程骨架，无需单独执行初始化命令），最后启动 fenixd daemon。跑完之后你就得到了一个可运行的 Fenix 环境。
+第一次在项目上启用 Fenix 时使用。命令检查 Python/Git/Node/systemd 依赖是否就绪，创建 `.fenix/` 目录与配置、生成 `.fenix/config.yaml`（项目尚未初始化时自动运行 fenix-init 生成完整工程骨架，无需单独执行初始化命令），最后启动 fenixd daemon。跑完之后你就得到了一个可运行的 Fenix 环境。
 
 ```
 /fenix-setup
@@ -55,8 +55,9 @@ SPEC 走完全生命周期后使用。命令把 `spec/changes/<name>/` 目录移
 | `fenix_dashboard.py` | Dashboard 统一入口（--serve Web / --tui 终端 / --add-project 注册） |
 | `fenix_spec.py` | 原生 SPEC 生成 CLI（提供 new change/status/instructions 子命令，输出 JSON，供 fenix-new 调用） |
 | `fenix_process.py` | 查看指定 SPEC 的详细进展 |
-| `fenix_session.py` | 计算项目唯一 tmux session 名并查询运行状态 |
-| `fenixd_supervisor.py` | daemon 托管入口（框架守护进程由 supervisor 托管，而非 tmux） |
+| `fenix_session.py` | 查询项目运行状态与 systemd unit 名（`running`/`path`/`unit`；tmux 会话名体系已退役，`name` 子命令拒绝并指引） |
+| `migrate_to_systemd.py` | tmux 承载存量部署 → systemd unit 一次性搬迁编排（缺省 dry-run 预演，`--execute` 真切换为人工步骤） |
+| `fenixd_supervisor.py` | daemon 托管入口（框架守护进程由 supervisor 托管，systemd unit 拉起） |
 | `fenix_cli.py` | SPEC 运维子命令集：`promote`（晋升草稿）/ `reflow`（verified 回炉复位 ready）/ `activate`（手工激活待激活 SPEC）/ `review`（重新评审）/ `unfreeze`（解冻），均支持 `--project <path>` |
 | `fenix_status.py` | 项目状态一句话总结 + 各 SPEC 状态表（`/fenix-status` 的底层实现） |
 | `fenix_verify_contract.py` | 校验 verify.yaml 契约形态（prepare/serve/ready 与场景集 kind 的自动反推匹配） |
@@ -69,10 +70,14 @@ SPEC 走完全生命周期后使用。命令把 `spec/changes/<name>/` 目录移
 ### 托管态（managed / unmanaged / stopped）
 
 daemon 的唯一合法启动路径是经 `fenixd_supervisor.py` 托管（`/fenix-setup` 第 7 步与
-Dashboard 项目页「启动」均以此方式拉起）。tmux 仅作为「脱离终端的承载手段」，daemon
-是 supervisor 的子进程；supervisor 检测 `.fenix/restart_request` 后 SIGTERM daemon 并
+Dashboard 项目页「启动」均以此方式拉起）。承载手段为 systemd unit
+`fenixd-<项目名>-<哈希>.service`（`systemctl enable --now`，`Restart=on-failure`
+崩溃自动拉回、开机自启），daemon 是 supervisor 的子进程，systemd 监督对象是
+supervisor 不是 daemon；supervisor 检测 `.fenix/restart_request` 后 SIGTERM daemon 并
 自动拉起，承担唯一的重启职责。停止语义为「写 `.fenix/stop` + SIGTERM daemon → supervisor
-收口退出」，不再直接杀 daemon。
+收口退出」，不再直接杀 daemon；unit 已安装时走 `systemctl stop --no-block` +
+≤30s 轮询 + 快照补杀收口。看现场：`journalctl -u <unit>`（supervisor 日志另见
+`.fenix/logs/supervisor.log`）。
 
 daemon 运行状态分三态：
 

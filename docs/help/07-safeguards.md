@@ -108,7 +108,7 @@ merge-back（把实现分支合并回主树）开跑前有一道前置检查（`
 
 daemon 由 `fenixd_supervisor.py` 托管的完整重启协议是自愈链路的最后一环：daemon 进程崩溃时 supervisor 自动拉起，启动后执行 boot recovery，将中断状态的 SPEC 回退 `ready`、续查恢复观察项、启动 sweeper。项目的启停通过 `/fenix-dashboard` 或 `/fenix-setup` 操作，跨项目的统一管理由 `/fenix-dashboard` 负责。这个协议保证了 daemon 异常退出不会导致整个系统停摆。
 
-**唯一托管启动路径与托管态**：daemon 的唯一合法启动路径是经 supervisor 托管——`/fenix-setup` 第 7 步与 Dashboard 项目页「启动」均在项目唯一 tmux session 内拉起 `fenixd_supervisor.py --project-root <根>`，tmux 仅承担脱离终端，daemon 是 supervisor 的子进程。停止语义为「写 `.fenix/stop` → SIGTERM daemon → supervisor 收口退出」。daemon 运行状态分三态：`managed`（受托管）、`unmanaged`（裸 daemon——进程在跑但无 supervisor，restart_request 无人消费，需经 Dashboard「安装托管」或 `/fenix-setup` 恢复）、`stopped`（未运行）。daemon 启动自检在托管缺失时落 `supervisor_missing` 告警并升级人工。
+**唯一托管启动路径与托管态**：daemon 的唯一合法启动路径是经 supervisor 托管——`/fenix-setup` 第 7 步与 Dashboard 项目页「启动」均以 systemd unit `fenixd-<项目名>-<哈希>.service` 拉起 `fenixd_supervisor.py --project-root <根>`（unit 缺失时自动生成安装并 `enable --now`），承载载体为 systemd（`Restart=on-failure` 崩溃自动拉回、`SuccessExitStatus=75` 熔断/放弃看护不被拉回、开机自启），daemon 是 supervisor 的子进程，systemd 监督对象是 supervisor 不是 daemon。停止语义为「写 `.fenix/stop` → SIGTERM daemon → supervisor 收口退出」。daemon 运行状态分三态：`managed`（受托管）、`unmanaged`（裸 daemon——进程在跑但无 supervisor，restart_request 无人消费，需经 Dashboard「安装托管」或 `/fenix-setup` 恢复）、`stopped`（未运行）。daemon 启动自检在托管缺失时落 `supervisor_missing` 告警并升级人工。
 
 ### 代码陈旧自愈与启动失败熔断
 

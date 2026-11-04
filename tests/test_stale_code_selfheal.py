@@ -24,6 +24,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 # 模块级 import：pytest 执行期 sys.path 变化可能撞仓库根同名包，
 # 模块级 import 绑定真实文件模块（test_daemon_lifecycle_races.py 同款处方）
 import fenixd as _fenixd_mod
@@ -1133,7 +1135,11 @@ class TestSupervisorFuse(unittest.TestCase):
                     supervisor_mod.time, "sleep", lambda s: None), \
                 mock.patch.object(supervisor_mod, "_write_fuse_alert") as alert, \
                 mock.patch.object(supervisor_mod, "_write_supervisor_runtime"):
-            supervisor_mod.main()
+            with pytest.raises(SystemExit) as ei:
+                supervisor_mod.main()
+        # 熔断退出码协议（add-systemd-hosting 2.1）：75=熔断，systemd
+        # Restart=on-failure + SuccessExitStatus=75 据此不拉回
+        assert ei.value.code == supervisor_mod.EXIT_GAVE_UP
         assert len(calls) == 3, f"熔断后不应第 4 次拉起（实际 {len(calls)} 次）"
         assert alert.called, "熔断应产出 critical 告警"
         assert self._marker().is_file(), "熔断标记应落盘"
@@ -1189,7 +1195,10 @@ class TestSupervisorFuse(unittest.TestCase):
                 mock.patch.object(supervisor_mod.time, "sleep", _fake_sleep), \
                 mock.patch.object(supervisor_mod, "_write_fuse_alert"), \
                 mock.patch.object(supervisor_mod, "_write_supervisor_runtime"):
-            supervisor_mod.main()
+            with pytest.raises(SystemExit) as ei:
+                supervisor_mod.main()
+        # 熔断退出码协议（add-systemd-hosting 2.1）
+        assert ei.value.code == supervisor_mod.EXIT_GAVE_UP
         assert len(start_times) == 4, (
             f"存活 61s 应重置计数，随后 3 次短命才熔断（实际 {len(start_times)} 次）")
         assert (self.proot / ".fenix" / "supervisor_fused").is_file()

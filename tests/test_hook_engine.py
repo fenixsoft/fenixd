@@ -776,8 +776,9 @@ class TestBuiltinPushRestartDashboard(unittest.TestCase):
     """内置 pushed → restart-dashboard 条目（dashboard-push-restart 1.1/1.2/1.3）。
 
     覆盖：hook_config() 读侧注入（global 头部/逃生键/同 id 去重/不 mutate 入参）、
-    动作三态返回（去抖 skipped、失败可重试、无会话静默跳过）与全链审计/告警语义。
-    tmux/端口探测全部 mock，单测不触真实会话。
+    动作三态返回（去抖 skipped、失败可重试、unit 未装静默跳过）与全链审计/告警语义。
+    执行侧已迁 systemctl restart（add-systemd-hosting）：systemd_hosting.
+    restart_dashboard_unit 与端口探测全部 mock，单测不触真 systemd。
     """
 
     def setUp(self):
@@ -794,12 +795,21 @@ class TestBuiltinPushRestartDashboard(unittest.TestCase):
                           admin_store=MagicMock())
 
     @staticmethod
-    def _tmux_ok():
-        """has-session/respawn 全部返回 0 + 端口探测成功的 patch 组。"""
+    def _sysctl_ok():
+        """restart_dashboard_unit 返回 success + 端口探测成功的 patch 组。"""
         return (
-            mock.patch("core.hook_engine.subprocess.run",
-                       return_value=subprocess.CompletedProcess([], 0, "", "")),
+            mock.patch("core.systemd_hosting.restart_dashboard_unit",
+                       return_value={"status": "success", "detail": "fenix-dashboard.service 已重启"}),
             mock.patch.object(HookEngine, "_probe_dashboard", return_value=True),
+        )
+
+    @staticmethod
+    def _sysctl_skipped():
+        """unit 未安装的环境态（静默 skip）patch 组。"""
+        return mock.patch(
+            "core.systemd_hosting.restart_dashboard_unit",
+            return_value={"status": "skipped",
+                          "detail": "fenix-dashboard.service unit 未安装（dashboard 未以 systemd 承载），静默跳过"},
         )
 
     # ── 1.1 内置条目注入 ────────────────────────────────────────────
@@ -863,20 +873,20 @@ class TestBuiltinPushRestartDashboard(unittest.TestCase):
 
     def test_debounce_second_trigger_within_window_skipped(self):
         eng = self._eng()
-        p_run, p_probe = self._tmux_ok()
+        p_run, p_probe = self._sysctl_ok()
         with p_run as run, p_probe:
             status, _ = eng._action_restart_dashboard({})
             self.assertEqual(status, STATUS_SUCCESS)
-            calls_after_first = run.call_count  # has-session + respawn
+            calls_after_first = run.call_count  # systemctl restart 一次
             status2, detail2 = eng._action_restart_dashboard({})
             self.assertEqual(status2, STATUS_SKIPPED, detail2)
             self.assertEqual(run.call_count, calls_after_first,
-                             "去抖窗口内不得再触 tmux")
+                             "去抖窗口内不得再触 systemctl restart")
 
     def test_execute_action_maps_skipped_not_success(self):
         """去抖 skipped 经 _execute_action 映射为 skipped 审计，不冒充 success。"""
         eng = self._eng()
-        p_run, p_probe = self._tmux_ok()
+        p_run, p_probe = self._sysctl_ok()
         with p_run, p_probe:
             eng._action_restart_dashboard({})  # 预热进入去抖窗口
             eng._execute_action(
@@ -887,49 +897,47 @@ class TestBuiltinPushRestartDashboard(unittest.TestCase):
         self.assertEqual(recs[0]["action"], "restart-dashboard")
 
     def test_failure_then_retry_within_window(self):
-        """首次 respawn 失败 → failure；失败不写时间戳，窗口内可重试成功。"""
+        """首次 systemctl restart 失败 → failure；失败不写时间戳，窗口内可重试成功。"""
         eng = self._eng()
-        fail_side = [subprocess.CompletedProcess([], 0, "", ""),   # has-session
-                     subprocess.CompletedProcess([], 1, "", "boom")]  # respawn
-        with mock.patch("core.hook_engine.subprocess.run", side_effect=fail_side):
+        fail_side = [{"status": "failure",
+                      "detail": "systemctl restart fenix-dashboard.service 失败: boom"}]
+        with mock.patch("core.systemd_hosting.restart_dashboard_unit",
+                        side_effect=fail_side):
             status, detail = eng._action_restart_dashboard({})
             self.assertEqual(status, STATUS_FAILURE)
-            self.assertIn("respawn", detail)
-        ok_side = [subprocess.CompletedProcess([], 0, "", ""),
-                   subprocess.CompletedProcess([], 0, "", "")]
-        with mock.patch("core.hook_engine.subprocess.run", side_effect=ok_side) as run, \
-             mock.patch.object(HookEngine, "_probe_dashboard", return_value=True):
+            self.assertIn("systemctl restart", detail)
+        p_run, p_probe = self._sysctl_ok()
+        with p_run as run, p_probe:
             status2, detail2 = eng._action_restart_dashboard({})
             self.assertEqual(status2, STATUS_SUCCESS, detail2)
-            self.assertEqual(run.call_count, 2, "失败后窗口内重试应真实再次触发 tmux")
+            self.assertEqual(run.call_count, 1, "失败后窗口内重试应真实再次 systemctl restart")
 
     def test_success_then_failure_still_debounced(self):
         """失败不推进窗口：成功后 60s 内再次失败尝试也被去抖跳过。"""
         eng = self._eng()
-        p_run, p_probe = self._tmux_ok()
+        p_run, p_probe = self._sysctl_ok()
         with p_run, p_probe:
             self.assertEqual(eng._action_restart_dashboard({})[0], STATUS_SUCCESS)
-        fail_side = [subprocess.CompletedProcess([], 0, "", ""),
-                     subprocess.CompletedProcess([], 1, "", "boom")]
-        with mock.patch("core.hook_engine.subprocess.run", side_effect=fail_side):
+        fail_side = [{"status": "failure",
+                      "detail": "systemctl restart fenix-dashboard.service 失败: boom"}]
+        with mock.patch("core.systemd_hosting.restart_dashboard_unit",
+                        side_effect=fail_side):
             status, _ = eng._action_restart_dashboard({})
             self.assertEqual(status, STATUS_SKIPPED, "上次成功仍在窗口内，应先去抖")
 
-    def test_no_session_silent_skip(self):
-        """会话不存在 → skipped 语义（非 failure），不触 respawn。"""
+    def test_unit_missing_silent_skip(self):
+        """unit 未安装 → skipped 语义（非 failure），执行侧不触 systemctl restart。"""
         eng = self._eng()
-        with mock.patch("core.hook_engine.subprocess.run",
-                        return_value=subprocess.CompletedProcess([], 1, "", "")) as run:
+        with self._sysctl_skipped() as run:
             status, detail = eng._action_restart_dashboard({})
             self.assertEqual(status, STATUS_SKIPPED, detail)
-            self.assertEqual(run.call_count, 1, "无会话不得触 respawn")
+            self.assertEqual(run.call_count, 1, "unit 缺席只判环境态一次，不触 restart")
 
-    def test_no_session_full_chain_no_failure_audit_or_alert(self):
-        """全链（dispatch → 动作 → 审计/告警）：无 failure 记录、无告警。"""
+    def test_unit_missing_full_chain_no_failure_audit_or_alert(self):
+        """全链（dispatch → 动作 → 审计/告警）：unit 缺席环境态无 failure 记录、无告警。"""
         eng = self._eng()
         admin = eng.admin_store
-        with mock.patch("core.hook_engine.subprocess.run",
-                        return_value=subprocess.CompletedProcess([], 1, "", "")):
+        with self._sysctl_skipped():
             eng.dispatch("s1", "verified", "pushed", {})
             self.assertTrue(_audit_has(
                 self.proot, BUILTIN_PUSH_RESTART_DASHBOARD_ID, STATUS_SKIPPED))
@@ -940,11 +948,12 @@ class TestBuiltinPushRestartDashboard(unittest.TestCase):
         admin.append.assert_not_called()
 
     def test_dispatch_pushed_fires_builtin_with_failure_alert(self):
-        """会话存在但 respawn 失败是真故障：failure 审计 + 站内告警。"""
+        """unit 在装但 systemctl restart 失败是真故障：failure 审计 + 站内告警。"""
         eng = self._eng()
-        fail_side = [subprocess.CompletedProcess([], 0, "", ""),
-                     subprocess.CompletedProcess([], 1, "", "boom")]
-        with mock.patch("core.hook_engine.subprocess.run", side_effect=fail_side):
+        fail_side = [{"status": "failure",
+                      "detail": "systemctl restart fenix-dashboard.service 失败: boom"}]
+        with mock.patch("core.systemd_hosting.restart_dashboard_unit",
+                        side_effect=fail_side):
             eng.dispatch("s1", "verified", "pushed", {})
             self.assertTrue(_audit_has(
                 self.proot, BUILTIN_PUSH_RESTART_DASHBOARD_ID, STATUS_FAILURE))

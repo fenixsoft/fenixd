@@ -556,6 +556,32 @@ def test_takeover_rejected_for_tmux_resident_occupant(monkeypatch, tmp_path, cap
     assert "--port" in err  # 换端口指引
 
 
+def test_takeover_rejected_for_pid1_resident_occupant(monkeypatch, tmp_path, capsys):
+    """systemd unit 承载占用者（PPID=1，add-systemd-hosting）：不发任何信号、
+    非 0 退出、错误含 PID 与 systemctl restart/--port 指引。
+
+    豁免判据优先于 tmux 判定（serve() 先查 _parent_is_pid1）——纯 ppid=1 的
+    stat 即命中，无需 tmux comm 夹具。
+    """
+    stat = _write_occupant_stat(tmp_path, ppid=1)
+    _patch_proc_files(monkeypatch, {f"/proc/{_OCCUPANT_PID}/stat": stat})
+    created, signals = _install_serve_harness(
+        monkeypatch, [_EADDRINUSE], _occupant()
+    )
+    with pytest.raises(SystemExit) as ei:
+        import core.dashboard.server as server_mod
+
+        server_mod.serve(None, port=8787)
+    assert ei.value.code == 1
+    assert signals == []  # 未向 systemd 常驻实例发送任何信号（防接管↔拉回闪断循环）
+    assert created == []  # 未完成绑定（拒绝启动而非自动换端口）
+    err = capsys.readouterr().err
+    assert str(_OCCUPANT_PID) in err  # 含占用者 PID
+    assert "systemd unit" in err  # unit 承载常驻说明
+    assert "systemctl restart fenix-dashboard" in err  # 生产实例重启指引
+    assert "--port" in err  # 换端口指引
+
+
 def test_takeover_proceeds_for_non_tmux_occupant(monkeypatch, tmp_path):
     """非 tmux 旧实例：既有接管语义不变——占用者收 SIGTERM、新实例完成绑定。"""
     stat = _write_occupant_stat(tmp_path, ppid=777)

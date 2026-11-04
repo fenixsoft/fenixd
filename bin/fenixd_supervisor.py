@@ -13,6 +13,14 @@ fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal / fix-supe
 
 启动方式（推荐）：python3 .fenix/bin/fenixd_supervisor.py --project-root <root>
 备选方式：cd <项目根> && python3 .fenix/bin/fenixd_supervisor.py
+
+退出码协议（add-systemd-hosting，systemd Restart=on-failure 消费）：
+  0   —— 有意退出：停机信号收尾（SIGTERM/SIGINT 转发收尾完成）或 .fenix/stop
+         旗标在场退出（显式停止）。systemd 不拉回，unit 落 inactive。
+  75  —— 有意放弃：启动失败熔断（supervisor_fused）或兜底收尸/收编复核超限
+         放弃看护。unit 以 SuccessExitStatus=75 声明为成功——不被拉回，防
+         熔断被 systemd 架空为「拉回→再熔断」告警风暴；恢复均人工。
+  其余一切退出形态（SIGKILL、异常非零）→ systemd on-failure 拉回。
 """
 
 import argparse
@@ -129,6 +137,13 @@ SUPERVISOR_STARTUP_FAIL_THRESHOLD = 3
 # 存活并持有 daemon 单例锁，新拉起必秒退、被误计启动失败致假熔断。
 DAEMON_REAP_WAIT_SECONDS = 60
 DAEMON_REAP_WAIT_ATTEMPTS = 5
+
+# ── 有意退出码（add-systemd-hosting，与 unit 模板 SuccessExitStatus 成对）──
+# 数值与 core/systemd_hosting.py 的 SUPERVISOR_GAVE_UP_EXIT_CODE 成对维护。
+# 0=停机收尾/stop 旗标（systemd on-failure 本就不拉回）；75=熔断/放弃看护，
+# 经 SuccessExitStatus=75 声明为成功——不被拉回，防熔断被架空为告警风暴。
+EXIT_CLEAN = 0
+EXIT_GAVE_UP = 75
 
 
 def _fuse_marker() -> Path:
@@ -912,6 +927,11 @@ def main():
     # 优雅重启（restart_request）/ 显式停止不计；存活 ≥ 60s 清零。
     fail_count = 0
 
+    # 有意退出码（add-systemd-hosting）：break 前落码，循环出口 sys.exit。
+    # 0=停机收尾/stop 旗标；75=熔断/放弃看护（systemd SuccessExitStatus=75
+    # 声明为成功不拉回）；crash 路径不落码（异常传播/信号杀死保持原形态）。
+    exit_code = EXIT_CLEAN
+
     while True:
         if STOP_FLAG.exists():
             log("stop flag present — supervisor exiting")
@@ -931,6 +951,7 @@ def main():
                 "Fix the startup failure, delete .fenix/supervisor_fused, and restart "
                 "supervisor."
             )
+            exit_code = EXIT_GAVE_UP
             break
 
         # 先收编再拉起（SIGKILL supervisor 后旧 daemon 可能仍存活，见
@@ -942,6 +963,7 @@ def main():
         # 旧 D 状态 pid 线索丢失。放弃看护退出交人工/进程管理器接管（重启
         # supervisor 即恢复托管）。
         if not _adopt_leftover_daemon():
+            exit_code = EXIT_GAVE_UP
             break
 
         # 收编等待窗（最长 sigkill_wait + 收编复核上限
@@ -972,6 +994,7 @@ def main():
                 )
                 _write_fuse_marker(fail_count)
                 _write_fuse_alert()
+                exit_code = EXIT_GAVE_UP
                 break
             time.sleep(3)
             log("restarting daemon...")
@@ -1063,6 +1086,7 @@ def main():
                 "（不可中断睡眠？）——supervisor 放弃看护并退出。"
                 "请人工处理该进程（排查存储/NFS 抖动），随后重启 supervisor 恢复托管。"
             )
+            exit_code = EXIT_GAVE_UP
             break
 
         if STOP_FLAG.exists():
@@ -1087,6 +1111,7 @@ def main():
                 )
                 _write_fuse_marker(fail_count)
                 _write_fuse_alert()
+                exit_code = EXIT_GAVE_UP
                 break
         else:
             # 优雅重启（supervisor 主动 SIGTERM）不计启动失败、清零连续计数
@@ -1095,6 +1120,13 @@ def main():
         # 退避后自动拉起（自愈）
         time.sleep(3)
         log("restarting daemon...")
+
+    # 有意退出出口（add-systemd-hosting）：exit_code 由各 break 点落码——
+    # 0=停机收尾/stop 旗标，75=熔断/放弃看护；systemd Restart=on-failure +
+    # SuccessExitStatus=75 据此不拉回。意外崩溃路径不走此出口（异常传播或
+    # 信号杀死），退出码保持原形态、被 systemd 拉回。
+    log(f"supervisor exiting (exit_code={exit_code})")
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

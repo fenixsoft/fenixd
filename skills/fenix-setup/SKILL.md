@@ -15,7 +15,7 @@ description: Use when the user wants to initialize or restart the Fenix Loop Eng
 echo "Checking dependencies..."
 python3 --version 2>/dev/null || echo "MISSING: Python 3.10+"
 git --version 2>/dev/null || echo "MISSING: git"
-tmux -V 2>/dev/null || echo "MISSING: tmux"
+systemctl --version 2>/dev/null | head -1 || echo "MISSING: systemd（daemon/dashboard 承载必需，add-systemd-hosting 起 tmux 承载已退役）"
 which claude 2>/dev/null || echo "MISSING: claude CLI"
 python3 -c "import yaml" 2>/dev/null && echo "PyYAML: OK" || { echo "Installing PyYAML..."; pip3 install pyyaml -q; }
 ```
@@ -49,19 +49,20 @@ fi
 mkdir -p .fenix/core .fenix/logs .fenix/tests .fenix/verify-progress .fenix/screenshots .claude/agents .claude/worktrees
 ```
 
-### 4. 计算本项目唯一 session 名并检查是否已在运行
+### 4. 计算本项目唯一 unit 名并检查是否已在运行
 
-session 名由项目根路径派生（`fenixd-<目录名>-<哈希>`，见 `bin/fenix_session.py`），
-同一台机器可同时运行多个项目的 daemon，互不干扰。
+unit 名由项目根路径派生（`fenixd-<目录名>-<哈希>.service`，见
+`python3 .fenix/bin/fenix_session.py unit`），同一台机器可同时运行多个项目的
+daemon（各一条 unit），互不干扰。
 
 ```bash
-SESSION_NAME=$(python3 .fenix/bin/fenix_session.py name "$(pwd)" 2>/dev/null)
-if [ -z "${SESSION_NAME}" ]; then
-    echo "错误：无法确定 session 名。项目尚未初始化 .fenix，请先运行 fenix-init"
+UNIT_NAME=$(python3 .fenix/bin/fenix_session.py unit "$(pwd)" 2>/dev/null)
+if [ -z "${UNIT_NAME}" ]; then
+    echo "错误：无法确定 unit 名。项目尚未初始化 .fenix，请先运行 fenix-init"
     exit 1
 fi
 if python3 .fenix/bin/fenix_session.py running "$(pwd)" 2>/dev/null | grep -q YES; then
-    echo "fenixd is already running for this project (supervisor-hosted, tmux session: ${SESSION_NAME})"
+    echo "fenixd is already running for this project (systemd unit: ${UNIT_NAME})"
     echo "To restart: 经 Dashboard 项目页「停止」→「启动」（或 touch .fenix/restart_request 走 supervisor 优雅重启）"
     exit 0
 fi
@@ -168,30 +169,79 @@ else
 fi
 ```
 
-### 7. 启动 fenixd
+### 7. 启动 fenixd（systemd unit 承载）
 
-> **托管语义**（fix-supervisor-hosting-chain）：daemon 由 `fenixd_supervisor.py`
-> 看门狗托管启动（而非 tmux 直启 `fenixd.py`）——supervisor 承担唯一的重启职责，
-> 检测 `.fenix/restart_request` 后 SIGTERM daemon 并自动拉起。tmux 仅作为
-> 「脱离终端的承载手段」，daemon 是 supervisor 的子进程。
+> **托管语义**（fix-supervisor-hosting-chain + add-systemd-hosting）：daemon 由
+> `fenixd_supervisor.py` 看门狗托管启动，supervisor 承担唯一的重启职责，检测
+> `.fenix/restart_request` 后 SIGTERM daemon 并自动拉起。承载手段为 systemd
+> unit（`fenixd-<项目名>-<哈希>.service`，`Restart=on-failure` + 崩溃拉回，开机
+> 自启）；daemon 是 supervisor 的子进程，systemd 监督对象是 supervisor 不是
+> daemon。tmux 承载已退役（BREAKING），`systemctl` 不可用时启动拒绝并给可读
+> 错误，不回退 tmux。
 
 ```bash
-tmux new-session -d -s "${SESSION_NAME}" "cd $(pwd) && python3 .fenix/bin/fenixd_supervisor.py --project-root $(pwd) >> .fenix/logs/supervisor.log 2>&1"
-sleep 2
-if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
-    echo "fenixd started (supervisor-hosted, tmux session: ${SESSION_NAME})"
+# ① env 承载：从当前会话环境机械捕获（过滤 CLAUDE_PID/CLAUDECODE/CLAUDE_CODE_*
+#    等会话身份键）→ 0600 正式 EnvironmentFile——systemd 不继承 shell 会话环境，
+#    缺失则 daemon 无法访问 LLM 网关。新装场景源即当前受信会话，直接写正式文件；
+#    密钥不入库（.fenix/ 已被 gitignore 覆盖）
+python3 - <<'PYEOF'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, '.fenix')
+from core.systemd_hosting import (read_process_env, filter_session_identity,
+                                  render_env_file, write_env_file, project_env_file)
+target = project_env_file(Path.cwd().resolve())
+filtered = filter_session_identity(read_process_env(os.getpid()))
+write_env_file(render_env_file(filtered), target)
+print(f"EnvironmentFile 已写入 {target}（{len(filtered)} 键，0600）")
+PYEOF
+
+# ② 启动：unit 缺失即生成安装并 enable --now（幂等；已活跃不重建不重启）
+python3 - <<'PYEOF'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, '.fenix')
+from core.fenix_session import start_daemon
+r = start_daemon(str(Path.cwd().resolve()))
+print(json.dumps(r, ensure_ascii=False))
+sys.exit(0 if r.get("ok") else 1)
+PYEOF
+if [ $? -eq 0 ]; then
+    echo "fenixd started (systemd unit: ${UNIT_NAME})"
 else
-    echo "Failed to start"
+    echo "Failed to start（看现场：journalctl -u ${UNIT_NAME} + .fenix/logs/supervisor.log）"
 fi
 ```
 
 ### 8. 展示启动信息
 
 ```
-  Fenix is running! (supervisor-hosted)
-  tmux session: ${SESSION_NAME}
-  View logs:  tmux attach -t ${SESSION_NAME}  # supervisor 日志见 .fenix/logs/supervisor.log
+  Fenix is running! (systemd unit hosted)
+  unit:       ${UNIT_NAME}   # systemctl status ${UNIT_NAME}
+  View logs:  journalctl -u ${UNIT_NAME} -f  # supervisor 日志另见 .fenix/logs/supervisor.log
   Status:     /fenix-status
   New SPEC:   /fenix-new "your idea"
-  Stop:       请经 Dashboard 项目页「停止」按钮（supervisor 收口退出）
+  Stop:       请经 Dashboard 项目页「停止」按钮（systemctl stop + supervisor 收口退出）
+```
+
+## 人工切换步骤（tmux 承载存量部署迁移 systemd）
+
+> 适用于 add-systemd-hosting 之前以 tmux 承载启动的在跑部署。daemon 本尊就在
+> 旧链上，真切换是**人工步骤**（Agent 只交付脚本与预演，不代拆）。
+
+1. **审核 env 候选稿**：`bin/migrate_to_systemd.py` 的 ① 阶段会从在跑进程
+   `/proc/<pid>/environ` 捕获候选稿（`<项目>/.fenix/systemd.env.candidate` 与
+   主树 `.fenix/dashboard-systemd.env.candidate`，0600）。逐键核对，补齐
+   load-bearing 键、删除不该带的键（会话身份键已被 denylist 自动剥离）。
+2. **dry-run 预演**：`python3 bin/migrate_to_systemd.py --dry-run`（缺省即预演）。
+   输出完整编排清单（unit 全文、env 键名摘要、旧链定位、验收项），零副作用。
+3. **真切换**：`python3 bin/migrate_to_systemd.py --execute`。编排顺序固定：
+   写 unit 不 enable → 拆旧 tmux 链（快照 SIGTERM→轮询→补杀，旧 dashboard
+   kill pid 等端口释放）→ `enable --now` 两条 unit → 验收四件套。全程无
+   「unit 已启用而旧链仍在」的双托管窗口。
+4. **验收**：脚本输出进程/端口/退出码语义/env 冒烟四项结果；人工补一项最小
+   agent spawn 冒烟（design：切换冒烟=最小 agent spawn + 网关健康探测）。
+5. **回滚配方**（验收失败时）：`systemctl disable --now <项目 unit>
+   fenix-dashboard.service` → 旧配方（tmux）重启托管链：
+   `tmux new-session -d -s <旧 session 名> "cd <项目根> && python3 .fenix/bin/fenixd_supervisor.py --project-root <项目根>"`。
 
