@@ -60,8 +60,10 @@ except Exception as _import_err:
 #   2. FamilyGovernor._fix_prefix_depth（staticmethod，core/pm_engine/family.py；
 #      PMEngine 上另有类级别别名）
 #   3. PMEngine._enqueue（core/pm_engine/dispatch/queue.py；用例打桩为 MagicMock）
-# 全部私有调用已收敛到 _trigger_bug_found / _fix_depth / _stub_enqueue 三个
-# facade 帮助函数，用例只依赖 facade，不直接触碰 engine 私有属性。
+#   4. PMEngine._on_spec_done（实例方法，core/pm_engine/engine.py）
+# 全部私有调用已收敛到 _trigger_bug_found / _fix_depth / _stub_enqueue /
+# _notify_spec_done 四个 facade 帮助函数，用例只依赖 facade，不直接触碰
+# engine 私有属性。
 
 
 def _trigger_bug_found(engine: PMEngine, spec_name: str) -> None:
@@ -79,6 +81,11 @@ def _stub_enqueue(engine: PMEngine) -> MagicMock:
     stub = MagicMock()
     engine._enqueue = stub
     return stub
+
+
+def _notify_spec_done(engine: PMEngine, spec_name: str) -> None:
+    """facade：驱动 engine 的 spec 完成闭环（收敛 engine._on_spec_done 私有调用）。"""
+    engine._on_spec_done(spec_name)
 
 
 def _setup_project(tmpdir: Path) -> Path:
@@ -182,7 +189,7 @@ def test_derive_loop(spec_name: str):
 
         # 模拟子 fix 完成 → 闭环
         sm.update_spec(fix_name, {"status": "done"})
-        engine._on_spec_done(fix_name)
+        _notify_spec_done(engine, fix_name)
         parent = sm.read_one(spec_name) or {}
         print(json.dumps({
             "fix_spawned": True,
