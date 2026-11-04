@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-04 17:37 UTC+8
+> 最后更新：2026-11-04 17:46 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -24,10 +24,10 @@
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测、CLI 重试退避与环境阻塞止损。 | 30 | 2026-11-04 16:30 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 14 | 2026-11-04 09:33 |
 | [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径。实现分支合回主树与推送的全生命周期纪律；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 30 | 2026-11-04 17:07 |
-| [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 15 | 2026-11-04 16:30 |
+| [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 15 | 2026-11-04 17:46 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、嵌入挂载与 harness 品牌投影、内容区留白与边框治理。 | 39 | 2026-11-04 17:37 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、嵌入挂载与 harness 品牌投影、内容区留白与边框治理。 | 40 | 2026-11-04 17:46 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-04 16:55 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 7 | 2026-11-04 17:07 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-04 10:31 |
@@ -36,7 +36,7 @@
 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
 | [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-10-04 05:06 |
-| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 12 | 2026-11-04 16:11 |
+| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 12 | 2026-11-04 17:46 |
 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 
 ## 决策记录
@@ -75,4 +75,6 @@ escalation_cooldown 缺省、告警降噪分级与 token 预算档位、多 harn
 等定调经核对已见诸既有能力页不重复折叠）；另有
 command-center-light-embed-migration 已折叠入库（2026-11-04 17:37，spread 至
 dashboard-frontend 一域一页：command-center-console-ui 整页改写为三屏嵌入形态）；
-distill-econnreset-misattrib-recover-sweep-race 一条在队。
+distill-econnreset-misattrib-recover-sweep-race 已折叠入库（2026-11-04 17:46，spread 至
+knowledge-atlas / daemon-runtime / dashboard-frontend 三域三页，含新建
+run-visual-agent-labels 页）。

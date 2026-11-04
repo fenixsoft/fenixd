@@ -1,5 +1,5 @@
 # 守护进程平台
-> 最后更新：2026-11-04 16:30 UTC+8
+> 最后更新：2026-11-04 17:46 UTC+8
 
 守护进程平台域：daemon 进程生命周期、单例与托管链、启动序列与排水语义、结构化日志单事件读写治理、宿主环境已知脆弱面登记。
 
@@ -10,7 +10,7 @@
 | [daemon-singleton](daemon-singleton.md) | daemon 单例保证 | 2026-10-03 04:59 |
 | [daemon-health](daemon-health.md) | daemon 健康监控 | 2026-10-03 04:59 |
 | [daemon-watcher-startup](daemon-watcher-startup.md) | Agent 派发异步化与 watcher 启动 | 2026-10-03 04:59 |
-| [daemon-drain-integrity](daemon-drain-integrity.md) | 启动终态补写与排水一致性自检（告警窗口去重） | 2026-10-04 04:01 |
+| [daemon-drain-integrity](daemon-drain-integrity.md) | 启动终态补写与排水一致性自检（告警窗口去重、恢复重派误杀签名） | 2026-11-04 17:46 |
 | [daemon-error-escalation](daemon-error-escalation.md) | daemon 错误升级上报（指纹归一化保守集+SPEC 名剥离） | 2026-10-31 16:23 |
 | [crossday-recurrence-detection](crossday-recurrence-detection.md) | daemon 错误跨日同刻复发检测（只读聚合观测） | 2026-10-11 02:02 |
 | [graceful-restart-drain](graceful-restart-drain.md) | 优雅重启排水窗口（重启前置双条件停驻判据、冻结不加速重启） | 2026-11-04 16:30 |

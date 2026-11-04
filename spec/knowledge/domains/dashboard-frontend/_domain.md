@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-04 17:37 UTC+8
+> 最后更新：2026-11-04 17:46 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -46,3 +46,4 @@
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
 | [timeline-origin-request](timeline-origin-request.md) | 时间轴立项原话展示（fenix-new 立项原话 request.md 持久化、时间轴首 state 节点附着、前端引用块渲染、缺失静默降级） | 2026-10-31 17:53 |
 | [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、零值尾部 spread 传导、去边框页级作用域豁免、rebuild 后 reload 验证纪律） | 2026-11-04 17:07 |
+| [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
