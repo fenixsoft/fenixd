@@ -1,13 +1,13 @@
 # 真相源目录契约与能力页格式
 
-<!-- knowledge: capability=knowledge-atlas-directory rev=3
+<!-- knowledge: capability=knowledge-atlas-directory rev=4
      sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction -->
 
 `spec/knowledge/` 是项目知识真相源：只装「系统现在是什么规则」的常驻知识层；归档 SPEC 继续承担历史职责，两者以溯源链接互指。
 
 ## 规则
 
-- 目录结构：`index.md`（总目录，列全部能力域与增厚简介——每域 2~3 句、覆盖该域主要能力面，素材取各域 `_domain.md` 既有简介与能力清单；简介列保持单行单元格且不含裸竖线 `|`）、`domains/<域>/<能力>.md`（一能力一页，域为能力的业务聚类）、`adr/index.md` + `adr/ADR-NNN-<标题>.md`（决策索引与条目）、`README.md`（目录契约说明）。全目录 git tracked；首次蒸馏前允许只含 README.md 骨架。能力域由蒸馏 run 自动聚类生成，不预置人工清单；`_domain.md` 与 `index.md` 是导航层，由蒸馏 run 维护。
+- 目录结构：`index.md`（总目录，列全部能力域与增厚简介——每域 2~3 句、覆盖该域主要能力面，素材取各域 `_domain.md` 既有简介与能力清单；简介列保持单行单元格且不含裸竖线 `|`；末尾含「记忆回填（存量蒸馏）」节，登记交互会话隐性知识经 `_inbox/` 候选区回填的状态与入库轨迹，蒸馏 run 维护该节内容而非删除该节）、`domains/<域>/<能力>.md`（一能力一页，域为能力的业务聚类）、`adr/index.md` + `adr/ADR-NNN-<标题>.md`（决策索引与条目）、`README.md`（目录契约说明）。全目录 git tracked；首次蒸馏前允许只含 README.md 骨架。能力域由蒸馏 run 自动聚类生成，不预置人工清单；`_domain.md` 与 `index.md` 是导航层，由蒸馏 run 维护。
 - 能力页结构（Markdown，人类可读性优先）：H1 能力名（中文表述）→ 紧随的 HTML 注释 marker → 角色一句话 → `## 规则`（当前生效业务规则）→ `## 关键行为`（可选）→ `## 溯源`（来源列表）。
 - marker 机器接口：`<!-- knowledge: capability=<能力kebab名> rev=<整数,初始1> sources=<来源项列表> [part=<n>] [origin=archive|prehistoric] -->`，脚本据此解析能力名、版本与来源链；sources 校验按 origin 分支——archive 页（缺省）每项必须指向真实存在的归档目录，prehistoric 页允许 `git:<起始ref>-..<结束日期>` 区间锚点（契约见史前能力复原页）。
 - 规则段必须是蒸馏 run 以一致语言风格重写的当前事实：禁机械搬运 delta 原文，禁「本 SPEC 新增了/修复了/原先是/改为」等历史叙述措辞，历史演变只出现在溯源段。同一能力被多个 SPEC 先后修改时，规则段只保留最终态，被覆盖的旧规则从规则段消失而非新旧并列。
@@ -22,3 +22,4 @@
 - 2026-09-30 真相源更新时间盖戳+本地时区（git:77341632，无归档目录） — index/_domain 盖戳行与表格更新时间列契约，盖戳取本地时间
 - 2026-10-05 fix-knowledge-backfill-reconstruction（spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction/） — marker 增可选 origin 字段（archive 缺省 / prehistoric），sources 存在性校验按 origin 分支放行 git 区间锚点
 - 2026-11-03 add-knowledge-consumption-discipline（spec/changes/ 实现 SPEC，暂无归档） — index 简介契约对齐增厚形态：一行简介改为 2~3 句增厚简介（覆盖主要能力面、单行单元格、不含裸竖线）
+- 2026-11-04 memory 存量蒸馏投递（git:c5076028e，无归档目录） — index 目录结构契约增补「记忆回填（存量蒸馏）」节：登记隐性知识经候选区回填的状态与入库轨迹，蒸馏 run 维护该节而非删除
