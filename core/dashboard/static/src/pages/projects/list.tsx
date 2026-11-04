@@ -1044,7 +1044,8 @@ function DevTab({
             // 底色走 DSH_INTERACTIVE_ACTIVE（宿主对齐改造 2026-11-03，替代原
             // colorPrimaryBg——615f6f350d58 时的主色是蓝 #1677ff，Bg 派生浅蓝；
             // 主色改黑系 #0f1115 后 antd 调色板对暗种子生成暗色 ramp，整行近黑，
-            // 改取 dsh 侧栏选中行的冷灰交互底 #2631481a（theme.ts 单源）
+            // 改取 dsh 侧栏选中行的冷灰交互底 #2631481a（theme.ts 单源）；
+            // 2026-11-04 用户裁决改蓝调 rgb(99 136 211 / 10%)，值随单源更新）
             onRow={(record) => ({
               style: PRIORITY_TERMINAL.has(record.status || '')
                 ? undefined

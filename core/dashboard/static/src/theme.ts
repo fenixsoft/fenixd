@@ -60,8 +60,9 @@ export const DSH_BG_SOFT = '#f9fafb';
 export const DSH_BG_MODULE = '#f5f6f7';
 /** dsw alias-interactive-bg-hover（#2631480f）：侧栏行 hover 冷灰。 */
 export const DSH_INTERACTIVE_HOVER = 'rgba(38, 49, 72, 0.06)';
-/** dsw alias-interactive-bg-active（#2631481a）：侧栏行选中冷灰。 */
-export const DSH_INTERACTIVE_ACTIVE = 'rgba(38, 49, 72, 0.10)';
+/** 数据行活动底：蓝调 rgb(99 136 211 / 10%)（2026-11-04 用户裁决；原为 dsw
+ *  alias-interactive-bg-active 侧栏行选中冷灰 #2631481a，改值后不再等值该别名）。 */
+export const DSH_INTERACTIVE_ACTIVE = 'rgb(99 136 211 / 10%)';
 
 /**
  * 菜单选中底：黑 4% alpha（2026-11-04 用户统一裁决，与 ProLayout 侧栏菜单选中
