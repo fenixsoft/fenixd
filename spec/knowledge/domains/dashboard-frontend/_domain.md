@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-04 17:46 UTC+8
+> 最后更新：2026-11-04 20:48 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -41,9 +41,10 @@
 | [v3-settings-page](v3-settings-page.md) | v3 设置页 | 2026-10-03 04:59 |
 | [topology-bigscreen-ui](topology-bigscreen-ui.md) | SPEC 协作拓扑大屏（脱壳全屏双视图、管线视图纵轴真实时间+PM 生命周期链+并行无伪串行边、跨视图联动、下钻复用） | 2026-10-30 23:11 |
 | [collab-graph-bigscreen-ui](collab-graph-bigscreen-ui.md) | 协作图谱大屏（overview 入口、8 角色固定就位、项目筛选器、下钻明细与跨大屏跳转） | 2026-10-30 23:11 |
-| [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、theme.ts 配色单源与暗种子 *Bg 陷阱压制、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 定高、KPI 条空值「—」、严肃企业风格红线） | 2026-11-04 17:37 |
-| [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏、缺省行为逐字节不变） | 2026-10-30 23:11 |
+| [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏、theme.ts 配色单源与暗种子 *Bg 陷阱压制、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线） | 2026-11-04 20:48 |
+| [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、缺省行为不变） | 2026-11-04 20:48 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
 | [timeline-origin-request](timeline-origin-request.md) | 时间轴立项原话展示（fenix-new 立项原话 request.md 持久化、时间轴首 state 节点附着、前端引用块渲染、缺失静默降级） | 2026-10-31 17:53 |
 | [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、零值尾部 spread 传导、去边框页级作用域豁免、rebuild 后 reload 验证纪律） | 2026-11-04 17:07 |
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
+| [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、顶栏/内容区首行双壳位自动分流、PageContainer 页头与面包屑退役、过滤项统一右上落位、定高偏移 embed 双档回校、脱壳大屏与占位页豁免） | 2026-11-04 20:48 |

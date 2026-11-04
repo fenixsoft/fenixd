@@ -1,13 +1,13 @@
 # Dashboard 帮助中心
 
-<!-- knowledge: capability=help-center rev=1
-     sources=spec/archive/2026-09-10-add-dashboard-help-center -->
+<!-- knowledge: capability=help-center rev=2
+     sources=spec/archive/2026-09-10-add-dashboard-help-center,spec/changes/unified-page-title-bar -->
 
 Dashboard 内置的框架使用帮助入口：侧边栏直达的帮助中心页面，在线阅读 `docs/help/` 帮助文档集，文档更新无需重建前端。
 
 ## 规则
 
-- 入口与导航：侧边栏设「帮助」菜单项（QuestionCircle 图标，路径 `/help`），菜单位于「运维」之下，完整顺序为概览、项目、设置、运维、帮助；顶栏面包屑对 `/help` 路径显示「帮助」。
+- 入口与导航：侧边栏设「帮助」菜单项（QuestionCircle 图标，路径 `/help`），菜单位于「运维」之下，完整顺序为概览、项目、设置、运维、帮助；页面标识由统一标题栏承载（顶栏渲染标题「帮助」）。
 - 文档读取 API（只读、后端标准库实现零新依赖）：
   - `GET /api/help/docs` 列出框架仓库 `docs/help/` 全部合法 `.md` 文档，返回 `[{name, title}]`（title 取文档一级标题）；`README.md` 置顶，其余按文件名字典序（`NN-` 编号天然有序）；非 `.md` 文件不入清单。
   - `GET /api/help/doc?name=<file>` 返回单篇文档的 Markdown 原文。
@@ -22,3 +22,4 @@ Dashboard 内置的框架使用帮助入口：侧边栏直达的帮助中心页�
 ## 溯源
 
 - 2026-09-10 2026-09-10-add-dashboard-help-center（spec/archive/2026-09-10-add-dashboard-help-center） — 建立「帮助」菜单与 `/help` 路由、文档清单与单篇正文两个读取端点（动态读盘 + 白名单防穿越）、目录+正文布局与 mermaid 动态渲染、空态容错与移动端适配
+- 2026-11-04 unified-page-title-bar（spec/changes/unified-page-title-bar/） — 顶栏面包屑全局退役，`/help` 位置指示改由标题栏页面标题承担（规则段移除面包屑条款，帮助页迁入统一标题栏控件）
