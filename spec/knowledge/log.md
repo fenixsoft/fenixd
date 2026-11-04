@@ -38,3 +38,4 @@
 ## [2026-11-04 09:46 UTC+8] fold | zn-inbox-entry-2.md 折叠入库
 ## [2026-11-04 09:47 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
 ## [2026-11-04 09:52 UTC+8] distill | remove-aged-spec-archive（第 1 轮，自动提交落库，折叠入库 5 条）
+## [2026-11-04 10:26 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
