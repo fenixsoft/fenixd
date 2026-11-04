@@ -1638,6 +1638,7 @@ class StateMachine:
                     }
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
+            # [fenix-ignore:48c4c7c0e6c6] 非缺陷：SPEC 缺失与 CAS 收敛两出口在置位后立即 break 出 for 循环（finally 先解锁再跳出），本行比较与下方「已重试」告警在这两条路径上不可达，不会产出「wrote {} 已重试」失实告警
             if verify == new_values:
                 return new_values
             self.logger.warning(

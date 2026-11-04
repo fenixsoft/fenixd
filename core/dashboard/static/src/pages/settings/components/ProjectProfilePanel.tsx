@@ -469,6 +469,13 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
   // 表达「起草确认 / 覆盖确认 / 加载中不渲染」三分支，违反前端禁止嵌套三元
   // 规则，比照同族 QualityPanel renderOcrStatus 抽 helper 以 if/else 表达。
   const renderAutodraftButton = () => {
+    // 加载失败态不渲染（code-review item 44158c6b9fc0）：与错误 Alert「重试
+    // 成功前请勿插入模板保存」引导及 handleAutodraft 的 yamlLoadError 守卫
+    // 同口径——失败态下确认弹窗点了必然被 warning 拦下，先渲染可点按钮只是
+    // 多一步无效确认交互（yamlLoading 在飞时仍按下方分支以 disabled 呈现）
+    if (yamlLoadError && !yamlLoading) {
+      return null;
+    }
     if (!yamlExists && !yamlLoading) {
       return (
         <Popconfirm

@@ -738,7 +738,11 @@ class EscalationChain:
 
         # Arbiter 级配额闸门（复现配额耗尽 → 强制上升人工，task 3.3）
         rulings = self._quota.arbiter_rulings(sig)
-        arb_quota = int(quota_cfg.get("arbiter_rulings") or 2)
+        # 兜底字面量与 ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT 单源对齐
+        # （现值 3，2026-11-03 用户定调 2→3；原 2 属漂移残留——同文件
+        # quota_config except 兜底字典同值，arbiter.py _arbiter_rulings_quota
+        # 亦同源）
+        arb_quota = int(quota_cfg.get("arbiter_rulings") or 3)
         if rulings >= arb_quota:
             self._log(
                 "warning",
@@ -1455,14 +1459,8 @@ class EscalationChain:
         endpoint_kind: str,
         admin_trail: Optional[List[dict]] = None,
     ):
-        """链终点：经 family 咽喉写入上升件（附全链痕迹，防自环不再入链）。"""
-        pm = self._resolve_pm()
-        if pm is None:
-            self._log(
-                "error",
-                f"链终点上升件落盘失败（pm 门面缺席）: sig={item.get('signature')} reason={reason}",
-            )
-            return
+        """链终点：经 family 咽喉写入上升件（附全链痕迹，防自环不再入链）；
+        pm 门面缺席时降级直写 AdminStore（:meth:`_fallback_write_escalation`）。"""
         chain_context = {
             "chain_id": item.get("chain_id") or "",
             "signature": item.get("signature") or "",
@@ -1480,6 +1478,23 @@ class EscalationChain:
             "arbiter_run_id": str(item.get("arbiter_run_id") or ""),
             "arbiter_ledger_ids": list(item.get("arbiter_ledger_ids") or []),
         }
+        pm = self._resolve_pm()
+        if pm is None:
+            # 降级兜底（code-review item 7fad88606255）：pm 门面缺席（engine.py
+            # 装配块异常降级跳过 get_chain(pm=self) 注入，或链件经 arbiter
+            # freeze hook / admin_monitor resubmit 等不传 pm 的 get_chain 入口
+            # 入链）时 _send_human_escalation_alert 通道不可达——仅记滚动日志
+            # 即丢弃等于上升件蒸发（人工队列与链状态文件双双零留痕）。降级
+            # 直写 AdminStore 上升件（附全链痕迹），写入失败再落台账事件留痕。
+            self._log(
+                "error",
+                f"链终点上升件 pm 门面缺席（降级直写 AdminStore）: "
+                f"sig={item.get('signature')} reason={reason}",
+            )
+            self._fallback_write_escalation(
+                item, chain_context, reason=reason, endpoint_kind=endpoint_kind
+            )
+            return
         try:
             pm._send_human_escalation_alert(
                 str(item.get("spec") or ""),
@@ -1500,6 +1515,113 @@ class EscalationChain:
             action_or_upgrade=f"链终点上升人工（{endpoint_kind}）: {reason[:300]}",
             extra={"chain_id": chain_context["chain_id"]},
         )
+
+    def _fallback_write_escalation(
+        self, item: dict, chain_context: dict, *, reason: str, endpoint_kind: str
+    ) -> bool:
+        """pm 门面缺席的上升件降级直写（code-review item 7fad88606255）。
+
+        落盘形态对齐 family._send_human_escalation_alert 写入分支（kind/
+        trigger/chain 全链关联键/choices 快照/降噪分级 handled）；缺省面：
+        narrative 补叙与 arbiter 改道判定依赖 pm 门面与链面，降级态不可达，
+        且本件已是链终点（防自环——MUST NOT 再入链）。append 拒写或异常时
+        落 chain-escalated 台账事件留痕（叙事文本注明未落人工队列），链终点
+        失败不停留在滚动日志。返回 True=上升件已落人工队列。
+        """
+        try:
+            from core.admin_store import (
+                ESCALATION,
+                AdminStore,
+                severity_needs_human,
+            )
+            from core.alert_lifecycle import build_trigger
+
+            signal_type = str(item.get("signal_type") or "")
+            severity = str(item.get("severity") or "major")
+            spec = str(item.get("spec") or "")
+            trigger = item.get("trigger") or build_trigger(signal_type, spec)
+            entry = {
+                "kind": ESCALATION,
+                "signal_type": signal_type,
+                "spec": spec,
+                "severity": severity,
+                "description": str(item.get("description") or ""),
+                "evidence": str(item.get("evidence") or ""),
+                "recommended_action": str(item.get("recommended_action") or ""),
+                # 全链痕迹（上升件必附）：Admin 尝试痕、Arbiter 台账回链、
+                # 链 run_id 关联键、配额水位与终点归因——人工读件即可还原
+                # 全链处置史；chain.signature 关联键同时是链闭环自动收口的
+                # 联查前提。
+                "chain": dict(chain_context),
+            }
+            if trigger:
+                entry["trigger"] = trigger
+            try:
+                from core.dashboard.data.adjudication_choices import choices_for
+
+                choices = choices_for(signal_type)
+                if choices:
+                    entry["choices"] = list(choices)
+            except Exception as e:
+                self._log(
+                    "warning",
+                    f"上升件 choices 快照失败（降级直写缺 choices 落盘）: {e}",
+                )
+            store = AdminStore(self.project_root, self.logger)
+            rec = store.append(entry)
+            if rec is None:
+                # store 拒写（损坏留底下限保护，item 2570ca391771 契约）：
+                # 记录未落盘，落台账事件留痕后按失败返回
+                self._log(
+                    "error",
+                    "链终点上升件降级直写失败（store 拒写，未落人工队列）",
+                )
+                self._write_chain_event(
+                    item,
+                    kind="chain-escalated",
+                    action_or_upgrade=(
+                        f"链终点上升件降级直写失败（pm 门面缺席 ∧ store 拒写，"
+                        f"未落人工队列）: {reason[:300]}"
+                    ),
+                    extra={"endpoint_kind": endpoint_kind},
+                )
+                return False
+            if not severity_needs_human(severity):
+                # 降噪分级同型：warning/minor 写入即 handled，不进待处理队列
+                try:
+                    store.mark_handled(rec["id"])
+                except Exception as e:
+                    self._log(
+                        "warning",
+                        f"降噪 handled 标记写入失败（告警已落盘）: {rec['id']}: {e}",
+                    )
+            self._write_chain_event(
+                item,
+                kind="chain-escalated",
+                action_or_upgrade=(
+                    f"链终点上升人工（{endpoint_kind}，pm 门面缺席降级直写）: "
+                    f"{reason[:300]}"
+                ),
+                extra={"chain_id": chain_context["chain_id"]},
+            )
+            self._log(
+                "warning",
+                f"链终点上升件已降级直写人工队列（pm 门面缺席）: "
+                f"sig={item.get('signature')} id={rec['id']}",
+            )
+            return True
+        except Exception as e:
+            self._log("error", f"链终点上升件降级直写异常（台账留痕）: {e}")
+            self._write_chain_event(
+                item,
+                kind="chain-escalated",
+                action_or_upgrade=(
+                    f"链终点上升件降级直写异常（pm 门面缺席，未落人工队列）: "
+                    f"{reason[:300]}"
+                ),
+                extra={"endpoint_kind": endpoint_kind, "error": str(e)[:400]},
+            )
+            return False
 
     def _resolve_pm(self):
         """pm 门面回引（链终点上升件经 family 咽喉落盘；咽喉调用点惰性补）。"""
@@ -1671,7 +1793,17 @@ class EscalationChain:
             return {
                 "queue_depth": self._queue.qsize(),
                 "active_signatures": sorted(self._active),
-                "in_flight": list(self._quota.stale_in_flight(0.0)),
+                # 在办口径与 chain_traces 单源一致（code-review item
+                # 27d52681f057）：deferred 让行条目是「等唤醒」态不算在办。
+                # stale_in_flight 只按 started_at 超时判定不辨 phase（0.0
+                # 阈值下返回全部条目），deferred 件会混入本键——按
+                # entry_phase 归一谓词过滤，防止消费方把等唤醒件误标为
+                # 链在办件（两只读投影对「在办」口径漂移）。
+                "in_flight": [
+                    x
+                    for x in self._quota.stale_in_flight(0.0)
+                    if entry_phase(x) != "deferred"
+                ],
             }
 
 

@@ -1794,6 +1794,21 @@ def run_audit(
         # 形成每日重复复核同一批旧疑点、新候选名额被占持续溢出转待人工的不收敛
         # 循环——统一按页哈希比对跳派/解冻，内容未变即收敛，不再白耗名额。
         if entry.get("status") == "exempt":
+            # page_hashes 人工编辑/旧版本可能写坏为非 dict 值（如字符串/JSON
+            # null——键在场时 .get 的缺省 {} 不生效）：就地归一为空 dict 按无
+            # 豁免键处理自然走解冻重派并 WARNING 留痕，不让 AttributeError 穿
+            # 出 run_audit 令整轮体检反复失败（与 _record_verdict 对 verdicts
+            # 的就地补齐、review_rounds 就地归零同口径）。
+            exempt_hashes = entry.get("page_hashes")
+            if not isinstance(exempt_hashes, dict):
+                log.warning(
+                    "knowledge",
+                    f"audit 台账条目 page_hashes 类型损坏"
+                    f"（{type(exempt_hashes).__name__}），就地归一解冻重派："
+                    f"{finding['kind']}（{pages[0]} × {pages[1]}）",
+                )
+                exempt_hashes = {}
+                entry["page_hashes"] = exempt_hashes
             # 涉事页在扫描快照后被外部删除/权限变化（is_file 通过后 read_text
             # 仍可抛 OSError）时哈希比对不可得：按「盘面已变」解冻回 suspected
             # 照常派发（转写段 try 按既有单点失败路径隔离），不让 OSError 穿出
@@ -1806,7 +1821,7 @@ def run_audit(
             except OSError:
                 cur_hashes = None
             if cur_hashes is not None and all(
-                entry.get("page_hashes", {}).get(rel) == h for rel, h in cur_hashes.items()
+                exempt_hashes.get(rel) == h for rel, h in cur_hashes.items()
             ):
                 entry["exempted_at"] = _today()
                 entry["updated_at"] = entry["exempted_at"]

@@ -1489,6 +1489,52 @@ def _missing_prehistoric_pages(
     return missing
 
 
+def _missing_batch_pages(
+    project_root: Path, batch: list[str], domain_map: dict[str, str]
+) -> list[str]:
+    """能力聚合批覆盖核验：批内每个能力必须有在盘能力页（入归位域）。
+
+    对齐 ``_missing_prehistoric_pages`` 口径（code-review b7a3230ee804）：
+    validate_knowledge 只校验在盘页面的格式契约，不检查链索引覆盖的每个
+    能力都已落页；run 以退出码 0 结束但零文件产出（LLM 空转）时差集校验
+    无新违规，批次照标 distilled、车道照常收敛，缺失能力页无告警留痕。
+    域归位推导与 ``build_batches`` 同源：LLM 值不信任，非法归位值按
+    ``_unassigned`` 兜底域取页路径（批内能力名来自链索引键=归档目录名，
+    恒为合法单路径成分）。
+
+    Returns:
+        缺页能力清单（空列表 = 通过）。
+    """
+    missing: list[str] = []
+    for cap in batch:
+        raw_domain = domain_map.get(cap)
+        domain = raw_domain if _valid_domain_component(raw_domain) else "_unassigned"
+        page = project_root / KNOWLEDGE_DIR / "domains" / domain / f"{cap}.md"
+        if not page.is_file():
+            missing.append(f"{cap}（域 {domain}）")
+    return missing
+
+
+def _adr_artifacts_snapshot(adr_dir: Path) -> Optional[tuple]:
+    """``spec/knowledge/adr/`` 顶层产物快照（文件名 + mtime_ns）。
+
+    ADR 抽取批覆盖核验用（code-review b7a3230ee804）：run 前后快照不变即
+    run 零产出空转——差集校验对此失明（validate_knowledge 只校验在盘文件
+    格式，不检查新归档的 ADR 是否落盘），照标 distilled 会宣称完成而 ADR
+    永久缺失。目录不存在返回空元组（run 落地产物后快照必变）；目录列举/
+    取 stat 失败返回 None，调用方跳过核验不误伤合法批次（fail-open 对齐
+    ``_knowledge_dirty_files_or_none`` 口径）。
+    """
+    if not adr_dir.is_dir():
+        return ()
+    try:
+        return tuple(
+            sorted((p.name, p.stat().st_mtime_ns) for p in adr_dir.glob("*.md"))
+        )
+    except OSError:
+        return None
+
+
 def _clean_untracked_knowledge(project_root: Path, log) -> None:
     """自举重跑清场：清 ``spec/knowledge/`` 下未跟踪残留。
 
@@ -2282,6 +2328,19 @@ def run_backfill(
             except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
                 ok, violations = False, [f"run 派发/执行失败：{e}"]
             if ok:
+                # 批覆盖核验（对齐史前段 _missing_prehistoric_pages 口径，
+                # code-review b7a3230ee804）：validate_knowledge 只校验在盘
+                # 页面格式契约、不检查链索引覆盖的每个能力都已落页，run 以
+                # 退出码 0 空转（零文件产出）时差集校验无新违规，批次照标
+                # distilled、车道照常收敛，缺失能力页无任何告警留痕。缺页即
+                # 翻转为本批失败分支处置（差集回滚、标 failed、登记 todo）。
+                missing_pages = _missing_batch_pages(project_root, batch, domain_map)
+                if missing_pages:
+                    ok, violations = False, [
+                        "能力页缺在盘产出（run 空转/部分产出）："
+                        + ", ".join(missing_pages[:5])
+                    ]
+            if ok:
                 # 校验通过即落库；提交失败 fail-open 记日志（内容已在盘上，
                 # 触达集记入 carryover_files，由后续批次成功提交显式扫入落库）。
                 # pathspec 收窄为本批相对 dirty_baseline 触达的文件
@@ -2481,6 +2540,9 @@ def run_backfill(
             before_violations = set(baseline_violations)
             base_prompt = build_prompt("adr", batch=batch)
             run_id = f"kb-adr{i}-{int(time.time())}"
+            # run 前 adr/ 产物快照：批覆盖核验基线（code-review b7a3230ee804）
+            adr_dir = project_root / KNOWLEDGE_DIR / "adr"
+            adr_before = _adr_artifacts_snapshot(adr_dir)
             try:
                 spawn(base_prompt, run_id)
                 ok, violations = _validate_with_repair(
@@ -2489,6 +2551,16 @@ def run_backfill(
                 )
             except Exception as e:  # noqa: BLE001 - 单批失败不阻塞后续批
                 ok, violations = False, [f"run 派发/执行失败：{e}"]
+            if ok and adr_before is not None:
+                # ADR 批覆盖核验（同能力批口径，code-review b7a3230ee804）：
+                # run 前后 adr/ 产物快照不变 = run 零产出空转，差集校验对此
+                # 失明（validate_knowledge 只校验在盘文件格式），照标
+                # distilled 会宣称完成而 ADR 永久缺失。快照不可用（None）
+                # 时跳过核验不误伤合法批次（fail-open 对齐基线采集口径）。
+                if _adr_artifacts_snapshot(adr_dir) == adr_before:
+                    ok, violations = False, [
+                        "ADR 批次 run 零产出：spec/knowledge/adr/ 无新增/变更产物"
+                    ]
             if ok:
                 # pathspec 收窄为本批相对 dirty_baseline 触达的文件（同能力
                 # 批次口径，code-review 28ef98d99462）；前序失败批次产出经

@@ -3109,7 +3109,11 @@ def read_fix_out(worktree, run_id: str) -> list:
     """读取 code-fix run 的增量产物 ``fix-out-<run_id>.jsonl``。
 
     每行一个条目处置结果（``{item_id, status, file}``）。损坏行跳过；
-    文件缺失返回空列表（run 失败路径由 CodeFixResult.success 承载）。
+    item_id 非字符串的行按损坏行同款待遇丢弃并记 WARNING 留痕（对齐台账
+    读侧 ``_read_items_unlocked`` 口径）：JSON 可解析但不可哈希的 item_id
+    （如 list/dict）若放行，会在下游以不可哈希值作 dict 键抛 TypeError
+    击穿读侧容错契约。文件缺失返回空列表（run 失败路径由
+    CodeFixResult.success 承载）。
     """
     path = Path(worktree) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
     rows: list = []
@@ -3124,6 +3128,24 @@ def read_fix_out(worktree, run_id: str) -> list:
         except ValueError:
             continue
         if isinstance(rec, dict) and rec.get("item_id"):
+            # item_id 非字符串（JSON 可解析但不可哈希，如 list/dict）按损坏
+            # 行同款待遇丢弃并留痕（code-review item c569e5c733ed，对齐台账
+            # 读侧 _read_items_unlocked 口径）：该行若放行，会在
+            # _synthesize_item_progress 去重循环或 _split_fix_rows 键收集处
+            # 以不可哈希值作 dict 键抛 TypeError——前者上穿 read_progress
+            # 「缺失/损坏返回缺省态（不抛异常）」契约（checkpoint 在
+            # self._lock 内读进度无兜底，异常中断整个调度节拍），后者被
+            # _run_batch 宽 except 误转 halt 终止成功批。「读侧 MUST NOT
+            # 500」由实现保证而非仅由 try 边界假设保证；缺失/空 item_id 行
+            # 维持既有静默丢弃口径不变。
+            if not isinstance(rec["item_id"], str):
+                _logger.warning(
+                    "code-fix: fix-out-%s 行 JSON 可解析但 item_id 非字符串，"
+                    "按损坏行丢弃: %.200s",
+                    run_id,
+                    line,
+                )
+                continue
             rows.append(rec)
     return rows
 

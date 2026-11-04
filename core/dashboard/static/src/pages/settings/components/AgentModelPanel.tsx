@@ -257,8 +257,16 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
       return;
     }
     // 同帧短路（item abd644ca22c4）：前置参数解析是同步代码、无调度间隙，守卫
-    // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该行已有检测在飞，直接 return
-    if (healthCheckInFlight.current.has(rowKey)) return;
+    // 紧贴请求发起即可；ref 写读同帧原子，命中 = 该行已有检测在飞。命中不静默
+    // 吞掉：在飞期间原位改 Provider/模型名（或删行/粘贴覆盖）会经 clearHealthRow
+    // 删掉 healthRows 条目、按钮 loading/disabled 随之消失，此时再点击会命中守卫，
+    // 须给轻提示（口径同 LlmProviderPanel 同款守卫 item 31eb25117704）。ref 的
+    // key 仍由在飞请求 finally 释放，不在 clearHealthRow 同步删（否则旧请求
+    // finally 会误删新请求的在飞标记）
+    if (healthCheckInFlight.current.has(rowKey)) {
+      message.info('该行的检测仍在进行中');
+      return;
+    }
     healthCheckInFlight.current.add(rowKey);
     // 发起时捕获行参数指纹：await 返回后行配置可能已被改（原位改 provider/
     // 模型、粘贴覆盖、删行），旧结论（可能是绿色「已验证」）不再代表当前

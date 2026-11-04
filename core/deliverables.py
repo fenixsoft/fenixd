@@ -1593,8 +1593,10 @@ def is_stale_declaration(entry, project_root) -> bool:
     # git 判定不可用（超时/无法执行/非仓库）：回退文件系统存在性（fail-safe）
     try:
         return not (Path(project_root) / path).exists()
-    except OSError:
-        # 判定不可用且无法证明缺失 → 视为存在（不误判陈旧）
+    except (OSError, ValueError):
+        # 判定不可用且无法证明缺失 → 视为存在（不误判陈旧）；NUL 等非法
+        # 路径形态部分版本抛 ValueError 而非 OSError（与 _exists_safe 容错
+        # 口径对齐，code-review item 9f37d31ce6e3）
         return False
 
 

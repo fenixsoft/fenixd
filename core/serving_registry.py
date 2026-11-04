@@ -619,6 +619,11 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
                     for f in ("start_ticks", "registered_at")
                 ):
                     continue
+                # 锚点已刷新＝pid 复用后新实例的新登记：放回保留集合
+                # （kept_fresh 只承担锁外留痕职责，不放回则下方
+                # records[:] = kept 会把它当 stale 一并删除，恰与上方
+                # 「保留该条目」注释及 kept_fresh 的 WARNING 文案相反）
+                kept.append(r)
                 kept_fresh.append((hit[0], _spec))
             records[:] = kept
             return len(records) != before

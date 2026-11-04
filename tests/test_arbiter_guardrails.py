@@ -31,7 +31,6 @@ from core.adjudication_narrative import (
 )
 from core.agent_runner.maintenance_runs import run_arbiter
 from core.pm_engine.arbiter import (
-    ARBITER_EXCLUDED_SIGNAL_TYPES,
     ARBITER_PINNED_MODEL,
     arbiter_report_path,
     get_lane,
@@ -456,9 +455,19 @@ class TestLaneMetricsRow:
 
 class TestNarrativeYieldIsolation:
     def test_non_blocked_family_signal_unaffected(self, tmp_path):
-        """非阻塞类（排除表）信号：narrative 让位判定 False——既有路径不受扰。"""
+        """原排除表政策/完整性/队列类信号：narrative 让位判定 False。
+
+        黑名单制后排除表常量已退役，这些信号默认在触发面；本断言在
+        tmp_path 无链装配环境成立走 fail-open 降级（链失能 narrative 照旧）。
+        """
         set_lane(None)
-        for sig in sorted(ARBITER_EXCLUDED_SIGNAL_TYPES):
+        for sig in (
+            "impl_budget_exhausted",
+            "impl_budget_exempt_loop",
+            "spec_content_missing",
+            "spec_delivered_no_content",
+            "redispatch_loop_detected",
+        ):
             assert narrative_yielded_to_arbiter(
                 sig, {"project_root": tmp_path, "logger": None}) is False
 

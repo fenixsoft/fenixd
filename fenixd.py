@@ -5435,7 +5435,7 @@ class FenixDaemon:
         """归档自进化 run 实测时长均值（秒）；无有效样本返回 None。
 
         样本策略对齐周期审查同款（core/admin_monitor.py
-        ``_code_review_archive_duration_mean``）：样本源为归档尾部 run_metrics
+        ``_code_review_archive_duration_max``）：样本源为归档尾部 run_metrics
         行 ``duration_s``，近 ``NIGHT_QUIET_DURATION_SAMPLE_LIMIT``（=3，
         core.code_fix 单源常量）轮均值——``.fenix/runs/archive/evo-*.jsonl``
         按归档新→旧取最近 3 轮；历史行缺字段/负值/非有限数值一律剔除。尾部

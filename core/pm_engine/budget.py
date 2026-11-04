@@ -103,7 +103,9 @@ def apply_budget_override(state_machine, spec_name: str, raw, max_value: int | N
     复用 ``impl_run_budget_override`` 既有字段（不新增 schema，与人工
     Dashboard 设置同一写点语义）；夹紧口径与闸门/Dashboard 同源
     （:func:`clamp_impl_run_budget`，上限 ``agents.impl_run_budget_max``——
-    未显式传入时从项目 config 现读，读不到回缺省）。写入经 ``update_spec``
+    未显式传入时从有效配置现读（用户级 + 项目级 resolve_config 合并，与
+    闸门 ``ImplBudget._impl_budget_max`` / Dashboard 摘要同源），读取异常
+    回缺省）。写入经 ``update_spec``
     （文件锁原子写）。返回夹紧后的生效值；非法值（非整数）返回 None 且不
     落盘（调用方留 WARNING）。state_machine 缺席或写失败上抛由调用方容错
     （不阻断处置主流程）。
@@ -114,7 +116,15 @@ def apply_budget_override(state_machine, spec_name: str, raw, max_value: int | N
             from core.config import ConfigLoader
 
             root = state_machine.state_path.parent.parent
-            cfg = ConfigLoader.load(Path(root) / ".fenix" / "config.yaml")
+            # 与闸门/Dashboard 同源（code-review item d6233c3e53bd）：旧写法
+            # ConfigLoader.load 只读项目级单文件且走严格校验（文件缺失抛
+            # FileNotFoundError、空文件抛 ValueError、require_project 强制
+            # 顶层必填键），用户级 ~/.fenix/config.yaml 单独设
+            # agents.impl_run_budget_max 时闸门按合并值夹紧、本处却按缺省
+            # 100 夹紧（口径分叉）；最小化项目配置还会在此抛异常被下方
+            # except 吞掉静默回缺省。改用 resolve_config 取已合并有效配置
+            # （宽松校验 + 缺文件按空 dict 兜底），口径与闸门/Dashboard 一致。
+            cfg = ConfigLoader.resolve_config(root)
             max_value = effective_impl_budget_max(
                 cfg if isinstance(cfg, dict) else {}
             )

@@ -24,7 +24,7 @@ import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboa
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 // 可点击标题色取宿主对齐链接蓝（theme.ts 单源；同 SPEC 列表页名称列口径）
-import { DSH_LINK } from '@/theme';
+import { DSH_ERROR, DSH_LINK } from '@/theme';
 import ScheduleFields, {
   describeStartAfter,
   isStartAfterValid,
@@ -1370,7 +1370,7 @@ const SuggestedImprovementsPanel = forwardRef<
       </div>
 
       {error && (
-        <div style={{ marginBottom: 12, color: '#ff4d4f' }}>
+        <div style={{ marginBottom: 12, color: DSH_ERROR }}>
           加载失败：{error}
           {/* 重试复用 loadItems（code-review item e735721e599d）：刷新失败保留
               列表后，用户不必切作用域或刷新页面即可恢复数据 */}
