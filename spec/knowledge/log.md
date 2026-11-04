@@ -76,3 +76,4 @@
 ## [2026-11-05 04:08 UTC+8] fold | zn-inbox-entry-1.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
 ## [2026-11-05 04:09 UTC+8] fold | zn-inbox-entry-2.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
 ## [2026-11-05 04:11 UTC+8] fold | zn-inbox-entry-3.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
+## [2026-11-05 04:25 UTC+8] distill | add-systemd-hosting（第 1 轮，自动提交落库）

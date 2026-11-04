@@ -1,6 +1,6 @@
 # SPEC 事件钩子（状态变化触发自定义动作）
-<!-- knowledge: capability=spec-event-hooks rev=2
-     sources=spec/archive/2026-09-12-add-spec-hooks,spec/archive/2026-10-07-add-push-restart-dashboard-hook -->
+<!-- knowledge: capability=spec-event-hooks rev=3
+     sources=spec/archive/2026-09-12-add-spec-hooks,spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/changes/add-systemd-hosting -->
 
 SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作（重启、git、webhook、shell），后台异步执行、审计留痕、失败告警不重试。
 
@@ -11,7 +11,7 @@ SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作
 - 每条 hook 配置：`events`（非空，十状态枚举内）、`action`（七种动作枚举）、`enabled` 布尔开关——`enabled=false` 时被有意跳过，不执行动作、不告警，审计状态记 `skipped`。
 - 七种动作：
   - `restart-daemon`：创建 `.fenix/restart_request` 请求文件复用 supervisor 优雅重启协议；创建成功即动作成功，不得由 hook 执行器直接杀 daemon 进程。
-  - `restart-dashboard`：以 `tmux respawn-window -k` 重启目标会话（可选参数 `target`，缺省 `fenix-dashboard`），命令满足 `env -u CLAUDE_PID` 且保持 8787 端口与原工作目录；重启后探测端口恢复可服务定成败。动作三态返回（success/failure/skipped）直接映射审计状态：60s 去抖窗口内（进程内最近一次成功重启时间戳）重复触发幂等跳过记 skipped，失败不写时间戳故窗口内可重试；目标会话不存在或 tmux 不可用按环境态静默跳过记 skipped，不产 failure 审计；会话存在但 respawn/端口探测失败才记 failure。
+  - `restart-dashboard`：执行 `systemctl restart fenix-dashboard` 重启 dashboard，重启后探测端口恢复可服务定成败；可选参数 `target` 为 legacy 键（tmux 会话名），容忍存在但不消费。动作三态返回（success/failure/skipped）直接映射审计状态：60s 去抖窗口内（进程内最近一次成功重启时间戳）重复触发幂等跳过记 skipped，失败不写时间戳故窗口内可重试；`fenix-dashboard` unit 未安装或 systemctl 不可用按环境态静默跳过记 skipped，不产 failure 审计；unit 在场但 restart/端口探测失败才记 failure。
   - `commit`：`git add -A` 后按提交信息模板执行 `git commit`（变量 `{spec}`、`{event}`，缺省 `[fenix] hook: {spec} {event}`）；工作区无变更视为 no-op 成功（审计记 `noop`，不告警）。
   - `push`：执行 `git push`（跟随当前分支 upstream）。
   - `commit-push`：先 commit 后 push；commit 为 no-op 时仍执行 push；push 失败不回滚已产生的本地提交。
@@ -27,3 +27,4 @@ SPEC 状态变化发布事件，按全局/spec 级两级订阅触发七种动作
 
 - 2026-09-12 2026-09-12-add-spec-hooks（spec/archive/2026-09-12-add-spec-hooks） — 新增事件钩子：全局状态观察者与事件发布、两级订阅与七种动作、异步执行与失败告警不重试、hook_audit 审计与查询 API、配置契约与 Dashboard 两个管理面
 - 2026-10-07 add-push-restart-dashboard-hook（spec/archive/2026-10-07-add-push-restart-dashboard-hook） — restart-dashboard 动作改三态返回并加 60s 去抖与无会话静默跳过；hook_config 引入内置默认条目读侧注入（逃生键与注入纪律归 dashboard-push-restart 能力页）
+- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — restart-dashboard 执行侧迁 `systemctl restart fenix-dashboard`（tmux respawn-window 退役）；`target` 参数降为 legacy 容忍不消费；静默跳过判据改 unit 缺席

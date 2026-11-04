@@ -1,27 +1,27 @@
 # Dashboard 实例生命周期
 
-<!-- knowledge: capability=dashboard-instance-lifecycle rev=4
-     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
+<!-- knowledge: capability=dashboard-instance-lifecycle rev=5
+     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/changes/add-systemd-hosting -->
 
 dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤儿泄漏防护（claude-watchdog）。
 
 ## 规则
 
 - 端口独占：`fenix_dashboard.py --serve` 启动时目标端口被占用，MUST NOT 静默僵挂——检测占用者身份后分支处理：
-  - 占用者为旧的 dashboard `--serve` 实例（命令行匹配 `bin/fenix_dashboard.py` 且含 `--serve`）且**非 tmux 承载**（agent 临时自测实例、nohup 遗留实例）：终止旧实例后绑定接管端口；
-  - 占用者为 dashboard `--serve` 实例且为 **tmux 承载的常驻实例**：MUST NOT 向占用者发送任何信号，常驻实例继续存活并监听；新实例打印含占用者 PID、tmux 常驻说明与「请用 `--port` 指定其它端口，或直接复用常驻实例」指引的错误后非 0 退出；
+  - 占用者为 dashboard `--serve` 实例且为**常驻实例**（unit 承载：父进程为 PID 1；tmux 承载：父进程为 tmux server）：MUST NOT 向占用者发送任何信号，常驻实例继续存活并监听；unit 承载实例提示「请用 `systemctl restart fenix-dashboard` 重启生产实例或 `--port` 指定其它端口」，tmux 承载实例提示「请用 `--port` 指定其它端口，或直接复用常驻实例」，均含占用者 PID 后非 0 退出；
+  - 占用者为旧的 dashboard `--serve` 实例且**非常驻**（agent 临时自测实例、nohup 遗留实例）：终止旧实例后绑定接管端口；
   - 占用者为其它进程：打印占用进程信息后明确报错退出（退出前不终止任何进程，退出码非 0）。
-- tmux 承载判定与 watchdog 长驻判据同源（`_is_tmux_hosted`）：接管路径经 `_parent_is_tmux_server` 读占用者 `/proc/<pid>/stat` 取 ppid，再按父进程判据——`/proc/<ppid>/comm` 恰为 `tmux: server`；comm 可读但不匹配时回退父进程 cmdline，仅当 `argv[0]` basename 恰为 `tmux` 或以 `tmux:` 开头方命中。判定时机在占用者身份复核（starttime 锚定防 PID 复用误杀）通过之后、发送信号之前，父进程身份与占用者 pid 同源快照，不引入额外竞态窗口。
-- 判定 fail-safe 方向：接管路径读不到占用者父进程身份（占用者已成孤儿、ppid 变 1 等）按非 tmux 承载处理、走既有接管——孤儿实例已无可依托的 tmux 会话，接管收割不破坏任何常驻形态；与 `_is_tmux_hosted` 读取失败返回 False 的纪律一致。
+- 常驻豁免判定两支并列、解析纪律同源（读占用者 `/proc/<pid>/stat` 取 ppid）：`_parent_is_pid1`——ppid 为 1 即 unit 承载（`fenix-dashboard.service` 主进程 PPID 恒为 1），接管它会触发「手工实例接管 → systemd 拉回 → 反向接管」的生产实例闪断循环；`_parent_is_tmux_server`——`/proc/<ppid>/comm` 恰为 `tmux: server`，comm 可读但不匹配时回退父进程 cmdline，仅当 `argv[0]` basename 恰为 `tmux` 或以 `tmux:` 开头方命中。判定时机在占用者身份复核（starttime 锚定防 PID 复用误杀）通过之后、发送信号之前，父进程身份与占用者 pid 同源快照，不引入额外竞态窗口。
+- 判定 fail-safe 方向：接管路径读不到占用者父进程身份（/proc 不可用、pid 已退出）按非常驻处理、走既有接管——fail-safe 偏向放行（无 systemd 拉回依托的实例收割后可随时重启重建，不破坏常驻形态）；两判据读取/解析失败返回 False 的纪律一致。
 - 端口解析链为 `--port > dashboard.yaml port > config port > 8787`，仅对最终确定的单一端口做占用检测；端口冲突一律报错退出、不自动上探换端口，换端口由调用方自行决定（自动上探会让 URL 写死 8787 的验证流量打到常驻实例而非被测实例）。
 - 启动失败的实例 MUST 在 5 秒内退出进程，不保留「已运行但未监听」的僵尸实例。
-- claude 生命周期 watchdog（`_start_claude_watchdog`，防 agent 经 CLI nohup 临时自测的实例泄漏）只绑定非显式长驻实例。「显式长驻」判据为父进程是 tmux server（同上判据），命中即不装配 watchdog，`CLAUDE_PID` 存在与否不影响——tmux 承载即视为人工可经 `tmux kill-session` 收口的常驻服务。
-- 判据禁令：MUST NOT 采用「argv 任一项含 `tmux` 子串」（以含 tmux 子串的包装脚本为父进程的 agent 自测实例会被误判常驻、漏掉防泄漏）；MUST NOT 采用「进程自身环境含 `TMUX`」（daemon 由 tmux 下 supervisor 启动，`TMUX` 会被 agent_runner 透传给 agent 子进程，agent 经 nohup 拉起的实例同样带 `TMUX`）。
-- 未命中长驻判据的实例（agent 经 CLI nohup 拉起、父进程非 tmux）：装配 watchdog 绑定 `CLAUDE_PID`，目标 claude 进程退出后实例自杀，避免孤儿泄漏。
-- 入口双保险：skill、administrator 常驻启动命令与 hook_engine 的 `restart-dashboard` hook 统一带 `env -u CLAUDE_PID`，与父进程判据互为冗余。
+- claude 生命周期 watchdog（`_start_claude_watchdog`，防 agent 经 CLI nohup 临时自测的实例泄漏）只绑定进程环境带 `CLAUDE_PID` 的非长驻实例：unit 承载实例的进程环境经 EnvironmentFile 会话身份 denylist 剥离 `CLAUDE_PID`，watchdog 无绑定目标、长驻豁免成立；父进程为 tmux server 的实例（`_is_tmux_hosted` 判据）亦不装配，`CLAUDE_PID` 存在与否不影响。
+- 判据禁令：MUST NOT 采用「argv 任一项含 `tmux` 子串」（以含 tmux 子串的包装脚本为父进程的 agent 自测实例会被误判常驻、漏掉防泄漏）；MUST NOT 采用「进程自身环境含 `TMUX`」（`TMUX` 会被 agent_runner 透传给 agent 子进程，agent 经 nohup 拉起的实例同样带 `TMUX`）。
+- 未命中长驻豁免且进程环境带 `CLAUDE_PID` 的实例（agent 经 CLI nohup 拉起）：装配 watchdog 绑定 `CLAUDE_PID`，目标 claude 进程退出后实例自杀，避免孤儿泄漏。
+- 入口双保险：常驻实例的启动入口不含 `CLAUDE_PID`——skill 与人工入口带 `env -u CLAUDE_PID`，unit 承载入口经 EnvironmentFile denylist 剥离（hook 的 `restart-dashboard` 经 `systemctl restart fenix-dashboard` 走 unit 环境生效），与父进程判据互为冗余。
 - PDEATHSIG/孤儿拒启两道防线（`_bind_parent_lifecycle`，import 场景防泄漏）独立于本页 watchdog 判据，两者正交。
 - 双向验证铁律：验证「分支/worktree 上的行为」打 worktree 自起实例（`python3 bin/fenix_dashboard.py --serve --port 8789`）——:8787 常驻进程内存是启动时刻旧码，吃不到分支改动；验证「dashboard 类 SPEC 交付的主树行为」目标恰是 :8787 常驻实例——静态资源实时读盘，重建 dist 后免重启生效，Python 读侧改动须重启才生效。1900x 端口段是 agent run 的隔离 dev-server，三类实例勿混用。
-- 常驻实例 tmux 重启协议：`tmux kill-session -t fenix-dashboard` 后以 `env -u CLAUDE_PID tmux new-session -d -s fenix-dashboard "env -u CLAUDE_PID python3 .../fenix_dashboard.py --serve"` 重建（会话命令与进程环境双重去 CLAUDE_PID）；重启验证三件套——curl :8787 得 200、`/proc/<pid>/environ` 无 CLAUDE_PID、dist 与源码一致。tmux server 孤儿化变体：`tmux kill-session` 报 no server running 但 8787 仍有旧进程监听——直接 `kill <旧PID>` 等端口释放再 new-session；端口被孤儿占用时直接 new-session 会静默失败。
+- 常驻实例重启协议：`systemctl restart fenix-dashboard`（unit 承载；手工 `--serve` 会被接管豁免拒绝，不能替代重启）；重启验证三件套——curl :8787 得 200、`/proc/<pid>/environ` 无 CLAUDE_PID、dist 与源码一致；看现场 `journalctl -u fenix-dashboard` 加主树 `.fenix/logs/` 既有日志文件。
 - 「显示未配置」类先怀疑陈旧进程：curl `/api/config?project=<名>` 与新进程直跑 `resolve_config` 比对，不一致即重启 dashboard（Python 读侧不重启恒旧视图），不要改 config.yaml 迁就旧视图。
 
 ## 溯源
@@ -30,3 +30,4 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 2026-09-26 fix-dashboard-watchdog-misfire（spec/archive/2026-09-26-fix-dashboard-watchdog-misfire） — watchdog 增加「tmux 承载即显式长驻、不装配」父进程判据（PPID comm 恰等匹配），禁 TMUX 环境变量与 tmux 子串误判路径；skill/agent/hook 入口补 `env -u CLAUDE_PID` 双保险
 - 2026-10-07 fix-dashboard-resident-takeover（spec/archive/2026-10-07-fix-dashboard-resident-takeover） — 端口接管增加常驻豁免：tmux 承载占用者拒信号、报错退出（PID+换端口指引）；接管路径补占用者 ppid 判定与读取失败放行的 fail-safe 方向；非 tmux 旧实例接管语义不变
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠验证与运维操作纪律：双向验证铁律（分支验证打 worktree 自起实例 / 主树交付验证打 :8787 / 1900x 为 run 隔离 dev-server）、tmux 重启协议与孤儿 server 变体、「显示未配置」先疑陈旧进程配方
+- 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 端口接管常驻豁免扩至 unit 承载实例（`_parent_is_pid1`，防「接管→systemd 拉回→反向接管」闪断循环）；常驻实例重启协议迁 `systemctl restart fenix-dashboard`（tmux kill-session/new-session 协议与孤儿 server 变体随 tmux 承载退役）；watchdog 长驻豁免经 unit 环境无 `CLAUDE_PID` 成立
