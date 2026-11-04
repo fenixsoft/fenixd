@@ -1,6 +1,7 @@
 import { createContext, isValidElement, useContext } from 'react';
 import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import type { Components } from 'react-markdown';
+import { DSH_LINK } from '@/theme';
 
 /**
  * Markdown 渲染共享层（code-review item 54951d20a40d）：react-markdown 的
@@ -102,7 +103,7 @@ const codeChipStyle: CSSProperties = {
   padding: '0.15em 0.4em',
   borderRadius: 4,
   background: 'rgba(135,131,120,0.15)',
-  color: '#1677ff',
+  color: DSH_LINK,
   fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
   fontSize: '0.9em',
 };
@@ -147,8 +148,9 @@ const collectTableText = (node: ReactNode): string => {
 // 知识真相源表格的列宽定义：按表头指纹（两个特征词同时出现）识别表格类型，
 // 经 Context 由 table 组件下发给 th 定宽；无命中的表格不设宽不受影响。
 const KNOWLEDGE_TABLE_WIDTHS: { fingerprint: [string, string]; widths: Record<string, string> }[] = [
-  // 总目录「能力域」四列表：30/42/8/20（总和 100%，fixed 布局按比例归一）
-  { fingerprint: ['能力域', '能力数量'], widths: { 能力域: '30%', 简介: '42%', 能力数量: '8%', 更新时间: '20%' } },
+  // 总目录「能力域」四列表：21/51/8/20（总和 100%，fixed 布局按比例归一）。
+  // 2026-11-04 用户指令：能力域列由 30% 缩至其 70%（21%），腾出份额给简介列。
+  { fingerprint: ['能力域', '能力数量'], widths: { 能力域: '21%', 简介: '51%', 能力数量: '8%', 更新时间: '20%' } },
   // 域导航「能力页」三列表：28/52/20
   { fingerprint: ['能力页', '简介'], widths: { 能力页: '28%', 简介: '52%', 更新时间: '20%' } },
   // ADR 索引「编号/状态/摘要」三列表：15/15/70

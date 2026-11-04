@@ -446,7 +446,11 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   // ── 总目录视图 ────────────────────────────────────────────────────
   return (
     <>
-      <Card variant="borderless" data-testid="knowledge-index-view">
+      <Card
+        variant="borderless"
+        data-testid="knowledge-index-view"
+        styles={{ body: { paddingTop: 0 } }}
+      >
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
           {uninitialized ? (
             <Typography.Text type="secondary" data-testid="knowledge-uninitialized">
