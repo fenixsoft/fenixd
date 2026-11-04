@@ -198,6 +198,13 @@ class TestDecideLevel:
             has_supported_stack=True, cache_hit=False, node_ok=True,
             bundle_succeeded=True, cdn_ok=True) == "vendor"
 
+    def test_local_bundle_succeeds_without_node_is_vendor(self):
+        # 本地 node_modules 打包路径不依赖 node/npm（esbuild 为原生二进制）：
+        # 打包成功即 vendor 层，不得因 node 缺失把真实产物降级作废
+        assert bootstrap_vendor.decide_level(
+            has_supported_stack=True, cache_hit=False, node_ok=False,
+            bundle_succeeded=True, cdn_ok=False) == "vendor"
+
     def test_cdn_fallback_when_no_bundle(self):
         assert bootstrap_vendor.decide_level(
             has_supported_stack=True, cache_hit=False, node_ok=False,

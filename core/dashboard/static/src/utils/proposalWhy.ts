@@ -29,10 +29,10 @@ export function extractProposalWhy(markdown: string): string | null {
       let run = 0;
       while (run < stripped.length && stripped[run] === fenceChar) run++;
       fenceLen = run;
-    } else if (start === -1 && /^##\s+why\s*$/i.test(lines[i])) {
+    } else if (start === -1 && /^##\s+why\s*$/i.test(stripped)) {
       start = i + 1;
       continue;
-    } else if (start !== -1 && /^##\s/.test(lines[i])) {
+    } else if (start !== -1 && /^##\s/.test(stripped)) {
       break; // 下一个二级标题即段尾（### 子标题不影响）
     }
     if (start !== -1) collected.push(lines[i]);

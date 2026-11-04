@@ -7,6 +7,7 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
+import hashlib
 import json
 import os
 import re
@@ -65,11 +66,38 @@ def _spec_name_path_error(spec_name: str):
     return None
 
 
+def _supply_signature(pipeline, contract) -> str:
+    """provision+prepare 供给语义签名（serving worktree 复用门比对用）。
+
+    code-review ebf3fd368921：worktree 层复用门原只比对 head/mode/wt_path
+    存活，HEAD 未变而 verify.yaml 契约内容被改动（落位后、git 提交前自证
+    重验窗口）时 provision+prepare 整体跳过、产物仍按旧契约语义复用。签名
+    覆盖 provision 实际消费的 deps_mode、prepare 步骤（run/cwd）与
+    serve_root/serve_cmd，任一变更判不匹配触发重建（旧条目缺键同口径）。
+    """
+    deps_mode = resolve_deps_mode(
+        contract, pipeline._context.config_reader("verify.deps_mode", "")
+    )
+    payload = repr(
+        [
+            deps_mode,
+            [(step.run, step.cwd) for step in contract.prepare],
+            contract.serve.root,
+            contract.serve.cmd or "",
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     """serving worktree 供给（static/command 两型共享）。
 
-    HEAD 未变且目录存活时复用；否则停掉旧实例、重建 worktree、provision
-    依赖（deps_mode）并执行契约 prepare（构建产物）。
+    HEAD 未变且目录存活且供给语义签名一致时复用；否则停掉旧实例、重建
+    worktree、provision 依赖（deps_mode）并执行契约 prepare（构建产物）。
+
+    code-review ebf3fd368921：复用门补比对供给语义签名（_supply_signature）
+    ——HEAD 未变而 verify.yaml prepare/serve 段被改动（落位后、git 提交前
+    自证重验窗口）时判不匹配触发重建，不按旧契约产物复用。
 
     Returns:
         (wt_path, head, err, created)：wt_path=None 时 err 为人类可读原因；
@@ -125,10 +153,16 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
     # code-review cd109376b90a：异形条目（外部改写 servers.json/半写残留）缺
     # wt_path 键时复用门以 .get 防御短路——落到下方清退分支，不 KeyError 炸穿
     # 供给主流程
+    # code-review ebf3fd368921：复用门补比对供给语义签名——HEAD 未变窗口内
+    # verify.yaml prepare/serve 段被改动（落位后、git 提交前自证重验）时不得
+    # 按旧契约产物放行，判不匹配落到下方清退+重建路径重跑 provision+prepare
+    # （旧条目缺键视为不匹配，对齐 45cdbe96ea1e 容错口径）
+    sig = _supply_signature(pipeline, contract)
     if (
         old is not None
         and old.get("head") == head
         and old.get("mode") == mode
+        and old.get("contract_sig") == sig
         and old.get("wt_path")
         and Path(old["wt_path"]).is_dir()
     ):
@@ -354,13 +388,16 @@ def _serve_static_in_worktree(pipeline, spec_name, contract, scenarios_path) -> 
         )
         return False, False, f"静态实例启动失败: {e}"
     # serve_root 补存供复用门比对 verify.yaml serve 段改动
-    # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重建）
+    # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重建）；
+    # contract_sig 补存供 _ensure_serving_worktree 复用门比对契约内容改动
+    # （code-review ebf3fd368921）
     cache[spec_name] = {
         "server": srv,
         "wt_path": wt,
         "head": head,
         "mode": "static",
         "serve_root": contract.serve.root,
+        "contract_sig": _supply_signature(pipeline, contract),
     }
     return pipeline._finalize_static(
         cache[spec_name]["server"], contract, scenarios_path, "验证 worktree"
@@ -452,6 +489,11 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     try:
         _port_holder = hold_free_port()
     except OSError as e:
+        # code-review 7993d3636f8f：与预检失败/spawn 异常/启动即死分支同口径
+        # ——本轮新建的 serving worktree 随端口分配失败清理（复用态不动），
+        # 不再等 serving_reclaim 600s 周期兜底回收
+        if created:
+            pipeline._remove_serving_worktree(wt)
         return False, False, f"验证端口分配失败: {e}"
     port = _port_holder.getsockname()[1]
     # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
@@ -582,13 +624,16 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
             pipeline, spec_name, old, cache, on_fail_note="重启", evict=False
         )
     # serve_cmd 补存供复用门比对 verify.yaml serve 段改动
-    # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重启）
+    # （code-review 45cdbe96ea1e；旧条目缺键视为不匹配触发重启）；
+    # contract_sig 补存供 _ensure_serving_worktree 复用门比对契约内容改动
+    # （code-review ebf3fd368921）
     cache[spec_name] = {
         "server": srv,
         "wt_path": wt,
         "head": head,
         "mode": "command",
         "serve_cmd": orig_cmd,
+        "contract_sig": _supply_signature(pipeline, contract),
     }
     # verify-process-lifecycle D6：command 型实例创建时登记
     # （pid/port/spec/worktree），终局/周期清扫按 liveness 收割。

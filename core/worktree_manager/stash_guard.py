@@ -592,7 +592,9 @@ class G6StashGuardMixin:
                 continue
             try:
                 st = subprocess.run(
-                    ["git", "-C", str(self.project_root), "add", "--", f],
+                    # :(literal) 钉死字面量匹配（code-review item a889b35d764c）：
+                    # 含通配元字符的路径过配会 stage 无关路径、欠配使自愈降级
+                    ["git", "-C", str(self.project_root), "add", "--", f":(literal){f}"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -709,7 +711,9 @@ class G6StashGuardMixin:
                     "-m",
                     f"[fenix] stash pop 恢复（stash {pinned_sha or 'unknown'}）",
                     "--",
-                    *conflict_files,
+                    # :(literal) 钉死字面量匹配（code-review item a889b35d764c）：
+                    # 裸 pathspec 过配会把非冲突路径连带入库（作用域扩宽）
+                    *[f":(literal){p}" for p in conflict_files],
                 ],
                 capture_output=True,
                 text=True,

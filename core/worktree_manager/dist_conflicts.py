@@ -261,6 +261,20 @@ class G5DistConflictsMixin:
                 timeout=30,
             )
             if res.returncode != 0:
+                # status 采集失败留痕（code-review item c2811e63ab03）：命令失败
+                # 与「无产物冲突」共用 False 返回语义，静默时调用方无法区分两
+                # 者；且语义路径分类依赖的 _collect_conflict_paths 同样会失败
+                # 返回空列表，分类证据一并缺失——非阻塞记录（行为不变：本轮
+                # 自愈放弃，交回调用方语义冲突路径），口径对齐下方 staged/复查
+                # 失败留痕。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Build-artifact self-heal status probe failed "
+                    f"(rc={res.returncode}): "
+                    f"{(res.stderr or '').strip()[:200]} — abandoning "
+                    f"self-heal this round, falling back to the caller's "
+                    f"semantic conflict path",
+                )
                 return False
 
             conflict_paths = _collect_unmerged_paths(res.stdout)

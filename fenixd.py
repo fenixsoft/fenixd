@@ -492,6 +492,13 @@ class FenixDaemon:
         # （其 WARNING 在 admin 去重判断之前无条件执行），互不挤占。读取走
         # getattr，容忍未走 initialize 的裸对象（既有测试形态）。
         self._dangling_timeout_alert_fired = False
+        # 悬空路径 restart_request 写失败的边沿标志（item 4e24a542b9c2）：本
+        # 悬空周期仅首次写失败落 ERROR + 升级告警，后续 tick 静默自动重试——
+        # 悬空闸 1s 粒度且 dangling_seconds 只增不减，不加边沿会在磁盘满/
+        # .fenix 只读等持久故障下逐秒刷 ERROR（item a6fb64ba17d4 同形态治理）。
+        # 随 _reset_dangling_timeout_flags 周期收尾复位；以 getattr 读取，
+        # 容忍未走 initialize 的裸对象（既有测试形态）。
+        self._dangling_write_failure_alerted = False
         # 重启冷却锁存起点（evo-stale-selfheal-restart-cooldown）：None=不在冷却中；
         # 首次因滑动窗口计数进入冷却的那个 tick 时刻——锁存是「冷却持续
         # cooldown_duration_seconds」的落地点（窗口计数会因条目老化提前回落）。
@@ -900,15 +907,32 @@ class FenixDaemon:
         # 回调（非 None——缺省 None 会使恢复路径退回静默冻结，违反「冻结必告警」
         # 不变式；helper 内对 None 打审计 ERROR 兜底）
         human_alert_cb = self._build_human_alert_callback()
-        self.state_machine.recover_interrupted(
-            PROJECT_ROOT,
-            self.worktree_manager,
-            verify_redo_budget=_redo_budget,
-            remerge_callback=remerge_cb,
-            human_alert_callback=human_alert_cb,
-        )
-        # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
-        _clear_preserve_sidecar()
+        # recover_interrupted non-blocking 包裹（code-review item cbf4f23a09d9）：
+        # 与相邻启动步骤同口径——启动期最重的恢复例程（中断态 SPEC 遍历/git
+        # plumbing 保留判定/re-merge-back/update_spec 写盘）内部仅对部分路径做
+        # 针对性捕获（如 _resolve_preserved_branch 只捕 subprocess.TimeoutExpired/
+        # OSError），磁盘满/只读等未覆盖 OSError 原样上抛会击穿 start()（main()
+        # FATAL 退出，supervisor 拉起即再崩循环）。ERROR 留痕后继续启动序列：
+        # 恢复未完成只延后派发（保守方向），由下次启动的 recovery 重试兜底，
+        # 启动序列不因恢复异常中断。
+        try:
+            self.state_machine.recover_interrupted(
+                PROJECT_ROOT,
+                self.worktree_manager,
+                verify_redo_budget=_redo_budget,
+                remerge_callback=remerge_cb,
+                human_alert_callback=human_alert_cb,
+            )
+            # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）。
+            # 置于包裹内：恢复异常时保留 sidecar（保全线索不丢，下轮 orphan
+            # 清理与停机保全仍按 sidecar/STATE 兜底），由下次启动重新消费。
+            _clear_preserve_sidecar()
+        except Exception as e:
+            self.logger.error(
+                "fenixd",
+                f"Interrupted-state recovery failed "
+                f"(non-blocking, daemon 启动继续): {e}",
+            )
 
         # 启动清扫 non-blocking 包裹（code-review item ea0ba60cd65f）：清扫内
         # 仍有未纳入其内部 try 的路径（活进程探测 / spec 解析 / 快照留档等），
@@ -2328,8 +2352,11 @@ class FenixDaemon:
         去重窗口——写失败与留痕互斥成条，不刷屏），severity=warning 且不调用
         mark_handled——须留在人工待处理视图（参照 _alert_dangling_timeout 的
         写入模式；mark_handled 仅锚定 ESCALATION 的闭环锚点语义不受影响）。
-        悬空超限路径的写失败不经过此处：该路径本就有独立升级告警，重复写入
-        只会双重升级。
+        悬空超限路径的写失败亦经由本方法升级（item 4e24a542b9c2）：此前该路径
+        仅 logger.error、并无升级出口（旧措辞「本就有独立升级告警」与代码不符
+        ——_alert_dangling_timeout 仅在写成功后调用）；悬空侧另有本周期首次
+        失败的边沿控制（_dangling_write_failure_alerted），1s 逐 tick 重试
+        不会逐秒成条。
         """
         try:
             admin_store = getattr(self, "admin_store", None)
@@ -2353,9 +2380,9 @@ class FenixDaemon:
                         "spec": None,
                         "severity": "warning",
                         "description": (
-                            "daemon 持旧代码且空闲确认已达成，但自愈重启请求"
-                            "（.fenix/restart_request）写入失败，自动收敛通道"
-                            "中断，需人工知悉"
+                            "daemon 持旧代码（悬空超限或空闲确认达成），但自愈"
+                            "重启请求（.fenix/restart_request）写入失败，自动"
+                            "收敛通道中断，需人工知悉"
                         ),
                         "evidence": (
                             f"restart_request 写入 OSError: {error}；空闲计时已"
@@ -2629,6 +2656,8 @@ class FenixDaemon:
         """
         self._dangling_timeout_fired = False
         self._dangling_timeout_alert_fired = False
+        # 悬空路径写失败边沿标志（item 4e24a542b9c2）随周期收尾一并复位
+        self._dangling_write_failure_alerted = False
 
     def _reset_stale_selfheal_on_clear(self) -> None:
         """陈旧解除（``_code_stale`` 真→假）时各闸门周期态的集中复位。
@@ -2905,10 +2934,19 @@ class FenixDaemon:
                 "（planned_restart 排水：在飞宽限收尾/checkpoint 保全/断点续做）",
             )
         except OSError as e:
-            self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+            # 写失败升级（item 4e24a542b9c2）：比照空闲确认路径经
+            # _alert_selfheal_write_failure 补 escalation 出口（内部 latest_signal
+            # 60 分钟窗口去重）。本闸 1s 粒度、dangling_seconds 只增不减，持久
+            # 故障（磁盘满/.fenix 只读）下会逐 tick 无限重试——ERROR 留痕与
+            # 升级一并做本周期边沿控制（_dangling_write_failure_alerted）：
+            # 仅首次失败留痕+升级，后续 tick 静默自动重试，不逐秒刷屏。
+            if not getattr(self, "_dangling_write_failure_alerted", False):
+                self._dangling_write_failure_alerted = True
+                self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+                self._alert_selfheal_write_failure(e)
         if wrote:
-            # 触发成功才置防重复标志 + 写升级告警 + 落历史；写失败仅记
-            # error 日志，标志未置位，下个 tick 自动重试。
+            # 触发成功才置防重复标志 + 写升级告警 + 落历史；写失败经本周期
+            # 边沿留痕+升级（仅首次），防重复标志未置位，下个 tick 自动重试。
             self._dangling_timeout_fired = True
             self._alert_dangling_timeout(dangling_seconds, max_dangling)
             self._record_selfheal_restart(
