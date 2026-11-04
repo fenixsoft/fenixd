@@ -72,3 +72,4 @@
 ## [2026-11-04 20:48 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
 ## [2026-11-04 20:58 UTC+8] distill | unified-page-title-bar（第 1 轮，自动提交落库，折叠入库 3 条）
 ## [2026-11-05 00:02 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 1 / 过 8）
+## [2026-11-05 00:02 UTC+8] lint | _inbox 积压提醒：3 条滞留（最老 21 天），等待 distill 轮折叠
