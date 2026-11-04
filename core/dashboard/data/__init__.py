@@ -74,6 +74,8 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     run_activity          (runs.py，summary.py 经门面解析),
     run_task_progress     (tasks.py，summary.py 经门面解析),
     spec_generation_progress (spec_docs.py，summary.py 经门面解析),
+    spec_total_duration     (summary.py 公开别名，topology.py 经门面解析；
+                             code-review d87d1114a797),
     task_progress         (tasks.py，summary.py 经门面解析),
     tasks_note            (tasks.py，summary.py 经门面解析),
     validated_spec_name   (spec_docs.py，tasks.py 经门面解析)
@@ -133,6 +135,7 @@ from .summary import (
     hosting_state,
     project_summary,
     _spec_total_duration,
+    spec_total_duration,
     _GLOBAL_BUDGET_CACHE,
     _GLOBAL_BUDGET_CACHE_MAX,
     _resolve_global_impl_run_budget,

@@ -2446,6 +2446,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 "self_evolution",
                 "worktree",
                 "arbiter",
+                "chain",
             ):
                 _seg_v = merged.get(_seg)
                 if _seg_v is not None and not isinstance(_seg_v, dict):

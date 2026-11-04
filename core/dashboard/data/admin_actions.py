@@ -3036,13 +3036,18 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
         {"ok": bool, "choice_id": str, "action": str, "steps": [str],
          "error": str|null, ...动作附加字段}
     """
-    from .adjudication_choices import is_global_spec, resolve_choice
+    from .adjudication_choices import _norm_signal_type, is_global_spec, resolve_choice
 
     if not choice_id or not str(choice_id).strip():
         return {"ok": False, "choice_id": choice_id or "", "action": None,
                 "steps": [], "error": "choice_id is required"}
     choice_id = str(choice_id).strip()
-    sig = str(signal_type or "")
+    # 入口归一（code-review item 9cb854efb10b）：与 resolve_choice 注册表
+    # 解析同口径（_norm_signal_type 单源）——否则带首尾空白的信号名在解析
+    # 层判已注册放行，透传 reset_verification 却在 VERIFY_CHAIN_SIGNAL_TYPES
+    # 精确判别处被拒（解析/执行口径漂移）；后续动词透传（reset_verification
+    # 与 stray 执行器绑定守卫）统一用归一值。
+    sig = _norm_signal_type(signal_type)
     # choice 解析收敛注册表单源（fix-global-signal-choice-execution 1.1）：
     # 桶内精确匹配 / 未注册信号全表反查（spec_scoped 动作不再兜底放行）同序
     # 同源，执行器与消费端守卫共用一套解析（resolve_choice）。
@@ -3078,7 +3083,7 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
 
     try:
         if action == "reset_verification":
-            r = reset_verification(project_root, spec, note=note, signal_type=signal_type)
+            r = reset_verification(project_root, spec, note=note, signal_type=sig)
         elif action == "grant_env_exemption":
             # fix-env-exemption-exit-reachability 4.2：授予 env 豁免（DISPOSITION
             # 放行 + 重置重验）
@@ -3130,26 +3135,26 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             # 唯一 git 写动作；signal_type 绑定守卫在执行器内 fail-closed，
             # design D4——resolve_choice 非作用域全表反查通道对未注册信号
             # 可达本动作，执行器收口后任意其它 signal_type 零 git 写）。
-            r = _exec_commit_stray_wip(project_root, note, signal_type)
+            r = _exec_commit_stray_wip(project_root, note, sig)
         elif action == "untrack_stray_wip":
             # evo-recurring-stray-remediation 1.2：复发型主树散件当场根治
             # （第二个主树 git 写动作；signal_type 绑定守卫同款在执行器内
             # fail-closed，design D4 收口逻辑一致）。
-            r = _exec_untrack_stray_wip(project_root, note, signal_type)
+            r = _exec_untrack_stray_wip(project_root, note, sig)
         elif action == "archive_untracked_stray":
             # evo-stray-untracked-escalation 3.1：untracked 散件显式归档
             # （主树文件移动 + 登记目录 ignore；signal_type 绑定白名单在
             # 执行器内 fail-closed，design D4 收口逻辑一致——tracked 桶与
             # info 信号零 git 写零文件触碰）。
-            r = _exec_archive_untracked_stray(project_root, note, signal_type)
+            r = _exec_archive_untracked_stray(project_root, note, sig)
         elif action == "ignore_untracked_stray":
             # evo-stray-untracked-escalation 3.1：untracked 路径追加 .gitignore
             # （去重 + pathspec 独立提交；绑定白名单同款收口）。
-            r = _exec_ignore_untracked_stray(project_root, note, signal_type)
+            r = _exec_ignore_untracked_stray(project_root, note, sig)
         elif action == "delete_untracked_stray":
             # evo-stray-untracked-escalation 3.1：untracked 散件文件删除
             # （destructive，仅普通文件；绑定白名单同款收口，零 git 写）。
-            r = _exec_delete_untracked_stray(project_root, note, signal_type)
+            r = _exec_delete_untracked_stray(project_root, note, sig)
         else:
             r = {"ok": False, "steps": [],
                  "error": f"注册表 action '{action}' 无执行器映射"}
