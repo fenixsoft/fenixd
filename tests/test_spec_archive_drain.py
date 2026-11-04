@@ -1,16 +1,19 @@
-"""evo-spec-changes-archive-drain 专项测试。
+"""evo-spec-changes-archive-drain 专项测试（remove-aged-spec-archive 改造后）。
 
-覆盖 specs/spec-archive-drain/spec.md 五条规则：
+覆盖 specs/spec-archive-drain/spec.md 现行规则：
 
 - R1 阈值排水：50/50 饱和态可触发，单轮排水至阈值下（50→49 归档 1 条）；
-- R2 时效归档：终态 + verification-report.md + 目录 mtime 滞留 ≥ 72h，
-  3 天边界（<72h 不归档 / ≥72h 归档，STATE 路径）；
+- R2 反转断言（remove-aged-spec-archive）：终态 + verification-report.md +
+  目录 mtime 滞留 ≥ 72h 且计数低于阈值 → 不被归档（时效驱动归档已移除，
+  终态归档仅由 R1 阈值水位触发）；
 - R3 孤儿接管：同判据经 archive_spec 孤儿形态入参归档
   （archived_by=auto-orphan，不写 STATE/清单条目），其余孤儿仅盘点；
-- R4 每日滞留盘点：24h 去重，①报告+滞留≥3天 / ②孤儿（无条件）/
-  ③终态无报告 三类入清单；
-- R5 安全边界：非终态活跃目录、无报告目录不被误归档；
-- auto_threshold=0 禁用全部自动归档动作（backfill 与盘点信号不受约束）。
+  终态目录不被 R3 误伤；
+- R4 每日滞留盘点（水位观测化）：24h 去重，① 终态水位观测（终态未归档
+  计数 + 最老终态目录滞留天数，单条 INFO，不按单目录列示）/
+  ② 孤儿目录无条件列示（原 ③ 终态无报告单列已并入 ①）；
+- R5 安全边界：非终态活跃目录不被误归档；
+- auto_threshold=0 禁用 R1/R3 全部自动归档动作（backfill 与盘点信号不受约束）。
 """
 
 import os
@@ -124,9 +127,9 @@ class TestThresholdSaturationDrain(SpecArchiveDrainTestBase):
         manifest = parse_archived_state(self.root)
         self.assertEqual(manifest["sat-00"].get("archived_by"), "auto")
         self.assertNotIn("sat-00", parse_state(self.root))
-        # 时效归档不误伤（新目录无报告）
-        self.assertEqual(r["age_archived"], 0)
+        # R3 孤儿接管不误伤（全部为 STATE 条目，无孤儿目录）
         self.assertEqual(r["orphan_archived"], 0)
+        self.assertEqual(r["orphan_skipped"], 0)
 
     def test_second_round_below_threshold_no_action(self):
         """排水后 49 < 50：第二轮无排水动作（稳态水位附近小幅波动）。"""
@@ -149,59 +152,82 @@ class TestThresholdSaturationDrain(SpecArchiveDrainTestBase):
             len(list((self.root / "spec" / "changes").iterdir())), 49)
 
 
-# ── R2/R3 时效归档 3 天边界（目录 mtime 72h） ────────────────────────────
+# ── R2 反转：终态目录满足时效判据不再被归档（remove-aged-spec-archive）──
 
-class TestAgeBoundary(SpecArchiveDrainTestBase):
-    """<72h 不归档 / ≥72h 归档；STATE 路径与孤儿路径同判据分流。"""
+class TestTerminalAgeNoArchive(SpecArchiveDrainTestBase):
+    """终态+报告+滞留≥72h 且计数低于阈值 → 不被归档（时效驱动归档已移除，
+    终态归档仅由 R1 阈值水位触发）；判据构造保留作回归锚（禁止只删不反）。"""
 
-    def test_state_path_72h_boundary(self):
-        """终态+报告：71h 保留 / 73h 归档（archived_by=auto 迁出清单）。"""
+    def test_state_path_72h_boundary_no_archive(self):
+        """终态+报告：71h / 73h 均保留（阈值下 R1 不接管、时效通道已移除）。"""
         self._write_state({
             "age-young": {"status": "pushed",
                           "updated": "2026-01-01T00:00:00+00:00"},
             "age-old": {"status": "pushed",
                         "updated": "2026-01-02T00:00:00+00:00"},
         })
+        # 判据构造回归锚：报告 + 目录 mtime 滞留 71h/73h（≥72h 边界两侧）
         self._add_spec("age-young", report=True, age_seconds=71 * 3600)
         self._add_spec("age-old", report=True, age_seconds=73 * 3600)
-        self._set_threshold(10)  # 2 < 10：R1 不接管，隔离 R2 时效行为
+        self._set_threshold(10)  # 2 < 10：R1 不接管，隔离水位行为
 
         r = self._check()
         self.assertEqual(r["archived"], 0)
-        self.assertEqual(r["age_archived"], 1)
+        self.assertEqual(r["orphan_archived"], 0)
         changes = self.root / "spec" / "changes"
+        # 满足原 R2 判据（报告 + 滞留 ≥ 72h）的终态目录不再被自动归档
         self.assertTrue((changes / "age-young").is_dir())
-        self.assertFalse((changes / "age-old").is_dir())
-        manifest = parse_archived_state(self.root)
-        self.assertEqual(manifest["age-old"].get("archived_by"), "auto")
-        self.assertNotIn("age-young", manifest)
-        self.assertNotIn("age-old", parse_state(self.root))
+        self.assertTrue((changes / "age-old").is_dir())
+        # STATE 条目原位保留、清单无迁出（终态归档仅由 R1 水位驱动）
+        self.assertIn("age-old", parse_state(self.root))
+        self.assertNotIn("age-old", parse_archived_state(self.root))
+        # R4① 水位观测覆盖：终态未归档计数 2（不按单目录列示）
+        self.assertTrue(r["audit"]["fired"])
+        self.assertEqual(r["audit"]["terminal_unarchived"], 2)
+        self.assertNotIn("age-old", r["audit"]["stale_dirs"])
+        self.assertNotIn("age-young", r["audit"]["stale_dirs"])
+
+
+# ── R3 孤儿目录接管（判据不变：verification-report.md + mtime ≥ 72h）─────
+
+class TestOrphanTakeover(SpecArchiveDrainTestBase):
+    """>=72h 孤儿经孤儿形态归档（auto-orphan）/ <72h 仅盘点；终态目录不被
+    R3 误伤（R3 仅接管 STATE 无条目的孤儿目录）。"""
 
     def test_orphan_path_72h_boundary(self):
         """孤儿+报告：71h 仅盘点 / 73h 经孤儿形态归档（auto-orphan 溯源）。"""
-        self._write_state({"keep-active": {"status": "implementing"}})
+        self._write_state({"keep-active": {"status": "implementing"},
+                           "term-aged": {"status": "done"}})
         self._add_spec("keep-active")  # 活跃在途，任何规则不接管
+        # 终态 + 报告 + 滞留 ≥ 72h：满足原 R2 判据，但终态目录不被 R3 误伤
+        # （R3 仅接管 STATE 无条目的孤儿目录；时效归档已移除）
+        self._add_spec("term-aged", report=True, age_seconds=73 * 3600)
         self._add_spec("orphan-young", report=True, age_seconds=71 * 3600)
         self._add_spec("orphan-old", report=True, age_seconds=73 * 3600)
-        self._set_threshold(10)
+        self._set_threshold(10)  # 1 < 10：R1 不接管
         log = _CaptureLogger()
 
         r = self._check(logger=log)
         self.assertEqual(r["orphan_archived"], 1)
-        self.assertEqual(r["age_archived"], 0)
         changes = self.root / "spec" / "changes"
         self.assertTrue((changes / "orphan-young").is_dir())
         self.assertFalse((changes / "orphan-old").is_dir())
-        # 孤儿形态：不写 STATE/清单条目（design 决策 6）
+        # 孤儿形态：不写 STATE/清单条目（evo-spec-changes-archive-drain 决策 6）
         self.assertNotIn("orphan-old", parse_state(self.root))
         self.assertNotIn("orphan-old", parse_archived_state(self.root))
-        # 归档台账溯源：archived_by=auto-orphan 随日志与返回值留痕
+        # 终态目录不被 R3 误伤（补断言，remove-aged-spec-archive）
+        self.assertTrue((changes / "term-aged").is_dir())
+        self.assertIn("term-aged", parse_state(self.root))
+        self.assertNotIn("term-aged", parse_archived_state(self.root))
+        # 归档台账溯源：archived_by=auto-orphan 随日志留痕
         self.assertTrue(any(
             "orphan-old" in m and "auto-orphan" in m
             for _lv, m in log.records))
-        # 盘点清单：未满足条件的孤儿（71h）仍被 ② 无条件列示
+        # 盘点清单：未满足条件的孤儿（71h）仍被 ② 无条件列示；终态目录
+        # （term-aged）不按单目录列示（R4① 水位观测聚合口径）
         self.assertIn("orphan-young", r["audit"]["stale_dirs"])
         self.assertNotIn("keep-active", r["audit"]["stale_dirs"])
+        self.assertNotIn("term-aged", r["audit"]["stale_dirs"])
 
     def test_orphan_no_report_only_audited(self):
         """孤儿无报告：永不归档，仅入每日盘点清单（R3 分流保守侧）。"""
@@ -211,7 +237,7 @@ class TestAgeBoundary(SpecArchiveDrainTestBase):
 
         r = self._check()
         self.assertEqual(r["orphan_archived"], 0)
-        self.assertEqual(r["age_archived"], 0)
+        self.assertEqual(r["archived"], 0)
         self.assertTrue(
             (self.root / "spec" / "changes" / "orphan-nr").is_dir())
         self.assertIn("orphan-nr", r["audit"]["stale_dirs"])
@@ -220,37 +246,43 @@ class TestAgeBoundary(SpecArchiveDrainTestBase):
 # ── R5 安全边界：不误归档 ────────────────────────────────────────────────
 
 class TestNeverArchiveGuard(SpecArchiveDrainTestBase):
-    """非终态活跃目录与无报告目录不被误归档，仅盘点暴露。"""
+    """非终态活跃目录与无报告目录不被误归档，等水位或仅盘点暴露。"""
 
     def test_non_terminal_with_old_report_not_archived(self):
-        """implementing + 报告 + 超期：R5 永不归档，盘点 ① 暴露。"""
+        """implementing + 报告 + 超期：R5 永不归档（R3 仅接管孤儿目录）。"""
         self._write_state({"wip-old": {"status": "implementing"}})
         self._add_spec("wip-old", report=True, age_seconds=73 * 3600)
         self._set_threshold(10)
 
         r = self._check()
-        self.assertEqual(r["age_archived"], 0)
         self.assertEqual(r["archived"], 0)
+        self.assertEqual(r["orphan_archived"], 0)
         self.assertTrue(
             (self.root / "spec" / "changes" / "wip-old").is_dir())
         self.assertNotIn("wip-old", parse_archived_state(self.root))
-        self.assertIn("wip-old", r["audit"]["stale_dirs"])
+        # 有条目的非终态目录不是孤儿，不入 ② 列示；① 水位观测只统计终态
+        self.assertEqual(r["audit"]["stale_dirs"], [])
+        self.assertEqual(r["audit"]["terminal_unarchived"], 0)
 
     def test_terminal_without_report_not_archived(self):
-        """终态无报告 + 超期：R1 低于阈值不接管、R2 无报告不接管 → 盘点 ③。"""
+        """终态无报告 + 超期：R1 低于阈值不接管、时效归档已移除 → 原地保留
+        等水位，由 R4① 水位观测覆盖（原 ③ 单列已并入水位观测）。"""
         self._write_state({"nr-old": {"status": "done"}})
         self._add_spec("nr-old", age_seconds=73 * 3600)
         self._set_threshold(10)  # 1 < 10：R1 不触发
 
         r = self._check()
         self.assertEqual(r["archived"], 0)
-        self.assertEqual(r["age_archived"], 0)
+        self.assertEqual(r["orphan_archived"], 0)
         self.assertTrue(
             (self.root / "spec" / "changes" / "nr-old").is_dir())
-        self.assertIn("nr-old", r["audit"]["stale_dirs"])
+        # 水位观测：计数 1、不区分含/不含 verification-report.md 的单目录列示
+        self.assertTrue(r["audit"]["fired"])
+        self.assertEqual(r["audit"]["terminal_unarchived"], 1)
+        self.assertNotIn("nr-old", r["audit"]["stale_dirs"])
 
     def test_active_dir_without_report_untouched(self):
-        """无报告的活跃目录（不论终态与否）不被时效归档误伤。"""
+        """无报告的活跃目录（不论终态与否）不被自动归档误伤。"""
         self._write_state({
             "fresh-done": {"status": "done"},
             "fresh-wip": {"status": "verifying"},
@@ -260,7 +292,7 @@ class TestNeverArchiveGuard(SpecArchiveDrainTestBase):
         self._set_threshold(10)
 
         r = self._check()
-        self.assertEqual(r["age_archived"], 0)
+        self.assertEqual(r["archived"], 0)
         self.assertEqual(r["orphan_archived"], 0)
         self.assertTrue(
             (self.root / "spec" / "changes" / "fresh-done").is_dir())
@@ -268,24 +300,33 @@ class TestNeverArchiveGuard(SpecArchiveDrainTestBase):
             (self.root / "spec" / "changes" / "fresh-wip").is_dir())
 
 
-# ── R4 每日滞留盘点：24h 去重 ────────────────────────────────────────────
+# ── R4 每日滞留盘点（水位观测化）：24h 去重 ──────────────────────────────
 
 class TestDailyAuditDedup(SpecArchiveDrainTestBase):
-    """盘点信号 24h 去重：首轮发一条 INFO，24h 内不重发。"""
+    """终态水位一日一报（计数+龄期单条 INFO，不按单目录列示）+ 24h 去重。"""
 
     def test_audit_fires_once_within_24h(self):
-        self._write_state({"dup-1": {"status": "done"}})
+        self._write_state({"dup-1": {"status": "done"},
+                           "dup-2": {"status": "pushed"}})
         self._add_spec("dup-1", age_seconds=73 * 3600)
+        self._add_spec("dup-2", age_seconds=100 * 3600)
         self._set_threshold(10)
         log = _CaptureLogger()
 
         r1 = self._check(logger=log)
         self.assertTrue(r1["audit"]["fired"])
-        self.assertIn("dup-1", r1["audit"]["stale_dirs"])
-        first = [m for _lv, m in log.records if "每日滞留盘点" in m]
-        self.assertEqual(len(first), 1)
-        # 一条信号列全三类标记（dup-1：③终态无报告 + ①报告…不成立 → 仅 ③）
-        self.assertIn("③终态无报告", first[0])
+        # 水位观测：终态未归档计数 + 最老终态目录滞留天数（100h ≈ 4.2 天）
+        self.assertEqual(r1["audit"]["terminal_unarchived"], 2)
+        self.assertEqual(
+            r1["audit"]["oldest_terminal_age_days"],
+            round(100 * 3600 / 86400, 1))
+        # 单条 INFO，不按单目录列示（终态目录名不进清单）
+        infos = [m for _lv, m in log.records if "每日滞留盘点" in m]
+        self.assertEqual(len(infos), 1)
+        self.assertIn("终态未归档 2 个", infos[0])
+        self.assertNotIn("dup-1", infos[0])
+        self.assertNotIn("dup-2", infos[0])
+        self.assertEqual(r1["audit"]["stale_dirs"], [])
 
         r2 = self._check(logger=log)  # 300s 节拍第二轮：24h 去重窗口内
         self.assertFalse(r2["audit"]["fired"])
@@ -293,11 +334,31 @@ class TestDailyAuditDedup(SpecArchiveDrainTestBase):
         again = [m for _lv, m in log.records if "每日滞留盘点" in m]
         self.assertEqual(len(again), 1)  # 仍只有首条
 
+    def test_orphan_listed_alongside_water_observation(self):
+        """孤儿目录无条件列示，与终态水位观测并入同一条 INFO。"""
+        self._write_state({"w-1": {"status": "done"}})
+        self._add_spec("w-1", age_seconds=1)
+        self._add_spec("orph-a", age_seconds=1)
+        self._add_spec("orph-b", age_seconds=1)
+        self._set_threshold(10)
+        log = _CaptureLogger()
 
-# ── auto_threshold=0：禁用全部自动归档动作，backfill 与盘点不受约束 ───────
+        r = self._check(logger=log)
+        self.assertTrue(r["audit"]["fired"])
+        self.assertEqual(r["audit"]["terminal_unarchived"], 1)
+        self.assertEqual(sorted(r["audit"]["stale_dirs"]),
+                         ["orph-a", "orph-b"])
+        infos = [m for _lv, m in log.records if "每日滞留盘点" in m]
+        self.assertEqual(len(infos), 1)
+        self.assertIn("终态未归档 1 个", infos[0])
+        self.assertIn("orph-a、orph-b", infos[0])
+
+
+# ── auto_threshold=0：禁用 R1/R3 全部自动归档动作，backfill 与盘点不受约束 ─
 
 class TestThresholdZeroDisabled(SpecArchiveDrainTestBase):
-    """threshold=0 语义：R1/R2/R3 全禁用；backfill 照跑、盘点信号照发。"""
+    """threshold=0 语义（remove-aged-spec-archive 决策 3）：R1/R3 全禁用；
+    backfill 照跑、盘点信号照发。"""
 
     def test_zero_disables_all_auto_archive_actions(self):
         self._write_state({
@@ -313,9 +374,8 @@ class TestThresholdZeroDisabled(SpecArchiveDrainTestBase):
 
         r = self._check()
         self.assertEqual(r["threshold"], 0)
-        # R1/R2/R3 全禁用：终态+报告+超期与孤儿+报告+超期均原地保留
+        # R1/R3 全禁用：终态+报告+超期与孤儿+报告+超期均原地保留
         self.assertEqual(r["archived"], 0)
-        self.assertEqual(r["age_archived"], 0)
         self.assertEqual(r["orphan_archived"], 0)
         self.assertEqual(r["target_count"], 0)
         changes = self.root / "spec" / "changes"
@@ -325,10 +385,11 @@ class TestThresholdZeroDisabled(SpecArchiveDrainTestBase):
         self.assertEqual(r["backfill"]["evicted"], 1)
         self.assertIn("z-old", parse_archived_state(self.root))
         self.assertNotIn("z-old", parse_state(self.root))
-        # 盘点信号不受开关约束：①报告+滞留≥3天 / ②孤儿 均列示
+        # 盘点信号不受开关约束：① 水位观测计数（zero-aged 终态）/
+        # ② 孤儿列示（zero-orphan）
         self.assertTrue(r["audit"]["fired"])
-        self.assertIn("zero-aged", r["audit"]["stale_dirs"])
-        self.assertIn("zero-orphan", r["audit"]["stale_dirs"])
+        self.assertEqual(r["audit"]["terminal_unarchived"], 1)
+        self.assertEqual(r["audit"]["stale_dirs"], ["zero-orphan"])
 
 
 if __name__ == "__main__":
