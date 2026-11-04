@@ -1,7 +1,7 @@
 # CLI stderr 诊断噪声统一判别与降噪
 
-<!-- knowledge: capability=cli-stderr-noise-filtering rev=2
-     sources=spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count -->
+<!-- knowledge: capability=cli-stderr-noise-filtering rev=3
+     sources=spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution,spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
 
 claude CLI 启动期诊断噪声行（`[claude-code:unrecognized_model]` 等，非 Anthropic 模型名 run 每 run 恒 1 条、与失败/停滞零区分度）的框架级判别与降噪：判别收口单源，自省深扫与回填失败归因等消费端共用同一常量，防止无害诊断行挤占真实故障证据。
 
@@ -15,6 +15,8 @@ claude CLI 启动期诊断噪声行（`[claude-code:unrecognized_model]` 等，�
 - 回填失败归因降噪：回填 run 失败归因文本先按噪声常量逐行过滤 stderr，再取过滤后尾部 400 字符；过滤后为空回退 stdout 尾部 400 字符（stdout 不过滤——`[claude-code:*]` 诊断行只写 stderr）；stdout 亦为空时归因仅保留退出码前缀（「claude -p 回填 run {id} 退出码 N」形态）。
 - 降噪不触原始留证：过滤只作用于摘要与归因消息，run 产物 jsonl 的 stderr 事件与回填 stdout/stderr 双留档保持全量原始内容，取证现场完整。
 - admin 证据字段豁免：admin 通道失败证据字段 `stderr_tail` 不过滤、按原始 stderr 独立留证（admin 通道 unrecognized_model 秒败本身是瘫痪判别信号，滤掉即毁证）。
+- unrecognized_model 双形态判读：stderr 诊断行形态（`[claude-code:unrecognized_model]`）是启动期噪音——自定义 BASE_URL 下每请求都打但请求照发，成功 run 同样高频在场，勿当死因；HTTP 400 拒绝形态是真实死亡——CLI 进程内重试白名单仅 5xx/429/断连/流停滞，400 不在其中，run 一次即死不因重试自愈（链上候选场景立即沿链推进，见 [failover-dispatch](../provider-models/failover-dispatch.md)）。
+- 真故障与噪音的分界：评审/蒸馏类 run 连续 3 次报 unrecognized_model + Exit code 1 = provider/模型配置侧真故障（会冻结转人工），勿按噪音豁免；间歇出现且伴随成功 run 的 stderr 行才是噪音。
 
 ## 关键行为
 
@@ -24,3 +26,4 @@ claude CLI 启动期诊断噪声行（`[claude-code:unrecognized_model]` 等，�
 
 - 2026-10-05 evo-reduce-cli-stderr-noise-attribution（spec/archive/2026-10-05-evo-reduce-cli-stderr-noise-attribution） — 新增噪声判别单源常量与入口、深扫首条 stderr 摘要跳噪与全噪声置空、回填失败归因过滤回退 stdout、admin 证据字段 stderr_tail 豁免
 - 2026-10-08 evo-split-self-review-stderr-noise-count（spec/archive/2026-10-08-evo-split-self-review-stderr-noise-count） — 修订自省深扫消费端的 stderr 计数口径：`stderr_count` 只计非噪声行、噪声行单列 `stderr_noise_count`（取代「stderr 计数保留全量」的计数条款）
+- 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠 unrecognized_model 双形态判读签名：stderr 行形态为噪音、400 拒绝形态一次死（进程内重试白名单仅 5xx/429/断连/流停滞）、评审/蒸馏 run 连续 3 次同签名即配置侧真故障

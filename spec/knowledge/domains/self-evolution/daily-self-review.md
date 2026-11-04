@@ -1,4 +1,4 @@
-<!-- knowledge: capability=daily-self-review rev=4 sources=spec/archive/2026-09-10-add-daily-self-review,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-12-evo-add-self-review-todo-fallback-honesty,spec/archive/2026-10-30-evo-self-review-evidence-bound-attribution -->
+<!-- knowledge: capability=daily-self-review rev=5 sources=spec/archive/2026-09-10-add-daily-self-review,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-12-evo-add-self-review-todo-fallback-honesty,spec/archive/2026-10-30-evo-self-review-evidence-bound-attribution,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
 
 # 每日定时自省
 
@@ -14,6 +14,7 @@ daemon 每晚由 Administrator Agent 自动复盘当日运行（浪费/失误/�
 - 纪律承载层：归因层级是语义判断，`core/self_review.py` 对 analysis 字段仅格式化渲染、不生成内容，代码层不设归因层级机械校验；该纪律由 `agents/self-review.md`「调查评估」质量标准段承载（模板经 prompt_builder 装载、缺失 fail-fast，改模板即生效）。纪律未生效的观测信号为后续窗口再现「证据只覆盖形态却单因归因」。
 - 上下文阅读开关：`admin.self_review.read_todo: true` 时自省派发 prompt 的「近 3 日既有条目」段注入窗口内既有条目的带 ID 标注清单（供识别历史条目、避免重复、标注已闭环项）；窗口内确无条目时该段为「近3日窗口内无既有条目」——此为真收集后的可核实结论。false（缺省）时该段为归因 read_todo 关闭的显式未收集陈述（如「（read_todo 关闭，未收集既有条目）」）——未收集与收集为空两种状态在输出文案上必须可分辨，未收集态不得呈现为空结论。未收集陈述在自省 detail 组装侧显式注入，不落入 prompt 组装的空清单兜底文案。
 - 立项权保留：自省链路不依据 todo.md 条目自动创建 SPEC、注册 STATE 条目或派发 implementer——SPEC 立项判定权保留给用户；自省产出与 todo.md 仅供阅读。
+- 消费侧独立复核：阅读 todo.md 条目时，「证据」段（具体数字/事件引用）可采信，「调查评估/根因」段的归因结论不可直接采信——其历史准确率有限，消费侧（立项起草、人工处置、后续 agent 复核）须回源码与 run jsonl 独立复核后再采信；写侧的归因证据边界纪律约束产出，不构成读侧免复核凭据。
 - 摘要夹具过滤：日审数据摘要装配识别项目 fixture 标记（复用 dashboard registry 既有读取入口）——标记项目的告警不计入未处理告警计数，以显式 fixture 标注单独呈现或整体省略，MUST NOT 与真实项目告警混排；告警记录本身不删不改。标记读取失败或项目未标记一律按非夹具处理（fail-open），不因标记异常使摘要失效；无标记项目的计数口径与摘要结构不变。
 - 配置界面：`admin.self_review` 三键（enabled/run_at/read_todo）在 Dashboard 设置页提供读写界面，enabled 与 read_todo 为开关控件、run_at 为时间输入（HH:MM 前后端双重校验，非法输入被拒）；保存后经既有配置热更新生效，无需重启 daemon。
 
@@ -23,3 +24,4 @@ daemon 每晚由 Administrator Agent 自动复盘当日运行（浪费/失误/�
 - 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 数据摘要装配新增夹具项目过滤：fixture 标记项目告警不进未处理计数、以 fixture 标注单独呈现，fail-open 不因标记异常失效
 - 2026-10-12 evo-add-self-review-todo-fallback-honesty（spec/archive/2026-10-12-evo-add-self-review-todo-fallback-honesty） — read_todo 关闭时既有条目段改为归因「未收集」的显式陈述、与真收集为空的文案可分辨，判定点定在组装侧（治「未收集被呈现为近3日无条目、误导回顾 agent」）；read_todo 开启的收集与注入行为不变
 - 2026-10-30 evo-self-review-evidence-bound-attribution（spec/archive/2026-10-30-evo-self-review-evidence-bound-attribution） — 「调查评估」新增归因证据边界纪律：结论层级与当日可回收证据覆盖层级一致，证据只覆盖失败形态时写多假说并存、禁单因确定性归因与定向修复建议（建议转取证/止损方向），有直接证据钉死才给确定性归因并附引用；归因纠错以新条目更正不回改历史；纪律落模板层、代码层不设机械校验
+- 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠消费侧判读签名：todo.md 条目证据段可采信、根因段归因历史准确率有限，消费侧立项/处置前须回源码与 run jsonl 独立复核

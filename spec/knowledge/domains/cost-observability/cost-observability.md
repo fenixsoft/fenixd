@@ -1,6 +1,6 @@
 # 成本观测与金额展示
-<!-- knowledge: capability=cost-observability rev=2
-     sources=spec/archive/2026-09-06-add-cost-observability,spec/archive/2026-09-11-add-model-billing-cost-display -->
+<!-- knowledge: capability=cost-observability rev=3
+     sources=spec/archive/2026-09-06-add-cost-observability,spec/archive/2026-09-11-add-model-billing-cost-display,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
 
 按 SPEC 累计 token 用量并本地计价展示金额，配预算阈值告警，使单 spec 烧钱可观测、可预警、不伪造。
 
@@ -14,9 +14,11 @@
 - **run 级成本计算来源**：从 run 产物尾部（`.fenix/runs/*.jsonl`，含归档与历史 run）的 result 事件提取 usage 分项、provider_marker 提取实际 `model@provider`，按 `provider+model` 精确匹配 `llm.billing.prices` 计价；历史 run 无需迁移即可补算。无 result 事件（运行中/中断/无 LLM 的 run）视为不可计价；失败重试仅最终 result 计入（与 usage 统计口径一致）。
 - **SPEC 详情成本展示**：可计价 run 的成本求和；存在未计价 run 时附注「含 N 个未计价 run」；全部 run 不可计价（含开关关闭/无匹配价格）时展示「成本不可用」。展示与累计 token 同区（项目信息区），不新增独立页面。
 - **时间轴节点成本标注**：可计价 run 节点显示成本标注（含其 `model@provider` 信息，llm Tag 风格）；不可计价节点不显示成本标注；标注不改变时间轴既有节点结构与交互。
+- **网关路由模型的 usage 全零判读**：经网关路由模型的 stream-json usage 字段恒 0——billing 面板与 token 累计对网关 agent 恒 0 是数据形态事实，不是采集链路缺陷；直连 provider 的 run 才有真实 usage 分项。取证时勿以「usage 为 0」反推采集故障，先核对该 run 的 `model@provider` 是否经网关。
 
 ## 溯源
 
 - 史前基线 — token 成本按 run 采集、按项目与 agent 累计，Dashboard 展示并接预算控制。
 - 2026-09-06 2026-09-06-add-cost-observability（spec/archive/2026-09-06-add-cost-observability） — 改立 per-spec usage 累计与 STATE.md 持久字段，新增 Dashboard/报告展示、预算阈值告警与降噪分级，确立「不伪造金额」口径。
 - 2026-09-11 2026-09-11-add-model-billing-cost-display（spec/archive/2026-09-11-add-model-billing-cost-display） — 金额口径改为本地单价计算为唯一依据（网关回传展示口径已随该归档废止），新增 run 级本地计价、SPEC 详情成本展示与时间轴节点成本标注。
+- 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠 usage 全零判读签名：网关路由模型的 stream-json usage 恒 0 属数据形态事实，取证先核对 model@provider 是否经网关再谈采集缺陷

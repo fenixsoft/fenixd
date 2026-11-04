@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-10-30 18:20 UTC+8
+> 最后更新：2026-11-04 15:55 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -12,7 +12,7 @@
 | [hang-discrimination](hang-discrimination.md) | 挂起与慢速判别 | 2026-10-03 04:59 |
 | [run-failure-classification](run-failure-classification.md) | run 失败三级分类与熔断 | 2026-10-03 04:59 |
 | [run-failure-judgment](run-failure-judgment.md) | run 失败判定（产物优先） | 2026-10-03 04:59 |
-| [error-attribution-denoise](error-attribution-denoise.md) | 错误归因降噪 | 2026-10-03 04:59 |
+| [error-attribution-denoise](error-attribution-denoise.md) | 错误归因降噪与取证判读（死因误标防护：exit 143 判读、自杀排除、日志归属层、复发三轴、在飞识别） | 2026-11-04 15:55 |
 | [fail-counter-budget](fail-counter-budget.md) | 失败计数预算 | 2026-10-03 04:59 |
 | [per-spec-impl-budget](per-spec-impl-budget.md) | 单 SPEC 实现预算 | 2026-10-03 04:59 |
 | [run-budget-continuity](run-budget-continuity.md) | run 预算连续性 | 2026-10-03 04:59 |
@@ -34,6 +34,6 @@
 | [lifecycle-hygiene](lifecycle-hygiene.md) | run 生命周期卫生 | 2026-10-03 04:59 |
 | [cli-retry-backoff](cli-retry-backoff.md) | CLI 退避重试 | 2026-10-03 04:59 |
 | [run-stop-loss](run-stop-loss.md) | run 级止损（attempt 间隙取消/重试让位/停滞预算） | 2026-10-04 03:36 |
-| [cli-stderr-noise-filtering](cli-stderr-noise-filtering.md) | CLI stderr 诊断噪声统一判别与降噪（判别单源、深扫摘要与回填归因消费端、admin 证据豁免） | 2026-10-08 02:32 |
+| [cli-stderr-noise-filtering](cli-stderr-noise-filtering.md) | CLI stderr 诊断噪声统一判别与降噪（判别单源、深扫摘要与回填归因消费端、admin 证据豁免、unrecognized_model 双形态判读） | 2026-11-04 15:55 |
 | [impl-env-blocker-stop-loss](impl-env-blocker-stop-loss.md) | impl 环境阻塞止损与任务停滞预警 | 2026-10-14 14:06 |
 | [killpg-self-guard](killpg-self-guard.md) | 进程清场击杀自保护守卫（禁命中调用者自身进程组） | 2026-10-28 17:59 |

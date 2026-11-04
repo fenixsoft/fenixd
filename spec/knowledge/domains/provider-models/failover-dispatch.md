@@ -1,4 +1,4 @@
-<!-- knowledge: capability=failover-dispatch rev=3 sources=spec/archive/2026-09-02-add-provider-failover,spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume -->
+<!-- knowledge: capability=failover-dispatch rev=4 sources=spec/archive/2026-09-02-add-provider-failover,spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
 
 # provider 故障切换派发（failover 链推进与可观测）
 
@@ -15,9 +15,11 @@ attempt 失败后的链推进决策与留痕：切换类错误驱动候选链前
 - 重派 run 在运行记录中标注「429 限流重派」缘由，供取证。
 - 可观测契约：每个 attempt 启动时向 run jsonl 追加 provider_marker 行（provider / model / chain_index）；AgentRunResult 携带 provider_used / model_used；跨 attempt 切换输出 INFO 级「provider switched」日志（含 spec 名与新旧 provider，模型名变化时附 `model_changed: <old>→<new>`）。
 - 单 provider 当日 attempt 计数超过 `pm.failover.daily_attempts_warn` 时打 WARNING，当日只告警一次。
+- 触发面是「失败」不是「挂」：链推进由 attempt 失败信号（错误/非零退出）驱动，网关「连得上但不响应」的 TCP 黑洞不产生失败信号、不触发任何链推进或退避——run 以约 1 轮/10 分钟的蠕动节奏耗到超时监督上限。黑洞型故障只有超时监督能兜底，取证时勿以「为何不 failover」归因，先确认 provider 是否处于黑洞形态。
 
 ## 溯源
 
 - 2026-09-02 add-provider-failover（spec/archive/2026-09-02-add-provider-failover） — 建立切换类错误分类、链推进与全链冷却失败语义，以及 provider_marker / provider switched / 高频告警三件可观测契约
 - 2026-09-30 add-code-review-concurrency-and-429-resilience（spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience） — 429 限流纳入切换类分类（三形态判定先于瞬断/4xx、独立限流冷却缺省 300s、不计 4xx 熔断双计数），新增限流打死 run 冷却到期自动重派一次（意图登记/唯一消费方/幂等续做/预算守卫/留痕标注）
 - 2026-10-06 add-code-review-ratelimit-resume（spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume） — 限流终局归因改双源（result 事件兜底）、重派消费由唯一周期消费方改为手动+周期双车道共享配额统一入口、code-review 车道重派由复用原 manifest 全量重跑改为剃余续跑只跑剩余文件
+- 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠 failover 触发面判读签名：只认失败不认挂，TCP 黑洞不触发链推进，run 蠕动到监督上限须靠超时监督兜底

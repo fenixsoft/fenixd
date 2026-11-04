@@ -1,7 +1,7 @@
 # 存量时间调用点迁移完成性契约
 
-<!-- knowledge: capability=timelib-callsite-migration rev=1
-     sources=spec/archive/2026-10-07-add-timelib-callsite-migration -->
+<!-- knowledge: capability=timelib-callsite-migration rev=2
+     sources=spec/archive/2026-10-07-add-timelib-callsite-migration,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
 
 生产代码的时间调用点已全部收拢进 [timelib 收拢层](timelib-consolidation.md)；本能力锁定迁移完成后的稳态——守卫白名单零豁免、写侧零 naive 产出、调度语义边界换算规则、CLI 展示统一与部署副本刷新登记，防止迁移成果回潮。
 
@@ -13,6 +13,7 @@
 - **迁移等价替换纪律**：时间调用点迁移限定等价替换——不改窗口阈值、不改超时秒数、不改台账 schema 字段名、不改告警判定边界；迁移中发现必须的行为变化（如存量数据按旧解读已错 8 小时）在 run 结果中申报，行为变化另行走 SPEC，不顺手修改。测试替身与生产同批迁移（逐域 grep 替身内 naive 串构造、`ts[:19]` 切片、`fromtimestamp` 构造），防「替身没跟着改」的假失败/假通过；自省窗口/调度类测试为用户级配置敏感区，替身时间戳格式逐域核对。
 - **CLI 展示统一 fmt_display**：`bin/fenix_process.py` 与 `bin/fenix_dashboard.py` 不保留私有本地时间格式化助手（`_local_ts` 类），时间戳展示一律 `timelib.fmt_display`，输出格式 `YYYY-MM-DD HH:MM:SS` 本地时区；`Z` 后缀、`+00:00` 后缀、无后缀三形态输入的输出与既有口径逐字一致（无后缀按本地解读，与 `parse_ts` 策略一致）。`bin/` 脚本的时间戳解析走 `parse_ts`，无裸 `fromisoformat`。
 - **部署副本人工刷新**：`bin/*.py` 为跟踪真身，`.fenix/bin` 为未跟踪部署副本——worktree 不含 gitignored 文件，副本改动不随 merge-back 落地。真身修改合入主树后，部署副本刷新是登记在案的人工步骤（`.fenix/todo.md` 或 docs help 人工步骤节），注明需主树手工同步或重启部署机制，agent 不可交付。
+- **跨源时间对齐先统一时区**：取证时比对 VERDICT/日志/提交等跨源时间戳，先归一到同一时区再比对——同一事件以 UTC 形态与本地形态呈现为两个不同时刻，直接比对会得出「先后颠倒」的假结论。写侧已统一 aware UTC、读取侧经 `parse_ts` 兼容三形态输入，但人工比对与跨源关联仍须显式归一。
 
 ## 关键行为
 
@@ -23,3 +24,4 @@
 ## 溯源
 
 - 2026-10-07 add-timelib-callsite-migration（spec/archive/2026-10-07-add-timelib-callsite-migration） — 新增能力：守卫白名单清零进入零豁免稳态、写侧零 naive 产出、self_review 窗口整体迁 aware UTC 与 HH:MM 调度语义边界换算、CLI 展示统一 fmt_display（私有 `_local_ts` 助手退役）、迁移等价替换纪律、`.fenix/bin` 部署副本人工刷新登记
+- 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠跨源时间对齐判读签名：VERDICT 等跨源时间戳比对先统一时区（同一事件曾以 UTC/本地两种形态呈现为两个时刻），写侧统一不豁免人工比对归一

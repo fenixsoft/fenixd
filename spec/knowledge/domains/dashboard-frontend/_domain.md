@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-10-31 17:53 UTC+8
+> 最后更新：2026-11-04 15:55 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -19,7 +19,7 @@
 | [spec-doc-view](spec-doc-view.md) | SPEC 文档查看 | 2026-10-03 04:59 |
 | [spec-status-actions-modal](spec-status-actions-modal.md) | 状态变更操作弹窗 | 2026-10-03 04:59 |
 | [spec-approve-push-modal](spec-approve-push-modal.md) | 审批推送弹窗 | 2026-10-03 04:59 |
-| [spec-timeline-accuracy](spec-timeline-accuracy.md) | 时间轴准确性 | 2026-10-03 04:59 |
+| [spec-timeline-accuracy](spec-timeline-accuracy.md) | 时间轴准确性（backward 序判定依赖生命周期枚举完整登记） | 2026-11-04 15:55 |
 | [spec-timeline-admin-events](spec-timeline-admin-events.md) | 时间轴 admin 事件 | 2026-10-03 04:59 |
 | [timeline-gate-failure-display](timeline-gate-failure-display.md) | 时间轴门禁失败展示 | 2026-10-03 04:59 |
 | [task-progress-phase-display](task-progress-phase-display.md) | 任务进度按阶段呈现 | 2026-10-03 04:59 |

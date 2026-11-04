@@ -1,8 +1,8 @@
-<!-- knowledge: capability=run-isolation rev=1 sources=spec/archive/evo-worktree-conflict-recovery-1789359846 -->
-
 # run 工作树隔离与冲突恢复
 
-worktree 创建撞锁时的归属诊断与恢复：先判定锁持有人是活动 run 还是残留，残留自动清理重试，活动并发结构化降级，且不误伤预算记账。
+<!-- knowledge: capability=run-isolation rev=2 sources=spec/archive/evo-worktree-conflict-recovery-1789359846,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md -->
+
+worktree 创建撞锁时的归属诊断与恢复：先判定锁持有人是活动 run 还是残留，残留自动清理重试，活动并发结构化降级，且不误伤预算记账；附锁冲突与 spec 归属的取证判读纪律。
 
 ## 现行规则
 
@@ -11,7 +11,10 @@ worktree 创建撞锁时的归属诊断与恢复：先判定锁持有人是活�
 - 残留清理重试：判定残留时先安全清理后重试创建一次，重试仍失败才降级，原因 `stale-recovery-failed`。清理满足既有删除约定：删除前对该 worktree 快照留档（`_snapshot_dirty_worktree`）；跳过保护集（`.fenix/interrupted_runs.json` 在册项与活动集在册项）；经 `git worktree remove --force` 并 `prune`，MUST NOT 直接 rmtree 目录树。非冲突类失败（git 命令失败/超时）不进清理重试，原因 `env-failure`；锁龄处于 create 构建窗口（worktree add + seed + deps 供给未完成）时判活动保留，不误判残留。
 - 降级诊断化：降级到 legacy verifier 时以既有 `degrade_context.json` 通道落盘结构化原因（`reason` 取值 `parallel-run` | `stale-recovery-failed` | `env-failure`，含 spec 与活跃 run id），经 `verify_report` 注入后 Dashboard 可见；不新建平行的日志/信号通道。原因覆盖异常驱动的降级路径（planner-plan 失败、planner-judge 失败），并从 worktree 冲突点经 `AgentRunResult.error` 传递到降级落盘点，不得丢弃为裸串 `Failed to create worktree`。
 - 锁冲突不按死亡 run 归因：锁冲突属基础设施状态，MUST NOT 判为「run 异常死亡」而回退预算或计入 retry（dispatch 死亡 run 豁免判据 `impl_status is None` 不得命中）；处置口径与 `provider circuit open` 先例一致。派发层既有的锁冲突退避与 `dispatch_stalled` 升级语义保持不变，create 层不排定重试定时器、不写 STATE 退避字段。
+- 锁冲突告警取证判读：「锁冲突」类告警的常见成因是同一 run_id 重复派发（双派发），非残留锁；动手清锁前先核对 run_id 派发记录排除重复派发，否则清掉活动锁会放大并发。
+- spec→分支/run 流归属禁 glob 前缀：按 spec 名枚举实现分支或 run 流时 MUST 全等比较——spec 名互为前缀时 glob 前缀匹配会跨 spec 误归属；worktree 按 spec 定位以 `worktree_manager.find_worktree_by_spec` 为单源约定。
 
 ## 溯源
 
 - 2026-09-14 evo-worktree-conflict-recovery-1789359846 — 新增锁归属诊断（活动/残留判定与 sidecar 缺记 fail-closed）、残留清理重试（快照留档/保护集/force remove）、降级原因结构化通道与锁冲突不按死亡 run 归因
+- 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠取证判读两条：「锁冲突」告警常见成因是同一 run_id 重复派发非残留锁；spec→分支/run 流枚举禁 glob 前缀匹配（spec 名互为前缀即误归属），定位单源 find_worktree_by_spec

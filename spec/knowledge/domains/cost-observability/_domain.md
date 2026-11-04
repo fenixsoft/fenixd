@@ -1,5 +1,5 @@
 # 成本与可观测
-> 最后更新：2026-10-07 14:39 UTC+8
+> 最后更新：2026-11-04 15:55 UTC+8
 
 成本与可观测。覆盖 run 成本采集与本地计价、预算与费控治理、延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [cost-observability](cost-observability.md) | per-spec token 用量累计、金额本地计价展示与预算阈值告警 | 2026-10-03 04:59 |
+| [cost-observability](cost-observability.md) | per-spec token 用量累计、金额本地计价展示与预算阈值告警（含网关 usage 全零判读） | 2026-11-04 15:55 |
 | [cost-governance](cost-governance.md) | 基础设施失败费控豁免（不耗预算、不进冻结闸门、历史轮次回拨） | 2026-10-03 04:59 |
 | [agent-cost-control](agent-cost-control.md) | 单 run 轮次上限与 thinking_tokens 遥测过滤 | 2026-10-03 04:59 |
 | [agent-run-token-economy](agent-run-token-economy.md) | run 级上下文经济性指标与网关前缀缓存探针 | 2026-10-03 04:59 |
