@@ -505,9 +505,14 @@ class PromptBuilder:
             )
         if agent_type == "planner-judge":
             # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
-            # 与 core/verify_engine/judge_files.py 的 JUDGE_ATTRIBUTION_FILENAME
-            # 同源（注入侧路径 = 读侧路径，防双实现漂移）。
-            values["{judge_attribution_path}"] = str(vp_dir / "judge_attribution.json")
+            # 读点净化与写侧单源（code-review item 334ea71f5bd9）：直接复用写方/
+            # 读方同一函数 judge_files._attribution_path（目录成分经 safe_component），
+            # 病理 spec 名下注入值不再以裸 spec_name 指向从未落盘的目录；常规名下
+            # safe_component 恒等、路径不变。函数内局部 import（同下方 scenarios
+            # 先例）避免模块级拉起 verify_engine 包重依赖。
+            from core.verify_engine.judge_files import _attribution_path
+
+            values["{judge_attribution_path}"] = str(_attribution_path(root, spec_name))
         if agent_type in ("planner-plan", "planner-judge", "fast-track", "verifier"):
             values["{scenarios_path}"] = str(
                 planner_result_path(root, spec_name, "planner-plan"))

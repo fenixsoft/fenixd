@@ -439,6 +439,12 @@ class ApiAssertionRunner:
             result["error"] = (
                 f"status_code 期望须为整型状态码，不支持通配形态: {expected!r}"
             )
+        elif actual is None:
+            # 定向归因：非 SSE 的 dict 捕获缺 status 键（mock/手写 capture
+            # 形态），actual 取 None 后静默 pass=False 且无 error，judge 须能
+            # 区分「响应捕获畸形/断言挂错捕获」与真实状态码不符（口径对齐
+            # latency_under 的 actual=None 分支，code-review item d519c708a30d）
+            result["error"] = "响应捕获无 status 状态码，无法与期望状态码对比"
         return result
 
     async def _assert_sse_event_count(self, resp, a: dict) -> dict:

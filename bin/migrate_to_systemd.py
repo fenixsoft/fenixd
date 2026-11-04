@@ -47,6 +47,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -489,8 +490,10 @@ def stage3_enable_units(proot: Path, froot: Path, dry_run: bool) -> dict:
 def probe_dashboard_http(port: int) -> bool:
     """端口 HTTP 可服务探测（任何 HTTP 响应即视为服务在场，与 hook_engine 同口径）。"""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as resp:
-            return resp.status < 500
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2):
+            return True
+    except urllib.error.HTTPError:
+        return True  # 服务已响应（返回错误码也算在场，与 hook_engine._probe_dashboard 同口径）
     except Exception:
         return False
 
@@ -547,9 +550,21 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
         )
 
     # ③ 退出码语义：unit 文本携带重启策略字段（真熔断演练不在迁移验收面，
-    # 由 tests/test_systemd_hosting.py 与 supervisor 退出码单测覆盖）
-    project_text = sh.render_project_unit(proot)
-    dashboard_text = sh.render_dashboard_unit(froot)
+    # 由 tests/test_systemd_hosting.py 与 supervisor 退出码单测覆盖）。
+    # 验收对象取 /etc/systemd/system 下已落盘的 unit 文件（already 幂等路径
+    # 不重写文件，落盘可能是旧模板版本）；落盘读取失败回退现场渲染模板
+    try:
+        project_text = (sh.SYSTEMD_UNIT_DIR / sh.unit_name_for(proot)).read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        project_text = sh.render_project_unit(proot)
+    try:
+        dashboard_text = (sh.SYSTEMD_UNIT_DIR / sh.DASHBOARD_UNIT).read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        dashboard_text = sh.render_dashboard_unit(froot)
     for label, text, needle in (
         (
             "退出码语义",
@@ -590,7 +605,8 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
         leaked = [k for k in denv if k.startswith(("CLAUDE_PID", "CLAUDECODE", "CLAUDE_CODE_"))]
         if leaked:
             errors.append(f"env 冒烟：新 dashboard environ 泄漏会话身份键 {sorted(leaked)}")
-        checks.append(f"env 冒烟（dashboard）：DETACH=1 在场、会话身份键缺席（pid={dash_pid}）")
+        if not any("env 冒烟" in e for e in errors):
+            checks.append(f"env 冒烟（dashboard）：DETACH=1 在场、会话身份键缺席（pid={dash_pid}）")
     sup_pid = _project_hosting_pid(proot)
     env_path = sh.project_env_file(proot)
     if sup_pid is not None and env_path.exists():
@@ -651,7 +667,10 @@ def migrate(project_root: Path, framework_root: Path, dry_run: bool) -> int:
         )
         return 1
     if dry_run:
-        log(f"前置：项目在跑（快照 pid={sorted(old_pids)}）✓；unit 已装={project_unit_installed}")
+        if old_pids:
+            log(f"前置：项目在跑（快照 pid={sorted(old_pids)}）✓；unit 已装={project_unit_installed}")
+        else:
+            log(f"前置：项目无在跑进程（已迁移态，unit 已装={project_unit_installed}）✓")
     elif project_unit_installed:
         try:
             already_active = sh.unit_active(sh.unit_name_for(proot))

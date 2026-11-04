@@ -646,7 +646,7 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     try:
         dirty = _git_status_paths(proot)
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：_git_out 的
         # RuntimeError 消息含最多 300 字符 git stderr 原文，可能携带仓库内部
         # 路径，细节经服务端日志留痕，客户端收固定文案。
@@ -676,7 +676,11 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         return {"ok": False, "steps": [], "error": err}
 
     gi_path = proot / ".gitignore"
-    gi_backup = gi_path.read_bytes() if gi_path.exists() else None
+    # 快照预置 None（code-review item c6aba6cf1154）：快照读取已纳入下方
+    # 主 try，读取失败（OSError）落既有 OSError 分支；_abort 还原分支仅在
+    # appended 非空（快照必已读成）时触达 gi_backup，预置只为闭包引用
+    # 作用域完备。
+    gi_backup = None
 
     # 复用 stash_guard 回滚子函数的最小宿主（code_fix._main_tree_dirty_files
     # 的 ``_Probe(G6StashGuardMixin)`` 先例：完整 WorktreeManager 装配是死重；
@@ -757,6 +761,11 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
                 "error": f"untrack 根治中止已回滚（主树状态已还原）: {reason}"}
 
     try:
+        # 快照读取纳入主 try（code-review item c6aba6cf1154）：读失败
+        # （OSError）不再直穿 execute_adjudication_choice 的宽 except，由
+        # 本 try 既有 OSError 分支给固定文案并日志留痕（此刻零 git 写零
+        # 文件触碰，_abort 回滚集为空）。
+        gi_backup = gi_path.read_bytes() if gi_path.exists() else None
         for path in to_untrack:
             _git_out(proot, "rm", "-f", "--cached", "--", path)
             processed.append(path)
@@ -990,7 +999,21 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
     # 删除而非按行过滤回写——否则全部追加行被剔除后仍回写空文件，给前置
     # 态本无 .gitignore 的检出残留一个新建的 0 字节文件。
     gi_existed = (proot / ".gitignore").exists()
-    appended = _append_gitignore_entries(proot, entries)
+    # 追加段先于提交段独立保护（code-review item c6aba6cf1154）：锁获取
+    # （.git 缺失/不可写→OSError）或原子写失败（磁盘满等）时零 git 写零
+    # 文件触碰，直接返回固定文案——不走下方提交保护段的还原分支（其
+    # 逻辑以「已有追加行落盘」为前提，追加失败时无行可还原）。
+    try:
+        appended = _append_gitignore_entries(proot, entries)
+    except (OSError, RuntimeError) as e:
+        # 不外泄裸异常文本（item e584a2ede367 同口径）：细节服务端日志留痕。
+        logger.warning(
+            "_append_gitignore_and_commit .gitignore 追加失败"
+            "（header=%s）: %s: %s",
+            header, type(e).__name__, e,
+        )
+        return {"appended": [], "commit_hash": "",
+                "error": ".gitignore 追加失败（详见服务端日志）"}
     if not appended:
         return {"appended": [], "commit_hash": "", "error": ""}
     # .gitignore 入库态快照（code-review item 8db336608775）：新文件场景 add
@@ -1171,7 +1194,7 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     # 的删改，违背「零 git 写、只动 untracked」契约。
     try:
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：git stderr 原文
         # 经服务端日志留痕，客户端收固定文案。
         logger.warning(
@@ -1384,7 +1407,7 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
     # 否则会把 tracked 文件的工作区副本直接 unlink 制造 git 可见删改。
     try:
         indexed = {p for p in _git_out(proot, "ls-files", "-z").split("\0") if p}
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：git stderr 原文
         # 经服务端日志留痕，客户端收固定文案。
         logger.warning(

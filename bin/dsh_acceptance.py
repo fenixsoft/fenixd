@@ -1343,6 +1343,7 @@ def run_smoke(args: argparse.Namespace) -> int:
     # 装置创建收口进 try（code-review item 61687c562eff）：/tmp 写满或权限
     # 异常时 mkdtemp/mkdir 抛 OSError，裸抛以 traceback + 退出码 1 收场，
     # 违背模块头「2=用法/装置错误」退出码契约（同 run_accept 路径解析收口）
+    holder: Optional[Path] = None
     try:
         holder = Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
         fixture = build_fixture(holder, prefix)
@@ -1350,6 +1351,11 @@ def run_smoke(args: argparse.Namespace) -> int:
         workdir.mkdir()
     except (ValueError, OSError) as e:
         print(f"夹具装置创建失败：{e}", file=sys.stderr)
+        # mkdtemp 成功但 build_fixture/workdir.mkdir 中途失败：holder 已落
+        # 磁盘而 evidence 未产出、前缀无从追查——按模块头零残留契约就地
+        # 回收（同 finally 的 rmtree 口径）；mkdtemp 自身失败时 holder 为 None
+        if holder is not None:
+            shutil.rmtree(holder, ignore_errors=True)
         return 2
     device: Optional[Dict[str, Any]] = None
     evidence: Dict[str, Any] = {
@@ -1730,11 +1736,17 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
     # mkdtemp/build_fixture 抛 OSError 时以裸 traceback + 退出码 1 收场，违背
     # 模块头「2=用法/装置错误」契约；此处失败无证据文件产出，归 1 会与
     # 「验收失败（证据内含明细）」语义混淆（同 run_accept 路径解析收口先例）
+    holder: Optional[Path] = None
     try:
         holder = Path(tempfile.mkdtemp(prefix=f"{FIXTURE_STEM}-"))
         fixture = build_fixture(holder, prefix)
     except (ValueError, OSError) as e:
         print(f"夹具装置创建失败：{e}", file=sys.stderr)
+        # mkdtemp 成功但 build_fixture 中途失败：holder 已落磁盘而 evidence
+        # 未产出、前缀无从追查——按模块头零残留契约就地回收（同 finally 的
+        # rmtree 口径）；mkdtemp 自身失败时 holder 为 None
+        if holder is not None:
+            shutil.rmtree(holder, ignore_errors=True)
         return 2
     evidence: Dict[str, Any] = {
         "meta": {"spec": "dsh-primary-acceptance-switch", "mode": "accept",

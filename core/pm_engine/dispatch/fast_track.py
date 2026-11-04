@@ -144,13 +144,25 @@ class FFastTrackMixin:
         # （fix-fasttrack-recovery-resume D4）本 update_spec 只写 status/error——
         # **不得**在此清空 branch/implementer_run，也**不得**消费 _recovery_resume：
         # 降级后走 implementer 车道，保留的锚点与标记须原样交给其派发入口消费。
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "status": "ready",
-                "error": (f"fast-track 规模预检降级完整模式（scale={scale}，任务面超阈）"),
-            },
-        )
+        # 状态写盘不穿透降级链（code-review item 73b9b83a67c9，对齐
+        # backoff._handle_dispatch_lock_conflict / adjudication._all_clear_proceed
+        # 口径）：STATE 瞬态 IO/锁异常仅 WARNING 留痕后继续 stuck 判定与
+        # _enqueue，避免异常跳过本轮降级入队；写失败时降级原因缺失由周期
+        # 扫描兜底。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "ready",
+                    "error": (f"fast-track 规模预检降级完整模式（scale={scale}，任务面超阈）"),
+                },
+            )
+        except Exception as werr:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"规模降级状态写盘失败 '{spec_name}'（非阻塞）: "
+                f"{type(werr).__name__}: {werr}",
+            )
         if stuck:
             # 封顶兜底：不再入队（零间隔空转循环的「零间隔」半边在此斩断），
             # spec 已保持 ready + error，等待周期扫描/人工通道重新派发。

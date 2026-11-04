@@ -454,6 +454,11 @@ class AssertionRunner:
                     # 选择器语法（支持 :has-text() / text= 等），querySelector
                     # 对这类语法抛 SyntaxError 被静默吞掉，含 tag/z-index 的
                     # 拦截详情在最有价值的拦截场景反而拿不到。
+                    # 求值限时 3000ms 同 _safe_evaluate 口径（code-review
+                    # item 046ca743600a）：click trial 已确认元素存在，
+                    # 提取前元素被移除/页面导航的竞态窗口内 locator.evaluate
+                    # 缺省按 30 秒超时等待重新匹配，失败路径单条断言最坏可
+                    # 被拖满 30 秒才落入下方 except。
                     intercept_detail = await self._locator(page, selector).evaluate(
                         """el => {
                             const rect = el.getBoundingClientRect();
@@ -469,7 +474,8 @@ class AssertionRunner:
                                 };
                             }
                             return null;
-                        }"""
+                        }""",
+                        timeout=3000,
                     )
                 except Exception as e:
                     # 拦截详情提取失败不阻塞主流程，但随结果 note 注明原因，
@@ -1054,6 +1060,10 @@ class AssertionRunner:
         # 逐元素取数外层异常文本（仅 selector 分支填充，code-review item
         # 02b9b2b1d6e5）：locator.all() 本身抛错等异常随结果 error 带出。
         outer_error = ""
+        # locator.all() 实际匹配元素数（仅 selector 分支填充，code-review
+        # item 6642b111a238）：区分零命中来源——all() 返回空（选择器未
+        # 匹配）与匹配到元素但逐元素读取全部失败（环境级中断）。
+        matched_elements = 0
         if selector:
             match_semantics = "selector 元素文本子串比较（大小写敏感）"
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配
@@ -1076,8 +1086,13 @@ class AssertionRunner:
                 # attribute_match 的 timeout 钳制预算防线），触顶截断剩余
                 # 元素、已取文本仍参与匹配，并在结果 note 注明。
                 deadline = time.monotonic() + _MAX_POLL_TIMEOUT_MS / 1000
+                # 先取元素列表再记录实际匹配长度（code-review item
+                # 6642b111a238）：texts 为空时据此判断是未匹配还是读取
+                # 全部失败。
+                elements = await page.locator(selector).all()
+                matched_elements = len(elements)
                 texts = []
-                for loc in await page.locator(selector).all():
+                for loc in elements:
                     if time.monotonic() >= deadline:
                         budget_note = (
                             f"匹配元素过多，逐元素取数超出总预算"
@@ -1166,12 +1181,27 @@ class AssertionRunner:
                 # checked_elements == 0 分支互斥，不争写 error 键。
                 result["error"] = f"逐元素取数中断: {outer_error}"
             if checked_elements == 0:
-                result["error"] = "选择器未匹配到任何元素"
-                zero_note = (
-                    "元素零命中（wait_for attached 未命中，元素从未渲染）"
-                    if not selector_attached
-                    else "元素零命中（wait_for attached 已命中，读取时元素数为 0）"
-                )
+                if matched_elements > 0:
+                    # 逐元素读取全部失败归因（code-review item
+                    # 6642b111a238）：all() 实际匹配到元素而 texts 为空，
+                    # 只能是读取全部抛错被跳过（预算截断在零次成功读取后
+                    # 收场的极端情形由预算 note 前缀注明截断），并非
+                    # 「未匹配」，不沿用下方配置性失败归因误导 judge。
+                    result["error"] = (
+                        f"逐元素读取全部失败: 选择器匹配到 "
+                        f"{matched_elements} 个元素，读取均抛错被跳过"
+                    )
+                    zero_note = (
+                        f"元素零命中（选择器匹配到 {matched_elements} 个元素"
+                        f"但逐元素读取全部失败，非未匹配）"
+                    )
+                else:
+                    result["error"] = "选择器未匹配到任何元素"
+                    zero_note = (
+                        "元素零命中（wait_for attached 未命中，元素从未渲染）"
+                        if not selector_attached
+                        else "元素零命中（wait_for attached 已命中，读取时元素数为 0）"
+                    )
                 result["note"] = (
                     f"{budget_note}；{zero_note}" if budget_note else zero_note
                 )

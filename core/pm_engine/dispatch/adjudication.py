@@ -3108,7 +3108,9 @@ class VAdjudicationMixin:
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
         missing_q = "、".join(
             (
-                f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
+                # or 兜底键存在但值为 null 的畸形条目（与 _preclassify_missing
+                # 0284d932e70f 口径对齐，伪路径 "None" 不流入重派/blocked 文案）：
+                f"{(m.get('path') or '?')}（{(m.get('violation') or 'missing')}）"
                 if isinstance(m, dict)
                 else str(m)
             )

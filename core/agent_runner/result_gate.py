@@ -1029,7 +1029,14 @@ def _check_impl_code_review_artifact(
     # 所有候选文件均不存在 → 缺失归因。
     first_err = None
     for path, mode in candidates:
-        if not path.is_file():
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            # stat 期非 ENOENT 的 OSError（EACCES/EIO 等）pathlib 不会吞
+            # （code-review item 5d5d0b91d325，同 _check_quality_gates_soft
+            # 先例防御）：按候选缺失处置，全部候选不可判时仍落缺失归因，
+            # fail-closed 不从硬门逸出。
             continue
         if mode == "worktree":
             # worktree 候选保持现状：read_text + json.loads，不做 mtime 硬拦
@@ -1396,7 +1403,20 @@ def _repo_code_review_gate_face(
     unreadable: list[str] = []
     sources_present = 0
     for src in sources:
-        if not src.is_file():
+        try:
+            src_is_file = src.is_file()
+        except OSError as e:
+            # stat 期非 ENOENT 的 OSError（EACCES/EIO 等）pathlib 不会吞
+            # （code-review item 5d5d0b91d325，同 _check_quality_gates_soft
+            # 先例防御）：裸探测会让异常逸出硬门、绕过下方 unreadable_sources
+            # 归因通道——按「该来源不计入有效行」语义收进名单并 WARNING 留痕。
+            unreadable.append(src.name)
+            _logger.warning(
+                "审查产物探测失败（repo-code-review-gate，该来源不计入有效行）"
+                ": %s (%s)", src.name, e,
+            )
+            continue
+        if not src_is_file:
             continue
         sources_present += 1
         try:
@@ -1792,7 +1812,18 @@ def salvage_result_from_transcript(
         return False
     if whitelist is None:
         whitelist = ()
-    if target.exists():
+    try:
+        target_exists = target.exists()
+    except OSError as e:
+        # exists() 与 is_file() 同款只吞 ENOENT/ENOTDIR/EBADF/ELOOP，stat 期
+        # EACCES/EIO 等 OSError 直接 raise（code-review item 6730a90c9bd8）：
+        # 目标在否不可判定 → 放弃捞回返回 False，守住本函数「不抛异常」契约
+        # （与下方转录读取/mkdir/落盘的 except 防御同口径）。
+        _logger.warning(
+            "%s 结果捞回放弃：目标文件存在性探测失败 '%s' (%s)",
+            agent_type, spec_name, e)
+        return False
+    if target_exists:
         return False
     if not run_id:
         return False

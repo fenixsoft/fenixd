@@ -2638,8 +2638,25 @@ class QQQueueMixin:
                             f"run 因 spec 冻结被终止 '{spec_name}' — "
                             f"_frozen_hold，不重试/不重派: {frozen_err}",
                         )
-                        self._pm.state_machine.mark_frozen_hold(
-                            spec_name, frozen_err)
+                        # hold-state 写点守卫（code-review item 96d043640103，
+                        # 对齐 repair_lane 同族冻结 hold-state 写点的
+                        # 3005bf766ee5 既有守卫范式）：mark_frozen_hold 是真实
+                        # STATE IO（flock + read/write），裸调若瞬时抛错会沿
+                        # worker 外层 except 被兜底成 _rollback_failed_dispatch
+                        # ——implementing → ready 清字段重派，本分支「不重试/
+                        # 不重派、不入队重派」的 hold-state 契约被放大成通用
+                        # 回滚。失败仅 WARNING 留痕并早退（保留冻结现场，
+                        # 不落入回滚重派）。
+                        try:
+                            self._pm.state_machine.mark_frozen_hold(
+                                spec_name, frozen_err)
+                        except Exception as fz_e:  # noqa: BLE001 —— 写失败不放大为重派
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"冻结 hold-state 写入失败 '{spec_name}'"
+                                f"（保留冻结现场早退，不落入回滚重派）: "
+                                f"{type(fz_e).__name__}: {fz_e}",
+                            )
                         return
                     # ── 人工取消 hold-state（add-run-cancel D4）──────
                     # 被取消的 run（cancelled=True）：只更新 error 字段（含
@@ -2658,15 +2675,32 @@ class QQQueueMixin:
                             f"run 被人工取消 '{spec_name}' — hold-state，"
                             f"不重试/不重派: {cancelled_err}",
                         )
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": cancelled_err,
-                                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）：
-                                # 随 STATE.md 存活，重启恢复/监测链路据此跳过该 spec。
-                                "_cancelled_hold": True,
-                            },
-                        )
+                        # hold-state 写点守卫（code-review item 96d043640103，
+                        # 对齐 repair_lane 同族取消 hold-state 写点的
+                        # 3005bf766ee5 既有守卫范式）：update_spec 是真实 STATE
+                        # IO（flock + read/write），裸调若瞬时抛错会沿 worker
+                        # 外层 except 被兜底成 _rollback_failed_dispatch——取消
+                        # 场景 spec 仍 implementing，回滚的 ready 写前状态复查
+                        # 会放行，覆写 error 并重派新 run，用户取消意图与
+                        # _cancelled_hold 标记丢失。失败仅 WARNING 留痕并早退
+                        # （保留取消现场，不落入回滚重派）。
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": cancelled_err,
+                                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）：
+                                    # 随 STATE.md 存活，重启恢复/监测链路据此跳过该 spec。
+                                    "_cancelled_hold": True,
+                                },
+                            )
+                        except Exception as cc_e:  # noqa: BLE001 —— 写失败不放大为重派
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"取消 hold-state 写入失败 '{spec_name}'"
+                                f"（保留取消现场早退，不落入回滚重派）: "
+                                f"{type(cc_e).__name__}: {cc_e}",
+                            )
                         return
                     # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
                     # 无收工结果产出（.fenix-run-result.json 缺失）＝ run 异常
@@ -3322,7 +3356,23 @@ class QQQueueMixin:
         则正常收尾（零 admin 会话）；未命中/失败走原路径熔断，告警 evidence 增补
         自愈评估摘要。
         """
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item d9a7315bce20，对齐同文件
+        # _handle_merge_back_real_failure 入口读取同款守卫）：read_one 是
+        # flock+read_all 真实文件 IO，本方法被实现 worker 失败链与 merge-only
+        # 重试 Timer 链共享（见下方记账注释），裸调瞬时 OSError 在 worker 路径
+        # 沿外层 except 落入 _rollback_failed_dispatch，沿 Timer 回调外溢则该链
+        # 不再排程新 Timer，MUST NOT 放大——logger.error 记审计后放弃本轮
+        # 顺延处置（交由周期消费者处置）。
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge 顺延处置读取 spec 现场失败 '{spec_name}'"
+                f"（放弃本轮顺延处置，交由周期消费者处置）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
         now = time.time()
         # first_at 非计数字段，沿用单一落点解析值（首阻缺省=now，自首次顺延
         # 起算窗口）；count 改走锁内原子递增（bump_counters 返回写后值，
@@ -3771,7 +3821,23 @@ class QQQueueMixin:
         implemented，不得把人工动作记成「自动合回成功」。
         """
         wm = self._pm.agent_runner.worktree_manager
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item d9a7315bce20，对齐同文件
+        # _handle_merge_back_real_failure 入口读取同款守卫）：read_one 是
+        # flock+read_all 真实文件 IO，本方法作为 merge-only 重试 Timer 回调体，
+        # 裸调瞬时 OSError 会杀死回调且不再排程新 Timer（worker 失败链复用时
+        # 则沿外层 except 落入 _rollback_failed_dispatch），MUST NOT 放大——
+        # logger.error 记审计后按 False 返回（本次未执行合并，交由周期消费者
+        # 处置）。
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge 重试读取 spec 现场失败 '{spec_name}'"
+                f"（放弃本轮合并重试，交由周期消费者处置）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
         # ── 状态守卫（evo-add-wip-defer-merge-retry-consumer 2.1a，两层守卫
         # 的第一层）── status 非 implementing 即跳过并清账后返回：人工/admin
         # 已把条目推进（如 orphaned_state 处置复位 ready、验证链推进
@@ -4157,7 +4223,24 @@ class QQQueueMixin:
         供实现 run 失败分支与 merge-only 重试点复用同一判定基准。rehearsed /
         wip_gate_blocked / 可重试形态均已在调用方早退，本方法只处理真失败。
         """
-        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item d9a7315bce20，复用同方法 bump_counters
+        # 941b22736836 / update_spec 2e1cb19c63c2 守卫范式）：read_one 是
+        # flock+read_all 真实文件 IO，本方法被 worker 失败链与 merge-only 重试
+        # Timer 回调共享，裸调瞬时 OSError 在 worker 路径沿外层 except 落入
+        # _rollback_failed_dispatch（指纹熔断/repair/ready 三段失败分类整体
+        # 跳过、白烧一整轮实现 run），沿 Timer 回调外溢则该链不再排程新 Timer，
+        # MUST NOT 放大——logger.error 记审计后放弃本轮失败分类（交由周期
+        # 消费者/在飞收尾处置）。
+        try:
+            spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.error(
+                "pm_engine",
+                f"merge-back 失败分类读取 spec 现场失败 '{spec_name}'"
+                f"（放弃本轮失败分类，交由周期消费者/在飞收尾处置）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return
         fp = self._pm._merge_fingerprint(merge_error)
         prev_fp = spec_entry.get("_merge_fp")
         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
@@ -4271,6 +4354,19 @@ class QQQueueMixin:
                 "error": final_error,
                 "_merge_fp": fp,
                 "_retry_count": 0,
+                # 熔断即本条失败链终结（D6）：_repair_round 一并归零
+                # （code-review item 234eef7240de，字段表对齐
+                # repair_lane._handle_remerge_failure 同族熔断分支的
+                # 06d96aa5edb5 修复）——unfreeze_spec 的解冻清零集不含
+                # 此字段，不归零则解冻重派后的新失败链首轮
+                # _should_enter_repair 按陈旧轮次判超限，repair 预算被前链
+                # 侵占（merge-only 重试 Timer 可在 repair 链在飞、spec 仍
+                # implementing 窗口重入本方法，此残留可达）。
+                "_repair_round": 0,
+                # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
+                # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
+                # 残留导致后续启动误走 re-merge 路径。
+                "_repair_awaiting_remerge": False,
             }
             if not streak_bumped:
                 breaker_updates["_merge_streak"] = streak
@@ -4545,9 +4641,10 @@ class QQQueueMixin:
         # 成功清账段单独包 try/except（code-review item e9377c18ee85，对齐
         # repair_lane.py:637-642 成功尾段范式）：本 update_spec（error 清空、
         # 计数清账、_merge_retry_pending/_wip_gate_deferred/
-        # _repair_awaiting_remerge 等待态解除）是本方法尾段唯一未包 try/except
-        # 的 IO 写点——其后的 _report_stash_pop_conflict / _sync_task_progress /
-        # consume_legacy / ocr 车道均已逐个非阻塞包裹。异常外溢时下方
+        # _repair_awaiting_remerge 等待态解除）是成功清账的 IO 写点——其后的
+        # verifier 入队（下方 Immediately queue verifier 处，code-review item
+        # 67a4576e66d5）/ _sync_task_progress / consume_legacy / ocr 车道均已
+        # 逐个非阻塞包裹。异常外溢时下方
         # _enqueue_front("verifier") 不再执行：spec 已 implemented 但无
         # verifier 条目、清账字段残留（worker 路径被外层 except 接住后
         # _rollback_failed_dispatch 因 status 已非 implementing 仅留痕，无
@@ -4644,8 +4741,21 @@ class QQQueueMixin:
                 "pm_engine",
                 f"consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
             )
-        # Immediately queue verifier at FRONT so it runs next
-        self._enqueue_front(spec_name, "verifier")
+        # Immediately queue verifier at FRONT so it runs next.
+        # verifier 入队写点守卫（code-review item 67a4576e66d5，对齐上方异常
+        # 恢复尾段与 repair_lane 成功尾段同款包裹）：_enqueue_front 内经
+        # _get_spec_priority 触发 STATE read_one 真实文件 IO，裸调瞬时抛错经
+        # merge-only 重试 Timer 线程进入时会杀死回调且不再排程新 Timer、
+        # verifier 条目丢失（worker 路径 status 已 implemented 仅外层留痕）——
+        # 失败仅 WARNING 留痕，交 full_scan 周期兜底。
+        try:
+            self._enqueue_front(spec_name, "verifier")
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"verifier 入队失败 '{spec_name}'（等 full_scan 周期兜底）: "
+                f"{type(e).__name__}: {e}",
+            )
         self._pm.logger.info(
             "pm_engine", f"Implement done, verifier queued for '{spec_name}'"
         )

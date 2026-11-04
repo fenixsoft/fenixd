@@ -810,6 +810,18 @@ class CliAssertionRunner:
         stdout = str(step.get("stdout") or "")
         if "json_parsed" in step:
             if not step.get("json_parsed"):
+                if step.get("json_parse_skipped"):
+                    # runner 越界标注透出：stdout 超解析上限被跳过解析置
+                    # json=None，「非合法 JSON」文案会把体积问题误归因为
+                    # 响应格式缺陷（口径对齐 api 侧 _assert_json_path）
+                    return {
+                        "type": "json_output",
+                        "layer": 3,
+                        "step": a.get("step"),
+                        "path": a.get("path"),
+                        "pass": False,
+                        "error": f"{step['json_parse_skipped']}，无 JSON 载荷可求值",
+                    }
                 return {
                     "type": "json_output",
                     "layer": 3,

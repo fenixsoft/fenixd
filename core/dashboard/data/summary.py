@@ -200,6 +200,11 @@ def _spec_total_duration(entry: dict, runs: list) -> int:
     return persisted
 
 
+# 公开访问面（code-review item d87d1114a797）：topology.py 跨组引用改用
+# 公开名（不跨组消费下划线私有名），与 _spec_total_duration 同一函数对象单源绑定。
+spec_total_duration = _spec_total_duration
+
+
 # ── 全局 impl_run_budget 缓存（add-spec-status-modal-budget D3）──────────────
 # budget_effective 需读全局 config agents.impl_run_budget 做 fallback，每次
 # spec_summary 调用都 resolve_config 是浪费（O(N) YAML 解析）；以 config 文件

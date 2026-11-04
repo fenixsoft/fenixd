@@ -78,7 +78,8 @@ class TestChainOverviewDataLayer:
 
     def test_four_sections_derived(self, proot):
         """在办/配额/上升件/队列四视图派生与 exhausted 判定。"""
-        _seed_quota(proot, "spec-a::verify_env_blocked", attempts=2, rulings=2)
+        # arbiter_rulings 缺省 2026-11-03 定调 2→3，exhausted 需 rulings 打满 cap=3
+        _seed_quota(proot, "spec-a::verify_env_blocked", attempts=2, rulings=3)
         _seed_quota(proot, "spec-b::verify_env_blocked", attempts=1)
         ChainQuotaStore(proot).mark_in_flight(
             "chain-1", "spec-a::verify_env_blocked", "spec-a", "arbiter"
@@ -102,7 +103,7 @@ class TestChainOverviewDataLayer:
         quads = {s["signature"]: s for s in view["signatures"]}
         assert quads["spec-a::verify_env_blocked"]["exhausted"] is True
         assert quads["spec-a::verify_env_blocked"]["admin_cap"] == 2
-        assert quads["spec-a::verify_env_blocked"]["arbiter_cap"] == 2
+        assert quads["spec-a::verify_env_blocked"]["arbiter_cap"] == 3
         assert quads["spec-b::verify_env_blocked"]["exhausted"] is False
         # 上升件含已收口（close_cause 保留），queue 仅未收口子集
         assert len(view["escalations"]) == 2

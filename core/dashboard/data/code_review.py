@@ -86,7 +86,18 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
     # 被审查 upsert 在盘上自然刷新。rec 为本函数私有加载产物，就地改写安全。
     for rec in rows:
         rec["severity"] = normalize_severity(rec.get("severity"))
-    field = sort_by if sort_by in _SORT_FIELDS else "severity"
+    # sort_by 白名单命中判定先做 isinstance(str) 守卫（code-review item
+    # 24841f3fd7e5）：_SORT_FIELDS 是 dict，裸 ``in`` 对 list/dict 等不可哈希
+    # 脏形态（程序化直调/路由透传）抛 TypeError 使整个列表端点 500——与 81 行
+    # status 过滤键、90 行 sort_order 的读侧容错同口径。用 isinstance 守卫而
+    # 非 str() 归一：白名单语义是「精确 str 命中」，str() 会把任意对象的
+    # __str__ 产物当排序键消费，isinstance 对非 str 一律 fail-closed 回退
+    # 默认排序（severity 升序）。
+    field = (
+        sort_by
+        if isinstance(sort_by, str) and sort_by in _SORT_FIELDS
+        else "severity"
+    )
     sign = _SORT_DIRECTIONS.get(str(sort_order or "asc").lower(), 1)
     rows.sort(
         key=lambda r: (
