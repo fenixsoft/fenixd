@@ -1,4 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import {
   App,
   Button,
@@ -602,12 +603,11 @@ export default function ActivitiesPage() {
   };
 
   return (
-    <PageContainer
-      header={{
-        title: '运维记录',
-        subtitle: '跨项目 Administrator 活动',
-      }}
-    >
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.1）：运维记录页无过滤项，
+          副标题「跨项目 Administrator 活动」随迁 */}
+      <PageTitleBar title="运维记录" subtitle="跨项目 Administrator 活动" />
+      <PageContainer>
       {/* fix 8fa2edf72bc5: SSE 连续重连失败提示条——断连期间实时刷新静默失效，
           运维记录/告警可能停留在陈旧数据；连接恢复后由 onopen / onmessage 自动消除 */}
       {streamDown ? (
@@ -655,6 +655,7 @@ export default function ActivitiesPage() {
           onClose={() => setViewingRun(null)}
         />
       )}
-    </PageContainer>
+      </PageContainer>
+    </>
   );
 }

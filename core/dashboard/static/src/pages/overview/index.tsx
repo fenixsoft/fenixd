@@ -2,6 +2,7 @@ import { PageContainer } from '@ant-design/pro-components';
 import { Alert, Button, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useModel } from '@umijs/max';
+import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import { getOverview, STREAM_URL } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
 import AlertBanner from './components/AlertBanner';
@@ -203,12 +204,21 @@ export default function OverviewPage() {
   }, [load]);
 
   return (
-    <PageContainer
-      header={{
-        title: '跨项目概览',
-        subTitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
-      }}
-    >
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.1）：standalone 顶栏承载、
+          embed/移动端自动落内容区首行；PageContainer 只留容器本体（留白单源），
+          页头全站退役 */}
+      <PageTitleBar
+        title="跨项目概览"
+        subtitle={
+          data ? (
+            <>
+              监控 <TitleBarNum>{data.projects.length}</TitleBarNum> 个项目
+            </>
+          ) : undefined
+        }
+      />
+      <PageContainer>
       <AlertBanner refreshTick={alertsTick} />
       {error ? (
         <Alert
@@ -242,6 +252,7 @@ export default function OverviewPage() {
           />
         </Space>
       ) : null}
-    </PageContainer>
+      </PageContainer>
+    </>
   );
 }

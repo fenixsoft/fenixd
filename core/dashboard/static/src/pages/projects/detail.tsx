@@ -1,4 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -1190,46 +1191,49 @@ export default function SpecDetailPage() {
     </div>
   );
 
-  // 位置由顶栏全局面包屑指示；这里关闭 PageContainer 默认左上面包屑
-  const headerCfg = {
-    title: (
-      <Space size={8} align="baseline" wrap>
-        <span>{spec}</span>
-        {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
-            （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
-            （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
-        <ModeTag mode={detail?.mode} />
-        {detail?.status && (
-          <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
-        )}
-        {otherSpecs.length > 0 && (
-          <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
-            <Button
-              type="text"
-              size="small"
-              icon={<DownOutlined />}
-              title="切换 SPEC"
-              aria-label="切换 SPEC"
-              style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
-            />
-          </Dropdown>
-        )}
-      </Space>
-    ),
-    onBack: () => {
-      // 返回列表优先历史回退：列表页过滤态承载在 URL query 上
-      // （add-spec-list-filter-stickiness），push 裸 URL 会新开无参历史条目，
-      // 列表重挂载时过滤归零；仅直达打开（无应用内历史）时兜底 push。
-      // 币值守卫（code-review item 1c4f3c30258d）：window.history.length 是
-      // 会话级计数——外链/重定向链进入时 length>1 但上一条目在应用外，
-      // history.back() 会退出 dashboard 或落在无关页面；react-router v6 的
-      // location.key !== 'default' 才表示本条目由应用路由推入（存在应用内
-      // 上一条目），刷新后 key 复位为 default，此时兜底 push 不会退出应用。
-      if (location.key !== 'default') history.back();
-      // 项目名经 URL 编码再拼路径，与 index.tsx 的 encodeURIComponent 口径对齐
-      // （code-review item 90704bcf4e7b）
-      else history.push(`/projects/${encodeURIComponent(name)}`);
-    },
+  // 富标题组合（unified-page-title-bar D6 整体迁移）：返回箭头 + SPEC 名 +
+  // 模式/状态 Tag + 快速切换下拉作为 ReactNode 整体传入 PageTitleBar title
+  // 槽位——控件对富节点透明不拆解重组，快速切换下拉保持在 SPEC 名旁
+  // （spec-detail-quick-switch 契约延续），wrap 语义在行壳位内继续成立
+  // （mobile-detail-header-density 载体迁移）。位置指示由标题本身承担
+  // （全局面包屑已退役）。
+  const richTitle = (
+    <Space size={8} align="baseline" wrap>
+      <span>{spec}</span>
+      {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
+          （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
+          （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
+      <ModeTag mode={detail?.mode} />
+      {detail?.status && (
+        <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
+      )}
+      {otherSpecs.length > 0 && (
+        <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
+          <Button
+            type="text"
+            size="small"
+            icon={<DownOutlined />}
+            title="切换 SPEC"
+            aria-label="切换 SPEC"
+            style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
+          />
+        </Dropdown>
+      )}
+    </Space>
+  );
+  const backToList = () => {
+    // 返回列表优先历史回退：列表页过滤态承载在 URL query 上
+    // （add-spec-list-filter-stickiness），push 裸 URL 会新开无参历史条目，
+    // 列表重挂载时过滤归零；仅直达打开（无应用内历史）时兜底 push。
+    // 币值守卫（code-review item 1c4f3c30258d）：window.history.length 是
+    // 会话级计数——外链/重定向链进入时 length>1 但上一条目在应用外，
+    // history.back() 会退出 dashboard 或落在无关页面；react-router v6 的
+    // location.key !== 'default' 才表示本条目由应用路由推入（存在应用内
+    // 上一条目），刷新后 key 复位为 default，此时兜底 push 不会退出应用。
+    if (location.key !== 'default') history.back();
+    // 项目名经 URL 编码再拼路径，与 index.tsx 的 encodeURIComponent 口径对齐
+    // （code-review item 90704bcf4e7b）
+    else history.push(`/projects/${encodeURIComponent(name)}`);
   };
 
   // 参数缺失防御（code-review item 5aa57e968aad）：路由匹配成功但 name/spec
@@ -1238,27 +1242,27 @@ export default function SpecDetailPage() {
   // 序，同 ClaudeOutputPane），以参数缺失提示兜底，不让 loading 悬挂。
   if (!name || !spec) {
     return (
-      <PageContainer breadcrumbRender={false} header={headerCfg}>
+      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
         <Alert type="warning" showIcon message="参数缺失" description="URL 缺少项目名或 SPEC 名，请从项目列表重新进入。" />
-      </PageContainer>
+      </PageContainer></>
     );
   }
 
   if (loading) {
     return (
-      <PageContainer breadcrumbRender={false} header={headerCfg}>
+      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
         <div style={{ textAlign: 'center', padding: '50px 0' }}>
           <Spin size="large" />
         </div>
-      </PageContainer>
+      </PageContainer></>
     );
   }
 
   if (error) {
     return (
-      <PageContainer breadcrumbRender={false} header={headerCfg}>
+      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
         <Alert type="error" showIcon message="加载失败" description={error} />
-      </PageContainer>
+      </PageContainer></>
     );
   }
 
@@ -1452,7 +1456,7 @@ export default function SpecDetailPage() {
   ];
 
   return (
-    <PageContainer breadcrumbRender={false} header={headerCfg}>
+    <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
       {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本 */}
       <Card
         title={
@@ -1922,6 +1926,6 @@ export default function SpecDetailPage() {
           setCancelNotices((prev) => ({ ...prev, [rid]: '取消请求已受理' }))
         }
       />
-    </PageContainer>
+    </PageContainer></>
   );
 }

@@ -17,6 +17,7 @@ import type { CSSProperties } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import type { Components, ExtraProps } from 'react-markdown';
 import type { AnchorHTMLAttributes, ComponentProps, ComponentType, ReactElement, ReactNode } from 'react';
 
@@ -45,13 +46,15 @@ const HELP_REMARK_PLUGINS = [remarkGfm];
 
 // 桌面端整卡定高偏移：calc(100vh - 本值)——滚动条下沉到正文 div 的前提（高度链
 // 从视口算起，滚动全部走容器内滚动条）。偏移 = 卡片上方的页框占用，实测校准
-// （1440×900）：standalone 为 ProLayout 顶栏 56 + PageContainer 页头 56；embed
-// 模式（dsh 面板桥 iframe）headerRender:false 无顶栏，仅页头 56。卡片贴视口底后
-// 文档流高度恰 = 100vh，#root 的 min-height:100vh 被填满——视口下方无空带、页面
-// 也不残生第二根滚动条（前置条件：children 容器 padding-block-end 已由 global.less
-// 归零，两处须同步）。口径同 pageChrome.ts 的校准常数（那是项目详情页 Tabs 版
-// 页框，本页无 Tabs 不通用）；纯 CSS calc，浏览器缩放/窗口拉伸免 JS 重算。
-const HELP_FRAME_OFFSET = isEmbedMode() ? 56 : 112;
+// （1440×900）：unified-page-title-bar 页头全站退役后，standalone 仅 ProLayout
+// 顶栏 56（原 PageContainer 页头 56 已随页头摘除消失，旧值 112=56+56 见 git 历
+// 史）；embed 模式（dsh 面板桥 iframe）headerRender:false 无顶栏，为统一标题栏
+// 行壳位 48。卡片贴视口底后文档流高度恰 = 100vh，#root 的 min-height:100vh 被
+// 填满——视口下方无空带、页面也不残生第二根滚动条（前置条件：children 容器
+// padding-block-end 已由 global.less 归零，两处须同步）。口径同 pageChrome.ts
+// 的校准常数（那是项目详情页 Tabs 版页框，本页无 Tabs 不通用）；纯 CSS calc，
+// 浏览器缩放/窗口拉伸免 JS 重算。
+const HELP_FRAME_OFFSET = isEmbedMode() ? 48 : 56;
 
 function getDocFromUrl(): string {
   try {
@@ -538,7 +541,11 @@ export default function HelpPage() {
   // 移动端布局：正文 + 顶部目录切换 Drawer
   if (isMobile) {
     return (
-      <PageContainer breadcrumbRender={false} header={{ title: '帮助' }}>
+      <>
+        {/* 统一标题栏声明（unified-page-title-bar 2.1）：移动端顶栏纯品牌，
+            控件自动落内容区首行行壳位 */}
+        <PageTitleBar title="帮助" />
+        <PageContainer>
         <Button
           icon={<MenuOutlined />}
           onClick={() => setDrawerOpen(true)}
@@ -559,7 +566,8 @@ export default function HelpPage() {
         <Card style={{ fontSize: 14, lineHeight: 1.65 }} styles={{ body: { padding: '12px 16px' } }}>
           {renderContent()}
         </Card>
-      </PageContainer>
+        </PageContainer>
+      </>
     );
   }
 
@@ -569,7 +577,11 @@ export default function HelpPage() {
   // 页面滚动（2026-11-04 用户指令）；目录列自滚兜底长目录（页面不滚后无自滚
   // 会被定高裁掉）
   return (
-    <PageContainer breadcrumbRender={false} header={{ title: '帮助' }}>
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.1）：standalone 顶栏承载，
+          embed 自动落内容区首行行壳位 */}
+      <PageTitleBar title="帮助" />
+      <PageContainer>
       {/* 右缘负外边距吃掉内容区右留白（值取 dshLayoutToken 单源，勿硬编码）：
           正文滚动条随卡右缘直达窗口右缘（2026-11-04 用户指令）；左缘留白保留 */}
       <Card
@@ -598,6 +610,7 @@ export default function HelpPage() {
           </div>
         </div>
       </Card>
-    </PageContainer>
+      </PageContainer>
+    </>
   );
 }
