@@ -799,9 +799,9 @@ export default function OrgGrid({
           可见，不再藏在内容底部折叠线之下；内容层 containerRef 随滚动整体
           平移，连接线坐标层与卡片同源不脱节） */}
       <div
-        // 扣减值单源 shared.SCREEN_CHROME_OFFSET（ProLayout 顶栏 + PageContainer
-        // 页头 + 页面 padding-top + 页签条；2026-11-04 嵌入改版定值 176，
-        // playwright 实拍校准）
+        // 扣减值单源 shared.SCREEN_CHROME_OFFSET（ProLayout 顶栏 / embed 行壳位
+        // + 页面 padding-top + 页签条；unified-page-title-bar 页头退役后重算并
+        // 实拍校准，口径见 shared.ts 注释）
         style={{
           height: `calc(100vh - ${SCREEN_CHROME_OFFSET}px)`,
           overflow: 'auto',
