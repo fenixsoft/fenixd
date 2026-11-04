@@ -1,0 +1,1 @@
+修改自动归档设计决策：当前 spec/changes/ 活跃区由「3 天时效归档」（R2：终态+verification-report.md+目录 mtime 滞留≥72h 自动归档）把水位压到远低于 archive.auto_threshold(50)。该时效规则原是为「归档后触发知识蒸馏」设计；现蒸馏触发已迁至 push 状态（move-distill-trigger-to-push），不再依赖归档。要求：移除时效驱动归档，未归档 SPEC 由阈值水位驱动（>=50 触发排水），活跃区维持在阈值（默认 50 条）左右。
