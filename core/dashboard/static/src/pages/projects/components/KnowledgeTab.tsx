@@ -455,8 +455,18 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
             </Typography.Text>
           ) : (
             <>
+              <div data-testid="knowledge-index-md">
+                <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
+                  {stripHtmlComments(indexData?.index_md || '')}
+                </Markdown>
+              </div>
+
+              {/* ADR 列表不再在此展示：adr/index.md（总目录「决策记录」节链接）
+                  已含编号/状态/摘要全量清单，避免双份维护。 */}
+
               {/* 候选区积压提醒（add-knowledge-inbox-pipeline 6.2）：有滞留
-                  候选时提示，空区不渲染（画像失败 null 同样不渲染）。 */}
+                  候选时提示，空区不渲染（画像失败 null 同样不渲染）。
+                  置于页面最下方（用户定调 2026-11-04），不遮挡总目录正文。 */}
               {indexData?.inbox_backlog && indexData.inbox_backlog.count > 0 && (
                 <Typography.Text
                   type="warning"
@@ -467,14 +477,6 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
                   等待下一次蒸馏轮折叠入库（spec/knowledge/_inbox/）。
                 </Typography.Text>
               )}
-              <div data-testid="knowledge-index-md">
-                <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
-                  {stripHtmlComments(indexData?.index_md || '')}
-                </Markdown>
-              </div>
-
-              {/* ADR 列表不再在此展示：adr/index.md（总目录「决策记录」节链接）
-                  已含编号/状态/摘要全量清单，避免双份维护。 */}
             </>
           )}
         </Space>
