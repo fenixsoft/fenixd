@@ -57,3 +57,4 @@
 ## [2026-11-04 16:55 UTC+8] fold | memory-distill-ops-runbook.md 折叠入库
 ## [2026-11-04 17:07 UTC+8] fold | memory-distill-unspec-landed-rules.md 折叠入库
 ## [2026-11-04 17:27 UTC+8] fold | memory-distill-user-rulings.md 折叠入库
+## [2026-11-04 17:30 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
