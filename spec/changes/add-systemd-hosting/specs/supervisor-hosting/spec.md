@@ -28,7 +28,7 @@
 
 `core/fenix_session.py:stop_daemon(root)` MUST 按 unit 接管状态双轨执行：
 
-- **unit 已安装**（systemd 承载）：① 写 `.fenix/stop`；② `systemctl stop --no-block`（MUST NOT 同步等待——systemd 停机链走 supervisor 既有 SIGTERM 转发收尾与排水窗）；③ 轮询等待 daemon 与 supervisor 双双退出，上限约 30 秒（保留既有快速停机契约与 dashboard stop 端点 30 秒预算）；④ 超时对 `/proc` 定位的残留 daemon/supervisor 进程补发 SIGKILL；
+- **unit 已安装**（systemd 承载）：① 写 `.fenix/stop`；② `systemctl stop --no-block`（MUST NOT 同步等待——systemd 停机链走 supervisor 既有 SIGTERM 转发收尾与排水窗）；③ 轮询等待 daemon 与 supervisor 双双退出，上限约 30 秒（保留既有快速停机契约与 dashboard stop 端点 30 秒预算）；④ 超时对入口快照中仍存活的残留 daemon/supervisor 进程补发 SIGKILL（快照对象为 stop 入口一次经 `/proc` 定位的项目进程集合，MUST NOT 重新扫描——既有并发安全契约保持）；
 - **unit 未安装但进程在跑**（managed-but-no-unit 态，含迁移期与人工直启）：保留既有直接信号链——写 `.fenix/stop` → 经 `/proc` 定位向该项目 daemon 发 SIGTERM → 轮询等待（上限约 30 秒）→ 超时对残留 daemon/supervisor 补发 SIGKILL。
 
 两条轨的停止操作均 MUST 幂等：`is_running(root)` 为假时 MUST 直接返回成功；⑤ 无论成败 MUST 清除 `.fenix/stop`。unit 未装且进程在跑时 MUST NOT 因 `systemctl stop` 对未启动 unit 是 no-op 而谎报成功。tmux kill-session 兜底 MUST 退役。

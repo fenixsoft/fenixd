@@ -21,7 +21,7 @@
 
 ### Requirement: 重启策略与 supervisor 退出码协议
 
-unit 重启策略 MUST 为 `Restart=on-failure`，并以 `SuccessExitStatus` 声明 supervisor 有意退出的专用码。supervisor 的四条有意退出路径退出码 MUST 为：停机信号收尾与 stop 旗标在场退出 → 0；熔断退出（supervisor_fused）与兜底收尸/收编超限放弃看护 → 专用码 75。退出码 0 与 75 的退出 MUST NOT 被 systemd 拉回；其余一切退出形态（SIGKILL、异常非零）MUST 被 systemd 拉回。`StartLimitIntervalSec`/`StartLimitBurst` MUST 配置为 crash-loop 最后兜底。
+项目 unit 与 `fenix-dashboard.service` 的重启策略 MUST 均为 `Restart=on-failure`，项目 unit 并以 `SuccessExitStatus` 声明 supervisor 有意退出的专用码（dashboard 无熔断/放弃看护语义，不适用退出码协议，SIGTERM 干净收尾退出 0 不拉回即满足）。supervisor 的四条有意退出路径退出码 MUST 为：停机信号收尾与 stop 旗标在场退出 → 0；熔断退出（supervisor_fused）与兜底收尸/收编超限放弃看护 → 专用码 75。退出码 0 与 75 的退出 MUST NOT 被 systemd 拉回；其余一切退出形态（SIGKILL、异常非零）MUST 被 systemd 拉回——含 dashboard 进程崩溃（目标「supervisor、daemon、dashboard 全部由 systemd 自动拉回」要求覆盖 dashboard 单独崩溃）。`StartLimitIntervalSec`/`StartLimitBurst` 在两类 unit 上 MUST 均配置为 crash-loop 最后兜底。
 
 #### Scenario: supervisor 被 kill -9 后自动拉回
 
@@ -37,6 +37,11 @@ unit 重启策略 MUST 为 `Restart=on-failure`，并以 `SuccessExitStatus` 声
 
 - **WHEN** supervisor 因 `.fenix/stop` 旗标在场以退出码 0 退出（非 systemctl stop 触发）
 - **THEN** systemd 不重新拉起 supervisor，unit 状态 inactive
+
+#### Scenario: dashboard 进程崩溃被拉回
+
+- **WHEN** `fenix-dashboard.service` 活跃时 dashboard 进程异常退出（非零码崩溃）
+- **THEN** systemd 按 `Restart=on-failure` 重新拉起 dashboard，:8787 恢复监听
 
 ### Requirement: unit 运行环境承载
 
@@ -54,7 +59,7 @@ unit 运行环境 MUST 经 `EnvironmentFile`（0600 root 属主）承载，MUST 
 
 ### Requirement: 托管停止的 systemctl 双轨语义
 
-stop 路径 MUST 按 unit 接管状态双轨执行：unit 已安装时，写 `.fenix/stop` 后执行 `systemctl stop --no-block`，沿用既有 ≤30 秒轮询确认（MUST NOT 同步等待 `systemctl stop`——其最坏等待为排水上界量级），轮询超时对 `/proc` 定位的残留 supervisor/daemon 进程补发 SIGKILL 收口；unit 未安装但进程在跑（managed-but-no-unit 态）时，MUST 保留既有直接信号链（写 stop 旗标 → SIGTERM daemon → 轮询等待 → 超时补 SIGKILL），MUST NOT 因 `systemctl stop` 对未启动 unit 是 no-op 而谎报成功。两条轨 MUST 都以「无论成败清除 `.fenix/stop`」收尾；停止未运行项目 MUST 幂等返回成功。
+stop 路径 MUST 按 unit 接管状态双轨执行：unit 已安装时，写 `.fenix/stop` 后执行 `systemctl stop --no-block`，沿用既有 ≤30 秒轮询确认（MUST NOT 同步等待 `systemctl stop`——其最坏等待为排水上界量级），轮询超时对入口快照中仍存活的残留 supervisor/daemon 进程补发 SIGKILL 收口（快照对象为 stop 入口一次经 `/proc` 定位的项目进程集合，超时兜底 MUST 只杀快照内残留、MUST NOT 重新扫描——既有并发安全契约保持，防把并发 start 新拉起的进程误杀）；unit 未安装但进程在跑（managed-but-no-unit 态）时，MUST 保留既有直接信号链（写 stop 旗标 → SIGTERM daemon → 轮询等待 → 超时补 SIGKILL），MUST NOT 因 `systemctl stop` 对未启动 unit 是 no-op 而谎报成功。两条轨 MUST 都以「无论成败清除 `.fenix/stop`」收尾；停止未运行项目 MUST 幂等返回成功。
 
 #### Scenario: unit 承载项目优雅收口
 
