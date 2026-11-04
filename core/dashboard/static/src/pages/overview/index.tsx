@@ -218,7 +218,7 @@ export default function OverviewPage() {
           ) : undefined
         }
       />
-      <PageContainer>
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <AlertBanner refreshTick={alertsTick} />
       {error ? (
         <Alert

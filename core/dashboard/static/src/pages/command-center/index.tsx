@@ -152,7 +152,7 @@ export default function CommandCenterPage() {
           </Space>
         }
       />
-      <PageContainer>
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 滚动条浅色细杆（2026-11-04 嵌入改版）：仅 .cmdcenter-* 页内滚动容器
           作用域——嵌入后页面不再是独立文档，原 html/body 级注入会泄漏全
           应用，随暗色域整体退役；页内竖向/横向滚动条统一浅灰细杆（webkit

@@ -231,7 +231,7 @@ export default function ChainPage() {
           />
         }
       />
-      <PageContainer>
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Spin spinning={loading}>
         <Row gutter={16}>
           {stats.map((s) => (

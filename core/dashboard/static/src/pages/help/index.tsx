@@ -545,7 +545,7 @@ export default function HelpPage() {
         {/* 统一标题栏声明（unified-page-title-bar 2.1）：移动端顶栏纯品牌，
             控件自动落内容区首行行壳位 */}
         <PageTitleBar title="帮助" />
-        <PageContainer>
+        <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
         <Button
           icon={<MenuOutlined />}
           onClick={() => setDrawerOpen(true)}
@@ -581,7 +581,7 @@ export default function HelpPage() {
       {/* 统一标题栏声明（unified-page-title-bar 2.1）：standalone 顶栏承载，
           embed 自动落内容区首行行壳位 */}
       <PageTitleBar title="帮助" />
-      <PageContainer>
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 右缘负外边距吃掉内容区右留白（值取 dshLayoutToken 单源，勿硬编码）：
           正文滚动条随卡右缘直达窗口右缘（2026-11-04 用户指令）；左缘留白保留 */}
       <Card

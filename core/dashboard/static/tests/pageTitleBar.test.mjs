@@ -144,3 +144,28 @@ test('行壳位形态锚点：48px 白底 DSH_SPLIT 底缘细线 + 同构槽位�
   // 富标题 wrap 语义（mobile-detail-header-density 载体迁移）
   assert.match(tsx, /flexWrap: 'wrap'/);
 });
+test('迁移页 PageContainer 必须 title={false}+breadcrumbRender={false} 抑制路由名兜底页头与路由面包屑（双标题并存禁回潮）', () => {
+  // pro-layout renderPageHeader 在无 title 且非 false 时从路由上下文兜底取
+  // 路由名渲染自动页头；umi 布局插件还给多段路由注入 breadcrumbProps
+  // （「项目 / fenixd」面包屑页头，title={false} 挡不住）；且 props 全空时
+  // PageHeader 仍渲染 32px 空壳（.ant-page-header-no-children）——唯
+  // pageHeaderRender={false} 走 renderPageHeader 的 return null 短路（3.2 实拍
+  // 三连抓）。PagePlaceholder 兜底
+  // 占位页按 specs 豁免条款保留路由名页头。
+  const pages = [
+    'overview/index', 'activities/index', 'help/index', 'settings/index',
+    'chain/index', 'projects/list', 'projects/detail', 'command-center/index',
+  ];
+  for (const page of pages) {
+    const text = readFileSync(join(STATIC_ROOT, 'src', 'pages', page + '.tsx'), 'utf8');
+    const opens = text.match(/<PageContainer[^>]*>/g) ?? [];
+    assert.ok(opens.length > 0, page + ' 应仍有 PageContainer 本体');
+    for (const open of opens) {
+      assert.match(
+        open,
+        /<PageContainer\s+title=\{false\} breadcrumbRender=\{false\} pageHeaderRender=\{false\}>/,
+        page + ' 的 PageContainer 须 title={false}+breadcrumbRender={false}：' + open,
+      );
+    }
+  }
+});

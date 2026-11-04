@@ -1242,7 +1242,7 @@ export default function SpecDetailPage() {
   // 序，同 ClaudeOutputPane），以参数缺失提示兜底，不让 loading 悬挂。
   if (!name || !spec) {
     return (
-      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
+      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
         <Alert type="warning" showIcon message="参数缺失" description="URL 缺少项目名或 SPEC 名，请从项目列表重新进入。" />
       </PageContainer></>
     );
@@ -1250,7 +1250,7 @@ export default function SpecDetailPage() {
 
   if (loading) {
     return (
-      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
+      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
         <div style={{ textAlign: 'center', padding: '50px 0' }}>
           <Spin size="large" />
         </div>
@@ -1260,7 +1260,7 @@ export default function SpecDetailPage() {
 
   if (error) {
     return (
-      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
+      <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
         <Alert type="error" showIcon message="加载失败" description={error} />
       </PageContainer></>
     );
@@ -1456,7 +1456,7 @@ export default function SpecDetailPage() {
   ];
 
   return (
-    <><PageTitleBar title={richTitle} back={backToList} /><PageContainer>
+    <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本 */}
       <Card
         title={

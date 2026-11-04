@@ -1678,7 +1678,7 @@ export default function SpecListPage() {
           </Space>
         }
       />
-      <PageContainer>
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* add-project-detail-tabs D1：项目页分面 Tabs——「功能开发」（默认）/「代码审查」/
           「测试回归」/「会话接入」；add-spec-list-filter-stickiness：选中态
           持久化到 URL `tab`（replace 写回、缺省不写参）；

@@ -373,7 +373,7 @@ export default function SettingsPage() {
           </Space>
         }
       />
-      <PageContainer>
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Card
         bordered={false}
         className="settings-page"

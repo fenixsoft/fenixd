@@ -16,6 +16,12 @@
 // unified-page-title-bar/prototype/（standalone.html / embed.html）——标题
 // 18px/700、副标题 12px 三级灰基线随迁、计数 tabular-nums、过滤项 28px small
 // 档、行壳位 48px 底缘细线；配色全部取 theme.ts 单源，零新色。
+//
+// 迁移页配套约定：PageContainer 保留本体承载留白 token，但须写 `title={false}`
+// 显式抑制页头——不传 title 时 PageContainer 会从路由上下文兜底取路由名渲染
+// 自动页头（pro-layout renderPageHeader 的 `!title && title !== false` 分支），
+// 与本控件双标题并存（3.2 实拍抓出）。PagePlaceholder 兜底占位页豁免
+// （保留路由名页头形态，specs 豁免条款）。
 
 import {
   useEffect,
