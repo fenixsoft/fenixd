@@ -35,7 +35,6 @@ import http.client
 import json
 import math
 import os
-import shlex
 import signal
 import subprocess
 import sys
@@ -133,7 +132,6 @@ _WEBHOOK_OPENER = urllib.request.build_opener(_WebhookRedirectGuard())
 
 # dashboard 重启探测（D4：保持 8787 端口；探测超时则失败告警）
 DEFAULT_DASHBOARD_PORT = 8787
-DEFAULT_DASHBOARD_SESSION = "fenix-dashboard"
 DASHBOARD_PROBE_ATTEMPTS = 20
 DASHBOARD_PROBE_INTERVAL = 0.5
 
@@ -420,10 +418,11 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
       {spec}/{event} 变量）——非字符串会在执行侧 render_message_template 的
       template.replace 处抛 AttributeError，被兜底误记为「hook 执行异常」major
       告警，故在配置层按「配置非法（不执行）」拦截；
-    - action=restart-dashboard 可选 target：字符串（tmux 会话名，缺省
-      fenix-dashboard）——非字符串（如手改 config.yaml 写成数字）会在执行
-      侧 (target or "").strip() 抛 AttributeError，被兜底误记为「hook 执行
-      异常」告警，故在配置层按「配置非法（不执行）」拦截；
+    - action=restart-dashboard 可选 target：字符串——add-systemd-hosting
+      后为 legacy 键（tmux 会话名），执行侧容忍存在不再消费；类型校验保留
+      拦非字符串（如手改 config.yaml 写成数字），防止非法类型穿通用兜底被
+      误记为「hook 执行异常」告警（与配置层按「配置非法（不执行）」口径
+      一致）；
     - 可选 timeout_seconds：正的有限数值（秒）且 ≤ MAX_HOOK_TIMEOUT_SECONDS，
       bool/非有限值（.inf 等非法，防手改 config.yaml 绕过执行侧 _num 守卫）
       与超上限的有限大值（执行侧会如实阻塞该时长、在飞标记不释放）均按配置
@@ -481,12 +480,13 @@ def validate_hook_entry(entry: Any) -> Optional[str]:
             )
     if action == "restart-dashboard":
         target = entry.get("target")
-        # 缺省/None 合法（执行侧回退 DEFAULT_DASHBOARD_SESSION）；空串同样
-        # 合法（执行侧 (target or "").strip() 等价缺省），仅拦非字符串类型
+        # legacy 键（tmux 会话名，add-systemd-hosting 后执行侧不再消费）：
+        # 缺省/None/任意字符串值均合法，仅拦非字符串类型（防穿通用兜底致
+        # 归因降级），口径对齐执行侧复检
         if target is not None and not isinstance(target, str):
             return (
-                f"restart-dashboard 的 target 必须为字符串（tmux 会话名，"
-                f"缺省 {DEFAULT_DASHBOARD_SESSION}），收到 {target!r}"
+                f"restart-dashboard 的 target 必须为字符串"
+                f"（legacy tmux 会话名键，值不再被消费），收到 {target!r}"
             )
     timeout = entry.get("timeout_seconds")
     if timeout is not None:
@@ -1416,35 +1416,34 @@ class HookEngine:
         return STATUS_SUCCESS, f"{cdetail}；{pdetail}"
 
     def _action_restart_dashboard(self, cfg: dict) -> Tuple[str, str]:
-        """tmux respawn-window -k -t <target> 重启 dashboard 会话（三态返回）。
+        """systemctl restart fenix-dashboard 重启 dashboard（三态返回）。
 
-        固化启动命令（2026-09-06 从存活会话提取固化）：``env -u CLAUDE_PID
-        <sys.executable> <framework>/bin/fenix_dashboard.py --serve``——env -u
-        CLAUDE_PID 防 claude-watchdog 绑会话自杀；解释器取 daemon 当前
-        sys.executable（venv/非系统解释器部署下 respawn 出的会话依赖仍可用，
-        不受 tmux 环境 PATH 命中的裸 python3 影响）；保持 8787 端口（serve()
-        内部解析配置端口，缺省 8787）与原工作目录。重启后以端口重新可服务为
-        成功判据。
+        add-systemd-hosting：tmux respawn-window 执行侧退役（tmux 会话承载
+        退役后现实现会静默死亡），迁 ``systemctl restart fenix-dashboard``；
+        重启后以端口重新可服务为成功判据（沿用既有探测）。unit 缺席维持
+        既有「静默 skip」语义（与 tmux 无会话时对齐），不报错不告警。
 
-        dashboard-push-restart D2/D3 健壮化：
+        dashboard-push-restart D2/D3 健壮化（语义保持）：
         - 去抖（D2）：入口检查进程内最近成功重启时间戳，60s 窗口内幂等跳过
           （skipped 审计留痕）；失败不写时间戳，窗口内可重试。检查与「标记
           重启中」在同一锁临界区一次完成：并发多条不同 id 的 restart-dashboard
           hook 命中时仅首个认领者执行动作，其余按 skipped 幂等跳过。
-        - 无会话静默跳过（D3）：tmux 会话不存在是环境态而非操作失败（CI/容器
-          本就无 dashboard），返回 skipped + debug 日志，不产 failure 审计与
-          告警噪音；会话存在但 respawn/端口探测失败仍记 failure（真故障）。
+        - unit 未安装静默跳过（D3 对齐）：fenix-dashboard unit 未安装（或
+          systemctl 不可用）是环境态而非操作失败（CI/容器本就无 systemd
+          dashboard），返回 skipped + debug 日志，不产 failure 审计与告警
+          噪音；unit 已装但 restart/端口探测失败仍记 failure（真故障）。
+        - legacy ``target`` 键（tmux 会话名）容忍存在不再消费：校验层仍拦
+          非字符串类型（直改 config.yaml 的非法类型会穿通用兜底致归因降级），
+          执行侧不再读取其值——tmux 会话名体系已退役。
 
         Returns: (status, detail)，status ∈ success/failure/skipped。
         """
-        # 执行侧复检 target 类型（校验只把守配置写入路径，直改 config.yaml 可
-        # 绕过）：非字符串会在下方 (target or "").strip() 抛 AttributeError、穿
-        # 通用兜底致归因降级，按「配置非法（不执行）」记 failure，口径对齐
+        # legacy target 键类型复检（校验只把守配置写入路径，直改 config.yaml
+        # 可绕过）：值不再消费，仅拦非字符串类型防归因降级，口径对齐
         # validate_hook_entry 与 _action_webhook 的 url 复检
         target = cfg.get("target")
         if target is not None and not isinstance(target, str):
             return STATUS_FAILURE, f"restart-dashboard target 配置非法（必须为字符串）: {target!r}"
-        target = (target or "").strip() or DEFAULT_DASHBOARD_SESSION
         now = time.monotonic()
         # 临界区一次完成「去抖检查 + 认领重启中」：并发 hook 线程只有首个
         # 认领成功者继续执行动作，其余按 skipped 跳过——两段式 check-then-act
@@ -1467,56 +1466,30 @@ class HookEngine:
         if not claim:
             return STATUS_SKIPPED, skip_detail
         try:
+            from .systemd_hosting import SystemdHostingError, restart_dashboard_unit
+
             try:
-                has = subprocess.run(
-                    ["tmux", "has-session", "-t", target], capture_output=True, text=True, timeout=10
-                )
-            except (subprocess.SubprocessError, OSError) as e:
-                # tmux 二进制缺失/不可执行同为「无 dashboard 环境」环境态：静默跳过
-                self._log_debug(f"tmux has-session 失败（按无 dashboard 环境跳过）: {e}")
-                return STATUS_SKIPPED, f"tmux has-session 失败（按无 dashboard 环境静默跳过）: {e}"
-            if has.returncode != 0:
-                self._log_debug(f"tmux 会话 {target} 不存在，restart-dashboard 静默跳过")
-                return (
-                    STATUS_SKIPPED,
-                    f"tmux 会话 {target} 不存在（dashboard 未运行环境），静默跳过",
-                )
-            dash = self._framework_root / "bin" / "fenix_dashboard.py"
-            if not dash.is_file():
-                return STATUS_FAILURE, f"dashboard 启动脚本不存在: {dash}"
-            # 解释器用 daemon 当前 sys.executable 而非裸 python3（后者解析的是
-            # tmux 环境 PATH 命中项，venv/非系统解释器部署下 dashboard 依赖只在
-            # daemon 环境装了，respawn 后起不来→探测必败记 failure）；
-            # sys.executable 理论上可为空串（嵌入解释器），回退裸 python3 保持旧行为
-            shell_cmd = (
-                f"cd {shlex.quote(str(self.project_root))} && "
-                f"env -u CLAUDE_PID {shlex.quote(sys.executable or 'python3')} "
-                f"{shlex.quote(str(dash))} --serve"
-            )
-            try:
-                respawn = subprocess.run(
-                    ["tmux", "respawn-window", "-k", "-t", target, shell_cmd],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-            except (subprocess.SubprocessError, OSError) as e:
-                return STATUS_FAILURE, f"tmux respawn-window 失败: {e}"
-            if respawn.returncode != 0:
-                return (
-                    STATUS_FAILURE,
-                    f"tmux respawn-window 失败: {_tail_combined(respawn.stdout, respawn.stderr)}",
-                )
+                result = restart_dashboard_unit()
+            except SystemdHostingError as e:
+                # systemctl 突变不可用等（前置 systemctl_available 已拦常态）：
+                # 按真故障记 failure，不静默吞——unit 在装而 systemctl 失联是
+                # 承载层异常，与「unit 未安装的环境态」不同类
+                return STATUS_FAILURE, f"systemctl restart 执行失败: {e}"
+            if result["status"] == "skipped":
+                self._log_debug(result["detail"])
+                return STATUS_SKIPPED, result["detail"]
+            if result["status"] == "failure":
+                return STATUS_FAILURE, result["detail"]
             port = self._dashboard_port()
             if not self._probe_dashboard(port):
                 # 上限按每轮 urlopen timeout=2s + 间隔 DASHBOARD_PROBE_INTERVAL 估算（对应 _probe_dashboard）
                 return (
                     STATUS_FAILURE,
-                    f"dashboard 已 respawn，但 {port} 端口最坏 {DASHBOARD_PROBE_ATTEMPTS * (2 + DASHBOARD_PROBE_INTERVAL):.0f}s 内未恢复 HTTP 可服务",
+                    f"dashboard 已 restart，但 {port} 端口最坏 {DASHBOARD_PROBE_ATTEMPTS * (2 + DASHBOARD_PROBE_INTERVAL):.0f}s 内未恢复 HTTP 可服务",
                 )
             with self._dashboard_restart_lock:
                 self._dashboard_restart_ok_monotonic = time.monotonic()
-            return STATUS_SUCCESS, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
+            return STATUS_SUCCESS, f"dashboard 已重启（systemctl restart，端口 {port} 恢复可服务）"
         finally:
             with self._dashboard_restart_lock:
                 self._dashboard_restart_running = False

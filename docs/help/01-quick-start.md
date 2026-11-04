@@ -9,7 +9,7 @@
 | Python | 3.10+ | 框架运行时 |
 | Git | 2.30+ | worktree 隔离、分支管理 |
 | Node.js | 18+ | 前端构建（dashboard dist） |
-| tmux | 任意 | Agent run 终端载体 |
+| systemd | 219+ | daemon/dashboard 承载载体（systemd unit，开机自启） |
 | Claude Code | 最新 | Agent 运行时 |
 
 ## 步骤概览

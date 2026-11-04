@@ -1,33 +1,36 @@
 """
-fenix_session.py — 为 Fenixd 项目计算唯一 tmux session 名并查询运行状态、
-daemon 托管态（fix-supervisor-hosting-chain）。
+fenix_session.py — Fenixd 项目托管启停与运行状态判定
+（fix-supervisor-hosting-chain / add-systemd-hosting）。
 
-早期框架用固定 tmux session 名 `fenixd`，同一台机器只能同时运行一个
-fenixd daemon。本模块按「项目根路径」派生确定性、唯一的 session 名
-（fenixd-<目录名>-<路径哈希6位>），使多个 Fenixd 项目可并行开发，
-互不干扰（日志、STATE.md、config.yaml 本就按项目隔离，唯一冲突点
-就是 session 名）。
+托管承载（add-systemd-hosting BREAKING）：daemon 由 systemd unit
+``fenixd-<项目名>.service`` 承载的 supervisor 托管运行（ExecStart=supervisor
+--project-root，daemon 保持为 supervisor 子进程）；tmux 从托管链退役
+（session 名体系随之退役，unit 名派生见 core/systemd_hosting.unit_name_for）。
+本模块承担 start_daemon（unit 缺失即生成安装并 enable --now）/ stop_daemon
+（systemctl 双轨）/ 运行状态判定的共享实现。
 
-托管态（supervisor-hosting）：daemon 自 fix-admin-self-heal 起由外部
-supervisor（bin/fenixd_supervisor.py）托管启动；本模块提供 supervisor_running
-与 hosting_state（managed / unmanaged / stopped）判定，供 dashboard、admin、
+托管态（supervisor-hosting）：本模块提供 supervisor_running 与
+hosting_state（managed / unmanaged / stopped）判定，供 dashboard、admin、
 hook 区分「进程在跑但无人托管」与「完全未运行」。
 
-纯函数（resolve_root / session_name / is_running / supervisor_running /
-hosting_state）供 bin/fenix_session.py（CLI）与 core/dashboard/data.py
-（daemon 健康检测）共享，避免两处重复实现。
+纯函数（resolve_root / is_running / supervisor_running / hosting_state）供
+bin/fenix_session.py（CLI）与 core/dashboard/data.py（daemon 健康检测）共享，
+避免两处重复实现。
 """
 
-import hashlib
 import os
-import re
-import shlex
 import signal
-import subprocess
 import time
 from pathlib import Path
 
-LEGACY_SESSION = "fenixd"
+from .systemd_hosting import (
+    SystemdHostingError,
+    install_project_unit,
+    stop_unit_no_block,
+    unit_active,
+    unit_installed,
+    unit_name_for,
+)
 
 # start_daemon 启动后轮询等待进程立起来的次数 × 步长（秒）。模块常量而非
 # 字面量，供测试注入小值（is_running 被 mock 为假时否则真等 5s）。
@@ -40,64 +43,9 @@ START_DAEMON_PROBE_INTERVAL_SECONDS = 0.1
 SUPERVISOR_ONLY_WARNING = "supervisor 在跑但未检测到 daemon 进程（可能处于启动退避、熔断或停止流程中），请查看 .fenix/logs/supervisor.log"
 
 
-def _tmux_env() -> dict:
-    """tmux 子进程环境：合并 ``os.environ`` 并强制 ``LC_ALL=C``。
-
-    与 ``deliverables._git_c_env`` / ``evolution._git_c_env`` 同源手法
-    （code-review item 73465fa1839d）：start_daemon 的失败分流以 tmux
-    stderr 英文文案 ``duplicate session`` 判别「同名会话已在」与「会话
-    没建起来」，强制 C locale 消除该文案匹配对运行环境本地化的依赖。
-    合并而非整体替换，保留 PATH 等既有环境。
-    """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    return env
-
-
 def resolve_root(root: str | None = None) -> Path:
     """规范化项目根路径（展开 ~ 与软链接）。"""
     return Path(root or os.getcwd()).expanduser().resolve()
-
-
-def session_name(root: str | None = None) -> str:
-    """按项目根路径派生唯一 session 名。
-
-    同一项目经不同入口（技能 / 状态栏 / 仪表盘）计算得到的结果一致；
-    不同项目（即使目录同名）因哈希不同而唯一。
-    """
-    proot = resolve_root(root)
-    digest = hashlib.md5(str(proot).encode()).hexdigest()[:6]
-    # 点号一并折叠为连字符（code-review item 12e5e201a1c3）：tmux 对会话名会
-    # 静默把 `.` 替换为 `_`，且 has-session/kill-session 解析带点号目标时把点号
-    # 当窗格分隔符而查找失败——派生名与 tmux 实际会话名必须同口径，否则
-    # start_daemon 启动复核、is_running 的 tmux 回退与 stop_daemon 兜底全部误判。
-    base = re.sub(r"[^A-Za-z0-9-]+", "-", proot.name).strip("-") or "project"
-    return f"fenixd-{base}-{digest}"
-
-
-def _legacy_session_matches(root: Path) -> bool:
-    """旧版固定 session `fenixd` 是否属于该项目（按其 cwd 判断）。"""
-    try:
-        r = subprocess.run(
-            ["tmux", "list-panes", "-t", LEGACY_SESSION, "-F", "#{pane_current_path}"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except Exception:
-        return False
-    if r.returncode != 0:
-        return False
-    for line in r.stdout.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            if Path(line).expanduser().resolve() == root:
-                return True
-        except Exception:
-            continue
-    return False
 
 
 def _procs_matching(match) -> list:
@@ -116,9 +64,9 @@ def _procs_matching(match) -> list:
     就是被执行的脚本」。
     """
     # /proc 不可用（非 Linux 平台等）时抛 OSError 交调用方兜底——本函数 docstring
-    # 即约定「调用方负责兜底整体异常」：is_running 的 except 路径据此回退 tmux
-    # 判定，supervisor_running / _fenix_pids_under 各自降级（code-review
-    # b7858abfd42b：此处吞成 [] 会让 tmux 回退不可达，无 /proc 环境恒判未运行）。
+    # 即约定「调用方负责兜底整体异常」：is_running 的 except 路径据此判未运行
+    # （tmux 回退已随 systemd 承载退役，fail-closed），supervisor_running /
+    # _fenix_pids_under 各自降级。
     pids = os.listdir("/proc")
     hits = []
     for pid in pids:
@@ -264,34 +212,20 @@ def _daemon_proc_running(root: Path) -> bool:
         return True
 
 
-def _tmux_match(proot: Path) -> bool:
-    """回退判定：唯一名 session（+ 旧版固定 `fenixd` cwd 匹配）。"""
-    try:
-        r = subprocess.run(
-            ["tmux", "has-session", "-t", session_name(proot)],
-            capture_output=True,
-            timeout=2,
-        )
-        if r.returncode == 0:
-            return True
-    except Exception:
-        pass
-    return _legacy_session_matches(proot)
-
-
 def is_running(root: str | None = None) -> bool:
     """该项目是否有 daemon 在运行。
 
-    主判定为进程检测（supervisor/直启/tmux 内 daemon 均命中，不会像 tmux
-    session 判定那样漏报直启模式或误报残留 session）；/proc 不可用时回退
-    tmux 判定（唯一名 + 旧版兼容）。
+    判定为 /proc 进程检测（supervisor 托管与裸 daemon 均命中，按「正在执行
+    fenixd.py / fenixd_supervisor.py」结构化识别，不误报命令行提及）。
+    /proc 不可用时判未运行（fail-closed）：tmux 回退已随 systemd 承载退役，
+    无 /proc 环境无从判定进程存在性，宁可误判 stopped 也不误判 running
+    （误判 running 会让 start 幂等门吞掉启动、stop 谎报成功）。
     """
     proot = resolve_root(root)
     try:
         return _daemon_procs_under(proot)
     except Exception:
-        pass
-    return _tmux_match(proot)
+        return False
 
 
 def _argv_option_root(argv):
@@ -452,65 +386,60 @@ def hosting_state(root: str | None = None) -> str:
 
 
 def start_daemon(root: str | None = None) -> dict:
-    """启动该项目的 fenixd daemon（supervisor 托管，fix-supervisor-hosting-chain）。
+    """启动该项目的 fenixd daemon（systemd unit 承载的 supervisor 托管，add-systemd-hosting）。
 
-    以 supervisor 托管方式拉起：在项目唯一 tmux session 内执行
-    `cd <root> && python3 .fenix/bin/fenixd_supervisor.py --project-root <root> >> .fenix/logs/supervisor.log 2>&1`，
-    daemon 由 supervisor 作为子进程拉起（tmux 仅承担脱离终端，不再是 daemon
-    的父进程）。与 `fenix-setup` 技能第 7 步的命令保持一致。
+    唯一托管启动路径：确保 ``fenixd-<项目名>.service`` unit 在位（缺失时生成
+    安装）并 ``systemctl enable --now`` 拉起；unit 的 ExecStart 为 supervisor
+    ``--project-root <root>``（daemon 由 supervisor 作为子进程拉起，systemd
+    监督对象是 supervisor 不是 daemon）。tmux session 创建已退役（承载层
+    BREAKING，MUST NOT 回退 tmux；systemctl 不可用返回可读错误并拒绝）。
 
     启动前校验项目根存在 `.fenix`（框架软链接）与 `STATE.md`，缺失返回可读
-    错误且不产生 daemon 进程。幂等：daemon 或 supervisor 已在跑则不重复拉起——
-    daemon 本体在跑直接返回 already；仅 supervisor 在跑（daemon 本体缺席，如
-    supervisor 启动退避/熔断计数中）同样不重复拉起，但返回值追加 warning
-    说明未检测到 daemon（code-review item e17df2678564）。
+    错误且不产生 daemon 进程、不写 unit。幂等：daemon 或 supervisor 已在跑则
+    不重复拉起——daemon 本体在跑直接返回 already；仅 supervisor 在跑（daemon
+    本体缺席，如 supervisor 启动退避/熔断计数中）同样不重复拉起，但返回值
+    追加 warning 说明未检测到 daemon（code-review item e17df2678564）。unit
+    已安装且服务活跃时重复调用不重建 unit、不重启服务（systemd_hosting
+    幂等安装语义）。
     启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
-    避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
+    避免误删一次正在进行的停止操作留下的标记）。安装后轮询 `is_running`
     至多约 5 秒，命中再返回成功；命中后以 `_daemon_proc_running` 复核 daemon
     本体，仅 supervisor 先到场（daemon 未检测到）时同样附 warning（code-review
-    item 87bdc3d2f2b9）；窗口耗尽则经 `tmux has-session` 复核会话
-    存活，并经 `list-panes` 校验会话确以 supervisor 命令启动，且对 supervisor
-    窗格的 pane_pid 做一次 /proc 活性核对——会话已退出（启动命令失败）、
-    会话内是同名残留的无关窗格、或残留会话仅余已死的 supervisor 窗格
-    （remain-on-exit 等配置占位），均返回 ok=False。
-    new-session 返回码非零（duplicate session 除外，维持既有「已存在」路径
-    语义落回轮询复核）同样直接返回 ok=False 并附 stderr，不静默忽略。
+    item 87bdc3d2f2b9）；窗口耗尽经 `systemctl is-active` 复核——unit 活跃
+    （/proc 探测失效）维持宽容成功并附 warning，unit 不活跃（enable --now
+    拉起的启动命令失败退出）返回 ok=False。
 
-    返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}；
-    「仅 supervisor 在跑、daemon 本体未检测到」的分支（幂等门与新拉起轮询
-    命中）额外附 warning: str。
-    任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
+    返回: {"ok": bool, "error": str|None, "already": bool}；「仅 supervisor
+    在跑、daemon 本体未检测到」的分支（幂等门与新拉起轮询命中）额外附
+    warning: str。
+    任何 systemctl 异常均返回 ok=False 的错误对象，不抛异常。
     """
     proot = resolve_root(root)
-    session = session_name(proot)
     if not (proot / ".fenix").exists():
         return {
             "ok": False,
             "error": f"项目根缺少 .fenix 框架软链接: {proot}",
-            "session": session,
             "already": False,
         }
     if not (proot / ".fenix" / "STATE.md").is_file():
         return {
             "ok": False,
             "error": f"项目根缺少 STATE.md: {proot}",
-            "session": session,
             "already": False,
         }
     if is_running(proot):
         if _daemon_proc_running(proot):
-            return {"ok": True, "error": None, "session": session, "already": True}
+            return {"ok": True, "error": None, "already": True}
         # 幂等门细分判定（code-review item e17df2678564）：is_running 主判定命中
         # daemon 或 supervisor 任一——仅托管壳在跑、daemon 本体缺席（如 supervisor
         # 拉起连续失败进入退避/熔断计数，daemon 不会被重新拉起）时，不得谎报
-        # daemon 已就绪；也不走下方 new-session 拉起（同名 tmux 会话被既有
-        # supervisor 占用，duplicate session 落回轮询后 is_running 仍会因
+        # daemon 已就绪；也不走下方 enable --now 拉起（unit 活跃即 supervisor
+        # 在跑，重复 enable --now 不重建不重启，落回轮询后 is_running 仍会因
         # supervisor 在跑立即判真，同样谎报成功）。维持既有 ok/already 键结构，
         # 追加 warning 供调用方区分「daemon 在跑」与「仅托管壳在跑」。
         return {
             "ok": True,
             "error": None,
-            "session": session,
             "already": True,
             "warning": SUPERVISOR_ONLY_WARNING,
         }
@@ -525,47 +454,27 @@ def start_daemon(root: str | None = None) -> dict:
         pass
 
     try:
-        # supervisor 日志重定向指向 .fenix/logs/supervisor.log，shell 会因目录
-        # 不存在而重定向失败（全新项目首次拉起即触发），先确保目录存在，
-        # 与其余日志写点的 mkdir 惯例对齐（code-review item 5fb92e285e94）。
+        # supervisor 日志写点在 .fenix/logs/supervisor.log，目录不存在时全新
+        # 项目首次拉起会写失败（supervisor 内部吞 OSError 但日志无痕），先确保
+        # 目录存在，与其余日志写点的 mkdir 惯例对齐（code-review item
+        # 5fb92e285e94 沿用）。
         (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
-        # shell-quote 路径插值（code-review item 6333feb03e0c）：tmux 会把命令串
-        # 交给 shell 执行，裸拼路径含空格时被拆词致启动失败、含 ;/$/反引号等
-        # 元字符时构成命令注入面（路径来源含 CLI 入参与调用方传参）。
-        proot_q = shlex.quote(str(proot))
-        created = subprocess.run(
-            [
-                "tmux",
-                "new-session",
-                "-d",
-                "-s",
-                session,
-                f"cd {proot_q} && python3 .fenix/bin/fenixd_supervisor.py --project-root {proot_q} >> .fenix/logs/supervisor.log 2>&1",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=_tmux_env(),
-        )
-        # new-session 返回码校验（code-review item ed96126c1cdf）：非零说明会话
-        # 根本没建起来，静默吞掉会让后续轮询必败、收口 has-session 又只看「会话
-        # 存在」而可能撞上同名残留会话误报成功。duplicate session（同名会话已在，
-        # 如并发 start 竞态）维持既有「已存在」路径语义，落回下方轮询 + 复核；
-        # 其余失败（tmux server 异常等）直接 ok=False 并附 stderr。
-        if created.returncode != 0 and "duplicate session" not in (created.stderr or ""):
-            return {
-                "ok": False,
-                "error": f"tmux new-session 失败（rc={created.returncode}）: {(created.stderr or '').strip()}",
-                "session": session,
-                "already": False,
-            }
+        result = install_project_unit(proot)
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error"), "already": False}
+    except SystemdHostingError as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "already": False,
+        }
     except Exception as e:
         return {
             "ok": False,
-            "error": f"无法启动 daemon（tmux 不可用？）: {e}",
-            "session": session,
+            "error": f"无法启动 daemon（systemd 承载安装失败）: {e}",
             "already": False,
         }
+    unit = result["unit"]
 
     # 轮询等待进程真正起来（is_running 主判定为 /proc 进程检测）
     for _ in range(START_DAEMON_PROBE_ATTEMPTS):
@@ -576,151 +485,82 @@ def start_daemon(root: str | None = None) -> dict:
             # （daemon 随后拉起连续失败进入退避/熔断，永不到场），不能无声
             # 报成功；复核 daemon 本体，仅托管壳在场时附同样的 warning。
             if _daemon_proc_running(proot):
-                return {"ok": True, "error": None, "session": session, "already": False}
+                return {"ok": True, "error": None, "already": False}
             return {
                 "ok": True,
                 "error": None,
-                "session": session,
                 "already": False,
                 "warning": SUPERVISOR_ONLY_WARNING,
             }
         time.sleep(START_DAEMON_PROBE_INTERVAL_SECONDS)
-    # 探测窗口耗尽后区分两种情况：/proc 不可判但会话仍存活 → 维持宽容成功；
-    # 会话已消失 → tmux 内命令失败退出（会话随命令退出关闭），不能误报成功。
+    # 探测窗口耗尽后经 systemctl 复核区分两种情况：unit 活跃 → /proc 探测
+    # 失效（procfs 不可读等），supervisor 实际在跑，维持宽容成功并附 warning；
+    # unit 不活跃 → enable --now 拉起的启动命令失败退出（systemd 已放弃），
+    # 不能误报成功。
     try:
-        probe = subprocess.run(
-            ["tmux", "has-session", "-t", session],
-            capture_output=True,
-            timeout=2,
-            env=_tmux_env(),
-        )
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": f"无法确认 daemon 会话存活（tmux 异常）: {e}，请查看 .fenix/logs/supervisor.log",
-            "session": session,
-            "already": False,
-        }
-    if probe.returncode != 0:
-        return {
-            "ok": False,
-            "error": "daemon 启动探测超时且 tmux 会话已退出（启动命令可能失败），请查看 .fenix/logs/supervisor.log",
-            "session": session,
-            "already": False,
-        }
-    # 会话存活 ≠ 本命令在跑（code-review item ed96126c1cdf）：同名残留会话可能
-    # 装着无关窗格（如人工附着的交互 shell），只判「会话存在」会误报成功。经
-    # list-panes 校验窗格确以 supervisor 命令启动才维持宽容成功；列表为空
-    # （复核手段自身拿不到窗格信息）时维持既有宽容语义，不因校验失效改判失败。
-    try:
-        panes = subprocess.run(
-            ["tmux", "list-panes", "-t", session, "-F", "#{pane_pid} #{pane_start_command}"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            env=_tmux_env(),
-        )
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": f"无法确认 daemon 会话内容（tmux 异常）: {e}，请查看 .fenix/logs/supervisor.log",
-            "session": session,
-            "already": False,
-        }
-    if panes.returncode != 0:
-        # 会话恰在 has-session 与 list-panes 之间退出——等同会话已消失
-        return {
-            "ok": False,
-            "error": "daemon 启动探测超时且 tmux 会话已退出（启动命令可能失败），请查看 .fenix/logs/supervisor.log",
-            "session": session,
-            "already": False,
-        }
-    # 输出行格式 "#{pane_pid} #{pane_start_command}"：pid 与命令串以首个空格分隔
-    start_cmds = []
-    supervisor_pane_pids = []
-    for ln in panes.stdout.splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        pid_txt, _, cmd = ln.partition(" ")
-        start_cmds.append(cmd.strip())
-        if pid_txt.isdigit() and "fenixd_supervisor.py" in cmd:
-            supervisor_pane_pids.append(int(pid_txt))
-    # [fenix-ignore:020fa14cdb13] 本宽容分支只在 is_running 主判定（全 /proc 结构化 argv 锚定扫描）整个探测窗口失败后才可达，换成 _is_supervisor_proc 判据对窗格 pid 几乎必败（唯一命中间是秒级竞态）、等价于把「宁可宽容成功」的降级路径整体改判失败，且 pane_start_command 是 shell 命令串非 argv 列表、结构化判据结构上不适用；误报面（残留会话+pid 复用+cmdline 恰提脚本名）远窄于漏报风险。
-    if start_cmds and not any("fenixd_supervisor.py" in cmd for cmd in start_cmds):
-        return {
-            "ok": False,
-            "error": "daemon 启动探测超时且 tmux 会话内存活的不是 supervisor 命令（同名残留会话？），请查看 .fenix/logs/supervisor.log",
-            "session": session,
-            "already": False,
-        }
-    # pane_start_command 是窗格创建时刻记录的静态命令串、非活性信号（code-review
-    # item 698d0b8b17ea）：同名残留会话在 remain-on-exit 等配置下可保留已死的
-    # supervisor 窗格，start command 照样含 supervisor 字面量，仅凭上方字面量
-    # 判据会把「无任何进程在跑」误报成功。此处对 supervisor 窗格的 pane_pid 做
-    # 一次 /proc 活性核对（能走到本宽容分支即探测轮的 is_running 主判定为
-    # /proc 扫描、procfs 可用）：pid 存在且 cmdline 含 supervisor 脚本名才判
-    # 活；全部窗格可证已死（pid 消失，或 pid 已被不含该字面量的他者进程复用）
-    # 才改判失败；cmdline 不可读等复核手段失效形态维持既有宽容语义，不因校验
-    # 降级改判失败（与会话内容校验的宽容口径一致）。
-    if supervisor_pane_pids:
-        alive = False
-        inconclusive = False
-        for pane_pid in supervisor_pane_pids:
-            try:
-                with open(f"/proc/{pane_pid}/cmdline", "rb") as f:
-                    raw = f.read().decode("utf-8", errors="replace")
-            except FileNotFoundError:
-                continue  # pid 已消失：窗格进程可证已死
-            except OSError:
-                inconclusive = True  # procfs 拒读等：校验失效，保持宽容
-                continue
-            if "fenixd_supervisor.py" in raw:
-                alive = True
-        if not alive and not inconclusive:
+        if unit_active(unit):
             return {
-                "ok": False,
-                "error": "daemon 启动探测超时且 tmux 会话内 supervisor 窗格进程已不存在（残留会话占位？），请查看 .fenix/logs/supervisor.log",
-                "session": session,
+                "ok": True,
+                "error": None,
                 "already": False,
+                "warning": SUPERVISOR_ONLY_WARNING,
             }
-    return {"ok": True, "error": None, "session": session, "already": False}
+        return {
+            "ok": False,
+            "error": (
+                f"daemon 启动探测超时且 unit {unit} 不处于活跃态（启动命令可能失败），"
+                f"请查看 .fenix/logs/supervisor.log 与 journalctl -u {unit}"
+            ),
+            "already": False,
+        }
+    except SystemdHostingError as e:
+        return {
+            "ok": False,
+            "error": f"无法确认 daemon unit 存活（systemctl 异常）: {e}，请查看 .fenix/logs/supervisor.log",
+            "already": False,
+        }
 
 
 def stop_daemon(root: str | None = None) -> dict:
-    """停止该项目的 fenixd daemon 及其 supervisor（fix-supervisor-hosting-chain）。
+    """停止该项目的 fenixd daemon 及其 supervisor（systemd 双轨，add-systemd-hosting）。
 
     托管语义：supervisor 是 daemon 的父进程，直接 kill daemon 会被 supervisor
-    立即重新拉起；直接 kill session 会连带 SIGHUP 掉两者并丢失优雅清理。停止
-    按序执行：
-      ① 写 `.fenix/stop`（supervisor 见 daemon 退出后不再拉起）
-      ② 经 /proc 定位该项目 daemon 进程并 SIGTERM（快速停机语义，秒级收口，
-         不触发规划性排水；.fenix/restart_request 不在册时不走排水窗口）
-      ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
-      ④ 超时 `tmux kill-session -t <session>` 强制终止，并对残留 daemon/
-         supervisor 进程补发 SIGKILL 后短轮询复核（仍存活者计入 error，
-         确保无孤儿）
-      ⑤ finally 清除 `.fenix/stop`
+    立即重新拉起。stop 按 unit 接管状态双轨执行（design 决策 4）：
+      unit 已安装（systemd 承载，主轨）：
+        ① 写 `.fenix/stop`（supervisor 见 daemon 退出后不再拉起，与 systemd
+           SIGTERM 收尾链双保险）
+        ② `systemctl stop --no-block`——同步 `systemctl stop` 最坏等待为排水
+           上界量级（TimeoutStopSec=2100），会挂死 dashboard HTTP 线程，破坏
+           现行有界契约，MUST NOT 同步等待；systemd 向 supervisor 发 SIGTERM，
+           走既有转发收尾（SIGTERM daemon → 排水窗）
+        ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
+        ④ 超时对入口快照中仍存活的残留补 SIGKILL
+      unit 未安装但进程在跑（managed-but-no-unit 态：迁移期 / 人工直启 /
+      unit 被手工卸载）：
+        ②' 保留既有直接信号链——经 /proc 定位向该项目 daemon 发 SIGTERM。
+        `systemctl stop` 对未启动 unit 是 no-op，不能以此谎报成功。
+      两条轨共用 ③④ 与 ⑤ finally 清除 `.fenix/stop`（无论成败）。
     幂等：`is_running` 为假时直接返回 was_running=False，不写 stop 文件。
+    tmux kill-session 兜底已退役（tmux 承载退役，无回退）。
 
     SIGTERM/SIGKILL 只作用于 cwd 或 --project-root 等于该项目根的进程
     （经 _fenix_pids_under 定位），禁止按 cmdline 裸匹配杀进程。
 
-    并发安全（fix-supervisor-hosting-chain 验证修复 BUG-01）：停止目标 pid
-    在入口一次快照；SIGTERM 与超时 SIGKILL 只作用快照中的 pid（SIGKILL 前经
-    kill(pid, 0) 探活＋cmdline 结构化复核，防等待窗内 pid 复用误杀，见
-    _is_snapshot_proc_cmdline），超时路径绝不重新扫描——否则一次并发的 stop/install
-    在兜底时刻会把另一路刚拉起的新 supervisor/daemon 当作「残留」误杀，
-    致托管永远无法成立。
+    并发安全（fix-supervisor-hosting-chain 验证修复 BUG-01，保持）：停止目标
+    pid 在入口一次快照；SIGTERM 与超时 SIGKILL 只作用快照中的 pid（SIGKILL
+    前经 kill(pid, 0) 探活＋cmdline 结构化复核，防等待窗内 pid 复用误杀，见
+    _is_snapshot_proc_cmdline），超时路径绝不重新扫描——否则一次并发的
+    stop/install 在兜底时刻会把另一路刚拉起的新 supervisor/daemon 当作
+    「残留」误杀，致托管永远无法成立。
 
-    返回: {"ok": bool, "error": str|None, "session": str|None, "was_running": bool}
-    任何 subprocess/信号异常均返回 ok=False 的错误对象，不抛异常。
+    返回: {"ok": bool, "error": str|None, "was_running": bool}
+    任何 systemctl/信号异常均返回 ok=False 的错误对象，不抛异常。
     """
     proot = resolve_root(root)
-    session = session_name(proot)
+    unit = unit_name_for(proot)
     stop_flag = proot / ".fenix" / "stop"
     if not is_running(proot):
-        return {"ok": True, "error": None, "session": session, "was_running": False}
+        return {"ok": True, "error": None, "was_running": False}
 
     # 入口快照停止目标（并发安全：超时兜底只杀快照 pid，不重扫）
     # [fenix-ignore:aea5d1c9400d] supervisor 拉起前后各有 stop 标记检查点（循环顶/监视循环/daemon 退出后）且监视循环见 stop 即主动 SIGTERM 当前 daemon，快照到写 stop 仅隔微秒级语句、spawn 不可能整体落入窗口，收口又以快照（含 supervisor pid）全退为前提，重生 daemon 无法在 stop 后存活；改为「写标记后等待再快照」反而会把并发 start 的新进程扫进快照被兜底误杀，重新引入 BUG-01「绝不重扫误杀」契约所禁止的行为。
@@ -734,24 +574,42 @@ def stop_daemon(root: str | None = None) -> dict:
         return {
             "ok": False,
             "error": f"写 .fenix/stop 失败: {e}",
-            "session": session,
             "was_running": True,
         }
 
+    kill_errors = []
     try:
-        # ② SIGTERM 该项目 daemon 进程（仅快照中的 cwd/--project-root 锚定且为
-        # daemon 的进程——supervisor 见 stop flag 后自行退出，SIGTERM 不发给它；
-        # 复核传 proot 做项目根锚定，防快照到 SIGTERM 之间 pid 被复用为其他
-        # 项目 daemon 时误杀，code-review item 33a5a217f420）
-        for pid in target_pids:
-            if _is_daemon_cmdline(pid, proot):
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
+        # ② 双轨启动停机：unit 已装走 systemctl stop --no-block（systemd 对
+        # supervisor 发 SIGTERM，转发收尾链照走）；未装走既有直接信号链。
+        hosted = False
+        try:
+            hosted = unit_installed(unit)
+        except SystemdHostingError:
+            # systemctl 不可用：unit 承载无从判定，视同未安装走直接信号链
+            # （managed-but-no-unit 态语义）；systemctl 不可用不阻断直接信号
+            # 收口，可读错误由下方停止结果承载。
+            hosted = False
+        if hosted:
+            try:
+                stop_unit_no_block(unit)
+            except SystemdHostingError as e:
+                # 排队停机指令失败：等待+兜底仍执行，残留由快照补杀收口
+                kill_errors.append(f"systemctl stop --no-block 失败: {e}")
+        else:
+            # ②' 直接信号链：SIGTERM 该项目 daemon 进程（仅快照中的
+            # cwd/--project-root 锚定且为 daemon 的进程——supervisor 见 stop
+            # flag 后自行退出，SIGTERM 不发给它；复核传 proot 做项目根锚定，
+            # 防快照到 SIGTERM 之间 pid 被复用为其他项目 daemon 时误杀，
+            # code-review item 33a5a217f420）
+            for pid in target_pids:
+                if _is_daemon_cmdline(pid, proot):
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError):
+                        pass
         # ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）。
         # 只等快照 pid：并发时另一路新拉起的进程不在此列，不会让本路误等满窗。
-        # 快照为空（/proc 不可用但 tmux 回退判定运行中）时退化为项目级轮询。
+        # 快照为空（/proc 不可用）时退化为项目级轮询。
         deadline = time.time() + 30
         if target_pids:
             while time.time() < deadline:
@@ -763,81 +621,47 @@ def stop_daemon(root: str | None = None) -> dict:
                 if not is_running(proot):
                     break
                 time.sleep(0.5)
-        # ④ 超时兜底：kill session 并对**快照中仍存活的残留**补 SIGKILL——
-        # 不重新扫描项目（并发场景下新拉起的 supervisor 绝不被误杀）
+        # ④ 超时兜底：对**快照中仍存活的残留**补 SIGKILL——不重新扫描项目
+        # （并发场景下新拉起的 supervisor 绝不被误杀）
         remaining = _alive_pids(target_pids)
-        kill_errors = []
-        if remaining or (not target_pids and is_running(proot)):
-            try:
-                subprocess.run(
-                    ["tmux", "kill-session", "-t", session],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-            except Exception:
-                pass
-            # 旧版固定会话兜底（code-review item 7254a6ea802b）：is_running 的
-            # tmux 回退仍兼容旧版固定 session `fenixd`（_legacy_session_matches），
-            # /proc 不可用的退化路径（快照为空）下 daemon 可能仍以该会话方式
-            # 运行，仅 kill 唯一名会话打不中它，退化路径将失去强制清理手段。
-            # 先经 _legacy_session_matches 确认会话存在且归属本项目（pane cwd
-            # 匹配，与 is_running 回退同口径）再补杀——不存在的会话不打、
-            # 他项目的旧版会话不误杀；异常吞掉与上方 kill-session 同风格，
-            # 是否真停由下方退化路径复核 is_running 计入 error，不谎报 ok。
-            try:
-                if _legacy_session_matches(proot):
-                    subprocess.run(
-                        ["tmux", "kill-session", "-t", LEGACY_SESSION],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-            except Exception:
-                pass
-            sigkilled = []
-            for pid in remaining:
-                # 补杀前复核（code-review item 8cf4db59080d）：kill(pid, 0) 探活
-                # 分不清「快照进程仍在」与「pid 已被复用给无关进程」，复核判
-                # False（cmdline 已非本项目 daemon/supervisor，疑似 pid 复用）
-                # 时跳过并计入 error，不盲杀；None（进程已退出/不可读）照旧
-                # 尝试，由 ProcessLookupError 兜底。
-                if _is_snapshot_proc_cmdline(pid, proot) is False:
-                    kill_errors.append(
-                        f"SIGKILL pid {pid} 补杀前复核失败"
-                        "（cmdline 已非本项目 daemon/supervisor，疑似 pid 复用），跳过补杀"
-                    )
-                    continue
-                try:
-                    os.kill(int(pid), signal.SIGKILL)
-                    sigkilled.append(pid)
-                except ProcessLookupError:
-                    pass
-                except PermissionError as e:
-                    # 无权限发 SIGKILL＝目标仍存活（145eb8771dfc）：计入返回
-                    # error，不谎报 ok=True。
-                    kill_errors.append(f"SIGKILL pid {pid} 权限不足: {e}")
-            # 补发后短轮询复核：D 态（不可中断 IO/NFS）进程暂不响应 SIGKILL
-            # 时 kill 不报错、kill_errors 为空，不复核会向调用方谎报 ok=True。
-            recheck_deadline = time.time() + 2
-            while _alive_pids(sigkilled) and time.time() < recheck_deadline:
-                time.sleep(0.2)
-            for pid in _alive_pids(sigkilled):
+        sigkilled = []
+        for pid in remaining:
+            # 补杀前复核（code-review item 8cf4db59080d）：kill(pid, 0) 探活
+            # 分不清「快照进程仍在」与「pid 已被复用给无关进程」，复核判
+            # False（cmdline 已非本项目 daemon/supervisor，疑似 pid 复用）
+            # 时跳过并计入 error，不盲杀；None（进程已退出/不可读）照旧
+            # 尝试，由 ProcessLookupError 兜底。
+            if _is_snapshot_proc_cmdline(pid, proot) is False:
                 kill_errors.append(
-                    f"SIGKILL pid {pid} 后仍存活（疑似不可中断态），daemon 可能未退出"
+                    f"SIGKILL pid {pid} 补杀前复核失败"
+                    "（cmdline 已非本项目 daemon/supervisor，疑似 pid 复用），跳过补杀"
                 )
-            # 快照为空的退化路径（/proc 不可用、靠 tmux 判定运行中）无快照 pid
-            # 可补杀/复核，只能依赖上面的 kill-session——其异常被吞且返回码
-            # 不可靠，须同样短轮询复核 is_running，仍存活时计入 error，
-            # 不谎报 ok=True。
-            if not target_pids:
-                session_recheck_deadline = time.time() + 2
-                while is_running(proot) and time.time() < session_recheck_deadline:
-                    time.sleep(0.2)
-                if is_running(proot):
-                    kill_errors.append(
-                        "kill-session 后项目仍判定为运行中，daemon 可能未退出"
-                    )
+                continue
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                sigkilled.append(pid)
+            except ProcessLookupError:
+                pass
+            except PermissionError as e:
+                # 无权限发 SIGKILL＝目标仍存活（145eb8771dfc）：计入返回
+                # error，不谎报 ok=True。
+                kill_errors.append(f"SIGKILL pid {pid} 权限不足: {e}")
+        # 补发后短轮询复核：D 态（不可中断 IO/NFS）进程暂不响应 SIGKILL
+        # 时 kill 不报错、kill_errors 为空，不复核会向调用方谎报 ok=True。
+        recheck_deadline = time.time() + 2
+        while _alive_pids(sigkilled) and time.time() < recheck_deadline:
+            time.sleep(0.2)
+        for pid in _alive_pids(sigkilled):
+            kill_errors.append(
+                f"SIGKILL pid {pid} 后仍存活（疑似不可中断态），daemon 可能未退出"
+            )
+        # 快照为空的退化路径（/proc 不可用）无快照 pid 可补杀/复核，只能依赖
+        # ③ 的等待；超时仍判定运行中时计入 error，不谎报 ok=True
+        # （kill-session 兜底已退役，该退化路径不再有强制清理手段）。
+        if not target_pids and is_running(proot):
+            kill_errors.append(
+                "无法定位停止目标（/proc 不可用）且项目仍判定为运行中，daemon 可能未退出"
+            )
         # ⑤ finally 清除 stop（无论成败）
         try:
             stop_flag.unlink()
@@ -846,7 +670,6 @@ def stop_daemon(root: str | None = None) -> dict:
         return {
             "ok": not kill_errors,
             "error": "; ".join(kill_errors) if kill_errors else None,
-            "session": session,
             "was_running": True,
         }
     except Exception as e:
@@ -858,7 +681,6 @@ def stop_daemon(root: str | None = None) -> dict:
         return {
             "ok": False,
             "error": f"停止 daemon 失败: {e}",
-            "session": session,
             "was_running": True,
         }
 

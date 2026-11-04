@@ -450,6 +450,28 @@ def _parent_is_tmux_server(pid: int) -> bool:
     return False
 
 
+def _parent_is_pid1(pid: int) -> bool:
+    """给定 pid，判定其父进程是否为 PID 1（systemd/unit 承载常驻判据）。
+
+    add-systemd-hosting：``fenix-dashboard.service`` 承载的生产实例主进程
+    PPID 恒为 1（systemd 直接为父）；手工 ``--serve``/agent 自测实例的父
+    进程是启动 shell（或经 PDEATHSIG 孤儿化后为 1，但那些实例无 unit 拉回
+    保护，收割不破坏常驻形态）。解析纪律与 _parent_is_tmux_server 同款：
+    读 /proc/<pid>/stat 从最后一个 ')' 之后切片取 ppid 字段。
+
+    读取/解析失败（/proc 不可用、pid 已退出）→ False：接管路径按非 unit
+    承载放行既有接管——fail-safe 偏向放行（孤儿化实例无 unit 依归，收割
+    它不破坏任何常驻形态），与 tmux 豁免的方向一致。
+    """
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+        # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
+        fields = data[data.rindex(")") + 2 :].split()
+        return int(fields[1]) == 1
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 # 本进程内全部在飞 claude-watchdog 的停止口（(stop_event, thread) 注册表）。
 # 收割口 stop_all_claude_watchdogs 消费；serve() 优雅停机链与 tests/conftest
 # 的用例边界收割 fixture 各自调用。锁保护注册/收割的并发（watchdog 装配点
@@ -580,9 +602,11 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
 
     端口独占语义（dashboard-instance-lifecycle）：目标端口被占用时，
     - 占用者为旧的 `fenix_dashboard.py --serve` 实例 → SIGTERM 终止旧实例，
-      等待其退出（≤9s）后重新绑定一次；但占用者为 tmux 承载的常驻实例
-      （父进程为 tmux server，见 _parent_is_tmux_server）→ 不发任何信号，
-      打印含 PID 与 --port 换端口指引的错误后非 0 退出（2026-09-29 事故）；
+      等待其退出（≤9s）后重新绑定一次；但占用者为 systemd unit 承载的常驻
+      实例（父进程为 PID 1，见 _parent_is_pid1，add-systemd-hosting）或 tmux
+      承载的常驻实例（父进程为 tmux server，见 _parent_is_tmux_server）→
+      不发任何信号，打印含 PID 与换端口/重启指引的错误后非 0 退出
+      （2026-09-29 事故 + add-systemd-hosting 接管豁免）；
     - 占用者为其它进程（非 dashboard 实例）→ 打印占用信息后非 0 退出；
     - 启动失败退出时限（code-review item a5c3c97d255b）：非接管失败立即
       退出；非 tmux 旧实例接管路径在 SIGTERM 后等待旧实例退出最长 9 秒、
@@ -649,7 +673,21 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
                     f"（未向身份存疑的 PID {occupant['pid']} 发送任何信号）。\n"
                 )
             if not identity_gone:
-                # 常驻豁免（2026-09-29 事故）：占用者父进程为 tmux server → 人工
+                # 常驻豁免一（add-systemd-hosting）：占用者父进程为 PID 1 →
+                # systemd unit 承载的生产实例（fenix-dashboard.service 主进程
+                # PPID 恒 1），MUST NOT 发送任何信号——手工/agent 实例接管会
+                # 触发「接管 → systemd 拉回 → 反向接管」的生产实例闪断循环
+                # （design 决策 6）。打印可操作错误后非 0 退出。
+                if _parent_is_pid1(occupant["pid"]):
+                    sys.stderr.write(
+                        f"端口 {actual} 已被 systemd unit 承载的常驻 dashboard 实例占用"
+                        f"（占用者 PID {occupant['pid']}，父进程为 PID 1）——"
+                        f"常驻实例不可被接管，未向其发送任何信号。\n"
+                        f"请用 systemctl restart fenix-dashboard 重启生产实例，"
+                        f"或用 --port 指定其它端口。\n"
+                    )
+                    sys.exit(1)
+                # 常驻豁免二（2026-09-29 事故）：占用者父进程为 tmux server → 人工
                 # 常驻实例，MUST NOT 发送任何信号（pane 进程死 → 单窗口 tmux 会话
                 # 消失、用户可访问实例静默死亡）。打印可操作错误后非 0 退出；
                 # agent 自适应换端口，非 tmux 旧实例（agent 自测/nohup 遗留）接管

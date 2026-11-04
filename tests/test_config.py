@@ -461,7 +461,8 @@ class TestDaemonHealth(unittest.TestCase):
 
 class TestFenixSessionIsRunning(unittest.TestCase):
     """core.fenix_session.is_running：进程检测为主（/proc cwd+cmdline），
-    /proc 不可用（非 Linux）时回退 tmux 判定；残留 session 不误报。"""
+    /proc 不可用时 fail-closed 判未运行（tmux 回退已随 systemd 承载退役，
+    add-systemd-hosting 3.3）；残留 session 不误报。"""
 
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
@@ -469,18 +470,6 @@ class TestFenixSessionIsRunning(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def _fake_run(self, returncodes, legacy_stdout=""):
-        from types import SimpleNamespace
-        calls = {"n": 0}
-
-        def fake(args, **kw):
-            calls["n"] += 1
-            if calls["n"] == 1:  # tmux has-session
-                return SimpleNamespace(returncode=returncodes[0], stdout="")
-            return SimpleNamespace(returncode=returncodes[1], stdout=legacy_stdout)
-
-        return fake
 
     def test_daemon_process_under_root_running(self):
         """supervisor 直启 daemon（无 tmux session）→ running。"""
@@ -494,35 +483,23 @@ class TestFenixSessionIsRunning(unittest.TestCase):
         with patch("core.fenix_session._daemon_procs_under", return_value=False):
             self.assertFalse(is_running(self.tmpdir))
 
-    def test_proc_scan_unavailable_falls_back_to_tmux(self):
-        """/proc 不可用（非 Linux）时回退 tmux 唯一 session / 旧版 cwd 判定。"""
+    def test_proc_scan_unavailable_fail_closed_stopped(self):
+        """/proc 不可用（非 Linux）→ fail-closed 判未运行；tmux 回退已退役，
+        MUST NOT 回退 tmux 判定（subprocess 无 tmux 出径可消费）。"""
         from core.fenix_session import is_running
 
         def proc_boom(root):
             raise OSError("no /proc")
 
         proot = Path(self.tmpdir).resolve()
-        with patch("core.fenix_session._daemon_procs_under", side_effect=proc_boom), \
-             patch("core.fenix_session.subprocess.run",
-                   side_effect=self._fake_run([0, 0])):
-            self.assertTrue(is_running(proot))
+        with patch("core.fenix_session._daemon_procs_under", side_effect=proc_boom):
+            self.assertFalse(is_running(proot))
 
-    def test_legacy_session_cwd_match_running_when_proc_unavailable(self):
+    def test_proc_exception_stopped(self):
+        """/proc 扫描异常（非 OSError 兜底面）→ stopped，不抛异常。"""
         from core.fenix_session import is_running
-
-        def proc_boom(root):
-            raise OSError("no /proc")
-
-        proot = Path(self.tmpdir).resolve()
-        with patch("core.fenix_session._daemon_procs_under", side_effect=proc_boom), \
-             patch("core.fenix_session.subprocess.run",
-                   side_effect=self._fake_run([1, 0], legacy_stdout=str(proot))):
-            self.assertTrue(is_running(proot))
-
-    def test_subprocess_exception_stopped(self):
-        from core.fenix_session import is_running
-        with patch("core.fenix_session._daemon_procs_under", return_value=False), \
-             patch("core.fenix_session.subprocess.run", side_effect=OSError("tmux unavailable")):
+        with patch("core.fenix_session._daemon_procs_under",
+                   side_effect=RuntimeError("proc walker boom")):
             self.assertFalse(is_running(self.tmpdir))
 
 

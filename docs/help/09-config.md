@@ -493,14 +493,14 @@ hooks:
 | command | — | shell 必填 | 以 `bash -c` 在项目根执行的命令 |
 | message | `[fenix] hook: {spec} {event}` | commit/commit-push 可选 | 提交信息模板，变量 `{spec}`/`{event}`，未知变量原样保留 |
 | timeout_seconds | webhook 10 / shell 60 | 正数 | webhook 请求超时 / shell 执行超时（超时强制终止） |
-| target | `fenix-dashboard` | restart-dashboard 可选 | 要重启的 dashboard tmux 会话名 |
+| target | `fenix-dashboard` | restart-dashboard 可选 | legacy 键（tmux 会话名，承载退役后不再消费；类型校验保留——非字符串按配置非法拦截） |
 
 #### 七种动作
 
 | 动作 | 行为 |
 |------|------|
 | restart-daemon | 写 `.fenix/restart_request`，由 supervisor 按既有协议优雅重启 daemon（合并新代码后让其生效的常规手段） |
-| restart-dashboard | `tmux respawn-window -k` 重启 dashboard 会话（重启命令固定含 `env -u CLAUDE_PID`、保持端口与工作目录），以端口恢复 HTTP 可服务为成功判据 |
+| restart-dashboard | `systemctl restart fenix-dashboard` 重启 dashboard（add-systemd-hosting 起 tmux respawn 退役）；unit 未安装时静默 skip（环境态非故障，与旧「无会话」语义对齐），以端口恢复 HTTP 可服务为成功判据；60s 去抖窗口内重复触发幂等跳过 |
 | commit | 项目根 `git add -A` 后按模板提交；工作区无变更记 noop 成功、不告警 |
 | push | `git push` 推送当前分支到其 upstream |
 | commit-push | 先 commit 后 push；commit 无变更仍 push；push 失败不回滚已产生的本地提交 |
