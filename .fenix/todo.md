@@ -46,18 +46,21 @@
 
 ### 浪费
 - **API 停滞 58 run 合计 370 分钟纯等待，恶化 4 倍且 success 豁免面按设计工作**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：窗口内 58 个 run 累计 API 停滞（单轮 API 往返超 60 秒的等待段）约 22224.9 秒 ≈ 370 分钟，为上窗 92 分钟的 4 倍；最重单 run（impl-add-escalation-chain-admin-arbiter 首派）停滞 2456.5 秒占其 3.35 小时时长的 20%、费用 41.55 美元为同组中位 21.7 倍，最长单轮 462.7 秒；零失败零交付损失，损失面全在墙钟与轮次。
   - 证据：数据摘要第 6 节 58 行 api-stall 聚合行逐行回源 .fenix/runs/archive/ 对应档案终态 run_metrics（run 档案末尾的指标行）：52/58 为 success 终态、53/58 模型字段为 glm-5.3-flash；latency_max（单轮最长 API 往返）超 300 秒升级线的仅 3 个——planner-judge-add-escalation-chain-admin-arbiter-1793688640-a1（463 秒）、evo-1793636167（420 秒）、planner-plan-add-knowledge-inbox-pipeline-1793697665-a1（331 秒）——且全部 success 终态。
   - 调查评估：在多 SPEC 交付日的六车道（impl/planner/spec-review/admin/code-fix/evo）普遍暴露。已核实事实：58 行合计按聚合行口径相加（终态指标行无 total 字段，与上窗同口径转引并如实标注），抽档案核对终态与 latency_max 吻合；admin 告警面窗口内 api_round_stall_escalated（API 停滞升级信号）零出现。根因未定、多假说并存（网关排队/长上下文/本地网络，2026-11-02-evo-add-api-stall-disposition-closeout 归档件留痕三假说不预设）。与存量关系：core/admin_monitor.py:3392 的 _check_api_round_stall_escalated 检测面（closeout 2.1 交付，判据 latency_max>300 秒与 core/agent_runner/latency.py:43 的 STALL_ROUND_ESCALATE_SECONDS 单源）本窗已在运行（daemon 最后一次 23:48 本地启动装载现行代码），零信号的原因是检测面第 3449 行的 success 终态豁免——「曾停滞但正常完成」的 run 不升级人工面（monitor-escalated-signal-negative-controls 修复的有意设计）。结论：上窗条目「若连续两窗停滞依旧而无升级信号，再按信号面接线缺口立项排查」的可证伪预期被本窗证据修正——接线无缺口，无升级信号是设计使然；真实敞口是停滞对成功收尾的 run 无任何缓解动作，纯烧墙钟，且体量恶化 4 倍。本条按车道微调对账既有蒸馏规则（api-stall 分级与处置面均已入库），只留痕实损与修正预期框架，不重复立项升级信号面。
   - 建议：不再以「升级信号是否出现」作为停滞浪费的验证锚（success 豁免使其对成功 run 天然沉默），改在 cost-observability（成本观测域）为停滞聚合定义常规出口：连续两窗合计超阈值时按 run_metrics 的 model 字段做模型版本对照与提示词/provider 路由收敛试验（53/58 已有 model 字段可支撑），替代逐窗人工对账。
 
 - **stale 自愈 4 次计划内重启全数硬杀在飞 run，6 个 run 约 114 分钟作废**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：当日 stale_code_selfheal（daemon 检测到磁盘代码比进程内存旧、自动计划重启的自愈链）触发 4 次计划内重启（本地 18:11:38、22:33:34、22:45:36、23:08:11），drain（关停前等待在飞 run 收尾的排水窗口）50/50/50/29 秒全数未能等到自然收尾，6 个在飞 run 被 SIGTERM 或启动扫描终结：51.5 分钟 impl（add-knowledge-inbox-pipeline 首派）、14 分钟 impl 与 13.7 分钟 planner-plan 与 96 秒 admin（均为 add-arbiter-gap-todo-routing 同件或同窗）、11.9 分钟 impl（正在跑全量回归后台任务时被杀、Exit 143）、22 分钟 impl（被启动扫描补写 interrupted）——纯 run 时间损失约 114 分钟（impl 99 + planner 13.7 + admin 1.6），另烧全部重派；交付零损失（worktree 分支保全、重派 6 分钟即收尾）。
   - 证据：fenixd.log 四组「Shutting down.../Drain finished after 50s（或 29s）, remaining runs:[…]/Sent SIGTERM to running agent/fenixd stopped」行（10:11:38Z、14:33:34Z、14:45:36Z、15:08:11Z，各接 3 秒级重启）；六个 run 档案尾部终态行逐一度核：impl-add-knowledge-inbox-pipeline-1793697665-a1 与 impl-add-arbiter-gap-todo-routing-1793715648-a1、planner-plan-add-arbiter-gap-todo-routing-1793715648-a1、admin-stale-code-governance-activation-window-1793716373 为 interrupted（reason=daemon shutdown），impl-add-arbiter-gap-todo-routing-1793716475-a1 为 error Exit code:143（141 轮后后台任务 task_updated status=killed），impl-add-arbiter-gap-todo-routing-1793717195-a1 为 interrupted（reason=startup terminal-state sweep）；首次重启前 14:29:02Z 有 stale_code_selfheal WARNING（磁盘 core/** mtime 超 baseline）+300 秒边沿等待行；drain 期间 checkpoint broadcast 3/3 全无响应后硬杀。
   - 调查评估：在 add-knowledge-inbox-pipeline 与 add-arbiter-gap-todo-routing 实现车道暴露，根因是交付密集日的结构性交互：当日 5 个以上 SPEC 交付均动 core/（escalation-chain、judge-repair、watchdog-yield、register-revise、arbiter-gap 等），每次 merge 后 daemon 检测 stale 即计划重启，重启必然撞上下一批在飞 run。已核实事实：重启决策与 drain 窗口值均出自日志原文；排水窗口量级受 agents.run_drain_max_seconds（缺省 60 秒，core/config.py:1930）控制，与 LLM run 单轮时长（本窗 API 往返常态 60-462 秒）结构性失配，窗口内自然收尾近乎不可能；restart checkpoint 广播（reason=planned restart 旗标）为 best-effort 无响应语义，3/3 零响应。次生噪音：同 spec 双 worktree 并存（.claude/worktrees/impl-add-arbiter-gap-todo-routing-1793715648 与 -1793715649）使 find_worktree_by_spec 歧义 4 次 WARNING、preserve 保全降级记 branch='none'，产物靠 drain-preserve checkpoint 提交与 cleanup 保护集兜住。与存量关系：stale-selfheal-cooldown（300 秒边沿防抖）与本窗 add-arbiter-gap-todo-routing 刚交付的 restart_request 机制（core/signals.py 等，JSON reason/origin/date 防重语义，提交 a9557cf02）治理的是「重复重启」，未覆盖「重启打断在飞」。结论：系统性缺口非一次性失误——交付密集日每个动 core/ 的交付都要付一轮打断-重派税，交付零损失全靠 worktree 保全链兜底。
   - 建议：立项小 spec 治排水-在飞失配：①把 run_drain_max_seconds 提到与 LLM 轮长对齐（≥300 秒）并在 drain 期间感知在飞 run 的后台任务（如全量回归）等待任务边界再放行；②重启前对在飞 run 统一落 WIP checkpoint（复用 drain-preserve 机制）后即停，新进程按 checkpoint 续做而非整体重派；③同 spec worktree 唯一性约束（重派复用既有目录而非新播种），消除命名歧义导致的 preserve 降级。
 
 - **code-fix 唯一失败为 unrecognized_model 秒败，31 分钟后自愈**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：code-fix 车道当日唯一失败：05:24 的 run 零轮 API 往返、秒败退出码 1，车道修复窗口延迟约 31 分钟（05:55 下一 run 起恢复成功），损失一次派发与一条 critical daemon_errors 记账。
   - 证据：code-fix-1793654666（code-review 台账修复 run）档案 stderr 行原文 `[claude-code:unrecognized_model] {"model":"glm-5.3-flash","query_source":"sdk"}` + error 行 Exit code:1 + run_metrics 零轮次；同日同模型 glm-5.3-flash 的 60+ 个 run 全部正常收尾（停滞聚合行 53/58 的 model 字段即此模型），05:55 的 code-fix-1793656527 起车道连续成功。
   - 调查评估：在 code-review 台账修复车道暴露。已核实事实：stderr 与退出码逐字核实；失败时刻 05:24（本地）在每日 04:30 网络断供窗口（历史记录 enp42s0 掉 carrier 时段）之后约 54 分钟。根因未定、多假说并存：①CLI 启动时模型名校验抖动（网关/CLI 瞬态）；②网络瞬断被 CLI 伪装成 unrecognized_model 报错——同模型同日高成功率不支持「配置错模型名」的单因叙事，故只写形态层（0 轮 + exit 1 + unrecognized_model stderr）不裁决单因。与存量关系：run-resilience 域已有 CLI 重试退避与 daemon_errors 指纹归一面（同 run 重试合并计数），本例单次即愈、未进入重试面。结论：瞬断型秒败、自愈，按既有「0 轮+exit1 才致命」判别法不值得重启 daemon（实际未重启也自愈）。
@@ -65,6 +68,7 @@
 
 ### 失误
 - **arbiter 提案三连烧六轮评审全否决，靠软删除收场暴露提案质关前移缺口**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：三条 arbiter（自主裁决车道）立项提案各烧两轮 spec-review 全被否决（escalation critical ×3）后软删除收场：fix-escalation-freeze-vs-parallel-admin-race、fix-scenario-revision-choice-registration-surface（评审否决×2 后撤销、race 主题转 todo 由自进化接手）、stale-code-governance-activation-window（评审否决×2 冻结后撤销），共 6 个评审 run 与 3 次 admin 升级处置的纯消耗，无交付产出。
   - 证据：git 提交链：0793024d6/02166efcc/e953…（21:25/19:31 arbiter 提案最小成文）、795e9f6b4 等评审留痕、90d04f003（22:32 软删除 stale-code-governance-activation-window）、28eab64ff（22:12 撤销两条冻结件）；admin_alerts.json 窗内 spec-review-rejected 升级告警 77705c61638b、2e80fc90bf39（critical）及对应 disposition（裁决处置记录）escalated 各一条；停滞聚合行中三条提案的 spec-review run 各 2 个在档。
   - 调查评估：在 arbiter 立项通道退役过渡期暴露。已核实事实：三条提案的创建-评审否决-软删除全链提交与告警均在档；评审 run 共 6 个（每条 2 轮）。根因评估：arbiter 立项通道退役注记（arbiter-proposal-filing 能力页，本窗 23:39 蒸馏入库）落地前，通道仍允许最小成文提案进入评审，提案质量闸门只有评审兜底、无入口预检，形成「提案-否决-再提案-再否决-撤销」的固定消耗模式；评审门本身按设计工作（有效拦截低质提案），消耗集中在入口端。与存量关系：add-arbiter-gap-todo-routing（本窗交付归档中）已把 gaps 改路由 todo，退役注记生效后同类提案不再入评审；本条为过渡期成本的留痕确认。结论：通道治理已闭环、过渡消耗已发生，无残余敞口，不建议再立项。
@@ -72,12 +76,14 @@
 
 ### 可改进
 - **startup sweep 无在途判据，当日两起错杀 62 分钟与 22 分钟在跑 run**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：startup terminal-state sweep（daemon 启动时对尾部无终态事件的 run 档案补写 interrupted 标记的扫描）当日错杀两个实际在途的 impl run：watchdog-yield-gaps 首派（20:12-21:14 跑 62 分钟，21:14:53 被 sweep 补 interrupted，与 worktree 收尾提交 aab45e481 同分钟，产物靠分支入库救回、账面失真）；add-arbiter-gap-todo-routing 第三派（22:46 派发跑 22 分钟，23:08:48 被打断后重走 merge）。复发敞口=每次 stale 自愈重启撞上在途 run 即再现（当日 2 起，上窗蒸馏车道 1 起），单次代价约一个完整实现 run（当日实测 22-62 分钟）。
   - 证据：两 run 档案尾部 interrupted（reason=startup terminal-state sweep，13:14:53Z 与 15:08:48Z）；sweep 实现 core/agent_runner/liveness.py:361 sweep_runs_without_terminal_state——判据只有「尾部无终态事件」，docstring 明示「孤儿 claude 进程存活不阻塞补写」，无停机/启动窗口豁免；watchdog-yield impl run 的停滞指标（stalls=8、合计 837.1 秒）证明被打断时仍在活跃跑；两 run 被补写后均无 run_metrics 行（无 latency_max 字段）。
   - 调查评估：在 impl 车道两个 SPEC 的收尾/中段暴露。已核实事实：21:14 案产物已提交分支（aab45e481 21:14、merge a45efc362 21:17）零交付损失，23:08 案同（merge 36095b1eb 23:09）；sweep 只补 interrupted 不补指标行。根因：sweep 的「残留」判定把「转写者（旧 daemon）已死但 run 在途/刚收尾未落 result」与「真残留」同判——上窗 #浪费#2 建议的「停机/启动窗口前后数秒豁免」不足以覆盖本窗形态（62/22 分钟长跑在途被杀）。与存量关系：fix-distill-observation-gaps 与 move-distill-trigger-to-push 两 spec 已全勾待归档（治蒸馏器早死终态兜底与触发面迁移），本窗蒸馏链未复发空转（runs 统计无终态残留 0）；但 sweep 判据本身两个 spec 均未触及，属残余缺口（代码级实锤）。结论：同族复发、判据缺口明确，值得在归档收尾时顺带补跳。
   - 建议：sweep 补写前增补在途判据：run 派发记录或 worktree 活跃分支 mtime 新于停机时刻则改记 pending（待定）而非 interrupted，交由运行期清扫器（runtime terminal-state sweep，liveness.py:562）按进程存活二次裁决；可并入 fix-distill-observation-gaps 归档收尾或独立小 spec。
 
 - **纯文本轮通胀连续第二窗命中且跨车道扩散，响应端仍未定义、检测 spec 滞留未归档**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：planner-judge 车道 run（add-escalation-chain-admin-arbiter 的 1793691083）178 轮中 111 轮纯文本（无工具调用的模型回复轮，占 62.4%）、planner-plan 同 spec run 125 轮中 65 轮（52.0%），双双越过离群阈值（轮数>100 且占比>50%）；与上窗 code-fix 命中（50.5%）合计，同一模型 glm-5.3-flash 已在 3 个车道命中，复发敞口为每窗多烧一轮演化复核注意力（上窗实测白跑一轮复核）。
   - 证据：数据摘要第 6 节初筛离群两行的 turns/text_turns 原始值；两 run 档案 run_metrics 的 model 字段均为 glm-5.3-flash；spec/changes/evo-refine-midflight-outlier-dims/（离群维度细化 spec）仍含 proposal/design/tasks/verification-report 全套（tasks.md 6 处勾选全完成）滞留活跃区未归档。
   - 调查评估：在 planner 双车道暴露，为该离群维度首报后的第二窗命中。已核实事实：阈值与占比按摘要原始值转引；检测 spec 全勾待归档、归档动作拖延是响应端未落的一部分。根因未定（模型输出行为漂移假说，该 spec 原文口径），token 面不可量化（该车道 run_metrics 的 input_tokens=0 计量缺失）。与存量关系：检测端已闭环（维度细化 spec 全勾），提案自述命中后「仅进自省摘要」零自动动作——上窗建议「连续 ≥2 窗同车道命中再做收敛试验」，本窗两处命中均为不同车道（planner-judge/planner-plan 首窗），按该规则属留痕；但命中面从 code-fix 单车道扩散为三车道同模型形态，叠加检测 spec 归档拖延，构成恶化。结论：响应端缺口已从「单车道等待观察」升级为「跨车道系统性形态」，归档收尾是当前最小可行动作。
