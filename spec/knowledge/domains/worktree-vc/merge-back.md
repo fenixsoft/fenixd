@@ -1,4 +1,4 @@
-<!-- knowledge: capability=merge-back rev=7 sources=spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976,spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard,spec/archive/2026-09-25-evo-stash-pop-conflict-triage,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
+<!-- knowledge: capability=merge-back rev=8 sources=spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976,spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard,spec/archive/2026-09-25-evo-stash-pop-conflict-triage,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/knowledge/_inbox/done/memory-distill-user-rulings.md -->
 
 # merge-back 合并回主树
 
@@ -8,6 +8,7 @@
 
 - 闸门顺序不变式：`merge-tree` 预演闸 → WIP 重叠闸门 → spec 目录在飞编辑卫检查 → `ensure_clean_tree` → merge。优先级为语义冲突 → WIP 重叠拦截 → spec 目录在飞编辑顺延 → 放行 merge。
 - 无重叠且主树干净的路径：autostash（含 untracked）→ `git merge --no-ff`（保留历史，分支已为主树祖先时幂等跳过）→ 成功后 stash pop 恢复主树 WIP。
+- dist 不入库：`dist/` 为 gitignored 构建产物，交付件从 src 构建、不进版本库；merge 成功后框架自动重建（`_rebuild_dist_after_merge`，分支带来的 dist 差异以主树为准、最终一致性由重建收口）；实现 agent 不 `git add dist`，交付物声明不含 dist 路径（gitignored 路径不可声明）。
 - WIP 重叠闸门：重叠集合 = 主树脏 tracked 文件 ∩ 分支触碰文件集，且 MUST 排除 `spec/changes/**`（该前缀由既有 `ensure_spec_committed` / `_commit_softened_declaration` 提交通道收口，不引入新的 stash/阻塞语义）。交集非空的缺省处置为升级人工拦截（不发 merge，人工告警附交集清单；该缺省由 merge-back-precheck 预检确立）；显式 `worktree.mergeback_wip_overlap_policy=auto` 维持自动收纳（收纳 → merge → 成功后恢复主树 WIP）；显式 `block` 并入升级出口；`worktree.merge_precheck_bypass=true` 跳过预检直接 merge。
 - WIP 拦截后的等待与自动合回：拦截落人工告警的同时在 spec 状态上落结构化等待标志（布尔 + 重试计数 + 首阻时刻），daemon 周期复查、主树重叠文件干净后在主树锁内 merge-only 自动合回并闭环原告警（详见 [WIP 阻断延迟合回](wip-defer-merge-retry.md)）；闸门本体与升级拦截语义不因此改变。
 - 阻塞与顺延不记账：WIP 重叠拦截 MUST NOT 计入 `_merge_fp`/`_merge_streak` 熔断记账，spec MUST NOT 因拦截被自动 `transition("blocked")`；spec 目录顺延同样不计指纹、不递增 `_retry_count`、不消耗实现尝试预算、不触发「新轮次派发清除锚点」。
@@ -32,3 +33,4 @@
 - 2026-10-13 evo-mergeback-archive-residue-selfheal（spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal） — 顺延熔断出口前置归档残留只读评估与自动收尾重放，超阈值悬置条目新增 120 秒周期消费者接手（独立能力页 mergeback-archive-residue-selfheal 承载），顺延有界性与不记账不变式不变
 - 2026-11-04 memory-distill-open-gaps-hazards（spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md） — 折叠两规则：自愈链覆盖边界（tracked-modified 冲突无自愈、跨会话并行写主树为合回失败首因）与上游 spec 目录自动提交夹带面（框架通道 pathspec 守卫、交互入口靠只 add 目标目录与 hunk 手术纪律）
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠两配方：主树多批未提交决策的 hunk 手术分拣提交纪律（切 hunk → apply --cached → 目检）、跨进程手工合回收尾配方（UU 取 HEAD 判据、禁借道进程内 ensure_clean_tree、update_spec 收尾清计数）
+- 2026-11-04 memory-distill-user-rulings（spec/knowledge/_inbox/done/memory-distill-user-rulings.md） — 折叠 dist 不入库纪律：构建产物不入库、merge 后 `_rebuild_dist_after_merge` 自动重建、实现侧不 add 不声明 dist

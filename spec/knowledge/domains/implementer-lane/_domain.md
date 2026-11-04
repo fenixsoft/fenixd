@@ -1,5 +1,5 @@
 # 实现车道与交付物
-> 最后更新：2026-11-04 15:41 UTC+8
+> 最后更新：2026-11-04 17:07 UTC+8
 
 实现车道与交付物。本域能力页清单如下。
 
@@ -24,7 +24,7 @@
 | [artifact-path-dashboard-ui](artifact-path-dashboard-ui.md) | 产物路径声明界面 | 2026-10-03 04:59 |
 | [deliverable-declaration-triage](deliverable-declaration-triage.md) | 交付物声明分诊 | 2026-10-03 04:59 |
 | [deliverable-declaration-resolution](deliverable-declaration-resolution.md) | 交付物声明解析 | 2026-10-03 04:59 |
-| [deliverable-dispute-governance](deliverable-dispute-governance.md) | 交付物争议治理 | 2026-10-03 04:59 |
+| [deliverable-dispute-governance](deliverable-dispute-governance.md) | 交付物争议治理（含晋升期 lint 孤儿检查的任务起始行匹配面） | 2026-11-04 17:07 |
 | [deliverable-dispute-preclassify](deliverable-dispute-preclassify.md) | 交付物争议预分类 | 2026-10-03 04:59 |
 | [declaration-premechanize](declaration-premechanize.md) | 声明机械化前置约束 | 2026-10-03 04:59 |
 | [declaration-relocation-protocol](declaration-relocation-protocol.md) | 交付物声明修正（relocation）协议 | 2026-10-03 04:59 |

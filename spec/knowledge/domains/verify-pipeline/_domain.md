@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-11-04 16:30 UTC+8
+> 最后更新：2026-11-04 17:07 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [verify-runner-engine](verify-runner-engine.md) | 验证执行引擎（runner） | 2026-10-03 04:59 |
+| [verify-runner-engine](verify-runner-engine.md) | 验证执行引擎（runner，场景集全量执行不裁剪） | 2026-11-04 17:07 |
 | [verification-pipeline-modules](verification-pipeline-modules.md) | 验证管线模块化结构 | 2026-10-03 04:59 |
 | [verify-process-lifecycle](verify-process-lifecycle.md) | 验证进程生命周期管理 | 2026-10-03 04:59 |
 | [verify-preflight-gate](verify-preflight-gate.md) | 验证预检门 | 2026-10-03 04:59 |

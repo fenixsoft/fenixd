@@ -1,4 +1,4 @@
-<!-- knowledge: capability=deliverable-dispute-governance rev=1 sources=spec/archive/2026-09-23-evo-deliverable-dispute-orphan-preclassify -->
+<!-- knowledge: capability=deliverable-dispute-governance rev=2 sources=spec/archive/2026-09-23-evo-deliverable-dispute-orphan-preclassify,spec/knowledge/_inbox/done/memory-distill-user-rulings.md -->
 
 # 交付物争议孤儿声明治理
 
@@ -11,8 +11,9 @@
 - 孤儿判定与处置：`kind: new` 源码面零引用且任务清单零出现、或 `kind: modify` 源码面零引用且路径限定历史零命中且任务清单零出现 → 判孤儿声明，机械删除声明并写审计（DisputeAuditStore，`verdict=orphan-preclassify`），不置 spec 为 blocked 待人工。
 - 删除后续走（guard-preclassify 范式）：删除仅限声明段该条的 path+kind 两行并留 `.history` 备份；改写的 tasks.md 立即提交（未提交的 spec 文件不被 merge-back 的 autostash 排除，会使 merge 被 git 拒绝并冻结 spec）；重跑交付物收工守卫，全清则置 `implementing` 并放行 merge；仍有缺件则以重跑结果续走既有后续处置（仍带 dispute 异议 → blocked 待人工；无异议 → 既有 LLM 终审）；判定/改写/提交任一环节异常全量回退既有 blocked 待人工路径（fail-open）。
 - 非孤儿形态维持人工：basename 多命中、语境等价、运行时产物、`kind: modify` 历史命中疑似漂移等任一引用存在时，维持既有 blocked 待人工裁决通道，不机械删除。`kind: delete` 不参与孤儿预分类（一律进人工裁决）。
-- 晋升期孤儿检查：`lint_declared` 对 `kind: new` 声明增加孤儿检查——声明路径在 tasks.md 任务清单文本（全路径与 basename）零出现且源码面（`git grep`，覆盖范围与负向 pathspec 写法同裁决通道）零引用时，报错拒绝晋升（spec 停留 drafted + error 附孤儿判定证据）。该检查只覆盖 basename 模糊匹配规则原本放行的「basename 零命中」形态：basename 多命中沿用既有规则 fail-open 放行、孤儿检查不触发；basename 唯一命中仍由既有规则拦截；lint 自身故障保持 fail-open（返回空清单放行晋升）。
+- 晋升期孤儿检查：`lint_declared` 对 `kind: new` 声明增加孤儿检查——任务清单匹配面只认 tasks.md 任务起始行（`- [ ]` 行）的字面文本（全路径或 basename 出现在起始行才计命中），花括号展开、续行等非起始行写法不参与匹配，故成文时任务行写路径必须平铺直书，否则被误判孤儿声明；声明路径起始行零出现且源码面（`git grep`，覆盖范围与负向 pathspec 写法同裁决通道）零引用时，报错拒绝晋升（spec 停留 drafted + error 附孤儿判定证据）。该检查只覆盖 basename 模糊匹配规则原本放行的「basename 零命中」形态：basename 多命中沿用既有规则 fail-open 放行、孤儿检查不触发；basename 唯一命中仍由既有规则拦截；lint 自身故障保持 fail-open（返回空清单放行晋升）。
 
 ## 溯源
 
 - 2026-09-23 2026-09-23-evo-deliverable-dispute-orphan-preclassify（spec/archive/2026-09-23-evo-deliverable-dispute-orphan-preclassify） — 确立孤儿判定口径（负向 pathspec 引用面、kind 分化历史判据、basename 比对）、机械删除续走范式与晋升期 lint 孤儿检查
+- 2026-11-04 memory-distill-user-rulings（spec/knowledge/_inbox/done/memory-distill-user-rulings.md） — 孤儿判定任务清单匹配面收窄为任务起始行字面文本（全路径或 basename），花括号展开/续行写法不参与匹配、任务行成文须平铺直书

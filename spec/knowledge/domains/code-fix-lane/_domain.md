@@ -1,5 +1,5 @@
 # 缺陷修复
-> 最后更新：2026-11-04 16:55 UTC+8
+> 最后更新：2026-11-04 17:07 UTC+8
 
 缺陷修复。本域能力页清单如下。
 
@@ -19,7 +19,7 @@
 | [code-fix-wipgate-defer](code-fix-wipgate-defer.md) | 修复批合回 WIP 阻断延迟合回（暂态零预算、现场保留+放锁、自动重试） | 2026-10-03 04:59 |
 | [code-fix-agent](code-fix-agent.md) | code-fix 修复 agent（四处注册点/模型链回退/worktree 写权限与产物契约/定向重试轮契约/LLM 拒绝出口 skip_reason 白名单与跨轮 fixed 优先） | 2026-11-04 16:55 |
 | [code-fix-config](code-fix-config.md) | code-fix 车道配置 | 2026-10-04 05:11 |
-| [code-fix-progress](code-fix-progress.md) | 修复进度聚合与呈现（快照结构/活口径分母 done+open/只读 API/项目页呈现与停轮询终态 visibilitychange 恢复） | 2026-11-04 16:55 |
+| [code-fix-progress](code-fix-progress.md) | 修复进度聚合与呈现（快照结构/活口径分母 done+open/可见性验收口径/只读 API/项目页呈现与停轮询终态 visibilitychange 恢复） | 2026-11-04 17:07 |
 | [code-fix-item-level-progress](code-fix-item-level-progress.md) | 修复批内条级进度（读侧实时合成与呈现） | 2026-10-03 04:59 |
 | [code-fix-manual-trigger](code-fix-manual-trigger.md) | 手工触发修复的 checkpoint 授权 | 2026-10-03 04:59 |
 | [regression-auto-fix](regression-auto-fix.md) | 回归问题一键自动修复（快照→code-fix 台账转换 + 触发回链） | 2026-10-03 04:59 |

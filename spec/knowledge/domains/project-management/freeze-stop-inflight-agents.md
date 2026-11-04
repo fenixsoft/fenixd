@@ -1,4 +1,4 @@
-<!-- knowledge: capability=freeze-stop-inflight-agents rev=5 sources=spec/archive/2026-09-25-add-freeze-stop-inflight-agents,spec/archive/2026-09-26-fix-relocation-writeback-layer,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-08-evo-fix-resume-base-branch-portability,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
+<!-- knowledge: capability=freeze-stop-inflight-agents rev=6 sources=spec/archive/2026-09-25-add-freeze-stop-inflight-agents,spec/archive/2026-09-26-fix-relocation-writeback-layer,spec/archive/2026-09-29-evo-alert-noise-governance,spec/archive/2026-10-08-evo-fix-resume-base-branch-portability,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/knowledge/_inbox/done/memory-distill-user-rulings.md -->
 
 # 项目冻结即停在跑 Agent
 
@@ -18,7 +18,7 @@
 - 载体缺失不弃分支：worktree 已清理、只剩分支（在册 worktree 无命中）时，经分支命名空间枚举（`find_branches_by_spec`）定位保留分支并记录为续做分支（`branch` 锚点保留 / `_recovery_resume` 置位），dispatch 重建 worktree 后在该分支 resume；不得因载体缺失丢弃分支锚点转从 main 新建分支（将使保留分支不再被枚举、已交付实现被弃）。核心不变量：带 `_frozen_hold` 的解冻 ⇔ 保留分支被续做，或显式告警降级；不得静默丢弃保留分支锚点。
 - 降级与既有清理：判定不通过（无 branch / 零提交 / 分支缺失）→ 清 `_frozen_hold`、不置 `_recovery_resume`、走普通重派并 WARNING 留痕。解冻既有清理行为（清 `error` / `frozen_until` / `frozen` 及各计数）保持不变；无 `_frozen_hold` 的解冻行为不受本能力影响。
 - 前端反馈：冻结操作后行内提示已停止的 agent 计数（有在跑 agent 时），并说明进度已留存、解冻后可续做；无在跑 agent 时 MUST NOT 展示该类提示。
-- 人工冻结处方顺序不能反：①`sm.freeze_spec(<spec>, <reason>)` 冻结 → ②`touch .fenix/restart_request` 重启——先冻结再重启，防重启窗口内 spec 被重新派发；已到 pushed 终态的 SPEC 不冻结（无可停对象）。
+- 人工冻结处方顺序不能反：①`sm.freeze_spec(<spec>, <reason>)` 冻结 → ②`touch .fenix/restart_request` 重启——先冻结再重启，防重启窗口内 spec 被重新派发；已到 pushed 终态的 SPEC 不冻结（无可停对象）。改动 daemon 正在派发的代码前先走本处方（冻结相关 spec + 重启杀在跑 agent）再动手；修完后的验证/除错由人工接手，不自动恢复派发（解冻时机由人工裁决）。
 
 ## 溯源
 
@@ -27,3 +27,4 @@
 - 2026-09-29 2026-09-29-evo-alert-noise-governance（spec/archive/2026-09-29-evo-alert-noise-governance） — 新增派发入口 frozen 复核（`_on_spec_ready` 守卫链、内容闸门校验之前）与派发失败重试路径的 frozen 跳过，冻结后不再新派、不重放闸门拦截流程
 - 2026-10-08 evo-fix-resume-base-branch-portability（spec/archive/2026-10-08-evo-fix-resume-base-branch-portability） — 解冻保留判定的基线随共享续做判定迁移到解析基线口径
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠人工冻结处方顺序纪律（先 freeze_spec 再 touch restart_request、pushed 终态不冻结）
+- 2026-11-04 memory-distill-user-rulings（spec/knowledge/_inbox/done/memory-distill-user-rulings.md） — 人工冻结处方补全修后环节：改派发代码前先冻结+重启杀在跑 agent，修完验证/除错人工接手、不自动恢复派发

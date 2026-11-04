@@ -1,7 +1,7 @@
 # 修复进度聚合与呈现
 
-<!-- knowledge: capability=code-fix-progress rev=3
-     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
+<!-- knowledge: capability=code-fix-progress rev=4
+     sources=spec/archive/2026-09-26-add-code-review-auto-fix,spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md,spec/knowledge/_inbox/done/memory-distill-user-rulings.md -->
 
 自动修复链的结构化进度快照、只读 API 与项目页进度呈现。
 
@@ -22,6 +22,7 @@
 - `GET /api/code-review/fix-progress?project=<name>`：接受 `project` 参数，项目不存在/不可用 → 404；复用既有 code-review 进度路由的注册与守卫形态；纯读端点，不得触发任何激活或派发。
 
 ### 项目页呈现
+- 可见性验收口径：修复链可以不推进到 100%，但不能没有显示——准备期与换挡期不得呈现为无进度的空档（空档会被感知为卡死）；可见性优先于进度精度，与分母语义取舍同取向。
 - 「代码审查」页签读取该 API，呈现「已处理 {done}/{total} 条」、进度条（`percent=done/total*100`）、当前阶段与 `current` 描述；与既有「审查进行中」进度卡片同款式（`Card` + `Progress` + 次级文案），不引入新视觉范式。
 - `running=true` 时按 2s 周期轮询（复用页签既有轮询形态）；结束或 `phase ∈ {blocked, failed}` 时停止轮询并刷新条目表格。
 - 「宁停不错」的停轮询终态必须带环境性失败的恢复路径：进度卡片连续读取失败（约 6s）停轮询落红条后，监听 `visibilitychange`，回到可见即重置 retryKey 重启主轮询并立即补刷一帧（对齐列表/总览页既有补刷模式）——否则移动端切后台被掐 fetch 后回前台将永不恢复。验证手法：playwright route `--status=500` 持续 9s 复现红条 → unroute → dispatch visibilitychange → 2s 内恢复轮询。
@@ -34,3 +35,4 @@
 - 2026-09-26 2026-09-26-add-code-review-auto-fix（spec/archive/2026-09-26-add-code-review-auto-fix） — 新建本页：fix-progress.json 快照结构与 activation_id 链内 total 不变语义、只读进度 API、审查页签进度呈现与双进度并存。
 - 2026-09-28 2026-09-28-add-code-fix-batch-failure-selfheal（spec/archive/2026-09-28-add-code-fix-batch-failure-selfheal） — 快照结构增 `chain_skipped` 链内跳过集字段及其新链重置语义。
 - 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 链进度 total 由「链首 open 定格」改写为活口径 done+total_open（核销转移不变分母、arrivals 推高/外部核销缩小，双测试锁双向语义）；进度卡片停轮询终态补 visibilitychange 恢复路径。
+- 2026-11-04 memory-distill-user-rulings（spec/knowledge/_inbox/done/memory-distill-user-rulings.md） — 折叠可见性验收口径：可以不推进 100% 但不能没有显示，准备期空档即被感知为卡死，可见性优先于进度精度。

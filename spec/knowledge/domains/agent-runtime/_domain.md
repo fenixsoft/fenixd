@@ -1,5 +1,5 @@
 # Agent 运行时
-> 最后更新：2026-11-04 15:41 UTC+8
+> 最后更新：2026-11-04 17:07 UTC+8
 
 Agent 运行时：agent 进程托管与信号处理、非交互运行契约、提示词文件化与提示词编写设计规则、run 产物留存、超时与轮次上限生命周期、提示词层效率治理。本域能力页清单如下。
 
@@ -10,7 +10,7 @@ Agent 运行时：agent 进程托管与信号处理、非交互运行契约、�
 | [agent-runner](agent-runner.md) | agent 进程托管与信号处理 | 2026-10-03 04:59 |
 | [agent-runner-modules](agent-runner-modules.md) | agent runner 模块化结构 | 2026-10-03 04:59 |
 | [agent-noninteractive-contract](agent-noninteractive-contract.md) | agent 非交互运行契约（含后台任务等待语义） | 2026-11-04 15:41 |
-| [agent-prompt-files](agent-prompt-files.md) | agent 提示词文件化注入与修改纪律 | 2026-11-04 15:41 |
+| [agent-prompt-files](agent-prompt-files.md) | agent 提示词文件化注入与修改纪律（含无项目级特殊处理定调、dist 不入库口径） | 2026-11-04 17:07 |
 | [agent-prompt-authoring](agent-prompt-authoring.md) | 提示词编写设计规则（语义约束 vs 数字上限、硬行为机械化兜底、3 次失败止损、门禁型 agent 消费触发者） | 2026-11-04 15:41 |
 | [agent-run-params-config](agent-run-params-config.md) | agent 运行参数配置 | 2026-10-03 04:59 |
 | [agent-run-artifacts](agent-run-artifacts.md) | run 产物目录与转录留存 | 2026-10-03 04:59 |
