@@ -1,13 +1,77 @@
 body {
   margin: 0;
+  // 宿主对齐（theme.ts DSH_FONT_FAMILY 同栈）：dsw-font-family——中文回退
+  // （PingFang SC 等）前移到 Roboto 之前，与 dsh web 逐字一致。
   font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica,
+    Arial, sans-serif;
 }
 
 #root {
   min-height: 100vh;
+}
+
+// 页面标题对齐 dsh 标题档：18px/700（DESIGN.md 字号阶 16-18 区块标题档取上限；
+// antd PageContainer 默认 20px 属阶外值）。#root 前缀压过 antd 组件级默认。
+#root .ant-page-header-heading-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+// 页面内容区卡片统一去边框（2026-11-04 用户指令，帮助页取证推广全菜单）：
+// PageContainer 内容区的包裹卡（帮助页文档卡、项目页表格卡、SPEC 详情分区卡、
+// 设置页灰底面板等）在白底页面上只承担布局对齐职责，边框属冗余 chrome——
+// 去边框对齐宿主 dsh web 平铺风格，卡片间分隔靠卡头底线 / 间距 / 灰底承担。
+// 内容区左右留白由 theme.ts dshLayoutToken（paddingInline=15）单源治理，此处不管。
+// 作用域限定 .ant-pro-page-container：Modal（portal 到 body）与大屏例外域
+// （spec-topology 脱壳页，layout:false）不在其后代位置，视觉零影响。
+// （指挥中心 2026-11-04 去脱壳嵌入后已入本作用域，但页内卡片均为自绘 div
+// 数据卡、无 .ant-card，不受本规则影响。）
+#root .ant-pro-page-container .ant-card.ant-card-bordered {
+  border: 0;
+}
+
+// 概览统计卡行定向豁免（2026-11-04 用户指令「overview 统计卡应保留边框」）：
+// 顶部 4 张统计卡（SPEC 总数/任务进度/Token 消耗/活跃 Agent，IntroduceRow Tile）
+// 是独立数据卡而非布局包裹卡，边框属卡片语义不属冗余 chrome。组件侧已从
+// variant="borderless" 改回 "outlined"（borderless 连 .ant-card-bordered 类名都
+// 不带，页级规则本打不到；真正抹掉卡感的是下方 box-shadow:none 规则），此处
+// 定向恢复描边，值=theme.ts DSH_BORDER_SECONDARY（antd 卡原生 colorBorderSecondary
+// 同源，硬编码对齐设置页灰底规则习语）。特异性与页级规则同档（1 id + 3 类），
+// 靠文件后置生效——勿上移到该规则之前。
+#root .overview-intro-row .ant-card.ant-card-bordered {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+// 页面内容区卡片阴影移除（2026-11-04 用户指令）：antd v6 卡默认带 0.05 微阴影
+//（白底页面上即「隐形边」，设置页/项目页包裹卡实测同源），与平铺方向相悖——
+// 页级作用域统一归 none，与上条去边框同口径；Modal（portal 到 body）与大屏
+// 例外域不在后代位置，浮层应有的海拔阴影不受影响。
+#root .ant-pro-page-container .ant-card {
+  box-shadow: none;
+}
+
+// 页头标题行定向避让（与上条配套）：侧栏折叠触发钮（.ant-pro-sider-collapsed-button，
+// 24×24）悬浮骑跨在内容区左缘（实测 x 245-269，纵向恰落标题行带内），token 15px
+// 档下页头标题 271 起排距钮仅 2px，回退箭头/标题视觉上与钮相触——页头条单独加大到
+// 24px（标题 280，距钮 11px；与正文 15px 的 9px 错位有意为之）。标题行以下的正文
+// 触发钮够不到，不吃本规则。右侧同步避让：设置页头部「作用域」选择器不再贴视口边。
+// padding-block-end 同步压 0（2026-11-04 用户指令）：pro-layout 按块内 token 缺省给
+// 页头 16px 下内边距，标题行与内容区之间的空带一并回收，标题紧贴正文顶缘。
+#root .ant-pro-page-container > .ant-page-header {
+  padding-inline: 24px;
+  padding-block-end: 0;
+}
+
+// PageContainer 内容容器底部内边距归零（2026-11-04 用户指令）：children 容器的
+// padding-block-end（pro-layout token paddingBlockPageContainerContent，缺省 8px）
+// 对定高贴底页（帮助页）是溢出源——卡片按视口裁齐后这 8px 会把文档流顶出第二根
+// 滚动条。顶内边距本就是 0（paddingBlockStart: 0）不动；左右留白归 theme.ts
+// dshLayoutToken 单源管辖，此处不碰。帮助页定高偏移常量（HELP_FRAME_OFFSET）
+// 按「本规则生效、padB=0」校准，两处须同步。
+#root .ant-pro-page-container-children-container {
+  padding-block-end: 0;
 }
 
 // SPEC 列表：展开图标列收窄（默认 padding 16px 两侧共 32px，挤占百分比列宽）
@@ -24,9 +88,87 @@ body {
 // 设置页 Provider 等卡片：浅灰底色，卡片头再深一档
 #root .settings-page .ant-card.ant-card-bordered {
   background-color: #f6f6f6;
+  // 圆角剪影去除（2026-11-04 用户指令「圆角边框去掉」）：边框归零后卡根 8px
+  // 圆角灰底在白底页面上仍呈「圆角框」观感（body 透明、透出的即卡根轮廓），
+  // 直角化贴合 dsh 平铺面板；与本宪法页其余控件圆角无关（输入框 6/按钮 6 不动）
+  border-radius: 0;
 }
 #root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
   background-color: #efefef;
+  border-radius: 0;
+}
+
+// 设置页包裹卡（.settings-page，bordered={false} 的白底隐形壳）body 左右内边距
+// 回收（2026-11-04 用户指出「设置界面看不出改动」——本页包裹卡天生无边框，去边框
+// 规则在此为 no-op，24px body 内边距才是该页主要留白面）：左右归零后设置页内容列
+// 与其他菜单对齐到容器 15px 同一口径；上下 24px 保留（标题行-内容的纵向节奏不变）。
+#root .settings-page > .ant-card-body {
+  padding: 24px 0;
+}
+
+// 项目页（/#/projects/:name）包裹卡 body 内边距收紧（2026-11-04 用户指令）：
+// SPEC 列表包裹卡（list.tsx 唯一包裹卡，六页签共享）24px body 内边距压到 8px，
+// 搜索条/表格更贴卡缘。边框侧无需另立规则：antd v6 card body 本就无边框，
+// borderless 变体 + 页级 .ant-card-bordered 去边框规则双保险（实测 computed border=0）。
+#root .projects-page > .ant-card-body {
+  padding: 8px;
+}
+
+// 设置页面板卡头底线去除（2026-11-04 用户指令「ant-card-body 的边框去掉」——antd v6
+// card body 自身无边框，面板内唯一现存 1px 线即卡头与 body 交界处的 head 底边线，
+// 也就是 body 顶缘可见线）：灰底双档 #efefef/#f6f6f6 已承担头身分隔，hairline 冗余。
+// 仅限设置页；其他菜单的分区卡卡头细线保留（flat 分隔语义仍在）。
+#root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
+  border-bottom: 0;
+}
+
+// 设置页定高滚动形态的卡体传导（2026-11-04 用户指令，桌面端专用；移动端断点
+// 豁免走文档滚动）：卡高由 tsx 内联 calc(100vh - SETTINGS_FRAME_OFFSET) 锁定，
+// 卡体 100% 撑满并作纵向 flex 容器，高度经内层行（tsx 内联 flex:1/minHeight:0）
+// 传导到右栏（内联 overflowY: auto）——纯 CSS 高度链，逐层 min-height:0 放开
+// flex 收缩下限，缺一层右栏即撑破外层回退文档滚动。块尾内边距归零：滚动条须
+// 贴视口底缘（2026-11-04 用户指令「滚动条紧贴右侧和底部」），卡体下方不再留 24px。
+#root
+  .ant-design-pro:not(.screen-xs):not(.screen-sm)
+  .settings-page
+  > .ant-card-body {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-block-end: 0;
+}
+
+// 卡体右缘外扩贴视口（与上条配套，2026-11-04 用户指令「滚动条紧贴右侧」）：
+// 卡体被 children-container 的 15px 左右内边距（theme.ts dshLayoutToken）约束在
+// 距视口右缘 15px 处，滚动条随之悬空——负右外边距等量抵消该内边距，右栏滚动条
+// 直贴视口右缘。**-15px 与 dshLayoutToken.paddingInlinePageContainerContent=15
+// 强耦合**，改 token 值必须同步此处（两处均已注释互指）。
+#root .ant-design-pro:not(.screen-xs):not(.screen-sm) .settings-page {
+  margin-right: -15px;
+}
+
+// 设置页页头标题行与内容区之间补 12px（2026-11-04 用户指令，首版 24px 本轮
+// 收窄）：页头块尾内边距已按早前指令归零，而右栏 marginTop:-30 又上探 6px，
+// 标题行与滚动内容视觉相触——heading 内层补块尾内边距拉开。仅限设置页（:has
+// 限定）；其余菜单维持「标题紧贴正文」的早前裁决不变。**强耦合**：本值计入
+// SETTINGS_FRAME_OFFSET（settings/index.tsx，页头 56+12），改值须回校偏移常量。
+#root
+  .ant-design-pro:not(.screen-xs):not(.screen-sm)
+  .ant-pro-page-container:has(.settings-page)
+  .ant-page-header-heading {
+  padding-block-end: 12px;
+}
+
+// 面板 body 内边距保持 antd 默认 24px（2026-11-04 用户指令「上下左右都不要
+// padding」试回撤：0 会使表单标签列/计费子行（billing-price-row 自带边框）等
+// 内部内容贴死面板四缘，布局散架，经用户确认布局已乱后整体回退本条）。若后续
+// 仍需收紧，须只作用于右栏顶层面板 body 并避开内部子行网格，勿全局置 0。
+// 右向呼吸由 `.ant-form` 的 16px padding-right 承担（下条）。
+
+// 设置页内容区表单右侧留 16px（2026-11-04 用户指令）：滚动条贴缘后表单控件
+// 直顶滚动条，padding-right 拉开一档呼吸。
+#root .settings-page .ant-form {
+  padding-right: 16px;
 }
 
 // 设置卡片 label 括号注解弱化显示（如（agents.max_concurrent）（选填，…））；

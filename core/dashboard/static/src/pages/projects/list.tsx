@@ -35,6 +35,8 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
+// 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
+import { DSH_INTERACTIVE_ACTIVE, DSH_LINK } from '@/theme';
 import {
   clearSpecError,
   deleteSpec,
@@ -96,11 +98,12 @@ const SPEC_REVIEW_BLOCKED_PREFIXES = ['spec-review-rejected:', 'spec-review-inco
 
 // 状态圆点配色（table-list 风格：色点 + 文字，不用标签）。走 antd 语义 token
 // 派生表（code-review item 615f6f350d58）：原硬编码十六进制在暗色主题下不变
-// 暗，token 化后随主题自适应——亮色下各 token 默认值与原十六进制逐一对应
-// （muted #bfbfbf≈colorTextQuaternary、info #1677ff=colorPrimary、
-// warning #faad14=colorWarning、critical #ff4d4f=colorError、
-// good #52c41a=colorSuccess）；aqua 在 v6 token 类型面无 alias 对应，沿用
-// Badge 预设色名 'cyan'（= cyan-6，同 ModeTag.tsx 口径，随主题算法变色）。
+// 暗，token 化后随主题自适应。宿主对齐改造（2026-11-03）：warning/critical/
+// good 随主题 token 换轨到 dsh state palette；info 语义=业务/链接蓝，主色已
+// 改黑系，不再随 colorPrimary（否则信息点变黑），改取 theme.ts DSH_LINK
+// （dsw alias-link/state-business-primary，同 StatusTag TONE_HEX 口径）；
+// aqua 在 v6 token 类型面无 alias 对应，沿用 Badge 预设色名 'cyan'
+// （= cyan-6，同 ModeTag.tsx 口径，随主题算法变色）。
 // useToken 只能在组件内调用，故以 hook 形式供 SpecListPage / SpecCardList
 // 两处共用（同 SessionPanel.tsx 惯例）。
 function useToneDot(): Record<string, string> {
@@ -108,7 +111,7 @@ function useToneDot(): Record<string, string> {
   return useMemo(
     () => ({
       muted: token.colorTextQuaternary,
-      info: token.colorPrimary,
+      info: DSH_LINK,
       warning: token.colorWarning,
       critical: token.colorError,
       good: token.colorSuccess,
@@ -262,10 +265,10 @@ function useHoverFetch<T>(fetcher: () => Promise<T | null>) {
 }
 
 function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
-  // 可点击名称文字色走 token（code-review item 0bcd835938ef）：原硬编码
-  // #1677ff 是 colorPrimary 的亮色默认值，自定义主题换主色后与按钮/链接等
-  // token 驱动元素脱节；随 token 自适应（口径对齐 615f6f350d58，useToken
-  // 只能在组件内调用）
+  // 可点击名称文字色（code-review item 0bcd835938ef 曾改走 colorPrimary，
+  // 615f6f350d58 同口径）：宿主对齐改造（2026-11-03）后主色为黑系 #0f1115，
+  // 可点击语义改走 dsh 链接蓝 DSH_LINK（theme.ts 单源，dsw alias-link），
+  // 与 antd colorLink 驱动的链接元素同色
   const { token } = theme.useToken();
   // 防抖/哨卫/卸载清理走共享 useHoverFetch（code-review item c7f6a8ebf9d8），
   // 本单元格只差取数函数（proposal ## Why 段）与浮层渲染
@@ -303,7 +306,7 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
             handleClick();
           }
         }}
-        style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: token.colorPrimary }}
+        style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: DSH_LINK }}
       >
         {record.name}
       </span>
@@ -404,7 +407,7 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
         onFocus={onEnter}
         onBlur={onLeave}
         // 可点击文字色走 token（code-review item 0bcd835938ef，同 SpecNameCell）
-        style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: token.colorPrimary }}
+        style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: DSH_LINK }}
       >
         {record.verify_done}/{record.verify_total}
       </span>
@@ -521,7 +524,7 @@ function PriorityCell({
           onEdit(record);
         }
       }}
-      style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: token.colorPrimary }}
+      style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: DSH_LINK }}
     >
       P{record.priority ?? '?'}
     </span>
@@ -967,7 +970,7 @@ function DevTab({
       {error ? (
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
       ) : null}
-      <Card variant="borderless">
+      <Card variant="borderless" className="projects-page">
         <div
           style={{
             marginBottom: 16,
@@ -1036,14 +1039,16 @@ function DevTab({
           <Table
             rowKey="name"
             tableLayout="fixed"
-            // 未完成（非 done/pushed 终态）行加浅蓝底：内联样式落在 tr 上，
+            // 未完成（非 done/pushed 终态）行加浅底：内联样式落在 tr 上，
             // antd 的 cell 级 hover 背景（cell-row-hover）不受影响照常生效。
-            // 底色走 colorPrimaryBg（code-review item 615f6f350d58）：原硬编码
-            // rgb(250,250,255) 在暗色主题下整行亮底刺眼，随 token 自适应
+            // 底色走 DSH_INTERACTIVE_ACTIVE（宿主对齐改造 2026-11-03，替代原
+            // colorPrimaryBg——615f6f350d58 时的主色是蓝 #1677ff，Bg 派生浅蓝；
+            // 主色改黑系 #0f1115 后 antd 调色板对暗种子生成暗色 ramp，整行近黑，
+            // 改取 dsh 侧栏选中行的冷灰交互底 #2631481a（theme.ts 单源）
             onRow={(record) => ({
               style: PRIORITY_TERMINAL.has(record.status || '')
                 ? undefined
-                : { backgroundColor: token.colorPrimaryBg },
+                : { backgroundColor: DSH_INTERACTIVE_ACTIVE },
             })}
             columns={columns}
             dataSource={tree}

@@ -5,9 +5,11 @@
 // implementing 卡存在在飞 run 时渲染 running lane 与开始时间；卡片点击跳
 // 既有 SPEC 详情页 /projects/:name/:spec。
 //
-// 2026-10-28 用户定稿：定高屏（100vh 减页签区），body 不滚动——滚动条
+// 2026-10-28 用户定稿：定高屏（视口减壳层 chrome），body 不滚动——滚动条
 // 下沉到各赛道内部，哪条赛道卡片超高哪条赛道自己出纵向滚动条
-// （.cmdcenter-lanescroll，深色蓝系样式单点在 index.tsx 页级 style）。
+// （.cmdcenter-lanescroll，浅灰细杆样式单点在 index.tsx 页级 style）。
+// 2026-11-04 嵌入改版：定高扣减值从 78（纯页签区）换为壳层口径单源
+// shared.SCREEN_CHROME_OFFSET。
 
 import { useEffect } from 'react';
 import { history } from '@umijs/max';
@@ -16,7 +18,16 @@ import { commandCenterPipeline, statusMeta } from '@/services/dashboard';
 import type { CommandCenterPipeline, CommandCenterPipelineCard } from '@/services/dashboard';
 import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
-import { BG, GREEN, PANEL_BORDER, TEXT_MAIN, TEXT_SUB, columnLabel, fmtShortTs } from './shared';
+import {
+  BG,
+  GREEN,
+  PANEL_BORDER,
+  SCREEN_CHROME_OFFSET,
+  TEXT_MAIN,
+  TEXT_SUB,
+  columnLabel,
+  fmtShortTs,
+} from './shared';
 
 function PipelineCard({
   card,
@@ -112,13 +123,13 @@ export default function PipelineBoard({
     );
   }
   return (
-    // 定高屏（与组织总览同款 78px 口径=页面 padding-top 8 + 页签条 70）：
+    // 定高屏（与组织总览同款扣减口径，单源 shared.SCREEN_CHROME_OFFSET）：
     // 页面 body 不滚动，滚动下沉到各赛道——哪条赛道卡片超高，哪条赛道自己
     // 出纵向滚动条（2026-10-28 用户定稿）
     <div
       className="cmdcenter-hscroll"
       style={{
-        height: 'calc(100vh - 78px)',
+        height: `calc(100vh - ${SCREEN_CHROME_OFFSET}px)`,
         display: 'flex',
         flexDirection: 'column',
         // 横向滚动兜底（与组织总览 OrgGrid 同款容器口径）：列宽

@@ -25,7 +25,7 @@ import RunCancelModal from './components/RunCancelModal';
 import SpecTimeline, { formatUsd } from './components/SpecTimeline';
 // 「任务进度」同款进度条控件 2026-09-23 抽出共享（CodeFixProgressCard 复用），原内联定义已删
 import ProgressBarTile from './components/ProgressBarTile';
-import { OutlinedTag, TONE_TAG_COLOR } from '@/components/StatusTag';
+import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
 // 告警裁决交互共享 hook + 执行按钮（与 overview AlertBanner 同源，
 // code-review item f86171cc149d）
@@ -1200,7 +1200,7 @@ export default function SpecDetailPage() {
             （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
         <ModeTag mode={detail?.mode} />
         {detail?.status && (
-          <Tag color={TONE_TAG_COLOR[statusInfo.tone] || 'default'}>{statusInfo.label}</Tag>
+          <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
         )}
         {otherSpecs.length > 0 && (
           <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>

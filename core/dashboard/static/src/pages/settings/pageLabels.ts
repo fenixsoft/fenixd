@@ -20,10 +20,10 @@ export const PAGE_LABELS = {
   misc: '归档',
   system: '系统',
   'self-evolution': '自进化',
-  // add-arbiter-lane：全局决策者车道页签
+  // add-arbiter-lane：全局决策者车道页签；处置链面板原为独立「处置链」页签
+  // （add-escalation-chain-admin-arbiter 5.3），后并入本页签堆叠呈现，chain 键
+  // 已随菜单项一并移除（面板自带「处置链」标题，页签内自解释）
   arbiter: '仲裁',
-  // add-escalation-chain-admin-arbiter 5.3：处置链配置页签
-  chain: '处置链',
   'self-review': '自省',
   'project-profile': '项目',
   hook: 'Hook',

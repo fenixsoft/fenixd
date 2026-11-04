@@ -38,18 +38,17 @@
   background: var(--ant-color-fill-secondary);
 }
 
+/* 键盘焦点环走 link 蓝（theme.ts「蓝只留给链接、info、输入焦点」；primary 已
+   是近黑，做焦点环会与文字色混淆）。 */
 .help-menu-item > button:focus-visible {
-  outline: 2px solid var(--ant-color-primary);
+  outline: 2px solid var(--ant-color-link);
   outline-offset: -2px;
 }
 
-.help-menu-item.active {
-  color: var(--ant-color-primary);
-}
-
-.help-menu-item.active > button {
-  background: var(--ant-color-primary-bg);
-}
+/* 选中态只由底色承载（dsh 侧栏行基线：冷灰底 + 常规黑字，不另变色）。
+   底色取 theme.ts 单源 DSH_INTERACTIVE_ACTIVE，经 index.tsx 内联注入——
+   不用 --ant-color-primary-bg：主色改黑系 #0f1115 后该族按暗种子派生成
+   暗色 ramp（#4f5254 起），黑字深底不可读（守卫 tests/darkSeedBgToken.test.mjs）。 */
 
 .help-menu-item > button::before {
   content: counter(help-menu-item, cjk-ideographic) "、";

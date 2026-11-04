@@ -143,6 +143,39 @@ test('agentLabel arbiter：泛型/缺失 agent_type 回落 arbiter- 前缀兜底
   assert.notEqual(agentLabel({ run_id: 'arbiter-demo-1793464069' }), '运维 Agent');
 });
 
+// 归档蒸馏车道（knowledge-distiller-<归档名>-<ts>；后端 run_files 前缀表
+// add-distill-run-artifacts 2.1 已收录，此处补前端两表）——此前缺条目使蒸馏
+// run 在时间轴一律回退「未知 Agent」（2026-11-04 add-systemd-hosting 推送后
+// 两条蒸馏 run 实证，run_id 形态取真实产物）。
+test('agentLabel knowledge-distiller：agent_type 直配命中 AGENT_LABEL', () => {
+  assert.equal(AGENT_LABEL['knowledge-distiller'], '知识蒸馏 Agent');
+  assert.equal(
+    agentLabel({
+      agent_type: 'knowledge-distiller',
+      run_id: 'knowledge-distiller-add-systemd-hosting-1793763090',
+    }),
+    '知识蒸馏 Agent',
+  );
+});
+
+test('agentLabel knowledge-distiller：泛型/缺失 agent_type 回落前缀兜底', () => {
+  assert.equal(
+    agentLabel({
+      agent_type: 'agent',
+      run_id: 'knowledge-distiller-add-systemd-hosting-1793763090',
+    }),
+    '知识蒸馏 Agent',
+  );
+  assert.equal(
+    agentLabel({
+      run_id: 'knowledge-distiller-2026-11-02-fix-frozen-scenario-dict-salvage-1793597114',
+    }),
+    '知识蒸馏 Agent',
+  );
+  // 不被相邻前缀（test-）误吞
+  assert.notEqual(agentLabel({ run_id: 'knowledge-distiller-x-1' }), '测试 Agent');
+});
+
 test('arbiterOutcomeLabel 三分支', () => {
   assert.equal(arbiterOutcomeLabel('disposition'), '自主处置');
   assert.equal(arbiterOutcomeLabel('escalation'), '升级人工');

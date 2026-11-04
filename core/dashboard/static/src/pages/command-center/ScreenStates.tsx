@@ -3,10 +3,12 @@
 // 独立错误降级单点：任一屏加载失败渲染占位 + 重试按钮，不拖垮其他屏与
 // 顶栏（specs「导航与默认 Tab」/「独立降级」Requirement）。独立成文件避免
 // 与 index.tsx 的组件 import 成环。
+// 2026-11-04 白底改版：占位框属布局包裹域（非数据卡），按 11-04 内容区
+// 平铺方向去描边/底色，只保留居中排布与副色文案。
 
 import { Button, Spin } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { BG, PANEL_BORDER, TEXT_SUB } from './shared';
+import { TEXT_SUB } from './shared';
 
 const boxStyle: React.CSSProperties = {
   display: 'flex',
@@ -15,8 +17,6 @@ const boxStyle: React.CSSProperties = {
   justifyContent: 'center',
   gap: 12,
   padding: 56,
-  border: `1px solid ${PANEL_BORDER}`,
-  borderRadius: 8,
   color: TEXT_SUB,
 };
 
@@ -33,7 +33,7 @@ export function ScreenLoading({ hint }: { hint?: string }) {
 /** 加载失败占位：错误原因 + 重试按钮（独立降级，不拖垮其他屏）。 */
 export function ScreenErrorPlaceholder({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
-    <div style={{ ...boxStyle, background: BG }}>
+    <div style={boxStyle}>
       <span>数据加载失败：{error}</span>
       <Button icon={<ReloadOutlined />} onClick={onRetry}>
         重试

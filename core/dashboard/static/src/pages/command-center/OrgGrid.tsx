@@ -63,9 +63,11 @@ import {
   GREEN_DIM_BG,
   GREEN_DIM_BG_HOVER,
   LINK_STROKE,
+  LANE_CARD_MIN_WIDTH,
   METRIC_DIVIDER,
   PANEL_BORDER,
   REST_BORDER,
+  SCREEN_CHROME_OFFSET,
   SPEC_CELL_HOVER_BG,
   SPEC_CELL_SELECTED_BG,
   TEXT_SUB,
@@ -299,7 +301,9 @@ function SpecPicker({
  * 窗变（windowLabels）。静态红线：无 animation/transition，hover 纯色切换。
  * 2026-10-30 spec 视图分支（add-command-center-spec-view 4.3）：specSel
  * 非空时活动区替换为该车道对该 SPEC 的轮次列表/未运行/加载占位——其余四段
- * （头行/三格指标/sparkline/页脚）保持实时口径不动。 */
+ * （头行/三格指标/sparkline/页脚）保持实时口径不动。
+ * 2026-11-04 自适应改版：固定宽退役，卡宽随分区列（grid 轨道）拉伸——
+ * 列下限 LANE_CARD_MIN_WIDTH、上限不限（CSS minmax 实现，禁脚本算宽）。 */
 function LaneCard({
   card,
   win,
@@ -325,7 +329,9 @@ function LaneCard({
   return (
     <div
       style={{
-        width: 310,
+        // 宽度随分区列拉伸（grid 轨道 minmax(270px,1fr) 下限单源
+        // LANE_CARD_MIN_WIDTH），纵向 flex 列默认 stretch 即满列宽
+        minWidth: LANE_CARD_MIN_WIDTH,
         border: `1px solid ${PANEL_BORDER}`,
         borderRadius: 10,
         padding: '13px 14px 11px',
@@ -699,10 +705,16 @@ export default function OrgGrid({
   const [links, setLinks] = useState<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
 
   // 产品团队卡 → 五线连接线：静态一次性量取（禁动画红线，无 transition/
-  // animation；数据每次刷新（轮询换 data 引用）、窗口 resize 与 spec 视图
-  // 切换时重量——specSel 切换改变 LaneCard 活动区高度，当前锚点（团队卡
-  // 底部/分区顶）虽不受影响，随切换重量一次，避免后续布局演进让锚点依赖
-  // 卡片列内容高度时连接线静默错位）。
+  // animation；数据每次刷新（轮询换 data 引用）与 spec 视图切换时重量——
+  // specSel 切换改变 LaneCard 活动区高度，当前锚点（团队卡底部/分区顶）
+  // 虽不受影响，随切换重量一次，避免后续布局演进让锚点依赖卡片列内容高度
+  // 时连接线静默错位）。
+  // 容器尺寸监听（2026-11-04 用户指令：收起侧栏等外部容器宽度变化后连线
+  // 必须保持对齐）用 ResizeObserver 挂 containerRef——内容区宽度随壳层
+  // 侧栏折叠/展开变化时不触发 window resize（视口尺寸没变），仅监听窗口
+  // 会漏掉这类变化致连线错位（11-04 用户实测翻车）；RO 观察容器自身盒尺
+  // 寸，覆盖窗口 resize 与壳层布局变化两类来源。RO 初次 observe 即回调
+  // 一次，与下方手动 measure 首测重叠无害（幂等）。
   // hooks 置于早退分支前（rules of hooks）；specSel 以序列化标量入 deps
   // （对象身份不可稳定比较，标量与 spec-runs refreshKey 同口径）；量取在
   // layout effect 内、setLinks 触发的重渲染不再进本 effect，无回环。
@@ -727,8 +739,9 @@ export default function OrgGrid({
       );
     };
     measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    const ro = new ResizeObserver(measure);
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
   }, [data, specSelKey]);
 
   if (error && !data) return <ScreenErrorPlaceholder error={error} onRetry={retry} />;
@@ -746,6 +759,13 @@ export default function OrgGrid({
   // 团队卡四格标签与 LaneCard 的 L 同口径取一次复用，不再四处重复求值
   // windowLabels(win)（code-review 8ec64a33e3b3）
   const L = windowLabels(win);
+  // 组织图行内容最小宽（2026-11-04 自适应改版）：分区列 grid 轨道下限之和
+  // （N×270 + (N-1)×14 列距 + 2×32 行内边距）。containerRef 以此为 minWidth
+  // 下限——块级 auto 宽 + minWidth 天然表达 max(100%, 该值)：宽视口随壳层
+  // 内容区流式撑满，窄视口定宽出横向滚动；连接线 SVG 坐标层随之全程铺满
+  // 内容宽，零脚本量宽。
+  const ORG_MIN_WIDTH =
+    data.zones.length * LANE_CARD_MIN_WIDTH + (data.zones.length - 1) * 14 + 64;
   return (
     <div>
       {/* 后台刷新失败保留旧数据（静默轮询恢复），内联提示不阻塞视图 */}
@@ -775,18 +795,22 @@ export default function OrgGrid({
         />
       ) : null}
       {/* 双向滚动容器（2026-10-28 定稿：五线不换行，宽度不足出横向滚动条；
-          定高=视口减页签区，纵向也走本容器——两条滚动条常驻视口边缘可见，
-          不再藏在内容底部折叠线之下；内容层 containerRef 随滚动整体平移，
-          连接线坐标层与卡片同源不脱节） */}
+          定高=视口减壳层 chrome，纵向也走本容器——两条滚动条常驻视口边缘
+          可见，不再藏在内容底部折叠线之下；内容层 containerRef 随滚动整体
+          平移，连接线坐标层与卡片同源不脱节） */}
       <div
-        // 78 = 页面 padding-top(8) + 页签条高(70)（页签条被右侧下拉选择器
-        // 撑高；页签间距走 padding-top 防止 margin 塌陷把整页推低）
-        style={{ height: 'calc(100vh - 78px)', overflow: 'auto' }}
+        // 扣减值单源 shared.SCREEN_CHROME_OFFSET（ProLayout 顶栏 + PageContainer
+        // 页头 + 页面 padding-top + 页签条；2026-11-04 嵌入改版定值 176，
+        // playwright 实拍校准）
+        style={{
+          height: `calc(100vh - ${SCREEN_CHROME_OFFSET}px)`,
+          overflow: 'auto',
+        }}
         className="cmdcenter-hscroll"
       >
         <div
           ref={containerRef}
-          style={{ position: 'relative', width: 'fit-content', minWidth: '100%' }}
+          style={{ position: 'relative', minWidth: ORG_MIN_WIDTH }}
         >
           {/* 产品团队汇总卡（2026-10-28 追加；三格指标口径见后端 summary 派生） */}
           <div
@@ -921,19 +945,21 @@ export default function OrgGrid({
               })()}
             </svg>
           ) : null}
-          {/* 分区纵列（2026-10-28 定稿：各线纵向卡片列、单行排布不换行；
-              行自身 shrink-to-fit + margin auto 整组居中——宽度富余时居中、
-              溢出时 auto margin 归零转起排，规避 justify-content:center 的
-              溢出左缘不可达陷阱，由外层横向滚动条兜底） */}
+          {/* 分区纵列（2026-10-28 定稿五线纵列单行不换行；2026-11-04 用户
+              指令改自适应：grid 均分——列宽 minmax(270px,1fr)，下限单源
+              LANE_CARD_MIN_WIDTH、上限不限；行左右各留 32px 内边距，剩余
+              宽度全部分配给卡片，纯 CSS 实现禁脚本算宽。窄视口由外层
+              containerRef minWidth 兜底出横向滚动，与流水线屏
+              minmax+minWidth 同款习语） */}
           <div
             style={{
               position: 'relative',
-              display: 'flex',
-              alignItems: 'flex-start',
-              flexWrap: 'nowrap',
+              display: 'grid',
+              gridTemplateColumns: `repeat(${data.zones.length}, minmax(${LANE_CARD_MIN_WIDTH}px, 1fr))`,
               gap: 14,
-              width: 'fit-content',
-              margin: '0 auto',
+              padding: '0 32px',
+              boxSizing: 'border-box',
+              alignItems: 'start',
             }}
           >
             {data.zones.map((z, i) => (

@@ -19,9 +19,12 @@
   文本型未知值可用中文限定词（「未知 run」「时长未知」），不强制「—」。（出处：
   command-center-console-ui spec「null 指标 MUST 显示『—』而非 0」+ shared.ts 常量
   表注记；2026-10-31 用户裁决 C2 措辞澄清，首轮审计文本占位核对）
-- 配色单源红线：界面颜色只准取自本宪法 token 表（一般域 antd token，大屏域四色单源
-  + 派生色），MUST NOT 散落硬编码新色值。（出处：shared.ts 常量表「集中管理、组件内
-  不散落硬编码色值」注记，2026-10-28 LaneCard 重设计定稿）
+- 配色单源红线：界面颜色只准取自本宪法 token 表（一般域 antd token + 宿主对齐
+  覆盖表，实现单源 core/dashboard/static/src/theme.ts；大屏域四色单源
+  + 派生色，实现单源 shared.ts 常量表），MUST NOT 散落硬编码新色值。（出处：
+  shared.ts 常量表「集中管理、组件内不散落硬编码色值」注记，2026-10-28
+  LaneCard 重设计定稿；一般域 theme.ts 单源指针为 2026-11-03 宿主对齐改造
+  增补）
 - 字号与数字排版：数值指标一律 tabular-nums 等宽字体排版，保证纵向可比对齐；
   适用范围全域强制（含一般域浅色页数值列，存量缺样式的列补
   fontVariantNumeric，列改代码清单）。（出处：shared.ts OrgGrid 注记 2026-10-28
@@ -49,9 +52,36 @@
 
 ## 一般域（默认法：overview / projects / settings / help / activities）
 
-- 基线：antd 浅色 token（默认算法）为基，不另起色板；状态色沿用 antd 语义色
-  （success / error / warning / info）。（出处：2026-10-31 定稿 §3.2「antd 浅色
-  token 为基」定稿；2026-10-31 用户裁决 #4 明示沿用默认色板）
+- 基线：antd 浅色 token 算法为基，ConfigProvider 挂「宿主对齐覆盖表」（实现面
+  theme.ts 常量单源）。覆盖表逐键注明 dsw 源键：主色黑系 #0f1115（dsw
+  alias-brand-primary=neutral-bluish-1000，hover #43454a=bluish-750）、链接与
+  info #4176e6（deepseek-500——蓝只留给链接、输入焦点、info 语义）、状态色
+  success #22c55e / error #ec1313 / warning #f59e0b（dsw state-success/error/
+  warn-primary）、文字四阶 #0f1115 / #61666b / #81858c / #adb2b8（dsw
+  label-primary/secondary/tertiary/caption）、边框黑 alpha 0.16 与 0.10（dsw
+  border-l4/l2）、圆角维持 antd 默认值 6 / 4 / 8（2026-11-03 用户裁决：不引入
+  dsw radius 阶，卡片与控件还原 antd 原圆角；首版曾挂 12/8/16 与 Tag 胶囊
+  999px，同日撤回；theme.ts 注明 MUST NOT 挂 borderRadius 覆写）、控件高
+  32 / 28
+  （dsh 基元 Input 32px、Button sm 28px）、输入焦点蓝 + 蓝光圈（dsw
+  Input.module.css focus=state-business-primary）、Table 表头 bluish-50 底 +
+  次级文字（dsw markdown-table-head 语义）、Tag 胶囊 999px（dsw Tag 基元）、
+  Menu 行高 36 + 选中冷灰 rgba(38,49,72,0.10)（dsh 侧栏行基线与交互底）。
+  页面标题 18px/700（字号阶 16-18 档；antd PageContainer 默认 20px 为阶外值）；
+  字体栈逐字对齐 dsw-font-family（中文回退前移，global.less 与 theme.ts 同源）。
+  （出处：2026-11-03 用户指令「dashboard 嵌入 dsh web 无割裂感」宿主对齐改造；
+  token 源=@deepseek-ai/dsh-client-ui-theme 0.2.0-rc.2 --dsw-* alias 表 +
+  dsh-client-ui-primitives 基元 CSS。原条款「状态色沿用 antd 语义色默认值」
+  （2026-10-31 用户裁决 #4）被本条覆盖：语义色仍走 antd token 通道，值域换轨
+  dsh state palette）
+- 数据编码色豁免：SPEC / 用户指定的数据编码色不随宿主对齐换轨——「同 ramp、
+  空条可辨」等指定语义优先于 UI chrome 对齐。现有豁免：进度条阶段 ramp
+  （progressPhase.ts TRACK_LIGHT impl 蓝 #1677ff / GATES gates 橙 / TRACK_GREEN
+  verify 绿 / TRACK_CYAN 出题青，含 ProjectCards.tsx 同族）、agent 分类色板
+  （IntroduceRow.tsx AGENT_PALETTE，图表可辨色相）、runVisual.ts STATUS_HEX
+  （大屏域 utilities）。新数据编码色入本清单登记。（出处：2026-11-03 宿主
+  对齐改造裁决；原指定出处见各文件注记——TRACK_GREEN 用户指定色、GATES_STROKE
+  spec 任务 5.1 指定色）
 - 浅灰卡片定制：settings 页卡片底 #f6f6f6、卡头 #efefef；适用范围明示仅 settings
   页，不推广一般域，其余页维持 antd 默认卡底。（出处：2026-10-31 定稿 §3.2 收录；
   core/dashboard/static/src/global.less settings 页实证；2026-10-31 用户裁决 #2）
@@ -65,39 +95,39 @@
 > 移动应用）按同一模板增小节即可，不改通用条款与一般域；MUST NOT 为未出现的域
 > 预写内容。
 
-### 例外域：大屏域（command-center 四屏 / collab-graph / spec-topology）
+### 例外域：大屏域（spec-topology 拓扑大屏）
 
-- 用途声明：大屏展示——管理层演示路径（90 秒组织总览 → SPEC 钻取 → 裁决 → 台账），
-  远距离投屏可读。（出处：spec/archive/2026-10-31-add-command-center design.md Goals）
-- 域专属 token（深蓝黑四色单源，IOC 风格；出处：shared.ts 常量表，与协作图谱/拓扑
-  大屏同一色系）：
-  - 基色四源：BG `#0a1628` / PANEL_BORDER `rgba(59,110,165,0.4)` / TEXT_MAIN
-    `#d6e7f7` / TEXT_SUB `#7f9cba`。
-  - 派生色（2026-10-28 LaneCard 重设计定稿族，10-29 用户定稿加深连接线）：
-    CARD_BG `rgba(10,30,56,0.55)`、CARD_BG_HOVER `rgba(16,42,78,0.65)`、
-    CARD_BORDER_BRIGHT `rgba(94,150,210,0.7)`、ACCENT `#40a9ff`、GREEN `#52c41a`、
-    GREEN_DIM_BG `rgba(82,196,26,0.12)`（hover 0.2）、AVATAR_BG 蓝系渐变、
-    AVATAR_BORDER `rgba(64,169,255,0.25)`、REST_BORDER `rgba(91,112,140,0.35)`、
-    METRIC_DIVIDER `rgba(59,110,165,0.25)`、LINK_STROKE `rgba(94,150,210,0.75)`；
-    spec 视图单元格 hover `rgba(64,169,255,0.10)` / 选中 `rgba(64,169,255,0.16)`
-    （add-command-center-spec-view 定稿）。
-  - 状态语义色：绿 `#52c41a`=成功/运行中；红 `#ff4d4f`=失败/严重；蓝 `#40a9ff`=
-    运行中/次要；橙 `#fa8c16`=中断/取消/门禁拦截/重要；灰蓝 `#7f9cba`=空闲/取代/
-    失联/空产物。（出处：shared.ts badge 函数族注记，classify_run 口径中文标签）
-  - 等宽字体栈：`ui-monospace, 'SF Mono', Menlo, Consolas, monospace`（FONT_MONO）。
+> 2026-11-04 用户指令：指挥中心（command-center 四屏）黑改白并去脱壳改
+> ProLayout 内容区嵌入，退出本域回归一般域（配色单源改挂 theme.ts dsh 对齐
+> 常量表，见 pages/command-center/shared.ts；Agent 卡缩宽 90% 随嵌入）。
+> collab-graph 协作图谱大屏此前已删除（commit 3f16acc7e）。原「深蓝黑四色
+> 单源」域专属 token 表随指挥中心迁移一并退役，历史值见
+> spec/archive/2026-10-31-add-command-center。本域现余成员=SPEC 协作拓扑
+> 大屏一项。
+
+- 用途声明：大屏展示——SPEC 全生命周期协作拓扑远距离投屏可读；layout:false
+  脱壳全屏深色页。（出处：spec/archive/2026-10-30-add-spec-topology-bigscreen）
 - 与一般域的偏离清单：
-  1. 配色：深蓝黑四色单源替代 antd 浅色 token（登记为域专属 token，非违规）。
-  2. 图表：手写 SVG + React 零图表库；状态色复用 utils/runVisual.ts STATUS_HEX
-     单源。（出处：collab-graph-bigscreen design.md D6/D7）
-  3. 刷新：固定间隔静默轮询（≥30s 常量），不做实时推送、不加配置项。（出处：
-     command-center-console-ui spec）
-  4. 静态渲染红线在本域按「汇报线/图表静态 SVG、无任何动画元素」从紧执行。（出处：
-     同 spec「静态 SVG、无动画」Scenario）
+  1. 配色：深底暗色页替代白底；状态语义色复用 utils/runVisual.ts STATUS_HEX
+     单源（与 SpecTimeline 同源）。（出处：add-spec-topology-bigscreen design
+     D6/D7）
+  2. 图表：手写 SVG + React 零图表库。（出处：同上）
+  3. 刷新：SSE 热更新 + 30s 轮询兜底（detail.tsx 同款），不走一般域心跳口径。
+     （出处：pages/projects/topology/index.tsx）
+  4. 静态渲染红线在本域按「管线/泳道图表静态 SVG、无任何动画元素」从紧执行。
+     （出处：specs/topology-bigscreen-ui「静态 SVG、无动画」Scenario）
 
 ## 待裁决段（普查无出处条目，留用户逐条裁决；裁决后经修正案入正式条款）
 
-（当前为空：首轮 4 条已于 2026-10-31 经用户裁决转入正式条款，见各条出处注记；
-后续审计新发现的无出处条目按本段机制继续登记。）
+- 宿主暗色主题联动缺口（2026-11-03 宿主对齐改造时登记，非样式条款、系立项
+  候选）：dsh web 有 Light / Dark / System 三态主题，面板桥 iframe src 不携带
+  主题参数、dashboard 恒浅色渲染——宿主切暗色主题时主面板出现白底割裂。
+  治理需跨仓两改（桥传主题 + dashboard antd dark algorithm 适配），是否立项
+  待用户裁决；裁决前 dashboard 按浅色单主题维护。（出处：2026-11-03 探索
+  dsh-client-ui-theme 亮暗双 alias 表 + embedMount.ts 仅 embed/apiBase 双参实证）
+
+（首轮 4 条已于 2026-10-31 经用户裁决转入正式条款，见各条出处注记；后续审计
+新发现的无出处条目按本段机制继续登记。）
 
 ## 附则：修正案程序与偏离声明
 

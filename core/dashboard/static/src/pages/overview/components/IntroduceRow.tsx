@@ -41,9 +41,13 @@ function Tile({
   tooltip?: string;
   children: ReactNode;
 }) {
+  // outlined 描边恢复（2026-11-04 用户指令「统计卡应保留边框」）：4 张统计卡是
+  // 独立数据卡而非布局包裹卡，边框属卡片语义；页级 box-shadow:none 曾抹掉最后
+  // 卡感（borderless 连 .ant-card-bordered 类名都没有，去边框规则本打不到）。
+  // 描边值走 global.less 概览豁免规则（同 DSH_BORDER_SECONDARY）。
   return (
     <Card
-      variant="borderless"
+      variant="outlined"
       title={title}
       extra={
         tooltip ? (

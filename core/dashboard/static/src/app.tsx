@@ -19,6 +19,7 @@ import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
 import { isEmbedMode } from './utils/embedMount';
+import { dshAlignedTheme, dshLayoutToken } from './theme';
 
 // 自省/演进面板的 TimePicker 以 dayjs(str, 'HH:mm') 回填配置字符串，
 // 该双参解析必须注册 customParseFormat 插件才生效（缺省解析得 Invalid Date，
@@ -46,7 +47,9 @@ export async function getInitialState(): Promise<{ projects: string[] }> {
  */
 export function rootContainer(container: ReactNode) {
   return (
-    <ConfigProvider locale={zhCN}>
+    // 宿主对齐主题（theme.ts 单源）：dsh web 面板桥 iframe 嵌入时与宿主同语言，
+    // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉。
+    <ConfigProvider locale={zhCN} theme={dshAlignedTheme}>
       <AntdApp>{container}</AntdApp>
     </ConfigProvider>
   );
@@ -115,6 +118,9 @@ function HeaderTitle() {
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
+    // ProLayout 布局 token（theme.ts 单源）：PageContainer 内容区左右留白 40px
+    // 压缩为 15px（页头标题行同 token 自动对齐）；窄屏 12px 由 global.less 覆盖。
+    token: dshLayoutToken,
     // 左上角标题对齐 v1 brand；headerTitleRender 会整体覆盖 ProLayout 默认「logo+title」组合。
     // 不把节点放进 title——umi 插件会用 title 拼 document.title，节点会变成 "[object Object]"。
     headerTitleRender: () => <HeaderTitle />,
@@ -135,7 +141,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       },
       { path: '/settings', name: '设置', icon: <SettingOutlined /> },
       { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
-      // 管理指挥中心（add-command-center 3.2）：管理演示大屏入口
+      // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
       { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
       { path: '/help', name: '帮助', icon: <QuestionCircleOutlined /> },
     ],

@@ -1,18 +1,18 @@
-// index.tsx — 管理指挥中心（add-command-center 3.3；2026-10-28 用户定稿
-// 取消顶栏标题/退出按钮、取消「裁决收件箱」页签（AdjudicationInbox 组件
-// 一并移除，裁决走主 dashboard 既有告警入口）——页面即纯大屏）。
-//
-// 脱壳全屏深色页面：路由 /command-center 以 layout:false 关闭 ProLayout
-// 框架壳（与协作图谱/拓扑大屏同款），三 Tab（组织总览默认）各屏数据独立
-// 加载、独立错误降级（错误占位 + 重试，互不拖垮——specs「导航与默认 Tab」
-// 「独立降级」Requirement），60s 常量静默轮询（design D5，useScreen 单点）。
-// 深色 antd token 与协作图谱大屏同一色系（design D6：样式作为场景复用，
-// 不新增样式配置）。
+// index.tsx — 管理指挥中心（add-command-center 3.3；2026-11-04 用户指令
+// 改版：黑改白 + 脱壳改内容区嵌入）。原 2026-10-28 脱壳全屏深色形态
+// （layout:false + 页级暗色 ConfigProvider + html/body 纯黑注入）整体移除：
+// 路由进 ProLayout 壳（routes.ts 去 layout:false，与全菜单一致的侧栏/顶栏/
+// PageContainer 页头），配色继承 dashboard 根主题（app.tsx rootContainer →
+// theme.ts dshAlignedTheme 白底单源；页面级配色常量在 shared.ts 换白底族）。
+// 三 Tab（组织总览默认）各屏数据独立加载、独立错误降级（错误占位 + 重试，
+// 互不拖垮）、60s 常量静默轮询（useScreen 单点）——交互与数据面零变化；
+// Agent 卡随嵌入缩宽（shared.LANE_CARD_WIDTH）。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from '@umijs/max';
-import { ConfigProvider, Select, Space, Tabs, theme } from 'antd';
-import { TEXT_MAIN, TIME_WINDOW_OPTIONS, TimeWindow } from './shared';
+import { PageContainer } from '@ant-design/pro-components';
+import { Select, Space, Tabs } from 'antd';
+import { TIME_WINDOW_OPTIONS, TimeWindow } from './shared';
 import OrgGrid from './OrgGrid';
 import PipelineBoard from './PipelineBoard';
 import ExecutionLedger from './ExecutionLedger';
@@ -120,51 +120,29 @@ export default function CommandCenterPage() {
   );
 
   return (
-    <ConfigProvider
-      theme={{
-        algorithm: theme.darkAlgorithm,
-        token: { colorBgBase: '#000000', colorPrimary: '#40a9ff', borderRadius: 8 },
-      }}
-    >
-      {/* 滚动条配色 + 纯黑底（2026-10-28 用户定稿）：本页挂载期间生效——
-          html/body 归零 margin 且纯黑（消除 body 默认 margin 露出的顶部
-          白条），滚动条深色蓝系（纵向 body 页面滚动 + 横向
-          .cmdcenter-hscroll 五线滚动 + .cmdcenter-lanescroll 流水线赛道内
-          纵向滚动）；卸载即移除，不污染 dashboard 亮色页。webkit 细节 +
-          Firefox scrollbar-color 兜底。 */}
+    <PageContainer header={{ title: '指挥中心' }}>
+      {/* 滚动条浅色细杆（2026-11-04 嵌入改版）：仅 .cmdcenter-* 页内滚动容器
+          作用域——嵌入后页面不再是独立文档，原 html/body 级注入会泄漏全
+          应用，随暗色域整体退役；页内竖向/横向滚动条统一浅灰细杆（webkit
+          细节 + Firefox scrollbar-width/scrollbar-color 兜底）。 */}
       <style>{`
-        html, body { margin: 0; background: #000; }
-        body::-webkit-scrollbar { width: 10px; height: 10px; }
-        body::-webkit-scrollbar-track { background: #000; }
-        body::-webkit-scrollbar-thumb { background: rgba(59, 110, 165, 0.55); border-radius: 5px; }
-        body::-webkit-scrollbar-thumb:hover { background: rgba(94, 150, 210, 0.75); }
-        html { scrollbar-color: rgba(59, 110, 165, 0.55) #000; }
-        .cmdcenter-hscroll::-webkit-scrollbar, .cmdcenter-lanescroll::-webkit-scrollbar { width: 10px; height: 10px; }
-        .cmdcenter-hscroll::-webkit-scrollbar-track, .cmdcenter-lanescroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.6); }
-        .cmdcenter-hscroll::-webkit-scrollbar-thumb, .cmdcenter-lanescroll::-webkit-scrollbar-thumb { background: rgba(59, 110, 165, 0.55); border-radius: 5px; }
-        .cmdcenter-hscroll::-webkit-scrollbar-thumb:hover, .cmdcenter-lanescroll::-webkit-scrollbar-thumb:hover { background: rgba(94, 150, 210, 0.75); }
-        .cmdcenter-hscroll, .cmdcenter-lanescroll { scrollbar-color: rgba(59, 110, 165, 0.55) rgba(0, 0, 0, 0.6); }
-        /* 深色 scrollbar-color 是继承属性，会沿 html→body→portal 漏进 Modal
-           （运行记录弹窗亮色内容配深色滚动条很突兀，2026-10-29 用户反馈）——
-           在 Modal 包装层重置回 auto，其子树继承即回归原生样式 */
-        .ant-modal-wrap { scrollbar-color: auto; }
+        .cmdcenter-hscroll::-webkit-scrollbar, .cmdcenter-lanescroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .cmdcenter-hscroll::-webkit-scrollbar-thumb, .cmdcenter-lanescroll::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.18); border-radius: 4px; }
+        .cmdcenter-hscroll::-webkit-scrollbar-thumb:hover, .cmdcenter-lanescroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.3); }
+        .cmdcenter-hscroll, .cmdcenter-lanescroll { scrollbar-width: thin; scrollbar-color: rgba(0, 0, 0, 0.18) transparent; }
       `}</style>
       <div
         style={{
-          // 组织总览/交付流水线页签=定高应用框（100vh 裁死 + border-box 把
-          // padding 计入，滚动全部走容器内滚动条，杜绝第二根竖向滚动条；
-          // 流水线为 2026-10-28 用户定稿：赛道内滚，body 不滚）；其余页签
-          // 保持自由页面滚动
-          ...(activeKey === 'org' || activeKey === 'pipeline'
-            ? { height: '100vh', overflow: 'hidden', boxSizing: 'border-box' as const }
-            : { minHeight: '100vh' }),
-          background: '#000',
-          padding: '8px 20px 0',
-          color: TEXT_MAIN,
+          // 页签上间距走页面 padding-top（8px）：Tabs 的 marginTop 会沿
+          // 无边框父链 margin 塌陷，把 PageContainer 内容区顶带推低；
+          // padding 阻断塌陷链。嵌入后页面自然随壳层文档流滚动，原
+          // 100vh 裁死/border-box 框架整体退役——org/pipeline 屏的定高
+          // 滚动容器在各屏内部自管（SCREEN_CHROME_OFFSET 口径）。
+          paddingTop: 8,
         }}
       >
-        {/* 页签上间距走页面 padding-top（8px）：Tabs 的 marginTop 会沿
-            无边框父链 margin 塌陷，把整页推下 8px（顶部白条根因） */}
+        {/* 页签上间距由外层 div 的 padding-top 承担（margin 塌陷防御，
+            见外层注释） */}
         <Tabs
           activeKey={activeKey}
           onChange={setActiveKey}
@@ -233,6 +211,6 @@ export default function CommandCenterPage() {
           ]}
         />
       </div>
-    </ConfigProvider>
+    </PageContainer>
   );
 }

@@ -23,6 +23,8 @@ import type { CSSProperties, Key } from 'react';
 import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboard';
 import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
+// 可点击标题色取宿主对齐链接蓝（theme.ts 单源；同 SPEC 列表页名称列口径）
+import { DSH_LINK } from '@/theme';
 import ScheduleFields, {
   describeStartAfter,
   isStartAfterValid,
@@ -1055,7 +1057,7 @@ const SuggestedImprovementsPanel = forwardRef<
       render: (t: string, r: EvolutionItem) => (
         <span
           onClick={() => openView(r)}
-          style={{ whiteSpace: 'nowrap', cursor: 'pointer', color: '#1677ff' }}
+          style={{ whiteSpace: 'nowrap', cursor: 'pointer', color: DSH_LINK }}
           data-testid={`evolution-item-title-${r.id}`}
         >
           {t}

@@ -1,7 +1,9 @@
 /**
  * 帮助中心（add-dashboard-help-center D4/D5）
  *
- * 桌面端：左侧文档目录（选中高亮）+ 右侧 Markdown 正文。
+ * 桌面端：左侧文档目录（选中高亮）+ 右侧 Markdown 正文；整卡定高
+ * （calc(100vh - 页框偏移)，见 HELP_FRAME_OFFSET），滚动条下沉——正文 div
+ * 自滚、目录不随页面滚动（2026-11-04 用户指令）。
  * 移动端（<768px）：正文上方抽屉式目录切换（Drawer）。
  * URL query 同步当前文档：`?doc=<name>`，缺省 README.md，刷新/直链可还原。
  * 正文 mermaid 代码块动态 import 按需渲染；相对链接改为页内切换：
@@ -22,6 +24,12 @@ import { getHelpDocs, getHelpDoc } from '@/services/dashboard';
 import type { HelpDocMeta, HelpDocItem } from '@/services/dashboard';
 import { isPageAnchor, markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { isEmbedMode } from '@/utils/embedMount';
+// 选中底色单源（theme.ts；help.css 纯 CSS 无法 import，经内联样式注入，见 HelpMenu）。
+// 2026-11-04 用户统一裁决：目录菜单选中底与侧栏/设置菜单看齐（DSH_MENU_SELECTED_BG，
+// 黑 4% alpha），原冷灰 10% 显著深于其他菜单。
+import { DSH_MENU_SELECTED_BG, dshLayoutToken } from '@/theme';
+import { MERMAID_INIT_CONFIG } from './mermaidInit';
 import './help.css';
 
 // SafeLink 声明为 react-markdown 的宽联合类型 Components['a']，兜底分支直接作 JSX
@@ -34,6 +42,16 @@ const DEFAULT_DOC = 'README.md';
 // 新建引用会让 react-markdown 对整篇文档重新 parse（移动端开合目录抽屉、isMobile
 // 变化等重渲染均触发），比照 activities 页 ACTIVITY_REMARK_PLUGINS 模式复用同一引用
 const HELP_REMARK_PLUGINS = [remarkGfm];
+
+// 桌面端整卡定高偏移：calc(100vh - 本值)——滚动条下沉到正文 div 的前提（高度链
+// 从视口算起，滚动全部走容器内滚动条）。偏移 = 卡片上方的页框占用，实测校准
+// （1440×900）：standalone 为 ProLayout 顶栏 56 + PageContainer 页头 56；embed
+// 模式（dsh 面板桥 iframe）headerRender:false 无顶栏，仅页头 56。卡片贴视口底后
+// 文档流高度恰 = 100vh，#root 的 min-height:100vh 被填满——视口下方无空带、页面
+// 也不残生第二根滚动条（前置条件：children 容器 padding-block-end 已由 global.less
+// 归零，两处须同步）。口径同 pageChrome.ts 的校准常数（那是项目详情页 Tabs 版
+// 页框，本页无 Tabs 不通用）；纯 CSS calc，浏览器缩放/窗口拉伸免 JS 重算。
+const HELP_FRAME_OFFSET = isEmbedMode() ? 56 : 112;
 
 function getDocFromUrl(): string {
   try {
@@ -77,17 +95,10 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
   try {
     const mermaid = await getMermaid();
     const id = `mermaid-${++mermaidIdCounter}`;
-    // 初始化（幂等，重复调用无害）；neutral 主题配色低饱和，适合文档场景；
-    // 字号统一 14px（sequence 族字号独立于 themeVariables，须单独设）
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'neutral',
-      // strict（默认级别）：帮助文档 mermaid 图无 click 交互/图内 HTML 需求，
-      // 保持 HTML/事件净化，避免文档内容引入外部内容时放大为 XSS 面
-      securityLevel: 'strict',
-      themeVariables: { fontSize: '14px' },
-      sequence: { actorFontSize: 14, messageFontSize: 14, noteFontSize: 14 },
-    });
+    // 初始化（幂等，重复调用无害）；neutral 主题配色低饱和，适合文档场景。
+    // 字号双层配置的原因与 sequence 级联覆写陷阱见 mermaidInit.ts 头注
+    // （守卫 tests/mermaidFontSize.test.mjs）
+    mermaid.initialize(MERMAID_INIT_CONFIG);
     const { svg } = await mermaid.render(id, code);
     container.innerHTML = svg;
   } catch (err) {
@@ -262,7 +273,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
             {...rest}
             href={href}
             onClick={(e) => { e.preventDefault(); scrollToAnchor(href.slice(1)); }}
-            style={{ color: 'var(--ant-color-primary)', cursor: 'pointer' }}
+            style={{ color: 'var(--ant-color-link)', cursor: 'pointer' }}
           >
             {children}
           </a>
@@ -293,7 +304,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
               {...rest}
               href={`#${window.location.hash.split('?')[0].replace('#', '')}?doc=${encodeURIComponent(target)}`}
               onClick={(e) => { e.preventDefault(); onNavigate(target!, anchor || undefined); }}
-              style={{ color: 'var(--ant-color-primary)', cursor: 'pointer' }}
+              style={{ color: 'var(--ant-color-link)', cursor: 'pointer' }}
             >
               {children}
             </a>
@@ -325,8 +336,14 @@ function HelpMenu({ docs, currentDoc, onDocChange }: {
           className={`help-menu-item${d.name === currentDoc ? ' active' : ''}`}
           aria-current={d.name === currentDoc ? 'page' : undefined}
         >
-          {/* 真实 <button> 承担可点击语义：Enter/Space 激活由原生按钮行为提供 */}
-          <button type="button" onClick={() => onDocChange(d.name)}>
+          {/* 真实 <button> 承担可点击语义：Enter/Space 激活由原生按钮行为提供。
+              选中底色走 theme.ts 单源冷灰（help.css 注释：primary-bg 族在黑主色
+              下派生暗色 ramp，不可用）；选中态只由底色承载，文字保持常规色 */}
+          <button
+            type="button"
+            onClick={() => onDocChange(d.name)}
+            style={d.name === currentDoc ? { background: DSH_MENU_SELECTED_BG } : undefined}
+          >
             {d.title}
           </button>
         </li>
@@ -546,11 +563,20 @@ export default function HelpPage() {
     );
   }
 
-  // 桌面端布局：目录与正文同处一张圆角白底卡片
+  // 桌面端布局：目录与正文同处一张圆角白底卡片；整卡定高（calc(100vh - 偏移)，
+  // HELP_FRAME_OFFSET 处注释），滚动条下沉——正文 div 自滚（overflowY auto；
+  // 锚点 scrollIntoView 滚动最近滚动祖先，页内锚点跳转不受影响），目录不再随
+  // 页面滚动（2026-11-04 用户指令）；目录列自滚兜底长目录（页面不滚后无自滚
+  // 会被定高裁掉）
   return (
     <PageContainer breadcrumbRender={false} header={{ title: '帮助' }}>
-      <Card styles={{ body: { padding: 0 } }}>
-        <div style={{ display: 'flex' }}>
+      {/* 右缘负外边距吃掉内容区右留白（值取 dshLayoutToken 单源，勿硬编码）：
+          正文滚动条随卡右缘直达窗口右缘（2026-11-04 用户指令）；左缘留白保留 */}
+      <Card
+        styles={{ body: { padding: 0 } }}
+        style={{ marginInlineEnd: -dshLayoutToken.pageContainer.paddingInlinePageContainerContent }}
+      >
+        <div style={{ display: 'flex', height: `calc(100vh - ${HELP_FRAME_OFFSET}px)`, minHeight: 320 }}>
           {/* 左侧目录 */}
           <div
             style={{
@@ -558,6 +584,7 @@ export default function HelpPage() {
               flexShrink: 0,
               borderRight: '1px solid var(--ant-color-border-secondary)',
               padding: '16px 0',
+              overflowY: 'auto',
             }}
           >
             <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: 'var(--ant-color-text-description)' }}>
@@ -565,8 +592,8 @@ export default function HelpPage() {
             </div>
             <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
           </div>
-          {/* 右侧正文 */}
-          <div style={{ flex: 1, minWidth: 0, padding: '24px 32px', fontSize: 14, lineHeight: 1.65 }}>
+          {/* 右侧正文：padding-top 归 0（2026-11-04 用户指令，24 → 0；底部 24 呼吸保留） */}
+          <div style={{ flex: 1, minWidth: 0, padding: '0 32px 24px', fontSize: 14, lineHeight: 1.65, overflowY: 'auto' }}>
             {renderContent()}
           </div>
         </div>

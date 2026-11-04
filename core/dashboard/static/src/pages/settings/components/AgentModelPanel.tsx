@@ -17,6 +17,8 @@ import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
+// 状态/焦点色取宿主对齐单源（theme.ts；DESIGN.md「宿主对齐基线」+ 配色单源红线）
+import { DSH_ERROR, DSH_LINK, DSH_SUCCESS, DSH_WARNING } from '@/theme';
 
 const { Text } = Typography;
 
@@ -437,7 +439,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
         为每种 Agent 角色分配 Provider 与模型。模型名留空时使用所选 Provider 的默认模型。
       </Text>
       {providers.length === 0 && (
-        <div style={{ color: '#faad14', marginTop: 12 }}>
+        <div style={{ color: DSH_WARNING, marginTop: 12 }}>
           ⚠ 当前作用域没有可用的 LLM Provider，无法为 Agent 分配模型。请先在上方「模型
           页签」添加 Provider 并保存，再回来分配；或切换到项目级配置（选择项目后进入配置页）进行分配。
         </div>
@@ -543,7 +545,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                   // draggable 到 DOM（实测被吞），手柄是原生元素可靠；
                                   // dragstart 自手柄冒泡到本行处理器。
                                   opacity: dragging ? 0.5 : undefined,
-                                  boxShadow: isOverTarget ? 'inset 0 2px 0 #1677ff' : undefined,
+                                  boxShadow: isOverTarget ? `inset 0 2px 0 ${DSH_LINK}` : undefined,
                                   borderRadius: isOverTarget ? 4 : undefined,
                                 }}
                                 onDragStart={(e) => {
@@ -630,7 +632,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                       <Text
                                         data-testid={`health-row-result-${rowId}`}
                                         style={{
-                                          color: health.display.kind === 'ok' ? '#52c41a' : '#ff4d4f',
+                                          color: health.display.kind === 'ok' ? DSH_SUCCESS : DSH_ERROR,
                                           fontSize: 12,
                                           whiteSpace: 'nowrap',
                                         }}

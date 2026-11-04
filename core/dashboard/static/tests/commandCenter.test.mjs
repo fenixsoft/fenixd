@@ -5,6 +5,8 @@
 // 运行：cd core/dashboard/static && node --test tests/commandCenter.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   fmtMetric,
   fmtRate,
@@ -23,6 +25,8 @@ import {
   windowLabels,
   SPEC_CELL_HOVER_BG,
   SPEC_CELL_SELECTED_BG,
+  LANE_CARD_MIN_WIDTH,
+  SCREEN_CHROME_OFFSET,
   specRoundLabel,
   specEntryLabel,
   isSpecInList,
@@ -85,8 +89,8 @@ test('fmtShortTs：null → 「—」；无效串原样回退不抛错', () => {
 // ── 车道状态 → 徽标映射 ──────────────────────────────────────────────────
 
 test('laneBadge：working → 绿「运行中」；idle → 灰「空闲」', () => {
-  assert.deepEqual(laneBadge('working'), { text: '运行中', color: '#52c41a' });
-  assert.deepEqual(laneBadge('idle'), { text: '空闲', color: '#5b708c' });
+  assert.deepEqual(laneBadge('working'), { text: '运行中', color: '#22c55e' });
+  assert.deepEqual(laneBadge('idle'), { text: '空闲', color: '#81858c' });
 });
 
 test('laneBadge：未知状态回退「空闲」（非 working 即 idle 口径）', () => {
@@ -94,8 +98,8 @@ test('laneBadge：未知状态回退「空闲」（非 working 即 idle 口径�
 });
 
 test('outcomeBadge：classify_run 口径中文标签；未知/空值原样透出不丢信息', () => {
-  assert.deepEqual(outcomeBadge('done'), { text: '成功', color: '#52c41a' });
-  assert.deepEqual(outcomeBadge('error'), { text: '失败', color: '#ff4d4f' });
+  assert.deepEqual(outcomeBadge('done'), { text: '成功', color: '#22c55e' });
+  assert.deepEqual(outcomeBadge('error'), { text: '失败', color: '#ec1313' });
   assert.equal(outcomeBadge('interrupted').text, '已中断');
   assert.equal(outcomeBadge('superseded').text, '已取代');
   assert.equal(outcomeBadge('gate-blocked').text, '门禁拦截');
@@ -104,9 +108,9 @@ test('outcomeBadge：classify_run 口径中文标签；未知/空值原样透出
 });
 
 test('severityBadge：critical/major/minor 徽标；未知原样透出', () => {
-  assert.deepEqual(severityBadge('critical'), { text: '严重', color: '#ff4d4f' });
-  assert.deepEqual(severityBadge('major'), { text: '重要', color: '#fa8c16' });
-  assert.deepEqual(severityBadge('minor'), { text: '次要', color: '#40a9ff' });
+  assert.deepEqual(severityBadge('critical'), { text: '严重', color: '#ec1313' });
+  assert.deepEqual(severityBadge('major'), { text: '重要', color: '#f59e0b' });
+  assert.deepEqual(severityBadge('minor'), { text: '次要', color: '#4176e6' });
   assert.equal(severityBadge('other').text, 'other');
   assert.equal(severityBadge(null).text, '未知');
 });
@@ -361,4 +365,61 @@ test('spec 视图派生色常量：ACCENT 同族弱底且 hover 与选中态可�
   assert.equal(typeof SPEC_CELL_HOVER_BG, 'string');
   assert.equal(typeof SPEC_CELL_SELECTED_BG, 'string');
   assert.notEqual(SPEC_CELL_HOVER_BG, SPEC_CELL_SELECTED_BG);
+});
+
+// ── 2026-11-04 白底嵌入改版守卫（源码扫描，同 pageChrome.test.mjs 习语）──
+// 改版内容：黑改白 + 脱壳改 ProLayout 内容区嵌入 + Agent 卡缩宽 90%。
+// 本节锁定改版四要素不回潮：配色单源、嵌入形态、卡宽单源、视口扣减单源。
+
+test('Agent 卡最小宽度单源=270（2026-11-04 用户指令：自适应分布，上限不限）', () => {
+  assert.equal(LANE_CARD_MIN_WIDTH, 270);
+});
+
+test('连接线必须挂 ResizeObserver（收起侧栏等容器宽度变化重对齐，禁只监听 window resize）', () => {
+  const text = readFileSync(
+    join(import.meta.dirname, '..', 'src', 'pages', 'command-center', 'OrgGrid.tsx'),
+    'utf8',
+  );
+  assert.match(text, /new ResizeObserver\(measure\)/);
+  assert.doesNotMatch(text, /addEventListener\('resize'/);
+});
+
+test('分区行必须是 minmax 自适应 grid（固定卡宽/脚本算宽禁回潮）', () => {
+  const text = readFileSync(
+    join(import.meta.dirname, '..', 'src', 'pages', 'command-center', 'OrgGrid.tsx'),
+    'utf8',
+  );
+  assert.ok(
+    text.includes('minmax(${LANE_CARD_MIN_WIDTH}px, 1fr)'),
+    '分区列轨道必须消费 LANE_CARD_MIN_WIDTH 单源 minmax(270px,1fr)',
+  );
+});
+
+test('定高屏视口扣减单源=SCREEN_CHROME_OFFSET（壳层 chrome 口径，禁回退纯页签值 78）', () => {
+  assert.equal(SCREEN_CHROME_OFFSET, 182);
+});
+
+test('页面配色单源挂 theme.ts（暗色 IOC 独立色板禁回潮）', () => {
+  const text = readFileSync(
+    join(import.meta.dirname, '..', 'src', 'pages', 'command-center', 'shared.ts'),
+    'utf8',
+  );
+  assert.match(text, /from '\.\.\/\.\.\/theme\.ts'/);
+});
+
+test('指挥中心必须是 ProLayout 嵌入页（routes.ts 禁 layout:false 脱壳回潮）', () => {
+  const text = readFileSync(join(import.meta.dirname, '..', 'config', 'routes.ts'), 'utf8');
+  const at = text.indexOf("path: '/command-center'");
+  assert.ok(at >= 0, 'routes.ts 必须保留 /command-center 路由');
+  // 拓扑大屏等脱壳路由合法存在，本守卫只锁定指挥中心路由块自身
+  assert.doesNotMatch(text.slice(at, at + 220), /layout:\s*false/);
+});
+
+test('指挥中心页级禁暗色算法与 html/body 注入（嵌入页不得泄漏全应用）', () => {
+  const text = readFileSync(
+    join(import.meta.dirname, '..', 'src', 'pages', 'command-center', 'index.tsx'),
+    'utf8',
+  );
+  assert.doesNotMatch(text, /darkAlgorithm/);
+  assert.doesNotMatch(text, /html,\s*body/);
 });

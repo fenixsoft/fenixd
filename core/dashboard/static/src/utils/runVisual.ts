@@ -24,6 +24,10 @@ export const AGENT_LABEL: Record<string, string> = {
   // add-arbiter-quality-display：全局决策者车道（add-arbiter-lane）中文标签，
   // 消除时间轴「未知 Agent」
   arbiter: '质量裁决 Agent',
+  // 归档蒸馏车道（add-distill-run-artifacts 2.1 后端 run_files 前缀表已收录）
+  // 中文标签，消除时间轴「未知 Agent」（2026-11-04 add-systemd-hosting 推送后
+  // 两条蒸馏 run 实证）
+  'knowledge-distiller': '知识蒸馏 Agent',
   repair: '修复 Agent',
   verifier: '验证 Agent',
   tester: '测试 Agent',
@@ -49,6 +53,9 @@ export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
   ['admin-', '运维 Agent'],
   ['test-', '测试 Agent'],
   ['verify-', '验证 Agent'],
+  // 归档蒸馏车道前缀兜底（后端 run_files 表 add-distill-run-artifacts 2.1
+  // 同名条目的前端镜像；与既有前缀无子串冲突，顺序不敏感处追加）
+  ['knowledge-distiller-', '知识蒸馏 Agent'],
 ];
 
 export function agentLabel(item: { agent_type?: string; run_id?: string }): string {

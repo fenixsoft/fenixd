@@ -4,11 +4,32 @@
 // 仅可擦除 TS 语法（类型注解/type-only import），禁 enum/namespace/运行时
 // 装饰器；不 import react/antd（保持纯函数零依赖，单测不拉组件依赖图）。
 
-// 深色大屏配色（IOC 风格，与协作图谱/拓扑大屏同一色系）
-export const BG = '#0a1628';
-export const PANEL_BORDER = 'rgba(59, 110, 165, 0.4)';
-export const TEXT_MAIN = '#d6e7f7';
-export const TEXT_SUB = '#7f9cba';
+// 页面配色（2026-11-04 用户指令「指挥中心黑改白 + 脱壳改内容区嵌入」改版）：
+// 原 IOC 深蓝黑四色单源整体退役，单源改挂 theme.ts dsh 对齐常量表（DESIGN.md
+// 配色红线同纪律——不另起色板；本模块只补弱底/描边等同族派生 alpha 档）。
+// theme.ts 纯常量文件，零 react/antd 依赖红线不破；.ts 扩展导入走
+// allowImportingTsExtensions 既有先例（mermaidInit.ts / embedMount.ts），
+// node type-stripping 直载兼容。
+import {
+  DSH_BG_MODULE,
+  DSH_BORDER,
+  DSH_BORDER_SECONDARY,
+  DSH_ERROR,
+  DSH_LINK,
+  DSH_SPLIT,
+  DSH_SUCCESS,
+  DSH_TEXT,
+  DSH_TEXT_SECONDARY,
+  DSH_TEXT_TERTIARY,
+  DSH_WARNING,
+} from '../../theme.ts';
+
+// 屏底/卡底：白底页面上数据卡=白底+细描边（同 overview 统计卡行豁免习语，
+// 0.10 档描边承担卡感；包裹卡去边框规则不涉及本页——本页卡片均为数据卡）
+export const BG = '#ffffff';
+export const PANEL_BORDER = DSH_BORDER_SECONDARY;
+export const TEXT_MAIN = DSH_TEXT;
+export const TEXT_SUB = DSH_TEXT_SECONDARY;
 
 // null 指标占位：分母零/不可计价/数据缺口一律「—」（MUST NOT 显示 0——0 与
 // 「口径不可得」语义不同，specs「验收与红线」节）；数值原样字符串化（0 保留）。
@@ -66,35 +87,35 @@ export function fmtShortTs(ts: string | null | undefined): string {
 // 车道状态 → 徽标（working 绿「运行中」/ idle 灰「空闲」；纯静态色，无动画）。
 export function laneBadge(status: string): { text: string; color: string } {
   return status === 'working'
-    ? { text: '运行中', color: '#52c41a' }
-    : { text: '空闲', color: '#5b708c' };
+    ? { text: '运行中', color: DSH_SUCCESS }
+    : { text: '空闲', color: DSH_TEXT_TERTIARY };
 }
 
 // 台账 run 结果 → 徽标（classify_run 口径中文标签；未知值原样透出防丢信息）。
 export function outcomeBadge(outcome: string | null | undefined): { text: string; color: string } {
   switch (outcome) {
     case 'done':
-      return { text: '成功', color: '#52c41a' };
+      return { text: '成功', color: DSH_SUCCESS };
     case 'error':
-      return { text: '失败', color: '#ff4d4f' };
+      return { text: '失败', color: DSH_ERROR };
     case 'running':
-      return { text: '运行中', color: '#40a9ff' };
+      return { text: '运行中', color: DSH_LINK };
     case 'interrupted':
-      return { text: '已中断', color: '#fa8c16' };
+      return { text: '已中断', color: DSH_WARNING };
     case 'cancelled':
-      return { text: '已取消', color: '#fa8c16' };
+      return { text: '已取消', color: DSH_WARNING };
     case 'superseded':
-      return { text: '已取代', color: '#7f9cba' };
+      return { text: '已取代', color: DSH_TEXT_TERTIARY };
     case 'frozen-terminated':
-      return { text: '冻结终止', color: '#7f9cba' };
+      return { text: '冻结终止', color: DSH_TEXT_TERTIARY };
     case 'gate-blocked':
-      return { text: '门禁拦截', color: '#fa8c16' };
+      return { text: '门禁拦截', color: DSH_WARNING };
     case 'stale':
-      return { text: '失联', color: '#7f9cba' };
+      return { text: '失联', color: DSH_TEXT_TERTIARY };
     case 'empty':
-      return { text: '空产物', color: '#7f9cba' };
+      return { text: '空产物', color: DSH_TEXT_TERTIARY };
     default:
-      return { text: outcome || '—', color: '#7f9cba' };
+      return { text: outcome || '—', color: DSH_TEXT_TERTIARY };
   }
 }
 
@@ -102,13 +123,13 @@ export function outcomeBadge(outcome: string | null | undefined): { text: string
 export function severityBadge(sev: string | null | undefined): { text: string; color: string } {
   switch (sev) {
     case 'critical':
-      return { text: '严重', color: '#ff4d4f' };
+      return { text: '严重', color: DSH_ERROR };
     case 'major':
-      return { text: '重要', color: '#fa8c16' };
+      return { text: '重要', color: DSH_WARNING };
     case 'minor':
-      return { text: '次要', color: '#40a9ff' };
+      return { text: '次要', color: DSH_LINK };
     default:
-      return { text: sev || '未知', color: '#7f9cba' };
+      return { text: sev || '未知', color: DSH_TEXT_TERTIARY };
   }
 }
 
@@ -179,27 +200,43 @@ export function laneLabel(lane: string): string {
   return LANE_LABELS[lane] ?? lane;
 }
 
-// ── Agent 卡派生色/字体（2026-10-28 LaneCard 重设计定稿）──────────────────
-// 与上方大屏四色单源同族的弱色变体，集中管理（组件内不散落硬编码色值）。
+// ── Agent 卡派生色/字体（2026-10-28 LaneCard 重设计定稿；2026-11-04 随页改
+// 版整体换白底族）───────────────────────────────────────────────
+// theme.ts 单源的弱底/描边同族派生档，集中管理（组件内不散落硬编码色值）。
 // 注意：图标组件映射因 antd import 红线不放本文件（见 OrgGrid.tsx LANE_ICONS）。
 export const FONT_MONO = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
-export const CARD_BG = 'rgba(10, 30, 56, 0.55)';
-export const CARD_BG_HOVER = 'rgba(16, 42, 78, 0.65)';
-export const CARD_BORDER_BRIGHT = 'rgba(94, 150, 210, 0.7)';
-export const ACCENT = '#40a9ff';
-export const GREEN = '#52c41a';
-export const GREEN_DIM_BG = 'rgba(82, 196, 26, 0.12)';
+export const CARD_BG = '#ffffff';
+export const CARD_BG_HOVER = DSH_BG_MODULE;
+export const CARD_BORDER_BRIGHT = 'rgba(65, 118, 230, 0.45)';
+export const ACCENT = DSH_LINK;
+export const GREEN = DSH_SUCCESS;
+export const GREEN_DIM_BG = 'rgba(34, 197, 94, 0.10)';
 // 活动行 spec 条目 hover 提亮（2026-10-29 多 spec 列表可点击行；同族绿弱底）
-export const GREEN_DIM_BG_HOVER = 'rgba(82, 196, 26, 0.2)';
+export const GREEN_DIM_BG_HOVER = 'rgba(34, 197, 94, 0.18)';
 // 图标徽章恒彩（2026-10-28 用户定稿：不随 working/idle 变灰，统一蓝系）
 export const AVATAR_BG =
-  'linear-gradient(135deg, rgba(64, 169, 255, 0.16), rgba(64, 169, 255, 0.05))';
-export const AVATAR_BORDER = 'rgba(64, 169, 255, 0.25)';
-export const REST_BORDER = 'rgba(91, 112, 140, 0.35)';
-export const METRIC_DIVIDER = 'rgba(59, 110, 165, 0.25)';
-// 连接线描边（2026-10-29 用户定稿加深：PANEL_BORDER 0.4 alpha 在纯黑底上
-// 偏浅看不清，提亮提饱和与 hover 边框同族）
-export const LINK_STROKE = 'rgba(94, 150, 210, 0.75)';
+  'linear-gradient(135deg, rgba(65, 118, 230, 0.12), rgba(65, 118, 230, 0.04))';
+export const AVATAR_BORDER = 'rgba(65, 118, 230, 0.25)';
+export const REST_BORDER = DSH_BORDER;
+export const METRIC_DIVIDER = DSH_SPLIT;
+// 连接线描边（2026-11-04 用户指令）：灰色、比卡片描边（PANEL_BORDER=
+// DSH_BORDER_SECONDARY 黑 0.10 alpha）深一档，白底上细线可读不抢主体
+// （原深底蓝系定值随暗色域退役）
+export const LINK_STROKE = 'rgba(0, 0, 0, 0.2)';
+
+// Agent 卡最小宽度（2026-11-04 用户指令二改：卡宽随外部容器自适应——组织
+// 图行左右各留 32px padding，剩余宽度按分区列均分给卡片，列宽下限 270px
+// 无上限；CSS minmax(270px,1fr) 实现，禁脚本算宽）。单源常量+守卫测试
+// （commandCenter.test.mjs），改值须同步复核团队卡 minWidth 560 与活动行/
+// 页脚排布不溢出。
+export const LANE_CARD_MIN_WIDTH = 270;
+
+// 组织总览/交付流水线定高滚动容器的视口扣减值（2026-11-04 嵌入改版换算）：
+// 原 78 = 页面 padding-top(8) + 页签条(70)；嵌入后叠加 ProLayout 顶栏 +
+// PageContainer 页头 → 182（1920×1080 playwright 实拍校准：容器 top=182，
+// 100vh−182 底缘恰贴视口底缘零溢出）。页头结构（header 高/PageContainer
+// 页头/页签条）任一变化须复核本值并重新实拍。
+export const SCREEN_CHROME_OFFSET = 182;
 
 // 时间窗（2026-10-28 时间下拉「今日/7 日/全量」）：窗口约束车道卡三格
 // （run/成功率/成本）与产品团队汇总的运行/成本口径；需求数量（活跃 SPEC）
@@ -302,8 +339,8 @@ export function activityLineState(card: {
 
 // 需求数量格可点击态派生色（ACCENT 同族弱底：hover 纯色提亮 + 选中态底色，
 // 与车道卡 hover 口径同族——纯色切换无动画）
-export const SPEC_CELL_HOVER_BG = 'rgba(64, 169, 255, 0.10)';
-export const SPEC_CELL_SELECTED_BG = 'rgba(64, 169, 255, 0.16)';
+export const SPEC_CELL_HOVER_BG = 'rgba(65, 118, 230, 0.08)';
+export const SPEC_CELL_SELECTED_BG = 'rgba(65, 118, 230, 0.14)';
 
 // org summary.specs 条目（{project, spec}；created 排序由后端下发）
 export interface SpecEntry {

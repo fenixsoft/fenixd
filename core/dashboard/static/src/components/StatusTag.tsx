@@ -1,21 +1,24 @@
 import { Tag } from 'antd';
 import type { ReactNode } from 'react';
-
 // v1 风格状态徽标：透明底 + 彩色文字 + 45% 透明度同色描边
+// 色相取 theme.ts 宿主对齐状态色（dsh state palette；DESIGN.md「宿主对齐基线」）；
+// aqua 青=出题语义 SPEC 指定色，与 progressPhase TRACK_CYAN 同 ramp，豁免对齐。
+import { DSH_LINK, DSH_WARNING, DSH_ERROR, DSH_SUCCESS } from '../theme';
 const TONE_HEX = {
   muted: null,
-  info: '#1677ff',
-  warning: '#faad14',
-  critical: '#ff4d4f',
-  good: '#52c41a',
+  info: DSH_LINK,
+  warning: DSH_WARNING,
+  critical: DSH_ERROR,
+  good: DSH_SUCCESS,
   aqua: '#13c2c2',
 } as const;
 
-// tone→antd 预设色映射（单源：detail.tsx 头部状态 Tag 与 topology/index.tsx
-// 大屏状态 Tag 共同消费，避免各页内联副本取值风格漂移——code-review item
-// 5f88cf8a2a02）。键覆盖 services/dashboard STATUS_META 全部 6 种 tone，色相
-// 与 TONE_HEX / 列表页 TONE_DOT 同语义（warning 橙、aqua 青、info 蓝；
-// item 7d6e6be9876c）。
+// tone→antd 预设色映射（单源：topology/index.tsx 大屏状态 Tag 消费，避免
+// 内联副本取值风格漂移——code-review item 5f88cf8a2a02；原 detail.tsx 头部
+// 消费方已迁移 OutlinedTag，宿主对齐改造 2026-11-03）。键覆盖
+// services/dashboard STATUS_META 全部 6 种 tone，色相与 TONE_HEX / 列表页
+// TONE_DOT 同语义（warning 橙、aqua 青、info 蓝；item 7d6e6be9876c）。
+// 大屏域自持配色（DESIGN.md 例外域），不经此改造换轨。
 export const TONE_TAG_COLOR: Record<string, string> = {
   muted: 'default',
   info: 'processing',

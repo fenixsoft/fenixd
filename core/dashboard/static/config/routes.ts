@@ -20,11 +20,13 @@ export default [
     component: './projects',
   },
   {
-    // 管理指挥中心（add-command-center 3.2）：layout:false 脱壳——全屏深色
-    // 独立页面，无 ProLayout 侧边栏/顶栏（与拓扑大屏同款脱壳，
-    // 菜单项「指挥中心」进入）。
+    // 管理指挥中心（add-command-center 3.2；2026-11-04 用户指令去脱壳改版）：
+    // 原脱壳全屏深色页改为 ProLayout 内容区常规页（侧栏/顶栏/PageContainer
+    // 页头与全菜单一致，配色继承 theme.ts 白底单源）；菜单项仍由
+    // app.tsx menuDataRender 注册（routes name 仅供 PageContainer 标题链路）。
     path: '/command-center',
-    layout: false,
+    name: '指挥中心',
+    icon: 'control',
     component: './command-center',
   },
   {

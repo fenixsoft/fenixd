@@ -2,6 +2,7 @@ import { PageContainer } from '@ant-design/pro-components';
 import { App, Button, Card, Menu, Select, Space, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { isEmbedMode } from '@/utils/embedMount';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
 // PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
@@ -10,6 +11,8 @@ import { PAGE_LABELS } from './pageLabels';
 import type { PageKey } from './pageLabels';
 // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：活跃面板判脏
 import { anyPanelDirty, snapshotPanelDirty } from './panelDirty';
+// 提示文字状态色取宿主对齐单源（theme.ts；DESIGN.md「宿主对齐基线」+ 配色单源红线）
+import { DSH_ERROR, DSH_WARNING } from '@/theme';
 import LlmProviderPanel from './components/LlmProviderPanel';
 import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
@@ -28,11 +31,23 @@ import BranchGcPanel from './components/BranchGcPanel';
 // add-arbiter-lane：全局决策者车道面板（arbiter 四键 + 运行时状态）
 import ArbiterPanel from './components/ArbiterPanel';
 // add-escalation-chain-admin-arbiter 5.3：处置链面板（chain 四键 + 运行时水位）
+// ——原独立「处置链」页签已并入「仲裁」页签堆叠呈现
 import ChainPanel from './components/ChainPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
 
 const { Text } = Typography;
+
+// 桌面端整卡定高偏移（口径同帮助页 HELP_FRAME_OFFSET，其处有完整校准注释）：
+// standalone = ProLayout 顶栏 56 + PageContainer 页头 56 + heading 块尾 12
+// （global.less 按用户指令给本页 heading 补的 12px，防止右栏 -30 上探与标题
+// 相触——本页页头因此比帮助页高 12，偏移必须计入，否则卡底探出视口产生
+// 第二根滚动条）；embed=1 面板桥 headerRender:false 无顶栏，页头 56 + 12。
+// 卡高 calc(100vh - 本值) 后文档流恰满视口（前置：children 容器
+// padding-block-end 已由 global.less 归零）；配合 global.less 卡体 flex 传导与
+// 右侧面板内联 overflowY，右栏自滚、左侧菜单固定（2026-11-04 用户指令）。
+// 纯 CSS calc，无脚本算高。改页头任何内边距必须回校本值。
+const SETTINGS_FRAME_OFFSET = isEmbedMode() ? 68 : 124;
 
 // 菜单标签统一从 PAGE_LABELS 派生（code-review item d996f0d0aac5）：旧实现
 // 标签字面在 BASE_MENU_ITEMS 与下方项目级 menuItems.push 各写一份，本文件
@@ -56,10 +71,9 @@ const BASE_MENU_ITEMS: { key: PageKey; label: string }[] = [
   // add-framework-self-evolution：页签「自愈」改名「自进化」（内部 key 同步改名，
   // 默认选中态与其它页签不受影响）
   { key: 'self-evolution', label: PAGE_LABELS['self-evolution'] },
-  // add-arbiter-lane：全局决策者车道配置页签
+  // add-arbiter-lane：全局决策者车道配置页签；处置链配置原为独立页签
+  // （add-escalation-chain-admin-arbiter 5.3），现并入本页签面板堆叠呈现
   { key: 'arbiter', label: PAGE_LABELS.arbiter },
-  // add-escalation-chain-admin-arbiter 5.3：处置链配置页签
-  { key: 'chain', label: PAGE_LABELS.chain },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -353,13 +367,20 @@ export default function SettingsPage() {
         ),
       }}
     >
-      <Card bordered={false} className="settings-page">
-        {/* 移动端菜单置顶横排，面板全宽；桌面保持左竖菜单布局不变 */}
+      <Card
+        bordered={false}
+        className="settings-page"
+        // 桌面整卡定高（SETTINGS_FRAME_OFFSET 口径见其注释），移动端不锁高走文档滚动
+        style={isMobile ? undefined : { height: `calc(100vh - ${SETTINGS_FRAME_OFFSET}px)` }}
+      >
+        {/* 移动端菜单置顶横排，面板全宽；桌面保持左竖菜单布局不变。
+            桌面 flex:1 + minHeight:0 吃满卡体（global.less 卡体为纵向 flex 容器），
+            原 minHeight:500 保底由定高形态天然取代 */}
         <div
           style={
             isMobile
               ? { display: 'flex', flexDirection: 'column' }
-              : { display: 'flex', minHeight: 500 }
+              : { flex: 1, minHeight: 0, display: 'flex' }
           }
         >
           {/* 左侧菜单 */}
@@ -403,14 +424,23 @@ export default function SettingsPage() {
             style={
               isMobile
                 ? { flex: 1, minWidth: 0, padding: '12px 16px 24px' }
-                : { flex: 1, padding: 24, marginTop: -30 }
+                : {
+                    // 右栏滚动本体（2026-11-04 用户指令）：overflowY 独立纵向滚动，
+                    // 左侧菜单不随动。右内边距归零（右侧 24px 空带回收），面板贴
+                    // 滚动条；左 24 保留（面板-菜单列间距），上下 24 维持节奏
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '24px 0 24px 24px',
+                    marginTop: -30,
+                    overflowY: 'auto',
+                  }
             }
           >
             {loading && <div>加载中...</div>}
             {/* 加载失败回退 UI（code-review item eae893169197）：旧实现失败后
                 config 恒为 null，非 prompts 页签全部渲染空白面板而用户无从判断。 */}
             {!loading && loadError && (
-              <div style={{ color: '#ff4d4f', padding: '12px 0' }}>
+              <div style={{ color: DSH_ERROR, padding: '12px 0' }}>
                 配置加载失败：{loadError}
               </div>
             )}
@@ -422,14 +452,14 @@ export default function SettingsPage() {
               <>
                 {/* 配置状态提示 */}
                 {!config.raw_exists && (
-                  <div style={{ marginBottom: 16, color: '#faad14' }}>
+                  <div style={{ marginBottom: 16, color: DSH_WARNING }}>
                     {config.scope === 'project'
                       ? '项目尚无配置文件，表单为默认值'
                       : '用户级配置文件不存在，表单为默认值'}
                   </div>
                 )}
                 {config.error && (
-                  <div style={{ marginBottom: 16, color: '#ff4d4f' }}>
+                  <div style={{ marginBottom: 16, color: DSH_ERROR }}>
                     配置加载错误：{config.error}
                   </div>
                 )}
@@ -498,22 +528,23 @@ export default function SettingsPage() {
                 {activeKey === 'arbiter' && (
                   // add-arbiter-lane：全局决策者车道面板（arbiter 四键 + 运行时
                   // 状态只读摘要），独立 Form 与保存按钮，保存走同一 handleSave
-                  // 写回通道
-                  <ArbiterPanel
-                    config={config}
-                    onSave={handleSave}
-                    project={scope === 'project' ? project : undefined}
-                  />
-                )}
-                {activeKey === 'chain' && (
-                  // add-escalation-chain-admin-arbiter 5.3：处置链面板（chain 四键
-                  // 配额/复位窗/黑名单 + 运行时水位 30s 轮询），独立 Form 与保存
-                  // 按钮，保存走同一 handleSave 写回通道
-                  <ChainPanel
-                    config={config}
-                    onSave={handleSave}
-                    project={scope === 'project' ? project : undefined}
-                  />
+                  // 写回通道。处置链面板并入本页签堆叠（沿用「验证」页签
+                  // VerifyPanel+BranchGcPanel 双面板先例：两面板各带标题、
+                  // 各自独立 Form 与保存按钮，保存走同一 handleSave 写回通道）
+                  <>
+                    <ArbiterPanel
+                      config={config}
+                      onSave={handleSave}
+                      project={scope === 'project' ? project : undefined}
+                    />
+                    {/* add-escalation-chain-admin-arbiter 5.3：处置链面板（chain
+                        四键配额/复位窗/黑名单 + 运行时水位 30s 轮询） */}
+                    <ChainPanel
+                      config={config}
+                      onSave={handleSave}
+                      project={scope === 'project' ? project : undefined}
+                    />
+                  </>
                 )}
                 {activeKey === 'quality' && (
                   <QualityPanel
