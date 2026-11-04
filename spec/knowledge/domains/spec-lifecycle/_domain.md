@@ -1,5 +1,5 @@
 # SPEC 生命周期
-> 最后更新：2026-10-31 16:23 UTC+8
+> 最后更新：2026-11-04 09:47 UTC+8
 
 SPEC 生命周期。本域能力页清单如下。
 
@@ -23,7 +23,7 @@ SPEC 生命周期。本域能力页清单如下。
 | [spec-content-integrity-gate](spec-content-integrity-gate.md) | SPEC 内容完整性门 | 2026-10-03 04:59 |
 | [spec-event-hooks](spec-event-hooks.md) | SPEC 事件钩子 | 2026-10-07 02:36 |
 | [spec-archive](spec-archive.md) | SPEC 归档（手动/查询/自动） | 2026-10-06 17:00 |
-| [auto-spec-archive](auto-spec-archive.md) | SPEC 自动归档 | 2026-10-06 17:00 |
+| [auto-spec-archive](auto-spec-archive.md) | SPEC 自动归档（阈值水位排水+孤儿目录时效接管+每日水位盘点） | 2026-11-04 09:47 |
 | [archive-state-relocation](archive-state-relocation.md) | STATE.md 条目迁出与归档清单 | 2026-10-06 17:00 |
 | [archive-auto-commit](archive-auto-commit.md) | 归档产物自动提交 | 2026-10-03 04:59 |
 | [fast-track-mode](fast-track-mode.md) | 快车道执行模式 | 2026-10-08 04:02 |
