@@ -35,3 +35,4 @@
 ## [2026-11-04 09:33 UTC+8] fold | escalation-chain-disposition-ledger-gap.md 折叠入库
 ## [2026-11-04 09:41 UTC+8] fold | host-wide-sigkill-hosting-chain-wipeout.md 折叠入库
 ## [2026-11-04 09:43 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
+## [2026-11-04 09:46 UTC+8] fold | zn-inbox-entry-2.md 折叠入库
