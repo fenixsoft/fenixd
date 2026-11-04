@@ -90,7 +90,9 @@ test('设置页定高滚动接线必须齐全：卡高 calc 常量 + 卡体 flex
     /\.ant-design-pro:not\(\.screen-xs\):not\(\.screen-sm\)\s+\.settings-page\s*>\s*\.ant-card-body \{\s*height: 100%;\s*display: flex;\s*flex-direction: column;/,
   );
   const tsx = readFileSync(join(STATIC_ROOT, 'src', 'pages', 'settings', 'index.tsx'), 'utf8');
-  assert.match(tsx, /const SETTINGS_FRAME_OFFSET = isEmbedMode\(\) \? 68 : 124;/);
+  // unified-page-title-bar 后 PageContainer 页头摘除：standalone = 顶栏 56；
+  // embed = 顶栏隐藏、统一标题行行壳位 48。旧双档 68/124（含页头）见 git 历史
+  assert.match(tsx, /const SETTINGS_FRAME_OFFSET = isEmbedMode\(\) \? 48 : 56;/);
   assert.match(tsx, /calc\(100vh - \$\{SETTINGS_FRAME_OFFSET\}px\)/);
   assert.match(tsx, /overflowY: 'auto'/);
 });
@@ -136,11 +138,13 @@ test('设置页面板直角化：卡根与卡头 border-radius 0（圆角灰底�
   );
 });
 
-test('设置页页头 heading 补 12px 块尾内边距（右栏 -30 上探与标题相触；仅 :has 限定设置页；强耦合 SETTINGS_FRAME_OFFSET）', () => {
-  const less = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
-  assert.match(
-    less,
-    /\.ant-pro-page-container:has\(\.settings-page\)\s+\.ant-page-header-heading \{\s*padding-block-end: 12px;/,
+test('设置页页头 heading 12px 块尾补偿必须保持退役（PageContainer 页头已摘除，补偿对象不复存在）', () => {
+  // unified-page-title-bar 2.2：页头消失后 12px padding-block-end 补偿随页头
+  // 一起退役（global.less 保留退役说明注释）；规则回潮会在无页头的现实下
+  // 悬空空转，且 :has 选择器依赖 .ant-page-header-heading 元素不再渲染
+  assert.doesNotMatch(
+    readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8'),
+    /\.ant-page-header-heading \{\s*padding-block-end: 12px;/,
   );
 });
 
