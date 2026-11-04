@@ -1,5 +1,5 @@
 # 中断恢复与续做
-> 最后更新：2026-10-30 23:34 UTC+8
+> 最后更新：2026-11-04 09:33 UTC+8
 
 中断恢复与续做域：覆盖 daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置、恢复监视告警、取消保持恢复与验证断点。
 
@@ -11,7 +11,7 @@
 | [恢复分支锚点](recovery-branch-anchor.md) | 成功即落锚点、新轮次失效旧锚点与三层回落解析 | 2026-10-08 04:02 |
 | [恢复遗留状态检查](recovery-legacy-check.md) | 死亡 run 遗产保留、上下文注入与 agent 自主收编 | 2026-10-03 04:59 |
 | [恢复路径驱动证据与处置互斥](recovery-path-liveness.md) | admin run 不算驱动证据、verifier 重验与在飞处置互斥 | 2026-10-03 04:59 |
-| [恢复前存活核验与锁一致性](recovery-state-consistency.md) | 恢复动作前进程事实核验、worktree 锁重建回收与锁冲突退避 | 2026-10-03 04:59 |
+| [恢复前存活核验与锁一致性](recovery-state-consistency.md) | 恢复动作前进程事实核验（含检测进程自命中豁免）、worktree 锁重建回收与锁冲突退避 | 2026-11-04 09:33 |
 | [恢复监视升级前复查](recovery-watch-status-recheck.md) | 升级 dispatch_stalled 前重读状态与运行痕迹、顺延有界 | 2026-10-03 04:59 |
 | [恢复监视过渡窗口守卫](recovery-watch-transition-guard.md) | implementer→merge 过渡窗口内顺延 stale 判定 | 2026-10-08 04:02 |
 | [恢复后巡检与假就绪闭环复查](post-recovery-patrol.md) | auto-recovery 闭环复查、假就绪滞留巡检与指纹限频 | 2026-10-03 04:59 |
