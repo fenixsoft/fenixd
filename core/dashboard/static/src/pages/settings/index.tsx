@@ -1,4 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import { App, Button, Card, Menu, Select, Space, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -39,15 +40,16 @@ import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSecti
 const { Text } = Typography;
 
 // 桌面端整卡定高偏移（口径同帮助页 HELP_FRAME_OFFSET，其处有完整校准注释）：
-// standalone = ProLayout 顶栏 56 + PageContainer 页头 56 + heading 块尾 12
-// （global.less 按用户指令给本页 heading 补的 12px，防止右栏 -30 上探与标题
-// 相触——本页页头因此比帮助页高 12，偏移必须计入，否则卡底探出视口产生
-// 第二根滚动条）；embed=1 面板桥 headerRender:false 无顶栏，页头 56 + 12。
+// unified-page-title-bar 页头全站退役后，standalone = ProLayout 顶栏 56（原
+// PageContainer 页头 56 + heading 块尾 12 已随页头摘除一并消失，global.less 的
+// heading 12px 补偿规则与右栏 marginTop:-30 上探补偿同步退役——补偿对象不复
+// 存在，旧值 124=56+56+12 / 68=56+12 见 git 历史）；embed=1 面板桥
+// headerRender:false 无顶栏，为统一标题栏行壳位 48。
 // 卡高 calc(100vh - 本值) 后文档流恰满视口（前置：children 容器
 // padding-block-end 已由 global.less 归零）；配合 global.less 卡体 flex 传导与
 // 右侧面板内联 overflowY，右栏自滚、左侧菜单固定（2026-11-04 用户指令）。
-// 纯 CSS calc，无脚本算高。改页头任何内边距必须回校本值。
-const SETTINGS_FRAME_OFFSET = isEmbedMode() ? 68 : 124;
+// 纯 CSS calc，无脚本算高。改标题行或内容区顶带任何内边距必须回校本值。
+const SETTINGS_FRAME_OFFSET = isEmbedMode() ? 48 : 56;
 
 // 菜单标签统一从 PAGE_LABELS 派生（code-review item d996f0d0aac5）：旧实现
 // 标签字面在 BASE_MENU_ITEMS 与下方项目级 menuItems.push 各写一份，本文件
@@ -340,12 +342,17 @@ export default function SettingsPage() {
   }
 
   return (
-    <PageContainer
-      header={{
-        title: '设置',
-        extra: (
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.2）：标题进顶栏（standalone）/
+          内容区首行（embed/移动端），「作用域」Select 迁 filters 槽位——standalone
+          落顶栏右上角（原面包屑位置），行壳位落行右端 */}
+      <PageTitleBar
+        title="设置"
+        filters={
           <Space>
-            <Text>作用域：</Text>
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              作用域：
+            </Text>
             <Select
               // project 为空值兜底（code-review item 234fe8e987a2）：与下方
               // menuItems.push 的 project 真值门禁同口径，避免受控 Select 显示
@@ -364,9 +371,9 @@ export default function SettingsPage() {
               ]}
             />
           </Space>
-        ),
-      }}
-    >
+        }
+      />
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Card
         bordered={false}
         className="settings-page"
@@ -427,11 +434,12 @@ export default function SettingsPage() {
                 : {
                     // 右栏滚动本体（2026-11-04 用户指令）：overflowY 独立纵向滚动，
                     // 左侧菜单不随动。右内边距归零（右侧 24px 空带回收），面板贴
-                    // 滚动条；左 24 保留（面板-菜单列间距），上下 24 维持节奏
+                    // 滚动条；左 24 保留（面板-菜单列间距），上下 24 维持节奏。
+                    // （原 marginTop:-30 页头基线补偿随 unified-page-title-bar 页头
+                    // 摘除一并退役——占位消失后 -30 会把右栏顶出容器。）
                     flex: 1,
                     minWidth: 0,
                     padding: '24px 0 24px 24px',
-                    marginTop: -30,
                     overflowY: 'auto',
                   }
             }
@@ -626,6 +634,7 @@ export default function SettingsPage() {
           </div>
         </div>
       </Card>
-    </PageContainer>
+      </PageContainer>
+    </>
   );
 }

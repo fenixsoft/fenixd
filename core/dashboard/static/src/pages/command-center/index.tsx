@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from '@umijs/max';
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import { Select, Space, Tabs } from 'antd';
 import { TIME_WINDOW_OPTIONS, TimeWindow } from './shared';
 import OrgGrid from './OrgGrid';
@@ -120,7 +121,38 @@ export default function CommandCenterPage() {
   );
 
   return (
-    <PageContainer header={{ title: '指挥中心' }}>
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.4）：「全部项目」+ 时间窗双
+          Select 从页签行 tabBarExtraContent 迁 filters 槽位（standalone 顶栏
+          右上角 / 行壳位行右端）；时间窗仅组织总览页签有意义的条件显隐随迁
+          （filters 为 ReactNode，页内自行条件渲染），页签行不再渲染 extra 区 */}
+      <PageTitleBar
+        title="指挥中心"
+        filters={
+          <Space size={8}>
+            <Select
+              value={project}
+              onChange={setProject}
+              style={{ minWidth: 160 }}
+              size="small"
+              options={[
+                { label: '全部项目', value: '' },
+                ...allProjects.map((p) => ({ label: p, value: p })),
+              ]}
+            />
+            {activeKey === 'org' ? (
+              <Select
+                value={orgWin}
+                onChange={setOrgWin}
+                style={{ minWidth: 96 }}
+                size="small"
+                options={TIME_WINDOW_OPTIONS}
+              />
+            ) : null}
+          </Space>
+        }
+      />
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 滚动条浅色细杆（2026-11-04 嵌入改版）：仅 .cmdcenter-* 页内滚动容器
           作用域——嵌入后页面不再是独立文档，原 html/body 级注入会泄漏全
           应用，随暗色域整体退役；页内竖向/横向滚动条统一浅灰细杆（webkit
@@ -143,34 +175,11 @@ export default function CommandCenterPage() {
       >
         {/* 页签上间距由外层 div 的 padding-top 承担（margin 塌陷防御，
             见外层注释） */}
+        {/* 页签行迁出 extra 后不再渲染 tabBarExtraContent（过滤项已上移统一
+            标题栏，见上方 PageTitleBar filters） */}
         <Tabs
           activeKey={activeKey}
           onChange={setActiveKey}
-          tabBarExtraContent={{
-            right: (
-              <Space size={8}>
-                <Select
-                  value={project}
-                  onChange={setProject}
-                  style={{ minWidth: 160 }}
-                  size="small"
-                  options={[
-                    { label: '全部项目', value: '' },
-                    ...allProjects.map((p) => ({ label: p, value: p })),
-                  ]}
-                />
-                {activeKey === 'org' ? (
-                  <Select
-                    value={orgWin}
-                    onChange={setOrgWin}
-                    style={{ minWidth: 96 }}
-                    size="small"
-                    options={TIME_WINDOW_OPTIONS}
-                  />
-                ) : null}
-              </Space>
-            ),
-          }}
           items={[
             {
               key: 'org',
@@ -211,6 +220,7 @@ export default function CommandCenterPage() {
           ]}
         />
       </div>
-    </PageContainer>
+      </PageContainer>
+    </>
   );
 }

@@ -172,3 +172,50 @@ test('ClaudeOutputPane 引用单源：无硬编码流端点，EventSource 走 ST
   assert.ok(!paneSource.includes('/api/stream'), '不得再出现硬编码流端点字面量');
   assert.ok(paneSource.includes('new EventSource(STREAM_URL)'), 'EventSource 须经 services 单源');
 });
+
+// ════ unified-page-title-bar：embed=1 壳层语义 ════
+//
+// embed 形态的页面标识不再有 PageContainer 页头承接（全站摘除、面包屑退役），
+// 统一标题栏行壳位成为 embed 下标题/副标题/过滤项的唯一归宿。源码扫描锚定
+// 判定链与归宿（运行形态由 pageTitleBar.test.mjs 的 store 直载测试与浏览器
+// 冒烟覆盖）。
+
+test('embed 壳位判定链：isEmbedMode() 是行壳位判定式首项（embed=1 → 本体渲染）', async () => {
+  const barSource = await readFile(
+    new URL('../src/components/PageTitleBar.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    barSource,
+    /const rowSlot = isEmbedMode\(\) \|\| isMobile;/,
+    'embed 必须落行壳位（isEmbedMode 在判定式首位）',
+  );
+  // 判定为真后本体渲染行壳位（顶栏壳位 return null 只覆盖 standalone 桌面档）
+  assert.match(barSource, /if \(!rowSlot\) return null;/);
+  assert.match(barSource, /data-testid="page-title-bar-row"/);
+});
+
+test('embed 行壳位承载完整标题链：标题 + 条件副标题 + 过滤项同一行内嵌', async () => {
+  const barSource = await readFile(
+    new URL('../src/components/PageTitleBar.tsx', import.meta.url),
+    'utf8',
+  );
+  // 行壳位 JSX 内三内部件齐备（title 恒渲染、subtitle/filters 条件渲染）
+  assert.match(barSource, /<TitleNode title=\{props\.title\} \/>/);
+  assert.match(barSource, /\{props\.subtitle != null \? <SubtitleNode subtitle=\{props\.subtitle\} \/> : null\}/);
+  assert.match(barSource, /\{props\.filters \? <FiltersNode filters=\{props\.filters\} wrap \/> : null\}/);
+});
+
+test('embed 下顶栏插槽静默退场：app.tsx 插槽接线仍在（standalone 形态共用），行壳位互斥由 store 层保证', async () => {
+  const appSource = await readFile(
+    new URL('../src/app.tsx', import.meta.url),
+    'utf8',
+  );
+  // headerContentRender/actionsRender 插槽接线（embed 行壳位下 HeaderSlot/FiltersSlot
+  // 因无注册 meta 渲染 null——PageTitleBar 行壳位时注册 null）
+  assert.match(appSource, /headerContentRender: \(\) => <PageTitleBarHeaderSlot \/>/);
+  assert.match(appSource, /actionsRender: \(\) => \[<PageTitleBarFiltersSlot key="filters" \/>\]/);
+  // 面包屑旧链路不得回潮（embed 下同样由行壳位承接位置指示）
+  const code = appSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /HeaderCrumb|crumbItems|breadcrumbRender/);
+});

@@ -147,17 +147,10 @@ body {
   margin-right: -15px;
 }
 
-// 设置页页头标题行与内容区之间补 12px（2026-11-04 用户指令，首版 24px 本轮
-// 收窄）：页头块尾内边距已按早前指令归零，而右栏 marginTop:-30 又上探 6px，
-// 标题行与滚动内容视觉相触——heading 内层补块尾内边距拉开。仅限设置页（:has
-// 限定）；其余菜单维持「标题紧贴正文」的早前裁决不变。**强耦合**：本值计入
-// SETTINGS_FRAME_OFFSET（settings/index.tsx，页头 56+12），改值须回校偏移常量。
-#root
-  .ant-design-pro:not(.screen-xs):not(.screen-sm)
-  .ant-pro-page-container:has(.settings-page)
-  .ant-page-header-heading {
-  padding-block-end: 12px;
-}
+// 设置页页头标题行的 12px 块尾补偿已随 unified-page-title-bar 页头全站退役一并
+// 删除（原规则：.ant-pro-page-container:has(.settings-page) .ant-page-header-heading
+// padding-block-end: 12px，计入 SETTINGS_FRAME_OFFSET 旧值 124/68；页头摘除后
+// .ant-page-header 不再渲染，规则失去对象，偏移常数已回校为 56/48）。
 
 // 面板 body 内边距保持 antd 默认 24px（2026-11-04 用户指令「上下左右都不要
 // padding」试回撤：0 会使表单标签列/计费子行（billing-price-row 自带边框）等
@@ -465,10 +458,9 @@ body {
   }
 }
 
-// 移动端隐藏顶栏全局面包屑（与返回箭头语义重复）
-#root .screen-xs .global-header-crumb {
-  display: none;
-}
+// 顶栏全局面包屑已随 unified-page-title-bar 全局退役（全部视口宽度）：原窄屏
+// 隐藏规则（#root .screen-xs .global-header-crumb）连同组件与样式锚点一并清理，
+// 位置指示职责由统一标题栏控件的页面标题承担。
 
 // 移动端抽屉菜单背景透明修复：ProLayout 移动端菜单 = inline drawer
 // （.ant-drawer-inline，position:absolute 渲染在 layout 容器内，白底在

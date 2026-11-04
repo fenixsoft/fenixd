@@ -1,4 +1,4 @@
-import { App as AntdApp, Breadcrumb, Space, theme } from 'antd';
+import { App as AntdApp, Space, theme } from 'antd';
 import {
   ControlOutlined,
   DashboardOutlined,
@@ -8,7 +8,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
-import { Link, useLocation } from '@umijs/max';
+import { Link } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
@@ -19,6 +19,7 @@ import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
 import { isEmbedMode } from './utils/embedMount';
+import { PageTitleBarFiltersSlot, PageTitleBarHeaderSlot } from './components/PageTitleBar';
 import { dshAlignedTheme, dshLayoutToken } from './theme';
 
 // 自省/演进面板的 TimePicker 以 dayjs(str, 'HH:mm') 回填配置字符串，
@@ -56,47 +57,11 @@ export function rootContainer(container: ReactNode) {
 }
 
 /**
- * 顶栏右侧全局面包屑：根据 pathname 推导当前位置，
- * 祖先节点可点击、当前节点纯文本（与原各页面 header.extra 面包屑行为一致）。
- * 用独立组件持有 useLocation，避免闭包拿到过期 location。
+ * 顶栏右侧全局面包屑已随 unified-page-title-bar 全局退役（用户裁决：位置信息
+ * 由顶栏页面标题表达，避免右上角拥挤）——HeaderCrumb 组件、crumbItems 映射与
+ * global-header-crumb 样式锚点一并移除；actionsRender 槽位改由统一标题栏控件
+ * 的过滤项插槽接管（无过滤项页右上角为空）。
  */
-// 解码 URL 段；非法编码（如裸 '%'）会抛 URIError，回退用原始段值渲染避免整页崩溃。
-function safeDecode(seg: string) {
-  try {
-    return decodeURIComponent(seg);
-  } catch {
-    return seg;
-  }
-}
-
-function crumbItems(pathname: string) {
-  const seg = pathname.split('/').filter(Boolean).map(safeDecode);
-  const home = { title: '概览', href: '#/overview' };
-  if (seg[0] === 'projects') {
-    if (seg[2]) {
-      return [
-        home,
-        { title: seg[1], href: `#/projects/${encodeURIComponent(seg[1])}` },
-        { title: seg[2] },
-      ];
-    }
-    if (seg[1]) return [home, { title: seg[1] }];
-    return [home, { title: '项目' }];
-  }
-  const map: Record<string, string> = {
-    overview: '概览',
-    settings: '设置',
-    activities: '运维',
-    help: '帮助',
-    'command-center': '指挥中心',
-  };
-  return [{ title: map[seg[0]] || '概览' }];
-}
-
-function HeaderCrumb() {
-  const { pathname } = useLocation();
-  return <Breadcrumb items={crumbItems(pathname)} style={{ marginInlineEnd: 0 }} className="global-header-crumb" />;
-}
 
 // 顶栏标题：logo + Fenix 粗体 + Harness 细体灰字。
 // 灰字走 antd token colorTextTertiary（浅色主题默认即 rgba(0,0,0,0.45)），适配未来暗色主题。
@@ -150,12 +115,19 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     // 用户点击标题仍可临时收起。不能用受控 openKeys（会被 pathname effect 覆盖）。
     openKeys: false,
     menu: { defaultOpenAll: true, ignoreFlatMenu: true },
-    // 顶栏右侧：全局面包屑，统一指示当前位置
-    actionsRender: () => [<HeaderCrumb key="crumb" />],
+    // 品牌区之后的标题区（unified-page-title-bar 1.2）：各页经 PageTitleBar 声明
+    // 的 back+title+subtitle 由注册单源桥接到本插槽渲染；无注册（豁免页/切换
+    // 瞬间）渲染空。插槽是组件形态——useSyncExternalStore 须在组件内调用
+    // （同 HeaderTitle 的 useToken 模式）。
+    headerContentRender: () => <PageTitleBarHeaderSlot />,
+    // 顶栏右侧：该页过滤项（原全局面包屑槽位；unified-page-title-bar D3 面包屑
+    // 退役）。无过滤项页右上角为空。
+    actionsRender: () => [<PageTitleBarFiltersSlot key="filters" />],
     // embed=1（dsh 面板桥 iframe 挂载，add-dashboard-embed-mode 2.1）：隐藏
-    // ProLayout 全局侧栏与全局顶栏（D4 标准关闭属性），导航由 dsh 侧栏承担，
-    // 页面自身内容头（PageContainer 面包屑/标题）保留。非 embed 分支不增键，
-    // 布局配置与现状逐字节一致。
+    // ProLayout 全局侧栏与全局顶栏（D4 标准关闭属性），导航由 dsh 侧栏承担。
+    // 页面标识由统一标题栏控件承担（unified-page-title-bar：PageContainer 页头
+    // 全站摘除、面包屑退役后，控件在 embed/移动端自动落内容区首行 48px 行壳位）。
+    // 非 embed 分支不增键，布局配置与现状逐字节一致。
     ...(isEmbedMode() ? { menuRender: false, headerRender: false } : {}),
   };
 };

@@ -87,6 +87,14 @@ export const DSH_MENU_SELECTED_BG = 'rgba(0, 0, 0, 0.04)';
 export const dshLayoutToken = {
   pageContainer: {
     paddingInlinePageContainerContent: 15,
+    // unified-page-title-bar 3.2 实拍回校：页头摘除（pageHeaderRender={false}）
+    // 后 children-container 落 no-header 变体，paddingBlockStart 以本键回填
+    // pro-layout 缺省 32px——页头时代的「页头↔内容」顶带遗留，统一标题栏接管
+    // 页面标识后归零（定高页 settings/help calc(100vh - 顶栏 56) 才能贴底不出
+    // 第二滚动条）。底部呼吸带随同键收零：滚动页（overview 等）底缘由内容
+    // 自身 margin 承担。PagePlaceholder 豁免页页头块向间距派生自本键（/4、/2
+    // 档），一并归零属可接受观感变化（占位页低视觉要求）。
+    paddingBlockPageContainerContent: 0,
   },
 } as const;
 

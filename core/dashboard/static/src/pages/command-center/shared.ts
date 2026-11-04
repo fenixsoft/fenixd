@@ -23,6 +23,8 @@ import {
   DSH_TEXT_TERTIARY,
   DSH_WARNING,
 } from '../../theme.ts';
+// embed 档判定单点（零依赖纯 TS，node 直载兼容——SCREEN_CHROME_OFFSET 双档）
+import { isEmbedMode } from '../../utils/embedMount.ts';
 
 // 屏底/卡底：白底页面上数据卡=白底+细描边（同 overview 统计卡行豁免习语，
 // 0.10 档描边承担卡感；包裹卡去边框规则不涉及本页——本页卡片均为数据卡）
@@ -231,12 +233,13 @@ export const LINK_STROKE = 'rgba(0, 0, 0, 0.2)';
 // 页脚排布不溢出。
 export const LANE_CARD_MIN_WIDTH = 270;
 
-// 组织总览/交付流水线定高滚动容器的视口扣减值（2026-11-04 嵌入改版换算）：
-// 原 78 = 页面 padding-top(8) + 页签条(70)；嵌入后叠加 ProLayout 顶栏 +
-// PageContainer 页头 → 182（1920×1080 playwright 实拍校准：容器 top=182，
-// 100vh−182 底缘恰贴视口底缘零溢出）。页头结构（header 高/PageContainer
-// 页头/页签条）任一变化须复核本值并重新实拍。
-export const SCREEN_CHROME_OFFSET = 182;
+// 组织总览/交付流水线定高滚动容器的视口扣减值（unified-page-title-bar 页头
+// 全站退役后重算，1920×1080 playwright 实拍校准）：
+// standalone = ProLayout 顶栏 56 + 页面 padding-top 8 + 页签条 62 = 126
+// （原 182 含 PageContainer 页头 56，随页头摘除扣减；旧值见 git 历史）；
+// embed（dsh 面板桥 headerRender:false 无顶栏）= 统一标题栏行壳位 48 + 8 + 62
+// = 118。壳层结构（顶栏/行壳位高/padding/页签条）任一变化须复核本值并重新实拍。
+export const SCREEN_CHROME_OFFSET = isEmbedMode() ? 118 : 126;
 
 // 时间窗（2026-10-28 时间下拉「今日/7 日/全量」）：窗口约束车道卡三格
 // （run/成功率/成本）与产品团队汇总的运行/成本口径；需求数量（活跃 SPEC）

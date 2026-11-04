@@ -9,6 +9,7 @@
  * 配置区块）演进，视图不得提供任何变更入口。30s 轮询对齐人观测频率。
  */
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import { Card, Col, Empty, Progress, Row, Select, Spin, Table, Tag, Tooltip, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useModel } from '@umijs/max';
@@ -212,20 +213,25 @@ export default function ChainPage() {
   ];
 
   return (
-    <PageContainer
-      header={{ title: '处置链', subTitle: 'Admin → Arbiter → Human 自动处置链观测（只读）' }}
-      extra={[
-        <Select
-          key="project"
-          allowClear
-          placeholder="全部项目"
-          style={{ minWidth: 200 }}
-          value={project}
-          onChange={(v) => setProject(v)}
-          options={projectOptions.map((name) => ({ value: name, label: name }))}
-        />,
-      ]}
-    >
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.2）：「全部项目」Select 迁
+          filters 槽位（standalone 顶栏右上角 / 行壳位行右端），链观测卡片为
+          内容区首屏 */}
+      <PageTitleBar
+        title="处置链"
+        subtitle="Admin → Arbiter → Human 自动处置链观测（只读）"
+        filters={
+          <Select
+            allowClear
+            placeholder="全部项目"
+            style={{ minWidth: 200 }}
+            value={project}
+            onChange={(v) => setProject(v)}
+            options={projectOptions.map((name) => ({ value: name, label: name }))}
+          />
+        }
+      />
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Spin spinning={loading}>
         <Row gutter={16}>
           {stats.map((s) => (
@@ -284,6 +290,7 @@ export default function ChainPage() {
           />
         </Card>
       </Spin>
-    </PageContainer>
+      </PageContainer>
+    </>
   );
 }

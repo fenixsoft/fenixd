@@ -1,5 +1,6 @@
 import { ClockCircleOutlined, MoreOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
+import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
   Alert,
   App,
@@ -1663,22 +1664,22 @@ export default function SpecListPage() {
   };
 
   return (
-    <PageContainer
-      breadcrumbRender={false}
-      header={{
-        // add-project-detail-tabs D4：移除标题栏右端会话按钮（会话入口由「会话」
-        // 分面承载）；header 恢复为项目名 + SPEC 计数
-        title: (
+    <>
+      {/* 统一标题栏声明（unified-page-title-bar 2.3）：返回箭头 + 「{项目名} +
+          共 N 个 SPEC」随标题迁入控件（原型中 fenixd 为示例项目名的具象值，
+          此处渲染当前路由项目名）；onBack 行为不变 */}
+      <PageTitleBar
+        back={() => history.push('/overview')}
+        title={
           <Space size={8} align="baseline" style={{ minWidth: 0 }}>
             <span>{name}</span>
             <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-              共 {Object.keys(specMap).length} 个 SPEC
+              共 <TitleBarNum>{Object.keys(specMap).length}</TitleBarNum> 个 SPEC
             </Typography.Text>
           </Space>
-        ),
-        onBack: () => history.push('/overview'),
-      }}
-    >
+        }
+      />
+      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* add-project-detail-tabs D1：项目页分面 Tabs——「功能开发」（默认）/「代码审查」/
           「测试回归」/「会话接入」；add-spec-list-filter-stickiness：选中态
           持久化到 URL `tab`（replace 写回、缺省不写参）；
@@ -1845,5 +1846,6 @@ export default function SpecListPage() {
       />
 
     </PageContainer>
+    </>
   );
 }
