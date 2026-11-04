@@ -230,6 +230,20 @@ class ApiRunner(VerifyRunner):
                     "url": url,
                     "error": f"头值须为标量（容器形态请写成字符串）: headers[{k!r}] 为 {type(v).__name__}",
                 }
+            if v is None:
+                # 显式 null 头值（YAML 空值 `X-Header:`/`~`）不在上方容器守卫
+                # 拦截面内，经下方 str() 归一产出字面量 "None" 静默作为头值
+                # 发送——作者意图（发送空值/不发送该头）无法从 null 唯一确定
+                # （body 的 null 分支可降级等价发送，此处不可），与容器头值
+                # 守卫同口径归一为本步骤结构化失败
+                # （code-review item 75ad2bbd41a3）。
+                return {
+                    "success": False,
+                    "action": "http_request",
+                    "method": method,
+                    "url": url,
+                    "error": f"头值不可为 null（发送空值请写成空串，不发送该头请删除该键）: headers[{k!r}]",
+                }
         headers = {
             # 键同值侧 str() 归一（YAML/JSON 场景可写出数字键）：后续
             # body_type=json 且 body 为 null 的分支会对键调 .lower()，非字

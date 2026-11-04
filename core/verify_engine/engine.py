@@ -672,13 +672,15 @@ class VerifyEngine:
             effective = finalize_scenario_status(r, healthy)
             if effective == "blocked-env":
                 # 赋值前判定原档位：预先 blocked-env 的合成跳过结果
-                # （dependency_skipped）非本次降级，不进 downgraded_ids。
+                # （dependency_skipped）非本次降级——整体保持原样，不盖
+                # env_blocked/env_probe_detail、不进 blocked_env 计数，
+                # 也不进 downgraded_ids（code-review item 21f569cf2b7a）。
                 was_fail = r.get("status") == "fail"
-                r["status"] = "blocked-env"
-                r["env_blocked"] = True
-                r["env_probe_detail"] = detail
-                blocked_env += 1
                 if was_fail:
+                    r["status"] = "blocked-env"
+                    r["env_blocked"] = True
+                    r["env_probe_detail"] = detail
+                    blocked_env += 1
                     downgraded_ids.add(str(r.get("scenario_id", "")))
 
         # 依赖失败传播下游口径统一（code-review item 38d274684a9a）：上游

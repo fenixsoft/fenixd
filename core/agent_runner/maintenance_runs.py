@@ -280,7 +280,32 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     # 不派生 run_id、不落占位、不唤起 run，按既有降级语义折算失败信封返回
     # （success=False + result="failed"，与下方产物硬门 fail-closed 折算
     # 同口径，run_id 留空由调用方既有缺省分支兜底）。
-    from core.pm_engine.verification.serving import _spec_name_path_error
+    # code-review item 57466f94f597：入口惰性 import 纳入 try 保护——对齐
+    # run_arbiter 2631620c91b8 / run_impl_ocr 5c991d3db365 同款守卫先例，
+    # verification.serving 模块缺失/装配成环时 ImportError 不再穿透
+    # run_administrator（调用方 admin_monitor 拿到 AdminDisposition 失败信封
+    # 而非裸异常）；此刻尚未申领 run_id，提前返回无占位残留。
+    try:
+        from core.pm_engine.verification.serving import _spec_name_path_error
+    except Exception as e:
+        error = (
+            "admin 车道入口模块 import 失败（verification.serving）: "
+            f"{type(e).__name__}: {e}"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "agent_runner", f"admin 车道入口 import 失败，折算失败信封返回: {error}"
+            )
+        return AdminDisposition(
+            run_id="",
+            spec=spec,
+            success=False,
+            problem=admin_signal.get("description", ""),
+            result="failed",
+            recommended_action=admin_signal.get("recommended_action") or "",
+            error=error,
+        )
 
     unsafe = _spec_name_path_error(spec)
     if unsafe:
@@ -758,7 +783,6 @@ def run_arbiter(runner, trigger: dict) -> dict:
             except OSError:
                 pass
 
-    _log = getattr(runner, "logger", None)
     try:
         output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
             prompt,
@@ -2885,10 +2909,13 @@ def run_code_review(
                                     f"指纹（{len(findings)} 条 finding 缺 file/title），"
                                     f"拒绝空集核销以免误置全部 open 为 resolved",
                                 )
-                    except Exception:  # noqa: BLE001 — 核销失败记 WARNING 不使整轮失败
+                    except Exception as e:  # noqa: BLE001 — 核销失败记 WARNING 不使整轮失败
                         _log = getattr(runner, "logger", None)
                         if _log is not None:
-                            _log.warning("code-review", f"全仓快照核销失败（run {run_id}）")
+                            _log.warning(
+                                "code-review",
+                                f"全仓快照核销失败（run {run_id}）: {type(e).__name__}: {e}",
+                            )
                 if not writeoff_locked:
                     # pending-writeoff 锚清除（evo-add-review-night-defer-
                     # snapshot-writeoff 3.2）：覆盖完整成功收尾（核销解锁分支
@@ -3612,10 +3639,15 @@ _PYTEST_VALUE_OPTIONS = frozenset({
     # tests/`` → ``pytest --timeout <nodeid>`` 坏命令），定向子集回归对
     # 该命令形态必然改写失败。这些选项恒带值、其值不是收集目标，收录进
     # 本清单（--cov 例外：值可选，``pytest --cov tests/`` 无值形态下
-    # tests/ 是真收集目标，收录反而改坏合法命令）。
+    # tests/ 是真收集目标，收录反而改坏合法命令）。pytest-cov 的
+    # --cov-report/--cov-config 同理收录（code-review item 326a2f1a3d1a）：
+    # ``pytest --cov=app --cov-report xml tests/`` 不收录时 xml（裸词形似
+    # 收集目标）被当作首个收集目标替换成失败 nodeids、tests/ 被删，改写出
+    # 坏命令；``--cov=`` 等号形态值附着在选项 token 上，不在本清单职责内。
     "--timeout", "--timeout-method", "-n", "--numprocesses", "--dist",
     "--maxprocesses", "--max-worker-restart", "--tx", "--rsyncdir",
     "--rsyncignore", "--lfnf", "--last-failed-no-failures",
+    "--cov-report", "--cov-config",
 })
 
 # -k/-m 的值为布尔表达式（值可含空格），未加引号的多词形态会被带值消费
@@ -4426,7 +4458,9 @@ def _carry_forward_ocr_findings(prev_findings, new_findings: list) -> list:
     （未处置/deferred/处置文件缺失）按指纹去重后并入新 findings。已在本轮
     重现的 finding 以新版本为准（不叠加旧注释字段）。
     """
-    new_fps = {_ocr_finding_fingerprint(f) for f in new_findings}
+    # 非 dict 元素跳过：与下方 prev_findings 侧 isinstance 防御同口径
+    # （对齐 _normalize_impl_ocr_findings 的宽松解析承诺，MUST NOT 抛异常）
+    new_fps = {_ocr_finding_fingerprint(f) for f in new_findings if isinstance(f, dict)}
     out: list = []
     if not isinstance(prev_findings, list):
         return out
