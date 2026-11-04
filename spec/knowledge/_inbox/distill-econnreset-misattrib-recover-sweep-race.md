@@ -51,4 +51,6 @@
    sweep 已收编窗口（如 run 文件 mtime 晚于进程启动时刻即豁免）。
 3. 台账再驱动：给 pending 台账加运行期兜底重派（如随维护检查点周期驱动，带退避/龄期上限），
    摆脱「只等重启」。
-4. 显示补表：`AGENT_LABEL`/`RUN_ID_PREFIX_LABEL` 收录 `knowledge-distiller`（知识蒸馏 Agent）。
+4. ~~显示补表~~ **已原地修复（2026-11-04 交互会话）**：`runVisual.ts` AGENT_LABEL/RUN_ID_PREFIX_LABEL
+   已收录 `knowledge-distiller`（「知识蒸馏 Agent」），配套 runVisual.test.mjs 两用例，342 前端
+   单测全过、dist 已重建并被 8787 服务实拍一致。无须再立项。
