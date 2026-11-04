@@ -2423,7 +2423,7 @@ class AdminMonitor:
 
     # ── 周期审查跨窗顺延（evo-add-review-night-defer-snapshot-writeoff 2.1）──
 
-    def _code_review_archive_duration_mean(self) -> Optional[float]:
+    def _code_review_archive_duration_max(self) -> Optional[float]:
         """归档 code-review run 实测时长最大值（秒）；无有效样本返回 None。
 
         样本源（design D2）：``.fenix/runs/archive/code-review-*.jsonl`` 尾部
@@ -2509,7 +2509,7 @@ class AdminMonitor:
         epoch) 二元组，不顺延返回 None。
 
         判定（design D2）：派发时刻加近几轮归档 code-review run 实测时长
-        最大值（``_code_review_archive_duration_mean``；无有效样本回退仅判
+        最大值（``_code_review_archive_duration_max``；无有效样本回退仅判
         派发时刻落窗）得预计在飞区间，与任一夜间静默窗相交即顺延——本轮
         不派发、不写同日防重状态，留待窗末后巡检自然触发。窗配置与解析
         复用 core.code_fix 单源（``_parse_night_quiet_windows``，键
@@ -2550,7 +2550,7 @@ class AdminMonitor:
                 return None
             lt = time.localtime()
             cur = lt.tm_hour * 60 + lt.tm_min
-            est = self._code_review_archive_duration_mean()
+            est = self._code_review_archive_duration_max()
             if est is None:
                 crossing = [w for w in windows if w[0] <= cur < w[1]]
                 sample_note = "无实测样本，仅判派发时刻落窗"

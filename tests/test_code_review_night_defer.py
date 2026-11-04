@@ -353,7 +353,7 @@ class TestArchiveReadDegradation(unittest.TestCase):
         try:
             h.write_archive([("code-review-1791500000", 7200.0)])
             with mock.patch.object(
-                h.mon, "_code_review_archive_duration_mean",
+                h.mon, "_code_review_archive_duration_max",
                 side_effect=RuntimeError("boom"),
             ):
                 result = h.checkpoint_at(1, 0, 30)

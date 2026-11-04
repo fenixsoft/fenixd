@@ -1639,14 +1639,25 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
             need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）：knowledge
             # 全表面都在折叠子树内，probe 结果原样收纳
     if need_probe:
-        probe = _git(
-            proot,
-            [
-                "--no-optional-locks", "ls-files",
-                "--others", "--exclude-standard", "-z",
-                "--", KNOWLEDGE_DIR,
-            ],
-        )
+        # 探测点包裹口径（code-review e28a085720d7）：对齐 _discard_output /
+        # _audit_stray_writes 同款 try/except——git 二进制缺失或 ls-files 超时
+        # 抛异常会沿 _discard_output/_rollback_failed_fold 调用点无保护上抛，
+        # 把保守降级路径升级成整批执行异常。docstring 契约是探测失败返回 None。
+        try:
+            probe = _git(
+                proot,
+                [
+                    "--no-optional-locks", "ls-files",
+                    "--others", "--exclude-standard", "-z",
+                    "--", KNOWLEDGE_DIR,
+                ],
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.warning(
+                "knowledge-distill 未跟踪文件枚举失败（%s），无法可靠判定基线差集",
+                e,
+            )
+            return None
         if probe.returncode == 0:
             untracked = [tok for tok in probe.stdout.split("\0") if tok]
             if folded_inside:
@@ -2305,25 +2316,36 @@ class DistillManager:
             ok, err = self._spawn_and_wait(proot, build_inbox_fold_prompt(proot, name))
             violations = validate_knowledge(proot) if ok else None
             if ok and not violations:
-                # fold 行先追加（随本条折叠提交搭车落库，4.2 顺序契约：
-                # 折叠轮先 fold 行后 distill 行）
-                append_knowledge_log(proot, "fold", f"{name} 折叠入库")
-                commit = _commit_output(
-                    proot,
-                    [name],
-                    baseline=status_before,
-                    msg=f"{COMMIT_PREFIX.replace('distill', 'fold')} {name}",
-                )
-                if commit is not None:
-                    summary["folded"] += 1
-                    summary["entries"].append({"entry": name, "ok": True})
-                    logger.info(
-                        "knowledge-distill 折叠入库：%s（commit=%s）",
-                        name,
-                        commit or "无变更",
+                # 确定性折叠成功判据（code-review ac8b82fa4a61）：提示词第 4 步
+                # 要求条目移入 done/。run 退出码 0 但条目未移动（完全空跑或折叠
+                # 了能力页漏移动）时，validate_knowledge 对未变状态恒通过、
+                # _commit_output 空串也算成功，条目会滞留 _inbox/ 被下一批前置段
+                # 重复折叠（能力页 rev 反复膨胀、逐批白烧折叠 run）。此处断言
+                # 移动确实发生，未满足按折叠失败走滞留回滚路径。
+                if (proot / origin_rel).exists() or not (
+                    proot / INBOX_DONE_PREFIX / name
+                ).exists():
+                    err = "折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）"
+                else:
+                    # fold 行先追加（随本条折叠提交搭车落库，4.2 顺序契约：
+                    # 折叠轮先 fold 行后 distill 行）
+                    append_knowledge_log(proot, "fold", f"{name} 折叠入库")
+                    commit = _commit_output(
+                        proot,
+                        [name],
+                        baseline=status_before,
+                        msg=f"{COMMIT_PREFIX.replace('distill', 'fold')} {name}",
                     )
-                    continue
-                err = "校验通过但自动提交失败"
+                    if commit is not None:
+                        summary["folded"] += 1
+                        summary["entries"].append({"entry": name, "ok": True})
+                        logger.info(
+                            "knowledge-distill 折叠入库：%s（commit=%s）",
+                            name,
+                            commit or "无变更",
+                        )
+                        continue
+                    err = "校验通过但自动提交失败"
             reason = err or "；".join(violations[:3])
             self._rollback_failed_fold(proot, status_before, name, snapshot, origin_rel)
             append_knowledge_log(
