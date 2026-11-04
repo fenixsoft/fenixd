@@ -1,4 +1,4 @@
-<!-- knowledge: capability=hierarchical-config rev=1 sources=spec/archive/2026-09-02-add-hierarchical-config -->
+<!-- knowledge: capability=hierarchical-config rev=2 sources=spec/archive/2026-09-02-add-hierarchical-config,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 # 分级配置（用户级 + 项目级深度合并）
 
@@ -13,8 +13,10 @@
 - Dashboard `/api/config` 双作用域：无 `project` 参数读写用户级配置；带 `project` 参数写项目级、读返回有效合并视图，并附 `sources`（标注每个受管键 `llm` / `agents.models` / `agents.max_concurrent` / `gates.approve_mode` 来自用户级还是项目级）、`scope`（user/project）与 `raw_exists`（当前作用域文件是否存在）。
 - 前端配置页双模式渲染：未选项目为用户模式（标题标注「用户级」，保存写入用户级文件；文件不存在时提示保存后创建）；选项目为项目模式（显示有效合并值，来自用户级的受管键旁标注「继承自用户级」，保存写入项目级文件并提示路径）。
 - Registry 扫描与项目注册仅以 `STATE.md` 存在为识别条件，不要求 `.fenix/config.yaml` 存在——配置完全继承用户级的项目同样可被监控与注册。
+- 排查 enabled/开关类配置问题两处物理文件都要看：用户级 `~/.fenix/config.yaml`（设置页用户模式写此处）与项目级 `.fenix/config.yaml`（daemon 经 `resolve_config` 直读合并结果）——只在设置页改过用户级、或只手改过项目级，都会造成「界面显示与 daemon 实际生效不一致」的盲区；对照 `/api/config` 响应的 `sources` 标注定位键的真实来源层。
 
 ## 溯源
 
 - 史前复原 — 迁移期已存在的基线：配置按全局与项目两级深度合并（resolve_config）出有效配置；可选字段不强制存在校验；daemon 与 Dashboard 读写同走有效配置口径
 - 2026-09-02 add-hierarchical-config（spec/archive/2026-09-02-add-hierarchical-config） — 固化两层路径与深度合并语义、resolve_config 兜底与 project.name 补齐、Dashboard 双作用域读写与继承标注、注册识别放宽为仅 STATE.md
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠排查纪律：enabled/开关类问题两处配置物理文件都要看，以 /api/config 的 sources 标注定位键来源层

@@ -1,4 +1,4 @@
-<!-- knowledge: capability=redispatch-loop-governance rev=1 sources=spec/archive/2026-09-22-fix-redispatch-loop-governance -->
+<!-- knowledge: capability=redispatch-loop-governance rev=2 sources=spec/archive/2026-09-22-fix-redispatch-loop-governance,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 # 同因重派熔断与成果继承
 
@@ -11,7 +11,9 @@
 - 重派成果继承：partial 收敛不成立（确有未申报缺口）、或收敛成立但卡在后续门导致需要重派时，重派继承上一轮的 worktree 现场与分支成果（含已提交成果与未提交现场），不从零重建（不新建 worktree、不从 main 重起）。run 层报成功（`result.success=True`)但 spec 层需要重派时不再无条件 `cleanup(success=True)` 清理现场；run 成功且 spec 正常推进（不重派）时既有清理语义不变。
 - 与既有预算/豁免机制正交：熔断不覆盖 `_impl_run_budget_used`（保持熔断前真实值，不重置不清零，熔断原因与预算状态在冻结 error 文案中均可读）、不吞预算计数；重派因熔断中止时不走死亡 run 豁免路径（该路径语义为「run 无收工结果」，与同因重派无关）；熔断、实现预算、死亡豁免三者各自独立记账。
 - 任务与交付物以函数名 / 字段名 / 配置键锚定，不以绝对行号作为唯一锚点。
+- 人工停靠失控重派的可靠落点：唯一可靠停靠点是实现预算闸门——把 `_impl_run_budget_used` 置为 ≥ 预算（如 8/6），闸门在派发前置检查即命中、置 blocked 并发人工告警；死亡豁免的预算回退（`used -= 1`）需要先有 run 启动，而闸门已阻止启动，环闭合、停靠稳定。单靠置 blocked 不可靠（会被失败处理器踩回 ready），单靠死亡豁免回退预算也不可靠。恢复失控 spec 须同时重置 `_impl_run_budget_used` 与 status（blocked→ready），只重置其一会被闸门或恢复路径再次拦下。
 
 ## 溯源
 
 - 2026-09-22 fix-redispatch-loop-governance（spec/archive/2026-09-22-fix-redispatch-loop-governance） — 确立同因重派熔断（机械同因判据 + 可配阈值 + 原状态还原解冻）、重派 worktree/分支成果继承、与预算豁免的正交记账
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠人工停靠失控重派纪律：唯一可靠停靠点=实现预算闸门（blocked 与死亡豁免回退均不可靠）、恢复须同时重置预算计数与 status

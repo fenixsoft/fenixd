@@ -1,5 +1,5 @@
 # SPEC 生命周期
-> 最后更新：2026-11-04 16:11 UTC+8
+> 最后更新：2026-11-04 16:30 UTC+8
 
 SPEC 生命周期。本域能力页清单如下。
 
@@ -29,5 +29,5 @@ SPEC 生命周期。本域能力页清单如下。
 | [fast-track-mode](fast-track-mode.md) | 快车道执行模式 | 2026-10-08 04:02 |
 | [fast-track-mode-selection](fast-track-mode-selection.md) | 快车道选道判定 | 2026-10-03 04:59 |
 | [fast-track-scale-precheck](fast-track-scale-precheck.md) | 快车道规模预检 | 2026-10-03 04:59 |
-| [spec-lifecycle-state-model](spec-lifecycle-state-model.md) | SPEC 生命周期状态机与 STATE.md 原子读写（含冻结现场字段保全缺口） | 2026-11-04 16:11 |
+| [spec-lifecycle-state-model](spec-lifecycle-state-model.md) | SPEC 生命周期状态机与 STATE.md 原子读写（含冻结现场字段保全缺口与人工解冻显式 status 纪律） | 2026-11-04 16:30 |
 | [platform-port-observability-checklist](platform-port-observability-checklist.md) | 平台移植类 SPEC 观测交付检查单（起草+评审双生效点） | 2026-10-11 03:32 |

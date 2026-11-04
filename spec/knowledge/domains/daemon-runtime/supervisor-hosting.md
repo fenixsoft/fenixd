@@ -1,4 +1,4 @@
-<!-- knowledge: capability=supervisor-hosting rev=4 sources=spec/archive/2026-09-18-fix-supervisor-hosting-chain,spec/knowledge/_inbox/done/host-wide-sigkill-hosting-chain-wipeout.md,spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md -->
+<!-- knowledge: capability=supervisor-hosting rev=5 sources=spec/archive/2026-09-18-fix-supervisor-hosting-chain,spec/knowledge/_inbox/done/host-wide-sigkill-hosting-chain-wipeout.md,spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 # supervisor 托管链
 
@@ -20,6 +20,7 @@ daemon 由 supervisor 托管运行：tmux 仅作脱离终端的承载手段，�
 - 托管链运维纪律：不得对 tmux server 执行 kill-server 或任何 server 级操作，重启 dashboard 只 kill 其 pid 或 `tmux kill-session -t fenix-dashboard`；「daemon 静默消失且 supervisor.log 无 exited 收尾行」先用 `ps -o ppid= -p <supervisor_pid>` 反查宿主进程死活再归因；socket 文件已删但 server 进程仍存活（fd 未关）的孤儿 tmux server 不是可清理残留，清理它同样触发整链连坐。
 - 托管链整链死亡后的人工重建：supervisor 会话以 `python3 .fenix/bin/fenix_session.py name <项目根>` 生成会话名，在其中以 `python3 .fenix/bin/fenixd_supervisor.py --project-root <项目根>` 拉起 supervisor（配方以 skills/fenix-setup/SKILL.md 为准）；dashboard 常驻会话（fenix-dashboard）以 `env -u CLAUDE_PID` 剥离环境后重建。重建完成后按五点判据验证：`.fenix/supervisor_runtime.json` 已刷新（新 pid 与新 script_hash）、daemon 全量扫描正常消化积压事件、dashboard 端口 curl 返回 200、真实 python 进程的 environ 无 `CLAUDE_PID`、dashboard dist 构建产物不落后于 src。
 - 代码改动生效语义：daemon 进程的代码改动须经重启才生效（模块启动时加载），单测通过不等于生产生效；在飞 run 期间不重启，等空窗再重启。诊断「修复无效」先核对 `.fenix/daemon_started`（daemon 启动时刻锚点）与修复提交时间的先后，再归因代码。
+- supervisor_fused 解熔断前置核验：解熔断（重置熔断态并重启）前先 `python3 -m compileall` 验证主树无瞬时坏文件——restart 撞上瞬时坏文件即熔断，提交版本可能无辜零 diff；不核验直接解熔断会在坏文件仍在场时立刻复熔断。熔断告警文案所称「新代码」不指示真实死因，以 compileall 结果为准。
 
 ## 溯源
 
@@ -28,3 +29,4 @@ daemon 由 supervisor 托管运行：tmux 仅作脱离终端的承载手段，�
 - 2026-11-04 host-wide-sigkill-hosting-chain-wipeout（spec/knowledge/_inbox/done/host-wide-sigkill-hosting-chain-wipeout.md） — 折叠宿主级全用户态 SIGKILL 事件实录：新增托管链宿主级暴露面规则（全链只住 tmux 无 systemd unit、宿主机级事件连坐死亡无人拉起、两变体与识别形态）与整链人工重建配方及五点验证判据
 - 2026-11-04 memory-distill-agent-prompt-rules（spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md） — 折叠代码改动生效语义：daemon 代码改动重启才生效（单测通过≠生产生效、在飞期间不重启等空窗、「修复无效」先核对 daemon_started 与修复提交时间）
 - 2026-11-04 memory-distill-open-gaps-hazards（spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md） — 折叠 tmux server 单例连坐机制与运维纪律：共享单例/无 SIGHUP handler/未脱离进程组的连坐根因、零日志识别形态、kill-server 禁令与孤儿 server 误清风险；SIGHUP+setsid 保护缺口仍开放
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠 supervisor_fused 解熔断前置核验配方（解熔断前 compileall 验证主树无瞬时坏文件，告警文案「新代码」不指示死因）

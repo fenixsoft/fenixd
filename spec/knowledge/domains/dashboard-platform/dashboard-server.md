@@ -1,7 +1,7 @@
 # Dashboard 服务端
 
-<!-- knowledge: capability=dashboard-server rev=2
-     sources=spec/archive/2026-09-02-add-fenix-dashboard,spec/archive/2026-09-18-fix-dashboard-fault-isolation -->
+<!-- knowledge: capability=dashboard-server rev=3
+     sources=spec/archive/2026-09-02-add-fenix-dashboard,spec/archive/2026-09-18-fix-dashboard-fault-isolation,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 跨项目 Web 仪表盘的独立服务进程：多项目注册发现、聚合数据 API、截图等静态资源安全服务。
 
@@ -18,9 +18,11 @@
 - 发现结果缓存异常语义：`projects()` 在发现异常时保留上次成功结果（从未成功过则空列表）；缓存时间戳无条件推进——TTL（缺省 10s）内后续请求复用上次结果而非重试注定失败的发现，TTL 到期重新尝试，成功即替换缓存。
 - 截图静态资源：`GET /screenshots/<project>/<spec>/<file>` 服务项目 `.fenix/verify-progress/<spec>/screenshots/` 下的 PNG（`image/png`）；路径必须经 `Path.resolve()` 校验后仍位于该项目 screenshots 目录内（防路径穿越），`project` 必须已注册，非法段返回 404/403。
 - run 行读取须容错 UTF-8 解码异常，不因脏字节中断聚合。
+- 验证与取证操作纪律：禁止以 curl 请求破坏性 POST 端点做验证——clear-todo 等全局动作一经请求立即执行、无确认与撤销，曾真实清空多项目 todo.md；API 404 取证看响应体区分路由层（无 handler 注册）与 handler 层（handler 返回 not found）；探测一律用真实注册项目名——`__probe__` 类假项目必然 404，是假阳性不是证据。假项目 fixture 验证以 `HOME=/tmp/<临时目录>` 起独立实例最彻底（registry 与扫描根全指临时 HOME，预写 dashboard.yaml 注册 fixture、`scan_dirs: []`），不烧真实项目 token。
 
 ## 溯源
 
 - 史前复原 — dashboard 由数据层、多项目注册发现与 HTTP 服务组成，bin 统一入口启动；run 行读取须容错 UTF-8 解码异常
 - 2026-09-02 2026-09-02-add-fenix-dashboard（spec/archive/2026-09-02-add-fenix-dashboard） — 建立多项目注册发现、六端点聚合 API、截图路径穿越防护与独立进程端口管理
 - 2026-09-18 2026-09-18-fix-dashboard-fault-isolation（spec/archive/2026-09-18-fix-dashboard-fault-isolation） — 容错范围扩展至发现层与聚合层（逐项目隔离、error 字段、不污染 totals），并固化发现结果缓存的异常语义（保留上次成功结果、TTL 无条件推进）
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠验证取证纪律：禁 curl 破坏性 POST 端点、404 看响应体分层取证、探测用真实项目名、HOME=/tmp fixture 实例配方

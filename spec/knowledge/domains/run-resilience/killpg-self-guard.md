@@ -1,7 +1,7 @@
 # 进程清场击杀自保护守卫
 
-<!-- knowledge: capability=killpg-self-guard rev=1
-     sources=spec/archive/2026-10-28-add-killpg-self-guard -->
+<!-- knowledge: capability=killpg-self-guard rev=2
+     sources=spec/archive/2026-10-28-add-killpg-self-guard,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 core 产品代码的全部进程组清场击杀（`os.killpg` 发送 SIGTERM/SIGKILL）经统一守卫助手
 `core/proc_utils.py` 的 `guard_killpg` 执行，防止清场动作命中调用者自身所在进程组，
@@ -36,6 +36,11 @@ core 产品代码的全部进程组清场击杀（`os.killpg` 发送 SIGTERM/SIG
 - 测试替身 proc 的 pid 怪值须用正值越界 pid（超出 Linux 默认 pid_max，如
   `2**22`）表达不可达：直传型清场点语境下 `-1` 折算为 `kill(1)` 误投递，`0`
   等价自身组广播，均禁用。替身修复与守卫互为冗余防御。
+- 人工杀回归进程组止血配方：先 `awk '{print $5}' /proc/<pid>/stat` 取目标 PGID，
+  确认其不等于 daemon 自身进程组后再 `kill -TERM -- -<PGID>` 组杀；回归子进程
+  执行阶段 `cancel_run_request` 无效（回归不是 agent run，取消旗标无人消费），
+  止血必须进程组直杀。守卫只约束 core 产品代码，人工 shell 操作不在守卫半径内，
+  自身组核对必须手工做。
 
 ## 关键行为
 
@@ -50,3 +55,6 @@ core 产品代码的全部进程组清场击杀（`os.killpg` 发送 SIGTERM/SIG
 - 2026-10-28 add-killpg-self-guard（spec/archive/2026-10-28-add-killpg-self-guard） —
   新增本页：`guard_killpg` 统一守卫落地、全 core 清场点收口、非正 pgid 单独拒绝、
   拒绝时禁单 pid 降级、替身怪值改正值越界 pid。
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） —
+  折叠人工杀回归进程组止血配方（/proc stat 取 PGID、自身组手工核对、回归阶段
+  cancel_run_request 无效须组杀）

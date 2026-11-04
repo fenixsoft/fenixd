@@ -1,5 +1,5 @@
 # 验证管线
-> 最后更新：2026-11-04 15:55 UTC+8
+> 最后更新：2026-11-04 16:30 UTC+8
 
 验证管线。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -17,7 +17,7 @@
 | [verify-infra-retry](verify-infra-retry.md) | 验证准备失败 infra-retry 廉价重试车道（限次重派 + 宿主预检样板） | 2026-10-28 10:02 |
 | [verify-deps-provision-default](verify-deps-provision-default.md) | 验证依赖供给缺省 | 2026-10-03 04:59 |
 | [main-tree-deps-provision](main-tree-deps-provision.md) | 主树依赖供给 | 2026-10-03 04:59 |
-| [worktree-test-server](worktree-test-server.md) | worktree 被测服务供给 | 2026-10-03 04:59 |
+| [worktree-test-server](worktree-test-server.md) | worktree 被测服务供给（含 playwright-cli 浏览器会话隔离纪律） | 2026-11-04 16:30 |
 | [serve-scope-matrix](serve-scope-matrix.md) | 被测实例 serve 范围矩阵 | 2026-10-03 04:59 |
 | [serving-dist-freshness-probe](serving-dist-freshness-probe.md) | verify run 前 dist 新鲜度探针与自动重建 | 2026-10-03 05:45 |
 | [verify-serving-reclaim](verify-serving-reclaim.md) | 验证服务磁盘回收 | 2026-10-03 04:59 |

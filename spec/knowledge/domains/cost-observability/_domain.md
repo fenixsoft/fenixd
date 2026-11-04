@@ -1,5 +1,5 @@
 # 成本与可观测
-> 最后更新：2026-11-04 15:55 UTC+8
+> 最后更新：2026-11-04 16:30 UTC+8
 
 成本与可观测。覆盖 run 成本采集与本地计价、预算与费控治理、延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。
 
@@ -14,7 +14,7 @@
 | [run-latency-observability](run-latency-observability.md) | run 级 API 延迟直方图（摘要日志/失败证据/事后脚本/失明自检） | 2026-10-03 04:59 |
 | [api-stall-observability](api-stall-observability.md) | run 期单次 API 往返停滞的时点 WARNING 现场与三字段随 run_metrics 入账（纯读侧不干预） | 2026-10-07 14:39 |
 | [run-progress-observability](run-progress-observability.md) | run 层实时任务进度与 tasks.md 快照并行展示 | 2026-10-03 04:59 |
-| [run-duration-parsing](run-duration-parsing.md) | run 耗时解析口径（run_id 时间戳 + mtime，attempt 后缀适配） | 2026-10-03 04:59 |
+| [run-duration-parsing](run-duration-parsing.md) | run 耗时解析口径（run_id 时间戳 + mtime，attempt 后缀适配；取证真实时长以事件 timestamp 差为准、duration_ms 不可信） | 2026-11-04 16:30 |
 | [spec-duration-persistence](spec-duration-persistence.md) | SPEC 完成时固化总耗时到 STATE.md | 2026-10-03 04:59 |
 | [run-stream-noise-reduction](run-stream-noise-reduction.md) | run 流事件分类渲染（心跳静默/信息类语义化/任务回填） | 2026-10-03 04:59 |
 | [run-stream-thinking-and-scope](run-stream-thinking-and-scope.md) | thinking 折叠头/思考开关/向前分页与总量计数 | 2026-10-03 04:59 |

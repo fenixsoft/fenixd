@@ -1,4 +1,4 @@
-<!-- knowledge: capability=worktree-isolation rev=2 sources=spec/archive/2026-09-02-fix-worktree-agent-cwd,spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md -->
+<!-- knowledge: capability=worktree-isolation rev=3 sources=spec/archive/2026-09-02-fix-worktree-agent-cwd,spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 # worktree 隔离与路径锚定
 
@@ -14,9 +14,12 @@
 - 「agent 写错位置」排查顺序：/proc cwd（先排除 spawn 侧问题）→ 转录 tool_use file_path 分布 → 其调用的 skill 注入文本。
 - 跨树操作纪律：会话 cwd 已切进 worktree 后改主树文件、再在 worktree 跑验证，验证的永远是旧代码（制造「修复无效」假象）——跨树操作显式 cd，或双树各验。
 - 主树手工改动遇磁盘异动的判别：函数/导入被删时先判别误伤 vs 并行 worker 重构——调用点清零 + 测试配套删 + 编译自洽＝重构让路（勿回滚）；不满足则按误伤恢复。
+- worktree 内脚本定位项目根不可按 `__file__` 目录层级推断（worktree 无 gitignored 的 `.fenix` 层级、路径深度与主树不一致）：需要 `.fenix` 布局时以自引用软链补齐（`ln -s <worktree> <worktree>/.fenix`），或显式传项目根（`--project` / `FENIX_PROJECT_ROOT`）。
+- dist 回退假象判别（「代码被冲掉」先查这个）：先 `git diff HEAD -- <file>` 核对工作树源码是否真丢；源码在而页面行为旧 → grep dist 产物定新旧定性——构建期源码被 stash 走时产物 hash 可能不变但内容旧，`npm run build` 重建后 hash 必变才算带上新码；dist 回退只需重建，不是代码丢失。bundle 特征 grep 用 ASCII 功能特征（中文被 minifier 转 `\uXXXX` escape，恒空命中），页面组件在 async chunk 不在主包。
 
 ## 溯源
 
 - 史前复原（存量基线） — 实现工作在独立 git worktree 内进行，主树不被实现期改动污染；完成后经 merge-back 合入主树
 - 2026-09-02 fix-worktree-agent-cwd（spec/archive/2026-09-02-fix-worktree-agent-cwd） — 固化 Popen cwd 指向 worktree、merge-back `--no-ff` 幂等合回、tasks.md 读取路径按生命周期分流与 implement→verify 周期不回归
 - 2026-11-04 memory-distill-agent-prompt-rules（spec/knowledge/_inbox/done/memory-distill-agent-prompt-rules.md） — 折叠路径锚定防线（PreToolUse 拦截 + FENIX_RUN_* env 注入 + 提示词工作目录段）、写错位置排查顺序、跨树操作验证错位纪律、主树磁盘异动误伤 vs 并行重构判别
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠 worktree 内脚本项目根定位纪律（__file__ 推根不可靠、自引用软链或显式传根）与 dist 回退假象判别配方（git diff 核对、产物 hash 新旧定性、ASCII 特征 grep）

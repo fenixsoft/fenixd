@@ -1,5 +1,5 @@
 # worktree 被测服务供给
-<!-- knowledge: capability=worktree-test-server rev=1 sources=spec/archive/2026-09-05-add-worktree-test-server -->
+<!-- knowledge: capability=worktree-test-server rev=2 sources=spec/archive/2026-09-05-add-worktree-test-server,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 per-run 隔离测试服务：implementer/verifier 的测试请求落在其 worktree 副本上，主仓工作区在运行期间零写入。
 
@@ -11,8 +11,10 @@ per-run 隔离测试服务：implementer/verifier 的测试请求落在其 workt
 - 服务回收：运行终态（成功/失败/异常终止/进程被杀）后框架回收该服务进程并释放端口；框架自身重启时清理遗留服务；主仓 8787 服务不受影响。
 - baseURL 参数化：`tests/v2/playwright.config.js` 的 baseURL 支持环境变量覆盖（框架派发时设置），未设置时回退 `http://127.0.0.1:8787`；既有本地人工调试流程（直接 `npx playwright test`）行为不变。
 - 零污染不变量：implementer/verifier 运行期间不修改主仓工作区的被跟踪文件；测试断言针对 worktree 副本（修改 worktree 内页面/脚本立即可测），主仓工作区被跟踪文件在该运行全程保持未修改。
+- 浏览器会话隔离：playwright-cli 的 default 会话是全局单例，与在飞 run 的 UI 验证 agent 共享同一浏览器实例、互相 goto 打架——交互会话做 UI 验证必用 `-s=<任务名>` 命名会话，验证完 close，不占用 default。
 
 ## 溯源
 
 - 史前复原（存量基线） — worktree 内 dev-server 生命周期由框架托管，孤儿清扫按存活归属判定，防 spec 锁误判
 - 2026-09-05 add-worktree-test-server（spec/archive/2026-09-05-add-worktree-test-server） — 新增 per-run 隔离测试服务与 baseURL 环境变量注入（测试 baseURL 曾固定指向主仓 8787，implementer 为让测试通过直改主仓工作区文件，主树反复被污染且 merge-back 被「local changes would be overwritten」熔断）
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠浏览器会话隔离纪律：playwright-cli default 会话全局单例与在飞 run UI 验证打架，交互验证必用命名会话用完 close

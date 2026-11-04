@@ -1,7 +1,7 @@
 # Dashboard 实例生命周期
 
-<!-- knowledge: capability=dashboard-instance-lifecycle rev=3
-     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover -->
+<!-- knowledge: capability=dashboard-instance-lifecycle rev=4
+     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤儿泄漏防护（claude-watchdog）。
 
@@ -20,9 +20,13 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 未命中长驻判据的实例（agent 经 CLI nohup 拉起、父进程非 tmux）：装配 watchdog 绑定 `CLAUDE_PID`，目标 claude 进程退出后实例自杀，避免孤儿泄漏。
 - 入口双保险：skill、administrator 常驻启动命令与 hook_engine 的 `restart-dashboard` hook 统一带 `env -u CLAUDE_PID`，与父进程判据互为冗余。
 - PDEATHSIG/孤儿拒启两道防线（`_bind_parent_lifecycle`，import 场景防泄漏）独立于本页 watchdog 判据，两者正交。
+- 双向验证铁律：验证「分支/worktree 上的行为」打 worktree 自起实例（`python3 bin/fenix_dashboard.py --serve --port 8789`）——:8787 常驻进程内存是启动时刻旧码，吃不到分支改动；验证「dashboard 类 SPEC 交付的主树行为」目标恰是 :8787 常驻实例——静态资源实时读盘，重建 dist 后免重启生效，Python 读侧改动须重启才生效。1900x 端口段是 agent run 的隔离 dev-server，三类实例勿混用。
+- 常驻实例 tmux 重启协议：`tmux kill-session -t fenix-dashboard` 后以 `env -u CLAUDE_PID tmux new-session -d -s fenix-dashboard "env -u CLAUDE_PID python3 .../fenix_dashboard.py --serve"` 重建（会话命令与进程环境双重去 CLAUDE_PID）；重启验证三件套——curl :8787 得 200、`/proc/<pid>/environ` 无 CLAUDE_PID、dist 与源码一致。tmux server 孤儿化变体：`tmux kill-session` 报 no server running 但 8787 仍有旧进程监听——直接 `kill <旧PID>` 等端口释放再 new-session；端口被孤儿占用时直接 new-session 会静默失败。
+- 「显示未配置」类先怀疑陈旧进程：curl `/api/config?project=<名>` 与新进程直跑 `resolve_config` 比对，不一致即重启 dashboard（Python 读侧不重启恒旧视图），不要改 config.yaml 迁就旧视图。
 
 ## 溯源
 
 - 2026-09-02 fix-dashboard-duration-and-verify-gate（spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate） — 建立端口独占与启动语义：旧实例接管、异主报错退出、5 秒僵尸退出
 - 2026-09-26 fix-dashboard-watchdog-misfire（spec/archive/2026-09-26-fix-dashboard-watchdog-misfire） — watchdog 增加「tmux 承载即显式长驻、不装配」父进程判据（PPID comm 恰等匹配），禁 TMUX 环境变量与 tmux 子串误判路径；skill/agent/hook 入口补 `env -u CLAUDE_PID` 双保险
 - 2026-10-07 fix-dashboard-resident-takeover（spec/archive/2026-10-07-fix-dashboard-resident-takeover） — 端口接管增加常驻豁免：tmux 承载占用者拒信号、报错退出（PID+换端口指引）；接管路径补占用者 ppid 判定与读取失败放行的 fail-safe 方向；非 tmux 旧实例接管语义不变
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠验证与运维操作纪律：双向验证铁律（分支验证打 worktree 自起实例 / 主树交付验证打 :8787 / 1900x 为 run 隔离 dev-server）、tmux 重启协议与孤儿 server 变体、「显示未配置」先疑陈旧进程配方

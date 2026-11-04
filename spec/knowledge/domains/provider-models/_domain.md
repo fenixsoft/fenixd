@@ -1,5 +1,5 @@
 # 模型网关与配置
-> 最后更新：2026-11-04 15:55 UTC+8
+> 最后更新：2026-11-04 16:30 UTC+8
 
 模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置，以及分级配置与设置界面的配置体系，外加 Provider 手动健康检测。
 
@@ -21,7 +21,7 @@
 | [model-chain-health-probe](model-chain-health-probe.md) | 模型链健康探测（拒模型快速 failover） | 2026-10-03 04:59 |
 | [model-billing-config](model-billing-config.md) | 模型计费单价与成本口径 | 2026-10-03 04:59 |
 | [provider-billing-config](provider-billing-config.md) | provider 计费配置 | 2026-10-03 04:59 |
-| [hierarchical-config](hierarchical-config.md) | 分级配置（用户级+项目级合并） | 2026-10-03 04:59 |
+| [hierarchical-config](hierarchical-config.md) | 分级配置（用户级+项目级合并；开关类排查两处配置都要看） | 2026-11-04 16:30 |
 | [hot-reload-unknown-key-tolerance](hot-reload-unknown-key-tolerance.md) | 配置热更新未知键容错 | 2026-10-03 04:59 |
 | [config-tabs](config-tabs.md) | 配置页页签 | 2026-10-03 04:59 |
 | [settings-system-tab](settings-system-tab.md) | 设置页系统页签 | 2026-10-03 04:59 |

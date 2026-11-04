@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-11-04 15:55 UTC+8
+> 最后更新：2026-11-04 16:30 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -12,7 +12,7 @@
 | [hang-discrimination](hang-discrimination.md) | 挂起与慢速判别 | 2026-10-03 04:59 |
 | [run-failure-classification](run-failure-classification.md) | run 失败三级分类与熔断 | 2026-10-03 04:59 |
 | [run-failure-judgment](run-failure-judgment.md) | run 失败判定（产物优先） | 2026-10-03 04:59 |
-| [error-attribution-denoise](error-attribution-denoise.md) | 错误归因降噪与取证判读（死因误标防护：exit 143 判读、自杀排除、日志归属层、复发三轴、在飞识别） | 2026-11-04 15:55 |
+| [error-attribution-denoise](error-attribution-denoise.md) | 错误归因降噪与取证判读（死因误标防护：exit 143 判读、自杀排除、日志归属层、复发三轴、在飞识别与转录前缀盲区、悬空 run 判读、kill 来源 ftrace 插桩） | 2026-11-04 16:30 |
 | [fail-counter-budget](fail-counter-budget.md) | 失败计数预算 | 2026-10-03 04:59 |
 | [per-spec-impl-budget](per-spec-impl-budget.md) | 单 SPEC 实现预算 | 2026-10-03 04:59 |
 | [run-budget-continuity](run-budget-continuity.md) | run 预算连续性 | 2026-10-03 04:59 |
@@ -20,7 +20,7 @@
 | [run-cancel](run-cancel.md) | run 取消（原语、全链路取消语义与取消前现场保全） | 2026-10-30 18:20 |
 | [run-superseded-terminal](run-superseded-terminal.md) | 被取代 run 的终态标记 | 2026-10-03 04:59 |
 | [runtime-run-sweep](runtime-run-sweep.md) | 运行时 run 清扫 | 2026-10-03 04:59 |
-| [redispatch-loop-governance](redispatch-loop-governance.md) | 重派循环治理 | 2026-10-03 04:59 |
+| [redispatch-loop-governance](redispatch-loop-governance.md) | 重派循环治理（同因重派熔断、成果继承、人工停靠失控重派=预算闸门落点） | 2026-11-04 16:30 |
 | [redispatch-artifact-succession](redispatch-artifact-succession.md) | 重派产物接续 | 2026-10-03 04:59 |
 | [honest-exit-convergence](honest-exit-convergence.md) | 诚实退出收敛 | 2026-10-03 04:59 |
 | [shared-result-file-integrity](shared-result-file-integrity.md) | 共享结果文件完整性 | 2026-10-03 04:59 |
@@ -36,4 +36,4 @@
 | [run-stop-loss](run-stop-loss.md) | run 级止损（attempt 间隙取消/重试让位/停滞预算） | 2026-10-04 03:36 |
 | [cli-stderr-noise-filtering](cli-stderr-noise-filtering.md) | CLI stderr 诊断噪声统一判别与降噪（判别单源、深扫摘要与回填归因消费端、admin 证据豁免、unrecognized_model 双形态判读） | 2026-11-04 15:55 |
 | [impl-env-blocker-stop-loss](impl-env-blocker-stop-loss.md) | impl 环境阻塞止损与任务停滞预警 | 2026-10-14 14:06 |
-| [killpg-self-guard](killpg-self-guard.md) | 进程清场击杀自保护守卫（禁命中调用者自身进程组） | 2026-10-28 17:59 |
+| [killpg-self-guard](killpg-self-guard.md) | 进程清场击杀自保护守卫（禁命中调用者自身进程组）与人工杀回归进程组止血配方 | 2026-11-04 16:30 |

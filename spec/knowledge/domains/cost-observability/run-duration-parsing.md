@@ -1,6 +1,6 @@
 # Run 耗时解析口径
-<!-- knowledge: capability=run-duration-parsing rev=1
-     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate -->
+<!-- knowledge: capability=run-duration-parsing rev=2
+     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 run 耗时由 run_id 内的开始时间戳与产物文件 mtime 推出，口径单源供表格列与统计共用。
 
@@ -10,8 +10,10 @@ run 耗时由 run_id 内的开始时间戳与产物文件 mtime 推出，口径�
 - **时间轴归属同步适配**：`get_spec_timeline()` 中从 run_id 剥离 spec 名与时间戳的逻辑同步适配 attempt 后缀（`spec_part` 不残留时间戳/尝试段），时间轴运行节点的归属、排序、过滤按正确 spec 名工作。
 - **total_duration 真实求和**：`spec_summary()` 的 `total_duration` 等于该 SPEC 全部 run 的真实 `duration_seconds` 之和；前端「耗时」列在 SPEC 存在任意真实时长（>0）运行记录时显示人类可读的非零时长，不得恒显示「—」。有运行记录但全为 0 只能是解析缺陷，修复后须显示真实数值。
 - **耗时真实性断言**：验证涉及「耗时」列时，对有运行记录的 SPEC 必须断言耗时非 0，区分「无记录占位 —」与「计算缺陷 0」。
+- **手工取证的真实时长口径**：run 产物 result 事件的 `duration_ms` 字段不可信（含等待与重试失真，实测显示 2.4 分钟实际 19 分钟），不得直接采信；真实时长取 run 流事件首尾 timestamp 差，或 daemon 日志「`run <车道>-<id>: N rounds`」行时间戳减 run id 内嵌 epoch 得真实跨度。daemon 日志时间戳全 UTC，跨时区比对先归一。
 
 ## 溯源
 
 - 史前基线 — 运行耗时由 run 起止时间解析，started 不取文件 mtime；耗时口径单源供表格与统计共用。
 - 2026-09-02 2026-09-02-fix-dashboard-duration-and-verify-gate（spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate） — start_ts 正则适配 attempt 后缀（run_id 带 `-a<n>` 后缀曾被漏解析致耗时恒 0），确立 total_duration 真实求和、耗时列非零展示与验证器真实性断言口径。
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠手工取证真实时长口径：result 事件 duration_ms 不可信、以事件首尾 timestamp 差或日志 rounds 行减 run id epoch 为准、日志全 UTC

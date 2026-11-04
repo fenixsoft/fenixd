@@ -1,4 +1,4 @@
-<!-- knowledge: capability=graceful-restart-drain rev=1 sources=spec/archive/2026-09-27-add-pipeline-throughput-governance -->
+<!-- knowledge: capability=graceful-restart-drain rev=2 sources=spec/archive/2026-09-27-add-pipeline-throughput-governance,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 # 优雅重启排水窗口
 
@@ -11,7 +11,10 @@ daemon restart 流程等待在飞 run 排水的时长上限与 checkpoint 广播
 - 显式配置优先于代码缺省，可人工调大给长排水留裕量；缺省组合下「重启到新 daemon 就绪」无 1800s 级空等，被强杀的 run 走既有恢复路径（保留分支续做）。
 - restart 触发、停止新派发后，daemon 向每个在飞 run 广播一次 checkpoint 信号（写 run 控制文件）：有响应语义的 run 按既有语义尽快落盘进度声明收尾，无响应语义的 run best-effort 忽略。
 - checkpoint 广播不阻塞排水等待（写后即返回），不产生新的失败终态或打回；信号未读即被强杀的 run 处理与未广播时完全一致，无新增告警、无状态损坏。
+- 重启前停驻判据是双条件：无在飞 run **且**（涉及 code-fix 链时）无 code-fix run 在飞——「进度文件 running=false」≠ worker 已收尾（checkpoint 关闭分支先于 worker 收尾写终态，秒级窗口足以误杀在飞批）。凡用进度/状态文件做「链已安全停驻」判据，MUST 加第二条件（该车道无 run 在飞）。快速确认在飞：`ps -eo cmd | grep 'claude -p'`。
+- 冻结不能加速重启：冻结只停被冻 SPEC 名下的 agent，排水窗口仍按在飞 run 语义等待；要快速重启先对卡死 run 执行 run-cancel，让排水等不到长寿 run。
 
 ## 溯源
 
 - 2026-09-27 add-pipeline-throughput-governance（spec/archive/2026-09-27-add-pipeline-throughput-governance） — 新增 restart 专用排水窗口配置并与 supervisor SIGKILL 宽限协调；restart 触发时向在飞 run 广播 checkpoint 信号
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠重启前置双条件停驻判据（进度文件 running=false≠worker 收尾、状态文件判据 MUST 配第二条件）与「冻结不能加速重启、快重启先 run-cancel」纪律

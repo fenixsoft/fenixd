@@ -1,4 +1,4 @@
-<!-- knowledge: capability=merge-back rev=6 sources=spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976,spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard,spec/archive/2026-09-25-evo-stash-pop-conflict-triage,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md -->
+<!-- knowledge: capability=merge-back rev=7 sources=spec/archive/2026-09-22-evo-merge-back-wip-overlap-gate-575976,spec/archive/2026-09-25-evo-merge-back-spec-dir-inflight-guard,spec/archive/2026-09-25-evo-stash-pop-conflict-triage,spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal,spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md -->
 
 # merge-back 合并回主树
 
@@ -18,6 +18,8 @@
 - stash 前缀隔离：闸门收纳/保留条目所用前缀 MUST NOT 包含 `AUTOSTASH_MSG_PREFIX` 子串——`reclaim_stale_autostash` 以子串匹配栈顶并 pop，复用同前缀会让故意保留待找回的条目被 60s 巡检抢走并沿用丢弃策略。
 - 自愈链覆盖边界：untracked 冲突（见 [未跟踪文件合并守卫](merge-untracked-guard.md)）与 stash pop UU 冲突（三态处置）有框架自愈；tracked-modified 冲突无自愈覆盖——即便分支与主树内容字节级相同、本可无损取分支版也直接失败。spec 车道经 WIP 重叠闸门旁路（升级拦截落 `wip_gate_blocked`），code-fix 车道有 defer 队列兜底；其余场景下跨会话并行写主树仍是合回失败的第一大来源。
 - 上游 spec 目录自动提交的夹带面：主树侧存在多条 spec 目录自动提交通道（fenix-new 注册提交、派发前 `ensure_spec_committed`、评审成文收尾、evo 立项等）；主树堆着未提交决策时，这类通道可能把同树改动顺带卷入上游提交，与下游 merge-back 相撞。框架代码通道以 pathspec 限定提交集守卫（`commit --only` / `commit -- <spec目录>`）；交互入口（fenix-new 第 5 步裸 commit 等）无整体守卫，靠「只 add 目标 spec 目录、禁止 `git add .` / `-A`」与主树多批未提交决策的 hunk 手术分拣纪律规避。
+- 主树多批未提交决策的分拣提交纪律：在主树提交「本会话改动」按 hunk 签名过滤——逐文件切 hunk 生成 per-file patch → `git apply --cached` → `git diff --cached` 目检确认无外来内容 → commit；整文件 `git add` 会把同树其它批次的未提交决策一并卷入提交，破坏对应 SPEC 的 merge-back 流。
+- 跨进程手工合回收尾配方（daemon 进程外人工收尾合回）：动手前先 `git diff HEAD..<branch>` 确认分支已含完整实现；`git status` 分清 untracked / UU / 构建产物——untracked 备份后移开，UU `git checkout HEAD -- <file>` 清理（stash pop 型 UU 无 MERGE_HEAD，冲突标签为 `Updated upstream`/`Stashed changes`；逐文件 `git diff :1:<file> :3:<file>` 判 stash 侧是否为被交付取代的陈旧副本，是则取 HEAD 零损失）；合并必须手动 `git merge --no-ff <branch>`，MUST NOT 借道 daemon 进程内的 `ensure_clean_tree` 路径（进程内锁与 stash 栈 LIFO 共享会跨进程错配）；合并后 `update_spec` 置 `implemented` 并清 `error`/`_merge_fp`/`_merge_streak`/`_retry_count`。
 - 告警通路：`signal_type=mergeback_wip_overlap` 由 dispatch 层在 merge 结果处理的失败/阻塞分支直发 admin store（仅成功路径调用的既有 emit 点不覆盖阻塞路径），MUST 收录进 `admin_monitor` 的 `STORED_SIGNAL_TYPES`（severity=major，附核对指引），`evidence` MUST 先序列化为 `str` 再入 record（dict 穿透会致 Administrator 唤起失败）。
 - 可观测性：冲突处置路径写结构化日志（文件清单 / 处置方式（态 1/2/3） / stash sha），dashboard 与自省可见。
 
@@ -29,3 +31,4 @@
 - 2026-10-02 evo-add-wip-defer-merge-retry-consumer（spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer） — WIP 拦截出口新增结构化等待标志与 daemon 周期自动合回（独立能力页 wip-defer-merge-retry 承载），闸门本体与升级拦截语义不变
 - 2026-10-13 evo-mergeback-archive-residue-selfheal（spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal） — 顺延熔断出口前置归档残留只读评估与自动收尾重放，超阈值悬置条目新增 120 秒周期消费者接手（独立能力页 mergeback-archive-residue-selfheal 承载），顺延有界性与不记账不变式不变
 - 2026-11-04 memory-distill-open-gaps-hazards（spec/knowledge/_inbox/done/memory-distill-open-gaps-hazards.md） — 折叠两规则：自愈链覆盖边界（tracked-modified 冲突无自愈、跨会话并行写主树为合回失败首因）与上游 spec 目录自动提交夹带面（框架通道 pathspec 守卫、交互入口靠只 add 目标目录与 hunk 手术纪律）
+- 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠两配方：主树多批未提交决策的 hunk 手术分拣提交纪律（切 hunk → apply --cached → 目检）、跨进程手工合回收尾配方（UU 取 HEAD 判据、禁借道进程内 ensure_clean_tree、update_spec 收尾清计数）
