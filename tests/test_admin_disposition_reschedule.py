@@ -752,3 +752,136 @@ class TestChainTraceSuppressionAndAttribution:
         assert len(sent) == 0
         # deferred 留痕条目保留待下轮
         assert len(load_chain_state(proot)["in_flight"]) == 1
+
+
+class TestOrphanLedgerClosureWatch:
+    """fix-escalation-chain-ledger-closure 3.4：看护侧新行为用例。
+
+    覆盖 tasks 3.4 字面清单：result success 子型归因新文案且不含「非成功
+    结论」（复刻首例事件 6474 形态——pending 超时 + run 末行 result
+    subtype=success）/ 非 success 文案不变回归锚 / 链台账 chain-closed 在场
+    不升级只对账终结 / chain-handoff 同款 / 台账损坏（缺失）fail-open
+    照常升级。
+
+    seam 策略：链事件台账直写 ``.fenix/arbiter_ledger.jsonl``（load_arbiter_
+    ledger 单源可读的 append-only jsonl 行，与链侧写侧同源结构）；损坏台账
+    写非法 JSON 行——load_arbiter_ledger 损坏行跳过 → 零命中 → 升级放行，
+    同时 chain_events_for_run 的异常兜底由台账整读异常口径覆盖（既有
+    fail-open 承诺）。
+    """
+
+    SPECS = {"spec-a": {"status": "blocked", "frozen": False}}
+
+    def _install_chain(self, proot):
+        from core.pm_engine.escalation_chain import EscalationChain, set_chain
+
+        chain = EscalationChain(proot, FakeLogger())
+        chain.set_state_machine(FakeSM(self.SPECS))
+        chain.set_runner(MagicMock())
+        chain.set_pm(MagicMock())
+        set_chain(chain)
+        return chain
+
+    def _write_run(self, proot, run_id, events):
+        runs = proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        (runs / f"{run_id}.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
+        )
+
+    def _orphan_fixture(self, tmp_path, run_id="admin-spec-a-6474",
+                        subtype="success"):
+        """首例事件 6474 复刻装置：超时 pending + run 末行 result 终态。"""
+        proot, mon, store = make_monitor(tmp_path, self.SPECS, config={
+            "admin": {"escalation_cooldown_minutes": 15}})
+        _append_pending(store, run_id=run_id, created_ago_minutes=20)
+        self._write_run(proot, run_id, [
+            {"type": "assistant", "message": {"content": []}},
+            {"type": "result", "subtype": subtype},
+        ])
+        return proot, mon, store
+
+    def _write_chain_event(self, proot, run_id, kind):
+        ledger = proot / ".fenix" / "arbiter_ledger.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "id": f"chain-ev-{kind}-{run_id}",
+            "created": utcnow_iso(),
+            "kind": kind,
+            "spec": "spec-a",
+            "signal_type": "stuck",
+            "signature": "type:stuck:spec:spec-a",
+            "chain_id": "chain-6474",
+            "run_id": run_id,
+            "scene_snapshot": "链事件台账结构化 run_id 落点（3.2）",
+        }
+        with ledger.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _dispositions(self, store):
+        return [r for r in store.read_all() if r.get("kind") == DISPOSITION]
+
+    # ── 归因读 result 子型（3.1 看护侧消费面）────────────────────
+
+    def test_result_success_attribution_new_wording(self, tmp_path):
+        # success 子型：归因写落账缺口方向性文案，MUST NOT 含「非成功结论」
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        mon._recover_orphaned_dispositions()
+        esc = _escalations(store)
+        assert len(esc) == 1  # 行为不变：仍升级（人工须知情）
+        desc = str(esc[0].get("description") or "")
+        assert "处置结论成功但 final 处置记录缺失" in desc
+        assert "非成功结论" not in desc
+
+    def test_result_non_success_wording_regression_anchor(self, tmp_path):
+        # 非 success 子型（error_max_turns）：文案回归锚，不被新分支波及
+        proot, mon, store = self._orphan_fixture(
+            tmp_path, subtype="error_max_turns")
+        mon._recover_orphaned_dispositions()
+        esc = _escalations(store)
+        assert len(esc) == 1
+        assert "非成功结论" in str(esc[0].get("description") or "")
+
+    # ── 链台账对账兜底：不升级只终结（3.3 看护侧消费面）────────────
+
+    def _reconcile_case(self, tmp_path, kind):
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        self._install_chain(proot)
+        self._write_chain_event(proot, "admin-spec-a-6474", kind)
+        mon._recover_orphaned_dispositions()
+        # 零人工升级
+        assert _escalations(store) == []
+        # 对账终结记录：非 pending + 带该 run id + result=resolved + 对账注记
+        finals = [r for r in self._dispositions(store)
+                  if str(r.get("admin_run_id") or "") == "admin-spec-a-6474"
+                  and r.get("status") != "pending"]
+        assert len(finals) == 1
+        assert finals[0]["status"] == "resolved"
+        assert finals[0]["result"] == "resolved"
+        assert "由看护对账补记" in str(finals[0].get("actions_taken") or "")
+        # 二轮巡检不再重判：组已 by_run final，无第二条对账记录、无升级
+        mon._recover_orphaned_dispositions()
+        finals2 = [r for r in self._dispositions(store)
+                   if str(r.get("admin_run_id") or "") == "admin-spec-a-6474"
+                   and r.get("status") != "pending"]
+        assert len(finals2) == 1
+        assert _escalations(store) == []
+
+    def test_chain_closed_ledger_reconciles_without_escalation(self, tmp_path):
+        self._reconcile_case(tmp_path, "chain-closed")
+
+    def test_chain_handoff_ledger_reconciles_without_escalation(self, tmp_path):
+        self._reconcile_case(tmp_path, "chain-handoff")
+
+    def test_chain_ledger_corrupt_fail_open_escalates(self, tmp_path):
+        # 台账损坏（首例事件台账缺失同口径）：联查零命中 → fail-open 照常升级
+        proot, mon, store = self._orphan_fixture(tmp_path)
+        self._install_chain(proot)
+        ledger = proot / ".fenix" / "arbiter_ledger.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("{broken json\n", encoding="utf-8")
+        mon._recover_orphaned_dispositions()
+        assert len(_escalations(store)) == 1
+        finals = [r for r in self._dispositions(store)
+                  if r.get("status") == "escalated"]
+        assert len(finals) == 1  # 升级即终结

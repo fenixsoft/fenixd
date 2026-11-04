@@ -255,6 +255,10 @@ _CHAIN_EVENT_KINDS = frozenset(
         "chain-closed",
         "chain-escalated",
         "chain-recurrence",
+        # fix-escalation-chain-ledger-closure 2.2：链上 choice 执行失败留痕
+        # （fail-closed 不伪造闭环——执行错误注入链事件，该件按链既有失败
+        # 语义处理）
+        "chain-choice-failed",
     }
 )
 

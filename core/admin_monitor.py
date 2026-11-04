@@ -6623,6 +6623,40 @@ class AdminMonitor:
             if self._chain_trace_hit(sig_query, sig_type):
                 continue
 
+            # fix-escalation-chain-ledger-closure 3.3（design D5）：链事件
+            # chain-closed/chain-handoff 对账兜底——链痕抑制未命中（链已走完
+            # 该件）但 final 记录缺失的孤儿 pending（历史缺口/落账失败残留）
+            # 升级人工前按 run_id 联查链事件台账：链侧已闭环 → 补终结记录
+            # 不升级（pending 被 by_run 归并闭合，后续巡检不再重判）。查询
+            # 异常按零命中放行升级（fail-open，对齐链痕抑制降级口径——宁多
+            # 告警不漏告警）。
+            if self._chain_event_closed_for_run(rid):
+                self.store.append(
+                    {
+                        "kind": DISPOSITION,
+                        "status": "resolved",
+                        "signal_type": sig_type,
+                        "spec": spec,
+                        # admin_run_id MUST 落该 run id——by_run 归并仅认「非
+                        # pending 记录带同 run id」为终结，缺该字段兜底空转
+                        "admin_run_id": rid,
+                        "result": "resolved",
+                        "actions_taken": (
+                            "AdminMonitor 孤儿对账：链侧已闭环但 final 记录缺失，"
+                            "由看护对账补记（fix-escalation-chain-ledger-closure 3.3）"
+                        ),
+                        "description": (
+                            f"Administrator 处置（run {rid}）链侧已闭环，"
+                            "pending 由看护对账终结（不升级人工）"
+                        ),
+                    }
+                )
+                self.logger.info(
+                    "admin_monitor",
+                    f"Chain-closed orphan reconciled without escalation: {rid}",
+                )
+                continue
+
             # fix-escalation-chain-watchdog-yield-gaps 2.2：归因按 run 终态
             # 实证生成（废弃「疑似 daemon 重启/崩溃连带杀死 admin」固定模板
             # ——首例事件 run 终态 frozen-terminated 与模板归因不符，误导
@@ -6703,6 +6737,25 @@ class AdminMonitor:
         except Exception:
             return False
 
+    def _chain_event_closed_for_run(self, admin_run_id: str) -> bool:
+        """该 admin run 存在链闭环/转单事件判定（ledger-closure 3.3 兜底联查门）。
+
+        经链单例 :meth:`EscalationChain.chain_events_for_run` 只读聚合（数据
+        属主封装，monitor 不直读台账内部结构，与 _chain_trace_hit 同一 lazy
+        import 形态）：同 run_id 的 chain-closed / chain-handoff 事件任一在场
+        即 True。链未装配（单测/链级失能）或查询异常一律 False——按零命中
+        放行孤儿升级（fail-open，宁多告警不漏告警）。
+        """
+        try:
+            from core.pm_engine.escalation_chain import get_chain
+
+            chain = get_chain(self.project_root, self.logger)
+            if chain is None:
+                return False
+            return bool(chain.chain_events_for_run(admin_run_id))
+        except Exception:
+            return False
+
     def _orphan_run_attribution(self, admin_run_id: str) -> tuple:
         """按 run 文件末事件终态生成孤儿升级归因（task 2.2；返回 (归因文案, 终态摘录)）。
 
@@ -6762,6 +6815,18 @@ class AdminMonitor:
         if ev_type == "gate-blocked":
             return ("run 被交付门拦截终止（gate-blocked 终态）", excerpt)
         if ev_type == "result":
+            # fix-escalation-chain-ledger-closure 3.1（design D4）：读 result
+            # 事件 subtype 区分形态——success 子型（处置结论成功）写落账缺口
+            # 方向性归因，MUST NOT 写「非成功结论」类与事实相反文案；不选
+            # 「success 直接抑制升级」：落账缺失时人工仍应知情（可能伴随真
+            # 收尾中断），只修正归因方向性，不动升级行为。
+            subtype = str(last.get("subtype") or "")
+            if subtype == "success":
+                return (
+                    "处置结论成功但 final 处置记录缺失（落账缺口或收尾中断）"
+                    "——先核对处置台账与链事件再定处置",
+                    excerpt,
+                )
             return ("run 以 result 终态退出但处置未完成（非成功结论）", excerpt)
         return default
 
@@ -8193,7 +8258,7 @@ class AdminMonitor:
                 # fail-closed 红线，见方法 docstring）。
                 self._persist_choice_step_records(signal, signal_rec, disp, choice_outcome)
                 # 处置记录 error 并入 choice 执行失败/跳过原因（2.2 留痕可溯源）
-                disp_error = disp.error or ""
+                final_error_note = ""
                 if choice_failed:
                     _cnote = str(choice_outcome.get("error") or "执行失败")
                     _caction = (
@@ -8201,61 +8266,17 @@ class AdminMonitor:
                         or getattr(disp, "choice_id", "")
                         or ""
                     )
-                    disp_error = (
-                        (f"{disp_error}；" if disp_error else "")
-                        + f"choice 执行未生效（{_caction}）：{_cnote}"
-                    )
+                    final_error_note = f"choice 执行未生效（{_caction}）：{_cnote}"
 
                 # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
-                # 的 pending 会变孤儿触发人工升级），记日志后继续
+                # 的 pending 会变孤儿触发人工升级），记日志后继续。
                 # fix-admin-disposition-empty-shell：失败记录自解释——error 携带 CLI 失败
                 # 原因；failed 时 recommended_action 回退到信号侧（disp 空串不再覆盖信号值）。
-                try:
-                    self.store.append(
-                        {
-                            "kind": DISPOSITION,
-                            "signal_type": signal.get("signal_type"),
-                            "spec": signal.get("spec") or disp.spec,
-                            "severity": signal.get("severity"),
-                            "description": disp.problem or signal.get("description"),
-                            "action_taken": disp.actions_taken,
-                            "result": disp.result,
-                            "recommended_action": (
-                                (disp.recommended_action or signal.get("recommended_action") or "")
-                                if disp.result == "failed"
-                                else disp.recommended_action
-                            ),
-                            "summary": disp.summary,
-                            "admin_run_id": disp.run_id,
-                            "escalate": bool(disp.escalate),
-                            "error": disp_error,
-                            # orphaned-state-probe-calibration 1.5：非零退出的可定位
-                            # 失败证据（原始 stderr 摘录/退出码/provider·model/带时间戳
-                            # 事件时间线），独立字段随处置记录留痕；无证据时省略
-                            # （类型守卫防 MagicMock 替身注入非 dict 值）。
-                            "failure_evidence": (
-                                disp.failure_evidence
-                                if isinstance(getattr(disp, "failure_evidence", None), dict)
-                                and disp.failure_evidence
-                                else None
-                            ),
-                            # add-human-adjudication-choices 4.2：结构化裁决字段
-                            # （choice_id 非空时框架按注册表 action 执行；空值写 None
-                            # 保持记录形状稳定，前端按无裁决处理）
-                            "choice_id": getattr(disp, "choice_id", "") or None,
-                            "suggested_choice": getattr(disp, "suggested_choice", "") or None,
-                            # fix-admin-choice-payload-and-scenario-pairing 2.1：
-                            # 结构化动作载荷随 final 记录透传落盘（审计闭环：
-                            # final 记录载荷在场即完整留痕；空值写 None 与
-                            # choice_id 同款形状稳定口径）
-                            "choice_payload": getattr(disp, "choice_payload", "") or None,
-                        }
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        "admin_monitor",
-                        f"Failed to persist administrator disposition for run {disp.run_id}: {e}",
-                    )
+                # fix-escalation-chain-ledger-closure 1.2（design D1）：落账字段
+                # 单源收敛到 AdminStore.append_admin_final（与链路径共用同一
+                # 落账助手，字段形状一处定义防族孪漂移）；append 失败 WARN 留痕
+                # 不阻断（助手内处理，pending 由孤儿看护兜底）。
+                self.store.append_admin_final(signal, disp, error_note=final_error_note)
 
                 # 终态回写（evo-signal-preprobe-handled-writeback R5）：处置 run 写入
                 # 非 pending 的最终处置结果后，回写对应信号 handled=true——原信号不再
@@ -9049,276 +9070,35 @@ class AdminMonitor:
     def _apply_choice_execution(self, signal: dict, disp) -> "dict | None":
         """Administrator 处置 choice_id 非空 → 执行注册表动作映射（4.2）。
 
-        与人工 alert-resolve 端点共用 ``execute_adjudication_choice``：同一
-        动作映射、同一留痕格式。执行结果只记审计日志（最终 DISPOSITION
-        记录已含 choice_id 留痕，动作步骤入日志 context）；执行失败记
-        ERROR 不阻塞后续收尾（escalation 闭环 / 升级告警），失败状态由
-        日志与既有告警面呈现。
-
-        fix-global-signal-choice-execution 2.1/2.2：返回执行结果 dict 供终态
-        回写判定——``{"ok": bool, "action": str|None, "error": str|None,
-        "skipped": bool}``；未尝试执行（choice_id 为空 / 无关联 spec）返回
-        None。全局信号（spec 为空或占位 'global'）的 spec_scoped choice 在此
-        提前跳过并留 INFO（与上方『无关联 spec 跳过』分支同型；执行器守卫
-        1.2 为正确性兜底），跳过形态返回 ok=False + skipped=True——信号保留
-        待重审，不闭环。
+        fix-escalation-chain-ledger-closure 2.1（design D3）：执行核心抽为
+        ``core/admin_choice_exec.execute_choice_for_disposition`` 模块级单源
+        （人工 alert-resolve、本直接路径、链 closed 出口三处同一执行机器，
+        不复制分支逻辑），本方法委托之——直接路径行为回归零变化。执行语义
+        （作用域守卫 fail-closed / 载荷直传 / 结果 dict 契约）见模块函数
+        docstring。
         """
-        choice_id = str(getattr(disp, "choice_id", "") or "").strip()
-        if not choice_id:
-            return None
-        spec = signal.get("spec") or disp.spec
-        # fix-global-signal-choice-execution 2.1：全局信号 × spec_scoped choice
-        # 提前跳过（双层设防的消费端一层），避免无谓执行报错；INFO 留痕。
-        # 守卫须先于『无关联 spec 跳过』分支——spec 为空同样属全局形态，此
-        # 形态下 spec_scoped choice 的跳过 MUST 以 not-ok 结果上报（拦截终态
-        # 回写，信号保留待重审），不能走 None 短路被回写门视为已执行成功。
-        # 未知/拒解析 choice_id（unknown-choice / not-in-bucket）对**具体
-        # spec** 仍放行执行器报非法 choice（走失败留痕）；全局信号下执行器
-        # 守卫触达不到——这些拒绝形态会落『无关联 spec』分支返回 None，被
-        # 终态回写门按 resolved 收口、失败留痕永不触达（code-review item
-        # ec2297068d68），故拒绝形态并入本守卫走 not-ok skipped，与导入失败
-        # 降级分支（d5edc8ac335e）同方向 fail-closed。
-        _resolved_choice = None
-        # fix-admin-choice-payload-and-scenario-pairing 4.1：requires_payload
-        # 位同样在作用域守卫处顺带读取（单次 resolve_choice 双用，不二次解析）
-        _requires_payload = False
-        try:
-            from core.dashboard.data.adjudication_choices import (
-                is_global_spec,
-                resolve_choice,
-            )
+        from core.admin_choice_exec import execute_choice_for_disposition
 
-            _resolved_choice, _resolve_reason = resolve_choice(
-                choice_id, str(signal.get("signal_type") or "")
-            )
-            # 载荷要求读注册表解析结果（单源），不硬编码选项名单
-            _requires_payload = bool(
-                (_resolved_choice or {}).get("requires_payload", False)
-            )
-            # scoped-no-reverse（未注册 signal_type 的 spec_scoped 动作被反查
-            # 收紧拒解析）同属作用域拒入形态——全局信号照此提前跳过；
-            # not-in-bucket / unknown-choice 拒解析形态同并入（见上方注释，
-            # code-review item ec2297068d68）
-            _globally_scoped = bool(
-                is_global_spec(spec)
-                and (
-                    (
-                        _resolved_choice
-                        and _resolved_choice.get("spec_scoped", True)
-                    )
-                    or _resolve_reason
-                    in ("scoped-no-reverse", "not-in-bucket", "unknown-choice")
-                )
-            )
-        except Exception as e:  # noqa: BLE001 — 守卫不可用不阻塞执行（执行器兜底）
-            self.logger.debug(
-                "admin_monitor",
-                f"choice 作用域预判不可用（执行器守卫兜底）: {e}",
-            )
-            _resolved_choice = None
-            # 拒绝原因位随守卫降级缺省空串（下方 skipped 留痕分支引用，
-            # 降级路径 resolve_choice 未成功调用、无拒绝原因可考）
-            _resolve_reason = ""
-            # 载荷要求位随守卫降级缺省 False（不拦处置，载荷合法性由执行器
-            # 既有解析失败路径拒绝，与作用域守卫降级同方向）
-            _requires_payload = False
-            # code-review d5edc8ac335e：降级分支对全局形态 spec（空值或占位
-            # 'global'，同 is_global_spec 口径）保守沿用 not-ok skipped 语义，
-            # 与非降级路径 fail-closed 方向一致——否则空 spec × spec_scoped
-            # choice 会落入下方「无关联 spec」分支返回 None，终态回写门把
-            # None 视为未执行无阻塞、信号按 resolved 收口，违背 docstring 的
-            # fail-closed 承诺（该形态下执行器守卫兜底不被触达）。具体 spec
-            # 不受影响，照常放行执行器兜底。占位常量复用本模块既有定义
-            # （导入失败场景不能依赖 adjudication_choices 的
-            # GLOBAL_SPEC_PLACEHOLDER）。
-            _spec_form = str(spec or "").strip().lower()
-            _globally_scoped = (
-                (not _spec_form)
-                or _spec_form == _ORPHAN_GLOBAL_SPEC_PLACEHOLDER
-            )
-        if _globally_scoped:
-            # 拒解析形态（not-in-bucket/unknown-choice）下作用域不可考，留痕
-            # 以 choice_id 兜底并附拒绝原因，不作「spec 作用域动作」的失真
-            # 表述（code-review item ec2297068d68）
-            _skip_basis = (
-                f"choice 拒解析（{_resolve_reason}）"
-                if _resolve_reason in ("not-in-bucket", "unknown-choice")
-                else "为 spec 作用域动作"
-            )
-            self.logger.info(
-                "admin_monitor",
-                f"处置 choice_id={choice_id} {_skip_basis}，全局信号"
-                f"（spec={spec!r}）无 spec 可操作，跳过执行（信号保留待重审）",
-            )
-            return {"ok": False, "skipped": True,
-                    # 拒解析形态（scoped-no-reverse/not-in-bucket/
-                    # unknown-choice）解析结果为 None，动作名以 choice_id
-                    # 兜底（留痕 action_taken 不缺位）
-                    "action": ((_resolved_choice or {}).get("action") or choice_id),
-                    "error": (f"全局信号（spec={spec!r}）不可执行"
-                              f"（{_skip_basis}），已跳过")}
-        if not spec and not (
-            _resolved_choice and not _resolved_choice.get("spec_scoped", True)
-        ):
-            # 无关联 spec（信号与处置记录均空）且动作语义需要具体 spec
-            # （spec_scoped / 注册表未知 id）——跳过执行。非作用域动作放行
-            # （1.3：全局/空 spec 信号的非作用域收口不断路，执行器守卫 1.2
-            # 兜底正确性）。
-            self.logger.warning(
-                "admin_monitor",
-                f"处置 choice_id={choice_id} 无关联 spec，跳过执行",
-            )
-            return None
-        # fix-admin-choice-payload-and-scenario-pairing 4.1：note 来源载荷优先
-        # ——choice_payload 非空 → 原文整体直传（不经 actions_taken 拼接/截断，
-        # 载荷型选项执行器契约强制完整 JSON 载荷，200 字截断结构性必败）；
-        # 载荷空且选项 requires_payload → not-ok skipped（信号保留待重审），
-        # 不空打执行器制造必然失败日志（处置产物硬门 3.1 为前置防线，此处
-        # 双层设防）；其余情况维持依据文本截断 200 字现状。
-        _choice_payload = str(getattr(disp, "choice_payload", "") or "")
-        if _choice_payload.strip():
-            basis = _choice_payload
-        elif _requires_payload:
-            self.logger.warning(
-                "admin_monitor",
-                f"处置 choice_id={choice_id} 为 requires_payload 选项而处置"
-                "记录未携带 choice_payload JSON 载荷，跳过执行（信号保留待重审）",
-            )
-            return {"ok": False, "skipped": True,
-                    "action": ((_resolved_choice or {}).get("action") or choice_id),
-                    "error": ("该选项需要 choice_payload JSON 载荷"
-                              '（{"scenarios": [...], "reason": "...", '
-                              '"fixture_files": [...]}），处置记录未携带，'
-                              "已跳过执行")}
-        else:
-            # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
-            basis = str(getattr(disp, "actions_taken", "") or "")[:200]
-        # 陈旧代码预检（evo-add-key-path-stale-code-preflight 2.3）：choice 执行
-        # 前查询进程代码陈旧旗标；陈旧则请求重启（一条 WARNING + daemon 侧
-        # .fenix/restart_request 防重）并照常执行——执行结果与留痕不受预检影响。
-        # 导入/调用与相邻 adjudication_choices 导入同款受守卫（code-review item
-        # 17d5aecc7009）：异常按失败留痕上报（ok=False），不穿透本函数令终态
-        # 回写与失败留痕双双缺席（pending 处置记录滞留孤儿）。
-        try:
-            from core.code_stale_flag import request_restart
-
-            request_restart(
-                lambda msg: self.logger.warning("admin_monitor", msg),
-                "admin 处置 choice 执行",
-            )
-        except Exception as e:  # noqa: BLE001 — 预检失败按失败留痕，不穿透
-            self.logger.error(
-                "admin_monitor",
-                f"陈旧代码预检（request_restart）异常 choice_id={choice_id} "
-                f"spec='{spec}': {e}",
-            )
-            return {"ok": False, "action": None,
-                    "error": f"陈旧代码预检异常: {e}"}
-        try:
-            from core.dashboard.data.admin_actions import execute_adjudication_choice
-
-            result = execute_adjudication_choice(
-                self.project_root,
-                spec,
-                choice_id,
-                note=basis,
-                signal_type=str(signal.get("signal_type") or ""),
-            )
-        except Exception as e:
-            self.logger.error(
-                "admin_monitor",
-                f"处置 choice 执行异常 choice_id={choice_id} spec='{spec}': {e}",
-            )
-            # fix-global-signal-choice-execution 2.2：异常按失败上报——终态回写
-            # 被拦截（fail-closed，信号保留待重审）
-            return {"ok": False, "action": None, "error": f"choice 执行异常: {e}"}
-        if result.get("ok"):
-            self.logger.info(
-                "admin_monitor",
-                f"处置 choice 执行成功 choice_id={choice_id} spec='{spec}'",
-                {"steps": result.get("steps") or [], "action": result.get("action")},
-            )
-        else:
-            self.logger.error(
-                "admin_monitor",
-                f"处置 choice 执行失败 choice_id={choice_id} spec='{spec}': "
-                f"{result.get('error')}",
-                {"steps": result.get("steps") or []},
-            )
-        return {"ok": bool(result.get("ok")), "action": result.get("action"),
-                "error": result.get("error"),
-                "steps": result.get("steps") or []}
+        return execute_choice_for_disposition(
+            self.project_root, signal, disp, self.logger
+        )
 
     def _persist_choice_step_records(self, signal: dict, signal_rec, disp,
                                      choice_outcome) -> None:
-        """结构化 choice 通道小步落账（evo-add-admin-orphan-disposition-effect-check 2.1）。
+        """结构化 choice 通道小步落账（evo-add-admin-orphan-disposition-
+        effect-check 2.1）。
 
-        choice 执行返回后、final append 前落一条逐动作 DISPOSITION 事件
-        （含 action_taken 与结果）：run 在 final 落账前死亡时已执行事实不丢
-        （「执行成功→落账」窗口从秒级收敛到零）。两条硬约束：
-
-        - 事件 MUST NOT 携带 admin_run_id（循 _close_signal_preprobed 无
-          run_id 留痕先例）——携带会被 _merge_admin_runs 并入本组使组提前
-          final，破坏「在飞 = has_pending 且非 final」判据（
-          _spec_has_active_admin_run 的重派/节流护栏失守）；
-        - 提前收口以 choice 整体执行 ok 为准（outcome["ok"]=True 才
-          mark_signal_handled(result="resolved")），不按单动作成功收口；
-          任一步骤失败（整体非 ok）不收口、不预写 resolved（保
-          evo-fix-global-signal-choice-execution 2.2「信号保留待重审」的
-          fail-closed 语义），失败形态落 result=failed 审计事件（非
-          resolved，不触发任何回写门/静默期语义）。全局跳过形态
-          （skipped=True）未执行任何动作，不落事件。
-
-        落账/收口失败仅记日志，不阻塞 final 落账主链路。
+        fix-escalation-chain-ledger-closure 2.1（design D3）：执行核心抽为
+        ``core/admin_choice_exec.persist_choice_step_records`` 模块级单源，
+        本方法委托之——直接路径行为回归零变化。小步落账两条硬约束（逐动
+        作事件 MUST NOT 携带 admin_run_id / 整体 ok 才提前收口）见模块函数
+        docstring。
         """
-        if choice_outcome is None or choice_outcome.get("skipped"):
-            return
-        ok = bool(choice_outcome.get("ok"))
-        action = (
-            choice_outcome.get("action")
-            or str(getattr(disp, "choice_id", "") or "")
-            or ""
+        from core.admin_choice_exec import persist_choice_step_records
+
+        persist_choice_step_records(
+            self.store, signal, signal_rec, disp, choice_outcome, self.logger
         )
-        try:
-            self.store.append(
-                {
-                    "kind": DISPOSITION,
-                    "signal_type": signal.get("signal_type"),
-                    "spec": signal.get("spec") or disp.spec,
-                    "severity": signal.get("severity"),
-                    "description": disp.problem or signal.get("description") or "",
-                    "action_taken": action,
-                    "result": "resolved" if ok else "failed",
-                    "error": "" if ok else str(choice_outcome.get("error") or "执行失败"),
-                    # 刻意不携带 admin_run_id：见 docstring 硬约束①
-                }
-            )
-        except Exception as e:
-            self.logger.error(
-                "admin_monitor",
-                f"choice 逐动作小步落账写入失败（不阻塞 final 落账）: {e}",
-            )
-        if not ok:
-            return
-        if signal_rec is not None:
-            try:
-                if self.store.mark_signal_handled(
-                    signal_rec.get("id"),
-                    action_taken=action,
-                    result="resolved",
-                ):
-                    self.logger.info(
-                        "admin_monitor",
-                        f"choice 整体执行 ok，已提前收口信号 handled=true"
-                        f"（id={signal_rec.get('id')}，"
-                        f"{signal.get('signal_type')}，action={action}）",
-                    )
-            except Exception as e:
-                self.logger.warning(
-                    "admin_monitor",
-                    f"choice 提前收口信号失败（不阻塞 final 落账）: {e}",
-                    {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
-                )
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。

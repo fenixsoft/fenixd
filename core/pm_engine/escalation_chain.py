@@ -814,6 +814,32 @@ class EscalationChain:
                 item["defer_yield_to"] = active_run
                 return trail, "deferred"
             disp = self._dispatch_admin(item)
+            # 链侧 final 落账（fix-escalation-chain-ledger-closure 1.3，design
+            # D2）：run_administrator 一返回即闭合 pending——先落账、后分支判定
+            # （handoff / 越界复核 / 成功闭环 / 失败计点一次覆盖，不留出口遗漏
+            # 面）。时序不变式：final 落账先于链 closed 事件——daemon 在两事件
+            # 间被杀时台账已闭合（pending 不孤儿），链 in_flight 残留由既有
+            # reap 清理。与直接路径共用 AdminStore.append_admin_final 落账单点
+            # （design D1，字段形状一处定义）；append 失败助手内 WARN 留痕返回
+            # False，不阻断分支判定（pending 保持由孤儿看护既有语义兜底）。
+            try:
+                from core.admin_store import AdminStore
+
+                AdminStore(self.project_root, self.logger).append_admin_final(
+                    {
+                        "signal_type": item.get("signal_type"),
+                        "spec": item.get("spec") or "global",
+                        "severity": item.get("severity") or "major",
+                        "description": item.get("description") or "",
+                        "recommended_action": item.get("recommended_action") or "",
+                    },
+                    disp,
+                )
+            except Exception as e:
+                self._log(
+                    "warning",
+                    f"链侧 final 落账装配失败（fail-open，pending 由看护兜底）: {e}",
+                )
             record = {
                 "run_id": disp.run_id,
                 "result": disp.result,
@@ -846,7 +872,14 @@ class EscalationChain:
                         f"{str(getattr(disp, 'handoff_reason', '') or '')[:200]}），"
                         f"Admin 尝试 {attempts}/{admin_quota} 不计失败"
                     ),
-                    extra={"handoff_reason": str(getattr(disp, "handoff_reason", "") or "")},
+                    extra={
+                        "handoff_reason": str(getattr(disp, "handoff_reason", "") or ""),
+                        # fix-escalation-chain-ledger-closure 3.2：admin 相事件
+                        # run_id 落实际 admin run id（现恒空、run id 只在文案
+                        # 里）——孤儿看护按 run_id 精确联查的对账前提；arbiter
+                        # 相事件取 arbiter_run_id 语义不变。
+                        "run_id": str(disp.run_id or ""),
+                    },
                 )
                 item["admin_handoff_reason"] = str(
                     getattr(disp, "handoff_reason", "") or ""
@@ -874,11 +907,43 @@ class EscalationChain:
                             f"Admin 产出越界 choice（{choice_id}），转单 "
                             f"Arbiter（Admin 尝试 {attempts}/{admin_quota} 不计失败）"
                         ),
-                        extra={"handoff_reason": reason[:400]},
+                        extra={
+                            "handoff_reason": reason[:400],
+                            "run_id": str(disp.run_id or ""),
+                        },
                     )
                     item["admin_handoff_reason"] = reason
                     return trail, "handoff"
             if disp.success and disp.result in ("resolved", "partially-resolved") and not disp.escalate:
+                # 链成功路径 choice 执行（fix-escalation-chain-ledger-closure
+                # 2.2，design D3）：越界白名单复核保持先行（上方），closed 出口
+                # 在 _close_chain_success 前执行注册表 choice——与人工
+                # alert-resolve、直接路径同一执行机器（模块级单源，不复制分
+                # 支逻辑）。escalate / handoff 出口不执行 choice（转单/上升
+                # 语义，修复责任随件流转）。
+                choice_error = self._execute_chain_choice(item, disp)
+                if choice_error:
+                    # fail-closed（与直接路径同款）：不写 chain-closed、不按
+                    # 成功闭环处理——执行错误注入链事件留痕 + 计一次失败，
+                    # 该件按链既有失败语义处理（配额未尽回环重派，耗尽转单
+                    # Arbiter/上升）。逐动作审计记录已由执行机器落账。
+                    attempts = self._quota.count_admin_attempt(sig)
+                    self._write_chain_event(
+                        item,
+                        kind="chain-choice-failed",
+                        action_or_upgrade=(
+                            f"Admin 处置 choice 执行失败，不伪造闭环: "
+                            f"{choice_error[:300]}（Admin 尝试 "
+                            f"{attempts}/{admin_quota}）"
+                        ),
+                        extra={"run_id": str(disp.run_id or "")},
+                    )
+                    self._log(
+                        "warning",
+                        f"Admin 处置 choice 执行失败（fail-closed 不伪造闭环）: "
+                        f"sig={sig} run={disp.run_id} error={choice_error[:160]}",
+                    )
+                    continue
                 closed = self._close_chain_success(item, disp)
                 self._log(
                     "info",
@@ -913,8 +978,67 @@ class EscalationChain:
                 f"Admin 尝试配额耗尽（{attempts}/{admin_quota}），转单 Arbiter"
                 f"（附尝试痕 {len(trail)} 条 run 记录）"
             ),
+            extra={"run_id": str(trail[-1]["run_id"] or "") if trail else ""},
         )
         return trail, "exhausted"
+
+    def _execute_chain_choice(self, item: dict, disp) -> str:
+        """链 closed 出口的注册表 choice 执行（fix-escalation-chain-ledger-
+        closure 2.2，design D3）。返回执行错误文案（""=成功或未尝试，放行闭环）。
+
+        - choice_id 空 → 未尝试（""，无 choice 的处置直接闭环——既有主路径）；
+        - 执行器返回 None（无关联 spec 的未尝试形态，与直接路径同款语义）
+          → ""，不拦闭环；
+        - 执行成功（ok=True）→ 逐动作 DISPOSITION 审计记录落账（signal_rec
+          为 None——链件无 store 信号记录，跳过提前收口回写）→ ""；
+        - 执行失败/执行器主动跳过（载荷缺失、全局信号 spec_scoped 等
+          not-ok 形态）→ 错误文案，调用方 fail-closed（不写 chain-closed、
+          计一次失败）。
+
+        执行机器经 ``core.admin_choice_exec`` 模块级单源（与人工
+        alert-resolve、admin_monitor 直接路径三处同源，不复制分支逻辑）；
+        装配异常（import/store 故障）按执行失败上报——fail-closed 方向，
+        不静默放行伪造闭环。
+        """
+        choice_id = str(getattr(disp, "choice_id", "") or "").strip()
+        if not choice_id:
+            return ""
+        try:
+            from core.admin_choice_exec import (
+                execute_choice_for_disposition,
+                persist_choice_step_records,
+            )
+            from core.admin_store import AdminStore
+
+            chain_signal = {
+                "signal_type": item.get("signal_type"),
+                "spec": item.get("spec") or "global",
+                "severity": item.get("severity") or "major",
+                "description": item.get("description") or "",
+            }
+            outcome = execute_choice_for_disposition(
+                self.project_root, chain_signal, disp, self.logger
+            )
+            if outcome is None:
+                return ""
+            persist_choice_step_records(
+                AdminStore(self.project_root, self.logger),
+                chain_signal,
+                None,  # 链件无关联信号记录：跳过提前收口回写
+                disp,
+                outcome,
+                self.logger,
+            )
+            if outcome.get("ok"):
+                self._log(
+                    "info",
+                    f"链上 choice 执行成功: choice_id={choice_id} "
+                    f"spec={item.get('spec') or 'global'} run={disp.run_id}",
+                )
+                return ""
+            return str(outcome.get("error") or "执行失败")
+        except Exception as e:
+            return f"choice 执行机器异常: {e}"
 
     def _run_file_has_terminal(self, run_id: str) -> bool:
         """run 产物末行终态判定（链侧只读；文件缺失/读失败按 False）。
@@ -1134,6 +1258,35 @@ class EscalationChain:
             "arbiter_active": arbiter_active,
         }
 
+    def chain_events_for_run(self, run_id: str) -> List[dict]:
+        """按 admin run id 联查链事件（fix-escalation-chain-ledger-closure 3.3，
+        design D5 只读聚合查询口）。
+
+        孤儿看护 chain-closed 对账兜底的联查入口：输入 admin run id，输出该
+        run 关联的 admin 相链事件列表（kind∈{chain-closed, chain-handoff} 且
+        ``run_id`` 字段等于该 run id——3.2 写侧结构化字段单源）。monitor 不直
+        读台账内部结构（数据属主封装，对齐 chain_traces 决策）；arbiter 相
+        事件（run_id=arbiter run）与本查询无关，不命中。
+
+        台账缺失/损坏/查询异常一律按零命中返回（fail-open——对齐链痕抑制
+        既有降级口径，宁多告警不漏告警：兜底查询故障不能让孤儿升级静默）。
+        """
+        if not run_id:
+            return []
+        try:
+            from core.pm_engine.arbiter import load_arbiter_ledger
+
+            rid = str(run_id)
+            return [
+                rec
+                for rec in load_arbiter_ledger(self.project_root)
+                if str(rec.get("kind") or "") in ("chain-closed", "chain-handoff")
+                and str(rec.get("run_id") or "") == rid
+            ]
+        except Exception as e:
+            self._log("warning", f"链事件按 run 联查异常（按零命中放行）: {e}")
+            return []
+
     def _admin_choice_allowlist(self, signal_type: str):
         """链上 Admin 拍板面白名单 id 集（task 2.4 单源；失败返回 None 跳过复核）。"""
         try:
@@ -1213,7 +1366,13 @@ class EscalationChain:
                 + (f"，解冻→{side['unfreeze_status']}" if side.get("unfrozen") else "")
                 + (f"，收口上升件 {side['closed_escalations']} 条" if side["closed_escalations"] else "")
             ),
-            extra={"status_after": status_after},
+            extra={
+                "status_after": status_after,
+                # fix-escalation-chain-ledger-closure 3.2：admin 相 chain-closed
+                # 事件 run_id 落实际 admin run id（看护 chain-closed 对账兜底
+                # 3.3 的联查前提）。
+                "run_id": str(disp.run_id or ""),
+            },
         )
         return side
 

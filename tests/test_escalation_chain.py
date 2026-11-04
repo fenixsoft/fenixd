@@ -1686,9 +1686,12 @@ class TestFirstIncidentTimeline(unittest.TestCase):
         assert in_flight_admin  # 链在办痕迹在场（抑制依据）
         self.mon._recover_orphaned_dispositions()
         assert self._escalations() == []  # 链在办：零看护告警
+        # 零看护终结（pending 原状保留）——非 pending 处置记录仅链侧 final
+        # 落账单点自带（fix-escalation-chain-ledger-closure 1.3：adm-1 派发
+        # 返回即落 final），看护自身不得终结在飞窗口内的 adm-2 pending
         disps = [r for r in self.store.read_all()
                  if r.get("kind") == "disposition" and r.get("status") != "pending"]
-        assert disps == []  # 零终结（pending 原状保留）
+        assert {str(r.get("admin_run_id") or "") for r in disps} == {"adm-1"}
         gate.set()
         assert self._drain()
         assert len(self.pm.alerts) == 1  # 链终点唯一人工作品
@@ -1697,3 +1700,444 @@ class TestFirstIncidentTimeline(unittest.TestCase):
         from core.pm_engine.escalation_chain import load_chain_state
 
         return load_chain_state(self.tmp)["in_flight"] == []
+
+
+# ══ fix-escalation-chain-ledger-closure：链侧终态落账 / choice 执行 / 事件 run_id ══
+
+
+class TestLedgerClosure(unittest.TestCase):
+    """tasks 1.3/1.4/3.2：链上 admin run 终态即时落账守卫 + 双路径字段契约。
+
+    复刻首例事件 …6474 时间轴形态作回归锚：``run_administrator`` 唤起前落
+    pending（替身内复刻，对齐 maintenance_runs 既有行为）、链头三分支任一
+    出口完成后 MUST 存在带该 run_id 的非 pending 处置记录——否则 pending
+    永久孤儿 → 15 分钟 grace 后孤儿看护假「处置中断」升级（一天 4 例实证
+    的结构性根因）。seam 策略同 TestAcceptanceScenarios：Admin 派发缝替身
+    内先落 pending 再返回脚本化终态，链序/落账/闭环语义由真链机器承载。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  admin_attempts: 2\n  arbiter_rulings: 2\n"
+            "  reset_window_days: 7\n",
+            encoding="utf-8",
+        )
+        reset_chain()
+        from core.state_machine import StateMachine
+
+        sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
+        sm.add_spec("spec-a", {"status": "blocked", "frozen": False})
+        self.chain = EscalationChain(self.tmp, MagicMock())
+        self.chain.set_runner(MagicMock())
+        self.chain.set_state_machine(sm)
+        self.pm = _FakePm(self.tmp)
+        self.chain.set_pm(self.pm)
+        self.lane = _FakeArbiterLane(self.tmp)
+        self._lane_patcher = patch(
+            "core.pm_engine.arbiter.get_lane", lambda *a, **k: self.lane
+        )
+        self._lane_patcher.start()
+
+    def tearDown(self):
+        self._lane_patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        reset_chain()
+
+    # ── 装置 ────────────────────────────────────────────────────────
+
+    def _install_dispatch_with_pending(self, script):
+        """链头派发缝替身：先落 pending（复刻 run_administrator 唤起序），
+        再返回脚本化终态。返回替身输出收集器。"""
+        from core.admin_store import DISPOSITION, AdminStore
+
+        store = AdminStore(self.tmp)
+        out = []
+
+        def fake_dispatch(item):
+            d = script.pop(0) if script else _disp()
+            out.append(d)
+            try:
+                store.append({
+                    "kind": DISPOSITION, "status": "pending", "result": "pending",
+                    "signal_type": item.get("signal_type"),
+                    "spec": item.get("spec") or "global",
+                    "admin_run_id": d.run_id,
+                })
+            except Exception:
+                pass  # run_administrator 对 pending 落盘失败内部降级继续（同款保真）
+            return d
+
+        self.chain._dispatch_admin = fake_dispatch
+        return out
+
+    def _submit_and_drain(self):
+        assert self.chain.submit_entry(
+            spec="spec-a", signal_type="verify_env_blocked", severity="major",
+            description="验证环境阻塞", evidence="env log",
+            recommended_action="修复环境", source="ledger-closure-test",
+        ) == "queued"
+        assert _drain_chain(self.chain)
+
+    def _dispositions(self):
+        from core.admin_store import DISPOSITION, AdminStore
+
+        return [r for r in AdminStore(self.tmp).read_all()
+                if r.get("kind") == DISPOSITION]
+
+    def _finals_for(self, run_id):
+        return [r for r in self._dispositions()
+                if str(r.get("admin_run_id") or "") == run_id
+                and (r.get("status") or r.get("result")) != "pending"]
+
+    def _ledger_events(self):
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        return load_arbiter_ledger(self.tmp)
+
+    # ── 首例时间轴三形态守卫（…6474 形态 MUST NOT 再产无 final 孤儿）──
+
+    def test_success_outlet_final_record_closes_pending(self):
+        script = [_disp(run_id="adm-6474", result="resolved", success=True,
+                        status_after="ready")]
+        self._install_dispatch_with_pending(script)
+        self._submit_and_drain()
+
+        finals = self._finals_for("adm-6474")
+        assert len(finals) == 1
+        assert finals[0]["result"] == "resolved"
+        # 不变式（守卫本体）：by_run 归并判该 run 已终结——pending 不再被
+        # 孤儿看护判为超时孤儿
+        from core.admin_monitor import _merge_admin_runs
+        from core.admin_store import AdminStore
+
+        by_run = _merge_admin_runs(AdminStore(self.tmp).read_all())
+        assert by_run["adm-6474"]["final"] is True
+        # 链 closed 事件在场且 run_id 落实际 admin run id（3.2）
+        closed = [e for e in self._ledger_events() if e.get("kind") == "chain-closed"]
+        assert len(closed) == 1 and closed[0]["run_id"] == "adm-6474"
+        # 时序不变式：final 落账先于链 closed 事件（D2）
+        assert str(finals[0]["created"]) <= str(closed[0]["created"])
+        # 链闭环：人工队列零痕迹
+        assert self.pm.alerts == []
+
+    def test_handoff_outlet_final_record_present(self):
+        script = [_disp(run_id="adm-h", result="resolved", success=True,
+                        handoff="arbiter", handoff_reason="超范围")]
+        self._install_dispatch_with_pending(script)
+        self.lane.outcomes = ["resolved"]
+        self._submit_and_drain()
+
+        finals = self._finals_for("adm-h")
+        assert len(finals) == 1
+        # result 保持管理员终态原值、escalate 位保持 disp 原值
+        assert finals[0]["result"] == "resolved"
+        assert finals[0]["escalate"] is False
+        # 链继续 Arbiter 相（转单已达车道）
+        assert len(self.lane.calls) == 1
+        # chain-handoff 事件 run_id 落实际 admin run id（3.2）
+        handoffs = [e for e in self._ledger_events()
+                    if e.get("kind") == "chain-handoff"]
+        assert handoffs and handoffs[0]["run_id"] == "adm-h"
+        # Arbiter 相 chain-closed 事件 run_id 语义不变（既有行为：不落
+        # admin run id，arbiter run id 只在文案里）
+        closed = [e for e in self._ledger_events() if e.get("kind") == "chain-closed"]
+        assert closed and closed[0]["run_id"] != "adm-h"
+
+    def test_exhausted_outlet_finals_for_every_attempt(self):
+        script = [
+            _disp(run_id="adm-e1", result="failed", success=False, error="boom1"),
+            _disp(run_id="adm-e2", result="failed", success=False, error="boom2"),
+        ]
+        self._install_dispatch_with_pending(script)
+        self._submit_and_drain()
+
+        for rid in ("adm-e1", "adm-e2"):
+            assert len(self._finals_for(rid)) == 1, rid
+        # 耗尽转单事件 run_id 落末次尝试 run id（3.2）
+        handoffs = [e for e in self._ledger_events()
+                    if e.get("kind") == "chain-handoff"]
+        assert handoffs and handoffs[-1]["run_id"] == "adm-e2"
+
+    def test_ledger_append_failure_degrades_not_blocks(self):
+        script = [_disp(run_id="adm-d", result="resolved", success=True,
+                        handoff="arbiter", handoff_reason="超范围")]
+        self._install_dispatch_with_pending(script)
+        self.lane.outcomes = ["escalated"]
+        with patch.object(
+            __import__("core.admin_store", fromlist=["AdminStore"]).AdminStore,
+            "append", side_effect=OSError("disk full"),
+        ):
+            self._submit_and_drain()
+
+        # 落账失败不阻断分支判定：handoff 判定照常触达 Arbiter 车道
+        assert len(self.lane.calls) == 1
+
+    # ── 双路径字段形状契约（D1 单源防族孪漂移）──────────────────────
+
+    def test_contract_direct_and_chain_record_shape_identical(self):
+        from core.agent_runner import AdminDisposition
+        from core.admin_store import AdminStore
+
+        # 直接路径形态参照：真 AdminDisposition 经同一落账助手产出（1.2 起
+        # _worker 亦走此单点）
+        store = AdminStore(self.tmp)
+        direct_disp = AdminDisposition(
+            run_id="adm-direct", spec="spec-a", success=True,
+            problem="环境阻塞", actions_taken="修复动作", result="resolved",
+            recommended_action="建议", summary="诊断结论：x；结果：已解决。",
+            error="", choice_id="", suggested_choice="", choice_payload="",
+        )
+        assert store.append_admin_final(
+            {"signal_type": "verify_env_blocked", "spec": "spec-a",
+             "severity": "major", "description": "验证环境阻塞",
+             "recommended_action": "修复环境"},
+            direct_disp,
+        ) is True
+        direct_rec = self._finals_for("adm-direct")[0]
+
+        # 链路径产出：成功闭环出口
+        script = [_disp(run_id="adm-chain", result="resolved", success=True,
+                        status_after="ready", problem="环境阻塞",
+                        actions_taken="修复动作", recommended_action="建议",
+                        summary="诊断结论：x；结果：已解决。")]
+        self._install_dispatch_with_pending(script)
+        self._submit_and_drain()
+        chain_rec = self._finals_for("adm-chain")[0]
+
+        # 字段形状一致（键集合同一；值随 run 不同属正常）
+        assert set(direct_rec.keys()) == set(chain_rec.keys())
+        # 关键形状断言：结构化裁决字段与载荷恒在（空值 None 形态稳定口径）
+        for k in ("choice_id", "suggested_choice", "choice_payload",
+                  "failure_evidence", "admin_run_id", "escalate", "error"):
+            assert k in chain_rec, k
+
+    def test_worker_final_append_delegates_to_shared_helper(self):
+        # 源级守卫（对齐本文件 TestAntiSelfLoopInventory 扫描风格）：
+        # 直接路径 _worker 的 final 落账已收敛到共享助手，内联字段拼装
+        # 不复存在（防两路径再漂移）
+        src = Path("core/admin_monitor.py").read_text(encoding="utf-8")
+        assert "self.store.append_admin_final(signal, disp" in src
+        assert "Failed to persist administrator disposition" not in src
+
+    # ── chain_events_for_run 查询口（3.3 单测面）────────────────────
+
+    def test_chain_events_for_run_filters_and_fail_open(self):
+        script = [_disp(run_id="adm-q", result="resolved", success=True,
+                        status_after="ready")]
+        self._install_dispatch_with_pending(script)
+        self._submit_and_drain()
+
+        hits = self.chain.chain_events_for_run("adm-q")
+        assert hits and all(e["run_id"] == "adm-q" for e in hits)
+        assert self.chain.chain_events_for_run("adm-no-such") == []
+        # 台账损坏 fail-open（零命中）
+        ledger = self.tmp / ".fenix" / "arbiter_ledger.jsonl"
+        ledger.write_text("{broken json", encoding="utf-8")
+        assert self.chain.chain_events_for_run("adm-q") == []
+
+
+class TestChainChoiceExecution(unittest.TestCase):
+    """tasks 2.2/2.3：链 closed 出口执行注册表 choice（payload 型生效 /
+    执行失败不伪造闭环 / 白名单外保持转单）。
+
+    执行器缝 patch ``core.dashboard.data.admin_actions.
+    execute_adjudication_choice``（模块级单源执行机器的底层执行器）——
+    链侧调用链（_execute_chain_choice → admin_choice_exec → 执行器）真实
+    执行，只脚本化最底层动作面。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.tmp / ".fenix" / "config.yaml").write_text(
+            "arbiter:\n  enabled: true\n"
+            "chain:\n  admin_attempts: 2\n  arbiter_rulings: 2\n"
+            "  reset_window_days: 7\n",
+            encoding="utf-8",
+        )
+        reset_chain()
+        from core.state_machine import StateMachine
+
+        sm = StateMachine(self.tmp / ".fenix" / "STATE.md", MagicMock())
+        sm.add_spec("spec-a", {"status": "blocked", "frozen": False})
+        self.chain = EscalationChain(self.tmp, MagicMock())
+        self.chain.set_runner(MagicMock())
+        self.chain.set_state_machine(sm)
+        self.pm = _FakePm(self.tmp)
+        self.chain.set_pm(self.pm)
+        self.lane = _FakeArbiterLane(self.tmp)
+        self._lane_patcher = patch(
+            "core.pm_engine.arbiter.get_lane", lambda *a, **k: self.lane
+        )
+        self._lane_patcher.start()
+        from core.admin_store import DISPOSITION, AdminStore
+
+        self.store = AdminStore(self.tmp)
+        self._DISPOSITION = DISPOSITION
+        self.exec_calls = []
+
+    def tearDown(self):
+        self._lane_patcher.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        reset_chain()
+
+    def _install_dispatch(self, script):
+        def fake_dispatch(item):
+            d = script.pop(0) if script else _disp()
+            self.store.append({
+                "kind": self._DISPOSITION, "status": "pending",
+                "result": "pending",
+                "signal_type": item.get("signal_type"),
+                "spec": item.get("spec") or "global",
+                "admin_run_id": d.run_id,
+            })
+            return d
+
+        self.chain._dispatch_admin = fake_dispatch
+
+    def _submit_and_drain(self):
+        assert self.chain.submit_entry(
+            spec="spec-a", signal_type="verify_env_blocked", severity="major",
+            description="验证环境阻塞", evidence="env log",
+            recommended_action="修复环境", source="chain-choice-test",
+        ) == "queued"
+        assert _drain_chain(self.chain)
+
+    def _patch_executor(self, result=None, exc=None):
+        recorded = self.exec_calls
+
+        def fake_executor(project_root, spec, choice_id, note="",
+                          signal_type=""):
+            recorded.append({
+                "project_root": project_root, "spec": spec,
+                "choice_id": choice_id, "note": note,
+                "signal_type": signal_type,
+            })
+            if exc is not None:
+                raise exc
+            return dict(result or {})
+
+        return patch(
+            "core.dashboard.data.admin_actions.execute_adjudication_choice",
+            fake_executor,
+        )
+
+    def _dispositions(self):
+        return [r for r in self.store.read_all()
+                if r.get("kind") == self._DISPOSITION]
+
+    def _ledger_kinds(self):
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        return [str(r.get("kind") or "") for r in load_arbiter_ledger(self.tmp)]
+
+    def test_payload_choice_executes_on_chain(self):
+        payload = json.dumps(
+            {"scenarios": ["scenario-a"], "reason": "场景定义不可行"},
+            ensure_ascii=False,
+        )
+        script = [_disp(run_id="adm-c", result="resolved", success=True,
+                        status_after="ready",
+                        choice_id="revise_scenario_reverify",
+                        choice_payload=payload)]
+        self._install_dispatch(script)
+        with self._patch_executor(
+            result={"ok": True, "action": "revise_scenario_reverify",
+                    "steps": ["wrote scenario pair"]},
+        ):
+            self._submit_and_drain()
+
+        # 执行器被调用：载荷原文整体直传（不经截断）
+        assert len(self.exec_calls) == 1
+        call = self.exec_calls[0]
+        assert call["spec"] == "spec-a"
+        assert call["choice_id"] == "revise_scenario_reverify"
+        assert call["note"] == payload
+        assert call["signal_type"] == "verify_env_blocked"
+        # 逐动作 DISPOSITION 审计记录落账（result=resolved、无 admin_run_id）
+        audits = [r for r in self._dispositions()
+                  if r.get("action_taken") == "revise_scenario_reverify"
+                  and not r.get("admin_run_id")]
+        assert len(audits) == 1 and audits[0]["result"] == "resolved"
+        # 闭环事件在执行成功后写（chain-closed 在场 + final 落账在前）
+        assert "chain-closed" in self._ledger_kinds()
+        finals = [r for r in self._dispositions()
+                  if str(r.get("admin_run_id") or "") == "adm-c"
+                  and (r.get("status") or r.get("result")) != "pending"]
+        assert len(finals) == 1
+        # 成功闭环不计失败
+        assert ChainQuotaStore(self.tmp).admin_attempts(_SIG) == 0
+        assert self.pm.alerts == []
+
+    def test_choice_execution_failure_no_false_closure(self):
+        script = [
+            _disp(run_id="adm-f1", result="resolved", success=True,
+                  status_after="ready", choice_id="revise_scenario_reverify",
+                  choice_payload=json.dumps({"scenarios": ["s"]})),
+            _disp(run_id="adm-f2", result="resolved", success=True,
+                  status_after="ready"),  # 重试后无 choice → 正常闭环
+        ]
+        self._install_dispatch(script)
+        with self._patch_executor(exc=RuntimeError("载荷非法：scenarios 缺失")):
+            self._submit_and_drain()
+
+        # fail-closed：不伪造闭环——执行失败事件在场 + 计一次失败
+        assert "chain-choice-failed" in self._ledger_kinds()
+        assert ChainQuotaStore(self.tmp).admin_attempts(_SIG) == 1
+        failed_ev = [e for e in self._ledger_all()
+                     if e.get("kind") == "chain-choice-failed"]
+        assert failed_ev[0]["run_id"] == "adm-f1"
+        assert "载荷非法" in failed_ev[0]["action_or_upgrade"]
+        # 该件按链既有失败语义处理：配额未尽回环重派 → 第二次成功闭环
+        assert "chain-closed" in self._ledger_kinds()
+        assert self.pm.alerts == []
+
+    def test_choice_skipped_payload_missing_fails_closed(self):
+        # requires_payload 选项而处置记录未携带载荷 → 执行器主动跳过
+        # （ok=False skipped，执行器不被触达）→ 链侧同款 fail-closed
+        script = [_disp(run_id="adm-s1", result="resolved", success=True,
+                        status_after="ready",
+                        choice_id="revise_scenario_reverify")]
+        self._install_dispatch(script)
+        with self._patch_executor(
+            result={"ok": True, "action": "revise_scenario_reverify"},
+        ):
+            self._submit_and_drain()
+
+        assert self.exec_calls == []  # 载荷缺失在执行机器内被跳过，执行器不触达
+        assert "chain-choice-failed" in self._ledger_kinds()
+        assert ChainQuotaStore(self.tmp).admin_attempts(_SIG) >= 1
+        assert "chain-closed" not in self._ledger_kinds()  # 首件未伪造闭环
+
+    def test_out_of_allowlist_choice_still_hands_off(self):
+        # 白名单外（人类拍板面 raise_budget）→ 不执行、转单 Arbiter 不计失败
+        script = [_disp(run_id="adm-o", result="resolved", success=True,
+                        status_after="ready", choice_id="raise_budget")]
+        self._install_dispatch(script)
+        self.lane.outcomes = ["escalated"]
+        with self._patch_executor(
+            result={"ok": True, "action": "raise_budget"},
+        ):
+            self._submit_and_drain()
+
+        assert self.exec_calls == []  # 白名单外不执行
+        assert len(self.lane.calls) == 1  # 越界复核转单照常
+        assert ChainQuotaStore(self.tmp).admin_attempts(_SIG) == 0  # 不计失败
+        handoffs = [e for e in self._ledger_all()
+                    if e.get("kind") == "chain-handoff"]
+        assert handoffs and handoffs[0]["run_id"] == "adm-o"
+        # final 记录照常落账（越界件同样不产孤儿 pending）
+        finals = [r for r in self._dispositions()
+                  if str(r.get("admin_run_id") or "") == "adm-o"
+                  and (r.get("status") or r.get("result")) != "pending"]
+        assert len(finals) == 1
+
+    # ── 台账读取小工具 ──────────────────────────────────────────────
+
+    def _ledger_all(self):
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        return load_arbiter_ledger(self.tmp)

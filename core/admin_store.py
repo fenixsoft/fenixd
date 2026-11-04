@@ -681,6 +681,94 @@ class AdminStore:
         written = self._mutate(fn, skip_unchanged=True, refuse_returns_none=True)
         return rec if written else None
 
+    def append_admin_final(self, signal: dict, disp, error_note: str = "") -> bool:
+        """Administrator 处置 final DISPOSITION 记录落账单点（fix-escalation-
+        chain-ledger-closure 1.1，design D1）。
+
+        admin_monitor 直接路径（``_worker``）与处置链路径（``_run_admin_phase``）
+        共用同一落账助手，字段形状一处定义（防族孪漂移）；disp duck-typed 读
+        取（getattr 缺省兜底——不 import agent_runner，admin_store 不反向依赖
+        agent_runner，避免环）。字段形状对齐直接路径 _worker final append 全
+        字段：signal_type / spec / severity / description（disp.problem，空则
+        回落信号描述）/ action_taken / result / recommended_action / summary /
+        admin_run_id / escalate / error / failure_evidence / choice_id /
+        suggested_choice / choice_payload。
+
+        ``error_note`` 并入 error 字段（非空时以「；」拼接 disp.error 之后）——
+        直接路径把 choice 执行失败原因并入 final 记录（fix-global-signal-
+        choice-execution 2.2 既有口径）。
+
+        append 失败（异常 / 损坏留底拒写返回 None）返回 False 并 WARN 留痕
+        （含 run_id），调用方不阻断——pending 保持由孤儿看护既有语义兜底
+        （宁多告警不静默）。落账成功返回 True。
+        """
+        base_error = str(getattr(disp, "error", "") or "")
+        if error_note:
+            error = (f"{base_error}；" if base_error else "") + str(error_note)
+        else:
+            error = base_error
+        failure_evidence = getattr(disp, "failure_evidence", None)
+        rec = {
+            "kind": DISPOSITION,
+            "signal_type": signal.get("signal_type"),
+            "spec": signal.get("spec") or getattr(disp, "spec", None),
+            "severity": signal.get("severity"),
+            "description": (
+                getattr(disp, "problem", "") or signal.get("description")
+            ),
+            "action_taken": getattr(disp, "actions_taken", "") or "",
+            "result": getattr(disp, "result", "") or "",
+            "recommended_action": (
+                (
+                    getattr(disp, "recommended_action", "")
+                    or signal.get("recommended_action")
+                    or ""
+                )
+                if (getattr(disp, "result", "") or "") == "failed"
+                else getattr(disp, "recommended_action", "") or ""
+            ),
+            "summary": getattr(disp, "summary", "") or "",
+            "admin_run_id": str(getattr(disp, "run_id", "") or ""),
+            "escalate": bool(getattr(disp, "escalate", False)),
+            "error": error,
+            # orphaned-state-probe-calibration 1.5：非零退出的可定位失败证据
+            # 随 final 记录留痕；无证据时省略（类型守卫防替身注入非 dict 值，
+            # 与 _worker 既有口径一致）。
+            "failure_evidence": (
+                failure_evidence
+                if isinstance(failure_evidence, dict) and failure_evidence
+                else None
+            ),
+            # add-human-adjudication-choices 4.2 / fix-admin-choice-payload-
+            # and-scenario-pairing 2.1：结构化裁决字段与载荷随 final 记录透传
+            # 落盘（空值写 None 保持记录形状稳定，前端按无裁决处理）。
+            "choice_id": getattr(disp, "choice_id", "") or None,
+            "suggested_choice": getattr(disp, "suggested_choice", "") or None,
+            "choice_payload": getattr(disp, "choice_payload", "") or None,
+        }
+        run_id = rec["admin_run_id"]
+        try:
+            written = self.append(rec)
+        except Exception as e:
+            if self._logger is not None:
+                self._logger.warning(
+                    "admin_store",
+                    f"final 处置记录落账失败（run {run_id}）: "
+                    f"{type(e).__name__}: {e}——pending 由孤儿看护兜底",
+                    {"run_id": run_id, "spec": rec["spec"]},
+                )
+            return False
+        if written is None:
+            if self._logger is not None:
+                self._logger.warning(
+                    "admin_store",
+                    f"final 处置记录落账被拒（run {run_id}）: "
+                    f"{self.last_write_refusal}——pending 由孤儿看护兜底",
+                    {"run_id": run_id, "spec": rec["spec"]},
+                )
+            return False
+        return True
+
     def merge_signal(self, entry: dict, status_hash: str):
         """沉淀式写入 per-spec 检测信号（admin-signal-consolidation D1）。
 
