@@ -8,6 +8,7 @@ Manages the finite state machine for SPECs:
 Handles atomic reads/writes of STATE.md with file locking.
 """
 
+import ast
 import fcntl
 import hashlib
 import json
@@ -866,6 +867,47 @@ def _normalize_priority_int(value) -> int:
         return 999
 
 
+def _normalize_depends_on(value):
+    """depends_on 形态归一单源：规范形态为逗号分隔 SPEC 名字符串。
+
+    读侧（_parse_content）与写侧（add_spec / _apply_updates_entry）共用本
+    助手，内存态恒为规范串，serialize 落盘自动自愈历史列表形态。
+
+    事故背景（2026-11-03 add-knowledge-inbox-pipeline 派发卡死）：立项方以
+    YAML 列表形态（``['A']``）登记 depends_on，原样落盘后 PMEngine 的
+    ``str(deps).split(",")`` 解析口径把单元素列表 str() 成带引号方括号的
+    脏名 ``['A']``——无逗号可拆，整串当一个依赖名查无此 SPEC，派发门
+    _dependencies_satisfied fail-closed 永判「依赖未满足」，依赖方转 pushed
+    后 dependent 仍永不派发。event_bus._find_dependents 早在 code-review
+    item 248d00806e40 修了列表归一，但姊妹消费点未同步——归一下沉到
+    state_machine 单源后全部消费点受益，不再逐点打补丁。
+
+    归一口径：None / "null" / "none" / 空串 → None（56f1aefd2823 可空契约，
+    原可空清单登记迁入本助手）；list/tuple → 逐元素 str().strip() 后逗号串；
+    字符串化列表字面量（"['A', 'B']"）→ ast.literal_eval 安全解析后同口径；
+    拆不动的坏值原样保留（不吞数据，消费侧维持既有 fail-closed 口径）；
+    其余标量 strip 后原样返回。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        names = [str(d).strip() for d in value if str(d).strip()]
+        return ",".join(names) if names else None
+    text = str(value).strip()
+    if not text or text.lower() in ("null", "none"):
+        return None
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return text
+        if isinstance(parsed, (list, tuple)):
+            names = [str(d).strip() for d in parsed if str(d).strip()]
+            return ",".join(names) if names else None
+        return str(parsed).strip()
+    return text
+
+
 # ── 归档清单（add-archive-state-migration D1/D2）─────────────────────
 
 # 已迁出 STATE.md 条目的归档清单，与 STATE.md 同级同生命周期（.fenix/ 内、
@@ -1050,6 +1092,16 @@ class StateParser:
                             value = int(value)
                         except ValueError:
                             value = None
+                elif key == "depends_on":
+                    # depends_on 形态归一（单源 _normalize_depends_on，读侧
+                    # 入口）：规范形态为逗号分隔 SPEC 名字符串。列表形态
+                    # （['A']）原样透传会被 PMEngine._dependencies_satisfied
+                    # 的 str().split(",") 解析成带引号方括号的脏名（单元素
+                    # 列表无逗号可拆）→ 查无此 SPEC → 派发门 fail-closed
+                    # 永判「依赖未满足」（2026-11-03 事故）。null 语义一并
+                    # 由助手承接（下方可空清单的 depends_on 登记随之迁出，
+                    # _verify_parallel_override 迁出先例同款）。
+                    value = _normalize_depends_on(value)
                 elif key in (
                     FROZEN_FIELD,
                     "_recovery_resume",
@@ -1108,14 +1160,10 @@ class StateParser:
                     "tester_run",
                     "branch",
                     "error",
-                    # code-review 56f1aefd2823：depends_on 可空——serialize 对
-                    # 缺失/None 恒写 null，未登记本表则 STATE.md 往返后读回
-                    # 字符串 "null" 而非 None，消费点被迫各自硬编码
-                    # == "null" 防御（event_bus._find_dependents、
-                    # pm_engine._dependencies_satisfied/_dependencies_pending），
-                    # 新消费点漏写即把 "null" 当依赖 spec 名去查并误告警。
-                    # serialize 写格式保持不变（仍写 null，兼容既有落盘格式）。
-                    "depends_on",
+                    # depends_on 已迁出本清单（上方 _normalize_depends_on
+                    # 归一分支，2026-11-03 列表形态派发卡死事故）——null 语义
+                    # 由助手承接（None/"null"/空串 → None），serialize 写
+                    # 格式不变（仍写 null，56f1aefd2823 契约保持）。
                     "total_duration",
                     START_AFTER_FIELD,
                     FROZEN_UNTIL_FIELD,
@@ -2011,6 +2059,11 @@ class StateMachine:
         # 比较时抛 TypeError，中断 STATE.md 全量回写。
         if "priority" in local:
             local["priority"] = _normalize_priority_int(local["priority"])
+        # depends_on 形态归一（单源 _normalize_depends_on）：与读侧/add_spec
+        # 同口径——update_spec/admin 面板以列表形态更新依赖时归一为规范逗号串，
+        # 防止列表形态经 STATE.md 往返固化（同上方 priority 归一先例）。
+        if "depends_on" in local:
+            local["depends_on"] = _normalize_depends_on(local["depends_on"])
         # created 显式 None 归一（code-review item b8c465861383）：与读侧
         # _spec_sort_key 的 ``or "z"`` 兜底同口径——created=None 原样落盘
         # 会让下一次 serialize 的 sorted(_spec_sort_key) 在同 priority 条目
@@ -2748,6 +2801,11 @@ class StateMachine:
             new_entry.setdefault("branch", None)
             new_entry.setdefault("error", None)
             new_entry.setdefault("depends_on", None)
+            # depends_on 形态归一（单源 _normalize_depends_on）：调用方（如
+            # 立项流程）传列表形态时与读侧同口径归一为规范逗号串——原样落盘
+            # 会在下一次 STATE.md 往返中固化列表形态，读侧消费点解析出脏名
+            # （同 priority 形状归一先例，code-review item 18afef1d8d99）。
+            new_entry["depends_on"] = _normalize_depends_on(new_entry["depends_on"])
             new_entry.setdefault("reviewer_run", None)
             new_entry.setdefault("_review_attempts", 0)
 
