@@ -28,7 +28,9 @@
 孤儿看护 pending 分支（run 文件终态、非 interrupted、链痕 in_flight/deferred/arbiter
 抑制未命中）升级人工前，MUST 查链事件台账——同 `admin_run_id` 存在
 chain-closed / chain-handoff 事件时，MUST NOT 产生升级告警：补写一条非 pending 终结
-DISPOSITION 记录闭合该 pending（`result=resolved`，`actions_taken` 注明「链侧已闭环但
+DISPOSITION 记录闭合该 pending（`result=resolved`，`admin_run_id` MUST 落该 run id——
+by_run 归并仅认「非 pending 记录带同 run id」为终结（`core/admin_monitor.py:6558-6561`
+归并语义），补记缺该字段则 pending 不被闭合、兜底空转；`actions_taken` 注明「链侧已闭环但
 final 记录缺失，由看护对账补记」），链事件台账查询异常（文件缺失/损坏）按零命中放行
 升级（fail-open，对齐链痕抑制既有降级口径）。
 

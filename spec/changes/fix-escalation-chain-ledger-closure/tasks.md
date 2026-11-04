@@ -49,7 +49,8 @@
       admin run id；arbiter 相事件语义不变
 - [ ] 3.3 链单例新增 chain_events_for_run(run_id) 只读聚合查询口；孤儿看护 pending
       分支升级前联查——命中 chain-closed/chain-handoff 补终结记录（result=resolved +
-      对账注记）不升级人工；查询异常按零命中放行（fail-open）
+      admin_run_id 落该 run id（by_run 归并闭合前提）+ 对账注记）不升级人工；
+      查询异常按零命中放行（fail-open）
 - [ ] 3.4 看护侧用例：success 归因新文案且不含「非成功结论」/ 非 success 文案不变回归锚 /
       chain-closed 在场不升级只终结 / chain-handoff 同款 / 台账缺失 fail-open 照常升级
 

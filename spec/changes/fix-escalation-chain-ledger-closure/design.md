@@ -56,8 +56,10 @@ human-escalation-alerts（rev=5，链痕抑制前置/归因按终态实证）、
   logger)` / `persist_choice_step_records(store, signal, signal_rec, disp, outcome,
   logger)`），AdminMonitor 同名方法委托之——直接路径行为回归零变化（既有用例全绿为锚）。
 - 链 closed 出口调用同一模块级函数：越界白名单复核（既有，保持先行）→ 执行 →
-  逐动作落账 → 成功才 `_close_chain_success`；执行失败/跳过 fail-closed：不写
-  chain-closed、不计成功，该件按链既有失败语义处理（计一次失败，error 注入链事件）。
+  逐动作落账 → 成功才 `_close_chain_success`；白名单内 choice 的执行失败/执行器
+  主动跳过（载荷缺失等）fail-closed：不写 chain-closed、不计成功，该件按链既有
+  失败语义处理（计一次失败，error 注入链事件）。白名单外 choice 不属此列——既有
+  越界复核转单、不计失败（与能力规格「白名单外 choice 保持转单」Scenario 同口径）。
 - 不选「链构造 AdminMonitor 单例调用方法」：Monitor 构造面远宽于所需（巡检状态/
   冷却/执行器池），引入隐性耦合；不选「链上复制执行逻辑」：与人工 alert-resolve、
   直接路径三处同源纪律（`execute_adjudication_choice` 单执行机器）冲突。
@@ -85,7 +87,8 @@ human-escalation-alerts（rev=5，链痕抑制前置/归因按终态实证）、
   「链侧已闭环但 final 记录缺失，由看护对账补记」）不升级；查询异常按零命中放行
   （fail-open，对齐链痕抑制既有降级口径，宁多告警不漏告警）。
 - 查询口放链单例（`chain_events_for_run(run_id)` 只读聚合，monitor 不直读台账内部
-  结构——对齐 D1 链痕查询口「数据属主封装」既有决策）。
+  结构——对齐既有链痕抑制查询口「数据属主封装」决策：monitor 侧经链单例函数内
+  lazy import 既有形态，`core/admin_monitor.py:6691` 先例）。
 
 ## Risks
 
