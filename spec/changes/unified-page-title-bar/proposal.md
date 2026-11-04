@@ -18,7 +18,7 @@
 
 ### New Capabilities
 
-- `unified-page-title-bar`: 全站统一内容标题栏控件——双壳位（顶栏承载 / 内容区首行承载）、标题+副标题随迁+过滤项右上落位、面包屑退役、PageContainer 页头退役、定高偏移回校、移动端壳位降级。**界面以 prototype/ 为 UI 真相源**（specs/unified-page-title-bar 同级 prototype/ 已批准入库）。
+- `unified-page-title-bar`: 全站统一内容标题栏控件——双壳位（顶栏承载 / 内容区首行承载）、标题+副标题随迁+过滤项右上落位、面包屑退役、PageContainer 页头退役、定高偏移回校、移动端壳位降级。**界面以 prototype/ 为 UI 真相源**（specs/unified-page-title-bar/prototype/ 已批准入库，落位与原型绑定契约 `specs/<spec>/prototype/` 约定一致）。
 
 ### Modified Capabilities
 

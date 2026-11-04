@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-> **界面原型（UI 真相源）**：`spec/changes/unified-page-title-bar/prototype/`（standalone.html = 独立访问形态，embed.html = dsh web 嵌入形态，双整页截图随原型入库）。相关界面 Scenario 的布局、排布、尺寸观感以 prototype/ 为准，冲突须升级用户裁决。
+> **界面原型（UI 真相源）**：`spec/changes/unified-page-title-bar/specs/unified-page-title-bar/prototype/`（standalone.html = 独立访问形态，embed.html = dsh web 嵌入形态，双整页截图随原型入库）。相关界面 Scenario 的布局、排布、尺寸观感以 prototype/ 为准，冲突须升级用户裁决。
 
 ### Requirement: 统一标题栏控件双壳位
 dashboard 前端 SHALL 提供唯一的全站标题栏控件（含**标题 / 副标题 / 返回箭头 / 过滤项**四类声明槽位），各常规页只声明数据、MUST NOT 逐页自画同类型标题 div。控件按运行环境自选壳位：独立访问（无 `embed=1`）且视口 ≥768px 时渲染进顶部标题栏（Fenix Harness 品牌之后，标题 18px/700、副标题 12px 三级灰基线随迁，过滤项落顶栏右上角）；`embed=1`（dsh web 面板桥）或视口 <768px 时顶栏不承载，控件 SHALL 自动渲染为内容区首行标题栏（48px、白底、底缘分隔细线，排布与顶栏壳位同构）。壳位判定 MUST 收敛在控件内部，页面侧零环境分支。
@@ -18,7 +18,7 @@ dashboard 前端 SHALL 提供唯一的全站标题栏控件（含**标题 / 副�
 - **THEN** 顶栏仅渲染品牌（不承载标题与过滤项），统一标题栏整体渲染在内容区首行（与 embed 壳位同款载体），页面 `scrollWidth` 不超过视口宽，无横向溢出
 
 ### Requirement: 内容区标题栏退役
-全部常规页（跨项目概览、项目列表、SPEC 详情、设置、运维记录、处置链、指挥中心、帮助）SHALL 摘除 PageContainer 页头（`header` 配置与页头渲染），内容区不再渲染标题行；页面内容直接从首屏卡片/表格起。无壳的脱壳页（SPEC 协作拓扑大屏 `layout:false`）不在本控件适用范围。
+全部常规页（跨项目概览、项目列表、SPEC 详情、设置、运维记录、处置链、指挥中心、帮助）SHALL 摘除 PageContainer 页头（`header` 配置与页头渲染），内容区不再渲染标题行；页面内容直接从首屏卡片/表格起。无壳的脱壳页（SPEC 协作拓扑大屏 `layout:false`）不在本控件适用范围；菜单「项目」父项落点 `/projects` 的兜底占位页（`PagePlaceholder`，项目列表就绪后自动重定向、仅空列表时兜底可见）同为豁免面——保留其占位页头，不迁移本控件。
 
 #### Scenario: 概览内容区首屏
 - **WHEN** 打开跨项目概览页（standalone）
@@ -90,7 +90,7 @@ SPEC 详情页标题区富组合（返回箭头 + SPEC 名 + 模式 Tag + 状态
 - **THEN** 侧栏菜单、配色、卡片表格形态一致；唯一差异为顶栏出现页面标题+副标题、内容区页头消失
 
 ### Requirement: 界面以原型为 UI 真相源
-本能力全部界面形态（顶栏排布、标题行尺寸、过滤项密度、副标题灰阶层级、行壳位同构关系）以 `spec/changes/unified-page-title-bar/prototype/` 为 UI 真相源（主题 token 取 `theme.ts` 单源真值）；实现与评审 MUST 对照原型，原型与文字描述冲突时以原型为准并升级用户裁决。
+本能力全部界面形态（顶栏排布、标题行尺寸、过滤项密度、副标题灰阶层级、行壳位同构关系）以 `spec/changes/unified-page-title-bar/specs/unified-page-title-bar/prototype/` 为 UI 真相源（主题 token 取 `theme.ts` 单源真值）；实现与评审 MUST 对照原型，原型与文字描述冲突时以原型为准并升级用户裁决。
 
 #### Scenario: 实现对照原型
 - **WHEN** 实现者渲染任一常规页标题栏

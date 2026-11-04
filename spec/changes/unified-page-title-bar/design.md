@@ -4,7 +4,7 @@
 
 dashboard 前端（umi + ProLayout mix 布局 + antd v6）现状：8 个常规页各自以 `PageContainer header={{ title, subTitle, extra }}` 在内容区顶部渲染标题行（56px 页头占位）；顶栏左侧为 `HeaderTitle` 品牌（`app.tsx:104`），右侧为 `actionsRender` 注入的全局面包屑 `HeaderCrumb`（`app.tsx:96/154`）；页级过滤控件散落两处形态（settings/chain 在 `header.extra`，指挥中心在 Tabs `tabBarExtraContent`）。embed=1（dsh web 面板桥）隐藏侧栏与顶栏，现靠 PageContainer 页头在嵌入态显示标题。
 
-本变更经原型确认环定稿（2026-11-04 用户明示认可）：**界面原型（UI 真相源）= `prototype/`**（standalone.html + embed.html + 双整页截图，vendor 层真组件、具约束力）。
+本变更经原型确认环定稿（2026-11-04 用户明示认可）：**界面原型（UI 真相源）= `specs/unified-page-title-bar/prototype/`**（standalone.html + embed.html + 双整页截图，vendor 层真组件、具约束力）。
 
 **设计约束以 DESIGN.md 为准**（界面设计宪法，当前摘录已注入原型生成）：页面标题 18px/700（字号阶 16-18 档）、字号阶 11/12/13/14/16/18/28、配色单源（theme.ts 宿主对齐覆盖表）、静态渲染红线（零动画）、数据墨水优先、移动端「改布局不改宽度」。本变更不偏离宪法任何条款；标题**载体**从内容区迁顶栏属现状变化，宪法「页面标题 18px/700」条款数值语义不变，宪法回写由用户定稿事件走修正案程序（本 SPEC 不直写宪法）。
 
