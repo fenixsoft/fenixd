@@ -470,12 +470,17 @@ def cdn_probe(react_version: str, antd_version: str, timeout: float = CDN_TIMEOU
 
 def decide_level(*, has_supported_stack: bool, cache_hit: bool, node_ok: bool,
                  bundle_succeeded: bool, cdn_ok: bool) -> str:
-    """三级降级判定：vendor 缓存 → node 现打包 → CDN ESM → 纯 HTML 仿样。"""
+    """三级降级判定：vendor 缓存 → 现打包 → CDN ESM → 纯 HTML 仿样。
+
+    ``node_ok`` 不参与层级判定：本地 node_modules 打包路径（esbuild 为平台
+    原生二进制）不依赖 node/npm，打包成功本身即证明产物可用；node_ok 仅由
+    调用方用于降级路径日志（解释走了哪条打包路径）。
+    """
     if not has_supported_stack:
         return "plain"
     if cache_hit:
         return "vendor"
-    if node_ok and bundle_succeeded:
+    if bundle_succeeded:
         return "vendor"
     if cdn_ok:
         return "cdn"

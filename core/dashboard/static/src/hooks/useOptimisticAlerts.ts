@@ -21,6 +21,11 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
   const [optimistic, setOptimistic] = useState<string[]>([]);
   // 标记成功的时刻（id → ts）：超时兜底的计时依据（ref 记账不触发渲染）
   const confirmedAtRef = useRef(new Map<string, number>());
+  // 同 id 在飞防重（code-review item cc4a669ce5fd）：同口径跟进姊妹 hook
+  // useAlertAdjudication 的 resolvingIdsRef——请求发出前同步置位、finally 清除；
+  // 双击间隔小于一帧时 optimistic 数组去重拦不住重复的 markAlertHandled 请求，
+  // ref 在 await 前同步置位才拦得住（ref 承担防重真相，不触发渲染）
+  const resolvingIdsRef = useRef<Set<string>>(new Set());
   // 兜底时钟：仅在存在乐观遮蔽时每秒 tick，驱动下方超时检查（alertsData 陈旧
   // 不再更新时收敛 effect 仍能按时推进）；遮蔽清空即停表，卸载自动清理
   const [tick, setTick] = useState(0);
@@ -64,11 +69,22 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
   // 标记已处理包装：成功记录收敛时刻并返回 null（遮蔽待确认或超时兜底清除），
   // 失败立即回滚遮蔽并返回错误文案（提示与刷新由各 surface 接续）
   const markHandled = useCallback(async (a: AlertItem): Promise<string | null> => {
-    // 去重守卫：同 id 并发重复调用（快速双击等）不重复写入遮蔽数组
+    // 在飞防重守卫（item cc4a669ce5fd）：同 id 在飞期间直接 return（null＝无
+    // 错误文案，后端请求由首调用负责），不重复发出 markAlertHandled；下方
+    // optimistic 去重只拦遮蔽数组重复写入，拦不住请求本身
+    if (resolvingIdsRef.current.has(a.id)) return null;
+    resolvingIdsRef.current.add(a.id);
+    // 遮蔽写入守卫：同 id 已在遮蔽内则 no-op，不重复写入
     setOptimistic((prev) => (prev.includes(a.id) ? prev : [...prev, a.id]));
     try {
       await markAlertHandled(a.project, a.id);
       confirmedAtRef.current.set(a.id, Date.now());
+      // 遮蔽补写（item f5126d5754ec）：并发一成一败且失败侧先返回时，该 id 已
+      // 被失败回滚移出 optimistic，成功侧后返回只记 confirmedAtRef 会让已处理
+      // 告警闪回「未处理」列表；这里按需补写遮蔽（已在遮蔽内则 no-op），使
+      // 两种并发完成次序的遮蔽收敛一致，清除仍由收敛 effect（确认消失或超时
+      // 兜底）负责
+      setOptimistic((prev) => (prev.includes(a.id) ? prev : [...prev, a.id]));
       return null;
     } catch (err) {
       // 失败即回滚乐观遮蔽：后端列表仍含该 id，不回滚会让未处理告警被永久隐藏。
@@ -79,6 +95,8 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
         setOptimistic((prev) => prev.filter((id) => id !== a.id));
       }
       return err instanceof Error ? err.message : String(err);
+    } finally {
+      resolvingIdsRef.current.delete(a.id);
     }
   }, []);
 

@@ -10,7 +10,7 @@
  */
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
-import { Card, Col, Empty, Progress, Row, Select, Spin, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Card, Col, Empty, Progress, Row, Select, Spin, Table, Tag, Tooltip, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useModel } from '@umijs/max';
 import { getChainOverview } from '@/services/dashboard';
@@ -56,6 +56,7 @@ function subjectLabel(row: { spec?: string; subject?: string; granularity: strin
 export default function ChainPage() {
   const [data, setData] = useState<ChainOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [project, setProject] = useState<string | undefined>(undefined);
   // 项目选择器选项取全局 initialState.projects（选定单项目后聚合分支的
   // projects 字段不再下发，避免选项列表被自身响应掏空）
@@ -66,8 +67,11 @@ export default function ChainPage() {
     try {
       const view = await getChainOverview(name);
       setData(view);
-    } catch {
-      // 观测面 fail-soft：请求失败保留上一帧数据，仅停 spinner
+      setError('');
+    } catch (err) {
+      // 观测面 fail-soft（command-center useScreen 同款口径）：刷新失败保留
+      // 上一帧数据仅置 error，由页首内联 Alert 透出，不静默吞掉
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -83,15 +87,18 @@ export default function ChainPage() {
   const summary = data?.summary;
   const total = data?.total;
 
+  // null 指标占位口径（command-center shared.ts fmtMetric 同款）：数据未到
+  // （data=null，首载未到或请求失败）统计格显「—」——0 与「口径不可得」
+  // 语义不同，MUST NOT 显示 0
   const stats = useMemo(
     () => [
-      { title: '链在办', value: total ? total.in_flight : summary?.in_flight ?? 0 },
-      { title: '人工队列', value: total ? total.queue : summary?.queue ?? 0 },
-      { title: '签名水位', value: total ? total.signatures : summary?.signatures ?? 0 },
-      { title: '配额耗尽', value: total ? total.quota_exhausted : summary?.quota_exhausted ?? 0 },
-      { title: '上升件', value: total ? total.escalations : summary?.escalations ?? 0 },
+      { title: '链在办', value: data ? (total ? total.in_flight : summary?.in_flight ?? 0) : '—' },
+      { title: '人工队列', value: data ? (total ? total.queue : summary?.queue ?? 0) : '—' },
+      { title: '签名水位', value: data ? (total ? total.signatures : summary?.signatures ?? 0) : '—' },
+      { title: '配额耗尽', value: data ? (total ? total.quota_exhausted : summary?.quota_exhausted ?? 0) : '—' },
+      { title: '上升件', value: data ? (total ? total.escalations : summary?.escalations ?? 0) : '—' },
     ],
-    [summary, total],
+    [data, summary, total],
   );
 
   const inFlightColumns = [
@@ -233,6 +240,10 @@ export default function ChainPage() {
       />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Spin spinning={loading}>
+        {/* 刷新失败保留旧数据 + 内联 Alert（command-center 各屏同款形态） */}
+        {error ? (
+          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`处置链刷新失败：${error}`} />
+        ) : null}
         <Row gutter={16}>
           {stats.map((s) => (
             <Col key={s.title} xs={12} sm={8} md={4} lg={4} style={{ marginBottom: 16 }}>

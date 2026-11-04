@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -40,6 +41,11 @@ from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+try:
+    import fcntl  # 跨进程文件锁（Linux/macOS 可用）；Windows 无此模块走降级
+except ImportError:  # 平台兜底：无 fcntl 时保持仅进程内互斥的历史行为
+    fcntl = None  # type: ignore[assignment]
+
 PID_FILE_NAME = ".proto-server.json"
 FEEDBACK_FILE_NAME = "feedback.json"
 PORT_RETRY_ATTEMPTS = 5
@@ -49,7 +55,42 @@ MAX_FEEDBACK_FILE_BYTES = 8 << 20  # 8MB：feedback.json 总量上限，超限�
 STOP_WAIT_SEC = 5
 # 跨请求共享的批注写入锁：ThreadingHTTPServer 每个连接新建 handler 实例，
 # 实例级锁没有跨连接互斥，并发 POST /feedback 会互相覆盖丢批注。
+# 但线程锁只在单进程内互斥：同目录可能出现多个存活实例共写同一 feedback.json
+# （无 /proc 平台命令行核实不可用时保守判残留接管、旧实例未被停止；以及
+# probe→写 PID 文件之间无仲裁的并发启动），读-改-写仍会互相覆盖丢批注——
+# 批注是本 skill 回流给 agent 的核心产物，写入须另加跨进程文件锁串行化。
 _FEEDBACK_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _feedback_file_lock(target: Path):
+    """feedback.json 读改写的跨进程互斥：独占 flock 伴生锁文件 ``<名>.lock``。
+
+    锁落在伴生文件而非 feedback.json 本身：目标文件经 tmp 原子 replace 换名，
+    inode 随每次写入变化，锁旧 inode 保护不了新文件。无 fcntl 平台（Windows）
+    或锁文件创建/加锁失败时降级为仅进程内互斥（历史行为），不让伺服崩溃。
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = target.with_name(target.name + ".lock")
+    fd: int | None = None
+    try:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            print(f"feedback-lock-unavailable: 跨进程锁不可用（{exc}），"
+                  "降级为仅进程内互斥", file=sys.stderr)
+            yield
+            return
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +334,9 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
         （如原文件损坏已被隔离为 .bak）。
         """
         target = self.proto_dir / FEEDBACK_FILE_NAME
-        with _FEEDBACK_LOCK:
+        # 先取跨进程文件锁再取线程锁：同目录多存活实例（无 /proc 平台保守接管
+        # 或启动竞态双活）下读-改-写必须在进程间也串行，否则后写覆盖前写丢批注。
+        with _feedback_file_lock(target), _FEEDBACK_LOCK:
             entries: list = []
             doc: dict | None = None  # dict 形态（如 annotator.js 本地导出）整体保留
             corrupt = False  # 原文件损坏/不可读：覆盖前先改名隔离，防丢可恢复历史

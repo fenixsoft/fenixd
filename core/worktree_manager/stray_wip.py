@@ -941,10 +941,12 @@ class MainTreeStrayWipSweeper:
         而非真实路径，须先经 ``_numstat_rename_dst`` 解析出目的端再读盘
         （code-review item e170743ae020：显示形直读则 os.stat 恒 OSError、
         恒定占位令 rename 后内容演化不改指纹、宽限从旧 first_seen 续算）。
-        读盘口径对齐 ``_untracked_fingerprint``：先 stat 判普通文件（防
-        管道/设备文件挂起哈希循环），OSError 按 unreadable 占位（真实
-        路径解析后占位只剩真实不可读的盘上态，该文件下轮指纹自然变化、
-        计时重起，不虚构内容哈希）。
+        读盘口径对齐 ``_untracked_fingerprint``：先 lstat 判普通文件（防
+        管道/设备文件挂起哈希循环；不跟随符号链接，指向仓库外普通文件的
+        链接按非普通文件取 unreadable 占位、不越界读盘，item
+        d05e3b49db73），OSError 按 unreadable 占位（真实路径解析后占位
+        只剩真实不可读的盘上态，该文件下轮指纹自然变化、计时重起，不虚构
+        内容哈希）。
 
         numstat 查询失败或无二进制改动返回空串——``_fingerprint`` 对空串
         不追加哈希材料，指纹与既有值一致（既有注册表零扰动；查询失败退化
@@ -975,7 +977,10 @@ class MainTreeStrayWipSweeper:
         for rel in rels:
             digest = hashlib.sha256()
             try:
-                if not stat.S_ISREG(os.stat(self.project_root / rel).st_mode):
+                # code-review item d05e3b49db73: lstat 不跟随符号链接，与
+                # _untracked_fingerprint（d0bc909897b8）口径一致——指向仓库外
+                # 文件的链接按非普通文件取 unreadable 占位，不跨界读盘。
+                if not stat.S_ISREG(os.lstat(self.project_root / rel).st_mode):
                     content_fp = "unreadable"
                 else:
                     with open(self.project_root / rel, "rb") as fh:
@@ -1405,17 +1410,23 @@ class MainTreeStrayWipSweeper:
         return h.hexdigest()
 
     def _untracked_entry_sizes(self, entries: list) -> dict:
-        """逐 entry 体积（字节，evo-stray-untracked-escalation 1.1）：stat 级
-        读元数据，不读内容。
+        """逐 entry 体积（字节，evo-stray-untracked-escalation 1.1）：lstat 级
+        读元数据（不跟随符号链接），不读内容。
 
-        不可读（竞态删除/权限）按 0 计——体积是升级判定的增强数据源，单条目
+        不可读（竞态删除/权限）与非普通文件（含符号链接，item
+        a89b77040924：链接目标在仓库外时不把外部体积计入阈值比较、不误触发
+        升级告警）按 0 计——体积是升级判定的增强数据源，单条目
         不可读 MUST NOT 放大成本轮放弃（与指纹的 unreadable 占位语义不同：
         指纹占位参与哈希使下轮自然重计，体积只参与阈值比较）。
         """
         sizes: dict = {}
         for rel in entries:
             try:
-                sizes[str(rel)] = (self.project_root / rel).stat().st_size
+                # code-review item a89b77040924: lstat 不跟随符号链接，与
+                # _untracked_fingerprint 的 lstat 口径统一；非普通文件与下方
+                # OSError 同按 0 计（体积只参与阈值比较）。
+                st = os.lstat(self.project_root / rel)
+                sizes[str(rel)] = st.st_size if stat.S_ISREG(st.st_mode) else 0
             except OSError:
                 sizes[str(rel)] = 0
         return sizes
