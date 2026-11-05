@@ -3735,7 +3735,15 @@ class QQQueueMixin:
             self._backoff_timers = [t for t in self._backoff_timers if t.is_alive()]
             if stale is not None:
                 stale.cancel()
-            self._backoff_timers.append(timer)
+            # 在飞登记移至 start 成功之后（code-review item 17f2383a0785，对齐
+            # backoff.py _schedule_backoff_retry 的 63b3527d20ca 修复）：本表只经
+            # 下方 else 臂 append，锁内不存在「已登记尚未 start」条目，is_alive
+            # 清理谓词不会误摘其他线程在飞但尚未启动的定时器——原先锁内先登记
+            # 未启动 Timer（is_alive 为 False），并发线程的惰性清理会把它误摘出
+            # ``_backoff_timers``，随后该 Timer 照常 start 并到期执行回调，但已
+            # 脱离对账（engine 属性与实际在飞定时器不一致，关闭期/测试对账漏算）；
+            # 且 backoff 通道同款清理以「表内只含已 start 条目」为前提，本站点
+            # 未启动条目会反向让它误摘 merge-retry 在飞定时器。
             pending[spec_name] = timer
         # （code-review item 53c202982773）start 守卫：裸 timer.start() 的启动异常
         # （如环境性 RuntimeError can't start new thread）会沿 _defer_merge_back →
@@ -3753,12 +3761,10 @@ class QQQueueMixin:
             timer.start()
         except Exception as e:  # noqa: BLE001 — 环境性启动失败按「未排成」处置
             with self._queue_lock:
-                self._backoff_timers = [
-                    t for t in self._backoff_timers if t is not timer
-                ]
                 # 判重登记表同步回滚（对齐 _schedule_backoff_retry start 失败路径）：
                 # 失败的 Timer 未运行，残留登记只占位（下轮排程会替换），摘除保持
-                # 登记表与在飞定时器一致。
+                # 登记表与在飞定时器一致。timer 尚未入 ``_backoff_timers``（start
+                # 成功后才登记，code-review item 17f2383a0785），无需摘除。
                 if self._merge_retry_timer_specs.get(spec_name) is timer:
                     self._merge_retry_timer_specs.pop(spec_name, None)
             try:
@@ -3772,7 +3778,7 @@ class QQQueueMixin:
                 )
             self._pm.logger.warning(
                 "pm_engine",
-                f"merge-only 重试定时器启动失败 '{spec_name}' — 已摘除死定时器并清"
+                f"merge-only 重试定时器启动失败 '{spec_name}' — 已摘除判重登记并清"
                 f"_merge_retry_pending，改走显式重试: {type(e).__name__}: {e}",
             )
             try:
@@ -3784,6 +3790,13 @@ class QQQueueMixin:
                     f"{type(re_err).__name__}: {re_err}",
                 )
             return
+        else:
+            # start 成功后再入在飞登记表（code-review item 17f2383a0785）：与锁内
+            # 惰性清理谓词（is_alive）口径一致——表内只含已 start 的定时器，清理
+            # 不会误摘在飞未启动条目，关闭期/测试对账不再漏算；形态与 backoff.py
+            # _schedule_backoff_retry 同款（append 在锁内执行，与其并发论证一致）。
+            with self._queue_lock:
+                self._backoff_timers.append(timer)
         self._pm.logger.info(
             "pm_engine",
             f"merge-only 重试已排程 '{spec_name}'（{int(max(0.5, float(delay)))}s，"

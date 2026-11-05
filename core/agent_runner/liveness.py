@@ -1391,6 +1391,17 @@ class LivenessSupervisor:
                     )
                     cfg[key] = default
                 continue
+            if isinstance(value, bool):
+                # 数值键误写 true/false：bool 是 int 子类，int()/float() 会静默
+                # 折成 1/1.0 或 0（对齐 session.py cost 字段的 bool 钳制口径，
+                # code-review item 163f1482cf7d），与上方 bool 键「非 bool 打
+                # WARNING 回退缺省」的归一口径对称。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"Invalid timeout_supervision.{key}={value!r} — keeping default "
+                    f"{default}",
+                )
+                continue
             try:
                 cfg[key] = type(default)(value)
             except (TypeError, ValueError):

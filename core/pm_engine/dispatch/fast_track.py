@@ -555,13 +555,37 @@ class FFastTrackMixin:
         if not merged:
             return  # merge 失败内部已处置（保留 worktree + 重派/熔断）
         self._rewrite_fast_track_to_full(spec_name)
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "error": "诚实退出收敛（fast-track）：缺口全部 ⊆ unattainable，"
-                "降级完整模式补独立验证",
-            },
-        )
+        # merge 成功收尾写点单独包 try/except（code-review item 8c196951547e，
+        # 对齐 full 车道 queue.py _finalize_merge_success e9377c18ee85 口径）：
+        # 本 update_spec（原因落盘）之后的 _enqueue(spec_name, "verifier") 在
+        # 异常时不再执行——spec 已 implemented 且 mode=full 但无 verifier 条目，
+        # 异常沿 flow→worker 外层 except 转 _rollback_failed_dispatch 仅留痕，
+        # 恢复退化为周期扫描兜底。失败仅 ERROR 留痕 + best-effort 补 verifier
+        # 入队（嵌套 try 防二次外泄），MUST NOT 放大处置。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": "诚实退出收敛（fast-track）：缺口全部 ⊆ unattainable，"
+                    "降级完整模式补独立验证",
+                },
+            )
+        except Exception as tail_e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"诚实退出收敛（fast-track）'{spec_name}'：mode 改写后原因落盘异常"
+                f"（merge 已成功，不回退处置，best-effort 补 verifier 入队后交周期"
+                f"恢复）: {type(tail_e).__name__}: {tail_e}",
+            )
+            try:
+                self._enqueue(spec_name, "verifier")
+            except Exception as e2:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"诚实退出收敛异常恢复：verifier 重入队失败 '{spec_name}'"
+                    f"（等 full_scan 周期兜底）: {type(e2).__name__}: {e2}",
+                )
+            return
         # impl-result per-spec 快照 + 共享结果文件清理（与其余成功收口同语义，
         # code-review item af70282d2f51 收敛共用段；本收敛尾部是 enqueue
         # verifier 且 merge 后有 mode 改写/原因落盘插入，与成功收口的
@@ -1582,12 +1606,36 @@ class FFastTrackMixin:
             error_payload = f"fast-track 升级完整模式：{bugs_summary[:200]}"
         else:
             error_payload = error_text
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "error": error_payload,
-            },
-        )
+        # 升级原因落盘单独包 try/except（code-review item 8c196951547e，
+        # 对齐 full 车道 queue.py _finalize_merge_success e9377c18ee85 口径）：
+        # 本 update_spec 之后的 _enqueue(spec_name, "verifier") 在异常时不再
+        # 执行——spec 已 implemented 且 mode=full 但无 verifier 条目，异常沿
+        # flow→worker 外层 except 转 _rollback_failed_dispatch 仅留痕，恢复
+        # 退化为周期扫描兜底。失败仅 ERROR 留痕 + best-effort 补 verifier
+        # 入队（嵌套 try 防二次外泄），MUST NOT 放大处置。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": error_payload,
+                },
+            )
+        except Exception as tail_e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track 升级完整模式 '{spec_name}'：mode 改写后原因落盘异常"
+                f"（merge 已成功，不回退处置，best-effort 补 verifier 入队后交周期"
+                f"恢复）: {type(tail_e).__name__}: {tail_e}",
+            )
+            try:
+                self._enqueue(spec_name, "verifier")
+            except Exception as e2:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"升级完整模式异常恢复：verifier 重入队失败 '{spec_name}'"
+                    f"（等 full_scan 周期兜底）: {type(e2).__name__}: {e2}",
+                )
+            return
         # 3. 派发完整模式 verifier 流水线
         self._enqueue(spec_name, "verifier")
         self._pm.logger.warning(

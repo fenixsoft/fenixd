@@ -1102,10 +1102,17 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
     # STATE 已变更不回滚（语义对齐 spec-activate 的 D3 诚实回报）。
     kick_result = _write_scheduling_kick_signal(proot, spec)
     if not kick_result["ok"]:
-        result["warning"] = (
+        # 追加而非覆盖（code-review item e807886d2487）：命中分支锚点被并发
+        # 改写时 warning 已携带 anchor_conflict 提示（刷新核对 SPEC 状态指引），
+        # kick 失败须拼接保留两段提示，防并发窗口组合场景下前者被覆盖丢失。
+        kick_warning = (
             "已复位 ready，但即时唤醒信号写入失败，将由下次扫描"
             "（缺省 ≤30 分钟，即 schedule.poll_interval_minutes）派发"
         )
+        if result.get("warning"):
+            result["warning"] += "；" + kick_warning
+        else:
+            result["warning"] = kick_warning
     return result
 
 

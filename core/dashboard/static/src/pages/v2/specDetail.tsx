@@ -27,22 +27,25 @@ import {
 } from '@/services/dashboard';
 import type { HookAuditData, SpecDetail, SpecSummary } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
+import { compactWan } from '@/utils/format';
+import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
+import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
 import { V2Page, V2Pill, V2StatusPill, V2TitleBand } from './shared';
 import {
   useV2IsMobile,
   V2_BG,
+  V2_ERROR,
   V2_HAIRLINE,
+  V2_LINK,
   V2_RAMP_IMPLEMENTING,
+  V2_RAMP_VERIFYING,
   V2_SPLIT,
   V2_TEXT,
   V2_TEXT_QUATERNARY,
   V2_TEXT_SECONDARY,
   V2_TEXT_TERTIARY,
+  V2_WARNING,
 } from './theme';
-
-// 与现产 list.tsx SPEC_REVIEW_BLOCKED_PREFIXES 同源：评审相关 blocked 判据
-// （后端 re_review 白名单同款前缀，后端扩展时两处同步）
-const SPEC_REVIEW_BLOCKED_PREFIXES = ['spec-review-rejected:', 'spec-review-incomplete:'];
 
 // 终态（冻结等调度类动作的禁用口径，同现产 PRIORITY_TERMINAL + archived）
 const TERMINAL_STATUSES = new Set(['done', 'pushed', 'archived']);
@@ -50,15 +53,6 @@ const TERMINAL_STATUSES = new Set(['done', 'pushed', 'archived']);
 // 截图静态路由（同现产 detail.tsx screenshotUrl 形态）
 const screenshotUrl = (project: string, spec: string, file: string) =>
   `/screenshots/${encodeURIComponent(project)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`;
-
-/** Token 万/亿压缩（口径同 overview.compactWan；本地副本因源未导出）。 */
-function compactWan(n: number): string {
-  if (n / 1e4 >= 9999.95) return (n / 1e8).toFixed(1) + '亿';
-  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
-  if (n / 1e3 >= 9.95) return (n / 1e4).toFixed(1) + '万';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return String(n);
-}
 
 function fmtTime(v?: string | null): string {
   return v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—';
@@ -75,13 +69,15 @@ function Dash({ children }: { children?: React.ReactNode }) {
  * m-spec-detail.html sd-info）：单列键值行（label 固宽 + 值右对齐 + 分隔线）。 */
 function InfoCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
   const tu = d.token_usage;
-  // 缓存命中率 = 缓存读 / (输入 + 缓存读)；分项缺省（历史条目 null）不显示括号
+  // 缓存命中率 = 缓存读 / tokens_in（token_usage 契约：tokens_in 已含缓存写入
+  // 与命中、分项 cache 入 input，口径同 @/utils/tokens fmtInputTokens，不做
+  // 分母双重计数）；[0,100] 钳制同源。分项缺省（历史条目 null）不显示括号
   let inCell: React.ReactNode = <Dash />;
   if (tu) {
     const cacheRead = tu.cache_read_input_tokens;
     const hitRate =
-      cacheRead != null && tu.tokens_in + cacheRead > 0
-        ? Math.round((cacheRead / (tu.tokens_in + cacheRead)) * 1000) / 10
+      cacheRead != null && tu.tokens_in > 0
+        ? Math.min(100, Math.max(0, Math.round((cacheRead / tu.tokens_in) * 1000) / 10))
         : null;
     inCell = (
       <>
@@ -236,7 +232,7 @@ function TaskCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
               />
             )}
             <div style={{ minWidth: 0, fontSize: 13 }}>
-              <span className="v2-mono" style={{ color: '#4176e6', fontWeight: 600, marginRight: 8 }}>{t.id}</span>
+              <span className="v2-mono" style={{ color: V2_LINK, fontWeight: 600, marginRight: 8 }}>{t.id}</span>
               <span className="v2-mono" style={{ fontSize: 12.5, color: V2_TEXT_SECONDARY }}>{t.desc}</span>
             </div>
           </div>
@@ -256,13 +252,13 @@ function TaskCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
   );
 }
 
-/** 时间轴节点标记色（kind 语义；回退转移升 warning）。 */
+/** 时间轴节点标记色（kind 语义；回退转移升 warning；色值取 v2 域单源 V2_* 常量）。 */
 const NODE_TONE_HEX: Record<string, string> = {
-  muted: '#94a3b8',
-  info: '#2563eb',
-  warning: '#d97706',
-  critical: '#dc2626',
-  good: '#16a34a',
+  muted: V2_TEXT_QUATERNARY,
+  info: V2_RAMP_IMPLEMENTING,
+  warning: V2_WARNING,
+  critical: V2_ERROR,
+  good: V2_RAMP_VERIFYING,
 };
 function nodeTone(ev: NonNullable<SpecDetail['timeline']>[number]): string {
   if (ev.kind === 'state') return ev.backward ? 'warning' : 'muted';
@@ -579,7 +575,7 @@ function HookPane({ project, spec, mobile }: { project: string; spec: string; mo
       alive = false;
     };
   }, [project, spec]);
-  if (error) return <div style={{ padding: '18px 0', color: '#dc2626', fontSize: 12.5 }}>hook 审计加载失败：{error}</div>;
+  if (error) return <div style={{ padding: '18px 0', color: V2_ERROR, fontSize: 12.5 }}>hook 审计加载失败：{error}</div>;
   if (!data) return <div style={{ padding: '18px 0' }}><Spin size="small" /></div>;
   const rows = data.audit || [];
   if (!rows.length) {
@@ -691,7 +687,7 @@ export default function V2SpecDetailPage() {
 
   useEffect(() => {
     void load();
-    const hb = setInterval(() => void load(), 30000);
+    const hb = setInterval(() => void load(), HEARTBEAT_MS);
     return () => {
       clearInterval(hb);
       seqRef.current += 1;

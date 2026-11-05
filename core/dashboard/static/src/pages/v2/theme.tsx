@@ -69,6 +69,8 @@ export const V2_RED_SOFT = '#fef2f2';
 export const V2_CYAN_SOFT = '#ecfeff';
 export const V2_ORANGE_SOFT = '#ffedd5';
 export const V2_SLATE_SOFT = '#f1f5f9';
+/** 纯白底（胶囊徽标 outline 形态的白底描边档；V2Pill 消费，Bento 白磁贴同底）。 */
+export const V2_WHITE = '#ffffff';
 
 /** 胶囊徽标 tone 键 → [前景色, 软底色]。键域与 services/dashboard.ts 的
  * StatusTone 对齐（状态 pill 由 statusMeta 的 tone 驱动取色），info/warning/

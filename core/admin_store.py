@@ -1158,11 +1158,20 @@ class AdminStore:
         return self._mutate(mutate, skip_unchanged=True)
 
     def latest_signal(
-        self, spec: Optional[str], signal_type: str, within_minutes: float
+        self,
+        spec: Optional[str],
+        signal_type: str,
+        within_minutes: float,
+        severity: Optional[str] = None,
     ) -> Optional[dict]:
         """返回最近一条匹配（spec, signal_type）的记录，供节流判断。
 
         within_minutes 内存在 → 返回该记录；否则返回 None。
+        severity 非空时仅匹配同 severity 记录（code-review 0f93a03ce73c）：
+        同 signal_type 内混布多级记录时（如 stale_code 同族含 info 留痕与
+        warning 升级），低危记录不得遮蔽高危事件的窗口去重——升级类调用方
+        传自身 severity，良性留痕不参与命中判定。缺省 None 保持既有全量
+        匹配语义，既有调用点不受影响。
         spec 为 None 时仅匹配 spec=None 的 daemon 级记录（per-spec 记录
         一律跳过，避免污染 daemon 级冷却窗口）。
 
@@ -1182,6 +1191,8 @@ class AdminStore:
         best = None
         for rec in self.read_all():
             if rec.get("signal_type") != signal_type:
+                continue
+            if severity is not None and rec.get("severity") != severity:
                 continue
             if rec.get("kind") not in (SIGNAL, ESCALATION, DISPOSITION, INFO):
                 # 四种 kind 已是 admin_alerts.json 全部在册记录（见模块 docstring），

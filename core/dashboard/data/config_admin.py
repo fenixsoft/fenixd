@@ -511,20 +511,34 @@ def _managed_key_sources(raw: dict) -> dict:
         for _k in ("enabled", "narrative_enabled"):
             if isinstance(admin_raw.get(_k), bool):
                 sources[f"admin.{_k}"] = "project"
+        # 数值键来源标注分两组（code-review item 0284a7f286e7：标注类型口径
+        # 对齐写路径/merged 视图/回显/运行时）：
+        # - 浮点容忍三键（interval_minutes / escalation_cooldown_minutes /
+        #   stuck_silence_minutes）：写路径前置校验、merged 视图校验、回显与
+        #   运行时 get_admin_config（_num float 转换）均接受 (int, float) 非
+        #   bool——项目级显式浮点落盘成功后须标 project（此前按严格 int 判定
+        #   使徽标滞留 user 而设置页回显浮点值，徽标与展示值互相矛盾）
         for _k in (
             "interval_minutes",
             "escalation_cooldown_minutes",
+            "stuck_silence_minutes",
+        ):
+            _v = admin_raw.get(_k)
+            if isinstance(_v, (int, float)) and not isinstance(_v, bool) and _in_admin_range(_k, _v):
+                sources[f"admin.{_k}"] = "project"
+        # - 严格 int 四键（merge_breaker_threshold / shutdown_drain_seconds /
+        #   narrative_timeout_seconds / self_heal_quiet_minutes）：写路径仅
+        #   接受 int，维持严格判定
+        # 两组均再按范围谓词判定（code-review item 10a004925a9a：
+        # _ADMIN_RANGE_MIN 单源，与写路径前置校验同口径）——范围脏值此前仍
+        # 标 project，而读回显/运行时生效值均已回退缺省，徽标与展示值互相矛盾
+        for _k in (
             "merge_breaker_threshold",
             "shutdown_drain_seconds",
-            "stuck_silence_minutes",
             "narrative_timeout_seconds",
             "self_heal_quiet_minutes",
         ):
             _v = admin_raw.get(_k)
-            # code-review item 10a004925a9a：类型合法之外再按范围谓词判定
-            # （_ADMIN_RANGE_MIN 单源，与写路径前置校验同口径）——范围脏值
-            # 此前仍标 project，而读回显/运行时生效值均已回退缺省，徽标与
-            # 展示值互相矛盾
             if isinstance(_v, int) and not isinstance(_v, bool) and _in_admin_range(_k, _v):
                 sources[f"admin.{_k}"] = "project"
         if admin_raw.get("bug_repair_mode") in ("inplace", "derive"):
@@ -838,10 +852,14 @@ def _default_echo_view(scope: str) -> dict:
         # 缺省段形状（其余键无 Dashboard 面板）
         "stale_code_selfheal": {"enabled": _CLICRT.get_stale_code_selfheal_config({})["enabled"],
                                 "idle_confirm_seconds": _CLICRT.get_stale_code_selfheal_config({})["idle_confirm_seconds"]},
-        # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
-        # max_items_per_run=20 / spec_run_at=null 立即执行；code-review item
-        # 42b017717b1e：两读路径统一含 spec_run_at，早退路径形状不缺键）
-        "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
+        # add-framework-self-evolution：self_evolution 三键（code-review item
+        # 42b017717b1e：两读路径统一含 spec_run_at，早退路径形状不缺键）。
+        # 缺省经读取器取（code-review item ca2ff5e421bd：get_self_evolution_
+        # config 即现成单源，与上方 stale_code_selfheal/arbiter/chain 块同款
+        # 范式——此前手写字面量镜像，运行时缺省调整后早退路径（文件缺失/
+        # 解析失败/resolve_config 异常）回显旧值，用户保存会把旧缺省显式
+        # 落盘压过新缺省）
+        "self_evolution": _CLICRT.get_self_evolution_config({}),
         # add-arbiter-lane：arbiter 四键缺省经读取器取（与 verify/stale_code_
         # selfheal 块同款单源——避免设置页以旧值回填表单、用户保存即把旧
         # 缺省显式写入项目配置、静默覆盖新缺省）
@@ -2230,7 +2248,11 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
             return fail(f"stale_code_selfheal.enabled must be a boolean: {scs['enabled']!r}")
         if "idle_confirm_seconds" in scs and scs["idle_confirm_seconds"] is not None:
             _scs_v = scs["idle_confirm_seconds"]
-            if isinstance(_scs_v, bool) or not isinstance(_scs_v, (int, float)) or _scs_v <= 0:
+            # code-review item 9b1926345dd9：严格 int（拒绝非整值浮点）——
+            # 运行时 _stale_selfheal_positive_int 对非整值浮点回退缺省，
+            # (int, float) 放行会「保存成功落盘却永不生效」；来源标注（551
+            # 行）与 branch_gc.retention_days 写路径均为严格 int 同款
+            if isinstance(_scs_v, bool) or not isinstance(_scs_v, int) or _scs_v <= 0:
                 return fail(
                     f"stale_code_selfheal.idle_confirm_seconds must be a positive "
                     f"integer: {_scs_v!r}"
@@ -2245,7 +2267,12 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
             if _akey in _arb_p and _arb_p[_akey] is not None:
                 _av = _arb_p[_akey]
-                if isinstance(_av, bool) or not isinstance(_av, (int, float)) or _av <= 0:
+                # 严格 int（code-review item 9b1926345dd9）：运行时
+                # get_arbiter_config 经 _normalize_int_value 对非整值浮点回退
+                # 缺省，(int, float) 放行即「保存成功落盘却永不生效」，且错误
+                # 文案自称 positive integer 与放行行为自相矛盾——与同文件
+                # b4e719c0ad3a / branch_gc.retention_days 写路径严格 int 同款
+                if isinstance(_av, bool) or not isinstance(_av, int) or _av <= 0:
                     return fail(
                         f"arbiter.{_akey} must be a positive integer: {_av!r}"
                     )
@@ -2258,7 +2285,10 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
         for _ckey in ("admin_attempts", "arbiter_rulings", "reset_window_days"):
             if _ckey in _chn_p and _chn_p[_ckey] is not None:
                 _cv = _chn_p[_ckey]
-                if isinstance(_cv, bool) or not isinstance(_cv, (int, float)) or _cv <= 0:
+                # 严格 int（code-review item 9b1926345dd9，同 arbiter 前置）：
+                # 运行时 get_chain_config 经 _normalize_int_value 对非整值
+                # 浮点回退缺省，(int, float) 放行即「保存成功落盘却永不生效」
+                if isinstance(_cv, bool) or not isinstance(_cv, int) or _cv <= 0:
                     return fail(f"chain.{_ckey} must be a positive integer: {_cv!r}")
         if "blacklist" in _chn_p and _chn_p["blacklist"] is not None:
             _cbl = _chn_p["blacklist"]
@@ -2854,7 +2884,9 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     )
                 if "idle_confirm_seconds" in scs_m and scs_m["idle_confirm_seconds"] is not None:
                     _sv = scs_m["idle_confirm_seconds"]
-                    if isinstance(_sv, bool) or not isinstance(_sv, (int, float)) or _sv <= 0:
+                    # 严格 int 同前置（code-review item 9b1926345dd9，运行时
+                    # _stale_selfheal_positive_int 非整值浮点回退缺省）
+                    if isinstance(_sv, bool) or not isinstance(_sv, int) or _sv <= 0:
                         raise ValueError(
                             f"stale_code_selfheal.idle_confirm_seconds must be a positive "
                             f"integer: {_sv!r}"
@@ -2874,7 +2906,11 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 for _akey in ("budget_wallclock_s", "budget_tokens", "max_consecutive_failures"):
                     if _akey in arb_m and arb_m[_akey] is not None:
                         _av = arb_m[_akey]
-                        if isinstance(_av, bool) or not isinstance(_av, (int, float)) or _av <= 0:
+                        # 严格 int（code-review item 9b1926345dd9）：运行时
+                        # get_arbiter_config 经 _normalize_int_value 对非整值
+                        # 浮点回退缺省，(int, float) 放行即「保存成功落盘却
+                        # 永不生效」，与来源标注严格 int 判定同款收敛
+                        if isinstance(_av, bool) or not isinstance(_av, int) or _av <= 0:
                             raise ValueError(
                                 f"arbiter.{_akey} must be a positive integer: {_av!r}"
                             )
@@ -2885,7 +2921,9 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 for _ckey in ("admin_attempts", "arbiter_rulings", "reset_window_days"):
                     if _ckey in ch_m and ch_m[_ckey] is not None:
                         _cv = ch_m[_ckey]
-                        if isinstance(_cv, bool) or not isinstance(_cv, (int, float)) or _cv <= 0:
+                        # 严格 int 同前置（code-review item 9b1926345dd9，运行时
+                        # get_chain_config 非整值浮点回退缺省）
+                        if isinstance(_cv, bool) or not isinstance(_cv, int) or _cv <= 0:
                             raise ValueError(
                                 f"chain.{_ckey} must be a positive integer: {_cv!r}"
                             )

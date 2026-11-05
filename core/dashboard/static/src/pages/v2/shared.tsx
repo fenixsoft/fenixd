@@ -6,7 +6,14 @@ import { Tag } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';
 import { statusMeta } from '@/services/dashboard';
 import './v2.less';
-import { useV2IsMobile, V2ConfigProvider, V2_PILL_RADIUS, V2_TONE } from './theme';
+import {
+  useV2IsMobile,
+  V2ConfigProvider,
+  V2_PILL_RADIUS,
+  V2_TONE,
+  V2_TEXT_SECONDARY,
+  V2_WHITE,
+} from './theme';
 
 /** v2 页壳：局部 Bento 主题 + 浅灰页底 + 1400px 居中内容列（原型 main 形态）。 */
 export function V2Page({ children }: { children: ReactNode }) {
@@ -42,7 +49,7 @@ export function V2Pill({
   const skin: CSSProperties =
     variant === 'filled'
       ? { color: pair[0], background: pair[1], borderColor: 'transparent', fontWeight: 500 }
-      : { color: pair[0], borderColor: `${pair[0]}55`, background: '#ffffff' };
+      : { color: pair[0], borderColor: `${pair[0]}55`, background: V2_WHITE };
   return (
     <Tag style={{ ...base, ...skin, ...style }}>{children}</Tag>
   );
@@ -82,7 +89,7 @@ export function V2BackArrow({ onClick, title }: { onClick: () => void; title?: s
     >
       <path
         d="M9 2.5 4.5 7 9 11.5"
-        stroke="#475569"
+        stroke={V2_TEXT_SECONDARY}
         strokeWidth={1.4}
         strokeLinecap="round"
         strokeLinejoin="round"

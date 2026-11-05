@@ -18,11 +18,10 @@ import type {
   ChainOverviewData,
   ChainSignatureQuota,
 } from '@/services/dashboard';
+import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
 import { V2AlertRows } from './AlertList';
 import { V2Page, V2Pill, V2TitleBand } from './shared';
-import { useV2IsMobile, V2_HAIRLINE, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
-
-const HEARTBEAT_MS = 30000;
+import { useV2IsMobile, V2_HAIRLINE, V2_TEXT, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
 
 /** 头部统计条（真实口径四项：待处理告警 / 在飞链 / 升级中 / 签名配额耗尽）。
  *  链摘要取 summary ?? total（跨项目聚合分支无 summary 键、总额在 total）。 */
@@ -39,7 +38,7 @@ function StatRow({ alerts, chain }: { alerts: AlertsData | null; chain: ChainOve
       {stats.map(([label, v]) => (
         <span key={label} className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>
           {label}{' '}
-          <span style={{ fontWeight: 600, color: (v ?? 0) > 0 ? '#1e293b' : V2_TEXT_TERTIARY, fontSize: 13 }}>
+          <span style={{ fontWeight: 600, color: (v ?? 0) > 0 ? V2_TEXT : V2_TEXT_TERTIARY, fontSize: 13 }}>
             {v ?? '—'}
           </span>
         </span>

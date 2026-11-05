@@ -18,7 +18,14 @@ import {
 } from '@/services/dashboard';
 import type { ConfigData, LlmProvider } from '@/services/dashboard';
 import { V2Page, V2Pill, V2TitleBand } from './shared';
-import { useV2IsMobile, V2_HAIRLINE, V2_TEXT, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
+import {
+  useV2IsMobile,
+  V2_HAIRLINE,
+  V2_SLATE_SOFT,
+  V2_TEXT,
+  V2_TEXT_QUATERNARY,
+  V2_TEXT_TERTIARY,
+} from './theme';
 
 // 左侧菜单分面（原型 MENU；v2 域当前仅 llm 分面有实体面板，其余占位说明）
 const MENU: Array<[string, string]> = [
@@ -53,6 +60,16 @@ function LlmPanel({
   const providers = cfg.llm?.providers || [];
   // 行内健康检测状态（provider.name → 检测中/结果）
   const [health, setHealth] = useState<Record<string, HealthState>>({});
+
+  // 重拉基底+合并（模式同 services/hooksSection.ts）：knowledge /
+  // stale_code_selfheal / self_evolution 段后端逐键白名单合并，组件内 cfg 是
+  // 页面加载时的快照，用快照展开构造 patch 会把并发改过的同级键静默写回
+  // （code-review item bfb318e34c17）。保存前 getConfig 重拉最新基底再合并；
+  // 基底拉取失败时与 hooksSection.ts 同语义：抛错不写盘（SwitchRow 提示保存失败）。
+  const toggleWithFreshBase = async (merge: (latest: ConfigData) => Partial<ConfigData>) => {
+    const latest = await getConfig(project);
+    return saveConfig(project, merge(latest));
+  };
 
   const runHealth = async (p: LlmProvider) => {
     setHealth((s) => ({ ...s, [p.name]: { loading: true } }));
@@ -176,7 +193,7 @@ function LlmPanel({
             desc="spec/knowledge 知识目录的消费与投递链路总开关（缺省开）"
             checked={cfg.knowledge?.enabled ?? true}
             project={project}
-            onToggle={(v) => saveConfig(project, { knowledge: { ...(cfg.knowledge || {}), enabled: v } })}
+            onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), enabled: v } }))}
             onDone={() => {
               message.success('已保存');
               onChanged();
@@ -187,7 +204,7 @@ function LlmPanel({
             desc="inbox 消费 / 域页维护等自动化维护车道开关（缺省开）"
             checked={cfg.knowledge?.audit_enabled ?? true}
             project={project}
-            onToggle={(v) => saveConfig(project, { knowledge: { ...(cfg.knowledge || {}), audit_enabled: v } })}
+            onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), audit_enabled: v } }))}
             onDone={() => {
               message.success('已保存');
               onChanged();
@@ -198,7 +215,7 @@ function LlmPanel({
             desc="陈旧 worktree + 托管项目连续空闲达阈值后自动请求重启（缺省开）"
             checked={cfg.stale_code_selfheal?.enabled ?? true}
             project={project}
-            onToggle={(v) => saveConfig(project, { stale_code_selfheal: { ...(cfg.stale_code_selfheal || {}), enabled: v } })}
+            onToggle={(v) => toggleWithFreshBase((c) => ({ stale_code_selfheal: { ...(c.stale_code_selfheal || {}), enabled: v } }))}
             onDone={() => {
               message.success('已保存');
               onChanged();
@@ -209,7 +226,7 @@ function LlmPanel({
             desc="允许框架自改进：自动接受全部判定值得立项的条目（缺省关）"
             checked={cfg.self_evolution?.auto_accept ?? false}
             project={project}
-            onToggle={(v) => saveConfig(project, { self_evolution: { ...(cfg.self_evolution || {}), auto_accept: v } })}
+            onToggle={(v) => toggleWithFreshBase((c) => ({ self_evolution: { ...(c.self_evolution || {}), auto_accept: v } }))}
             onDone={() => {
               message.success('已保存');
               onChanged();
@@ -245,7 +262,7 @@ function LlmPanel({
           desc="spec/knowledge 知识目录的消费与投递链路总开关（缺省开）"
           checked={cfg.knowledge?.enabled ?? true}
           project={project}
-          onToggle={(v) => saveConfig(project, { knowledge: { ...(cfg.knowledge || {}), enabled: v } })}
+          onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), enabled: v } }))}
           onDone={() => {
             message.success('已保存');
             onChanged();
@@ -256,7 +273,7 @@ function LlmPanel({
           desc="inbox 消费 / 域页维护等自动化维护车道开关（缺省开）"
           checked={cfg.knowledge?.audit_enabled ?? true}
           project={project}
-          onToggle={(v) => saveConfig(project, { knowledge: { ...(cfg.knowledge || {}), audit_enabled: v } })}
+          onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), audit_enabled: v } }))}
           onDone={() => {
             message.success('已保存');
             onChanged();
@@ -267,7 +284,7 @@ function LlmPanel({
           desc="陈旧 worktree + 托管项目连续空闲达阈值后自动请求重启（缺省开）"
           checked={cfg.stale_code_selfheal?.enabled ?? true}
           project={project}
-          onToggle={(v) => saveConfig(project, { stale_code_selfheal: { ...(cfg.stale_code_selfheal || {}), enabled: v } })}
+          onToggle={(v) => toggleWithFreshBase((c) => ({ stale_code_selfheal: { ...(c.stale_code_selfheal || {}), enabled: v } }))}
           onDone={() => {
             message.success('已保存');
             onChanged();
@@ -278,7 +295,7 @@ function LlmPanel({
           desc="允许框架自改进：自动接受全部判定值得立项的条目（缺省关）"
           checked={cfg.self_evolution?.auto_accept ?? false}
           project={project}
-          onToggle={(v) => saveConfig(project, { self_evolution: { ...(cfg.self_evolution || {}), auto_accept: v } })}
+          onToggle={(v) => toggleWithFreshBase((c) => ({ self_evolution: { ...(c.self_evolution || {}), auto_accept: v } }))}
           onDone={() => {
             message.success('已保存');
             onChanged();
@@ -465,7 +482,7 @@ export default function V2SettingsPage() {
                   cursor: 'pointer',
                   fontWeight: menu === k ? 600 : 400,
                   color: menu === k ? V2_TEXT : V2_TEXT_TERTIARY,
-                  background: menu === k ? '#f1f5f9' : 'transparent',
+                  background: menu === k ? V2_SLATE_SOFT : 'transparent',
                 }}
               >
                 {label}

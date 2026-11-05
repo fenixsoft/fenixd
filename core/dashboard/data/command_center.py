@@ -75,10 +75,10 @@ LANE_ZONE = {lane: zone for zone, lanes in ROSTER.items() for lane in lanes}
 # 2026-11-01（add-arbiter-quality-display）新增 arbiter→judge：arbiter 是
 # 「质量裁决」编制的执行面（与 dispute-judge→judge 同族），run 计数/成本/
 # 在飞归属并入 judge 卡统一显示「质量裁决」，不再单独出「其他」卡。
-# 消费面边界：组织网格聚合、spec 视图轮次与交付流水线在飞标记
-# （aggregate_org/aggregate_spec_runs/aggregate_pipeline 三处消费点）消费
-# 本表；时间线/拓扑屏保持原生 agent_type（各有角色映射单源）的定稿口径
-# 不变。
+# 消费面边界：组织网格聚合、spec 视图轮次、交付流水线在飞标记与执行
+# 台账（aggregate_org/aggregate_spec_runs/aggregate_pipeline/
+# aggregate_ledger 四处消费点）消费本表；时间线/拓扑屏保持原生
+# agent_type（各有角色映射单源）的定稿口径不变。
 LANE_ALIASES = {
     "dispute-judge": "judge",
     "repair": "code-fix",
@@ -937,11 +937,15 @@ def aggregate_ledger(registry_projects, project=None, *, now=None) -> dict:
         proots[name] = proot
         billings[name] = _facade.load_billing_config(proot)
         for r in _facade.get_runs(proot, None, include_archive=True):
+            # lane 与组织网格/spec 视图/流水线同口径：or "agent" 兜底 +
+            # LANE_ALIASES 归并（code-review item c5f4a151e0aa）——避免同
+            # 一指挥中心内车道命名跨卡漂移（repair vs code-fix 等）。
+            raw_lane = r.get("agent_type") or "agent"
             merged.append(
                 {
                     "project": name,
                     "spec": str(r.get("spec") or ""),
-                    "lane": r.get("agent_type"),
+                    "lane": LANE_ALIASES.get(raw_lane, raw_lane),
                     "outcome": r.get("status"),
                     "duration": r.get("duration_seconds"),
                     "started_at": r.get("started"),

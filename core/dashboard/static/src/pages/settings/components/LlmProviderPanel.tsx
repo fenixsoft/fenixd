@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
 import { toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
+import { DSH_ERROR, DSH_SUCCESS } from '@/theme';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
@@ -458,7 +459,7 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
                           <Text
                             data-testid={`health-result-${index}`}
                             style={{
-                              color: health.display.kind === 'ok' ? '#52c41a' : '#ff4d4f',
+                              color: health.display.kind === 'ok' ? DSH_SUCCESS : DSH_ERROR,
                               fontSize: 12,
                               whiteSpace: 'nowrap',
                             }}

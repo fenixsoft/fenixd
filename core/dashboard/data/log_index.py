@@ -99,11 +99,7 @@ def _sample_block_boundary(
         return pending_start
     pending_start = -1
     if old_size is not None and boundary == old_size:
-        at_line_start = boundary == 0
-        if not at_line_start:
-            f.seek(boundary - 1)
-            at_line_start = f.read(1) == b"\n"
-        if at_line_start:
+        if _boundary_at_line_start(f, boundary):
             # old_size==0 的空日志退化索引 offsets=[0] 增长后 boundary=0 命中此处，
             # 该偏移已在首项，重复 append 产生 [0,0] 冗余项（单调校验 a<=b 放行、
             # 读窗 bi=0/1 等值，仅索引膨胀）——与 offsets[-1] 去重后跳过。

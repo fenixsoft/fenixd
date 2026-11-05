@@ -53,6 +53,8 @@ import { fmtDuration } from '@/utils/duration';
 // 刷新/心跳节奏常量与详情页共用单源（code-review item 73395d34f3de）
 import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
+// 评审 blocked 前缀与 v2 specDetail 共用单源（code-review item 801f9399dba8）
+import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
@@ -90,12 +92,6 @@ const SEARCH_DEBOUNCE_MS = 300;
 // SPEC_DOC_REMARK_PLUGINS 先例）：名称列/验证列两处 Markdown 共用同一数组标识，
 // 避免 SSE 增量 patch / 心跳整表重渲染下每单元格重建数组触发整篇重新 parse
 const LIST_REMARK_PLUGINS = [remarkGfm];
-
-// add-spec-review-gate D8（code-review item 1b64add9823d）：评审 blocked 前缀
-// 清单——与后端 re_review 白名单（core/pm_engine/spec_review.py
-// SpecReviewManager.re_review）逐字同源；specMenuItems 菜单判据与
-// handleReReview 注释均以此为准，后端扩展前缀时仅需同步本清单。
-const SPEC_REVIEW_BLOCKED_PREFIXES = ['spec-review-rejected:', 'spec-review-incomplete:'];
 
 // 状态圆点配色（table-list 风格：色点 + 文字，不用标签）。走 antd 语义 token
 // 派生表（code-review item 615f6f350d58）：原硬编码十六进制在暗色主题下不变
