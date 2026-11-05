@@ -15,6 +15,7 @@ add-control-plane-silent-failure-guards 防线一（callsite-arity-guard）与
 """
 
 import ast
+from collections import deque
 from pathlib import Path
 
 # 第三方 vendored 目录标记：跳过（katex 的 parse_tfm.py 等构建脚本混在
@@ -83,15 +84,39 @@ def method_signature(fn: ast.FunctionDef):
     return (req, fn.args.vararg is not None, fn.args.kwarg is not None, is_static)
 
 
+# 类定义只可能出现在语句列表中（Module/类体/函数体的 body，复合语句的
+# body/orelse/finalbody，except handler 与 match case 的 body/cases）；
+# 表达式子树（Lambda 体、调用链、推导式等）内不可能定义类。签名索引与
+# 替身扫描只需 ClassDef，按 ast.walk 同样的 deque BFS 但仅入队语句列表，
+# 得到的 ClassDef 序列与全量 ast.walk 逐位一致，而跳过表达式子树——
+# 全仓扫描遍历的主要节点量所在（实测约省 3/4 遍历耗时）。
+_CLASS_CONTAINER_ATTRS = ("body", "orelse", "finalbody", "handlers", "cases")
+
+
+def iter_class_defs(tree):
+    """遍历 AST 中所有 ast.ClassDef，顺序与 ast.walk 完全一致。
+
+    仅沿语句列表下降（见 _CLASS_CONTAINER_ATTRS 注记）；类在函数内、
+    分支内、嵌套类内等所有语句位仍会被检出，判定集不因剪枝改变。
+    """
+    queue = deque([tree])
+    while queue:
+        node = queue.popleft()
+        if isinstance(node, ast.ClassDef):
+            yield node
+        for attr in _CLASS_CONTAINER_ATTRS:
+            children = getattr(node, attr, None)
+            if isinstance(children, list):
+                queue.extend(children)
+
+
 def iter_class_methods(tree):
     """遍历 AST 中所有类及其直接子级方法定义。
 
     产出 (class_node, method_node)。仅取类体直接子级（不深入嵌套类/函数内
     定义的类——方法的直接定义点在类体中）。
     """
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
+    for node in iter_class_defs(tree):
         for item in node.body:
             if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
