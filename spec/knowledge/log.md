@@ -90,3 +90,5 @@
 ## [2026-11-05 20:50 UTC+8] fold | settings-menu-renamed-config-1105.md 折叠入库
 ## [2026-11-05 20:50 UTC+8] fold | systemd-hosted-daemon-path-missing-local-bin.md 折叠入库
 ## [2026-11-05 20:58 UTC+8] fold | systemd-hosted-daemon-path-missing-local-bin.md 折叠入库
+## [2026-11-05 20:58 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
+## [2026-11-05 21:02 UTC+8] fold | zn-inbox-entry-1.md 折叠入库
