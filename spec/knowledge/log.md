@@ -82,3 +82,4 @@
 ## [2026-11-05 18:32 UTC+8] fold | embed-titlebar-frosted-glass.md 折叠入库
 ## [2026-11-05 18:36 UTC+8] fold | settings-help-document-scroll-unify.md 折叠失败滞留：claude 进程非零退出（exit=1）；stderr 尾部: Claude Code doesn't recognize the model "glm-5.3-flash", so it assumes a context 
 ## [2026-11-05 18:37 UTC+8] fold | settings-menu-renamed-config-1105.md 折叠失败滞留：claude 进程非零退出（exit=1）；stderr 尾部: Claude Code doesn't recognize the model "glm-5.3-flash", so it assumes a context wi
+## [2026-11-05 18:39 UTC+8] fold | zn-inbox-entry-1.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
