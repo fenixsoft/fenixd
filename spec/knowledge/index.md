@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-05 18:44 UTC+8
+> 最后更新：2026-11-05 20:37 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -27,7 +27,7 @@
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-05 04:11 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页，例外域并存）。 | 43 | 2026-11-05 18:44 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页，例外域并存）。 | 44 | 2026-11-05 20:37 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（unit 承载接管豁免与 systemctl 重启协议）、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-05 04:11 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 7 | 2026-11-04 20:48 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
@@ -35,7 +35,7 @@
 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。 | 14 | 2026-11-04 16:11 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
-| [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-04 20:48 |
+| [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-05 20:37 |
 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 12 | 2026-11-04 17:46 |
 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 
@@ -82,4 +82,9 @@ run-visual-agent-labels 页）；bridge-projects-row-toggle-1105 已折叠入库
 dsh-bridge-projects-section 页）；embed-titlebar-frosted-glass 已折叠入库
 （2026-11-05 18:27，spread 至 dashboard-frontend 一域两页：
 unified-page-title-bar 行壳位改写双档形态并新增 embed 档毛玻璃固定标题带规则、
-dashboard-embed-mount 嵌入态标题行形态句随迁）。
+dashboard-embed-mount 嵌入态标题行形态句随迁）；
+settings-help-document-scroll-unify 已折叠入库（2026-11-05 20:37，spread 至
+dashboard-frontend / docs-help 两域五页：新建 document-scroll-unify 页、
+unified-page-title-bar 定高偏移口径改写（settings/help FRAME_OFFSET 条目消失、
+对象收敛项目详情页框与指挥中心）、page-container-chrome 新增 children 容器
+padding-block-end 归零规则、v3-settings-page 与 help-center 布局句随迁）。

@@ -1,4 +1,4 @@
-<!-- knowledge: capability=v3-settings-page rev=1 sources=spec/archive/2026-09-08-add-v3-settings-page -->
+<!-- knowledge: capability=v3-settings-page rev=2 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md -->
 
 # v3 设置页
 
@@ -6,7 +6,7 @@ v3 的统一设置入口：左侧子项菜单 + 右侧面板，复用 v1 配置�
 
 ## 现行规则
 
-- `/settings` 路由采用 account/settings 风格布局：左侧竖向子项菜单（LLM Provider / Agent 模型分配 / 并行度设置 / 审批模式 / Token 预算 / 界面风格），右侧为当前子项面板；默认选中「LLM Provider」。
+- `/settings` 路由采用 account/settings 风格布局：左侧竖向子项菜单（LLM Provider / Agent 模型分配 / 并行度设置 / 审批模式 / Token 预算 / 界面风格），右侧为当前子项面板；默认选中「LLM Provider」。页面纵向滚动为文档级（滚动条跨标题区域），左菜单列 sticky 钉住不随页面滚走——滚动形态与钉位常数细则由 dashboard-frontend 域 `document-scroll-unify` 单源承载。
 - 配置经 `GET /api/config?project=<name>` 读取（复用 v1 后端，零后端改动）；支持用户级（无项目参数，写 `~/.fenix/config.yaml`）与项目级（写 `.fenix/config.yaml`）作用域切换，默认项目级；无配置文件时展示提示且表单为默认值；受管键在响应 `sources` 中标记 `user` 时，面板展示「继承自用户级」提示。
 - LLM Provider 子项管理 `llm.providers` 列表：Provider 卡片（名称、baseurl、apikey、默认模型）支持追加空白卡片、编辑、删除，保存时整体写回数组。
 - Agent 模型分配子项按 Agent 角色（KNOWN_AGENT_TYPES 全集）逐个分配：Provider 下拉（取自 `llm.providers`）+ 模型名（留空使用该 Provider 默认模型），写回 `agents.models`（`{provider, model}`）；作用域内无 Provider 时展示「请先在 LLM Provider 子项添加 Provider」引导。
@@ -19,3 +19,4 @@ v3 的统一设置入口：左侧子项菜单 + 右侧面板，复用 v1 配置�
 ## 溯源
 
 - 2026-09-08 add-v3-settings-page（spec/archive/2026-09-08-add-v3-settings-page） — 建立 v3 设置页六子项布局、作用域读写与继承标注、各子项配置键契约及统一保存 / 错误反馈
+- 2026-11-05 settings-help-document-scroll-unify（spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md） — 布局规则随迁：页面文档级滚动、左菜单 sticky 钉住（滚动形态细则归 document-scroll-unify 单源）
