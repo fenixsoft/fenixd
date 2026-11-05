@@ -3,7 +3,11 @@
 // 四类声明槽位（title / subtitle / back / filters），页面只声明数据、禁止逐页
 // 自画同类型标题 div。壳位判定收敛在本组件内，页面侧零环境分支：
 // - 行壳位：embed=1（dsh 面板桥 iframe，无顶栏）或视口 <768px（移动端顶栏维持
-//   纯品牌）时，渲染为内容区首行标题栏（48px、白底、底缘 DSH_SPLIT 细线）；
+//   纯品牌）时，渲染为内容区首行标题栏，底缘 DSH_SPLIT 细线。双档形态：
+//   embed 档 = 60px soft 底（DSH_BG_SOFT）+ sticky 钉住视口顶（滚动发生在下方
+//   内容区，标题栏不随滚，视觉对齐 standalone fixedHeader 顶栏；2026-11-05
+//   用户定调 min-height 60 / background rgb(249,250,251) ≡ DSH_BG_SOFT）；
+//   移动端档 = 1.1 原形态（48px 白底随文档流，未获指令不动）。
 // - 顶栏壳位：独立访问 ≥768px 时向模块级注册表登记 meta，由 app.tsx 顶栏插槽
 //   （HeaderSlot / FiltersSlot）消费渲染——标题区在 Fenix Harness 品牌之后、
 //   过滤项在顶栏右上角（原全局面包屑槽位）。
@@ -15,7 +19,9 @@
 // 形态基准（UI 真相源）：spec/changes/unified-page-title-bar/specs/
 // unified-page-title-bar/prototype/（standalone.html / embed.html）——标题
 // 18px/700、副标题 12px 三级灰基线随迁、计数 tabular-nums、过滤项 28px small
-// 档、行壳位 48px 底缘细线；配色全部取 theme.ts 单源，零新色。
+// 档、行壳位底缘细线；配色全部取 theme.ts 单源，零新色。落地后修订
+// （2026-11-05 用户定调）：embed 档行壳位 60px/soft 底/sticky（上方注释）、
+// 顶栏标题缩进 16→104。
 //
 // 迁移页配套约定：PageContainer 保留本体承载留白 token，但须写 `title={false}`
 // 显式抑制页头——不传 title 时 PageContainer 会从路由上下文兜底取路由名渲染
@@ -38,7 +44,7 @@ import {
   subscribePageTitleBar,
   type PageTitleBarMeta,
 } from './pageTitleBarStore';
-import { DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
+import { DSH_BG_SOFT, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
 
 export type { PageTitleBarMeta } from './pageTitleBarStore';
 
@@ -83,7 +89,8 @@ export function PageTitleBarHeaderSlot() {
           flexWrap: 'wrap',
           columnGap: 10,
           rowGap: 2,
-          paddingLeft: 16,
+          // 2026-11-05 用户定调 16→104：顶栏标题离品牌区再深缩进一档
+          paddingLeft: 104,
           minWidth: 0,
         }}
       >
@@ -112,19 +119,26 @@ export function PageTitleBar(props: PageTitleBarMeta) {
   // 行壳位：embed（无顶栏）或移动端（顶栏维持纯品牌）。isEmbedMode() 是文档
   // 生命周期常量，判定分支只随视口阈值翻转。
   const rowSlot = isEmbedMode() || isMobile;
+  // embed 档升格固定标题带（2026-11-05 用户定调）：60px + soft 底 + sticky——
+  // sticky 仍在文档流占位（定高页 FRAME_OFFSET 族只吃高度不吃定位），滚动
+  // 发生在下方内容区，标题栏钉住视口顶不随滚，视觉对齐 standalone fixedHeader
+  // 顶栏。移动端档维持原形态。rgb(249,250,251) ≡ theme.ts DSH_BG_SOFT
+  // （配色单源红线：不落字面量）。
+  const embedChrome = isEmbedMode();
   usePageTitleBarSlot(rowSlot ? null : props);
   if (!rowSlot) return null; // 顶栏壳位：本体不渲染，交顶栏插槽呈现
   return (
     <div
       data-testid="page-title-bar-row"
       style={{
-        minHeight: 48,
+        minHeight: embedChrome ? 60 : 48,
         display: 'flex',
         alignItems: 'center',
         flexWrap: 'wrap',
-        background: '#ffffff',
+        background: embedChrome ? DSH_BG_SOFT : '#ffffff',
         borderBottom: `1px solid ${DSH_SPLIT}`,
         padding: '0 15px',
+        ...(embedChrome ? { position: 'sticky', top: 0, zIndex: 20 } : {}),
       }}
     >
       <div

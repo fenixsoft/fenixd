@@ -91,8 +91,9 @@ test('设置页定高滚动接线必须齐全：卡高 calc 常量 + 卡体 flex
   );
   const tsx = readFileSync(join(STATIC_ROOT, 'src', 'pages', 'settings', 'index.tsx'), 'utf8');
   // unified-page-title-bar 后 PageContainer 页头摘除：standalone = 顶栏 56；
-  // embed = 顶栏隐藏、统一标题行行壳位 48。旧双档 68/124（含页头）见 git 历史
-  assert.match(tsx, /const SETTINGS_FRAME_OFFSET = isEmbedMode\(\) \? 48 : 56;/);
+  // embed = 顶栏隐藏、统一标题行行壳位 60（2026-11-05 用户定调 48→60 升格
+  // 固定标题带）。旧双档 68/124（含页头）与 48 档见 git 历史
+  assert.match(tsx, /const SETTINGS_FRAME_OFFSET = isEmbedMode\(\) \? 60 : 56;/);
   assert.match(tsx, /calc\(100vh - \$\{SETTINGS_FRAME_OFFSET\}px\)/);
   assert.match(tsx, /overflowY: 'auto'/);
 });

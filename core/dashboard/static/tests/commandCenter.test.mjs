@@ -397,9 +397,10 @@ test('分区行必须是 minmax 自适应 grid（固定卡宽/脚本算宽禁回
 
 test('定高屏视口扣减单源=SCREEN_CHROME_OFFSET（壳层 chrome 口径，禁回退纯页签值 78）', () => {
   // unified-page-title-bar 2.4：页头摘除后壳层 chrome 重算——standalone =
-  // 顶栏 56 + 页面 padding-top 8 + 页签条 62 = 126；embed = 行壳位 48 +
-  // 8 + 62 = 118（isEmbedMode() 双档，node 环境 location 缺失 → false 取
-  // standalone 值）。旧值 182（含 PageContainer 页头 72）见 git 历史。
+  // 顶栏 56 + 页面 padding-top 8 + 页签条 62 = 126；embed = 行壳位 60 +
+  // 8 + 62 = 130（2026-11-05 用户定调行壳位 embed 档 48→60；isEmbedMode()
+  // 双档，node 环境 location 缺失 → false 取 standalone 值）。旧值 182（含
+  // PageContainer 页头 72）/ 118 见 git 历史。
   assert.equal(SCREEN_CHROME_OFFSET, 126);
 });
 

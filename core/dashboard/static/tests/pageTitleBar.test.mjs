@@ -110,6 +110,8 @@ test('app.tsx 顶栏插槽接线：headerContentRender 标题区 + actionsRender
   const tsx = readComponent();
   assert.match(tsx, /useSyncExternalStore\(subscribePageTitleBar, getPageTitleBarMeta\)/);
   assert.match(tsx, /if \(!meta\) return null;/);
+  // 顶栏标题缩进（2026-11-05 用户定调 16→104：标题离品牌区再深缩进一档）
+  assert.match(tsx, /paddingLeft: 104,/);
 });
 
 test('注册随卸载清理：同一 effect cleanup 注销（路由切换瞬间旧注销+新注册同批 flush）', () => {
@@ -132,9 +134,13 @@ test('壳位互斥：跨阈值 resize 时旧壳位随 deps 翻转清理（四字
   assert.equal(rowRendering?.length, 1);
 });
 
-test('行壳位形态锚点：48px 白底 DSH_SPLIT 底缘细线 + 同构槽位件（theme.ts 单源配色）', () => {
+test('行壳位形态锚点：embed 档 60px soft 底 sticky / 移动端档 48px 白底随流 + DSH_SPLIT 底缘细线 + 同构槽位件（theme.ts 单源配色）', () => {
   const tsx = readComponent();
-  assert.match(tsx, /minHeight: 48,/);
+  // 2026-11-05 用户定调双档：embed 升格固定标题带（60 / DSH_BG_SOFT /
+  // sticky 钉视口顶），移动端维持 1.1 原形态（48 / 白底 / 随文档流）
+  assert.match(tsx, /minHeight: embedChrome \? 60 : 48,/);
+  assert.match(tsx, /background: embedChrome \? DSH_BG_SOFT : '#ffffff',/);
+  assert.match(tsx, /\.\.\.\(embedChrome \? \{ position: 'sticky', top: 0, zIndex: 20 \} : \{\}\),/);
   assert.match(tsx, /borderBottom: `1px solid \$\{DSH_SPLIT\}`/);
   assert.match(tsx, /fontSize: 18, fontWeight: 700,/);
   assert.match(tsx, /fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY/);

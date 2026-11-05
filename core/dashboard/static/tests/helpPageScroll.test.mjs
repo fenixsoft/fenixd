@@ -45,10 +45,10 @@ test('整卡定高必须是纯 CSS calc(100vh - 偏移)，双模式偏移实测�
   // calc 接线在 flex 行 style 上
   assert.match(text, /height: `calc\(100vh - \$\{HELP_FRAME_OFFSET\}px\)`/);
   // 双模式偏移 = 卡片上方页框占用：standalone 顶栏 56（PageContainer 页头已
-  // 摘除）；embed 顶栏隐藏、统一标题行行壳位 48（卡片贴视口底后文档流恰 =
-  // 100vh，无底带、无页面级滚动条）。校准值改动时须同步复核两种模式
-  // （standalone 1440×900 卡底贴视口底）
-  assert.match(text, /isEmbedMode\(\) \? 48 : 56/);
+  // 摘除）；embed 顶栏隐藏、统一标题行行壳位 60（2026-11-05 用户定调 48→60
+  // 升格固定标题带；卡片贴视口底后文档流恰 = 100vh，无底带、无页面级滚动条）。
+  // 校准值改动时须同步复核两种模式（standalone 1440×900 卡底贴视口底）
+  assert.match(text, /isEmbedMode\(\) \? 60 : 56/);
   // JS 测高方案不得回潮（用户明确否掉）：flex 行不挂 ref 测高
   assert.doesNotMatch(text, /getBoundingClientRect\(\)\.top \+ window\.scrollY/);
 });

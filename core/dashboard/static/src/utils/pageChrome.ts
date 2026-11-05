@@ -9,8 +9,9 @@
 // - standalone：顶栏 56 + Tabs 导航 46 + Tabs 内容上边距 16 + 底部 32。
 //   桌面 150；移动 198（顶栏同 56，页头项换行壳位 48，构成项替换与
 //   直接构成两算法同值，390×844 旧站实测顶栏 56/旧页头 96 校准构成项）。
-// - embed（embed=1，ProLayout 全局顶栏隐藏）：行壳位 48 + Tabs 46 + 16
-//   + 32 = 142（桌面/移动同值——移动端 embed 同样隐藏顶栏）。
+// - embed（embed=1，ProLayout 全局顶栏隐藏）：行壳位 60 + Tabs 46 + 16
+//   + 32 = 154（桌面/移动同值——移动端 embed 同样隐藏顶栏；2026-11-05
+//   用户定调行壳位 embed 档 48→60 升格固定标题带，旧值 142 见 git 历史）。
 //
 // 旧单档推导（页头在场）：桌面 222 = 顶栏 56 + 页头 72 + Tabs 导航 46
 // + Tabs 内容上边距 16 + 底部 32；移动 234 按 390×844 实测校准
@@ -21,7 +22,7 @@ import { isEmbedMode } from './embedMount.ts';
 // [fenix-ignore:e6aef4e44ee9] 仓库内无共享布局 CSS 变量可派生（消费侧 SessionPanel/ArchitectureTab 均为 emotion 内联 calc 字符串插值），引入变量体系或视觉回归门改动面大于收益，推导口径已注释在文件头
 
 /** 桌面端偏移：配合 calc(100vh - Npx) 给分面视口填充高度（embed 取行壳位档） */
-export const PAGE_CHROME_OFFSET_DESKTOP = isEmbedMode() ? 142 : 150;
+export const PAGE_CHROME_OFFSET_DESKTOP = isEmbedMode() ? 154 : 150;
 
 /** 移动端偏移：配合 calc(100dvh - Npx) 使用（dvh 随浏览器工具栏收展；embed 取行壳位档） */
-export const PAGE_CHROME_OFFSET_MOBILE = isEmbedMode() ? 142 : 198;
+export const PAGE_CHROME_OFFSET_MOBILE = isEmbedMode() ? 154 : 198;

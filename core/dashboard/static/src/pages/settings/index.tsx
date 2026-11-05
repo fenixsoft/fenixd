@@ -44,12 +44,13 @@ const { Text } = Typography;
 // PageContainer 页头 56 + heading 块尾 12 已随页头摘除一并消失，global.less 的
 // heading 12px 补偿规则与右栏 marginTop:-30 上探补偿同步退役——补偿对象不复
 // 存在，旧值 124=56+56+12 / 68=56+12 见 git 历史）；embed=1 面板桥
-// headerRender:false 无顶栏，为统一标题栏行壳位 48。
+// headerRender:false 无顶栏，为统一标题栏行壳位 60（2026-11-05 用户定调
+// embed 档 48→60 升格固定标题带；sticky 不改文档流占位，只吃高度）。
 // 卡高 calc(100vh - 本值) 后文档流恰满视口（前置：children 容器
 // padding-block-end 已由 global.less 归零）；配合 global.less 卡体 flex 传导与
 // 右侧面板内联 overflowY，右栏自滚、左侧菜单固定（2026-11-04 用户指令）。
 // 纯 CSS calc，无脚本算高。改标题行或内容区顶带任何内边距必须回校本值。
-const SETTINGS_FRAME_OFFSET = isEmbedMode() ? 48 : 56;
+const SETTINGS_FRAME_OFFSET = isEmbedMode() ? 60 : 56;
 
 // 菜单标签统一从 PAGE_LABELS 派生（code-review item d996f0d0aac5）：旧实现
 // 标签字面在 BASE_MENU_ITEMS 与下方项目级 menuItems.push 各写一份，本文件

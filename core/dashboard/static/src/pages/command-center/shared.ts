@@ -237,9 +237,10 @@ export const LANE_CARD_MIN_WIDTH = 270;
 // 全站退役后重算，1920×1080 playwright 实拍校准）：
 // standalone = ProLayout 顶栏 56 + 页面 padding-top 8 + 页签条 62 = 126
 // （原 182 含 PageContainer 页头 56，随页头摘除扣减；旧值见 git 历史）；
-// embed（dsh 面板桥 headerRender:false 无顶栏）= 统一标题栏行壳位 48 + 8 + 62
-// = 118。壳层结构（顶栏/行壳位高/padding/页签条）任一变化须复核本值并重新实拍。
-export const SCREEN_CHROME_OFFSET = isEmbedMode() ? 118 : 126;
+// embed（dsh 面板桥 headerRender:false 无顶栏）= 统一标题栏行壳位 60 + 8 + 62
+// = 130（2026-11-05 用户定调行壳位 embed 档 48→60，旧值 118 见 git 历史）。
+// 壳层结构（顶栏/行壳位高/padding/页签条）任一变化须复核本值并重新实拍。
+export const SCREEN_CHROME_OFFSET = isEmbedMode() ? 130 : 126;
 
 // 时间窗（2026-10-28 时间下拉「今日/7 日/全量」）：窗口约束车道卡三格
 // （run/成功率/成本）与产品团队汇总的运行/成本口径；需求数量（活跃 SPEC）

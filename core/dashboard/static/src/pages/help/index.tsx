@@ -49,12 +49,13 @@ const HELP_REMARK_PLUGINS = [remarkGfm];
 // （1440×900）：unified-page-title-bar 页头全站退役后，standalone 仅 ProLayout
 // 顶栏 56（原 PageContainer 页头 56 已随页头摘除消失，旧值 112=56+56 见 git 历
 // 史）；embed 模式（dsh 面板桥 iframe）headerRender:false 无顶栏，为统一标题栏
-// 行壳位 48。卡片贴视口底后文档流高度恰 = 100vh，#root 的 min-height:100vh 被
+// 行壳位 60（2026-11-05 用户定调 embed 档 48→60 升格固定标题带，sticky 只吃
+// 高度不改文档流占位）。卡片贴视口底后文档流高度恰 = 100vh，#root 的 min-height:100vh 被
 // 填满——视口下方无空带、页面也不残生第二根滚动条（前置条件：children 容器
 // padding-block-end 已由 global.less 归零，两处须同步）。口径同 pageChrome.ts
 // 的校准常数（那是项目详情页 Tabs 版页框，本页无 Tabs 不通用）；纯 CSS calc，
 // 浏览器缩放/窗口拉伸免 JS 重算。
-const HELP_FRAME_OFFSET = isEmbedMode() ? 48 : 56;
+const HELP_FRAME_OFFSET = isEmbedMode() ? 60 : 56;
 
 function getDocFromUrl(): string {
   try {
