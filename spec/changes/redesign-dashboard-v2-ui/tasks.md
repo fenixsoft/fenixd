@@ -45,5 +45,5 @@
 
 ## 4. 构建与验证
 
-- [ ] 4.1 `npm run build` 通过；全部 v2 路由可达（#/v2/overview 等六页渲染冒烟）
+- [x] 4.1 `npm run build` 通过；全部 v2 路由可达（#/v2/overview 等六页渲染冒烟）
 - [ ] 4.2 既有页面回归断言：routes 快照守卫通过、`src/pages/` 既有页面组件文件零 diff、`#/overview` 等既有路由渲染不变
