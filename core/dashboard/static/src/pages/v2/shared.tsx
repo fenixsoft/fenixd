@@ -66,7 +66,8 @@ export function V2IconDots() {
   );
 }
 
-/** 返回箭头（标题带左端，原型 BackArrow 形态）。 */
+/** 返回箭头（标题带左端，原型 BackArrow 形态）。title 经 aria-label 承载
+ * （SVGProps 无原生 title 属性）。 */
 export function V2BackArrow({ onClick, title }: { onClick: () => void; title?: string }) {
   return (
     <svg
@@ -75,7 +76,7 @@ export function V2BackArrow({ onClick, title }: { onClick: () => void; title?: s
       viewBox="0 0 14 14"
       fill="none"
       aria-hidden
-      title={title}
+      aria-label={title}
       style={{ cursor: 'pointer', flexShrink: 0 }}
       onClick={onClick}
     >
