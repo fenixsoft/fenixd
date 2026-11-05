@@ -349,12 +349,17 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
         # 交由零变更哨/merge 流程兜底
         return []
 
-    def _exists_on_branch(path: str) -> bool:
+    def _exists_on_branch(path: str) -> bool | None:
         # 字面路径校验（.fenix 前缀归一化已退役，见本方法 docstring）
-        # 属性缺失/查询异常按「路径不存在=False」保守回退（code-review item
-        # 2d18a722b42c）：与上方 find_worktree_path 的 try/except 静默跳过
-        # 同口径，防桩 pm / 接线变化时 AttributeError 从守卫抛穿、不走守卫
-        # 其余路径的保守语义；WARNING 留痕供接线回归排查。
+        # 属性缺失/查询异常返回 None（无法判定，code-review item
+        # a6e415ce889a）：统一回退 False 对 new/modify 缺失判定是保守方向
+        # （误报 missing 可入裁决流水线），但对 delete 反判（undeleted）会把
+        # 查询失败当作「已删除」静默漏掉——硬闸在该路径 fail-open，与
+        # 「保守回退」语义不符。三态化（True/False/None）后失败方向由调用方
+        # 按 kind 决定：delete 类 None 跳过 undeleted 反判并 WARNING 留痕，
+        # new/modify 类 None 沿用既有 False 的保守方向（报 missing）。
+        # try/except 本身仍防桩 pm / 接线变化时 AttributeError 从守卫抛穿
+        # （code-review item 2d18a722b42c）；WARNING 留痕供接线回归排查。
         try:
             wm = pipeline._pm.agent_runner.worktree_manager
             return wm.file_exists_on_branch(branch, path)
@@ -362,19 +367,29 @@ def _deliverable_gate_missing(pipeline, spec_name: str, result) -> list:
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"交付物守卫分支存在性查询失败 '{spec_name}'"
-                f"（{branch}:{path}，按不存在保守处理）: {e}",
+                f"（{branch}:{path}，无法判定，由调用方按 kind 决定失败方向）: {e}",
             )
-            return False
+            return None
 
     # 交付物（硬校验）：按 kind 区分违规类别——
     #   new/modify 缺失 → missing（既有一致行为）；
-    #   delete 仍存在 → undeleted（反判，D3 结构化返回）。
+    #   delete 仍存在 → undeleted（反判，D3 结构化返回）；
+    #   delete 查询失败（None）→ 跳过 undeleted 反判 + WARNING 留痕
+    #   （a6e415ce889a：无法判定不静默核销、也不误伤）；new/modify 的
+    #   None 沿用既有 False 语义按缺失保守处理。
     violations: list = []
     for p in declared:
         kind = kind_by_path.get(p, "new")
         if kind == "delete":
-            if _exists_on_branch(p):
+            exists = _exists_on_branch(p)
+            if exists is True:
                 violations.append({"path": p, "kind": "delete", "violation": "undeleted"})
+            elif exists is None:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"交付物守卫 delete 反判无法判定 '{spec_name}'"
+                    f"（{branch}:{p}，查询失败，跳过 undeleted 判定留痕）",
+                )
         else:
             if not _exists_on_branch(p):
                 violations.append({"path": p, "kind": kind, "violation": "missing"})

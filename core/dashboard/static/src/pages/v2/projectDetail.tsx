@@ -14,6 +14,7 @@ import dayjs from 'dayjs';
 import { deleteSpec, getSpecs, statusMeta } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
+import { pct } from '@/utils/percent';
 import { V2IconDots, V2Page, V2Pill, V2StatusPill, V2TitleBand } from './shared';
 import {
   useV2IsMobile,
@@ -71,7 +72,7 @@ function PhaseProgressCell({ s }: { s: SpecSummary }) {
     done = s.verify_done;
     total = s.verify_total;
   }
-  const pct = Math.round((done / Math.max(1, total)) * 100);
+  const percent = pct(done, total);
   const current = s.progress_phase === 'gates' ? s.gates_current : isVerify ? s.verify_current : undefined;
 
   return (
@@ -79,11 +80,11 @@ function PhaseProgressCell({ s }: { s: SpecSummary }) {
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
         <span style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>{label}</span>
         <span className="v2-num" style={{ fontSize: 12, fontWeight: 600 }}>
-          {done}/{total} · {pct}%
+          {done}/{total} · {percent}%
         </span>
       </div>
       <div style={{ marginTop: 6 }}>
-        <Progress percent={pct} size="small" strokeColor={color} railColor={V2_HAIRLINE} showInfo={false} />
+        <Progress percent={percent} size="small" strokeColor={color} railColor={V2_HAIRLINE} showInfo={false} />
       </div>
       {current ? (
         <div className="v2-ellipsis" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4 }} title={current}>

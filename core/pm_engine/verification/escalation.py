@@ -832,7 +832,22 @@ def _escalate_env_blocked(
         }
         if frozen:
             entry[FROZEN_FIELD] = True
-        pipeline._context.state_machine.update_spec(spec_name, entry)
+        # blocked 终态落盘单独容错（code-review 1cba954feb86，比照上方
+        # bump_counters / planner_cost 的降级口径）：update_spec 含 STATE
+        # 磁盘 IO，磁盘满/权限等 IO 异常若沿函数级 except 吞成一条 WARNING
+        # 即返回，其后的 admin 自动呼叫、人工告警全部跳过——Administrator
+        # 不会被呼叫，整轮升级仅剩一条 WARNING，只能靠下一轮重触发重试。
+        # 失败 ERROR 留痕后继续收口，不让落盘失败丢弃整轮升级（spec 状态
+        # 未写成 blocked 由下一轮重派再写；后续文案只用上方已定值局部变量，
+        # 不回读 spec 状态，失败路径无二次异常）。
+        try:
+            pipeline._context.state_machine.update_spec(spec_name, entry)
+        except Exception as e:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"'{spec_name}' blocked 终态落盘失败（继续 admin 呼叫与"
+                f"人工告警，不阻断升级）: {type(e).__name__}: {e}",
+            )
         if frozen:
             pipeline._context.logger.error(
                 "pm_engine",

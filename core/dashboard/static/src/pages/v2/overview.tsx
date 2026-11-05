@@ -21,14 +21,20 @@ import {
   stopProject,
 } from '@/services/dashboard';
 import type { AlertsData, OverviewData, ProjectSummary } from '@/services/dashboard';
+import { compactWan } from '@/utils/format';
+import { pct } from '@/utils/percent';
+import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
 import { V2AlertRows } from './AlertList';
 import { V2Page, V2Pill, V2TitleBand } from './shared';
 import {
   useV2IsMobile,
   V2_ERROR,
+  V2_GREEN_SOFT,
   V2_HAIRLINE,
   V2_LANE_COLORS,
   V2_RAMP_IMPLEMENTING,
+  V2_RAMP_VERIFYING,
+  V2_RED_SOFT,
   V2_SPLIT,
   V2_TEXT,
   V2_TEXT_QUATERNARY,
@@ -37,19 +43,6 @@ import {
   V2_TILE_BORDER,
   V2_WARNING,
 } from './theme';
-
-// 刷新心跳（对齐现产 overview 30s 心跳量级）
-const HEARTBEAT_MS = 30000;
-
-/** Token 万/亿压缩格式（口径同现产 IntroduceRow compactTokens：万/亿进位、
- * 9999.95 提前升档防「10000.0万」自相矛盾；本地副本因源未导出）。 */
-function compactWan(n: number): string {
-  if (n / 1e4 >= 9999.95) return (n / 1e8).toFixed(1) + '亿';
-  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
-  if (n / 1e3 >= 9.95) return (n / 1e4).toFixed(1) + '万';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return String(n);
-}
 
 // 活跃 Agent 归族口径（与现产 IntroduceRow AGENT_CATS 同源：键域 =
 // core/agent_runner/run_files.py RUN_ID_AGENT_PREFIXES 值域，impl-ocr 归实现、
@@ -230,7 +223,9 @@ function AlertCard({
                 </Button>
               </div>
             </div>
-            {alerts.length > 1 ? <V2AlertRows alerts={alerts.slice(1)} onChanged={onChanged} /> : null}
+            {alerts.length > 1 ? (
+              <V2AlertRows alerts={alerts.filter((a) => a.id !== top.id)} onChanged={onChanged} />
+            ) : null}
           </>
         ) : null}
       </div>
@@ -246,7 +241,7 @@ function AlertCard({
             width: 34,
             height: 34,
             borderRadius: 10,
-            background: '#fef2f2',
+            background: V2_RED_SOFT,
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -285,7 +280,7 @@ function AlertCard({
 function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
   const t = data.totals;
   const recent = data.token_usage?.recent ?? [];
-  const pct = Math.round(((t.task_done ?? 0) / Math.max(1, t.task_total ?? 0)) * 100);
+  const taskPct = pct(t.task_done ?? 0, t.task_total ?? 0);
   const tokenSum = recent.reduce((s, r) => s + (r.tokens || 0), 0);
   const statusEntries = Object.entries(t.status_counts || {});
   const tilePad = mobile ? '14px 16px' : '18px 20px';
@@ -370,7 +365,7 @@ function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
       <div className="v2-bento" style={{ padding: tilePad, display: 'flex', flexDirection: 'column' }}>
         <TileLabel>任务进度</TileLabel>
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: mobile ? 10 : 14, marginTop: 10 }}>
-          <Donut pct={pct} box={mobile ? 56 : 72} />
+          <Donut pct={taskPct} box={mobile ? 56 : 72} />
           <div style={{ minWidth: 0 }}>
             <div className="v2-num" style={{ fontSize: mobile ? 15 : 20, fontWeight: 700, whiteSpace: 'nowrap' }}>
               {t.task_done ?? 0} / {t.task_total ?? 0}
@@ -378,7 +373,7 @@ function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
             </div>
             {!mobile ? (
               <Progress
-                percent={pct}
+                percent={taskPct}
                 size="small"
                 strokeColor={V2_RAMP_IMPLEMENTING}
                 railColor={V2_HAIRLINE}
@@ -439,9 +434,9 @@ function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
               className="v2-num"
               style={{
                 fontSize: 12,
-                color: '#16a34a',
+                color: V2_RAMP_VERIFYING,
                 fontWeight: 600,
-                background: '#f0fdf4',
+                background: V2_GREEN_SOFT,
                 borderRadius: 999,
                 padding: '2px 8px',
               }}
@@ -656,7 +651,7 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
   };
 
   if (mobile) {
-    const pct = (p: ProjectSummary) => Math.round((p.task_done / Math.max(1, p.task_total)) * 100);
+    const taskPct = (p: ProjectSummary) => pct(p.task_done, p.task_total);
     return (
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -724,10 +719,10 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
                     </span>
                   </div>
                   <div style={{ marginTop: 8 }}>
-                    <Progress percent={pct(p)} size="small" strokeColor={V2_RAMP_IMPLEMENTING} railColor={V2_HAIRLINE} showInfo={false} />
+                    <Progress percent={taskPct(p)} size="small" strokeColor={V2_RAMP_IMPLEMENTING} railColor={V2_HAIRLINE} showInfo={false} />
                   </div>
                   <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4 }}>
-                    {p.task_done}/{p.task_total} · {pct(p)}%
+                    {p.task_done}/{p.task_total} · {taskPct(p)}%
                   </div>
                 </>
               ) : null}
@@ -763,12 +758,12 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
               <span style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>任务进度</span>
               <span className="v2-num" style={{ fontSize: 12, fontWeight: 600 }}>
                 {p.task_done}/{p.task_total} ·{' '}
-                {Math.round((p.task_done / Math.max(1, p.task_total)) * 100)}%
+                {pct(p.task_done, p.task_total)}%
               </span>
             </div>
             <div style={{ marginTop: 6 }}>
               <Progress
-                percent={Math.round((p.task_done / Math.max(1, p.task_total)) * 100)}
+                percent={pct(p.task_done, p.task_total)}
                 size="small"
                 strokeColor={V2_RAMP_IMPLEMENTING}
                 railColor={V2_HAIRLINE}
