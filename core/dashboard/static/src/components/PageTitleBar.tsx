@@ -4,9 +4,10 @@
 // 自画同类型标题 div。壳位判定收敛在本组件内，页面侧零环境分支：
 // - 行壳位：embed=1（dsh 面板桥 iframe，无顶栏）或视口 <768px（移动端顶栏维持
 //   纯品牌）时，渲染为内容区首行标题栏，底缘 DSH_SPLIT 细线。双档形态：
-//   embed 档 = 60px soft 底（DSH_BG_SOFT）+ sticky 钉住视口顶（滚动发生在下方
-//   内容区，标题栏不随滚，视觉对齐 standalone fixedHeader 顶栏；2026-11-05
-//   用户定调 min-height 60 / background rgb(249,250,251) ≡ DSH_BG_SOFT）；
+//   embed 档 = 60px 半透明 soft 玻璃底（DSH_BG_SOFT_GLASS ≡ DSH_BG_SOFT 60%）+
+//   backdrop blur(8px)（复刻 standalone fixedHeader 毛玻璃，2026-11-05 用户指令）
+//   + sticky 钉住视口顶（滚动发生在下方内容区，标题栏不随滚；2026-11-05
+//   用户定调 min-height 60）；
 //   移动端档 = 1.1 原形态（48px 白底随文档流，未获指令不动）。
 // - 顶栏壳位：独立访问 ≥768px 时向模块级注册表登记 meta，由 app.tsx 顶栏插槽
 //   （HeaderSlot / FiltersSlot）消费渲染——标题区在 Fenix Harness 品牌之后、
@@ -44,7 +45,7 @@ import {
   subscribePageTitleBar,
   type PageTitleBarMeta,
 } from './pageTitleBarStore';
-import { DSH_BG_SOFT, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
+import { DSH_BG_SOFT_GLASS, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
 
 export type { PageTitleBarMeta } from './pageTitleBarStore';
 
@@ -122,8 +123,11 @@ export function PageTitleBar(props: PageTitleBarMeta) {
   // embed 档升格固定标题带（2026-11-05 用户定调）：60px + soft 底 + sticky——
   // sticky 仍在文档流占位（定高页 FRAME_OFFSET 族只吃高度不吃定位），滚动
   // 发生在下方内容区，标题栏钉住视口顶不随滚，视觉对齐 standalone fixedHeader
-  // 顶栏。移动端档维持原形态。rgb(249,250,251) ≡ theme.ts DSH_BG_SOFT
-  // （配色单源红线：不落字面量）。
+  // 顶栏。移动端档维持原形态。配色单源红线：玻璃底 DSH_BG_SOFT_GLASS 为
+  // DSH_BG_SOFT 的 60% 透明形态（theme.ts 同源共改，守卫测试钉住）。
+  // 毛玻璃（2026-11-05 用户指令「复刻 standalone 顶栏半透明模糊」）：半透明底
+  // + backdrop blur(8px)（ProLayout fixedHeader 同值），内容滚过标题带时透出
+  // 模糊内容；-webkit- 前缀兜底旧移动端 webview。
   const embedChrome = isEmbedMode();
   usePageTitleBarSlot(rowSlot ? null : props);
   if (!rowSlot) return null; // 顶栏壳位：本体不渲染，交顶栏插槽呈现
@@ -135,10 +139,18 @@ export function PageTitleBar(props: PageTitleBarMeta) {
         display: 'flex',
         alignItems: 'center',
         flexWrap: 'wrap',
-        background: embedChrome ? DSH_BG_SOFT : '#ffffff',
+        background: embedChrome ? DSH_BG_SOFT_GLASS : '#ffffff',
         borderBottom: `1px solid ${DSH_SPLIT}`,
         padding: '0 15px',
-        ...(embedChrome ? { position: 'sticky', top: 0, zIndex: 20 } : {}),
+        ...(embedChrome
+          ? {
+              position: 'sticky',
+              top: 0,
+              zIndex: 20,
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
+            }
+          : {}),
       }}
     >
       <div

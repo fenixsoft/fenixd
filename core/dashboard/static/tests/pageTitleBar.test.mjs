@@ -134,16 +134,32 @@ test('壳位互斥：跨阈值 resize 时旧壳位随 deps 翻转清理（四字
   assert.equal(rowRendering?.length, 1);
 });
 
-test('行壳位形态锚点：embed 档 60px soft 底 sticky / 移动端档 48px 白底随流 + DSH_SPLIT 底缘细线 + 同构槽位件（theme.ts 单源配色）', () => {
+test('行壳位形态锚点：embed 档 60px 半透明玻璃底 sticky 毛玻璃 / 移动端档 48px 白底随流 + DSH_SPLIT 底缘细线 + 同构槽位件（theme.ts 单源配色）', () => {
   const tsx = readComponent();
-  // 2026-11-05 用户定调双档：embed 升格固定标题带（60 / DSH_BG_SOFT /
-  // sticky 钉视口顶），移动端维持 1.1 原形态（48 / 白底 / 随文档流）
+  // 2026-11-05 用户定调双档：embed 升格固定标题带（60 / sticky 钉视口顶），
+  // 移动端维持 1.1 原形态（48 / 白底 / 随文档流）；同日用户指令复刻 standalone
+  // 顶栏毛玻璃：半透明玻璃底 + backdrop blur(8px)（ProLayout fixedHeader 同值）
   assert.match(tsx, /minHeight: embedChrome \? 60 : 48,/);
-  assert.match(tsx, /background: embedChrome \? DSH_BG_SOFT : '#ffffff',/);
-  assert.match(tsx, /\.\.\.\(embedChrome \? \{ position: 'sticky', top: 0, zIndex: 20 \} : \{\}\),/);
+  assert.match(tsx, /background: embedChrome \? DSH_BG_SOFT_GLASS : '#ffffff',/);
+  assert.match(tsx, /backdropFilter: 'blur\(8px\)',/);
+  assert.match(tsx, /WebkitBackdropFilter: 'blur\(8px\)',/);
+  assert.match(tsx, /\(embedChrome\s*\?\s*\{\s*position: 'sticky',\s*top: 0,\s*zIndex: 20,\s*backdropFilter: 'blur\(8px\)',\s*WebkitBackdropFilter: 'blur\(8px\)',\s*\}\s*: \{\}\),/);
   assert.match(tsx, /borderBottom: `1px solid \$\{DSH_SPLIT\}`/);
   assert.match(tsx, /fontSize: 18, fontWeight: 700,/);
   assert.match(tsx, /fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY/);
+  // 玻璃底与 soft 底同源共改守卫：DSH_BG_SOFT_GLASS 的 rgb 通道必须与
+  // DSH_BG_SOFT 的 hex 通道一致（theme.ts 两值其一改动须同步另一值）
+  const themeSrc = readFileSync(join(STATIC_ROOT, 'src', 'theme.ts'), 'utf8');
+  const soft = themeSrc.match(/export const DSH_BG_SOFT = '#([0-9a-f]{6})'/);
+  const glass = themeSrc.match(/export const DSH_BG_SOFT_GLASS = 'rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)'/);
+  assert.ok(soft && glass, 'theme.ts 须同时声明 DSH_BG_SOFT(hex) 与 DSH_BG_SOFT_GLASS(rgba)');
+  const hexToRgb = (h) => [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  assert.deepEqual(
+    hexToRgb(soft[1]),
+    [glass[1], glass[2], glass[3]].map(Number),
+    'DSH_BG_SOFT_GLASS 通道与 DSH_BG_SOFT 漂移（两值须同源共改）',
+  );
+  assert.ok(parseFloat(glass[4]) < 1, '玻璃底必须保留透明度（实底即毛玻璃失效）');
   // 计数排版辅助（副标题随迁 tabular-nums 契约的页面侧入口）
   assert.match(tsx, /export function TitleBarNum/);
   assert.match(tsx, /fontVariantNumeric: 'tabular-nums'/);

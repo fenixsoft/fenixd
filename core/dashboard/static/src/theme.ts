@@ -56,6 +56,10 @@ export const DSH_FONT_FAMILY =
 
 /** dsw static-neutral-bluish-50：表格表头 / 轻底纹档（同侧栏底色一族）。 */
 export const DSH_BG_SOFT = '#f9fafb';
+/** 行壳位玻璃底（2026-11-05 用户指令「embed 标题带复刻顶栏半透明模糊」）：
+ * 上值 60% 透明形态，配 backdrop-filter blur(8px) 使用。两值必须同源共改
+ * （pageTitleBar 守卫测试钉住通道一致）。 */
+export const DSH_BG_SOFT_GLASS = 'rgba(249, 250, 251, 0.6)';
 /** dsw alias-bg-module-platform（neutral-bluish-60）：行 hover / 中性填充档。 */
 export const DSH_BG_MODULE = '#f5f6f7';
 /** dsw alias-interactive-bg-hover（#2631480f）：侧栏行 hover 冷灰。 */
