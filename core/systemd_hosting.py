@@ -28,6 +28,8 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 # dashboard unit 固定名（框架主树唯一一条；hook_engine restart-dashboard、
@@ -219,17 +221,27 @@ def write_env_file(text: str, target: Path) -> Path:
     """
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
+    # mkstemp 唯一临时名（pid+tid 后缀、同目录）：固定 <name>.tmp 在两进程
+    # 并发写同一目标时后写者截断先写者未替换完的临时文件，os.replace 可落盘
+    # 交叉内容（对齐 state_machine._atomic_write_text / fs_utils 原子写惯例）。
+    tmp = None
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.{os.getpid()}.{threading.get_ident()}.",
+            suffix=".tmp",
+            dir=str(target.parent),
+        )
+        tmp = Path(tmp_name)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             f.write(text)
         os.chmod(tmp, 0o600)
         os.replace(tmp, target)
     except OSError as e:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         raise SystemdHostingError(f"写 EnvironmentFile {target} 失败: {e}") from e
     return target
 
@@ -360,14 +372,28 @@ def write_unit_file(unit: str, content: str) -> Path:
     保证无双托管窗口（design 决策 5）。
     """
     target = SYSTEMD_UNIT_DIR / unit
+    # mkstemp 唯一临时名（pid+tid 后缀、同目录）：与 write_env_file 同款并发
+    # 互踩防线，对齐仓库既有原子写惯例；失败路径尽力清理临时文件（唯一名
+    # 不会像固定名那样被下次写入自然覆盖，残留会积累）。
+    tmp = None
     try:
         SYSTEMD_UNIT_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.{os.getpid()}.{threading.get_ident()}.",
+            suffix=".tmp",
+            dir=str(SYSTEMD_UNIT_DIR),
+        )
+        tmp = Path(tmp_name)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             f.write(content)
         os.chmod(tmp, 0o644)
         os.replace(tmp, target)
     except OSError as e:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         raise SystemdHostingError(
             f"写 unit 文件 {target} 失败: {e}（需要 root 权限）"
         ) from e
@@ -428,10 +454,16 @@ def stop_unit_no_block(unit: str) -> None:
 
 
 def restart_dashboard_unit() -> dict:
-    """``systemctl restart fenix-dashboard``（restart-dashboard 动作执行侧）。
+    """``systemctl restart --no-block fenix-dashboard``（restart-dashboard 动作执行侧）。
 
     Returns: {"status": "success"|"failure"|"skipped", "detail": str}
     unit 未安装 → skipped（与 tmux 无会话时的静默 skip 对齐，环境态非故障）。
+
+    同步 ``systemctl restart`` 最坏等待为 dashboard unit 的 TimeoutStopSec=60
+    （停机排水逼近上界时挂死 hook 线程，且 subprocess 超时按失败上报而 systemd
+    侧重启可能实际完成，结果与事实相反）——与 stop 路径同款 ``--no-block``
+    （design 决策 4），就绪确认由调用方（hook_engine restart-dashboard）既有的
+    端口轮询探测承担。
     """
     if not systemctl_available():
         return {
@@ -443,16 +475,19 @@ def restart_dashboard_unit() -> dict:
             "status": "skipped",
             "detail": f"{DASHBOARD_UNIT} unit 未安装（dashboard 未以 systemd 承载），静默跳过",
         }
-    r = _run_systemctl(["restart", DASHBOARD_UNIT], timeout=60)
+    r = _run_systemctl(["restart", "--no-block", DASHBOARD_UNIT], timeout=15)
     if r.returncode != 0:
         return {
             "status": "failure",
             "detail": (
-                f"systemctl restart {DASHBOARD_UNIT} 失败: "
+                f"systemctl restart --no-block {DASHBOARD_UNIT} 失败: "
                 f"{(r.stderr or r.stdout).strip()}"
             ),
         }
-    return {"status": "success", "detail": f"{DASHBOARD_UNIT} 已重启"}
+    return {
+        "status": "success",
+        "detail": f"{DASHBOARD_UNIT} 重启指令已排队（--no-block），就绪由调用方端口探测确认",
+    }
 
 
 # ── /proc 最小进程扫描（本模块自带，不 import fenix_session 防循环）────────
@@ -472,7 +507,6 @@ def find_framework_dashboard_pid() -> int | None:
         if not pid.isdigit():
             continue
         try:
-            cwd = os.readlink(f"/proc/{pid}/cwd")
             with open(f"/proc/{pid}/cmdline", "rb") as f:
                 raw = f.read().decode("utf-8", errors="replace")
         except (OSError, ValueError):

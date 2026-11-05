@@ -397,29 +397,27 @@ class G6StashGuardMixin:
             mode, triage_note = self._triage_stash_pop_conflicts(
                 pinned_sha, conflict_files
             )
-            # D4 可观测性：结构化日志（处置方式（态 1/2/3）/stash sha/文件清单），
-            # 供 stash_pop_conflict 信号 evidence 携带，dashboard 与自省可见。
-            self.logger.warning(
-                "worktree_manager",
-                f"Stash pop conflict triage: mode={mode} "
-                f"stash_sha={pinned_sha[:12] if pinned_sha else '-'} "
-                f"files={conflict_files} note={triage_note}",
-            )
             # 条目保留记账（D3）：内容已按三态落回工作区/恢复 commit，条目一律
             # 保留——不因恢复 commit 触发「零独有内容」自动 drop（恢复 commit
             # 后 HEAD 已含 stash 版、树级 diff 恒为空，drop 判据会误命中；
             # 且「被合并结果取代」与「被自愈恢复 commit 重新入库」是两回事，
             # 后者保留条目作审计）。stash_pop_conflict 信号行为保持不变。
+            self.last_stash_entry_fate = {"kept": True, "sha": pinned_sha}
             recover_cmds = (
                 " ".join(f"git show {pinned_sha}:{f}" for f in conflict_files)
                 if pinned_sha
                 else "git stash show"
             )
-            self.last_stash_entry_fate = {"kept": True, "sha": pinned_sha}
+            # D4 可观测性：单条结构化 WARNING 携带全量字段（处置方式（态 1/2/3）/
+            # stash sha/文件清单/三态注记/文件数/人工找回命令；code-review item
+            # a5aa1b1c05f7 将原两条重叠 WARNING 合并为一条），供
+            # stash_pop_conflict 信号 evidence 携带，dashboard 与自省可见。
             self.logger.warning(
                 "worktree_manager",
-                f"Stash pop conflict triaged via mode {mode}; stash changes on "
-                f"{len(conflict_files)} file(s): {conflict_files} recovered "
+                f"Stash pop conflict triage: mode={mode} "
+                f"stash_sha={pinned_sha[:12] if pinned_sha else '-'} "
+                f"files={conflict_files} note={triage_note} "
+                f"recovered {len(conflict_files)} file(s) "
                 f"(stash preserved, recover via: {recover_cmds})",
             )
             # 复查残留（对齐 reclaim_stale_autostash 口径）：态 2 checkout

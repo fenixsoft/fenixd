@@ -514,10 +514,13 @@ class ConfigLoader:
         ``positive`` 参数化：True 时 ``<=0`` 回退缺省（0 不等效关闭的键），
         否则仅 ``<0`` 回退缺省（0 合法，含 0=禁用/关闭语义的键）。
 
-        覆盖范围：仅「整值浮点按整数接受」口径的键。严格 int 键（整值浮点
-        拒绝，如 knowledge.escalate_after_rounds / archive.auto_threshold）、
-        数值字符串转换族（_num）与失败路径带告警留痕的读取器接受集/行为不同，
-        MUST NOT 迁移至本助手（行为变更单列评审）。
+        覆盖范围：仅「整值浮点按整数接受」口径的键。数值字符串转换族（_num）
+        与失败路径带告警留痕的读取器接受集/行为不同，MUST NOT 迁移至本助手
+        （行为变更单列评审）。原「整值浮点拒绝」的严格 int 键
+        knowledge.escalate_after_rounds / escalated_stale_days /
+        archive.auto_threshold 已随 code-review item 356f31eb205d /
+        c7154d400156 收敛为本口径并迁移至本助手（本条列举的变更即该次
+        「单列评审」的落地记录）。
         """
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
@@ -2962,9 +2965,11 @@ class ConfigLoader:
           （纯增量：audit 车道默认随每日检查点开启；
           no_conflict_exempt 为疑点台账的内容豁免开关，
           add-knowledge-audit-finding-ledger 4.1）。
-        - escalate_after_rounds：正整数，缺省 2（同一疑点连续 N 轮复核均无
+        - escalate_after_rounds：正整数（整值浮点按整数接受，item
+          356f31eb205d），缺省 2（同一疑点连续 N 轮复核均无
           确定性判定即升级待人工；豁免解冻重派不计入升级轮次）。
-        - escalated_stale_days：正整数，缺省 7（escalated 挂起超过该天数即对
+        - escalated_stale_days：正整数（整值浮点按整数接受，item
+          356f31eb205d），缺省 7（escalated 挂起超过该天数即对
           涉事知识页写 disputed 超龄注记，add-knowledge-audit-escalation-
           consumption 2.1）。
         - 非法值不阻塞加载/热更新：WARNING 告警并回退缺省（bool 键同
@@ -2996,10 +3001,17 @@ class ConfigLoader:
                 )
                 val = default
             result[key] = val
+        # 两正整数键归一收敛 _normalize_int_value（code-review item
+        # 356f31eb205d，与 _positive_int_reader / admin.code_review.max_files
+        # 同族口径一致）：整值浮点（3.0/14.0）按整数接受——YAML 安全加载把
+        # 整值浮点解析为 float，旧内联守卫判非法回退缺省、用户配置实际失效；
+        # bool 是 int 子类仍被助手显式排除（True/False 不当轮次数/天数，防
+        # YAML 布尔值被静默当 1/0），非整值浮点/非数值/≤0 仍回缺省并经
+        # _warn_reader_once 留痕——归一结果与原值不等即非法回退，整值浮点
+        # 数值相等（2 == 2.0）静默接受不告警。
         rounds = knowledge.get("escalate_after_rounds", 2)
-        # bool 是 int 子类：True/False 不当轮次数（与 regression.enabled 的严格
-        # bool 同理，防 YAML 引号串/布尔值被静默当 1/0）
-        if not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 1:
+        normalized = cls._normalize_int_value(rounds, 2, positive=True)
+        if normalized != rounds:
             cls._warn_reader_once(
                 "knowledge.escalate_after_rounds",
                 rounds,
@@ -3007,11 +3019,10 @@ class ConfigLoader:
                 "knowledge.escalate_after_rounds 非法值 %r（非正整数），回退缺省 2",
                 rounds,
             )
-            rounds = 2
-        result["escalate_after_rounds"] = rounds
+        result["escalate_after_rounds"] = normalized
         stale = knowledge.get("escalated_stale_days", 7)
-        # 同 escalate_after_rounds 口径：bool 是 int 子类不当天数
-        if not isinstance(stale, int) or isinstance(stale, bool) or stale < 1:
+        normalized = cls._normalize_int_value(stale, 7, positive=True)
+        if normalized != stale:
             cls._warn_reader_once(
                 "knowledge.escalated_stale_days",
                 stale,
@@ -3019,8 +3030,7 @@ class ConfigLoader:
                 "knowledge.escalated_stale_days 非法值 %r（非正整数），回退缺省 7",
                 stale,
             )
-            stale = 7
-        result["escalated_stale_days"] = stale
+        result["escalated_stale_days"] = normalized
         return result
 
     @classmethod
@@ -3737,7 +3747,8 @@ class ConfigLoader:
     def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
         """archive.auto_threshold 的生效值（非负整数；0 = 禁用）。
 
-        D5：非法值（非整数 / 负数 / bool）记日志并回落默认 50，且不阻塞加载。
+        D5：非法值（非整数 / 负数 / bool；整值浮点按整数接受，item
+        c7154d400156）记日志并回落默认 50，且不阻塞加载。
         所有消费方（daemon 自动归档检查、dashboard 设置回显）MUST 调本助手读取
         生效值，而非直读原始配置——保证非法值不会流入归档判定。
         """
@@ -3745,7 +3756,15 @@ class ConfigLoader:
         at = archive.get("auto_threshold")
         if at is None:
             return default
-        if isinstance(at, bool) or not isinstance(at, int) or at < 0:
+        # 归一收敛 _normalize_int_value（code-review item c7154d400156，对齐
+        # get_context_cost_per_turn_threshold / _positive_int_reader 同族口径）：
+        # 整值浮点（100.0）按整数接受——YAML 整值浮点旧被判非法回落默认 50、
+        # 配置实际失效（同值无声偏差先例见 context_cost_per_turn_threshold 注释）；
+        # bool/负数/非整值浮点/非数值仍回落默认并经 _warn_reader_once 留痕——
+        # 归一结果与原值不等即非法回落，整值浮点数值相等（50 == 50.0）静默
+        # 接受不告警（positive=False：0=禁用仍合法）。
+        normalized = cls._normalize_int_value(at, default, positive=False)
+        if normalized != at:
             cls._warn_reader_once(
                 "archive.auto_threshold",
                 at,
@@ -3755,7 +3774,7 @@ class ConfigLoader:
                 default,
             )
             return default
-        return at
+        return normalized
 
     @classmethod
     def get_knowledge_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
