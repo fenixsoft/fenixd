@@ -61,6 +61,14 @@ function arbiterActionFieldLabel(kind: string): string {
   return '处置动作';
 }
 
+// 回退节点判定谓词（code-review item 77b2b6634542）：StateNode 的「↩ 状态回退」
+// orange 徽标与主渲染 timeline.map 回调的圆点 colorWarning 着色共用此单一来源，
+// 防止两处内联各自演化导致徽标与圆点着色不一致。判定口径：后端 backward 字段
+// 单源，缺失时回退旧 !!reason 判定兼容存量/归档数据（语义固化，勿改口径）
+function isRollbackNode(item: TimelineItem): boolean {
+  return item.backward === true || (item.backward === undefined && !!item.reason);
+}
+
 // 状态转移节点的输出信息用默认黑色正文（此前 secondary 灰色不易读），链接分支保留可点
 function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: () => void }) {
   const m = reason.match(VERIFICATION_LINK_RE);
@@ -109,7 +117,7 @@ type TimelineNodeShared = {
 function StateNode({
   item, cardBox, headRow, fmtTime, token, onOpenReport,
 }: TimelineNodeShared & { onOpenReport: () => void }) {
-  const isRollback = item.backward === true || (item.backward === undefined && !!item.reason);
+  const isRollback = isRollbackNode(item);
   const chainStatuses: string[] = (item.chain && item.chain.length > 1)
     ? item.chain
     : [item.from || '', item.to || ''];
@@ -550,7 +558,7 @@ export default function SpecTimeline({
             // b64f38deac7d token 化口径）：与 StateNode 内「↩ 状态回退」orange
             // Tag 同语气；runDotColor 以 status 为输入、回退是方向语义非状态，
             // 故不直接复用
-            const isRollback = item.backward === true || (item.backward === undefined && !!item.reason);
+            const isRollback = isRollbackNode(item);
             return {
               color: isRollback ? token.colorWarning : 'gray',
               children: <StateNode {...shared} onOpenReport={onOpenVerificationReport} />,

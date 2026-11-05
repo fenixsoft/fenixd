@@ -32,7 +32,7 @@ export const MERMAID_INIT_CONFIG = {
   securityLevel: 'strict',
   fontFamily: DSH_FONT_FAMILY,
   fontSize: MERMAID_FONT_SIZE,
-  themeVariables: { fontSize: '14px' },
+  themeVariables: { fontSize: `${MERMAID_FONT_SIZE}px` },
   // sequence 子键与顶层 fontSize 同值保留：当前被顶层级联覆写（等价），若未来
   // mermaid 移除级联则退回子键缺省（actor/note 14、message 16）时不至反弹
   sequence: { actorFontSize: MERMAID_FONT_SIZE, messageFontSize: MERMAID_FONT_SIZE, noteFontSize: MERMAID_FONT_SIZE },
