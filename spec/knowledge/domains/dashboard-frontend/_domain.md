@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-05 20:37 UTC+8
+> 最后更新：2026-11-05 20:45 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -38,7 +38,7 @@
 | [v3-spec-detail-page](v3-spec-detail-page.md) | v3 SPEC 详情页 | 2026-10-03 04:59 |
 | [v3-spec-doc-view](v3-spec-doc-view.md) | v3 SPEC 文档查看 | 2026-10-03 04:59 |
 | [v3-activities-page](v3-activities-page.md) | v3 运维页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-05 18:19 |
-| [v3-settings-page](v3-settings-page.md) | v3 设置页（左菜单 sticky 钉住、页面文档级滚动） | 2026-11-05 20:37 |
+| [v3-settings-page](v3-settings-page.md) | v3 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动） | 2026-11-05 20:45 |
 | [topology-bigscreen-ui](topology-bigscreen-ui.md) | SPEC 协作拓扑大屏（脱壳全屏双视图、管线视图纵轴真实时间+PM 生命周期链+并行无伪串行边、跨视图联动、下钻复用） | 2026-10-30 23:11 |
 | [collab-graph-bigscreen-ui](collab-graph-bigscreen-ui.md) | 协作图谱大屏（overview 入口、8 角色固定就位、项目筛选器、下钻明细与跨大屏跳转） | 2026-10-30 23:11 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏、theme.ts 配色单源与暗种子 *Bg 陷阱压制、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线） | 2026-11-04 20:48 |
