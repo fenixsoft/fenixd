@@ -181,12 +181,15 @@ export default function SwimlaneView({
           </g>
         ))}
 
-        {/* 用户泳道人工动作标记 */}
+        {/* 用户泳道人工动作标记（label 与 marks 同口径 midTrunc 限长，
+            全文经 title 承载——action 自由文本长文案会越过泳道边界压叠，
+            code-review item 6d93f6f34c11） */}
         {userMarks.map((m, i) => (
           <g key={`u${i}`}>
+            <title>{m.label}</title>
             <circle cx={m.x} cy={HEADER_H + LANE_H / 2} r={5} fill={STATUS_HEX.blue} />
             <text x={m.x} y={HEADER_H + LANE_H / 2 - 10} textAnchor="middle" fill="#8fb8dd" fontSize={9.5}>
-              {m.label}
+              {midTrunc(m.label, 6)}
             </text>
           </g>
         ))}

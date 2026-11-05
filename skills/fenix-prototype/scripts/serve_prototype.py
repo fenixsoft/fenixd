@@ -337,6 +337,8 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
         raw_length = self.headers.get("Content-Length")
         if not raw_length:
             # chunked 等无 Content-Length 的请求：显式 411，而非误报「请求体为空」
+            # 体未消费即响应，须断开：keep-alive 复用会把残留体错解析为下一请求
+            self.close_connection = True
             self._send_json(411, {"ok": False, "error": "缺少 Content-Length 头"})
             return
         try:
@@ -345,6 +347,8 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "Content-Length 非法"})
             return
         if length <= 0 or length > MAX_FEEDBACK_BODY_BYTES:
+            # 超上限体未读取即响应，须断开：keep-alive 复用会把残留体错解析为下一请求
+            self.close_connection = True
             self._send_json(413, {"ok": False,
                                   "error": f"请求体为空或超过 {MAX_FEEDBACK_BODY_BYTES}B 上限"})
             return
