@@ -80,3 +80,4 @@
 ## [2026-11-05 18:19 UTC+8] fold | bridge-projects-row-toggle-1105.md 折叠入库
 ## [2026-11-05 18:27 UTC+8] fold | dashboard-ops-tabs-chain-merge.md 折叠入库
 ## [2026-11-05 18:32 UTC+8] fold | embed-titlebar-frosted-glass.md 折叠入库
+## [2026-11-05 18:36 UTC+8] fold | settings-help-document-scroll-unify.md 折叠失败滞留：claude 进程非零退出（exit=1）；stderr 尾部: Claude Code doesn't recognize the model "glm-5.3-flash", so it assumes a context 
