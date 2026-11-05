@@ -62,6 +62,7 @@ export function useSlashCommands({
       // 渲染期读盘（localStorage）+ 写 historyRef 是受控幂等副作用：同 key 重复
       // 渲染读到同一份历史，排序结果稳定；移入 useEffect 会改变首帧 sortedCommands
       // 排序并多一次重排渲染，故有意保留在 memo 内，勿误改为 effect。
+      // [fenix-ignore:2778f7fdbebc] 幂等已在上方声明且与实现同步，改 useEffect 会丢首帧排序引发闪变，纯风格问题不值得改。
       historyRef.current = readCommandHistory(historyProjectKey);
       return sortCommandsByUsage(commands, historyRef.current);
     },
