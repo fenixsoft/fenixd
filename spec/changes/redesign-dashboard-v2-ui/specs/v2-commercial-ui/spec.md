@@ -21,6 +21,11 @@ v2 页面族全部挂载在 `/v2/*` 路由前缀下（hash 路由形态 `#/v2/ov
 - **WHEN** 访问未实现的 `/v2/*` 路径
 - **THEN** 渲染占位页或回退既有兜底，MUST NOT 影响既有页面路由匹配
 
+#### Scenario: 现产菜单零污染
+
+- **WHEN** 渲染 ProLayout 侧栏菜单
+- **THEN** 菜单项与既有完全一致（`app.tsx` menuDataRender 白名单未新增 v2 条目，v2 路由条目不带 name/icon）
+
 ### Requirement: 六页面按定稿原型实现
 
 界面原型（UI 真相源）：`spec/changes/redesign-dashboard-v2-ui/prototype/`（6 张单文件 HTML：variant-b-bento.html=概览、project-detail.html、spec-detail.html、settings.html、help.html、ops.html；渲染凭证 screenshots/*.png）。
@@ -28,7 +33,7 @@ v2 页面族全部挂载在 `/v2/*` 路由前缀下（hash 路由形态 `#/v2/ov
 相关页面布局、组件选型、信息架构 **界面以 prototype/ 为准**（与「数值以 Scenario 为准」同纪律等级；实现与原型冲突 MUST NOT 擅自偏离，MUST 升级用户裁决）。
 
 - 概览（/v2/overview）：4 卡等宽 KPI（SPEC 总数/任务进度圆环/Token 消耗/活跃 Agent 堆叠条）、告警横幅（多行明细 + 内嵌裁决选择题）、项目台账表格（fixed 布局、首列 14px 缩进、长注释换行）
-- 项目详情（/v2/projects/:name）：标题带（返回+运行中徽标）+ 页签（功能开发/代码审查/测试回归/会话接入）+ 真实列集（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时/操作·仅三点）
+- 项目详情（/v2/projects/:name）：标题带（返回+运行中徽标）+ 页签（功能开发/代码审查/测试回归/会话接入，后三页签项目级数据缺口时可先占位说明，与 tasks 2.2 口径一致）+ 真实列集（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时/操作·仅三点）
 - SPEC 详情（/v2/projects/:name/:spec）：标题带（模式/状态徽标+状态转移下拉）+ 项目信息 8 项 + 任务清单（大百分比+勾选任务）+ 页签（运行时间轴/场景结果/Bug 列表/测试截图/Hook），时间轴节点含 run 元数据（模型/成本/耗时/结果文件/涉及文件）
 - 配置（/v2/settings）：左侧菜单 + 作用域切换（用户级/项目级）+ 面板（Provider 表格、开关行）
 - 帮助（/v2/help）：分组目录（sticky）+ Markdown 正文双栏
@@ -52,6 +57,8 @@ v2 页面族全部挂载在 `/v2/*` 路由前缀下（hash 路由形态 `#/v2/ov
 ### Requirement: v2 设计语言单源
 
 v2 页面颜色、圆角、控件形态取自新增的 v2 主题单源常量（独立文件，不修改现产 theme.ts）：页面底 #f8fafc、白磁贴 radius 16 + 软阴影、主按钮/ACTIVE 分段按钮黑 #0f1115（hover #43454a / active #2c2c2e）、链接与输入焦点蓝 #4176e6、语义色 success #22c55e / error #dc2626 / warning #d97706、阶段进度 ramp（出题青 #0891b2 / 实现蓝 #2563eb / 验证绿 #16a34a）、徽标胶囊 radius 999。
+
+v2 六页标题带形态按定稿原型实现（返回 + 徽标 + 富组合），经本例外域条款豁免全站统一标题栏形态基准（偏离已在 design.md 偏离声明表登记）；PageContainer 页头维持全站退役约定（`title={false}`），避免 ProLayout 从路由上下文兜底渲染双标题。
 
 #### Scenario: 主按钮与分段按钮 ACTIVE 黑底
 

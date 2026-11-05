@@ -12,7 +12,7 @@
 
 ## Decisions
 
-- **D1 路由隔离**：`config/routes.ts` 追加 `/v2/*` 分支（layout 沿用 ProLayout），既有条目零改动；v2 菜单项由 v2 页面族自行声明（不进既有菜单组，避免污染现产导航）
+- **D1 路由隔离**：`config/routes.ts` 追加 `/v2/*` 分支（layout 沿用 ProLayout），既有条目零改动；v2 路由条目不写 name/icon，且 `app.tsx` 的 menuDataRender 白名单（现产菜单单源，手写数组、不消费路由表）不新增任何 v2 条目——现产侧栏菜单逐字不变，避免污染现产导航
 - **D2 主题单源独立**：新建 `src/pages/v2/theme.tsx`（Bento token 常量 + ConfigProvider 主题），页面根节点局部 ConfigProvider 包裹；MUST NOT 修改现产 theme.ts（宪法配色单源在 v2 域经修正案后由新单源承载）
 - **D3 设计语言**（定稿原型提取）：页底 #f8fafc / 白磁贴 radius 16 / 软阴影 / 主按钮黑 #0f1115 / 链接蓝 #4176e6 / 胶囊徽标 999 / 数字 tabular-nums / 表格 fixed 布局 + 首列 14px 缩进 + 长文本 pre-wrap
 - **D4 数据复用**：v2 页面复用 `services/dashboard.ts` 既有 API 客户端与类型；信息架构对齐现产页（如 SPEC 详情的项目信息 8 项、任务清单、五页签）
@@ -27,6 +27,7 @@
 | 配色单源换轨：v2 主题独立文件（原 theme.ts dsh 表） | 用户定稿「黑主色按钮 + 蓝链接」新基线；不触碰现产文件 | 仅 v2 域 |
 | 页底浅灰 #f8fafc（一般域现为白底） | 磁贴层次需要 | 仅 v2 域 |
 | 语义色 error #dc2626 / warning #d97706（原 dsh #ec1313/#f59e0b） | 候选方案 B 定稿色板 | 仅 v2 域 |
+| 标题栏形态：v2 六页标题带按定稿原型实现（返回 + 运行中/模式状态徽标 + 富组合），不套用全站统一标题栏形态基准（unified-page-title-bar 18px/700 等） | 例外域界面整体定稿，原型为 UI 真相源；显式登记以免按 DESIGN.md 附则「未声明偏离判真违规」误判 | 仅 v2 域六页 |
 
 以上偏离随 DESIGN.md v2 例外域小节一并转正；v2 域外任何页面不得引用 v2 主题。
 

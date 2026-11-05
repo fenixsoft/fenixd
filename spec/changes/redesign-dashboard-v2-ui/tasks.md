@@ -28,7 +28,7 @@
 ## 1. 骨架与主题单源
 
 - [ ] 1.1 新建 `src/pages/v2/theme.tsx`：Bento token 常量（页底/磁贴圆角阴影/黑主色/蓝链接/语义色/胶囊/阶段 ramp）+ v2ConfigProvider 组件（局部 ConfigProvider 包裹），零 import 现产 theme.ts 色值
-- [ ] 1.2 `config/routes.ts` 追加 `/v2/*` 路由族（overview、projects/:name、projects/:name/:spec、settings、help、activities），既有条目逐字不动；新增 routes 快照守卫测试钉住既有条目零改动
+- [ ] 1.2 `config/routes.ts` 追加 `/v2/*` 路由族（overview、projects/:name、projects/:name/:spec、settings、help、activities），既有条目逐字不动；v2 条目不写 name/icon，`app.tsx` menuDataRender 白名单零新增；新增 routes 快照守卫测试钉住既有条目与 menuDataRender 菜单逐字不变
 
 ## 2. 六页面实现（UI 真相源 = prototype/，实现前必读）
 
@@ -46,4 +46,4 @@
 ## 4. 构建与验证
 
 - [ ] 4.1 `npm run build` 通过；全部 v2 路由可达（#/v2/overview 等六页渲染冒烟）
-- [ ] 4.2 既有页面回归断言：routes 快照守卫通过、既有六页组件文件零 diff、`#/overview` 等既有路由渲染不变
+- [ ] 4.2 既有页面回归断言：routes 快照守卫通过、`src/pages/` 既有页面组件文件零 diff、`#/overview` 等既有路由渲染不变
