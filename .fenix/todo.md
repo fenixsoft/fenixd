@@ -132,12 +132,14 @@
 
 ### 浪费
 - **mobile出题并行链三派两空转，串行第三派兜底落盘**
+  - 自进化：问题部分成立 / 建议部分合理 / — 不需要
   - 影响：redesign-dashboard-v2-ui-mobile 一份场景集耗三派出题才落盘：首派出题 run 整体报废（22 分钟 119 轮死于网关连接复位 ECONNRESET）、第二派被编排层超时取消（35 分钟 129 轮），三 run 合计纯 API 停滞约 58.6 分钟，出题链从 18:14 拖到 19:57，交付零损。
   - 证据：出题 a1 档案（planner-plan-redesign-dashboard-v2-ui-mobile-1793873658-a1.jsonl）末行 error「Exit code: 1」、result 行原文「API Error: Connection dropped (ECONNRESET)」、run_metrics（run 档案末尾终态指标行）turns=119/duration_s=1316.6/latency_stalls=4/max=258.1；a2 档案 cancelled 行 reason=「并行出题等待超时，取消后转串行重出」、turns=129/stalls=13/max=338.3（18:36:32 起跑，19:11:39 取消）；串行 a3（1793877098）turns=239 success、stalls=9/max=233.7；升级链三行日志：19:12「api_round_stall_escalated 信号已落」（告警 146abcebcdad，API 停滞升级信号）→ 19:17 invoking Administrator（run admin-fenixd-1793877431）→ 19:21 处置终态 resolved+handled=true。
   - 调查评估：在 mobile spec 场景出题车道暴露。已核实事实：a1/a2/a3 起止 span、终态行、停滞指标逐一度核吻合（档案 run_metrics 原值，三 run 停滞合计 577.0+1501.9+1439.1=3518 秒）；a2 的 35 分钟里停滞占 25 分钟，并行等待预算被 provider 长尾吃穿后触发取消，串行重出 45 分钟一次成功。根因分层：a1 死于网关连接复位（瞬态，错误文本自证形态）；a2 取消属编排层「并行出题等待超时→转串行」设计行为，但预算计时未区分「API 停滞等待」与「有效出题进展」，把 provider 长尾计入预算提前判死；停滞根因未定、多假说并存（网关排队/长上下文/本地网络，2026-11-02-evo-add-api-stall-disposition-closeout 留痕口径），不预设。与存量关系：Administrator 处置已定性「非产品缺陷、零干预收尾，338s 属 provider 长尾（与历史基线 514.3s 同量级）」（admin_disposition-admin-fenixd-1793877431.json 自述）；升级信号面第二次真实闭环（上窗告警 a14031730875 首例）；另注：取消事件的告警 kind 文案写作「人工取消 run」（告警 ff56c13408d7），实为编排层自动取消，处置记录特意澄清，命名易误导后续 triage。结论：串行兜底有效、交付零损，实损为两派空转轮次与约 58.6 分钟停滞等待；同窗该 spec 出题首判 17/30 场景 test-defect（其中 11 个败于夹具项目被用户级 registry 软删除，judge 补 fixture-registry-unignore seed 幂等解除后自愈）进一步拉长了验证链总时长。
   - 建议：并行出题等待预算改为停滞感知：run 处于 API 停滞区间（单轮往返超 60 秒）时预算暂停计时，避免把 provider 长尾误判为出题超时而取消重派；编排层自动取消的告警 kind 与「人工取消」文案区分开。
 
 - **API停滞第4窗23run合计210分钟，聚合出口仍未落地（恶化）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：窗口内 23 个 run 累计 API 停滞（单轮 API 往返超 60 秒的等待段）约 12607.5 秒 ≈ 210.1 分钟纯墙钟等待，为四窗序列 92→370→175.5→210.1 的第二高位；两窗合计 385.6 分钟已越过上窗自定的「连续两窗超 150 分钟做模型对照与收敛试验」触发线且无机制承接；零失败零金额损失。
   - 证据：数据摘要第 6 节 23 行 api-stall 聚合行相加得 12607.5 秒（终态指标行无 total 字段，按聚合行口径转引并如实标注，与前三窗同口径）；抽 6 个档案终态 run_metrics 原值核对吻合：a2 stalls=13/max=338.3、a3 stalls=9/max=233.7、evo-1793877486 max=350.2、planner-judge-mobile-1793880022 stalls=5/max=266.8、impl-v2ui stalls=5/max=187.2、code-fix-1793879016 stalls=13/max=151.9；单轮超 300 秒升级线 4 run——evo-1793877486（350.2，success）、planner-plan-v2ui-1793864343（325.5，success）、planner-plan-v2ui-1793868644（315.1，success）、a2（338.3，cancelled，唯一被升级面捕获）。
   - 调查评估：在出题/评审/实现/code-fix/evo 六车道普遍暴露。已核实事实：合计按聚合行口径相加、抽 6 档案原值吻合；上窗 175.5 分钟为其回顾留痕值（同口径，抽上窗档案 planner-plan-add-systemd-hosting-1793757731-a1 复核 stalls=9/max=387.5 与留痕吻合）。升级信号面本窗再次真实工作：唯一非 success 终态的超线 run（a2）触发 api_round_stall_escalated（告警 146abcebcdad，19:12 落账、19:21 处置闭环），3 个 success 终态超线 run 被 success 豁免面放行（monitor-escalated-signal-negative-controls 修复的有意设计）。根因未定、多假说并存（网关排队/长上下文/本地网络，既有留痕），不预设。与存量关系：cost-observability 域 api-stall-observability 能力页现行文本仍无聚合出口（grep 出口/收敛/对照零命中，本窗复核）；上窗建议的触发条件（两窗合计超 150 分钟）自上窗起成立、至今两窗无承接。结论：观测闭环、升级面工作、聚合出口缺口第四窗，属既有建议的落地拖延非新缺口。
@@ -145,6 +147,7 @@
 
 ### 失误
 - **quality-gates.json再现形态漂移，list冒充对象被放行**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：redesign-dashboard-v2-ui-mobile 实现收尾把 quality-gates.json（验证质量门状态文件）顶层 gates 写成 list（应为对象），守卫宽松对账告警放行、本窗零拒收零重派；这是该文件形态漂移第三窗第三种形状（11-03 枚举漂移「pass」、本窗结构漂移「list」），复发敞口为下次漂移撞上严格门时重演终点拒收-重派周期（11-03 实测代价 48 分钟 run 被拒）。
   - 证据：告警 4050a28333ff 与 17940053dbf9（quality-gates 形态漂移信号，本窗 18:56 恰为 impl-mobile 合并分钟）原文「quality-gates.json 顶层 gates 键非对象（实际类型 list，宽松对账，仅告警放行）: .fenix/verify-progress/redesign-dashboard-v2-ui-mobile」；本窗日志 grep「gate-blocked」「task_gate」零命中（守卫零拒收）。
   - 调查评估：在 mobile spec 实现收尾时暴露。已核实事实：两条告警同分钟成对、对象路径指向 mobile 的 verify-progress 目录、本窗无任何 gate-blocked。根因：quality-gates.json 由实现 run 自由写盘、写侧无 schema 校验，漂移只能靠 monitor 事后对账发现；monitor 按「宽松对账、仅告警放行」设计放行，执行层得不到硬反馈，漂移惯性得以延续。与存量关系：2026-11-03#失误#1（pass/passed 枚举漂移致 48 分钟 run 被拒）与 2026-11-05#失误#1（task_gate 的 done_ids 失配第二例）同族，两例建议（implementer 收尾自检清单补对账与枚举校验）至今未落地（core/ 内 grep「收尾自检」无提示词面命中，实现提示词模板落点未核实）；本窗新增第三种漂移形状（list 冒充对象），证实漂移面在枚举维之外还有结构维。结论：守卫面按设计工作（发现+放行+留痕），缺口在写侧自检缺席，属执行惯性点非框架缺陷，两例历史建议应合并落地。
@@ -152,30 +155,35 @@
 
 ### 可改进
 - **晋升lint不识在途依赖，mobile晋升延迟44分钟**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：redesign-dashboard-v2-ui-mobile（depends_on redesign-dashboard-v2-ui）起草晋升连续两次被产物晋升声明检查（promotion lint）拒绝，卡 drafted（草案）态 44 分钟，靠 30 分钟恢复节拍在基线 spec 合入后才自动晋升；同族前例（10-31）曾因同 lint 双失败触发 daemon_errors critical 误升级人工面并建议重启 daemon。
   - 证据：日志链：08:22:43Z 与 08:36:47Z 两条「Promotion lint failed 'redesign-dashboard-v2-ui-mobile'」ERROR（7 个 modify 声明路径——v2/theme.tsx、overview.tsx、projectDetail.tsx、specDetail.tsx、settings.tsx、help.tsx、ops.tsx——全不在主树）；08:36:47Z 与 09:06:48Z 两条「Recovery: re-triggering promote」（event_bus 恢复节拍）；09:06:48Z「Auto-promoting … drafted → reviewing」（本地 17:06:48，恰为 spec-review 起跑同一秒）；基线 v2-ui 实现分支合入主树为提交 05fa47338（16:50）；前例：fenixd.log 2026-10-31T12:33/12:34 同 lint 对 add-arbiter-backlog-sweep 双失败后，admin_monitor 以「同指纹 ≥2 次且最近两次间隔 ≤5 分钟」升级 daemon_errors critical（信号原文在档）。
   - 调查评估：在 mobile spec 起草晋升时暴露。已核实事实：双失败、两次恢复节拍 re-trigger、晋升成功时刻（17:06:48）与基线合入时刻（16:50）的先后关系逐一度核；mobile spec 对 7 个 v2 文件声明 modify 语义正确（移动端适配就是改这些文件），错不在声明而在时序——晋升发生在基线实现分支合入前 28 分钟，lint 的「modify 路径必须在主树存在」判据结构性地不兼容 depends_on 在途基线。根因属系统性缺口：晋升链现有「软化不可满足声明」步骤未覆盖「路径将由在途依赖交付」形态（spec-lifecycle 域 draft-promotion-gate 能力页现行规则无 depends_on 豁免，本窗复核），属既有规则的缺口而非重复立项。与存量关系：10-31 同 lint 双失败曾把声明类 lint 失败当 daemon 故障判读、误升级 critical 并建议重启 daemon；本窗双失败间隔 14 分钟侥幸未触发同指纹升级线，敞口仍在。结论：恢复节拍兜住了交付，代价 44 分钟管线延迟与 2 条 ERROR 噪音，值得小 spec 治本。
   - 建议：promotion lint 对「声明路径命中未合入 depends_on 基线 spec 自身 deliverables」的 modify 声明改记 existence-pending（放行加注解，或晋升触发顺延至依赖合入事件）；同步收紧 daemon_errors 指纹升级面对 pm_engine 声明类 lint 失败的判读，不再建议重启 daemon。
 
 - **startup sweep同秒误标第三例，成功蒸馏档案裂两份（恶化）**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：04:06 daemon 陈旧自愈重启（stale_code_selfheal，检测到磁盘代码比进程内存旧后计划重启的自愈链）时，启动清扫（startup terminal-state sweep，daemon 启动时对尾部无终态 run 档案补写 interrupted 的扫描）把同秒派发、且 19 分钟后成功落库的蒸馏 run 误补 interrupted——该 run 档案裂成两份（归档侧记失败、活跃侧记成功），账面失真但交付零损；同秒竞态第三日连发，前两例实损 62/22 分钟在飞 run。
   - 证据：归档件 runs/archive/knowledge-distiller-add-systemd-hosting-1793822801.jsonl 全文两行：started（rounds=0，04:06:41）+ interrupted（reason=startup terminal-state sweep，20:06:41.721Z）；活跃件 runs/knowledge-distiller-add-systemd-hosting-1793822801.jsonl 三行：heartbeat 04:21:41 → round 04:25:05 → result 04:25:06（commit 9d5f616b9）；日志行「Startup terminal-state sweep: 补写 1 个遗留 无终态 run 的 interrupted 终态: knowledge-distiller-add-systemd-hosting-1793822801」（20:06:41.721467Z）；蒸馏产物经 git show 9d5f616b9 实锤（daemon-runtime/systemd-hosting.md 等 14 个知识文件）。
   - 调查评估：在蒸馏车道（knowledge-distill，归档件知识蒸馏）消费 add-systemd-hosting、daemon 陈旧自愈重启窗口内暴露。已核实事实：两份档案逐行核对、误标 interrupted 与成功产物共存于同 id 的两个文件、重启链闭合（03:10 stale 检测 WARNING → 04:06 空闲 301 秒触发重启 → 启动清扫同秒补写 → 恢复重派 19 分钟后成功）。根因：run-resilience 域 runtime-run-sweep 能力页明文「启动清扫既有行为（孤儿进程存活不阻塞补写）保持不变」——启动清扫只看「尾部无终态」不做在途判据，与恢复重派同秒竞态结构性无解；本例新形态是账面失真升级为档案分裂（归档侧 interrupted 与活跃侧 result 各执一词），对账时需人工拼合。与存量关系：2026-11-04#可改进#1 的第三例复发，其建议（补写前对派发记录或档案 mtime 新于停机时刻的 run 改记 pending）仍未落地；fix-distill-observation-gaps 与 move-distill-trigger-to-push 至今滞留 spec/changes/ 活跃区且均未触及 sweep 判据（11-04 代码级结论，本窗未见反证）。结论：本例零实损但证实敞口稳定（三窗三例），判据缺口仍开放，与 2026-11-04#可改进#1 同源不另立项。
   - 建议：同 2026-11-04#可改进#1：启动清扫补写前增补在途判据（派发记录或档案 mtime 新于停机时刻→改记 pending 交运行期清扫二次裁决），并补一步对账自愈——同 id 档案活跃侧已出现新终态时撤回误补的 interrupted。
 
 - **纯文本轮通胀第4窗命中，出题车道3连窗响应仍缺席（恶化）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：planner-plan（出题）车道本窗 2 个 run 命中纯文本轮离群维（text_turns，无工具调用的模型回复轮：a1 61/119 占 51.3%、a2 70/129 占 54.3%），该形态第四窗持续命中、出题车道第三连窗（11-04 一 run、11-05 三 run、本窗两 run，同一模型 glm-5.3-flash）；复发敞口为每窗多烧一轮演化复核注意力，上窗实测曾白跑一轮复核。
   - 证据：两 run 档案终态 run_metrics 原值：a1 turns=119/text_turns=61/duration_s=1316.6、a2 turns=129/text_turns=70/duration_s=2106.6，model 均为 glm-5.3-flash（逐字段核对吻合）；检测 spec evo-refine-midflight-outlier-dims 已归档（spec/archive/2026-11-04-evo-refine-midflight-outlier-dims 在档实证），其三项交付均为观测端、无响应端定义。
   - 调查评估：在 mobile spec 出题车道暴露，为该离群维度第四窗命中。已核实事实：占比与 model 字段逐一度核，检测 spec 归档件无响应端交付。根因未定（模型输出行为漂移假说，检测 spec 原文口径），token 面不可量化（该车道 run_metrics 的 input_tokens=0 计量缺失）。与存量关系：上窗条目 2026-11-05#可改进#2 建议的「同车道连续两窗命中即按 model 字段做模型对照与提示词收敛试验」——出题车道 11-05 窗（3 run）与本窗（2 run）已两连窗命中，触发条件成立满两窗，响应端仍零机制（cost-observability 域无聚合出口能力页、spec/changes/ 无对应 spec，本窗复核）。结论：从「跨车道扩散」到「同车道聚集」再到「同车道连窗」，观测闭环后响应端落地时机已过两窗，建议不再观察直接落最小响应。
   - 建议：落最小响应机制：同车道连续两窗命中即按 model 字段出对照报告并做出题提示词收敛试验（如压缩逐轮叙述性输出指引），单窗命中仅留痕；可与 API 停滞聚合出口同一个小 spec 承接（同域 cost-observability、同数据源 run_metrics）。
 
 - **distill重试台账成功不清账，欠账告警落库后复燃**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：add-systemd-hosting 的知识蒸馏已于 04:25 落库（提交 9d5f616b9），但「knowledge-distill 重试台账欠账超 24 小时未重试」告警在其后 17 与 20 小时仍复燃两次（21:30、次日 00:00），台账成功不清账将持续空转 warning 噪音，并误导「蒸馏仍未完成」的人工判读。
   - 证据：告警 7c529c2bdcfc（21:30）与 4834d132796d（次日 00:00）原文均为「knowledge-distill 重试台账欠账超 24 小时未重试（1 条）：add-systemd-hosting（登记 2026-11-04）」；蒸馏成功实锤：runs/knowledge-distiller-add-systemd-hosting-1793822801.jsonl result 行 commit=9d5f616b9（04:25:06），git show 该提交含 systemd-hosting.md 等 14 个知识文件；窗内该告警共 4 次（00:02/04:11 两次属落库前合法欠账提醒，21:30/00:00 两次为落库后复燃）。
   - 调查评估：在蒸馏重试台账的消费面暴露。已核实事实：4 次告警时刻与落库时刻（04:25）先后核对，后两次分别晚于落库 17/20 小时，且告警语义仍是「未重试」而实际重试已成功。根因：重试台账条目仅在人工核查或显式处置时清账，蒸馏成功路径（result 行带 commit）不回写台账，欠账检查只看登记时间不看完成状态。与存量关系：2026-11-04#知识真相源#1 预测「将由 daemon 重启续跑接管」已应验（04:06 重启→按台账恢复重派→成功），该待办可判闭环（见 resolved）；但配套告警面未同步，台账成功清账缺口此前无条目登记，属本窗新发现。结论：纯记账卫生问题、量级小（warning 级、约 8 小时一拍），但持续污染「蒸馏是否完成」的判读信号，适合随蒸馏车道下次交付顺带落地。
   - 建议：蒸馏 result 行落 commit 后同步清账（或欠账检查先核对该 spec 是否已有 distill 提交再告警），告警文案带上最近一次尝试状态防误判。
 
 - **主树untracked探测刷屏862条，聚合改造未落地（恶化）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：主树 untracked 散件归因探测（worktree-vc 周期盘点，将主树未跟踪文件归因到在用会话后复位宽限计时的只读探测）本窗按每分钟一次全量打印 862 条 INFO 行（上窗 670 条，+29%），从 00:01 持续刷到 22:10，约 2MB 日志膨胀与检索噪音；集合构成已从 53 文件收敛到 5 文件，但逐分钟重刷行为未变。
   - 证据：窗口内 grep「主树 untracked 散件归因」862 条（日志扫描计数，UTC 2026-11-04T16:01 ~ 2026-11-05T16:01）；样例行全量列出 5 路径（docs/superpowers/specs/2026-10-28-agent-card-redesign-design.md、idea.md、spec/knowledge/domains/worktree-vc/stray-escalation-clock-persistence.md、同目录 untracked-stray-session-attribution.md、z-ignore-control-probe-file）并以「复位宽限计时（不升级不处置）」收尾；相关告警 b981cdd296c4/eca93b38939a（untracked 首现提示）与 fcf24fe41ff9（超阈值滞留，info 只告警）在档。
   - 调查评估：在 worktree-vc 主树 WIP 盘点车道暴露，为 2026-11-05#可改进#3 的第二窗复发且量升。已核实事实：条数、每分钟节奏、集合构成收敛（53→5，大头随 knowledge fold 提交入库）逐一度核；行为语义仍正确（归因活会话、非无主盲区、不升级不处置）。根因不变：缺输出聚合契约——同集合指纹未变时逐分钟全量重打。与存量关系：上窗建议（按集合指纹聚合：首次全量、其后一行计数摘要或 N 分钟降频）未落地；本窗集合里恰有该能力域自家两页知识页（untracked-stray-session-attribution、stray-escalation-clock-persistence）滞留未跟踪——蒸馏产物本身成为刷屏素材。结论：纯日志卫生问题，量级随散件滞留天数线性放大，聚合改造拖延一窗、持续恶化。
