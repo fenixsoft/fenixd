@@ -79,3 +79,4 @@
 ## [2026-11-05 04:25 UTC+8] distill | add-systemd-hosting（第 1 轮，自动提交落库）
 ## [2026-11-05 18:19 UTC+8] fold | bridge-projects-row-toggle-1105.md 折叠入库
 ## [2026-11-05 18:27 UTC+8] fold | dashboard-ops-tabs-chain-merge.md 折叠入库
+## [2026-11-05 18:32 UTC+8] fold | embed-titlebar-frosted-glass.md 折叠入库
