@@ -20,7 +20,7 @@ import type {
 } from '@/services/dashboard';
 import { V2AlertRows } from './AlertList';
 import { V2Page, V2Pill, V2TitleBand } from './shared';
-import { V2_HAIRLINE, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
+import { useV2IsMobile, V2_HAIRLINE, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
 
 const HEARTBEAT_MS = 30000;
 
@@ -74,7 +74,7 @@ function AlertPane({
   );
 }
 
-function ChainPane({ chain }: { chain: ChainOverviewData | null }) {
+function ChainPane({ chain, mobile }: { chain: ChainOverviewData | null; mobile?: boolean }) {
   if (!chain) {
     return (
       <div style={{ padding: 32, textAlign: 'center' }}>
@@ -85,6 +85,80 @@ function ChainPane({ chain }: { chain: ChainOverviewData | null }) {
   if (chain.error) {
     return (
       <Alert type="warning" showIcon style={{ margin: '16px 0' }} message="处置链视图未就绪" description={chain.error} />
+    );
+  }
+
+  // 移动形态（prototype/m-ops.html ops-chain「卡片列表随实现展开」）：三块
+  // 观测表转堆叠卡——多列观测表窄屏无收缩点（mono 长 ID），越界治理布局优先。
+  if (mobile) {
+    return (
+      <div data-proto-id="ops-chain-table" style={{ padding: '16px 0 4px' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '0 0 10px' }}>在飞链 {chain.in_flight.length}</div>
+        {chain.in_flight.length ? (
+          chain.in_flight.map((r) => (
+            <div key={r.chain_id} style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '9px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span className="v2-mono v2-ellipsis" style={{ fontSize: 12.5, fontWeight: 600, flex: 1, minWidth: 0 }}>
+                  {r.chain_id}
+                </span>
+                <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY }}>
+                  {r.started_at ? dayjs(r.started_at).format('MM-DD HH:mm') : '—'}
+                </span>
+              </div>
+              <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 3, wordBreak: 'break-all' }}>
+                {r.project || '—'}
+                {r.spec ? ` · ${r.spec}` : ''}
+                {r.phase ? ` · ${r.phase}` : ''}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, paddingBottom: 12 }}>暂无在飞处置链</div>
+        )}
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 10px' }}>升级件 {chain.escalations.length}</div>
+        {chain.escalations.length ? (
+          chain.escalations.map((r, i) => (
+            <div key={`${r.id}-${i}`} style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '9px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0 }}>{r.signal_type || r.id}</span>
+                <V2Pill tone={SEV_TONE[r.severity || ''] || 'muted'}>{SEV_LABEL[r.severity || ''] || r.severity || '—'}</V2Pill>
+                {r.handled ? <V2Pill tone="good">已处理</V2Pill> : <V2Pill tone="warning">待处理</V2Pill>}
+              </div>
+              {r.description ? (
+                <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 3, whiteSpace: 'pre-wrap' }}>
+                  {r.description}
+                </div>
+              ) : null}
+              <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginTop: 3 }}>
+                {r.project || '—'}
+                {r.created ? ` · ${dayjs(r.created).format('MM-DD HH:mm')}` : ''}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, paddingBottom: 12 }}>暂无升级件</div>
+        )}
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 10px' }}>签名配额 {chain.signatures.length}</div>
+        {chain.signatures.length ? (
+          chain.signatures.map((r, i) => (
+            <div key={`${r.signature}-${r.spec || r.subject || ''}-${i}`} style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '9px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span className="v2-mono v2-ellipsis" style={{ fontSize: 12.5, flex: 1, minWidth: 0 }}>
+                  {r.signature}
+                </span>
+                <V2Pill tone="muted">{r.granularity}</V2Pill>
+                {r.exhausted ? <V2Pill tone="critical">配额耗尽</V2Pill> : <V2Pill tone="good">余量正常</V2Pill>}
+              </div>
+              <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 3, wordBreak: 'break-all' }}>
+                {r.spec ? `${r.spec} · ` : ''}Admin {r.admin_attempts}/{r.admin_cap} · Arbiter {r.arbiter_rulings}/{r.arbiter_cap}
+                {r.last_seen ? ` · ${dayjs(r.last_seen).format('MM-DD HH:mm')}` : ''}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>暂无签名配额记录</div>
+        )}
+      </div>
     );
   }
 
@@ -235,6 +309,7 @@ export default function V2OpsPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [resolvedOpen, setResolvedOpen] = useState(false);
+  const mobile = useV2IsMobile();
 
   const load = useCallback(async () => {
     try {
@@ -270,7 +345,11 @@ export default function V2OpsPage() {
             <Spin size="large" />
           </div>
         ) : (
-          <div className="v2-bento" data-proto-id="ops-panel" style={{ padding: '4px 16px 16px' }}>
+          <div
+            className="v2-bento"
+            data-proto-id="ops-panel"
+            style={{ padding: mobile ? '4px 12px 16px' : '4px 16px 16px' }}
+          >
             <Tabs
               defaultActiveKey="alert"
               items={[
@@ -306,7 +385,7 @@ export default function V2OpsPage() {
                     </>
                   ),
                 },
-                { key: 'chain', label: '处置链观测', children: <ChainPane chain={chain} /> },
+                { key: 'chain', label: '处置链观测', children: <ChainPane chain={chain} mobile={mobile} /> },
                 {
                   key: 'auto',
                   label: '自愈记录',

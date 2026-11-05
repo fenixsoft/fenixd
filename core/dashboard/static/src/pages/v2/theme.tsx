@@ -9,6 +9,7 @@
 
 import { ConfigProvider } from 'antd';
 import type { ReactNode } from 'react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 // ── 页面底色与磁贴 ──
 
@@ -144,4 +145,22 @@ export const v2Theme = {
  * 主题，不截断 AntdApp 消息上下文。 */
 export function V2ConfigProvider({ children }: { children: ReactNode }) {
   return <ConfigProvider theme={v2Theme}>{children}</ConfigProvider>;
+}
+
+// ── 移动端断点单源（redesign-dashboard-v2-ui-mobile D1）──────────────────
+
+/** 移动断点上界（不含）：视口 ≥768px 呈桌面形态，<768px 呈移动形态。与现产
+ * hooks/useIsMobile.ts 的 matchMedia '(max-width: 767.98px)' 两轨同界（CSS
+ * 媒体查询与 JS 判定对齐，见知识 mobile-breakpoint-unification）；v2.less 的
+ * @media 镜像同值（CSS 无法 import TS 常量，两处同改）。v2 域内禁止散落
+ * 断点魔法数，一律消费本 token 或 useV2IsMobile。 */
+export const V2_MOBILE_MAX_WIDTH = 767.98;
+export const V2_MOBILE_QUERY = `(max-width: ${V2_MOBILE_MAX_WIDTH}px)`;
+
+/** v2 形态判定 hook（D2 形态切换单源）：六页统一消费入口，复用现产
+ * useIsMobile（767.98 同界、matchMedia 同步首帧），v2 页不散落 matchMedia
+ * 调用；桌面/移动两形态在页组件内按本判定分支渲染（布局容器级分支，数据层
+ * 共享），MUST NOT 拆成两套路由。 */
+export function useV2IsMobile(): boolean {
+  return useIsMobile();
 }
