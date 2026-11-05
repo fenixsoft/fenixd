@@ -654,7 +654,10 @@ export default function ActivitiesPage() {
       {/* 三页签（2026-11-05 处置链并入，用户指令）：页签内容按激活态条件渲染——
           处置链页签失活即卸载（30s 轮询随卸载停止，项目筛选在宿主页保持），
           自动运维/告警状态本就在宿主页，重挂零成本 */}
-      <Card variant="borderless">
+      {/* 卡体顶 24px 归零（2026-11-05 用户指令「页签上方空白减少 24px」）：
+          该空白恰为 Card body 默认 padding-top（实测页头带 56→页签栏 80），
+          页签栏贴卡体顶沿即可 */}
+      <Card variant="borderless" styles={{ body: { paddingTop: 0 } }}>
         <Tabs
           data-testid="view-mode-switch"
           activeKey={activeTab}
