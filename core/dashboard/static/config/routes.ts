@@ -54,7 +54,8 @@ export default [
   },
   {
     path: '/settings',
-    name: '设置',
+    // 名「配置」（2026-11-05 用户指令）：与 app.tsx 菜单单源，避让 dsh web 既有「设置」
+    name: '配置',
     icon: 'setting',
     component: './settings',
   },

@@ -348,7 +348,8 @@ export default function SettingsPage() {
           内容区首行（embed/移动端），「作用域」Select 迁 filters 槽位——standalone
           落顶栏右上角（原面包屑位置），行壳位落行右端 */}
       <PageTitleBar
-        title="设置"
+        // 标题与菜单同名单源改「配置」（2026-11-05 用户指令，避让 dsh web「设置」）
+        title="配置"
         filters={
           <Space>
             <Text type="secondary" style={{ fontSize: 13 }}>

@@ -111,7 +111,8 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
           name: n,
         })),
       },
-      { path: '/settings', name: '设置', icon: <SettingOutlined /> },
+      // 菜单名「配置」（2026-11-05 用户指令）：避免与 dsh web 既有「设置」菜单重名
+      { path: '/settings', name: '配置', icon: <SettingOutlined /> },
       { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
       // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
       { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
