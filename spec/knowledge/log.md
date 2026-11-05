@@ -85,3 +85,4 @@
 ## [2026-11-05 18:39 UTC+8] fold | zn-inbox-entry-1.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
 ## [2026-11-05 18:42 UTC+8] fold | zn-inbox-entry-2.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
 ## [2026-11-05 18:44 UTC+8] fold | zn-inbox-entry-3.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
+## [2026-11-05 18:51 UTC+8] distill | redesign-dashboard-v2-ui（第 1 轮，自动提交落库，折叠入库 3 条）
