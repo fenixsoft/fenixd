@@ -41,7 +41,7 @@
 
 ## 3. DESIGN.md 修正案
 
-- [ ] 3.1 按 design.md「偏离声明」表在 DESIGN.md 例外域章节新增「例外域：v2 商业化界面域」小节（用途声明 + 域专属 token 表 + 偏离清单，出处标注本 SPEC 与 prototype/ 路径），既有条款文本零改动
+- [x] 3.1 按 design.md「偏离声明」表在 DESIGN.md 例外域章节新增「例外域：v2 商业化界面域」小节（用途声明 + 域专属 token 表 + 偏离清单，出处标注本 SPEC 与 prototype/ 路径），既有条款文本零改动
 
 ## 4. 构建与验证
 
