@@ -48,6 +48,13 @@ export async function getInitialState(): Promise<{ projects: string[] }> {
  * 全局 antd 中文 locale（未启用 umi i18n 插件，直接挂 ConfigProvider）
  */
 export function rootContainer(container: ReactNode) {
+  // 文档级 embed 标记（unified-page-title-bar 行壳位 sticky 前置，2026-11-05）：
+  // isEmbedMode() 是 JS 常量，CSS 侧无法经 :has() 探测查询参数——落
+  // <html data-embed-mode> 供样式作用域取用（global.less overview 呼吸带豁免）。
+  // embed 档滚动口顶须让给 sticky 标题栏：上游任何顶垫都会变成起滚位移。
+  if (typeof document !== 'undefined' && isEmbedMode()) {
+    document.documentElement.setAttribute('data-embed-mode', '1');
+  }
   return (
     // 宿主对齐主题（theme.ts 单源）：dsh web 面板桥 iframe 嵌入时与宿主同语言，
     // 独立访问时也保持同一套黑主色 + 深寻蓝链接的视觉。

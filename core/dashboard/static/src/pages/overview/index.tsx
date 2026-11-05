@@ -204,7 +204,9 @@ export default function OverviewPage() {
   }, [load]);
 
   return (
-    <>
+    // overview-page 标记类：页级 chrome 作用域挂点（settings-page 同族模式），
+    // global.less 借 :has() 定向 ant-layout-content 顶衬（2026-11-05 顶呼吸带）
+    <div className="overview-page">
       {/* 统一标题栏声明（unified-page-title-bar 2.1）：standalone 顶栏承载、
           embed/移动端自动落内容区首行；PageContainer 只留容器本体（留白单源），
           页头全站退役 */}
@@ -253,6 +255,6 @@ export default function OverviewPage() {
         </Space>
       ) : null}
       </PageContainer>
-    </>
+    </div>
   );
 }

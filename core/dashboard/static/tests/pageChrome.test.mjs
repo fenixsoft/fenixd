@@ -63,9 +63,11 @@ test('global.less 必须保留页头标题行避让规则（侧栏折叠钮悬�
   );
 });
 
-test('设置页隐形包裹卡 body 左右内边距必须回收（该页无边框可去，24px body 是主要留白面）', () => {
+test('设置页隐形包裹卡 body 内边距全档归零（包裹卡纯布局壳；纵向节奏由卡内左菜单/右栏 padding 自承担）', () => {
   const text = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
-  assert.match(text, /#root \.settings-page > \.ant-card-body \{\s*padding: 24px 0;/);
+  // 2026-11-05 用户指令：原 2026-11-04 版 padding: 24px 0（左右归零上下保留）
+  // 升级为全档归零，卡内左菜单 paddingTop:16 与右栏 padding 上 8 下 24 分自承担
+  assert.match(text, /#root \.settings-page > \.ant-card-body \{\s*padding: 0;/);
 });
 
 test('设置页面板卡头底线必须去除（body 顶缘唯一可见线源；灰底双档已承担分隔）', () => {
@@ -122,7 +124,9 @@ test('设置页滚动条贴缘三件套：卡体负右外边距（-15 强耦合 
   );
   assert.match(
     less,
-    /\.ant-design-pro:not\(\.screen-xs\):not\(\.screen-sm\)\s+\.settings-page\s*>\s*\.ant-card-body \{[^}]*padding-block-end: 0;/,
+    // 卡体块尾归零由基础规则 padding:0 承担（2026-11-05 全档归零后 flex 规则的
+    // padding-block-end:0 长写补丁已回收，global.less 注释有交代）
+    /#root \.settings-page > \.ant-card-body \{\s*padding: 0;/,
   );
   assert.match(less, /#root \.settings-page \.ant-form \{\s*padding-right: 16px;/);
 });

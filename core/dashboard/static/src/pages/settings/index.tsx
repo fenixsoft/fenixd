@@ -404,7 +404,13 @@ export default function SettingsPage() {
                     WebkitOverflowScrolling: 'touch',
                     borderBottom: '1px solid #f0f0f0',
                   }
-                : { width: 224, borderRight: '1px solid #f0f0f0' }
+                : {
+                    // 目录区顶带 16px（2026-11-05 用户指令）：卡体 padding 归零
+                    // （global.less）后菜单列贴卡顶，垫回纵向呼吸
+                    width: 224,
+                    borderRight: '1px solid #f0f0f0',
+                    paddingTop: 16,
+                  }
             }
           >
             <Menu
@@ -435,12 +441,13 @@ export default function SettingsPage() {
                 : {
                     // 右栏滚动本体（2026-11-04 用户指令）：overflowY 独立纵向滚动，
                     // 左侧菜单不随动。右内边距归零（右侧 24px 空带回收），面板贴
-                    // 滚动条；左 24 保留（面板-菜单列间距），上下 24 维持节奏。
+                    // 滚动条；左 24 保留（面板-菜单列间距）；顶带 8（2026-11-05
+                    // 用户指令，原 24）+ 底 24 维持纵向节奏。
                     // （原 marginTop:-30 页头基线补偿随 unified-page-title-bar 页头
                     // 摘除一并退役——占位消失后 -30 会把右栏顶出容器。）
                     flex: 1,
                     minWidth: 0,
-                    padding: '24px 0 24px 24px',
+                    padding: '8px 0 24px 24px',
                     overflowY: 'auto',
                   }
             }

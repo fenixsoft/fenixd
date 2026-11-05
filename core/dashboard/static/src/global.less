@@ -74,6 +74,25 @@ body {
   padding-block-end: 0;
 }
 
+// overview 页内容区顶呼吸带（2026-11-05 用户指令）：顶栏（定高 56px）与首卡
+// 之间垫 16px，作用于 ant-layout-content 本体——不走 children-container（其
+// paddingBlock 已随 theme.ts dshLayoutToken 归零，承担定高页贴底语义），也不并
+// 入 paddingBlockPageContainerContent（全局键会波及 settings/help 等定高贴底页）。
+// 页级作用域：:has() 探测页内标记类 .overview-page（settings-page 同族模式），
+// 不做全站一刀切；overview 为滚动页，底缘呼吸不受本条影响。
+#root .ant-layout-content:has(.overview-page) {
+  padding-top: 16px;
+}
+
+// embed=1（dsh 面板桥）豁免上条：行壳位 sticky 钉滚动口顶（PageTitleBar 行节点
+// top:0），上游任何顶垫都会变成起滚位移（16px 呼吸带 = 标题栏起滚平移 16px，
+// 2026-11-05 用户实证）——标题栏须从文档流 y=0 起步。标记由 app.tsx
+// rootContainer 落 <html data-embed-mode>；standalone（含移动端行壳位档，顶栏
+// 在场无 sticky 需求）不受影响。
+html[data-embed-mode] #root .ant-layout-content:has(.overview-page) {
+  padding-top: 0;
+}
+
 // SPEC 列表：展开图标列收窄（默认 padding 16px 两侧共 32px，挤占百分比列宽）
 #root .ant-table-cell.ant-table-row-expand-icon-cell {
   padding-inline: 6px;
@@ -98,12 +117,12 @@ body {
   border-radius: 0;
 }
 
-// 设置页包裹卡（.settings-page，bordered={false} 的白底隐形壳）body 左右内边距
-// 回收（2026-11-04 用户指出「设置界面看不出改动」——本页包裹卡天生无边框，去边框
-// 规则在此为 no-op，24px body 内边距才是该页主要留白面）：左右归零后设置页内容列
-// 与其他菜单对齐到容器 15px 同一口径；上下 24px 保留（标题行-内容的纵向节奏不变）。
+// 设置页包裹卡（.settings-page，bordered={false} 的白底隐形壳）body 内边距全档
+// 归零（2026-11-05 用户指令；原 2026-11-04 版为 `padding: 24px 0` 左右归零、上下
+// 24 保留）：包裹卡纯布局壳，纵向节奏改由卡内左菜单 paddingTop:16（index.tsx）
+// 与右栏 padding 上 8 下 24 分自承担。
 #root .settings-page > .ant-card-body {
-  padding: 24px 0;
+  padding: 0;
 }
 
 // 项目页（/#/projects/:name）包裹卡 body 内边距收紧（2026-11-04 用户指令）：
@@ -126,8 +145,9 @@ body {
 // 豁免走文档滚动）：卡高由 tsx 内联 calc(100vh - SETTINGS_FRAME_OFFSET) 锁定，
 // 卡体 100% 撑满并作纵向 flex 容器，高度经内层行（tsx 内联 flex:1/minHeight:0）
 // 传导到右栏（内联 overflowY: auto）——纯 CSS 高度链，逐层 min-height:0 放开
-// flex 收缩下限，缺一层右栏即撑破外层回退文档滚动。块尾内边距归零：滚动条须
-// 贴视口底缘（2026-11-04 用户指令「滚动条紧贴右侧和底部」），卡体下方不再留 24px。
+// flex 收缩下限，缺一层右栏即撑破外层回退文档滚动。滚动条贴视口底缘依赖卡体
+// 无块尾内边距，由上方基础规则 padding:0 承担（2026-11-05 全档归零后此处原
+// padding-block-end:0 补丁冗余，已回收）。
 #root
   .ant-design-pro:not(.screen-xs):not(.screen-sm)
   .settings-page
@@ -135,7 +155,6 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding-block-end: 0;
 }
 
 // 卡体右缘外扩贴视口（与上条配套，2026-11-04 用户指令「滚动条紧贴右侧」）：
