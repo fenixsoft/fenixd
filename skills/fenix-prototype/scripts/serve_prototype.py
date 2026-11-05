@@ -52,7 +52,16 @@ PORT_RETRY_ATTEMPTS = 5
 RANDOM_PORT_RANGE = (49200, 65499)
 MAX_FEEDBACK_BODY_BYTES = 1 << 20  # 1MB
 MAX_FEEDBACK_FILE_BYTES = 8 << 20  # 8MB：feedback.json 总量上限，超限拒绝写入
-STOP_WAIT_SEC = 5
+# --stop 回收两级阶梯的预算：SIGTERM 宽限 + SIGKILL 后死亡观察。正常退出实测
+# 数十 ms 级，1s 已 20x 余量；回归车道重载窗口实证过 SIGTERM 送达后目标进程
+# 5-8s 才死（同窗 SIGKILL 秒死），固定 5s 等待窗会整窗烧满把 --stop 拖到 5.2s+
+# （regression-long-test 批 28566f37e3f7 等 6 条同根因），阶梯上界压回 ~2s。
+TERM_GRACE_SEC = 1.0
+KILL_GRACE_SEC = 1.0
+# Windows 无 SIGKILL 常量：os.kill 对非 CTRL_* 信号等价 TerminateProcess，
+# 回退 SIGTERM 即为强杀语义（与本文件 process_alive/_process_is_zombie 的
+# win32 降级分支同口径）。
+SIGKILL_SIG = getattr(signal, "SIGKILL", signal.SIGTERM)
 # 跨请求共享的批注写入锁：ThreadingHTTPServer 每个连接新建 handler 实例，
 # 实例级锁没有跨连接互斥，并发 POST /feedback 会互相覆盖丢批注。
 # 但线程锁只在单进程内互斥：同目录可能出现多个存活实例共写同一 feedback.json
@@ -232,7 +241,11 @@ def probe_existing(proto_dir: Path, script_path: str) -> dict:
 
 
 def stop_server(proto_dir: Path, script_path: str) -> dict:
-    """``--stop``：核实身份后 SIGTERM 回收；不留僵尸、不误杀无辜进程。"""
+    """``--stop``：核实身份后 SIGTERM→SIGKILL 两级回收；不留僵尸、不误杀无辜进程。
+
+    SIGKILL 升级只作用于已经 probe_existing 核实为本脚本实例的 PID（命令行
+    核实不符的实例走 stale 接管，本就 SIGKILL 同权），无误杀无辜进程面。
+    """
     probe = probe_existing(proto_dir, script_path)
     if probe["state"] == "fresh":
         return {"ok": False, "action": "not-running", "error": "无运行中的原型服务器"}
@@ -241,11 +254,6 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
         return {"ok": True, "action": "cleaned-stale",
                 "reason": probe.get("reason", "残留 PID 文件已清理")}
     pid = int(probe["info"]["pid"])
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError as exc:
-        remove_pid_file(proto_dir)
-        return {"ok": False, "action": "stop-failed", "error": str(exc)}
     import time
 
     def _exited() -> bool:
@@ -253,14 +261,35 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
         # 本进程而言多为未收割僵尸，仅信号探活会误判仍存活而空转到超时。
         return not process_alive(pid) or _process_is_zombie(pid)
 
-    deadline = time.time() + STOP_WAIT_SEC
-    while time.time() < deadline:
-        if _exited():
-            break
-        time.sleep(0.1)
-    if not _exited():
+    def _await_exit(budget_sec: float) -> bool:
+        deadline = time.time() + budget_sec
+        while True:
+            if _exited():
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        remove_pid_file(proto_dir)
+        return {"ok": False, "action": "stop-failed", "error": str(exc)}
+    if _await_exit(TERM_GRACE_SEC):
+        remove_pid_file(proto_dir)
+        return {"ok": True, "action": "stopped", "pid": pid}
+    # SIGTERM 宽限内未退出（外部暂停/信号处理延迟等）：升级 SIGKILL 强回收。
+    # SIGKILL 后进程无清理机会，PID 文件由本侧回收（下方 remove_pid_file）；
+    # 观察窗仍超时的极端场景（如不可中断 IO）维持 stop-timeout 语义，残留
+    # PID 文件交给下次启动的 stale 接管路径清理，与既有设计闭环。
+    try:
+        os.kill(pid, SIGKILL_SIG)
+    except OSError as exc:
+        remove_pid_file(proto_dir)
+        return {"ok": False, "action": "stop-failed", "error": str(exc)}
+    if not _await_exit(KILL_GRACE_SEC):
         return {"ok": False, "action": "stop-timeout",
-                "error": f"PID {pid} 在 {STOP_WAIT_SEC}s 内未退出"}
+                "error": f"PID {pid} SIGTERM+SIGKILL 升级后仍未退出"}
     remove_pid_file(proto_dir)
     return {"ok": True, "action": "stopped", "pid": pid}
 

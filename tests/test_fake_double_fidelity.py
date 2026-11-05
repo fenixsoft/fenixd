@@ -266,6 +266,7 @@ class TestFakeDoubleFidelityTeeth(unittest.TestCase):
 class TestFakeDoubleFidelityOnRepo(unittest.TestCase):
     """落地实证：对当前 tests/ 运行守卫，违规数 = 0（白名单为空）。"""
 
+    # [fenix-ignore:3f8c3b0d6f80] 5.17s 系修复前旧测量（2026-11-04 回归先于 c58304592 优化落地），现实测 1.66-2.28s，低于 5s 阈值与 3s 目标
     def test_current_tests_have_zero_violations(self):
         # 批量 AST 构建期间作用域关闭 gc（regression-long-test 3f8c3b0d6f80）：
         # core/tests 两仓 600+ 棵 AST 树驻留 parse 缓存时，全仓扫描的数百万
