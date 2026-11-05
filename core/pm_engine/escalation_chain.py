@@ -7,6 +7,14 @@
 处置成功即闭环（信号收口 + spec 显式解冻），人工队列零痕迹；仅链终点
 （Arbiter 失败/配额耗尽/黑名单/降级态）产生人工告警。
 
+用户定调（2026-11-05，fenix-desktop token-usage-monitor-panel 首例实战后）：
+**告警、阻塞到人类之前，一定要先经过 Arbiter 的处理**——Admin 不介入
+（冻结预检/空壳击杀让位）时该件改道 Arbiter 冻结鉴定接单，不得 deferred
+静默等人工。冻结态恰是 Admin（受限运维）不可动作、Arbiter（显式解冻
+许可+全局视野）可鉴定处置的状态。保留的人工直达例外仅四类（均为人工
+拉杆或防自环，非「arbiter 不管」）：arbiter.enabled=false 关闭态、dead-man
+永久单次、chain.blacklist kill switch、admin_monitor 孤儿看护第三通道。
+
 设计真相源：spec/changes/add-escalation-chain-admin-arbiter/design.md
 （决策 1 链派发器独立成模块——事件驱动直派，不走 admin_monitor 5 分钟
 巡检；决策 2 配额状态独立 state 文件；决策 5 上升件=链终点专属落盘路径）。
@@ -409,14 +417,17 @@ class ChainQuotaStore:
         """在办登记改写为 deferred 让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2）。
 
         让行路径从「整条清除」改为「改写 phase」：phase→"deferred"，附被让行
-        对象标识 ``yield_to``（同 spec 在飞 admin run 的 run_id；frozen 预检件
-        为空）与让行时间戳 ``deferred_at``。``item_signal`` 快照链件信号详情，
-        供看护扫描重派时还原 submit_entry 入参（MUST NOT 作为新信号重新计签
-        ——重派沿用留痕原签名）。条目不存在（已被并发清除）返回 False 无副作用。
+        对象标识 ``yield_to``（同 spec 在飞 admin run 的 run_id）与让行时间戳
+        ``deferred_at``。``item_signal`` 快照链件信号详情，供看护扫描重派时
+        还原 submit_entry 入参（MUST NOT 作为新信号重新计签——重派沿用留痕
+        原签名）。条目不存在（已被并发清除）返回 False 无副作用。
 
-        读侧兼容：缺 yield_to/deferred_at 的既有条目按 admin/arbiter 相待
-        （entry_phase 单源归一）；deferred 条目纳入既有 stale_in_flight 超时
-        reap（按 started_at 一视同仁，不因 phase 特判放行）。
+        用户定调 2026-11-05 冻结预检改道 Arbiter 后，deferred 收窄为互斥让行
+        专用形态（新空 ``yield_to`` 条目不再产出）；看护扫描保留空 yield_to
+        分支仅消化存量 legacy 条目。读侧兼容：缺 yield_to/deferred_at 的既有
+        条目按 admin/arbiter 相待（entry_phase 单源归一）；deferred 条目纳入
+        既有 stale_in_flight 超时 reap（按 started_at 一视同仁，不因 phase
+        特判放行）。
         """
         def _defer(state):
             for x in state["in_flight"]:
@@ -715,11 +726,11 @@ class EscalationChain:
         self._quota.mark_in_flight(chain_id, sig, spec, "admin")
         admin_trail, phase = self._run_admin_phase(item, quota_cfg)
         if phase == "deferred":
-            # 让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2/1.3）：
-            # 互斥守卫命中（yield_to=被让行 admin run）或 frozen 预检件
-            # （yield_to 空）——整条清除改为 deferred 形态改写，附信号详情
-            # 快照；看护巡检扫描重派（被让行 run 终态/spec 解冻后），不再
-            # 「静默丢弃等复发」。
+            # 互斥让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2）：
+            # yield_to=被让行 admin run——deferred 形态改写附信号详情快照；
+            # 看护巡检扫描重派（被让行 run 终态后自动回喂，不阻塞人工）。
+            # 用户定调 2026-11-05 后冻结件不再走此出口（改道 Arbiter 相，
+            # frozen-arbiter 直落下方 Arbiter 级）。
             yield_to = str(item.pop("defer_yield_to", "") or "")
             self._quota.defer_in_flight(
                 chain_id, sig, spec,
@@ -728,13 +739,27 @@ class EscalationChain:
             )
             self._log(
                 "info",
-                f"处置链让行留痕（deferred，等看护扫描重派）: sig={sig} "
-                f"yield_to={yield_to or '(frozen 预检件)'}",
+                f"处置链互斥让行留痕（deferred，等被让行 run 终态回喂）: "
+                f"sig={sig} yield_to={yield_to}",
             )
             return
         self._quota.clear_in_flight(chain_id)
         if phase == "closed":
             return  # Admin 处置成功闭环（side-effects 已在 _run_admin_phase 落）
+        if phase == "frozen-arbiter":
+            # 冻结改道（用户定调 2026-11-05「告警、阻塞到人类之前一定要先
+            # 经过 arbiter 的处理」）：Admin 冻结态不可动作（零派发零配额），
+            # Arbiter 冻结鉴定接单——直落下方 Arbiter 级（配额闸门/失败双轨/
+            # 终点上升语义全部共用）。转单理由经 {handoff_reason} 注入 arbiter
+            # 调查 prompt，告以其鉴定面与许可边界。
+            item.setdefault(
+                "admin_handoff_reason",
+                "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），"
+                "Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）"
+                "且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复"
+                "可运行；human 冻结（_frozen_source=human）或白名单外不得自动"
+                "解冻，产出裁决包上升人工",
+            )
 
         # Arbiter 级配额闸门（复现配额耗尽 → 强制上升人工，task 3.3）
         rulings = self._quota.arbiter_rulings(sig)
@@ -790,9 +815,14 @@ class EscalationChain:
         - phase="handoff"：超范围转单（不计失败），带尝试痕；
         - phase="exhausted"：尝试配额耗尽，转单 Arbiter，带尝试痕；
         - phase="deferred"：让行留痕出口（fix-escalation-chain-watchdog-yield-gaps
-          1.2/1.3/1.4）——同 spec 在飞 admin run（互斥守卫，item["defer_yield_to"]
-          携带被让行 run_id）或 spec 冻结预检/空壳击杀豁免（defer_yield_to 空），
-          本件让行不派发不计配额。
+          1.2）——同 spec 在飞 admin run 互斥守卫命中（item["defer_yield_to"]
+          携带被让行 run_id），本件让行不派发不计配额，等被让行 run 终态后由
+          看护扫描自动重派；
+        - phase="frozen-arbiter"：冻结改道出口（用户定调 2026-11-05「告警、
+          阻塞到人类之前一定要先经过 arbiter」）——spec 冻结预检（1.3）或
+          frozen-terminated 空壳击杀（1.4）命中，Admin 车道冻结态不可动作
+          （不派发不计配额），item["frozen_skip_admin"] 置位，链 worker 直达
+          Arbiter 相冻结鉴定接单。
         """
         spec = str(item.get("spec") or "")
         sig = str(item.get("signature") or "")
@@ -804,13 +834,16 @@ class EscalationChain:
             if runner is None:
                 self._log("warning", "处置链 Admin 派发不可用（runner 缺席），转单 Arbiter")
                 return trail, "exhausted"
-            # frozen 预检（fix-escalation-chain-watchdog-yield-gaps 1.3）：spec
-            # 冻结时派发即被 frozen-terminated 秒杀烧配额（首例竞态实证——冻结
-            # 落盘早于链头 spawn ~100ms）。派发前预检：frozen 不派发不计配额，
-            # 转 deferred 留痕（yield_to 空，重派条件=spec 解冻，看护扫描消费）。
+            # frozen 预检（fix-escalation-chain-watchdog-yield-gaps 1.3；用户定调
+            # 2026-11-05 改道）：spec 冻结时派发即被 frozen-terminated 秒杀烧配额
+            # （首例竞态实证——冻结落盘早于链头 spawn ~100ms）。派发前预检：frozen
+            # 不派发不计配额。原语义转 deferred 等人工解冻（fenix-desktop
+            # token-usage-monitor-panel 首例实战暴露：admin 不介入 arbiter 也不管，
+            # 链内零痕迹静默等人工），改道 Arbiter 相——冻结态恰是 Admin（受限
+            # 运维）不可动作、Arbiter（显式解冻许可+全局视野）可鉴定处置的状态。
             if self._spec_frozen(spec):
-                item["defer_yield_to"] = ""
-                return trail, "deferred"
+                item["frozen_skip_admin"] = True
+                return trail, "frozen-arbiter"
             # 在飞互斥守卫复用（task 1.2）：同 spec 已有在飞 admin run 不双派，
             # 让行并留痕（yield_to=被让行对象标识，看护扫描重派消费）
             active_run = self._active_admin_run_id(spec)
@@ -958,16 +991,17 @@ class EscalationChain:
             # frozen-terminated 空壳豁免（fix-escalation-chain-watchdog-yield-gaps
             # 1.4）：0 API 轮次 + 终态 frozen-terminated 双条件 → 派发即被 spec
             # 冻结终止的空壳（冻结×派发竞态），视为未尝试不计失败——配额计数
-            # 不变，该件按 deferred 留痕处理（与预检同出口）。跑过轮次后被冻结
+            # 不变，该件按 frozen-arbiter 改道处理（与预检同出口，用户定调
+            # 2026-11-05：冻结件由 Arbiter 冻结鉴定接单）。跑过轮次后被冻结
             # 击杀的文件含 assistant 事件 → 不命中仍计失败（防误伤真实失败）。
             if self._frozen_killed_empty_shell(str(disp.run_id or "")):
                 self._log(
                     "warning",
                     f"Admin run frozen-terminated 空壳击杀（0 轮，不计失败）: "
-                    f"sig={sig} run={disp.run_id}——转 deferred 留痕",
+                    f"sig={sig} run={disp.run_id}——转 Arbiter 冻结鉴定",
                 )
-                item["defer_yield_to"] = ""
-                return trail, "deferred"
+                item["frozen_skip_admin"] = True
+                return trail, "frozen-arbiter"
             # 失败计一次（run 崩溃/超时/终态失败）
             attempts = self._quota.count_admin_attempt(sig)
             self._log(

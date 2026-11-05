@@ -1273,41 +1273,76 @@ class TestDeferredYieldAndFrozenPrecheck(unittest.TestCase):
             x["started_at"] = old.isoformat()
         save_chain_state(self.tmp, state)
 
-    # ── frozen 预检：不派发、不烧配额、转 deferred 留痕 ──────────────
+    # ── frozen 预检：不派发、不烧配额、直达 Arbiter 冻结鉴定 ─────────
+    # （用户定调 2026-11-05「告警、阻塞到人类之前一定要先经过 arbiter」：
+    # 冻结件不再 deferred 等人工解冻——admin 不介入 arbiter 必须接手；
+    # deferred 收窄为互斥让行专用形态）
 
-    def test_frozen_precheck_defers_zero_dispatch_zero_quota(self):
+    def test_frozen_precheck_routes_to_arbiter(self):
         self.sm.update_spec("spec-a", {"frozen": True})
         assert self._submit() == "queued"
         assert _drain_chain(self.chain)
         assert self.dispatch_calls == []  # 预检拦截：零派发
         sig = self.chain._quota.snapshot().get(_SIG) or {}
-        assert not sig.get("admin_attempts")  # 零配额消耗
-        deferred = self._deferred_entries()
-        assert len(deferred) == 1
-        assert deferred[0]["yield_to"] == ""  # 冻结预检件无被让行对象
-        assert deferred[0]["item_signal"]["spec"] == "spec-a"
-        assert deferred[0]["item_signal"]["signal_type"] == "verify_env_blocked"
+        assert not sig.get("admin_attempts")  # 零 Admin 配额消耗
+        # Arbiter 冻结鉴定接单（默认替身 escalated → 链终点上升）
+        assert len(self.lane.calls) == 1
+        trig = self.lane.calls[0]
+        assert trig["admin_trail"] == []  # Admin 未尝试（附空尝试痕）
+        assert "frozen" in str(trig.get("admin_handoff_reason") or "")
+        assert sig.get("arbiter_rulings") == 1  # Arbiter 参与被记账
+        assert len(self.pm.alerts) == 1  # Arbiter 处理后仍失败 → 才上升人工
+        ctx = self.pm.alerts[0]["chain_context"]
+        assert ctx["endpoint_kind"] == "arbiter-escalated"
+        assert ctx["admin_attempts_used"] == 0
+        assert self._deferred_entries() == []  # 不再 deferred 等人工
+        assert self._in_flight() == []
 
-    def test_frozen_deferred_resubmits_after_unfreeze(self):
-        # 预检 deferred → 解冻 → 看护扫描重派（resubmit_deferred 直驱）
-        self._freeze(True)
+    def test_frozen_precheck_arbiter_resolved_closes_chain(self):
+        # 冻结鉴定成功（machine 冻结自愈解冻形态）→ 链闭环零人工痕迹
+        self.lane.outcomes = ["resolved"]
+        self.sm.update_spec("spec-a", {"frozen": True})
         assert self._submit() == "queued"
         assert _drain_chain(self.chain)
-        self._freeze(False)  # spec 解冻（重派条件满足）
+        assert self.dispatch_calls == []
+        assert self.pm.alerts == []  # 拍板成功 → 人工队列零痕迹
+        assert self._in_flight() == []
+        assert self._deferred_entries() == []
+        sig = self.chain._quota.snapshot().get(_SIG) or {}
+        assert sig.get("arbiter_rulings") == 1
+
+    def test_legacy_empty_yield_deferred_still_resubmits(self):
+        # 向后兼容：存量 yield_to="" deferred 条目（旧冻结预检形态）解冻后
+        # 仍可被看护重派消费——重派走新链头全流程（冻结预检改道后新条目
+        # 不再产出空 yield_to 形态，存量条目按原语义自然消化）
+        state = load_chain_state(self.tmp)
+        state["in_flight"].append({
+            "chain_id": "chain-legacy-frozen", "signature": _SIG,
+            "spec": "spec-a", "phase": "deferred", "yield_to": "",
+            "deferred_at": _utcnow_iso(), "started_at": _utcnow_iso(),
+            "item_signal": {
+                "spec": "spec-a", "signal_type": "verify_env_blocked",
+                "severity": "major", "description": "验证环境阻塞",
+                "evidence": "env log", "recommended_action": "修复环境",
+                "trigger": {}, "payload": {},
+                "source": "escalation-alert", "signature": _SIG,
+                "granularity": "spec",
+            },
+        })
+        save_chain_state(self.tmp, state)
         self._dispatch_script = [
-            _disp(run_id="adm-ok", result="resolved", success=True,
+            _disp(run_id="adm-legacy", result="resolved", success=True,
                   status_after="ready")
         ]
         entry = self._deferred_entries()[0]
         assert self.chain.resubmit_deferred(entry) == "queued"
         assert _drain_chain(self.chain)
-        assert len(self.dispatch_calls) == 1  # 解冻后照常派发
-        assert self._in_flight() == []  # 处置成功闭环、登记清零
-        assert self.pm.alerts == []
+        assert len(self.dispatch_calls) == 1  # 解冻态下照常派发
+        assert self._in_flight() == []
 
     # ── 冻结击杀空壳：0 assistant 轮次 + frozen-terminated 终态不计尝试 ──
 
-    def test_frozen_killed_empty_shell_not_counted(self):
+    def test_frozen_killed_empty_shell_routes_to_arbiter(self):
         self._dispatch_script = [_disp(run_id="adm-shell")]
         self._write_run(
             "adm-shell",
@@ -1318,9 +1353,8 @@ class TestDeferredYieldAndFrozenPrecheck(unittest.TestCase):
         assert _drain_chain(self.chain)
         sig = self.chain._quota.snapshot().get(_SIG) or {}
         assert not sig.get("admin_attempts")  # 空壳不计尝试
-        deferred = self._deferred_entries()
-        assert len(deferred) == 1
-        assert deferred[0]["yield_to"] == ""
+        assert len(self.lane.calls) == 1  # 冻结竞态件同口径改道 Arbiter
+        assert self._deferred_entries() == []  # 不再 deferred 等人工
 
     def test_shell_exemption_requires_zero_api_rounds(self):
         # 跑过轮次（有 assistant 事件）后遭 frozen-terminated：正常计尝试
@@ -1390,9 +1424,13 @@ class TestDeferredYieldAndFrozenPrecheck(unittest.TestCase):
     # ── deferred 超时 reap：与 admin 相条目同拍按 started_at 回收 ─────
 
     def test_deferred_stale_reaped_with_admin_entries(self):
-        self.sm.update_spec("spec-a", {"frozen": True})
-        assert self._submit() == "queued"
-        assert _drain_chain(self.chain)  # 产生 deferred 条目
+        with patch(
+            "core.admin_monitor._merge_admin_runs",
+            return_value={"admin-manual-reap": {
+                "final": False, "has_pending": True, "rec": {}}},
+        ):
+            assert self._submit() == "queued"
+            assert _drain_chain(self.chain)  # 产生 deferred 让行条目
         # 再手工放一条旧形态 admin 相条目（无 phase 键——存量形态）
         state = load_chain_state(self.tmp)
         state["in_flight"].append({
@@ -1425,10 +1463,15 @@ class TestDeferredYieldAndFrozenPrecheck(unittest.TestCase):
         assert entry_phase(state["in_flight"][1]) == "admin"
         assert entry_phase({"phase": "nonsense"}) == "admin"  # 非法值归一
         assert self.chain._quota.deferred_in_flight() == []  # 不误判为 deferred
-        # 新形态 deferred 与旧形态并存：读侧各归各位
-        self.sm.update_spec("spec-a", {"frozen": True})
-        assert self._submit() == "queued"
-        assert _drain_chain(self.chain)
+        # 新形态 deferred 与旧形态并存：读侧各归各位（deferred 直注——
+        # 冻结预检已改道 Arbiter，不再产出空 yield_to 条目）
+        state = load_chain_state(self.tmp)
+        state["in_flight"].append({
+            "chain_id": "chain-legacy-def", "signature": "spec-y::stuck",
+            "spec": "spec-y", "phase": "deferred", "yield_to": "",
+            "deferred_at": _utcnow_iso(), "started_at": _utcnow_iso(),
+        })
+        save_chain_state(self.tmp, state)
         phases = sorted(entry_phase(x) for x in self._in_flight())
         assert phases == ["admin", "admin", "deferred"]
         assert len(self.chain._quota.deferred_in_flight()) == 1
@@ -1586,28 +1629,35 @@ class TestFirstIncidentTimeline(unittest.TestCase):
         self.chain._dispatch_admin = fake_dispatch
 
         # ── T0 冻结竞态：冻结态下信号入链 → 预检拦（零派发零配额）────
+        # （用户定调 2026-11-05 改道：冻结件直达 Arbiter 冻结鉴定——
+        # Arbiter 先处理后仍失败才落人工，不再 deferred 等人工解冻）
         assert self.chain.submit_entry(
             spec="spec-a", signal_type="verify_env_blocked", severity="major",
             description="验证环境阻塞", evidence="env log",
             recommended_action="修复环境", source="incident-e2e",
         ) == "queued"
         assert self._drain()
-        assert dispatch_calls == []  # T0 零派发（旧实现此时照常派发→空壳烧配额）
+        assert dispatch_calls == []  # T0 零派发
         assert not (self.chain._quota.snapshot().get(_SIG) or {}).get("admin_attempts")
-        deferred = self._deferred_entries()
-        assert len(deferred) == 1 and deferred[0]["yield_to"] == ""
+        assert len(self.lane.calls) == 1  # Arbiter 冻结鉴定接单（默认 escalated）
+        assert len(self.pm.alerts) == 1  # Arbiter 处理后上升（链终点件 #1）
+        assert self._deferred_entries() == []
 
-        # ── T1 解冻 + 看护首扫：重派 → 互斥命中活 manual run → 让行 ──
+        # ── T1 解冻 + 复发入链：互斥命中活 manual run → 让行 ──────────
         self.sm.update_spec("spec-a", {"frozen": False})
         self._append_pending_aged("admin-manual-1", "manual-intervention", 0)
         self._write_run("admin-manual-1", [
             {"type": "assistant", "message": {"content": [{"type": "text"}]}},
         ])  # 非终态 = manual run 在飞
-        assert self.mon._scan_deferred_chain_items() == 1  # 看护扫描回喂
+        assert self.chain.submit_entry(
+            spec="spec-a", signal_type="verify_env_blocked", severity="major",
+            description="验证环境阻塞", evidence="env log",
+            recommended_action="修复环境", source="incident-e2e",
+        ) == "queued"
         assert self._wait_until(lambda: (
             len(self._deferred_entries()) == 1
             and self._deferred_entries()[0]["yield_to"] == "admin-manual-1"
-        ))  # 让行留痕（旧实现整条清除 → 静默挂起）
+        ))  # 让行留痕（互斥让行为 deferred 唯一来源）
         assert len(dispatch_calls) == 0  # 让行不派发
 
         # ── T2 被让行 run 死：manual run 落终态 → 看护再扫 → 互斥放行 ──
@@ -1624,16 +1674,17 @@ class TestFirstIncidentTimeline(unittest.TestCase):
         # ── T3 链终点：Admin 烧满 2 次 → Arbiter escalated → 人工上升件 ──
         quota = self.chain._quota.snapshot().get(_SIG) or {}
         assert quota.get("admin_attempts") == 2
-        assert len(self.lane.calls) == 1  # Arbiter 接手一次
-        assert len(self.pm.alerts) == 1  # 链终点人工上升件
+        assert len(self.lane.calls) == 2  # Arbiter 接手两次（T0 冻结鉴定 + T3 终点）
+        assert len(self.pm.alerts) == 2  # 链终点人工上升件（T0 + T3 各一）
         assert self.pm.alerts[0]["chain_context"]["chain_id"]
         assert self._in_flight_all_cleared()
         assert self._deferred_entries() == []
 
-        # ── T4 终局对账：全程人工队列零重复条目 ─────────────────────
+        # ── T4 终局对账：人工队列只含两次链终点件（T0 冻结鉴定 + T3）───
         esc = self._escalations()
-        assert len(esc) == 1  # 链终点件是唯一落盘人工作品
-        assert esc[0].get("chain")  # 链关联键在场（与看护出件形态区分）
+        assert len(esc) == 2
+        for e in esc:
+            assert e.get("chain")  # 链关联键在场（与看护出件形态区分）
         # 看护复扫（链痕已全消）：adm-N pending 已由链终点收口语义覆盖，
         # 孤儿兜底升级不得再产出同签名第二件——T4 窗口已验证抑制，此处
         # 断言全链路终态人工面收敛

@@ -1,17 +1,17 @@
 # 升级处置链（Admin→Arbiter→人工）
 
-<!-- knowledge: capability=escalation-chain rev=6
+<!-- knowledge: capability=escalation-chain rev=7
      sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
 ## 规则
 
-- 链序固定 Admin→Arbiter→人工。升级边信号（`StateMachine.freeze_for_human` 全族与 `PMEngine._send_human_escalation_alert` 全部调用点）默认入链头 Admin；链内任一级处置成功即闭环（信号收口 + spec 状态恢复可运行），人工队列零痕迹；仅链终点（Arbiter 失败）产生人工告警。
+- 链序固定 Admin→Arbiter→人工。升级边信号（`StateMachine.freeze_for_human` 全族与 `PMEngine._send_human_escalation_alert` 全部调用点）默认入链头 Admin；链内任一级处置成功即闭环（信号收口 + spec 状态恢复可运行），人工队列零痕迹；仅链终点（Arbiter 失败）产生人工告警。**Arbiter 必经不变式（用户定调 2026-11-05，fenix-desktop token-usage-monitor-panel 首例实战后）**：告警、阻塞到人类之前，一定要先经过 Arbiter 的处理——Admin 不介入（冻结预检/空壳击杀让位）时该件改道 Arbiter 冻结鉴定接单，不得 deferred 静默等人工。保留的人工直达例外仅四类（人工拉杆或防自环，非「arbiter 不管」）：`arbiter.enabled=false` 关闭态、dead-man 永久单次、`chain.blacklist` kill switch、admin_monitor 孤儿看护第三通道。
 - 链契约按发射通道治理而非告警语义：入链面即上述两个咽喉层的注册点；`admin_monitor` 孤儿看护是链外豁免的第三条发射通道（pending 超时升级仍是链外直写，受链痕抑制约束）。豁免是防自环的必要设计——链无法处置自己的死讯，看护对链死讯报警若入链即自环。看护与链的协调以「链痕」为判据：链痕在场时看护不开火，链痕消失后兜底升级语义保留（升级口径见 [human-escalation-alerts](human-escalation-alerts.md)）。
 - 各信号既有自愈/重试梯子（transient backoff、verify 重验、severity 批闸、同因重派熔断）原样保留；处置链只接管梯子耗尽那一刻的去向。
 - 链入口按信号来源判定防自环：只收框架/runner 侧产生的信号；链成员的处置输出永远是链内转单边（Admin 超范围→Arbiter、处置失败→下一级），看护触发的 deferred 重派同属链内恢复动作——均不作为新信号重新计签入链。`admin_dispatch_programming_error` 等框架自指类照常入链头。
-- Admin 链上语义：以既有受限形态处置（受限工具、只见当前 run 注入结果）；尝试配额 2 次/签名——run 崩溃/超时计一次，自判超范围转单不计失败；链头派发前查 spec 冻结态，frozen 时不派发、不计尝试、不记失败，该件转 deferred 留痕（解冻后由看护扫描重派）；run 终态 frozen-terminated 空壳击杀（0 API 轮次即被冻结终止）视为未尝试不计配额，跑过若干轮后被冻结击杀仍计真实失败；处置成功的终态收口同时完成信号收口与 spec 状态恢复可运行（框架侧 side-effects 显式 status 解冻、拒绝 parse 兜底，与 Arbiter `_apply_disposition_side_effects` 同型纪律）。
+- Admin 链上语义：以既有受限形态处置（受限工具、只见当前 run 注入结果）；尝试配额 2 次/签名——run 崩溃/超时计一次，自判超范围转单不计失败；链头派发前查 spec 冻结态，frozen 时不派发、不计尝试、不记失败，该件**改道 Arbiter 相冻结鉴定**（`frozen_skip_admin` 置位 + 转单理由经 `{handoff_reason}` 注入调查 prompt：machine 冻结且属白名单自愈面可显式 status 解冻恢复可运行；human 冻结或白名单外产裁决包上升人工）；run 终态 frozen-terminated 空壳击杀（0 API 轮次即被冻结终止）视为未尝试不计配额，同口径改道 Arbiter；跑过若干轮后被冻结击杀仍计真实失败；处置成功的终态收口同时完成信号收口与 spec 状态恢复可运行（框架侧 side-effects 显式 status 解冻、拒绝 parse 兜底，与 Arbiter `_apply_disposition_side_effects` 同型纪律）。
 - Admin 超范围转单是结构化产出：disposition 写 `handoff: "arbiter"` + `handoff_reason`，直达 Arbiter 单飞队列，不重载 `result=escalate` 的既有语义（「需人工决策」），不计 Admin 失败。
 - Arbiter 链上语义：以全局视野接单，转单载荷含 Admin 尝试痕（run 摘要与失败原因）；获得预算豁免拍板动作面——可写 spec 预算 override 字段（`impl_run_budget_override` 等既有字段复用，不新增 schema）并落台账留痕；复现配额缺省 3 次/签名，第 4 次复现强制上升人工（告警附 Admin 尝试痕 + Arbiter 台账五段 + choices）。拍板成功即闭环不计「复现」，连续复现才逐次烧拍板配额——复现配额只决定自动化兜底深度，不改变链序与人工出口语义。
 - Arbiter 复现配额缺省值单源 `ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT`（`core/config.py`），两处运行时兜底（`arbiter.py _arbiter_rulings_quota`、`escalation_chain.py quota_config` except 字典）与 Dashboard ChainPanel 缺省同值对齐；链配置可在 Dashboard 设置页编辑并经热更新生效。Admin 尝试配额（2 次/签名）与配额复位通道不受该缺省影响。
@@ -20,7 +20,7 @@
 - 配额计数是状态不是台账事实：独立状态文件 `.fenix/escalation_chain_state.json`（gitignored）按签名记 Admin 尝试/Arbiter 拍板计数与最近复现，不入 arbiter ledger；主树运行时写入仅 daemon 执行。
 - 链派发器事件驱动直派（`core/pm_engine/escalation_chain.py`），对齐 arbiter lane 单飞队列形态（同签名 dedup + 复用在飞互斥守卫 + 队列深度上限），不走 admin_monitor 5 分钟巡检；admin_monitor 保留兜底看护——pending 超时升级语义不变；链感知钩子（`_reap_chain_inflight`）负责在办登记超时清除与 deferred 扫描重派。
 - 链痕单源查询口：看护升级抑制与 deferred 重派判定共用同一查询函数（输入签名，输出 in_flight/deferred/arbiter_active 三态命中）；in_flight/deferred 读链状态文件同名区，arbiter 在飞读 arbiter 单飞队列既有注册（只读访问，不新建注册表）；链状态文件缺失/损坏按零命中降级（fail-open，对齐看护链缺席既有口径）。
-- 链让行留痕与唤醒：链在办互斥守卫命中（同 spec 在飞 admin run 且该 run 非本链成员）时链让行（deferred），in_flight 区留 `phase: deferred` 条目（含被让行对象标识 `yield_to` 与让行时间戳 `deferred_at`），不整条清除登记。看护巡检扫描 deferred 条目：被让行 run 已终态且该签名信号未收口（spec 仍 blocked/冻结或 pending 告警在场）时重新触发该件链派发——走链派发器既有单飞/互斥守卫，不绕过；信号已收口仅清条目。frozen 预检转入的条目（`yield_to` 为空）以「spec 已解冻」为重派条件，同一扫描覆盖。deferred 条目纳入既有 in_flight 超时 reap，超时无进展照常清理，不产生永久滞留条目。
+- 链让行留痕与唤醒：链在办互斥守卫命中（同 spec 在飞 admin run 且该 run 非本链成员）时链让行（deferred），in_flight 区留 `phase: deferred` 条目（含被让行对象标识 `yield_to` 与让行时间戳 `deferred_at`），不整条清除登记。看护巡检扫描 deferred 条目：被让行 run 已终态且该签名信号未收口（spec 仍 blocked/冻结或 pending 告警在场）时重新触发该件链派发——走链派发器既有单飞/互斥守卫，不绕过；信号已收口仅清条目。**deferred 收窄为互斥让行专用形态**（冻结预检改道 Arbiter 后新条目不再产出空 `yield_to` 形态）；空 `yield_to` 分支仅消化存量 legacy 条目（以「spec 已解冻」为重派条件，同一扫描覆盖），消化完自然退役。deferred 条目纳入既有 in_flight 超时 reap，超时无进展照常清理，不产生永久滞留条目。
 - 链路由 admin run 终态即时落账：`run_administrator` 一返回、后续分支判定（handoff/越界复核/成功闭环/失败计点）之前即写 final DISPOSITION 记录闭合该 run 的 pending。落账写点单源——AdminStore `append_admin_final` 助手（字段形状一处定义，admin 侧 duck-typed 读 disp、不反向依赖 agent_runner），直接路径 `_worker` 与链路径共用，两路径产出记录字段形状由契约测试钉死；字段对齐直接路径 final 全字段（含 `admin_run_id`、`result`、`choice_id`、`choice_payload`）。exhausted 出口每次尝试各落一条 final。append 失败 try/except 降级 WARN 留痕（含 run_id）、不阻断链分支判定，pending 保持由孤儿看护兜底（宁多告警不静默）。不变式：任何经链派发的 admin run 收尾后必须存在带其 run_id 的非 pending 处置记录（守卫测试钉死）。
 - 落账时序不变式：final 落账先于链 closed 事件——daemon 在两事件间被杀时台账已闭合（pending 不孤儿），链 in_flight 残留由既有 6h reap 清理、链痕抑制在 reap 前兜住，不新增告警窗口。
 - 链残留孤儿 pending 的对账兜底：落账失败或历史缺口残留「链已闭环但 final 缺失」时，孤儿看护升级人工前按 run_id 联查链事件台账——同 run_id 存在 chain-closed/chain-handoff 事件即补终结记录闭合 pending、不升级（补记纪律见 [human-escalation-alerts](human-escalation-alerts.md)）；台账查询异常按零命中放行升级（fail-open，宁多告警不漏告警）。链 admin 相事件（chain-closed/chain-handoff 等）的 `run_id` 字段落实际 admin run id（Arbiter 相事件语义不变），是按 run 精确联查的结构基础。
@@ -43,3 +43,4 @@
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（第二次裁决仍白名单外时留第三次自主处置机会，不提前落人工）：缺省单源 CHAIN_ARBITER_RULINGS_DEFAULT、两处运行时兜底与 ChainPanel 同值对齐；Admin 尝试配额 2 与复位窗 7 天不变
 - 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠链路由处置台账缺口取证（链上线首日 4 例同根因）：链全出口不写 final 处置记录致 pending 永久孤儿（宽限后必然假「处置中断」）、链成功路径不执行 choice 载荷（单通道修复静默跳过）、逐动作记录无 run id 的 by_run 归并盲区、排查判据=run 名下有无 final
 - 2026-11-04 fix-escalation-chain-ledger-closure（spec/changes/fix-escalation-chain-ledger-closure/） — 台账闭合缺口终态收口（上条折叠的缺口定性随之废除）：链路径改为 run_administrator 返回即落账（单源 append_admin_final、先于链 closed 事件、append 失败降级不阻断）、closed 出口执行注册表 choice（单执行机器 admin_choice_exec、fail-closed 不伪造闭环、白名单外保持转单）、链事件 run_id 结构字段、看护 chain-closed 对账兜底
+- 2026-11-05 用户定调直改（fenix-desktop token-usage-monitor-panel 首例实战；无 SPEC，core/pm_engine/escalation_chain.py 直改） — Arbiter 必经不变式：frozen 预检与 frozen-terminated 空壳击杀出口由「deferred 等人工解冻（链内零痕迹静默挂起）」改道 Arbiter 相冻结鉴定（frozen_skip_admin 置位 + 零配额 + {handoff_reason} 注入鉴定面与许可边界）；deferred 收窄为互斥让行专用形态，空 yield_to 分转 legacy 消化分支自然退役；人工直达例外收敛为四类（关闭态/dead-man/黑名单/看护第三通道）

@@ -6840,8 +6840,11 @@ class AdminMonitor:
         - 被让行 run（yield_to）已终态且信号未收口 → 调链派发器入口重派
           （链单飞 dedup/互斥守卫生效，MUST NOT 绕过——重派风暴由同签名
           dedup 天然限流，最坏每轮巡检一次重派尝试）；
-        - frozen 预检件（yield_to 空）：按「spec 已解冻」作为重派条件（仍
-          冻结时重派即被链头预检拦回，无谓烧一轮）；
+        - 空 yield_to 条目：按「spec 已解冻」作为重派条件（仍冻结时重派即
+          被链头改道 Arbiter 冻结鉴定，不烧配额）。用户定调 2026-11-05 冻结
+          预检改道 Arbiter 后，新条目不再产出空 yield_to 形态——此分支仅
+          消化存量 legacy 条目（deferred 收窄为互斥让行专用），消化完自然
+          退役；
         - spec 已迁移终态（信号收口）→ 仅清条目不重派。
 
         deferred 条目的超时清理不在此处——stale_in_flight 既有超时 reap 按
