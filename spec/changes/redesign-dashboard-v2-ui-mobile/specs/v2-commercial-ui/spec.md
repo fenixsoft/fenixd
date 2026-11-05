@@ -21,7 +21,7 @@
 #### Scenario: 移动端越界与触控
 
 - **WHEN** 390px 视口渲染六页
-- **THEN** 无横向滚动越界（body scrollWidth ≤ 视口宽）；操作按钮/入口触控目标可用（≥28px 控件 + 足额点击区）
+- **THEN** 无横向滚动越界（body scrollWidth ≤ 视口宽）；操作按钮/入口触控目标可用（≥28px 控件 + 命中区 ≥32px，可复用 global.less 移动端作用域 `.touch-expand` 工具类，对齐仓库触控目标约定）
 
 #### Scenario: 移动端信息密度
 
