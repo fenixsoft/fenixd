@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>移动端 · SPEC 详情 — Bento v2</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #f8fafc; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 16px; box-shadow: 0 1px 3px rgba(15,23,42,0.05); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .chip { flex-shrink: 0; padding: 7px 14px; border-radius: 999px; background: #fff; border: 1px solid #e2e8f0; font-size: 13px; color: #475569; }
+  .chip.on { background: #0f1115; border-color: #0f1115; color: #fff; font-weight: 600; }
+  /* 桌面浏览器预览约束：锁定 390px 手机屏宽（真机/DevTools 下随视口自适应） */
+  #root { max-width: 390px; margin: 0 auto; min-height: 100vh; background: #f8fafc; box-shadow: 0 0 0 1px #eef2f7; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body><div id="root"></div><script>
+(function () {
+'use strict';
+var h = React.createElement;
+var A = window.antd;
+var CP = A.ConfigProvider, Tag = A.Tag, Button = A.Button, Progress = A.Progress, Tabs = A.Tabs, Select = A.Select, Drawer = A.Drawer, Table = A.Table;
+var C = { text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8', blue: '#2563eb', blueSoft: '#eff6ff',
+  green: '#16a34a', greenSoft: '#f0fdf4', red: '#dc2626', redSoft: '#fef2f2', amber: '#d97706', amberSoft: '#fffbeb', cyan: '#0891b2', cyanSoft: '#ecfeff' };
+var TONE = { info: [C.blue, C.blueSoft], warning: [C.amber, C.amberSoft], critical: [C.red, C.redSoft], good: [C.green, C.greenSoft], muted: [C.text3, '#f1f5f9'] };
+function Pill(k, children) { var p = TONE[k] || TONE.muted; return h(Tag, { style: { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9, color: p[0], background: p[1], borderColor: 'transparent', fontWeight: 500 } }, children); }
+function IconDots() { return h('svg', { width: 16, height: 16, viewBox: '0 0 14 14', fill: 'currentColor' }, h('circle', { cx: 2.6, cy: 7, r: 1.3 }), h('circle', { cx: 7, cy: 7, r: 1.3 }), h('circle', { cx: 11.4, cy: 7, r: 1.3 })); }
+function Back() { return h('svg', { width: 16, height: 16, viewBox: '0 0 14 14', fill: 'none' }, h('path', { d: 'M9 2.5 4.5 7 9 11.5', stroke: '#475569', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' })); }
+function Card(anchor, children, extra) { return h('div', Object.assign({ 'data-proto-id': anchor, className: 'bento', style: { padding: '14px 16px', marginTop: 12 } }, extra || {}), React.Children.toArray(children)); }
+var THEME = { token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue,
+  colorSuccess: C.green, colorError: C.red, colorWarning: C.amber, colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+  colorBgLayout: '#f8fafc', colorBorder: '#e2e8f0', colorBorderSecondary: '#eef2f7', colorSplit: '#f1f5f9',
+  borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16, controlHeight: 32, controlHeightSM: 28,
+  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" },
+  components: { Button: { primaryShadow: 'none', defaultShadow: 'none' }, Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: '#f8fafc' } } };
+function Page() {
+  var info = [['优先级', 'P5'], ['创建时间', '11-04 18:44'], ['更新时间', '11-04 20:43'], ['依赖', '无依赖'], ['输入 Token', '0.7M（命中率 98.3%）'], ['输出 Token', '0.2M'], ['耗时', '2时22分11秒'], ['成本', '$29.06']];
+  return h('div', { style: { minHeight: '100vh' } }, h('main', { style: { padding: '16px 14px 32px' } },
+    h('div', { 'data-proto-id': 'sd-titlebar' },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+        Back(),
+        h('span', { className: 'ellipsis', style: { fontSize: 17, fontWeight: 700, flex: 1 } }, 'unified-page-title-bar')),
+      h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } }, Pill('muted', '完整模式'), Pill('good', '已推送'), Pill('muted', 'fenixd'))),
+    Card('sd-info', [
+      h('div', { style: { fontSize: 15, fontWeight: 700, marginBottom: 4 } }, '项目信息'),
+      info.map(function (p) {
+        return h('div', { key: p[0], style: { display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid #f8fafc' } },
+          h('span', { style: { fontSize: 12, color: C.text3, width: 76, flexShrink: 0 } }, p[0]),
+          h('span', { className: 'num', style: { fontSize: 13, fontWeight: 600, flex: 1, textAlign: 'right' } }, p[1]));
+      }),
+    ]),
+    Card('sd-tasks', [
+      h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' } },
+        h('span', { style: { fontSize: 15, fontWeight: 700 } }, '任务清单'),
+        h('span', { className: 'num', style: { fontSize: 13, color: C.text3 } }, '已完成 ', h('span', { style: { fontWeight: 700, color: C.text } }, '10 / 10'))),
+      h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 } },
+        h('span', { className: 'num', style: { fontSize: 30, fontWeight: 700 } }, '100%')),
+      h(Progress, { percent: 100, strokeColor: { '0%': '#108ee9', '100%': '#87d068' }, railColor: '#eef2f7', showInfo: false, style: { marginTop: 4 } }),
+      h('div', { style: { marginTop: 8, fontSize: 12, color: C.text3 } }, '☑ 1.1 新建 PageTitleBar.tsx（四槽位 props）'),
+      h('div', { style: { fontSize: 12, color: C.text3, marginTop: 4 } }, '☑ 1.2 app.tsx 顶栏插槽改造'),
+      h('div', { style: { fontSize: 12, color: C.text4, marginTop: 6 } }, '展开其余 8 项'),
+    ]),
+    Card('sd-panel', [
+      h(Tabs, { defaultActiveKey: 'tl', size: 'small', items: [
+        { key: 'tl', label: '时间轴', children: h('div', { 'data-proto-id': 'sd-timeline' }, [
+          ['20:43', '已推送', 'good', 'merge-back 完成，分支已删除'],
+          ['20:12', '回归通过', 'good', '24 场景通过 · $1.94'],
+          ['19:03', '实现完成', 'warning', '10/10 任务 · $18.20 · 1时58分'],
+          ['18:44', '需求评审', 'info', 'goal-fit ✓ · $0.81 · 9分41秒'],
+        ].map(function (e) {
+          return h('div', { key: e[0], style: { padding: '8px 0', borderBottom: '1px solid #f8fafc' } },
+            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+              h('span', { className: 'num', style: { fontSize: 12, color: C.text4 } }, e[0]), Pill(e[2], e[1])),
+            h('div', { style: { fontSize: 12.5, color: C.text2, marginTop: 3 } }, e[3]));
+        })) },
+        { key: 'sc', label: '场景 24', children: h('div', { style: { padding: '14px 0', fontSize: 12, color: C.text3 } }, Pill('good', '通过 24'), ' · 失败 0 · 错误 0（表格随实现展开）') },
+        { key: 'bugs', label: 'Bug', children: h('div', { style: { padding: '14px 0', fontSize: 12, color: C.text3 } }, Pill('good', '产品Bug 0')) },
+        { key: 'shots', label: '截图 5', children: h('div', { style: { padding: '14px 0', fontSize: 12, color: C.text3 } }, '5 张验证截图（网格随实现展开）') },
+        { key: 'hooks', label: 'Hook', children: h('div', { style: { padding: '14px 0', fontSize: 12, color: C.text3 } }, 'spec 提交 hook 自动提交记录') },
+      ] }),
+    ], { padding: '4px 12px 8px' }),
+  ));
+}
+ReactDOM.createRoot(document.getElementById('root')).render(h(CP, { theme: THEME }, Page()));
+})();
+</script><script src="annotator.js" defer></script></body></html>
