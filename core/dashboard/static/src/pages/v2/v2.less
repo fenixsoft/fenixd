@@ -149,3 +149,45 @@
   flex-shrink: 0;
   margin-top: 2px;
 }
+
+/* ── 移动端形态基建（redesign-dashboard-v2-ui-mobile D1 断点单源）─────────
+   断点两轨同界：@media 值镜像 theme.tsx V2_MOBILE_MAX_WIDTH 767.98（CSS 无法
+   import TS 常量，两处同改；知识 mobile-breakpoint-unification）。≥768px 视口
+   本段零命中，桌面形态零影响（知识 mobile-overflow-layout-first PC 零影响）。 */
+
+@media (max-width: 767.98px) {
+  /* 移动容器内边距（原型 main 16px 14px 32px；桌面 24px 24px 40px 不变） */
+  .v2-inner {
+    padding: 16px 14px 32px;
+  }
+}
+
+/* 横向滑动胶囊菜单（settings 移动原型 .chip / .chip.on；仅移动分支渲染，
+   JS 侧 useV2IsMobile 控制，桌面不出现） */
+.v2-chip-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  /* 触控滚动不把页面横向滚动带出来：越界收纳在容器内（越界布局优先） */
+  overscroll-behavior-x: contain;
+}
+
+.v2-chip {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0; /* = V2_BORDER */
+  font-size: 13px;
+  color: #475569; /* = V2_TEXT_SECONDARY */
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.v2-chip.on {
+  background: #0f1115; /* = V2_PRIMARY（ACTIVE 黑底） */
+  border-color: #0f1115;
+  color: #ffffff;
+  font-weight: 600;
+}

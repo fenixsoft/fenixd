@@ -16,11 +16,13 @@ import type { SpecSummary } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
 import { V2IconDots, V2Page, V2Pill, V2StatusPill, V2TitleBand } from './shared';
 import {
+  useV2IsMobile,
   V2_HAIRLINE,
   V2_RAMP_GATES,
   V2_RAMP_IMPLEMENTING,
   V2_RAMP_PLANNING,
   V2_RAMP_VERIFYING,
+  V2_SPLIT,
   V2_TEXT,
   V2_TEXT_QUATERNARY,
   V2_TEXT_TERTIARY,
@@ -117,15 +119,18 @@ function SpecDevPane({
   project,
   specs,
   onChanged,
+  mobile,
 }: {
   project: string;
   specs: SpecSummary[];
   onChanged: () => void;
+  mobile?: boolean;
 }) {
   const { message, modal } = App.useApp();
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
   const [statusSel, setStatusSel] = useState<string[]>([]);
+  const [modeSel, setModeSel] = useState<'all' | 'fast-track' | 'full'>('all');
   const [lifeFilter, setLifeFilter] = useState<'all' | 'active' | 'done'>('all');
   const [busy, setBusy] = useState(false);
 
@@ -140,10 +145,11 @@ function SpecDevPane({
     if (lifeFilter === 'active') out = out.filter((s) => !DONE_STATUSES.has(s.status || ''));
     if (lifeFilter === 'done') out = out.filter((s) => DONE_STATUSES.has(s.status || ''));
     if (statusSel.length) out = out.filter((s) => s.status && statusSel.includes(s.status));
+    if (modeSel !== 'all') out = out.filter((s) => s.mode === modeSel);
     const kw = keyword.trim().toLowerCase();
     if (kw) out = out.filter((s) => s.name.toLowerCase().includes(kw));
     return out;
-  }, [specs, keyword, statusSel, lifeFilter]);
+  }, [specs, keyword, statusSel, modeSel, lifeFilter]);
 
   const confirmDelete = (s: SpecSummary) => {
     modal.confirm({
@@ -267,6 +273,97 @@ function SpecDevPane({
     },
   ];
 
+  // 移动形态（prototype/m-project-detail.html）：筛选双下拉（状态/模式）+
+  // SPEC 卡片流（名称+状态/模式/验证胶囊+阶段进度+耗时）；生命周期 Radio 与
+  // 搜索框为桌面形态工具，移动端按原型收敛（渐进披露，过滤语义由双下拉承载）。
+  if (mobile) {
+    return (
+      <div style={{ paddingTop: 4 }}>
+        <div data-proto-id="pd-toolbar" style={{ display: 'flex', gap: 8, paddingBottom: 10 }}>
+          <Select
+            size="small"
+            mode="multiple"
+            placeholder="状态"
+            style={{ flex: 1, minWidth: 0 }}
+            maxTagCount={1}
+            value={statusSel}
+            onChange={setStatusSel}
+            allowClear
+            options={statusOptions}
+          />
+          <Select
+            size="small"
+            placeholder="模式"
+            style={{ flex: 1, minWidth: 0 }}
+            value={modeSel === 'all' ? undefined : modeSel}
+            onChange={(v) => setModeSel((v as 'all' | 'fast-track' | 'full') ?? 'all')}
+            allowClear
+            options={[
+              { value: 'fast-track', label: '快速' },
+              { value: 'full', label: '标准' },
+            ]}
+          />
+        </div>
+        <div>
+          {list.map((s) => (
+            <div key={s.name} data-proto-id={`pd-row-${s.name}`} style={{ borderTop: `1px solid ${V2_SPLIT}`, padding: '12px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span
+                  className="v2-ellipsis"
+                  style={{ fontSize: 14, fontWeight: 600, flex: 1, cursor: 'pointer', color: V2_TEXT }}
+                  onClick={() => navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`)}
+                  title={s.name}
+                >
+                  {s.name}
+                </span>
+                <Dropdown
+                  menu={{
+                    items: [
+                      { key: 'detail', label: '打开详情' },
+                      { key: 'topo', label: '协作拓扑' },
+                      { type: 'divider' },
+                      { key: 'delete', label: '删除', danger: true, disabled: busy },
+                    ],
+                    onClick: ({ key, domEvent }) => {
+                      domEvent.stopPropagation();
+                      if (key === 'detail') navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`);
+                      if (key === 'topo')
+                        navigate(`/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}/topology`);
+                      if (key === 'delete') confirmDelete(s);
+                    },
+                  }}
+                  placement="bottomRight"
+                  trigger={['click']}
+                >
+                  <Button type="text" size="small" icon={<V2IconDots />} aria-label="更多操作" />
+                </Dropdown>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <V2StatusPill status={s.status} />
+                {s.mode ? (
+                  <V2Pill tone={s.mode === 'fast-track' ? 'warning' : 'muted'}>{MODE_LABEL[s.mode] || s.mode}</V2Pill>
+                ) : null}
+                <VerifyCell s={s} />
+                <span
+                  className="v2-num"
+                  style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginLeft: 'auto', alignSelf: 'center' }}
+                >
+                  {s.total_duration ? fmtDuration(s.total_duration) : '—'}
+                </span>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <PhaseProgressCell s={s} />
+              </div>
+            </div>
+          ))}
+          {!list.length ? (
+            <div style={{ padding: '14px 0', fontSize: 12, color: V2_TEXT_TERTIARY }}>无匹配 SPEC</div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ paddingTop: 4 }}>
       <div
@@ -325,6 +422,7 @@ function SpecDevPane({
 export default function V2ProjectDetailPage() {
   const { name = '' } = useParams<{ name: string }>();
   const navigate = useNavigate();
+  const mobile = useV2IsMobile();
   const [specs, setSpecs] = useState<SpecSummary[] | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -384,7 +482,7 @@ export default function V2ProjectDetailPage() {
             <Tabs
               defaultActiveKey="dev"
               items={[
-                { key: 'dev', label: '功能开发', children: <SpecDevPane project={name} specs={specs} onChanged={() => void load()} /> },
+                { key: 'dev', label: '功能开发', children: <SpecDevPane project={name} specs={specs} onChanged={() => void load()} mobile={mobile} /> },
                 {
                   key: 'review',
                   label: '代码审查',

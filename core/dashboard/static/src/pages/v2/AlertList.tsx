@@ -10,7 +10,7 @@ import { markAlertHandled } from '@/services/dashboard';
 import type { AlertItem } from '@/services/dashboard';
 import { useAlertAdjudication, AlertAdjudicationExec } from '@/hooks/useAlertAdjudication';
 import { V2Pill } from './shared';
-import { V2_SPLIT, V2_TEXT_QUATERNARY, V2_TEXT_SECONDARY } from './theme';
+import { useV2IsMobile, V2_SPLIT, V2_TEXT_QUATERNARY, V2_TEXT_SECONDARY } from './theme';
 
 /** 严重级 → 中文短标签（定稿原型 ops.html/variant-b-bento.html 词表）。 */
 const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较重', minor: '轻微' };
@@ -21,7 +21,9 @@ function sevTone(sev?: string): string {
   return 'muted';
 }
 
-/** 单条告警行。last=true 时省略顶部分隔线（列表末行）。 */
+/** 单条告警行。last=true 时省略顶部分隔线（列表末行）。移动形态（prototype/
+ * m-ops.html ops-alert-item）：堆叠卡——胶囊在上、明细换行完整（pre-wrap）、
+ * 裁决 Select 全宽、执行/标记已处理按钮行（无选择题时标记已处理全宽单按钮）。 */
 export function V2AlertRow({
   alert,
   last,
@@ -33,6 +35,7 @@ export function V2AlertRow({
 }) {
   const { message } = App.useApp();
   const adj = useAlertAdjudication();
+  const mobile = useV2IsMobile();
   // 附注输入开合（Popover 受控）：确认后写入共享 hook 的 alertNotes（裁决提交
   // 随 resolveAlert note 通道走）
   const [noteOpen, setNoteOpen] = useState(false);
@@ -52,6 +55,76 @@ export function V2AlertRow({
       setHandling(false);
     }
   };
+
+  if (mobile) {
+    const selChoiceId = adj.alertChoiceSels[alert.id] || '';
+    return (
+      <div style={{ padding: '10px 2px', borderTop: last ? 'none' : `1px solid ${V2_SPLIT}` }}>
+        <V2Pill tone={sevTone(alert.severity)}>{SEV_LABEL[alert.severity || ''] || alert.severity || '未知'}</V2Pill>
+        <div style={{ fontSize: 13.5, fontWeight: 600, marginTop: 5, whiteSpace: 'pre-wrap' }}>
+          {alert.description || alert.id}
+        </div>
+        {alert.evidence ? (
+          <div
+            style={{
+              fontSize: 12.5,
+              color: V2_TEXT_SECONDARY,
+              lineHeight: '19px',
+              whiteSpace: 'pre-wrap',
+              marginTop: 4,
+            }}
+          >
+            {alert.evidence}
+          </div>
+        ) : null}
+        <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginTop: 4 }}>
+          {alert.project ? `项目 ${alert.project}` : ''}
+          {alert.spec ? ` · ${alert.spec}` : ''}
+          {alert.created ? ` · ${dayjs(alert.created).format('MM-DD HH:mm')}` : ''}
+        </div>
+        {hasChoices ? (
+          <>
+            <Select
+              size="small"
+              placeholder="选择处置动作"
+              style={{ width: '100%', marginTop: 8 }}
+              value={selChoiceId || undefined}
+              onChange={(v) => adj.setAlertChoiceSels((s) => ({ ...s, [alert.id]: v }))}
+              options={(alert.choices || []).map((c) => ({ value: c.id, label: c.label, title: c.desc }))}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+              <Popover
+                title="处置附注"
+                trigger="click"
+                open={noteOpen}
+                onOpenChange={setNoteOpen}
+                content={
+                  <div style={{ width: 260 }}>
+                    <Input.TextArea
+                      rows={2}
+                      value={adj.alertNotes[alert.id] || ''}
+                      onChange={(e) => adj.setAlertNotes((s) => ({ ...s, [alert.id]: e.target.value }))}
+                      placeholder="随裁决留痕写入（可空）"
+                    />
+                  </div>
+                }
+              >
+                <a className="touch-expand" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY }}>
+                  附注{adj.alertNotes[alert.id] ? '·已填' : ''}
+                </a>
+              </Popover>
+              <span style={{ flex: 1 }} />
+              <AlertAdjudicationExec alert={alert} adj={adj} onResolved={onChanged} />
+            </div>
+          </>
+        ) : (
+          <Button size="small" block loading={handling} onClick={() => void markHandled()} style={{ marginTop: 8 }}>
+            标记已处理
+          </Button>
+        )}
+      </div>
+    );
+  }
 
   const kids = [
     <div key="title" className="v2-ellipsis" style={{ fontSize: 13, fontWeight: 500 }}>

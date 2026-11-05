@@ -6,7 +6,7 @@ import { Tag } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';
 import { statusMeta } from '@/services/dashboard';
 import './v2.less';
-import { V2ConfigProvider, V2_PILL_RADIUS, V2_TONE } from './theme';
+import { useV2IsMobile, V2ConfigProvider, V2_PILL_RADIUS, V2_TONE } from './theme';
 
 /** v2 页壳：局部 Bento 主题 + 浅灰页底 + 1400px 居中内容列（原型 main 形态）。 */
 export function V2Page({ children }: { children: ReactNode }) {
@@ -91,8 +91,9 @@ export function V2BackArrow({ onClick, title }: { onClick: () => void; title?: s
   );
 }
 
-/** 页标题带（轻产品头：22px 大标题 + 副标题行）。右侧富组合由各页 children
- * 传入（标题带形态按各页定稿原型，豁免全站统一标题栏形态基准）。 */
+/** 页标题带（轻产品头：22px 大标题 + 副标题行；移动形态 20px 收纳，富组合
+ * 允许换行防溢出）。右侧富组合由各页 children 传入（标题带形态按各页定稿
+ * 原型，豁免全站统一标题栏形态基准）。 */
 export function V2TitleBand({
   title,
   subtitle,
@@ -108,13 +109,21 @@ export function V2TitleBand({
   backTitle?: string;
   children?: ReactNode;
 }) {
+  const mobile = useV2IsMobile();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       {onBack ? <V2BackArrow onClick={onBack} title={backTitle} /> : null}
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: mobile ? 1 : undefined }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {typeof title === 'string' ? (
-            <span style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' }}>
+            <span
+              style={{
+                fontSize: mobile ? 20 : 22,
+                fontWeight: 700,
+                letterSpacing: -0.3,
+                lineHeight: '28px',
+              }}
+            >
               {title}
             </span>
           ) : (

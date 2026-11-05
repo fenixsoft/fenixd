@@ -6,7 +6,7 @@
 // 正文复用现产 markdown-shared 渲染链（react-markdown + remarkGfm +
 // markdownComponents/SafeLink，同 SpecDocModal 单源）。URL query ?doc= 同步
 // 当前文档，直链/刷新可还原（口径同现产 help 页）。
-import { Alert, Skeleton, Spin } from 'antd';
+import { Alert, Button, Drawer, Skeleton, Spin } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -15,6 +15,7 @@ import { getHelpDoc, getHelpDocs } from '@/services/dashboard';
 import type { HelpDocItem, HelpDocMeta } from '@/services/dashboard';
 import { isPageAnchor, markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
 import { V2Page, V2TitleBand } from './shared';
+import { useV2IsMobile } from './theme';
 
 const DEFAULT_DOC = 'README.md';
 
@@ -120,6 +121,8 @@ export default function V2HelpPage() {
   const [loading, setLoading] = useState(true);
   const [docData, setDocData] = useState<HelpDocItem | null>(null);
   const [docLoading, setDocLoading] = useState(false);
+  const [tocOpen, setTocOpen] = useState(false);
+  const mobile = useV2IsMobile();
   const currentDoc = searchParams.get('doc') || DEFAULT_DOC;
 
   const handleDocChange = useCallback(
@@ -130,6 +133,15 @@ export default function V2HelpPage() {
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
+  );
+
+  // 移动形态：目录抽屉化——选中文档后收起抽屉（渐进披露）
+  const pickDoc = useCallback(
+    (name: string) => {
+      handleDocChange(name);
+      setTocOpen(false);
+    },
+    [handleDocChange],
   );
 
   useEffect(() => {
@@ -175,23 +187,58 @@ export default function V2HelpPage() {
     };
   }, [currentDoc, handleDocChange]);
 
+  // 移动形态（prototype/m-help.html）：目录抽屉化（标题行「目录」按钮触发，
+  // 选中后收起）；正文单列；现产本无搜索入口（桌面亦无），与原型零搜索一致。
   return (
     <V2Page>
-      <V2TitleBand title="帮助中心" subtitle={loading ? undefined : `${docs.length} 篇文档`} />
+      <V2TitleBand
+        title="帮助中心"
+        subtitle={loading ? undefined : `${docs.length} 篇文档`}
+        right={
+          mobile ? (
+            <Button size="small" onClick={() => setTocOpen(true)}>
+              目录
+            </Button>
+          ) : undefined
+        }
+      />
       <div style={{ marginTop: 18 }}>
         {docsError ? (
           <Alert type="error" showIcon style={{ marginBottom: 16 }} message="文档清单加载失败" description={docsError} />
         ) : null}
-        <div data-proto-id="hp-layout" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-          <Toc docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
-          {docLoading && !docData ? (
-            <div className="v2-bento" style={{ flex: 1, padding: 48, textAlign: 'center' }}>
-              <Spin size="large" />
-            </div>
-          ) : (
-            <DocPane doc={docData} loading={docLoading} />
-          )}
-        </div>
+        {mobile ? (
+          <>
+            <Drawer
+              title="文档目录"
+              placement="right"
+              open={tocOpen}
+              onClose={() => setTocOpen(false)}
+              // antd v6 弃用 width prop（→ size 仅 default/large），自定宽走
+              // styles.wrapper（contentWrapperStyle 映射）承载，免控制台弃用告警
+              styles={{ body: { padding: '4px 10px' }, wrapper: { width: 300 } }}
+            >
+              <Toc docs={docs} currentDoc={currentDoc} onDocChange={pickDoc} />
+            </Drawer>
+            {docLoading && !docData ? (
+              <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
+                <Spin size="large" />
+              </div>
+            ) : (
+              <DocPane doc={docData} loading={docLoading} />
+            )}
+          </>
+        ) : (
+          <div data-proto-id="hp-layout" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+            <Toc docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
+            {docLoading && !docData ? (
+              <div className="v2-bento" style={{ flex: 1, padding: 48, textAlign: 'center' }}>
+                <Spin size="large" />
+              </div>
+            ) : (
+              <DocPane doc={docData} loading={docLoading} />
+            )}
+          </div>
+        )}
       </div>
     </V2Page>
   );

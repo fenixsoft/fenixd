@@ -18,7 +18,7 @@ import {
 } from '@/services/dashboard';
 import type { ConfigData, LlmProvider } from '@/services/dashboard';
 import { V2Page, V2Pill, V2TitleBand } from './shared';
-import { V2_HAIRLINE, V2_TEXT, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
+import { useV2IsMobile, V2_HAIRLINE, V2_TEXT, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
 
 // 左侧菜单分面（原型 MENU；v2 域当前仅 llm 分面有实体面板，其余占位说明）
 const MENU: Array<[string, string]> = [
@@ -37,7 +37,17 @@ const MENU: Array<[string, string]> = [
 
 type HealthState = { loading: boolean; ok?: boolean; text?: string };
 
-function LlmPanel({ cfg, project, onChanged }: { cfg: ConfigData; project?: string; onChanged: () => void }) {
+function LlmPanel({
+  cfg,
+  project,
+  onChanged,
+  mobile,
+}: {
+  cfg: ConfigData;
+  project?: string;
+  onChanged: () => void;
+  mobile?: boolean;
+}) {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const providers = cfg.llm?.providers || [];
@@ -111,6 +121,104 @@ function LlmPanel({ cfg, project, onChanged }: { cfg: ConfigData; project?: stri
       ),
     },
   ];
+
+  // 移动形态（prototype/m-settings.html st-panel-llm）：Provider 表格转堆叠卡
+  // （名称+网关+默认模型+健康胶囊+双按钮行）；面板头「新增 Provider」按原型
+  // 收敛（卡内「编辑」同样可达现产配置页编辑单源）。
+  if (mobile) {
+    return (
+      <div className="v2-bento" data-proto-id="st-panel-llm" style={{ flex: 1, minWidth: 0, padding: '14px 16px' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>模型与网关</div>
+        <div>
+          {providers.map((p) => {
+            const st = health[p.name];
+            return (
+              <div key={p.name} data-proto-id={`st-provider-${p.name}`} style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '10px 0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="v2-ellipsis" style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0 }}>{p.name}</span>
+                  {st && !st.loading && st.ok !== undefined ? (
+                    st.ok ? (
+                      <V2Pill tone="good">{st.text}</V2Pill>
+                    ) : (
+                      <V2Pill tone="critical">{st.text}</V2Pill>
+                    )
+                  ) : (
+                    <V2Pill tone="muted">{st?.loading ? '检测中' : '未检测'}</V2Pill>
+                  )}
+                </div>
+                <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginTop: 2, wordBreak: 'break-all' }}>
+                  {p.baseurl}
+                </div>
+                <div className="v2-num" style={{ fontSize: 12.5, marginTop: 2, wordBreak: 'break-all' }}>
+                  默认模型：
+                  {p.model ? <span style={{ fontWeight: 600 }}>{p.model}</span> : <span className="v2-num" style={{ color: V2_TEXT_QUATERNARY }}>—</span>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <Button size="small" style={{ flex: 1 }} loading={st?.loading} onClick={() => void runHealth(p)}>
+                    健康检测
+                  </Button>
+                  <Button size="small" style={{ flex: 1 }} onClick={() => navigate('/settings')}>
+                    编辑
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+          {!providers.length ? (
+            <div style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '14px 0', fontSize: 12, color: V2_TEXT_TERTIARY }}>
+              未配置 Provider
+            </div>
+          ) : null}
+        </div>
+        <div data-proto-id="st-panel-llm-extra" style={{ borderTop: `1px solid ${V2_HAIRLINE}`, marginTop: 12, paddingTop: 8 }}>
+          <SwitchRow
+            label="知识真相源总开关"
+            desc="spec/knowledge 知识目录的消费与投递链路总开关（缺省开）"
+            checked={cfg.knowledge?.enabled ?? true}
+            project={project}
+            onToggle={(v) => saveConfig(project, { knowledge: { ...(cfg.knowledge || {}), enabled: v } })}
+            onDone={() => {
+              message.success('已保存');
+              onChanged();
+            }}
+          />
+          <SwitchRow
+            label="知识维护车道"
+            desc="inbox 消费 / 域页维护等自动化维护车道开关（缺省开）"
+            checked={cfg.knowledge?.audit_enabled ?? true}
+            project={project}
+            onToggle={(v) => saveConfig(project, { knowledge: { ...(cfg.knowledge || {}), audit_enabled: v } })}
+            onDone={() => {
+              message.success('已保存');
+              onChanged();
+            }}
+          />
+          <SwitchRow
+            label="代码陈旧自愈"
+            desc="陈旧 worktree + 托管项目连续空闲达阈值后自动请求重启（缺省开）"
+            checked={cfg.stale_code_selfheal?.enabled ?? true}
+            project={project}
+            onToggle={(v) => saveConfig(project, { stale_code_selfheal: { ...(cfg.stale_code_selfheal || {}), enabled: v } })}
+            onDone={() => {
+              message.success('已保存');
+              onChanged();
+            }}
+          />
+          <SwitchRow
+            label="自进化自动接受"
+            desc="允许框架自改进：自动接受全部判定值得立项的条目（缺省关）"
+            checked={cfg.self_evolution?.auto_accept ?? false}
+            project={project}
+            onToggle={(v) => saveConfig(project, { self_evolution: { ...(cfg.self_evolution || {}), auto_accept: v } })}
+            onDone={() => {
+              message.success('已保存');
+              onChanged();
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="v2-bento" data-proto-id="st-panel-llm" style={{ flex: 1, minWidth: 0, padding: '4px 20px 16px' }}>
@@ -250,6 +358,7 @@ export default function V2SettingsPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [menu, setMenu] = useState('llm');
+  const mobile = useV2IsMobile();
 
   const load = useCallback(async (s: string | undefined) => {
     setLoading(true);
@@ -293,7 +402,7 @@ export default function V2SettingsPage() {
         right={
           <Select
             size="small"
-            style={{ width: 190 }}
+            style={{ width: mobile ? 130 : 190 }}
             value={scope || 'user'}
             onChange={(v) => setScope(v === 'user' ? undefined : v)}
             options={scopeOptions}
@@ -303,43 +412,79 @@ export default function V2SettingsPage() {
       {error ? (
         <Alert type="error" showIcon style={{ marginTop: 16 }} message="配置加载失败" description={error} />
       ) : null}
-      <div data-proto-id="st-layout" style={{ display: 'flex', gap: 16, marginTop: 18, alignItems: 'flex-start' }}>
-        <div className="v2-bento" data-proto-id="st-menu" style={{ width: 230, flexShrink: 0, padding: 10 }}>
-          {MENU.map(([k, label]) => (
-            <div
-              key={k}
-              role="button"
-              tabIndex={0}
-              onClick={() => setMenu(k)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') setMenu(k);
-              }}
-              style={{
-                padding: '8px 12px',
-                borderRadius: 8,
-                fontSize: 13,
-                cursor: 'pointer',
-                fontWeight: menu === k ? 600 : 400,
-                color: menu === k ? V2_TEXT : V2_TEXT_TERTIARY,
-                background: menu === k ? '#f1f5f9' : 'transparent',
-              }}
-            >
-              {label}
-            </div>
-          ))}
-        </div>
-        {loading && !cfg ? (
-          <div className="v2-bento" style={{ flex: 1, padding: 48, textAlign: 'center' }}>
-            <Spin size="large" />
+      {mobile ? (
+        // 移动形态（prototype/m-settings.html）：左菜单转横向滑动胶囊
+        // （ACTIVE 黑底，越界收纳在容器内滚动，不撑破页面）+ 面板单列。
+        <div data-proto-id="st-layout">
+          <div className="v2-chip-row" data-proto-id="st-menu" style={{ marginTop: 14 }}>
+            {MENU.map(([k, label]) => (
+              <span
+                key={k}
+                role="button"
+                tabIndex={0}
+                className={`v2-chip${menu === k ? ' on' : ''}`}
+                onClick={() => setMenu(k)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setMenu(k);
+                }}
+              >
+                {label}
+              </span>
+            ))}
           </div>
-        ) : cfg ? (
-          menu === 'llm' ? (
-            <LlmPanel cfg={cfg} project={scope} onChanged={() => void load(scope)} />
-          ) : (
-            <PlaceholderPanel label={activeLabel} />
-          )
-        ) : null}
-      </div>
+          <div style={{ marginTop: 14 }}>
+            {loading && !cfg ? (
+              <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
+                <Spin size="large" />
+              </div>
+            ) : cfg ? (
+              menu === 'llm' ? (
+                <LlmPanel cfg={cfg} project={scope} onChanged={() => void load(scope)} mobile />
+              ) : (
+                <PlaceholderPanel label={activeLabel} />
+              )
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div data-proto-id="st-layout" style={{ display: 'flex', gap: 16, marginTop: 18, alignItems: 'flex-start' }}>
+          <div className="v2-bento" data-proto-id="st-menu" style={{ width: 230, flexShrink: 0, padding: 10 }}>
+            {MENU.map(([k, label]) => (
+              <div
+                key={k}
+                role="button"
+                tabIndex={0}
+                onClick={() => setMenu(k)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setMenu(k);
+                }}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  fontWeight: menu === k ? 600 : 400,
+                  color: menu === k ? V2_TEXT : V2_TEXT_TERTIARY,
+                  background: menu === k ? '#f1f5f9' : 'transparent',
+                }}
+              >
+                {label}
+              </div>
+            ))}
+          </div>
+          {loading && !cfg ? (
+            <div className="v2-bento" style={{ flex: 1, padding: 48, textAlign: 'center' }}>
+              <Spin size="large" />
+            </div>
+          ) : cfg ? (
+            menu === 'llm' ? (
+              <LlmPanel cfg={cfg} project={scope} onChanged={() => void load(scope)} />
+            ) : (
+              <PlaceholderPanel label={activeLabel} />
+            )
+          ) : null}
+        </div>
+      )}
     </V2Page>
   );
 }

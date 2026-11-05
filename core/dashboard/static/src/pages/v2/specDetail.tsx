@@ -29,6 +29,8 @@ import type { HookAuditData, SpecDetail, SpecSummary } from '@/services/dashboar
 import { fmtDuration } from '@/utils/duration';
 import { V2Page, V2Pill, V2StatusPill, V2TitleBand } from './shared';
 import {
+  useV2IsMobile,
+  V2_BG,
   V2_HAIRLINE,
   V2_RAMP_IMPLEMENTING,
   V2_SPLIT,
@@ -69,8 +71,9 @@ function Dash({ children }: { children?: React.ReactNode }) {
   return <>{children}</>;
 }
 
-/** 项目信息 8 项（原型 InfoCard grid；缺口「—」）。 */
-function InfoCard({ d }: { d: SpecDetail }) {
+/** 项目信息 8 项（原型 InfoCard grid；缺口「—」）。移动形态（prototype/
+ * m-spec-detail.html sd-info）：单列键值行（label 固宽 + 值右对齐 + 分隔线）。 */
+function InfoCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
   const tu = d.token_usage;
   // 缓存命中率 = 缓存读 / (输入 + 缓存读)；分项缺省（历史条目 null）不显示括号
   let inCell: React.ReactNode = <Dash />;
@@ -121,21 +124,41 @@ function InfoCard({ d }: { d: SpecDetail }) {
     ['成本', costCell],
   ];
   return (
-    <div className="v2-bento" data-proto-id="sd-info" style={{ marginTop: 18, padding: '16px 22px 18px' }}>
+    <div
+      className="v2-bento"
+      data-proto-id="sd-info"
+      style={{ marginTop: 18, padding: mobile ? '14px 16px 10px' : '16px 22px 18px' }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <span style={{ fontSize: 15, fontWeight: 700 }}>项目信息</span>
         {d.branch ? (
-          <span className="v2-mono" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>{d.branch}</span>
+          <span className="v2-mono v2-ellipsis" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>{d.branch}</span>
         ) : null}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px 32px', marginTop: 14 }}>
-        {items.map(([k, v]) => (
-          <div key={k} style={{ minWidth: 0, display: 'flex', gap: 8, alignItems: 'baseline' }}>
-            <span style={{ fontSize: 12, color: V2_TEXT_TERTIARY, flexShrink: 0 }}>{k}：</span>
-            <span className="v2-num" style={{ fontSize: 13, fontWeight: 600, minWidth: 0 }}>{v}</span>
-          </div>
-        ))}
-      </div>
+      {mobile ? (
+        <div style={{ marginTop: 8 }}>
+          {items.map(([k, v]) => (
+            <div
+              key={k}
+              style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: `1px solid ${V2_BG}`, alignItems: 'baseline' }}
+            >
+              <span style={{ fontSize: 12, color: V2_TEXT_TERTIARY, width: 76, flexShrink: 0 }}>{k}</span>
+              <span className="v2-num" style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0, textAlign: 'right' }}>
+                {v}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px 32px', marginTop: 14 }}>
+          {items.map(([k, v]) => (
+            <div key={k} style={{ minWidth: 0, display: 'flex', gap: 8, alignItems: 'baseline' }}>
+              <span style={{ fontSize: 12, color: V2_TEXT_TERTIARY, flexShrink: 0 }}>{k}：</span>
+              <span className="v2-num" style={{ fontSize: 13, fontWeight: 600, minWidth: 0 }}>{v}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {d.error ? (
         <Alert
           type="error"
@@ -149,8 +172,9 @@ function InfoCard({ d }: { d: SpecDetail }) {
   );
 }
 
-/** 任务清单卡（大百分比 + 分组勾选清单；分组内超 8 行折叠，toggle 真实可用）。 */
-function TaskCard({ d }: { d: SpecDetail }) {
+/** 任务清单卡（大百分比 + 分组勾选清单；分组内超 8 行折叠，toggle 真实可用；
+ * 移动形态容器 padding 收窄，结构与桌面一致）。 */
+function TaskCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const groups = d.tasks || [];
   const done = groups.reduce((s, g) => s + g.done, 0);
@@ -161,7 +185,11 @@ function TaskCard({ d }: { d: SpecDetail }) {
   const hidden = rows.length - visible.length;
 
   return (
-    <div className="v2-bento" data-proto-id="sd-tasks" style={{ marginTop: 16, padding: '16px 22px 18px' }}>
+    <div
+      className="v2-bento"
+      data-proto-id="sd-tasks"
+      style={{ marginTop: 16, padding: mobile ? '14px 16px 18px' : '16px 22px 18px' }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <span style={{ fontSize: 15, fontWeight: 700 }}>任务清单</span>
         {d.run_activity?.active ? <V2Pill tone="info">运行中</V2Pill> : null}
@@ -346,8 +374,9 @@ function TimelinePane({ d }: { d: SpecDetail }) {
   );
 }
 
-/** 场景结果页签（汇总 pill 行 + 场景表；断言明细列展示描述/错误首行）。 */
-function ScenarioPane({ d }: { d: SpecDetail }) {
+/** 场景结果页签（汇总 pill 行 + 场景表；断言明细列展示描述/错误首行；移动
+ * 形态表格转堆叠卡——越界治理布局优先，窄屏不横向挤压四列表）。 */
+function ScenarioPane({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
   const scenarios = d.scenarios || [];
   const sum = d.report?.summary;
   const bugCount = (d.bugs || []).length;
@@ -391,13 +420,32 @@ function ScenarioPane({ d }: { d: SpecDetail }) {
         {d.report?.degrade_annotation ? <V2Pill tone="warning">报告为降级合成</V2Pill> : null}
       </div>
       {scenarios.length ? (
-        <Table
-          columns={columns}
-          dataSource={scenarios}
-          rowKey="scenario_id"
-          pagination={false}
-          size="middle"
-        />
+        mobile ? (
+          <div>
+            {scenarios.map((s) => (
+              <div key={s.scenario_id} style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '10px 0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span className="v2-mono v2-ellipsis" style={{ fontSize: 12.5, fontWeight: 600, flex: 1, minWidth: 0 }}>
+                    {s.scenario_id}
+                  </span>
+                  <V2Pill tone="muted">{s.kind || 'web'}</V2Pill>
+                  <V2Pill tone={tone(s.status)}>{label(s.status)}</V2Pill>
+                </div>
+                <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                  {s.description || '—'}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Table
+            columns={columns}
+            dataSource={scenarios}
+            rowKey="scenario_id"
+            pagination={false}
+            size="middle"
+          />
+        )
       ) : (
         <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>暂无场景结果记录</div>
       )}
@@ -510,8 +558,9 @@ function ShotPane({ d }: { d: SpecDetail }) {
 const HOOK_STATUS_TONE: Record<string, string> = { success: 'good', failure: 'critical', noop: 'muted', skipped: 'muted' };
 const HOOK_STATUS_LABEL: Record<string, string> = { success: '成功', failure: '失败', noop: '无操作', skipped: '跳过' };
 
-/** Hook 页签（spec 作用域 hook 审计事件，端点同现产 getHookAudit）。 */
-function HookPane({ project, spec }: { project: string; spec: string }) {
+/** Hook 页签（spec 作用域 hook 审计事件，端点同现产 getHookAudit；移动形态
+ * 六列表转堆叠卡——越界治理布局优先）。 */
+function HookPane({ project, spec, mobile }: { project: string; spec: string; mobile?: boolean }) {
   const [data, setData] = useState<HookAuditData | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -535,6 +584,35 @@ function HookPane({ project, spec }: { project: string; spec: string }) {
   const rows = data.audit || [];
   if (!rows.length) {
     return <div style={{ padding: '18px 0', fontSize: 12, color: V2_TEXT_TERTIARY }}>暂无 hook 审计记录</div>;
+  }
+  if (mobile) {
+    return (
+      <div data-proto-id="sd-hooks" style={{ padding: '18px 0' }}>
+        {rows.map((r) => (
+          <div
+            key={`${r.ts}-${r.event}-${r.hook_id || ''}`}
+            style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '9px 0' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span className="v2-mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.event}</span>
+              <V2Pill tone={HOOK_STATUS_TONE[r.status] || 'muted'}>{HOOK_STATUS_LABEL[r.status] || r.status}</V2Pill>
+              <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginLeft: 'auto' }}>
+                {fmtTime(r.ts)}
+              </span>
+            </div>
+            <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 3 }}>
+              {r.action || '—'}
+              {r.duration_ms != null ? ` · ${r.duration_ms}ms` : ''}
+            </div>
+            {r.detail ? (
+              <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, whiteSpace: 'pre-wrap', marginTop: 3 }}>
+                {r.detail}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
   }
   return (
     <div data-proto-id="sd-hooks" style={{ padding: '18px 0' }}>
@@ -582,6 +660,7 @@ export default function V2SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
   const navigate = useNavigate();
   const { message, modal } = App.useApp();
+  const mobile = useV2IsMobile();
   const [detail, setDetail] = useState<SpecDetail | null>(null);
   const [summary, setSummary] = useState<SpecSummary | null>(null);
   const [error, setError] = useState('');
@@ -701,52 +780,69 @@ export default function V2SpecDetailPage() {
 
   const modeLabel = detail?.mode ? (detail.mode === 'fast-track' ? '快速模式' : '完整模式') : null;
 
+  // 移动形态（prototype/m-spec-detail.html sd-titlebar + D4 头部按钮收敛）：
+  // 标题 17px 换行收纳，移除「状态转移」「更多操作」两入口（冻结/删除等对应
+  // 动作由列表页/桌面端承载）；页签转短标签。
+  const rightActions = mobile ? undefined : (
+    <div style={{ display: 'flex', gap: 8 }}>
+      <Dropdown
+        menu={{ items: transitionItems, onClick: ({ key }) => onTransition(key) }}
+        placement="bottomRight"
+        trigger={['click']}
+      >
+        <Button size="small">状态转移</Button>
+      </Dropdown>
+      <Dropdown
+        menu={{
+          items: [
+            { key: 'doc', label: '查看文档' },
+            { key: 'topo', label: '协作拓扑' },
+          ],
+          onClick: ({ key }) => {
+            if (key === 'doc') navigate(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(spec)}`);
+            if (key === 'topo')
+              navigate(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/topology`);
+          },
+        }}
+        placement="bottomRight"
+        trigger={['click']}
+      >
+        <Button type="text" size="small" aria-label="更多操作">
+          <svg width={14} height={14} viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+            <circle cx={2.6} cy={7} r={1.2} />
+            <circle cx={7} cy={7} r={1.2} />
+            <circle cx={11.4} cy={7} r={1.2} />
+          </svg>
+        </Button>
+      </Dropdown>
+    </div>
+  );
+
   return (
     <V2Page>
       <V2TitleBand
-        title={<span style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' }}>{spec}</span>}
+        title={
+          <span
+            className="v2-ellipsis"
+            style={{
+              fontSize: mobile ? 17 : 20,
+              fontWeight: 700,
+              letterSpacing: -0.3,
+              lineHeight: '28px',
+            }}
+          >
+            {spec}
+          </span>
+        }
         onBack={() => navigate(`/v2/projects/${encodeURIComponent(name)}`)}
         backTitle="返回项目"
-        subtitle={detail?.branch || undefined}
+        subtitle={mobile ? undefined : detail?.branch || undefined}
+        right={rightActions}
       >
         {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
         {detail ? <V2StatusPill status={detail.status} /> : null}
         {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
         {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
-        right={
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Dropdown
-              menu={{ items: transitionItems, onClick: ({ key }) => onTransition(key) }}
-              placement="bottomRight"
-              trigger={['click']}
-            >
-              <Button size="small">状态转移</Button>
-            </Dropdown>
-            <Dropdown
-              menu={{
-                items: [
-                  { key: 'doc', label: '查看文档' },
-                  { key: 'topo', label: '协作拓扑' },
-                ],
-                onClick: ({ key }) => {
-                  if (key === 'doc') navigate(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(spec)}`);
-                  if (key === 'topo')
-                    navigate(`/projects/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/topology`);
-                },
-              }}
-              placement="bottomRight"
-              trigger={['click']}
-            >
-              <Button type="text" size="small" aria-label="更多操作">
-                <svg width={14} height={14} viewBox="0 0 14 14" fill="currentColor" aria-hidden>
-                  <circle cx={2.6} cy={7} r={1.2} />
-                  <circle cx={7} cy={7} r={1.2} />
-                  <circle cx={11.4} cy={7} r={1.2} />
-                </svg>
-              </Button>
-            </Dropdown>
-          </div>
-        }
       </V2TitleBand>
       {error ? (
         <Alert type="error" showIcon style={{ marginTop: 16 }} message="SPEC 详情加载失败" description={error} />
@@ -757,18 +853,32 @@ export default function V2SpecDetailPage() {
         </div>
       ) : detail ? (
         <>
-          <InfoCard d={detail} />
-          <TaskCard d={detail} />
-          <div className="v2-bento" data-proto-id="sd-panel" style={{ marginTop: 16, padding: '4px 22px 16px' }}>
+          <InfoCard d={detail} mobile={mobile} />
+          <TaskCard d={detail} mobile={mobile} />
+          <div
+            className="v2-bento"
+            data-proto-id="sd-panel"
+            style={{ marginTop: 16, padding: mobile ? '4px 12px 16px' : '4px 22px 16px' }}
+          >
             <Tabs
               defaultActiveKey="timeline"
-              items={[
-                { key: 'timeline', label: '运行时间轴', children: <TimelinePane d={detail} /> },
-                { key: 'scenarios', label: '场景结果', children: <ScenarioPane d={detail} /> },
-                { key: 'bugs', label: 'Bug 列表', children: <BugPane d={detail} /> },
-                { key: 'shots', label: '测试截图', children: <ShotPane d={detail} /> },
-                { key: 'hooks', label: 'Hook', children: <HookPane project={name} spec={spec} /> },
-              ]}
+              items={
+                mobile
+                  ? [
+                      { key: 'timeline', label: '时间轴', children: <TimelinePane d={detail} /> },
+                      { key: 'scenarios', label: '场景', children: <ScenarioPane d={detail} mobile={mobile} /> },
+                      { key: 'bugs', label: 'Bug', children: <BugPane d={detail} /> },
+                      { key: 'shots', label: `截图 ${(detail.screenshots || []).length}` , children: <ShotPane d={detail} /> },
+                      { key: 'hooks', label: 'Hook', children: <HookPane project={name} spec={spec} mobile={mobile} /> },
+                    ]
+                  : [
+                      { key: 'timeline', label: '运行时间轴', children: <TimelinePane d={detail} /> },
+                      { key: 'scenarios', label: '场景结果', children: <ScenarioPane d={detail} /> },
+                      { key: 'bugs', label: 'Bug 列表', children: <BugPane d={detail} /> },
+                      { key: 'shots', label: '测试截图', children: <ShotPane d={detail} /> },
+                      { key: 'hooks', label: 'Hook', children: <HookPane project={name} spec={spec} /> },
+                    ]
+              }
             />
           </div>
         </>

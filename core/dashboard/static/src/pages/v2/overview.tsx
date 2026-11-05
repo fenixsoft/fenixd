@@ -9,12 +9,14 @@ import { Alert, App, Button, Dropdown, Input, Progress, Radio, Space, Spin, Tabl
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from '@umijs/max';
+import dayjs from 'dayjs';
 import {
   clearAllAlerts,
   deleteProject,
   getAlerts,
   getOverview,
   installHosting,
+  markAlertHandled,
   statusMeta,
   stopProject,
 } from '@/services/dashboard';
@@ -22,6 +24,7 @@ import type { AlertsData, OverviewData, ProjectSummary } from '@/services/dashbo
 import { V2AlertRows } from './AlertList';
 import { V2Page, V2Pill, V2TitleBand } from './shared';
 import {
+  useV2IsMobile,
   V2_ERROR,
   V2_HAIRLINE,
   V2_LANE_COLORS,
@@ -102,10 +105,11 @@ function Donut({ pct, box = 92 }: { pct: number; box?: number }) {
   );
 }
 
-/** Token 静态 SVG 面积图（原型 spark 形态；x 从旧到新，最新点最右）。 */
-function SparkArea({ values }: { values: number[] }) {
+/** Token 静态 SVG 面积图（原型 spark 形态；x 从旧到新，最新点最右；移动形态
+ * h=40 压高度）。 */
+function SparkArea({ values, h }: { values: number[]; h?: number }) {
   const W = 560;
-  const H = 56;
+  const H = h ?? 56;
   const max = Math.max(...values, 1);
   const pts = values.map((v, i) => [
     6 + (i * (W - 12)) / Math.max(1, values.length - 1),
@@ -128,18 +132,24 @@ function SparkArea({ values }: { values: number[] }) {
   );
 }
 
-/** 告警横幅磁贴（多行明细 + 裁决选择题，行渲染复用 V2AlertRow）。 */
+/** 告警横幅磁贴（多行明细 + 裁决选择题，行渲染复用 V2AlertRow）。移动形态
+ * （prototype/m-overview.html overview-alert-banner）：左缘警示条 + 最高级别
+ * 统计胶囊 + 单条摘要 + 去处置/标记已处理双按钮，「展开」渐进披露完整列表。 */
 function AlertCard({
   alerts,
   totalUnhandled,
   onChanged,
+  mobile,
 }: {
   alerts: NonNullable<AlertsData['alerts']>;
   totalUnhandled: number;
   onChanged: () => void;
+  mobile?: boolean;
 }) {
   const { message, modal } = App.useApp();
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const [handling, setHandling] = useState(false);
   const rank = (s?: string) => (s === 'critical' ? 3 : s === 'major' ? 2 : s === 'minor' ? 1 : 0);
   const top = alerts.reduce((m, a) => (rank(a.severity) > rank(m.severity) ? a : m), alerts[0]);
   const topTone = top.severity === 'critical' ? 'critical' : top.severity === 'major' ? 'warning' : 'muted';
@@ -162,6 +172,70 @@ function AlertCard({
       },
     });
   };
+
+  const markTopHandled = async () => {
+    setHandling(true);
+    try {
+      await markAlertHandled(top.project, top.id);
+      message.success('已标记处理');
+      onChanged();
+    } catch (e) {
+      message.error(`标记失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setHandling(false);
+    }
+  };
+
+  if (mobile) {
+    const sevShort = top.severity === 'critical' ? '严重' : top.severity === 'major' ? '较重' : '轻微';
+    const topSevCount = alerts.filter((a) => a.severity === top.severity).length;
+    const edgeColor =
+      top.severity === 'critical' ? V2_ERROR : top.severity === 'major' ? V2_WARNING : undefined;
+    return (
+      <div
+        className="v2-bento"
+        style={{ marginTop: 16, padding: '12px 12px 6px', borderLeft: edgeColor ? `3px solid ${edgeColor}` : undefined }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <V2Pill tone={topTone}>{`${sevShort} ${topSevCount}`}</V2Pill>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0 }}>
+            <span className="v2-num">{totalUnhandled}</span> 条待处理
+          </span>
+          <a
+            className="touch-expand"
+            style={{ fontSize: 12, color: V2_TEXT_QUATERNARY }}
+            onClick={() => setCollapsed((c) => !c)}
+            role="button"
+            tabIndex={0}
+          >
+            {collapsed ? '展开' : '收起'}
+          </a>
+        </div>
+        {!collapsed ? (
+          <>
+            <div style={{ marginTop: 8, borderTop: `1px solid ${V2_SPLIT}`, padding: '9px 2px' }}>
+              <div className="v2-ellipsis" style={{ fontSize: 13, fontWeight: 600 }} title={top.description || top.id}>
+                {top.description || top.id}
+              </div>
+              <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginTop: 3 }}>
+                {top.project || ''}
+                {top.created ? ` · ${dayjs(top.created).format('MM-DD HH:mm')}` : ''}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <Button size="small" type="primary" style={{ flex: 1 }} onClick={() => navigate('/v2/activities')}>
+                  去处置
+                </Button>
+                <Button size="small" style={{ flex: 1 }} loading={handling} onClick={() => void markTopHandled()}>
+                  标记已处理
+                </Button>
+              </div>
+            </div>
+            {alerts.length > 1 ? <V2AlertRows alerts={alerts.slice(1)} onChanged={onChanged} /> : null}
+          </>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="v2-bento" style={{ padding: '13px 14px 8px' }}>
@@ -205,13 +279,16 @@ function AlertCard({
   );
 }
 
-/** KPI 区：4 卡等宽磁贴（SPEC 总数 / 任务进度圆环 / Token 消耗 / 活跃 Agent）。 */
-function KpiRow({ data }: { data: OverviewData }) {
+/** KPI 区：4 卡等宽磁贴（SPEC 总数 / 任务进度圆环 / Token 消耗 / 活跃 Agent）。
+ * 移动形态（prototype/m-overview.html overview-kpi-row）：2×2 磁贴 + 卡内
+ * 字号/圆环/spark 压缩。 */
+function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
   const t = data.totals;
   const recent = data.token_usage?.recent ?? [];
   const pct = Math.round(((t.task_done ?? 0) / Math.max(1, t.task_total ?? 0)) * 100);
   const tokenSum = recent.reduce((s, r) => s + (r.tokens || 0), 0);
   const statusEntries = Object.entries(t.status_counts || {});
+  const tilePad = mobile ? '14px 16px' : '18px 20px';
 
   // 活跃 Agent 归族计数（口径见 AGENT_CATS 注记）
   const byType = t.active_runs_by_type || {};
@@ -232,11 +309,26 @@ function KpiRow({ data }: { data: OverviewData }) {
   const agentTotal = cats.reduce((s, d) => s + d.value, 0);
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
+    <div
+      style={
+        mobile
+          ? { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
+          : { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }
+      }
+    >
       {/* SPEC 总数 */}
-      <div className="v2-bento" style={{ padding: '18px 20px' }}>
+      <div className="v2-bento" style={{ padding: tilePad }}>
         <TileLabel>SPEC 总数</TileLabel>
-        <div className="v2-num" style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1, lineHeight: '48px', marginTop: 8 }}>
+        <div
+          className="v2-num"
+          style={{
+            fontSize: mobile ? 28 : 40,
+            fontWeight: 700,
+            letterSpacing: mobile ? -0.6 : -1,
+            lineHeight: mobile ? '36px' : '48px',
+            marginTop: 8,
+          }}
+        >
           {t.spec_count ?? 0}
         </div>
         <div style={{ display: 'flex', gap: 16, marginTop: 10 }}>
@@ -275,30 +367,41 @@ function KpiRow({ data }: { data: OverviewData }) {
         ) : null}
       </div>
       {/* 任务进度（圆环 + 明细行） */}
-      <div className="v2-bento" style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column' }}>
+      <div className="v2-bento" style={{ padding: tilePad, display: 'flex', flexDirection: 'column' }}>
         <TileLabel>任务进度</TileLabel>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 14, marginTop: 10 }}>
-          <Donut pct={pct} box={72} />
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: mobile ? 10 : 14, marginTop: 10 }}>
+          <Donut pct={pct} box={mobile ? 56 : 72} />
           <div style={{ minWidth: 0 }}>
-            <div className="v2-num" style={{ fontSize: 20, fontWeight: 700, whiteSpace: 'nowrap' }}>
+            <div className="v2-num" style={{ fontSize: mobile ? 15 : 20, fontWeight: 700, whiteSpace: 'nowrap' }}>
               {t.task_done ?? 0} / {t.task_total ?? 0}
               <span style={{ fontSize: 12, fontWeight: 400, color: V2_TEXT_TERTIARY }}> 已完成</span>
             </div>
-            <Progress
-              percent={pct}
-              size="small"
-              strokeColor={V2_RAMP_IMPLEMENTING}
-              railColor={V2_HAIRLINE}
-              showInfo={false}
-              style={{ marginTop: 8 }}
-            />
+            {!mobile ? (
+              <Progress
+                percent={pct}
+                size="small"
+                strokeColor={V2_RAMP_IMPLEMENTING}
+                railColor={V2_HAIRLINE}
+                showInfo={false}
+                style={{ marginTop: 8 }}
+              />
+            ) : null}
           </div>
         </div>
       </div>
       {/* Token 消耗（口径：最近 20 个有消耗 SPEC 的累计，同现产 Token 卡） */}
-      <div className="v2-bento" style={{ padding: '18px 20px' }}>
+      <div className="v2-bento" style={{ padding: tilePad }}>
         <TileLabel>Token 消耗</TileLabel>
-        <div className="v2-num" style={{ fontSize: 28, fontWeight: 700, letterSpacing: -0.6, lineHeight: '36px', marginTop: 8 }}>
+        <div
+          className="v2-num"
+          style={{
+            fontSize: mobile ? 24 : 28,
+            fontWeight: 700,
+            letterSpacing: -0.6,
+            lineHeight: '36px',
+            marginTop: 8,
+          }}
+        >
           {recent.length ? compactWan(tokenSum) : '—'}
         </div>
         <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 8 }}>
@@ -311,28 +414,41 @@ function KpiRow({ data }: { data: OverviewData }) {
             '暂无 token 记录'
           )}
         </div>
-        <div style={{ marginTop: 10 }}>{recent.length >= 2 ? <SparkArea values={recent.slice().reverse().map((r) => r.tokens || 0)} /> : null}</div>
+        <div style={{ marginTop: 10 }}>
+          {recent.length >= 2 ? <SparkArea values={recent.slice().reverse().map((r) => r.tokens || 0)} h={mobile ? 40 : undefined} /> : null}
+        </div>
       </div>
       {/* 活跃 Agent（大数字 + 图例 + 归一化堆叠条） */}
-      <div className="v2-bento" style={{ padding: '18px 20px' }}>
+      <div className="v2-bento" style={{ padding: tilePad }}>
         <TileLabel>活跃 Agent</TileLabel>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <div className="v2-num" style={{ fontSize: 32, fontWeight: 700, letterSpacing: -0.8, lineHeight: '40px', marginTop: 8 }}>
-            {t.active_runs ?? 0}
-          </div>
-          <span
+          <div
             className="v2-num"
             style={{
-              fontSize: 12,
-              color: '#16a34a',
-              fontWeight: 600,
-              background: '#f0fdf4',
-              borderRadius: 999,
-              padding: '2px 8px',
+              fontSize: mobile ? 28 : 32,
+              fontWeight: 700,
+              letterSpacing: -0.8,
+              lineHeight: mobile ? '36px' : '40px',
+              marginTop: 8,
             }}
           >
-            按类型分布
-          </span>
+            {t.active_runs ?? 0}
+          </div>
+          {!mobile ? (
+            <span
+              className="v2-num"
+              style={{
+                fontSize: 12,
+                color: '#16a34a',
+                fontWeight: 600,
+                background: '#f0fdf4',
+                borderRadius: 999,
+                padding: '2px 8px',
+              }}
+            >
+              按类型分布
+            </span>
+          ) : null}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 8 }}>
           {cats.map((d) => (
@@ -342,7 +458,7 @@ function KpiRow({ data }: { data: OverviewData }) {
             </span>
           ))}
         </div>
-        <div style={{ display: 'flex', height: 16, borderRadius: 8, overflow: 'hidden', gap: 2, marginTop: 12 }}>
+        <div style={{ display: 'flex', height: mobile ? 12 : 16, borderRadius: mobile ? 6 : 8, overflow: 'hidden', gap: 2, marginTop: 12 }}>
           {agentTotal > 0 &&
             cats.map((d) => {
               const share = d.value / agentTotal;
@@ -361,7 +477,7 @@ function KpiRow({ data }: { data: OverviewData }) {
                     color: '#fff',
                   }}
                 >
-                  {share >= SEGMENT_LABEL_MIN_SHARE ? d.value : ''}
+                  {!mobile && share >= SEGMENT_LABEL_MIN_SHARE ? d.value : ''}
                 </div>
               );
             })}
@@ -450,8 +566,10 @@ function DashCell() {
   );
 }
 
-/** 项目台账表格磁贴（fixed 布局 / 首列 14px 缩进 / 长注释换行）。 */
-function ProjectPanel({ data, onChanged }: { data: OverviewData; onChanged: () => void }) {
+/** 项目台账表格磁贴（fixed 布局 / 首列 14px 缩进 / 长注释换行）。移动形态
+ * （prototype/m-overview.html overview-project-panel）：表格转堆叠项目卡，
+ * 行级组件复用 ProjectCell，操作收敛在卡头更多菜单（语义同桌面行内操作）。 */
+function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChanged: () => void; mobile?: boolean }) {
   const { message, modal } = App.useApp();
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
@@ -536,6 +654,92 @@ function ProjectPanel({ data, onChanged }: { data: OverviewData; onChanged: () =
       },
     });
   };
+
+  if (mobile) {
+    const pct = (p: ProjectSummary) => Math.round((p.task_done / Math.max(1, p.task_total)) * 100);
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 16, fontWeight: 700 }}>项目清单</span>
+          <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY }}>
+            {(data.projects || []).length} 个 · 运行中 {runCount}
+          </span>
+        </div>
+        <Input.Search
+          placeholder="搜索项目"
+          size="small"
+          allowClear
+          style={{ width: '100%', marginTop: 10 }}
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+        />
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {projects.map((p) => (
+            <div
+              key={p.name}
+              className="v2-bento"
+              style={{ padding: '14px 16px', cursor: p.error ? 'default' : 'pointer' }}
+              onClick={() => {
+                if (!p.error) navigate(`/v2/projects/${encodeURIComponent(p.name)}`);
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <ProjectCell p={p} />
+                </div>
+                <Dropdown
+                  menu={{
+                    items: [
+                      { key: 'stop', label: '停止', disabled: busy || Boolean(p.error) || p.daemon !== 'running' },
+                      { key: 'install', label: '安装托管', disabled: busy || Boolean(p.error) || p.hosting === 'managed' },
+                      { type: 'divider' },
+                      { key: 'delete', label: '删除', danger: true, disabled: busy || Boolean(p.error) },
+                    ],
+                    onClick: ({ key, domEvent }) => {
+                      domEvent.stopPropagation();
+                      if (key === 'stop') act(p, 'stop');
+                      if (key === 'install') act(p, 'install');
+                      if (key === 'delete') act(p, 'delete');
+                    },
+                  }}
+                  placement="bottomRight"
+                  trigger={['click']}
+                >
+                  <Button type="text" size="small" icon={<DotsIcon />} aria-label="更多操作" />
+                </Dropdown>
+              </div>
+              {!p.error ? (
+                <>
+                  <div style={{ display: 'flex', gap: 14, marginTop: 8 }}>
+                    <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>
+                      SPEC <span style={{ fontWeight: 700, color: V2_TEXT }}>{p.spec_count}</span>
+                    </span>
+                    <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>
+                      问题{' '}
+                      <span style={{ fontWeight: 700, color: p.problems > 0 ? V2_ERROR : V2_TEXT }}>{p.problems}</span>
+                    </span>
+                    <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>
+                      活跃{' '}
+                      <span style={{ fontWeight: 700, color: p.active_runs > 0 ? V2_WARNING : V2_TEXT }}>{p.active_runs}</span>
+                    </span>
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <Progress percent={pct(p)} size="small" strokeColor={V2_RAMP_IMPLEMENTING} railColor={V2_HAIRLINE} showInfo={false} />
+                  </div>
+                  <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4 }}>
+                    {p.task_done}/{p.task_total} · {pct(p)}%
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ))}
+          {!projects.length ? (
+            <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, padding: '12px 0' }}>无匹配项目</div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   const columns: ColumnsType<ProjectSummary> = [
     { title: '项目', dataIndex: 'name', render: (_, p) => <ProjectCell p={p} /> },
@@ -697,6 +901,7 @@ function DotsIcon() {
 }
 
 export default function V2OverviewPage() {
+  const mobile = useV2IsMobile();
   const [data, setData] = useState<OverviewData | null>(null);
   const [alerts, setAlerts] = useState<AlertsData | null>(null);
   const [error, setError] = useState('');
@@ -764,13 +969,14 @@ export default function V2OverviewPage() {
                 alerts={unhandled}
                 totalUnhandled={alerts?.total_unhandled ?? unhandled.length}
                 onChanged={() => void load()}
+                mobile={mobile}
               />
             ) : null}
             <div style={{ marginTop: 16 }}>
-              <KpiRow data={data} />
+              <KpiRow data={data} mobile={mobile} />
             </div>
             <div style={{ marginTop: 16 }}>
-              <ProjectPanel data={data} onChanged={() => void load()} />
+              <ProjectPanel data={data} onChanged={() => void load()} mobile={mobile} />
             </div>
           </>
         ) : null}
