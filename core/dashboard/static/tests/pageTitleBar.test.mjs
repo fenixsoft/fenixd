@@ -160,7 +160,7 @@ test('迁移页 PageContainer 必须 title={false}+breadcrumbRender={false} 抑�
   // 占位页按 specs 豁免条款保留路由名页头。
   const pages = [
     'overview/index', 'activities/index', 'help/index', 'settings/index',
-    'chain/index', 'projects/list', 'projects/detail', 'command-center/index',
+    'projects/list', 'projects/detail', 'command-center/index',
   ];
   for (const page of pages) {
     const text = readFileSync(join(STATIC_ROOT, 'src', 'pages', page + '.tsx'), 'utf8');

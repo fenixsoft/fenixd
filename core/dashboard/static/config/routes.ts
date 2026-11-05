@@ -30,12 +30,11 @@ export default [
     component: './command-center',
   },
   {
-    // 处置链视图（add-escalation-chain-admin-arbiter 5.2）：Admin→Arbiter→Human
-    // 自动处置链观测面（在办/队列/配额水位/上升件，只读）。
+    // 处置链并入运维页三页签（2026-11-05 用户指令；add-escalation-chain-admin-arbiter
+    // 5.2 的独立观测页退役）：原独立路由保留重定向，老深链/书签落地运维页处置链
+    // 页签（hash 路由，query 随 hash 传递，activities 页 initialTab 读取预选）。
     path: '/chain',
-    name: '处置链',
-    icon: 'apartment',
-    component: './chain',
+    redirect: '/activities?tab=chain',
   },
   {
     path: '/projects/:name/:spec',

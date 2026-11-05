@@ -8,18 +8,21 @@ import {
   Empty,
   List,
   Pagination,
-  Radio,
+  Select,
   Spin,
+  Tabs,
   Tag,
   Timeline,
   Typography,
 } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useModel } from '@umijs/max';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
+import ChainPanel from './components/ChainPanel';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import { getAdminActivities, getAlerts, STREAM_URL } from '@/services/dashboard';
 import type {
@@ -247,7 +250,16 @@ function ActivityTimeline({
   );
 }
 
-type ViewMode = 'auto' | 'alert';
+// 页签键（2026-11-05 处置链并入运维页，用户指令）：chain=处置链观测（原
+// /chain 独立页迁入）、auto=自动运维记录、alert=告警记录
+type TabKey = 'chain' | 'auto' | 'alert';
+
+// 首屏页签：URL ?tab= 预选（/chain 老深链重定向携带 tab=chain），缺省处置链
+//（2026-11-05 用户定调）。hash 路由，query 位于 location.hash 的 '?' 之后
+function initialTab(): TabKey {
+  const tab = new URLSearchParams(window.location.hash.split('?')[1] || '').get('tab');
+  return tab === 'auto' || tab === 'alert' ? tab : 'chain';
+}
 
 // 加载失败来源（fix 2ca9c5ff7be6）：alerts=人工告警接口，activities=运维记录接口。
 // 两路失败共用一个 error state，但横幅按来源区分文案，避免仅告警失败时
@@ -354,7 +366,13 @@ export default function ActivitiesPage() {
   // 乐观遮蔽单源（items d9c50f5bcc38、e673281b0b03）：optimistic、收敛 effect
   //（确认消失/超时兜底）与 markHandled 包装都在共享 hook 内，与横幅同源
   const { optimistic, markHandled } = useOptimisticAlerts(alertsData);
-  const [viewMode, setViewMode] = useState<ViewMode>('auto');
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+  // 处置链页签的单项目聚合筛选：state 提升到宿主页——Select 在标题栏筛选槽
+  // 渲染（页签失活即卸载 ChainPanel，提升后筛选选择跨页签切换保持）
+  const [project, setProject] = useState<string | undefined>(undefined);
+  // 项目选择器选项取全局 initialState.projects（原 /chain 页同源口径）
+  const { initialState } = useModel('@@initialState');
+  const projectOptions = initialState?.projects || [];
   const [current, setCurrent] = useState(1);
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
   const [error, setError] = useState<LoadError | null>(null);
@@ -567,29 +585,16 @@ export default function ActivitiesPage() {
     [],
   );
 
-  const renderContent = () => {
+  // 自动运维记录页签内容：首载转圈 + 服务端分页的当前页时间线（total 为服务端
+  // 过滤后总条数）。原嵌套 Card 已随 Radio→Tabs 改版去掉——页签容器本身在 Card 内
+  const renderAutoPane = () => {
     if (loading && !data) {
       return (
-        <Card>
-          <div style={{ textAlign: 'center', padding: 48 }}>
-            <Spin size="large" />
-          </div>
-        </Card>
+        <div style={{ textAlign: 'center', padding: 48 }}>
+          <Spin size="large" />
+        </div>
       );
     }
-
-    if (viewMode === 'alert') {
-      // 人工告警视图：全部项目合并展示（不按项目过滤）
-      return (
-        <AlertPanel
-          alertsData={alertsData}
-          optimistic={optimistic}
-          onMarkHandled={(a) => void handleMarkHandled(a)}
-        />
-      );
-    }
-
-    // 自动运维视图：服务端分页的当前页时间线（total 为服务端过滤后总条数）
     return (
       <ActivityTimeline
         activities={allActivities}
@@ -604,13 +609,30 @@ export default function ActivitiesPage() {
 
   return (
     <>
-      {/* 统一标题栏声明（unified-page-title-bar 2.1）：运维记录页无过滤项，
-          副标题「跨项目 Administrator 活动」随迁 */}
-      <PageTitleBar title="运维记录" subtitle="跨项目 Administrator 活动" />
+      {/* 统一标题栏声明（unified-page-title-bar 2.1）：副标题罩住三页签数据面；
+          处置链页签激活时筛选槽放单项目聚合 Select（原 /chain 页顶栏筛选位形态） */}
+      <PageTitleBar
+        title="运维"
+        subtitle="跨项目 Administrator 活动与处置链观测"
+        filters={
+          activeTab === 'chain' ? (
+            <Select
+              allowClear
+              placeholder="全部项目"
+              style={{ minWidth: 200 }}
+              value={project}
+              onChange={(v) => setProject(v)}
+              options={projectOptions.map((name) => ({ value: name, label: name }))}
+            />
+          ) : undefined
+        }
+      />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* fix 8fa2edf72bc5: SSE 连续重连失败提示条——断连期间实时刷新静默失效，
-          运维记录/告警可能停留在陈旧数据；连接恢复后由 onopen / onmessage 自动消除 */}
-      {streamDown ? (
+          运维记录/告警可能停留在陈旧数据；连接恢复后由 onopen / onmessage 自动消除。
+          两横幅仅属自动运维记录/告警记录两路数据（处置链有独立 fail-soft Alert，
+          数据不同源不混报），处置链页签激活时不展示 */}
+      {activeTab !== 'chain' && streamDown ? (
         <div style={{ marginBottom: 16 }}>
           <Card>
             <Typography.Text type="warning">
@@ -619,7 +641,7 @@ export default function ActivitiesPage() {
           </Card>
         </div>
       ) : null}
-      {error ? (
+      {activeTab !== 'chain' && error ? (
         <div style={{ marginBottom: 16 }}>
           <Card>
             {/* fix 2ca9c5ff7be6: 按失败来源区分文案（运维记录 / 人工告警），避免误导失败范围 */}
@@ -629,21 +651,39 @@ export default function ActivitiesPage() {
           </Card>
         </div>
       ) : null}
+      {/* 三页签（2026-11-05 处置链并入，用户指令）：页签内容按激活态条件渲染——
+          处置链页签失活即卸载（30s 轮询随卸载停止，项目筛选在宿主页保持），
+          自动运维/告警状态本就在宿主页，重挂零成本 */}
       <Card variant="borderless">
-        <div style={{ marginBottom: 16 }}>
-          <Radio.Group
-            data-testid="view-mode-switch"
-            optionType="button"
-            size="middle"
-            value={viewMode}
-            onChange={(e) => setViewMode(e.target.value as ViewMode)}
-            options={[
-              { label: '自动运维', value: 'auto' },
-              { label: '人工告警', value: 'alert' },
-            ]}
-          />
-        </div>
-        {renderContent()}
+        <Tabs
+          data-testid="view-mode-switch"
+          activeKey={activeTab}
+          onChange={(k) => setActiveTab(k as TabKey)}
+          items={[
+            {
+              key: 'chain',
+              label: '处置链',
+              children: activeTab === 'chain' ? <ChainPanel project={project} /> : null,
+            },
+            {
+              key: 'auto',
+              label: '自动运维记录',
+              children: activeTab === 'auto' ? renderAutoPane() : null,
+            },
+            {
+              key: 'alert',
+              label: '告警记录',
+              children:
+                activeTab === 'alert' ? (
+                  <AlertPanel
+                    alertsData={alertsData}
+                    optimistic={optimistic}
+                    onMarkHandled={(a) => void handleMarkHandled(a)}
+                  />
+                ) : null,
+            },
+          ]}
+        />
       </Card>
       {viewingRun && (
         <AdminRunModal

@@ -1,18 +1,17 @@
 /**
- * 处置链视图（add-escalation-chain-admin-arbiter 5.2，只读）
+ * 处置链页签（原 /chain 独立页迁入运维页三页签，2026-11-05 用户指令）
  *
  * Admin→Arbiter→Human 自动处置链的观测面：在办件 / 队列（人工队列）/
  * 配额水位 / 上升件四区块。数据源 /api/chain（data/admin_alerts.py
- * chain_overview 单读聚合）；缺省跨项目聚合，可切单项目。
+ * chain_overview 单读聚合）；项目筛选 Select 由宿主页（activities）在统一
+ * 标题栏 filters 槽位渲染，本组件只持有数据与轮询。
  *
- * 只读纪律：本页零写动作——链状态只由链运行时与管理配置通道（设置页链
- * 配置区块）演进，视图不得提供任何变更入口。30s 轮询对齐人观测频率。
+ * 只读纪律：本面板零写动作——链状态只由链运行时与管理配置通道（设置页链
+ * 配置区块）演进，视图不得提供任何变更入口。30s 轮询对齐人观测频率；
+ * 页签失活即卸载，轮询随卸载自动停止。
  */
-import { PageContainer } from '@ant-design/pro-components';
-import { PageTitleBar } from '@/components/PageTitleBar';
-import { Alert, Card, Col, Empty, Progress, Row, Select, Spin, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Card, Col, Empty, Progress, Row, Spin, Table, Tag, Tooltip, Typography } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useModel } from '@umijs/max';
 import { getChainOverview } from '@/services/dashboard';
 import type {
   ChainEscalationItem,
@@ -53,15 +52,15 @@ function subjectLabel(row: { spec?: string; subject?: string; granularity: strin
   return row.spec || '(未知)';
 }
 
-export default function ChainPage() {
+export default function ChainPanel({
+  project,
+}: {
+  /** 单项目聚合筛选（宿主页持有并同步到标题栏 Select，undefined=全部项目） */
+  project?: string;
+}) {
   const [data, setData] = useState<ChainOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [project, setProject] = useState<string | undefined>(undefined);
-  // 项目选择器选项取全局 initialState.projects（选定单项目后聚合分支的
-  // projects 字段不再下发，避免选项列表被自身响应掏空）
-  const { initialState } = useModel('@@initialState');
-  const projectOptions = initialState?.projects || [];
 
   const load = useCallback(async (name?: string) => {
     try {
@@ -78,7 +77,6 @@ export default function ChainPage() {
   }, []);
 
   useEffect(() => {
-    setLoading(true);
     load(project);
     const timer = setInterval(() => load(project), REFRESH_MS);
     return () => clearInterval(timer);
@@ -221,24 +219,6 @@ export default function ChainPage() {
 
   return (
     <>
-      {/* 统一标题栏声明（unified-page-title-bar 2.2）：「全部项目」Select 迁
-          filters 槽位（standalone 顶栏右上角 / 行壳位行右端），链观测卡片为
-          内容区首屏 */}
-      <PageTitleBar
-        title="处置链"
-        subtitle="Admin → Arbiter → Human 自动处置链观测（只读）"
-        filters={
-          <Select
-            allowClear
-            placeholder="全部项目"
-            style={{ minWidth: 200 }}
-            value={project}
-            onChange={(v) => setProject(v)}
-            options={projectOptions.map((name) => ({ value: name, label: name }))}
-          />
-        }
-      />
-      <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       <Spin spinning={loading}>
         {/* 刷新失败保留旧数据 + 内联 Alert（command-center 各屏同款形态） */}
         {error ? (
@@ -301,7 +281,6 @@ export default function ChainPage() {
           />
         </Card>
       </Spin>
-      </PageContainer>
     </>
   );
 }

@@ -1,6 +1,5 @@
 import { App as AntdApp, Space, theme } from 'antd';
 import {
-  ApartmentOutlined,
   ControlOutlined,
   DashboardOutlined,
   HistoryOutlined,
@@ -116,8 +115,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
       // 管理指挥中心（add-command-center 3.2；2026-11-04 去脱壳改内容区常规页）
       { path: '/command-center', name: '指挥中心', icon: <ControlOutlined /> },
-      // 处置链观测视图（add-escalation-chain-admin-arbiter 5.2，只读）
-      { path: '/chain', name: '处置链', icon: <ApartmentOutlined /> },
+      // 处置链菜单项已并入运维页三页签（2026-11-05 用户指令），路由 /chain 保留重定向
       { path: '/help', name: '帮助', icon: <QuestionCircleOutlined /> },
     ],
     // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
