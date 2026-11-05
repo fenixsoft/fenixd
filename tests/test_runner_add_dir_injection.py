@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from core.agent_runner.runner import (
     _NO_MAIN_TREE_VERIFY_PROGRESS_LANES,
+    AgentRunner,
 )
 
 
@@ -58,7 +59,13 @@ def _capture_cmd(runner, cwd: Path, agent_type=None):
         captured["cmd"] = cmd
         return proc
 
-    with patch("core.agent_runner.runner.subprocess.Popen", side_effect=fake_popen):
+    # 维护车道（administrator 等）派发前连通预检会真打 DNS（取 os.environ
+    # 的 ANTHROPIC_BASE_URL 探测），单测环境无外网必超时顺延——按仓内既定
+    # 替身模式替身化（tests/test_run_prompt_event.py 同款）；本文件只捕获
+    # cmd，预检不影响 cmd 形状。
+    with patch("core.agent_runner.runner.subprocess.Popen", side_effect=fake_popen), \
+         patch.object(AgentRunner, "_dispatch_connectivity_preflight",
+                      create=True, new=lambda *a, **k: None):
         runner._run_agent(
             prompt="test",
             cwd=cwd,
