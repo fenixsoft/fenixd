@@ -1,5 +1,5 @@
 # 守护进程平台
-> 最后更新：2026-11-05 04:11 UTC+8
+> 最后更新：2026-11-05 20:50 UTC+8
 
 守护进程平台域：daemon 进程生命周期、单例与托管链（systemd unit 承载、on-failure 重启策略与 supervisor 退出码协议）、启动序列与排水语义、结构化日志单事件读写治理、宿主环境已知脆弱面登记。
 
@@ -14,9 +14,9 @@
 | [daemon-error-escalation](daemon-error-escalation.md) | daemon 错误升级上报（指纹归一化保守集+SPEC 名剥离） | 2026-10-31 16:23 |
 | [crossday-recurrence-detection](crossday-recurrence-detection.md) | daemon 错误跨日同刻复发检测（只读聚合观测） | 2026-10-11 02:02 |
 | [graceful-restart-drain](graceful-restart-drain.md) | 优雅重启排水窗口（重启前置双条件停驻判据、冻结不加速重启） | 2026-11-04 16:30 |
-| [systemd-hosting](systemd-hosting.md) | systemd 承载的托管链（unit 形态与幂等安装、Restart=on-failure 与 supervisor 退出码协议、EnvironmentFile 环境承载与 denylist、stop 双轨、dashboard unit 接管豁免、restart-dashboard 迁移、一次性搬迁编排） | 2026-11-05 04:11 |
+| [systemd-hosting](systemd-hosting.md) | systemd 承载的托管链（unit 形态与幂等安装、Restart=on-failure 与 supervisor 退出码协议、EnvironmentFile 环境承载与 denylist、stop 双轨、dashboard unit 接管豁免、restart-dashboard 迁移、一次性搬迁编排） | 2026-11-05 20:50 |
 | [supervisor-hosting](supervisor-hosting.md) | supervisor 托管链（托管态判定与 systemctl 双轨启停语义、信号消费校验、整链人工重建、supervisor_fused 解熔断 compileall 核验） | 2026-11-05 04:11 |
-| [host-env-hazards](host-env-hazards.md) | 宿主环境已知脆弱面（网关 DNS 失效 drop-in 绕过待 revert、dns_probe_failed 归因判读） | 2026-11-05 04:11 |
+| [host-env-hazards](host-env-hazards.md) | 宿主环境已知脆弱面（网关 DNS 失效 drop-in 绕过待 revert、dns_probe_failed 归因判读、spawn 层失败三查判读） | 2026-11-05 20:50 |
 | [state-watch-event-bus](state-watch-event-bus.md) | STATE.md 变更监视与事件派发总线 | 2026-09-27 17:23 |
 | [structured-log-rotation](structured-log-rotation.md) | JSON 结构化日志与跨进程安全轮转 | 2026-09-27 17:23 |
 | [framework-install](framework-install.md) | 框架安装（依赖检查与软链装配） | 2026-09-27 17:23 |

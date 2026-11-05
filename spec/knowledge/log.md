@@ -88,3 +88,5 @@
 ## [2026-11-05 18:51 UTC+8] distill | redesign-dashboard-v2-ui（第 1 轮，自动提交落库，折叠入库 3 条）
 ## [2026-11-05 20:45 UTC+8] fold | settings-help-document-scroll-unify.md 折叠入库
 ## [2026-11-05 20:50 UTC+8] fold | settings-menu-renamed-config-1105.md 折叠入库
+## [2026-11-05 20:50 UTC+8] fold | systemd-hosted-daemon-path-missing-local-bin.md 折叠入库
+## [2026-11-05 20:58 UTC+8] fold | systemd-hosted-daemon-path-missing-local-bin.md 折叠入库

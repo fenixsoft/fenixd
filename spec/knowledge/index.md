@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-05 20:45 UTC+8
+> 最后更新：2026-11-05 20:50 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -20,11 +20,11 @@
 | [code-review-lane](domains/code-review-lane/_domain.md) | 周期性代码审查车道：注册/调度（夜间静默窗跨窗顺延）、scope 两档、分片直写落盘、进度聚合与停滞看门狗。审查发现台账与质量分面（快照核销/三态分派）、发现转修复 SPEC 生成、全仓审查并发约束与限流终局续跑。实现期收尾 ocr 审查（异步车道 + join 门）及其配置调优。 | 19 | 2026-11-04 16:55 |
 | [code-fix-lane](domains/code-fix-lane/_domain.md) | 缺陷修复车道：两路激活与批循环编排、批内并行处置（orchestrator 派子代理、单写者落盘、三级兜底）、批收尾回归门与失败明细映射。回归异常熔断与零失败面收口、修复批自愈重试预算分档、合回冲突定向救回、夜间静默窗投递守卫、审查发现分级修复节奏与轻微缺陷快车道。 | 27 | 2026-11-04 17:07 |
 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。 | 17 | 2026-11-04 17:07 |
-| [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理。run jsonl 以 claude stream-json 形状为唯一 canon；dashboard 自由会话与 CLAUDE_PID watchdog 为显式豁免面。 | 6 | 2026-11-03 10:59 |
+| [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理。run jsonl 以 claude stream-json 形状为唯一 canon；dashboard 自由会话与 CLAUDE_PID watchdog 为显式豁免面。 | 6 | 2026-11-05 20:50 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测、CLI 重试退避与环境阻塞止损。 | 30 | 2026-11-04 16:30 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 14 | 2026-11-04 09:33 |
 | [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径。实现分支合回主树与推送的全生命周期纪律；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 30 | 2026-11-04 17:07 |
-| [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-05 04:11 |
+| [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-05 20:50 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」。 | 44 | 2026-11-05 20:45 |
@@ -91,4 +91,9 @@ padding-block-end 归零规则、v3-settings-page 与 help-center 布局句随�
 settings-menu-renamed-config-1105 已折叠入库（2026-11-05 20:45，spread 至
 dashboard-frontend 一域一页：v3-settings-page 新增全表面命名规则——统一「配置」
 避让 dsh 官方「设置」、四处标签同步面、路由/深链/条目 id 不改名、
-docs/help 措辞残余登记）。
+docs/help 措辞残余登记）；systemd-hosted-daemon-path-missing-local-bin 已折叠入库
+（2026-11-05 20:50，spread 至 daemon-runtime / harness-integration 两域三页：
+systemd-hosting 环境承载规则改写——env 文件必须真实落盘与最小集
+PATH/HOME/USER/LOGNAME/IS_SANDBOX=1、denylist 语义边界（IS_SANDBOX 属捕获侧
+误伤面）、host-env-hazards 新增 spawn 层失败三查判读、agent-harness-adapter
+新增 claude spawn env 恒注入 IS_SANDBOX=1 兜底规则）。
