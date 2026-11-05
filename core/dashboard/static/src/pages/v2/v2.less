@@ -1,0 +1,151 @@
+// v2 商业化界面域页级样式（redesign-dashboard-v2-ui）。
+//
+// 作用域钉死 .v2-page 根类——v2 域外零生效（例外域约束：v2 域外禁用 v2 主题）。
+// 色值系 theme.tsx 单源的样式镜像（CSS 无法 import TS 常量），改动须两处同改；
+// antd v6 cssinjs 运行时注入顺序在静态样式表之后，同特异性会被覆盖——表格钉死
+// 规则沿用定稿原型的 !important 形态（原型 round3/round5 实证）。
+
+.v2-page {
+  min-height: 100%;
+  background: #f8fafc; /* = theme.tsx V2_BG */
+  color: #1e293b; /* = theme.tsx V2_TEXT */
+}
+
+.v2-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 40px;
+}
+
+/* Bento 白磁贴（圆角 16 + 细边框 + 软阴影） */
+.v2-bento {
+  background: #ffffff;
+  border: 1px solid #eef2f7; /* = V2_TILE_BORDER */
+  border-radius: 16px; /* = V2_TILE_RADIUS */
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03); /* = V2_TILE_SHADOW */
+}
+
+/* 数字等宽排版（宪法字号与数字排版条款） */
+.v2-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.v2-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+/* ── Bento 表格：透明表头 / fixed 布局防撑坏 / 首列 14px 缩进 ── */
+
+.v2-bento-table .ant-table {
+  background: transparent;
+}
+
+.v2-bento-table .ant-table-thead > tr > th {
+  background: transparent !important;
+  border-bottom: 1px solid #eef2f7 !important;
+}
+
+.v2-bento-table .ant-table-tbody > tr > td {
+  border-bottom: 1px solid #f1f5f9 !important;
+}
+
+/* fixed 布局恢复列宽单源：长注释 / 长告警明细 MUST NOT 把表格撑破容器
+   （spec「表格布局防撑坏」Scenario；原型 round5 实证 antd v6 scroll.x 不再
+   强制 fixed） */
+.v2-bento-table .ant-table table {
+  table-layout: fixed !important;
+}
+
+.v2-bento-table .ant-table-thead > tr > th:first-child {
+  padding-left: 14px !important;
+}
+
+/* :not() 排除 measure 行（原型 round4：!important 曾误命中泄漏 14px） */
+.v2-bento-table .ant-table-tbody > tr:not(.ant-table-measure-row) > td:first-child {
+  padding-left: 14px !important;
+}
+
+/* ── 配置页左列菜单（settings 原型 .menu-item） ── */
+
+.v2-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #475569; /* = V2_TEXT_SECONDARY */
+  cursor: pointer;
+}
+
+.v2-menu-item.on {
+  background: #eff6ff; /* = V2_BLUE_SOFT */
+  color: #2563eb; /* = V2_RAMP_IMPLEMENTING */
+  font-weight: 600;
+}
+
+/* ── 帮助页目录与正文（help 原型） ── */
+
+.v2-toc-item {
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.v2-toc-item.on {
+  background: #eff6ff;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.v2-toc-group {
+  font-size: 11px;
+  letter-spacing: 1.2px;
+  color: #94a3b8; /* = V2_TEXT_QUATERNARY */
+  font-weight: 600;
+  padding: 14px 14px 6px;
+}
+
+.v2-doc :where(h2) {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 26px 0 10px;
+}
+
+.v2-doc :where(p) {
+  font-size: 13.5px;
+  line-height: 23px;
+  color: #334155;
+  margin: 0 0 10px;
+}
+
+.v2-doc :where(li) {
+  font-size: 13.5px;
+  line-height: 23px;
+  color: #334155;
+}
+
+/* ── SPEC 详情任务清单勾选块（spec-detail 原型 .task-check） ── */
+
+.v2-task-check {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #2563eb; /* = V2_RAMP_IMPLEMENTING */
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
