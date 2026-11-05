@@ -24,13 +24,15 @@ import { V2_HAIRLINE, V2_TEXT_QUATERNARY, V2_TEXT_TERTIARY } from './theme';
 
 const HEARTBEAT_MS = 30000;
 
-/** 头部统计条（真实口径四项：待处理告警 / 在飞链 / 升级中 / 签名配额耗尽）。 */
+/** 头部统计条（真实口径四项：待处理告警 / 在飞链 / 升级中 / 签名配额耗尽）。
+ *  链摘要取 summary ?? total（跨项目聚合分支无 summary 键、总额在 total）。 */
 function StatRow({ alerts, chain }: { alerts: AlertsData | null; chain: ChainOverviewData | null }) {
+  const sum = chain?.summary ?? chain?.total;
   const stats: Array<[string, number | null]> = [
     ['待处理告警', alerts ? (alerts.total_unhandled ?? alerts.alerts?.length ?? 0) : null],
-    ['在飞链', chain ? chain.summary.in_flight : null],
-    ['升级中', chain ? chain.summary.escalations : null],
-    ['配额耗尽', chain ? chain.summary.quota_exhausted : null],
+    ['在飞链', sum?.in_flight ?? null],
+    ['升级中', sum?.escalations ?? null],
+    ['配额耗尽', sum?.quota_exhausted ?? null],
   ];
   return (
     <div style={{ display: 'flex', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
