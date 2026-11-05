@@ -93,6 +93,16 @@ html[data-embed-mode] #root .ant-layout-content:has(.overview-page) {
   padding-top: 0;
 }
 
+// dsh embed 档标题带→内容区呼吸空隙（2026-11-05 用户指令）：embed 概览页内容
+// 紧贴标题带底缘（上方豁免归零后的形态），对齐 standalone「顶栏与首卡 16px」
+// 观感垫 24px。落点在 sticky 标题带下游的 PageContainer 本体（两者同为
+// .overview-page 直接子节点）——上游顶垫会变成行壳位起滚位移（上方豁免注释），
+// 下游垫只把内容推离带底缘，滚动时间隙随内容滑入标题带下方，sticky 锚点不受
+// 影响。页级作用域随 .overview-page 标记类，定高页（指挥中心/项目详情）不波及。
+html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
+  padding-top: 24px;
+}
+
 // SPEC 列表：展开图标列收窄（默认 padding 16px 两侧共 32px，挤占百分比列宽）
 #root .ant-table-cell.ant-table-row-expand-icon-cell {
   padding-inline: 6px;
