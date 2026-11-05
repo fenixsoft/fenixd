@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-04 20:48 UTC+8
+> 最后更新：2026-11-05 18:14 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -48,3 +48,4 @@
 | [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、零值尾部 spread 传导、去边框页级作用域豁免、rebuild 后 reload 验证纪律） | 2026-11-04 17:07 |
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
 | [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、顶栏/内容区首行双壳位自动分流、PageContainer 页头与面包屑退役、过滤项统一右上落位、定高偏移 embed 双档回校、脱壳大屏与占位页豁免） | 2026-11-04 20:48 |
+| [dsh-bridge-projects-section](dsh-bridge-projects-section.md) | dsh 面板桥「项目」菜单行折叠开关（点击=分区展开/折叠非主面板切换、右缘状态箭头、整行拦截层机制约束、键盘路径保留主面板注册） | 2026-11-05 18:14 |
