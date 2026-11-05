@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Key } from 'react';
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -317,6 +318,14 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   const [severityFilter, setSeverityFilter] = useState<string | undefined>();
   const [statusFilter, setStatusFilter] = useState<string | undefined>('open');
   const [progress, setProgress] = useState<CodeReviewProgress | null>(null);
+  // 审查进度读取失败的可见错误态（code-review item c936bdeb1a76，对齐
+  // ArchitectureTab 55aea63bbe02 / RegressionTab e419d82ceb2b 的轮询失败止损
+  // 口径）：止损只停定时器的话，progress 停在最后一次成功快照，running 态会
+  // 一直渲染「审查进行中」且进度不再推进，toast 消失后无任何错误展示与恢复
+  // 入口。这里把失败暴露为常驻错误条 + 重试读取按钮；仅记录「进度读取失败」，
+  // 不改写 progress，与 run 真实失败语义不混淆。下一次成功读取（含既有 30s
+  // 心跳的自愈读取）或切换项目即清除。
+  const [progressReadError, setProgressReadError] = useState<string | null>(null);
   // 条目表格 server-side 分页态（2026-09-24）：页码/过滤后总数；fixRunning
   // 来自 CodeFixProgressCard 的运行态上抛，供「自动修复」按钮门控。
   // total 为 undefined（后端未升级，返回无 total 的旧契约）时传给 antd 回退
@@ -484,6 +493,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       const p = await getCodeReviewProgress(project);
       if (seq !== progressSeqRef.current) return; // 过期响应丢弃（陈旧覆盖/旧轮询重建防护）
       setProgress(p);
+      setProgressReadError(null);
       if (p.running) {
         // 运行中：轮询进度（2s），结束兜底刷新表格
         if (pollTimerRef.current !== null) return;
@@ -492,15 +502,18 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           // 跳过本轮 tick，避免后端挂起时在飞请求随 2s interval 堆积
           if (progressInFlightCountRef.current > 0) return;
           progressInFlightCountRef.current += 1;
+          // 过期守卫（code-review item bcdc14169759）：cleanup（卸载/切项目/
+          // 切页签）自增 progressSeqRef 并清 interval，但已发出的在飞轮询响应
+          // 仍会晚到——每轮请求前快照序号、响应到达后复核，过期即丢弃，防旧
+          // 项目进度覆盖新项目，也防旧 tick 的 !running 分支误清新项目的轮询。
+          // 快照声明在 try 之外（c936bdeb1a76）：失败响应晚到时 catch 同样复核
+          // 序号决定是否止损——try 块内声明的常量 catch 不可见。
+          const tickSeq = progressSeqRef.current;
           try {
-            // 过期守卫（code-review item bcdc14169759）：cleanup（卸载/切项目/
-            // 切页签）自增 progressSeqRef 并清 interval，但已发出的在飞轮询响应
-            // 仍会晚到——每轮请求前快照序号、响应到达后复核，过期即丢弃，防旧
-            // 项目进度覆盖新项目，也防旧 tick 的 !running 分支误清新项目的轮询。
-            const tickSeq = progressSeqRef.current;
             const p2 = await getCodeReviewProgress(project);
             if (tickSeq !== progressSeqRef.current) return; // 过期响应丢弃（含 cleanup 后晚到）
             setProgress(p2);
+            setProgressReadError(null);
             if (!p2.running) {
               if (pollTimerRef.current !== null) {
                 window.clearInterval(pollTimerRef.current);
@@ -511,8 +524,22 @@ export default function QualityTab({ project, active }: QualityTabProps) {
               // 后台兜底刷新，失败静默）
               void loadItemsRef.current({ background: true });
             }
-          } catch {
-            // 轮询失败继续（下轮重试）
+          } catch (e) {
+            // 过期 tick（cleanup 后晚到的失败响应）不止损不提示，与成功分支
+            // 同口径复核序号
+            if (tickSeq !== progressSeqRef.current) return;
+            // 轮询失败止损（对齐 ArchitectureTab 55aea63bbe02 / RegressionTab
+            // e419d82ceb2b）：持久后端错误时不再每 2s 重复打失败请求——停 2s
+            // 轮询；止损之外同步落地常驻错误条与手动重试入口（形制对齐
+            // ArchitectureTab readErrorBanner），后端恢复后既有 30s 心跳的成功
+            // 读取会自清错误条并重建轮询
+            if (pollTimerRef.current !== null) {
+              window.clearInterval(pollTimerRef.current);
+              pollTimerRef.current = null;
+            }
+            const errMsg = e instanceof Error ? e.message : String(e);
+            setProgressReadError(errMsg);
+            message.error(`加载失败: ${errMsg}`);
           } finally {
             progressInFlightCountRef.current -= 1;
           }
@@ -525,7 +552,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
       // 59ceed862544 起引用计数递减，先完成者不再提前放行并发中的另一请求）
       progressInFlightCountRef.current -= 1;
     }
-  }, [active, project]);
+  }, [active, project, message]);
 
   // project 变化清态（code-review item 1189a998e8c1）：组件随 Tabs 常驻挂载、
   // project 变化不卸载，loadItems 又仅首载置 loading（loadedOnceRef 已为 true），
@@ -546,6 +573,7 @@ export default function QualityTab({ project, active }: QualityTabProps) {
     setItems([]);
     setSelectedKeys([]);
     setProgress(null);
+    setProgressReadError(null); // 进度读取错误条不跨项目滞留（口径同 ArchitectureTab）
     setItemsPage(1);
     setItemsTotal(undefined);
     loadedOnceRef.current = false;
@@ -1347,6 +1375,26 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           已修复（合回核销） {resolvedSplit.fixed} · 快照关闭 {resolvedSplit.snapshot}
           （存量无 resolution 条目按「快照关闭」口径解读）
         </Typography.Text>
+      ) : null}
+
+      {/* 审查进度读取失败错误条（code-review item c936bdeb1a76）：轮询止损后
+          的常驻提示与手动重试入口——running 旧帧仍按「审查进行中」渲染但进度
+          已停更，提示条是 toast 之外唯一的失败痕迹与恢复指引。仅标注「进度读取
+          失败」，不改写 progress 语义（与 run 真实失败不混淆）；「重试读取」只
+          重新拉进度，不触发新的审查。形制对齐 ArchitectureTab readErrorBanner。 */}
+      {progressReadError ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="进度读取失败，已停止自动刷新"
+          description={`${progressReadError}（可点击「重试读取」，或切出本分面再切回触发重新读取）`}
+          action={
+            <Button size="small" onClick={() => void loadProgress()}>
+              重试读取
+            </Button>
+          }
+        />
       ) : null}
 
       {progress?.running ? (

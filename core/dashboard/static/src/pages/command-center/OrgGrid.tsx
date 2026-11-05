@@ -25,6 +25,7 @@
 // 14→24px、连线描边加深加粗（LINK_STROKE + 1.5）。
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Alert, Input, Popover } from 'antd';
 import {
   BulbOutlined,
@@ -295,6 +296,73 @@ function SpecPicker({
   );
 }
 
+/** 车道卡可点行（code-review 776263a67375：spec 视图轮次列表与实时模式在飞
+ * 归属列表两段近乎逐行重复的行渲染单源收编）：行结构/键盘可达/hover 高亮/
+ * 省略号样式集中此处，调用点只注入差异化字段。键盘可达对齐
+ * PipelineBoard.PipelineCard 既有模式——可点行补 role+tabIndex+Enter，禁点
+ * 行（onOpen 缺省，run_id 缺失兜底）不进 tab 序。hover 态收归行组件自身，
+ * LaneCard 不再维护平行 hover state。静态红线：无 animation/transition，
+ * hover 纯色切换。 */
+function LaneActionRow({
+  title,
+  label,
+  trailing,
+  onOpen,
+}: {
+  title: string;
+  label: ReactNode;
+  /** 右侧附注节点（轮次列表的 started 时间；缺省=无附注） */
+  trailing?: ReactNode;
+  /** 打开运行记录；缺省=禁点行 */
+  onOpen?: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const clickable = !!onOpen;
+  return (
+    <div
+      title={title}
+      onClick={onOpen}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={
+        onOpen
+          ? (e) => {
+              if (e.key === 'Enter') onOpen();
+            }
+          : undefined
+      }
+      onMouseEnter={clickable ? () => setHovered(true) : undefined}
+      onMouseLeave={clickable ? () => setHovered(false) : undefined}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        minHeight: 19,
+        padding: '1px 5px',
+        borderRadius: 4,
+        cursor: clickable ? 'pointer' : 'default',
+        background: clickable && hovered ? GREEN_DIM_BG_HOVER : 'transparent',
+      }}
+    >
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          color: ACCENT,
+          fontFamily: FONT_MONO,
+          fontSize: 12.5,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {label}
+      </span>
+      {trailing}
+    </div>
+  );
+}
+
 /** 车道卡（2026-10-28 重设计五段结构，定稿原型
  * .history/agent-card-prototype.html）：2026-10-29 整卡钻取取消，点击目标
  * 收敛到活动行 spec 条目（onOpenRun 开运行记录弹窗）。三格指标标签随时间
@@ -320,8 +388,6 @@ function LaneCard({
   specRounds: SpecRound[] | null;
 }) {
   const L = windowLabels(win);
-  const [hoverRun, setHoverRun] = useState<string | null>(null);
-  const [hoverRound, setHoverRound] = useState<string | null>(null);
   const badge = laneBadge(card.status);
   const activity = activityLineState(card);
   const working = card.status === 'working';
@@ -431,64 +497,28 @@ function LaneCard({
           >
             {specRounds.map((r) => {
               // run_id 空 = 旧后端形态防御（保留行但禁点，零伪造红线）
-              const clickable = !!r.run_id;
               const key = `${r.seq}-${r.run_id || 'na'}`;
-              const openRun = clickable
-                ? () =>
-                    onOpenRun({
-                      project: specSel.project,
-                      spec: specSel.spec,
-                      run_id: r.run_id,
-                    })
-                : undefined;
               return (
-                <div
+                <LaneActionRow
                   key={key}
                   title={`${r.seq} 轮 · ${fmtShortTs(r.started_ts)}`}
-                  onClick={openRun}
-                  // 键盘可达（对齐 PipelineBoard.PipelineCard 既有模式）：
-                  // 可点行补 role+tabIndex+Enter；禁点行不进 tab 序
-                  role={clickable ? 'button' : undefined}
-                  tabIndex={clickable ? 0 : undefined}
-                  onKeyDown={
-                    openRun
-                      ? (e) => {
-                          if (e.key === 'Enter') openRun();
-                        }
+                  label={specRoundLabel(specSel.spec, r.seq)}
+                  trailing={
+                    <span style={{ fontSize: 11, color: TEXT_SUB, flexShrink: 0 }}>
+                      {fmtShortTs(r.started_ts)}
+                    </span>
+                  }
+                  onOpen={
+                    r.run_id
+                      ? () =>
+                          onOpenRun({
+                            project: specSel.project,
+                            spec: specSel.spec,
+                            run_id: r.run_id,
+                          })
                       : undefined
                   }
-                  onMouseEnter={clickable ? () => setHoverRound(key) : undefined}
-                  onMouseLeave={clickable ? () => setHoverRound(null) : undefined}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    minHeight: 19,
-                    padding: '1px 5px',
-                    borderRadius: 4,
-                    cursor: clickable ? 'pointer' : 'default',
-                    background:
-                      clickable && hoverRound === key ? GREEN_DIM_BG_HOVER : 'transparent',
-                  }}
-                >
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      color: ACCENT,
-                      fontFamily: FONT_MONO,
-                      fontSize: 12.5,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {specRoundLabel(specSel.spec, r.seq)}
-                  </span>
-                  <span style={{ fontSize: 11, color: TEXT_SUB, flexShrink: 0 }}>
-                    {fmtShortTs(r.started_ts)}
-                  </span>
-                </div>
+                />
               );
             })}
           </div>
@@ -553,56 +583,15 @@ function LaneCard({
             overflowY: 'auto',
           }}
         >
-          {activity.items.map((it) => {
-            const key = `${it.project}/${it.spec}`;
-            // run_id 空 = 旧后端兜底形态（仅显名字，开不了运行记录）
-            const clickable = !!it.run_id;
-            const openRun = clickable ? () => onOpenRun(it) : undefined;
-            return (
-              <div
-                key={key}
-                title={`${it.project}/${it.spec}`}
-                onClick={openRun}
-                // 键盘可达（对齐 PipelineBoard.PipelineCard 既有模式）：
-                // 可点行补 role+tabIndex+Enter；禁点行不进 tab 序
-                role={clickable ? 'button' : undefined}
-                tabIndex={clickable ? 0 : undefined}
-                onKeyDown={
-                  openRun
-                    ? (e) => {
-                        if (e.key === 'Enter') openRun();
-                      }
-                    : undefined
-                }
-                onMouseEnter={clickable ? () => setHoverRun(key) : undefined}
-                onMouseLeave={clickable ? () => setHoverRun(null) : undefined}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  minHeight: 19,
-                  padding: '1px 5px',
-                  borderRadius: 4,
-                  cursor: clickable ? 'pointer' : 'default',
-                  background: clickable && hoverRun === key ? GREEN_DIM_BG_HOVER : 'transparent',
-                }}
-              >
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: ACCENT,
-                    fontFamily: FONT_MONO,
-                    fontSize: 12.5,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {it.spec}
-                </span>
-              </div>
-            );
-          })}
+          {activity.items.map((it) => (
+            <LaneActionRow
+              key={`${it.project}/${it.spec}`}
+              title={`${it.project}/${it.spec}`}
+              label={it.spec}
+              // run_id 空 = 旧后端兜底形态（仅显名字，开不了运行记录）
+              onOpen={it.run_id ? () => onOpenRun(it) : undefined}
+            />
+          ))}
         </div>
       )}
       {/* 三格指标：null→「—」（红线），0 保留；idle 卡降调；窗口口径标签 */}
@@ -955,7 +944,10 @@ export default function OrgGrid({
             style={{
               position: 'relative',
               display: 'grid',
-              gridTemplateColumns: `repeat(${data.zones.length}, minmax(${LANE_CARD_MIN_WIDTH}px, 1fr))`,
+              // repeat() 计数须为正整数：花名册空响应兜底 1 列，防 repeat(0,…
+              // ) 非法 CSS 使整条 grid-template-columns 声明失效（code-review
+              // bc5583bbf2c3；零分区时无子项渲染，轨数不影响空数据呈现）
+              gridTemplateColumns: `repeat(${Math.max(1, data.zones.length)}, minmax(${LANE_CARD_MIN_WIDTH}px, 1fr))`,
               gap: 14,
               padding: '0 32px',
               boxSizing: 'border-box',

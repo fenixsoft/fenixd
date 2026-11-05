@@ -616,7 +616,9 @@ def _adopt_leftover_daemon() -> bool:
     单例锁秒退、被误计启动失败连计假熔断，且主循环随即以新 pid 覆写
     daemon_runtime.json、旧 D 状态 pid 线索丢失。超限仍存活按「兜底收尸超限」
     同款处置：返回 False 放弃拉起，调用方退出看护（daemon_runtime.json 保持
-    指向旧 pid 供人工处置）。
+    指向旧 pid 供人工处置）。停机信号/stop 旗标在两段收编等待窗内置位时提前
+    返回 True（code-review fce505b98f54）：主循环收编后的旗标复查即刻走既有
+    停机出口，不会真拉起新 daemon。
     """
     try:
         data = json.loads(_daemon_runtime_file().read_text(encoding="utf-8"))
@@ -696,6 +698,14 @@ def _adopt_leftover_daemon() -> bool:
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
+        # 停机请求落在 SIGTERM 等待窗内（code-review fce505b98f54）：SIGTERM
+        # 已送达旧 daemon，不必等满 sigkill_wait（最长 drain+120s）才响应
+        # systemctl stop——提前放行返回 True，主循环收编后的既有
+        # STOP_FLAG/_shutdown_requested 复查即刻消费旗标走停机出口
+        # （exit_code=0），不会拉起新 daemon。
+        if _shutdown_requested or STOP_FLAG.exists():
+            log(f"shutdown requested while waiting out pid {pid} — stop adopt wait")
+            return True
     if term_denied:
         # 信号被拒无法升级 SIGKILL，保守窗口已耗尽 → 放行拉起
         log(f"pid {pid} unresponsive to denied signals — proceeding after {sigkill_wait}s")
@@ -764,6 +774,12 @@ def _adopt_leftover_daemon() -> bool:
             if _pid_reaped(pid):
                 return True
             time.sleep(0.5)
+            # 停机请求落在 SIGKILL 后复核窗内（code-review fce505b98f54）：
+            # SIGKILL 已送达，提前放行返回 True 走主循环既有停机出口，
+            # 不等满 300s 复核上限拖延 systemctl stop。
+            if _shutdown_requested or STOP_FLAG.exists():
+                log(f"shutdown requested while verifying pid {pid} — stop adopt wait")
+                return True
         log(
             f"daemon pid {pid} still alive {attempt * DAEMON_REAP_WAIT_SECONDS}s "
             f"after SIGKILL (adopt verify {attempt}/{DAEMON_REAP_WAIT_ATTEMPTS}, "
@@ -836,6 +852,9 @@ def _wait_daemon_exit(proc):
     DAEMON_REAP_WAIT_ATTEMPTS 轮：单轮超时记日志留痕后继续等；累计
     DAEMON_REAP_WAIT_ATTEMPTS × DAEMON_REAP_WAIT_SECONDS 仍收不到尸则返回
     None，由调用方放弃看护退出（不重走拉起，理由见常数处注释）。
+    停机信号/stop 旗标在窗内置位时同样提前返回 None（code-review
+    fce505b98f54）——终止序列（SIGTERM→SIGKILL）已送达，调用方须先复查
+    旗标：在场则走既有停机出口（exit_code=0），不按放弃看护处置。
     """
     for attempt in range(1, DAEMON_REAP_WAIT_ATTEMPTS + 1):
         try:
@@ -846,6 +865,12 @@ def _wait_daemon_exit(proc):
                 f"kill (reap wait {attempt}/{DAEMON_REAP_WAIT_ATTEMPTS}, "
                 "uninterruptible sleep?) — keep waiting"
             )
+            # 停机请求落在兜底收尸等待窗内（code-review fce505b98f54）：提前
+            # 返回 None，由调用方按旗标在场走既有停机出口（见 main 的
+            # rc is None 分支），不等满 300s 复核上限。
+            if _shutdown_requested or STOP_FLAG.exists():
+                log(f"shutdown requested while reaping pid {proc.pid} — stop reap wait")
+                return None
     return None
 
 
@@ -1075,6 +1100,13 @@ def main():
                 pass
 
         if rc is None:
+            # 停机请求落在兜底收尸等待窗内（code-review fce505b98f54，
+            # _wait_daemon_exit 提前返回）：终止序列已送达，按旗标在场走
+            # 既有停机出口（exit_code 保持 EXIT_CLEAN=0），不落入下方放弃
+            # 看护的 EXIT_GAVE_UP=75 语义（退出码协议：停机收尾退出 → 0）。
+            if _shutdown_requested or STOP_FLAG.exists():
+                log("shutdown requested during reap wait — supervisor exiting")
+                break
             # 兜底收尸超限（code-review 9266d3b0bff3）：不再无限阻塞（否则
             # stop/restart 请求无人消费、看门狗静默失效），也不重走拉起——
             # 旧 daemon 仍存活并持有 daemon 单例锁，新拉起必秒退、被误计启动
