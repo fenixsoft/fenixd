@@ -78,3 +78,4 @@
 ## [2026-11-05 04:11 UTC+8] fold | zn-inbox-entry-3.md 折叠失败滞留：折叠成功判据不满足：条目未移动到 done/（空跑或半完成 run）
 ## [2026-11-05 04:25 UTC+8] distill | add-systemd-hosting（第 1 轮，自动提交落库）
 ## [2026-11-05 18:19 UTC+8] fold | bridge-projects-row-toggle-1105.md 折叠入库
+## [2026-11-05 18:27 UTC+8] fold | dashboard-ops-tabs-chain-merge.md 折叠入库
