@@ -333,6 +333,12 @@ def build_profile(project: Path) -> dict:
     if walk_truncated:
         warnings.append("源文件扫描达到类别上限，主题/样例收集已截断（侦察尽力而为）")
 
+    # low-confidence 告警在 profile 构造前并入（code-review item ba5e156c091e）：
+    # 构造后再 append 仅因字典持有同一 list 引用才进入输出，后置突变与构造点
+    # 分离，后续重构（移构造/拷贝列表）易静默丢失该告警。
+    if detected["confidence"] == "low":
+        warnings.append("检测到 react + antd 但未发现 react-dom，渲染入口需生成时确认")
+
     profile = {
         "schema": SCHEMA_VERSION,
         "profile": detected["profile"],
@@ -355,8 +361,6 @@ def build_profile(project: Path) -> dict:
         "degradation": None,
         "warnings": warnings,
     }
-    if detected["confidence"] == "low":
-        warnings.append("检测到 react + antd 但未发现 react-dom，渲染入口需生成时确认")
     return profile
 
 

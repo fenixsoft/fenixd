@@ -83,6 +83,9 @@ export function midTrunc(s: string, max = 28): string {
   if (s.length <= max) return s;
   const head = Math.ceil((max - 1) / 2);
   const tail = Math.floor((max - 1) / 2);
+  // max<=2 时 tail 为 0，s.slice(-0) 等价 slice(0) 返回整串，输出比原文更长
+  // （code-review item bcdc740e35a3）：小 max 退化为纯头部截断，输出不超长。
+  if (tail < 1) return max >= 2 ? `${s.slice(0, 1)}…` : '…';
   return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
 

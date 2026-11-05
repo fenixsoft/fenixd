@@ -838,7 +838,7 @@ class RecoveryWatch:
         ，顺延推进量直接复用此值，使下一次复查恰好落在窗口边界。
         """
         try:
-            return max(
+            result = max(
                 0.0,
                 float(
                     self._pm._get_config(
@@ -847,7 +847,15 @@ class RecoveryWatch:
                 ),
             )
         except (TypeError, ValueError):
-            return float(DEFAULT_TRANSITION_BUFFER_SECONDS)
+            result = float(DEFAULT_TRANSITION_BUFFER_SECONDS)
+        # 非有限配置守卫（code-review item fecfcea57a1e，对齐 afaa44a20ba8
+        # 其余四个配置助手同款）：1e999 经 json 解析即为 inf 且合法进入配置
+        # 链路，inf 缓冲使 _transition_defer_due 的 succeed 判据恒真、顺延
+        # due 写成 Infinity 落盘（下轮被归 0 立即到期，形成顺延循环）。回落
+        # 权威缺省。
+        if not math.isfinite(result):
+            result = float(DEFAULT_TRANSITION_BUFFER_SECONDS)
+        return result
 
     def _transition_grace_minutes(self) -> float:
         """待合并豁免上限（分钟）：pm.recovery.transition_grace_minutes（缺省 5）。

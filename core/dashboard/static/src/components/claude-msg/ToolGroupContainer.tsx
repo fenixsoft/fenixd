@@ -16,6 +16,9 @@ const CLASS_ICONS: Record<ToolClass, string> = {
   edit: '✏️',
 };
 
+// 非编辑组收起态预览的消息条数上限
+const PREVIEW_COUNT = 2;
+
 interface ToolGroupContainerProps {
   group: ToolGroupItem;
   getMessageKey: (message: ChatMessage) => string;
@@ -45,13 +48,12 @@ export default function ToolGroupContainer({
       return extra > 0 ? `${text}, +${extra} 个文件` : text;
     }
     const visiblePreviews = group.messages
-      .slice(0, 2)
+      .slice(0, PREVIEW_COUNT)
       .map((m) => toolCardPreview(m))
       .filter(Boolean);
 
     // 「+N 条」按未展示的消息条数计，与预览是否为空的展示口径解耦
-    const extraCount =
-      group.messages.length - Math.min(group.messages.length, 2);
+    const extraCount = Math.max(0, group.messages.length - PREVIEW_COUNT);
     const previewText = visiblePreviews.join(', ');
 
     if (!previewText) {

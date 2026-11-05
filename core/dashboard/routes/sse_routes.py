@@ -57,10 +57,16 @@ class H9SseRoutesMixin:
         # 停滞客户端防占位：无超时则发送缓冲写满后 _sse_send 永久阻塞，
         # 占死连接槽位与处理线程；写超时经 socket.timeout（OSError 子类）
         # 由下方 except 捕获，finally unregister 释放槽位。
+        original_timeout = None
         try:
             # 注册已占槽位，故 settimeout 与写响应头各步须纳入 try/finally 覆盖：
             # 若留在 try 外，响应首字节刷出前客户端 RST 会让写失败穿出本方法、
             # finally 未建立，该槽位永久泄漏（仅进程重启可回收）。
+            # 先记录原值供 finally 恢复（code-review item fcdb05b11630）：
+            # settimeout 是 socket 级设置、同时覆盖读与写，若不恢复，30s 写
+            # 超时会残留成流终结后复用连接的读超时（与 base 层语义不一致，
+            # 与 base 层 _read_body_bytes_with_timeout 的记录/恢复惯例同款）。
+            original_timeout = self.connection.gettimeout()
             self.connection.settimeout(SSE_WRITE_TIMEOUT_SECONDS)
             # 直写响应与 _json/_error/_write_304 同一登记纪律（code-review
             # item 78ee3db75b4a）：先登记再写头，循环内若逃逸出非连接类异常
@@ -97,8 +103,9 @@ class H9SseRoutesMixin:
                     # BaseHTTPRequestHandler.send_header 置 close_connection=False
                     # （protocol_version="HTTP/1.1"，见 server.py），流终结后
                     # base 层 handle 循环会在同一连接继续读下一请求（EventSource
-                    # 重连可复用）；该连接仍挂 SSE_WRITE_TIMEOUT_SECONDS 读超时，
-                    # 空闲超时由 base 层读超时关闭。若改显式 close_connection=True，
+                    # 重连可复用）；finally 已把 socket 超时恢复为进入本方法前
+                    # 的原值，复用连接的读超时语义与普通 keep-alive 连接一致。
+                    # 若改显式 close_connection=True，
                     # 须先确认前端重连与既有测试对连接复用的依赖
                     # （code-review item 06b2943f7fd7）。
                     try:
@@ -126,6 +133,15 @@ class H9SseRoutesMixin:
         ):
             pass
         finally:
+            # 恢复进入本方法前的 socket 超时（code-review item fcdb05b11630）：
+            # SSE_WRITE_TIMEOUT_SECONDS 只应在流活跃期生效；不恢复会把 30s
+            # 残留成流终结后复用连接的读超时，使注释声称的「连接复用策略在
+            # base 层」名不副实。客户端已断开时 socket 可能已失效，settimeout
+            # 的 OSError 静默忽略（unregister 释放槽位仍须执行）。
+            try:
+                self.connection.settimeout(original_timeout)
+            except OSError:
+                pass
             self.server.sse_hub.unregister(conn)
 
     def _sse_client_gone(self) -> bool:

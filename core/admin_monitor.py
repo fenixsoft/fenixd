@@ -2723,11 +2723,19 @@ class AdminMonitor:
                 self._code_review_ratelimit_redispatches -= 1
                 if self._code_review_redispatch_timer is timer:
                     self._code_review_redispatch_timer = None
+                # item ca0f35756b3f：上方锁内已完成链登记（2706-2708），start 失败
+                # 时实际重派从未发生，链标记须与配额/句柄同口径回滚——否则本 run
+                # 再遭产物硬门拦截会被 _handle_code_review_empty_product 链命中
+                # 误判「重派仍零有效行」直接升级，烧掉配额已回滚本应保留的
+                # 唯一重派机会（登记延迟修复 91602e39d491 要防的假链命中）。
+                if run_id:
+                    self.__dict__.setdefault(
+                        "_code_review_redispatched_runs", set()).discard(run_id)
             timer.cancel()
             self.logger.error(
                 "admin_monitor",
                 f"code-review 429 重派排程失败: {e}（原 run {run_id}，"
-                f"已回滚重派配额与 Timer 句柄）",
+                f"已回滚重派配额、Timer 句柄与重派链登记）",
             )
 
     def _schedule_stall_redispatch(self, manifest, review_kind, window_start,
@@ -2832,11 +2840,17 @@ class AdminMonitor:
                 self._code_review_stall_redispatches -= 1
                 if self._code_review_redispatch_timer is timer:
                     self._code_review_redispatch_timer = None
+                # item ca0f35756b3f：同 429 登记处——锁内链登记（2817-2819）后
+                # start 失败，实际重派从未发生，链标记与配额/句柄同口径回滚，
+                # 防假链命中烧掉唯一重派机会（item 91602e39d491 同源防线）。
+                if run_id:
+                    self.__dict__.setdefault(
+                        "_code_review_redispatched_runs", set()).discard(run_id)
             timer.cancel()
             self.logger.error(
                 "admin_monitor",
                 f"code-review stall 重派排程失败: {e}（原 run {run_id}，"
-                f"已回滚重派配额与 Timer 句柄）",
+                f"已回滚重派配额、Timer 句柄与重派链登记）",
             )
 
     def _consume_ratelimit_redispatch(self, manifest, review_kind, window_start,

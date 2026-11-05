@@ -2184,12 +2184,28 @@ class PMEngine:
                             f"and verifier enqueue",
                         )
                         return
-                    self.state_machine.update_spec(
-                        original,
-                        {
-                            "error": f"Re-verifying after fix: {spec_name}",
-                        },
-                    )
+                    # 写前冻结复查（code-review item 5ae791946f2c，对齐同文件
+                    # 逃生门 ac983fb2d386 / 收敛拦截 54d679a82fc7 先例）：
+                    # transition 成功到此写之间的残余窗口内并发冻结时，frozen
+                    # 条目的 update_spec 只剥 status 键，error 覆写照常生效
+                    # ——会把内嵌「原状态 X」的冻结 error 覆写为重验文案，
+                    # frozen_until 到期时 parse_orig_status 解析不到原状态将
+                    # 回退 ready。发现冻结即放弃本次 error 写（verifier 入队
+                    # 照常，冻结期间本就不派发，解冻后重验链条照常续推）。
+                    latest = self.state_machine.read_one(original) or {}
+                    if latest.get(FROZEN_FIELD):
+                        self.logger.info(
+                            "pm_engine",
+                            f"fix 重验写盘前冻结复查：'{original}' 已冻结"
+                            "——放弃 Re-verifying error 写",
+                        )
+                    else:
+                        self.state_machine.update_spec(
+                            original,
+                            {
+                                "error": f"Re-verifying after fix: {spec_name}",
+                            },
+                        )
                     # fast-track 父 SPEC 分流（code-review item 1d98994a6cdd，
                     # _on_spec_implemented 同款守卫）：fast-track 单 run 全包不设
                     # verifier 车道（fasttrack-orphan-planner-race）——queue.
@@ -3036,12 +3052,26 @@ class PMEngine:
             )
             chain = f"第 1 次降级: {first_reason}；第 2 次降级: {reason}"
             try:
-                sm.update_spec(spec_name, {
-                    "status": "blocked",
-                    "error": f"{error_msg}（{chain[:300]}）",
-                    LEGACY_DEGRADE_STREAK_FIELD: streak + 1,
-                    LEGACY_DEGRADE_LAST_REASON_FIELD: reason,
-                })
+                # 写前冻结复查（code-review item d6572f412579，对齐同文件
+                # 54d679a82fc7 写盘前冻结复查口径）：frozen 条目的 update_spec
+                # 只剥 status 键，error 与 streak 字段覆写照常生效——会把内嵌
+                # 「原状态 X」的冻结 error 覆写为熔断文案，frozen_until 到期时
+                # parse_orig_status 解析不到原状态将回退 ready，冻结现场丢失。
+                # 冻结在场即放弃 blocked 写（含 streak 记账，解冻后下一次降级
+                # 重新计满 2 次才熔断，语义不变），熔断与升级告警照常生效。
+                if (sm.read_one(spec_name) or {}).get(FROZEN_FIELD):
+                    self.logger.warning(
+                        "pm_engine",
+                        f"降级熔断写盘前冻结复查：'{spec_name}' 已冻结"
+                        "——放弃 blocked 写，熔断不派发与升级告警照常",
+                    )
+                else:
+                    sm.update_spec(spec_name, {
+                        "status": "blocked",
+                        "error": f"{error_msg}（{chain[:300]}）",
+                        LEGACY_DEGRADE_STREAK_FIELD: streak + 1,
+                        LEGACY_DEGRADE_LAST_REASON_FIELD: reason,
+                    })
             except Exception as e:
                 self.logger.warning(
                     "pm_engine",

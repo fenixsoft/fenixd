@@ -1141,10 +1141,16 @@ class AdminStore:
             changed = 0
             closed_at = _utcnow_iso()
             for rec in records:
+                # chain 脏形态防御（7f00ca0baf37）：非 dict 真值（人工修补/
+                # 外部误写）原取值抛 AttributeError，整批读-改-写原子回滚致
+                # 同签名全部在队上升件收口失败滞留；与 host_change_paths/
+                # choices 同款 isinstance 口径，脏形态按无链痕处理不匹配。
+                chain = rec.get("chain")
+                sig = str(chain.get("signature") or "") if isinstance(chain, dict) else ""
                 if (
                     rec.get("kind") == ESCALATION
                     and not rec.get("handled")
-                    and str((rec.get("chain") or {}).get("signature") or "") == signature
+                    and sig == signature
                 ):
                     rec["handled"] = True
                     rec["handled_by"] = AUTO_RESOLVE_BY

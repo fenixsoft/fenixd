@@ -256,7 +256,7 @@ class H3SpecRoutesMixin:
             self._error(409, result.get("error") or "SPEC 写入失败")
             return
         self._json(
-            {"ok": True, "project": project["name"], "spec": spec, "priority": result["priority"]}
+            {"ok": True, "project": project["name"], "spec": spec, "priority": result.get("priority")}
         )
 
 

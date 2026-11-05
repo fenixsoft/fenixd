@@ -39,6 +39,7 @@ export const Reasoning: React.FC<ReasoningProps> = ({
   const [duration, setDuration] = React.useState<number | undefined>(undefined);
   const startTimeRef = React.useRef<number | null>(null);
 
+  // [fenix-ignore:a00541a206e7] 迁移语义保留位，删除留待流式接入决策
   React.useEffect(() => {
     if (isStreaming) {
       hasEverStreamedRef.current = true;

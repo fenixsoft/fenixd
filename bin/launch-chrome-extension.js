@@ -389,7 +389,7 @@ async function launchChromeExtension(distPath, opts = {}) {
       // UI 交互测试
       // ======================================================================
 
-      return runUITests(browserContext, newtabPage, consoleErrors);
+      return runUITests(browserContext, newtabPage, consoleErrors, manifestOverridesNewtab(absoluteDist));
     };
 
     // 用剩余预算作总超时；超时后用已采集到的 networkLog 提前收卷
@@ -631,8 +631,29 @@ async function getExtensionId(distPath, context) {
 // UI 交互测试
 // ============================================================================
 
-async function runUITests(context, page, consoleErrors = []) {
+// manifest 是否声明接管 newtab（chrome_url_overrides.newtab）。不接管 newtab 的
+// 扩展形态（popup/选项页等）下 newtabPage 恒停留 about:blank 空页，依赖页面内容
+// 的 UI 判据在此形态不适用（code-review item 76c6793dbf48）
+function manifestOverridesNewtab(distPath) {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(distPath, 'manifest.json'), 'utf-8')
+    );
+    return Boolean(manifest.chrome_url_overrides?.newtab);
+  } catch {
+    return false;
+  }
+}
+
+async function runUITests(context, page, consoleErrors = [], overridesNewtab = false) {
   const results = [];
+
+  // about:blank 无内容形态统一降级（code-review item 76c6793dbf48）：扩展未声明
+  // 接管 newtab 且 newtabPage 仍停留 about:blank 时，页面无内容属形态预期而非加载
+  // 失败，测试 1/2/4 的 fail 分支统一落 warn 并标注形态局限（不进 hasUiTestFailures，
+  // 同测试 1 的「不作为失败依据」口径，否则单用例放宽被其余用例的 fail 抵消、
+  // success 判定依旧恒 false）；已声明接管但页面仍空白则不降级，真加载失败照常 fail。
+  const blankUnclaimed = !overridesNewtab && page.url() === 'about:blank';
 
   try {
     // 测试 1: 页面标题
@@ -641,7 +662,9 @@ async function runUITests(context, page, consoleErrors = []) {
     // 复用测试 2 的替代命中面：title 为空但页面已有实质内容（URL 非 about:blank
     // 或元素/shadow root/文本非零）时降级为 warn（不进 hasUiTestFailures/uiTestFailures，
     // 同口径见测试 3），detail 标注启发式局限；title 为空且 about:blank 无内容
-    // 仍 fail（真加载失败不放松）。
+    // 仍 fail（真加载失败不放松），但扩展未声明接管 newtab（popup/选项页形态，
+    // 见 blankUnclaimed）时统一降级 warn——该形态下 newtab 页无内容属预期，
+    // 不作为失败依据（code-review item 76c6793dbf48）。
     try {
       const title = await page.title();
       if (title) {
@@ -666,6 +689,12 @@ async function runUITests(context, page, consoleErrors = []) {
             test: '页面加载',
             status: 'warn',
             detail: `页面无标题，但页面已有实质内容（URL ${alt.isBlank ? '仍为 about:blank' : '非 about:blank'}、元素 ${alt.elementCount} 个、shadow root ${alt.shadowRoots} 个、文本 ${alt.textLen} 字符）；标题判据对不接管 newtab 的扩展形态（popup/选项页）不适用，不作为失败依据`,
+          });
+        } else if (blankUnclaimed) {
+          results.push({
+            test: '页面加载',
+            status: 'warn',
+            detail: '页面无标题且停留 about:blank 空页；扩展未声明接管 newtab（popup/选项页形态），newtab 页无内容属形态预期，不作为失败依据',
           });
         } else {
           results.push({
@@ -713,6 +742,12 @@ async function runUITests(context, page, consoleErrors = []) {
             status: 'pass',
             detail: `未命中 panel/widget 类名启发式，但页面已有实质内容（元素 ${alt.elementCount} 个、shadow root ${alt.shadowRoots} 个、文本 ${alt.textLen} 字符）`,
           });
+        } else if (blankUnclaimed) {
+          results.push({
+            test: '面板渲染',
+            status: 'warn',
+            detail: '未命中 panel/widget 类名启发式且页面无实质内容（about:blank 空页）；扩展未声明接管 newtab（popup/选项页形态），newtab 页本就无内容，不作为失败依据',
+          });
         } else {
           results.push({
             test: '面板渲染',
@@ -756,11 +791,27 @@ async function runUITests(context, page, consoleErrors = []) {
           return false;
         }
       });
-      results.push({
-        test: 'localStorage',
-        status: hasStorage ? 'pass' : 'fail',
-        detail: hasStorage ? 'localStorage 可用' : 'localStorage 不可用',
-      });
+      if (hasStorage) {
+        results.push({
+          test: 'localStorage',
+          status: 'pass',
+          detail: 'localStorage 可用',
+        });
+      } else if (blankUnclaimed) {
+        // about:blank 无有效 origin，localStorage 访问被浏览器拒绝（SecurityError 被
+        // evaluate 内部 catch 成 false）属形态预期，不作为失败依据（code-review item 76c6793dbf48）
+        results.push({
+          test: 'localStorage',
+          status: 'warn',
+          detail: 'localStorage 不可用（about:blank 无有效 origin）；扩展未声明接管 newtab（popup/选项页形态），该判据在此形态不适用，不作为失败依据',
+        });
+      } else {
+        results.push({
+          test: 'localStorage',
+          status: 'fail',
+          detail: 'localStorage 不可用',
+        });
+      }
     } catch (e) {
       results.push({ test: 'localStorage', status: 'error', detail: e.message });
     }

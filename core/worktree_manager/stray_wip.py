@@ -1649,7 +1649,7 @@ class MainTreeStrayWipSweeper:
         self._log(
             "info",
             f"{UNTRACKED_FIRST_SIGHT_SIGNAL_TYPE}: 目录型产物集合首现提示"
-            f"（{scale}）已发一次性 info 提示: {', '.join(files)}",
+            f"（{scale}）已发一次性 info 提示: {_evidence_file_manifest(files)}",
         )
         return True
 
@@ -2111,7 +2111,7 @@ class MainTreeStrayWipSweeper:
             f"{WHITELIST_UNTRACKED_SIGNAL_TYPE}: 白名单文件脱落"
             f"（{len(files)} 个放行-未跟踪路径，"
             f"first_seen={entry.get('first_seen_iso')}）已发一次性 major 告警"
-            f": {', '.join(files)}",
+            f": {_evidence_file_manifest(files)}",
         )
         return True
 
@@ -2170,7 +2170,7 @@ class MainTreeStrayWipSweeper:
             "info",
             f"{UNTRACKED_SIGNAL_TYPE}: 主树 untracked 散件超阈值滞留"
             f"（{len(files)} entry，first_seen={entry.get('first_seen_iso')}）"
-            f"已发一次性 info 告警: {', '.join(files)}",
+            f"已发一次性 info 告警: {_evidence_file_manifest(files)}",
         )
         return True
 
@@ -2252,7 +2252,7 @@ class MainTreeStrayWipSweeper:
             f"{UNTRACKED_ESCALATED_SIGNAL_TYPE}: 主树 untracked 散件滞留升级"
             f"（{len(files)} entry / {int(total_bytes)} 字节，"
             f"触发: {' + '.join(triggers)}）已发一次性 major 升级告警: "
-            f"{', '.join(files)}",
+            f"{_evidence_file_manifest(files)}",
         )
         return True
 
@@ -2436,6 +2436,6 @@ class MainTreeStrayWipSweeper:
             "warning",
             f"{SIGNAL_TYPE}: 主树散件 WIP 滞留宽限耗尽（{len(files)} 文件，"
             f"first_seen={entry.get('first_seen_iso')}）已发一次性 major 告警"
-            f": {', '.join(files)}",
+            f": {_evidence_file_manifest(files)}",
         )
         return True

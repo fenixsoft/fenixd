@@ -188,11 +188,20 @@ class H5SettingsRoutesMixin:
             return
         root = Path(project["path"]) if project else Path.cwd()
         try:
-            from core.config import ConfigLoader
+            if project is not None:
+                from core.config import ConfigLoader
 
-            config = ConfigLoader.get_arbiter_config(
-                ConfigLoader.resolve_config(root)
-            )
+                config = ConfigLoader.get_arbiter_config(
+                    ConfigLoader.resolve_config(root)
+                )
+            else:
+                # 用户级口径（code-review item ef19583cc9ba）：不以 Path.cwd() 为
+                # resolve_config 根——daemon 从非仓库目录启动时 cwd 下多半无项目
+                # 级配置，恰落在无关目录时又会并入他项目级 arbiter 段，回显随
+                # 启动目录漂移而非稳定用户级语义。对齐 _api_config_get 口径改走
+                # read_config(scope="user")：其回显已含经 get_arbiter_config 归一
+                # 的 arbiter 段（单源 ~/.fenix/config.yaml，scope_root 忽略）。
+                config = dashboard_data.read_config(None, scope="user").get("arbiter")
         except Exception as e:
             # 错误文案口径（code-review item 25436bdc6686）：异常原文含
             # 服务器绝对路径，logger 留痕、不随响应透出
@@ -787,10 +796,12 @@ class H5SettingsRoutesMixin:
         由用户自行 sudo 安装（不做提权）。成功返回最新版本串供 UI 立即刷新。
         """
         result = install_ocr()
-        if not result["ok"]:
+        # code-review item d721dbdfd6f3：回执键一律 .get 容错（对齐 _api_config_post
+        # 口径）——数据层契约演进缺键时 400 分支不退化为不透明 500。
+        if not result.get("ok"):
             # npm 原始报错（如 EACCES 权限不足）尾部并入错误文案透出，
             # 便于用户自行 sudo 安装；错误体仍是单行可读字符串。
-            msg = result["error"] or "安装失败"
+            msg = result.get("error") or "安装失败"
             tail = (result.get("output") or "").strip()
             if tail:
                 last_line = tail.splitlines()[-1].strip()
@@ -798,4 +809,4 @@ class H5SettingsRoutesMixin:
                     msg = f"{msg}：{last_line}"
             self._error(400, msg)
             return
-        self._json({"ok": True, "version": result["version"], "output": result["output"]})
+        self._json({"ok": True, "version": result.get("version"), "output": result.get("output") or ""})

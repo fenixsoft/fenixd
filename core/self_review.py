@@ -2049,7 +2049,7 @@ TODO_ENTRIES_NOT_COLLECTED = "（read_todo 关闭，未收集既有条目）"
 def render_todo_entries(entries: List[Dict[str, str]]) -> str:
     """把闭环判定条目渲染为 ID 标注清单（注入 self-review prompt 用）。"""
     if not entries:
-        return "（近3日窗口内无既有条目）"
+        return f"（近{CLEANUP_WINDOW_DAYS}日窗口内无既有条目）"
     lines: List[str] = []
     last_date: Optional[str] = None
     last_section: Optional[str] = None
@@ -2193,7 +2193,11 @@ class SelfReviewScheduler:
             self.project_root, window_start, pre_classified=classified_runs
         )
         if stats["total"] == 0:
-            return self._skip_review(today, todo_head_restore=sr.get("todo_head_restore", True))
+            return self._skip_review(
+                today,
+                todo_head_restore=sr.get("todo_head_restore", True),
+                anchor_at=window_end,
+            )
 
         daily_summary = self.collect_daily_summary(
             window_start, pre_classified=classified_runs, window_end=window_end
@@ -2276,9 +2280,19 @@ class SelfReviewScheduler:
 
         return ConfigLoader.get_self_review_config(self.config).get("todo_head_restore", True)
 
-    def _skip_review(self, today: str, todo_head_restore: Optional[bool] = None) -> dict:
+    def _skip_review(
+        self,
+        today: str,
+        todo_head_restore: Optional[bool] = None,
+        anchor_at: Optional[datetime] = None,
+    ) -> dict:
         """窗口零 SPEC 活动跳过：不发起 run（不唤醒 admin），仅在 todo.md
         记一句占位，照常提交 + 写状态文件（当日不再重试）。
+
+        anchor_at（code-review item fdd9e74d2a55）：透传 _save_state 的锚点
+        时刻；调度链传入口冻结的 window_end（与成功路径 af4335da489a 同口径），
+        占位写入与 _commit_todo 期间完成的 SPEC run 不被挤出下轮增量窗口；
+        None 时维持取状态落盘时刻的既有口径（直调兼容）。
 
         占位写为日期节下的裸 bullet（无小节）——_collect_recent_entries 只
         收小节下条目，故不进闭环判定清单、也不参与闭环移除，作为「当天执行
@@ -2312,7 +2326,12 @@ class SelfReviewScheduler:
 
         with_file_lock(todo, _do)
         self._commit_todo(today)
-        self._save_state(today)
+        # 锚点回写取调用侧冻结的 window_end 而非状态落盘时刻（code-review
+        # item fdd9e74d2a55）：占位写入与 _commit_todo（git add/commit/push，
+        # 分钟级超时上限）期间完成的 SPEC run 既不在本轮窗口、又晚于下轮
+        # 窗口起点，锚点取落盘时刻会将其永久排除；anchor_at=None（直调）
+        # 维持落盘时刻既有口径。
+        self._save_state(today, anchor_at=anchor_at)
         self.logger.info(
             "self_review", f"{today}: 自上次自省以来无 SPEC 活动（0 run），跳过自省（未唤醒 admin）"
         )
@@ -3248,9 +3267,10 @@ class SelfReviewScheduler:
         口径不变。
 
         anchor_at（code-review item af4335da489a）：advance_anchor=True 时
-        显式指定锚点时刻——成功路径传本次聚合冻结的 window_end，使相邻两轮
-        增量窗口无缝衔接（自省 run 执行期间落地的活动不被挤出下轮窗口）；
-        None 时维持取 _save_state 调用时刻的既有口径。
+        显式指定锚点时刻——成功与零活动跳过路径（item fdd9e74d2a55）传本次
+        聚合冻结的 window_end，使相邻两轮增量窗口无缝衔接（自省执行期间落地
+        的活动不被挤出下轮窗口）；None 时维持取 _save_state 调用时刻的既有
+        口径。
         """
         path = self._state_path()
         try:

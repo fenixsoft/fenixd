@@ -11,7 +11,7 @@
  * 页签失活即卸载，轮询随卸载自动停止。
  */
 import { Alert, Card, Col, Empty, Progress, Row, Spin, Table, Tag, Tooltip, Typography } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getChainOverview } from '@/services/dashboard';
 import type {
   ChainEscalationItem,
@@ -62,14 +62,23 @@ export default function ChainPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // fix 43351def1296: load 自增请求序号——project 变化时 useEffect 重建轮询，
+  // 旧项目的在飞请求可能晚于新项目响应落地，过期响应直接丢弃不落状态，
+  // 防旧项目链在办/配额/上升件覆盖当前筛选（activities 页 loadSeqRef 同款口径）
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async (name?: string) => {
+    const seq = ++loadSeqRef.current;
     try {
       const view = await getChainOverview(name);
+      if (seq !== loadSeqRef.current) return;
       setData(view);
       setError('');
     } catch (err) {
       // 观测面 fail-soft（command-center useScreen 同款口径）：刷新失败保留
       // 上一帧数据仅置 error，由页首内联 Alert 透出，不静默吞掉
+      // 过期请求的失败同样不落状态，防旧项目错误横幅盖掉新项目数据
+      if (seq !== loadSeqRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
@@ -87,14 +96,15 @@ export default function ChainPanel({
 
   // null 指标占位口径（command-center shared.ts fmtMetric 同款）：数据未到
   // （data=null，首载未到或请求失败）统计格显「—」——0 与「口径不可得」
-  // 语义不同，MUST NOT 显示 0
+  // 语义不同，MUST NOT 显示 0；total/summary 字段级缺失（服务端代差）同显「—」
+  // fix 3151a7bf4b1f: 字段级缺失兜底链收敛为统一「—」占位，不再漏渲染空 span
   const stats = useMemo(
     () => [
-      { title: '链在办', value: data ? (total ? total.in_flight : summary?.in_flight ?? 0) : '—' },
-      { title: '人工队列', value: data ? (total ? total.queue : summary?.queue ?? 0) : '—' },
-      { title: '签名水位', value: data ? (total ? total.signatures : summary?.signatures ?? 0) : '—' },
-      { title: '配额耗尽', value: data ? (total ? total.quota_exhausted : summary?.quota_exhausted ?? 0) : '—' },
-      { title: '上升件', value: data ? (total ? total.escalations : summary?.escalations ?? 0) : '—' },
+      { title: '链在办', value: data ? (total?.in_flight ?? summary?.in_flight ?? '—') : '—' },
+      { title: '人工队列', value: data ? (total?.queue ?? summary?.queue ?? '—') : '—' },
+      { title: '签名水位', value: data ? (total?.signatures ?? summary?.signatures ?? '—') : '—' },
+      { title: '配额耗尽', value: data ? (total?.quota_exhausted ?? summary?.quota_exhausted ?? '—') : '—' },
+      { title: '上升件', value: data ? (total?.escalations ?? summary?.escalations ?? '—') : '—' },
     ],
     [data, summary, total],
   );
