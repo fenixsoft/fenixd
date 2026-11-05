@@ -37,7 +37,7 @@
 - [x] 2.3 新建 `src/pages/v2/specDetail.tsx` 实现 `/v2/projects/:name/:spec`（prototype/spec-detail.html）：标题带（模式/状态徽标+状态转移下拉）+ 项目信息 8 项 + 任务清单（大百分比+勾选任务）+ 五页签（时间轴含 run 元数据/场景结果/Bug/截图/Hook）；缺口字段显示「—」不伪装 0
 - [x] 2.4 新建 `src/pages/v2/settings.tsx` 实现 `/v2/settings`（prototype/settings.html）：左侧菜单 + 作用域切换 + LLM Provider 表格面板与开关行；消费既有配置端点
 - [x] 2.5 新建 `src/pages/v2/help.tsx` 实现 `/v2/help`（prototype/help.html）：分组目录 sticky + Markdown 正文双栏（复用 markdown-shared 渲染链）
-- [ ] 2.6 新建 `src/pages/v2/ops.tsx` 实现 `/v2/activities`（prototype/ops.html）：头部统计条 + 三页签（人工告警含裁决选择题/处置链观测/自愈记录）；消费 /api/alerts 等既有端点
+- [x] 2.6 新建 `src/pages/v2/ops.tsx` 实现 `/v2/activities`（prototype/ops.html）：头部统计条 + 三页签（人工告警含裁决选择题/处置链观测/自愈记录）；消费 /api/alerts 等既有端点
 
 ## 3. DESIGN.md 修正案
 
