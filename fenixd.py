@@ -2348,10 +2348,17 @@ class FenixDaemon:
 
         空闲确认达成却 touch .fenix/restart_request 失败（OSError）= 自动收敛
         通道已断，原先仅 logger.error、无人知悉。本方法补一条 escalation：
-        signal_type 仍取 stale_code（与健康路径 info 留痕同信号族，共用 60 分钟
-        去重窗口——写失败与留痕互斥成条，不刷屏），severity=warning 且不调用
-        mark_handled——须留在人工待处理视图（参照 _alert_dangling_timeout 的
-        写入模式；mark_handled 仅锚定 ESCALATION 的闭环锚点语义不受影响）。
+        signal_type 仍取 stale_code（与健康路径 info 留痕同信号族），severity=
+        warning 且不调用 mark_handled——须留在人工待处理视图（参照
+        _alert_dangling_timeout 的写入模式；mark_handled 仅锚定 ESCALATION
+        的闭环锚点语义不受影响）。
+        去重只比对同 severity 记录（latest_signal severity 过滤，code-review
+        0f93a03ce73c）：同一陈旧周期内假→真边沿先写入的 info 级留痕与空闲
+        确认达闸时的写失败升级同窗共存（边沿留痕先于空闲确认数分钟以上，
+        「写失败与留痕互斥成条」前提不成立），共用全量窗口会把升级误吞为
+        日志、人工无从知悉自动收敛通道已断；按 severity 过滤后 info 留痕
+        不再遮蔽本升级，同窗重复写失败仍由本升级自身的 warning 记录去重，
+        不刷屏。
         悬空超限路径的写失败亦经由本方法升级（item 4e24a542b9c2）：此前该路径
         仅 logger.error、并无升级出口（旧措辞「本就有独立升级告警」与代码不符
         ——_alert_dangling_timeout 仅在写成功后调用）；悬空侧另有本周期首次
@@ -2362,14 +2369,14 @@ class FenixDaemon:
             admin_store = getattr(self, "admin_store", None)
             if admin_store is not None:
                 recent = admin_store.latest_signal(
-                    None, "stale_code", STALE_ALERT_DEDUP_MINUTES
+                    None, "stale_code", STALE_ALERT_DEDUP_MINUTES, severity="warning"
                 )
                 if recent is not None:
                     self.logger.info(
                         "fenixd",
                         f"stale_code 写失败升级窗口去重命中："
-                        f"{STALE_ALERT_DEDUP_MINUTES} 分钟内已有同信号记录"
-                        f"（created {recent.get('created')}），跳过写入仅留日志",
+                        f"{STALE_ALERT_DEDUP_MINUTES} 分钟内已有同信号同 severity"
+                        f"记录（created {recent.get('created')}），跳过写入仅留日志",
                     )
                     return
                 # 注意：不调用 mark_handled——升级事件须留在人工待处理视图
@@ -3007,8 +3014,9 @@ class FenixDaemon:
             # 原先仅 logger.error——写失败意味着自动收敛通道已断（空闲确认
             # 达成却发不出重启请求），升级 escalation 提请人工知悉；复用
             # _alert_dangling_timeout 的 append + latest_signal 去重范式，
-            # signal_type 仍取 stale_code（与 info 留痕同受 60 分钟窗口互斥
-            # 成条，不刷屏）。陈旧状态保持，空闲计时已在 finally 复位——
+            # signal_type 仍取 stale_code（60 分钟窗口去重只比对同 severity
+            # 记录：同周期 info 留痕不遮蔽本升级，重复写失败不刷屏）。
+            # 陈旧状态保持，空闲计时已在 finally 复位——
             # 下个 tick 重新累计 idle_confirm_seconds 后自动重试。
             self.logger.error("fenixd", f"restart_request 写入失败: {e}")
             self._alert_selfheal_write_failure(e)
