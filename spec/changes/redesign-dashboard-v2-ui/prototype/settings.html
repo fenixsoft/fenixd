@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配置（设置） · Bento 改版原型</title>
+<!-- 与 overview 定稿同源：vendor 真组件 / Bento 主题 / 假数据 / 零动画 -->
+<style>
+  html, body { margin: 0; padding: 0; background: #f8fafc; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 16px; box-shadow: 0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03); }
+  .bento-table .ant-table { background: transparent; }
+  .bento-table .ant-table-thead > tr > th { background: transparent; border-bottom: 1px solid #eef2f7; }
+  .bento-table .ant-table-tbody > tr > td { border-bottom: 1px solid #f1f5f9; }
+  .bento-table .ant-table table { table-layout: fixed !important; }
+  .menu-item { display: flex; align-items: center; gap: 9px; padding: 9px 14px; border-radius: 10px; font-size: 13px; color: #475569; cursor: pointer; }
+  .menu-item.on { background: #eff6ff; color: #2563eb; font-weight: 600; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var A = window.antd;
+  var ConfigProvider = A.ConfigProvider, Table = A.Table, Tag = A.Tag, Button = A.Button, Select = A.Select, Switch = A.Switch, Space = A.Space;
+  var C = { bg: '#f8fafc', text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8',
+    blue: '#2563eb', blueSoft: '#eff6ff', line: '#e2e8f0', hair: '#eef2f7', green: '#16a34a',
+    greenSoft: '#f0fdf4', red: '#dc2626', redSoft: '#fef2f2', amber: '#d97706', amberSoft: '#fffbeb' };
+  var themeConfig = {
+    token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue, colorSuccess: C.green, colorError: C.red, colorWarning: C.amber,
+      colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+      colorBgLayout: C.bg, colorBorder: C.line, colorBorderSecondary: C.hair, colorSplit: '#f1f5f9',
+      borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16, controlHeight: 32, controlHeightSM: 28,
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" },
+    components: { Button: { primaryShadow: 'none', defaultShadow: 'none' },
+      Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: '#f8fafc' } },
+  };
+  function Pill(children, color, bg) {
+    return h(Tag, { style: { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9, color: color, background: bg, borderColor: 'transparent', fontWeight: 500 } }, children);
+  }
+  var MENU = [
+    ['llm', '模型与网关'], ['agents', '角色模型'], ['prompts', '提示词'], ['parallel', '并行调度'],
+    ['token', 'Token 与计费'], ['verify', '验证管线'], ['quality', '质量门禁'], ['approval', '审批推送'],
+    ['arbiter', '仲裁'], ['self-evolution', '自进化'], ['system', '系统'],
+  ];
+  var providers = [
+    { name: 'bigmodel', gateway: 'https://open.bigmodel.cn/api', model: 'glm-5.3-flash', health: '正常', tone: 'good', primary: true },
+    { name: 'deepseek', gateway: 'https://api.deepseek.com', model: 'deepseek-chat', health: '正常', tone: 'good', primary: false },
+    { name: 'anthropic', gateway: 'https://api.anthropic.com', model: 'claude-sonnet-5-5', health: '正常', tone: 'good', primary: false },
+    { name: 'local-ollama', gateway: 'http://127.0.0.1:11434', model: 'qwen3:32b', health: '未检测', tone: 'muted', primary: false },
+  ];
+  function Header() {
+    return h('div', { 'data-proto-id': 'st-titlebar', style: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' } },
+      h('div', { style: { minWidth: 0 } },
+        h('div', { style: { fontSize: 22, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' } }, '配置'),
+        h('div', { style: { fontSize: 13, color: C.text3, marginTop: 2 } }, '网关、角色、调度与门禁的集中配置')),
+      h('span', { style: { flex: 1 } }),
+      h(Select, { size: 'small', defaultValue: 'user', style: { width: 150 }, options: [{ value: 'user', label: '用户级' }, { value: 'p-atlas', label: '项目级：atlas-api' }, { value: 'p-beacon', label: '项目级：beacon-web' }] }));
+  }
+  function LlmPanel() {
+    var columns = [
+      { title: 'Provider', dataIndex: 'name', render: function (v, r) {
+        return h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          h('span', { style: { fontSize: 13, fontWeight: 600 } }, v),
+          r.primary ? Pill('默认', C.blue, C.blueSoft) : null);
+      } },
+      { title: '网关地址', dataIndex: 'gateway', render: function (v) { return h('span', { className: 'num', style: { fontSize: 12, color: C.text3 } }, v); } },
+      { title: '默认模型', dataIndex: 'model', render: function (v) { return h('span', { className: 'num', style: { fontSize: 13 } }, v); } },
+      { title: '健康', dataIndex: 'health', width: 100, render: function (v, r) { return Pill(v, r.tone === 'good' ? C.green : C.text3, r.tone === 'good' ? C.greenSoft : '#f1f5f9'); } },
+      { title: '操作', key: 'act', width: 150, align: 'right', render: function () {
+        return h(Space, { size: 8 },
+          h(Button, { size: 'small' }, '健康检测'),
+          h(Button, { size: 'small' }, '编辑'));
+      } },
+    ];
+    return h('div', { 'data-proto-id': 'st-panel-llm', className: 'bento', style: { flex: 1, minWidth: 0, padding: '4px 20px 16px' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '14px 0 6px' } },
+        h('span', { style: { fontSize: 16, fontWeight: 700 } }, '模型与网关'),
+        h('span', { style: { flex: 1 } }),
+        h(Button, { type: 'primary', size: 'small' }, '新增 Provider')),
+      h('div', { className: 'bento-table' },
+        h(Table, { columns: columns, dataSource: providers.map(function (p) { return Object.assign({ key: p.name }, p); }), rowKey: 'key', pagination: false, size: 'middle' })),
+      h('div', { 'data-proto-id': 'st-panel-llm-extra', style: { borderTop: '1px solid #f1f5f9', marginTop: 12, paddingTop: 14 } },
+        Row('429 瞬断治理', '重试退避 + 熔断分档，网关长尾不触发 failover（黑棘认「失败」不认「挂」）'),
+        Row('候选链 failover', '主 provider 失败后按候选顺序切换（bigmodel → deepseek → anthropic）'),
+        Row('成本上限', '单 run 预算 ¥12 · 超 80% 告警')));
+  }
+  function Row(label, desc) {
+    return h('div', { key: label, style: { display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderBottom: '1px solid #f8fafc' } },
+      h('div', { style: { minWidth: 0 } },
+        h('div', { style: { fontSize: 13, fontWeight: 600 } }, label),
+        h('div', { style: { fontSize: 12, color: C.text3, marginTop: 2 } }, desc)),
+      h('span', { style: { flex: 1 } }),
+      h(Switch, { defaultChecked: true, size: 'small' }));
+  }
+  function Page() {
+    return h('div', { style: { minHeight: '100vh', background: C.bg } },
+      h('main', { style: { padding: '24px 24px 40px', maxWidth: 1400, margin: '0 auto' } },
+        Header(),
+        h('div', { 'data-proto-id': 'st-layout', style: { display: 'flex', gap: 16, marginTop: 18, alignItems: 'flex-start' } },
+          h('div', { 'data-proto-id': 'st-menu', className: 'bento', style: { width: 230, flexShrink: 0, padding: 10 } },
+            MENU.map(function (m) {
+              return h('div', { key: m[0], className: 'menu-item' + (m[0] === 'llm' ? ' on' : '') }, m[1]);
+            })),
+          LlmPanel())));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(ConfigProvider, { theme: themeConfig }, Page()));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>

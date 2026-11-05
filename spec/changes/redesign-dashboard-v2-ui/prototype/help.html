@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>帮助 · Bento 改版原型</title>
+<!-- 与 overview 定稿同源：vendor 真组件 / Bento 主题 / 假数据 / 零动画 -->
+<style>
+  html, body { margin: 0; padding: 0; background: #f8fafc; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 16px; box-shadow: 0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03); }
+  .toc-item { padding: 8px 14px; border-radius: 10px; font-size: 13px; color: #475569; cursor: pointer; }
+  .toc-item.on { background: #eff6ff; color: #2563eb; font-weight: 600; }
+  .toc-group { font-size: 11px; letter-spacing: 1.2px; color: #94a3b8; font-weight: 600; padding: 14px 14px 6px; }
+  pre.code { background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 14px 16px; font-size: 12.5px; line-height: 20px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow: auto; }
+  .doc h2 { font-size: 17px; font-weight: 700; margin: 26px 0 10px; }
+  .doc p { font-size: 13.5px; line-height: 23px; color: #334155; margin: 0 0 10px; }
+  .doc li { font-size: 13.5px; line-height: 23px; color: #334155; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var A = window.antd;
+  var ConfigProvider = A.ConfigProvider, Tag = A.Tag, Button = A.Button, Input = A.Input;
+  var C = { bg: '#f8fafc', text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8', blue: '#2563eb', blueSoft: '#eff6ff', line: '#e2e8f0' };
+  var themeConfig = {
+    token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue, colorSuccess: '#16a34a', colorError: '#dc2626', colorWarning: '#d97706',
+      colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+      colorBgLayout: C.bg, colorBorder: C.line, colorBorderSecondary: C.line, colorSplit: '#f1f5f9',
+      borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16, controlHeight: 32, controlHeightSM: 28,
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" },
+    components: { Button: { primaryShadow: 'none', defaultShadow: 'none' } },
+  };
+  function Pill(children, color, bg) {
+    return h(Tag, { style: { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9, color: color, background: bg, borderColor: 'transparent', fontWeight: 500 } }, children);
+  }
+  var TOC = [
+    ['快速上手', [['readme', 'README · 总览'], ['quickstart', '十分钟跑通第一个 SPEC']]],
+    ['核心概念', [['concepts', 'SPEC 生命周期与状态机'], ['lanes', '六车道与派发调度']]],
+    ['运维手册', [['ops-alerts', '告警与人工裁决'], ['ops-chain', '处置链观测'], ['ops-recovery', '中断恢复与续做']]],
+    ['附录', [['faq', '常见问题'], ['config-ref', '配置项速查']]],
+  ];
+  function Toc() {
+    return h('div', { 'data-proto-id': 'hp-toc', className: 'bento', style: { width: 250, flexShrink: 0, padding: 10, position: 'sticky', top: 16 } },
+      TOC.map(function (g) {
+        return h('div', { key: g[0] },
+          h('div', { className: 'toc-group' }, g[0]),
+          g[1].map(function (it) {
+            return h('div', { key: it[0], className: 'toc-item' + (it[0] === 'ops-alerts' ? ' on' : '') }, it[1]);
+          }));
+      }));
+  }
+  function Doc() {
+    return h('div', { 'data-proto-id': 'hp-doc', className: 'bento doc', style: { flex: 1, minWidth: 0, padding: '24px 28px 32px' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+        h('span', { style: { fontSize: 22, fontWeight: 700, letterSpacing: -0.3 } }, '告警与人工裁决'),
+        Pill('v3 · 2026-11-05 更新', C.blue, C.blueSoft),
+        h('span', { style: { flex: 1 } })),
+      h('p', { style: { marginTop: 12 } }, '人工告警是 fenixd 升级链（Administrator → Arbiter → 人工）的最后一站：当自动处置无法闭环时，daemon 会把告警写入人工告警台账，并在运维页顶部横幅与 SPEC 详情同步提示。本文描述告警的生命周期、裁决入口与选择题化交互。'),
+      h('h2', null, '告警生命周期'),
+      h('p', null, '每条告警携带 severity（critical / major / minor）、来源项目、归因叙事与可选的 choices 裁决选项。处置完成后进入「已解决」折叠区，保留近期记录供追溯。'),
+      h('h2', null, '裁决入口'),
+      h('li', null, '运维页顶部横幅：汇总待处理计数与最高级别，单条「标记已处理」或批量「清理所有事件」'),
+      h('li', null, '告警明细行：内嵌裁决选择题（Select + note + 执行），与 SPEC 详情页同一 alert-resolve 闭环端点'),
+      h('li', null, 'SPEC 详情页：该 SPEC 名下告警在时间轴侧栏同步出现'),
+      h('h2', null, 'CLI 等价命令'),
+      h('pre', { className: 'code' }, '# 标记单条告警已处理\nfenix alert resolve <alert-id> --choice abandon --note "误报：夹具 spec 段"\n\n# 批量清理已解决告警\nfenix alert clear-all --project atlas-api'),
+      h('h2', null, '降噪约定'),
+      h('p', null, '合成兜底类告警默认静默化（用户定调），不推送人工告警；同一告警在升级冷却窗口内不重复触发，窗口缺省 60 分钟。'));
+  }
+  function Page() {
+    return h('div', { style: { minHeight: '100vh', background: C.bg } },
+      h('main', { style: { padding: '24px 24px 40px', maxWidth: 1400, margin: '0 auto' } },
+        h('div', { 'data-proto-id': 'hp-titlebar', style: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' } },
+          h('div', { style: { minWidth: 0 } },
+            h('div', { style: { fontSize: 22, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' } }, '帮助中心'),
+            h('div', { style: { fontSize: 13, color: C.text3, marginTop: 2 } }, '框架使用文档 · 8 篇')),
+          h('span', { style: { flex: 1 } }),
+          h(Input.Search, { placeholder: '搜索文档', size: 'small', style: { width: 220 } })),
+        h('div', { 'data-proto-id': 'hp-layout', style: { display: 'flex', gap: 16, marginTop: 18, alignItems: 'flex-start' } },
+          Toc(),
+          Doc())));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(ConfigProvider, { theme: themeConfig }, Page()));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>

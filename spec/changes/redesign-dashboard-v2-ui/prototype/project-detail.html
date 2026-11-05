@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目详情 · Bento 改版原型</title>
+<!-- 与 overview 定稿同源：vendor 真组件 / Bento 主题 / 假数据 / 零动画
+     批注修订：去 4 统计卡；页签对齐现产（功能开发/代码审查/测试回归/会话接入）；
+     列集对齐现产（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时/操作）；
+     操作仅三点；主按钮黑底（dsh 风格）；表格左间距 14px 与概览一致 -->
+<style>
+  html, body { margin: 0; padding: 0; background: #f8fafc; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 16px; box-shadow: 0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03); }
+  .bento-table .ant-table { background: transparent; }
+  .bento-table .ant-table-thead > tr > th { background: transparent; border-bottom: 1px solid #eef2f7; }
+  .bento-table .ant-table-tbody > tr > td { border-bottom: 1px solid #f1f5f9; }
+  .bento-table .ant-table table { table-layout: fixed !important; }
+  .bento-table .ant-table-thead > tr > th:first-child { padding-left: 14px !important; }
+  .bento-table .ant-table-tbody > tr:not(.ant-table-measure-row) > td:first-child { padding-left: 14px !important; }
+  .ant-radio-button-wrapper-checked { background: #0f1115 !important; border-color: #0f1115 !important; color: #fff !important; }
+  .ant-radio-button-wrapper-checked:not(:first-child)::before { background-color: #0f1115 !important; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var A = window.antd;
+  var ConfigProvider = A.ConfigProvider, Tabs = A.Tabs, Table = A.Table, Tag = A.Tag, Button = A.Button,
+      Input = A.Input, Radio = A.Radio, Progress = A.Progress, Dropdown = A.Dropdown, Space = A.Space, Select = A.Select;
+  var C = { bg: '#f8fafc', text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8',
+    blue: '#2563eb', blueSoft: '#eff6ff', line: '#e2e8f0', hair: '#eef2f7', green: '#16a34a',
+    greenSoft: '#f0fdf4', orange: '#ea580c', orangeSoft: '#fff7ed', red: '#dc2626', redSoft: '#fef2f2',
+    amber: '#d97706', amberSoft: '#fffbeb', cyan: '#0891b2', cyanSoft: '#ecfeff' };
+  var themeConfig = {
+    token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue,
+      colorSuccess: C.green, colorError: C.red, colorWarning: C.amber,
+      colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+      colorBgLayout: C.bg, colorBorder: C.line, colorBorderSecondary: C.hair, colorSplit: '#f1f5f9',
+      borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16, controlHeight: 32, controlHeightSM: 28,
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" },
+    components: { Input: { activeBorderColor: C.blue, activeShadow: '0 0 0 2px rgba(37,99,235,0.12)', hoverBorderColor: '#94a3b8' },
+      Button: { primaryShadow: 'none', defaultShadow: 'none' },
+      Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: '#f8fafc' } },
+  };
+  var STATUS_META = { drafted: ['草稿', 'muted'], ready: ['就绪', 'info'], implementing: ['实现中', 'warning'], implemented: ['已实现', 'aqua'], testing: ['验证中', 'info'], verified: ['已验证', 'good'], 'bug-found': ['有Bug', 'critical'], blocked: ['阻塞', 'critical'], done: ['完成', 'good'], pushed: ['已推送', 'good'], reviewing: ['评审中', 'aqua'] };
+  var TONE = { info: [C.blue, C.blueSoft], warning: [C.amber, C.amberSoft], critical: [C.red, C.redSoft], good: [C.green, C.greenSoft], aqua: [C.cyan, C.cyanSoft], muted: [C.text3, '#f1f5f9'] };
+  function Pill(toneKey, children) {
+    var pair = TONE[toneKey] || TONE.muted;
+    return h(Tag, { style: { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9, color: pair[0], background: pair[1], borderColor: 'transparent', fontWeight: 500 } }, children);
+  }
+  function statusPill(st) { var m = STATUS_META[st] || [st, 'muted']; return Pill(m[1], m[0]); }
+  function IconDots() {
+    return h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'currentColor', 'aria-hidden': true },
+      h('circle', { cx: 2.6, cy: 7, r: 1.2 }), h('circle', { cx: 7, cy: 7, r: 1.2 }), h('circle', { cx: 11.4, cy: 7, r: 1.2 }));
+  }
+  function BackArrow() {
+    return h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true, style: { cursor: 'pointer' } },
+      h('path', { d: 'M9 2.5 4.5 7 9 11.5', stroke: '#475569', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }));
+  }
+  var PHASE = { planning: ['#0891b2', '#e6fffb', '出题'], implementing: ['#2563eb', '#dbeafe', '实现'], gates: ['#ea580c', '#ffedd5', '门禁'], verifying: ['#16a34a', '#dcfce7', '验证'] };
+  function PhaseProgress(phase, pct, done, total) {
+    var p = PHASE[phase];
+    return h('div', { style: { minWidth: 0 } },
+      h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 } },
+        h('span', { style: { fontSize: 12, color: C.text3 } }, p[2]),
+        h('span', { className: 'num', style: { fontSize: 12, fontWeight: 600 } }, done + '/' + total + ' · ' + pct + '%')),
+      h('div', { style: { marginTop: 6 } }, h(Progress, { percent: pct, size: 'small', strokeColor: p[0], railColor: p[1], showInfo: false })));
+  }
+  var specs = [
+    { name: 'fix-overview-commercial-ui', status: 'implementing', mode: '快速', phase: 'implementing', done: 6, total: 9, created: '11-04', verify: '未执行', dur: '2.4h' },
+    { name: 'add-chain-choice-payload-replay', status: 'reviewing', mode: '标准', phase: 'planning', done: 4, total: 4, created: '11-04', verify: '未执行', dur: '0.6h' },
+    { name: 'fix-escalation-watchdog-yield', status: 'testing', mode: '标准', phase: 'verifying', done: 11, total: 14, created: '11-03', verify: '进行中', dur: '5.1h' },
+    { name: 'add-provider-health-quota-guard', status: 'ready', mode: '标准', phase: 'planning', done: 0, total: 8, created: '11-03', verify: '未执行', dur: '—' },
+    { name: 'fix-token-ledger-drift', status: 'verified', mode: '快速', phase: 'verifying', done: 12, total: 12, created: '11-02', verify: '通过', dur: '3.8h' },
+    { name: 'add-help-doc-anchor-jump', status: 'pushed', mode: '快速', phase: 'verifying', done: 7, total: 7, created: '11-01', verify: '通过', dur: '1.9h' },
+    { name: 'fix-spec-table-filter-stickiness', status: 'bug-found', mode: '标准', phase: 'implementing', done: 5, total: 9, created: '10-31', verify: '失败', dur: '6.2h' },
+    { name: 'add-knowledge-graphify-lite', status: 'drafted', mode: '标准', phase: 'planning', done: 0, total: 0, created: '10-30', verify: '未执行', dur: '—' },
+  ];
+  var VERIFY_TONE = { '通过': 'good', '失败': 'critical', '进行中': 'info', '未执行': 'muted' };
+  function Header() {
+    return h('div', { 'data-proto-id': 'pd-titlebar', style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } },
+      BackArrow(),
+      h('div', { style: { minWidth: 0 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+          h('span', { style: { fontSize: 22, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' } }, 'atlas-api'),
+          Pill('good', '运行中')),
+        h('div', { className: 'num', style: { fontSize: 13, color: C.text3, marginTop: 2 } }, '共 8 个 SPEC · 3 个在飞')),
+      h('span', { style: { flex: 1 } }),
+      h(Button, { type: 'primary', size: 'small' }, '新建 SPEC'));
+  }
+  function DevPane() {
+    var columns = [
+      { title: '状态', dataIndex: 'status', width: 90, render: function (v) { return statusPill(v); } },
+      { title: '模式', dataIndex: 'mode', width: 80, render: function (v) { return Pill(v === '快速' ? 'warning' : 'muted', v); } },
+      { title: '名称', dataIndex: 'name', render: function (v) { return h('span', { className: 'ellipsis', style: { fontSize: 13.5, fontWeight: 600, cursor: 'pointer', display: 'block' } }, v); } },
+      { title: '优先级', dataIndex: 'created', width: 80, render: function (_, s) { return h('span', { className: 'num', style: { fontSize: 13 } }, 'P' + (s.mode === '快速' ? 3 : 4)); } },
+      { title: '创建时间', dataIndex: 'created', width: 100, render: function (v) { return h('span', { className: 'num', style: { fontSize: 12, color: C.text3 } }, v); } },
+      { title: '任务进度', key: 'task', width: 220, render: function (_, s) { return PhaseProgress(s.phase, Math.round(s.done / Math.max(1, s.total) * 100), s.done, s.total); } },
+      { title: '验证', key: 'verify', width: 90, render: function (_, s) { return Pill(VERIFY_TONE[s.verify], s.verify); } },
+      { title: '耗时', key: 'dur', width: 80, align: 'right', render: function (_, s) { return h('span', { className: 'num', style: { fontSize: 12.5, color: C.text2 } }, s.dur); } },
+      { title: '操作', key: 'act', width: 60, align: 'right', render: function () {
+        var menu = { items: [{ key: 'doc', label: '查看文档' }, { key: 'timeline', label: '运行时间轴' }, { key: 'topo', label: '协作拓扑' }, { type: 'divider' }, { key: 'delete', label: '删除', danger: true }] };
+        return h(Dropdown, { menu: menu, placement: 'bottomRight', trigger: ['click'] }, h(Button, { type: 'text', size: 'small', icon: IconDots(), 'aria-label': '更多操作' }));
+      } },
+    ];
+    return h('div', { style: { paddingTop: 4 } },
+      h('div', { 'data-proto-id': 'pd-toolbar', style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '8px 0 12px' } },
+        h(Input.Search, { placeholder: '搜索 SPEC', size: 'small', allowClear: true, style: { width: 200 } }),
+        h(Select, { size: 'small', mode: 'multiple', placeholder: '状态', style: { minWidth: 140 }, maxTagCount: 2, options: Object.keys(STATUS_META).map(function (k) { return { value: k, label: STATUS_META[k][0] }; }) }),
+        h(Radio.Group, { optionType: 'button', size: 'small', defaultValue: 'all', options: [{ label: '全部', value: 'all' }, { label: '进行中', value: 'active' }, { label: '已完成', value: 'done' }] })),
+      h('div', { 'data-proto-id': 'pd-table', className: 'bento-table' },
+        h(Table, { columns: columns, dataSource: specs.map(function (s) { return Object.assign({ key: s.name }, s); }), rowKey: 'key', pagination: false, size: 'middle',
+          onRow: function (rec) { return { 'data-proto-id': 'pd-row-' + rec.name }; } })));
+  }
+  function PlaceholderPane(anchor, label, hint) {
+    return h('div', { 'data-proto-id': anchor, style: { padding: '28px 4px' } },
+      h('div', { style: { fontSize: 14, fontWeight: 600 } }, label),
+      h('div', { style: { fontSize: 12, color: C.text3, marginTop: 6 } }, hint));
+  }
+  function Page() {
+    return h('div', { style: { minHeight: '100vh', background: C.bg } },
+      h('main', { style: { padding: '24px 24px 40px', maxWidth: 1400, margin: '0 auto' } },
+        Header(),
+        h('div', { 'data-proto-id': 'pd-panel', className: 'bento', style: { marginTop: 18, padding: '4px 20px 16px' } },
+          h(Tabs, {
+            defaultActiveKey: 'dev',
+            items: [
+              { key: 'dev', label: '功能开发', children: DevPane() },
+              { key: 'review', label: '代码审查', children: PlaceholderPane('pd-tab-review', '代码审查分面', '审查快照、发现台账与质量分面（原型示意页签，内容随实现展开）') },
+              { key: 'regression', label: '测试回归', children: PlaceholderPane('pd-tab-regression', '测试回归分面', '全量回归声明、执行与展示（原型示意页签）') },
+              { key: 'session', label: '会话接入', children: PlaceholderPane('pd-tab-session', '会话接入分面', 'dsh 会话面板与 run 会话流（原型示意页签）') },
+            ],
+          }))));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(ConfigProvider, { theme: themeConfig }, Page()));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>

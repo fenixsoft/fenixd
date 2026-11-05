@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运维 · Bento 改版原型</title>
+<!-- 与 overview 定稿同源：vendor 真组件 / Bento 主题 / 假数据 / 零动画 -->
+<style>
+  html, body { margin: 0; padding: 0; background: #f8fafc; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 16px; box-shadow: 0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var A = window.antd;
+  var ConfigProvider = A.ConfigProvider, Tabs = A.Tabs, Tag = A.Tag, Button = A.Button,
+      Select = A.Select, Table = A.Table, Space = A.Space;
+  var C = { bg: '#f8fafc', text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8',
+    blue: '#2563eb', blueSoft: '#eff6ff', line: '#e2e8f0', hair: '#eef2f7', green: '#16a34a',
+    greenSoft: '#f0fdf4', red: '#dc2626', redSoft: '#fef2f2', amber: '#d97706', amberSoft: '#fffbeb' };
+  var themeConfig = {
+    token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue, colorSuccess: C.green, colorError: C.red, colorWarning: C.amber,
+      colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+      colorBgLayout: C.bg, colorBorder: C.line, colorBorderSecondary: C.hair, colorSplit: '#f1f5f9',
+      borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16, controlHeight: 32, controlHeightSM: 28,
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" },
+    components: { Button: { primaryShadow: 'none', defaultShadow: 'none' },
+      Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: '#f8fafc' } },
+  };
+  var TONE = { info: [C.blue, C.blueSoft], warning: [C.amber, C.amberSoft], critical: [C.red, C.redSoft], good: [C.green, C.greenSoft], muted: [C.text3, '#f1f5f9'] };
+  function Pill(toneKey, children) {
+    var pair = TONE[toneKey] || TONE.muted;
+    return h(Tag, { style: { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9, color: pair[0], background: pair[1], borderColor: 'transparent', fontWeight: 500 } }, children);
+  }
+  function Row(label, value) {
+    return h('span', { key: label, className: 'num', style: { fontSize: 12, color: C.text3 } },
+      label + ' ', h('span', { style: { fontWeight: 600, color: C.text, fontSize: 13 } }, value));
+  }
+  var alerts = [
+    { sev: 'critical', sevLabel: '严重', title: '处置链中断：choice 载荷通道缺失，升级告警滞留 15 分钟未闭合', project: 'atlas-api', time: '2026-11-05 09:14',
+      choices: ['重放该链（跳过 choice）', '改为人工执行并闭合台账', '标记误报'], note: true },
+    { sev: 'major', sevLabel: '较重', title: '实现分支滞留主树超 24h 未合并，WIP 门即将拦截新派发', project: 'beacon-web', time: '2026-11-05 08:52',
+      body: '分支 fenix/fix-token-ledger-drift 已 merged 但未删除；主树 WIP 占用归因指向 run impl-9c21（已终态）。建议走分支回收宽限期自动清理，或手工 -d 删除（唯一安全口径）。' },
+    { sev: 'minor', sevLabel: '轻微', title: '陈旧代码自愈连续 3 次失败，冷却保护已生效（60 分钟后重试）', project: 'drift-ml', time: '2026-11-05 07:30' },
+  ];
+  var chains = [
+    { id: 'chain-20261105-0914', project: 'atlas-api', stage: 'Admin→Arbiter', state: '中断', tone: 'critical', dur: '15m', updated: '09:14' },
+    { id: 'chain-20261105-0812', project: 'beacon-web', stage: 'Admin 自闭环', state: '进行中', tone: 'info', dur: '6m', updated: '08:52' },
+    { id: 'chain-20261104-2241', project: 'drift-ml', stage: 'Admin→人工', state: '已解决', tone: 'good', dur: '42m', updated: '昨日 23:23' },
+    { id: 'chain-20261104-1903', project: 'cobalt-cli', stage: 'Admin 自闭环', state: '已解决', tone: 'good', dur: '9m', updated: '昨日 19:12' },
+  ];
+  function AlertList() {
+    var item = function (a, idx, last) {
+      var content = [
+        h('div', { key: 'title', className: 'ellipsis', style: { fontSize: 13, fontWeight: 600 } }, a.title),
+      ];
+      if (a.body) content.push(h('div', { key: 'body', style: { fontSize: 12, color: C.text2, lineHeight: '20px', whiteSpace: 'pre-wrap', marginTop: 5 } }, a.body));
+      if (a.choices) content.push(h('div', { key: 'choices', style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
+        h(Select, { size: 'small', placeholder: '选择处置动作', style: { width: 220 }, options: a.choices.map(function (c) { return { value: c, label: c }; }) }),
+        h('a', { style: { fontSize: 12, color: C.text4, cursor: 'pointer' }, tabIndex: 0 }, '附注'),
+        h(Button, { size: 'small', type: 'primary' }, '执行')));
+      content.push(h('div', { key: 'meta', className: 'num', style: { fontSize: 12, color: C.text4, marginTop: a.body || a.choices ? 6 : 1 } }, '项目 ' + a.project + ' · ' + a.time));
+      return h('div', { 'data-proto-id': 'ops-alert-item-' + idx, style: { display: 'flex', alignItems: a.body || a.choices ? 'flex-start' : 'center', gap: 10, padding: '12px 12px', borderTop: last ? 'none' : '1px solid #f1f5f9' } },
+        Pill(a.sev === 'critical' ? 'critical' : (a.sev === 'major' ? 'warning' : 'muted'), a.sevLabel),
+        h('div', { style: { flex: 1, minWidth: 0 } }, content),
+        a.choices ? null : h(Button, { size: 'small', style: a.body ? { marginTop: 2 } : null }, '标记已处理'));
+    };
+    return h('div', { 'data-proto-id': 'ops-alert-list', className: 'bento', style: { padding: '6px 6px 4px' } },
+      item(alerts[0], 1), item(alerts[1], 2), item(alerts[2], 3, true));
+  }
+  function ChainPane() {
+    var columns = [
+      { title: '链 ID', dataIndex: 'id', render: function (v) { return h('span', { className: 'mono', style: { fontSize: 12.5, fontWeight: 600 } }, v); } },
+      { title: '项目', dataIndex: 'project', width: 120 },
+      { title: '阶段', dataIndex: 'stage', width: 140, render: function (v) { return h('span', { style: { fontSize: 12.5, color: C.text2 } }, v); } },
+      { title: '状态', dataIndex: 'state', width: 100, render: function (v, r) { return Pill(r.tone, v); } },
+      { title: '耗时', dataIndex: 'dur', width: 90, render: function (v) { return h('span', { className: 'num', style: { fontSize: 12.5 } }, v); } },
+      { title: '最近活动', dataIndex: 'updated', width: 120, align: 'right', render: function (v) { return h('span', { className: 'num', style: { fontSize: 12, color: C.text3 } }, v); } },
+    ];
+    return h('div', { 'data-proto-id': 'ops-chain-table', style: { padding: '16px 0 4px' } },
+      h(Table, { columns: columns, dataSource: chains.map(function (c) { return Object.assign({ key: c.id }, c); }), rowKey: 'key', pagination: false, size: 'middle',
+        onRow: function (rec) { return { 'data-proto-id': 'ops-chain-row-' + rec.id }; } }));
+  }
+  function Page() {
+    return h('div', { style: { minHeight: '100vh', background: C.bg } },
+      h('main', { style: { padding: '24px 24px 40px', maxWidth: 1400, margin: '0 auto' } },
+        h('div', { 'data-proto-id': 'ops-titlebar', style: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' } },
+          h('div', { style: { minWidth: 0 } },
+            h('div', { style: { fontSize: 22, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' } }, '运维'),
+            h('div', { style: { display: 'flex', gap: 14, marginTop: 4, flexWrap: 'wrap' } },
+              Row('待处理告警', '3'), Row('在飞链', '2'), Row('24h 解决', '7'), Row('升级到人工', '1'))),
+          h('span', { style: { flex: 1 } }),
+          h(Button, { size: 'small', danger: true }, '清理所有已解决')),
+        h('div', { 'data-proto-id': 'ops-panel', className: 'bento', style: { marginTop: 18, padding: '4px 16px 16px' } },
+          h(Tabs, {
+            defaultActiveKey: 'alert',
+            items: [
+              { key: 'alert', label: '人工告警 (3)', children: h('div', { style: { paddingTop: 6 } }, AlertList()) },
+              { key: 'chain', label: '处置链观测', children: ChainPane() },
+              { key: 'auto', label: '自愈记录', children: h('div', { 'data-proto-id': 'ops-auto', style: { padding: '16px 0' } },
+                Pill('good', '近 24h 无失败'), h('div', { style: { fontSize: 12, color: C.text3, marginTop: 8 } }, '自愈成功率 94%（33/35）· 冷却中 1 项 · 最近一次 11-05 07:30 陈旧代码重写')) },
+            ],
+          }))));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(ConfigProvider, { theme: themeConfig }, Page()));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>

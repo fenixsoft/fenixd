@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 B · Bento 磁贴工作台 — 跨项目概览原型</title>
+<!--
+  原型候选 B：Bento 磁贴现代 SaaS（ui-ux-pro-max Trust Blue 派生）
+  层级：vendor（真组件 react 19.2.7 + antd 6.6.0，具约束力）
+  数据：全部内联假数据；动效：零自定义 animation/transition
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #f8fafc; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #1e293b; -webkit-font-smoothing: antialiased;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+  .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bento {
+    background: #ffffff; border: 1px solid #eef2f7; border-radius: 16px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03);
+  }
+  .bento-table .ant-table-thead > tr > th { background: transparent; border-bottom: 1px solid #eef2f7; }
+  .bento-table .ant-table { background: transparent; }
+  .bento-table .ant-table-tbody > tr > td { border-bottom: 1px solid #f1f5f9; }
+  /* 批注 round2：分段按钮 ACTIVE 态黑底白字（对齐 dsh web 主按钮色） */
+  .ant-radio-button-wrapper-checked {
+    background: #0f1115 !important; border-color: #0f1115 !important; color: #ffffff !important;
+  }
+  .ant-radio-button-wrapper-checked:not(:first-child)::before { background-color: #0f1115 !important; }
+  /* 批注 round3：项目表首列左边距 +6px（antd middle 8px → 14px）。
+     round3 复核：antd v6 运行时注入样式表顺序在静态 <style> 之后，同特异性被覆盖 → !important 钉死。
+     round4 复核：!important 曾误命中 measure 行（td padding-left 泄漏 14px），改为 :not() 排除 */
+  .bento-table .ant-table-thead > tr > th:first-child { padding-left: 14px !important; }
+  .bento-table .ant-table-tbody > tr:not(.ant-table-measure-row) > td:first-child { padding-left: 14px !important; }
+  /* 批注 round5：antd v6 scroll.x 不再强制 fixed 布局（实测 auto）——220 字长注释 min-content
+     把表格撑到 2678px / 容器 1230px，省略号失效、列宽崩坏。强制 fixed 布局恢复列宽单源 */
+  .bento-table .ant-table table { table-layout: fixed !important; }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var A = window.antd;
+  var ConfigProvider = A.ConfigProvider, Table = A.Table, Tag = A.Tag,
+      Button = A.Button, Input = A.Input, Radio = A.Radio, Progress = A.Progress,
+      Dropdown = A.Dropdown, Space = A.Space;
+
+  var C = { bg: '#f8fafc', text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8',
+    blue: '#2563eb', blueSoft: '#eff6ff', line: '#e2e8f0', hair: '#eef2f7',
+    green: '#16a34a', greenSoft: '#f0fdf4', orange: '#ea580c', orangeSoft: '#fff7ed',
+    red: '#dc2626', redSoft: '#fef2f2', amber: '#d97706', amberSoft: '#fffbeb', cyan: '#0891b2', cyanSoft: '#ecfeff' };
+
+  var themeConfig = {
+    token: {
+      colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue,
+      colorSuccess: C.green, colorError: C.red, colorWarning: C.amber,
+      colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+      colorBgLayout: C.bg, colorBorder: C.line, colorBorderSecondary: C.hair, colorSplit: '#f1f5f9',
+      borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16,
+      controlHeight: 32, controlHeightSM: 28,
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif",
+    },
+    components: {
+      Input: { activeBorderColor: C.blue, activeShadow: '0 0 0 2px rgba(37, 99, 235, 0.12)', hoverBorderColor: '#94a3b8' },
+      Button: { primaryShadow: 'none', defaultShadow: 'none' },
+      Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: '#f8fafc' },
+    },
+  };
+
+  // ── 假数据（与其他方案同一份） ──
+  var projects = [
+    { name: 'atlas-api', path: '/srv/projects/atlas-api', description: '面向多团队共享的 LLM 网关聚合与路由服务：统一注册 OpenAI、Anthropic、GLM、DeepSeek 等多家 provider，按角色模型档位与预算水位路由请求，聚合计费口径与 token 消耗台账；内置失败分类与重试退避、候选链 failover、瞬断熔断与限流终局续跑，输出结构化 run 事件流供仪表盘、告警与每日自省消费；支持流式透传与工具调用协议适配，提供多租户配额与审计日志（示例项目：约 200 字长简介，验证长注释下的版面截断与行高表现）', daemon: 'running', hosting: 'managed', discovered: false, spec_count: 18, task_done: 14, task_total: 18, problems: 1, active_runs: 3, status_counts: { implementing: 2, testing: 1, ready: 3, drafted: 1, verified: 11 } },
+    { name: 'beacon-web', path: '/srv/projects/beacon-web', description: '运营数据看板前端，图表渲染与实时订阅（示例项目）', daemon: 'running', hosting: 'unmanaged', discovered: false, spec_count: 9, task_done: 5, task_total: 9, problems: 0, active_runs: 2, status_counts: { implementing: 1, reviewing: 1, ready: 2, verified: 5 } },
+    { name: 'cobalt-cli', path: '/srv/projects/cobalt-cli', description: '终端效率工具集：批处理脚本与本地索引（示例项目）', daemon: 'stopped', hosting: 'managed', discovered: false, spec_count: 23, task_done: 23, task_total: 23, problems: 0, active_runs: 0, status_counts: { pushed: 20, verified: 3 } },
+    { name: 'drift-ml', path: '/srv/projects/drift-ml', description: '数据漂移检测流水线，特征监控与告警（示例项目）', daemon: 'stopped', hosting: 'managed', discovered: true, spec_count: 5, task_done: 2, task_total: 5, problems: 2, active_runs: 0, status_counts: { 'bug-found': 1, blocked: 1, drafted: 1, ready: 2 } },
+    { name: 'edge-gateway', path: '/srv/edge-gateway', description: '', daemon: 'unknown', discovered: true, error: '.fenix/STATE.md 解析失败：schema 版本不兼容（示例错误信息）' },
+  ];
+  var alerts = [
+    { sev: 'critical', sevLabel: '严重', title: '处置链中断：choice 载荷通道缺失，升级告警滞留 15 分钟未闭合', project: 'atlas-api', time: '2026-11-05 09:14',
+      body: '处置链 escalation_chain 在执行 Admin→Arbiter 段时无法路由 choice 载荷：admin 处置台账 _disposition_ledger.jsonl 中 choice_payload 字段缺失，链上执行被跳过，pending 记录未闭合。涉及文件：core/escalation/escalation_chain.py:736（closed 早退分支）、core/admin/monitor.py:_dispatch_choice（载荷装配点）；数据文件：.fenix/admin_alerts.json、.fenix/escalation_runs/run-20261105-0914/events.jsonl。错误信息：KeyError: \'choice_payload\'（实际载荷键 action、note）。已连续 3 个 run 复现，15 分钟后将被 watchdog 二次升级。请人工核对 choice 注册表与链配置一致性后重放该链。' },
+    { sev: 'minor', sevLabel: '轻微', title: '陈旧代码自愈连续 3 次失败，冷却保护已生效（60 分钟后重试）', project: 'beacon-web', time: '2026-11-05 08:52' },
+  ];
+  var STATUS_META = { drafted: ['草稿', 'muted'], ready: ['就绪', 'info'], implementing: ['实现中', 'warning'], implemented: ['已实现', 'aqua'], testing: ['验证中', 'info'], verified: ['已验证', 'good'], 'bug-found': ['有Bug', 'critical'], blocked: ['阻塞', 'critical'], done: ['完成', 'good'], pushed: ['已推送', 'good'], reviewing: ['评审中', 'aqua'] };
+  var TONE = { info: [C.blue, C.blueSoft], warning: [C.amber, C.amberSoft], critical: [C.red, C.redSoft], good: [C.green, C.greenSoft], aqua: [C.cyan, C.cyanSoft], muted: [C.text3, '#f1f5f9'] };
+
+  function Pill(toneKey, children, filled) {
+    var pair = TONE[toneKey] || TONE.muted;
+    var style = { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9 };
+    if (filled) return h(Tag, { style: Object.assign({}, style, { color: pair[0], background: pair[1], borderColor: 'transparent', fontWeight: 500 }) }, children);
+    return h(Tag, { style: Object.assign({}, style, { color: pair[0], borderColor: pair[0] + '55', background: '#ffffff' }) }, children);
+  }
+  function statusTag(st, n) {
+    var m = STATUS_META[st] || [st, 'muted'];
+    return h('span', { key: st }, Pill(m[1], m[0] + ' ' + n, true));
+  }
+  function IconDots() {
+    return h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'currentColor', 'aria-hidden': true },
+      h('circle', { cx: 2.6, cy: 7, r: 1.2 }), h('circle', { cx: 7, cy: 7, r: 1.2 }), h('circle', { cx: 11.4, cy: 7, r: 1.2 }));
+  }
+  function IconAlertChip() {
+    // 圆角方形警示 chip（bento 图标语言）
+    return h('span', { style: { width: 34, height: 34, borderRadius: 10, background: C.redSoft, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } },
+      h('svg', { width: 17, height: 17, viewBox: '0 0 16 16', fill: C.red, 'aria-hidden': true },
+        h('path', { d: 'M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zM8 4.2a.85.85 0 0 0-.85.9l.2 3.3a.65.65 0 0 0 1.3 0l.2-3.3A.85.85 0 0 0 8 4.2zm0 5.9a.95.95 0 1 0 0 1.9.95.95 0 0 0 0-1.9z' })));
+  }
+
+  // ── 页头（轻快产品头：品牌 chip + 大标题 + 日期 chip） ──
+  function PageHeader() {
+    // 批注 round2：去掉品牌图标 chip 与日期 chip，只留标题 + 副标题
+    return h('div', { 'data-proto-id': 'overview-titlebar', style: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' } },
+      h('div', { style: { minWidth: 0 } },
+        h('div', { style: { fontSize: 22, fontWeight: 700, letterSpacing: -0.3, lineHeight: '28px' } }, '跨项目概览'),
+        h('div', { className: 'num', style: { fontSize: 13, color: C.text3, marginTop: 2 } }, '监控 5 个项目 · 全部系统正常运行')),
+      h('span', { style: { flex: 1 } }));
+  }
+
+  // ── 告警磁贴 ──
+  function AlertCard() {
+    // 批注 round2：明细行拍平为全宽行、收紧左右 padding（去嵌套缩进）
+    // 批注 round6：支持多行告警——有 body 时换行展示（pre-wrap），徽标/按钮顶对齐
+    var item = function (a, idx, last) {
+      var contentKids = [
+        h('div', { key: 'title', className: 'ellipsis', style: { fontSize: 13, fontWeight: 500 } }, a.title),
+      ];
+      if (a.body) {
+        contentKids.push(h('div', { key: 'body', style: { fontSize: 12, color: C.text2, lineHeight: '20px', whiteSpace: 'pre-wrap', marginTop: 5 } }, a.body));
+      }
+      contentKids.push(h('div', { key: 'meta', className: 'num', style: { fontSize: 12, color: C.text4, marginTop: a.body ? 6 : 1 } }, '项目 ' + a.project + ' · ' + a.time));
+      return h('div', { 'data-proto-id': 'overview-alert-banner-item-' + idx, style: { display: 'flex', alignItems: a.body ? 'flex-start' : 'center', gap: 10, padding: '9px 10px', borderTop: last ? 'none' : '1px solid #f1f5f9' } },
+        Pill(a.sev === 'critical' ? 'critical' : 'warning', a.sevLabel, true),
+        h('div', { style: { flex: 1, minWidth: 0 } }, contentKids),
+        h(Button, { size: 'small', style: a.body ? { marginTop: 2 } : null }, '标记已处理'));
+    };
+    return h('div', { 'data-proto-id': 'overview-alert-banner', className: 'bento', style: { padding: '13px 14px 8px' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '0 4px 11px' } },
+        IconAlertChip(),
+        h('span', { style: { fontSize: 14, fontWeight: 600 } }, h('span', { className: 'num' }, '2'), ' 条待处理人工告警'),
+        Pill('critical', '最高级别：严重', true),
+        h('span', { style: { flex: 1 } }),
+        h(Button, { size: 'small', danger: true }, '清理所有事件'),
+        h('a', { style: { fontSize: 12, color: C.text4, cursor: 'pointer' }, tabIndex: 0 }, '收起')),
+      h('div', null, item(alerts[0], 1), item(alerts[1], 2, true)));
+  }
+
+  // ── Bento KPI 区：不对称磁贴 + 圆环进度 ──
+  function TileLabel(children) {
+    return h('div', { style: { fontSize: 12, fontWeight: 500, color: C.text3 } }, children);
+  }
+  function Donut(pct, box) {
+    var r = 34, circ = 2 * Math.PI * r;
+    return h('svg', { width: box || 92, height: box || 92, viewBox: '0 0 92 92', 'aria-hidden': true },
+      h('circle', { cx: 46, cy: 46, r: r, fill: 'none', stroke: '#eef2f7', strokeWidth: 10 }),
+      h('circle', { cx: 46, cy: 46, r: r, fill: 'none', stroke: C.blue, strokeWidth: 10, strokeLinecap: 'round',
+        strokeDasharray: (pct / 100 * circ).toFixed(1) + ' ' + circ.toFixed(1), transform: 'rotate(-90 46 46)' }),
+      h('text', { x: 46, y: 50, textAnchor: 'middle', fontSize: 20, fontWeight: 700, fill: C.text, style: { fontVariantNumeric: 'tabular-nums' } }, pct + '%'));
+  }
+  function KpiBento() {
+    var cats = [
+      { label: '实现', value: 3, color: C.blue },
+      { label: '规划', value: 1, color: '#f59e0b' },
+      { label: '评审', value: 1, color: C.cyan },
+      { label: '修复', value: 2, color: '#db2777' },
+      { label: '运维', value: 1, color: '#92710c' },
+    ];
+    var bar = h('div', { style: { display: 'flex', height: 16, borderRadius: 8, overflow: 'hidden', gap: 2, marginTop: 12 } },
+      cats.map(function (d) {
+        return h('div', { key: d.label, title: d.label + '：' + d.value, style: { flex: d.value, background: d.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, color: '#fff' } }, String(d.value));
+      }));
+    var legend = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 8 } },
+      cats.map(function (d) {
+        return h('span', { key: 'lg-' + d.label, style: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: C.text2 } },
+          h('span', { style: { width: 7, height: 7, borderRadius: 3, background: d.color, display: 'inline-block' } }), d.label + ' ' + d.value);
+      }));
+    var vals = [1.8, 2.4, 2.1, 3.2, 2.8, 4.1, 3.6, 5.0, 4.4, 3.9, 4.8, 5.6, 5.1, 6.2, 5.8, 6.9, 6.4, 7.4, 7.0, 8.2];
+    var W = 560, H = 56, max = 8.2;
+    var pts = vals.map(function (v, i) { return [6 + (i * (W - 12)) / (vals.length - 1), H - 8 - (v / max) * (H - 18)]; });
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+    var area = line + ' L ' + (W - 6) + ' ' + (H - 2) + ' L 6 ' + (H - 2) + ' Z';
+    var spark = h('svg', { width: '100%', height: H, viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', 'aria-hidden': true },
+      h('defs', null, h('linearGradient', { id: 'bg1', x1: 0, y1: 0, x2: 0, y2: 1 },
+        h('stop', { offset: '0%', stopColor: C.blue, stopOpacity: 0.22 }), h('stop', { offset: '100%', stopColor: C.blue, stopOpacity: 0 }))),
+      h('path', { d: area, fill: 'url(#bg1)' }),
+      h('path', { d: line, fill: 'none', stroke: C.blue, strokeWidth: 1.6 }),
+      h('circle', { cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1], r: 3, fill: C.blue }));
+
+    // 批注 round2：Token 撤通栏独板，4 卡等宽并排（顺序对齐产线：SPEC/进度/Token/Agent）
+    return h('div', { 'data-proto-id': 'overview-kpi-row', style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(220px, 1fr))', gap: 16 } },
+      // SPEC 总数
+      h('div', { 'data-proto-id': 'overview-kpi-card-spec', className: 'bento', style: { padding: '18px 20px' } },
+        TileLabel('SPEC 总数'),
+        h('div', { className: 'num', style: { fontSize: 40, fontWeight: 700, letterSpacing: -1, lineHeight: '48px', marginTop: 8 } }, '47'),
+        h('div', { style: { display: 'flex', gap: 16, marginTop: 10 } },
+          h('span', { className: 'num', style: { fontSize: 12, color: C.text3 } }, '今日更新 ', h('span', { style: { fontWeight: 600, color: C.text } }, '6')),
+          h('span', { className: 'num', style: { fontSize: 12, color: C.text3 } }, '近 7 天 ', h('span', { style: { fontWeight: 600, color: C.text } }, '18'))),
+        h('div', { style: { display: 'flex', gap: 3, marginTop: 14 } },
+          [3, 5, 2, 6, 4, 3, 5, 4, 6, 3, 4, 5].map(function (v, i) {
+            return h('div', { key: i, title: '第 ' + (i + 1) + ' 周：' + v, style: { flex: v, height: 6, borderRadius: 3, background: i === 11 ? C.blue : '#e2e8f0' } });
+          }))),
+      // 任务进度（批注 round3：标题回左上角同标尺；round4：内容行下压，底部与相邻卡基本对齐）
+      h('div', { 'data-proto-id': 'overview-kpi-card-progress', className: 'bento', style: { padding: '18px 20px', display: 'flex', flexDirection: 'column' } },
+        TileLabel('任务进度'),
+        h('div', { style: { flex: 1, display: 'flex', alignItems: 'center', gap: 14, marginTop: 10 } },
+          Donut(62, 72),
+          h('div', { style: { minWidth: 0 } },
+            h('div', { className: 'num', style: { fontSize: 20, fontWeight: 700, whiteSpace: 'nowrap' } }, '214 / 345', h('span', { style: { fontSize: 12, fontWeight: 400, color: C.text3 } }, ' 已完成')),
+            h(Progress, { percent: 62, size: 'small', strokeColor: C.blue, railColor: '#eef2f7', showInfo: false, style: { marginTop: 8 } }),
+            h('div', { className: 'num', style: { fontSize: 12, color: C.text3, marginTop: 6 } }, '较昨日 +4 · 速率正常（示例文案）')))),
+      // Token 消耗（批注 round2：回到普通磁贴，与另 3 卡并排）
+      h('div', { 'data-proto-id': 'overview-kpi-card-token', className: 'bento', style: { padding: '18px 20px' } },
+        TileLabel('Token 消耗'),
+        // 批注 round4：9380万 小一号（32→28）
+        h('div', { className: 'num', style: { fontSize: 28, fontWeight: 700, letterSpacing: -0.6, lineHeight: '36px', marginTop: 8 } }, '9380万'),
+        h('div', { className: 'num', style: { fontSize: 12, color: C.text3, marginTop: 8 } }, '平均每 SPEC ', h('span', { style: { fontWeight: 600, color: C.text, fontSize: 13 } }, '198万')),
+        h('div', { style: { marginTop: 10 } }, spark)),
+      // 活跃 Agent
+      h('div', { 'data-proto-id': 'overview-kpi-card-agent', className: 'bento', style: { padding: '18px 20px' } },
+        TileLabel('活跃 Agent'),
+        h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' } },
+          h('div', { className: 'num', style: { fontSize: 32, fontWeight: 700, letterSpacing: -0.8, lineHeight: '40px', marginTop: 8 } }, '8'),
+          h('span', { className: 'num', style: { fontSize: 12, color: C.green, fontWeight: 600, background: C.greenSoft, borderRadius: 999, padding: '2px 8px' } }, '2 项目在跑')),
+        legend, bar));
+  }
+
+  // ── 项目清单（白卡大圆角表格） ──
+  function ProjectCell(p) {
+    var kids = [];
+    if (p.error) {
+      kids.push(h('div', { key: 'id', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+        h('span', { style: { fontSize: 14, fontWeight: 600 } }, p.name), Pill('critical', '项目错误', true)));
+      kids.push(h('div', { key: 'path', className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 5 } }, p.path));
+      kids.push(h('div', { key: 'err', className: 'ellipsis', style: { fontSize: 12, color: C.red, marginTop: 4 } }, p.error));
+    } else {
+      kids.push(h('div', { key: 'id', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+        h('span', { style: { fontSize: 14, fontWeight: 600, cursor: 'pointer' } }, p.name),
+        p.daemon === 'running'
+          ? (p.hosting === 'unmanaged' ? Pill('warning', '运行中·未托管', true) : Pill('good', '运行中', true))
+          : (p.daemon === 'stopped' ? Pill('warning', '未运行', true) : null),
+        p.discovered ? Pill('muted', '自动发现', true) : null));
+      kids.push(h('div', { key: 'path', className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 5 } }, p.path));
+      // 批注 round6：长注释换行显示（pre-wrap），不再省略截断
+      kids.push(h('div', { key: 'desc', style: { fontSize: 12, color: C.text3, marginTop: 4, whiteSpace: 'pre-wrap', lineHeight: '20px' } }, p.description || '暂无简介'));
+      var tags = Object.keys(p.status_counts || {}).map(function (st) { return statusTag(st, p.status_counts[st]); });
+      if (tags.length) kids.push(h('div', { key: 'tags', style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 7 } }, tags));
+    }
+    return h('div', { style: { minWidth: 0 } }, kids);
+  }
+  function ProgressCell(p) {
+    var pctv = Math.round((p.task_done / Math.max(1, p.task_total)) * 100);
+    return h('div', { style: { minWidth: 0 } },
+      h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 } },
+        h('span', { style: { fontSize: 12, color: C.text3 } }, '任务进度'),
+        h('span', { className: 'num', style: { fontSize: 12, fontWeight: 600 } }, p.task_done + '/' + p.task_total + ' · ' + pctv + '%')),
+      h('div', { style: { marginTop: 6 } },
+        h(Progress, { percent: pctv, size: 'small', strokeColor: C.blue, railColor: '#eef2f7', showInfo: false })));
+  }
+  function NumCell(v, color) {
+    return h('span', { className: 'num', style: { fontSize: 16, fontWeight: 700, color: color || C.text } }, v);
+  }
+  function ActionsCell() {
+    var menu = { items: [{ key: 'stop', label: '停止' }, { key: 'install', label: '安装托管' }, { type: 'divider' }, { key: 'delete', label: '删除', danger: true }] };
+    return h(Space, { size: 4 },
+      h(Button, { type: 'link', size: 'small' }, '进入'),
+      h(Dropdown, { menu: menu, placement: 'bottomRight', trigger: ['click'] },
+        h(Button, { type: 'text', size: 'small', icon: IconDots(), 'aria-label': '更多操作' })));
+  }
+  function ProjectPanel() {
+    var columns = [
+      // 批注 round6：列宽分配还原（去掉显式 380 定宽）；fixed 布局保留（撑坏防线）
+      { title: '项目', dataIndex: 'name', render: function (_, p) { return ProjectCell(p); } },
+      { title: 'SPEC 数', dataIndex: 'spec_count', width: 96, align: 'right', render: function (v, p) { return p.error ? h('span', { className: 'num', style: { color: C.text4, fontSize: 16 } }, '—') : NumCell(v); } },
+      { title: '任务进度', dataIndex: 'task_total', width: 220, render: function (v, p) { return p.error ? h('span', { className: 'num', style: { color: C.text4 } }, '—') : ProgressCell(p); } },
+      { title: '问题/阻塞', dataIndex: 'problems', width: 108, align: 'right', render: function (v, p) { return p.error ? h('span', { className: 'num', style: { color: C.text4, fontSize: 16 } }, '—') : NumCell(v, v > 0 ? C.red : null); } },
+      { title: '活跃运行', dataIndex: 'active_runs', width: 108, align: 'right', render: function (v, p) { return p.error ? h('span', { className: 'num', style: { color: C.text4, fontSize: 16 } }, '—') : NumCell(v, v > 0 ? C.amber : null); } },
+      { title: '操作', key: 'actions', width: 116, align: 'right', render: function () { return ActionsCell(); } },
+    ];
+    var rows = projects.map(function (p) { return Object.assign({ key: p.name }, p); });
+    return h('div', { 'data-proto-id': 'overview-project-panel', className: 'bento' },
+      h('div', { 'data-proto-id': 'overview-project-toolbar', style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '14px 20px', borderBottom: '1px solid #f1f5f9' } },
+        h('span', { style: { fontSize: 16, fontWeight: 700 } }, '项目清单'),
+        h('span', { className: 'num', style: { fontSize: 12, color: C.text4 } }, '共 5 个 · 运行中 2'),
+        h('span', { style: { flex: 1 } }),
+        h(Input.Search, { placeholder: '搜索项目', size: 'small', allowClear: true, style: { width: 200 } }),
+        h(Radio.Group, { optionType: 'button', size: 'small', defaultValue: 'all', options: [{ label: '全部', value: 'all' }, { label: '运行中', value: 'running' }, { label: '未运行', value: 'stopped' }], style: { borderRadius: 10 } })),
+      h('div', { 'data-proto-id': 'overview-project-table', className: 'bento-table' },
+        h(Table, { columns: columns, dataSource: rows, rowKey: 'key', pagination: false, size: 'middle', scroll: { x: 1060 },
+          onRow: function (rec) { return { 'data-proto-id': 'overview-project-row-' + rec.name }; } })));
+  }
+
+  function Page() {
+    return h('div', { style: { minHeight: '100vh', background: C.bg } },
+      h('main', { style: { padding: '24px 24px 40px', maxWidth: 1400, margin: '0 auto' } },
+        PageHeader(),
+        h('div', { style: { marginTop: 20 } }, AlertCard()),
+        h('div', { style: { marginTop: 16 } }, KpiBento()),
+        h('div', { style: { marginTop: 16 } }, ProjectPanel())));
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(ConfigProvider, { theme: themeConfig }, Page()));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>
