@@ -151,8 +151,6 @@ def resolve_adapter(harness: str, config: Optional[Dict[str, Any]] = None) -> Ha
     if harness == "claude":
         return ClaudeAdapter()
     if harness == "dsh":
-        from core.config import ConfigLoader
-
         cfg = config or {}
         # 部署参数：agent.dsh_profile（缺省 Bundle README 约定名）/ agent.dsh_home
         # （缺省空=继承进程环境；DSH_HOME 隔离部署由此键指定）/ agent.dsh_api

@@ -469,7 +469,7 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
             // unknown，经 resultContentToText 文本化再截断。
             // isError 结果改推 error 行（消费端 MessageItem 渲染红色「错误」头，
             // 与上方终态 error 分支同形态），不以中性系统行掩盖失败状态（item
-            // 4aef6dc57a79）；digest 为空时省略冒号尾巴（与 :624 task_started
+            // 4aef6dc57a79）；digest 为空时省略冒号尾巴（与下方 task_started
             // 兜底同口径）
             const digest = truncateText(resultContentToText(result.content), 80);
             const text = digest ? `工具结果：${digest}` : '工具结果';
@@ -596,8 +596,9 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
       const hasLegacyText =
         ev.type === 'system' && typeof ev.content === 'string' && ev.content.trim() !== '';
       if (!hasLegacyText) {
-        // error 载荷可能为对象形态（见 payloadText 注释），与 :390 终态分支
-        // 同一文本化口径，strField 会把非字符串 error 判空导致整段静默
+        // error 载荷可能为对象形态（见 payloadText 注释），与上方 error/
+        // interrupted/cancelled 终态分支同一文本化口径，strField 会把非字
+        // 符串 error 判空导致整段静默
         const errorPayload = payloadText(rec.error).trim();
         if (!errorPayload) continue;
         pushSystem(`系统事件（${kind}）：${truncateText(errorPayload, 80)}`, timestamp);

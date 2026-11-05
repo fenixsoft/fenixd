@@ -98,8 +98,10 @@ class SpawnRequest:
     # 期望超时（秒；None = 不限）。当前无消费方——run_one_shot 的 communicate
     # timeout 取自身同名形参（None = 无限等），不读本字段；仅作请求描述随行。
     timeout: Optional[float] = None
-    # 显式 env 键值对覆盖 env_mode 产物（优先级最高；当前无消费方，预留）
-    strict_env: Optional[Dict[str, str]] = None
+    # 显式 env 键值对，覆盖 env_mode 产物（优先级最高；当前无消费方，预留）。
+    # strict 指最终覆盖语义（压过上方 env_overrides 与 env_mode 产物），
+    # 非「严格 env 模式」开关——消费者勿按字面名误用
+    env_strict_overrides: Optional[Dict[str, str]] = None
 
 
 @dataclass
