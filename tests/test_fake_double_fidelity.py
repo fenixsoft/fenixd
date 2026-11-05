@@ -19,6 +19,7 @@ staticmethod 首参不剥离。vendored 代码（node_modules）不参与。
 """
 
 import ast
+import gc
 import inspect
 import tempfile
 import unittest
@@ -28,6 +29,7 @@ from fenix_guards import (
     VENDORED_DIR_MARKERS,
     index_method_signatures,
     is_vendored,
+    iter_class_defs,
     method_signature,
     parse_tree,
     repo_relative,
@@ -89,9 +91,10 @@ def scan_fake_fidelity(test_files, seams: dict, whitelist) -> list:
         if tree is None:
             continue
         rel = repo_relative(f, REPO_ROOT)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
+        # iter_class_defs：与 ast.walk 同序的 ClassDef 遍历（只走语句容器，
+        # 跳过表达式子树）——扫描语义不变，436 个测试文件的全节点遍历是
+        # 本守卫的主要耗时（regression-long-test 3f8c3b0d6f80）。
+        for node in iter_class_defs(tree):
             for item in node.body:
                 if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
@@ -264,9 +267,20 @@ class TestFakeDoubleFidelityOnRepo(unittest.TestCase):
     """落地实证：对当前 tests/ 运行守卫，违规数 = 0（白名单为空）。"""
 
     def test_current_tests_have_zero_violations(self):
-        seams = core_seams()
-        violations = scan_fake_fidelity(
-            _test_files(), seams, FIDELITY_WHITELIST)
+        # 批量 AST 构建期间作用域关闭 gc（regression-long-test 3f8c3b0d6f80）：
+        # core/tests 两仓 600+ 棵 AST 树驻留 parse 缓存时，全仓扫描的数百万
+        # 节点分配会反复触发对巨量存活对象的代际回收，占本用例耗时的主要
+        # 份额（实测 2.98s → 0.75s）。AST 节点树无环，仅靠引用计数即可回收，
+        # 关闭期间不产生泄漏；finally 恢复原开关状态，不影响后续用例。
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            seams = core_seams()
+            violations = scan_fake_fidelity(
+                _test_files(), seams, FIDELITY_WHITELIST)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
         self.assertEqual(
             violations, [],
             "tests/ 出现宽容/必填不足的测试替身:\n" + "\n".join(violations))

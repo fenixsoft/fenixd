@@ -76,8 +76,15 @@ class TestChainOverviewDataLayer:
         assert view["in_flight"] == [] and view["signatures"] == []
         assert view["escalations"] == [] and view["queue"] == []
 
-    def test_four_sections_derived(self, proot):
+    def test_four_sections_derived(self, proot, monkeypatch):
         """在办/配额/上升件/队列四视图派生与 exhausted 判定。"""
+        # 隔离机器级用户配置：cap 经 resolve_config 深合并 ~/.fenix/config.yaml
+        # （用户级合并是产品特性），机器级 chain 覆盖会改写缺省 cap、使本用例
+        # 的绝对 cap 断言漂移（全量回归曾因此 quota_exhausted 0≠1）。patch 到
+        # 不存在路径即走纯「缺省 cap 回落」路径，与用例意图一致。
+        monkeypatch.setattr(
+            "core.config.USER_CONFIG_DIR", proot / ".fenix" / "no-user-config"
+        )
         # arbiter_rulings 缺省 2026-11-03 定调 2→3，exhausted 需 rulings 打满 cap=3
         _seed_quota(proot, "spec-a::verify_env_blocked", attempts=2, rulings=3)
         _seed_quota(proot, "spec-b::verify_env_blocked", attempts=1)

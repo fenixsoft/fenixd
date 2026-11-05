@@ -178,6 +178,25 @@ def process_cmdline(pid: int) -> str:
         return ""
 
 
+def _process_is_zombie(pid: int) -> bool:
+    """进程是否已成僵尸（已退出、仅剩父进程未收割的空壳）。
+
+    ``os.kill(pid, 0)`` 对僵尸进程同样成功（POSIX：僵尸仍是「存在」的进程），
+    仅凭信号探活无法区分「已退出未收割」与「仍在运行」——``--stop`` 停掉的
+    实例对停止方进程而言通常正是这种未收割僵尸，等待循环若只看信号探活会
+    空转到超时。读 /proc/<pid>/stat 的 state 字段判定（解析纪律同 dashboard
+    ``_proc_state``：comm 可能含空格/括号，取最后一个 ')' 之后首字段）。
+    非 Linux / 进程已消失 → False（维持仅信号探活的既有行为）。
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        return data[data.rindex(")") + 2:].split()[0] == "Z"
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def probe_existing(proto_dir: Path, script_path: str) -> dict:
     """探测既有实例：``reuse``（存活且核实为本脚本伺服同目录）/ ``stale``（可接管）。
 
@@ -228,12 +247,18 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
         remove_pid_file(proto_dir)
         return {"ok": False, "action": "stop-failed", "error": str(exc)}
     import time
+
+    def _exited() -> bool:
+        # 僵尸（已退出、等待父进程收割）视同已退出：SIGTERM 后被停实例对
+        # 本进程而言多为未收割僵尸，仅信号探活会误判仍存活而空转到超时。
+        return not process_alive(pid) or _process_is_zombie(pid)
+
     deadline = time.time() + STOP_WAIT_SEC
     while time.time() < deadline:
-        if not process_alive(pid):
+        if _exited():
             break
         time.sleep(0.1)
-    if process_alive(pid):
+    if not _exited():
         return {"ok": False, "action": "stop-timeout",
                 "error": f"PID {pid} 在 {STOP_WAIT_SEC}s 内未退出"}
     remove_pid_file(proto_dir)
