@@ -37,7 +37,11 @@ from core.dashboard.data.runs import (
     get_runs,
     runs_retention_check,
 )
-from core.knowledge import DistillManager
+from core.knowledge import (
+    _DISTILL_SUMMARY_MAX_CHARS,
+    DistillManager,
+    _extract_distill_summary,
+)
 from test_knowledge import (
     GOOD_PAGE,
     KNOWLEDGE_DIR,
@@ -613,6 +617,42 @@ class TestDistillBatchHeartbeat(KnowledgeTestBase):
         self.assertEqual(lines[-1]["type"], "error")
         self.assertIn("validate boom", lines[-1]["error"])
         self.assertFalse(self._hb_thread_alive())
+
+
+class TestExtractDistillSummary(unittest.TestCase):
+    """add-distill-run-work-summary 1.2/3.3：工作总结提取纯函数三分支。"""
+
+    def test_strips_trailing_marker_line(self):
+        stdout = "总结正文第一行\n总结正文第二行\nKNOWLEDGE_DISTILL_DONE\n"
+        self.assertEqual(
+            _extract_distill_summary(stdout),
+            "总结正文第一行\n总结正文第二行",
+        )
+
+    def test_marker_missing_noop_keeps_full_text(self):
+        # 标记缺失不判失败：剥除逻辑空转，归一后全文作为总结
+        self.assertEqual(
+            _extract_distill_summary("没有标记的总结全文\n"),
+            "没有标记的总结全文",
+        )
+
+    def test_truncation_cap_with_suffix(self):
+        text = "字" * (_DISTILL_SUMMARY_MAX_CHARS + 100)
+        out = _extract_distill_summary(text + "\nKNOWLEDGE_DISTILL_DONE")
+        self.assertTrue(out.endswith("…（截断）"))
+        self.assertEqual(len(out), _DISTILL_SUMMARY_MAX_CHARS + len("…（截断）"))
+        self.assertEqual(
+            out[:_DISTILL_SUMMARY_MAX_CHARS], "字" * _DISTILL_SUMMARY_MAX_CHARS
+        )
+
+    def test_empty_inputs_return_empty(self):
+        for s in (
+            "",
+            "   \n\n",
+            "KNOWLEDGE_DISTILL_DONE",
+            "\nKNOWLEDGE_DISTILL_DONE\n",
+        ):
+            self.assertEqual(_extract_distill_summary(s), "")
 
 
 if __name__ == "__main__":
