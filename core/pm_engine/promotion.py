@@ -256,6 +256,16 @@ def _lint_tasks_parseable(project_root: Path, spec_name: str, logger) -> list:
     )
 
 
+# title 违规处方（add-spec-title-promotion-gate D5「违规消息即处方」，对齐
+# 门禁平铺事故教训——不留零解释 pending）：内嵌最小写入示例与规范出处，
+# 立项方（实现分支或交互会话）可零上下文补写，30 分钟周期扫描重试晋升即过。
+_TITLE_PRESCRIPTION = (
+    "处方：以 'title: <5-25字中文标题>' 为一行追加至该 SPEC 的 .spec.yaml 末行，"
+    "保存后由 30 分钟周期扫描自动重试晋升即通过"
+    "（中文标题生成纪律：add-spec-chinese-title）"
+)
+
+
 def _lint_title(project_root: Path, spec_name: str, logger) -> list:
     """中文标题存在性 lint（晋升前拦截，add-spec-title-promotion-gate D2/D4）。
 
@@ -296,7 +306,7 @@ def _lint_title(project_root: Path, spec_name: str, logger) -> list:
                 return []
         if not detail:
             detail = "title 字段缺失、为空白或非字符串"
-    return [detail]
+    return [f"{detail}；{_TITLE_PRESCRIPTION}"]
 
 
 def should_skip_review(project_root: Path, spec_name: str, config: dict, logger) -> bool:
