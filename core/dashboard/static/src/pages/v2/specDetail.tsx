@@ -853,10 +853,10 @@ export default function V2SpecDetailPage() {
           title={richTitle}
           back={() => navigate(`/v2/projects/${encodeURIComponent(name)}`)}
           subtitle={
-            // add-spec-subtitle-and-row-click（task 1.3，merge-back 手术并入）：
-            // 中文标题与 branch 组合副标题（「中文标题 · branch」），组合语义
-            // 单源 combineSpecSubtitle（branch 空只显中文标题、title 空维持
-            // branch 单独显示、双空不渲染）；移动端隐藏维持既有页级 gate
+            // add-spec-subtitle-and-row-click（task 1.3）：中文标题与 branch 组合
+            // 副标题（「中文标题 · branch」），组合语义单源 combineSpecSubtitle
+            // （branch 空只显中文标题、title 空维持 branch 单独显示、双空不渲染）；
+            // 移动端隐藏维持既有页级 gate
             mobile ? undefined : combineSpecSubtitle(detail?.title, detail?.branch)
           }
           filters={rightActions}

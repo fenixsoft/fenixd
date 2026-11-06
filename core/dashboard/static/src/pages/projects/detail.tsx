@@ -1473,10 +1473,10 @@ export default function SpecDetailPage() {
     <PageTitleBar
       title={richTitle}
       subtitle={
-        // add-spec-subtitle-and-row-click（task 1.2，merge-back 手术并入）：
-        // 标题栏中文副标题——详情响应 title 透传（null/空不声明，缺失容错与
-        // 列表规则一致）；移动端隐藏走页级 gate（统一标题栏 SubtitleNode 自带
-        // !isMobile 隐藏，页级 gate 为双保险）
+        // add-spec-subtitle-and-row-click（task 1.2）：标题栏中文副标题——详情
+        // 响应 title 透传（null/空不声明，缺失容错与列表规则一致）；移动端隐藏
+        // 走页级 gate（对齐 v2 specDetail 既有先例：本基线 SubtitleNode 无
+        // !isMobile 判据，页级承载同语义、PageTitleBar 组件本体不改）
         isMobile ? undefined : detail?.title || undefined
       }
       back={backToList}
