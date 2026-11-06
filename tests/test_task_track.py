@@ -31,6 +31,9 @@ def _mk_change(root: Path, name: str) -> Path:
 def _write_tasks(spec_dir: Path, text: str) -> None:
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "tasks.md").write_text(text, encoding="utf-8")
+    # add-spec-title-promotion-gate：title 存在性晋升门上线，晋升链夹具须带
+    # 非 title 违规的 .spec.yaml（mode 键留缺 → 保守 reviewing 语义不变）
+    (spec_dir / ".spec.yaml").write_text("title: 测试中文标题\n", encoding="utf-8")
 
 
 # ── R0 任务 id 语法（字母后缀为正形态）─────────────────────────────────
@@ -316,6 +319,9 @@ class TestPromotionLintTasks(unittest.TestCase):
         # lint_tasks_parseable 契约）；目录须存在——目录整体缺失是另一独立判定
         # （code-review item aea24eef0e8e），见 test_missing_spec_dir_blocks_promotion
         self.spec_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec_dir / ".spec.yaml").write_text(
+            "title: 测试中文标题\n", encoding="utf-8"
+        )
         self.engine._on_spec_drafted("demo")
         self.assertEqual(self._entry()["status"], "ready")
 

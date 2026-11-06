@@ -125,24 +125,30 @@ def promote_drafted(
             f"晋升前软化编排异常 '{spec_name}'（降级走既有 lint 判定）: {e}",
         )
 
-    # 3. 晋升 lint（deliverables 声明形态校验 + tasks.md 可解析性校验）
+    # 3. 晋升 lint（deliverables 声明形态校验 + tasks.md 可解析性校验
+    #    + title 存在性校验，add-spec-title-promotion-gate D1）
     violations = _lint_deliverable_declarations(project_root, spec_name, logger)
     tasks_violations = _lint_tasks_parseable(project_root, spec_name, logger)
+    title_violations = _lint_title(project_root, spec_name, logger)
     # 1.5 步判定目录缺失：两项 lint 对缺失目录必返回空（fail-open），此处
     # 显式合成违规条目交由第 4 步统一处理（写前复查 + error 直写 + violations 返回）
     if spec_dir_missing:
         violations = [
             f"SPEC 目录缺失：spec/changes/{spec_name}/ 不存在"
-            "（STATE 残留或归档竞态遗留），两项晋升 lint 门禁无法执行",
+            "（STATE 残留或归档竞态遗留），三项晋升 lint 门禁无法执行",
         ] + list(violations)
 
     # 4. 违规判定：有违规 → 写 STATE error + 返回失败
-    if violations or tasks_violations:
+    if violations or tasks_violations or title_violations:
         msgs = []
         if violations:
             msgs.append("Deliverables 声明 lint 未通过：" + "；".join(violations))
         if tasks_violations:
             msgs.append("tasks.md 可解析性 lint 未通过：" + "；".join(tasks_violations))
+        if title_violations:
+            msgs.append(
+                "中文标题存在性 lint 未通过：" + "；".join(title_violations)
+            )
         err = "；".join(msgs)
         logger.error(
             "pm_engine",
@@ -164,7 +170,7 @@ def promote_drafted(
                 f"Promotion lint error write abandoned '{spec_name}': "
                 "写盘前复查发现已冻结——放弃 error 直写，冻结现场保留待人工解冻",
             )
-            return {"ok": False, "violations": violations + tasks_violations,
+            return {"ok": False, "violations": violations + tasks_violations + title_violations,
                     "error_written": False}
         # 写前状态复核（code-review item 8aa4caccad7c，对齐 engine.py
         # _on_spec_verified 49044ee6e490「status 非预期即放弃写」先例）：
@@ -184,7 +190,7 @@ def promote_drafted(
                 f"Promotion lint error write abandoned '{spec_name}': "
                 "写盘前复核发现条目已不存在（被删除或归档）——放弃 error 直写",
             )
-            return {"ok": False, "violations": violations + tasks_violations,
+            return {"ok": False, "violations": violations + tasks_violations + title_violations,
                     "error_written": False}
         if recheck.get("status", "") != "drafted":
             logger.info(
@@ -193,7 +199,7 @@ def promote_drafted(
                 f"写盘前复核发现 status 已为 '{recheck.get('status', '')}'，"
                 "非 drafted——放弃 error 直写，让位于外部进度",
             )
-            return {"ok": False, "violations": violations + tasks_violations,
+            return {"ok": False, "violations": violations + tasks_violations + title_violations,
                     "error_written": False}
         if not state_machine.update_spec(spec_name, {"error": err}):
             logger.warning(
@@ -201,9 +207,9 @@ def promote_drafted(
                 f"Promotion lint error write failed '{spec_name}': "
                 "update_spec 返回 False（条目缺失/原子写失败），error 未落盘",
             )
-            return {"ok": False, "violations": violations + tasks_violations,
+            return {"ok": False, "violations": violations + tasks_violations + title_violations,
                     "error_written": False}
-        return {"ok": False, "violations": violations + tasks_violations,
+        return {"ok": False, "violations": violations + tasks_violations + title_violations,
                 "error_written": True}
 
     # 5. 全部通过，返回可晋升，并确定 next_status
@@ -248,6 +254,49 @@ def _lint_tasks_parseable(project_root: Path, spec_name: str, logger) -> list:
     return _lint(
         project_root, spec_name, logger, "lint_tasks_parseable", "tasks.md 可解析性"
     )
+
+
+def _lint_title(project_root: Path, spec_name: str, logger) -> list:
+    """中文标题存在性 lint（晋升前拦截，add-spec-title-promotion-gate D2/D4）。
+
+    活跃 `.spec.yaml` yaml.safe_load 后 `title` 为非空 str 即通过（判定谓词
+    与读侧单点 core/dashboard/data/spec_docs.read_spec_title 同源——晋升时
+    change 目录必在活跃侧，无需归档回退）；文件缺失 / YAML 解析失败 /
+    值空白 / 非 str → 违规。机械网取 fail-closed 而非 `_lint` 族的
+    fail-open：本门职责正是兜住「读侧证明不了 title 存在」的一切形态
+    （提示词级纪律的会话快照盲区），异常放行等于门空转；补写一行即自愈，
+    误拦代价低。`fix-cr-` 前缀豁免先判（精确字符串前缀，非正则——code-fix
+    程序化模板生成通道，add-spec-chinese-title proposal 非目标；不豁免
+    `fix-*` 泛前缀）。不做长度/形态校验（D3：5-25 字仍是生成纪律，读侧
+    容错契约不变）。SPEC 目录缺失返回空列表——目录缺失已由 promote_drafted
+    入口 1.5 步拦截，不重复产出违规条目。
+    """
+    spec_dir = project_root / "spec" / "changes" / spec_name
+    if not spec_dir.is_dir():
+        return []
+    # D4 豁免口径先于一切读取判定
+    if spec_name.startswith("fix-cr-"):
+        return []
+    detail = ""
+    yaml_path = spec_dir / ".spec.yaml"
+    if not yaml_path.is_file():
+        detail = ".spec.yaml 文件不存在"
+    else:
+        data = None
+        try:
+            import yaml
+
+            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+            detail = ".spec.yaml YAML 解析失败"
+        if not detail and isinstance(data, dict):
+            raw = data.get("title")
+            if isinstance(raw, str) and raw.strip():
+                return []
+        if not detail:
+            detail = "title 字段缺失、为空白或非字符串"
+    return [detail]
 
 
 def should_skip_review(project_root: Path, spec_name: str, config: dict, logger) -> bool:

@@ -1336,6 +1336,12 @@ class TestSpecPromoteAPI:
         (proot / "spec" / "changes" / spec_name / "tasks.md").write_text(
             "## 1. 阶段一\n\n- [x] 1.1 任务一\n", encoding="utf-8"
         )
+        # add-spec-title-promotion-gate：title 存在性晋升门上线，晋升成功
+        # 路径夹具须带非 title 违规的 .spec.yaml（mode 键留缺 → 保守
+        # reviewing 分流语义不变）
+        (proot / "spec" / "changes" / spec_name / ".spec.yaml").write_text(
+            "title: 测试中文标题\n", encoding="utf-8"
+        )
         return proot
 
     def test_promote_success(self, tmp_path):

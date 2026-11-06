@@ -31,6 +31,12 @@ def _setup_project(tmpdir, spec_name="myspec", status="drafted"):
     (proot / "spec" / "changes" / spec_name / "tasks.md").write_text(
         "## 1. 阶段一\n\n- [x] 1.1 任务一\n", encoding="utf-8"
     )
+    # add-spec-title-promotion-gate：title 存在性晋升门上线后，晋升成功路径
+    # 的夹具 MUST 带 .spec.yaml 非 title 违规豁免——mode 键留缺（回退 full，
+    # 保守不跳过评审），保持原「无 mode 语义」测试前提不变
+    (proot / "spec" / "changes" / spec_name / ".spec.yaml").write_text(
+        "title: 测试中文标题\n", encoding="utf-8"
+    )
     return proot, sm, state_path
 
 
@@ -302,8 +308,9 @@ class TestCLI(unittest.TestCase):
         # 构造命中跳过判据的 spec：fast-track + 能力目录 0 + 声明 1 条
         spec_dir = proot / "spec" / "changes" / "myspec"
         (proot / "deliverable.txt").write_text("x", encoding="utf-8")
-        (spec_dir / ".spec.yaml").write_text("mode: fast-track\n",
-                                             encoding="utf-8")
+        (spec_dir / ".spec.yaml").write_text(
+            "mode: fast-track\ntitle: 测试中文标题\n", encoding="utf-8"
+        )
         (spec_dir / "tasks.md").write_text(
             "## 1. 阶段一\n\n"
             "## Deliverables\n\n"
