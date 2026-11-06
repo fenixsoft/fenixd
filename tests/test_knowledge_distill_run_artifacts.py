@@ -37,7 +37,11 @@ from core.dashboard.data.runs import (
     get_runs,
     runs_retention_check,
 )
-from core.knowledge import DistillManager
+from core.knowledge import (
+    _DISTILL_SUMMARY_MAX_CHARS,
+    DistillManager,
+    _extract_distill_summary,
+)
 from test_knowledge import (
     GOOD_PAGE,
     KNOWLEDGE_DIR,
@@ -45,6 +49,17 @@ from test_knowledge import (
     KnowledgeTestBase,
     _FakeProc,
 )
+
+
+class _StdoutProc(_FakeProc):
+    """带 stdout 的 fake spawn 产物（工作总结数据源验证用）。"""
+
+    def __init__(self, stdout, returncode=0):
+        super().__init__(returncode)
+        self._stdout = stdout
+
+    def communicate(self, prompt=None, timeout=None):
+        return self._stdout, ""
 
 
 class TestDistillRunArtifacts(KnowledgeTestBase):
@@ -62,6 +77,17 @@ class TestDistillRunArtifacts(KnowledgeTestBase):
         def spawn(cmd, cwd, env=None):
             on_spawn(cmd, cwd)
             return _FakeProc(returncode)
+
+        mgr._spawn = spawn
+        return mgr
+
+    def _manager_with_stdout(self, on_spawn, stdout, returncode=0):
+        """spawn 替身返回带 stdout 的产物（终态行总结字段验证用）。"""
+        mgr = DistillManager(max_fix_rounds=2)
+
+        def spawn(cmd, cwd, env=None):
+            on_spawn(cmd, cwd)
+            return _StdoutProc(stdout, returncode)
 
         mgr._spawn = spawn
         return mgr
@@ -144,6 +170,73 @@ class TestDistillRunArtifacts(KnowledgeTestBase):
         # 读侧归属：agent_type=knowledge-distiller、spec 段=归档目录名
         self.assertEqual(infer_run_agent_type(stem)[0], "knowledge-distiller")
         self.assertEqual(run_spec_part(stem), self._archive_name())
+
+    # ── Scenario: 主蒸馏成功且 agent 输出总结（终态行带 result 字段）──
+
+    def test_success_batch_terminal_line_carries_summary(self):
+        self._git_init()
+        stdout = (
+            "## 工作总结\n\n- 蒸馏能力页：scheduled-spec-pickup\n"
+            "- 修订规则：拣选周期 rev+1\n\nKNOWLEDGE_DISTILL_DONE\n"
+        )
+        expected = (
+            "## 工作总结\n\n- 蒸馏能力页：scheduled-spec-pickup\n"
+            "- 修订规则：拣选周期 rev+1"
+        )
+        mgr = self._manager_with_stdout(
+            self._spawn_writer([self._good_versions()]), stdout
+        )
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["summary"], expected)
+        lines = self._lines(self._artifact_path())
+        self.assertEqual(lines[-1]["type"], "result")
+        # 终态行 result 字段 = stdout 剥标记后的文本（读侧契约字段名 result）
+        self.assertEqual(lines[-1]["result"], expected)
+        self.assertNotIn("KNOWLEDGE_DISTILL_DONE", lines[-1]["result"])
+
+    # ── Scenario: stdout 空/仅标记行 → fail-open 不写 result 键 ──────
+
+    def test_empty_stdout_no_result_key_batch_ok(self):
+        self._git_init()
+        # _FakeProc.communicate 恒返回 ("", "")——stdout 空形态
+        mgr = self._manager(self._spawn_writer([self._good_versions()]))
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertTrue(result["ok"])
+        self.assertNotIn("summary", result)
+        lines = self._lines(self._artifact_path())
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertNotIn("result", lines[-1])
+
+    def test_marker_only_stdout_no_result_key_batch_ok(self):
+        self._git_init()
+        mgr = self._manager_with_stdout(
+            self._spawn_writer([self._good_versions()]),
+            "KNOWLEDGE_DISTILL_DONE\n",
+        )
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        # 仅标记行 → 总结剥空 → 不写键，批成功与台账行为不受影响
+        self.assertTrue(result["ok"])
+        self.assertNotIn("summary", result)
+        lines = self._lines(self._artifact_path())
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertNotIn("result", lines[-1])
+
+    # ── Scenario: 失败路径不携带总结 ─────────────────────────────────
+
+    def test_spawn_fail_batch_terminal_no_summary(self):
+        self._git_init()
+        mgr = self._manager_with_stdout(
+            lambda cmd, cwd: None, "这段总结不该出现", returncode=1
+        )
+        result = mgr._run_batch(self.root, [self._archive_name()])
+        self.assertFalse(result["ok"])
+        lines = self._lines(self._artifact_path())
+        self.assertEqual(lines[-1]["type"], "error")
+        self.assertNotIn("result", lines[-1])
+        self.assertNotIn(
+            "这段总结不该出现", json.dumps(lines[-1], ensure_ascii=False)
+        )
 
     # ── Scenario: 批失败写 error 终态 ────────────────────────────────
 
@@ -524,6 +617,42 @@ class TestDistillBatchHeartbeat(KnowledgeTestBase):
         self.assertEqual(lines[-1]["type"], "error")
         self.assertIn("validate boom", lines[-1]["error"])
         self.assertFalse(self._hb_thread_alive())
+
+
+class TestExtractDistillSummary(unittest.TestCase):
+    """add-distill-run-work-summary 1.2/3.3：工作总结提取纯函数三分支。"""
+
+    def test_strips_trailing_marker_line(self):
+        stdout = "总结正文第一行\n总结正文第二行\nKNOWLEDGE_DISTILL_DONE\n"
+        self.assertEqual(
+            _extract_distill_summary(stdout),
+            "总结正文第一行\n总结正文第二行",
+        )
+
+    def test_marker_missing_noop_keeps_full_text(self):
+        # 标记缺失不判失败：剥除逻辑空转，归一后全文作为总结
+        self.assertEqual(
+            _extract_distill_summary("没有标记的总结全文\n"),
+            "没有标记的总结全文",
+        )
+
+    def test_truncation_cap_with_suffix(self):
+        text = "字" * (_DISTILL_SUMMARY_MAX_CHARS + 100)
+        out = _extract_distill_summary(text + "\nKNOWLEDGE_DISTILL_DONE")
+        self.assertTrue(out.endswith("…（截断）"))
+        self.assertEqual(len(out), _DISTILL_SUMMARY_MAX_CHARS + len("…（截断）"))
+        self.assertEqual(
+            out[:_DISTILL_SUMMARY_MAX_CHARS], "字" * _DISTILL_SUMMARY_MAX_CHARS
+        )
+
+    def test_empty_inputs_return_empty(self):
+        for s in (
+            "",
+            "   \n\n",
+            "KNOWLEDGE_DISTILL_DONE",
+            "\nKNOWLEDGE_DISTILL_DONE\n",
+        ):
+            self.assertEqual(_extract_distill_summary(s), "")
 
 
 if __name__ == "__main__":
