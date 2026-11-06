@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-06 16:55 UTC+8
+> 最后更新：2026-11-06 17:04 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -36,7 +36,7 @@
 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
 | [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-05 20:37 |
-| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 12 | 2026-11-04 17:46 |
+| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 12 | 2026-11-06 17:04 |
 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 
 ## 决策记录
@@ -105,4 +105,13 @@ pageChrome 守卫、几何证据验证配方）；chrome-soft-solid-titlebar-110
 （2026-11-06 16:55，spread 至 dashboard-frontend 一域两页：新建
 layout-chrome-tinting 页——顶栏毛玻璃只换 rgb 通道双档与 colorBgScrollHeader
 必随配、菜单侧栏 soft 实底平涂一体、三处边框同取 colorSplit、soft 染色族
-守卫；unified-page-title-bar 玻璃守卫表述改钉族通道一致与透明度 <1）。
+守卫；unified-page-title-bar 玻璃守卫表述改钉族通道一致与透明度 <1）；
+distill-batch-fold-tax-and-artifact-no-content-1106 已折叠入库（2026-11-06
+17:04，spread 至 knowledge-atlas 一域两页：knowledge-inbox-pipeline 新增
+折叠耗时税语义（每条完整子 run 2–8 分钟、与当轮蒸馏串行、批次耗时随积压
+线性膨胀、空折叠夹具同价）与编年账权威口径（run 自写 fold 行可能重复、
+事实对账以 git 提交为准）、knowledge-distill-pipeline 新增批耗时口径
+（单 SPEC 基准约 10 分钟、长批由折叠税主导）与 run 观测面缺口登记
+（事件流只记 started/heartbeat/round/result、result 行无改动文件清单、
+产出取证走 git log）及 _inbox 常驻 untracked 条目触发基线 WARNING 的
+已知误报面）。
