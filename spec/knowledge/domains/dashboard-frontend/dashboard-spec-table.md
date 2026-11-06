@@ -1,14 +1,15 @@
-<!-- knowledge: capability=dashboard-spec-table rev=9 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/changes/add-spec-chinese-title -->
+<!-- knowledge: capability=dashboard-spec-table rev=10 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/changes/add-spec-chinese-title,spec/changes/add-spec-subtitle-and-row-click -->
 
 # SPEC 列表表格
 
-项目视图的 SPEC 列表主体：表格化展示、前端过滤、行内文档入口、错误信息子行与状态列标记；桌面表格为 v2 台账重绘形态（功能保留）。
+项目视图的 SPEC 列表主体：表格化展示、整行点击进详情、前端过滤、行内文档入口、错误信息子行与状态列标记；桌面表格为 v2 台账重绘形态（功能保留）。
 
 ## 现行规则
 
 - 归档清单条目合并：`/api/specs` 在活跃 STATE.md 条目之外合并归档清单 `.fenix/STATE.archive.md` 的条目（并集，同名单活跃侧优先，不产生重复行），使条目已迁出的已归档 SPEC 继续出现在列表中且 archived=true；清单条目透迁出前的既有字段（status、created、updated、优先级等）与 `archived_at`/`archived_by` 溯源字段。「已归档」视图对这些行复用既有渲染（状态、任务进度、文档按钮等，文档与进度经归档目录回退读取）；默认「未归档」视图不出现清单条目；概览统计口径不受本合并影响（统计只算活跃）。
 - 列表数据与默认排序：`/api/specs` 每个 SPEC 摘要项含 `created` 与 `updated` 字段（取 STATE.md 条目的 ISO 时间，缺失为 null）；列表以 created 倒序（新在前）为默认排序，缺失创建时间的排最后；默认排序仅在用户未选择任何表头排序时生效。
-- 表格化展示：以带表头的表格呈现，表头逐列说明含义（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时等）；行点击进详情；无创建时间或验证进度的行显示占位符「—」。
+- 表格化展示：以带表头的表格呈现，表头逐列说明含义（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时等）；无创建时间或验证进度的行显示占位符「—」。
+- 整行点击进详情：行任意位置（任务进度、耗时、状态等非交互单元格）点击即进入该 SPEC 详情页，整行 `cursor: pointer`（与 overview 项目表格同一整行点击范式）；行内既有交互不被行点击吞并——展开钮（fix-* 树展开/收起、error 信息子行展开）点击仅做展开切换，操作列（⋯ 菜单、状态操作）点击仅触发对应操作，交互单元格经事件守卫（stopPropagation 或事件目标判定命中展开钮/操作列容器即短路）阻止行级导航；名称链接不额外拦截（链接自身导航与行导航同目标，连跳同路由无害）；展开行内容区点击不触发导航（expandedRowRender 渲染于行外，天然不在行级命中面）；无 error 抑制语义（overview 行点击的 error 守卫在 SPEC 列表无对应物），行恒可点；名称 Why 悬浮提示等其余行内交互不变。
 - 桌面表格 v2 重绘（重绘非替换）：DevTab 桌面表格重绘为 v2 台账形态——Table 包 `.ov-bento` > `.ov-bento-table`（白磁贴发丝边 + 透明表头 + 发丝线行分隔 + 首列缩进，复用 overview 侧镜像 CSS，双页共享同改），优先级列表头 nowrap（6% 定宽防三字头折行）；antd Table 全部功能保留——表头排序、分页（20 条 + 换页大小）、树形展开、信息子行、悬浮 Why 提示与验证结论悬浮、优先级编辑、行选中底色；只重绘边框与行内容呈现，不得退化为自绘表格丢功能。
 - 行内容 v2 形态：状态=语义胶囊（原色点+文字）；模式=胶囊（快速 warning / 标准 muted——移动卡片与详情页仍走 ModeTag 单源）；名称=dense 形态（13.5px 半粗深色单行省略，悬浮 Why 与键盘跳转不变；移动卡片保持链接蓝 16px）；创建时间=等宽三阶灰（精度保持完整时间戳）；任务进度=阶段名 + 「计数 · 百分比」同行置于进度条上方（镜像 v2 PhaseProgressCell 版式；run 线索与验证/门禁 current 行保留）；验证=胶囊（异常红/进行中蓝/完毕灰/未执行灰，悬浮结论不变）；耗时=右对齐等宽。进度条配色不走 v2 ramp：progressPhase.ts 阶段 ramp 是 DESIGN.md 登记的数据编码色豁免（底轨「空条可辨」语义），保留原函数。
 - 名称列中文副标题：名称列在 SPEC 英文名主行下方渲染中文标题副标题行（数据源条目 `title` 字段）——次级视觉（字号小于主行、次级文字色、单行省略），随主行同级缩进（fix-* 树形子行缩进保持）；title 为 null/空不渲染副标题行（保持单行形态，缺失=无该行而非「—」占位）；副标题不承载点击与悬停交互，行点击进详情、名称 Why 悬浮提示等既有交互不变；移动端卡片形态名称区同规则渲染（次级字号/色，缺失不渲染）；排序键仍为英文名（字典序），fix-* 类型过滤与树形挂载不受影响。
@@ -36,3 +37,4 @@
 - 2026-10-06 add-archive-state-migration（spec/archive/2026-10-06-add-archive-state-migration） — 新增列表合并归档清单条目（并集、同名单活跃侧优先、透传 archived_at/archived_by 溯源字段）；已归档视图对已迁出条目仍可见可进详情，未归档视图不含清单条目
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — DevTab 桌面表格 v2 重绘非替换（antd 功能保留、.ov-bento/.ov-bento-table 边框）、行内容 v2 形态（状态/模式/名称 dense/创建时间/任务进度/验证/耗时，进度 ramp 豁免保留）、操作列改三点菜单且「文档」并入首项（入口位迁移，恒可见契约保留）、类型过滤改 Radio 组并与归档切换同挂 .ov-radio-dark 黑底白字
 - 2026-11-06 add-spec-chinese-title（spec/changes/add-spec-chinese-title/） — 新增名称列中文副标题条款（英文名主行下方次级中文行、缺失零渲染）与名称关键字过滤中文标题 OR 命中；排序键仍为英文名、树形/类型过滤语义不变
+- 2026-11-06 add-spec-subtitle-and-row-click（spec/changes/add-spec-subtitle-and-row-click/） — 新增整行点击进详情条款（任意非交互单元格可点、展开钮/操作列事件守卫、名称链接连跳不拦截、展开行豁免、无 error 抑制语义）

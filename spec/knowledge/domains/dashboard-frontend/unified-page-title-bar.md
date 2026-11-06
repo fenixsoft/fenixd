@@ -1,7 +1,7 @@
 # 全站统一标题栏
 
-<!-- knowledge: capability=unified-page-title-bar rev=6
-     sources=spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/chrome-soft-solid-titlebar-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md -->
+<!-- knowledge: capability=unified-page-title-bar rev=7
+     sources=spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/chrome-soft-solid-titlebar-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/changes/add-spec-subtitle-and-row-click -->
 
 dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitleBar.tsx`）：标题/副标题/返回箭头/过滤项四槽位声明，双壳位（顶栏承载 / embed 行壳位承载）自动分流——页面只声明数据，禁止逐页自画同类型标题 div；v2 商业化域六页亦经 V2Page titleBar 槽位并入本控件。
 
@@ -18,6 +18,7 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 - **内容区无页头**：7 个常规页（跨项目概览、项目列表、SPEC 详情、设置、运维、指挥中心、帮助）均不渲染 PageContainer 页头，内容直接从首屏卡片/表格起；PageContainer 本体保留（内容区留白 token 单源仍由其承载，见 `page-container-chrome`），但必须传 `title={false}` 显式抑制自动页头——不传 title 时 ProLayout 会从路由上下文兜底取路由名渲染页头，与标题栏双标题并存。v2 六页经 V2Page 壳跳过 PageContainer，同语义。
 - **过滤项统一右上落位**：页级过滤控件全部收编进 `filters` 槽位，落位随壳位（顶栏右上角 / 行右端）——设置页「作用域」Select、运维页处置链页签「全部项目」Select（仅页签激活时渲染）、指挥中心「全部项目」+时间窗双 Select（时间窗仅 org 屏显隐逻辑随迁页内条件渲染）。
 - **返回箭头与富标题**：项目列表页返回箭头（回 `/overview`）走 `back` 槽位渲染在标题左侧；SPEC 详情页富组合（返回箭头 + SPEC 名 + 模式/状态 Tag + 快速切换下拉）作为 ReactNode 整体传入 `title` 槽位——控件对富节点透明不拆解，快速切换下拉保持渲染在 SPEC 名旁（`spec-detail-quick-switch` 契约延续）。
+- **SPEC 详情标题栏中文副标题**：两个 SPEC 详情页在标题（英文名富节点）下方经 `subtitle` 槽渲染中文标题，数据源为 `/api/specs/<spec>` 详情响应的 `title` 字段——title 为 null/空时不渲染副标题、维持单行现状（与列表副标题缺失规则一致）。v1 详情（projects/detail）声明 `subtitle={title}`（页面已拉取的 specList 查表可作兜底，不强制双源合并）；v2 详情（v2/specDetail）subtitle 槽与既有 branch 声明组合渲染「中文标题 · branch」（中点两侧带空格；branch 空只显中文标题，title 空维持 branch 单独显示，双空不渲染）。移动端维持副标题隐藏规则零改动。
 - **顶栏无面包屑**：顶栏右侧全局面包屑在任何视口宽度均不渲染（`HeaderCrumb` 组件、`crumbItems` 映射与 `global-header-crumb` 样式锚点不复存在），位置指示职责由顶栏页面标题承担；顶栏右上角只渲染该页过滤项（无过滤项页右上角为空）。
 - **定高偏移口径**：定高页扣减常数为双档并经 playwright 实拍校准，对象仅两类——`pageChrome.ts` 项目详情页框（desktop 150/142、mobile 198/142）与指挥中心 `SCREEN_CHROME_OFFSET`（standalone 126 / embed 118）。回校后定高卡体 `calc(100vh - offset)` 恰满视口——右栏自滚、无第二根滚动条、无视口下空带。帮助/设置页为文档级滚动页，不持定高偏移常数（滚动形态见 `document-scroll-unify`）；其目录/菜单 sticky 钉位常数（standalone 56 / embed 60）与本栏高度联动。改标题行或内容区顶带任何内边距必须回校全部联动常数并重新实拍。
 - **豁免面**：现存豁免仅两类——`layout:false` 脱壳页（SPEC 协作拓扑大屏）无壳层不适用；菜单「项目」父项落点 `/projects` 的兜底占位页（`PagePlaceholder`，项目列表就绪后自动重定向、仅空列表时兜底可见）保留其占位页头不迁移。v2 六页不在豁免面（titleBar 槽位并入）。
@@ -27,7 +28,7 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 ## 关键行为
 
 - dsh 侧零改造：embed 契约仍由查询参数承载（`embed`/`apiBase` 语义不变），标题行由本控件在嵌入态自动内嵌，dsh web 面板桥无需任何变更。
-- 副标题承载：概览「监控 N 个项目」、项目列表「共 N 个 SPEC」、运维「跨项目 Administrator 活动与处置链观测」（罩三页签）随标题渲染在标题栏，仅桌面视口可见（移动端隐藏）；无副标题页（设置、指挥中心、帮助）不渲染副标题槽位。
+- 副标题承载：概览「监控 N 个项目」、项目列表「共 N 个 SPEC」、运维「跨项目 Administrator 活动与处置链观测」（罩三页签）、SPEC 详情两页中文标题（v2 与 branch 组合渲染）随标题渲染在标题栏，仅桌面视口可见（移动端隐藏）；无副标题页（设置、指挥中心、帮助）不渲染副标题槽位。
 - 守卫契约：`pageTitleBar.test.mjs` / `embedMount.test.mjs` 钉移动顶栏 + embed 行壳位的双壳位新契约，页壳位结构变化须两测试同步钉版。
 
 ## 溯源
@@ -38,3 +39,4 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 - 2026-11-05 settings-help-document-scroll-unify（spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md） — 定高偏移口径改写：settings/help `FRAME_OFFSET`（standalone 56 / embed 48）条目随两页转文档级滚动消失，现存对象仅项目详情页框与指挥中心 SCREEN_CHROME_OFFSET；回校纪律扩及帮助/设置目录/菜单 sticky 钉位常数（56/60）联动
 - 2026-11-06 chrome-soft-solid-titlebar-1106（spec/knowledge/_inbox/done/chrome-soft-solid-titlebar-1106.md） — 行壳位玻璃守卫表述改钉 soft 染色族（SOFT/GLASS/HEADER_GLASS 族 rgb 通道一致、玻璃透明度必须 <1）；布局级 chrome 染色（顶栏玻璃双档/侧栏实底/边框三处同源）拆分至新页 layout-chrome-tinting
 - 2026-11-06 v2-overview-titlebar-white-variant-1106（spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md） — v2 六页经 V2Page titleBar 槽位并入统一标题栏（v2 自画标题带与豁免面退役，新增 v2 并入条款）；行壳位收敛 embed 单档——移动端 48px 行壳位废除，移动端标题并入 ProLayout 顶栏（汉堡+logo+标题同条、缩进档 104→8、filters 落 right-content）；副标题移动端隐藏（顶栏插槽与行壳位两处同条件）
+- 2026-11-06 add-spec-subtitle-and-row-click（spec/changes/add-spec-subtitle-and-row-click/） — 新增 SPEC 详情标题栏中文副标题消费面条款（v1 详情增 subtitle 声明、v2 详情与 branch 组合渲染「中文标题 · branch」、title 缺失容错不渲染、移动端隐藏零改动）
