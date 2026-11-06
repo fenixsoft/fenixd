@@ -21,3 +21,17 @@ export function specKeywordHit(name: string, title: string | null | undefined, k
   if (name.toLowerCase().includes(needle)) return true;
   return !!title && title.toLowerCase().includes(needle);
 }
+
+/**
+ * SPEC 详情标题栏中文副标题组合（add-spec-subtitle-and-row-click 任务 1.3，
+ * v2 specDetail 消费）：「中文标题 · branch」中点分隔两侧带空格；branch 空
+ * 只显中文标题、title 空维持 branch 单独显示、双空不渲染（返回 undefined，
+ * 调用方副标题槽即不渲染）。缺失容错与列表副标题规则一致。
+ */
+export function combineSpecSubtitle(
+  title: string | null | undefined,
+  branch: string | null | undefined,
+): string | undefined {
+  const parts = [title, branch].filter((p): p is string => !!p);
+  return parts.length ? parts.join(' · ') : undefined;
+}

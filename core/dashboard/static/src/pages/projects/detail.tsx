@@ -1470,7 +1470,17 @@ export default function SpecDetailPage() {
     // global.less 借 :has() 给内容区顶呼吸带垫 16px（2026-11-06 用户指令：
     // 首 bento 卡上方留出间距，对齐 overview；数值登记 DESIGN.md 一般域条款）
     <div className="spec-detail-page">
-    <PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
+    <PageTitleBar
+      title={richTitle}
+      subtitle={
+        // add-spec-subtitle-and-row-click（task 1.2，merge-back 手术并入）：
+        // 标题栏中文副标题——详情响应 title 透传（null/空不声明，缺失容错与
+        // 列表规则一致）；移动端隐藏走页级 gate（统一标题栏 SubtitleNode 自带
+        // !isMobile 隐藏，页级 gate 为双保险）
+        isMobile ? undefined : detail?.title || undefined
+      }
+      back={backToList}
+    /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本。
           Bento 皮肤（2026-11-06 用户指令：顶栈卡片对齐 v2 磁贴，内容不变）走
           .spec-bento-card 覆写类（global.less 单源） */}

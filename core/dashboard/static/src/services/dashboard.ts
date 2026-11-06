@@ -1009,6 +1009,11 @@ export interface SpecDetail {
   error: string | null;
   branch?: string | null;
   depends_on?: string | null;
+  // add-spec-subtitle-and-row-click（task 1.1）：中文标题——id/name 关系同
+  // SpecSummary.title：英文名（name）是唯一键，中文标题是 .spec.yaml 的纯
+  // 展示字段，数据源为 /api/specs/<spec> 详情响应透传，缺失为 null（标题栏
+  // 副标题不渲染）。
+  title?: string | null;
   // add-spec-detail-duration：累计耗时（秒），与列表页耗时列同源同口径
   total_duration?: number;
   // 验证结论 — 对应后端 data.py parse_verdict() 返回结构

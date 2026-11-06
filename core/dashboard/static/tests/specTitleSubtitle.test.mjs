@@ -9,12 +9,16 @@
 //   守卫、无 title 不渲染（falsy 三元）、次级视觉（字号/色/单行省略）、副标题
 //   在 Why 悬浮 Popover 之外不承载交互、树形缩进对齐（副标题与主行同单元格
 //   同包裹层，桌面表格与移动卡片共用 SpecNameCell）；
-// - SpecSummary 类型透传字段与 v2 名称既有交互保持。
+// - SpecSummary 类型透传字段与 v2 名称既有交互保持；
+// - 详情标题栏中文副标题（add-spec-subtitle-and-row-click 任务 1.1/1.2/1.3）：
+//   v1 详情主内容分支 subtitle 声明（null/空不声明、移动端页级 gate）、v2
+//   组合形态四分支（title+branch / 仅 branch / 仅 title / 双空）单源
+//   combineSpecSubtitle、SpecDetail 类型透传。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { specKeywordHit } from '../src/pages/projects/specTitle.ts';
+import { combineSpecSubtitle, specKeywordHit } from '../src/pages/projects/specTitle.ts';
 
 const STATIC_ROOT = join(import.meta.dirname, '..');
 const readSrc = (rel) => readFileSync(join(STATIC_ROOT, rel), 'utf-8');
@@ -116,4 +120,54 @@ test('SpecSummary 增加 title 可空类型（数据源注释标注 id/name 关�
   const svc = readSrc('src/services/dashboard.ts');
   assert.ok(svc.includes('title?: string | null;'), 'SpecSummary 应含 title?: string | null');
   assert.ok(svc.includes('add-spec-chinese-title'), '类型注释应标注能力来源与 id/name 关系');
+});
+
+// ── v1 detail.tsx：详情标题栏中文副标题（add-spec-subtitle-and-row-click 1.2）──
+
+const detailSrc = readSrc('src/pages/projects/detail.tsx');
+
+test('v1 详情仅主内容分支声明 subtitle（四处声明唯一带 subtitle，null/空不声明）', () => {
+  const decls = [...detailSrc.matchAll(/<PageTitleBar[\s\S]*?\/>/g)].map((m) => m[0]);
+  assert.equal(decls.length, 4, 'detail.tsx 应恰有四处 PageTitleBar 声明（参数缺失/loading/error/主内容）');
+  const withSub = decls.filter((d) => d.includes('subtitle='));
+  assert.equal(withSub.length, 1, '仅主内容分支（detail 已就绪处）声明 subtitle——其余分支 detail 必为空');
+  assert.ok(withSub[0].includes('detail?.title || undefined'), '副标题应取详情响应 title，null/空不声明');
+});
+
+test('v1 详情副标题移动端隐藏（页级 isMobile gate，对齐 v2 specDetail 既有先例）', () => {
+  const at = detailSrc.indexOf('subtitle={');
+  const expr = detailSrc.slice(at, detailSrc.indexOf('}', at) + 1);
+  assert.ok(expr.includes('isMobile ? undefined :'), '移动端应不声明 subtitle（页级 gate 承载隐藏）');
+});
+
+// ── v2 specDetail.tsx：副标题组合渲染（add-spec-subtitle-and-row-click 1.3）──
+
+const v2DetailSrc = readSrc('src/pages/v2/specDetail.tsx');
+
+test('v2 详情副标题组合单源 combineSpecSubtitle（组合语义不下放页面自拼）', () => {
+  assert.ok(
+    v2DetailSrc.includes('combineSpecSubtitle(detail?.title, detail?.branch)'),
+    'v2 应经单源组合函数声明 subtitle',
+  );
+  assert.ok(v2DetailSrc.includes("from '@/pages/projects/specTitle'"), '组合函数应从 specTitle 单源导入');
+  assert.ok(v2DetailSrc.includes('mobile ? undefined :'), '移动端隐藏既有页级 gate 应保留');
+});
+
+test('combineSpecSubtitle 组合形态四分支（title+branch / 仅 branch / 仅 title / 双空）', () => {
+  assert.equal(combineSpecSubtitle('中文标题', 'main'), '中文标题 · main', '双非空为中点组合');
+  assert.equal(combineSpecSubtitle('中文标题', null), '中文标题', 'branch 空只显中文标题');
+  assert.equal(combineSpecSubtitle(null, 'main'), 'main', 'title 空维持 branch 单独显示');
+  assert.equal(combineSpecSubtitle(null, undefined), undefined, '双空不渲染');
+  assert.equal(combineSpecSubtitle('', ''), undefined, '空串按缺失容错（与列表规则一致）');
+});
+
+// ── SpecDetail 类型透传 ─────────────────────────────────────────────
+
+test('SpecDetail 增加 title 可空类型（注释标注 id/name 关系与详情 API 透传来源）', () => {
+  const svc = readSrc('src/services/dashboard.ts');
+  const start = svc.indexOf('export interface SpecDetail');
+  const iface = svc.slice(start, svc.indexOf('\n}', start));
+  assert.ok(iface.includes('title?: string | null;'), 'SpecDetail 应含 title?: string | null');
+  assert.ok(iface.includes('add-spec-subtitle-and-row-click'), '字段注释应标注能力来源');
+  assert.ok(iface.includes('/api/specs/<spec>'), '字段注释应标注详情 API 透传来源');
 });

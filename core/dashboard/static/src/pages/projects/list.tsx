@@ -57,6 +57,8 @@ import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
 // SPEC 中文标题关键字命中单源（add-spec-chinese-title 2.2）
 import { specKeywordHit } from './specTitle';
+// 整行点击守卫与路径单源（add-spec-subtitle-and-row-click task 2.1）
+import { rowClickHitsExpandIcon, specDetailPath } from './specRowClick';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
@@ -334,8 +336,10 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
 
   const handleClick = () => {
     // 编码与 index.tsx 同形跳转口径一致（code-review item d075831bfba5）：项目名
-    // 源于目录名不限字符集，含 #/?/% 时裸拼接会路由错乱（# 截断为 hash）
-    history.push(`/projects/${encodeURIComponent(project)}/${encodeURIComponent(record.name)}`);
+    // 源于目录名不限字符集，含 #/?/% 时裸拼接会路由错乱（# 截断为 hash）。
+    // 路径单源 specDetailPath（add-spec-subtitle-and-row-click task 2.1）：
+    // 与整行点击行导航同源同目标，不拦截、连跳同路由无害
+    history.push(specDetailPath(project, record.name));
   };
 
   return (
@@ -1209,9 +1213,24 @@ function DevTab({
             // 改取 dsh 侧栏选中行的冷灰交互底 #2631481a（theme.ts 单源）；
             // 2026-11-04 用户裁决改蓝调 rgb(99 136 211 / 10%)，值随单源更新）
             onRow={(record) => ({
-              style: PRIORITY_TERMINAL.has(record.status || '')
-                ? undefined
-                : { backgroundColor: DSH_INTERACTIVE_ACTIVE },
+              // add-spec-subtitle-and-row-click（task 2.1）：整行点击进详情
+              // （镜像 overview 台账 onRow 范式：整行 cursor pointer + 路由跳
+              // 转；SPEC 列表无 error 抑制语义，行恒可点）。事件目标守卫
+              // （design D3，单源 specRowClick.ts）：展开钮（fix-* 树展开与
+              // error 信息行展开共用 antd 展开图标类）命中不导航；操作列交互
+              // 单元格既有 stopPropagation 单元格守卫零改动命中；展开行内容
+              // 渲染于行外 ant-table-expanded-row，不在 onRow 命中面；名称
+              // 链接自有跳转与本行导航同目标不额外拦截（连跳同路由无害）。
+              onClick: (e) => {
+                if (rowClickHitsExpandIcon(e)) return;
+                history.push(specDetailPath(project, record.name));
+              },
+              style: {
+                cursor: 'pointer',
+                ...(PRIORITY_TERMINAL.has(record.status || '')
+                  ? {}
+                  : { backgroundColor: DSH_INTERACTIVE_ACTIVE }),
+              },
             })}
             columns={columns}
             dataSource={tree}
