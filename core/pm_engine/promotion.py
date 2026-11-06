@@ -78,7 +78,25 @@ def promote_drafted(
                     before_text = tasks_path.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
                     before_text = ""
-        softened = soften_unsatisfiable_declarations(spec_dir, project_root)
+        # 写前冻结复查（code-review item 147e4ddabcfc，对齐第 4 步
+        # 29de1ddc2fbc 的 error 写前冻结复查口径）：入口 status 快照（本函数
+        # 第 1 步）到软化写盘隔着声明段快照读取等文件 I/O，窗口内 spec 可能
+        # 已被并发冻结——软化经 soften_declared_kind 机械改写 tasks.md 声明
+        # 行且不走 update_spec（冻结剥离分支拦不住），自动化在冻结窗口内改动
+        # 冻结 SPEC 的 tasks.md 违背「冻结现场保留待人工解冻」纪律。发现冻结
+        # 即跳过软化（softened 置空，审计 diff 亦随之跳过），lint 照常执行，
+        # 违规交由第 4 步写前复查 + error 直写统一收口。
+        from core.state_machine import FROZEN_FIELD
+
+        if (state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+            logger.warning(
+                "pm_engine",
+                f"Promotion soften skipped '{spec_name}': "
+                "软化前复查发现已冻结——跳过软化改写，冻结现场保留待人工解冻",
+            )
+            softened = []
+        else:
+            softened = soften_unsatisfiable_declarations(spec_dir, project_root)
         if softened:
             logger.info(
                 "pm_engine",

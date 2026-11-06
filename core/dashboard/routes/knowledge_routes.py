@@ -33,10 +33,6 @@ _ADR_SUPERSEDED_BY_RE = re.compile(r"^Superseded by:\s*(\S+)\s*$", re.M)
 _ADR_TITLE_RE = re.compile(r"^#\s+ADR-\d{3}\s*[:：]\s*(.+?)\s*$", re.M)
 # adr/index.md 表格行：'| ADR-NNN | 标题 | ...'（标题列兜底源）
 _ADR_INDEX_ROW_RE = re.compile(r"^\|\s*(ADR-\d{3})\s*\|\s*([^|]+?)\s*\|", re.M)
-# 首 H1 标题（titles 下发源）：'# <标题>'。能力页头部 marker 为 HTML 注释行、
-# 二级标题缩进一格，均不匹配 ``^# ``，天然跳过；只取首处（首个 H1 即页题），
-# 围栏代码块内的 ``#`` 行由 _read_h1_title 的围栏状态机排除。
-_H1_TITLE_RE = re.compile(r"^#\s+(.+?)\s*$", re.M)
 
 # 真相源目录相对路径（契约见 spec/knowledge/README.md）
 KNOWLEDGE_DIR = "spec/knowledge"
@@ -80,37 +76,25 @@ def _read_h1_title(path: Path) -> str | None:
 
     titles 下发的单文件取题入口，调用方（域/能力页枚举）对 None 原样
     下发，前端按「无标题回退 slug」渲染，此处不抛错不告警（缺标题是
-    蒸馏管线的合法中间态，非本端点异常）。围栏代码块（``` / ~~~）内
-    的行不参与匹配，代码示例中的 ``# 注释`` 行不会被误当页题。
+    蒸馏管线的合法中间态，非本端点异常）。标题行判定单源复用
+    help_routes._help_doc_title（code-review 4317730d64ac：此前本地
+    ``^#\\s+`` 口径与帮助侧 strip 后 ``#(?!#)\\s*`` 口径对缩进标题、
+    ``#`` 后无空格写法分叉，同一文档可能一处取到、一处回 null 走 slug
+    兜底）。统一后的标题行缩进处理选择：strip 后匹配，1-3 空格缩进
+    标题与无空格 ATX 变体与帮助中心同口径；缩进≥4 空格按缩进代码块、
+    围栏代码块（``` / ~~~）内的行不参与匹配，代码示例中的 ``# 注释``
+    行不会被误当页题；后续取题口径演进随帮助侧单点同步。无标题时
+    帮助侧回空串，此处转 None。
     """
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    in_fence = False
-    fence_marker = ""
-    for line in text.splitlines():
-        # 轻量围栏状态机（缩进口径与 help_routes._help_doc_title 对齐，
-        # code-review ad41ed96b20a：缩进≤3 空格的 ``` / ~~~ 行才开启围栏，
-        # 缩进≥4 行按缩进代码块处理不开围栏，两处取题行为不再分叉）；
-        # ```bash 等尾随信息符照收；围栏内仅同符号围栏行可闭合，异符号行
-        # 视为代码内容（避免「``` 围栏内嵌 ~~~ 行」的语法示例提前闭合
-        # 外层围栏，code-review da69388c7533）。围栏内行不参与 _H1_TITLE_RE
-        # 匹配
-        bare = line.lstrip(" ")
-        indent = len(line) - len(bare)
-        if indent <= 3 and bare.startswith(("```", "~~~")):
-            marker = bare[:3]
-            if not in_fence:
-                in_fence, fence_marker = True, marker
-            elif marker == fence_marker:
-                in_fence, fence_marker = False, ""
-            continue
-        if not in_fence:
-            m = _H1_TITLE_RE.match(line)
-            if m:
-                return m.group(1)
-    return None
+    # 函数内延迟导入：help_routes 顶层仅依赖标准库，与 server.py 的 mixin
+    # 装配顺序解耦；_help_doc_title 为 staticmethod，可离实例单源调用
+    from core.dashboard.routes.help_routes import H8HelpRoutesMixin
+
+    return H8HelpRoutesMixin._help_doc_title(text) or None
 
 
 def _safe_knowledge_file(proot: Path, rel: str) -> Path | None:
@@ -185,6 +169,11 @@ class H14KnowledgeRoutesMixin:
             "titles": {},
             "inbox_backlog": inbox_info,
         }
+        # [fenix-ignore:133dbb1ea2de] 条目自述当前规模可接受、属前瞻性建议：
+        # 读放大仅发生在进入知识页签时且真相源为本地小文件集；仿 overview 加
+        # ETag 签名仍须逐请求遍历真相源算签名，TTL 缓存须配 DistillManager 写
+        # 侧失效（缺失效则蒸馏后下发陈旧标题，正确性代价重于读放大），titles
+        # 惰性化须改 /index 契约并动前端 KnowledgeTab.tsx，均非最小修。
         if index_md.is_file():
             try:
                 payload["index_md"] = index_md.read_text(encoding="utf-8")
