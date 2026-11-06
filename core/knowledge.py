@@ -1978,6 +1978,39 @@ def _distill_run_artifact_round(
         logger.warning("knowledge-distill run 产物轮次行写入失败（fail-open）: %s", e)
 
 
+# add-distill-run-work-summary 1.2：主蒸馏工作总结提取参数——截断上限
+# （字符）防 agent 输出失控刷爆时间轴总结盒；标记行是完成契约的剥离锚点。
+_DISTILL_SUMMARY_MAX_CHARS = 2000
+_DISTILL_SUMMARY_MARKER = "KNOWLEDGE_DISTILL_DONE"
+_DISTILL_SUMMARY_TRUNCATED_SUFFIX = "…（截断）"
+
+
+def _extract_distill_summary(stdout: str) -> str:
+    """从主蒸馏 spawn stdout 提取工作总结（design D2，纯函数便于单测）。
+
+    - 剥除尾部 ``KNOWLEDGE_DISTILL_DONE`` 标记行（标记从无消费方的提示词
+      契约转正为剥离锚点；缺失时空转不报错——成功判据仍是退出码 + 校验
+      脚本，标记仅作剥离锚，fail-open）；
+    - 首尾空白归一；
+    - 超 ``_DISTILL_SUMMARY_MAX_CHARS`` 尾部截断加「…（截断）」后缀；
+    - 空输入/剥标记后为空 → 空串（调用方空串不写键）。
+    """
+    if not stdout:
+        return ""
+    lines = stdout.splitlines()
+    # 尾部容错：标记行前后允许空白行（提示词只约束「最后一行」）
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip() == _DISTILL_SUMMARY_MARKER:
+        lines.pop()
+    text = "\n".join(lines).strip()
+    if len(text) > _DISTILL_SUMMARY_MAX_CHARS:
+        text = (
+            text[:_DISTILL_SUMMARY_MAX_CHARS] + _DISTILL_SUMMARY_TRUNCATED_SUFFIX
+        )
+    return text
+
+
 def _distill_run_artifact_close(run_file: "Path | None", result: dict) -> None:
     """按批结果写终态行（ok→``result`` / 其余→``error`` 附 reason 摘要）。
 
