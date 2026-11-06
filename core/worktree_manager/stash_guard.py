@@ -132,7 +132,13 @@ class G6StashGuardMixin:
         for line in status_stdout.splitlines():
             if len(line) < 3 or line.startswith("?? "):
                 continue
-            path = line[3:].strip()
+            # 路径段不 strip：porcelain v1 行前缀恒 3 字符（XY+空格），
+            # line[3:] 已是完整路径；quotePath 不对空格加引号（空格非可引号
+            # 字符），strip 会截掉文件名自身的首尾空白致脏 tracked 清单失真
+            # （WIP 重叠闸门求交漏判），口径对齐 stray_wip 的
+            # _porcelain_untracked_paths（code-review f59571853e2b 先例 +
+            # item 05aba0f5f726）
+            path = line[3:]
             if " -> " in path:
                 # porcelain 对 rename 两侧各自 C-quote，按段逐个反转义；
                 # 切分须 C-quote 感知——引号内路径自含「 -> 」不参与切分
@@ -1658,8 +1664,12 @@ class G6StashGuardMixin:
                     # 反斜杠/控制字符时输出仍是 C-quote 转义形，直接拼入下方
                     # git rm --cached 与 check-ignore 的 pathspec 永不命中；
                     # unquote_git_path 对无引号行原样返回（幂等），保留
-                    # quotePath=false 以减少转义面
-                    du_paths.append(unquote_git_path(line[3:].strip()))
+                    # quotePath=false 以减少转义面。路径段同款不 strip
+                    # （item 05aba0f5f726，口径对齐 _list_dirty_tracked_files）：
+                    # 空格非可引号字符，首/尾空格文件名被 strip 后拼出的
+                    # git rm / check-ignore pathspec 永不命中，DU 自愈
+                    # 确定性降级 abort
+                    du_paths.append(unquote_git_path(line[3:]))
             if not du_paths:
                 return False, False
             for path in du_paths:

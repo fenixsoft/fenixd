@@ -685,6 +685,12 @@ class FenixDaemon:
         # 2513848b87c2）：or 0 语义（显式 0/空值 → 不启用后台池）、非有限浮点
         # 预检与 (TypeError, ValueError, OverflowError) 回退均由助手内部表达，
         # 留痕文案保持原样。
+        def _on_admin_workers_invalid(raw, _reason):
+            self.logger.error(
+                "fenixd",
+                f"admin.workers 非法（应为非负整数）: {raw!r}，回退 2",
+            )
+
         admin_workers = ConfigLoader.get_finite_number(
             self.config,
             "admin.workers",
@@ -692,11 +698,15 @@ class FenixDaemon:
             get_default=2,
             or_default=0,
             fallback=2,
-            on_invalid=lambda raw, _reason: self.logger.error(
-                "fenixd",
-                f"admin.workers 非法（应为非负整数）: {raw!r}，回退 2",
-            ),
+            on_invalid=_on_admin_workers_invalid,
         )
+        # get_finite_number 只拦转换失败与非有限值，负值原样穿透：-5 会在下
+        # 方 `> 0` 处静默禁用后台池，与「应为非负整数」口径不符——负值补一
+        # 道归一，同走非法守卫路径回退 2 并 ERROR 留痕（code-review item
+        # b3e6353231f0）。
+        if admin_workers < 0:
+            _on_admin_workers_invalid(admin_workers, "negative")
+            admin_workers = 2
         if admin_workers > 0:
             self._admin_executor = ThreadPoolExecutor(
                 max_workers=admin_workers,
@@ -1520,6 +1530,13 @@ class FenixDaemon:
             # 2513848b87c2）：此处回退动作与启动路径不同——非法时返回 None
             # （fallback=None）跳过比对而非回缺省，保证快照刷新与对齐持久化
             # 总能走到，留痕文案保持原样。
+            def _on_admin_workers_reload_invalid(raw, _reason):
+                self.logger.error(
+                    "fenixd",
+                    f"admin.workers 非法（应为非负整数）: {raw!r}，"
+                    "跳过 worker 池大小比对",
+                )
+
             workers = ConfigLoader.get_finite_number(
                 self.config,
                 "admin.workers",
@@ -1527,12 +1544,14 @@ class FenixDaemon:
                 get_default=2,
                 or_default=0,
                 fallback=None,
-                on_invalid=lambda raw, _reason: self.logger.error(
-                    "fenixd",
-                    f"admin.workers 非法（应为非负整数）: {raw!r}，"
-                    "跳过 worker 池大小比对",
-                ),
+                on_invalid=_on_admin_workers_reload_invalid,
             )
+            # 负值穿透同启动路径（get_finite_number 不拦负值）：按非法处理
+            # 跳过比对，避免「admin.workers 变为 -5，重启后生效」的误导提示
+            # （重启后实际是非法回退，code-review item b3e6353231f0）。
+            if workers is not None and workers < 0:
+                _on_admin_workers_reload_invalid(workers, "negative")
+                workers = None
             if workers is not None and workers != self._admin_executor._max_workers:  # noqa: SLF001 只读探测
                 self.logger.info(
                     "fenixd",
@@ -5559,8 +5578,11 @@ class FenixDaemon:
           （``_evolution_archive_duration_mean``，PROJECT_ROOT 归档）；无有效
           样本回退仅判派发时刻落窗；
         - 相交判定（对齐 code-fix 守卫口径）：派发时刻已落窗（任一窗
-          start<=cur<end）或预计结束越过尚未开始的窗起点（严格大于——恰压
-          线视作不相交，run 在窗起点整点前收尾）；
+          start<=cur<end）或预计结束越过该窗下一次出现的起点（严格大于——
+          恰压线视作不相交，run 在窗起点整点前收尾）；起点按绝对秒计——
+          cur<窗起点取当日起点，否则（当日窗已过）取次日起点
+          （w[0]*60+86400），深夜派出、预计跨午夜进入次日静默窗的 run
+          同样命中（code-review item 066a972ea800）；
         - 读取/解析/取样/导入异常一律按不命中处理（fail-open），MUST NOT
           阻断派发主路径。
 
@@ -5593,10 +5615,17 @@ class FenixDaemon:
                 sample_note = "无实测样本，仅判派发时刻落窗"
             else:
                 cur_s = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+                # 相交按绝对秒比较：cur < w[0] 时窗在今日稍后，越过今日窗起
+                # 点即相交；否则（cur >= w[1]，当日窗已过）该窗下一次出现在
+                # 次日，越过次日起点（w[0]*60+86400）同样相交——深夜派出、
+                # 预计跨午夜进入次日静默窗的 run 不再漏判（code-review item
+                # 066a972ea800；该盲区与 admin_monitor/code_fix 同款，其余
+                # 两处不在本批清单内未动）。
                 crossing = [
                     w for w in windows
                     if (w[0] <= cur < w[1])
                     or (cur < w[0] and cur_s + est > w[0] * 60)
+                    or (cur >= w[1] and cur_s + est > w[0] * 60 + 86400)
                 ]
                 sample_note = f"近几轮实测均时长 {est:.0f} 秒"
             if not crossing:

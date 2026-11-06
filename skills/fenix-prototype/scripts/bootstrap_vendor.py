@@ -70,6 +70,20 @@ _ESBUILD_RE = re.compile(r"esbuild v(\d+\.\d+\.\d+)")
 # 环境自检
 # ---------------------------------------------------------------------------
 
+def _redact_proxy_url(value: str) -> str:
+    """抹去代理 URL 内嵌的 userinfo（``http://user:pass@host:port`` → ``http://***@host:port``）。
+
+    代理 URL 常以 ``user:pass@host`` 形式内嵌凭据，自检只需要代理的存在性与
+    指向（scheme/host/port），凭据不进入输出 JSON（会打印 stdout 或落盘）。
+    """
+    if "@" not in value:
+        return value
+    scheme, sep, rest = value.partition("://")
+    if sep:
+        return f"{scheme}://{re.sub(r'[^/]*@', '***@', rest, count=1)}"
+    return re.sub(r"^[^/]*@", "***@", value, count=1)
+
+
 def self_check() -> dict:
     """环境自检：node / npm 可用性与版本、代理环境变量。缺失不报错，只如实上报。"""
     node_path = shutil.which("node")
@@ -87,7 +101,7 @@ def self_check() -> dict:
                                          text=True, timeout=15).stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
             npm_version = None
-    proxy = {k: os.environ[k] for k in
+    proxy = {k: _redact_proxy_url(os.environ[k]) for k in
              ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY")
              if os.environ.get(k)}
     return {

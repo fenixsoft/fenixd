@@ -44,6 +44,10 @@ SKIP_DIRS = {
 # 各类别扫描的文件上限（侦察是尽力而为，不为全仓遍历烧时间）
 MAX_FILES_PER_CATEGORY = 400
 
+# 单个主题文件的读取字节上限：超出只读头部做正则匹配并在 warnings 注明截断
+# （防 vendor 主题包、误提交的构建产物等巨型打包 CSS/JS 单文件读入数十 MB）
+MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024
+
 # 主题相关文件扩展名
 STYLE_EXTS = {".css", ".less", ".scss"}
 CODE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
@@ -198,6 +202,36 @@ def _walk_source_files(project: Path) -> tuple[list[Path], bool]:
     return sorted(style) + sorted(code), truncated
 
 
+def _read_text_capped(
+    path: Path, project: Path, warnings: list[str] | None = None
+) -> str:
+    """读取单个主题源文件内容做正则匹配；超过 ``MAX_SCAN_FILE_BYTES`` 只读头部。
+
+    侦察尽力而为：vendor 主题包、误提交的构建产物等巨型打包 CSS/JS 单文件
+    即可读入数十 MB，与「不为全仓遍历烧时间/内存」的定位不符，故超出上限只
+    保留头部（``:root`` 级自定义属性与 theme.token 配置通常集中在文件前部），
+    并在 ``warnings`` 注明截断，避免下游把截断后的提取结果误当全量画像。
+    """
+    try:
+        if path.stat().st_size <= MAX_SCAN_FILE_BYTES:
+            return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(MAX_SCAN_FILE_BYTES)
+    except OSError:
+        return ""
+    if warnings is not None:
+        rel = path.relative_to(project).as_posix()
+        warnings.append(
+            f"主题文件超过 {MAX_SCAN_FILE_BYTES // (1024 * 1024)}MB 上限，"
+            f"仅读取头部做 token 提取：{rel}"
+        )
+    # 头部按字节截断可能切断多字节字符，errors="replace" 兜底
+    return head.decode("utf-8", errors="replace")
+
+
 #: 只提取「视觉约束相关」的 CSS 自定义属性（前缀命中即收，防 token 表爆炸）。
 #: 值不强制以 ``;`` 收尾（末条声明可省略分号）；排除 ``{}`` 与换行，
 #: 防无分号时跨声明吞并后续内容。
@@ -213,22 +247,33 @@ _ANTD_TOKEN_KEY = re.compile(r"(color[A-Za-z]+|borderRadius[A-Za-z]*|fontSize[A-
 
 
 def extract_css_custom_props(
-    project: Path, files: list[Path] | None = None
+    project: Path,
+    files: list[Path] | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
-    """提取 :root 级 CSS 自定义属性（less/scss/css 同口径），返回 (tokens, sources)。"""
+    """提取 :root 级 CSS 自定义属性（less/scss/css 同口径），返回 (tokens, sources)。
+
+    键名保留原始大小写：CSS 自定义属性名按规范大小写敏感，统一转小写会让
+    下游按画像生成 ``var(--xxx)`` 时引用不存在的变量而静默回退；去重另用
+    小写键比较。
+    """
     tokens: dict[str, str] = {}
+    seen_lower: set[str] = set()
     sources: list[str] = []
     for path in _iter_source_files(project, STYLE_EXTS, files=files):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        found = {f"--{name.strip().lower()}": value.strip()
+        text = _read_text_capped(path, project, warnings)
+        found = {f"--{name.strip()}": value.strip()
                  for name, value in _INTERESTING_CUSTOM_PROP.findall(text)}
         if found:
-            # 先扫到的文件优先（sorted 遍历保证确定性）；不覆盖已有键
+            # 先扫到的文件优先（sorted 遍历保证确定性）；不覆盖已有键。
+            # 去重按小写比较：--PrimaryColor 与 --primarycolor 视为同一声明，
+            # 收录先扫到的原始大小写键，保证下游 var() 引用可还原。
             for key, value in found.items():
-                tokens.setdefault(key, value)
+                lower = key.lower()
+                if lower in seen_lower:
+                    continue
+                seen_lower.add(lower)
+                tokens[key] = value
             rel = path.relative_to(project).as_posix()
             if rel not in sources:
                 sources.append(rel)
@@ -236,16 +281,15 @@ def extract_css_custom_props(
 
 
 def extract_antd_tokens(
-    project: Path, files: list[Path] | None = None
+    project: Path,
+    files: list[Path] | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """提取代码里 antd ConfigProvider 的 theme.token 配置，返回 (tokens, sources)。"""
     tokens: dict[str, str] = {}
     sources: list[str] = []
     for path in _iter_source_files(project, CODE_EXTS, files=files):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+        text = _read_text_capped(path, project, warnings)
         if "token" not in text:
             continue
         found: dict[str, str] = {}
@@ -327,8 +371,8 @@ def build_profile(project: Path) -> dict:
 
     # 一次受控遍历，三类收集器共享（侦察是尽力而为，不为全仓遍历烧三遍时间）
     walked, walk_truncated = _walk_source_files(project)
-    css_tokens, css_sources = extract_css_custom_props(project, walked)
-    antd_tokens, antd_sources = extract_antd_tokens(project, walked)
+    css_tokens, css_sources = extract_css_custom_props(project, walked, warnings)
+    antd_tokens, antd_sources = extract_antd_tokens(project, walked, warnings)
     design_doc = extract_design_doc(project)
     if walk_truncated:
         warnings.append("源文件扫描达到类别上限，主题/样例收集已截断（侦察尽力而为）")

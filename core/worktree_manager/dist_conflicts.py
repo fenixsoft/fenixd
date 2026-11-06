@@ -941,17 +941,20 @@ class G5DistConflictsMixin:
     def _list_unmerged_files(self) -> list | None:
         """枚举主树中全部 UU 未合并文件（merge 冲突 / stash pop 冲突残留）。
 
-        ``git ls-files -u`` 对每个冲突文件输出 1~3 行（stage 1/2/3），行末为路径；
-        去重后返回排序后的路径列表。命令失败（子进程异常/非零返回）返回
+        ``git ls-files -u -z`` 对每个冲突文件输出 1~3 条记录（stage 1/2/3），
+        NUL 分隔、记录末段为路径；去重后返回排序后的路径列表。命令失败（子进程异常/非零返回）返回
         ``None``（code-review item f636712de58a）：与「rc=0 且无输出＝确无 UU
         文件」的空列表可区分，调用方在 pop CONFLICT 分支据此走保守分支处置，
         不得把枚举失败当作「无冲突/自愈完成」。
 
-        路径不转义：``-c core.quotePath=false``（与 ``_collect_conflict_paths``
-        的采集点同口径）让非 ASCII 路径按原样输出——路径原样传给
-        ``_triage_stash_pop_conflicts`` 拼 cat-file/checkout --theirs 的
-        pathspec，带引号 C 转义形会永不命中，态 1/态 2 自愈对非 ASCII
-        冲突文件恒失败退到态 3。
+        路径不转义不 strip（口径对齐 repair_site.repair_site_facts 的 -z 记录
+        切分，code-review item 4d158f275b1c）：``-z`` 下路径不经引用，路径段
+        仅凭制表符定位、原样保留——真实路径允许首尾空格，strip 会让返回路径
+        与磁盘真实路径失配。路径原样传给 ``_triage_stash_pop_conflicts`` 拼
+        cat-file/checkout --theirs 的 pathspec，引号 C 转义形或首尾失配都
+        会永不命中，态 1/态 2 自愈对该类冲突文件恒失败退到态 3；
+        ``-c core.quotePath=false``（与 ``_collect_conflict_paths`` 的采集点
+        同口径）保留为防线。
         """
         try:
             # [fenix-ignore:b229780a54d9] 本采集点已带 -c core.quotePath=false（与 _collect_conflict_paths 同口径），非 ASCII 路径原样返回，条目描述的转义失配不存在
@@ -964,6 +967,7 @@ class G5DistConflictsMixin:
                     "core.quotePath=false",
                     "ls-files",
                     "-u",
+                    "-z",
                 ],
                 capture_output=True,
                 text=True,
@@ -979,14 +983,18 @@ class G5DistConflictsMixin:
         if not ls.stdout.strip():
             return []
         paths: set = set()
-        for line in ls.stdout.splitlines():
-            line = line.strip()
-            if not line:
+        # -z 记录以 NUL 分隔且路径段不经引用（与 repair_site.repair_site_facts
+        # 同款切分）：记录格式 <mode> <hash> <stage>\t<path>，仅凭制表符定位
+        # 路径段、原样保留不 strip——真实路径允许首尾空格（item
+        # 4d158f275b1c：原 strip 口径会剥掉首尾空格致路径与磁盘失配，下游
+        # :(literal) pathspec 恒不命中、态 1/态 2 自愈退态 3）；末尾 NUL 切出
+        # 的空记录被下方无制表符检查自然跳过。
+        for record in ls.stdout.split("\x00"):
+            if "\t" not in record:
                 continue
-            # 行格式：<mode> <hash> <stage>\t<path>
-            tab = line.split("\t", 1)
-            if len(tab) == 2 and tab[1].strip():
-                paths.add(tab[1].strip())
+            path = record.split("\t", 1)[1]
+            if path:
+                paths.add(path)
         return sorted(paths)
 
     def _collect_conflict_paths(self) -> list:

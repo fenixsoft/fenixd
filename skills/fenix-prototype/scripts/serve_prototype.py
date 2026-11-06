@@ -8,10 +8,11 @@
 
 生命周期（PID 文件 = ``<原型目录>/.proto-server.json``）：
 
-- 启动时 PID 文件存在且对应进程存活、且命令行核实为本脚本在伺服同一目录
+- 启动时 PID 文件存在且对应进程存活、且身份核实为本脚本在伺服同一目录
   → **复用**既有实例与端口（不报端口冲突、不重复启动）；
-- PID 文件存在但进程已死，或存活进程经命令行核实**不是**本脚本的实例
-  （PID 被无辜进程复用，MUST NOT 误杀）→ 判定残留，清理 PID 文件**接管**；
+- PID 文件存在但进程已死，或存活进程经身份核实**不是**本脚本的实例
+  （PID 被无辜进程复用，MUST NOT 误杀）→ 判定残留，清理 PID 文件**接管**
+  （接管仍以 ``action: started`` 报告，stderr 提示 ``stale-takeover``）；
 - 正常退出 / SIGINT / SIGTERM / ``--stop`` 时回收 PID 文件，不留僵尸。
 
 端口：默认 0 = OS 分配随机高端口；显式 ``--port`` 被占用时随机高端口重试。
@@ -22,21 +23,24 @@
     python3 serve_prototype.py <原型目录> [--host 127.0.0.1] [--port N]
                                [--stop] [--json]
 
-退出码：0 = started / reused / took-over / stopped；2 = 用法/目录错误。
+退出码：0 = started / reused / stopped（``--stop`` 成功含 stopped /
+cleaned-stale，细分看 ``action`` 字段）；1 = ``--stop`` 无实例（not-running）/
+停止失败 / 停止超时；2 = 用法 / 目录错误 / 端口绑定重试耗尽。
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import contextlib
 import json
 import os
 import random
 import signal
 import socket
-import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -206,10 +210,47 @@ def _process_is_zombie(pid: int) -> bool:
         return False
 
 
+def _process_is_script_instance(pid: int, script_path: str) -> bool:
+    """强证据核实存活 PID 是否本脚本实例（``reuse`` 认定与 ``--stop`` 信号
+    发放的共同前置门）。
+
+    命令行「含本脚本路径/文件名字样」不作身份证据：grep、编辑器、py_compile
+    等命令行恰含 serve_prototype.py 字样的无辜进程被 PID 复用命中时，
+    ``--stop`` 会对它误发 SIGTERM/SIGKILL。改用强证据链（Linux /proc，
+    任一环节读不到即按不匹配保守处理）：
+
+    1) 目标进程与本进程同一解释器（``/proc/<pid>/exe`` 一致）——grep/编辑器
+       等非 Python 进程无论命令行长什么样都到此为止；
+    2) 且命令行存在某个 argv 元素，按目标进程自身 cwd（``/proc/<pid>/cwd``）
+       解析后恰为本脚本文件——独立元素而非子串，且兼容相对路径调起的旧实例。
+
+    无 /proc 平台恒 False，调用方按「核实不可用」保守判 stale 接管，
+    不向任何进程发信号。
+    """
+    if sys.platform == "win32":
+        return False
+    script = Path(script_path).resolve()
+    try:
+        if Path(os.readlink(f"/proc/{pid}/exe")) != \
+                Path(os.readlink(f"/proc/{os.getpid()}/exe")):
+            return False
+        argv = process_cmdline(pid).split()
+        target_cwd = os.readlink(f"/proc/{pid}/cwd")
+    except (OSError, ValueError):
+        return False
+    for elem in argv:
+        try:
+            if (Path(target_cwd) / elem).resolve() == script:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def probe_existing(proto_dir: Path, script_path: str) -> dict:
     """探测既有实例：``reuse``（存活且核实为本脚本伺服同目录）/ ``stale``（可接管）。
 
-    存活但命令行核实不是本脚本实例（PID 被无辜进程复用）同样判 ``stale``——
+    存活但身份核实不是本脚本实例（PID 被无辜进程复用）同样判 ``stale``——
     只清理 PID 文件并另起新实例，MUST NOT 杀掉无辜进程。
     """
     info = read_pid_file(proto_dir)
@@ -223,15 +264,16 @@ def probe_existing(proto_dir: Path, script_path: str) -> dict:
         return {"state": "stale", "info": info, "reason": f"PID {pid} 进程已死"}
     cmdline = process_cmdline(pid)
     # 目录一致性以 PID 文件写入口径（resolve 后的 proto_dir）比对——cmdline 保存
-    # 的是启动时原样输入，相对路径启动的旧实例不含 resolve 后的绝对路径；
-    # 脚本身份仅作辅助确认（完整路径或脚本名均可，PID 文件已锚定同一目录）。
+    # 的是启动时原样输入，相对路径启动的旧实例不含 resolve 后的绝对路径。
+    # 脚本身份用强证据核实：命令行含脚本路径「字样」不作数（grep、编辑器、
+    # py_compile 等无辜进程被 PID 复用命中时会被 --stop 误杀）。
     recorded_dir = str(info.get("proto_dir", ""))
-    script_identified = script_path in cmdline or Path(script_path).name in cmdline
-    if script_identified and recorded_dir == str(proto_dir.resolve()):
+    if _process_is_script_instance(pid, script_path) \
+            and recorded_dir == str(proto_dir.resolve()):
         return {"state": "reuse", "info": info}
     if cmdline:
         return {"state": "stale", "info": info,
-                "reason": f"PID {pid} 存活但非本原型服务器实例（命令行核实不符），不误杀、直接接管"}
+                "reason": f"PID {pid} 存活但非本原型服务器实例（身份核实不符），不误杀、直接接管"}
     # 无 /proc 平台（macOS/Windows 等）命令行核实不可用：显式标注给调用方，
     # 而非静默判 stale（避免同目录每次重复叠加新实例、覆盖 PID 文件）。
     return {"state": "stale", "info": info,
@@ -243,8 +285,8 @@ def probe_existing(proto_dir: Path, script_path: str) -> dict:
 def stop_server(proto_dir: Path, script_path: str) -> dict:
     """``--stop``：核实身份后 SIGTERM→SIGKILL 两级回收；不留僵尸、不误杀无辜进程。
 
-    SIGKILL 升级只作用于已经 probe_existing 核实为本脚本实例的 PID（命令行
-    核实不符的实例走 stale 接管，本就 SIGKILL 同权），无误杀无辜进程面。
+    SIGKILL 升级只作用于已经 probe_existing 强证据核实为本脚本实例的 PID
+    （身份核实不符的实例走 stale 接管，只清理 PID 文件），无误杀无辜进程面。
     """
     probe = probe_existing(proto_dir, script_path)
     if probe["state"] == "fresh":
@@ -254,7 +296,6 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
         return {"ok": True, "action": "cleaned-stale",
                 "reason": probe.get("reason", "残留 PID 文件已清理")}
     pid = int(probe["info"]["pid"])
-    import time
 
     def _exited() -> bool:
         # 僵尸（已退出、等待父进程收割）视同已退出：SIGTERM 后被停实例对
@@ -328,6 +369,23 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
     def list_directory(self, path):
         self.send_error(403, "Directory listing is not allowed")
         return None
+
+    # 内部状态文件不得经 HTTP 取走：403 只关闭了目录列举，已知文件名仍可被
+    # 直接猜中——--host 0.0.0.0 时 LAN 内对端可取回 feedback.json（全部批注
+    # 内容）、.proto-server.json（PID/host/端口/目录路径）及其 .lock/.tmp/.bak
+    # 派生文件。对其显式 404（隐藏存在性）；批注回流走磁盘读取，不走 HTTP。
+    def _is_internal_state_file(self, path: str) -> bool:
+        real = Path(self.translate_path(path))
+        return real.parent == Path(self.directory) and (
+            real.name == PID_FILE_NAME
+            or real.name == FEEDBACK_FILE_NAME
+            or real.name.startswith(FEEDBACK_FILE_NAME + "."))
+
+    def do_GET(self):
+        if self._is_internal_state_file(self.path):
+            self.send_error(404, "Not Found")
+            return
+        super().do_GET()
 
     # ── POST /feedback ────────────────────────────────────────────────
     def do_POST(self):
@@ -458,7 +516,6 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
 
         隔离动作本身失败不阻塞新批注写入：降级为 stderr 提示并返回 None。
         """
-        import time
         stamp = time.strftime("%Y%m%d-%H%M%S")
         # 隔离名带进程/线程唯一标识：时间戳秒级粒度内两次隔离也不重名覆盖
         backup = target.with_name(
@@ -476,11 +533,17 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
 
     def _send_json(self, code: int, payload: dict):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            # 客户端中途断开（浏览器刷新/提前离开等常见断连）：与 408 读体
+            # 超时路径同口径静默回收，不沿 socketserver 默认 handle_error 刷
+            # 整栈 stderr；半写出的连接状态不可靠，显式断开防 keep-alive 复用。
+            self.close_connection = True
 
 
 def bind_server(host: str, port: int, proto_dir: Path) -> ThreadingHTTPServer:
@@ -548,7 +611,13 @@ def main(argv: list[str] | None = None) -> int:
         remove_pid_file(proto_dir)
         print(f"stale-takeover: {probe.get('reason', '')}", file=sys.stderr)
 
-    server = bind_server(args.host, args.port, proto_dir)
+    try:
+        server = bind_server(args.host, args.port, proto_dir)
+    except RuntimeError as exc:
+        # 端口与全部随机重试耗尽：走 emit 结构化 JSON + 约定退出码 2，与文件
+        # 其余错误路径同口径，不裸抛 traceback。
+        emit({"ok": False, "error": str(exc)}, args.json)
+        return 2
     host, port = server.server_address[0], server.server_address[1]
     # 0.0.0.0 等通配绑定打印时保持用户输入（URL 用 localhost 提示可达性）
     display_host = args.host if host in ("0.0.0.0", "::") else str(host)
@@ -564,7 +633,6 @@ def main(argv: list[str] | None = None) -> int:
             return
         remove_pid_file(proto_dir)
 
-    import atexit
     atexit.register(_cleanup)
 
     def _on_signal(signum, _frame):

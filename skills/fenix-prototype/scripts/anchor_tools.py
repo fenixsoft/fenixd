@@ -20,7 +20,8 @@
     python3 anchor_tools.py diff <旧.html> <新.html> [--affected id1,id2]
 
 退出码：0 = 完成；``diff --affected`` 时若未波及锚未全部保持以 1 退出（可作
-生成管线的机械门）；2 = 用法/文件错误。
+生成管线的机械门）；2 = 用法/文件错误；3 = 工具自身未捕获异常（崩溃路径向
+stderr 输出 ``ok: false`` JSON，不占用机械门违规的 1，退出码 1 保持单一语义）。
 """
 
 from __future__ import annotations
@@ -95,11 +96,15 @@ class _AnchorParser(HTMLParser):
                 if anchor_id:
                     self._record(anchor_id, popped_tag, self._snapshot(texts))
                 # 被跨越丢弃的带锚帧（未闭合/错配时）：其 texts 按最近锚祖先
-                # 原则归属自身，回填记录避免快照静默丢失且无任何观测信号
+                # 原则归属自身，回填记录避免快照静默丢失且无任何观测信号；
+                # 附 source="discarded" 与正常闭合锚区分（快照可能不完整，
+                # 供人工核对与 _guess_renames 匹配时识别恢复路径来源），口径
+                # 与 close() 的 EOF 残帧（source="unclosed"）两条恢复路径对齐
                 for lost_tag, lost_anchor, lost_texts in self._stack[i + 1:]:
                     if lost_anchor and lost_texts:
                         self._record(lost_anchor, lost_tag,
-                                     self._snapshot(lost_texts))
+                                     self._snapshot(lost_texts),
+                                     source="discarded")
                 del self._stack[i:]
                 return
 
@@ -278,4 +283,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 崩溃兜底：退出码 1 专留 ``diff --affected`` 机械门违规，解析/读文件等
+    # 未捕获异常以独立退出码 3 终止并向 stderr 输出 ok:false JSON（与
+    # _read_or_die 口径一致），避免管线按退出码判定时把崩溃误读为锚漂移。
+    # argparse 的用法错误走 SystemExit(2)，不落入本兜底。
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"ok": False,
+                          "error": f"工具自身异常：{type(exc).__name__}: {exc}"},
+                         ensure_ascii=False), file=sys.stderr)
+        sys.exit(3)
