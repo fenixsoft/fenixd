@@ -103,11 +103,26 @@ SPEC——你定。」
 与现状脱节的设计。未命中可跳过，MUST NOT 为走流程而全量阅读；项目尚无
 `spec/knowledge/` 目录时静默跳过。
 
-### 2. 生成 kebab-case 名称
+### 2. 生成 kebab-case 名称与中文标题
 
 从需求描述中提取简洁的 kebab-case 名称：
 - "添加用户登录功能" → `add-user-login`
 - "修复移动端首页布局" → `fix-mobile-homepage`
+
+**同一阶段生成 5-25 字中文标题（add-spec-chinese-title，强制）**：中文标题是
+SPEC 的展示名（name），与 kebab-case 名（id）构成 id/name 关系——一切寻址、
+排序、信号与状态机仍以英文名为唯一键，标题纯展示（列表页副标题、名称搜索
+命中）。示例：
+- `add-user-login` → 添加用户登录功能
+- `fix-mobile-homepage` → 修复移动端首页布局
+
+起草纪律（强制）：
+- 长度 **5-25 字**，描述「做什么」，不逐词直译英文名
+- **YAML plain scalar 安全形态**：标题行会被 `yaml.safe_load` 读取——禁半角
+  冒号 `:`、禁以引号 / `[` / `{` / `&` / `*` / `%` / `@` / `!` 开头、禁尾部
+  反斜杠；写出的 `title: <标题>` 行 MUST 能被按字符串原样读回
+- `--modify <name>` 更新既有 SPEC 时，标题随需求演变**可**同步更新；标题仍
+  准确时保持不变，MUST NOT 强制改写
 
 ### 3. 使用 fenix 原生 SPEC 生成器创建 SPEC
 
@@ -195,6 +210,28 @@ FENIX_REQUEST_EOF
 request.md 由本 skill 步骤运行时产出（随既有 `git add spec/changes/<name>/`
 提交流程入库、归档时随目录迁移），**不写进 tasks.md 的 Deliverables 声明段**
 （实现分支代码交付物才声明；本文件的存在由本 skill 步骤保证）。
+
+**3.1.4 写入中文标题（add-spec-chinese-title）**
+
+把 §2 生成的 5-25 字中文标题写入 `.spec.yaml`，与 `schema` / `created` /
+`mode` 同级新增 `title` 行（追加在文件末尾，读侧按字段名读取与行序无关）：
+
+```bash
+# 示例：写入中文标题（与 mode 写入同模式）
+python3 -c "
+from pathlib import Path
+p = Path('spec/changes/<name>/.spec.yaml')
+text = p.read_text(encoding='utf-8')
+if 'title:' not in text:
+    p.write_text(text.rstrip() + '\ntitle: <5-25字中文标题>\n', encoding='utf-8')
+"
+```
+
+- 标题形态纪律见 §2（plain scalar 安全形态，禁半角冒号 / 引号开头等易碎写法）
+- 存量 spec（无 title 行）读侧容错缺省 null：列表不渲染副标题行，零迁移强制；
+  但新建 SPEC **必须**写 title（本节即为生成纪律）
+- `--modify <name>` 时标题仍准确则保持不变（MUST NOT 强制改写），需求已演变
+  则同步更新该行
 
 **3.2 按依赖顺序生成 artifact**
 
@@ -391,7 +428,7 @@ git commit -m "[fenix] spec: <spec-name>"
 
 - 只 add 该 spec 目录，**禁止 `git add .` / `-A`**（避免带入无关改动）
 - STATE.md 位于 `.fenix/` 下，已被 `.gitignore` 忽略，属运行时文件，**无需提交**
-- 提交前检查脚手架产物完整：`.spec.yaml` 缺失时补写（内容为 `schema: spec-driven` + `created: <年-月-日>` 两行，与其它 change 一致）
+- 提交前检查脚手架产物完整：`.spec.yaml` 缺失时补写（内容为 `schema: spec-driven` + `created: <年-月-日>` 两行，与其它 change 一致）；`title` 行缺失时按 §3.1.4 补写（5-25 字中文标题，add-spec-chinese-title 完整性检查）
 - 提交失败（pre-commit hook 报错等）时修复后重新提交，不要跳过 hook
 - `--modify <name>` 更新完 artifacts 后同样执行本节提交
 

@@ -61,6 +61,7 @@
   "spec": null 或 {
     "name": "kebab-case 规格名称（不含 evo- 前缀）",
     "capability": "kebab-case 能力名称",
+    "title_cn": "5-25 字中文标题（SPEC 展示名，add-spec-chinese-title；可选但 MUST 提供——缺失/非法时落盘不含 title 行，列表只剩英文名。纯展示用途，id/name 关系：英文名 = id 一切寻址排序，中文标题 = name 纯展示。禁易碎 YAML：纯文本 plain scalar，MUST NOT 以引号开头、MUST NOT 含半角冒号或 # ）",
     "proposal_md": "proposal.md 内容",
     "spec_md": "specs/<capability>/spec.md 内容",
     "design_md": "design.md 内容",
@@ -230,4 +231,4 @@ PY
 4. **证据引用**：rationale MUST 引用具体证据（文件路径/行号、日志时间戳、STATE 条目等）
 5. **诚实标注**：无法核实的部分标注「未核实」，MUST NOT 编造
 6. **产物完整**：每条条目必须包含完整的 verdict + analysis_md（结构齐全：`**简介**：` 打头 → 问题源 / 核查依据 / 与存量 SPEC 的关系 / 未核实 → `### 原始条目：<标题>` + 一级列表），worth_spec=true 时 spec 字段齐全
-7. **格式合规**：JSON 格式正确，name/capability 为 kebab-case，tasks.md 两段结构齐全（首个 `## Deliverables` fenced yaml 段 + `## <编号>. <标题>` 分组任务），   且已跑过第 2 步自检脚本并打印 `SPEC_OK`
+7. **格式合规**：JSON 格式正确，name/capability 为 kebab-case，title_cn 为 5-25 字中文标题（可选展示名，建议必给——缺失时落盘 `.spec.yaml` 不含 title 行；禁以引号开头/含半角冒号等易碎 YAML 形态），tasks.md 两段结构齐全（首个 `## Deliverables` fenced yaml 段 + `## <编号>. <标题>` 分组任务），   且已跑过第 2 步自检脚本并打印 `SPEC_OK`

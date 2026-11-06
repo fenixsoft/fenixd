@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-09-24
 mode: fast-track
+title: 修复批启动阶段可见性

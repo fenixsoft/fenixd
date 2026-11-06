@@ -1099,32 +1099,32 @@
 
 ## 1. 后端：title 读取与 API 透传
 
-- [ ] 1.1 `core/dashboard/data/spec_docs.py` 新增 `read_spec_title(project_root, spec_name) -> str | None`：活跃 `spec/changes/<spec>/.spec.yaml` 优先，缺失经 `resolve_spec_dir` 归档回退；字段缺失 / 文件缺失 / YAML 解析失败 / 非法 spec 名一律返回 None（不抛异常）；签名缓存对齐 `core/spec_mode.py` 的 `(path, mtime_ns, size)` 有界缓存模式；经 `core/dashboard/data/__init__.py` 门面导出（同既有 helper 消费口径）。
-- [ ] 1.2 `core/dashboard/data/summary.py` 的 `spec_summary` 透传 `"title"` 字段：活跃条目直读（`read_spec_title`），已归档条目经 SummaryIndex 每轮单次 `os.scandir(spec/archive/)` 建立的名称→目录映射下发读取（剥日期前缀、exact 优先 + `sorted()[-1]`，语义对齐 `resolve_spec_dir`；MUST NOT per-spec glob）；`spec_detail` 同样透传 `title`。增量 patch（SSE watcher）随 summary 重建自动携带。
-- [ ] 1.3 新增 `tests/test_spec_title.py`：钉死读取容错矩阵（活跃有/无 title、归档有/无 title、文件缺失、字段缺失、YAML 损坏、非法 spec 名 → None）与 `spec_summary`/`spec_detail` 透传形状（有值 string / 缺失 null）。
+- [x] 1.1 `core/dashboard/data/spec_docs.py` 新增 `read_spec_title(project_root, spec_name) -> str | None`：活跃 `spec/changes/<spec>/.spec.yaml` 优先，缺失经 `resolve_spec_dir` 归档回退；字段缺失 / 文件缺失 / YAML 解析失败 / 非法 spec 名一律返回 None（不抛异常）；签名缓存对齐 `core/spec_mode.py` 的 `(path, mtime_ns, size)` 有界缓存模式；经 `core/dashboard/data/__init__.py` 门面导出（同既有 helper 消费口径）。
+- [x] 1.2 `core/dashboard/data/summary.py` 的 `spec_summary` 透传 `"title"` 字段：活跃条目直读（`read_spec_title`），已归档条目经 SummaryIndex 每轮单次 `os.scandir(spec/archive/)` 建立的名称→目录映射下发读取（剥日期前缀、exact 优先 + `sorted()[-1]`，语义对齐 `resolve_spec_dir`；MUST NOT per-spec glob）；`spec_detail` 同样透传 `title`。增量 patch（SSE watcher）随 summary 重建自动携带。
+- [x] 1.3 新增 `tests/test_spec_title.py`：钉死读取容错矩阵（活跃有/无 title、归档有/无 title、文件缺失、字段缺失、YAML 损坏、非法 spec 名 → None）与 `spec_summary`/`spec_detail` 透传形状（有值 string / 缺失 null）。
 
 ## 2. 前端：两处列表名称列副标题
 
-- [ ] 2.1 `core/dashboard/static/src/services/dashboard.ts` 的 `SpecSummary` 增加 `title?: string | null` 类型（注释标注 id/name 关系与数据源）。
-- [ ] 2.2 v1 `pages/projects/list.tsx` 名称列：英文名主行下方渲染中文副标题行（12px、tertiary 文字色、单行省略、随树形缩进对齐主行）；`title` 为 null/空不渲染副标题行；移动端卡片形态名称区同规则；名称关键字过滤在英文名包含匹配外 OR 命中 `title`（大小写不敏感）；排序键、fix-* 树挂载/缩进、行点击、Why 悬浮提示行为不变。
-- [ ] 2.3 v2 `pages/v2/projectDetail.tsx` SPEC 表格名称列：同规则渲染副标题（`V2_TEXT_TERTIARY` 同级 token、小于主行字号、单行省略）；`title` 为 null/空不渲染；名称链接点击/悬停 `title` 属性等既有交互不变。
-- [ ] 2.4 新增 `core/dashboard/static/tests/specTitleSubtitle.test.mjs`：钉死两处副标题渲染（有 title / 无 title / 树形缩进对齐）与搜索命中中文标题；跑通前端既有测试套件无回归。
+- [x] 2.1 `core/dashboard/static/src/services/dashboard.ts` 的 `SpecSummary` 增加 `title?: string | null` 类型（注释标注 id/name 关系与数据源）。
+- [x] 2.2 v1 `pages/projects/list.tsx` 名称列：英文名主行下方渲染中文副标题行（12px、tertiary 文字色、单行省略、随树形缩进对齐主行）；`title` 为 null/空不渲染副标题行；移动端卡片形态名称区同规则；名称关键字过滤在英文名包含匹配外 OR 命中 `title`（大小写不敏感）；排序键、fix-* 树挂载/缩进、行点击、Why 悬浮提示行为不变。
+- [x] 2.3 v2 `pages/v2/projectDetail.tsx` SPEC 表格名称列：同规则渲染副标题（`V2_TEXT_TERTIARY` 同级 token、小于主行字号、单行省略）；`title` 为 null/空不渲染；名称链接点击/悬停 `title` 属性等既有交互不变。
+- [x] 2.4 新增 `core/dashboard/static/tests/specTitleSubtitle.test.mjs`：钉死两处副标题渲染（有 title / 无 title / 树形缩进对齐）与搜索命中中文标题；跑通前端既有测试套件无回归。
 
 ## 3. 立项通道：中文标题生成纪律
 
-- [ ] 3.1 `skills/fenix-new/SKILL.md` §2 增补：生成 kebab-case 名的同一阶段生成 5-25 字中文标题，随 §3.1 写入 `.spec.yaml` 的 `title` 字段（给出与 mode 写入同模式的脚本示例）；YAML plain scalar 纪律（禁半角冒号、引号开头等易碎形态）；`--modify` 语义 = 标题随需求演变可更新、仍准确不强制改写；§5 提交前置检查同步提及 title 完整性。
-- [ ] 3.2 `core/evolution.py` 草稿契约加可选 `title_cn` 字段：`materialize_draft` 校验其形态（str 且 5-25 字，非法时不作废草稿、仅省略 title 行）；`SPEC_YAML_TEMPLATE` 支持 title 行（缺省省略）；`agents/evolution.md` spec 契约节与格式合规清单同步要求 5-25 字中文标题；补/改 evolution 既有单测钉死契约（含缺 title_cn 容错分支）。
+- [x] 3.1 `skills/fenix-new/SKILL.md` §2 增补：生成 kebab-case 名的同一阶段生成 5-25 字中文标题，随 §3.1 写入 `.spec.yaml` 的 `title` 字段（给出与 mode 写入同模式的脚本示例）；YAML plain scalar 纪律（禁半角冒号、引号开头等易碎形态）；`--modify` 语义 = 标题随需求演变可更新、仍准确不强制改写；§5 提交前置检查同步提及 title 完整性。
+- [x] 3.2 `core/evolution.py` 草稿契约加可选 `title_cn` 字段：`materialize_draft` 校验其形态（str 且 5-25 字，非法时不作废草稿、仅省略 title 行）；`SPEC_YAML_TEMPLATE` 支持 title 行（缺省省略）；`agents/evolution.md` spec 契约节与格式合规清单同步要求 5-25 字中文标题；补/改 evolution 既有单测钉死契约（含缺 title_cn 容错分支）。
 
 ## 4. 存量回填（幂等分批）
 
-- [ ] 4.1 盘点漂移：对照本 SPEC 立项时刻清单，核对 `spec/changes/` 与 `spec/archive/` 目录迁移（活跃→归档）与实现期新建目录；同步修正上方 Deliverables 段的 path/kind，使声明与实现分支真实路径一致。
-- [ ] 4.2 活跃批回填：`spec/changes/` 全部 27 目录（含本 SPEC 自身 `add-spec-chinese-title`；2 个缺 `.spec.yaml` 的 pushed 目录按脚手架补写：`schema: spec-driven` + `created` 取 STATE 条目日期 + `title`）；逐目录读 proposal/design 起草 5-25 字中文标题写入；已有非空 title 跳过（幂等）。
-- [ ] 4.3 归档批 A 回填：`spec/archive/` 2026-09-01 ～ 2026-09-25 段目录，规则同 4.2（proposal/design 头部起草，Why 段优先；缺 `.spec.yaml` 的按脚手架补写，`created` 取归档清单条目日期）。
-- [ ] 4.4 归档批 B 回填：2026-09-26 ～ 2026-10-20 段目录，规则同 4.3。
-- [ ] 4.5 归档批 C 回填：2026-10-21 ～ 2026-11-06 段目录，规则同 4.3。
-- [ ] 4.6 收尾增量回扫 + 全量自检：回扫实现期内新建/迁移后仍缺 title 的目录一并回填并补进 Deliverables 段；自检脚本遍历全部 `.spec.yaml` 断言非空 `title` 且长度 5-25（报错退出非零）；幂等复跑（重跑回填零变更）。
+- [x] 4.1 盘点漂移：对照本 SPEC 立项时刻清单，核对 `spec/changes/` 与 `spec/archive/` 目录迁移（活跃→归档）与实现期新建目录；同步修正上方 Deliverables 段的 path/kind，使声明与实现分支真实路径一致。
+- [x] 4.2 活跃批回填：`spec/changes/` 全部 27 目录（含本 SPEC 自身 `add-spec-chinese-title`；2 个缺 `.spec.yaml` 的 pushed 目录按脚手架补写：`schema: spec-driven` + `created` 取 STATE 条目日期 + `title`）；逐目录读 proposal/design 起草 5-25 字中文标题写入；已有非空 title 跳过（幂等）。
+- [x] 4.3 归档批 A 回填：`spec/archive/` 2026-09-01 ～ 2026-09-25 段目录，规则同 4.2（proposal/design 头部起草，Why 段优先；缺 `.spec.yaml` 的按脚手架补写，`created` 取归档清单条目日期）。
+- [x] 4.4 归档批 B 回填：2026-09-26 ～ 2026-10-20 段目录，规则同 4.3。
+- [x] 4.5 归档批 C 回填：2026-10-21 ～ 2026-11-06 段目录，规则同 4.3。
+- [x] 4.6 收尾增量回扫 + 全量自检：回扫实现期内新建/迁移后仍缺 title 的目录一并回填并补进 Deliverables 段；自检脚本遍历全部 `.spec.yaml` 断言非空 `title` 且长度 5-25（报错退出非零）；幂等复跑（重跑回填零变更）。（回扫命中 11 个无日期前缀的 epoch 后缀目录：6 个补 title + 5 个脚手架补写 [含 4 个 verify-draft 事故夹具与 1 个幽灵条目处置留痕]，均已在 Deliverables 段声明；自检 536/536 零违规退出码 0）
 
 ## 5. 收尾验证
 
-- [ ] 5.1 后端全量回归：跑 `tests/test_spec_title.py` 与既有 dashboard data / spec_mode / evolution 相关测试全过；daemon 侧 `/api/specs` 冒烟验证活跃与已归档条目均携带 `title`（curl 抽样）。
-- [ ] 5.2 前端生产 rebuild（`core/dashboard/static/dist/`）+ 前端测试套件全过；本地起服务对 v1 列表页与 v2 项目详情 SPEC 表格截图取证（有标题条目副标题渲染、无标题条目单行、搜索命中中文标题三形态）。
+- [x] 5.1 后端全量回归：跑 `tests/test_spec_title.py` 与既有 dashboard data / spec_mode / evolution 相关测试全过；daemon 侧 `/api/specs` 冒烟验证活跃与已归档条目均携带 `title`（curl 抽样）。（test_spec_title 22 过 + dashboard/spec_mode/evolution 相关 649 过；worktree 隔离实例 8899 冒烟：活跃条目 title ✓、归档日期前缀条目 ✓、epoch 后缀目录经 exact 名可达 ✓；8787 主树常驻旧代码未触碰）
+- [x] 5.2 前端生产 rebuild（`core/dashboard/static/dist/`）+ 前端测试套件全过；本地起服务对 v1 列表页与 v2 项目详情 SPEC 表格截图取证（有标题条目副标题渲染、无标题条目单行、搜索命中中文标题三形态）。（前端套件 375 过 0 挂；生产 dist rebuild 完成 [untracked 构建产物]；worktree 隔离实例 + gitignored 受控夹具项目三形态取证：v1 列表副标题/归档回退/搜索命中中文标题 + v2 SPEC 表格同三形态，4 张截图与 DOM 快照摘录落 .history/ui-evidence-notes.md，未 Read 图片）

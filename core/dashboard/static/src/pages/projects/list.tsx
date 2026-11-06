@@ -55,6 +55,8 @@ import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 // 评审 blocked 前缀与 v2 specDetail 共用单源（code-review item 801f9399dba8）
 import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
+// SPEC 中文标题关键字命中单源（add-spec-chinese-title 2.2）
+import { specKeywordHit } from './specTitle';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
@@ -337,42 +339,64 @@ function SpecNameCell({ project, record, dense }: { project: string; record: Spe
   };
 
   return (
-    <Popover
-      open={open && !!why}
-      placement="topLeft"
-      content={
-        <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
-          <Markdown remarkPlugins={LIST_REMARK_PLUGINS} components={markdownComponents}>{why}</Markdown>
-        </div>
-      }
-    >
-      <span
-        onMouseEnter={onEnter}
-        onMouseLeave={onLeave}
-        onClick={handleClick}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          // 键盘可达（code-review item 3e07fb4c2b30）：Enter/Space 触发跳转，
-          // 口径对齐 ProjectCards 项目名跳转（item b5ed7707672e）
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleClick();
-          }
-        }}
-        className={dense ? 'ov-ellipsis' : undefined}
-        title={dense ? record.name : undefined}
-        style={
-          // dense=v2 台账形态（2026-11-06 用户指令）：13.5px 半粗 + 深色单行省略
-          //（镜像 v2 projectDetail 名称列）；缺省保持链接蓝 16px（移动卡片同款）
-          dense
-            ? { cursor: 'pointer', fontSize: 13.5, fontWeight: 600, color: OV_TEXT, display: 'block' }
-            : { cursor: 'pointer', fontSize: 16, fontWeight: 600, color: DSH_LINK }
+    <div style={{ minWidth: 0 }}>
+      <Popover
+        open={open && !!why}
+        placement="topLeft"
+        content={
+          <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
+            <Markdown remarkPlugins={LIST_REMARK_PLUGINS} components={markdownComponents}>{why}</Markdown>
+          </div>
         }
       >
-        {record.name}
-      </span>
-    </Popover>
+        <span
+          onMouseEnter={onEnter}
+          onMouseLeave={onLeave}
+          onClick={handleClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            // 键盘可达（code-review item 3e07fb4c2b30）：Enter/Space 触发跳转，
+            // 口径对齐 ProjectCards 项目名跳转（item b5ed7707672e）
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              handleClick();
+            }
+          }}
+          className={dense ? 'ov-ellipsis' : undefined}
+          title={dense ? record.name : undefined}
+          style={
+            // dense=v2 台账形态（2026-11-06 用户指令）：13.5px 半粗 + 深色单行省略
+            //（镜像 v2 projectDetail 名称列）；缺省保持链接蓝 16px（移动卡片同款）
+            dense
+              ? { cursor: 'pointer', fontSize: 13.5, fontWeight: 600, color: OV_TEXT, display: 'block' }
+              : { cursor: 'pointer', fontSize: 16, fontWeight: 600, color: DSH_LINK }
+          }
+        >
+          {record.name}
+        </span>
+      </Popover>
+      {/* add-spec-chinese-title：英文名主行下方的中文标题副标题行（12px、
+          tertiary 文字色、单行省略）。副标题不承载点击与悬停交互（Why 悬浮
+          仅挂在主行 span 上），title 缺失/空不渲染（保持既有单行形态）；
+          桌面表格与移动卡片共用本单元格，树形缩进随主行同级对齐。 */}
+      {record.title ? (
+        <div
+          className="spec-title-sub"
+          style={{
+            fontSize: 12,
+            lineHeight: '18px',
+            color: token.colorTextTertiary,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            maxWidth: '100%',
+          }}
+        >
+          {record.title}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1481,7 +1505,10 @@ export default function SpecListPage() {
     // 本地表渲染：与 /api/specs 全量口径一致按 created 倒序（新增 spec 插序）
     return Object.values(specMap)
       .filter((s) => {
-        if (kw && !s.name.toLowerCase().includes(kw)) return false;
+        // add-spec-chinese-title：名称关键字在英文名包含匹配外 OR 命中中文
+        // 标题（大小写不敏感，任一命中即保留；id/name 关系下标题参与匹配
+        // 的唯一例外，匹配语义单源 specTitle.specKeywordHit）
+        if (kw && !specKeywordHit(s.name, s.title, kw)) return false;
         if (statusList.length && !statusList.includes(s.status || '')) return false;
         // 进度过滤：口径与行高亮一致，PRIORITY_TERMINAL（done/pushed）为已完成，其余为进行中
         if (type === 'active' && PRIORITY_TERMINAL.has(s.status || '')) return false;

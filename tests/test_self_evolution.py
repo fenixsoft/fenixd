@@ -479,6 +479,8 @@ from core.evolution import (
     materialize_draft,
     draft_dir,
     SPEC_YAML_TEMPLATE,
+    spec_yaml_text,
+    _valid_title_cn,
     ContractError,
     read_contract,
     _spec_summary,
@@ -685,6 +687,64 @@ class TestEvolutionMaterializeDraft(unittest.TestCase):
         spec_yaml = (d / ".spec.yaml").read_text(encoding="utf-8")
         self.assertIn("schema: spec-driven", spec_yaml)
         self.assertIn("mode: fast-track", spec_yaml)
+
+    def test_materialize_draft_title_cn_written(self):
+        """title_cn 合法 → .spec.yaml 含 title 行（strip 后，mode 行之后）。"""
+        spec = self._valid_spec()
+        spec["title_cn"] = "  修复测试夹具供给缺口  "
+        item = {"project": "p", "date_section": "2026-09-12",
+                "section": "浪费", "title": "t", "spec": spec}
+        d, reason = materialize_draft(item, self.proot)
+        self.assertIsNotNone(d)
+        self.assertEqual(reason, "")
+        yaml_text = (d / ".spec.yaml").read_text(encoding="utf-8")
+        self.assertIn("title: 修复测试夹具供给缺口\n", yaml_text)
+        self.assertLess(
+            yaml_text.index("mode: fast-track"), yaml_text.index("title: "),
+            "title 行应追加在模板三行（schema/created/mode）之后")
+
+    def test_materialize_draft_title_cn_invalid_omitted(self):
+        """title_cn 非法（过短/过长/非 str/全空白）→ 省略 title 行、草稿照常落盘
+        （不作废草稿，SPEC 容错语义）。"""
+        for bad in ("短", "x" * 26, 123, None, "   ", ""):
+            spec = self._valid_spec()
+            spec["title_cn"] = bad
+            item = {"project": "p", "date_section": "d",
+                    "section": "浪费", "title": "t", "spec": spec}
+            d, reason = materialize_draft(item, self.proot)
+            self.assertIsNotNone(d, f"title_cn={bad!r} 不应作废草稿: {reason}")
+            yaml_text = (d / ".spec.yaml").read_text(encoding="utf-8")
+            self.assertNotIn("title:", yaml_text, f"title_cn={bad!r} 应省略 title 行")
+
+    def test_materialize_draft_title_cn_absent_tolerated(self):
+        """缺 title_cn 字段 → 容错落盘，无 title 行（与既有五文件形态一致）。"""
+        spec = self._valid_spec()
+        self.assertNotIn("title_cn", spec)
+        item = {"project": "p", "date_section": "d",
+                "section": "浪费", "title": "t", "spec": spec}
+        d, reason = materialize_draft(item, self.proot)
+        self.assertIsNotNone(d)
+        yaml_text = (d / ".spec.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("title:", yaml_text)
+
+    def test_spec_yaml_text_title_lines(self):
+        """spec_yaml_text：模板三行恒在；title 行仅形态合法（str 且 5-25 字）
+        时追加；SPEC_YAML_TEMPLATE.format 接收者形态保持（arity 豁免）。"""
+        base = "schema: spec-driven\ncreated: 2026-11-06\nmode: fast-track\n"
+        self.assertEqual(spec_yaml_text("2026-11-06"), base)
+        self.assertEqual(
+            spec_yaml_text("2026-11-06", "五字标题测试"),
+            base + "title: 五字标题测试\n")
+        # 5/25 边界合法
+        self.assertTrue(_valid_title_cn("五个字标题"))
+        self.assertTrue(_valid_title_cn("字" * 25))
+        self.assertFalse(_valid_title_cn("字" * 4))
+        self.assertFalse(_valid_title_cn("字" * 26))
+        self.assertFalse(_valid_title_cn(123))
+        self.assertFalse(_valid_title_cn(None))
+        # strip 计长：首尾空白不计入（25 字夹空白仍合法；26 字夹空白仍非法）
+        self.assertTrue(_valid_title_cn("  " + "字" * 25 + " "))
+        self.assertFalse(_valid_title_cn(" " + "字" * 26 + " "))
 
     def test_materialize_draft_no_spec(self):
         """无 spec 字段 → None + reason。"""

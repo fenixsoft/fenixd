@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-06
+title: 守护进程竞态验证缺陷修复
