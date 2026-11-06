@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-06 17:54 UTC+8
+> 最后更新：2026-11-06 18:17 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [dashboard-ui](dashboard-ui.md) | 仪表盘基础界面 | 2026-10-03 04:59 |
 | [dashboard-overview](dashboard-overview.md) | 项目总览页（Bento 统计卡 + 项目台账磁贴双形态、运行态 Radio 筛选、跨域镜像不引用） | 2026-11-06 17:54 |
-| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面 v2 台账重绘非替换、行内容 v2 形态、三点菜单文档入口） | 2026-11-06 17:11 |
+| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面 v2 台账重绘非替换、行内容 v2 形态、名称列中文副标题与标题命中搜索、三点菜单文档入口） | 2026-11-06 18:17 |
 | [spec-table-improvements](spec-table-improvements.md) | SPEC 列表体验改进 | 2026-10-03 04:59 |
 | [spec-list-filter-stickiness](spec-list-filter-stickiness.md) | 列表过滤条件保持 | 2026-10-03 04:59 |
 | [add-spec-context-menu](add-spec-context-menu.md) | SPEC 列表右键菜单 | 2026-10-03 04:59 |
@@ -30,7 +30,7 @@
 | [ui-theme](ui-theme.md) | 主题切换 | 2026-10-03 04:59 |
 | [v2-overview-page](v2-overview-page.md) | v2 总览页（Bento KPI 四磁贴+告警横幅+项目台账表格白底满宽变体、运行态胶囊筛选、操作列三点收编进入居首、移动 2×2 等宽钳制与项目卡简介省略） | 2026-11-06 17:24 |
 | [v2-project-list-page](v2-project-list-page.md) | v2 项目列表页 | 2026-10-03 04:59 |
-| [v2-project-detail-page](v2-project-detail-page.md) | v2 项目详情页（白底满宽 projects 变体、标题 titleBar 槽位声明形态、状态筛选 LIST_STATUSES 单源、分页 20、六分面页签复用现产组件） | 2026-11-06 17:35 |
+| [v2-project-detail-page](v2-project-detail-page.md) | v2 项目详情页（白底满宽 projects 变体、标题 titleBar 槽位声明形态、状态筛选 LIST_STATUSES 单源、分页 20、SPEC 表名称列中文副标题、六分面页签复用现产组件） | 2026-11-06 18:17 |
 | [v2-spec-detail-page](v2-spec-detail-page.md) | v2 SPEC 详情页 | 2026-10-03 04:59 |
 | [v2-config-page](v2-config-page.md) | v2 配置页 | 2026-10-03 04:59 |
 | [v2-alerts-activities](v2-alerts-activities.md) | v2 告警与活动页 | 2026-10-03 04:59 |
@@ -50,7 +50,7 @@
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
 | [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、embed 行壳位单档 60px 毛玻璃固定标题带、standalone 含移动端统一注册落 ProLayout 顶栏（移动=汉堡+logo+标题同条、副标题移动端隐藏）、v2 六页经 titleBar 槽位并入、PageContainer 页头与面包屑退役、过滤项统一右上落位、定高偏移 embed 双档回校、脱壳大屏与占位页豁免） | 2026-11-06 17:24 |
 | [dsh-bridge-projects-section](dsh-bridge-projects-section.md) | dsh 面板桥「项目」菜单行折叠开关与内嵌项目分区（点击=分区展开/折叠非主面板切换、右缘状态箭头、整行拦截层、键盘路径保留主面板注册、分区 5 行封顶滚动条 dsh web 同款定制、官方 Workspaces 列表同款） | 2026-11-06 17:54 |
-| [v2-commercial-ui](v2-commercial-ui.md) | v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态：/v2/* 路由前缀隔离与现产菜单零污染、主题单源分立互不引用、跨域镜像不引用消费纪律、磁贴圆角全站 12px、定稿原型双形态分立为 UI 真相源、真实 API 消费缺口「—」、移动断点单源与页内容器级双形态分支、白底变体三档（overview/projects 满宽 30px、help 仅白底）、标题栏经 titleBar 槽位并入统一控件、帮助正文标题去重（正文 H1 唯一）、运行态筛选胶囊语言、移动等宽钳制、DESIGN.md 例外域条款） | 2026-11-06 17:42 |
+| [v2-commercial-ui](v2-commercial-ui.md) | v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态：/v2/* 路由前缀隔离与现产菜单零污染、主题单源分立互不引用、跨域镜像不引用消费纪律、磁贴圆角全站 12px、定稿原型双形态分立为 UI 真相源、真实 API 消费缺口「—」、移动断点单源与页内容器级双形态分支、白底变体三档（overview/projects 满宽 30px、help 仅白底）、标题栏经 titleBar 槽位并入统一控件、帮助正文标题去重（正文 H1 唯一）、运行态筛选胶囊语言、移动等宽钳制、DESIGN.md 例外域条款） | 2026-11-06 18:17 |
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
 | [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | antd 表格限高滚动与 sticky 表头纪律（限高层钉 .ant-table-content、sticky 钉 thead>tr、rect 行高校准、几何证据验证；fenixd 台账磁贴不限高，「5 行封顶」落地面为 dsh web 侧栏） | 2026-11-06 17:54 |
 | [layout-chrome-tinting](layout-chrome-tinting.md) | 布局 chrome 底色 soft 染色统一（顶栏毛玻璃只换 rgb 通道双档、colorBgScrollHeader 必随配、菜单侧栏 soft 实底平涂一体、三处边框同取 colorSplit、soft 染色族守卫） | 2026-11-06 16:55 |

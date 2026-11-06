@@ -1,5 +1,5 @@
 # SPEC 生命周期
-> 最后更新：2026-11-05 04:11 UTC+8
+> 最后更新：2026-11-06 18:17 UTC+8
 
 SPEC 生命周期。本域能力页清单如下。
 
@@ -32,3 +32,4 @@ SPEC 生命周期。本域能力页清单如下。
 | [spec-lifecycle-state-model](spec-lifecycle-state-model.md) | SPEC 生命周期状态机与 STATE.md 原子读写（含冻结现场字段保全缺口与人工解冻显式 status 纪律） | 2026-11-04 16:30 |
 | [platform-port-observability-checklist](platform-port-observability-checklist.md) | 平台移植类 SPEC 观测交付检查单（起草+评审双生效点） | 2026-10-11 03:32 |
 | [spec-authoring-conventions](spec-authoring-conventions.md) | SPEC 立项与成文定调（设计定稿前置立项入口、Scenario 优过正文、配置项必须同步设置界面） | 2026-11-04 17:07 |
+| [spec-chinese-title](spec-chinese-title.md) | SPEC 中文标题 display name（立项双通道生成、.spec.yaml title 单源存储、读侧归档回退与 API 透传、id/name 语义分离） | 2026-11-06 18:17 |

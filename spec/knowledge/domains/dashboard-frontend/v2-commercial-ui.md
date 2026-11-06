@@ -1,7 +1,7 @@
 # v2 商业化界面域（Bento 工作台）
 
-<!-- knowledge: capability=v2-commercial-ui rev=6
-     sources=spec/changes/redesign-dashboard-v2-ui,spec/changes/redesign-dashboard-v2-ui-mobile,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/v2-projects-page-parity-1106.md,spec/knowledge/_inbox/done/v2-titlebar-slot-white-dedupe-1106.md -->
+<!-- knowledge: capability=v2-commercial-ui rev=7
+     sources=spec/changes/redesign-dashboard-v2-ui,spec/changes/redesign-dashboard-v2-ui-mobile,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/v2-projects-page-parity-1106.md,spec/knowledge/_inbox/done/v2-titlebar-slot-white-dedupe-1106.md,spec/changes/add-spec-chinese-title -->
 
 dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 + 白磁贴大圆角软阴影、黑主色按钮、蓝链接、语义胶囊徽标）承载概览/项目/SPEC 详情/配置/帮助/运维六页的桌面与移动双形态，与既有页面并存互不干扰。
 
@@ -53,3 +53,4 @@ dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 
 - 2026-11-06 v2-overview-titlebar-white-variant-1106（spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md） — 修改本页：「页面壳与标题带例外」改写为「页面壳与白底变体」（variant 三档：overview/projects 白底+去 1400px 满宽+左右 30px、white 仅白底；移动侧距 14px @media 回填守卫）与「标题栏并入统一控件」（titleBar 槽位、V2TitleBand 不复存在、v2TitleBarGuard 钉死）；筛选条款扩为「运行态筛选胶囊语言」（.v2-chip 跨移动菜单与桌面筛选两处复用，旧筛选形态分叉条目并入）；新增「移动等宽钳制」条款（minmax(0,1fr)、纵列 min-width:0、任务进度两行、简介单行省略例外）；概览台账三点菜单收编进入居首
 - 2026-11-06 v2-projects-page-parity-1106（spec/knowledge/_inbox/done/v2-projects-page-parity-1106.md） — 修改本页：关键行为项目详情行改写（标题带→titleBar 统一标题栏声明、四页签占位→六分面复用现产组件）；标题栏并入条款登记 v2TitleBarGuard 剥注释扫描习语；项目详情页面级规则拆分至新建 v2-project-detail-page
 - 2026-11-06 v2-titlebar-slot-white-dedupe-1106（spec/knowledge/_inbox/done/v2-titlebar-slot-white-dedupe-1106.md） — 修改本页：帮助关键行为行改写（白底 white 变体与「帮助中心 · N 篇文档」titleBar 声明落行，新增正文标题去重条款——DocPane 不渲染自动 doc.title、正文 H1 唯一、slug 锚点不受影响、v2TitleBarGuard 钉死）；移动帮助行「目录」按钮改经 filters 槽位落顶栏
+- 2026-11-06 add-spec-chinese-title（spec/changes/add-spec-chinese-title/） — 项目详情 SPEC 表名称列中文副标题为页面级规则，落 `v2-project-detail-page`「名称列中文副标题」条款；本页域级条款无变化
