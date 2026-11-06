@@ -28,8 +28,16 @@
    列表款（6px/无箭头/track 透明/官方变量 thumb）。
 2. **fenixd dashboard 独立访问侧栏（8787，embed 模式不渲染故与 3080 无关）**——
    `global.less` `li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline
-   { max-height: 200px; overflow-y: auto; }`（单项布局占位 40=36+4 行距，
-   5 项=200；ProLayout 全站唯一 inline 子菜单锚点）。用户二次指令纠正后落地。
+   { max-height: 200px; overflow-y: auto; scrollbar-gutter: stable; }` +
+   同选择器 `::-webkit-scrollbar-*` 五条（6px 滑块/无箭头/track 透明/中性灰
+   alpha thumb 亮暗通用；fenixd 无 dsh scrollbar 变量体系）。用户二次指令
+   纠正后落地，三次指令补滚动条同款。
+   **引擎行为知识（headless Chromium 148 实测）**：该引擎 overlay 滚动条
+   模式下滚动条不占布局宽——`::-webkit-scrollbar` 定制宽不改变 offset−
+   client（全局规则同样无效），dsh 列表量到的 6px 实为 `scrollbar-gutter:
+   stable` 按定制宽预留的 gutter；无 stable 的容器占宽恒 0。量滚动条宽须
+   先问容器有无 gutter stable；视觉验证 headless 截图不渲染滚动条本体，
+   以规则注入 + gutter 几何为证（真实桌面 Chrome webkit 定制正常生效）。
 
 ## antd scroll.x 表格限高 sticky 实测坑（撤销方案的留存知识，Chrome 148 / antd 6.6.0 实测）
 
