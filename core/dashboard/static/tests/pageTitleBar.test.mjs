@@ -114,39 +114,9 @@ test('app.tsx 顶栏插槽接线：headerContentRender 标题区 + actionsRender
   // 顶栏标题缩进（2026-11-05 用户定调 16→104：标题离品牌区再深缩进一档；
   // 2026-11-06 用户指令移动档并入顶栏后收窄 8 贴排汉堡+logo）
   assert.match(tsx, /paddingLeft: isMobile \? 8 : 104,/);
-  // 副标题移动端不显示（2026-11-06 用户指令）：顶栏插槽与行壳位两处
-  // subtitleInline 判据均含 !isMobile（2026-11-06 内联档指令改钉：条件收进
-  // subtitleInline 常量，渲染三元随之改钉）
-  assert.match(tsx, /const subtitleInline = meta\.subtitle != null && !isMobile;/);
-  assert.match(tsx, /const subtitleInline = props\.subtitle != null && !isMobile;/);
-  assert.match(tsx, /subtitleInline \? <SubtitleNode subtitle=\{meta\.subtitle\} \/> : null\}/);
-  assert.match(tsx, /subtitleInline \? <SubtitleNode subtitle=\{props\.subtitle\} \/> : null\}/);
-});
-
-test('副标题同行内联档：标题行 nowrap + 标题不收缩 + 副标题尾随省略（2026-11-06 用户指令「中文标题跟随在英文标题最后面」）', () => {
-  const tsx = readComponent();
-  // 两壳位同构：副标题可见时标题行收 nowrap + 溢出隐藏——放不下截尾（副标题
-  // 尾随省略号）而非整项下坠换行；副标题隐藏（移动端）维持 wrap——富标题
-  // Tag 行窄视口自然换行契约（mobile-detail-header-density）不受影响
-  assert.equal(
-    (tsx.match(/flexWrap: subtitleInline \? 'nowrap' : 'wrap',/g) ?? []).length,
-    2,
-    '顶栏插槽与行壳位两处标题行须同构收内联档',
-  );
-  assert.equal(
-    (tsx.match(/\.\.\.\(subtitleInline \? \{ overflow: 'hidden' \} : \{\}\),/g) ?? []).length,
-    2,
-    '内联档须溢出隐藏（nowrap 下超宽内容不得外溢压过滤区）',
-  );
-  // 标题项不收缩仅内联档生效（移动端收缩+内部换行语义不变）
-  assert.equal((tsx.match(/noShrink=\{subtitleInline\}/g) ?? []).length, 2, '两壳位标题节点同声明');
-  assert.match(tsx, /noShrink \? \{ flexShrink: 0 \} : \{\}/, 'noShrink 时标题项 flexShrink: 0（富标题胶囊不下坠换行）');
-  // 副标题尾随省略三件套（收缩 + 单行 + 省略号），SubtitleNode 内置单点
-  const subNode = tsx.slice(tsx.indexOf('function SubtitleNode'), tsx.indexOf('function FiltersNode'));
-  assert.match(subNode, /minWidth: 0,/);
-  assert.match(subNode, /overflow: 'hidden',/);
-  assert.match(subNode, /textOverflow: 'ellipsis',/);
-  assert.match(subNode, /whiteSpace: 'nowrap'/);
+  // 副标题移动端不显示（2026-11-06 用户指令）：顶栏插槽与行壳位两处 !isMobile
+  assert.match(tsx, /meta\.subtitle != null && !isMobile \? <SubtitleNode subtitle=\{meta\.subtitle\} \/>/);
+  assert.match(tsx, /props\.subtitle != null && !isMobile \? <SubtitleNode subtitle=\{props\.subtitle\} \/>/);
 });
 
 test('注册随卸载清理：同一 effect cleanup 注销（路由切换瞬间旧注销+新注册同批 flush）', () => {

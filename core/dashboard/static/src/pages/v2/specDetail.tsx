@@ -822,43 +822,63 @@ export default function V2SpecDetailPage() {
   // SPEC 详情页 D6 整体迁移习语）：SPEC 名 + 模式/状态胶囊作为 ReactNode 整体
   // 传入 PageTitleBar title 槽位，控件对富节点透明不拆解；原 V2TitleBand
   // children（胶囊行）并入本节点随迁。移动端 17px 收纳排布保留。
+  //
+  // 中文标题下方行（2026-11-06 用户指令「中文标题放在英文标题下方」）：组合
+  // 「中文标题 · branch」作为块级第二行收进富标题内部（同列表名称列副标题行
+  // 形态：次级字号/色/单行省略），不经 subtitle 槽——槽位行尾跟随是概览等页
+  // 副标题形态，详情中文标题要的是确定性换行位置，不随宽度漂移。组合语义
+  // 仍单源 combineSpecSubtitle（branch 空只显中文标题、title 空维持 branch
+  // 单独显示、双空不渲染）；移动端隐藏（同 subtitle 槽既有规则，页级 gate）。
+  const chineseTitle = combineSpecSubtitle(detail?.title, detail?.branch);
   const richTitle = (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
-      <span
-        className="v2-ellipsis"
-        style={{
-          fontSize: mobile ? 17 : 20,
-          fontWeight: 700,
-          letterSpacing: -0.3,
-          lineHeight: '28px',
-        }}
-      >
-        {spec}
+    <span style={{ display: 'block', minWidth: 0 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+        <span
+          className="v2-ellipsis"
+          style={{
+            fontSize: mobile ? 17 : 20,
+            fontWeight: 700,
+            letterSpacing: -0.3,
+            lineHeight: '28px',
+          }}
+        >
+          {spec}
+        </span>
+        {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
+        {detail ? <V2StatusPill status={detail.status} /> : null}
+        {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
+        {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
       </span>
-      {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
-      {detail ? <V2StatusPill status={detail.status} /> : null}
-      {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
-      {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
+      {!mobile && chineseTitle ? (
+        <span
+          style={{
+            display: 'block',
+            fontSize: 12,
+            fontWeight: 400,
+            color: V2_TEXT_TERTIARY,
+            // 贴排（2026-11-06 用户指令「中文与英文标题之间的间隔缩小」）：
+            // 零外边距 + 行高收紧 14px，只留行盒固有半行距
+            lineHeight: '14px',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {chineseTitle}
+        </span>
+      ) : null}
     </span>
   );
 
   return (
     // 页标题经 V2Page titleBar 槽位落统一标题栏（standalone 与移动端均由顶栏
     // 承载，embed 行壳位满宽贴顶）；返回箭头/rightActions（状态转移/更多操作，
-    // 移动端豁免）随迁 back / filters 槽位。副标题保留页面侧条件（移动端不渲染，
-    // 与统一控件「副标题移动端隐藏」双保险）。
+    // 移动端豁免）随迁 back / filters 槽位。
     <V2Page
       titleBar={
         <PageTitleBar
           title={richTitle}
           back={() => navigate(`/v2/projects/${encodeURIComponent(name)}`)}
-          subtitle={
-            // add-spec-subtitle-and-row-click（task 1.3）：中文标题与 branch 组合
-            // 副标题（「中文标题 · branch」），组合语义单源 combineSpecSubtitle
-            // （branch 空只显中文标题、title 空维持 branch 单独显示、双空不渲染）；
-            // 移动端隐藏维持既有页级 gate
-            mobile ? undefined : combineSpecSubtitle(detail?.title, detail?.branch)
-          }
           filters={rightActions}
         />
       }

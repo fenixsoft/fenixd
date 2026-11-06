@@ -1207,29 +1207,59 @@ export default function SpecDetailPage() {
   // （spec-detail-quick-switch 契约延续），wrap 语义在行壳位内继续成立
   // （mobile-detail-header-density 载体迁移）。位置指示由标题本身承担
   // （全局面包屑已退役）。
+  //
+  // 中文标题下方行（2026-11-06 用户指令「中文标题放在英文标题下方」，v2
+  // specDetail 同款）：详情响应 title 作为块级第二行收进富标题内部（同列表
+  // 名称列副标题行形态：次级字号/色/单行省略），不经 subtitle 槽——槽位行尾
+  // 跟随是概览等页副标题形态，详情中文标题要的是确定性换行位置。title 缺失
+  // 不渲染（缺失容错与列表规则一致）；移动端隐藏（同 subtitle 槽既有规则，
+  // 页级 gate）；参数缺失/loading/error 分支 detail 必为空、自然不渲染。
+  // 同日用户指令「模式标签/状态标签/下拉箭头垂直居中」：Space 由
+  // align="baseline" 改 center（基线对齐使标签盒相对英文名偏沉），与 v2
+  // 富标题内部 alignItems center 同款。
   const richTitle = (
-    <Space size={8} align="baseline" wrap>
-      <span>{spec}</span>
-      {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
-          （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
-          （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
-      <ModeTag mode={detail?.mode} />
-      {detail?.status && (
-        <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
-      )}
-      {otherSpecs.length > 0 && (
-        <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
-          <Button
-            type="text"
-            size="small"
-            icon={<DownOutlined />}
-            title="切换 SPEC"
-            aria-label="切换 SPEC"
-            style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
-          />
-        </Dropdown>
-      )}
-    </Space>
+    <span style={{ display: 'block', minWidth: 0 }}>
+      <Space size={8} align="center" wrap>
+        <span>{spec}</span>
+        {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
+            （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
+            （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
+        <ModeTag mode={detail?.mode} />
+        {detail?.status && (
+          <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
+        )}
+        {otherSpecs.length > 0 && (
+          <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
+            <Button
+              type="text"
+              size="small"
+              icon={<DownOutlined />}
+              title="切换 SPEC"
+              aria-label="切换 SPEC"
+              style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
+            />
+          </Dropdown>
+        )}
+      </Space>
+      {!isMobile && detail?.title ? (
+        <span
+          style={{
+            display: 'block',
+            fontSize: 12,
+            fontWeight: 400,
+            color: token.colorTextTertiary,
+            // 贴排（2026-11-06 用户指令「中文与英文标题之间的间隔缩小」）：
+            // 零外边距 + 行高收紧 14px，只留行盒固有半行距（v2 specDetail 同款）
+            lineHeight: '14px',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {detail.title}
+        </span>
+      ) : null}
+    </span>
   );
   const backToList = () => {
     // 返回列表优先历史回退：列表页过滤态承载在 URL query 上
@@ -1472,13 +1502,8 @@ export default function SpecDetailPage() {
     <div className="spec-detail-page">
     <PageTitleBar
       title={richTitle}
-      subtitle={
-        // add-spec-subtitle-and-row-click（task 1.2）：标题栏中文副标题——详情
-        // 响应 title 透传（null/空不声明，缺失容错与列表规则一致）；移动端隐藏
-        // 走页级 gate（对齐 v2 specDetail 既有先例：本基线 SubtitleNode 无
-        // !isMobile 判据，页级承载同语义、PageTitleBar 组件本体不改）
-        isMobile ? undefined : detail?.title || undefined
-      }
+      // 中文标题已收进 richTitle 内部下方行（2026-11-06 用户指令「中文标题
+      // 放在英文标题下方」），不经 subtitle 槽——见上方富标题组合注
       back={backToList}
     /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本。

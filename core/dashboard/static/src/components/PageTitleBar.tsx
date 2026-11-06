@@ -87,30 +87,27 @@ export function PageTitleBarHeaderSlot() {
   const meta = useSyncExternalStore(subscribePageTitleBar, getPageTitleBarMeta);
   const isMobile = useIsMobile();
   if (!meta) return null;
-  // 副标题同行内联档（2026-11-06 用户指令「中文标题跟随在英文标题最后面」）：
-  // 副标题可见时标题行收 nowrap——放不下副标题截尾（尾随省略号）而非整项下坠
-  // 换行成第二行；副标题隐藏（移动端）维持 wrap——富标题 Tag 行窄视口自然换行
-  // 契约（mobile-detail-header-density）不受影响。行壳位同构（见 PageTitleBar）。
-  const subtitleInline = meta.subtitle != null && !isMobile;
   return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', minWidth: 0 }}>
       <div
         style={{
           display: 'flex',
-          alignItems: 'baseline',
-          flexWrap: subtitleInline ? 'nowrap' : 'wrap',
+          // center（2026-11-06 用户指令「标题左边的箭头在标题栏中垂直居中」）：
+          // 详情页富标题内含中文标题下方行后整体变高，baseline 会让箭头钉在
+          // 首行基线显得偏高——改居中随标题块（含多行）整体取中
+          alignItems: 'center',
+          flexWrap: 'wrap',
           columnGap: 10,
           rowGap: 2,
           // 2026-11-05 用户定调桌面 16→104：顶栏标题离品牌区再深缩进一档；
           // 移动档 8（2026-11-06，汉堡+logo 后贴排）
           paddingLeft: isMobile ? 8 : 104,
           minWidth: 0,
-          ...(subtitleInline ? { overflow: 'hidden' } : {}),
         }}
       >
         {meta.back ? <BackArrow onBack={meta.back} /> : null}
-        <TitleNode title={meta.title} noShrink={subtitleInline} />
-        {subtitleInline ? <SubtitleNode subtitle={meta.subtitle} /> : null}
+        <TitleNode title={meta.title} />
+        {meta.subtitle != null && !isMobile ? <SubtitleNode subtitle={meta.subtitle} /> : null}
       </div>
     </div>
   );
@@ -144,10 +141,6 @@ export function PageTitleBar(props: PageTitleBarMeta) {
   // 守卫测试钉住）+ backdrop blur(8px)（半透明底是毛玻璃生效前提，回实底即
   // 静默失效）。底缘细线 DSH_SPLIT 与 standalone 顶栏下边框、侧栏右边框同值
   // （用户指令三者一致）。
-  // 副标题同行内联档（2026-11-06 用户指令「中文标题跟随在英文标题最后面」，
-  // 顶栏插槽同款）：可见收 nowrap+溢出隐藏、截尾不下坠；隐藏（移动端）维持
-  // wrap——富标题 Tag 行窄视口自然换行契约不变。
-  const subtitleInline = props.subtitle != null && !isMobile;
   usePageTitleBarSlot(rowSlot ? null : props);
   if (!rowSlot) return null; // 顶栏壳位：本体不渲染，交顶栏插槽呈现
   return (
@@ -171,23 +164,23 @@ export function PageTitleBar(props: PageTitleBarMeta) {
       <div
         style={{
           display: 'flex',
-          alignItems: 'baseline',
-          flexWrap: subtitleInline ? 'nowrap' : 'wrap',
+          // center（2026-11-06 用户指令「标题左边的箭头在标题栏中垂直居中」，
+          // 顶栏插槽同款）：箭头随标题块（含详情页中文标题下方行）整体取中
+          alignItems: 'center',
+          flexWrap: 'wrap',
           columnGap: 10,
           rowGap: 2,
           minWidth: 0,
-          ...(subtitleInline ? { overflow: 'hidden' } : {}),
           // 富标题（详情页 Tag 行）在 390px 视口自然换行不溢出
-          // （mobile-detail-header-density 契约，载体迁移后语义不变；
-          // 仅副标题隐藏档承载该契约——内联档 nowrap 见上方指令注）
+          // （mobile-detail-header-density 契约，载体迁移后语义不变）
         }}
       >
         {props.back ? <BackArrow onBack={props.back} /> : null}
-        <TitleNode title={props.title} noShrink={subtitleInline} />
+        <TitleNode title={props.title} />
         {/* 副标题只在非移动壳位渲染（2026-11-06 用户指令「副标题在移动设备
             模式中不显示」）：移动档 48px 窄幅密度考虑，桌面顶栏与 embed 档
             （60px，桌面 iframe 语境）不受影响 */}
-        {subtitleInline ? <SubtitleNode subtitle={props.subtitle} /> : null}
+        {props.subtitle != null && !isMobile ? <SubtitleNode subtitle={props.subtitle} /> : null}
       </div>
       {props.filters ? <FiltersNode filters={props.filters} wrap /> : null}
     </div>
@@ -211,27 +204,20 @@ function BackArrow({ onBack }: { onBack: () => void }) {
   );
 }
 
-/** 标题节点：noShrink（同行内联档）时 flexShrink: 0——富标题（SPEC 名+胶囊）
- *  保持完整不收缩，空间不足由副标题侧截尾承担；移动端 wrap 档不传（默认
- *  收缩语义不变，Tag 行窄视口内部换行照旧）。 */
-function TitleNode({ title, noShrink }: { title: ReactNode; noShrink?: boolean }) {
+function TitleNode({ title }: { title: ReactNode }) {
   return (
-    <span
-      data-testid="page-title-bar-title"
-      style={{ fontSize: 18, fontWeight: 700, color: DSH_TEXT, lineHeight: '24px', ...(noShrink ? { flexShrink: 0 } : {}) }}
-    >
+    // minWidth 0（flex 项默认 min-width:auto 会撑住富节点内部第二行的
+    // min-content）——详情页富标题内含「中文标题下方行」单行省略，须允许
+    // 本项收缩到可用宽，省略号才能生效（spec-detail-page-scope 约定）
+    <span data-testid="page-title-bar-title" style={{ fontSize: 18, fontWeight: 700, color: DSH_TEXT, lineHeight: '24px', minWidth: 0 }}>
       {title}
     </span>
   );
 }
 
-/** 副标题节点：内联档尾随省略三件套（ellipsis 常量：minWidth 0 + 单行 +
- *  省略号）——跟随在标题行尾放不下截尾；SubtitleNode 仅在内联档渲染（移动端
- *  不渲染），无 wrap 形态。 */
 function SubtitleNode({ subtitle }: { subtitle: ReactNode }) {
-  const ellipsis = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as const;
   return (
-    <span data-testid="page-title-bar-subtitle" style={{ fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY, ...ellipsis }}>
+    <span data-testid="page-title-bar-subtitle" style={{ fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY }}>
       {subtitle}
     </span>
   );

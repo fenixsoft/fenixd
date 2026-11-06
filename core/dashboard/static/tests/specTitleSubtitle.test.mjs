@@ -10,10 +10,11 @@
 //   在 Why 悬浮 Popover 之外不承载交互、树形缩进对齐（副标题与主行同单元格
 //   同包裹层，桌面表格与移动卡片共用 SpecNameCell）；
 // - SpecSummary 类型透传字段与 v2 名称既有交互保持；
-// - 详情标题栏中文副标题（add-spec-subtitle-and-row-click 任务 1.1/1.2/1.3）：
-//   v1 详情主内容分支 subtitle 声明（null/空不声明、移动端页级 gate）、v2
-//   组合形态四分支（title+branch / 仅 branch / 仅 title / 双空）单源
-//   combineSpecSubtitle、SpecDetail 类型透传。
+// - 详情标题栏中文标题下方行（add-spec-subtitle-and-row-click 任务 1.1/1.3
+//   原 subtitle 槽形态经 2026-11-06 用户指令「中文标题放在英文标题下方」改版
+//   收进 richTitle 内部）：两详情页零 subtitle 槽、块级第二行次级视觉（字号/
+//   色/单行省略）、移动端页级 gate、v2 组合形态四分支单源 combineSpecSubtitle、
+//   SpecDetail 类型透传。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -122,35 +123,52 @@ test('SpecSummary 增加 title 可空类型（数据源注释标注 id/name 关�
   assert.ok(svc.includes('add-spec-chinese-title'), '类型注释应标注能力来源与 id/name 关系');
 });
 
-// ── v1 detail.tsx：详情标题栏中文副标题（add-spec-subtitle-and-row-click 1.2）──
+// ── v1 detail.tsx：详情标题栏中文标题下方行（2026-11-06 用户指令「中文标题
+// 放在英文标题下方」改版；原 add-spec-subtitle-and-row-click 1.2 subtitle 槽
+// 形态退役——下方行收进 richTitle 富节点内部，不经 subtitle 槽）──
 
 const detailSrc = readSrc('src/pages/projects/detail.tsx');
 
-test('v1 详情仅主内容分支声明 subtitle（四处声明唯一带 subtitle，null/空不声明）', () => {
+test('v1 详情四处 PageTitleBar 声明零 subtitle 槽（中文标题已收进富标题下方行）', () => {
   const decls = [...detailSrc.matchAll(/<PageTitleBar[\s\S]*?\/>/g)].map((m) => m[0]);
   assert.equal(decls.length, 4, 'detail.tsx 应恰有四处 PageTitleBar 声明（参数缺失/loading/error/主内容）');
-  const withSub = decls.filter((d) => d.includes('subtitle='));
-  assert.equal(withSub.length, 1, '仅主内容分支（detail 已就绪处）声明 subtitle——其余分支 detail 必为空');
-  assert.ok(withSub[0].includes('detail?.title || undefined'), '副标题应取详情响应 title，null/空不声明');
+  assert.equal(detailSrc.includes('subtitle='), false, '不应再经 subtitle 槽声明中文标题（槽位行尾跟随非详情形态）');
 });
 
-test('v1 详情副标题移动端隐藏（页级 isMobile gate，对齐 v2 specDetail 既有先例）', () => {
-  const at = detailSrc.indexOf('subtitle={');
-  const expr = detailSrc.slice(at, detailSrc.indexOf('}', at) + 1);
-  assert.ok(expr.includes('isMobile ? undefined :'), '移动端应不声明 subtitle（页级 gate 承载隐藏）');
+test('v1 详情中文标题下方行：richTitle 内块级第二行（次级视觉单行省略 + 移动端 gate + 缺失容错）', () => {
+  const at = detailSrc.indexOf('{!isMobile && detail?.title ? (');
+  assert.ok(at > 0, '中文标题下方行应以 !isMobile + detail?.title 双条件守卫渲染');
+  const block = detailSrc.slice(at, detailSrc.indexOf(') : null}', at) + 8);
+  assert.ok(block.includes("display: 'block'"), '下方行应为块级第二行');
+  assert.ok(block.includes('fontSize: 12'), '下方行字号应次级（12px）');
+  assert.ok(block.includes('token.colorTextTertiary'), '下方行应为 tertiary 文字色');
+  assert.ok(block.includes("textOverflow: 'ellipsis'"), '下方行应单行省略');
+  assert.ok(block.includes("whiteSpace: 'nowrap'"), '下方行应不换行');
+  assert.ok(block.includes('{detail.title}'), '下方行数据源应为详情响应 title');
 });
 
-// ── v2 specDetail.tsx：副标题组合渲染（add-spec-subtitle-and-row-click 1.3）──
+// ── v2 specDetail.tsx：中文标题下方行组合（原 add-spec-subtitle-and-row-click
+// 1.3 subtitle 槽形态退役，组合单源与缺失容错语义保持）──
 
 const v2DetailSrc = readSrc('src/pages/v2/specDetail.tsx');
 
-test('v2 详情副标题组合单源 combineSpecSubtitle（组合语义不下放页面自拼）', () => {
+test('v2 详情中文标题组合单源 combineSpecSubtitle（组合语义不下放页面自拼）', () => {
   assert.ok(
-    v2DetailSrc.includes('combineSpecSubtitle(detail?.title, detail?.branch)'),
-    'v2 应经单源组合函数声明 subtitle',
+    v2DetailSrc.includes('const chineseTitle = combineSpecSubtitle(detail?.title, detail?.branch);'),
+    'v2 下方行应经单源组合函数取值（title+branch 四分支语义保持）',
   );
   assert.ok(v2DetailSrc.includes("from '@/pages/projects/specTitle'"), '组合函数应从 specTitle 单源导入');
-  assert.ok(v2DetailSrc.includes('mobile ? undefined :'), '移动端隐藏既有页级 gate 应保留');
+});
+
+test('v2 详情中文标题下方行：richTitle 内块级第二行（移动端 gate + 次级视觉 + 零 subtitle 槽）', () => {
+  assert.equal(v2DetailSrc.includes('subtitle='), false, '不应再经 subtitle 槽声明（槽位行尾跟随非详情形态）');
+  const at = v2DetailSrc.indexOf('{!mobile && chineseTitle ? (');
+  assert.ok(at > 0, '中文标题下方行应以 !mobile + chineseTitle 双条件守卫渲染');
+  const block = v2DetailSrc.slice(at, v2DetailSrc.indexOf(') : null}', at) + 8);
+  assert.ok(block.includes("display: 'block'"), '下方行应为块级第二行');
+  assert.ok(block.includes('fontSize: 12'), '下方行字号应次级（12px）');
+  assert.ok(block.includes('V2_TEXT_TERTIARY'), '下方行应用 v2 次级文字 token');
+  assert.ok(block.includes("textOverflow: 'ellipsis'"), '下方行应单行省略');
 });
 
 test('combineSpecSubtitle 组合形态四分支（title+branch / 仅 branch / 仅 title / 双空）', () => {
