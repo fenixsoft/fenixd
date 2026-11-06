@@ -1,7 +1,7 @@
 # spec 车道 WIP 阻断延迟合回
 
-<!-- knowledge: capability=wip-defer-merge-retry rev=1
-     sources=spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer -->
+<!-- knowledge: capability=wip-defer-merge-retry rev=2
+     sources=spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/knowledge/_inbox/done/mergeback-consumer-rehearsed-repair-gap-1106.md -->
 
 spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合回」周期：拦截即落结构化等待标志，daemon 周期复查、主树清干净后自动 merge-only 合回，超限降级人工——「WIP 清了自动合回」是默认路径，admin 只处理真冲突与超限降级。
 
@@ -20,6 +20,8 @@ spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合
 - 状态守卫拆两层、禁并成单条「须带 wip 标志才放行」：既有 merge-only 重试入口 `_retry_merge_back_only` 只拦 status≠implementing——人工/admin 已合并推进的条目跳过合并并清账（标志/计数/首阻全清、状态不改写），杜绝迟到重试重复合并；「implementing+带标志」的严格筛选放在周期扫描层，保证既有 spec 目录顺延链（条目只带 `_merge_retry_pending`）不受影响。
 - 重试仍被 WIP 阻断：计数 +1、首阻时刻沿用、状态保持 implementing、标志保留、error 叠加 deferred 取证形态；拦截不记账不变式延续——MUST NOT 落指纹熔断记账、不误冻结 spec。
 - 重试落非 WIP 失败（真内容冲突等）：等待到此结束——先清等待标志再交回既有可重试/真失败通道，MUST NOT 尝试自动解决内容冲突；该清账同时杜绝陈旧标志在恢复 run 在飞期间触发过早合并。
+
+- 语义冲突形态的已登记缺口：消费者重试失败路径未接预演语义冲突直通 repair（同型接线仅存于实现主路径 merge-back 站点，见 [合并预演与语义冲突直通修复](merge-rehearsal.md)），带标志条目撞真内容冲突时按 merge-back 失败分类走真失败通道，可能落 `_merge_streak` 指纹熔断或降级复位清锚点——已完成实现的工作面被降级、分支锚点有孤儿化风险。接线前该形态由 admin 人工 SOP 覆盖：定点收编 + 手工 merge 合回（跨进程手工收尾纪律适用，见 merge-back 能力页）+ 镜像 `_finalize_merge_success` 清账（人工复现既有成功收尾：推进 implemented、verifier 入队、清等待标志与顺延记账、原告警写 `result=resolved` 闭环）；补接线方向为消费者失败路径复用 `_direct_rehearsed_to_repair`，`_repair_round` 轮次上限语义不变。
 
 ### 有界与降级
 
@@ -43,3 +45,4 @@ spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合
 ## 溯源
 
 - 2026-10-02 evo-add-wip-defer-merge-retry-consumer（spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer） — 新建本页：WIP 阻断落结构化等待标志（STATE.md 往返 + 三类清账写点）、daemon 120 秒周期消费者（主树锁内 merge-only 重试、成功收尾告警闭环、两层状态守卫）、90 分钟/6 次预算双门降级（`mergeback_wip_defer_stuck`）、orphaned_state 等待期豁免与超限失效
+- 2026-11-06 mergeback-consumer-rehearsed-repair-gap-1106（spec/knowledge/_inbox/done/mergeback-consumer-rehearsed-repair-gap-1106.md） — 折叠语义冲突形态已登记缺口条款：消费者失败路径清标志走真失败通道（可落指纹熔断/降级复位清锚点、分支锚点孤儿化风险），接线前 admin 人工 SOP 覆盖（定点收编+手工 merge+镜像 `_finalize_merge_success` 清账）与补接线方向（复用 `_direct_rehearsed_to_repair`、`_repair_round` 上限不变）

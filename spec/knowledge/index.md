@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-06 17:35 UTC+8
+> 最后更新：2026-11-06 18:17 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -12,7 +12,7 @@
 | [project-management](domains/project-management/_domain.md) | 项目的发现接入、描述信息与生命周期控制（daemon 启停 systemctl 双轨/软删除）。含项目初始化骨架播种与针对 SPEC 的冻结/删除停止语义。 | 8 | 2026-11-05 04:11 |
 | [planning-generation](domains/planning-generation/_domain.md) | SPEC 的原生生成链路：从需求澄清到 proposal/design/tasks 成文。planner 出题阶段的产物硬门、契约情报与性能治理同属此域。 | 6 | 2026-10-03 04:59 |
 | [ui-prototyping](domains/ui-prototyping/_domain.md) | 界面原型确认环：SPEC 起草阶段用「真组件、假数据」的高保真原型对齐界面意图，浏览器批注迭代至批准入库。批准后以双通道契约约束后续 AI 实现与评审（原型纯视觉参照、无约束力）。 | 3 | 2026-11-02 11:32 |
-| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调也在此域。 | 25 | 2026-11-05 04:11 |
+| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-06 18:17 |
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | SPEC 并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复。即时唤醒信号与事件投递完整性、秒挂冷却派发门控也在此域。 | 9 | 2026-10-30 23:11 |
 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道的任务协议与交付物门禁：tasks.md 进度同步/回写、验收偏差申报、结果文件契约与自检、回归委托。交付物声明与归属仲裁（声明分诊/争议治理/搬迁回写）、WIP 检查点与任务产物归属也在此域。 | 28 | 2026-11-04 17:07 |
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线全链：runner 引擎与场景生命周期、验证环境预检与依赖供给、serve 范围矩阵与实例回收。场景冻结/打捞/schema 单源、多形态场景模型（web/cli/api）与资源互斥、视觉基线与并行回退、验证报告门与证据分级留存也在此域。 | 59 | 2026-11-04 17:07 |
@@ -23,12 +23,12 @@
 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理。run jsonl 以 claude stream-json 形状为唯一 canon；dashboard 自由会话与 CLAUDE_PID watchdog 为显式豁免面。 | 6 | 2026-11-05 20:50 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测、CLI 重试退避与环境阻塞止损。 | 30 | 2026-11-04 16:30 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 14 | 2026-11-04 09:33 |
-| [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径。实现分支合回主树与推送的全生命周期纪律；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 30 | 2026-11-04 17:07 |
-| [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-05 20:50 |
+| [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径。实现分支合回主树与推送的全生命周期纪律；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 30 | 2026-11-06 18:06 |
+| [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-06 18:13 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、项目台账磁贴限高滚动与 sticky 表头、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产。 | 48 | 2026-11-06 17:35 |
-| [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（unit 承载接管豁免与 systemctl 重启协议）、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-05 04:11 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题。 | 49 | 2026-11-06 18:17 |
+| [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（unit 承载接管豁免与承载形态双轨重启协议）、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-06 18:13 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 7 | 2026-11-04 20:48 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、arbiter 立项通道退役注记。 | 18 | 2026-11-04 17:07 |
@@ -36,7 +36,7 @@
 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
 | [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-05 20:37 |
-| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 12 | 2026-11-06 17:04 |
+| [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 13 | 2026-11-06 17:49 |
 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 
 ## 决策记录
@@ -138,4 +138,11 @@ LIST_STATUSES 全 11 态单源与 antd 256px 虚拟滚动非缺陷口径、分�
 20/showSizeChanger/showTotal 与移动卡片流不分页、页签六分面复用现产组件
 （project+active 门控按需加载、PlaceholderPane 退役）与选中态内存态不引入
 URL tab 契约；v2-commercial-ui 项目详情关键行为行改写（标题带→统一标题栏、
-四页签→六分面）与 v2TitleBarGuard 剥注释扫描习语登记）。
+四页签→六分面）与 v2TitleBarGuard 剥注释扫描习语登记）；v2-titlebar-slot-white-dedupe-1106
+已折叠入库（2026-11-06 17:42，spread 至 dashboard-frontend 一域一页：
+v2-commercial-ui 帮助关键行为行改写——白底 variant="white" 与「帮助中心 ·
+N 篇文档」titleBar 声明落行、新增正文标题去重条款（DocPane 不渲染自动
+doc.title、后端 title 本从 markdown 首个一级标题解析、正文 H1 唯一、slug
+锚点不受影响、守卫钉死）、移动帮助行「目录」按钮改经 filters 槽位落顶栏；
+本条余项（titleBar 槽位挂法、白底变体族、副标题移动端隐藏、剥注释守卫习语）
+经核对已由前两条入库条目覆盖不重复折叠）；antd-table-scroll-maxheight-sticky-th-1106 更新版（17:43 条目，16:51 首折版本的台账限高落地被撤销）已折叠入库（2026-11-06 17:54，spread 至 dashboard-frontend 一域四页：project-ledger-bounded-scroll 整页覆盖重写——台账磁贴不限高定案、antd 限高/sticky 实测纪律留存；新建 sidebar-submenu-bounded-scroll——独立侧栏子菜单 5 项封顶 200px 与定制滚动条及 overlay 引擎量宽判据；dsh-bridge-projects-section 增补分区 5 行封顶 182px、滚动条定制与官方 Workspaces 列表同款；dashboard-overview 台账细则句改不限高口径）；mergeback-consumer-rehearsed-repair-gap-1106 已折叠入库（2026-11-06 18:06，spread 至 worktree-vc 一域两页：merge-rehearsal 新增直通 repair 接线边界条款——同型接线仅存于实现主路径 merge-back 站点、周期消费者 merge-only 重试路径未接线为已登记框架缺口；wip-defer-merge-retry 新增语义冲突形态条款——消费者失败路径清标志走真失败通道可落指纹熔断/降级复位清锚点、接线前 admin 人工 SOP 覆盖（定点收编+手工 merge+镜像 _finalize_merge_success 清账）与补接线方向复用 _direct_rehearsed_to_repair）；push-restart-unit-absent-tmux-stale-1106 已折叠入库（2026-11-06 18:13，spread 至 dashboard-platform / daemon-runtime 两域三页：dashboard-push-restart 新增 tmux 托管兜底形态盲态规则——unit 缺席静默跳过使 pushed 重启对 tmux 常驻实例永不可达且无审计留痕、两向收口方向（补装 unit / unit 缺席分支加 tmux 探测+respawn+审计）；dashboard-instance-lifecycle 重启协议改写为承载形态双轨——unit 缺席时 tmux 轨 `respawn-window -k` 为实测有效路径、验证三件套第三件改 API 读侧新字段有值、陈旧进程判读一般化（读侧字段恒旧+全新进程对照+ps -o lstart 对比合入时间）；host-env-hazards 新增 dashboard unit 缺席 tmux 兜底常驻环境实态登记与收口销账义务）。

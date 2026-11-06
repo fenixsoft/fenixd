@@ -1,5 +1,5 @@
 # 工作树与版本控制
-> 最后更新：2026-11-04 17:07 UTC+8
+> 最后更新：2026-11-06 18:06 UTC+8
 
 实现工作树（worktree）的隔离、播种、回读与卫生与 spec 锁终态释放/陈锁清扫，已合并实现/验证分支随清扫的宽限期自动回收，分支基线解析与提交数判定的单源口径，实现分支合回主树与推送的完整生命周期纪律，主树 WIP 占用归因单源（在飞车道与活交互会话只读探测），主树流水线外未提交改动的周期盘点与滞留升级，主树 untracked 散件的滞留超限升级与自动认领、盘点时钟持久化、越阈会话归因豁免、目录 ignore 前置免疫与首现预防提示，主树白名单文件脱落的独立巡检告警。
 
@@ -15,7 +15,7 @@
 | [worktree-acquire](worktree-acquire.md) | worktree 获取退避等待与降级计数（自适应预算封顶 + 竞争类降级分流留痕） | 2026-10-11 01:47 |
 | [merge-back](merge-back.md) | merge-back 合并回主树（闸门链与自愈链、自愈覆盖边界、上游 spec 目录自动提交夹带面、hunk 手术分拣提交与跨进程手工合回收尾配方、dist 不入库自动重建） | 2026-11-04 17:07 |
 | [merge-back-precheck](merge-back-precheck.md) | merge-back 预检（WIP 交集升级拦截） | 2026-10-03 04:59 |
-| [wip-defer-merge-retry](wip-defer-merge-retry.md) | WIP 阻断延迟合回（等待标志 + 周期自动合回） | 2026-10-03 04:59 |
+| [wip-defer-merge-retry](wip-defer-merge-retry.md) | WIP 阻断延迟合回（等待标志 + 周期自动合回；语义冲突形态接线缺口与人工 SOP） | 2026-11-06 18:06 |
 | [mergeback-wip-active-coordination](mergeback-wip-active-coordination.md) | 合回 WIP 占用者识别与事件驱动重试（无主宽限升级） | 2026-10-09 03:24 |
 | [maintree-stray-wip-sweep](maintree-stray-wip-sweep.md) | 主树散件 WIP 周期只读盘点与滞留升级（内容指纹计时 + 无主宽限一次性 major 告警带复发计数与裁决选项 + 会话归因留痕状态收敛） | 2026-10-31 16:23 |
 | [stray-untracked-escalation](stray-untracked-escalation.md) | 主树 untracked 散件滞留超限升档 major 自动唤起认领（24h/体积双路升级 + 归档/ignore/删除三裁决） | 2026-10-30 19:51 |
@@ -25,7 +25,7 @@
 | [maintree-wip-attribution](maintree-wip-attribution.md) | 主树 WIP 占用归因单源（在飞车道求交 + 活交互会话只读探测 + 采信回退单键） | 2026-10-09 03:24 |
 | [spec-amendment-watch](spec-amendment-watch.md) | 主树 spec 目录在飞修订探测与预警（merge-back + 周期扫描双入口） | 2026-10-08 02:46 |
 | [merge-circuit-breaker](merge-circuit-breaker.md) | merge 熔断（失败指纹） | 2026-10-03 04:59 |
-| [merge-rehearsal](merge-rehearsal.md) | 合并预演与语义冲突直通修复 | 2026-10-03 04:59 |
+| [merge-rehearsal](merge-rehearsal.md) | 合并预演与语义冲突直通修复（接线仅实现主路径站点） | 2026-11-06 18:06 |
 | [merge-untracked-guard](merge-untracked-guard.md) | 未跟踪文件合并守卫 | 2026-10-03 04:59 |
 | [mergeback-inplace-repair](mergeback-inplace-repair.md) | merge-back 原位修复（repair 车道） | 2026-10-03 04:59 |
 | [mergeback-stashpop-self-heal](mergeback-stashpop-self-heal.md) | stash pop 自愈（含悬空 autostash 人工找回配方：fsck 筛选与 --3way 静默跳过陷阱） | 2026-11-04 16:30 |

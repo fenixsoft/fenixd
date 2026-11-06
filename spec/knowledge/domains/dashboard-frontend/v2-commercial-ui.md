@@ -1,7 +1,7 @@
 # v2 商业化界面域（Bento 工作台）
 
-<!-- knowledge: capability=v2-commercial-ui rev=5
-     sources=spec/changes/redesign-dashboard-v2-ui,spec/changes/redesign-dashboard-v2-ui-mobile,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/v2-projects-page-parity-1106.md -->
+<!-- knowledge: capability=v2-commercial-ui rev=7
+     sources=spec/changes/redesign-dashboard-v2-ui,spec/changes/redesign-dashboard-v2-ui-mobile,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/v2-projects-page-parity-1106.md,spec/knowledge/_inbox/done/v2-titlebar-slot-white-dedupe-1106.md,spec/changes/add-spec-chinese-title -->
 
 dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 + 白磁贴大圆角软阴影、黑主色按钮、蓝链接、语义胶囊徽标）承载概览/项目/SPEC 详情/配置/帮助/运维六页的桌面与移动双形态，与既有页面并存互不干扰。
 
@@ -33,7 +33,7 @@ dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 
 - 项目详情（/v2/projects/:name）：标题经 titleBar 槽位进统一标题栏（back 回 /v2/overview + 项目名 + 「共 N 个 SPEC · M 个活跃」计数）+ 六分面页签（功能开发实体渲染；代码审查/测试回归/架构蓝图/项目知识/会话接入复用现产组件）+ SPEC 表真实列集（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时/操作·仅三点），行点击进 SPEC 详情；页面级规则（白底满宽、筛选单源、分页）见 `v2-project-detail-page`。
 - SPEC 详情（/v2/projects/:name/:spec）：标题带（模式/状态徽标 + 状态转移入口）+ 项目信息 8 项（优先级/创建时间/更新时间/依赖/输入 Token/输出 Token/耗时/成本）+ 任务清单大百分比卡（已完成 N/M + 勾选任务）+ 五页签（运行时间轴含立项原话与 run 元数据/场景结果/Bug 列表/测试截图/Hook），信息架构对齐现产 SPEC 详情数据结构。
 - 配置（/v2/settings）：左侧分面菜单 + 作用域切换（用户级/项目级，切换重拉 `/api/config?project=`，开关行 aria 作用域标注同步）+ 实体面板（模型与网关 Provider 表、真实 config 开关行，零写操作）；未实体化分面渲染占位说明。
-- 帮助（/v2/help）：分组目录（sticky）+ Markdown 正文双栏，目录项选中态与 aria-current 同步切换。
+- 帮助（/v2/help）：页底白（white 变体，1400px 居中列不变）+ 页标题「帮助中心 · N 篇文档」经 titleBar 槽位进统一标题栏 + 分组目录（sticky）+ Markdown 正文双栏，目录项选中态与 aria-current 同步切换；正文标题唯一——DocPane 不渲染自动 doc.title 行（清单接口的 title 字段本就从文档首个一级标题解析，复渲染即同文双显），markdown 自身 H1 为唯一标题，标题标签照常注入 GitHub slug id、锚点跳转不受影响（守卫 `tests/v2TitleBarGuard.test.mjs` 钉死自动标题不回潮）。
 - 运维（/v2/activities）：头部统计条四项真实口径（待处理告警/在飞链/升级中/配额耗尽）+ 三页签（人工告警含裁决选择题、处置链观测三段计数实体渲染；自愈记录暂无数据端点，占位说明）。
 
 移动形态（<768px，390px 基准，UI 真相源为移动版定稿原型）：
@@ -42,7 +42,7 @@ dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 
 - 项目详情：状态/模式筛选双下拉（桌面搜索 SPEC 输入框与 Radio 组不渲染）+ SPEC 表格转卡片流（名称 + 状态/模式/验证胶囊 + 阶段进度 + 耗时）+ 无新建按钮。
 - SPEC 详情：标题行换行收纳 + 无状态转移/更多操作入口 + 项目信息单列键值行（八项齐备）+ 页签短标签（时间轴/场景/Bug/截图 N/Hook）。
 - 配置：左菜单转横向滑动胶囊菜单（ACTIVE 黑底）+ Provider 堆叠卡（含健康检测入口）+ 开关行；作用域切换仍触发 `/api/config?project=` 重拉。
-- 帮助：目录抽屉化（标题行「目录」按钮开 Drawer，选中目录项即收）+ 无搜索入口 + 正文单列。
+- 帮助：目录抽屉化（「目录」按钮经 titleBar filters 槽位落顶栏触发 Drawer，选中目录项即收）+ 无搜索入口 + 正文单列。
 - 运维：统计条转 chips（四项口径不变）+ 表格转堆叠卡（处置链卡替代桌面表格；人工告警堆叠卡：裁决 Select 全宽 + 执行/标记已处理双按钮行）。
 
 ## 溯源
@@ -52,3 +52,5 @@ dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 修改本页：Bento 白磁贴圆角改 12px（DESIGN.md 通用条款全站统一，四处同值守卫钉值）、新增跨域镜像不引用消费纪律与 overview/v2 筛选形态分叉条款（v2 侧 .v2-chip 胶囊不随动）、登记 node:test 禁 import .tsx 的守卫习语
 - 2026-11-06 v2-overview-titlebar-white-variant-1106（spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md） — 修改本页：「页面壳与标题带例外」改写为「页面壳与白底变体」（variant 三档：overview/projects 白底+去 1400px 满宽+左右 30px、white 仅白底；移动侧距 14px @media 回填守卫）与「标题栏并入统一控件」（titleBar 槽位、V2TitleBand 不复存在、v2TitleBarGuard 钉死）；筛选条款扩为「运行态筛选胶囊语言」（.v2-chip 跨移动菜单与桌面筛选两处复用，旧筛选形态分叉条目并入）；新增「移动等宽钳制」条款（minmax(0,1fr)、纵列 min-width:0、任务进度两行、简介单行省略例外）；概览台账三点菜单收编进入居首
 - 2026-11-06 v2-projects-page-parity-1106（spec/knowledge/_inbox/done/v2-projects-page-parity-1106.md） — 修改本页：关键行为项目详情行改写（标题带→titleBar 统一标题栏声明、四页签占位→六分面复用现产组件）；标题栏并入条款登记 v2TitleBarGuard 剥注释扫描习语；项目详情页面级规则拆分至新建 v2-project-detail-page
+- 2026-11-06 v2-titlebar-slot-white-dedupe-1106（spec/knowledge/_inbox/done/v2-titlebar-slot-white-dedupe-1106.md） — 修改本页：帮助关键行为行改写（白底 white 变体与「帮助中心 · N 篇文档」titleBar 声明落行，新增正文标题去重条款——DocPane 不渲染自动 doc.title、正文 H1 唯一、slug 锚点不受影响、v2TitleBarGuard 钉死）；移动帮助行「目录」按钮改经 filters 槽位落顶栏
+- 2026-11-06 add-spec-chinese-title（spec/changes/add-spec-chinese-title/） — 项目详情 SPEC 表名称列中文副标题为页面级规则，落 `v2-project-detail-page`「名称列中文副标题」条款；本页域级条款无变化

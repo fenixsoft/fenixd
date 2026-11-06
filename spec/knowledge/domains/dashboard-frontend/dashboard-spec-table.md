@@ -1,4 +1,4 @@
-<!-- knowledge: capability=dashboard-spec-table rev=8 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md -->
+<!-- knowledge: capability=dashboard-spec-table rev=9 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/changes/add-spec-chinese-title -->
 
 # SPEC 列表表格
 
@@ -11,7 +11,8 @@
 - 表格化展示：以带表头的表格呈现，表头逐列说明含义（状态/模式/名称/优先级/创建时间/任务进度/验证/耗时等）；行点击进详情；无创建时间或验证进度的行显示占位符「—」。
 - 桌面表格 v2 重绘（重绘非替换）：DevTab 桌面表格重绘为 v2 台账形态——Table 包 `.ov-bento` > `.ov-bento-table`（白磁贴发丝边 + 透明表头 + 发丝线行分隔 + 首列缩进，复用 overview 侧镜像 CSS，双页共享同改），优先级列表头 nowrap（6% 定宽防三字头折行）；antd Table 全部功能保留——表头排序、分页（20 条 + 换页大小）、树形展开、信息子行、悬浮 Why 提示与验证结论悬浮、优先级编辑、行选中底色；只重绘边框与行内容呈现，不得退化为自绘表格丢功能。
 - 行内容 v2 形态：状态=语义胶囊（原色点+文字）；模式=胶囊（快速 warning / 标准 muted——移动卡片与详情页仍走 ModeTag 单源）；名称=dense 形态（13.5px 半粗深色单行省略，悬浮 Why 与键盘跳转不变；移动卡片保持链接蓝 16px）；创建时间=等宽三阶灰（精度保持完整时间戳）；任务进度=阶段名 + 「计数 · 百分比」同行置于进度条上方（镜像 v2 PhaseProgressCell 版式；run 线索与验证/门禁 current 行保留）；验证=胶囊（异常红/进行中蓝/完毕灰/未执行灰，悬浮结论不变）；耗时=右对齐等宽。进度条配色不走 v2 ramp：progressPhase.ts 阶段 ramp 是 DESIGN.md 登记的数据编码色豁免（底轨「空条可辨」语义），保留原函数。
-- 前端过滤：名称关键字输入框（大小写不敏感、包含匹配）与状态下拉框（「全部状态」或指定状态）；过滤作用于已排序的列表、保留排序顺序，纯前端实现不发起新的服务端请求；过滤后为空展示「无匹配的 SPEC」空态（区别于「该项目暂无 SPEC」）。
+- 名称列中文副标题：名称列在 SPEC 英文名主行下方渲染中文标题副标题行（数据源条目 `title` 字段）——次级视觉（字号小于主行、次级文字色、单行省略），随主行同级缩进（fix-* 树形子行缩进保持）；title 为 null/空不渲染副标题行（保持单行形态，缺失=无该行而非「—」占位）；副标题不承载点击与悬停交互，行点击进详情、名称 Why 悬浮提示等既有交互不变；移动端卡片形态名称区同规则渲染（次级字号/色，缺失不渲染）；排序键仍为英文名（字典序），fix-* 类型过滤与树形挂载不受影响。
+- 前端过滤：名称关键字输入框（大小写不敏感、包含匹配，英文名或中文标题任一命中即保留该行）与状态下拉框（「全部状态」或指定状态）；过滤作用于已排序的列表、保留排序顺序，纯前端实现不发起新的服务端请求；过滤后为空展示「无匹配的 SPEC」空态（区别于「该项目暂无 SPEC」）。
 - 类型过滤：Radio 并排按钮组「全部 / 仅需求 / 仅问题」，默认「全部」；「仅需求」隐藏名称以 `fix-` 开头的全部 SPEC（含无父级分组行及其子树），「仅问题」仅显示 `fix-` 开头的 SPEC；类型过滤与名称、状态过滤 AND 叠加，不改变排序，仅问题视图下 fix 树层级缩进保持。
 - 过滤 Radio 组黑底白字：类型过滤与归档切换两组 Radio 并排按钮组挂独立单源覆写类 `.ov-radio-dark`（激活项黑底白字，DESIGN.md 一般域条款；overview 运行态筛选同挂同源类）。
 - 刷新保持：2 秒自动刷新/SSE 重绘仅更新表格数据，不重置名称关键字、状态选择与类型选择，过滤条件仍生效且控件回填当前值。
@@ -34,3 +35,4 @@
 - 2026-09-23 add-spec-manual-activation（spec/archive/2026-09-23-add-spec-manual-activation） — 新增「待激活」「前置依赖」状态列标记与 depends_on 规范化摘要字段（纳入指纹字段集）
 - 2026-10-06 add-archive-state-migration（spec/archive/2026-10-06-add-archive-state-migration） — 新增列表合并归档清单条目（并集、同名单活跃侧优先、透传 archived_at/archived_by 溯源字段）；已归档视图对已迁出条目仍可见可进详情，未归档视图不含清单条目
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — DevTab 桌面表格 v2 重绘非替换（antd 功能保留、.ov-bento/.ov-bento-table 边框）、行内容 v2 形态（状态/模式/名称 dense/创建时间/任务进度/验证/耗时，进度 ramp 豁免保留）、操作列改三点菜单且「文档」并入首项（入口位迁移，恒可见契约保留）、类型过滤改 Radio 组并与归档切换同挂 .ov-radio-dark 黑底白字
+- 2026-11-06 add-spec-chinese-title（spec/changes/add-spec-chinese-title/） — 新增名称列中文副标题条款（英文名主行下方次级中文行、缺失零渲染）与名称关键字过滤中文标题 OR 命中；排序键仍为英文名、树形/类型过滤语义不变
