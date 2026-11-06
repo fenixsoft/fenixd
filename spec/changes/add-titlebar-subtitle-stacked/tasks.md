@@ -33,4 +33,4 @@
 ## 3. 测试与收尾
 
 - [x] 3.1 守卫测试同步：`specTitleSubtitle.test.mjs` 钉死零 subtitle 槽 + 富节点内部下方行断言（v1/v2 各一条 + combineSpecSubtitle 四分支）；`pageTitleBar.test.mjs`、`embedMount.test.mjs` 富标题适配同步。（5e085bb0c）
-- [ ] 3.2 前端测试套件全过 + 生产 rebuild（`dist/index.html` 锚点刷新）；本地起服务对两详情页截图取证（下方堆叠、两列居中、移动端只显标题）存 `.history/`。
+- [x] 3.2 前端测试套件全过（406 pass / 0 fail）+ 生产 rebuild（`dist/index.html` 锚点刷新：umi.38c20375.js → umi.9e79c2a6.js）；本地起服务（worktree 实例 ：18911）playwright-cli 对两详情页截图取证（桌面下方堆叠 12px/14px 贴排+width 0/minWidth 100%、两列 clusterCY=leftCY=28 居中、390px 移动端只显英文标题、零 subtitle 槽、概览页行内形态不变）存 `.history/`，DOM 事实与截图副本归档主树 `.fenix/verify-evidence/add-titlebar-subtitle-stacked/`。
