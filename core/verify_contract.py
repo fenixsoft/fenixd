@@ -1147,14 +1147,50 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         base_url = ""
         try:
             if contract.serve.kind == "static":
-                root_dir = project_root / contract.serve.root
-                if not root_dir.is_dir():
+                # serve.root 消费点复检（code-review item f1f2e997f5b2）：loader
+                # 侧守卫（item 6e6a1c4d4f7a，含 da39113f486a 的 "." 归一拒绝）
+                # 只覆盖 YAML 加载路径，本消费点可被绕过 loader 的调用方以手工
+                # 构造的 ServeSpec 直达——绝对路径/含 ".." 段/指向项目根本体的
+                # root 会在 ``project_root / root`` 静默漂移到项目根之外（含
+                # .fenix/ 状态与全部源码）经 loopback HTTP 暴露给本机任意进程。
+                # 与同文件三处复检先例（prepare.cwd item 75a115723804 /
+                # evidence_dir item 538dbc40fc3a / provision sub_dirs item
+                # c366eb91ef20）同款收口：判定口径与 loader 守卫逐字对齐；
+                # 空 root 不在此判定（既有「serve.root 为空」格式失败路径单点
+                # 负责，第 2 步 _raw_serve_section_errors 已置 serve_ok=False
+                # 整段跳过 serve）。判非法走既有「serve.root 不存在」同款
+                # 运行时失败路径（serve_ok=False、不进入静态服务）。
+                cand_root = (
+                    contract.serve.root.strip()
+                    if isinstance(contract.serve.root, str)
+                    else ""
+                )
+                bad_root_reason = ""
+                if cand_root.startswith("/"):
+                    bad_root_reason = "绝对路径（须为相对项目根的路径）"
+                elif ".." in cand_root.split("/"):
+                    bad_root_reason = '含 ".." 段（不得逃出项目根）'
+                elif cand_root and os.path.normpath(cand_root) == ".":
+                    bad_root_reason = (
+                        "指向项目根本体（会把 .fenix/ 状态目录与全部源码"
+                        "经 loopback HTTP 暴露给本机任意进程）"
+                    )
+                if bad_root_reason:
                     serve_ok = False
-                    serve_error = f"serve.root 不存在: {contract.serve.root}"
-                    # serve.root 不存在是运行时问题，不是契约格式问题——契约结构有效
+                    serve_error = (
+                        f"serve.root 非法（{bad_root_reason}）: "
+                        f"{contract.serve.root!r}"
+                    )
+                    # 同「serve.root 不存在」：运行时问题，不是契约格式问题
                 else:
-                    server = StaticVerifyServer(root_dir)
-                    base_url = server.base_url
+                    root_dir = project_root / contract.serve.root
+                    if not root_dir.is_dir():
+                        serve_ok = False
+                        serve_error = f"serve.root 不存在: {contract.serve.root}"
+                        # serve.root 不存在是运行时问题，不是契约格式问题——契约结构有效
+                    else:
+                        server = StaticVerifyServer(root_dir)
+                        base_url = server.base_url
             elif contract.serve.kind == "command":
                 # command 形态：分配端口、替换占位符、启动进程
                 # srv 声明提前到此处，由 finally 统一 stop（先探 ready 再停）
@@ -2693,11 +2729,25 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str, logger=None) -
             dir=str(scenarios_path.parent), prefix=".scenarios.", suffix=".json.tmp"
         )
         try:
-            with open(fd, "w", encoding="utf-8") as f:
+            # open 失败路径显式接管（code-review item 6f17f6449bfd，对齐
+            # verdict_check.save_report/save_verdict_cache 的 fdopen 兜底先例）：
+            # with 的 close 只在 open 成功接管 fd 后生效，open 自身抛 OSError
+            # （如 EMFILE）时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+            f = None
+            try:
+                f = open(fd, "w", encoding="utf-8")
                 json.dump(rewritten, f, ensure_ascii=False, indent=2)
                 f.flush()
                 # fsync 落盘后再 rename，断电才真正不会留下截断 JSON（对齐全仓原子写惯例）
                 os.fsync(f.fileno())
+            finally:
+                if f is not None:
+                    f.close()
+                else:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
             # mkstemp 产物固定 0600，还原原文件权限，避免 os.replace 后权限漂移
             try:
                 os.chmod(tmp_path, scenarios_path.stat().st_mode & 0o777)
