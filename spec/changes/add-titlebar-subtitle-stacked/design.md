@@ -2,21 +2,21 @@
 
 ## Context
 
-PageTitleBar 现有 subtitle 槽为行内形态（`BackArrow + TitleNode + SubtitleNode` 同一 baseline flex 行，`columnGap: 10`，两壳位同构排布）；v1/v2 详情页经该槽渲染中文标题后呈「标题同行右侧」灰字，与用户「英文标题下方」诉求不符（2026-11-06 用户裁决修成下方堆叠）。行内形态不增栏高，堆叠形态会增——标题栏高度是既有偏移常数族的锚（settings/help 56/60、command-center 126/130、pageChrome 屏幕偏移族），增栏即触发同步面。
+PageTitleBar 现有 subtitle 槽为行内形态（`BackArrow + TitleNode + SubtitleNode` 同一 baseline flex 行，`columnGap: 10`，两壳位同构排布）；add-spec-subtitle-and-row-click 曾把两详情页中文标题经该槽渲染为「标题同行右侧」灰字，与用户「英文标题下方」诉求不符（2026-11-06 用户裁决修成下方堆叠）。同日晚间实现已按用户多轮指令落地：中文标题撤出 subtitle 槽、作为块级第二行收进 richTitle 富标题内部（5e085bb0c 下方行更正 + 6d7ead201 两列结构与移动端只显标题），subtitle 槽行内形态与既有消费面（概览等页）不变。
 
 ## Goals
 
-1. 组件支持声明式堆叠形态；两详情页切换声明，branch 一并下移。
-2. 未声明面零变化；偏移常数按实际渲染回校，守卫测试防回潮。
+1. 两详情页中文标题呈英文标题下方堆叠形态、branch 组合语义保留、两页一致（已达成）。
+2. subtitle 槽未声明面零变化；形态由守卫测试钉死防回潮。
 
 ## Decisions
 
-- **D1 声明式切换**：`PageTitleBar` 新增布尔声明（如 `subtitleBelow`，命名实现期定），`true` 时 SubtitleNode 从标题行内移出、渲染为标题行下独立行（标题行 flex 行保持，副标题行 `fontSize: 12 / tertiary / 左对齐标题首字`）；缺省 false 行内形态不变——形态切换权在页面声明，组件不全局翻转（v2 branch 先例与其余消费面不被动迁）。
-- **D2 两壳位同构**：行壳位与顶栏槽两形态同构排布纪律延续——堆叠行在两壳位行为一致（sticky 栏内自然增高）；embed 档同规则。
-- **D3 偏移回校以实测为准**：不预写常数目标值——实现时以浏览器实测新栏高回校命中常数（56/60 族 / pageChrome 屏幕偏移族中与两详情页相关者），pageTitleBar / pageChrome / embedMount 守卫测试同步钉死；未命中的常数不动（避免全族误改——titlebar 同步面纪律「5 常量 4 测试」以实际同步面为准）。
-- **D4 移动端零改动**：`!isMobile` 判据在页级声明处既有承担，堆叠形态仅桌面生效路径，移动端三态（不渲染）不变。
+- **D1 富标题内部下方行（而非组件堆叠声明）**：中文标题不新增 `PageTitleBar` subtitleBelow 之类声明，而是作为块级第二行收进 richTitle 富标题内部（12px tertiary、单行省略、贴排 `lineHeight: 14px`；`width: 0 / minWidth: 100%` 定宽使中文行不参与左列 max-content 定宽、右簇不被中文行宽度推开）——详情中文标题要确定性换行位置（不随宽度漂移），且富节点路线让模式/状态 Tag、快速切换下拉随标题块两列结构整体垂直居中；subtitle 槽行尾跟随形态留给概览等页（组件不全局翻转，v2 branch 先例与其余消费面不被动迁）。
+- **D2 两壳位同构**：richTitle 经 title 槽位落行壳位与顶栏槽，控件对富节点透明不拆解重组（spec-detail-quick-switch 契约延续），wrap 语义在行壳位内继续成立（mobile-detail-header-density 载体迁移）；embed 档同规则。
+- **D3 偏移常数以实测为准**：堆叠使标题块增高，但两详情页实测未命中标题栏高度依赖常数（56/60、126/130 同族字面量零命中），既有常数不动（避免全族误改——titlebar 同步面纪律「5 常量 4 测试」以实际同步面为准）；pageTitleBar / pageChrome / embedMount 守卫测试已同步钉死。
+- **D4 移动端只显标题**：`!isMobile` / `!mobile` 页级 gate 下中文下方行不渲染（同 subtitle 槽既有规则）；2026-11-06 用户指令「移动端设备样式中只显标题」进一步把右簇（模式/状态 Tag/胶囊 + 快速切换下拉/状态转移）一并隐藏——移动端仅英文标题。
 
 ## Risks
 
-- **栏高增加引发页内遮挡/错位**：缓解 = D3 实测回校 + 守卫测试；两详情页页签 sticky、目录 sticky 等命中面在任务中逐页盘点。
-- **富标题换行交互**：堆叠后标题行仍 `flexWrap: wrap`（mobile-detail-header-density 契约），副标题独立行不受富标题换行影响；390px 视口回归由既有移动端测试兜底。
+- **富标题换行交互**：标题行保持 `flexWrap: wrap`（mobile-detail-header-density 契约），窄视口外层 wrap 右簇下坠（同旧 wrap 形态）；390px 视口回归由既有移动端测试兜底。
+- **实现与文档偏差回潮**：守卫测试（specTitleSubtitle 零 subtitle 槽 + 富节点下方行断言、pageTitleBar、embedMount）已钉死实际形态，防实现回退 subtitle 槽路线。
