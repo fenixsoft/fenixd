@@ -125,6 +125,15 @@ _SUPERVISION_RUNTIME_FLOOR_WARNED = False
 # 未消费的残留记录会被下一次 _validate 覆盖，恒反映最新校验的配置。
 _SUPERVISION_LAST_ALIGNED = None
 
+# supervision 两处非布尔回退 WARNING 的进程级一次性去重（code-review item
+# c3d0b4da4ddc，同 _VALIDATE_SOFT_WARNED 范式）：_supervision_settings 对
+# enabled 非 bool、_check_supervision_consistency 对 auto_align 非 bool 的
+# WARNING 均处在 30s 热更新（_validate → _check_supervision_consistency →
+# supervision_config_floor → _supervision_settings）与 supervision_floor 运行期
+# 高频路径，脏值在场时逐周期重复打印同一告警。键取 (键名, 脏值类型)，脏值
+# 类型变化仍会重新告警一次；去重只作用于告警分支，归一与回退行为不变。
+_SUPERVISION_NON_BOOL_WARNED = set()
+
 # run 超时回退 WARNING 的进程级一次性去重标记：agents.run_timeout_seconds 缺失/
 # ≤0/非有限时 effective_run_timeout_seconds 按 RUN_TIMEOUT_FALLBACK_SECONDS 回退，
 # 派发路径高频读取，仿 _DEPRECATED_STUCK_WARNED「首次告警、后续静默」（原为
@@ -1319,7 +1328,18 @@ class ConfigLoader:
         archive = cls._segment_or_empty(config, "archive")
         if "auto_threshold" in archive and archive["auto_threshold"] is not None:
             at = archive["auto_threshold"]
-            if not isinstance(at, int) or isinstance(at, bool) or at < 0:
+            # 整值浮点按整数接受（code-review item 7872568086fb，对齐读取器
+            # effective_auto_archive_threshold 经 _normalize_int_value 的现行
+            # 口径，item c7154d400156）：60 == 60.0 运行期静默接受，加载期
+            # 同样接受，不再对合法配置误报「回落默认 50」；NaN/inf 的
+            # is_integer() 恒为 False 自然拒绝；bool、负数、非整值浮点与
+            # 非数值仍判非法回落。
+            if (
+                isinstance(at, bool)
+                or not isinstance(at, (int, float))
+                or (isinstance(at, float) and not at.is_integer())
+                or at < 0
+            ):
                 # 进程级一次性去重（code-review item a84b10635fb2）。
                 dedup_key = ("archive.auto_threshold", type(at).__name__)
                 if dedup_key not in _VALIDATE_SOFT_WARNED:
@@ -3327,11 +3347,17 @@ class ConfigLoader:
             # get_self_review_config 等既有严格 bool 口径一致：非 bool 打 WARNING
             # 并回退 SUPERVISION_DEFAULTS["enabled"]（True）。
             if not isinstance(cfg["enabled"], bool):
-                _logger.warning(
-                    "timeout_supervision.enabled 非布尔（%r），回退缺省 %s",
-                    cfg["enabled"],
-                    SUPERVISION_DEFAULTS["enabled"],
-                )
+                # 进程级一次性去重（code-review item c3d0b4da4ddc，键取
+                # (键名, 脏值类型)，脏值类型变化仍告警一次；去重只作用告警
+                # 分支，下方回退行为不变）。
+                dedup_key = ("timeout_supervision.enabled", type(cfg["enabled"]).__name__)
+                if dedup_key not in _SUPERVISION_NON_BOOL_WARNED:
+                    _SUPERVISION_NON_BOOL_WARNED.add(dedup_key)
+                    _logger.warning(
+                        "timeout_supervision.enabled 非布尔（%r），回退缺省 %s",
+                        cfg["enabled"],
+                        SUPERVISION_DEFAULTS["enabled"],
+                    )
                 cfg["enabled"] = SUPERVISION_DEFAULTS["enabled"]
         return cfg
 
@@ -3499,11 +3525,17 @@ class ConfigLoader:
         # 6b032f4596e5）：非 bool 打 WARNING 并按缺省 True（自动对齐）处理。
         auto_align = sup.get("auto_align", True)
         if not isinstance(auto_align, bool):
-            _logger.warning(
-                "agents.timeout_supervision.auto_align 非布尔（%r），"
-                "按缺省 True（自动对齐）处理",
-                auto_align,
-            )
+            # 进程级一次性去重（code-review item c3d0b4da4ddc，键取
+            # (键名, 脏值类型)，脏值类型变化仍告警一次；去重只作用告警
+            # 分支，下方按缺省 True 处理的行为不变）。
+            dedup_key = ("agents.timeout_supervision.auto_align", type(auto_align).__name__)
+            if dedup_key not in _SUPERVISION_NON_BOOL_WARNED:
+                _SUPERVISION_NON_BOOL_WARNED.add(dedup_key)
+                _logger.warning(
+                    "agents.timeout_supervision.auto_align 非布尔（%r），"
+                    "按缺省 True（自动对齐）处理",
+                    auto_align,
+                )
             auto_align = True
         if not auto_align:
             raise ValueError(
@@ -3731,6 +3763,11 @@ class ConfigLoader:
         _UNKNOWN_PROVIDER_REF_WARNED.clear()
         _UNRESOLVED_CHAIN_MODEL_WARNED.clear()
         _VALIDATE_SOFT_WARNED.clear()
+        # supervision 非 bool 回退 WARNING 去重集合（code-review item
+        # c3d0b4da4ddc）：与本清单各去重集合同属「进程级一次性告警」语义，
+        # 漏清会让前一用例留在集合中的 (键名, 脏值类型) 键压制后续用例对
+        # enabled / auto_align 脏值的首告警断言。
+        _SUPERVISION_NON_BOOL_WARNED.clear()
         _TRANSIENT_BACKOFF_FALLBACK_WARNED.clear()
         _TIMEOUT_OVERRIDE_INVALID_WARNED.clear()
         # verify 段正整数键去重集合（code-review item 83732e1a3117）：与上方 8 个
