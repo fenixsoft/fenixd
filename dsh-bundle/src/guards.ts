@@ -18,6 +18,7 @@
  */
 
 import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ── 纯逻辑：三守卫判定 ─────────────────────────────────────────────────────
 
@@ -81,7 +82,8 @@ function resolveReal(p: string): string {
 /**
  * 主树写守卫：对 write/edit 的 file_path 判定（对齐 block-main-tree-write.py）。
  * - 两个 env 任一为空 → 直通（非 fenixd 派发场景，不误伤）；
- * - 相对路径 → 相对 CWD（spawn 已保证 = worktree）解析，放行；
+ * - 相对路径 → 先以 worktree（spawn 已保证 = CWD）解析为绝对路径，再套用
+ *   下列落点判定（不再直通：../ 形态可逃逸 worktree 落回主树）；
  * - 落在 worktree 内 → 放行；
  * - 落在主树 .fenix/verify-progress/（--add-dir 授权的进度目录）→ 放行；
  * - 其余主树路径 → 拦截并给纠偏处方（「主树只读」语义）；
@@ -89,7 +91,9 @@ function resolveReal(p: string): string {
  *
  * 判定前 filePath / worktree / projectRoot 均先 realpath（失败回退词法路径）：
  * 同一真实坐标系内比对，worktree 内指向主树的符号链接不再被词法前缀放行
- * 写穿主树。dsh 通道较 Python 版 hook（纯 normpath 词法判定）多这一层收紧。
+ * 写穿主树。dsh 通道较 Python 版 hook（纯 normpath 词法判定）多这一层收紧；
+ * 相对路径落点复核亦为 dsh 侧先行（Python hook 系 gitignored 自举部署物，
+ * 仅存在于主树，未成对修）。
  */
 export function mainTreeWriteDecision(filePath: string, env: GuardEnv): GuardDecision {
   const worktree = (env.worktree ?? "").trim();
@@ -97,10 +101,13 @@ export function mainTreeWriteDecision(filePath: string, env: GuardEnv): GuardDec
   if (!worktree || !projectRoot) return { blocked: false };
 
   if (!filePath) return { blocked: false };
-  // 相对路径 → 相对 CWD 解析，天然安全
-  if (!filePath.startsWith("/")) return { blocked: false };
+  // 相对路径不再直通：write/edit 按工具进程 CWD 解析相对路径，而 spawn 已
+  // 保证 CWD = worktree，故以 FENIX_RUN_WORKTREE 为解析基准（resolve 含
+  // 逐段 ./ ../ 消解）与工具侧落点一致；../ 逃逸出 worktree 的落点（如落回
+  // 主树）由此进入同一套 within 判定，不再词法放行写穿主树。
+  const abs = filePath.startsWith("/") ? filePath : resolve(worktree, filePath);
 
-  const norm = normalize(resolveReal(filePath));
+  const norm = normalize(resolveReal(abs));
   const wt = normalize(resolveReal(worktree));
   const root = normalize(resolveReal(projectRoot));
   if (within(norm, wt)) return { blocked: false };
