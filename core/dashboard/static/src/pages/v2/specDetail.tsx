@@ -27,6 +27,9 @@ import {
 } from '@/services/dashboard';
 import type { HookAuditData, SpecDetail, SpecSummary } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
+// 副标题组合单源（add-spec-subtitle-and-row-click task 1.3：「中文标题 ·
+// branch」组合语义不在页面自拼）
+import { combineSpecSubtitle } from '@/pages/projects/specTitle';
 import { compactWan } from '@/utils/format';
 import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
 import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
@@ -832,7 +835,13 @@ export default function V2SpecDetailPage() {
         }
         onBack={() => navigate(`/v2/projects/${encodeURIComponent(name)}`)}
         backTitle="返回项目"
-        subtitle={mobile ? undefined : detail?.branch || undefined}
+        subtitle={
+          // add-spec-subtitle-and-row-click（task 1.3）：中文标题与 branch 组合
+          // 副标题（「中文标题 · branch」），组合语义单源 combineSpecSubtitle
+          // （branch 空只显中文标题、title 空维持 branch 单独显示、双空不渲染）；
+          // 移动端隐藏维持既有页级 gate
+          mobile ? undefined : combineSpecSubtitle(detail?.title, detail?.branch)
+        }
         right={rightActions}
       >
         {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
