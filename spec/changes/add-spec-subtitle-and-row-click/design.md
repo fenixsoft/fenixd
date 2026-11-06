@@ -19,7 +19,7 @@ add-spec-chinese-title 已落地：`.spec.yaml` `title` 字段全量回填、`/a
 
 - **D1 数据源**：详情响应 `title` 字段（后端已透传，无需后端改动）；`SpecDetail` TS 类型补 `title?: string | null`。v1 详情经 `detail?.title` 取值（specList 查表仅作实现期兜底备选，不写死两源合并逻辑）。
 - **D2 副标题组合形态**：v2 subtitle 节点为 `中文标题 · branch`（branch 空只显中文标题，title 空维持现状 branch 单独显示，双空不渲染）；v1 直接 `subtitle={detail?.title || undefined}`。分隔符用中点「·」两侧带空格，视觉对齐既有 tertiary 12px。
-- **D3 行点击守卫**：`onRow.onClick` 内经事件目标判定守卫——`event.target.closest('.ant-table-row-expand-icon')`（展开钮）与操作列容器（`[data-spec-row-actions]` 或 closest 按钮/`.ant-dropdown-menu`）命中即 return，不导航；名称链接自有 href 跳转与行导航同目标，不额外拦截（双触发同路由无害）；展开行内容（expandedRowRender 渲染于行外 `ant-table-expanded-row`）天然不在 onRow 命中面。cursor pointer 整行生效。
+- **D3 行点击守卫**：`onRow.onClick` 内经事件目标判定守卫——`event.target.closest('.ant-table-row-expand-icon')`（展开钮）与操作列容器（`[data-spec-row-actions]`——现无此属性，走此路径需新增；或 closest 按钮/`.ant-dropdown-menu`，零改动即可命中——list.tsx:1113 操作触发器即 Button）命中即 return，不导航；名称链接自有 href 跳转与行导航同目标，不额外拦截（双触发同路由无害）；展开行内容（expandedRowRender 渲染于行外 `ant-table-expanded-row`）天然不在 onRow 命中面。cursor pointer 整行生效。
 - **D4 不加 v2 表格行点击**：v2 SPEC 表操作列密集（删除等危险操作），误触代价高，本轮不动（proposal 非目标）。
 
 ## Risks
