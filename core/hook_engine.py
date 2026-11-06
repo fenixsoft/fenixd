@@ -676,8 +676,6 @@ class HookEngine:
         # （首次必留痕，重启后重新审计），抑制长期不修时 append-only 审计随
         # 状态迁移频率线性膨胀、刷屏审计尾读。
         self._malformed_hook_audited: Dict[Tuple[str, str], str] = {}
-        # 框架目录：core/hook_engine.py → 框架根（bin/fenix_dashboard.py 所在）
-        self._framework_root = Path(__file__).resolve().parent.parent
         self._project_name = None
         # restart-dashboard 去抖（dashboard-push-restart D2）：进程内最近一次
         # 成功重启的 monotonic 时间戳（0 = 从未成功）；失败不写、窗口内可重试。
