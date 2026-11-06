@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-10-07
 mode: fast-track
+title: 回归解析失败熔断
