@@ -281,11 +281,11 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     if not ok:
         return True
     raw_run_id = getattr(result, "run_id", "") or ""
-    try:
-        m = RUN_ID_EPOCH_PATTERN.search(raw_run_id)
-        run_start = int(m.group(1)) if m else None
-    except (TypeError, ValueError):
-        run_start = None
+    # run_id 经 getattr 默认 + or "" 双兜底恒为 str，search 无 TypeError 路径、
+    # \d{10,} 纯数字匹配使 int() 无 ValueError 路径（code-review item
+    # 47b679542d23：原 try/except (TypeError, ValueError) 属永不命中的死防御）。
+    m = RUN_ID_EPOCH_PATTERN.search(raw_run_id)
+    run_start = int(m.group(1)) if m else None
     if run_start is None:
         # run_id 无法解析（格式漂移/非字符串）：mtime 陈旧护栏整体退化为
         # 直通（不判陈旧）。维持既有放行行为不变（向后兼容），但记 WARNING
