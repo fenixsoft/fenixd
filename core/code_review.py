@@ -987,7 +987,9 @@ def _coerce_line(value) -> int:
     m = re.search(r"\d+", str(value))
     if m:
         try:
-            return int(m.group(0))
+            # 提取段可能为 "0"（"0.9"/"L0" 等字符串形态命中 "0"），与
+            # int/float 分支同口径钳到 ≥1，避免落账出 0/负行号
+            return max(int(m.group(0)), 1)
         except ValueError:
             return 1
     return 1
@@ -1835,11 +1837,27 @@ def _read_progress_with_manifest(project_root) -> tuple:
     # done <= total 恒成立（清单缺失/损坏 → total=0 → done=0）
     done = len(covered.intersection(files))
     current = None
-    sources = [
-        p
-        for p in [*shard_paths(project_root, run_id), out_path(project_root, run_id)]
-        if p.is_file()
-    ]
+    sources = []
+    for p in [*shard_paths(project_root, run_id), out_path(project_root, run_id)]:
+        # 「确认缺失 vs 访问失败」分口（对齐 shard_paths / read_review_out_rows
+        # 同款纪律）：is_file() 对 stat 层异常（权限漂移、NFS 句柄失效等）
+        # 同样回 False，瞬时访问失败经 warn-once 留痕后仍按缺失跳过——此处
+        # 仅影响 current 展示字段（外观级退化），不致漏读；FileNotFoundError
+        # 确认缺失维持静默。stat 成功后的 is_file() 兜底保留（非普通文件跳过）。
+        try:
+            p.stat()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            if _warn_once(("current-stat", run_id, p.name)):
+                _logger.warning(
+                    "code_review: 访问产物 %s 失败（run %s），按缺失跳过，"
+                    "current 可能退化: %s",
+                    p, run_id, e,
+                )
+            continue
+        if p.is_file():
+            sources.append(p)
     if sources:
         try:
             # mtime 最晚者；平局（文件系统粒度粗）取规范序后者——
