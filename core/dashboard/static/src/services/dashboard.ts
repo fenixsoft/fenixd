@@ -635,6 +635,13 @@ export interface SpecSummary {
   name: string;
   status: string | null;
   mode?: 'fast-track' | 'full' | null;
+  /**
+   * add-spec-chinese-title：SPEC 中文标题（display name，纯展示）。id/name 关系：
+   * 英文名 name = id（一切寻址/排序/交互的键不变），本字段仅消费在名称列
+   * 中文副标题行与名称关键字过滤命中两处；数据源为 /api/specs 条目透传的
+   * .spec.yaml title 字段，缺失为 null/undefined（不渲染副标题行）。
+   */
+  title?: string | null;
   /** add-spec-archive：是否已归档（活跃目录 spec/changes/<name>/ 不存在即 true） */
   archived?: boolean;
   priority: number | null;

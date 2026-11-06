@@ -191,17 +191,28 @@ function SpecDevPane({
       title: '名称',
       dataIndex: 'name',
       render: (_, s) => (
-        <span
-          className="v2-ellipsis"
-          style={{ fontSize: 13.5, fontWeight: 600, cursor: 'pointer', display: 'block', color: V2_TEXT }}
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`);
-          }}
-          title={s.name}
-        >
-          {s.name}
-        </span>
+        <div style={{ minWidth: 0 }}>
+          <span
+            className="v2-ellipsis"
+            style={{ fontSize: 13.5, fontWeight: 600, cursor: 'pointer', display: 'block', color: V2_TEXT }}
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`);
+            }}
+            title={s.name}
+          >
+            {s.name}
+          </span>
+          {/* add-spec-chinese-title：英文名主行下方中文标题副标题（v2 台账
+              次级文字 token、小于主行字号、单行省略）。副标题不承载独立
+              点击目标（点击落行 onClick 跳详情，与既有行点击一致）；
+              title 缺失/空不渲染（保持既有单行形态）。 */}
+          {s.title ? (
+            <div className="v2-ellipsis" style={{ fontSize: 12, color: V2_TEXT_TERTIARY }}>
+              {s.title}
+            </div>
+          ) : null}
+        </div>
       ),
     },
     {
