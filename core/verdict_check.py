@@ -2104,7 +2104,12 @@ def scenario_fingerprint(scenario: dict) -> str:
                 }
             )
         payload_obj = {
-            "sid": scenario.get("scenario_id"),
+            # sid 双键回退（item 2d315819783a，与本模块其余消费点同口径）：
+            # judge 整体改写/旧格式产物只带 id 键时，直接取 scenario_id 恒为
+            # None，指纹与写入轮失配、跨轮缓存退化为每轮全量重裁。占位符用
+            # 空串避免把 "?" 混进哈希。sid 分量翻动既有指纹值：旧缓存自然
+            # 未命中 → 重裁一轮后写回新指纹（fail-open，不影响正确性）。
+            "sid": _scenario_id_of(scenario, ""),
             "status": scenario.get("status"),
             "failed": failed,
         }
