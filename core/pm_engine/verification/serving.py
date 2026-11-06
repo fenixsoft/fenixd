@@ -1536,6 +1536,12 @@ def _legacy_selfheal_start(
     跨段复用的局部变量，改经参数传入（urls 已由 _collect_scenario_entry_urls
     按本机 origin 过滤，外链目标不参与探活与端口改写）。
 
+    code-review c23edf798863：邻近扫描补 spawn 前 pre 快照剔除（对齐契约
+    路径 6cea9255ff17 同款口径，517-524/700-707 先例）——fbc1dbb2c634 的
+    零改动纪律在此点解除：无快照时窗口内既有响应服务（如紧邻的 dashboard
+    端口）会被邻近扫描当作本轮新出现的监听命中、reg.register 锁定并经
+    _rewrite_scenario_port 持久改写冻结场景 URL，跨轮延续污染。
+
     Returns:
         (reachable, user_blocked, note)，语义同 _ensure_app_reachable。
     """
@@ -1611,6 +1617,20 @@ def _legacy_selfheal_start(
         pm = re.search(r"(?:--port|-p)\s+(\d+)", start_cmd)
         if pm:
             base_port = int(pm.group(1))
+    # code-review c23edf798863：邻近扫描 pre 快照（对齐契约路径 6cea9255ff17
+    # 同款，517-524/700-707 先例）——spawn 前对 base_port+1..+50 做一次响应
+    # 快照（同款 _probe_ports_responding + http_error_ok=True，4xx/5xx 亦算
+    # 应答）。缺快照时窗口内既有监听服务会被下方邻近扫描当作「本轮新出现
+    # 的监听」命中，reg.register 锁到无关服务且 _rewrite_scenario_port 把
+    # 端口持久改写进冻结场景集，污染跨轮延续
+    pre = (
+        _probe_ports_responding(
+            range(base_port + 1, base_port + 51),
+            probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
+        )
+        if base_port
+        else set()
+    )
 
     # code-review e50ef3822d93：入口告警按探测依据收敛——urls 非空才是
     # 「探测确认不可达」；urls 为空（仅外链场景集，本机 URL 已被
@@ -1783,11 +1803,14 @@ def _legacy_selfheal_start(
     if base_port:
         # 探测口径与 _probe_url(http_error_ok=True) 一致：4xx/5xx 同样证明
         # HTTP 服务在应答（API-only 应用根路径 404 不判不响应）
+        # c23edf798863：剔除 spawn 前 pre 快照——快照内已响应的既有服务不是
+        # 本轮新出现的监听，不进改写候选（对齐契约路径 legacy_pre 同款剔除）
         ports = sorted(
             _probe_ports_responding(
                 range(base_port + 1, base_port + 51),
                 probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
             )
+            - pre
         )
         for port in ports:
             urls_new = [
