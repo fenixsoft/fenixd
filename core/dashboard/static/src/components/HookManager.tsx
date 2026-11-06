@@ -16,7 +16,7 @@ import {
   App, Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd';
 import dayjs from 'dayjs';
-import { useCallback, useState, useMemo } from 'react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { HOOK_ACTION_LABELS } from '@/services/dashboard';
 import type { HookAction, HookAuditRecord, HookConfig } from '@/services/dashboard';
@@ -96,6 +96,10 @@ const ACTION_PARAM_KEYS: Record<string, string[]> = {
   'restart-dashboard': ['target'],
 };
 
+// Modal 表单初值快照类型（code-review item eaa392cfc2db）：打开瞬间定格的可编辑
+// 字段集合，不含 id——id 在提交时按 editIdx/存量补发决定（item 8e6f2324f94c）
+type HookFormDraft = Partial<HookConfig>;
+
 // ── Props ──────────────────────────────────────────────────────────
 
 export interface HookManagerProps {
@@ -132,6 +136,10 @@ export default function HookManager({
 }: HookManagerProps) {
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  // Modal 初值快照（code-review item eaa392cfc2db）：打开瞬间定格，编辑期间不随
+  // hooks prop 刷新回灌——effect 不追踪 hooks 引用，父级保存往返/重取配置不会
+  // 覆盖用户正在编辑的内容
+  const [draft, setDraft] = useState<HookFormDraft | null>(null);
   // Modal 提交本地 pending（code-review item 336b12c207dc）：confirmLoading 只在
   // 父组件 saving 回写后才生效，点击到回写之间存在窗口，双击保存会以同一份 hooks
   // prop 各自计算 next 调两次 onSave，落盘两条内容相同的 hook。本地状态在提交
@@ -151,10 +159,21 @@ export default function HookManager({
   // （对齐 QualityTab ignorePending 门控模式）。
   const opLocked = readOnly || !!saving;
 
+  // 初值注入时机（code-review item eaa392cfc2db）：Modal destroyOnHidden 下关闭
+  // 期间表单未挂载，此前在 setModalOpen(true) 之前对未连接的 form 实例调用
+  // resetFields/setFieldsValue，依赖 rc-field-form「值先入 store、字段挂载后再
+  // 拾取」的内部行为（开发态触发 Instance created by `useForm` is not connected
+  // 告警）。改为 Modal 打开后注入：open 置真与 Modal 内容挂载属同一次 commit，
+  // effect 执行时字段实体已注册，form 实例必已连接。
+  useEffect(() => {
+    if (!modalOpen || !draft) return;
+    if (editIdx === null) form.resetFields();
+    form.setFieldsValue(draft);
+  }, [modalOpen, draft, editIdx, form]);
+
   const handleAdd = () => {
     setEditIdx(null);
-    form.resetFields();
-    form.setFieldsValue({ enabled: true, events: [], action: 'commit' });
+    setDraft({ enabled: true, events: [], action: 'commit' });
     setModalOpen(true);
   };
 
@@ -169,7 +188,7 @@ export default function HookManager({
       // 会命中已不存在的下标，不设防则 TypeError 抛到 React 事件层且无任何反馈
       // （口径对齐 handleSubmit catch 对 editIdx 越界的处理）
       if (!h) return;
-      form.setFieldsValue({
+      setDraft({
         events: h.events,
         action: h.action,
         enabled: h.enabled !== false,
@@ -181,7 +200,7 @@ export default function HookManager({
       });
       setModalOpen(true);
     },
-    [hooks, form],
+    [hooks],
   );
 
   // 删除/启停与 handleSubmit 同款错误口径（code-review item c31395922dc3）：
@@ -231,7 +250,10 @@ export default function HookManager({
       // 切换后残留 form store 的旧参数不写入 entry
       const allowed = ACTION_PARAM_KEYS[values.action] ?? [];
       const entry: HookConfig = {
-        id: editIdx !== null ? hooks[editIdx].id : shortId(),
+        // 存量无 id 条目补发（code-review item 8e6f2324f94c）：id 缺失时不再写成
+        // 显式 undefined（判缺失口径与表格 key 的 `h.id || 'idx'` 一致），保持
+        // id 字段语义恒为确定唯一
+        id: editIdx !== null ? (hooks[editIdx].id || shortId()) : shortId(),
         enabled: values.enabled !== false,
         events: values.events,
         action: values.action,
