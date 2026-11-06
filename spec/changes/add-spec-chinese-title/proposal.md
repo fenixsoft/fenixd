@@ -8,7 +8,7 @@ SPEC 的唯一人类可读标识当前是 kebab-case 英文名（如 `add-knowle
 - **evo 通道同步**（新增）：`core/evolution.py` 草稿契约增加 `title_cn` 字段，`materialize_draft` 写 `.spec.yaml` 时带上 `title` 行；`agents/evolution.md` 起草契约同步要求 5-25 字中文标题。
 - **读侧与 API**（新增）：title 读取单点（活跃目录优先、归档目录回退，签名缓存同 `spec_mode` 模式）；`/api/specs` 列表项与 `/api/specs/<spec>` 详情透传 `title` 字段（缺失为 null）。
 - **列表 UI**（新增）：v1 列表页名称列、v2 项目详情 SPEC 表格名称列，在英文名下方渲染中文副标题行；缺 title 不渲染（保持单行现状）；v1 名称关键字搜索同时命中 title。
-- **存量回填**（新增）：为存量全部 SPEC（活跃 26 + 归档 509，其中 38 个归档目录缺 `.spec.yaml` 按脚手架约定补写）回填中文标题，逐目录读取 proposal/design 起草 5-25 字标题写入各自 `.spec.yaml`。
+- **存量回填**（新增）：为存量全部 SPEC（活跃 27（含本 SPEC 自身）+ 归档 509，其中活跃 2 + 归档 38 共 40 个目录缺 `.spec.yaml` 按脚手架约定补写）回填中文标题，逐目录读取 proposal/design 起草 5-25 字标题写入各自 `.spec.yaml`。
 
 **非目标**：
 - code-fix 通道（`core/code_review.py::generate_fix_spec`）为纯程序化模板生成（无 LLM 起草环节），本轮不加中文标题（模板化标题质量低且 `fix-cr-*` 名语义已自明）；后续需要可另行立项。
@@ -29,6 +29,6 @@ SPEC 的唯一人类可读标识当前是 kebab-case 英文名（如 `add-knowle
 ## Impact
 
 - **代码面**：`core/dashboard/data/`（title 读取单点 + summary 透传）、`core/evolution.py`（草稿契约 + 模板）、`agents/evolution.md`（起草契约）、`skills/fenix-new/SKILL.md`（生成纪律）、`core/dashboard/static/src/`（SpecSummary 类型 + 两处列表名称列 + 搜索）及前后端测试。
-- **数据面**：存量 535 个 `.spec.yaml` 回填 `title` 字段（497 修改 + 38 补写新建），全部为 git 交付物、随归档目录迁移。
+- **数据面**：存量 536 个 `.spec.yaml` 回填 `title` 字段（496 修改 + 40 补写新建），全部为 git 交付物、随归档目录迁移。
 - **性能面**：列表 API 每条目增加一次 `.spec.yaml` 读取——活跃侧经签名缓存摊销；归档侧经 SummaryIndex 每轮单次 `spec/archive/` 目录扫描建立映射，不做 per-spec glob（遵守既有 /api/specs 性能治理纪律）。
 - **兼容面**：存量无 title 的 SPEC（含实现期新建）列表渲染零变化（不渲染副标题行），读侧容错缺省 null，零迁移强制。

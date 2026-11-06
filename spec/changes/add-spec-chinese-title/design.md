@@ -2,7 +2,7 @@
 
 ## Context
 
-SPEC 名（kebab-case）是全框架唯一寻址键：目录名、STATE.md、信号文件、fix-* 树、排序全部以它为键；列表页直接渲染英文名，中文工作语境下辨识成本高。立项（/fenix-new）与自进化（evolution）是两条 LLM 起草通道；code-fix（`code_review.py::generate_fix_spec`）为纯程序化通道。存量清单：活跃 `spec/changes/` 26 目录（2 个 pushed 未归档且缺 `.spec.yaml`）+ 归档 `spec/archive/` 509 目录（38 缺 `.spec.yaml`），合计 535。
+SPEC 名（kebab-case）是全框架唯一寻址键：目录名、STATE.md、信号文件、fix-* 树、排序全部以它为键；列表页直接渲染英文名，中文工作语境下辨识成本高。立项（/fenix-new）与自进化（evolution）是两条 LLM 起草通道；code-fix（`code_review.py::generate_fix_spec`）为纯程序化通道。存量清单：活跃 `spec/changes/` 27 目录（含本 SPEC 自身；2 个 pushed 未归档且缺 `.spec.yaml`）+ 归档 `spec/archive/` 509 目录（38 缺 `.spec.yaml`），合计 536。
 
 既有可复用基建：
 - `.spec.yaml` 字段读取先例：`core/spec_mode.py::read_spec_mode`（签名缓存 `(path, mtime_ns, size)`，读侧全容错）。
@@ -23,7 +23,7 @@ SPEC 名（kebab-case）是全框架唯一寻址键：目录名、STATE.md、信
 - **D4 API 形状**：`spec_summary` 与 `spec_detail` 各透传 `"title": str | None`；前端 `SpecSummary` 加 `title?: string | null`。增量 patch（SSE watcher）随 summary 重建自动携带，无独立通道。
 - **D5 UI 副标题形态**：v1 名称列主行（既有链接/字号/色不动）下方一行次级文本（12px、tertiary 色、单行省略），随树形缩进；移动端卡片名称区同规则。v2 用 `V2_TEXT_TERTIARY` 同级 token。两处缺失均不渲染副标题行（v2「缺口字段不伪装」惯例的自然延伸：缺失 = 无该行，而非「—」占位）。搜索：v1 关键字过滤在英文名包含匹配外 OR 命中 title（大小写不敏感）；排序键仍为英文名。
 - **D6 生成通道**：fenix-new §2 增补「同阶段生成 5-25 字中文标题」+ `.spec.yaml` title 写入脚本示例（与 §3.1.1 mode 写入同模式），`--modify` 语义=可更新不强制；`evolution.py` 草稿契约加可选 `title_cn`，`SPEC_YAML_TEMPLATE` 带 title 占位（缺失时该行省略、草稿不作废——容错缺省对齐读侧）；`agents/evolution.md` spec 契约节与格式合规清单同步。code-fix 通道非目标（proposal 已声明）。
-- **D7 回填策略**：全量 535 目录（495 modify + 40 new：活跃 2 + 归档 38 缺 `.spec.yaml` 按脚手架补写，`created` 取 STATE/归档清单条目日期）。分批任务（活跃批 + 归档三批）保证 run 预算耗尽后可续做；每批幂等（已有非空 title 跳过）。清单冻结于立项时刻，实现期漂移由盘点任务修正 Deliverables 段 + 收尾增量回扫兜底。归档标题起草只读 proposal/design 头部（Why 段优先），控制每条目读取成本。
+- **D7 回填策略**：全量 536 目录（496 modify + 40 new：活跃 2 + 归档 38 缺 `.spec.yaml` 按脚手架补写，`created` 取 STATE/归档清单条目日期；本 SPEC 自身 `.spec.yaml` 含于活跃 modify，由活跃批一并回填，保证任务 4.6 全量自检可达）。分批任务（活跃批 + 归档三批）保证 run 预算耗尽后可续做；每批幂等（已有非空 title 跳过）。清单冻结于立项时刻，实现期漂移由盘点任务修正 Deliverables 段 + 收尾增量回扫兜底。归档标题起草只读 proposal/design 头部（Why 段优先），控制每条目读取成本。
 
 ## Risks
 
