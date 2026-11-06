@@ -1456,7 +1456,17 @@ export default function SpecDetailPage() {
   ];
 
   return (
-    <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
+    <><PageTitleBar
+      title={richTitle}
+      subtitle={
+        // add-spec-subtitle-and-row-click（task 1.2）：标题栏中文副标题——详情
+        // 响应 title 透传（null/空不声明，缺失容错与列表规则一致）；移动端隐藏
+        // 走页级 gate（对齐 v2 specDetail 既有先例：本基线 SubtitleNode 无
+        // !isMobile 判据，页级承载同语义、PageTitleBar 组件本体不改）
+        isMobile ? undefined : detail?.title || undefined
+      }
+      back={backToList}
+    /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
       {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本 */}
       <Card
         title={
