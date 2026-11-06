@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-10-03
 mode: full
+title: 并发覆写类型修复
