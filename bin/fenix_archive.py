@@ -18,10 +18,19 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
 # 框架根（.resolve() 跟随 .fenix 软链接，定位真实安装位置）：core/ 所在目录
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
-# 直接以 bin/ 路径调用时上面的三级上溯会落到仓库外目录：校验 spec/ 缺失则
-# 回退到框架根（自举仓库下与项目根重合，同为 .resolve() 口径），
+# 直接以框架 bin/ 路径调用时上面的三级上溯会落到仓库外目录：此时才在 spec/
+# 缺失时回退到框架根（自举仓库下与项目根重合，同为 .resolve() 口径），
 # 此时 main() 会向 stderr 提示实际使用的根。
-PROJECT_ROOT_FALLBACK = not (PROJECT_ROOT / "spec").is_dir()
+# 经项目内 .fenix/bin/ 软链接调用的判据 = 调用路径含 .fenix 路径成分；判定用
+# .absolute()（不跟随软链接，对齐 fenix_status.py 同一口径）——resolve 后会
+# 解析到框架真实安装路径，反而丢失 .fenix 成分。此场景下即使项目尚未创建
+# spec/ 也不回退：保持项目根，让 change 查找在真实项目位置给出准确报错，
+# 而非静默换到框架安装根误导排障（code-review item 3eac94914c87）。
+# PROJECT_ROOT 是调用路径的前缀，调用路径无 .fenix 成分即二者皆无。
+PROJECT_ROOT_FALLBACK = (
+    ".fenix" not in Path(__file__).absolute().parts
+    and not (PROJECT_ROOT / "spec").is_dir()
+)
 if PROJECT_ROOT_FALLBACK:
     PROJECT_ROOT = FRAMEWORK_ROOT
 

@@ -186,7 +186,10 @@ class H5SettingsRoutesMixin:
         project, project_param = self._project_or_user_scope(query)
         if project_param and project is None:
             return
-        root = Path(project["path"]) if project else Path.cwd()
+        # 用户级口径（code-review item 27bc013c5701）：root 仅 project 在场时
+        # 解析——user 作用域不落 Path.cwd()，与上方 config 段（scope=user）同源；
+        # lane/台账段随下方门控一并跳过。
+        root = Path(project["path"]) if project else None
         try:
             if project is not None:
                 from core.config import ConfigLoader
@@ -207,44 +210,49 @@ class H5SettingsRoutesMixin:
             # 服务器绝对路径，logger 留痕、不随响应透出
             logger.warning("arbiter 配置读取失败: %s", e)
             config = {"error": "arbiter 配置读取失败"}
+        # user 作用域不读车道/台账（code-review item 27bc013c5701）：cwd 根下
+        # get_lane 会以启动目录为键惰性新建零态单例并顶替模块全局 _LANE、台账
+        # 恒读不到。lane=None 前端按未装配渲染（ArbiterPanel 状态卡仅在
+        # project 在场时渲染，消费点均走可选链），台账返回空摘要。
         lane_view = None
-        try:
-            from core.pm_engine.arbiter import get_lane
-
-            lane = get_lane(root)
-            if lane is not None:
-                # 快照组装（含锁纪律）由属主 ArbiterLane.snapshot() 承担，
-                # 本端点只消费返回值（code-review 21372fd6d003）
-                lane_view = lane.snapshot()
-        except Exception as e:
-            logger.warning("arbiter 车道状态读取失败: %s", e)
-            lane_view = {"error": "arbiter 车道状态读取失败"}
         ledger_summary = {"total": 0, "kinds": {}, "recent": []}
-        try:
-            from core.pm_engine.arbiter import load_arbiter_ledger
+        if project is not None:
+            try:
+                from core.pm_engine.arbiter import get_lane
 
-            entries = load_arbiter_ledger(root)
-            ledger_summary["total"] = len(entries)
-            for rec in entries:
-                kind = str(rec.get("kind") or "unknown")
-                ledger_summary["kinds"][kind] = (
-                    ledger_summary["kinds"].get(kind, 0) + 1
-                )
-            for rec in entries[-5:]:
-                ledger_summary["recent"].append(
-                    {
-                        "id": rec.get("id"),
-                        "created": rec.get("created"),
-                        "kind": rec.get("kind"),
-                        "spec": rec.get("spec"),
-                        "signature": rec.get("signature"),
-                        "alert_id": rec.get("alert_id"),
-                        "run_id": rec.get("run_id"),
-                    }
-                )
-        except Exception as e:
-            logger.warning("arbiter 台账读取失败: %s", e)
-            ledger_summary = {"error": "arbiter 台账读取失败"}
+                lane = get_lane(root)
+                if lane is not None:
+                    # 快照组装（含锁纪律）由属主 ArbiterLane.snapshot() 承担，
+                    # 本端点只消费返回值（code-review 21372fd6d003）
+                    lane_view = lane.snapshot()
+            except Exception as e:
+                logger.warning("arbiter 车道状态读取失败: %s", e)
+                lane_view = {"error": "arbiter 车道状态读取失败"}
+            try:
+                from core.pm_engine.arbiter import load_arbiter_ledger
+
+                entries = load_arbiter_ledger(root)
+                ledger_summary["total"] = len(entries)
+                for rec in entries:
+                    kind = str(rec.get("kind") or "unknown")
+                    ledger_summary["kinds"][kind] = (
+                        ledger_summary["kinds"].get(kind, 0) + 1
+                    )
+                for rec in entries[-5:]:
+                    ledger_summary["recent"].append(
+                        {
+                            "id": rec.get("id"),
+                            "created": rec.get("created"),
+                            "kind": rec.get("kind"),
+                            "spec": rec.get("spec"),
+                            "signature": rec.get("signature"),
+                            "alert_id": rec.get("alert_id"),
+                            "run_id": rec.get("run_id"),
+                        }
+                    )
+            except Exception as e:
+                logger.warning("arbiter 台账读取失败: %s", e)
+                ledger_summary = {"error": "arbiter 台账读取失败"}
         self._json(
             {
                 "config": config,

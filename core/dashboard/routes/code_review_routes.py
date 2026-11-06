@@ -437,7 +437,13 @@ class H11CodeReviewRoutesMixin:
         req_path = proot / CODE_REVIEW_REQUEST
         try:
             written = _write_signal_exclusive(req_path, payload)
-        except _SignalWriteError:
+        except _SignalWriteError as exc:
+            # 泛化文案策略留痕（同 generate-spec/items-status 惯例）：底层
+            # OSError 细节（errno/路径）不透给客户端，降级经服务端日志留痕。
+            logger.warning(
+                "审查触发信号写入失败（project=%s）: %s: %s",
+                proot, type(exc).__name__, exc
+            )
             self._error(500, "审查触发信号写入失败")
             return
         if written is None:
@@ -488,7 +494,13 @@ class H11CodeReviewRoutesMixin:
         req_path = proot / CODE_FIX_REQUEST
         try:
             written = _write_signal_exclusive(req_path, payload)
-        except _SignalWriteError:
+        except _SignalWriteError as exc:
+            # 泛化文案策略留痕（同 generate-spec/items-status 惯例）：底层
+            # OSError 细节（errno/路径）不透给客户端，降级经服务端日志留痕。
+            logger.warning(
+                "修复触发信号写入失败（project=%s）: %s: %s",
+                proot, type(exc).__name__, exc
+            )
             self._error(500, "修复触发信号写入失败")
             return
         if written is None:

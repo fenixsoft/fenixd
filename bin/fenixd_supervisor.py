@@ -96,12 +96,35 @@ def _resolve_project_root() -> tuple:
             file=sys.stderr,
         )
         sys.exit(2)
-    if args.project_root:
-        return Path(args.project_root).expanduser().resolve(), "参数 --project-root"
-    env_root = os.environ.get("FENIX_PROJECT_ROOT")
-    if env_root:
-        return Path(env_root).expanduser().resolve(), "环境变量 FENIX_PROJECT_ROOT"
-    return Path.cwd().expanduser().resolve(), "当前工作目录（cwd）"
+    # code-review 946a6b1629b5：三路解析的 expanduser().resolve() 原先无异常包裹
+    # ——FENIX_PROJECT_ROOT 为 ~ 前缀且 HOME 未设置时 expanduser 抛 RuntimeError、
+    # 异常路径字符（含空字节）可致构造/resolve 抛 ValueError/OSError，进程在模块
+    # 导入期以裸 traceback 退出（exit 1），运维拿到的是调用栈而非指向解析来源的
+    # 可读提示。收口进 try：按本脚本既有 FATAL 风格输出含解析来源与原始值的错误，
+    # 以参数错误语义的 exit 2 退出，与 main() 的 .fenix 缺失守卫处置口径对齐
+    # （同目录 fenix_spec.py / fenix_archive.py 对同场景已是此防护）。
+    source = "当前工作目录（cwd）"
+    raw = "<工作目录不可读取>"
+    try:
+        if args.project_root:
+            source, raw = "参数 --project-root", args.project_root
+        else:
+            env_root = os.environ.get("FENIX_PROJECT_ROOT")
+            if env_root:
+                source, raw = "环境变量 FENIX_PROJECT_ROOT", env_root
+            else:
+                raw = str(Path.cwd())
+        return Path(raw).expanduser().resolve(), source
+    except (ValueError, OSError, RuntimeError) as e:
+        print(
+            f"FATAL: 无法解析项目根路径: {e}。\n"
+            f"  解析来源: {source}\n"
+            f"  原始值: {raw}\n"
+            f"  请确认该路径有效（~ 展开失败时检查 HOME 环境变量），"
+            f"并显式指定 --project-root 或修正 FENIX_PROJECT_ROOT。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 PROJECT_ROOT, PROJECT_ROOT_SOURCE = _resolve_project_root()

@@ -85,17 +85,26 @@ class SSEHub:
                 if run_id is None or run_id in conn.watched_runs:
                     conn.send(event)
 
-    def watch(self, cid: str, run_id: str):
+    def watch(self, cid: str, run_id: str) -> bool:
+        """注册 run 订阅；返回是否命中连接。
+
+        返回命中布尔（code-review item 8691d7bfa0d2）：cid 查无连接（客户端
+        断开重连、服务重启后持陈旧 cid）原先静默忽略，路由层无从感知订阅
+        未生效；现返回 False 供路由层回 error 并记服务端日志。
+        """
         with self._lock:
             conn = self._conns.get(cid)
             if conn:
                 conn.watched_runs.add(run_id)
+            return conn is not None
 
-    def unwatch(self, cid: str, run_id: str):
+    def unwatch(self, cid: str, run_id: str) -> bool:
+        """取消 run 订阅；返回是否命中连接（与 watch 对称，语义仍幂等）。"""
         with self._lock:
             conn = self._conns.get(cid)
             if conn:
                 conn.watched_runs.discard(run_id)
+            return conn is not None
 
     # [fenix-ignore:0b465c351a58] 确认性记录：成员测试与写侧同用 self._lock，锁纪律对称，无竞态
     def is_watched(self, run_id: str) -> bool:

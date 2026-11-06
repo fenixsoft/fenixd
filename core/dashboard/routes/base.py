@@ -230,13 +230,19 @@ def _sig_admin_activities(s, q, m):
     from pathlib import Path
 
     from core.dashboard.data import signature as _sig
+    # 延迟导入消费共享谓词（code-review item a4760fa5f62f）：archived 判定
+    # 与 _api_admin_activities 收敛 alert_routes.is_archived_query 单源，
+    # 字面口径不再靠注释纪律同步；函数内导入避免经 routes 包 __init__ 的
+    # mixin re-export 与 server.py 导入图成环（同本文件签名函数既有
+    # 延迟导入范式）。
+    from core.dashboard.routes.alert_routes import is_archived_query
 
     # ?archived=1 数据源切换为归档旁路文件（admin_alerts_archive.jsonl，见
     # _api_admin_activities），签名须与响应数据源对齐（code-review item
     # 3da93afce0c9）：归档文件独立变化（活跃写回失败、人工/外部改动归档）
     # 时 ETag 必须翻转，否则携带 If-None-Match 的归档页假 304。archived
-    # 判定与 _api_admin_activities 同一字面口径，两处不得分叉。
-    if (q.get("archived", [None])[0] or "").lower() in ("1", "true"):
+    # 判定与 _api_admin_activities 共用同一谓词单源，不随任一侧独立放宽。
+    if is_archived_query(q):
         project = _resolve_project_for_sig(s, q)
         if project is not None:
             base = _sig.admin_alerts_archive_signature(Path(project["path"]))

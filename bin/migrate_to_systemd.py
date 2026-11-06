@@ -356,7 +356,13 @@ def _project_hosting_pid(proot: Path) -> int | None:
     tmux 链下 supervisor→daemon 环境透传一致，但 unit 直接拉起的是 supervisor，
     supervisor 的 environ 才是迁移后 unit 环境的精确基线。
     """
-    pids = _fenix_pids_under(proot)
+    # 归类前先探活过滤（code-review item edac8c2b6952）：快照到分类之间退出
+    # 的 pid，_is_daemon_cmdline 因 /proc/<pid>/cmdline 已不可读返回 False，
+    # 会被误归入 supervisors 当作 env 捕获源（stage1 捕获与 stage4 冒烟随后
+    # 对死 pid 读 environ，前者报误导性失败、后者漏检真实 supervisor）。
+    # _alive_pids 只滤死 pid，活 pid 的归类行为不变；全灭时返回 None 走
+    # 「未定位到进程」显式报错分支。
+    pids = _alive_pids(_fenix_pids_under(proot))
     supervisors = [p for p in pids if not _is_daemon_cmdline(p, proot)]
     daemons = [p for p in pids if _is_daemon_cmdline(p, proot)]
     if supervisors:
@@ -407,7 +413,14 @@ def stage1_write_units_and_env(proot: Path, froot: Path, dry_run: bool) -> dict:
     if dash_pid is not None:
         if dry_run:
             env = sh.read_process_env(dash_pid)
-            if env:
+            if not env:
+                # 与 project 分支同口径（code-review item 9e76b4403578）：读取
+                # 失败显式报错留原因，预演输出不再静默缺 dashboard env 摘要
+                errors.append(
+                    f"无法读取进程 {dash_pid} 的 /proc/<pid>/environ，"
+                    "dashboard env 候选稿摘要缺失"
+                )
+            else:
                 plan.append(_env_summary(sh.filter_session_identity(env), sh.dashboard_env_file(froot)))
         else:
             try:
@@ -463,13 +476,28 @@ def stage3_enable_units(proot: Path, froot: Path, dry_run: bool) -> dict:
             log(f"env 候选稿已提升为正式 EnvironmentFile：{env_path}")
         except OSError as e:
             errors.append(f"env 候选稿提升 {env_path} 失败: {e}")
+    # project unit 安装失败两种形态同口径（code-review item 8da64459abed）：
+    # 软失败（ok=False）与硬失败（SystemdHostingError）都短路返回、不再安装
+    # dashboard unit，detail 说明 dashboard unit 实际未落位——否则两条失败
+    # 路径下 dashboard unit 是否安装取决于失败形态，回滚面不可预期。
     try:
         project = sh.install_project_unit(proot)
-        if not project["ok"]:
-            errors.append(project["error"])
     except sh.SystemdHostingError as e:
         errors.append(str(e))
-        return {"ok": False, "error": "; ".join(errors), "detail": None}
+        return {
+            "ok": False,
+            "error": "; ".join(errors),
+            "detail": f"project unit（{sh.unit_name_for(proot)}）安装异常，"
+            f"{sh.DASHBOARD_UNIT} 未安装",
+        }
+    if not project["ok"]:
+        errors.append(project["error"])
+        return {
+            "ok": False,
+            "error": "; ".join(errors),
+            "detail": f"project unit（{sh.unit_name_for(proot)}）安装失败，"
+            f"{sh.DASHBOARD_UNIT} 未安装",
+        }
     try:
         dash = sh.install_dashboard_unit(froot)
         if not dash["ok"]:
@@ -496,6 +524,48 @@ def probe_dashboard_http(port: int) -> bool:
         return True  # 服务已响应（返回错误码也算在场，与 hook_engine._probe_dashboard 同口径）
     except Exception:
         return False
+
+
+def _advance_quote_state(line: str, in_quote: bool) -> bool:
+    """按 systemd EnvironmentFile 引号语义推进单引号折叠态（行内扫描）。
+
+    引号区外的 ``\\'`` 是转义字面引号（_quoted_env_value 的 '\'' 序列）不翻
+    转状态、引号区内 ``\\`` 为字面量——逐字符扫描而非引号计数，转义序列不
+    破坏奇偶配对。
+    """
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if not in_quote and ch == "\\":
+            i += 2  # 引号区外反斜杠转义下一字符（串尾截断由切片语义兜底）
+            continue
+        if ch == "'":
+            in_quote = not in_quote
+        i += 1
+    return in_quote
+
+
+def _env_file_keys(env_path: Path) -> set:
+    """EnvironmentFile 真实键名提取：按单引号配对折叠跨行值后逐行取键。
+
+    正式 env 值由 systemd_hosting._quoted_env_value 落盘（含空白/引号/#/\\/$
+    的值单引号包裹；裸值不含引号也不含换行），值内含换行时一个键跨多物理
+    行，逐物理行 split("=") 会把续行中的 "x=y" 片段解析成伪键，env 冒烟据此
+    误报「键缺席、EnvironmentFile 未被消费」（code-review item c84c230ef1f2）。
+    折叠口径对齐 _quoted_env_value 的落盘形态语义：仅在单引号值外认 KEY= 行；
+    systemd_hosting 侧只有渲染向函数、无文本解析函数可复用，故按其落盘形态
+    在此处做键提取，不另造第二套值转义语义。
+    """
+    keys = set()
+    in_quote = False
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if not in_quote:
+            if "=" in line and not line.lstrip().startswith("#"):
+                keys.add(line.split("=", 1)[0])
+            elif not line.strip() or line.lstrip().startswith("#"):
+                continue  # 注释/空行不参与折叠态（人工注释含引号不污染配对）
+        in_quote = _advance_quote_state(line, in_quote)
+    return keys
 
 
 def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
@@ -610,11 +680,7 @@ def stage4_accept(proot: Path, froot: Path, dry_run: bool) -> dict:
     sup_pid = _project_hosting_pid(proot)
     env_path = sh.project_env_file(proot)
     if sup_pid is not None and env_path.exists():
-        formal_keys = {
-            line.split("=", 1)[0]
-            for line in env_path.read_text(encoding="utf-8").splitlines()
-            if "=" in line and not line.lstrip().startswith("#")
-        }
+        formal_keys = _env_file_keys(env_path)
         senv = sh.read_process_env(sup_pid)
         missing = sorted(k for k in formal_keys if k not in senv)
         if missing:

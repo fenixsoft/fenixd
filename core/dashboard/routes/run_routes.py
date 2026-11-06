@@ -196,9 +196,22 @@ class H4RunRoutesMixin:
         if not cid:
             return {"error": "missing cid"}
         if watch:
-            self.server.sse_hub.watch(cid, run_id)
-        else:
-            self.server.sse_hub.unwatch(cid, run_id)
+            # 陈旧 cid 感知（code-review item 8691d7bfa0d2）：连接断开重连/
+            # 服务重启后客户端持旧 cid，hub.watch 原先静默不命中仍回成功，
+            # 客户端误以为增量订阅已建立、只能靠心跳兜底轮询且问题难定位。
+            # 现据命中布尔记服务端日志并回 error；保持本端点 200 字典契约
+            # （与上方 unknown project 同款，前端 request 层仅非 2xx 抛错，
+            # 200 载荷不触发重试风暴/console.error）
+            if not self.server.sse_hub.watch(cid, run_id):
+                logger.warning(
+                    "run watch: unknown cid=%s (run_id=%s)，订阅未建立",
+                    cid, run_id,
+                )
+                return {"ok": False, "error": "unknown cid"}
+            return {"ok": True}
+        # unwatch 方向维持幂等成功（与 session watch 的 unwatch 口径一致）：
+        # cid 失联时订阅已随 unregister 整连接清除，取消无可回滚、失败无害
+        self.server.sse_hub.unwatch(cid, run_id)
         return {"ok": True}
 
 

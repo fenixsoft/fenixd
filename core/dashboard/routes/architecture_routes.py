@@ -307,6 +307,19 @@ def _evidence_ready(proot: Path) -> bool:
         return False
 
 
+# status.json 业务键（存量六键 + stage）单一来源：_status_payload 的载荷
+# 键集与 status() 补键循环共用（code-review item 1f4de9307452），新增状态
+# 键单点改此常量并同步 _status_payload 形参即可。
+_STATUS_KEYS = (
+    "started_at",
+    "generated_at",
+    "error",
+    "duration_ms",
+    "component_count",
+    "stage",
+)
+
+
 def _status_payload(
     state: str,
     *,
@@ -320,15 +333,13 @@ def _status_payload(
     """status.json 全字段形态（task 1.1）：存量六键恒在（未 applicable 为
     null），加可选键 ``stage``（两段编排运行态：exploring/authoring，终态
     与受理初态为 null——读侧容忍缺键/多键，向后兼容）。"""
-    return {
-        "state": state,
-        "started_at": started_at,
-        "generated_at": generated_at,
-        "error": error,
-        "duration_ms": duration_ms,
-        "component_count": component_count,
-        "stage": stage,
-    }
+    payload = {"state": state}
+    # zip 两侧按 _STATUS_KEYS 与形参序一一对应（dict 保序，序列化形状不变）。
+    payload.update(dict(zip(_STATUS_KEYS, (
+        started_at, generated_at, error,
+        duration_ms, component_count, stage,
+    ))))
+    return payload
 
 
 def _write_status(proot: Path, payload: dict) -> None:
@@ -526,10 +537,10 @@ class ArchitectureManager:
         )
         if invalid_state:
             state = "none"
-        # 补齐存量六键 + stage（旧版残留文件可能缺键）
+        # 补齐存量六键 + stage（旧版残留文件可能缺键；键集单一来源
+        # _STATUS_KEYS，code-review item 1f4de9307452）
         full = _status_payload(state or "none")
-        for key in ("started_at", "generated_at", "error", "duration_ms",
-                    "component_count", "stage"):
+        for key in _STATUS_KEYS:
             if key in data:
                 full[key] = data.get(key)
         if invalid_state:

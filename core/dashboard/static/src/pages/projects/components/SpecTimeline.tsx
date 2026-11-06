@@ -239,7 +239,11 @@ function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
         </Typography.Text>
         <Tag>{isEscalation ? '升级告警' : '运维处置'}</Tag>
         <Tag color={sevColor} style={{ marginInlineEnd: 0 }}>
-          {SEV_LABEL[sev] || sev || '未知'}
+          {/* SEV_LABEL 查找用 hasOwnProperty 自有键防御（code-review item
+              5f9331c7ecae，口径同 codeFixGuidance.isKnownReason）：后端下发
+              'constructor' 等畸形 severity 时普通对象查找命中原型链继承键
+              拿到函数，作为子节点渲染会抛运行时错 */}
+          {Object.prototype.hasOwnProperty.call(SEV_LABEL, sev) ? SEV_LABEL[sev] : sev || '未知'}
         </Tag>
         {statusTag}
       </div>
@@ -529,12 +533,13 @@ export default function SpecTimeline({
   onViewRecord: (runId: string, harness?: string) => void;
   onOpenVerificationReport: () => void;
 }) {
-    // 卡片/摘要盒/运行记录容器的底色与边框走 antd token（code-review item
-    // b64f38deac7d）：原迁移自 detail.tsx 的硬编码浅色常量（#fafafa/#fff/#f0f0f0，
-    // 同 SessionPanel.tsx item 22baafa4128a 已修形态）在暗色主题下是亮色补丁，
-    // 改为随主题（卡片底/运行记录容器 colorBgLayout、摘要盒 colorBgContainer、
-    // 边框 colorBorderSecondary）；急态红边/红底同走 colorError/colorErrorBg
-    // 语义 token。useToken 只能在组件内调用（同 SessionPanel.tsx 惯例）
+    // 底色/边框历史口径（code-review item b64f38deac7d 曾将硬编码浅色
+    // #fafafa/#fff/#f0f0f0 全部 token 化以消除暗色主题亮色补丁）；但 2026-11-06
+    // Bento 磁贴形态指令（见下方 cardBox 注释）有意让非急态磁贴回用纯白底
+    // '#ffffff' + 发丝边 OV_TILE_BORDER（'#eef2f7'），暗色主题下磁贴呈亮色
+    // 补丁属有意取舍，勿据旧「token 化」口径改回；急态红边/红底仍走
+    // colorError/colorErrorBg 语义 token。useToken 只能在组件内调用
+    // （同 SessionPanel.tsx 惯例）
     const { token } = theme.useToken();
     const cardBox = (urgent: boolean): CSSProperties => ({
       padding: isMobile ? 8 : 12,

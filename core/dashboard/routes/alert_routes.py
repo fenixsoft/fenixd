@@ -36,6 +36,18 @@ _ACTIVITY_PAGE_DEFAULT_SIZE = 50
 _ACTIVITY_PAGE_MAX_SIZE = 200
 
 
+def is_archived_query(query) -> bool:
+    """?archived=1 数据源切换判定（活跃/归档旁路唯一字面口径）。
+
+    响应层（_api_admin_activities）与 ETag 签名层（base.py
+    _sig_admin_activities）共用本谓词作单源：两侧判定若各自写字面量，
+    一旦某侧放宽（如加 "yes"）就会令签名数据源与响应数据源错位——归档页
+    假 304 或漏 304。base.py 侧经函数内延迟导入消费，避免经 routes 包
+    __init__ 的 mixin re-export 与 server.py 导入图成环。
+    """
+    return (query.get("archived", [None])[0] or "").lower() in ("1", "true")
+
+
 def _adjudication_lock(alert_id: str) -> threading.Lock:
     """按 alert_id 取（懒建）进程内互斥锁。
 
@@ -256,7 +268,9 @@ class H6AlertRoutesMixin:
         """
         project_name = query.get("project", [None])[0]
         spec_name = query.get("spec", [None])[0]
-        if (query.get("archived", [None])[0] or "").lower() in ("1", "true"):
+        # 判定消费共享谓词 is_archived_query（与 base.py 签名层同源，防字面
+        # 口径分叉——见谓词 docstring，code-review item a4760fa5f62f）
+        if is_archived_query(query):
             return self._api_archived_activities(project_name, spec_name, query)
         page, page_size = self._parse_page_params(
             query.get("page", [None])[0],

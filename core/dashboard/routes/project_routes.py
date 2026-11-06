@@ -365,7 +365,10 @@ class H2ProjectRoutesMixin:
                     try:
                         req_path.parent.mkdir(parents=True, exist_ok=True)
                         req_path.touch()
-                        result = {"ok": True, "error": None, "requested": True, "session": None}
+                        # item 9cb06db5b428：不带 requested 键——成功响应只转发
+                        # ok/session/already/was_running，自造该键到不了客户端
+                        # （前端 restartProjectDaemon 类型也只有 {ok, error}）。
+                        result = {"ok": True, "error": None, "session": None}
                     except OSError as e:
                         # 不外泄裸异常文本（code-review item 18e71e70c018）：str(e)
                         # 可能携带 .fenix/restart_request 完整路径与 errno 细节，
