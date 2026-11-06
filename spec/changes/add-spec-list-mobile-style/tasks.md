@@ -9,6 +9,8 @@
   kind: modify
 - path: core/dashboard/static/dist/index.html
   kind: reference
+- path: DESIGN.md
+  kind: modify
 ```
 
 ## 1. 移动卡片重绘（UI 真相源对齐）
