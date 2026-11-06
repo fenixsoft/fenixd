@@ -1,7 +1,7 @@
 # v2 商业化界面域（Bento 工作台）
 
-<!-- knowledge: capability=v2-commercial-ui rev=2
-     sources=spec/changes/redesign-dashboard-v2-ui,spec/changes/redesign-dashboard-v2-ui-mobile -->
+<!-- knowledge: capability=v2-commercial-ui rev=3
+     sources=spec/changes/redesign-dashboard-v2-ui,spec/changes/redesign-dashboard-v2-ui-mobile,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md -->
 
 dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 + 白磁贴大圆角软阴影、黑主色按钮、蓝链接、语义胶囊徽标）承载概览/项目/SPEC 详情/配置/帮助/运维六页的桌面与移动双形态，与既有页面并存互不干扰。
 
@@ -12,7 +12,9 @@ dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 
 - **原型为 UI 真相源（双形态分立）**：六页布局、组件选型、信息架构按视口形态分立定源——桌面形态（≥768px）以 redesign-dashboard-v2-ui 定稿原型为准（`spec/changes/redesign-dashboard-v2-ui/prototype/` 六张单文件 HTML：variant-b-bento.html=概览、project-detail.html、spec-detail.html、settings.html、help.html、ops.html，附 screenshots/ 渲染凭证）；移动形态（<768px）以 redesign-dashboard-v2-ui-mobile 定稿原型为准（`spec/changes/redesign-dashboard-v2-ui-mobile/prototype/` 六张 m-*.html：m-overview.html、m-project-detail.html、m-spec-detail.html、m-settings.html、m-help.html、m-ops.html，附 screenshots/ 渲染凭证）。与「数值以 Scenario 为准」同纪律等级；实现与原型冲突不得擅自偏离，须升级用户裁决。
 - **真实数据消费**：复用 `services/dashboard.ts` 既有 API 客户端与类型，消费与既有页面相同的 `/api/` 端点，不内联原型假数据、不新增后端端点；接口缺口按既有端点语义最小适配。缺口字段渲染「—」不伪装 0；无数据源的分面渲染占位说明、如实声明。数据刷新走 30s 心跳轮询，不接现产 SSE 合帧（开发期简化口径）。
 - **主题单源分立**：v2 页面颜色、圆角、控件形态只准取自 `src/pages/v2/theme.tsx` 单源（Bento token 常量 + antd 主题表 + V2ConfigProvider 局部包裹，只作用于 v2 六页子树；locale 由根 ConfigProvider 下传）。v2 域不引用现产 theme.ts，v2 域外任何页面不得引用 v2 主题——两域配色各自单源、互不引用。
-- **Bento token 基线**：页底浅灰 #f8fafc；白磁贴 radius 16 + 软阴影 + 细边框；徽标胶囊 radius 999；控件圆角 12/8；主按钮与 ACTIVE 分段按钮黑 #0f1115（hover #43454a / active #2c2c2e）白字；链接与输入焦点蓝 #4176e6；语义色 success #22c55e / error #dc2626 / warning #d97706；阶段进度 ramp 出题青 #0891b2 / 实现蓝 #2563eb / 门禁橙 #ea580c / 验证绿 #16a34a；活跃 Agent 堆叠条用 V2_LANE_COLORS 数据编码色板；文字四阶 slate；数字排版 tabular-nums（.v2-num）。
+- **跨域消费=镜像不引用**：域外页面消费 v2 视觉的唯一方式是复制组件 + 镜像色值（overview 侧 `OV_*` 常量与 global.less `.ov-*` 规则族、指挥中心 `shared.ts` `CARD_FRAME_*` 镜像 `theme.tsx` 等），镜像值注释标注源并以「两处同改」纪律维护；MUST NOT import `@/pages/v2/*`（例外域条款钉死域外禁引用，pageChrome 守卫拦截跨域 import）。
+- **筛选形态分叉**：v2 域自身运行态筛选保持 `.v2-chip` 胶囊形态；overview 侧运行态筛选为 Radio 按钮组黑底白字（`.ov-radio-dark`）——分叉系用户指令（只撤 overview 侧胶囊），v2 域不随动对齐。
+- **Bento token 基线**：页底浅灰 #f8fafc；白磁贴 radius 12（`V2_TILE_RADIUS`，v2.less 镜像同值）+ 软阴影 + 细边框——该值即 DESIGN.md 通用条款「Bento 磁贴圆角固定 12px」，全站 Bento 磁贴统一 12px，v2 theme.tsx / v2.less / overview 镜像 `.ov-bento` / overview 统计卡豁免规则四处同值，pageChrome 守卫钉值（v2 常量钉值守卫走源码正则，node:test 无法 import .tsx，不 import theme.tsx）；徽标胶囊 radius 999 与 v2 控件圆角 12/8、一般域 antd 控件圆角 6/4/8 条款均不受磁贴条款影响；主按钮与 ACTIVE 分段按钮黑 #0f1115（hover #43454a / active #2c2c2e）白字；链接与输入焦点蓝 #4176e6；语义色 success #22c55e / error #dc2626 / warning #d97706；阶段进度 ramp 出题青 #0891b2 / 实现蓝 #2563eb / 门禁橙 #ea580c / 验证绿 #16a34a；活跃 Agent 堆叠条用 V2_LANE_COLORS 数据编码色板；文字四阶 slate；数字排版 tabular-nums（.v2-num）。
 - **移动断点单源**：移动形态判定收进 v2 主题单源——`src/pages/v2/theme.tsx` 定义断点 token `V2_MOBILE_MAX_WIDTH = 767.98`（与现产 `hooks/useIsMobile.ts` 的 `(max-width: 767.98px)` 同界，`pages/v2/v2.less` 的 `@media` 镜像同值）并导出 `useV2IsMobile` 形态判定 hook，六页统一消费；v2 域 tsx 零散落 matchMedia 调用、除 theme.tsx 外零 767.98 魔法数。
 - **双形态分支**：桌面/移动两形态在页组件内按断点分支渲染，分支收敛在布局容器级，卡片/行级组件抽为子件两形态复用；数据层共享，零新路由、零新 API。≥768px 桌面形态对照 redesign-dashboard-v2-ui 原型零回归，两形态零交叉污染。
 - **移动端头部入口收敛**：移动端六页头部不渲染 新建 SPEC、状态转移、搜索 三入口（桌面保留），对应动作由列表页/桌面端承载。
@@ -45,3 +47,4 @@ dashboard 的商业化观感界面域：Bento 磁贴设计语言（浅灰页底 
 
 - 2026-11-05 redesign-dashboard-v2-ui（spec/changes/redesign-dashboard-v2-ui/） — 新建本页：/v2/* 六页 Bento 化落地；登记路由/菜单隔离、主题单源分立互不引用、原型 UI 真相源、真实 API 消费与缺口「—」口径、30s 心跳轮询、DESIGN.md 例外域条款；项目详情后三页签、配置页未实体化分面、运维自愈记录分面为占位说明态
 - 2026-11-05 redesign-dashboard-v2-ui-mobile（spec/changes/redesign-dashboard-v2-ui-mobile/） — 修改本页：六页叠加 <768px 移动形态——原型 UI 真相源改写为桌面/移动双形态分立（移动以本 SPEC prototype/m-*.html 为准）、新增移动断点单源（V2_MOBILE_MAX_WIDTH 与现产 useIsMobile 同界 + useV2IsMobile 六页统一消费）、双形态页内布局容器级分支（数据层共享、零新路由零新 API）、移动端头部 新建 SPEC/状态转移/搜索 三入口收敛、越界与触控目标门、移动端信息密度门
+- 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 修改本页：Bento 白磁贴圆角改 12px（DESIGN.md 通用条款全站统一，四处同值守卫钉值）、新增跨域镜像不引用消费纪律与 overview/v2 筛选形态分叉条款（v2 侧 .v2-chip 胶囊不随动）、登记 node:test 禁 import .tsx 的守卫习语

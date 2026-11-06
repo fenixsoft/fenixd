@@ -1,5 +1,5 @@
-<!-- knowledge: capability=page-container-chrome rev=2
-     sources=spec/knowledge/_inbox/done/memory-distill-user-rulings.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md -->
+<!-- knowledge: capability=page-container-chrome rev=3
+     sources=spec/knowledge/_inbox/done/memory-distill-user-rulings.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md -->
 
 # 内容区留白与边框治理
 
@@ -8,6 +8,7 @@
 ## 规则
 
 - 留白单源：页面容器水平留白由 ProLayout token `paddingInlinePageContainerContent` 单源承载（`theme.ts` 的 `dshLayoutToken` 设定），各页不得自带容器 padding 形成第二留白源。
+- 页面内容区间距：内容区左右留白 15px（`dshLayoutToken` 单源承载）；页顶另加 16px 呼吸带，以页级标记类 `:has()` 作用于 `ant-layout-content`（现存标记类 `overview-page` / `spec-detail-page` 两页，标记类落页根包装 div）；embed 行壳位档豁免归零（下游 24px）。呼吸带由 pageChrome 守卫钉住（标记类接线 + 值与豁免档断言）。
 - 零值传导靠尾部 spread：token 值 0 会被 `getLayoutDesignToken` 的 `||40` 类缺省兜底吞掉，0 值必须靠对象尾部 spread 展开覆盖传入才能生效，不能依赖前置赋值。
 - 去边框页级作用域：去边框/扁平化治理按页级作用域生效，Modal 与脱壳页（独立挂载的无壳页面）豁免，不做全局一刀切。
 - 前端验证必须 reload：前端改动 rebuild 后必须整页 reload 再验证——hash 路由 goto 只变更 hash 不重载文档，不 reload 会拿旧 bundle 验证新改动。
@@ -17,3 +18,4 @@
 
 - 2026-11-04 memory-distill-user-rulings（spec/knowledge/_inbox/done/memory-distill-user-rulings.md） — 新建本页：折叠留白单源 token 口径（含 `||40` 吞 0 与尾部 spread）、去边框页级作用域豁免、rebuild 后 reload 验证纪律
 - 2026-11-05 settings-help-document-scroll-unify（spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md） — 新增 children 容器 padding-block-end 归零规则：定高贴底页现存面为项目详情页框与指挥中心，帮助/设置页文档级滚动不贴底、同享归零不按页回填
+- 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 新增页面内容区间距条款：左右 15px（dshLayoutToken 单源）+ 顶呼吸带 16px（页级标记类 :has() 作用 ant-layout-content，现存 overview-page / spec-detail-page 两页，embed 行壳位档豁免归零）
