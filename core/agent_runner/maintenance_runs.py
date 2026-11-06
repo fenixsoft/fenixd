@@ -1699,6 +1699,49 @@ def _parse_context_metrics_turns(project_root, run_id: str) -> "int | None":
     return None
 
 
+def _read_jsonl_tail_lines(
+    run_file: Path,
+    window: int = 65536,
+    *,
+    size: "int | None" = None,
+    skip_cut_head: bool = False,
+) -> "tuple[int, int, list[str]] | None":
+    """run jsonl 尾窗逐行读取的单源助手（item e317a4dffc17 三处同构段收敛）。
+
+    收敛三处各自手写的「seek 尾窗 + decode + splitlines」同构段（
+    _register_stall_redispatch_intent 的幂等预读、_extract_transcript_total_
+    cost 的指标读取、_read_terminal_message 的终局事件扫描）：只读打开
+    ``run_file`` 的尾部 ``window`` 字节，返回 ``(文件字节数, 本轮窗口, 行
+    列表)``。文件缺失/读失败（OSError）返回 None，由调用方按各自兜底口径
+    处置（登记侧按未登记继续、指标侧返回 None、终局消息侧返回空串）。
+    残首行与扩窗语义三处本就不一，作为差异参数留在调用点，防借收敛单边
+    统一改变既有行为：
+
+    - ``skip_cut_head``：seek 切在行中部时首行是残段（窗口命中即
+      ``size > window``）。指标侧需要整行 JSON，置 True 跳过；登记侧
+      子串预筛 + JSON type 复核对残段天然免疫、终局消息侧要拿残首行做
+      扩窗判据，均保持缺省不跳。
+    - ``size``：调用方已持有时直接复用（终局消息侧扩窗重扫不重 stat，
+      窗口逐轮递增期间 size 恒定）；None 时先 stat 取得。
+    - 扩窗重扫（终局消息侧 4 倍递增、16MiB 封顶）由调用方按返回值自驱动
+      下一轮更大 ``window`` 再调本助手，扩窗判据（残首行解析失败）留在
+      调用点。
+    """
+    try:
+        if size is None:
+            size = run_file.stat().st_size
+        with run_file.open("rb") as f:
+            if size > window:
+                f.seek(size - window)
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    lines = tail.splitlines()
+    if skip_cut_head and size > window and lines:
+        lines = lines[1:]
+    return size, window, lines
+
+
 def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
     """读档案 run 产物 result 事件顶层 total_cost_usd（2.1 分源回填）。
 
@@ -1711,18 +1754,16 @@ def _extract_transcript_total_cost(project_root, run_id: str) -> "float | None":
     解析失败返回 None（调用侧保持 cost=None 并 DEBUG 留痕）。
     """
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
-    try:
-        with run_file.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - _SALVAGE_METRIC_TAIL_BYTES))
-            tail = f.read().decode("utf-8", errors="replace")
-    except OSError:
+    # 尾窗读取经单源助手（item e317a4dffc17 三处同构段收敛）：固定
+    # _SALVAGE_METRIC_TAIL_BYTES 窗 + 跳残首行（窗口命中即 size > 窗口
+    # 字节，由助手 skip_cut_head 处置）；读失败返回 None 即原 OSError
+    # → None 兜底口径。
+    read = _read_jsonl_tail_lines(
+        run_file, window=_SALVAGE_METRIC_TAIL_BYTES, skip_cut_head=True
+    )
+    if read is None:
         return None
-    lines = tail.splitlines()
-    # 尾窗起点落在行中间时首行是残段：跳过（窗口命中即 size > 窗口字节）
-    if size > _SALVAGE_METRIC_TAIL_BYTES and lines:
-        lines = lines[1:]
+    _size, _window, lines = read
     result_event = None
     for raw in lines:
         raw = raw.strip()
@@ -1827,25 +1868,22 @@ def _register_stall_redispatch_intent(
     # 幂等：同 run 已登记过即不再登记（重派后的 run 是新 run_id，消费侧
     # 上限守卫兜底——这里防的是同 run 重复登记）。尾部 64KiB 窗口读取
     #（意图行恒在文件尾部，与 _ratelimit_redispatch_on_terminal 同口径）；
-    # 子串预筛命中后复核 JSON type，防嵌入代码/回显的伪命中行误判「已登记」。
-    try:
-        if run_file.exists():
-            size = run_file.stat().st_size
-            with run_file.open("rb") as f:
-                if size > 65536:
-                    f.seek(size - 65536)
-                tail = f.read().decode("utf-8", "replace")
-            for line in tail.splitlines():
-                if '"type": "stall_redispatch"' not in line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(ev, dict) and ev.get("type") == "stall_redispatch":
-                    return None
-    except OSError:
-        pass
+    # 读盘同构段经单源助手（item e317a4dffc17），读失败返回 None 按未登记
+    # 处置（原 try/except OSError 同义）。子串预筛命中后复核 JSON type，
+    # 防嵌入代码/回显的伪命中行误判「已登记」；不跳残首行——预筛+复核对
+    # 被切残段天然免疫（不含完整标记子串或解析失败即跳过）。
+    read = _read_jsonl_tail_lines(run_file)
+    if read is not None:
+        _size, _window, lines = read
+        for line in lines:
+            if '"type": "stall_redispatch"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "stall_redispatch":
+                return None
     cooldown_until = time.time() + STALL_REDISPATCH_COOLDOWN_SECONDS
     intent = {
         "reason": "api stall escalated",
@@ -3186,17 +3224,17 @@ def _read_terminal_message(project_root, run_id: str) -> str:
     fragment = ""  # 命中预筛却解析失败的嫌疑行（截断半行/畸形），兜底留痕
     window = 65536
     while True:
-        try:
-            with run_file.open("rb") as f:
-                if size > window:
-                    f.seek(size - window)
-                raw = f.read().decode("utf-8", "replace")
-        except OSError:
+        # 尾窗读取经单源助手（item e317a4dffc17，与指标侧/登记侧同构段收敛）：
+        # size 复用首次 stat 结果（扩窗重扫不重 stat），OSError → "" 口径不变；
+        # 扩窗判据（残首行探测）留在下方调用点——残首行口径三处各异，不借
+        # 收敛统一。
+        read = _read_jsonl_tail_lines(run_file, window=window, size=size)
+        if read is None:
             return ""
+        size, window, lines = read
         last_text = ""
         last_assistant = ""
         fragment = ""
-        lines = raw.splitlines()
         for raw_line in lines:
             line = raw_line.strip()
             if ('"type": "result"' not in line
@@ -3319,16 +3357,33 @@ def _persist_terminal_message_trace(runner, run_id: str, message: str) -> str:
     与保留期，每个 error 收场且终局消息非空的 run 永久新增一个
     ``terminal-salvage-<run_id>.txt``、随失败 run 次数线性累积——留由外部
     运维按需清理（对齐 ``_archive_failed_evolution_out`` 的 ``.failed``
-    留档取舍口径）。
+    留档取舍口径）。写入封顶 1MiB（item fcedd2dd0aa3，对齐 _read_terminal_
+    message 截断片段路径的口径）：正常取到的 result 文本不再无上限整写，
+    超限截断并在文件头注明截断事实与原文总大小。
     """
     text = str(message or "")
     if not text.strip():
         return ""
+    # 写入封顶 1MiB（item fcedd2dd0aa3，对齐 _read_terminal_message 截断
+    # 片段路径 fragment[:1048576] 口径）：正常取到的 result 文本（last_text
+    # 路径）此前无上限原样整写，agent 把超大对象贴进终局消息时每个 error
+    # 收场落一个可达数 MB 的留痕文件、随失败 run 永久累积（本留档无自动
+    # 清理与保留期）。超限截断并在文件头注明截断事实与原文总大小，人工
+    # 取证可判别「留痕非全文」；截断只影响留痕文件，结论行提取走全量
+    # message 不受影响。
+    truncate_note = ""
+    if len(text) > 1048576:
+        truncate_note = (
+            f"[terminal-salvage 截断] 原文共 {len(text)} 字符，超出 1MiB 上限，"
+            "以下仅保留前 1048576 字符（封顶防畸形巨行灌爆留痕文件，留由"
+            "外部运维清理）。\n\n"
+        )
+        text = text[:1048576]
     try:
         tdir = Path(runner.project_root) / ".fenix" / "code-review"
         tdir.mkdir(parents=True, exist_ok=True)
         tpath = tdir / f"terminal-salvage-{run_id}.txt"
-        tpath.write_text(text, encoding="utf-8")
+        tpath.write_text(truncate_note + text, encoding="utf-8")
     except OSError as e:
         _log = getattr(runner, "logger", None)
         if _log is not None:
@@ -5242,6 +5297,21 @@ def run_impl_ocr(
                 lane_done.set()
             _unregister_lane = getattr(runner, "unregister_lane_process", None)
             if callable(_unregister_lane):
-                _unregister_lane(run_id)
+                # 注销包防护（code-review item 54412e36346b）：此刻产物与终态
+                # 事件均已落盘，注销若抛错会从 finally 穿透顶替在飞异常逃逸
+                # 到 join 评估侧，违反 docstring「MUST NOT 抛未捕获异常」契约
+                #（任务 3.3）——bundled 实现（runner.py unregister_lane_process
+                # 为 dict.pop）不抛，但替身/第三方 runner 的该回调无此保证；
+                # 对齐上方 register 失败分支的防护口径只记 WARNING，不影响
+                # 已落盘的终态。
+                try:
+                    _unregister_lane(run_id)
+                except Exception as e:
+                    if log is not None:
+                        log.warning(
+                            "agent_runner",
+                            f"impl-ocr 车道注销排水登记失败（run {run_id}）: "
+                            f"{type(e).__name__}: {e}",
+                        )
 
     return artifact

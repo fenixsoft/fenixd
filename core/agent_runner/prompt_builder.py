@@ -234,7 +234,8 @@ def _fill_and_scan_placeholders(
     - 通道一（模板侧真漂移）：填充前对模板骨架扫描（findall(template)）与
       values 键集作差——模板引用了构建方未填充的占位符，保留 WARNING 且消息
       补模板名（template_name，由 AGENT_PROMPT_FILES[agent_type] 导出），
-      可直达模板文件；当前 12 模板实测零漂移，无需预置豁免机制。
+      可直达模板文件；扫描覆盖面与 AGENT_PROMPT_FILES 白名单同步（实测
+      零漂移），无需预置豁免机制。
     - 通道二（注入值字面量）：填充后残差扣除模板侧已告警键——注入值文本
       （code-review 台账引用的源码片段 f-string「{e}」、URL 模板「&doc=${doc}」
       等）里的花括号字面量是合法内容，降为 INFO 计数不再打 WARNING（历史
@@ -1618,10 +1619,17 @@ class PromptBuilder:
             # UnicodeDecodeError 不适用。解析失败：降级为原文截断呈现（2.2），
             # MUST NOT 抛错——重派轮仍携带上轮死因文本（哪怕结构损坏），
             # 不静默丢弃。
+            # 截断注记（code-review item a7268e81a61e）：与本文件其余截断点
+            # （_prev_error_section、_replan_feedback_section 等）同口径——
+            # 超限注明原文总字数，不让重派 agent 无从感知诊断证据缩水。
+            diag_stripped = diag_raw.strip()
+            diag_text = diag_stripped[:500]
+            if len(diag_stripped) > 500:
+                diag_text += f"\n…（原文共 {len(diag_stripped)} 字，已尾部截断）"
             return (
                 f"\n\n## Previous run diagnosis (raw, inherited by this attempt)\n"
                 f"Use this raw diagnosis text to adjust your strategy — do NOT "
-                f"repeat the same detection:\n\n{diag_raw.strip()[:500]}\n"
+                f"repeat the same detection:\n\n{diag_text}\n"
             )
         if not isinstance(diag, dict) or not diag.get("terminal"):
             return ""
@@ -1913,18 +1921,18 @@ class PromptBuilder:
 
     def _designed_ids_line(self, scenarios_path) -> str:
         """当前设计集场景 ID 清单行（硬校验比对基准的 prompt 侧可见性）。"""
+        # JSON 读取收敛单源（code-review item bcd81cb9912a）：内联 try/
+        # json.loads/read_text 属 _load_json_lenient 收敛后残留的手写拷贝
+        # （更宽 except Exception 兜底），改走共享 helper——四元组异常面随
+        # 单源同步演进不再漂移；顶层形状判定（isinstance list）留在调用方。
+        data = _load_json_lenient(scenarios_path)
         designed_ids: list = []
-        try:
-            if scenarios_path.exists():
-                data = json.loads(scenarios_path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    designed_ids = [
-                        str(s.get("id"))
-                        for s in data
-                        if isinstance(s, dict) and s.get("id") is not None
-                    ]
-        except Exception:
-            designed_ids = []
+        if isinstance(data, list):
+            designed_ids = [
+                str(s.get("id"))
+                for s in data
+                if isinstance(s, dict) and s.get("id") is not None
+            ]
         if not designed_ids:
             return ""
         return (
@@ -1969,7 +1977,13 @@ class PromptBuilder:
         # 主树在飞修订根因（evo-inflight-spec-amendment-watch 1.3）：merge-back
         # 侧检出 spec/changes/<spec>/ 的主树已提交修订时由调度层透传——非空才
         # 注入根因段（未命中时 prompt 与现状逐字节一致）。
+        # 条目防御（code-review item d2ddbf82808b）：与 conflict_paths 的
+        # isinstance list 防御同口径——非 list 脏值（如上游回归传入字符串）
+        # 作废回空，join 按单字符迭代会把在飞修订提交哈希清单渲染成逐字符
+        # 一行的畸形注入段，误导 repair agent 的冲突根因判断。
         amended_inflight = conflict_summary.get("amended_inflight") or []
+        if not isinstance(amended_inflight, list):
+            amended_inflight = []
 
         conflict_section = ""
         if conflict_paths:
