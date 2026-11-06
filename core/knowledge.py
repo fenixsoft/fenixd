@@ -1321,8 +1321,9 @@ def _git(proot: Path, args: list, timeout: int = 60):
 def _discard_output(proot: Path, before=None, exclude=None) -> bool:
     """放弃产出：restore tracked + 清理未跟踪新增（不留半成品）。
 
-    基线感知（code-review 4d1e46fa795c）：``before`` 为本次 run 前的
-    ``_git_status_paths`` 快照。仅当 spec/knowledge/ 下当前脏路径相对基线
+    基线感知（code-review 4d1e46fa795c）：``before`` 为本次 run 前的基线
+    快照（_knowledge_baseline_snapshot，祖先折叠条目已就地展开）。仅当
+    spec/knowledge/ 下当前脏路径相对基线
     确为本次 run 新增（基线中不存在）时才回滚，且回滚收敛为文件粒度
     （code-review fb19dedc8045）——只对相对基线的差集（本次 run 产出路径集）
     restore/clean，不做整目录操作：蒸馏 run 可长达数十分钟，期间用户在
@@ -1554,6 +1555,63 @@ def _git_status_paths(proot: Path):
     return paths
 
 
+def _knowledge_baseline_snapshot(proot: Path):
+    """run 前基线快照（``_git_status_paths`` + 祖先折叠条目就地展开）。
+
+    祖先折叠条目（如首蒸项目 spec/ 全树未跟踪时 status 把整树折叠为
+    ``spec/``）不能事后展开（code-review 86d88801917e）：基线快照取在
+    run 开始前，而 ``_expand_knowledge_surface`` 的事后 ls-files 枚举发生
+    在 run 结束后——此刻蒸馏产出已在盘上，把产出自身收进基线，run_new
+    差集恒为空集（_commit_output 按「无变更」成功收尾并清 pending 台账，
+    产出滞留工作区永不落库）、overlap 恒非空（_discard_output 把产出误判
+    为用户 run 前手工策展而跳过回滚）。故须在快照时刻就地展开：产出尚未
+    写入，此刻枚举即真实基线。折叠条目本身意味着其子树下无任何已跟踪
+    文件、knowledge 全表面 untracked 面恰为枚举面，不会过度收纳；祖先折
+    叠条目由枚举结果替代（保留会让下游展开仍走事后枚举分支）。
+
+    Returns:
+        路径集合；``None`` = 快照或就地展开不可用（git 失败），调用方按
+        「基线不可用」保守口径处置（不提交、登重试台账 / 跳过回滚），
+        不得降级为空集或保留折叠条目事后展开。
+    """
+    paths = _git_status_paths(proot)
+    if paths is None:
+        return None
+    kn_prefix = KNOWLEDGE_DIR + "/"
+    ancestor_folds = {
+        p for p in paths if p.endswith("/") and kn_prefix.startswith(p)
+    }
+    if not ancestor_folds:
+        return paths
+    try:
+        probe = _git(
+            proot,
+            [
+                "--no-optional-locks", "ls-files",
+                "--others", "--exclude-standard", "-z",
+                "--", KNOWLEDGE_DIR,
+            ],
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning(
+            "knowledge-distill 基线快照祖先折叠条目就地展开失败（%s），"
+            "按基线不可用处置",
+            e,
+        )
+        return None
+    if probe.returncode != 0:
+        logger.warning(
+            "knowledge-distill 基线快照祖先折叠条目就地展开失败（git "
+            "ls-files 退出码 %d，stderr: %s），按基线不可用处置",
+            probe.returncode,
+            (probe.stderr or "").strip()[-300:] or "（空）",
+        )
+        return None
+    expanded = paths - ancestor_folds
+    expanded.update(tok for tok in probe.stdout.split("\0") if tok)
+    return expanded
+
+
 def _audit_stray_writes(proot: Path, before, label: str) -> None:
     """越界写面对账：``before``（run 前基线）之外新增的主树改动记 WARNING。
 
@@ -1637,7 +1695,11 @@ def _expand_knowledge_surface(proot: Path, paths) -> set | None:
                 surface.add(p)
         elif p.endswith("/") and kn_prefix.startswith(p):
             need_probe = True  # 祖先目录折叠（如 spec/ 全树未跟踪）：knowledge
-            # 全表面都在折叠子树内，probe 结果原样收纳
+            # 全表面都在折叠子树内，probe 结果原样收纳。注意本事后展开只对
+            # 「现状」侧快照（after/residue——枚举即当下盘面）成立；基线侧
+            # 快照经 _knowledge_baseline_snapshot 在快照时刻就地展开、不在
+            # 此处事后枚举（run 结束后产出已在盘上，事后枚举会把产出自身
+            # 充作基线，code-review 86d88801917e）
     if need_probe:
         # 探测点包裹口径（code-review e28a085720d7）：对齐 _discard_output /
         # _audit_stray_writes 同款 try/except——git 二进制缺失或 ls-files 超时
@@ -1689,7 +1751,8 @@ def _commit_output(proot: Path, archived_names: list, baseline=None, msg: "str |
     <条目>``）；缺省 None 保持蒸馏提交信息不变。
 
     基线甄别（code-review 50251dbfd0c1）：``baseline`` 为本批 run 前的
-    ``_git_status_paths`` 快照（_run_batch 的 run_baseline），与
+    基线快照（_run_batch_core 的 run_baseline，经 _knowledge_baseline_snapshot
+    就地展开祖先折叠条目），与
     _discard_output / _audit_stray_writes「不吞用户未提交改动」同一尺度：
     仅 add/commit 相对基线确为本次 run 新增的 spec/knowledge/ 路径。此前
     整目录 ``git add -- spec/knowledge`` 是无基线的全路径面收纳，会把用户
@@ -2351,7 +2414,11 @@ class DistillManager:
                 summary["fold_failed"] += 1
                 summary["entries"].append({"entry": name, "ok": False, "reason": "条目不可读"})
                 continue
-            status_before = _git_status_paths(proot)
+            # 基线快照（祖先折叠条目就地展开，code-review 86d88801917e）：本
+            # 快照供 _commit_output 基线甄别与折叠失败回滚，首蒸场景快照含
+            # 祖先折叠条目时事后展开会把折叠产出误充基线，与 run_baseline
+            # 同根因同口径
+            status_before = _knowledge_baseline_snapshot(proot)
             # add-distill-run-work-summary：折叠子 run stdout 不进总结
             # （design Non-Goal，folded 计数语义不变），第三位丢弃
             ok, err, _fold_stdout = self._spawn_and_wait(
@@ -2480,8 +2547,13 @@ class DistillManager:
         # 判别 spec/knowledge/ 下哪些改动是用户 run 前既有的未提交改动，避免
         # 整目录回滚吞掉手工策展；成功收尾时同快照供 _commit_output 做提交
         # 基线甄别（仅收纳本轮新增路径，code-review 50251dbfd0c1）。逐轮快照
-        # （status_before）仍供越界对账。
-        run_baseline = _git_status_paths(proot)
+        # （status_before）仍供越界对账。祖先折叠条目（首蒸项目 spec/ 全树
+        # 未跟踪折叠为 "spec/"）在快照时刻就地展开为文件级集合（code-review
+        # 86d88801917e）：事后展开发生在 run 结束后，会把已在盘上的蒸馏产出
+        # 自身充作基线（run_new 差集恒空 → 按「无变更」成功收尾并清 pending
+        # 台账，产出滞留永不落库；overlap 恒非空 → 放弃路径误跳过回滚），
+        # 此刻产出尚未写入，枚举即真实基线。
+        run_baseline = _knowledge_baseline_snapshot(proot)
 
         for round_no in range(1 + self._max_fix_rounds):
             result["rounds"] = round_no + 1
