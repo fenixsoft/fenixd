@@ -232,8 +232,21 @@ def write_env_file(text: str, target: Path) -> Path:
             dir=str(target.parent),
         )
         tmp = Path(tmp_name)
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 state_machine._atomic_write_text 先例
+        # cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，fdopen 自身
+        # 抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
             f.write(text)
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
         os.chmod(tmp, 0o600)
         os.replace(tmp, target)
     except OSError as e:
@@ -267,6 +280,27 @@ def capture_env_candidate(pid: int, target: Path) -> dict:
 # ── unit 模板 ────────────────────────────────────────────────────────────
 
 
+def _validate_unit_path(path_value, label: str) -> None:
+    """裸插值进 unit 文本的路径校验：含空白/引号即拒绝，不静默产出坏 unit。
+
+    unit 名一侧已有 _sanitize_unit_component 折叠非法字符，文件内路径一侧
+    的防线与之对称：systemd 的 ExecStart 按空白切分参数（含空格的路径被拆
+    成多个参数、指向错误路径），unit 文本按行解析指令（含换行的路径会把
+    换行后的文本当新指令行写入，同文件后段 Restart 等指令被移位），引号
+    则破坏 systemd 自身的引号语义——模板侧无法安全转义，只能拒绝安装并
+    给可读错误。派生路径（supervisor/env_file 等）继承 root 前缀，校验
+    入口一处即覆盖 WorkingDirectory/ExecStart/EnvironmentFile/Description
+    全部插值位。
+    """
+    text = str(path_value)
+    if re.search(r"[\s\"']", text):
+        raise SystemdHostingError(
+            f"{label}含空白或引号字符，无法安全写入 systemd unit 文本"
+            "（空格会拆错 ExecStart 参数、换行会注入新指令行），拒绝安装: "
+            f"{text}"
+        )
+
+
 def render_project_unit(root, python_executable: str | None = None) -> str:
     """渲染 ``fenixd-<项目名>.service`` unit 文本。
 
@@ -282,6 +316,7 @@ def render_project_unit(root, python_executable: str | None = None) -> str:
       排水窗），超时后 SIGKILL 才扩展到整个 cgroup。
     """
     proot = Path(root)
+    _validate_unit_path(proot, "项目根路径")
     interpreter = python_executable or "python3"
     supervisor = proot / ".fenix" / "bin" / "fenixd_supervisor.py"
     env_file = project_env_file(proot)
@@ -319,6 +354,7 @@ def render_dashboard_unit(framework_root, python_executable: str | None = None) 
       退出 0 在 Restart=on-failure 下本就不拉回（不适用退出码协议）。
     """
     froot = Path(framework_root)
+    _validate_unit_path(froot, "框架主树路径")
     interpreter = python_executable or "python3"
     entry = froot / "bin" / "fenix_dashboard.py"
     env_file = dashboard_env_file(froot)
@@ -384,8 +420,21 @@ def write_unit_file(unit: str, content: str) -> Path:
             dir=str(SYSTEMD_UNIT_DIR),
         )
         tmp = Path(tmp_name)
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+        # fdopen 失败路径显式接管（对齐 state_machine._atomic_write_text 先例
+        # cbb57806fbfd）：with 的 close 只在 fdopen 成功后才生效，fdopen 自身
+        # 抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            f = os.fdopen(tmp_fd, "w", encoding="utf-8")
             f.write(content)
+        finally:
+            if f is not None:
+                f.close()
+            else:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
         os.chmod(tmp, 0o644)
         os.replace(tmp, target)
     except OSError as e:
