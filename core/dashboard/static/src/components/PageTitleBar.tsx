@@ -105,7 +105,9 @@ export function PageTitleBarHeaderSlot() {
           minWidth: 0,
         }}
       >
-        {meta.back ? <BackArrow onBack={meta.back} /> : null}
+        {/* 返回箭头移动端不渲染（2026-11-06 用户指令「标题的左边箭头在移动
+            设备中也不用显示」）：移动端导航走系统返回/菜单，桌面保持 */}
+        {meta.back && !isMobile ? <BackArrow onBack={meta.back} /> : null}
         <TitleNode title={meta.title} />
         {meta.subtitle != null && !isMobile ? <SubtitleNode subtitle={meta.subtitle} /> : null}
       </div>
@@ -175,7 +177,8 @@ export function PageTitleBar(props: PageTitleBarMeta) {
           // （mobile-detail-header-density 契约，载体迁移后语义不变）
         }}
       >
-        {props.back ? <BackArrow onBack={props.back} /> : null}
+        {/* 返回箭头移动端不渲染（同顶栏插槽指令，embed iframe 移动设备同款） */}
+        {props.back && !isMobile ? <BackArrow onBack={props.back} /> : null}
         <TitleNode title={props.title} />
         {/* 副标题只在非移动壳位渲染（2026-11-06 用户指令「副标题在移动设备
             模式中不显示」）：移动档 48px 窄幅密度考虑，桌面顶栏与 embed 档

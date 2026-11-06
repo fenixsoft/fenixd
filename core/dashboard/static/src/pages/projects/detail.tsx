@@ -1214,50 +1214,63 @@ export default function SpecDetailPage() {
   // 跟随是概览等页副标题形态，详情中文标题要的是确定性换行位置。title 缺失
   // 不渲染（缺失容错与列表规则一致）；移动端隐藏（同 subtitle 槽既有规则，
   // 页级 gate）；参数缺失/loading/error 分支 detail 必为空、自然不渲染。
-  // 同日用户指令「模式标签/状态标签/下拉箭头垂直居中」：Space 由
-  // align="baseline" 改 center（基线对齐使标签盒相对英文名偏沉），与 v2
-  // 富标题内部 alignItems center 同款。
+  // 同日用户指令「模式标签/状态标签/下拉箭头垂直居中」两连落地：首版 Space
+  // align center 只让标签在首行内互相对齐（量测标签簇中心 21px vs 标题栏中心
+  // 28px，仍偏高 7px）——改两列结构：左列（英文名+中文下方行）、右簇（Tag+
+  // 下拉，Space 保留 size 8/wrap）分列，外层 alignItems center 使右簇随标题
+  // 块整体取中（v2 specDetail 同款）；窄视口外层 wrap 右簇下坠（同旧形态）。
   const richTitle = (
-    <span style={{ display: 'block', minWidth: 0 }}>
-      <Space size={8} align="center" wrap>
-        <span>{spec}</span>
-        {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
-            （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
-            （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
-        <ModeTag mode={detail?.mode} />
-        {detail?.status && (
-          <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
-        )}
-        {otherSpecs.length > 0 && (
-          <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
-            <Button
-              type="text"
-              size="small"
-              icon={<DownOutlined />}
-              title="切换 SPEC"
-              aria-label="切换 SPEC"
-              style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
-            />
-          </Dropdown>
-        )}
-      </Space>
-      {!isMobile && detail?.title ? (
-        <span
-          style={{
-            display: 'block',
-            fontSize: 12,
-            fontWeight: 400,
-            color: token.colorTextTertiary,
-            // 贴排（2026-11-06 用户指令「中文与英文标题之间的间隔缩小」）：
-            // 零外边距 + 行高收紧 14px，只留行盒固有半行距（v2 specDetail 同款）
-            lineHeight: '14px',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
-        >
-          {detail.title}
-        </span>
+    <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: 8, rowGap: 2, minWidth: 0 }}>
+      <span style={{ display: 'block', minWidth: 0 }}>
+        <span style={{ display: 'block' }}>{spec}</span>
+        {!isMobile && detail?.title ? (
+          <span
+            style={{
+              display: 'block',
+              fontSize: 12,
+              fontWeight: 400,
+              color: token.colorTextTertiary,
+              // 贴排（2026-11-06 用户指令「中文与英文标题之间的间隔缩小」）：
+              // 零外边距 + 行高收紧 14px，只留行盒固有半行距（v2 specDetail 同款）
+              lineHeight: '14px',
+              // 定宽技巧同 v2：width 0 不参与左列 max-content 定宽、minWidth
+              // 100% 撑回列宽（列宽只由英文名决定，右簇不被中文行宽度推开）
+              width: 0,
+              minWidth: '100%',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {detail.title}
+          </span>
+        ) : null}
+      </span>
+      {/* 右簇移动端不渲染（2026-11-06 用户指令「移动端设备样式中只显示标题」
+          ——模式/状态 Tag 与快速切换下拉全hide，中文下方行既有移动端隐藏同门；
+          快速切换移动端无入口为该指令显式接受），桌面随标题块整体垂直居中 */}
+      {!isMobile ? (
+        <Space size={8} align="center" wrap style={{ flexShrink: 0 }}>
+          {/* add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
+              （code-review item 504cf2d4b647），fast-track 单 run 全包，其余
+              （含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
+          <ModeTag mode={detail?.mode} />
+          {detail?.status && (
+            <OutlinedTag tone={statusInfo.tone}>{statusInfo.label}</OutlinedTag>
+          )}
+          {otherSpecs.length > 0 && (
+            <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
+              <Button
+                type="text"
+                size="small"
+                icon={<DownOutlined />}
+                title="切换 SPEC"
+                aria-label="切换 SPEC"
+                style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
+              />
+            </Dropdown>
+          )}
+        </Space>
       ) : null}
     </span>
   );

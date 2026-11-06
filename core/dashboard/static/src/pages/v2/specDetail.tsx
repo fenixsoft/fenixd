@@ -829,13 +829,19 @@ export default function V2SpecDetailPage() {
   // 副标题形态，详情中文标题要的是确定性换行位置，不随宽度漂移。组合语义
   // 仍单源 combineSpecSubtitle（branch 空只显中文标题、title 空维持 branch
   // 单独显示、双空不渲染）；移动端隐藏（同 subtitle 槽既有规则，页级 gate）。
+  //
+  // 两列结构（同日用户指令「模式/状态标签垂直居中」实测落地：初版把胶囊留在
+  // 首行内只互相对齐，量测胶囊簇中心 21px vs 标题栏中心 28px 偏高 7px）——
+  // 左列（英文名+中文下方行）、右簇（胶囊行）分列，外层 alignItems center
+  // 使右簇随标题块整体取中；窄视口外层 wrap 右簇下坠（同旧 wrap 形态）。
   const chineseTitle = combineSpecSubtitle(detail?.title, detail?.branch);
   const richTitle = (
-    <span style={{ display: 'block', minWidth: 0 }}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+    <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', columnGap: 10, rowGap: 2, minWidth: 0 }}>
+      <span style={{ display: 'block', minWidth: 0 }}>
         <span
           className="v2-ellipsis"
           style={{
+            display: 'block',
             fontSize: mobile ? 17 : 20,
             fontWeight: 700,
             letterSpacing: -0.3,
@@ -844,27 +850,38 @@ export default function V2SpecDetailPage() {
         >
           {spec}
         </span>
-        {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
-        {detail ? <V2StatusPill status={detail.status} /> : null}
-        {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
-        {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
+        {!mobile && chineseTitle ? (
+          <span
+            style={{
+              display: 'block',
+              fontSize: 12,
+              fontWeight: 400,
+              color: V2_TEXT_TERTIARY,
+              // 贴排（2026-11-06 用户指令「中文与英文标题之间的间隔缩小」）：
+              // 零外边距 + 行高收紧 14px，只留行盒固有半行距
+              lineHeight: '14px',
+              // 定宽技巧：width 0 使本行不参与左列 max-content 定宽（列宽只由
+              // 英文名决定，右簇胶囊紧跟英文名不被中文行宽度推开），minWidth
+              // 100% 再撑回列宽、超出即省略
+              width: 0,
+              minWidth: '100%',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {chineseTitle}
+          </span>
+        ) : null}
       </span>
-      {!mobile && chineseTitle ? (
-        <span
-          style={{
-            display: 'block',
-            fontSize: 12,
-            fontWeight: 400,
-            color: V2_TEXT_TERTIARY,
-            // 贴排（2026-11-06 用户指令「中文与英文标题之间的间隔缩小」）：
-            // 零外边距 + 行高收紧 14px，只留行盒固有半行距
-            lineHeight: '14px',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }}
-        >
-          {chineseTitle}
+      {/* 右簇移动端不渲染（2026-11-06 用户指令「移动端设备样式中只显示标题」
+          ——中文下方行既有移动端隐藏同门），桌面随标题块整体垂直居中 */}
+      {!mobile ? (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
+          {detail ? <V2StatusPill status={detail.status} /> : null}
+          {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
+          {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
         </span>
       ) : null}
     </span>
