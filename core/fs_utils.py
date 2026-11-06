@@ -11,6 +11,12 @@ verify_report 与 verify_scenarios 此前各持一份近乎相同的 ``_atomic_w
 - ``inherit_existing_mode=False``（verify_scenarios 口径，缺省）：无条件
   chmod 0644，产物对非 root 辅助进程/人工其它账号可读。
 
+另收口 ``fsync_parent_dir``：rename 后父目录 fsync 原语（item
+74e17a6b9d5c 的持久化纪律），原为 admin_store 私有 ``_fsync_parent_dir``
+被 signals/state_machine/admin_monitor/serving_registry 跨模块 import
+私有名（item 671399f09114），提升于此公共归属，与 ``atomic_write_text``
+尾部内联的目录 fsync 同属原子写持久化纪律族。
+
 另收口跨模块共用的 flock 互斥原语 ``with_file_lock``：evolution 与
 self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
 ``_with_lock`` 被外部 import，提升于此公共归属（item 1a8a9328767b）。
@@ -92,6 +98,28 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+def fsync_parent_dir(path: Path) -> None:
+    """rename 原子替换后刷父目录项，保证替换结果掉电不回退（尽力而为）。
+
+    临时文件 fsync 只保证文件内容落盘，rename 的目录项变更是否持久化取决于
+    父目录是否刷盘——不刷则掉电重启后文件可能整体回退为旧内容（code-review
+    item 74e17a6b9d5c）。收口自 admin_store 私有 ``_fsync_parent_dir``
+    （item 671399f09114）：admin_store 侧薄委托引用，serving_registry 直用
+    公共名。目录 fsync 在个别文件系统上不支持或失败（EINVAL 等），静默
+    忽略，此时仍保留进程级崩溃安全保证。
+    """
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def with_file_lock(path: Path, fn):

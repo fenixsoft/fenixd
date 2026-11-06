@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .alert_lifecycle import AUTO_RESOLVE_BY, AUTO_SELF_HEAL_BY
+from core.fs_utils import fsync_parent_dir as _fsync_parent_dir_impl
 from core.timelib import parse_ts
 
 
@@ -112,28 +113,20 @@ def _utcnow_iso() -> str:
 def _fsync_parent_dir(path: Path) -> None:
     """rename 原子替换后刷父目录项，保证替换结果掉电不回退（尽力而为）。
 
-    临时文件 fsync 只保证文件内容落盘，rename 的目录项变更是否持久化取决于
-    父目录是否刷盘——不刷则掉电重启后文件可能整体回退为旧内容（code-review
-    item 74e17a6b9d5c）。目录 fsync 在个别文件系统上不支持或失败（EINVAL 等），
-    静默忽略，此时仍保留进程级崩溃安全保证。
+    实现收口 ``core.fs_utils.fsync_parent_dir`` 单点（item 671399f09114，
+    语义说明随实现上移）；私有名保留给本模块内部调用点与
+    signals/state_machine/admin_monitor/serving_registry 的既有 import，
+    行为随单点本体。
     """
-    try:
-        dfd = os.open(str(path.parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dfd)
-    except OSError:
-        pass
-    finally:
-        os.close(dfd)
+    _fsync_parent_dir_impl(path)
 
 
 # code-review item dda0ab4ba29c：跨模块（core.verdict_check 等）复用统一走
 # 公开名，模块边界不依赖下划线私有符号（verdict_check 对 extract_step_number
 # 公开别名的自述纪律同款）。私有名保留给既有调用点（本模块内部调用与
 # serving_registry/signals/state_machine/admin_monitor 的既有 import）。
-# 别名直引同一实现，签名与行为随本体，无任何包装差异。
+# 公开名经薄委托随 fs_utils 单点本体（item 671399f09114），签名与行为
+# 与本体一致。
 fsync_parent_dir = _fsync_parent_dir
 
 

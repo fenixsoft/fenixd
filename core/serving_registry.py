@@ -16,13 +16,12 @@ import fcntl
 import json
 import os
 import signal
-import subprocess
 import tempfile
 import threading
 import time
 from pathlib import Path
 
-from core.admin_store import _fsync_parent_dir
+from core.fs_utils import fsync_parent_dir
 from core.proc_utils import guard_killpg, pid_alive_signal, proc_start_ticks
 
 SERVERS_FILENAME = "servers.json"
@@ -113,9 +112,10 @@ class ServingRegistry:
                         pass
             os.replace(str(tmp_path), str(self.path))
             # rename 生效后刷父目录项，防掉电后 servers.json 整体回退为旧
-            # 内容（对齐 admin_store 原子写四段式；复用 _fsync_parent_dir，
-            # 内部吞 EINVAL 等目录 fsync 不支持的异常，尽力而为）
-            _fsync_parent_dir(self.path)
+            # 内容（对齐 admin_store 原子写四段式；复用 fs_utils 公共单点
+            # fsync_parent_dir，内部吞 EINVAL 等目录 fsync 不支持的异常，
+            # 尽力而为）
+            fsync_parent_dir(self.path)
         finally:
             if tmp_path.exists():
                 try:
