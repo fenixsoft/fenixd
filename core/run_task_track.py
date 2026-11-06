@@ -22,8 +22,14 @@ planner 实质会产出该形态（本仓 5 个在飞 spec 中 4 个含字母后
 import fnmatch
 import glob
 import json
+import logging
 import re
 from pathlib import Path
+
+# 读侧降级留痕通道（item 4d8604c531c0）：命名对齐本仓 fenixd.<module> 惯例
+# （regression/fs_utils/agent_runner.run_files 同款），经 core/logger.py 的
+# fenixd 根日志器出结构化通道。
+_logger = logging.getLogger("fenixd.run_task_track")
 
 # 任务 id 语法单一片段（code-review item d5eb2d18e472）：三个正则
 # （_TASK_CHECKBOX_RE / _TASK_ID_RE / _TASK_ID_FULL_RE）全部经 f-string
@@ -169,7 +175,10 @@ def parse_tasks_md(project_root, spec_name) -> tuple[list, set]:
         - all_ids: 按文档顺序的全部数字任务 id（形如 "1.1"、"1.2b"）；
         - checked_ids: 已勾选（``- [x]``）的 id 集合。
     文件缺失/不可读/不含任何数字任务 → ([]， set())——「无缺口概念」，
-    调用方判据通过（与既有 _task_completion_blocker 语义一致）。
+    调用方判据通过（与既有 _task_completion_blocker 语义一致）。其中文件
+    缺失（FileNotFoundError）静默降级；其余读取失败（EIO/EACCES/非 UTF-8
+    坏档等）返回同一空结果但记 WARNING 留痕（item 4d8604c531c0）——放行
+    语义不变，但坏档与「真无数字任务」事后可审计区分。
     """
     # code-review item fbac6439c318：spec 名先过路径分量校验再拼路径读文件，
     # 非法名按「无缺口概念」降级返回空（与下方「文件缺失」同形态），不把
@@ -181,7 +190,13 @@ def parse_tasks_md(project_root, spec_name) -> tuple[list, set]:
     checked_ids: set = set()
     try:
         # 不做 exists() 预探测：其只吞 ENOENT/ENOTDIR，EIO/EACCES 会上抛穿透门禁；
-        # 直接 read_text，缺失（FileNotFoundError）与其他 OSError 一并按「无缺口概念」降级。
+        # 直接 read_text，全部异常按「无缺口概念」降级——放行是既有刻意取舍
+        # （避免 EIO 上抛穿透门禁），不翻案。分支区分（item 4d8604c531c0）：
+        # 文件缺失（FileNotFoundError，含 fast-track 后补 tasks.md 的合法形态）
+        # 维持静默；其余 OSError/UnicodeDecodeError 返回同一空结果但记 WARNING
+        # ——否则坏档 tasks.md 与「真无数字任务」不可区分，完成度门静默放行
+        # 且事后无从审计，与同仓读侧「损坏归一 + warning 留痕」惯例
+        # （regression._read_json_file、read_result）不一致。
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
             m = _TASK_CHECKBOX_RE.match(line)
             if m:
@@ -189,7 +204,16 @@ def parse_tasks_md(project_root, spec_name) -> tuple[list, set]:
                 all_ids.append(tid)
                 if m.group(1) == "x":
                     checked_ids.add(tid)
-    except (OSError, UnicodeDecodeError):
+    except FileNotFoundError:
+        return [], set()
+    except (OSError, UnicodeDecodeError) as e:
+        # FileNotFoundError 是 OSError 子类，except 子句序保证缺失路径不落此；
+        # 消息带 spec 名与路径 + 异常类型摘要（lazy %s，对齐 run_files 惯例）。
+        _logger.warning(
+            "parse_tasks_md: spec %s 的 tasks.md（%s）读取失败"
+            "（%s: %s），按「无缺口概念」降级放行（留痕供审计）",
+            spec_name, tasks_path, type(e).__name__, e,
+        )
         return [], set()
     return all_ids, checked_ids
 
