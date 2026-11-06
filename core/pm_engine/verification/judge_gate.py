@@ -15,10 +15,12 @@ from datetime import datetime, timezone
 from core.agent_runner.run_files import run_spec_part
 # 原子写收口共享助手 core.fs_utils.atomic_write_text（code-review
 # 132bd399dd4d）：与 infra_classify 同源——mkstemp 唯一临时名 + fsync +
-# 目录 fsync 纪律单点维护。不消费 scenario_gate 局部助手（只 fsync 临时
-# 文件、不 fsync 父目录的弱持久性版）：本模块写点是裁决采纳链权威产物
-# （.fenix-run-result.json）与降级上下文，不在 scenario_gate docstring
-# 「可重生成/可重写产物」的持久性豁免范围内。
+# 目录 fsync 纪律单点维护。scenario_gate 局部助手已随收口（item
+# abfbfb073153）升级为同一 fs_utils 单点的薄委托，持久性纪律（rename
+# 后尽力而为 fsync 父目录）与直引 fs_utils 等价，不存在「弱持久性版」
+# 之分；此处仍直引 fs_utils 只是直引单点实现、少一层模块间接。本模块
+# 写点是裁决采纳链权威产物（.fenix-run-result.json）与降级上下文，
+# 收口版纪律即所需持久性。
 from core.fs_utils import atomic_write_text
 # fix-env-exemption-exit-reachability 3.3：inconclusive 重验窗口的独立计数
 # 上限复用 escalation 的防御性配置读取助手（同键同缺省，防两侧调参漂移）；
