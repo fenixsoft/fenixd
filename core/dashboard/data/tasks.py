@@ -128,6 +128,8 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
         return []
     groups = []
     current_group = None
+    orphans = []  # 首个分组标题之前的任务行（item 327405f6183c）
+    saw_header = False
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
             # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
@@ -137,32 +139,44 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
             # 自有 parse_tasks。
             m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
+                saw_header = True
                 current_group = {"title": m.group(1).strip(), "tasks": [], "done": 0, "total": 0}
                 groups.append(current_group)
                 continue
             m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
             if m:
-                if current_group is None:
-                    # code-review item 327405f6183c：首个分组标题之前的任务行
-                    # 此前被静默丢弃（既不计数也不报错，total/done 失真且无
-                    # 提示）——降级归入合成分组恢复真实计数。合成分组 title
-                    # 不带数字编号，与 `## <n>. <标题>` 真实分组的编号命名
-                    # 空间无冲突；后续出现真实分组标题时正常切换归属。
-                    current_group = {"title": "未分组", "tasks": [], "done": 0, "total": 0}
-                    groups.append(current_group)
                 is_done = m.group(1) == "x"
-                current_group["tasks"].append(
-                    {
-                        "done": is_done,
-                        "id": m.group(2),
-                        "desc": m.group(3).strip(),
-                    }
-                )
+                entry = {
+                    "done": is_done,
+                    "id": m.group(2),
+                    "desc": m.group(3).strip(),
+                }
+                if current_group is None:
+                    orphans.append(entry)
+                    continue
+                current_group["tasks"].append(entry)
                 if is_done:
                     current_group["done"] += 1
                 current_group["total"] += 1
     except (OSError, UnicodeDecodeError):
         pass
+    if saw_header and orphans:
+        # code-review item 327405f6183c：首个分组标题之前的任务行此前被静默
+        # 丢弃（既不计数也不报错，total/done 失真且无提示）——归入合成分组
+        # 恢复真实计数。仅当文件确有真实分组标题时启用：完全无分组的
+        # tasks.md 属格式畸形态，维持「未解析出任务」告警契约
+        # （tests/test_task_track.py TestCliWarning/TestDashboardTasksNote）。
+        # 合成分组 title 不带数字编号，与 `## <n>. <标题>` 真实分组的编号
+        # 命名空间无冲突；放置在列表首位与原文任务行出现次序一致。
+        groups.insert(
+            0,
+            {
+                "title": "未分组",
+                "tasks": orphans,
+                "done": sum(1 for t in orphans if t["done"]),
+                "total": len(orphans),
+            },
+        )
     if not groups:
         return groups
     # 实时叠加：最新 impl run 的 TaskUpdate 完成状态与 tasks.md 勾选取并集。
