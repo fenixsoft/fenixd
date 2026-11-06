@@ -188,3 +188,7 @@
   - 证据：窗口内 grep「主树 untracked 散件归因」862 条（日志扫描计数，UTC 2026-11-04T16:01 ~ 2026-11-05T16:01）；样例行全量列出 5 路径（docs/superpowers/specs/2026-10-28-agent-card-redesign-design.md、idea.md、spec/knowledge/domains/worktree-vc/stray-escalation-clock-persistence.md、同目录 untracked-stray-session-attribution.md、z-ignore-control-probe-file）并以「复位宽限计时（不升级不处置）」收尾；相关告警 b981cdd296c4/eca93b38939a（untracked 首现提示）与 fcf24fe41ff9（超阈值滞留，info 只告警）在档。
   - 调查评估：在 worktree-vc 主树 WIP 盘点车道暴露，为 2026-11-05#可改进#3 的第二窗复发且量升。已核实事实：条数、每分钟节奏、集合构成收敛（53→5，大头随 knowledge fold 提交入库）逐一度核；行为语义仍正确（归因活会话、非无主盲区、不升级不处置）。根因不变：缺输出聚合契约——同集合指纹未变时逐分钟全量重打。与存量关系：上窗建议（按集合指纹聚合：首次全量、其后一行计数摘要或 N 分钟降频）未落地；本窗集合里恰有该能力域自家两页知识页（untracked-stray-session-attribution、stray-escalation-clock-persistence）滞留未跟踪——蒸馏产物本身成为刷屏素材。结论：纯日志卫生问题，量级随散件滞留天数线性放大，聚合改造拖延一窗、持续恶化。
   - 建议：维持上窗建议：探测输出按集合指纹聚合（集合不变时首次全量、其后降为计数摘要或降频重打）；顺带把滞留的两页 worktree-vc 知识页与 idea.md 等散件收编提交使集合收敛。
+
+## 2026-11-07
+### 知识真相源
+- audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/unified-page-title-bar.md × spec/knowledge/domains/harness-integration/agent-harness-adapter.md），请人工核查
