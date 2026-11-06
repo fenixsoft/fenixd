@@ -37,6 +37,9 @@ def _mk_tasks_md(spec_dir: Path, yaml_block: str) -> None:
         + yaml_block + "\n```\n\n## 1. x\n\n- [ ] 1.1 do it\n",
         encoding="utf-8",
     )
+    # add-spec-title-promotion-gate：title 存在性晋升门上线，晋升链夹具须带
+    # 非 title 违规的 .spec.yaml
+    (spec_dir / ".spec.yaml").write_text("title: 测试中文标题\n", encoding="utf-8")
 
 
 class TestLintDeclared(unittest.TestCase):
