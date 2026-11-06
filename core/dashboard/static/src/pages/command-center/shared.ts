@@ -336,7 +336,8 @@ export function activityLineState(card: {
       return { kind: 'specs', items };
     }
     const legacy = card.attributable;
-    if (legacy && legacy.spec) {
+    // project 判空与主路径过滤口径对齐，脏数据不落 LaneCard 的 `undefined/spec`
+    if (legacy && legacy.project && legacy.spec) {
       return {
         kind: 'specs',
         items: [{ project: legacy.project, spec: legacy.spec, run_id: '' }],
