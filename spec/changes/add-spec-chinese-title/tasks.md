@@ -1099,16 +1099,16 @@
 
 ## 1. 后端：title 读取与 API 透传
 
-- [ ] 1.1 `core/dashboard/data/spec_docs.py` 新增 `read_spec_title(project_root, spec_name) -> str | None`：活跃 `spec/changes/<spec>/.spec.yaml` 优先，缺失经 `resolve_spec_dir` 归档回退；字段缺失 / 文件缺失 / YAML 解析失败 / 非法 spec 名一律返回 None（不抛异常）；签名缓存对齐 `core/spec_mode.py` 的 `(path, mtime_ns, size)` 有界缓存模式；经 `core/dashboard/data/__init__.py` 门面导出（同既有 helper 消费口径）。
-- [ ] 1.2 `core/dashboard/data/summary.py` 的 `spec_summary` 透传 `"title"` 字段：活跃条目直读（`read_spec_title`），已归档条目经 SummaryIndex 每轮单次 `os.scandir(spec/archive/)` 建立的名称→目录映射下发读取（剥日期前缀、exact 优先 + `sorted()[-1]`，语义对齐 `resolve_spec_dir`；MUST NOT per-spec glob）；`spec_detail` 同样透传 `title`。增量 patch（SSE watcher）随 summary 重建自动携带。
-- [ ] 1.3 新增 `tests/test_spec_title.py`：钉死读取容错矩阵（活跃有/无 title、归档有/无 title、文件缺失、字段缺失、YAML 损坏、非法 spec 名 → None）与 `spec_summary`/`spec_detail` 透传形状（有值 string / 缺失 null）。
+- [x] 1.1 `core/dashboard/data/spec_docs.py` 新增 `read_spec_title(project_root, spec_name) -> str | None`：活跃 `spec/changes/<spec>/.spec.yaml` 优先，缺失经 `resolve_spec_dir` 归档回退；字段缺失 / 文件缺失 / YAML 解析失败 / 非法 spec 名一律返回 None（不抛异常）；签名缓存对齐 `core/spec_mode.py` 的 `(path, mtime_ns, size)` 有界缓存模式；经 `core/dashboard/data/__init__.py` 门面导出（同既有 helper 消费口径）。
+- [x] 1.2 `core/dashboard/data/summary.py` 的 `spec_summary` 透传 `"title"` 字段：活跃条目直读（`read_spec_title`），已归档条目经 SummaryIndex 每轮单次 `os.scandir(spec/archive/)` 建立的名称→目录映射下发读取（剥日期前缀、exact 优先 + `sorted()[-1]`，语义对齐 `resolve_spec_dir`；MUST NOT per-spec glob）；`spec_detail` 同样透传 `title`。增量 patch（SSE watcher）随 summary 重建自动携带。
+- [x] 1.3 新增 `tests/test_spec_title.py`：钉死读取容错矩阵（活跃有/无 title、归档有/无 title、文件缺失、字段缺失、YAML 损坏、非法 spec 名 → None）与 `spec_summary`/`spec_detail` 透传形状（有值 string / 缺失 null）。
 
 ## 2. 前端：两处列表名称列副标题
 
-- [ ] 2.1 `core/dashboard/static/src/services/dashboard.ts` 的 `SpecSummary` 增加 `title?: string | null` 类型（注释标注 id/name 关系与数据源）。
-- [ ] 2.2 v1 `pages/projects/list.tsx` 名称列：英文名主行下方渲染中文副标题行（12px、tertiary 文字色、单行省略、随树形缩进对齐主行）；`title` 为 null/空不渲染副标题行；移动端卡片形态名称区同规则；名称关键字过滤在英文名包含匹配外 OR 命中 `title`（大小写不敏感）；排序键、fix-* 树挂载/缩进、行点击、Why 悬浮提示行为不变。
-- [ ] 2.3 v2 `pages/v2/projectDetail.tsx` SPEC 表格名称列：同规则渲染副标题（`V2_TEXT_TERTIARY` 同级 token、小于主行字号、单行省略）；`title` 为 null/空不渲染；名称链接点击/悬停 `title` 属性等既有交互不变。
-- [ ] 2.4 新增 `core/dashboard/static/tests/specTitleSubtitle.test.mjs`：钉死两处副标题渲染（有 title / 无 title / 树形缩进对齐）与搜索命中中文标题；跑通前端既有测试套件无回归。
+- [x] 2.1 `core/dashboard/static/src/services/dashboard.ts` 的 `SpecSummary` 增加 `title?: string | null` 类型（注释标注 id/name 关系与数据源）。
+- [x] 2.2 v1 `pages/projects/list.tsx` 名称列：英文名主行下方渲染中文副标题行（12px、tertiary 文字色、单行省略、随树形缩进对齐主行）；`title` 为 null/空不渲染副标题行；移动端卡片形态名称区同规则；名称关键字过滤在英文名包含匹配外 OR 命中 `title`（大小写不敏感）；排序键、fix-* 树挂载/缩进、行点击、Why 悬浮提示行为不变。
+- [x] 2.3 v2 `pages/v2/projectDetail.tsx` SPEC 表格名称列：同规则渲染副标题（`V2_TEXT_TERTIARY` 同级 token、小于主行字号、单行省略）；`title` 为 null/空不渲染；名称链接点击/悬停 `title` 属性等既有交互不变。
+- [x] 2.4 新增 `core/dashboard/static/tests/specTitleSubtitle.test.mjs`：钉死两处副标题渲染（有 title / 无 title / 树形缩进对齐）与搜索命中中文标题；跑通前端既有测试套件无回归。
 
 ## 3. 立项通道：中文标题生成纪律
 
