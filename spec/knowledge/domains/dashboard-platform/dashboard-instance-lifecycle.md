@@ -1,7 +1,7 @@
 # Dashboard 实例生命周期
 
-<!-- knowledge: capability=dashboard-instance-lifecycle rev=5
-     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/changes/add-systemd-hosting -->
+<!-- knowledge: capability=dashboard-instance-lifecycle rev=6
+     sources=spec/archive/2026-09-02-fix-dashboard-duration-and-verify-gate,spec/archive/2026-09-26-fix-dashboard-watchdog-misfire,spec/archive/2026-10-07-fix-dashboard-resident-takeover,spec/knowledge/_inbox/done/memory-distill-ops-runbook.md,spec/changes/add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md -->
 
 dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤儿泄漏防护（claude-watchdog）。
 
@@ -21,8 +21,8 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 入口双保险：常驻实例的启动入口不含 `CLAUDE_PID`——skill 与人工入口带 `env -u CLAUDE_PID`，unit 承载入口经 EnvironmentFile denylist 剥离（hook 的 `restart-dashboard` 经 `systemctl restart fenix-dashboard` 走 unit 环境生效），与父进程判据互为冗余。
 - PDEATHSIG/孤儿拒启两道防线（`_bind_parent_lifecycle`，import 场景防泄漏）独立于本页 watchdog 判据，两者正交。
 - 双向验证铁律：验证「分支/worktree 上的行为」打 worktree 自起实例（`python3 bin/fenix_dashboard.py --serve --port 8789`）——:8787 常驻进程内存是启动时刻旧码，吃不到分支改动；验证「dashboard 类 SPEC 交付的主树行为」目标恰是 :8787 常驻实例——静态资源实时读盘，重建 dist 后免重启生效，Python 读侧改动须重启才生效。1900x 端口段是 agent run 的隔离 dev-server，三类实例勿混用。
-- 常驻实例重启协议：`systemctl restart fenix-dashboard`（unit 承载；手工 `--serve` 会被接管豁免拒绝，不能替代重启）；重启验证三件套——curl :8787 得 200、`/proc/<pid>/environ` 无 CLAUDE_PID、dist 与源码一致；看现场 `journalctl -u fenix-dashboard` 加主树 `.fenix/logs/` 既有日志文件。
-- 「显示未配置」类先怀疑陈旧进程：curl `/api/config?project=<名>` 与新进程直跑 `resolve_config` 比对，不一致即重启 dashboard（Python 读侧不重启恒旧视图），不要改 config.yaml 迁就旧视图。
+- 常驻实例重启协议按承载形态双轨：unit 承载走 `systemctl restart fenix-dashboard`，看现场 `journalctl -u fenix-dashboard` 加主树 `.fenix/logs/` 既有日志文件；tmux 托管兜底形态（unit 缺席，session `fenix-dashboard:0`）走 `tmux respawn-window -k -t fenix-dashboard:0`——respawn 沿用窗口原启动命令，`env -u CLAUDE_PID` 双保险与常驻形态一并保留。手工 `--serve` 会被接管豁免拒绝，不能替代任一轨重启。重启验证三件套——curl :8787 得 200、`/proc/<新pid>/environ` 无 CLAUDE_PID、API 读侧新字段有值（Python 读侧生效的直接判据；静态资源侧另核 dist 与源码一致）。
+- 读侧字段缺失/恒旧先怀疑陈旧进程：前端正常渲染（dist 实时读盘）而 `/api/specs`、`/api/config` 等读侧字段缺失或恒旧，且同数据在全新进程直跑正常，即运行进程陈旧——`ps -o lstart` 对比主树合入时间钉死；修复走重启而非改 config.yaml 迁就旧视图（Python 读侧不重启恒旧视图）。
 
 ## 溯源
 
@@ -31,3 +31,4 @@ dashboard 服务实例的端口独占与接管语义、启动退出纪律与孤�
 - 2026-10-07 fix-dashboard-resident-takeover（spec/archive/2026-10-07-fix-dashboard-resident-takeover） — 端口接管增加常驻豁免：tmux 承载占用者拒信号、报错退出（PID+换端口指引）；接管路径补占用者 ppid 判定与读取失败放行的 fail-safe 方向；非 tmux 旧实例接管语义不变
 - 2026-11-04 memory-distill-ops-runbook（spec/knowledge/_inbox/done/memory-distill-ops-runbook.md） — 折叠验证与运维操作纪律：双向验证铁律（分支验证打 worktree 自起实例 / 主树交付验证打 :8787 / 1900x 为 run 隔离 dev-server）、tmux 重启协议与孤儿 server 变体、「显示未配置」先疑陈旧进程配方
 - 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 端口接管常驻豁免扩至 unit 承载实例（`_parent_is_pid1`，防「接管→systemd 拉回→反向接管」闪断循环）；常驻实例重启协议迁 `systemctl restart fenix-dashboard`（tmux kill-session/new-session 协议与孤儿 server 变体随 tmux 承载退役）；watchdog 长驻豁免经 unit 环境无 `CLAUDE_PID` 成立
+- 2026-11-06 push-restart-unit-absent-tmux-stale-1106（spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md） — 重启协议改写为承载形态双轨（unit 缺席时 tmux 轨 `respawn-window -k` 配方为实测有效路径、验证三件套第三件改 API 读侧新字段有值）；陈旧进程判读一般化（读侧字段缺失/恒旧 + 全新进程对照正常 + `ps -o lstart` 对比合入时间）

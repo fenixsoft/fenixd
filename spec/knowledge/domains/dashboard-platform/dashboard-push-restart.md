@@ -1,7 +1,7 @@
 # pushed 终态自动重启 dashboard
 
-<!-- knowledge: capability=dashboard-push-restart rev=2
-     sources=spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/changes/add-systemd-hosting -->
+<!-- knowledge: capability=dashboard-push-restart rev=3
+     sources=spec/archive/2026-10-07-add-push-restart-dashboard-hook,spec/changes/add-systemd-hosting,spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md -->
 
 任一 SPEC 合入（pushed 终态）后自动重启 dashboard 进程，主树最新代码无需人工重启即对用户生效；由 HookEngine 的内置默认 hook 条目驱动，零配置生效。
 
@@ -14,6 +14,7 @@
 - 去抖窗口：60 秒，锚定进程内最近一次成功重启的 monotonic 时间戳。窗口内的后续触发幂等跳过，记 skipped 审计；重启失败不写时间戳，窗口内再次触发可重试。不做跨进程持久化——daemon 重启后时间戳清零，重启后的首个 pushed 会多重启一次，设计内无害。
 - 并发防重：去抖检查与「标记重启中」在同一锁临界区一次完成——多条不同 id 的 restart-dashboard hook（内置条目与用户自挂条目）并发命中时仅首个认领者执行动作，其余按 skipped 跳过，dashboard 不会被连续弹两次。
 - unit 缺席静默跳过：`fenix-dashboard` unit 未安装（或 systemctl 不可执行）是环境态而非操作失败，动作返回 skipped 并记 debug 日志，不产 failure 审计、不升级人工告警；unit 在场但 restart 或端口探测失败仍记 failure（真故障）。
+- tmux 托管兜底形态下的盲态：unit 缺席静默跳过的设计前提是本机 dashboard 由 unit 承载；unit 未安装、dashboard 以 tmux 托管兜底形态常驻时（判定见 [Dashboard 实例生命周期](dashboard-instance-lifecycle.md)），本动作每次 pushed 都静默跳过且无审计留痕，主树合入的 Python 读侧改动对常驻实例永不可达。收口方向二选一（均未落地）：补装 `fenix-dashboard` unit 让本链路回到设计路径，或在 unit 缺席分支增加 tmux 托管形态探测（占用 :8787 且父进程为 tmux server 的实例），respawn 对应窗口并留 skipped→executed 审计。该形态下的实际重启按 [Dashboard 实例生命周期](dashboard-instance-lifecycle.md) 的 tmux 轨执行。
 - 边界：本链路只重启 dashboard，不自动重启 daemon——pushed 时可能存在其它 SPEC 的在飞 run，daemon 重启会打断在飞批，daemon 重启维持 supervisor/人工链路。
 
 ## 关键行为
@@ -25,3 +26,4 @@
 
 - 2026-10-07 add-push-restart-dashboard-hook（spec/archive/2026-10-07-add-push-restart-dashboard-hook） — 新增能力：内置条目读侧注入与逃生键、restart-dashboard 60s 去抖与并发认领、无会话静默跳过、HooksPanel 开关
 - 2026-11-04 add-systemd-hosting（spec/changes/add-systemd-hosting） — 重启动作执行侧迁 `systemctl restart fenix-dashboard`（tmux respawn-window 退役）；「无会话静默跳过」语义平移为「unit 缺席静默跳过」
+- 2026-11-06 push-restart-unit-absent-tmux-stale-1106（spec/knowledge/_inbox/done/push-restart-unit-absent-tmux-stale-1106.md） — 新增 tmux 托管兜底形态盲态规则：unit 缺席静默跳过使 pushed 重启对 tmux 常驻实例永不可达且无审计留痕，登记两向收口方向
