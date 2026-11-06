@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SPEC 列表 · 移动端样式原型</title>
+<!-- fenix-prototype：spec-list-mobile-style
+     层级：vendor（React 19 + antd 6.6.0 预打包，真组件、具约束力）
+     主题：theme.ts dshAlignedTheme / V2 色板单源注入（画像 antd_tokens + css 常量）
+     宪法：静态渲染零动画、字号阶 11/12/13/14/16/18、数字 tabular-nums、
+           内容区左右留白 15px、磁贴圆角 12px、配色全部取 token 表
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #e2e8f0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+    color: #1e293b;
+    -webkit-font-smoothing: antialiased;
+  }
+  .num { fontVariantNumeric: 'tabular-nums'; font-variant-numeric: tabular-nums; }
+  /* 390px 设备框：桌面浏览器预览用，真机即全屏等价形态 */
+  .device {
+    width: 390px; margin: 24px auto; background: #ffffff;
+    border-radius: 24px; overflow: hidden; box-shadow: 0 12px 40px rgba(15, 17, 21, 0.18);
+    display: flex; flex-direction: column; min-height: 900px; position: relative;
+  }
+  .topbar {
+    height: 56px; display: flex; align-items: center; gap: 10px;
+    padding: 0 12px; background: #ffffff; border-bottom: 1px solid rgba(0,0,0,0.08);
+    position: sticky; top: 0; z-index: 30;
+  }
+  .brand-mark {
+    width: 22px; height: 22px; border-radius: 6px; background: #0f1115;
+    display: flex; align-items: center; justify-content: center;
+    color: #ffffff; font-size: 12px; font-weight: 700;
+  }
+  .brand-name { font-size: 14px; font-weight: 600; color: #1e293b; }
+  .topbar-title { font-size: 18px; font-weight: 700; color: #1e293b; margin-left: 2px; }
+  .content { padding: 12px 15px 24px; display: flex; flex-direction: column; gap: 10px; background: #e3e3e3; }
+  .chips-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+  .chips-row::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: 0 0 auto; height: 30px; padding: 0 12px; border-radius: 999px;
+    border: 1px solid #e2e8f0; background: #ffffff; color: #475569;
+    font-size: 12px; display: flex; align-items: center; cursor: pointer; user-select: none;
+  }
+  .chip-active { background: #0f1115; border-color: #0f1115; color: #ffffff; }
+  .chip .chip-n { margin-left: 5px; font-size: 11px; color: #94a3b8; }
+  .chip-active .chip-n { color: rgba(255,255,255,0.62); }
+  .tile {
+    background: #ffffff; border: 1px solid #eef2f7; border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(15, 17, 21, 0.03); overflow: hidden;
+  }
+  .card { padding: 12px 14px; cursor: pointer; }
+  .card + .card { border-top: 1px solid #eef2f7; }
+  .card-fix { padding-left: 26px; }
+  .card-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .card-name {
+    font-size: 14px; font-weight: 600; color: #1e293b;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  .card-name .fix-prefix { color: #94a3b8; font-weight: 400; margin-right: 2px; }
+  .card-cn {
+    margin-top: 2px; font-size: 12px; color: #64748b;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .meta-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .pill {
+    height: 22px; padding: 0 9px; border-radius: 999px; font-size: 12px;
+    display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  }
+  .pill-dot { width: 6px; height: 6px; border-radius: 999px; }
+  .meta-more { margin-left: auto; flex: 0 0 auto; }
+  .prog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 10px; }
+  .prog-phase { font-size: 12px; color: #64748b; }
+  .prog-count { font-size: 12px; color: #64748b; }
+  .prog-track { margin-top: 5px; height: 6px; border-radius: 999px; background: #f1f5f9; overflow: hidden; }
+  .prog-fill { height: 100%; border-radius: 999px; }
+  .sub-row { display: flex; align-items: center; gap: 10px; margin-top: 9px; font-size: 12px; color: #64748b; flex-wrap: wrap; }
+  .sub-row .sep { color: #e2e8f0; }
+  .verify-row { margin-top: 8px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .info-row {
+    margin-top: 8px; display: flex; align-items: center; gap: 6px;
+    background: #fffbeb; border-radius: 6px; padding: 6px 8px;
+  }
+  .info-row .info-text {
+    flex: 1; min-width: 0; font-size: 12px; color: #92400e;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .loadmore-wrap { padding: 12px 14px; border-top: 1px solid #eef2f7; }
+  .loadmore-caption { text-align: center; margin-top: 8px; font-size: 11px; color: #94a3b8; }
+  .summary-row { display: flex; align-items: center; justify-content: space-between; padding: 0 2px; }
+  .summary-text { font-size: 12px; color: #64748b; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="vendor.js"></script>
+<script>
+(function () {
+  var h = React.createElement;
+  var antd = window.antd;
+
+  // ── 主题单源（theme.ts dshAlignedTheme + v2/theme.tsx 色板，全部画像注入）──
+  var T = {
+    text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8',
+    primary: '#0f1115', link: '#4176e6',
+    success: '#22c55e', error: '#dc2626', warning: '#d97706',
+    hairline: '#eef2f7', border: '#e2e8f0', softGrey: '#f1f5f9',
+    rampGen: '#0891b2', rampImpl: '#2563eb', rampGates: '#ea580c', rampVerify: '#16a34a',
+    blueSoft: '#eff6ff', greenSoft: '#f0fdf4', amberSoft: '#fffbeb', redSoft: '#fef2f2',
+    cyanSoft: '#ecfeff', orangeSoft: '#ffedd5', mutedSoft: '#f1f5f9',
+  };
+
+  var themeConfig = {
+    token: {
+      colorPrimary: '#0f1115', colorLink: '#4176e6', colorInfo: '#4176e6',
+      colorSuccess: '#22c55e', colorError: '#dc2626', colorWarning: '#d97706',
+      colorText: '#0f1115', colorTextSecondary: '#61666b', colorTextTertiary: '#81858c',
+      colorBorderSecondary: 'rgba(0,0,0,0.06)', colorSplit: 'rgba(0, 0, 0, 0.08)',
+      colorBgLayout: '#ffffff',
+      // 圆角还原 antd 默认 6/4/8（DESIGN.md 一般域条款，MUST NOT 挂覆写）
+    },
+  };
+
+  // ── 假数据（全部内联字面量，一眼可辨为示例）────────────────────────
+  var SPECS = [
+    { anchor: 'spec-list-card-implementing', name: 'add-spec-list-mobile-style', cn: 'SPEC 列表移动端样式改版', status: '实现中', tone: 'warning',
+      toneColor: T.warning, soft: T.amberSoft, mode: '快速', wait: null, indent: false,
+      phase: '实现中', counter: '5/12', percent: 42, ramp: T.rampImpl,
+      priority: 'P1', created: '2026-11-06 09:12', dur: '1时02分', run: '运行中',
+      verify: null, info: null },
+    { anchor: 'spec-list-card-gates', name: 'add-quality-gates-visibility', cn: '质量门禁可见性治理', status: '验证中', tone: 'info',
+      toneColor: '#2563eb', soft: T.blueSoft, mode: null, wait: null, indent: false,
+      phase: '门禁', counter: '6/8', percent: 75, ramp: T.rampGates,
+      priority: 'P3', created: '2026-11-05 14:40', dur: '6时18分', run: null,
+      verify: { text: '验证 2/3 通过', tone: 'good' }, info: null },
+    { anchor: 'spec-list-card-fix-parent', name: 'fix-writepoint-anchor-drift', cn: '修复写入点锚漂移', status: '已推送', tone: 'good',
+      toneColor: T.success, soft: T.greenSoft, mode: null, wait: null, indent: false,
+      phase: null, counter: null, percent: 100, ramp: null,
+      priority: 'P2', created: '2026-11-04 20:05', dur: '2时44分', run: null,
+      verify: { text: '验证 4/4 通过', tone: 'good' }, info: null },
+    { anchor: 'spec-list-card-fix-child', name: 'fix-fix-writepoint-anchor-drift', cn: '修复修复写入点锚漂移', status: '实现中', tone: 'warning',
+      toneColor: T.warning, soft: T.amberSoft, mode: null, wait: null, indent: true,
+      phase: '实现中', counter: '2/3', percent: 66, ramp: T.rampImpl,
+      priority: 'P2', created: '2026-11-05 10:31', dur: '0时48分', run: null,
+      verify: null, info: null },
+    { anchor: 'spec-list-card-blocked', name: 'add-admin-choice-payload', cn: 'Administrator 选择题载荷补齐', status: '阻塞', tone: 'critical',
+      toneColor: T.error, soft: T.redSoft, mode: null, wait: { label: '待激活', tone: 'muted' }, indent: false,
+      phase: '实现中', counter: '3/9', percent: 33, ramp: T.rampImpl,
+      priority: 'P4', created: '2026-11-03 16:22', dur: '4时09分', run: null,
+      verify: null,
+      info: '实现 run 失败：admin 载荷字段缺失（fixspec 已立项，待前置依赖恢复）' },
+    { anchor: 'spec-list-card-pushed', name: 'add-knowledge-atlas-specs', cn: '知识图谱双 SPEC 立项', status: '已推送', tone: 'good',
+      toneColor: T.success, soft: T.greenSoft, mode: null, wait: null, indent: false,
+      phase: null, counter: null, percent: null, ramp: null,
+      priority: 'P5', created: '2026-11-01 11:47', dur: '5时52分', run: null,
+      verify: { text: '验证 3/3 通过', tone: 'good' }, info: null },
+    { anchor: 'spec-list-card-drafted', name: 'add-fenix-desktop-shell', cn: 'fenix 桌面壳（草稿）', status: '草稿', tone: 'muted',
+      toneColor: T.text4, soft: T.mutedSoft, mode: null, wait: null, indent: false,
+      phase: null, counter: null, percent: null, ramp: null,
+      priority: 'P5', created: '2026-11-06 18:03', dur: null, run: null,
+      verify: null, info: null },
+  ];
+
+  var CHIPS = [
+    { key: 'all', label: '全部', n: 58 },
+    { key: 'implementing', label: '实现中', n: 3 },
+    { key: 'testing', label: '验证中', n: 2 },
+    { key: 'blocked', label: '阻塞', n: 1 },
+    { key: 'pushed', label: '已推送', n: 41 },
+    { key: 'drafted', label: '草稿', n: 6 },
+  ];
+
+  // ── 小件 ──────────────────────────────────────────────────────────
+  function Pill(props) {
+    var style = {
+      background: props.soft, color: props.color, height: 22, padding: '0 9px',
+      borderRadius: 999, fontSize: 12, display: 'inline-flex', alignItems: 'center',
+      gap: 4, whiteSpace: 'nowrap',
+    };
+    var kids = [];
+    if (props.dot) kids.push(h('span', { key: 'dot', className: 'pill-dot', style: { background: props.color } }));
+    kids.push(props.label);
+    return h('span', { className: 'pill', style: style }, kids);
+  }
+
+  function ProgressBlock(spec) {
+    if (spec.percent === null || spec.percent === undefined) {
+      // 草稿/无任务计数：口径不可得显「—」（宪法：0 与不可得语义分离）
+      return h('div', { className: 'sub-row', style: { marginTop: 9 } },
+        h('span', null, '任务进度'),
+        h('span', { className: 'num' }, '—'));
+    }
+    if (spec.phase === null && spec.percent === 100) {
+      // 终态紧凑化：进度区省略（信息密度/渐进披露——已推送卡不重复画 100% 条）
+      return null;
+    }
+    return h('div', null,
+      h('div', { className: 'prog-head' },
+        h('span', { className: 'prog-phase' }, spec.phase),
+        h('span', { className: 'prog-count num' }, spec.counter + ' · ' + spec.percent + '%')),
+      h('div', { className: 'prog-track' },
+        h('div', { className: 'prog-fill', style: { width: spec.percent + '%', background: spec.ramp } })));
+  }
+
+  function SpecCard(spec) {
+    var metaKids = [];
+    metaKids.push(h(Pill, { key: 'st', label: spec.status, color: spec.toneColor, soft: spec.soft, dot: true }));
+    if (spec.wait) metaKids.push(h(Pill, { key: 'wt', label: spec.wait.label, color: T.text4, soft: T.mutedSoft }));
+    if (spec.mode) metaKids.push(h(Pill, { key: 'md', label: spec.mode === '快速' ? '快速' : '标准', color: spec.mode === '快速' ? T.warning : T.text3, soft: spec.mode === '快速' ? T.orangeSoft : T.mutedSoft }));
+    metaKids.push(h('span', { key: 'more', className: 'meta-more' },
+      h(antd.Dropdown, {
+        menu: {
+          items: [
+            { key: 'doc', label: '查看文档' },
+            { key: 'priority', label: '调整优先级' },
+            { key: 'freeze', label: '冻结' },
+          ],
+        },
+        trigger: ['click'], placement: 'bottomRight',
+      }, h(antd.Button, {
+        type: 'text', size: 'small', 'aria-label': '更多操作',
+        style: { minWidth: 32, height: 32 },
+        icon: h('span', { style: { fontSize: 16, color: T.text3, letterSpacing: 2 } }, '⋮'),
+      }))));
+    var nameKids = [];
+    if (spec.indent) nameKids.push(h('span', { key: 'fp', className: 'fix-prefix' }, '└'));
+    nameKids.push(h('span', { key: 'nm' }, spec.name));
+    var subKids = [
+      h('span', { key: 'p', className: 'num' }, spec.priority),
+      h('span', { key: 's1', className: 'sep' }, '|'),
+      h('span', { key: 'c', className: 'num' }, spec.created),
+      h('span', { key: 's2', className: 'sep' }, '|'),
+      h('span', { key: 'd', className: 'num' }, '耗时 ' + (spec.dur || '—')),
+    ];
+    if (spec.run) subKids.push(h('span', { key: 'r', style: { color: T.success } }, '● ' + spec.run));
+    var verifyKid = null;
+    if (spec.verify) {
+      verifyKid = h('div', { className: 'verify-row' },
+        h('span', { style: { color: spec.verify.tone === 'good' ? T.success : T.error } },
+          spec.verify.tone === 'good' ? '✓' : '⚠'),
+        h('span', { style: { color: spec.verify.tone === 'good' ? T.text3 : T.error } }, spec.verify.text));
+    }
+    var infoKid = null;
+    if (spec.info) {
+      infoKid = h('div', { className: 'info-row' },
+        h('span', { style: { fontSize: 12, color: T.warning, flex: '0 0 auto' } }, '信息'),
+        h('span', { className: 'info-text' }, spec.info));
+    }
+    return h('div', {
+      key: spec.anchor,
+      'data-proto-id': spec.anchor, className: 'card' + (spec.indent ? ' card-fix' : ''),
+      onClick: function () { antd.message.info('整卡点击 → 进入 SPEC 详情（交互示意）'); },
+    },
+      h('div', { className: 'card-name-row' }, h('span', { className: 'card-name' }, nameKids)),
+      h('div', { className: 'card-cn' }, spec.cn),
+      h('div', { className: 'meta-row' }, metaKids),
+      ProgressBlock(spec),
+      h('div', { className: 'sub-row num' }, subKids),
+      verifyKid, infoKid);
+  }
+
+  // ── 页面 ─────────────────────────────────────────────────────────
+  function App() {
+    var chipState = React.useState('all');
+    var chip = chipState[0], setChip = chipState[1];
+    var drawerState = React.useState(false);
+    var drawerOpen = drawerState[0], setDrawerOpen = drawerState[1];
+    var typeState = React.useState('all');
+    var type = typeState[0], setType = typeState[1];
+    var archState = React.useState('open');
+    var arch = archState[0], setArch = archState[1];
+    var sortState = React.useState('name');
+    var sort = sortState[0], setSort = sortState[1];
+    var msg = antd.message;
+
+    var topbar = h('div', { 'data-proto-id': 'spec-list-topbar', className: 'topbar' },
+      h('span', { style: { width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' } },
+        h('span', { style: { fontSize: 18, color: T.text } }, '☰')),
+      h('span', { className: 'brand-mark' }, 'F'),
+      h('span', { className: 'brand-name' }, 'Fenix Harness'),
+      h('span', { className: 'topbar-title' }, 'SPEC 列表'));
+
+    var toolbar = h('div', { 'data-proto-id': 'spec-list-toolbar', style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+      h('div', { 'data-proto-id': 'spec-list-search', style: { display: 'flex', gap: 8 } },
+        h(antd.Input, {
+          allowClear: true, placeholder: '搜索英文名 / 中文标题', prefix: h('span', { style: { color: T.text4 } }, '⌕'),
+          size: 'middle', style: { flex: 1 },
+        }),
+        h(antd.Button, {
+          'data-proto-id': 'spec-list-filter-trigger', size: 'middle',
+          style: { height: 32, minWidth: 32, paddingInline: 10 },
+          onClick: function () { setDrawerOpen(true); },
+        }, '筛选')),
+      h('div', { 'data-proto-id': 'spec-list-status-chips', className: 'chips-row' },
+        CHIPS.map(function (c) {
+          return h('span', {
+            key: c.key,
+            className: 'chip' + (chip === c.key ? ' chip-active' : ''),
+            onClick: function () { setChip(c.key); },
+          }, c.label, h('span', { className: 'chip-n num' }, String(c.n)));
+        })));
+
+    var summary = h('div', { 'data-proto-id': 'spec-list-summary', className: 'summary-row' },
+      h('span', { className: 'summary-text num' }, '58 个 SPEC · 3 活跃 · 1 运行中'),
+      h('span', { className: 'summary-text' }, '按名称排序'));
+
+    var cards = SPECS.map(function (s) { return SpecCard(s); });
+    var tile = h('div', { 'data-proto-id': 'spec-list-tile', className: 'tile' },
+      cards,
+      h('div', { 'data-proto-id': 'spec-list-loadmore', className: 'loadmore-wrap' },
+        h(antd.Button, { block: true, size: 'middle', onClick: function () { msg.info('加载下一页 20 条（交互示意）'); } }, '加载更多'),
+        h('div', { className: 'loadmore-caption num' }, '共 58 条 · 已显示 20 条')));
+
+    var drawer = h(antd.Drawer, {
+      'data-proto-id': 'spec-list-filter-drawer',
+      title: '筛选与排序', placement: 'bottom', open: drawerOpen,
+      onClose: function () { setDrawerOpen(false); },
+      styles: { wrapper: { height: 380 }, body: { paddingBottom: 24 } },
+      footer: h(antd.Button, { block: true, type: 'primary', onClick: function () { setDrawerOpen(false); } }, '查看结果'),
+    },
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+        h('div', null,
+          h('div', { style: { fontSize: 12, color: T.text3, marginBottom: 8 } }, '类型'),
+          h(antd.Segmented, {
+            block: true, value: type, onChange: function (v) { setType(v); },
+            options: [{ label: '全部', value: 'all' }, { label: '开发', value: 'dev' }, { label: '修复 fix-*', value: 'fix' }],
+          })),
+        h('div', null,
+          h('div', { style: { fontSize: 12, color: T.text3, marginBottom: 8 } }, '归档'),
+          h(antd.Segmented, {
+            block: true, value: arch, onChange: function (v) { setArch(v); },
+            options: [{ label: '未归档', value: 'open' }, { label: '已归档', value: 'archived' }],
+          })),
+        h('div', null,
+          h('div', { style: { fontSize: 12, color: T.text3, marginBottom: 8 } }, '排序'),
+          h(antd.Segmented, {
+            block: true, value: sort, onChange: function (v) { setSort(v); },
+            options: [{ label: '名称', value: 'name' }, { label: '优先级', value: 'priority' }, { label: '进度', value: 'progress' }, { label: '创建时间', value: 'created' }],
+          }))));
+
+    return h(antd.ConfigProvider, { theme: themeConfig },
+      topbar,
+      h('div', { className: 'content' },
+        toolbar, summary, tile, drawer));
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>
