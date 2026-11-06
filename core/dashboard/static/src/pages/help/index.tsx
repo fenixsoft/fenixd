@@ -333,7 +333,7 @@ function HelpMenu({ docs, currentDoc, onDocChange }: {
       {docs.map((d) => (
         <li
           key={d.name}
-          className={`help-menu-item${d.name === currentDoc ? ' active' : ''}`}
+          className="help-menu-item"
           aria-current={d.name === currentDoc ? 'page' : undefined}
         >
           {/* 真实 <button> 承担可点击语义：Enter/Space 激活由原生按钮行为提供。

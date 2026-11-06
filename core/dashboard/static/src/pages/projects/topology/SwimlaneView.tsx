@@ -32,6 +32,11 @@ const PAD_X = 20; // 时间轴左右内边距
 const HEADER_H = 34; // 刻度头高
 const MIN_CONTENT_W = 720; // 内容最小宽（短跨度不压缩到不可读）
 
+// PMEngine / 用户泳道纵坐标按 LANE_ORDER 名称查找（与色块 laneIdx 同口径），
+// 不用魔法数字隐含依赖泳道顺序（code-review item da0485505c22）
+const pmLaneIdx = LANE_ORDER.indexOf('pm');
+const userLaneIdx = LANE_ORDER.indexOf('user');
+
 // 泳道内并行错行：按开始时间排序后做「行占用区间」贪心分配（重叠块换行）
 function assignRows(items: { start: number; end: number }[]): number[] {
   const order = items
@@ -163,15 +168,15 @@ export default function SwimlaneView({
           <g key={`m${i}`}>
             <line
               x1={m.x}
-              y1={HEADER_H + 1 * LANE_H + 8}
+              y1={HEADER_H + pmLaneIdx * LANE_H + 8}
               x2={m.x}
-              y2={HEADER_H + 1 * LANE_H + LANE_H - 12}
+              y2={HEADER_H + pmLaneIdx * LANE_H + LANE_H - 12}
               stroke={m.pushed ? STATUS_HEX.green : 'rgba(143, 184, 221, 0.8)'}
               strokeWidth={m.pushed ? 2 : 1}
             />
             <text
               x={m.x}
-              y={HEADER_H + LANE_H - 4}
+              y={HEADER_H + pmLaneIdx * LANE_H - 4}
               textAnchor="middle"
               fill={m.pushed ? STATUS_HEX.green : '#6f93b8'}
               fontSize={9}
@@ -187,8 +192,8 @@ export default function SwimlaneView({
         {userMarks.map((m, i) => (
           <g key={`u${i}`}>
             <title>{m.label}</title>
-            <circle cx={m.x} cy={HEADER_H + LANE_H / 2} r={5} fill={STATUS_HEX.blue} />
-            <text x={m.x} y={HEADER_H + LANE_H / 2 - 10} textAnchor="middle" fill="#8fb8dd" fontSize={9.5}>
+            <circle cx={m.x} cy={HEADER_H + userLaneIdx * LANE_H + LANE_H / 2} r={5} fill={STATUS_HEX.blue} />
+            <text x={m.x} y={HEADER_H + userLaneIdx * LANE_H + LANE_H / 2 - 10} textAnchor="middle" fill="#8fb8dd" fontSize={9.5}>
               {midTrunc(m.label, 6)}
             </text>
           </g>

@@ -123,7 +123,7 @@ export function PageTitleBarFiltersSlot() {
   return <FiltersNode filters={meta.filters} />;
 }
 
-// ── 行壳位（embed / 移动端：内容区首行 48px 标题栏）────────────────────
+// ── 行壳位（仅 embed=1，60px sticky 玻璃带）；移动端并入顶栏──────────────
 
 /** 统一标题栏组件：壳位判定收敛于此。页面在返回树的顶部声明
  *  `<PageTitleBar {...meta} />`（PageContainer 之前，行壳位时即内容区首行）。 */
