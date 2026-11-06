@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-06 23:58 UTC+8
+> 最后更新：2026-11-07 00:24 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [dashboard-ui](dashboard-ui.md) | 仪表盘基础界面 | 2026-10-03 04:59 |
 | [dashboard-overview](dashboard-overview.md) | 项目总览页（Bento 统计卡 + 项目台账磁贴双形态、运行态 Radio 筛选、跨域镜像不引用） | 2026-11-06 17:54 |
-| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面 v2 台账重绘非替换、行内容 v2 形态、名称列中文副标题与标题命中搜索、整行点击进详情、三点菜单文档入口） | 2026-11-06 18:42 |
+| [dashboard-spec-table](dashboard-spec-table.md) | SPEC 列表表格（桌面 v2 台账重绘非替换、行内容 v2 形态、名称列中文副标题与标题命中搜索、整行点击进详情、三点菜单文档入口；移动端磁贴卡片流七行层级与状态 chips/筛选 Drawer/加载更多编排） | 2026-11-07 00:24 |
 | [spec-table-improvements](spec-table-improvements.md) | SPEC 列表体验改进 | 2026-10-03 04:59 |
 | [spec-list-filter-stickiness](spec-list-filter-stickiness.md) | 列表过滤条件保持 | 2026-10-03 04:59 |
 | [add-spec-context-menu](add-spec-context-menu.md) | SPEC 列表右键菜单 | 2026-10-03 04:59 |
