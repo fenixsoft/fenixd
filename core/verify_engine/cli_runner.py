@@ -682,12 +682,15 @@ class CliRunner(VerifyRunner):
 
     def _resolve_cwd(self, rel: str):
         """cwd 相对验证树根（scenario_root）；无显式 cwd 时以验证树根为
-        缺省（worktree 轮落验证树，无 worktree 轮回退 project_root）。
+        缺省（worktree 轮落验证树，无 worktree 轮回退 project_root）；
+        根链全空再回退进程当前目录（与 CliAssertionRunner 同款兜底，
+        code-review item 3a0dbb80dcf8）。
         目录不存在返回 None（判 error，不进 product-bug 管道）。
         """
-        root = self.scenario_root or self.project_root
+        root = self.scenario_root or self.project_root or "."
         if not rel:
             # 回退链：scenario_root（有 serving worktree 时）→ project_root
+            # → "."（进程 cwd，兜底口径与 cli_assertions.py 同款）
             return Path(root)
         # 有显式 cwd 时：相对验证树根。护栏与 cli_assertions._resolve_under_root
         # 同款（code-review item 6b9b164b3ed9）：pathlib 的 ``/`` 对绝对路径
@@ -741,6 +744,7 @@ class CliRunner(VerifyRunner):
             # 端口段非法（非数字/越界，如 http://host:abc）：按非 http(s)
             # 分支原样透出 base_url、不注入端口，异常不作结构化穿出
             return self.base_url, ""
+        # [fenix-ignore:bd473bfb0530] 引擎产出的 base_url 恒带端口（static/command server、serving 兜底、browser 四路均 f"http://127.0.0.1:{port}"），无显式端口形态链路不可达，scheme 默认端口即该无端口 URL 的语义端口，保持现状
         port = port or (443 if parsed.scheme == "https" else 80)
         return self.base_url.rstrip("/"), str(port)
 

@@ -7082,7 +7082,6 @@ class AgentRunner:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             pass
-                    returncode = -15  # SIGTERM 对应语义
                     frozen_error = FrozenTerminatedError(
                         reason=f"spec '{spec_name}' frozen", by="admin")
                     # 冻结命中清理残留 cancel 旗标（spec 级 > run 级）：防止
@@ -7128,7 +7127,6 @@ class AgentRunner:
                     # 跳过；失败仅 WARNING 降级、绝不阻断取消收口。
                     self._wip_checkpoint_on_forced_kill(
                         spec_name, cwd, anchor=ANCHOR_CANCEL)
-                    returncode = -15  # SIGTERM 对应语义
                     cancel_error = RunCancelledError(reason=reason, by=by)
                     break
 
@@ -7185,7 +7183,6 @@ class AgentRunner:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             pass
-                        returncode = -9  # SIGKILL 对应语义
                         stall_error = RunStallBudgetExceededError(
                             criterion=_sb_criterion, detail=_sb_stats)
                         break

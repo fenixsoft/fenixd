@@ -41,6 +41,15 @@ class _NullLogger:
     def error(self, *args, **kwargs):
         pass
 
+    def exception(self, *args, **kwargs):
+        pass
+
+    def critical(self, *args, **kwargs):
+        pass
+
+    def log(self, level, msg, *args, **kwargs):
+        pass
+
 
 class VerifyRunner:
     """Runner 抽象基类：接口即约定，子类必须实现全部方法。

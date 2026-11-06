@@ -321,7 +321,15 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
                f"{len(to_commit)} 文件）")
         if note:
             msg += f"\n\n裁决依据：{note}"
-        _git_out(proot, "commit", "-m", msg, "--", *to_commit)
+        # pathspec 字面化（code-review item 3e562aaf7483）：git 命令行
+        # pathspec 缺省按 glob 通配解析，清单路径含 * ? [ ] 等元字符时除
+        # 目标文件外还会把同 glob 匹配的其它文件一并提交入库，违背 design
+        # D2「只落清单内路径、不裹挟」承诺（本执行器无 untrack 的提交集合
+        # 复核防线兜底）；:(literal) magic 禁用 glob 解析、按字面匹配。
+        _git_out(
+            proot, "commit", "-m", msg, "--",
+            *(f":(literal){p}" for p in to_commit),
+        )
     except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367）：同上，git stderr
         # 原文经服务端日志留痕，客户端收固定文案。
@@ -767,7 +775,10 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
         # 文件触碰，_abort 回滚集为空）。
         gi_backup = gi_path.read_bytes() if gi_path.exists() else None
         for path in to_untrack:
-            _git_out(proot, "rm", "-f", "--cached", "--", path)
+            # :(literal) 同款字面化（code-review item 3e562aaf7483，同型暴露
+            # 面，只堵不扩）：下方 staged 子集守卫与提交集合复核虽可拦截
+            # glob 裹挟，但越界即触发整轮回滚，字面化直接消除事故面。
+            _git_out(proot, "rm", "-f", "--cached", "--", f":(literal){path}")
             processed.append(path)
         appended = _append_gitignore_entries(proot, to_untrack)
         if appended:
@@ -1206,9 +1217,20 @@ def _exec_archive_untracked_stray(project_root, note: str = "", signal_type: str
     newly_tracked = [p for p in existing if p in indexed]
     existing = [p for p in existing if p not in indexed]
     if not existing:
-        err = ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
-               f"无可归档文件；清单({len(pre['manifest'])}): "
-               f"{', '.join(pre['manifest'])}")
+        # 首句按主导原因选用（code-review item b52cce2414ef）：本分支也吞
+        # 已变 tracked/在盘但非普通文件/全部不合规条目，一律断言「均已不在
+        # 磁盘」会与后续从句自相矛盾，误导操作者判「清单陈旧」而放弃处置；
+        # 仅全集均为磁盘缺失时保留原表述，否则中性表述并逐项披露构成。
+        if skipped and not (newly_tracked or not_plain or escapes):
+            err = ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
+                   f"无可归档文件；清单({len(pre['manifest'])}): "
+                   f"{', '.join(pre['manifest'])}")
+        else:
+            err = ("信号清单内文件均无可归档（同指纹一次性告警，清单陈旧）；"
+                   f"清单({len(pre['manifest'])}): "
+                   f"{', '.join(pre['manifest'])}")
+            if skipped:
+                err += f"；其中 {len(skipped)} 个已不在磁盘"
         if newly_tracked:
             err += f"；其中 {len(newly_tracked)} 个已变 tracked（不执行归档移动）"
         if not_plain:
@@ -1419,9 +1441,21 @@ def _exec_delete_untracked_stray(project_root, note: str = "", signal_type: str 
     newly_tracked = [p for p in targets if p in indexed]
     targets = [p for p in targets if p not in indexed]
     if not targets:
-        err = ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
-               f"无可删除文件；清单({len(pre['manifest'])}): "
-               f"{', '.join(pre['manifest'])}")
+        # 首句按主导原因选用（code-review item b52cce2414ef，与 archive 执行
+        # 器同款修正）：本分支也吞已变 tracked/全部不合规条目（非普通文件已
+        # 在上方单独拒绝分支返回，此处 not_plain 必空），一律断言「均已不在
+        # 磁盘」会与后续从句自相矛盾；仅全集均为磁盘缺失时保留原表述，否则
+        # 中性表述并逐项披露构成。
+        if skipped and not (newly_tracked or escapes):
+            err = ("信号清单内文件均已不在磁盘（同指纹一次性告警，清单陈旧），"
+                   f"无可删除文件；清单({len(pre['manifest'])}): "
+                   f"{', '.join(pre['manifest'])}")
+        else:
+            err = ("信号清单内文件均无可删除（同指纹一次性告警，清单陈旧）；"
+                   f"清单({len(pre['manifest'])}): "
+                   f"{', '.join(pre['manifest'])}")
+            if skipped:
+                err += f"；其中 {len(skipped)} 个已不在磁盘"
         if newly_tracked:
             err += f"；其中 {len(newly_tracked)} 个已变 tracked（不执行删除）"
         if escapes:

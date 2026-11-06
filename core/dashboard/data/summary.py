@@ -236,6 +236,7 @@ def _cached_config_value(project_root, cache: dict, cache_max: int, parse):
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
+    # [fenix-ignore:5a82c9ea1361] 签名变化瞬间的并发 miss 各自重复 resolve_config 结果一致，仅浪费 CPU/IO 无行为错误，与 daemon_health 免锁取舍同风格，暂不加锁
     cfg = ConfigLoader.resolve_config(proot)
     value = parse(cfg)
     if len(cache) > cache_max:
@@ -1394,7 +1395,13 @@ def overview(registry_projects: list) -> dict:
             )
             projects.append(_degraded_project(p, "摘要计算失败，详见服务端日志"))
     totals["status_counts"] = status_counts
-    token_entries.sort(key=lambda e: (e["_ts"].timestamp() if e["_ts"] else 0.0), reverse=True)
+    # code-review item 42ed97b6027f：排序键区分 None 与实值——None 恒 (0, 0.0)、
+    # 实值 (1, ts)，降序下实值恒在 None 前，缺失时间戳条目稳定沉底，不再与
+    # 1970 哨兵 0.0 混排（畸形负时间戳条目在场时次序不可预期）。
+    token_entries.sort(
+        key=lambda e: (0, 0.0) if e["_ts"] is None else (1, e["_ts"].timestamp()),
+        reverse=True,
+    )
     for e in token_entries:
         e.pop("_ts", None)
     return {"projects": projects, "totals": totals, "token_usage": {"recent": token_entries[:20]}}
