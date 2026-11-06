@@ -30,7 +30,7 @@
 
 - agent 输出的总结过长或含噪声 → 截断常量兜底；总结盒 markdown 渲染与普通 agent 总结同管道，无新增注入面
 - stdout 为空（模型未按要求输出）→ fail-open 不写字段，时间轴与现状一致
-- `_spawn_and_wait` 三元组遗漏调用点 → 全仓 grep 该方法名（产品代码 2 处调用 + 测试 2 处解包），回归测试覆盖
+- `_spawn_and_wait` 三元组遗漏解包点 → 全仓 grep 该方法名与 `_spawn_once`（产品代码 2 处外部调用 + `_spawn_and_wait` 内部 2 处 `_spawn_once` 解包（含 bare-model 重试段）+ 测试 2 处解包），回归测试覆盖
 
 ## 界面约束
 
