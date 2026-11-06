@@ -1117,7 +1117,7 @@
 
 ## 4. 存量回填（幂等分批）
 
-- [ ] 4.1 盘点漂移：对照本 SPEC 立项时刻清单，核对 `spec/changes/` 与 `spec/archive/` 目录迁移（活跃→归档）与实现期新建目录；同步修正上方 Deliverables 段的 path/kind，使声明与实现分支真实路径一致。
+- [x] 4.1 盘点漂移：对照本 SPEC 立项时刻清单，核对 `spec/changes/` 与 `spec/archive/` 目录迁移（活跃→归档）与实现期新建目录；同步修正上方 Deliverables 段的 path/kind，使声明与实现分支真实路径一致。
 - [ ] 4.2 活跃批回填：`spec/changes/` 全部 27 目录（含本 SPEC 自身 `add-spec-chinese-title`；2 个缺 `.spec.yaml` 的 pushed 目录按脚手架补写：`schema: spec-driven` + `created` 取 STATE 条目日期 + `title`）；逐目录读 proposal/design 起草 5-25 字中文标题写入；已有非空 title 跳过（幂等）。
 - [ ] 4.3 归档批 A 回填：`spec/archive/` 2026-09-01 ～ 2026-09-25 段目录，规则同 4.2（proposal/design 头部起草，Why 段优先；缺 `.spec.yaml` 的按脚手架补写，`created` 取归档清单条目日期）。
 - [ ] 4.4 归档批 B 回填：2026-09-26 ～ 2026-10-20 段目录，规则同 4.3。
