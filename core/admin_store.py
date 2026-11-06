@@ -556,11 +556,18 @@ class AdminStore:
             return
         try:
             self.archive_path.parent.mkdir(parents=True, exist_ok=True)
+            # code-review item 41edb3cbe5f0：追加前锁内探测首建；确为首建时
+            # 文件 fsync 后同刷父目录项（与 _write_unlocked 持久化纪律对齐）
+            # ——新建文件的目录项不随文件 fd fsync 持久化，掉电归档文件
+            # 可能整体消失。非首建追加不付目录 fsync 代价。
+            first_create = not self.archive_path.exists()
             with self.archive_path.open("a", encoding="utf-8") as f:
                 for rec in trimmed:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
+            if first_create:
+                _fsync_parent_dir(self.archive_path)
         except OSError as exc:
             if self._logger is not None:
                 self._logger.warning(
@@ -712,7 +719,11 @@ class AdminStore:
             "kind": DISPOSITION,
             "signal_type": signal.get("signal_type"),
             "spec": signal.get("spec") or getattr(disp, "spec", None),
-            "severity": signal.get("severity"),
+            # code-review item 5241be9219c1：signal 缺键/显式 None（或空串）
+            # 回落文档缺省 major——键已存在的 None 会绕过 _normalize_entry
+            # 的 setdefault，处置记录 severity 不得落无效空级别（与
+            # SIGNAL_SEVERITY.get(type, "major") 的未知值缺省惯例同向）
+            "severity": signal.get("severity") or "major",
             "description": (
                 getattr(disp, "problem", "") or signal.get("description")
             ),
@@ -1590,12 +1601,20 @@ class DisputeAuditStore:
             with self._acquire_lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 try:
+                    # code-review item 41edb3cbe5f0：追加前探测首建；确为
+                    # 首建时文件 fsync 后同刷父目录项（与 _write_unlocked
+                    # 持久化纪律对齐）——dispute 审计承担回滚凭据职责，
+                    # 掉电丢失首建文件代价高于归档。非首建追加不付目录
+                    # fsync 代价。
+                    first_create = not self.audit_path.exists()
                     with self.audit_path.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                         f.flush()
                         # 与 AdminStore._write_unlocked 对齐：落盘后才返回，
                         # 崩溃时最近一条审计记录不因页缓存未刷而丢失
                         os.fsync(f.fileno())
+                    if first_create:
+                        _fsync_parent_dir(self.audit_path)
                     self._trim_unlocked()
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
