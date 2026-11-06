@@ -1126,5 +1126,5 @@
 
 ## 5. 收尾验证
 
-- [ ] 5.1 后端全量回归：跑 `tests/test_spec_title.py` 与既有 dashboard data / spec_mode / evolution 相关测试全过；daemon 侧 `/api/specs` 冒烟验证活跃与已归档条目均携带 `title`（curl 抽样）。
+- [x] 5.1 后端全量回归：跑 `tests/test_spec_title.py` 与既有 dashboard data / spec_mode / evolution 相关测试全过；daemon 侧 `/api/specs` 冒烟验证活跃与已归档条目均携带 `title`（curl 抽样）。（test_spec_title 22 过 + dashboard/spec_mode/evolution 相关 649 过；worktree 隔离实例 8899 冒烟：活跃条目 title ✓、归档日期前缀条目 ✓、epoch 后缀目录经 exact 名可达 ✓；8787 主树常驻旧代码未触碰）
 - [ ] 5.2 前端生产 rebuild（`core/dashboard/static/dist/`）+ 前端测试套件全过；本地起服务对 v1 列表页与 v2 项目详情 SPEC 表格截图取证（有标题条目副标题渲染、无标题条目单行、搜索命中中文标题三形态）。
