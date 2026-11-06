@@ -200,9 +200,11 @@ test('embed 行壳位承载完整标题链：标题 + 条件副标题 + 过滤�
     new URL('../src/components/PageTitleBar.tsx', import.meta.url),
     'utf8',
   );
-  // 行壳位 JSX 内三内部件齐备（title 恒渲染、subtitle/filters 条件渲染）
-  assert.match(barSource, /<TitleNode title=\{props\.title\} \/>/);
-  assert.match(barSource, /\{props\.subtitle != null && !isMobile \? <SubtitleNode subtitle=\{props\.subtitle\} \/> : null\}/);
+  // 行壳位 JSX 内三内部件齐备（title 恒渲染、subtitle/filters 条件渲染；
+  // 2026-11-06 内联档指令：title 节点随 subtitleInline 声明不收缩、subtitle
+  // 三元改经 subtitleInline 常量——判据含 !isMobile 语义不变）
+  assert.match(barSource, /<TitleNode title=\{props\.title\} noShrink=\{subtitleInline\} \/>/);
+  assert.match(barSource, /\{subtitleInline \? <SubtitleNode subtitle=\{props\.subtitle\} \/> : null\}/);
   assert.match(barSource, /\{props\.filters \? <FiltersNode filters=\{props\.filters\} wrap \/> : null\}/);
 });
 
