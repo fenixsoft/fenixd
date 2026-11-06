@@ -27,9 +27,9 @@
 - [x] 2.2 新增「筛选」底部 Drawer（antd Segmented：类型 全部/开发/fix-*、归档 未归档/已归档、排序 名称/优先级/进度/创建时间；「查看结果」关闭生效），类型/归档过滤语义与现产一致（注明：任务行「类型 全部/开发/fix-*」与尾句「过滤语义与现产一致」矛盾，按约束句裁决——Segmented 承载现产 ListTypeFilter 语义（''=全部/active=进行中/completed=已完成）配现产标签 全部/进行中/已完成，原型「开发/fix-*」为假数据表述不落码；specKeywordHit/归档语义零改动）
 - [x] 2.3 分页改磁贴底部「加载更多」block 按钮+「共 N 条 · 已显示 M 条」caption（数据层 pageSize 20 语义不变）
 - [x] 2.4 内容区背景色 theme.ts 新增 #E3E3E3 单源常量并在本页内容区消费；DESIGN.md 修正案登记该色值条款（偏离收口，见 design.md 偏离声明段）
-- [ ] 2.5 顶栏/桌面分支零改动自证：≥768px 视口列表渲染 diff 前后一致（桌面表格列/整行点击/树形/信息子行现状）
+- [x] 2.5 顶栏/桌面分支零改动自证：≥768px 视口列表渲染 diff 前后一致（桌面表格列/整行点击/树形/信息子行现状）（注明：1280×800 视口实采 `.projects-page` outerHTML——改动前=主树 8787 现产实例（经 git 核对其 list.tsx 与 fork 基线 388a87770 逐字一致），改动后=本分支 dev server；剥 cssinjs hash 类归一化后逐字符 diff 仅剩耗时字段实时数据漂移（27分59秒→28分52秒），结构零差异；移动 Table 渲染数为 0 佐证分支互斥）
 
 ## 3. 守卫与验证
 
 - [x] 3.1 `specTitleSubtitle.test.mjs` 移动卡锚点改钉新卡结构（英文名主行/中文标题次行/胶囊行/缩进└），桌面列锚不动；`node --test tests/*.test.mjs` 全绿
-- [ ] 3.2 `npm run build` 成功；390px 视口实拍列表页与原型逐区块对照（卡片层级/胶囊/进度/元信息/信息行/筛选 Drawer/加载更多），截图存 `.history/`
+- [x] 3.2 `npm run build` 成功；390px 视口实拍列表页与原型逐区块对照（卡片层级/胶囊/进度/元信息/信息行/筛选 Drawer/加载更多），截图存 `.history/`（注明：build 成功出 dist；390×844 实拍 DOM 断言逐区块过——背景 rgb(227,227,227)、首卡 14px/600 主行+12px 次行+胶囊行、终态卡进度区省略、进度卡「10/12 · 83%」、元信息 P5|时间|耗时、chips 12 枚激活黑底白字过滤生效、再点取消、Drawer 380px 三组 Segmented+查看结果、名称升序、加载更多 20→30 后 disabled、caption「共 30 条 · 已显示 30 条」、中文标题关键词命中 2 条、整卡点击跳详情、console 仅既有 deprecation 警告；截图存 `.history/screens/mobile-390-{list,drawer}.png`（禁读仅存档）；fix-* 当前数据集全为根级平铺（桌面基线同形态，buildTree 单源未动），26px+└ 缩进由守卫测试钉住）
