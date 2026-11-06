@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-05 21:10 UTC+8
+> 最后更新：2026-11-06 16:51 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -51,3 +51,4 @@
 | [dsh-bridge-projects-section](dsh-bridge-projects-section.md) | dsh 面板桥「项目」菜单行折叠开关（点击=分区展开/折叠非主面板切换、右缘状态箭头、整行拦截层机制约束、键盘路径保留主面板注册） | 2026-11-05 18:14 |
 | [v2-commercial-ui](v2-commercial-ui.md) | v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态：/v2/* 路由前缀隔离与现产菜单零污染、主题单源分立互不引用、定稿原型双形态分立为 UI 真相源、真实 API 消费缺口「—」、移动断点单源与页内容器级双形态分支、DESIGN.md 例外域条款） | 2026-11-05 21:10 |
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
+| [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | 项目台账磁贴限高滚动与 sticky 表头（桌面约 5 行封顶、限高层钉 .ant-table-content、sticky 钉 thead>tr、827px 真实行高校准、v2/ov 两域镜像同改守卫、几何证据验证配方） | 2026-11-06 16:51 |

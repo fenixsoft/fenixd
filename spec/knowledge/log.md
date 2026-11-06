@@ -96,3 +96,4 @@
 ## [2026-11-05 21:10 UTC+8] fold | zn-inbox-entry-3.md 折叠入库
 ## [2026-11-05 21:19 UTC+8] distill | redesign-dashboard-v2-ui-mobile（第 1 轮，自动提交落库，折叠入库 6 条）
 ## [2026-11-06 00:00 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 1 / 过 8）
+## [2026-11-06 16:55 UTC+8] fold | antd-table-scroll-maxheight-sticky-th-1106.md 折叠入库
