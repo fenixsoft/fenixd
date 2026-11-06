@@ -1128,9 +1128,12 @@ def verify_correction_readback(
     # 仍可能以硬校验交付物形态被守卫读到，违背「修正被执行 ⇔ 下一次守卫读取
     # 能看到修正」不变量。与上方 source 为 None 同向 fail-safe：无有效声明
     # 对账基准不给修正生效的肯定结论，交由调用方走重试/人工兜底（不静默销账）。
-    if not (resolved.get("entries") or []):
+    # entries 局部单次取值复用（code-review item c8824832d0c8）：守卫与循环
+    # 共享同一变量，消除重复的空值兜底表达（上方空 entries 守卫语义不变）。
+    entries = resolved.get("entries") or []
+    if not entries:
         return False
-    for e in resolved.get("entries") or []:
+    for e in entries:
         if not isinstance(e, dict) or e.get("path") != corrected_path:
             continue
         if kind is None or e.get("kind") == kind:
@@ -1514,10 +1517,15 @@ def check_declaration_shrinkage(
     base_entries = baseline.get("entries")
     if not isinstance(base_entries, list) or not base_entries:
         return []
+    # 过滤条件一并要求 kind 非空（code-review item b1d1d2f700f6）：取值用
+    # e["kind"] 直接下标，入参条目缺 kind 键（上游格式漂移/手工构造）会
+    # KeyError 中断整个收缩判定。缺 kind 条目按 base_entries 侧同款口径
+    # 跳过（等价「未以任何 kind 硬校验该路径」，交由后续分支满足性判定），
+    # 不以 None 值参与映射。
     eff_by_path = {
         e["path"]: e["kind"]
         for e in (effective_entries or [])
-        if isinstance(e, dict) and e.get("path")
+        if isinstance(e, dict) and e.get("path") and e.get("kind")
     }
     violations: list = []
     # 审计流单次全量读入，复用于全部基线路径的豁免判定（重定位凭据 + 软化
