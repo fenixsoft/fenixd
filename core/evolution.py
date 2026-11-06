@@ -2481,7 +2481,9 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
 
     保留判据（design D1）：删除条件为「不在最近 ITEM_RETENTION_DAYS 天窗口
     内」AND「不在按创建时间倒序的前 ITEM_RETENTION_MIN 名内」——保留两者
-    并集（数量较多者）。排序键 ``(created_at or "", id)`` 倒序，``id`` 作
+    并集（数量较多者）。排序键 ``(_parse_iso(created_at), id)`` 倒序——解析
+    归一 UTC 后按时刻比较（与窗口判定同一解析口径，混排非 UTC 偏移的 ISO
+    串不依赖字典序），``id`` 作
     确定性兜底（等时条目在多次运行间稳定）。创建时间缺失或无法解析 MUST 判
     为保留（fail-open，D3：年龄不可知不得误删新条目）。清理不设状态门：未决
     条目（pending/analyzed 等）同样受保留策略约束。
@@ -2511,10 +2513,15 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
         now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=ITEM_RETENTION_DAYS)
 
-    # 确定性次序：创建时间倒序 + id 兜底
+    # 确定性次序：创建时间倒序 + id 兜底。解析经 _parse_iso 归一 aware UTC
+    # 后按时刻比较（与窗口判定同一解析口径）；不可解析兜底极小哨兵置最旧侧，
+    # 该类条目仍由下方 fail-open 分支保留，不影响保留判定。
     ordered = sorted(
         items.values(),
-        key=lambda r: (str(r.get("created_at") or ""), str(r.get("id") or "")),
+        key=lambda r: (
+            _parse_iso(r.get("created_at")) or datetime(1, 1, 1, tzinfo=timezone.utc),
+            str(r.get("id") or ""),
+        ),
         reverse=True,
     )
 
