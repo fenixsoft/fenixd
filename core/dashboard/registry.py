@@ -500,6 +500,11 @@ class Registry:
                 return False, load_error
             # 既有条目的生效别名 → 规范化路径（code-review item b1cd0d9f4402：
             # 落盘前的 name 冲突检测用），归一化口径与 discover 读侧守卫同式。
+            # 忽略态前置集合（code-review item eb88a85426ca）：软删除只写
+            # `ignored`、保留 projects 条目（discover 两侧过滤后项目不可见），
+            # 同路径再注册须区分「在监控列表」与「已被软删除」两种不可注册
+            # 原因，规范化口径与 discover 读侧（及 add_ignored 写侧）同式。
+            ignored_keys = {self._norm(x) for x in data.get("ignored", []) if x}
             existing_names = {}
             for p in data.get("projects", []):
                 if not isinstance(p, dict):
@@ -519,6 +524,14 @@ class Registry:
                     existing_name = Path(existing).name or existing
                 existing_names[existing_name] = existing
                 if existing == key:
+                    # code-review item eb88a85426ca：已被软删除（ignored）的
+                    # 路径在监控列表不可见，若仍报「已在监控列表」与实际
+                    # 状态矛盾且用户无从知道需先解除忽略——改报可执行的
+                    # 恢复提示（返回类型/结构不变，仅消息更准确）。
+                    if existing in ignored_keys:
+                        return False, (
+                            f"项目已被忽略（软删除），请先从忽略列表移除: {key}"
+                        )
                     return False, f"项目已在监控列表: {key}"
 
             if not Registry._state_md_is_file(rp / ".fenix" / "STATE.md"):

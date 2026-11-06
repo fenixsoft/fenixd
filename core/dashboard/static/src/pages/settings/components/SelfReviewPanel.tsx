@@ -91,6 +91,13 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
     // 作用域（下方直接 return 不加载）——若残留失败态会误拦用户级的配置保存；
     // 是否失败由本次重新加载重新裁决
     setTodoLoadFailed(false);
+    // 在飞态同在此收口（code-review item db793923d78a）：切到用户级作用域时
+    // 上一项目的 getTodo 若仍在飞，cleanup 已把 cancelled 置真、其 finally 的
+    // setTodoLoading(false) 被跳过，下方直接 return 后再无人复位——todoLoading
+    // 永久滞留 true，保存按钮恒禁用且 handleSave 恒短路，而用户级作用域不渲染
+    // todo.md 编辑区、无任何加载提示可见。项目级路径随下方 load() 同步置回
+    // true（同一 effect 内连续置值合并渲染），无闪烁副作用
+    setTodoLoading(false);
     if (!project) return;
     let cancelled = false;
     // 作用域切换即先清空上一项目残留草稿（code-review item 6bf8170c023d，
