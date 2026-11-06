@@ -137,7 +137,11 @@ class VisualDiffer:
         if scenario_context.get("steps_failed"):
             return False
         for a in scenario_context.get("assertion_results") or []:
-            if isinstance(a, dict) and not a.get("pass", True):
+            # 畸形断言条目兜底与判定侧同款（code-review item 3c13a61f83a1）：
+            # 非 dict 条目（上游畸形）与 dict 缺 pass 键均按失败兜底，对齐
+            # determine_scenario_status / web_runner 取证分支的缺省口径——
+            # 场景判 fail 则不固化基线、不计 streak，两侧消费点口径一致。
+            if not (isinstance(a, dict) and a.get("pass", False)):
                 return False
         return True
 

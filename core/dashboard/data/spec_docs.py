@@ -546,6 +546,11 @@ def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | 
         return None
     # 同一次进度查询只装载一遍 test_scenarios.json，分子/分母共享同一 list
     scenarios = _load_planned_scenarios(project_root, spec_name)
+    if scenarios is None:
+        # 装载失败（缺失/损坏/非列表）时分子必为 0、本就以 None 收场；直接
+        # 走既有 None 返回，避免把 None 传给计数函数命中其各自的「调用方未
+        # 传则重装载」兜底、对同一缺失文件重复 exists/读盘/解析
+        return None
     done = count_generated_scenarios(project_root, spec_name, scenarios)
     if not done:
         return None

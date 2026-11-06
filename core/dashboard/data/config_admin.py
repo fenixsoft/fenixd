@@ -1307,6 +1307,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             )
         # fix-provider-transient-backoff（D6）：瞬断治理五键合并分支（前置校验
         # 已拒绝非法值，此处只应用合法值；缺省透传由 get_transient_config 兜底）。
+        # code-review item 9b8155dd0c64：五键加 is not None 守卫——直存
+        # {"agents": {<瞬断键>: null}} 原样落盘以 null 形态写入项目级文件
+        # （merged 视图校验对该五键带 is not None 前置、null 放行），对齐
+        # gates 四键同款「显式 null = 未提交不落盘」约定；sync 路径另由
+        # _SYNC_PAGE_APPLY_PREDICATES 的 agents 段对 null 报错拒绝。
         for _tk in (
             "transient_backoff_schedule",
             "transient_redispatch_delay_seconds",
@@ -1314,7 +1319,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             "transient_break_window_seconds",
             "transient_break_cooldown_seconds",
         ):
-            if _tk in patch["agents"]:
+            if patch["agents"].get(_tk) is not None:
                 merged["agents"][_tk] = patch["agents"][_tk]
         # fix-agent-lane-efficiency D1：子代理模型覆盖合并分支。
         # 非空字符串覆盖、空串显式写回空值（语义 = 清除覆盖、回落 provider
@@ -1335,26 +1340,36 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         merged["agent"]["harness"] = patch["agent"]["harness"]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
-        if (
-            "approve_mode" in patch["gates"]
-            or "promote_mode" in patch["gates"]
-            or "spec_review_mode" in patch["gates"]
-            or "start_after_scope" in patch["gates"]
+        # code-review item 0b71f3981bae：四键合并分支统一加 is not None 守卫——
+        # 前置校验把 None 视为「未提交」放行，无守卫时直存 {"gates":
+        # {"approve_mode": null}} 会以 null 形态写入项目级 config.yaml（sync
+        # 路径已由 _SYNC_PAGE_APPLY_PREDICATES 对 null 报错拒绝，此处堵直存
+        # 残余面）；显式 null 不落盘、读侧归一回缺省，对齐 agent.harness
+        # 分支（item 87cc1fcac728）同款「显式 null = 未提交」约定。段入口
+        # 条件同步改为「有非 null 键才建段」，避免全 null patch 留下空段。
+        if any(
+            patch["gates"].get(_gk) is not None
+            for _gk in (
+                "approve_mode",
+                "promote_mode",
+                "spec_review_mode",
+                "start_after_scope",
+            )
         ):
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
-        if "approve_mode" in patch["gates"]:
+        if patch["gates"].get("approve_mode") is not None:
             merged["gates"]["approve_mode"] = patch["gates"]["approve_mode"]
         # add-draft-promotion-gate 验证修复：缺合并分支导致设置页保存的
         # promote_mode 在 merge 阶段被静默丢弃（枚举合法性已由 write_config 前置校验把关）
-        if "promote_mode" in patch["gates"]:
+        if patch["gates"].get("promote_mode") is not None:
             merged["gates"]["promote_mode"] = patch["gates"]["promote_mode"]
         # add-spec-review-gate：spec_review_mode 缺合并分支会被静默丢弃（同 promote_mode）
-        if "spec_review_mode" in patch["gates"]:
+        if patch["gates"].get("spec_review_mode") is not None:
             merged["gates"]["spec_review_mode"] = patch["gates"]["spec_review_mode"]
         # add-start-after-scope-config：start_after_scope 缺合并分支会被静默丢弃
         # （同 promote_mode / spec_review_mode 历史同坑）
-        if "start_after_scope" in patch["gates"]:
+        if patch["gates"].get("start_after_scope") is not None:
             merged["gates"]["start_after_scope"] = patch["gates"]["start_after_scope"]
 
     # verify.*：static_scope 服务范围 / deps_mode 依赖供给模式
@@ -2137,10 +2152,24 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                     f"admin.self_heal_quiet_minutes must be a positive integer: {sq!r}"
                 )
 
-    # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode；
-    # code-review item 47a9bd170bc6：枚举集改引 ConfigLoader.VALID_PROMOTE_MODES 单源）
+    # add-draft-promotion-gate：gates 前置校验（枚举拒绝；None 视为「未提交」放行，
+    # 显式 null 不落盘由 _deep_merge_managed 的 is not None 合并守卫保证——
+    # code-review item 0b71f3981bae：approve_mode 此前缺前置分支，原注释
+    # 「对齐 approve_mode」失实——approve_mode 仅有 merged 视图校验，直存
+    # {"gates": {"approve_mode": null}} 经放行合并后以 null 落盘，与 sync
+    # 预检（_pred_approve_mode 对 null 拒绝）口径分裂，此处补齐四键同款。
+    # code-review item 47a9bd170bc6：枚举集改引 ConfigLoader.VALID_* 单源）
     if isinstance(config_patch.get("gates"), dict):
         g_patch = config_patch["gates"]
+        if (
+            "approve_mode" in g_patch
+            and g_patch["approve_mode"] is not None
+            and g_patch["approve_mode"] not in ConfigLoader.VALID_APPROVE_MODES
+        ):
+            return fail(
+                f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: "
+                f"{g_patch['approve_mode']!r}"
+            )
         if (
             "promote_mode" in g_patch
             and g_patch["promote_mode"] is not None
@@ -3279,6 +3308,39 @@ _SYNC_PAGE_APPLY_PREDICATES = {
             f"must be one of {ConfigLoader.VALID_START_AFTER_SCOPES}",
         ),
     },
+    # code-review item 9b8155dd0c64：system 页 agents 瞬断五键补登记——瞬断
+    # 合并分支此前无 None 守卫，用户级手工写成 null 的键经 sync 原样落进项目级
+    # 文件且 synced 回执照含该键（bf995a56f571 / b331b2c9ae73 同款「synced 与
+    # 实际落盘不一致」假成功的 agents 段残余面），表注释宣称的「预检不命中
+    # 直接报错拒绝」契约在 agents 段不成立。谓词与 get_transient_config 归一
+    # 化 / merged 视图校验同口径（schedule 为 str、四数值键为非负数非 bool，
+    # 消息串逐字对齐 merged 校验文案）。
+    # agents 标量键（parallel/token 页 max_concurrent 等九键）不登记：其显式
+    # null 已由 merged 视图校验逐键拒绝（无 is not None 前置，
+    # _is_int_not_bool(None) 为 False → 400），sync 与直存两路径口径一致、
+    # synced 不会假成功，登记属重复设防。
+    "agents": {
+        "transient_backoff_schedule": (
+            lambda v: isinstance(v, str),
+            "must be a comma-separated seconds string",
+        ),
+        "transient_redispatch_delay_seconds": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative number",
+        ),
+        "transient_break_threshold": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative number",
+        ),
+        "transient_break_window_seconds": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative number",
+        ),
+        "transient_break_cooldown_seconds": (
+            lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            "must be a non-negative number",
+        ),
+    },
 }
 
 def _pred_hhmm(v) -> bool:
@@ -3333,6 +3395,9 @@ def sync_config_from_user(project_root, page: str) -> dict:
     以用户级文件原始值为 patch 源（read_config 的回显含缺省填充，会把用户级
     未显式配置的键也一并覆盖成缺省值），经 write_config 走完整的前置校验 +
     受管键合并 + 原子写盘——非受管键与其它页签的设置值不受影响。
+    读用户级文件、构造 patch、写入全程持 _CONFIG_WRITE_LOCK（与 write_config /
+    clear_project_page_keys 同锁，锁内经 write_config 的持锁实现
+    _write_config_locked 落盘）。
 
     Args:
         project_root: 项目根路径
@@ -3343,99 +3408,107 @@ def sync_config_from_user(project_root, page: str) -> dict:
     if page not in _SYNC_PAGE_KEYS:
         return {"ok": False, "error": f"未知页面标识: {page}", "synced": None, "path": None}
 
-    # 读用户级原始文件（raw dict，不做缺省填充）：用户级未显式配置的键不覆盖
     import core.dashboard.data as _facade
 
-    user_raw = {}
-    if _facade.USER_CONFIG_PATH.exists():
-        try:
-            with _facade.USER_CONFIG_PATH.open("r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f)
-        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
-            # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛（code-review
-            # item eeec7a6f3ff5，与五处 yaml 读取点同款口径）
-            return {
-                "ok": False,
-                "error": f"读取用户级配置失败: {e}",
-                "synced": None,
-                "path": str(_facade.USER_CONFIG_PATH),
-            }
-        # 空文件（None）仍按空配置处理，对齐写/清空路径 `or {}` 口径。
-        if loaded is None:
-            loaded = {}
-        # code-review item b11d30931a75：顶层非 dict（list/标量）时与写路径
-        # （item 2108d49c5ea8）及清空路径（item 3fc70edaec8c）同款报错（提示
-        # 先手工修正），不再静默按空配置处理——否则最终报「用户级配置中该
-        # 页面没有已设置的值」，掩盖配置文件顶层已损坏的真实原因。
-        if not isinstance(loaded, dict):
-            return {
-                "ok": False,
-                "error": "配置文件顶层不是对象，请先手工修正 config.yaml",
-                "synced": None,
-                "path": str(_facade.USER_CONFIG_PATH),
-            }
-        user_raw = loaded
-
-    section_map = _SYNC_PAGE_KEYS[page]
-    patch = {}
-    for section, keys in section_map.items():
-        sec_raw = user_raw.get(section)
-        if sec_raw is None:
-            continue  # 用户级未配置该段：本页无可同步值，跳过（不写空覆盖）
-        if not isinstance(sec_raw, dict):
-            # code-review item fd7178c8666c：段存在但形态脏（如 verify: true）
-            # 不能静默跳过——该段会被无声略去而其余段照常 sync 返回 ok，同款
-            # 「synced 与实际落盘不一致」假成功，直接报错拒绝。
-            return {
-                "ok": False,
-                "error": f"{section} must be an object: {sec_raw!r}",
-                "synced": None,
-                "path": str(_facade.USER_CONFIG_PATH),
-            }
-        picked = {k: sec_raw[k] for k in keys if k in sec_raw}
-        # 逐键可应用性预检（口径见 _SYNC_PAGE_APPLY_PREDICATES 表注释）：形态
-        # 不符直接报错拒绝，而非照常计入 synced 回执虚报已同步
-        for _pk, _pv in picked.items():
-            _pred = _SYNC_PAGE_APPLY_PREDICATES.get(section, {}).get(_pk)
-            if _pred is not None and not _pred[0](_pv):
+    # 读-构-写全程持 _CONFIG_WRITE_LOCK（code-review item c0f2467c8462）：原实现
+    # 在锁外读取用户级 config.yaml 构造 patch 后才进 write_config（锁在其内部
+    # 才获取），用户在另一页签并发保存用户级配置时，本函数会基于旧快照把过期
+    # 值写入项目级（TOCTOU）。锁为非可重入 threading.Lock，故锁内改调
+    # _write_config_locked（其契约即「调用方须已持锁」，实现与 write_config
+    # 相同）；不得改调 write_config——内部重复取锁会死锁。调用方为 HTTP 路由，
+    # 不持本锁，无重入风险。
+    with _CONFIG_WRITE_LOCK:
+        # 读用户级原始文件（raw dict，不做缺省填充）：用户级未显式配置的键不覆盖
+        user_raw = {}
+        if _facade.USER_CONFIG_PATH.exists():
+            try:
+                with _facade.USER_CONFIG_PATH.open("r", encoding="utf-8") as f:
+                    loaded = yaml.safe_load(f)
+            except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+                # UnicodeDecodeError：非 UTF8 编码文件 read() 即抛（code-review
+                # item eeec7a6f3ff5，与五处 yaml 读取点同款口径）
                 return {
                     "ok": False,
-                    "error": f"{section}.{_pk} {_pred[1]}: {_pv!r}",
+                    "error": f"读取用户级配置失败: {e}",
                     "synced": None,
                     "path": str(_facade.USER_CONFIG_PATH),
                 }
-        if picked:
-            patch[section] = picked
+            # 空文件（None）仍按空配置处理，对齐写/清空路径 `or {}` 口径。
+            if loaded is None:
+                loaded = {}
+            # code-review item b11d30931a75：顶层非 dict（list/标量）时与写路径
+            # （item 2108d49c5ea8）及清空路径（item 3fc70edaec8c）同款报错（提示
+            # 先手工修正），不再静默按空配置处理——否则最终报「用户级配置中该
+            # 页面没有已设置的值」，掩盖配置文件顶层已损坏的真实原因。
+            if not isinstance(loaded, dict):
+                return {
+                    "ok": False,
+                    "error": "配置文件顶层不是对象，请先手工修正 config.yaml",
+                    "synced": None,
+                    "path": str(_facade.USER_CONFIG_PATH),
+                }
+            user_raw = loaded
 
-    if not patch:
-        return {
-            "ok": False,
-            "error": "用户级配置中该页面没有已设置的值，无可同步内容",
-            "synced": None,
-            "path": str(_facade.USER_CONFIG_PATH),
-        }
-
-    result = write_config(project_root, patch, scope="project")
-    if result["ok"]:
-        # code-review item 002d3c8a7fb0：synced 回执按 _deep_merge_managed 实际
-        # 应用口径逐键裁剪整段子对象（段内未知键、显式 null 不落盘，原样回执
-        # 即虚报已同步）。裁剪在 write_config 成功后进行，不影响其前置校验
-        # （已知子键非法值仍被直接拒绝，不剔除、不假成功）。
-        for _sec, _keys_patch in patch.items():
-            for _pk in _keys_patch:
-                _sub_apply = _SYNC_DICT_SUBKEY_APPLY.get((_sec, _pk))
-                if _sub_apply is not None and isinstance(_keys_patch[_pk], dict):
-                    _keys_patch[_pk] = {
-                        _sk: _sv
-                        for _sk, _sv in _keys_patch[_pk].items()
-                        if _sk in _sub_apply and _sub_apply[_sk](_sv)
+        section_map = _SYNC_PAGE_KEYS[page]
+        patch = {}
+        for section, keys in section_map.items():
+            sec_raw = user_raw.get(section)
+            if sec_raw is None:
+                continue  # 用户级未配置该段：本页无可同步值，跳过（不写空覆盖）
+            if not isinstance(sec_raw, dict):
+                # code-review item fd7178c8666c：段存在但形态脏（如 verify: true）
+                # 不能静默跳过——该段会被无声略去而其余段照常 sync 返回 ok，同款
+                # 「synced 与实际落盘不一致」假成功，直接报错拒绝。
+                return {
+                    "ok": False,
+                    "error": f"{section} must be an object: {sec_raw!r}",
+                    "synced": None,
+                    "path": str(_facade.USER_CONFIG_PATH),
+                }
+            picked = {k: sec_raw[k] for k in keys if k in sec_raw}
+            # 逐键可应用性预检（口径见 _SYNC_PAGE_APPLY_PREDICATES 表注释）：形态
+            # 不符直接报错拒绝，而非照常计入 synced 回执虚报已同步
+            for _pk, _pv in picked.items():
+                _pred = _SYNC_PAGE_APPLY_PREDICATES.get(section, {}).get(_pk)
+                if _pred is not None and not _pred[0](_pv):
+                    return {
+                        "ok": False,
+                        "error": f"{section}.{_pk} {_pred[1]}: {_pv!r}",
+                        "synced": None,
+                        "path": str(_facade.USER_CONFIG_PATH),
                     }
-    return {
-        "ok": result["ok"],
-        "error": result.get("error"),
-        "synced": patch if result["ok"] else None,
-        "path": result.get("path"),
-    }
+            if picked:
+                patch[section] = picked
+
+        if not patch:
+            return {
+                "ok": False,
+                "error": "用户级配置中该页面没有已设置的值，无可同步内容",
+                "synced": None,
+                "path": str(_facade.USER_CONFIG_PATH),
+            }
+
+        result = _write_config_locked(project_root, patch, scope="project")
+        if result["ok"]:
+            # code-review item 002d3c8a7fb0：synced 回执按 _deep_merge_managed 实际
+            # 应用口径逐键裁剪整段子对象（段内未知键、显式 null 不落盘，原样回执
+            # 即虚报已同步）。裁剪在 write_config 成功后进行，不影响其前置校验
+            # （已知子键非法值仍被直接拒绝，不剔除、不假成功）。
+            for _sec, _keys_patch in patch.items():
+                for _pk in _keys_patch:
+                    _sub_apply = _SYNC_DICT_SUBKEY_APPLY.get((_sec, _pk))
+                    if _sub_apply is not None and isinstance(_keys_patch[_pk], dict):
+                        _keys_patch[_pk] = {
+                            _sk: _sv
+                            for _sk, _sv in _keys_patch[_pk].items()
+                            if _sk in _sub_apply and _sub_apply[_sk](_sv)
+                        }
+        return {
+            "ok": result["ok"],
+            "error": result.get("error"),
+            "synced": patch if result["ok"] else None,
+            "path": result.get("path"),
+        }
 
 
 def clear_project_page_keys(project_root, page: str) -> dict:

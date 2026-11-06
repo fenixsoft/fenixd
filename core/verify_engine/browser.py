@@ -1206,10 +1206,14 @@ class BrowserManager:
             if action == "dialog":
                 mode = (value or "accept").lower()
                 if mode not in ("accept", "dismiss"):
+                    # error_type 对齐 click 内联 dialog 校验（code-review item
+                    # 9c1be3d89a0e）：同类配置错误的结构化失败形态一致，下游
+                    # 按 error_type 分流的归因逻辑不再退化为无分类处理
                     return {
                         "success": False,
                         "action": action,
                         "target": target,
+                        "error_type": "invalid_dialog_mode",
                         "error": f"dialog 模式无效: {value}（应为 accept/dismiss）",
                     }
                 self._register_dialog_handler(page, mode, prompt_text=step.get("prompt_text"))
@@ -1221,10 +1225,13 @@ class BrowserManager:
 
             # 所有其他操作都需要 target
             if not target:
+                # error_type 与同文件配置类结构化失败同口径（code-review item
+                # 9c1be3d89a0e），snake_case 字面量对齐既有命名风格
                 return {
                     "success": False,
                     "action": action,
                     "target": target,
+                    "error_type": "missing_target",
                     "error": "缺少 target 选择器",
                 }
 

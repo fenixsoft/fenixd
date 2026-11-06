@@ -496,8 +496,13 @@ class VerifyEngine:
                 runnable = accepted
                 ready = runnable
             elif dep_skipped:
-                # 本批全部为依赖失败跳过（进度与 completed_ids 均已推进），
-                # 收紧 remaining 后回循环头重判下一批，不空烧批次号
+                # 本批全部为依赖失败跳过（进度与 completed_ids 均已推进）：
+                # 上方合成结果已按收尾段自增口径写 batch=batch_num+1，该批号
+                # 已被本批跳过条目占用，此处必须同步推进 batch_num 再回循环头
+                # ——否则下一真实批次自增后取同一批号，连续多个独占批次相互
+                # 之间也复用同号，跨执行窗口撞号污染豁免复核归因的 batch 同窗
+                # 证据（item b13d4b9a9b70）。
+                batch_num += 1
                 remaining = [s for s in remaining if s.id not in completed_ids]
                 continue
             else:

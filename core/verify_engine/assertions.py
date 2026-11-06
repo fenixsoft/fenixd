@@ -24,12 +24,13 @@ from typing import Any
 # run() 分派前的 selector 缺参兜底复用该单源集合，不另立类型清单漂移面。
 from .scenarios import ASSERTIONS_REQUIRING_SELECTOR, WEB_ASSERTION_LAYERS
 
-# 第三方 regex 库（环境可用时）为 regex 模式提供 timeout 参数，防灾难性
-# 回溯正则挂起整个验证执行；库缺失时退回 stdlib re（无超时保护）。
-try:
-    import regex as _regex_mod
-except ImportError:  # pragma: no cover
-    _regex_mod = None
+# 正则匹配统一走共享层 regex_safety 的 TimeoutRegex/compile_regex（code-
+# review item 20a65b10cbfe）：web 侧 text_match 的正则预检与超时防护收敛
+# 复用 api/cli/scenarios 三方共用实现——regex 库可用时带 timeout 匹配、
+# 超时转 TimeoutRegexError（re.error 子类）定向归因、预编译产物随轮询
+# 复用，超时预算/归因文案/预编译口径单源不漂移；regex_safety 零内部
+# 依赖，本文件已依赖 scenarios（其反向依赖 regex_safety），无 import 环。
+from .regex_safety import TimeoutRegex, compile_regex
 
 # 轮询类断言（text_match/attribute_match）timeout/interval 的钳制边界
 # （code-review item e396300682b6）：timeout 上界对齐 element_count/
@@ -754,7 +755,11 @@ class AssertionRunner:
     # ═══════════════════════════════════════════════════════════════
 
     def _text_matches(
-        self, actual: str, expected: str, mode: str, regex_compiled: re.Pattern | None = None
+        self,
+        actual: str,
+        expected: str,
+        mode: str,
+        regex_compiled: TimeoutRegex | None = None,
     ) -> bool:
         """按 mode 判断文本是否匹配。"""
         if mode == "exact":
@@ -762,56 +767,12 @@ class AssertionRunner:
         if mode == "contains":
             return expected in actual
         if mode == "regex":
-            return self._regex_search(expected, actual, regex_compiled)
+            # regex_compiled 是预检期 compile_regex 的产物（TimeoutRegex），
+            # search 内部带超时防护、超时沿 re.error 子类 TimeoutRegexError
+            # 定向归因；预检门保证 mode == "regex" 时必非 None（compile_regex
+            # 判定非法时调用方已提前确定性失败）。
+            return regex_compiled.search(actual)
         return False
-
-    # regex 模式单次匹配的回溯预算（秒）：compile 通过但呈灾难性回溯的
-    # 正则（嵌套量词形态）在匹配时无超时保护，长文本下会同步阻塞
-    # AssertionRunner 直至回溯结束，整轮验证被单个断言拖死；planner 产出
-    # 属半可信输入，单次匹配超时按「不匹配」收场，交由轮询按普通失败上报
-    # （匹配超时轮以带「正则匹配超时」归因的 re.error 抛给调用方定向
-    # 标注，见 _regex_search）。
-    _REGEX_MATCH_TIMEOUT_S = 1.0
-
-    @classmethod
-    def _regex_search(
-        cls, pattern: str, text: str, compiled: re.Pattern | None = None
-    ) -> bool:
-        """regex 模式匹配，带单次匹配超时保护。
-
-        优先用第三方 regex 库的 timeout 参数（覆盖嵌套量词等全部灾难性
-        回溯形态，超时抛 TimeoutError）；库不可用时退回 stdlib re（行为
-        同旧版，无超时保护）。其余异常一律按不匹配收场——抛错会被
-        _assert_text_match 的 except 当「元素尚未渲染」空转至超时；仅
-        匹配超时重抛为带归因的 re.error（code-review item b34af3a4195b，
-        与 api 侧 _TimeoutRegex 的定向归因口径对齐），由
-        _assert_text_match 单独捕获记入结果 error，归因不被吞。
-
-        compiled 是调用方预编译好的同一 pattern（编译引擎与 regex 库可用
-        性一致，见 _assert_text_match 的正则预检），传入时复用编译产物，
-        轮询循环不必每轮重复解析编译（同 api 侧 _TimeoutRegex 的预编译
-        口径，code-review item ad66fbae76be）；未传入时保持模块级 search
-        的旧行为。
-        """
-        if _regex_mod is not None:
-            try:
-                if compiled is not None:
-                    return bool(
-                        compiled.search(text, timeout=cls._REGEX_MATCH_TIMEOUT_S)
-                    )
-                return bool(
-                    _regex_mod.search(pattern, text, timeout=cls._REGEX_MATCH_TIMEOUT_S)
-                )
-            except TimeoutError:
-                raise re.error(
-                    f"正则匹配超时（>{cls._REGEX_MATCH_TIMEOUT_S}s，"
-                    f"疑似灾难性回溯）: {pattern!r}"
-                ) from None
-            except Exception:
-                return False
-        if compiled is not None:
-            return bool(compiled.search(text))
-        return bool(re.search(pattern, text))
 
     async def _assert_text_match(self, page, a: dict) -> dict:
         """断言元素文字内容匹配。
@@ -895,29 +856,21 @@ class AssertionRunner:
                 "error": f"mode={mode} 时 expected 为显式空串恒真，拒绝",
             }
 
-        # 非法正则是确定性错误：_text_matches 经 _regex_search 匹配时在 regex
-        # 库可用时走 _regex_mod.search，预检须用同一引擎——regex 是 re 的超集，
-        # 仅 regex 支持的语法（如递归）会被 stdlib re.compile 误判为非法正则、
-        # 把可执行的合法期望值按确定性错误拒绝；regex.error 与 re.error 无继承
-        # 关系，须按引擎捕获对应异常。库缺失时回退 re.compile/re.error。
-        # （code-review item 11293370e8f2）非法正则本身仍是确定性错误：
-        # _text_matches 内每轮重抛匹配异常，会被下方 except 当作「元素尚未
-        # 渲染」的临时态空转至超时，故进轮询前预检。
+        # 非法正则是确定性错误（code-review item 11293370e8f2）：匹配异常会
+        # 被轮询循环当「元素尚未渲染」空转至超时，故进轮询前预检。预检与
+        # 匹配统一走共享层 compile_regex/TimeoutRegex（code-review item
+        # 20a65b10cbfe，同 api/cli/scenarios 口径）：compile_regex 以 stdlib
+        # re 判定合法性，非法时返回「非法正则: …」确定性失败文案；合法时
+        # 返回 TimeoutRegex——匹配带超时防护、超时沿 re.error 子类
+        # TimeoutRegexError 定向归因（下方轮询段 except re.error 捕获面
+        # 不变），预编译产物随轮询循环复用。
         # [fenix-ignore:7f1d7284e123] 正则预检以 mode == "regex" 为门，mode 非法
         # 时进不了本分支，下方「非法 mode」校验必然先于任何正则报错触发，
         # 「双配置错误归因偏离」场景在当前代码中不存在。
-        # 预编译产物（regex 库可用时 regex.compile、缺失时 re.compile）随
-        # 轮询循环复用，避免每轮匹配重复解析编译同一 pattern（同 api 侧
-        # _TimeoutRegex 的预编译口径，code-review item ad66fbae76be）。
         regex_compiled = None
         if mode == "regex":
-            if _regex_mod is not None:
-                regex_compile, regex_errors = _regex_mod.compile, _regex_mod.error
-            else:
-                regex_compile, regex_errors = re.compile, re.error
-            try:
-                regex_compiled = regex_compile(expected)
-            except regex_errors as e:
+            regex_compiled, invalid_regex_error = compile_regex(expected)
+            if regex_compiled is None:
                 return {
                     "type": "text_match",
                     "layer": 3,
@@ -926,7 +879,7 @@ class AssertionRunner:
                     "actual": "",
                     "mode": mode,
                     "pass": False,
-                    "error": f"非法正则: {e}",
+                    "error": invalid_regex_error,
                 }
 
         # 非法 mode 是确定性配置错误：_text_matches 对未知 mode 返回 False，
@@ -1339,6 +1292,57 @@ class AssertionRunner:
             **({"note": clamp_note} if clamp_note else {}),
         }
 
+    @staticmethod
+    def _normalize_injected_errors(
+        a: dict, key: str
+    ) -> tuple[list[str], bool, bool, str]:
+        """注入式收集数据（console/network 错误清单）的公共防御段。
+
+        no_console_error 与 no_network_error 对注入数据的四段防御逐行同构
+        （多次 code-review 修复在两侧分头落补丁累积的平行副本，code-review
+        item 4f92c815470f 收敛单源）：注入键缺失标注（injected，item
+        796f7244820d）、非 list 形态防御（item 90b055a2072a）、元素级 str
+        归一（item c70f6bf51b8f）、[truncated] 截断标记剔除（item
+        58ce31605491）。
+
+        返回 (errors, injected, truncated, error)：error 非空即注入形态
+        非法，调用方按各自的结果 shape（console 侧多 filtered_network 键）
+        提前确定性失败；合法时 errors 已完成元素级 str 归一与截断标记
+        剔除，网络层豁免分拣与 pass 裁决仍留在各断言函数内。
+        """
+        errors = a.get(key, [])
+        # 注入键缺失标注：注入键缺失（未来新 runner 直用 AssertionRunner、
+        # 或 web_runner 注入段回归）时按空集处理会让断言恒 pass 且无任何
+        # 「数据未注入」痕迹——静默假通过方向与模块头「0 误判/确定性」
+        # 承诺相反。以 injected 标志 + note 透出供 judge 区分「确无错误」
+        # 与「未检查」；不翻转 pass：无收集能力的 runner 变体下翻失败会把
+        # 环境缺位误判为产品缺陷（假失败）。
+        injected = key in a
+        # 非 list 形态防御：注入值非 list 时调用方下方的遍历（startswith
+        # 剔除、分拣）会抛 TypeError/AttributeError，被 run() 统一包装成
+        # 裸异常文本的「断言执行异常」，judge 难以归因——以 error 文案交
+        # 调用方在分拣前按确定性失败上报并注明。
+        if not isinstance(errors, list):
+            return [], injected, False, (
+                f"注入数据形态非法: {key} 须为 list，"
+                f"实际 {type(errors).__name__}"
+            )
+        # 元素级类型归一：list 形态防御不覆盖元素类型——含非 str 元素
+        # （新 runner 变体或收集器回归写入 dict/int）时下方 startswith
+        # 遍历抛 AttributeError；归一为 str 后正常收集路径（恒产 str）
+        # 逐元素原样保留，不翻转 pass 裁决，畸形条目保真转字符串参与
+        # 过滤与透出。
+        errors = [e if isinstance(e, str) else str(e) for e in errors]
+        # 收集侧触顶截断标记（browser._capped_append）剔除：标记是「后续
+        # 还有错误被截断」的信号而非真实错误记录，留在 errors 里会被
+        # 误计为一条错误（console 侧豁免路径上纯网络层错误风暴被截断后
+        # 即误报），剔除后以 truncated 标志透出，judge 读错误清单不再
+        # 混入标记条目。
+        truncated = any(e.startswith("[truncated]") for e in errors)
+        if truncated:
+            errors = [e for e in errors if not e.startswith("[truncated]")]
+        return errors, injected, truncated, ""
+
     async def _assert_no_console_error(self, page, a: dict) -> dict:
         """断言页面没有控制台错误。
 
@@ -1361,23 +1365,14 @@ class AssertionRunner:
         「仅外部域」。被豁免条目的原始全文保留在结果 filtered_network 中，
         judge 归因时须复核其中是否混有应用自身缺陷。
         """
-        errors = a.get("_console_errors", [])
+        # 注入数据防御四段（injected 标注/非 list 形态/元素级 str 归一/
+        # [truncated] 剔除）收敛到公共助手单源（code-review item
+        # 4f92c815470f），本函数只保留网络层豁免分拣与 pass 裁决。
+        errors, injected, truncated, form_error = self._normalize_injected_errors(
+            a, "_console_errors"
+        )
         allow_network = a.get("_external_net_errors_ok", False)
-        # 数据未注入标注（code-review item 796f7244820d）：注入键缺失（未来
-        # 新 runner 直用 AssertionRunner、或 web_runner 注入段回归）时按空集
-        # 处理会让断言恒 pass 且无任何「数据未注入」痕迹——静默假通过方向
-        # 与模块头第 1-3 层「0 误判/确定性」承诺相反。以 injected 标志 + note
-        # 透出供 judge 区分「确无错误」与「未检查」；不翻转 pass：无收集
-        # 能力的 runner 变体下翻失败会把环境缺位误判为产品缺陷（假失败）。
-        injected = "_console_errors" in a
-
-        # 注入数据形态防御（code-review item 90b055a2072a）：键缺失已有上方
-        # injected 标志防御，形态防御此前缺位——注入值非 list（新 runner 变体
-        # 直用 AssertionRunner、web_runner 注入段回归）时下方 truncated 的
-        # startswith 遍历与网络错误分拣遍历抛 TypeError/AttributeError，被
-        # run() 统一包装成「断言执行异常」，error 归因是裸异常文本而非「注入
-        # 数据形态非法」，judge 难以归因；进分拣前按确定性失败上报并注明。
-        if not isinstance(errors, list):
+        if form_error:
             return {
                 "type": "no_console_error",
                 "layer": 3,
@@ -1386,25 +1381,8 @@ class AssertionRunner:
                 "truncated": False,
                 "filtered_network": [],
                 "injected": injected,
-                "error": (
-                    f"注入数据形态非法: _console_errors 须为 list，"
-                    f"实际 {type(errors).__name__}"
-                ),
+                "error": form_error,
             }
-
-        # 元素级类型归一（code-review item c70f6bf51b8f）：list 形态防御不
-        # 覆盖元素类型——含非 str 元素（新 runner 变体或收集器回归写入
-        # dict/int）时下方 startswith 遍历抛 AttributeError，被 run() 包装
-        # 成裸异常文本的「断言执行异常」（正是上方防御注释要避免的归因
-        # 形态）；归一为 str 后正常收集路径（恒产 str）逐元素原样保留，
-        # 不翻转 pass 裁决，畸形条目保真转字符串参与过滤与透出。
-        errors = [e if isinstance(e, str) else str(e) for e in errors]
-        # 收集侧触顶截断标记（browser._capped_append）不计入 pass：
-        # external_net_errors_ok 豁免路径上，纯网络层错误风暴被截断后
-        # 标记若留在 errors 里会被误计为控制台错误（误报）
-        truncated = any(e.startswith("[truncated]") for e in errors)
-        if truncated:
-            errors = [e for e in errors if not e.startswith("[truncated]")]
 
         filtered: list[str] = []
         if allow_network:
@@ -1446,16 +1424,14 @@ class AssertionRunner:
         注意：network_errors 由 BrowserManager 在 context 生命周期中收集，
         通过 assertion 的 _network_errors 字段传入。
         """
-        errors = a.get("_network_errors", [])
-        # 数据未注入标注（code-review item 796f7244820d，同 no_console_error
-        # 口径）：注入键缺失时按空集静默判 pass 是 fail-open 方向，以
-        # injected 标志 + note 透出供 judge 区分「确无错误」与「未检查」。
-        injected = "_network_errors" in a
-        # 注入数据形态防御（code-review item 90b055a2072a，同 no_console_error
-        # 口径）：注入值非 list 时下方 truncated 的 startswith 遍历抛
-        # TypeError，被 run() 包装成裸异常文本的「断言执行异常」，进分拣前
-        # 按确定性失败上报并注明注入形态非法。
-        if not isinstance(errors, list):
+        # 注入数据防御四段（injected 标注/非 list 形态/元素级 str 归一/
+        # [truncated] 剔除）收敛到公共助手单源（code-review item
+        # 4f92c815470f，与 no_console_error 同口径），本函数无网络层豁免
+        # 分拣，防御后直接裁决。
+        errors, injected, truncated, form_error = self._normalize_injected_errors(
+            a, "_network_errors"
+        )
+        if form_error:
             return {
                 "type": "no_network_error",
                 "layer": 3,
@@ -1463,24 +1439,8 @@ class AssertionRunner:
                 "errors": [],
                 "truncated": False,
                 "injected": injected,
-                "error": (
-                    f"注入数据形态非法: _network_errors 须为 list，"
-                    f"实际 {type(errors).__name__}"
-                ),
+                "error": form_error,
             }
-        # 元素级类型归一（code-review item c70f6bf51b8f，同 no_console_error
-        # 口径）：list 形态防御不覆盖元素类型——含非 str 元素时下方
-        # startswith 遍历抛 AttributeError，被 run() 包装成裸异常文本的
-        # 「断言执行异常」；归一为 str 后正常收集路径逐元素原样保留，
-        # 不翻转 pass 裁决，畸形条目保真转字符串参与过滤与透出。
-        errors = [e if isinstance(e, str) else str(e) for e in errors]
-        # 收集侧触顶截断标记（browser._capped_append）不计入 errors：标记是
-        # 「后续还有错误被截断」的信号而非真实 4xx/5xx 记录，与 console 侧
-        # （_assert_no_console_error）同口径剔除并以 truncated 标志透出
-        # （code-review item 58ce31605491），judge 读错误清单不再混入标记条目
-        truncated = any(e.startswith("[truncated]") for e in errors)
-        if truncated:
-            errors = [e for e in errors if not e.startswith("[truncated]")]
         return {
             "type": "no_network_error",
             "layer": 3,

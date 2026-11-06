@@ -640,9 +640,19 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
     缺失/porcelain 空）或提交失败（失败形态已 WARNING 留痕）。
     """
     name = str(spec_name or "")
-    # spec 名形态守卫（路径注入面）：空名/含路径分隔/相对上跳一律跳过
-    # （上游 STATE 侧已校验，此处防御性兜底）。
-    if not name or "/" in name or "\\" in name or name in (".", ".."):
+    # spec 名形态守卫（路径注入面）：空名/含路径分隔/相对上跳/NUL 一律
+    # 跳过（上游 STATE 侧已校验且无字符集约束——serving._spec_name_path_error
+    # 同一结论，此处防御性兜底）。NUL 必拦：本函数 try 块只捕
+    # SubprocessError 与 OSError，含 NUL 的名字会让下方 spec_dir.is_dir()
+    # 与 git 子进程 argv 都抛 ValueError（embedded null byte）直接逸出，
+    # 破坏「MUST NOT 抛异常」契约（code-review item 97d8013f2784）。
+    if (
+        not name
+        or "/" in name
+        or "\\" in name
+        or name in (".", "..")
+        or "\x00" in name
+    ):
         return False
     root = Path(project_root)
     spec_rel = f"{_SPEC_REVIEW_DOCS_DIRNAME}/{name}"
@@ -2733,6 +2743,13 @@ def run_selfcheck(result_file) -> int:
             # 会被 agent 误读为逐条违规明细而去「修复」。归一为独立退出码 3：
             # stderr 行不复用「selfcheck FAIL」前缀、不计入违规条数，与违规
             # 明细可区分（契约见 _SELFCHECK_USAGE）。
+            # 存量违规不随环境故障丢弃（code-review item 7f536d87a540）：进
+            # 校验段之前 violations 里可能已收集 spec 字段缺失/路径穿越等真
+            # 实产物违规，只写环境故障行会让 agent 按「退出码 3=非产物违规」
+            # 放弃修复、丢一轮诊断。退出码仍 3（不改 _SELFCHECK_USAGE 契约
+            # 面），存量违规逐行前置输出并标注，与下方环境故障行可区分。
+            for v in violations:
+                sys.stderr.write(f"selfcheck 环境故障前的存量违规: {v}\n")
             sys.stderr.write(
                 f"selfcheck 环境故障（非产物违规，勿按违规明细修复）: "
                 f"自检校验段抛出 {type(e).__name__}: {e}\n")

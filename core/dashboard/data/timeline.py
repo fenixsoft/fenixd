@@ -197,7 +197,25 @@ def _ocr_lane_summary(project_root, run_id: str) -> str:
     return ""
 
 
-def _arbiter_ledger_index(project_root) -> dict:
+def _load_arbiter_entries(project_root) -> list:
+    """arbiter 台账单点装载（get_spec_timeline 同一次构建共用一份 entries，
+    code-review item 164ea4e84cc4：原先 _arbiter_ledger_index 与
+    _chain_events_for_spec 各自独立读同一台账文件，台账增大后时间轴详情页
+    IO 翻倍——现收敛到此处读入一次、参数下发两处联查）。
+
+    读侧复用 ``core.pm_engine.arbiter.load_arbiter_ledger`` 单源，自带文件
+    缺失/损坏行 fail-open，防双实现漂移；任何异常 fail-open 返回空列表
+    （下游索引归并/链事件过滤对空 entries 零命中，与缺文件同口径）。
+    """
+    try:
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        return load_arbiter_ledger(project_root)
+    except Exception:  # noqa: BLE001 —— 台账联查失败不阻断时间轴
+        return []
+
+
+def _arbiter_ledger_index(project_root, entries=None) -> dict:
     """arbiter 处置台账联查索引（add-arbiter-quality-display 任务 2.2）。
 
     整台账读入**一次**（读侧复用 ``core.pm_engine.arbiter.load_arbiter_ledger``
@@ -212,13 +230,13 @@ def _arbiter_ledger_index(project_root) -> dict:
 
     读侧任何异常 fail-open 返回空索引（时间轴零新增字段，对齐 lane_summary
     模式）。
-    """
-    try:
-        from core.pm_engine.arbiter import load_arbiter_ledger
 
-        entries = load_arbiter_ledger(project_root)
-    except Exception:  # noqa: BLE001 —— 台账联查失败不阻断时间轴
-        return {}
+    ``entries`` 缺省时退化经 _load_arbiter_entries 自读（fail-open 不变）；
+    get_spec_timeline 传入已装载的一份 entries 以免同一次构建重复读文件
+    （code-review item 164ea4e84cc4）。
+    """
+    if entries is None:
+        entries = _load_arbiter_entries(project_root)
     best: dict = {}
     for e in entries:
         if not isinstance(e, dict) or e.get("kind") not in ("disposition", "escalation"):
@@ -263,19 +281,19 @@ _CHAIN_EVENT_KINDS = frozenset(
 )
 
 
-def _chain_events_for_spec(project_root, spec_name: str) -> list:
+def _chain_events_for_spec(project_root, spec_name: str, entries=None) -> list:
     """处置链事件联查（add-escalation-chain-admin-arbiter 5.1）。
 
     台账单源 ``load_arbiter_ledger`` 读入一次（自带文件缺失/损坏行
     fail-open），过滤 chain-* kinds ∧ spec 全等，created 升序（链叙事顺序）。
     读侧任何异常 fail-open 返回空列表（时间轴零新增节点）。
-    """
-    try:
-        from core.pm_engine.arbiter import load_arbiter_ledger
 
-        entries = load_arbiter_ledger(project_root)
-    except Exception:  # noqa: BLE001 —— 链事件联查失败不阻断时间轴
-        return []
+    ``entries`` 缺省时退化经 _load_arbiter_entries 自读（fail-open 不变）；
+    get_spec_timeline 传入已装载的一份 entries 以免同一次构建重复读文件
+    （code-review item 164ea4e84cc4）。
+    """
+    if entries is None:
+        entries = _load_arbiter_entries(project_root)
     out = [
         e
         for e in entries
@@ -289,6 +307,14 @@ def _chain_events_for_spec(project_root, spec_name: str) -> list:
 
 # 台账长文本下发截断（design D3：防巨型行破锚定窗前科）
 _ARBITER_FIELD_TRUNCATE = 200
+
+# 立项原话（origin_request）下发上限（code-review item 85ed168d60ae）：
+# request.md 为用户立项原话，正常体量小，但被外部工具/人工写入超大文件时
+# 会随 /api/specs/<spec> 详情响应整体下发放大响应体——与 _ARBITER_FIELD_TRUNCATE
+# 同风格限量，但取 KB 量级（8K 字符）而非台账字段的 200 字符（立项原话是
+# 给用户完整阅读的叙事文本）。超限截断时尾部附注记指回 spec 目录 request.md
+# 原文（对齐「原话始终可从 spec 目录直接追溯」的降级口径，不丢数据）。
+_ORIGIN_REQUEST_MAX_CHARS = 8192
 
 
 def _arbiter_node_payload(entry: dict) -> dict:
@@ -536,9 +562,20 @@ def get_spec_timeline(
     # arbiter run 时整台账读入一次（run 循环外、内存匹配——MUST NOT 逐 run
     # 重读文件）；无 arbiter run 的 spec 零台账读。命中节点附 ``arbiter``
     # 结构化字段，未命中/缺文件/损坏行 fail-open 静默省略（零新增字段）。
+    has_arbiter_run = any(r.get("agent_type") == "arbiter" for r in runs)
+    # 台账单点装载一次（code-review item 164ea4e84cc4）：同一次构建内
+    # arbiter 索引（_arbiter_ledger_index）与处置链事件
+    # （_chain_events_for_spec）共用一份 entries，台账文件只完整读取一遍
+    # ——原先两处各自 fail-open 各读一遍，台账增大后详情页 IO 翻倍。装载
+    # 条件取两个消费方触发条件的并集（has_arbiter_run 或 spec_name），
+    # 与原先各自条件读的 IO 逐输入等价（仅去重）；「整台账读入一次」的
+    # 承诺自此跨两函数成立（单点在 _load_arbiter_entries）。
+    arbiter_entries = (
+        _load_arbiter_entries(project_root) if (has_arbiter_run or spec_name) else []
+    )
     arbiter_index: dict = {}
-    if any(r.get("agent_type") == "arbiter" for r in runs):
-        arbiter_index = _arbiter_ledger_index(project_root)
+    if has_arbiter_run:
+        arbiter_index = _arbiter_ledger_index(project_root, arbiter_entries)
     for r in runs:
         insights = _facade.run_tail_insights(_facade.resolve_run_file(project_root, r["run_id"]))
         node = {
@@ -581,7 +618,7 @@ def get_spec_timeline(
     # 静默省略（对齐 arbiter 台账联查模式）；global 信号不落 spec 时间轴
     # （spec_name 为空零联查）。
     if spec_name:
-        for ev in _chain_events_for_spec(project_root, spec_name):
+        for ev in _chain_events_for_spec(project_root, spec_name, arbiter_entries):
             events.append(
                 {
                     "time": str(ev.get("created") or ""),
@@ -712,8 +749,19 @@ def get_spec_timeline(
     if first_state is not None:
         try:
             spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
-            origin = spec_dir.joinpath("request.md").read_text(encoding="utf-8") if spec_dir else ""
+            origin = ""
+            truncated = False
+            if spec_dir:
+                # 有界读取（code-review item 85ed168d60ae）：只读前
+                # _ORIGIN_REQUEST_MAX_CHARS 字符、再探 1 字符判定截断——
+                # 超大 request.md 不再整篇随详情响应下发；非 UTF-8 内容
+                # 解码失败沿 except 按缺失同口径静默省字段（与 read_text 同）。
+                with spec_dir.joinpath("request.md").open("r", encoding="utf-8") as fh:
+                    origin = fh.read(_ORIGIN_REQUEST_MAX_CHARS)
+                    truncated = bool(fh.read(1))
             if origin.strip():
+                if truncated:
+                    origin += "\n…（已截断，完整立项原话见 spec 目录 request.md）"
                 first_state["origin_request"] = origin
         except Exception:  # noqa: BLE001 —— 读取异常按缺失同口径静默省字段
             pass

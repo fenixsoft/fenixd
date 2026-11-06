@@ -113,7 +113,14 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
         if isinstance(sort_by, str) and sort_by in _SORT_FIELDS
         else "severity"
     )
-    sign = _SORT_DIRECTIONS.get(str(sort_order or "asc").lower(), 1)
+    # 方向键与上方 sort_by 同款 isinstance fail-closed（code-review item
+    # 71c6383012d6）：str() 归一会把任意对象的 __str__ 产物当方向键消费，
+    # isinstance 对非 str（含 None）一律回默认升序，白名单语义两键统一。
+    sign = (
+        _SORT_DIRECTIONS.get(sort_order.lower(), 1)
+        if isinstance(sort_order, str)
+        else 1
+    )
     rows.sort(
         key=lambda r: (
             # 未知档位缺省权重按 sign 翻转（sign*9）：有效键恒为 sign*(sign*9)=9，

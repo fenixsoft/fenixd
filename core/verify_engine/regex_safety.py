@@ -162,6 +162,10 @@ def has_nested_quantifier(pattern: str) -> bool:
         安全形态须语义分析才能区分）——后者是 IP/版本号惯用写法，会被
         确定性拒绝（fail-closed 可见化，拒绝文案附改写建议），误拦面比
         「宁少拦」宣称更宽，属已知取舍。
+      - 零宽组（``(?=...)``/``(?!...)``/``(?<=...)``/``(?<!...)``）内的
+        变长量词标志亦随 ``)`` 闭合无差别向父组传播——零宽断言不消耗
+        字符、不产生回溯分裂，``(?:(?=a+)b)+`` 类合法模式会被误判高危，
+        属 fail-closed 方向误拦（code-review item 282c4119282d 补记）。
     跳过转义序列与字符类（``[*+]`` 内的量词字符是字面量）。
     """
     group_has_variable_quant: list[bool] = []
@@ -178,6 +182,14 @@ def has_nested_quantifier(pattern: str) -> bool:
                 in_class = False
         elif ch == "[":
             in_class = True
+            # 「]」作类内首成员（含「^」取反前缀）是字面量而非空类闭合——
+            # []] / [^]] 是合法形态，不预消费会让类体被首个 ] 提前关闭、
+            # 类内后续量词字符被错当真量词（code-review item 036d29c34d0f）
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                i = j  # 落到被消费的「]」上，循环尾部 i += 1 后自类体续扫
         elif ch == "(":
             group_has_variable_quant.append(False)
             if i + 1 < n and pattern[i + 1] == "?":

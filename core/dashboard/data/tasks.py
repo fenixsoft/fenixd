@@ -82,6 +82,22 @@ def _should_overlay(spec_status: str, has_uncompleted: bool) -> bool:
     return spec_status in ("done", "pushed") and has_uncompleted
 
 
+def _tasks_md_path(project_root, spec_name):
+    """tasks.md 快照路径单点：活跃目录优先、主树 ``spec/changes`` 回退。
+
+    parse_tasks 与 tasks_note 的「resolve_spec_dir + 回退构造」此前逐字重复
+    （code-review item f28e312ebd20），收敛于此。仅收敛主树/归档路径构造；
+    implementing 的 worktree 优先读取逻辑留在 parse_tasks（其与 tasks_note
+    存在性预检只看主树路径的口径差是 tasks_note docstring 声明的良性差异，
+    不在此统一）。
+    """
+    # 跨组引用经门面延迟解析（D4：叶子组引用中层 spec_docs 的 resolve_spec_dir）
+    import core.dashboard.data as _facade
+
+    spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
+    return (spec_dir or Path(project_root) / "spec" / "changes" / spec_name) / "tasks.md"
+
+
 def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = True, files=None) -> list:
     """解析 tasks.md 为分组任务结构：[{title, tasks:[{id,desc,done}], done, total}]。
 
@@ -101,8 +117,7 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
         return []
     # 活跃优先、归档回退（fix-archived-spec-doc-readback D3）；归档 SPEC 的
     # tasks.md 从归档目录读取，详情页任务卡片不再空白
-    spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
-    tasks_path = (spec_dir or Path(project_root) / "spec" / "changes" / spec_name) / "tasks.md"
+    tasks_path = _tasks_md_path(project_root, spec_name)
     if spec_status == "implementing":
         wt = find_implementer_worktree(project_root, spec_name)
         if wt:
@@ -113,6 +128,8 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
         return []
     groups = []
     current_group = None
+    orphans = []  # 首个分组标题之前的任务行（item 327405f6183c）
+    saw_header = False
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
             # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
@@ -122,24 +139,44 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
             # 自有 parse_tasks。
             m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
+                saw_header = True
                 current_group = {"title": m.group(1).strip(), "tasks": [], "done": 0, "total": 0}
                 groups.append(current_group)
                 continue
             m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
-            if m and current_group is not None:
+            if m:
                 is_done = m.group(1) == "x"
-                current_group["tasks"].append(
-                    {
-                        "done": is_done,
-                        "id": m.group(2),
-                        "desc": m.group(3).strip(),
-                    }
-                )
+                entry = {
+                    "done": is_done,
+                    "id": m.group(2),
+                    "desc": m.group(3).strip(),
+                }
+                if current_group is None:
+                    orphans.append(entry)
+                    continue
+                current_group["tasks"].append(entry)
                 if is_done:
                     current_group["done"] += 1
                 current_group["total"] += 1
     except (OSError, UnicodeDecodeError):
         pass
+    if saw_header and orphans:
+        # code-review item 327405f6183c：首个分组标题之前的任务行此前被静默
+        # 丢弃（既不计数也不报错，total/done 失真且无提示）——归入合成分组
+        # 恢复真实计数。仅当文件确有真实分组标题时启用：完全无分组的
+        # tasks.md 属格式畸形态，维持「未解析出任务」告警契约
+        # （tests/test_task_track.py TestCliWarning/TestDashboardTasksNote）。
+        # 合成分组 title 不带数字编号，与 `## <n>. <标题>` 真实分组的编号
+        # 命名空间无冲突；放置在列表首位与原文任务行出现次序一致。
+        groups.insert(
+            0,
+            {
+                "title": "未分组",
+                "tasks": orphans,
+                "done": sum(1 for t in orphans if t["done"]),
+                "total": len(orphans),
+            },
+        )
     if not groups:
         return groups
     # 实时叠加：最新 impl run 的 TaskUpdate 完成状态与 tasks.md 勾选取并集。
@@ -201,8 +238,7 @@ def tasks_note(project_root, spec_name, spec_status: str = "", groups=None):
     # 不经回退分支拼路径，直接返回 None（「无 tasks.md」语义）
     if _facade.validated_spec_name(spec_name) is None:
         return None
-    spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
-    tasks_path = (spec_dir or Path(project_root) / "spec" / "changes" / spec_name) / "tasks.md"
+    tasks_path = _tasks_md_path(project_root, spec_name)
     if not tasks_path.exists():
         return None
     if groups is None:

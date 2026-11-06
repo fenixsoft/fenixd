@@ -877,7 +877,12 @@ class ProviderCircuit:
                     "chain_len": chain_len,
                 },
             )
-        except OSError as e:
+        # 守卫面放宽（code-review item 016d03665bd7）：append_run_line 内
+        # json.dumps 对不可序列化值抛 TypeError / 循环引用抛 ValueError，均非
+        # OSError（line 预清洗只挡 UnicodeEncodeError）；只接 OSError 会让这类
+        # 异常从 try 逃逸、中止 attempt 启动，违背本方法「标记写失败不阻断
+        # attempt」的 fail-open 契约。放宽为 Exception，WARNING 留痕口径不变。
+        except Exception as e:
             self._pm.logger.warning(
                 "agent_runner",
                 f"provider_marker 写入失败 {run_file}（不阻断 attempt）: {e}",
