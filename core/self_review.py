@@ -486,6 +486,10 @@ def _signal_evidence(lines: list) -> Optional[str]:
 # 同源的收工叙事（实测不逐字等于 result 全文），不再作信号证据源。
 _TERMINAL_ADJACENT_WINDOW = 3
 
+# 深扫行数上限（design D2）：窗口长尾 run 实测量级上界，超限多为异常残留转录；
+# 与「仅离群 run 深扫」双闸限制自省自身开销。
+MIDFLIGHT_SCAN_MAX_LINES = 20000
+
 
 def _strip_terminal_echo_lines(lines: list) -> list:
     """剥除终态邻近窗口（尾三行结构）中的 assistant 收工叙事回声行。
@@ -1027,10 +1031,6 @@ def _recent_batch_p90(values: List[float]) -> float:
     ordered = sorted(values)
     idx = max(0, -(-len(ordered) * 9 // 10) - 1)
     return float(ordered[idx])
-
-# 深扫行数上限（design D2）：窗口长尾 run 实测量级上界，超限多为异常残留转录；
-# 与「仅离群 run 深扫」双闸限制自省自身开销。
-MIDFLIGHT_SCAN_MAX_LINES = 20000
 
 # 中途 error/stderr 事件首条摘要截断长度（tasks 2.1）。
 _MIDFLIGHT_EVENT_SUMMARY_MAX = 140
