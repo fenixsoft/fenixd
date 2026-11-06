@@ -907,6 +907,10 @@ export default function SpecDetailPage() {
   // 全局单布尔（code-review item 75bcd3ef3540）：单布尔会把在飞窗口内另一条
   // 告警的清除点击静默吞掉，分键后不同告警互不阻塞、同告警仍只放行首个
   const markHandledInFlightRef = useRef<Record<string, boolean>>({});
+  // 「清除 spec 信息」在飞防重守卫（code-review item e64b394f6856，比照上面
+  // markHandledInFlightRef 同帧原子短路口径）：网络往返窗口内连点「清除」只
+  // 放行首个调用，不并发重复 clearSpecError、不弹多条「已清除」toast
+  const clearingRef = useRef(false);
 
   const toggleAlert = (id: string) => {
     setExpandedAlerts((prev) => {
@@ -1091,6 +1095,10 @@ export default function SpecDetailPage() {
   }, [name, spec]);
 
   useEffect(() => {
+    // 下拉快速切换 SPEC 不重挂载本组件，旧 SPEC 告警会渲染到新响应返回才被
+    // 覆盖，加载失败时更会无限期残留：随 [name, spec] 变更先复位（与
+    // proposalWhy 的切换清空同口径，code-review item 8679562dec5e）
+    setSpecAlerts([]);
     loadSpecAlerts();
   }, [loadSpecAlerts]);
 
@@ -1341,24 +1349,32 @@ export default function SpecDetailPage() {
 
   // 清除 spec 信息（同列表页清除 error）；成功后重拉详情使信息条消失。
   // 清除与刷新分开捕获：「清除失败」只在 clearSpecError 本身失败时出现，清除已
-  // 成功后刷新失败不得误报为清除失败、诱导重复提交（code-review item 898eb44cb047）
+  // 成功后刷新失败不得误报为清除失败、诱导重复提交（code-review item 898eb44cb047）。
+  // 在飞防重：clearingRef 同帧原子短路（比照 markHandledInFlightRef 口径，
+  // code-review item e64b394f6856），连点「清除」时静默只放行首个调用
   const handleClearInfo = async () => {
+    if (clearingRef.current) return;
+    clearingRef.current = true;
     try {
-      await clearSpecError(name, spec);
-    } catch (err) {
-      message.error(`清除失败：${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    message.success('已清除');
-    try {
-      const fresh = await getSpecDetail(name, spec);
-      // 迟到响应守卫：等待期间已切换到另一 SPEC → 丢弃旧详情，不串页
-      if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
-      // 经 applyDetail 通道直写：推进 appliedSeq + 更新内容判等基线，使清除落地
-      // 前发出的在飞旧快照被序号守卫整表丢弃（code-review item bb989e8b9dff）
-      applyDetailRef.current(fresh);
-    } catch (err) {
-      message.warning(`已清除，但刷新详情失败：${err instanceof Error ? err.message : String(err)}`);
+      try {
+        await clearSpecError(name, spec);
+      } catch (err) {
+        message.error(`清除失败：${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      message.success('已清除');
+      try {
+        const fresh = await getSpecDetail(name, spec);
+        // 迟到响应守卫：等待期间已切换到另一 SPEC → 丢弃旧详情，不串页
+        if (nameSpecRef.current.name !== name || nameSpecRef.current.spec !== spec) return;
+        // 经 applyDetail 通道直写：推进 appliedSeq + 更新内容判等基线，使清除落地
+        // 前发出的在飞旧快照被序号守卫整表丢弃（code-review item bb989e8b9dff）
+        applyDetailRef.current(fresh);
+      } catch (err) {
+        message.warning(`已清除，但刷新详情失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    } finally {
+      clearingRef.current = false;
     }
   };
 

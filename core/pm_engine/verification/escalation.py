@@ -426,7 +426,14 @@ def _handle_env_blocked_inconclusive(pipeline, spec_name: str, report: dict) -> 
     # 空值防御口径与同族 inconclusive 入口一致（_handle_verdict_env_exemption_inconclusive
     # / _inconclusive_fail_signature 均容 None）。
     report = report or {}
-    summary = report.get("summary") or {}
+    # isinstance(summary, dict) 守卫（code-review item a21cfb42c713，与
+    # infra_classify._detect_uniform_verify_failure 同口径，item b97a47f9f8ca）：
+    # summary 被外部改写为非 dict 真值（list/非空串）时 _summary_count 内
+    # summary.get 抛 AttributeError 沿本阶段 2 verdict 裁决路径上抛——按空
+    # summary（计数 0）走既有判定，不让脏 summary 中断环境性失联判定。
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     failed = _summary_count(pipeline, spec_name, summary, "failed")
     errors = _summary_count(pipeline, spec_name, summary, "errors")
@@ -953,11 +960,15 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     """
     from core.verdict_check import load_report
 
+    # 目录成分经 safe_component 净化（code-review item 694d1d7ac13f，与下方
+    # scenario_reroute_directive 写点同口径）：病理 spec 名（含分隔符/控制字符）
+    # 下裸拼会嵌套出净化目录之外的子目录，与 report.json / fail_history 同族
+    # 文件分裂两处形成清理盲区，读侧日后补净化即互通失效。
     streaks_path = (
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "warning_streaks.json"
     )
     streaks = {}
@@ -999,11 +1010,15 @@ def _update_warning_streaks(pipeline, spec_name: str) -> list:
     # 执行，进程在两步之间中断时下轮计数涨到 3 后「== 2」永不命中，「连续
     # 2 轮 warning 需人工甄别」的升级语义被静默吞掉；放宽后下轮可补发，且
     # 已入清单者不重复告警。
+    # 目录成分经 safe_component 净化（code-review item 694d1d7ac13f，与
+    # scenario_reroute_directive / prompt_builder _triage_recheck_section 读侧
+    # 单源同口径）：病理 spec 名下裸拼与净化目录分裂，planner prompt 读侧
+    # 恒读空、优先复核注入静默失效。
     recheck_path = (
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "triage_recheck.json"
     )
     already_recheck: set = set()
@@ -1182,11 +1197,13 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             f"triage 升级告警失败 '{spec_name}'（非阻塞）: {type(e).__name__}: {e}",
         )
     # 下一轮 planner prompt 优先复核注入（design D5）：落盘 triage_recheck.json
+    # （目录成分经 safe_component 净化，code-review item 694d1d7ac13f，与上方
+    # _update_warning_streaks 回读点及 prompt_builder 读侧单源同口径）
     recheck_path = (
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "triage_recheck.json"
     )
     try:
@@ -1217,11 +1234,14 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
 
 def _scenario_reroute_stoploss_path(pipeline, spec_name: str) -> Path:
     """跨轮失败集留存路径（与 scenario_reroute_directive / triage_recheck 同级）。"""
+    # 目录成分经 safe_component 净化（code-review item 694d1d7ac13f，与本模块
+    # 其余侧车写点及 directive / fail_history 单源同口径）：病理 spec 名下裸拼
+    # 会嵌套出净化目录之外的子目录，与 report.json 同族文件分裂两处形成清理盲区。
     return (
         pipeline._context.project_root
         / ".fenix"
         / "verify-progress"
-        / spec_name
+        / safe_component(spec_name)
         / "scenario_reroute_stoploss.json"
     )
 
@@ -1940,18 +1960,42 @@ def _speculative_bug_found_gate(pipeline, spec_name: str) -> bool:
             should_suppress_bug_found,
             enforce_blank_screenshot_direction,
             load_report as _load_gate_report,
+            save_report,
         )
 
         gate_report = _load_gate_report(pipeline._context.project_root, spec_name)
         if gate_report is None:
             return False  # 无 report.json，门禁无对象可判，不阻断
         validate_attribution_levels(gate_report)
+        # 白屏方向强制改写发生时写回磁盘（code-review item c152bc0dd76f，与
+        # verdict_evidence 同一改写点的持久化语义对齐）：本门禁对 gate_report
+        # 原地改写若只留内存，verdict_evidence 因异常走 fail-open（跳过分级
+        # 照常采纳）的本轮，门禁放行后打回路由、_scenario_classification_
+        # distribution 等读磁盘仍见原分类——抑制判定与后续处置所见分裂。
+        # 正常轮 verdict_evidence 已先行落盘，此处改写为幂等 no-op、零额外写入。
+        # 改写哨兵只记本函数局部布尔，MUST NOT 随 report 落盘（verdict_evidence
+        # _adopt_report 摘除哨兵先于写回的同款卫生约定）。
+        _gate_mutated = False
         for _sc in gate_report.get("scenarios") or []:
             if isinstance(_sc, dict):
                 _new_cls = enforce_blank_screenshot_direction(_sc)
                 if _new_cls:
                     _sc["classification"] = _new_cls
                     _sc["blank_direction_forced"] = True
+                    _gate_mutated = True
+        if _gate_mutated:
+            # 局部 try 收口（同下方两处处置写点口径，code-review 83b11b02ea49
+            # 范式）：写回失败若落进函数级 except 会被误记为「门禁校验异常
+            # 跳过」并 return False 放过推测级打回——失败仅 WARNING 留痕，
+            # 不改变门禁判定路由。
+            try:
+                save_report(pipeline._context.project_root, spec_name, gate_report)
+            except (OSError, TypeError, ValueError) as e:
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' 白屏方向改写写回失败（report.json 保留原"
+                    f"分类，非阻断）: {type(e).__name__}: {e}",
+                )
         if not should_suppress_bug_found(gate_report):
             # 清空门禁计数：本轮未触发（有证据支撑的归因，不记入 speculative 统计）
             spec_data = pipeline._context.state_machine.read_one(spec_name) or {}
@@ -2380,7 +2424,14 @@ def _handle_verdict_env_exemption_inconclusive(
     # 修订 re-entry 先于升级（2.2）：旗标在位先重验，本函数不停车
     if pipeline._scenario_revision_reentry(spec_name):
         return True
-    summary = (report or {}).get("summary") or {}
+    # isinstance(summary, dict) 守卫与 _handle_env_blocked_inconclusive 同款
+    # （code-review item a21cfb42c713，与 infra_classify
+    # _detect_uniform_verify_failure 同口径）：summary 非 dict 真值时按空
+    # summary（计数 0）走既有判定，不让 _summary_count 内 summary.get 的
+    # AttributeError 穿出中断升级停车判定。
+    summary = (report or {}).get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
     blocked_env = _summary_count(pipeline, spec_name, summary, "blocked_env")
     spec = pipeline._context.state_machine.read_one(spec_name) or {}
     # 锁内原子递增（code-review item 3a39bcdb19d0，比照 fastlane._bump_fail_streak

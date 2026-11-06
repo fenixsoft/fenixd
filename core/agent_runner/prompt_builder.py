@@ -2819,8 +2819,16 @@ class PromptBuilder:
         与 scenario-freeze 的基准集注入同一接入点（纯本地确定性读取，不触发 LLM）。
         文件缺失 / 为空 → 返回空串（不约束）。
         """
+        # 读点净化与写侧单源（code-review item 694d1d7ac13f，同下方
+        # _verdict_rejection_section 手法）：写方 escalation 三处 triage_recheck
+        # 路径经 safe_component 净化目录成分，此处裸内插 spec_name 在病理名下
+        # 会嵌套子目录、恒读空，优先复核注入静默失效。
         recheck_path = (
-            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "triage_recheck.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(spec_name)
+            / "triage_recheck.json"
         )
         if not recheck_path.exists():
             return ""

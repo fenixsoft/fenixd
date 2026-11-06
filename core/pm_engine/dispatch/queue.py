@@ -2168,14 +2168,27 @@ class QQQueueMixin:
                             )
                             return
                     else:
-                        self._pm.state_machine.update_spec(spec_name, updates)
+                        # 状态写守卫（code-review item be172509602e，对齐上方
+                        # freeze 分支「冻结 IO 失败不放大处置」同型）：update_spec
+                        # 裸调 IO 瞬时异常沿 worker 外层 except 逃逸会落入
+                        # _rollback_failed_dispatch（此时 status 仍 implementing
+                        # → 预算豁免回退 + 误导性 _last_dispatch_error 覆盖本
+                        # 分支 error 文案，零变更哨分类语义丢失），MUST NOT
+                        # 放大。失败记审计后放弃本分支收尾（不重派、不翻转
+                        # 状态，交由恢复/周期通道接手）；重派入队一并纳入守卫。
+                        try:
+                            self._pm.state_machine.update_spec(spec_name, updates)
+                            self._enqueue_front(spec_name, "implementer")
+                        except Exception as e:  # noqa: BLE001 —— 状态写/入队失败不放大处置
+                            self._log_state_write_failure(
+                                spec_name, e, warn_label="零变更哨",
+                            )
+                            return
                     self._pm.logger.error(
                         "pm_engine",
                         f"零变更成功哨触发 '{spec_name}'（第 {attempts} 次）— "
                         f"run={result.run_id}",
                     )
-                    if attempts < ZERO_CHANGE_BREAKER_ATTEMPTS:
-                        self._enqueue_front(spec_name, "implementer")
                     return
 
                 # ── 交付物存在性守卫（add-implementer-deliverable-gate，D1/D3）──
@@ -2261,7 +2274,23 @@ class QQQueueMixin:
                                             f"成果）— 已 blocked 待人工裁决，不自动重派"
                                         ),
                                     }
-                                    self._pm.state_machine.update_spec(spec_name, updates)
+                                    # 状态写守卫（code-review item be172509602e，
+                                    # 对齐同函数 freeze 分支「冻结 IO 失败不放大
+                                    # 处置」同型）：update_spec 裸调 IO 瞬时异常
+                                    # 沿 worker 外层 except 逃逸会落入
+                                    # _rollback_failed_dispatch（此时 status 仍
+                                    # implementing → 预算豁免回退 + 误导性
+                                    # _last_dispatch_error 覆盖本分支异议裁决
+                                    # error 文案），MUST NOT 放大。失败记审计后
+                                    # 放弃本分支收尾（不翻转状态，交由恢复/周期
+                                    # 通道接手）。
+                                    try:
+                                        self._pm.state_machine.update_spec(spec_name, updates)
+                                    except Exception as e:  # noqa: BLE001 —— 状态写失败不放大处置
+                                        self._log_state_write_failure(
+                                            spec_name, e, warn_label="缺件异议裁决",
+                                        )
+                                        return
                                     self._pm.logger.error(
                                         "pm_engine",
                                         f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
@@ -2286,7 +2315,21 @@ class QQQueueMixin:
                                         f"— 已 blocked 待人工裁决，不自动重派"
                                     ),
                                 }
-                                self._pm.state_machine.update_spec(spec_name, updates)
+                                # 状态写守卫（code-review item be172509602e，对齐
+                                # 同函数 freeze 分支「冻结 IO 失败不放大处置」同型）：
+                                # update_spec 裸调 IO 瞬时异常沿 worker 外层 except
+                                # 逃逸会落入 _rollback_failed_dispatch（此时 status
+                                # 仍 implementing → 预算豁免回退 + 误导性
+                                # _last_dispatch_error 覆盖本分支异议裁决 error
+                                # 文案），MUST NOT 放大。失败记审计后放弃本分支
+                                # 收尾（不翻转状态，交由恢复/周期通道接手）。
+                                try:
+                                    self._pm.state_machine.update_spec(spec_name, updates)
+                                except Exception as e:  # noqa: BLE001 —— 状态写失败不放大处置
+                                    self._log_state_write_failure(
+                                        spec_name, e, warn_label="缺件异议裁决",
+                                    )
+                                    return
                                 self._pm.logger.error(
                                     "pm_engine",
                                     f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
@@ -2529,14 +2572,28 @@ class QQQueueMixin:
                                 f"冻结转人工，不再重派（{retries}/{max_r}，fp={fp}）",
                             )
                         else:
-                            self._pm.state_machine.update_spec(
-                                spec_name,
-                                {
-                                    "status": "ready",
-                                    "error": contract_err,
-                                },
-                            )
-                            self._enqueue_front(spec_name, "implementer")
+                            # 状态写守卫（code-review item be172509602e，对齐上方
+                            # freeze 分支「冻结 IO 失败不放大处置」同型）：update_spec
+                            # 裸调 IO 瞬时异常沿 worker 外层 except 逃逸会落入
+                            # _rollback_failed_dispatch（此时 status 仍 implementing
+                            # → 预算豁免回退 + 误导性 _last_dispatch_error 覆盖本
+                            # 分支契约违反分类 error 文案），MUST NOT 放大。失败
+                            # 记审计后放弃本分支收尾（不重派、不翻转状态，交由
+                            # 恢复/周期通道接手）；重派入队一并纳入守卫。
+                            try:
+                                self._pm.state_machine.update_spec(
+                                    spec_name,
+                                    {
+                                        "status": "ready",
+                                        "error": contract_err,
+                                    },
+                                )
+                                self._enqueue_front(spec_name, "implementer")
+                            except Exception as e:  # noqa: BLE001 —— 状态写/入队失败不放大处置
+                                self._log_state_write_failure(
+                                    spec_name, e, warn_label="契约违反重派",
+                                )
+                                return
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"merge-back skipped for '{spec_name}': "
@@ -3025,26 +3082,41 @@ class QQQueueMixin:
                                 f"冻结转人工，不再重派（{retries}/{max_r}，fp={fp}）",
                             )
                         else:
-                            self._pm.state_machine.update_spec(
-                                spec_name,
-                                {
-                                    "status": "ready",
-                                    "error": final_error,
-                                    # _retry_count / _redispatch_same_cause_streak 均已由
-                                    # 上方 bump_counters 原子递增落盘，此处不再并写
-                                    # （防并发写回互相覆盖丢增量）；streak 仅指纹切换
-                                    # 重置路径经 streak_updates 补绝对写
-                                    "_redispatch_cause_fp": fp,
-                                    **streak_updates,
-                                },
-                            )
-                            # 置 ready 后显式重入队（code-review item
-                            # fdc175ea758f，对齐同文件零变更哨/契约违反/merge
-                            # 失败降级三个失败出口的收口——只翻状态不入队＝
-                            # 重派退化为周期 full_scan 兜底拾取，延迟一个扫描
-                            # 周期且与「Retry x/y」日志承诺不符）。_enqueue 自带
-                            # (spec, agent) 去重，无双派风险。
-                            self._enqueue_front(spec_name, "implementer")
+                            # 状态写守卫（code-review item be172509602e，对齐上方
+                            # 同因熔断/重试耗尽 freeze 分支「冻结 IO 失败不放大
+                            # 处置」同型）：update_spec 裸调 IO 瞬时异常沿 worker
+                            # 外层 except 逃逸会落入 _rollback_failed_dispatch
+                            # （此时 status 仍 implementing → 预算豁免回退 + 误导
+                            # 性 _last_dispatch_error 覆盖本分支 error 文案），
+                            # MUST NOT 放大。失败记审计后放弃本分支收尾（不重派、
+                            # 不翻转状态，交由恢复/周期通道接手）；重派入队一并
+                            # 纳入守卫。
+                            try:
+                                self._pm.state_machine.update_spec(
+                                    spec_name,
+                                    {
+                                        "status": "ready",
+                                        "error": final_error,
+                                        # _retry_count / _redispatch_same_cause_streak 均已由
+                                        # 上方 bump_counters 原子递增落盘，此处不再并写
+                                        # （防并发写回互相覆盖丢增量）；streak 仅指纹切换
+                                        # 重置路径经 streak_updates 补绝对写
+                                        "_redispatch_cause_fp": fp,
+                                        **streak_updates,
+                                    },
+                                )
+                                # 置 ready 后显式重入队（code-review item
+                                # fdc175ea758f，对齐同文件零变更哨/契约违反/merge
+                                # 失败降级三个失败出口的收口——只翻状态不入队＝
+                                # 重派退化为周期 full_scan 兜底拾取，延迟一个扫描
+                                # 周期且与「Retry x/y」日志承诺不符）。_enqueue 自带
+                                # (spec, agent) 去重，无双派风险。
+                                self._enqueue_front(spec_name, "implementer")
+                            except Exception as e:  # noqa: BLE001 —— 状态写/入队失败不放大处置
+                                self._log_state_write_failure(
+                                    spec_name, e, warn_label="通用失败重派",
+                                )
+                                return
                             self._pm.logger.warning(
                                 "pm_engine",
                                 f"Retry {retries}/{max_r} for '{spec_name}'"
@@ -3323,6 +3395,29 @@ class QQQueueMixin:
         self._pm.logger.error(
             "pm_engine",
             f"{warn_label}冻结转人工失败 '{spec_name}'"
+            f"（放弃本分支收尾，交由恢复/周期通道接手）: "
+            f"{type(err).__name__}: {err}",
+        )
+
+    def _log_state_write_failure(
+        self, spec_name: str, err: Exception, warn_label: str
+    ) -> None:
+        """失败分类链非冻结状态写点收尾失败的留痕单一落点（code-review item
+        be172509602e，沿 _log_freeze_for_human_failure 同型收敛）。
+
+        worker 失败分类链的非冻结 update_spec 写点（零变更哨 ready 降级/
+        deliverable-dispute blocked/契约违反 ready 降级/通用失败 ready 降级）
+        裸调 IO 瞬时异常沿 worker 外层 except 逃逸会落入
+        _rollback_failed_dispatch（此时 status 仍 implementing → 对已正常
+        收工的 run 触发预算豁免回退 + _last_dispatch_error「Implementation
+        dispatch failed」用 error: None 覆盖本分支已写入的业务 error 文案，
+        失败分类语义丢失），MUST NOT 放大。调用方在 except 侧调用本助手后
+        按既有语义 return 放弃本分支收尾（重派入队 _enqueue_front 一并纳入
+        调用方守卫范围），交由恢复/周期通道接手。
+        """
+        self._pm.logger.error(
+            "pm_engine",
+            f"{warn_label}状态写入失败 '{spec_name}'"
             f"（放弃本分支收尾，交由恢复/周期通道接手）: "
             f"{type(err).__name__}: {err}",
         )

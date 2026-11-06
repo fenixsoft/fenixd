@@ -168,6 +168,30 @@ def _iter_violation_dicts(violations) -> list:
     return [v for v in (violations or []) if isinstance(v, dict)]
 
 
+def _truncated_violation_view(violations: list, cap: int = 20) -> "tuple[list, str]":
+    """违规摘要截断单点：取前 cap 条 dict 元素 + 超量注明（截断同口径单源）。
+
+    [fenix-code-fix:f3722c91f574] ``_verdict_violations_evidence``（告警
+    evidence）与 ``_escalate_dedup_resynthesis``（升级 error）原各持一份
+    「前 20 条 + ``violations_truncated=20/<总数>`` 注明」近逐字拷贝（后者
+    注释自称与前者的截断口径一致），截断阈值或注明格式单侧调整会静默漂移，
+    收敛本助手防只改其一（与本文件 _parse_resynthesis_counts/
+    _clear_verdict_injection_files 的近逐字拷贝收口先例同由）。逐条拼装
+    格式两处消费面本就不同（evidence 带 scenario_id、error 摘要带
+    per-reason 160 截断），仍由调用方各自渲染。
+
+    Returns:
+        (shown, truncation_note)；``shown`` 为经 ``_iter_violation_dicts``
+        元素过滤后的前 cap 条 dict；``truncation_note`` 为总数超 cap 时的
+        ``violations_truncated=<cap>/<total>`` 注明（未超为空串，调用方
+        自行决定拼装位置）。
+    """
+    total = len(violations or [])
+    shown = _iter_violation_dicts(violations)[:cap]
+    note = f"violations_truncated={cap}/{total}" if total > cap else ""
+    return shown, note
+
+
 def _rejection_closure(
     pipeline, spec_name: str, report: dict, dedup: dict, lane_label: str
 ) -> dict:
@@ -596,7 +620,7 @@ def _verdict_violations_evidence(pipeline, spec_name: str, violations: list) -> 
     fix-verdict-retry-misattribution D5：每条 `scenario_id + reason`，超过 20 条
     截断并注明总数——人工无需读 report.json 即可定位违规形状。
     """
-    shown = _iter_violation_dicts(violations)[:20]
+    shown, truncation_note = _truncated_violation_view(violations)
     parts = [
         f"spec={spec_name}",
         f"report=spec/changes/{spec_name}/verification-report.md",
@@ -606,8 +630,8 @@ def _verdict_violations_evidence(pipeline, spec_name: str, violations: list) -> 
         sid = v.get("scenario_id") or v.get("id") or "?"
         reason = str(v.get("reason") or "?").strip()
         parts.append(f"violation[scenario_id={sid}; reason={reason}]")
-    if len(violations or []) > 20:
-        parts.append(f"violations_truncated=20/{len(violations)}")
+    if truncation_note:
+        parts.append(truncation_note)
     return "; ".join(parts)
 
 
@@ -931,13 +955,14 @@ def _escalate_dedup_resynthesis(
     error 携带多轮违规摘要；spec 置 blocked 后自动链路对 status 的改写被
     update_spec 剥离（人工接管），MUST NOT 无限重试重合成。
     """
-    # 与 _verdict_violations_evidence 同口径截断（20 条 + 总数注明）：违规
+    # 与 _verdict_violations_evidence 同口径截断（20 条 + 总数注明，经
+    # _truncated_violation_view 单源，[fenix-code-fix:f3722c91f574]）：违规
     # 多时 error 字段直入 STATE.md，无总长上限会膨胀数 KB——截断后单条 error
     # 有界（≤20×160 字符）。
-    shown_violations = _iter_violation_dicts(violations)[:20]
+    shown_violations, truncation_note = _truncated_violation_view(violations)
     summary = "; ".join(str(v.get("reason") or "")[:160] for v in shown_violations)
-    if len(violations or []) > 20:
-        summary = f"{summary}; violations_truncated=20/{len(violations)}"
+    if truncation_note:
+        summary = f"{summary}; {truncation_note}"
     error = (
         f"批量归因查重连续 {rejection_round} 次拒绝采纳"
         f"（含 {_RESYNTHESIS_MAX_ATTEMPTS} 轮轻量重合成仍同文），"
@@ -1202,7 +1227,23 @@ def _handle_scenario_requeue(pipeline, spec_name: str, report: dict, dedup: dict
 
     requeue_ids = [str(s) for s in (dedup.get("requeue_ids") or [])]
     accept_ids = [str(s) for s in (dedup.get("accept_ids") or [])]
+    # [fenix-code-fix:6edb0268cf53] counts 形态归一（与 _run_attribution_gate
+    # 对 dedup 本体的「非 dict 非 None 归一」先例同口径）：查重结果契约违约把
+    # counts 写坏为 list/str 等非 dict 真值时归一为 {} 并 warning 留痕——否则
+    # 下方 counts.get(...) 抛 AttributeError，不在 except (TypeError,
+    # ValueError) 捕获面内，会沿 _rejection_closure 的 try 折算为
+    # cause=requeue_error（spec 反复停滞到 stuck 兜底），违反本函数自述的
+    # 「损坏计数不判全量回炉」兜 0 语义（与 directive 计数走
+    # _parse_resynthesis_counts 兜 0 的同源口径一致）。
     counts = dedup.get("counts") or {}
+    if not isinstance(counts, dict):
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"批量归因查重计数字段形态异常 '{spec_name}'"
+            f"（counts 非 dict，按空计数兜 0、不判全量回炉）: "
+            f"{type(counts).__name__}",
+        )
+        counts = {}
     # 元素形态同口径过滤收编至 _iter_violation_dicts 单点（与
     # _verdict_violations_evidence/_rejection_closure 先例一致）：非 dict
     # 跳过，不以 v.get 裸外溢 AttributeError（本函数位于拒绝收口链上，

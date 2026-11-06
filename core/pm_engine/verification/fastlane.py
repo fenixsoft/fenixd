@@ -276,6 +276,14 @@ def extract_affected_files(attribution_text) -> list:
         return []
     seen: list = []
     for m in _AFFECTED_PATH_RE.findall(attribution_text):
+        # 前缀归一（code-review c2e0ab174d70）：judge 以绝对路径
+        # /root/fenixd/core/… 提及影响面时，\b 词边界落在 root/ 与
+        # fenixd 之间，会提取出 fenixd/core/… 形态的伪仓库相对路径；
+        # 剥去该前缀还原仓库相对形态，保证注入 code-fix item 的 file
+        # 键恒为仓库相对路径（仓库布局无 fenixd/ 子目录前缀，归一无
+        # 误伤）。归一后去重，同文件双形态不重复入列。
+        if m.startswith("fenixd/"):
+            m = m[len("fenixd/"):]
         if m not in seen:
             seen.append(m)
     return seen

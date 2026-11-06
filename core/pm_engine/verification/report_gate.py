@@ -22,6 +22,15 @@ from pathlib import Path
 from core.agent_runner.prompt_builder import PLANNER_RESULT_STATUS_WHITELIST
 from core.verify_engine.path_safety import safe_component
 
+# run/attempt id 内嵌 epoch 口径单源（code-review item b90d63ed2e83，收编
+# legacy._RUN_ID_EPOCH_PATTERN 字面重复，同 fastlane.VERIFIED_RESET_FIELDS
+# 跨模块收编先例）：id 形如 ``<run>-<epoch>-a<n>``，内嵌 epoch 即本轮
+# attempt 启动时刻（≈ 派发时刻）。两处消费同一 run_id 形态契约且语义强
+# 耦合——本模块 _verifier_result_is_stale 以它判残留新鲜度，
+# legacy._verify_dispatch_epoch 以它解析本轮派发时刻作 report 保全判据——
+# 口径演进（如 run_id 形态扩展）只改本处，防两侧解析静默漂移。
+RUN_ID_EPOCH_PATTERN = re.compile(r"-(\d{10,})-a\d+$")
+
 
 class VerdictReadResult:
     """verdict 结果文件读取三态结果（fix-verdict-read-failclosed D4）。
@@ -272,11 +281,11 @@ def _verifier_result_is_stale(pipeline, result, result_path: Path, spec_name: st
     if not ok:
         return True
     raw_run_id = getattr(result, "run_id", "") or ""
-    try:
-        m = re.search(r"-(\d{10,})-a\d+$", raw_run_id)
-        run_start = int(m.group(1)) if m else None
-    except (TypeError, ValueError):
-        run_start = None
+    # run_id 经 getattr 默认 + or "" 双兜底恒为 str，search 无 TypeError 路径、
+    # \d{10,} 纯数字匹配使 int() 无 ValueError 路径（code-review item
+    # 47b679542d23：原 try/except (TypeError, ValueError) 属永不命中的死防御）。
+    m = RUN_ID_EPOCH_PATTERN.search(raw_run_id)
+    run_start = int(m.group(1)) if m else None
     if run_start is None:
         # run_id 无法解析（格式漂移/非字符串）：mtime 陈旧护栏整体退化为
         # 直通（不判陈旧）。维持既有放行行为不变（向后兼容），但记 WARNING

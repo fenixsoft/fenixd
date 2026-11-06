@@ -72,6 +72,16 @@ export default function ChainPanel({
     try {
       const view = await getChainOverview(name);
       if (seq !== loadSeqRef.current) return;
+      // fix 6fe630a044a7: 服务端对 ?project 指向不存在/未就绪项目返回**有意 200**
+      // 错误体 {"error": "project not found"}（alert_routes.py _api_chain 契约、
+      // ChainOverviewData.error 注释均声明「调用方按 error 分支」）——直接落盘会
+      // 渲染成全「—」统计格与空态文案，误导用户以为链上确无数据。走既有错误
+      // 横幅（「处置链刷新失败：」前缀）透出并保留上一帧数据（catch 分支同款
+      // fail-soft），不清屏
+      if (view.error) {
+        setError(view.error);
+        return;
+      }
       setData(view);
       setError('');
     } catch (err) {
@@ -81,11 +91,18 @@ export default function ChainPanel({
       if (seq !== loadSeqRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      // fix 6e3faa904945: 收尾置 false 同样纳入序号守卫（activities/index.tsx
+      // fix 9fc948945fc7 同款口径）——旧请求不得抢在并发新请求之前撤加载指示
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    // fix 6e3faa904945: project 切换重建轮询时置加载反馈——重拉期间 Spin 转、
+    // 旧项目数据不再持续可见（序号守卫只保证不落盘，不保证视觉中性）。
+    // 30s 轮询重拉不置 true，防周期性闪烁；挂载时与初始 state true 重复赋值
+    // 由 React 同值 bailout 吸收
+    setLoading(true);
     load(project);
     const timer = setInterval(() => load(project), REFRESH_MS);
     return () => clearInterval(timer);
@@ -249,7 +266,10 @@ export default function ChainPanel({
 
         <Card size="small" title={`链在办（${data?.in_flight?.length ?? 0}）`} style={{ marginBottom: 16 }}>
           <Table<ChainInFlightItem>
-            rowKey={(r) => r.chain_id || r.signature}
+            // fix 76072bbd6819: chain_id/signature 双空（链状态 JSON 损坏的历史
+            // 数据不可信）时兜底 index 键，防 undefined key 触发 duplicate/missing
+            // key 告警与行复用异常
+            rowKey={(r, i) => r.chain_id || r.signature || `in-flight-${i}`}
             size="small"
             columns={inFlightColumns}
             dataSource={data?.in_flight || []}

@@ -3598,6 +3598,16 @@ class VerificationPipeline:
                     # 比照 env_error 退回的预算耗尽分支（本方法 env_error 段
                     # replan_left<=0 分支：预算耗尽即置 implemented + error 显式结束）：
                     # 置 implemented + error 显式结束本轮，ERROR 留痕。
+                    # 写点前状态复核（code-review item f7ccfa9ba109，与 plan-ready
+                    # 写点及 legacy 各结果应用分支同口径收敛于
+                    # _discard_if_not_testing）：入口核对到本写点之间隔着
+                    # 整轮 planner run 与写前预校验，窗口内 spec 可能被人工
+                    # 复位/并发 attempt 接管/终态收敛——非 testing 时 DEBUG
+                    # 丢弃并直接结束，不覆写较新状态。
+                    if _discard_if_not_testing(
+                        self, spec_name, None, "freeze-reject-budget-exhausted"
+                    ):
+                        return
                     self._context.state_machine.update_spec(
                         spec_name,
                         {
@@ -3743,6 +3753,15 @@ class VerificationPipeline:
                     return
                 prev_replan_error = env_error
                 if replan_left <= 0:
+                    # 写点前状态复核（code-review item f7ccfa9ba109，与 plan-ready
+                    # 写点及上方空集兜底写点同口径收敛于 _discard_if_not_testing）：
+                    # 最近一次状态核查距此隔着完整一轮 stage2 引擎执行，窗口内
+                    # spec 可能被人工复位/并发 attempt 接管/终态收敛——非
+                    # testing 时 DEBUG 丢弃并直接结束，不覆写较新状态。
+                    if _discard_if_not_testing(
+                        self, spec_name, None, "env-replan-budget-exhausted"
+                    ):
+                        return
                     self._context.state_machine.update_spec(
                         spec_name,
                         {
