@@ -637,21 +637,45 @@ def _detect_uniform_verify_failure(pipeline, spec_name: str, report: dict) -> bo
         # frozen 与人工升级告警成对落盘。tester_run 清空经 extra_updates 并入
         # 同一原子写（error/status/frozen 三键由入口自管）；attempts 计数已由
         # 上方 bump_counters 锁内原子递增，不再随本写点回写。
-        pipeline._context.state_machine.freeze_for_human(
-            spec_name,
-            error=note,
-            signal_type="verify_uniform_failure",
-            severity="major",
-            description=note,
-            evidence=_uniform_failure_evidence(signature, fail_total),
-            recommended_action=_uniform_recommended_action(frozen=True),
-            alert_callback=pipeline._context.escalation_notifier,
-            extra_updates={"tester_run": None},
-        )
+        # freeze_for_human 内部 update_spec 含磁盘 IO，磁盘满/权限异常若上抛
+        # 会沿哨调用点中断本轮 verdict 处置（与 escalation
+        # ._escalate_inconclusive_parking 容错口径对齐，code-review item
+        # 47a1567accbb）：SIGNAL 已发、计数已 bump，冻结落盘失败仅 ERROR 留痕
+        # ——frozen/blocked 未生效由下一轮同因重触发兜底，不回滚本轮哨处置。
+        try:
+            pipeline._context.state_machine.freeze_for_human(
+                spec_name,
+                error=note,
+                signal_type="verify_uniform_failure",
+                severity="major",
+                description=note,
+                evidence=_uniform_failure_evidence(signature, fail_total),
+                recommended_action=_uniform_recommended_action(frozen=True),
+                alert_callback=pipeline._context.escalation_notifier,
+                extra_updates={"tester_run": None},
+            )
+        except Exception as e:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"同因失败哨冻结转人工写盘失败 '{spec_name}'（frozen/blocked "
+                f"本轮未落盘；verify_uniform_failure SIGNAL 已发、计数已 bump，"
+                f"下一轮同因可重触发）: {type(e).__name__}: {e}",
+            )
     else:
         # 未达阈值：仅落 error 文案，不改状态（继续按轮呼叫 admin；连续计数
-        # 已由上方 bump_counters 锁内原子递增，不在此回写）。
-        pipeline._context.state_machine.update_spec(spec_name, {"error": note})
+        # 已由上方 bump_counters 锁内原子递增，不在此回写）。update_spec 含
+        # 磁盘 IO，局部容错（比照 _escalate_inconclusive_parking 容错口径，
+        # code-review item 47a1567accbb）：error 文案写盘失败仅 WARNING 留痕
+        # 不中断哨处置——admin 通知主面是上方已独立容错的 verify_uniform_
+        # failure SIGNAL。
+        try:
+            pipeline._context.state_machine.update_spec(spec_name, {"error": note})
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"同因失败哨 error 文案写盘失败 '{spec_name}'（非阻断，SIGNAL "
+                f"已发、计数已 bump）: {type(e).__name__}: {e}",
+            )
     pipeline._context.logger.warning("pm_engine", f"全场景同因失败哨触发 '{spec_name}': {note}")
     return True
 
