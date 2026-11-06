@@ -3871,18 +3871,29 @@ class AdminMonitor:
                 resolvable = find_resolvable(pending, specs, backfill=backfill)
                 if resolvable:
                     resolved = self.store.auto_resolve(resolvable)
-                    for item in resolvable:
-                        self.logger.info(
-                            "admin_monitor",
-                            f"alert auto-resolved: id={item.get('id')} "
-                            f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
-                        )
-                    if resolved:
-                        self.logger.warning(
-                            "admin_monitor",
-                            f"alert lifecycle: auto-resolved {resolved}/{len(resolvable)} "
-                            f"stale alert(s)" + ("（存量回填）" if backfill else ""),
-                        )
+                    # 写回端对写前已 handled / 记录已删除 / kind 不符的条目
+                    # 跳过，实际闭环数可能小于判定列表长度（code-review
+                    # 3197720cbee0）：逐条 INFO 只在全部确认闭环时输出，
+                    # 闭环数偏少时不再逐条谎报「已自动闭环」，跳过事实并入
+                    # 聚合行。
+                    if resolved == len(resolvable):
+                        for item in resolvable:
+                            self.logger.info(
+                                "admin_monitor",
+                                f"alert auto-resolved: id={item.get('id')} "
+                                f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
+                            )
+                    skip_note = (
+                        ""
+                        if resolved == len(resolvable)
+                        else f"（{len(resolvable) - resolved} 条写回前已 handled/"
+                        "已删除或 kind 不符被跳过，未闭环）"
+                    )
+                    self.logger.warning(
+                        "admin_monitor",
+                        f"alert lifecycle: auto-resolved {resolved}/{len(resolvable)} "
+                        f"stale alert(s)" + ("（存量回填）" if backfill else "") + skip_note,
+                    )
                     resolved_total += resolved
             # 回填标志置于判定与写回成功之后（code-review item
             # 5c6103677e02）：find_resolvable/auto_resolve/写回异常路径不
@@ -3903,18 +3914,28 @@ class AdminMonitor:
             )
             if healable:
                 healed = self.store.auto_self_heal(healable)
-                for item in healable:
-                    self.logger.info(
-                        "admin_monitor",
-                        f"alert self-healed: id={item.get('id')} "
-                        f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
-                    )
-                if healed:
-                    self.logger.warning(
-                        "admin_monitor",
-                        f"alert lifecycle: self-healed {healed}/{len(healable)} "
-                        f"transient alert(s)（已自愈）",
-                    )
+                # 与通道一同款处理（code-review 3197720cbee0）：
+                # auto_self_heal 对写前已 handled / 记录已删除 / kind 不符
+                # 条目跳过，逐条 INFO 只在全部确认收口时输出，闭环数偏少时
+                # 不再逐条谎报，跳过事实并入聚合行。
+                if healed == len(healable):
+                    for item in healable:
+                        self.logger.info(
+                            "admin_monitor",
+                            f"alert self-healed: id={item.get('id')} "
+                            f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
+                        )
+                skip_note = (
+                    ""
+                    if healed == len(healable)
+                    else f"（{len(healable) - healed} 条写回前已 handled/"
+                    "已删除或 kind 不符被跳过，未闭环）"
+                )
+                self.logger.warning(
+                    "admin_monitor",
+                    f"alert lifecycle: self-healed {healed}/{len(healable)} "
+                    f"transient alert(s)（已自愈）" + skip_note,
+                )
                 resolved_total += healed
         except Exception as e:
             self.logger.warning(
