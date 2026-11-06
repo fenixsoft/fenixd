@@ -6,7 +6,6 @@
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,12 +22,15 @@ from core.pm_engine.verification.infra_classify import (
     annotate_death_fingerprint,
     is_verifier_process_death,
 )
-
-# 本轮 verify 派发时刻解析口径（fix-verify-verdict-run-attribution D4）：
-# run/attempt id 形如 ``<run>-<epoch>-a<n>[-r<m>]``，内嵌 epoch 即本轮
-# attempt 启动时刻（≈ 派发时刻），与 report_gate._verifier_result_is_stale
-# 的 ``-(\d{10,})-a\d+$`` 既有口径同源。
-_RUN_ID_EPOCH_PATTERN = re.compile(r"-(\d{10,})-a\d+$")
+# 本轮 verify 派发时刻解析口径（fix-verify-verdict-run-attribution D4）单源
+# 收编（code-review item b90d63ed2e83）：run/attempt id 形如
+# ``<run>-<epoch>-a<n>[-r<m>]``，内嵌 epoch 即本轮 attempt 启动时刻（≈ 派发
+# 时刻）。report_gate._verifier_result_is_stale 以同一口径判残留新鲜度、本
+# 模块 _verify_dispatch_epoch 以它解析派发时刻作 report 保全判据——两侧
+# 消费同一 run_id 形态契约且语义强耦合，口径演进（如 run_id 形态扩展）只
+# 改单源处，防解析静默漂移（同 fastlane.VERIFIED_RESET_FIELDS 收编先例；
+# report_gate 不回引本模块，无环，同上方 infra_classify 直引同款）。
+from core.pm_engine.verification.report_gate import RUN_ID_EPOCH_PATTERN
 
 
 def _discard_if_not_testing(pipeline, spec_name, result, label):
@@ -100,15 +102,17 @@ def _archive_stale_verdict_file(result_path: Path, logger) -> str:
 def _verify_dispatch_epoch(result) -> float:
     """解析本轮 verify 派发时刻（UTC epoch 秒，fix-verify-verdict-run-attribution D4）。
 
-    优先从 ``result.run_id`` 内嵌 epoch 解析（``-(\d{10,})-a\d+$`` 口径，
-    与 report_gate._verifier_result_is_stale 同源）；解析失败回退本轮 run
-    流启动时刻（完成时刻 - result.duration_seconds，即本轮 verify run 流
-    的起算点）；时长亦不可得时回退当前时刻（mtime < now 恒不成立 → 不
-    保全——回退链全断时按「无新鲜 report」口径走照常 fail-closed）。
+    优先从 ``result.run_id`` 内嵌 epoch 解析（report_gate.RUN_ID_EPOCH_PATTERN
+    单源口径，与 report_gate._verifier_result_is_stale 同消费）；解析失败回
+    退本轮 run 流启动时刻（完成时刻 - result.duration_seconds，即本轮
+    verify run 流的起算点）；时长亦不可得时回退当前时刻——新鲜性判据必然
+    不满足：report mtime 是过去时刻，``mtime < now`` 恒成立 → 保全处比较
+    判真直接跳过保全（回退链全断时按「无新鲜 report」口径走照常
+    fail-closed）。
     """
     raw_run_id = getattr(result, "run_id", "") or ""
     try:
-        m = _RUN_ID_EPOCH_PATTERN.search(raw_run_id)
+        m = RUN_ID_EPOCH_PATTERN.search(raw_run_id)
         if m:
             return float(int(m.group(1)))
     except (TypeError, ValueError):
@@ -1134,31 +1138,48 @@ def _run_legacy_verification(pipeline, spec_name: str):
                 f"进程级死亡分流超限 '{spec_name}'：freeze_for_human 暂挂验证"
                 f"（不 transition bug-found）— {_death_reason}",
             )
-            pipeline._context.state_machine.freeze_for_human(
-                spec_name,
-                error=_freeze_note,
-                signal_type="verifier_infra_death",
-                severity="critical",
-                description=_freeze_note,
-                evidence=(
-                    f"spec={spec_name}; run={getattr(result, 'run_id', '') or ''}; "
-                    f"turns_used={getattr(result, 'turns_used', None)}; "
-                    f"duration_seconds={getattr(result, 'duration_seconds', None)}; "
-                    f"fingerprint={_fingerprint}; error={_death_err[:200]}"
-                ),
-                recommended_action=(
-                    "验证 agent 启动期即死（0 轮/秒挂），非产品缺陷：检查 runner/"
-                    "网关/CLI 环境（补丁文件缺失、二进制不可达、额度耗尽等）修复后 "
-                    "unfreeze_spec 清零重试（解冻即清零 infra 重派计数）；确认为"
-                    "实现问题时人工拨回 implemented 重实现"
-                ),
-                alert_callback=pipeline._context.escalation_notifier,
-                extra_updates={
-                    # 死亡 run 已终局：清 tester_run 防在飞判定误认（对齐
-                    # _detect_uniform_verify_failure 冻结同款收口）。
-                    "tester_run": None,
-                },
-            )
+            # 升级通道自身失败不得抛穿裁决流程（code-review item 67e68ffbdff9，
+            # 与 escalation.py 同场景 update_spec 包裹先例同款）：freeze_for_human
+            # 内部仅对告警回调容错（state_machine 冻结告警段 try/except），对
+            # update_spec 的落盘调用无磁盘 IO 防护——磁盘满/权限类异常若沿
+            # engine 异常守卫上抛会被 _rollback_failed_dispatch 洗回
+            # implemented，把结构性冻结的人工处置窗口覆写成自动重试通道，与
+            # 上方「legacy 内部消费失败不抛异常」的设计目标相悖。失败 ERROR
+            # 留痕，spec 保持 testing 由 recovery 兜底重排，不阻断本轮 verdict
+            # 处置收口。
+            try:
+                pipeline._context.state_machine.freeze_for_human(
+                    spec_name,
+                    error=_freeze_note,
+                    signal_type="verifier_infra_death",
+                    severity="critical",
+                    description=_freeze_note,
+                    evidence=(
+                        f"spec={spec_name}; run={getattr(result, 'run_id', '') or ''}; "
+                        f"turns_used={getattr(result, 'turns_used', None)}; "
+                        f"duration_seconds={getattr(result, 'duration_seconds', None)}; "
+                        f"fingerprint={_fingerprint}; error={_death_err[:200]}"
+                    ),
+                    recommended_action=(
+                        "验证 agent 启动期即死（0 轮/秒挂），非产品缺陷：检查 runner/"
+                        "网关/CLI 环境（补丁文件缺失、二进制不可达、额度耗尽等）修复后 "
+                        "unfreeze_spec 清零重试（解冻即清零 infra 重派计数）；确认为"
+                        "实现问题时人工拨回 implemented 重实现"
+                    ),
+                    alert_callback=pipeline._context.escalation_notifier,
+                    extra_updates={
+                        # 死亡 run 已终局：清 tester_run 防在飞判定误认（对齐
+                        # _detect_uniform_verify_failure 冻结同款收口）。
+                        "tester_run": None,
+                    },
+                )
+            except Exception as exc:
+                pipeline._context.logger.error(
+                    "pm_engine",
+                    f"进程级死亡超限冻结落盘失败（spec 保持 testing 由 recovery "
+                    f"兜底重排，本轮 verdict 处置照常收口）'{spec_name}': "
+                    f"{type(exc).__name__}: {exc}",
+                )
             return
         # ── 统一失败归因入口（code-review 0d478d8f37ce，与 verdict bug-found
         # 分支对齐）──
