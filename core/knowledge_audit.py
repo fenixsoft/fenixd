@@ -49,6 +49,7 @@ from core.knowledge_backfill import (
     load_knowledge_core,
     null_logger,
     resolve_commit,
+    safe_validate,
     scale_stats,
     upsert_todo_line,
     validate_with_repair,
@@ -717,9 +718,13 @@ def consume_arbitration(
             )
             if changed:
                 try:
+                    # pathspec 收窄为本轮实际改写页列表（对齐 run_audit 注记同步
+                    # 段 5e5e4ea03d8c 纪律）：整目录 pathspec 会把进锁前已在场的
+                    # carryover（人工编辑、前序 fail-open 留盘产出）一并卷进本笔
+                    # 提交，污染提交归属；carryover 留工作区由收尾 leftover 曝光。
                     resolve_commit(core)(
                         project_root,
-                        [KNOWLEDGE_DIR],
+                        sorted(changed),
                         f"[fenix] knowledge: audit disputed 注记摘除（{len(changed)} 页）",
                     )
                 except Exception as e:  # noqa: BLE001 - 提交失败 fail-open（内容已在盘上）
@@ -1650,7 +1655,19 @@ def run_audit(
         # 缺失等报告项、kebab 名、链接失配、ADR 正文改写……）若一并否决，单个
         # 报告类病灶就会令整轮机械修复被回滚、机械车道被单点病灶长期空转——
         # 修复前后违规清单取差集，既有违规不拦提交，仍走各自报告/待人工路径。
-        before_violations = {str(v) for v in (validate(project_root) or [])}
+        # 裸调改经 safe_validate 包装（code-review 8074e216699a，复用 backfill
+        # 4b72c899e0ef 单实现）：校验器异常不再穿出 run_audit（否则日戳不落
+        # 盘，当日每个 300s 检查点重复失败刷屏）。基线异常的段失败分支对齐
+        # backfill 自举/史前段口径：本段尚未修复、无产出可回滚，登记待人工后
+        # 跳过机械修复，不掀翻整轮体检。
+        baseline_ok, baseline_violations = safe_validate(project_root, validate)
+        before_violations = set(baseline_violations)
+        if not baseline_ok:
+            counts["pending_manual"] += 1
+            details["manual"].append(
+                "机械修复前违规基线采集失败（校验器异常），本轮机械修复未执行，"
+                "待下轮体检或人工核查"
+            )
         # carryover：机械段开始前 spec/knowledge/ 已有的未提交改动（上一轮提交
         # 失败 fail-open 留盘的已验证产出、人工在盘上的编辑）。回滚纪律与语义
         # 段同款：只还原本轮触达的文件，不得全目录连带清除。用严格变体采集
@@ -1658,21 +1675,32 @@ def run_audit(
         # 集会把采集失败伪装成「无 carryover」，回滚差集随即把进锁前已在场的
         # 未提交改动当本轮产出连带清除；基线不可得时在回滚分支跳过差集回滚。
         carryover = _knowledge_dirty_files_or_none(project_root)
-        fixed, manual_fixes, rewritten_rels, fix_cats = _apply_mechanical(
-            project_root, scan
-        )
+        if baseline_ok:
+            fixed, manual_fixes, rewritten_rels, fix_cats = _apply_mechanical(
+                project_root, scan
+            )
+        else:
+            # 基线异常段已登记待人工：零产出自然跳过下方提交闸门与回滚分支
+            fixed, manual_fixes, rewritten_rels, fix_cats = [], [], [], []
         if manual_fixes:
             counts["pending_manual"] += len(manual_fixes)
             details["manual"].extend(manual_fixes)
         if fixed:
-            _, violations = validate_with_repair(
-                project_root,
-                validate,
-                spawn,
-                "",
-                f"ka-fix-{int(time.time())}",
-                repair_rounds=0,  # 机械自修无 run 语境：只验不改（显式声明）
-            )
+            try:
+                _, violations = validate_with_repair(
+                    project_root,
+                    validate,
+                    spawn,
+                    "",
+                    f"ka-fix-{int(time.time())}",
+                    repair_rounds=0,  # 机械自修无 run 语境：只验不改（显式声明）
+                )
+            except Exception as e:  # noqa: BLE001 - 校验器/修正环异常不穿出体检
+                # 多参签名与 safe_validate 单参违规清单契约不对接，按语义段既有
+                # try/except 形态包装（code-review 8074e216699a）：异常折算为
+                # 单条违规串走下方差集闸门——不在基线内即判闸门未过回滚（对齐
+                # backfill 剪枝闸门「校验器异常视为闸门未过」口径）。
+                violations = [f"校验器异常：{e}"]
             new_violations = [v for v in violations if str(v) not in before_violations]
             if not new_violations:
                 summary = (
@@ -1882,7 +1910,20 @@ def run_audit(
             # 违规基线进锁后、spawn 前采集（与机械段 before_violations 同款口径）：
             # 失败回滚只在「相对本基线的新发违规」时才连带回滚 carryover，真相源
             # 里与 carryover 无关的既有违规（marker 缺失等报告类病灶）不拦。
-            before_violations = {str(v) for v in (validate(project_root) or [])}
+            # safe_validate 包装（code-review 8074e216699a）：校验器异常不穿出
+            # run_audit；本出口未及 spawn 不耗转写名额，按上方 carryover 采集
+            # 失败同款分支保持 suspected 待下轮复核。
+            baseline_ok, baseline_violations = safe_validate(project_root, validate)
+            if not baseline_ok:
+                counts["pending_manual"] += 1
+                details["manual"].append(
+                    f"{finding['kind']}（{pages[0]} × {pages[1]}）：违规基线采集失败"
+                    f"（{baseline_violations[0]}），本轮转写跳过，保持 suspected "
+                    "待下轮复核"
+                )
+                _save_findings_ledger(project_root, ledger, own_fingerprints={fp})
+                continue
+            before_violations = set(baseline_violations)
             try:
                 # prompt 构建纳入同一 try（code-review 52c1a762cce9）：audit.md
                 # 缺失/混入非 UTF-8 字节、涉事页在 is_file 检查后被删除或权限

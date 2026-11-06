@@ -1098,6 +1098,32 @@ class EventBus:
             )
             return ""
 
+    def _build_known_snapshot(self, specs: dict, prev_known: dict) -> dict:
+        """构造下一轮已知状态快照（``_known_specs`` 重写的单点实现）。
+
+        供 ``_update_known_state`` 与 ``_diff_specs`` 尾部共用（code-review
+        item 15846c8f8c49）：归一规则演进时只改此处，避免两份同构拷贝漏改
+        一处造成快照口径漂移。
+
+        - status None 归一（code-review item a1210ff24c15）：.get 默认值只兜
+          键缺失，手改 STATE.md 写出显式 null（YAML 空值）时返回 None 原样
+          入快照；``or "drafted"`` 形态与 _diff_specs diff 循环的 new_status
+          取值同口径（该处为 diff 语义消费点、不收编进本助手），两处须
+          同步演进。
+        - 非 dict 条目沿用旧已知状态（无则不登记），与 recovery 段/
+          _find_dependents 的 isinstance 双保险同口径（code-review item
+          609c98e20eff）：read_all 契约已剔除坏条目，此处为解析层回归时的
+          双保险；``elif name in`` 而非 .get 缺省 None，避免把 None 引入
+          快照（a1210ff24c15 归一口径）。
+        """
+        next_known = {}
+        for name, entry in specs.items():
+            if isinstance(entry, dict):
+                next_known[name] = entry.get("status") or "drafted"
+            elif name in prev_known:
+                next_known[name] = prev_known[name]
+        return next_known
+
     def _update_known_state(self, warn_on_empty: bool = True):
         """Update internal snapshot of known SPEC states（持 _state_lock 串行化）。
 
@@ -1130,25 +1156,13 @@ class EventBus:
                         "保留既有 _known_specs 待下一轮确认",
                     )
                 return
-            # status None 归一（code-review item a1210ff24c15）：.get 默认值只兜
-            # 键缺失，手改 STATE.md 写出显式 null（YAML 空值）时返回 None 原样
-            # 入快照；``or`` 形态与 _diff_specs 两处取值口径统一。
-            # 非 dict 条目沿用旧已知状态（无则不登记），与 _diff_specs 快照重写
-            # 段/recovery 段/_find_dependents 的 isinstance 双保险同口径
-            # （code-review item 609c98e20eff）：read_all 契约已剔除坏条目，
-            # 此处为解析层回归时的双保险——稳态快照缺失时 _snapshot_baseline
-            # 走此处重建，若坏条目直接 .get 抛 AttributeError 会被
-            # _periodic_scan_loop 记 error 并跳过整轮 full_scan（恢复链、
-            # 悬空清扫、code-fix checkpoint 一并损失），违反「单条坏条目只
-            # 损失自身事件」的双保险意图；``elif name in`` 而非 .get 缺省
-            # None，避免把 None 引入快照（a1210ff24c15 归一口径）。
-            next_known = {}
-            for name, entry in specs.items():
-                if isinstance(entry, dict):
-                    next_known[name] = entry.get("status") or "drafted"
-                elif name in self._known_specs:
-                    next_known[name] = self._known_specs[name]
-            self._known_specs = next_known
+            # 609c98e20eff 双保险的本调用点后果：稳态快照缺失时
+            # _snapshot_baseline 走此处重建，若坏条目直接 .get 抛
+            # AttributeError 会被 _periodic_scan_loop 记 error 并跳过整轮
+            # full_scan（恢复链、悬空清扫、code-fix checkpoint 一并损失），
+            # 违反「单条坏条目只损失自身事件」的双保险意图。快照构造规则
+            # （status 归一、非 dict 沿用旧值）单点见 _build_known_snapshot。
+            self._known_specs = self._build_known_snapshot(specs, self._known_specs)
 
     def _dispatch_changes(self, current_specs: dict):
         """Compare current state against known state and dispatch events.
@@ -1300,15 +1314,8 @@ class EventBus:
 
         # Update known state：非 dict 条目沿用旧已知状态（无则不登记），与上方
         # 循环的跳过口径一致，避免快照重写处对坏条目二次引爆
-        # （code-review item d392b921a012）
-        next_known = {}
-        for name, entry in current_specs.items():
-            if isinstance(entry, dict):
-                # status None 归一（code-review item a1210ff24c15），三处取值同口径
-                next_known[name] = entry.get("status") or "drafted"
-            elif name in self._known_specs:
-                next_known[name] = self._known_specs[name]
-        self._known_specs = next_known
+        # （code-review item d392b921a012）；构造规则单点见 _build_known_snapshot。
+        self._known_specs = self._build_known_snapshot(current_specs, self._known_specs)
         return events, accepted_names, hook_events
 
     @staticmethod

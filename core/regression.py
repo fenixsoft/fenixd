@@ -149,6 +149,18 @@ _XML_ENTITY_GUARD_RE = re.compile(rb"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
 # DOCTYPE）、``</``（闭合标签）均不属根元素起始。DOCTYPE 按规范必位于
 # 根元素之前，扫到根元素即得完整 prolog 扫描窗口。
 _XML_ROOT_START_RE = re.compile(rb"<[A-Za-z_:]")
+# 平凡大文件守卫（code-review item 2dbc878d98e5）：实体膨胀守卫只拦
+# DOCTYPE/ENTITY 形态，普通形态的超大文件同样会经 ET.parse 把整棵树载入
+# daemon 进程内存并膨胀单文件覆盖式快照 last-run.json（junit.xml 由项目侧
+# 命令产出，verify.yaml 与测试命令均由项目侧 author，属半可信输入）。超限
+# 按既有 parse_error fail-closed 契约归一 ValueError 留 reason。合法 JUnit
+# XML（pytest/jest-junit/surefire/go-junit-report 产出）远小于该值。
+_XML_MAX_FILE_BYTES = 64 * 1024 * 1024
+# failures 条数截断上限（同 item 2dbc878d98e5）：百万级 testcase 的全量
+# failures 会把快照写入与 dashboard 读侧一并撑爆——与裁决侧对违规清单的
+# 截断纪律同风格，截断后在结果 dict 置 failures_truncated 随快照注明；
+# cases 侧不截断（total/分类计数不失真）。
+_XML_FAILURES_MAX = 1000
 
 
 def _find_prolog_end(data: bytes) -> Optional[int]:
@@ -220,17 +232,39 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
     返回格式（对齐 design D6）：
 
     - total / passed / failed / errors / skipped: 计数
-    - failures: 失败/错误用例列表（name/file/line/time/kind/message）
+    - failures: 失败/错误用例列表（name/file/line/time/kind/message），
+      超过 _XML_FAILURES_MAX 条截断并置 failures_truncated（item
+      2dbc878d98e5）
     - cases: 全部用例（供 extract_long_tests 消费）
 
     文件缺失抛出 FileNotFoundError；其余解析期文件异常（XML 存在但
     打开/读取失败等）与格式错误均归一为 ValueError（调用方据此归为
     parse_error）。含 DOCTYPE/ENTITY 声明的 XML 在解析前即拒绝（同样
-    归一 ValueError，防实体膨胀，code-review item d25b89a98831）。
+    归一 ValueError，防实体膨胀，code-review item d25b89a98831）；
+    文件大小超过 _XML_MAX_FILE_BYTES 同样解析前拒绝（防平凡大文件
+    撑爆内存，code-review item 2dbc878d98e5）。
     """
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"JUnit XML 不存在: {path}")
+
+    # 文件大小守卫（item 2dbc878d98e5，纵深防御）：实体膨胀守卫只拦
+    # DOCTYPE/ENTITY 形态，平凡的超大文件不在其覆盖面。超限在解析前即拒
+    # （归一 ValueError，调用方走既有 parse_error fail-closed 路径留 reason），
+    # FileNotFoundError 保持原契约不归一。
+    try:
+        xml_size = path.stat().st_size
+    except OSError as e:
+        raise ValueError(f"JUnit XML 无法读取: {e}") from e
+    if xml_size > _XML_MAX_FILE_BYTES:
+        _logger.warning(
+            f"regression: JUnit XML 超过大小上限"
+            f"（{_XML_MAX_FILE_BYTES} 字节，实际 {xml_size}），拒绝解析: {path}"
+        )
+        raise ValueError(
+            f"JUnit XML 大小 {xml_size} 字节超过上限 {_XML_MAX_FILE_BYTES}"
+            " 字节，已拒绝解析（防超大产物撑爆 daemon 内存）"
+        )
 
     # 实体膨胀守卫（item d25b89a98831，纵深防御）：分块读至根元素起始
     # 标记为止再整体匹配——DOCTYPE 按规范必位于根元素之前，超长前置
@@ -277,6 +311,7 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
     root = tree.getroot()
     failures: List[Dict[str, Any]] = []
     cases: List[Dict[str, Any]] = []
+    failures_truncated = False
 
     for tc in _iter_testcases(root):
         name = tc.get("name") or tc.get("classname") or "unnamed"
@@ -309,19 +344,25 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
             msg = (el.get("message") or (el.text or "").strip())[:500]
             case_info["kind"] = kind
             case_info["message"] = msg
-            failures.append({
-                "name": name,
-                "file": tc_file,
-                "line": tc_line,
-                "time": tc_time,
-                "kind": kind,
-                "message": msg,
-                # classname（add-codefix-targeted-retry 1.1）：失败用例 nodeid
-                # 重构的映射源——pytest junitxml 不产 file 属性，nodeid 以
-                # classname 主导重构（tests.test_x.TestFoo → tests/test_x.py
-                # ::TestFoo::<name>）。cases 侧本就携带，failures 侧补齐对齐。
-                "classname": tc_classname,
-            })
+            if len(failures) < _XML_FAILURES_MAX:
+                failures.append({
+                    "name": name,
+                    "file": tc_file,
+                    "line": tc_line,
+                    "time": tc_time,
+                    "kind": kind,
+                    "message": msg,
+                    # classname（add-codefix-targeted-retry 1.1）：失败用例 nodeid
+                    # 重构的映射源——pytest junitxml 不产 file 属性，nodeid 以
+                    # classname 主导重构（tests.test_x.TestFoo → tests/test_x.py
+                    # ::TestFoo::<name>）。cases 侧本就携带，failures 侧补齐对齐。
+                    "classname": tc_classname,
+                })
+            else:
+                # 条数截断（item 2dbc878d98e5）：不再收集 failures，cases/计数
+                # 照常累计（total 与 failed/errors 分类数不失真），快照经
+                # failures_truncated 注明截断。
+                failures_truncated = True
             break
         else:
             if skipped_el is not None:
@@ -344,6 +385,9 @@ def parse_junit_xml(path: Union[str, Path]) -> Dict[str, Any]:
         "errors": errors,
         "skipped": skipped,
         "failures": failures,
+        # failures 条数截断标记（item 2dbc878d98e5）：True 时 failures 已按
+        # _XML_FAILURES_MAX 截断，调用方透传进结果/快照注明
+        "failures_truncated": failures_truncated,
         "cases": cases,
     }
 
@@ -905,6 +949,42 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 # ── 回归执行（task 2.5 + 2.7 + 2.8）──────────────────────────────────
 
 
+def _result_frame(
+    *,
+    reason: str,
+    cmd: str,
+    output: str,
+    started_at: str,
+    finished_at: str,
+    duration_seconds: float,
+    long_test_threshold_seconds: float,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """run_regression 异常/fail-closed return 路径的公共字段集单源。
+
+    code-review item 3a14460fa289：launch_error、空结果 fail-closed、
+    stale_xml、XML 不可解析四条路径此前各自手写字段近同的 dict（status 恒
+    parse_error、计数恒 0、failures/long_tests 恒空），已出现漂移痕迹
+    （launch_error/stale 路径无 exit_code 而空结果路径有）。公共字段在此
+    统一维护；差异字段经 ``extra`` 表达（launch_error=True、exit_code 等），
+    各路径对外字段集不回归。
+    """
+    frame: Dict[str, Any] = {
+        "status": "parse_error",
+        "cmd": cmd,
+        "output": output,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": duration_seconds,
+        "total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
+        "failures": [], "long_tests": [],
+        "long_test_threshold_seconds": long_test_threshold_seconds,
+        "reason": reason,
+    }
+    frame.update(extra)
+    return frame
+
+
 def run_regression(
     project_root,
     spec: RegressionSpec,
@@ -1026,22 +1106,19 @@ def run_regression(
             )
         except OSError as e:
             elapsed = round(time.monotonic() - started_mono, 2)
-            return {
-                "status": "parse_error",
+            return _result_frame(
+                cmd=cmd_display,
+                output=output_rel,
+                started_at=started_at,
+                finished_at=now_iso(),
+                duration_seconds=elapsed,
+                long_test_threshold_seconds=spec.long_test_threshold_seconds,
+                reason=f"回归命令启动失败: {e}",
                 # 启动失败子语义（code-review item 1cc2d91268e4）：与「跑完产
                 # 不出 XML」同归 parse_error（不新增状态枚举，read_progress /
                 # 质量门的保守回落语义不变）；本字段供消费侧结构化判别「未起跑」。
-                "launch_error": True,
-                "cmd": cmd_display,
-                "output": output_rel,
-                "started_at": started_at,
-                "finished_at": now_iso(),
-                "duration_seconds": elapsed,
-                "total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
-                "failures": [], "long_tests": [],
-                "reason": f"回归命令启动失败: {e}",
-                "long_test_threshold_seconds": spec.long_test_threshold_seconds,
-            }
+                launch_error=True,
+            )
         finally:
             if log_fh is not None:
                 log_fh.close()
@@ -1065,8 +1142,16 @@ def run_regression(
         parse_result: Optional[Dict[str, Any]] = None
         parse_error_reason: Optional[str] = None
         if not output_abs.is_file():
+            # code-review item 25a2c6b9c43b：超时中止后收尸窗口内 leader 仍未
+            # 被 reap 时 returncode 为 None——文案退化为「退出码不可知」，
+            # 不落「退出码 None」字样随 timeout/parse_error reason 误导排障。
+            exit_code_text = (
+                "退出码不可知（进程组被强制中止且未及收尸）"
+                if returncode is None
+                else f"命令退出码 {returncode}"
+            )
             parse_error_reason = (
-                f"命令退出码 {returncode}，但 JUnit XML 产物不存在: {output_rel}"
+                f"{exit_code_text}，但 JUnit XML 产物不存在: {output_rel}"
             )
         else:
             try:
@@ -1093,6 +1178,10 @@ def run_regression(
                 "skipped": parse_result["skipped"] if parse_result else 0,
                 "long_test_threshold_seconds": spec.long_test_threshold_seconds,
                 "failures": (parse_result or {}).get("failures", []),
+                # failures 条数截断标记透传（item 2dbc878d98e5，随快照注明）
+                "failures_truncated": bool(
+                    (parse_result or {}).get("failures_truncated")
+                ),
                 "long_tests": extract_long_tests(
                     (parse_result or {}).get("cases", []),
                     spec.long_test_threshold_seconds,
@@ -1126,22 +1215,18 @@ def run_regression(
                     f"用例，不采信该结果（按 parse_error 处置）"
                 )
                 log.warning("regression", f"{reason}: {cmd_display}")
-                return {
-                    "status": "parse_error",
-                    "cmd": cmd_display,
-                    "output": output_rel,
-                    "started_at": started_at,
-                    "finished_at": finished_at,
-                    "duration_seconds": elapsed,
-                    "total": 0, "passed": 0, "failed": 0,
-                    "errors": 0, "skipped": 0,
-                    "failures": [], "long_tests": [],
-                    "long_test_threshold_seconds": spec.long_test_threshold_seconds,
+                return _result_frame(
+                    cmd=cmd_display,
+                    output=output_rel,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_seconds=elapsed,
+                    long_test_threshold_seconds=spec.long_test_threshold_seconds,
+                    reason=reason,
                     # 非零退出码结构化留痕（与既有 exit_code 字段同形），供
                     # 消费侧判别「命令没跑成」的具体形态
-                    "exit_code": returncode,
-                    "reason": reason,
-                }
+                    exit_code=returncode,
+                )
 
             # 状态判定：timeout 优先；否则按解析结果（退出码不改判——XML 全绿
             # 仍 passed，非零退出经下方 exit_code 留痕，不静默蒸发）
@@ -1188,19 +1273,15 @@ def run_regression(
                     )
                 if stale:
                     log.warning("regression", f"{stale_reason}: {cmd_display}")
-                    return {
-                        "status": "parse_error",
-                        "cmd": cmd_display,
-                        "output": output_rel,
-                        "started_at": started_at,
-                        "finished_at": finished_at,
-                        "duration_seconds": elapsed,
-                        "total": 0, "passed": 0, "failed": 0,
-                        "errors": 0, "skipped": 0,
-                        "failures": [], "long_tests": [],
-                        "long_test_threshold_seconds": spec.long_test_threshold_seconds,
-                        "reason": stale_reason,
-                    }
+                    return _result_frame(
+                        cmd=cmd_display,
+                        output=output_rel,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_seconds=elapsed,
+                        long_test_threshold_seconds=spec.long_test_threshold_seconds,
+                        reason=stale_reason,
+                    )
                 status = "passed"
             result = {
                 "status": status,
@@ -1216,6 +1297,8 @@ def run_regression(
                 "skipped": parse_result["skipped"],
                 "long_test_threshold_seconds": spec.long_test_threshold_seconds,
                 "failures": parse_result["failures"],
+                # failures 条数截断标记透传（item 2dbc878d98e5，随快照注明）
+                "failures_truncated": parse_result["failures_truncated"],
                 "long_tests": long_tests,
             }
             # 非零退出但 XML 全绿（如 runner 在 sessionfinish 收尾阶段崩溃、
@@ -1232,18 +1315,15 @@ def run_regression(
             return result
 
         # parse_error 路径：XML 不可解析
-        return {
-            "status": "parse_error",
-            "cmd": cmd_display,
-            "output": output_rel,
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "duration_seconds": elapsed,
-            "total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
-            "failures": [], "long_tests": [],
-            "reason": parse_error_reason or "JUnit XML 不可解析",
-            "long_test_threshold_seconds": spec.long_test_threshold_seconds,
-        }
+        return _result_frame(
+            cmd=cmd_display,
+            output=output_rel,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=elapsed,
+            long_test_threshold_seconds=spec.long_test_threshold_seconds,
+            reason=parse_error_reason or "JUnit XML 不可解析",
+        )
 
 
 def run_and_write_regression(

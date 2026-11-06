@@ -2353,56 +2353,86 @@ def run_backfill(
                     if dirty_now is not None
                     else []
                 )
-                try:
-                    if dirty_now is None:
-                        # 现状采集失败时触达集不可知：按提交失败同口径
-                        # fail-open，不以整目录 pathspec 兜底扫走用户未提交改动
-                        raise RuntimeError(
-                            "提交前脏文件现状采集失败（git status 不可用/超时）"
-                        )
-                    if batch_touched:
-                        commit(
-                            project_root,
-                            batch_touched,
-                            f"[fenix] knowledge: backfill batch {i}/{total}",
-                        )
-                except Exception as e:  # noqa: BLE001
-                    log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
+                if dirty_now is None:
+                    # 现状采集失败时触达集不可知：既无法构造本批提交 pathspec，
+                    # 也无法为 carryover 召回记录本批产出路径（batch_touched 按
+                    # 空集走提交失败 fail-open 会令召回落空，产出永不落库而下方
+                    # 照标 distilled，工作区与 git 永久分叉）。改为显式把本批
+                    # 条目打回 pending 并跳过 distilled 标记，保住重入机会——
+                    # 重入批次重新聚合后按正常提交路径落库；前序批次在盘遗留
+                    # （carryover_files）保持原样待后续批次召回；不并入
+                    # uncommitted_keys（条目未标 distilled，无需收尾对账兜底
+                    # 纠正，避免重复留痕）。不以整目录 pathspec 兜底扫走用户
+                    # 未提交改动（code-review a7b1077c5346）。
                     batch_keys = [CAPABILITY_PREFIX + cap for cap in batch]
-                    uncommitted_keys.update(batch_keys)
-                    carryover_files.update(batch_touched)
-                    # 遗留文件持久化到台账条目：本进程内无后续成功提交时相关
-                    # 条目打回 pending，重入批次据此把仍在盘上的产出重新纳入
-                    # 提交 pathspec（code-review 7a39a875fdfd）
-                    _ledger_record_carryover(ledger, batch_keys, batch_touched)
+                    for key in batch_keys:
+                        ledger.reset_pending(key)
+                    log.warning(
+                        "knowledge",
+                        f"回填批次 {i}/{total} 提交前脏文件现状采集失败（git "
+                        "status 不可用/超时），本批产出未落库，相关条目已打回 "
+                        "pending 待重入重做",
+                    )
+                    _append_todo_fail_open(
+                        project_root,
+                        f"回填批次 {i}/{total} 提交前脏文件现状采集失败，本批产出"
+                        "未落库，相关条目已打回 pending 待重入重做",
+                        log,
+                    )
+                    failed_batches.append(
+                        {
+                            "batch": i,
+                            "capabilities": batch,
+                            "violations": [
+                                "提交前脏文件现状采集失败（git status 不可用/超时）"
+                            ],
+                        }
+                    )
                 else:
-                    uncommitted_keys.clear()
-                    carryover_files.clear()
-                    # 成功提交已扫入全部在盘遗留（含台账召回部分）：清除条目
-                    # 上的持久化字段，免留已落库路径的陈旧记录
-                    for entry in ledger.entries.values():
-                        entry.pop("carryover", None)
-                # 回填在飞期间新登记的归档（register_archive_pending 在派发
-                # 漏斗进程并发改盘台账）可能触碰本批能力：车道入口一次性构建
-                # 的 chain_index 不含其 delta，此处若照常标 distilled，台账按
-                # 条合并以 updated_at 较新者胜、会覆盖登记进程的 pending 写入，
-                # 下轮重入收敛判定即跳过该能力，新归档的溯源行对该能力页永久
-                # 缺失。重扫链索引与提示词所用链比对，链有增变的条目保持
-                # pending，下轮重入按新链重新聚合（code-review c06e4666a93b）。
-                fresh_index = build_chain_index(project_root, log=log)
-                for cap in batch:
-                    cap_key = CAPABILITY_PREFIX + cap
-                    if fresh_index.get(cap, []) != chain_index.get(cap, []):
-                        ledger.reset_pending(cap_key)
-                        log.warning(
-                            "knowledge",
-                            f"回填批次 {i}/{total}：能力 {cap} 在聚合期间有新登记"
-                            "归档触碰（本轮链未含其 delta），保持 pending 待重入"
-                            "按新链重新聚合",
-                        )
-                        continue
-                    ledger.mark(cap_key, STATUS_DISTILLED, batch=i)
-                ok_batches.append(i)
+                    try:
+                        if batch_touched:
+                            commit(
+                                project_root,
+                                batch_touched,
+                                f"[fenix] knowledge: backfill batch {i}/{total}",
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("knowledge", f"回填批次 {i}/{total} 提交失败（fail-open）：{e}")
+                        batch_keys = [CAPABILITY_PREFIX + cap for cap in batch]
+                        uncommitted_keys.update(batch_keys)
+                        carryover_files.update(batch_touched)
+                        # 遗留文件持久化到台账条目：本进程内无后续成功提交时相关
+                        # 条目打回 pending，重入批次据此把仍在盘上的产出重新纳入
+                        # 提交 pathspec（code-review 7a39a875fdfd）
+                        _ledger_record_carryover(ledger, batch_keys, batch_touched)
+                    else:
+                        uncommitted_keys.clear()
+                        carryover_files.clear()
+                        # 成功提交已扫入全部在盘遗留（含台账召回部分）：清除条目
+                        # 上的持久化字段，免留已落库路径的陈旧记录
+                        for entry in ledger.entries.values():
+                            entry.pop("carryover", None)
+                    # 回填在飞期间新登记的归档（register_archive_pending 在派发
+                    # 漏斗进程并发改盘台账）可能触碰本批能力：车道入口一次性构建
+                    # 的 chain_index 不含其 delta，此处若照常标 distilled，台账按
+                    # 条合并以 updated_at 较新者胜、会覆盖登记进程的 pending 写入，
+                    # 下轮重入收敛判定即跳过该能力，新归档的溯源行对该能力页永久
+                    # 缺失。重扫链索引与提示词所用链比对，链有增变的条目保持
+                    # pending，下轮重入按新链重新聚合（code-review c06e4666a93b）。
+                    fresh_index = build_chain_index(project_root, log=log)
+                    for cap in batch:
+                        cap_key = CAPABILITY_PREFIX + cap
+                        if fresh_index.get(cap, []) != chain_index.get(cap, []):
+                            ledger.reset_pending(cap_key)
+                            log.warning(
+                                "knowledge",
+                                f"回填批次 {i}/{total}：能力 {cap} 在聚合期间有新登记"
+                                "归档触碰（本轮链未含其 delta），保持 pending 待重入"
+                                "按新链重新聚合",
+                            )
+                            continue
+                        ledger.mark(cap_key, STATUS_DISTILLED, batch=i)
+                    ok_batches.append(i)
             else:
                 # 差集回滚只清本批新增脏路径：前批提交失败仍在盘上的产出落在
                 # 基线内会被保留并告警（不连带清除），但内容尚未落库——台账打回
@@ -2780,6 +2810,7 @@ def _validate_with_repair(
 
 # 公开别名（core.knowledge_audit 复用，避免 import 私有名；须置于定义之后）
 validate_with_repair = _validate_with_repair
+safe_validate = _safe_validate
 
 
 def _write_report(project_root: Path, summary: dict) -> None:

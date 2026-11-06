@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .alert_lifecycle import AUTO_RESOLVE_BY, AUTO_SELF_HEAL_BY
+from core.fs_utils import fsync_parent_dir as _fsync_parent_dir_impl
 from core.timelib import parse_ts
 
 
@@ -112,28 +113,20 @@ def _utcnow_iso() -> str:
 def _fsync_parent_dir(path: Path) -> None:
     """rename 原子替换后刷父目录项，保证替换结果掉电不回退（尽力而为）。
 
-    临时文件 fsync 只保证文件内容落盘，rename 的目录项变更是否持久化取决于
-    父目录是否刷盘——不刷则掉电重启后文件可能整体回退为旧内容（code-review
-    item 74e17a6b9d5c）。目录 fsync 在个别文件系统上不支持或失败（EINVAL 等），
-    静默忽略，此时仍保留进程级崩溃安全保证。
+    实现收口 ``core.fs_utils.fsync_parent_dir`` 单点（item 671399f09114，
+    语义说明随实现上移）；私有名保留给本模块内部调用点与
+    signals/state_machine/admin_monitor/serving_registry 的既有 import，
+    行为随单点本体。
     """
-    try:
-        dfd = os.open(str(path.parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dfd)
-    except OSError:
-        pass
-    finally:
-        os.close(dfd)
+    _fsync_parent_dir_impl(path)
 
 
 # code-review item dda0ab4ba29c：跨模块（core.verdict_check 等）复用统一走
 # 公开名，模块边界不依赖下划线私有符号（verdict_check 对 extract_step_number
 # 公开别名的自述纪律同款）。私有名保留给既有调用点（本模块内部调用与
 # serving_registry/signals/state_machine/admin_monitor 的既有 import）。
-# 别名直引同一实现，签名与行为随本体，无任何包装差异。
+# 公开名经薄委托随 fs_utils 单点本体（item 671399f09114），签名与行为
+# 与本体一致。
 fsync_parent_dir = _fsync_parent_dir
 
 
@@ -556,11 +549,18 @@ class AdminStore:
             return
         try:
             self.archive_path.parent.mkdir(parents=True, exist_ok=True)
+            # code-review item 41edb3cbe5f0：追加前锁内探测首建；确为首建时
+            # 文件 fsync 后同刷父目录项（与 _write_unlocked 持久化纪律对齐）
+            # ——新建文件的目录项不随文件 fd fsync 持久化，掉电归档文件
+            # 可能整体消失。非首建追加不付目录 fsync 代价。
+            first_create = not self.archive_path.exists()
             with self.archive_path.open("a", encoding="utf-8") as f:
                 for rec in trimmed:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
+            if first_create:
+                _fsync_parent_dir(self.archive_path)
         except OSError as exc:
             if self._logger is not None:
                 self._logger.warning(
@@ -712,7 +712,11 @@ class AdminStore:
             "kind": DISPOSITION,
             "signal_type": signal.get("signal_type"),
             "spec": signal.get("spec") or getattr(disp, "spec", None),
-            "severity": signal.get("severity"),
+            # code-review item 5241be9219c1：signal 缺键/显式 None（或空串）
+            # 回落文档缺省 major——键已存在的 None 会绕过 _normalize_entry
+            # 的 setdefault，处置记录 severity 不得落无效空级别（与
+            # SIGNAL_SEVERITY.get(type, "major") 的未知值缺省惯例同向）
+            "severity": signal.get("severity") or "major",
             "description": (
                 getattr(disp, "problem", "") or signal.get("description")
             ),
@@ -1590,12 +1594,20 @@ class DisputeAuditStore:
             with self._acquire_lock() as lf:
                 fcntl.flock(lf, fcntl.LOCK_EX)
                 try:
+                    # code-review item 41edb3cbe5f0：追加前探测首建；确为
+                    # 首建时文件 fsync 后同刷父目录项（与 _write_unlocked
+                    # 持久化纪律对齐）——dispute 审计承担回滚凭据职责，
+                    # 掉电丢失首建文件代价高于归档。非首建追加不付目录
+                    # fsync 代价。
+                    first_create = not self.audit_path.exists()
                     with self.audit_path.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                         f.flush()
                         # 与 AdminStore._write_unlocked 对齐：落盘后才返回，
                         # 崩溃时最近一条审计记录不因页缓存未刷而丢失
                         os.fsync(f.fileno())
+                    if first_create:
+                        _fsync_parent_dir(self.audit_path)
                     self._trim_unlocked()
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)

@@ -82,6 +82,60 @@ def list_maintenance_entries(project) -> list:
     return entries
 
 
+# code-review item 007fb4732748：run_id 唯一性探测只需近期条目——撞名候选
+# 携带 epoch 秒段（base = maintenance-<scope>-<int(time.time())>），能与
+# 候选全等相等的既有条目必然写于同一秒内、必落在台账文件尾部；唯一性对
+# 全量历史去重没有语义要求（候选随机段 x<4hex> 已把并发撞名概率压到可
+# 忽略），尾窗限量探测足够，登记路径的读 IO 与逐行解析成本从随台账逐年
+# 累积线性上涨降为常量。
+_PROBE_TAIL_LINES = 512
+
+
+def _tail_maintenance_entries(project, max_lines: int = _PROBE_TAIL_LINES) -> list:
+    """按行数从台账尾部限量读取有效条目（旧→新，至多 max_lines 条）。
+
+    二进制分块自文件尾向前扩读、不整读文件——限量读的意义在同时封住读 IO
+    与逐行 JSON 解析两头的线性成本（item 007fb4732748）。坏行容错（非法
+    JSON / 非 dict 顶层 / 空行跳过）与 list_maintenance_entries 同口径。
+    """
+    path = _ledger_path(project)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    chunk = 65536
+    start = size
+    try:
+        with path.open("rb") as fh:
+            while True:
+                start = max(0, start - chunk)
+                fh.seek(start)
+                data = fh.read(size - start)
+                if start > 0:
+                    # 起点大概率切在半行中间：丢弃到本块首个换行为止；
+                    # 整块落在同一超长行内时继续向文件头扩块
+                    nl = data.find(b"\n")
+                    if nl == -1:
+                        continue
+                    data = data[nl + 1:]
+                if data.count(b"\n") >= max_lines or start == 0:
+                    break
+    except OSError:
+        return []
+    entries = []
+    for line in data.decode("utf-8", errors="replace").split("\n")[-max_lines:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            entries.append(item)
+    return entries
+
+
 def make_maintenance_run_id(scope: str, project=None) -> str:
     """生成登记型 run id：``maintenance-<scope>-<epoch 秒>``。
 
@@ -93,9 +147,11 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     一起，告警归因与复盘引用失真。初版 docstring 声称与 maintenance_runs.py
     两处 run id 生成点「同款」，但那两处（_unique_admin_run_id /
     _unique_evolution_run_id）实际已各自包了 ``-<n>`` 探测退避防撞，本函数
-    同步跟进：提供 project 时复用本模块读侧（list_maintenance_entries）探测
-    候选 run_id 是否已在台账出现，已存在即追加 ``-<n>``（n 从 1 起递增）。
-    探测台账而非落申领占位：台账是纯登记簿（追加行 + 读侧全量扫描），
+    同步跟进：提供 project 时经尾部限量读侧（_tail_maintenance_entries，
+    item 007fb4732748）探测候选 run_id 是否已在台账出现，已存在即追加
+    ``-<n>``（n 从 1 起递增）——撞名候选携带 epoch 秒段，冲突条目必落台账
+    尾窗内，限量探测对唯一性语义足够、成本不随台账累积线性上涨。
+    探测台账而非落申领占位：台账是纯登记簿（追加行 + 读侧扫描），
     run_id 只作关联键、无独立产物文件可申领。退避 run 尾段变为
     ``-<rand>-<n>``（仅 project=None 的 base 形态无随机段），
     admin_monitor._spec_from_run_id 的 ``-\\d{9,}(-(?:a|r)\\d+)*$`` 尾锚不再
@@ -125,7 +181,8 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
     rand = f"x{secrets.token_hex(2)}"
     candidate = f"{base}-{rand}"
     n = 0
-    existing = {e.get("run_id") for e in list_maintenance_entries(project)}
+    # item 007fb4732748：探测走尾部限量读侧，不再全量读取台账
+    existing = {e.get("run_id") for e in _tail_maintenance_entries(project)}
     while candidate in existing:
         n += 1
         candidate = f"{base}-{rand}-{n}"
@@ -133,7 +190,12 @@ def make_maintenance_run_id(scope: str, project=None) -> str:
 
 
 def list_entries_for_run(project, run_id: str) -> list:
-    """按 run_id 过滤台账条目（R3 关联读侧：告警归因/盘点按 run 反查登记）。"""
+    """按 run_id 过滤台账条目（R3 关联读侧：告警归因/盘点按 run 反查登记）。
+
+    item 007fb4732748：反查语义要求覆盖完整历史（老 run 的登记行可落在
+    台账任意深处），故不做尾部限量、保持全量扫描；尾部限量只适用于
+    run_id 唯一性探测（_tail_maintenance_entries）。
+    """
     return [
         e for e in list_maintenance_entries(project) if e.get("run_id") == run_id
     ]

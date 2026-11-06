@@ -4858,17 +4858,11 @@ class CodeFixOrchestrator:
                 # 窗末/配置关闭后的残留窗次标识：惰性清理（沿上方冷却残留态
                 # 清理先例）——补写解除告警（一次）并清标识；标识本身不拦截
                 # 投递，清理失败只留痕（下一个 checkpoint 重试清理）。
-                try:
-                    _write_night_quiet_window_release_alert(
-                        root,
-                        window_text=str(
-                            prev_chain.get("night_quiet_armed_text") or ""
-                        ),
-                        window_date=quiet_armed_date,
-                        logger=self._logger,
-                    )
-                except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
-                    self._log("warning", f"code-fix 静默窗解除告警写盘异常: {e}")
+                # 清态先行（code-review item 65d8ffa94545）：清态成功后本分支
+                # 即不可再入，解除告警至多追加一次——先告后清在清态写盘失败
+                # 时会于下个 checkpoint 重入分支重复补发同型告警（AdminStore
+                # 窗口去重对 info 级不生效）。清态失败则跳过本轮告警，交下一
+                # checkpoint 重试清理时再补写。
                 try:
                     write_progress(
                         root,
@@ -4879,11 +4873,28 @@ class CodeFixOrchestrator:
                     )
                 except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
                     self._log("warning", f"code-fix 静默窗残留态清除写盘异常: {e}")
+                else:
+                    try:
+                        _write_night_quiet_window_release_alert(
+                            root,
+                            window_text=str(
+                                prev_chain.get("night_quiet_armed_text") or ""
+                            ),
+                            window_date=quiet_armed_date,
+                            logger=self._logger,
+                        )
+                    except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+                        self._log(
+                            "warning", f"code-fix 静默窗解除告警写盘异常: {e}"
+                        )
             if cooldown_until > 0 and not cooldown_active:
                 # 到期：本 checkpoint 即「冷却到期后首个通过守卫的 checkpoint」
-                # ——补写解除告警（evidence 携带实际推迟时长）并清冷却态，
+                # ——清冷却态并补写解除告警（evidence 携带实际推迟时长），
                 # 保证只发一次；静默窗随后接管拦截时本解除照写（二者独立
-                # 武装/解除，互不复位）。告警/清态异常不阻断后续投递（同款纪律）。
+                # 武装/解除，互不复位）。告警/清态异常不阻断后续投递（同款
+                # 纪律）。清态先行（code-review item 65d8ffa94545，与上方
+                # 静默窗解除分支同款）：清态成功后本分支即不可再入，解除告警
+                # 至多追加一次；清态失败跳过本轮告警，下一 checkpoint 重试。
                 try:
                     cooldown_from = float(
                         prev_chain.get("switch_cooldown_from")
@@ -4891,15 +4902,6 @@ class CodeFixOrchestrator:
                     )
                 except (TypeError, ValueError):
                     cooldown_from = cooldown_until - self._switch_cooldown_seconds()
-                try:
-                    _write_switch_cooldown_release_alert(
-                        root,
-                        until_ts=cooldown_until,
-                        deferred_seconds=max(0.0, now_ts - cooldown_from),
-                        logger=self._logger,
-                    )
-                except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
-                    self._log("warning", f"code-fix 冷却解除告警写盘异常: {e}")
                 try:
                     write_progress(
                         root,
@@ -4910,6 +4912,18 @@ class CodeFixOrchestrator:
                     )
                 except Exception as e:  # noqa: BLE001 — 清态失败不阻断投递
                     self._log("warning", f"code-fix 冷却态清除写盘异常: {e}")
+                else:
+                    try:
+                        _write_switch_cooldown_release_alert(
+                            root,
+                            until_ts=cooldown_until,
+                            deferred_seconds=max(0.0, now_ts - cooldown_from),
+                            logger=self._logger,
+                        )
+                    except Exception as e:  # noqa: BLE001 — 告警通道失败只留痕
+                        self._log(
+                            "warning", f"code-fix 冷却解除告警写盘异常: {e}"
+                        )
 
             if cooldown_active or quiet_window is not None:
                 # 二守卫同时命中：可投递时刻取更晚者，reason 取更晚者对应守卫
@@ -6319,24 +6333,24 @@ class CodeFixOrchestrator:
                         try:
                             hit = mark_resolved(root, still_open)
                         except OSError as e:
-                            self._log(
-                                "warning",
-                                f"code-fix 延迟批已合回但核销写盘失败，已合回"
-                                f"未核销——保留台账条目与 worktree 待下一链边界"
-                                f"重试核销（branch={branch}, "
-                                f"item_ids={item_ids}）: {e}",
-                            )
-                            write_progress(
-                                root,
-                                reason="",
+                            # 保留收尾公共序列收敛于
+                            # _retain_merged_unresolved_deferred（code-review
+                            # item 10acff06e8c4）。
+                            return self._retain_merged_unresolved_deferred(
+                                warn=(
+                                    f"code-fix 延迟批已合回但核销写盘失败，已合回"
+                                    f"未核销——保留台账条目与 worktree 待下一链边界"
+                                    f"重试核销（branch={branch}, "
+                                    f"item_ids={item_ids}）: {e}"
+                                ),
                                 current=(
                                     f"延迟批已合回但核销写盘失败未核销，"
                                     f"保留待下一链边界重试（branch={branch}）"
                                 ),
-                            )
-                            return 0, (
-                                "延迟批已合回未核销"
-                                "（核销写盘失败，保留待下链边界重试）"
+                                ret=(
+                                    "延迟批已合回未核销"
+                                    "（核销写盘失败，保留待下链边界重试）"
+                                ),
                             )
             # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准，与主路径
             # _run_batch_created 同口径——缺它则延迟批核销不进任何链的 rollup
@@ -6352,21 +6366,20 @@ class CodeFixOrchestrator:
                 # NOT 此刻清理现场/移除台账——fixed_ids 随台账删除而丢失，下链
                 # 无法识别修复已在主树。保留条目与 worktree，不动链计数，等下
                 # 一链边界重试核销；持续读失败的极端由既有时间门降级路径兜底。
-                self._log(
-                    "warning",
-                    f"code-fix 延迟批已合回但台账读失败（重试耗尽），已合回未核销"
-                    f"——保留台账条目与 worktree 待下一链边界重试核销"
-                    f"（branch={branch}, item_ids={item_ids}）",
-                )
-                write_progress(
-                    root,
-                    reason="",
+                # 保留收尾公共序列收敛于 _retain_merged_unresolved_deferred
+                # （code-review item 10acff06e8c4）。
+                return self._retain_merged_unresolved_deferred(
+                    warn=(
+                        f"code-fix 延迟批已合回但台账读失败（重试耗尽），已合回未核销"
+                        f"——保留台账条目与 worktree 待下一链边界重试核销"
+                        f"（branch={branch}, item_ids={item_ids}）"
+                    ),
                     current=(
                         f"延迟批已合回但台账读失败未核销，保留待下一链边界重试"
                         f"（branch={branch}）"
                     ),
+                    ret="延迟批已合回未核销（台账读失败，保留待下链边界重试）",
                 )
-                return 0, "延迟批已合回未核销（台账读失败，保留待下链边界重试）"
             if fixed_ids_bad_shape:
                 # 已合回但核销集合坏档（code-review item a4e188106d9e）：无法
                 # 区分「确实无可核销」与「核销集合已损坏」，此刻清理现场/移除
@@ -6374,21 +6387,20 @@ class CodeFixOrchestrator:
                 # （5905398dbbcb 同款）。保留条目与 worktree 待人工对账（人工
                 # 修复 fixed_ids 后下一边界重试即正常核销）；持续滞留由既有
                 # 时间门/次数门降级路径兜底。
-                self._log(
-                    "warning",
-                    f"code-fix 延迟批已合回但 fixed_ids 形态异常（非列表）无法"
-                    f"核销——保留台账条目与 worktree 待人工对账"
-                    f"（branch={branch}, item_ids={item_ids}）",
-                )
-                write_progress(
-                    root,
-                    reason="",
+                # 保留收尾公共序列同收敛于 _retain_merged_unresolved_deferred
+                # （code-review item 10acff06e8c4）。
+                return self._retain_merged_unresolved_deferred(
+                    warn=(
+                        f"code-fix 延迟批已合回但 fixed_ids 形态异常（非列表）无法"
+                        f"核销——保留台账条目与 worktree 待人工对账"
+                        f"（branch={branch}, item_ids={item_ids}）"
+                    ),
                     current=(
                         f"延迟批已合回但 fixed_ids 坏档未核销，保留待人工对账"
                         f"（branch={branch}）"
                     ),
+                    ret="延迟批已合回未核销（fixed_ids 坏档，保留待人工对账）",
                 )
-                return 0, "延迟批已合回未核销（fixed_ids 坏档，保留待人工对账）"
             _safe_cleanup(wm, wt, success=True, logger=self._logger)
             _remove_deferred_batch(root, item_ids)
             # 免合成直读：只消费链级 done 字段（code-review item
@@ -6592,11 +6604,94 @@ class CodeFixOrchestrator:
             f"{DEFER_RETRY_MAX} 次重试），降级入失败档案: branch={branch}",
         )
 
+    def _finalize_merged_unresolved_deferred(
+        self, wm, wt: Path, batch_no: int,
+        item_ids: list, pending_ids: list, fixed_ids: list,
+        trigger_short: str, trigger_cause: str, trigger_detail: str = "",
+    ) -> str:
+        """已合回未核销转延迟台账的公共兜底收尾（code-review item
+        10acff06e8c4）：延迟台账入账兜底 → 放锁兜底 → 主告警留痕 →
+        write_progress 批上下文三键清除 → return consumed；入账失败按
+        0a2ed138031e 口径保留 worktree/spec lock 不清场并按 halt 收尾。
+
+        供 _run_batch_created 两个「已合回但台账读失败/核销写盘失败」分支
+        复用（原三处近逐字拷贝的公共序列）；触发原因与文案差异经
+        ``trigger_short``（halt/放锁/进度文案短语）、``trigger_cause``（主
+        告警原因短语）、``trigger_detail``（主告警尾部异常明细）传入。
+        """
+        root = self.project_root
+        branch = _worktree_branch(wt)
+        tip_sha = _worktree_head(wt)
+        # 延迟台账入账失败兜底（code-review item 0a2ed138031e）：此刻
+        # merge_back 已成功、修复已在主树，延迟台账条目是本现场唯一恢复
+        # 锚——入账抛异常上穿会经 _run_batch_inner 的未预期异常兜底
+        # _safe_cleanup(success=False) 清掉 worktree，且台账无条目，条目
+        # 保持 open 又无核销/归档记录，下链重选后 agent 在已含修复的 HEAD
+        # 上零提交空转。入账失败时保留台账条目与 worktree/spec lock 不清
+        # 场（跳过下方放锁与写点），warning 留痕后按 halt 收尾，交下一链
+        # 边界或 reclaim 路径恢复。
+        try:
+            record_deferred_batch(
+                root, pending_ids, fixed_ids, wt,
+                branch=branch, tip_sha=tip_sha, last_overlap=[],
+            )
+        except Exception as e:  # noqa: BLE001 — 入账失败保留现场不清场
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批已合回但{trigger_short}后延迟台账"
+                "入账失败——保留台账条目与 worktree/spec lock 不清场，"
+                f"按 halt 收尾待恢复（branch={branch}, "
+                f"item_ids={item_ids}）: {e}",
+            )
+            self._finish("failed", reason=f"deferred_ledger_record_failed: {e}")
+            return "halt"
+        try:
+            wm.release_spec_lock("code-review-fix", "code-fix")
+        except Exception as e:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕
+            self._log(
+                "warning", f"code-fix 台账{trigger_short}保留现场放锁异常: {e}"
+            )
+        self._log(
+            "warning",
+            f"code-fix 第 {batch_no} 批已合回但{trigger_cause}，"
+            "已合回未核销——保留台账条目与 worktree 转延迟台账，待下一链"
+            f"边界重试核销（branch={branch}, item_ids={item_ids}）"
+            f"{trigger_detail}",
+        )
+        write_progress(
+            root,
+            phase="merging",
+            reason="",
+            current=(
+                f"第 {batch_no} 批已合回但{trigger_short}未核销，"
+                f"保留待下一链边界重试（branch={branch}）"
+            ),
+            # 批上下文三键清除（defer D2 同款）：现场保留由延迟台账承载，
+            # 防读侧按陈旧 run_id 合成条级进度。
+            worktree=None,
+            run_id=None,
+            batch_total=None,
+        )
+        return "consumed"
+
+    def _retain_merged_unresolved_deferred(
+        self, warn: str, current: str, ret: str
+    ) -> tuple:
+        """已合回未核销的保留收尾（code-review item 10acff06e8c4 第三变体，
+        供 _retry_one_deferred 复用）：延迟台账条目已在册，此路径 MUST NOT
+        重记台账/放锁——只 warning 留痕 → 进度写盘（reason 清空）→ 返回
+        零核销与文案；条目与 worktree 原样保留，交下一链边界重试核销或
+        人工对账。"""
+        self._log("warning", warn)
+        write_progress(self.project_root, reason="", current=current)
+        return 0, ret
+
     def _defer_merge_back(
         self, wm, wt: Path, ctx: dict, merge_info, fixed_ids: list, pending_ids: list
     ) -> str:
         """批收尾 wip_gate_blocked 收尾（defer 路径，D1/D3）：保留现场 + 记
-        台账 + 放锁 + 首次 info 告警。返回 "consumed"（链继续后续批）。
+        台账 + 放锁 + 首次 info 告警。返回 "consumed"（链继续后续批）；
+        台账入账失败返回 "halt"（worktree/spec lock 保留，交恢复路径）。
 
         保留：worktree 目录/分支/``_active_worktrees`` 在册（sweeper 扫孤儿
         跳过在册目录；重试收尾 ``wm.cleanup`` 语义不变）。放锁 MUST：``create()``
@@ -6609,10 +6704,28 @@ class CodeFixOrchestrator:
         tip_sha = _worktree_head(wt)
         branch = _worktree_branch(wt)
         # 台账先落（磁盘真相源），随后放锁/告警/进度。
-        deferred_entry = record_deferred_batch(
-            root, pending_ids, fixed_ids, wt,
-            branch=branch, tip_sha=tip_sha, last_overlap=overlap,
-        )
+        # 延迟台账入账失败兜底（code-review item 22109e2e094a，0a2ed138031e
+        # 同款口径）：此刻 merge_back 被 WIP 阻断、worktree/分支刚保留，延迟
+        # 台账条目是本现场唯一恢复锚——入账写盘 OSError 抛出上穿会沿批
+        # worker 兜底 _safe_cleanup(success=False) 物理清掉刚保留的 worktree
+        # 且台账无条目，条目保持 open 又无核销/归档记录，spec lock 滞留在册，
+        # 下一链建树恒 None、批次持续 halt 直到陈锁清扫放行。入账失败时保留
+        # worktree/spec lock 不清场（跳过下方放锁与各写点），warning 留痕后
+        # 按 halt 收尾，交下一链边界或 reclaim 路径恢复。
+        try:
+            deferred_entry = record_deferred_batch(
+                root, pending_ids, fixed_ids, wt,
+                branch=branch, tip_sha=tip_sha, last_overlap=overlap,
+            )
+        except Exception as e:  # noqa: BLE001 — 入账失败保留现场不清场
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批 defer 延迟台账入账失败——保留"
+                "worktree/spec lock 不清场，按 halt 收尾待恢复"
+                f"（branch={branch}, item_ids={pending_ids}）: {e}",
+            )
+            self._finish("failed", reason=f"deferred_ledger_record_failed: {e}")
+            return "halt"
         try:
             wm.release_spec_lock("code-review-fix", "code-fix")
         except Exception as e:  # noqa: BLE001 — 放锁失败不影响 defer 记账，
@@ -7820,57 +7933,15 @@ class CodeFixOrchestrator:
             # 登记延迟台账 + 放锁后按 consumed 收尾，条目随 _deferred_item_ids
             # 退出选批池，下一链边界 _retry_one_deferred 重试核销（merge_back
             # 幂等：分支已是 HEAD 祖先时返回成功，重试无副作用；持续读失败
-            # 的极端由既有时间门降级路径兜底）。
-            branch = _worktree_branch(wt)
-            tip_sha = _worktree_head(wt)
-            # 延迟台账入账失败兜底（code-review item 0a2ed138031e）：此刻
-            # merge_back 已成功、修复已在主树，延迟台账条目是本现场唯一恢复
-            # 锚——入账抛异常上穿会经 _run_batch_inner 的未预期异常兜底
-            # _safe_cleanup(success=False) 清掉 worktree，且台账无条目，条目
-            # 保持 open 又无核销/归档记录，下链重选后 agent 在已含修复的 HEAD
-            # 上零提交空转。入账失败时保留台账条目与 worktree/spec lock 不清
-            # 场（跳过下方放锁与写点），warning 留痕后按 halt 收尾，交下一链
-            # 边界或 reclaim 路径恢复。
-            try:
-                record_deferred_batch(
-                    root, pending_ids, fixed_ids, wt,
-                    branch=branch, tip_sha=tip_sha, last_overlap=[],
-                )
-            except Exception as e:  # noqa: BLE001 — 入账失败保留现场不清场
-                self._log(
-                    "warning",
-                    f"code-fix 第 {batch_no} 批已合回但台账读失败后延迟台账"
-                    "入账失败——保留台账条目与 worktree/spec lock 不清场，"
-                    f"按 halt 收尾待恢复（branch={branch}, "
-                    f"item_ids={item_ids}）: {e}",
-                )
-                self._finish("failed", reason=f"deferred_ledger_record_failed: {e}")
-                return "halt"
-            try:
-                wm.release_spec_lock("code-review-fix", "code-fix")
-            except Exception as e:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕
-                self._log("warning", f"code-fix 台账读失败保留现场放锁异常: {e}")
-            self._log(
-                "warning",
-                f"code-fix 第 {batch_no} 批已合回但台账读失败（重试耗尽），"
-                "已合回未核销——保留台账条目与 worktree 转延迟台账，待下一链"
-                f"边界重试核销（branch={branch}, item_ids={item_ids}）",
+            # 的极端由既有时间门降级路径兜底）。公共序列（含 0a2ed138031e
+            # 入账兜底与 halt 出口）收敛于
+            # _finalize_merged_unresolved_deferred（code-review item
+            # 10acff06e8c4）。
+            return self._finalize_merged_unresolved_deferred(
+                wm, wt, batch_no, item_ids, pending_ids, fixed_ids,
+                trigger_short="台账读失败",
+                trigger_cause="台账读失败（重试耗尽）",
             )
-            write_progress(
-                root,
-                phase="merging",
-                reason="",
-                current=(
-                    f"第 {batch_no} 批已合回但台账读失败未核销，"
-                    f"保留待下一链边界重试（branch={branch}）"
-                ),
-                # 批上下文三键清除（defer D2 同款）：现场保留由延迟台账承载，
-                # 防读侧按陈旧 run_id 合成条级进度。
-                worktree=None,
-                run_id=None,
-                batch_total=None,
-            )
-            return "consumed"
         still_open = [
             i for i in resolve_candidates
             if (ledger.get(i) or {}).get("status") == "open"
@@ -7884,58 +7955,15 @@ class CodeFixOrchestrator:
         try:
             hit = mark_resolved(root, still_open) if still_open else 0
         except OSError as e:
-            self._log(
-                "warning",
-                f"code-fix 第 {batch_no} 批已合回但台账核销写盘失败，"
-                "已合回未核销——保留台账条目与 worktree 转延迟台账，待下一链"
-                f"边界重试核销（item_ids={item_ids}）: {e}",
+            # 公共序列（含 0a2ed138031e 入账兜底与 halt 出口）收敛于
+            # _finalize_merged_unresolved_deferred（code-review item
+            # 10acff06e8c4）。
+            return self._finalize_merged_unresolved_deferred(
+                wm, wt, batch_no, item_ids, pending_ids, fixed_ids,
+                trigger_short="核销写盘失败",
+                trigger_cause="台账核销写盘失败",
+                trigger_detail=f": {e}",
             )
-            branch = _worktree_branch(wt)
-            tip_sha = _worktree_head(wt)
-            # 延迟台账入账失败兜底（code-review item 0a2ed138031e，与上方读
-            # 降级分支同款）：merge_back 已成功而延迟台账条目是本现场唯一恢复
-            # 锚——入账抛异常上穿会经 _run_batch_inner 的未预期异常兜底
-            # _safe_cleanup(success=False) 清掉 worktree 且台账无条目，条目
-            # 保持 open 又无核销/归档记录，下链重选后 agent 零提交空转。入账
-            # 失败时保留台账条目与 worktree/spec lock 不清场（跳过下方放锁与
-            # 写点），warning 留痕后按 halt 收尾，交下一链边界或 reclaim 路径
-            # 恢复。
-            try:
-                record_deferred_batch(
-                    root, pending_ids, fixed_ids, wt,
-                    branch=branch, tip_sha=tip_sha, last_overlap=[],
-                )
-            except Exception as e:  # noqa: BLE001 — 入账失败保留现场不清场
-                self._log(
-                    "warning",
-                    f"code-fix 第 {batch_no} 批已合回但核销写盘失败后延迟台账"
-                    "入账失败——保留台账条目与 worktree/spec lock 不清场，"
-                    f"按 halt 收尾待恢复（item_ids={item_ids}）: {e}",
-                )
-                self._finish("failed", reason=f"deferred_ledger_record_failed: {e}")
-                return "halt"
-            try:
-                wm.release_spec_lock("code-review-fix", "code-fix")
-            except Exception as lock_err:  # noqa: BLE001 — 放锁失败车道可能死锁，留痕
-                self._log(
-                    "warning",
-                    f"code-fix 台账核销写盘失败保留现场放锁异常: {lock_err}",
-                )
-            write_progress(
-                root,
-                phase="merging",
-                reason="",
-                current=(
-                    f"第 {batch_no} 批已合回但核销写盘失败未核销，"
-                    f"保留待下一链边界重试（branch={branch}）"
-                ),
-                # 批上下文三键清除（读降级分支同款）：现场保留由延迟台账承载，
-                # 防读侧按陈旧 run_id 合成条级进度。
-                worktree=None,
-                run_id=None,
-                batch_total=None,
-            )
-            return "consumed"
         # 链级核销计数累加（2.1）：以 mark_resolved 真实命中为准。
         if hit:
             self._chain_bump(root, chain_resolved=hit)

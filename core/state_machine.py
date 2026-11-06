@@ -3477,6 +3477,57 @@ class StateMachine:
         self._log_update_applied(spec_name, applied)
         return True
 
+    def _recovery_freeze_precheck(self, spec_name: str) -> bool:
+        """超限冻结写前的锁内并发复查（code-review item e91eeb9fb37f）。
+
+        recover_interrupted 的 TESTING 超限分支以 freeze_for_human（内部
+        update_spec 直写）落盘，不经 _recovery_update_spec 的锁内复查；快照
+        （get_by_status 锁外）与本写之间的窗口内该 spec 若恰被人工冻结
+        （status→blocked + frozen），freeze_for_human 的 updates 自带
+        FROZEN_FIELD 使 _apply_updates_entry 的冻结剥离分支不触发，写盘照常
+        进行——人工冻结 error（含用户冻结原因）被「重启重验超限」文案整段
+        覆盖，_frozen_source/_frozen_signal_type 被误标 machine（arbiter 回扫
+        会把人工冻结误判为机器冻结）。窗口内并发落地的取消保持
+        （_cancelled_hold=True，有意不改 status）同样拦不住——冻结写显式携带
+        status 会把标记清回 False。本入口在 ``_mutate_locked`` 锁内以最新条目
+        复查 frozen 与 _cancelled_hold 两标记（对齐 _recovery_update_spec 同款
+        出口）：任一在场即整体放弃本冻结写（恢复让位于人工冻结/取消保持），
+        返回 False 由调用方按既有「不计入 recovered」口径处置。条目缺失时
+        放行——freeze_for_human 内部 update_spec 对并发删除已有 False 出口与
+        留痕（code-review c649ac7eb82e），此处不复刻。纯读锁：任何出口均不
+        落盘。
+        """
+        skip: dict = {}
+
+        def _mutate(specs):
+            entry = specs.get(spec_name)
+            if entry is None:
+                return True, False
+            if entry.get(FROZEN_FIELD):
+                skip["frozen"] = True
+                return False, False
+            if entry.get("_cancelled_hold"):
+                skip["cancelled_hold"] = True
+                return False, False
+            return True, False
+
+        allowed = self._mutate_locked(_mutate)
+        if skip.get("frozen"):
+            self.logger.warning(
+                "state_machine",
+                f"跳过重启重验超限冻结：'{spec_name}' 已在恢复窗口内被冻结"
+                f"——冻结写整体放弃，人工冻结 error 不被「重启重验超限」"
+                f"文案覆盖、_frozen_source 不被误标 machine",
+            )
+        elif skip.get("cancelled_hold"):
+            self.logger.warning(
+                "state_machine",
+                f"跳过重启重验超限冻结：'{spec_name}' 已在恢复窗口内被人工取消"
+                f"（取消保持标记在场）——冻结写整体放弃，"
+                f"人工取消保持不被冻结写覆盖",
+            )
+        return bool(allowed)
+
     def recover_interrupted(
         self,
         project_root=None,
@@ -3611,6 +3662,14 @@ class StateMachine:
                     # ——运行期中断/重派不经过 recover_interrupted，天然不计数。
                     redo_count = self.bump_verify_redo_count(name, 1)
                     if redo_count >= max(1, int(verify_redo_budget or 0)):
+                        # 冻结前锁内并发复查（code-review item e91eeb9fb37f）：
+                        # 快照与本冻结写之间的窗口内该 spec 若恰被人工冻结或置
+                        # 取消保持，freeze_for_human 的 updates 自带 FROZEN_FIELD
+                        # （冻结剥离分支不触发）会照常落盘。对齐
+                        # _recovery_update_spec 同款出口：命中即跳过本冻结写并
+                        # WARNING 留痕，不计入 recovered。
+                        if not self._recovery_freeze_precheck(name):
+                            continue
                         # 超限冻结：blocked + frozen + 规范 error 前缀，本次启动
                         # 不再重派 verifier（冻结期间自动链路的 status 改写被
                         # update_spec 剥离），唯一出路是人工 unfreeze_spec。
