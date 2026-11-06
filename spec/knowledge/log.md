@@ -102,3 +102,4 @@
 ## [2026-11-06 17:11 UTC+8] fold | distill-batch-fold-tax-and-artifact-no-content-1106.md 折叠入库
 ## [2026-11-06 17:24 UTC+8] fold | overview-ledger-bento-align-1106.md 折叠入库
 ## [2026-11-06 17:35 UTC+8] fold | v2-overview-titlebar-white-variant-1106.md 折叠入库
+## [2026-11-06 17:42 UTC+8] fold | v2-projects-page-parity-1106.md 折叠入库
