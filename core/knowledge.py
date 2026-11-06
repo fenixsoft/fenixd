@@ -2022,20 +2022,26 @@ def _distill_run_artifact_close(run_file: "Path | None", result: dict) -> None:
         return
     try:
         if result.get("ok"):
-            append_run_line(
-                run_file,
-                {
-                    "type": "result",
-                    "names": result.get("names"),
-                    "commit": result.get("commit"),
-                    "rounds": result.get("rounds"),
-                    # add-knowledge-inbox-pipeline 4.2：折叠前置段计数随终态
-                    # 行下发（读侧不解析未知键，纯增量观测）
-                    "folded": result.get("folded", 0),
-                    "fold_failed": result.get("fold_failed", 0),
-                    "timestamp": now_local().isoformat(timespec="seconds"),
-                },
-            )
+            line = {
+                "type": "result",
+                "names": result.get("names"),
+                "commit": result.get("commit"),
+                "rounds": result.get("rounds"),
+                # add-knowledge-inbox-pipeline 4.2：折叠前置段计数随终态
+                # 行下发（读侧不解析未知键，纯增量观测）
+                "folded": result.get("folded", 0),
+                "fold_failed": result.get("fold_failed", 0),
+                "timestamp": now_local().isoformat(timespec="seconds"),
+            }
+            # add-distill-run-work-summary 2.1：主蒸馏工作总结随终态行下发。
+            # 字段名必须为 ``result``（读侧 _run_tail_insights 既有契约，
+            # dict 内部键名用 summary 避免与行类型语义混淆）；非空字符串才
+            # 写该键——stdout 空/仅标记行（fail-open）与历史产物一样按字段
+            # 缺失渲染，时间轴与现状一致；error 分支不动。
+            _summary = result.get("summary")
+            if isinstance(_summary, str) and _summary:
+                line["result"] = _summary
+            append_run_line(run_file, line)
         else:
             append_run_error(
                 run_file,
