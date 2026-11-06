@@ -2523,6 +2523,12 @@ class DistillManager:
                 if commit is not None:
                     result["ok"] = True
                     result["commit"] = commit
+                    # add-distill-run-work-summary 1.3：主蒸馏工作总结装配
+                    # （剥 KNOWLEDGE_DISTILL_DONE 标记 + 截断归一）；空串
+                    # 不写键——产物/台账行为与现状一致，读侧按字段缺失渲染
+                    summary = _extract_distill_summary(spawn_stdout)
+                    if summary:
+                        result["summary"] = summary
                     # R2：成功收尾（commit 含空串=无变更可提交）即移除 pending
                     # 条目——按本批 names 并集一次清除（合并批次防漏清陈旧条目）
                     self._ledger_remove(proot, archived_names)
