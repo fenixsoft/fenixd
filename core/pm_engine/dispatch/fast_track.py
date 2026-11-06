@@ -825,10 +825,26 @@ class FFastTrackMixin:
                 # _dispatch_repair_lane 只写 repair 轮次元数据、不含本组
                 # 字段，原「随后续 update_spec 落盘」在该出口不成立）。
                 if prev_fp == fp:
-                    streak = self._pm.state_machine.bump_counters(
-                        spec_name, {"_merge_streak": 1}
-                    ).get("_merge_streak", 0)
-                    streak_bumped = True
+                    # 记账失败不阻塞熔断分类（code-review item 8ab2fd151195，
+                    # 对齐 queue.py _handle_merge_back_real_failure 对
+                    # _merge_streak 的 941b22736836 同款守卫）：bump_counters
+                    # 是真实文件 IO，裸调异常沿 worker 外层 except 逃逸会把
+                    # 熔断/repair/ready 三段失败分类整体跳过、落入
+                    # _rollback_failed_dispatch 通用重派——恰是这些闸门要
+                    # 遏制的重派，MUST NOT 放大。递增未落盘时按读取侧旧值+1
+                    # 内存参与阈值判定，streak_bumped 置 False——下方各分支经
+                    # 既有 not streak_bumped 路径绝对写回，尽力补落盘。
+                    try:
+                        streak = self._pm.state_machine.bump_counters(
+                            spec_name, {"_merge_streak": 1}
+                        ).get("_merge_streak", 0)
+                        streak_bumped = True
+                    except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                        streak = self._bump_fallback_count(
+                            spec_name, "_merge_streak", e,
+                            entry=spec_entry, warn_label="fast-track merge 熔断 streak",
+                        )
+                        streak_bumped = False
                 else:
                     streak = 1
                     streak_bumped = False
@@ -875,9 +891,24 @@ class FFastTrackMixin:
                         }
                         if not streak_bumped:
                             breaker_updates["_merge_streak"] = streak
-                        self._pm.state_machine.update_spec(
-                            spec_name, breaker_updates
-                        )
+                        # 失败收尾写盘守卫（code-review item eb3982dae3fb，对齐
+                        # 73b9b83a67c9「状态写盘不穿透处置链」与 queue.py
+                        # 2e1cb19c63c2 同款口径）：update_spec 是 flock+read_all+
+                        # write_all 真实文件 IO，裸调异常沿 worker 外层 except
+                        # 逃逸会跳过下方熔断 ERROR 留痕、落入通用回滚重派。
+                        # 失败仅 ERROR 留痕后继续（blocked 转移已发生时 error
+                        # 现场缺失交 admin/周期通道接手），MUST NOT 放大处置。
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name, breaker_updates
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"fast-track merge 熔断收尾写盘失败 '{spec_name}'"
+                                f"（不回退处置，交由 admin/周期通道接手）: "
+                                f"{type(e).__name__}: {e}",
+                            )
                 elif self._pm._should_enter_repair(
                     spec_name, merge_info, streak, breaker_threshold
                 ):
@@ -919,7 +950,20 @@ class FFastTrackMixin:
                     # _retry_count 同型收口：锁内原子递增，不再并入 update_spec
                     # （对齐 queue.py 先例，防并发写回互相覆盖丢增量；本分支
                     # 无 max_retries 判定，不需消费写后值）。
-                    self._pm.state_machine.bump_counters(spec_name, {"_retry_count": 1})
+                    # 记账失败不阻塞失败分类（code-review item 8ab2fd151195，
+                    # 对齐 queue.py 941b22736836 同款守卫）：裸调异常沿 worker
+                    # 外层 except 逃逸会跳过下方 ready 收尾与重派入队、落入
+                    # 通用回滚。本分支无阈值判定，兜底返回值不消费——仅经
+                    # _bump_fallback_count 统一 WARNING 留痕后继续收尾。
+                    try:
+                        self._pm.state_machine.bump_counters(
+                            spec_name, {"_retry_count": 1}
+                        )
+                    except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                        self._bump_fallback_count(
+                            spec_name, "_retry_count", e,
+                            entry=spec_entry, warn_label="fast-track merge 重试",
+                        )
                     ready_updates: dict = {
                         "status": "ready",
                         "error": final_error,
@@ -927,7 +971,21 @@ class FFastTrackMixin:
                     }
                     if not streak_bumped:
                         ready_updates["_merge_streak"] = streak
-                    self._pm.state_machine.update_spec(spec_name, ready_updates)
+                    # 失败收尾写盘守卫（code-review item eb3982dae3fb，对齐
+                    # 73b9b83a67c9「状态写盘不穿透处置链」/ queue.py
+                    # 2e1cb19c63c2 同款口径）：写盘失败仅 ERROR 留痕后继续
+                    # _enqueue_front——派发入口按 status 前置复核，未落成的
+                    # ready 态交周期扫描兜底，MUST NOT 让异常沿 worker 外层
+                    # except 跳过重派入队落入通用回滚。
+                    try:
+                        self._pm.state_machine.update_spec(spec_name, ready_updates)
+                    except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                        self._pm.logger.error(
+                            "pm_engine",
+                            f"fast-track merge 失败 ready 收尾写盘失败 '{spec_name}'"
+                            f"（不回退处置，交由周期扫描兜底）: "
+                            f"{type(e).__name__}: {e}",
+                        )
                     self._enqueue_front(spec_name, "fast-track")
                 self._pm.logger.error(
                     "pm_engine",
@@ -955,9 +1013,19 @@ class FFastTrackMixin:
             # _handle_dispatch_lock_conflict 先例，防并发写回互相覆盖丢增量）
             # ——原两段式「读 → 算 +1 → 绝对写回」读与写分处两次 STATE 锁临界
             # 区，并发交错丢一次递增，封顶晚一轮触发、多烧一轮 fast-track run。
-            retries = self._pm.state_machine.bump_counters(
-                spec_name, {"_retry_count": 1}
-            ).get("_retry_count", 0)
+            # 记账失败不阻塞失败分类（code-review item 8ab2fd151195，对齐
+            # queue.py 941b22736836 同款守卫）：递增未落盘时按读取侧旧值+1
+            # 内存继续参与 max_retries 封顶判定（封顶晚一轮触发、不丢账），
+            # 避免异常沿 worker 外层 except 跳过下方封顶冻结分类。
+            try:
+                retries = self._pm.state_machine.bump_counters(
+                    spec_name, {"_retry_count": 1}
+                ).get("_retry_count", 0)
+            except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+                retries = self._bump_fallback_count(
+                    spec_name, "_retry_count", e,
+                    entry=spec_entry, warn_label="fast-track 契约违反重试",
+                )
             # （code-review item a7395837fcbb）本出口重派同样受 agents.max_retries
             # 封顶：派发入口不读 _retry_count 设闸，持续性「success 但 branch 为空」
             # 若只递增重派会无限烧 fast-track run 预算——封顶判据与
@@ -997,15 +1065,28 @@ class FFastTrackMixin:
                     f"不再重派（{retries}/{max_r}，fp={fp}）",
                 )
                 return False
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "ready",
-                    "error": contract_err,
-                    # _retry_count 已由上方 bump_counters 原子递增落盘，此处
-                    # 不再并写（防并发写回互相覆盖丢增量）
-                },
-            )
+            # 失败收尾写盘守卫（code-review item eb3982dae3fb，对齐
+            # 73b9b83a67c9「状态写盘不穿透处置链」/ queue.py 2e1cb19c63c2
+            # 同款口径）：写盘失败仅 ERROR 留痕后继续 _enqueue_front——
+            # 派发入口按 status 前置复核，未落成的 ready 态交周期扫描兜底，
+            # MUST NOT 让异常沿 worker 外层 except 跳过重派入队落入通用回滚。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "ready",
+                        "error": contract_err,
+                        # _retry_count 已由上方 bump_counters 原子递增落盘，此处
+                        # 不再并写（防并发写回互相覆盖丢增量）
+                    },
+                )
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track 契约违反 ready 收尾写盘失败 '{spec_name}'"
+                    f"（不回退处置，交由周期扫描兜底）: "
+                    f"{type(e).__name__}: {e}",
+                )
             self._enqueue_front(spec_name, "fast-track")
             self._pm.logger.error(
                 "pm_engine",
@@ -1039,38 +1120,56 @@ class FFastTrackMixin:
                 f"保留计数与 error 待收口重试/审计: {spec_name}",
             )
             return True
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "implementer_run": result.run_id,
-                "branch": result.branch,
-                "error": None,
-                "_retry_count": 0,
-                "_merge_fp": None,
-                "_merge_streak": 0,
-                # 与 full 车道零变更成功收口同款清零（queue.py 确认型 no-op
-                # 分支）：非连续的零变更不应累计进「连续 3 次」哨。
-                "_zero_change_attempts": 0,
-                # 顺延/等待记账清账（code-review item 86290ef5c6af，对齐
-                # queue.py _finalize_merge_success 的成功清账字段集）：本车道
-                # merge 失败路径会写这组记账——spec_dir_inflight 顺延分支
-                # （_defer_merge_back 写 _merge_retry_pending/_merge_retry_count/
-                # _merge_retry_first_at）、wip_gate_blocked 分支（rollback.py
-                # _report_mergeback_wip_overlap 写 _wip_gate_deferred）、repair
-                # 通道（_repair_awaiting_remerge）。成功收口不清则残留的
-                # _merge_retry_pending 会在 spec 下一轮 implementing 期间被
-                # _recheck_inflight_deferred_merges 按超限判式接手（branch 锚点
-                # 已被派发清空 → mergeback_branch_anchor_missing 误告警；锚点
-                # 在飞 → 对当前在飞轮分支提前发起 merge-only 重试）。merge 成功
-                # 即解除顺延/等待态，防陈旧计数污染下一轮。
-                "_merge_retry_pending": False,
-                "_merge_retry_count": 0,
-                "_merge_retry_first_at": None,
-                "_wip_gate_deferred": False,
-                "_repair_awaiting_remerge": False,
-                **self._pm._clear_dispatch_conflict(),
-            },
-        )
+        # 成功清账段单独包 try/except（code-review item eb3982dae3fb，对齐
+        # full 车道 queue.py _finalize_merge_success e9377c18ee85 同款口径，
+        # 与本文件 _fast_track_honest_exit_converge / _escalate_to_full_mode
+        # 既有两处一致）：本 update_spec（error 清空、计数清账、顺延/等待态
+        # 解除）在 transition 到 implemented 之后执行，裸调遇 STATE 瞬态 IO
+        # 异常会沿 _run_fast_track_flow → worker 外层 except 转
+        # _rollback_failed_dispatch，把已合并、已推进 implemented 的成功收工
+        # 误判为失败回滚重派。失败仅 ERROR 留痕 + 继续执行下方已逐个非阻塞
+        # 包裹的收尾（_sync_task_progress/consume_legacy/ocr 车道），清账残留
+        # 交周期恢复/收口重试兜底，MUST NOT 放大处置。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "implementer_run": result.run_id,
+                    "branch": result.branch,
+                    "error": None,
+                    "_retry_count": 0,
+                    "_merge_fp": None,
+                    "_merge_streak": 0,
+                    # 与 full 车道零变更成功收口同款清零（queue.py 确认型 no-op
+                    # 分支）：非连续的零变更不应累计进「连续 3 次」哨。
+                    "_zero_change_attempts": 0,
+                    # 顺延/等待记账清账（code-review item 86290ef5c6af，对齐
+                    # queue.py _finalize_merge_success 的成功清账字段集）：本车道
+                    # merge 失败路径会写这组记账——spec_dir_inflight 顺延分支
+                    # （_defer_merge_back 写 _merge_retry_pending/_merge_retry_count/
+                    # _merge_retry_first_at）、wip_gate_blocked 分支（rollback.py
+                    # _report_mergeback_wip_overlap 写 _wip_gate_deferred）、repair
+                    # 通道（_repair_awaiting_remerge）。成功收口不清则残留的
+                    # _merge_retry_pending 会在 spec 下一轮 implementing 期间被
+                    # _recheck_inflight_deferred_merges 按超限判式接手（branch 锚点
+                    # 已被派发清空 → mergeback_branch_anchor_missing 误告警；锚点
+                    # 在飞 → 对当前在飞轮分支提前发起 merge-only 重试）。merge 成功
+                    # 即解除顺延/等待态，防陈旧计数污染下一轮。
+                    "_merge_retry_pending": False,
+                    "_merge_retry_count": 0,
+                    "_merge_retry_first_at": None,
+                    "_wip_gate_deferred": False,
+                    "_repair_awaiting_remerge": False,
+                    **self._pm._clear_dispatch_conflict(),
+                },
+            )
+        except Exception as tail_e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track merge 成功清账写盘异常 '{spec_name}'（合并已成功，"
+                f"不回退处置，清账残留交周期恢复/收口重试兜底）: "
+                f"{type(tail_e).__name__}: {tail_e}",
+            )
         # 任务进度回写（与 implementer 成功路径一致，非阻塞）
         try:
             self._pm._sync_task_progress(spec_name)
@@ -1133,9 +1232,20 @@ class FFastTrackMixin:
         """
         # _retry_count 锁内原子递增、消费写后值判阈值（对齐 _handle_fast_track_
         # failure 同型收口，防并发写回互相覆盖丢增量）；bump 自带 int 归一。
-        retries = self._pm.state_machine.bump_counters(
-            spec_name, {"_retry_count": 1}
-        ).get("_retry_count", 0)
+        # 记账失败不阻塞失败分类（code-review item 8ab2fd151195，对齐 queue.py
+        # 941b22736836 同款守卫）：裸调异常沿 worker 外层 except 逃逸会跳过
+        # 下方 max_retries 封顶冻结分类、落入 _rollback_failed_dispatch 通用
+        # 重派。本方法手头无 read 快照，兜底走 _bump_fallback_count 的重新
+        # read_one 形态（读侧也失败按 0 继续分类，封顶晚一轮触发、不丢账）。
+        try:
+            retries = self._pm.state_machine.bump_counters(
+                spec_name, {"_retry_count": 1}
+            ).get("_retry_count", 0)
+        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+            retries = self._bump_fallback_count(
+                spec_name, "_retry_count", e,
+                warn_label="fast-track 硬校验重试",
+            )
         # 归一统一 repair_lane._max_retries 单一读取器（0=不自动重试为合法
         # 语义，与 _handle_fast_track_failure 同口径）。
         max_r = _max_retries(self._pm)
@@ -1833,9 +1943,21 @@ class FFastTrackMixin:
         # 并发进入同一 spec 时各持相同旧值写回、丢一次递增，max_retries 冻结
         # 封顶晚一轮触发、多烧一轮 fast-track run。bump 自带 int 归一（非法值
         # 按 0 起算），下方 update_spec 不再并写该字段（防并发写回互相覆盖）。
-        retries = self._pm.state_machine.bump_counters(
-            spec_name, {"_retry_count": 1}
-        ).get("_retry_count", 0)
+        # 记账失败不阻塞失败分类（code-review item 8ab2fd151195，对齐 queue.py
+        # 通用失败重派分支的 d708ce0288a8 / 941b22736836 同款守卫）：裸调异常
+        # 沿 worker 外层 except 逃逸会整体跳过上方三段终态分类与下方 max_retries
+        # 封顶冻结、落入 _rollback_failed_dispatch 通用重派——恰是这些闸门要
+        # 遏制的重派，MUST NOT 放大。递增未落盘时按读取侧旧值+1 内存继续参与
+        # 封顶判定与 error 文案（封顶晚一轮触发、不丢账）。
+        try:
+            retries = self._pm.state_machine.bump_counters(
+                spec_name, {"_retry_count": 1}
+            ).get("_retry_count", 0)
+        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+            retries = self._bump_fallback_count(
+                spec_name, "_retry_count", e,
+                entry=spec_entry, warn_label="fast-track 通用失败重试",
+            )
         # agents.max_retries 归一收敛三车道单一读取器（code-review item
         # 8b26fd7980ce）：None 判空而非 or 兜底（code-review item c54ffbef69c5，
         # 合法配置 0 不被吞成缺省 3）、非法值回退缺省 3（code-review item
@@ -1911,9 +2033,20 @@ class FFastTrackMixin:
         # 原子递增、消费写后值判「连续 3 次」哨阈值，下方 update_spec 与 freeze
         # extra_updates 不再并写该字段（对齐 _reconcile_and_merge 的 bump_counters
         # 收口形态，防并发写回互相覆盖丢增量、零变更哨晚触发多烧 run）。
-        attempts = self._pm.state_machine.bump_counters(
-            spec_name, {"_zero_change_attempts": 1}
-        ).get("_zero_change_attempts", 0)
+        # 记账失败不阻塞失败分类（code-review item 8ab2fd151195，对齐 queue.py
+        # 零变更哨 twin 分支的 d708ce0288a8 / 941b22736836 同款守卫）：裸调异常
+        # 沿 worker 外层 except 逃逸会整体跳过下方三连冻结分类、落入
+        # _rollback_failed_dispatch 通用重派——恰是本哨要遏制的重派，MUST NOT
+        # 放大。递增未落盘时按读取侧旧值+1 内存继续参与哨阈值判定与 error 文案。
+        try:
+            attempts = self._pm.state_machine.bump_counters(
+                spec_name, {"_zero_change_attempts": 1}
+            ).get("_zero_change_attempts", 0)
+        except Exception as e:  # noqa: BLE001 —— 记账 IO 失败不放大处置
+            attempts = self._bump_fallback_count(
+                spec_name, "_zero_change_attempts", e,
+                entry=spec_entry, warn_label="fast-track 零变更计数",
+            )
         dirty = list(getattr(result, "worktree_dirty", None) or [])
         if dirty:
             err_note = (
