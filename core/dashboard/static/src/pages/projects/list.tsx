@@ -1,13 +1,13 @@
-import { ClockCircleOutlined, MoreOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
   Alert,
   App,
-  Badge,
   Button,
   Card,
   DatePicker,
+  Drawer,
   Dropdown,
   Input,
   List,
@@ -15,6 +15,7 @@ import {
   Popover,
   Progress,
   Radio,
+  Segmented,
   Select,
   Slider,
   Space,
@@ -37,7 +38,7 @@ import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 // 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
-import { DSH_INTERACTIVE_ACTIVE, DSH_LINK } from '@/theme';
+import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, SPEC_LIST_MOBILE_BG } from '@/theme';
 import {
   clearSpecError,
   deleteSpec,
@@ -133,6 +134,18 @@ const OV_WARNING = '#d97706'; // = V2_WARNING
 const OV_INFO = '#2563eb'; // = V2_RAMP_IMPLEMENTING（v2 语义 info tone 前景）
 const OV_INFO_SOFT = '#eff6ff'; // = V2_BLUE_SOFT
 const OV_MUTED_SOFT = '#f1f5f9'; // = V2_SLATE_SOFT
+// add-spec-list-mobile-style：移动卡磁贴/分隔/信息行镜像色（原型 T 常量同源，
+// 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200 / warning 软底 + amber-800）
+const OV_HAIRLINE = '#eef2f7';
+const OV_BORDER = '#e2e8f0';
+const OV_AMBER_SOFT = '#fffbeb';
+const OV_AMBER_TEXT = '#92400e';
+// 移动状态 chips 激活态计数（DSH_PRIMARY 黑底上的降透白，原型 chip-active
+// .chip-n 同值 rgba 62%）；仅 SpecCardList 移动编排块消费
+const OV_ON_PRIMARY_DIM = 'rgba(255, 255, 255, 0.62)';
+// 移动卡「加载更多」页大小（add-spec-list-mobile-style 2.3）：与桌面 Table
+// 分页 pageSize 20 同值语义（每页条数不变，仅呈现换加载更多）
+const SPEC_CARD_PAGE_SIZE = 20;
 
 /** 语义胶囊徽标（镜像 v2 shared.tsx V2Pill filled 形态：999 胶囊 + tone 软底）。
  * tone 键域对齐 statusMeta 的 StatusTone，muted 兜底。 */
@@ -147,7 +160,7 @@ function DotsIcon() {
   );
 }
 
-function Pill({ tone = 'muted', children, style }: { tone?: string; children: ReactNode; style?: CSSProperties }) {
+function Pill({ tone = 'muted', children, style, dot }: { tone?: string; children: ReactNode; style?: CSSProperties; dot?: boolean }) {
   const pair =
     tone === 'critical'
       ? [OV_ERROR, '#fef2f2']
@@ -171,12 +184,23 @@ function Pill({ tone = 'muted', children, style }: { tone?: string; children: Re
         background: pair[1],
         borderColor: 'transparent',
         fontWeight: 500,
+        // 色点形态（add-spec-list-mobile-style 1.2：移动卡状态胶囊带色点）：
+        // 点位与文字需要 flex 对齐，仅在 dot 时切换布局，桌面胶囊渲染零变化
+        ...(dot ? { display: 'inline-flex', alignItems: 'center', gap: 4 } : null),
         ...style,
       }}
     >
+      {dot ? <span aria-hidden style={{ flex: '0 0 auto', width: 6, height: 6, borderRadius: 999, background: pair[0] }} /> : null}
       {children}
     </Tag>
   );
+}
+
+/** 模式胶囊（v2 台账形态：快速=橙 warning 软底 / 标准=灰 muted 软底）。桌面
+ * 「模式」列与移动卡片共用（add-spec-list-mobile-style D2：移动端不另造色对，
+ * 同桌面列 Pill 单源）。 */
+function ModePill({ mode }: { mode?: string | null }) {
+  return <Pill tone={mode === 'fast-track' ? 'warning' : 'muted'}>{mode === 'fast-track' ? '快速' : '标准'}</Pill>;
 }
 
 function progressText(progress: number) {
@@ -531,7 +555,7 @@ const PRIORITY_TERMINAL = new Set(['done', 'pushed']);
 // start_after 未到期的 spec 渲染「定时」Tag：目标时间本地渲染 + 分钟级倒计时。
 // 倒计时在渲染时刻用 dayjs() 求值，随列表既有刷新节奏（30s 心跳 / SSE 增量 /
 // visibilitychange）更新，不另起秒级定时器（design D6）。
-function ScheduledPickupTag({ record }: { record: SpecSummary }) {
+function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
   const sa = record.start_after;
   if (!sa) return null;
   const target = dayjs(sa);
@@ -540,11 +564,18 @@ function ScheduledPickupTag({ record }: { record: SpecSummary }) {
   if (diffMin < 0) return null; // 已到期：交调度器正常拾取，不再展示等待标记
   const targetLocal = target.format('MM-DD HH:mm');
   const tip = `定时拾取 · ${targetLocal}（本地）启动，约 ${diffMin} 分钟后被 daemon 拾取`;
+  const label = diffMin <= 1 ? '即将调度' : `${diffMin}分后`;
   return (
     <Tooltip title={tip}>
-      <Tag icon={<ClockCircleOutlined />} color="blue" style={{ marginInlineEnd: 0 }}>
-        {diffMin <= 1 ? '即将调度' : `${diffMin}分后`}
-      </Tag>
+      {/* pill 形态（add-spec-list-mobile-style 1.2）：移动卡等待标记组改灰软底
+          胶囊（spec.md：独立灰软底胶囊）；桌面 Tag 形态零改动 */}
+      {pill ? (
+        <Pill tone="muted">{label}</Pill>
+      ) : (
+        <Tag icon={<ClockCircleOutlined />} color="blue" style={{ marginInlineEnd: 0 }}>
+          {label}
+        </Tag>
+      )}
     </Tooltip>
   );
 }
@@ -553,13 +584,18 @@ function ScheduledPickupTag({ record }: { record: SpecSummary }) {
 // 渲染橙色「待激活」Tag——永不到期、待人工激活。不加状态门槛（渲染只看字段，
 // 避免 drafted 态漏标；若后续语义变化不误伤）。ScheduledPickupTag 对 'manual'
 // 由 dayjs('manual') Invalid Date 自然返回 null，二者不冲突。
-function ManualActivationTag({ record }: { record: SpecSummary }) {
+function ManualActivationTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
   if (record.start_after !== 'manual') return null;
   return (
     <Tooltip title="已设为手工激活，需人工激活后才会被拾取">
-      <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-        待激活
-      </Tag>
+      {pill ? (
+        // 灰软底胶囊（add-spec-list-mobile-style 1.2，同 StatusWaitGroup pill 契约）
+        <Pill tone="muted">待激活</Pill>
+      ) : (
+        <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+          待激活
+        </Tag>
+      )}
     </Tooltip>
   );
 }
@@ -570,26 +606,31 @@ function ManualActivationTag({ record }: { record: SpecSummary }) {
 // （STATE.md 里 `depends_on: null` 解析回字面量字符串 "null"，227/244 条存量
 // entry 为此形态，裸真值会全线误标）。仅 ready 展示（用户明确要求：ready 时才
 // 提示「为什么就绪却不派发」）；其它状态的依赖信息属详情页职责。
-function DependencyTag({ record }: { record: SpecSummary }) {
+function DependencyTag({ record, pill }: { record: SpecSummary; pill?: boolean }) {
   if (record.status !== 'ready') return null;
   const deps = record.depends_on;
   if (!deps) return null;
   return (
     <Tooltip title={`前置依赖：${deps}`}>
-      <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
-        前置依赖
-      </Tag>
+      {pill ? (
+        <Pill tone="muted">前置依赖</Pill>
+      ) : (
+        <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>
+          前置依赖
+        </Tag>
+      )}
     </Tooltip>
   );
 }
 
-// 状态列等待标记集：定时拾取 + 待激活 + 前置依赖（桌面与移动端共用）
-function StatusWaitGroup({ record }: { record: SpecSummary }) {
+// 状态列等待标记集：定时拾取 + 待激活 + 前置依赖（桌面与移动端共用）。
+// pill：移动卡灰软底胶囊形态（add-spec-list-mobile-style 1.2），桌面缺省 Tag 不变
+function StatusWaitGroup({ record, pill }: { record: SpecSummary; pill?: boolean }) {
   return (
     <>
-      <ScheduledPickupTag record={record} />
-      <ManualActivationTag record={record} />
-      <DependencyTag record={record} />
+      <ScheduledPickupTag record={record} pill={pill} />
+      <ManualActivationTag record={record} pill={pill} />
+      <DependencyTag record={record} pill={pill} />
     </>
   );
 }
@@ -699,11 +740,16 @@ interface SpecCardListProps {
   archivedOnly?: boolean;
 }
 
-// 移动端（<768px）卡片形态：字段与桌面表格列一一对应，扁平化树并按层级缩进。
+// 移动端（<768px）卡片形态（add-spec-list-mobile-style 重绘，UI 真相源
+// specs/dashboard-spec-table/prototype/index.html）：白磁贴（12px 圆角发丝边）
+// 内发丝线分卡，镜像桌面 .ov-bento 磁贴语态（D1 不逐卡开卡框）；卡 = 英文名主行
+// → 中文标题次行 → 语义胶囊行 → 阶段进度区 → 元信息行 → 验证行 → 信息行；
+// fix-* 子卡缩进 26px + └ 前缀灰符；整卡点击进详情（specDetailPath 单源）。
 // 仅在 md 断点以下渲染，桌面 Table 分支不受影响。
-function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError, archivedOnly }: SpecCardListProps) {
-  // 状态点配色走 token 派生表（code-review item 615f6f350d58）
-  const toneDot = useToneDot();
+function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError }: SpecCardListProps) {
+  // token 消费（验证行 ✓/⚠ 色与 caption 三阶灰随主题；移动卡状态胶囊色点走
+  // Pill pair 前景色，不再各自取 useToneDot）
+  const { token } = theme.useToken();
   type FlatNode = { record: SpecSummary; level: number };
   const flat = useMemo<FlatNode[]>(() => {
     const out: FlatNode[] = [];
@@ -717,92 +763,258 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
     return out;
   }, [data]);
 
+  // 分页改磁贴底部「加载更多」（任务 2.3）：pageSize 20 语义保持（数据层分页
+  // 不变），替代 antd List 分页器；过滤/树变化时回到首页
+  const [visibleCount, setVisibleCount] = useState(SPEC_CARD_PAGE_SIZE);
+  useEffect(() => {
+    setVisibleCount(SPEC_CARD_PAGE_SIZE);
+  }, [data]);
+  const shown = useMemo(() => flat.slice(0, visibleCount), [flat, visibleCount]);
+
   return (
-    <List
-      loading={loading}
-      dataSource={flat}
-      // 按行数据身份复用节点（code-review item add168d205dc）：SSE patch 删除
-      // 行后避免按索引复用，悬浮浮层状态随正确行走（与桌面 Table rowKey 对齐）
-      rowKey={(n) => n.record.name}
-      pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
-      renderItem={({ record, level }) => {
-        const m = statusMeta(record.status || '');
-        const created = record.created ? dayjs(record.created) : null;
-        // 阶段感知进度（code-review item e1f8a359480d）：与桌面「任务进度」列
-        // 共用同一推导，两侧口径一致
-        const prog = phaseProgressOf(record);
-        const progress = prog.percent;
-        return (
-          <List.Item style={{ paddingLeft: level > 0 ? 16 * level : undefined }}>
-            <div style={{ width: '100%', minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Badge color={toneDot[m.tone]} text={m.label} />
-                <StatusWaitGroup record={record} />
-                {/* 模式标记单源 ModeTag（code-review item 504cf2d4b647）：存量无
-                    mode 字段的 spec 按缺省 full 展示「完整模式」等价标记 */}
-                <ModeTag mode={record.mode} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <SpecNameCell project={project} record={record} />
-                </div>
-                <Button
-                  type="link"
-                  size="small"
-                  className="touch-expand"
-                  onClick={() => onDocView(record.name)}
+    <div
+      className="spec-card-tile"
+      // 磁贴形态镜像 .ov-bento（global.less 同值：白底 + #eef2f7 发丝边 + 12px
+      // 圆角 + V2_TILE_SHADOW 软阴影）；样式走 JSX 内联不新增 less（D6）
+      style={{
+        background: '#ffffff',
+        border: `1px solid ${OV_HAIRLINE}`,
+        borderRadius: 12,
+        boxShadow: '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)',
+        overflow: 'hidden',
+      }}
+    >
+      <List
+        split={false}
+        loading={loading}
+        dataSource={shown}
+        // 按行数据身份复用节点（code-review item add168d205dc）：SSE patch 删除
+        // 行后避免按索引复用，行状态随正确行走（与桌面 Table rowKey 对齐）
+        rowKey={(n) => n.record.name}
+        renderItem={({ record, level }) => {
+          const m = statusMeta(record.status || '');
+          const created = record.created ? dayjs(record.created) : null;
+          // 阶段感知进度（code-review item e1f8a359480d）：与桌面「任务进度」列
+          // 共用 phaseProgressOf 单源，两侧口径一致
+          const prog = phaseProgressOf(record);
+          const terminal = PRIORITY_TERMINAL.has(record.status || '');
+          // 阶段名与桌面列同款（gen 出题 / gates 门禁 / verify 验证 / 其余实现）
+          const phaseLabel = prog.gen ? '出题' : prog.isGates ? '门禁' : prog.isVerify ? '验证' : '实现';
+          // gen 出题分支计数不带「出题」前缀（阶段名已承载，与桌面列同款）
+          const counterText = prog.gen ? `${prog.gen.done}/${prog.gen.total}` : prog.counter;
+          // 草稿 / impl 阶段无任务清单 → 口径不可得显「—」（D3：0 与口径不可得
+          // 分离，MUST NOT 显示假 0）；verify/gates 阶段 0/0 是真实阶段口径照常显示
+          const noTasks = !prog.isVerify && !prog.isGates && (record.task_total ?? 0) === 0;
+          return (
+            <List.Item
+              data-testid="spec-mobile-card"
+              data-spec={record.name}
+              // 整卡点击进详情（specDetailPath 单源）；行内交互（⋮ 菜单/清除按钮）
+              // 各自 stopPropagation 不被吞
+              onClick={() => history.push(specDetailPath(project, record.name))}
+              style={{
+                display: 'block',
+                padding: '12px 14px',
+                // fix-* 子卡缩进 26px + 名称行 └ 前缀灰符（树形语义，buildTree 单源不变）
+                paddingLeft: level > 0 ? 26 : 14,
+                cursor: 'pointer',
+                background: 'transparent',
+              }}
+            >
+              {/* 英文名主行：14px/600 单行省略（tap 目标为整卡） */}
+              <div
+                className="spec-card-name"
+                title={record.name}
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: OV_TEXT,
+                  lineHeight: '20px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  minWidth: 0,
+                }}
+              >
+                {level > 0 ? (
+                  <span aria-hidden style={{ color: token.colorTextQuaternary, fontWeight: 400, marginRight: 2 }}>
+                    └
+                  </span>
+                ) : null}
+                {record.name}
+              </div>
+              {/* 中文标题次行：12px 三阶灰单行省略；title 缺失不渲染（缺失=无该行） */}
+              {record.title ? (
+                <div
+                  className="spec-card-cn"
+                  style={{
+                    marginTop: 2,
+                    fontSize: 12,
+                    lineHeight: '18px',
+                    color: OV_TEXT_TERTIARY,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
                 >
-                  文档
-                </Button>
-                <Dropdown
-                  menu={{ items: menuItems(record), onClick: ({ key }) => onMenu(record, key) }}
-                  placement="bottomRight"
-                  trigger={['click']}
-                >
-                  <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">更多</Button>
-                </Dropdown>
-              </div>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
-                <PriorityCell record={record} editable={!archivedOnly} onEdit={(r) => onMenu(r, 'priority')} muted />
-                <Typography.Text type="secondary">
-                  {created && created.isValid() ? created.format('YYYY-MM-DD HH:mm') : '—'}
-                </Typography.Text>
-                <Typography.Text type="secondary">耗时 {fmtDuration(record.total_duration)}</Typography.Text>
-              </div>
-              <div style={{ marginTop: 8 }}>
-                {/* 配色随阶段（code-review item 1ee2743543f4）：与桌面列同源
-                    strokeColorFor/trailColorFor，verify/gates 空条底轨可辨 */}
-                <Progress
-                  percent={progress}
-                  size="small"
-                  showInfo={false}
-                  strokeColor={strokeColorFor(!!prog.gen, prog.isVerify, prog.isGates)}
-                  trailColor={trailColorFor(!!prog.gen, prog.isVerify, prog.isGates)}
-                />
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-                  <Typography.Text type="secondary">{prog.counter}</Typography.Text>
-                  <Typography.Text type="secondary">{progressText(progress)}</Typography.Text>
-                </div>
-              </div>
-              <div style={{ marginTop: 8 }}>
-                {record.verify_error ? (
-                  <Tooltip title={record.verify_error}>
-                    <Typography.Text type="danger">⚠ 验证异常</Typography.Text>
-                  </Tooltip>
-                ) : (
-                  <VerifyCell project={project} record={record} />
-                )}
-              </div>
-              {record.error ? (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8 }}>
-                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>信息</Tag>
-                  <Typography.Text style={{ flex: 1, minWidth: 0 }}>{record.error}</Typography.Text>
-                  <Button size="small" onClick={() => onClearError(record)}>清除</Button>
+                  {record.title}
                 </div>
               ) : null}
-            </div>
-          </List.Item>
-        );
-      }}
-    />
+              {/* 语义胶囊行：状态 tone 色对带色点 + 等待标记灰软底 + 模式胶囊 + ⋮ 更多 */}
+              <div className="spec-card-pills" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap', minWidth: 0 }}>
+                <Pill tone={m.tone} dot>
+                  {m.label}
+                </Pill>
+                <StatusWaitGroup record={record} pill />
+                {/* 模式胶囊单源 ModePill（与桌面模式列同源）；存量无 mode 字段
+                    按缺省 full 展示「标准」 */}
+                <ModePill mode={record.mode} />
+                <span style={{ marginLeft: 'auto', flex: '0 0 auto' }} onClick={(e) => e.stopPropagation()}>
+                  <Dropdown
+                    menu={{
+                      // 「查看文档」并入首项（与桌面操作列同构，入口恒可见）；
+                      // 菜单其余项仍由 onMenu 单点承载（specMenuItems 含归档收敛）
+                      items: [{ key: 'doc', label: '查看文档' }, ...(menuItems(record) || [])],
+                      onClick: ({ key, domEvent }) => {
+                        domEvent.stopPropagation();
+                        if (key === 'doc') {
+                          onDocView(record.name);
+                          return;
+                        }
+                        onMenu(record, key);
+                      },
+                    }}
+                    placement="bottomRight"
+                    trigger={['click']}
+                  >
+                    {/* 32px 触控目标（spec.md THEN：⋮ 更多 32px 触控目标） */}
+                    <Button type="text" size="small" icon={<DotsIcon />} aria-label="更多操作" style={{ minWidth: 32, height: 32 }} />
+                  </Dropdown>
+                </span>
+              </div>
+              {/* 阶段进度区：终态卡省略（D3 不重复画 100% 条）；草稿/无任务计数
+                  显「—」；其余 阶段名 + 「计数 · 百分比」同行在上 + ramp 色条
+                  （progressPhase 单源 strokeColorFor/trailColorFor，禁另写色表） */}
+              {terminal ? null : noTasks ? (
+                <div className="spec-card-progress-empty" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9, fontSize: 12, color: OV_TEXT_TERTIARY }}>
+                  <span>任务进度</span>
+                  <span className="ov-num">—</span>
+                </div>
+              ) : (
+                <div className="spec-card-progress" style={{ marginTop: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{phaseLabel}</span>
+                    <span className="ov-num" data-testid="spec-card-progress-count" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>
+                      {counterText} · {progressText(prog.percent)}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 5,
+                      height: 6,
+                      borderRadius: 999,
+                      background: trailColorFor(!!prog.gen, prog.isVerify, prog.isGates),
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: '100%',
+                        borderRadius: 999,
+                        width: `${prog.percent}%`,
+                        background: strokeColorFor(!!prog.gen, prog.isVerify, prog.isGates),
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {/* 元信息行：优先级 | 创建时间 | 耗时（12px tabular-nums 竖线分隔）；
+                  run 活跃追加「● 运行中」（success 色，静态） */}
+              <div
+                className="ov-num spec-card-meta"
+                style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9, fontSize: 12, color: OV_TEXT_TERTIARY, flexWrap: 'wrap' }}
+              >
+                <span>P{record.priority ?? '?'}</span>
+                <span aria-hidden style={{ color: OV_BORDER }}>|</span>
+                <span>{created && created.isValid() ? created.format('YYYY-MM-DD HH:mm') : '—'}</span>
+                <span aria-hidden style={{ color: OV_BORDER }}>|</span>
+                <span>耗时 {fmtDuration(record.total_duration)}</span>
+                {record.run_activity?.active ? (
+                  <span data-testid="spec-card-running" style={{ color: token.colorSuccess }}>● 运行中</span>
+                ) : null}
+              </div>
+              {/* 验证行：异常 ⚠ 红（悬浮提示保留）/ 通过 ✓ 绿 / 进行中 n/m 三阶灰；
+                  无验证数据不渲染（缺失=无该行） */}
+              {record.verify_error ? (
+                <Tooltip title={record.verify_error}>
+                  <div className="spec-card-verify-bad" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: token.colorError }}>
+                    <span>⚠</span>
+                    <span>验证异常</span>
+                  </div>
+                </Tooltip>
+              ) : record.verify_total > 0 ? (
+                <div className="spec-card-verify" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12 }}>
+                  {record.verify_done >= record.verify_total ? (
+                    <>
+                      <span style={{ color: token.colorSuccess }}>✓</span>
+                      <span style={{ color: OV_TEXT_TERTIARY }}>
+                        验证 {record.verify_done}/{record.verify_total} 通过
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ color: OV_TEXT_TERTIARY }}>
+                      验证 {record.verify_done}/{record.verify_total}
+                    </span>
+                  )}
+                </div>
+              ) : null}
+              {/* 信息行：amber 软底圆角条、橙「信息」前缀、摘要单行省略 + 清除
+                  （信息清除既有契约保留，dashboard-spec-table 清除链路不变） */}
+              {record.error ? (
+                <div
+                  className="spec-card-info-row"
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, background: OV_AMBER_SOFT, borderRadius: 6, padding: '6px 8px' }}
+                >
+                  <span style={{ fontSize: 12, color: OV_WARNING, flex: '0 0 auto' }}>信息</span>
+                  <span
+                    style={{ flex: 1, minWidth: 0, fontSize: 12, color: OV_AMBER_TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
+                    {record.error}
+                  </span>
+                  <Button
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClearError(record);
+                    }}
+                  >
+                    清除
+                  </Button>
+                </div>
+              ) : null}
+            </List.Item>
+          );
+        }}
+      />
+      {/* 磁贴底部「加载更多」+ 计数 caption（原型 loadmore-wrap 形态）；空表 /
+          加载中不渲染（防「共 0 条」闪烁） */}
+      {!loading && flat.length > 0 ? (
+        <div style={{ padding: '12px 14px', borderTop: `1px solid ${OV_HAIRLINE}` }}>
+          <Button
+            block
+            size="middle"
+            data-testid="spec-load-more"
+            disabled={shown.length >= flat.length}
+            onClick={() => setVisibleCount((c) => c + SPEC_CARD_PAGE_SIZE)}
+          >
+            加载更多
+          </Button>
+          <div className="ov-num" style={{ textAlign: 'center', marginTop: 8, fontSize: 11, color: token.colorTextQuaternary }} data-testid="spec-load-caption">
+            共 {flat.length} 条 · 已显示 {Math.min(visibleCount, flat.length)} 条
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -833,7 +1045,15 @@ interface DevTabProps {
   onMenu: (record: SpecSummary, key: string) => void;
   menuItems: (record: SpecSummary) => MenuProps['items'];
   onClearError: (record: SpecSummary) => void;
+  /** 状态 chips 计数（add-spec-list-mobile-style 2.1）：keyword/type/archived
+   * 过滤后（不含状态过滤）按状态计数，与 statusTotal 同源于 SpecListPage
+   * preStatus 集合——chips 徽标反映「选该状态会看到多少条」 */
+  statusCounts: Record<string, number>;
+  statusTotal: number;
 }
+
+// 移动端排序键（add-spec-list-mobile-style 2.2/D4）：键集合与桌面表头一致
+type MobileSortKey = 'name' | 'priority' | 'progress' | 'created';
 
 function DevTab({
   project,
@@ -856,11 +1076,41 @@ function DevTab({
   onMenu,
   menuItems,
   onClearError,
+  statusCounts,
+  statusTotal,
 }: DevTabProps) {
   // 行底色/状态点/验证中文案色走 token（code-review item 615f6f350d58）：
   // useToken 只能在组件内调用（同 SessionPanel.tsx 惯例）
   const { token } = theme.useToken();
   const toneDot = useToneDot();
+
+  // 移动筛选编排呈现态（add-spec-list-mobile-style 2.2）：Drawer 开合与排序键
+  // 不入 URL（过滤 stickiness 白名单契约不变——类型/归档仍走既有 state 写回，
+  // 排序为移动端呈现态，桌面无此控件）
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sortKey, setSortKey] = useState<MobileSortKey>('created');
+  // 排序（D4：键集合与桌面表头一致——名称/优先级/进度/创建时间）。创建时间=
+  // 现产默认排序（created 倒序，即 tree 原序）零变化；其余键对树根排序，
+  // children 随父移动（fix-* 子树保持挂在父下）
+  const sortedTree = useMemo(() => {
+    if (sortKey === 'created') return tree;
+    const cmp =
+      sortKey === 'name'
+        ? (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name)
+        : sortKey === 'priority'
+          ? (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999)
+          : (a: SpecSummary, b: SpecSummary) => progressSortPct(a) - progressSortPct(b);
+    return [...tree].sort(cmp);
+  }, [tree, sortKey]);
+  // 状态 chips（任务 2.1）：全部 + 各状态 + 计数徽标（激活态黑底白字走
+  // DSH_PRIMARY 单源，镜像 overview Radio 黑底白字惯例）
+  const statusChips = useMemo(
+    () => [
+      { key: 'all', label: '全部', n: statusTotal },
+      ...LIST_STATUSES.map((k) => ({ key: k, label: statusMeta(k).label, n: statusCounts[k] ?? 0 })),
+    ],
+    [statusCounts, statusTotal],
+  );
 
   // 九列 width 合计归一 100%（code-review item dafbe62b7e29）：原合计 110%
   // （12+9+28+7+13+15+8+8+10），tableLayout='fixed' 且未启用 scroll.x 时超
@@ -902,9 +1152,9 @@ function DevTab({
       // 移动卡片与详情页仍走单源 ModeTag（504cf2d4b647），存量无 mode 字段按
       // 缺省 full 展示「标准」等价标记
       render: (v: string | null | undefined) => (
-        <Pill tone={v === 'fast-track' ? 'warning' : 'muted'}>
-          {v === 'fast-track' ? '快速' : '标准'}
-        </Pill>
+        // add-spec-list-mobile-style D2：模式胶囊抽 ModePill 单源（桌面列与
+        // 移动卡共用），渲染形态与本列原内联实现一致
+        <ModePill mode={v} />
       ),
     },
     {
@@ -1126,6 +1376,139 @@ function DevTab({
       {error ? (
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
       ) : null}
+      {isMobile ? (
+        // 移动筛选编排（add-spec-list-mobile-style 任务 2.1-2.4）：内容区背景
+        // #E3E3E3（theme.ts SPEC_LIST_MOBILE_BG 单源，DESIGN.md 修正案条款）+
+        // 搜索行 + 状态 chips 横滚 + 磁贴卡列表 + 筛选底部 Drawer。负 margin
+        // 与 global.less <768 children-container padding-inline:12 对应（两处
+        // 同改），背景铺满内容区。桌面分支（下方）零改动。
+        <div
+          className="spec-mobile-content"
+          style={{ background: SPEC_LIST_MOBILE_BG, margin: '0 -12px', padding: '12px 12px 24px' }}
+        >
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <Input.Search
+              placeholder="搜索英文名 / 中文标题"
+              allowClear
+              value={q}
+              onChange={(e) => onQueryChange(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <Button data-testid="spec-filter-trigger" style={{ height: 32, minWidth: 32, paddingInline: 10 }} onClick={() => setDrawerOpen(true)}>
+              筛选
+            </Button>
+          </div>
+          {/* 状态筛选横向滚动 chips（原型 chips-row 形态）：全部 + 各状态 +
+              计数徽标；激活黑底白字（DSH_PRIMARY 单源），再点取消回「全部」。
+              specKeywordHit 命中语义不在此处（SpecListPage filtered 单源零改动） */}
+          <div className="spec-status-chips" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2, marginBottom: 10 }}>
+            {statusChips.map((c) => {
+              const active = c.key === 'all' ? statusList.length === 0 : statusList.includes(c.key);
+              return (
+                <span
+                  key={c.key}
+                  data-testid={`status-chip-${c.key}`}
+                  onClick={() => onStatusListChange(c.key === 'all' || active ? [] : [c.key])}
+                  style={{
+                    flex: '0 0 auto',
+                    height: 30,
+                    padding: '0 12px',
+                    borderRadius: 999,
+                    border: `1px solid ${active ? DSH_PRIMARY : OV_BORDER}`,
+                    background: active ? DSH_PRIMARY : '#ffffff',
+                    color: active ? '#ffffff' : OV_TEXT_TERTIARY,
+                    fontSize: 12,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                  }}
+                >
+                  {c.label}
+                  <span
+                    // 主色黑底上的降透白计数（原型 chip-active .chip-n 同值）
+                    style={{ marginLeft: 5, fontSize: 11, color: active ? OV_ON_PRIMARY_DIM : token.colorTextQuaternary, fontVariantNumeric: 'tabular-nums' }}
+                  >
+                    {c.n}
+                  </span>
+                </span>
+              );
+            })}
+          </div>
+          <SpecCardList
+            data={sortedTree}
+            project={project}
+            loading={loading}
+            onDocView={onDocView}
+            onMenu={onMenu}
+            menuItems={menuItems}
+            onClearError={onClearError}
+          />
+          {/* 筛选底部 Drawer（任务 2.2）：类型/归档/排序三组 Segmented，选择
+              即时生效，「查看结果」仅收起 Drawer（原型同构） */}
+          <Drawer
+            data-testid="spec-filter-drawer"
+            title="筛选与排序"
+            placement="bottom"
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            // antd v6 现行 API（styles.wrapper；design Risks：不用弃用 height 参数）
+            styles={{ wrapper: { height: 380 }, body: { paddingBottom: 24 } }}
+            footer={
+              <Button block type="primary" data-testid="spec-filter-apply" onClick={() => setDrawerOpen(false)}>
+                查看结果
+              </Button>
+            }
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>类型</div>
+                {/* 类型过滤语义与现产一致（任务 2.2 约束句）：全部/进行中/已完成
+                    进度语义（ListTypeFilter 值域单源 listFilters.ts），仅呈现换
+                    Segmented 承载（spec.md「全部/开发/fix-*」标签为原型假数据
+                    表述，与现产语义约束冲突处以约束句为准） */}
+                <Segmented
+                  block
+                  value={type}
+                  onChange={(v) => onTypeChange(v as TypeFilter)}
+                  options={[
+                    { label: '全部', value: '' },
+                    { label: '进行中', value: 'active' },
+                    { label: '已完成', value: 'completed' },
+                  ]}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>归档</div>
+                <Segmented
+                  block
+                  value={archivedOnly ? 'archived' : 'open'}
+                  onChange={(v) => onArchivedOnlyChange(v === 'archived')}
+                  options={[
+                    { label: '未归档', value: 'open' },
+                    { label: '已归档', value: 'archived' },
+                  ]}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 8 }}>排序</div>
+                <Segmented
+                  block
+                  value={sortKey}
+                  onChange={(v) => setSortKey(v as MobileSortKey)}
+                  options={[
+                    { label: '名称', value: 'name' },
+                    { label: '优先级', value: 'priority' },
+                    { label: '进度', value: 'progress' },
+                    { label: '创建时间', value: 'created' },
+                  ]}
+                />
+              </div>
+            </div>
+          </Drawer>
+        </div>
+      ) : (
+        <>
       <Card variant="borderless" className="projects-page">
         <div
           style={{
@@ -1184,23 +1567,13 @@ function DevTab({
             ]}
           />
         </div>
-        {isMobile ? (
-          <SpecCardList
-            data={tree}
-            project={project}
-            loading={loading}
-            onDocView={onDocView}
-            onMenu={onMenu}
-            menuItems={menuItems}
-            onClearError={onClearError}
-            archivedOnly={archivedOnly}
-          />
-        ) : (
-          // Bento 台账磁贴（2026-11-06 用户指令：桌面表格对齐 v2 projects 表格
-          // 边框——白磁贴发丝边 + 透明表头 + 发丝线行分隔 + 首列缩进，样式镜像
-          // 在 global.less .ov-bento / .ov-bento-table）。antd Table 控件与其
-          // 功能（表头排序/分页/树形展开/信息子行）原样保留，不替换为 v2 自绘表。
-          <div className="ov-bento">
+        {/* add-spec-list-mobile-style 任务 2.5：桌面分支零改动——原 isMobile
+            三元摘除（移动卡迁至 Card 外移动编排块），桌面内容逐字保留。 */}
+        {/* Bento 台账磁贴（2026-11-06 用户指令：桌面表格对齐 v2 projects 表格
+            边框——白磁贴发丝边 + 透明表头 + 发丝线行分隔 + 首列缩进，样式镜像
+            在 global.less .ov-bento / .ov-bento-table）。antd Table 控件与其
+            功能（表头排序/分页/树形展开/信息子行）原样保留，不替换为 v2 自绘表。 */}
+        <div className="ov-bento">
             <div className="ov-bento-table">
           <Table
             rowKey="name"
@@ -1258,8 +1631,9 @@ function DevTab({
           />
             </div>
           </div>
-        )}
       </Card>
+        </>
+      )}
     </>
   );
 }
@@ -1540,6 +1914,25 @@ export default function SpecListPage() {
   }, [specMap, debouncedQ, statusList, type, archivedOnly]);
 
   const tree = useMemo(() => buildTree(filtered), [filtered]);
+
+  // 移动端状态 chips 计数（add-spec-list-mobile-style 2.1）：kw + 类型 + 归档
+  // 过滤后、状态过滤前的子集——chip 计数含义为「当前其余条件下该状态还剩几条」
+  // （原型 chips 同语义，点选某状态后其余 chip 计数不归零）；桌面分支零消费
+  const preStatus = useMemo(() => {
+    const kw = debouncedQ.trim().toLowerCase();
+    return Object.values(specMap).filter((s) => {
+      if (kw && !specKeywordHit(s.name, s.title, kw)) return false;
+      if (type === 'active' && PRIORITY_TERMINAL.has(s.status || '')) return false;
+      if (type === 'completed' && !PRIORITY_TERMINAL.has(s.status || '')) return false;
+      if (!!s.archived !== archivedOnly) return false;
+      return true;
+    });
+  }, [specMap, debouncedQ, type, archivedOnly]);
+  const statusCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const s of preStatus) c[s.status || ''] = (c[s.status || ''] || 0) + 1;
+    return c;
+  }, [preStatus]);
 
   // 受控展开：数据到达时默认全部展开（树形子级 + error 信息行可见），用户可手动收起
   const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
@@ -1901,6 +2294,8 @@ export default function SpecListPage() {
                 onMenu={onSpecMenu}
                 menuItems={specMenuItems}
                 onClearError={handleClearError}
+                statusCounts={statusCounts}
+                statusTotal={preStatus.length}
               />
             ),
           },
