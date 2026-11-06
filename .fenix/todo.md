@@ -59,13 +59,6 @@
   - 调查评估：在 add-knowledge-inbox-pipeline 与 add-arbiter-gap-todo-routing 实现车道暴露，根因是交付密集日的结构性交互：当日 5 个以上 SPEC 交付均动 core/（escalation-chain、judge-repair、watchdog-yield、register-revise、arbiter-gap 等），每次 merge 后 daemon 检测 stale 即计划重启，重启必然撞上下一批在飞 run。已核实事实：重启决策与 drain 窗口值均出自日志原文；排水窗口量级受 agents.run_drain_max_seconds（缺省 60 秒，core/config.py:1930）控制，与 LLM run 单轮时长（本窗 API 往返常态 60-462 秒）结构性失配，窗口内自然收尾近乎不可能；restart checkpoint 广播（reason=planned restart 旗标）为 best-effort 无响应语义，3/3 零响应。次生噪音：同 spec 双 worktree 并存（.claude/worktrees/impl-add-arbiter-gap-todo-routing-1793715648 与 -1793715649）使 find_worktree_by_spec 歧义 4 次 WARNING、preserve 保全降级记 branch='none'，产物靠 drain-preserve checkpoint 提交与 cleanup 保护集兜住。与存量关系：stale-selfheal-cooldown（300 秒边沿防抖）与本窗 add-arbiter-gap-todo-routing 刚交付的 restart_request 机制（core/signals.py 等，JSON reason/origin/date 防重语义，提交 a9557cf02）治理的是「重复重启」，未覆盖「重启打断在飞」。结论：系统性缺口非一次性失误——交付密集日每个动 core/ 的交付都要付一轮打断-重派税，交付零损失全靠 worktree 保全链兜底。
   - 建议：立项小 spec 治排水-在飞失配：①把 run_drain_max_seconds 提到与 LLM 轮长对齐（≥300 秒）并在 drain 期间感知在飞 run 的后台任务（如全量回归）等待任务边界再放行；②重启前对在飞 run 统一落 WIP checkpoint（复用 drain-preserve 机制）后即停，新进程按 checkpoint 续做而非整体重派；③同 spec worktree 唯一性约束（重派复用既有目录而非新播种），消除命名歧义导致的 preserve 降级。
 
-- **code-fix 唯一失败为 unrecognized_model 秒败，31 分钟后自愈**
-  - 自进化：问题成立 / 建议合理 / — 不需要
-  - 影响：code-fix 车道当日唯一失败：05:24 的 run 零轮 API 往返、秒败退出码 1，车道修复窗口延迟约 31 分钟（05:55 下一 run 起恢复成功），损失一次派发与一条 critical daemon_errors 记账。
-  - 证据：code-fix-1793654666（code-review 台账修复 run）档案 stderr 行原文 `[claude-code:unrecognized_model] {"model":"glm-5.3-flash","query_source":"sdk"}` + error 行 Exit code:1 + run_metrics 零轮次；同日同模型 glm-5.3-flash 的 60+ 个 run 全部正常收尾（停滞聚合行 53/58 的 model 字段即此模型），05:55 的 code-fix-1793656527 起车道连续成功。
-  - 调查评估：在 code-review 台账修复车道暴露。已核实事实：stderr 与退出码逐字核实；失败时刻 05:24（本地）在每日 04:30 网络断供窗口（历史记录 enp42s0 掉 carrier 时段）之后约 54 分钟。根因未定、多假说并存：①CLI 启动时模型名校验抖动（网关/CLI 瞬态）；②网络瞬断被 CLI 伪装成 unrecognized_model 报错——同模型同日高成功率不支持「配置错模型名」的单因叙事，故只写形态层（0 轮 + exit 1 + unrecognized_model stderr）不裁决单因。与存量关系：run-resilience 域已有 CLI 重试退避与 daemon_errors 指纹归一面（同 run 重试合并计数），本例单次即愈、未进入重试面。结论：瞬断型秒败、自愈，按既有「0 轮+exit1 才致命」判别法不值得重启 daemon（实际未重启也自愈）。
-  - 建议：0 轮+exit1 秒败按「连续 ≥2 次同指纹」再升级处置，单次留痕即可；不按单一根因假说（如改模型配置）误修，失败档案已留存 stderr 原文可回溯。
-
 ### 可改进
 - **startup sweep 无在途判据，当日两起错杀 62 分钟与 22 分钟在跑 run**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
@@ -190,6 +183,7 @@
   - 建议：维持上窗建议：探测输出按集合指纹聚合（集合不变时首次全量、其后降为计数摘要或降频重打）；顺带把滞留的两页 worktree-vc 知识页与 idea.md 等散件收编提交使集合收敛。
 
 ## 2026-11-07
+
 ### 知识真相源
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/worktree-vc/mergeback-archive-residue-selfheal.md × spec/knowledge/domains/worktree-vc/wip-defer-merge-retry.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/v2-overview-page.md × spec/knowledge/domains/dashboard-frontend/v2-project-detail-page.md），请人工核查
