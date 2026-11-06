@@ -77,9 +77,8 @@ import {
   trailColorFor,
   GATES_STROKE,
 } from './progressPhase';
-// 「快速/完整模式」标记单源（code-review item 504cf2d4b647）：桌面「模式」列、
-// 移动卡片（与 detail.tsx）共用，判据/文案/配色改一处生效
-import { ModeTag } from './components/ModeTag';
+// 「快速/完整模式」标记单源已收敛为本页 ModePill（定义见下；
+// add-spec-list-mobile-style D2），ModeTag 仅剩 detail.tsx 使用
 // add-spec-list-filter-stickiness：过滤状态 ↔ URL 查询参数白名单与 fail-safe
 // 解析（纯函数单测见 tests/listFilters.test.mjs）
 import {
@@ -147,8 +146,6 @@ const OV_ON_PRIMARY_DIM = 'rgba(255, 255, 255, 0.62)';
 // 分页 pageSize 20 同值语义（每页条数不变，仅呈现换加载更多）
 const SPEC_CARD_PAGE_SIZE = 20;
 
-/** 语义胶囊徽标（镜像 v2 shared.tsx V2Pill filled 形态：999 胶囊 + tone 软底）。
- * tone 键域对齐 statusMeta 的 StatusTone，muted 兜底。 */
 /** 三点操作图标（镜像 v2 DotsIcon；操作列 Dropdown 触发器，与 overview 台账同款）。 */
 function DotsIcon() {
   return (
@@ -160,6 +157,8 @@ function DotsIcon() {
   );
 }
 
+/** 语义胶囊徽标（镜像 v2 shared.tsx V2Pill filled 形态：999 胶囊 + tone 软底）。
+ * tone 键域对齐 statusMeta 的 StatusTone，muted 兜底。 */
 function Pill({ tone = 'muted', children, style, dot }: { tone?: string; children: ReactNode; style?: CSSProperties; dot?: boolean }) {
   const pair =
     tone === 'critical'
@@ -216,7 +215,10 @@ function progressText(progress: number) {
 // （verify 阶段在移动端看似已完成）。
 type PhaseProgress = {
   percent: number;
-  /** 计数文案：gates 门禁 / verify（含出题前缀）/ impl 任务，与 percent 同源 */
+  /** 阶段名（出题/门禁/验证/实现）：桌面「任务进度」列与移动卡片同源呈现 */
+  label: string;
+  /** 计数文案：gates 门禁 / verify / impl 任务，与 percent 同源；gen 出题分支
+   * 不带「出题」前缀（阶段名 label 已承载，呈现层不再各自去前缀） */
   counter: string;
   isVerify: boolean;
   isGates: boolean;
@@ -236,17 +238,18 @@ function phaseProgressOf(record: SpecSummary): PhaseProgress {
     isVerify && record.verify_total === 0 && record.generation && record.generation.total > 0
       ? record.generation
       : null;
+  // 阶段名与去前缀计数并入单源（code-review item 2d64a13ea499）：桌面列与
+  // 移动卡片直接消费，新增阶段只需改此处，呈现层不再各自推导
+  const label = gen ? '出题' : isGates ? '门禁' : isVerify ? '验证' : '实现';
   let counter: string;
   if (isGates) {
     counter = `${record.gates_done ?? 0}/${record.gates_total ?? 0}`;
   } else if (isVerify) {
-    counter = gen
-      ? `出题 ${gen.done}/${gen.total}`
-      : `${record.verify_done}/${record.verify_total}`;
+    counter = gen ? `${gen.done}/${gen.total}` : `${record.verify_done}/${record.verify_total}`;
   } else {
     counter = `${record.task_done}/${record.task_total}`;
   }
-  return { percent: renderPercent(record, gen), counter, isVerify, isGates, gen };
+  return { percent: renderPercent(record, gen), label, counter, isVerify, isGates, gen };
 }
 
 function progressSortPct(record: SpecSummary): number {
@@ -736,8 +739,6 @@ interface SpecCardListProps {
   onMenu: (record: SpecSummary, key: string) => void;
   menuItems: (record: SpecSummary) => MenuProps['items'];
   onClearError: (record: SpecSummary) => void;
-  /** 归档视图（add-spec-archive）：与 specMenuItems 同门——归档 SPEC 不可重排优先级 */
-  archivedOnly?: boolean;
 }
 
 // 移动端（<768px）卡片形态（add-spec-list-mobile-style 重绘，UI 真相源
@@ -798,10 +799,6 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
           // 共用 phaseProgressOf 单源，两侧口径一致
           const prog = phaseProgressOf(record);
           const terminal = PRIORITY_TERMINAL.has(record.status || '');
-          // 阶段名与桌面列同款（gen 出题 / gates 门禁 / verify 验证 / 其余实现）
-          const phaseLabel = prog.gen ? '出题' : prog.isGates ? '门禁' : prog.isVerify ? '验证' : '实现';
-          // gen 出题分支计数不带「出题」前缀（阶段名已承载，与桌面列同款）
-          const counterText = prog.gen ? `${prog.gen.done}/${prog.gen.total}` : prog.counter;
           // 草稿 / impl 阶段无任务清单 → 口径不可得显「—」（D3：0 与口径不可得
           // 分离，MUST NOT 显示假 0）；verify/gates 阶段 0/0 是真实阶段口径照常显示
           const noTasks = !prog.isVerify && !prog.isGates && (record.task_total ?? 0) === 0;
@@ -903,9 +900,9 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
               ) : (
                 <div className="spec-card-progress" style={{ marginTop: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{phaseLabel}</span>
+                    <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{prog.label}</span>
                     <span className="ov-num" data-testid="spec-card-progress-count" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>
-                      {counterText} · {progressText(prog.percent)}
+                      {prog.counter} · {progressText(prog.percent)}
                     </span>
                   </div>
                   <div
@@ -1216,7 +1213,7 @@ function DevTab({
       render: (_: unknown, record: SpecSummary) => {
         // 阶段感知推导单点在 phaseProgressOf（code-review item e1f8a359480d）：
         // 与移动端卡片、排序键共用，本列不再各自内联 gen/计数分支。
-        const { percent: p, counter, isVerify, isGates, gen } = phaseProgressOf(record);
+        const { percent: p, label, counter, isVerify, isGates, gen } = phaseProgressOf(record);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
@@ -1231,16 +1228,14 @@ function DevTab({
         // 提供不依赖任务工具的存活线索，仅在无更细粒度线索（current）时兜底显示。
         const runActive = !isVerify && !runCurrent && !!record.run_activity?.active;
         // v2 台账形态（2026-11-06 用户指令）：阶段名 + 「计数 · 百分比」同行在
-        // 进度条上方（镜像 v2 PhaseProgressCell 版式）；gen 出题分支计数不带
-        // 「出题」前缀（阶段名已承载，避免双写——移动卡片 counter 保持原样）。
+        // 进度条上方（镜像 v2 PhaseProgressCell 版式）；阶段名 label 与 gen 出题
+        // 分支去前缀计数均来自 phaseProgressOf 单源（2d64a13ea499，移动卡片同源）。
         // 配色不走 v2 ramp：进度条阶段 ramp（progressPhase.ts）是 DESIGN.md 登记
         // 的数据编码色豁免，底轨随阶段同 ramp 的「空条可辨」语义优先保留。
-        const phaseLabel = gen ? '出题' : isGates ? '门禁' : isVerify ? '验证' : '实现';
-        const counterText = gen ? `${gen.done}/${gen.total}` : counter;
         return (
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-              <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{phaseLabel}</span>
+              <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{label}</span>
               {/* add-quality-gates-visibility：gates 阶段计数=门禁完成度，
                   run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
                   落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系。
@@ -1248,7 +1243,7 @@ function DevTab({
                   2026-11-06 用户指令：计数与左侧阶段名同款（12px 三阶灰常规
                   字重），不走 v2 的深色半粗形态 */}
               <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }} data-testid="task-progress-cell">
-                {counterText} ·{' '}
+                {counter} ·{' '}
                 {/* 完成态文案与移动端卡片同口径（code-review item cf0a2e1103b9）：
                     progress >= 100 显示「已完成」，两形态不再分叉 */}
                 {progressText(p)}
