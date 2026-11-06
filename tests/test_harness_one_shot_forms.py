@@ -164,10 +164,14 @@ class TestDistillForm:
             seen["argv"] = cmd
             seen["cwd"] = cwd
             seen["env"] = env
-            return _OutProc()
+            return _OutProc(stdout="蒸馏工作总结")
 
-        ok, err = DistillManager(spawn=spawn)._spawn_and_wait(tmp_path, "提示词")
+        ok, err, stdout = DistillManager(spawn=spawn)._spawn_and_wait(
+            tmp_path, "提示词"
+        )
         assert (ok, err) == (True, None)
+        # add-distill-run-work-summary 1.1：成功支第三位带回 stdout 原文
+        assert stdout == "蒸馏工作总结"
         assert seen["argv"] == [
             "claude", "-p", "--permission-mode", "bypassPermissions",
         ]
@@ -180,9 +184,11 @@ class TestDistillForm:
         def spawn(cmd, cwd, env=None):
             return _OutProc(stderr="boom-tail", returncode=2)
 
-        ok, err = DistillManager(spawn=spawn)._spawn_and_wait(tmp_path, "提示词")
+        ok, err, stdout = DistillManager(spawn=spawn)._spawn_and_wait(tmp_path, "提示词")
         assert ok is False
         assert "exit=2" in err and "boom-tail" in err
+        # add-distill-run-work-summary 1.1：失败支第三位恒空（不携带 stdout）
+        assert not stdout
 
 
 # ── 知识回填形态 ────────────────────────────────────────
