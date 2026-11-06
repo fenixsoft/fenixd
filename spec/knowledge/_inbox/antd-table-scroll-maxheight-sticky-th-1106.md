@@ -11,6 +11,21 @@
    `systemctl restart dsh-web` → 日志尾部取新 token URL 重登。srcContract
    测试钉 `min(182px, 46vh)` 精确值。首发言行被误读为 fenixd 项目台账表格
    （表格限高方案已全额撤销）。
+   **滚动条样式（同日追加指令）**：`PROJECT_ROW_CSS` 注入
+   `[data-testid="fenix-projects-list"]::-webkit-scrollbar-*` 规则——宽 6px、
+   thumb 官方变量色（border:0 + background-image:none 覆全局 thumb 的
+   border/渐变包装，6px 滑块经不起 2px 边框蚕食）、track 透明、button
+   display:none（去 Chrome 默认上下箭头）。testid 三路径共用（宽态分区/
+   浮层降级/窄态 rail），作用域外滚动条零波及（实测官方 Workspaces 列表
+   仍 10px）。inline gutter 预留（paddingRight）同步 6px 同值同改。
+   headless 截图不渲染滚动条本体，验证靠占宽几何
+   （offsetWidth−clientWidth=6）+ 规则注入。
+   **官方 Workspaces 列表同款（同日三段指令）**：宿主列表类名是 CSS modules
+   哈希（`bhn1Oq_list`），哈希前缀随构建变、`_regionArea`/`_list` 语义段源自
+   源文件类名稳定——选择器 `[class*="_regionArea"] [class*="_list"]` 属性
+   包含匹配；`*="_list"` 会并命中 `_listArea` 外层容器（overflow visible
+   规则闲置无害，真正的滚动列表 `bhn1Oq_list` 命中生效）。规则逐键同项目
+   列表款（6px/无箭头/track 透明/官方变量 thumb）。
 2. **fenixd dashboard 独立访问侧栏（8787，embed 模式不渲染故与 3080 无关）**——
    `global.less` `li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline
    { max-height: 200px; overflow-y: auto; }`（单项布局占位 40=36+4 行距，
