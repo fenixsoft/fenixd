@@ -1,6 +1,6 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
-import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
@@ -62,6 +62,16 @@ const screenshotUrl = (project: string, spec: string, file: string) =>
 // SPEC_DOC_REMARK_PLUGINS 先例）：验证结论/任务背景描述两处 Markdown 共用同一
 // 数组标识，避免 SSE 驱动的高频重渲染每帧重建数组触发整篇重新 parse
 const DETAIL_REMARK_PLUGINS = [remarkGfm];
+
+// ── Bento 镜像色值（2026-11-06 用户指令：顶栈卡片对齐 v2 磁贴 + 任务清单改 v2
+// 行渲染）。源 = pages/v2/theme.tsx，例外域配色单源不得跨域 import，镜像纪律同
+// overview ProjectTable / projects list（OV_* 两处同改）；卡片皮肤与勾选块样式
+// 镜像在 global.less `.spec-bento-card` / `.ov-task-check` / `.ov-mono`（圆角
+// 固定 12px，DESIGN.md 通用条款）。
+const OV_HAIRLINE = '#eef2f7'; // = V2_HAIRLINE
+const OV_LINK = '#4176e6'; // = V2_LINK
+const OV_TEXT_SECONDARY = '#475569'; // = V2_TEXT_SECONDARY
+const OV_TEXT_TERTIARY = '#64748b'; // = V2_TEXT_TERTIARY
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -1456,9 +1466,16 @@ export default function SpecDetailPage() {
   ];
 
   return (
-    <><PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-      {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本 */}
+    // spec-detail-page 标记类：页级 chrome 作用域挂点（overview-page 同族模式），
+    // global.less 借 :has() 给内容区顶呼吸带垫 16px（2026-11-06 用户指令：
+    // 首 bento 卡上方留出间距，对齐 overview；数值登记 DESIGN.md 一般域条款）
+    <div className="spec-detail-page">
+    <PageTitleBar title={richTitle} back={backToList} /><PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
+      {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本。
+          Bento 皮肤（2026-11-06 用户指令：顶栈卡片对齐 v2 磁贴，内容不变）走
+          .spec-bento-card 覆写类（global.less 单源） */}
       <Card
+        className="spec-bento-card"
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>项目信息</span>
@@ -1697,8 +1714,9 @@ export default function SpecDetailPage() {
         </div>
       )}
 
-      {/* 任务清单（overview 任务进度同款控件 + 分组勾选） */}
-      <Card title="任务清单" size="small" style={{ marginBottom: 16 }}>
+      {/* 任务清单（overview 任务进度同款控件 + 分组勾选；列表行渲染 2026-11-06
+          用户指令改 v2 形态——蓝底勾选块/空心圆 + mono 编号 + 发丝线行分隔） */}
+      <Card title="任务清单" size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
         {/* run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照
             落后于 run 实际推进时叠加显示，不再静止 0/N。run_progress/run_activity
             本就不依赖 tasks.md 编号与任务工具（code-review item bc1afc221833），
@@ -1761,23 +1779,34 @@ export default function SpecDetailPage() {
                 key={`task-group-${group.title}-${idx}`}
                 style={{ marginBottom: idx === taskGroups.length - 1 ? 0 : 12 }}
               >
-                <Typography.Text strong style={{ display: 'block', marginBottom: 10 }}>
-                  {group.title} ({group.done}/{group.total})
-                </Typography.Text>
+                {/* v2 列表渲染（2026-11-06 用户指令）：分组行=三阶灰摘要
+                    「标题 · done/total」（镜像 v2 TaskCard 分组行） */}
+                <div className="ov-num" style={{ fontSize: 12, color: OV_TEXT_TERTIARY, marginBottom: 2 }}>
+                  {group.title} · {group.done}/{group.total}
+                </div>
                 {group.tasks.map((task, taskIdx) => (
+                  // 行渲染镜像 v2 TaskCard：完成=蓝底勾选块、未完成=空心圆，
+                  // mono 编号（链接蓝）+ mono 描述，发丝线行分隔（.ov-task-check/
+                  // .ov-mono 样式镜像在 global.less）
                   <div
                     key={`task-${task.id || task.desc}-${taskIdx}`}
-                    style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}
+                    style={{ display: 'flex', gap: 10, padding: '7px 0', borderBottom: `1px solid ${OV_HAIRLINE}` }}
                   >
-                    <Checkbox checked={task.done} disabled style={{ marginRight: 8 }} />
-                    <Typography.Text
-                      style={{
-                        color: task.done ? undefined : token.colorTextQuaternary,
-                      }}
-                    >
-                      <code style={{ marginRight: 6 }}>{task.id}</code>
-                      {task.desc}
-                    </Typography.Text>
+                    {task.done ? (
+                      <span className="ov-task-check" aria-hidden>
+                        <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
+                          <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    ) : (
+                      // 未完成=空心方框（2026-11-06 用户指令「未勾选保持方形」，
+                      // 与勾选块同几何；样式 .ov-task-empty 在 global.less）
+                      <span className="ov-task-empty" aria-hidden />
+                    )}
+                    <div style={{ minWidth: 0, fontSize: 13 }}>
+                      <span className="ov-mono" style={{ color: OV_LINK, fontWeight: 600, marginRight: 8 }}>{task.id}</span>
+                      <span className="ov-mono" style={{ fontSize: 12.5, color: OV_TEXT_SECONDARY }}>{task.desc}</span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1800,7 +1829,7 @@ export default function SpecDetailPage() {
           drafted/ready 且无门禁文件不渲染本 Card（早期 spec 无门禁可言）；
           其余状态文件不可见时显示空态兜底 */}
       {shouldRenderGatesCard(detail?.status, !!detail?.quality_gates?.exists) ? (
-        <Card title="质量门禁" size="small" style={{ marginBottom: 16 }} data-testid="quality-gates-card">
+        <Card title="质量门禁" size="small" style={{ marginBottom: 16 }} className="spec-bento-card" data-testid="quality-gates-card">
           {detail?.quality_gates?.exists ? (
             <>
               <ProgressBarTile
@@ -1813,25 +1842,36 @@ export default function SpecDetailPage() {
                 </Typography.Text>
               ) : null}
               {normalizeGateItems(detail.quality_gates.items).map((item, idx) => (
+                // 行渲染对齐任务清单 v2 形态（2026-11-06 用户指令）：完成=蓝底
+                // 勾选块、未完成=空心圆，发丝线行分隔；状态语义保留——failed 红
+                // 字 / pending·unknown 灰字（gateTextColor 数据语义色不随视觉
+                // 换轨），后缀与 detail 文案原样
                 <div
                   key={item.id || idx}
                   data-testid="quality-gate-item"
-                  style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}
+                  style={{ display: 'flex', gap: 10, padding: '7px 0', borderBottom: `1px solid ${OV_HAIRLINE}` }}
                 >
-                  <Checkbox checked={gateChecked(item)} disabled style={{ marginRight: 8 }} />
-                  <Typography.Text
-                    style={{
-                      color: gateTextColor(item),
-                    }}
-                  >
-                    {item.desc}
-                    {gateSuffix(item)}
-                  </Typography.Text>
-                  {gateDetailText(item) ? (
-                    <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                      {gateDetailText(item)}
-                    </Typography.Text>
-                  ) : null}
+                  {gateChecked(item) ? (
+                    <span className="ov-task-check" aria-hidden>
+                      <svg width={9} height={9} viewBox="0 0 10 10" fill="none">
+                        <path d="M1.5 5.2 4 7.6 8.5 2.6" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </span>
+                  ) : (
+                    // 未完成=空心方框（同任务清单，2026-11-06 用户指令）
+                    <span className="ov-task-empty" aria-hidden />
+                  )}
+                  <div style={{ minWidth: 0, fontSize: 13 }}>
+                    <span style={{ color: gateTextColor(item) }}>
+                      {item.desc}
+                      {gateSuffix(item)}
+                    </span>
+                    {gateDetailText(item) ? (
+                      <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        {gateDetailText(item)}
+                      </Typography.Text>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </>
@@ -1842,7 +1882,7 @@ export default function SpecDetailPage() {
       ) : null}
 
       {/* 验证进度（overview 任务进度同款控件 + 当前步骤） */}
-      <Card title="验证进度" size="small" style={{ marginBottom: 16 }}>
+      <Card title="验证进度" size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
         {detail?.verify_progress?.exists ? (
           <>
             {detail.verify_progress.error && (
@@ -1865,7 +1905,7 @@ export default function SpecDetailPage() {
       </Card>
 
       {/* 验证结论 */}
-      <Card title="验证结论" size="small" style={{ marginBottom: 16 }}>
+      <Card title="验证结论" size="small" style={{ marginBottom: 16 }} className="spec-bento-card">
         {detail?.verdict?.exists ? (
           <VerdictPanel verdict={detail.verdict} />
         ) : (
@@ -1900,7 +1940,8 @@ export default function SpecDetailPage() {
         )}
       </Card>
 
-      {/* 页签区 */}
+      {/* 页签区（2026-11-06 用户指令：tab 菜单不入 bento 卡，避免卡套卡；
+          时间轴节点各自成磁贴，见 components/SpecTimeline cardBox） */}
       <Card className="spec-detail-card">
         <Tabs items={tabItems} />
       </Card>
@@ -1926,6 +1967,7 @@ export default function SpecDetailPage() {
           setCancelNotices((prev) => ({ ...prev, [rid]: '取消请求已受理' }))
         }
       />
-    </PageContainer></>
+    </PageContainer>
+    </div>
   );
 }

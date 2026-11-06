@@ -30,7 +30,8 @@ import { fmtDuration } from '@/utils/duration';
 import { compactWan } from '@/utils/format';
 import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
 import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
-import { V2Page, V2Pill, V2StatusPill, V2TitleBand } from './shared';
+import { V2Page, V2Pill, V2StatusPill } from './shared';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import {
   useV2IsMobile,
   V2_BG,
@@ -814,37 +815,50 @@ export default function V2SpecDetailPage() {
     </div>
   );
 
-  return (
-    <V2Page>
-      <V2TitleBand
-        title={
-          <span
-            className="v2-ellipsis"
-            style={{
-              fontSize: mobile ? 17 : 20,
-              fontWeight: 700,
-              letterSpacing: -0.3,
-              lineHeight: '28px',
-            }}
-          >
-            {spec}
-          </span>
-        }
-        onBack={() => navigate(`/v2/projects/${encodeURIComponent(name)}`)}
-        backTitle="返回项目"
-        subtitle={mobile ? undefined : detail?.branch || undefined}
-        right={rightActions}
+  // 富标题（2026-11-06 用户指令「v2 页标题收编全站统一标题栏控件」，同现产
+  // SPEC 详情页 D6 整体迁移习语）：SPEC 名 + 模式/状态胶囊作为 ReactNode 整体
+  // 传入 PageTitleBar title 槽位，控件对富节点透明不拆解；原 V2TitleBand
+  // children（胶囊行）并入本节点随迁。移动端 17px 收纳排布保留。
+  const richTitle = (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+      <span
+        className="v2-ellipsis"
+        style={{
+          fontSize: mobile ? 17 : 20,
+          fontWeight: 700,
+          letterSpacing: -0.3,
+          lineHeight: '28px',
+        }}
       >
-        {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
-        {detail ? <V2StatusPill status={detail.status} /> : null}
-        {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
-        {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
-      </V2TitleBand>
+        {spec}
+      </span>
+      {modeLabel ? <V2Pill tone="muted">{modeLabel}</V2Pill> : null}
+      {detail ? <V2StatusPill status={detail.status} /> : null}
+      {frozen ? <V2Pill tone="warning">已冻结</V2Pill> : null}
+      {cancelledHold ? <V2Pill tone="warning">取消保持</V2Pill> : null}
+    </span>
+  );
+
+  return (
+    // 页标题经 V2Page titleBar 槽位落统一标题栏（standalone 与移动端均由顶栏
+    // 承载，embed 行壳位满宽贴顶）；返回箭头/rightActions（状态转移/更多操作，
+    // 移动端豁免）随迁 back / filters 槽位。副标题保留页面侧条件（移动端不渲染，
+    // 与统一控件「副标题移动端隐藏」双保险）。
+    <V2Page
+      titleBar={
+        <PageTitleBar
+          title={richTitle}
+          back={() => navigate(`/v2/projects/${encodeURIComponent(name)}`)}
+          subtitle={mobile ? undefined : detail?.branch || undefined}
+          filters={rightActions}
+        />
+      }
+    >
       {error ? (
-        <Alert type="error" showIcon style={{ marginTop: 16 }} message="SPEC 详情加载失败" description={error} />
+        <Alert type="error" showIcon message="SPEC 详情加载失败" description={error} />
       ) : null}
       {loading && !detail ? (
-        <div className="v2-bento" style={{ marginTop: 18, padding: 48, textAlign: 'center' }}>
+        <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
           <Spin size="large" />
         </div>
       ) : detail ? (
