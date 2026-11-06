@@ -110,3 +110,4 @@
 ## [2026-11-06 18:17 UTC+8] fold | push-restart-unit-absent-tmux-stale-1106.md 折叠入库
 ## [2026-11-06 18:24 UTC+8] distill | add-spec-chinese-title（第 1 轮，自动提交落库，折叠入库 3 条）
 ## [2026-11-06 18:45 UTC+8] distill | add-spec-subtitle-and-row-click（第 1 轮，自动提交落库）
+## [2026-11-06 20:19 UTC+8] distill | add-spec-title-promotion-gate（第 1 轮，自动提交落库）

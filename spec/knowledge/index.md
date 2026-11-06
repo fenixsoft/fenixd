@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-06 18:42 UTC+8
+> 最后更新：2026-11-06 20:17 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -12,7 +12,7 @@
 | [project-management](domains/project-management/_domain.md) | 项目的发现接入、描述信息与生命周期控制（daemon 启停 systemctl 双轨/软删除）。含项目初始化骨架播种与针对 SPEC 的冻结/删除停止语义。 | 8 | 2026-11-05 04:11 |
 | [planning-generation](domains/planning-generation/_domain.md) | SPEC 的原生生成链路：从需求澄清到 proposal/design/tasks 成文。planner 出题阶段的产物硬门、契约情报与性能治理同属此域。 | 6 | 2026-10-03 04:59 |
 | [ui-prototyping](domains/ui-prototyping/_domain.md) | 界面原型确认环：SPEC 起草阶段用「真组件、假数据」的高保真原型对齐界面意图，浏览器批注迭代至批准入库。批准后以双通道契约约束后续 AI 实现与评审（原型纯视觉参照、无约束力）。 | 3 | 2026-11-02 11:32 |
-| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-06 18:17 |
+| [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升（含中文标题晋升硬门）/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-06 20:15 |
 | [dispatch-scheduling](domains/dispatch-scheduling/_domain.md) | SPEC 并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复。即时唤醒信号与事件投递完整性、秒挂冷却派发门控也在此域。 | 9 | 2026-10-30 23:11 |
 | [implementer-lane](domains/implementer-lane/_domain.md) | 实现车道的任务协议与交付物门禁：tasks.md 进度同步/回写、验收偏差申报、结果文件契约与自检、回归委托。交付物声明与归属仲裁（声明分诊/争议治理/搬迁回写）、WIP 检查点与任务产物归属也在此域。 | 28 | 2026-11-04 17:07 |
 | [verify-pipeline](domains/verify-pipeline/_domain.md) | 验证管线全链：runner 引擎与场景生命周期、验证环境预检与依赖供给、serve 范围矩阵与实例回收。场景冻结/打捞/schema 单源、多形态场景模型（web/cli/api）与资源互斥、视觉基线与并行回退、验证报告门与证据分级留存也在此域。 | 59 | 2026-11-04 17:07 |
@@ -27,7 +27,7 @@
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-06 18:13 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题、SPEC 列表整行点击进详情与 SPEC 详情标题栏中文副标题。 | 49 | 2026-11-06 18:42 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题、SPEC 列表整行点击进详情与 SPEC 详情标题栏中文副标题。 | 49 | 2026-11-06 20:17 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（unit 承载接管豁免与承载形态双轨重启协议）、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-06 18:13 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 7 | 2026-11-04 20:48 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
