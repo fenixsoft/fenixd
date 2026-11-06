@@ -53,14 +53,27 @@ function parseArgs() {
     detect: null,
   };
 
+  // --timeout 取值非纯数字时的原始值（code-review item 5cf06a69bf55），null 表示无此情况
+  let invalidTimeoutValue = null;
+
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--dist-path':
         opts.distPath = args[++i];
         break;
-      case '--timeout':
-        opts.timeout = parseInt(args[++i], 10);
+      case '--timeout': {
+        const raw = args[++i];
+        if (raw !== undefined && !/^\d+$/.test(raw)) {
+          // 取值非纯数字（如 "60s"、"60000ms"）时 parseInt 会按前缀解析出 60、60000
+          // 并通过正数校验，调用方口径被静默改变（--timeout 60s 实际只等 60 毫秒），
+          // 故记录原始值，统一走下方 invalidReason 通道报错退出（code-review item 5cf06a69bf55）
+          invalidTimeoutValue = raw;
+        } else {
+          // 缺值（undefined）→ parseInt 得 NaN，落入下方「--timeout 需要正数参数」既有校验
+          opts.timeout = parseInt(raw, 10);
+        }
         break;
+      }
       case '--debug':
         opts.debug = true;
         break;
@@ -92,7 +105,10 @@ function parseArgs() {
   // 排障，--output 更会在 cwd 落出错误命名的结果文件，故以 -- 开头的取值一并报错（code-review item 6075c3ad88f7）
   const usage = '用法: node launch-chrome-extension.js [--dist-path <path>] [--timeout <ms>] [--debug] [--headless] [--output <path>] [--detect <spec-dir>]';
   let invalidReason = null;
-  if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
+  // --timeout 取值带单位后缀等非纯数字形态（code-review item 5cf06a69bf55）优先报错：
+  // 文案明示须为纯数字毫秒数，避免 parseInt 前缀解析静默改变调用方口径
+  if (invalidTimeoutValue !== null) invalidReason = `--timeout 需要纯数字毫秒数（如 60000，不支持 60s/60000ms 等带单位后缀），得到: "${invalidTimeoutValue}"`;
+  else if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
   // startsWith 前 String() 归一：--output/--detect 未传时默认值为 null，
   // 直接对 null 调 startsWith 会在任何未带这两个选项的调用下 TypeError 崩溃
   if (opts.distPath === undefined || opts.distPath === '' || String(opts.distPath).startsWith('--')) invalidReason = '--dist-path 缺少取值';

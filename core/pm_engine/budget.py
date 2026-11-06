@@ -319,7 +319,7 @@ class ImplBudget:
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算豁免被拒（非基础设施性死亡）: '{spec_name}' reason={reason}, "
-                f"run_reason={run_reason[:80] if run_reason else ''}",
+                f"run_reason={str(run_reason)[:80] if run_reason else ''}",
             )
             return "refused"
         # 容错（item 3b6448c3a22b）：记账失败记 WARNING 返回、不抛穿（姿态与

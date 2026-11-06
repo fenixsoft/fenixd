@@ -141,7 +141,7 @@ def build_import_graph(tests_dir: str) -> Dict[str, Set[str]]:
 
     # rglob 递归覆盖嵌套测试目录（如 tests/v2/、tests/fixtures/…/tests/）。
     for py_file in sorted(Path(tests_dir).rglob("*.py")):
-        if py_file.name.startswith("."):
+        if any(part.startswith(".") for part in py_file.relative_to(Path(tests_dir)).parts):
             continue
 
         rel_module = ".".join(py_file.relative_to(Path(tests_dir)).with_suffix("").parts)

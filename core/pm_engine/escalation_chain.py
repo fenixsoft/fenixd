@@ -53,6 +53,7 @@ import json
 import queue
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -694,7 +695,8 @@ class EscalationChain:
     def _process(self, item: dict):
         spec = str(item.get("spec") or "")
         sig = str(item.get("signature") or "")
-        chain_id = f"chain-{int(time.time() * 1000)}"
+        # uuid 短后缀防亚毫秒连写碰撞（同毫秒多链/多台账事件同 id 互覆）
+        chain_id = f"chain-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         item["chain_id"] = chain_id
         quota_cfg = self.config()
         window_days = int(quota_cfg.get("reset_window_days") or 7)
@@ -732,16 +734,25 @@ class EscalationChain:
             # 用户定调 2026-11-05 后冻结件不再走此出口（改道 Arbiter 相，
             # frozen-arbiter 直落下方 Arbiter 级）。
             yield_to = str(item.pop("defer_yield_to", "") or "")
-            self._quota.defer_in_flight(
+            deferred_ok = self._quota.defer_in_flight(
                 chain_id, sig, spec,
                 yield_to=yield_to,
                 item_signal=self._deferred_signal_snapshot(item),
             )
-            self._log(
-                "info",
-                f"处置链互斥让行留痕（deferred，等被让行 run 终态回喂）: "
-                f"sig={sig} yield_to={yield_to}",
-            )
+            if deferred_ok:
+                self._log(
+                    "info",
+                    f"处置链互斥让行留痕（deferred，等被让行 run 终态回喂）: "
+                    f"sig={sig} yield_to={yield_to}",
+                )
+            else:
+                # 在办条目已被并发清除（defer_in_flight=False 无副作用）：
+                # deferred 留痕未落盘，改打 warning 如实告警，不再宣称留痕成功
+                self._log(
+                    "warning",
+                    f"处置链互斥让行留痕未落盘（在办条目已被并发清除，"
+                    f"重派锚点缺失）: sig={sig} yield_to={yield_to}",
+                )
             return
         self._quota.clear_in_flight(chain_id)
         if phase == "closed":
@@ -1469,6 +1480,7 @@ class EscalationChain:
                 kind="chain-closed",
                 action_or_upgrade=(
                     f"Arbiter 拍板成功链闭环（run={trigger.get('_chain_run_id')}）"
+                    + ("，冻结态显式解冻后闭环" if side_unfrozen else "")
                     + (f"，收口上升件 {closed} 条" if closed else "")
                 ),
             )
@@ -1541,7 +1553,18 @@ class EscalationChain:
                 chain_context=chain_context,
             )
         except Exception as e:
+            # 台账留痕纪律（对齐 _fallback_write_escalation）：链终点写入失败
+            # 不停留在滚动日志——落 chain-escalated 台账事件注明未落人工队列
             self._log("error", f"链终点上升件写入异常: {e}")
+            self._write_chain_event(
+                item,
+                kind="chain-escalated",
+                action_or_upgrade=(
+                    f"链终点上升件写入异常（family 咽喉，未落人工队列）: "
+                    f"{reason[:300]}"
+                ),
+                extra={"endpoint_kind": endpoint_kind, "error": str(e)[:400]},
+            )
             return
         self._write_chain_event(
             item,
@@ -1689,7 +1712,7 @@ class EscalationChain:
             from core.pm_engine.arbiter import arbiter_ledger_path
 
             entry = {
-                "id": f"chain-ev-{int(time.time() * 1000)}",
+                "id": f"chain-ev-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}",
                 "created": _utcnow_iso(),
                 "kind": kind,
                 "spec": item.get("spec"),

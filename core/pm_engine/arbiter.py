@@ -169,7 +169,16 @@ def load_arbiter_ledger(project_root) -> List[dict]:
     except (OSError, ValueError):
         return []
     out: List[dict] = []
-    for line in text.splitlines():
+    # 9744fdf1cab7：按 \n 硬分割而非 splitlines()——写侧 append_run_line 的
+    # json.dumps(ensure_ascii=False) 不转义 U+2028/U+2029，splitlines() 会按
+    # 其边界拆行，含此类字符的台账条目（scene_snapshot 等最长 4000 字符的
+    # 报告文本）裂成两个半行 JSON、双双解析失败被跳过——_ledger_sigs 读丢
+    # dead-man/处置条目即跨重启配额豁免与 dead-man 永久例外失效、同签名被
+    # 再次自主派发。落盘单行内唯一的真实换行即写侧追加的 \n，json 对 \r 等
+    # 控制符恒转义；行尾 .strip() 兜住 \r\n。与
+    # maintenance_ledger.list_maintenance_entries 读侧同款修复（code-review
+    # item 34ace64df65c）。
+    for line in text.split("\n"):
         line = line.strip()
         if not line:
             continue
@@ -366,6 +375,7 @@ class ArbiterLane:
         quota = self._chain_quota()
         rulings = quota.arbiter_rulings(sig) if quota is not None else 0
         rulings_cap = self._arbiter_rulings_quota()
+        recurrence_payload: Optional[dict] = None
         with self._lock:
             if sig in self._active:
                 # 同签名在飞/排队：只绑 alert（原位挂靠目标），不重复派发
@@ -388,45 +398,58 @@ class ArbiterLane:
                     f"arbiter 复现配额耗尽（{rulings}/{rulings_cap}）或 dead-man "
                     f"例外，跳过自主处置直接升级: sig={sig}",
                 )
-                self._record_recurrence_escalation(
-                    spec=spec,
-                    signal_type=signal_type,
-                    sig=sig,
-                    severity=severity,
-                    description=description,
-                    evidence=evidence,
-                    alert_id=alert_id,
-                    rulings_used=rulings,
-                    rulings_cap=rulings_cap,
-                )
-                return "recurrence-escalated"
-            trigger = {
-                "spec": spec,
-                "signal_type": signal_type,
-                "severity": severity,
-                "description": description,
-                "evidence": evidence,
-                "recommended_action": recommended_action,
-                "alert_id": alert_id,
-                "signature": sig,
-                "source": source,
-                "enqueued_at": _utcnow_iso(),
-                "budget": {
-                    "wallclock_s": cfg.get("budget_wallclock_s"),
-                    "tokens": cfg.get("budget_tokens"),
-                },
-            }
-            try:
-                self._queue.put_nowait(trigger)
-            except queue.Full:
-                # 显式报错（不得吞 conflict 报假成功）：调用方按失败处理，
-                # 告警走既有 narrative/人工路径
-                raise RuntimeError(
-                    f"arbiter 单飞队列已满（maxsize={ARBITER_QUEUE_MAX}），"
-                    f"触发登记失败 spec={spec} signal={signal_type}"
-                )
-            self._active.add(sig)
-        self._ensure_worker()
+                # 锁内只暂存升级载荷（2cb4626ec8a3）：_record_recurrence_
+                # escalation 的台账 append_run_line 与告警原位升级（AdminStore
+                # + narrative sidecar）均为慢盘 IO，留在持锁关键区会拖慢并发
+                # submit_trigger 与 snapshot（后者锁内经 self.enabled 读配置
+                # 文件）。该方法不读锁内状态、输入全为传参，锁外执行不引入
+                # 重入竞态。
+                recurrence_payload = {
+                    "spec": spec,
+                    "signal_type": signal_type,
+                    "sig": sig,
+                    "severity": severity,
+                    "description": description,
+                    "evidence": evidence,
+                    "alert_id": alert_id,
+                    "rulings_used": rulings,
+                    "rulings_cap": rulings_cap,
+                }
+            else:
+                # worker 预热先于入队与 dedup 占位（c0f79d6b865f）：线程创建
+                # /start 失败时队列未进、_active 未占，异常上抛即干净回滚，
+                # 不留「队列条目无人消费 + 签名永久占用 dedup 集合」的失明
+                # 残留（RLock：锁内调 _ensure_worker 同线程重入安全）。
+                self._ensure_worker()
+                trigger = {
+                    "spec": spec,
+                    "signal_type": signal_type,
+                    "severity": severity,
+                    "description": description,
+                    "evidence": evidence,
+                    "recommended_action": recommended_action,
+                    "alert_id": alert_id,
+                    "signature": sig,
+                    "source": source,
+                    "enqueued_at": _utcnow_iso(),
+                    "budget": {
+                        "wallclock_s": cfg.get("budget_wallclock_s"),
+                        "tokens": cfg.get("budget_tokens"),
+                    },
+                }
+                try:
+                    self._queue.put_nowait(trigger)
+                except queue.Full:
+                    # 显式报错（不得吞 conflict 报假成功）：调用方按失败处理，
+                    # 告警走既有 narrative/人工路径
+                    raise RuntimeError(
+                        f"arbiter 单飞队列已满（maxsize={ARBITER_QUEUE_MAX}），"
+                        f"触发登记失败 spec={spec} signal={signal_type}"
+                    )
+                self._active.add(sig)
+        if recurrence_payload is not None:
+            self._record_recurrence_escalation(**recurrence_payload)
+            return "recurrence-escalated"
         self._log(
             "info",
             f"arbiter 触发入队（单飞串行）: sig={sig} alert={alert_id} source={source}",

@@ -205,8 +205,9 @@ def _superseded_name_peers(spec_name: str, scan: dict) -> list:
 
 
 # evo-add-worktree-acquire-backoff 1.3：新验证流程降级累计计数器。
-# MUST 为模块级——PMEngine 按 run 重建实例，实例级计数恒为 1、无法统计
-# 降级频率；WARNING 附「第 N 次降级」供日志保留窗内统计降级频率。
+# 为模块级——PMEngine 随 daemon 进程单例构建（fenixd.py daemon 构造器中
+# 构建一次、贯穿进程生命周期），模块级计数跨整个 daemon 生命周期累计；
+# WARNING 附「第 N 次降级」供日志保留窗内统计降级频率。
 # 递增锁（code-review item 98e2a2803b54）：多 verifier worker 线程可并发
 # 进入降级分支，`+= 1` 读-改-写非原子会丢增量——加锁保证序号不重不跳。
 _NEW_VERIFIER_FALLBACK_COUNT = 0
@@ -3007,8 +3008,8 @@ class PMEngine:
         """legacy 降级前置门（fix-worktree-lock-release-degrade-gate 3.1/D4）。
 
         spec 级连续降级计数（``_legacy_degrade_streak``，持久化于 spec STATE
-        条目——实例级/模块级计数已被 :201-205 注释证伪，PMEngine 按 run 重建
-        实例、模块级跨 spec 串扰）：
+        条目——实例级/模块级计数均跨 spec 混计、无法按 spec 统计；PMEngine
+        随 daemon 进程单例构建，模块级累计跨整个 daemon 生命周期）：
         - 首次（streak == 0）：放行 + 计数 +1 + 首次原因持久化，返回 True；
         - 连续第 2 次（streak >= 1）：不再派发 legacy verifier，SPEC 转
           blocked + human-escalation-alert（文案拼两次降级原因链与建议动作），
@@ -3171,8 +3172,8 @@ class PMEngine:
             # 熔断收口返回，不产生第三轮静默降级。
             if not self._legacy_degrade_gate(spec_name, degrade_error):
                 return
-            # evo-add-worktree-acquire-backoff 1.3：模块级累计计数（实例按
-            # run 重建，实例级计数恒为 1），WARNING 附「第 N 次降级」。
+            # evo-add-worktree-acquire-backoff 1.3：模块级累计计数（跨整个
+            # daemon 生命周期累计），WARNING 附「第 N 次降级」。
             # 递增持锁并取快照（code-review item 98e2a2803b54）：并发降级时
             # 读-改-写非原子，WARNING 取数与递增之间也可被其他线程插入。
             global _NEW_VERIFIER_FALLBACK_COUNT

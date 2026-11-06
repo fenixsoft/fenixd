@@ -1142,16 +1142,18 @@ class FamilyGovernor:
         # 对齐 dispatch/queue._get_spec_priority 的容错口径，非法值回退 5。
         # bool 显式排除（code-review item 5fad69785324，对齐 _family_gate_int
         # 的归一口径）：bool 是 int 子类，误写 true 会被当作 1 参与子 fix
-        # 优先级计算（parent_prio+1=2），回退缺省 5 并 WARNING 留痕。
+        # 优先级计算（parent_prio+1=2），回退缺省 5。所有非法值（bool/float/
+        # str/None）统一 WARNING 留痕（code-review item 637491225c56，对齐
+        # _family_gate_int 的归一口径）：priority 被外部改写为非法值后子 fix
+        # 优先级从 parent+1 变为固定 5，无留痕则事后排障无线索。
         if isinstance(raw_prio, int) and not isinstance(raw_prio, bool):
             parent_prio = raw_prio
         else:
-            if isinstance(raw_prio, bool):
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"STATE priority 非法（应为整数，布尔不合法）: "
-                    f"{raw_prio!r}，回退缺省 5",
-                )
+            self._pm.logger.warning(
+                "pm_engine",
+                f"STATE priority 非法（应为整数，布尔/小数/非数字均不合法）: "
+                f"{raw_prio!r}，回退缺省 5",
+            )
             parent_prio = 5
 
         # 确定本轮 bug 应使用的 fix SPEC 名称
