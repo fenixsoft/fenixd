@@ -2313,7 +2313,11 @@ class DistillManager:
                 summary["entries"].append({"entry": name, "ok": False, "reason": "条目不可读"})
                 continue
             status_before = _git_status_paths(proot)
-            ok, err = self._spawn_and_wait(proot, build_inbox_fold_prompt(proot, name))
+            # add-distill-run-work-summary：折叠子 run stdout 不进总结
+            # （design Non-Goal，folded 计数语义不变），第三位丢弃
+            ok, err, _fold_stdout = self._spawn_and_wait(
+                proot, build_inbox_fold_prompt(proot, name)
+            )
             violations = validate_knowledge(proot) if ok else None
             if ok and not violations:
                 # 确定性折叠成功判据（code-review ac8b82fa4a61）：提示词第 4 步
@@ -2450,7 +2454,9 @@ class DistillManager:
                     + "\n"
                 )
             status_before = _git_status_paths(proot)
-            ok, err = self._spawn_and_wait(proot, prompt)
+            # add-distill-run-work-summary 1.1：第三位承接裸文本 stdout
+            # （主蒸馏工作总结数据源，仅成功轮有效）
+            ok, err, spawn_stdout = self._spawn_and_wait(proot, prompt)
             # add-distill-run-artifacts 1.1：批内单轮收尾 round 行（修正轮是
             # 同一派发的内部重试，不另开产物；产物行数随修正轮数递增）。
             _distill_run_artifact_round(
@@ -2541,7 +2547,9 @@ class DistillManager:
         """spawn 一轮 claude -p 并等待结束（硬超时 killpg）。
 
         Returns:
-            (ok, error)：ok=True 进程已退出且退出码 0（产物合法性交校验脚本）。
+            (ok, error, stdout)：ok=True 进程已退出且退出码 0（产物合法性交
+            校验脚本）；stdout=裸文本最终消息原文（add-distill-run-work-summary
+            1.1，主蒸馏工作总结数据源；失败路径第三位恒 None）。
         """
         # evo-distill-model-name-fallback 1.1：spawn 恒传显式裸模型名（取
         # knowledge.model 配置；未配置/非法/空值回退现行为不传名并告警——
@@ -2552,11 +2560,11 @@ class DistillManager:
         # （同因重试必然再拒），不重试。重试收拢在本方法内（对外仍是单一
         # (ok, err)），上游 give_up→登台账路径天然不重复登记。
         model = _spawn_model_from_config(proot)
-        ok, err = self._spawn_once(proot, prompt, model)
+        ok, err, stdout = self._spawn_once(proot, prompt, model)
         if ok:
-            return True, None
+            return True, None, stdout
         if not _stderr_hits_unrecognized_model(err or ""):
-            return False, err
+            return False, err, None
         # 拒识形态命中：无论是否重试，收场 error（随 give_up 进 todo.md 台账
         # reason）恒注明拒识形态与生效模型名——stderr 尾部截断后该事实不丢失。
         rejected = _extract_rejected_model(err or "")
@@ -2567,7 +2575,7 @@ class DistillManager:
             return False, (
                 f"{err}；拒识形态 unrecognized_model（生效模型名 {model}，"
                 "显式传名仍被拒属确定性失败），不重试"
-            )
+            ), None
         bare = _bare_model_name(rejected) if rejected else None
         if bare:
             logger.warning(
@@ -2576,25 +2584,30 @@ class DistillManager:
                 rejected,
                 bare,
             )
-            ok_retry, err_retry = self._spawn_once(proot, prompt, bare)
+            ok_retry, err_retry, stdout_retry = self._spawn_once(proot, prompt, bare)
             if ok_retry:
                 logger.info(
                     "knowledge-distill 以裸模型名 %s 重试成功", bare
                 )
-                return True, None
+                return True, None, stdout_retry
             return False, (
                 f"{err_retry}；拒识形态 unrecognized_model：首次拒识（生效模型"
                 f"名 {rejected}）后已以裸模型名 {bare} 自动重试一次仍失败"
-            )
+            ), None
         # 裸名形态（生效名已无可剥别名后缀）或未能提取生效名：同因重试
         # 必然再拒，直接按终态收场；reason 注明拒识形态与生效模型名。
         return False, (
             f"{err}；拒识形态 unrecognized_model（生效模型名 "
             f"{rejected or '未知'}），无可用更裸模型名可兜底，不重试"
-        )
+        ), None
 
     def _spawn_once(self, proot: Path, prompt: str, model: "str | None") -> tuple:
-        """单次 spawn claude -p 并等待结束（``model``=本次显式传名；None=不传）。"""
+        """单次 spawn claude -p 并等待结束（``model``=本次显式传名；None=不传）。
+
+        Returns:
+            (ok, error, stdout)：成功第三位为裸文本 stdout 原文
+            （add-distill-run-work-summary 1.1）；失败路径第三位恒 None。
+        """
         # 收编进 harness.run_one_shot（add-harness-adapter-layer 4.1）：claude
         # 命令构造唯一入口在 claude_adapter.build_spawn_spec——提示词经 stdin
         # 传入（SpawnRequest 缺省传输形态；不走 argv：argv 全文驻留
@@ -2631,11 +2644,11 @@ class DistillManager:
                 on_timeout=_kill_process_group,
             )
         except OneShotCommunicateError as e:
-            return False, f"claude 进程通信失败: {e.original}"
+            return False, f"claude 进程通信失败: {e.original}", None
         except Exception as e:  # noqa: BLE001 — CLI 不存在等 spawn 失败
-            return False, f"调用 claude CLI 失败: {e}"
+            return False, f"调用 claude CLI 失败: {e}", None
         if outcome.timed_out:
-            return False, f"run 超时（>{RUN_TIMEOUT_SECONDS}s），已终止进程组"
+            return False, f"run 超时（>{RUN_TIMEOUT_SECONDS}s），已终止进程组", None
         stdout, stderr = outcome.stdout, outcome.stderr
         if outcome.returncode != 0:
             # 失败诊断：stdout/stderr 摘要进日志，stderr 尾部随 error 一路进
@@ -2650,8 +2663,12 @@ class DistillManager:
                 stderr_tail[:200] or "（空）",
             )
             detail = f"；stderr 尾部: {stderr_tail}" if stderr_tail else ""
-            return False, f"claude 进程非零退出（exit={outcome.returncode}）{detail}"
-        return True, None
+            return (
+                False,
+                f"claude 进程非零退出（exit={outcome.returncode}）{detail}",
+                None,
+            )
+        return True, None, stdout
 
     def _give_up(self, proot: Path, archived_names: list, reason: str, before=None) -> None:
         """放弃产出：清理半成品 + 登重试台账（``before`` = run 前基线快照）。"""
