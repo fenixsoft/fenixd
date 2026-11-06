@@ -8,7 +8,8 @@
 // - 两处名称列副标题接线（v1 list.tsx / v2 projectDetail.tsx）：有 title 渲染
 //   守卫、无 title 不渲染（falsy 三元）、次级视觉（字号/色/单行省略）、副标题
 //   在 Why 悬浮 Popover 之外不承载交互、树形缩进对齐（副标题与主行同单元格
-//   同包裹层，桌面表格与移动卡片共用 SpecNameCell）；
+//   同包裹层，桌面表格消费 SpecNameCell——移动卡片经 add-spec-list-mobile-style
+//   改自绘磁贴卡不再共用，新卡结构锚独立钉住）；
 // - SpecSummary 类型透传字段与 v2 名称既有交互保持；
 // - 详情标题栏中文标题下方行（add-spec-subtitle-and-row-click 任务 1.1/1.3
 //   原 subtitle 槽形态经 2026-11-06 用户指令「中文标题放在英文标题下方」改版
@@ -78,15 +79,64 @@ test('v1 副标题在 Why 悬浮 Popover 之外（不承载点击/悬停交互�
   assert.ok(popoverEnd > 0 && subStart > popoverEnd, '副标题渲染应位于 </Popover> 之后（Why 悬浮仅挂主行 span）');
 });
 
-test('v1 树形缩进对齐：副标题与主行同包裹层，桌面表格与移动卡片共用 SpecNameCell', () => {
+test('v1 树形缩进对齐：副标题与主行同包裹层，桌面表格消费 SpecNameCell（缩进随单元格）', () => {
   const cellStart = listSrc.indexOf('function SpecNameCell(');
   const cellEnd = listSrc.indexOf('// ── 验证列悬浮提示');
   const cell = listSrc.slice(cellStart, cellEnd);
   assert.ok(cell.includes('{ minWidth: 0 }'), '主行+副标题应共用 minWidth:0 包裹层（缩进随单元格）');
   assert.ok(cell.includes('<div style={{ minWidth: 0 }}>'), '包裹层应在 SpecNameCell 内');
-  // 桌面列渲染与移动卡片两处消费同一单元格 → 副标题自动随两处缩进
+  // add-spec-list-mobile-style 3.1：移动卡片改自绘磁贴卡不再共用 SpecNameCell
+  // （桌面列恰 1 处消费，桌面缩进随单元格语义不变）
   const uses = [...listSrc.matchAll(/<SpecNameCell project=\{project\} record=\{record\}( dense)? \/>/g)].length;
-  assert.ok(uses >= 2, `桌面表格与移动卡片应共用 SpecNameCell（实际 ${uses} 处）`);
+  assert.equal(uses, 1, `桌面表格列应恰 1 处消费 SpecNameCell（实际 ${uses} 处）`);
+});
+
+// ── v1 移动卡片结构锚（add-spec-list-mobile-style 3.1 改钉：移动卡自绘磁贴
+// 卡逐区块钉住——英文名主行/中文标题次行/胶囊行/树形缩进 └ + 26px）──
+
+function mobileCardBlock(src) {
+  const cardStart = src.indexOf('data-testid="spec-mobile-card"');
+  assert.ok(cardStart > 0, '移动卡应有 spec-mobile-card 稳定锚（整卡点击面）');
+  // 主行/次行/胶囊行三区块都位于阶段进度区之前，以进度区类名前缀收口
+  return src.slice(cardStart, src.indexOf('spec-card-progress', cardStart));
+}
+
+test('v1 移动卡片：英文名主行 14px/600 单行省略，└ 前缀灰符随 fix-* 树层级', () => {
+  const block = mobileCardBlock(listSrc);
+  assert.ok(block.includes('className="spec-card-name"'), '英文名主行应有 spec-card-name 稳定锚');
+  assert.ok(block.includes('fontWeight: 600'), '主行应 600 半粗（14px/600）');
+  assert.ok(block.includes("textOverflow: 'ellipsis'") && block.includes("whiteSpace: 'nowrap'"), '主行应单行省略');
+  assert.ok(block.includes('└'), 'fix-* 子卡应有 └ 前缀灰符');
+  assert.ok(block.includes('level > 0 ? 26 : 14'), 'fix-* 子卡应缩进 26px（根卡 14px，buildTree 树形层级透传）');
+});
+
+test('v1 移动卡片：中文标题次行 12px 次级单行省略，title 缺失不渲染（缺失=无该行）', () => {
+  const block = mobileCardBlock(listSrc);
+  assert.ok(block.includes('{record.title ? ('), '中文标题次行应以 record.title 三元守卫渲染');
+  const cnAt = block.indexOf('className="spec-card-cn"');
+  assert.ok(cnAt > 0, '中文标题次行应有 spec-card-cn 稳定锚');
+  const cnBlock = block.slice(cnAt, cnAt + 400);
+  assert.ok(cnBlock.includes('fontSize: 12'), '次行字号应次级（12px）');
+  assert.ok(cnBlock.includes("textOverflow: 'ellipsis'") && cnBlock.includes("whiteSpace: 'nowrap'"), '次行应单行省略');
+});
+
+test('v1 移动卡片：语义胶囊行（状态 dot 胶囊/等待组 pill/模式 ModePill 单源/⋮ 更多 32px 触控）', () => {
+  const block = mobileCardBlock(listSrc);
+  assert.ok(block.includes('className="spec-card-pills"'), '胶囊行应有 spec-card-pills 稳定锚');
+  assert.ok(block.includes('<Pill tone={m.tone} dot>'), '状态胶囊应 tone 色对带色点（999 软底）');
+  assert.ok(block.includes('<StatusWaitGroup record={record} pill />'), '等待标记应灰软底 pill 形态');
+  assert.ok(block.includes('<ModePill mode={record.mode} />'), '模式应走 ModePill 单源（与桌面模式列同源）');
+  assert.ok(block.includes('aria-label="更多操作"') && block.includes('minWidth: 32, height: 32'), '⋮ 更多应 32px 触控目标');
+});
+
+test('v1 移动卡片：整卡点击进详情（specDetailPath 单源），⋮ 菜单/清除按钮 stopPropagation 不被吞', () => {
+  const cardStart = listSrc.indexOf('data-testid="spec-mobile-card"');
+  // List.Item 开标签属性序列（data-testid → data-spec → onClick）整体切出
+  const itemBlock = listSrc.slice(listSrc.lastIndexOf('<List.Item', cardStart), cardStart + 400);
+  assert.ok(itemBlock.includes('onClick={() => history.push(specDetailPath(project, record.name))}'), '整卡点击应经 specDetailPath 单源跳详情');
+  const pillsAt = listSrc.indexOf('className="spec-card-pills"', cardStart);
+  const pillsBlock = listSrc.slice(pillsAt, listSrc.indexOf('spec-card-progress', pillsAt));
+  assert.ok(pillsBlock.includes('stopPropagation'), '行内交互（⋮ 菜单/清除）应 stopPropagation 不被整卡点击吞并');
 });
 
 test('v1 名称关键字过滤经 specKeywordHit 单源（标题命中）', () => {
