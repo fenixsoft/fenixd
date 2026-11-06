@@ -2261,7 +2261,8 @@ class VAdjudicationMixin:
         judge_input_paths = list(remaining_paths)
 
         # time_ns 亚秒分量（code-review item a26a8087cbec）：秒级 id 同秒重入时
-        # 与残留旧结果文件的 run stamp 同串，393 行严格匹配会误放行陈旧裁决。
+        # 与残留旧结果文件的 run stamp 同串，_read_dispute_verdicts 的
+        # run stamp 严格匹配会误放行陈旧裁决。
         judge_run_id = f"dispute-judge-{spec_name}-{time.time_ns()}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
         try:
