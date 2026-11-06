@@ -288,6 +288,8 @@ from .spec_docs import (
     count_generated_scenarios,
     count_planned_scenarios,
     spec_generation_progress,
+    read_spec_title,
+    archive_dir_map,
 )
 
 # ── admin_alerts 组 ──

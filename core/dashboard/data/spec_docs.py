@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+import yaml
+
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
 # 注意：本正则是**读侧**白名单，目的是防路径穿越（点/斜杠均被排除），宽于
 # core/spec_gen.py 的 kebab-case 权威**创建**口径 ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
@@ -159,6 +161,134 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     # 无全等命中时才回退到含数字后缀的归一化候选层。
     exact = [d for d in matches if exact_pattern.match(d.name)]
     return sorted(exact or matches)[-1]
+
+
+# ── SPEC 中文标题读取（add-spec-chinese-title D2/D3） ──────────────
+
+# 签名缓存（对齐 core/spec_mode.py read_spec_mode 的 (path, mtime_ns, size)
+# 有界缓存模式，specMode 模块头注释的已知窗口同款接受）：命中不重读文件与
+# YAML 解析；写路径不维护显式失效（写后 mtime 已变，自然失效）。有界：超出
+# 上限整体清空。缓存值含 None（「缺 title」也是有效读结果，归档 509 目录每
+# 轮都要读，None 不入缓存会退化为每轮全量重读），命中判定用键存在性而非
+# get() 的 None 比对。
+_SPEC_TITLE_CACHE: dict = {}
+_SPEC_TITLE_CACHE_MAX = 2048
+
+
+def _read_title_file(yaml_path: Path) -> str | None:
+    """读单个 ``.spec.yaml`` 的 ``title`` 字段（签名缓存 + 读侧容错）。
+
+    字段缺失 / 值非非空字符串 / 文件缺失 / 解析失败一律返回 None，不抛异常。
+    title 为去首尾空白后的非空字符串时返回该字符串（YAML plain scalar 常态
+    无空白包裹，strip 仅兜手写尾部空白等形态）。
+    """
+    try:
+        st = yaml_path.stat()
+        key = (str(yaml_path.resolve()), st.st_mtime_ns, st.st_size)
+    except OSError:
+        # 与 spec_mode 同款：resolve() 罕见 FS 异常（ELOOP 等）退哨兵 None 键，
+        # 本次只计算不读写缓存，保持读侧「不抛异常」契约与自愈性。
+        key = None
+    if key is not None and key in _SPEC_TITLE_CACHE:
+        return _SPEC_TITLE_CACHE[key]
+    title = None
+    if yaml_path.is_file():
+        try:
+            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            data = None
+        if isinstance(data, dict):
+            raw = data.get("title")
+            if isinstance(raw, str) and raw.strip():
+                title = raw.strip()
+    if key is not None:
+        if len(_SPEC_TITLE_CACHE) > _SPEC_TITLE_CACHE_MAX:
+            _SPEC_TITLE_CACHE.clear()
+        _SPEC_TITLE_CACHE[key] = title
+    return title
+
+
+def read_spec_title(project_root, spec_name, archive_dirs: dict | None = None) -> str | None:
+    """读取 SPEC 中文标题（add-spec-chinese-title D2）：活跃优先、归档回退。
+
+    活跃目录 ``spec/changes/<spec>`` 存在时只读活跃侧 ``.spec.yaml``（与
+    resolve_spec_dir「活跃优先」同语义：活跃目录存在即整体覆盖同名归档目录）；
+    缺失时归档回退——archive_dirs 提供调用方预建的名称→目录映射
+    （archive_dir_map 单次扫描产物）则查表（/api/specs 索引路径，免 per-spec
+    归档解析），缺省 None 走 resolve_spec_dir（详情页等低频路径）。
+
+    字段缺失 / 文件缺失 / YAML 解析失败 / 非法 spec 名一律返回 None
+    （读侧容错，不抛异常），spec 名白名单与 resolve_spec_dir 同口径
+    （_SPEC_NAME_RE 读侧防穿越白名单）。
+    """
+    spec_name = _validated_spec_name(spec_name)
+    if spec_name is None:
+        return None
+    active = Path(project_root) / "spec" / "changes" / spec_name
+    if active.is_dir():
+        return _read_title_file(active / ".spec.yaml")
+    if archive_dirs is not None:
+        arc = archive_dirs.get(spec_name)
+        if arc is None:
+            return None
+        return _read_title_file(Path(arc) / ".spec.yaml")
+    arc_dir = resolve_spec_dir(project_root, spec_name)
+    if arc_dir is None:
+        return None
+    return _read_title_file(arc_dir / ".spec.yaml")
+
+
+# 归档目录名解析（add-spec-chinese-title D3）：日期前缀剥取与尾部「-<数字>」
+# 冲突后缀剥除（`(-\d+)*$` 匹配语义的逆操作），与 _archive_name_patterns 同族。
+_ARCHIVE_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-(.+)$")
+_TRAILING_NUM_GROUP_RE = re.compile(r"^(.+)-\d+$")
+
+
+def archive_dir_map(project_root) -> dict:
+    """归档根单次扫描建立 spec 名 → 归档目录映射（add-spec-chinese-title D3）。
+
+    /api/specs 索引路径的归档 title 读取下发表：SummaryIndex 每轮调用一次
+    本函数（目录清单走 _archive_dir_entries 签名+TTL memo，非全量 iterdir），
+    消费侧 read_spec_title 按 spec 名 O(1) 查表——归档条目 title 读取
+    MUST NOT per-spec 逐个归档解析。
+
+    语义对齐 resolve_spec_dir：剥日期前缀后与 spec 名全等的目录为 exact
+    候选（优先取用）；冲突后缀目录（``<date>-<spec>-<n>`` 形态）剥后缀登记到
+    基名下作后缀候选（独立 spec 并存——如 ``evo-foo`` 与 ``evo-foo-2``——的
+    歧义由 exact 优先还原）；同层多命中取 ``sorted()[-1]``（字典序最大 =
+    日期最新/后缀最大）；软删除墓碑目录（无日期前缀、名字即 spec 名）按
+    全等名登记且不进 exact 集（对齐 resolve_spec_dir 中墓碑不参与 exact
+    优先、仅兜底取胜出的取舍）。映射仅服务 title 读取的候选目录解析，非一般
+    目录寻址入口。
+    """
+    archive_root = Path(project_root) / "spec" / "archive"
+    if not archive_root.is_dir():
+        return {}
+    # 基名 → [(该目录剥日期前缀名, 是否 exact 候选, 目录), ...]：一个目录除
+    # 全等名外还登记到全部尾部数字后缀剥除基名下（evo-foo-2-3 → evo-foo-2 →
+    # evo-foo），登记项是否 exact 由「剥前缀名 == 登记基名」判定。
+    candidates: dict = {}
+    for d in _archive_dir_entries(archive_root):
+        m = _ARCHIVE_DATE_PREFIX_RE.match(d.name)
+        if m:
+            stripped = m.group(1)
+            first = True
+            while True:
+                candidates.setdefault(stripped, []).append((stripped, first, d))
+                parent = _TRAILING_NUM_GROUP_RE.match(stripped)
+                if parent is None:
+                    break
+                # 剥一层后缀后降级为后缀候选（exact 仅保留最内层全等形态）
+                stripped = parent.group(1)
+                first = False
+        elif _SPEC_NAME_RE.match(d.name):
+            # 软删除墓碑（无日期前缀）：按全等名登记，不进 exact 集
+            candidates.setdefault(d.name, []).append((d.name, False, d))
+    out: dict = {}
+    for name, pairs in candidates.items():
+        exact = [d for _, ex, d in pairs if ex]
+        out[name] = sorted(exact or [d for _, _, d in pairs])[-1]
+    return out
 
 
 class InvalidSpecName(ValueError):

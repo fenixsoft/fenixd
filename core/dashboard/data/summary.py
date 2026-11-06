@@ -346,6 +346,7 @@ _normalize_depends_on = normalize_depends_on
 def spec_summary(
     project_root, spec_name: str, entry: dict, runs_files: list | None = None,
     state_entries: dict | None = None, archived_entries: dict | None = None,
+    archive_dirs: dict | None = None,
 ) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。
 
@@ -358,6 +359,10 @@ def spec_summary(
         判定复用——SummaryIndex 重建链逐 spec 透传，避免对每个已归档 spec
         全量重解析双 STATE 文件（code-review item c5e751f5a595）。缺省 None
         时 is_spec_archived 内部自行解析，行为与原先一致。
+    archive_dirs: 调用方预建的归档 spec 名→目录映射（add-spec-chinese-title
+        D3，archive_dir_map 每轮单次扫描产物），仅供归档条目 title 读取查表
+        ——MUST NOT per-spec 逐个归档解析。缺省 None 时 title 读取内部走
+        resolve_spec_dir（详情页等非索引路径，行为不变）。
     """
     # 入口单点归一（code-review item c028b72cc8ef）：SummaryIndex 调用链本就
     # 保证 entry 非 None（entry = entry or {}），此处兜底同款归一，函数内
@@ -402,6 +407,11 @@ def spec_summary(
     from core.spec_mode import read_spec_mode
 
     mode = read_spec_mode(project_root, spec_name)
+    # add-spec-chinese-title D2/D4：中文标题（display name，纯展示；英文名 =
+    # id 的一切寻址与匹配不变，仅名称搜索这一处消费）。活跃条目直读活跃目录
+    # .spec.yaml（stat + 签名缓存命中零 glob）；已归档条目经调用方单次扫描
+    # 映射查表（archive_dirs），非索引路径缺省走 resolve_spec_dir 回退。
+    title = _facade.read_spec_title(project_root, spec_name, archive_dirs=archive_dirs)
     # add-spec-status-modal-budget D3：per-spec 预算字段
     # 三字段读取与预算闸门同源（clamp_impl_run_budget 单点），前端不重复实现解析。
     # open-impl-budget-ceiling：夹紧上限改由可配置键解析，前端界面范围与此同源。
@@ -436,6 +446,9 @@ def spec_summary(
         # 迁出条目的字段即清单小节原值。
         "archived_at": entry.get("archived_at"),
         "archived_by": entry.get("archived_by"),
+        # add-spec-chinese-title D4：中文标题透传（string 或 null；读侧容错
+        # 不做长度校验，前端缺失不渲染副标题行）
+        "title": title,
         "mode": mode,
         "priority": entry.get("priority"),
         "created": entry.get("created"),
@@ -888,6 +901,10 @@ class SummaryIndex:
                 specs = merged
 
             runs_sigs = _runs_by_spec_sigs(proot)
+            # add-spec-chinese-title D3：归档 title 读取的单次扫描映射——每轮
+            # 重建/增量重算期构建一次（目录清单走 spec_docs 的签名+TTL memo），
+            # 逐 spec 透传给 spec_summary 查表，MUST NOT per-spec 归档解析。
+            archive_dirs = _facade.archive_dir_map(proot)
             out = []
             for spec_name, entry in specs.items():
                 entry = entry or {}
@@ -906,6 +923,7 @@ class SummaryIndex:
                 summary = _facade.spec_summary(
                     proot, spec_name, entry, runs_files=spec_files,
                     state_entries=active_specs, archived_entries=archived_entries,
+                    archive_dirs=archive_dirs,
                 )
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
@@ -1092,6 +1110,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     return {
         "name": spec_name,
         "status": entry.get("status"),
+        # add-spec-chinese-title D4：中文标题透传（非索引路径，read_spec_title
+        # 内部经 resolve_spec_dir 归档回退，低频调用不值得加映射参数）
+        "title": _facade.read_spec_title(project_root, spec_name),
         "mode": mode,
         "priority": entry.get("priority"),
         "created": entry.get("created"),
