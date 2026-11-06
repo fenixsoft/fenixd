@@ -2093,7 +2093,7 @@ class G4MergebackMixin:
 
         泛化原 spec/changes 限定逻辑（fix-merge-untracked-guard）：
 
-        1. `git diff --name-only --diff-filter=A HEAD...<branch>` 取分支**新增**文件路径集合
+        1. `git diff --name-only --no-renames --diff-filter=A HEAD...<branch>` 取分支**新增**文件路径集合
            —— untracked 冲突只会发生在新增路径上（修改既有 tracked 文件不与 untracked 冲突）。
         2. 对主树存在同名路径的新增路径，批量判定是否 untracked：单条
            `git ls-files -z -- <全部候选路径>`（`:(literal)` 禁 glob、`-z` 免
@@ -2116,9 +2116,22 @@ class G4MergebackMixin:
         # TimeoutExpired 同待降级（code-review item af581068b80d）：备份探测
         # 不可用（git 二进制缺失等）不上抛到调用方大 try 被当成整次 merge-back
         # 失败，与文件内其余 git 探测调用容错口径统一——返回 None 即该降级。
+        # --no-renames（item 950ba4b64df1）：porcelain git diff 缺省开启 rename
+        # 检测，分支以纯 rename 引入的新路径记 R 而非 A，被 --diff-filter=A
+        # 排除——主树恰有与 rename 目标同名的 untracked 文件时不会被移入备份，
+        # merge 以 untracked working tree files would be overwritten 恒败
+        # （merge 未进冲突态、conflict_paths 为空、无结构化归因）。关闭 rename
+        # 检测把 R 拆回 A+D 两侧，--diff-filter=A 只取拆分后的 A 侧（即 rename
+        # 目标路径），使 rename 目标进入新增集合被备份守卫覆盖。
         added = _git_output_items(
             self.project_root,
-            ["diff", "--name-only", "--diff-filter=A", f"HEAD...{branch}"],
+            [
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "--diff-filter=A",
+                f"HEAD...{branch}",
+            ],
         )
         if not added:
             return None

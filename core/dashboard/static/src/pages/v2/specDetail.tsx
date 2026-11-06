@@ -31,6 +31,7 @@ import { fmtDuration } from '@/utils/duration';
 // branch」组合语义不在页面自拼）
 import { combineSpecSubtitle } from '@/pages/projects/specTitle';
 import { compactWan } from '@/utils/format';
+import { formatUsd } from '@/utils/runVisual';
 import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
 import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
 import { V2Page, V2Pill, V2StatusPill } from './shared';
@@ -100,7 +101,7 @@ function InfoCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
     costCell =
       d.cost_summary.computed_usd != null ? (
         <>
-          <span className="v2-num">${d.cost_summary.computed_usd.toFixed(2)}</span>
+          <span className="v2-num">{formatUsd(d.cost_summary.computed_usd)}</span>
           {d.cost_summary.unpriced_runs > 0 ? (
             <span className="v2-num" style={{ fontWeight: 400, color: V2_TEXT_TERTIARY }}>
               （含 {d.cost_summary.unpriced_runs} 个未计价 run）
@@ -111,7 +112,7 @@ function InfoCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
         <span className="v2-num" style={{ color: V2_TEXT_QUATERNARY }}>run 均不可计价</span>
       );
   } else if (tu?.cost_usd != null) {
-    costCell = <span className="v2-num">${tu.cost_usd.toFixed(2)}</span>;
+    costCell = <span className="v2-num">{formatUsd(tu.cost_usd)}</span>;
   }
   const items: Array<[string, React.ReactNode]> = [
     ['优先级', d.priority != null ? <span key="p">P{d.priority}</span> : <Dash key="p" />],
@@ -182,7 +183,9 @@ function TaskCard({ d, mobile }: { d: SpecDetail; mobile?: boolean }) {
   const pct = Math.round((done / Math.max(1, total)) * 100);
   const rows = groups.flatMap((g) => g.tasks.map((t) => ({ ...t, group: g.title })));
   const visible = expanded ? rows : rows.slice(0, 8);
-  const hidden = rows.length - visible.length;
+  // 按折叠视图计 hidden（code-review item 4d3b9e8b2d60）：展开态 visible 取全量，
+  // 减 visible 会使 hidden 恒 0、「收起」入口消失；固定阈值 8 与上方 slice 对齐。
+  const hidden = Math.max(0, rows.length - 8);
 
   return (
     <div
@@ -323,7 +326,7 @@ function TimelinePane({ d }: { d: SpecDetail }) {
         if (ev.run_id) metas.push(ev.run_id);
         if (ev.llm) metas.push(ev.llm);
         if (ev.duration_seconds) metas.push(`耗时 ${fmtDuration(ev.duration_seconds)}`);
-        if (ev.cost_usd != null) metas.push(`$${ev.cost_usd.toFixed(2)}`);
+        if (ev.cost_usd != null) metas.push(formatUsd(ev.cost_usd));
         if (ev.retry_count) metas.push(`重试 ${ev.retry_count}${ev.retry_max ? `/${ev.retry_max}` : ''}`);
         if (ev.harness && ev.harness !== 'claude') metas.push(ev.harness);
         if (ev.handled != null) metas.push(ev.handled ? '已处置' : '未处置');
@@ -790,7 +793,7 @@ export default function V2SpecDetailPage() {
         placement="bottomRight"
         trigger={['click']}
       >
-        <Button size="small">状态转移</Button>
+        <Button size="small" loading={busy}>状态转移</Button>
       </Dropdown>
       <Dropdown
         menu={{
