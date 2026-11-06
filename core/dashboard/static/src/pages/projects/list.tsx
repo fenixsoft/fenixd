@@ -28,7 +28,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Key } from 'react';
+import type { CSSProperties, Key, ReactNode } from 'react';
 import { history, useParams, useSearchParams } from '@umijs/max';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import dayjs from 'dayjs';
@@ -115,6 +115,63 @@ function useToneDot(): Record<string, string> {
       aqua: 'cyan',
     }),
     [token],
+  );
+}
+
+// ── Bento 镜像色值（2026-11-06 用户指令：桌面 SPEC 表格对齐 v2 projects 台账
+// 呈现）。源 = pages/v2/theme.tsx，例外域配色单源不得跨域 import，镜像纪律同
+// overview ProjectTable（OV_* 两处同改）；磁贴/表头/发丝线样式镜像在 global.less
+// `.ov-bento` / `.ov-bento-table`（圆角固定 12px，DESIGN.md 通用条款）。
+const OV_TEXT = '#1e293b'; // = V2_TEXT
+const OV_TEXT_TERTIARY = '#64748b'; // = V2_TEXT_TERTIARY
+const OV_ERROR = '#dc2626'; // = V2_ERROR
+const OV_WARNING = '#d97706'; // = V2_WARNING
+const OV_INFO = '#2563eb'; // = V2_RAMP_IMPLEMENTING（v2 语义 info tone 前景）
+const OV_INFO_SOFT = '#eff6ff'; // = V2_BLUE_SOFT
+const OV_MUTED_SOFT = '#f1f5f9'; // = V2_SLATE_SOFT
+
+/** 语义胶囊徽标（镜像 v2 shared.tsx V2Pill filled 形态：999 胶囊 + tone 软底）。
+ * tone 键域对齐 statusMeta 的 StatusTone，muted 兜底。 */
+/** 三点操作图标（镜像 v2 DotsIcon；操作列 Dropdown 触发器，与 overview 台账同款）。 */
+function DotsIcon() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" fill="currentColor" aria-hidden>
+      <circle cx={2.6} cy={7} r={1.2} />
+      <circle cx={7} cy={7} r={1.2} />
+      <circle cx={11.4} cy={7} r={1.2} />
+    </svg>
+  );
+}
+
+function Pill({ tone = 'muted', children, style }: { tone?: string; children: ReactNode; style?: CSSProperties }) {
+  const pair =
+    tone === 'critical'
+      ? [OV_ERROR, '#fef2f2']
+      : tone === 'warning'
+        ? [OV_WARNING, '#fffbeb']
+        : tone === 'good'
+          ? ['#16a34a', '#f0fdf4']
+          : tone === 'info'
+            ? [OV_INFO, OV_INFO_SOFT]
+            : tone === 'aqua'
+              ? ['#0891b2', '#ecfeff']
+              : [OV_TEXT_TERTIARY, OV_MUTED_SOFT];
+  return (
+    <Tag
+      style={{
+        marginInlineEnd: 0,
+        borderRadius: 999,
+        fontSize: 12,
+        paddingInline: 9,
+        color: pair[0],
+        background: pair[1],
+        borderColor: 'transparent',
+        fontWeight: 500,
+        ...style,
+      }}
+    >
+      {children}
+    </Tag>
   );
 }
 
@@ -261,7 +318,7 @@ function useHoverFetch<T>(fetcher: () => Promise<T | null>) {
   return { open, value, onEnter, onLeave };
 }
 
-function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
+function SpecNameCell({ project, record, dense }: { project: string; record: SpecSummary; dense?: boolean }) {
   // 可点击名称文字色（code-review item 0bcd835938ef 曾改走 colorPrimary，
   // 615f6f350d58 同口径）：宿主对齐改造（2026-11-03）后主色为黑系 #0f1115，
   // 可点击语义改走 dsh 链接蓝 DSH_LINK（theme.ts 单源，dsw alias-link），
@@ -303,7 +360,15 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
             handleClick();
           }
         }}
-        style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: DSH_LINK }}
+        className={dense ? 'ov-ellipsis' : undefined}
+        title={dense ? record.name : undefined}
+        style={
+          // dense=v2 台账形态（2026-11-06 用户指令）：13.5px 半粗 + 深色单行省略
+          //（镜像 v2 projectDetail 名称列）；缺省保持链接蓝 16px（移动卡片同款）
+          dense
+            ? { cursor: 'pointer', fontSize: 13.5, fontWeight: 600, color: OV_TEXT, display: 'block' }
+            : { cursor: 'pointer', fontSize: 16, fontWeight: 600, color: DSH_LINK }
+        }
       >
         {record.name}
       </span>
@@ -348,7 +413,7 @@ function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdic
   return p;
 }
 
-function VerifyCell({ project, record }: { project: string; record: SpecSummary }) {
+function VerifyCell({ project, record, pill }: { project: string; record: SpecSummary; pill?: boolean }) {
   // 占位符文字色走 token（code-review item 615f6f350d58）：原 rgba(0,0,0,0.45)
   // 硬编码在暗色主题下近乎不可见，colorTextQuaternary 随主题自适应
   const { token } = theme.useToken();
@@ -359,10 +424,15 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
     () => fetchVerdict(project, record.name).then((v) => (v && v.exists ? v : null)),
   );
 
-  // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染纯文本
-  // 占位符 —，避免「尚无验证数据」被误读为 0/0 计数；无结论可读，不包 Popover。
+  // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染占位
+  // ——桌面 v2 形态（pill=true，2026-11-06 用户指令）为「未执行」灰胶囊（中文限定
+  // 词，合 DESIGN.md null 口径），移动卡片维持「—」文本占位；两形态都不伪装 0/0。
   if (!record.verify_total) {
-    return <span style={{ fontSize: 13, color: token.colorTextQuaternary }}>—</span>;
+    return pill ? (
+      <Pill tone="muted">未执行</Pill>
+    ) : (
+      <span style={{ fontSize: 13, color: token.colorTextQuaternary }}>—</span>
+    );
   }
 
   const sum = verdict?.summary;
@@ -403,10 +473,24 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
         tabIndex={0}
         onFocus={onEnter}
         onBlur={onLeave}
-        // 可点击文字色走 token（code-review item 0bcd835938ef，同 SpecNameCell）
-        style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: DSH_LINK }}
+        // 可点击文字色走 token（code-review item 0bcd835938ef，同 SpecNameCell）；
+        // pill=v2 台账形态（2026-11-06 用户指令）：n/m 计数入灰蓝胶囊（进行中蓝/
+        // 完毕灰，镜像 v2 VerifyCell），悬浮/键盘焦点路径不变
+        style={
+          pill
+            ? { cursor: 'pointer', display: 'inline-flex' }
+            : { cursor: 'pointer', fontSize: 13, fontWeight: 600, color: DSH_LINK }
+        }
       >
-        {record.verify_done}/{record.verify_total}
+        {pill ? (
+          <Pill tone={record.verify_done < record.verify_total ? 'info' : 'muted'}>
+            {record.verify_done}/{record.verify_total}
+          </Pill>
+        ) : (
+          <>
+            {record.verify_done}/{record.verify_total}
+          </>
+        )}
       </span>
     </Popover>
   );
@@ -752,22 +836,26 @@ function DevTab({
 
   // 九列 width 合计归一 100%（code-review item dafbe62b7e29）：原合计 110%
   // （12+9+28+7+13+15+8+8+10），tableLayout='fixed' 且未启用 scroll.x 时超
-  // 额定宽依赖浏览器按比例归一；等比缩到 11+8+25+6+12+14+8+8+8=100，
-  // 列宽视觉权重不变。
+  // 额定宽依赖浏览器按比例归一；等比缩到 11+8+25+6+12+14+8+8+8=100 后，
+  // 2026-11-06 用户指令再收窄：状态/模式两列等宽 7%（原 11/8），腾出 4 给
+  // 名称列（25→29），现合计 7+7+29+6+12+14+8+8+8=100，列宽视觉权重不变。
   const columns: ColumnsType<SpecSummary> = [
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: '11%',
+      // 状态/模式两列等宽收窄（2026-11-06 用户指令；腾出宽度给名称列）
+      width: '7%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.status || '').localeCompare(b.status || ''),
       onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       render: (v: string | null, record: SpecSummary) => {
         const m = statusMeta(v || '');
+        // v2 台账形态（2026-11-06 用户指令）：状态从「色点+文字」改语义胶囊
+        // （镜像 v2 V2StatusPill）；等待标记组（定时/待激活/前置依赖）保留
         return (
           <Space size={4} wrap>
-            <Badge color={toneDot[m.tone]} text={m.label} />
+            <Pill tone={m.tone}>{m.label}</Pill>
             <StatusWaitGroup record={record} />
           </Space>
         );
@@ -777,23 +865,30 @@ function DevTab({
       title: '模式',
       dataIndex: 'mode',
       key: 'mode',
-      width: '8%',
+      width: '7%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.mode || '').localeCompare(b.mode || ''),
       onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      // add-fast-track-mode（task 7.2）：执行模式标记——单源 ModeTag
-      // （code-review item 504cf2d4b647），fast-track 与 full 可辨识，存量无
-      // mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
-      render: (v: string | null | undefined) => <ModeTag mode={v} />,
+      // add-fast-track-mode（task 7.2）：执行模式标记——桌面表格改 v2 胶囊形态
+      //（2026-11-06 用户指令，镜像 v2 MODE_LABEL：fast-track=快速/full=标准）；
+      // 移动卡片与详情页仍走单源 ModeTag（504cf2d4b647），存量无 mode 字段按
+      // 缺省 full 展示「标准」等价标记
+      render: (v: string | null | undefined) => (
+        <Pill tone={v === 'fast-track' ? 'warning' : 'muted'}>
+          {v === 'fast-track' ? '快速' : '标准'}
+        </Pill>
+      ),
     },
     {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: '25%',
+      width: '29%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (_: string, record: SpecSummary) => (
-        <SpecNameCell project={project} record={record} />
+        // dense：v2 台账名称形态（13.5px 半粗深色单行省略），悬浮 Why 提示/键盘
+        // 跳转不变；移动卡片走缺省链接蓝形态
+        <SpecNameCell project={project} record={record} dense />
       ),
     },
     {
@@ -802,6 +897,8 @@ function DevTab({
       key: 'priority',
       width: '6%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
+      // 表头不换行（v2 台账形态单行表头；6% 定宽下三字头会折行）
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       render: (_: number | null, record: SpecSummary) => (
         <PriorityCell
           record={record}
@@ -818,10 +915,14 @@ function DevTab({
       sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
       render: (v: string | null) => {
         const d = v ? dayjs(v) : null;
+        // v2 台账形态（2026-11-06 用户指令）：等宽数字 + 三阶灰（12.5px），
+        // 精度保持完整时间戳不随视觉收缩
         return d && d.isValid() ? (
-          d.format('YYYY-MM-DD HH:mm:ss')
+          <span className="ov-num" style={{ fontSize: 12.5, color: OV_TEXT_TERTIARY }}>
+            {d.format('YYYY-MM-DD HH:mm:ss')}
+          </span>
         ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
+          <span className="ov-num" style={{ color: OV_TEXT_TERTIARY }}>—</span>
         );
       },
     },
@@ -851,34 +952,45 @@ function DevTab({
         // 立刻建 Task、历史 run 也可能无事件。run_activity 用「产物是否仍在写」
         // 提供不依赖任务工具的存活线索，仅在无更细粒度线索（current）时兜底显示。
         const runActive = !isVerify && !runCurrent && !!record.run_activity?.active;
-        // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
-        // 底轨随阶段同 ramp：verify 阶段 0/0 空条靠底轨读出「淡绿=验证未开始」，
-        // 否则与 impl 蓝色空条同观感，误读成任务没完成（add-task-progress-verify-phase 补充）。
+        // v2 台账形态（2026-11-06 用户指令）：阶段名 + 「计数 · 百分比」同行在
+        // 进度条上方（镜像 v2 PhaseProgressCell 版式）；gen 出题分支计数不带
+        // 「出题」前缀（阶段名已承载，避免双写——移动卡片 counter 保持原样）。
+        // 配色不走 v2 ramp：进度条阶段 ramp（progressPhase.ts）是 DESIGN.md 登记
+        // 的数据编码色豁免，底轨随阶段同 ramp 的「空条可辨」语义优先保留。
+        const phaseLabel = gen ? '出题' : isGates ? '门禁' : isVerify ? '验证' : '实现';
+        const counterText = gen ? `${gen.done}/${gen.total}` : counter;
         return (
           <div style={{ minWidth: 0 }}>
-            <Progress
-              percent={p}
-              size="small"
-              showInfo={false}
-              strokeColor={strokeColorFor(!!gen, isVerify, isGates)}
-              trailColor={trailColorFor(!!gen, isVerify, isGates)}
-            />
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+              <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{phaseLabel}</span>
               {/* add-quality-gates-visibility：gates 阶段计数=门禁完成度，
                   run 层线索（run_progress/存活心跳）不渲染——门禁完成度由
                   落盘文件与后端合成驱动，run 任务汇报与门禁无对应关系。
-                  计数文案统一来自 phaseProgressOf 的 counter（阶段已分流）。 */}
-              <Typography.Text type="secondary" data-testid="task-progress-cell">
-                {counter}
-              </Typography.Text>
-              {/* 完成态文案与移动端卡片同口径（code-review item cf0a2e1103b9）：
-                  progress >= 100 显示「已完成」，两形态不再分叉 */}
-              <Typography.Text type="secondary">{progressText(p)}</Typography.Text>
+                  计数文案统一来自 phaseProgressOf 的 counter（阶段已分流）。
+                  2026-11-06 用户指令：计数与左侧阶段名同款（12px 三阶灰常规
+                  字重），不走 v2 的深色半粗形态 */}
+              <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }} data-testid="task-progress-cell">
+                {counterText} ·{' '}
+                {/* 完成态文案与移动端卡片同口径（code-review item cf0a2e1103b9）：
+                    progress >= 100 显示「已完成」，两形态不再分叉 */}
+                {progressText(p)}
+              </span>
+            </div>
+            {/* 底轨随阶段同 ramp：verify 阶段 0/0 空条靠底轨读出「淡绿=验证未开始」，
+                否则与 impl 蓝色空条同观感，误读成任务没完成（add-task-progress-verify-phase 补充）。 */}
+            <div style={{ marginTop: 6 }}>
+              <Progress
+                percent={p}
+                size="small"
+                showInfo={false}
+                strokeColor={strokeColorFor(!!gen, isVerify, isGates)}
+                trailColor={trailColorFor(!!gen, isVerify, isGates)}
+              />
             </div>
             {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
               // run 层线索与计数换行分离（与 verify_current/gates_current 同款
               // 二行结构统一）；marginLeft 4 保留 run 已汇报与进行中并存时的间距
-              <div style={{ fontSize: 12, lineHeight: '18px' }}>
+              <div style={{ fontSize: 12, lineHeight: '18px', marginTop: 2 }}>
                 {runAhead && rp ? (
                   <Typography.Text type="warning">
                     run {rp.done}/{rp.total} 已汇报
@@ -899,14 +1011,14 @@ function DevTab({
             {isVerify && record.verify_current ? (
               // 验证进行中文案走 colorSuccess（code-review item 615f6f350d58）：
               // 与状态点 good tone 同源，暗色随 token
-              <div style={{ fontSize: 12, lineHeight: '18px', color: token.colorSuccess }}>
+              <div style={{ fontSize: 12, lineHeight: '18px', marginTop: 2, color: token.colorSuccess }}>
                 {record.verify_current}
               </div>
             ) : null}
             {isGates && record.gates_current ? (
               // add-quality-gates-visibility：gates 阶段辅助文案（running 门或
               // failed 归因，后端非空才返回），橙字与进度条同色系（复用常量防漂移）
-              <div style={{ fontSize: 12, lineHeight: '18px', color: GATES_STROKE }}>
+              <div style={{ fontSize: 12, lineHeight: '18px', marginTop: 2, color: GATES_STROKE }}>
                 {record.gates_current}
               </div>
             ) : null}
@@ -921,12 +1033,15 @@ function DevTab({
       sorter: (a: SpecSummary, b: SpecSummary) =>
         pct(a.verify_done, a.verify_total) - pct(b.verify_done, b.verify_total),
       render: (_: unknown, record: SpecSummary) =>
+        // v2 台账形态（2026-11-06 用户指令）：验证异常=红胶囊（悬浮提示保留）、
+        // 计数=灰蓝胶囊（进行中蓝/完毕灰，悬浮结论 Popover 路径在 VerifyCell
+        // pill 分支内不变）
         record.verify_error ? (
           <Tooltip title={record.verify_error}>
-            <Typography.Text type="danger">⚠ 验证异常</Typography.Text>
+            <Pill tone="critical">验证异常</Pill>
           </Tooltip>
         ) : (
-          <VerifyCell project={project} record={record} />
+          <VerifyCell project={project} record={record} pill />
         ),
     },
     {
@@ -934,28 +1049,44 @@ function DevTab({
       dataIndex: 'total_duration',
       key: 'duration',
       width: '8%',
+      align: 'right',
       // 空值兜底（code-review item 826c6a25ac54）：total_duration 可选，
       // 直接相减得 NaN 使排序不可预期；?? 0 归一。
       sorter: (a: SpecSummary, b: SpecSummary) =>
         (a.total_duration ?? 0) - (b.total_duration ?? 0),
-      render: (v: number) => fmtDuration(v),
+      // v2 台账形态（2026-11-06 用户指令）：右对齐 + 等宽数字
+      render: (v: number) => (
+        <span className="ov-num" style={{ fontSize: 12.5, color: OV_TEXT }}>
+          {fmtDuration(v)}
+        </span>
+      ),
     },
     {
       title: '操作',
       key: 'actions',
       width: '8%',
-      onCell: () => ({ style: { paddingInline: 0 } }),
+      align: 'right',
+      // v2 台账形态（2026-11-06 用户指令）：触发器改三点图标（与 overview 台账
+      // 操作列同款），「文档」并入菜单首项——文档入口仍恒可见可达（dashboard-
+      // spec-table 契约的入口位随用户指令迁移）；菜单其余项仍由 onMenu 单点承载
       render: (_: unknown, record: SpecSummary) => (
-        <Space size={2}>
-          <Button type="link" size="small" onClick={() => onDocView(record.name)}>
-            文档
-          </Button>
+        <Space size={4} onClick={(e) => e.stopPropagation()}>
           <Dropdown
-            menu={{ items: menuItems(record), onClick: ({ key }) => onMenu(record, key) }}
+            menu={{
+              items: [{ key: 'doc', label: '文档' }, ...(menuItems(record) || [])],
+              onClick: ({ key, domEvent }) => {
+                domEvent.stopPropagation();
+                if (key === 'doc') {
+                  onDocView(record.name);
+                  return;
+                }
+                onMenu(record, key);
+              },
+            }}
             placement="bottomRight"
             trigger={['click']}
           >
-            <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
+            <Button type="text" size="small" icon={<DotsIcon />} aria-label="更多操作" />
           </Dropdown>
         </Space>
       ),
@@ -997,6 +1128,7 @@ function DevTab({
               options={LIST_STATUSES.map((k) => ({ value: k, label: statusMeta(k).label }))}
             />
             <Radio.Group
+              className="ov-radio-dark"
               optionType="button"
               size="middle"
               value={type}
@@ -1008,8 +1140,11 @@ function DevTab({
               ]}
             />
           </Space>
-          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤；靠右显示 */}
+          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤；靠右显示。
+              两过滤组激活态黑底白字走 .ov-radio-dark 覆写类（2026-11-06 用户指令
+              「参考 overview 的 radio 控件样式」，DESIGN.md 一般域条款单源） */}
           <Radio.Group
+            className="ov-radio-dark"
             style={{ marginLeft: 'auto' }}
             optionType="button"
             size="middle"
@@ -1033,6 +1168,12 @@ function DevTab({
             archivedOnly={archivedOnly}
           />
         ) : (
+          // Bento 台账磁贴（2026-11-06 用户指令：桌面表格对齐 v2 projects 表格
+          // 边框——白磁贴发丝边 + 透明表头 + 发丝线行分隔 + 首列缩进，样式镜像
+          // 在 global.less .ov-bento / .ov-bento-table）。antd Table 控件与其
+          // 功能（表头排序/分页/树形展开/信息子行）原样保留，不替换为 v2 自绘表。
+          <div className="ov-bento">
+            <div className="ov-bento-table">
           <Table
             rowKey="name"
             tableLayout="fixed"
@@ -1072,6 +1213,8 @@ function DevTab({
               rowExpandable: (record: SpecSummary) => !!record.error,
             }}
           />
+            </div>
+          </div>
         )}
       </Card>
     </>

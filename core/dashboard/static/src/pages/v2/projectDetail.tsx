@@ -6,6 +6,19 @@
 // 列语义（进度 phase / 验证计数 / 耗时格式）与现产 projects/list 同源同口径，
 // 不重造判定。原型「新建 SPEC」按钮无对应端点（services 无 createSpec），按
 // 交互契约不渲染无定义行为的控件。
+//
+// 2026-11-06 用户指令六项（原型豁免点随指令修订）：
+// 1. 页底改纯白 + 内容列随外部容器满宽、左右固定 30px（V2Page
+//    variant="projects"，镜像 v2.less `.v2-page.v2-projects`）；
+// 2. 页标题收编全站统一标题栏控件（V2Page titleBar 槽位 + PageTitleBar，同
+//    原版 projects/list 逻辑：返回箭头回概览 + 项目名 + 「共 N 个 SPEC」计数
+//    随迁标题栏；自画 V2TitleBand 退役）；
+// 3. 表格撑满容器（满宽内容列承载）；
+// 4. 表格分页参考原版（pageSize 20 + showSizeChanger + 「共 N 条」）；
+// 5. 状态过滤下拉参考原版：LIST_STATUSES 全 11 态恒显（旧实现只列表内
+//    出现过的状态键，空态不可过滤）；
+// 6. 页签与原版保持一致：六分面全量对齐——代码审查/测试回归/架构蓝图/
+//    项目知识/会话接入复用现产组件（active 门控按需加载），占位说明页签退役。
 import { Alert, App, Button, Dropdown, Input, Progress, Radio, Select, Spin, Table, Tabs } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -15,7 +28,17 @@ import { deleteSpec, getSpecs, statusMeta } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
 import { fmtDuration } from '@/utils/duration';
 import { pct } from '@/utils/percent';
-import { V2IconDots, V2Page, V2Pill, V2StatusPill, V2TitleBand } from './shared';
+import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
+// 状态过滤值域与页签类型单源对齐现产（2026-11-06 用户指令五/六：下拉全 11 态、
+// 页签键域与 projects/list 同表）
+import { LIST_STATUSES } from '@/pages/projects/listFilters';
+import type { ListTab } from '@/pages/projects/listFilters';
+import QualityTab from '@/pages/projects/components/QualityTab';
+import RegressionTab from '@/pages/projects/components/RegressionTab';
+import ArchitectureTab from '@/pages/projects/components/ArchitectureTab';
+import KnowledgeTab from '@/pages/projects/components/KnowledgeTab';
+import SessionPanel from '@/pages/projects/components/SessionPanel';
+import { V2IconDots, V2Page, V2Pill, V2StatusPill } from './shared';
 import {
   useV2IsMobile,
   V2_HAIRLINE,
@@ -35,14 +58,10 @@ const MODE_LABEL: Record<string, string> = { 'fast-track': '快速', full: '标�
 // 已完结终态（「已完成」Radio 过滤口径；其余非终态全算「进行中」）
 const DONE_STATUSES = new Set(['pushed', 'archived', 'done']);
 
-function PlaceholderPane({ label, hint }: { label: string; hint: string }) {
-  return (
-    <div style={{ padding: '28px 4px' }}>
-      <div style={{ fontSize: 14, fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 6 }}>{hint}</div>
-    </div>
-  );
-}
+// 状态过滤选项单源对齐现产（2026-11-06 用户指令「下拉内容参考原版全部显示」）：
+// LIST_STATUSES 全 11 态恒显（v2 旧实现派生自表内出现过的状态键，空态/新态
+// 不可过滤），label 单源 statusMeta（与 projects/list 同款映射）
+const STATUS_OPTIONS = LIST_STATUSES.map((k) => ({ value: k, label: statusMeta(k).label }));
 
 /** 任务进度单元（现产 list 语义：impl 任务计数 / gates 门禁计数 / verify 验证
  * 计数；verify 未开始而出题进度可见时展示出题青。原型 PHASE 四态的 planning
@@ -134,12 +153,6 @@ function SpecDevPane({
   const [modeSel, setModeSel] = useState<'all' | 'fast-track' | 'full'>('all');
   const [lifeFilter, setLifeFilter] = useState<'all' | 'active' | 'done'>('all');
   const [busy, setBusy] = useState(false);
-
-  const statusOptions = useMemo(() => {
-    // 现产表内出现过的状态键域（去重），label 单源 statusMeta
-    const keys = Array.from(new Set(specs.map((s) => s.status).filter(Boolean) as string[]));
-    return keys.map((k) => ({ value: k, label: statusMeta(k).label }));
-  }, [specs]);
 
   const list = useMemo(() => {
     let out = specs;
@@ -290,7 +303,7 @@ function SpecDevPane({
             value={statusSel}
             onChange={setStatusSel}
             allowClear
-            options={statusOptions}
+            options={STATUS_OPTIONS}
           />
           <Select
             size="small"
@@ -388,7 +401,7 @@ function SpecDevPane({
           value={statusSel}
           onChange={setStatusSel}
           allowClear
-          options={statusOptions}
+          options={STATUS_OPTIONS}
         />
         <Radio.Group
           optionType="button"
@@ -407,7 +420,9 @@ function SpecDevPane({
           columns={columns}
           dataSource={list}
           rowKey="name"
-          pagination={false}
+          // 分页参考原版（2026-11-06 用户指令四）：pageSize 20 + 可换页大小 +
+          // 「共 N 条」合计，口径与 projects/list DevTab 同款
+          pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
           size="middle"
           scroll={{ x: 1080 }}
           onRow={(rec) => ({
@@ -462,53 +477,82 @@ export default function V2ProjectDetailPage() {
     [specs],
   );
 
+  // 页签选中态（2026-11-06 用户指令六：六分面对齐现产 projects/list，键域单源
+  // ListTab）。现产把 tab 持久化到 URL 参数属过滤粘滞域，v2 页维持改造前
+  // defaultActiveKey 等价的内存态，不引入 URL 契约。
+  const [activeTab, setActiveTab] = useState<ListTab>('dev');
+
   return (
-    <V2Page>
-      <V2TitleBand
-        title={name}
-        onBack={() => navigate('/v2/overview')}
-        backTitle="返回概览"
-        subtitle={specs ? `共 ${specs.length} 个 SPEC · ${activeCount} 个活跃` : undefined}
-      />
-      <div style={{ marginTop: 18 }}>
-        {error ? (
-          <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
-        ) : null}
-        {loading && !specs ? (
-          <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
-            <Spin size="large" />
-          </div>
-        ) : specs ? (
-          <div className="v2-bento" data-proto-id="pd-panel" style={{ padding: '4px 20px 16px' }}>
-            <Tabs
-              defaultActiveKey="dev"
-              items={[
-                { key: 'dev', label: '功能开发', children: <SpecDevPane project={name} specs={specs} onChanged={() => void load()} mobile={mobile} /> },
-                {
-                  key: 'review',
-                  label: '代码审查',
-                  children: (
-                    <PlaceholderPane
-                      label="代码审查分面"
-                      hint="审查快照、发现台账与质量分面（原型示意页签，内容随实现展开）"
-                    />
-                  ),
-                },
-                {
-                  key: 'regression',
-                  label: '测试回归',
-                  children: <PlaceholderPane label="测试回归分面" hint="全量回归声明、执行与展示（原型示意页签）" />,
-                },
-                {
-                  key: 'session',
-                  label: '会话接入',
-                  children: <PlaceholderPane label="会话接入分面" hint="dsh 会话面板与 run 会话流（原型示意页签）" />,
-                },
-              ]}
-            />
-          </div>
-        ) : null}
-      </div>
+    <V2Page
+      variant="projects"
+      titleBar={
+        // 统一标题栏声明（2026-11-06 用户指令二，同原版 projects/list 逻辑）：
+        // 返回箭头回 /v2/overview + 项目名 + 「共 N 个 SPEC · M 个活跃」计数
+        // 随迁（TitleBarNum 等宽）。行壳位（embed/移动端）满宽贴顶由 V2Page
+        // titleBar 槽位结构保证（.v2-page 直下、.v2-inner 之前）。
+        <PageTitleBar
+          back={() => navigate('/v2/overview')}
+          title={name}
+          subtitle={
+            specs ? (
+              <>
+                共 <TitleBarNum>{specs.length}</TitleBarNum> 个 SPEC ·{' '}
+                <TitleBarNum>{activeCount}</TitleBarNum> 个活跃
+              </>
+            ) : undefined
+          }
+        />
+      }
+    >
+      {error ? (
+        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
+      ) : null}
+      {loading && !specs ? (
+        <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
+          <Spin size="large" />
+        </div>
+      ) : null}
+      {specs ? (
+        <div className="v2-bento" data-proto-id="pd-panel" style={{ padding: '4px 20px 16px' }}>
+          <Tabs
+            activeKey={activeTab}
+            onChange={(k) => setActiveTab(k as ListTab)}
+            items={[
+              {
+                key: 'dev',
+                label: '功能开发',
+                children: <SpecDevPane project={name} specs={specs} onChanged={() => void load()} mobile={mobile} />,
+              },
+              {
+                key: 'quality',
+                label: '代码审查',
+                // 现产组件复用（2026-11-06 用户指令六）；active 门控未选中零请求
+                children: <QualityTab project={name} active={activeTab === 'quality'} />,
+              },
+              {
+                key: 'regression',
+                label: '测试回归',
+                children: <RegressionTab project={name} active={activeTab === 'regression'} />,
+              },
+              {
+                key: 'architecture',
+                label: '架构蓝图',
+                children: <ArchitectureTab project={name} active={activeTab === 'architecture'} />,
+              },
+              {
+                key: 'knowledge',
+                label: '项目知识',
+                children: <KnowledgeTab project={name} active={activeTab === 'knowledge'} />,
+              },
+              {
+                key: 'session',
+                label: '会话接入',
+                children: <SessionPanel project={name} active={activeTab === 'session'} />,
+              },
+            ]}
+          />
+        </div>
+      ) : null}
     </V2Page>
   );
 }
