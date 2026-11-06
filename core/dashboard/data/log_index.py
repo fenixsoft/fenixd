@@ -12,6 +12,8 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from core.logger import LOG_EVENT_MAX_BYTES
+
 # ── fenixd 日志块偏移索引（dashboard-log-offset-index D5） ─────
 
 # 每 64KB 一块；查询窗口只读尾部 ≤1MB（16 块），不再全量扫描日志文件。
@@ -25,7 +27,13 @@ LOG_INDEX_ANCHOR_WINDOW = 1 * 1024 * 1024
 # 越过该行字节区间继续读后续行——超长行内容不读入内存，单请求读取字节数有
 # 界（阈值常量 + 窗口上限双重约束）。写侧已加 LOG_EVENT_MAX_BYTES 封顶，
 # 存量巨型行只求读侧跳过（设计 D2：扩大窗口上限会让内存无界化，否决）。
-LOG_LINE_SKIP_THRESHOLD = 128 * 1024
+# 与写侧封顶同源对齐（code-review item f729fb381a87）：直接 import 写侧常量
+# 而非复刻数值——写侧合法落盘的最大事件行可达 LOG_EVENT_MAX_BYTES，原 128KB
+# 阈值低于该封顶，128–256KB 的合法事件行（封顶前巨型错误转储被截断后的典型
+# 体量）在尾窗/锚定窗口/get_recent_events 全部读路径被静默判弃且无丢弃标注；
+# 阈值抬到与封顶一致后该区间读侧可见，存量巨型行（远超封顶，如 admin_monitor
+# 单行 6.6MB）仍被跳过，单请求内存峰值仍以「阈值 + 单块」为界。
+LOG_LINE_SKIP_THRESHOLD = LOG_EVENT_MAX_BYTES
 # 进程内重建计数（测试断言用：追加热更新 0 次重建、损坏容错恰好 1 次）。
 _LOG_INDEX_REBUILDS = {"count": 0}
 
@@ -592,6 +600,50 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
     return events[-limit:]
 
 
+def _project_event_len(entry: dict) -> int:
+    """序列化产物的 UTF-8 字节长（与 core/logger.py _json_len 同口径，replace 不抛）。"""
+    return len(
+        json.dumps(entry, ensure_ascii=False, default=str).encode("utf-8", "replace")
+    )
+
+
+def _cap_project_event(entry: dict, orig_bytes: int) -> dict:
+    """超限项目事件截断防御：保证序列化单行 ≤ LOG_EVENT_MAX_BYTES（原位修改并返回）。
+
+    与 core/logger.py JsonFormatter._cap_event 同构、封顶值同源（code-review
+    item f729fb381a87；不跨组消费其私有实现）：① context 替换为占位摘要
+    （truncated/orig_bytes/context_keys），message 等其余字段原样保留；② 替换
+    后仍超限（message/component 等字符串字段单体超限）逐次折半尾部截断并附
+    顶层 truncated 留痕，折半终止性与 256 轮上界同 core/logger.py；③ 折半尽
+    仍超限（context 含超长键名致占位摘要自身超限等病态输入可达）丢弃 context，
+    该形态下单行回归固定小尺寸，封顶在任意输入下可达。截断恒以 json.dumps
+    产物落盘，保持合法 JSON 可解析（读侧逐行解析不受影响）。
+    """
+    if "context" in entry:
+        orig_ctx = entry["context"]
+        entry["context"] = {
+            "truncated": True,
+            "orig_bytes": orig_bytes,
+            "context_keys": list(orig_ctx.keys()) if isinstance(orig_ctx, dict) else [],
+        }
+        if _project_event_len(entry) <= LOG_EVENT_MAX_BYTES:
+            return entry
+    entry["truncated"] = True
+    for _ in range(256):
+        if _project_event_len(entry) <= LOG_EVENT_MAX_BYTES:
+            return entry
+        for field in ("message", "component", "level"):
+            val = entry.get(field)
+            if isinstance(val, str) and val:
+                entry[field] = val[: len(val) // 2] if len(val) > 1 else ""
+                break
+        else:
+            break
+    # 折半尽仍超限：仅 context 占位摘要自身超限（超长键名清单）可达，丢弃之。
+    entry["context"] = {"truncated": True}
+    return entry
+
+
 def record_project_event(
     project_root, component: str, message: str, level: str = "INFO", context: dict | None = None
 ) -> None:
@@ -625,11 +677,23 @@ def record_project_event(
         }
         if context:
             entry["context"] = context
+        line = json.dumps(entry, ensure_ascii=False, default=str)
+        total = len(line.encode("utf-8", "replace"))
+        if total > LOG_EVENT_MAX_BYTES:
+            # 写侧同源封顶（code-review item f729fb381a87）：dashboard 侧事件
+            # 此前无任何长度封顶，超大 message/context 落盘行超出读侧
+            # LOG_LINE_SKIP_THRESHOLD 后在尾窗/锚定窗口全部读路径静默不可见。
+            # 截断防御与 core/logger.py JsonFormatter._cap_event 同构（封顶值
+            # 同源、不跨组消费其私有实现），产物保持合法 JSON 可解析；不超限
+            # 路径逐字节不变。
+            line = json.dumps(
+                _cap_project_event(entry, total), ensure_ascii=False, default=str
+            )
         # [fenix-ignore:3a4ea2594eec] 误报：单次 f.write(str) 经 TextIOWrapper+BufferedWriter 合并为一次 write() 系统调用整行落盘，超缓冲走直写路径不拆分，O_APPEND 下内核串行化——同 core/logger.py:161 strace 实测先例（两进程并发 1100 条 120–180KB 大行逐行解析 0 撕裂），「O_APPEND 追加互不覆盖」表述成立，不修
         with (logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
             # default=str 兜底：context 含 Path/datetime 等不可序列化对象时
             # 序列化为字符串而非抛 TypeError 穿透（写日志失败静默降级的承诺）
-            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            f.write(line + "\n")
     # ValueError 族覆盖 UnicodeEncodeError：context/message 含 lone surrogate 时
     # ensure_ascii=False 产物在 utf-8 落盘编码阶段抛的是编码错误而非 OSError
     except (OSError, ValueError):

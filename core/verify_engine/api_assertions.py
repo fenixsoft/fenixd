@@ -688,9 +688,28 @@ class ApiAssertionRunner:
                 "pass": False,
                 "error": "缺少 header 字段",
             }
+        raw_headers = resp.get("headers")
+        # fail-closed：headers 非 dict 形态（mock/手写 capture 来源的 list/str
+        # 等）会让下方 .items() 抛 AttributeError，被 run() 兜底包成笼统
+        # 「断言执行异常」，judge 无法区分场景捕获畸形与产品行为——定向
+        # 归因口径对齐 _assert_sse_event_matches 对 events 非 dict 的预检；
+        # None = 无 headers（不算畸形），保持下方 or {} 的既有行为
+        if raw_headers is not None and not isinstance(raw_headers, dict):
+            return {
+                "type": "response_header",
+                "header": header,
+                "expected": expected,
+                "mode": mode,
+                "actual": None,
+                "pass": False,
+                "error": (
+                    f"响应捕获 headers 字段非法: 须为 dict 键值映射，"
+                    f"实际 {type(raw_headers).__name__}，capture 结构非法"
+                ),
+            }
         actual = None
         found = False
-        for k, v in (resp.get("headers") or {}).items():
+        for k, v in (raw_headers or {}).items():
             if k.lower() == str(header).lower():
                 actual = v
                 found = True

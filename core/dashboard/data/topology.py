@@ -65,6 +65,7 @@ _ROLE_TABLE = {
     "code-fix": ("review", "review", "代码修复"),
     "tester": ("test", "test", "测试"),
     "verifier": ("test", "test", "验证"),
+    "arbiter": ("ops", "ops", "仲裁裁决"),
     "administrator": ("ops", "ops", "运维"),
 }
 # 未识别前缀（infer_run_agent_type 的 "agent" 泛型兜底与一切未知值）：落开发列
