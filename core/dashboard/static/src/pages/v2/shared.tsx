@@ -6,20 +6,42 @@ import { Tag } from 'antd';
 import type { CSSProperties, ReactNode } from 'react';
 import { statusMeta } from '@/services/dashboard';
 import './v2.less';
-import {
-  useV2IsMobile,
-  V2ConfigProvider,
-  V2_PILL_RADIUS,
-  V2_TONE,
-  V2_TEXT_SECONDARY,
-  V2_WHITE,
-} from './theme';
+import { V2ConfigProvider, V2_PILL_RADIUS, V2_TONE, V2_WHITE } from './theme';
 
-/** v2 页壳：局部 Bento 主题 + 浅灰页底 + 1400px 居中内容列（原型 main 形态）。 */
-export function V2Page({ children }: { children: ReactNode }) {
+/** v2 页壳：局部 Bento 主题 + 浅灰页底 + 1400px 居中内容列（原型 main 形态）。
+ * variant="overview"：概览页变体（白底 + 内容列随外部容器满宽、左右固定 30px，
+ * 样式镜像 v2.less `.v2-page.v2-overview`）；variant="projects"：项目详情页变体
+ * （同 overview 白底满宽 30px 形态，2026-11-06 用户指令「v2 项目页背景改纯白 +
+ * 表格撑满容器」，镜像 `.v2-page.v2-projects`）；variant="white"：仅页底改白、
+ * 居中列不变（2026-11-06 用户指令「v2 帮助中心背景改白」，镜像
+ * `.v2-page.v2-white`），缺省形态不变。
+ * titleBar：统一标题栏声明（2026-11-06 用户指令「v2 页标题收编全站统一标题栏
+ * 控件」——六页自画 V2TitleBand 标题带整体退役）。渲染在 `.v2-page` 直下、
+ * `.v2-inner` 之前：行壳位（embed 档 60px sticky；2026-11-06 二次指令后移动端
+ * 行壳位退役、标题随顶栏 HeaderSlot，本槽位结构对移动端同样无害）满宽贴顶
+ * （sticky 钉视口顶依赖此结构，进 .v2-inner 会被 1400px 收窄 + 页顶内边距架空）；
+ * standalone 桌面控件本体渲染 null，标题经注册表落 ProLayout 顶栏插槽。 */
+export function V2Page({
+  children,
+  variant,
+  titleBar,
+}: {
+  children: ReactNode;
+  variant?: 'overview' | 'white' | 'projects';
+  titleBar?: ReactNode;
+}) {
+  const cls =
+    variant === 'overview'
+      ? 'v2-page v2-overview'
+      : variant === 'white'
+        ? 'v2-page v2-white'
+        : variant === 'projects'
+          ? 'v2-page v2-projects'
+          : 'v2-page';
   return (
     <V2ConfigProvider>
-      <div className="v2-page">
+      <div className={cls}>
+        {titleBar}
         <div className="v2-inner">{children}</div>
       </div>
     </V2ConfigProvider>
@@ -73,79 +95,8 @@ export function V2IconDots() {
   );
 }
 
-/** 返回箭头（标题带左端，原型 BackArrow 形态）。title 经 aria-label 承载
- * （SVGProps 无原生 title 属性）。 */
-export function V2BackArrow({ onClick, title }: { onClick: () => void; title?: string }) {
-  return (
-    <svg
-      width={14}
-      height={14}
-      viewBox="0 0 14 14"
-      fill="none"
-      aria-hidden
-      aria-label={title}
-      style={{ cursor: 'pointer', flexShrink: 0 }}
-      onClick={onClick}
-    >
-      <path
-        d="M9 2.5 4.5 7 9 11.5"
-        stroke={V2_TEXT_SECONDARY}
-        strokeWidth={1.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** 页标题带（轻产品头：22px 大标题 + 副标题行；移动形态 20px 收纳，富组合
- * 允许换行防溢出）。右侧富组合由各页 children 传入（标题带形态按各页定稿
- * 原型，豁免全站统一标题栏形态基准）。 */
-export function V2TitleBand({
-  title,
-  subtitle,
-  right,
-  onBack,
-  backTitle,
-  children,
-}: {
-  title: ReactNode;
-  subtitle?: ReactNode;
-  right?: ReactNode;
-  onBack?: () => void;
-  backTitle?: string;
-  children?: ReactNode;
-}) {
-  const mobile = useV2IsMobile();
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-      {onBack ? <V2BackArrow onClick={onBack} title={backTitle} /> : null}
-      <div style={{ minWidth: 0, flex: mobile ? 1 : undefined }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {typeof title === 'string' ? (
-            <span
-              style={{
-                fontSize: mobile ? 20 : 22,
-                fontWeight: 700,
-                letterSpacing: -0.3,
-                lineHeight: '28px',
-              }}
-            >
-              {title}
-            </span>
-          ) : (
-            title
-          )}
-          {children}
-        </div>
-        {subtitle ? (
-          <div className="v2-num" style={{ fontSize: 13, color: V2_TONE.muted[0], marginTop: 2 }}>
-            {subtitle}
-          </div>
-        ) : null}
-      </div>
-      <span style={{ flex: 1 }} />
-      {right}
-    </div>
-  );
-}
+/** 页标题带已退役（2026-11-06 用户指令「v2 页标题收编全站统一标题栏控件」）：
+ * 六页（overview / projectDetail / specDetail / settings / help / ops）全部改经
+ * `<V2Page titleBar={<PageTitleBar … />}>` 声明标题元数据（title/subtitle/back/
+ * filters 四槽位，壳位判定收敛在控件内），本组件与配套 V2BackArrow 已删除，
+ * 守卫 tests/v2TitleBarGuard.test.mjs 钉死勿回填。 */

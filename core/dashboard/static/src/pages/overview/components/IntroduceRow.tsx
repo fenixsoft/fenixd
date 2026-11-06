@@ -323,14 +323,9 @@ export default function IntroduceRow({
   tokenRecent: TokenUsageItem[];
 }) {
   return (
-    <div
-      className="overview-intro-row"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-        gap: 16,
-      }}
-    >
+    // 网格布局迁 global.less（2026-11-06 用户指令：移动端对齐 v2 概览 2×2 磁贴，
+    // inline 样式会挡住移动断点媒体查询；桌面 auto-fit 口径不变）
+    <div className="overview-intro-row">
       <SpecCountTile totals={totals} />
       <TaskProgressTile totals={totals} />
       <TokenTile recent={tokenRecent} />

@@ -1,9 +1,10 @@
 /**
  * 帮助中心（add-dashboard-help-center D4/D5）
  *
- * 桌面端：左侧文档目录（选中高亮）+ 右侧 Markdown 正文；整卡定高
- * （calc(100vh - 页框偏移)，见 HELP_FRAME_OFFSET），滚动条下沉——正文 div
- * 自滚、目录不随页面滚动（2026-11-04 用户指令）。
+ * 桌面端：左侧文档目录（选中高亮）+ 右侧 Markdown 正文；页面纵向滚动统一走
+ * 文档级——滚动条跨标题区域（2026-11-05 用户指令「全站滚动条范围统一」），
+ * 原 2026-11-04 整卡定高 + 正文 div 自滚形态已整体退役；目录列本体 sticky
+ * 钉在标题带下缘不随页面滚走（2026-11-05 用户指令「菜单/目录不能滚走」）。
  * 移动端（<768px）：正文上方抽屉式目录切换（Drawer）。
  * URL query 同步当前文档：`?doc=<name>`，缺省 README.md，刷新/直链可还原。
  * 正文 mermaid 代码块动态 import 按需渲染；相对链接改为页内切换：
@@ -29,7 +30,7 @@ import { isEmbedMode } from '@/utils/embedMount';
 // 选中底色单源（theme.ts；help.css 纯 CSS 无法 import，经内联样式注入，见 HelpMenu）。
 // 2026-11-04 用户统一裁决：目录菜单选中底与侧栏/设置菜单看齐（DSH_MENU_SELECTED_BG，
 // 黑 4% alpha），原冷灰 10% 显著深于其他菜单。
-import { DSH_MENU_SELECTED_BG, dshLayoutToken } from '@/theme';
+import { DSH_MENU_SELECTED_BG } from '@/theme';
 import { MERMAID_INIT_CONFIG } from './mermaidInit';
 import './help.css';
 
@@ -39,23 +40,18 @@ const SafeLinkComp = SafeLink as ComponentType<AnchorHTMLAttributes<HTMLAnchorEl
 
 const DEFAULT_DOC = 'README.md';
 
+// 目录列 sticky 钉住偏移（2026-11-05 用户指令「菜单/目录不能滚走」）：目录本体
+// 钉在固定标题带下缘——standalone = ProLayout 顶栏 56（fixed，标题承载于顶栏
+// 插槽）；embed = 统一标题栏行壳位 60（PageTitleBar sticky top:0 + minHeight 60，
+// 本列钉其下）。仅定位用途（sticky top），不吃高度链——与已退役的
+// HELP_FRAME_OFFSET 定高偏移（旧 56/60，见 git 历史）数值巧合、职责不同。
+// 改顶栏/行壳位高度须回校本值。
+const HELP_TOC_STICKY_TOP = isEmbedMode() ? 60 : 56;
+
 // remarkPlugins 提为模块级常量（code-review item e80d92a09a0e）：内联数组每次渲染
 // 新建引用会让 react-markdown 对整篇文档重新 parse（移动端开合目录抽屉、isMobile
 // 变化等重渲染均触发），比照 activities 页 ACTIVITY_REMARK_PLUGINS 模式复用同一引用
 const HELP_REMARK_PLUGINS = [remarkGfm];
-
-// 桌面端整卡定高偏移：calc(100vh - 本值)——滚动条下沉到正文 div 的前提（高度链
-// 从视口算起，滚动全部走容器内滚动条）。偏移 = 卡片上方的页框占用，实测校准
-// （1440×900）：unified-page-title-bar 页头全站退役后，standalone 仅 ProLayout
-// 顶栏 56（原 PageContainer 页头 56 已随页头摘除消失，旧值 112=56+56 见 git 历
-// 史）；embed 模式（dsh 面板桥 iframe）headerRender:false 无顶栏，为统一标题栏
-// 行壳位 60（2026-11-05 用户定调 embed 档 48→60 升格固定标题带，sticky 只吃
-// 高度不改文档流占位）。卡片贴视口底后文档流高度恰 = 100vh，#root 的 min-height:100vh 被
-// 填满——视口下方无空带、页面也不残生第二根滚动条（前置条件：children 容器
-// padding-block-end 已由 global.less 归零，两处须同步）。口径同 pageChrome.ts
-// 的校准常数（那是项目详情页 Tabs 版页框，本页无 Tabs 不通用）；纯 CSS calc，
-// 浏览器缩放/窗口拉伸免 JS 重算。
-const HELP_FRAME_OFFSET = isEmbedMode() ? 60 : 56;
 
 function getDocFromUrl(): string {
   try {
@@ -572,41 +568,46 @@ export default function HelpPage() {
     );
   }
 
-  // 桌面端布局：目录与正文同处一张圆角白底卡片；整卡定高（calc(100vh - 偏移)，
-  // HELP_FRAME_OFFSET 处注释），滚动条下沉——正文 div 自滚（overflowY auto；
-  // 锚点 scrollIntoView 滚动最近滚动祖先，页内锚点跳转不受影响），目录不再随
-  // 页面滚动（2026-11-04 用户指令）；目录列自滚兜底长目录（页面不滚后无自滚
-  // 会被定高裁掉）
+  // 桌面端布局：目录与正文同处一张圆角白底卡片；卡体随内容自然增高，页面纵向
+  // 滚动统一走文档级——滚动条跨标题区域（2026-11-05 用户指令「全站滚动条范围
+  // 统一」，同概览/项目/运维记录口径），原 2026-11-04 整卡定高 + 正文 div 自滚
+  // 形态整体退役。锚点 scrollIntoView 滚动最近滚动祖先（现为文档），页内锚点
+  // 跳转不受影响。目录列外壳撑满列高（右缘分隔线全长），目录本体 sticky 钉在
+  // 标题带下缘不随页面滚走（2026-11-05 用户指令「菜单/目录不能滚走」）；
+  // 长目录超出视口时目录自滚兜底（overflowY auto 仅此 fallback 生效，正文无内滚）。
   return (
     <>
       {/* 统一标题栏声明（unified-page-title-bar 2.1）：standalone 顶栏承载，
           embed 自动落内容区首行行壳位 */}
       <PageTitleBar title="帮助" />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-      {/* 右缘负外边距吃掉内容区右留白（值取 dshLayoutToken 单源，勿硬编码）：
-          正文滚动条随卡右缘直达窗口右缘（2026-11-04 用户指令）；左缘留白保留 */}
-      <Card
-        styles={{ body: { padding: 0 } }}
-        style={{ marginInlineEnd: -dshLayoutToken.pageContainer.paddingInlinePageContainerContent }}
-      >
-        <div style={{ display: 'flex', height: `calc(100vh - ${HELP_FRAME_OFFSET}px)`, minHeight: 320 }}>
-          {/* 左侧目录 */}
+      <Card styles={{ body: { padding: 0 } }}>
+        <div style={{ display: 'flex' }}>
+          {/* 左侧目录列 */}
           <div
             style={{
               width: 240,
               flexShrink: 0,
               borderRight: '1px solid var(--ant-color-border-secondary)',
-              padding: '16px 0',
-              overflowY: 'auto',
             }}
           >
-            <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: 'var(--ant-color-text-description)' }}>
-              文档目录
+            <div
+              style={{
+                position: 'sticky',
+                top: HELP_TOC_STICKY_TOP,
+                maxHeight: `calc(100vh - ${HELP_TOC_STICKY_TOP}px - 16px)`,
+                padding: '16px 0',
+                overflowY: 'auto',
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: 'var(--ant-color-text-description)' }}>
+                文档目录
+              </div>
+              <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
             </div>
-            <HelpMenu docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
           </div>
           {/* 右侧正文：padding-top 归 0（2026-11-04 用户指令，24 → 0；底部 24 呼吸保留） */}
-          <div style={{ flex: 1, minWidth: 0, padding: '0 32px 24px', fontSize: 14, lineHeight: 1.65, overflowY: 'auto' }}>
+          <div style={{ flex: 1, minWidth: 0, padding: '0 32px 24px', fontSize: 14, lineHeight: 1.65 }}>
             {renderContent()}
           </div>
         </div>

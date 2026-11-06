@@ -54,12 +54,24 @@ export const DSH_CONTROL_HEIGHT_SM = 28;
 export const DSH_FONT_FAMILY =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
-/** dsw static-neutral-bluish-50：表格表头 / 轻底纹档（同侧栏底色一族）。 */
+/** dsw static-neutral-bluish-50：布局 chrome 底色档（2026-11-06 用户指令
+ * 「菜单、标题栏、Fenix Harness 标题背景 rgb(249,250,251)」后升格）——表格表头 /
+ * 轻底纹 / 侧栏菜单 / 标题栏玻璃染色 rgb 通道全部取本值。 */
 export const DSH_BG_SOFT = '#f9fafb';
-/** 行壳位玻璃底（2026-11-05 用户指令「embed 标题带复刻顶栏半透明模糊」）：
- * 上值 60% 透明形态，配 backdrop-filter blur(8px) 使用。两值必须同源共改
- * （pageTitleBar 守卫测试钉住通道一致）。 */
+/** 行壳位玻璃底（embed 档标题带）：上值 60% 透明形态，配 backdrop-filter
+ * blur(8px) 使用。rgb 通道必须与 DSH_BG_SOFT 同源共改（pageTitleBar 守卫测试
+ * 钉住通道一致与透明度必须保留——毛玻璃生效前提=底半透明，回实底即静默失效）。
+ * （2026-11-06 用户指令「标题栏只是改变颜色，保留毛玻璃」：当日早前误改实底，
+ * 本值恢复并确认保留。） */
 export const DSH_BG_SOFT_GLASS = 'rgba(249, 250, 251, 0.6)';
+/** standalone 顶栏玻璃底（2026-11-06 用户指令「标题栏只换染色保留毛玻璃」）：
+ * pro-layout fixedHeader 缺省 rgba(255,255,255,0.4) 的 soft 染色形态，alpha 0.4
+ * 同档只换 rgb 通道；blur 由 pro-layout 顶栏样式内置（blur(8px)+-webkit-），
+ * 无需另配。 */
+export const DSH_HEADER_GLASS = 'rgba(249, 250, 251, 0.4)';
+/** standalone 顶栏滚动态玻璃底：-fixed-header-scroll 类换底档，缺省
+ * rgba(255,255,255,0.8) 的 soft 染色形态。漏配则滚动态顶栏回白。 */
+export const DSH_HEADER_GLASS_SCROLL = 'rgba(249, 250, 251, 0.8)';
 /** dsw alias-bg-module-platform（neutral-bluish-60）：行 hover / 中性填充档。 */
 export const DSH_BG_MODULE = '#f5f6f7';
 /** dsw alias-interactive-bg-hover（#2631480f）：侧栏行 hover 冷灰。 */
@@ -89,6 +101,26 @@ export const DSH_MENU_SELECTED_BG = 'rgba(0, 0, 0, 0.04)';
  * 与本值等量抵消，改本值必须同步该负边距（两处注释互指）。
  */
 export const dshLayoutToken = {
+  header: {
+    // 顶栏玻璃染色换 soft（2026-11-06 用户指令两段：先「菜单、标题栏、Fenix
+    // Harness 标题背景 rgb(249,250,251)」，后更正「标题栏只是改变颜色，保留
+    // 毛玻璃」）——pro-layout fixedHeader 顶栏缺省白染毛玻璃
+    // （rgba(255,255,255,0.4/0.8) + 内置 blur(8px)）只换 rgb 通道为 soft，
+    // alpha 双档不变；Fenix Harness 品牌区随顶栏同底（GlobalHeader transparent）。
+    // **colorBgScrollHeader 必须随配**：fixedHeader 滚动超过 56px 时滚动态类名
+    // （-fixed-header-scroll）换底，漏配即滚动态回白染色。顶栏下边框（pro-layout
+    // header borderBlockEnd）与侧栏右边框（sider-children borderInlineEnd）同为
+    // colorSplit=DSH_SPLIT，「标题栏下边框与菜单右边框一致可见」由两处同取
+    // colorSplit 成立，勿局部覆写。
+    colorBgHeader: DSH_HEADER_GLASS,
+    colorBgScrollHeader: DSH_HEADER_GLASS_SCROLL,
+  },
+  sider: {
+    // 侧栏（菜单）底色同批改 soft（pro-layout 缺省侧栏底 = antd lightSiderBg =
+    // colorBgContainer 白）；同键兼作侧栏 Menu 的 itemBg/subMenuItemBg，与容器
+    // 同色即菜单行与侧栏平涂一体。
+    colorMenuBackground: DSH_BG_SOFT,
+  },
   pageContainer: {
     paddingInlinePageContainerContent: 15,
     // unified-page-title-bar 3.2 实拍回校：页头摘除（pageHeaderRender={false}）

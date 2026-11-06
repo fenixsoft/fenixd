@@ -27,11 +27,20 @@ import {
 import { isEmbedMode } from '../../utils/embedMount.ts';
 
 // 屏底/卡底：白底页面上数据卡=白底+细描边（同 overview 统计卡行豁免习语，
-// 0.10 档描边承担卡感；包裹卡去边框规则不涉及本页——本页卡片均为数据卡）
+// 0.10 档描边承担卡感；包裹卡去边框规则不涉及本页——本页卡片均为数据卡）。
+// 2026-11-06 用户指令：卡片框改 Bento 形态（CARD_FRAME_*），本值降级为非框
+// 用途——sparkline 空点填充（OrgGrid）、流水线列头分隔线（PipelineBoard）。
 export const BG = '#ffffff';
 export const PANEL_BORDER = DSH_BORDER_SECONDARY;
 export const TEXT_MAIN = DSH_TEXT;
 export const TEXT_SUB = DSH_TEXT_SECONDARY;
+
+// ── Bento 磁贴边框（2026-11-06 用户指令「三个页签的卡片框都改为 bento 样式」）
+// ── 值镜像 pages/v2/theme.tsx（例外域配色单源不得跨域 import，两处同改）；圆角
+// 固定 12px 见 DESIGN.md 通用条款（本页白底磁贴，不适用 settings 灰底准例）。
+export const CARD_FRAME_BORDER = '#eef2f7'; // = V2_TILE_BORDER / V2_HAIRLINE
+export const CARD_FRAME_SHADOW =
+  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)'; // = V2_TILE_SHADOW
 
 // null 指标占位：分母零/不可计价/数据缺口一律「—」（MUST NOT 显示 0——0 与
 // 「口径不可得」语义不同，specs「验收与红线」节）；数值原样字符串化（0 保留）。

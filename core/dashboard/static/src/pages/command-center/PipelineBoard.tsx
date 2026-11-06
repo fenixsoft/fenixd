@@ -20,6 +20,8 @@ import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
 import {
   BG,
+  CARD_FRAME_BORDER,
+  CARD_FRAME_SHADOW,
   GREEN,
   PANEL_BORDER,
   SCREEN_CHROME_OFFSET,
@@ -47,8 +49,10 @@ function PipelineCard({
         if (e.key === 'Enter') open();
       }}
       style={{
-        border: `1px solid ${PANEL_BORDER}`,
-        borderRadius: 8,
+        // Bento 磁贴框（2026-11-06 用户指令：卡片框对齐 bento 样式，shared 单源）
+        border: `1px solid ${CARD_FRAME_BORDER}`,
+        borderRadius: 12,
+        boxShadow: CARD_FRAME_SHADOW,
         padding: '8px 10px',
         background: BG,
         cursor: 'pointer',
@@ -163,8 +167,10 @@ export default function PipelineBoard({
           <div
             key={col.key}
             style={{
-              border: `1px solid ${PANEL_BORDER}`,
-              borderRadius: 8,
+              // Bento 磁贴框（2026-11-06 用户指令，shared 单源）
+              border: `1px solid ${CARD_FRAME_BORDER}`,
+              borderRadius: 12,
+              boxShadow: CARD_FRAME_SHADOW,
               padding: 10,
               display: 'flex',
               flexDirection: 'column',

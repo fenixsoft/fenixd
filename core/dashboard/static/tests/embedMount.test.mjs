@@ -187,8 +187,8 @@ test('embed 壳位判定链：isEmbedMode() 是行壳位判定式首项（embed=
   );
   assert.match(
     barSource,
-    /const rowSlot = isEmbedMode\(\) \|\| isMobile;/,
-    'embed 必须落行壳位（isEmbedMode 在判定式首位）',
+    /const rowSlot = isEmbedMode\(\);/,
+    'embed 必须落行壳位（2026-11-06 移动端并入顶栏后判定式仅剩 embed）',
   );
   // 判定为真后本体渲染行壳位（顶栏壳位 return null 只覆盖 standalone 桌面档）
   assert.match(barSource, /if \(!rowSlot\) return null;/);
@@ -202,7 +202,7 @@ test('embed 行壳位承载完整标题链：标题 + 条件副标题 + 过滤�
   );
   // 行壳位 JSX 内三内部件齐备（title 恒渲染、subtitle/filters 条件渲染）
   assert.match(barSource, /<TitleNode title=\{props\.title\} \/>/);
-  assert.match(barSource, /\{props\.subtitle != null \? <SubtitleNode subtitle=\{props\.subtitle\} \/> : null\}/);
+  assert.match(barSource, /\{props\.subtitle != null && !isMobile \? <SubtitleNode subtitle=\{props\.subtitle\} \/> : null\}/);
   assert.match(barSource, /\{props\.filters \? <FiltersNode filters=\{props\.filters\} wrap \/> : null\}/);
 });
 

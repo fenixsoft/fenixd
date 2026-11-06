@@ -35,22 +35,17 @@ import ArbiterPanel from './components/ArbiterPanel';
 // ——原独立「处置链」页签已并入「仲裁」页签堆叠呈现
 import ChainPanel from './components/ChainPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
-import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
+import type { SettingsSectionHandle } from './components/settingsSection';
 
 const { Text } = Typography;
 
-// 桌面端整卡定高偏移（口径同帮助页 HELP_FRAME_OFFSET，其处有完整校准注释）：
-// unified-page-title-bar 页头全站退役后，standalone = ProLayout 顶栏 56（原
-// PageContainer 页头 56 + heading 块尾 12 已随页头摘除一并消失，global.less 的
-// heading 12px 补偿规则与右栏 marginTop:-30 上探补偿同步退役——补偿对象不复
-// 存在，旧值 124=56+56+12 / 68=56+12 见 git 历史）；embed=1 面板桥
-// headerRender:false 无顶栏，为统一标题栏行壳位 60（2026-11-05 用户定调
-// embed 档 48→60 升格固定标题带；sticky 不改文档流占位，只吃高度）。
-// 卡高 calc(100vh - 本值) 后文档流恰满视口（前置：children 容器
-// padding-block-end 已由 global.less 归零）；配合 global.less 卡体 flex 传导与
-// 右侧面板内联 overflowY，右栏自滚、左侧菜单固定（2026-11-04 用户指令）。
-// 纯 CSS calc，无脚本算高。改标题行或内容区顶带任何内边距必须回校本值。
-const SETTINGS_FRAME_OFFSET = isEmbedMode() ? 60 : 56;
+// 左侧菜单列 sticky 钉住偏移（2026-11-05 用户指令「菜单/目录不能滚走」）：菜单
+// 本体钉在固定标题带下缘——standalone = ProLayout 顶栏 56（fixed，标题承载于
+// 顶栏插槽）；embed = 统一标题栏行壳位 60（PageTitleBar sticky top:0 +
+// minHeight 60，本列钉其下）。仅定位用途（sticky top），不吃高度链——与已退役
+// 的 SETTINGS_FRAME_OFFSET 定高偏移（旧 56/60，见 git 历史）数值巧合、职责
+// 不同。口径同帮助页 HELP_TOC_STICKY_TOP，改顶栏/行壳位高度须回校两处。
+const SETTINGS_MENU_STICKY_TOP = isEmbedMode() ? 60 : 56;
 
 // 菜单标签统一从 PAGE_LABELS 派生（code-review item d996f0d0aac5）：旧实现
 // 标签字面在 BASE_MENU_ITEMS 与下方项目级 menuItems.push 各写一份，本文件
@@ -118,8 +113,13 @@ export default function SettingsPage() {
   // config 停在 null，除 prompts 外的页签统统渲染空白面板，用户无从判断原因。
   const [loadError, setLoadError] = useState<string | null>(null);
   // 自进化页签：两张配置卡片各自暴露的收集句柄，供页签底部唯一「保存」按钮触发
-  const staleSelfhealRef = useRef<SelfEvolutionSectionHandle>(null);
-  const suggestionsRef = useRef<SelfEvolutionSectionHandle>(null);
+  const staleSelfhealRef = useRef<SettingsSectionHandle>(null);
+  const suggestionsRef = useRef<SettingsSectionHandle>(null);
+  // 仲裁页签同款（2026-11-05 用户指令「只保留最下面一个保存按钮」）：Arbiter
+  // 与 Chain 两面板的收集句柄，页签底部唯一保存按钮合并提交（原两面板各带
+  // 保存钮，堆叠页出现两个「保存」）
+  const arbiterSectionRef = useRef<SettingsSectionHandle>(null);
+  const chainSectionRef = useRef<SettingsSectionHandle>(null);
   // 自进化保存重入守卫（code-review item d64feaab59a4）：对齐其余页签保存
   // 按钮的 saving 口径（SelfReview/TokenBudget/Verify/ProjectProfile 均为
   // saving 期间置 loading/disabled 并在入口短路），覆盖 collect 校验 →
@@ -332,6 +332,47 @@ export default function SettingsPage() {
     }
   };
 
+  // 仲裁页签唯一保存入口（handleSelfEvolutionSave 同款两段式：两面板各自
+  // validateFields 收集 → 合并为一次提交，任一校验失败即中止并提示）。复用
+  // 同一对 saving/savingRef：两页签互斥渲染，state 语义不交叉。
+  const handleArbiterTabSave = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const parts = await Promise.all([
+        arbiterSectionRef.current?.collect(),
+        chainSectionRef.current?.collect(),
+      ]).catch((error) => {
+        message.error('收集仲裁配置失败，保存已中止，请稍后重试');
+        return null;
+      });
+      if (parts === null) return;
+      // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c 同款口径）：undefined
+      // （面板未就绪）与 null（校验失败）分开提示，均中止保存
+      if (parts.some((p) => p === undefined)) {
+        message.warning('仲裁面板未就绪，无法收集配置，请稍后重试');
+        return;
+      }
+      if (parts.some((p) => p === null)) {
+        message.warning('请先修正表单校验错误');
+        return;
+      }
+      const merged = parts.reduce<Partial<ConfigData>>(
+        (acc, p) => ({ ...acc, ...p }),
+        {},
+      );
+      if (Object.keys(merged).length === 0) {
+        message.info('没有需要保存的变更');
+        return;
+      }
+      await handleSave(merged);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
   // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
   // Hook 为项目级设置置于菜单最末。项目简介页签固定名「项目」，不随项目名变长
   const menuItems = [...BASE_MENU_ITEMS];
@@ -379,20 +420,22 @@ export default function SettingsPage() {
       <Card
         bordered={false}
         className="settings-page"
-        // 桌面整卡定高（SETTINGS_FRAME_OFFSET 口径见其注释），移动端不锁高走文档滚动
-        style={isMobile ? undefined : { height: `calc(100vh - ${SETTINGS_FRAME_OFFSET}px)` }}
       >
         {/* 移动端菜单置顶横排，面板全宽；桌面保持左竖菜单布局不变。
-            桌面 flex:1 + minHeight:0 吃满卡体（global.less 卡体为纵向 flex 容器），
-            原 minHeight:500 保底由定高形态天然取代 */}
+            卡体随内容自然增高，页面纵向滚动统一走文档级（2026-11-05 用户指令
+            「全站滚动条范围统一」，同 overview/projects/activities 口径；原
+            2026-11-04 整卡定高 + 右栏 overflowY 内滚形态已整体退役）。
+            桌面左菜单本体 sticky 钉住不随页面滚走（同日用户指令
+            「菜单/目录不能滚走」，见 SETTINGS_MENU_STICKY_TOP）。 */}
         <div
           style={
             isMobile
               ? { display: 'flex', flexDirection: 'column' }
-              : { flex: 1, minHeight: 0, display: 'flex' }
+              : { display: 'flex' }
           }
         >
-          {/* 左侧菜单 */}
+          {/* 左侧菜单列：外壳撑满列高（右缘分隔线全长），菜单本体 sticky 钉住
+              （2026-11-05 用户指令「菜单/目录不能滚走」）；顶带 16 随本体走钉位 */}
           <div
             style={
               isMobile
@@ -405,34 +448,47 @@ export default function SettingsPage() {
                     WebkitOverflowScrolling: 'touch',
                     borderBottom: '1px solid #f0f0f0',
                   }
-                : {
-                    // 目录区顶带 16px（2026-11-05 用户指令）：卡体 padding 归零
-                    // （global.less）后菜单列贴卡顶，垫回纵向呼吸
-                    width: 224,
-                    borderRight: '1px solid #f0f0f0',
-                    paddingTop: 16,
-                  }
+                : { width: 224, borderRight: '1px solid #f0f0f0' }
             }
           >
-            <Menu
-              mode={isMobile ? 'horizontal' : 'inline'}
-              selectedKeys={[activeKey]}
-              onClick={({ key }) => {
-                // 切页签即卸载当前面板：有未保存改动先确认（item 8a3eb01dc2b9）
-                if (key !== activeKey && !confirmDiscardPanelEdits()) return;
-                setActiveKey(key);
-                // 未消费的聚焦信号随页签切换作废（code-review item b49d23bf8dd1）：
-                // 目标非「项目简介」时信号已无人消费，残留会在之后打开该页签时
-                // 拿旧时间戳误触发一次聚焦。
-                if (key !== 'project-profile') setVerifyFocusSignal(0);
-              }}
-              items={menuItems}
+            <div
               style={
                 isMobile
-                  ? { borderBottom: 0, width: 'max-content', minWidth: '100%' }
-                  : { height: '100%', borderRight: 0 }
+                  ? undefined
+                  : {
+                      // 菜单本体 sticky 钉在标题带下缘（SETTINGS_MENU_STICKY_TOP
+                      // 口径见其注释）；页面滚动走文档级，长菜单超出视口时菜单
+                      // 自滚兜底（overflowY auto 仅此 fallback 生效，右栏无内滚）。
+                      // 顶带 16（2026-11-05 用户指令）随本体走，钉位后仍垫呼吸。
+                      position: 'sticky',
+                      top: SETTINGS_MENU_STICKY_TOP,
+                      maxHeight: `calc(100vh - ${SETTINGS_MENU_STICKY_TOP}px - 16px)`,
+                      paddingTop: 16,
+                      overflowY: 'auto',
+                    }
               }
-            />
+            >
+              <Menu
+                mode={isMobile ? 'horizontal' : 'inline'}
+                selectedKeys={[activeKey]}
+                onClick={({ key }) => {
+                  // 切页签即卸载当前面板：有未保存改动先确认（item 8a3eb01dc2b9）
+                  if (key !== activeKey && !confirmDiscardPanelEdits()) return;
+                  setActiveKey(key);
+                  // 未消费的聚焦信号随页签切换作废（code-review item b49d23bf8dd1）：
+                  // 目标非「项目简介」时信号已无人消费，残留会在之后打开该页签时
+                  // 拿旧时间戳误触发一次聚焦。
+                  if (key !== 'project-profile') setVerifyFocusSignal(0);
+                }}
+                items={menuItems}
+                style={
+                  isMobile
+                    ? { borderBottom: 0, width: 'max-content', minWidth: '100%' }
+                    // 原 height:'100%' 随定高形态退役：本体高度即菜单自然高度
+                    : { borderRight: 0 }
+                }
+              />
+            </div>
           </div>
           {/* 右侧面板 */}
           <div
@@ -440,16 +496,17 @@ export default function SettingsPage() {
               isMobile
                 ? { flex: 1, minWidth: 0, padding: '12px 16px 24px' }
                 : {
-                    // 右栏滚动本体（2026-11-04 用户指令）：overflowY 独立纵向滚动，
-                    // 左侧菜单不随动。右内边距归零（右侧 24px 空带回收），面板贴
-                    // 滚动条；左 24 保留（面板-菜单列间距）；顶带 8（2026-11-05
-                    // 用户指令，原 24）+ 底 24 维持纵向节奏。
-                    // （原 marginTop:-30 页头基线补偿随 unified-page-title-bar 页头
-                    // 摘除一并退役——占位消失后 -30 会把右栏顶出容器。）
+                    // 右栏随文档滚动（2026-11-05 用户指令「全站滚动条范围统一」，
+                    // 原 overflowY 内滚已退役）。右内边距 16（2026-11-05 用户指令
+                    // 「各页签右间距统一」——原右 0 + .ant-form padding-right:16
+                    // 的双源口径使非 Form 面板（提示词/项目/Hook）内容直顶滚动条，
+                    // 现右呼吸单源上收到本栏，Form 与非 Form 面板右缘对齐同一
+                    // 16px；原 global.less 的 .ant-form 规则已随之退役）；左 24
+                    // 保留（面板-菜单列间距）；顶带 8（2026-11-05 用户指令，原 24）
+                    // + 底 24 维持纵向节奏。
                     flex: 1,
                     minWidth: 0,
-                    padding: '8px 0 24px 24px',
-                    overflowY: 'auto',
+                    padding: '8px 16px 24px 24px',
                   }
             }
           >
@@ -544,23 +601,35 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'arbiter' && (
                   // add-arbiter-lane：全局决策者车道面板（arbiter 四键 + 运行时
-                  // 状态只读摘要），独立 Form 与保存按钮，保存走同一 handleSave
-                  // 写回通道。处置链面板并入本页签堆叠（沿用「验证」页签
-                  // VerifyPanel+BranchGcPanel 双面板先例：两面板各带标题、
-                  // 各自独立 Form 与保存按钮，保存走同一 handleSave 写回通道）
+                  // 状态只读摘要）。处置链面板并入本页签堆叠（add-escalation-chain-
+                  // admin-arbiter 5.3）。两面板经 ref 暴露 collect()（StaleCodeSelfheal
+                  // 同款句柄模式），保存收口为页签底部唯一「保存」按钮合并提交
+                  // （2026-11-05 用户指令：原两面板各带保存钮，堆叠页出现两个「保存」）
                   <>
                     <ArbiterPanel
+                      ref={arbiterSectionRef}
                       config={config}
-                      onSave={handleSave}
                       project={scope === 'project' ? project : undefined}
                     />
                     {/* add-escalation-chain-admin-arbiter 5.3：处置链面板（chain
                         四键配额/复位窗/黑名单 + 运行时水位 30s 轮询） */}
                     <ChainPanel
+                      ref={chainSectionRef}
                       config={config}
-                      onSave={handleSave}
                       project={scope === 'project' ? project : undefined}
                     />
+                    {/* 页签唯一「保存」按钮：置于页面最下方、右对齐（自进化页签同款） */}
+                    <div style={{ textAlign: 'right', marginTop: 24 }}>
+                      <Button
+                        type="primary"
+                        onClick={handleArbiterTabSave}
+                        loading={saving}
+                        disabled={saving}
+                        data-testid="arbiter-save"
+                      >
+                        保存
+                      </Button>
+                    </div>
                   </>
                 )}
                 {activeKey === 'quality' && (

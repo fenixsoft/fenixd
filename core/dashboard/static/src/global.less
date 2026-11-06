@@ -32,16 +32,205 @@ body {
   border: 0;
 }
 
-// 概览统计卡行定向豁免（2026-11-04 用户指令「overview 统计卡应保留边框」）：
+// 概览统计卡行定向豁免（2026-11-04 用户指令「overview 统计卡应保留边框」；
+// 2026-11-06 用户指令升级：边框风格对齐 v2 overview Bento 磁贴——发丝线描边 +
+// 大圆角 + 软阴影，卡内容布局不变）：
 // 顶部 4 张统计卡（SPEC 总数/任务进度/Token 消耗/活跃 Agent，IntroduceRow Tile）
-// 是独立数据卡而非布局包裹卡，边框属卡片语义不属冗余 chrome。组件侧已从
-// variant="borderless" 改回 "outlined"（borderless 连 .ant-card-bordered 类名都
-// 不带，页级规则本打不到；真正抹掉卡感的是下方 box-shadow:none 规则），此处
-// 定向恢复描边，值=theme.ts DSH_BORDER_SECONDARY（antd 卡原生 colorBorderSecondary
-// 同源，硬编码对齐设置页灰底规则习语）。特异性与页级规则同档（1 id + 3 类），
-// 靠文件后置生效——勿上移到该规则之前。
+// 是独立数据卡而非布局包裹卡，边框属卡片语义不属冗余 chrome。组件侧保持
+// variant="outlined"（borderless 连 .ant-card-bordered 类名都不带，页级规则本
+// 打不到；真正抹掉卡感的是下方 box-shadow:none 规则），此处定向恢复 v2 磁贴
+// 皮肤，色值=pages/v2/theme.tsx 镜像（例外域配色单源不得跨域引用，两处同改；
+// V2_TILE_BORDER / V2_TILE_RADIUS / V2_TILE_SHADOW）。特异性 1 id + 3 类高于
+// 下方去阴影规则，box-shadow 可覆写——勿上移到该规则之前。
 #root .overview-intro-row .ant-card.ant-card-bordered {
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid #eef2f7;
+  border-radius: 12px;
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+// 概览统计卡行网格（自 IntroduceRow inline 样式迁入，2026-11-06 用户指令：
+// 移动端对齐 v2 概览 KPI 2×2 磁贴布局；桌面 auto-fit 口径不变——inline 样式
+// 会挡住移动断点媒体查询，故布局单源落此处）
+.overview-intro-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 16px;
+}
+#root :is(.screen-xs, .screen-sm) .overview-intro-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+// Bento 台账表格磁贴镜像族（2026-11-06 用户指令：overview 项目清单 + projects
+// 桌面 SPEC 表格对齐 v2 台账表格边框；消费方 pages/overview/components/
+// ProjectTable.tsx、pages/projects/list.tsx DevTab）。样式值镜像 v2 域
+// theme.tsx / v2.less `.v2-bento` 族（例外域配色单源不得跨域引用，两处同改），
+// 类名独立 `.ov-*` 前缀与 v2 域零耦合；表格钉死规则沿用 !important 形态
+//（antd v6 cssinjs 运行时注入在静态样式表之后，同特异性会被覆盖——v2.less
+// 原型 round3/round5 实证）。
+.ov-bento {
+  background: #ffffff;
+  border: 1px solid #eef2f7; /* = V2_TILE_BORDER */
+  border-radius: 12px; /* Bento 磁贴圆角固定 12px（DESIGN.md 通用条款，2026-11-06 用户指令） */
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03); /* = V2_TILE_SHADOW */
+}
+
+.ov-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.ov-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+/* 任务清单 v2 行渲染勾选块（镜像 v2.less .v2-task-check，两处同改） */
+.ov-task-check {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: #2563eb; /* = V2_RAMP_IMPLEMENTING */
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* 未完成指示器：空心方框（与 .ov-task-check 同几何 15×15 radius 4；2026-11-06
+   用户指令「未勾选保持方形」——任务/质量门禁两处消费。注意：v2 TaskCard 原形
+   为空心圆，本页经用户指令偏离镜像源，勿「对齐」回去） */
+.ov-task-empty {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1.5px solid #94a3b8; /* = V2_TEXT_QUATERNARY */
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+// SPEC 详情页顶栈卡片 Bento 皮肤（2026-11-06 用户指令：项目信息/任务清单/质量
+// 门禁/验证进度/验证结论五卡对齐 v2 磁贴，内容不变；页签区卡同日二次指令退出
+// bento 避免卡套卡，时间轴节点改由 SpecTimeline cardBox 承载磁贴形态）。值镜像
+// theme.tsx V2_TILE_*；圆角固定 12px（DESIGN.md 通用条款）。特异性 1 id + 3 类
+// 与概览统计卡豁免同档，靠文件后置覆写页级去边框/去阴影规则——勿上移到去边框
+// 规则之前。
+#root .spec-bento-card.ant-card.ant-card-bordered {
+  border: 1px solid #eef2f7;
+  border-radius: 12px;
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+// 页签区包裹卡=纯布局壳，卡体默认 24px 内边距归零（2026-11-06 用户指令：tab
+// 菜单退出 bento 后，卡体隐形但内边距仍使页签内容比上方 bento 卡左右各多缩进
+// 一圈——归零后页签菜单与时间轴节点磁贴对齐上方卡片左右缘；各页签自带纵向
+// 间距不受影响。窄屏 12px 收紧规则在移动端段落，特异性更高不受本条波及）
+#root .spec-detail-card > .ant-card-body {
+  padding: 0;
+}
+
+// 侧栏「项目」二级菜单限高滚动（2026-11-06 用户指令：对齐 dsh web 工作区
+// 显示逻辑——固定显示 5 个项目，超出滚动条）。单项内容 36px、布局占位 40px
+// （含 4px 行距，2026-11-06 实测），5 项完整可见 = 200。锚点
+// li.ant-menu-submenu > ul：ProLayout（app.tsx menuDataRender）侧栏是全站
+// 唯一 antd inline 子菜单（settings/help 左目录均自画，不受波及）；侧栏折叠
+// 态子菜单走浮层 .ant-menu-vertical 不命中（浮层随视口自行排布）。展开动画
+// 期间 antd 以内联 height+overflow:hidden 驱动，优先级高于本规则，动画结束
+// 内联移除后限高生效，互不干扰。
+// gutter 预留对齐 dsh 面板桥列表行为：overlay 滚动条引擎（Chromium Fluent
+// 默认）下滚动条不占布局宽，stable 按 ::-webkit-scrollbar 定制宽 6px 预留
+// gutter，滑块浮于 gutter 内不遮菜单文字；经典滚动条模式下与真实占宽冗余
+// 无害（防两态行宽跳动）
+li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline {
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+// 侧栏「项目」菜单滚动条同款 dsh web（2026-11-06 用户指令：只留滑块——去
+// 上下箭头与轨道底色，滑块 6px 收窄；dsh 面板桥 fenix-projects-list 与
+// Workspaces 列表逐键同款）。滑块色用中性灰 alpha（fenixd 无 dsh 的
+// scrollbar 变量体系，alpha 灰亮暗主题通用）；同一选择器作用域，页面其他
+// 滚动条零波及。
+li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar {
+  width: 6px;
+}
+
+li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background-color: rgba(127, 127, 127, 0.5);
+}
+
+li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(127, 127, 127, 0.8);
+}
+
+li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-button {
+  display: none;
+}
+
+/* 台账表格：透明表头 / fixed 布局防撑坏 / 首列 14px 缩进 / 发丝线行分隔
+   （镜像 v2.less .v2-bento-table 族） */
+.ov-bento-table .ant-table {
+  background: transparent;
+}
+
+.ov-bento-table .ant-table-thead > tr > th {
+  background: transparent !important;
+  border-bottom: 1px solid #eef2f7 !important; /* = V2_HAIRLINE */
+  color: #64748b !important; /* = V2_TEXT_TERTIARY（v2 主题 Table.headerColor 镜像） */
+}
+
+.ov-bento-table .ant-table-tbody > tr > td {
+  border-bottom: 1px solid #f1f5f9 !important; /* = V2_SPLIT */
+}
+
+.ov-bento-table .ant-table-tbody > tr.ant-table-row:hover > td {
+  background: #f8fafc !important; /* = V2_BG（v2 主题 Table.rowHoverBg 镜像） */
+}
+
+/* fixed 布局恢复列宽单源：长注释 MUST NOT 把表格撑破容器（v2 域「表格布局
+   防撑坏」Scenario 同款纪律） */
+.ov-bento-table .ant-table table {
+  table-layout: fixed !important;
+}
+
+.ov-bento-table .ant-table-thead > tr > th:first-child {
+  padding-left: 14px !important;
+}
+
+/* :not() 排除 measure 行（v2 原型 round4：!important 曾误命中泄漏 14px） */
+.ov-bento-table .ant-table-tbody > tr:not(.ant-table-measure-row) > td:first-child {
+  padding-left: 14px !important;
+}
+
+/* Radio 并排按钮组激活态=黑底白字（DESIGN.md 一般域条款，2026-11-06 用户指令；
+   消费方：overview 运行态筛选、projects 类型/归档过滤——Radio.Group 挂
+   .ov-radio-dark 即得，非激活项保持 antd 描边态） */
+.ov-radio-dark .ant-radio-button-wrapper-checked {
+  background: #0f1115; /* = V2_PRIMARY / 一般域主色黑系 */
+  border-color: #0f1115;
+  color: #ffffff;
+}
+
+.ov-radio-dark .ant-radio-button-wrapper-checked:not(:first-child)::before {
+  background: #0f1115;
 }
 
 // 页面内容区卡片阴影移除（2026-11-04 用户指令）：antd v6 卡默认带 0.05 微阴影
@@ -66,10 +255,11 @@ body {
 
 // PageContainer 内容容器底部内边距归零（2026-11-04 用户指令）：children 容器的
 // padding-block-end（pro-layout token paddingBlockPageContainerContent，缺省 8px）
-// 对定高贴底页（帮助页）是溢出源——卡片按视口裁齐后这 8px 会把文档流顶出第二根
-// 滚动条。顶内边距本就是 0（paddingBlockStart: 0）不动；左右留白归 theme.ts
-// dshLayoutToken 单源管辖，此处不碰。帮助页定高偏移常量（HELP_FRAME_OFFSET）
-// 按「本规则生效、padB=0」校准，两处须同步。
+// 对定高贴底页是溢出源——卡片按视口裁齐后这 8px 会把文档流顶出第二根滚动条
+// （现存定高贴底页：项目详情页框 pageChrome.ts、指挥中心 SCREEN_CHROME_OFFSET；
+// 帮助/设置页 2026-11-05 起改文档级滚动、不再贴底，同享本规则口径不回填）。
+// 顶内边距本就是 0（paddingBlockStart: 0）不动；左右留白归 theme.ts
+// dshLayoutToken 单源管辖，此处不碰。
 #root .ant-pro-page-container-children-container {
   padding-block-end: 0;
 }
@@ -103,6 +293,21 @@ html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
   padding-top: 24px;
 }
 
+// projects SPEC 详情页内容区顶呼吸带（2026-11-06 用户指令：首 bento 卡上方留出
+// 间距，对齐 overview 顶垫；上/左右间距数值已登记 DESIGN.md 一般域「页面内容区
+// 间距」条款）。三连形态与 overview 同构：standalone 垫 16px；embed 行壳位档
+// 豁免归零（上游顶垫会变成 sticky 标题带起滚位移），下游 PageContainer 垫 24px。
+// 页级作用域随 .spec-detail-page 标记类（detail.tsx 根包装 div）。
+#root .ant-layout-content:has(.spec-detail-page) {
+  padding-top: 16px;
+}
+html[data-embed-mode] #root .ant-layout-content:has(.spec-detail-page) {
+  padding-top: 0;
+}
+html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
+  padding-top: 24px;
+}
+
 // SPEC 列表：展开图标列收窄（默认 padding 16px 两侧共 32px，挤占百分比列宽）
 #root .ant-table-cell.ant-table-row-expand-icon-cell {
   padding-inline: 6px;
@@ -125,6 +330,23 @@ html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
 #root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
   background-color: #efefef;
   border-radius: 0;
+}
+
+// 配置页全量卡片 Bento 边框（2026-11-06 用户指令「ant-card 都设置为 bento 样式
+// 的边框」，同日二次指令：圆角缩至 10px、边框加深 #d7d7d7——浅灰卡底 #f6f6f6
+// 上 V2_TILE_BORDER #eef2f7 发丝线不可辨，边框不可见即失效；仅此一页，灰底准例
+// 已登记 DESIGN.md 通用条款）。置于上方直角化规则之后——同特异性靠后置覆写
+// border-radius: 0；浅灰卡底条款（#f6f6f6/#efefef，DESIGN.md 一般域）不受影响，
+// 本条只接管边框三件套。卡头随卡根圆角同形（灰头直角由卡根圆角收口）。
+#root .settings-page .ant-card.ant-card-bordered {
+  border: 1px solid #d7d7d7;
+  border-radius: 10px;
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+}
+#root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
+  border-radius: 10px 10px 0 0;
 }
 
 // 设置页包裹卡（.settings-page，bordered={false} 的白底隐形壳）body 内边距全档
@@ -151,30 +373,17 @@ html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
   border-bottom: 0;
 }
 
-// 设置页定高滚动形态的卡体传导（2026-11-04 用户指令，桌面端专用；移动端断点
-// 豁免走文档滚动）：卡高由 tsx 内联 calc(100vh - SETTINGS_FRAME_OFFSET) 锁定，
-// 卡体 100% 撑满并作纵向 flex 容器，高度经内层行（tsx 内联 flex:1/minHeight:0）
-// 传导到右栏（内联 overflowY: auto）——纯 CSS 高度链，逐层 min-height:0 放开
-// flex 收缩下限，缺一层右栏即撑破外层回退文档滚动。滚动条贴视口底缘依赖卡体
-// 无块尾内边距，由上方基础规则 padding:0 承担（2026-11-05 全档归零后此处原
-// padding-block-end:0 补丁冗余，已回收）。
-#root
-  .ant-design-pro:not(.screen-xs):not(.screen-sm)
-  .settings-page
-  > .ant-card-body {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-// 卡体右缘外扩贴视口（与上条配套，2026-11-04 用户指令「滚动条紧贴右侧」）：
-// 卡体被 children-container 的 15px 左右内边距（theme.ts dshLayoutToken）约束在
-// 距视口右缘 15px 处，滚动条随之悬空——负右外边距等量抵消该内边距，右栏滚动条
-// 直贴视口右缘。**-15px 与 dshLayoutToken.paddingInlinePageContainerContent=15
-// 强耦合**，改 token 值必须同步此处（两处均已注释互指）。
-#root .ant-design-pro:not(.screen-xs):not(.screen-sm) .settings-page {
-  margin-right: -15px;
-}
+// 设置页定高滚动形态的卡体传导规则与卡体右缘外扩贴视口规则已随 2026-11-05
+// 用户指令「全站滚动条范围统一（滚动条跨标题区域）」整体退役。原两条：
+// ① 桌面端 .settings-page > .ant-card-body height:100% + 纵向 flex——卡体 flex
+//   传导高度链，配合 tsx 内联 calc(100vh - SETTINGS_FRAME_OFFSET) 卡高与右栏
+//   overflowY:auto（SETTINGS_FRAME_OFFSET 常数与右栏内滚同批移除，设置页改
+//   文档级滚动，同 overview/projects/activities 口径）；
+// ② 同选择器 margin-right:-15px 吃掉 children-container 右内边距（与
+//   dshLayoutToken.paddingInlinePageContainerContent=15 强耦合），使右栏内滚
+//   滚动条直贴视口右缘（2026-11-04 用户指令「滚动条紧贴右侧」）——内滚退役后
+//   滚动条归文档级、天然落在视口右缘，内容区恢复与其他页一致的 15px 右留白。
+// 两条均失去对象，勿回填。
 
 // 设置页页头标题行的 12px 块尾补偿已随 unified-page-title-bar 页头全站退役一并
 // 删除（原规则：.ant-pro-page-container:has(.settings-page) .ant-page-header-heading
@@ -185,13 +394,9 @@ html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
 // padding」试回撤：0 会使表单标签列/计费子行（billing-price-row 自带边框）等
 // 内部内容贴死面板四缘，布局散架，经用户确认布局已乱后整体回退本条）。若后续
 // 仍需收紧，须只作用于右栏顶层面板 body 并避开内部子行网格，勿全局置 0。
-// 右向呼吸由 `.ant-form` 的 16px padding-right 承担（下条）。
-
-// 设置页内容区表单右侧留 16px（2026-11-04 用户指令）：滚动条贴缘后表单控件
-// 直顶滚动条，padding-right 拉开一档呼吸。
-#root .settings-page .ant-form {
-  padding-right: 16px;
-}
+// 右向呼吸原由 `.ant-form` 的 16px padding-right 承担（2026-11-04）；2026-11-05
+// 用户指令「各页签右间距统一」后上收到右栏本体（index.tsx 右栏 padding-right
+// 16，非 Form 面板 提示词/项目/Hook 同享），本规则退役不再回来。
 
 // 设置卡片 label 括号注解弱化显示（如（agents.max_concurrent）（选填，…））；
 // 开关行（.switch-inline-row）用 noStyle Form.Item，注解不在 .ant-form-item 内，选择器放宽到容器级
@@ -430,9 +635,10 @@ html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
   white-space: normal;
 }
 
-// 概览页统计卡移动端优化
+// 概览页统计卡移动端优化（body 内边距 2026-11-06 用户指令对齐 v2 概览移动
+// 磁贴 14px 16px）
 #root :is(.screen-xs, .screen-sm) .overview-intro-row .ant-card-body {
-  padding: 12px 16px !important;
+  padding: 14px 16px !important;
 }
 #root :is(.screen-xs, .screen-sm) .overview-tile-eyebrow {
   display: none;
@@ -443,26 +649,9 @@ html[data-embed-mode] #root .overview-page > .ant-pro-page-container {
   overflow: visible !important;
 }
 
-// 概览页项目清单卡头两行移动端优化
-#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-head-wrapper {
-  flex-wrap: wrap;
-  row-gap: 4px;
-}
-#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra {
-  flex: 1 1 100%;
-  min-width: 0;
-}
-// extra 内 Space 撑满（inline-flex 宽度随内容收缩，width:100% 子项无从解析）；
-// Space item wrapper 同撑满，使 .ant-input-search 的 width:100% 真正铺满整行
-#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra .ant-space {
-  width: 100%;
-}
-#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra .ant-space-item {
-  width: 100%;
-}
-#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-input-search {
-  width: 100% !important;
-}
+// （原「项目清单卡头两行」移动端规则随 ProjectCards 退役删除，2026-11-06：
+// 项目清单改 v2 台账形态，移动端为 JS 分支堆叠项目卡，搜索框 inline 全宽，
+// 不再依赖卡头两行 CSS）
 
 // 移动端触控目标扩展工具类：padding 8px 扩大命中区 + 负 margin 完全抵消视觉，命中区 ≥32px ≥ WCAG AA。
 // #root 前缀提特异性到 1,1,0：antd v6 css-in-js 组件级规则形如

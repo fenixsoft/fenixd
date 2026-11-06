@@ -5,7 +5,7 @@
 // 同源的 /api/ 真实端点（getOverview / getAlerts），不内联原型假数据；原型中
 // 无真实口径的装饰（示例速率文案）按 null 口径红线不渲染。刷新走 30s 心跳轮询
 // （v2 域简化口径：不接入 SSE 合帧，页面为与现产并行的开发期界面）。
-import { Alert, App, Button, Dropdown, Input, Progress, Radio, Space, Spin, Table } from 'antd';
+import { Alert, App, Button, Dropdown, Input, Progress, Space, Spin, Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from '@umijs/max';
@@ -21,11 +21,12 @@ import {
   stopProject,
 } from '@/services/dashboard';
 import type { AlertsData, OverviewData, ProjectSummary } from '@/services/dashboard';
+import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import { compactWan } from '@/utils/format';
 import { pct } from '@/utils/percent';
 import { HEARTBEAT_MS } from '@/utils/refreshPolicy';
 import { V2AlertRows } from './AlertList';
-import { V2Page, V2Pill, V2TitleBand } from './shared';
+import { V2Page, V2Pill } from './shared';
 import {
   useV2IsMobile,
   V2_ERROR,
@@ -307,7 +308,9 @@ function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
     <div
       style={
         mobile
-          ? { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
+          ? // minmax(0,1fr)：钳掉 1fr 隐式 auto 下限，磁贴内容（长数字/spark）
+            // 不把轨道撑破容器，两列等宽（越界布局优先）
+            { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12 }
           : { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }
       }
     >
@@ -364,13 +367,26 @@ function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
       {/* 任务进度（圆环 + 明细行） */}
       <div className="v2-bento" style={{ padding: tilePad, display: 'flex', flexDirection: 'column' }}>
         <TileLabel>任务进度</TileLabel>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: mobile ? 10 : 14, marginTop: 10 }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: mobile ? 10 : 14, flexWrap: mobile ? 'wrap' : undefined, marginTop: 10 }}>
           <Donut pct={taskPct} box={mobile ? 56 : 72} />
           <div style={{ minWidth: 0 }}>
-            <div className="v2-num" style={{ fontSize: mobile ? 15 : 20, fontWeight: 700, whiteSpace: 'nowrap' }}>
-              {t.task_done ?? 0} / {t.task_total ?? 0}
-              <span style={{ fontSize: 12, fontWeight: 400, color: V2_TEXT_TERTIARY }}> 已完成</span>
-            </div>
+            {mobile ? (
+              // 移动原型形态：数值与「已完成」分两行；数值 nowrap、行可整体
+              // 换行——窄容器下文本块整块落到圆环下方，数值不在「/」处拦腰断行
+              <>
+                <div className="v2-num" style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  {t.task_done ?? 0} / {t.task_total ?? 0}
+                </div>
+                <div className="v2-num" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 2 }}>
+                  已完成
+                </div>
+              </>
+            ) : (
+              <div className="v2-num" style={{ fontSize: 20, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                {t.task_done ?? 0} / {t.task_total ?? 0}
+                <span style={{ fontSize: 12, fontWeight: 400, color: V2_TEXT_TERTIARY }}> 已完成</span>
+              </div>
+            )}
             {!mobile ? (
               <Progress
                 percent={taskPct}
@@ -482,8 +498,9 @@ function KpiRow({ data, mobile }: { data: OverviewData; mobile?: boolean }) {
   );
 }
 
-/** 项目单元格：名称行（运行态胶囊 + 自动发现/项目错误）+ 路径 + 长简介 + 状态胶囊。 */
-function ProjectCell({ p }: { p: ProjectSummary }) {
+/** 项目单元格：名称行（运行态胶囊 + 自动发现/项目错误）+ 路径 + 长简介 + 状态胶囊。
+ * mobile 形态简介单行省略（卡片等宽不横撑）；PC 表格保持 pre-wrap 全显。 */
+function ProjectCell({ p, mobile }: { p: ProjectSummary; mobile?: boolean }) {
   const navigate = useNavigate();
   if (p.error) {
     return (
@@ -526,8 +543,16 @@ function ProjectCell({ p }: { p: ProjectSummary }) {
     <div key="path" className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY, marginTop: 5 }}>
       {p.path}
     </div>,
-    // 长注释换行显示（pre-wrap，表格 fixed 布局防撑坏）
-    <div key="desc" style={{ fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4, whiteSpace: 'pre-wrap', lineHeight: '20px' }}>
+    // 长注释：PC 换行全显（pre-wrap，表格 fixed 布局防撑坏）；移动卡片单行省略
+    <div
+      key="desc"
+      className={mobile ? 'v2-ellipsis' : undefined}
+      style={
+        mobile
+          ? { fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4 }
+          : { fontSize: 12, color: V2_TEXT_TERTIARY, marginTop: 4, whiteSpace: 'pre-wrap', lineHeight: '20px' }
+      }
+    >
       {p.description || '暂无简介'}
     </div>,
   ];
@@ -673,14 +698,14 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
             <div
               key={p.name}
               className="v2-bento"
-              style={{ padding: '14px 16px', cursor: p.error ? 'default' : 'pointer' }}
+              style={{ padding: '14px 16px', cursor: p.error ? 'default' : 'pointer', minWidth: 0 }}
               onClick={() => {
                 if (!p.error) navigate(`/v2/projects/${encodeURIComponent(p.name)}`);
               }}
             >
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <ProjectCell p={p} />
+                  <ProjectCell p={p} mobile />
                 </div>
                 <Dropdown
                   menu={{
@@ -790,20 +815,14 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
     {
       title: '操作',
       key: 'actions',
-      width: 116,
+      width: 72,
       align: 'right',
       render: (_, p) => (
         <Space size={4} onClick={(e) => e.stopPropagation()}>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => navigate(`/v2/projects/${encodeURIComponent(p.name)}`)}
-          >
-            进入
-          </Button>
           <Dropdown
             menu={{
               items: [
+                { key: 'enter', label: '进入' },
                 // p.error 是错误文案字符串，disabled 须布尔化
                 { key: 'stop', label: '停止', disabled: busy || Boolean(p.error) || p.daemon !== 'running' },
                 { key: 'install', label: '安装托管', disabled: busy || Boolean(p.error) || p.hosting === 'managed' },
@@ -812,6 +831,7 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
               ],
               onClick: ({ key, domEvent }) => {
                 domEvent.stopPropagation();
+                if (key === 'enter') navigate(`/v2/projects/${encodeURIComponent(p.name)}`);
                 if (key === 'stop') act(p, 'stop');
                 if (key === 'install') act(p, 'install');
                 if (key === 'delete') act(p, 'delete');
@@ -852,17 +872,27 @@ function ProjectPanel({ data, onChanged, mobile }: { data: OverviewData; onChang
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
         />
-        <Radio.Group
-          optionType="button"
-          size="small"
-          value={runFilter}
-          onChange={(e) => setRunFilter(e.target.value)}
-          options={[
+        {/* 运行态筛选胶囊（原型 .v2-chip 语言：激活黑底白字，非 antd 按钮组描边态） */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {[
             { label: '全部', value: 'all' },
             { label: '运行中', value: 'running' },
             { label: '未运行', value: 'stopped' },
-          ]}
-        />
+          ].map((o) => (
+            <span
+              key={o.value}
+              role="button"
+              tabIndex={0}
+              className={`v2-chip${runFilter === o.value ? ' on' : ''}`}
+              onClick={() => setRunFilter(o.value as 'all' | 'running' | 'stopped')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') setRunFilter(o.value as 'all' | 'running' | 'stopped');
+              }}
+            >
+              {o.label}
+            </span>
+          ))}
+        </div>
       </div>
       <div className="v2-bento-table">
         <Table
@@ -929,16 +959,31 @@ export default function V2OverviewPage() {
   const unhandled = alerts?.alerts ?? [];
 
   return (
-    <V2Page>
-      <V2TitleBand
-        title="跨项目概览"
-        subtitle={
-          data
-            ? `监控 ${(data.projects || []).length} 个项目${(data.totals?.problems ?? 0) > 0 ? ` · ${data.totals.problems} 个问题/阻塞` : ''}`
-            : undefined
-        }
-      />
-      <div style={{ marginTop: 20 }}>
+    <V2Page
+      variant="overview"
+      titleBar={
+        // 统一标题栏声明（unified-page-title-bar）：经 V2Page titleBar 槽位落
+        // `.v2-page` 直下——行壳位（embed/移动端）标题带满宽贴顶不被子容器内边
+        // 距架空；standalone 桌面控件本体 null，标题注册落 ProLayout 顶栏插槽
+        <PageTitleBar
+          title="跨项目概览"
+          subtitle={
+            data ? (
+              <>
+                监控 <TitleBarNum>{(data.projects || []).length}</TitleBarNum> 个项目
+                {(data.totals?.problems ?? 0) > 0 ? (
+                  <>
+                    {' · '}
+                    <TitleBarNum>{data.totals.problems}</TitleBarNum> 个问题/阻塞
+                  </>
+                ) : null}
+              </>
+            ) : undefined
+          }
+        />
+      }
+    >
+      <div>
         {error ? (
           <Alert
             type="error"

@@ -86,10 +86,11 @@ test('订阅退订：退订后不再收到通知', () => {
 
 // ════ 接线层：壳位判定收敛 + 互斥结构（源码扫描） ════
 
-test('壳位判定收敛在组件内：embed 或 <768 行壳位，页面侧零环境分支', () => {
+test('壳位判定收敛在组件内：embed 行壳位（移动端并入顶栏），页面侧零环境分支', () => {
   const tsx = readComponent();
-  // 判定单源：isEmbedMode() || isMobile 收敛在 PageTitleBar 内部
-  assert.match(tsx, /const rowSlot = isEmbedMode\(\) \|\| isMobile;/);
+  // 判定单源：isEmbedMode() 收敛在 PageTitleBar 内部（2026-11-06 用户指令：
+  // 移动端标题并入最顶顶栏，行壳位不再含 isMobile 档）
+  assert.match(tsx, /const rowSlot = isEmbedMode\(\);/);
   // 行壳位节点与顶栏注册互斥：行壳位时不注册（null），顶栏壳位本体不渲染
   assert.match(tsx, /usePageTitleBarSlot\(rowSlot \? null : props\)/);
   assert.match(tsx, /if \(!rowSlot\) return null;/);
@@ -110,8 +111,12 @@ test('app.tsx 顶栏插槽接线：headerContentRender 标题区 + actionsRender
   const tsx = readComponent();
   assert.match(tsx, /useSyncExternalStore\(subscribePageTitleBar, getPageTitleBarMeta\)/);
   assert.match(tsx, /if \(!meta\) return null;/);
-  // 顶栏标题缩进（2026-11-05 用户定调 16→104：标题离品牌区再深缩进一档）
-  assert.match(tsx, /paddingLeft: 104,/);
+  // 顶栏标题缩进（2026-11-05 用户定调 16→104：标题离品牌区再深缩进一档；
+  // 2026-11-06 用户指令移动档并入顶栏后收窄 8 贴排汉堡+logo）
+  assert.match(tsx, /paddingLeft: isMobile \? 8 : 104,/);
+  // 副标题移动端不显示（2026-11-06 用户指令）：顶栏插槽与行壳位两处 !isMobile
+  assert.match(tsx, /meta\.subtitle != null && !isMobile \? <SubtitleNode subtitle=\{meta\.subtitle\} \/>/);
+  assert.match(tsx, /props\.subtitle != null && !isMobile \? <SubtitleNode subtitle=\{props\.subtitle\} \/>/);
 });
 
 test('注册随卸载清理：同一 effect cleanup 注销（路由切换瞬间旧注销+新注册同批 flush）', () => {
@@ -134,32 +139,57 @@ test('壳位互斥：跨阈值 resize 时旧壳位随 deps 翻转清理（四字
   assert.equal(rowRendering?.length, 1);
 });
 
-test('行壳位形态锚点：embed 档 60px 半透明玻璃底 sticky 毛玻璃 / 移动端档 48px 白底随流 + DSH_SPLIT 底缘细线 + 同构槽位件（theme.ts 单源配色）', () => {
+test('行壳位形态锚点：embed 档 60px soft 染色玻璃底 sticky 毛玻璃 + DSH_SPLIT 底缘细线 + 同构槽位件（theme.ts 单源配色；移动端档随标题并入顶栏退役）', () => {
   const tsx = readComponent();
-  // 2026-11-05 用户定调双档：embed 升格固定标题带（60 / sticky 钉视口顶），
-  // 移动端维持 1.1 原形态（48 / 白底 / 随文档流）；同日用户指令复刻 standalone
-  // 顶栏毛玻璃：半透明玻璃底 + backdrop blur(8px)（ProLayout fixedHeader 同值）
-  assert.match(tsx, /minHeight: embedChrome \? 60 : 48,/);
-  assert.match(tsx, /background: embedChrome \? DSH_BG_SOFT_GLASS : '#ffffff',/);
+  // 2026-11-05 用户定调 embed 固定标题带（60 / sticky 钉视口顶）；2026-11-06
+  // 用户指令「标题栏只是改变颜色，保留毛玻璃」：玻璃底 soft 染色（形态不变）；
+  // 同日「移动端标题并入顶栏」：行壳位收敛为 embed 单档，48px 移动档退役
+  assert.match(tsx, /minHeight: 60,/);
+  assert.match(tsx, /background: DSH_BG_SOFT_GLASS,/);
   assert.match(tsx, /backdropFilter: 'blur\(8px\)',/);
   assert.match(tsx, /WebkitBackdropFilter: 'blur\(8px\)',/);
-  assert.match(tsx, /\(embedChrome\s*\?\s*\{\s*position: 'sticky',\s*top: 0,\s*zIndex: 20,\s*backdropFilter: 'blur\(8px\)',\s*WebkitBackdropFilter: 'blur\(8px\)',\s*\}\s*: \{\}\),/);
+  assert.match(tsx, /position: 'sticky',\s*top: 0,\s*zIndex: 20,/);
   assert.match(tsx, /borderBottom: `1px solid \$\{DSH_SPLIT\}`/);
   assert.match(tsx, /fontSize: 18, fontWeight: 700,/);
   assert.match(tsx, /fontSize: 12, fontWeight: 400, color: DSH_TEXT_TERTIARY/);
   // 玻璃底与 soft 底同源共改守卫：DSH_BG_SOFT_GLASS 的 rgb 通道必须与
-  // DSH_BG_SOFT 的 hex 通道一致（theme.ts 两值其一改动须同步另一值）
+  // DSH_BG_SOFT 的 hex 通道一致（theme.ts 两值其一改动须同步另一值），
+  // 且玻璃底必须保留透明度（实底即毛玻璃失效）
   const themeSrc = readFileSync(join(STATIC_ROOT, 'src', 'theme.ts'), 'utf8');
   const soft = themeSrc.match(/export const DSH_BG_SOFT = '#([0-9a-f]{6})'/);
   const glass = themeSrc.match(/export const DSH_BG_SOFT_GLASS = 'rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)'/);
   assert.ok(soft && glass, 'theme.ts 须同时声明 DSH_BG_SOFT(hex) 与 DSH_BG_SOFT_GLASS(rgba)');
   const hexToRgb = (h) => [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const softRgb = hexToRgb(soft[1]);
   assert.deepEqual(
-    hexToRgb(soft[1]),
+    softRgb,
+    [249, 250, 251],
+    'DSH_BG_SOFT 漂移出用户定调 rgb(249,250,251)',
+  );
+  assert.deepEqual(
     [glass[1], glass[2], glass[3]].map(Number),
+    softRgb,
     'DSH_BG_SOFT_GLASS 通道与 DSH_BG_SOFT 漂移（两值须同源共改）',
   );
   assert.ok(parseFloat(glass[4]) < 1, '玻璃底必须保留透明度（实底即毛玻璃失效）');
+  // standalone chrome 接线守卫（2026-11-06 用户指令「菜单、标题栏、Fenix Harness
+  // 标题背景 rgb(249,250,251)」+ 更正「标题栏保留毛玻璃」）：顶栏玻璃染色双档 +
+  // 侧栏 soft 实底必须引用 theme.ts 常量单源、不得散落字面量；scroll 键漏配则
+  // 滚动态顶栏回白染色（-fixed-header-scroll 换底）
+  const headerGlass = themeSrc.match(/export const DSH_HEADER_GLASS = 'rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)'/);
+  const headerGlassScroll = themeSrc.match(/export const DSH_HEADER_GLASS_SCROLL = 'rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)'/);
+  assert.ok(headerGlass && headerGlassScroll, 'theme.ts 须声明 DSH_HEADER_GLASS 与 DSH_HEADER_GLASS_SCROLL');
+  for (const m of [headerGlass, headerGlassScroll]) {
+    assert.deepEqual(
+      [m[1], m[2], m[3]].map(Number),
+      softRgb,
+      '顶栏玻璃染色通道与 DSH_BG_SOFT 漂移（soft 染色族须同源共改）',
+    );
+    assert.ok(parseFloat(m[4]) < 1, '顶栏玻璃染色必须保留透明度（毛玻璃生效前提）');
+  }
+  assert.match(themeSrc, /colorBgHeader: DSH_HEADER_GLASS,/);
+  assert.match(themeSrc, /colorBgScrollHeader: DSH_HEADER_GLASS_SCROLL,/);
+  assert.match(themeSrc, /colorMenuBackground: DSH_BG_SOFT,/);
   // 计数排版辅助（副标题随迁 tabular-nums 契约的页面侧入口）
   assert.match(tsx, /export function TitleBarNum/);
   assert.match(tsx, /fontVariantNumeric: 'tabular-nums'/);

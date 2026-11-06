@@ -49,6 +49,16 @@
 - 数据墨水优先：界面以数据为主语，小号标签 + 静态细线 + 高密度排布；灰字走 antd
   token colorTextTertiary，不手写灰色。（出处：command-center-console-ui spec 风格
   条款；app.tsx 注记「灰字走 colorTextTertiary 适配未来暗色主题」）
+- Bento 磁贴圆角固定 12px：凡 Bento 磁贴形态的白磁贴（v2 六页 `.v2-bento`、现产
+  overview 统计卡与项目台账磁贴 `.ov-bento` 及后续同语态新增面），border-radius
+  一律 12px，MUST NOT 回调 16px 或逐页散值；胶囊徽标 999px 不变，一般域 antd
+  控件圆角 6/4/8 条款不受影响（本条是磁贴形态级规则，非 theme 级 borderRadius
+  覆写）。（出处：2026-11-06 用户指令「border-radius 从 16px 改为 12px，作为
+  固定规则写入 DESIGN.md」，overview 台账对齐 v2 改造中提出，全站统一适用；
+  实现单源 pages/v2/theme.tsx `V2_TILE_RADIUS` + v2.less 镜像 + global.less
+  overview 镜像）。**灰底准例（仅配置页）**：settings 卡片经同日用户指令准离
+  本条——圆角 10px + 边框加深 #d7d7d7（浅灰卡底 #f6f6f6 上 #eef2f7 发丝线
+  不可辨，边框不可见即失效），MUST NOT 推广至白底磁贴页。
 
 ## 一般域（默认法：overview / projects / settings / help / activities）
 
@@ -85,9 +95,26 @@
 - 浅灰卡片定制：settings 页卡片底 #f6f6f6、卡头 #efefef；适用范围明示仅 settings
   页，不推广一般域，其余页维持 antd 默认卡底。（出处：2026-10-31 定稿 §3.2 收录；
   core/dashboard/static/src/global.less settings 页实证；2026-10-31 用户裁决 #2）
+- Radio 按钮组激活态固定黑底白字：并排 Radio 过滤控件（optionType="button"，
+  现存消费面=overview 运行态筛选、projects 类型/归档过滤，后续同语态过滤组
+  一律沿用）激活项一律黑底白字 #0f1115（= 一般域主色黑系 / v2 V2_PRIMARY），
+  非激活项保持 antd 描边态；MUST NOT 回退 antd 缺省激活底或逐页散值覆写。
+  实现单源 global.less `.ov-radio-dark` 覆写类（Radio.Group 挂类即得）。（出处：
+  2026-11-06 用户指令「参考 overview 的 radio 控件样式处理，并将该样式写入
+  DESIGN.md」——projects 过滤组对齐 overview 时升格为一般域条款）
 - 布局惯例：导航 + 分区卡片 + 表格为主干；页面级抽风风格创新不做，与既有页协调。
   （出处：fenix-dashboard 归档系列定稿现状；2026-10-29-ui-prototype-loop-design.md
   「与画像既有布局惯例协调」）
+- 页面内容区间距：滚动页内容区**左右留白 15px**（单源 theme.ts dshLayoutToken
+  `paddingInlinePageContainerContent`；pro-layout 缺省回填 `||40` 会吞 0 值，
+  生效靠对象尾部 spread 传导）；内容区**顶呼吸带 16px**（顶栏/标题行与首卡之
+  间的垫高，页级标记类 + `:has()` 作用于 ant-layout-content，现存消费面=
+  overview-page、spec-detail-page 两页；embed 行壳位档豁免归零、下游
+  PageContainer 改垫 24px 防 sticky 起滚位移）。MUST NOT 逐页自带第二留白源或
+  散落第二套顶垫数值。（出处：左右 15px=2026-11-04 内容区留白治理；顶呼吸带
+  16px=2026-11-05 用户指令 overview 顶垫，2026-11-06 用户指令「参考 overview
+  界面修改并将页面上、左右间距的数值写入 DESIGN.md」推广至 SPEC 详情页并升格
+  本条款）
 
 ## 例外域（特别法，逐域小节）
 
@@ -131,7 +158,8 @@
 - 域专属 token 表（主题单源 core/dashboard/static/src/pages/v2/theme.tsx，v2 域
   外任何页面不得引用）：
   1. 主色：黑 #0f1115（hover #43454a / active #2c2c2e）；链接蓝 #4176e6。
-  2. 底色：页底浅灰 #f8fafc；磁贴纯白 radius 16 软阴影；胶囊 radius 999。
+  2. 底色：页底浅灰 #f8fafc；磁贴纯白 radius 12 软阴影（2026-11-06 用户指令自 16
+     改 12，升通用条款固定规则，见「Bento 磁贴圆角固定 12px」）；胶囊 radius 999。
   3. 语义色：success #22c55e / error #dc2626 / warning #d97706；胶囊软色板
      （good 绿软 / warning 琥珀软 / critical 红软 / info 蓝软 / muted 灰蓝软 /
      aqua 青）。
@@ -140,8 +168,9 @@
   5. 数字排版：tabular-nums（.v2-num）；表格 fixed 布局 + 首列 14px 缩进 +
      长注释 pre-wrap（.v2-bento-table）。
 - 与一般域的偏离清单：
-  1. 圆角：磁贴 16 / 胶囊 999（一般域 antd 默认 6/4/8）。（出处：本 SPEC design
-     偏离声明表；prototype 定稿）
+  1. 圆角：磁贴 12（2026-11-06 用户指令自 16 改 12，单源升通用条款「Bento 磁贴
+     圆角固定 12px」）/ 胶囊 999（一般域 antd 默认 6/4/8）。（出处：本 SPEC design
+     偏离声明表；prototype 定稿；radius 值修正见通用条款出处）
   2. 配色单源换轨：v2 主题独立文件，零 import 现产 theme.ts dsh 表。（出处：
      design D2）
   3. 页底浅灰 #f8fafc 替代白底。（出处：design 偏离声明表）

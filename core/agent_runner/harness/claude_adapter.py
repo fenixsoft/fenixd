@@ -299,6 +299,7 @@ def build_env(req: SpawnRequest) -> Optional[Dict[str, str]]:
                     if key not in AGENT_RUN_BANNED_ENV_KEYS
                 }
             )
+        _ensure_sandbox_flag(env)
         return env
     # ── ENV_MODE_AGENT_RUN（主车道）────────────────────────────────────
     env = os.environ.copy()
@@ -325,7 +326,23 @@ def build_env(req: SpawnRequest) -> Optional[Dict[str, str]]:
     # 整套 run-progress 链路全部依赖该工具族；统一注入对该族工具「不适用」的
     # 第一方模型无副作用（本就默认提供）。
     env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] = "1"
+    _ensure_sandbox_flag(env)
     return env
+
+
+def _ensure_sandbox_flag(env: Dict[str, str]) -> None:
+    """root 部署兜底：确保 claude 子进程环境携带 IS_SANDBOX=1（2026-11-05）。
+
+    claude CLI 安全规则：以 root/sudo 运行且使用 bypass 权限模式（主车道恒
+    注入 --permission-mode bypassPermissions，与 --dangerously-skip-permissions
+    同触发 root 检查）时，除非环境携带 IS_SANDBOX=1，否则启动即拒
+    （exit_code=1、0 rounds，stderr 引用 --dangerously-skip-permissions）。
+    systemd 托管部署下 daemon 可能继承裸环境缺该键（fenix-desktop 事故：
+    unit 未提升 EnvironmentFile 稿，arbiter/spec-review run 三连秒死、
+    SPEC 冻结）——在 adapter 层统一兜底注入，与 .fenix/systemd.env 提升稿
+    互为纵深。非 root 场景该键不被 CLI 读取，注入无行为影响。
+    """
+    env["IS_SANDBOX"] = "1"
 
 
 def _to_int(value: Any) -> int:

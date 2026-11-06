@@ -1,11 +1,10 @@
-import { Button, Card, Form, InputNumber, Select, Tag, Typography } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
+import { Card, Form, InputNumber, Select, Tag, Typography } from 'antd';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import { getChainOverview } from '@/services/dashboard';
 import type { ChainConfig, ChainOverviewData } from '@/services/dashboard';
 import { usePanelDirty } from '../panelDirty';
-import { useGatedFormPanel } from '../useGatedFormPanel';
-import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import type { SettingsSectionHandle } from './settingsSection';
 
 const { Text } = Typography;
 
@@ -41,34 +40,63 @@ function buildChainFormValues(cfg: ConfigData['chain'] | undefined) {
 
 interface ChainPanelProps {
   config: ConfigData;
-  /** 父级 index.handleSave（返回 Promise<boolean>），与 useGatedFormPanel
-   *  onSave 契约同型（Promise<boolean | void>）。 */
-  onSave: (values: Partial<ConfigData>) => Promise<boolean | void>;
   /** 项目名（项目级作用域下取运行时水位；用户级不传） */
   project?: string;
 }
 
 // 处置链设置面板（add-escalation-chain-admin-arbiter 5.3）：四键配置（配额
-// 两轴 + 复位窗 + 信号黑名单）+ 运行时水位只读摘要（30s 轮询）。保存走既有
-// 配置写回通道（index.handleSave → saveConfig → write_config 前置校验 +
-// 白名单合并）；链头每次判定即时解析项目级配置，保存即热更新（无需重启）。
-export default function ChainPanel({ config, onSave, project }: ChainPanelProps) {
+// 两轴 + 复位窗 + 信号黑名单）+ 运行时水位只读摘要（30s 轮询）。配置写回走
+// 页签唯一保存按钮（ArbiterPanel 同款 collect 句柄模式，2026-11-05 用户指令
+// 「仲裁页签只留最下一个保存按钮」——本面板原保存钮为堆叠页最下一个，收口后
+// 由父页签底部唯一按钮替代），本面板经 ref 暴露 collect() 由父页签校验并合并
+// 提交；链头每次判定即时解析项目级配置，保存即热更新（无需重启）。
+const ChainPanel = forwardRef<SettingsSectionHandle, ChainPanelProps>(
+  function ChainPanel({ config, project }, ref) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  const { saving, initialValues, handleSave } = useGatedFormPanel({
-    form,
-    buildValues: () => buildChainFormValues(config.chain),
-    backfillDeps: [config.chain],
-    onSave,
-    buildPayload: (values): Partial<ConfigData> => ({
-      chain: {
-        admin_attempts: values.admin_attempts,
-        arbiter_rulings: values.arbiter_rulings,
-        reset_window_days: values.reset_window_days,
-        blacklist: values.blacklist ?? EMPTY_BLACKLIST,
+
+  const initialValues = buildChainFormValues(config.chain);
+
+  // 回填门控（比照 StaleCodeSelfhealPanel cbec8303669f 同族面板）：无条件
+  // setFieldsValue 会在保存往返或父级 setConfig 刷新 config 时覆盖用户尚未
+  // 保存的输入。对回填产物做序列化比较，只在内容真变化时回填。
+  const lastBackfillRef = useRef('');
+  useEffect(() => {
+    const next = buildChainFormValues(config.chain);
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    form.setFieldsValue(next);
+    // ref 记账在回填成功之后（与 useGatedFormPanel item 51e106646c29 对齐）：
+    // setFieldsValue 抛异常时 key 不落 ref，同样的配置内容依赖下次变化仍会重试
+    lastBackfillRef.current = key;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.chain, form]);
+
+  // 页签唯一保存入口的收集句柄：校验通过返回本节补丁，失败返回 null
+  // （antd 已在表单内渲染 explain-error，静默返回不落 console）
+  useImperativeHandle(
+    ref,
+    () => ({
+      collect: async () => {
+        try {
+          const values = await form.validateFields();
+          return {
+            chain: {
+              admin_attempts: values.admin_attempts,
+              arbiter_rulings: values.arbiter_rulings,
+              reset_window_days: values.reset_window_days,
+              blacklist: values.blacklist ?? EMPTY_BLACKLIST,
+            },
+          };
+        } catch {
+          return null;
+        }
       },
     }),
-  });
+    [form],
+  );
 
   // 运行时水位只读摘要（恒 200 自含端点，失败静默为空态——非关键数据；
   // ArbiterPanel 的过期响应守卫同款：per-effect alive 判活，项目切换/卸载
@@ -230,18 +258,9 @@ export default function ChainPanel({ config, onSave, project }: ChainPanelProps)
           </div>
         </Card>
       )}
-
-      <div style={SETTINGS_ACTIONS_ROW_STYLE}>
-        <Button
-          type="primary"
-          onClick={handleSave}
-          loading={saving}
-          disabled={saving}
-          data-testid="chain-save"
-        >
-          保存
-        </Button>
-      </div>
     </div>
   );
-}
+  },
+);
+
+export default ChainPanel;

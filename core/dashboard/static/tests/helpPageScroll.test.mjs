@@ -1,14 +1,11 @@
-// 帮助页滚动布局守卫（2026-11-04 用户指令：内容滚动条下沉到正文 div，目录
-// 不随页面滚动；正文 padding-top 24 → 0）。
-//
-// 滚动下沉的前提是整卡定高：calc(100vh - 页框偏移) 纯 CSS（用户明确否掉
-// JS 测高脚本——偏移校准：standalone 顶栏 56（unified-page-title-bar 后
-// PageContainer 页头已摘除，标题进顶栏插槽）；embed 全局顶栏隐藏、统一
-// 标题行为内容区首行 48）。不取 pageChrome.ts 常数（项目详情页 Tabs 版
-// 页框，本页无 Tabs 不通用）。
+// 帮助页滚动布局守卫（2026-11-05 用户指令两连定调：①全站滚动条范围统一——
+// 滚动条跨标题区域，页面纵向滚动统一走文档级，同概览/项目/运维记录口径，
+// 原 2026-11-04「整卡定高 + 正文 div 自滚」形态整体退役；②菜单/目录不能
+// 滚走——目录列本体 sticky 钉在标题带下缘，长目录自滚兜底。本文件锁定
+// 上述形态不回潮）。
 //
 // 零依赖 node:test 源码扫描（同 pageChrome.test.mjs 习语）；视觉行为由
-// `npm run build` 与浏览器冒烟覆盖，本文件锁定接线与形态不回潮。
+// `npm run build` 与浏览器冒烟覆盖。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -17,46 +14,44 @@ import { join } from 'node:path';
 const STATIC_ROOT = join(import.meta.dirname, '..');
 const readHelpPage = () => readFileSync(join(STATIC_ROOT, 'src', 'pages', 'help', 'index.tsx'), 'utf8');
 
-test('正文 div 必须自带滚动条（overflowY auto）：滚动不落在页面上', () => {
-  // 正文容器 = flex:1 + minWidth:0 的那个 div；padding 与 overflow 锁同一处声明
-  assert.match(
-    readHelpPage(),
-    /flex: 1, minWidth: 0, padding: '0 32px 24px'.*overflowY: 'auto'/,
-  );
-});
-
-test('正文 padding-top 必须归 0（2026-11-04 用户指令 24 → 0；底部 24 呼吸保留）', () => {
-  assert.match(readHelpPage(), /padding: '0 32px 24px'/);
-  // 旧值不得残留（两值简写 '24px 32px' 或含顶部 24 的写法都算回潮）
-  assert.doesNotMatch(readHelpPage(), /padding: '24px 32px'/);
-});
-
-test('目录列必须有自滚兜底（页面不滚后长目录若无自滚会被定高裁掉）', () => {
+test('整卡定高形态不得回潮：无页框偏移常数、无视口算高 height 链', () => {
   const text = readHelpPage();
-  // 目录列特征：width 240 + borderRight；overflowY 与之同处一块声明
-  assert.match(
-    text,
-    /width: 240,[\s\S]{0,200}?borderRight: '1px solid var\(--ant-color-border-secondary\)'[\s\S]{0,200}?overflowY: 'auto'/,
-  );
-});
-
-test('整卡定高必须是纯 CSS calc(100vh - 偏移)，双模式偏移实测值锁定', () => {
-  const text = readHelpPage();
-  // calc 接线在 flex 行 style 上
-  assert.match(text, /height: `calc\(100vh - \$\{HELP_FRAME_OFFSET\}px\)`/);
-  // 双模式偏移 = 卡片上方页框占用：standalone 顶栏 56（PageContainer 页头已
-  // 摘除）；embed 顶栏隐藏、统一标题行行壳位 60（2026-11-05 用户定调 48→60
-  // 升格固定标题带；卡片贴视口底后文档流恰 = 100vh，无底带、无页面级滚动条）。
-  // 校准值改动时须同步复核两种模式（standalone 1440×900 卡底贴视口底）
-  assert.match(text, /isEmbedMode\(\) \? 60 : 56/);
-  // JS 测高方案不得回潮（用户明确否掉）：flex 行不挂 ref 测高
+  // 定高常数（旧双档 56/60）与高度链已随文档级滚动统一退役，见 git 历史；
+  // 视口 calc 只允许出现在目录 sticky 的 maxHeight（钉住高度预算），任何
+  // height: calc(100vh) 高度链回潮即违规
+  assert.doesNotMatch(text, /const HELP_FRAME_OFFSET/);
+  assert.doesNotMatch(text, /height: `calc\(100vh/);
+  assert.match(text, /maxHeight: `calc\(100vh - \$\{HELP_TOC_STICKY_TOP\}px - 16px\)`/);
+  // JS 测高方案不得回潮（用户明确否掉）
   assert.doesNotMatch(text, /getBoundingClientRect\(\)\.top \+ window\.scrollY/);
 });
 
-test('正文滚动条贴窗口右缘：包裹卡右缘负外边距吃掉内容区右留白（单源取 token，勿硬编码）', () => {
+test('目录列必须 sticky 钉住不随页面滚走（2026-11-05 用户指令「菜单/目录不能滚走」）', () => {
   const text = readHelpPage();
+  // 目录列 = width 240 外壳（撑满列高承分隔线）+ 本体 sticky（钉住偏移双档 +
+  // 长目录自滚兜底 overflowY，同块声明）
   assert.match(
     text,
-    /marginInlineEnd: -dshLayoutToken\.pageContainer\.paddingInlinePageContainerContent/,
+    /width: 240,[\s\S]{0,200}?position: 'sticky',\s*top: HELP_TOC_STICKY_TOP,[\s\S]{0,200}?overflowY: 'auto'/,
+  );
+  // 钉住偏移双档实测值锁定：standalone 顶栏 56 / embed 行壳位 60
+  assert.match(text, /const HELP_TOC_STICKY_TOP = isEmbedMode\(\) \? 60 : 56;/);
+});
+
+test('正文不得自带纵向滚动条：滚动必须落在文档上（目录 sticky 自滚兜底豁免）', () => {
+  // 正文容器（padding '0 32px 24px' 块）不得带 overflowY
+  assert.doesNotMatch(readHelpPage(), /padding: '0 32px 24px',[^}]*overflowY/);
+});
+
+test('桌面 flex 行必须走文档流：不锁高度、正文顶带 0 底呼吸 24 保留', () => {
+  const text = readHelpPage();
+  assert.match(text, /<div style=\{\{ display: 'flex' \}\}>/);
+  assert.match(text, /padding: '0 32px 24px'/);
+});
+
+test('包裹卡贴缘负外边距不得回潮（文档滚动条天然贴视口右缘，内容区留白与他页一致）', () => {
+  assert.doesNotMatch(
+    readHelpPage(),
+    /marginInlineEnd: -dshLayoutToken/,
   );
 });

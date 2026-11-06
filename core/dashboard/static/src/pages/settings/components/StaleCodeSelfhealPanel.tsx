@@ -1,7 +1,7 @@
 import { Card, Form, InputNumber, Switch, Typography } from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
-import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
+import type { SettingsSectionHandle } from './settingsSection';
 import { usePanelDirty } from '../panelDirty';
 
 const { Text } = Typography;
@@ -28,7 +28,7 @@ interface StaleCodeSelfhealPanelProps {
 // 保存按钮已上提到自进化页签底部（全页唯一），本卡片经 ref 暴露 collect()，
 // 由父页签在唯一点击事件里与「建议改进项」卡片一起校验并合并提交。
 const StaleCodeSelfhealPanel = forwardRef<
-  SelfEvolutionSectionHandle,
+  SettingsSectionHandle,
   StaleCodeSelfhealPanelProps
 >(function StaleCodeSelfhealPanel({ config }, ref) {
   const [form] = Form.useForm();

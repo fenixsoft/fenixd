@@ -17,11 +17,31 @@
   padding: 24px 24px 40px;
 }
 
-/* Bento 白磁贴（圆角 16 + 细边框 + 软阴影） */
+/* ── 白底变体（2026-11-06 用户指令；V2Page variant）───────────────────────
+   页底改白（= theme.tsx V2_WHITE）。variant="overview"（/v2/overview）与
+   variant="projects"（/v2/projects/:name，用户指令「项目页背景改纯白+表格撑满
+   容器」）另去掉 1400px 居中收窄、随外部容器满宽，左右固定 30px 间距；
+   variant="white"（/v2/help，用户指令「帮助中心背景改白」）仅改底色、居中列
+   不变——不改 .v2-inner 即无特异性压制问题，移动端断点规则照常生效。其余页
+   缺省形态不变。 */
+.v2-page.v2-overview,
+.v2-page.v2-white,
+.v2-page.v2-projects {
+  background: #ffffff;
+}
+
+.v2-page.v2-overview .v2-inner,
+.v2-page.v2-projects .v2-inner {
+  max-width: none;
+  padding: 24px 30px 40px;
+}
+
+/* Bento 白磁贴（圆角 12 + 细边框 + 软阴影；圆角单源 DESIGN.md 通用条款，
+   2026-11-06 用户指令自 16 改 12 全站统一） */
 .v2-bento {
   background: #ffffff;
   border: 1px solid #eef2f7; /* = V2_TILE_BORDER */
-  border-radius: 16px; /* = V2_TILE_RADIUS */
+  border-radius: 12px; /* = V2_TILE_RADIUS */
   box-shadow:
     0 1px 3px rgba(15, 23, 42, 0.05),
     0 1px 2px rgba(15, 23, 42, 0.03); /* = V2_TILE_SHADOW */
@@ -160,10 +180,17 @@
   .v2-inner {
     padding: 16px 14px 32px;
   }
+  /* 概览/项目变体侧距单源镜像：变体选择器特异性 (0,3,0) 会压制上方 (0,1,0)
+     移动规则，须在此回填——移动形态仍走原型 14px 侧距，桌面 30px 不下探 */
+  .v2-page.v2-overview .v2-inner,
+  .v2-page.v2-projects .v2-inner {
+    padding: 16px 14px 32px;
+  }
 }
 
-/* 横向滑动胶囊菜单（settings 移动原型 .chip / .chip.on；仅移动分支渲染，
-   JS 侧 useV2IsMobile 控制，桌面不出现） */
+/* 横向滑动胶囊菜单（settings 移动原型 .chip / .chip.on；settings 移动菜单
+   JS 侧 useV2IsMobile 控制；另 2026-11-06 用户指令起 overview 桌面运行态
+   筛选复用同一胶囊语言：激活黑底白字，非 antd 按钮组描边态） */
 .v2-chip-row {
   display: flex;
   gap: 8px;

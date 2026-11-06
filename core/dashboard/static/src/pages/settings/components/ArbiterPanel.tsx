@@ -1,11 +1,10 @@
-import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
+import { Card, Form, InputNumber, Switch, Typography } from 'antd';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import { getArbiterStatus } from '@/services/dashboard';
 import type { ArbiterStatus } from '@/services/dashboard';
 import { usePanelDirty } from '../panelDirty';
-import { useGatedFormPanel } from '../useGatedFormPanel';
-import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
+import type { SettingsSectionHandle } from './settingsSection';
 
 const { Text } = Typography;
 
@@ -39,34 +38,63 @@ function buildArbiterFormValues(cfg: ConfigData['arbiter'] | undefined) {
 
 interface ArbiterPanelProps {
   config: ConfigData;
-  /** 父级 index.handleSave（返回 Promise<boolean>），与 useGatedFormPanel
-   *  onSave 契约同型（Promise<boolean | void>）。 */
-  onSave: (values: Partial<ConfigData>) => Promise<boolean | void>;
   /** 项目名（项目级作用域下取运行时状态；用户级不传） */
   project?: string;
 }
 
 // Arbiter 全局决策者车道设置面板（add-arbiter-lane 5.3）：四键配置 + 运行时
-// 状态只读摘要（队列/台账）。保存走既有配置写回通道（index.handleSave →
-// saveConfig → write_config 前置校验 + 白名单合并），回显当前生效值（后端经
+// 状态只读摘要（队列/台账）。配置写回走页签唯一保存按钮（StaleCodeSelfhealPanel
+// 同款 collect 句柄模式，2026-11-05 用户指令「仲裁页签只留最下一个保存按钮」
+// ——原面板自带保存钮与堆叠下方的 ChainPanel 保存钮并存），本面板经 ref 暴露
+// collect() 由父页签校验并合并提交；表单回显维持回填门控（后端经
 // get_arbiter_config 归一，非法值回显缺省）。
-export default function ArbiterPanel({ config, onSave, project }: ArbiterPanelProps) {
+const ArbiterPanel = forwardRef<SettingsSectionHandle, ArbiterPanelProps>(
+  function ArbiterPanel({ config, project }, ref) {
   const [form] = Form.useForm();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
+  // （code-review item 8a3eb01dc2b9）
   const { setDirty } = usePanelDirty();
-  const { saving, initialValues, handleSave } = useGatedFormPanel({
-    form,
-    buildValues: () => buildArbiterFormValues(config.arbiter),
-    backfillDeps: [config.arbiter],
-    onSave,
-    buildPayload: (values): Partial<ConfigData> => ({
-      arbiter: {
-        enabled: values.enabled,
-        budget_wallclock_s: values.budget_wallclock_s,
-        budget_tokens: values.budget_tokens,
-        max_consecutive_failures: values.max_consecutive_failures,
+
+  const initialValues = buildArbiterFormValues(config.arbiter);
+
+  // 回填门控（比照 StaleCodeSelfhealPanel cbec8303669f 同族面板）：无条件
+  // setFieldsValue 会在保存往返或父级 setConfig 刷新 config 时覆盖用户尚未
+  // 保存的输入。对回填产物做序列化比较，只在内容真变化时回填。
+  const lastBackfillRef = useRef('');
+  useEffect(() => {
+    const next = buildArbiterFormValues(config.arbiter);
+    const key = JSON.stringify(next);
+    if (key === lastBackfillRef.current) return;
+    form.setFieldsValue(next);
+    // ref 记账在回填成功之后（与 useGatedFormPanel item 51e106646c29 对齐）：
+    // setFieldsValue 抛异常时 key 不落 ref，同样的配置内容依赖下次变化仍会重试
+    lastBackfillRef.current = key;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.arbiter, form]);
+
+  // 页签唯一保存入口的收集句柄：校验通过返回本节补丁，失败返回 null
+  // （antd 已在表单内渲染 explain-error，静默返回不落 console）
+  useImperativeHandle(
+    ref,
+    () => ({
+      collect: async () => {
+        try {
+          const values = await form.validateFields();
+          return {
+            arbiter: {
+              enabled: values.enabled,
+              budget_wallclock_s: values.budget_wallclock_s,
+              budget_tokens: values.budget_tokens,
+              max_consecutive_failures: values.max_consecutive_failures,
+            },
+          };
+        } catch {
+          return null;
+        }
       },
     }),
-  });
+    [form],
+  );
 
   // 运行时状态只读摘要（恒 200 自含端点，失败静默为空态——非关键数据）
   const [status, setStatus] = useState<ArbiterStatus | null>(null);
@@ -217,18 +245,9 @@ export default function ArbiterPanel({ config, onSave, project }: ArbiterPanelPr
           )}
         </Card>
       )}
-
-      <div style={SETTINGS_ACTIONS_ROW_STYLE}>
-        <Button
-          type="primary"
-          onClick={handleSave}
-          loading={saving}
-          disabled={saving}
-          data-testid="arbiter-save"
-        >
-          保存
-        </Button>
-      </div>
     </div>
   );
-}
+  },
+);
+
+export default ArbiterPanel;

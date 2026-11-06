@@ -59,6 +59,8 @@ import {
   AVATAR_BG,
   AVATAR_BORDER,
   CARD_BG,
+  CARD_FRAME_BORDER,
+  CARD_FRAME_SHADOW,
   FONT_MONO,
   GREEN,
   GREEN_DIM_BG,
@@ -398,8 +400,10 @@ function LaneCard({
         // 宽度随分区列拉伸（grid 轨道 minmax(270px,1fr) 下限单源
         // LANE_CARD_MIN_WIDTH），纵向 flex 列默认 stretch 即满列宽
         minWidth: LANE_CARD_MIN_WIDTH,
-        border: `1px solid ${PANEL_BORDER}`,
-        borderRadius: 10,
+        // Bento 磁贴框（2026-11-06 用户指令：卡片框对齐 bento 样式，shared 单源）
+        border: `1px solid ${CARD_FRAME_BORDER}`,
+        borderRadius: 12,
+        boxShadow: CARD_FRAME_SHADOW,
         padding: '13px 14px 11px',
         background: CARD_BG,
         display: 'flex',
@@ -811,8 +815,10 @@ export default function OrgGrid({
               // 下间距即连接线垂直段长度（2026-10-29 用户定稿 14→24px：原
               // 折线垂直段太短）
               margin: '0 auto 24px',
-              border: `1px solid ${PANEL_BORDER}`,
-              borderRadius: 10,
+              // Bento 磁贴框（2026-11-06 用户指令，shared 单源）
+              border: `1px solid ${CARD_FRAME_BORDER}`,
+              borderRadius: 12,
+              boxShadow: CARD_FRAME_SHADOW,
               background: CARD_BG,
               padding: '12px 18px 10px',
             }}

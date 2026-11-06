@@ -6,6 +6,16 @@
 // 正文复用现产 markdown-shared 渲染链（react-markdown + remarkGfm +
 // markdownComponents/SafeLink，同 SpecDocModal 单源）。URL query ?doc= 同步
 // 当前文档，直链/刷新可还原（口径同现产 help 页）。
+//
+// 2026-11-06 用户指令三则（原型豁免点随指令修订）：
+// 1. 页底改白（V2Page variant="white"，v2.less `.v2-page.v2-white`）；
+// 2. 页标题「帮助中心」收编全站统一标题栏控件（PageTitleBar titleBar 槽位，
+//    自画 V2TitleBand 退役）；移动端标题落顶栏（2026-11-06 二次指令：移动端
+//    行壳位退役，标题/「目录」filters 按钮均经 HeaderSlot/actionsRender 落
+//    global header，Drawer 触发语义不变）；
+// 3. 正文标题去重：DocPane 不再渲染自动 doc.title（后端 title 本就从
+//    markdown 首个一级标题解析，与正文 H1 同文重复），正文首行即文档自身
+//    H1（slug 锚点不受影响，headingComponent 照常注入 id）。
 import { Alert, Button, Drawer, Skeleton, Spin } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
@@ -16,7 +26,8 @@ import { useSearchParams } from '@umijs/max';
 import { getHelpDoc, getHelpDocs } from '@/services/dashboard';
 import type { HelpDocItem, HelpDocMeta } from '@/services/dashboard';
 import { isPageAnchor, markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
-import { V2Page, V2TitleBand } from './shared';
+import { PageTitleBar } from '@/components/PageTitleBar';
+import { V2Page } from './shared';
 import { useV2IsMobile } from './theme';
 
 const DEFAULT_DOC = 'README.md';
@@ -240,14 +251,13 @@ function DocPane({
   if (!doc) return null;
   return (
     <div className="v2-bento v2-doc" data-proto-id="hp-doc" style={{ flex: 1, minWidth: 0, padding: '24px 28px 32px', minHeight: 320 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.3 }}>{doc.title}</span>
-      </div>
-      <div style={{ marginTop: 12 }}>
-        <Markdown remarkPlugins={HELP_REMARK_PLUGINS} components={components}>
-          {doc.content}
-        </Markdown>
-      </div>
+      {/* 正文标题只此一份（2026-11-06 用户指令「内容区域标题重复」）：原 DocPane
+          顶部自动 doc.title 行已删——后端 title 本就从 markdown 首个一级标题
+          解析（help_routes._help_doc_title），与正文 H1 同文双显；保留正文 H1
+          （headingComponent 注入 slug id，锚点跳转目标不受影响） */}
+      <Markdown remarkPlugins={HELP_REMARK_PLUGINS} components={components}>
+        {doc.content}
+      </Markdown>
     </div>
   );
 }
@@ -360,59 +370,63 @@ export default function V2HelpPage() {
     };
   }, [currentDoc, handleDocChange]);
 
-  // 移动形态（prototype/m-help.html）：目录抽屉化（标题行「目录」按钮触发，
-  // 选中后收起）；正文单列；现产本无搜索入口（桌面亦无），与原型零搜索一致。
+  // 移动形态（prototype/m-help.html）：目录抽屉化（「目录」按钮触发——已随迁
+  // 标题栏 filters 槽位，选中后收起）；正文单列；现产本无搜索入口（桌面亦无），
+  // 与原型零搜索一致。页标题（2026-11-06 用户指令）经 V2Page titleBar 槽位落
+  // 统一标题栏：standalone 顶栏承载「帮助中心 · N 篇文档」，移动端行壳位承载。
   return (
-    <V2Page>
-      <V2TitleBand
-        title="帮助中心"
-        subtitle={loading ? undefined : `${docs.length} 篇文档`}
-        right={
-          mobile ? (
-            <Button size="small" onClick={() => setTocOpen(true)}>
-              目录
-            </Button>
-          ) : undefined
-        }
-      />
-      <div style={{ marginTop: 18 }}>
-        {docsError ? (
-          <Alert type="error" showIcon style={{ marginBottom: 16 }} message="文档清单加载失败" description={docsError} />
-        ) : null}
-        {mobile ? (
-          <>
-            <Drawer
-              title="文档目录"
-              placement="right"
-              open={tocOpen}
-              onClose={() => setTocOpen(false)}
-              // antd v6 弃用 width prop（→ size 仅 default/large），自定宽走
-              // styles.wrapper（contentWrapperStyle 映射）承载，免控制台弃用告警
-              styles={{ body: { padding: '4px 10px' }, wrapper: { width: 300 } }}
-            >
-              <Toc docs={docs} currentDoc={currentDoc} onDocChange={pickDoc} />
-            </Drawer>
-            {docLoading && !docData ? (
-              <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
-                <Spin size="large" />
-              </div>
-            ) : (
-              <DocPane doc={docData} loading={docLoading} docs={docs} onNavigate={onNavigate} />
-            )}
-          </>
-        ) : (
-          <div data-proto-id="hp-layout" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-            <Toc docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
-            {docLoading && !docData ? (
-              <div className="v2-bento" style={{ flex: 1, padding: 48, textAlign: 'center' }}>
-                <Spin size="large" />
-              </div>
-            ) : (
-              <DocPane doc={docData} loading={docLoading} docs={docs} onNavigate={onNavigate} />
-            )}
-          </div>
-        )}
-      </div>
+    <V2Page
+      variant="white"
+      titleBar={
+        <PageTitleBar
+          title="帮助中心"
+          subtitle={loading ? undefined : `${docs.length} 篇文档`}
+          filters={
+            mobile ? (
+              <Button size="small" onClick={() => setTocOpen(true)}>
+                目录
+              </Button>
+            ) : undefined
+          }
+        />
+      }
+    >
+      {docsError ? (
+        <Alert type="error" showIcon style={{ marginBottom: 16 }} message="文档清单加载失败" description={docsError} />
+      ) : null}
+      {mobile ? (
+        <>
+          <Drawer
+            title="文档目录"
+            placement="right"
+            open={tocOpen}
+            onClose={() => setTocOpen(false)}
+            // antd v6 弃用 width prop（→ size 仅 default/large），自定宽走
+            // styles.wrapper（contentWrapperStyle 映射）承载，免控制台弃用告警
+            styles={{ body: { padding: '4px 10px' }, wrapper: { width: 300 } }}
+          >
+            <Toc docs={docs} currentDoc={currentDoc} onDocChange={pickDoc} />
+          </Drawer>
+          {docLoading && !docData ? (
+            <div className="v2-bento" style={{ padding: 48, textAlign: 'center' }}>
+              <Spin size="large" />
+            </div>
+          ) : (
+            <DocPane doc={docData} loading={docLoading} docs={docs} onNavigate={onNavigate} />
+          )}
+        </>
+      ) : (
+        <div data-proto-id="hp-layout" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <Toc docs={docs} currentDoc={currentDoc} onDocChange={handleDocChange} />
+          {docLoading && !docData ? (
+            <div className="v2-bento" style={{ flex: 1, padding: 48, textAlign: 'center' }}>
+              <Spin size="large" />
+            </div>
+          ) : (
+            <DocPane doc={docData} loading={docLoading} docs={docs} onNavigate={onNavigate} />
+          )}
+        </div>
+      )}
     </V2Page>
   );
 }

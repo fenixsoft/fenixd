@@ -17,7 +17,8 @@ import {
   saveConfig,
 } from '@/services/dashboard';
 import type { ConfigData, LlmProvider } from '@/services/dashboard';
-import { V2Page, V2Pill, V2TitleBand } from './shared';
+import { V2Page, V2Pill } from './shared';
+import { PageTitleBar } from '@/components/PageTitleBar';
 import {
   useV2IsMobile,
   V2_HAIRLINE,
@@ -412,28 +413,34 @@ export default function V2SettingsPage() {
   const activeLabel = MENU.find(([k]) => k === menu)?.[1] || '';
 
   return (
-    <V2Page>
-      <V2TitleBand
-        title="配置"
-        subtitle="网关、角色、调度与门禁的集中配置"
-        right={
-          <Select
-            size="small"
-            style={{ width: mobile ? 130 : 190 }}
-            value={scope || 'user'}
-            onChange={(v) => setScope(v === 'user' ? undefined : v)}
-            options={scopeOptions}
-          />
-        }
-      />
+    // 页标题（2026-11-06 用户指令「v2 页标题收编全站统一标题栏控件」）经 V2Page
+    // titleBar 槽位落统一标题栏：顶栏承载「配置 · 副标题」，「作用域」
+    // Select 随迁 filters 槽位（顶栏右上角，同现产设置页口径）。
+    <V2Page
+      titleBar={
+        <PageTitleBar
+          title="配置"
+          subtitle="网关、角色、调度与门禁的集中配置"
+          filters={
+            <Select
+              size="small"
+              style={{ width: mobile ? 130 : 190 }}
+              value={scope || 'user'}
+              onChange={(v) => setScope(v === 'user' ? undefined : v)}
+              options={scopeOptions}
+            />
+          }
+        />
+      }
+    >
       {error ? (
-        <Alert type="error" showIcon style={{ marginTop: 16 }} message="配置加载失败" description={error} />
+        <Alert type="error" showIcon message="配置加载失败" description={error} />
       ) : null}
       {mobile ? (
         // 移动形态（prototype/m-settings.html）：左菜单转横向滑动胶囊
         // （ACTIVE 黑底，越界收纳在容器内滚动，不撑破页面）+ 面板单列。
         <div data-proto-id="st-layout">
-          <div className="v2-chip-row" data-proto-id="st-menu" style={{ marginTop: 14 }}>
+          <div className="v2-chip-row" data-proto-id="st-menu">
             {MENU.map(([k, label]) => (
               <span
                 key={k}
@@ -464,7 +471,7 @@ export default function V2SettingsPage() {
           </div>
         </div>
       ) : (
-        <div data-proto-id="st-layout" style={{ display: 'flex', gap: 16, marginTop: 18, alignItems: 'flex-start' }}>
+        <div data-proto-id="st-layout" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
           <div className="v2-bento" data-proto-id="st-menu" style={{ width: 230, flexShrink: 0, padding: 10 }}>
             {MENU.map(([k, label]) => (
               <div

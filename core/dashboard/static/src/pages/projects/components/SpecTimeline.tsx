@@ -39,6 +39,14 @@ export { formatUsd };
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
 
+// ── Bento 镜像色值（2026-11-06 用户指令：时间轴每个节点各自成磁贴，页签区卡
+// 同步退出 bento 避免卡套卡）。源 = pages/v2/theme.tsx，例外域配色单源不得跨域
+// import，镜像纪律同 overview ProjectTable / projects list（两处同改）；圆角
+// 固定 12px 见 DESIGN.md 通用条款。
+const OV_TILE_BORDER = '#eef2f7'; // = V2_TILE_BORDER / V2_HAIRLINE
+const OV_TILE_SHADOW =
+  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)'; // = V2_TILE_SHADOW
+
 // remarkPlugins 提为模块级常量（code-review item 0a666cf57a47）：比照 SpecDocModal
 // SPEC_DOC_REMARK_PLUGINS / KnowledgeTab KNOWLEDGE_REMARK_PLUGINS 先例复用同一引用，
 // 避免每次渲染（SSE 增量刷新、父页状态变化引发的时间轴整体重渲染）新建数组
@@ -156,10 +164,10 @@ function StateNode({
         <div
           className="spec-origin-request-quote"
           style={{
-            marginTop: 10,
+            // 2026-11-06 用户指令：去描边（节点本体已是磁贴，盒式边框属双重
+            // chrome），上边距 10→6
+            marginTop: 6,
             padding: '8px 12px',
-            border: `1px solid ${token.colorBorderSecondary}`,
-            borderRadius: 8,
             background: token.colorBgContainer,
             fontSize: 13,
           }}
@@ -443,14 +451,14 @@ function RunNode({
           )}
         </div>
       )}
-      {/* ClaudeCode 最后一条总结（result 字段，markdown）：不展开运行记录即可掌握结论 */}
+      {/* ClaudeCode 最后一条总结（result 字段，markdown）：不展开运行记录即可掌握结论。
+          2026-11-06 用户指令：去描边（节点本体已是磁贴）、上左右内边距收紧——
+          padding 8px 12px → 0px 12px */}
       {item.summary && (
         <div
           style={{
             marginBottom: 8,
-            padding: '8px 12px',
-            border: `1px solid ${token.colorBorderSecondary}`,
-            borderRadius: 8,
+            padding: '0px 12px',
             background: token.colorBgContainer,
             fontSize: 13,
           }}
@@ -530,9 +538,13 @@ export default function SpecTimeline({
     const { token } = theme.useToken();
     const cardBox = (urgent: boolean): CSSProperties => ({
       padding: isMobile ? 8 : 12,
-      borderRadius: 8,
-      border: urgent ? `1px solid ${token.colorError}` : `1px solid ${token.colorBorderSecondary}`,
-      background: urgent ? token.colorErrorBg : token.colorBgLayout,
+      // Bento 磁贴形态（2026-11-06 用户指令：节点各自成磁贴）：发丝边 + 12 圆角
+      // + 软阴影 + 纯白底；urgent（失败 run / 门禁拒绝）保留警示描边与红软底——
+      // 数据语义色不随视觉换轨
+      borderRadius: 12,
+      border: urgent ? `1px solid ${token.colorError}` : `1px solid ${OV_TILE_BORDER}`,
+      background: urgent ? token.colorErrorBg : '#ffffff',
+      boxShadow: OV_TILE_SHADOW,
     });
     const headRow: CSSProperties = {
       display: 'flex',

@@ -5,7 +5,8 @@
 // add-run-record-readability：头部「显示思考过程」开关（默认关闭，3.2）与
 // 「显示尾部 N / 共 M 条事件」计数 + 「加载更早事件」向前分页（D5）。
 // add-run-prompt-viewer 3.3：工具条「查看提示词」按钮 + Modal（注入提示词
-// 全文只读展示，含字符数与一键复制；历史 run 无记录时展示明确提示）。
+// 全文只读展示，markdown 渲染、窗口 80% 尺寸，含字符数与一键复制；历史 run
+// 无记录时展示明确提示）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App, Button, Modal, Spin, Switch, Typography } from 'antd';
 import { getRunPrompt, getRunTail, registerRunWatch, STREAM_URL } from '@/services/dashboard';
@@ -13,7 +14,7 @@ import type { RunEvent, RunPrompt } from '@/services/dashboard';
 
 import { runEventsToChatMessages } from './runEvents';
 import ClaudeMessageList from './ClaudeMessageList';
-import { copyToClipboard } from './Markdown';
+import { Markdown, copyToClipboard } from './Markdown';
 
 interface ClaudeOutputPaneProps {
   runId: string;
@@ -695,7 +696,15 @@ export default function ClaudeOutputPane({
         open={promptOpen}
         onCancel={closePrompt}
         title={`注入提示词（${runId}）`}
-        width={880}
+        // 尺寸取窗口 80%（2026-11-06 用户指令）：宽 80%、高 80vh；container
+        // （v6 对 v5 content 槽位的改名，承载 header/body/footer 的面板）撑满
+        // 后转 flex 列布局，header/footer 自然高度、body 弹性占满并内部滚动
+        width="80%"
+        centered
+        styles={{
+          container: { height: '80vh', display: 'flex', flexDirection: 'column' },
+          body: { flex: 1, minHeight: 0, overflow: 'auto' },
+        }}
         // antd v6 Modal 无 data-testid 透传面：定位钩子用 rootClassName
         rootClassName="prompt-modal-root"
         // 关闭即卸载内容（add-run-prompt-viewer 3.3 spec 字面口径）：antd 缺省
@@ -733,25 +742,12 @@ export default function ClaudeOutputPane({
             <Button size="small" data-testid="prompt-retry-btn" onClick={() => void loadPrompt()}>重试</Button>
           </div>
         ) : promptData?.prompt ? (
-          <pre
-            data-testid="prompt-text"
-            style={{
-              margin: 0,
-              padding: 12,
-              borderRadius: 6,
-              background: 'rgba(127, 127, 127, 0.08)',
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-              fontSize: 12,
-              lineHeight: 1.6,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              maxHeight: '60vh',
-              overflow: 'auto',
-              userSelect: 'text',
-            }}
-          >
-            {promptData.prompt}
-          </pre>
+          // markdown 渲染（2026-11-06 用户指令）：注入提示词多为 markdown 成文，
+          // 复用消息气泡同款 Markdown 渲染（GFM/代码高亮/链接白名单兜底）；
+          // 复制走 footer「复制全文」仍取原始文本
+          <div data-testid="prompt-text" style={{ userSelect: 'text' }}>
+            <Markdown>{promptData.prompt}</Markdown>
+          </div>
         ) : (
           <div className="py-8 text-center" data-testid="prompt-empty">
             <Typography.Text type="secondary">

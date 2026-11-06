@@ -21,7 +21,7 @@ import type { MenuProps } from 'antd';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Key } from 'react';
 import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboard';
-import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
+import type { SettingsSectionHandle } from './settingsSection';
 import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 // 可点击标题色取宿主对齐链接蓝（theme.ts 单源；同 SPEC 列表页名称列口径）
 import { DSH_ERROR, DSH_LINK } from '@/theme';
@@ -318,7 +318,7 @@ function getActionDisabled(status: string): Record<string, boolean> {
 // 保存按钮已上提到自进化页签底部（全页唯一），本卡片经 ref 暴露 collect()，
 // 由父页签在唯一点击事件里与「代码陈旧自愈」卡片一起校验并合并提交。
 const SuggestedImprovementsPanel = forwardRef<
-  SelfEvolutionSectionHandle,
+  SettingsSectionHandle,
   SuggestedImprovementsPanelProps
 >(function SuggestedImprovementsPanel({ config, scope, project }, ref) {
   const [form] = Form.useForm();

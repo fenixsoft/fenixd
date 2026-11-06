@@ -2,27 +2,30 @@
 //
 // 四类声明槽位（title / subtitle / back / filters），页面只声明数据、禁止逐页
 // 自画同类型标题 div。壳位判定收敛在本组件内，页面侧零环境分支：
-// - 行壳位：embed=1（dsh 面板桥 iframe，无顶栏）或视口 <768px（移动端顶栏维持
-//   纯品牌）时，渲染为内容区首行标题栏，底缘 DSH_SPLIT 细线。双档形态：
-//   embed 档 = 60px 半透明 soft 玻璃底（DSH_BG_SOFT_GLASS ≡ DSH_BG_SOFT 60%）+
-//   backdrop blur(8px)（复刻 standalone fixedHeader 毛玻璃，2026-11-05 用户指令）
-//   + sticky 钉住视口顶（滚动发生在下方内容区，标题栏不随滚；2026-11-05
-//   用户定调 min-height 60）；
-//   移动端档 = 1.1 原形态（48px 白底随文档流，未获指令不动）。
-// - 顶栏壳位：独立访问 ≥768px 时向模块级注册表登记 meta，由 app.tsx 顶栏插槽
-//   （HeaderSlot / FiltersSlot）消费渲染——标题区在 Fenix Harness 品牌之后、
-//   过滤项在顶栏右上角（原全局面包屑槽位）。
+// - 顶栏壳位：standalone 访问（桌面与移动端，2026-11-06 用户指令「移动端标题
+//   并入最顶那条带 logo/汉堡的顶栏」——原移动端独立行壳位 48px 档退役；副标题
+//   移动端不显示）向模块级注册表登记 meta，由 app.tsx 顶栏插槽（HeaderSlot /
+//   FiltersSlot）消费渲染——标题区在 Fenix Harness 品牌之后、过滤项在顶栏右上
+//   角（原全局面包屑槽位）。
+// - 行壳位：仅 embed=1（dsh 面板桥 iframe，无顶栏），渲染为内容区首行标题栏，
+//   底缘 DSH_SPLIT 细线。形态 = 60px 半透明 soft 玻璃底（DSH_BG_SOFT_GLASS ≡
+//   DSH_BG_SOFT 60%）+ backdrop blur(8px) + sticky 钉住视口顶（滚动发生在下方
+//   内容区，标题栏不随滚；2026-11-05 用户定调 min-height 60；2026-11-06 用户
+//   指令「标题栏只换染色 rgb(249,250,251) 保留毛玻璃」——玻璃染色随 soft 单源，
+//   形态不变）。
 //
 // 壳位判定单源互斥：行壳位时不注册、顶栏壳位时不渲染行节点——同一 meta 任一
-// 时刻只渲染于一处壳位；判定条件（embed / isMobile）翻转时旧壳位节点随 effect
-// 清理（注销或卸载行节点），不出现双标题并存或切换残留。
+// 时刻只渲染于一处壳位；判定条件（embed）翻转时旧壳位节点随 effect 清理
+// （注销或卸载行节点），不出现双标题并存或切换残留。
 //
 // 形态基准（UI 真相源）：spec/changes/unified-page-title-bar/specs/
 // unified-page-title-bar/prototype/（standalone.html / embed.html）——标题
 // 18px/700、副标题 12px 三级灰基线随迁、计数 tabular-nums、过滤项 28px small
 // 档、行壳位底缘细线；配色全部取 theme.ts 单源，零新色。落地后修订
 // （2026-11-05 用户定调）：embed 档行壳位 60px/soft 底/sticky（上方注释）、
-// 顶栏标题缩进 16→104。
+// 顶栏标题缩进 16→104；（2026-11-06 用户指令）：标题栏只换 soft 染色保留
+// 毛玻璃（上方注释）、菜单侧栏底色 soft 实底（theme.ts dshLayoutToken）、
+// 移动端标题并入顶栏+副标题移动端隐藏（顶栏缩进移动档 104→8）。
 //
 // 迁移页配套约定：PageContainer 保留本体承载留白 token，但须写 `title={false}`
 // 显式抑制页头——不传 title 时 PageContainer 会从路由上下文兜底取路由名渲染
@@ -45,7 +48,7 @@ import {
   subscribePageTitleBar,
   type PageTitleBarMeta,
 } from './pageTitleBarStore';
-import { DSH_BG_SOFT_GLASS, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
+import { DSH_BG_SOFT, DSH_BG_SOFT_GLASS, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
 
 export type { PageTitleBarMeta } from './pageTitleBarStore';
 
@@ -77,9 +80,12 @@ function usePageTitleBarSlot(meta: PageTitleBarMeta | null) {
 // ── 顶栏插槽（app.tsx headerContentRender / actionsRender 消费）────────
 
 /** 顶栏标题区插槽：品牌（Fenix Harness）之后渲染注册的 back+title+subtitle；
- *  无注册（豁免页、路由切换瞬间）渲染空——不残留上一页内容。 */
+ *  无注册（豁免页、路由切换瞬间）渲染空——不残留上一页内容。standalone 桌面
+ *  与移动端共用本插槽（2026-11-06 用户指令：移动端标题并入最顶顶栏）：移动档
+ *  缩进 104→8（品牌区窄，深缩进会把标题顶出视口），副标题移动端不显示。 */
 export function PageTitleBarHeaderSlot() {
   const meta = useSyncExternalStore(subscribePageTitleBar, getPageTitleBarMeta);
+  const isMobile = useIsMobile();
   if (!meta) return null;
   return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', minWidth: 0 }}>
@@ -90,14 +96,15 @@ export function PageTitleBarHeaderSlot() {
           flexWrap: 'wrap',
           columnGap: 10,
           rowGap: 2,
-          // 2026-11-05 用户定调 16→104：顶栏标题离品牌区再深缩进一档
-          paddingLeft: 104,
+          // 2026-11-05 用户定调桌面 16→104：顶栏标题离品牌区再深缩进一档；
+          // 移动档 8（2026-11-06，汉堡+logo 后贴排）
+          paddingLeft: isMobile ? 8 : 104,
           minWidth: 0,
         }}
       >
         {meta.back ? <BackArrow onBack={meta.back} /> : null}
         <TitleNode title={meta.title} />
-        {meta.subtitle != null ? <SubtitleNode subtitle={meta.subtitle} /> : null}
+        {meta.subtitle != null && !isMobile ? <SubtitleNode subtitle={meta.subtitle} /> : null}
       </div>
     </div>
   );
@@ -117,40 +124,38 @@ export function PageTitleBarFiltersSlot() {
  *  `<PageTitleBar {...meta} />`（PageContainer 之前，行壳位时即内容区首行）。 */
 export function PageTitleBar(props: PageTitleBarMeta) {
   const isMobile = useIsMobile();
-  // 行壳位：embed（无顶栏）或移动端（顶栏维持纯品牌）。isEmbedMode() 是文档
-  // 生命周期常量，判定分支只随视口阈值翻转。
-  const rowSlot = isEmbedMode() || isMobile;
-  // embed 档升格固定标题带（2026-11-05 用户定调）：60px + soft 底 + sticky——
-  // sticky 仍在文档流占位（定高页 FRAME_OFFSET 族只吃高度不吃定位），滚动
-  // 发生在下方内容区，标题栏钉住视口顶不随滚，视觉对齐 standalone fixedHeader
-  // 顶栏。移动端档维持原形态。配色单源红线：玻璃底 DSH_BG_SOFT_GLASS 为
-  // DSH_BG_SOFT 的 60% 透明形态（theme.ts 同源共改，守卫测试钉住）。
-  // 毛玻璃（2026-11-05 用户指令「复刻 standalone 顶栏半透明模糊」）：半透明底
-  // + backdrop blur(8px)（ProLayout fixedHeader 同值），内容滚过标题带时透出
-  // 模糊内容；-webkit- 前缀兜底旧移动端 webview。
-  const embedChrome = isEmbedMode();
+  // 行壳位（2026-11-06 用户指令改版）：仅 embed=1（dsh 面板桥 iframe，无顶栏）。
+  // 移动端不再落行壳位——页面标题并入最顶层顶栏（logo/汉堡那条，同 standalone
+  // 桌面注册-插槽路径），内容区不再独立铺标题带；副标题移动端不显示（同指令，
+  // 见 HeaderSlot 与行壳位两处 !isMobile 条件）。isEmbedMode() 是文档生命周期
+  // 常量，判定分支不随视口翻转（移动端注册进顶栏后，跨 768 阈值 resize 无壳位
+  // 迁移，仅缩进/副标题档位随 isMobile 变化）。
+  const rowSlot = isEmbedMode();
+  // embed 档固定标题带：60px + sticky——sticky 仍在文档流占位（定高页
+  // FRAME_OFFSET 族只吃高度不吃定位），滚动发生在下方内容区，标题栏钉住视口顶
+  // 不随滚。配色（2026-11-06 用户指令「标题栏只是改变颜色，保留毛玻璃」）：
+  // 玻璃底 DSH_BG_SOFT_GLASS（DSH_BG_SOFT 60% 透明形态，theme.ts 同源共改，
+  // 守卫测试钉住）+ backdrop blur(8px)（半透明底是毛玻璃生效前提，回实底即
+  // 静默失效）。底缘细线 DSH_SPLIT 与 standalone 顶栏下边框、侧栏右边框同值
+  // （用户指令三者一致）。
   usePageTitleBarSlot(rowSlot ? null : props);
   if (!rowSlot) return null; // 顶栏壳位：本体不渲染，交顶栏插槽呈现
   return (
     <div
       data-testid="page-title-bar-row"
       style={{
-        minHeight: embedChrome ? 60 : 48,
+        minHeight: 60,
         display: 'flex',
         alignItems: 'center',
         flexWrap: 'wrap',
-        background: embedChrome ? DSH_BG_SOFT_GLASS : '#ffffff',
+        background: DSH_BG_SOFT_GLASS,
         borderBottom: `1px solid ${DSH_SPLIT}`,
         padding: '0 15px',
-        ...(embedChrome
-          ? {
-              position: 'sticky',
-              top: 0,
-              zIndex: 20,
-              backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
-            }
-          : {}),
+        position: 'sticky',
+        top: 0,
+        zIndex: 20,
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
       }}
     >
       <div
@@ -167,7 +172,10 @@ export function PageTitleBar(props: PageTitleBarMeta) {
       >
         {props.back ? <BackArrow onBack={props.back} /> : null}
         <TitleNode title={props.title} />
-        {props.subtitle != null ? <SubtitleNode subtitle={props.subtitle} /> : null}
+        {/* 副标题只在非移动壳位渲染（2026-11-06 用户指令「副标题在移动设备
+            模式中不显示」）：移动档 48px 窄幅密度考虑，桌面顶栏与 embed 档
+            （60px，桌面 iframe 语境）不受影响 */}
+        {props.subtitle != null && !isMobile ? <SubtitleNode subtitle={props.subtitle} /> : null}
       </div>
       {props.filters ? <FiltersNode filters={props.filters} wrap /> : null}
     </div>

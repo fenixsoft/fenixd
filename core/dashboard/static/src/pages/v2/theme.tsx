@@ -15,8 +15,10 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 
 /** 页底浅灰（磁贴层次底；一般域为白底，v2 域偏离已登记）。 */
 export const V2_BG = '#f8fafc';
-/** 白磁贴：圆角 16 + 细边框 + 软阴影（.v2-bento 类，样式镜像见 v2.less）。 */
-export const V2_TILE_RADIUS = 16;
+/** 白磁贴：圆角 12（DESIGN.md 通用条款「Bento 磁贴圆角固定 12px」，
+ * 2026-11-06 用户指令自 16 改 12 全站统一）+ 细边框 + 软阴影（.v2-bento 类，
+ * 样式镜像见 v2.less）。 */
+export const V2_TILE_RADIUS = 12;
 export const V2_TILE_BORDER = '#eef2f7';
 export const V2_TILE_SHADOW =
   '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';

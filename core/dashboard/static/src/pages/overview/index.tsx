@@ -7,7 +7,9 @@ import { getOverview, STREAM_URL } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
 import AlertBanner from './components/AlertBanner';
 import IntroduceRow from './components/IntroduceRow';
-import ProjectCards from './components/ProjectCards';
+// 项目清单改台账表格（2026-11-06 用户指令：呈现对齐 v2 overview 台账磁贴；
+// 行为契约不变——乐观删除/菜单同步/错误态语义/跳转本产项目页）
+import ProjectTable from './components/ProjectTable';
 
 // dashboard-sse-refresh 3.3：overview 轮询 2s → 30s 心跳校准 + visibilitychange 补刷
 const HEARTBEAT_MS = 30000;
@@ -246,7 +248,7 @@ export default function OverviewPage() {
       ) : data ? (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <IntroduceRow totals={data.totals} tokenRecent={data.token_usage?.recent ?? []} />
-          <ProjectCards
+          <ProjectTable
             projects={data.projects}
             onChanged={() => void load()}
             onProjectRemoved={removeProjectLocal}

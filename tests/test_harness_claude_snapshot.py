@@ -357,6 +357,9 @@ class TestClaudeSnapshotEquivalence:
         assert env["FENIX_RUN_WORKTREE"] == str(cwd)
         assert env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "1"
         assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-ant-legacy-inherited-token"
+        # root 豁免开关兜底注入（2026-11-05 systemd 裸环境事故）：主车道恒用
+        # bypassPermissions，root 部署下缺 IS_SANDBOX=1 时 claude CLI 启动即拒
+        assert env["IS_SANDBOX"] == "1"
 
 
 def _capture_adapter_env_keys(case: dict):

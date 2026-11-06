@@ -273,6 +273,9 @@ class TestClaudeAdapterBasics:
         assert "FENIX_RUN_WORKTREE" not in env
         assert "CLAUDE_CODE_ENABLE_TODO_TOOLS" not in env
         assert env["ANTHROPIC_BASE_URL"] == "https://api.example.com"
+        # root 豁免开关兜底注入（2026-11-05 systemd 裸环境事故）：clean 口径
+        # 的一次性 claude spawn 同样需要 IS_SANDBOX=1 在场
+        assert env["IS_SANDBOX"] == "1"
 
     def test_inherit_env_mode_returns_none(self):
         # 叙事通道现状：Popen 不带 env 参数（完整继承）

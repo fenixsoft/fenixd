@@ -14,6 +14,8 @@ import type { CommandCenterKpi, CommandCenterLedger, CommandCenterLedgerRow } fr
 import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
 import {
+  CARD_FRAME_BORDER,
+  CARD_FRAME_SHADOW,
   PANEL_BORDER,
   TEXT_MAIN,
   TEXT_SUB,
@@ -115,8 +117,10 @@ function KpiBar({
           flexWrap: 'wrap',
           alignItems: 'center',
           gap: 2,
-          border: `1px solid ${PANEL_BORDER}`,
-          borderRadius: 8,
+          // Bento 磁贴框（2026-11-06 用户指令：卡片框对齐 bento 样式，shared 单源）
+          border: `1px solid ${CARD_FRAME_BORDER}`,
+          borderRadius: 12,
+          boxShadow: CARD_FRAME_SHADOW,
           padding: '8px 10px',
           marginBottom: 12,
         }}

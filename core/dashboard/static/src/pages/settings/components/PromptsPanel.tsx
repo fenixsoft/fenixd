@@ -8,7 +8,7 @@ import { getPrompts, saveProjectPrompt } from '@/services/dashboard';
 import type { PromptsData } from '@/services/dashboard';
 import { usePanelDirty } from '../panelDirty';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 const { TextArea } = Input;
 
 // key 集合与后端 AGENT_PROMPT_FILES 严格一致（agent 数量以本对象实际键数为准，
@@ -298,7 +298,10 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
 
   return (
     <div>
-      <Title level={5} style={{ marginTop: 0 }}>Agent 提示词</Title>
+      {/* 标题走家规模式（h3 默认顶距，2026-11-05 用户指令「与模型页基准统一」，
+          原 Title level={5} 与全站页签页标题 h3 16.38/700 不一致）：勿改
+          Typography.Title——同 HooksPanel 家规注释 */}
+      <h3>Agent 提示词</h3>
       <Text type="secondary">
         通用提示词由框架管理（只读）；项目级附加提示词保存到项目
         <code>.fenix/agents/</code>，派发时附加在对应 agent 的 prompt 末尾。
@@ -320,7 +323,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       </div>
 
       {/* 通用提示词（只读，两种作用域均展示）—— Markdown 渲染，圆角灰底容器 */}
-      <Title level={5}>通用提示词（只读）</Title>
+      <h3>通用提示词（只读）</h3>
       <div
         data-testid="prompts-generic-content"
         style={{
@@ -357,7 +360,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       {/* 项目级附加提示词（仅项目作用域） */}
       {isProjectScope && (
         <div style={{ marginTop: 16 }} data-testid="prompts-extra-section">
-          <Title level={5}>项目附加提示词</Title>
+          <h3>项目附加提示词</h3>
           <Text type="secondary">
             保存在项目 <code>.fenix/agents/{activeAgent}.md</code>，
             为空表示该项目无附加提示词。
