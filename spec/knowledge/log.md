@@ -106,3 +106,4 @@
 ## [2026-11-06 17:49 UTC+8] fold | v2-titlebar-slot-white-dedupe-1106.md 折叠入库
 ## [2026-11-06 17:54 UTC+8] distill | add-distill-run-work-summary（第 1 轮，自动提交落库，折叠入库 7 条）
 ## [2026-11-06 18:06 UTC+8] fold | antd-table-scroll-maxheight-sticky-th-1106.md 折叠入库
+## [2026-11-06 18:13 UTC+8] fold | mergeback-consumer-rehearsed-repair-gap-1106.md 折叠入库

@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-06 17:54 UTC+8
+> 最后更新：2026-11-06 18:06 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -23,7 +23,7 @@
 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理。run jsonl 以 claude stream-json 形状为唯一 canon；dashboard 自由会话与 CLAUDE_PID watchdog 为显式豁免面。 | 6 | 2026-11-05 20:50 |
 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测、CLI 重试退避与环境阻塞止损。 | 30 | 2026-11-04 16:30 |
 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 14 | 2026-11-04 09:33 |
-| [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径。实现分支合回主树与推送的全生命周期纪律；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 30 | 2026-11-04 17:07 |
+| [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径。实现分支合回主树与推送的全生命周期纪律；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 30 | 2026-11-06 18:06 |
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-05 20:50 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
@@ -145,4 +145,4 @@ N 篇文档」titleBar 声明落行、新增正文标题去重条款（DocPane �
 doc.title、后端 title 本从 markdown 首个一级标题解析、正文 H1 唯一、slug
 锚点不受影响、守卫钉死）、移动帮助行「目录」按钮改经 filters 槽位落顶栏；
 本条余项（titleBar 槽位挂法、白底变体族、副标题移动端隐藏、剥注释守卫习语）
-经核对已由前两条入库条目覆盖不重复折叠）；antd-table-scroll-maxheight-sticky-th-1106 更新版（17:43 条目，16:51 首折版本的台账限高落地被撤销）已折叠入库（2026-11-06 17:54，spread 至 dashboard-frontend 一域四页：project-ledger-bounded-scroll 整页覆盖重写——台账磁贴不限高定案、antd 限高/sticky 实测纪律留存；新建 sidebar-submenu-bounded-scroll——独立侧栏子菜单 5 项封顶 200px 与定制滚动条及 overlay 引擎量宽判据；dsh-bridge-projects-section 增补分区 5 行封顶 182px、滚动条定制与官方 Workspaces 列表同款；dashboard-overview 台账细则句改不限高口径）。
+经核对已由前两条入库条目覆盖不重复折叠）；antd-table-scroll-maxheight-sticky-th-1106 更新版（17:43 条目，16:51 首折版本的台账限高落地被撤销）已折叠入库（2026-11-06 17:54，spread 至 dashboard-frontend 一域四页：project-ledger-bounded-scroll 整页覆盖重写——台账磁贴不限高定案、antd 限高/sticky 实测纪律留存；新建 sidebar-submenu-bounded-scroll——独立侧栏子菜单 5 项封顶 200px 与定制滚动条及 overlay 引擎量宽判据；dsh-bridge-projects-section 增补分区 5 行封顶 182px、滚动条定制与官方 Workspaces 列表同款；dashboard-overview 台账细则句改不限高口径）；mergeback-consumer-rehearsed-repair-gap-1106 已折叠入库（2026-11-06 18:06，spread 至 worktree-vc 一域两页：merge-rehearsal 新增直通 repair 接线边界条款——同型接线仅存于实现主路径 merge-back 站点、周期消费者 merge-only 重试路径未接线为已登记框架缺口；wip-defer-merge-retry 新增语义冲突形态条款——消费者失败路径清标志走真失败通道可落指纹熔断/降级复位清锚点、接线前 admin 人工 SOP 覆盖（定点收编+手工 merge+镜像 _finalize_merge_success 清账）与补接线方向复用 _direct_rehearsed_to_repair）。
