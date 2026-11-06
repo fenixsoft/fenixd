@@ -532,6 +532,24 @@ class G7StaleSweepMixin:
                         capture_output=True,
                         timeout=10,
                     )
+                # 分支处置前复核目录残留（code-review item 9cc41ea4f6dc）：
+                # remove 失败且 rmtree 兜底也失败时目录仍在（_rmtree_with_
+                # residual_warning 只 WARNING 留痕、无返回值，目录按约定保留
+                # 交下轮清扫），此时若继续下行，对未被 STATE/legacy 保护的
+                # 分支执行的却是不可逆 branch -D——残留目录变成丢失分支的
+                # 孤儿载体（提交未并入基线只余 reflog 可寻），与上方「目录
+                # 保留交下轮清扫」声明及「宁可不清理，不可误删」保守口径
+                # 矛盾。目录仍在即跳过本目录的分支处置（含在飞引用保护——
+                # 保留分支无需豁免判定），目录与分支一并留待下轮清扫重试；
+                # 正常路径目录已删、exists() 恒 False，不改变既有行为。
+                if wt_dir.exists():
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Skip stale branch disposal for '{wt_dir.name}' — "
+                        f"worktree dir still present after remove/rmtree "
+                        f"fallback, dir and branch kept together for next sweep",
+                    )
+                    continue
                 if branch and branch != "HEAD":
                     # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
                     # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用

@@ -187,6 +187,35 @@ function SpecDevPane({
     });
   };
 
+  // 行操作三点菜单单源（桌面操作列与移动卡片流两形态共用，v2-commercial-ui
+  // 「双形态分支」行级组件两形态复用）——菜单项与跳转口径只此一份，新增菜单
+  // 项或改路径不再两处同改。
+  const buildRowMenu = (s: SpecSummary) => (
+    <Dropdown
+      menu={{
+        items: [
+          { key: 'detail', label: '打开详情' },
+          { key: 'topo', label: '协作拓扑' },
+          { type: 'divider' },
+          { key: 'delete', label: '删除', danger: true, disabled: busy },
+        ],
+        onClick: ({ key, domEvent }) => {
+          domEvent.stopPropagation();
+          if (key === 'detail') navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`);
+          if (key === 'topo')
+            navigate(
+              `/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}/topology`,
+            );
+          if (key === 'delete') confirmDelete(s);
+        },
+      }}
+      placement="bottomRight"
+      trigger={['click']}
+    >
+      <Button type="text" size="small" icon={<V2IconDots />} aria-label="更多操作" />
+    </Dropdown>
+  );
+
   const columns: ColumnsType<SpecSummary> = [
     { title: '状态', dataIndex: 'status', width: 96, render: (_, s) => <V2StatusPill status={s.status} /> },
     {
@@ -270,31 +299,7 @@ function SpecDevPane({
       key: 'act',
       width: 64,
       align: 'right',
-      render: (_, s) => (
-        <Dropdown
-          menu={{
-            items: [
-              { key: 'detail', label: '打开详情' },
-              { key: 'topo', label: '协作拓扑' },
-              { type: 'divider' },
-              { key: 'delete', label: '删除', danger: true, disabled: busy },
-            ],
-            onClick: ({ key, domEvent }) => {
-              domEvent.stopPropagation();
-              if (key === 'detail') navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`);
-              if (key === 'topo')
-                navigate(
-                  `/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}/topology`,
-                );
-              if (key === 'delete') confirmDelete(s);
-            },
-          }}
-          placement="bottomRight"
-          trigger={['click']}
-        >
-          <Button type="text" size="small" icon={<V2IconDots />} aria-label="更多操作" />
-        </Dropdown>
-      ),
+      render: (_, s) => buildRowMenu(s),
     },
   ];
 
@@ -341,27 +346,7 @@ function SpecDevPane({
                 >
                   {s.name}
                 </span>
-                <Dropdown
-                  menu={{
-                    items: [
-                      { key: 'detail', label: '打开详情' },
-                      { key: 'topo', label: '协作拓扑' },
-                      { type: 'divider' },
-                      { key: 'delete', label: '删除', danger: true, disabled: busy },
-                    ],
-                    onClick: ({ key, domEvent }) => {
-                      domEvent.stopPropagation();
-                      if (key === 'detail') navigate(`/v2/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}`);
-                      if (key === 'topo')
-                        navigate(`/projects/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}/topology`);
-                      if (key === 'delete') confirmDelete(s);
-                    },
-                  }}
-                  placement="bottomRight"
-                  trigger={['click']}
-                >
-                  <Button type="text" size="small" icon={<V2IconDots />} aria-label="更多操作" />
-                </Dropdown>
+                {buildRowMenu(s)}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                 <V2StatusPill status={s.status} />

@@ -156,13 +156,14 @@ function AlertCard({
       okText: '全部清理',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => {
-        clearAllAlerts()
-          .then(() => {
-            message.success('已清理所有事件');
-            onChanged();
-          })
-          .catch((e) => message.error(`清理失败：${e instanceof Error ? e.message : String(e)}`));
+      onOk: async () => {
+        try {
+          await clearAllAlerts();
+          message.success('已清理所有事件');
+          onChanged();
+        } catch (e) {
+          message.error(`清理失败：${e instanceof Error ? e.message : String(e)}`);
+        }
       },
     });
   };

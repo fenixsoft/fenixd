@@ -52,6 +52,9 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
       路径不含空段，该前缀判定恒假——比照 ``./`` 前缀同款丢弃）；
     - 含内部 ``.`` 段的前缀项丢弃（``dist/./x/``、``a/b/./`` 等，git 树内
       tracked 路径不可能含 ``.`` 成分，该前缀判定恒假——比照内部空段同款
+      丢弃）；
+    - 含内部空路径段或内部 ``.`` 段的通配项丢弃（``dist//*``、``a/./b*`` 等，
+      经 fnmatch 对 git 树内相对路径恒不命中，判定恒假——比照前缀同款
       丢弃）。
 
     任何异常捕获后返回空列表（fail-safe **回退空集合**：空集合 = 判定恒假，
@@ -102,6 +105,30 @@ def normalize_artifact_patterns(raw: Any) -> List[Tuple[str, str]]:
                         "路径恒不命中），丢弃: %r", item,
                     )
                     continue
+                if "" in item.split("/"):
+                    # 含内部空路径段的通配项（code-review item 50f1753b92c9）：
+                    # git 树内相对路径不含空段（不存在 "//"），该 glob 经
+                    # fnmatch 恒不命中、判定面被无声收窄——比照前缀内部空段
+                    # 同款丢弃 + WARNING，写入侧 validate_build_artifact_paths
+                    # 随 kept 集自动判非法提示。
+                    logger.warning(
+                        "build_artifact_paths: 通配项含内部空路径段（对 git 树内"
+                        "相对路径恒不命中），丢弃: %r", item,
+                    )
+                    continue
+
+                if "." in item.split("/"):
+                    # 含内部 . 路径段的通配项（code-review item 50f1753b92c9）：
+                    # git 树内 tracked 路径不可能含 . 成分（文件系统无法表示、
+                    # git 路径解析时归一），该 glob 经 fnmatch 恒不命中、判定面
+                    # 被无声收窄——比照前缀内部 . 段同款丢弃 + WARNING，写入侧
+                    # validate_build_artifact_paths 随 kept 集自动判非法提示。
+                    logger.warning(
+                        "build_artifact_paths: 通配项含内部 . 路径段（对 git 树内"
+                        "相对路径恒不命中），丢弃: %r", item,
+                    )
+                    continue
+
                 # 通配形态（含 *）：按完整相对路径匹配
                 result.append(("glob", item))
                 continue
@@ -154,7 +181,7 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
     与 ``normalize_artifact_patterns`` 同一判定权威：顶层须为字符串列表；逐项
     strip 后仍会被 normalize 丢弃的项（非字符串、绝对路径、含 ``..`` 段、
     以 ``./`` 开头、不含 ``*`` 又未以 ``/`` 结尾、含内部空路径段或内部
-    ``.`` 段的前缀）
+    ``.`` 段的前缀或通配项）
     即非法。返回的提示含丢弃项与
     合法形态示例，供前端回显；合法返回 None。
     """
@@ -175,7 +202,8 @@ def validate_build_artifact_paths(value: Any) -> Optional[str]:
             f"worktree.build_artifact_paths 含非法项（将被静默丢弃）：{discarded!r}。"
             f"合法形态示例：目录前缀以 '/' 结尾（如 'dist/'、'build/'），通配含 '*'"
             f"（如 'release-*.zip'）；非字符串/绝对路径/含 '..' 段/以 './' "
-            f"开头/未以 '/' 结尾的前缀均非法。保留项：{kept!r}"
+            f"开头/未以 '/' 结尾的前缀/含内部空段或 '.' 段的前缀或通配项"
+            f"均非法。保留项：{kept!r}"
         )
     return None
 

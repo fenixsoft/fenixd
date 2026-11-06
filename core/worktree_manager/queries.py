@@ -1064,7 +1064,11 @@ class G8QueryMixin:
           - ``prefixes`` 缺省 ``("fenix",)``（创建端硬编码口径）；调用方按
             「创建端 ∪ 配置 implement_branch_prefix」并集传入（与
             find_branches_by_spec / _branch_protected_by_state 同口径，
-            7c79c46aa62c）；
+            7c79c46aa62c）；匹配按**最长前缀优先**迭代（code-review item
+            8492e629eaff）——并集是 set、迭代顺序受 PYTHONHASHSEED 影响，
+            配置前缀为 fenix 的嵌套子命名空间（如 ``fenix/sub``）时，
+            ``fenix/sub/<spec>-<ts>`` 须先命中 ``fenix/sub/`` 才能正确归属，
+            最短先命中会把 rest 解析成 ``sub/<spec>`` 而误剔候选；
           - verify- 按**结构**判别而非裸 ``startswith("verify-")``
             （3f168f91d3af）：rest 去掉末段纯数字时间戳后，前段恰为
             ``verify-<spec>`` 才是验证分支——spec 名自身以 ``verify-`` 开头
@@ -1082,7 +1086,11 @@ class G8QueryMixin:
         """
         if not branch or not spec_name:
             return False
-        for prefix in prefixes or ("fenix",):
+        # [fenix:code-review:8492e629eaff] 最长前缀优先：调用方传 set
+        # （fenix ∪ 配置 implement_branch_prefix），嵌套子命名空间配置下
+        # 短前缀先命中会把 fenix/sub/<spec>-<ts> 误解析成 sub/<spec>，
+        # 按 len 降序保证取最具体命名空间，跨进程确定性。
+        for prefix in sorted(prefixes or ("fenix",), key=len, reverse=True):
             if branch.startswith(f"{prefix}/"):
                 rest = branch[len(prefix) + 1 :]
                 break

@@ -8,7 +8,7 @@
 // 单源在 /settings，v2 不复制第二份编辑链路）；其余菜单分面为占位说明。
 import { Alert, App, Button, Select, Space, Spin, Switch, Table } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from '@umijs/max';
 import {
   checkLlmHealth,
@@ -76,12 +76,16 @@ function LlmPanel({
     setHealth((s) => ({ ...s, [p.name]: { loading: true } }));
     try {
       const res = await checkLlmHealth({ baseurl: p.baseurl, apikey: p.apikey, model: p.model || '' });
+      // 耗时段 Number.isFinite 防御（对齐 utils/llmHealth.ts toHealthDisplay 的
+      // cb2dde8cbbcc 口径）：latency_ms 缺失/非有限值时回退「—」，不向展示层
+      // 透传「正常 NaNms」。
+      const ms = Number.isFinite(res.latency_ms) ? Math.round(res.latency_ms) : null;
       setHealth((s) => ({
         ...s,
         [p.name]: {
           loading: false,
           ok: res.ok,
-          text: res.ok ? `正常 ${Math.round(res.latency_ms)}ms` : res.error || '失败',
+          text: res.ok ? (ms === null ? '正常 —' : `正常 ${ms}ms`) : res.error || '失败',
         },
       }));
     } catch (e) {
@@ -140,6 +144,60 @@ function LlmPanel({
     },
   ];
 
+  // 四条真实 config 开关行：移动与桌面两形态共用片段（code-review item
+  // 7cecb2a75289）——label/desc/checked 取值/onToggle 合并逻辑单处维护，新增
+  // 开关或改合并口径不再双处同步；外层容器（data-proto-id=st-panel-llm-extra）
+  // 仍按双形态分支各自渲染（能力页「分支收敛在布局容器级、行级组件两形态
+  // 复用」纪律不变）。
+  const configSwitchRows = (
+    <>
+      <SwitchRow
+        label="知识真相源总开关"
+        desc="spec/knowledge 知识目录的消费与投递链路总开关（缺省开）"
+        checked={cfg.knowledge?.enabled ?? true}
+        project={project}
+        onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), enabled: v } }))}
+        onDone={() => {
+          message.success('已保存');
+          onChanged();
+        }}
+      />
+      <SwitchRow
+        label="知识维护车道"
+        desc="inbox 消费 / 域页维护等自动化维护车道开关（缺省开）"
+        checked={cfg.knowledge?.audit_enabled ?? true}
+        project={project}
+        onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), audit_enabled: v } }))}
+        onDone={() => {
+          message.success('已保存');
+          onChanged();
+        }}
+      />
+      <SwitchRow
+        label="代码陈旧自愈"
+        desc="陈旧 worktree + 托管项目连续空闲达阈值后自动请求重启（缺省开）"
+        checked={cfg.stale_code_selfheal?.enabled ?? true}
+        project={project}
+        onToggle={(v) => toggleWithFreshBase((c) => ({ stale_code_selfheal: { ...(c.stale_code_selfheal || {}), enabled: v } }))}
+        onDone={() => {
+          message.success('已保存');
+          onChanged();
+        }}
+      />
+      <SwitchRow
+        label="自进化自动接受"
+        desc="允许框架自改进：自动接受全部判定值得立项的条目（缺省关）"
+        checked={cfg.self_evolution?.auto_accept ?? false}
+        project={project}
+        onToggle={(v) => toggleWithFreshBase((c) => ({ self_evolution: { ...(c.self_evolution || {}), auto_accept: v } }))}
+        onDone={() => {
+          message.success('已保存');
+          onChanged();
+        }}
+      />
+    </>
+  );
+
   // 移动形态（prototype/m-settings.html st-panel-llm）：Provider 表格转堆叠卡
   // （名称+网关+默认模型+健康胶囊+双按钮行）；面板头「新增 Provider」按原型
   // 收敛（卡内「编辑」同样可达现产配置页编辑单源）。
@@ -189,50 +247,7 @@ function LlmPanel({
           ) : null}
         </div>
         <div data-proto-id="st-panel-llm-extra" style={{ borderTop: `1px solid ${V2_HAIRLINE}`, marginTop: 12, paddingTop: 8 }}>
-          <SwitchRow
-            label="知识真相源总开关"
-            desc="spec/knowledge 知识目录的消费与投递链路总开关（缺省开）"
-            checked={cfg.knowledge?.enabled ?? true}
-            project={project}
-            onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), enabled: v } }))}
-            onDone={() => {
-              message.success('已保存');
-              onChanged();
-            }}
-          />
-          <SwitchRow
-            label="知识维护车道"
-            desc="inbox 消费 / 域页维护等自动化维护车道开关（缺省开）"
-            checked={cfg.knowledge?.audit_enabled ?? true}
-            project={project}
-            onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), audit_enabled: v } }))}
-            onDone={() => {
-              message.success('已保存');
-              onChanged();
-            }}
-          />
-          <SwitchRow
-            label="代码陈旧自愈"
-            desc="陈旧 worktree + 托管项目连续空闲达阈值后自动请求重启（缺省开）"
-            checked={cfg.stale_code_selfheal?.enabled ?? true}
-            project={project}
-            onToggle={(v) => toggleWithFreshBase((c) => ({ stale_code_selfheal: { ...(c.stale_code_selfheal || {}), enabled: v } }))}
-            onDone={() => {
-              message.success('已保存');
-              onChanged();
-            }}
-          />
-          <SwitchRow
-            label="自进化自动接受"
-            desc="允许框架自改进：自动接受全部判定值得立项的条目（缺省关）"
-            checked={cfg.self_evolution?.auto_accept ?? false}
-            project={project}
-            onToggle={(v) => toggleWithFreshBase((c) => ({ self_evolution: { ...(c.self_evolution || {}), auto_accept: v } }))}
-            onDone={() => {
-              message.success('已保存');
-              onChanged();
-            }}
-          />
+          {configSwitchRows}
         </div>
       </div>
     );
@@ -258,50 +273,7 @@ function LlmPanel({
         />
       </div>
       <div data-proto-id="st-panel-llm-extra" style={{ borderTop: `1px solid ${V2_HAIRLINE}`, marginTop: 12, paddingTop: 8 }}>
-        <SwitchRow
-          label="知识真相源总开关"
-          desc="spec/knowledge 知识目录的消费与投递链路总开关（缺省开）"
-          checked={cfg.knowledge?.enabled ?? true}
-          project={project}
-          onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), enabled: v } }))}
-          onDone={() => {
-            message.success('已保存');
-            onChanged();
-          }}
-        />
-        <SwitchRow
-          label="知识维护车道"
-          desc="inbox 消费 / 域页维护等自动化维护车道开关（缺省开）"
-          checked={cfg.knowledge?.audit_enabled ?? true}
-          project={project}
-          onToggle={(v) => toggleWithFreshBase((c) => ({ knowledge: { ...(c.knowledge || {}), audit_enabled: v } }))}
-          onDone={() => {
-            message.success('已保存');
-            onChanged();
-          }}
-        />
-        <SwitchRow
-          label="代码陈旧自愈"
-          desc="陈旧 worktree + 托管项目连续空闲达阈值后自动请求重启（缺省开）"
-          checked={cfg.stale_code_selfheal?.enabled ?? true}
-          project={project}
-          onToggle={(v) => toggleWithFreshBase((c) => ({ stale_code_selfheal: { ...(c.stale_code_selfheal || {}), enabled: v } }))}
-          onDone={() => {
-            message.success('已保存');
-            onChanged();
-          }}
-        />
-        <SwitchRow
-          label="自进化自动接受"
-          desc="允许框架自改进：自动接受全部判定值得立项的条目（缺省关）"
-          checked={cfg.self_evolution?.auto_accept ?? false}
-          project={project}
-          onToggle={(v) => toggleWithFreshBase((c) => ({ self_evolution: { ...(c.self_evolution || {}), auto_accept: v } }))}
-          onDone={() => {
-            message.success('已保存');
-            onChanged();
-          }}
-        />
+        {configSwitchRows}
       </div>
     </div>
   );
@@ -378,16 +350,23 @@ export default function V2SettingsPage() {
   const [menu, setMenu] = useState('llm');
   const mobile = useV2IsMobile();
 
+  // 序号竞态守卫（对齐 v2/projectDetail.tsx 同款 seqRef 口径）：快速切换作用域
+  // 时两个 getConfig 并发在途，迟到的旧作用域回包不再覆盖新展示（仅展示层；
+  // 写路径 toggleWithFreshBase 每次重拉基底，不受此影响）。
+  const seqRef = useRef(0);
   const load = useCallback(async (s: string | undefined) => {
+    const seq = ++seqRef.current;
     setLoading(true);
     try {
       const c = await getConfig(s);
+      if (seq !== seqRef.current) return;
       setCfg(c);
       setError('');
     } catch (e) {
+      if (seq !== seqRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, []);
 

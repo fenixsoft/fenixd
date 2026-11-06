@@ -211,6 +211,14 @@ export default function SettingsPage() {
     if (nextScope === scope && nextProject === project) return;
     // 切换会重载配置并卸载当前面板：有未保存改动先确认再放行
     if (!confirmDiscardPanelEdits()) return;
+    // 放行即复位在场面板脏标记（code-review item 0d7c5ba5af5c）：面板按
+    // activeKey 条件渲染，停留同页签切作用域/项目时面板实例并不卸载，其
+    // dirtyRef 随实例存续；旧作用域的未保存编辑既经确认丢弃、新配置回填后
+    // 表单已显示新值，不复位则此后该面板每次切页签都会对已不存在的改动误弹
+    // 丢弃确认（直到面板真正卸载注销才自愈）。快照+同步执行恰覆盖当前在册
+    // 的在场面板，不会波及其他页签；probe 型面板 reset 本为 no-op，其脏状态
+    // 由加载回填的草稿/基线归零口径负责，不受影响。
+    snapshotPanelDirty()();
     setScope(nextScope);
     setProject(nextProject);
     // 未消费的聚焦信号随作用域切换作废（code-review item b49d23bf8dd1）：信号

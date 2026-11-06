@@ -234,17 +234,19 @@ function ChainPane({
   chainError?: string;
   mobile?: boolean;
 }) {
+  // chainError 判定须先于 !chain 分支：首载失败时 chain 仍是初始 null，
+  // 错误若排在 Spin 之后会被无限转圈吞掉（心跳轮询期间无任何失败反馈）
+  const error = chainError || chain?.error;
+  if (error) {
+    return (
+      <Alert type="warning" showIcon style={{ margin: '16px 0' }} message="处置链视图未就绪" description={error} />
+    );
+  }
   if (!chain) {
     return (
       <div style={{ padding: 32, textAlign: 'center' }}>
         <Spin />
       </div>
-    );
-  }
-  const error = chainError || chain.error;
-  if (error) {
-    return (
-      <Alert type="warning" showIcon style={{ margin: '16px 0' }} message="处置链视图未就绪" description={error} />
     );
   }
 
