@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-09-03
 mode: fast-track
+title: 移除运行产物自动清理

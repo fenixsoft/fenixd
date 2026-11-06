@@ -1,3 +1,4 @@
 schema: spec-driven
 created: 2026-09-21
 mode: full
+title: 状态原子写与自愈重启修复
