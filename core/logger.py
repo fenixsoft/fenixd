@@ -37,22 +37,23 @@ class JsonFormatter(logging.Formatter):
     # 出口，context 原样落盘并随轮转（maxBytes=10MB/backupCount=5）明文最多
     # 留存 6 份；仓库其他出口均各自脱敏，日志通道此前无兜底。按键名黑名单
     # 遮蔽敏感值，遮蔽口径对齐 api_runner 的「<已脱敏:N 字符>」；子串匹配
-    # 覆盖 access_token/client_secret 等常见变体，键名小写并把 - 归一为 _
-    # 后匹配。
+    # 覆盖 access_token/client_secret 等常见变体，键名小写并剥掉 - 与 _ 后
+    # 按无分隔符形态匹配（item c9434285c95c：原先仅把 - 归一为 _，匹配不到
+    # apiKey/apikey/privatekey 等无分隔符变体，敏感值明文落盘）。
     # 数值豁免：int/float（含 bool）值不遮蔽——键名含 token 的数值几乎恒为
     # 用量计数/度量（input_tokens、cache_read_input_tokens 等 run_metrics
     # 观测契约字段，tests/test_run_metrics_persistence.py 钉死原样落盘），
     # 秘密值实践中恒为字符串；字符串与容器仍整值遮蔽。
     _SENSITIVE_KEY_MARKERS = (
         "token", "secret", "password", "passwd", "authorization",
-        "api_key", "credential", "private_key",
+        "apikey", "credential", "privatekey",
     )
 
     @classmethod
     def _is_sensitive_key(cls, key) -> bool:
         if not isinstance(key, str):
             return False
-        normalized = key.lower().replace("-", "_")
+        normalized = key.lower().replace("-", "").replace("_", "")
         return any(marker in normalized for marker in cls._SENSITIVE_KEY_MARKERS)
 
     @classmethod
