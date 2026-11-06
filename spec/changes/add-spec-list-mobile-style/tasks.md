@@ -31,5 +31,5 @@
 
 ## 3. 守卫与验证
 
-- [ ] 3.1 `specTitleSubtitle.test.mjs` 移动卡锚点改钉新卡结构（英文名主行/中文标题次行/胶囊行/缩进└），桌面列锚不动；`node --test tests/*.test.mjs` 全绿
+- [x] 3.1 `specTitleSubtitle.test.mjs` 移动卡锚点改钉新卡结构（英文名主行/中文标题次行/胶囊行/缩进└），桌面列锚不动；`node --test tests/*.test.mjs` 全绿
 - [ ] 3.2 `npm run build` 成功；390px 视口实拍列表页与原型逐区块对照（卡片层级/胶囊/进度/元信息/信息行/筛选 Drawer/加载更多），截图存 `.history/`
