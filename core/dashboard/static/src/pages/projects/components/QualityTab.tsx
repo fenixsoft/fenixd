@@ -36,7 +36,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { markdownComponents } from './SpecDocModal';
+import { markdownComponents } from '@/components/markdown-shared';
 import {
   ApiError,
   cancelRun,
