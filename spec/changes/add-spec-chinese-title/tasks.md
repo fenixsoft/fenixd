@@ -1112,8 +1112,8 @@
 
 ## 3. 立项通道：中文标题生成纪律
 
-- [ ] 3.1 `skills/fenix-new/SKILL.md` §2 增补：生成 kebab-case 名的同一阶段生成 5-25 字中文标题，随 §3.1 写入 `.spec.yaml` 的 `title` 字段（给出与 mode 写入同模式的脚本示例）；YAML plain scalar 纪律（禁半角冒号、引号开头等易碎形态）；`--modify` 语义 = 标题随需求演变可更新、仍准确不强制改写；§5 提交前置检查同步提及 title 完整性。
-- [ ] 3.2 `core/evolution.py` 草稿契约加可选 `title_cn` 字段：`materialize_draft` 校验其形态（str 且 5-25 字，非法时不作废草稿、仅省略 title 行）；`SPEC_YAML_TEMPLATE` 支持 title 行（缺省省略）；`agents/evolution.md` spec 契约节与格式合规清单同步要求 5-25 字中文标题；补/改 evolution 既有单测钉死契约（含缺 title_cn 容错分支）。
+- [x] 3.1 `skills/fenix-new/SKILL.md` §2 增补：生成 kebab-case 名的同一阶段生成 5-25 字中文标题，随 §3.1 写入 `.spec.yaml` 的 `title` 字段（给出与 mode 写入同模式的脚本示例）；YAML plain scalar 纪律（禁半角冒号、引号开头等易碎形态）；`--modify` 语义 = 标题随需求演变可更新、仍准确不强制改写；§5 提交前置检查同步提及 title 完整性。
+- [x] 3.2 `core/evolution.py` 草稿契约加可选 `title_cn` 字段：`materialize_draft` 校验其形态（str 且 5-25 字，非法时不作废草稿、仅省略 title 行）；`SPEC_YAML_TEMPLATE` 支持 title 行（缺省省略）；`agents/evolution.md` spec 契约节与格式合规清单同步要求 5-25 字中文标题；补/改 evolution 既有单测钉死契约（含缺 title_cn 容错分支）。
 
 ## 4. 存量回填（幂等分批）
 

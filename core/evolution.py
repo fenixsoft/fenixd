@@ -106,6 +106,30 @@ _ENTRY_ID_RE = re.compile(r"^[0-9a-f]{12}\Z")
 # 前缀评审排除（should_skip_review 条件 4）不受影响，草稿评审门保持。
 SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: fast-track\n"
 
+
+def _valid_title_cn(value) -> bool:
+    """title_cn 形态校验（add-spec-chinese-title）：str 且去首尾空白后
+    5-25 字。非法值不作废草稿——落盘侧仅省略 title 行（读侧全容错，
+    同 core/dashboard/data/spec_docs.read_spec_title 口径）。"""
+    return isinstance(value, str) and 5 <= len(value.strip()) <= 25
+
+
+def spec_yaml_text(created: str, title_cn=None) -> str:
+    """装配 .spec.yaml 文本：模板三行 + 可选 title 行。
+
+    title_cn 形态合法（str 且 5-25 字）时追加 ``title: <值>`` 行（strip 后
+    纯文本形态，禁易碎 YAML：引号开头/含半角冒号等由生成纪律约束，校验只
+    关卡长度）；非法/缺省省略该行，草稿照常落盘。保持 SPEC_YAML_TEMPLATE
+    的 str.format 接收者形态（callsite arity guard 白名单键
+    ("core/evolution.py", "format", "SPEC_YAML_TEMPLATE") 不含行号），
+    title 行在 format 结果后追加而非进模板占位符。
+    """
+    text = SPEC_YAML_TEMPLATE.format(created=created)
+    if _valid_title_cn(title_cn):
+        text += f"title: {title_cn.strip()}\n"
+    return text
+
+
 # 条目保留策略常量（保留最近 N 天 ∪ 最近 M 条，取较多数者）
 # 超出并集部分硬删（由 daemon 周期执行）
 ITEM_RETENTION_DAYS = 7  # 保留创建时间在最近 7 天内的条目
@@ -1304,7 +1328,10 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     → 返回 ``(None, 原因)`` 且 MUST NOT 半写文件。校验全部通过后才依次写
     ``proposal.md`` / ``specs/<capability>/spec.md`` / ``design.md`` /
     ``tasks.md`` / ``.spec.yaml``（``schema: spec-driven`` + ``created:
-    <YYYY-MM-DD>`` + ``mode: fast-track``）。
+    <YYYY-MM-DD>`` + ``mode: fast-track`` + 可选 ``title`` 行）。
+
+    ``title_cn`` 为可选展示名（add-spec-chinese-title）：str 且 5-25 字时
+    写入 title 行，非法/缺省仅省略该行、不作废草稿。
 
     Returns: ``(draft_dir, "")`` 成功；``(None, 原因)`` 失败。3.1
     """
@@ -1360,7 +1387,10 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
         (tmp / "design.md").write_text(spec["design_md"], encoding="utf-8")
         (tmp / "tasks.md").write_text(spec["tasks_md"], encoding="utf-8")
         (tmp / ".spec.yaml").write_text(
-            SPEC_YAML_TEMPLATE.format(created=datetime.now(timezone.utc).strftime("%Y-%m-%d")),
+            spec_yaml_text(
+                datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                spec.get("title_cn"),
+            ),
             encoding="utf-8",
         )
         # 顶替：os.replace 的目标名须不存在，旧目录先原子挪到唯一 old 路径。
