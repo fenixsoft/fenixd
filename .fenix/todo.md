@@ -191,5 +191,6 @@
 
 ## 2026-11-07
 ### 知识真相源
+- audit 语义项转写失败：contradiction（spec/knowledge/domains/worktree-vc/mergeback-archive-residue-selfheal.md × spec/knowledge/domains/worktree-vc/wip-defer-merge-retry.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/v2-overview-page.md × spec/knowledge/domains/dashboard-frontend/v2-project-detail-page.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/unified-page-title-bar.md × spec/knowledge/domains/harness-integration/agent-harness-adapter.md），请人工核查
