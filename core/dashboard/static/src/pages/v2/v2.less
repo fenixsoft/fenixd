@@ -186,6 +186,12 @@
   .v2-page.v2-projects .v2-inner {
     padding: 16px 14px 32px;
   }
+  /* 帮助变体移动边距（2026-11-07 用户指令「左右间距减少到 16px」）：白底
+     变体文档磁贴每侧 14→1——layout 内容区固定 15px 内嵌 + 1 = 每侧合计
+     16px（磁贴边框即内容边界，磁贴内 28px 阅读内边距不动）；桌面 24px 不变 */
+  .v2-page.v2-white .v2-inner {
+    padding: 16px 1px 32px;
+  }
 }
 
 /* 横向滑动胶囊菜单（settings 移动原型 .chip / .chip.on；settings 移动菜单

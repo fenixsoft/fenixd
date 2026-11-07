@@ -1373,7 +1373,8 @@ function DevTab({
       ) : null}
       {isMobile ? (
         // 移动筛选编排（add-spec-list-mobile-style 任务 2.1-2.4）：内容区背景
-        // #E3E3E3（theme.ts SPEC_LIST_MOBILE_BG 单源，DESIGN.md 修正案条款）+
+        // 白底（theme.ts SPEC_LIST_MOBILE_BG 单源；2026-11-07 用户指令由
+        // #E3E3E3 灰改白，DESIGN.md 修正案条款已同步）+
         // 搜索行 + 状态 chips 横滚 + 磁贴卡列表 + 筛选底部 Drawer。负 margin
         // 与 global.less <768 children-container padding-inline:12 对应（两处
         // 同改），背景铺满内容区。桌面分支（下方）零改动。
@@ -2236,6 +2237,14 @@ export default function SpecListPage() {
     }
   };
 
+  // 四分面移动边距 16px（2026-11-07 用户指令「代码审查、测试回归、架构蓝图、
+  // 项目知识的左右边距也设置为 16px」）：页签卡 body 缺省 24 + 容器 12 = 每侧
+  // 36，四分面经负 margin 抵消卡体 20（容器 12 + 余 4 = 每侧 16）。功能开发
+  // （DevTab 自带 -12 全幅编排，抵的是容器 12）与会话接入不在此列、零改动；
+  // 桌面不包裹零影响
+  const facetWrap = (node: ReactNode) =>
+    isMobile ? <div style={{ margin: '0 -20px' }}>{node}</div> : node;
+
   return (
     <>
       {/* 统一标题栏声明（unified-page-title-bar 2.3）：返回箭头 + 「{项目名} +
@@ -2300,7 +2309,7 @@ export default function SpecListPage() {
             // add-code-review-agent-and-quality-tab：承载代码审查质量视图——
             // QualityTab active 门控：仅在选中本分面时拉取数据与订阅事件流。
             // 卡片由 QualityTab 自身渲染（与「功能开发」分面同层，避免嵌套 Card 双倍内边距）
-            children: <QualityTab project={name} active={activeTab === 'quality'} />,
+            children: facetWrap(<QualityTab project={name} active={activeTab === 'quality'} />),
           },
           {
             key: 'regression',
@@ -2308,7 +2317,7 @@ export default function SpecListPage() {
             // add-test-regression-tab：承载全量回归结果视图。RegressionTab
             // active 门控：仅在选中本分面时拉取 GET /api/regression/result，
             // 未选中零请求（对齐 QualityTab/SessionPanel 按需加载语义）
-            children: <RegressionTab project={name} active={activeTab === 'regression'} />,
+            children: facetWrap(<RegressionTab project={name} active={activeTab === 'regression'} />),
           },
           {
             key: 'architecture',
@@ -2317,7 +2326,7 @@ export default function SpecListPage() {
             // ArchitectureTab active 门控：仅在选中本分面时拉取
             // GET /api/architecture/status，未选中零请求（对齐
             // QualityTab/RegressionTab 按需加载语义）；不自动触发生成
-            children: <ArchitectureTab project={name} active={activeTab === 'architecture'} />,
+            children: facetWrap(<ArchitectureTab project={name} active={activeTab === 'architecture'} />),
           },
           {
             key: 'knowledge',
@@ -2325,7 +2334,7 @@ export default function SpecListPage() {
             // add-knowledge-atlas 4.2：承载知识真相源只读视图（位于「架构蓝图」
             // 与「会话接入」之间）。KnowledgeTab active 门控：仅在选中本分面时
             // 拉取 GET /api/knowledge/index，未选中零请求（对齐按需加载语义）
-            children: <KnowledgeTab project={name} active={activeTab === 'knowledge'} />,
+            children: facetWrap(<KnowledgeTab project={name} active={activeTab === 'knowledge'} />),
           },
           {
             key: 'session',
