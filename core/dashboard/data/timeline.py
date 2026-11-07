@@ -885,6 +885,12 @@ def _timeline_sort_key(e: dict):
     admin 运维节点（add-timeline-admin-events）夹在中间：同秒内的真实时序是
     「状态转移（testing→bug-found）→ admin 处置完成 → 触发重派的 run 启动」，
     kind 次序显式映射为 state=0、admin=1、run=2（state/run 相对次序不变）。
+    chain 链事件节点（add-escalation-chain-admin-arbiter 5.1）与 admin 同
+    rank=1：链事件是处置里程碑台账留痕（派发/转单/拍板/复现/闭环/上升），
+    created 与 admin 记录同为微秒级精确时刻，同秒先后由第三键还原真实写入
+    序；且链事件必先于由它触发的下一棒 run 派发（转单/复现 → 立即派发，
+    run started 是秒截断，须靠 rank 压住才不反超链事件），故不得落 run 的
+    默认 rank。
     verify（验证执行节点）与 state 同 rank：退化场景（日志「开始验证」行缺失）
     节点取报告完成时刻、与 verified 转换同秒且真实次序在前（报告先落盘），
     须靠第三键精确时间排在 verified 之前；正常场景（引擎开始时刻）独占一秒，
@@ -897,7 +903,11 @@ def _timeline_sort_key(e: dict):
         from datetime import datetime as _dt, timezone as _tz
 
         return (_dt.max.replace(tzinfo=_tz.utc), 2, str(e.get("time", "")))
-    kind_rank = {"state": 0, "verify": 0, "admin": 1, "run": 2}.get(e.get("kind"), 2)
+    # chain=1 依据：链事件（台账 created 精确时刻）叙事上先于由它触发的
+    # 同秒 run 派发（见 docstring），与 admin 同级、靠第三键与 admin 分先后。
+    kind_rank = {"state": 0, "verify": 0, "admin": 1, "chain": 1, "run": 2}.get(
+        e.get("kind"), 2
+    )
     return (dt.replace(microsecond=0), kind_rank, dt)
 
 
