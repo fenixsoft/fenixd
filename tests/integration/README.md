@@ -45,7 +45,7 @@ tests/integration/run.sh
 | `FENIX_IT_PLUGINS_REPO` | 宿主 `/root/dsh-plugins`（存在时）；否则必填 | dsh 面板桥插件源：宿主目录路径（挂载进容器）或 git URL（容器内克隆） |
 | `FENIX_IT_TIMEOUT` | 真实 3600 / smoke 900 | 单轮超时预算（秒） |
 | `FENIX_IT_ARTIFACTS_DIR` | `<repo>/.history/integration-runs/<UTC时间戳>/` | 产物输出目录（gitignored；覆盖时路径纪律自担） |
-| `FENIX_IT_APT_MIRROR` | 空（官方源） | 构建期 apt 源镜像（官方 `deb.debian.org` 在部分网络停滞时传 `https://mirrors.aliyun.com/debian` 加速） |
+| `FENIX_IT_APT_MIRROR` | 空（官方源） | 构建期 apt 源站 origin 替换（官方 `deb.debian.org` 在部分网络停滞时传 `http://mirrors.aliyun.com` 加速；传 origin 而非带 `/debian` 路径，sed 按域名整体替换） |
 
 ## 产物目录与退出码
 
