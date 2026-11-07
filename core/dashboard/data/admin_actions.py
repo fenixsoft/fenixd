@@ -1039,6 +1039,13 @@ def resume_cancelled_spec(project_root, spec: str) -> dict:
         anchor_conflict: dict = {}
 
         def _mutate(specs):
+            if specs.get(spec) is None:
+                # 保留判定运行期间 spec 被并发软删除（code-review item
+                # 2f792326f706）：锁内 fresh 为空 dict 会使锚点比对必然失配、
+                # 误入下方 anchor_conflict 分支返回「请刷新后重试」——对已
+                # 删除 spec 是误导指引。先判缺席直接放弃本次写入，交由锁外
+                # 既有「spec 已并发删除，恢复未落盘」文案如实返回。
+                return False, False
             fresh = specs.get(spec) or {}
             if not (
                 fresh.get("branch") == entry.get("branch")
@@ -2797,6 +2804,19 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
                 "error": (f"spec 已是终态（{entry.get('status')}），"
                           "不可修订重验（终态不可逆）"),
                 "frozen_manual": False, "terminal": True}
+    # 用户指令冻结前置拒绝（code-review item 4ac2caacab89，与同模块
+    # reset_verification/skip_review_gate/_exec_review_unfreeze 的
+    # FREEZE_ERROR_PREFIX 前置门同口径）：manual-intervention 桶选项集中
+    # 本动作缺此门会让冻结 spec 产生该信号时人工选择即经步骤 6 直接写
+    # frozen=False 并清 error 绕过冻结语义拽回 testing——须先解冻再处置
+    # （对齐 resume_cancelled_spec 文案「须先解冻，禁止绕过」）。自动冻结
+    # （场景争议/env 阻塞/预算闸门）写自有文案不携带该前缀，修订重验正是
+    # 其设计出口（步骤 7 显式解冻），不受本门影响。
+    if str(entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX):
+        return {"ok": False, "steps": [],
+                "error": ("用户指令冻结 SPEC 须先解冻，禁止绕过冻结直接修订重验"
+                          "（unfreeze_spec 后再处置）"),
+                "frozen_manual": False}
     try:
         revision_count = int(entry.get(SCENARIO_REVISION_COUNT_FIELD) or 0)
     except (TypeError, ValueError):
@@ -2942,15 +2962,20 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
                 steps.append(f"状态转换失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
             # 补偿还原步骤 6 已落盘的修订簿记（code-review item c66bef46e771）：
             # 计数/重验旗标随失败一并还原，防白耗修订预算与「STATE 已记修订
-            # 待重验、盘面仍旧场景集」半改态；补偿写若再失败经 steps 如实
-            # 留痕供人工核对。
+            # 待重验、盘面仍旧场景集」半改态；冻结态与 error 同批按快照还原
+            # （code-review item 4ac2caacab89）：步骤 6 已解冻清 error，补偿
+            # 不还原会让冻结静默解除、调度据此捞起该 spec，与 docstring
+            # 「任一步失败即停，不留半改状态」承诺不符；补偿写若再失败经
+            # steps 如实留痕供人工核对。
             if sm.update_spec(spec, {
                 SCENARIO_REVISION_COUNT_FIELD: revision_count,
                 SCENARIO_REVISION_PENDING_FIELD: False,
+                "frozen": entry.get("frozen"),
+                "error": entry.get("error"),
             }):
-                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标）")
+                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标/冻结态与 error）")
             else:
-                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标待人工核对）")
+                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标/冻结态待人工核对）")
             return {"ok": False, "steps": steps,
                     "error": ("修订后状态转换未生效（IMPLEMENTED→TESTING 被拒；"
                               "场景文件与 STATE 修订簿记均已还原）"),
@@ -2968,14 +2993,17 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
                 steps.append(f"状态直改失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
             # 直改失败同属步骤 6 之后的 STATE 写后段失败，补偿还原已落盘的
             # 修订簿记（code-review item c66bef46e771，与转换失败分支同口径）；
+            # 冻结态与 error 同批按快照还原（item 4ac2caacab89，同口径）；
             # 补偿写若再失败经 steps 如实留痕供人工核对。
             if sm.update_spec(spec, {
                 SCENARIO_REVISION_COUNT_FIELD: revision_count,
                 SCENARIO_REVISION_PENDING_FIELD: False,
+                "frozen": entry.get("frozen"),
+                "error": entry.get("error"),
             }):
-                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标）")
+                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标/冻结态与 error）")
             else:
-                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标待人工核对）")
+                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标/冻结态待人工核对）")
             return {"ok": False, "steps": steps,
                     "error": (f"状态 {old_status} → testing 直改未生效"
                               "（场景文件与 STATE 修订簿记均已还原）"),
