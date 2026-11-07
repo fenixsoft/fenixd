@@ -40,12 +40,14 @@ tests/integration/run.sh
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `FENIX_IT_LLM_BASE_URL` / `FENIX_IT_LLM_API_KEY` / `FENIX_IT_LLM_MODEL` | 无（真实模式必填） | LLM 三要素；claude 轮映射 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`，dsh 轮映射 bundle 模型显式配置三要素。仅注入容器 env，零落盘 |
-| `FENIX_IT_GIT_REPO` | `https://github.com/fenixsoft/fenixd.git` | 框架克隆源；值为宿主已存在目录路径时改为只读挂载该目录进容器并从本地路径克隆（离线开发替代） |
+| `FENIX_IT_GIT_REPO` | `https://github.com/fenixsoft/fenixd.git` | 框架克隆源；值为宿主已存在目录路径时只读挂载该仓的 git 共享对象库（`--git-common-dir`，worktree 与普通仓统一）进容器并从本地路径克隆（离线开发替代；`FENIX_IT_GIT_REF` 仍按引用选取） |
 | `FENIX_IT_GIT_REF` | `main` | 克隆引用（分支/tag） |
 | `FENIX_IT_PLUGINS_REPO` | 宿主 `/root/dsh-plugins`（存在时）；否则必填 | dsh 面板桥插件源：宿主目录路径（挂载进容器）或 git URL（容器内克隆） |
 | `FENIX_IT_TIMEOUT` | 真实 3600 / smoke 900 | 单轮超时预算（秒） |
 | `FENIX_IT_ARTIFACTS_DIR` | `<repo>/.history/integration-runs/<UTC时间戳>/` | 产物输出目录（gitignored；覆盖时路径纪律自担） |
 | `FENIX_IT_APT_MIRROR` | 空（官方源） | 构建期 apt 源站 origin 替换（官方 `deb.debian.org` 在部分网络停滞时传 `http://mirrors.aliyun.com` 加速；传 origin 而非带 `/debian` 路径，sed 按域名整体替换） |
+| `FENIX_IT_NPM_REGISTRY` | 空（官方源） | 构建期 npm registry 镜像（官方源停滞/过慢时传 `https://registry.npmmirror.com`；写入镜像 root 级 .npmrc，运行期容器内 npm/pnpm 同享） |
+| `FENIX_IT_PIP_INDEX` | 空（官方源） | 构建期 PyPI index 镜像（官方 CDN 停滞时传 `https://mirrors.aliyun.com/pypi/simple`；镜像已预装 playwright/pyyaml/httpx/jsonschema，运行期 install.sh 依赖检查 import 即过、不再外联 PyPI） |
 
 ## 产物目录与退出码
 
@@ -95,4 +97,5 @@ tests/integration/run.sh
   fail-loud；另 Anthropic 兼容形态 baseurl（`*/anthropic`）须线协议
   `anthropic-messages`（编排按同款判据自动配 `agent.dsh_api`）。
 - **镜像构建期网络失败**：Playwright 浏览器下载默认走 npmmirror 镜像路径
-  （`PLAYWRIGHT_DOWNLOAD_HOST`）；npm/apt 源按需在构建期以 build-arg/env 覆盖。
+  （`PLAYWRIGHT_DOWNLOAD_HOST`）；apt/npm/pypi 源按需在构建期以环境变量
+  覆盖（见环境变量表三镜像行；构建日志可见各层是否命中缓存）。
