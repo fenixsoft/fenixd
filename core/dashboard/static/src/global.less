@@ -39,8 +39,8 @@ body {
 // 是独立数据卡而非布局包裹卡，边框属卡片语义不属冗余 chrome。组件侧保持
 // variant="outlined"（borderless 连 .ant-card-bordered 类名都不带，页级规则本
 // 打不到；真正抹掉卡感的是下方 box-shadow:none 规则），此处定向恢复 v2 磁贴
-// 皮肤，色值=pages/v2/theme.tsx 镜像（例外域配色单源不得跨域引用，两处同改；
-// V2_TILE_BORDER / V2_TILE_RADIUS / V2_TILE_SHADOW）。特异性 1 id + 3 类高于
+// 皮肤（色值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，此处为独立
+// 存量）。特异性 1 id + 3 类高于
 // 下方去阴影规则，box-shadow 可覆写——勿上移到该规则之前。
 #root .overview-intro-row .ant-card.ant-card-bordered {
   border: 1px solid #eef2f7;
@@ -63,16 +63,15 @@ body {
   gap: 12px;
 }
 
-// Bento 台账表格磁贴镜像族（2026-11-06 用户指令：overview 项目清单 + projects
+// Bento 台账表格磁贴族（2026-11-06 用户指令：overview 项目清单 + projects
 // 桌面 SPEC 表格对齐 v2 台账表格边框；消费方 pages/overview/components/
-// ProjectTable.tsx、pages/projects/list.tsx DevTab）。样式值镜像 v2 域
-// theme.tsx / v2.less `.v2-bento` 族（例外域配色单源不得跨域引用，两处同改），
-// 类名独立 `.ov-*` 前缀与 v2 域零耦合；表格钉死规则沿用 !important 形态
-//（antd v6 cssinjs 运行时注入在静态样式表之后，同特异性会被覆盖——v2.less
-// 原型 round3/round5 实证）。
+// ProjectTable.tsx、pages/projects/list.tsx DevTab）。样式值取自当日的 v2 域
+// token 表（该域 2026-11-07 已退役，此处为独立存量），类名独立 `.ov-*` 前缀；
+// 表格钉死规则沿用 !important 形态
+//（antd v6 cssinjs 运行时注入在静态样式表之后，同特异性会被覆盖）。
 .ov-bento {
   background: #ffffff;
-  border: 1px solid #eef2f7; /* = V2_TILE_BORDER */
+  border: 1px solid #eef2f7;
   border-radius: 12px; /* Bento 磁贴圆角固定 12px（DESIGN.md 通用条款，2026-11-06 用户指令） */
   box-shadow:
     0 1px 3px rgba(15, 23, 42, 0.05),
@@ -93,12 +92,12 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 }
 
-/* 任务清单 v2 行渲染勾选块（镜像 v2.less .v2-task-check，两处同改） */
+/* 任务清单 v2 行渲染勾选块 */
 .ov-task-check {
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  background: #2563eb; /* = V2_RAMP_IMPLEMENTING */
+  background: #2563eb;
   color: #fff;
   display: inline-flex;
   align-items: center;
@@ -109,20 +108,20 @@ body {
 
 /* 未完成指示器：空心方框（与 .ov-task-check 同几何 15×15 radius 4；2026-11-06
    用户指令「未勾选保持方形」——任务/质量门禁两处消费。注意：v2 TaskCard 原形
-   为空心圆，本页经用户指令偏离镜像源，勿「对齐」回去） */
+   为空心圆，本页经用户指令偏离其形态，勿「对齐」回去） */
 .ov-task-empty {
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  border: 1.5px solid #94a3b8; /* = V2_TEXT_QUATERNARY */
+  border: 1.5px solid #94a3b8;
   flex-shrink: 0;
   margin-top: 2px;
 }
 
 // SPEC 详情页顶栈卡片 Bento 皮肤（2026-11-06 用户指令：项目信息/任务清单/质量
 // 门禁/验证进度/验证结论五卡对齐 v2 磁贴，内容不变；页签区卡同日二次指令退出
-// bento 避免卡套卡，时间轴节点改由 SpecTimeline cardBox 承载磁贴形态）。值镜像
-// theme.tsx V2_TILE_*；圆角固定 12px（DESIGN.md 通用条款）。特异性 1 id + 3 类
+// bento 避免卡套卡，时间轴节点改由 SpecTimeline cardBox 承载磁贴形态）。圆角
+// 固定 12px（DESIGN.md 通用条款）。特异性 1 id + 3 类
 // 与概览统计卡豁免同档，靠文件后置覆写页级去边框/去阴影规则——勿上移到去边框
 // 规则之前。
 #root .spec-bento-card.ant-card.ant-card-bordered {
@@ -186,23 +185,23 @@ li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-button 
 }
 
 /* 台账表格：透明表头 / fixed 布局防撑坏 / 首列 14px 缩进 / 发丝线行分隔
-   （镜像 v2.less .v2-bento-table 族） */
+   （2026-11-06 对齐 v2 台账表格时定形；v2 域 2026-11-07 已退役，独立存量） */
 .ov-bento-table .ant-table {
   background: transparent;
 }
 
 .ov-bento-table .ant-table-thead > tr > th {
   background: transparent !important;
-  border-bottom: 1px solid #eef2f7 !important; /* = V2_HAIRLINE */
-  color: #64748b !important; /* = V2_TEXT_TERTIARY（v2 主题 Table.headerColor 镜像） */
+  border-bottom: 1px solid #eef2f7 !important;
+  color: #64748b !important;
 }
 
 .ov-bento-table .ant-table-tbody > tr > td {
-  border-bottom: 1px solid #f1f5f9 !important; /* = V2_SPLIT */
+  border-bottom: 1px solid #f1f5f9 !important;
 }
 
 .ov-bento-table .ant-table-tbody > tr.ant-table-row:hover > td {
-  background: #f8fafc !important; /* = V2_BG（v2 主题 Table.rowHoverBg 镜像） */
+  background: #f8fafc !important;
 }
 
 /* fixed 布局恢复列宽单源：长注释 MUST NOT 把表格撑破容器（v2 域「表格布局
@@ -224,7 +223,7 @@ li.ant-menu-submenu > ul.ant-menu-sub.ant-menu-inline::-webkit-scrollbar-button 
    消费方：overview 运行态筛选、projects 类型/归档过滤——Radio.Group 挂
    .ov-radio-dark 即得，非激活项保持 antd 描边态） */
 .ov-radio-dark .ant-radio-button-wrapper-checked {
-  background: #0f1115; /* = V2_PRIMARY / 一般域主色黑系 */
+  background: #0f1115; /* 一般域主色黑系 */
   border-color: #0f1115;
   color: #ffffff;
 }
@@ -334,7 +333,7 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
 
 // 配置页全量卡片 Bento 边框（2026-11-06 用户指令「ant-card 都设置为 bento 样式
 // 的边框」，同日二次指令：圆角缩至 10px、边框加深 #d7d7d7——浅灰卡底 #f6f6f6
-// 上 V2_TILE_BORDER #eef2f7 发丝线不可辨，边框不可见即失效；仅此一页，灰底准例
+// 上 #eef2f7 发丝线不可辨，边框不可见即失效；仅此一页，灰底准例
 // 已登记 DESIGN.md 通用条款）。置于上方直角化规则之后——同特异性靠后置覆写
 // border-radius: 0；浅灰卡底条款（#f6f6f6/#efefef，DESIGN.md 一般域）不受影响，
 // 本条只接管边框三件套。卡头随卡根圆角同形（灰头直角由卡根圆角收口）。

@@ -39,13 +39,12 @@ export { formatUsd };
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
 
-// ── Bento 镜像色值（2026-11-06 用户指令：时间轴每个节点各自成磁贴，页签区卡
-// 同步退出 bento 避免卡套卡）。源 = pages/v2/theme.tsx，例外域配色单源不得跨域
-// import，镜像纪律同 overview ProjectTable / projects list（两处同改）；圆角
-// 固定 12px 见 DESIGN.md 通用条款。
-const OV_TILE_BORDER = '#eef2f7'; // = V2_TILE_BORDER / V2_HAIRLINE
+// ── Bento 色值（2026-11-06 用户指令：时间轴每个节点各自成磁贴，页签区卡
+// 同步退出 bento 避免卡套卡；色值取自当日的 v2 域 token 表——该域 2026-11-07
+// 已退役，独立存量）。圆角固定 12px 见 DESIGN.md 通用条款。
+const OV_TILE_BORDER = '#eef2f7';
 const OV_TILE_SHADOW =
-  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)'; // = V2_TILE_SHADOW
+  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';
 
 // remarkPlugins 提为模块级常量（code-review item 0a666cf57a47）：比照 SpecDocModal
 // SPEC_DOC_REMARK_PLUGINS / KnowledgeTab KNOWLEDGE_REMARK_PLUGINS 先例复用同一引用，

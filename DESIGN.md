@@ -49,14 +49,13 @@
 - 数据墨水优先：界面以数据为主语，小号标签 + 静态细线 + 高密度排布；灰字走 antd
   token colorTextTertiary，不手写灰色。（出处：command-center-console-ui spec 风格
   条款；app.tsx 注记「灰字走 colorTextTertiary 适配未来暗色主题」）
-- Bento 磁贴圆角固定 12px：凡 Bento 磁贴形态的白磁贴（v2 六页 `.v2-bento`、现产
-  overview 统计卡与项目台账磁贴 `.ov-bento` 及后续同语态新增面），border-radius
-  一律 12px，MUST NOT 回调 16px 或逐页散值；胶囊徽标 999px 不变，一般域 antd
-  控件圆角 6/4/8 条款不受影响（本条是磁贴形态级规则，非 theme 级 borderRadius
-  覆写）。（出处：2026-11-06 用户指令「border-radius 从 16px 改为 12px，作为
-  固定规则写入 DESIGN.md」，overview 台账对齐 v2 改造中提出，全站统一适用；
-  实现单源 pages/v2/theme.tsx `V2_TILE_RADIUS` + v2.less 镜像 + global.less
-  overview 镜像）。**灰底准例（仅配置页）**：settings 卡片经同日用户指令准离
+- Bento 磁贴圆角固定 12px：凡 Bento 磁贴形态的白磁贴（现产 overview 统计卡与
+  项目台账磁贴 `.ov-bento` 及后续同语态新增面），border-radius 一律 12px，
+  MUST NOT 回调 16px 或逐页散值；胶囊徽标 999px 不变，一般域 antd 控件圆角
+  6/4/8 条款不受影响（本条是磁贴形态级规则，非 theme 级 borderRadius 覆写）。
+  （出处：2026-11-06 用户指令「border-radius 从 16px 改为 12px，作为固定规则
+  写入 DESIGN.md」，overview 台账对齐 v2 改造中提出，全站统一适用；实现单源
+  global.less overview 镜像）。**灰底准例（仅配置页）**：settings 卡片经同日用户指令准离
   本条——圆角 10px + 边框加深 #d7d7d7（浅灰卡底 #f6f6f6 上 #eef2f7 发丝线
   不可辨，边框不可见即失效），MUST NOT 推广至白底磁贴页。
 
@@ -97,7 +96,7 @@
   core/dashboard/static/src/global.less settings 页实证；2026-10-31 用户裁决 #2）
 - Radio 按钮组激活态固定黑底白字：并排 Radio 过滤控件（optionType="button"，
   现存消费面=overview 运行态筛选、projects 类型/归档过滤，后续同语态过滤组
-  一律沿用）激活项一律黑底白字 #0f1115（= 一般域主色黑系 / v2 V2_PRIMARY），
+  一律沿用）激活项一律黑底白字 #0f1115（= 一般域主色黑系），
   非激活项保持 antd 描边态；MUST NOT 回退 antd 缺省激活底或逐页散值覆写。
   实现单源 global.less `.ov-radio-dark` 覆写类（Radio.Group 挂类即得）。（出处：
   2026-11-06 用户指令「参考 overview 的 radio 控件样式处理，并将该样式写入
@@ -151,49 +150,15 @@
   4. 静态渲染红线在本域按「管线/泳道图表静态 SVG、无任何动画元素」从紧执行。
      （出处：specs/topology-bigscreen-ui「静态 SVG、无动画」Scenario）
 
-### 例外域：v2 商业化界面域（redesign-dashboard-v2-ui）
+### 例外域：v2 商业化界面域（redesign-dashboard-v2-ui）——已退役
 
-> 2026-11-05 立项的 Bento 磁贴设计语言域，开发期与既有页面并存（全部挂 /v2/
-> 路由前缀，D1 路由隔离：v2 条目不写 name/icon，现产侧栏菜单/页头零污染）。
-> UI 真相源 = spec/changes/redesign-dashboard-v2-ui/prototype/ 六张定稿原型；
-> 是否切换为默认界面由用户另行裁决（验收后另行立项），本域条款仅约束 v2 六页。
-
-- 用途声明：商业化观感的 Bento 磁贴界面（浅灰页底 + 白磁贴 + 黑主色按钮 + 蓝
-  链接），覆盖概览 / 项目 / SPEC 详情 / 配置 / 帮助 / 运维六页。（出处：
-  spec/changes/redesign-dashboard-v2-ui proposal/design；prototype/variant-b-bento.html
-  等六张）
-- 域专属 token 表（主题单源 core/dashboard/static/src/pages/v2/theme.tsx，v2 域
-  外任何页面不得引用）：
-  1. 主色：黑 #0f1115（hover #43454a / active #2c2c2e）；链接蓝 #4176e6。
-  2. 底色：页底浅灰 #f8fafc；磁贴纯白 radius 12 软阴影（2026-11-06 用户指令自 16
-     改 12，升通用条款固定规则，见「Bento 磁贴圆角固定 12px」）；胶囊 radius 999。
-  3. 语义色：success #22c55e / error #dc2626 / warning #d97706；胶囊软色板
-     （good 绿软 / warning 琥珀软 / critical 红软 / info 蓝软 / muted 灰蓝软 /
-     aqua 青）。
-  4. 数据编码 ramp：出题青 #0891b2 / 实现蓝 #2563eb / 门禁橙 #ea580c /
-     验证绿 #16a34a；车道色板 V2_LANE_COLORS（堆叠条数据编码）。
-  5. 数字排版：tabular-nums（.v2-num）；表格 fixed 布局 + 首列 14px 缩进 +
-     长注释 pre-wrap（.v2-bento-table）。
-- 与一般域的偏离清单：
-  1. 圆角：磁贴 12（2026-11-06 用户指令自 16 改 12，单源升通用条款「Bento 磁贴
-     圆角固定 12px」）/ 胶囊 999（一般域 antd 默认 6/4/8）。（出处：本 SPEC design
-     偏离声明表；prototype 定稿；radius 值修正见通用条款出处）
-  2. 配色单源换轨：v2 主题独立文件，零 import 现产 theme.ts dsh 表。（出处：
-     design D2）
-  3. 页底浅灰 #f8fafc 替代白底。（出处：design 偏离声明表）
-  4. 语义色 error #dc2626 / warning #d97706（原 dsh #ec1313/#f59e0b）。（出处：
-     同上）
-  5. 标题栏形态：六页自绘标题带（22px/700 大标题 + 返回箭头 + 状态/模式徽标 +
-     右侧富组合），不套用全站统一标题栏形态基准。（出处：design 偏离声明表）
-  6. 布局承载：v2 页跳过 PageContainer，V2Page 壳自带全出血页底与 24px 内容
-     边距（.v2-inner 1400px 居中），一般域「导航 + 卡片主干」布局惯例在磁贴
-     网格形态下重新表达。（出处：prototype 各页 main 形态；pages/v2/shared.tsx）
-  7. 数据复用：一切数据面（overview/alerts/specs/config/chain/help）复用现产
-     /api/ 端点与口径（statusMeta 归族、验证计数、耗时格式、告警裁决
-     useAlertAdjudication 闭环），不新建后端；缺口字段渲染「—」不伪装 0，
-     无数据源的分面（自愈记录）渲染占位说明。（出处：design D3 + Risks）
-  8. 刷新：30s 心跳轮询，不接现产 SSE 合帧（开发期简化口径，页面为与现产
-     并行的独立界面）。（出处：pages/v2/overview.tsx 等实现注记）
+> 2026-11-05 立项的 Bento 磁贴设计语言域，曾以 /v2/ 路由前缀与既有页面并存。
+> **2026-11-07 用户指令整体退役**：pages/v2/ 目录（六页 + theme.tsx + v2.less +
+> shared.tsx）与 /v2/* 路由全部删除，原版页面恢复为唯一界面，本域条款随之
+> 失效（历史条款与六张定稿原型见 spec/changes/redesign-dashboard-v2-ui 及
+> -mobile 两个 SPEC 目录）。其「磁贴圆角 12px」已先行升格为通用条款继续生效；
+> 一般域各页曾对齐 v2 的样式值保留现状（出处注记中的 v2 指涉均为历史出处）。
+> 域专属 token 表与偏离清单不再赘述，见 git 历史本文件上一版本。
 
 ## 待裁决段（普查无出处条目，留用户逐条裁决；裁决后经修正案入正式条款）
 

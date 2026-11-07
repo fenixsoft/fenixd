@@ -206,12 +206,7 @@ test('配置页全量卡片=Bento 边框（2026-11-06 用户指令；直角化�
   assert.match(less, /#root \.settings-page \.ant-card\.ant-card-bordered > \.ant-card-head \{\s*border-radius: 10px 10px 0 0;/);
 });
 
-test('Bento 磁贴圆角固定 12px（DESIGN.md 通用条款；v2 单源与 overview 镜像同值）', () => {
-  // theme.tsx 含 JSX，node:test 不加载——按源码正则钉值（同 v2TitleBarGuard 习语）
-  const v2Theme = readFileSync(join(STATIC_ROOT, 'src', 'pages', 'v2', 'theme.tsx'), 'utf8');
-  assert.match(v2Theme, /export const V2_TILE_RADIUS = 12;/);
-  const v2Less = readFileSync(join(STATIC_ROOT, 'src', 'pages', 'v2', 'v2.less'), 'utf8');
-  assert.match(v2Less, /\.v2-bento \{[\s\S]*?border-radius: 12px;/);
+test('Bento 磁贴圆角固定 12px（DESIGN.md 通用条款）', () => {
   const less = readFileSync(join(STATIC_ROOT, 'src', 'global.less'), 'utf8');
   assert.match(less, /\.ov-bento \{[\s\S]*?border-radius: 12px;/);
   // 独立胶囊筛选形态不得回潮（2026-11-06 用户指令撤退）

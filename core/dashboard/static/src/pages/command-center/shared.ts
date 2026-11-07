@@ -35,12 +35,12 @@ export const PANEL_BORDER = DSH_BORDER_SECONDARY;
 export const TEXT_MAIN = DSH_TEXT;
 export const TEXT_SUB = DSH_TEXT_SECONDARY;
 
-// ── Bento 磁贴边框（2026-11-06 用户指令「三个页签的卡片框都改为 bento 样式」）
-// ── 值镜像 pages/v2/theme.tsx（例外域配色单源不得跨域 import，两处同改）；圆角
+// ── Bento 磁贴边框（2026-11-06 用户指令「三个页签的卡片框都改为 bento 样式」；
+// 值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，独立存量）；圆角
 // 固定 12px 见 DESIGN.md 通用条款（本页白底磁贴，不适用 settings 灰底准例）。
-export const CARD_FRAME_BORDER = '#eef2f7'; // = V2_TILE_BORDER / V2_HAIRLINE
+export const CARD_FRAME_BORDER = '#eef2f7';
 export const CARD_FRAME_SHADOW =
-  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)'; // = V2_TILE_SHADOW
+  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';
 
 // null 指标占位：分母零/不可计价/数据缺口一律「—」（MUST NOT 显示 0——0 与
 // 「口径不可得」语义不同，specs「验收与红线」节）；数值原样字符串化（0 保留）。

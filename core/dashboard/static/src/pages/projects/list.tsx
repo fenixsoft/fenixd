@@ -122,17 +122,17 @@ function useToneDot(): Record<string, string> {
   );
 }
 
-// ── Bento 镜像色值（2026-11-06 用户指令：桌面 SPEC 表格对齐 v2 projects 台账
-// 呈现）。源 = pages/v2/theme.tsx，例外域配色单源不得跨域 import，镜像纪律同
-// overview ProjectTable（OV_* 两处同改）；磁贴/表头/发丝线样式镜像在 global.less
-// `.ov-bento` / `.ov-bento-table`（圆角固定 12px，DESIGN.md 通用条款）。
-const OV_TEXT = '#1e293b'; // = V2_TEXT
-const OV_TEXT_TERTIARY = '#64748b'; // = V2_TEXT_TERTIARY
-const OV_ERROR = '#dc2626'; // = V2_ERROR
-const OV_WARNING = '#d97706'; // = V2_WARNING
-const OV_INFO = '#2563eb'; // = V2_RAMP_IMPLEMENTING（v2 语义 info tone 前景）
-const OV_INFO_SOFT = '#eff6ff'; // = V2_BLUE_SOFT
-const OV_MUTED_SOFT = '#f1f5f9'; // = V2_SLATE_SOFT
+// ── Bento 色值（2026-11-06 用户指令：桌面 SPEC 表格对齐 v2 projects 台账
+// 呈现；色值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，此处值为
+// 独立存量）。磁贴/表头/发丝线样式镜像在 global.less `.ov-bento` /
+// `.ov-bento-table`（圆角固定 12px，DESIGN.md 通用条款）。
+const OV_TEXT = '#1e293b';
+const OV_TEXT_TERTIARY = '#64748b';
+const OV_ERROR = '#dc2626';
+const OV_WARNING = '#d97706';
+const OV_INFO = '#2563eb'; // v2 语义 info tone 前景
+const OV_INFO_SOFT = '#eff6ff';
+const OV_MUTED_SOFT = '#f1f5f9';
 // add-spec-list-mobile-style：移动卡磁贴/分隔/信息行镜像色（原型 T 常量同源，
 // 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200 / warning 软底 + amber-800）
 const OV_HAIRLINE = '#eef2f7';

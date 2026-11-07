@@ -63,15 +63,14 @@ const screenshotUrl = (project: string, spec: string, file: string) =>
 // 数组标识，避免 SSE 驱动的高频重渲染每帧重建数组触发整篇重新 parse
 const DETAIL_REMARK_PLUGINS = [remarkGfm];
 
-// ── Bento 镜像色值（2026-11-06 用户指令：顶栈卡片对齐 v2 磁贴 + 任务清单改 v2
-// 行渲染）。源 = pages/v2/theme.tsx，例外域配色单源不得跨域 import，镜像纪律同
-// overview ProjectTable / projects list（OV_* 两处同改）；卡片皮肤与勾选块样式
-// 镜像在 global.less `.spec-bento-card` / `.ov-task-check` / `.ov-mono`（圆角
-// 固定 12px，DESIGN.md 通用条款）。
-const OV_HAIRLINE = '#eef2f7'; // = V2_HAIRLINE
-const OV_LINK = '#4176e6'; // = V2_LINK
-const OV_TEXT_SECONDARY = '#475569'; // = V2_TEXT_SECONDARY
-const OV_TEXT_TERTIARY = '#64748b'; // = V2_TEXT_TERTIARY
+// ── Bento 色值（2026-11-06 用户指令：顶栈卡片对齐 v2 磁贴 + 任务清单改 v2
+// 行渲染；色值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，此处值为
+// 独立存量）。卡片皮肤与勾选块样式镜像在 global.less `.spec-bento-card` /
+// `.ov-task-check` / `.ov-mono`（圆角固定 12px，DESIGN.md 通用条款）。
+const OV_HAIRLINE = '#eef2f7';
+const OV_LINK = '#4176e6';
+const OV_TEXT_SECONDARY = '#475569';
+const OV_TEXT_TERTIARY = '#64748b';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，

@@ -1,11 +1,10 @@
 // overview 项目台账表格（2026-11-06 用户指令：项目清单呈现对齐 v2 overview
 // 台账磁贴，桌面=表格形态、移动=堆叠项目卡，复制自 pages/v2/overview.tsx
-// ProjectPanel 两形态）。样式值镜像 v2 域 theme.tsx / v2.less（DESIGN.md 例外域
-// 配色单源不得跨域引用，镜像纪律同 v2.less↔theme.tsx「两处同改」）；样式规则
-// 镜像落 global.less `.ov-*` 作用域。行为层保留本页既有契约不随视觉切换：
+// ProjectPanel 两形态——该域 2026-11-07 已退役，本组件为独立存量）。样式规则
+// 落 global.less `.ov-*` 作用域。行为层保留本页既有契约不随视觉切换：
 // 乐观删除 + 侧边栏菜单同步（onProjectRemoved/onProjectSettle）、在飞记账
 // pending、错误态/exists 语义（fix-dashboard-fault-isolation）、跳转本产项目页
-// /projects/:name（不跳 /v2/，原版页面语义不变）。
+// /projects/:name（原版页面语义不变）。
 import {
   DeleteOutlined,
   MoreOutlined,
@@ -24,10 +23,10 @@ import { deleteProject, installHosting, startProject, statusMeta, stopProject } 
 // 百分比帮助函数单源（code-review item d7d303f389f6）：收敛到 @/utils/percent
 import { pct } from '@/utils/percent';
 
-// ── 镜像色值（源 = pages/v2/theme.tsx，例外域单源不得跨域 import，两处同改）──
-const OV_RAMP_IMPLEMENTING = '#2563eb'; // = V2_RAMP_IMPLEMENTING
-const OV_HAIRLINE = '#eef2f7'; // = V2_HAIRLINE / V2_TILE_BORDER
-const OV_ERROR = '#dc2626'; // = V2_ERROR
+// ── 台账色值（2026-11-06 对齐 v2 时取值，v2 域 2026-11-07 已退役，独立存量）──
+const OV_RAMP_IMPLEMENTING = '#2563eb';
+const OV_HAIRLINE = '#eef2f7';
+const OV_ERROR = '#dc2626';
 const OV_WARNING = '#d97706'; // = V2_WARNING
 const OV_TEXT = '#1e293b'; // = V2_TEXT
 const OV_TEXT_SECONDARY = '#475569'; // = V2_TEXT_SECONDARY
