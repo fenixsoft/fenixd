@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>指挥中心 · 执行台账 — Bento 白底</title>
+<!-- 重绘（2026-11-07）：指挥中心「执行台账」页签（add-command-center 4.4）。
+     旧大屏原型（redesign-overview-bigscreen，深蓝黑 IOC 风格）随 2026-11-04
+     「黑改白 + 脱壳改内容区嵌入」改版整体退役，本稿对齐现产
+     pages/command-center/ExecutionLedger.tsx 白底形态：
+     ①壳层顶栏（Fenix Harness 品牌 + 指挥中心标题 + 「全部项目」筛选 Select，
+     filters 槽位同现产 unified-titlebar 接法）；②三页签壳（组织总览/交付
+     流水线/执行台账——裁决收件箱页签已移除，本稿仅台账页签为可批注主体，
+     另两页签占位说明非本轮范围）；③KPI 条 Bento 磁贴框（#eef2f7 边 + 12px
+     圆角 + 软阴影，值镜像 v2 theme，shared.ts CARD_FRAME_* 单源）四指标居中
+     列（值 17/700 上、标签 11 下）+ 网关状态绿徽标；④台账九列表格
+     （项目/SPEC/车道/结果/耗时/tokens/成本/开始时间/trigger），null 显「—」
+     非零（口径红线），结果列文字色徽（成功绿/失败红/运行中蓝/中断橙/取消橙/
+     取代灰），车道用现产 LANE_LABELS 词表，不分页（后端恒 ≤50 行）。
+     主题：一般域 token（antd 缺省圆角 6/4/8、controlHeight 缺省），链接蓝
+     #4176e6、成功 #22c55e、错误 #ec1313、警示 #f59e0b、文字 #0f1115/#61666b/
+     #81858c——全部取自 theme.ts DSH_* 单源，零自创色。交互仅页签切换为真，
+     其余（筛选/表格排序）视觉呈现。 -->
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #0f1115; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+  /* 顶栏（standalone dsh 壳）：白玻璃 + 下缘细线 */
+  .topbar { position: sticky; top: 0; z-index: 20; height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px; background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid rgba(0,0,0,0.08); }
+</style>
+<script src="vendor.js"></script>
+</head>
+<body><div id="root"></div><script>
+(function () {
+'use strict';
+var h = React.createElement;
+var A = window.antd;
+var CP = A.ConfigProvider, Tag = A.Tag, Select = A.Select, Tabs = A.Tabs, Table = A.Typography ? A.Table : A.Table;
+// ── 色值单源：theme.ts DSH_*（一般域）+ command-center/shared.ts 派生档 ──
+var C = { text: '#0f1115', text2: '#61666b', text3: '#81858c', link: '#4176e6',
+  success: '#22c55e', error: '#ec1313', warning: '#f59e0b',
+  border: 'rgba(0,0,0,0.16)', border2: 'rgba(0,0,0,0.10)', split: 'rgba(0,0,0,0.08)',
+  frame: '#eef2f7', shadow: '0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03)' };
+var THEME = { token: { colorPrimary: '#4176e6', colorLink: '#4176e6', colorInfo: '#4176e6',
+  colorSuccess: '#22c55e', colorError: '#ec1313', colorWarning: '#f59e0b',
+  colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3,
+  colorBorder: C.border, colorBorderSecondary: C.border2, colorSplit: C.split,
+  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" } };
+
+// ── 假数据（全部内联字面量，一眼可辨示例） ──
+var KPI = [
+  { anchor: 'cc-kpi-delivered', label: '7 日交付 SPEC', value: '12' },
+  { anchor: 'cc-kpi-intervention', label: '人工介入率', value: '8.3%' },
+  { anchor: 'cc-kpi-success', label: 'run 成功率', value: '94.2%' },
+  { anchor: 'cc-kpi-cost', label: '单 SPEC 成本', value: '$12.48' }];
+// 车道词表 = shared.ts LANE_LABELS；结果词表/色 = outcomeBadge
+var LANES = { planner: '需求规划', 'spec-review': '需求评审', implementer: '实现',
+  'code-fix': '修复', verifier: '验证', judge: '质量裁决', 'code-review': '代码评审',
+  administrator: '运维管理', 'knowledge-distiller': '知识蒸馏' };
+var OUT = { done: ['成功', C.success], error: ['失败', C.error], running: ['运行中', C.link],
+  interrupted: ['已中断', C.warning], cancelled: ['已取消', C.warning],
+  'gate-blocked': ['门禁拦截', C.warning], superseded: ['已取代', C.text3] };
+var ROWS = [
+  { p: 'fenixd', s: 'add-command-center', lane: 'implementer', out: 'done', dur: '21分10秒', tk: '1,204,338', cost: '$9.42', t: '11-07 09:14', tr: '依赖唤醒' },
+  { p: 'fenixd', s: 'add-command-center', lane: 'verifier', out: 'running', dur: '8分32秒', tk: '402,119', cost: '$2.87', t: '11-07 09:41', tr: '依赖唤醒' },
+  { p: 'fenixd', s: 'add-alert-selfheal', lane: 'administrator', out: 'error', dur: '4分05秒', tk: '188,220', cost: '$1.36', t: '11-07 08:52', tr: '自愈' },
+  { p: 'beacon-web', s: 'add-spec-list-mobile-style', lane: 'code-review', out: 'done', dur: '47分34秒', tk: '967,514', cost: '$7.21', t: '11-06 23:36', tr: '定时' },
+  { p: 'beacon-web', s: 'add-spec-list-mobile-style', lane: 'code-fix', out: 'done', dur: '12分02秒', tk: '311,874', cost: '$2.43', t: '11-06 22:58', tr: '审查发现' },
+  { p: 'fenixd', s: 'add-spec-title-promotion-gate', lane: 'planner', out: 'interrupted', dur: '15分41秒', tk: '512,003', cost: '$3.98', t: '11-06 19:59', tr: '手动' },
+  { p: 'drift-ml', s: 'add-distill-run-work-summary', lane: 'knowledge-distiller', out: 'done', dur: '6分18秒', tk: '155,431', cost: '$1.12', t: '11-06 16:29', tr: '定时' },
+  { p: 'fenixd', s: 'redesign-dashboard-v2-ui-mobile', lane: 'judge', out: 'gate-blocked', dur: '3分27秒', tk: '98,760', cost: '$0.74', t: '11-06 15:02', tr: '依赖唤醒' },
+  { p: 'potplayer-base', s: 'add-win-vm-skill', lane: 'implementer', out: 'cancelled', dur: '—', tk: '—', cost: '—', t: '11-06 11:40', tr: null },
+  { p: 'fenixd', s: 'add-arbiter-backlog-sweep', lane: 'spec-review', out: 'done', dur: '2分51秒', tk: '84,209', cost: '$0.63', t: '11-06 10:11', tr: '—' }];
+
+function KpiCell(anchor, value, label) {
+  return h('div', { 'data-proto-id': anchor, style: { display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 90, padding: '2px 10px' } },
+    h('span', { className: 'num', style: { fontSize: 17, fontWeight: 700, color: C.text, lineHeight: 1.3 } }, value),
+    h('span', { style: { fontSize: 11, color: C.text2 } }, label));
+}
+function outcomeCell(v) { var b = OUT[v] || ['—', C.text3]; return h('span', { style: { color: b[1] } }, b[0]); }
+
+var columns = [
+  { title: '项目', dataIndex: 'p', render: function (v) { return v || '—'; } },
+  { title: 'SPEC', dataIndex: 's', render: function (v) { return v || '—'; } },
+  { title: '车道', dataIndex: 'lane', render: function (v) { return LANES[v] || v; } },
+  { title: '结果', dataIndex: 'out', render: function (v) { return outcomeCell(v); } },
+  { title: '耗时', dataIndex: 'dur', render: function (v) { return v; } },
+  { title: 'tokens', dataIndex: 'tk', render: function (v) { return h('span', { className: 'num' }, v); } },
+  { title: '成本', dataIndex: 'cost', render: function (v) { return h('span', { className: 'num' }, v); } },
+  { title: '开始时间', dataIndex: 't', render: function (v) { return h('span', { className: 'num' }, v); } },
+  { title: 'trigger', dataIndex: 'tr', render: function (v) { return v === null || v === undefined ? '—' : v; } }];
+
+function Page() {
+  var topbar = h('div', { 'data-proto-id': 'cc-topbar', className: 'topbar' },
+    h('span', { style: { fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' } }, 'Fenix Harness'),
+    h('span', { style: { fontSize: 18, fontWeight: 700, lineHeight: '24px', paddingLeft: 8, minWidth: 0 } }, '指挥中心'),
+    h('div', { 'data-proto-id': 'cc-filter-select', style: { marginLeft: 'auto' } },
+      h(Select, { size: 'small', style: { minWidth: 160 }, value: '', placeholder: '全部项目',
+        options: [{ value: '', label: '全部项目' }, { value: 'fenixd', label: 'fenixd' }, { value: 'beacon-web', label: 'beacon-web' }, { value: 'drift-ml', label: 'drift-ml' }] })));
+  var kpiBar = h('div', { 'data-proto-id': 'cc-kpi-bar', style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2, border: '1px solid ' + C.frame, borderRadius: 12, boxShadow: C.shadow, padding: '8px 10px', marginBottom: 12 } },
+    KpiCell('cc-kpi-delivered', KPI[0].value, KPI[0].label),
+    KpiCell('cc-kpi-intervention', KPI[1].value, KPI[1].label),
+    KpiCell('cc-kpi-success', KPI[2].value, KPI[2].label),
+    KpiCell('cc-kpi-cost', KPI[3].value, KPI[3].label),
+    h('div', { 'data-proto-id': 'cc-gateway-badge', style: { marginLeft: 10 } },
+      h(Tag, { color: 'green' }, '网关已配置 · 3 provider')));
+  var ledgerTable = h('div', { 'data-proto-id': 'cc-ledger-table' },
+    h(Table, { size: 'small', pagination: false, columns: columns, dataSource: ROWS, rowKey: function (r) { return r.p + '/' + r.t + '/' + r.s; } }));
+  return h('div', { style: { minHeight: '100vh' } }, topbar,
+    h('main', { style: { padding: '12px 16px 32px', maxWidth: 1400, margin: '0 auto' } },
+      h(Tabs, { defaultActiveKey: 'ledger', items: [
+        { key: 'org', label: '组织总览', children: h('div', { style: { padding: '48px 0', textAlign: 'center', color: C.text3, fontSize: 12.5 } }, '本轮原型仅「执行台账」页签为批注主体（组织总览见原大屏稿另议）') },
+        { key: 'pipeline', label: '交付流水线', children: h('div', { style: { padding: '48px 0', textAlign: 'center', color: C.text3, fontSize: 12.5 } }, '本轮原型仅「执行台账」页签为批注主体') },
+        { key: 'ledger', label: '执行台账', children: h('div', null, kpiBar, ledgerTable) }] })));
+}
+ReactDOM.createRoot(document.getElementById('root')).render(h(CP, { theme: THEME }, Page()));
+})();
+</script><script src="annotator.js" defer></script></body></html>

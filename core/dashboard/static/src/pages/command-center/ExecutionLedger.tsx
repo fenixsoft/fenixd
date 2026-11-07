@@ -11,6 +11,7 @@ import { Alert, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { commandCenterKpi, commandCenterLedger } from '@/services/dashboard';
 import type { CommandCenterKpi, CommandCenterLedger, CommandCenterLedgerRow } from '@/services/dashboard';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { useScreenResource } from './useScreen';
 import { ScreenErrorPlaceholder, ScreenLoading } from './ScreenStates';
 import {
@@ -20,6 +21,7 @@ import {
   TEXT_MAIN,
   TEXT_SUB,
   fmtDurationSeconds,
+  fmtMetric,
   fmtRate,
   fmtShortTs,
   fmtTokens,
@@ -46,17 +48,21 @@ function KpiCell({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 /** KPI 条：四指标 + 网关状态徽标（配置态派生，零探测）。初载（loading 且
- * 无 data）显加载占位——「—」专指分母零/不可计价口径，不冒充加载态。 */
+ * 无 data）显加载占位——「—」专指分母零/不可计价口径，不冒充加载态。
+ * 移动分支（prototype/m-ledger.html 定稿 2026-11-07）：单 Bento 磁贴内 2×2
+ * 网格（无内分隔线，批注定稿）+ 网关徽标跨列行贴底；桌面保持单条四格。 */
 function KpiBar({
   kpi,
   kpiLoading,
   kpiError,
   onRetry,
+  isMobile,
 }: {
   kpi: CommandCenterKpi | null;
   kpiLoading: boolean;
   kpiError: string;
   onRetry: () => void;
+  isMobile?: boolean;
 }) {
   if (kpiError && !kpi) {
     return (
@@ -109,6 +115,52 @@ function KpiBar({
     );
   }
   const gh = kpi?.gateway_health;
+  const gatewayTag = gh ? (
+    <Tag color={gh.configured ? 'green' : 'default'}>
+      网关{gh.configured ? '已配置' : '未配置'}
+      {gh.configured ? ` · ${gh.providers} provider` : ''}
+    </Tag>
+  ) : null;
+  if (isMobile) {
+    return (
+      <div>
+        <div
+          data-proto-id="cc-m-kpi-grid"
+          style={{
+            border: `1px solid ${CARD_FRAME_BORDER}`,
+            borderRadius: 12,
+            boxShadow: CARD_FRAME_SHADOW,
+            overflow: 'hidden',
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            marginBottom: 8,
+          }}
+        >
+          {(
+            [
+              ['cc-m-kpi-delivered', kpi ? fmtMetric(kpi.delivered_specs_7d) : '—', '7 日交付 SPEC'],
+              ['cc-m-kpi-intervention', kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—', '人工介入率'],
+              ['cc-m-kpi-success', kpi ? fmtRate(kpi.run_success_rate_7d) : '—', 'run 成功率'],
+              ['cc-m-kpi-cost', kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—', '单 SPEC 成本'],
+            ] as Array<[string, string, string]>
+          ).map(([anchor, value, label]) => (
+            <div key={anchor} data-proto-id={anchor} style={{ padding: '10px 12px' }}>
+              <div style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.2, fontVariantNumeric: 'tabular-nums' }}>
+                {value}
+              </div>
+              <div style={{ fontSize: 11, color: TEXT_SUB, marginTop: 2 }}>{label}</div>
+            </div>
+          ))}
+          <div data-proto-id="cc-m-gateway-badge" style={{ gridColumn: '1 / -1', padding: '6px 12px' }}>
+            {gatewayTag}
+          </div>
+        </div>
+        {kpiError ? (
+          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`KPI 刷新失败：${kpiError}`} />
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div>
       <div
@@ -125,18 +177,11 @@ function KpiBar({
           marginBottom: 12,
         }}
       >
-        <KpiCell label="7 日交付 SPEC" value={kpi ? kpi.delivered_specs_7d : '—'} />
+        <KpiCell label="7 日交付 SPEC" value={kpi ? fmtMetric(kpi.delivered_specs_7d) : '—'} />
         <KpiCell label="人工介入率" value={kpi ? fmtRate(kpi.human_intervention_rate_7d) : '—'} />
         <KpiCell label="run 成功率" value={kpi ? fmtRate(kpi.run_success_rate_7d) : '—'} />
         <KpiCell label="单 SPEC 成本" value={kpi ? fmtUsd(kpi.cost_per_spec_7d) : '—'} />
-        {gh ? (
-          <span style={{ marginLeft: 10 }}>
-            <Tag color={gh.configured ? 'green' : 'default'}>
-              网关{gh.configured ? '已配置' : '未配置'}
-              {gh.configured ? ` · ${gh.providers} provider` : ''}
-            </Tag>
-          </span>
-        ) : null}
+        {gh ? <span style={{ marginLeft: 10 }}>{gatewayTag}</span> : null}
       </div>
       {/* 后台刷新失败保留旧数据（与台账/网格/流水线同口径），内联提示不阻塞视图 */}
       {kpiError ? (
@@ -188,6 +233,7 @@ export default function ExecutionLedger({
   /** 裁决收件箱页签移除后无生产者，保留参数位（默认 0=不触发 KPI 重拉） */
   kpiTick?: number;
 }) {
+  const isMobile = useIsMobile();
   const kpi = useScreenResource<CommandCenterKpi>(
     () => commandCenterKpi(project || undefined),
     active,
@@ -244,6 +290,60 @@ export default function ExecutionLedger({
         />
       );
     }
+    if (isMobile) {
+      // 移动端直接行（prototype/m-ledger.html 定稿 2026-11-07）：九列转三行
+      // 结构（SPEC+结果色字 / 项目·车道·trigger / 耗时·tokens·成本·开始时间），
+      // 发丝线分隔、无卡壳；null 显「—」；不分页（后端恒 ≤50 行）。桌面表格
+      // 形态不变。
+      const rows = ledger.data.rows;
+      return (
+        <div>
+          {ledger.error ? (
+            <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`执行台账刷新失败：${ledger.error}`} />
+          ) : null}
+          <div data-proto-id="cc-m-ledger-rows">
+            {rows.length ? (
+              rows.map((r, i) => {
+                const badge = outcomeBadge(r.outcome);
+                return (
+                  <div
+                    key={ledgerRowKeys.get(r) ?? `row-${i}`}
+                    style={{ padding: '10px 0', borderTop: i ? '1px solid rgba(0,0,0,0.08)' : undefined }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {r.spec || '—'}
+                      </span>
+                      <span style={{ color: badge.color, fontSize: 12.5, fontWeight: 600, flexShrink: 0 }}>{badge.text}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: TEXT_SUB, marginTop: 3 }}>
+                      {[r.project || '—', laneLabel(String(r.lane ?? '')) || '—', r.trigger ?? '—'].join(' · ')}
+                    </div>
+                    <div
+                      style={{ fontSize: 12, color: TEXT_SUB, marginTop: 3, fontVariantNumeric: 'tabular-nums' }}
+                    >
+                      {[fmtDurationSeconds(r.duration), `${fmtTokens(r.tokens)} tokens`, fmtUsd(r.cost), fmtShortTs(r.started_at)].join(' · ')}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ padding: '8px 0', fontSize: 12.5, color: TEXT_SUB }}>暂无数据</div>
+            )}
+          </div>
+        </div>
+      );
+    }
     return (
       <div>
         {ledger.error ? (
@@ -264,7 +364,7 @@ export default function ExecutionLedger({
 
   return (
     <div>
-      <KpiBar kpi={kpi.data} kpiLoading={kpi.loading} kpiError={kpi.error} onRetry={kpi.retry} />
+      <KpiBar kpi={kpi.data} kpiLoading={kpi.loading} kpiError={kpi.error} onRetry={kpi.retry} isMobile={isMobile} />
       {ledgerView()}
     </div>
   );
