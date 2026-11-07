@@ -815,7 +815,7 @@ export default function ActivitiesPage() {
           数据不同源不混报），处置链页签激活时不展示 */}
       {activeTab !== 'chain' && streamDown ? (
         <div style={{ marginBottom: 16 }}>
-          <Card styles={{ body: isMobile ? { padding: 12 } : undefined }}>
+          <Card styles={{ body: isMobile ? { padding: '12px 4px' } : undefined }}>
             <Typography.Text type="warning">
               实时刷新已断开：页面数据可能不是最新，正在尝试重连
             </Typography.Text>
@@ -824,7 +824,7 @@ export default function ActivitiesPage() {
       ) : null}
       {activeTab !== 'chain' && error ? (
         <div style={{ marginBottom: 16 }}>
-          <Card styles={{ body: isMobile ? { padding: 12 } : undefined }}>
+          <Card styles={{ body: isMobile ? { padding: '12px 4px' } : undefined }}>
             {/* fix 2ca9c5ff7be6: 按失败来源区分文案（运维记录 / 人工告警），避免误导失败范围 */}
             <div style={{ color: '#ff4d4f' }}>
               {error.source === 'alerts' ? '人工告警加载失败' : '运维记录加载失败'}：{error.message}
@@ -837,10 +837,10 @@ export default function ActivitiesPage() {
           自动运维/告警状态本就在宿主页，重挂零成本 */}
       {/* 卡体顶 24px 归零（2026-11-05 用户指令「页签上方空白减少 24px」）：
           该空白恰为 Card body 默认 padding-top（实测页头带 56→页签栏 80），
-          页签栏贴卡体顶沿即可。移动端左右 24→12（2026-11-07 用户指令「整个
-          运维页面的左右边距都太宽了」：antd body 缺省 24 + 外层 12 = 每侧
-          36px 挤占 390px 视口，收窄后每侧 24px）；桌面 24px 惯例不变 */}
-      <Card variant="borderless" styles={{ body: isMobile ? { padding: '0 12px 12px' } : { paddingTop: 0 } }}>
+          页签栏贴卡体顶沿即可。移动端每侧 16px（2026-11-07 用户指令两段收敛：
+          「左右边距太宽」24→12 后「改到 16px」——antd body 缺省 24 + 外层
+          容器 12，body 左右收到 4px 使每侧合计 16px）；桌面 24px 惯例不变 */}
+      <Card variant="borderless" styles={{ body: isMobile ? { padding: '0 4px 12px' } : { paddingTop: 0 } }}>
         <Tabs
           data-testid="view-mode-switch"
           activeKey={activeTab}
