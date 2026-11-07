@@ -585,8 +585,14 @@ def _run_meta_cached(p: Path, stat, now: float,
             and status_raw in _RUN_TERMINAL_STATUS_MAP.values()
             and (now - stat.st_mtime) < _RUN_METRIC_GRACE_SECONDS):
         provisional_until = now + _RUN_METRIC_GRACE_SECONDS
-    if len(_RUN_META_CACHE) > _RUN_META_CACHE_MAX:
-        _RUN_META_CACHE.clear()
+    # code-review item 150aeb1f50c4：超限改为逐出最早写入条目（dict 保序
+    # FIFO），不再整体 clear()——与 config_admin.read_effective_config 同款
+    # 演进（item 2ee7175b2aeb）：缓存键含 mtime_ns，run 产物每次追加事件旧键
+    # 即失效但永不清理，长驻 daemon 下触及上限全清会让下一轮 get_runs 对全部
+    # run 现算（尾读 + _first_run_event_ts 扫头部 + json.loads），轮询热路径
+    # 周期性重算刺峰；`>=` 判定使缓存稳态收敛于 _RUN_META_CACHE_MAX 条
+    if len(_RUN_META_CACHE) >= _RUN_META_CACHE_MAX:
+        _RUN_META_CACHE.pop(next(iter(_RUN_META_CACHE)), None)
     _RUN_META_CACHE[key] = (meta, provisional_until)
     return meta
 
