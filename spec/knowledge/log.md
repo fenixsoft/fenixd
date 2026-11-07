@@ -116,3 +116,4 @@
 ## [2026-11-07 00:31 UTC+8] distill | add-spec-list-mobile-style（第 1 轮，自动提交落库）
 ## [2026-11-07 21:32 UTC+8] fold | dsh-settings-dock-plugin-1107.md 折叠入库
 ## [2026-11-07 21:36 UTC+8] fold | dsh-settings-dock-plugin-1107.md 折叠入库
+## [2026-11-07 21:40 UTC+8] fold | dsh-web-stale-asset-reconnect-loop-1107.md 折叠入库
