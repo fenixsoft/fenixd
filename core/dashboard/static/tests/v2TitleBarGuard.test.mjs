@@ -63,14 +63,14 @@ test('帮助页白底变体：variant="white" + .v2-white 规则（仅改底色�
   const less = readV2('v2.less');
   assert.match(less, /\.v2-page\.v2-white[\s\S]{0,120}background:\s*#ffffff/, '.v2-white 应改页底纯白');
   // white 变体与 overview/projects 满宽变体的区分点：1400px 居中列保留。
-  // 2026-11-07 用户指令「帮助页面的左右间距减少到 16px」后，移动档覆写
-  // .v2-inner 左右为 1px（layout 内容区 15px 内嵌 + 1 = 每侧 16px）成为
-  // 定稿契约——守卫随之钉住该移动覆写存在且仅作用于移动断点；桌面居中列
-  // 24px 内边距不得被该变体触碰
+  // 2026-11-07 用户指令两段收敛（「减少到 16px」→「减少到 0px」）后，移动档
+  // 定稿契约：.v2-inner 负 margin 抵消 layout 内容区 15px 内嵌（左右间距 0）
+  // + 文档磁贴去边框/圆角/阴影成纯阅读面——守卫钉住全幅三件套存在且仅作用
+  // 于移动断点；桌面居中列 24px 与磁贴形态不得被该变体触碰
   assert.match(
     less,
-    /@media \(max-width: 767\.98px\) \{[\s\S]*?\.v2-page\.v2-white \.v2-inner \{[\s\S]*?padding: 16px 1px 32px;[\s\S]*?\}/,
-    '.v2-white 移动档应覆写 .v2-inner 左右 1px（15px 内嵌 + 1 = 每侧 16px）',
+    /@media \(max-width: 767\.98px\) \{[\s\S]*?\.v2-page\.v2-white \.v2-inner \{[\s\S]*?padding: 16px 0 32px;[\s\S]*?margin: 0 -15px;[\s\S]*?\}[\s\S]*?\.v2-page\.v2-white \.v2-bento\.v2-doc \{[\s\S]*?border: none;[\s\S]*?\}/,
+    '.v2-white 移动档应全幅（padding 16px 0 32px + margin 0 -15px + 文档磁贴去框）',
   );
   // 顶层（无缩进）即桌面档规则——覆写只许活在移动断点内
   assert.ok(

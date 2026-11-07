@@ -186,11 +186,19 @@
   .v2-page.v2-projects .v2-inner {
     padding: 16px 14px 32px;
   }
-  /* 帮助变体移动边距（2026-11-07 用户指令「左右间距减少到 16px」）：白底
-     变体文档磁贴每侧 14→1——layout 内容区固定 15px 内嵌 + 1 = 每侧合计
-     16px（磁贴边框即内容边界，磁贴内 28px 阅读内边距不动）；桌面 24px 不变 */
+  /* 帮助变体移动边距（2026-11-07 用户指令两段收敛：先「减少到 16px」后
+     「减少到 0px」）：负 margin 抵消 layout 内容区固定 15px 内嵌（16px 定裁
+     的 1px 内边距随之归零），文档磁贴去边框/圆角/阴影成纯阅读面（白底白磁
+     贴全幅后框线只剩视觉噪声，磁贴内 28px 阅读内边距不动）；桌面磁贴形态
+     与 24px 居中列不变 */
   .v2-page.v2-white .v2-inner {
-    padding: 16px 1px 32px;
+    padding: 16px 0 32px;
+    margin: 0 -15px;
+  }
+  .v2-page.v2-white .v2-bento.v2-doc {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
   }
 }
 
