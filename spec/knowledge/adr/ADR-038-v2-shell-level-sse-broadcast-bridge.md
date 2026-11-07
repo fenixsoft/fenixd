@@ -1,7 +1,8 @@
 # ADR-038：v2 事件架构——壳级 SSE 广播桥 + onEvent 重拉，增量数据流自管 EventSource
 
 date: 2026-09-05
-status: accepted
+status: retired
+Retired: 2026-11-08 壳级 SSE 广播桥随 amis 壳退役删除，无取代裁定
 
 ## Context
 

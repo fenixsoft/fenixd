@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-11-06 18:13 UTC+8
+> 最后更新：2026-11-08 00:35 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建、按需生成类任务、协作拓扑派生/跨项目聚合端点与指挥中心聚合。
 
@@ -12,7 +12,6 @@
 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（端口接管豁免 unit/tmux 两支/看门狗、双向验证铁律、承载形态双轨重启协议 systemctl/respawn-window、陈旧进程判读） | 2026-11-06 18:13 |
 | [dashboard-push-restart](dashboard-push-restart.md) | pushed 终态自动重启 dashboard（内置 hook/去抖/unit 缺席静默跳过/逃生键/tmux 托管盲态与收口方向） | 2026-11-06 18:13 |
 | [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-07 02:25 |
-| [v2-sse-bridge](v2-sse-bridge.md) | v2 SSE 桥（已随壳层退役） | 2026-10-03 04:59 |
 | [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher | 2026-10-03 04:59 |
 | [dashboard-log-offset-index](dashboard-log-offset-index.md) | 日志偏移索引 | 2026-10-03 04:59 |
 | [dashboard-spec-summary-index](dashboard-spec-summary-index.md) | SPEC 摘要索引 | 2026-10-03 04:59 |
@@ -25,10 +24,19 @@
 | [dashboard-live-session](dashboard-live-session.md) | 实时会话视图 | 2026-10-03 04:59 |
 | [session-composer](session-composer.md) | 会话输入控件（补全/草稿/键盘适配） | 2026-10-03 04:59 |
 | [project-architecture-diagram](project-architecture-diagram.md) | 项目架构图（archify 按需生成） | 2026-10-04 04:57 |
-| [v2-data-adapters](v2-data-adapters.md) | v2 数据适配层（已随壳层退役） | 2026-10-03 04:59 |
-| [v2-sdk-vendor](v2-sdk-vendor.md) | v2 vendored SDK（已随壳层退役） | 2026-10-03 04:59 |
-| [v2-shell-router](v2-shell-router.md) | v2 shell 与 hash 路由（已随壳层退役） | 2026-10-03 04:59 |
-| [v2-legacy-coexist](v2-legacy-coexist.md) | v2 与旧版并存机制（已随壳层退役） | 2026-10-03 04:59 |
 | [topology-derivation](topology-derivation.md) | SPEC 协作拓扑派生端点（七阶段角色归列、KPI 五项口径、重试边仅连 attempt 链、多轮验证逐轮、交付终点按持久确证自适应、归档降级骨架） | 2026-10-30 23:11 |
 | [collab-graph-aggregation](collab-graph-aggregation.md) | 跨项目角色级协作图谱聚合端点（复用 derive_topology 零第二套映射、project 筛选、下钻明细内嵌、归档计 KPI 不进图） | 2026-10-30 23:11 |
 | [command-center-aggregation](command-center-aggregation.md) | 指挥中心后端聚合（KPI 四指标 7 日窗口径、组织网格五线静态花名册与汇报线、流水线五列桶映射、台账 50 条、收件箱只读装配复用 alert-resolve） | 2026-11-04 16:55 |
+
+> 退役：2026-11-08 v2 amis 壳域五能力页（原 v2-shell-router / v2-data-adapters / v2-sdk-vendor / v2-sse-bridge / v2-legacy-coexist）已随 add-knowledge-anchor-lint-and-prune 退役收口删除，历史见 spec/archive/2026-09-04-v2-shell-hash-router、spec/archive/2026-09-04-v2-vendor-amis-sdk 等 2026-09-04/05 系列归档与 git 历史；tests/v2 冒烟基建与 v2_dev_server 现役，不在本退役批范围。
+
+## 症状速查
+
+| 症状签名 | 能力页 |
+| --- | --- |
+| dsh web「重新连接中」重连环、WS 反复断连（close 4000 是下游症状勿查传输层） | [dsh-web-connection-baseline](../dashboard-frontend/dsh-web-connection-baseline.md)（dashboard-frontend 域） |
+| 嵌入态 hash 深链丢失/挂载路径漂移（同源前缀代理挂载下） | [dashboard-embed-mount](../dashboard-frontend/dashboard-embed-mount.md)（dashboard-frontend 域） |
+| 前端 rebuild 后改动不生效（拿到旧 bundle 验证新改动） | [page-container-chrome](../dashboard-frontend/page-container-chrome.md)（dashboard-frontend 域；hash goto 不重载文档，验证须整页 reload） |
+| SSE 断开空窗/增量停摆 | [dashboard-sse-refresh](dashboard-sse-refresh.md)（30s 心跳兜底刷新、重连恢复增量） |
+| dashboard 端口被占/实例疑似陈旧僵死 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md)（陈旧进程判读、双轨重启协议） |
+

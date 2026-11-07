@@ -12,6 +12,11 @@
   文件不可读盘面已变）进体检报告
   待人工。报告落 ``.fenix/knowledge_audit_report.md``，含规模趋势：总行数相对
   上次体检增长超 +10% 显式标「需精简」并给候选页清单。
+- **病灶⑥锚点悬空**（add-knowledge-anchor-lint-and-prune 1.5）：能力页
+  「代码锚点」段内悬空路径与行号形态违例，消费
+  ``core.knowledge.check_anchor_references`` 进报告「待人工/定向转写」档——
+  不入 validate_knowledge 硬门（防一处陈旧锚点阻塞全树折叠校验）、不机械自删
+  （修复需语义判断，删除丢信息）。
 
 挂载：``fenixd.py`` 主循环 300s 周期检查点调 ``knowledge_daily_check``（与自动
 归档同款挂载）；门控 ``knowledge.audit_enabled``
@@ -111,7 +116,7 @@ _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 _GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
 _ADR_NAME_RE = re.compile(r"ADR-(\d{3})")
-_STATUS_WORD_RE = re.compile(r"\b(accepted|superseded)\b", re.IGNORECASE)
+_STATUS_WORD_RE = re.compile(r"\b(accepted|superseded|retired)\b", re.IGNORECASE)
 
 
 # ── 状态文件（自然日防重 + 规模趋势基线） ────────────────────────────────
@@ -1104,7 +1109,9 @@ def _adr_entry_status(text: str) -> Optional[str]:
     header = text.split("## Context", 1)[0]
     if re.search(r"^Superseded by:", header, re.MULTILINE | re.IGNORECASE):
         return "superseded"
-    m = re.search(r"^status:\s*(accepted|superseded)\b", header, re.MULTILINE | re.IGNORECASE)
+    m = re.search(
+        r"^status:\s*(accepted|superseded|retired)\b", header, re.MULTILINE | re.IGNORECASE
+    )
     return m.group(1).lower() if m else None
 
 
@@ -1129,7 +1136,7 @@ def _adr_status_slot(ln: str) -> Optional[tuple[int, int, str]]:
     if "|" in ln:
         offset = 0
         for col in ln.split("|"):
-            if col.strip().lower() in ("accepted", "superseded"):
+            if col.strip().lower() in ("accepted", "superseded", "retired"):
                 m = _STATUS_WORD_RE.search(col)
                 return (offset + m.start(), offset + m.end(), m.group(1).lower())
             offset += len(col) + 1
@@ -1589,6 +1596,7 @@ def run_audit(
         "no_conflict": [],
         "exempt": [],
         "superseded": [],
+        "anchor_findings": [],
     }
 
     # 本批已纠偏页集合（2.3）：机械段提交涉及的页 + 语义段转写提交涉及的页。
@@ -1610,6 +1618,22 @@ def run_audit(
         scan = _scan_pages(project_root)
         scan["adr"] = _scan_adrs(project_root)
         semantic_all = _scan_semantic(scan["pages"])
+
+        # 病灶⑥锚点悬空（add-knowledge-anchor-lint-and-prune 1.5）：锚点检查
+        # 独立于 validate_knowledge 硬门（design D2，不阻塞折叠校验），此处只
+        # 采集进报告「待人工/定向转写」档——MUST NOT 机械自删悬空锚点行（修复
+        # 需语义判断定位新位置，删除丢信息）。fail-open：函数缺席（旧 core
+        # 版本共存窗）或单点异常不掀翻整轮体检。
+        anchor_fn = getattr(core, "check_anchor_references", None)
+        anchor_findings: list = []
+        if callable(anchor_fn):
+            try:
+                anchor_findings = list(anchor_fn(project_root))
+            except Exception as e:  # noqa: BLE001 — 病灶⑥采集失败不阻断体检
+                log.warning("knowledge", f"锚点存活检查失败（fail-open）：{e}")
+        if anchor_findings:
+            counts["pending_manual"] += len(anchor_findings)
+            details["anchor_findings"] = anchor_findings
 
         # 台账提前加载（1.1 解冻点）：escalated 指纹在切片前从候选中剔除——
         # 切片 semantic_all[:MAX_SEMANTIC_RUNS] 已定，循环内 continue 无法让
@@ -2341,6 +2365,13 @@ def _render_report(
             f"- 仲裁入口：`{ARBITRATION_RELPATH}`"
             f"（登记 fingerprint/decision/decided_at/note，框架检查点自动消费）"
         )
+        lines.append("")
+    # 病灶⑥独立节（add-knowledge-anchor-lint-and-prune 1.5）：悬空/行号违例
+    # 逐条列明页与路径，处置档位「待人工/定向转写」，计数已并入待人工总计数
+    if details.get("anchor_findings"):
+        lines.append("## 病灶⑥：锚点悬空/行号违例（待人工/定向转写）")
+        lines.append("")
+        lines.extend(f"- {item}" for item in details["anchor_findings"])
         lines.append("")
     for title, key in (
         ("机械自修明细", "fixed"),

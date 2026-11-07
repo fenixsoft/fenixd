@@ -1,4 +1,4 @@
-<!-- knowledge: capability=activities-page rev=3 sources=spec/archive/2026-09-08-add-v3-activities-page,spec/archive/2026-09-10-add-activities-pagination,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md -->
+<!-- knowledge: capability=activities-page rev=4 sources=spec/archive/2026-09-08-add-v3-activities-page,spec/archive/2026-09-10-add-activities-pagination,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/changes/add-knowledge-anchor-lint-and-prune -->
 
 # 运维记录页
 
@@ -16,9 +16,15 @@
 - 时间线启用前端分页：每页 15 条，默认仅渲染最新 15 条，其余记录翻页时再渲染（数据仍全量拉取）。
 - 数据为空时展示「暂无运维记录」空态而非空白；页面不出现「建设中」占位内容。
 
+## 代码锚点
+
+- 主实现：`core/dashboard/static/src/pages/activities/index.tsx`
+- 消费方：`core/dashboard/static/src/app.tsx`（`/activities` 路由注册与菜单项）
+
 ## 溯源
 
 - 2026-09-08 add-v3-activities-page（spec/archive/2026-09-08-add-v3-activities-page） — 建立 /activities 跨项目聚合视图（初版：项目页签 + 条数徽标 + 分段展示）与处置记录时间线、未处理置顶语义
 - 2026-09-10 add-activities-pagination（spec/archive/2026-09-10-add-activities-pagination） — 改为全局合并时间线（每卡保留项目 Tag），新增自动运维/人工告警 Radio 双视图与每页 15 条前端分页
 - 2026-11-05 dashboard-ops-tabs-chain-merge（spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md） — Radio 双视图随处置链并入改版为三页签（处置链/自动运维记录/告警记录，默认处置链），新增 `?tab=` 预选与 `/chain` 重定向、标题栏筛选槽单项目聚合 Select、SSE 横幅两路罩面
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 补代码锚点段（高频消费页锚点范例批次）：三页签实现位 activities/index.tsx、路由注册消费方 app.tsx，路径逐一盘上核验
 - 已随 2026-09-10-add-activities-pagination 废除：项目维度页签切换（含「全部」页签与各处条数徽标）

@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-06 17:49 UTC+8
+> 最后更新：2026-11-08 00:35 UTC+8
 
 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力，加存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律。归档 SPEC 承担历史职责，真相源只装当前生效的业务规则，两者以溯源链接互指。本域能力页清单如下。
 
@@ -7,7 +7,8 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [knowledge-atlas-directory](knowledge-atlas-directory.md) | 真相源目录契约与能力页格式（marker 机器接口、溯源链接、150 行硬顶） | 2026-11-03 15:39 |
+| [knowledge-atlas-directory](knowledge-atlas-directory.md) | 真相源目录契约与能力页格式（marker 机器接口、溯源链接、150 行硬顶、可选代码锚点段、退役即删不墓碑） | 2026-11-08 00:35 |
+| [knowledge-retirement-runbook](knowledge-retirement-runbook.md) | 能力退役 runbook（前置盘点、八步 checklist：代码路由删除→镜像指令收口→删页→域表收口注记→ADR 翻 retired→index 计数→log 登记→复核 grep） | 2026-11-08 00:35 |
 | [knowledge-consumption-discipline](knowledge-consumption-discipline.md) | 车道/CLAUDE.md/skill 三面 index-first 消费指路（条件 MUST、存在性条件、`_inbox/` 回填预告）与 index 简介增厚质量要求 | 2026-11-03 15:39 |
 | [knowledge-distill-pipeline](knowledge-distill-pipeline.md) | 归档触发蒸馏管线（单点挂载、合并语义、收尾校验与自动提交、pending 台账与重启续跑、spawn 拒识分类误归因面、产物心跳保活、放弃清理半径、批耗时口径与 run 观测面现状——无改动文件清单） | 2026-11-06 17:49 |
 | [knowledge-distill-run-summary](knowledge-distill-run-summary.md) | 蒸馏批时间轴工作总结（终态 result 行 result 字段承载 agent 自述、DONE 标记剥离锚 fail-open、2000 字符截断、折叠子 run 与失败路径不携带） | 2026-11-06 17:49 |
@@ -18,5 +19,5 @@
 | [knowledge-backfill](knowledge-backfill.md) | 存量归档批量回填车道（域骨架自举、双维度台账断点、批间校验提交、回填期单写者） | 2026-10-05 03:38 |
 | [knowledge-backfill-chain-aggregation](knowledge-backfill-chain-aggregation.md) | 回填聚合蒸馏语义（链索引、能力一次成文最终态、台账 v2、增量排队） | 2026-10-05 03:38 |
 | [knowledge-prehistoric-bootstrap](knowledge-prehistoric-bootstrap.md) | 史前能力复原（git 考古求差、史前页形态、marker origin 契约） | 2026-10-05 03:38 |
-| [knowledge-audit](knowledge-audit.md) | 周期 audit 体检（五类病灶、机械自修/语义转写分级处置、疑点台账与内容豁免、二轮升级、超龄 disputed 注记、仲裁清单当日消费、规模趋势） | 2026-10-07 03:55 |
+| [knowledge-audit](knowledge-audit.md) | 周期 audit 体检（六类病灶、机械自修/语义转写分级处置、疑点台账与内容豁免、二轮升级、超龄 disputed 注记、仲裁清单当日消费、规模趋势） | 2026-11-08 00:35 |
 | [knowledge-graph](knowledge-graph.md) | Graphify 关系图每日生成（fail-open、探测端点点亮、graph/ 三件套） | 2026-10-05 03:02 |

@@ -1,7 +1,8 @@
 # ADR-327：v2 商业化界面例外域并存架构
 
 date: 2026-11-05
-status: accepted
+status: retired
+Retired: 2026-11-08 v2 商业化例外域并存架构主体已退役（2026-11-07），无取代裁定
 
 ## Context
 

@@ -1,7 +1,8 @@
 # ADR-039：v2 数据分层——字段逻辑收口 Adapters 纯函数层，页面 JSON 不做字段逻辑
 
 date: 2026-09-05
-status: accepted
+status: retired
+Retired: 2026-11-08 Adapters 纯函数层随 amis 壳退役删除，无取代裁定
 
 ## Context
 

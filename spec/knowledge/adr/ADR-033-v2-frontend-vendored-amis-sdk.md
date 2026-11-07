@@ -1,7 +1,8 @@
 # ADR-033：v2 前端栈 = vendored AMIS SDK + JSON DSL 页面
 
 date: 2026-09-04
-status: accepted
+status: retired
+Retired: 2026-11-08 v2 amis 壳与 JSON DSL 页面已随壳层整体退役删除，无取代裁定
 
 ## Context
 
