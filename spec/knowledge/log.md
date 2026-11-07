@@ -122,3 +122,5 @@
 ## [2026-11-07 22:03 UTC+8] fold | ops-mobile-nested-bento-removal.md 折叠入库
 ## [2026-11-07 22:08 UTC+8] fold | prolayout-header-actions-minwidth-ratchet.md 折叠入库
 ## [2026-11-07 22:12 UTC+8] distill | fix-dashboard-verdict-fallback（第 1 轮，自动提交落库，折叠入库 6 条）
+## [2026-11-08 00:22 UTC+8] retire | v2-ui-domain-retired-1107 折叠入库（含 index 回填节迁出与目录契约 rev=5 改版）
+## [2026-11-08 00:04 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 3 / 过 8）
