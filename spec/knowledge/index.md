@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-07 21:53 UTC+8
+> 最后更新：2026-11-07 22:03 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -27,7 +27,7 @@
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-06 18:13 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题、SPEC 列表整行点击进详情与 SPEC 详情标题栏中文标题下方行（贴排、两列结构标签簇随块居中、移动端只显标题与返回箭头隐藏）、SPEC 列表移动端卡片流与筛选编排改版（<768px 磁贴卡流七行层级、状态 chips 黑底白字、筛选底部 Drawer、加载更多分页与内容区背景白底单源）、dsh 设置 UI 壳层契约与设置停靠插件（settings 弹窗壳结构与稳定钩子面、useModalLayer 语义边界、停靠页面化三规）、dsh web 连接基线与重连环判读（浏览器 API 基线双门槛、低版本恒「重新连接中」症状签名、tcpdump 取证）、dsh web 对话框宽表横向滚动治理（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、margin 夹紧、哈希类失配回退、活站验证配方）、v2 运维页页面级规则独立成页（v2-ops-page：三页签 `?tab=` 预选、五项统计标题栏副标题、三路失败隔离、移动端忌卡中卡与去嵌套磁贴直接行呈现）。 | 53 | 2026-11-07 21:53 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题、SPEC 列表整行点击进详情与 SPEC 详情标题栏中文标题下方行（贴排、两列结构标签簇随块居中、移动端只显标题与返回箭头隐藏）、SPEC 列表移动端卡片流与筛选编排改版（<768px 磁贴卡流七行层级、状态 chips 黑底白字、筛选底部 Drawer、加载更多分页与内容区背景白底单源）、dsh 设置 UI 壳层契约与设置停靠插件（settings 弹窗壳结构与稳定钩子面、useModalLayer 语义边界、停靠页面化三规）、dsh web 连接基线与重连环判读（浏览器 API 基线双门槛、低版本恒「重新连接中」症状签名、tcpdump 取证）、dsh web 对话框宽表横向滚动治理（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、margin 夹紧、哈希类失配回退、活站验证配方）、v2 运维页页面级规则独立成页（v2-ops-page：三页签 `?tab=` 预选、五项统计标题栏副标题、三路失败隔离、移动端忌卡中卡与去嵌套磁贴直接行呈现）、顶栏动作区 min-width 棘轮锁独立成页（global.less 单源恒零化勿删、SPA 切页残留锁宽挤压标题签名与排查定式）。 | 54 | 2026-11-07 22:03 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（unit 承载接管豁免与承载形态双轨重启协议）、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-06 18:13 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-07 21:43 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
@@ -186,4 +186,10 @@ dashboard-frontend / ui-prototyping 两域三页：新建 v2-ops-page——v2 �
 重绘版、运维关键行为两行改写（四项统计条→五项统计副标题、自愈记录占位→真实
 端点三页签）；prototype-annotation-loop 新增控制台噪音判读条款——vendor React
 DEV「数组 key」警告为非缺陷信号、生产构建无 DEV React、排查先对照旧版原型勿据
-其返工）。
+其返工）；prolayout-header-actions-minwidth-ratchet 已折叠入库（2026-11-07
+22:03，spread 至 dashboard-frontend 一域一页：新建
+prolayout-header-actions-minwidth-ratchet 页——顶栏动作区 min-width 棘轮自锁
+（pro-layout ActionsContent ResizeObserver 实测回写、锁宽后观测元素同步撑宽
+只升不降）、触发链与症状签名（filters 槽宽组件 SPA 残留、390px 标题竖排挤压、
+直连加载正常）、global.less 单源恒零化两行勿删、顶栏挂宽组件零额外处理、
+分态复现与逐元素量宽排查定式）。
