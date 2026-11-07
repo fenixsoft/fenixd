@@ -1,6 +1,7 @@
 # merge-back 归档残留自愈与顺延链周期消费者
 <!-- knowledge: capability=mergeback-archive-residue-selfheal rev=1
      sources=spec/archive/2026-10-13-evo-mergeback-archive-residue-selfheal -->
+<!-- disputed: since=2026-10-14 fps=efecabc2 -->
 
 merge-back 因主树脏文件被拒进入顺延后的自愈兜底：熔断出口前置只读「归档残留」评估，命中即由框架代为补提交归档收尾并立即重放合并；熔断后的悬置条目另有周期消费者接手——自动放行先行，人工只处理确实无法自动收尾的形态。
 

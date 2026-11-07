@@ -2,6 +2,7 @@
 
 <!-- knowledge: capability=wip-defer-merge-retry rev=2
      sources=spec/archive/2026-10-02-evo-add-wip-defer-merge-retry-consumer,spec/knowledge/_inbox/done/mergeback-consumer-rehearsed-repair-gap-1106.md -->
+<!-- disputed: since=2026-10-14 fps=efecabc2 -->
 
 spec 实现车道合回被主树 WIP 重叠闸门拦截后的「等待-自动合回」周期：拦截即落结构化等待标志，daemon 周期复查、主树清干净后自动 merge-only 合回，超限降级人工——「WIP 清了自动合回」是默认路径，admin 只处理真冲突与超限降级。
 
