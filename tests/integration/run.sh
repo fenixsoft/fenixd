@@ -67,6 +67,21 @@ docker info >/dev/null 2>&1 || die2 "Docker daemon 不可达（docker info 失�
 
 # ── 真实模式凭据自检：缺项列清单 exit 2，不发起任何容器/克隆/网络动作 ────────
 # 对齐 bin/dsh_acceptance.py accept 的人工信号式哲学。
+# --build-only 只做镜像预热、无需凭据，在自检之前短路（构建/预热顺序见下）。
+if [ "${BUILD_ONLY}" -eq 1 ]; then
+  IMAGE_HASH="$(sha256sum "${SCRIPT_DIR}/Dockerfile" | cut -c1-12)"
+  IMAGE_TAG="fenix-it-env:${IMAGE_HASH}"
+  if docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
+    log "镜像已存在，跳过构建: ${IMAGE_TAG}（强制重建请先 docker rmi ${IMAGE_TAG}）"
+  else
+    log "构建镜像: ${IMAGE_TAG}（分层缓存，低频变动层命中时仅增补高频层）"
+    (cd "${SCRIPT_DIR}" && docker build -t "${IMAGE_TAG}" .) || die2 "镜像构建失败（构建期错误属装置/网络面，exit 2）"
+  fi
+  log "预热完成: ${IMAGE_TAG}"
+  log "后续步骤: tests/integration/run.sh --smoke  →  注入凭据后 tests/integration/run.sh"
+  exit 0
+fi
+
 if [ "${MODE}" = "real" ]; then
   missing=()
   [ -n "${FENIX_IT_LLM_BASE_URL:-}" ] || missing+=("FENIX_IT_LLM_BASE_URL")
@@ -100,18 +115,6 @@ IMAGE_HASH="$(sha256sum "${SCRIPT_DIR}/Dockerfile" | cut -c1-12)"
 IMAGE_TAG="fenix-it-env:${IMAGE_HASH}"
 
 image_exists() { docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; }
-
-if [ "${BUILD_ONLY}" -eq 1 ]; then
-  if image_exists; then
-    log "镜像已存在，跳过构建: ${IMAGE_TAG}（强制重建请先 docker rmi ${IMAGE_TAG}）"
-  else
-    log "构建镜像: ${IMAGE_TAG}（分层缓存，低频变动层命中时仅增补高频层）"
-    (cd "${SCRIPT_DIR}" && docker build -t "${IMAGE_TAG}" .) || die2 "镜像构建失败（构建期错误属装置/网络面，exit 2）"
-  fi
-  log "预热完成: ${IMAGE_TAG}"
-  log "后续步骤: tests/integration/run.sh --smoke  →  注入凭据后 tests/integration/run.sh"
-  exit 0
-fi
 
 if ! image_exists; then
   log "本地无镜像 ${IMAGE_TAG}，先构建（等价 --build-only 预热）"
