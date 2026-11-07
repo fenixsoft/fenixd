@@ -1,8 +1,8 @@
-<!-- knowledge: capability=v3-activities-page rev=3 sources=spec/archive/2026-09-08-add-v3-activities-page,spec/archive/2026-09-10-add-activities-pagination,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md -->
+<!-- knowledge: capability=activities-page rev=3 sources=spec/archive/2026-09-08-add-v3-activities-page,spec/archive/2026-09-10-add-activities-pagination,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md -->
 
-# v3 运维记录页
+# 运维记录页
 
-v3 的跨项目运维页：处置链 / 自动运维记录 / 告警记录三页签，自动运维为全局合并时间线，容量受前端分页控制。
+跨项目运维页（/activities）：处置链 / 自动运维记录 / 告警记录三页签，自动运维为全局合并时间线，容量受前端分页控制。
 
 ## 现行规则
 

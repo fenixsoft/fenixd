@@ -1,8 +1,8 @@
-<!-- knowledge: capability=v3-spec-detail-page rev=1 sources=spec/archive/2026-09-08-add-v3-spec-detail-page -->
+<!-- knowledge: capability=spec-detail-page rev=1 sources=spec/archive/2026-09-08-add-v3-spec-detail-page -->
 
-# v3 SPEC 详情页
+# SPEC 详情页
 
-v3 的 SPEC 详情：常驻信息区 + 四页签（运行时间轴 / 场景结果 / Bug 列表 / 失败截图）。
+SPEC 详情页（projects/detail）：常驻信息区 + 四页签（运行时间轴 / 场景结果 / Bug 列表 / 失败截图）。
 
 ## 现行规则
 

@@ -1,8 +1,8 @@
-<!-- knowledge: capability=v3-settings-page rev=5 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
+<!-- knowledge: capability=settings-page rev=5 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
 
-# v3 设置页
+# 设置页
 
-v3 的统一设置入口：左侧子项菜单 + 右侧面板，复用 v1 配置后端，覆盖 Provider、模型分配、并行度、审批、预算与主题。
+统一设置入口（/settings）：左侧子项菜单 + 右侧面板，复用既有配置后端，覆盖 Provider、模型分配、并行度、审批、预算与主题。
 
 ## 现行规则
 

@@ -9,7 +9,7 @@
 
 - **overviewActions 移动形态**：RegressionTab 的 `overviewActions` 纯渲染单元提供 `mobile?: boolean` 形态参数——<768px 视口传 `mobile` 时按钮容器为 `<Space direction="vertical">` 纵排，三枚概览按钮逐个 `block` 全宽（同页筛选 Drawer 页脚 block 按钮习语）；span Tooltip 承载层随之转 block（否则内层按钮 block 撑不满行宽）。
 - **桌面缺省横排**：不传 `mobile`（≥768px 桌面视口）时概览按钮保持横排右对齐形态。
-- **共用组件两侧生效**：`overviewActions` 为纯渲染单元，现产 projects/detail 与 v2/projectDetail 回归页签共用本组件，移动端纵排在两页同时生效，页面不得各自另写按钮行。
+- **共用组件单点生效**：`overviewActions` 为纯渲染单元，projects/detail 回归页签消费本组件，移动端纵排随组件生效，页面不得各自另写按钮行。（原与 v2/projectDetail 共用，该页 2026-11-07 退役后仅存现产消费方。）
 
 ## 溯源
 
