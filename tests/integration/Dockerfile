@@ -23,6 +23,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # 停滞，可传国内镜像（如 https://mirrors.aliyun.com/debian）加速；缺省空串
 # = 保持官方源。镜像仅替换域名，deb822（debian.sources）与传统格式双兼容。
 ARG APT_MIRROR=""
+# NPM_REGISTRY / PIP_INDEX_URL：npm 官源 registry.npmjs.org 与 PyPI 官源
+# files.pythonhosted.org 在部分网络同样停滞（实测 543 包 13 分钟 / wheel 下载
+# Read timeout），可分别传国内镜像（如 https://registry.npmmirror.com 与
+# https://mirrors.aliyun.com/pypi/simple）加速；缺省空串 = 保持官方源。
+# 仅在引用它们的层生效，不影响前面低频层的缓存命中。
+ARG NPM_REGISTRY=""
+ARG PIP_INDEX_URL=""
 RUN if [ -n "${APT_MIRROR}" ]; then \
       for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
         [ -f "$f" ] && sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" "$f" || true; \
@@ -65,14 +72,24 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && npm config set fund false --global \
     && npm config set audit-level moderate --global
 
+# ── 层 2.5：npm 源镜像（写 root 级 .npmrc，后续层与运行期 npm/pnpm 同享）──
+RUN if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}" --global; fi
+
 # ── 层 3：双 harness CLI（全局安装；dsh 版本钉扎 0.2.0-rc.2）───────────────
 # @deepseek-ai/dsh 含原生模块（node-pty 等），依赖上层 build-essential + python3。
 RUN npm install -g --no-audit --no-fund \
         @anthropic-ai/claude-code \
         @deepseek-ai/dsh@0.2.0-rc.2
 
-# ── 层 4：Playwright + Chromium（含系统依赖）──────────────────────────────
-RUN pip3 install --break-system-packages playwright \
+# ── 层 4：Playwright + Chromium（含系统依赖）+ 框架 python 依赖预装 ────────
+# pyyaml/httpx/jsonschema 预装后 install.sh 的依赖检查 import 即通过、构建期
+# 不再外联 PyPI；PIP_INDEX_URL 指定镜像时 pip 走国内源（CDN 停滞环境）。
+RUN if [ -n "${PIP_INDEX_URL}" ]; then \
+      pip3 install --break-system-packages --index-url "${PIP_INDEX_URL}" \
+          playwright pyyaml httpx jsonschema; \
+    else \
+      pip3 install --break-system-packages playwright pyyaml httpx jsonschema; \
+    fi \
     && python3 -m playwright install --with-deps chromium
 
 # ── 运行期挂载点（D2）：/opt/it=编排脚本(ro)、/artifacts=产物卷(rw)、

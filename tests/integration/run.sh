@@ -20,6 +20,10 @@
 #       dsh 面板桥插件源：宿主目录路径（挂载进容器）或 git URL（容器内克隆）。
 #   FENIX_IT_TIMEOUT     真实模式每轮秒数（默认 3600；smoke 900）
 #   FENIX_IT_ARTIFACTS_DIR 产物目录，默认 <repo>/.history/integration-runs/<UTC时间戳>/
+#   构建期源镜像（官方源停滞时传国内镜像，缺省空串=官方源）:
+#     FENIX_IT_APT_MIRROR   apt 源站 origin（如 http://mirrors.aliyun.com）
+#     FENIX_IT_NPM_REGISTRY npm registry（如 https://registry.npmmirror.com）
+#     FENIX_IT_PIP_INDEX    PyPI index（如 https://mirrors.aliyun.com/pypi/simple）
 #
 # 退出码: 0=全绿; 1=判定失败（摘要含失败明细）; 2=用法/装置错误。
 # =============================================================================
@@ -74,6 +78,8 @@ IMAGE_TAG="fenix-it-env:${IMAGE_HASH}"
 image_build() {
   local bargs=()
   [ -n "${FENIX_IT_APT_MIRROR:-}" ] && bargs+=(--build-arg "APT_MIRROR=${FENIX_IT_APT_MIRROR}")
+  [ -n "${FENIX_IT_NPM_REGISTRY:-}" ] && bargs+=(--build-arg "NPM_REGISTRY=${FENIX_IT_NPM_REGISTRY}")
+  [ -n "${FENIX_IT_PIP_INDEX:-}" ] && bargs+=(--build-arg "PIP_INDEX_URL=${FENIX_IT_PIP_INDEX}")
   (cd "${SCRIPT_DIR}" && docker build -t "${IMAGE_TAG}" "${bargs[@]}" .) \
     || die2 "镜像构建失败（构建期错误属装置/网络面，exit 2）"
 }
@@ -141,12 +147,17 @@ ENV_ARGS=(
 
 # FENIX_IT_GIT_REPO 目录形态：只读挂载进容器，容器内克隆源换算为挂载路径
 #（默认 git URL 形态原样传入，由容器内 e2e.sh 克隆）。
+# 挂载目标取 git 共享对象库（--git-common-dir）而非目录本身：worktree 的
+# .git 是指向宿主 gitdir 的文件指针，容器内不存在宿主路径，直接挂工作树
+# 会导致容器内 clone 报 not a git repository；普通仓的 common dir 即 <根>/.git，
+# 两种形态统一，且 git clone 支持直接以 gitdir 路径为源（无需源工作树）。
 CONTAINER_GIT_REPO="${GIT_REPO}"
 if [ -d "${GIT_REPO}" ]; then
-  REAL_GIT_DIR="$(cd "${GIT_REPO}" && pwd)"
+  COMMON_DIR="$(cd "${GIT_REPO}" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || die2 "FENIX_IT_GIT_REPO 目录不是 git 仓库: ${GIT_REPO}"
   CONTAINER_GIT_REPO=/opt/framework-src
-  MOUNT_ARGS+=( -v "${REAL_GIT_DIR}:${CONTAINER_GIT_REPO}:ro" )
-  log "FENIX_IT_GIT_REPO 为宿主目录，只读挂载进容器: ${REAL_GIT_DIR} → ${CONTAINER_GIT_REPO}"
+  MOUNT_ARGS+=( -v "${COMMON_DIR}:${CONTAINER_GIT_REPO}:ro" )
+  log "框架源挂载（git 共享对象库）: ${COMMON_DIR} → ${CONTAINER_GIT_REPO}"
 fi
 ENV_ARGS+=( -e FENIX_IT_GIT_REPO="${CONTAINER_GIT_REPO}" )
 
@@ -201,7 +212,8 @@ esac
 
 if [ ! -f "${ARTIFACTS}/summary.json" ]; then
   log "警告: summary.json 未落盘（容器早期崩溃）——以编排日志为失败证据，按判定失败处置"
-  [ "${rc}" -eq 0 ] && rc=1
+  # if 形态保证条件为假时返回 0，不污染下方 exit 的真实退出码
+  if [ "${rc}" -eq 0 ]; then rc=1; fi
 fi
 
 exit "${rc}"
