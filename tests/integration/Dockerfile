@@ -11,6 +11,9 @@
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    # bookworm pip 默认 PEP 668 externally-managed：框架 install.sh 的补装
+    # （pyyaml/httpx/jsonschema）不带 --break-system-packages，经此 env 放行
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     # Playwright 浏览器下载源：官方 CDN 在部分网络环境被网关拦截，
     # npmmirror 镜像路径实测可达（同源二进制）。网络可用官方源时可覆盖。
     PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
