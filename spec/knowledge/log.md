@@ -131,3 +131,4 @@
 ## [2026-11-08 02:57 UTC+8] distill | add-integration-test-env 失败：校验违规未通过
 ## [2026-11-08 03:35 UTC+8] fold | 2026-11-07-it-env-runsh-dotenv-load-gap.md 折叠入库
 ## [2026-11-08 03:40 UTC+8] distill | add-knowledge-anchor-lint-and-prune（第 1 轮，自动提交落库，折叠入库 1 条）
+## [2026-11-08 03:44 UTC+8] distill | add-integration-test-env（第 1 轮，自动提交落库）
