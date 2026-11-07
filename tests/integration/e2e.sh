@@ -127,6 +127,13 @@ fi
 log "模式=${MODE} 克隆源=${GIT_REPO} 引用=${GIT_REF} 每轮预算=${TIMEOUT}s 插件源=${PLUGINS_REPO:-<无>}"
 
 # ════════════════════════════════════════════════════════════════════════
+# 0.5) 镜像自检：双 harness CLI 与 playwright/chromium 版本打印（非致命，
+#      fail-loud 断言由三插件面各司其职；此处为 smoke 验收的版本留痕）
+# ════════════════════════════════════════════════════════════════════════
+CHROMIUM_VER="$(ls "${HOME}/.cache/ms-playwright" 2>/dev/null | grep -o '^chromium-[0-9]*' | head -1)"
+log "镜像自检: $(claude --version 2>&1) | $(dsh --version 2>&1) | $(python3 --version 2>&1) | node $(node --version 2>&1) | playwright $(python3 -m playwright --version 2>&1) | ${CHROMIUM_VER:-chromium-未检出}"
+
+# ════════════════════════════════════════════════════════════════════════
 # 1) 克隆框架（框架不入镜像；git URL 与本地路径均支持）
 # ════════════════════════════════════════════════════════════════════════
 log "克隆框架: ${GIT_REPO}（ref=${GIT_REF}）"

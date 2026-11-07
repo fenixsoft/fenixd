@@ -106,6 +106,15 @@ bridge_dir = plugins_dir / BRIDGE_NAME
 if not bridge_dir.is_dir():
     fail("插件供源", f"插件源内无 {BRIDGE_NAME} 目录: {plugins_dir}")
 
+# ── 1.5) 复制进可写工作区再构建：目录形态插件源是只读卷挂载（run.sh 设计，
+#         源零污染），而 pnpm install 需在包目录写 node_modules/.bin shims
+#         （EROFS 实测）；构建一律在 /work 副本上进行，link: 亦指向副本。
+bridge_build_dir = Path("/work/dsh-web-bridge")
+shutil.rmtree(bridge_build_dir, ignore_errors=True)
+shutil.copytree(bridge_dir, bridge_build_dir, symlinks=True)
+print(f"  · bridge 已复制进可写工作区: {bridge_build_dir}")
+bridge_dir = bridge_build_dir
+
 # ── 2) bridge 构建（pnpm build → lib/index.js）────────────────────────────
 print("[check_dsh_web] 阶段[构建] pnpm install + pnpm build")
 try:
