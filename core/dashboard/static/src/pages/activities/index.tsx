@@ -6,8 +6,10 @@ import {
   Card,
   Collapse,
   Empty,
+  Input,
   List,
   Pagination,
+  Popover,
   Select,
   Spin,
   Tabs,
@@ -33,6 +35,9 @@ import type {
   ProjectActivities,
 } from '@/services/dashboard';
 import { useIsMobile } from '@/hooks/useIsMobile';
+// 裁决选择题交互单源（add-human-adjudication-choices；v2 AlertList 同源）：
+// 选择态/附注/执行确认三件套随 hook 走，移植 m-ops r2 告警行形态时复用
+import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdjudication';
 // 乐观遮蔽/标记已处理收敛共享 hook（code-review items d9c50f5bcc38、
 // e673281b0b03）：与 overview AlertBanner 同源逻辑单点维护，两页复用
 import { useOptimisticAlerts } from '@/hooks/useOptimisticAlerts';
@@ -306,14 +311,153 @@ interface ViewingRun {
   harness?: string;
 }
 
+// 移动端告警直接行（2026-11-07 运维页移动定稿移植，prototype/m-ops.html r2
+// ops-alert-list 行形态）：SEV 标题行 + AlertLines 明细单源 + 裁决 choices
+// （Select 全宽 + 附注 + 执行）或标记已处理全宽；调查报告入口保留在动作区
+// （原型无此件的既有功能面，移植声明的小偏离）。
+function MobileAlertRow({
+  a,
+  onMarkHandled,
+  onResolved,
+}: {
+  a: AlertItem;
+  onMarkHandled: (a: AlertItem) => void;
+  onResolved: () => void;
+}) {
+  const adj = useAlertAdjudication();
+  const [noteOpen, setNoteOpen] = useState(false);
+  const hasChoices = (a.choices || []).length > 0;
+  return (
+    <div style={{ padding: '10px 0' }}>
+      <AlertTitle item={a} variant="page" />
+      <AlertLines item={a} variant="page" />
+      {hasChoices ? (
+        <>
+          <Select
+            size="small"
+            placeholder="选择处置动作"
+            style={{ width: '100%', marginTop: 8 }}
+            value={adj.alertChoiceSels[a.id] || undefined}
+            onChange={(v) => adj.setAlertChoiceSels((s) => ({ ...s, [a.id]: v }))}
+            options={(a.choices || []).map((c) => ({ value: c.id, label: c.label, title: c.desc }))}
+          />
+          <div style={{ display: 'flex', gap: 12, marginTop: 8, alignItems: 'center' }}>
+            <Popover
+              title="处置附注"
+              trigger="click"
+              open={noteOpen}
+              onOpenChange={setNoteOpen}
+              content={
+                <div style={{ width: 260 }}>
+                  <Input.TextArea
+                    rows={2}
+                    value={adj.alertNotes[a.id] || ''}
+                    onChange={(e) => adj.setAlertNotes((s) => ({ ...s, [a.id]: e.target.value }))}
+                    placeholder="随裁决留痕写入（可空）"
+                  />
+                </div>
+              }
+            >
+              <a className="touch-expand" style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+                附注{adj.alertNotes[a.id] ? '·已填' : ''}
+              </a>
+            </Popover>
+            {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
+            <span style={{ flex: 1 }} />
+            <AlertAdjudicationExec alert={a} adj={adj} onResolved={onResolved} />
+          </div>
+        </>
+      ) : (
+        <div style={{ display: 'flex', gap: 12, marginTop: 8, alignItems: 'center' }}>
+          {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
+          <span style={{ flex: 1 }} />
+          <Button size="small" onClick={() => onMarkHandled(a)}>
+            标记已处理
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 告警记录移动 pane（prototype/m-ops.html r2）：未处理直接行 +「收起已解决」
+// 紧凑行（已解决 Tag + 单行描述 + 时间；报告入口保留）；桌面 List+Collapse 不变
+function MobileAlertPane({
+  unhandled,
+  resolved,
+  onMarkHandled,
+  onResolved,
+}: {
+  unhandled: AlertItem[];
+  resolved: AlertItem[];
+  onMarkHandled: (a: AlertItem) => void;
+  onResolved: () => void;
+}) {
+  const [resolvedOpen, setResolvedOpen] = useState(true);
+  return (
+    <div>
+      {unhandled.length ? (
+        unhandled.map((a, i) => (
+          <div key={a.id} style={i ? { borderTop: '1px solid #f0f0f0' } : undefined}>
+            <MobileAlertRow a={a} onMarkHandled={onMarkHandled} onResolved={onResolved} />
+          </div>
+        ))
+      ) : (
+        <div style={{ padding: '8px 0 4px', fontSize: 12.5, color: 'rgba(0,0,0,0.45)' }}>暂无未处理告警。</div>
+      )}
+      {resolved.length ? (
+        <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 4, paddingTop: 4 }}>
+          <a
+            role="button"
+            tabIndex={0}
+            onClick={() => setResolvedOpen((o) => !o)}
+            style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', display: 'inline-block', padding: '4px 2px' }}
+          >
+            {resolvedOpen ? '收起已解决' : `已解决 ${resolved.length} 条`}
+          </a>
+          {resolvedOpen
+            ? resolved.map((a) => (
+                <div key={a.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'center' }}>
+                  <Tag style={{ marginInlineEnd: 0, flexShrink: 0 }} color="green">
+                    已解决
+                  </Tag>
+                  <span
+                    style={{
+                      fontSize: 12.5,
+                      minWidth: 0,
+                      flex: 1,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {a.description || a.id}
+                  </span>
+                  {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
+                  <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', flexShrink: 0 }}>
+                    {fmtDate(a.handled_at || a.created, { withYear: false })}
+                  </span>
+                </div>
+              ))
+            : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AlertPanel({
   alertsData,
   optimistic,
   onMarkHandled,
+  onResolved,
+  isMobile,
 }: {
   alertsData: AlertsData | null;
   optimistic: string[];
   onMarkHandled: (a: AlertItem) => void;
+  onResolved: () => void;
+  isMobile?: boolean;
 }) {
   // 全局视图：不按项目过滤，仅剔除乐观移除的条目
   const visible = (a: AlertItem) => !optimistic.includes(a.id);
@@ -322,6 +466,12 @@ function AlertPanel({
 
   if (!unhandled.length && !resolved.length) {
     return <Empty description="暂无人工告警" />;
+  }
+
+  if (isMobile) {
+    return (
+      <MobileAlertPane unhandled={unhandled} resolved={resolved} onMarkHandled={onMarkHandled} onResolved={onResolved} />
+    );
   }
 
   return (
@@ -713,6 +863,8 @@ export default function ActivitiesPage() {
                     alertsData={alertsData}
                     optimistic={optimistic}
                     onMarkHandled={(a) => void handleMarkHandled(a)}
+                    onResolved={() => void load()}
+                    isMobile={isMobile}
                   />
                 ) : null,
             },

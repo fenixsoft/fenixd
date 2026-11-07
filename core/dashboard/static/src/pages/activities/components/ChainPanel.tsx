@@ -20,6 +20,7 @@ import type {
   ChainSignatureQuota,
 } from '@/services/dashboard';
 import { fmtDate } from '@/components/alert-shared';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 // 轮询周期：与设置页链配置热更新（30s）同拍——观测面无需更快
 const REFRESH_MS = 30_000;
@@ -58,6 +59,7 @@ export default function ChainPanel({
   /** 单项目聚合筛选（宿主页持有并同步到标题栏 Select，undefined=全部项目） */
   project?: string;
 }) {
+  const isMobile = useIsMobile();
   const [data, setData] = useState<ChainOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -243,6 +245,101 @@ export default function ChainPanel({
     { title: '签名', dataIndex: 'chain', ellipsis: true, render: (v?: { signature?: string }) => <Typography.Text code>{v?.signature || '—'}</Typography.Text> },
     { title: '时间', dataIndex: 'created', width: 170, render: (v?: string) => fmtDate(v) },
   ];
+
+  // 移动端直接行呈现（2026-11-07 运维页移动定稿移植，prototype/m-ops.html r2
+  // ops-chain-table 四段堆叠卡形态）：统计磁贴隐藏（计数进段标题），桌面表格
+  // 转堆叠行——多列观测表窄屏无收缩点（mono 长 ID），越界治理布局优先；
+  // 段名对齐原型（在飞链/签名配额/人工队列/升级件），桌面磁贴+表格形态不变
+  if (isMobile) {
+    const inFlight = data?.in_flight || [];
+    const quotas = data?.signatures || [];
+    const queue = data?.queue || [];
+    const escalations = data?.escalations || [];
+    const rowHair = (i: number) => (i ? { borderTop: '1px solid #f0f0f0' } : undefined);
+    const metaStyle = { fontSize: 12, color: 'rgba(0,0,0,0.45)' } as const;
+    const escRow = (r: ChainEscalationItem, i: number) => (
+      <div key={r.id} style={{ ...rowHair(i), padding: '9px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0 }}>
+            {severityTag(r.severity)} {r.signal_type || '—'}
+          </span>
+          {r.handled ? (
+            <Tag style={{ marginInlineEnd: 0 }} color={CLOSE_CAUSE_META[r.close_cause || '']?.color || 'green'}>
+              {CLOSE_CAUSE_META[r.close_cause || '']?.label || '已收口'}
+            </Tag>
+          ) : (
+            <Tag style={{ marginInlineEnd: 0 }} color="volcano">待人工</Tag>
+          )}
+        </div>
+        {r.description ? (
+          <div style={{ ...metaStyle, marginTop: 3, whiteSpace: 'pre-wrap' }}>{r.description}</div>
+        ) : null}
+        <div style={{ ...metaStyle, marginTop: 3 }}>{[r.project || '—', fmtDate(r.created)].join(' · ')}</div>
+      </div>
+    );
+    return (
+      <Spin spinning={loading}>
+        {error ? (
+          <Alert style={{ marginBottom: 12 }} type="warning" showIcon message={`处置链刷新失败：${error}`} />
+        ) : null}
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '0 0 10px' }}>在飞链 {inFlight.length}</div>
+        {inFlight.length ? (
+          inFlight.map((r, i) => (
+            <div key={r.chain_id || r.signature || `in-flight-${i}`} style={{ ...rowHair(i), padding: '9px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Typography.Text code style={{ fontSize: 12.5, flex: 1, minWidth: 0 }} ellipsis>
+                  {r.chain_id || '—'}
+                </Typography.Text>
+                <span style={{ ...metaStyle, flexShrink: 0 }}>{fmtDate(r.started_at)}</span>
+              </div>
+              <div style={{ ...metaStyle, marginTop: 3, wordBreak: 'break-all' }}>
+                {[r.project || '—', r.spec || '(主体键/类型级)', r.phase ? PHASE_META[r.phase]?.label || r.phase : '']
+                  .filter(Boolean)
+                  .join(' · ')}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div style={{ ...metaStyle, paddingBottom: 12 }}>链上无在办件</div>
+        )}
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 10px' }}>签名配额 {quotas.length}</div>
+        {quotas.length ? (
+          quotas.map((r, i) => (
+            <div key={r.signature} style={{ ...rowHair(i), padding: '9px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Typography.Text code style={{ fontSize: 12.5, flex: 1, minWidth: 0 }} ellipsis>
+                  {subjectLabel(r)}
+                </Typography.Text>
+                <Tag style={{ marginInlineEnd: 0 }} color={GRANULARITY_META[r.granularity]?.color || 'default'}>
+                  {GRANULARITY_META[r.granularity]?.label || r.granularity}
+                </Tag>
+                {r.exhausted ? (
+                  <Tag style={{ marginInlineEnd: 0 }} color="red">配额耗尽</Tag>
+                ) : (
+                  <Tag style={{ marginInlineEnd: 0 }} color="green">余量可用</Tag>
+                )}
+              </div>
+              <div style={{ ...metaStyle, marginTop: 3, wordBreak: 'break-all' }}>
+                {[r.project, `Admin ${r.admin_attempts}/${r.admin_cap}`, `Arbiter ${r.arbiter_rulings}/${r.arbiter_cap}`, fmtDate(r.last_seen)]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div style={{ ...metaStyle, paddingBottom: 12 }}>暂无签名配额记录</div>
+        )}
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 10px' }}>人工队列 {queue.length}</div>
+        {queue.length ? queue.map((r, i) => escRow(r, i)) : (
+          <div style={{ ...metaStyle, paddingBottom: 12 }}>链终点零待人工件——链内闭环即全闭环</div>
+        )}
+        <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 10px' }}>升级件 {escalations.length}</div>
+        {escalations.length ? escalations.map((r, i) => escRow(r, i)) : (
+          <div style={{ ...metaStyle, paddingBottom: 12 }}>无链关联上升件</div>
+        )}
+      </Spin>
+    );
+  }
 
   return (
     <>
