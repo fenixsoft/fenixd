@@ -1,7 +1,8 @@
 # ADR-328：v2 移动双形态走断点主题单源与页内布局容器级分支
 
 date: 2026-11-05
-status: accepted
+status: retired
+Retired: 2026-11-08 v2 移动双形态架构主体已退役（2026-11-07），无取代裁定
 
 ## Context
 
