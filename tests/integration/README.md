@@ -11,7 +11,7 @@ dashboard、dsh web 三个插件面可正常安装与使用。
 
 | 文件 | 职责 |
 | --- | --- |
-| `Dockerfile` | 纯环境镜像：python3.11 / Node 20 / git / tmux / build-essential / pnpm / Playwright+Chromium / `@anthropic-ai/claude-code` / `@deepseek-ai/dsh@0.2.0-rc.2`（钉版）。**框架代码不烘入**、LLM 凭据零残留 |
+| `Dockerfile` | 纯环境镜像：python3.11 / Node 22 LTS / git / tmux / build-essential / pnpm / Playwright+Chromium / `@anthropic-ai/claude-code` / `@deepseek-ai/dsh@0.2.0-rc.2`（钉版）。**框架代码不烘入**、LLM 凭据零残留 |
 | `run.sh` | 宿主侧唯一入口：镜像按 Dockerfile 内容哈希 tag（`fenix-it-env:<hash>`）构建/复用 → `docker run` 注入环境变量与挂载（`tests/integration`→`/opt/it:ro`、插件仓、产物卷→`/artifacts`）→ 转发容器退出码 |
 | `e2e.sh` | 容器内主编排：克隆 → install.sh → 夹具项目 → config.yaml 生成 → 前端 dist 构建（缺失时）→ daemon 启动健康检查 → `fenix_spec.py new` + 种子覆写 + `add_spec` 程序化注册 fast-track SPEC → 轮询 STATE.md → 断言 → `summary.json`；双 harness 各一轮（`agent.harness` 切换，独立夹具项目与超时） |
 | `checks/check_skills.sh` | skill 面：fenix-* 软链、fenix-init PATH、claude CLI、夹具项目内 `fenix_spec.py status` |

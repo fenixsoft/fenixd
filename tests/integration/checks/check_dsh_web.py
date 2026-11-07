@@ -62,7 +62,8 @@ def run(cmd, cwd=None, timeout=600, env=None):
         cmd, cwd=cwd, env=e, capture_output=True, text=True, timeout=timeout,
     )
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "")[-500:]
+        # stderr 在前（错误通常在 stderr），两端拼接保尾部；足够长以含错误头
+        tail = ((proc.stderr or "") + (proc.stdout or ""))[-2000:]
         raise RuntimeError(f"cmd={' '.join(map(str, cmd))} rc={proc.returncode}\n{tail}")
     return proc
 
@@ -111,14 +112,24 @@ if not bridge_dir.is_dir():
 #         （EROFS 实测）；构建一律在 /work 副本上进行，link: 亦指向副本。
 bridge_build_dir = Path("/work/dsh-web-bridge")
 shutil.rmtree(bridge_build_dir, ignore_errors=True)
-shutil.copytree(bridge_dir, bridge_build_dir, symlinks=True)
-print(f"  · bridge 已复制进可写工作区: {bridge_build_dir}")
+# node_modules 必须排除：宿主目录形态下它是 pnpm symlink 农场（指向宿主
+# store 路径，容器内不存在），带入会使 tsdown 配置加载期 import unrun 失败
+# （实测）；副本内由 pnpm 依 lockfile 全新安装。
+shutil.copytree(
+    bridge_dir, bridge_build_dir, symlinks=True,
+    ignore=shutil.ignore_patterns("node_modules"),
+)
+print(f"  · bridge 已复制进可写工作区（排除 node_modules）: {bridge_build_dir}")
 bridge_dir = bridge_build_dir
 
 # ── 2) bridge 构建（pnpm build → lib/index.js）────────────────────────────
 print("[check_dsh_web] 阶段[构建] pnpm install + pnpm build")
 try:
     run(["pnpm", "install", "--no-frozen-lockfile"], cwd=bridge_dir, timeout=900)
+    # tsdown 0.23.1 虽声明 unrun 依赖，但其配置加载器从项目上下文 import，
+    # pnpm 严格隔离下对项目不可见（容器内实测 ERR_MODULE_NOT_FOUND）——
+    # 按 tsdown 声明范围补为直接依赖
+    run(["pnpm", "add", "-D", "unrun@^0.3.1"], cwd=bridge_dir, timeout=300)
     run(["pnpm", "build"], cwd=bridge_dir, timeout=600)
 except FileNotFoundError:
     fail("插件构建", "pnpm 不可用（镜像未装 pnpm?）")

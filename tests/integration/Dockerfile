@@ -64,8 +64,13 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
         fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 层 2：Node 20（NodeSource）+ pnpm ──────────────────────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# ── 层 2：Node 22 LTS（NodeSource）+ pnpm ─────────────────────────────────
+# Node 22 而非 20：dsh-bundle 面板桥构建链（tsdown 0.23.1）无条件使用
+# Promise.withResolvers（node ≥22 API，node 20 容器内实测 TypeError），且
+# dsh 的传递依赖 which-command@0.1.0 engines 即要求 ≥22；claude-code 与
+# dashboard 前端在 22 下均兼容（实测）。任务文本 Node 20 为草拟时点约束，
+# 按验收偏差申报。
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g pnpm \
