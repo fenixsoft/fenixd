@@ -200,20 +200,32 @@ def _fold_summary(summary: dict, key: str, val: str) -> dict:
 
 
 def _load_run_result(project_root, spec_name) -> dict | None:
-    """读取裁决 .fenix-run-result.json（两路候选，不可得返回 None）。
+    """读取裁决结果文件（三路候选，不可得返回 None）。
 
-    专属副本（.fenix/verify-progress/<spec>/.fenix-run-result.json）优先；
-    项目根 .fenix/.fenix-run-result.json 为共享文件，须显式携带与当前 spec
-    一致的 spec 字段，缺失或不符均视为其它 spec 残留忽略（fail-closed）。
-    损坏/非对象同样返回 None（fail-closed）。
+    优先级：
+    1. 私有裁决 .fenix/verify-progress/<spec>/.fenix-run-result.json（full
+       模式机械裁决专属副本，路径本身已含 spec 名，免归属校验）；
+    2. fast-track 快照 .fenix/verify-progress/<spec>/impl-result.json
+       （fast-track 收口经 _write_impl_result_snapshot 整体落盘，裁决段在
+       verification 嵌套内）；优先级居中理由：fast-track 升级 full 后新裁决
+       落候选 1，必须压过 fast-track 期旧快照，故快照只能插在两者之间；
+    3. 共享 .fenix/.fenix-run-result.json（跨候选垫底）。
+
+    候选 2/3 须显式携带与当前 spec 一致的 spec 字段，缺失或不符均视为
+    其它 spec 残留忽略（fail-closed）；损坏/非对象同样跳过继续下一路，
+    全部候选不可得返回 None（fail-closed）。
     """
     # 读侧形态白名单（item 87200f11aa7a，同 parse_report 口径）
     if validate_spec_name(spec_name):
         return None
     candidates = [
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / "impl-result.json",
         Path(project_root) / ".fenix" / ".fenix-run-result.json",
     ]
+    # 须 spec 字段严格归属校验的候选：fast-track 快照（写侧整体落盘收口
+    # dict，spec 键在）与项目根共享文件；首个专属副本路径本身已含 spec 名
+    spec_owned = {1, 2}
     for idx, path in enumerate(candidates):
         if not path.exists():
             continue
@@ -223,10 +235,10 @@ def _load_run_result(project_root, spec_name) -> dict | None:
             continue
         if not isinstance(data, dict):
             continue
-        # 共享候选必须显式携带匹配的 spec 字段：缺字段（旧格式/写侧异常）时
-        # 无法证明归属，直接放弃该候选（当前处拿不到场景 ID 集做归属推断，
+        # 归属校验候选必须显式携带匹配的 spec 字段：缺字段（旧格式/写侧异常）
+        # 时无法证明归属，直接放弃该候选（当前处拿不到场景 ID 集做归属推断，
         # 不为弱校验重排调用方签名），避免他 spec 残留被误合成进当前 spec 详情页
-        if idx == 1 and data.get("spec") != spec_name:
+        if idx in spec_owned and data.get("spec") != spec_name:
             continue
         return data
     return None
