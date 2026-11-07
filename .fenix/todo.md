@@ -208,4 +208,5 @@
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：生效核查按处置动作形态分流判据：escalate/handoff 类处置的「生效」证据应为链上接续（Arbiter 接手记录/人工 choice 落账），而非 spec 状态推进；spec 状态推进类证据仅适用于「处置=状态动作（unfreeze/reset）」形态且需校验 Transition 的 trigger/channel 与处置动作语义一致（capability 页已有 channel/note 对账机制，收紧到逐形态匹配即可）
 ### 知识真相源
+- [ ] knowledge-distill 重试：归档 add-integration-test-env — 校验违规经 3 轮 run 仍未通过（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查；pending 台账条目保留，将由 daemon 重启续跑接管）
 - [ ] knowledge-distill 重试：归档 add-knowledge-anchor-lint-and-prune — 校验违规经 3 轮 run 仍未通过（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查；pending 台账条目保留，将由 daemon 重启续跑接管）
