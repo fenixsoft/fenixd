@@ -28,7 +28,7 @@ fenixd 的既有质量面是宿主机 pytest 套件（`tests/`）与 dsh 通道�
 
 **D1 基底镜像：`debian:bookworm-slim`（备选：alpine、ubuntu slim）**。选 debian：glibc 生态——dsh web 依赖 node-pty 原生模块、Playwright Chromium 与 claude code CLI 在 musl 上均有兼容坑；slim 变体体积可控。alpine 仅在体积敏感压倒兼容性时才值得。Node 20 经 NodeSource 装入；构建期含 `build-essential`（node-pty 编译）与 Chromium 系统依赖，装完不清理构建工具以换取可调试性（体积代价 <200MB，可接受）。
 
-**D2 镜像=纯环境，脚本与夹具运行期挂载**。`docker run -v <repo>/tests/integration:/opt/it:ro` 把编排脚本、检查脚本、夹具模板以只读方式挂入——脚本迭代不需要重建镜像；框架代码另在容器内从 GitHub 克隆（满足「每次从 GitHub 拉取」）。镜像复用策略：tag `fenix-it-env:<dockehash>`（Dockerfile 内容哈希），`run.sh` 检测本地已有同 hash 镜像则跳过构建；`--build-only` 支持单独预热。
+**D2 镜像=纯环境，脚本与夹具运行期挂载**。`docker run -v <repo>/tests/integration:/opt/it:ro` 把编排脚本、检查脚本、夹具模板以只读方式挂入——脚本迭代不需要重建镜像；产物目录另以**读写卷**挂载（run.sh 在宿主侧创建时间戳目录后 `-v <FENIX_IT_ARTIFACTS_DIR>:/artifacts`，容器内统一写 `/artifacts`）——`/opt/it` 只读，容器内产物仅能经该卷落回宿主；框架代码另在容器内从 GitHub 克隆（满足「每次从 GitHub 拉取」）。镜像复用策略：tag `fenix-it-env:<dockehash>`（Dockerfile 内容哈希），`run.sh` 检测本地已有同 hash 镜像则跳过构建；`--build-only` 支持单独预热。
 
 **D3 环境变量契约（`FENIX_IT_` 前缀，容器内统一注入）**：
 
@@ -38,17 +38,17 @@ fenixd 的既有质量面是宿主机 pytest 套件（`tests/`）与 dsh 通道�
 | `FENIX_IT_GIT_REPO` / `FENIX_IT_GIT_REF` | `https://github.com/fenixsoft/fenixd.git` / 仓库默认分支 | 框架克隆源 |
 | `FENIX_IT_PLUGINS_REPO` | 宿主 `/root/dsh-plugins`（存在则挂载）；否则必填 | dsh 面板桥插件源：支持宿主路径（挂载进容器）或 git URL（容器内克隆） |
 | `FENIX_IT_TIMEOUT` | 3600（真实模式每轮秒数；smoke 900） | 单轮超时预算 |
-| `FENIX_IT_ARTIFACTS_DIR` | `.history/integration-runs/<UTC时间戳>/` | 产物输出（宿主侧，遵循 AGENTS.md 临时文件约定） |
+| `FENIX_IT_ARTIFACTS_DIR` | `.history/integration-runs/<UTC时间戳>/` | 产物输出（宿主侧，遵循 AGENTS.md 临时文件约定）；时间戳目录由 run.sh 在宿主侧创建，并以读写卷挂至容器内固定路径 `/artifacts`（见 D2） |
 
 真实模式启动前自检凭据齐备性，缺项即列清单退出（exit 2），不发起任何容器/网络动作——对齐 `bin/dsh_acceptance.py accept` 的人工信号式哲学。
 
 **D4 夹具 SPEC 的程序化注册**：容器内经 `.fenix/bin/fenix_spec.py new` 生成脚手架，以挂载的种子文件（`fixture/spec-proposal.md` / `fixture/spec-tasks.md`）覆写 proposal/tasks，`core.state_machine.add_spec` 注册为 fast-track——完全复用 fenix-new skill 的机械层，不走交互式 /fenix-new。夹具项目 = git 初始化的静态小站（`fixture/index.html` + `fixture/app.js`），SPEC 内容为「添加一个带稳定 testid 的徽标元素，点击切换文案」——足够简单（单文件改动）且可被 web 验证场景做 DOM 断言，真实驱动实现 → Playwright 验证 → 裁决全链。
 
-**D5 容器内 daemon 承载**：slim 镜像无 systemd，daemon 以 `nohup python3 fenixd.py` 直跑（日志落 `.fenix/logs/`），不做 supervisor 托管（集成环境生命周期 = 容器生命周期，无需崩溃自愈）。`.fenix/config.yaml` 由编排脚本按注入环境变量生成（provider baseurl/key/model + `agent.harness` + `gates.approve_mode` 保持人工档——断言终态为 `done`，不推送）。轮询循环机械读 `STATE.md` 状态行至 `done`/`blocked`，超时按 `FENIX_IT_TIMEOUT`。
+**D5 容器内 daemon 承载**：slim 镜像无 systemd，daemon 以 `nohup python3 fenixd.py` 直跑（日志落 `.fenix/logs/`），不做 supervisor 托管（集成环境生命周期 = 容器生命周期，无需崩溃自愈）。`.fenix/config.yaml` 由编排脚本按注入环境变量生成（provider baseurl/key/model + `agent.harness` + `project.type: web`——夹具为静态小站，Playwright DOM 场景形态需显式声明；`project.type` 缺失时由消费方默认兜底，不保证出 web 验证场景 + `gates.approve_mode` 保持人工档——断言终态为 `done`，不推送）。轮询循环机械读 `STATE.md` 状态行至 `done`/`blocked`，超时按 `FENIX_IT_TIMEOUT`。
 
-**D6 双轮编排**：单容器内顺序两轮——`/work/round-claude/`、`/work/round-dsh/` 各自独立夹具项目 + 独立配置（仅 `agent.harness` 不同）+ 独立超时。任一轮失败记录后继续另一轮；摘要 JSON 汇总双轮终态/耗时/判定，任一失败整体 exit 1。dsh 轮前置条件含 bundle 装配自检（fenix-dsh-bundle 以软链形态挂入 dsh profile，模型三要素缺失即该轮 fail-loud）。
+**D6 双轮编排**：单容器内顺序两轮——`/work/round-claude/`、`/work/round-dsh/` 各自独立夹具项目 + 独立配置（仅 `agent.harness` 不同）+ 独立超时。任一轮失败记录后继续另一轮；摘要 JSON 汇总双轮终态/耗时/判定，任一失败整体 exit 1。dsh 轮前置条件含 bundle 容器内部署与装配自检：按 `dsh-bundle/README.md` 部署段先创建自定义 profile（`dsh --profile <p> --from-default-profile headless`）再 `dsh plugin --profile <p> add "link:<repo>/dsh-bundle"` 软链挂入——shipped 模板名被 CLI 禁止作为自定义 profile 目标（dsh_adapter 实测 fail-loud），profile 名须与 `agent.dsh_profile` 一致；模型三要素缺失即该轮 fail-loud。
 
-**D7 dsh web 完整 GUI 验证**：容器内 `DSH_HOME` 隔离目录 + `dsh --from-default-profile web` 初始化 profile，bridge 插件（`FENIX_IT_PLUGINS_REPO` 供源）`pnpm build` 后以软链挂入 profile（对齐 dsh-bundle README 的软链安装口径，`file:` 拷贝会断 peer 链）。dashboard 服务先行启动（:8787），随后 `dsh web` 起服（容器内固定 :3080）。GUI 断言脚本 `checks/check_dsh_web.py`（Playwright sync API + 镜像内 chromium headless）：打开 `http://127.0.0.1:3080` → 定位面板桥注入的「项目」菜单行元素 → 断言其 iframe 存在且 src 含 `embed=1` → `page.frame_locator` 进入 iframe 断言 dashboard 前端根节点已渲染（Playwright 经 CDP 驱动，跨 origin iframe 可进入）→ 截图落产物目录。
+**D7 dsh web 完整 GUI 验证**：容器内 `DSH_HOME` 隔离目录 + `dsh --profile <web-profile> --from-default-profile web` 初始化自定义 profile（同 D6：shipped 模板名禁作自定义 profile 目标，必须携带 `--profile` 自定义名），bridge 插件（`FENIX_IT_PLUGINS_REPO` 供源）`pnpm build` 后以软链挂入 profile（对齐 dsh-bundle README 的软链安装口径，`file:` 拷贝会断 peer 链）。dashboard 服务先行启动（:8787；dist 构建产物不入 git——源码克隆形态下若 `core/dashboard/static/dist/index.html` 缺失，编排须先执行 `npm install --no-audit --no-fund && npm run build` 构建前端，对齐 install.sh 的源码使用者提示），随后 `dsh web` 起服（容器内固定 :3080）。GUI 断言脚本 `checks/check_dsh_web.py`（Playwright sync API + 镜像内 chromium headless）：打开 `http://127.0.0.1:3080` → 定位面板桥注入的「项目」菜单行元素 → 断言其 iframe 存在且 src 含 `embed=1` → `page.frame_locator` 进入 iframe 断言 dashboard 前端根节点已渲染（Playwright 经 CDP 驱动，跨 origin iframe 可进入）→ 截图落产物目录。
 
 **D8 smoke 模式与本 SPEC 自验证**：`--smoke` 跳过双轮真实闭环，执行：镜像自检（CLI/Playwright/基础工具版本打印）→ 克隆安装 → 夹具项目创建 + daemon 启动健康检查 → 三插件面验证（含 D7 完整 GUI）。本 SPEC 自身的验证场景为 cli 形态、执行 `run.sh --smoke` 以退出码判定（时间预算按验证场景超时配置放宽至 ≥20 分钟，镜像已预热时实际约 5-10 分钟）。
 
