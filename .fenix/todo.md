@@ -188,3 +188,11 @@
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/worktree-vc/mergeback-archive-residue-selfheal.md × spec/knowledge/domains/worktree-vc/wip-defer-merge-retry.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/v2-overview-page.md × spec/knowledge/domains/dashboard-frontend/v2-project-detail-page.md），请人工核查
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/unified-page-title-bar.md × spec/knowledge/domains/harness-integration/agent-harness-adapter.md），请人工核查
+
+## 2026-11-08
+### 可改进
+- **[arbiter:add-inte] 集成测试交付物代理注入面缺失（GitHub 限速环境下「修环境」出口不可达）**
+  - 影响：add-integration-test-env 及同类 Docker 克隆型 SPEC 的验证轮在国际链路限速时段必败，manual_fixed_reverify（修环境重验）出口结构性不可达，人工只剩「豁免（失覆盖面）」或「赌网络窗口重验」两选项；每次限速窗口都产生一轮豁免握手停车+人工裁决负担
+  - 证据：tests/integration/run.sh 与 Dockerfile 不支持代理环境变量注入/透传（无 HTTPS_PROXY 类面）：验证轮容器内 GitHub bulk 截断时唯一失败路径无法通过环境修复翻绿（.fenix/runs/archive/admin-add-integration-test-env-1794066458.jsonl 探针：~41KB/s、8m47s 死亡、ref 协商与 npm 健康；.history/it-verify/smoke/orchestrate.log:5,11 GnuTLS -110/early EOF）；同轮证明交付物经 FENIX_IT_GIT_REPO 本地源路径实测全绿（.fenix/verify-evidence/add-integration-test-env/smoke-summary.json）；触发 run_id=arbiter-add-integration-test-env-1794067782（签名 add-integration-test-env::inconclusive_loop，来源 chain-handoff:escalation-alert）
+  - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
+  - 建议：交付物增强：run.sh 支持 FENIX_IT_HTTPS_PROXY（或透传宿主 HTTPS_PROXY/ALL_PROXY）并配置容器内 git/npm 走代理；或克隆源分级 fallback（GitHub → 镜像源 → 本地源）；契约语义边界（公开克隆契约在代理/镜像源下是否仍算覆盖）需 owner 拍板后成文
