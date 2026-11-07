@@ -150,12 +150,18 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
   return (
     <div
       data-testid="activity-card"
-      style={{
-        padding: 12,
-        borderRadius: 8,
-        border: unhandled ? '1px solid #ff4d4f' : '1px solid #f0f0f0',
-        background: unhandled ? '#fff2f0' : '#fafafa',
-      }}
+      style={
+        isMobile
+          ? // 移动端直接行（2026-11-07 运维页移动定稿移植，prototype/m-ops.html r2
+            // 批注「宽度有限，去卡片直接显示内容」）：去卡壳，样式交行容器
+            { padding: '12px 0', borderRadius: 0 }
+          : {
+              padding: 12,
+              borderRadius: 8,
+              border: unhandled ? '1px solid #ff4d4f' : '1px solid #f0f0f0',
+              background: unhandled ? '#fff2f0' : '#fafafa',
+            }
+      }
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -226,6 +232,31 @@ function ActivityTimeline({
   }
 
   // 服务端分页：activities 已是当前页切片（跨项目全局序），前端不再二次切片
+  if (isMobile) {
+    // 移动端直接行呈现（2026-11-07 运维页移动定稿移植，prototype/m-ops.html r2
+    // 批注「宽度有限，去卡片直接显示内容」）：去 Timeline 轨与小卡壳，行间
+    // 发丝线分隔，内容净宽让给正文；桌面 Timeline+卡片形态不变
+    return (
+      <div>
+        {activities.map((a, i) => (
+          <div key={a.id} style={{ borderTop: i === 0 ? undefined : '1px solid #f0f0f0' }}>
+            <ActivityCard a={a} onViewRun={onViewRun} isMobile={isMobile} />
+          </div>
+        ))}
+        {total > PAGE_SIZE ? (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+            <Pagination
+              current={current}
+              pageSize={PAGE_SIZE}
+              total={total}
+              onChange={onPageChange}
+              showSizeChanger={false}
+            />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div>
       <Timeline
