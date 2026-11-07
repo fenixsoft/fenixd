@@ -3,15 +3,12 @@
 // 页签与数据口径对齐现产 /activities 三页签（2026-11-05 处置链并入后的原版；
 // 2026-11-06 用户指令「页签与原版一致、数据正确加载」）：处置链（缺省，
 // URL ?tab= 预选）/ 自动运维记录 / 告警记录。视觉保持 v2 Bento 壳（UI 真相源
-// prototype/ops.html）；移动端形态 UI 真相源 prototype/m-ops.html（2026-11-07
-// 重绘定稿 r2：三页签/设备顶栏/处置链四段堆叠卡对齐本页现状，批注定稿「移动
-// 端宽度有限，去嵌套 bento 白卡、直接行呈现」落自动运维记录与告警记录两 pane
-// 的移动分支——桌面嵌套磁贴形态不变）。原型的「自愈记录」占位页签随本次对齐
-// 退役——自动运维记录消费真实端点 /api/admin-activities（服务端分页同原版
-// 15/页），原「暂无数据端点」占位声明作废。处置链块序亦对齐原版（在飞链 /
-// 签名配额 / 人工队列 / 升级件），人工队列块为本次补齐（原实现漏渲染 queue
-// 分面）。叙述字段（summary 等）以 pre-wrap 纯文本呈现——v2 域不引
-// react-markdown（与其余五页一致），数据字段与原版一一对应不缺列。
+// prototype/ops.html）；原型的「自愈记录」占位页签随本次对齐退役——自动运维
+// 记录消费真实端点 /api/admin-activities（服务端分页同原版 15/页），原
+// 「暂无数据端点」占位声明作废。处置链块序亦对齐原版（在飞链 / 签名配额 /
+// 人工队列 / 升级件），人工队列块为本次补齐（原实现漏渲染 queue 分面）。
+// 叙述字段（summary 等）以 pre-wrap 纯文本呈现——v2 域不引 react-markdown
+//（与其余五页一致），数据字段与原版一一对应不缺列。
 import { Alert, Pagination, Select, Spin, Table, Tabs } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -150,14 +147,12 @@ function AlertPane({
   resolvedOpen,
   onToggleResolved,
   onChanged,
-  mobile,
 }: {
   alerts: NonNullable<AlertsData['alerts']>;
   resolved: NonNullable<AlertsData['resolved']>;
   resolvedOpen: boolean;
   onToggleResolved: () => void;
   onChanged: () => void;
-  mobile?: boolean;
 }) {
   const empty = !alerts.length && !resolved.length;
   if (empty) {
@@ -170,17 +165,14 @@ function AlertPane({
   return (
     <div style={{ paddingTop: 6 }}>
       {alerts.length ? (
-        // 移动分支去嵌套 bento（2026-11-07 批注定稿，prototype/m-ops.html r2
-        // 「移动端宽度有限，直接行呈现」）：锚名 ops-alert-list 保留在裸容器上；
-        // 桌面保持嵌套磁贴形态。V2AlertRow 与 overview 共用，行内边距不动
-        <div data-proto-id="ops-alert-list" className={mobile ? undefined : 'v2-bento'} style={mobile ? undefined : { padding: '6px 6px 4px' }}>
+        <div className="v2-bento" data-proto-id="ops-alert-list" style={{ padding: '6px 6px 4px' }}>
           <V2AlertRows alerts={alerts} onChanged={onChanged} />
         </div>
       ) : (
         <div style={{ padding: '8px 10px 4px', fontSize: 12.5, color: V2_TEXT_TERTIARY }}>暂无未处理告警。</div>
       )}
       {resolved.length ? (
-        <div style={{ borderTop: `1px solid ${V2_HAIRLINE}`, margin: mobile ? '4px 0 0' : '4px 8px 0', paddingTop: 4 }}>
+        <div style={{ borderTop: `1px solid ${V2_HAIRLINE}`, margin: '4px 8px 0', paddingTop: 4 }}>
           <a
             role="button"
             tabIndex={0}
@@ -484,10 +476,10 @@ function QuotaCards({ rows }: { rows: ChainSignatureQuota[] }) {
 /** 自动运维记录单条卡（v2 形态）：时间/项目/SPEC/信号/结果/需人工决策一行 +
  *  失败原因 + 叙述 + 处置/建议，字段与原版 ActivityCard 一一对应；「查看处置
  *  过程」开 AdminRunModal（原版同源组件）。 */
-function ActivityCard({ a, onViewRun, mobile }: { a: ActivityItem; onViewRun: (a: ActivityItem) => void; mobile?: boolean }) {
+function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun: (a: ActivityItem) => void }) {
   const unhandled = a.handled === false;
   return (
-    <div data-testid="v2-activity-card" style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: mobile ? '11px 0' : '11px 2px' }}>
+    <div data-testid="v2-activity-card" style={{ borderTop: `1px solid ${V2_HAIRLINE}`, padding: '11px 2px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span className="v2-num" style={{ fontSize: 12, color: V2_TEXT_QUATERNARY }}>
           {fmtDate(a.created)}
@@ -540,14 +532,12 @@ function ActivityPane({
   current,
   onPageChange,
   onViewRun,
-  mobile,
 }: {
   loading: boolean;
   data: AdminActivitiesData | null;
   current: number;
   onPageChange: (page: number) => void;
   onViewRun: (a: ActivityItem) => void;
-  mobile?: boolean;
 }) {
   if (loading && !data) {
     return (
@@ -567,11 +557,11 @@ function ActivityPane({
   const total = data?.total ?? activities.length;
   return (
     <div data-proto-id="ops-auto" style={{ paddingTop: 6 }}>
-      {/* 移动分支去嵌套 bento（2026-11-07 批注定稿，prototype/m-ops.html r2）：
-          直接行呈现与处置链页签堆叠卡同惯例；桌面保持嵌套磁贴形态 */}
-      {activities.map((a) => (
-        <ActivityCard key={a.id} a={a} onViewRun={onViewRun} mobile={mobile} />
-      ))}
+      <div className="v2-bento" style={{ padding: '4px 12px 10px' }}>
+        {activities.map((a) => (
+          <ActivityCard key={a.id} a={a} onViewRun={onViewRun} />
+        ))}
+      </div>
       {total > PAGE_SIZE ? (
         <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 12 }}>
           <Pagination
@@ -788,7 +778,6 @@ export default function V2OpsPage() {
                       current={current}
                       onPageChange={handlePageChange}
                       onViewRun={handleViewRun}
-                      mobile={mobile}
                     />
                   ),
                 },
@@ -802,7 +791,6 @@ export default function V2OpsPage() {
                       resolvedOpen={resolvedOpen}
                       onToggleResolved={() => setResolvedOpen((o) => !o)}
                       onChanged={() => void load()}
-                      mobile={mobile}
                     />
                   ),
                 },
