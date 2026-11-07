@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-07 21:36 UTC+8
+> 最后更新：2026-11-07 21:40 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -58,3 +58,4 @@
 | [sidebar-submenu-bounded-scroll](sidebar-submenu-bounded-scroll.md) | 侧栏子菜单限高滚动与定制滚动条（独立访问侧栏 inline 子菜单 5 项封顶 200px、gutter stable、中性灰 alpha 滚动条五条、锚点唯一与动画共存、headless overlay 引擎量宽判据） | 2026-11-06 17:54 |
 | [dsh-settings-ui-contract](dsh-settings-ui-contract.md) | dsh 设置 UI 架构契约与停靠插件（设置弹窗壳结构与 settings.section 插槽、稳定钩子面、useModalLayer 语义边界与 aria-modal 不可翻转、收缩态 56px 窄轨与触发按钮幂等开、停靠页面化三规） | 2026-11-07 21:32 |
 | [dsh-web-connection-baseline](dsh-web-connection-baseline.md) | dsh web 连接基线与「重新连接中」重连环判读（浏览器 API 基线双门槛、低版本症状签名 101 正常零业务帧、close 4000 下游症状、健康握手对照、服务端/cookie/frp 排除面、console 优先与 tcpdump 取证纪律、无能力探测开放缺口） | 2026-11-07 21:36 |
+| [dsh-web-wide-table-scrollbar](dsh-web-wide-table-scrollbar.md) | dsh web 对话框宽表横向滚动与全宽变量同步（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、退化路径 margin 夹紧、哈希类失配自动回退、变量探针与活站假设验证配方） | 2026-11-07 21:40 |
