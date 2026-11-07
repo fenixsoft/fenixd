@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-07 21:40 UTC+8
+> 最后更新：2026-11-07 21:43 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -27,15 +27,15 @@
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-06 18:13 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题、SPEC 列表整行点击进详情与 SPEC 详情标题栏中文标题下方行（贴排、两列结构标签簇随块居中、移动端只显标题与返回箭头隐藏）、SPEC 列表移动端卡片流与筛选编排改版（<768px 磁贴卡流七行层级、状态 chips 黑底白字、筛选底部 Drawer、加载更多分页与 #E3E3E3 内容区背景单源）、dsh 设置 UI 壳层契约与设置停靠插件（settings 弹窗壳结构与稳定钩子面、useModalLayer 语义边界、停靠页面化三规）、dsh web 连接基线与重连环判读（浏览器 API 基线双门槛、低版本恒「重新连接中」症状签名、tcpdump 取证）、dsh web 对话框宽表横向滚动治理（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、margin 夹紧、哈希类失配回退、活站验证配方）。 | 52 | 2026-11-07 21:40 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端：项目/规格列表与详情页签、时间轴与活动记录、主题与布局改进。v2/v3 页面族（总览/项目列表/规格详情/配置/告警活动/设置）、大屏拓扑与指挥中心台面、全站统一标题栏与页头退役、嵌入挂载与 harness 品牌投影、内容区留白与边框治理、帮助/设置页文档级滚动统一、dsh 面板桥「项目」菜单行折叠开关、v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态，例外域并存）、设置功能全表面命名「配置」避让 dsh 官方「设置」、antd 表格限高滚动与 sticky 纪律（台账磁贴不限高、「5 行封顶」落 dsh web 侧栏）与侧栏子菜单限高滚动、布局 chrome 底色 soft 染色统一（顶栏玻璃保留、菜单实底）、一般域 Bento 视觉对齐（overview 台账磁贴、projects 表格与 spec 详情/settings/指挥中心卡框、跨域镜像不引用、磁贴圆角全站 12px）、v2 六页标题栏经 titleBar 槽位并入统一控件（移动行壳位并入顶栏、副标题移动端隐藏）与 v2 白底变体三档（overview/projects 满宽 30px、help 仅白底）、v2 项目详情页六分面页签/状态筛选单源/分页对齐现产、v2 帮助正文标题去重（正文 H1 唯一）、SPEC 列表与 v2 SPEC 表名称列中文副标题、SPEC 列表整行点击进详情与 SPEC 详情标题栏中文标题下方行（贴排、两列结构标签簇随块居中、移动端只显标题与返回箭头隐藏）、SPEC 列表移动端卡片流与筛选编排改版（<768px 磁贴卡流七行层级、状态 chips 黑底白字、筛选底部 Drawer、加载更多分页与内容区背景白底单源）、dsh 设置 UI 壳层契约与设置停靠插件（settings 弹窗壳结构与稳定钩子面、useModalLayer 语义边界、停靠页面化三规）、dsh web 连接基线与重连环判读（浏览器 API 基线双门槛、低版本恒「重新连接中」症状签名、tcpdump 取证）、dsh web 对话框宽表横向滚动治理（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、margin 夹紧、哈希类失配回退、活站验证配方）。 | 52 | 2026-11-07 21:43 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（unit 承载接管豁免与承载形态双轨重启协议）、增量数据管线、实时会话、前端壳层基建。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合。 | 25 | 2026-11-06 18:13 |
-| [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 7 | 2026-11-04 20:48 |
+| [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-07 21:43 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、arbiter 立项通道退役注记。 | 18 | 2026-11-04 17:07 |
 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。 | 14 | 2026-11-04 16:11 |
 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。 | 4 | 2026-10-03 04:59 |
 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
-| [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-05 20:37 |
+| [docs-help](domains/docs-help/_domain.md) | 面向人类的框架使用文档体系：`docs/help/` 文档集的内容契约。Dashboard 帮助中心功能与保障机制专章。 | 5 | 2026-11-07 21:43 |
 | [knowledge-atlas](domains/knowledge-atlas/_domain.md) | 知识真相源（`spec/knowledge/`）子系统：目录契约、归档蒸馏管线与 `_inbox/` 候选区回填管道、ADR 决策索引、项目知识页签与配置开关等机制能力。存量回填、周期体检、Graphify 关系图等维护车道，以及六车道与交互会话的 index-first 消费纪律；真相源只装当前生效业务规则，归档 SPEC 承担历史职责，两者以溯源链接互指。 | 13 | 2026-11-06 17:49 |
 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 
@@ -165,4 +165,13 @@ spread 至 dashboard-frontend 一域一页：新建 dsh-web-wide-table-scrollbar
 页——wide/fill 分流与对称出血公式机制链（无下限缺陷、未报上游插件侧补偿）、
 全宽覆盖列宽变量同步义务与溢出传播链、退化路径 margin 夹紧与变量作用域纪律、
 哈希类失配自动回退官方布局、变量探针/样式表归属/活站假设验证配方与干净态
-终验口径）。
+终验口径）；mobile-ui-fixes-1107 已折叠入库（2026-11-07 21:43，spread 至
+dashboard-frontend / docs-help / mobile-adaptation 三域七页：dashboard-spec-table
+移动内容区背景色改白（SPEC_LIST_MOBILE_BG 单源值 #E3E3E3→#ffffff、灰底衬托
+退役）、command-center-console-ui 新增移动端双过滤落内容区首行（槽位不注册、
+项目 Select flex:1 + 时间窗定宽 100）、unified-page-title-bar 过滤项条款补
+移动端 filters 槽位单一定点定式（上移标题栏一律走槽位、不在内容区手画按钮行）、
+v3-settings-page 新增标题栏作用域控件移动端瘦身（标签不渲染、Select 移动档
+130）、help-center 移动端目录按钮迁 filters 槽位抽屉化、mobile-detail-header-density
+顶栏与富标题载体对齐现行契约（旧顶栏纯品牌/行壳位表述废除）、mobile-adaptation
+新建 mobile-regression-actions-stacking（回归页签概览三按钮移动端纵排）。
