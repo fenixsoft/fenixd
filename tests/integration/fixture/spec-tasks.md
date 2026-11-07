@@ -4,7 +4,7 @@
 
 ```yaml
 - path: index.html
-  kind: modified
+  kind: modify
 ```
 
 ## 1. 徽标元素与切换交互
