@@ -100,13 +100,6 @@
   - 建议：在 implementer 提示词收尾自检清单补两项：tasks.md 勾选集合与 TaskUpdate done_ids 集合一致、quality-gates.json 状态值在 passed 枚举内；落地后此类失配应在 run 内自纠而非终点拒收重派。
 
 ### 可改进
-- **daemon非优雅死亡停摆7.8小时，evo复核与周期审查两run蒸发（新增）**
-  - 自进化：问题成立 / 建议部分合理 / — 不需要
-  - 影响：daemon 于 11-04 00:53 本地前后非优雅死亡（无 Shutting down 行、无 supervisor 退出记录），fenixd.log 随之零行 7.77 小时，直到 08:39 本地才被拉起；死亡时刻在飞的两个长跑 run——evo-1793723033（演化复核，30 分钟 1014 事件）与 code-review-1793721816（周期代码审查，50 分钟 2624 事件）——在飞工作蒸发，账面悬空 7.8 小时后才由启动清扫补写 interrupted 终态。
-  - 证据：fenixd.log 在 2026-11-03T16:54Z 至 2026-11-04T00:38Z（本地 00:54-08:38）区间 0 行（脚本统计）；两 run 最后事件均停在本地 00:52-00:53；supervisor.log 最后记录 11-03 16:13:32Z（supervisor_runtime written pid=1946442）其后无 daemon exited/restarting 行；08:39:37 本地新 daemon（PID 2080813）启动行无 supervisor 拉起对应记录（裸启动），首屏「Startup terminal-state sweep: 补写 2 个遗留 无终态 run」；evo 复核工作由 5 分钟后派发的 evo-1793753078 接续成功（cost 15.96）。
-  - 调查评估：在演化复核与周期审查车道暴露。已核实事实：日志空窗 0 行、两 run 事件停止时刻、supervisor 静默、sweep 补写行均逐一核实。根因未定、多假说并存：宿主重启/OOM/手动 kill/托管链断裂（supervisor 16:13Z 后无记录、新 daemon 绕过 supervisor 裸启动均支持托管链当时不在位），死亡在本地夜间无人值守段。归因证据边界：上窗 2026-11-04#可改进#1 判「startup sweep 无在途判据错杀在途 run」，本窗 08:39 两案证据形态不同——两 run 悬空 7.8 小时无任何新事件，sweep 补写时「在途」已不可证，按悬空 run 判读（daemon-rules 能力页口径）直接死因是 daemon 非优雅死亡，sweep 仅兜底补写；对上窗条目作显式更正：本窗两案不构成「错杀在途」新实锤。与存量关系：supervisor-hosting 与 daemon-drain-integrity 能力页覆盖排水一致性与托管语义，但「非优雅死亡后无人拉起」的监督缺口在案发时不在位；本窗 10:30 merge 的 add-systemd-hosting（systemd 托管改造）正是治此，落地后宿主级拉起应消除长时间无人值守停摆。结论：一次宿主级事件暴露托管链断裂窗口，交付未丢失（重派接续），实损约 80 分钟工作量与 7.8 小时框架不可用。
-  - 建议：观察 add-systemd-hosting 托管落地后是否再现无人拉起停摆；将本例死亡痕迹（supervisor 静默＋日志空窗＋悬空补写）沉淀为非优雅死亡的判读签名；不做无根因预设的修复。
-
 - **纯文本轮通胀第三窗命中且同车道三run并发，响应端仍未落地（恶化）**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：planner-plan（出题）车道同窗 3 个 run 命中纯文本轮离群维度（turns>100 且纯文本轮占比>50%）：add-systemd-hosting 两派 58/111（52.3%）与 88/169（52.1%）、fix-escalation-chain-ledger-closure 一派 59/108（54.6%），合计 388 轮中 205 轮无工具调用；该形态第三窗持续命中且首次同车道多 run 并发，复发敞口为每窗多烧一轮演化复核注意力（上窗实测曾白跑一轮复核）。
@@ -190,6 +183,7 @@
 - audit 语义项转写失败：contradiction（spec/knowledge/domains/dashboard-frontend/unified-page-title-bar.md × spec/knowledge/domains/harness-integration/agent-harness-adapter.md），请人工核查
 
 ## 2026-11-08
+
 ### 可改进
 - **[arbiter:add-inte] 集成测试交付物代理注入面缺失（GitHub 限速环境下「修环境」出口不可达）**
   - 影响：add-integration-test-env 及同类 Docker 克隆型 SPEC 的验证轮在国际链路限速时段必败，manual_fixed_reverify（修环境重验）出口结构性不可达，人工只剩「豁免（失覆盖面）」或「赌网络窗口重验」两选项；每次限速窗口都产生一轮豁免握手停车+人工裁决负担
