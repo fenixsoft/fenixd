@@ -4,8 +4,10 @@
 
 知识体检病灶族新增第六类「锚点悬空」：`core/knowledge.py` 新增
 `check_anchor_references(project_root) -> list`，只扫描各能力页 `## 代码锚点`
-段内的路径 token，逐一生成仓库相对路径并校验盘上存在性（`spec/archive/`、
-`spec/knowledge/_inbox/`、`node_modules/` 下路径跳过）；悬空项进体检报告
+段内的路径 token（`路径:符号` 形态取路径部分；`路径:行号` 尾形态报格式违规
+「行号必腐」，与悬空并列两类发现），逐一生成仓库相对路径并校验盘上存在性
+（`spec/archive/`、
+`spec/knowledge/_inbox/`、`node_modules/` 下路径跳过）；悬空与格式违规项进体检报告
 「待人工/定向转写」档计数与明细。该检查 MUST NOT 并入
 `validate_knowledge` 硬门（防一处陈旧锚点阻塞全树折叠校验），MUST NOT 机械
 自删悬空锚点行（修复需语义判断，删除丢信息）。

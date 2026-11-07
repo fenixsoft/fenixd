@@ -54,7 +54,8 @@ MUST NOT 携带指向已删除文件/域的现行口径引用（「镜像 X 两�
 #### Scenario: 世代前缀拦截
 
 - **WHEN** 蒸馏产出新能力页 `v4-xxx-page.md`
-- **THEN** 校验/复核判命名违规，改功能名（如 `xxx-page.md`）
+- **THEN** 蒸馏车道复核与 spec 评审判命名违规（机械校验面不覆盖命名——锚点存活
+  检查只约束锚点段），改功能名（如 `xxx-page.md`）
 
 ### Requirement: ADR retired 状态词汇
 
