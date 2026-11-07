@@ -19,3 +19,17 @@
 
 - 双形态分支膨胀 → 分支收敛在布局容器级，卡片/行级组件抽为子件复用
 - 依赖时序 → depends_on 硬约束，daemon 依赖唤醒机制保证前序合并后派发
+
+## 修订记录
+
+- **2026-11-07 运维页移动原型重绘（用户确认定稿 r2，UI 真相源重新绑定）**：
+  prototype/m-ops.html 重绘并覆盖入库（screenshots/ops.png 同步刷新）。对齐
+  pages/v2/ops.tsx 现状：页签序更名 处置链（缺省）/自动运维记录/告警记录
+  （旧「告警缺省/自愈」退役）；标题入设备顶栏、副标题与返回箭头移动端不渲染
+  （unified-page-title-bar 移动语义）；处置链四段堆叠卡（在飞链/签名配额/
+  人工队列/升级件）；磁贴圆角 12；colorLink 对齐 theme.tsx V2_LINK。
+  批注定稿「移动端宽度有限，去嵌套 bento 白卡、直接行呈现」（ops-auto /
+  ops-alert-list 两锚）落现产 ops.tsx 两 pane 移动分支：嵌套磁贴仅移动端
+  解除，桌面形态不变；V2AlertRow 与 overview 共用故行内边距不动。
+  锚保持：ops-panel、ops-alert-item-1/2/3 原锚保留；ops-titlebar→ops-topbar、
+  ops-chain→ops-chain-table(+四段锚) 受波及换锚（机械门通过）。

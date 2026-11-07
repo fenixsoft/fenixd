@@ -3,16 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>移动端 · 运维 — Bento v2</title>
+<title>移动端 · 运维（三页签）— Bento v2</title>
+<!-- 重绘（2026-11-07）：对齐现产 pages/v2/ops.tsx 三页签（处置链[缺省]/自动运维记录/告警记录）。
+     相对旧版 m-ops.html 的差异：①页签序与命名对齐现产（旧「告警缺省/自愈」退役）；
+     ②标题入设备顶栏（unified-page-title-bar：移动端标题并入带 logo/汉堡的顶栏，
+     副标题[五项统计]移动端不显示、返回箭头移动端不渲染）；③处置链页签由占位行
+     升级为四段堆叠卡（在飞链/签名配额/人工队列/升级件，含空态文案语义）；
+     ④自动运维记录落真实字段形态（ActivityCard：时间/项目/SPEC/信号/结果/需人工
+     决策胶囊 + 失败原因/叙述/处置/建议 + 服务端分页 15/页）；⑤告警记录行落
+     V2AlertRow 移动分支（裁决 choices：Select 全宽 + 附注 + 执行；无 choices：
+     标记已处理全宽）+ 已解决折叠；⑥磁贴圆角 16→12（2026-11-06 全站统一）、
+     colorLink 对齐 theme.tsx V2_LINK #4176e6。
+     壳位：standalone 移动（顶栏壳位）；embed=1 行壳位（60px 玻璃带）为另一形态，
+     本原型不覆盖。非交互项（执行/标记已处理/查看处置过程/分页翻页）仅视觉呈现。 -->
 <style>
   html, body { margin: 0; padding: 0; background: #f8fafc; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; -webkit-font-smoothing: antialiased; }
   .num { font-variant-numeric: tabular-nums; }
   .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 16px; box-shadow: 0 1px 3px rgba(15,23,42,0.05); }
+  /* Bento 白磁贴：圆角 12（DESIGN.md 通用条款，2026-11-06 自 16 改 12）+ 细边框 + 软阴影 */
+  .bento { background: #fff; border: 1px solid #eef2f7; border-radius: 12px; box-shadow: 0 1px 3px rgba(15,23,42,0.05), 0 1px 2px rgba(15,23,42,0.03); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .chip { flex-shrink: 0; padding: 7px 14px; border-radius: 999px; background: #fff; border: 1px solid #e2e8f0; font-size: 13px; color: #475569; }
-  .chip.on { background: #0f1115; border-color: #0f1115; color: #fff; font-weight: 600; }
+  /* 设备顶栏（standalone 移动档 48px 窄幅密度）：玻璃底 + 下缘细线 #e2e8f0 */
+  .topbar { position: sticky; top: 0; z-index: 20; height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid #e2e8f0; }
   /* 桌面浏览器预览约束：锁定 390px 手机屏宽（真机/DevTools 下随视口自适应） */
   #root { max-width: 390px; margin: 0 auto; min-height: 100vh; background: #f8fafc; box-shadow: 0 0 0 1px #eef2f7; }
 </style>
@@ -23,57 +36,192 @@
 'use strict';
 var h = React.createElement;
 var A = window.antd;
-var CP = A.ConfigProvider, Tag = A.Tag, Button = A.Button, Progress = A.Progress, Tabs = A.Tabs, Select = A.Select, Drawer = A.Drawer, Table = A.Table;
-var C = { text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8', blue: '#2563eb', blueSoft: '#eff6ff',
-  green: '#16a34a', greenSoft: '#f0fdf4', red: '#dc2626', redSoft: '#fef2f2', amber: '#d97706', amberSoft: '#fffbeb', cyan: '#0891b2', cyanSoft: '#ecfeff' };
-var TONE = { info: [C.blue, C.blueSoft], warning: [C.amber, C.amberSoft], critical: [C.red, C.redSoft], good: [C.green, C.greenSoft], muted: [C.text3, '#f1f5f9'] };
+var CP = A.ConfigProvider, Tag = A.Tag, Button = A.Button, Pagination = A.Pagination, Select = A.Select, Tabs = A.Tabs;
+// ── 色值单源：pages/v2/theme.tsx（v2 例外域，零自创色） ──
+var C = { text: '#1e293b', text2: '#475569', text3: '#64748b', text4: '#94a3b8',
+  blue: '#2563eb', blueSoft: '#eff6ff', green: '#16a34a', greenSoft: '#f0fdf4',
+  red: '#dc2626', redSoft: '#fef2f2', amber: '#d97706', amberSoft: '#fffbeb',
+  aqua: '#0891b2', aquaSoft: '#ecfeff', slateSoft: '#f1f5f9',
+  bg: '#f8fafc', border: '#e2e8f0', hairline: '#eef2f7', split: '#f1f5f9', link: '#4176e6' };
+// V2_TONE（胶囊 filled 形态：[前景, 软底]）
+var TONE = { info: [C.blue, C.blueSoft], warning: [C.amber, C.amberSoft], critical: [C.red, C.redSoft],
+  good: [C.green, C.greenSoft], aqua: [C.aqua, C.aquaSoft], muted: [C.text3, C.slateSoft] };
 function Pill(k, children) { var p = TONE[k] || TONE.muted; return h(Tag, { style: { marginInlineEnd: 0, borderRadius: 999, fontSize: 12, paddingInline: 9, color: p[0], background: p[1], borderColor: 'transparent', fontWeight: 500 } }, children); }
-function IconDots() { return h('svg', { width: 16, height: 16, viewBox: '0 0 14 14', fill: 'currentColor' }, h('circle', { cx: 2.6, cy: 7, r: 1.3 }), h('circle', { cx: 7, cy: 7, r: 1.3 }), h('circle', { cx: 11.4, cy: 7, r: 1.3 })); }
-function Back() { return h('svg', { width: 16, height: 16, viewBox: '0 0 14 14', fill: 'none' }, h('path', { d: 'M9 2.5 4.5 7 9 11.5', stroke: '#475569', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' })); }
-function Card(anchor, children, extra) { return h('div', Object.assign({ 'data-proto-id': anchor, className: 'bento', style: { padding: '14px 16px', marginTop: 12 } }, extra || {}), React.Children.toArray(children)); }
-var THEME = { token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.blue, colorInfo: C.blue,
-  colorSuccess: C.green, colorError: C.red, colorWarning: C.amber, colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
-  colorBgLayout: '#f8fafc', colorBorder: '#e2e8f0', colorBorderSecondary: '#eef2f7', colorSplit: '#f1f5f9',
-  borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 16, controlHeight: 32, controlHeightSM: 28,
+var THEME = { token: { colorPrimary: '#0f1115', colorPrimaryHover: '#43454a', colorPrimaryActive: '#2c2c2e', colorLink: C.link, colorInfo: C.link,
+  colorSuccess: '#22c55e', colorError: C.red, colorWarning: C.amber, colorText: C.text, colorTextSecondary: C.text2, colorTextTertiary: C.text3, colorTextQuaternary: C.text4,
+  colorBgLayout: C.bg, colorBorder: C.border, colorBorderSecondary: C.hairline, colorSplit: C.split,
+  borderRadius: 12, borderRadiusSM: 8, borderRadiusLG: 12, controlHeight: 32, controlHeightSM: 28,
   fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif" },
-  components: { Button: { primaryShadow: 'none', defaultShadow: 'none' }, Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: '#f8fafc' } } };
-function Page() {
-  return h('div', { style: { minHeight: '100vh' } }, h('main', { style: { padding: '16px 14px 32px' } },
-    h('div', { 'data-proto-id': 'ops-titlebar' },
-      h('div', { style: { fontSize: 20, fontWeight: 700 } }, '运维'),
-      h('div', { style: { display: 'flex', gap: 12, marginTop: 4, flexWrap: 'wrap' } },
-        ['待处理 3', '在飞链 2', '24h 解决 7', '升级人工 1'].map(function (s) {
-          return h('span', { key: s, className: 'num', style: { fontSize: 12, color: C.text3 } }, s);
-        }))),
-    Card('ops-panel', [
-      h(Tabs, { defaultActiveKey: 'alert', size: 'small', items: [
-        { key: 'alert', label: '告警 (3)', children: [
-          h('div', { 'data-proto-id': 'ops-alert-item-1', style: { borderTop: '1px solid #f1f5f9', padding: '10px 0' } },
-            Pill('critical', '严重'),
-            h('div', { style: { fontSize: 13.5, fontWeight: 600, marginTop: 5 } }, '处置链中断：choice 载荷通道缺失'),
-            h('div', { className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 3 } }, 'atlas-api · 09:14'),
-            h(Select, { size: 'small', placeholder: '选择处置动作', style: { width: '100%', marginTop: 8 }, options: [{ value: 'replay', label: '重放该链（跳过 choice）' }] }),
-            h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
-              h(Button, { size: 'small', type: 'primary', style: { flex: 1 } }, '执行'),
-              h(Button, { size: 'small', style: { flex: 1 } }, '标记已处理'))),
-          h('div', { 'data-proto-id': 'ops-alert-item-2', style: { borderTop: '1px solid #f1f5f9', padding: '10px 0' } },
-            Pill('warning', '较重'),
-            h('div', { style: { fontSize: 13.5, fontWeight: 600, marginTop: 5 } }, '实现分支滞留主树超 24h 未合并'),
-            h('div', { style: { fontSize: 12.5, color: C.text2, lineHeight: '19px', marginTop: 4 } }, '分支 fenix/fix-token-ledger-drift 已 merged 但未删除；建议走分支回收宽限期自动清理，或手工 -d 删除。'),
-            h('div', { className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 4 } }, 'beacon-web · 08:52'),
-            h(Button, { size: 'small', block: true, style: { marginTop: 8 } }, '标记已处理')),
-          h('div', { 'data-proto-id': 'ops-alert-item-3', style: { borderTop: '1px solid #f1f5f9', padding: '10px 0' } },
-            Pill('muted', '轻微'),
-            h('div', { style: { fontSize: 13.5, fontWeight: 600, marginTop: 5 } }, '陈旧代码自愈连续 3 次失败，冷却中'),
-            h('div', { className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 3 } }, 'drift-ml · 07:30'),
-            h(Button, { size: 'small', block: true, style: { marginTop: 8 } }, '标记已处理')),
-        ] },
-        { key: 'chain', label: '处置链', children: h('div', { 'data-proto-id': 'ops-chain', style: { padding: '12px 0', fontSize: 12, color: C.text3 } }, 'chain-20261105-0914 · atlas-api · 中断（卡片列表随实现展开）') },
-        { key: 'auto', label: '自愈', children: h('div', { style: { padding: '12px 0', fontSize: 12, color: C.text3 } }, Pill('good', '24h 无失败'), ' · 成功率 94%（33/35）') },
-      ] }),
-    ], { padding: '4px 12px 8px' }),
-  ));
+  components: { Input: { activeBorderColor: C.link, activeShadow: '0 0 0 2px rgba(65, 118, 230, 0.12)', hoverBorderColor: C.text4 },
+    Button: { primaryShadow: 'none', defaultShadow: 'none' },
+    Table: { headerBg: 'transparent', headerColor: C.text3, headerSplitColor: 'transparent', rowHoverBg: C.bg } } };
+
+// ── 假数据（全部内联字面量，一眼可辨示例） ──
+var FLIGHT = [
+  { id: 'chain-20261106-0914', t: '11-06 09:14', row2: 'atlas-api · add-alert-selfheal · arbiter 裁决中' },
+  { id: 'chain-20261106-0837', t: '11-06 08:37', row2: 'beacon-web · add-spec-list-mobile-style · admin 处置中' }];
+var QUOTA = [
+  { sig: 'verify_fail_timeout', gran: 'spec', ok: true, meta: 'add-distill-run-summary · Admin 1/3 · Arbiter 0/2 · 11-06 08:52' },
+  { sig: 'mergeback_wip_overlap', gran: 'project', ok: false, meta: 'Admin 3/3 · Arbiter 2/2 · 11-05 22:41' },
+  { sig: 'stash_pop_conflict', gran: 'spec', ok: true, meta: 'add-run-prompt-viewer · Admin 0/3 · Arbiter 1/2 · 11-05 18:09' }];
+var QUEUE = [
+  { sig: 'mergeback_wip_overlap', sev: 'major', handled: false, desc: '实现分支合并被主树 WIP 占用阻塞，已等待 2 个轮询窗，建议先落主树改动再放行。', meta: 'beacon-web · 11-06 07:58' }];
+var ESCAL = [
+  { sig: 'family_explosion', sev: 'critical', handled: false, desc: 'SPEC 族 24h 内新增 9 个派生 SPEC，超过族爆炸阈值，已升级人工裁决是否拆族。', meta: 'drift-ml · 11-05 21:17' },
+  { sig: 'dispatch_stalled', sev: 'major', handled: true, desc: '派发停滞 25 分钟：并发槽位被长尾 run 占满，看门狗已自动扩容恢复。', meta: 'atlas-api · 11-05 16:44' }];
+var ACTS = [
+  { t: '11-06 09:14', proj: 'atlas-api', spec: 'add-alert-selfheal', signal: '阻塞滞留', result: ['critical', '已中断'], unhandled: true, run: true,
+    err: '网关 429 连续 3 窗超阈值，处置 run 在第 4 轮被中断。',
+    summary: '已定位为 provider 瞬断叠峰：同读 run_at 的四路任务齐发触发限流，非链路逻辑缺陷。',
+    act: '重放处置链被网关限流阻断，未推进。', rec: '等待 10 分钟冷却后在告警页一键重派。' },
+  { t: '11-06 08:52', proj: 'beacon-web', spec: 'add-spec-list-mobile-style', signal: '卡滞', result: ['good', '已解决'], run: true,
+    summary: 'SPEC 卡在 implementing 超 40 分钟：探测为实现分支与主树同文件异动，编译自洽判定成立后已让路重新排队。',
+    act: '暂停在飞 run 并登记重派信号。', rec: '无需人工跟进。' },
+  { t: '11-05 23:41', proj: 'drift-ml', signal: '状态抖动', result: ['warning', '部分解决'], run: false, noSummary: true,
+    fallback: '（无叙述总结）处置：重启守护进程并清理陈旧锁 · 结果：partially-resolved' }];
+var ALERTS = [
+  { sev: 'critical', sevK: '严重', desc: '处置链中断：choice 载荷通道缺失',
+    ev: '链 chain-20261106-0914 在 admin→人工段无有效载荷通道，重放与改道均失败（3 次）。',
+    meta: '项目 atlas-api · add-alert-selfheal · 11-06 09:14', choices: ['重放该链（跳过 choice 段）', '改道 Arbiter 裁决', '终止该链'] },
+  { sev: 'major', sevK: '较重', desc: '实现分支滞留主树超 24h 未合并',
+    ev: '分支 fenix/fix-token-ledger-drift 已 merged 但未删除；建议走分支回收宽限期自动清理，或手工 -d 删除。',
+    meta: '项目 beacon-web · 11-06 08:52' },
+  { sev: 'minor', sevK: '轻微', desc: '陈旧代码自愈连续 3 次失败，冷却中',
+    meta: '项目 drift-ml · 11-06 07:30' }];
+var RESOLVED = [
+  { desc: '网关 DNS 失效：admin 下发 drop-in 已回滚，53 端口恢复', t: '11-05 19:03' },
+  { desc: '健康检测误报：探测 UA 遭 CF 1010，已换 UA', t: '11-05 16:44' }];
+
+var HAIR = '1px solid ' + C.hairline;
+function escCardChildren(r) {
+  var kids = [h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+    h('span', { style: { fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0 } }, r.sig),
+    Pill(r.sev === 'critical' ? 'critical' : r.sev === 'major' ? 'warning' : 'muted', r.sev === 'critical' ? '严重' : r.sev === 'major' ? '较重' : r.sev),
+    r.handled ? Pill('good', '已处理') : Pill('warning', '待处理'))];
+  if (r.desc) kids.push(h('div', { key: 'desc', style: { fontSize: 12, color: C.text3, marginTop: 3, whiteSpace: 'pre-wrap' } }, r.desc));
+  kids.push(h('div', { key: 'meta', className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 3 } }, r.meta));
+  return kids;
 }
-ReactDOM.createRoot(document.getElementById('root')).render(h(CP, { theme: THEME }, Page()));
+function quotaCardChildren(r) {
+  return [h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+      h('span', { className: 'mono ellipsis', style: { fontSize: 12.5, flex: 1, minWidth: 0 } }, r.sig),
+      Pill('muted', r.gran),
+      r.ok ? Pill('good', '余量正常') : Pill('critical', '配额耗尽')),
+    h('div', { className: 'num', style: { fontSize: 12, color: C.text3, marginTop: 3, wordBreak: 'break-all' } }, r.meta)];
+}
+function actCardChildren(a) {
+  var kids = [h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+    h('span', { className: 'num', style: { fontSize: 12, color: C.text4 } }, a.t),
+    Pill('muted', a.proj),
+    a.spec ? Pill('info', a.spec) : null,
+    Pill('aqua', a.signal),
+    Pill(a.result[0], a.result[1]),
+    a.unhandled ? Pill('critical', '需人工决策') : null,
+    h('span', { style: { flex: 1 } }),
+    a.run ? h('a', { style: { fontSize: 12 }, tabIndex: 0 }, '查看处置过程') : null)];
+  if (a.err) kids.push(h('div', { key: 'err', style: { fontSize: 12.5, color: C.red, marginTop: 5, whiteSpace: 'pre-wrap' } }, '失败原因：' + a.err));
+  if (a.noSummary) {
+    kids.push(h('div', { key: 'fallback', style: { fontSize: 12.5, color: C.text3, marginTop: 5 } }, a.fallback));
+  } else {
+    kids.push(h('div', { key: 'sum', style: { fontSize: 12.5, lineHeight: '20px', color: C.text, marginTop: a.err || a.unhandled ? 6 : 5, whiteSpace: 'pre-wrap' } }, a.summary));
+    kids.push(h('div', { key: 'act', style: { fontSize: 12.5, color: C.text2, marginTop: 4, whiteSpace: 'pre-wrap' } }, h('span', { style: { color: C.text3 } }, '处置：'), a.act));
+    kids.push(h('div', { key: 'rec', style: { fontSize: 12.5, color: C.text2, marginTop: 4, whiteSpace: 'pre-wrap' } }, h('span', { style: { color: C.text3 } }, '建议：'), a.rec));
+  }
+  return kids;
+}
+function alertCardChildren(a) {
+  var kids = [h('span', { key: 'pill' }, Pill(a.sev === 'critical' ? 'critical' : a.sev === 'major' ? 'warning' : 'muted', a.sevK)),
+    h('div', { key: 'desc', style: { fontSize: 13.5, fontWeight: 600, marginTop: 5, whiteSpace: 'pre-wrap' } }, a.desc)];
+  if (a.ev) kids.push(h('div', { key: 'ev', style: { fontSize: 12.5, color: C.text2, lineHeight: '19px', whiteSpace: 'pre-wrap', marginTop: 4 } }, a.ev));
+  kids.push(h('div', { key: 'meta', className: 'num', style: { fontSize: 12, color: C.text4, marginTop: 4 } }, a.meta));
+  if (a.choices) {
+    kids.push(h(Select, { key: 'sel', size: 'small', placeholder: '选择处置动作', style: { width: '100%', marginTop: 8 },
+      options: a.choices.map(function (c) { return { value: c, label: c }; }) }));
+    kids.push(h('div', { key: 'row', style: { display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' } },
+      h('a', { style: { fontSize: 12, color: C.text4 }, tabIndex: 0 }, '附注'),
+      h('span', { style: { flex: 1 } }),
+      h(Button, { size: 'small', type: 'primary' }, '执行')));
+  } else {
+    kids.push(h(Button, { key: 'mark', size: 'small', block: true, style: { marginTop: 8 } }, '标记已处理'));
+  }
+  return kids;
+}
+
+// 页签状态走模块级变量 + 整树重渲染（vendor 双 React 实例下 hooks 不可用，
+// 原型交互只需页签切换，无需局部 state）。初始页签对齐现产 initialTab 语义：
+// URL ?tab= 仅认 auto/alert，非法或缺省回退处置链
+var initialTab = function () {
+  var t = new URLSearchParams(location.search).get('tab');
+  return t === 'auto' || t === 'alert' ? t : 'chain';
+};
+var activeTab = initialTab();
+var protoRoot;
+function rerender() { protoRoot.render(h(CP, { theme: THEME }, Page())); }
+
+function Page() {
+  // 顶栏（standalone 移动）：汉堡 + 品牌之后接页标题（paddingLeft 8）；返回箭头
+  // 与副标题（五项统计）移动端不渲染（unified-page-title-bar 移动语义）；
+  // 处置链页签激活时顶栏右上过滤槽放单项目聚合 Select（state 提升宿主页口径）
+  var topbar = h('div', { 'data-proto-id': 'ops-topbar', className: 'topbar' },
+    h('svg', { width: 18, height: 18, viewBox: '0 0 18 18', fill: 'none' },
+      h('path', { d: 'M2 4.5h14M2 9h14M2 13.5h14', stroke: C.text2, strokeWidth: 1.5, strokeLinecap: 'round' })),
+    h('span', { style: { fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' } }, 'Fenix Harness'),
+    h('span', { style: { fontSize: 18, fontWeight: 700, lineHeight: '24px', paddingLeft: 8, minWidth: 0 } }, '运维'),
+    activeTab === 'chain' ? h(Select, { size: 'small', allowClear: true, placeholder: '全部项目', style: { marginLeft: 'auto', width: 128 },
+      options: ['atlas-api', 'beacon-web', 'drift-ml'].map(function (n) { return { value: n, label: n }; }) }) : h('span', { style: { flex: 1 } }));
+  // 处置链（缺省页签）：四段观测块转堆叠卡（多列表格窄屏无收缩点，越界治理布局优先）
+  var chainPane = h('div', { 'data-proto-id': 'ops-chain-table', style: { padding: '16px 0 4px' } },
+    h('div', { 'data-proto-id': 'ops-chain-flight' },
+      h('div', { style: { fontSize: 13, fontWeight: 600, margin: '0 0 10px' } }, '在飞链 ' + FLIGHT.length),
+      FLIGHT.map(function (r, i) {
+        return h('div', { key: i, style: { borderTop: HAIR, padding: '9px 0' } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            h('span', { className: 'mono ellipsis', style: { fontSize: 12.5, fontWeight: 600, flex: 1, minWidth: 0 } }, r.id),
+            h('span', { className: 'num', style: { fontSize: 12, color: C.text4 } }, r.t)),
+          h('div', { className: 'num', style: { fontSize: 12, color: C.text3, marginTop: 3, wordBreak: 'break-all' } }, r.row2));
+      })),
+    h('div', { 'data-proto-id': 'ops-chain-quota' },
+      h('div', { style: { fontSize: 13, fontWeight: 600, margin: '16px 0 10px' } }, '签名配额 ' + QUOTA.length),
+      QUOTA.map(function (r, i) { return h('div', { key: i, style: { borderTop: HAIR, padding: '9px 0' } }, quotaCardChildren(r)); })),
+    h('div', { 'data-proto-id': 'ops-chain-queue' },
+      h('div', { style: { fontSize: 13, fontWeight: 600, margin: '16px 0 10px' } }, '人工队列 ' + QUEUE.length),
+      QUEUE.map(function (r, i) { return h('div', { key: i, style: { borderTop: HAIR, padding: '9px 0' } }, escCardChildren(r)); })),
+    h('div', { 'data-proto-id': 'ops-chain-escalations' },
+      h('div', { style: { fontSize: 13, fontWeight: 600, margin: '16px 0 10px' } }, '升级件 ' + ESCAL.length),
+      ESCAL.map(function (r, i) { return h('div', { key: i, style: { borderTop: HAIR, padding: '9px 0' } }, escCardChildren(r)); })));
+  // 自动运维记录（2026-11-07 批注 r1：移动端宽度有限，去嵌套 bento 白卡、
+  // 内容直接呈现——行排布对齐处置链页签直接行惯例，横向 0 内边距）
+  var autoPane = h('div', { 'data-proto-id': 'ops-auto', style: { paddingTop: 6 } },
+    h('div', { 'data-proto-id': 'ops-auto-item-1', style: { padding: '11px 0' } }, actCardChildren(ACTS[0])),
+    h('div', { 'data-proto-id': 'ops-auto-item-2', style: { borderTop: HAIR, padding: '11px 0' } }, actCardChildren(ACTS[1])),
+    h('div', { 'data-proto-id': 'ops-auto-item-3', style: { borderTop: HAIR, padding: '11px 0' } }, actCardChildren(ACTS[2])),
+    h('div', { 'data-proto-id': 'ops-auto-pagination', style: { display: 'flex', justifyContent: 'flex-end', paddingTop: 12 } },
+      h(Pagination, { current: 1, pageSize: 15, total: 23, showSizeChanger: false, onChange: function () {} })));
+  // 告警记录（2026-11-07 批注 r1：同上，去嵌套 bento 白卡、直接行呈现；
+  // 行分隔线随行走 hairline，不再包卡）
+  var alertPane = h('div', { style: { paddingTop: 6 } },
+    h('div', { 'data-proto-id': 'ops-alert-list' },
+      h('div', { 'data-proto-id': 'ops-alert-item-1', style: { padding: '10px 0' } }, alertCardChildren(ALERTS[0])),
+      h('div', { 'data-proto-id': 'ops-alert-item-2', style: { borderTop: '1px solid ' + C.split, padding: '10px 0' } }, alertCardChildren(ALERTS[1])),
+      h('div', { 'data-proto-id': 'ops-alert-item-3', style: { borderTop: '1px solid ' + C.split, padding: '10px 0' } }, alertCardChildren(ALERTS[2]))),
+    h('div', { 'data-proto-id': 'ops-alert-resolved', style: { borderTop: HAIR, margin: '4px 0 0', paddingTop: 4 } },
+      h('a', { role: 'button', tabIndex: 0, style: { fontSize: 12, color: C.text4, display: 'inline-block', padding: '4px 2px' } }, '收起已解决'),
+      RESOLVED.map(function (r, i) {
+        return h('div', { key: i, style: { display: 'flex', gap: 10, padding: '7px 2px', alignItems: 'baseline' } },
+          Pill('good', '已解决'),
+          h('span', { style: { fontSize: 12.5, minWidth: 0, flex: 1 } }, r.desc),
+          h('span', { className: 'num', style: { fontSize: 12, color: C.text4, flexShrink: 0 } }, r.t));
+      })));
+  var TAB_ITEMS = [
+    { key: 'chain', label: '处置链', children: chainPane, forceRender: true },
+    { key: 'auto', label: '自动运维记录', children: autoPane, forceRender: true },
+    { key: 'alert', label: '告警记录', children: alertPane, forceRender: true }];
+  return h('div', { style: { minHeight: '100vh' } }, topbar,
+    h('main', { style: { padding: '16px 14px 32px' } },
+      h('div', { className: 'bento', 'data-proto-id': 'ops-panel', style: { padding: '4px 12px 16px', marginTop: 2 } },
+        h(Tabs, { activeKey: activeTab, onChange: function (k) { activeTab = k; rerender(); }, items: TAB_ITEMS }))));
+}
+protoRoot = ReactDOM.createRoot(document.getElementById('root'));
+rerender();
 })();
 </script><script src="annotator.js" defer></script></body></html>
