@@ -317,17 +317,33 @@ def _is_dashboard_serve_cmd(cmdline: str) -> bool:
     }
 
 
+def _read_proc_stat_fields(pid: int) -> list[str] | None:
+    """读 /proc/<pid>/stat，返回最后一个 ')' 之后的字段列表；读不到/解析失败 → None。
+
+    单一解析入口（code-review item 4bba30d8411a）：comm 字段可能含空格/括号，
+    从最后一个 ')' 之后切片再 split——其后首字段即 state（第 3 字段），次字段
+    为 ppid（第 4 字段）。_proc_starttime / _parent_is_tmux_server /
+    _parent_is_pid1 / _proc_state 四处消费各自取所需下标，避免解析规则在多处
+    重复实现后漂移。
+    """
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+        return data[data.rindex(")") + 2 :].split()
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def _proc_starttime(pid: int) -> int | None:
     """读 /proc/<pid>/stat 的 starttime（第 22 字段）；进程不存在 → None。
 
     starttime 比对用于防 PID 复用：目标死后 PID 被新进程复用时值必然不同。
     """
+    fields = _read_proc_stat_fields(pid)
+    if not fields:
+        return None
     try:
-        data = Path(f"/proc/{pid}/stat").read_text()
-        # comm 字段可能含空格：从最后一个 ')' 之后取字段（其后首字段=state=第 3 字段）
-        fields = data[data.rindex(")") + 2 :].split()
         return int(fields[19])  # 22 - 3 = 19
-    except (OSError, ValueError, IndexError):
+    except (ValueError, IndexError):
         return None
 
 
@@ -418,9 +434,8 @@ def _parent_is_tmux_server(pid: int) -> bool:
     实例后无差别 SIGTERM，杀掉 tmux 承载的人工常驻 dashboard（pane 进程死 →
     单窗口 tmux 会话消失），接管者自身带 watchdog 自杀——用户可访问实例静默
     死亡。本判据在 kill 前对占用者做与 _is_tmux_hosted 同源的长驻判定：
-    读 /proc/<pid>/stat 取 ppid（解析纪律同 _proc_starttime——comm 可能含
-    空格，从最后一个 ')' 之后切片取字段），沿祖先链上溯逐层调
-    _is_tmux_hosted(祖先 pid)。
+    读 /proc/<pid>/stat 取 ppid（解析入口同 _read_proc_stat_fields），
+    沿祖先链上溯逐层调 _is_tmux_hosted(祖先 pid)。
 
     必须上溯而非只查一层：`tmux new-session -d "... --serve"`（sh -c exec）
     形态下占用者父进程恰为 tmux server，但人工常驻的主流形态是 pane 交互
@@ -436,12 +451,12 @@ def _parent_is_tmux_server(pid: int) -> bool:
     """
     current = pid
     for _ in range(4):
+        fields = _read_proc_stat_fields(current)
+        if not fields:
+            return False
         try:
-            data = Path(f"/proc/{current}/stat").read_text()
-            # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
-            fields = data[data.rindex(")") + 2 :].split()
-            current = int(fields[1])
-        except (OSError, ValueError, IndexError):
+            current = int(fields[1])  # ')' 后次字段=ppid（第 4 字段）
+        except (ValueError, IndexError):
             return False
         if current <= 1:
             return False
@@ -456,19 +471,19 @@ def _parent_is_pid1(pid: int) -> bool:
     add-systemd-hosting：``fenix-dashboard.service`` 承载的生产实例主进程
     PPID 恒为 1（systemd 直接为父）；手工 ``--serve``/agent 自测实例的父
     进程是启动 shell（或经 PDEATHSIG 孤儿化后为 1，但那些实例无 unit 拉回
-    保护，收割不破坏常驻形态）。解析纪律与 _parent_is_tmux_server 同款：
-    读 /proc/<pid>/stat 从最后一个 ')' 之后切片取 ppid 字段。
+    保护，收割不破坏常驻形态）。解析入口同 _read_proc_stat_fields：取
+    ')' 后 ppid 字段。
 
     读取/解析失败（/proc 不可用、pid 已退出）→ False：接管路径按非 unit
     承载放行既有接管——fail-safe 偏向放行（孤儿化实例无 unit 依归，收割
     它不破坏任何常驻形态），与 tmux 豁免的方向一致。
     """
+    fields = _read_proc_stat_fields(pid)
+    if not fields:
+        return False
     try:
-        data = Path(f"/proc/{pid}/stat").read_text()
-        # ')' 后首字段=state（第 3 字段），次字段=ppid（第 4 字段）
-        fields = data[data.rindex(")") + 2 :].split()
-        return int(fields[1]) == 1
-    except (OSError, ValueError, IndexError):
+        return int(fields[1]) == 1  # ')' 后次字段=ppid（第 4 字段）
+    except (ValueError, IndexError):
         return False
 
 
@@ -882,11 +897,10 @@ def _is_process_alive(pid: int) -> bool:
 def _proc_state(pid: int) -> str | None:
     """读 /proc/<pid>/stat 的 state 字段（第 3 字段，Z=僵尸）；读不到 → None。
 
-    解析纪律同 _proc_starttime——comm 字段可能含空格/括号，从最后一个 ')'
-    之后取字段，其后首字段即 state。仅用于接管等待期识别僵尸态旧实例。
+    解析入口同 _read_proc_stat_fields，其后首字段即 state。
+    仅用于接管等待期识别僵尸态旧实例。
     """
-    try:
-        data = Path(f"/proc/{pid}/stat").read_text()
-        return data[data.rindex(")") + 2 :].split()[0]
-    except (OSError, ValueError, IndexError):
+    fields = _read_proc_stat_fields(pid)
+    if not fields:
         return None
+    return fields[0]
