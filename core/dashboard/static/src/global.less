@@ -630,9 +630,40 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   display: block;
 }
 
+// 设置页必填星号同行（2026-11-07 审批页签修复）：label 块化后，复合 label
+// （ApprovalModePanel 四组「外层 block 包装 span > 名称 block span + 说明 block
+// Text」的 required 项）的 block 首子把 ::before 星号（行内盒）甩成独占一行
+// ——移动端把星号拎出文档流钉在名称首行左缘，required label 留 padding 腾位；
+// 纯文本 required label 观感与桌面一致（星号在文字左侧），选填 label 无
+// required 类不受影响（与 antd 桌面「必填多一个星号位」行为一致）；PC ≥768
+// 零影响（inline-flex 布局原样）。top:2px 为星号与 14px 名称行基线目测对齐值。
+#root :is(.screen-xs, .screen-sm) .settings-page .ant-form-item-required {
+  position: relative;
+  padding-left: 12px;
+}
+#root :is(.screen-xs, .screen-sm) .settings-page .ant-form-item-required::before {
+  position: absolute;
+  left: 0;
+  top: 2px;
+}
+
 // 设置页开关行：窄屏一行放不下（名称+配置键注解），允许名称自身折行避免横向溢出
 #root :is(.screen-xs, .screen-sm) .settings-page .switch-inline-row .switch-inline-label {
   white-space: normal;
+}
+
+// 设置页窄屏断行兜底：label-note 注解内是下划线连接的长英文配置键 token（如
+// admin.code_review_fix.severity_batch_gate_enabled，44 字符无自然断点），缺省
+// overflow-wrap:normal 下整 token 伸出卡区（2026-11-07 质量页签 390px 实测
+// doc.scrollWidth=411，用户级/项目级两作用域均复现；600px 时 token 放得下故
+// 仅窄屏露出）。移动端对四类文本载体放开任意点断行——anywhere 仅在将溢出时
+// 才断，短注解与正常文本排版零变化；表格单元格不在列（自进化等宽表走容器内
+// 横向滚动的既有形态，不挤列）；PC（≥768）零影响。守卫：tests/settingsMobileTextWrap.test.mjs
+#root :is(.screen-xs, .screen-sm) .settings-page .label-note,
+#root :is(.screen-xs, .screen-sm) .settings-page .switch-inline-label,
+#root :is(.screen-xs, .screen-sm) .settings-page .ant-form-item-label label,
+#root :is(.screen-xs, .screen-sm) .settings-page .ant-typography {
+  overflow-wrap: anywhere;
 }
 
 // 概览页统计卡移动端优化（body 内边距 2026-11-06 用户指令对齐 v2 概览移动
@@ -728,4 +759,20 @@ html[data-embed-mode] #root .spec-detail-page > .ant-pro-page-container {
   margin-top: 4px;
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+/* ── 顶栏右侧动作区棘轮锁修正（2026-11-07，运维页→SPEC 列表标题挤压）────────
+   pro-layout ActionsContent 以 ResizeObserver 实测动作区内容宽并回写
+   right-content 内联 min-width（防动作被标题挤压的保护）。缺陷：min-width 一旦
+   锁宽，内部被观测元素随之撑到同宽，宽度不再回缩、观测器永不触发——锁只升
+   不降。触发链：运维页处置链页签顶栏「全部项目」Select（minWidth 200，实测
+   216px 锁宽）→ SPA 切任意页后 Select 撤销但锁残留 → 移动端 390px 顶栏标题区
+   被挤到 75px，富标题「共 N 个 SPEC」竖排一字一行（直连加载同页正常）。
+   恒 0 化该 min-width（!important 压内联样式），动作项自身禁收缩：收缩由
+   标题区承担（HeaderSlot flex:1 + minWidth 0，标题长时先缩不挤动作）。 */
+#root .ant-pro-global-header-right-content {
+  min-width: 0 !important;
+}
+#root .ant-pro-global-header-header-actions-item {
+  flex-shrink: 0;
 }
