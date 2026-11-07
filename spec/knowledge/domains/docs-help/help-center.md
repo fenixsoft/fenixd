@@ -1,7 +1,7 @@
 # Dashboard 帮助中心
 
-<!-- knowledge: capability=help-center rev=3
-     sources=spec/archive/2026-09-10-add-dashboard-help-center,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md -->
+<!-- knowledge: capability=help-center rev=4
+     sources=spec/archive/2026-09-10-add-dashboard-help-center,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
 
 Dashboard 内置的框架使用帮助入口：侧边栏直达的帮助中心页面，在线阅读 `docs/help/` 帮助文档集，文档更新无需重建前端。
 
@@ -17,10 +17,11 @@ Dashboard 内置的框架使用帮助入口：侧边栏直达的帮助中心页�
 - 渲染：正文渲染标题、列表、表格、代码块与链接；`mermaid` 代码块渲染为图形，采用动态 import 按需加载（不放大首屏体积，实例首次初始化后复用），渲染失败回退显示原始代码文本且不白屏；普通代码块保持等宽字体展示。
 - 页内导航：正文中指向其它帮助文档的相对链接在帮助页内切换渲染目标，不整页跳出。
 - 容错与空态：`docs/help/` 目录缺失或为空时显示「暂无帮助文档」空态，无未捕获异常；单篇文档读取失败时正文区显示错误提示，目录保持可用。
-- 移动端：视口宽度 <768px 时目录与正文不并排显示（上下堆叠或抽屉式切换），复用 useIsMobile + screen-xs 作用域适配模式；切换文档无横向滚动，正文文字不溢出。
+- 移动端：视口宽度 <768px 时目录与正文不并排显示，「文档目录」按钮经统一标题栏 filters 槽位声明（standalone 落顶栏右上角 FiltersSlot 天然右对齐、embed 行壳位 FiltersNode marginLeft:auto 落行右端），点击滑出目录抽屉，内容区只剩正文卡片——控件上移标题栏走 filters 槽位单一定点定式（见 dashboard-frontend 域 `unified-page-title-bar`）；切换文档无横向滚动，正文文字不溢出。桌面分支（左侧目录列形态）保持不变。
 
 ## 溯源
 
 - 2026-09-10 2026-09-10-add-dashboard-help-center（spec/archive/2026-09-10-add-dashboard-help-center） — 建立「帮助」菜单与 `/help` 路由、文档清单与单篇正文两个读取端点（动态读盘 + 白名单防穿越）、目录+正文布局与 mermaid 动态渲染、空态容错与移动端适配
 - 2026-11-04 unified-page-title-bar（spec/changes/unified-page-title-bar/） — 顶栏面包屑全局退役，`/help` 位置指示改由标题栏页面标题承担（规则段移除面包屑条款，帮助页迁入统一标题栏控件）
 - 2026-11-05 settings-help-document-scroll-unify（spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md） — 布局规则随迁：页面文档级滚动、文档目录 sticky 钉住（滚动形态细则归 document-scroll-unify 单源）
+- 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 移动端规则改写：文档目录按钮迁 filters 槽位落标题栏右侧（standalone 顶栏右上角 / embed 行右端）触发目录抽屉、内容区只剩正文卡片；桌面左侧目录列形态不变

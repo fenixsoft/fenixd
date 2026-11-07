@@ -80,3 +80,6 @@ dsh-bundle/node_modules.bak*/
 # pnpm 安装运行态（prepare/场景装依赖生成；npm 口径锁文件 package-lock.json 才入库）
 dsh-bundle/pnpm-lock.yaml
 .superpowers/
+
+# 集成测试运行时凭据（真实 key，禁止入库）
+tests/integration/.env

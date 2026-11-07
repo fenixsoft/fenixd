@@ -14,11 +14,15 @@
 - **THEN** 镜像内不存在 fenixd 框架源码目录（框架只在运行期克隆），镜像与环境变量声明中不存在任何 LLM key 字面值
 
 ### Requirement: 一键运行编排契约
-系统 SHALL 提供 `tests/integration/run.sh` 作为唯一本地触发入口：构建（或复用）镜像后 `docker run` 启动容器，经环境变量注入外部配置——LLM 三要素（baseurl/key/model，命名 `FENIX_IT_LLM_BASE_URL` / `FENIX_IT_LLM_API_KEY` / `FENIX_IT_LLM_MODEL`）、框架克隆源（默认 `https://github.com/fenixsoft/fenixd.git`，`FENIX_IT_GIT_REPO` / `FENIX_IT_GIT_REF` 可覆盖）、dsh 插件仓地址（`FENIX_IT_PLUGINS_REPO`）与超时预算（`FENIX_IT_TIMEOUT`）。容器内编排 MUST 顺序完成：HTTPS 克隆框架 → 执行 `install.sh` → 创建夹具项目（静态小站模板，git 初始化）→ 依注入配置生成 `.fenix/config.yaml`（provider 与 `agent.harness`）→ 启动 daemon → 程序化注册一个 fast-track 简单 SPEC（静态页可见元素 + 交互，可被 web 验证场景断言）→ 轮询 STATE.md 至终态 → 执行断言。
+系统 SHALL 提供 `tests/integration/run.sh` 作为唯一本地触发入口：构建（或复用）镜像后 `docker run` 启动容器，经环境变量注入外部配置——LLM 三要素（baseurl/key/model，命名 `FENIX_IT_LLM_BASE_URL` / `FENIX_IT_LLM_API_KEY` / `FENIX_IT_LLM_MODEL`）、框架克隆源（默认 `https://github.com/fenixsoft/fenixd.git`，`FENIX_IT_GIT_REPO` / `FENIX_IT_GIT_REF` 可覆盖）、dsh 插件仓地址（`FENIX_IT_PLUGINS_REPO`）与超时预算（`FENIX_IT_TIMEOUT`）。凭据缺项判定前 MUST 自动加载 `tests/integration/.env`（gitignored 运行时凭据文件，`KEY=VALUE` 行格式，bash source 语义）作为环境变量默认值——宿主机预置该文件即可零手工注入跑通真实双轮；文件不存在时回退纯环境变量。缺项即 fail-loud。容器内编排 MUST 顺序完成：HTTPS 克隆框架 → 执行 `install.sh` → 创建夹具项目（静态小站模板，git 初始化）→ 依注入配置生成 `.fenix/config.yaml`（provider 与 `agent.harness`）→ 启动 daemon → 程序化注册一个 fast-track 简单 SPEC（静态页可见元素 + 交互，可被 web 验证场景断言）→ 轮询 STATE.md 至终态 → 执行断言。
 
 #### Scenario: 真实模式缺凭据时 fail-loud 且零调用
-- **WHEN** 不带 LLM 环境变量执行 `run.sh`（真实模式，未加 `--smoke`）
+- **WHEN** 未预置 `tests/integration/.env` 且不带 LLM 环境变量执行 `run.sh`（真实模式，未加 `--smoke`）
 - **THEN** 脚本在启动任何容器/克隆/真实模型调用之前，输出缺失项清单与修复指引并以非零码退出（对齐 `bin/dsh_acceptance.py accept` 的信号式自检哲学）
+
+#### Scenario: 预置 .env 自动加载跑通真实模式
+- **WHEN** 宿主机存在 `tests/integration/.env` 且未手工 export 任何 `FENIX_IT_LLM_*` 变量，执行 `run.sh`（真实模式）
+- **THEN** 凭据自检以该文件为默认源全部通过，配置值经环境变量注入容器；key 明文不出现在 git 历史、镜像层与脚本日志中
 
 #### Scenario: 全链成功闭环
 - **WHEN** 注入有效 LLM 配置执行 `run.sh`，夹具 SPEC 被调度实现

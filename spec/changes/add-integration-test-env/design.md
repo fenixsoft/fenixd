@@ -34,13 +34,13 @@ fenixd 的既有质量面是宿主机 pytest 套件（`tests/`）与 dsh 通道�
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `FENIX_IT_LLM_BASE_URL` / `FENIX_IT_LLM_API_KEY` / `FENIX_IT_LLM_MODEL` | 无（真实模式必填） | LLM 三要素；claude 轮映射 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`，dsh 轮映射 bundle 模型显式配置三要素（provider/baseURL/apiKeyEnv——apiKeyEnv 指向容器内注入的键名变量） |
+| `FENIX_IT_LLM_BASE_URL` / `FENIX_IT_LLM_API_KEY` / `FENIX_IT_LLM_MODEL` | 默认源自 `tests/integration/.env`（gitignored 运行时凭据文件，见下）；文件与环境变量均缺失时真实模式必填 | LLM 三要素；claude 轮映射 `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL`，dsh 轮映射 bundle 模型显式配置三要素（provider/baseURL/apiKeyEnv——apiKeyEnv 指向容器内注入的键名变量） |
 | `FENIX_IT_GIT_REPO` / `FENIX_IT_GIT_REF` | `https://github.com/fenixsoft/fenixd.git` / 仓库默认分支 | 框架克隆源 |
 | `FENIX_IT_PLUGINS_REPO` | 宿主 `/root/dsh-plugins`（存在则挂载）；否则必填 | dsh 面板桥插件源：支持宿主路径（挂载进容器）或 git URL（容器内克隆） |
 | `FENIX_IT_TIMEOUT` | 3600（真实模式每轮秒数；smoke 900） | 单轮超时预算 |
 | `FENIX_IT_ARTIFACTS_DIR` | `.history/integration-runs/<UTC时间戳>/` | 产物输出（宿主侧，遵循 AGENTS.md 临时文件约定）；时间戳目录由 run.sh 在宿主侧创建，并以读写卷挂至容器内固定路径 `/artifacts`（见 D2） |
 
-真实模式启动前自检凭据齐备性，缺项即列清单退出（exit 2），不发起任何容器/网络动作——对齐 `bin/dsh_acceptance.py accept` 的人工信号式哲学。
+真实模式启动前，run.sh 以 `set -a; source tests/integration/.env; set +a` 自动加载宿主机预置凭据文件（已入 .gitignore，进程环境变量优先于文件值），随后自检凭据齐备性，缺项即列清单退出（exit 2），不发起任何容器/网络动作——对齐 `bin/dsh_acceptance.py accept` 的人工信号式哲学。本机已预置该文件：provider `bigmodel.cn`（Anthropic 兼容端点，模型 `glm-5.3-flash`），url/key 取自 `.fenix/config.yaml` providers 段同名条目；key 只落该 gitignored 文件，禁止写入任何入库文件、镜像层或日志输出。
 
 **D4 夹具 SPEC 的程序化注册**：容器内经 `.fenix/bin/fenix_spec.py new` 生成脚手架，以挂载的种子文件（`fixture/spec-proposal.md` / `fixture/spec-tasks.md`）覆写 proposal/tasks，`core.state_machine.add_spec` 注册为 fast-track——完全复用 fenix-new skill 的机械层，不走交互式 /fenix-new。夹具项目 = git 初始化的静态小站（`fixture/index.html` + `fixture/app.js`），SPEC 内容为「添加一个带稳定 testid 的徽标元素，点击切换文案」——足够简单（单文件改动）且可被 web 验证场景做 DOM 断言，真实驱动实现 → Playwright 验证 → 裁决全链。
 

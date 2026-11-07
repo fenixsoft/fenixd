@@ -1,4 +1,4 @@
-<!-- knowledge: capability=dashboard-spec-table rev=11 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/changes/add-spec-chinese-title,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-spec-list-mobile-style -->
+<!-- knowledge: capability=dashboard-spec-table rev=12 sources=spec/archive/2026-09-02-add-dashboard-spec-doc-tabs-and-info-clear,spec/archive/2026-09-02-add-dashboard-spec-table,spec/archive/2026-09-02-add-spec-doc-buttons,spec/archive/2026-09-02-add-spec-list-hover-hint,spec/archive/2026-09-02-add-spec-type-filter,spec/archive/2026-09-23-add-spec-manual-activation,spec/archive/2026-10-06-add-archive-state-migration,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-spec-chinese-title,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-spec-list-mobile-style -->
 
 # SPEC 列表表格
 
@@ -37,7 +37,7 @@
 - 移动卡片实现落点：卡片样式走 JSX 内联（不新增 less）；SSE 增量 patch 下卡片按 rowKey 身份复用（不自引入索引复用）。
 - 移动筛选编排：搜索框保留既有命中语义（specKeywordHit 单源：英文名 OR 中文标题）；状态筛选为横向滚动 chips（全部与各状态 + 计数徽标，激活态黑底白字镜像 overview Radio 惯例，再点取消）；「筛选」按钮打开底部 Drawer（antd Segmented 三组：类型 全部/进行中/已完成、归档 未归档/已归档、排序 名称/优先级/进度/创建时间——排序键集合与桌面表头一致），「查看结果」关闭 Drawer 并按所选过滤排序生效。
 - 移动分页：磁贴底部「加载更多」按钮 +「共 N 条 · 已显示 M 条」caption 替代 antd 分页器；数据层 pageSize 20 分页语义不变，已显示满额时按钮禁用。
-- 移动内容区背景色：SPEC 列表页移动端内容区背景色 #E3E3E3（用户指定色值，落 theme.ts 单源常量消费并在 DESIGN.md 修正案登记该色值条款；仅移动端内容区消费，桌面不改）。
+- 移动内容区背景色：SPEC 列表页移动端内容区背景为白底 `#ffffff`（theme.ts 单源常量 `SPEC_LIST_MOBILE_BG` 消费；色值条款在 DESIGN.md 修正案登记，改值走附则修正案程序；白磁贴卡与白底之间靠磁贴发丝边分界，不依赖灰底衬托；仅移动端内容区消费，桌面不改）。
 - 移动顶栏豁免：SPEC 列表页顶栏（页面标题栏）在移动端不做适配处理、保持现状（用户批注豁免）。
 
 ## 溯源
@@ -54,3 +54,4 @@
 - 2026-11-06 add-spec-chinese-title（spec/changes/add-spec-chinese-title/） — 新增名称列中文副标题条款（英文名主行下方次级中文行、缺失零渲染）与名称关键字过滤中文标题 OR 命中；排序键仍为英文名、树形/类型过滤语义不变
 - 2026-11-06 add-spec-subtitle-and-row-click（spec/changes/add-spec-subtitle-and-row-click/） — 新增整行点击进详情条款（任意非交互单元格可点、展开钮/操作列事件守卫、名称链接连跳不拦截、展开行豁免、无 error 抑制语义）
 - 2026-11-06 add-spec-list-mobile-style（spec/changes/add-spec-list-mobile-style/） — 移动端节整体改版：新增移动卡片形态与移动筛选编排规则组（白磁贴卡流与七行层级、语义胶囊行镜像 v2 色对、阶段进度区共用单源、终态紧凑化与草稿「—」、元信息/验证/信息行、fix-* 子卡缩进 └、整卡点击与 ⋮ 菜单、状态 chips、筛选底部 Drawer、加载更多分页、#E3E3E3 内容区背景单源常量）；废除移动卡片链接蓝 16px 名称形态与平铺按钮文档入口（收编卡内 ⋮ 菜单）；桌面表格规则零改动
+- 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 移动内容区背景色改白：SPEC_LIST_MOBILE_BG 单源值 #E3E3E3→#ffffff，灰底衬托退役（白磁贴卡靠发丝边分界），DESIGN.md 修正案登记随值同步、改值走附则修正案程序纪律不变

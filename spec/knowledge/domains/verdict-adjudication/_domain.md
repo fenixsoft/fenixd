@@ -1,7 +1,7 @@
 # 验证裁决与证据
-> 最后更新：2026-11-03 20:35 UTC+8
+> 最后更新：2026-11-07 22:08 UTC+8
 
-验证裁决与证据：覆盖裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义、查重与重合成、缓存复验、env 类失败的豁免握手与场景修订处置出口、judge 场景修复写回受理门（fail-closed 整批校验与成对落盘），以及裁决在 Dashboard 的可见性。
+验证裁决与证据：覆盖裁决产物的产生与门检、证据分类与归因可信度、裁决结果与失败语义、查重与重合成、缓存复验、env 类失败的豁免握手与场景修订处置出口、judge 场景修复写回受理门（fail-closed 整批校验与成对落盘），以及裁决在 Dashboard 的可见性与结果文件兜底读取。
 
 ## 能力页
 
@@ -34,3 +34,4 @@
 | [judge-repair-budget-alignment](judge-repair-budget-alignment.md) | judge 修复预算口径统一（耗尽后无修复纯归因跨重启持久、受理点机械门禁穿透假 verified、硬上限冻结告警附修复预算上下文） | 2026-10-30 23:11 |
 | [verify-verdict-run-attribution](verify-verdict-run-attribution.md) | verdict 文件 run 级归属戳与采信判据（派发预写戳、消费三分支、残留禁作本轮输入、丢弃前 report.json 保全） | 2026-10-30 23:11 |
 | [judge-repair-scenario-writeback-gate](judge-repair-scenario-writeback-gate.md) | judge 修复场景写回受理门（受理点 fail-closed 整批校验 + 成对落盘 + 错误清单回传重修） | 2026-11-03 20:35 |
+| [verdict-run-result-fallback](verdict-run-result-fallback.md) | Dashboard 验证裁决兜底读取（无报告 md 时回退结果文件裁决段：私有 run-result / fast-track impl-result 快照 / 共享 run-result 三路候选，归属 fail-closed，空态不伪造结论） | 2026-11-07 22:08 |

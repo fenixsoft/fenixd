@@ -1,13 +1,14 @@
 # 指挥中心三屏前端
 
-<!-- knowledge: capability=command-center-console-ui rev=4
-     sources=spec/archive/2026-10-31-add-command-center,spec/archive/2026-11-02-add-command-center-spec-view,spec/knowledge/_inbox/done/command-center-light-embed-migration.md,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md -->
+<!-- knowledge: capability=command-center-console-ui rev=5
+     sources=spec/archive/2026-10-31-add-command-center,spec/archive/2026-11-02-add-command-center-spec-view,spec/knowledge/_inbox/done/command-center-light-embed-migration.md,spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
 
 指挥中心台面的前端面：`/command-center` 以 ProLayout 内容区常规页承载三 Tab（组织总览、交付流水线、执行台账）+ KPI 条，面向管理层快速检视组织交付态势与执行明细。
 
 ## 规则
 
 - **入口与页面骨架**：路由 `/command-center` 为 ProLayout 内容区常规页（侧栏/顶栏与全菜单一致），MUST NOT 回退 `layout:false` 脱壳形态（routes.ts 守卫拦截回潮）。菜单项由 `src/app.tsx` menuDataRender 注册。页面标题与双过滤项由统一标题栏控件（unified-page-title-bar）承载，PageContainer 页头不渲染（`title={false}` 抑制自动页头）。三屏以 antd Tabs 组织，默认展示组织总览；页签行不渲染 extra 区（过滤控件由标题栏承载）。
+- **移动端双过滤落内容区首行**：<768px 视口双 Select 不注册统一标题栏 filters 槽位（`filters={undefined}`），改落内容区首行 flex 行——项目 Select `flex:1` 铺行宽、时间窗 Select 定宽 100；时间窗「仅组织总览显示」的条件显隐不变。双 Select 声明收单源（`projectSelect`/`orgWinSelect` 元素常量，isMobile 只切宽度承载）；桌面视口双 Select 仍注册 filters 槽位、落顶栏右上角。
 - **URL 深链**：筛选与选中态入 URL——`project`（项目筛选）、`window`（时间窗，脏值回落 today）、`spec` + `spec_project`（org 屏 SPEC 视图二元组，写读单点；名单校验不过自动清除退出）；刷新/分享直达即得筛选语义。时间窗下拉仅总览页签显示，非总览页签不渲染（不留「显示但无效」的死控件）。
 - **三屏独立加载与降级**：各屏数据独立加载；某屏对应端点返回 5xx 或超时时仅该屏渲染错误占位与重试按钮，其余屏与 KPI 条不受影响。后台静默刷新失败保留旧数据，不白屏。加载/错误占位框平铺呈现（无描边、无底色）。
 - **数据接入与刷新**：复用既有 services 层 API client 模式（`src/services/dashboard.ts`）接入只读聚合端点；前端固定间隔（≥30s，现值 60s）静默轮询，无用户操作下数据自更新，MUST NOT 引入新配置项。
@@ -32,3 +33,4 @@
 - 2026-11-04 command-center-light-embed-migration（spec/knowledge/_inbox/done/command-center-light-embed-migration.md） — 黑改白+去脱壳嵌入改版：ProLayout 常规页、配色挂 theme.ts 单源、暗种子 *Bg 陷阱别名压制（controlItemBgActive）、Agent 卡流式自适应（minmax 270px 单源）、连接线 ResizeObserver+换灰、定高扣减换 SCREEN_CHROME_OFFSET=182、占位框平铺、DESIGN.md 大屏域收缩为 spec-topology 一项
 - 2026-11-04 unified-page-title-bar（spec/changes/unified-page-title-bar/） — 页头退役随迁改造：页面标题与双过滤项迁统一标题栏（standalone 顶栏 / embed·移动端行壳位），页签行 `tabBarExtraContent` extra 区移除，PageContainer 改传 `title={false}`，SCREEN_CHROME_OFFSET 回校 182→standalone 126/embed 118 双档
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 改写数据卡描边条款为卡片框 Bento 形态：五类卡片框（车道卡/团队卡/泳道容器/泳道 SPEC 卡/KPI 条主框）发丝边 + 12 圆角 + 软阴影（CARD_FRAME_* 镜像单源）、PANEL_BORDER 降级非框用途、占位框平铺与框内结构不换肤保留
+- 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 新增「移动端双过滤落内容区首行」条款：双 Select 声明收单源（isMobile 只切宽度承载）、移动端 filters 槽位不注册（filters={undefined}）、首行 flex 行（项目 Select flex:1 + 时间窗定宽 100）；桌面顶栏右上角形态不变

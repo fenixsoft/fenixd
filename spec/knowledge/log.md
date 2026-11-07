@@ -114,3 +114,11 @@
 ## [2026-11-07 00:02 UTC+8] distill | add-titlebar-subtitle-stacked（第 1 轮，自动提交落库）
 ## [2026-11-07 00:05 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 4 / 过 8）
 ## [2026-11-07 00:31 UTC+8] distill | add-spec-list-mobile-style（第 1 轮，自动提交落库）
+## [2026-11-07 21:32 UTC+8] fold | dsh-settings-dock-plugin-1107.md 折叠入库
+## [2026-11-07 21:36 UTC+8] fold | dsh-settings-dock-plugin-1107.md 折叠入库
+## [2026-11-07 21:40 UTC+8] fold | dsh-web-stale-asset-reconnect-loop-1107.md 折叠入库
+## [2026-11-07 21:43 UTC+8] fold | dsh-web-wide-table-horizontal-scrollbar-1107.md 折叠入库
+## [2026-11-07 21:53 UTC+8] fold | mobile-ui-fixes-1107.md 折叠入库
+## [2026-11-07 22:03 UTC+8] fold | ops-mobile-nested-bento-removal.md 折叠入库
+## [2026-11-07 22:08 UTC+8] fold | prolayout-header-actions-minwidth-ratchet.md 折叠入库
+## [2026-11-07 22:12 UTC+8] distill | fix-dashboard-verdict-fallback（第 1 轮，自动提交落库，折叠入库 6 条）

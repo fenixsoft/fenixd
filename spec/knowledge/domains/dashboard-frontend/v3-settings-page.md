@@ -1,4 +1,4 @@
-<!-- knowledge: capability=v3-settings-page rev=4 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md -->
+<!-- knowledge: capability=v3-settings-page rev=5 sources=spec/archive/2026-09-08-add-v3-settings-page,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md,spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md -->
 
 # v3 设置页
 
@@ -11,6 +11,7 @@ v3 的统一设置入口：左侧子项菜单 + 右侧面板，复用 v1 配置�
 - 文档措辞现状：`docs/help/` 仍以「设置页」指称本页（09-config.md 面板映射表、08-dashboard.md 锚点 `#设置页settings`），与 UI 命名暂不一致；触及帮助文档的改动顺带统一——锚点含中文段，改锚点须同步内外链。
 - 页面全量卡片挂 Bento 边框三件套（软阴影 + 圆角 10px + 加深边框 #d7d7d7，global.less 单源规则作用于本页所有 `.ant-card.ant-card-bordered`；卡头随卡根圆角同形 10px 10px 0 0）。本页为浅灰卡底（#f6f6f6/#efefef 条款不变，边框规则只接管边框）——浅灰底上 #eef2f7 发丝线不可辨，边框不可见即失效，故不走白磁贴 12px 发丝边条款；灰底准例仅此一页（DESIGN.md 通用条款登记），MUST NOT 推广至白底磁贴页。覆写位置纪律：Bento 边框规则必须后置于同特异性的页级直角化规则（border-radius: 0）之后，守卫测试钉住先后顺序。
 - `/settings` 路由采用 account/settings 风格布局：左侧竖向子项菜单（LLM Provider / Agent 模型分配 / 并行度设置 / 审批模式 / Token 预算 / 界面风格），右侧为当前子项面板；默认选中「LLM Provider」。页面纵向滚动为文档级（滚动条跨标题区域），左菜单列 sticky 钉住不随页面滚走——滚动形态与钉位常数细则由 dashboard-frontend 域 `document-scroll-unify` 单源承载。
+- 标题栏作用域控件移动端瘦身：顶栏 filters 槽位「作用域：」标签在移动端（<768px）不渲染，作用域 Select 宽度按视口分档——移动档 130（对齐 v2 配置页移动档同值）、桌面档 200；顶栏窄幅下标签+宽下拉会把标题行挤到换行，故移动端收窄。
 - 配置经 `GET /api/config?project=<name>` 读取（复用 v1 后端，零后端改动）；支持用户级（无项目参数，写 `~/.fenix/config.yaml`）与项目级（写 `.fenix/config.yaml`）作用域切换，默认项目级；无配置文件时展示提示且表单为默认值；受管键在响应 `sources` 中标记 `user` 时，面板展示「继承自用户级」提示。
 - LLM Provider 子项管理 `llm.providers` 列表：Provider 卡片（名称、baseurl、apikey、默认模型）支持追加空白卡片、编辑、删除，保存时整体写回数组。
 - Agent 模型分配子项按 Agent 角色（KNOWN_AGENT_TYPES 全集）逐个分配：Provider 下拉（取自 `llm.providers`）+ 模型名（留空使用该 Provider 默认模型），写回 `agents.models`（`{provider, model}`）；作用域内无 Provider 时展示「请先在 LLM Provider 子项添加 Provider」引导。
@@ -26,3 +27,4 @@ v3 的统一设置入口：左侧子项菜单 + 右侧面板，复用 v1 配置�
 - 2026-11-05 settings-help-document-scroll-unify（spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md） — 布局规则随迁：页面文档级滚动、左菜单 sticky 钉住（滚动形态细则归 document-scroll-unify 单源）
 - 2026-11-05 settings-menu-renamed-config-1105（spec/knowledge/_inbox/done/settings-menu-renamed-config-1105.md） — 全表面命名规则入库：统一「配置」避让 dsh 官方「设置」、四处标签同步面、路由/深链/条目 id 不改名、docs/help 措辞残余登记
 - 2026-11-06 overview-ledger-bento-align-1106（spec/knowledge/_inbox/done/overview-ledger-bento-align-1106.md） — 新增全量卡片 Bento 边框三件套规则：圆角 10px + 加深边框 #d7d7d7（浅灰卡底发丝线不可辨的灰底准例，仅此一页）、卡头随形、覆写后置于直角化规则的位置纪律
+- 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 新增标题栏作用域控件移动端瘦身条款：「作用域：」标签移动端不渲染、Select 宽度移动档 130（对齐 v2 配置页移动档同值）桌面档 200，防顶栏窄幅标题行换行
