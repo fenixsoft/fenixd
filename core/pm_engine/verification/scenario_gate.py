@@ -109,8 +109,12 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
       缺口区分开，避免「重排-剔除」循环。
 
     Returns:
-        dict：{'diff': <DiffResult>, 'path': <写入路径>}，便于报告渲染复用；
-        空集显式兜底时返回 {'aborted': 'no_valid_scenarios', 'rejected':
+        dict：{'diff': <DiffResult>, 'path': <场景文件路径>,
+        'persisted_updated': <持久化集 scenarios.json 是否真已写入>}，
+        便于报告渲染复用；持久化集写失败轮 path 为 test_scenarios.json
+        占位（非 scenarios.json），消费方据 persisted_updated=False 区分
+        （code-review b536410a1121）；空集显式兜底时返回
+        {'aborted': 'no_valid_scenarios', 'rejected':
         [<逐条剔除描述>], 'total': <原始总数>, 'path': <场景文件路径>}。
     """
     from core.verify_scenarios import (
@@ -312,7 +316,11 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
             f"持久化场景集写回失败 '{spec_name}'（scenarios.json 未更新，"
             f"下轮 diff 退化为首轮全量口径）: {e}",
         )
-        path = scenarios_path  # 写失败占位：供返回值 path 字段（当前无消费方）
+        # 写失败占位（code-review b536410a1121）：path 与成功路径指向不同
+        # 文件（此处 test_scenarios.json / 成功为 scenarios.json），返回值
+        # 以 persisted_updated=False 结构化标记区分，不复用 path 承载歧义
+        # 语义（当前无消费方）。
+        path = scenarios_path
     # 全量场景定义备份（_scenarios_full.json）：供无理由缺场景时按持久化集
     # 补齐 test_scenarios.json 的原始定义（design D2：不丢回归面）。
     # 仅当本轮未删减既有场景时更新备份（保留最全的历史定义）。
@@ -438,7 +446,17 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
         if backup.exists():
             try:
                 backup_data = json.loads(backup.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                # code-review c4f7e68b4019：备份读失败与下方「顶层非列表」
+                # 同属备份不可用，两种形态留痕口径一致——否则排障只见
+                # 「定义不可恢复」剔除结论，无法归因备份从未写过/被截断/
+                # 编码损坏（3.6 留痕口径：失败不得零痕迹）。
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"场景备份不可用 '{spec_name}'（_scenarios_full.json 读取"
+                    f"失败 {type(e).__name__}: {e}，缺场景补齐将按"
+                    f"「定义不可恢复」剔除）",
+                )
                 backup_map = {}
             else:
                 # code-review e2441291ebbb：备份可能被外部损坏成「合法 JSON 但
@@ -656,7 +674,10 @@ def _apply_scenario_freeze(pipeline, spec_name: str,
             )
 
     pipeline._last_scenario_diff = diff  # 供报告渲染（2.3）读取
-    return {"diff": diff, "path": str(path)}
+    # persisted_updated（code-review b536410a1121）：写失败轮 path 为
+    # test_scenarios.json 占位，与成功路径的 scenarios.json 指向不同——
+    # 结构化标记供未来消费方区分「持久化集真已写入」与「写失败未动」。
+    return {"diff": diff, "path": str(path), "persisted_updated": persisted_updated}
 
 
 def _apply_interaction_contract(pipeline, spec_name: str) -> dict:

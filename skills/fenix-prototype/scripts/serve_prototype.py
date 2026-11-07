@@ -25,7 +25,7 @@
 
 退出码：0 = started / reused / stopped（``--stop`` 成功含 stopped /
 cleaned-stale，细分看 ``action`` 字段）；1 = ``--stop`` 无实例（not-running）/
-停止失败 / 停止超时；2 = 用法 / 目录错误 / 端口绑定重试耗尽。
+停止失败 / 停止超时；2 = 用法 / 目录错误 / 端口绑定重试耗尽 / PID 文件写入失败。
 """
 
 from __future__ import annotations
@@ -274,11 +274,14 @@ def probe_existing(proto_dir: Path, script_path: str) -> dict:
     if cmdline:
         return {"state": "stale", "info": info,
                 "reason": f"PID {pid} 存活但非本原型服务器实例（身份核实不符），不误杀、直接接管"}
-    # 无 /proc 平台（macOS/Windows 等）命令行核实不可用：显式标注给调用方，
-    # 而非静默判 stale（避免同目录每次重复叠加新实例、覆盖 PID 文件）。
+    # 命令行核实不可用：无 /proc 平台（macOS/Windows 等），或 Linux 上
+    # /proc/<pid>/cmdline 读取受限（hidepid 挂载、他人进程）同样返回空串——
+    # 显式标注给调用方，而非静默判 stale（避免同目录每次重复叠加新实例、
+    # 覆盖 PID 文件）。
     return {"state": "stale", "info": info,
-            "reason": f"PID {pid} 存活但命令行核实不可用（本平台无 /proc，"
-                      "无法确认为本脚本实例），保守判残留接管",
+            "reason": f"PID {pid} 存活但命令行核实不可用（无 /proc 或 "
+                      "/proc/<pid>/cmdline 不可读，无法确认为本脚本实例），"
+                      "保守判残留接管",
             "cmdline_check": "unavailable"}
 
 
@@ -313,6 +316,12 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
 
     try:
         os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # probe 核实存活与发信号之间目标恰好自行退出：信号落空即停止已达成
+        # （PID 文件随退出方清理，此处幂等兜底），按成功返回而非并入 OSError
+        # 误报 stop-failed（调用方会据失败语义重试或误报）
+        remove_pid_file(proto_dir)
+        return {"ok": True, "action": "stopped", "pid": pid}
     except OSError as exc:
         remove_pid_file(proto_dir)
         return {"ok": False, "action": "stop-failed", "error": str(exc)}
@@ -325,6 +334,10 @@ def stop_server(proto_dir: Path, script_path: str) -> dict:
     # PID 文件交给下次启动的 stale 接管路径清理，与既有设计闭环。
     try:
         os.kill(pid, SIGKILL_SIG)
+    except ProcessLookupError:
+        # 同上：TERM 宽限观察窗内目标自行退出后 SIGKILL 落空，停止已达成
+        remove_pid_file(proto_dir)
+        return {"ok": True, "action": "stopped", "pid": pid}
     except OSError as exc:
         remove_pid_file(proto_dir)
         return {"ok": False, "action": "stop-failed", "error": str(exc)}
@@ -388,6 +401,11 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     # ── POST /feedback ────────────────────────────────────────────────
+    # 写接口零鉴权（保持零依赖简易伺服形态的取舍）：--host 绑定非回环地址时，
+    # 同网段任意对端可 POST 伪造/垃圾批注写进 feedback.json——该文件会回流给
+    # agent 读取驱动原型修订，构成内容注入面；反复写入也可撑到 8MB 总量上限
+    # 挤掉后续合法批注。读侧已有目录 403、内部文件 404 的暴露面收敛，写侧
+    # 防护以启动输出 note 显式警示落地（见 main 非回环绑定分支）。
     def do_POST(self):
         if self.path.split("?")[0].rstrip("/") != "/feedback":
             self._send_json(404, {"ok": False, "error": "仅支持 POST /feedback"})
@@ -546,6 +564,13 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
             self.close_connection = True
 
 
+def _url_host(bind_host: str) -> str:
+    """通配绑定地址（0.0.0.0/::）不能直接作为访问 URL：Windows 等平台该地址
+    不可达，用户照抄打不开原型——统一换成回环地址提示可达性，其余原样返回
+    （实际绑定的原地址由调用方单独保留在 bind_host 字段，不参与 URL 拼接）。"""
+    return "127.0.0.1" if bind_host in ("0.0.0.0", "::") else bind_host
+
+
 def bind_server(host: str, port: int, proto_dir: Path) -> ThreadingHTTPServer:
     """绑定监听；显式端口被占用时按随机高端口重试（冲突重试要求）。"""
     attempts = [(port, 0)] if port == 0 else \
@@ -602,7 +627,8 @@ def main(argv: list[str] | None = None) -> int:
     probe = probe_existing(proto_dir, script_path)
     if probe["state"] == "reuse":
         info = probe["info"]
-        url = f"http://{info.get('host', args.host)}:{info.get('port')}/"
+        # 与 started 同口径：PID 文件记录的通配绑定地址不直接作访问 URL
+        url = f"http://{_url_host(str(info.get('host', args.host)))}:{info.get('port')}/"
         emit({"ok": True, "action": "reused", "url": url, "pid": info.get("pid"),
               "pid_file": str(pid_file_path(proto_dir)),
               "note": "同目录已有存活实例，复用既有端口"}, args.json)
@@ -619,12 +645,21 @@ def main(argv: list[str] | None = None) -> int:
         emit({"ok": False, "error": str(exc)}, args.json)
         return 2
     host, port = server.server_address[0], server.server_address[1]
-    # 0.0.0.0 等通配绑定打印时保持用户输入（URL 用 localhost 提示可达性）
-    display_host = args.host if host in ("0.0.0.0", "::") else str(host)
-    url = f"http://{display_host}:{port}/"
+    # 通配绑定（0.0.0.0/::）的地址并非处处可达（Windows 等平台照抄打不开）：
+    # 访问 URL 统一换成回环地址提示可达性，bind_host 单独保留实际绑定原值
+    bind_host = str(host)
+    url = f"http://{_url_host(bind_host)}:{port}/"
 
     pid = os.getpid()
-    pid_path = write_pid_file(proto_dir, pid, display_host, port)
+    try:
+        pid_path = write_pid_file(proto_dir, pid, bind_host, port)
+    except OSError as exc:
+        # 原型目录只读/磁盘满等导致 PID 文件写不进：此刻端口已绑定而 started
+        # 尚未 emit，先关监听套接字再走结构化错误通道（退出码 2 与 bind 失败
+        # 同口径），不沿 main 裸崩 traceback
+        server.server_close()
+        emit({"ok": False, "error": f"PID 文件写入失败：{exc}"}, args.json)
+        return 2
 
     def _cleanup(*_a):
         # 只回收自己写入的 PID 文件：若已被继任者覆盖（pid 非本进程），不误删
@@ -642,10 +677,16 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
 
+    note = "Ctrl+C 或 --stop 回收"
+    if not (bind_host == "::1" or bind_host.startswith("127.")):
+        # 非回环绑定时 POST /feedback 写接口零鉴权的暴露面显式警示（详见
+        # PrototypeHandler.do_POST 注释），不让他机可写的注入面静默存在
+        note += ("；警告：绑定地址非回环，POST /feedback 写接口无鉴权，"
+                 "同网段任意对端可写入伪造批注（feedback.json 会回流给 agent 消费）")
     emit({"ok": True, "action": "started", "url": url, "pid": pid,
           "pid_file": str(pid_path), "proto_dir": str(proto_dir.resolve()),
           "feedback_file": str(proto_dir / FEEDBACK_FILE_NAME),
-          "note": "Ctrl+C 或 --stop 回收"}, args.json)
+          "bind_host": bind_host, "note": note}, args.json)
     try:
         server.serve_forever()
     finally:

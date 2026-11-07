@@ -256,29 +256,53 @@ class ChainQuotaStore:
     # ── 配置读取（热更新：每次判定即时解析）─────────────────────────
 
     def quota_config(self) -> dict:
-        try:
-            from core.config import ConfigLoader
+        # import 置于 try 外（item 12035016f936）：except 的触发面是
+        # resolve_config/get_chain_config 异常而非 import 失败，兜底分支
+        # 才能直接引用 CHAIN_*_DEFAULT 单源常量
+        from core.config import ConfigLoader
 
+        try:
             raw = ConfigLoader.resolve_config(self.project_root)
             return ConfigLoader.get_chain_config(raw)
         except Exception:
-            # 兜底字面量与 ConfigLoader.CHAIN_*_DEFAULT 单源对齐（现值
-            # arbiter_rulings=3，2026-11-03 用户定调 2→3）
+            # 兜底直接引用单源常量（现值 arbiter_rulings=3，2026-11-03
+            # 用户定调 2→3），消除与运行时 `or N` 兜底的手工双份真相
             return {
-                "admin_attempts": 2,
-                "arbiter_rulings": 3,
-                "reset_window_days": 7,
-                "blacklist": [],
+                "admin_attempts": ConfigLoader.CHAIN_ADMIN_ATTEMPTS_DEFAULT,
+                "arbiter_rulings": ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT,
+                "reset_window_days": ConfigLoader.CHAIN_RESET_WINDOW_DAYS_DEFAULT,
+                # 共享类属性可变列表，浅拷贝防调用方就地改写污染单源
+                "blacklist": list(ConfigLoader.CHAIN_BLACKLIST_DEFAULT),
             }
 
     # ── 基础读写 ────────────────────────────────────────────────────
 
-    def _mutate(self, fn):
-        """锁内 读→改→写（fn(state) 原地修改；写失败不抛由调用方降级）。"""
+    def _log_warning(self, message: str):
+        log = self.logger
+        if log is None:
+            return
+        try:
+            log.warning(COMPONENT, message)
+        except Exception:
+            pass
+
+    def _mutate(self, fn, sig: str = ""):
+        """锁内 读→改→写（fn(state) 原地修改；写失败不抛由调用方降级）。
+
+        写失败留痕（item 6f06b2b6efcd）：save_chain_state 返回 False 时输出
+        带 sig 的 warning——此前写失败对调用方完全不可见，磁盘满/权限异常
+        持续存在时配额实际未持久化，Admin/Arbiter 每次复现都从 0 重计派发，
+        超配额重复派发语义静默失效。
+        """
         with self._lock:
             state = load_chain_state(self.project_root)
             result = fn(state)
-            save_chain_state(self.project_root, state)
+            if not save_chain_state(self.project_root, state):
+                self._log_warning(
+                    "处置链配额状态写盘失败（本次变更仅内存生效未持久化，"
+                    "配额计数可能重复消耗）: "
+                    + (f"sig={sig}" if sig else "sig=（无签名上下文）")
+                )
             return result
 
     def entry(self, sig: str) -> dict:
@@ -303,7 +327,7 @@ class ChainQuotaStore:
             ent["last_seen"] = _utcnow_iso()
             return ent["admin_attempts"]
 
-        return self._mutate(_inc) or 0
+        return self._mutate(_inc, sig=sig) or 0
 
     def count_arbiter_ruling(self, sig: str) -> int:
         """Arbiter 拍板计一次（处置成功落账；复现配额判定消费）。"""
@@ -315,7 +339,7 @@ class ChainQuotaStore:
             ent["last_seen"] = _utcnow_iso()
             return ent["arbiter_rulings"]
 
-        return self._mutate(_inc) or 0
+        return self._mutate(_inc, sig=sig) or 0
 
     def observe_spec_status(self, sig: str, spec_status: str) -> bool:
         """状态迁移复位（spec「或该 spec 状态发生迁移清零」）。
@@ -338,7 +362,7 @@ class ChainQuotaStore:
                 return True
             return False
 
-        return bool(self._mutate(_obs))
+        return bool(self._mutate(_obs, sig=sig))
 
     def apply_window_reset(self, sig: str, window_days: int) -> bool:
         """复位窗清零（签名连续 window_days 天无复现 → 配额清零）。"""
@@ -361,7 +385,7 @@ class ChainQuotaStore:
                 return True
             return False
 
-        return bool(self._mutate(_reset))
+        return bool(self._mutate(_reset, sig=sig))
 
     def record_recurrence(self, sig: str) -> None:
         """复现登记：刷新 last_seen（复位窗计时锚点）。
@@ -375,7 +399,7 @@ class ChainQuotaStore:
             )
             ent["last_seen"] = _utcnow_iso()
 
-        self._mutate(_touch)
+        self._mutate(_touch, sig=sig)
 
     def snapshot(self) -> dict:
         """只读快照（dashboard 配额水位消费）：sig → 计数条目。"""
@@ -385,7 +409,10 @@ class ChainQuotaStore:
     # ── 链在办件登记（design 决策 1：admin_monitor 兜底看护对象）────
 
     def mark_in_flight(self, chain_id: str, sig: str, spec: str, phase: str):
+        dropped: List[dict] = []
+
         def _add(state):
+            nonlocal dropped
             state["in_flight"] = [
                 x for x in state["in_flight"] if x.get("chain_id") != chain_id
             ]
@@ -398,10 +425,31 @@ class ChainQuotaStore:
                     "started_at": _utcnow_iso(),
                 }
             )
-            # 在办登记有界（防 worker 崩溃残留无界累积）
-            del state["in_flight"][:-32]
+            # 在办登记有界（防 worker 崩溃残留无界累积）。截断分层保护
+            # （item 7d27d30d28e1）：deferred 让行条目跨链件长期驻留（等
+            # 被让行 run 终态后由看护重派，锚点 item_signal 快照不可丢），
+            # 不计入在办截断配额、单独上限——混入同一配额会被新在办登记
+            # 挤出，重派锚点静默丢失、该件不再被看护重派。被截除条目
+            # warning 留痕。
+            live = [x for x in state["in_flight"] if entry_phase(x) != "deferred"]
+            deferred = [
+                x for x in state["in_flight"] if entry_phase(x) == "deferred"
+            ]
+            if len(live) > 32:
+                dropped.extend(live[:-32])
+                del live[:-32]
+            if len(deferred) > 16:
+                dropped.extend(deferred[:-16])
+                del deferred[:-16]
+            state["in_flight"] = live + deferred
 
-        self._mutate(_add)
+        self._mutate(_add, sig=sig)
+        for x in dropped:
+            self._log_warning(
+                f"处置链在办登记截断丢弃（超出分相保留上限，被截件的 "
+                f"重派锚点丢失、不再被看护重派）: chain_id={x.get('chain_id')} "
+                f"phase={x.get('phase')} spec={x.get('spec')}"
+            )
 
     def clear_in_flight(self, chain_id: str):
         def _drop(state):
@@ -441,7 +489,7 @@ class ChainQuotaStore:
                     return True
             return False
 
-        return bool(self._mutate(_defer))
+        return bool(self._mutate(_defer, sig=sig))
 
     def deferred_in_flight(self) -> list:
         """deferred 让行条目（看护扫描重派消费；只读投影）。"""
@@ -650,7 +698,24 @@ class EscalationChain:
                     f"触发登记失败 spec={spec} signal={signal_type}"
                 )
             self._active.add(sig)
-        self._ensure_worker()
+        try:
+            self._ensure_worker()
+        except Exception:
+            # worker 启动失败（如线程资源耗尽）回滚入队副作用，保证「抛错
+            # 即零副作用」（item b167017a0687）：否则 item 已入队且签名已
+            # 登记但无 worker 消费，同签名后续信号恒判 deduped（调用方按
+            # 契约不落人工告警），该升级信号被永久吞掉。此刻必有异常路径
+            # 上无存活 worker（_ensure_worker 在既有 worker 存活时直接
+            # return 不抛），队列暂无消费者，移除本件无消费竞态。
+            with self._lock:
+                self._active.discard(sig)
+            try:
+                with self._queue.mutex:
+                    if item in self._queue.queue:
+                        self._queue.queue.remove(item)
+            except Exception:
+                pass
+            raise
         self._log(
             "info",
             f"升级信号入处置链（链头 Admin）: sig={sig} granularity={granularity} "
@@ -682,6 +747,25 @@ class EscalationChain:
             except Exception as e:
                 # 单件处理崩溃不杀 worker；签名释放允许后续触发重新入链
                 self._log("error", f"处置链处理异常（继续下一件）: {e}")
+                # 异常收尾（item c6684059ea29）：mark_in_flight 已登记的
+                # 在办条目不再滞留至 6h reap，并补 chain-error 台账事件
+                # 留痕——否则派发抛错后信号既无人工告警也无台账痕迹，
+                # 人工完全无感知。chain_id 未生成（极早期崩溃）则无从
+                # 清理，仅留上方 error 日志。成功路径的 clear_in_flight
+                # 与 deferred 留痕不受影响（只在异常分支收尾）。
+                chain_id = str(item.get("chain_id") or "")
+                if chain_id:
+                    try:
+                        self._quota.clear_in_flight(chain_id)
+                    except Exception:
+                        pass
+                    self._write_chain_event(
+                        item,
+                        kind="chain-error",
+                        action_or_upgrade=(
+                            f"链件处理异常中断（worker 兜底收尾）: {e}"
+                        ),
+                    )
             finally:
                 with self._lock:
                     self._active.discard(str(item.get("signature") or ""))
@@ -699,7 +783,14 @@ class EscalationChain:
         chain_id = f"chain-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         item["chain_id"] = chain_id
         quota_cfg = self.config()
-        window_days = int(quota_cfg.get("reset_window_days") or 7)
+        # `or` 兜底与 quota_config except 分支同引单源常量（item
+        # 12035016f936，不再手工同步字面量）
+        from core.config import ConfigLoader
+
+        window_days = int(
+            quota_cfg.get("reset_window_days")
+            or ConfigLoader.CHAIN_RESET_WINDOW_DAYS_DEFAULT
+        )
 
         # 复现登记与配额复位（复位窗 / spec 状态迁移清零；dead-man 例外不复位）。
         # 窗复位 MUST 先于 touch：touch 把 last_seen 刷到当下，先 touch 后复位
@@ -774,11 +865,12 @@ class EscalationChain:
 
         # Arbiter 级配额闸门（复现配额耗尽 → 强制上升人工，task 3.3）
         rulings = self._quota.arbiter_rulings(sig)
-        # 兜底字面量与 ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT 单源对齐
-        # （现值 3，2026-11-03 用户定调 2→3；原 2 属漂移残留——同文件
-        # quota_config except 兜底字典同值，arbiter.py _arbiter_rulings_quota
-        # 亦同源）
-        arb_quota = int(quota_cfg.get("arbiter_rulings") or 3)
+        # 兜底引用单源常量（现值 3，2026-11-03 用户定调 2→3；原 2 属漂移
+        # 残留——arbiter.py _arbiter_rulings_quota 亦同源）
+        arb_quota = int(
+            quota_cfg.get("arbiter_rulings")
+            or ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT
+        )
         if rulings >= arb_quota:
             self._log(
                 "warning",
@@ -837,7 +929,13 @@ class EscalationChain:
         """
         spec = str(item.get("spec") or "")
         sig = str(item.get("signature") or "")
-        admin_quota = int(quota_cfg.get("admin_attempts") or 2)
+        # `or` 兜底同引单源常量（item 12035016f936）
+        from core.config import ConfigLoader
+
+        admin_quota = int(
+            quota_cfg.get("admin_attempts")
+            or ConfigLoader.CHAIN_ADMIN_ATTEMPTS_DEFAULT
+        )
         trail: List[dict] = []
         attempts = self._quota.admin_attempts(sig)
         while attempts < admin_quota:
@@ -1829,7 +1927,7 @@ class EscalationChain:
                         kept += 1
                 return changed
 
-            store._mutate(_close, skip_unchanged=False)
+            store.update_records(_close)
             mark_migration_done(
                 self.project_root, {"closed": closed, "kept": kept}
             )

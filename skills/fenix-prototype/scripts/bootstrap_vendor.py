@@ -120,11 +120,13 @@ def self_check() -> dict:
 def pinned(version_range: str) -> str | None:
     """``^6.6.0`` / ``~19.2.7`` / ``19.2.7`` → ``6.6.0``（按画像版本精确缓存）。
 
+    prerelease 后缀保留为完整精确版本（``19.2.7-beta.1`` → ``19.2.7-beta.1``）：
+    该串本身即可精确安装，截断成稳定段会静默装到错误版本、缓存键也随之漂移。
     无法从中提取精确版本的 range（如 ``>=18 <20``）返回 None：原样拼进
     ``react@<range>`` 会产出错误的安装参数，调用方须显式跳过 npm 精确
     安装路径再降级。
     """
-    match = re.search(r"\d+\.\d+(\.\d+)?", version_range or "")
+    match = re.search(r"\d+\.\d+(\.\d+)?(-[0-9A-Za-z.-]+)?", version_range or "")
     return match.group(0) if match else None
 
 
@@ -456,7 +458,7 @@ def cdn_urls(react_version: str, antd_version: str) -> dict[str, str]:
 
 def cdn_probe(react_version: str, antd_version: str, timeout: float = CDN_TIMEOUT_SEC,
               _opener=None) -> tuple[bool, str | None]:
-    """探测 CDN ESM 可达性（GET 主资源，读少量字节即断开）。失败返回 (False, 原因)。"""
+    """探测 CDN ESM 可达性（GET 主资源，仅校验状态码即断开，不读响应体）。失败返回 (False, 原因)。"""
     urls = cdn_urls(react_version, antd_version)
     # 除 antd 主资源外再探 react-dom/client 子路径入口：importmap 的
     # createRoot 依赖该子路径，仅探 antd 无法发现子路径映射缺失或错误
@@ -635,7 +637,7 @@ def run(project: Path, cache_dir: Path, offline: bool = False,
     if level == "vendor" and cache_entry is not None:
         assets = {
             "vendor_js": str((cache_entry["dir"] / "vendor.js").resolve()),
-            "manifest": cache_entry["dir"] / "manifest.json",
+            "manifest": str((cache_entry["dir"] / "manifest.json").resolve()),
             "snippet": vendor_script_snippet("vendor.js"),
             "note": "生成原型时把 vendor.js 复制进原型目录与 HTML 同放",
         }
@@ -706,8 +708,13 @@ def main(argv: list[str] | None = None) -> int:
                       default=str)
     if args.output:
         out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(text + "\n", encoding="utf-8")
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": f"判定 JSON 落盘失败：{exc}"},
+                             ensure_ascii=False), file=sys.stderr)
+            return 2
     else:
         print(text)
     return 0

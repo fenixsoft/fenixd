@@ -57,6 +57,12 @@ export interface OverviewData {
     settle，UI 转圈无出路。统一 30s；个别长耗时端点经 request 第三参覆盖。 */
 const REQUEST_TIMEOUT_MS = 30000;
 
+/** per-call 超时下界（毫秒，code-review item 0f5003043aca）：request 对传入
+    timeoutMs 按此钳制——0/负值会让 setTimeout(fn, 0) 在 fetch 发起前就触发
+    abort，请求必然失败且文案「请求超时（>0s）」排障误导；现无合法调用需要
+    <1s 的超时窗口。 */
+const MIN_REQUEST_TIMEOUT_MS = 1000;
+
 // per-call 超时对照表（code-review item a21b19e73181）：「端点 → 服务端预算
 // 秒」单源。客户端 per-call 超时一律经 serverBudgetTimeoutMs 派生为
 // 预算*1000 + 30s 余量，不再逐常量手工推导——服务端调参只改本表，客户端
@@ -177,7 +183,18 @@ async function request<T>(
   // 期间 abort 定时器已消失——后端先发头再挂起（流式/hung handler）时
   // promise 永挂。timer 现于最外层 finally（整段读毕）才清。
   let timedOut = false;
-  const timeoutMs = opts?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  // 下界钳制（code-review item 0f5003043aca）：getRegressionFixResult 等轮询
+  // 封装把「剩余预算」由调用方算出后透传，预算算尽或算术失误会传入 0/负数
+  // （NaN/Infinity 同为合法 number，setTimeout 对两者分别退化为立即触发/
+  // 溢出归零）。非有限值直接落回下界，有限值取 max(raw, 下界)——保证任何
+  // 调用路径下超时窗口均有效。
+  const rawTimeoutMs = opts?.timeoutMs;
+  const timeoutMs = Math.max(
+    typeof rawTimeoutMs === 'number' && Number.isFinite(rawTimeoutMs)
+      ? rawTimeoutMs
+      : MIN_REQUEST_TIMEOUT_MS,
+    MIN_REQUEST_TIMEOUT_MS,
+  );
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
@@ -343,7 +360,10 @@ export function installHosting(name: string) {
 
 /** 同步/清空用户级设置：sync=把用户级 config.yaml 中 page 页签对应的受管键覆盖
  *  写入项目级；clear=删除项目级该页签受管键（清空后沿用用户级/默认值）。
- *  page 白名单见 core/dashboard/data/config_admin.py 的 _SYNC_PAGE_KEYS */
+ *  page 恒走 JSON body、不进 URL，故不套 encodeURIComponent（本文件其余动态值
+ *  均拼入 query/path 侧）；值域受后端 _SYNC_PAGE_KEYS（core/dashboard/data/
+ *  config_admin.py）白名单约束，勿沿用本签名把 page 改拼进 URL（code-review
+ *  item 9fb0a09c7848） */
 export function syncConfigFromUser(
   project: string,
   page: string,

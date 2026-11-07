@@ -23,7 +23,9 @@ export const fmtInputTokens = (usage: TokenUsageLike) => {
   // 非有限值守卫（code-review item c414a07b4aa3）：tokens_in 为 ±Infinity 时
   // !usage.tokens_in 不成立会穿透，命中率被钳成 0% 与主数值/分项矛盾；非有限时
   // 统一走 fmtMillions 兜底（回退 0.0M），守卫口径对齐 fmtMillions。
-  if (cacheRead == null || !usage.tokens_in || !Number.isFinite(usage.tokens_in))
+  // cache_read 非有限（code-review item 0e08644772ab）并入同守卫：NaN 穿透后
+  // Math.max/min 均返回 NaN、toFixed 输出字面量「NaN%」，按 null 分支只显主数值。
+  if (cacheRead == null || !usage.tokens_in || !Number.isFinite(usage.tokens_in) || !Number.isFinite(cacheRead))
     return fmtMillions(usage.tokens_in);
   // 异常数据钳制（code-review item 7991b6540abd）：cacheRead 大于 tokens_in 时
   // 差值为负、命中率超 100%，钳到 max(0, …) / [0, 100] 避免渲染矛盾数字。

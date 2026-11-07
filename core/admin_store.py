@@ -451,6 +451,10 @@ class AdminStore:
         入口复位抹掉，把拒写误判为在途；线程本地后置位/复位/读取同线程
         不交错，「None=在途 / 非空=拒写」区分在 ThreadingHTTPServer 并发下
         成立。
+
+        跨模块批量改写 MUST 走公开入口 ``update_records``（item
+        afc7d7f69279）：本方法属内部实现，签名/参数随时可能内部重构，
+        不对跨模块消费者提供稳定承诺。
         """
         with self._thread_lock:
             # 复位与 corrupt 分支的置位均落在本线程的 TLS 槽（item
@@ -603,6 +607,19 @@ class AdminStore:
         return out
 
     # ── 公开 API ─────────────────────────────────────────────────
+
+    def update_records(self, fn):
+        """公开批量改写入口：单次排他锁内 读-改-写（fn(records) 原地修改）。
+
+        为「一次锁内跨多条记录批量改写」的跨模块消费者提供公开 API
+        （code-review item afc7d7f69279：escalation_chain.migrate_legacy_pending
+        原直调私有 _mutate，绕开公开封装，AdminStore 内部重构会静默破坏
+        存量迁移）。保持 _mutate 默认语义：fn 返回假值仍照常写回
+        （skip_unchanged=False），返回 fn(records) 的结果；corrupt 拒写时
+        返回 None（调用方按未落盘处理）。单条/单字段改写请走
+        append/mark_*/close_* 专用入口。
+        """
+        return self._mutate(fn)
 
     @staticmethod
     def _normalize_entry(entry: dict) -> dict:

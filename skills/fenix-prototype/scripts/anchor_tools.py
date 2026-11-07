@@ -220,13 +220,19 @@ def verify_unaffected(old_html: str, new_html: str, affected_ids: list[str]) -> 
     """机械断言：除声明的受波及锚外，旧原型其余锚 MUST 全部在新原型保持。
 
     未波及锚消失即违规（锚漂移 = 旧批注错位，本 SPEC 的反目标）。
+    受波及清单中不存在于旧∪新锚集合的 id 属无效声明（笔误/编造），
+    同样判违规（``invalid_affected`` 并入 ``ok`` 与退出码），防止机械门
+    被塞满无效锚 id 静默架空。
     """
     report = diff_anchors(old_html, new_html)
     affected = set(affected_ids)
     violations = [anchor_id for anchor_id in report["dropped"] if anchor_id not in affected]
+    invalid_affected = sorted(
+        affected - report["old_anchors"].keys() - report["new_anchors"].keys())
     return {
-        "ok": not violations,
+        "ok": not violations and not invalid_affected,
         "violations": violations,
+        "invalid_affected": invalid_affected,
         "affected_declared": sorted(affected),
         "kept_ratio": report["kept_ratio"],
         "rename_guesses": report["rename_guesses"],
