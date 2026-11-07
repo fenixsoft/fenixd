@@ -131,6 +131,22 @@ def extract_web_url(log_path: Path) -> str:
     return hits[-1].rstrip(".），") if hits else ""
 
 
+def wait_web_url(log_path: Path, seconds: int = 15) -> str:
+    """轮询启动日志直至 token URL 落盘（boot 横幅写盘可能晚于端口 listen）。
+
+    竞态实测：wait_port 探到 :3080 listen 的瞬间读文件，横幅尚未写出 →
+    extract 落空 → fallback 裸 URL → 服务 token 鉴权 401 → GUI 断言必然
+    超时。此处轮询兜平写盘延迟；超时返回空串（调用方 fallback 裸 URL，
+    无鉴权部署仍可用）。"""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        url = extract_web_url(log_path)
+        if url:
+            return url
+        time.sleep(1)
+    return ""
+
+
 # ── 1) 插件供源解析 ────────────────────────────────────────────────────────
 print("[check_dsh_web] 阶段[供源] 解析 bridge 插件源")
 if PLUGINS and Path(PLUGINS).is_dir():
@@ -260,8 +276,9 @@ if dsh_web_proc is None:
         pass
     fail("dsh web 启动", f"各 argv 形态均未在 45s 内监听 :{WEB_PORT}；日志尾部:\n{tail}")
 # 服务带 token 鉴权时页面必须带 token 访问（boot 横幅实测输出
-# `dsh web: http://127.0.0.1:3080/?token=...`）——提取供 GUI 断言深链
-WEB_URL = extract_web_url(web_log) or f"http://127.0.0.1:{WEB_PORT}"
+# `dsh web: http://127.0.0.1:3080/?token=...`）——轮询等待落盘后提取供
+# GUI 断言深链（wait_port 命中早于横幅写盘的竞态见 wait_web_url 注释）
+WEB_URL = wait_web_url(web_log, 15) or f"http://127.0.0.1:{WEB_PORT}"
 print(f"  · 服务 URL: {WEB_URL}")
 
 # ── 6) Playwright GUI 断言 ─────────────────────────────────────────────────
@@ -276,14 +293,20 @@ try:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         # 深链直达「项目」面板（面板 id 与侧栏条目 id 同为 fenix-projects）
-        page.goto(
+        resp = page.goto(
             f"{WEB_URL}#panel=fenix-projects",
             wait_until="domcontentloaded", timeout=30_000,
         )
+        # 前置 status 检查：裸 URL 撞 token 鉴权即 401，GUI 断言必空转超时
+        # ——失败信息直指 WEB_URL 形态而非 selector 罗生门（实测教训）
+        if resp is not None and resp.status >= 400:
+            fail("GUI 断言", f"页面 HTTP {resp.status}（token 鉴权未过？WEB_URL={WEB_URL}）")
 
-        # 6a) 面板桥「项目」菜单行/分区元素存在（Portal 分区 testid 或锚点）
+        # 6a) 面板桥「项目」分区元素存在（testid 均实证于 bridge 源码：
+        #     panels.tsx 常规分区 section + 锚点漂移降级形态的 Portal 宿主）
         page.wait_for_selector(
-            '[data-testid="fenix-projects-section"], [data-testid="fenix-projects-anchor"]',
+            '[data-testid="fenix-projects-section"], '
+            '[data-testid="fenix-projects-portal-host"]',
             timeout=30_000,
         )
         print("  ✅ 面板桥「项目」菜单行元素在场")
