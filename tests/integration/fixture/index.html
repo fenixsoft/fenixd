@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>fixture-web · fenixd 集成测试夹具站</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 48px; color: #1a1a1a; }
+    #site-title { font-size: 24px; margin-bottom: 24px; }
+    #app-root { border: 1px solid #ddd; border-radius: 8px; padding: 24px; max-width: 560px; }
+    #hello-line { margin: 0 0 12px; }
+    #greet-output { margin-top: 12px; color: #555; min-height: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1 id="site-title">fenixd 集成测试夹具站</h1>
+  <main id="app-root">
+    <p id="hello-line">这是一个静态小站夹具，用于 daemon 全链（实现 → 验证 → 裁决）集成验证。</p>
+    <button id="greet-btn" type="button">打招呼</button>
+    <p id="greet-output"></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
