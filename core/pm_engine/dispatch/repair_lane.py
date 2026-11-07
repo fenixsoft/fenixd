@@ -966,7 +966,17 @@ class PRepairLaneMixin:
                     wm._spec_locks.discard(f"{spec_name}:repair")
                 except Exception:
                     pass
-            self._pm._process_queue()
+            # finally 段防御口径与上方 discard 一致（code-review item
+            # 06ced02211b0）：_process_queue 抛出（队列文件 IO/锁异常）时
+            # 仅 WARNING 留痕，不得从 finally 穿出覆盖 except 分支正在
+            # 传播的原始 repair 异常，也不中断当轮队列泵。
+            try:
+                self._pm._process_queue()
+            except Exception as e_pq:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair worker 收尾队列泵失败 '{spec_name}'（非阻塞）: {e_pq}",
+                )
 
     # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2/D5）──────
 
