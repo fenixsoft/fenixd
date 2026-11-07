@@ -186,11 +186,13 @@
 
 ### 可改进
 - **[arbiter:add-inte] 集成测试交付物代理注入面缺失（GitHub 限速环境下「修环境」出口不可达）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：add-integration-test-env 及同类 Docker 克隆型 SPEC 的验证轮在国际链路限速时段必败，manual_fixed_reverify（修环境重验）出口结构性不可达，人工只剩「豁免（失覆盖面）」或「赌网络窗口重验」两选项；每次限速窗口都产生一轮豁免握手停车+人工裁决负担
   - 证据：tests/integration/run.sh 与 Dockerfile 不支持代理环境变量注入/透传（无 HTTPS_PROXY 类面）：验证轮容器内 GitHub bulk 截断时唯一失败路径无法通过环境修复翻绿（.fenix/runs/archive/admin-add-integration-test-env-1794066458.jsonl 探针：~41KB/s、8m47s 死亡、ref 协商与 npm 健康；.history/it-verify/smoke/orchestrate.log:5,11 GnuTLS -110/early EOF）；同轮证明交付物经 FENIX_IT_GIT_REPO 本地源路径实测全绿（.fenix/verify-evidence/add-integration-test-env/smoke-summary.json）；触发 run_id=arbiter-add-integration-test-env-1794067782（签名 add-integration-test-env::inconclusive_loop，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：交付物增强：run.sh 支持 FENIX_IT_HTTPS_PROXY（或透传宿主 HTTPS_PROXY/ALL_PROXY）并配置容器内 git/npm 走代理；或克隆源分级 fallback（GitHub → 镜像源 → 本地源）；契约语义边界（公开克隆契约在代理/镜像源下是否仍算覆盖）需 owner 拍板后成文
 - **[arbiter:add-inte] 验证轮对网络面瞬态劣化无探针延迟重验自愈（env 失败直接烧轮进豁免握手停车）**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：瞬态网络劣化把「等几小时自然恢复后重验」变成人工裁决+整轮验证预算消耗（本轮 impl 修复轮 $29 + admin run $4.2 + 验证轮与 arbiter 轮成本）；豁免握手停车频次被网络波动放大；限速窗口内立即重验还可能再烧一轮
   - 证据：验证轮 2026-11-07T15:43Z GitHub bulk 截断判 env 进豁免握手停车（.fenix/verify-progress/add-integration-test-env/judge_attribution.json + .fenix-run-result.json）；约 8.5 小时后宿主 bulk 面自然恢复（Arbiter 探针 run arbiter-add-integration-test-env-1794067782：浅克隆 44s/116MB RC=0）；现行重验前补救探针仅覆盖 dist 新鲜度面（verdict-env-exemption-handshake「重验前补救」段），无网络面探针与延迟重验窗；触发 run_id=arbiter-add-integration-test-env-1794067782（签名 add-integration-test-env::inconclusive_loop，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
