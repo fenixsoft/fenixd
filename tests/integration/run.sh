@@ -11,6 +11,7 @@
 #   FENIX_IT_LLM_BASE_URL / FENIX_IT_LLM_API_KEY / FENIX_IT_LLM_MODEL
 #       LLM 三要素；真实模式必填（缺项 exit 2 零动作）。claude 轮映射
 #       ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL，dsh 轮映射 bundle 模型显式配置三要素。
+#       真实模式启动前自动加载 tests/integration/.env 作缺省值（进程环境变量优先）。
 #   FENIX_IT_GIT_REPO    默认 https://github.com/fenixsoft/fenixd.git
 #       框架克隆源。特殊形态：值为主机上已存在的目录路径时，改为只读挂载该
 #       目录进容器并从本地路径克隆（离线/无 GitHub 场景的开发替代，行为仍为
@@ -46,6 +47,32 @@ done
 
 log()  { echo "[run.sh] $*"; }
 die2() { echo "[run.sh] 装置/用法错误: $*" >&2; exit 2; }
+
+# ── 预置凭据文件自动加载（design D3）──────────────────────────────────────
+# 真实模式启动前自动加载宿主机预置凭据文件 tests/integration/.env
+# （gitignored；key 明文只落该文件，禁止写入任何入库文件、镜像层或日志输出）。
+# 语义：set -a; source; set +a，文件值仅充当缺省值——进程环境变量优先：
+# 先记录环境中已有的 FENIX_IT_* 原值，source 后恢复，文件不覆盖已有环境。
+ENVFILE_LOADED=no
+load_env_file() {
+  local envfile="${SCRIPT_DIR}/.env"
+  [ -f "${envfile}" ] || return 0
+  local -A prior=()
+  local n
+  while IFS= read -r n; do
+    prior["${n}"]="$(printenv "${n}" 2>/dev/null || true)"
+  done < <(env | sed -n 's/^\(FENIX_IT_[A-Za-z0-9_]*\)=.*/\1/p')
+  set -a
+  # shellcheck disable=SC1091
+  . "${envfile}"
+  set +a
+  for n in "${!prior[@]}"; do
+    export "${n}=${prior[${n}]}"
+  done
+  ENVFILE_LOADED=yes
+  log "已自动加载凭据文件: tests/integration/.env（进程环境变量优先于文件值）"
+}
+load_env_file
 
 # ── 环境变量契约解析 ────────────────────────────────────────────────────────
 GIT_REPO="${FENIX_IT_GIT_REPO:-https://github.com/fenixsoft/fenixd.git}"
