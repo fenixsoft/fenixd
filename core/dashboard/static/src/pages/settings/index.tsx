@@ -401,9 +401,13 @@ export default function SettingsPage() {
         title="配置"
         filters={
           <Space>
-            <Text type="secondary" style={{ fontSize: 13 }}>
-              作用域：
-            </Text>
+            {/* 「作用域：」标签移动端不渲染（2026-11-07 用户指令）：顶栏窄幅下
+                标签+下拉会挤得标题行换行；桌面保持原样 */}
+            {!isMobile && (
+              <Text type="secondary" style={{ fontSize: 13 }}>
+                作用域：
+              </Text>
+            )}
             <Select
               // project 为空值兜底（code-review item 234fe8e987a2）：与下方
               // menuItems.push 的 project 真值门禁同口径，避免受控 Select 显示
@@ -415,7 +419,9 @@ export default function SettingsPage() {
               onOpenChange={(open) => {
                 if (open && projects.length === 0) loadProjects();
               }}
-              style={{ width: 200 }}
+              // 宽度移动档 130（2026-11-07 用户指令「下拉框宽度缩小」，对齐
+              // v2/settings.tsx 移动档同值），桌面 200 不变
+              style={{ width: isMobile ? 130 : 200 }}
               options={[
                 { value: USER_SCOPE, label: '用户级' },
                 ...projects.map((p) => ({ value: `project:${p}`, label: `项目级：${p}` })),
@@ -502,7 +508,10 @@ export default function SettingsPage() {
           <div
             style={
               isMobile
-                ? { flex: 1, minWidth: 0, padding: '12px 16px 24px' }
+                ? // 左右 4（2026-11-07 用户指令「配置页面的左右边距也改为 16px」：
+                  // 外层 children-container 12 + 本面板 4 = 每侧合计 16；原 16
+                  // 时每侧 28）。桌面右 16/左 24 惯例不变
+                  { flex: 1, minWidth: 0, padding: '12px 4px 24px' }
                 : {
                     // 右栏随文档滚动（2026-11-05 用户指令「全站滚动条范围统一」，
                     // 原 overflowY 内滚已退役）。右内边距 16（2026-11-05 用户指令
