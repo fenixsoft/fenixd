@@ -350,8 +350,12 @@ def _exec_commit_stray_wip(project_root, note: str = "", signal_type: str = "",
     # 盘面不一致。回读失败仅 WARNING 留痕，commit_hash 置空并在 steps 说明。
     commit_hash = ""
     try:
+        # :(literal) 与上方 commit 的 pathspec 字面化同口径（code-review
+        # item b136b88cdfce，3e562aaf7483 同型回读面）：清单路径含 glob
+        # 元字符时缺省按通配解析会读回清单外路径的提交哈希。
         commit_hash = _git_out(
-            proot, "log", "-1", "--format=%H", "--", *to_commit,
+            proot, "log", "-1", "--format=%H", "--",
+            *(f":(literal){p}" for p in to_commit),
         ).strip()
     except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367 同口径）。
@@ -876,8 +880,12 @@ def _exec_untrack_stray_wip(project_root, note: str = "", signal_type: str = "",
     # 回读失败仅 WARNING 留痕，按成功收尾并在 steps 说明哈希缺失。
     commit_hash = ""
     try:
+        # :(literal) 与上方 rm 的 pathspec 字面化同口径（code-review
+        # item b136b88cdfce，3e562aaf7483 同型回读面）：清单路径含 glob
+        # 元字符时缺省按通配解析会读回清单外路径的提交哈希。
         commit_hash = _git_out(
-            proot, "log", "-1", "--format=%H", "--", *to_untrack,
+            proot, "log", "-1", "--format=%H", "--",
+            *(f":(literal){p}" for p in to_untrack),
         ).strip()
     except (OSError, RuntimeError) as e:
         # 不外泄裸异常文本（code-review item e584a2ede367 同口径）。
