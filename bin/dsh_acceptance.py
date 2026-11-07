@@ -670,7 +670,8 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     ``.fenix-run-result.json`` 写点，gate 读侧推迟到全部车道写点收口后由
     run_smoke 统一补算，消除并发写-读撕裂窗口（判定对象与判据不变）。
     """
-    from core.agent_runner.harness import resolve_adapter, set_current_adapter
+    from core.agent_runner.harness import (
+        HarnessHealthError, resolve_adapter, set_current_adapter)
 
     spec = fixture["impl_spec"] if lane == "implementer" else \
         fixture["verify_spec"]
@@ -683,7 +684,25 @@ def run_agent_lane(*, lane: str, device: Dict[str, Any], fixture: Dict[str, Any]
     adapter = resolve_adapter("dsh", {"agent": {
         "harness": "dsh", "dsh_home": device["home"],
         "dsh_profile": device["profile"]}})
-    adapter.check_health()  # 版本白名单 + Bundle 挂载探测（不满足 fail-fast）
+    # 并发组合撕裂自愈重试（code-fix 4357445c4b34）：三车道并发起步时两
+    # agent 车道各自 check_health（各起一次 --dump-config）与 judge 一次性
+    # spawn 同窗并发；dsh CLI 每次组合都重写组合缓存 cordis.yml（非原子写，
+    # 实测 mtime 每次组合都变），并发读侧偶见撕裂（「must be a top-level
+    # YAML array of entries」）——回归负载拉大交织窗口后成 smoke 假失败
+    # 根因（快败 ~3s、单跑难复现）。瞬时签名退避重试自愈；真实 profile
+    # 缺陷（版本漂移/未挂载 bundle 等）不含该签名，立即原样 fail-loud，
+    # 健康门语义不变。
+    for attempt in range(3):
+        try:
+            adapter.check_health()  # 版本白名单 + Bundle 挂载探测（fail-fast）
+            break
+        except HarnessHealthError as e:
+            msg = str(e)
+            transient = ("cordis.yml" in msg
+                         or "must be a top-level" in msg)
+            if attempt == 2 or not transient:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
     prompt = lane_prompt(lane, fixture)
     logger = EvidenceLogger()
