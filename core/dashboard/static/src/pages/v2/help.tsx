@@ -23,6 +23,7 @@ import type { Components, ExtraProps } from 'react-markdown';
 import type { ComponentProps, CSSProperties, ReactElement, ReactNode } from 'react';
 import remarkGfm from 'remark-gfm';
 import { useSearchParams } from '@umijs/max';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { getHelpDoc, getHelpDocs } from '@/services/dashboard';
 import type { HelpDocItem, HelpDocMeta } from '@/services/dashboard';
 import { isPageAnchor, markdownComponents, SafeLink } from '@/pages/projects/components/SpecDocModal';
@@ -241,16 +242,21 @@ function DocPane({
   // 依赖 doc：文档内容轮次变化时重建 components（heading 组件函数身份变化即
   // 重挂载，同步重置 slug 去重计数，口径同现产 help 页）
   const components = useMemo(() => buildV2HelpComponents(onNavigate, docs), [onNavigate, docs, doc]);
+  // 移动端阅读内边距 28→16（2026-11-07 用户指令「帮助页左右间距 0px」定稿：
+  // 页面容器经 v2.less 全幅已 0（负 margin 抵消 layout 内嵌），此 28px 为文档
+  // 自身阅读内边距——正文贴 0 会顶屏幕玻璃边，按全局 16px 口径收窄；桌面 28 不变）
+  const isMobile = useIsMobile();
+  const docPad = isMobile ? '24px 16px 32px' : '24px 28px 32px';
   if (loading) {
     return (
-      <div className="v2-bento" data-proto-id="hp-doc" style={{ flex: 1, minWidth: 0, padding: '24px 28px 32px' }}>
+      <div className="v2-bento" data-proto-id="hp-doc" style={{ flex: 1, minWidth: 0, padding: docPad }}>
         <Skeleton active title paragraph={{ rows: 8 }} />
       </div>
     );
   }
   if (!doc) return null;
   return (
-    <div className="v2-bento v2-doc" data-proto-id="hp-doc" style={{ flex: 1, minWidth: 0, padding: '24px 28px 32px', minHeight: 320 }}>
+    <div className="v2-bento v2-doc" data-proto-id="hp-doc" style={{ flex: 1, minWidth: 0, padding: docPad, minHeight: 320 }}>
       {/* 正文标题只此一份（2026-11-06 用户指令「内容区域标题重复」）：原 DocPane
           顶部自动 doc.title 行已删——后端 title 本就从 markdown 首个一级标题
           解析（help_routes._help_doc_title），与正文 H1 同文双显；保留正文 H1
