@@ -99,6 +99,13 @@ def test_removed_default_symbols_no_longer_exist():
                     content = f.read()
             except (OSError, UnicodeDecodeError):
                 continue
+            # 快路径子串预筛（code-fix 823d429f7987，回归长耗时治理）：标识符
+            # 必然以子串形态出现在源文本里，文本不含任一被删符号的文件不可能
+            # 命中断言——直接跳过昂贵的 ast.parse（实测 650 个 .py 全量解析
+            # ~1.3s 是本用例耗时主体，回归负载下放大到超阈；预筛后仅解析子串
+            # 命中的极少数文件）。子串命中是标识符命中的超集，断言语义零变化。
+            if not any(sym in content for sym in forbidden):
+                continue
             try:
                 tree = ast.parse(content)
             except SyntaxError:
