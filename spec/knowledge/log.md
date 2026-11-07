@@ -114,3 +114,5 @@
 ## [2026-11-07 00:02 UTC+8] distill | add-titlebar-subtitle-stacked（第 1 轮，自动提交落库）
 ## [2026-11-07 00:05 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 4 / 过 8）
 ## [2026-11-07 00:31 UTC+8] distill | add-spec-list-mobile-style（第 1 轮，自动提交落库）
+## [2026-11-07 21:32 UTC+8] fold | dsh-settings-dock-plugin-1107.md 折叠入库
+## [2026-11-07 21:36 UTC+8] fold | dsh-settings-dock-plugin-1107.md 折叠入库
