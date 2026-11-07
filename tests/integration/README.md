@@ -16,7 +16,7 @@ dashboard、dsh web 三个插件面可正常安装与使用。
 | `e2e.sh` | 容器内主编排：克隆 → install.sh → 夹具项目 → config.yaml 生成 → 前端 dist 构建（缺失时）→ daemon 启动健康检查 → `fenix_spec.py new` + 种子覆写 + `add_spec` 程序化注册 fast-track SPEC → 轮询 STATE.md → 断言 → `summary.json`；双 harness 各一轮（`agent.harness` 切换，独立夹具项目与超时） |
 | `checks/check_skills.sh` | skill 面：fenix-* 软链、fenix-init PATH、claude CLI、夹具项目内 `fenix_spec.py status` |
 | `checks/check_dashboard.sh` | dashboard 面：幂等启动 `--serve`、HTTP 200、注册夹具项目后 `/api/projects` 可见 |
-| `checks/check_dsh_web.py` | dsh web 面（**完整 GUI**）：bridge 插件 pnpm build → link: 挂入自定义 profile → `dsh web` :3080 → Playwright 断言「项目」菜单行、iframe `embed=1`、dashboard 根节点渲染、截图 |
+| `checks/check_dsh_web.py` | dsh web 面（**完整 GUI**）：bridge 插件 pnpm build → link: 依赖 + `cordis.patch.yml` insert 条目挂入自定义 profile（`dsh plugin add` 只装依赖，插件加载须经 patch 层，容器内实证）→ `dsh web` :3080 → Playwright 断言「项目」分区、iframe `embed=1`、dashboard 根节点渲染、截图 |
 | `fixture/` | 夹具静态小站模板（index.html + app.js）与 SPEC 种子（spec-proposal.md / spec-tasks.md：添加带稳定 testid 的徽标元素、点击切换文案，单文件改动） |
 
 ## 快速开始

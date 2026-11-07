@@ -215,9 +215,26 @@ try:
         env=dashboard_env(), timeout=300)
 except RuntimeError as exc:
     fail("profile/挂载", f"dsh profile 初始化或 plugin add 失败: {exc}")
-# 注意：bridge 的 manifest 是 dsh.client（web 端注入），不是 dsh.bundle——
-# 不可追加进 dsh.profile.bundles（bundle 加载器实测报
-# "declares no dsh.bundle ... skipping"）；plugin add 即完成挂入。
+# 挂入口径（容器内三轮探针实证）：`dsh plugin add` 只是 pnpm 装依赖——dsh
+# web 的插件加载走 cordis Loader entry 列表（config 组成 = bundles patch 层
+# → cordis.patch.yml → overlay）。bridge 是纯 dsh.client 插件（无 dsh.bundle
+# manifest，bundle 通道实测报 "declares no dsh.bundle ... skipping"），必须
+# 经 cordis.patch.yml 的 insert 条目进顶层 entry 列表：boot 时 host 半注册
+# /fenix-dashboard/ 反代路由、client 半进 /plugins/?? 聚合清单（仅 add 不写
+# patch 时两者皆缺席：路由 404、页面 HTML 零 fenix 命中；写 patch 后路由
+# 在场实测 502——upstream dashboard 未起时的预期故障形态）。
+patch_path = DSH_WEB_HOME / "profiles" / PROFILE / "cordis.patch.yml"
+try:
+    patch_path.write_text(
+        "# fenix it: dashboard bridge 插入顶层 entry 列表（dsh plugin add 只装\n"
+        "# 依赖，插件加载须经本 patch 层的 insert 条目）\n"
+        "- insert:\n"
+        f"    - id: {BRIDGE_NAME}\n"
+        f"      name: {BRIDGE_NAME}\n",
+        encoding="utf-8",
+    )
+except OSError as exc:
+    fail("profile/挂载", f"cordis.patch.yml 写入失败: {exc}")
 pkg_path = DSH_WEB_HOME / "profiles" / PROFILE / "package.json"
 try:
     deps = json.loads(pkg_path.read_text(encoding="utf-8")).get("dependencies", {})
@@ -225,7 +242,7 @@ try:
         fail("profile/挂载", f"plugin add 后 dependencies 缺 {BRIDGE_NAME}: {deps}")
 except Exception as exc:  # noqa: BLE001
     fail("profile/挂载", f"plugin 挂入校验失败（{pkg_path}）: {exc}")
-print(f"  · bridge 已以 link: 挂入 profile {PROFILE}（dependencies 在案）")
+print(f"  · bridge 已挂入 profile {PROFILE}（link: 依赖 + patch 层 insert 条目）")
 
 # ── 4) dashboard 服务先行就绪 ──────────────────────────────────────────────
 print("[check_dsh_web] 阶段[dashboard 就绪] 轮询 :%d" % DASH_PORT)
