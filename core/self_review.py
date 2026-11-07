@@ -1,8 +1,9 @@
 """self_review.py — 每日定时自省（add-daily-self-review spec）。
 
 每晚本地时间 ``admin.self_review.run_at``（缺省 02:00）后，由 Administrator
-通道执行一次工作回顾：聚合执行前 24 小时的数据摘要（STATE 终态 / runs 统计 /
-admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交 / 中途信号六源）→ 发起 ``self-review``
+通道执行一次工作回顾：聚合 [last_run_at, now] 增量窗口的数据摘要（首跑
+回退 24h；STATE 终态 / runs 统计 / admin 告警与处置 / 日志 ERROR / 近 3 日
+git 提交 / 中途信号六源）→ 发起 ``self-review``
 run → 按 resolved 移除已闭环历史条目 + 追加写入项目 ``.fenix/todo.md``
 → 单文件 commit + push。
 
@@ -330,6 +331,10 @@ def _parse_run_at(run_at: str, today) -> datetime:
     本判定属防御层，仅拦绕行调用方。
     """
     value = str(run_at)
+    # [fenix-ignore:c4c1aefd2a1d] 生产调用方传入的 run_at 均已经上游过滤为合法值
+    # （get_self_review_config._validated_run_at / get_code_review_config 回退链），
+    # 脏值到不了本防御层，WARNING 无巡检周期重复触发面；上游脏配置留痕已
+    # _warn_reader_once 进程级去重，防风暴纪律已在单源处落实。
     if not ConfigLoader.is_valid_hhmm(value):
         _logger.warning(
             "self_review: admin.self_review.run_at 非法（应为 HH:MM）: %r，回退缺省 %s",
@@ -445,7 +450,12 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
                     window * _RUN_TAIL_WINDOW_GROWTH, _RUN_TAIL_WINDOW_MAX_BYTES
                 )
     except OSError:
-        return []
+        # code-review item 447c5e2e1a26：IO 异常（权限/瞬时锁/读抖动）返回
+        # None，与「确为空产物」的 [] 区分——[] 会被 _classify_run 判
+        # dropped/empty，把真实存在的 run 计入「丢弃/空」桶污染当日 runs
+        # 统计；None 由 _classify_run 按 running（detail=read-error）处理，
+        # 与 running 判定同走聚合侧 stale 对账（_reconcile_running_run）。
+        return None
 
 
 def _business_fail_marker(text: str) -> Optional[str]:
@@ -567,7 +577,7 @@ def _terminal_status_types() -> set:
         return set()
 
 
-def _classify_run(run_id: str, lines: list) -> tuple:
+def _classify_run(run_id: str, lines: Optional[list]) -> tuple:
     """按产物终态分类一条 run：返回 (category, detail)。
 
     category ∈ {succeeded, failed, instant_hang, timeout, dropped, running,
@@ -577,14 +587,23 @@ def _classify_run(run_id: str, lines: list) -> tuple:
                  终态 error 且非超时/秒挂
     - timeout:   终态 error 且文本含超时信号
     - instant_hang: 终态 error 且文本命中秒挂签名
-    - dropped:   空文件 / 无任何事件
+    - dropped:   空文件 / 无任何事件（文件可读但确为空；IO 读失败不在此列，
+                 见 running 的 read-error 形态）
     - superseded: 终态 superseded（弃置/重试件——同一逻辑 run 的中间弃置
                  分片，最终结果活在后续分片，不算 running 也不算成功）
     - ended:     其他已知终态（interrupted/cancelled/frozen-terminated/
                  gate-blocked 及词表未来新增者）——已终结但非成功交付
     - running:   有事件但末行非任何已知终态（真实在跑或异常残留；聚合侧
-                 另有 stale 对账细分，见 _reconcile_running_run）
+                 另有 stale 对账细分，见 _reconcile_running_run）。lines 为
+                 None（_read_run_tail 产物读取 IO 异常，code-review item
+                 447c5e2e1a26）也归此桶（detail=read-error），交由同一
+                 stale 对账细分，不判 dropped 污染「丢弃/空」统计
     """
+    if lines is None:
+        # 产物读取 IO 异常（_read_run_tail 返回 None）：文件真实存在，判
+        # dropped 会把读失败污染进「丢弃/空」桶；按 running 处理，对账
+        # 通道与真实在跑一致。
+        return "running", "read-error"
     if not lines:
         return "dropped", "empty"
     last = lines[-1]
@@ -3340,19 +3359,31 @@ class SelfReviewScheduler:
                     ),
                 }
             )
-            try:
-                self.store.mark_handled(rec["id"])
-            except Exception as e:
-                # code-review item 7da1db317e22：告警已写入但 handled 标记失败
-                # （如 admin_store 落盘瞬时故障，或 append 被下限保护拒写返回
-                # None）时不再静默吞掉——该条会以未处理状态滞留人工队列并混入
-                # 下一轮自省摘要第 3 节的 unhandled 明细，留 WARNING 供人工核对
-                # （此处不重试，防失败风暴放大）。
+            # code-review item a0a2041358c8：append 被下限保护拒写时返回
+            # None 且记录未落盘（admin_store.append 契约），对齐
+            # _record_phantom_failure_alert 的 written = rec is not None
+            # 口径——未落地不尝试 mark_handled（旧代码对 None 取 rec["id"]
+            # 抛 TypeError 落入 handled 失败分支，打出的「已写入但标记失败」
+            # 文案与事实相反，误导人工核对方向）。
+            if rec is None:
                 self.logger.warning(
                     "self_review",
-                    f"失败告警已写入但 handled 标记失败"
-                    f"（id={rec.get('id') if rec else None}），需人工核对: {e}",
+                    "失败告警写入被拒（admin_store 下限保护），告警未落盘",
                 )
+            else:
+                try:
+                    self.store.mark_handled(rec["id"])
+                except Exception as e:
+                    # code-review item 7da1db317e22：告警已写入但 handled
+                    # 标记失败（如 admin_store 落盘瞬时故障）时不再静默吞掉
+                    # ——该条会以未处理状态滞留人工队列并混入下一轮自省摘要
+                    # 第 3 节的 unhandled 明细，留 WARNING 供人工核对（此处
+                    # 不重试，防失败风暴放大）。
+                    self.logger.warning(
+                        "self_review",
+                        f"失败告警已写入但 handled 标记失败"
+                        f"（id={rec.get('id')}），需人工核对: {e}",
+                    )
         except Exception as e:
             self.logger.error("self_review", f"失败告警落盘失败: {e}")
         self.logger.warning("self_review", f"每日自省失败：{message}")
