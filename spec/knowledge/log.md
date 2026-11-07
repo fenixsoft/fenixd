@@ -129,3 +129,4 @@
 ## [2026-11-08 01:38 UTC+8] distill | add-knowledge-anchor-lint-and-prune 失败：校验违规未通过
 ## [2026-11-08 02:39 UTC+8] fold | 2026-11-07-it-env-runsh-dotenv-load-gap.md 折叠失败滞留：spec/knowledge/adr/ADR-033-v2-frontend-vendored-amis-sdk.md: 头部缺 status 行（accepted|superseded）；spec/knowledge/
 ## [2026-11-08 02:57 UTC+8] distill | add-integration-test-env 失败：校验违规未通过
+## [2026-11-08 03:35 UTC+8] fold | 2026-11-07-it-env-runsh-dotenv-load-gap.md 折叠入库
