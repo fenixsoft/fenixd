@@ -74,7 +74,8 @@ _ROLE_UNKNOWN = ("dev", "dev", "unknown")
 
 # fix 家族 SPEC 命名（pm_engine/family.py _resolve_fix_spec_name 递归前缀）：
 # fix-<spec>、fix-fix-<spec>…。父 SPEC 拓扑并入家族 run（🔧 角标呈现修复环）；
-# 归属判定恒为 run_spec_part 精确全等（防前缀兄弟 spec 串入）。
+# 归属判定恒为 run_spec_part 精确全等（防前缀兄弟 spec 串入）。家族正则
+# 构造单点收拢于 _family_patterns（run 收集与 fix 角标两处消费同源，禁各自内联）。
 
 # attempt（-a<n>）与瞬态重试（-r<n>）尾段逐段剥除（与 RUN_ID_SUFFIX_RE 同值域，
 # 逐段从右解析取序号；base 归并仍以 strip_run_id_suffixes 单源为准）。
@@ -294,6 +295,19 @@ def _approval_record_time(spec_dir) -> str:
 # ── run 产物收集（本 SPEC + fix 家族） ─────────────────────────────────────
 
 
+def _family_patterns(spec_name: str) -> tuple:
+    """fix 家族命名正则单点：返回 ``(collect_re, fix_mark_re)``。
+
+    collect = 裸 spec 或 fix- 递归前缀（``_family_run_paths`` 收集 run 产物）；
+    fix_mark = 仅 fix- 递归前缀（``derive_topology`` 打 🔧 角标）。家族规则
+    演进（新增前缀族 / 改递归形式）只改本处，两处口径不分裂。
+    """
+    esc = re.escape(spec_name)
+    collect_re = re.compile(rf"^(?:{esc}|(?:fix-)+{esc})$")
+    fix_mark_re = re.compile(rf"^(?:fix-)+{esc}$")
+    return collect_re, fix_mark_re
+
+
 def _family_run_paths(project_root, spec_name: str) -> list:
     """预扫描本 SPEC 与 fix 家族（fix-<spec>、fix-fix-<spec>…）的 run 产物路径。
 
@@ -304,7 +318,7 @@ def _family_run_paths(project_root, spec_name: str) -> list:
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return []
-    fam_re = re.compile(rf"^(?:{re.escape(spec_name)}|(?:fix-)+{re.escape(spec_name)})$")
+    collect_re, _fix_mark_re = _family_patterns(spec_name)
     out: list = []
     for d in (runs_dir, runs_dir / "archive"):
         try:
@@ -313,7 +327,7 @@ def _family_run_paths(project_root, spec_name: str) -> list:
             continue
         for p in entries:
             try:
-                if fam_re.fullmatch(run_spec_part(p.stem)):
+                if collect_re.fullmatch(run_spec_part(p.stem)):
                     out.append(p)
             except (OSError, ValueError):
                 continue
@@ -459,7 +473,7 @@ def derive_topology(project_root, spec_name: str, entry: "dict | None" = None) -
     #    retry 边串联；归档 SPEC 产物已清理 → 自然为空集） ──
     run_paths = _family_run_paths(proot, spec_name)
     runs = _facade.get_runs(proot, None, include_archive=True, files=run_paths) if run_paths else []
-    fam_re = re.compile(rf"^(?:fix-)+{re.escape(spec_name)}$")
+    _collect_re, fam_re = _family_patterns(spec_name)
     run_nodes: list = []
     for r in runs:
         run_id = r["run_id"]
