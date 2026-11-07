@@ -270,9 +270,16 @@ from pathlib import Path
 name = sys.argv[1]
 p = Path("spec/changes") / name / ".spec.yaml"
 text = p.read_text(encoding="utf-8")
+add = []
 if "mode:" not in text:
-    p.write_text(text.rstrip() + "\nmode: fast-track\n", encoding="utf-8")
-print("mode: fast-track 已写入 .spec.yaml")
+    add.append("mode: fast-track")
+# 晋升硬门（add-spec-title-promotion-gate）：.spec.yaml 必须带 5-25 字中文
+# 标题行，缺行会被晋升 lint 打回 drafted+error、闭环永不出轮
+if "title:" not in text:
+    add.append("title: 夹具首页徽标点击切换")
+if add:
+    p.write_text(text.rstrip() + "\n" + "\n".join(add) + "\n", encoding="utf-8")
+print("已写入: " + "、".join(add) if add else ".spec.yaml 已齐备")
 PY
     python3 - "${SPEC_NAME}" <<'PY2'
 import sys
