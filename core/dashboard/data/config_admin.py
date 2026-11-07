@@ -583,7 +583,19 @@ def _managed_key_sources(raw: dict) -> dict:
         if isinstance(se_raw.get("auto_accept"), bool):
             sources["self_evolution.auto_accept"] = "project"
         _se_max = se_raw.get("max_items_per_run")
-        if isinstance(_se_max, int) and not isinstance(_se_max, bool) and _se_max > 0:
+        # code-review item c63e31cc50ae：补上界判定（复用 core.config 单源常量，
+        # 不复制 200 字面量）——读侧 get_self_evolution_config 对
+        # > SELF_EVOLUTION_MAX_ITEMS_UPPER 回退缺省 20，手工编辑 config.yaml
+        # 写入合法类型但超上界的脏值（如 500）时读回显已是 20 而此处仍标
+        # project，徽标与展示值互相矛盾（同 10a004925a9a 建立的
+        # 「来源徽标 / 回显值 / 生效值」三方一致口径）
+        from core.config import SELF_EVOLUTION_MAX_ITEMS_UPPER as _SE_MAX_UPPER
+        if (
+            isinstance(_se_max, int)
+            and not isinstance(_se_max, bool)
+            and _se_max > 0
+            and _se_max <= _SE_MAX_UPPER
+        ):
             sources["self_evolution.max_items_per_run"] = "project"
         if "spec_run_at" in se_raw and (
             se_raw["spec_run_at"] is None or isinstance(se_raw["spec_run_at"], str)
