@@ -65,17 +65,26 @@ fi
 command -v docker >/dev/null 2>&1 || die2 "docker CLI 不可用（请安装 Docker 后重试）"
 docker info >/dev/null 2>&1 || die2 "Docker daemon 不可达（docker info 失败；请确认 daemon 已启动）"
 
-# ── 真实模式凭据自检：缺项列清单 exit 2，不发起任何容器/克隆/网络动作 ────────
-# 对齐 bin/dsh_acceptance.py accept 的人工信号式哲学。
-# --build-only 只做镜像预热、无需凭据，在自检之前短路（构建/预热顺序见下）。
+# ── 镜像构建/复用：tag = Dockerfile 内容哈希 ───────────────────────────────
+IMAGE_HASH="$(sha256sum "${SCRIPT_DIR}/Dockerfile" | cut -c1-12)"
+IMAGE_TAG="fenix-it-env:${IMAGE_HASH}"
+
+# FENIX_IT_APT_MIRROR：构建期 apt 源镜像（官方 deb.debian.org 在部分网络停滞时
+# 传国内镜像加速，如 https://mirrors.aliyun.com/debian）；缺省空串=官方源。
+image_build() {
+  local bargs=()
+  [ -n "${FENIX_IT_APT_MIRROR:-}" ] && bargs+=(--build-arg "APT_MIRROR=${FENIX_IT_APT_MIRROR}")
+  (cd "${SCRIPT_DIR}" && docker build -t "${IMAGE_TAG}" "${bargs[@]}" .) \
+    || die2 "镜像构建失败（构建期错误属装置/网络面，exit 2）"
+}
+
+# --build-only 只做镜像预热、无需凭据，在凭据自检之前短路。
 if [ "${BUILD_ONLY}" -eq 1 ]; then
-  IMAGE_HASH="$(sha256sum "${SCRIPT_DIR}/Dockerfile" | cut -c1-12)"
-  IMAGE_TAG="fenix-it-env:${IMAGE_HASH}"
   if docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
     log "镜像已存在，跳过构建: ${IMAGE_TAG}（强制重建请先 docker rmi ${IMAGE_TAG}）"
   else
     log "构建镜像: ${IMAGE_TAG}（分层缓存，低频变动层命中时仅增补高频层）"
-    (cd "${SCRIPT_DIR}" && docker build -t "${IMAGE_TAG}" .) || die2 "镜像构建失败（构建期错误属装置/网络面，exit 2）"
+    image_build
   fi
   log "预热完成: ${IMAGE_TAG}"
   log "后续步骤: tests/integration/run.sh --smoke  →  注入凭据后 tests/integration/run.sh"
@@ -110,15 +119,10 @@ if [ -z "${PLUGINS_REPO}" ]; then
   log "       dsh web 插件面将在容器内按设计 fail-loud（不静默降级）。"
 fi
 
-# ── 镜像构建/复用：tag = Dockerfile 内容哈希 ───────────────────────────────
-IMAGE_HASH="$(sha256sum "${SCRIPT_DIR}/Dockerfile" | cut -c1-12)"
-IMAGE_TAG="fenix-it-env:${IMAGE_HASH}"
-
-image_exists() { docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; }
-
-if ! image_exists; then
+# ── 镜像构建/复用（tag 已在上方按内容哈希确定）────────────────────────────
+if ! docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
   log "本地无镜像 ${IMAGE_TAG}，先构建（等价 --build-only 预热）"
-  (cd "${SCRIPT_DIR}" && docker build -t "${IMAGE_TAG}" .) || die2 "镜像构建失败（构建期错误属装置/网络面，exit 2）"
+  image_build
 fi
 
 # ── 产物目录（宿主侧创建；读写卷挂至容器 /artifacts）───────────────────────

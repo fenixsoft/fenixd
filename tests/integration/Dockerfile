@@ -19,11 +19,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 
 # ── 层 1：系统包（低频变动在前，最大化层缓存命中）──────────────────────────
-# python3（bookworm 即 3.11）/ git / tmux / curl / ca-certificates 为框架
-# install.sh 依赖检查项；build-essential 供 dsh web 的 node-pty 原生编译
-# （装完不清理构建工具，换取容器内可调试性，体积代价 <200MB）；
-# libnss3 等为 Chromium 运行时系统依赖；fonts-noto-cjk 供截图中文不豆腐块。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# APT_MIRROR 构建参数：官方 deb.debian.org 在部分网络环境（CN/Fastly）下载
+# 停滞，可传国内镜像（如 https://mirrors.aliyun.com/debian）加速；缺省空串
+# = 保持官方源。镜像仅替换域名，deb822（debian.sources）与传统格式双兼容。
+ARG APT_MIRROR=""
+RUN if [ -n "${APT_MIRROR}" ]; then \
+      for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+        [ -f "$f" ] && sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" "$f" || true; \
+      done; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
