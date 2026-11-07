@@ -292,6 +292,8 @@ class TestReclaimExecution:
             result = reclaim_verify_serving(tmp_path, logger=logger)
         assert "add-gone-1-1788583057" not in result["reclaimed"]
         assert "add-gone-2-1788583058" in result["reclaimed"]
+        # 回收失败条目落入 reclaim_failed 机读视图（code-review be1892305a73）
+        assert result["reclaim_failed"] == ["add-gone-1-1788583057"]
         # 失败的条目记 WARNING（含「回收 serving worktree 失败」字样）并继续
         warning_calls = [c for c in logger.warning.call_args_list if c.args[0] == "serving_reclaim"]
         assert warning_calls, "MUST 记 warning"
@@ -472,7 +474,7 @@ class TestBootLogReclaim:
 
 class TestReturnStructure:
     def test_full_structure_and_counts(self, tmp_path):
-        """返回 {reclaimed, kept, boot_logs_reclaimed} 且计数正确。"""
+        """返回 {reclaimed, kept, boot_logs_reclaimed, reclaim_failed} 且计数正确。"""
         (tmp_path / "spec" / "changes" / "fix-foo").mkdir(parents=True)
         serve_root = _make_verify_serving(
             tmp_path, ["fix-foo-1789587927", "add-gone-1789587928", "add-gone-1789587929"]
@@ -485,7 +487,10 @@ class TestReturnStructure:
              patch.object(sr, "has_live_process", return_value=False), \
              patch.object(sr, "is_registered_in_servers", return_value=False):
             result = reclaim_verify_serving(tmp_path, logger=None)
-        assert set(result.keys()) == {"reclaimed", "kept", "boot_logs_reclaimed"}
+        assert set(result.keys()) == {
+            "reclaimed", "kept", "boot_logs_reclaimed", "reclaim_failed"
+        }
+        assert result["reclaim_failed"] == []
         assert result["kept"] == ["fix-foo-1789587927"]
         assert len(result["reclaimed"]) == 2
         assert "add-gone-1789587928" in result["reclaimed"]
@@ -495,7 +500,7 @@ class TestReturnStructure:
     def test_missing_serve_root_empty_result(self, tmp_path):
         """无 .fenix/verify-serving/ 目录 → 空结果（不报错）。"""
         result = reclaim_verify_serving(tmp_path, logger=None)
-        assert result == {"reclaimed": [], "kept": [], "boot_logs_reclaimed": []}
+        assert result == {"reclaimed": [], "kept": [], "boot_logs_reclaimed": [], "reclaim_failed": []}
 
     def test_reclaim_logs_counts(self, tmp_path):
         """清扫输出含回收数量的日志（可观测性）。"""
@@ -525,7 +530,7 @@ class TestSwitchEarlyExit:
              patch.object(sr, "is_registered_in_servers", return_value=False) as fake_reg:
             result = reclaim_verify_serving(tmp_path, logger=logger, reclaim_enabled=False)
         fake_run.assert_not_called()
-        assert result == {"reclaimed": [], "kept": [], "boot_logs_reclaimed": []}
+        assert result == {"reclaimed": [], "kept": [], "boot_logs_reclaimed": [], "reclaim_failed": []}
         assert (serve_root / "add-gone-1788583057").is_dir()
         assert (serve_root / "add-gone-boot.log").exists()
 

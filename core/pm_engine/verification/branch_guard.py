@@ -588,6 +588,19 @@ def _disputed_deliverables(pipeline, impl_result, missing) -> list:
     """
     if not impl_result or not missing:
         return []
+    if not isinstance(impl_result, dict):
+        # 顶层载荷形状防御（code-review item 0a450f05ea00，与本函数内
+        # findings/missing 元素级 isinstance 防御同口径）：调用方契约漂移
+        # 传入非 dict truthy 载荷（如 list）时 .get("findings") 抛
+        # AttributeError 会从守卫冲出、不走保守放行路径。按「无异议」返回
+        # 空列表并 WARNING 留痕（保守方向：异议缺失只会让缺件走既有裁决
+        # 通道，不会误放行）。
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"_disputed_deliverables: impl_result 非 dict"
+            f"（{type(impl_result).__name__}），按无异议保守返回",
+        )
+        return []
 
     disputed: list = []
     for f in impl_result.get("findings") or []:

@@ -440,6 +440,13 @@ def merge_subset_report(prev_report, subset_report) -> dict:
             errors += 1
         elif st == "blocked-env":
             blocked_env += 1
+        # 兜底档按取值反选（code-review item eae9aed25460）：对齐
+        # engine._build_report 的 legal_tiers 口径——缺 status 键或取值不在
+        # 任何约定分档（含上方沿用的 passed/failed 别名档，合并输入两轮条目
+        # 均由引擎原样落盘、畸形值会跨轮延续）的条目计入 errors，保证 total
+        # 恒等于各分档之和，合并报告不出现缺口、errors 不少计
+        else:
+            errors += 1
     warnings += blocked_env  # blocked-env 并入 warnings（同 _merge_cached_scenario_results 口径）
     merged["summary"] = {
         "total": len(merged["scenarios"]),

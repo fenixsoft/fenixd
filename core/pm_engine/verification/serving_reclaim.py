@@ -450,21 +450,27 @@ def reclaim_verify_serving(
             False 时早退（MUST NOT 调 git、MUST NOT 删除任何文件）。
 
     Returns:
-        {"reclaimed": [...], "kept": [...], "boot_logs_reclaimed": [...]}
+        {"reclaimed": [...], "kept": [...], "boot_logs_reclaimed": [...],
+         "reclaim_failed": [...]}
+
+    kept 为「本轮未回收」观测集合（有意保留 + 回收失败，对 serve_root
+    全集完备）；reclaim_failed 是其中回收动作失败条目的机读子集视图，
+    消费方按 kept - reclaim_failed 即可区分有意保留与回收缺口。
     """
     if not reclaim_enabled:
         if logger:
             logger.info("serving_reclaim", "verify.serving_reclaim.enabled=false，跳过目录回收")
-        return {"reclaimed": [], "kept": [], "boot_logs_reclaimed": []}
+        return {"reclaimed": [], "kept": [], "boot_logs_reclaimed": [], "reclaim_failed": []}
 
     project_root = Path(project_root)
     serve_root = project_root / ".fenix" / "verify-serving"
     if not serve_root.is_dir():
-        return {"reclaimed": [], "kept": [], "boot_logs_reclaimed": []}
+        return {"reclaimed": [], "kept": [], "boot_logs_reclaimed": [], "reclaim_failed": []}
 
     reclaimed = []
     kept = []
     boot_logs_reclaimed = []
+    reclaim_failed = []
 
     # ── 目录回收 ──
     for entry in sorted(serve_root.iterdir()):
@@ -493,6 +499,9 @@ def reclaim_verify_serving(
             # 集合），保证返回值对 serve_root 目录全集完备，消费方按返回值
             # 对账时不必翻日志才发现回收缺口
             kept.append(entry.name)
+            # code-review item be1892305a73：失败条目同步落入 reclaim_failed
+            # 机读视图，消费方按 kept - reclaim_failed 区分有意保留与回收失败
+            reclaim_failed.append(entry.name)
             if logger:
                 logger.warning(
                     "serving_reclaim",
@@ -539,6 +548,8 @@ def reclaim_verify_serving(
             # （与目录维度回收失败留痕同口径，同属「本轮未回收」观测集合），
             # 保证返回值对 boot.log 全集完备，消费方按返回值对账时不必翻日志。
             kept.append(name)
+            # code-review item be1892305a73：同目录维度，同步落入 reclaim_failed
+            reclaim_failed.append(name)
             if logger:
                 logger.warning(
                     "serving_reclaim",
@@ -557,4 +568,5 @@ def reclaim_verify_serving(
         "reclaimed": reclaimed,
         "kept": kept,
         "boot_logs_reclaimed": boot_logs_reclaimed,
+        "reclaim_failed": reclaim_failed,
     }

@@ -1526,13 +1526,19 @@ def _round_definition_fingerprints(pipeline, spec_name: str) -> dict:
     except Exception:  # noqa: BLE001
         return {}
     by_sid: dict = {}
-    for i, sc in enumerate(scenarios or []):
+    for sc in scenarios or []:
         if sc is None:
             continue
         d = _def_view(sc)
         if not d:
             continue
-        sid = str(d.get("scenario_id") or d.get("id") or f"#{i}")
+        # 与 _persist_verdict_cache 写侧同口径（item 3b82fddd2988）：scenario_id
+        # 缺省回退 id，两者皆缺跳过不入表——"#N" 下标占位键无任何消费路径
+        # （persist 对 sid 缺失场景先行跳过不落缓存条目，读侧缓存键空间亦无
+        # "#N" 形态），登记死键只徒增表体积。
+        sid = str(d.get("scenario_id") or d.get("id") or "")
+        if not sid:
+            continue
         by_sid[sid] = scenario_definition_fingerprint(d)
     return by_sid
 
@@ -1572,6 +1578,8 @@ def _persist_verdict_cache(pipeline, spec_name: str, report: dict) -> None:
         # 与 _prune_rescan_scenarios / verdict_check 读侧同口径：scenario_id 缺省时回退 id，
         # 两者皆缺时跳过该场景不入缓存——裸 str(None) 会生成字面量 "None"
         # 键（可写盘但永远不被消费侧命中），三处口径漂移此处最弱。
+        # _round_definition_fingerprints 对 sid 缺失场景同样跳过
+        # （item 3b82fddd2988），写读两侧 sid 归一不再留 "#N" 死键漂移点。
         sid = str(sc.get("scenario_id") or sc.get("id") or "")
         if not sid:
             continue
