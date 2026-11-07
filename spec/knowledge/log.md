@@ -125,3 +125,4 @@
 ## [2026-11-08 00:22 UTC+8] retire | v2-ui-domain-retired-1107 折叠入库（含 index 回填节迁出与目录契约 rev=5 改版）
 ## [2026-11-08 00:04 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 3 / 过 8）
 ## [2026-11-08 00:40 UTC+8] lint | 退役批：dashboard-platform 五个 v2 amis 壳退役页删除（v2-shell-router / v2-data-adapters / v2-sdk-vendor / v2-sse-bridge / v2-legacy-coexist，退役即删不墓碑，域表尾退役注记+症状速查范例段），ADR-033/038/039/327/328 翻 retired（Retired: 2026-11-08 注记行，adr/index.md 状态列同步，ADR-037 保持 accepted），index 计数同步 dashboard-platform 25→20、knowledge-atlas 13→14，超标域行简介收缩 2~3 句
+## [2026-11-08 01:10 UTC+8] fold | 2026-11-07-it-env-runsh-dotenv-load-gap.md 折叠失败滞留：spec/knowledge/adr/ADR-033-v2-frontend-vendored-amis-sdk.md: 头部缺 status 行（accepted|superseded）；spec/knowledge/
