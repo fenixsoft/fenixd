@@ -441,7 +441,11 @@ def count_scenarios(project_root, spec_name) -> int:
             for line in content.split("\n"):
                 if re.match(r"^####\s+Scenario:", line):
                     count += 1
-    except (OSError, UnicodeDecodeError):
+    # 外层只兜 glob/resolve 的 OSError：解码异常已由内层逐文件容错覆盖，
+    # glob/resolve/is_relative_to/re.match 均不会抛 UnicodeDecodeError；
+    # 调用方（summary 摘要）无自兜底，依赖本函数 fail-open 不外抛，故
+    # 外层 try 须保留
+    except OSError:
         pass
     return count
 

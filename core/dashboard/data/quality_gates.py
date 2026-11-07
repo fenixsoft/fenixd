@@ -163,7 +163,12 @@ def _read_json_candidate(candidates: list) -> tuple:
             continue
         try:
             return json.loads(p.read_text(encoding="utf-8")), True
-        except (OSError, ValueError, UnicodeDecodeError):
+        except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+            # RecursionError 非 ValueError 子类：极深嵌套（上万层）的损坏
+            # JSON 会使 loads 递归爆栈直穿本兜底，违背 docstring「读取/解析
+            # 失败 data=None，不抛异常」的 fail-open 口径（对齐
+            # core/config.py _load_optional_yaml 先例，item 5721eb0286f2 /
+            # 40b623c7090b 同源），同按「解析失败」降级返回 (None, True)。
             return None, True
     return None, False
 

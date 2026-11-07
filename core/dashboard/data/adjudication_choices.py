@@ -587,6 +587,7 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
     # 非本纯形态校验职责。
     """
     import os
+    import re
 
     # 入参形态守卫（code-review item 7dad3d40224f）：paths 误传单个路径
     # 字符串时 for 会按字符迭代，拒绝理由把首字符当路径展示、误导排查；
@@ -598,7 +599,16 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
         p = str(raw or "").strip()
         if not p:
             return "夹具文件路径为空"
-        if p.startswith("~") or os.path.isabs(p) or ":" in p.split("/")[0]:
+        # 盘符形态收窄检测（code-review item 23a1060d9490）：此前「首段含
+        # 冒号即拒」会把 POSIX 合法的含冒号相对路径（如 run@10:30.log、
+        # logs:latest/x.yaml）误判为 Windows 盘符；本守卫意图（规则 2）仅
+        # 拒盘符形态，收窄为「首段以单字母+冒号开头」——无分隔符的 C:\evil
+        # 形态首段是整串，用 match（非 fullmatch）保证仍被此门拦截并以
+        # 「绝对路径」归因。白名单目录首段（.fenix/fixtures/tests/test）前
+        # 两字符均非「字母+冒号」，合法夹具路径零影响。
+        if p.startswith("~") or os.path.isabs(p) or re.match(
+            r"[A-Za-z]:", p.split("/")[0]
+        ):
             return f"拒绝绝对路径（修订仅允许项目内相对路径）：{p}"
         norm = os.path.normpath(p)
         # 分隔符统一为 "/" 后再做穿越判定与白名单比对（Windows 宿主上

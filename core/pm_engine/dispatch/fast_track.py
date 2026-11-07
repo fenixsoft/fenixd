@@ -888,6 +888,21 @@ class FFastTrackMixin:
                             "error": final_error,
                             "_merge_fp": fp,
                             "_retry_count": 0,
+                            # 熔断即本条失败链终结（D6）：_repair_round 一并归零
+                            # （code-review item c2dba6faa8e2，字段表对齐 queue.py
+                            # 孪生熔断分支的 234eef7240de / repair_lane
+                            # _handle_remerge_failure 同族熔断分支的 06d96aa5edb5
+                            # 修复）——fast-track spec 可经 _should_enter_repair
+                            # 进入 repair 链并持久化 _repair_round>=1 与
+                            # _repair_awaiting_remerge=True，unfreeze_spec 的解冻
+                            # 清零集不含 _repair_round，不归零则解冻重派后的新失败
+                            # 链首轮 _should_enter_repair 按陈旧轮次判超限，repair
+                            # 预算被前链侵占。
+                            "_repair_round": 0,
+                            # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
+                            # 状态下无论 admin 如何处置（unfreeze/重置），该标记
+                            # 不应残留导致后续启动恢复误走 re-merge 路径。
+                            "_repair_awaiting_remerge": False,
                         }
                         if not streak_bumped:
                             breaker_updates["_merge_streak"] = streak
@@ -923,11 +938,16 @@ class FFastTrackMixin:
                     # _dispatch_repair_lane 只写 _repair_round/_repair_merge_fp
                     # 等 repair 轮次元数据、不含本组字段，不在此落盘则下一轮
                     # 同指纹失败仍判切换、streak 恒为 1，fp 熔断在链内晚触发。
-                    # 仅指纹切换轮补写（streak_bumped=True 时 bump_counters 已
-                    # 原子递增落盘且 _merge_fp 未变）；熔断/ready 两出口各有
-                    # 既有写盘路径，不重复写。写失败仅 WARNING：下一轮仍走
-                    # 切换路径重置，轮次上限兜底，有界性无损。
-                    if not streak_bumped:
+                    # 补写条件与 queue.py 孪生分支（_handle_merge_back_real_
+                    # failure）一致收窄为「仅指纹切换轮」（code-review item
+                    # f531a68e25df）：not streak_bumped 还有同指纹 bump 失败一型
+                    # （此时内存 streak=读取侧旧值+1 已参与阈值判定），落本分支
+                    # 写字面量 1 会把兜底值 clobber 成 1（丢累计轮次、fp 熔断被
+                    # 推迟触发）并重写未变化的 _merge_fp；熔断/ready 两出口各有
+                    # 既有写盘路径（not streak_bumped 时写回兜底值 streak），不
+                    # 重复写。写失败仅 WARNING：下一轮仍走切换路径重置，轮次
+                    # 上限兜底，有界性无损。
+                    if prev_fp != fp:
                         try:
                             self._pm.state_machine.update_spec(
                                 spec_name, {"_merge_fp": fp, "_merge_streak": 1},
@@ -1329,8 +1349,20 @@ class FFastTrackMixin:
                     # 返回 False = 已冻结转人工，终止原地重派。
                     if not self._hard_check_fail_accounting(spec_name, err):
                         return None
-                    self._pm.state_machine.update_spec(spec_name, {"error": err})
-                    self._enqueue_front(spec_name, "fast-track")
+                    # 拦截出口收尾写盘单独包裹（code-review item
+                    # bf8745920ef6）：本出口位于外层 fail-open try 内，裸调 IO
+                    # 异常会被外层 except 误判为「判据执行异常（fail-open 防误
+                    # 拦）」后继续放行后续校验——记账已消费而拦截重派未发生，
+                    # 语义错位。失败记审计后终止本出口（放弃重派收尾，记账现场
+                    # 交周期通道接手），不落入外层 fail-open 放行。
+                    try:
+                        self._pm.state_machine.update_spec(spec_name, {"error": err})
+                        self._enqueue_front(spec_name, "fast-track")
+                    except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                        self._log_state_write_failure(
+                            spec_name, e, warn_label="fast-track 完成度判据拦截",
+                        )
+                        return None
                     self._pm.logger.error(
                         "pm_engine",
                         f"fast-track 完成度判据拦截 '{spec_name}': {err}",
@@ -1368,8 +1400,20 @@ class FFastTrackMixin:
             # 重试记账 + max_retries 封顶冻结（code-review item dcddb2783911）
             if not self._hard_check_fail_accounting(spec_name, err):
                 return None
-            self._pm.state_machine.update_spec(spec_name, {"error": err})
-            self._enqueue_front(spec_name, "fast-track")
+            # 失败收尾写盘守卫（code-review item bf8745920ef6，对齐本文件
+            # 熔断/ready 失败出口 eb3982dae3fb 与 queue.py 同款 be172509602e
+            # 口径）：重试记账已在上一步持久化（含可能已冻结转人工），裸调
+            # update_spec 异常沿 worker 外层 except 逃逸落入通用回滚——本出口
+            # 的 error 补写与原地重派被整体跳过。写盘与入队包进同一 try，失败
+            # 记审计后放弃重派收尾，交周期通道接手，MUST NOT 穿透回滚。
+            try:
+                self._pm.state_machine.update_spec(spec_name, {"error": err})
+                self._enqueue_front(spec_name, "fast-track")
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._log_state_write_failure(
+                    spec_name, e, warn_label="fast-track 硬校验失败",
+                )
+                return None
             self._pm.logger.error(
                 "pm_engine",
                 f"fast-track 硬校验失败 '{spec_name}': {err}",
@@ -1440,8 +1484,17 @@ class FFastTrackMixin:
             # 重试记账 + max_retries 封顶冻结（code-review item dcddb2783911）
             if not self._hard_check_fail_accounting(spec_name, err):
                 return None
-            self._pm.state_machine.update_spec(spec_name, {"error": err})
-            self._enqueue_front(spec_name, "fast-track")
+            # 失败收尾写盘守卫（code-review item bf8745920ef6，同上方
+            # verification 非法出口口径）：写盘与入队包进同一 try，失败记审计
+            # 后放弃重派收尾，MUST NOT 让异常穿透回滚。
+            try:
+                self._pm.state_machine.update_spec(spec_name, {"error": err})
+                self._enqueue_front(spec_name, "fast-track")
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._log_state_write_failure(
+                    spec_name, e, warn_label="fast-track 硬校验失败",
+                )
+                return None
             self._pm.logger.error(
                 "pm_engine",
                 f"fast-track 硬校验不通过 '{spec_name}': {violations_str}",
@@ -1524,23 +1577,39 @@ class FFastTrackMixin:
                 f"保留计数与 error 现场待收口重试/审计: {spec_name}",
             )
             return
-        self._pm.state_machine.update_spec(
-            spec_name,
-            {
-                "tester_run": result.run_id,
-                "error": None,
-                "_inconclusive_attempts": 0,
-                # add-verify-parallel-backoff / design D2：fast-track verified 是
-                # 既有清零点，降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
-                "_verify_parallel_override": None,
-                "_verify_fail_rounds": 0,
-                # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
-                "_verify_redo_count": 0,
-                # add-blocked-reverify-lane D3：env 阻塞轮次清零点（fast-track verified
-                # 属「验证通过」唯一自动清零点语义，与全模式 verified 落定同款）。
-                ENV_BLOCK_ROUNDS_FIELD: 0,
-            },
-        )
+        # 清零点收尾写盘守卫（code-review item 33ad7dd29a2a，对齐本文件
+        # 熔断/ready 失败出口 eb3982dae3fb「状态写盘不穿透处置链」与成功清账段
+        # 同款口径）：transition 到 verified 已成功，本 update_spec 是承载清零
+        # 语义的关键写点（转移失败时上方特意保留现场不执行）；裸调异常沿
+        # worker 外层 except 逃逸落入通用回滚——spec 已 verified 而清零未落盘
+        # 且下方 _on_spec_verified 及后续门禁/告警链路整段跳过。失败仅 ERROR
+        # 留痕后继续 _on_spec_verified（清零残留交周期/收口通道兜底），MUST
+        # NOT 让异常穿透回滚。
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "tester_run": result.run_id,
+                    "error": None,
+                    "_inconclusive_attempts": 0,
+                    # add-verify-parallel-backoff / design D2：fast-track verified 是
+                    # 既有清零点，降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
+                    "_verify_parallel_override": None,
+                    "_verify_fail_rounds": 0,
+                    # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
+                    "_verify_redo_count": 0,
+                    # add-blocked-reverify-lane D3：env 阻塞轮次清零点（fast-track verified
+                    # 属「验证通过」唯一自动清零点语义，与全模式 verified 落定同款）。
+                    ENV_BLOCK_ROUNDS_FIELD: 0,
+                },
+            )
+        except Exception as e:  # noqa: BLE001 —— 清零点写盘失败不穿透处置链
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track verified 清零点写盘失败 '{spec_name}'"
+                f"（verified 已落位，不回退处置，清零残留交周期/收口通道兜底）: "
+                f"{type(e).__name__}: {e}",
+            )
         self._pm.logger.info(
             "pm_engine",
             f"fast-track verified: '{spec_name}' → 推进 verified",
@@ -1905,7 +1974,19 @@ class FFastTrackMixin:
                 f"fast-track provider circuit open '{spec_name}' — holding "
                 f"state, no retry/state flip: {final_error}",
             )
-            self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            # 终态 error 补写守卫（code-review item d3a787ddcbca，对齐
+            # d708ce0288a8「冻结 IO 失败不放大处置」同款口径）：裸调异常沿
+            # worker 外层 except 逃逸会穿透回滚放大处置。失败记 ERROR 审计后
+            # 继续本分支收尾（保持原状），MUST NOT 穿透回滚。
+            try:
+                self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            except Exception as e:  # noqa: BLE001 —— 终态 error 补写失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track 终态 error 补写失败 '{spec_name}'"
+                    f"（provider 熔断保持原状收尾不受影响，交由 admin/周期通道接手）: "
+                    f"{type(e).__name__}: {e}",
+                )
             return
         # provider 瞬断终态延迟重派（code-review item 498a7c7432f1）：与 full 车道
         # 的 [provider-transient] 分支同语义（queue.py `_run_agent_worker`
@@ -1919,7 +2000,18 @@ class FFastTrackMixin:
                 f"fast-track provider transient '{spec_name}' — scheduling "
                 f"delayed redispatch, no retry/state flip: {final_error}",
             )
-            self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            # 终态 error 补写守卫（code-review item d3a787ddcbca，对齐
+            # d708ce0288a8 同款口径）：失败记 ERROR 审计后继续本分支收尾（延迟
+            # 重派排程不依赖该写点），MUST NOT 让异常穿透回滚。
+            try:
+                self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            except Exception as e:  # noqa: BLE001 —— 终态 error 补写失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track 终态 error 补写失败 '{spec_name}'"
+                    f"（transient 延迟重派收尾不受影响，交由 admin/周期通道接手）: "
+                    f"{type(e).__name__}: {e}",
+                )
             self._schedule_transient_recovery(spec_name)
             return
         # 全链模型不可用终态（add-impl-selfcheck-model-probe 2.2，fast-track 车道
@@ -1932,7 +2024,18 @@ class FFastTrackMixin:
                 f"fast-track model chain unavailable '{spec_name}' — holding "
                 f"state, no redispatch/retry/state flip: {final_error}",
             )
-            self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            # 终态 error 补写守卫（code-review item d3a787ddcbca，对齐
+            # d708ce0288a8 同款口径）：失败记 ERROR 审计后继续本分支收尾（保持
+            # 原状不重派不翻转），MUST NOT 让异常穿透回滚。
+            try:
+                self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            except Exception as e:  # noqa: BLE001 —— 终态 error 补写失败不放大处置
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track 终态 error 补写失败 '{spec_name}'"
+                    f"（模型链不可用保持原状收尾不受影响，交由 admin/周期通道接手）: "
+                    f"{type(e).__name__}: {e}",
+                )
             return
         # 重试
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -2000,21 +2103,37 @@ class FFastTrackMixin:
                 f"不再重派（{retries}/{max_r}，fp={fp}）",
             )
         else:
-            self._pm.state_machine.update_spec(
-                spec_name,
-                {
-                    "status": "ready",
-                    "error": f"{final_error}｜自动重试 {retries}/{max_r}",
-                    # _retry_count 已由上方 bump_counters 原子递增落盘，此处
-                    # 不再并写（防并发写回互相覆盖丢增量）
-                },
-            )
-            # 复位 ready 后显式重新入队（code-review item 6e6259821f64）：调用方
-            # _run_fast_track_flow 失败分支立即 return，本模块其它「复位 ready」
-            # 点（零变更哨/_hard_check/merge-retry）均 _enqueue_front 显式驱动
-            # 重派——只翻状态不入队时「自动重试」承诺落空，spec 悬挂 ready 只能
-            # 等周期恢复兜底（队列去重吸收重复条目，见 _enqueue_front）。
-            self._enqueue_front(spec_name, "fast-track")
+            # 状态写守卫（code-review item fae7dcf82183，对齐 queue.py 孪生段
+            # be172509602e 同款口径与本文件 merge 失败 ready 出口
+            # eb3982dae3fb）：update_spec 是 flock+read_all+write_all 真实文件
+            # IO，裸调异常沿 worker 外层 except 逃逸落入
+            # _rollback_failed_dispatch——此时 status 仍 implementing，触发
+            # 预算豁免回退，误导性 _last_dispatch_error 覆盖「自动重试 x/y」
+            # 文案，本段要兑现的重派承诺被整体跳过。写盘与入队包进同一 try，
+            # 失败记审计后 return 放弃本段收尾（交恢复/周期通道接手），MUST
+            # NOT 让异常穿透到通用回滚。
+            try:
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "ready",
+                        "error": f"{final_error}｜自动重试 {retries}/{max_r}",
+                        # _retry_count 已由上方 bump_counters 原子递增落盘，此处
+                        # 不再并写（防并发写回互相覆盖丢增量）
+                    },
+                )
+                # 复位 ready 后显式重新入队（code-review item 6e6259821f64）：
+                # 调用方 _run_fast_track_flow 失败分支立即 return，本模块其它
+                # 「复位 ready」点（零变更哨/_hard_check/merge-retry）均
+                # _enqueue_front 显式驱动重派——只翻状态不入队时「自动重试」
+                # 承诺落空，spec 悬挂 ready 只能等周期恢复兜底（队列去重吸收
+                # 重复条目，见 _enqueue_front）。
+                self._enqueue_front(spec_name, "fast-track")
+            except Exception as e:  # noqa: BLE001 —— 状态写/入队失败不放大处置
+                self._log_state_write_failure(
+                    spec_name, e, warn_label="fast-track 自动重试",
+                )
+                return
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track retry {retries}/{max_r} '{spec_name}'",

@@ -8,8 +8,9 @@ from pathlib import Path
 
 
 # 布尔标记归一口径（add-cancelled-spec-resume-action D1 单点）：
-# 与下方 _parse_state_text 对 frozen/_cancelled_hold 的归一化逐字一致，供
-# 摘要字段与恢复动作对「未经 parse_state 的原始值」防御式复用。
+# _parse_state_text 对 frozen/_cancelled_hold 的归一化经下方
+# normalize_bool_flag 单点复用本常量；该函数另供摘要字段与恢复动作
+# 对「未经 parse_state 的原始值」防御式调用。
 BOOL_FLAG_VALUES = ("true", "1", "yes")
 
 # 归档清单文件名（add-archive-state-migration D1）：已迁出 STATE.md 条目的

@@ -521,6 +521,11 @@ class SessionManager:
                 continue
             chunk = os.read(fd, 65536)  # 已就绪读不阻塞
             if not chunk:
+                # EOF 时 flush 增量解码器（code-review item 03f2bb8533ae）：
+                # 末尾截断的多字节残序列按 replace 口径产出 U+FFFD 并入残余
+                # 半行一并补发，与 Popen 文本模式 EOF 语义对齐；不 flush 则
+                # 滞留解码器内部的残字节被静默丢弃。
+                pending += decoder.decode(b"", final=True)
                 if pending:  # EOF 残余半行（无换行结尾）按文本迭代语义补发
                     handle_line(pending.rstrip("\r"))
                 return

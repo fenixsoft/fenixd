@@ -2027,14 +2027,31 @@ class QQQueueMixin:
                                 f"现场待收口重试/审计: {spec_name}",
                             )
                             return
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "implementer_run": result.run_id,
-                                "error": None,
-                                "_zero_change_attempts": 0,
-                            },
-                        )
+                        # 成功清账写盘守卫（code-review item c996c1f81a0c，对齐
+                        # _finalize_merge_success 成功清账段 e9377c18ee85 同款
+                        # 包裹）：确认型 no-op 收口的清零写（清 error / 计数、
+                        # 落 implementer_run）是成功清账 IO 写点，裸调瞬时异常
+                        # 沿 worker 外层 except 逃逸会跳过下方 impl-result 快照
+                        # 与共享结果文件清理（残留共享文件恰是清理序列注释自述
+                        # 要防的「被后续无新结果文件的死亡 run 误采信」）并落入
+                        # 通用回滚。失败记审计后继续本分支收尾（快照/清理/入队
+                        # 照常），MUST NOT 放大。
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "implementer_run": result.run_id,
+                                    "error": None,
+                                    "_zero_change_attempts": 0,
+                                },
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 清账 IO 失败不放大处置
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"确认型 no-op 清账写盘异常 '{spec_name}'（已 "
+                                f"implemented，继续快照/清理/入队，交恢复/周期"
+                                f"通道接手）: {type(e).__name__}: {e}",
+                            )
                         # （code-review item 85495e15ab27）确认型 no-op 分支同样落
                         # impl-result 快照（与 fast_track.py 确认型 no-op 同分支对齐）：
                         # 本分支 transition implemented 后直接入队 verifier，不经下方
@@ -2059,7 +2076,23 @@ class QQQueueMixin:
                             # 本分支已消费共享文件，残留可致后续无新结果文件的
                             # 死亡 run 被读侧误采信旧结果。删除失败不阻塞（同口径）。
                             self._pm._cleanup_shared_result_file(spec_name)
-                        self._enqueue_front(spec_name, "verifier")
+                        # verifier 入队写点守卫（code-review item c996c1f81a0c，
+                        # 对齐 _finalize_merge_success 67a4576e66d5 同款包裹）：
+                        # _enqueue_front 内经 _get_spec_priority 触发 STATE
+                        # read_one 真实文件 IO，裸调瞬时抛错沿 worker 外层 except
+                        # 逃逸——已 implemented 的 spec 丢失 verifier 续做锚点
+                        # （入队是本分支关键续做点，不入队则条目 status 前置
+                        # 不满足、永不派发）。失败仅 WARNING 留痕，交 full_scan
+                        # 周期兜底。
+                        try:
+                            self._enqueue_front(spec_name, "verifier")
+                        except Exception as e:  # noqa: BLE001 —— 入队失败不放大处置
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"确认型 no-op verifier 入队失败 '{spec_name}'"
+                                f"（等 full_scan 周期兜底）: "
+                                f"{type(e).__name__}: {e}",
+                            )
                         return
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                     # _zero_change_attempts 锁内原子递增（code-review item
@@ -2836,13 +2869,30 @@ class QQQueueMixin:
                             f"Provider circuit open for '{spec_name}' — holding state, "
                             f"no retry/state flip: {final_error}",
                         )
-                        # 写入 error 供 dashboard/admin 可见，但不翻转状态、不增 retry
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": final_error,
-                            },
-                        )
+                        # 写入 error 供 dashboard/admin 可见，但不翻转状态、不增
+                        # retry。error 归因补写守卫（code-review item
+                        # d3a787ddcbca，对齐本文件冻结分支「冻结 IO 失败不放大
+                        # 处置」守卫口径）：三段终态分类的处置动作（保持原状/
+                        # 延迟排程）先于本写点已定，补写仅是归因文案补充——裸调
+                        # 瞬时异常沿 worker 外层 except 逃逸会落入
+                        # _rollback_failed_dispatch，对本应「保持原状待冷却重排/
+                        # admin 接手」的终态追加回滚记账，MUST NOT 放大。失败记
+                        # ERROR 审计后继续本分支收尾（终态在场足以被 admin/stuck
+                        # 通道接手）。
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                },
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 归因补写失败不放大处置
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"provider 熔断终态 error 补写失败 '{spec_name}'"
+                                f"（终态保持原状在场，继续本分支收尾）: "
+                                f"{type(e).__name__}: {e}",
+                            )
                     elif final_error and "[provider-transient]" in final_error:
                         # fix-provider-transient-backoff（D4）：transient 终态——不走
                         # _retry_count 递增/清零路径，改排程等待后重派（复用
@@ -2853,13 +2903,22 @@ class QQQueueMixin:
                             f"Provider transient for '{spec_name}' — scheduling "
                             f"delayed redispatch, no retry/state flip: {final_error}",
                         )
-                        # 写入 error 供 dashboard 可见，但不翻转状态
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": final_error,
-                            },
-                        )
+                        # 写入 error 供 dashboard 可见，但不翻转状态（error 归因
+                        # 补写守卫同上段，d3a787ddcbca：失败记审计后继续排程收尾）
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                },
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 归因补写失败不放大处置
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"provider transient 终态 error 补写失败 "
+                                f"'{spec_name}'（终态保持原状在场，继续延迟"
+                                f"重派排程收尾）: {type(e).__name__}: {e}",
+                            )
                         self._schedule_transient_recovery(spec_name)
                     elif final_error and MODEL_CHAIN_UNAVAILABLE_MARKER in final_error:
                         # add-impl-selfcheck-model-probe（2.2）：链尾拒模型 →
@@ -2872,12 +2931,22 @@ class QQQueueMixin:
                             f"Model chain unavailable for '{spec_name}' — holding "
                             f"state, no redispatch/retry/state flip: {final_error}",
                         )
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            {
-                                "error": final_error,
-                            },
-                        )
+                        # error 归因补写守卫（d3a787ddcbca，同上两段口径）：失败
+                        # 记审计后继续本分支收尾，MUST NOT 穿透回滚
+                        try:
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                },
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 归因补写失败不放大处置
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"模型链不可用终态 error 补写失败 '{spec_name}'"
+                                f"（终态保持原状在场，继续本分支收尾）: "
+                                f"{type(e).__name__}: {e}",
+                            )
                     else:
                         # Retry or mark error
                         # code-review item f8c5c67e7eb4：run 在飞期间 spec 可能

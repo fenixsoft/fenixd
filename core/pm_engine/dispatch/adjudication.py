@@ -2789,9 +2789,7 @@ class VAdjudicationMixin:
                         # 防白洗改写（如 delete-kind reference 被拒改写为
                         # unclear 带 judge_original/rewrite_reason）若只写
                         # judge 原始输出，改写事实在审计轨迹中不可见。
-                        "verdicts": (
-                            verdict_data.get("verdicts") if verdict_data else executed_verdicts
-                        ),
+                        "verdicts": verdict_data.get("verdicts"),
                         "executed_verdicts": executed_verdicts,
                         # 凭据登记条目（type=credential，未发生 tasks.md 文本
                         # 改写）原样透传回执要素——MUST NOT 投影成 before/after

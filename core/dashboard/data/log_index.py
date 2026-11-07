@@ -420,11 +420,15 @@ def _skip_leading_giant_lines(f, start: int, size: int) -> int:
                 found_nl = True
                 break
             scanned += len(chunk)
-            if scanned >= LOG_LINE_SKIP_THRESHOLD:
+            # > 而非 >=（与 _read_lines_bounded 中部「行长度 > 阈值判弃」同口径，
+            # code-review item 4eaae688eae1）：写侧封顶语义为「落盘单行 ≤
+            # LOG_EVENT_MAX_BYTES」，行长恰等于阈值的合法事件行可达；>= 会在
+            # 未见行界时把 \n 落在下一字节的该行提前误判为超长丢弃。
+            if scanned > LOG_LINE_SKIP_THRESHOLD:
                 break
         giant = found_nl and scanned > LOG_LINE_SKIP_THRESHOLD
         if not found_nl:
-            giant = scanned >= LOG_LINE_SKIP_THRESHOLD
+            giant = scanned > LOG_LINE_SKIP_THRESHOLD
         if not giant:
             return pos
         if found_nl:

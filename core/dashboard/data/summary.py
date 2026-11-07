@@ -98,6 +98,61 @@ def hosting_state(project_root) -> str:
     return state
 
 
+# ── project_summary 场景计数 memo（code-review item 20237ed45281）────────────
+# project_summary（/api/overview、/api/projects 共用）的 scenario_count 对每
+# spec 走 count_scenarios：resolve_spec_dir + 逐 capability 读 spec.md 全文并
+# 逐行正则计数。该路径不经 SummaryIndex（后者仅以签名缓存服务 /api/specs），
+# 是本文件读侧唯一未 memo 化的重复 IO 面。/api/overview 端点虽有结果级
+# TTL∨签名缓存（project_routes._OVERVIEW_CACHE），但其签名含 runs 产物——
+# 活跃 run 期间 jsonl 持续追加使签名高频翻转，冷算仍按 run 写入频率反复全文
+# 计数；/api/projects 更是无结果缓存直连本聚合。取舍登记：场景计数是纯展示
+# fail-open 信号、只在 planner 出题/修订 specs/ 目录时变化，仿
+# _ARCHIVE_TREE_CACHE 的「目录签名 + 短 TTL」memo——specs/ 直接子项增删翻
+# 目录签名即时失效；深层文件原地改写不翻目录签名，由 5s TTL 兜底陈旧上界
+# （与 daemon_health/_ARCHIVE_TREE_CACHE 同窗口，同款理论角取舍）。键含规范
+# 化项目根与 spec_dir 解析结果（多项目聚合安全，活跃/归档解析互不串键）；
+# 目录 stat 失败不读写缓存、退化为现算，与 _arch_tree_sigs 同口径。
+_SCENARIO_COUNT_TTL = 5.0  # 秒；与 daemon_health/_ARCHIVE_TREE_CACHE 同窗口
+_SCENARIO_COUNT_CACHE: dict = {}  # (proot_key, spec_dir, dir_sig) -> (计数, monotonic)
+_SCENARIO_COUNT_CACHE_MAX = 4096
+_SCENARIO_COUNT_LOCK = threading.Lock()
+
+
+def _cached_scenario_count(proot: Path, spec_name) -> int:
+    """project_summary 的场景计数读侧（specs/ 目录签名 + 短 TTL memo）。
+
+    与 spec_summary 的同名输出不同（后者由 SummaryIndex 的 _spec_dep_sigs
+    签名缓存面覆盖，服务 /api/specs），本计数无上层失效键可复用，只能自建
+    memo；count_scenarios 语义（fail-open 0、活跃优先/归档回退）经门面原样
+    保留，本函数只做缓存层，不复制其解析口径。
+    """
+    import core.dashboard.data as _facade
+
+    spec_dir = _facade.resolve_spec_dir(proot, spec_name)
+    if spec_dir is None:
+        # 无命中（含非法 spec 名）→ 0，与 count_scenarios 同口径
+        return 0
+    try:
+        st = spec_dir.stat()
+        dir_sig = (st.st_mtime_ns, st.st_size, st.st_nlink)
+    except OSError:
+        dir_sig = None
+    key = (str(proot.resolve()), str(spec_dir), dir_sig)
+    now = time.monotonic()
+    if dir_sig is not None:
+        with _SCENARIO_COUNT_LOCK:
+            hit = _SCENARIO_COUNT_CACHE.get(key)
+            if hit is not None and now - hit[1] < _SCENARIO_COUNT_TTL:
+                return hit[0]
+    count = _facade.count_scenarios(proot, spec_name)
+    if dir_sig is not None:
+        with _SCENARIO_COUNT_LOCK:
+            if len(_SCENARIO_COUNT_CACHE) > _SCENARIO_COUNT_CACHE_MAX:
+                _SCENARIO_COUNT_CACHE.clear()
+            _SCENARIO_COUNT_CACHE[key] = (count, now)
+    return count
+
+
 def project_summary(name: str, path: str, specs=None) -> dict:
     """单个项目的聚合摘要（/api/projects、/api/overview 共用）。
 
@@ -172,7 +227,9 @@ def project_summary(name: str, path: str, specs=None) -> dict:
         "problems": problems,
         "active_runs": active,
         "active_runs_by_type": active_by_type,
-        "scenario_count": sum(_facade.count_scenarios(proot, s) for s in specs),
+        # 场景计数走目录签名+短 TTL memo（item 20237ed45281，取舍登记见
+        # _SCENARIO_COUNT_CACHE 处），不再每次冷算全文读盘计数
+        "scenario_count": sum(_cached_scenario_count(proot, s) for s in specs),
         "updated": state_st.st_mtime if state_st else 0,
         "description": description,
     }

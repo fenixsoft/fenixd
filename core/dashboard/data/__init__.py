@@ -7,17 +7,19 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
 `_is_running` 与 `USER_CONFIG_PATH`，范围过窄，实际远不止这两个）：被搬移函数内
 通过**本门面**（`import core.dashboard.data as _facade` 后 `_facade.<name>`）
 延迟解析的全部名字都构成 patch 缝，测试以 `patch.object(core.dashboard.data,
-"<name>")` 打桩。当前已知清单（新增门面延迟引用时同步登记）：
+"<name>")` 打桩。当前已知清单（新增门面延迟引用时同步登记；对账以
+`grep -rn "_facade\." core/ tests/` 全仓核实为准）：
 
     _is_running, USER_CONFIG_PATH,
     archive_spec_runs   (spec_archive.py，显式 D8 注释),
+    archive_dir_map     (spec_docs.py，summary.py 经门面解析；
+                         code-review 5aa6eed3fc95),
     spec_summary        (summary.py),
     parse_verify_progress (core/signals.py 定义，经 artifacts.py re-export；
                            summary.py 经门面解析),
     classify_run        (runs.py，tasks.py 经门面解析),
     parse_quality_gates (quality_gates.py，summary.py 经门面消费),
     find_implementer_worktree (tasks.py，quality_gates.py 经门面解析),
-    _resolve_run_file, _read_run_lines (runs.py，quality_gates.py 经门面解析),
     resolve_run_file, run_tail_insights (runs.py 公开别名，timeline.py 经门面解析；
                                         code-review 2546f200e430),
     read_log_window_from (log_index.py 公开别名，timeline.py 经门面解析；
@@ -32,10 +34,6 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     read_run_lines      (runs.py，tasks.py 经门面解析；code-review 09c363a0b1b9),
     cached_config_value (summary.py 公开别名，quality_gates.py 经门面解析；
                          code-review 20ad589a3bc4),
-    runs_by_spec_sigs   (summary.py 公开别名，project_routes.py 经门面解析；
-                         code-review c0c4df6ac475),
-    degraded_project    (summary.py 公开别名，project_routes.py 经门面解析；
-                         code-review 850b89f106d6),
     merge_dispositions_by_run (admin_alerts.py，timeline.py 经门面解析；
                                code-review 55336c2a40af),
     admin_events_for_spec (timeline.py，topology.py 经门面解析；
@@ -68,6 +66,8 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     project_summary       (summary.py),
     read_effective_config (config_admin.py，timeline.py、summary.py
                            经门面解析),
+    read_spec_title     (spec_docs.py，summary.py 经门面解析；
+                         code-review 5aa6eed3fc95),
     resolve_spec_dir      (spec_docs.py，tasks.py、summary.py 经门面解析),
     rotated_log_files     (timeline.py，topology.py 经门面解析；
                            code-review aba5c5dd1e75),
@@ -79,6 +79,11 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     task_progress         (tasks.py，summary.py 经门面解析),
     tasks_note            (tasks.py，summary.py 经门面解析),
     validated_spec_name   (spec_docs.py，tasks.py 经门面解析)
+
+（清单对账 code-review 5aa6eed3fc95：补登记 read_spec_title 与
+archive_dir_map；移除 `_resolve_run_file`、`_read_run_lines`、
+`runs_by_spec_sigs`、`degraded_project` 四个陈旧条目——全仓已无
+`_facade.<名>` 访问点亦无测试 patch 消费，名字仍保留在 re-export 面上。）
 
 MUST NOT 把这些 `_facade.X` 访问「整理」成直接 import——会静默破坏
 monkeypatch 语义（对应测试会以难定位的方式失败）。
