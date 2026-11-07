@@ -1,7 +1,7 @@
 # 原型批注环
 
-<!-- knowledge: capability=prototype-annotation-loop rev=1
-     sources=spec/archive/2026-11-02-fenix-prototype -->
+<!-- knowledge: capability=prototype-annotation-loop rev=2
+     sources=spec/archive/2026-11-02-fenix-prototype,spec/knowledge/_inbox/done/ops-mobile-nested-bento-removal.md -->
 
 原型草稿的会话内批注迭代闭环：独立 HTTP 服务器伺服原型、注入式批注器收集意见、`feedback.json` 回流驱动修订，直到用户明示批准入库并冻结。
 
@@ -15,7 +15,9 @@
 - 仅当用户在会话中明示认可（如「原型定了」）才视为批准。批准后原型文件连同整页截图落入 `specs/<spec>/prototype/` 入库提交，草稿目录（`.fenix/prototypes/<spec>/`，gitignore 运行时目录）清理。
 - 整页截图为尽力而为：无头浏览器不可用或抓取失败时批准 MUST NOT 阻塞，SPEC 显式记录「无渲染凭证」降级，HTML 仍为真相源主体。
 - 批准后原型视为冻结：任何再修改 MUST 视为新一轮确认（重新迭代、重新批准），MUST NOT 静默改动已入库原型。
+- 原型页控制台的 vendor DEV 构建警告为非缺陷信号：react DEV 构建（vendor 缓存/CDN 加载）对 createElement 多位置 children 写法恒发一条「数组 key」警告，已入库旧版原型同款、生产构建不含 DEV React 无此噪音——排查页面代码前先与旧版原型控制台对照，勿据该警告返工。
 
 ## 溯源
 
 - 2026-11-02 fenix-prototype（spec/archive/2026-11-02-fenix-prototype） — 新增本能力：独立简易服务器与 PID 三态生命周期、注入式批注器与本地导出降级、feedback.json 会话内迭代闭环、批准入库与冻结语义。
+- 2026-11-07 ops-mobile-nested-bento-removal（spec/knowledge/_inbox/done/ops-mobile-nested-bento-removal.md） — 新增控制台噪音判读条款：vendor React DEV「数组 key」警告为非缺陷信号（生产构建无 DEV React），排查先对照旧版原型控制台、勿据其返工

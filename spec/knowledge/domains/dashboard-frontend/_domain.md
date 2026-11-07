@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-07 21:43 UTC+8
+> 最后更新：2026-11-07 21:53 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -34,6 +34,7 @@
 | [v2-spec-detail-page](v2-spec-detail-page.md) | v2 SPEC 详情页 | 2026-10-03 04:59 |
 | [v2-config-page](v2-config-page.md) | v2 配置页 | 2026-10-03 04:59 |
 | [v2-alerts-activities](v2-alerts-activities.md) | v2 告警与活动页 | 2026-10-03 04:59 |
+| [v2-ops-page](v2-ops-page.md) | v2 运维页（三页签处置链缺省与 `?tab=` 预选、五项统计标题栏副标题与项目筛选槽、处置链四块观测/自动运维记录服务端分页/告警裁决折叠区、三路失败隔离、移动端去嵌套磁贴直接行呈现与分隔线保色、V2AlertRow prop 分支纪律） | 2026-11-07 21:53 |
 | [v2-admin-doc-modals](v2-admin-doc-modals.md) | v2 管理文档弹窗 | 2026-10-03 04:59 |
 | [v2-run-stream-modal](v2-run-stream-modal.md) | v2 run 流弹窗 | 2026-10-03 04:59 |
 | [v3-spec-detail-page](v3-spec-detail-page.md) | v3 SPEC 详情页 | 2026-10-03 04:59 |
@@ -50,7 +51,7 @@
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
 | [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、SPEC 详情页中文标题富标题内部下方行堆叠（v2 与 branch 组合、移动端只显英文标题、subtitle 槽行内形态保留既有消费面）、embed 行壳位单档 60px 毛玻璃固定标题带、standalone 含移动端统一注册落 ProLayout 顶栏（移动=汉堡+logo+标题同条、副标题移动端隐藏）、v2 六页经 titleBar 槽位并入、PageContainer 页头与面包屑退役、过滤项统一右上落位（filters 槽位=移动端标题栏右侧控件位单一定点）、定高偏移双档回校、脱壳大屏与占位页豁免） | 2026-11-07 21:43 |
 | [dsh-bridge-projects-section](dsh-bridge-projects-section.md) | dsh 面板桥「项目」菜单行折叠开关与内嵌项目分区（点击=分区展开/折叠非主面板切换、右缘状态箭头、整行拦截层、键盘路径保留主面板注册、分区 5 行封顶滚动条 dsh web 同款定制、官方 Workspaces 列表同款） | 2026-11-06 17:54 |
-| [v2-commercial-ui](v2-commercial-ui.md) | v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态：/v2/* 路由前缀隔离与现产菜单零污染、主题单源分立互不引用、跨域镜像不引用消费纪律、磁贴圆角全站 12px、定稿原型双形态分立为 UI 真相源、真实 API 消费缺口「—」、移动断点单源与页内容器级双形态分支、白底变体三档（overview/projects 满宽 30px、help 仅白底）、标题栏经 titleBar 槽位并入统一控件、帮助正文标题去重（正文 H1 唯一）、运行态筛选胶囊语言、移动等宽钳制、DESIGN.md 例外域条款） | 2026-11-06 18:17 |
+| [v2-commercial-ui](v2-commercial-ui.md) | v2 商业化界面域（Bento 磁贴工作台六页桌面+移动双形态：/v2/* 路由前缀隔离与现产菜单零污染、主题单源分立互不引用、跨域镜像不引用消费纪律、磁贴圆角全站 12px、定稿原型双形态分立为 UI 真相源、真实 API 消费缺口「—」、移动断点单源与页内容器级双形态分支、共用组件 prop 分支纪律、移动端忌卡中卡、白底变体三档（overview/projects 满宽 30px、help 仅白底）、标题栏经 titleBar 槽位并入统一控件、帮助正文标题去重（正文 H1 唯一）、运行态筛选胶囊语言、移动等宽钳制、DESIGN.md 例外域条款） | 2026-11-07 21:53 |
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
 | [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | antd 表格限高滚动与 sticky 表头纪律（限高层钉 .ant-table-content、sticky 钉 thead>tr、rect 行高校准、几何证据验证；fenixd 台账磁贴不限高，「5 行封顶」落地面为 dsh web 侧栏） | 2026-11-06 17:54 |
 | [layout-chrome-tinting](layout-chrome-tinting.md) | 布局 chrome 底色 soft 染色统一（顶栏毛玻璃只换 rgb 通道双档、colorBgScrollHeader 必随配、菜单侧栏 soft 实底平涂一体、三处边框同取 colorSplit、soft 染色族守卫） | 2026-11-06 16:55 |
