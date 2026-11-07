@@ -1,7 +1,7 @@
 # 全站统一标题栏
 
-<!-- knowledge: capability=unified-page-title-bar rev=13
-     sources=spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/chrome-soft-solid-titlebar-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-titlebar-subtitle-stacked -->
+<!-- knowledge: capability=unified-page-title-bar rev=14
+     sources=spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/chrome-soft-solid-titlebar-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-titlebar-subtitle-stacked,spec/changes/add-knowledge-anchor-lint-and-prune -->
 
 dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitleBar.tsx`）：标题/副标题/返回箭头/过滤项四槽位声明，双壳位（顶栏承载 / embed 行壳位承载）自动分流——页面只声明数据，禁止逐页自画同类型标题 div。
 
@@ -31,6 +31,12 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 - 副标题承载：概览「监控 N 个项目」、项目列表「共 N 个 SPEC」、运维「跨项目 Administrator 活动与处置链观测」（罩三页签）经 subtitle 槽随标题渲染在标题栏，仅桌面视口可见（移动端隐藏）；无副标题页（设置、指挥中心、帮助）不渲染副标题槽位。SPEC 详情页中文标题不走本槽（富节点内下方行，见规则条目）。
 - 守卫契约：`pageTitleBar.test.mjs` / `embedMount.test.mjs` 钉移动顶栏 + embed 行壳位的双壳位新契约，页壳位结构变化须两测试同步钉版。
 
+## 代码锚点
+
+- 主实现：`core/dashboard/static/src/components/PageTitleBar.tsx`
+- 单源符号：`core/dashboard/static/src/components/pageTitleBarStore.ts`
+- 守卫测试：`core/dashboard/static/tests/pageTitleBar.test.mjs`
+
 ## 溯源
 
 - 2026-11-04 unified-page-title-bar（spec/changes/unified-page-title-bar/） — 新增本能力：四槽位统一控件与双壳位自动分流（顶栏注册-插槽 / embed·移动端内容区首行 48px）、PageContainer 页头全站退役（本体保留 + `title={false}`）、过滤项收编、面包屑全局退役、富标题整体迁移、定高偏移五处常数 embed 双档回校、脱壳大屏与占位页豁免
@@ -44,3 +50,4 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 - 2026-11-06 add-titlebar-subtitle-stacked（spec/changes/add-titlebar-subtitle-stacked/） — 已落地的详情页中文标题下方堆叠形态成文契约化：「SPEC 详情标题栏中文标题下方行」条款去历史化改写并升格 MUST（两页声明零 subtitle 槽、既有 subtitle 槽消费面保持行内右侧形态不变、组件不全局翻转不新增堆叠声明）；「详情富标题两列结构」条款钉死守卫面（specTitleSubtitle 零 subtitle 槽+下方行块级视觉锚，pageTitleBar/pageChrome/embedMount 同步）；「定高偏移口径」增补按实际渲染盘点回校条款（命中 56/60、126/130 族才改，两详情页堆叠行实测零命中既有常数未动）
 - 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 「过滤项统一右上落位」条款补移动端定式：filters 槽位即移动端「标题栏右侧控件位」单一定点，控件上移标题栏一律走槽位、不在内容区手画按钮行；窄幅放不下的过滤组整组下放内容区不注册槽位（指挥中心双下拉）
 - 2026-11-07 交互会话用户指令「移除所有v2版本的页面，只保留原版」（未走 SPEC） — v2 商业化域六页随域退役删除，「v2 六页并入」条款消失（守卫 tests/v2TitleBarGuard.test.mjs 同删）；「SPEC 详情标题栏中文标题下方行」收敛单详情页口径（combineSpecSubtitle 随 v2 specDetail 删除，下方行只取 title）；本页 v2 指涉收口为历史溯源
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 补代码锚点段（高频消费页锚点范例批次）：主实现 PageTitleBar.tsx、注册单源 pageTitleBarStore.ts、守卫 pageTitleBar.test.mjs，路径逐一盘上核验

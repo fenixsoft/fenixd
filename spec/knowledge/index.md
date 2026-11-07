@@ -27,7 +27,7 @@
 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-06 18:13 |
 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
-| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排。另有 dsh 面板桥集成（嵌入挂载/项目菜单行/设置停靠）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 43 | 2026-11-08 00:22 |
+| [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排。另有 dsh 面板桥集成（嵌入挂载/项目菜单行/设置停靠）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 43 | 2026-11-08 00:40 |
 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（双轨重启协议）、增量数据管线、实时会话。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合同属此域。 | 20 | 2026-11-08 00:40 |
 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-07 21:43 |
 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
