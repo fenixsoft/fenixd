@@ -52,3 +52,9 @@
 
 - [x] 4.1 编写 `tests/integration/README.md`：用途与架构一段、快速开始（构建预热 → smoke → 真实双轮）、环境变量契约表（与 D3 一致）、产物目录与退出码语义、**人工步骤**专节（本机已预置 `tests/integration/.env`（gitignored，provider bigmodel.cn / glm-5.3-flash），真实双轮无需手工注入即可触发；新环境需自行创建该文件或 export 环境变量，模板见 README；`FENIX_IT_PLUGINS_REPO` 长期默认地址待插件仓定址后钉入）、故障排查（GitHub 私有仓 PAT/SSH 改造指引、插件仓不可达处置、dashboard dist 缺失需先 `npm run build`、dsh web 启动失败排查——含 shipped 模板名禁作自定义 profile 目标的报错口径）
 - [x] 4.2 收尾自检：`bash -n` 覆盖 run.sh/e2e.sh/check_skills.sh/check_dashboard.sh；`python3 -m py_compile` 覆盖 check_dsh_web.py；run.sh 无凭据 dry-run exit 2（临时移开 `.env` 验证，后恢复）；`shellcheck`（如可用）零 error 级告警；夹具 SPEC 种子的 Deliverables 声明路径与 lint 规则自洽（具体文件路径、无目录/占位符）；`tests/` 既有 pytest 套件零受累（新增文件不进 pytest 收集路径或以显式忽略规避）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-integration-test-env/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
