@@ -9,6 +9,7 @@ _clear_degrade_context）。纯结构搬移，零行为变化。
 本模块 MUST NOT `import _legacy`（D2b 规则 1：门面依赖以显式 `pipeline` 参数注入）。
 """
 
+import glob
 import json
 from datetime import datetime, timezone
 
@@ -528,43 +529,54 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
     # update_spec 置 blocked 无 frozen 结构化标记、error 亦无 FREEZE_ERROR_
     # PREFIX，blocked_stuck 看门狗的三选一豁免（frozen 字段 / 'frozen:'
     # 前缀 / '用户指令' 子串）全不命中，声称「等待人工裁决」却会被自动派
-    # admin run。frozen 与人工升级告警经该入口成对落盘；升级通道自身失败
-    # 不得抛穿裁决流程（code-review item 7e0509f14fdd 语义）由
-    # freeze_for_human 内部容错承接（告警失败记 WARNING、不回滚冻结）。
-    pipeline._context.state_machine.freeze_for_human(
-        spec_name,
-        error=(
-            f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
-            f"等待人工裁决。详见 `spec/changes/{spec_name}/verification-report.md`"
-        ),
-        signal_type="judge_rerun_cap",
-        severity="major",
-        description=(
-            f"'{spec_name}' judge 重跑超上限"
-            f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
-        ),
-        evidence=(
-            f"spec={spec_name}; judge_rerun_count={count}; "
-            f"修复预算状态: 耗尽={exhausted_rounds}（_scenario_repair_exhausted_rounds）; "
-            f"生命周期修复申报={claim_rounds} 轮（其中耗尽后拒收 "
-            f"{rejected_rounds} 轮）; 最近修复申报摘要="
-            f"{last_summary or '无记录'}"
-        ),
-        recommended_action=(
-            (
-                "场景修复预算已耗尽（无修复纯归因模式运行中）：重跑超上限主要由"
-                "耗尽后 test-defect 复判重跑贡献——剩余 test-defect 走人工修复"
-                "或归因豁免路径处置；人工解冻（unfreeze）后修复预算重新获得"
-            )
-            if exhausted_rounds >= 1
-            else (
-                "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
-                "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
-            )
-        ),
-        alert_callback=pipeline._context.escalation_notifier,
-        extra_updates={"_judge_cap_frozen": True},
-    )
+    # admin run。frozen 与人工升级告警经该入口成对落盘；升级通道（告警回调
+    # 与 arbiter hook）自身失败由 freeze_for_human 内部容错承接（记 WARNING、
+    # 不回滚冻结，code-review item 7e0509f14fdd 语义）——但其首段 update_spec
+    # 含磁盘 IO 且不吞 OSError，磁盘满/权限异常会沿本函数 → _judge_dispatch_gate
+    # 上抛中断本轮 verdict 处置，故调用点再包一层容错（比照 infra_classify
+    # 同因失败哨冻结，code-review item 738682ae5449）：冻结落盘失败仅 ERROR
+    # 留痕——judge_rerun_cap 语义下 spec 未冻结可由下一轮超限重触发兜底。
+    try:
+        pipeline._context.state_machine.freeze_for_human(
+            spec_name,
+            error=(
+                f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
+                f"等待人工裁决。详见 `spec/changes/{spec_name}/verification-report.md`"
+            ),
+            signal_type="judge_rerun_cap",
+            severity="major",
+            description=(
+                f"'{spec_name}' judge 重跑超上限"
+                f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
+            ),
+            evidence=(
+                f"spec={spec_name}; judge_rerun_count={count}; "
+                f"修复预算状态: 耗尽={exhausted_rounds}（_scenario_repair_exhausted_rounds）; "
+                f"生命周期修复申报={claim_rounds} 轮（其中耗尽后拒收 "
+                f"{rejected_rounds} 轮）; 最近修复申报摘要="
+                f"{last_summary or '无记录'}"
+            ),
+            recommended_action=(
+                (
+                    "场景修复预算已耗尽（无修复纯归因模式运行中）：重跑超上限主要由"
+                    "耗尽后 test-defect 复判重跑贡献——剩余 test-defect 走人工修复"
+                    "或归因豁免路径处置；人工解冻（unfreeze）后修复预算重新获得"
+                )
+                if exhausted_rounds >= 1
+                else (
+                    "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
+                    "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+                )
+            ),
+            alert_callback=pipeline._context.escalation_notifier,
+            extra_updates={"_judge_cap_frozen": True},
+        )
+    except Exception as e:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"judge 重跑硬上限冻结转人工写盘失败 '{spec_name}'（frozen/blocked "
+            f"本轮未落盘，下一轮超限可重触发）: {type(e).__name__}: {e}",
+        )
     pipeline._context.logger.error(
         "pm_engine",
         f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— " f"冻结为 blocked，等待人工裁决",
@@ -899,7 +911,10 @@ def _last_planner_run_cost(pipeline, spec_name: str) -> str:
         runs_dir = pipeline._context.project_root / ".fenix" / "runs"
         if runs_dir.is_dir():
             candidates = sorted(
-                p for p in runs_dir.glob(f"planner-plan-{spec_name}-*.jsonl")
+                # glob.escape（code-review item c0998c655514）：spec 名含
+                # [ ] * ? 等元字符时原样拼进 glob 会被解释为字符类/通配——
+                # 转义后仅保留字面匹配，归属守卫 run_spec_part 不变。
+                p for p in runs_dir.glob(f"planner-plan-{glob.escape(spec_name)}-*.jsonl")
                 # 精确归属守卫（范式见 recovery.py）：spec 名互为前缀时
                 # glob 命中不得直接认定——planner-plan-fix-x 不得取 fix-x-y 的耗时
                 if run_spec_part(p.stem) == spec_name

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -140,6 +141,19 @@ PROFILE_PROBES: list[StackProbe] = [ReactAntdProbe()]
 # 主题 / 设计 token 提取
 # ---------------------------------------------------------------------------
 
+def _iter_pruned_files(project: Path):
+    """按 SKIP_DIRS 在遍历层剪枝的文件枚举（排除目录整棵不进入遍历）。
+
+    os.walk + ``dirs[:]`` 就地剪枝使 node_modules/.git/dist 等巨型目录在
+    枚举阶段即被跳过，而非全树枚举产出后再逐路径过滤（侦察尽力而为，
+    不为全仓遍历烧时间）。目录与文件名排序保证遍历顺序确定。
+    """
+    for root, dirs, names in os.walk(project):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        for name in sorted(names):
+            yield Path(root) / name
+
+
 def _iter_source_files(
     project: Path,
     exts: set[str],
@@ -152,12 +166,9 @@ def _iter_source_files(
     供同一画像内的多个收集器共享一次遍历结果。
     """
     count = 0
-    for path in (files if files is not None else sorted(project.rglob("*"))):
+    for path in (files if files is not None
+                 else sorted(_iter_pruned_files(project))):
         if not path.is_file():
-            continue
-        if files is None and any(
-            part in SKIP_DIRS for part in path.relative_to(project).parts
-        ):
             continue
         if path.suffix.lower() not in exts:
             continue
@@ -171,16 +182,15 @@ def _walk_source_files(project: Path) -> tuple[list[Path], bool]:
     """单次受控遍历，产出跳过 SKIP_DIRS 的文件清单（顺序稳定，尽力而为）。
 
     遍历即按扩展名分桶（仅收集下游收集器消费的样式/代码两类）并套用
-    ``MAX_FILES_PER_CATEGORY`` 上限，不把整棵文件树物化进内存；桶内按路径
-    排序保证确定性。返回 ``(清单, 是否因上限截断)``。
+    ``MAX_FILES_PER_CATEGORY`` 上限，不把整棵文件树物化进内存；排除目录在
+    遍历层剪枝（node_modules 等整棵不进入），桶内按路径排序保证确定性。
+    返回 ``(清单, 是否因上限截断)``。
     """
     style: list[Path] = []
     code: list[Path] = []
     truncated = False
-    for path in project.rglob("*"):
+    for path in _iter_pruned_files(project):
         if not path.is_file():
-            continue
-        if any(part in SKIP_DIRS for part in path.relative_to(project).parts):
             continue
         suffix = path.suffix.lower()
         if suffix in STYLE_EXTS:
@@ -312,16 +322,20 @@ _DESIGN_KEYWORD = re.compile(
 )
 
 
-def extract_design_doc(project: Path) -> dict | None:
-    """提取 DESIGN.md 摘录（标题 + 含视觉关键词的行，封顶 40 行）。"""
+def extract_design_doc(
+    project: Path, warnings: list[str] | None = None
+) -> dict | None:
+    """提取 DESIGN.md 摘录（标题 + 含视觉关键词的行，封顶 40 行）。
+
+    读取复用 ``_read_text_capped``：截断纪律与主题文件同口径（2MB 上限），
+    误把大型生成产物命名为 DESIGN.md 时只读头部并在 ``warnings`` 注明，
+    读取防线不在同一文件内出现两套口径。
+    """
     for rel in _DESIGN_DOC_CANDIDATES:
         path = project / rel
         if not path.is_file():
             continue
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
+        lines = _read_text_capped(path, project, warnings).splitlines()
         extract: list[str] = []
         for line in lines:
             stripped = line.strip()
@@ -373,7 +387,7 @@ def build_profile(project: Path) -> dict:
     walked, walk_truncated = _walk_source_files(project)
     css_tokens, css_sources = extract_css_custom_props(project, walked, warnings)
     antd_tokens, antd_sources = extract_antd_tokens(project, walked, warnings)
-    design_doc = extract_design_doc(project)
+    design_doc = extract_design_doc(project, warnings)
     if walk_truncated:
         warnings.append("源文件扫描达到类别上限，主题/样例收集已截断（侦察尽力而为）")
 
@@ -411,7 +425,8 @@ def build_profile(project: Path) -> dict:
 def _unknown_profile(project: Path, reasons: list[str]) -> dict:
     """unknown 画像：显式降级为纯 HTML/CSS 仿样并标注无约束力。"""
     # 与 detected 路径同口径：复用 _walk_source_files 的单次受控遍历
-    # （分桶封顶、不物化整棵文件树）；截断标记不进入 unknown 画像输出。
+    # （分桶封顶、不物化整棵文件树）；walk 截断标记不进入 unknown 画像输出。
+    warnings = list(reasons)
     walked, _ = _walk_source_files(project)
     return {
         "schema": SCHEMA_VERSION,
@@ -421,7 +436,7 @@ def _unknown_profile(project: Path, reasons: list[str]) -> dict:
         "framework": None,
         "component_library": None,
         "theme": {"css_custom_props": {}, "antd_tokens": {}, "sources": []},
-        "design_doc": extract_design_doc(project),
+        "design_doc": extract_design_doc(project, warnings),
         "samples": _sample_pages(project, walked),
         "generation": {
             "mode": "plain-html",
@@ -432,7 +447,7 @@ def _unknown_profile(project: Path, reasons: list[str]) -> dict:
             "level": "plain-html",
             "reasons": reasons,
         },
-        "warnings": list(reasons),
+        "warnings": warnings,
     }
 
 

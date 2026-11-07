@@ -1337,6 +1337,12 @@ class VerificationPipeline:
                 "error": "Verification found bugs — see verification report",
                 # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
                 "_inconclusive_attempts": 0,
+                # 计数清零处同步清签名比较基准（与 escalation speculative 抑制
+                # 写点同款显式空串回写）：_last_inconclusive_signature 与
+                # _inconclusive_attempts 同生命周期，不回写会残留上一 episode
+                # 的旧签名，实现修复后重新验证再遇 blocked-env 同签名复现时，
+                # escalation 提前升级停车按「环境未变化」误判跳过剩余重验。
+                "_last_inconclusive_signature": "",
                 # add-verify-parallel-backoff / design D2：bug-found 属健康轮
                 # 判定（非 inconclusive），降档并行度同轮复位。
                 "_verify_parallel_override": None,
@@ -3511,6 +3517,15 @@ class VerificationPipeline:
                     except (TypeError, ValueError):
                         _dur = 0.0
                     _dur_min = _dur / 60
+                    # 写点前状态复核（与本方法其余结果写点同口径收敛于
+                    # _discard_if_not_testing）：入口核对到本写点之间隔着
+                    # 整轮 planner run，窗口内 spec 可能被人工复位/并发
+                    # attempt 接管并写入处置说明——非 testing 时 DEBUG
+                    # 丢弃并直接结束，不覆写较新的 error 字段。
+                    if _discard_if_not_testing(
+                        self, spec_name, None, "planner-invalid-output"
+                    ):
+                        return
                     self._context.state_machine.update_spec(
                         spec_name,
                         {
