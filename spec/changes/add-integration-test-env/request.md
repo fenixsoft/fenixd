@@ -1,0 +1,1 @@
+给fenix框架设计一套集成测试环境：先基于一套轻量的瘦linux docker环境构建测试镜像，该镜像应构建好claude code、deepseek harness两套harness环境，从外部传入llm的baseurl、key等信息。镜像构建好后，每次从github上拉取fenix框架，然后创建一个夹具项目，跑一个简单的spec，确保skill、dashboard、dsh web的插件能够正常安装和使用、spec能正常完成开发，通过验证，输出产物。以上集成测试的相关内容，在test目录下创建一个集成测试的目录存放。
