@@ -1,14 +1,15 @@
 # 周期 audit 体检与淘汰纠错
 
-<!-- knowledge: capability=knowledge-audit rev=3
-     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption -->
+<!-- knowledge: capability=knowledge-audit rev=4
+     sources=spec/archive/2026-10-05-add-knowledge-atlas-maintenance,spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger,spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption,spec/changes/add-knowledge-anchor-lint-and-prune -->
 
 对知识真相源做每日全量体检的维护车道：检测病灶、分级处置，疑点判定跨日记忆，超龄疑点转人工仲裁闭环，防真相源腐烂与膨胀。
 
 ## 规则
 
 - 调度：每日一次、自然日语义（对齐自省调度先例），挂 daemon 主循环自然日检查点（与自动归档同款周期检查模式）。`knowledge.audit_enabled`（布尔，缺省 true）为 false 时当日不派发，无告警与日志噪音；配置改动经既有 30s 热更新生效。设置页「归档」页签的 knowledge 设置卡片承载该开关。
-- 体检范围——五类病灶：①同页或跨页规则矛盾（同一事实两处陈述不一致）；②溯源链接悬空（指向不存在的归档目录）；③跨页重复规则（同一规则在多个能力页重复陈述）；④超 150 行硬顶页；⑤ADR 病灶（supersede 链断裂、accepted 正文被改动、index 状态与条目头不一致）。
+- 体检范围——六类病灶：①同页或跨页规则矛盾（同一事实两处陈述不一致）；②溯源链接悬空（指向不存在的归档目录）；③跨页重复规则（同一规则在多个能力页重复陈述）；④超 150 行硬顶页；⑤ADR 病灶（supersede 链断裂、accepted 正文被改动、index 状态与条目头不一致，状态词汇 accepted|superseded|retired）；⑥锚点悬空（能力页「代码锚点」段内路径悬空与行号形态违例）。
+- 病灶⑥检测口径：只扫能力页 `## 代码锚点` 段内的路径 token（`路径:符号` 形态取路径部分；`路径:<纯数字>` 行号尾形态报「行号必腐」格式违规，与悬空并列两类发现），逐一生成仓库相对路径校验盘上文件存在性；`spec/archive/`、`spec/knowledge/_inbox/`、`node_modules/` 前缀跳过（历史/候选区/第三方不受锚点纪律约束）。悬空与格式违例进体检报告「待人工/定向转写」档计数与明细。两道纪律边界：不机械自删悬空锚点行——修复需语义判断定位新位置，脚本删除丢信息；不并入 `validate_knowledge` 硬门——折叠前置校验跑全树，一处陈旧锚点会硬阻塞全树折叠校验，把内容问题放大成管线阻塞。
 - ADR 引用断链按前缀匹配：检查知识页 ADR 引用时按 `ADR-\d{3}` 前缀匹配盘上 slug 形态文件名（如 `ADR-015-<slug>.md`），存在对应 slug 文件的引用不得判断链——精确名比对会对 slug 形态文件永久误报。
 - 分级处置，两级各司其职：
   - 机械项（悬空溯源行删除、格式违规、行数硬顶超标报告）由确定性脚本自动修复并 pathspec 限定 `spec/knowledge/` 提交，commit 形如 `[fenix] knowledge: audit fix <摘要>`。
@@ -31,3 +32,4 @@
 - 2026-10-05 add-knowledge-atlas-maintenance（spec/archive/2026-10-05-add-knowledge-atlas-maintenance） — 新增本能力页：五类病灶检测、机械自修/语义转写两级处置、初筛宁松勿紧、体检报告四计数、规模趋势「需精简」标记
 - 2026-10-06 evo-add-knowledge-audit-finding-ledger（spec/archive/2026-10-06-evo-add-knowledge-audit-finding-ledger） — 新增疑点台账（指纹持久化、判定回写、五态状态机、fail-open）、no-conflict 内容豁免与内容变更解冻、待人工挂起与同批快照滞后去重、二轮升级 todo.md 登记、ADR 断链前缀匹配（消除精确名永久误报）、state 检查点合并回写（救活 last_scale 规模趋势）、no_conflict_exempt 与 escalate_after_rounds 配置键
 - 2026-10-07 evo-add-knowledge-audit-escalation-consumption（spec/archive/2026-10-07-evo-add-knowledge-audit-escalation-consumption） — 修订本能力页：escalated 不再占用语义转写预算（切片前剔除，解除积压冻结）、报告与 todo 收敛为单条聚合（聚合行同前缀 upsert）、超龄 disputed 注记（三红线+写入/摘除自提交）、仲裁清单当日消费闭环（独立消费段避开防重短路、合法 decision 落判定删条目恢复复核）、escalated_stale_days 配置键
+- 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 修订本能力页：病灶族增第六类「锚点悬空」（消费 core.knowledge.check_anchor_references，只校验能力页代码锚点段，悬空与行号违例进报告待人工/定向转写档，不机械自删、不进 validate_knowledge 硬门的理由）；ADR 病灶⑤状态词汇扩 retired（index 一致性检查覆盖三值）
