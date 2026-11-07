@@ -7,7 +7,7 @@
    （两态：``spec/changes/<名>`` 或 ``spec/archive/<名>``，move-distill-
    trigger-to-push 3.5）、单页 150 行硬顶、index/_domain/adr 链接可解析且不
    越界、ADR 三段式与不可变性（tracked ADR 正文与 HEAD diff）、Superseded by
-   指向存在条目。返回违规字符串列表，空列表 = 通过。
+   指向存在条目、retired 注记行齐备。返回违规字符串列表，空列表 = 通过。
 
 2. **派发入口** ``dispatch_distill``：SPEC 经 ``PmEngine.approve_push`` 成功
    转移 done→pushed 后单点 fail-open 调用（move-distill-trigger-to-push 1.1，
@@ -174,10 +174,14 @@ def local_now_stamp() -> tuple:
     tz = f"UTC{sign}{hours}" + (f":{minutes:02d}" if minutes else "")
     return now.strftime("%Y-%m-%d %H:%M"), tz
 
-# ADR 文件名与头部状态
+# ADR 文件名与头部状态（add-knowledge-anchor-lint-and-prune 1.1：词汇表扩
+# retired——主体已从产品退役且无取代裁定，区别于 superseded 的「被新裁定推翻」；
+# 合法形态=头部 status: retired + Retired: <YYYY-MM-DD> <一句话> 注记行，
+# 三段正文不可变同 superseded 纪律）
 _ADR_NAME_RE = re.compile(r"^ADR-(\d{3})-.+\.md\Z")  # 结尾锚 \Z 同 _KEBAB_RE
-_ADR_STATUS_RE = re.compile(r"^status:\s*(accepted|superseded)\s*$", re.M)
+_ADR_STATUS_RE = re.compile(r"^status:\s*(accepted|superseded|retired)\s*$", re.M)
 _SUPERSEDED_BY_RE = re.compile(r"Superseded by:\s*ADR-(\d{3})")
+_RETIRED_NOTE_RE = re.compile(r"^Retired:\s*\d{4}-\d{2}-\d{2}\b", re.M)
 _ADR_BODY_SPLIT = "## Context"
 
 # 提交信息前缀（spec「蒸馏收尾确定性校验与自动提交」）
@@ -618,7 +622,7 @@ def validate_knowledge(project_root) -> list:
             seen_numbers[num] = adr.name
             status_m = _ADR_STATUS_RE.search(text.split(_ADR_BODY_SPLIT, 1)[0])
             if status_m is None:
-                violations.append(f"{label}: 头部缺 status 行（accepted|superseded）")
+                violations.append(f"{label}: 头部缺 status 行（accepted|superseded|retired）")
                 continue
             status = status_m.group(1)
             if status == "superseded":
@@ -631,6 +635,13 @@ def validate_knowledge(project_root) -> list:
                         violations.append(
                             f"{label}: Superseded by 指向不存在条目: ADR-{target_num}"
                         )
+            elif status == "retired":
+                # add-knowledge-anchor-lint-and-prune 1.1：retired 须带日期锚定
+                # 的 Retired: 注记行（同 Superseded by 先例置于头部段，三段正文
+                # 不可变性比对不受影响）；正文改写检测走下方统一 HEAD 比对，与
+                # superseded 同口径，无额外分支。
+                if not _RETIRED_NOTE_RE.search(text):
+                    violations.append(f"{label}: retired 条目缺 Retired: 注记行")
             # 不可变性：tracked ADR 三段正文与 HEAD 逐字比对（accepted 与
             # superseded 同样不可改写；未跟踪/非 git/读 HEAD 失败跳过）
             rel_posix = (Path(KNOWLEDGE_DIR) / "adr" / adr.name).as_posix()
@@ -652,6 +663,92 @@ def validate_knowledge(project_root) -> list:
             degraded_git["diff"],
         )
     return violations
+
+
+# ── 锚点存活检查（add-knowledge-anchor-lint-and-prune 1.2）───────────────
+
+# 「代码锚点」段标题（能力页契约：置于 ## 规则 之后、## 溯源 之前）
+_ANCHOR_HEADING_RE = re.compile(r"^##\s+代码锚点\s*$", re.M)
+
+# 锚点段内路径 token：含 / 的仓库相对路径形态，可带 ``:符号`` 尾形态
+# （取路径部分校验）或 ``:<纯数字>`` 尾形态（行号必腐，格式违规）。起始
+# lookbehind 排除前导路径字符，防 URL「https://…」中段与长 token 中段被
+# 误命中（design D1：精确、零误报）。
+_ANCHOR_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])"
+    r"(?P<path>[A-Za-z0-9_][A-Za-z0-9_./-]*/[A-Za-z0-9_./-]+)"
+    r"(?::(?P<suffix>[A-Za-z0-9_][A-Za-z0-9_.]*))?"
+)
+
+# 锚点纪律豁免前缀（design D1）：历史归档/候选区/第三方目录不受锚点纪律约束
+_ANCHOR_SKIP_PREFIXES = ("spec/archive/", "spec/knowledge/_inbox/", "node_modules/")
+
+
+def _extract_anchor_section(text: str) -> str | None:
+    """取能力页「## 代码锚点」段文本（段标题行至下一 ``## `` 标题或文末）。
+
+    段不存在返回 None（段为可选，纯契约/流程类能力允许缺省）。
+    """
+    m = _ANCHOR_HEADING_RE.search(text)
+    if not m:
+        return None
+    rest = text[m.end():]
+    nxt = re.search(r"^##\s", rest, re.M)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def check_anchor_references(project_root) -> list:
+    """能力页「代码锚点」段存活检查（audit 车道病灶⑥数据源）。
+
+    只扫各能力页（``domains/<域>/<能力>.md``，域导航页 ``_domain.md`` 除外）
+    「## 代码锚点」段内的路径 token：``路径:符号`` 形态取路径部分校验；
+    ``路径:<纯数字>`` 尾形态报格式违规（行号必腐，与悬空并列两类发现）；
+    其余仓库相对路径逐一校验盘上文件存在性。``spec/archive/``、
+    ``spec/knowledge/_inbox/``、``node_modules/`` 前缀跳过（design D1）。
+
+    独立于 :func:`validate_knowledge`（design D2：不并入硬门——防一处陈旧
+    锚点阻塞全树折叠校验；悬空修复需语义判断，机械自删丢信息），供 audit
+    车道消费，发现进体检报告「待人工/定向转写」档。
+
+    Returns:
+        发现字符串列表（空列表 = 零悬空零违例）。domains/ 目录不存在视为
+        未初始化，返回空列表。
+    """
+    proot = Path(project_root)
+    domains_dir = proot / KNOWLEDGE_DIR / "domains"
+    findings: list = []
+    if not domains_dir.is_dir():
+        return findings
+    for page in sorted(domains_dir.glob("*/*.md")):
+        if page.name == "_domain.md":
+            continue
+        try:
+            text = page.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # 读取失败归既有病灶（①-⑤）管辖，不在本检查重复报告
+        rel_page = page.relative_to(proot).as_posix()
+        section = _extract_anchor_section(text)
+        if section is None:
+            continue
+        seen: set = set()  # 同页同路径去重（主实现与 :符号 两行指同一文件只报一条）
+        for m in _ANCHOR_TOKEN_RE.finditer(section):
+            path = m.group("path")
+            suffix = m.group("suffix")
+            if suffix is not None and suffix.isdigit():
+                msg = (
+                    f"{rel_page}: 锚点行号形态（行号必腐，改文件级路径+符号）:"
+                    f" {path}:{suffix}"
+                )
+            elif path.startswith(_ANCHOR_SKIP_PREFIXES):
+                continue
+            elif not (proot / path).is_file():
+                msg = f"{rel_page}: 锚点悬空: {path}"
+            else:
+                continue
+            if msg not in seen:
+                seen.add(msg)
+                findings.append(msg)
+    return findings
 
 
 # ── 溯源改写器（move-distill-trigger-to-push 3.1）────────────────────
@@ -937,7 +1034,10 @@ def build_inbox_fold_prompt(proot: Path, entry_name: str) -> str:
         f"   进最相关的能力页（无可挂靠页则新建能力页，并同步所在域\n"
         f"   `_domain.md` 与 index 表登记）。条目是自由格式，由你折叠成合规\n"
         f"   能力页内容；条目代表最新交互结论，与既有规则冲突时按「后写覆盖\n"
-        f"   前写」覆盖旧规则，旧规则从规则段消失。\n"
+        f"   前写」覆盖旧规则，旧规则从规则段消失。新建能力页必带\n"
+        f"   ``## 代码锚点`` 段（主实现/单源符号/消费方/守卫测试，文件级路径\n"
+        f"   禁行号，置于规则段之后、溯源段之前；无实现载体写一行\n"
+        f"   「无独立实现载体」）。\n"
         f"2. 散文重写、禁止历史叙述措辞、单页 ≤ 150 行（超顶拆主从分片互链）：\n"
         f"   与 SPEC 蒸馏同纪律。\n"
         f"3. 折叠涉及的每个能力页：marker ``rev`` +1、刷新盖戳行与所在域\n"
