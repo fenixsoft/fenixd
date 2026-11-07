@@ -377,9 +377,26 @@ deploy_dsh_bundle() {
     return 1
   fi
   # shipped 模板名（headless）被 CLI 禁止作为自定义 profile 目标——必须携带
-  # --profile 自定义名（dsh_adapter 实测口径）
-  if ! DSH_HOME="${DSH_HOME_HEADLESS}" dsh --profile "${DSH_PROFILE}" \
-        --from-default-profile headless >>"${LOG}" 2>&1; then
+  # --profile 自定义名（dsh_adapter 实测口径）。--from-default-profile 的 CLI
+  # 语义是「初始化然后 boot」（dsh --help 实证），前台调用会一路 boot 不返回
+  # ——后台 boot 待 profile package.json 落盘后 terminate，仅完成初始化意图。
+  if ! ( DSH_HOME="${DSH_HOME_HEADLESS}" dsh --profile "${DSH_PROFILE}" \
+          --from-default-profile headless >>"${LOG}" 2>&1 </dev/null &
+         boot_pid=$!
+         pkg="${DSH_HOME_HEADLESS}/profiles/${DSH_PROFILE}/package.json"
+         for i in $(seq 1 120); do
+           [ -f "${pkg}" ] && break
+           kill -0 "${boot_pid}" 2>/dev/null || { echo "profile boot 提前退出" >>"${LOG}"; exit 1; }
+           sleep 1
+         done
+         if [ ! -f "${pkg}" ]; then
+           kill "${boot_pid}" 2>/dev/null
+           echo "120s 内 profile package.json 未落盘" >>"${LOG}"
+           exit 1
+         fi
+         kill "${boot_pid}" 2>/dev/null
+         wait "${boot_pid}" 2>/dev/null
+         exit 0 ); then
     log "自定义 profile 创建失败（profile=${DSH_PROFILE}）"
     return 1
   fi

@@ -26,6 +26,7 @@
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -87,6 +88,49 @@ def dashboard_env() -> dict:
     return {"DSH_HOME": str(DSH_WEB_HOME)}
 
 
+def boot_profile_until_created(argv: list, log_path: Path, seconds: int) -> None:
+    """后台 boot dsh profile，待 profile package.json 落盘后收尾进程。
+
+    `dsh --profile <p> --from-default-profile <t>` 的 CLI 语义是「初始化然后
+    boot」（--help 实证），前台调用会一路 boot 成常驻服务永不返回（容器内
+    实测 300s 超时）——初始化意图必须用后台 boot + 落盘轮询 + terminate 达成。
+    stdin 接 DEVNULL（boot 后若进入交互态不至于吞住管道）。
+    """
+    log_f = open(log_path, "ab", buffering=0)
+    proc = subprocess.Popen(
+        argv, cwd=str(FW), env={**os.environ, **dashboard_env()},
+        stdout=log_f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+    )
+    profile_pkg = DSH_WEB_HOME / "profiles" / PROFILE / "package.json"
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if profile_pkg.is_file():
+            break
+        if proc.poll() is not None:
+            fail("profile/挂载", f"profile boot 提前退出 rc={proc.returncode}，"
+                 f"日志尾部见 {log_path}")
+        time.sleep(1)
+    else:
+        proc.kill()
+        fail("profile/挂载", f"{seconds}s 内 profile package.json 未落盘（{profile_pkg}）")
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def extract_web_url(log_path: Path) -> str:
+    """从 dsh web 启动日志提取带 token 的服务 URL（`dsh web: http://...`）。"""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    hits = re.findall(r"(https?://127\.0\.0\.1:\d+/\?token=\S+)", text)
+    return hits[-1].rstrip(".），") if hits else ""
+
+
 # ── 1) 插件供源解析 ────────────────────────────────────────────────────────
 print("[check_dsh_web] 阶段[供源] 解析 bridge 插件源")
 if PLUGINS and Path(PLUGINS).is_dir():
@@ -141,26 +185,31 @@ if not (bridge_dir / "lib" / "index.js").is_file():
     fail("插件构建", f"构建产物缺失: {bridge_dir}/lib/index.js")
 
 # ── 3) 自定义 web profile 初始化 + link: 软链挂入 ──────────────────────────
-print(f"[check_dsh_web] 阶段[profile] 初始化 {PROFILE}（--from-default-profile web）")
+# 初始化以后台 boot 形态完成（见 boot_profile_until_created），插件必须在
+# 最终 boot 之前挂入——web 服务的配置在 boot 时组定，运行中挂插件不生效。
+print(f"[check_dsh_web] 阶段[profile] 初始化 {PROFILE}（--from-default-profile web，后台 boot）")
 shutil.rmtree(DSH_WEB_HOME, ignore_errors=True)
+web_log = ART / "dsh-web.log"
 try:
-    run(["dsh", "--profile", PROFILE, "--from-default-profile", "web"],
-        env=dashboard_env(), timeout=300)
+    boot_profile_until_created(
+        ["dsh", "--profile", PROFILE, "--from-default-profile", "web", "--no-open"],
+        web_log, 120,
+    )
     run(["dsh", "plugin", "--profile", PROFILE, "add", f"link:{bridge_dir}"],
         env=dashboard_env(), timeout=300)
 except RuntimeError as exc:
     fail("profile/挂载", f"dsh profile 初始化或 plugin add 失败: {exc}")
-
+# 注意：bridge 的 manifest 是 dsh.client（web 端注入），不是 dsh.bundle——
+# 不可追加进 dsh.profile.bundles（bundle 加载器实测报
+# "declares no dsh.bundle ... skipping"）；plugin add 即完成挂入。
 pkg_path = DSH_WEB_HOME / "profiles" / PROFILE / "package.json"
 try:
-    pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
-    bundles = pkg.setdefault("dsh", {}).setdefault("profile", {}).setdefault("bundles", [])
-    if BRIDGE_NAME not in bundles:
-        bundles.append(BRIDGE_NAME)
-    pkg_path.write_text(json.dumps(pkg, ensure_ascii=False, indent=2), encoding="utf-8")
+    deps = json.loads(pkg_path.read_text(encoding="utf-8")).get("dependencies", {})
+    if BRIDGE_NAME not in deps:
+        fail("profile/挂载", f"plugin add 后 dependencies 缺 {BRIDGE_NAME}: {deps}")
 except Exception as exc:  # noqa: BLE001
-    fail("profile/挂载", f"bundles 追加失败（{pkg_path}）: {exc}")
-print(f"  · bridge 已以 link: 挂入 profile {PROFILE} 并追加 bundles")
+    fail("profile/挂载", f"plugin 挂入校验失败（{pkg_path}）: {exc}")
+print(f"  · bridge 已以 link: 挂入 profile {PROFILE}（dependencies 在案）")
 
 # ── 4) dashboard 服务先行就绪 ──────────────────────────────────────────────
 print("[check_dsh_web] 阶段[dashboard 就绪] 轮询 :%d" % DASH_PORT)
@@ -178,21 +227,21 @@ for _ in range(10):
 if not dash_ok:
     fail("dashboard 就绪", f":{DASH_PORT} 未就绪（check_dashboard.sh 应先行启动）")
 
-# ── 5) 启动 dsh web（:3080；多 argv 形态探测）─────────────────────────────
+# ── 5) 最终 boot：插件已挂入的 profile 起 web 服务（:3080）─────────────────
 print("[check_dsh_web] 阶段[dsh web 启动] 目标端口 :%d" % WEB_PORT)
-web_log = open(ART / "dsh-web.log", "ab", buffering=0)
 dsh_web_proc = None
+# `web` 子命令与 --profile 组合非法（实测 too many arguments）；直接 boot
+# 自定义 profile 缺省 app 即 web。--no-open 传给 web app（容器内无浏览器，
+# 启动横幅实测提示该开关）；dsh web 缺省端口 3080 与 WEB_PORT 同值。
 argv_candidates = [
-    ["dsh", "--profile", PROFILE, "web", "--port", str(WEB_PORT)],
-    ["dsh", "--profile", PROFILE, "web", "-p", str(WEB_PORT)],
-    ["dsh", "--profile", PROFILE, "web", "--port", str(WEB_PORT), "--host", "127.0.0.1"],
-    ["dsh", "--profile", PROFILE, "web"],
+    ["dsh", "--profile", PROFILE, "--no-open"],
 ]
 for argv in argv_candidates:
-    web_log.write(f"\n=== 尝试 argv: {' '.join(argv)} ===\n".encode())
+    log_f = open(web_log, "ab", buffering=0)
+    log_f.write(f"\n=== 尝试 argv: {' '.join(argv)} ===\n".encode())
     proc = subprocess.Popen(
         argv, cwd=str(FW), env={**os.environ, **dashboard_env(), "PORT": str(WEB_PORT)},
-        stdout=web_log, stderr=subprocess.STDOUT,
+        stdout=log_f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
     )
     if wait_port(WEB_PORT, 45):
         dsh_web_proc = proc
@@ -206,10 +255,14 @@ for argv in argv_candidates:
 if dsh_web_proc is None:
     tail = ""
     try:
-        tail = (ART / "dsh-web.log").read_text(encoding="utf-8", errors="replace")[-800:]
+        tail = web_log.read_text(encoding="utf-8", errors="replace")[-800:]
     except OSError:
         pass
-    fail("dsh web 启动", f"四种 argv 形态均未在 45s 内监听 :{WEB_PORT}；日志尾部:\n{tail}")
+    fail("dsh web 启动", f"各 argv 形态均未在 45s 内监听 :{WEB_PORT}；日志尾部:\n{tail}")
+# 服务带 token 鉴权时页面必须带 token 访问（boot 横幅实测输出
+# `dsh web: http://127.0.0.1:3080/?token=...`）——提取供 GUI 断言深链
+WEB_URL = extract_web_url(web_log) or f"http://127.0.0.1:{WEB_PORT}"
+print(f"  · 服务 URL: {WEB_URL}")
 
 # ── 6) Playwright GUI 断言 ─────────────────────────────────────────────────
 print("[check_dsh_web] 阶段[GUI 断言] Playwright headless chromium")
@@ -224,7 +277,7 @@ try:
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         # 深链直达「项目」面板（面板 id 与侧栏条目 id 同为 fenix-projects）
         page.goto(
-            f"http://127.0.0.1:{WEB_PORT}/#panel=fenix-projects",
+            f"{WEB_URL}#panel=fenix-projects",
             wait_until="domcontentloaded", timeout=30_000,
         )
 
