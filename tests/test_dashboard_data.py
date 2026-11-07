@@ -1266,6 +1266,108 @@ class TestVerdictFastTrackFallback(unittest.TestCase):
         self.assertEqual(out["summary"]["passed"], "10")  # md 解析值为字符串
 
 
+class TestVerdictImplResultSnapshot(unittest.TestCase):
+    """parse_verdict 对 fast-track 收口快照 impl-result.json 的兜底合成。
+
+    fast-track 收口经 _fast_track_snapshot_and_cleanup 把结果 dict 快照为
+    .fenix/verify-progress/<spec>/impl-result.json 并删除共享
+    .fenix/.fenix-run-result.json——兜底读取器原先只有两路 .fenix-run-result.json
+    候选，成功收口的 fast-track spec 验证列恒空态（验证已发生但界面不可见）。
+    夹具按快照真实形态构造：顶层 spec + verification.verdict +
+    verification.scenarios[].status（add-spec-list-mobile-style 实测形态）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.spec = "fix-demo-fast-track"
+        self.vp = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        self.vp.mkdir(parents=True)
+        self.snapshot = self.vp / "impl-result.json"
+        self.vp_result = self.vp / ".fenix-run-result.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _snapshot_payload(self, scenarios, verdict="verified", bugs=None):
+        return {
+            "status": "success", "spec": self.spec, "mode": "fast-track",
+            "summary": "done", "completed_tasks": ["1.1"],
+            "implementation": {"deliverables": ["core/x.py"]},
+            "verification": {"scenarios": scenarios, "verdict": verdict,
+                             "bugs": bugs or []},
+        }
+
+    def _scenario(self, i, status="pass"):
+        return {"scenario_id": f"s{i}", "description": f"场景{i}",
+                "status": status, "assertion_results": []}
+
+    def test_snapshot_hit_synthesizes_verdict(self):
+        from core.dashboard.data import parse_verdict
+        scenarios = [self._scenario(1), self._scenario(2),
+                     {"scenario_id": "s3", "description": "失败场景",
+                      "status": "fail", "assertion_results": []}]
+        self.snapshot.write_text(
+            json.dumps(self._snapshot_payload(scenarios)), encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertIn("✅", out["status"])
+        self.assertEqual(out["status_detail"], "裁决: verified")
+        # 快照合成路径三桶计数为 int、env_issues 恒 None（str|int|None 三态契约）
+        self.assertEqual(out["summary"]["passed"], 2)
+        self.assertEqual(out["summary"]["failed"], 1)
+        self.assertEqual(out["summary"]["errors"], 0)
+        self.assertEqual(out["summary"]["product_bugs"], 0)
+        self.assertIsNone(out["summary"]["env_issues"])
+
+    def test_private_run_result_beats_snapshot(self):
+        """私有 .fenix-run-result.json 与快照并存时取前者（升级 full 后新裁决压过旧快照）。"""
+        from core.dashboard.data import parse_verdict
+        self.snapshot.write_text(
+            json.dumps(self._snapshot_payload([self._scenario(1)])),
+            encoding="utf-8")
+        self.vp_result.write_text(
+            json.dumps(self._snapshot_payload(
+                [self._scenario(1), self._scenario(2)], verdict="bug-found",
+                bugs=[{"id": "BUG-01"}])),
+            encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertEqual(out["status_detail"], "裁决: bug-found")
+        self.assertEqual(out["summary"]["product_bugs"], 1)
+
+    def test_snapshot_spec_mismatch_ignored(self):
+        from core.dashboard.data import parse_verdict
+        data = self._snapshot_payload([self._scenario(1)])
+        data["spec"] = "another-spec"
+        self.snapshot.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+    def test_snapshot_missing_spec_field_ignored(self):
+        from core.dashboard.data import parse_verdict
+        data = self._snapshot_payload([self._scenario(1)])
+        del data["spec"]
+        self.snapshot.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+    def test_corrupt_snapshot_skipped(self):
+        from core.dashboard.data import parse_verdict
+        self.snapshot.write_text("{not json", encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+    def test_snapshot_missing_verdict_fail_closed(self):
+        from core.dashboard.data import parse_verdict
+        data = self._snapshot_payload([self._scenario(1)])
+        del data["verification"]["verdict"]
+        self.snapshot.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+    def test_snapshot_illegal_verdict_fail_closed(self):
+        from core.dashboard.data import parse_verdict
+        data = self._snapshot_payload([self._scenario(1)], verdict="not-a-verdict")
+        self.snapshot.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+
 class TestBugsFastTrackFallback(unittest.TestCase):
     """parse_bugs 对 fast-track 裁决结果文件 bugs 清单的回退收录。
 
