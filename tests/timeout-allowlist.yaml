@@ -32,3 +32,13 @@ entries:
     timeout_seconds: 420
     reason: 真实 dsh 子进程启动（Bundle 挂载/隔离 DSH_HOME）+ mock 端点多轮
       往返 + result gate selfcheck 子进程，远超 10s 全局门
+  # 2026-11-08 定向重试轮实证超时源（regression-1794123896）：用例起真实
+  # DashboardHTTPServer（Registry/静态目录装配）+ 130 条台账种子并全量响应，
+  # 空载稳定 2.4s（占 10s 门 1/4）；同轮回归中纯静态扫描用例
+  # test_no_bare_getlogger_in_core 同步放大 2.4x（2.14s→5.2s），坐实环境
+  # 负载放大而非产品回归。30s 留 ~12x 余量，与 test_run_stop_loss 负载敏感
+  # 族同口径。
+  - nodeid: tests/test_dashboard_api.py::TestAdminActivitiesServerPaging::test_page_size_capped_at_200
+    timeout_seconds: 30
+    reason: 真实 HTTP 服务器装配 + 130 条种子全量响应，空载 2.4s，负载下
+      回归环境实测放大越门（10.015s），10s 全局门余量不足
