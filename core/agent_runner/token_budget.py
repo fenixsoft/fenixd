@@ -176,14 +176,41 @@ class TokenAccountant:
             # 缓存分项累计（spec 详情「缓存命中/命中率」展示）：字段缺失（历史 spec）从 0 起步
             prev_cache_read = _to_int(entry.get("_cache_read_tokens", 0))
             prev_cache_creation = _to_int(entry.get("_cache_creation_tokens", 0))
+            new_cache_read = prev_cache_read + _to_int(
+                usage_info.get("cache_read_input_tokens", 0)
+            )
+            new_cache_creation = prev_cache_creation + _to_int(
+                usage_info.get("cache_creation_input_tokens", 0)
+            )
+            # code-review item 9890bca7e211：分项此前以 _to_int 直接放行相加、无
+            # 独立大数钳制，单字段超大畸形仅因两分项均计入 tokens_in 总量而被
+            # 上方 f0c135be16eb 的总量钳制连带拦截——防护依赖「分项 ⊆ 总量」的
+            # 数值包含关系，字段间累加关系将来调整（如分项移出 tokens_in）时
+            # 防护会静默失效。比照上方同款 sys.float_info.max 口径对分项独立
+            # 钳制：超限记 warning 后仅跳过该分项累计（键不进 updates），其余
+            # 入账不变。
             updates = {
                 "_tokens_in": new_in,
                 "_tokens_out": new_out,
-                "_cache_read_tokens": prev_cache_read
-                + _to_int(usage_info.get("cache_read_input_tokens", 0)),
-                "_cache_creation_tokens": prev_cache_creation
-                + _to_int(usage_info.get("cache_creation_input_tokens", 0)),
             }
+            if abs(new_cache_read) <= sys.float_info.max:
+                updates["_cache_read_tokens"] = new_cache_read
+            else:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 缓存分项累计值畸形超大（超 float 可表示范围）"
+                    f"'{spec_name}'（_cache_read_tokens 累计={new_cache_read!r}），"
+                    f"跳过该分项累计",
+                )
+            if abs(new_cache_creation) <= sys.float_info.max:
+                updates["_cache_creation_tokens"] = new_cache_creation
+            else:
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token 缓存分项累计值畸形超大（超 float 可表示范围）"
+                    f"'{spec_name}'（_cache_creation_tokens 累计="
+                    f"{new_cache_creation!r}），跳过该分项累计",
+                )
             # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
             if cost is not None and type(entry.get("_cost_usd")) is bool:
                 # code-review item ccbf36ac4b84：既有 _cost_usd 被人工/历史版本
