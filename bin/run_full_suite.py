@@ -885,10 +885,26 @@ def main(argv=None) -> int:
                 if current.get("timed_out"):
                     base = None
                 else:
-                    base = run_baseline_comparison(
-                        project_root, args.baseline, args.timeout,
-                        basetemp_unique=not lock.acquired, log=log,
-                    )
+                    # 基线段独立兜底（code-review item c470e8c84a08）：current 已
+                    # 赋值成功后，基线段的 git worktree 命令或基线套件 Popen 抛
+                    # OSError 若仍冒到上方 except，长跑（默认 1 小时量级）采得的
+                    # failed_tests/exit_code/hanging_test 会随「套件启动失败」
+                    # error 文档整体丢弃。此处降级为与 run_baseline_comparison
+                    # 错误分支同形态的 baseline-worktree-error（带 error 字段），
+                    # 复用下方既有基线不可用处置，仍输出含 current 结果的完整文档。
+                    try:
+                        base = run_baseline_comparison(
+                            project_root, args.baseline, args.timeout,
+                            basetemp_unique=not lock.acquired, log=log,
+                        )
+                    except OSError as exc:
+                        base = {
+                            "ref": args.baseline,
+                            "baseline_failures": [],
+                            "classification": "baseline-worktree-error",
+                            "hanging_test": None,
+                            "error": f"基线段启动失败: {exc}",
+                        }
     except OSError as exc:
         result = {"error": f"套件启动失败: {exc}", "exit_code": 1}
         if args.json:
