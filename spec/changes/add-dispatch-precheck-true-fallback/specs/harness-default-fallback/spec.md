@@ -45,16 +45,25 @@
 
 ### Requirement: 回落 WARN 观察钩子（一次性）
 
-（既有要求不变，补充 bundle 侧观测面）bundle 侧回落形态生效时 SHALL 在 dsh 侧日志留痕一条回落 WARN（含「config.model 缺席，回落 dsh 默认档」语义），使启动诊断一眼可辨回落形态与显式链形态。
+系统 SHALL 在回落形态生效时（SpawnRequest 无显式 provider 链）发一次 `WARNING` 日志留痕，每 daemon 进程每 adapter 至多一次（进程级去重）；MUST NOT 拒绝 spawn。WARNING 文案 MUST 含「未分配 provider 链，回落 harness 默认配置」语义与角色名。
+
+补充 bundle 侧观测面：bundle 侧回落形态（`config.model` 整体缺席）生效时 SHALL 在 dsh 侧日志留痕一条回落 WARN（含「config.model 缺席，回落 dsh 默认档」语义），使启动诊断一眼可辨回落形态与显式链形态。
+
+#### Scenario: 回落 WARN 每进程仅一次
+
+- **WHEN** 同一 daemon 进程内连续发起 3 次无分配 spawn（同 harness）
+- **THEN** 仅第 1 次产生 WARNING 留痕，第 2/3 次静默正常 spawn
 
 #### Scenario: bundle 侧回落留痕
 
 - **WHEN** fenix profile 无 patch 启动、回落 dsh 默认档
 - **THEN** dsh 启动日志/诊断含回落 WARN；显式链启动（patch 在场）不产生该 WARN
 
+## ADDED Requirements
+
 ### Requirement: 显式链形态不受回落语义改写（回归红线）
 
-（既有要求不变，本变更重申为回归红线）显式全链 spawn 产物为 argv 含 `--patch` 且 patch 文件落盘渲染 model/baseURL 三要素、env 桥接 `FENIX_DSH_PROVIDER_API_KEY`、`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` 两 consumed 键不透传子进程——该形态逐字节恒定。
+系统 SHALL 保持显式全链 spawn 产物逐字节恒定：argv 含 `--patch` 且 patch 文件落盘渲染 model/baseURL 三要素、env 桥接 `FENIX_DSH_PROVIDER_API_KEY`、`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` 两 consumed 键不透传子进程。
 
 #### Scenario: 显式链 spawn 产物字节级不变
 

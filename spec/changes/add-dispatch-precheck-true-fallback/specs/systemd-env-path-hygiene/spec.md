@@ -4,7 +4,7 @@
 
 ### Requirement: env 候选稿 PATH 基线并集
 
-`capture_env_candidate` 捕获 env 时 SHALL 对捕获源 PATH 做基线目录集检查：基线集为常见工具安装目录（`~/.local/bin`、`/usr/local/bin`、`/usr/bin`、`/bin` 等），捕获源 PATH 缺失的基线目录按序追加至候选稿 PATH 值尾部，并在候选稿中以注释留痕「已追加目录清单与原因」；捕获源 PATH 已含全部基线目录时产物与现行为逐字节一致。
+`capture_env_candidate` 捕获 env 时 SHALL 对捕获源 PATH 做基线目录集检查：基线集为常见工具安装目录（`~/.local/bin`、`/usr/local/bin`、`/usr/bin`、`/bin` 等），捕获源 PATH 缺失的基线目录按序追加至候选稿 PATH 值尾部，并在候选稿中以注释留痕「已追加目录清单与原因」；捕获源 PATH 已含全部基线目录时产物与现行为逐字节一致。基线目录集的比较与写入 MUST 使用展开后的绝对路径（systemd `Environment=` 与 EnvironmentFile 值均不展开 `~`，`~/.local/bin` 仅为文档记法）。
 
 #### Scenario: systemd 最小 PATH 被补齐并留痕
 
