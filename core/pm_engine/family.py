@@ -733,18 +733,18 @@ class FamilyGovernor:
     def _collect_root_cause_lines(self, spec_name: str, limit: int = 5) -> list:
         """收集验证裁决产物的行级根因摘要行（recommended_action 注入用）。
 
-        读取面与分流判据同源（fastlane._load_judge_bugs：verifier/judge 结果
+        读取面与分流判据同源（fastlane.load_judge_bugs：verifier/judge 结果
         文件 bugs[]，spec 戳 + status=bug-found 门），逐条「file:line [场景]
         根因」行形态输出；产物不可读/无根因返回空清单（调用方按无根因
         文案兜底）。截断防长文撑爆告警面板（每行 160 字、至多 limit 条）。
         """
         try:
             from core.pm_engine.verification.fastlane import (
-                _load_judge_bugs,
-                _parse_line_level,
+                load_judge_bugs,
+                parse_line_level,
             )
 
-            bugs = _load_judge_bugs(self._pm._verification, spec_name)
+            bugs = load_judge_bugs(self._pm._verification, spec_name)
         except Exception as e:  # noqa: BLE001 — 根因读取失败不阻断冻结主链
             self._pm.logger.warning(
                 "pm_engine",
@@ -760,9 +760,9 @@ class FamilyGovernor:
             rc = str(bug.get("root_cause") or "").strip()
             if not rc:
                 continue
-            file, line_no = _parse_line_level(bug.get("location"))
+            file, line_no = parse_line_level(bug.get("location"))
             if not line_no:
-                file, line_no = _parse_line_level(rc)
+                file, line_no = parse_line_level(rc)
             loc = f"{file}:{line_no} " if file and line_no else ""
             ids = bug.get("scenario_ids")
             sid_text = ""
@@ -1034,6 +1034,37 @@ class FamilyGovernor:
             # force_advance/abandon，adjudication_choices.py）由告警通道照常
             # 携带，不受本文案影响。
             _recommended_action = self._build_freeze_recommended_action(spec_name)
+            # 写前复查（code-review item 8755e13792fc，与下方修复写分支二次
+            # 复查同款口径）：本复查与冻结写之间隔着 bump_counters、_append_
+            # fail_history、_read_fail_history 与 _build_freeze_recommended_
+            # action（读 judge 产物）的文件 I/O，窗口内并发冻结/外部推进
+            # （并发验证收工转 verified、人工推进终态）仍可能被盲写拉回
+            # blocked+frozen——收敛成果被冻结现场覆盖，人工还要按「连续失败
+            # 第 N 轮」的误导文案去解冻。此处重读一次：发现已冻结或状态漂移
+            # 出可闸门态即放弃冻结（冻结现场保留待人工解冻 / 让位于外部进度，
+            # 缺口留待后续周期重评），把复查与冻结写的间隔收敛到无文件 I/O。
+            # 已递增计数与本轮 fail_history 条目按上方既有取舍保留，不做锁内
+            # 回写。
+            latest = self._pm.state_machine.read_one(spec_name) or {}
+            if latest.get(FROZEN_FIELD):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"升级闸门冻结放弃：'{spec_name}' 写盘前复查发现已冻结"
+                    f"——放弃冻结写与升级告警，冻结现场保留待人工解冻",
+                )
+                return
+            if latest.get("status") not in (
+                "bug-found",
+                "implemented",
+                "implementing",
+            ):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"升级闸门冻结竞争后到者：'{spec_name}' 状态已为 "
+                    f"'{latest.get('status')}'，让位于外部进度——放弃冻结写"
+                    f"与升级告警（缺口留待后续周期重评）",
+                )
+                return
             self._pm.state_machine.freeze_for_human(
                 spec_name,
                 error=(
@@ -1781,23 +1812,41 @@ class FamilyGovernor:
                         "pm_engine",
                         f"arbiter 改道判定异常（回落 narrative 路径）: {e}",
                     )
+                # code-review item 46d53e1e5748：直派/补叙段独立隔离——走到
+                # 此处告警本体 rec 已 append 落盘成功，本段任何失败（非
+                # RuntimeError 的 submit_for_alert 异常、schedule_narrative
+                # 生成/落盘异常）若冒泡到函数尾部外层兜底，会被误记为
+                # 「Failed to send escalation alert」误导排障方向（排查者会
+                # 去找落盘失败根因），且 narrative 侧车静默缺失无线索。失败
+                # 仅 WARNING 注明告警已落盘，不与告警落盘共用外层兜底文案。
                 dispatched = None
-                if arbiter_lane is not None:
-                    try:
-                        dispatched = arbiter_lane.submit_for_alert(
-                            self._pm, entry, rec["id"]
+                try:
+                    if arbiter_lane is not None:
+                        try:
+                            dispatched = arbiter_lane.submit_for_alert(
+                                self._pm, entry, rec["id"]
+                            )
+                        except RuntimeError as e:
+                            # 排队登记失败显式报错（MUST NOT 报假成功），回落
+                            # 既有 narrative 路径——告警本体已落盘不受影响
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"arbiter 触发登记失败（回落 narrative 路径）: {e}",
+                            )
+                    if dispatched in (None, "disabled", "excluded"):
+                        from core.adjudication_narrative import (
+                            schedule_narrative,
                         )
-                    except RuntimeError as e:
-                        # 排队登记失败显式报错（MUST NOT 报假成功），回落
-                        # 既有 narrative 路径——告警本体已落盘不受影响
-                        self._pm.logger.warning(
-                            "pm_engine",
-                            f"arbiter 触发登记失败（回落 narrative 路径）: {e}",
-                        )
-                if dispatched in (None, "disabled", "excluded"):
-                    from core.adjudication_narrative import schedule_narrative
 
-                    schedule_narrative(rec["id"], entry, self._pm, facts=facts)
+                        schedule_narrative(
+                            rec["id"], entry, self._pm, facts=facts
+                        )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"arbiter 直派/narrative 补叙失败（告警已落盘 "
+                        f"id={rec['id']}，告警本体不受影响）: {e}",
+                    )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"human-escalation-alert: {signal_type} for '{spec_name}'"

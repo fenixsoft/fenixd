@@ -186,7 +186,9 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
     ingest / 产物硬门）MUST 统一经本函数取行，禁止自写读取口径。
 
     ``on_error(source, exc)``：某来源（分片或主产物）读取发生 OSError 时
-    回调注明并跳过该来源——单分片失败不中断整轮；不传则静默跳过。stat
+    回调注明并跳过该来源——单分片失败不中断整轮；不传则跳过（stat 与
+    read_text 层失败均另记 WARNING 留痕，warn-once 节流——read_progress
+    热路径不传回调，留痕全凭此）。stat
     层访问失败（``is_file()`` 对权限类异常同样回 False，不得与真缺失混同）
     同走本回调并另记 WARNING 留痕。文件缺失（如分片直写模式下主产物尚未
     创建）是常态而非错误，不回调。各
@@ -223,6 +225,15 @@ def read_review_out_rows(project_root, run_id: str, on_error=None) -> List[dict]
         try:
             text = src.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
+            # 读取层失败与 stat 分口同款 WARNING 留痕：read_progress 热路径
+            # （_read_progress_with_manifest）不传 on_error，不留痕即完全
+            # 静默——covered 得空集、done 骤降零，还会喂出零进度停滞误告警。
+            if _warn_once(("out-read", run_id, src.name)):
+                _logger.warning(
+                    "code_review: 读取产物 %s 失败（run %s），按缺失跳过，"
+                    "该来源发现可能漏读: %s",
+                    src, run_id, e,
+                )
             if on_error is not None:
                 try:
                     on_error(src, e)
@@ -1601,7 +1612,9 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
             except FileNotFoundError:
                 continue
             except OSError as e:
-                if _warn_once(("manifest-stat", str(project_root))):
+                # 键含文件路径：同项目多文件访问失败逐个点名留痕（对齐
+                # shard-stat/out-stat 的文件级键粒度），不让留痕面塌缩为一条。
+                if _warn_once(("manifest-stat", str(project_root), line)):
                     _logger.warning(
                         "code_review: 访问文件 %s 失败（收集全仓清单时），"
                         "按缺失剔除出审查清单: %s",
@@ -1651,7 +1664,9 @@ def collect_manifest(project_root, scope: str, window_start: Optional[datetime] 
             except FileNotFoundError:
                 continue
             except OSError as e:
-                if _warn_once(("manifest-stat", str(project_root))):
+                # 键含文件路径：同上方 full scope 的文件级键粒度（多文件失败
+                # 逐个点名，不塌缩为一条）。
+                if _warn_once(("manifest-stat", str(project_root), f)):
                     _logger.warning(
                         "code_review: 访问文件 %s 失败（收集窗口清单时），"
                         "按缺失剔除出审查清单: %s",

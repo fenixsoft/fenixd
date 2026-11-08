@@ -81,6 +81,13 @@ FREEZE_ERROR_PREFIX = "用户指令冻结："
 REVIEW_ATTEMPTS_FREEZE_ERROR_PREFIX = "评审失败冻结："
 REVIEW_REJECTED_FREEZE_ERROR_PREFIX = "评审否决冻结："
 
+# mark_frozen_hold 向既有冻结 error 追加终止原因的长度封顶（code-review
+# fbcd762aa87e，同文件 REFUNDED_RUN_IDS_MAX_ANCHORS / ENV_EXEMPTION_MAX_ENTRIES
+# 的「追加时封顶」先例口径）：长生命周期 spec 在「解冻→再冻结→再被终止」
+# 循环下 error 逐次变长。超限即保留头部冻结锚点 + 尾部最近一次原因、截断中段。
+FROZEN_HOLD_ERROR_MAX_LEN = 600
+FROZEN_HOLD_ERROR_HEAD_KEEP = 300
+
 
 # update_spec 留痕键单源（code-review 2cd5458a25d4）：_apply_updates_entry 写入
 # applied 的「非生效」留痕键——
@@ -768,6 +775,10 @@ LEGACY_DEGRADE_LAST_REASON_FIELD = "_legacy_degrade_last_reason"
 # 与人工 reset_verification 清零清单。
 JUDGE_INCONCLUSIVE_DISPATCHES_FIELD = "_judge_inconclusive_dispatches"
 IN_INCONCLUSIVE_REVERIFY_FIELD = "_in_inconclusive_reverify"
+# 同族去重旗标（judge_gate 独立计数到顶升级告警「只发一次」）：字段名单点
+# 定义（judge_gate / verdict_evidence / dashboard admin_actions 消费点引用
+# 本常量，避免拼写漂移使解冻清零与置位/消费点失配，code-review 5d456699cd55）。
+JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD = "_judge_inconclusive_cap_escalated"
 
 # 上一轮 inconclusive 失败签名摘要（同 spec 2.2）：级一签名一致提前升级的
 # 跨轮比较基准，每轮 inconclusive 处置点回写本轮值；与 _inconclusive_attempts
@@ -2160,12 +2171,25 @@ class StateMachine:
         dropped = applied.get("_dropped_keys")
         if dropped:
             # code-review 94803b70af42：serialize 白名单外普通命名键的显性化
-            # 告警（收集点在 _apply_updates_entry，此处锁外输出）
+            # 告警（收集点在 _apply_updates_entry，此处锁外输出）。
+            # 55d04c39e893：dropped-only 零写入分支（persisted=False）applied
+            # 仅含留痕键 → changed=False 不落盘、specs 局部快照一并被丢弃，
+            # 「内存写可见」不成立——按落盘事实分叉文案，防排障被误导去查
+            # 全量回写丢键而非零写入路径。
+            if persisted:
+                fate = (
+                    "本次内存写可见，但 STATE.md 全量回写时会被静默丢弃"
+                    "（读写口径不对称，仅显性化不改变丢弃行为）"
+                )
+            else:
+                fate = (
+                    "未携带任何生效字段，本次写入未落盘（zero-write：内存快照"
+                    "与 STATE.md 均不生效）"
+                )
             self.logger.warning(
                 "state_machine",
                 f"SPEC '{spec_name}' 的更新含 serialize 固定字段表外且无下划线"
-                f"前缀的键 {dropped}——本次内存写可见，但 STATE.md 全量回写时"
-                f"会被静默丢弃（读写口径不对称，仅显性化不改变丢弃行为）",
+                f"前缀的键 {dropped}——{fate}",
             )
         if "_rejected_verify_parallel_override" in applied:
             # evo-fix-verify-parallel-override-type 2.1a：非法形状拒绝留痕
@@ -2467,6 +2491,16 @@ class StateMachine:
                 or REVIEW_REJECTED_FREEZE_ERROR_PREFIX in prev_error
             ):
                 new_error = f"{prev_error} · {stop_reason}"
+                if len(new_error) > FROZEN_HOLD_ERROR_MAX_LEN:
+                    # fbcd762aa87e：追加后超限即截断中段——头部保留冻结锚点
+                    # 子串（「原状态 X」/冻结前缀，解冻判定与告警文本契约的
+                    # 匹配面都在头部），尾部保留最近一次终止原因，中段历史
+                    # 以占位标注，防「解冻→再冻结→再终止」循环下 error 无界
+                    # 增长（STATE.md 行膨胀 + 告警/面板渲染可读性劣化）。
+                    new_error = (
+                        f"{prev_error[:FROZEN_HOLD_ERROR_HEAD_KEEP]} …"
+                        f"（冻结终止历史已截断）… · {stop_reason}"
+                    )
             else:
                 new_error = stop_reason
             found = self._apply_updates_entry(
@@ -2690,7 +2724,7 @@ class StateMachine:
         # dedup 旗标命中使升级告警被吞且 judge 派发被永久拦停。
         updates[JUDGE_INCONCLUSIVE_DISPATCHES_FIELD] = 0
         updates[IN_INCONCLUSIVE_REVERIFY_FIELD] = False
-        updates["_judge_inconclusive_cap_escalated"] = False
+        updates[JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD] = False
         # fix-unfreeze-judge-counter-reset D1/D2：judge 重跑计数与 hard cap
         # 冻结旗标随人工解冻成对清零/清除（与上方各验证计数同一原子写）——
         # 只清计数不清旗标则递增恒失效、judge 预算失明；只清旗标不清计数则
@@ -3539,7 +3573,7 @@ class StateMachine:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery);
-        the three recovery writes go through ``_recovery_update_spec`` — a spec
+        the four recovery writes go through ``_recovery_update_spec`` — a spec
         frozen inside the snapshot-to-write window is skipped whole so the
         freeze error is not clobbered by the recovery message
         (code-review d373f46756dd).

@@ -193,8 +193,9 @@ def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
     """对被测实例发起连通性探测（含等价数据端点检查）。
 
     顺序探测: 根路径 → /api/state（dashboard 实时数据源）→ /api/overview
-    （dashboard 等价端点）。收到任意 HTTP 状态码（2xx/3xx 经响应对象、
-    4xx/5xx 以 HTTPError 形态抛出）即视为连通——TCP+HTTP 可达证明实例在线，
+    （dashboard 等价端点）。收到任意 HTTP 状态码（2xx 经响应对象返回；3xx 被
+    默认重定向处理器自动跟随、按跟随后的最终状态码判定；4xx/5xx 以
+    HTTPError 形态抛出）即视为连通——TCP+HTTP 可达证明实例在线，
     受限（401/403）/路径迁移（404）形态不误判失联；仅连接类异常（拒绝/
     超时/DNS）判失联。争议端点不可探测时仅凭根路径结果判定（非 dashboard
     应用不误降级）。

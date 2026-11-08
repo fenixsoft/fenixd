@@ -153,12 +153,13 @@ def _ready_timeout_or_default(value) -> int:
     CommandVerifyServer、_discover_port、probe_ready 三处消费点共用同一
     兜底下限与缺省值——旧实现同一非法值（如 0）在不同阶段分别等 60s/5s/1s，
     行为不可预期。
+
+    直接复用 _positive_int_or_default 消除双实现漂移（code-review item
+    7242f26d062f）：bool 是 int 子类，裸 int() 会把 True 变 1（>0 直接
+    放行）——手工构造传 ``ready.timeout: true`` 时三处消费点全部骤缩成
+    1 秒就绪窗口，正是 loader 侧排除 bool 要防的同款故障在兜底路径复活。
     """
-    try:
-        timeout = int(value)
-    except (TypeError, ValueError):
-        return DEFAULT_READY_TIMEOUT
-    return timeout if timeout > 0 else DEFAULT_READY_TIMEOUT
+    return _positive_int_or_default(value, DEFAULT_READY_TIMEOUT)
 
 
 # worktree node_modules 供给模式（verify.yaml deps_mode > config verify.deps_mode > 默认）
@@ -2329,11 +2330,15 @@ def ensure_main_tree_deps(
     # （正是 _cleanup_partial_node_modules 想消除的形态）。与 prepare 段复用
     # 同一 _PrepareHostLock 互斥域（对齐 run_prepare_steps 的「worktree 不锁、
     # 主检出持锁」判定）。锁等待上限覆盖并发车道最坏供给持有时长（sub_dirs
-    # 数 × NPM_PROVISION_TIMEOUT）；竞争车道锁内还可能再持 prepare 段（步数
-    # 本入口不可知），超时按 best-effort 跳过预装，不为不可知量放大等待。
+    # 数 × 2 × NPM_PROVISION_TIMEOUT：单目录最坏供给路径是 npm ci 失败/超时
+    # （900s）后再回退 npm install（900s），按双段命令计才是真实持锁上界，
+    # 防长供给下竞争车道在持有者合法持锁期间提前误判超时跳过预装
+    # （code-review item 92f6a6edf6c3）；竞争车道锁内还可能再持 prepare 段
+    # （步数本入口不可知），超时按 best-effort 跳过预装，不为不可知量放大
+    # 等待。
     lock = _PrepareHostLock(
         root,
-        timeout=max(PREPARE_LOCK_TIMEOUT, len(sub_dirs) * NPM_PROVISION_TIMEOUT),
+        timeout=max(PREPARE_LOCK_TIMEOUT, len(sub_dirs) * 2 * NPM_PROVISION_TIMEOUT),
         log_fn=log_fn,
     )
     if not lock.acquire():

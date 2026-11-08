@@ -24,9 +24,11 @@
 // - 切后台恢复（2026-09-25 用户事故）：移动端切后台会掐断在飞 fetch，连续
 //   3 次失败即触发上述停轮询+红条，而 effect 依赖不变 → 回前台后永不恢复
 //   （对照组 QualityTab 的审查进度靠 SSE 重连+30s 心跳自愈，本组件无冗余
-//   驱动）。补 visibilitychange 监听：回前台即重置 retryKey 重启轮询
-//   （effect 入口本就 setReadFailed(false) 并重置错误计数），顺带获得回前台
-//   立即补刷一帧（对齐 list.tsx/overview 的 visibilitychange 补刷模式）。
+//   驱动）。补 visibilitychange 监听：回前台且轮询已因连续失败停摆时重置
+//   retryKey 重启轮询（effect 入口本就 markReadFailed(false) 并重置错误计数）；
+//   轮询健康运行或因收尾/空转兜底正常停止时回前台不再重启——重启会作废在飞
+//   响应帧并多发一帧请求，健康运行由既有 2s tick 自然补刷（code-review item
+//   4f9a913dd97a）。
 //   「已观察到在跑」的记忆（sawRunningRef）跨该重启保留（item 43f494acd283）：
 //   链在切后台期间收尾时，回前台首帧 running=false 仍凭记忆判收尾并回调
 //   onSettled——记忆若随 effect 局部变量清零，收尾只能落到不回调刷新的
@@ -104,9 +106,20 @@ export default function CodeFixProgressCard(
   // ——连续读取失败停轮询是「宁停不错」的终态，但移动端切后台掐 fetch 造成
   // 的失败是环境性的，回前台必须可恢复（否则红条+冻结到手动刷新页面）。
   const [retryKey, setRetryKey] = useState(0);
+  // readFailed 的 ref 镜像（code-review item 4f9a913dd97a）：下方
+  // visibilitychange 事件处理器经它判读轮询是否已停摆——仅停摆态需要重启
+  // 恢复（2026-09-25 切后台掐 fetch 连续失败事故的原始场景）；健康运行/链
+  // 收尾/缺省空转兜底停轮询时回前台不再重启。写入点经 markReadFailed 同步
+  // 写双份（见下方 readFailed 定义处），事件读 ref 无渲染滞后。
+  const readFailedRef = useRef(false);
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') setRetryKey((k) => k + 1);
+      // 仅停摆态重启（4f9a913dd97a）：轮询健在时重启纯属多余——重启置旧
+      // effect alive=false 丢弃在飞响应帧并立即重新发请求；由既有 2s tick
+      // 自然补刷即可。切后台掐 fetch 且未达停摆阈值时轮询仍健在，同理不重启。
+      if (document.visibilityState !== 'visible') return;
+      if (!readFailedRef.current) return;
+      setRetryKey((k) => k + 1);
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -114,6 +127,13 @@ export default function CodeFixProgressCard(
   // 连续读取失败停轮询后的展示标记：此时最后一帧可能仍是 running=true，
   // MUST NOT 以 active 进度条无限展示陈旧「进行中」（ocr 收尾审查）。
   const [readFailed, setReadFailed] = useState(false);
+  // 置位/复位经 markReadFailed 同步写双份（对齐 QualityTab/RegressionTab 的
+  // mark* 范式）：上方 visibilitychange 事件处理器读 readFailedRef 判读停摆
+  // 态（4f9a913dd97a），state 置位到下一次渲染前不生效，事件读 ref 无滞后。
+  const markReadFailed = (v: boolean) => {
+    readFailedRef.current = v;
+    setReadFailed(v);
+  };
   // onSettled 经 ref 传递：轮询 effect 不因回调身份变化重启（父组件未 memo 时
   // 每帧新函数会让 2s 轮询不断重置）。赋值在 effect 内（post-commit），
   // MUST NOT 在渲染期写 ref——渲染必须保持纯净。
@@ -158,7 +178,7 @@ export default function CodeFixProgressCard(
   // 触发的正常轮询周期不经本 effect，已落地的进度不受影响。
   useEffect(() => {
     setProgress(null);
-    setReadFailed(false);
+    markReadFailed(false);
     // sawRunningRef 一并复位（item 43f494acd283）：记忆已提为 ref、跨轮询重启
     // 保留，切项目不复位会拿旧项目的「在跑」记忆给新项目首帧误判收尾。
     sawRunningRef.current = false;
@@ -168,7 +188,7 @@ export default function CodeFixProgressCard(
     // <Tabs> 未设 destroyInactiveTabPane，本组件首次激活后会一直挂载；若修复链
     // 卡在 running=true，分面切走后仍会每 2s 打 fix-progress。
     if (!active || !project) return;
-    setReadFailed(false);
+    markReadFailed(false);
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let errors = 0;
@@ -225,7 +245,7 @@ export default function CodeFixProgressCard(
         if (!alive) return;
         errors += 1;
         settled = errors >= MAX_CONSECUTIVE_ERRORS;
-        if (settled) setReadFailed(true);
+        if (settled) markReadFailed(true);
       }
       if (settled) {
         // 进入终态/收尾：停轮询，必要时通知父组件刷新（一次）

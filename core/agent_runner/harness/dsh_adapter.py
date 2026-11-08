@@ -262,6 +262,13 @@ class DshEventProjector:
                 run_dir_path = Path(run_dir)
                 run_dir_path.mkdir(parents=True, exist_ok=True)
                 self._dump_path = run_dir_path / f"{run_id}.dsh-events.jsonl"
+                # append（"a"）安全性（code-review item 1eb30325ef73）：dump
+                # 文件名按 run_id 单轮唯一——runner 侧投影器 run_id 取 attempt
+                # run 文件名 stem（<sub_run_id>.dsh-events.jsonl），attempt 环
+                # 每轮 ``<run_id>-a{N}`` 换新、原地重试再换新 ``-r{N}``（见
+                # runner._execute_agent_inner 的 sub_run_id 换新注释），同一
+                # dump 文件不跨轮复用，故追加模式不存在跨 attempt 轮次无分隔
+                # 累积混流，无需轮次分隔 marker 行。
                 self._dump_fh = self._dump_path.open("a", encoding="utf-8")
             except OSError:
                 self._dump_path = None

@@ -85,29 +85,43 @@ def _parse_porcelain_path(line: str) -> Optional[str]:
 _DIRTY_HASH_MAX_BYTES = 1 << 20
 
 
-def _dirty_file_fingerprint(path: Path) -> Optional[str]:
-    """计算脏文件指纹 ``"{size}:{头部 md5}"``，读失败返回 None。
+def _hash_file_capped(path: Path, cap: int = _DIRTY_HASH_MAX_BYTES) -> Tuple[str, bool]:
+    """分块读入文件头部（按 ``cap`` 截断）累积 md5，返回 ``(指纹, True)``。
 
-    对齐 _take_snapshot/_verify_snapshot 两侧既有的读失败降级口径（静默跳过，
-    非硬门信号不因 IO 故障放大）；头部读取按 _DIRTY_HASH_MAX_BYTES 截断，分块
-    读入避免大文件整体驻留内存。大小入指纹使头部之外的增长/截断仍可被比对
-    检出（同尺寸原地改写超出头部的部分不检出——dirty_files 本就非硬门，仅
-    留痕信号，漏报可接受）。
+    公共读入入口（code-review item d11b9a1e3ae2）：「分块读入、按上限截断、
+    md5 累积」的循环此前在 _dirty_file_fingerprint 与 _spec_file_fingerprint
+    各内联一份逐字同构副本，读入上限或分块大小调整须两处同步——收敛于此
+    单源。指纹为 ``"{size}:{头部 md5}"``（截断路径恒降级口径，degraded=True）；
+    读失败返回 ``(None, False)``，与两个调用方既有的静默降级口径一致。
     """
     try:
         size = path.stat().st_size
         h = hashlib.md5()
         with path.open("rb") as f:
-            remaining = _DIRTY_HASH_MAX_BYTES
+            remaining = cap
             while remaining > 0:
                 chunk = f.read(min(65536, remaining))
                 if not chunk:
                     break
                 h.update(chunk)
                 remaining -= len(chunk)
-        return f"{size}:{h.hexdigest()}"
+        return f"{size}:{h.hexdigest()}", True
     except OSError:
-        return None
+        return None, False
+
+
+def _dirty_file_fingerprint(path: Path) -> Optional[str]:
+    """计算脏文件指纹 ``"{size}:{头部 md5}"``，读失败返回 None。
+
+    对齐 _take_snapshot/_verify_snapshot 两侧既有的读失败降级口径（静默跳过，
+    非硬门信号不因 IO 故障放大）；头部读取按 _DIRTY_HASH_MAX_BYTES 截断，分块
+    读入避免大文件整体驻留内存（读入循环单源 _hash_file_capped，本函数恒走
+    其截断路径）。大小入指纹使头部之外的增长/截断仍可被比对
+    检出（同尺寸原地改写超出头部的部分不检出——dirty_files 本就非硬门，仅
+    留痕信号，漏报可接受）。
+    """
+    fp, _ = _hash_file_capped(path)
+    return fp
 
 
 def _spec_file_fingerprint(path: Path) -> tuple:
@@ -120,25 +134,18 @@ def _spec_file_fingerprint(path: Path) -> tuple:
     md5 格式完全一致，存量快照不失配；达到上限的大文件读入有界（分块截断），
     指纹退化为 ``"{size}:{头部 md5}"``，degraded=True 供调用方打 WARNING 留痕
     （硬门比对两侧同形即保持可比）。_take_snapshot 与 _verify_snapshot 必须同用
-    本函数——指纹同形才可比；读失败对齐两侧既有降级口径（静默跳过）。
+    本函数——指纹同形才可比；读失败对齐两侧既有降级口径（静默跳过）。大文件
+    分块截断读入委托 _hash_file_capped（读入循环单源，code-review item
+    d11b9a1e3ae2）。
     """
     try:
-        size = path.stat().st_size
-        if size < _DIRTY_HASH_MAX_BYTES:
+        if path.stat().st_size < _DIRTY_HASH_MAX_BYTES:
             # 小文件：与原实现逐字同款的全量读入纯 md5。
             return hashlib.md5(path.read_bytes()).hexdigest(), False
-        h = hashlib.md5()
-        with path.open("rb") as f:
-            remaining = _DIRTY_HASH_MAX_BYTES
-            while remaining > 0:
-                chunk = f.read(min(65536, remaining))
-                if not chunk:
-                    break
-                h.update(chunk)
-                remaining -= len(chunk)
-        return f"{size}:{h.hexdigest()}", True
     except OSError:
         return None, False
+    # 大文件：按 size 分流到公共截断读入入口，指纹 ``"{size}:{头部 md5}"``。
+    return _hash_file_capped(path)
 
 # ── infra 失败指纹（evo-run-failure-classification-circuitbreaker D1）──────
 # 评审 API 批量失败（403 网关拒绝 / 402 余额不足 / 429 限流 / quota/budget 耗尽 /
@@ -728,8 +735,13 @@ class SpecReviewManager:
         if self.agent_runner is None:
             err = "agent_runner 未注入（CLI 形态），结果硬门校验不可用"
             self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
+            # content_failure=True（code-review item f74f38902c71）：本方法全部
+            # 失败收口通道统一同参形态（allow_artifact=False + run_started_at +
+            # content_failure=True）——该文案为本模块自产、不经 run error 通路
+            # 携带结构化归因，恒归 content 走重试预算。
             self._handle_review_failure(
-                spec_name, err, allow_artifact=False, run_started_at=run_started_at
+                spec_name, err, allow_artifact=False, run_started_at=run_started_at,
+                content_failure=True,
             )
             return False
         # 公开契约调用（code-review item 9e1197a61f51）：硬门入口经
@@ -784,8 +796,13 @@ class SpecReviewManager:
             # content_failure=True（code-review item 4a086cfce2e9）：异常文案内嵌
             # JSON 解析器行号（"Expecting value: line 429 column 3"），行号随产物
             # 内容变化，不得按文本指纹判 infra。
+            # allow_artifact=False + run_started_at（code-review item f74f38902c71）：
+            # 与兄弟通道统一同参形态——文件刚读取失败，artifact 复查无增益
+            # （_artifact_landed_valid 同样要读该文件），回流反而经
+            # run_started_at=None 跳过 mtime 新鲜度校验。
             self._handle_review_failure(
-                spec_name, f"结果文件读取失败: {e}", content_failure=True
+                spec_name, f"结果文件读取失败: {e}", allow_artifact=False,
+                run_started_at=run_started_at, content_failure=True,
             )
             return False
 
@@ -798,7 +815,13 @@ class SpecReviewManager:
         if not isinstance(data, dict):
             err = f"结果文件顶层非 JSON 对象: {type(data).__name__}"
             self.logger.warning("spec_review", f"结果文件读取失败: {spec_name}: {err}")
-            self._handle_review_failure(spec_name, err, content_failure=True)
+            # allow_artifact=False + run_started_at（code-review item f74f38902c71）：
+            # 同参形态统一，与上方读取失败通道同款理由——非对象产物在 artifact
+            # 复查处同样不合法，回流无增益且丢失 mtime 新鲜度强锚点。
+            self._handle_review_failure(
+                spec_name, err, allow_artifact=False,
+                run_started_at=run_started_at, content_failure=True,
+            )
             return False
 
         # 写入边界校验。MUST NOT 再走 artifact 分类（code-review item 4b9f59b8717f）：
@@ -834,8 +857,12 @@ class SpecReviewManager:
             # content_failure=True（code-review item 4a086cfce2e9）：status 回显值
             # 来自产物 JSON（不可信内容），"未知 status: 429" 形态会被数字指纹
             # 误判 infra——白名单外恒为产物取值问题，归 content。
+            # allow_artifact=False + run_started_at（code-review item f74f38902c71）：
+            # 同参形态统一——status 白名单外的产物在 _artifact_landed_valid 的
+            # status 校验处必然不合法，回流无增益。
             self._handle_review_failure(
-                spec_name, f"未知 status: {status}", content_failure=True
+                spec_name, f"未知 status: {status}", allow_artifact=False,
+                run_started_at=run_started_at, content_failure=True,
             )
             return False
 
@@ -1068,8 +1095,11 @@ class SpecReviewManager:
             # 理论上不会到这里
             # content_failure=True（code-review item 4a086cfce2e9）：同上方
             # 未知 status 通道——status 回显值来自产物，不按文本指纹判 infra。
+            # allow_artifact=False + run_started_at：同参形态统一
+            # （code-review item f74f38902c71）。
             self._handle_review_failure(
-                spec_name, f"未知 status: {status}", content_failure=True
+                spec_name, f"未知 status: {status}", allow_artifact=False,
+                run_started_at=run_started_at, content_failure=True,
             )
             return False
 

@@ -109,17 +109,30 @@ SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: fast-track\
 
 def _valid_title_cn(value) -> bool:
     """title_cn 形态校验（add-spec-chinese-title）：str 且去首尾空白后
-    5-25 字。非法值不作废草稿——落盘侧仅省略 title 行（读侧全容错，
-    同 core/dashboard/data/spec_docs.read_spec_title 口径）。"""
-    return isinstance(value, str) and 5 <= len(value.strip()) <= 25
+    5-25 字，且不含换行/回车。非法值不作废草稿——落盘侧仅省略 title 行
+    （读侧全容错，同 core/dashboard/data/spec_docs.read_spec_title 口径）。
+
+    换行拒绝（code-review item 4ba0883268c9）：title_cn 源自 agent 产出
+    JSON（低信输入），内嵌换行会以「title: 首段\\n注入行」形态写入
+    .spec.yaml，第二行可构成合法 YAML 顶层键（行结构注入，超出引号/
+    冒号等值形态由生成纪律约束的范畴）；拒绝后与非法值同路径静默省略
+    title 行。
+    """
+    return (
+        isinstance(value, str)
+        and "\n" not in value
+        and "\r" not in value
+        and 5 <= len(value.strip()) <= 25
+    )
 
 
 def spec_yaml_text(created: str, title_cn=None) -> str:
     """装配 .spec.yaml 文本：模板三行 + 可选 title 行。
 
-    title_cn 形态合法（str 且 5-25 字）时追加 ``title: <值>`` 行（strip 后
-    纯文本形态，禁易碎 YAML：引号开头/含半角冒号等由生成纪律约束，校验只
-    关卡长度）；非法/缺省省略该行，草稿照常落盘。保持 SPEC_YAML_TEMPLATE
+    title_cn 形态合法（str 且 5-25 字且不含换行）时追加 ``title: <值>`` 行
+    （strip 后纯文本形态，禁易碎 YAML：引号开头/含半角冒号等值形态由生成
+    纪律约束，校验关卡长度与换行）；非法/缺省省略该行，草稿照常落盘。
+    保持 SPEC_YAML_TEMPLATE
     的 str.format 接收者形态（callsite arity guard 白名单键
     ("core/evolution.py", "format", "SPEC_YAML_TEMPLATE") 不含行号），
     title 行在 format 结果后追加而非进模板占位符。
@@ -1790,6 +1803,11 @@ def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
     本函数是唯一实现（code_review._git_commit 薄委托至此，code-review item
     2beb5528e1b9），单点演进防再漂移。
 
+    git 子进程统一 ``env=_git_c_env()`` 强制 LC_ALL=C（与同模块
+    ``_commit_todo_marker`` 环境口径一致，code-review item c37e746a71d7）：
+    失败 stderr 免按运行 locale 本地化即进入 draft_failed_reason 与 admin
+    告警文案。
+
     Returns: ``(ok, error)``；ok=False 时调用方负责清理未跟踪副本（含
     撤回 pathspec 暂存项——error 前缀区分 ``git add 失败`` / ``git commit
     失败`` 阶段，调用方可据此判断脏索引形态）。
@@ -1801,6 +1819,7 @@ def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=60,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"git add 失败: {e}"
@@ -1812,6 +1831,7 @@ def _git_commit(project_root, spec_name: str) -> Tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=60,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"git commit 失败: {e}"
@@ -1826,6 +1846,9 @@ def _git_remove_committed_dir(project_root, rel_path: str) -> Tuple[bool, str]:
     ``git rm -r`` + 仅含该路径的 commit（MUST NOT ``git add -A``／裹挟索引中
     其他暂存内容）。任一步失败返回 ``(False, 错误)``，由调用方降级为告警
     说明残留目录，MUST NOT 让清理失败掩盖注册失败本身。
+
+    git 子进程统一 ``env=_git_c_env()``（LC_ALL=C，与 accept 链路其余
+    git 调用同口径；code-review item c37e746a71d7）。
     """
     git = ["git", "-C", str(project_root)]
     try:
@@ -1834,6 +1857,7 @@ def _git_remove_committed_dir(project_root, rel_path: str) -> Tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=60,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"git rm 失败: {e}"
@@ -1845,6 +1869,7 @@ def _git_remove_committed_dir(project_root, rel_path: str) -> Tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=60,
+            env=_git_c_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"git commit 失败: {e}"
@@ -2204,6 +2229,7 @@ def accept_item(
                     capture_output=True,
                     text=True,
                     timeout=60,
+                    env=_git_c_env(),
                 )
                 if undo.returncode != 0:
                     _logger.warning(

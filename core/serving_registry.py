@@ -22,7 +22,12 @@ import time
 from pathlib import Path
 
 from core.fs_utils import fsync_parent_dir
-from core.proc_utils import guard_killpg, pid_alive_signal, proc_start_ticks
+from core.proc_utils import (
+    guard_killpg,
+    pid_alive_signal,
+    proc_start_ticks,
+    proc_stat_fields,
+)
 
 SERVERS_FILENAME = "servers.json"
 
@@ -32,6 +37,13 @@ SERVERS_FILENAME = "servers.json"
 # docstring）；两侧取值由 tests/test_serving_registry_kill_timing.py 守卫
 # 钉住，单侧调整须两侧同步修订并更新守卫断言，防同名语义静默分叉。
 KILL_WAIT_SECONDS = 3.0
+
+# SIGKILL 投递后的存活复核窗口（code-review 553fbdf9ee6b）：D 状态（不可中断
+# 睡眠，挂死 NFS/FUSE IO 等）进程的 SIGKILL 在系统调用返回前不生效，投递后
+# 短轮询确认组已空（或仅剩未收尸僵尸席位，见 _group_has_live_members）才算
+# 收割完成；超时仍存活按未收割口径返回 False（sweep 据此保留登记项留给下轮
+# 重试，不让实例永久失去唯一收割通道）。
+KILL_CONFIRM_SECONDS = 2.0
 
 
 def servers_path(project_root) -> Path:
@@ -371,6 +383,37 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
     return None
 
 
+def _group_has_live_members(pgid: int) -> bool:
+    """进程组是否仍有非僵尸存活成员（SIGKILL 复核判据，553fbdf9ee6b）。
+
+    ``killpg(pgid, 0)`` 只判组存在性：成员死后、被父进程收尸前以僵尸态
+    仍占组席位——复核窗口据此把「已死未收尸」误判为「SIGKILL 后仍存活」
+    （实测：sweep 收割无句柄登记项时子进程由当前 daemon 持有、无人收尸，
+    僵尸席位让复核恒超时，登记项永不摘除）。僵尸不持端口不运行代码，
+    D 状态复核的语义对象是「活进程」，故按 /proc 成员扫描排除 Z 态后判活。
+    /proc 条目读不到（竞态消亡/无权读取）不计入成员——与
+    ``pid_alive_stat`` 的「读不到按已终止」同口径。
+    """
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return True  # /proc 不可枚举 → 无法证伪，按仍有存活成员（宁保守）
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        fields = proc_stat_fields(int(entry))
+        if not fields or len(fields) < 3:
+            continue  # 读不到/畸形：不计入成员
+        try:
+            if int(fields[2]) != pgid:
+                continue
+        except ValueError:
+            continue
+        if fields[0] != "Z":
+            return True
+    return False
+
+
 def kill_process_group(pid: int, logger=None) -> bool:
     """进程组 SIGTERM → 短等待 → SIGKILL 兜底（同 CommandVerifyServer.stop 语义）。
 
@@ -390,7 +433,11 @@ def kill_process_group(pid: int, logger=None) -> bool:
         logger: 可选日志器；EPERM 放弃收割时留痕（与 sweep 的 identity
             mismatch 同款 warning）。
 
-    Returns: 是否向进程组发出过信号。
+    Returns: 是否完成收割——向进程组发出过信号**且** SIGKILL 后短轮询复核
+        组已空（553fbdf9ee6b）；SIGKILL 复核窗口内组仍存活（如目标处于 D 状态
+        不可中断睡眠）返回 False，sweep 按「kill delivery failed」同款保守
+        口径保留登记项留给下轮重试。already-gone（组提前自清、无需信号）与
+        无信号投递同样返回 False，条目由 sweep 按 pid 已亡路径摘除。
     """
     sent = False
     try:
@@ -460,12 +507,37 @@ def kill_process_group(pid: int, logger=None) -> bool:
         time.sleep(0.2)
     if pgid is not None:
         # SIGKILL 实际发出成功同样置位（守卫拒绝/组已不存在则静默，sent
-        # 维持原值），保证返回值与「是否向进程组发出过信号」的契约一致
-        # （sweep 的 harvested 计数依赖它）。
+        # 维持原值）；sweep 的 harvested 计数与登记摘除决策依赖返回值。
         if guard_killpg(
             pgid, signal.SIGKILL, caller="serving_registry.kill_process_group", resolve=False
         ):
             sent = True
+            # SIGKILL 复核（code-review 553fbdf9ee6b）：D 状态（不可中断睡眠）
+            # 进程的 SIGKILL 在系统调用返回前不生效，组实际仍存活并持续占用
+            # 端口——照常返回 True 会让 sweep 摘除登记，command 型 serve 无
+            # marker pgrep 兜底、实例永久失去唯一收割通道。投递后短轮询复核
+            # 组已空才视为收割完成；仍存活按「kill delivery failed」同款保守
+            # 口径返回 False（sweep 的 540-554 行纪律保留登记项下轮重试）。
+            confirm_deadline = time.monotonic() + KILL_CONFIRM_SECONDS
+            while time.monotonic() < confirm_deadline:
+                # 存活判据走 /proc 成员扫描而非 killpg(pgid, 0)：僵尸席位
+                # （已死未收尸，父进程持有的子进程无人 wait）仍占组席位，
+                # 组存在性探测会把「已死未收尸」误判为 D 状态存活、复核恒
+                # 超时扣回收割（test_pm_verification 收割用例实测）。
+                # _group_has_live_members 在 /proc 不可枚举时按仍有存活成员
+                # 处理（宁保守，走满复核窗口再返回 False）。
+                if not _group_has_live_members(pgid):
+                    return sent  # 组空/仅剩僵尸席位：收割完成
+                time.sleep(0.2)
+            if logger:
+                logger.warning(
+                    "serving_registry",
+                    f"kill pid={pid}: SIGKILL sent but process group {pgid} "
+                    f"still alive after {KILL_CONFIRM_SECONDS}s confirm window "
+                    f"(likely uninterruptible sleep) — reporting not harvested, "
+                    f"keeping registry entry for next sweep",
+                )
+            return False
     return sent
 
 

@@ -207,6 +207,11 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
   const [indexData, setIndexData] = useState<KnowledgeIndexData | null>(null);
   const [view, setView] = useState<View>({ kind: 'index' });
   const [loading, setLoading] = useState(false);
+  // openPage 在途的轻量加载反馈（code-review item 7cc294648802）：点击站内
+  // 链接后视图原地不动直到响应替换，慢网时无「正在加载」信号——在途期间
+  // 内容区半透明；与 pageLoadingRef 守卫槽同生命周期（finally 按槽归属复位，
+  // 槽被新路径接管时不误清新路径的在途态）。
+  const [pageLoading, setPageLoading] = useState(false);
   // 加载失败态（code-review item 61d229fbd494）：config/index 请求失败的
   // 错误消息；null = 无错误。与「尚未初始化」业务态区分，不互相伪装。
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -278,8 +283,10 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     setDocSpec(null);
     // 清 openPage 在途守卫槽（code-review item f4391a6104d8）：槽随旧项目残留
     // 时会吞掉新项目同路径的首次点击且无任何加载反馈；在飞响应已由 seqRef 守卫
-    // 判过期作废，清槽无副作用。
+    // 判过期作废，清槽无副作用。加载反馈一并复位（f4391a6104d8 同点，
+    // 7cc294648802）。
     pageLoadingRef.current = null;
+    setPageLoading(false);
   }, [project]);
 
   // 站内相对链接拦截：spec/archive 归档链接 → 弹 SPEC 文档弹窗；真相源内
@@ -291,6 +298,9 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
     if (pageLoadingRef.current === path) return; // 同路径在途，忽略重复发起
     pageLoadingRef.current = path;
     const seq = ++seqRef.current;
+    // 轻量加载反馈（7cc294648802）：在途期间内容区半透明（渲染见 page/index
+    // 两视图容器），响应替换/失败引用块落位后随 finally 复位恢复不透明
+    setPageLoading(true);
     try {
       const data = await getKnowledgeFile(project, path);
       if (seq !== seqRef.current) return;
@@ -302,8 +312,12 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
       const msg = e instanceof ApiError ? e.message : String(e);
       setView({ kind: 'page', path, content: `> 加载失败：${msg}\n` });
     } finally {
-      // 守卫槽仍归属本次请求时才清空（已被更新的路径接管则不动）
-      if (pageLoadingRef.current === path) pageLoadingRef.current = null;
+      // 守卫槽仍归属本次请求时才清空（已被更新的路径接管则不动）；加载反馈
+      // 同口径按槽归属复位，旧请求的 finally 不误清新路径的在途态
+      if (pageLoadingRef.current === path) {
+        pageLoadingRef.current = null;
+        setPageLoading(false);
+      }
     }
   }, [project]);
 
@@ -433,9 +447,12 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
         <Card variant="borderless" data-testid="knowledge-page-view">
           <Space direction="vertical" style={{ width: '100%' }} size={12}>
             <Breadcrumb data-testid="knowledge-page-path" items={crumbItems} />
-            <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
-              {stripHtmlComments(view.content)}
-            </Markdown>
+            {/* 在途加载反馈（7cc294648802）：内容区半透明，响应落位后恢复 */}
+            <div style={{ opacity: pageLoading ? 0.45 : 1, transition: 'opacity 0.2s' }}>
+              <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
+                {stripHtmlComments(view.content)}
+              </Markdown>
+            </div>
           </Space>
         </Card>
         {docSpecModal}
@@ -459,7 +476,10 @@ export default function KnowledgeTab({ project, active }: KnowledgeTabProps) {
             </Typography.Text>
           ) : (
             <>
-              <div data-testid="knowledge-index-md">
+              <div
+                data-testid="knowledge-index-md"
+                style={{ opacity: pageLoading ? 0.45 : 1, transition: 'opacity 0.2s' }}
+              >
                 <Markdown remarkPlugins={KNOWLEDGE_REMARK_PLUGINS} components={linkComponents}>
                   {stripHtmlComments(indexData?.index_md || '')}
                 </Markdown>

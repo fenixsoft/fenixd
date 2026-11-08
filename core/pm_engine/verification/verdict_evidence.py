@@ -1440,6 +1440,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     if status == "verified":
         from core.state_machine import (
             IN_INCONCLUSIVE_REVERIFY_FIELD,
+            JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD,
             JUDGE_INCONCLUSIVE_DISPATCHES_FIELD,
             JUDGE_REPAIR_CLAIMS_FIELD,
             JUDGE_REPAIR_LAST_SUMMARY_FIELD,
@@ -1476,7 +1477,7 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
                 # episode 再到顶时去重命中、人工升级告警被静默吞掉。与人工
                 # 复位清单（admin_actions._RETRY_COUNTER_RESETS）同形态清
                 # False；读侧为字符串防御式解析，STATE.md 往返安全。
-                "_judge_inconclusive_cap_escalated": False,
+                JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD: False,
                 # fix-scheduled-reverify-survive-restart D1：verified 落定 =
                 # 排程重验窗口已消费——等待态标记/来源与仍未来的截止残留
                 # 一并清零（与 bug-found 分支/unfreeze_spec/恢复路径拾起同源

@@ -26,6 +26,12 @@
 
 子集重验独立可用（不依赖 verdict 缓存能力合入：直接以子集场景集作为本轮
 执行集构造引擎执行，绕过缓存逻辑）。
+
+跨模块公开读取面（无下划线前缀）：``load_judge_bugs``（验证裁决产物
+``bugs[]`` 读取，spec 戳 + status=bug-found 门）与 ``parse_line_level``
+（行级定位解析）——分流判据与升级告警根因注入（
+``family._collect_root_cause_lines``）同源消费这两个公开名；跨模块消费
+MUST NOT 绕过公开面直取下划线私有名。
 """
 
 from __future__ import annotations
@@ -1015,7 +1021,7 @@ _SEVERITY_MAP = {
 }
 
 
-def _parse_line_level(text) -> tuple:
+def parse_line_level(text) -> tuple:
     """从根因/位置文本解析 (file, line) 行级定位；无行级返回 ("", None)。"""
     if not isinstance(text, str) or not text:
         return "", None
@@ -1028,7 +1034,7 @@ def _parse_line_level(text) -> tuple:
         return "", None
 
 
-def _load_judge_bugs(pipeline, spec_name) -> list:
+def load_judge_bugs(pipeline, spec_name) -> list:
     """读取验证裁决产物 ``bugs[]``（verifier/judge 结果文件），不可用返回 []。
 
     复用 report_gate 的 primary 路径解析与 spec 戳门（escalation.
@@ -1114,7 +1120,7 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
     MUST NOT 使用白名单外键名：序列化时整键剔除、注入被静默架空。
     """
     affected = [str(f) for f in (affected_files or []) if f]
-    bugs = _load_judge_bugs(pipeline, spec_name)
+    bugs = load_judge_bugs(pipeline, spec_name)
     scenarios = _report_scenario_map(pipeline, spec_name)
     items: list = []
     for sid in failed_ids:
@@ -1124,9 +1130,9 @@ def build_fastlane_items(pipeline, spec_name, failed_ids: list,
         bug = _bug_for_scenario(bugs, sid) or {}
         scenario = scenarios.get(sid) or {}
         root_cause = _scenario_root_cause(bug, scenario)
-        file, line = _parse_line_level(bug.get("location"))
+        file, line = parse_line_level(bug.get("location"))
         if not line:
-            file, line = _parse_line_level(root_cause)
+            file, line = parse_line_level(root_cause)
         description_parts = []
         if not file:
             # 影响面文件与失败场景无位置对应关系（code-review 5084894b255d）：
@@ -1221,16 +1227,16 @@ def evaluate_pre_freeze_diversion(pipeline, spec_name) -> dict:
             "matched": False, "failed_ids": failed_ids,
             "items": [], "subset_ids": [], "reasons": reasons,
         }
-    bugs = _load_judge_bugs(pipeline, spec_name)
+    bugs = load_judge_bugs(pipeline, spec_name)
     scenarios = _report_scenario_map(pipeline, spec_name)
     matched = True
     for sid in failed_ids:
         bug = _bug_for_scenario(bugs, sid) or {}
         scenario = scenarios.get(sid) or {}
         root_cause = _scenario_root_cause(bug, scenario)
-        _file, line = _parse_line_level(bug.get("location"))
+        _file, line = parse_line_level(bug.get("location"))
         if not line:
-            _file, line = _parse_line_level(root_cause)
+            _file, line = parse_line_level(root_cause)
         if not root_cause or not line:
             matched = False
             reasons.append(

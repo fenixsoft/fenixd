@@ -3544,8 +3544,12 @@ class AdminMonitor:
 
         双判据（design D2）：① 进度产物 mtime（主产物 + 全部分片最新 mtime）；
         ② run 子进程进程树 CPU 时间。任一判据有进展即整体重置计时；CPU 判据
-        不可解析（进程句柄缺失/已退出）按 fail-open 不触发——宁可漏杀不可误杀，
-        且无进程句柄时 cancel_run 也无从终止。run 不在飞时短路并清理状态。
+        不可解析（进程句柄缺失/已退出）按 fail-open 不触发——宁可漏杀不可误杀；
+        已有停滞基线时保留 since 继续计时、仅本轮不判级（与 mtime 判据的
+        be72a1425abd 兜底同向：间歇性 CPU 不可读反复清零计时会让看门狗永远
+        达不到阈值而漏杀；cancel_run 仅登记取消旗标、不依赖进程句柄，到期仍
+        可取消，code-review item 8efe0e9ae4e7），无基线首轮才清状态跳过。
+        run 不在飞时短路并清理状态。
 
         Returns: 判定结果 dict（供测试断言；巡检不消费返回值）。
         """
@@ -3592,6 +3596,18 @@ class AdminMonitor:
             except Exception:  # noqa: BLE001 — 判据读取失败按不可用处理
                 cpu = None
         if cpu is None:
+            # 已有基线时保留 since 继续计时、仅本轮不判级（code-review item
+            # 8efe0e9ae4e7，对齐 mtime 判据 be72a1425abd 兜底形态）：间歇性
+            # CPU 不可读反复 pop 会丢弃已累计停滞计时、下轮重建基线，看门狗
+            # 永远达不到阈值、挂死 run 漏杀——句柄缺失本可继续计时并在到期
+            # 时取消（cancel_run 仅登记取消旗标、不依赖进程句柄）。无基线
+            # （首轮）维持既有清状态跳过。
+            if prev is not None:
+                return {
+                    "triggered": False,
+                    "reason": "cpu_unavailable",
+                    "run_id": run_id,
+                }
             self._review_stall_state.pop(run_id, None)
             return {"triggered": False, "reason": "cpu_unavailable", "run_id": run_id}
 

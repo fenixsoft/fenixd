@@ -47,6 +47,14 @@ class JsonFormatter(logging.Formatter):
     _SENSITIVE_KEY_MARKERS = (
         "token", "secret", "password", "passwd", "authorization",
         "apikey", "credential", "privatekey",
+        # item 23e3a4210730：补凭据型键变体——session（session_id 等）、
+        # cookie（口径对齐 api_runner 证据脱敏 _EVIDENCE_REDACT_HEADERS 的
+        # set-cookie 遮蔽）、auth（auth_header/api-auth 等；归一化子串匹配
+        # 下 authorization 已被覆盖，仓库核实无 author 类日志键名、无误命中
+        # 实况）、private（private_key 等变体，privatekey 的超集）。有意不收
+        # signature：仓库内 signature/failure_signature 均为错误去重指纹
+        # （非凭据），遮蔽会破坏跨日指纹对账的可观测性。
+        "session", "cookie", "auth", "private",
     )
 
     @classmethod

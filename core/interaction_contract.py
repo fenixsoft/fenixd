@@ -164,8 +164,14 @@ def _bare_keyword(token_lower: str) -> Optional[str]:
 
 
 def _primary_keyword(key: str) -> Optional[str]:
-    """候选标识的主语义关键词（首个命中关键词的部分，含复数形式）。"""
-    for part in key.split("-"):
+    """候选标识的主语义关键词（首个命中关键词的部分，含复数形式）。
+
+    分隔口径与召回侧 ``extract_candidates`` 的 ``re.split(r"[-_]", key)``
+    一致（code-review 682462bb5329）：连字符与下划线均为词内连接符——只
+    拆连字符会让含下划线候选（btn_submit、dark_card）召回成功但主关键词
+    恒 None，通道 3 别名匹配与具体卡片 token 判定整体失效。
+    """
+    for part in re.split(r"[-_]", key):
         kw = _bare_keyword(part)
         if kw:
             return kw
@@ -441,6 +447,10 @@ def is_legacy_scenario_set(scenario_set: Any) -> bool:
     # 形态漂移留痕（code-review 8c43da322a27）：走到此处说明全部条目 covers
     # 为空——区分「合法 ScenarioEntry 空表」与「非属性对象恒 getattr miss」，
     # 后者按无元数据计入遗留集时落 debug，防上游形态漂移静默关闸。
+    # declared 提前读取（code-review be7c490c502d）：下方留痕分支按其事实
+    # 分叉文案，避免「留痕断言集级无 display_declarations → 随后判非遗留」
+    # 的留痕与最终裁决相反失真。
+    declared = getattr(scenario_set, "display_declarations", None)
     for e in entries:
         if not hasattr(e, "covers"):
             _logger.debug(
@@ -451,16 +461,22 @@ def is_legacy_scenario_set(scenario_set: Any) -> bool:
             break
     else:
         # code-review f436d3b17010：条目均为 ScenarioEntry 形态但 covers 全
-        # 空、且集级无 display_declarations——既可能是真遗留集（D2 合法跳过），
-        # 也可能是 planner 整轮仅靠文本/id 通道隐式覆盖、未写 covers 亦未声
-        # 明纯展示的新集；后者若存在未覆盖候选，契约对该轮静默失效（fail-
-        # open）。启发式无法区分二者，留痕备查（区分于上方形态漂移日志）。
-        _logger.debug(
-            "is_legacy_scenario_set: 全部条目为 ScenarioEntry 形态但 covers "
-            "全空且集级无 display_declarations，按遗留集跳过强制——若为仅靠"
-            "隐式通道覆盖的新集，交互契约本轮不生效",
-        )
-    declared = getattr(scenario_set, "display_declarations", None)
+        # 空——既可能是真遗留集（D2 合法跳过），也可能是 planner 整轮仅靠
+        # 文本/id 通道隐式覆盖、未写 covers 亦未声明纯展示的新集；后者若存
+        # 在未覆盖候选，契约对该轮静默失效（fail-open）。启发式无法区分二
+        # 者，留痕备查（区分于上方形态漂移日志）；文案按 declared 事实分叉。
+        if declared:
+            _logger.debug(
+                "is_legacy_scenario_set: 全部条目为 ScenarioEntry 形态但 "
+                "covers 全空，集级 display_declarations 非空——判非遗留集、"
+                "不跳过强制",
+            )
+        else:
+            _logger.debug(
+                "is_legacy_scenario_set: 全部条目为 ScenarioEntry 形态但 "
+                "covers 全空且集级无 display_declarations，按遗留集跳过强制"
+                "——若为仅靠隐式通道覆盖的新集，交互契约本轮不生效",
+            )
     if declared:
         return False
     return True

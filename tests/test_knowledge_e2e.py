@@ -151,9 +151,9 @@ class KnowledgeE2E(unittest.TestCase):
         (k / "README.md").write_text("# 契约\n", encoding="utf-8")
         (k / "index.md").write_text(
             f"# 知识真相源\n> 最后更新：{TODAY} 15:02 UTC+8\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-            "| --- | --- | --- | --- |\n"
-            f"| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | {TODAY} 15:02 |\n",
+            "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            f"| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | {TODAY} 15:02 |\n",
             encoding="utf-8",
         )
         (k / "domains" / "pickup" / "_domain.md").write_text(

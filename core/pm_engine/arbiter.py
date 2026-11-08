@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import queue
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -539,8 +540,10 @@ class ArbiterLane:
         """pending（未处理）机器升级告警索引：spec → 最新一条。
 
         机器升级告警 = kind=escalation ∧ 未 handled ∧ signal_type 在触发面
-        白名单（ARBITER_TRIGGER_SIGNAL_TYPES，生产发射词汇——「冻结+告警」
-        成对语义的告警半边）。
+        （触发面黑名单制：in_trigger_surface 只读 chain.blacklist 配置，
+        非黑名单即入——「冻结+告警」成对语义的告警半边；原
+        ARBITER_TRIGGER_SIGNAL_TYPES 白名单机制已退役，词表仅存词汇
+        机械枚举基线用途）。
         freeze_spec 人工冻结不产告警对——无索引命中即天然排除（回扫判据
         反查侧）。read_all 最新在前，首个命中即该 spec 最新 pending 告警
         （同 spec 多条历史告警只取最新，回扫描述以最新现场为准）。
@@ -566,18 +569,18 @@ class ArbiterLane:
                 out[spec] = rec
         return out
 
-    def _ledger_sigs(self, kinds: Optional[set] = None) -> set:
-        """台账签名集（回扫与事件触发面共用的跨重启 dedup 单实现）。
+    def _ledger_sigs(self, kinds: set) -> set:
+        """台账签名集（跨重启 dedup 单实现）：只取 kind 命中 kinds 集合者。
 
-        kinds=None 取全部 kind（回扫口径：任何 kind 都代表 Arbiter 已
-        调查过该签名）；传入 kind 集合时只取命中者（事件触发面口径：
-        dead-man/disposition 才代表已自主处置/停机过、不得再次自主处置）。
+        kinds 必传。现行唯一口径 = dead-man 永久例外（事件触发面与回扫
+        共用：台账 kind=dead-man 才代表该签名已停机过、不得再次自主
+        处置）。add-escalation-chain-admin-arbiter 3.3 配额制反转后回扫
+        不再按台账全量排除（原 kinds=None 全量口径已无消费方、分支删除，
+        查询任意 kind 集合仍可用本方法直传）。
         load_arbiter_ledger 自带 fail-open（IO 失败/坏行按空集降级），
         读失败按无台账处理照旧放行。
         """
         records = load_arbiter_ledger(self.project_root)
-        if kinds is None:
-            return {str(rec.get("signature") or "") for rec in records}
         return {
             str(rec.get("signature") or "")
             for rec in records
@@ -1341,7 +1344,12 @@ class ArbiterLane:
             # 真实回链：run 归档转录（调查过程事实所在）
             evidence = [f".fenix/runs/{run_id_eff}.jsonl"]
         entry = {
-            "id": f"arb-ledger-{int(time.time() * 1000)}",
+            # 同毫秒并发写账撞 id 消歧（item 175d49d47a1b）：写点有多个并发
+            # 线程（单飞 worker/submit_trigger 锁外复发/链 worker），毫秒粒度
+            # 可撞车。随机尾段与 make_maintenance_run_id 的 x<rand> 先例同
+            # 口径——id 仅作 _chain_ledger_ids 回链与按 id 反查的关联键，
+            # 消费方不解析形态，追加尾段不破坏任何读侧。
+            "id": f"arb-ledger-{int(time.time() * 1000)}-{secrets.token_hex(2)}",
             "created": _utcnow_iso(),
             "kind": kind,
             "spec": trigger.get("spec"),

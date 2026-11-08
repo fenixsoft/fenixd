@@ -456,8 +456,9 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
     回滚共用本原语，超时值/restore 粒度不再各自演进。restore 逐路径执行：
     pathspec 混入未跟踪新路径时整条命令会一起失败（git restore 只要有一个
     pathspec 不匹配即整体报错，同条 tracked 文件也一并不被还原）。git 不可
-    用/超时 fail-open；命令非零退出（pathspec 不匹配/索引锁冲突等）同样不
-    抛错，收集失败路径统一 WARNING 留痕（code-review 0f075b2bce72）——回
+    用/超时 fail-open 不抛错；非零退出（pathspec 不匹配/索引锁冲突等）与
+    异常分支同样收集失败路径，统一 WARNING 留痕（code-review 0f075b2bce72
+    / 7041ba4b8339）——回
     滚失败的内容仍在盘上，由本告警与调用方的 leftover 告警/待人工路径曝光，
     不阻塞调用方收尾。
     """
@@ -482,7 +483,9 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
                 timeout=120,
             )
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            # git 不可用/超时：本路径未还原，同样收集进 failed（code-review
+            # 7041ba4b8339）——否则整体故障时 failed 恒空，回滚零执行且零告警
+            failed.append(rel)
         else:
             if proc.returncode != 0:
                 # 本路径未还原：留痕待人工，不中断其余路径的回滚
@@ -499,7 +502,10 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        # clean 不可用/超时：未跟踪残留无法确认已清，维持全量留痕口径（对齐
+        # 非零退出分支，code-review 7041ba4b8339）；clean_ok 保持 False，盘面
+        # 复核不可信不执行，failed 不为空即有告警
+        failed.extend(rels)
     else:
         if proc.returncode != 0:
             # clean 整体失败时未跟踪残留全部未清、无法细化到单路径，全量留痕
@@ -521,8 +527,8 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
     if failed:
         log.warning(
             "knowledge",
-            "回滚半失败留痕（fail-open 不抛错）：以下路径 restore/clean 返回"
-            "非零，可能仍滞留 spec/knowledge/，请人工核查："
+            "回滚半失败留痕（fail-open 不抛错）：以下路径 restore/clean 非零"
+            "退出或不可用/超时，可能仍滞留 spec/knowledge/，请人工核查："
             + ", ".join(sorted(set(failed))[:10])
             + (f"（clean stderr：{clean_err}）" if clean_err else ""),
         )

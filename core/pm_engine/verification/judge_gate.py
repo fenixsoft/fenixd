@@ -645,7 +645,9 @@ def _judge_inconclusive_cap_escalate(
     重验窗口计数，人工面对的仍是同一裁决。独立计数器到顶是旗标泄漏/异常
     重入的兜底（正常路径人工出口在升级停车即达，远早于本计数器到顶）。
     """
-    dedup_field = "_judge_inconclusive_cap_escalated"
+    from core.state_machine import JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD
+
+    dedup_field = JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD
     entry = pipeline._context.state_machine.read_one(spec_name) or {}
     if _state_flag_true(entry, dedup_field):
         pipeline._context.logger.info(

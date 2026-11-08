@@ -272,15 +272,29 @@ def _candidates_from_line(line: str) -> List[str]:
 
 
 def _iter_spec_documents(spec_dir: Path) -> Iterable[Path]:
-    """yielding SPEC 文档（tasks.md / proposal.md / specs/*.md）。"""
+    """yielding SPEC 文档（tasks.md / proposal.md / specs/*.md）。
+
+    枚举与探测全程 OSError 容错（code-review item fca0b6910887）：typed
+    提取是声明守卫的正则兜底回退路径，specs 树不可读（EACCES/EIO 等）按
+    文档缺失口径跳过——只产出空结果或完整结果，不向守卫上抛（与文档读取
+    的 try (OSError, UnicodeDecodeError) 对齐）。
+    """
     for name in ("tasks.md", "proposal.md"):
         p = spec_dir / name
-        if p.is_file():
+        if _is_file_safe(p):
             yield p
     specs_dir = spec_dir / "specs"
-    if specs_dir.is_dir():
-        for f in sorted(specs_dir.rglob("*.md")):
-            if f.is_file():
+    if _is_dir_safe(specs_dir):
+        try:
+            candidates = sorted(specs_dir.rglob("*.md"))
+        except OSError as e:
+            _resolution_logger.warning(
+                "deliverables",
+                f"typed 提取 specs/ 枚举失败（按无文档跳过）{specs_dir}: {e}",
+            )
+            return
+        for f in candidates:
+            if _is_file_safe(f):
                 yield f
 
 
@@ -2602,6 +2616,12 @@ def _git_branch_changed_files(project_root, branch, merge_base) -> list:
     fail-open 回人工）。
     """
     if not branch or not merge_base:
+        return []
+    if _is_unsafe_git_ref_name(branch):
+        # code-review item 2443f3713800：与本文件其余分支封装（_git_branch_merge_base /
+        # _git_show_tasks_text / _git_object_exists_on_branch）同口径的引用名
+        # 守卫——消除防线口径漂移。fail-open 回空列表（调用方本就按 git 异常
+        # 回人工，不机械改写）。
         return []
     try:
         proc = subprocess.run(

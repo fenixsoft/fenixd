@@ -53,8 +53,11 @@ VERDICT_BUG_FOUND = "bug-found"
 # 逐场景状态取值
 SCENARIO_STATUSES = ("pass", "fail", "error", "warning", "exempt")
 
-# 非 PASS 状态（硬校验对这些场景校验证据与分类）
-NON_PASS_STATUSES = ("fail", "error", "warning")
+# 非 PASS 状态词表单源在 core/verdict_check.NON_PASS_STATUSES（双词表
+# ("fail", "failed", "error", "warning")，兼容 passed/failed 变体）。
+# 本模块不再另立同名常量（code-review item a518addac3c9：曾并存取值缺
+# "failed" 的旧词表，同名词表两处定义且值不一致，正是模块 docstring
+# 「键名单点定义」要防的漂移形态；全仓零消费后已删）。
 
 
 def _scenario_ok(sc: dict) -> bool:
@@ -553,7 +556,15 @@ def suggested_turn_cap_for_scale(base_turn_cap: int, scale: int, cfg: dict) -> i
         生效轮数上限（int）。
     """
     cfg = cfg if isinstance(cfg, dict) else {}
-    if not cfg.get(TURN_BUDGET_ENABLED_KEY, DEFAULT_TURN_BUDGET_ENABLED):
+    # enabled 与 scale/threshold/suggested 的 isinstance 显式判型同口径
+    # （code-review item 606c3a32465a）：调用方绕过「先经
+    # get_turn_budget_sizing_config 归一化」契约传入非 bool 真值（如非空
+    # 字符串）时 ``if not enabled`` 判假、语义反转（应关未关）——非 bool
+    # 回退缺省，与归一化层（get_turn_budget_sizing_config）防御一致。
+    enabled = cfg.get(TURN_BUDGET_ENABLED_KEY, DEFAULT_TURN_BUDGET_ENABLED)
+    if not isinstance(enabled, bool):
+        enabled = DEFAULT_TURN_BUDGET_ENABLED
+    if not enabled:
         return base_turn_cap
     threshold = cfg.get(
         TURN_BUDGET_FULL_SCALE_THRESHOLD_KEY, DEFAULT_TURN_BUDGET_FULL_SCALE_THRESHOLD)
@@ -732,6 +743,13 @@ def lifted_max_extensions_for_scale(
         cfg[IMPL_WALLCLOCK_ENABLED_KEY]
         if IMPL_WALLCLOCK_ENABLED_KEY in cfg
         else _impl_wallclock_default("enabled", logger))
+    # enabled 与 threshold/extra 的 isinstance 显式判型同口径（code-review
+    # item 606c3a32465a）：调用方绕过「先经 get_impl_wallclock_sizing_config
+    # 归一化」契约传入非 bool 真值（如非空字符串）时 ``if not enabled`` 判
+    # 假、语义反转（应关未关、推算照抬预算）——非 bool 回退缺省，与归一化
+    # 层（get_impl_wallclock_sizing_config）防御一致。
+    if not isinstance(enabled, bool):
+        enabled = _impl_wallclock_default("enabled", logger)
     if not enabled:
         return base_max_extensions
     threshold = (

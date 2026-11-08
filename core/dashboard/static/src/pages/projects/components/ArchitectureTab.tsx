@@ -19,7 +19,6 @@
 //   实测偏移 222/234），useIsMobile 切换，minHeight 兜底，避免移动端越界。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import dayjs from 'dayjs';
 import { Alert, App, Button, Card, Space, Spin, Typography } from 'antd';
 import {
   ApiError,
@@ -33,6 +32,10 @@ import {
   PAGE_CHROME_OFFSET_DESKTOP as FRAME_OFFSET_DESKTOP,
   PAGE_CHROME_OFFSET_MOBILE as FRAME_OFFSET_MOBILE,
 } from '@/utils/pageChrome';
+// 日期时间格式化单源（utils/datetime.ts，code-review item 13ec66ff34fe）：
+// 「生成时间」展示原为本地 fmtTime，与 RegressionTab fmtExecTime / SpecTimeline
+// 组件内 fmtTime 三处逐字重复；空值回退 '—' 与原实现一致
+import { fmtDateTime } from '@/utils/datetime';
 
 interface ArchitectureTabProps {
   project: string;
@@ -44,12 +47,6 @@ const POLL_INTERVAL_MS = 3000;
 // 分面高度 = 视口 − 页面 chrome（偏移常数以 pageChrome 为单源共享，
 // 推导见 utils/pageChrome.ts）。超短视口由 minHeight 保底。
 const FRAME_MIN_HEIGHT = 320;
-
-function fmtTime(iso?: string | null) {
-  if (!iso) return '—';
-  const d = dayjs(iso);
-  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : iso;
-}
 
 export default function ArchitectureTab({ project, active }: ArchitectureTabProps) {
   const { message } = App.useApp();
@@ -343,7 +340,7 @@ export default function ArchitectureTab({ project, active }: ArchitectureTabProp
         >
           <Space size={16} wrap>
             <Typography.Text type="secondary">
-              生成时间：{fmtTime(status?.generated_at)}
+              生成时间：{fmtDateTime(status?.generated_at)}
             </Typography.Text>
             {status?.component_count !== null &&
             status?.component_count !== undefined ? (
