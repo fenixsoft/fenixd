@@ -1691,7 +1691,7 @@ class G4MergebackMixin:
             # （Layer 2 兜底，fix-merge-untracked-guard 泛化）：即使 spec 未被
             # ensure_spec_committed 提交、或产物路径有污染，也不让 merge 因 untracked 冲突死锁。
             backup = self._backup_untracked_spec_files(branch)
-            head_before = subprocess.run(
+            head_proc = subprocess.run(
                 ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
                 capture_output=True,
                 text=True,
@@ -1699,7 +1699,23 @@ class G4MergebackMixin:
                 encoding="utf-8",
                 errors="replace",
                 timeout=30,
-            ).stdout.strip()
+            )
+            head_before = head_proc.stdout.strip()
+            if head_proc.returncode != 0:
+                # 命令失败（index.lock 争用、git 瞬时不可用等）与「空输出」不可
+                # 混同：head_before 为空会使 _post_merge_finalize 的
+                # ``if head_before:`` 静默跳过 _purge_ignored_brought_in——该
+                # purge 承担防「ignored 草稿随分支带回→主树再度变脏→撞车循环
+                # 重启」的职责，跳过必须在日志可循（对齐 stash_guard.py
+                # a14b215ba4d4 同款职责失败留痕口径）。rev-parse 失败时
+                # old_head 基线缺失，purge 的 ``{old_head}..HEAD`` 枚举本就无从
+                # 成立，跳过属正确降级，此处只补留痕。
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Purge ignored brought-in skipped: pre-merge HEAD "
+                    f"baseline unavailable (rev-parse failed: "
+                    f"{(head_proc.stderr or head_proc.stdout).strip()})",
+                )
 
             # Merge with --no-ff to preserve worktree history
             # 三处（merge 本体 + 两处自愈重试）逐字相同的命令构造收拢为单一局部

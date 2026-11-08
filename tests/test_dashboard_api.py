@@ -2419,9 +2419,13 @@ class TestConditionalGet:
             assert body == b"", path
 
     def test_specs_signature_unavailable_degrades_no_etag(self, server_fx):
-        """签名组件不可得（STATE.md / STATE.archive.md 消失，stat None）→
-        get_with_signature 返回 None 签名，端点降级无条件 200：不挂 ETag
-        头、不协商，列表数据仍正常返回（宁缺 304 不假 304）。"""
+        """签名组件不可得（STATE.md 消失，stat None）→ get_with_signature
+        返回 None 签名，端点降级无条件 200：不挂 ETag 头、不协商，列表数据
+        仍正常返回（宁缺 304 不假 304）。对照：归档清单缺失是稳定空态
+        （item 03cbe54d9d34，parse_archived_state 以缺失=空为常态分支）——
+        签名经 "missing" 哨兵照常聚合产出、端点挂 ETag 可协商，304 短路
+        对未归档项目恢复生效；「签名不可得」降级仅保留给 STATE.md 消失
+        窗口与真 stat 失败。"""
         proot, srv = server_fx
         self._ensure_archive_manifest(proot)
         # state 组件缺失：STATE.md 消失
@@ -2431,7 +2435,8 @@ class TestConditionalGet:
         assert "ETag" not in headers
         data = json.loads(body)
         assert data["project"] == "proj-a" and data["specs"] == []
-        # arch 组件缺失（恢复 STATE.md 后删除清单）：同样降级
+        # arch 组件缺失（恢复 STATE.md 后删除清单）：清单缺失是稳定空态，
+        # 签名照常产出、304 可协商（非「签名不可得」降级）
         (proot / ".fenix" / "STATE.md").write_text(
             "# Fenix Project State\n\n## Specs\n\n"
             "### myspec\n- status: testing\n- priority: 2\n"
@@ -2442,8 +2447,15 @@ class TestConditionalGet:
         (proot / ".fenix" / "STATE.archive.md").unlink()
         status2, headers2, body2 = srv.get_ex("/api/specs?project=proj-a")
         assert status2 == 200
-        assert "ETag" not in headers2
+        etag2 = headers2.get("ETag")
+        assert etag2
         assert json.loads(body2)["specs"]  # 活跃条目照常产出
+        # 缺清单稳态下条件请求命中 304
+        status3, _, body3 = srv.get_ex(
+            "/api/specs?project=proj-a", headers={"If-None-Match": etag2}
+        )
+        assert status3 == 304
+        assert body3 == b""
 
     def test_specs_304_reuses_keep_alive_connection(self, server_fx):
         """specs 端点 304 后同一 keep-alive 连接继续请求不失步（_write_304
@@ -3124,6 +3136,28 @@ class TestBundleRevHeader:
     服务端在 _json/_write_304/_error 三点附 X-Bundle-Rev（dist/index.html
     的 mtime_ns:size）；前端 request() 记录基线、漂移即整页 reload。
     """
+
+    @pytest.fixture(autouse=True)
+    def _seed_dist_index(self, server_fx):
+        """dist 构建物是 gitignored 产物（.gitignore dist/），fresh worktree
+        等隔离环境不存在；本类验证的是头部机制而非 dist 在场（缺席降级另有
+        test_missing_dist_rev_absent_no_crash 覆盖）。缺席时种最小 index.html，
+        用例后按原状（缺席）还原，不污染仓库静态目录。"""
+        index_html = server_fx[1].httpd.static_dir / "dist" / "index.html"
+        dist_dir = index_html.parent
+        made_dir = not dist_dir.exists()
+        existed = index_html.exists()
+        if not existed:
+            dist_dir.mkdir(parents=True, exist_ok=True)
+            index_html.write_text(
+                "<!DOCTYPE html><html><body>seed-for-tests</body></html>",
+                encoding="utf-8",
+            )
+        yield
+        if not existed:
+            index_html.unlink(missing_ok=True)
+            if made_dir and not any(dist_dir.iterdir()):
+                dist_dir.rmdir()
 
     def test_json_200_carries_bundle_rev(self, server_fx):
         proot, srv = server_fx

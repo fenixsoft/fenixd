@@ -121,6 +121,31 @@ def _safe_knowledge_file(proot: Path, rel: str) -> Path | None:
     return resolved
 
 
+def _probe_is_file(path: Path) -> bool:
+    """``is_file()`` 的 OSError 容错包装：探测失败按 False + WARNING。
+
+    同 registry._state_md_is_file 容错口径：裸 is_file() 遇 EIO/EACCES
+    （挂载点抖动、网络 home 目录）会上抛，穿透 _api_knowledge_index 被
+    base 层兜成 500，违反 server.py 模块头「所有 API 容错：数据源损坏以
+    字段标记返回，不 500」契约；按缺失降级维持 initialized/nav_exists
+    字段级语义。
+    """
+    try:
+        return path.is_file()
+    except OSError as exc:
+        logger.warning("knowledge 文件探测失败 %s: %s", path, exc)
+        return False
+
+
+def _probe_is_dir(path: Path) -> bool:
+    """``is_dir()`` 的 OSError 容错包装，口径同 :func:`_probe_is_file`。"""
+    try:
+        return path.is_dir()
+    except OSError as exc:
+        logger.warning("knowledge 目录探测失败 %s: %s", path, exc)
+        return False
+
+
 class H14KnowledgeRoutesMixin:
     """H14 knowledge（对齐 H13 Architecture 汇聚方式；H13 已被占用）。"""
 
@@ -162,7 +187,7 @@ class H14KnowledgeRoutesMixin:
             inbox_info = None
         payload = {
             "project": project["name"],
-            "initialized": index_md.is_file(),
+            "initialized": _probe_is_file(index_md),
             "index_md": None,
             "domains": [],
             "adrs": [],
@@ -174,7 +199,7 @@ class H14KnowledgeRoutesMixin:
         # ETag 签名仍须逐请求遍历真相源算签名，TTL 缓存须配 DistillManager 写
         # 侧失效（缺失效则蒸馏后下发陈旧标题，正确性代价重于读放大），titles
         # 惰性化须改 /index 契约并动前端 KnowledgeTab.tsx，均非最小修。
-        if index_md.is_file():
+        if _probe_is_file(index_md):
             try:
                 payload["index_md"] = index_md.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
@@ -182,7 +207,7 @@ class H14KnowledgeRoutesMixin:
                 self._error(500, "index.md 读取失败")
                 return
         domains_dir = kroot / "domains"
-        if domains_dir.is_dir():
+        if _probe_is_dir(domains_dir):
             # 枚举本身失败（权限/IO）时按空清单降级，对齐 help_routes 双层容错口径
             try:
                 domain_dirs = sorted(p for p in domains_dir.iterdir() if p.is_dir())
@@ -211,7 +236,7 @@ class H14KnowledgeRoutesMixin:
                     {
                         "name": d.name,
                         "pages": pages,
-                        "nav_exists": (d / "_domain.md").is_file(),
+                        "nav_exists": _probe_is_file(d / "_domain.md"),
                     }
                 )
                 # titles：域键 + 能力页键（与前端面包屑/页路径同形，剥 .md）
@@ -223,11 +248,11 @@ class H14KnowledgeRoutesMixin:
                         _read_h1_title(d / pg)
                     )
         adr_dir = kroot / "adr"
-        if adr_dir.is_dir():
+        if _probe_is_dir(adr_dir):
             # adr/index.md 表格标题列（ADR 文件首标题缺失时的兜底源）
             index_titles: dict[str, str] = {}
             adr_index = adr_dir / "index.md"
-            if adr_index.is_file():
+            if _probe_is_file(adr_index):
                 try:
                     index_titles = _adr_titles_from_index(
                         adr_index.read_text(encoding="utf-8")

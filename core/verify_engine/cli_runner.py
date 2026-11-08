@@ -617,6 +617,12 @@ class CliRunner(VerifyRunner):
         # 断言按「非 JSON」口径失败，带标注供 judge 归因。
         stdout_text_bytes = len(stdout_full.encode("utf-8", errors="replace"))
         json_parse_skipped = stdout_text_bytes > _RUN_JSON_PARSE_LIMIT
+        # 深层嵌套输入会让 json.loads 抛 RecursionError（非 JSONDecodeError
+        # 子类，code-review item 165718b4ea07）：不捕会穿出 _execute_run 被
+        # 引擎侧 gather 兜成无步骤定位的裸 error，超时前已采集的 stdout/
+        # stderr/exit_code 等全部步骤证据随之丢失——与 result_gate 对超深
+        # 嵌套的处置同款捕获，同口径置空并附标注供断言侧归因
+        json_parse_depth_note = ""
         if stdout_full.strip() and not json_parse_skipped:
             try:
                 stdout_json = json.loads(stdout_full)
@@ -624,6 +630,12 @@ class CliRunner(VerifyRunner):
             except json.JSONDecodeError:
                 stdout_json = None
                 stdout_json_parsed = False
+            except RecursionError:
+                stdout_json = None
+                stdout_json_parsed = False
+                json_parse_depth_note = (
+                    f"stdout 嵌套过深解析中止（RecursionError，{stdout_text_bytes} 字节）"
+                )
         else:
             stdout_json = None
             stdout_json_parsed = False
@@ -643,6 +655,11 @@ class CliRunner(VerifyRunner):
             result["json_parse_skipped"] = (
                 f"stdout 超大未解析（{stdout_text_bytes} 字节 > 上限 {_RUN_JSON_PARSE_LIMIT}）"
             )
+        # 嵌套过深与体积超限同键同形态透出（两者互斥：解析仅在未超限时发生，
+        # 无覆盖冲突）：断言侧 _assert_json_output 据此把 json 输出类失败归
+        # 因为「解析中止」而非「非合法 JSON」格式缺陷
+        if json_parse_depth_note:
+            result["json_parse_skipped"] = json_parse_depth_note
         if stdout_read_truncated:
             result["read_truncated"] = (
                 f"stdout 超过读入上限（{_OUTPUT_READ_LIMIT} 字节），仅保留前缀参与解析与证据"

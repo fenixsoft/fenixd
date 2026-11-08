@@ -1499,6 +1499,26 @@ def _scenario_defect_reroute_gate(
                 f"（保持 testing）: {cancelled_err}",
             )
         else:
+            # ── provider 熔断让位（三让位单源复用，code-review c437e6d20b30）：
+            # 派发失败含 provider 熔断（PROVIDER_CIRCUIT_ERROR_MARKER）——此前
+            # 一律按「留 error 保持 testing」温和处置，熔断态留下语义含糊的
+            # error 且 infra 失败台账漏计（与 pipeline.py
+            # _yield_on_agent_failure 三让位单源不一致）。复用单源（与 judge
+            # 首派/fail-closed 重派同口径）：熔断态经单源写原始 error +
+            # _record_infra_failure 记账（预算退款 + _verify_infra_rounds，
+            # attempt run id 经 ledger_run_id 只进台账）后让位返回（保持
+            # testing）；非熔断失败单源返回 (None, "") 落穿既有温和处置。
+            # 单源内 frozen_terminated/cancelled 判定与上方 `is True` 门同
+            # 口径，走到 else 必为 False，不会重复写 hold 标记。
+            yield_reason, _yield_err = pipeline._yield_on_agent_failure(
+                spec_name, reroute_judge)
+            if yield_reason == "provider_circuit":
+                pipeline._context.logger.warning(
+                    "pm_engine",
+                    f"改道重派 judge provider 熔断 '{spec_name}' — infra "
+                    f"记账后让位（保持 testing）: {_yield_err}",
+                )
+                return True
             pipeline._context.logger.warning(
                 "pm_engine",
                 f"改道重派 judge 派发失败 '{spec_name}' — 保持 testing，"
@@ -2813,16 +2833,23 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
                 f"重验日程到期入队异常 '{name}': {type(e).__name__}: {e}",
             )
             return
-        # 触发派发：经 pipeline._pm 门面回引（design D3 规则 3）——_context
-        # 无 pm_engine 成员，MUST NOT 从 _context 取。
-        pm_engine = getattr(pipeline, "_pm", None)
-        if pm_engine is not None:
+        # 触发派发（design D3 规则 3）：经 PipelineContext 公开排空接缝
+        # request_queue_drain——code-review 3fe95948997b：此前经局部变量
+        # getattr(pipeline, "_pm") 回引私有 _process_queue，对
+        # verification-pipeline-modules 契约「self._pm._ 零命中」审计不可见；
+        # 私有回引由 context 委托承载（同 ocr_join_gate/
+        # schedule_infra_retry_redispatch 的 D10 模式）。桩 context 未接线
+        # （成员为 None）时 fail-open 跳过——派发兜底由 _dispatch_backoff_
+        # until + event_bus._recover_testing 周期扫描承担（与定时器重启丢失
+        # 同款兜底，见本函数 docstring）。
+        drain = getattr(pipeline._context, "request_queue_drain", None)
+        if drain is not None:
             try:
-                pm_engine._process_queue()
+                drain()
             except Exception as e:
                 pipeline._context.logger.warning(
                     "pm_engine",
-                    f"重验日程到期 _process_queue 异常 '{name}': "
+                    f"重验日程到期排空派发异常 '{name}': "
                     f"{type(e).__name__}: {e}",
                 )
 

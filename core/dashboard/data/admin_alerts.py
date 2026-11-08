@@ -295,8 +295,18 @@ def chain_overview(project_root) -> dict:
     for sig, ent in sorted(state["signatures"].items()):
         if not isinstance(ent, dict):
             ent = {}
-        attempts = int(ent.get("admin_attempts") or 0)
-        rulings = int(ent.get("arbiter_rulings") or 0)
+        # try/except 同 summary._int_or_zero / timeline 重派计数口径（code-review
+        # item 262689521310）：load_chain_state 只做 dict() 保真不归一值类型，
+        # 状态文件值被手改/半损坏为非数值真值（or 0 挡不住）时裸 int() 抛
+        # ValueError/TypeError 会让本视图 5xx，违背上方 fail-open 承诺——归 0。
+        try:
+            attempts = int(ent.get("admin_attempts") or 0)
+        except (TypeError, ValueError, OverflowError):
+            attempts = 0
+        try:
+            rulings = int(ent.get("arbiter_rulings") or 0)
+        except (TypeError, ValueError, OverflowError):
+            rulings = 0
         signatures.append(
             {
                 "signature": sig,

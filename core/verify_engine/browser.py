@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from .path_safety import safe_component
+from .scenarios import MAX_WAIT_MS as _MAX_WAIT_MS
 from .scenarios import url_matches_network_pattern
 
 # playwright 类型化异常（code-review item ea1ef016ced3）：顶层 error_type
@@ -108,8 +109,11 @@ _MAX_COLLECTED_ERRORS = 200
 # planner 误写（毫秒/秒混用、或 "1e9" 这类超大有限值）会被 float() 正常
 # 解析并传给 wait_for_timeout 如实等待，而引擎对单场景没有超时包裹，该
 # 场景会持续占用并行信号量槽与浏览器 context 直至外部监督超时介入，整轮
-# 验证窗口被单条场景声明占满。10 分钟覆盖合法长等待，超过按配置错误拦截
-_MAX_WAIT_MS = 600_000
+# 验证窗口被单条场景声明占满。10 分钟覆盖合法长等待，超过按配置错误拦截。
+# 常量本体单源在 scenarios.MAX_WAIT_MS（code-review item b3113c78efad：验收
+# 层 _validate_web 前移预检须与运行层同上限，本模块已 import scenarios、
+# 反向 import 会成环，故上移 scenarios 单源），经顶部 import 以 _MAX_WAIT_MS
+# 别名消费，本模块内引用点不变。
 
 
 def _capped_append(bucket: list[str], entry: str) -> None:

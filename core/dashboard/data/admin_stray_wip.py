@@ -568,7 +568,11 @@ def _append_gitignore_entries(proot, paths) -> list:
         # 走文本口径（仅读侧比较，不回写）：合法行不受有损解码影响，比对不失真。
         raw = gi.read_bytes() if gi.exists() else b""
         have_lines = {
-            ln.strip() for ln in raw.decode("utf-8", errors="replace").splitlines()
+            # 比对键只去换行不去空格（code-review item 876fb88ec426）：尾随
+            # 空格文件名经 _gitignore_escape_entry 转义成「\ 」后条目以空格
+            # 收尾，strip 会剥掉该空格致重入去重失配（重复追加）。splitlines
+            # 已去换行，行原样入集。
+            ln for ln in raw.decode("utf-8", errors="replace").splitlines()
         }
         appended: list = []
         for p in paths:
@@ -1079,10 +1083,14 @@ def _append_gitignore_and_commit(proot, entries, header: str) -> dict:
                     # 文本解码往返——.gitignore 含非 UTF-8 字节时
                     # read_text(errors="replace") 再回写会把坏字节改写成 U+FFFD。
                     # 追加行是本函数新写的完整行，按字节行精确匹配剔除即可。
+                    # 比对键只去换行不去空格（code-review item 876fb88ec426）：
+                    # 尾随空格文件名经 _gitignore_escape_entry 转义后条目以
+                    # 空格收尾，ln.strip() 会剥掉该空格、刚写入的规则行匹配
+                    # 不上而被保留（还原漏滤）——rstrip 只剥行尾换行符。
                     appended_lines = {p.encode("utf-8") for p in appended}
                     kept = [
                         ln for ln in gi.read_bytes().splitlines(keepends=True)
-                        if ln.strip() not in appended_lines
+                        if ln.rstrip(b"\r\n") not in appended_lines
                     ]
                     # 原子写回（code-review item 8db336608775，与
                     # _append_gitignore_entries 同口径）：裸写回非原子，还原时刻

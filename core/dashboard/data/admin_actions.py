@@ -2931,6 +2931,13 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
 
     # 6+7. STATE：计数 +1、置 re-entry 旗标、清停车字段、解冻、testing、唤醒
     sm = _sm(proot)
+    # 写前快照步骤 6 将清零的重试计数器原值（code-review item 6e0a8b6533a9）：
+    # 供步骤 7 失败分支的补偿写按快照整体还原——否则场景文件虽回滚旧集，
+    # 被 _RETRY_COUNTER_RESETS 清零的失败轮/退避窗/judge 预算等计数器滞留
+    # 清零态，调度退避与失败轮预算被一次失败的管理动作静默抹除。快照取自
+    # entry（步骤 2 解析的写前 STATE），必须先于步骤 6 落盘；步骤 6 未落盘
+    # 的早失败分支不得使用本快照。
+    retry_counter_snapshot = {k: entry.get(k) for k in _RETRY_COUNTER_RESETS}
     updates = dict(_RETRY_COUNTER_RESETS)
     updates.update({
         SCENARIO_REVISION_COUNT_FIELD: revision_count + 1,
@@ -2961,25 +2968,31 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             rolled = _rollback_written()
             if rolled:
                 steps.append(f"状态转换失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
-            # 补偿还原步骤 6 已落盘的修订簿记（code-review item c66bef46e771）：
-            # 计数/重验旗标随失败一并还原，防白耗修订预算与「STATE 已记修订
-            # 待重验、盘面仍旧场景集」半改态；冻结态与 error 同批按快照还原
-            # （code-review item 4ac2caacab89）：步骤 6 已解冻清 error，补偿
-            # 不还原会让冻结静默解除、调度据此捞起该 spec，与 docstring
+            # 补偿还原步骤 6 已落盘的修订簿记与被清零的重试计数器
+            # （code-review item c66bef46e771 + 6e0a8b6533a9）：计数/重验旗标
+            # 随失败一并还原，防白耗修订预算与「STATE 已记修订待重验、盘面
+            # 仍旧场景集」半改态；_RETRY_COUNTER_RESETS 清零的重试计数器
+            # （失败轮/退避窗/judge 预算等）按写前快照同批还原，防文件回滚后
+            # 调度退避与失败轮预算仍被静默抹除；冻结态与 error 同批按快照
+            # 还原（code-review item 4ac2caacab89）：步骤 6 已解冻清 error，
+            # 补偿不还原会让冻结静默解除、调度据此捞起该 spec，与 docstring
             # 「任一步失败即停，不留半改状态」承诺不符；补偿写若再失败经
             # steps 如实留痕供人工核对。
-            if sm.update_spec(spec, {
+            compensation = dict(retry_counter_snapshot)
+            compensation.update({
                 SCENARIO_REVISION_COUNT_FIELD: revision_count,
-                SCENARIO_REVISION_PENDING_FIELD: False,
                 "frozen": entry.get("frozen"),
                 "error": entry.get("error"),
-            }):
-                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标/冻结态与 error）")
+            })
+            if sm.update_spec(spec, compensation):
+                steps.append("已补偿还原 STATE 修订簿记"
+                             "（修订计数/重验旗标/重试计数器/冻结态与 error）")
             else:
-                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标/冻结态待人工核对）")
+                steps.append("STATE 修订簿记补偿还原未生效"
+                             "（修订计数/旗标/重试计数器/冻结态待人工核对）")
             return {"ok": False, "steps": steps,
                     "error": ("修订后状态转换未生效（IMPLEMENTED→TESTING 被拒；"
-                              "场景文件与 STATE 修订簿记均已还原）"),
+                              "场景文件与 STATE 修订簿记（含重试计数器）均已还原）"),
                     "frozen_manual": False}
         steps.append("IMPLEMENTED→TESTING 门禁转换（channel=manual）")
     else:
@@ -2993,21 +3006,26 @@ def _exec_revise_scenario_reverify(project_root, spec: str, note: str = "") -> d
             if rolled:
                 steps.append(f"状态直改失败，已回滚本轮已写场景/夹具文件（{rolled} 个）")
             # 直改失败同属步骤 6 之后的 STATE 写后段失败，补偿还原已落盘的
-            # 修订簿记（code-review item c66bef46e771，与转换失败分支同口径）；
-            # 冻结态与 error 同批按快照还原（item 4ac2caacab89，同口径）；
-            # 补偿写若再失败经 steps 如实留痕供人工核对。
-            if sm.update_spec(spec, {
+            # 修订簿记与被清零的重试计数器（code-review item c66bef46e771 +
+            # 6e0a8b6533a9，与转换失败分支同口径：_RETRY_COUNTER_RESETS 各键
+            # 按写前快照还原）；冻结态与 error 同批按快照还原
+            # （item 4ac2caacab89，同口径）；补偿写若再失败经 steps 如实留痕
+            # 供人工核对。
+            compensation = dict(retry_counter_snapshot)
+            compensation.update({
                 SCENARIO_REVISION_COUNT_FIELD: revision_count,
-                SCENARIO_REVISION_PENDING_FIELD: False,
                 "frozen": entry.get("frozen"),
                 "error": entry.get("error"),
-            }):
-                steps.append("已补偿还原 STATE 修订簿记（修订计数/重验旗标/冻结态与 error）")
+            })
+            if sm.update_spec(spec, compensation):
+                steps.append("已补偿还原 STATE 修订簿记"
+                             "（修订计数/重验旗标/重试计数器/冻结态与 error）")
             else:
-                steps.append("STATE 修订簿记补偿还原未生效（修订计数/旗标/冻结态待人工核对）")
+                steps.append("STATE 修订簿记补偿还原未生效"
+                             "（修订计数/旗标/重试计数器/冻结态待人工核对）")
             return {"ok": False, "steps": steps,
                     "error": (f"状态 {old_status} → testing 直改未生效"
-                              "（场景文件与 STATE 修订簿记均已还原）"),
+                              "（场景文件与 STATE 修订簿记（含重试计数器）均已还原）"),
                     "frozen_manual": False}
         sm.logger.info(
             "state_machine",

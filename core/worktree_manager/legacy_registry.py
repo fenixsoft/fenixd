@@ -332,7 +332,7 @@ class G2LegacyRegistryMixin:
             # lifecycle.py cleanup finally 的 47b98315d174 口径，正常收尾
             # 出口同款）：_spec_process_alive 按 (spec, prefixes) 二元组为
             # 家族限定扫描单独缓存（refresh_locks 家族过滤判活消费，
-            # prefixes 取 _lock_family_prefix 值域 verify/impl），仅清裸
+            # prefixes 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸
             # spec 键会在缓存窗口内残留摘锁前的家族存活判定。
             self._proc_scan_cache.pop((spec_name, ("verify",)), None)
             self._proc_scan_cache.pop((spec_name, ("impl",)), None)
@@ -363,7 +363,7 @@ class G2LegacyRegistryMixin:
         # lifecycle.py cleanup finally 47b98315d174 口径，登记未生效出口
         # 同款）：_spec_process_alive 按 (spec, prefixes) 二元组为家族限定
         # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes 取
-        # _lock_family_prefix 值域 verify/impl），仅清裸 spec 键会在缓存
+        # _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键会在缓存
         # 窗口内残留摘锁前的家族存活判定。
         self._proc_scan_cache.pop((spec_name, ("verify",)), None)
         self._proc_scan_cache.pop((spec_name, ("impl",)), None)

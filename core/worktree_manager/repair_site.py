@@ -160,7 +160,13 @@ class G9RepairSiteMixin:
         出册持锁 + pop 后复核（code-review item ae4697f9486e，对齐包内 _legacy
         变更的单一持锁纪律 fb49eca84deb/d6c32c0b63b6）：认领探测与 pop 之间该
         spec 可能被并发车道重新登记——pop 到宽限期内刚登记的新遗产时 setdefault
-        放回出册位（清扫豁免保持完整）并返回 None，调度层降级走全新建树。
+        放回出册位并返回 None。认领被拒仅表示登记表条目保留（宽限期清扫豁免
+        保持完整），现场仍被 repair 继续使用——调度层不因认领被拒改道：唯一
+        调用方 repair_lane._claim_repair_site 不消费返回值（「降级全新建树」
+        只发生在 resolve_repair_site 返回 (None, None) 的载体不可用分支，与本
+        方法认领被拒无关），现场保护依赖 resolve_repair_site 的活动集登记
+        （_active_worktrees，stale_sweep 跳过在册目录）与 {spec}:repair 锁
+        （code-review item dc43d4058d17）。
 
         成功收尾真实语义（code-review item b3d6e5357355，修正旧 docstring 的
         失真描述）：本方法摘出的记录不会再被成功路径的 consume_legacy 回收

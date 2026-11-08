@@ -245,14 +245,27 @@ class G7StaleSweepMixin:
                 continue
             # 删除动作：只用 -d（绝不 -D）。并发 checkout/脱离 main 时 git
             # 拒绝，记录明细后继续其余分支，不中断清扫轮。
-            del_res = subprocess.run(
-                ["git", "-C", str(self.project_root), "branch", "-d", branch],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
-            )
+            # 逐分支异常隔离（与 legacy_registry._physically_reclaim_legacy
+            # 的 per-step 容错同口径）：TimeoutExpired / OSError 也不得中断
+            # 剩余分支——GC 仅由 daemon 启动路径执行一次，单分支瞬时异常
+            # 短路会让整轮 GC 对本 daemon 生命周期静默失效。
+            try:
+                del_res = subprocess.run(
+                    ["git", "-C", str(self.project_root), "branch", "-d", branch],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self._BRANCH_GC_GIT_TIMEOUT_SECONDS,
+                )
+            except (subprocess.SubprocessError, OSError) as e:
+                failed.append(branch)
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Branch GC delete failed (non-blocking): '{branch}' — "
+                    f"{str(e)[:200]}",
+                )
+                continue
             if del_res.returncode != 0:
                 failed.append(branch)
                 self.logger.warning(

@@ -240,13 +240,12 @@ class TestScenarioAwareHelper(unittest.TestCase):
             low_contrast_upper_for_scenario,
         )
         declared = [
-            "bigscreen-empty-state",      # empty
+            "bigscreen-empty-state",      # empty-state 复合词（item af3b9528667a）
             "zero-state",                 # zero-state
             "Zero_State_Placeholder",     # placeholder + 大小写不敏感
             "chart-low-contrast",         # low-contrast 保留标记
             "sc_low_contrast",            # low_contrast 下划线形态
             "EMPTY-STATE",                # 大写
-            "table-with-empty-rows",      # 子串命中即可
         ]
         for name in declared:
             self.assertTrue(is_low_contrast_declared_scenario(name))
@@ -266,6 +265,9 @@ class TestScenarioAwareHelper(unittest.TestCase):
             "bigscreen-view", "scenario-1", "login-page", "dashboard-main",
             "", "placeholder_check_placeholder".replace("placeholder", "view"),
             None, 123,      # 非 str 上下文按未声明回退缺省
+            # 裸 "empty" 收窄为 empty-state/empty_state 复合词（item
+            # af3b9528667a）：仅词面含 empty 的普通场景不再误放宽
+            "table-with-empty-rows", "verify_form_not_empty_validation",
         ]
         for name in undeclared:
             self.assertFalse(

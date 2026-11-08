@@ -966,7 +966,10 @@ def aggregate_ledger(registry_projects, project=None, *, now=None) -> dict:
     for row in merged:
         billing = billings.get(row["project"]) or {}
         cost = tokens = None
-        if billing and row["_run_id"]:
+        if row["_run_id"]:
+            # tokens 与计费开关无关（result 事件 usage 四分项，_run_cost_and_tokens
+            # 内独立于计价匹配）：不得被 billing 卡片连带钳制；billing 为空时
+            # compute_run_cost 直接判不可计价，cost 仍为 None（52d52862e75a）
             cost, tokens = _run_cost_and_tokens(
                 proots[row["project"]], row["_run_id"], billing
             )

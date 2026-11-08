@@ -78,12 +78,19 @@ class H8HelpRoutesMixin:
             files = list(
                 p for p in help_dir.iterdir() if p.is_file() and _server_mod.HELP_DOC_NAME_RE.match(p.name)
             )
-        except OSError:
+        except OSError as exc:
+            # 枚举失败可达：pathlib 的 is_file() 只吞 ENOENT/ENOTDIR/EBADF/
+            # ELOOP，EACCES/EIO 会直接上抛（同 watcher._is_dir 固化的结论）。
+            # 仍按空清单降级（「暂无帮助文档」空态契约不变），但留痕以便从
+            # 日志反推，对齐 knowledge_routes 的枚举容错口径
+            logger.warning("help docs 目录枚举失败: %s", exc)
             return {"docs": []}
         docs = []
         # code-review b32643bc6058：循环体内唯一 OSError 源（read_text）已在内层
-        # 捕获并回退空标题，外层 except OSError 不可达，且一旦命中会把已收集
-        # 的 docs 吞成空列表，与「目录缺失/为空才返回空列表」契约不符，故不设
+        # 捕获并回退空标题，包住循环收集段的 except OSError 不可达，且一旦命中
+        # 会把已收集的 docs 吞成空列表，与「目录缺失/为空才返回空列表」契约
+        # 不符，故不设。（上方枚举段的 except OSError 是另一回事：EACCES/EIO
+        # 等会穿透 is_file 的吞错白名单，该分支可达，见其降级留痕注释）
         for f in files:
             title = ""
             try:
