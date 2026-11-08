@@ -750,11 +750,6 @@ class TaskCompletionWatcher:
             self._completed_idx.add(n - 1)
 
 
-# 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
-_parse_run_task_done = parse_run_task_done
-_find_impl_run_file = find_impl_run_file
-
-
 def read_init_tools(run_file) -> list | None:
     """读 run 产物 init 事件的 tools 数组（fix-impl-tasks-completion-gate D4 能力探测）。
 
