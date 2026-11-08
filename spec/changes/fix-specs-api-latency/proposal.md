@@ -22,7 +22,7 @@
 
 ## Impact
 
-- 代码：`core/dashboard/data/summary.py`（get 签名聚合 + 分槽锁）、`core/dashboard/routes/base.py`（`_sig_specs` 消费同趟签名）、`core/dashboard/watcher.py`（SSE 广播消费 get 返回值形态，若签名随行返回需兼容）。
+- 代码：`core/dashboard/data/summary.py`（get 签名聚合 + 分槽锁）、`core/dashboard/routes/spec_routes.py`（`_api_specs` 改自含响应 handler）、`core/dashboard/routes/base.py`（路由表摘 sig_fn + `_get_specs` 适配器去 `_json` 包装）、`core/dashboard/watcher.py`（零改动——`get()` 薄包装形态下 SSE 广播消费形态不变）。
 - 行为影响面：`/api/specs`（列表 + ETag）、SSE 广播路径（watcher 经同一 get）；`/api/specs/<spec>` 详情签名走 `state_snapshot`（分槽后同项目语义不变）。
-- 测试：`tests/test_dashboard_data.py`、ETag/304 与 SummaryIndex 并发相关测试需扩展（分槽互斥性、同趟签名与 `invalidation_signature` 一致性、304 不假签名回归）。
+- 测试：`tests/test_dashboard_index.py`（SummaryIndex 并发/聚合）与 `tests/test_dashboard_api.py`（ETag/304 回归）需扩展（分槽互斥性、同趟签名与 `invalidation_signature` 一致性、304 不假签名回归），另新增 `tests/test_specs_api_perf_guard.py` 性能守卫。
 - 性能预期：热路径 ~0.43s → ~0.21s；跨项目排队（实测 ~0.3s）消除；冷构建长尾不再阻塞其他项目读请求。

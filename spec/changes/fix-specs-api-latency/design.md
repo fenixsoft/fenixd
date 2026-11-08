@@ -22,7 +22,7 @@
 `SummaryIndex` 新增 `get_with_signature(proot, specs=None, state_sig=None) -> tuple[list, str | None]`：取数完成时**直接复用本轮已驻留内存的 per-spec sigs**（`idx[name]["sigs"]`，缓存命中与重算两路都有）+ 本轮 state/arch/runs 签名，按 `invalidation_signature` 完全同构的结构 combine 聚合——聚合本身零额外 stat（排序 + 哈希，微秒级）。签名与响应体出自同一次扫描，天然原子。
 
 - `get()` 改为薄包装 `return get_with_signature(...)[0]`，watcher（`watcher.py:568` SSE 广播）等既有消费方零改动。
-- `_api_specs` 改为**自含响应 handler**（`_api_config_get` 先例）：内部 `get_with_signature` → `_if_none_match_hit(base.py:261)` 内联协商 → 命中 `_write_304(base.py:890)`，未命中 `_json`（附带 ETag 头）。表驱动 `_API_GET_ROUTES` 的 `/api/specs` 条目摘掉第 4 位 sig_fn（4 元组 → 3 元组，摘出 304 通道）。
+- `_api_specs` 改为**自含响应 handler**（`_api_config_get` 先例）：函数本体在 `core/dashboard/routes/spec_routes.py`（H3SpecRoutesMixin），内部 `get_with_signature` → `_if_none_match_hit(base.py:261)` 内联协商 → 命中 `_write_304(base.py:890)`，未命中经 `_pending_etag` 通道挂头后 `_json`（附带 ETag 头）。最终 ETag 按 `_route_etag` 同款双引号包裹（`_if_none_match_hit` 按带引号形态逐项比对，裸哈希恒 miss 304）。`base.py` 侧同步两处：适配器 `_get_specs` 去掉 `_json` 包装改直调（自含 handler 再包 `_json` 会 keep-alive 双写响应，`_get_config` 注记同款陷阱）；表驱动 `_API_GET_ROUTES` 的 `/api/specs` 条目摘掉第 4 位 sig_fn（4 元组 → 3 元组，摘出 304 通道）。
 - **page/page_size 入签不丢**：现 `_sig_specs` 把 `page`/`page_size` 原始 query 值拼稳定串并入 combine（item ba4a1e3c3386，翻页防假 304）；该串拼装逻辑随协商内联搬入 `_api_specs`，与聚合签名组合后作为最终 ETag。
 - `invalidation_signature()` 保留，docstring 注明生产路径已退役、唯一消费方为一致性守卫测试（见 D3）。
 

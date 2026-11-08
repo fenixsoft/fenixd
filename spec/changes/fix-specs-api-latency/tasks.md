@@ -5,6 +5,8 @@
   kind: modify
 - path: core/dashboard/routes/base.py
   kind: modify
+- path: core/dashboard/routes/spec_routes.py
+  kind: modify
 - path: tests/test_dashboard_index.py
   kind: modify
 - path: tests/test_dashboard_api.py
@@ -27,8 +29,8 @@
 
 ## 3. /api/specs 自含协商改造
 
-- [ ] 3.1 `core/dashboard/routes/base.py`：`_api_specs` 改自含响应 handler——内部 `get_with_signature` → 签名不可得降级无条件 200（不挂 ETag）→ `_if_none_match_hit` 内联协商：命中 `_write_304`、未命中 `_json` 200 体附 ETag；page/page_size 原始 query 值拼稳定串与聚合签名 combine 为最终 ETag（原 `_sig_specs` 拼装逻辑迁入，翻页变体不共享 ETag）；304 路径不序列化响应体
-- [ ] 3.2 `core/dashboard/routes/base.py`：`_API_GET_ROUTES` 的 `/api/specs` 条目摘掉第 4 位 sig_fn（4 元组 → 3 元组）；`_sig_specs` 函数体迁出后删除（确认无其他消费方）
+- [ ] 3.1 `core/dashboard/routes/spec_routes.py`：`_api_specs`（H3SpecRoutesMixin，本函数定义于此非 base.py）改自含响应 handler——内部 `get_with_signature` → 签名不可得降级无条件 200（不挂 ETag）→ `_if_none_match_hit` 内联协商：命中 `_write_304`、未命中经 `_pending_etag` 通道挂头后 `_json` 200 体；最终 ETag MUST 按 `_route_etag` 同款双引号包裹（`f'"{etag}"'`）后再参与比对与响应头——`_if_none_match_hit` 按带引号形态逐项比对，裸哈希恒 miss 304；page/page_size 原始 query 值拼稳定串与聚合签名 combine 为最终 ETag（原 `_sig_specs` 拼装逻辑迁入，翻页变体不共享 ETag）；304 路径不序列化响应体；未知/不存在项目维持 200+error 兼容契约且不挂 ETag
+- [ ] 3.2 `core/dashboard/routes/base.py`：适配器 `_get_specs` 去掉 `_json` 包装改直调 `s._api_specs(q)`（同 `_get_config` 先例——自含 handler 再包 `_json` 会 keep-alive 双写响应污染下一请求）；`_API_GET_ROUTES` 的 `/api/specs` 条目摘掉第 4 位 sig_fn（4 元组 → 3 元组）；`_sig_specs` 函数体迁出后删除（确认无其他消费方）
 - [ ] 3.3 `tests/test_dashboard_api.py` 新增/改造测试：304 命中（数据未变时空体附当前 ETag）；数据变化后 200 全量体新 ETag；无条件请求 200 体与 ETag 头共存；page/page_size 变体 ETag 不同；签名不可得降级为 200 无 ETag 头；304 空体不写 Content-Length 非 0 值（`_write_304` 既有纪律回归）
 
 ## 4. 性能与规模守卫
