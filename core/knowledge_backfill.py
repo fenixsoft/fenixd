@@ -534,6 +534,50 @@ def discard_paths(project_root: Path, rels: list[str], log=None) -> None:
         )
 
 
+def _unstage_paths(project_root: Path, rels: list[str], log=None) -> None:
+    """按 pathspec 撤销触达路径的暂存态（提交失败分支差集回滚的前置步）。
+
+    ``commit_pathspec`` 的 ``git add`` 先于 ``git commit`` 执行：提交步失败
+    （hook 拒绝/gpg 签名失败/索引锁冲突等）时触达路径已整体入暂存区——
+    staged 态下 ``git restore`` 只把工作区还原到暂存内容、``git clean`` 不再
+    视其为 untracked，直接 discard 回滚不掉。先 reset 撤暂存（pathspec 口径
+    只动本车道触达路径，不碰用户其余暂存内容；pathspec 无匹配时静默零退出，
+    对 add 失败/未暂存场景为无害 no-op），再交
+    ``discard_knowledge_changes`` 差集回滚收尾（code-review 2dacc4c836c8）。
+    git 不可用/超时/非零退出 fail-open 留痕（对齐 discard_paths 口径），
+    不抛错；残留由调用方回滚的盘面复核告警曝光。
+    """
+    if not rels:
+        return
+    log = log or _NullLogger()
+    try:
+        proc = subprocess.run(
+            ["git", "reset", "-q", "--", *rels],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            # encoding/errors 固化（对齐 _git / discard_paths）：裸 text=True
+            # 走 locale strict 解码，非 UTF-8 路径字节会使 UnicodeDecodeError
+            # （ValueError）穿透下方 except 口径
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        log.warning(
+            "knowledge",
+            "回填提交失败回滚：暂存撤销不可用/超时，产出可能以暂存态滞留 "
+            "spec/knowledge/，请人工核查",
+        )
+        return
+    if proc.returncode != 0:
+        log.warning(
+            "knowledge",
+            "回填提交失败回滚：暂存撤销非零退出（"
+            f"{proc.stderr.strip()[:200]}），产出可能以暂存态滞留，请人工核查",
+        )
+
+
 def discard_knowledge_changes(
     project_root: Path,
     before: Optional[set[str]] = None,
@@ -2017,6 +2061,7 @@ def run_backfill(
             # 收窄口径）：整目录 pathspec 会把 run 前已在场的用户未提交改动
             # 一并扫进 backfill 提交，溯源归属失真。
             dirty_now = _knowledge_dirty_files_or_none(project_root)
+            touched: list[str] = []
             try:
                 if dirty_now is None:
                     # 现状采集失败时触达集不可知：按提交失败同口径 fail-open，
@@ -2032,8 +2077,24 @@ def run_backfill(
                         "[fenix] knowledge: backfill bootstrap",
                     )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                # 同 spawn/校验失败分支口径差集回滚：本段产出已过校验但未入库，
+                # 留在工作区会以重入基线搁浅——重入时 domain_map 已在盘、自举段
+                # 整体跳过，后续各段提交 pathspec 取 dirty_now - dirty_baseline
+                # 差集永不再扫入这批文件，真相源产出与 git 永久分叉且无告警
+                # （code-review 2dacc4c836c8）。先撤暂存再回滚：commit 的 add
+                # 先行，提交步失败时触达路径已整体入暂存区（staged 态 restore
+                # 只还原到暂存内容、clean 不视为 untracked，直接 discard 回滚
+                # 不掉）；批次循环的 carryover 机制不接入本段——其持久化锚定
+                # 批次条目、召回点只在批次/ADR 提交，自举段可先于任何条目存在
+                # 时执行且重入整段跳过，接入需在收敛门另设召回清扫，改走整段
+                # 重做口径保住「重入可收敛」。
+                _unstage_paths(project_root, touched, log=log)
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
-                    project_root, f"回填自举提交失败（{run_id}）：{e}", log
+                    project_root,
+                    f"回填自举提交失败（{run_id}）：{e}，已回滚本段产出，"
+                    "请人工检查后重跑回填",
+                    log,
                 )
                 return {
                     "triggered": True,
@@ -2204,6 +2265,7 @@ def run_backfill(
             # （code-review 28ef98d99462，同自举段口径）：整目录 pathspec 会把
             # run 前已在场的用户未提交改动一并扫进 backfill 提交。
             dirty_now = _knowledge_dirty_files_or_none(project_root)
+            touched: list[str] = []
             try:
                 if dirty_now is None:
                     # 同自举段口径：现状采集失败按提交失败 fail-open，不整目录
@@ -2219,8 +2281,18 @@ def run_backfill(
                         "[fenix] knowledge: backfill prehistoric",
                     )
             except Exception as e:  # noqa: BLE001 - 单段失败不阻塞车道，可重入
+                # 同自举段提交失败口径：先撤暂存再差集回滚，不让已过校验未入库
+                # 的产出以重入基线搁浅——重入时盘上史前页过 is_file 复用核验、
+                # 本段整体跳过，后续各段 pathspec 差集永不再扫入（同
+                # code-review 2dacc4c836c8）。回滚后盘上无页，重入复用核验
+                # （_missing_prehistoric_pages）探得缺页即重跑本段，闭环恢复。
+                _unstage_paths(project_root, touched, log=log)
+                discard_knowledge_changes(project_root, before=dirty_baseline, log=log)
                 _append_todo_fail_open(
-                    project_root, f"回填史前复原提交失败（{run_id}）：{e}", log
+                    project_root,
+                    f"回填史前复原提交失败（{run_id}）：{e}，已回滚本段产出，"
+                    "请人工检查后重跑回填",
+                    log,
                 )
                 return {
                     "triggered": True,
