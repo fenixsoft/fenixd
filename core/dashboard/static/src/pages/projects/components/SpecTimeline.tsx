@@ -153,6 +153,10 @@ function StateNode({
   item, cardBox, headRow, fmtTime, token, onOpenReport,
 }: TimelineNodeShared & { onOpenReport: () => void }) {
   const isRollback = isRollbackNode(item);
+  // 命名防混淆红线（fix-timeline-chain-nodes-invisible 任务 1.3）：此处的
+  // item.chain 是 state 折叠节点的「状态序列」字段，与处置链事件节点
+  // （kind === 'chain'，ChainNode 分支）无关——链节点判定仅以
+  // item.kind === 'chain' 为准，本分支消费逻辑零改动，勿按字段名互串。
   const chainStatuses: string[] = (item.chain && item.chain.length > 1)
     ? item.chain
     : [item.from || '', item.to || ''];
