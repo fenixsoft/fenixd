@@ -369,20 +369,28 @@ class TestBacklogSweepIdempotence:
         assert len(investigations) == 1  # 全程只一次调查
 
     def test_sweep_vs_event_trigger_no_double_dispatch(self, tmp_path):
-        """回扫与事件触发先后命中同签名：不产生第二次派发。"""
+        """回扫与事件触发先后命中同签名：不产生第二次派发。
+
+        挂起替身钉住首个调查在飞（_active）后再触发：FakeRunner 毫秒级
+        消费在全量回归负载下可能先于事件触发完成调查并把签名移出
+        _active，dedup 断言即竞态失败（outcome 退化为 queued）——
+        blocking_lane 注记的同款教训。
+        """
         write_pending_alert(tmp_path, "spec-a")
-        runner = FakeRunner(tmp_path, script={"run": dict(RESOLVED_REPORT)})
-        lane = make_lane(tmp_path, runner=runner,
-                         sm=FakeStateMachine({"spec-a": {"frozen": True}}))
+        lane, gate, investigations = blocking_lane(
+            tmp_path, sm=FakeStateMachine({"spec-a": {"frozen": True}}))
         assert len(lane.sweep_backlog()["dispatched"]) == 1
-        # 事件触发（告警咽喉形态）后到：同签名 dedup 只补绑不派发
+        # 事件触发（告警咽喉形态）后到：同签名在飞 → dedup 只补绑不派发
+        # （_active 在 submit_trigger 内同步登记、仅在调查终态移出，gate
+        # 未放行前 dedup 判定为确定态；worker 是否已起跑不影响）
         outcome = lane.submit_for_alert(
             None, {"spec": "spec-a", "signal_type": "verify_env_blocked"},
             "alert-late",
         )
         assert outcome == "deduped"
+        gate.set()
         assert drain(lane)
-        assert len(runner.run_agent_calls) == 1
+        assert len(investigations) == 1  # 第二次触发只补绑，未再派发
 
     def test_sweep_after_restart_no_redispatch(self, tmp_path):
         """跨重启幂等：新 lane（进程内存 dedup 清空）+ 拍板配额已耗尽 → 不再派发。
