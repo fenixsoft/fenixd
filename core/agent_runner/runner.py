@@ -950,8 +950,12 @@ class AgentRunner:
         # base_run_id → {subscriber → callback}。挂在 _execute_agent 终态收口
         # 处触发；defer 批合回消费者据此注册持有者 run 监听实现事件驱动重试。
         # 二级 dict 按 subscriber 键覆盖（同订阅方重复注册不累积）；fire 时
-        # 整键 pop 消费（单键原子，对齐 _running_agents 不加锁）。
+        # 整键 pop 消费。表操作由专用锁互斥（code-review item 9e299b7026fc）：
+        # 不加锁时收口侧 pop 恰落在注册侧 setdefault 与写入回调之间，回调会
+        # 写进已被摘键的孤儿 dict——注册侧立即触发 pop 不到键、收口侧触发又
+        # 已错过，双轨同时失效静默丢失。
         self._run_terminal_callbacks: Dict[str, Dict[str, object]] = {}
+        self._run_terminal_callbacks_lock = threading.Lock()
 
     # ── 公开存活查询（code-review item 305dcbb105c3）─────────────────
     # 跨组件判活（verification pipeline 并行出题等待）改查本公开接口，不再
@@ -9376,6 +9380,27 @@ class AgentRunner:
     # 消费者据此注册持有者 run 监听，终态到达即触发事件驱动重试（替代固定
     # 长间隔轮询作为主要唤醒手段；轮询降级为兜底）。
 
+    @property
+    def _run_terminal_callbacks_lock(self) -> threading.Lock:
+        """终态回调表互斥锁（code-review item 9e299b7026fc）：注册侧
+        「setdefault+写入回调」与收口侧「整键 pop」的互斥点。两段各自原子
+        后 pop 只可能落在写入前（键不在表，注册侧终态复核兜底补触发）或
+        写入后（pop 到回调正常触发），不存在「键在表、回调未写入」的中间
+        态，孤儿 dict 丢失窗口消除。锁内仅内存表操作；终态复核（查在飞表
+        与 run 文件）与回调本体执行留在锁外——回调可能重入 runner 其他加锁
+        路径，持锁调用有锁序风险。惰性 property（测试 ``__new__`` 绕过
+        ``__init__``，对齐 _run_finalize_lock 模式）。
+        """
+        inst = self.__dict__.get("_run_terminal_callbacks_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_run_terminal_callbacks_lock_state"] = inst
+        return inst
+
+    @_run_terminal_callbacks_lock.setter
+    def _run_terminal_callbacks_lock(self, value):
+        self.__dict__["_run_terminal_callbacks_lock_state"] = value
+
     def _run_terminal_callback_table(self) -> dict:
         """终态回调表（base_run_id → {subscriber → callback}）。
 
@@ -9409,8 +9434,13 @@ class AgentRunner:
         base = self._normalize_run_id(str(run_id or ""))
         if not base:
             return
-        subs = self._run_terminal_callback_table().setdefault(base, {})
-        subs[str(subscriber or "default")] = callback
+        # setdefault+写入纳入同一临界区（对收口侧整键 pop 互斥）：pop 不得
+        # 插入两步之间把键摘走，否则回调写进孤儿 dict 被静默丢失
+        # （code-review item 9e299b7026fc）。终态复核与立即触发在锁外——
+        # 收口侧 pop 若先于此发生（run 已终态），本侧终态复核照常兜底补触发。
+        with self._run_terminal_callbacks_lock:
+            subs = self._run_terminal_callback_table().setdefault(base, {})
+            subs[str(subscriber or "default")] = callback
         if not self._run_id_in_flight(base) and self._run_files_terminal(base):
             self._fire_run_terminal_callbacks(base)
 
@@ -9442,12 +9472,15 @@ class AgentRunner:
         """触发并消费该 run 的全部终态回调（整键 pop，单键原子）。
 
         供 ``_execute_agent`` 终态收口调用；单回调异常 warning 兜底，不阻断
-        其余回调与 run 收尾。
+        其余回调与 run 收尾。pop 与注册侧写入经同一把表锁互斥
+        （code-review item 9e299b7026fc）；遍历触发在锁外执行——回调可能
+        重入 runner 其他加锁路径，持锁调用有锁序风险。
         """
         base = self._normalize_run_id(str(run_id or ""))
         if not base:
             return
-        subs = self._run_terminal_callback_table().pop(base, None)
+        with self._run_terminal_callbacks_lock:
+            subs = self._run_terminal_callback_table().pop(base, None)
         if not subs:
             return
         for name, cb in list(subs.items()):
