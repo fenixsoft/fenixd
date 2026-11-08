@@ -386,8 +386,37 @@ class _RunnerStub:
     _get_agent_chain_resolution = AgentRunner._get_agent_chain_resolution
     _maybe_supersede_model_chain_alerts = AgentRunner._maybe_supersede_model_chain_alerts
 
-    def _log_run_metrics(self, **kw):
-        self.metrics.append(kw)
+    def _log_run_metrics(
+        self,
+        *,
+        run_id,
+        spec_name,
+        agent_type,
+        duration_seconds,
+        turns,
+        usage_info,
+        terminal,
+        provider=None,
+        model=None,
+        latency=None,
+        toolface=None,
+    ):
+        # 显式镜像生产签名（AgentRunner._log_run_metrics 全部 keyword-only
+        # 形参）：**kw 宽容替身会让生产侧新增必填形参时测试仍静默通过，
+        # 违反替身保真守卫（test_fake_double_fidelity）。
+        self.metrics.append({
+            "run_id": run_id,
+            "spec_name": spec_name,
+            "agent_type": agent_type,
+            "duration_seconds": duration_seconds,
+            "turns": turns,
+            "usage_info": usage_info,
+            "terminal": terminal,
+            "provider": provider,
+            "model": model,
+            "latency": latency,
+            "toolface": toolface,
+        })
 
     def is_circuit_open(self, name, now=None):
         return False

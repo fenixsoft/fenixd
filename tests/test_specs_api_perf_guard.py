@@ -102,7 +102,10 @@ class _SigCounter:
             self._n += 1
         return self._orig(p)
 
-    def reset(self):
+    def reset_count(self):
+        # 不名 reset：该名与 core seam 集里 infra_breaker.reset(self, link)
+        # 撞名，替身保真扫描按名匹配会误判「必填不足」——本 helper 仅测试
+        # 本地计数复位用，非 _stat_sig 鸭子型契约面。
         with self._lock:
             self._n = 0
 
@@ -135,7 +138,7 @@ class TestSpecsApiPerfGuard:
 
             # 新链：单次 200 请求全链（自含 handler：get_with_signature 同趟
             # 签名+取数，协商与 page 拼装零 stat）
-            counter.reset()
+            counter.reset_count()
             t0 = time.monotonic()
             status, _ = srv.get("/api/specs?project=perf-proj")
             hot = time.monotonic() - t0
@@ -146,7 +149,7 @@ class TestSpecsApiPerfGuard:
             # （invalidation_signature）+ get 取数一趟 + _json 发头前复核
             # 签名一趟（invalidation_signature again）
             idx = srv.httpd.summary_index
-            counter.reset()
+            counter.reset_count()
             idx.invalidation_signature(proot)
             idx.get(proot)
             idx.invalidation_signature(proot)
