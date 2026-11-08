@@ -1,7 +1,7 @@
 # 测试工程
-> 最后更新：2026-11-04 16:11 UTC+8
+> 最后更新：2026-11-08 03:40 UTC+8
 
-测试工程：测试套件自身的结构、隔离、守卫与编写设计纪律，以及全量回归的声明、执行与展示。本域能力页清单如下。
+测试工程：测试套件自身的结构、隔离、守卫与编写设计纪律，以及全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）也在此域。本域能力页清单如下。
 
 ## 能力页
 
@@ -21,3 +21,4 @@
 | [test-regression-view](test-regression-view.md) | 回归视图页签 | 2026-10-07 03:30 |
 | [regression-issues-rerun](regression-issues-rerun.md) | 定向子集回归触发链（错误/长耗时重跑） | 2026-10-07 03:30 |
 | [callsite-arity-guard](callsite-arity-guard.md) | 校验函数调用点参数守卫 | 2026-10-03 04:59 |
+| [integration-test-env](integration-test-env.md) | Docker 集成测试环境（run.sh 一键编排、镜像纯环境契约、双 harness 双轮、三插件面 GUI 验证、smoke 免凭据、.env 凭据注入与克隆源形态） | 2026-11-08 03:40 |

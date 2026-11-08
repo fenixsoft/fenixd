@@ -1,13 +1,13 @@
 # 真相源目录契约与能力页格式
 
-<!-- knowledge: capability=knowledge-atlas-directory rev=6
+<!-- knowledge: capability=knowledge-atlas-directory rev=7
      sources=spec/archive/2026-10-05-add-knowledge-atlas,spec/archive/2026-10-05-fix-knowledge-backfill-reconstruction,spec/changes/add-knowledge-anchor-lint-and-prune -->
 
 `spec/knowledge/` 是项目知识真相源：只装「系统现在是什么规则」的常驻知识层；归档 SPEC 继续承担历史职责，两者以溯源链接互指。
 
 ## 规则
 
-- 目录结构：`index.md`（总目录，列全部能力域与增厚简介——每域 2~3 句、覆盖该域主要能力面，素材取各域 `_domain.md` 既有简介与能力清单；简介列保持单行单元格且不含裸竖线 `|`；记忆回填轨迹不落 index（2026-11-08 用户指令：首页人类不可读账目迁出——折叠轨迹以 `log.md` 编年账与各能力页「溯源」段 `_inbox/done/` 来源行承载，index 只保留域导航））、`domains/<域>/<能力>.md`（一能力一页，域为能力的业务聚类）、`adr/index.md` + `adr/ADR-NNN-<标题>.md`（决策索引与条目）、`README.md`（目录契约说明）。全目录 git tracked；首次蒸馏前允许只含 README.md 骨架。能力域由蒸馏 run 自动聚类生成，不预置人工清单；`_domain.md` 与 `index.md` 是导航层，由蒸馏 run 维护。
+- 目录结构：`index.md`（总目录，「能力域」节按**组级聚合**分层导航（2026-11-08 用户指令）：`### <组号> <组名>（<N> 域 · <M> 能力）`小节各含一张四列表；域行首列带 `<组号>.<域序号>` 显示编号。分组与编号为纯导航层展示——域 slug、目录名与机器接口不变；组归属由蒸馏 run 维护，新域入组由蒸馏裁决，重组须用户定调。每域 2~3 句、覆盖该域主要能力面，素材取各域 `_domain.md` 既有简介与能力清单；简介列保持单行单元格且不含裸竖线 `|`；记忆回填轨迹不落 index（2026-11-08 用户指令：首页人类不可读账目迁出——折叠轨迹以 `log.md` 编年账与各能力页「溯源」段 `_inbox/done/` 来源行承载，index 只保留域导航））、`domains/<域>/<能力>.md`（一能力一页，域为能力的业务聚类）、`adr/index.md` + `adr/ADR-NNN-<标题>.md`（决策索引与条目）、`README.md`（目录契约说明）。全目录 git tracked；首次蒸馏前允许只含 README.md 骨架。能力域由蒸馏 run 自动聚类生成，不预置人工清单；`_domain.md` 与 `index.md` 是导航层，由蒸馏 run 维护。
 - 能力页结构（Markdown，人类可读性优先）：H1 能力名（中文表述）→ 紧随的 HTML 注释 marker → 角色一句话 → `## 规则`（当前生效业务规则）→ `## 关键行为`（可选）→ `## 代码锚点`（可选，见下）→ `## 溯源`（来源列表）。
 - 代码锚点段：置于 `## 规则` 之后、`## 溯源` 之前，按四类固定标签承载实现定位——主实现（文件路径）/ 单源符号（`路径:符号` 形态）/ 消费方（谁调用/挂载）/ 守卫测试（钉住本行为的测试文件）。粒度纪律：一律文件级路径 + 符号名，禁行号（必腐）；段内路径 MUST 指向盘上真实存在的仓库内文件。新建能力页（蒸馏折叠与回填车道产出）MUST 带锚点段；纯契约/流程类能力（无实现载体）允许缺省并在段位写一行「无独立实现载体」；存量页按触达增量补，不做全量回填批次。锚点段纳入 marker 之外的机器校验面：`check_anchor_references` 只校验段内路径盘上存在性（`路径:<纯数字>` 行号形态报格式违规），由 audit 车道消费、进体检报告病灶⑥待人工/定向转写档——不并入 `validate_knowledge` 硬门（防一处陈旧锚点阻塞全树折叠校验），悬空不机械自删（修复需语义判断）。
 - 退役即删不墓碑：能力主体从产品删除时，其能力页从真相源**直接删除**（MUST NOT 保留页面加退役注记的墓碑形态——墓碑页每次会话持续支付读取成本；历史由 git 历史 + `spec/archive/` 承载）。同批动作：`_domain.md` 表行移除、表尾追加一行退役注记（退役日期 + spec/archive 或 git 历史指针，唯一墓碑形态）、相关 ADR 状态翻 retired、`index.md` 能力数量更新、`log.md` 登记；删除前 grep 该 capability 名在其余知识页/ADR/提示词中的引用并收口。完整操作序列照单执行 `knowledge-retirement-runbook` 能力页。
@@ -29,3 +29,4 @@
 - 2026-11-04 memory 存量蒸馏投递（git:c5076028e，无归档目录） — index 目录结构契约增补「记忆回填（存量蒸馏）」节：登记隐性知识经候选区回填的状态与入库轨迹，蒸馏 run 维护该节而非删除
 - 2026-11-08 v2-ui-domain-retired-1107（spec/knowledge/_inbox/done/v2-ui-domain-retired-1107.md） — index 目录结构契约改版：「记忆回填（存量蒸馏）」节从 index 迁出（人类可读性裁决），折叠轨迹唯一承载=log.md 编年账 + 能力页溯源段；index 简介行增厚口径收紧为 2~3 句遵守既有契约（dashboard-frontend 行先行改写）
 - 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 能力页结构契约增补可选「代码锚点」段（四类标签/文件级禁行号/新页强制存量增量/机器校验面 check_anchor_references 由 audit 车道消费不进硬门）、退役即删不墓碑语义（域表尾一行退役注记为唯一墓碑形态）、新页世代前缀命名禁令、域导航页可选「症状速查」段
+- 2026-11-08 index 组级聚合分层（交互会话用户指令「能力域加编号+向上聚合一层」，未走 SPEC） — 「能力域」节改 8 组分层导航（项目与规格/执行车道/运行时与守护/模型与成本/前端交互/运维与自愈/工程与质量/文档与知识），域行带组内显示编号，纯导航层不改机器接口
