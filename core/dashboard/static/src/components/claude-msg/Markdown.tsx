@@ -4,6 +4,7 @@
 // - 去 MermaidDiagram（mermaid 代码块按普通代码高亮显示）
 // - 去 useTheme（dashboard 全站亮色，语法高亮固定 oneLight）
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { App } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -89,6 +90,9 @@ type CodeBlockProps = {
 // `node` is destructured out so react-markdown's hast node never reaches the DOM.
 const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: CodeBlockProps) => {
   const [copied, setCopied] = useState(false);
+  // 失败反馈对齐 ClaudeOutputPane.copyPrompt（item 5b908e7da183）：复制成功有
+  // 「已复制」态，失败（如非安全上下文降级失败）此前静默无反馈
+  const { message } = App.useApp();
   // 「已复制」2 秒回退定时器的句柄：覆盖旧定时器，并在组件卸载时清理，
   // 避免悬挂定时器在卸载后仍触发 setState。
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -129,6 +133,8 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
                 setCopied(true);
                 clearTimeout(copiedTimerRef.current);
                 copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
+              } else {
+                message.error('复制失败：剪贴板不可用');
               }
             })
           }
