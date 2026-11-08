@@ -134,6 +134,16 @@ class H6AlertRoutesMixin:
             if project is None or not project.get("exists"):
                 return {"error": "project not found"}
             proot = Path(project["path"])
+            # 双读取舍声明（code-review item f6df4e96673e）：缺省聚合分支已收敛
+            # alerts_overview 单读（d3d6a32a1091），本分支有意保留 get_alerts +
+            # alerts_summary 各自一次 read_all。原因：本分支 alerts 契约是
+            # 「该项目全部告警/处置记录」（get_alerts = 全 kind 全量 + 叙事侧车
+            # 合并），而 alerts_overview 只派生 summary/unhandled/resolved 三
+            # 视图——未处理 SIGNAL、非自愈已处理 SIGNAL 与 DISPOSITION 记录
+            # 均不在任何视图内且 resolved 截断 50，无法等价派生全量段；summary
+            # 侧 alerts_summary 另有免侧车合并的轮询热路径取舍（90e30c16a030）。
+            # 收敛单读须扩 alerts_overview 契约新增 all-records 视图，超出本
+            # 条目最小改动范围，故保留双读并在此声明。
             return {
                 "project": project["name"],
                 "alerts": dashboard_data.get_alerts(proot),
