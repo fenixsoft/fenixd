@@ -15,7 +15,7 @@
 
 ## 1. 白名单文件初始化自动入库（D1）
 
-- [ ] 1.1 fenix-init 骨架写入完成后新增 git add 步骤：git 仓库内对 `.fenix/todo.md`、`.fenix/verify.yaml` 离散路径 git add（仅 staged 不 commit），控制台输出已入库提示；git add 逐文件存在性守卫——todo.md 非 init 播种物（自省/进化车道后续创建），不存在时跳过该文件且不报错，在场时一并入库；非 git 仓库跳过并输出「待 git init 后手工入库」提示；unborn 分支正常工作；幂等重跑不报错
+- [x] 1.1 fenix-init 骨架写入完成后新增 git add 步骤：git 仓库内对 `.fenix/todo.md`、`.fenix/verify.yaml` 离散路径 git add（仅 staged 不 commit），控制台输出已入库提示；git add 逐文件存在性守卫——todo.md 非 init 播种物（自省/进化车道后续创建），不存在时跳过该文件且不报错，在场时一并入库；非 git 仓库跳过并输出「待 git init 后手工入库」提示；unborn 分支正常工作；幂等重跑不报错
 - [ ] 1.2 pytest 单测（tests/test_init_self_bootstrap.py）：tmp git 仓库内初始化后 `git ls-files` 含 `.fenix/verify.yaml`（todo.md 非 init 播种物：断言其缺席时初始化不报错，事后补建 todo.md 再重跑能补入库）、无 commit 产生、非 git 目录跳过提示、重复执行幂等
 
 ## 2. 运行时产物预防性 ignore（D2）
