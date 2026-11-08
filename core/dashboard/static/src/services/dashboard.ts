@@ -1096,7 +1096,9 @@ export interface SpecDetail {
   // 为 record_kind/severity/handled/result，验证执行节点为 total/passed 等
   // （get_spec_timeline 返回结构）
   timeline?: Array<{
-    kind: 'state' | 'run' | 'admin' | 'verify';
+    // fix-timeline-chain-nodes-invisible：处置链事件节点（kind="chain"，
+    // add-escalation-chain-admin-arbiter 5.1 链事件台账联查派生）
+    kind: 'state' | 'run' | 'admin' | 'verify' | 'chain';
     time: string;
     from?: string;
     to?: string;
@@ -1156,6 +1158,12 @@ export interface SpecDetail {
     description?: string;
     handled?: boolean;
     result?: string;
+    // 处置链事件节点（fix-timeline-chain-nodes-invisible）：链事件台账联查
+    // 字段（kind="chain"）；summary 复用上方字段（台账 action_or_upgrade
+    // 截断 200，与 run 节点 summary 共型）
+    chain_kind?: string;
+    chain_id?: string;
+    signature?: string;
   }>;
   // 场景结果 — report.json 的 scenarios 平铺数组（parse_report）
   scenarios?: Array<{

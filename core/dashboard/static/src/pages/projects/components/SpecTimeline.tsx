@@ -281,6 +281,37 @@ function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
   );
 }
 
+// 处置链事件节点（fix-timeline-chain-nodes-invisible 任务 1.2）：链事件台账
+// 联查节点（get_spec_timeline kind="chain"，add-escalation-chain-admin-arbiter
+// 5.1 后端已交付；此前前端落兜底守卫渲染为空 listitem——处置链节点实际不可见，
+// 用户误判「没有 arbiter 处理节点」）。紧凑卡片：标题行（时间 + 链里程碑中文
+// 标签 Tag + signal_type 副标签）+ 正文一行 summary（台账 action_or_upgrade
+// 摘要，后端已截断 200 字符）。对齐 admin 节点紧凑范式，不渲染 markdown 全文
+// （完整台账仍由运维页处置链视图承载）。纯展示块，无任何交互形态。
+function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
+  const meta = chainKindMeta(item.chain_kind || '');
+  return (
+    <div style={cardBox(false)}>
+      <div style={headRow}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {fmtTime(item.time)}
+        </Typography.Text>
+        <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+          {meta.label}
+        </Tag>
+        {!!item.signal_type && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {item.signal_type}
+          </Typography.Text>
+        )}
+      </div>
+      <Typography.Text style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
+        {item.summary || ''}
+      </Typography.Text>
+    </div>
+  );
+}
+
 // 验证执行节点（verify_engine 确定性执行，非 agent run）：原时间轴
 // 不可见导致 testing→verified 连跳被误读为「跳过验证」
 // （fix-provider-transient-backoff 事故）。节点不着红：有失败也可能
@@ -623,6 +654,15 @@ export default function SpecTimeline({
               color: hasIssue || vWarn ? 'orange' : 'green',
               children: <VerifyNode {...shared} />,
             };
+          }
+
+          // 处置链事件节点（fix-timeline-chain-nodes-invisible 任务 1.2）：
+          // 分支置于兜底守卫之前——链节点此前落守卫降级为裸灰点（无卡片体）。
+          // 圆点色与链标签着色同源（chainKindMeta 单源，设计 D2）；unknown
+          // 兜底的 'default' 非 Timeline dot 合法色，圆点侧归一 gray
+          if (item.kind === 'chain') {
+            const meta = chainKindMeta(item.chain_kind || '');
+            return { color: meta.dot, children: <ChainNode {...shared} /> };
           }
 
           // 兜底守卫（add-timeline-admin-events）：以上各 kind 分支未处理的
