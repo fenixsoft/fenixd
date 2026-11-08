@@ -904,6 +904,9 @@ class H0BaseMixin:
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Vary", "Accept-Encoding")
+        _bundle_rev = self._bundle_rev()
+        if _bundle_rev is not None:
+            self.send_header("X-Bundle-Rev", _bundle_rev)
         # 同 _error：close_connection 在场（客户端带 Connection: close 请求
         # 头、SSE 终结后连接的策略性关闭等）时本 304 也随连接关闭，须声明
         # Connection: close，否则客户端会复用已被服务器关闭的连接重放
@@ -1272,6 +1275,24 @@ class H0BaseMixin:
             return gzip.compress(body, 5)
         return body
 
+    def _bundle_rev(self) -> str | None:
+        """前端 bundle 版本指纹（X-Bundle-Rev 响应头单源）。
+
+        取 dist/index.html 的 ``(mtime_ns, size)``——rebuild 必替换文件，mtime
+        翻转（size 变更位兜底等长替换角）。所有 JSON 响应（_json/_write_304/
+        _error 三点）附此头，前端 request() 记录基线、后续比对，漂移即整页
+        reload——rebuild 后旧标签页不再以陈旧 JS 持续请求（2026-11-08 超时
+        塌缩事故族的自愈面：旧标签页在 SSE/30s 心跳下持续报「请求超时」且
+        无自愈通道）。每响应一次 stat（O(1) 廉价，不做 memo）；stat 失败返回
+        None 不附头（前端对缺席头不比对，行为与无此机制时一致——降级纪律与
+        「宁缺 304 不假 304」同构）。
+        """
+        try:
+            st = (self.server.static_dir / "dist" / "index.html").stat()
+        except OSError:
+            return None
+        return f"{st.st_mtime_ns}:{st.st_size}"
+
     def _json(self, payload, status: int = 200):
         # 非有限值（inf/NaN）在序列化单点快速失败，经 _handle_inner 兜底 500 留痕
         body = json.dumps(
@@ -1303,6 +1324,9 @@ class H0BaseMixin:
                     self.send_header("ETag", etag)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
+        _bundle_rev = self._bundle_rev()
+        if _bundle_rev is not None:
+            self.send_header("X-Bundle-Rev", _bundle_rev)
         body = self._maybe_gzip(body)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -1317,6 +1341,9 @@ class H0BaseMixin:
         # 与 _json/_write_304 三点对齐的缓存纪律（code-review item c80c569a6181）：
         # 4xx 错误体按 RFC 7234 属可启发式缓存响应，no-cache 关闭中介缓存通道。
         self.send_header("Cache-Control", "no-cache")
+        _bundle_rev = self._bundle_rev()
+        if _bundle_rev is not None:
+            self.send_header("X-Bundle-Rev", _bundle_rev)
         self.send_header("Content-Length", str(len(body)))
         # close_connection=True 的分支（411/413/读体停滞超时/超限快速拒绝等，
         # 见 _handle 与 _read_json_body 各处置点）响应后服务器即关闭连接：

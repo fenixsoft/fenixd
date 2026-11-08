@@ -167,6 +167,52 @@ function cloneCached<T>(value: T): T {
     : (JSON.parse(JSON.stringify(value)) as T);
 }
 
+/** X-Bundle-Rev 陈旧 bundle 自愈守卫（fix-specs-api-latency 同族热修）：
+    服务端在所有 JSON 响应附 X-Bundle-Rev（dist/index.html 的 mtime_ns+size），
+    首响应记录基线、后续响应比对，漂移即闩锁触发一次整页 reload——rebuild 后
+    旧标签页不再以陈旧 JS 请求新数据（此前 1s 超时塌缩事故里旧标签页在
+    SSE/30s 心跳下持续报「请求超时」且无自愈通道）。reload 一次后新 bundle
+    以新 rev 为基线，不会循环。测试经 _setBundleRev/_resetBundleRevGuard 注入。 */
+let bundleRevBaseline: string | null = null;
+let bundleRevReloadArmed = false;
+let bundleRevReloadFn: () => void = () => {
+  if (typeof window !== 'undefined') window.location.reload();
+};
+
+/** 测试钩子：注入 reload 桩（生产勿调用）。 */
+export function _setBundleRev(opts: { reload?: (url?: string) => void }): void {
+  if (opts.reload) bundleRevReloadFn = opts.reload;
+}
+Object.defineProperty(_setBundleRev, '__state', {
+  get: () => ({ baseline: bundleRevBaseline, armed: bundleRevReloadArmed }),
+});
+
+/** 测试钩子：清空 rev 守卫状态（单测隔离用；生产勿调用）。 */
+export function _resetBundleRevGuard(): void {
+  bundleRevBaseline = null;
+  bundleRevReloadArmed = false;
+  bundleRevReloadFn = () => {
+    if (typeof window !== 'undefined') window.location.reload();
+  };
+}
+
+function noteBundleRev(res: Response): void {
+  if (bundleRevReloadArmed) return; // 闩锁：一次会话只触发一次 reload
+  const rev = res.headers.get('X-Bundle-Rev');
+  if (!rev) return; // 头缺席（非 dashboard 服务端/代理剥离）不比对，旧行为零变化
+  if (bundleRevBaseline === null) {
+    bundleRevBaseline = rev;
+    return;
+  }
+  if (rev !== bundleRevBaseline) {
+    bundleRevReloadArmed = true;
+    console.warn(
+      `[dashboard] 检测到前端已更新（X-Bundle-Rev ${bundleRevBaseline} → ${rev}），整页刷新加载新版本`,
+    );
+    bundleRevReloadFn();
+  }
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
@@ -245,6 +291,9 @@ async function request<T>(
         'network',
       );
     }
+    // 陈旧 bundle 守卫：200/304/错误响应统一在此比对（304 短路分支返回缓
+    // 存数据也必须参与——数据未变不代表 bundle 未变）
+    noteBundleRev(res);
     if (cachedEntry && res.status === 304) {
       // 304 返回结构化拷贝（code-review item e4a589e90e6c）：缓存条目是共享
       // 单例，直接返回引用会让调用方的原地变异（push/sort/改字段）写进

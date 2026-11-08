@@ -3005,3 +3005,64 @@ class TestOverviewResultCache:
         _, d3 = srv.get("/api/overview")
         assert len(calls) == 3, "项目移除后缓存失效"
         assert {p["name"] for p in d3["projects"]} == {"proj-a"}
+
+
+class TestBundleRevHeader:
+    """X-Bundle-Rev 陈旧 bundle 自愈守卫（2026-11-08 超时塌缩事故族）。
+
+    服务端在 _json/_write_304/_error 三点附 X-Bundle-Rev（dist/index.html
+    的 mtime_ns:size）；前端 request() 记录基线、漂移即整页 reload。
+    """
+
+    def test_json_200_carries_bundle_rev(self, server_fx):
+        proot, srv = server_fx
+        status, headers, _body = srv.get_ex("/api/specs?project=proj-a")
+        assert status == 200
+        rev = headers.get("X-Bundle-Rev")
+        assert rev, "200 JSON 响应必须携带 X-Bundle-Rev"
+        assert ":" in rev  # mtime_ns:size 形态
+
+    def test_bundle_rev_stable_within_same_dist(self, server_fx):
+        proot, srv = server_fx
+        _, h1, _ = srv.get_ex("/api/overview")
+        _, h2, _ = srv.get_ex("/api/alerts")
+        assert h1.get("X-Bundle-Rev") == h2.get("X-Bundle-Rev"), (
+            "同一 dist 下各端点 rev 一致（前端基线比对的前提）"
+        )
+
+    def test_bundle_rev_flips_after_rebuild(self, server_fx, tmp_path):
+        proot, srv = server_fx
+        _, h1, _ = srv.get_ex("/api/overview")
+        index_html = srv.httpd.static_dir / "dist" / "index.html"
+        assert index_html.exists()
+        # 模拟 rebuild：替换文件（mtime_ns + size 双翻）
+        index_html.write_text(
+            "<!DOCTYPE html><html><body>rebuilt</body></html>", encoding="utf-8"
+        )
+        _, h2, _ = srv.get_ex("/api/overview")
+        assert h1.get("X-Bundle-Rev") != h2.get("X-Bundle-Rev"), (
+            "rebuild（文件替换）后 rev 必须翻转"
+        )
+
+    def test_error_response_carries_bundle_rev(self, server_fx):
+        proot, srv = server_fx
+        # 用一个确定 4xx 的路径：未知 API 路由
+        status, headers, _body = srv.get_ex("/api/definitely-not-a-route")
+        assert status == 404
+        assert headers.get("X-Bundle-Rev"), "错误响应同样附 X-Bundle-Rev（漂移检测全覆盖）"
+
+    def test_missing_dist_rev_absent_no_crash(self, server_fx):
+        proot, srv = server_fx
+        # dist/index.html 暂时消失：降级为不附头（前端对缺席头不比对）
+        index_html = srv.httpd.static_dir / "dist" / "index.html"
+        exists = index_html.exists()
+        if exists:
+            backup = index_html.with_suffix(".html.bak")
+            index_html.rename(backup)
+        try:
+            status, headers, _body = srv.get_ex("/api/overview")
+            assert status == 200
+            assert "X-Bundle-Rev" not in headers, "dist 缺席时降级不附头"
+        finally:
+            if exists:
+                backup.rename(index_html)
