@@ -210,7 +210,7 @@ class TestValidateKnowledge(KnowledgeTestBase):
         v = validate_knowledge(self.root)
         self.assertTrue(any("越出真相源" in x for x in v))
 
-    # ── 更新时间盖戳（index 标题/盖戳行/四列表 + _domain 盖戳行）─────────
+    # ── 更新时间盖戳（index 标题/盖戳行/五列表 + _domain 盖戳行）─────────
 
     def _good_domain_nav(self, domain="pickup"):
         self._write(
@@ -224,9 +224,9 @@ class TestValidateKnowledge(KnowledgeTestBase):
         self._write(
             f"{KNOWLEDGE_DIR}/index.md",
             f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| pickup | 拣选 | 1 | 2026-09-29 15:02 |\n",
+            "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1.1 | pickup | 拣选 | 1 | 2026-09-29 15:02 |\n",
         )
 
     def test_valid_full_tree_with_stamps_passes(self):
@@ -312,21 +312,21 @@ class TestValidateKnowledge(KnowledgeTestBase):
         self._write(
             f"{KNOWLEDGE_DIR}/index.md",
             f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 |\n"
+            "| 编号 | 能力域 | 简介 |\n"
             "| --- | --- | --- |\n"
-            "| pickup | 拣选 | 1 |\n",
+            "| 1.1 | pickup | 拣选 |\n",
         )
         v = validate_knowledge(self.root)
-        self.assertTrue(any("能力域" in x and "四列" in x for x in v))
+        self.assertTrue(any("能力域" in x and "五列" in x for x in v))
 
     def test_index_row_bad_time_format(self):
         self._good_page()
         self._write(
             f"{KNOWLEDGE_DIR}/index.md",
             f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| pickup | 拣选 | 1 | 09-29 |\n",
+            "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1.1 | pickup | 拣选 | 1 | 09-29 |\n",
         )
         v = validate_knowledge(self.root)
         self.assertTrue(any("更新时间" in x for x in v))
@@ -804,9 +804,9 @@ class TestDistillManager(KnowledgeTestBase):
     def _index(self):
         return (
             f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+            "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
         )
 
     def _domain(self):
@@ -1093,9 +1093,9 @@ class TestInboxCandidateArea(KnowledgeTestBase):
             f"{KNOWLEDGE_DIR}/index.md",
             (
                 f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-                "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-                "| --- | --- | --- | --- |\n"
-                "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+                "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
             ),
         )
         self._write(
@@ -1211,9 +1211,9 @@ class TestInboxFoldStage(KnowledgeTestBase):
             f"{KNOWLEDGE_DIR}/index.md",
             (
                 f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-                "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-                "| --- | --- | --- | --- |\n"
-                "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+                "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
             ),
         )
         self._write(
@@ -1232,9 +1232,9 @@ class TestInboxFoldStage(KnowledgeTestBase):
         return {
             f"{KNOWLEDGE_DIR}/index.md": (
                 f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-                "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-                "| --- | --- | --- | --- |\n"
-                "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 16:02 |\n"
+                "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 16:02 |\n"
             ),
             f"{KNOWLEDGE_DIR}/domains/pickup/_domain.md": (
                 f"# 拣选域\n{STAMP}\n\n| 能力页 | 简介 | 更新时间 |\n| --- | --- | --- |\n"

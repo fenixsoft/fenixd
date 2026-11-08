@@ -138,10 +138,10 @@ _LINK_LOOSE_RE = re.compile(r"\[[^\]]*\]\(([^)]*)\)")
 _STAMP_LINE_RE = re.compile(r"^> 最后更新：\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC[+-]\d{1,2}(?::\d{2})?$")
 _STAMP_CELL_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 _INDEX_TITLE = "知识真相源"
-_INDEX_TABLE_HEADER = "| 能力域 | 简介 | 能力数量 | 更新时间 |"
+_INDEX_TABLE_HEADER = "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |"
 _DOMAIN_TABLE_HEADER = "| 能力页 | 简介 | 更新时间 |"
 # 表格列数的中文数词（校验文案用：缺 N 列表与行违规文案同形）
-_COL_COUNT_WORDS = {3: "三", 4: "四"}
+_COL_COUNT_WORDS = {3: "三", 4: "四", 5: "五"}
 
 
 def _distill_source_dir(proot: Path, name: str) -> "Path | None":
@@ -415,25 +415,26 @@ def validate_knowledge(project_root) -> list:
         """定位 ``header`` 表头并逐行校验行末更新时间列，返回违规列表。"""
         expected_cols = ts_col_idx + 1
         num = _COL_COUNT_WORDS[expected_cols]
-        try:
-            header_pos = lines.index(header)
-        except ValueError:
+        positions = [i for i, l in enumerate(lines) if l == header]
+        if not positions:
             return [f"{label}: 缺{kind}{num}列表（表头须为 {header}）"]
         out: list = []
-        for row in lines[header_pos + 1:]:
-            if not row.startswith("|"):
-                break  # 表格结束
-            # 切列豁免单元格内转义竖线（code-review 4de27e2e7876）：裸
-            # split 按竖线逐字切开会把合法的 ``\\|`` 一并切开，列数虚增或
-            # 时间列下标错位，合法表格被误判更新时间违规、白烧修正轮。
-            cells = [c.strip() for c in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
-            if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
-                continue
-            if len(cells) != expected_cols or not _STAMP_CELL_RE.match(cells[ts_col_idx]):
-                out.append(
-                    f"{label}: {kind}行更新时间缺失或格式非法"
-                    f"（{num}列，末列 YYYY-MM-DD HH:MM）: {row}"
-                )
+        # index 分组导航后同形表头有多张（每域组一张），逐表校验到各自表格结束
+        for header_pos in positions:
+            for row in lines[header_pos + 1:]:
+                if not row.startswith("|"):
+                    break  # 表格结束
+                # 切列豁免单元格内转义竖线（code-review 4de27e2e7876）：裸
+                # split 按竖线逐字切开会把合法的 ``\\|`` 一并切开，列数虚增或
+                # 时间列下标错位，合法表格被误判更新时间违规、白烧修正轮。
+                cells = [c.strip() for c in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
+                if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
+                    continue
+                if len(cells) != expected_cols or not _STAMP_CELL_RE.match(cells[ts_col_idx]):
+                    out.append(
+                        f"{label}: {kind}行更新时间缺失或格式非法"
+                        f"（{num}列，末列 YYYY-MM-DD HH:MM）: {row}"
+                    )
         return out
 
     # ── 能力页（domains/<域>/<能力>.md，_domain.md 为导航层另行处理）──
@@ -592,7 +593,7 @@ def validate_knowledge(project_root) -> list:
                     "（应形如 > 最后更新：YYYY-MM-DD HH:MM UTC+8，紧随标题）"
                 )
             violations.extend(
-                _check_stamp_table(index_lines, _INDEX_TABLE_HEADER, "能力域", 3, index_label)
+                _check_stamp_table(index_lines, _INDEX_TABLE_HEADER, "能力域", 4, index_label)
             )
 
     # ── ADR（三段式 / 不可变 / supersede 链）────────────────────────
