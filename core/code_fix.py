@@ -2552,9 +2552,18 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
     """定向回归 targets 消毒（evo-add-regression-empty-result-failclosed 2.1，
     单点 producer 出口）。
 
-    过滤五类毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
+    过滤六类不可收集/毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
     ``__pycache__`` 段、``.pyc`` 编译缓存、相对 ``exec_root`` 不存在的
-    路径；被过滤项聚合 WARNING 留痕（含原因）。
+    路径、非 ``.py`` 后缀文件（非 pytest 可收集目标）；被过滤项聚合
+    WARNING 留痕（含原因）。
+
+    非 ``.py`` 过滤（2026-11-08 parse_error 实测）：import 反查按 grep 文本
+    命中把 tests/ 树内非 ``.py`` 文件（``tests/integration/e2e.sh`` 内嵌
+    heredoc 的 ``from core.state_machine import …``）召回进 targets，
+    pytest 对显式非 ``.py`` 入参报「no match in any of …」用法错误退出
+    码 4、零用例 → fail-closed parse_error 整轮回归蒸发。显式入参位
+    ``.py`` 恒可收集（python 插件对 isinitpath 豁免 ``python_files`` 模式
+    匹配），故只要求 ``.py`` 后缀、不做 ``test_*.py`` 命名收窄。
 
     落点 MUST 为单点 producer（``_map_fix_files_to_tests`` 返回前）：targets
     同时流向 ``_apply_test_targets`` 的 cmd 替换与 ``_with_test_targets_env``
@@ -2573,6 +2582,9 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
         poison = _test_target_poison_reason(rel)
         if poison:
             dropped.append(f"{rel}（{poison}）")
+            continue
+        if not rel.endswith(".py"):
+            dropped.append(f"{rel}（非 pytest 可收集目标：非 .py 文件）")
             continue
         try:
             exists = (root / rel).exists()
@@ -2720,7 +2732,9 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass  # fail-open：反查失败只缩小定向面
     # 出口消毒（evo-add-regression-empty-result-failclosed 2.1，单点
-    # producer）：过滤 # 前缀/「..」穿越段/__pycache__/.pyc/不存在路径并
+    # producer）：过滤 # 前缀/「..」穿越段/__pycache__/.pyc/不存在路径/
+    # 非 .py 文件（grep 反查按文本命中可召回 tests/ 树内 .sh 等
+    # 非 pytest 可收集文件，2026-11-08 e2e.sh parse_error 实测）并
     # WARNING 留痕，cmd 替换与 FENIX_TEST_TARGETS env 导出两条注入通道
     # 共享消毒后列表。
     return _sanitize_test_target_paths(sorted(direct), root)

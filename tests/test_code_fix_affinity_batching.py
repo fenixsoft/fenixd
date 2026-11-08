@@ -435,6 +435,29 @@ class TestTouchFaceMapping(unittest.TestCase):
         self.assertIn("tests/test_ghost.py", joined)
         self.assertIn("路径不存在", joined)
 
+    def test_non_py_import_lookup_hits_filtered(self):
+        """import 反查召回的非 .py 文件须被出口消毒剔除：grep 按文本命中会把
+        tests/ 树内 .sh 等非 pytest 可收集文件（内嵌 heredoc 的 import 语句）
+        召回进 targets，pytest 对显式非 .py 入参报「no match in any of」
+        用法错误退出码 4、零用例 → fail-closed parse_error（2026-11-08
+        tests/integration/e2e.sh 实测肇因）。"""
+        (self.root / "tests" / "e2e.sh").write_text(
+            "python3 - <<'PY'\nfrom core.foo import X\nPY\n", encoding="utf-8"
+        )
+        (self.root / "tests" / "notes.md").write_text(
+            "参考 import core.foo 的用法\n", encoding="utf-8"
+        )
+        with self.assertLogs("fenixd.code_review", level="WARNING") as captured:
+            got = _map_fix_files_to_tests(["core/foo.py"], self.root)
+        self.assertEqual(
+            got, ["tests/test_bar.py"],
+            "非 .py 召回项（.sh/.md）被剔除，.py 反查命中原样保留",
+        )
+        joined = "\n".join(captured.output)
+        self.assertIn("tests/e2e.sh", joined)
+        self.assertIn("tests/notes.md", joined)
+        self.assertIn("非 .py 文件", joined)
+
     def test_module_names(self):
         self.assertEqual(_module_names_for_file("core/foo.py"), ["foo", "core.foo"])
         self.assertEqual(_module_names_for_file("foo.py"), ["foo"])
