@@ -13,6 +13,9 @@ import logging
 from pathlib import Path
 
 from core.dashboard import data as dashboard_data
+# 条件请求协商比对单点（fix-specs-api-latency 3.1：_api_specs 内联协商消费）；
+# base 模块体仅依赖 stdlib，对 mixin 无反向导入，无环
+from core.dashboard.routes.base import _if_none_match_hit
 # 托管态守卫（code-review item 48af85ca5ee7）：spec-admin-invoke 与 run-cancel /
 # regression 同族共用 hosting_guard 单点实现
 from core.dashboard.routes.hosting_guard import _guard_hosting_state
@@ -73,23 +76,74 @@ class H3SpecRoutesMixin:
             return None
         return project, spec
 
-    def _api_specs(self, query) -> dict:
+    def _api_specs(self, query) -> None:
+        """GET /api/specs?project=X（fix-specs-api-latency D1 自含响应 handler）。
+
+        返回值恒 None，适配层（base.py _get_specs）裸调用勿再包 _json——
+        自含 handler 再包一层会 keep-alive 双写响应污染下一请求（同
+        _get_config 注记）。
+
+        取数与失效签名同趟（SummaryIndex.get_with_signature），条件请求
+        协商在 handler 内联完成（取数同趟型，dashboard-conditional-get
+        MODIFIED 契约）：
+        - 签名不可得（None）→ 降级无条件 200 路径（不协商、不挂 ETag 头，
+          宁缺 304 不假 304，与 _route_etag 降级纪律同构）；
+        - If-None-Match 命中 → _write_304 空体（304 路径不序列化响应体）；
+        - 未命中 → _pending_etag 通道挂头后 _json 200 全量体。
+        最终 ETag = 同趟聚合签名与 page/page_size 原始 query 值稳定串的
+        combine，按 _route_etag 同款双引号包裹后再参与比对与响应头
+        （_if_none_match_hit 按带引号形态逐项比对，裸哈希恒 miss 304）。
+        同趟原子（签名与体出自同一次扫描），表驱动通道的发头前复核对本
+        端点不适用——/api/specs 已摘出表驱动 304 通道。
+        """
         # 未知/不存在项目维持 200 + {"error": ..., "specs": []}，不走本文件
         # 其余端点的 _error(404) 家族——这是有意的 v1 兼容契约，非遗漏：
         # tests/test_dashboard_api.py::test_unknown_project 钉死 200 + specs
         # 空表形状，v3 前端 list 页 load() 也按响应体 error 字段分支渲染，
         # 改 404 会同时破坏测试契约与前端消费形状（code-review item 81d9ba1b6aae）。
+        # 错误体不参与协商、不挂 ETag（错误响应恒无条件 200）。
         project = self._project_from_query(query)
         if project is None:
-            return {"error": "unknown project", "specs": []}
+            self._json({"error": "unknown project", "specs": []})
+            return
         if not project.get("exists"):
-            return {"error": "project not found", "specs": []}
+            self._json({"error": "project not found", "specs": []})
+            return
         proot = Path(project["path"])
         # 列表数据源 = 活跃 ∪ 归档清单（add-archive-state-migration 3.2/D4）：
-        # 合并单点在 SummaryIndex.get()（活跃侧优先），本端点与 watcher SSE
+        # 合并单点在 SummaryIndex（活跃侧优先），本端点与 watcher SSE
         # 推送同源消费——清单条目 archived=true 并经 spec_summary 透传
         # archived_at/archived_by 溯源字段，「已归档」视图对迁出条目继续可见。
-        items = self.server.summary_index.get(proot)
+        items, agg_sig = self.server.summary_index.get_with_signature(proot)
+        if agg_sig is None:
+            # 签名不可得（state/arch stat 失败等）：降级无条件 200 全量体
+            self._json(self._specs_payload(project, items, query))
+            return
+        # 签名与响应表示一一对应（code-review item ba4a1e3c3386，原 _sig_specs
+        # 拼装逻辑迁入）：_api_specs 消费 page/page_size 做服务端切片（带 page
+        # 响应追加 total/page/page_size/has_more），不并入则携带 If-None-Match
+        # 的客户端翻页时命中旧 ETag 拿空 304。page/page_size 原始值直入稳定串
+        # 后与同趟聚合签名组合（非法值归一属更细粒度方向，宁少 304 不可跨
+        # 变体假 304）；缺省时该串恒定，无参请求仍共享同一 ETag。
+        from core.dashboard.data import signature as _sig
+
+        paging_part = "|".join(
+            f"{k}={query.get(k, [''])[0] or ''}" for k in ("page", "page_size")
+        )
+        etag = f'"{_sig.combine([agg_sig, paging_part])}"'
+        if _if_none_match_hit(self.headers.get("If-None-Match", ""), etag):
+            self._write_304(etag)
+            return
+        # keep-alive 下 handler 实例跨请求复用：_pending_etag 由 _json 消费
+        # （仅 200 响应附带），异常残留由 _dispatch_table 的 finally 兜底清零
+        self._pending_etag = etag
+        self._json(self._specs_payload(project, items, query))
+
+    def _specs_payload(self, project: dict, items: list, query: dict) -> dict:
+        """_api_specs 的 200 响应体构造（排序 + 服务端分页切片）。
+
+        独立于协商路径：304 命中时不进入本函数（304 路径不序列化响应体）。
+        """
         items.sort(key=lambda s: s.get("created") or "", reverse=True)
         # 服务端分页（add-dashboard-paging-and-etag 2.2）：现有排序后切片；
         # 带 page 追加 total/page/page_size/has_more；缺省 page 响应零变化

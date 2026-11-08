@@ -2348,9 +2348,21 @@ class TestConditionalGet:
             assert status == 304, path
             assert body == b"", path
 
+    @staticmethod
+    def _ensure_archive_manifest(proot):
+        """fix-specs-api-latency：/api/specs 的 ETag 由 get_with_signature 同趟
+        聚合产出，state/arch 签名组件不可得（STATE.archive.md 缺失与 stat 失败
+        同为 None 形态）时签名位为 None、端点降级不挂 ETag——specs 协商用例
+        统一先补归档清单夹具（空清单即可），保证签名可得、内联协商路径被
+        真实覆盖。"""
+        (proot / ".fenix" / "STATE.archive.md").write_text(
+            "# Fenix Archive State\n\n## Specs\n", encoding="utf-8"
+        )
+
     def test_state_mtime_change_flips_specs_etag(self, server_fx):
         """daemon 写 STATE.md（mtime 变化）→ /api/specs ETag 翻转（spec 场景 1）。"""
         proot, srv = server_fx
+        self._ensure_archive_manifest(proot)
         etag1 = self._etag_of(srv, "/api/specs?project=proj-a")
         time.sleep(0.01)
         p = proot / ".fenix" / "STATE.md"
@@ -2361,6 +2373,105 @@ class TestConditionalGet:
         assert status == 200  # 数据源变化 → 200 全量，不 304
         assert headers["ETag"] != etag1
         assert json.loads(body)["project"] == "proj-a"
+
+    def test_specs_304_hit_empty_body(self, server_fx):
+        """数据未变时 /api/specs 条件请求命中 304：空体附当前 ETag，不写
+        Content-Length（_write_304 既有纪律回归），同趟单次完成（无独立
+        预扫描——签名随取数同趟产出）。"""
+        proot, srv = server_fx
+        self._ensure_archive_manifest(proot)
+        etag = self._etag_of(srv, "/api/specs?project=proj-a")
+        status, headers, body = srv.get_ex(
+            "/api/specs?project=proj-a", headers={"If-None-Match": etag}
+        )
+        assert status == 304
+        assert body == b""
+        assert headers.get("ETag") == etag
+        assert "Content-Length" not in headers
+
+    def test_specs_unconditional_200_body_with_etag(self, server_fx):
+        """无 If-None-Match → 200 全量体与 ETag 头共存（对不感知 ETag 的
+        调用方零影响）。"""
+        proot, srv = server_fx
+        self._ensure_archive_manifest(proot)
+        status, body = srv.get("/api/specs?project=proj-a")
+        assert status == 200
+        status2, headers, raw = srv.get_ex("/api/specs?project=proj-a")
+        assert status2 == 200
+        assert headers.get("ETag")
+        assert json.loads(raw) == body
+
+    def test_specs_page_variant_etag_differs(self, server_fx):
+        """翻页变体不共享 ETag（item ba4a1e3c3386：page/page_size 原始值
+        参与最终 ETag 组合，携带 If-None-Match 的客户端翻页不拿空 304）。"""
+        proot, srv = server_fx
+        self._ensure_archive_manifest(proot)
+        etag_default = self._etag_of(srv, "/api/specs?project=proj-a")
+        etag_paged = self._etag_of(srv, "/api/specs?project=proj-a&page=1&page_size=200")
+        assert etag_paged != etag_default
+        # 各自条件请求均命中自身 304（互不串键）
+        for path, etag in (
+            ("/api/specs?project=proj-a", etag_default),
+            ("/api/specs?project=proj-a&page=1&page_size=200", etag_paged),
+        ):
+            status, _, body = srv.get_ex(path, headers={"If-None-Match": etag})
+            assert status == 304, path
+            assert body == b"", path
+
+    def test_specs_signature_unavailable_degrades_no_etag(self, server_fx):
+        """签名组件不可得（STATE.md / STATE.archive.md 消失，stat None）→
+        get_with_signature 返回 None 签名，端点降级无条件 200：不挂 ETag
+        头、不协商，列表数据仍正常返回（宁缺 304 不假 304）。"""
+        proot, srv = server_fx
+        self._ensure_archive_manifest(proot)
+        # state 组件缺失：STATE.md 消失
+        (proot / ".fenix" / "STATE.md").unlink()
+        status, headers, body = srv.get_ex("/api/specs?project=proj-a")
+        assert status == 200
+        assert "ETag" not in headers
+        data = json.loads(body)
+        assert data["project"] == "proj-a" and data["specs"] == []
+        # arch 组件缺失（恢复 STATE.md 后删除清单）：同样降级
+        (proot / ".fenix" / "STATE.md").write_text(
+            "# Fenix Project State\n\n## Specs\n\n"
+            "### myspec\n- status: testing\n- priority: 2\n"
+            "- created: 2026-01-01T00:00:00+00:00\n- updated: 2026-01-02T00:00:00+00:00\n"
+            "- error: null\n- depends_on: null\n",
+            encoding="utf-8",
+        )
+        (proot / ".fenix" / "STATE.archive.md").unlink()
+        status2, headers2, body2 = srv.get_ex("/api/specs?project=proj-a")
+        assert status2 == 200
+        assert "ETag" not in headers2
+        assert json.loads(body2)["specs"]  # 活跃条目照常产出
+
+    def test_specs_304_reuses_keep_alive_connection(self, server_fx):
+        """specs 端点 304 后同一 keep-alive 连接继续请求不失步（_write_304
+        空体分帧 + _pending_etag 消费后清零的连接纪律回归）。"""
+        import http.client
+
+        proot, srv = server_fx
+        self._ensure_archive_manifest(proot)
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            conn.request("GET", "/api/specs?project=proj-a")
+            r1 = conn.getresponse()
+            assert r1.status == 200
+            r1.read()
+            etag = r1.getheader("ETag")
+            assert etag
+            conn.request("GET", "/api/specs?project=proj-a", headers={"If-None-Match": etag})
+            r2 = conn.getresponse()
+            assert r2.status == 304
+            assert r2.read() == b""
+            # 同一连接继续请求 → 必须拿到合法 200（304 空体未使连接失步，
+            # 自含 handler 未双写响应污染 keep-alive）
+            conn.request("GET", "/api/specs?project=proj-a")
+            r3 = conn.getresponse()
+            assert r3.status == 200
+            assert json.loads(r3.read())["project"] == "proj-a"
+        finally:
+            conn.close()
 
     def test_runs_new_record_flips_overview_etag(self, server_fx):
         """runs 目录新增 run 记录（STATE.md 未变）→ overview ETag 翻转，不假 304。"""

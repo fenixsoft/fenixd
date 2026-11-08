@@ -105,31 +105,6 @@ def _sig_overview(s, q, m):
     return _sig.combine(parts)
 
 
-def _sig_specs(s, q, m):
-    from pathlib import Path
-
-    from core.dashboard.data import signature as _sig
-
-    project = _resolve_project_for_sig(s, q)
-    if project is None:
-        return None
-    # 签名与响应表示一一对应（code-review item ba4a1e3c3386）：_api_specs
-    # 消费 page/page_size 做服务端切片（带 page 响应追加 total/page/
-    # page_size/has_more），不并入则携带 If-None-Match 的客户端翻页时签名
-    # 仍命中旧 ETag，_dispatch_table 在 handler 之前写 304 空体，后续页取
-    # 不回。page/page_size 原始值直入稳定串后组合（与 _sig_admin_activities
-    # 同一范式：非法值归一属更细粒度方向，宁少 304 不可跨变体假 304）；
-    # 缺省时该串恒定，无参请求仍共享同一 ETag。
-    return _sig.combine(
-        [
-            s.server.summary_index.invalidation_signature(Path(project["path"])),
-            "|".join(
-                f"{k}={q.get(k, [''])[0] or ''}" for k in ("page", "page_size")
-            ),
-        ]
-    )
-
-
 def _sig_spec_detail(s, q, m):
     from pathlib import Path
 
@@ -284,7 +259,11 @@ def _get_overview(s, p, q, m):
     s._json(s._api_overview())
 
 def _get_specs(s, p, q, m):
-    s._json(s._api_specs(q))
+    # _api_specs 是自含响应 handler（fix-specs-api-latency 3.1：内部自写
+    # _json/_write_304，协商在 handler 内联完成）——适配器裸调用勿再包
+    # _json：自含 handler 再包一层会 keep-alive 双写响应污染下一请求
+    # （同 _get_config 注记）。
+    s._api_specs(q)
 
 def _get_spec_detail(s, p, q, m):
     spec = urllib.parse.unquote(m.group(1))
@@ -613,7 +592,10 @@ _API_GET_ROUTES = [
     # 精确路由（原 _handle_api if/elif 顺序保持优先级）
     ("exact", "/api/projects",         _get_projects),
     ("exact", "/api/overview",         _get_overview, _sig_overview),
-    ("exact", "/api/specs",            _get_specs, _sig_specs),
+    # specs 是自含响应 handler（fix-specs-api-latency 3.1：get_with_signature
+    # 同趟取数 + handler 内联协商，304 摘出表驱动通道）——3 元组条目，签名
+    # 与 page/page_size 的拼装随 handler 本体（原 _sig_specs 迁入 spec_routes）
+    ("exact", "/api/specs",            _get_specs),
     # 参数化前缀（regex）
     ("regex", r"^/api/specs/([^/]+)$", _get_spec_detail, _sig_spec_detail),
     # run 注入提示词读取（add-run-prompt-viewer 2.2）：更具体参数化路由
