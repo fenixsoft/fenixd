@@ -99,3 +99,46 @@ class TestWhitelistAutoStaged:
         assert ls.stdout.splitlines().count(".fenix/verify.yaml") == 1
         gitignore = (proj / ".gitignore").read_text(encoding="utf-8")
         assert len(re.findall(r"(?m)^\.fenix/\*$", gitignore)) == 1
+
+
+class TestAgentsDirPreemptiveIgnore:
+    """2.2 运行时产物目录预防性 ignore：新模板生效、--ensure-gitignore 幂等补齐、已跟踪文件不受影响。"""
+
+    def test_new_template_ignores_claude_agents(self, tmp_path):
+        proj = _make_git_repo(tmp_path)
+        assert _run_init(proj).returncode == 0
+        (proj / ".claude" / "agents" / "extra.md").write_text("x\n", encoding="utf-8")
+        status = _git(proj, "status", "--porcelain")
+        assert ".claude/agents/" not in status.stdout  # 不再视为 untracked 散件
+        gitignore = (proj / ".gitignore").read_text(encoding="utf-8")
+        assert re.search(r"(?m)^\.claude/agents/$", gitignore)
+        assert "预防性 ignore" in gitignore  # 规则带成因注释
+
+    def test_ensure_gitignore_appends_missing_rule_idempotently(self, tmp_path):
+        proj = tmp_path / "legacy"
+        proj.mkdir()
+        (proj / ".gitignore").write_text("# legacy project\n.fenix/*\n", encoding="utf-8")
+        first = _run_init(proj, "--ensure-gitignore")
+        assert first.returncode == 0, first.stderr
+        gitignore = (proj / ".gitignore").read_text(encoding="utf-8")
+        assert len(re.findall(r"(?m)^\.claude/agents/$", gitignore)) == 1
+        # 幂等：二跑规则已在场，跳过不重复追加
+        second = _run_init(proj, "--ensure-gitignore")
+        assert second.returncode == 0, second.stderr
+        gitignore = (proj / ".gitignore").read_text(encoding="utf-8")
+        assert len(re.findall(r"(?m)^\.claude/agents/$", gitignore)) == 1
+        assert "跳过" in second.stdout
+
+    def test_tracked_file_unaffected_by_ignore_rule(self, tmp_path):
+        proj = _make_git_repo(tmp_path)
+        agents_dir = proj / ".claude" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "keep.md").write_text("user tracked\n", encoding="utf-8")
+        assert _git(proj, "add", ".claude/agents/keep.md").returncode == 0
+        assert _git(proj, "commit", "-q", "-m", "track agent file").returncode == 0
+        # 追加 ignore 规则后已跟踪文件不受影响（gitignore 只作用于 untracked）
+        assert _run_init(proj).returncode == 0
+        ls = _git(proj, "ls-files")
+        assert ".claude/agents/keep.md" in ls.stdout.splitlines()
+        status = _git(proj, "status", "--porcelain")
+        assert "keep.md" not in status.stdout
