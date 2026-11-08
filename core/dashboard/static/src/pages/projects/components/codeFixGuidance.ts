@@ -83,6 +83,7 @@ export function isSelfhealWait(reason: string | null | undefined): boolean {
 function isKnownReason(reason: string | null | undefined): reason is string {
   return (
     reason !== null &&
+    reason !== undefined &&
     reason !== '' &&
     Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason)
   );
