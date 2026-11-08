@@ -29,6 +29,7 @@ from core.state_machine import (
     parse_orig_status,
     START_AFTER_MANUAL,
     BUDGET_MANUAL_RESET_BASELINE_FIELD,
+    JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD,
     SCENARIO_REVISION_COUNT_FIELD,
     SCENARIO_REVISION_MAX_COUNT,
     SCENARIO_REVISION_PENDING_FIELD,
@@ -1764,7 +1765,7 @@ _RETRY_COUNTER_RESETS = {
     "_dispatch_backoff_until": None,
     # 同字段 3.3：独立计数器到顶升级告警的去重标记——复位后新 episode
     # 再到顶应能再次告警。
-    "_judge_inconclusive_cap_escalated": False,
+    JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD: False,
     # evo-fix-env-exemption-gate-conflict-… 2.2：场景修订待重验旗标——复位
     # 视为验证链输入整体重置，滞留旗标会让复位后首次升级被误判为修订
     # re-entry 追加重验轮。修订次数计数（_scenario_revision_count）**不清**：
