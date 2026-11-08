@@ -1,5 +1,5 @@
 # 项目接入与生命周期
-> 最后更新：2026-11-05 04:11 UTC+8
+> 最后更新：2026-11-08 19:28 UTC+8
 
 项目的发现接入、描述信息与生命周期控制（daemon 启停/软删除），以及针对 SPEC 的冻结/删除停止语义。
 
@@ -12,6 +12,6 @@
 | [project-lifecycle-control](project-lifecycle-control.md) | 项目启用/停用等生命周期控制（启停端点 systemctl 双轨） | 2026-11-05 04:11 |
 | [freeze-stop-inflight-agents](freeze-stop-inflight-agents.md) | 项目冻结时停止在飞 agent（含人工冻结处方：先冻结再重启、修后人工接手不自动恢复派发） | 2026-11-04 17:07 |
 | [delete-stop-inflight-agents](delete-stop-inflight-agents.md) | 项目删除时停止在飞 agent | 2026-10-03 04:59 |
-| [project-init-seeding](project-init-seeding.md) | 项目初始化骨架播种（fenix-init） | 2026-09-27 17:23 |
-| [fenix-setup-skill](fenix-setup-skill.md) | 框架初始化与启动入口（/fenix-setup，systemd 承载配方与人工切换步骤） | 2026-11-05 04:11 |
+| [project-init-seeding](project-init-seeding.md) | 项目初始化骨架播种（fenix-init，含初始化产物自举：白名单 staged 入库与运行时产物预防性 ignore） | 2026-11-08 19:28 |
+| [fenix-setup-skill](fenix-setup-skill.md) | 框架初始化与启动入口（/fenix-setup，systemd 承载配方与人工切换步骤，含模型配置检查与首跑告警解读） | 2026-11-08 19:28 |
 | [project-log](project-log.md) | 项目追加式运维日志（PROJECT_LOG.md） | 2026-09-27 17:23 |

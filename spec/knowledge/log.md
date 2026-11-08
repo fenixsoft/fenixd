@@ -137,3 +137,4 @@
 ## [2026-11-08 12:30 UTC+8] retire | 协作拓扑与会话接入退役批（用户指令）：删 topology-derivation / topology-bigscreen-ui / dashboard-live-session / session-composer 四页；collab-graph-aggregation / collab-graph-bigscreen-ui 两页补收口（功能代码已随 v2 界面域退役消失）；ADR-303/ADR-139 翻 retired（Retired: 2026-11-08 注记行，adr/index.md 状态列同步）；index 计数 dashboard-frontend 43→41、dashboard-platform 20→16；project-page-tabs / spec-list-filter-stickiness / project-architecture-diagram / knowledge-dashboard-tab / help-docs-mechanism-coverage / unified-page-title-bar / command-center-console-ui / command-center-aggregation 八页镜像条款收口
 ## [2026-11-08 12:07 UTC+8] distill | add-inconclusive-alert-verified-close（第 1 轮，自动提交落库）
 ## [2026-11-08 12:17 UTC+8] distill | fix-timeline-chain-nodes-invisible（第 1 轮，自动提交落库）
+## [2026-11-08 19:35 UTC+8] distill | add-onboarding-init-setup-guidance（第 1 轮，自动提交落库）
