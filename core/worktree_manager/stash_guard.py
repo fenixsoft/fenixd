@@ -510,7 +510,8 @@ class G6StashGuardMixin:
                     capture_output=True,
                     timeout=30,
                 )
-            except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+            # bytes 模式（未传 text=True），无解码步骤，不会抛 UnicodeDecodeError
+            except (subprocess.TimeoutExpired, OSError):
                 return None
             if cat.returncode != 0:
                 return None
@@ -547,7 +548,8 @@ class G6StashGuardMixin:
             if mf.returncode != 0:
                 return None
             return mf.stdout
-        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+        # bytes 模式（未传 text=True），无解码步骤，不会抛 UnicodeDecodeError
+        except (subprocess.TimeoutExpired, OSError):
             return None
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
