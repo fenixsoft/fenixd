@@ -748,7 +748,12 @@ class G8QueryMixin:
             # 3.1）：origin/HEAD → 本地 main → master → 回退 "main"，非
             # main 主干仓库不再恒空/分组退化。解析器吞异常回退常量、不抛错。
             base = resolve_base_branch(self.project_root)
-            for prefix in prefixes:
+            # sorted 收敛迭代序（与 pending_merge_since / _impl_branch_owned_by_spec
+            # 的跨进程确定性惯例同源）：prefixes 是 set，裸迭代顺序受
+            # PYTHONHASHSEED 影响逐进程不同；候选按本循环序追加后经 valid.sort
+            # 稳定排序，主键并列时最终次序会随进程漂移。本处无需 len 降序——
+            # 各 prefix 枚举的 pattern 互不重叠，无最长前缀优先诉求。
+            for prefix in sorted(prefixes):
                 # spec 名与命名空间前缀都套 glob.escape（与
                 # locks._latest_stream_mtime 同口径），防 for-each-ref pattern
                 # 按 fnmatch 展开元字符致枚举过配/漏配——prefix 来自配置

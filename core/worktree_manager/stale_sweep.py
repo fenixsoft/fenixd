@@ -647,6 +647,22 @@ class G7StaleSweepMixin:
                                     f"Stale branch delete failed (non-blocking): "
                                     f"'{branch}' — {del_res.stderr.strip()}",
                                 )
+                elif branch == "HEAD":
+                    # detached HEAD 孤儿（code-review item 6bf99fe23da1）：
+                    # rev-parse --abbrev-ref 在 detached 态输出字面 "HEAD" 且
+                    # returncode 0，上方分支删除段与 rev-parse 失败分支均覆盖
+                    # 不到——整段分支处置静默跳过且零日志。此时目录已被
+                    # worktree remove --force 删除，其上未合并提交仅对象库
+                    # reflog 窗口内可寻，对齐同函数 remove 失败 / 删除失败 /
+                    # rev-parse 失败路径「静默残留必须 WARNING 留痕」的保守
+                    # 观测口径，避免删除已发生却无线索的观测盲区。
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Stale worktree '{wt_dir.name}' was in detached HEAD "
+                        f"state (no branch to dispose) — unmerged commits only "
+                        f"recoverable from object db within reflog window, "
+                        f"inspect manually via dir mtime and run logs",
+                    )
                 elif not branch and not wt_dir.exists():
                     # 分支名识别失败（rev-parse 非零退出，gitdir 损坏等）且
                     # worktree 已删：分支处置（在飞引用保护 + 删除）整体跳过，
