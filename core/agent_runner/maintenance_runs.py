@@ -78,6 +78,14 @@ DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
 ADMIN_DISPOSITION_PREFIX = "admin_disposition-"
 ADMIN_DISPOSITION_GLOB = "admin_disposition-*.json"
 
+# admin 处置记录 result 合法枚举（run_administrator 产物硬门第二道门的取值
+# 口径；agents/administrator.md 指令枚举 resolved | partially-resolved |
+# escalated，admin_monitor 终态消费另认 failed；pending 是框架唤起前自身的
+# 占位值、interrupted 是 monitor 孤儿接管自写值，均非管理员终态取值）。
+# 缺省/非法值一律 fail-closed 折算失败（词表单源对齐 ARBITER_REPORT_OUTCOMES
+# 先例，code-review item 2c3f123935fe）。
+ADMIN_DISPOSITION_RESULTS = ("resolved", "partially-resolved", "escalated", "failed")
+
 # ── 失败取证参数（orphaned-state-probe-calibration 1.5） ─────────────
 # run_administrator 非零退出失败证据的取值上限：原始 stderr 取末 N 行、
 # 整体截断 4KB；run 产物取末 3 条带 timestamp 事件。
@@ -499,8 +507,13 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
     # failed（处置未成功的保守保留值）；pending 是框架唤起前自身的占位值、
     # interrupted 是 monitor 孤儿接管自写值，均非管理员终态取值。一并按
     # fail-closed 折算为失败（escalate 位不受影响，升级通道照常）。
-    if success and disp.get("result") not in (
-        "resolved", "partially-resolved", "escalated", "failed",
+    # code-review item 2c3f123935fe：比对前按 run_arbiter 同款口径归一
+    # （str(...).strip().lower()）——管理员（LLM）误写 "Resolved" 或带尾随
+    # 空格/大小写漂移的合法处置不再被误折算失败（方向本就 fail-closed，误拦
+    # 只会多一轮误告警与重派浪费）；词表收敛 ADMIN_DISPOSITION_RESULTS 常量
+    # 单源，消除与 arbiter 车道 outcome 硬门的同族口径漂移。
+    if success and str(disp.get("result") or "").strip().lower() not in (
+        ADMIN_DISPOSITION_RESULTS
     ):
         _raw_result = disp.get("result")
         success = False
@@ -660,12 +673,13 @@ def _clear_admin_disposition(disp_path: Path):
 
     fix-admin-run-blocks-mainloop D3：路径按 run 实例传入，不再使用全局
     固定文件名——并行实例只清理自己的文件。
+
+    code-review item 3137aba97214：与 _delete_admin_disposition 语义等价
+    （原 exists()+unlink 形态还多一次 TOCTOU 窗口），收敛为单实现
+    unlink(missing_ok=True)，本名保留为语义别名供组装前清理点引用
+    （runner.py 门面 re-export 同名方法，改签名即破坏文件外引用）。
     """
-    try:
-        if disp_path.exists():
-            disp_path.unlink()
-    except OSError:
-        pass
+    _delete_admin_disposition(disp_path)
 
 
 def _delete_admin_disposition(disp_path: Path):
@@ -1033,6 +1047,44 @@ def run_self_review(
             （闭环判定对象）；read_todo=false 时为显式未收集陈述；None
             （历史调用方）归一空串，落 prompt_builder 意外空值兜底。
     """
+    # ── date_str 路径分量校验（code-review item 6c903363da20，对齐
+    # run_administrator 29985b608a34 / run_arbiter 2631620c91b8 / run_impl_ocr
+    # 8eb9572741c4 三车道入口同款守卫，判定单点复用 _spec_name_path_error）──
+    # date_str 直接内插 run_id（review-<date>[-n]）并拼进 runs/<run_id>.jsonl
+    # 事件流与 .fenix/self_review_out-<run_id>.json 产物文件（该路径还经
+    # prompt 交 agent 写入、框架读回），含路径分隔符或 ``..`` 分量的名字会把
+    # 申领占位/产物文件引到 .fenix 之外。当前上游 core/self_review.py 的
+    # today 为框架内部生成的日期串、无用户输入旁路，本守卫属纵深防御一致性
+    # 而非已知可利用面；在任何路径拼点/申领之前按分量拒绝：不派生 run_id、
+    # 不落占位、不唤起 run，按既有降级语义折算失败信封返回（success=False，
+    # run_id 留空由调度器既有缺省分支兜底）。入口惰性 import 纳入 try 保护
+    # （对齐 57466f94f597 / 2631620c91b8 / 5c991d3db365 同款守卫先例：
+    # verification.serving 模块损坏/装配成环时不穿透本车道）。
+    try:
+        from core.pm_engine.verification.serving import _spec_name_path_error
+    except Exception as e:
+        error = (
+            "self-review 车道入口模块 import 失败（verification.serving）: "
+            f"{type(e).__name__}: {e}"
+        )
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "self-review",
+                f"每日自省入口 import 失败，折算失败信封返回: {error}",
+                {"run_id": "", "date": date_str},
+            )
+        return SelfReviewResult(run_id="", date=date_str, success=False, error=error)
+    unsafe = _spec_name_path_error(date_str)
+    if unsafe:
+        _log = getattr(runner, "logger", None)
+        if _log is not None:
+            _log.warning(
+                "self-review",
+                f"每日自省拒绝非法 date_str: {unsafe}",
+                {"run_id": "", "date": date_str},
+            )
+        return SelfReviewResult(run_id="", date=date_str, success=False, error=unsafe)
     run_id = _unique_self_review_run_id(runner, date_str)
     # 申领占位收尾清理（对齐 run_administrator item e6a103d93b91 确立的
     # _claim_settled finally 形态，code-review item 3f06f3fdec69）：
@@ -1210,12 +1262,14 @@ def run_self_review(
 
 
 def _clear_self_review_out(out_path: Path):
-    """清空本次自省 run 的输出文件（若残留），避免读到陈旧数据。"""
-    try:
-        if out_path.exists():
-            out_path.unlink()
-    except OSError:
-        pass
+    """清空本次自省 run 的输出文件（若残留），避免读到陈旧数据。
+
+    code-review item 3137aba97214：与 _delete_self_review_out 语义等价，
+    收敛为单实现 unlink(missing_ok=True)，本名保留为语义别名供组装前
+    清理点引用（runner.py 门面 re-export 同名方法，改签名即破坏文件外
+    引用）。
+    """
+    _delete_self_review_out(out_path)
 
 
 def _delete_self_review_out(out_path: Path):
