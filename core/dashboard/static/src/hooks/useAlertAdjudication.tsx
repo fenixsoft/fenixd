@@ -13,7 +13,7 @@ import { KNOWN_IRREVERSIBLE_CHOICE_IDS } from '@/pages/command-center/shared';
 import type { AlertChoice, AlertItem } from '@/services/dashboard';
 import { resolveAlert } from '@/services/dashboard';
 
-export type AlertResolveMsg = { text: string; tone: 'error' | 'info' };
+export type AlertResolveMsg = { text: string; tone: 'error' | 'info' | 'warning' };
 
 // 不可逆/越权裁决执行前二次确认（5.3）：确认门由注册表 destructive 标志单源
 // 驱动（code-review item 19f72b875e8f，前端不硬编码业务 id）；历史告警快照
@@ -84,7 +84,9 @@ export function useAlertAdjudication(): AlertAdjudication {
       const text = caveats.length
         ? `裁决已执行${stepSuffix}（${caveats.join('；')}）`
         : `裁决已执行，处置留痕已写入${stepSuffix}`;
-      setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: 'info' } }));
+      // 内联回显 tone 与 toast 同严重度口径（code-review item d9623fe78e7a）：
+      // caveat 场景 toast 走 warning，内联也落 warning 警示样式而非 info 灰色。
+      setAlertResolveMsgs((m) => ({ ...m, [a.id]: { text, tone: caveats.length ? 'warning' : 'info' } }));
       if (caveats.length) {
         message.warning(text);
       } else {

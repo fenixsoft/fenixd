@@ -1700,7 +1700,7 @@ export default function SpecDetailPage() {
                       )}
                       {resolveMsg && (
                         <div style={{ marginTop: 4, fontSize: 12, whiteSpace: 'pre-wrap' }}>
-                          <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : 'secondary'}>
+                          <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : resolveMsg.tone === 'warning' ? 'warning' : 'secondary'}>
                             {resolveMsg.text}
                           </Typography.Text>
                         </div>

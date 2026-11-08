@@ -810,8 +810,10 @@ export default function ActivitiesPage() {
 
   const handleMarkHandled = useCallback(
     async (a: AlertItem) => {
-      // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案
+      // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案、
+      // 'duplicate'＝同 id 在飞防重命中（首个请求仍在飞，提示由首调用接续）
       const err = await markHandled(a);
+      if (err === 'duplicate') return;
       if (err == null) message.success('已标记处理');
       else message.error(`标记失败：${err}`);
       void load();

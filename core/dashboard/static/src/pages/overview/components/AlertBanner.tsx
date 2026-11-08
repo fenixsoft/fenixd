@@ -106,8 +106,10 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   const resolved = (data?.resolved || []).filter((a) => !inOptimistic(a.id));
 
   const handleOne = async (a: AlertItem) => {
-    // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案
+    // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案、
+    // 'duplicate'＝同 id 在飞防重命中（首个请求仍在飞，提示由首调用接续）
     const err = await markHandled(a);
+    if (err === 'duplicate') return;
     if (err == null) message.success('已标记处理');
     else message.error(`标记失败：${err}`);
     void load();
@@ -252,7 +254,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
                         )}
                         {resolveMsg && (
                           <div className="alert-resolve-msg">
-                            <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : 'secondary'}>
+                            <Typography.Text type={resolveMsg.tone === 'error' ? 'danger' : resolveMsg.tone === 'warning' ? 'warning' : 'secondary'}>
                               {resolveMsg.text}
                             </Typography.Text>
                           </div>
