@@ -1533,6 +1533,17 @@ def _apply_mechanical(
                     )
                     continue
                 ln = lines[mm["line_no"]]
+                # 行身份复核（code-review e0aa999f5a0a，对齐悬空段逐行内容复核
+                # 口径）：行数不变的替换/平移会让 line_no 指向另一 ADR 的行，当前
+                # 行编号与扫描记录的 name 对不上即「盘面已变」转待人工，不盲写
+                # 状态槽位随 audit fix 自动提交。
+                nm_now = _ADR_NAME_RE.search(ln)
+                if nm_now is None or f"ADR-{nm_now.group(1)}" != mm["name"]:
+                    manual.append(
+                        f"adr/index.md：{mm['name']} 状态行身份失配（盘面相对扫描快照已漂移），"
+                        f"请人工对齐为 {mm['expected']}"
+                    )
+                    continue
                 slot = _adr_status_slot(ln)
                 if slot is None:
                     # 状态槽位重定位失败（行内容相对扫描快照已变）不盲改，转待人工
@@ -1894,10 +1905,11 @@ def run_audit(
                 )
                 exempt_hashes = {}
                 entry["page_hashes"] = exempt_hashes
-            # 涉事页在扫描快照后被外部删除/权限变化（is_file 通过后 read_text
-            # 仍可抛 OSError）时哈希比对不可得：按「盘面已变」解冻回 suspected
-            # 照常派发（转写段 try 按既有单点失败路径隔离），不让 OSError 穿出
-            # run_audit 令整轮体检反复失败（对齐 _collect_pages 防护口径）。
+            # 涉事页在扫描快照后被外部删除时 _page_text_by_rel 返回空串：哈希
+            # 与豁免键失配，走下方「盘面已变」解冻回 suspected 照常派发；权限
+            # 错误（is_file 通过后 read_text 仍可抛 OSError）落 except 分支同样
+            # 解冻（转写段 try 按既有单点失败路径隔离）。两条路都不让 OSError
+            # 穿出 run_audit 令整轮体检反复失败（对齐 _collect_pages 防护口径）。
             try:
                 cur_hashes = {
                     rel: _page_hash(project_root, rel)
@@ -2090,10 +2102,11 @@ def run_audit(
                     f"{finding['kind']}（{finding['a']['page']} × {finding['b']['page']}）：判无矛盾"
                 )
                 # 判定入账（2.2）：记两页全文哈希作下次初筛的内容豁免键。涉事页
-                # 盘面已变（快照后外部删除/权限变化）时哈希读不到：降级为仅入账
-                # 判定、不记豁免键（下轮比对自然失配解冻重派，不会以读空内容误
-                # 固化豁免），不让 OSError 穿出 run_audit 令整轮体检反复失败
-                # （对齐 _collect_pages 防护口径）。
+                # 被外部删除时 _page_text_by_rel 返回空串（不抛错），会以 sha256("")
+                # 固化豁免键——页缺席期语义上等价于疑点失效，页日后重建即哈希失配
+                # 解冻重派，不会错误豁免；权限错误（read_text 抛 OSError）才走下方
+                # 降级：仅入账判定、不记豁免键，不让 OSError 穿出 run_audit 令整轮
+                # 体检反复失败（对齐 _collect_pages 防护口径）。
                 try:
                     verdict_hashes = {
                         rel: _page_hash(project_root, rel)

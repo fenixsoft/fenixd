@@ -1957,7 +1957,10 @@ class StateMachine:
 
         仅由 daemon 重启恢复路径（recover_interrupted 的 testing→implemented
         分支）递增调用；运行期中断/重试不经过此路径，计数天然只反映「重启恢复
-        重验」次数（fix-daemon-lifecycle-races D3）。
+        重验」次数（fix-daemon-lifecycle-races D3）。恢复写/超限冻结被锁内
+        复查放弃（frozen/_cancelled_hold/status 漂移，spec 不计入恢复）时，
+        同路径以 ``delta=-1`` 对称回退本次递增（code-review d036d2b10ed9：
+        不计入恢复的 spec 不占重启重验预算）。
 
         Returns: 增减后的累计值（跨重启持久化）。
         """
@@ -2339,15 +2342,22 @@ class StateMachine:
             "_frozen_signal_type": str(signal_type or ""),
         }
         if extra_updates:
-            # 防误用：error/status/frozen 三键只应由本方法自身设定——携带
-            # error 会用非冻结前缀文案覆盖冻结 error（parse_orig_status 失效）；
-            # 携带 status/frozen 会覆盖已置的 blocked/True，且 updates 自带
-            # FROZEN_FIELD 使 _apply_updates_entry 的冻结剥离分支不触发，
-            # 落盘 frozen=True 而 status≠blocked 的自相矛盾条目。
+            # 防误用：error/status/frozen 与机器冻结来源标记五键只应由本方法
+            # 自身设定——携带 error 会用非冻结前缀文案覆盖冻结 error
+            # （parse_orig_status 失效）；携带 status/frozen 会覆盖已置的
+            # blocked/True，且 updates 自带 FROZEN_FIELD 使 _apply_updates_entry
+            # 的冻结剥离分支不触发，落盘 frozen=True 而 status≠blocked 的自相
+            # 矛盾条目；携带 _frozen_source/_frozen_signal_type 会覆盖上方刚
+            # 写入的机器来源标记（arbiter 回扫以 _frozen_source 判别机器冻结，
+            # 被改写会把机器冻结误判为人工冻结、回扫签名归类失真，且
+            # unfreeze_spec 对两键的对称清理失配——code-review d756c4b4484f）。
             safe_extra = {
                 k: v
                 for k, v in extra_updates.items()
-                if k not in ("error", "status", FROZEN_FIELD)
+                if k not in (
+                    "error", "status", FROZEN_FIELD,
+                    "_frozen_source", "_frozen_signal_type",
+                )
             }
             updates.update(safe_extra)
         ok = self.update_spec(spec_name, updates)
@@ -3596,7 +3606,9 @@ class StateMachine:
           重置 ready 会误派 implementer 从头实现已合并代码并劫持 branch 字段
           （pushed 记录被写成 rogue 分支）；配合场景冻结复用，重验代价极小。
           fix-daemon-lifecycle-races（D3）：恢复重验递增 ``_verify_redo_count``
-          并持久化，累计达 ``verify_redo_budget`` 阈值即经 freeze_for_human
+          并持久化（恢复写/超限冻结被锁内复查放弃时对称回退，
+          code-review d036d2b10ed9），累计达 ``verify_redo_budget`` 阈值即经
+          freeze_for_human
           「冻结 + 告警」成对入口（fix-blocked-freeze-classification D4）转为
           blocked 等待人工裁决——修复此前「打了 frozen 却不告警」的静默冻结
           缺陷；本启动不再派发 verifier——毒 spec 无法借反复重启无限重验。
@@ -3694,6 +3706,14 @@ class StateMachine:
                     # 重启恢复重验计数（fix-daemon-lifecycle-races D3）：递增并
                     # 持久化（_bump_counter 文件锁内原子读写）。仅此恢复路径递增
                     # ——运行期中断/重派不经过 recover_interrupted，天然不计数。
+                    # 递增必须先于预算判定落盘（以新值选路），且无法收进写锁
+                    # 临界区（bump_counters 自取同一把 .STATE.md.lock，锁内二次
+                    # flock 自阻塞），故下方两条放弃出口（冻结预检拒绝/恢复写
+                    # 被锁内复查整体跳过）各做对称回退（code-review
+                    # d036d2b10ed9）：不计入恢复的 spec 不占重启重验预算——
+                    # 快照与本写窗口内并发落地的冻结/取消保持不再虚增计数
+                    # （否则取消保持期间反复重启会把计数推到阈值，admin 复位
+                    # status 不清计数，下一次真实恢复重验误触发超限冻结）。
                     redo_count = self.bump_verify_redo_count(name, 1)
                     if redo_count >= max(1, int(verify_redo_budget or 0)):
                         # 冻结前锁内并发复查（code-review item e91eeb9fb37f）：
@@ -3703,6 +3723,10 @@ class StateMachine:
                         # _recovery_update_spec 同款出口：命中即跳过本冻结写并
                         # WARNING 留痕，不计入 recovered。
                         if not self._recovery_freeze_precheck(name):
+                            # 对称回退（code-review d036d2b10ed9）：放行的冻结写
+                            # 未发生——本 spec 不计入恢复，本次递增不保留。
+                            # delta=-1 结果下限 0（_bump_counter 钳零）。
+                            self.bump_verify_redo_count(name, -1)
                             continue
                         # 超限冻结：blocked + frozen + 规范 error 前缀，本次启动
                         # 不再重派 verifier（冻结期间自动链路的 status 改写被
@@ -3775,6 +3799,13 @@ class StateMachine:
                     )
                     if retested:
                         recovered.append(name)
+                    else:
+                        # 对称回退（code-review d036d2b10ed9）：恢复写被锁内
+                        # 复查整体放弃（frozen/_cancelled_hold/status 漂移）
+                        # ——spec 不计入恢复，本次重启的递增不保留。spec 并发
+                        # 删除时条目连同计数一并消失，对缺失条目的回退 bump
+                        # 不落盘（_bump_counter 记 warning 返回 0，无副作用）。
+                        self.bump_verify_redo_count(name, -1)
                     continue
                 elif status == SpecStatus.REVIEWING:
                     # 评审中断恢复：回退 drafted，清空评审 run 引用与尝试计数，

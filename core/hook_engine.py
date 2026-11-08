@@ -784,6 +784,13 @@ class HookEngine:
         else:
             for name, lst in (specs or {}).items():
                 if not isinstance(lst, list):
+                    # 值级：specs.<name> 非列表（如手写成字符串/数字）此前被
+                    # 静默跳过——match_hooks 对字符串值逐字符迭代永不命中、对
+                    # 不可迭代值抛 TypeError 被当「hook 匹配失败」吞掉，均无
+                    # 审计留痕；补审计暴露（口径对齐 validate_hooks_config）
+                    malformed.append(
+                        ("spec", f"hooks.specs.{name}", _truncate(repr(lst), 512))
+                    )
                     continue
                 malformed.extend(
                     ("spec", f"hooks.specs.{name}[{idx}]", _truncate(repr(h), 512))
@@ -804,6 +811,10 @@ class HookEngine:
                 "hooks.global": "必须为列表（非列表按空处理，整段未执行）",
                 "hooks.specs": "必须为对象（非对象按空处理，整段未执行）",
             }.get(where)
+            if section_reason is None and where.startswith("hooks.specs.") and not where.endswith("]"):
+                # 值级形态（code-review item bcb37ab638ff）：hooks.specs.<name>
+                # 非列表（无下标定位符），文案口径对齐 validate_hooks_config
+                section_reason = "必须为列表（非列表值不参与匹配，未执行）"
             detail = (
                 f"hook 配置非法（不执行）: {where} {section_reason}"
                 if section_reason

@@ -820,6 +820,13 @@ def _git_show_tasks_text(branch: str, spec_name: str, project_root) -> "str | No
             ],
             capture_output=True,
             text=True,
+            # errors="replace"（code-review item 9446db4925ab，对齐
+            # self_review._collect_recent_commits 先例）：text=True 严格解码遇
+            # 分支版 tasks.md 含非法 UTF-8 字节抛 UnicodeDecodeError（ValueError
+            # 子类），不在下方 except 捕获面内，冲出分层回退 fail-safe 契约——
+            # 有损替换解码即可：损坏字节落声明段外无影响，破坏 yaml 结构由
+            # _declared_entries_from_text 解析失败按既有语义回退下一来源。
+            errors="replace",
             timeout=_GIT_READ_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
