@@ -966,13 +966,23 @@ def read_run_events_between(
     run_id 先经 _RUN_ID_RE 白名单校验（code-review item f970801a5c7d，与
     _resolve_run_file 同口径）：含路径分隔符等越界字符一律按读失败返回 None，
     不拼 runs 目录之外的读取路径。
+    产物被替换/重建（runs_retention_check 移档终态 run 后 runner 按原路径重建
+    产物继续追加）时新文件 size 小于旧基线：此时按替换信号从 0 重读整个重建
+    产物（其内容全部是未推送的新增事件），基线经返回的 end_offset 自然复位；
+    否则旧基线越过新 EOF，seek 过去只能读到空串，重建产物中偏移小于旧基线的
+    新增事件在文件涨回旧基线之前全部漏采，增量推送静默断流
+    （code-review item fbd79fff16d0）。
     """
     if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
         return None
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     try:
         with run_file.open("rb") as f:
-            f.seek(start_offset)
+            f.seek(0, 2)
+            if f.tell() < start_offset:
+                f.seek(0)
+            else:
+                f.seek(start_offset)
             raw = f.read()
             end_offset = f.tell()
     except OSError:
