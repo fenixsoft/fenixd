@@ -484,7 +484,10 @@ function AlertPanel({
           <List.Item
             actions={[
               /* 操作按钮竖排列（查看调查报告/标记已处理同列、随最宽者等宽），
-                 与 overview 横幅同形态（该页无裁决选择题，执行按钮在横幅侧） */
+                 与 overview 横幅同形态。桌面裁决入口有意收敛在 overview 横幅：
+                 横幅消费同一全局告警数据面，含 choices 的告警在横幅侧走
+                 Select+附注+执行完整闭环，桌面面板不重复内嵌；本页仅移动端
+                 由 MobileAlertRow 行内补齐同款闭环（code-review item 86a887e5e554） */
               <AlertActionColumn key="ops">
                 {hasNarrativeReport(a) && <AlertReportButton text={a.narrative.text} />}
                 <Button size="small" onClick={() => onMarkHandled(a)}>
