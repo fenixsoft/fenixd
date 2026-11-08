@@ -60,8 +60,10 @@ def list_maintenance_entries(project) -> list:
     jsonl，半行交错（写侧已按原子约定防）或手工编辑损伤不应让全量读取失败。
     """
     try:
+        # errors="replace" 使解码失败被替换为 U+FFFD 而不抛 UnicodeDecodeError，
+        # 故此处只捕 OSError（与 _tail_maintenance_entries 的二进制读侧同口径）。
         text = _ledger_path(project).read_text(encoding="utf-8", errors="replace")
-    except (OSError, UnicodeDecodeError):
+    except OSError:
         return []
     entries = []
     # code-review item 34ace64df65c：按 \n 硬分割而非 splitlines()——写侧
