@@ -760,6 +760,34 @@ def check_anchor_references(project_root) -> list:
 _SOURCE_NAME_CLS = r"[A-Za-z0-9._-]"
 
 
+@contextmanager
+def _source_rewrite_lock(proot: Path):
+    """溯源改写逐页读改写窗口的进程间互斥（flock，``.fenix/knowledge-rewrite.lock``）。
+
+    同 _pending_ledger_lock 口径（code-review c6002c057367）：tmp+os.replace
+    只保证单次写不撕裂，不保证「读全文→sub→原子回写」的读改写原子性——
+    本 pass 被 daemon 自动归档与 dashboard --serve 归档（spec_archive 壳层）
+    两进程双路径调用，无锁时并发归档两个同页引用的 SPEC，后写者以改写前
+    读到的旧文本整文回写，覆盖先写者刚落的 ``spec/archive/`` 改写（残留指
+    向已消失 ``spec/changes/<名>`` 的死链）。持锁串行 + 锁内重读盘上最新
+    文本，两轮改写叠加不丢。锁文件与 knowledge-log.lock 同目录不同文件、
+    互不阻塞（改写窗口毫秒级，不值得与编年账追加互排队）。
+    """
+    import fcntl
+
+    lock_dir = Path(proot) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge-rewrite.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_name: str) -> list:
     """归档溯源改写 pass：知识页中该 SPEC 的 changes/ 引用批量改到归档路径。
 
@@ -783,6 +811,8 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
     Returns:
         实际发生替换的文件相对路径清单（posix 形态、相对项目根），供调用方
         并入归档提交的 pathspec。无命中的知识页不改写不写盘（无 mtime 噪声）。
+        命中页的读改写窗口持跨进程 flock（``_source_rewrite_lock``），并发
+        归档对同一页的改写叠加不丢。
 
     Raises:
         读页/写盘等异常原样抛给调用方——fail-open（告警留痕、归档照常）的
@@ -814,16 +844,28 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
             # 不让一个坏页阻断整批改写（调用方的 fail-open 针对整体异常）
             continue
         if f"spec/changes/{spec_name}" not in text:
-            continue  # 快速预筛：无命中不读写盘
-        new_text = pattern.sub(lambda _m: replacement, text)
-        if new_text == text:
-            continue  # 仅前缀同名命中（右边界全否决），不改写
-        # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
-        if not page.is_file():
-            continue
-        # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
-        # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
-        atomic_write_text(page, new_text)
+            continue  # 快速预筛：无命中不读写盘（不取锁）
+        # 逐页读改写互斥（code-review c6002c057367）：上方预筛读到的是无锁
+        # 快照，并发归档可能在预筛与取锁之间已改写本页（另一 SPEC 的
+        # changes/ 引用）——持锁后重读盘上最新文本再做替换回写（同
+        # _pending_ledger_lock 的持锁重读-回写纪律），后写者不再以旧文本
+        # 覆盖先写者刚落的 ``spec/archive/`` 改写。
+        with _source_rewrite_lock(proot):
+            try:
+                text = page.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # 单页不可读：与预筛读取同口径按跳过处理，不让一个坏页
+                # 阻断整批改写（调用方的 fail-open 针对整体异常）
+                continue
+            new_text = pattern.sub(lambda _m: replacement, text)
+            if new_text == text:
+                continue  # 仅前缀同名命中（右边界全否决），不改写
+            # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
+            if not page.is_file():
+                continue
+            # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
+            # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
+            atomic_write_text(page, new_text)
         rewritten.append(page.relative_to(proot).as_posix())
     return rewritten
 
@@ -1657,7 +1699,7 @@ def _git_status_paths(proot: Path):
 
 
 def _knowledge_baseline_snapshot(proot: Path):
-    """run 前基线快照（``_git_status_paths`` + 祖先折叠条目就地展开）。
+    """run 前基线快照（``_git_status_paths`` + 折叠条目就地展开）。
 
     祖先折叠条目（如首蒸项目 spec/ 全树未跟踪时 status 把整树折叠为
     ``spec/``）不能事后展开（code-review 86d88801917e）：基线快照取在
@@ -1667,13 +1709,22 @@ def _knowledge_baseline_snapshot(proot: Path):
     产出滞留工作区永不落库）、overlap 恒非空（_discard_output 把产出误判
     为用户 run 前手工策展而跳过回滚）。故须在快照时刻就地展开：产出尚未
     写入，此刻枚举即真实基线。折叠条目本身意味着其子树下无任何已跟踪
-    文件、knowledge 全表面 untracked 面恰为枚举面，不会过度收纳；祖先折
-    叠条目由枚举结果替代（保留会让下游展开仍走事后枚举分支）。
+    文件、子树 untracked 面恰为枚举面的子集，不会过度收纳；折叠条目由
+    枚举结果替代（保留会让下游展开仍走事后枚举分支）。
+
+    knowledge 内部整树未跟踪折叠条目（code-review b480c04897d8）同理：
+    祖先折叠只覆盖 kn_prefix 之前的层，knowledge 目录自身的子树折叠（如
+    index.md/log.md 已跟踪而 domains/ 尚无已跟踪文件时折叠为 ``??
+    spec/knowledge/domains/``）若原样留在快照里，下游 _expand_knowledge_
+    surface 会按 run 结束后的盘面事后枚举该折叠子树——蒸馏产出（能力页
+    恰落 domains/ 下）被并入基线，run_new 恒空集、pending 台账被清而产出
+    滞留永不落库。与祖先折叠同口径在快照时刻就地展开。
 
     Returns:
         路径集合；``None`` = 快照或就地展开不可用（git 失败），调用方按
         「基线不可用」保守口径处置（不提交、登重试台账 / 跳过回滚），
-        不得降级为空集或保留折叠条目事后展开。
+        不得降级为空集或保留折叠条目事后展开（展开失败回退原折叠形态会
+        重新打开上述产出充基线链，同样不可接受）。
     """
     paths = _git_status_paths(proot)
     if paths is None:
@@ -1682,7 +1733,10 @@ def _knowledge_baseline_snapshot(proot: Path):
     ancestor_folds = {
         p for p in paths if p.endswith("/") and kn_prefix.startswith(p)
     }
-    if not ancestor_folds:
+    internal_folds = {
+        p for p in paths if p.startswith(kn_prefix) and p.endswith("/")
+    }
+    if not ancestor_folds and not internal_folds:
         return paths
     try:
         probe = _git(
@@ -1695,21 +1749,33 @@ def _knowledge_baseline_snapshot(proot: Path):
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning(
-            "knowledge-distill 基线快照祖先折叠条目就地展开失败（%s），"
+            "knowledge-distill 基线快照折叠条目就地展开失败（%s），"
             "按基线不可用处置",
             e,
         )
         return None
     if probe.returncode != 0:
         logger.warning(
-            "knowledge-distill 基线快照祖先折叠条目就地展开失败（git "
+            "knowledge-distill 基线快照折叠条目就地展开失败（git "
             "ls-files 退出码 %d，stderr: %s），按基线不可用处置",
             probe.returncode,
             (probe.stderr or "").strip()[-300:] or "（空）",
         )
         return None
-    expanded = paths - ancestor_folds
-    expanded.update(tok for tok in probe.stdout.split("\0") if tok)
+    untracked = [tok for tok in probe.stdout.split("\0") if tok]
+    expanded = paths - ancestor_folds - internal_folds
+    if ancestor_folds:
+        # 祖先折叠意味着 knowledge 全表面 untracked，枚举面恰为全表面，
+        # 整体收纳（86d88801917e 原逻辑不变）
+        expanded.update(untracked)
+    else:
+        # 内部折叠：只收纳折叠条目子树内的文件（对齐 _expand_knowledge_
+        # surface 的 folded_inside 口径——枚举面是当下盘面，折叠子树外的
+        # 文件级路径由快照原样承载，不靠当下枚举）
+        expanded.update(
+            f for f in untracked
+            if any(f.startswith(d) for d in internal_folds)
+        )
     return expanded
 
 
