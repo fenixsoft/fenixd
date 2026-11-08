@@ -722,7 +722,16 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
     // 重复计入；同刻后续条目不写时长，折叠头回退「已思考数秒」
     if (estimatedAtTime.has(t)) continue;
     estimatedAtTime.add(t);
-    const next = assistantTimes.find((x) => x > t);
+    // item 77f4b082595e：assistantTimes 已升序，二分上界找首个更大时间戳（与线
+    // 性 find 严格等价），长流全量重转换时估算从 O(n²) 降回 O(n log n)
+    let lo = 0;
+    let hi = assistantTimes.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (assistantTimes[mid] > t) hi = mid;
+      else lo = mid + 1;
+    }
+    const next = lo < assistantTimes.length ? assistantTimes[lo] : undefined;
     if (next === undefined) continue;
     // 扣除同事件工具的观测耗时后再估算（item 5828e59782f2）；扣除后非正 → 不写
     // 字段，折叠头回退「已思考数秒」
