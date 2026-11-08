@@ -142,3 +142,25 @@ class TestAgentsDirPreemptiveIgnore:
         assert ".claude/agents/keep.md" in ls.stdout.splitlines()
         status = _git(proj, "status", "--porcelain")
         assert "keep.md" not in status.stdout
+
+
+class TestRenderConfigYaml:
+    """3.2 模板渲染产物 YAML 可正常解析；3.1 注释按 harness 分形态、无误导表述。"""
+
+    def test_rendered_config_safe_load(self):
+        mod = _load_fenix_init()
+        rendered = mod.render_config("demo-proj", "cli")
+        data = yaml.safe_load(rendered)
+        assert isinstance(data, dict)  # 注释改动不破坏结构
+        assert data["project"]["name"] == "demo-proj"
+        assert data["project"]["type"] == "cli"
+
+    def test_comment_harness_wording_no_env_model_claim(self):
+        mod = _load_fenix_init()
+        rendered = mod.render_config("demo-proj", "web")
+        assert "环境变量模型" not in rendered  # 两形态都不准确的误导表述已删除
+        assert "继承 Claude CLI 会话环境" in rendered  # claude 分形态
+        # dsh 条件式表述：对称回落闭环（SPEC ①）未落地，不得断言当下不存在的行为
+        assert "将随对称回落" in rendered
+        assert "add-dispatch-precheck-true-fallback" in rendered
+        assert "无分配角色的默认行为按 agent.harness" in rendered  # agents.models 段补注
