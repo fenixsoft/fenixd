@@ -50,6 +50,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-provider-validation-alert-governance/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-provider-validation-alert-governance/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码（复核结论：裁决 product-bug 成立——场景期望「已失效 (1)+无 500」与产品语义一致（AdminStore.revert_supersede 仅 superseded 态恢复未处理），500 根因实锤为 data 包门面 __init__ 漏 re-export revert_superseded_alert、路由经 dashboard_data 属性访问 AttributeError）
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（52d6cd563：门面补导出 revert_superseded_alert + 新增穿透 dashboard_data 属性访问回归测试封堵漏测缺口 + 门面契约测试 KEY_FUNCTIONS 补入该名）
+- [x] 修复后重跑验证确认通过（run 内重跑受影响面：tests/test_alert_supersede.py + test_dashboard_data_modules_contract.py + 本 SPEC 三个交付单测文件共 130 用例全绿；冻结场景链重跑由框架验证链承接）
