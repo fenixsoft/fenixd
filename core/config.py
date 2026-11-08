@@ -2139,17 +2139,43 @@ class ConfigLoader:
                 provider_out = rows if rows else None
             elif isinstance(rows, list):
                 norm_rows = []
-                for r in rows:
+                for idx, r in enumerate(rows):
                     if isinstance(r, str):
                         norm_rows.append((r, None))
                     elif isinstance(r, dict):
                         n = r.get("provider")
                         if not isinstance(n, str) or not n:
+                            # code-review item ed4cc14fe35a：行级 provider 名非法
+                            # 此前静默 continue，被丢行无从排查——落 WARNING 留痕
+                            # （同 _warn_reader_once 进程级去重口径，对齐下方未知
+                            # 形态告警），行为不变。
+                            cls._warn_reader_once(
+                                f"admin.agents.models.{agent_type}.provider.row[{idx}]",
+                                n,
+                                _logger.warning,
+                                "agents.models[%s].provider 第 %s 行 provider 名非法（%r），该行已丢弃",
+                                agent_type,
+                                idx,
+                                n,
+                            )
                             continue
                         m = r.get("model")
                         norm_rows.append((n, m if (isinstance(m, str) and m) else None))
                     else:
                         continue
+                if rows and not norm_rows:
+                    # code-review item ed4cc14fe35a：入参非空但全部行被丢弃时
+                    # provider_out 坍缩为 None、entry 不含 provider 键——该角色
+                    # provider 配置整体无痕丢失。落 WARNING 留痕（同
+                    # _warn_reader_once 去重口径），行为不变。
+                    cls._warn_reader_once(
+                        f"admin.agents.models.{agent_type}.provider",
+                        rows,
+                        _logger.warning,
+                        "agents.models[%s].provider 全部 %d 行均非法被丢弃，该角色 provider 配置已丢失",
+                        agent_type,
+                        len(rows),
+                    )
                 if len(norm_rows) == 1 and norm_rows[0][1] is None:
                     # 单行且无元素级 model → 退化为字符串（design D4）
                     provider_out = norm_rows[0][0]

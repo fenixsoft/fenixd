@@ -50,8 +50,20 @@ BUGS_KEY = "bugs"
 VERDICT_VERIFIED = "verified"
 VERDICT_BUG_FOUND = "bug-found"
 
-# 逐场景状态取值
-SCENARIO_STATUSES = ("pass", "fail", "error", "warning", "exempt")
+# 逐场景状态取值。含 passed/failed 双词表（code-review item eddd21925cd6）：
+# 本词表是 verdict_check._FAST_TRACK_SCENARIO_STATUSES（item 244fa0af2fba 的
+# passed/failed 容错）的上游硬门——verification 在解析门被判 None 即整轮
+# fail-closed 重派（core/pm_engine/dispatch/fast_track.py 与 result_gate
+# 产物硬门同口径），容错若只做在校验侧则对被解析门拒绝的状态恒不可达。
+# 故在解析侧单点合并双词表：agent 写出 passed/failed 照常过解析门，非 PASS
+# 归类（evidence/classification 义务）仍由 verdict_check.NON_PASS_STATUSES
+# （含 "failed"）双词表承接；拼写错误/未知词依旧 fail-closed 返回 None。
+SCENARIO_STATUSES = (
+    "pass", "passed",
+    "fail", "failed",
+    "error", "warning",
+    "exempt",
+)
 
 # 非 PASS 状态词表单源在 core/verdict_check.NON_PASS_STATUSES（双词表
 # ("fail", "failed", "error", "warning")，兼容 passed/failed 变体）。

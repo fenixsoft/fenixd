@@ -1407,9 +1407,16 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
             encoding="utf-8",
         )
         # 顶替：os.replace 的目标名须不存在，旧目录先原子挪到唯一 old 路径。
-        # 挪走与顶入之间存在毫秒级窗口，并发输家在此落 draft_failed（与此前
-        # 整段逐文件写入的暴露窗口相比可忽略），且其清理只触自己的临时/挪出
-        # 目录，不损赢家的完整落盘。
+        # 并发窗口如实标注（code-review item ec10e5b2fd65）：挪走与顶入之间
+        # 的相邻 rename 窗口内 d 瞬时缺位，并发输家的 os.replace(tmp, d) 撞上
+        # 已占位即 ENOTEMPTY 落 draft_failed（与此前整段逐文件写入的暴露窗口
+        # 相比可忽略）；且 is_dir 观测与 os.replace(d, old) 之间若并发赢家
+        # 恰好整体顶入，old 里装的就是赢家的完整草稿，其后的 rmtree(old) 会
+        # 把它一并删除——「输家清理只触自己的临时/挪出目录、不损赢家完整
+        # 落盘」在该交错下不成立。终态不受损：d 恒为后写入者的完整草稿（同
+        # eid 两方内容一致），单槽位语义下被顶替方必然超车删除，无法在不改
+        # 后写者胜出的前提下保留；赢家侧 accept 撞上瞬时缺位由 accept_item
+        # copytree 的 FileNotFoundError 一次性重试兜底。
         if d.is_dir():
             old = Path(
                 tempfile.mkdtemp(
@@ -2161,19 +2168,35 @@ def accept_item(
             # 本条目此前失败残留：清掉再复制（重试复用原名），防残留污染
             shutil.rmtree(dest, ignore_errors=True)
         try:
-            if src.is_dir():
-                shutil.copytree(src, dest)
-            else:
-                rec["status"] = "accept_failed"
-                rec["draft_failed_reason"] = "暂存草稿目录缺失"
-                _persist(rec)
-                _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：暂存草稿目录缺失")
-                return {
-                    "ok": False,
-                    "status": "accept_failed",
-                    "spec_name": None,
-                    "error": rec["draft_failed_reason"],
-                }
+            # ec10e5b2fd65：src 是 materialize_draft 的顶替对象，输家把旧目录
+            # 挪到唯一 old 路径与顶入自己 tmp 之间的相邻 rename 窗口内 src
+            # 瞬时缺位——is_dir False 与 copytree 半途 FileNotFoundError 是
+            # 同一窗口的两种形态。窗口纳秒级且终态必回完整草稿（后写者胜出），
+            # 一次性重试兜底；重试仍失败交回下方既有分支处置，不掩盖真实故障。
+            for _race_retry in range(2):
+                try:
+                    if src.is_dir():
+                        shutil.copytree(src, dest)
+                        break
+                    if not _race_retry:
+                        # 首次缺位可能是顶替窗口瞬时形态：重看一次再落缺失终态
+                        continue
+                    rec["status"] = "accept_failed"
+                    rec["draft_failed_reason"] = "暂存草稿目录缺失"
+                    _persist(rec)
+                    _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：暂存草稿目录缺失")
+                    return {
+                        "ok": False,
+                        "status": "accept_failed",
+                        "spec_name": None,
+                        "error": rec["draft_failed_reason"],
+                    }
+                except FileNotFoundError:
+                    # 半写副本清掉再重试（copytree 默认要求 dest 不存在）；
+                    # 第二次仍失败时向上抛给 OSError 分支按复制失败处置
+                    shutil.rmtree(dest, ignore_errors=True)
+                    if _race_retry:
+                        raise
         except FileExistsError:
             # code-review item 8b7c78717b19：dest.exists() 预检（41d71f597331）
             # 与 copytree 之间的窗口期被外部新建同名目录时，copytree 顶层
