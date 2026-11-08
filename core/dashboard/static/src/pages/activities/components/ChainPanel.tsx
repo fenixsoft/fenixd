@@ -322,7 +322,13 @@ export default function ChainPanel({
                 )}
               </div>
               <div style={{ ...metaStyle, marginTop: 3, wordBreak: 'break-all' }}>
-                {[r.project, `Admin ${r.admin_attempts}/${r.admin_cap}`, `Arbiter ${r.arbiter_rulings}/${r.arbiter_cap}`, fmtDate(r.last_seen)]
+                {/* fix 32f03ff150b6 同款兜底：cap 缺失（服务端代差/数据损坏）回落原值或「—」，不渲染「N/undefined」 */}
+                {[
+                  r.project,
+                  `Admin ${r.admin_cap != null ? `${r.admin_attempts}/${r.admin_cap}` : `${r.admin_attempts ?? '—'}`}`,
+                  `Arbiter ${r.arbiter_cap != null ? `${r.arbiter_rulings}/${r.arbiter_cap}` : `${r.arbiter_rulings ?? '—'}`}`,
+                  fmtDate(r.last_seen),
+                ]
                   .filter(Boolean)
                   .join(' · ')}
               </div>
