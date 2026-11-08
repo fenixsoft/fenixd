@@ -375,5 +375,51 @@ class TestInfraBudgetExempt(unittest.TestCase):
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0) or 0), 0)
 
 
+class TestReclassifyTextCaseVariants(unittest.TestCase):
+    """英文回拨授予/否定两侧大小写口径（code-review b53d1dccb378）。
+
+    纯文本判定面单测：'Do NOT reclassify 3 rounds' 大写否定句此前否定
+    检查不命中、反被授予模式命中小写子串误判为回拨声明（误减
+    _verify_fail_rounds）；'Reclassify 3 rounds' 句首大写此前授予模式
+    不命中。
+    """
+
+    def test_uppercase_negation_not_reclassified(self):
+        from core.admin_monitor_text_rules import (
+            infra_reclassify_rounds,
+            is_reclassify_negated,
+        )
+
+        text = "本次 infra 误判：Do NOT reclassify 3 rounds，仅记录在案。"
+        self.assertTrue(is_reclassify_negated(text))
+        self.assertEqual(infra_reclassify_rounds(text, "demo-spec"), 0)
+
+    def test_capitalized_grant_still_matches(self):
+        from core.admin_monitor_text_rules import (
+            infra_reclassify_rounds,
+            is_reclassify_negated,
+        )
+
+        text = (
+            "本次验证失败实为 infra 误计入 fail_rounds，"
+            "Reclassify 3 rounds。"
+        )
+        self.assertFalse(is_reclassify_negated(text))
+        self.assertEqual(infra_reclassify_rounds(text, "demo-spec"), 3)
+
+    def test_chinese_phrases_unchanged_by_lower(self):
+        from core.admin_monitor_text_rules import (
+            infra_reclassify_rounds,
+            is_reclassify_negated,
+        )
+
+        negated = "本次无需回拨 3 轮"
+        self.assertTrue(is_reclassify_negated(negated))
+        self.assertEqual(infra_reclassify_rounds(negated, "demo-spec"), 0)
+        granted = "本次回拨 3 轮"
+        self.assertFalse(is_reclassify_negated(granted))
+        self.assertEqual(infra_reclassify_rounds(granted, "demo-spec"), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2668,9 +2668,12 @@ class ConfigLoader:
         admin = cls._segment_or_empty(config, "admin")
         # admin 已由助手归一、契约恒返回 dict（code-review item 8dd876b76689），
         # 不再重复 isinstance 防御
-        sr = admin.get("self_review")
-        if not isinstance(sr, dict):
-            sr = {}
+        # 子段归一复用 _sub_segment_or_empty（code-review item
+        # 9e636252d257）：真值非 dict 进程级一次性 ERROR 告警后按空段降级，
+        # 与同文件 admin.code_review/code_review_fix/regression/
+        # run_infra_breaker 读取器口径对齐——静默置空会让周期自省被静默
+        # 关闭且无任何日志线索，用户无从排障。
+        sr = cls._sub_segment_or_empty(admin, "self_review")
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
         # enabled: "false"）静默转 True、意外开启自省周期调度；非 bool 回退
         # 文档缺省 False（与 get_regression_config 同范式，code-review

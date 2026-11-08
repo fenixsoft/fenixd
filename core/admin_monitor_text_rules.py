@@ -131,7 +131,10 @@ _WAIVER_ASSIGN_RE = re.compile(
 # 匹配组 (?P<n>\d+) 给出减回轮次。
 _RECLASSIFY_GRANT_PATTERNS = (
     r"回拨\s*(?P<n>\d+)\s*轮",
-    r"reclassify\s*(?P<n>\d+)\s*(?:infra)?\s*rounds?",
+    # (?i) 大小写不敏感（code-review b53d1dccb378）：句首/首字母大写变体
+    # 'Reclassify 3 rounds' 此前不命中授予模式；与否定侧英文短语的
+    # 不敏感化同批收口。中文条目大小写无感知、不动。
+    r"(?i)reclassify\s*(?P<n>\d+)\s*(?:infra)?\s*rounds?",
     # 已被第一条「回拨 N 轮」子串覆盖（n 捕获组同值），仅为文档性保留：消费方
     # 按数组顺序取首个命中，本条在正常输入下永不首中（仅「回拨 0 轮」与
     # 「infra 回拨 N>0 轮」同句的病理输入才会轮到），勿按三条独立匹配面理解。
@@ -149,6 +152,10 @@ _RECLASSIFY_NEGATION_PHRASES = (
     "无需回拨",
     "无须回拨",
     "不必回拨",
+    # 唯一英文否定条目：判定侧对 text.lower() 做子串匹配、大小写不敏感
+    # （code-review b53d1dccb378——授予模式以子串方式命中小写 'reclassify
+    # N rounds'，否定侧若大小写敏感，'Do NOT reclassify 3 rounds' 这类
+    # 大写否定句漏拦、反被授予模式误减 fail_rounds，违背保守方向）
     "not reclassify",
     "不适用回拨",
     # 委婉/完成时否定变体（code-review 2ebeb5e657bb）：比照 _WAIVER_NEGATION_
@@ -245,12 +252,15 @@ def is_reclassify_negated(text: str) -> bool:
     """infra 回拨文本是否命中否定短语（命中即保守不触发回拨）。
 
     text 为 None/非 str 时按空串处理（无否定短语命中，返回 False）。
+    英文短语大小写不敏感（code-review b53d1dccb378）。
     """
     # text 防御（与 family_waiver_granted 同款口径）：None/非 str 会使
     # in 判定抛 TypeError——按空串处理，否定短语判定自然落空（返回 False）。
     if not isinstance(text, str):
         text = ""
-    return any(neg in text for neg in _RECLASSIFY_NEGATION_PHRASES)
+    # 英文否定短语大小写不敏感（code-review item b53d1dccb378）：否定
+    # 常量均为小写、中文短语对 .lower() 无感知，对折后文本做子串匹配。
+    return any(neg in text.lower() for neg in _RECLASSIFY_NEGATION_PHRASES)
 
 
 def _pick_current_reclassify_match(matches: list, sent: str):

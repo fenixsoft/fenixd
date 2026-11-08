@@ -29,7 +29,10 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
 
     fix-global-signal-choice-execution 2.1/2.2：返回执行结果 dict 供终态
     回写判定——``{"ok": bool, "action": str|None, "error": str|None,
-    "skipped": bool}``；未尝试执行（choice_id 为空 / 无关联 spec）返回
+    "skipped": bool, "steps": list}``；各出口键集统一：skipped 恒给出、
+    steps 空列表兜底（code-review item 66154381bdd7，下游
+    persist_choice_step_records 只消费 ok/skipped/action/error，补键无
+    副作用）；未尝试执行（choice_id 为空 / 无关联 spec）返回
     None。全局信号（spec 为空或占位 'global'）的 spec_scoped choice 在此
     提前跳过并留 INFO（与『无关联 spec 跳过』分支同型；执行器守卫
     1.2 为正确性兜底），跳过形态返回 ok=False + skipped=True——信号保留
@@ -47,7 +50,9 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
     choice_id = str(getattr(disp, "choice_id", "") or "").strip()
     if not choice_id:
         return None
-    spec = signal.get("spec") or disp.spec
+    # disp duck-typed 防御访问与 choice_id 同口径（code-review item
+    # d90b707f972f）：宿主对象缺 spec 属性不得 AttributeError 穿透执行函数。
+    spec = signal.get("spec") or getattr(disp, "spec", "")
     # fix-global-signal-choice-execution 2.1：全局信号 × spec_scoped choice
     # 提前跳过（双层设防的消费端一层），避免无谓执行报错；INFO 留痕。
     # 守卫须先于『无关联 spec 跳过』分支——spec 为空同样属全局形态，此
@@ -137,7 +142,8 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
                 # 兜底（留痕 action_taken 不缺位）
                 "action": ((_resolved_choice or {}).get("action") or choice_id),
                 "error": (f"全局信号（spec={spec!r}）不可执行"
-                          f"（{_skip_basis}），已跳过")}
+                          f"（{_skip_basis}），已跳过"),
+                "steps": []}
     if not spec and not (
         _resolved_choice and not _resolved_choice.get("spec_scoped", True)
     ):
@@ -170,7 +176,8 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
                 "error": ("该选项需要 choice_payload JSON 载荷"
                           '（{"scenarios": [...], "reason": "...", '
                           '"fixture_files": [...]}），处置记录未携带，'
-                          "已跳过执行")}
+                          "已跳过执行"),
+                "steps": []}
     else:
         # 依据原文随执行留痕（截断防日志膨胀；完整依据已在 DISPOSITION 记录）
         basis = str(getattr(disp, "actions_taken", "") or "")[:200]
@@ -193,7 +200,8 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
             f"陈旧代码预检（request_restart）异常 choice_id={choice_id} "
             f"spec='{spec}': {e}",
         )
-        return {"ok": False, "action": None,
+        return {"ok": False, "skipped": False, "steps": [],
+                "action": None,
                 "error": f"陈旧代码预检异常: {e}"}
     try:
         from core.dashboard.data.admin_actions import execute_adjudication_choice
@@ -212,7 +220,8 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
         )
         # fix-global-signal-choice-execution 2.2：异常按失败上报——终态回写
         # 被拦截（fail-closed，信号保留待重审）
-        return {"ok": False, "action": None, "error": f"choice 执行异常: {e}"}
+        return {"ok": False, "skipped": False, "steps": [],
+                "action": None, "error": f"choice 执行异常: {e}"}
     if result.get("ok"):
         logger.info(
             "admin_monitor",
@@ -226,7 +235,8 @@ def execute_choice_for_disposition(project_root, signal: dict, disp, logger
             f"{result.get('error')}",
             {"steps": result.get("steps") or []},
         )
-    return {"ok": bool(result.get("ok")), "action": result.get("action"),
+    return {"ok": bool(result.get("ok")), "skipped": False,
+            "action": result.get("action"),
             "error": result.get("error"),
             "steps": result.get("steps") or []}
 
@@ -309,5 +319,8 @@ def persist_choice_step_records(store, signal: dict, signal_rec, disp,
             logger.warning(
                 "admin_monitor",
                 f"choice 提前收口信号失败（不阻塞 final 落账）: {e}",
-                {"record_id": signal_rec.get("id"), "run_id": disp.run_id},
+                # 留痕自身不得再抛 AttributeError 穿透本函数（code-review
+                # item d90b707f972f，duck-typed 防御访问口径统一）
+                {"record_id": signal_rec.get("id"),
+                 "run_id": getattr(disp, "run_id", None)},
             )

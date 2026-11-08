@@ -734,8 +734,13 @@ class AdminStore:
             # 的 setdefault，处置记录 severity 不得落无效空级别（与
             # SIGNAL_SEVERITY.get(type, "major") 的未知值缺省惯例同向）
             "severity": signal.get("severity") or "major",
+            # code-review item a260855a3677：与上方 severity 同款 `or ""` 归一
+            # ——signal 缺 description 键/显式 None 时键已存在，_normalize_
+            # entry 的 setdefault 不生效，落 None 绕过空串缺省契约；处置记录
+            # description 恒为字符串（同函数 action_taken/result/recommended_
+            # action/summary/error 均已带 or "" 归一，无需另改）。
             "description": (
-                getattr(disp, "problem", "") or signal.get("description")
+                getattr(disp, "problem", "") or signal.get("description") or ""
             ),
             "action_taken": getattr(disp, "actions_taken", "") or "",
             "result": getattr(disp, "result", "") or "",
