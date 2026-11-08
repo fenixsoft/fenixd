@@ -1909,29 +1909,51 @@ class SpecReviewManager:
     def _content_retry_backoff_seconds(self) -> float:
         """content 失败重派短退避秒数（``review.content_retry_delay_seconds``）。
 
-        配置容错（对齐 backoff._transient_redispatch_delay 口径）：非法配置值
-        回退缺省，不中断重试链路；0 = 关闭退避（立即重派，既有行为）。
+        配置容错（对齐 backoff._transient_redispatch_delay 口径）：布尔/非法
+        配置值 WARNING 留痕后回退缺省，不中断重试链路；0 = 关闭退避（立即
+        重派，既有行为）。
         """
         getter = getattr(self.pm_engine, "_get_config", None)
         if not callable(getter):
             return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
-        try:
-            val = float(
-                getter(
-                    REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY,
-                    REVIEW_CONTENT_RETRY_BACKOFF_SECONDS,
-                )
+        raw = getter(
+            REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY,
+            REVIEW_CONTENT_RETRY_BACKOFF_SECONDS,
+        )
+        # bool 显式拒绝（对齐 backoff._delay_config_value，item 88ef37e3e57e）：
+        # bool 是 int 子类，float(True)=1.0 会被下方守卫误判为合法延时、
+        # float(False)=0.0 直接关闭退避立即重派——恰是本机制治理的秒级连发
+        # 烧光重试预算形态。按脏配置 WARNING 留痕回退缺省。
+        if isinstance(raw, bool):
+            self.logger.warning(
+                "spec_review",
+                f"配置 {REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY} 非法"
+                f"（布尔不合法），回退缺省 "
+                f"{REVIEW_CONTENT_RETRY_BACKOFF_SECONDS:g}s: {raw!r}",
             )
+            return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
+        try:
+            val = float(raw)
         except (TypeError, ValueError, OverflowError):
             # code-review item 851ba3eeed41：巨大 int（YAML 任意精度）送 float()
             # 抛 OverflowError，同按脏值回退缺省——不拦截会沿 _enqueue_review_retry
             # → _handle_review_failure（content 分支）→ consume_review_result
             # 上抛打断本轮评审失败收口（口径同 infra_breaker threshold，
             # item 8c2855513307）。
+            self.logger.warning(
+                "spec_review",
+                f"配置 {REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY} 非法，"
+                f"回退缺省 {REVIEW_CONTENT_RETRY_BACKOFF_SECONDS:g}s: {raw!r}",
+            )
             return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
         # 负值/非有限浮点（.inf/.nan）按脏值回退缺省——同 backoff.py 对
         # transient_redispatch_delay 的守卫口径（item e2d87491cc64）。
         if not math.isfinite(val) or val < 0:
+            self.logger.warning(
+                "spec_review",
+                f"配置 {REVIEW_CONTENT_RETRY_DELAY_CONFIG_KEY} 非法，"
+                f"回退缺省 {REVIEW_CONTENT_RETRY_BACKOFF_SECONDS:g}s: {raw!r}",
+            )
             return REVIEW_CONTENT_RETRY_BACKOFF_SECONDS
         return val
 

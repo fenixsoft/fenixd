@@ -67,12 +67,14 @@ export function useOptimisticAlerts(alertsData: AlertsData | null) {
   }, [alertsData, optimistic, tick]);
 
   // 标记已处理包装：成功记录收敛时刻并返回 null（遮蔽待确认或超时兜底清除），
-  // 失败立即回滚遮蔽并返回错误文案（提示与刷新由各 surface 接续）
+  // 失败立即回滚遮蔽并返回错误文案（提示与刷新由各 surface 接续）；同 id 在飞
+  // 防重命中返回 'duplicate' 哨兵（item edcaa9807336，与成功返回的 null 可区分
+  // ——首个请求仍在飞，成败提示由首调用接续，调用方不得对哨兵弹成功提示）
   const markHandled = useCallback(async (a: AlertItem): Promise<string | null> => {
-    // 在飞防重守卫（item cc4a669ce5fd）：同 id 在飞期间直接 return（null＝无
-    // 错误文案，后端请求由首调用负责），不重复发出 markAlertHandled；下方
+    // 在飞防重守卫（item cc4a669ce5fd）：同 id 在飞期间返回 'duplicate' 哨兵
+    // （后端请求由首调用负责），不重复发出 markAlertHandled；下方
     // optimistic 去重只拦遮蔽数组重复写入，拦不住请求本身
-    if (resolvingIdsRef.current.has(a.id)) return null;
+    if (resolvingIdsRef.current.has(a.id)) return 'duplicate';
     resolvingIdsRef.current.add(a.id);
     // 遮蔽写入守卫：同 id 已在遮蔽内则 no-op，不重复写入
     setOptimistic((prev) => (prev.includes(a.id) ? prev : [...prev, a.id]));

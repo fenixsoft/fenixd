@@ -4857,10 +4857,6 @@ class PMEngine:
                 lines.append(f"- 🟡 **{w['spec']}**: {w['reason']}")
                 lines.append("")
 
-        if not blockers and not warnings:
-            lines.append("✅ No blockers detected. All SPECs progressing normally.")
-            lines.append("")
-
         lines.append(
             f"*Next check: ~{self._get_config('schedule.poll_interval_minutes', 30)} minutes*"
         )

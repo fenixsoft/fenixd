@@ -326,15 +326,18 @@ function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
 // 被 judge 判定通过（裁决权在 judge），失败数只在内容行文字着色。
 // 橙=有失败/警告/env 受阻，绿=全过。
 function VerifyNode({ item, cardBox, headRow, fmtTime, token }: TimelineNodeShared) {
-  const vDur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
+  const vDur =
+    item.duration_seconds !== null && item.duration_seconds !== undefined
+      ? fmtDuration(item.duration_seconds)
+      : '';
   // 统计明细（N 场景/通过/失败/错误/警告）放内容区正文行：数字着色、
   // 0 值项省略，分隔符对齐列表页 VerifyCell 悬浮汇总口径；耗时放标题行
   // 数字着色走语义 token（code-review 180d01dc3edb，对齐 b64f38deac7d
   // token 化口径）：通过 colorSuccess、失败/错误 colorError、警告
   // colorWarning，随主题定制变化
   const statParts: ReactNode[] = [];
-  if (item.total != null) statParts.push(<span key="total">{item.total} 场景</span>);
-  if (item.passed != null) {
+  if (item.total !== null && item.total !== undefined) statParts.push(<span key="total">{item.total} 场景</span>);
+  if (item.passed !== null && item.passed !== undefined) {
     statParts.push(<span key="passed" style={{ color: token.colorSuccess }}>通过 {item.passed}</span>);
   }
   if (!!item.failed) {
@@ -412,7 +415,10 @@ function RunNode({
   // runDotColor：error/gate-blocked 红、interrupted/cancelled 橙、
   // stale 灰、running/empty 蓝、其余绿兜底——渲染输出与迁移前一致）
   const dotColor = runDotColor(st);
-  const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
+  const dur =
+    item.duration_seconds !== null && item.duration_seconds !== undefined
+      ? fmtDuration(item.duration_seconds)
+      : '';
   const isFix = item.spec && String(item.spec).startsWith('fix-');
 
   return (
@@ -425,7 +431,7 @@ function RunNode({
         {item.llm && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{item.llm}</Tag>}
         {/* add-model-billing-cost-display：可计价 run 成本标注（样式同 llm Tag；
             不可计价节点不下发 cost_usd，不渲染，避免历史节点噪音） */}
-        {item.cost_usd != null && (
+        {item.cost_usd !== null && item.cost_usd !== undefined && (
           <Tag color="green" style={{ marginInlineEnd: 0 }}>{formatUsd(item.cost_usd)}</Tag>
         )}
         {(item.retry_count ?? 0) > 0 && (

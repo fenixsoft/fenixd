@@ -26,7 +26,7 @@ from core.fast_track_result import (
     estimate_spec_scale,
     get_scale_precheck_config,
 )
-from core.state_machine import ENV_BLOCK_ROUNDS_FIELD
+from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FROZEN_FIELD
 # add-dispatch-precheck-true-fallback 2.3：harness binary 缺失终态同享
 # 「确定性环境缺陷不自动重派」豁免面（与模型链不可用同款）。
 from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
@@ -152,6 +152,13 @@ class FFastTrackMixin:
         # 口径）：STATE 瞬态 IO/锁异常仅 WARNING 留痕后继续 stuck 判定与
         # _enqueue，避免异常跳过本轮降级入队；写失败时降级原因缺失由周期
         # 扫描兜底。
+        # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+        # _error_write_frozen_recheck）：窗口内并发 freeze_for_human 的冻结
+        # error（内嵌「原状态 X」还原锚点）不在冻结剥离范围、会被本 ready 写
+        # 覆盖。已冻结即放弃本轮降级写与 implementer 入队，冻结现场保留待
+        # 人工解冻。
+        if self._error_write_frozen_recheck(spec_name, "fast-track 规模降级"):
+            return
         try:
             self._pm.state_machine.update_spec(
                 spec_name,
@@ -1059,29 +1066,41 @@ class FFastTrackMixin:
             if retries >= max_r:
                 fp = self._pm._redispatch_cause_fingerprint(contract_err)
                 orig_status = spec_entry.get("status") or "implementing"
-                self._pm.state_machine.freeze_for_human(
-                    spec_name,
-                    error=(
-                        f"原状态 {orig_status} · fast-track 重试耗尽"
-                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
-                    ),
-                    signal_type="redispatch_loop_detected",
-                    severity="major",
-                    description=(
-                        f"'{spec_name}' fast-track 契约违反（success 但 branch 为空）"
-                        f"连续重试 {max_r} 轮已达上限（max_retries），自动重试终止"
-                        f"——已冻结转人工处置"
-                    ),
-                    evidence=(
-                        f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                        f"fp={fp}; final_error={contract_err}"
-                    ),
-                    recommended_action=(
-                        "检查 runner 成功但分支名缺失的根因；处置后解冻"
-                        "（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
-                    ),
-                    alert_callback=self._pm._send_human_escalation_alert,
-                )
+                # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py
+                # 孪生位点 d708ce0288a8/ad24a537a716 同款口径）：freeze_for_human
+                # 裸调 IO 瞬时异常沿 worker 外层 except 逃逸会跳过重试耗尽冻结、
+                # 落入通用回滚重派。失败统一留痕后放弃本分支收尾（return False
+                # = 调用方按「内部已处置」直接收口，交恢复/周期通道接手），
+                # MUST NOT 放大。
+                try:
+                    self._pm.state_machine.freeze_for_human(
+                        spec_name,
+                        error=(
+                            f"原状态 {orig_status} · fast-track 重试耗尽"
+                            f"（{max_r}/{max_r} 轮，指纹 {fp}）：{contract_err}"
+                        ),
+                        signal_type="redispatch_loop_detected",
+                        severity="major",
+                        description=(
+                            f"'{spec_name}' fast-track 契约违反（success 但 branch 为空）"
+                            f"连续重试 {max_r} 轮已达上限（max_retries），自动重试终止"
+                            f"——已冻结转人工处置"
+                        ),
+                        evidence=(
+                            f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                            f"fp={fp}; final_error={contract_err}"
+                        ),
+                        recommended_action=(
+                            "检查 runner 成功但分支名缺失的根因；处置后解冻"
+                            "（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
+                        ),
+                        alert_callback=self._pm._send_human_escalation_alert,
+                    )
+                except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                    self._log_freeze_for_human_failure(
+                        spec_name, e, warn_label="fast-track 契约违反重试耗尽",
+                    )
+                    return False
                 self._pm.logger.error(
                     "pm_engine",
                     f"fast-track all retries exhausted '{spec_name}' — 冻结转人工，"
@@ -1279,28 +1298,40 @@ class FFastTrackMixin:
             (self._pm.state_machine.read_one(spec_name) or {}).get("status")
             or "implementing"
         )
-        self._pm.state_machine.freeze_for_human(
-            spec_name,
-            error=(
-                f"原状态 {orig_status} · fast-track 硬校验失败重试耗尽"
-                f"（{max_r}/{max_r} 轮，指纹 {fp}）：{err}"
-            ),
-            signal_type="redispatch_loop_detected",
-            severity="major",
-            description=(
-                f"'{spec_name}' fast-track 结果文件持续未通过硬校验，连续重试 "
-                f"{max_r} 轮已达上限（max_retries），自动重试终止——已冻结转人工处置"
-            ),
-            evidence=(
-                f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                f"fp={fp}; final_error={err}"
-            ),
-            recommended_action=(
-                "检查结果文件持续非法的根因（runner 产出契约/场景集漂移）；处置后"
-                "解冻（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
-            ),
-            alert_callback=self._pm._send_human_escalation_alert,
-        )
+        # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py 孪生位点
+        # d708ce0288a8/ad24a537a716 同款口径）：freeze_for_human 裸调 IO 瞬时
+        # 异常沿 worker 外层 except 逃逸会跳过封顶冻结分类、落入通用回滚重派
+        # （记账已持久化而冻结升级被跳过）。失败统一留痕后放弃本分支收尾
+        # （return False = 调用方 MUST 终止重派），交恢复/周期通道接手，
+        # MUST NOT 放大。
+        try:
+            self._pm.state_machine.freeze_for_human(
+                spec_name,
+                error=(
+                    f"原状态 {orig_status} · fast-track 硬校验失败重试耗尽"
+                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{err}"
+                ),
+                signal_type="redispatch_loop_detected",
+                severity="major",
+                description=(
+                    f"'{spec_name}' fast-track 结果文件持续未通过硬校验，连续重试 "
+                    f"{max_r} 轮已达上限（max_retries），自动重试终止——已冻结转人工处置"
+                ),
+                evidence=(
+                    f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                    f"fp={fp}; final_error={err}"
+                ),
+                recommended_action=(
+                    "检查结果文件持续非法的根因（runner 产出契约/场景集漂移）；处置后"
+                    "解冻（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
+                ),
+                alert_callback=self._pm._send_human_escalation_alert,
+            )
+        except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+            self._log_freeze_for_human_failure(
+                spec_name, e, warn_label="fast-track 硬校验重试耗尽",
+            )
+            return False
         self._pm.logger.error(
             "pm_engine",
             f"fast-track hard-check retries exhausted '{spec_name}' — 冻结转人工，"
@@ -1865,6 +1896,34 @@ class FFastTrackMixin:
             ),
         )
 
+    def _error_write_frozen_recheck(self, spec_name: str, context_label: str) -> bool:
+        """终态 error 写盘前的冻结复查（code-review item 9eccfb685eed，仿
+        backoff._handle_dispatch_lock_conflict 的 440ec07a12cc / rollback
+        _rollback_frozen_recheck 030f2c204875 同型并发窗口防护，六处终态
+        error 写点收敛单一落点）。
+
+        error 键不在冻结剥离范围（state_machine 冻结剥离只剥 status），
+        run 收尾分类窗口内并发 freeze_for_human 的冻结 error 内嵌
+        「原状态 X」供 parse_orig_status 解冻还原——终态写点直接覆盖会保留
+        frozen=True 而丢失还原锚点。读侧失败按未冻结继续（保既有写行为，
+        写点自身另有收尾守卫兜底）。
+
+        Returns: True = 复查发现已冻结，调用方放弃本次 error 写并按分支
+        语义收尾（不重派），冻结现场原样保留待人工解冻。
+        """
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception:  # noqa: BLE001 —— 读侧失败按未冻结继续
+            return False
+        if not entry.get(FROZEN_FIELD):
+            return False
+        self._pm.logger.warning(
+            "pm_engine",
+            f"终态 error 写盘放弃 '{spec_name}'（{context_label}）：写盘前复查"
+            "发现已冻结——放弃 error 写与重派收尾，冻结现场保留待人工解冻还原",
+        )
+        return True
+
     def _handle_fast_track_failure(
         self,
         spec_name: str,
@@ -1977,6 +2036,11 @@ class FFastTrackMixin:
                 f"fast-track provider circuit open '{spec_name}' — holding "
                 f"state, no retry/state flip: {final_error}",
             )
+            # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+            # _error_write_frozen_recheck）：已冻结即放弃 error 补写（本分支
+            # 收尾本就保持原状后 return），冻结现场保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "provider 熔断终态"):
+                return
             # 终态 error 补写守卫（code-review item d3a787ddcbca，对齐
             # d708ce0288a8「冻结 IO 失败不放大处置」同款口径）：裸调异常沿
             # worker 外层 except 逃逸会穿透回滚放大处置。失败记 ERROR 审计后
@@ -2003,6 +2067,11 @@ class FFastTrackMixin:
                 f"fast-track provider transient '{spec_name}' — scheduling "
                 f"delayed redispatch, no retry/state flip: {final_error}",
             )
+            # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+            # _error_write_frozen_recheck）：已冻结即放弃 error 补写与延迟重派
+            # 排程（不重派），冻结现场保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "provider 瞬断终态"):
+                return
             # 终态 error 补写守卫（code-review item d3a787ddcbca，对齐
             # d708ce0288a8 同款口径）：失败记 ERROR 审计后继续本分支收尾（延迟
             # 重派排程不依赖该写点），MUST NOT 让异常穿透回滚。
@@ -2030,6 +2099,11 @@ class FFastTrackMixin:
                 f"fast-track model chain unavailable '{spec_name}' — holding "
                 f"state, no redispatch/retry/state flip: {final_error}",
             )
+            # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+            # _error_write_frozen_recheck）：已冻结即放弃 error 补写（本分支
+            # 收尾本就保持原状后 return），冻结现场保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "模型链不可用终态"):
+                return
             # 终态 error 补写守卫（code-review item d3a787ddcbca，对齐
             # d708ce0288a8 同款口径）：失败记 ERROR 审计后继续本分支收尾（保持
             # 原状不重派不翻转），MUST NOT 让异常穿透回滚。
@@ -2081,34 +2155,52 @@ class FFastTrackMixin:
         if retries >= max_r:
             fp = self._pm._redispatch_cause_fingerprint(final_error)
             orig_status = (spec_entry or {}).get("status") or "implementing"
-            self._pm.state_machine.freeze_for_human(
-                spec_name,
-                error=(
-                    f"原状态 {orig_status} · fast-track 重试耗尽"
-                    f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
-                ),
-                signal_type="redispatch_loop_detected",
-                severity="major",
-                description=(
-                    f"'{spec_name}' fast-track 连续失败重试 {max_r} 轮已达上限"
-                    f"（max_retries），自动重试终止——已冻结转人工处置"
-                ),
-                evidence=(
-                    f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                    f"fp={fp}; final_error={final_error}"
-                ),
-                recommended_action=(
-                    "检查失败根因；处置后解冻（unfreeze_spec 自动清零计数）可重新"
-                    "获得自动修复机会"
-                ),
-                alert_callback=self._pm._send_human_escalation_alert,
-            )
+            # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py 孪生
+            # 位点 d708ce0288a8/ad24a537a716 同款口径）：freeze_for_human 裸调
+            # IO 瞬时异常沿 worker 外层 except 逃逸会跳过重试耗尽冻结、落入
+            # _rollback_failed_dispatch 通用重派（多烧一轮 fast-track run）。
+            # 失败统一留痕后放弃本分支收尾（不重派、不翻转状态），交恢复/
+            # 周期通道接手，MUST NOT 放大。
+            try:
+                self._pm.state_machine.freeze_for_human(
+                    spec_name,
+                    error=(
+                        f"原状态 {orig_status} · fast-track 重试耗尽"
+                        f"（{max_r}/{max_r} 轮，指纹 {fp}）：{final_error}"
+                    ),
+                    signal_type="redispatch_loop_detected",
+                    severity="major",
+                    description=(
+                        f"'{spec_name}' fast-track 连续失败重试 {max_r} 轮已达上限"
+                        f"（max_retries），自动重试终止——已冻结转人工处置"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
+                        f"fp={fp}; final_error={final_error}"
+                    ),
+                    recommended_action=(
+                        "检查失败根因；处置后解冻（unfreeze_spec 自动清零计数）可重新"
+                        "获得自动修复机会"
+                    ),
+                    alert_callback=self._pm._send_human_escalation_alert,
+                )
+            except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                self._log_freeze_for_human_failure(
+                    spec_name, e, warn_label="fast-track 重试耗尽",
+                )
+                return
             self._pm.logger.error(
                 "pm_engine",
                 f"fast-track all retries exhausted '{spec_name}' — 冻结转人工，"
                 f"不再重派（{retries}/{max_r}，fp={fp}）",
             )
         else:
+            # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+            # _error_write_frozen_recheck）：已冻结即放弃 ready 写与重派入队
+            # （「自动重试」承诺让位冻结现场），保留冻结 error「原状态 X」
+            # 还原锚点待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "fast-track 自动重试"):
+                return
             # 状态写守卫（code-review item fae7dcf82183，对齐 queue.py 孪生段
             # be172509602e 同款口径与本文件 merge 失败 ready 出口
             # eb3982dae3fb）：update_spec 是 flock+read_all+write_all 真实文件
@@ -2196,40 +2288,73 @@ class FFastTrackMixin:
             # 解冻还原；blocked 终态清旧 tester_run 指针沿用
             # （code-review item 14a6755b9728）。
             orig_status = spec_entry.get("status") or "implementing"
-            self._pm.state_machine.freeze_for_human(
-                spec_name,
-                error=(
-                    f"原状态 {orig_status} · fast-track 连续 {attempts} 次"
-                    f"零变更报成功 — 已冻结转人工，需人工检查"
-                ),
-                signal_type="redispatch_loop_detected",
-                severity="major",
-                description=(
-                    f"'{spec_name}' fast-track 连续 {attempts} 次零变更报成功"
-                    f"（疑似空转），自动重派终止——已冻结转人工处置"
-                ),
-                evidence=(
-                    f"spec={spec_name}; zero_change_attempts={attempts}; "
-                    f"run={getattr(result, 'run_id', '') or ''}"
-                ),
-                recommended_action=(
-                    "检查任务书/上下文/网关稳定性；处置后解冻"
-                    "（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
-                ),
-                alert_callback=self._pm._send_human_escalation_alert,
-                extra_updates={
-                    # _zero_change_attempts 已由 bump_counters 原子递增落盘，
-                    # 不再并写（防并发写回互相覆盖丢增量）
-                    "tester_run": None,
-                },
-            )
+            # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py
+            # 孪生位点 d708ce0288a8/ad24a537a716「冻结 IO 失败不放大处置」
+            # 同款口径）：freeze_for_human 含 flock+read_all+write_all 与告警
+            # 回调真实 IO，裸调瞬时异常沿 worker 外层 except 逃逸落入
+            # _rollback_failed_dispatch——attempts 记账已持久化而三连冻结升级
+            # 被整体跳过，已分类的空转循环被误回滚成通用失败重派。失败统一
+            # 留痕后放弃本分支收尾（不重派），交恢复/周期通道接手，MUST NOT
+            # 放大。
+            try:
+                self._pm.state_machine.freeze_for_human(
+                    spec_name,
+                    error=(
+                        f"原状态 {orig_status} · fast-track 连续 {attempts} 次"
+                        f"零变更报成功 — 已冻结转人工，需人工检查"
+                    ),
+                    signal_type="redispatch_loop_detected",
+                    severity="major",
+                    description=(
+                        f"'{spec_name}' fast-track 连续 {attempts} 次零变更报成功"
+                        f"（疑似空转），自动重派终止——已冻结转人工处置"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; zero_change_attempts={attempts}; "
+                        f"run={getattr(result, 'run_id', '') or ''}"
+                    ),
+                    recommended_action=(
+                        "检查任务书/上下文/网关稳定性；处置后解冻"
+                        "（unfreeze_spec 自动清零计数）可重新获得自动修复机会"
+                    ),
+                    alert_callback=self._pm._send_human_escalation_alert,
+                    extra_updates={
+                        # _zero_change_attempts 已由 bump_counters 原子递增落盘，
+                        # 不再并写（防并发写回互相覆盖丢增量）
+                        "tester_run": None,
+                    },
+                )
+            except Exception as e:  # noqa: BLE001 —— 冻结 IO 失败不放大处置
+                # 留痕统一走 _log_freeze_for_human_failure（对齐 queue.py
+                # ad24a537a716 守卫单一落点）
+                self._log_freeze_for_human_failure(
+                    spec_name, e, warn_label="fast-track 零变更三连",
+                )
+                return
             self._pm.logger.error(
                 "pm_engine",
                 f"fast-track 零变更哨超限 '{spec_name}'（第 {attempts} 次）— "
                 f"冻结转人工，不再重派",
             )
         else:
-            self._pm.state_machine.update_spec(spec_name, updates)
+            # 终态 error 写盘前冻结复查（code-review item 9eccfb685eed，见
+            # _error_write_frozen_recheck）：已冻结即放弃 ready 写与重派入队，
+            # 冻结现场（error「原状态 X」还原锚点）保留待人工解冻。
+            if self._error_write_frozen_recheck(spec_name, "fast-track 零变更哨"):
+                return
+            # 状态写守卫（code-review item 84f09a73fe9b，对齐 queue.py 孪生
+            # 位点 be172509602e「状态写盘不穿透处置链」同款口径）：update_spec
+            # 裸调瞬时异常沿 worker 外层 except 逃逸落入
+            # _rollback_failed_dispatch（status 仍 implementing → 预算豁免回退
+            # + 误导性 _last_dispatch_error 覆盖本哨 error 文案），MUST NOT
+            # 放大。失败记审计后放弃本分支收尾（不重派，交恢复/周期通道接手）。
+            try:
+                self._pm.state_machine.update_spec(spec_name, updates)
+            except Exception as e:  # noqa: BLE001 —— 收尾写盘失败不放大处置
+                self._log_state_write_failure(
+                    spec_name, e, warn_label="fast-track 零变更哨",
+                )
+                return
         if attempts < ZERO_CHANGE_BREAKER_ATTEMPTS:
             self._enqueue_front(spec_name, "fast-track")
 

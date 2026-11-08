@@ -2836,7 +2836,7 @@ def _schedule_scenario_repair_reverify(pipeline, spec_name: str) -> None:
         # 触发派发（design D3 规则 3）：经 PipelineContext 公开排空接缝
         # request_queue_drain——code-review 3fe95948997b：此前经局部变量
         # getattr(pipeline, "_pm") 回引私有 _process_queue，对
-        # verification-pipeline-modules 契约「self._pm._ 零命中」审计不可见；
+        # verification-pipeline-modules 契约「门面私有回引零命中」审计不可见；
         # 私有回引由 context 委托承载（同 ocr_join_gate/
         # schedule_infra_retry_redispatch 的 D10 模式）。桩 context 未接线
         # （成员为 None）时 fail-open 跳过——派发兜底由 _dispatch_backoff_

@@ -53,6 +53,18 @@ export const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
   // 归档蒸馏车道前缀兜底（后端 run_files 表 add-distill-run-artifacts 2.1
   // 同名条目的前端镜像；与既有前缀无子串冲突，顺序不敏感处追加）
   ['knowledge-distiller-', '知识蒸馏 Agent'],
+  // 以下五条对齐后端唯一真源 run_files.py RUN_ID_AGENT_PREFIXES（其注释
+  // 口径「新增 run 前缀只改这里，别再复制一份」）此前缺的车道前缀，防
+  // 「未知 Agent」退化回潮（本表 arbiter- / knowledge-distiller- 两次补条
+  // 先例）。中文名取自既有代码命名（设置页 PromptsPanel AGENT_LABELS、
+  // 「自进化」页签、maintenance_ledger 维护台账）；code-review- 与
+  // impl-ocr-（实现期收尾审查）共用「代码审查」名。与既有前缀无子串冲突
+  // （review- 与 spec-review- 在 startswith 语义下互不吞并），顺序不敏感处追加
+  ['code-review-', '代码审查 Agent'],
+  ['code-fix-', '自动修复 Agent'],
+  ['review-', '自省 Agent'],
+  ['evo-', '自进化 Agent'],
+  ['maintenance-', '维护 Agent'],
 ];
 
 export function agentLabel(item: { agent_type?: string; run_id?: string }): string {

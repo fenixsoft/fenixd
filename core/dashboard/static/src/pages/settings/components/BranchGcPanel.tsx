@@ -1,6 +1,6 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import type { ConfigData } from '@/services/dashboard';
-import { usePanelDirty } from '../panelDirty';
+import { usePanelDirty, BRANCH_GC_SAVE_OWNER } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 
@@ -35,8 +35,11 @@ interface BranchGcPanelProps {
 // 合并），回显当前生效值（后端经 get_branch_gc_config 归一，非法值回显缺省）。
 export default function BranchGcPanel({ config, onSave }: BranchGcPanelProps) {
   const [form] = Form.useForm();
-  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
-  const { setDirty } = usePanelDirty();
+  // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认。
+  // owner 与 index 传给 handleSave 的 dirtyOwner 同值配对（code-review item
+  // 4a1439f602af）：本页签同时挂 VerifyPanel、两保存入口各清各的脏标记，
+  // 保存本面板不复位其快照前已置脏的未保存编辑
+  const { setDirty } = usePanelDirty(undefined, BRANCH_GC_SAVE_OWNER);
   // 表单脚手架统一走 useGatedFormPanel（saving 重入守卫 / 序列化比较回填
   // 门控 / 校验与持久化分离，与 MiscSettingsPanel 同款）
   const { saving, initialValues, handleSave } = useGatedFormPanel({

@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
-import { usePanelDirty } from '../panelDirty';
+import { usePanelDirty, VERIFY_SAVE_OWNER } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
 
 const { Text } = Typography;
@@ -125,8 +125,11 @@ interface VerifyPanelProps {
 export default function VerifyPanel({ config, onSave, project, onConfigSynced }: VerifyPanelProps) {
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
-  // （code-review item 8a3eb01dc2b9）
-  const { setDirty } = usePanelDirty();
+  // （code-review item 8a3eb01dc2b9）。owner 与 index 传给 handleSave 的
+  // dirtyOwner 同值配对（code-review item 4a1439f602af）：本页签同时挂
+  // BranchGcPanel、两保存入口各清各的脏标记，保存本面板不复位其快照前
+  // 已置脏的未保存编辑
+  const { setDirty } = usePanelDirty(undefined, VERIFY_SAVE_OWNER);
   // 产物路径为项目级键：用户级作用域下只读展示（无 project 即用户级）
   const artifactEditable = Boolean(project);
   // 三态联动：无产物（false）时路径列表隐藏并显示结案提示

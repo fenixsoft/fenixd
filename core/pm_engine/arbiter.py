@@ -128,6 +128,13 @@ GAP_TODO_SECTION = "### 可改进"
 # 满队列 = 显式报错（排队登记失败 MUST NOT 吞 conflict 报假成功）。
 ARBITER_QUEUE_MAX = 8
 
+# 复现升级在飞 dedup 窗口（秒，item 8a294f3ebdc2）：复现升级不经单飞队列、
+# 不写 _active，同一冻结事件的双咽喉（冻结咽喉 alert_id=None 直派 → 告警
+# 咽喉携 alert_id 补报，降级形态两咽喉必先后同到）对同签名会各自走完一次
+# 复现判定——重复写台账并重复升级同一告警。窗口内第二报折叠为告警补绑
+# （零台账）；两咽喉间隔为秒级事件对，窗口取宽裕值，超时自清不永久占用。
+ARBITER_RECURRENCE_DEDUP_WINDOW_S = 120.0
+
 # 台账条目五段结构键（spec「调查报告与处置台账」）：缺任一段即不完整。
 LEDGER_SEGMENT_KEYS = (
     "scene_snapshot",     # 现场快照
@@ -243,6 +250,11 @@ class ArbiterLane:
         self._budget_ledger: Dict[str, dict] = {}
         # 在飞触发的迟到 alert 补绑表（签名 → alert_id；worker 取到触发时合并）
         self._pending_binds: Dict[str, str] = {}
+        # 复现升级在飞标记（签名 → 单调时刻，窗口见
+        # ARBITER_RECURRENCE_DEDUP_WINDOW_S）：复现升级不经队列/worker、
+        # 无 _active 占位，同一冻结事件双咽喉的第二报在此命中 dedup
+        # （item 8a294f3ebdc2）。
+        self._recurrence_inflight: Dict[str, float] = {}
         # 存量回扫（add-arbiter-backlog-sweep 1.1）跃迁记账：
         # _startup_swept——启动回扫每进程至多一次（重复调用幂等短路）；
         # _last_seen_enabled——热更新跃迁观察基线（None=未观测，False→True
@@ -349,7 +361,8 @@ class ArbiterLane:
           既有 narrative/人工路径，本方法不做任何写入）；
         - ``"excluded"``：signal 在 chain.blacklist 黑名单（留 narrative 与
           人类——不进 Arbiter 也不进链，直达人工队列）；
-        - ``"deduped"``：同签名已派发/在飞——本次触发只绑 alert 不再派发；
+        - ``"deduped"``：同签名已派发/在飞（含复现升级在飞）——本次触发
+          只绑 alert/补挂告警升级，不再派发；
         - ``"recurrence-escalated"``：同签名已派发过（复发）——按 design D6
           直接产裁决包升级，不再自主处置；
         - ``"queued"``：已入单飞队列（排队后串行消费）。
@@ -377,6 +390,7 @@ class ArbiterLane:
         rulings = quota.arbiter_rulings(sig) if quota is not None else 0
         rulings_cap = self._arbiter_rulings_quota()
         recurrence_payload: Optional[dict] = None
+        recurrence_bind = False
         with self._lock:
             if sig in self._active:
                 # 同签名在飞/排队：只绑 alert（原位挂靠目标），不重复派发
@@ -387,7 +401,29 @@ class ArbiterLane:
                     f"arbiter 触发 dedup（同签名在飞/排队）: sig={sig} alert={alert_id}",
                 )
                 return "deduped"
-            if (
+            rec_at = self._recurrence_inflight.get(sig)
+            if rec_at is not None and (
+                time.monotonic() - rec_at > ARBITER_RECURRENCE_DEDUP_WINDOW_S
+            ):
+                # 窗口外自清：告警咽喉补报始终未到（store 拒写等告警未落盘
+                # 形态）标记不永久占用——后续真实复发照常按配额语义上升
+                self._recurrence_inflight.pop(sig, None)
+                rec_at = None
+            if rec_at is not None:
+                # 同一冻结事件双咽喉第二报（复现升级在飞）：首次升级件已落
+                # 台账（冻结咽喉 alert_id=None，当时告警未落盘），本次只补
+                # 做告警原位升级、零台账落盘；携 alert_id 的补报即刻消费
+                # 标记，锁外执行慢盘升级（与下方复发分支同纪律）。
+                if alert_id:
+                    self._recurrence_inflight.pop(sig, None)
+                    recurrence_bind = True
+                self._log(
+                    "info",
+                    f"arbiter 触发 dedup（复现升级在飞）: sig={sig} alert={alert_id}",
+                )
+                if not recurrence_bind:
+                    return "deduped"
+            elif (
                 sig in self._deadmanned
                 or sig in persisted_deadmanned
                 or rulings >= rulings_cap
@@ -416,6 +452,8 @@ class ArbiterLane:
                     "rulings_used": rulings,
                     "rulings_cap": rulings_cap,
                 }
+                # 复现升级在飞登记（锁内，与 queued 分支 _active.add 同纪律）
+                self._recurrence_inflight[sig] = time.monotonic()
             else:
                 # worker 预热先于入队与 dedup 占位（c0f79d6b865f）：线程创建
                 # /start 失败时队列未进、_active 未占，异常上抛即干净回滚，
@@ -451,6 +489,22 @@ class ArbiterLane:
         if recurrence_payload is not None:
             self._record_recurrence_escalation(**recurrence_payload)
             return "recurrence-escalated"
+        if recurrence_bind:
+            # 同事件告警咽喉补报：只补做告警原位升级（首次触发已落台账），
+            # 不重复写 recurrence-escalation 台账、不重复升级
+            self._record_recurrence_escalation(
+                spec=spec,
+                signal_type=signal_type,
+                sig=sig,
+                severity=severity,
+                description=description,
+                evidence=evidence,
+                alert_id=alert_id,
+                rulings_used=rulings,
+                rulings_cap=rulings_cap,
+                write_ledger=False,
+            )
+            return "deduped"
         self._log(
             "info",
             f"arbiter 触发入队（单飞串行）: sig={sig} alert={alert_id} source={source}",
@@ -1501,8 +1555,14 @@ class ArbiterLane:
         alert_id: Optional[str],
         rulings_used: int = 0,
         rulings_cap: int = 2,
+        write_ledger: bool = True,
     ) -> None:
-        """复现配额耗尽/dead-man 例外：不经 run 直接产裁决包挂新告警升级。"""
+        """复现配额耗尽/dead-man 例外：不经 run 直接产裁决包挂新告警升级。
+
+        ``write_ledger=False`` 为同事件双咽喉补绑形态（item 8a294f3ebdc2）：
+        首次触发已落 recurrence-escalation 台账，本调用只补做告警原位升级，
+        零台账落盘。
+        """
         trigger = {
             "spec": spec,
             "signal_type": signal_type,
@@ -1513,25 +1573,26 @@ class ArbiterLane:
             "source": "recurrence",
             "enqueued_at": _utcnow_iso(),
         }
-        self._write_ledger(
-            trigger,
-            {"run_id": None, "error": ""},
-            kind="recurrence-escalation",
-            report={
-                "summary": (
-                    f"签名 {sig} 复现配额已耗尽（已拍板 {rulings_used}/{rulings_cap}）"
-                    "或属 dead-man 永久例外——第 "
-                    f"{rulings_used + 1} 次复现强制上升人工。"
+        if write_ledger:
+            self._write_ledger(
+                trigger,
+                {"run_id": None, "error": ""},
+                kind="recurrence-escalation",
+                report={
+                    "summary": (
+                        f"签名 {sig} 复现配额已耗尽（已拍板 {rulings_used}/{rulings_cap}）"
+                        "或属 dead-man 永久例外——第 "
+                        f"{rulings_used + 1} 次复现强制上升人工。"
+                    ),
+                    "evidence_refs": [evidence] if evidence else [],
+                },
+                budget={},
+                action_or_upgrade=(
+                    f"复现配额耗尽强制升级（拍板 {rulings_used}/{rulings_cap} 后第 "
+                    f"{rulings_used + 1} 次复现；dead-man 永久单次例外不复位）"
                 ),
-                "evidence_refs": [evidence] if evidence else [],
-            },
-            budget={},
-            action_or_upgrade=(
-                f"复现配额耗尽强制升级（拍板 {rulings_used}/{rulings_cap} 后第 "
-                f"{rulings_used + 1} 次复现；dead-man 永久单次例外不复位）"
-            ),
-            status_after="",
-        )
+                status_after="",
+            )
         if alert_id:
             self._upgrade_alert(
                 alert_id,

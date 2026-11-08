@@ -232,8 +232,8 @@ async function request<T>(
   // 下界钳制（code-review item 0f5003043aca）：getRegressionFixResult 等轮询
   // 封装把「剩余预算」由调用方算出后透传，预算算尽或算术失误会传入 0/负数
   // （NaN/Infinity 同为合法 number，setTimeout 对两者分别退化为立即触发/
-  // 溢出归零）。非有限值直接落回下界，有限值取 max(raw, 下界)——保证任何
-  // 调用路径下超时窗口均有效。
+  // 溢出归零）。非有限值落回 REQUEST_TIMEOUT_MS 缺省（见下方回归锚说明），
+  // 有限值取 max(raw, 下界)——保证任何调用路径下超时窗口均有效。
   const rawTimeoutMs = opts?.timeoutMs;
   // fallback 须为 REQUEST_TIMEOUT_MS（回归锚 tests/requestTimeoutFallback.test.mjs）：
   // code-fix 00bd36bda 曾把未传参分支误落 MIN_REQUEST_TIMEOUT_MS，全站默认

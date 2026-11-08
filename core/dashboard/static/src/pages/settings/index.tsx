@@ -11,7 +11,12 @@ import type { ConfigData, OverviewData } from '@/services/dashboard';
 import { PAGE_LABELS } from './pageLabels';
 import type { PageKey } from './pageLabels';
 // 页签/作用域切换丢弃确认（code-review item 8a3eb01dc2b9）：活跃面板判脏
-import { anyPanelDirty, snapshotPanelDirty } from './panelDirty';
+import {
+  anyPanelDirty,
+  snapshotPanelDirty,
+  VERIFY_SAVE_OWNER,
+  BRANCH_GC_SAVE_OWNER,
+} from './panelDirty';
 // 提示文字状态色取宿主对齐单源（theme.ts；DESIGN.md「宿主对齐基线」+ 配色单源红线）
 import { DSH_ERROR, DSH_WARNING } from '@/theme';
 import LlmProviderPanel from './components/LlmProviderPanel';
@@ -237,7 +242,12 @@ export default function SettingsPage() {
   // 瞬态重载失败不得把已成功的保存误报为「保存失败」，只给非致命刷新提示；
   // 重载完成时经 scopeRef/projectRef 比对币值，await 期间用户切换作用域/
   // 项目则丢弃旧作用域的迟到响应（不覆盖新作用域 config）。
-  const handleSave = async (values: Partial<ConfigData>): Promise<boolean> => {
+  // dirtyOwner（code-review item 4a1439f602af）：发起保存的面板标识，仅 verify
+  // 页签双保存入口传（见下方快照注释）；其余调用方不传
+  const handleSave = async (
+    values: Partial<ConfigData>,
+    dirtyOwner?: string,
+  ): Promise<boolean> => {
     const scopeAtStart = scope;
     const projectAtStart = project;
     // 判脏复位只覆盖被保存面板（code-review item 1b0adfd4fcaa）：在首个 await
@@ -245,7 +255,13 @@ export default function SettingsPage() {
     // 链（写盘往返 + 重载），在飞期间经丢弃确认切页签新编辑的其他面板若被全量
     // 复位，其未保存编辑会在后续切换时静默丢弃。快照恰为发起保存时的活跃页签
     // 条目（面板按 activeKey 条件渲染），保存失败不复位、语义无损。
-    const resetSavedPanelDirty = snapshotPanelDirty();
+    // 同页签多保存入口按发起者收窄（code-review item 4a1439f602af）：verify
+    // 页签同时挂 VerifyPanel 与 BranchGcPanel、各有独立保存按钮且各自只提交
+    // 本面板字段，全量快照会把「保存其一时另一面板快照前已置脏」的条目一并
+    // 复位，其未保存编辑失去切页签丢弃确认保护、随后切换被静默丢弃——传
+    // dirtyOwner 仅快照发起面板条目，双按钮各清各的；其余页签单保存入口或
+    // collect 合并提交（自进化/仲裁），不传保持全量快照语义。
+    const resetSavedPanelDirty = snapshotPanelDirty(dirtyOwner);
     try {
       await saveConfig(project, values);
     } catch (error) {
@@ -256,7 +272,8 @@ export default function SettingsPage() {
     message.success('保存成功');
     // 已落盘的编辑不再是「未保存改动」（code-review item 8a3eb01dc2b9）：复位
     // 判脏，后续切页签/作用域不再对已保存的内容弹丢弃确认；仅复位发起保存时
-    // 在场的被保存面板（item 1b0adfd4fcaa），在飞期间新编辑的其他页签保留脏标记。
+    // 在场的被保存面板（item 1b0adfd4fcaa），在飞期间新编辑的其他页签保留脏标记
+    // （同页签另一保存入口快照前的既有脏亦保留，item 4a1439f602af）。
     resetSavedPanelDirty();
     // 重新加载配置（失败不影响保存结论）
     try {
@@ -606,14 +623,21 @@ export default function SettingsPage() {
                   <>
                     <VerifyPanel
                       config={config}
-                      onSave={handleSave}
+                      // 保存入口标识（code-review item 4a1439f602af）：与本面板
+                      // usePanelDirty 登记的 owner 同值配对，保存只复位自身脏
+                      // 条目，不清同页签 BranchGcPanel 快照前已置脏的未保存编辑
+                      onSave={(v) => handleSave(v, VERIFY_SAVE_OWNER)}
                       project={scope === 'project' ? project : undefined}
                       onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
                     />
                     {/* add-merged-branch-gc：已合并分支 GC 面板（worktree.branch_gc
                         两键），与验证/worktree 维护设置同页签呈现；独立 Form 与
-                        保存按钮，保存走同一 handleSave 写回通道 */}
-                    <BranchGcPanel config={config} onSave={handleSave} />
+                        保存按钮，保存走同一 handleSave 写回通道。owner 配对口径
+                        同上方 VerifyPanel（code-review item 4a1439f602af） */}
+                    <BranchGcPanel
+                      config={config}
+                      onSave={(v) => handleSave(v, BRANCH_GC_SAVE_OWNER)}
+                    />
                   </>
                 )}
                 {activeKey === 'arbiter' && (

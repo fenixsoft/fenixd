@@ -3304,7 +3304,25 @@ class QQQueueMixin:
         理论上不成立（run 已启动说明派发锁已取得），本判据为防御性识别；判不准
         fail-open 回既有指纹熔断。
         """
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item a79f230f331a，对齐同文件
+        # _defer_merge_back / _retry_merge_back_only / _handle_merge_back_real_failure
+        # 的 d9a7315bce20 同款守卫）：read_one 是 flock+read_all 真实文件 IO，本判据
+        # 经 _handle_retryable_mergeback_failure 被实现 worker 失败链与 merge-only
+        # 重试 Timer 链共享（且是该三级判据中唯一需要 read_one IO 的一级），裸调瞬时
+        # OSError 在 worker 路径沿外层 except 落入 _rollback_failed_dispatch（把
+        # 「仅顺延重试、保留分支锚点」的可重试分类放大成 ready 回滚），沿 Timer 回调
+        # 外溢则该链不再排程新 Timer，MUST NOT 放大——logger.warning 留痕后返回
+        # False（判不准 fail-open 回既有指纹熔断/repair/ready 通道）。
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispatch 锁冲突判据读取 spec 现场失败 '{spec_name}'"
+                f"（判不准 fail-open 回既有指纹熔断通道）: "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
         until = entry.get("_dispatch_backoff_until")
         if not until:
             return False

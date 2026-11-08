@@ -22,7 +22,21 @@ interface PanelDirtyEntry {
   // 可比，但毫秒分辨率下快照与再置脏虽隔至少一个事件循环任务仍可落于同一
   // 毫秒（code-review item eccce22c019b），复位比较须用 >= 兜住该碰撞。
   lastDirtyAt: number;
+  // 保存入口归属标识（code-review item 4a1439f602af）：仅同页签挂多个独立
+  // 保存入口的面板登记（见下方 VERIFY_SAVE_OWNER/BRANCH_GC_SAVE_OWNER），
+  // 供按发起保存的入口过滤快照集合；其余面板不登记（undefined = 归属任意
+  // 保存入口，仅参与全量快照）。
+  owner?: string;
 }
+
+// 同页签多独立保存入口的归属标识单源（code-review item 4a1439f602af）：
+// verify 页签同时挂 VerifyPanel 与 BranchGcPanel、各有独立保存按钮且各自只
+// 提交本面板字段，面板侧 usePanelDirty 以同值登记 owner、index 渲染处把它
+// 传给 handleSave 作 dirtyOwner 过滤快照。字面集中在本模块防两处漂移（漂移
+// 会使保存后快照捞不到条目、已保存编辑误弹丢弃确认），同 PAGE_LABELS 的
+// 单源口径。
+export const VERIFY_SAVE_OWNER = 'verify';
+export const BRANCH_GC_SAVE_OWNER = 'branch-gc';
 
 const entries = new Set<PanelDirtyEntry>();
 
@@ -52,9 +66,22 @@ export function anyPanelDirty(): boolean {
  * 落盘）才复位；快照后新置脏（lastDirtyAt >= 快照时刻）的一律保留。快照
  * 时刻未脏的条目本就无脏可清，复位与否行为等价，无需逐条目记录快照时值。
  * probe 型面板 reset 本为 no-op，脏状态由面板自身归零，不受此门禁影响。
+ *
+ * 保存入口粒度收窄（code-review item 4a1439f602af）：上段「快照恰为被保存
+ * 面板」仅对页签内单一保存入口成立。verify 页签同时挂 VerifyPanel 与
+ * BranchGcPanel，各有独立保存按钮且各自只提交本面板字段，全量快照会在保存
+ * 其一时把另一面板「快照前已置脏」的条目一并复位——该面板未保存编辑从此
+ * 失去切页签/切作用域的丢弃确认保护、随后切换即被静默丢弃（跨页签同型缺陷
+ * 见 item 1b0adfd4fcaa）。传 owner 仅快照登记了该标识的条目，双保存入口
+ * 各清各的；不传保持全量语义（切作用域复位、自进化/仲裁页签 collect 合并
+ * 提交的两卡片同属一次保存）。
  */
-export function snapshotPanelDirty(): () => void {
-  const armed = new Set(entries);
+export function snapshotPanelDirty(owner?: string): () => void {
+  const armed = new Set(
+    owner === undefined
+      ? entries
+      : [...entries].filter((entry) => entry.owner === owner),
+  );
   const snapshotAt = Date.now();
   return () => {
     for (const entry of armed) {
@@ -82,8 +109,16 @@ export function snapshotPanelDirty(): () => void {
  * refetch/syncSavedExtra、ProjectProfilePanel 的基线回打），不经
  * snapshotPanelDirty 统一复位；探针实时比对口径下外部清脏反而会掩盖仍与
  * 落盘不一致的草稿（见 ProjectProfilePanel 对单一脏布尔连带清标记的取舍）。
+ * owner（code-review item 4a1439f602af）：保存入口归属标识，仅同页签挂多个
+ * 独立保存入口的面板登记（verify 页签两面板取 VERIFY_SAVE_OWNER/
+ * BRANCH_GC_SAVE_OWNER），与 index 渲染处传给 handleSave 的 dirtyOwner 同值
+ * 配对，使保存各清各的脏标记；其余面板不登记（undefined = 不参与按入口
+ * 过滤，全量快照照常覆盖）。
  */
-export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolean) => void } {
+export function usePanelDirty(
+  probe?: () => boolean,
+  owner?: string,
+): { setDirty: (dirty: boolean) => void } {
   const dirtyRef = useRef(false);
   // probe 经 ref 间接引用（镜像 index.tsx 的 scopeRef 模式）：内联箭头每次
   // 渲染都是新引用，注册效果只跑一次、探针读到的始终是最新闭包
@@ -102,6 +137,7 @@ export function usePanelDirty(probe?: () => boolean): { setDirty: (dirty: boolea
         dirtyRef.current = false;
       },
       lastDirtyAt: 0,
+      owner,
     };
     entryRef.current = entry;
     entries.add(entry);

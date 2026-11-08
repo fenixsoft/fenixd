@@ -196,7 +196,17 @@ def _run_captured(argv: list, timeout: int, caller: str) -> subprocess.Completed
         try:
             out2, err2 = p.communicate(timeout=5)
         except Exception:
-            pass
+            # 第二次排空仍超时（孙进程逃出进程组继续持有管道写端）：leader
+            # 未经 wait 收割会残留僵尸直至 dashboard 退出，补一次短超时收尸；
+            # 并把首次异常携带的部分输出经 _as_text 归一挂回（Popen.communicate
+            # 的 TimeoutExpired 当前恒为 None，防御其他解释器形态携带部分
+            # 输出），避免诊断回退到修复前空串（code-review item 2b311f1384cb）。
+            try:
+                p.wait(timeout=1)
+            except Exception:
+                pass
+            e.stdout = _as_text(e.stdout)
+            e.stderr = _as_text(e.stderr)
         else:
             e.stdout = _as_text(e.stdout) + _as_text(out2)
             e.stderr = _as_text(e.stderr) + _as_text(err2)

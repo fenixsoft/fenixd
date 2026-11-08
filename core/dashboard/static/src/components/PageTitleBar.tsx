@@ -48,7 +48,7 @@ import {
   subscribePageTitleBar,
   type PageTitleBarMeta,
 } from './pageTitleBarStore';
-import { DSH_BG_SOFT, DSH_BG_SOFT_GLASS, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
+import { DSH_BG_SOFT_GLASS, DSH_SPLIT, DSH_TEXT, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@/theme';
 
 export type { PageTitleBarMeta } from './pageTitleBarStore';
 

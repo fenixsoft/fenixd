@@ -460,6 +460,8 @@ function MobileAlertPane({
 function AlertPanel({
   alertsData,
   optimistic,
+  causeFilter,
+  onCauseFilterChange,
   onMarkHandled,
   onRevertSupersede,
   onResolved,
@@ -467,6 +469,8 @@ function AlertPanel({
 }: {
   alertsData: AlertsData | null;
   optimistic: string[];
+  causeFilter: string;
+  onCauseFilterChange: (v: string) => void;
   onMarkHandled: (a: AlertItem) => void;
   onRevertSupersede: (a: AlertItem) => void;
   onResolved: () => void;
@@ -474,9 +478,9 @@ function AlertPanel({
 }) {
   // 全局视图：不按项目过滤，仅剔除乐观移除的条目
   const visible = (a: AlertItem) => !optimistic.includes(a.id);
-  // 根因筛选（add-provider-validation-alert-governance 4.3）：'' = 全部；
-  // cause 缺席的存量记录按 unknown 归组（后端 4.6 首轮回填前的旧账本）
-  const [causeFilter, setCauseFilter] = useState('');
+  // 根因筛选（add-provider-validation-alert-governance 4.3）：state 提升宿主页
+  //（页签失活即卸载本面板，提升后筛选选择跨页签切换保持，与处置链 project 同款）；
+  // '' = 全部；cause 缺席的存量记录按 unknown 归组（后端 4.6 首轮回填前的旧账本）
   const byCause = (a: AlertItem) => !causeFilter || (a.cause || 'unknown') === causeFilter;
   const unhandled = (alertsData?.alerts || []).filter(visible).filter(byCause);
   const resolvedAll = (alertsData?.resolved || []).filter(visible).filter(byCause);
@@ -558,7 +562,7 @@ function AlertPanel({
     <Select
       size="small"
       value={causeFilter}
-      onChange={setCauseFilter}
+      onChange={onCauseFilterChange}
       style={{ minWidth: 140 }}
       data-testid="alert-cause-filter"
       options={[
@@ -635,6 +639,9 @@ export default function ActivitiesPage() {
   // 处置链页签的单项目聚合筛选：state 提升到宿主页——Select 在标题栏筛选槽
   // 渲染（页签失活即卸载 ChainPanel，提升后筛选选择跨页签切换保持）
   const [project, setProject] = useState<string | undefined>(undefined);
+  // 告警页签的根因筛选：同款提升到宿主页（页签失活即卸载 AlertPanel，
+  // 提升后筛选选择跨页签切换保持）
+  const [causeFilter, setCauseFilter] = useState('');
   // 项目选择器选项取全局 initialState.projects（原 /chain 页同源口径）
   const { initialState } = useModel('@@initialState');
   const projectOptions = initialState?.projects || [];
@@ -803,8 +810,10 @@ export default function ActivitiesPage() {
 
   const handleMarkHandled = useCallback(
     async (a: AlertItem) => {
-      // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案
+      // markHandled（hook 单源）：成功返回 null、失败已回滚并返回错误文案、
+      // 'duplicate'＝同 id 在飞防重命中（首个请求仍在飞，提示由首调用接续）
       const err = await markHandled(a);
+      if (err === 'duplicate') return;
       if (err == null) message.success('已标记处理');
       else message.error(`标记失败：${err}`);
       void load();
@@ -964,6 +973,8 @@ export default function ActivitiesPage() {
                   <AlertPanel
                     alertsData={alertsData}
                     optimistic={optimistic}
+                    causeFilter={causeFilter}
+                    onCauseFilterChange={setCauseFilter}
                     onMarkHandled={(a) => void handleMarkHandled(a)}
                     onRevertSupersede={(a) => void handleRevertSupersede(a)}
                     onResolved={() => void load()}

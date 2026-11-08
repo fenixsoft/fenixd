@@ -740,9 +740,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     disabled={rIdx === 0}
                                     onClick={() => {
                                       moveRow(rIdx, rIdx - 1);
-                                      // moveRow 不触发 onValuesChange，程序化换序后
-                                      // 显式置脏（比照 autofill 的 setDirty 口径），
-                                      // 否则换序内容切页签不弹丢弃确认被静默丢弃
+                                      // moveRow 经 Form.List 的 Field 包装 onChange 走
+                                      // dispatch updateValue，已触发 onValuesChange 置脏；
+                                      // 显式 setDirty 仅为防御性双保险（防 rc-field-form
+                                      // 升级改变回调链，比照 autofill 的 setDirty 口径）
                                       setDirty(true);
                                     }}
                                   />
@@ -754,6 +755,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                     disabled={rIdx === rowFields.length - 1}
                                     onClick={() => {
                                       moveRow(rIdx, rIdx + 1);
+                                      // 同上：onValuesChange 已置脏，此处防御性双保险
                                       setDirty(true);
                                     }}
                                   />
@@ -812,6 +814,8 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                   const [fromRole, fromRow] = fromId.split('-').map(Number);
                                   // 只允许同角色卡片内换序（跨卡片行分属不同 Form.List）
                                   if (fromRole !== index) return;
+                                  // moveRow 会触发 onValuesChange 置脏，拖拽换序无需显式
+                                  // setDirty（移动端按钮的显式 setDirty 仅为双保险）
                                   moveRow(fromRow, rIdx);
                                 }}
                                 onDragEnd={() => {
@@ -967,7 +971,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                   设置面板同一写法，项目/非项目两分支间距一致，避免视觉漂移。移动端
                   改底部吸附保存条（原型定稿）：13 卡长页保存不依赖滚到页尾；sticky
                   占据文档流不永久遮挡内容。负边距两端耦合 index.tsx 移动端右栏
-                  padding '12px 16px 24px'（-16 吃横距、-24 吃底距落页底），右栏
+                  padding '12px 4px 24px'（-4 吃横距、-24 吃底距落页底），右栏
                   padding 调整须同步本处；圆角随壳卡灰底准例 10px 收口。 */}
               <div
                 style={
@@ -979,7 +983,7 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                         display: 'flex',
                         alignItems: 'center',
                         gap: 8,
-                        margin: '16px -16px -24px',
+                        margin: '16px -4px -24px',
                         padding: '10px 16px calc(10px + env(safe-area-inset-bottom))',
                         background: '#ffffff', // = antd colorBgBase，白壳卡同源
                         borderTop: `1px solid ${DSH_SPLIT}`,

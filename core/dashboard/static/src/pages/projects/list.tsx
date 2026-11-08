@@ -54,8 +54,8 @@ import { fmtDuration } from '@/utils/duration';
 // 刷新/心跳节奏常量与详情页共用单源（code-review item 73395d34f3de）
 import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
-// 评审 blocked 前缀与 v2 specDetail 共用单源（code-review item 801f9399dba8）
-import { SPEC_REVIEW_BLOCKED_PREFIXES } from '@/utils/specReview';
+// 评审 blocked 标记与 v2 specDetail 共用单源（code-review item 801f9399dba8）
+import { SPEC_REVIEW_BLOCKED_MARKERS } from '@/utils/specReview';
 // SPEC 中文标题关键字命中单源（add-spec-chinese-title 2.2）
 import { specKeywordHit } from './specTitle';
 // 整行点击守卫与路径单源（add-spec-subtitle-and-row-click task 2.1）
@@ -2043,10 +2043,10 @@ export default function SpecListPage() {
   };
 
   const handleReReview = (record: SpecSummary) => {
-    // add-spec-review-gate D8：重新评审入口——仅 error 前缀命中
-    // SPEC_REVIEW_BLOCKED_PREFIXES（与后端 re_review 白名单同源）的
+    // add-spec-review-gate D8：重新评审入口——仅 error 子串命中
+    // SPEC_REVIEW_BLOCKED_MARKERS（与后端 re_review 判据同源同口径）的
     // blocked SPEC 显示本入口；后端仍会复核开放条件（非 blocked/冻结/
-    // 前缀不符任一拒绝），失败时展示后端返回的拒绝原因。
+    // 标记不符任一拒绝），失败时展示后端返回的拒绝原因。
     modal.confirm({
       title: '重新评审 SPEC',
       content: (
@@ -2064,7 +2064,7 @@ export default function SpecListPage() {
           message.success(`SPEC「${record.name}」已重新进入评审`);
           void load();
         } catch (err) {
-          // 后端拒绝（非 blocked / 冻结 / 前缀不符等）→ 展示明确拒绝原因
+          // 后端拒绝（非 blocked / 冻结 / 标记不符等）→ 展示明确拒绝原因
           message.error(`重新评审失败：${err instanceof Error ? err.message : String(err)}`);
         }
       },
@@ -2160,11 +2160,11 @@ export default function SpecListPage() {
     // （归档区块可用）。
     // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
     // add-spec-review-gate D8（code-review item 1b64add9823d）：评审相关
-    // blocked（error 前缀命中 SPEC_REVIEW_BLOCKED_PREFIXES，与后端
-    // re_review 白名单同源）判据收敛单点，消除双前缀重复子句
+    // blocked（error 子串命中 SPEC_REVIEW_BLOCKED_MARKERS，与后端
+    // re_review 判据同源同口径）判据收敛单点，消除双前缀重复子句
     const reviewBlocked =
       record.status === 'blocked' &&
-      SPEC_REVIEW_BLOCKED_PREFIXES.some((p) => (record.error || '').startsWith(p));
+      SPEC_REVIEW_BLOCKED_MARKERS.some((m) => (record.error || '').includes(m));
     return [
       { key: 'status', label: '修改状态' },
       // add-spec-review-gate D8：评审相关 blocked 增「重新评审」入口
