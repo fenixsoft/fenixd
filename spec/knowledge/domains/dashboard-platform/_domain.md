@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-11-08 12:30 UTC+8
+> 最后更新：2026-11-08 20:53 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、前端壳层基建、按需生成类任务与指挥中心聚合。
 
@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | [dashboard-server](dashboard-server.md) | dashboard 服务端（含 API 验证取证纪律：禁破坏性 POST、404 分层、真实项目名探测、fixture 实例配方） | 2026-11-04 16:30 |
 | [fenix-dashboard-skill](fenix-dashboard-skill.md) | dashboard 技能入口 | 2026-11-05 04:11 |
-| [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（端口接管豁免 unit/tmux 两支/看门狗、双向验证铁律、承载形态双轨重启协议 systemctl/respawn-window、陈旧进程判读） | 2026-11-06 18:13 |
+| [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md) | dashboard 实例生命周期（端口接管豁免 unit/tmux 两支/看门狗、双向验证铁律、承载形态双轨重启协议 systemctl/respawn-window、陈旧进程判读含路由层 404/混代 500 签名） | 2026-11-08 20:53 |
 | [dashboard-push-restart](dashboard-push-restart.md) | pushed 终态自动重启 dashboard（内置 hook/去抖/unit 缺席静默跳过/逃生键/tmux 托管盲态与收口方向） | 2026-11-06 18:13 |
 | [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-07 02:25 |
 | [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher | 2026-10-03 04:59 |

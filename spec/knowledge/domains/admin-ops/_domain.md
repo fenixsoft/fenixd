@@ -1,7 +1,7 @@
 # 管理员运营与告警
-> 最后更新：2026-11-08 11:59 UTC+8
+> 最后更新：2026-11-08 20:53 UTC+8
 
-管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与告警自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、Arbiter 自主裁决车道。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
+管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与告警自解释叙事、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、Arbiter 自主裁决车道。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
 ## 能力页
 
@@ -31,6 +31,7 @@
 | [adjudication-alert-narrative](adjudication-alert-narrative.md) | 转人工裁决告警异步调查叙事（四段式+侧车补叙） | 2026-10-09 02:02 |
 | [alert-lifecycle](alert-lifecycle.md) | 告警生命周期自动闭环（spec 附着条件解除消解含验证翻绿收口，升级与信号双 kind 皆然＋瞬态族签名安静自愈） | 2026-11-08 11:59 |
 | [alert-resolve](alert-resolve.md) | 告警人工消解闭环 | 2026-10-03 04:59 |
+| [alert-fixture-seeds](alert-fixture-seeds.md) | 告警面板验证夹具种子（真实 AdminStore 通道写入不打标进缺省聚合、幂等含未处理态恢复、无 teardown 设计内遗留、[provfix-seed] 判别签名与清理路径） | 2026-11-08 20:53 |
 | [human-escalation-alerts](human-escalation-alerts.md) | 人工升级告警（链终点例外出口：全链痕迹落盘、降噪分级、孤儿链痕抑制与链事件对账兜底升级口径、归因按 run 终态分派文案含 result 读 success 子型） | 2026-11-04 10:31 |
 | [arbiter-lane](arbiter-lane.md) | Arbiter 自主裁决车道（触发面黑名单制与单飞配额、权限红线含禁立项、处置白名单、五段台账、零噪音分层、框架缺口 gaps→todo 路由） | 2026-11-03 23:39 |
 | [escalation-chain](escalation-chain.md) | 升级处置链（Admin→Arbiter→人工）路由与配额语义（frozen 预检、frozen-terminated 不计尝试、Arbiter 复现配额缺省 3）、防自环、链痕单源协调、让行留痕与看护扫描唤醒、失败双轨上升、黑名单 kill switch 与 fail-open 降级、存量迁移、看护豁免通道、链上 admin run 返回即落账（单源落账助手）与闭环出口 choice 执行（fail-closed）、链事件 run_id 结构字段与看护对账兜底 | 2026-11-04 10:31 |
