@@ -68,6 +68,34 @@ function arbiterActionFieldLabel(kind: string): string {
   return '处置动作';
 }
 
+// 处置链事件标签/着色映射（fix-timeline-chain-nodes-invisible 任务 1.1）：
+// chain_kind → 中文里程碑标签 + 语义着色（闭环绿 / 上升·复现橙 / 转单金 /
+// 派发蓝 / choice 失败红，设计 D2）；台账未来新增而前端未跟的未知形态走
+// 中性「处置链」灰标签兜底，不报错（对齐 arbiterOutcomeTone 的 default 语气）。
+const CHAIN_KIND_META: Record<string, { label: string; color: string }> = {
+  'chain-dispatch': { label: '链派发', color: 'blue' },
+  'chain-handoff': { label: '转单 Arbiter', color: 'gold' },
+  'chain-closed': { label: '链闭环', color: 'green' },
+  'chain-escalated': { label: '链终点上升', color: 'orange' },
+  'chain-recurrence': { label: '复现', color: 'orange' },
+  'chain-choice-failed': { label: 'choice 执行失败', color: 'red' },
+};
+
+// 键查找用 hasOwnProperty 自有键防御（口径同 AdminNode 的 SEV_LABEL，
+// code-review item 5f9331c7ecae）：后端下发 'constructor' 等畸形 chain_kind
+// 时普通对象查找命中原型链继承键。圆点色与标签着色同源（color）；
+// 'default' 非 Timeline dot 合法色，圆点侧归一 gray（unknown 兜底）。
+// 分支选择以 if/else 表达（先例：arbiterOutcomeTone，禁止嵌套三元）。
+function chainKindMeta(chainKind: string): { label: string; color: string; dot: string } {
+  const known = Object.prototype.hasOwnProperty.call(CHAIN_KIND_META, chainKind)
+    ? CHAIN_KIND_META[chainKind]
+    : null;
+  if (known) {
+    return { label: known.label, color: known.color, dot: known.color };
+  }
+  return { label: '处置链', color: 'default', dot: 'gray' };
+}
+
 // 回退节点判定谓词（code-review item 77b2b6634542）：StateNode 的「↩ 状态回退」
 // orange 徽标与主渲染 timeline.map 回调的圆点 colorWarning 着色共用此单一来源，
 // 防止两处内联各自演化导致徽标与圆点着色不一致。判定口径：后端 backward 字段
@@ -125,6 +153,10 @@ function StateNode({
   item, cardBox, headRow, fmtTime, token, onOpenReport,
 }: TimelineNodeShared & { onOpenReport: () => void }) {
   const isRollback = isRollbackNode(item);
+  // 命名防混淆红线（fix-timeline-chain-nodes-invisible 任务 1.3）：此处的
+  // item.chain 是 state 折叠节点的「状态序列」字段，与处置链事件节点
+  // （kind === 'chain'，ChainNode 分支）无关——链节点判定仅以
+  // item.kind === 'chain' 为准，本分支消费逻辑零改动，勿按字段名互串。
   const chainStatuses: string[] = (item.chain && item.chain.length > 1)
     ? item.chain
     : [item.from || '', item.to || ''];
@@ -248,6 +280,37 @@ function AdminNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
       </div>
       <Typography.Text style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
         {item.description || ''}
+      </Typography.Text>
+    </div>
+  );
+}
+
+// 处置链事件节点（fix-timeline-chain-nodes-invisible 任务 1.2）：链事件台账
+// 联查节点（get_spec_timeline kind="chain"，add-escalation-chain-admin-arbiter
+// 5.1 后端已交付；此前前端落兜底守卫渲染为空 listitem——处置链节点实际不可见，
+// 用户误判「没有 arbiter 处理节点」）。紧凑卡片：标题行（时间 + 链里程碑中文
+// 标签 Tag + signal_type 副标签）+ 正文一行 summary（台账 action_or_upgrade
+// 摘要，后端已截断 200 字符）。对齐 admin 节点紧凑范式，不渲染 markdown 全文
+// （完整台账仍由运维页处置链视图承载）。纯展示块，无任何交互形态。
+function ChainNode({ item, cardBox, headRow, fmtTime }: TimelineNodeShared) {
+  const meta = chainKindMeta(item.chain_kind || '');
+  return (
+    <div style={cardBox(false)}>
+      <div style={headRow}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {fmtTime(item.time)}
+        </Typography.Text>
+        <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+          {meta.label}
+        </Tag>
+        {!!item.signal_type && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {item.signal_type}
+          </Typography.Text>
+        )}
+      </div>
+      <Typography.Text style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
+        {item.summary || ''}
       </Typography.Text>
     </div>
   );
@@ -595,6 +658,15 @@ export default function SpecTimeline({
               color: hasIssue || vWarn ? 'orange' : 'green',
               children: <VerifyNode {...shared} />,
             };
+          }
+
+          // 处置链事件节点（fix-timeline-chain-nodes-invisible 任务 1.2）：
+          // 分支置于兜底守卫之前——链节点此前落守卫降级为裸灰点（无卡片体）。
+          // 圆点色与链标签着色同源（chainKindMeta 单源，设计 D2）；unknown
+          // 兜底的 'default' 非 Timeline dot 合法色，圆点侧归一 gray
+          if (item.kind === 'chain') {
+            const meta = chainKindMeta(item.chain_kind || '');
+            return { color: meta.dot, children: <ChainNode {...shared} /> };
           }
 
           // 兜底守卫（add-timeline-admin-events）：以上各 kind 分支未处理的
