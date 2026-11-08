@@ -189,10 +189,13 @@ async function request<T>(
   // 溢出归零）。非有限值直接落回下界，有限值取 max(raw, 下界)——保证任何
   // 调用路径下超时窗口均有效。
   const rawTimeoutMs = opts?.timeoutMs;
+  // fallback 须为 REQUEST_TIMEOUT_MS（回归锚 tests/requestTimeoutFallback.test.mjs）：
+  // code-fix 00bd36bda 曾把未传参分支误落 MIN_REQUEST_TIMEOUT_MS，全站默认
+  // 超时塌缩到 1s，SPEC 列表 0.4~0.7s 常规延迟频撞「请求超时（>1s）」。
   const timeoutMs = Math.max(
     typeof rawTimeoutMs === 'number' && Number.isFinite(rawTimeoutMs)
       ? rawTimeoutMs
-      : MIN_REQUEST_TIMEOUT_MS,
+      : REQUEST_TIMEOUT_MS,
     MIN_REQUEST_TIMEOUT_MS,
   );
   const timer = setTimeout(() => {
