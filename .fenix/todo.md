@@ -210,3 +210,7 @@
 ### 知识真相源
 - [ ] knowledge-distill 重试：归档 add-integration-test-env — 校验违规经 3 轮 run 仍未通过（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查；pending 台账条目保留，将由 daemon 重启续跑接管）
 - [ ] knowledge-distill 重试：归档 add-knowledge-anchor-lint-and-prune — 校验违规经 3 轮 run 仍未通过（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查；pending 台账条目保留，将由 daemon 重启续跑接管）
+
+## 2026-11-09
+### 知识真相源
+- audit 语义项转写失败：duplicate（spec/knowledge/domains/knowledge-atlas/knowledge-anchor-discipline.md × spec/knowledge/domains/knowledge-atlas/knowledge-atlas-directory.md），请人工核查
