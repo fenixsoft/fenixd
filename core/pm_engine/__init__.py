@@ -15,6 +15,8 @@
 - spec_integrity.py SpecIntegrityGate：spec 完整性门禁
 - spec_review.py SpecReviewManager：spec 评审与拒绝分类
 - task_reflow.py 任务回流（reflow_spec）
+- escalation_chain.py EscalationChain：升级信号处置链派发器（Admin→Arbiter→人工
+  链序，add-escalation-chain-admin-arbiter）
 
 对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：
 `fenixd.py` 的 `from core.pm_engine import PMEngine`、测试的模块属性补丁缝

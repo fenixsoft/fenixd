@@ -1341,7 +1341,10 @@ class PMEngine:
             return
         if getattr(result, "frozen_terminated", False) is True:
             status = "frozen"
-        elif getattr(result, "cancelled", False):
+        # code-review item 486ee56877db：cancelled 与 frozen_terminated 同口径
+        # is True 精确判别（其余四车道均此口径），防非布尔真值误触发 cancelled
+        # marker 写出。
+        elif getattr(result, "cancelled", False) is True:
             status = "cancelled"
         else:
             status = "failed"
@@ -2019,11 +2022,22 @@ class PMEngine:
                 # 求和口径与 spec_summary 一致（duration_seconds 求和、含归档），
                 # 保证写入值 = 当时列表页显示值。done→done 幂等返回 True，重复事件
                 # 回放会重复求和覆盖，但求和口径不变结果相同（见上方 D4 注释）。
-                total_duration = sum(
-                    int(r.get("duration_seconds") or 0)
-                    for r in get_runs(self.project_root, spec_name, include_archive=True)
-                )
-                self.state_machine.update_spec(spec_name, {"total_duration": total_duration})
+                # code-review item 60555ef26e09：对齐上方 _evict_spec_serving /
+                # _reclaim_verify_lane 的独立非阻塞包裹——done 已落定，求和
+                # （get_runs 文件 IO）与写盘的瞬时 IO 异常不得穿出事件处理器
+                # 打断收口链（done 为终态不会再重发 verified 事件）。
+                try:
+                    total_duration = sum(
+                        int(r.get("duration_seconds") or 0)
+                        for r in get_runs(self.project_root, spec_name, include_archive=True)
+                    )
+                    self.state_machine.update_spec(spec_name, {"total_duration": total_duration})
+                except Exception as e:  # noqa: BLE001 — 耗时快照失败非阻塞
+                    self.logger.warning(
+                        "pm_engine",
+                        f"done 总耗时快照写入失败 '{spec_name}'（非阻塞）: "
+                        f"{type(e).__name__}: {e}",
+                    )
                 # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
                 # 背景：daemon 启动时 full_scan 在 EventBus watcher 启动前同步调度，
                 # 阻塞完成整个 fix 生命周期，使 verified→done 变化在快照初始化前发生，
@@ -2033,7 +2047,16 @@ class PMEngine:
                 # _enqueue 亦有去重。事件总线后续若重复发出 spec_done 亦无害。
                 # 置于 transition 成功分支内：转移被拒（如外部冻结/改判 blocked）
                 # 时 spec 并非 done，不得落完成日志或提前触发父 SPEC 重验。
-                self._on_spec_done(spec_name)
+                # code-review item 60555ef26e09：父 SPEC 重验与自动推送链是 done
+                # 收口链的后续步骤，异常同样独立非阻塞降级留痕（周期兜底可补）。
+                try:
+                    self._on_spec_done(spec_name)
+                except Exception as e:  # noqa: BLE001 — done 后续处理失败非阻塞
+                    self.logger.warning(
+                        "pm_engine",
+                        f"spec_done 后续处理失败 '{spec_name}'（非阻塞）: "
+                        f"{type(e).__name__}: {e}",
+                    )
         finally:
             self._handling_events.discard(event_key)
 
@@ -2848,7 +2871,19 @@ class PMEngine:
             return
         err = spec_entry.get("error")
         if isinstance(err, str) and err.startswith(TASK_GAP_ERROR_PREFIX):
-            self.state_machine.update_spec(spec_name, {"error": None})
+            # code-review item 122f5761f8c6：与上游 _task_completion_blocker
+            # 两处 fail-closed 包裹（833f70ceec3a / 76d826d7bf59）口径对齐——
+            # 清除写盘异常不得沿放行路径穿出中断当轮 verified 收口，降级
+            # WARNING 留痕（error 残留仅影响展示，不阻断放行）。
+            try:
+                self.state_machine.update_spec(spec_name, {"error": None})
+            except Exception as e:  # noqa: BLE001 — 清除失败非阻塞，放行照常
+                self.logger.warning(
+                    "pm_engine",
+                    f"task-gap error 清除失败 '{spec_name}'（非阻塞，"
+                    f"error 残留不影响放行）: {type(e).__name__}: {e}",
+                )
+                return
             self.logger.info(
                 "pm_engine",
                 f"task-gap 已补勾，清除 error：'{spec_name}'",
