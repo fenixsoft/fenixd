@@ -5,8 +5,15 @@
 # 装配链：
 #   1. fenix-model-config —— 校验模型三要素并 provide `fenixModelConfig` 服务；
 #      校验失败（model 缺失 / 版本不符）在本插件 apply 内抛错。
-#   2. llm-pi-ai / agent-default-model —— providers 与默认模型全部由
-#      fenixModelConfig 渲染（!!js 从注入服务取值），本 bundle 不留任何默认档回退。
+#   2. llm-pi-ai / agent-default-model —— providers 与默认模型由 fenixModelConfig
+#      渲染（!!js 从注入服务取值）。agent-default-model 双行互补装配
+#      （add-dispatch-precheck-true-fallback D1 真对称回落）：config.model 整体
+#      缺席（回落形态）时 dsh-base 原生行以自身默认档配置供数、本 bundle 插入行
+#      禁用；显式链形态反之。本 patch 对原生行不携带 config 键（patch 逐键覆盖、
+#      无 config 键即不替换原 config），零硬编码 dsh 默认值；providers 在回落
+#      形态插值为 undefined → llm-pi-ai schema 缺省 {}（dsh 零路由的原生休眠形态）。
+#      任一形态恰好一行激活，agentDefaultModel 服务名不冲突；本插件失败时两行
+#      一起 pending → headless-runner 一起失败 → StartupError 语义不变。
 #   3. fenix-dsh-bundle —— Task 工具族 + 三守卫主插件。
 #   4. sandbox-policy / approval —— 非交互审批（等价 claude bypassPermissions）：
 #      沙箱 danger-full-access + 审批 never；两块面由 fenix-approval 在启动期
@@ -34,6 +41,15 @@
     - id: fenix-approval
       name: fenix-dsh-bundle/approval
       inject: [approval]
+    # 显式链形态的 agent-default-model 行（fenix 三要素供数）；回落形态由
+    # 下方补丁行放开的 dsh-base 原生行供数（见「真对称回落」段注释）。
+    - id: fenix-agent-default-model
+      name: '@deepseek-ai/dsh-agent-default-model'
+      inject: [fenixModelConfig]
+      disabled: !!js ctx.fenixModelConfig.mode === 'fallback'
+      config:
+        provider: !!js ctx.fenixModelConfig.provider
+        model: !!js ctx.fenixModelConfig.model
 - id: sandbox-policy
   config:
     mode: danger-full-access
@@ -45,10 +61,14 @@
   inject: [fenixModelConfig]
   config:
     providers: !!js ctx.fenixModelConfig.providers
+# ── 真对称回落：agent-default-model 双行互补（add-dispatch-precheck-true-fallback D1）──
+# 对 dsh-base 原生行只追加 inject 与互补 disabled、不携带 config 键——patch 逐键
+# 覆盖，原 config（dsh 自身默认档）原样保留供回落形态使用；显式链形态本行禁用、
+# 由上方插入行以 fenix 三要素供数。inject fenixModelConfig 确保形态判定发生在
+# 服务在场之后：本插件失败（版本钉扎不符等）时两行一起 pending → headless-runner
+# 一起失败 → StartupError fail-fast 语义不变。
 - id: agent-default-model
   inject: [fenixModelConfig]
-  config:
-    provider: !!js ctx.fenixModelConfig.provider
-    model: !!js ctx.fenixModelConfig.model
+  disabled: !!js ctx.fenixModelConfig.mode === 'explicit'
 - id: headless-runner
   inject: [headlessStartup, fenixModelConfig]

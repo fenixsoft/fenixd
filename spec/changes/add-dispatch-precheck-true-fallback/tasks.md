@@ -27,10 +27,10 @@
 
 ## 1. dsh-bundle 侧真对称回落（D1）
 
-- [ ] 1.1 `assertModelExplicit` 形态划界重构：`config.model` 整体缺席（undefined/键不存在）→ 不抛错，返回回落形态标记，插件跳过显式覆盖并 WARN 留痕（含「config.model 缺席，回落 dsh 默认档」语义）；`config.model` 为 null/空串/对象但要素缺失 → 保持现行「模型未显式配置」fail-fast（笔误防护）
-- [ ] 1.2 回落形态下 `agentDefaultModel`/`fenixModelConfig` 服务由 dsh 自身默认模型解析链（dsh-base 通道）供数，`headless-runner`（required）正常激活——以插件服务注册/降级逻辑实现，隔离 dsh-base 依赖（mock 注入）
-- [ ] 1.3 vitest 单测（dsh-bundle/tests/modelConfig.test.ts）：无 patch 启动不抛 StartupError 且服务可用、部分 config.model（null/空串/缺要素对象）仍 fail-fast、显式全链校验路径行为与重构前一致（回归红线用例）
-- [ ] 1.4 `pnpm build` 重建 dist + dsh-bundle 全量 vitest 绿（worktree 内 `pnpm install` 后执行）
+- [x] 1.1 `assertModelExplicit` 形态划界重构：`config.model` 整体缺席（undefined/键不存在）→ 不抛错，返回回落形态标记，插件跳过显式覆盖并 WARN 留痕（含「config.model 缺席，回落 dsh 默认档」语义）；`config.model` 为 null/空串/对象但要素缺失 → 保持现行「模型未显式配置」fail-fast（笔误防护）
+- [x] 1.2 回落形态下 `agentDefaultModel`/`fenixModelConfig` 服务由 dsh 自身默认模型解析链（dsh-base 通道）供数，`headless-runner`（required）正常激活——以插件服务注册/降级逻辑实现，隔离 dsh-base 依赖（mock 注入）
+- [x] 1.3 vitest 单测（dsh-bundle/tests/modelConfig.test.ts）：无 patch 启动不抛 StartupError 且服务可用、部分 config.model（null/空串/缺要素对象）仍 fail-fast、显式全链校验路径行为与重构前一致（回归红线用例）
+- [x] 1.4 `pnpm build` 重建 dist + dsh-bundle 全量 vitest 绿（worktree 内 `pnpm install` 后执行）
 
 ## 2. 派发前置自检与失败归因（D2）
 
