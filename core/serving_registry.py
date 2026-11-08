@@ -33,6 +33,12 @@ SERVERS_FILENAME = "servers.json"
 # 钉住，单侧调整须两侧同步修订并更新守卫断言，防同名语义静默分叉。
 KILL_WAIT_SECONDS = 3.0
 
+# SIGKILL 投递后的存活复核窗口（code-review 553fbdf9ee6b）：D 状态（不可中断
+# 睡眠，挂死 NFS/FUSE IO 等）进程的 SIGKILL 在系统调用返回前不生效，投递后
+# 短轮询确认组已空才算收割完成；超时仍存活按未收割口径返回 False（sweep 据此
+# 保留登记项留给下轮重试，不让实例永久失去唯一收割通道）。
+KILL_CONFIRM_SECONDS = 2.0
+
 
 def servers_path(project_root) -> Path:
     """登记文件绝对路径：<project_root>/.fenix/verify-serving/servers.json。"""
@@ -390,7 +396,11 @@ def kill_process_group(pid: int, logger=None) -> bool:
         logger: 可选日志器；EPERM 放弃收割时留痕（与 sweep 的 identity
             mismatch 同款 warning）。
 
-    Returns: 是否向进程组发出过信号。
+    Returns: 是否完成收割——向进程组发出过信号**且** SIGKILL 后短轮询复核
+        组已空（553fbdf9ee6b）；SIGKILL 复核窗口内组仍存活（如目标处于 D 状态
+        不可中断睡眠）返回 False，sweep 按「kill delivery failed」同款保守
+        口径保留登记项留给下轮重试。already-gone（组提前自清、无需信号）与
+        无信号投递同样返回 False，条目由 sweep 按 pid 已亡路径摘除。
     """
     sent = False
     try:
@@ -460,12 +470,35 @@ def kill_process_group(pid: int, logger=None) -> bool:
         time.sleep(0.2)
     if pgid is not None:
         # SIGKILL 实际发出成功同样置位（守卫拒绝/组已不存在则静默，sent
-        # 维持原值），保证返回值与「是否向进程组发出过信号」的契约一致
-        # （sweep 的 harvested 计数依赖它）。
+        # 维持原值）；sweep 的 harvested 计数与登记摘除决策依赖返回值。
         if guard_killpg(
             pgid, signal.SIGKILL, caller="serving_registry.kill_process_group", resolve=False
         ):
             sent = True
+            # SIGKILL 复核（code-review 553fbdf9ee6b）：D 状态（不可中断睡眠）
+            # 进程的 SIGKILL 在系统调用返回前不生效，组实际仍存活并持续占用
+            # 端口——照常返回 True 会让 sweep 摘除登记，command 型 serve 无
+            # marker pgrep 兜底、实例永久失去唯一收割通道。投递后短轮询复核
+            # 组已空才视为收割完成；仍存活按「kill delivery failed」同款保守
+            # 口径返回 False（sweep 的 540-554 行纪律保留登记项下轮重试）。
+            confirm_deadline = time.monotonic() + KILL_CONFIRM_SECONDS
+            while time.monotonic() < confirm_deadline:
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    return sent  # 组已空：收割完成
+                except OSError:
+                    pass  # 无权探测 → 按存活处理（同上方等待环口径，宁保守）
+                time.sleep(0.2)
+            if logger:
+                logger.warning(
+                    "serving_registry",
+                    f"kill pid={pid}: SIGKILL sent but process group {pgid} "
+                    f"still alive after {KILL_CONFIRM_SECONDS}s confirm window "
+                    f"(likely uninterruptible sleep) — reporting not harvested, "
+                    f"keeping registry entry for next sweep",
+                )
+            return False
     return sent
 
 

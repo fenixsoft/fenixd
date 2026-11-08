@@ -1115,7 +1115,27 @@ class EventBus:
           609c98e20eff）：read_all 契约已剔除坏条目，此处为解析层回归时的
           双保险；``elif name in`` 而非 .get 缺省 None，避免把 None 引入
           快照（a1210ff24c15 归一口径）。
+        - 回缩守卫（code-review 5ce21736ef35，空段守卫 3838697ca747 /
+          601892dd73ec 的非空残缺变体）：本轮条目数较既有快照骤减过半视为
+          异常残缺读而非权威删除——原样返回既有快照（缺失条目不剔除），
+          待下一轮读数确认；文件恢复后不会把存量 SPEC 误判「新出现」重放
+          hook 事件。
         """
+        # 非原子外部写者（手工编辑器 truncate+write 中间态、第三方工具）的
+        # truncate 后 write 前中间态可产出「可解析但残缺」的非空读数：部分
+        # 条目从本轮消失，照常重写快照会剔除它们——文件恢复后 watcher 感知
+        # checksum 变化，这些条目 old_status=None 被判「新出现」，hook 事件
+        # （from=None）被重放（PM 队列侧有 status 过滤兜底，hook 无吸收）。
+        # 本轮条目数不足既有快照一半即跳过重写并留痕（合法删除不会一次性
+        # 消失过半；人工批量清理属低频显式动作，下一轮读数即收敛确认）。
+        if prev_known and len(specs) * 2 < len(prev_known):
+            self.logger.warning(
+                "event_bus",
+                f"STATE.md 读出条目数骤减（{len(prev_known)} → {len(specs)}，"
+                f"可能为外部残缺写中间态）：跳过快照重写，保留既有快照"
+                f"待下一轮确认",
+            )
+            return dict(prev_known)
         next_known = {}
         for name, entry in specs.items():
             if isinstance(entry, dict):
@@ -1334,6 +1354,9 @@ class EventBus:
         list/tuple 时按元素 str() 展开——``str()`` 直接作用于列表会得到
         ``"['a', 'b']"``，split(",") 产出脏名使精确匹配恒失败，依赖定向
         唤醒对该 spec 静默失效；归一同时留 WARNING 指明书写形态非法。
+        dict 映射形态（手改 STATE.md 写成 ``depends_on: {a: 1}``）同款
+        「告警+归一」防御（code-review 5e15fc65cd8b）：按 keys() 展开，
+        与 list 形态口径一致，不再落入 str(deps).split(",") 的静默脏名路径。
         ``logger`` 可选注入（调用方传 ``self.logger``），缺省 None 时静默
         归一，保持 staticmethod 无副作用契约。
         """
@@ -1356,6 +1379,19 @@ class EventBus:
                         f"规范形态为逗号分隔 SPEC 名字符串：{deps!r}（已按元素归一处理）",
                     )
                 dep_names = [d.strip() for d in map(str, deps) if d.strip()]
+            elif isinstance(deps, dict):
+                # YAML 映射 dict 形态（手改 STATE.md，code-review 5e15fc65cd8b）：
+                # 与 list 形态同款「告警+归一」防御——原 else 分支的
+                # str(deps).split(",") 会产出脏名片段使精确匹配恒失败、依赖
+                # 定向唤醒对该 spec 静默失效且无任何留痕；按 keys() 归一。
+                if logger is not None:
+                    logger.warning(
+                        "event_bus",
+                        f"SPEC '{name}' 的 depends_on 是 dict 映射形态，"
+                        f"规范形态为逗号分隔 SPEC 名字符串：{deps!r}"
+                        f"（已按 keys() 归一处理）",
+                    )
+                dep_names = [d.strip() for d in map(str, deps.keys()) if d.strip()]
             else:
                 dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
             if dep_name in dep_names:
