@@ -1404,13 +1404,21 @@ def _repo_code_review_gate_face(
             "shards": 0,
             "sources_present": 0,
             "unreadable": [],
+            "unreadable_probe": [],
+            "unreadable_read": [],
         }
 
     main = cr_out_path(project_root, run_id)
     shards = shard_paths(project_root, run_id)
     sources = [*shards, main]
     valids = 0
+    # 分形态名单（code-review item 689c4426c598）：stat 探测失败（存在性未知）
+    # 与 read_text 读取失败（文件确定存在）环境侧根因不同，分列收集供汇总
+    # 文案与 fail_face 区分排障方向；``unreadable`` 维持两形态合集——消费方
+    # （admin_monitor 升级 evidence 行、既有场景断言）按该键取值，向后兼容。
     unreadable: list[str] = []
+    unreadable_probe: list[str] = []
+    unreadable_read: list[str] = []
     sources_present = 0
     for src in sources:
         try:
@@ -1421,6 +1429,7 @@ def _repo_code_review_gate_face(
             # 先例防御）：裸探测会让异常逸出硬门、绕过下方 unreadable_sources
             # 归因通道——按「该来源不计入有效行」语义收进名单并 WARNING 留痕。
             unreadable.append(src.name)
+            unreadable_probe.append(src.name)
             _logger.warning(
                 "审查产物探测失败（repo-code-review-gate，该来源不计入有效行）"
                 ": %s (%s)", src.name, e,
@@ -1436,6 +1445,7 @@ def _repo_code_review_gate_face(
             # 取证门失真——记 WARNING（经 _logger，caplog 可断言）
             # 并收集名单进失败文案，供 valids<=0 时区分环境侧根因。
             unreadable.append(src.name)
+            unreadable_read.append(src.name)
             _logger.warning(
                 "审查产物读取失败（repo-code-review-gate，该来源不计入有效行）"
                 ": %s (%s)", src.name, e,
@@ -1476,6 +1486,8 @@ def _repo_code_review_gate_face(
             "shards": len(shards),
             "sources_present": sources_present,
             "unreadable": list(unreadable),
+            "unreadable_probe": list(unreadable_probe),
+            "unreadable_read": list(unreadable_read),
         }
         base = (
             f"审查产物为零有效行（repo-code-review-gate）：run {run_id} manifest "
@@ -1492,6 +1504,25 @@ def _repo_code_review_gate_face(
                 f"分片均可）"
             ), face
         if unreadable:
+            # 分形态措辞（code-review item 689c4426c598）：探测失败时存在性
+            # 未知，「存在但读取失败」表述失真——按名单构成区分三套措辞；
+            # 纯读取形态保持原文案逐字不动（既有测试断言「读取失败」子串与
+            # 三文案剔除 run id 后互异的场景口径不变）。
+            if unreadable_probe and not unreadable_read:
+                return (
+                    f"{base}合计零有效行；其中 {'、'.join(unreadable_probe)} "
+                    f"存在性探测失败（stat OSError，存在性未知，已记 WARNING，"
+                    f"标注: {variant_label}）——有来源因文件系统级异常被排除"
+                    f"出有效行统计，优先排查环境侧路径可见性/权限而非 agent "
+                    f"转录"
+                ), face
+            if unreadable_probe:
+                return (
+                    f"{base}合计零有效行；其中 {'、'.join(unreadable)} 探测/"
+                    f"读取失败（OSError，已记 WARNING，标注: {variant_label}）"
+                    f"——有来源因文件系统级异常被排除出有效行统计，优先排查"
+                    f"环境侧文件系统异常而非 agent 转录"
+                ), face
             return (
                 f"{base}合计零有效行；其中 {'、'.join(unreadable)} 存在但读取失败"
                 f"（OSError，已记 WARNING，标注: {variant_label}）——有来源因"
@@ -2716,16 +2747,30 @@ def run_selfcheck(result_file) -> int:
                 f"tasks.md 对账）: {path}"
             )
             spec_name = ""
-        elif "/" in spec_name or "\\" in spec_name or ".." in spec_name:
+        elif (
+            "/" in spec_name
+            or "\\" in spec_name
+            or ".." in spec_name
+            or "\x00" in spec_name
+        ):
             # 路径穿越加固（code-review item c7c0bfdbf9a0）：spec 自报值直接
             # 参与 tasks.md 与 code-review.json 的读取路径拼接，含路径分隔符
             # 或 ".." 时读取范围会越出 worktree。按既有「缺非空 spec 字段」
             # 分支同型处置：记一条 spec 字段违规并按空串降级（下游 Path 空
             # 段折叠，判据语义与缺 spec 一致，见
             # _selfcheck_dispositions_violations 内注释）。
+            # NUL 必拦（code-review item 8c73db5ad346，对齐
+            # commit_spec_review_docs 对 item 97d8013f2784 的守卫口径）：下游
+            # 各守卫（serving._spec_name_path_error 与本分支改造前同款）只拦
+            # 分隔符与 '..' 分量，含 NUL 的名字会在 parse_tasks_md 的
+            # read_text 与 _selfcheck_dispositions_violations 的
+            # report_path.is_file() 抛 ValueError（embedded null byte，非
+            # OSError、两处 except 不接）——被 run_selfcheck 的环境故障兜底
+            # 收进退出码 3，agent 可修复的 spec 字段违规被误标为「非产物违规
+            # 勿按明细修复」的环境故障。
             violations.append(
-                f"结果文件 spec 字段含路径分隔符或 '..'（implementer 产物硬门，"
-                f"spec 须为纯名称，禁止路径穿越）: {path}"
+                f"结果文件 spec 字段含路径分隔符、'..' 或 NUL（implementer "
+                f"产物硬门，spec 须为纯名称，禁止路径穿越）: {path}"
             )
             spec_name = ""
         wt_path = path.resolve().parent
