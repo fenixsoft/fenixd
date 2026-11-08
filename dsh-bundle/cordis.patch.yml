@@ -4,9 +4,25 @@
 #
 # 装配链：
 #   1. fenix-model-config —— 校验模型三要素并 provide `fenixModelConfig` 服务；
-#      校验失败（model 缺失 / 版本不符）在本插件 apply 内抛错。
-#   2. llm-pi-ai / agent-default-model —— providers 与默认模型全部由
-#      fenixModelConfig 渲染（!!js 从注入服务取值），本 bundle 不留任何默认档回退。
+#      校验失败（model 为 null/空串/缺要素等残缺形态）在本插件 apply 内抛错；
+#      config.model 整体缺席（undefined）为回落形态，不抛错（WARN 留痕）。
+#   2. llm-pi-ai / agent-default-model 供数分流（add-dispatch-precheck-true-fallback
+#      D1 真对称回落，机理修正版）：
+#      - dsh-base 原生 agent-default-model 行本 bundle 零触碰（不 inject、不改
+#        config、不 disabled）——它两形态常开，用 dsh 自身配置（全局默认档）供
+#        `agentDefaultModel` 服务（dsh-headless 消费方 ctx.get 读取）。
+#      - 显式链形态的默认模型覆盖由 spawn 侧 --patch 渲染承载
+#        （core/agent_runner/harness/dsh_adapter.render_model_patch_yaml 追加
+#        `agent-default-model` config 覆盖，静态值、每次 spawn 重写）：--patch
+#        应用序最后，必然压过 profile/home 层同名键。
+#      - llm-pi-ai providers 仍由 fenixModelConfig 插值（显式链路由）；回落形态
+#        插值为 undefined → schema 缺省 {}（dsh 零路由的原生休眠形态）。
+#      ⚠ 机理注记（2026-11-08 端到端冒烟实证）：cordis 的 `disabled: !!js`
+#      表达式在启动审计期求值，先于 entry 的 inject 服务绑定——插件提供的
+#      服务（fenixModelConfig）在 disabled 表达式内不可达（报文
+#      "cannot get property ... without inject"，两行互补 disabled 装配即因此
+#      双双失败）。故形态分流不能放在 disabled 表达式上：bundle 面只保留
+#      config 插值（激活期求值，inject 已绑定，生产验证过的机制）或彻底不碰。
 #   3. fenix-dsh-bundle —— Task 工具族 + 三守卫主插件。
 #   4. sandbox-policy / approval —— 非交互审批（等价 claude bypassPermissions）：
 #      沙箱 danger-full-access + 审批 never；两块面由 fenix-approval 在启动期
@@ -21,10 +37,11 @@
 #      由本文件写死期望值 + assertSandboxModeSafe 供装配方与测试校验
 #      （见 approval.ts 头注）。
 #   5. headless-runner 追加注入 fenixModelConfig —— headless-runner 是 dsh 的
-#      required 启动条目：模型配置缺失 / 版本不符时它一起失败 → StartupError
-#      exit 1（fail-fast，不静默降级）。本 bundle 供 headless 车道专用；
-#      其它 profile（无 headless-runner 条目）挂载本 bundle 会因 patch 目标
-#      不存在而启动报错，属预期行为。
+#      required 启动条目：本插件 apply 抛错（残缺三要素 / 版本不符）时
+#      fenixModelConfig 缺席 → 它一起失败 → StartupError exit 1（fail-fast，
+#      不静默降级）。回落形态本插件正常供数 → 启动放行。本 bundle 供 headless
+#      车道专用；其它 profile（无 headless-runner 条目）挂载本 bundle 会因
+#      patch 目标不存在而启动报错，属预期行为。
 - insert:
     - id: fenix-model-config
       name: fenix-dsh-bundle/modelConfig
@@ -45,10 +62,5 @@
   inject: [fenixModelConfig]
   config:
     providers: !!js ctx.fenixModelConfig.providers
-- id: agent-default-model
-  inject: [fenixModelConfig]
-  config:
-    provider: !!js ctx.fenixModelConfig.provider
-    model: !!js ctx.fenixModelConfig.model
 - id: headless-runner
   inject: [headlessStartup, fenixModelConfig]

@@ -52,6 +52,7 @@ from .protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
     ENV_MODE_INHERIT,
+    HARNESS_CLI_UNAVAILABLE_MARKER,
     PROMPT_TRANSPORT_STDIN,
     STDERR_CLASS_CLI_NOISE,
     STDERR_CLASS_GENERIC,
@@ -187,10 +188,17 @@ def render_model_patch_yaml(
     Bundle 的 fenix-model-config 插件校验 ``config.model`` 四字段
     （provider/baseURL/apiKeyEnv/model）显式非空，缺失即 apply 期抛错
     （fail-fast 链）；渲染是单向的：patch 覆盖后 providers/默认模型全部由
-    该服务铺开——绝不回退 dsh 默认档（spec「MUST NOT 依赖 dsh 默认档」）。
-    ``api`` 非空时追加渲染线协议字段（pi-ai api 类型，如
+    该服务铺开。``api`` 非空时追加渲染线协议字段（pi-ai api 类型，如
     ``anthropic-messages``）；空则不渲染，Bundle 端缺省
     ``openai-completions``。
+
+    add-dispatch-precheck-true-fallback D1（真对称回落）：本文件只在显式链
+    形态渲染（回落形态 spawn 不携带 --patch）。agent-default-model 的默认
+    模型覆盖由本文件承载（静态值，应用序最后必压过 profile/home 层）——
+    bundle 面对 dsh-base 原生行零触碰（不 inject、不改 config），回落形态
+    下原生行以 dsh 自身配置供 `agentDefaultModel` 服务（机理注记：形态
+    分流不可放在 disabled !!js 表达式上，其求值先于 inject 服务绑定，
+    见 dsh-bundle/cordis.patch.yml）。
     """
     lines = [
         "# fenixd DshAdapter 自动生成（每次 spawn 重写）：Bundle 模型三要素显式渲染。",
@@ -205,6 +213,14 @@ def render_model_patch_yaml(
     ]
     if api:
         lines.append(f"      api: {_yaml_scalar(api)}")
+    # 默认模型覆盖（与 fenix-model-config 的 model 段同源静态值）：dsh-headless
+    # 经 agentDefaultModel.currentSelection() 取 provider/model 路由。
+    lines.extend([
+        "- id: agent-default-model",
+        "  config:",
+        f"    provider: {_yaml_scalar(provider_name)}",
+        f"    model: {_yaml_scalar(model)}",
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -1156,8 +1172,11 @@ class DshAdapter:
                 env=self._health_env(),
             )
         except (OSError, subprocess.SubprocessError) as e:
+            # add-dispatch-precheck-true-fallback 2.1：「未装」路径接入
+            # [harness-cli-unavailable] 归因（与派发前置自检同口径，避免双口径
+            # ——升级信号豁免面按标记豁免，归因不同升级路径不同）。
             raise HarnessHealthError(
-                f"dsh 不可用（{e}）：请安装 dsh（npm install -g "
+                f"{HARNESS_CLI_UNAVAILABLE_MARKER} dsh 不可用（{e}）：请安装 dsh（npm install -g "
                 f"@deepseek-ai/dsh@{DSH_VERSION_WHITELIST[0]}，详见 "
                 f"dsh-bundle/README.md 部署段），或将 agent.harness 改回 claude"
             ) from e

@@ -1,8 +1,13 @@
 /**
  * modelConfig.test.ts — 模型显式配置契约单测。
- * 覆盖：model 缺失/为空 fail-fast（错误含「模型未显式配置」）、三要素校验、
- * providers / 默认模型渲染段形状、版本钉扎 fail-fast、apply 装配面。
+ * 覆盖：形态划界（config.model 整体缺席 → 回落形态标记；null/空串/缺要素
+ * fail-fast，错误含「模型未显式配置」）、三要素校验、providers / 默认模型
+ * 渲染段形状、版本钉扎 fail-fast、apply 装配面（回落 WARN 留痕 + 显式零噪音）。
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import * as yaml from "js-yaml";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { setMockDshRuntimeVersion } from "@deepseek-ai/dsh-app-boot";
@@ -27,9 +32,13 @@ afterEach(() => {
   setMockDshRuntimeVersion("0.2.0-rc.2");
 });
 
-describe("assertModelExplicit：缺 model 即拒绝启动", () => {
-  it("config.model 整段缺失 → 「模型未显式配置」", () => {
-    expect(() => assertModelExplicit(undefined)).toThrow(/模型未显式配置/);
+describe("assertModelExplicit：形态划界", () => {
+  it("config.model 整体缺席（undefined）→ 返回回落形态标记，不抛错", () => {
+    expect(assertModelExplicit(undefined)).toBeNull();
+  });
+
+  it("config.model 显式为 null → 笔误形态仍 fail-fast（整体缺席才是回落）", () => {
+    expect(() => assertModelExplicit(null)).toThrow(/模型未显式配置/);
   });
 
   it("model 非对象形态 → 「模型未显式配置」", () => {
@@ -80,12 +89,25 @@ describe("渲染段构造", () => {
     expect(buildDefaultModelSegment(VALID)).toEqual({ provider: "fenix-gateway", model: "glm-5.3-flash" });
   });
 
-  it("createModelConfigService：聚合服务对象；缺 model 抛「模型未显式配置」", () => {
+  it("createModelConfigService：显式链聚合服务对象（mode=explicit）", () => {
     const service = createModelConfigService({ model: VALID });
+    if (service.mode !== "explicit") throw new Error("预期显式形态");
     expect(service.provider).toBe("fenix-gateway");
     expect(service.model).toBe("glm-5.3-flash");
     expect(service.providers).toEqual(buildProviderSegment(VALID));
-    expect(() => createModelConfigService({})).toThrow(/模型未显式配置/);
+  });
+
+  it("createModelConfigService：config.model 整体缺席 → 回落形态（不抛错）", () => {
+    expect(createModelConfigService({})).toEqual({ mode: "fallback" });
+    expect(createModelConfigService(undefined)).toEqual({ mode: "fallback" });
+    expect(createModelConfigService(null)).toEqual({ mode: "fallback" });
+  });
+
+  it("createModelConfigService：config.model 残缺（null/缺要素对象）仍 fail-fast", () => {
+    expect(() => createModelConfigService({ model: null })).toThrow(/模型未显式配置/);
+    expect(() =>
+      createModelConfigService({ model: { baseURL: VALID.baseURL, apiKeyEnv: VALID.apiKeyEnv } }),
+    ).toThrow(/模型未显式配置/);
   });
 });
 
@@ -111,6 +133,46 @@ describe("apply 装配面", () => {
     const provided: Record<string, unknown> = {};
     applyModelConfig({ reflect: { provide: (name, value) => (provided[name] = value) } }, { model: VALID });
     expect(Object.keys(provided)).toEqual(["fenixModelConfig"]);
+  });
+
+  it("无 config 启动（无 patch 回落形态）→ 提供回落服务且不抛 StartupError，WARN 留痕", () => {
+    const provided: Record<string, unknown> = {};
+    const warns: string[] = [];
+    applyModelConfig(
+      {
+        reflect: { provide: (name, value) => (provided[name] = value) },
+        logger: { warn: (msg: string) => warns.push(msg) },
+      },
+      undefined,
+    );
+    expect(provided["fenixModelConfig"]).toEqual({ mode: "fallback" });
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("config.model 缺席，回落 dsh 默认档");
+  });
+
+  it("显式链形态 → 提供显式服务且零 WARN（不误报回落）", () => {
+    const provided: Record<string, unknown> = {};
+    const warns: string[] = [];
+    applyModelConfig(
+      {
+        reflect: { provide: (name, value) => (provided[name] = value) },
+        logger: { warn: (msg: string) => warns.push(msg) },
+      },
+      { model: VALID },
+    );
+    expect(provided["fenixModelConfig"]).toMatchObject({ mode: "explicit", provider: "fenix-gateway" });
+    expect(warns).toEqual([]);
+  });
+
+  it("残缺 config.model → fail-fast 不提供服务（笔误防护不变）", () => {
+    const provided: Record<string, unknown> = {};
+    expect(() =>
+      applyModelConfig(
+        { reflect: { provide: (name, value) => (provided[name] = value) } },
+        { model: { provider: "p" } },
+      ),
+    ).toThrow(/模型未显式配置/);
+    expect(provided["fenixModelConfig"]).toBeUndefined();
   });
 
   it("主插件：注册恰好四工具 + pre-execute 守卫 + 审批校验 + AGENTS.md 分区", () => {
@@ -143,5 +205,56 @@ describe("apply 装配面", () => {
         inject: () => {},
       }),
     ).toThrow(/无人值守零交互阻塞/);
+  });
+});
+
+// ── cordis.patch.yml 原生行零触碰装配结构锁（真对称回落，D1 机理修正版）──────
+
+/** 与 dsh-app-boot 同构的条目清单方言（!!js → {__jsExpr}），装配结构断言用。 */
+const JsExpr = new yaml.Type("tag:yaml.org,2002:js", {
+  kind: "scalar",
+  resolve: (data: unknown) => typeof data === "string",
+  construct: (data: string) => ({ __jsExpr: data }),
+});
+const entryListSchema = yaml.JSON_SCHEMA.extend([JsExpr]);
+
+function loadPatchDoc(): Array<Record<string, unknown>> {
+  const text = readFileSync(fileURLToPath(new URL("../cordis.patch.yml", import.meta.url)), "utf-8");
+  return yaml.load(text, { schema: entryListSchema }) as Array<Record<string, unknown>>;
+}
+
+describe("cordis.patch.yml 原生行零触碰装配结构锁", () => {
+  const doc = loadPatchDoc();
+  const insertBlock = doc.find((r) => "insert" in r) as { insert: Array<Record<string, unknown>> };
+
+  it("bundle 零触碰 dsh-base 原生 agent-default-model 行（patch 面无该 id 条目）", () => {
+    // 机理注记（cordis.patch.yml）：disabled !!js 求值先于 inject 服务绑定，
+    // 形态分流不可放在 disabled 表达式上 → bundle 对原生行不 inject、不改
+    // config、不 disabled；两形态由原生行常开供 agentDefaultModel。
+    const patchTargets = doc
+      .filter((r) => !("insert" in r))
+      .map((r) => r.id);
+    expect(patchTargets).not.toContain("agent-default-model");
+    const insertIds = insertBlock.insert.map((r) => r.id);
+    expect(insertIds).not.toContain("agent-default-model");
+    expect(insertIds).not.toContain("fenix-agent-default-model");
+  });
+
+  it("fenix-model-config 插入行在场（形态划界与回落供数的承载插件）", () => {
+    const row = insertBlock.insert.find((r) => r.id === "fenix-model-config");
+    expect(row).toBeDefined();
+    expect((row as Record<string, unknown>).name).toBe("fenix-dsh-bundle/modelConfig");
+  });
+
+  it("llm-pi-ai 行：providers 由 fenixModelConfig 插值（回落形态 undefined → schema 缺省 {}）", () => {
+    const row = doc.find((r) => r.id === "llm-pi-ai") as Record<string, unknown>;
+    expect(row.inject).toEqual(["fenixModelConfig"]);
+    const config = row.config as Record<string, { __jsExpr?: string }>;
+    expect(config.providers.__jsExpr).toContain("ctx.fenixModelConfig.providers");
+  });
+
+  it("headless-runner 行：追加注入 fenixModelConfig 不变（回落形态服务恒提供）", () => {
+    const row = doc.find((r) => r.id === "headless-runner") as Record<string, unknown>;
+    expect(row.inject).toEqual(["headlessStartup", "fenixModelConfig"]);
   });
 });

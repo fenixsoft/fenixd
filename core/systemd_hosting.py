@@ -205,7 +205,88 @@ def read_process_env(pid: int) -> dict:
     return env
 
 
-def render_env_file(env: dict) -> str:
+# ── PATH 卫生基线（add-dispatch-precheck-true-fallback 3.1）─────────────────
+# 基线目录集：会话 shell 常见具备而 systemd 承载进程常缺失的用户/系统 bin 目录。
+# 比较与写入一律用展开后的绝对路径（env 文件值不做 ~ 展开——systemd 不展开
+# 字面 ~，缺失会让保底/自愈 PATH 静默失效；``~/.local/bin`` 仅为文档记法）；
+# Path.home() 在模块导入期取值（daemon 进程 HOME 即承载语义下的 home）。
+PATH_BASELINE_DIRS: tuple = (
+    str(Path.home() / ".local" / "bin"),
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+)
+
+
+def path_baseline_missing(path_value: str) -> list:
+    """给定 PATH 值，返回其中缺失的基线目录（按基线序）。
+
+    比较按展开后的绝对路径（见 PATH_BASELINE_DIRS 注）；空/缺席 PATH 视为
+    全缺。migrate 摘要（3.3）与启动自检告警共用本判定单源。
+    """
+    present = {p for p in (path_value or "").split(":") if p}
+    return [d for d in PATH_BASELINE_DIRS if d not in present]
+
+
+def apply_path_baseline(env: dict) -> tuple:
+    """env dict 的 PATH 值并集基线目录，返回 ``( healed dict, 追加目录清单 )``。
+
+    add-dispatch-precheck-true-fallback 3.1：捕获源 PATH 缺失基线目录按序
+    追加尾部；完整 PATH 逐字节不变（追加清单为空时原值原样返回）。留痕
+    注释由调用方（render_env_file 的 path_note 形参）写入候选稿头部。
+    """
+    missing = path_baseline_missing(env.get("PATH", ""))
+    if not missing:
+        return env, []
+    healed = dict(env)
+    current = env.get("PATH", "")
+    healed["PATH"] = (current + ":" if current else "") + ":".join(missing)
+    return healed, missing
+
+
+def append_env_path_dirs(env_file, dirs) -> list:
+    """向既有 EnvironmentFile 的 PATH 行幂等追加目录（原子写）。
+
+    add-dispatch-precheck-true-fallback 2.4 PATH 自愈写侧单源：仅当给定目录
+    确有缺失才改写（幂等——重复调用不重复追加、无缺失零改写零 mtime 变化）；
+    文件无 PATH 行时补行。写入经 write_env_file（tmp+rename、0600 保持）。
+    返回实际追加目录清单（空 = 未改写）。
+    """
+    env_file = Path(env_file)
+    text = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    lines = text.splitlines()
+    current = ""
+    for line in lines:
+        if line.startswith("PATH="):
+            raw = line[len("PATH="):].strip()
+            # 双引号形态反解（_quoted_env_value 的逆：仅 \\" 与 \\\\ 两个转义）
+            if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+                raw = raw[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+            current = raw
+            break
+    present = {p for p in current.split(":") if p}
+    missing = [d for d in dirs if d and d not in present]
+    if not missing:
+        return []
+    new_path = (current + ":" if current else "") + ":".join(missing)
+    out = []
+    replaced = False
+    for line in lines:
+        if line.startswith("PATH="):
+            out.append(f"PATH={_quoted_env_value(new_path)}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"PATH={_quoted_env_value(new_path)}")
+    write_env_file("\n".join(out) + "\n", env_file)
+    return missing
+
+
+def render_env_file(env: dict, path_note=None) -> str:
     """env dict → EnvironmentFile 文本（渲染原语自含防线，不依赖唯一调用链）。
 
     denylist 过滤（filter_session_identity）、非法键名与含换行值的剔除在
@@ -214,14 +295,25 @@ def render_env_file(env: dict) -> str:
     （如从配置文件读取 env 合成）不会再把坏行或会话身份键（CLAUDE_PID
     自杀扳机、CLAUDECODE 自证行为）写进 0600 EnvironmentFile。对已过滤
     入参幂等（重复过滤/剔除为无操作），capture 链现有行为不变。
+
+    ``path_note``（add-dispatch-precheck-true-fallback 3.1）：传入实际追加
+    的基线目录清单时在头部写留痕注释（已追加目录与原因）；空/缺席时不
+    产生任何额外行——完整 PATH 产物逐字节不变。
     """
     filtered = filter_session_identity(env)
     lines = [
         "# fenixd systemd EnvironmentFile 候选稿（add-systemd-hosting）",
         "# 由在跑进程 /proc/<pid>/environ 机械捕获 + 会话身份 denylist 过滤生成，",
         "# 人工审核后提升为正式 EnvironmentFile（unit 引用路径见 unit 文件）。",
-        "",
     ]
+    if path_note:
+        lines.extend([
+            "# PATH 卫生（add-dispatch-precheck-true-fallback 3.1）：捕获源 PATH"
+            f" 缺失基线目录，已按序追加尾部：{'、'.join(path_note)}",
+            "# 原因：systemd 承载进程不继承会话 shell 的 PATH 拼装，缺基线目录会"
+            "使 ~/.local/bin 等位置的 harness 可执行文件在服务环境不可达。",
+        ])
+    lines.append("")
     for key in sorted(filtered):
         # 键名/值形状校验与 read_process_env 同口径：EnvironmentFile 行格式
         # 装不下非法键名与含换行的值（整行被 systemd 拒解析），剔除而非渲染。
@@ -281,12 +373,18 @@ def write_env_file(text: str, target: Path) -> Path:
     return target
 
 
-def capture_env_candidate(pid: int, target: Path) -> dict:
-    """从在跑进程捕获 env → denylist 过滤 → 写 0600 候选稿。
+def capture_env_candidate(pid: int, target: Path, path_report=None) -> dict:
+    """从在跑进程捕获 env → denylist 过滤 → PATH 基线并集 → 写 0600 候选稿。
 
-    返回过滤后的键集（供 migrate 预演打印摘要）；进程不可读时抛
-    SystemdHostingError（候选稿是迁移验收的 env 冒烟基线，静默空稿会让
-    人工审核无从下手）。
+    返回过滤后的键集（供 migrate 预演打印摘要；PATH 已含基线并集）；进程
+    不可读时抛 SystemdHostingError（候选稿是迁移验收的 env 冒烟基线，静默
+    空稿会让人工审核无从下手）。
+
+    PATH 卫生（add-dispatch-precheck-true-fallback 3.1）：捕获源 PATH 缺失
+    基线目录（PATH_BASELINE_DIRS）按序追加尾部，候选稿头部留痕「已追加
+    目录清单与原因」；完整 PATH 产物逐字节不变。``path_report`` 传 list 时
+    收集实际追加目录（migrate 摘要 3.3「完整」/「补齐 <清单>」结论行的
+    判定单源）。
     """
     env = read_process_env(pid)
     if not env:
@@ -295,8 +393,14 @@ def capture_env_candidate(pid: int, target: Path) -> dict:
             "env 候选稿捕获失败"
         )
     filtered = filter_session_identity(env)
-    write_env_file(render_env_file(filtered), Path(f"{target}{ENV_CANDIDATE_SUFFIX}"))
-    return filtered
+    healed, appended = apply_path_baseline(filtered)
+    if path_report is not None:
+        path_report.extend(appended)
+    write_env_file(
+        render_env_file(healed, path_note=appended),
+        Path(f"{target}{ENV_CANDIDATE_SUFFIX}"),
+    )
+    return healed
 
 
 # ── unit 模板 ────────────────────────────────────────────────────────────
@@ -346,6 +450,9 @@ def render_project_unit(root, python_executable: str | None = None) -> str:
     _validate_unit_path(interpreter, "Python 解释器路径")
     supervisor = proot / ".fenix" / "bin" / "fenixd_supervisor.py"
     env_file = project_env_file(proot)
+    # PATH 保底（add-dispatch-precheck-true-fallback 3.2）：恒为展开绝对路径
+    # （systemd 不展开 ~，字面 ~ 目录项会使保底 PATH 静默失效）。
+    fallback_path = ":".join(PATH_BASELINE_DIRS)
     return f"""\
 [Unit]
 Description=Fenixd daemon hosting (supervisor) for {proot}
@@ -355,6 +462,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory={proot}
+# PATH 保底（add-dispatch-precheck-true-fallback 3.2）：EnvironmentFile 在场时
+# 其 PATH 行覆盖本行（systemd 语义：EnvironmentFile 晚于 Environment 读入，
+# 同名变量以 EnvironmentFile 为准）；env 文件缺席/未提升时本行兜底，保证
+# ~/.local/bin 等常见安装目录的 harness 可执行文件在服务环境可达。
+Environment=PATH={fallback_path}
 ExecStart={interpreter} {supervisor} --project-root {proot}
 EnvironmentFile=-{env_file}
 Restart=on-failure

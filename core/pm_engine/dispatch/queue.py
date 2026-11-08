@@ -34,6 +34,9 @@ from core.state_machine import (
     start_after_blocks_promotion,
     start_after_pending,
 )
+# add-dispatch-precheck-true-fallback 2.3：harness binary 缺失终态同享
+# 「确定性环境缺陷不自动重派」豁免面（与模型链不可用同款）。
+from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_ERROR_MARKER,
@@ -2920,7 +2923,10 @@ class QQQueueMixin:
                                 f"重派排程收尾）: {type(e).__name__}: {e}",
                             )
                         self._schedule_transient_recovery(spec_name)
-                    elif final_error and MODEL_CHAIN_UNAVAILABLE_MARKER in final_error:
+                    elif final_error and (
+                        MODEL_CHAIN_UNAVAILABLE_MARKER in final_error
+                        or HARNESS_CLI_UNAVAILABLE_MARKER in final_error
+                    ):
                         # add-impl-selfcheck-model-probe（2.2）：链尾拒模型 →
                         # 全链模型不可用终态。同因重派必然撞同一拒模型链（确定性
                         # 失败，非瞬态），不排程、不增 retry、不翻转状态机；spec

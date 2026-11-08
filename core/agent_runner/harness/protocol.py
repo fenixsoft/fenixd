@@ -162,6 +162,14 @@ STDERR_CLASS_CLI_NOISE = "cli_noise"
 STDERR_CLASS_UNRECOGNIZED_MODEL = "unrecognized_model"
 STDERR_CLASS_GENERIC = "generic"
 
+# ── 失败归因标记（升级信号豁免面词汇）─────────────────────────────────────
+# [harness-cli-unavailable]（add-dispatch-precheck-true-fallback 2.1）：harness
+# binary 不在 PATH 导致的失败归因——派发前置自检短路文案与 DshAdapter
+# .check_health「未装」路径共用（双口径合一）。与 provider_circuit 的
+# MODEL_CHAIN_UNAVAILABLE_MARKER 同层同形：升级信号（instant-fail-storm /
+# repeated-failures / 自动重派）按标记豁免（2.3），归因不同升级路径不同。
+HARNESS_CLI_UNAVAILABLE_MARKER = "[harness-cli-unavailable]"
+
 
 class HarnessAdapter:
     """harness adapter 协议（名义基类 + 继承桩的结构化契约）。

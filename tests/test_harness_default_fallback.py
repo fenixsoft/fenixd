@@ -17,8 +17,10 @@ arbiter run 0.001s/0 tokens 秒败）——回落语义对 harness 对称（2026
 import json
 import logging
 import os
+from pathlib import Path
 
 import pytest
+import yaml
 
 from core.agent_runner import AgentRunner
 from core.agent_runner.harness import (
@@ -30,7 +32,10 @@ from core.agent_runner.harness import (
     SpawnRequest,
     reset_harness_default_fallback_warned,
 )
-from core.agent_runner.harness.dsh_adapter import DSH_API_KEY_ENV
+from core.agent_runner.harness.dsh_adapter import (
+    DSH_API_KEY_ENV,
+    render_model_patch_yaml,
+)
 from core.logger import Logger
 
 _HARNESS_LOGGER = "fenixd.agent_runner.harness"
@@ -338,3 +343,95 @@ class TestFallbackEnvBridge:
             _make_request(env_overrides={}, model=None))
         assert spec.env["KEEP_ME"] == "yes"
         assert os.environ.get("KEEP_ME") == "yes"
+
+
+# ── bundle 侧联动断言（add-dispatch-precheck-true-fallback 4.1）──────────
+#
+# 「无 patch → 存活」的 spawn 侧形态由上方 TestSymmetricFallback 锁定
+# （argv 不含 --patch）；本段锁定随 bundle 出货的 dsh-bundle/cordis.patch.yml
+# 装配结构（D1 机理修正版）：bundle 对 dsh-base 原生 agent-default-model 行
+# 零触碰（两形态常开，回落形态以 dsh 自身默认档供数保 dsh 存活），显式链
+# 形态的默认模型覆盖由 --patch 渲染承载。与 dsh-bundle/tests/modelConfig.test.ts
+# 的结构锁同构（pytest 侧独立复核，防单侧漂移）。
+
+
+class _JsExpr:
+    """cordis.patch.yml ``!!js`` 标签的解析替身（同构 vitest JsExpr）。"""
+
+    def __init__(self, expr: str):
+        self.expr = expr
+
+
+def _js_constructor(loader, node):
+    return _JsExpr(loader.construct_scalar(node))
+
+
+_JsLoader = type("_JsLoader", (yaml.SafeLoader,), {})
+_JsLoader.add_constructor("tag:yaml.org,2002:js", _js_constructor)
+
+_BUNDLE_PATCH = (
+    Path(__file__).resolve().parent.parent / "dsh-bundle" / "cordis.patch.yml"
+)
+
+
+def _load_bundle_entries() -> list:
+    doc = yaml.load(_BUNDLE_PATCH.read_text(encoding="utf-8"), Loader=_JsLoader)
+    entries = []
+    for item in doc:
+        if isinstance(item, dict) and "insert" in item:
+            entries.extend(item["insert"])
+        else:
+            entries.append(item)
+    return entries
+
+
+def _by_id(entries, entry_id):
+    return next(e for e in entries if e.get("id") == entry_id)
+
+
+class TestBundlePatchAssembly:
+    """bundle 面原生行零触碰 + 显式覆盖由 --patch 渲染承载（D1 机理修正版）。
+
+    机理注记（2026-11-08 端到端冒烟实证）：cordis 的 ``disabled: !!js`` 表达式
+    在启动审计期求值，先于 entry 的 inject 服务绑定——插件服务（fenixModelConfig）
+    在 disabled 表达式内不可达（"cannot get property ... without inject"），双行
+    互补 disabled 装配不可行。故：bundle 对 dsh-base 原生 agent-default-model 行
+    零触碰（两形态常开供 agentDefaultModel）；显式链覆盖由
+    ``render_model_patch_yaml`` 在 --patch 内静态渲染（应用序最后）。"""
+
+    def test_bundle_patch_never_touches_native_default_model_row(self):
+        """patch 面无 agent-default-model 条目（插入表亦无）——原生行两形态
+        常开，回落形态以 dsh 自身配置供数（零硬编码 dsh 默认档）。"""
+        entries = _load_bundle_entries()
+        assert all(e.get("id") != "agent-default-model" for e in entries)
+
+    def test_explicit_override_carried_by_spawn_patch_renderer(self):
+        """显式链默认模型覆盖在 --patch 渲染产物内：agent-default-model
+        config 与 fenix-model-config model 段同源（provider/model 静态值），
+        回落形态 spawn 无 --patch（上方 TestSymmetricFallback 锁定）。"""
+        text = render_model_patch_yaml(
+            model="glm-5.3-flash",
+            base_url="http://127.0.0.1:18787/v1",
+            api_key_env="FENIX_DSH_PROVIDER_API_KEY",
+        )
+        assert "- id: agent-default-model" in text
+        assert 'provider: "fenix-dsh"' in text
+        assert 'model: "glm-5.3-flash"' in text
+
+    def test_llm_pi_ai_providers_interpolation_kept(self):
+        """llm-pi-ai 行 providers 插值保留（回落形态 undefined → schema 缺省
+        {} 的原生休眠形态；显式链路由由 fenixModelConfig 铺开）。"""
+        entries = _load_bundle_entries()
+        llm = _by_id(entries, "llm-pi-ai")
+        assert llm.get("inject") == ["fenixModelConfig"]
+        assert llm["config"]["providers"].expr == "ctx.fenixModelConfig.providers"
+
+    def test_required_plugins_unconditional_in_both_modes(self):
+        """headless-runner（required 启动条目）不随形态禁用：两形态都激活
+        （回落形态 fenixModelConfig 恒提供；agentDefaultModel 由原生行供数）。"""
+        entries = _load_bundle_entries()
+        headless = _by_id(entries, "headless-runner")
+        assert "fenixModelConfig" in headless.get("inject", [])
+        assert "disabled" not in headless
+        llm = _by_id(entries, "llm-pi-ai")
+        assert "disabled" not in llm

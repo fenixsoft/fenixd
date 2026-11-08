@@ -99,6 +99,8 @@ from core.proc_utils import guard_killpg
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
 from core.agent_runner.harness import (
     ENV_MODE_AGENT_RUN,
+    HARNESS_CLI_UNAVAILABLE_MARKER,
+    HARNESS_EXECUTABLE_NAMES,
     HarnessHealthError,
     HarnessNotDeployedError,
     ISOLATED_SETTINGS_SCHEMA_VERSION as _ISOLATED_SETTINGS_SCHEMA_VERSION,
@@ -106,6 +108,7 @@ from core.agent_runner.harness import (
     build_isolated_settings,
     ensure_agent_config_dir,
     get_current_adapter,
+    precheck_harness_executable,
     resolve_adapter_from_config,
     set_current_adapter,
 )
@@ -3277,6 +3280,24 @@ class AgentRunner:
                 run_id, spec_name, agent_type, success=False,
                 duration_seconds=0.0,
                 error=f"harness 前置装配意外失败: {e}",
+            )
+        # ── harness binary 可达性自检（add-dispatch-precheck-true-fallback 2.1）──
+        # 按 agent.harness 选型解析可执行名（单源 HARNESS_EXECUTABLE_NAMES），
+        # shutil.which 探测；不可达短路该次 dispatch（不建 worktree、不起进程、
+        # 不消耗 attempt 预算），错误证据带 [harness-cli-unavailable] 归因标记
+        # + 修复指引（可执行名、当前 PATH 摘要、「检查 PATH / systemd
+        # EnvironmentFile」）；升级信号豁免面（2.3）按标记豁免。可达时零日志
+        # 零噪音放行（which 为微秒级文件系统探测）。探测先于 check_health 的
+        # 子进程级健康检查（dsh --version），缺二进制时不再空起一次子进程。
+        _harness_exec = HARNESS_EXECUTABLE_NAMES[_resolved_adapter.name]
+        _precheck_error = precheck_harness_executable(_harness_exec)
+        if _precheck_error:
+            self.logger.warning(
+                "agent_runner",
+                f"harness 前置可达性自检拦截 dispatch: {_precheck_error}")
+            return AgentRunResult(
+                run_id, spec_name, agent_type, success=False,
+                duration_seconds=0.0, error=_precheck_error,
             )
         _health_check = getattr(_resolved_adapter, "check_health", None)
         if _health_check is not None:
@@ -9006,6 +9027,16 @@ class AgentRunner:
             self.logger.debug(
                 "agent_runner",
                 f"'{spec_name}' run 被框架终止，不计入秒挂退避计数",
+            )
+            return
+        if error and HARNESS_CLI_UNAVAILABLE_MARKER in error:
+            # add-dispatch-precheck-true-fallback 2.3：harness binary 缺失是
+            # 确定性环境缺陷（与 [model-chain-unavailable] 同款豁免面，归因
+            # 不同升级路径不同）——不计入秒挂退避计数，同因重派只会复现同一
+            # 环境缺陷；处置走 [harness-cli-unavailable] 告警与 PATH 自愈链。
+            self.logger.debug(
+                "agent_runner",
+                f"'{spec_name}' run 因 harness binary 缺失失败，不计入秒挂计数",
             )
             return
         threshold = self._instant_fail_threshold()

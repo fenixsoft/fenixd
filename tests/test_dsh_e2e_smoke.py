@@ -15,6 +15,7 @@ dispatch（配置解析 + check_health 健康门）→ spawn 真实 dsh 0.2.0-rc
 """
 
 import json
+import logging
 import os
 import shutil
 import socket
@@ -279,6 +280,190 @@ def _run_smoke_chain(tmp_path, dsh_home, port, log_file, result_path, wt):
         "Bundle Task 工具族未出现在请求工具面"
 
     # ── result gate 全链：dsh 落的结果文件过硬门同源 selfcheck（退出码 0）──
+    assert result_path.is_file(), "dsh 未写出 .fenix-run-result.json"
+    chk = subprocess.run(
+        [sys.executable, "-m", "core.agent_runner.result_gate", "--selfcheck",
+         str(result_path)],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+    assert chk.returncode == 0, (
+        f"result gate selfcheck FAIL:\n{chk.stderr}\nstdout={chk.stdout}")
+
+
+# ── 回落形态冒烟（add-dispatch-precheck-true-fallback 4.2）────────────────
+
+
+def test_dsh_fallback_smoke_no_patch(tmp_path, dsh_home, monkeypatch, caplog):
+    """无分配回落形态全链：env 无 provider 链键 + model=None → spawn 无
+    --patch 启动真实 dsh → dsh-base 原生默认档（deepseek-official /
+    deepseek-flash）供数存活、headless-runner（required 条目）激活、最小
+    任务完成落结果文件。
+
+    mock 路由经 profile 层 ``cordis.patch.yml`` 接线（应用顺序在 bundle
+    patch 之后：llm-pi-ai 的 providers 覆盖为假模型端点，config.model 保持
+    整体缺席 → fenix-model-config 回落形态成立）。显式链基线由上方
+    test_dsh_e2e_smoke_full_chain 锁定（spawn 产物形态对照）。"""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / "spec" / "changes" / SPEC).mkdir(parents=True)
+    (wt / "spec" / "changes" / SPEC / "tasks.md").write_text(
+        f"# Tasks\n\n- [x] 1.1 回落冒烟（{SPEC}）\n", encoding="utf-8")
+    result_path = wt / ".fenix-run-result.json"
+    expected_result = {"status": "success", "spec": SPEC,
+                       "summary": "dsh 回落冒烟",
+                       "completed_tasks": ["1.1"]}
+    # 步骤编排与显式链冒烟同款（标题会话交错竞态：前两步都 TaskCreate）
+    mock_proc, port, log_file = _start_mock(tmp_path, [
+        {"kind": "tool_calls", "toolCalls": [
+            {"name": "TaskCreate",
+             "arguments": {"subject": "Task 1.1: 回落冒烟",
+                           "description": "端到端冒烟"}}]},
+        {"kind": "tool_calls", "toolCalls": [
+            {"name": "TaskCreate",
+             "arguments": {"subject": "Task 1.1: 回落冒烟 (备步)",
+                           "description": "端到端冒烟"}}]},
+        {"kind": "tool_calls", "toolCalls": [
+            {"name": "write",
+             "arguments": {"file_path": str(result_path),
+                           "content": json.dumps(expected_result,
+                                                 ensure_ascii=False, indent=2)}}]},
+        {"kind": "text", "text": "回落冒烟完成"},
+    ])
+    # profile 层接线（mock 路由走独立路由名——dsh-llm 已内建登记
+    # deepseek-official 等名字，llm-pi-ai 重名登记启动即炸「already declared」；
+    # 同文件把原生 agent-default-model 行的路由指到该名，模型 id 保持
+    # deepseek-flash——回落供数通道不变，只换端点指向）
+    (dsh_home / "profiles" / "fenix" / "cordis.patch.yml").write_text(
+        "- id: llm-pi-ai\n"
+        "  config:\n"
+        "    providers:\n"
+        "      fenix-smoke-fallback:\n"
+        "        api: openai-completions\n"
+        f"        baseURL: http://127.0.0.1:{port}/v1\n"
+        "        apiKeyEnv: FENIX_SMOKE_FALLBACK_KEY\n"
+        "        models:\n"
+        "          - id: deepseek-flash\n"
+        "            contextWindow: 262144\n"
+        "- id: agent-default-model\n"
+        "  config:\n"
+        "    provider: fenix-smoke-fallback\n"
+        "    model: deepseek-flash\n",
+        encoding="utf-8")
+    # 手工声明路由的 apiKeyEnv 引用（mock 不校验值，dsh 按名解析凭据）
+    monkeypatch.setenv("FENIX_SMOKE_FALLBACK_KEY", "sk-mock-fallback")
+    try:
+        with caplog.at_level(logging.WARNING,
+                             logger="fenixd.agent_runner.harness"):
+            _run_fallback_chain(tmp_path, dsh_home, port, log_file,
+                                result_path, wt, caplog)
+    finally:
+        mock_proc.terminate()
+        try:
+            mock_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            mock_proc.kill()
+
+
+def _run_fallback_chain(tmp_path, dsh_home, port, log_file, result_path, wt, caplog):
+    from core.agent_runner.harness import resolve_adapter_from_config
+    adapter = resolve_adapter_from_config(
+        {"agent": {"harness": "dsh", "dsh_home": str(dsh_home)}})
+    adapter.check_health()
+
+    proot = tmp_path / "proj"
+    proot.mkdir()
+    (proot / ".fenix").mkdir()
+    from tests.helpers import make_runner
+    logger = RecLogger()
+    runner = make_runner(proot, {"agents": {"run_timeout_seconds": 600}})
+    runner.logger = logger
+
+    box = {}
+
+    def _drive():
+        try:
+            box["ret"] = runner._run_agent(
+                f"实现 {SPEC} 并把结果写入 {result_path}",
+                wt, f"impl-{SPEC}-b1",
+                model_override=None,       # 无分配：回落 dsh 自身默认档
+                env_overrides={},          # 无 provider 链键
+                spec_name=SPEC, agent_type="implementer")
+        except Exception as e:  # noqa: BLE001 — 失败形态原样带回断言面
+            box["err"] = e
+
+    from core.agent_runner.harness import set_current_adapter
+    prev = set_current_adapter(adapter)
+    try:
+        th = threading.Thread(target=_drive, daemon=True)
+        th.start()
+        # 在飞观测：spawn 无 --patch（回落形态 spawn 产物形态）
+        deadline = time.time() + 30
+        inflight_seen = False
+        seen_cmdlines = []
+        while time.time() < deadline and "ret" not in box and "err" not in box:
+            for proc in list(runner._running_agents.values()):
+                try:
+                    cmdline = Path(
+                        f"/proc/{proc.pid}/cmdline").read_bytes().decode(
+                        "utf-8", "replace")
+                except OSError:
+                    continue
+                if proc.poll() is not None:
+                    continue
+                if not seen_cmdlines or seen_cmdlines[-1] != cmdline:
+                    seen_cmdlines.append(cmdline)
+                if ("dsh" in cmdline and "--json" in cmdline
+                        and "--patch" not in cmdline):
+                    inflight_seen = True
+            if not inflight_seen and ("ret" not in box and "err" not in box):
+                time.sleep(0.1)
+        th.join(timeout=300)
+    finally:
+        set_current_adapter(prev)
+
+    assert "err" not in box, f"dsh 回落全链失败: {box.get('err')!r}"
+    assert inflight_seen, (
+        "未观测到在飞无 --patch dsh 进程；"
+        f"观测窗采样 cmdline={seen_cmdlines[:3]!r}")
+    output, turns, session_id, usage, _stall = box["ret"]
+    assert output == "回落冒烟完成"
+    assert session_id and turns >= 1
+
+    run_file = proot / ".fenix" / "runs" / f"impl-{SPEC}-b1.jsonl"
+    entries = [json.loads(l) for l in
+               run_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    projection_entries = [e for e in entries if e["type"] != "prompt"]
+    assert projection_entries[0]["type"] == "system" \
+        and projection_entries[0]["harness"] == "dsh"
+    assert entries[-1]["type"] == "result"
+
+    proj = next((c["projection"] for c in logger.infos
+                 if c.get("metric_type") == "run_metrics"
+                 and "projection" in c), None)
+    assert proj and proj["harness"] == "dsh"
+    assert proj["events_received"]["final"] >= 1
+    assert all(v == 0 for v in proj["bad_events"].values()), proj["bad_events"]
+
+    # 回落归因标记：无链键 spawn 的 run metrics 带 provider_source
+    metrics = [c for c in logger.infos if c.get("metric_type") == "run_metrics"]
+    # 回落归因观测面：harness 层 WARN 观察钩子（进程×adapter 一次性）。
+    # provider_source run_metrics 标记由 dispatch/车道收尾消费，本冒烟直调
+    # _run_agent 不经过该收尾（登记在 _run_agent、消费在收尾层），此层
+    # 可观测的是 WARN 钩子 + 假模型端点的原生默认档模型名。
+    fallback_warns = [r for r in caplog.records
+                      if r.levelno == logging.WARNING
+                      and "未分配 provider 链" in r.message]
+    assert len(fallback_warns) == 1, caplog.records
+    assert "implementer" in fallback_warns[0].getMessage()
+
+    # 假模型端点对账：请求模型名 = dsh-base 原生默认档 deepseek-flash
+    # （config.model 缺席 → 回落形态实锤，而非 fenix 显式链模型）
+    reqs = [json.loads(l) for l in
+            log_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert reqs, "假模型端点未收到请求"
+    assert reqs[0].get("model") == "deepseek-flash"
+    assert any("TaskCreate" in (req.get("tools") or []) for req in reqs), \
+        "Bundle Task 工具族未出现在请求工具面"
+
     assert result_path.is_file(), "dsh 未写出 .fenix-run-result.json"
     chk = subprocess.run(
         [sys.executable, "-m", "core.agent_runner.result_gate", "--selfcheck",
