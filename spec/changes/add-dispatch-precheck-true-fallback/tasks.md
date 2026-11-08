@@ -34,18 +34,18 @@
 
 ## 2. 派发前置自检与失败归因（D2）
 
-- [ ] 2.1 runner 派发前置自检：spawn 前按 `agent.harness` 选型 `shutil.which` 探测 harness binary（claude→`claude`、dsh→`dsh`），不可达短路该次派发（不产生 spawn 进程），失败证据带 `[harness-cli-unavailable]` 标记（复用既有归因标记管道）+ 修复指引文案（可执行名、当前 PATH 摘要、「检查 PATH / systemd EnvironmentFile」）；可执行名解析单源放 `core/agent_runner/harness/__init__.py`（VALID_HARNESS_VALUES 同源），`DshAdapter.check_health` 既有「未装」路径接入同一 `[harness-cli-unavailable]` 归因避免双口径
-- [ ] 2.2 daemon 启动序列自检：启动时探测一次，不可达发单条 actionable 告警（进程内去重，不阻塞其余职能）；可达时不播报
-- [ ] 2.3 升级信号豁免：`[harness-cli-unavailable]` 归因失败不计入 instant-fail-storm / repeated-failures 计数（与 `[model-chain-unavailable]` 不自动重派同款豁免面）
-- [ ] 2.4 PATH 自愈：启动自检发现 `<home>/.local/bin/<harness>` 存在而 PATH 缺该目录且 `.fenix/systemd.env` 在场 → PATH 行幂等追加缺失目录（原子写 tmp+rename）+ 落 `restart_request`（JSON：reason/origin/date）+ 日志留痕；全常见目录未找到 binary 时不写 env 仅告警
-- [ ] 2.5 pytest 单测（tests/test_dispatch_precheck.py）：自检短路 + 归因标记断言、可达放行零噪音、启动告警去重、豁免面不计数、自愈幂等追加 + restart_request 落位、binary 缺失不盲写
+- [x] 2.1 runner 派发前置自检：spawn 前按 `agent.harness` 选型 `shutil.which` 探测 harness binary（claude→`claude`、dsh→`dsh`），不可达短路该次派发（不产生 spawn 进程），失败证据带 `[harness-cli-unavailable]` 标记（复用既有归因标记管道）+ 修复指引文案（可执行名、当前 PATH 摘要、「检查 PATH / systemd EnvironmentFile」）；可执行名解析单源放 `core/agent_runner/harness/__init__.py`（VALID_HARNESS_VALUES 同源），`DshAdapter.check_health` 既有「未装」路径接入同一 `[harness-cli-unavailable]` 归因避免双口径
+- [x] 2.2 daemon 启动序列自检：启动时探测一次，不可达发单条 actionable 告警（进程内去重，不阻塞其余职能）；可达时不播报
+- [x] 2.3 升级信号豁免：`[harness-cli-unavailable]` 归因失败不计入 instant-fail-storm / repeated-failures 计数（与 `[model-chain-unavailable]` 不自动重派同款豁免面）
+- [x] 2.4 PATH 自愈：启动自检发现 `<home>/.local/bin/<harness>` 存在而 PATH 缺该目录且 `.fenix/systemd.env` 在场 → PATH 行幂等追加缺失目录（原子写 tmp+rename）+ 落 `restart_request`（JSON：reason/origin/date）+ 日志留痕；全常见目录未找到 binary 时不写 env 仅告警
+- [x] 2.5 pytest 单测（tests/test_dispatch_precheck.py）：自检短路 + 归因标记断言、可达放行零噪音、启动告警去重、豁免面不计数、自愈幂等追加 + restart_request 落位、binary 缺失不盲写
 
 ## 3. systemd env PATH 卫生（D3/D4）
 
-- [ ] 3.1 `capture_env_candidate` 基线并集：基线目录集模块常量（`~/.local/bin`、`/usr/local/bin`、`/usr/local/sbin`、`/usr/sbin`、`/usr/bin`、`/sbin`、`/bin`），捕获源 PATH 缺失基线目录按序追加尾部，候选稿头部注释留痕「已追加目录清单与原因」；完整 PATH 产物逐字节不变；基线目录集比较与写入一律用展开后的绝对路径（`Path.expanduser`——env 文件值不做 `~` 展开，`~/.local/bin` 仅为文档记法）
-- [ ] 3.2 `render_project_unit` 保底 PATH：unit 模板加 `Environment=PATH=<基线目录集>` 行（env 文件缺席时兜底；在场时被覆盖，systemd 语义注释说明）；PATH 值渲染时展开为绝对路径（systemd 不展开 `~`，字面 `~` 目录项会使保底 PATH 静默失效）
-- [ ] 3.3 迁移摘要：`migrate_to_systemd.py` env 捕获段 plan 追加一行 PATH 卫生结论（「完整」或「补齐 <目录清单>」）
-- [ ] 3.4 pytest 单测（tests/test_systemd_env_path_hygiene.py）：最小 PATH 补齐 + 留痕断言、完整 PATH 逐字节不变、unit 模板含保底行、迁移摘要结论行
+- [x] 3.1 `capture_env_candidate` 基线并集：基线目录集模块常量（`~/.local/bin`、`/usr/local/bin`、`/usr/local/sbin`、`/usr/sbin`、`/usr/bin`、`/sbin`、`/bin`），捕获源 PATH 缺失基线目录按序追加尾部，候选稿头部注释留痕「已追加目录清单与原因」；完整 PATH 产物逐字节不变；基线目录集比较与写入一律用展开后的绝对路径（`Path.expanduser`——env 文件值不做 `~` 展开，`~/.local/bin` 仅为文档记法）
+- [x] 3.2 `render_project_unit` 保底 PATH：unit 模板加 `Environment=PATH=<基线目录集>` 行（env 文件缺席时兜底；在场时被覆盖，systemd 语义注释说明）；PATH 值渲染时展开为绝对路径（systemd 不展开 `~`，字面 `~` 目录项会使保底 PATH 静默失效）
+- [x] 3.3 迁移摘要：`migrate_to_systemd.py` env 捕获段 plan 追加一行 PATH 卫生结论（「完整」或「补齐 <目录清单>」）
+- [x] 3.4 pytest 单测（tests/test_systemd_env_path_hygiene.py）：最小 PATH 补齐 + 留痕断言、完整 PATH 逐字节不变、unit 模板含保底行、迁移摘要结论行
 
 ## 4. 对称回落回归与端到端冒烟
 

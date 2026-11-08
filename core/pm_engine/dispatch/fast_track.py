@@ -27,6 +27,9 @@ from core.fast_track_result import (
     get_scale_precheck_config,
 )
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD
+# add-dispatch-precheck-true-fallback 2.3：harness binary 缺失终态同享
+# 「确定性环境缺陷不自动重派」豁免面（与模型链不可用同款）。
+from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
 from core.agent_runner.provider_circuit import (
     MODEL_CHAIN_UNAVAILABLE_MARKER,
     PROVIDER_CIRCUIT_ERROR_MARKER,
@@ -2018,7 +2021,10 @@ class FFastTrackMixin:
         # 对等）：链尾拒模型是确定性失败，同因重派必然撞同一拒模型链——不重派、
         # 不增 retry、不翻转状态机，error 落盘供 dashboard/admin 可见。摘除拒模型
         # 条目后恢复属人工运维（docs/help/12-faq.md）。
-        if classify_error and MODEL_CHAIN_UNAVAILABLE_MARKER in classify_error:
+        if classify_error and (
+            MODEL_CHAIN_UNAVAILABLE_MARKER in classify_error
+            or HARNESS_CLI_UNAVAILABLE_MARKER in classify_error
+        ):
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track model chain unavailable '{spec_name}' — holding "

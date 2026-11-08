@@ -4472,6 +4472,8 @@ class AdminMonitor:
 
         只扫描 .fenix/runs 统计失败 run，不依赖当轮状态表（specs）。
         """
+        from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
+
         signals = []
         window = REPEAT_FAILURE_WINDOW_MINUTES * 60
         cutoff = now - window
@@ -4505,6 +4507,12 @@ class AdminMonitor:
             if not spec:
                 continue
             if self._run_terminal_status(p) != "error":
+                continue
+            # add-dispatch-precheck-true-fallback 2.3：harness binary 缺失归因
+            # （[harness-cli-unavailable]）的失败不计入重复失败计数——确定性
+            # 环境缺陷不是「重复失败」升级信号要放大的对象（与模型链不可用
+            # 同款豁免面），处置走对应归因告警与 PATH 自愈链。
+            if HARNESS_CLI_UNAVAILABLE_MARKER in self._run_terminal_error_text(p):
                 continue
             per_spec.setdefault(spec, 0)
             per_spec[spec] += 1
@@ -9326,6 +9334,43 @@ class AdminMonitor:
             if m:
                 return m.group(1)
         return None
+
+    @staticmethod
+    def _run_terminal_error_text(run_file: Path) -> str:
+        """读取产物尾部末事件的 error 文本（终态归因豁免判定用）。
+
+        add-dispatch-precheck-true-fallback 2.3：repeated_failures 计数对带
+        [harness-cli-unavailable] 归因的失败豁免。读取范式与 _run_terminal_status
+        同源（尾读窗口 + 末行完整事件）；仅在终态已判 error 后调用（罕见路径，
+        二次读窗可接受）。非字符串错误体经 str() 拼 repr，标记子串仍可命中。
+        """
+        try:
+            first_line_truncated, tail = _read_tail_lines(
+                run_file, _RUN_TAIL_READ_WINDOW)
+        except OSError:
+            return ""
+        lines = tail.split("\n")
+        if first_line_truncated:
+            lines = lines[1:]
+        last = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                last = entry
+        if not isinstance(last, dict):
+            return ""
+        error = last.get("error")
+        if isinstance(error, str):
+            return error
+        if error is not None:
+            return str(error)
+        return ""
 
     @staticmethod
     def _run_terminal_status(run_file: Path) -> str:

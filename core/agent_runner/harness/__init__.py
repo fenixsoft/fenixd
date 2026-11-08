@@ -28,6 +28,8 @@ runner/event_bus/admin_monitor 等消费侧模块；消费侧单向 import 本�
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +38,7 @@ from core.agent_runner.harness.protocol import (
     ENV_MODE_CLEAN,
     ENV_MODE_INHERIT,
     HARNESS_ADAPTER_MEMBERS,
+    HARNESS_CLI_UNAVAILABLE_MARKER,
     PROMPT_TRANSPORT_ARGV,
     PROMPT_TRANSPORT_STDIN,
     STDERR_CLASS_CLI_NOISE,
@@ -102,11 +105,52 @@ __all__ = [
     # 回落 WARN（add-harness-default-key-fallback 2.1）
     "warn_harness_default_fallback",
     "reset_harness_default_fallback_warned",
+    # 可达性自检与归因（add-dispatch-precheck-true-fallback 2.1）
+    "HARNESS_CLI_UNAVAILABLE_MARKER",
+    "HARNESS_EXECUTABLE_NAMES",
+    "harness_unavailable_message",
+    "precheck_harness_executable",
 ]
 
 # agent.harness 合法值（config 校验/settings_routes/config_admin 三处共用单源；
 # dsh 已由 add-dsh-adapter-integration 部署 DshAdapter，保存与生效同词表）
 VALID_HARNESS_VALUES = ("claude", "dsh")
+
+
+# ── harness 可执行文件可达性自检（add-dispatch-precheck-true-fallback 2.1）──
+# 可执行名单源（与 VALID_HARNESS_VALUES 同源派生）：claude→claude、dsh→dsh。
+# 生产装配链 resolve_adapter 不开放自定义二进制名（DshAdapterConfig 的 dsh_bin
+# 恒缺省），按本表探测即实际 spawn 面。
+HARNESS_EXECUTABLE_NAMES: Dict[str, str] = {name: name for name in VALID_HARNESS_VALUES}
+
+
+def harness_unavailable_message(executable: str) -> str:
+    """harness binary 不可达的归因文案（标记 + PATH 现场 + 修复指引）。
+
+    标记与 [model-chain-unavailable] 同层同形：升级信号豁免面（runner 秒挂
+    计数 / admin_monitor 重复失败计数 / dispatch 自动重派）按标记豁免（2.3）。
+    daemon 启动自检告警（2.2）与派发短路（2.1）两处共用本文案，双口径合一。
+    """
+    path_summary = os.environ.get("PATH", "") or "<空>"
+    return (
+        f"{HARNESS_CLI_UNAVAILABLE_MARKER} harness 可执行文件 {executable!r} "
+        f"不在当前 PATH 中（PATH={path_summary}）：请检查 PATH / systemd "
+        f"EnvironmentFile 配置（确认 ~/.local/bin 等安装目录在场），"
+        f"或将 agent.harness 切换到可达 harness"
+    )
+
+
+def precheck_harness_executable(executable: str) -> Optional[str]:
+    """shutil.which 探测 harness binary；可达返回 None，不可达返回归因文案。
+
+    派发前置自检（runner._execute_agent 装配段）与 daemon 启动自检
+    （fenixd.py 启动序列）共用的探测单源：可达路径零日志零噪音放行
+    （which 为微秒级文件系统探测）；不可达由调用方处置（短路派发 /
+    发单条告警）。
+    """
+    if shutil.which(executable):
+        return None
+    return harness_unavailable_message(executable)
 
 
 class HarnessNotDeployedError(RuntimeError):

@@ -442,6 +442,9 @@ class FenixDaemon:
         self.agent_runner = None
         self.admin_store = None
         self.admin_monitor = None
+        # harness 启动可达性自检 run-once 旗标（add-dispatch-precheck-true-fallback
+        # 2.2：进程内去重——启动序列探测一次，后续调用零重复）
+        self._harness_precheck_done = False
         self._admin_thread = None
         # Administrator 后台执行 worker 池（fix-admin-run-blocks-mainloop D1/D6）：
         # 处置移出主循环，主循环只拾取与投递；admin.workers=0 回退同步行为。
@@ -813,6 +816,136 @@ class FenixDaemon:
                 f"knowledge-distill pending 台账恢复失败 (non-blocking): {e}",
             )
 
+    def _startup_harness_precheck(self):
+        """启动序列 harness binary 可达性自检（add-dispatch-precheck-true-fallback 2.2/2.4）。
+
+        启动时探测一次当前 agent.harness 选型的可执行名（探测单源
+        precheck_harness_executable / shutil.which）：可达零噪音返回（不播报）。
+        不可达按序：
+
+        - PATH 自愈（2.4）：binary 在基线安装目录在场而进程 PATH 缺该目录、
+          且 .fenix/systemd.env 在场 → PATH 行幂等追加缺失目录（原子写）+
+          落 restart_request（JSON：reason/origin/date；已在不重写）+ WARNING
+          留痕——supervisor 消费重启后生效（2s 轮询仅判存在性）；
+        - 告警（2.2）：发单条 actionable 告警（含可执行名、当前 PATH 摘要、
+          修复指引；binary 全基线目录缺失时附安装指引），run-once 旗标进程内
+          去重，不阻塞其余职能。
+
+        全常见安装目录未找到 binary 时不写 env 仅告警（盲写门）。调用方以
+        非阻塞 try/except 包裹（与相邻启动自检同口径）：自检自身故障只降级
+        WARNING，不击穿 start()。
+        """
+        if self._harness_precheck_done:
+            return
+        self._harness_precheck_done = True
+        from core.agent_runner.harness import (
+            HARNESS_EXECUTABLE_NAMES,
+            precheck_harness_executable,
+        )
+        from core.systemd_hosting import (
+            ENV_FILE_BASENAME,
+            PATH_BASELINE_DIRS,
+            append_env_path_dirs,
+        )
+
+        harness = ConfigLoader.get_harness(self.config or {})
+        executable = HARNESS_EXECUTABLE_NAMES.get(harness)
+        if executable is None:
+            return
+        precheck_error = precheck_harness_executable(executable)
+        if precheck_error is None:
+            return  # 可达：零噪音放行（2.2「可达时不播报」）
+
+        env_file = PROJECT_ROOT / ".fenix" / ENV_FILE_BASENAME
+        path_dirs = {p for p in os.environ.get("PATH", "").split(":") if p}
+        # 自愈候选 = PATH 缺失的基线目录（已在 PATH 的目录无自愈需求）
+        heal_dirs = [d for d in PATH_BASELINE_DIRS if d not in path_dirs]
+        found_in = next(
+            (d for d in heal_dirs if (Path(d) / executable).exists()), None)
+        healed_dirs: list = []
+        if found_in is not None and env_file.exists():
+            healed_dirs = append_env_path_dirs(env_file, heal_dirs)
+            if healed_dirs:
+                self._write_selfheal_restart_request(healed_dirs)
+
+        # ── 单条 actionable 告警（2.2：run-once 旗标进程内去重）──────────
+        if found_in is None:
+            action_taken = "不写 env（binary 全基线目录未找到，盲写门）；仅告警"
+            recommended = (
+                f"安装 harness CLI（如将 {executable} 安装到 ~/.local/bin）或把 "
+                "agent.harness 切换到可达通道；安装后重启 daemon 自检即通过"
+            )
+        elif healed_dirs:
+            action_taken = (
+                f"PATH 自愈：.fenix/systemd.env PATH 行追加 {'、'.join(healed_dirs)}"
+                "（原子写）+ restart_request 落盘（JSON reason/origin/date）"
+            )
+            recommended = (
+                "无需人工干预：supervisor 消费 restart_request 重启 daemon 后 "
+                "PATH 追加生效、自检通过；重启完成后确认再手动关闭本告警"
+            )
+        else:
+            action_taken = "不写 env（无可自愈缺失目录，或 .fenix/systemd.env 缺席）"
+            recommended = (
+                f"检查 PATH / systemd EnvironmentFile 配置：将 {found_in} 加入"
+                "承载 PATH 或提升 systemd.env 后重启 daemon"
+            )
+        dedup_key = f"harness-cli-unavailable-{executable}"
+
+        def _inflight(rec: dict) -> bool:
+            return (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type") == "harness_cli_unavailable"
+                and rec.get("dedup_key") == dedup_key
+            )
+
+        self.admin_store.append_if_absent(
+            {
+                "kind": ESCALATION,
+                "signal_type": "harness_cli_unavailable",
+                "dedup_key": dedup_key,
+                "spec": None,
+                "severity": "major",
+                "description": (
+                    f"harness 可执行文件 {executable!r} 不在 daemon 进程 PATH 中——"
+                    "各车道派发将以此归因短路（[harness-cli-unavailable]），"
+                    "agent 车道不可用直至 PATH 修复"
+                ),
+                "evidence": (
+                    f"executable={executable}; PATH={os.environ.get('PATH', '') or '<空>'}; "
+                    f"binary_found_in={found_in or '全基线目录均未找到'}; "
+                    f"systemd_env={'在场' if env_file.exists() else '缺席'}; "
+                    f"self_heal={'已追加 ' + '、'.join(healed_dirs) if healed_dirs else '未触发'}"
+                ),
+                "action_taken": action_taken,
+                "recommended_action": recommended,
+            },
+            _inflight,
+        )
+        self.logger.warning("fenixd", f"启动自检：{precheck_error}")
+
+    def _write_selfheal_restart_request(self, healed_dirs: list) -> None:
+        """PATH 自愈后落 restart_request（JSON：reason/origin/date）。
+
+        与既有自愈「restart_request 已在不重复写、不刷 mtime」不变量一致
+        （supervisor 只判存在性，2s 轮询命中即 SIGTERM → 排水 → 重启）。
+        """
+        rr = PROJECT_ROOT / ".fenix" / "restart_request"
+        if rr.exists():
+            return
+        rr.parent.mkdir(parents=True, exist_ok=True)
+        rr.write_text(
+            json.dumps({
+                "reason": (
+                    "harness PATH 自愈：.fenix/systemd.env PATH 行追加 "
+                    + "、".join(healed_dirs)
+                ),
+                "origin": "harness-path-selfheal",
+                "date": datetime.now(timezone.utc).isoformat(),
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
     def start(self):
         """Start the daemon main loop."""
         self.running = True
@@ -852,6 +985,17 @@ class FenixDaemon:
             self.logger.warning(
                 "fenixd",
                 f"Supervisor drain consistency check failed (non-blocking): {e}",
+            )
+
+        # ── harness binary 可达性自检（add-dispatch-precheck-true-fallback 2.2/2.4）──
+        # 不可达发单条 actionable 告警并尝试 PATH 自愈（systemd.env 追加 +
+        # restart_request）；非阻塞同款包裹，自检自身故障不击穿 start()。
+        try:
+            self._startup_harness_precheck()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Startup harness precheck failed (non-blocking): {e}",
             )
 
         # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。

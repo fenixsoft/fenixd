@@ -52,6 +52,7 @@ from .protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
     ENV_MODE_INHERIT,
+    HARNESS_CLI_UNAVAILABLE_MARKER,
     PROMPT_TRANSPORT_STDIN,
     STDERR_CLASS_CLI_NOISE,
     STDERR_CLASS_GENERIC,
@@ -1156,8 +1157,11 @@ class DshAdapter:
                 env=self._health_env(),
             )
         except (OSError, subprocess.SubprocessError) as e:
+            # add-dispatch-precheck-true-fallback 2.1：「未装」路径接入
+            # [harness-cli-unavailable] 归因（与派发前置自检同口径，避免双口径
+            # ——升级信号豁免面按标记豁免，归因不同升级路径不同）。
             raise HarnessHealthError(
-                f"dsh 不可用（{e}）：请安装 dsh（npm install -g "
+                f"{HARNESS_CLI_UNAVAILABLE_MARKER} dsh 不可用（{e}）：请安装 dsh（npm install -g "
                 f"@deepseek-ai/dsh@{DSH_VERSION_WHITELIST[0]}，详见 "
                 f"dsh-bundle/README.md 部署段），或将 agent.harness 改回 claude"
             ) from e

@@ -398,10 +398,26 @@ def stage1_write_units_and_env(proot: Path, froot: Path, dry_run: bool) -> dict:
                 )
             else:
                 plan.append(_env_summary(sh.filter_session_identity(env), sh.project_env_file(proot)))
+                # PATH 卫生结论行（add-dispatch-precheck-true-fallback 3.3）
+                missing = sh.path_baseline_missing(env.get("PATH", ""))
+                plan.append(
+                    "PATH 卫生：完整（基线目录齐备）"
+                    if not missing
+                    else f"PATH 卫生：补齐 {'、'.join(missing)}（候选稿头部留痕原因）"
+                )
         else:
             try:
-                keys = sh.capture_env_candidate(sup_pid, sh.project_env_file(proot))
+                # path_report 收集实际追加目录（3.1 基线并集），摘要据此出
+                # 「完整」/「补齐 <清单>」结论行（3.3）
+                path_report: list = []
+                keys = sh.capture_env_candidate(
+                    sup_pid, sh.project_env_file(proot), path_report=path_report)
                 plan.append(_env_summary(keys, sh.project_env_file(proot)))
+                plan.append(
+                    "PATH 卫生：完整（基线目录齐备）"
+                    if not path_report
+                    else f"PATH 卫生：补齐 {'、'.join(path_report)}（候选稿头部留痕原因）"
+                )
             except sh.SystemdHostingError as e:
                 errors.append(str(e))
     elif sh.project_env_file(proot).exists():
