@@ -883,15 +883,28 @@ class PRepairLaneMixin:
                     # 式在飞状态回写保护，可能把已推进的 implemented 锚点覆盖回
                     # ready。恢复口径：保留 implemented 锚点，best-effort 补齐
                     # 收口后重入队 verifier（transition 对非法转移仅 WARNING +
-                    # False 不抛异常，已推进时幂等短路，重复补推无副作用）。
+                    # False 不抛异常，已推进时幂等短路，重复补推无副作用；
+                    # 补推返回 False 即并发写者已推进/冻结，下方跳过收口回写
+                    # 保留现场）。
                     self._pm.logger.error(
                         "pm_engine",
                         f"repair 链成功尾段异常 '{spec_name}'（re-merge 已成功，"
                         f"不回退重派，转 verifier 重入队恢复）: "
                         f"{type(tail_e).__name__}: {tail_e}",
                     )
+                    transition_ok = False
                     try:
-                        self._pm.state_machine.transition(
+                        # 补推返回值消费（code-review item f54e9338187d，对齐
+                        # 上方主路径 a5e1c9319ad4 的同型守卫）：True 含已推进
+                        # 的幂等短路；False 表示补推未生效——并发写者已把 spec
+                        # 冻结（frozen 剥离 status 后 transition 返回 False）或
+                        # 推进/复位到其他状态。此时下方收口字段表（error=None、
+                        # 计数清零、implementer_run 覆写）会把冻结 error 内嵌
+                        # 「原状态 X」的解冻还原锚点与现场计数一并抹掉
+                        # （update_spec 冻结剥离只保 status、不保这些字段），
+                        # 故跳过清账回写、保留冻结现场，仅保留下方 verifier
+                        # 重入队兜底。
+                        transition_ok = self._pm.state_machine.transition(
                             spec_name, "implemented",
                             trigger_run_id=getattr(r, "run_id", None) or None,
                             agent_type="repair", channel="auto",
@@ -902,20 +915,29 @@ class PRepairLaneMixin:
                             f"成功尾段异常恢复：补推 implemented 失败 "
                             f"'{spec_name}'（非阻塞）: {e2}",
                         )
-                    try:
-                        # best-effort 补齐收口字段（与成功尾段共用
-                        # _repair_closeout_updates 单一字段表，含
-                        # _clear_dispatch_conflict 锁冲突收口；已写过的字段
-                        # 幂等重写无害，仅触发时机不同）。
-                        self._pm.state_machine.update_spec(
-                            spec_name,
-                            self._repair_closeout_updates(spec_name, r, branch),
-                        )
-                    except Exception as e3:
+                    if transition_ok:
+                        try:
+                            # best-effort 补齐收口字段（与成功尾段共用
+                            # _repair_closeout_updates 单一字段表，含
+                            # _clear_dispatch_conflict 锁冲突收口；已写过的字段
+                            # 幂等重写无害，仅触发时机不同）。
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                self._repair_closeout_updates(spec_name, r, branch),
+                            )
+                        except Exception as e3:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"成功尾段异常恢复：收口字段回写失败 "
+                                f"'{spec_name}'（非阻塞）: {e3}",
+                            )
+                    else:
                         self._pm.logger.warning(
                             "pm_engine",
-                            f"成功尾段异常恢复：收口字段回写失败 "
-                            f"'{spec_name}'（非阻塞）: {e3}",
+                            f"成功尾段异常恢复：补推 implemented 未生效 "
+                            f"'{spec_name}'（并发写者已推进/冻结，或补推自身异常），"
+                            f"跳过收口字段回写，保留计数与 error 现场"
+                            f"待收口重试/审计",
                         )
                     try:
                         # verify 单飞守卫同上（evo-add-verify-dispatch-single-flight
