@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-11-08 20:53 UTC+8
+> 最后更新：2026-11-08 21:00 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、前端壳层基建、按需生成类任务与指挥中心聚合。
 
@@ -14,11 +14,11 @@
 | [dashboard-sse-refresh](dashboard-sse-refresh.md) | SSE 增量刷新 | 2026-10-07 02:25 |
 | [dashboard-incremental-watcher](dashboard-incremental-watcher.md) | 增量数据 watcher | 2026-10-03 04:59 |
 | [dashboard-log-offset-index](dashboard-log-offset-index.md) | 日志偏移索引 | 2026-10-03 04:59 |
-| [dashboard-spec-summary-index](dashboard-spec-summary-index.md) | SPEC 摘要索引 | 2026-10-03 04:59 |
+| [dashboard-spec-summary-index](dashboard-spec-summary-index.md) | SPEC 摘要内存索引（同趟聚合签名、按项目分槽锁、配置解析缓存、cleanup_runs 节流） | 2026-11-08 21:00 |
 | [dashboard-data-modules](dashboard-data-modules.md) | 数据读取模块化 | 2026-10-03 04:59 |
-| [dashboard-read-path-performance](dashboard-read-path-performance.md) | 读路径性能优化 | 2026-10-06 07:44 |
+| [dashboard-read-path-performance](dashboard-read-path-performance.md) | 读路径性能治理（/api/specs 单趟读、SummaryIndex 增量失效、run 尾读、runs 清扫有界） | 2026-11-08 21:00 |
 | [dashboard-overview-cache](dashboard-overview-cache.md) | /api/overview 结果缓存（TTL∨签名） | 2026-10-07 02:15 |
-| [dashboard-conditional-get](dashboard-conditional-get.md) | GET 读端点条件请求（ETag/304） | 2026-10-07 02:25 |
+| [dashboard-conditional-get](dashboard-conditional-get.md) | GET 读端点条件请求（ETag/304；specs 走取数同趟型自含协商） | 2026-11-08 21:00 |
 | [dashboard-server-paging](dashboard-server-paging.md) | 读端点服务端分页 | 2026-10-07 02:25 |
 | [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 | 2026-10-03 04:59 |
 | [project-architecture-diagram](project-architecture-diagram.md) | 项目架构图（archify 按需生成） | 2026-10-04 04:57 |
@@ -37,4 +37,5 @@
 | 前端 rebuild 后改动不生效（拿到旧 bundle 验证新改动） | [page-container-chrome](../dashboard-frontend/page-container-chrome.md)（dashboard-frontend 域；hash goto 不重载文档，验证须整页 reload） |
 | SSE 断开空窗/增量停摆 | [dashboard-sse-refresh](dashboard-sse-refresh.md)（30s 心跳兜底刷新、重连恢复增量） |
 | dashboard 端口被占/实例疑似陈旧僵死 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md)（陈旧进程判读、双轨重启协议） |
+| SPEC 列表请求慢/超时（/api/specs 服务端延迟） | [dashboard-read-path-performance](dashboard-read-path-performance.md)（单趟同源聚合与分槽锁治理） |
 
