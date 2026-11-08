@@ -4231,30 +4231,17 @@ class FenixDaemon:
         if self._admin_executor is None:
             self._execute_approve_push(spec)
             return True
-        with self._admin_pool_lock:
-            stats = dict(self._admin_pool_stats)
-            stats["submitted"] += 1
-            self._admin_pool_stats = stats
         try:
-            self._admin_executor.submit(self._approve_push_worker, spec)
-        except Exception as e:  # noqa: BLE001 — 非 RuntimeError 同样回滚泄漏的
-            # submitted（code-review item 8232ac14d5d8，口径对齐
-            # _submit_admin_run / spec_delete 的宽 Exception 投递点）
-            with self._admin_pool_lock:
-                stats = dict(self._admin_pool_stats)
-                stats["submitted"] -= 1
-                self._admin_pool_stats = stats
+            self._submit_pool_task(
+                self._approve_push_worker, spec,
+                submitted_log_prefix=f"approve_push 已投递后台（spec='{spec}'")
+        except Exception as e:  # noqa: BLE001 — 投递被拒（submitted 已由助手
+            # 回滚，item 8232ac14d5d8 宽 Exception 口径）交 recovery 兜底
             self.logger.error(
                 "fenixd",
                 f"approve_push 投递被拒绝 spec='{spec}': {e}（recovery 兜底）",
             )
             return False
-        queued = stats["submitted"] - stats["completed"] - stats["failed"]
-        self.logger.info(
-            "fenixd",
-            f"approve_push 已投递后台（spec='{spec}'，"
-            f"已提交 {stats['submitted']}，排队中 {queued}）",
-        )
         return True
 
     def _execute_approve_push(self, spec) -> bool:
@@ -4430,29 +4417,20 @@ class FenixDaemon:
             return
 
         # 派发即置位、worker finally 复位（对齐 _evolution_in_flight）：主循环
-        # 是唯一置位者，check-then-set 无并发写者。submit 前先递增 submitted
-        # （对齐 _submit_admin_run / code-review item 5786fd76ad49：worker 可
-        # 领跑收尾先递增 completed/failed，在飞推导转负），被拒回滚——删除的
-        # 60s 有界等待 MUST 计入 _is_idle 的池在途维度，避免删除等待期间被
-        # stale-code 自愈误判空闲。
+        # 是唯一置位者，check-then-set 无并发写者。submitted 先增后投、被拒
+        # 回滚收口于 _submit_pool_task（对齐 _submit_admin_run / item
+        # 5786fd76ad49）——删除的 60s 有界等待 MUST 计入 _is_idle 的池在途
+        # 维度，避免删除等待期间被 stale-code 自愈误判空闲。
         self._spec_delete_in_flight = True
-        with self._admin_pool_lock:
-            stats = dict(self._admin_pool_stats)
-            stats["submitted"] += 1
-            self._admin_pool_stats = stats
         try:
-            self._admin_executor.submit(
-                self._spec_delete_worker,
-                spec, _stop_running, SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS)
+            self._submit_pool_task(
+                self._spec_delete_worker, spec, _stop_running,
+                SPEC_DELETE_STOP_WAIT_TOTAL_SECONDS,
+                submitted_log_prefix=f"spec_delete 已投递后台（spec='{spec}'")
         except Exception as e:  # noqa: BLE001 — 非 RuntimeError 同样处置
-            # （code-review item 8232ac14d5d8，口径对齐 _check_evolution_checkpoint
-            # / _check_code_review_requests 的宽 Exception 投递点）：只接
-            # RuntimeError 时其它异常会令去重旗标不复位（后续 spec_delete 被去
-            # 重门永久吞掉直至重启）、submitted 泄漏使 _is_idle 空闲判定永不达成
-            with self._admin_pool_lock:
-                stats = dict(self._admin_pool_stats)
-                stats["submitted"] -= 1
-                self._admin_pool_stats = stats
+            # （code-review item 8232ac14d5d8 宽 Exception 口径，submitted 已由
+            # 助手回滚）：去重旗标 MUST 复位——否则其它异常会令旗标不复位
+            # （后续 spec_delete 被去重门永久吞掉直至重启）
             self._spec_delete_in_flight = False
             self.logger.error(
                 "fenixd",
@@ -4460,12 +4438,6 @@ class FenixDaemon:
                 "（不重写信号，用户可重试）",
             )
             return
-        queued = stats["submitted"] - stats["completed"] - stats["failed"]
-        self.logger.info(
-            "fenixd",
-            f"spec_delete 已投递后台（spec='{spec}'，"
-            f"已提交 {stats['submitted']}，排队中 {queued}）",
-        )
 
     def _soft_delete_with_bounded_wait(self, spec, stop_callback, total_timeout: float):
         """先停后删的有界等待实现（add-freeze-stop-inflight-agents 5.3）。
@@ -4924,28 +4896,14 @@ class FenixDaemon:
                 # 路径「先受理后执行」的既有顺序；submit 抛异常由 except 分支
                 # 补落 failed/submit_error（后写覆盖，终态仍正确）。
                 self._write_code_review_request_result(requested_at, "started", None)
-                # submit 前先递增 submitted（code-review item c979d0ffe6f8，口径
-                # 对齐 _submit_admin_run / _submit_approve_push / spec_delete 的
-                # item 5786fd76ad49：worker 可领跑收尾先递增 completed/failed，
-                # 在飞推导不得转负）——手动审查在飞期 MUST 计入 _is_idle 的池
-                # 在途维度：run_code_review 把子进程登记进 _running_agents 之前
-                # 的窗口（manifest 收集/契约加载）内，陈旧自愈空闲闸不得把刚
-                # 受理的审查判为空闲写 restart_request。先增后投、被拒回滚，
-                # 任意瞬间 submitted ≥ completed + failed。
-                with self._admin_pool_lock:
-                    stats = dict(self._admin_pool_stats)
-                    stats["submitted"] += 1
-                    self._admin_pool_stats = stats
-                try:
-                    self._admin_executor.submit(_worker_with_flag, True)
-                except Exception:
-                    # 投递被拒回滚泄漏的 submitted（item 8232ac14d5d8 宽
-                    # Exception 口径）；单飞复位与 failed 留痕由外层 except 收口
-                    with self._admin_pool_lock:
-                        stats = dict(self._admin_pool_stats)
-                        stats["submitted"] -= 1
-                        self._admin_pool_stats = stats
-                    raise
+                # 手动审查在飞期 MUST 计入 _is_idle 的池在途维度（item
+                # c979d0ffe6f8）：run_code_review 把子进程登记进 _running_agents
+                # 之前的窗口（manifest 收集/契约加载）内，陈旧自愈空闲闸不得
+                # 把刚受理的审查判为空闲写 restart_request。先增后投、被拒
+                # 回滚收口于 _submit_pool_task（item 5786fd76ad49 /
+                # 8232ac14d5d8 口径）；投递被拒（submitted 已由助手回滚）抛出
+                # 到外层 except 收口单飞复位与 failed 留痕。
+                self._submit_pool_task(_worker_with_flag, True)
             else:
                 # 无池兜底（同步执行）：受理先于执行落盘；run 终态不回写结果
                 # 文件（design D1），执行完毕后结果仍停留 started
@@ -5154,27 +5112,14 @@ class FenixDaemon:
 
         try:
             if self._admin_executor is not None:
-                # submit 前先递增 submitted（code-review item c979d0ffe6f8，口径
-                # 对齐 _submit_admin_run / _submit_approve_push / spec_delete 的
-                # item 5786fd76ad49）：手动回归在飞期 MUST 计入 _is_idle 的池
-                # 在途维度——run_regression 把子进程登记进 _running_agents 之前
-                # 的窗口（快照映射/契约校验）内，陈旧自愈空闲闸不得把刚受理
-                # 的回归判为空闲写 restart_request。先增后投、被拒回滚，任意
-                # 瞬间 submitted ≥ completed + failed。
-                with self._admin_pool_lock:
-                    stats = dict(self._admin_pool_stats)
-                    stats["submitted"] += 1
-                    self._admin_pool_stats = stats
-                try:
-                    self._admin_executor.submit(_worker_with_flag, True)
-                except Exception:
-                    # 投递被拒回滚泄漏的 submitted（item 8232ac14d5d8 宽
-                    # Exception 口径）；单飞复位与留痕由外层 except 收口
-                    with self._admin_pool_lock:
-                        stats = dict(self._admin_pool_stats)
-                        stats["submitted"] -= 1
-                        self._admin_pool_stats = stats
-                    raise
+                # 手动回归在飞期 MUST 计入 _is_idle 的池在途维度（item
+                # c979d0ffe6f8）：run_regression 把子进程登记进 _running_agents
+                # 之前的窗口（快照映射/契约校验）内，陈旧自愈空闲闸不得把刚
+                # 受理的回归判为空闲写 restart_request。先增后投、被拒回滚
+                # 收口于 _submit_pool_task（item 5786fd76ad49 / 8232ac14d5d8
+                # 口径）；投递被拒（submitted 已由助手回滚）抛出到外层 except
+                # 收口单飞复位与留痕。
+                self._submit_pool_task(_worker_with_flag, True)
             else:
                 _worker_with_flag()
         except Exception as e:
@@ -5875,6 +5820,60 @@ class FenixDaemon:
         finally:
             self._evolution_in_flight = False
 
+    def _submit_pool_task(self, worker, *args, submitted_log_prefix=None) -> bool:
+        """admin 后台池「先增后投、被拒回滚」投递样板单点收口。
+
+        code-review item c0a83ac86e74（先例 _consume_signal_payload /
+        _singleflight_lock）：「锁内 dict 拷贝 → submitted+1 →
+        executor.submit → 被拒锁内回滚」的池统计样板在 _submit_admin_run /
+        _submit_approve_push / _check_spec_delete_requests /
+        _check_code_review_requests / _check_regression_requests 五个投递点
+        逐字重复、仅文案微差，收口此处，新增车道不再复制漏改。该样板历史上
+        两度出缺陷（item 5786fd76ad49 时序遗漏、item 8232ac14d5d8 仅接
+        RuntimeError），统一在本助手保证：
+
+        - submit 前锁内先递增 submitted（item 5786fd76ad49）：worker 可在其间
+          领跑并先递增 completed/failed，在飞推导式
+          submitted - completed - failed 不得转负——否则 _is_idle() 误报空闲
+          （喂给 stale-code 自重启决策），shutdown 的 _dropped 计数低估；
+        - submit 被拒按宽 Exception 回滚（item 8232ac14d5d8）：非 RuntimeError
+          同样回滚泄漏的 submitted，任意瞬间
+          submitted ≥ completed + failed。
+
+        投递成功且 submitted_log_prefix 非空时统一拼接
+        「，已提交 N，排队中 M）」尾巴落 INFO（_submit_admin_run /
+        _submit_approve_push / spec_delete 三点既有投递日志，文案前缀按点
+        传入、措辞保留原样；code_review / regression 两点既有行为无投递
+        日志，传 None 保持原样）。投递被拒不吞不换形：回滚后原样重抛，由
+        调用点按各自语义落痕（failed disposition / 去重旗标复位 / raise 进
+        外层 except 收口单飞）。回收侧 completed/failed 收口不在本助手
+        （各 worker 形态不一，见 _admin_run_worker / _worker_with_flag）。
+
+        Returns:
+            True = 已投递；被拒不返回（回滚后重抛）。
+        """
+        with self._admin_pool_lock:
+            stats = dict(self._admin_pool_stats)
+            stats["submitted"] += 1
+            self._admin_pool_stats = stats
+        try:
+            self._admin_executor.submit(worker, *args)
+        except Exception:  # noqa: BLE001 — 非 RuntimeError 同样回滚泄漏的
+            # submitted（item 8232ac14d5d8 宽 Exception 口径）
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
+                stats["submitted"] -= 1
+                self._admin_pool_stats = stats
+            raise
+        if submitted_log_prefix is not None:
+            queued = stats["submitted"] - stats["completed"] - stats["failed"]
+            self.logger.info(
+                "fenixd",
+                f"{submitted_log_prefix}，已提交 {stats['submitted']}，"
+                f"排队中 {queued}）",
+            )
+        return True
+
     def _submit_admin_run(self, signal: dict) -> bool:
         """把一次 Administrator 处置投递到后台 worker 池（D1/D2）。
 
@@ -5889,36 +5888,21 @@ class FenixDaemon:
         if self._admin_executor is None:
             self._execute_admin_disposition(signal)
             return True
-        # submit 前先递增 submitted（code-review item 5786fd76ad49）：旧时序在
-        # submit 返回后才计数——worker 可在其间领跑并先递增 completed/failed，
-        # 在飞推导式 submitted - completed - failed 转负：_is_idle() 误报空闲
-        # （喂给 stale-code 自重启决策），shutdown 的 _dropped 计数低估。先增
-        # 后投、被拒回滚，保证任意瞬间 submitted ≥ completed + failed。
-        with self._admin_pool_lock:
-            stats = dict(self._admin_pool_stats)
-            stats["submitted"] += 1
-            self._admin_pool_stats = stats
+        # 先增后投、被拒回滚收口于 _submit_pool_task（item 5786fd76ad49 /
+        # 8232ac14d5d8 口径）：submitted MUST 先于 submit 递增且被拒回滚，
+        # 任意瞬间 submitted ≥ completed + failed（_is_idle 池在途推导）。
         try:
-            self._admin_executor.submit(self._admin_run_worker, signal)
-        except Exception as e:  # noqa: BLE001 — 非 RuntimeError 同样回滚泄漏的
-            # submitted 并落 failed 处置留痕（code-review item 8232ac14d5d8，
-            # 口径对齐 _check_evolution_checkpoint / _check_code_review_requests）
-            with self._admin_pool_lock:
-                stats = dict(self._admin_pool_stats)
-                stats["submitted"] -= 1
-                self._admin_pool_stats = stats
+            self._submit_pool_task(
+                self._admin_run_worker, signal,
+                submitted_log_prefix=f"Administrator 处置已投递后台（SPEC {spec}")
+        except Exception as e:  # noqa: BLE001 — 投递被拒（submitted 已由助手
+            # 回滚）落 failed 处置留痕，不丢痕
             self.logger.error(
                 "fenixd",
                 f"Administrator 处置投递被拒绝（SPEC {spec}）：{e}",
             )
             self._record_failed_admin_disposition(spec, f"投递被拒绝：{e}")
             return False
-        queued = stats["submitted"] - stats["completed"] - stats["failed"]
-        self.logger.info(
-            "fenixd",
-            f"Administrator 处置已投递后台（SPEC {spec}，"
-            f"已提交 {stats['submitted']}，排队中 {queued}）",
-        )
         return True
 
     def _admin_run_worker(self, signal: dict):
