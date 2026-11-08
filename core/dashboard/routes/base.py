@@ -1138,7 +1138,16 @@ class H0BaseMixin:
             self.close_connection = True
             self._error(400, "Invalid Content-Length")
             return None
-        if content_length <= 0:
+        if content_length < 0:
+            # 负值 Content-Length（畸形请求，code-review item 55fe2a400f24）：
+            # _drain_remaining_request_body 算得 remaining 为负必然跳过排空，
+            # 客户端已发出的 body 字节会残留 keep-alive 连接、被下一请求当
+            # 请求行解析（BUG-01 同类失步）。比照上方 ValueError 与 413 分支
+            # 置 close_connection=True，残留字节随连接关闭作废。
+            self.close_connection = True
+            self._error(400, "Invalid Content-Length")
+            return None
+        if content_length == 0:
             self._error(400, "Empty request body")
             return None
         if content_length > max_body:
@@ -1192,6 +1201,16 @@ class H0BaseMixin:
             # 的同型处置置 close_connection=True，残留字节随连接关闭作废。
             content_length = 0
             self.close_connection = True
+        if content_length < 0:
+            # 负值 Content-Length（code-review item 55fe2a400f24）：remaining
+            # 为负会跳过排空，客户端已发出的 body 字节残留 keep-alive 连接、
+            # 被下一请求当请求行解析（BUG-01 同类失步）。比照上方 ValueError
+            # 分支与 _read_json_body 同型处置置 close_connection=True，残留
+            # 字节随连接关闭作废；_handle 快速拒绝分支与未走 _read_json_body
+            # 的 POST/DELETE 路由（负值声明同样过不了 remaining>0 判定）均经
+            # 本单点覆盖。
+            self.close_connection = True
+            return
         remaining = content_length - getattr(self, "_request_body_consumed", 0)
         if remaining > 0:
             # 残留长度上界（code-review item 5761d9f2f5c3）：handler 走 query
