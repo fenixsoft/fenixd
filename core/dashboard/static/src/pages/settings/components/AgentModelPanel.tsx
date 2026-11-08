@@ -1,24 +1,38 @@
 import { App, Button, Card, Col, Form, Input, Row, Select, Space, Tooltip, Typography } from 'antd';
 import {
   CopyOutlined,
+  DownOutlined,
   HeartOutlined,
   HolderOutlined,
   MinusCircleOutlined,
   PlusOutlined,
   SnippetsOutlined,
+  UpOutlined,
 } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
 import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData } from '@/services/dashboard';
 import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
 import { resolveHealthCheckParams, toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
 import { useGatedFormPanel } from '../useGatedFormPanel';
 // 状态/焦点色取宿主对齐单源（theme.ts；DESIGN.md「宿主对齐基线」+ 配色单源红线）
-import { DSH_ERROR, DSH_LINK, DSH_SUCCESS, DSH_WARNING } from '@/theme';
+import {
+  DSH_BG_MODULE,
+  DSH_BORDER_SECONDARY,
+  DSH_ERROR,
+  DSH_LINK,
+  DSH_SPLIT,
+  DSH_SUCCESS,
+  DSH_TEXT_CAPTION,
+  DSH_TEXT_SECONDARY,
+  DSH_TEXT_TERTIARY,
+  DSH_WARNING,
+} from '@/theme';
 
 const { Text } = Typography;
 
@@ -153,6 +167,16 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // - dragOver：拖动中悬停的目标行（同结构），用于落位高亮
   const [dragReady, setDragReady] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+
+  // 移动端（<768px，useIsMobile 判定）折叠态：默认全折叠 = 分配清单读态（折叠头
+  // 摘要显示链序或「未分配」），点摘要条展开进入编辑态。按角色 key 记录、与表单
+  // 值无关；PC 端不渲染折叠结构，本状态恒不被消费（isMobile 条件分支整体收口，
+  // 桌面零影响）。形态出处：2026-11-07 用户会话内批准的移动端原型
+  // （.fenix/prototypes/settings-agent-model-mobile，vendor 层真组件定稿）。
+  const isMobile = useIsMobile();
+  const [collapsedRoles, setCollapsedRoles] = useState<Record<string, boolean>>({});
+  const toggleRoleCollapsed = (key: string) =>
+    setCollapsedRoles((m) => ({ ...m, [key]: !(m[key] ?? true) }));
 
   // 全局兜底复位（code-review item 9dcac1b55672）：mouseUp 只挂手柄元素上，
   // 按住后移出元素再松开（未触发 HTML5 drag、dragend 不派发）时 dragReady
@@ -457,6 +481,15 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           name="subagentModelOverride"
           label="子代理模型覆盖（Subagent Model Override）"
           tooltip="非空时，直连 Provider 车道的隔离 settings.json 的 env 子代理 tier 映射（CLAUDE_CODE_SUBAGENT_MODEL 等）使用该值而非 provider 默认模型。留空 = 使用 provider model。"
+          extra={
+            // 移动端悬停提示不可达：tooltip 文案平铺为输入框下说明文字（原型定稿）
+            isMobile ? (
+              <span style={{ fontSize: 11, color: DSH_TEXT_TERTIARY, lineHeight: 1.5 }}>
+                非空时，直连 Provider 车道的隔离 settings.json 的 env 子代理 tier 映射（CLAUDE_CODE_SUBAGENT_MODEL
+                等）使用该值而非 provider 默认模型。留空 = 使用 provider model。
+              </span>
+            ) : undefined
+          }
         >
           <Input placeholder="模型名（如 deepseek-v4-flash），留空使用 Provider 默认" />
         </Form.Item>
@@ -467,10 +500,22 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                 const role = AGENT_ROLES[index] ?? { key: `role-${index}`, label: `角色 ${index + 1}` };
                 const rv = watchList[index] ?? {};
                 const roleModel = (rv?.roleModel || '').trim();
+                // 折叠态与折叠头摘要（仅移动端渲染）：链序即回退序，单行文本
+                // 「缺省 X · a → b」；未分配（无链无角色级缺省）显示灰「未分配」。
+                // 全部折叠时页面即一张分配清单读态（2026-11-07 批准原型定稿形态）。
+                const collapsed = isMobile && (collapsedRoles[role.key] ?? true);
+                const chainNames = (rv?.rows || [])
+                  .map((r) => (r?.provider || '').trim())
+                  .filter(Boolean);
                 return (
                   <Card
                     key={field.key}
-                    style={{ marginBottom: 16 }}
+                    style={{ marginBottom: isMobile ? 10 : 16 }}
+                    styles={
+                      isMobile
+                        ? { header: { minHeight: 44, paddingInline: 12 }, body: { padding: '12px 14px 14px' } }
+                        : undefined
+                    }
                     title={role.label}
                     extra={
                       <Space size={0}>
@@ -496,6 +541,56 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                       </Space>
                     }
                   >
+                    {/* 折叠/展开切换条（仅移动端）：卡头下方整条可点，32px 触控
+                        高度；展开态兼作「收起」入口与当前链上下文展示。折叠实现
+                        走 display:none 隐藏而非卸载字段——antd Form 字段值与校验
+                        依赖挂载字段，display:none 对 form store 零影响，折叠期间
+                        保存/校验/切页签判脏语义与桌面完全一致。 */}
+                    {isMobile && (
+                      <div
+                        onClick={() => toggleRoleCollapsed(role.key)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          minHeight: 32,
+                          cursor: 'pointer',
+                          borderBottom: collapsed ? undefined : `1px solid ${DSH_SPLIT}`,
+                          paddingBottom: collapsed ? 0 : 8,
+                          marginBottom: collapsed ? 0 : 12,
+                        }}
+                      >
+                        <div
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontSize: 12,
+                          }}
+                        >
+                          {chainNames.length === 0 && !roleModel ? (
+                            <span style={{ color: DSH_TEXT_CAPTION }}>未分配</span>
+                          ) : (
+                            <span style={{ color: DSH_TEXT_SECONDARY, fontVariantNumeric: 'tabular-nums' }}>
+                              {[
+                                roleModel ? `缺省 ${roleModel}` : '',
+                                chainNames.length > 0 ? chainNames.join(' → ') : '（无候选链）',
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          )}
+                        </div>
+                        {collapsed ? (
+                          <DownOutlined style={{ fontSize: 12, color: DSH_TEXT_CAPTION }} />
+                        ) : (
+                          <UpOutlined style={{ fontSize: 12, color: DSH_TEXT_CAPTION }} />
+                        )}
+                      </div>
+                    )}
+                    <div style={isMobile && collapsed ? { display: 'none' } : undefined}>
                     <Form.Item
                       name={[field.name, 'roleModel']}
                       label={
@@ -522,13 +617,11 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                       />
                     </Form.Item>
                     <Form.List name={[field.name, 'rows']}>
-                      {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => (
-                        <>
-                          {/* 行 fields 快照经 RowFieldsSync 在 effect 内写入 rowFieldsRef
-                              （渲染保持纯净，见 RowFieldsSync 注释）；清理 healthRows 仍按
-                              「行位置 → key」映射（code-review item 46bf16b0f8df） */}
-                          <RowFieldsSync index={index} fields={rowFields} target={rowFieldsRef} />
-                          {rowFields.map((rowField, rIdx) => {
+                      {(rowFields, { add: addRow, remove: removeRow, move: moveRow }) => {
+                        // 行节点单点构造：移动端/桌面端只分支行内布局与容器，行级
+                        // 处理器（健康检测/删除/Provider 自动填充/清徽标）两态共用
+                        // 同一份逻辑，不复制粘贴两份 map
+                        const rowNodes = rowFields.map((rowField, rIdx) => {
                             const curProvider = ((watchList[index]?.rows || [])[rIdx]?.provider || '').trim();
                             const rowId = `${index}-${rIdx}`;
                             const dragging = dragReady === rowId;
@@ -541,7 +634,150 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                             // 健康状态按「角色前缀 + 稳定 field.key」组合键取
                             // （跨角色卡唯一；同卡内不随删除/换序的位置迁移错配）
                             const health = healthRows[`${index}-${rowField.key}`];
-                            return (
+                            // 移动端行两线堆叠（原型定稿）：一线 [序号徽|Provider|
+                            // 健康检测|删除]，二线 [模型|↑|↓]——触屏无 HTML5 拖拽，
+                            // 回退顺序改 ↑/↓ 显式微调（首末行诚实禁用）；健康结论
+                            // 平铺行尾，悬浮 tooltip 内容退化为原生 title。桌面 Row
+                            // 分支原样保留（含拖拽手柄列）。
+                            return isMobile ? (
+                              <div
+                                key={rowField.key}
+                                style={{ position: 'relative', paddingBottom: 12 }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span
+                                    aria-hidden
+                                    style={{
+                                      flexShrink: 0,
+                                      width: 20,
+                                      height: 20,
+                                      borderRadius: 999,
+                                      background: DSH_BG_MODULE,
+                                      border: `1px solid ${DSH_BORDER_SECONDARY}`,
+                                      color: DSH_TEXT_SECONDARY,
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      fontVariantNumeric: 'tabular-nums',
+                                      position: 'relative',
+                                      zIndex: 1,
+                                    }}
+                                  >
+                                    {rIdx + 1}
+                                  </span>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <Form.Item name={[rowField.name, 'provider']} noStyle>
+                                      <Select
+                                        size="small"
+                                        placeholder="-- 选择 Provider --"
+                                        options={providerOptions(curProvider)}
+                                        style={{ width: '100%' }}
+                                        onChange={(val) => {
+                                          // 切 Provider 后旧健康结论错配到新组合，先清
+                                          // 条目（code-review item 495527f13465）
+                                          clearHealthRow(`${index}-${rowField.key}`);
+                                          autofillProviderDefault(index, rIdx, val as string);
+                                        }}
+                                      />
+                                    </Form.Item>
+                                  </div>
+                                  <Button
+                                    type="text"
+                                    icon={<HeartOutlined />}
+                                    data-testid={`health-row-btn-${rowId}`}
+                                    title="健康检测"
+                                    aria-label="健康检测"
+                                    loading={!!health?.loading}
+                                    disabled={!!health?.loading}
+                                    onClick={() => runRowHealthCheck(index, rIdx, `${index}-${rowField.key}`)}
+                                  />
+                                  <Button
+                                    type="text"
+                                    danger
+                                    icon={<MinusCircleOutlined />}
+                                    title="删除此行"
+                                    aria-label="删除此行"
+                                    onClick={() => {
+                                      removeRow(rIdx);
+                                      // 清除被删行的健康检测条目（code-review item
+                                      // 0f5501b57f78）：组合键不随位置迁移被覆盖，
+                                      // 须显式清除
+                                      clearHealthRow(`${index}-${rowField.key}`);
+                                    }}
+                                  />
+                                </div>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    marginTop: 6,
+                                    paddingLeft: 26,
+                                  }}
+                                >
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <Form.Item name={[rowField.name, 'model']} noStyle>
+                                      <Input
+                                        size="small"
+                                        // 改模型名即生效模型变化，旧健康结论失效，清条目
+                                        // （code-review item 495527f13465）
+                                        onChange={() => clearHealthRow(`${index}-${rowField.key}`)}
+                                        placeholder={
+                                          roleModel
+                                            ? `留空用角色级缺省 ${roleModel}`
+                                            : '模型名（留空用 Provider 默认模型）'
+                                        }
+                                      />
+                                    </Form.Item>
+                                  </div>
+                                  <Button
+                                    type="text"
+                                    icon={<UpOutlined />}
+                                    title="上移（提高回退优先级）"
+                                    aria-label={`上移第 ${rIdx + 1} 行`}
+                                    disabled={rIdx === 0}
+                                    onClick={() => {
+                                      moveRow(rIdx, rIdx - 1);
+                                      // moveRow 不触发 onValuesChange，程序化换序后
+                                      // 显式置脏（比照 autofill 的 setDirty 口径），
+                                      // 否则换序内容切页签不弹丢弃确认被静默丢弃
+                                      setDirty(true);
+                                    }}
+                                  />
+                                  <Button
+                                    type="text"
+                                    icon={<DownOutlined />}
+                                    title="下移（降低回退优先级）"
+                                    aria-label={`下移第 ${rIdx + 1} 行`}
+                                    disabled={rIdx === rowFields.length - 1}
+                                    onClick={() => {
+                                      moveRow(rIdx, rIdx + 1);
+                                      setDirty(true);
+                                    }}
+                                  />
+                                </div>
+                                {health?.display && (
+                                  <div
+                                    data-testid={`health-row-result-${rowId}`}
+                                    title={health.display.tooltip}
+                                    style={{
+                                      fontSize: 12,
+                                      marginTop: 4,
+                                      paddingLeft: 26,
+                                      color: health.display.kind === 'ok' ? DSH_SUCCESS : DSH_ERROR,
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      fontVariantNumeric: 'tabular-nums',
+                                    }}
+                                  >
+                                    {health.display.short}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
                               <Row
                                 key={rowField.key}
                                 gutter={8}
@@ -681,28 +917,89 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                                 </Col>
                               </Row>
                             );
-                          })}
-                          <Button
-                            type="dashed"
-                            onClick={() => addRow({ provider: '', model: '' })}
-                            block
-                            icon={<PlusOutlined />}
-                          >
-                            添加 Provider 行
-                          </Button>
-                        </>
-                      )}
+                        });
+                        return (
+                          <>
+                            {/* 行 fields 快照经 RowFieldsSync 在 effect 内写入 rowFieldsRef
+                                （渲染保持纯净，见 RowFieldsSync 注释）；清理 healthRows 仍按
+                                「行位置 → key」映射（code-review item 46bf16b0f8df） */}
+                            <RowFieldsSync index={index} fields={rowFields} target={rowFieldsRef} />
+                            {isMobile ? (
+                              <div style={{ position: 'relative' }}>
+                                {/* 候选链优先级链轨（移动端）：序号徽后的竖向细线连接
+                                    各行，回退顺序成为可见结构；灰卡上分栏线档（黑 8%）
+                                    不可辨，升次级边框档（黑 10%，theme.ts 边框双档） */}
+                                {rowFields.length > 1 && (
+                                  <div
+                                    aria-hidden
+                                    style={{
+                                      position: 'absolute',
+                                      left: 9,
+                                      top: 24,
+                                      bottom: 26,
+                                      width: 2,
+                                      background: DSH_BORDER_SECONDARY,
+                                    }}
+                                  />
+                                )}
+                                {rowNodes}
+                              </div>
+                            ) : (
+                              rowNodes
+                            )}
+                            <Button
+                              type="dashed"
+                              onClick={() => addRow({ provider: '', model: '' })}
+                              block
+                              icon={<PlusOutlined />}
+                            >
+                              添加 Provider 行
+                            </Button>
+                          </>
+                        );
+                      }}
                     </Form.List>
+                    </div>
                   </Card>
                 );
               })}
               {/* 保存按钮行复用统一常量（code-review item 7c1311483b0a）：与其余六个
-                  设置面板同一写法，项目/非项目两分支间距一致，避免视觉漂移 */}
-              <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
+                  设置面板同一写法，项目/非项目两分支间距一致，避免视觉漂移。移动端
+                  改底部吸附保存条（原型定稿）：13 卡长页保存不依赖滚到页尾；sticky
+                  占据文档流不永久遮挡内容。负边距两端耦合 index.tsx 移动端右栏
+                  padding '12px 16px 24px'（-16 吃横距、-24 吃底距落页底），右栏
+                  padding 调整须同步本处；圆角随壳卡灰底准例 10px 收口。 */}
+              <div
+                style={
+                  isMobile
+                    ? {
+                        position: 'sticky',
+                        bottom: 0,
+                        zIndex: 20,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        margin: '16px -16px -24px',
+                        padding: '10px 16px calc(10px + env(safe-area-inset-bottom))',
+                        background: '#ffffff', // = antd colorBgBase，白壳卡同源
+                        borderTop: `1px solid ${DSH_SPLIT}`,
+                        borderRadius: '0 0 10px 10px',
+                      }
+                    : project
+                      ? SETTINGS_ACTIONS_ROW_STYLE
+                      : { textAlign: 'right', marginTop: 24 }
+                }
+              >
                 {project && onConfigSynced && (
                   <SyncFromUserButton project={project} page="agents" onSynced={onConfigSynced} />
                 )}
-                <Button type="primary" onClick={handleSave} loading={saving} disabled={saving}>
+                <Button
+                  type="primary"
+                  style={isMobile ? { flex: 1 } : undefined}
+                  onClick={handleSave}
+                  loading={saving}
+                  disabled={saving}
+                >
                   保存
                 </Button>
               </div>

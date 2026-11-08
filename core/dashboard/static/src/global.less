@@ -1,3 +1,28 @@
+// 品牌字体 Montserrat（2026-11-07 品牌同步：顶栏 HeaderTitle 改用与 dsh web
+// 侧栏同源的自绘 SVG lockup，dsh web 品牌语言=官方 boot 屏 wordmark 同款
+// Montserrat）。woff2 三权重（300/400/500）取自 dsh-web-frontend 发行资产
+// （src/assets/fonts/），600/700 由浏览器合成——与 dsh 官方做法一致。
+// 仅品牌 lockup 消费（app.tsx HeaderTitle fontFamily 显式指定），不改动
+// body 全局字体栈。
+@font-face {
+  font-family: 'Montserrat';
+  font-weight: 300;
+  font-display: swap;
+  src: url('./assets/fonts/montserrat-light-Cvd2VjE_.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/montserrat-regular-DYep38cA.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/montserrat-medium-B4OyO9CN.woff2') format('woff2');
+}
+
 body {
   margin: 0;
   // 宿主对齐（theme.ts DSH_FONT_FAMILY 同栈）：dsw-font-family——中文回退

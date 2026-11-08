@@ -74,11 +74,11 @@ export const DSH_HEADER_GLASS = 'rgba(249, 250, 251, 0.4)';
 export const DSH_HEADER_GLASS_SCROLL = 'rgba(249, 250, 251, 0.8)';
 /** dsw alias-bg-module-platform（neutral-bluish-60）：行 hover / 中性填充档。 */
 export const DSH_BG_MODULE = '#f5f6f7';
-/** SPEC 列表页移动端（<768px）内容区背景 #e3e3e3：2026-11-06 用户原型批注
- * 指定色值（add-spec-list-mobile-style design 偏离声明段），不在宪法 token 表
- * 内的已登记偏离色——DESIGN.md 一般域「SPEC 列表页移动端内容区背景」修正案
- * 条款收口。消费点仅 SPEC 列表页移动端内容区，桌面零改动。 */
-export const SPEC_LIST_MOBILE_BG = '#e3e3e3';
+/** SPEC 列表页移动端（<768px）内容区背景：白底（2026-11-07 用户指令由
+ * 2026-11-06 原型批注指定的 #e3e3e3 灰底改白，通用白不再属登记偏离色）——
+ * DESIGN.md 一般域「SPEC 列表页移动端内容区背景」修正案条款同步收口。
+ * 消费点仅 SPEC 列表页移动端内容区，桌面零改动。 */
+export const SPEC_LIST_MOBILE_BG = '#ffffff';
 
 /** dsw alias-interactive-bg-hover（#2631480f）：侧栏行 hover 冷灰。 */
 export const DSH_INTERACTIVE_HOVER = 'rgba(38, 49, 72, 0.06)';

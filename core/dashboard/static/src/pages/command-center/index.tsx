@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from '@umijs/max';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { Select, Space, Tabs } from 'antd';
 import { TIME_WINDOW_OPTIONS, TimeWindow } from './shared';
 import OrgGrid from './OrgGrid';
@@ -120,36 +121,54 @@ export default function CommandCenterPage() {
     [setSearchParams],
   );
 
+  // <768 窄屏形态切换（2026-11-07 用户指令）：双过滤下拉不进顶栏 filters
+  // 槽位（窄幅下两个下拉挤压标题区），改落标题栏下方内容区首行；桌面
+  // （≥768）filters 槽位原样零改动。
+  const isMobile = useIsMobile();
+
+  // 「全部项目」+ 时间窗双 Select 声明单源：桌面 filters 槽位与移动内容首行
+  // 共用同一元素声明（isMobile 只切宽度承载——桌面 minWidth 原值、移动
+  // flex 铺行宽/定宽），时间窗仅组织总览页签有意义的既有条件显隐语义不变
+  const projectSelect = (
+    <Select
+      value={project}
+      onChange={setProject}
+      size="small"
+      style={isMobile ? { flex: 1, minWidth: 0 } : { minWidth: 160 }}
+      options={[
+        { label: '全部项目', value: '' },
+        ...allProjects.map((p) => ({ label: p, value: p })),
+      ]}
+    />
+  );
+  const orgWinSelect =
+    activeKey === 'org' ? (
+      <Select
+        value={orgWin}
+        onChange={setOrgWin}
+        size="small"
+        style={isMobile ? { width: 100 } : { minWidth: 96 }}
+        options={TIME_WINDOW_OPTIONS}
+      />
+    ) : null;
+
   return (
     <>
       {/* 统一标题栏声明（unified-page-title-bar 2.4）：「全部项目」+ 时间窗双
           Select 从页签行 tabBarExtraContent 迁 filters 槽位（standalone 顶栏
           右上角 / 行壳位行右端）；时间窗仅组织总览页签有意义的条件显隐随迁
-          （filters 为 ReactNode，页内自行条件渲染），页签行不再渲染 extra 区 */}
+          （filters 为 ReactNode，页内自行条件渲染），页签行不再渲染 extra 区。
+          移动端不注册 filters（2026-11-07 用户指令，双下拉落标题栏下方，见
+          isMobile 注释与内容首行过滤行）。 */}
       <PageTitleBar
         title="指挥中心"
         filters={
-          <Space size={8}>
-            <Select
-              value={project}
-              onChange={setProject}
-              style={{ minWidth: 160 }}
-              size="small"
-              options={[
-                { label: '全部项目', value: '' },
-                ...allProjects.map((p) => ({ label: p, value: p })),
-              ]}
-            />
-            {activeKey === 'org' ? (
-              <Select
-                value={orgWin}
-                onChange={setOrgWin}
-                style={{ minWidth: 96 }}
-                size="small"
-                options={TIME_WINDOW_OPTIONS}
-              />
-            ) : null}
-          </Space>
+          isMobile ? undefined : (
+            <Space size={8}>
+              {projectSelect}
+              {orgWinSelect}
+            </Space>
+          )
         }
       />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
@@ -175,6 +194,15 @@ export default function CommandCenterPage() {
       >
         {/* 页签上间距由外层 div 的 padding-top 承担（margin 塌陷防御，
             见外层注释） */}
+        {/* 移动端过滤行（2026-11-07 用户指令）：双下拉落标题栏下方内容区
+            首行（时间窗仅组织总览显示的语义不变）；桌面不渲染此行，走
+            filters 槽位 */}
+        {isMobile ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+            {projectSelect}
+            {orgWinSelect}
+          </div>
+        ) : null}
         {/* 页签行迁出 extra 后不再渲染 tabBarExtraContent（过滤项已上移统一
             标题栏，见上方 PageTitleBar filters） */}
         <Tabs

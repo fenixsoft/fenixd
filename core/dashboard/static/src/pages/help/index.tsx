@@ -540,16 +540,20 @@ export default function HelpPage() {
     return (
       <>
         {/* 统一标题栏声明（unified-page-title-bar 2.1）：移动端顶栏纯品牌，
-            控件自动落内容区首行行壳位 */}
-        <PageTitleBar title="帮助" />
+            控件自动落内容区首行行壳位。「文档目录」按钮迁标题栏 filters 槽位
+            （2026-11-07 用户指令「放在标题栏中，靠右对齐」）：standalone 落
+            顶栏右上角（FiltersSlot 天然右对齐）、embed 行壳位落行右端
+            （FiltersNode marginLeft:auto）；内容区不再渲染按钮行，正文卡片
+            上移首行。本分支仅移动端渲染，桌面 filters 槽位零改动。 */}
+        <PageTitleBar
+          title="帮助"
+          filters={
+            <Button size="small" icon={<MenuOutlined />} onClick={() => setDrawerOpen(true)}>
+              文档目录
+            </Button>
+          }
+        />
         <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-        <Button
-          icon={<MenuOutlined />}
-          onClick={() => setDrawerOpen(true)}
-          style={{ marginBottom: 12 }}
-        >
-          文档目录
-        </Button>
         <Drawer
           title="文档目录"
           placement="left"

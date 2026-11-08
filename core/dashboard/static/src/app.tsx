@@ -70,18 +70,60 @@ export function rootContainer(container: ReactNode) {
  * 的过滤项插槽接管（无过滤项页右上角为空）。
  */
 
-// 顶栏标题：logo + Fenix 粗体 + Harness 细体灰字。
-// 灰字走 antd token colorTextTertiary（浅色主题默认即 rgba(0,0,0,0.45)），适配未来暗色主题。
+// 顶栏标题：logo + 自绘 SVG lockup（2026-11-07 用户指令：与 dsh web 侧栏品牌
+// 同步）。主行 FENIX HARNESS：Montserrat 600/12.5px/字距 1px 大写（dsh 官方
+// boot 屏 wordmark 语言），HARNESS 500 权重次级灰弱化；副标 WEB DASHBOARD：
+// Montserrat 500/9px/字距 2.2px，基线 y=30.5（与主行视觉空隙 ≈7.2px）。两行
+// textLength 锁同宽 117.3px（lengthAdjust=spacing 均分字隙，字体回退仍等宽）。
+// 颜色走 antd token（theme.ts 单源零新色：colorText/colorTextSecondary/
+// colorTextTertiary=#0f1115/#61666b/#81858c，与 dsh web 别名值逐字相同）。
+// Montserrat @font-face 见 global.less（woff2 取自 dsh-web-frontend 发行资产）。
+// 几何与 dsh web 插件 fenix-dsh-brand-fenix 的 FenixName 逐参数一致（viewBox
+// 0 0 124 38），两侧品牌像素级同源；差异仅 icon 尺寸沿用本侧 22px 惯例。
 // useToken 须在组件内调用，故单独成组件（同 HeaderCrumb 模式）。
 function HeaderTitle() {
   const { token } = theme.useToken();
   return (
-    <Space size={8} align="center">
+    <Space size={10} align="center">
       <img src={logoUrl} alt="logo" style={{ width: 22, height: 22, display: 'block' }} />
-      <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
-        Fenix
-        <span style={{ fontWeight: 400, marginLeft: 6, color: token.colorTextTertiary }}>Harness</span>
-      </span>
+      <svg
+        width={124}
+        height={38}
+        viewBox="0 0 124 38"
+        role="img"
+        aria-label="Fenix Harness — Web Dashboard"
+        style={{ display: 'block', overflow: 'visible' }}
+      >
+        <text
+          x={0}
+          y={17}
+          textLength={117.3}
+          lengthAdjust="spacing"
+          fontFamily="Montserrat, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+          fontSize="12.5px"
+          fontWeight={600}
+          letterSpacing="1px"
+          fill={token.colorText}
+        >
+          FENIX{' '}
+          <tspan fontWeight={500} fill={token.colorTextSecondary}>
+            HARNESS
+          </tspan>
+        </text>
+        <text
+          x={0}
+          y={30.5}
+          textLength={117.3}
+          lengthAdjust="spacing"
+          fontFamily="Montserrat, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+          fontSize="9px"
+          fontWeight={500}
+          letterSpacing="2.2px"
+          fill={token.colorTextTertiary}
+        >
+          WEB DASHBOARD
+        </text>
+      </svg>
     </Space>
   );
 }

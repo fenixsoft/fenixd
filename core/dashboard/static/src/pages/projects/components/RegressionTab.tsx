@@ -173,7 +173,10 @@ export function statusTagRow(snapshot: RegressionResult | null) {
  * 三键禁用口径：running / awaitingStart / 任一回归动作在途（anyPending 交叉
  * 门控，code-review item 5cbfc2119f5a，对齐 QualityTab 交叉 pending 范式）全禁；
  * 定向子集另受可用性机械判定（不可用禁用，span+Tooltip 说明，对齐自动修复
- * 禁用态范式）。 */
+ * 禁用态范式）。
+ * mobile 形态（2026-11-07 用户指令「3个按钮从横向排列改为纵向排列」）：<768
+ * 窄屏改纵向堆叠，三键 block 全宽（同页筛选 Drawer 页脚 block 按钮习语，
+ * 触控目标友好）；桌面（缺省 false）横排右对齐零改动。 */
 export function overviewActions(opts: {
   snapshot: RegressionResult | null;
   running: boolean;
@@ -184,8 +187,10 @@ export function overviewActions(opts: {
   onFix: () => void;
   onTriggerIssues: () => void;
   onTrigger: () => void;
+  mobile?: boolean;
 }) {
   const { snapshot, running, awaitingStart } = opts;
+  const mobile = opts.mobile ?? false;
   // 交叉 pending 门控（code-review item 5cbfc2119f5a）：任一回归动作 POST 在飞
   // （running/awaitingStart 尚未置位的受理窗口）即三键全禁，杜绝在飞窗口内
   // 并发下发两份触发信号——否则第二份只能靠后端 regression_already_running /
@@ -202,13 +207,18 @@ export function overviewActions(opts: {
   const issuesOk = issuesAvailable(snapshot);
   return (
     <div style={{ marginTop: 4, textAlign: 'right' }}>
-      <Space>
+      <Space
+        direction={mobile ? 'vertical' : 'horizontal'}
+        style={mobile ? { width: '100%' } : undefined}
+      >
         {/* 自动修复回归问题（add-regression-auto-fix）：可用性由快照机械
             判定；全绿禁用态悬停提示「无异常用例可修复」。disabled 按钮
-            不触发悬停事件，按 antd 惯例外包一层 span 承载 Tooltip。 */}
+            不触发悬停事件，按 antd 惯例外包一层 span 承载 Tooltip。
+            移动端纵排时 span 转 block 容器，block 全宽按钮得以铺满行宽。 */}
         <Tooltip title={fixAvailable ? undefined : '无异常用例可修复'}>
-          <span>
+          <span style={mobile ? { display: 'block' } : undefined}>
             <Button
+              block={mobile}
               loading={opts.fixPending}
               disabled={!fixAvailable || running || awaitingStart || anyPending}
               onClick={opts.onFix}
@@ -221,9 +231,10 @@ export function overviewActions(opts: {
             位于全量按钮左侧；可用时 Tooltip 预告回退行为，不可用禁用态
             悬停提示「无异常用例可重跑」（同 span 承载范式） */}
         <Tooltip title={issuesOk ? ISSUES_BTN_TOOLTIP : ISSUES_BTN_DISABLED_TOOLTIP}>
-          <span>
+          <span style={mobile ? { display: 'block' } : undefined}>
             <Button
               type="primary"
+              block={mobile}
               loading={opts.issuesTriggering}
               disabled={!issuesOk || running || awaitingStart || anyPending}
               onClick={opts.onTriggerIssues}
@@ -234,6 +245,7 @@ export function overviewActions(opts: {
         </Tooltip>
         <Button
           type="primary"
+          block={mobile}
           loading={opts.triggering}
           disabled={running || awaitingStart || anyPending}
           onClick={opts.onTrigger}
@@ -1067,6 +1079,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             triggering,
             issuesTriggering,
             fixPending,
+            mobile: isMobile,
             onFix: () => void handleFix(),
             onTriggerIssues: () => void handleTriggerIssues(),
             onTrigger: () => void handleTrigger(),

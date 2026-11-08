@@ -114,12 +114,14 @@
   16px=2026-11-05 用户指令 overview 顶垫，2026-11-06 用户指令「参考 overview
   界面修改并将页面上、左右间距的数值写入 DESIGN.md」推广至 SPEC 详情页并升格
   本条款）
-- SPEC 列表页移动端内容区背景 #e3e3e3：<768px 时 SPEC 列表页（projects DevTab
-  移动编排分支）内容区底色取 #e3e3e3（单源 theme.ts `SPEC_LIST_MOBILE_BG`），
-  灰底衬托白磁贴卡列表；MUST NOT 扩散到其它页面或桌面分支（桌面内容区零改动，
-  由 add-spec-list-mobile-style 桌面零改动守卫钉住）。本值不在上文 token 表内，
-  为**已登记偏离色**——改值须同走本附则修正案程序并同步 theme.ts 单源与
-  spec/changes/add-spec-list-mobile-style design.md 偏离声明。（出处：2026-11-06
+- SPEC 列表页移动端内容区背景：白底：<768px 时 SPEC 列表页（projects DevTab
+  移动编排分支）内容区底色取白 #ffffff（单源 theme.ts `SPEC_LIST_MOBILE_BG`），
+  与白磁贴卡列表同底、发丝边分界；MUST NOT 扩散到其它页面或桌面分支（桌面内容区零改动，
+  由 add-spec-list-mobile-style 桌面零改动守卫钉住）。值为通用白，2026-11-07 用户指令
+  由 2026-11-06 原型批注指定的 #E3E3E3 灰底改白，**已登记偏离色**登记随值退役——
+  改值仍须同走本附则修正案程序并同步 theme.ts 单源与
+  spec/changes/add-spec-list-mobile-style design.md 偏离声明。（出处：2026-11-07
+  用户指令「spec列表页面中，表格背后的灰色背景改为白色」；前值出处 2026-11-06
   用户原型批注指定色值 #E3E3E3 + add-spec-list-mobile-style SPEC 定稿）
 
 ## 例外域（特别法，逐域小节）
