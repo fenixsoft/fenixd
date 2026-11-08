@@ -70,9 +70,13 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
   // baseURL 形态守卫（与下方可选字段守卫同型，收口在校验期）：缺 scheme
   // （如 "127.0.0.1:18787/v1"）或含空格等畸形值若放行，会经 buildProviderSegment
   // 原样透传进 providers 配置、首个 LLM 请求期才失败——定位成本远高于启动期拦截。
+  // 校验与透传同用 trim 后的值：WHATWG URL 解析会剥离入参首尾空白（及内嵌
+  // tab/LF/CR），若仍按原值透传，校验基于规范化形态而下游拿到未规范化原值，
+  // 带空白端点会推迟到首个 LLM 请求期才暴露。
+  const normalizedBaseURL = (seg.baseURL as string).trim();
   let parsedBaseURL: URL;
   try {
-    parsedBaseURL = new URL(seg.baseURL as string);
+    parsedBaseURL = new URL(normalizedBaseURL);
   } catch {
     throw new Error(
       `模型配置非法：config.model.baseURL 必须是可解析的 http(s) URL——当前值「${seg.baseURL}」无法解析为 URL。`,
@@ -116,7 +120,15 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment {
       }
     }
   }
-  return segment as unknown as FenixModelSegment;
+  // 三要素以 trim 后的规范化值返回（校验值 == 透传值）：provider/apiKeyEnv 同样
+  // 只按 trim 判空，原样透传会把带空白形态带进 providers 配置与 agent-default-model
+  // 路由；其余字段（model/api/headers 等）保持原样。
+  return {
+    ...seg,
+    provider: (seg.provider as string).trim(),
+    baseURL: normalizedBaseURL,
+    apiKeyEnv: (seg.apiKeyEnv as string).trim(),
+  } as unknown as FenixModelSegment;
 }
 
 /** 构造 llm-pi-ai 的 providers 配置段（OpenAI 兼容端点路由）。 */

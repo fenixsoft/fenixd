@@ -338,7 +338,7 @@ export default function ProjectProfilePanel({ config, onSave, project, focusVeri
     } catch (e) {
       if (seq !== yamlLoadSeq.current) return; // 过期请求的失败也不打扰当前项目
       setYamlLoadError(true); // 失败时不让 yamlExists 的旧值冒充「确认不存在」
-      message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
+      message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       // 非 silent 是 yamlLoading 的置位者，无条件清理自身锁——即使响应已过期
       // （保存触发的静默重载会自增 seq 令并发「重新加载」的响应过期），否则

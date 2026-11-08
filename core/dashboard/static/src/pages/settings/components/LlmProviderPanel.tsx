@@ -214,8 +214,13 @@ export default function LlmProviderPanel({ config, onSave, project, onConfigSync
   // toProviders）与保存前拦截规则（beforeValidate）。
   const { saving, initialValues, handleSave } = useGatedFormPanel({
     form,
-    buildValues: () => buildProvidersFormValues(config.llm.providers),
-    backfillDeps: [config.llm.providers],
+    // llm?. 段缺失防护（code-review item a635f4d4c830，比照 ParallelSettingsPanel
+    // item 60ae9a174a6c / TokenBudgetPanel item bf63df93837f 同族口径）：旧版本
+    // 配置或接口降级响应可能缺 llm 段，首帧 buildValues 即执行本调用，直接解引用
+    // 会抛 TypeError 白屏；缺段时回退空列表，buildProvidersFormValues 内部已有
+    // (providers || []) 兜底。
+    buildValues: () => buildProvidersFormValues(config.llm?.providers ?? []),
+    backfillDeps: [config.llm?.providers],
     onSave,
     buildPayload: (values: FormValues) => ({ llm: { providers: toProviders(values) } }),
     // 保存入口、校验前的面板专属拦截：先剔除完全空的价格行（占位行），再做

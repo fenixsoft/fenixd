@@ -1382,15 +1382,18 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
       得反复落 WARNING 制造告警噪声。
     """
     proot = Path(project_root)
-    # git pathspec 保持仓库相对路径（与既有调用逐字等价）：从单源绝对路径
-    # 剥掉 proot 前缀即得，纯词法操作。
-    rel_path = str(verification_report_path(proot, spec_name).relative_to(proot))
 
     def _warn(msg: str) -> None:
         if logger is not None:
             logger.warning("verify_report", f"验证报告入库失败 '{spec_name}': {msg}")
 
     try:
+        # git pathspec 保持仓库相对路径（与既有调用逐字等价）：从单源绝对路径
+        # 剥掉 proot 前缀即得，纯词法操作。code-review fda1688b1ff7：计算置于
+        # try 内——spec_name 有意不过 safe_component（见 verification_report_path
+        # 注释），呈绝对路径形态时 Path 拼接被绝对成分接管、relative_to 抛
+        # ValueError，留在 try 外将逃逸「任何失败仅 WARNING」契约。
+        rel_path = str(verification_report_path(proot, spec_name).relative_to(proot))
         # 非 git 仓库：入库机制不适用，静默跳过（每轮验证都进闸门，
         # 对无 git 的被管项目逐轮刷 WARNING 纯属噪声）
         # 显式 UTF-8：text=True 缺省按 locale strict 解码，stdout/stderr 含
@@ -1476,7 +1479,9 @@ def _commit_verification_report(project_root, spec_name, logger=None) -> None:
                     f"git reset 回滚暂存失败（报告仍以 staged 态残留索引）: "
                     f"{reset.stderr.strip() or f'exit {reset.returncode}'}"
                 )
-    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as e:
+    # 裸 ValueError：relative_to 对接管前缀的绝对路径 spec_name 抛出（见上方
+    # rel_path 计算处）；UnicodeDecodeError 本是其子类，显式并列保语义直观。
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError, ValueError) as e:
         _warn(f"git 入库异常: {e}")
 
 

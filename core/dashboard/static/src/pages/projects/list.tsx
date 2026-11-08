@@ -640,13 +640,10 @@ function StatusWaitGroup({ record, pill }: { record: SpecSummary; pill?: boolean
 function PriorityCell({
   record,
   onEdit,
-  muted,
   editable = true,
 }: {
   record: SpecSummary;
   onEdit: (record: SpecSummary) => void;
-  // 移动端卡片场景：不可编辑时保持灰色 secondary 字体
-  muted?: boolean;
   // 归档视图门控（code-review item 740a46d99bf6）：archivedOnly 下
   // specMenuItems 已移除全部调度条目（归档 SPEC 不得重排），内联单元格
   // 点击 MUST 复用同一门——不可编辑时渲染纯文本（与终态分支同形），
@@ -657,11 +654,7 @@ function PriorityCell({
   // useToken MUST 在早退分支之前调用（hook 规则）
   const { token } = theme.useToken();
   if (!editable || PRIORITY_TERMINAL.has(record.status || '')) {
-    return muted ? (
-      <Typography.Text type="secondary">P{record.priority ?? '?'}</Typography.Text>
-    ) : (
-      <span>P{record.priority ?? '?'}</span>
-    );
+    return <span>P{record.priority ?? '?'}</span>;
   }
   return (
     <span

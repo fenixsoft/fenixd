@@ -3267,6 +3267,7 @@ def _worktree_commit_count(worktree, created_sha: str):
             ["git", "-C", str(worktree), "rev-list", "--count", f"{created_sha}..HEAD"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
         )
         if out.returncode != 0:
@@ -3289,6 +3290,7 @@ def _worktree_head(worktree) -> str:
             ["git", "-C", str(worktree), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
         )
         if out.returncode != 0:
@@ -3313,6 +3315,7 @@ def _worktree_branch(worktree) -> str:
             ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
         )
         if out.returncode != 0:
@@ -3335,6 +3338,7 @@ def _worktree_porcelain(worktree) -> str:
             ["git", "-C", str(worktree), "status", "--porcelain"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
         )
         return out.stdout
@@ -3353,6 +3357,7 @@ def _salvage_commit(worktree, message: str) -> bool:
             ["git", "-C", str(worktree), "add", "-A"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=60,
         )
         if add.returncode != 0:
@@ -3361,6 +3366,7 @@ def _salvage_commit(worktree, message: str) -> bool:
             ["git", "-C", str(worktree), "commit", "-m", message],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=60,
         )
         return commit.returncode == 0

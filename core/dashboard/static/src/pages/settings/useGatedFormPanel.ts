@@ -104,7 +104,21 @@ export function useGatedFormPanel<TValues>(options: GatedFormPanelOptions<TValue
   // 配置，不等回填 effect（消除一帧空显闪变）。antd 只在挂载时消费
   // initialValues，useState 惰性初始化（传函数引用，非调用结果）让 buildValues
   // 仅首帧执行一次，后续渲染不再白算。
-  const [initialValues] = useState(buildValues);
+  // 首帧初始化异常兜底（code-review item fb5ffaf7ba2a）：惰性初始化在首帧
+  // 渲染期执行 buildValues，位于渲染路径且原本无兜底——任一接入面板传入的
+  // 映射对畸形配置段解引用抛异常会在首帧直接冒泡（React 对 render/effect
+  // 阶段逃逸的异常会卸载整棵组件树，设置页白屏），而下方回填 effect 已为
+  // 同一 buildValues 配了完整兜底（code-review item 83842c2b2344），两条
+  // 路径防护不对称。catch 后回退空对象初值，异常的提示与重试交由回填
+  // effect 接力：effect 挂载即跑且自带 warning 降级与「key 不落
+  // lastBackfillRef」的重试语义，表单停留旧值而非整页卸载。
+  const [initialValues] = useState<TValues>(() => {
+    try {
+      return buildValues();
+    } catch {
+      return {} as TValues;
+    }
+  });
 
   // 回填门控（各面板原 5be7cabc4d91 / 5d6582ba9951 / 0a2bd3f20fcd /
   // 9f98edec21fa / 241f4f2d452a / cbec8303669f 同族条目）：无条件

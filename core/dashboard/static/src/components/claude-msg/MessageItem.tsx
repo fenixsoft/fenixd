@@ -4,6 +4,7 @@
 //   投影，add-harness-brand-projection 1.3）
 // - thinking 折叠用本目录 Reasoning（无 radix 依赖）
 import { memo, useMemo } from 'react';
+import { App } from 'antd';
 
 import type { ChatMessage, ChatMessageType } from './types';
 import { formatUsageLimitText } from './chatFormatting';
@@ -62,12 +63,21 @@ function headerLabelFor(type: ChatMessageType, brandName: string) {
 // execCommand 降级路径，非安全上下文（如 http://<局域网IP> 访问 dashboard，
 // navigator.clipboard 为 undefined）下复制不再静默失效
 function MessageCopyControl({ content }: { content: string }) {
+  // 失败反馈对齐 ClaudeOutputPane.copyPrompt（item 5b908e7da183）：copyToClipboard
+  // 恒 resolve boolean（内部吞错、降级失败返回 false）而非 reject，旧 .catch(() => {})
+  // 既接不到异常也掩盖了 false 返回——非安全上下文复制失败时点击无任何反馈
+  const { message } = App.useApp();
   return (
     <button
       type="button"
       className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
       title="复制"
-      onClick={() => copyToClipboard(content).catch(() => {})}
+      onClick={async () => {
+        const ok = await copyToClipboard(content);
+        if (!ok) {
+          message.error('复制失败：剪贴板不可用');
+        }
+      }}
     >
       复制
     </button>

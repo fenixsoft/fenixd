@@ -57,8 +57,9 @@ logger = logging.getLogger("fenixd.dashboard.routes.project_routes")
 
 # 同项目简介生成互斥注册表（code-review item 9c8e2c44f682）：_api_project_describe
 # 在 HTTP 线程内同步等待 claude CLI 最长 120 秒，同项目并发点击会叠加占用
-# base.py 的请求槽位（耗尽时对全部请求返回 503）。锁按项目名缓存复用（项目
-# 数量有限，不会无限增长）。
+# base.py 的请求槽位（耗尽时对全部请求返回 503）。锁按项目名缓存复用；项目
+# 删除时在 _api_project_delete 成功路径弹出对应条目（code-review item
+# fcca0c5efd45），注册表只累积现役项目名。
 _DESCRIBE_LOCKS: dict[str, threading.Lock] = {}
 _DESCRIBE_LOCKS_GUARD = threading.Lock()
 
@@ -592,6 +593,18 @@ class H2ProjectRoutesMixin:
             if errors:
                 self._json({"ok": False, "error": "；".join(errors)})
                 return
+        # 成功：清理 describe 互斥锁注册表（code-review item fcca0c5efd45），
+        # 已删项目名的锁条目不再随项目增删残留。整段持 _DESCRIBE_LOCKS_GUARD
+        # 完成 get/试抢/pop，不被并发 setdefault 插入；非阻塞试抢到手说明无
+        # 在途 describe 持有或排队等待，弹出安全，不从在途请求脚下 pop。试抢
+        # 失败则跳过清理（该次请求 finally 释放后条目留待同名片再次删除时回收）。
+        # 项目此刻已移出 registry，新 describe 在 _project_from_query 即被 400
+        # 拦截，不会再 setdefault 同名条目。
+        with _DESCRIBE_LOCKS_GUARD:
+            describe_lock = _DESCRIBE_LOCKS.get(project["name"])
+            if describe_lock is not None and describe_lock.acquire(blocking=False):
+                describe_lock.release()
+                del _DESCRIBE_LOCKS[project["name"]]
         # 成功：失效 projects() 缓存（settle 后首次 /api/overview 立即反映真值，
         # 否则 TTL 内的旧缓存让已删项目「消失→重现→10s 后再消失」），再广播 refresh
         try:

@@ -37,9 +37,10 @@ def load_schema() -> Dict[str, Any]:
 
     Raises:
         ValueError: schema 缺 'artifacts'，某 artifact 条目缺必需键
-            （id/generates/template），或 artifact id 重复/非字符串。在加载期
-            集中校验，让 schema 漂移可直读定位，而非散落在 status/instructions
-            里以裸 KeyError 失败。
+            （id/generates/template）、id/generates/template 非字符串，
+            或 artifact id 重复。在加载期集中校验，让 schema 漂移可直读
+            定位，而非散落在 status/instructions 里以裸 KeyError/TypeError
+            失败。
         FileNotFoundError: schema.yaml 文件缺失。
     """
     schema_path = SCHEMA_DIR / "schema.yaml"
@@ -75,6 +76,17 @@ def load_schema() -> Dict[str, Any]:
             raise ValueError(
                 f"Invalid schema: artifact '#{index}' has non-string id: {schema_path}"
             )
+        for key in ("generates", "template"):
+            if not isinstance(artifact[key], str):
+                # 非字符串 generates/template 会在消费侧以裸 TypeError 冒出：
+                # generates 落在 status() → _detect_completed → _is_glob_pattern
+                # 的子串包含检查、template 落在 instructions() → _load_template
+                # 的 Path 拼接。与上方 id 分支同归入加载期集中校验，文案同形态
+                # 定位到具体条目（code-review item e7149c55f610）。
+                raise ValueError(
+                    f"Invalid schema: artifact '#{index}' has non-string "
+                    f"{key}: {schema_path}"
+                )
         first_index = seen_ids.setdefault(artifact_id, index)
         if first_index != index:
             # 重复 id 会让依赖建键静默覆盖、_artifact_by_id 恒取首条、isComplete

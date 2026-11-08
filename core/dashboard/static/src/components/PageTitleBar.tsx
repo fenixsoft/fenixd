@@ -196,7 +196,19 @@ function BackArrow({ onBack }: { onBack: () => void }) {
   return (
     <span
       data-testid="page-title-bar-back"
+      role="button"
+      tabIndex={0}
+      aria-label="返回"
       onClick={onBack}
+      onKeyDown={(e) => {
+        // 键盘可达（code-review item d1f7c7fe3ee5）：span 无原生按钮语义不进焦点序，
+        // 比照 ProjectTable 名称列/SpecTimeline 验证报告链接惯例补 role/tabIndex，
+        // Enter/Space 触发返回，preventDefault 防空格滚动页面
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onBack();
+        }
+      }}
       style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', marginRight: 6, color: DSH_TEXT_SECONDARY }}
     >
       {/* 返回箭头：14px 细描边（1.4）chevron，形态对齐原型 titlebar-back */}
