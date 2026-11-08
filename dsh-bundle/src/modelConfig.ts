@@ -6,21 +6,25 @@
  * 段；本插件启动时按形态划界处置（add-dispatch-precheck-true-fallback D1，
  * 2026-11-08 用户裁定 dsh+fenix 走真对称回落）：
  * - config.model 整体缺席（键不存在 / 无 config）→ 回落形态（mode: "fallback"），
- *   agent-default-model 由 dsh-base 原生默认档配置供数（真对称回落，零硬编码），
- *   插件跳过显式覆盖并 WARN 留痕；
+ *   agent-default-model 由 dsh-base 原生行（本 bundle 零触碰）以 dsh 自身配置
+ *   供数（真对称回落，零硬编码），插件跳过显式覆盖并 WARN 留痕；
  * - config.model 在场但残缺（null/空串/缺要素对象）→ 保持「模型未显式配置」
  *   fail-fast（笔误防护，承袭 narrative 网关别名事故：部分链不是回落理由）。
  *
  * 渲染产物：
  * - providers —— 挂到 dsh-base 的 llm-pi-ai 条目 config.providers
- *   （OpenAI 兼容端点：api=openai-completions + baseURL + apiKeyEnv + models 目录）；
- * - provider / model —— 挂到 agent-default-model 条目，指定默认路由与模型。
+ *   （OpenAI 兼容端点：api=openai-completions + baseURL + apiKeyEnv + models 目录；
+ *   回落形态插值 undefined → schema 缺省 {}，dsh 零路由的原生休眠形态）；
+ * - provider / model —— 显式链形态由 spawn 侧 --patch 渲染为 agent-default-model
+ *   的 config 覆盖（dsh_adapter.render_model_patch_yaml 静态渲染，应用序最后），
+ *   本 bundle 不再触碰 agent-default-model 行（机理注记见 cordis.patch.yml：
+ *   disabled !!js 求值先于 inject 服务绑定，形态分流不可放在 disabled 表达式上）。
  *
  * fail-fast 通道：残缺形态校验失败在本插件 apply 内抛错 → fenixModelConfig
- * 服务缺失 → 依赖它的 llm-pi-ai / agent-default-model / headless-runner（dsh
- * required 启动条目，cordis.patch.yml 已追加注入）一起失败 → StartupError
- * exit 1。回落形态服务恒提供（headless-runner 正常激活），两行
- * agent-default-model 以互补 disabled 切换供数通道（见 cordis.patch.yml）。
+ * 服务缺失 → 依赖它的 llm-pi-ai / headless-runner（dsh required 启动条目，
+ * cordis.patch.yml 已追加注入）一起失败 → StartupError exit 1。回落形态服务
+ * 恒提供（headless-runner 正常激活），agentDefaultModel 由 dsh-base 原生行
+ * 两形态常开供数。
  *
  * 纯逻辑（校验与渲染段构造）与 dsh 装配分离：单测零 dsh 依赖。
  */
@@ -209,8 +213,8 @@ export const name = "fenix-model-config";
  * llm-pi-ai / agent-default-model / headless-runner 经 inject + !!js 取值。
  * 无 Config schema（cordis 原样传 config）——三要素校验由 assertModelExplicit
  * 以确切中文错误信息执行；config.model 整体缺席时提供回落形态服务并 WARN
- * 留痕（agent-default-model 由 dsh-base 原生配置供数，cordis.patch.yml 双行
- * 互补 disabled 装配），残缺形态仍 fail-fast（服务缺失 → StartupError）。
+ * 留痕（agent-default-model 由 dsh-base 原生行零触碰常开供数，机理注记见
+ * cordis.patch.yml），残缺形态仍 fail-fast（服务缺失 → StartupError）。
  */
 export function apply(
   ctx: {

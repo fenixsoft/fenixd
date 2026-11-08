@@ -208,7 +208,7 @@ describe("apply 装配面", () => {
   });
 });
 
-// ── cordis.patch.yml 双行互补装配结构锁（真对称回落，D1）────────────────────
+// ── cordis.patch.yml 原生行零触碰装配结构锁（真对称回落，D1 机理修正版）──────
 
 /** 与 dsh-app-boot 同构的条目清单方言（!!js → {__jsExpr}），装配结构断言用。 */
 const JsExpr = new yaml.Type("tag:yaml.org,2002:js", {
@@ -223,39 +223,34 @@ function loadPatchDoc(): Array<Record<string, unknown>> {
   return yaml.load(text, { schema: entryListSchema }) as Array<Record<string, unknown>>;
 }
 
-describe("cordis.patch.yml 双行互补装配结构锁", () => {
+describe("cordis.patch.yml 原生行零触碰装配结构锁", () => {
   const doc = loadPatchDoc();
-  const nativeRow = doc.find((r) => r.id === "agent-default-model") as Record<string, unknown>;
   const insertBlock = doc.find((r) => "insert" in r) as { insert: Array<Record<string, unknown>> };
-  const fenixRow = insertBlock.insert.find((r) => r.id === "fenix-agent-default-model") as Record<
-    string,
-    unknown
-  >;
 
-  it("dsh-base 原生行：只追加 inject + disabled，不携带 config（原默认档配置保留供回落）", () => {
-    expect(nativeRow).toBeDefined();
-    expect(nativeRow.config).toBeUndefined();
-    expect(nativeRow.inject).toEqual(["fenixModelConfig"]);
-    const disabled = nativeRow.disabled as { __jsExpr?: string };
-    expect(disabled.__jsExpr).toContain("mode === 'explicit'");
+  it("bundle 零触碰 dsh-base 原生 agent-default-model 行（patch 面无该 id 条目）", () => {
+    // 机理注记（cordis.patch.yml）：disabled !!js 求值先于 inject 服务绑定，
+    // 形态分流不可放在 disabled 表达式上 → bundle 对原生行不 inject、不改
+    // config、不 disabled；两形态由原生行常开供 agentDefaultModel。
+    const patchTargets = doc
+      .filter((r) => !("insert" in r))
+      .map((r) => r.id);
+    expect(patchTargets).not.toContain("agent-default-model");
+    const insertIds = insertBlock.insert.map((r) => r.id);
+    expect(insertIds).not.toContain("agent-default-model");
+    expect(insertIds).not.toContain("fenix-agent-default-model");
   });
 
-  it("插入行：同插件身份 + 显式三要素 config + 互补 disabled", () => {
-    expect(fenixRow).toBeDefined();
-    expect(fenixRow.name).toBe("@deepseek-ai/dsh-agent-default-model");
-    expect(fenixRow.inject).toEqual(["fenixModelConfig"]);
-    expect((fenixRow.disabled as { __jsExpr?: string }).__jsExpr).toContain("mode === 'fallback'");
-    const config = fenixRow.config as Record<string, { __jsExpr?: string }>;
-    expect(config.provider.__jsExpr).toContain("ctx.fenixModelConfig.provider");
-    expect(config.model.__jsExpr).toContain("ctx.fenixModelConfig.model");
+  it("fenix-model-config 插入行在场（形态划界与回落供数的承载插件）", () => {
+    const row = insertBlock.insert.find((r) => r.id === "fenix-model-config");
+    expect(row).toBeDefined();
+    expect((row as Record<string, unknown>).name).toBe("fenix-dsh-bundle/modelConfig");
   });
 
-  it("两行 disabled 判定同源互补（同一 mode 字段取反），任一形态恰好一行激活", () => {
-    const explicitGuard = (nativeRow.disabled as { __jsExpr?: string }).__jsExpr ?? "";
-    const fallbackGuard = (fenixRow.disabled as { __jsExpr?: string }).__jsExpr ?? "";
-    expect(explicitGuard).toContain("ctx.fenixModelConfig.mode");
-    expect(fallbackGuard).toContain("ctx.fenixModelConfig.mode");
-    expect(explicitGuard).not.toBe(fallbackGuard);
+  it("llm-pi-ai 行：providers 由 fenixModelConfig 插值（回落形态 undefined → schema 缺省 {}）", () => {
+    const row = doc.find((r) => r.id === "llm-pi-ai") as Record<string, unknown>;
+    expect(row.inject).toEqual(["fenixModelConfig"]);
+    const config = row.config as Record<string, { __jsExpr?: string }>;
+    expect(config.providers.__jsExpr).toContain("ctx.fenixModelConfig.providers");
   });
 
   it("headless-runner 行：追加注入 fenixModelConfig 不变（回落形态服务恒提供）", () => {

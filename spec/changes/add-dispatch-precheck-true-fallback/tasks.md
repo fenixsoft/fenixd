@@ -50,5 +50,5 @@
 ## 4. 对称回落回归与端到端冒烟
 
 - [x] 4.1 既有回落测试更新（tests/test_harness_default_fallback.py）：无分配 spawn 用例补 bundle 侧联动断言（无 patch → 存活）；显式链字节级回归用例保持绿
-- [ ] 4.2 端到端冒烟（DSH_HOME 隔离环境）：无 `agents.models` 分配 + harness=dsh + fenix profile 无 patch 启动 → dsh 进程存活、headless-runner 激活、执行一次最小任务完成；显式链（patch 三要素齐全）spawn 产物与基线一致
+- [x] 4.2 端到端冒烟（DSH_HOME 隔离环境）：无 `agents.models` 分配 + harness=dsh + fenix profile 无 patch 启动 → dsh 进程存活、headless-runner 激活、执行一次最小任务完成；显式链（patch 三要素齐全）spawn 产物与基线一致
 - [ ] 4.3 全量回归：fenixd pytest 既有套件 + dsh-bundle vitest 全量绿；`restart_request` 预演（全新进程消费 + 核心 API import）验证自愈信号链完整
