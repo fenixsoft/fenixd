@@ -115,6 +115,13 @@ _MARKER_RE = re.compile(r"<!--\s*knowledge:\s*(.*?)-->", re.DOTALL)
 # _scan_pages 无 core 语境，扫描侧只做形态校验，起始 ref 解析仍归校验器）
 _GIT_ANCHOR_RE = re.compile(r"^git:([0-9a-f]{7,40})-\.\.(\d{4}-\d{2}-\d{2})$")
 _ARCHIVE_REF_RE = re.compile(r"spec/archive/([A-Za-z0-9._-]+)")
+# 示例语境剔除（code-review 496c1d338c25，与 core.knowledge._check_links
+# 648908c58646 同款两步口径）：悬空溯源行扫描前先剔除 ``` 围栏代码块与行内
+# 代码 span——能力页/导航页正文以「格式示例」形态给出的归档名不参与悬空
+# 判定，否则被判悬空溯源、_apply_mechanical 整行删除并随 audit fix 自动
+# 提交，误删内容只能靠 git 历史找回。
+_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _ADR_NAME_RE = re.compile(r"ADR-(\d{3})")
 _STATUS_WORD_RE = re.compile(r"\b(accepted|superseded|retired)\b", re.IGNORECASE)
 
@@ -1027,14 +1034,25 @@ def _scan_pages(project_root: Path) -> dict:
                     text.count("\n", 0, mk.end()) + 1,
                 )
             )
+        # 围栏块覆盖行整行豁免（含围栏行自身）：跨度按与 _check_links 同款
+        # 非贪婪配对在全文定位；行内代码 span 逐行剔除（``[^`\n]`` 不跨行，
+        # 逐行应用与全文应用等价），命中行只按剔除后的残留文本匹配。
+        fence_lines: set[int] = set()
+        for fm in _FENCED_BLOCK_RE.finditer(text):
+            for li in range(
+                text.count("\n", 0, fm.start()),
+                text.count("\n", 0, fm.end()) + 1,
+            ):
+                fence_lines.add(li)
         for i, ln in enumerate(lines):
-            if i in marker_lines:
+            if i in marker_lines or i in fence_lines:
                 continue
             if archives is None:
                 # 归档目录不可读（见上方 fail-open 降级）：正文归档引用的悬空
                 # 判定基准不可得，本轮跳过，防误判成批删行。
                 continue
-            for m in _ARCHIVE_REF_RE.finditer(ln):
+            ln_scan = _INLINE_CODE_RE.sub("", ln)
+            for m in _ARCHIVE_REF_RE.finditer(ln_scan):
                 name = m.group(1).strip("\"'`")
                 # 捕获字符类含 ``.``：正文以 ASCII 句点收尾会捕获尾点、
                 # ``spec/archive/foo.md`` 会带 .md 后缀，直接对归档基名集合
@@ -1060,7 +1078,7 @@ def _scan_pages(project_root: Path) -> dict:
                 # 字段粒度口径一致（_clean_sources 保留原值不机械清空）。
                 if any(
                     _archive_ref_bare(m2.group(1)) in archives
-                    for m2 in _ARCHIVE_REF_RE.finditer(ln)
+                    for m2 in _ARCHIVE_REF_RE.finditer(ln_scan)
                 ):
                     dangling_suspect.append(
                         f"{page['rel']}：正文行混排有效归档引用与悬空引用"
@@ -1405,12 +1423,27 @@ def _apply_mechanical(
             if not sm:
                 return mm.group(0)
             names = [s for s in re.split(r"[,，]", sm.group(1)) if s]
-            # 两态等价（move-distill-trigger-to-push 3.3，与 _scan_pages 同一
-            # 判据单源 _source_target_exists）：archive/ 或 changes/ 在盘均保留
-            kept_names = [
-                s for s in names
-                if _source_target_exists(project_root, s, archives)
-            ]
+            # origin 分流（code-review b5335cc8c8bc，与扫描侧 missing_sources
+            # 判定同款分支）：prehistoric 页 sources 是 git 区间锚点，
+            # _source_target_exists 对 ``git:<ref>-..<日期>`` 形态恒判悬空——
+            # 锚点与真实归档路径混排时 kept_names 非空，合法锚点被剔除、marker
+            # 被改写并随 audit fix 自动提交（溯源锚点只能靠 git 历史找回）。
+            # prehistoric 页按 _GIT_ANCHOR_RE 形态放行锚点（与 validate_knowledge
+            # prehistoric 分支同口径），仅对非锚点项做两态存在性剔除。
+            om = re.search(r"origin=(\S+)", fields)
+            if om and om.group(1) == "prehistoric":
+                kept_names = [
+                    s for s in names
+                    if _GIT_ANCHOR_RE.match(s.strip())
+                    or _source_target_exists(project_root, s, archives)
+                ]
+            else:
+                # 两态等价（move-distill-trigger-to-push 3.3，与 _scan_pages 同一
+                # 判据单源 _source_target_exists）：archive/ 或 changes/ 在盘均保留
+                kept_names = [
+                    s for s in names
+                    if _source_target_exists(project_root, s, archives)
+                ]
             if not kept_names:
                 # sources 全悬空时保留原值不剔除：清空会产出 ``sources=`` 空值，
                 # marker 字段正则要求非空，校验将报「marker 字段非法」——该字符
@@ -2013,9 +2046,14 @@ def run_audit(
                 # 下一轮体检可重建，人工在盘上的编辑不可重建，不得因既有违规
                 # 被连带销毁）。
                 discard_paths(project_root, sorted(touched), log=log)
-                new_violations = {
-                    str(v) for v in (validate(project_root) or [])
-                } - before_violations
+                # safe_validate 包装（code-review 81f21813b6af，对齐 1687/1940
+                # 行基线采集口径）：畸形页面内容令校验器在此抛异常时不再穿出
+                # 语义循环与 run_audit（循环的 try 只包 spawn/validate_with_repair，
+                # 不含此段），否则整轮体检中止、last_audit_date 不落盘，此后每个
+                # 300s 检查点重复失败刷屏。异常折算为单条「校验器异常：…」违规
+                # 串，不在 before_violations 内即走下方既有回滚/待人工分支。
+                _, post_violations = safe_validate(project_root, validate)
+                new_violations = set(post_violations) - before_violations
                 if dirty_now & carryover and new_violations:
                     discard_paths(project_root, sorted(dirty_now & carryover), log=log)
                 counts["pending_manual"] += 1
