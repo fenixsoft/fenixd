@@ -14,7 +14,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 import { normalizeInlineCodeFences } from './chatFormatting';
-import { ALLOWED_PROTOCOLS } from '../markdown-shared';
+import { ALLOWED_PROTOCOLS, isPageAnchor } from '../markdown-shared';
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -295,6 +295,23 @@ export function Markdown({ children, className, breaks = false }: MarkdownProps)
         }
         if (!linkUrl || !ALLOWED_PROTOCOLS.has(linkUrl.protocol)) {
           return <span>{linkChildren}</span>;
+        }
+
+        // 页内锚点（#xxx，排除 SPA 路由 #/）与裸 #（LLM 输出常见 [占位](#) 形态）：
+        // 二者经 URL 解析都落在本站 http(s) 白名单内，不拦截会渲染成 target="_blank"
+        // 的链接，点击以无 hash 缺省路由新开一个冗余的当前页签——对齐 markdown-shared
+        // SafeLink 的 isPageAnchor/裸 # 口径，preventDefault 阻断原生跳转（本应用基于
+        // hash 路由，裸 # 跳转还会清空 location.hash 被路由当作路径变更切走当前页面）
+        if (href && (href === '#' || isPageAnchor(href))) {
+          return (
+            <a
+              href={href}
+              className="text-blue-600 hover:underline"
+              onClick={(e) => e.preventDefault()}
+            >
+              {linkChildren}
+            </a>
+          );
         }
 
         return (

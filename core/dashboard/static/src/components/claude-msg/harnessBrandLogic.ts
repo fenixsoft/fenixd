@@ -46,6 +46,8 @@ export function resolveHarness(harness?: string | null): HarnessResolution {
     return { kind: 'registered', name: normalized };
   }
   // 未知值 → 首字母徽标：大写首码点（'pi' → 'P'），标签保留原值展示
-  const letter = raw.charAt(0).toUpperCase();
+  // （Array.from 按码点取首字符：星象首字符走 charAt(0) 会取到孤立代理
+  // 半码元，渲染成替换字形；raw 此处保证非空，?? '' 仅类型收窄兜底）
+  const letter = (Array.from(raw)[0] ?? '').toUpperCase();
   return { kind: 'fallback', name: raw, letter };
 }

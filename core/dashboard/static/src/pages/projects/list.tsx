@@ -96,31 +96,6 @@ const SEARCH_DEBOUNCE_MS = 300;
 // 避免 SSE 增量 patch / 心跳整表重渲染下每单元格重建数组触发整篇重新 parse
 const LIST_REMARK_PLUGINS = [remarkGfm];
 
-// 状态圆点配色（table-list 风格：色点 + 文字，不用标签）。走 antd 语义 token
-// 派生表（code-review item 615f6f350d58）：原硬编码十六进制在暗色主题下不变
-// 暗，token 化后随主题自适应。宿主对齐改造（2026-11-03）：warning/critical/
-// good 随主题 token 换轨到 dsh state palette；info 语义=业务/链接蓝，主色已
-// 改黑系，不再随 colorPrimary（否则信息点变黑），改取 theme.ts DSH_LINK
-// （dsw alias-link/state-business-primary，同 StatusTag TONE_HEX 口径）；
-// aqua 在 v6 token 类型面无 alias 对应，沿用 Badge 预设色名 'cyan'
-// （= cyan-6，同 ModeTag.tsx 口径，随主题算法变色）。
-// useToken 只能在组件内调用，故以 hook 形式供 SpecListPage / SpecCardList
-// 两处共用。
-function useToneDot(): Record<string, string> {
-  const { token } = theme.useToken();
-  return useMemo(
-    () => ({
-      muted: token.colorTextQuaternary,
-      info: DSH_LINK,
-      warning: token.colorWarning,
-      critical: token.colorError,
-      good: token.colorSuccess,
-      aqua: 'cyan',
-    }),
-    [token],
-  );
-}
-
 // ── Bento 色值（2026-11-06 用户指令：桌面 SPEC 表格对齐 v2 projects 台账
 // 呈现；色值取自当日的 v2 域 token 表——该域 2026-11-07 已退役，此处值为
 // 独立存量）。磁贴/表头/发丝线样式镜像在 global.less `.ov-bento` /
@@ -1069,9 +1044,8 @@ function DevTab({
   statusTotal,
 }: DevTabProps) {
   // 行底色/状态点/验证中文案色走 token（code-review item 615f6f350d58）：
-  // useToken 只能在组件内调用（同 useToneDot 惯例）
+  // useToken 只能在组件内调用
   const { token } = theme.useToken();
-  const toneDot = useToneDot();
 
   // 移动筛选编排呈现态（add-spec-list-mobile-style 2.2）：Drawer 开合与排序键
   // 不入 URL（过滤 stickiness 白名单契约不变——类型/归档仍走既有 state 写回，
@@ -1105,7 +1079,9 @@ function DevTab({
   // （12+9+28+7+13+15+8+8+10），tableLayout='fixed' 且未启用 scroll.x 时超
   // 额定宽依赖浏览器按比例归一；等比缩到 11+8+25+6+12+14+8+8+8=100 后，
   // 2026-11-06 用户指令再收窄：状态/模式两列等宽 7%（原 11/8），腾出 4 给
-  // 名称列（25→29），现合计 7+7+29+6+12+14+8+8+8=100，列宽视觉权重不变。
+  // 名称列（25→29），现合计 7+7+30+6+12+14+8+8+8=100，列宽视觉权重不变。
+  // （code-review item 9c4225623333：29% 实算合计 99，名称列补足 1% 至 30
+  // 恢复归一不变量）
   const columns: ColumnsType<SpecSummary> = [
     {
       title: '状态',
@@ -1150,7 +1126,7 @@ function DevTab({
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: '29%',
+      width: '30%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (_: string, record: SpecSummary) => (
         // dense：v2 台账名称形态（13.5px 半粗深色单行省略），悬浮 Why 提示/键盘

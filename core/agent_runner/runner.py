@@ -2661,10 +2661,13 @@ class AgentRunner:
         后续 attempt resume 或降级重建均可从该提交恢复。
 
         第三种调用形态（add-freeze-stop-inflight-agents D1，锚点
-        freeze-hold）：frozen 预终止——``proc.terminate()`` 之前调用，此刻
-        子进程仍存活、无法证明不再写盘。冻结即停、不再有下一 attempt 的
-        退避窗口保全机会，故有意接受竞态代价：git add/commit 可能纳入半写
-        文件、也可能撞 index.lock 使保全失败（仅 WARNING，不阻断冻结终止）。
+        freeze-hold）：frozen 终止——SIGTERM→grace→SIGKILL 收口序列完成之后
+        调用（code-review item e4c14616187f 对齐 item c162e63ba9b2 时序约定；
+        旧实现放在 ``proc.terminate()`` 之前、子进程仍存活时提交——冻结即停、
+        无下一 attempt 退避窗口补交，kill 前提交一旦撞在飞 agent 的
+        index.lock 便静默丢失保全，或纳入半写文件污染后续 resume/salvage
+        现场）。冻结即停、不再有下一 attempt 的退避窗口保全机会，故冻结
+        命中即在本时序提交未落盘现场；失败仅 WARNING，不阻断冻结终止。
 
         无 worktree 载体或路径失效时跳过（与锚点 A/B 同语义，幂等）。
         主工作树同样跳过（fix-main-tree-wip-checkpoint）：dispute-judge /
@@ -7133,11 +7136,6 @@ class AgentRunner:
                         f"spec '{spec_name}' frozen — 终止在飞 agent 子进程"
                         f"（attempt {run_id}，base {base_run_id}）",
                     )
-                    # 终止前 WIP 保全（锚点 freeze-hold）：子进程仍活着时提交
-                    # 未落盘现场——冻结终止即停，不再有下一 attempt 的退避窗口
-                    # 保全机会；无 worktree 载体/失败仅 WARNING 不阻断。
-                    self._wip_checkpoint_on_forced_kill(
-                        spec_name, cwd, anchor=ANCHOR_FREEZE_HOLD)
                     self._signal_attempt_child(
                         proc, spawn_spec.start_new_session, signal.SIGTERM,
                         caller="runner._run_agent.freeze")
@@ -7156,6 +7154,19 @@ class AgentRunner:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             pass
+                    # 冻结收口前的 WIP 保全（锚点 freeze-hold）：时序对齐
+                    # cancel/stall/timeout/turn-limit 四强杀锚点（code-review
+                    # item c162e63ba9b2）——SIGTERM→grace→SIGKILL 序列完成、
+                    # agent 可证明不再写盘后再提交。冻结即停、不再有下一
+                    # attempt 的退避窗口补交机会，kill 前提交恰与本锚点保护
+                    # 目标相悖：可能与在飞 agent 的 git 操作撞 index.lock 使
+                    # 保全失败（仅 WARNING 降级、无补交窗口），或把半写文件
+                    # 纳入 checkpoint 污染后续 resume/salvage 现场。经
+                    # forced_kill 助手执行（自带 exclude_main_tree=True）：
+                    # 无 worktree 载体/主树车道自动跳过；失败仅 WARNING
+                    # 降级、不阻断冻结收口。
+                    self._wip_checkpoint_on_forced_kill(
+                        spec_name, cwd, anchor=ANCHOR_FREEZE_HOLD)
                     frozen_error = FrozenTerminatedError(
                         reason=f"spec '{spec_name}' frozen", by="admin")
                     # 冻结命中清理残留 cancel 旗标（spec 级 > run 级）：防止
