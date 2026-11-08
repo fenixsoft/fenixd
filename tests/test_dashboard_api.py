@@ -3137,6 +3137,28 @@ class TestBundleRevHeader:
     的 mtime_ns:size）；前端 request() 记录基线、漂移即整页 reload。
     """
 
+    @pytest.fixture(autouse=True)
+    def _seed_dist_index(self, server_fx):
+        """dist 构建物是 gitignored 产物（.gitignore dist/），fresh worktree
+        等隔离环境不存在；本类验证的是头部机制而非 dist 在场（缺席降级另有
+        test_missing_dist_rev_absent_no_crash 覆盖）。缺席时种最小 index.html，
+        用例后按原状（缺席）还原，不污染仓库静态目录。"""
+        index_html = server_fx[1].httpd.static_dir / "dist" / "index.html"
+        dist_dir = index_html.parent
+        made_dir = not dist_dir.exists()
+        existed = index_html.exists()
+        if not existed:
+            dist_dir.mkdir(parents=True, exist_ok=True)
+            index_html.write_text(
+                "<!DOCTYPE html><html><body>seed-for-tests</body></html>",
+                encoding="utf-8",
+            )
+        yield
+        if not existed:
+            index_html.unlink(missing_ok=True)
+            if made_dir and not any(dist_dir.iterdir()):
+                dist_dir.rmdir()
+
     def test_json_200_carries_bundle_rev(self, server_fx):
         proot, srv = server_fx
         status, headers, _body = srv.get_ex("/api/specs?project=proj-a")
