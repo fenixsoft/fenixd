@@ -71,7 +71,7 @@ const SELFHEAL_WAIT_REASONS: ReadonlySet<string> = new Set([
  * 未知/空 reason 返回 false（宁严勿松，按需人工样式回退，漂移不静默）。
  */
 export function isSelfhealWait(reason: string | null | undefined): boolean {
-  return reason != null && reason !== '' && SELFHEAL_WAIT_REASONS.has(reason);
+  return reason !== null && reason !== undefined && reason !== '' && SELFHEAL_WAIT_REASONS.has(reason);
 }
 
 /**
@@ -82,7 +82,7 @@ export function isSelfhealWait(reason: string | null | undefined): boolean {
  */
 function isKnownReason(reason: string | null | undefined): reason is string {
   return (
-    reason != null &&
+    reason !== null &&
     reason !== '' &&
     Object.prototype.hasOwnProperty.call(BLOCKED_REASONS, reason)
   );
