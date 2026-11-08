@@ -607,6 +607,27 @@ def _stat_sig(path: Path):
     return (st.st_mtime_ns, st.st_size)
 
 
+# 归档清单缺失空态的稳定哨兵（code-review item 03cbe54d9d34）：文件不存在
+# 是稳定且语义明确的空态（parse_archived_state 以「缺失 = 空」为常态分支），
+# 用固定哨兵参与 combine 聚合——与 data_signature 的缺失源哨兵同款纪律
+# （出现/消失即翻签名）；哨兵为 str 形态，与 (mtime_ns, size) 元组的 repr
+# 不会碰撞。仅真 stat 失败（非 ENOENT 的 OSError）才返回 None 保持降级。
+_ARCH_SIG_MISSING = "missing"
+
+
+def _arch_manifest_sig(path: Path):
+    """归档清单签名：缺失（ENOENT，稳定空态）返回哨兵参与聚合；真 stat
+    失败（PermissionError 等非 ENOENT 的 OSError，暂时不可得）返回 None
+    保持保守降级。"""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return _ARCH_SIG_MISSING
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def _runs_by_spec_sigs(proot: Path) -> dict:
     """扫描 .fenix/runs（含 archive）一次，按 spec 分组各 run 文件签名。
 
@@ -977,7 +998,11 @@ class SummaryIndex:
             # 不再把迁出误判为删除行）。快照仅存活跃侧（下方回写
             # active_specs），清单文件删除/清空时不会经快照泄漏幽灵条目。
             active_specs = specs
-            arch_sig = _stat_sig(proot / ".fenix" / "STATE.archive.md")
+            # 清单惰性创建（首次归档迁移才落盘）：缺失是多数项目的常态稳态，
+            # 用缺失哨兵参与聚合而非判签名不可得——否则 ETag 永不生成、
+            # 304 短路对这类项目整体失效（item 03cbe54d9d34）。仅真 stat
+            # 失败返回 None 走下方降级。
+            arch_sig = _arch_manifest_sig(proot / ".fenix" / "STATE.archive.md")
             if arch_sig != self._arch_sigs.get(key) or key not in self._arch_snapshot:
                 self._arch_snapshot[key] = _facade.parse_archived_state(proot)
                 self._arch_sigs[key] = arch_sig
@@ -1039,8 +1064,9 @@ class SummaryIndex:
             # index.py 的 get_with_signature 与 invalidation_signature 逐字节
             # 等值断言——后者退役后的唯一消费方）。
             if state_sig is None or arch_sig is None:
-                # 签名组件不可得（stat 失败等）：宁缺 304 不假 304，消费方
-                # 降级无条件 200 路径（design D4）
+                # 签名组件不可得（STATE.md 消失窗口/失败，或清单真 stat 失败
+                # 的暂时不可得）：宁缺 304 不假 304，消费方降级无条件 200
+                # 路径（design D4）。清单缺失空态已由哨兵参与聚合，不落此处。
                 return out, None
             per_spec.sort()
             all_runs = sorted(

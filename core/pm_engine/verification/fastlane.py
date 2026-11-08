@@ -62,6 +62,12 @@ from core.verify_engine.path_safety import safe_component
 from core.state_machine import (
     ENV_BLOCK_ROUNDS_FIELD,
     ENV_EXEMPTIONS_FIELD,
+    # 人工介入终态判别（code-review item 6bb57e5ad08e）：收敛回读按仓库既有
+    # 冻结双判据（FROZEN_FIELD 在位 / error 以 FREEZE_ERROR_PREFIX 开头，同
+    # branch_guard.resolve_env_blocked_reset_path 口径；评审冻结等机器冻结经
+    # freeze_for_human 也写 frozen=True 一并命中）豁免连败记账。
+    FREEZE_ERROR_PREFIX,
+    FROZEN_FIELD,
     INCONCLUSIVE_ATTEMPTS_FIELD,
     LEGACY_DEGRADE_LAST_REASON_FIELD,
     LEGACY_DEGRADE_STREAK_FIELD,
@@ -860,21 +866,31 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
     from core.verdict_check import load_report, save_report
 
     prev_report = load_report(ctx.project_root, spec_name)
+
+    def _restore_prev_report(reason_tag: str) -> None:
+        # 回落整轮前回写上一轮全量报告（code-review item 0e4765165903：三处
+        # 回落分支逐字镜像的回写块收敛为单一 helper，仅日志文案差异经
+        # reason_tag 注入，防单侧漂移——VERIFIED_RESET_FIELDS 注释自述的
+        # fastlane streak 两处各自补漏即同类前车）。prev_report 为 None
+        # （本就无报告/不可读）按无报告语义跳过写盘；回写失败仅 WARNING
+        # 留痕、不阻断回落记账（整轮验证随后会重写报告）。
+        if prev_report is None:
+            return
+        try:
+            save_report(ctx.project_root, spec_name, prev_report)
+        except OSError as e:
+            ctx.logger.warning(
+                "pm_engine",
+                f"fastlane {reason_tag}回落回写上一轮报告失败 '{spec_name}': {e!r}",
+            )
+
     reverify = subset_reverify(pipeline, spec_name, subset_ids)
     if not reverify.get("ok"):
         # 回落整轮前回写上一轮全量报告：子集重验经 _execute_stage2 已把仅含
         # 子集场景的报告覆写规范 report.json，不回写则时间轴与报告消费方读到
         # 失真的 total/passed/failed 直到下一次全量验证（与成功路径 merged
-        # 落盘对称）。prev_report 为 None（本就无报告/不可读）按无报告语义
-        # 跳过写盘；回写失败不阻断回落记账（整轮验证随后会重写报告）。
-        if prev_report is not None:
-            try:
-                save_report(ctx.project_root, spec_name, prev_report)
-            except OSError as e:
-                ctx.logger.warning(
-                    "pm_engine",
-                    f"fastlane 失败回落回写上一轮报告失败 '{spec_name}': {e!r}",
-                )
+        # 落盘对称）。
+        _restore_prev_report("失败")
         return record_failure(f"fastlane 子集重验未收敛: {reverify.get('reason')}")
 
     # ③ 收敛：合并报告（未实跑场景沿用上一轮通过结论并标注来源）后先落盘
@@ -924,16 +940,7 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
             # implemented 按整轮处置，不回写则读侧（_failed_scenario_ids/
             # _detect_uniform_verify_failure/dashboard 展示）在窗口内读到与状态
             # 失真的乐观全绿报告（与子集重验失败回落、门禁拒绝回落两处对称）。
-            # prev_report 为 None（本就无报告/不可读）按无报告语义跳过写盘；
-            # 回写失败不阻断回落记账（整轮验证随后会重写报告）。
-            if prev_report is not None:
-                try:
-                    save_report(ctx.project_root, spec_name, prev_report)
-                except OSError as e:
-                    ctx.logger.warning(
-                        "pm_engine",
-                        f"fastlane 转换失败回落回写上一轮报告失败 '{spec_name}': {e!r}",
-                    )
+            _restore_prev_report("转换失败")
             return record_failure(
                 f"fastlane 收敛状态转换 '{spec_name}'→{_hop} 失败（非法/冻结），回落整轮"
             )
@@ -959,23 +966,51 @@ def _fastlane_reverify_and_converge(pipeline, spec_name, *, run_id, subset_ids,
     # transition 合法性校验，对滞留 testing 无副作用矛盾）。
     # status 缺失（不可观测，如无 status 字段的桩 store）按既有收敛行为放行：
     # 生产 STATE 记录恒带 status，「缺失」不构成门禁拒绝的证据，不据此误回落。
-    _applied_status = str((sm.read_one(spec_name) or {}).get("status", "") or "")
+    _applied_entry = sm.read_one(spec_name) or {}
+    _applied_status = str(_applied_entry.get("status", "") or "")
     if _applied_status and _applied_status not in ("verified", "done", "pushed"):
-        # 门禁拒绝回落整轮前回写上一轮全量报告：与子集重验失败回落（上方
-        # 682-689）对称——merged 报告（实跑子集全 pass + carried-over 沿用）
+        # 人工介入终态豁免（code-review item 6bb57e5ad08e）：status 非收敛且
+        # 冻结双判据命中（frozen 结构化标记在位 / error 以 FREEZE_ERROR_PREFIX
+        # 开头，口径同 branch_guard.resolve_env_blocked_reset_path——评审冻结
+        # 等机器冻结经 freeze_for_human 也写 frozen=True，一并命中）时，spec
+        # 已被人工/处置接管而非 fastlane 本轮失败：不递增连败计数（把「人工
+        # 接管」记成「车道失败」属归因混叠，会误推进熔断并在下一轮继续按
+        # 回落语义尝试派发），回写上一轮报告留痕后直接返回 dispatched=False，
+        # 既有冻结豁免语义接管（family 冻结写前复查放弃打回/递增的先例）。
+        if _applied_entry.get(FROZEN_FIELD) or str(
+            _applied_entry.get("error") or ""
+        ).startswith(FREEZE_ERROR_PREFIX):
+            _restore_prev_report("人工冻结")
+            record_decision(pipeline, spec_name, {
+                "eligible": True,
+                "path": "full-round",
+                "stage": "frozen-fallback",
+                "reason": (
+                    f"fastlane 收敛回读命中人工介入终态（status={_applied_status}，"
+                    "冻结标记在位），不计连败回落"
+                ),
+            })
+            ctx.logger.warning(
+                "pm_engine",
+                f"fastlane 收敛回读 '{spec_name}' 命中人工冻结终态"
+                f"（status={_applied_status}）：不递增连败计数，回落整轮"
+                "（既有冻结豁免语义接管）",
+            )
+            return {
+                "dispatched": False,
+                "converged": False,
+                "matched": True,
+                "reason": (
+                    f"fastlane 收敛回读命中人工冻结终态（status={_applied_status}），"
+                    "不计连败，既有冻结豁免语义接管"
+                ),
+            }
+        # 门禁拒绝回落整轮前回写上一轮全量报告：与子集重验失败回落、转换失败
+        # 回落两处对称——merged 报告（实跑子集全 pass + carried-over 沿用）
         # 已落盘规范 report.json，而 spec 实际滞留 testing 按 bug-found 走整轮
         # 处置，不回写则读侧（_failed_scenario_ids/_detect_uniform_verify_
         # failure/dashboard 展示）在窗口内读到与状态失真的乐观全绿报告。
-        # prev_report 为 None（本就无报告/不可读）按无报告语义跳过写盘；
-        # 回写失败不阻断回落记账（整轮验证随后会重写报告）。
-        if prev_report is not None:
-            try:
-                save_report(ctx.project_root, spec_name, prev_report)
-            except OSError as e:
-                ctx.logger.warning(
-                    "pm_engine",
-                    f"fastlane 门禁拒绝回落回写上一轮报告失败 '{spec_name}': {e!r}",
-                )
+        _restore_prev_report("门禁拒绝")
         return record_failure(
             f"fastlane 收敛门禁未通过（_apply_verified 后 status={_applied_status}"
             f"∉{{verified, done, pushed}}，spec 未收口），回落整轮"

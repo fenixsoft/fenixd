@@ -185,7 +185,15 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     initial_running_count = 0
     specs = parse_state(proot)
     # found 判定含清单（add-archive-state-migration D6）：条目已迁出（仅清单
-    # 有）的已归档 SPEC 同样可软删除，清理动作 = 移除清单小节 + 归档目录移除。
+    # 有）的已归档 SPEC 同样可软删除；仅清单态的清理动作 = 移除清单小节
+    # （此时 spec/changes/ 活跃目录已不存在，下方 spec_dir.is_dir() 分支不
+    # 触发，无任何目录动作）。
+    # spec/archive/ 下的既有归档目录有意保留，非「归档目录移除」（code-review
+    # item f993dbe11c02：原注释与实现不符，实现自始无该动作）：软删除只清
+    # 活跃登记面（STATE 条目 + 清单小节），归档内容按软删除墓碑语义留在
+    # 归档区，供 resolve_spec_dir 归档回退 / archive_dir_map 标题映射 /
+    # 交付计数与知识页溯源链接继续消费（与 docstring「目录缺失仅清状态
+    # （幂等）」同口径）。
     in_manifest = spec in parse_archived_state(proot)
     if spec not in specs and not in_manifest:
         return {"found": False}
