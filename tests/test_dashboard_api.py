@@ -2419,9 +2419,13 @@ class TestConditionalGet:
             assert body == b"", path
 
     def test_specs_signature_unavailable_degrades_no_etag(self, server_fx):
-        """签名组件不可得（STATE.md / STATE.archive.md 消失，stat None）→
-        get_with_signature 返回 None 签名，端点降级无条件 200：不挂 ETag
-        头、不协商，列表数据仍正常返回（宁缺 304 不假 304）。"""
+        """签名组件不可得（STATE.md 消失，stat None）→ get_with_signature
+        返回 None 签名，端点降级无条件 200：不挂 ETag 头、不协商，列表数据
+        仍正常返回（宁缺 304 不假 304）。对照：归档清单缺失是稳定空态
+        （item 03cbe54d9d34，parse_archived_state 以缺失=空为常态分支）——
+        签名经 "missing" 哨兵照常聚合产出、端点挂 ETag 可协商，304 短路
+        对未归档项目恢复生效；「签名不可得」降级仅保留给 STATE.md 消失
+        窗口与真 stat 失败。"""
         proot, srv = server_fx
         self._ensure_archive_manifest(proot)
         # state 组件缺失：STATE.md 消失
@@ -2431,7 +2435,8 @@ class TestConditionalGet:
         assert "ETag" not in headers
         data = json.loads(body)
         assert data["project"] == "proj-a" and data["specs"] == []
-        # arch 组件缺失（恢复 STATE.md 后删除清单）：同样降级
+        # arch 组件缺失（恢复 STATE.md 后删除清单）：清单缺失是稳定空态，
+        # 签名照常产出、304 可协商（非「签名不可得」降级）
         (proot / ".fenix" / "STATE.md").write_text(
             "# Fenix Project State\n\n## Specs\n\n"
             "### myspec\n- status: testing\n- priority: 2\n"
@@ -2442,8 +2447,15 @@ class TestConditionalGet:
         (proot / ".fenix" / "STATE.archive.md").unlink()
         status2, headers2, body2 = srv.get_ex("/api/specs?project=proj-a")
         assert status2 == 200
-        assert "ETag" not in headers2
+        etag2 = headers2.get("ETag")
+        assert etag2
         assert json.loads(body2)["specs"]  # 活跃条目照常产出
+        # 缺清单稳态下条件请求命中 304
+        status3, _, body3 = srv.get_ex(
+            "/api/specs?project=proj-a", headers={"If-None-Match": etag2}
+        )
+        assert status3 == 304
+        assert body3 == b""
 
     def test_specs_304_reuses_keep_alive_connection(self, server_fx):
         """specs 端点 304 后同一 keep-alive 连接继续请求不失步（_write_304
