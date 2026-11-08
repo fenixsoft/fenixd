@@ -322,8 +322,12 @@ export default function ProjectTable({
       ];
     }
     const running = project.daemon === 'running';
-    const items = project.exists
-      ? [
+    // exists 用 === false 严格判定（code-review item dd8894b24e80）：字段缺省
+    // （undefined）按存在处理，与 ProjectCell / rowUnavailable 同口径，防版本
+    // 代差下操作菜单被误裁剪
+    const items = project.exists === false
+      ? []
+      : [
           { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running || busy },
           { key: 'stop', icon: <PauseCircleOutlined />, label: '停止', disabled: !running || busy },
           // fix-supervisor-hosting-chain 5.3：unmanaged 项目提供「安装托管」
@@ -332,8 +336,7 @@ export default function ProjectTable({
             ? [{ key: 'install', icon: <ToolOutlined />, label: '安装托管', disabled: busy }]
             : []),
           { type: 'divider' as const },
-        ]
-      : [];
+        ];
     return [...items, { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, disabled: busy }];
   };
 
