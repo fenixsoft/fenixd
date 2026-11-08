@@ -36,10 +36,6 @@ from core.proc_utils import (
 V2_TEST_PORT_BASE = 19000
 V2_TEST_PORT_RANGE = 20
 
-# dev-server 孤儿自灭轮询间隔（秒）：与 tests/v2/dev-server.mjs 的 ppid 绑定
-# 轮询间隔对齐（design D3），供测试/日志引用同一语义值。
-PPID_POLL_INTERVAL = 2
-
 # 子进程命令行标记（D2 清扫依据）：daemon 重启时扫 pgrep 该字面量识别遗留 dev-server。
 V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
 

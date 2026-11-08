@@ -148,6 +148,8 @@ process.on('SIGINT', () => {
 // process.ppid === 1（孤儿判据）即自行退出，不依赖外部清扫。
 // 明确不用 PDEATHSIG：daemon 的 per-dispatch **线程**死亡即触发该信号，
 // run 结束线程退出会把仍在服务的实例提前误杀。
+// 轮询间隔 2000ms（秒值 2）是孤儿自灭轮询的权威值，与 core/v2_dev_server
+// 的语义对齐（design D3）；跨语言无法共享常量，两侧同值以此注记维持。
 const PARENT_POLL_INTERVAL_MS = 2000;
 setInterval(() => {
   if (process.ppid === 1) {
