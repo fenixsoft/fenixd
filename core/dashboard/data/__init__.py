@@ -294,6 +294,7 @@ from .admin_alerts import (
     get_unhandled_alerts,
     get_resolved_alerts,
     mark_alert_handled,
+    revert_superseded_alert,
     mark_all_alerts_handled,
     alerts_summary,
     alerts_overview,
