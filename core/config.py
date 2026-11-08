@@ -5,6 +5,7 @@ Reads and validates config.yaml, providing typed access to all settings.
 """
 
 import copy
+import json
 import logging
 import math
 import os
@@ -177,6 +178,13 @@ _SEGMENT_DIRTY_WARNED = set()
 # 只在首次告警；去重只作用于告警分支，校验/跳过行为不变。
 _UNKNOWN_PROVIDER_REF_WARNED = set()
 _UNRESOLVED_CHAIN_MODEL_WARNED = set()
+
+# 加载路径 provider 引用校验告警的信号类型（add-provider-validation-alert-
+# governance task 1.2）：daemon 加载/热加载对未注册 provider 引用不再静默跳过，
+# 改按「角色+坏名集合」指纹发单条 major 配置告警（kind=signal、spec=None 的
+# daemon 级信号，产生方标注 cause=model-chain）。常量单源：AdminStore 指纹
+# 去重/复位与消费方（测试）共用，禁止字面量散布。
+PROVIDER_REF_INVALID_SIGNAL_TYPE = "provider_ref_invalid"
 
 # _validate 软校验 ERROR 的进程级一次性去重（code-review item a84b10635fb2，
 # 同 _SEGMENT_DIRTY_WARNED / _UNKNOWN_PROVIDER_REF_WARNED 范式）：resolve_config
@@ -787,6 +795,10 @@ class ConfigLoader:
 
         cls._validate(effective, require_project=False)
         cls._maybe_warn_invalid_night_quiet_window(effective)
+        # add-provider-validation-alert-governance 1.2：加载路径 provider 引用
+        # 校验告警（未注册引用 → 按角色+坏名指纹发 major 配置告警；修复后指纹
+        # 消失自动复位）。fail-open：告警发射失败不阻断配置加载。
+        cls._report_provider_ref_alerts(proot, effective)
         return effective
 
     @classmethod
@@ -811,6 +823,216 @@ class ConfigLoader:
         config.update(fresh)
         for stale_key in [k for k in config if k not in fresh]:
             config.pop(stale_key, None)
+
+    # ── provider 引用校验单源（add-provider-validation-alert-governance D1/D2）──
+    #
+    # config 加载路径（resolve_config 告警发射 / _validate_agent_models 日志）
+    # 与 Dashboard 保存路径（config_admin patch 校验）共用同一套坏名收集与
+    # 相似名建议实现，禁止两路径规则漂移（design D1）。
+
+    @staticmethod
+    def normalize_provider_name_for_match(name: Any) -> str:
+        """provider 名规范化（design D2）：小写 + ``.``/``-``/``_`` 统一归一为 ``-``。
+
+        ``bigmodel.cn`` 与 ``bigmodel-cn`` 归一后同为 ``bigmodel-cn``——一字之差
+        （分隔符漂移）类坏名在规范化空间完全相等，相似名建议据此优先命中。
+        """
+        return "".join(
+            "-" if ch in ".-_" else ch.lower() for ch in str(name or "").strip()
+        )
+
+    @staticmethod
+    def _edit_distance_at_most_2(a: str, b: str) -> bool:
+        """编辑距离 ≤2 判定（单行 DP + 行下界早退；仅服务相似名建议的小串比对）。"""
+        if abs(len(a) - len(b)) > 2:
+            return False
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            row_min = i
+            for j, cb in enumerate(b, 1):
+                cost = 0 if ca == cb else 1
+                v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                cur.append(v)
+                if v < row_min:
+                    row_min = v
+            if row_min > 2:
+                return False  # 整行下界已超阈值，后续行只会更大，早退
+            prev = cur
+        return prev[-1] <= 2
+
+    @classmethod
+    def suggest_registered_provider_name(
+        cls, unregistered_name: Any, provider_names
+    ) -> Optional[str]:
+        """相似名建议（design D2）：规范化相等或编辑距离 ≤2 的已注册名即命中。
+
+        多个命中时取（规范化编辑距离, 字典序）最小者，保证确定性；无命中返回
+        None（调用方改输出注册表清单）。
+        """
+        norm = cls.normalize_provider_name_for_match(unregistered_name)
+        best: Optional[Tuple[Tuple[int, str], str]] = None
+        for cand in provider_names:
+            cand_norm = cls.normalize_provider_name_for_match(cand)
+            if cand_norm == norm:
+                dist = 0
+            elif cls._edit_distance_at_most_2(norm, cand_norm):
+                dist = 1  # 阈值内但不相等：规范化距离粗分一档即可满足排序语义
+            else:
+                continue
+            key = (dist, str(cand))
+            if best is None or key < best[0]:
+                best = (key, str(cand))
+        return best[1] if best is not None else None
+
+    @classmethod
+    def describe_provider_ref_fix_hint(cls, unregistered_name: Any, provider_names) -> str:
+        """修复建议段（design D2）：有相似名 →「是否意指 <名>？」；无 → 注册表清单。
+
+        注册表为空时明示「未注册任何 provider」，避免输出空清单误导。
+        """
+        names = sorted({str(n) for n in (provider_names or []) if n})
+        suggestion = cls.suggest_registered_provider_name(unregistered_name, names)
+        if suggestion:
+            return f"是否意指 {suggestion}？"
+        if not names:
+            return "当前未注册任何 provider（llm.providers 为空）"
+        return "当前已注册 provider: " + "、".join(names)
+
+    @classmethod
+    def collect_unregistered_provider_refs(
+        cls, config: Dict[str, Any], roles: Optional[set] = None
+    ) -> Dict[str, List[str]]:
+        """收集 ``agents.models.<role>.provider`` 引用的未注册 provider 名（D1 单源）。
+
+        形态覆盖：provider 字符串单值与 ``list[str|{provider,...}]`` 对象数组两
+        形态（经 ``_normalize_provider_chain`` 统一规范化后逐名比对注册表）；坏名
+        按角色聚合、去重保序。形态非法（normalize ValueError）不在此判定——保存
+        路径由 ``_validate_agent_models`` 拒绝、加载路径打日志，本函数只按可解析
+        形态收集。``roles`` 限定角色子集（Dashboard patch 校验只看本次提交的角
+        色），None 遍历全部角色。返回 ``{role: [未注册名, ...]}``，无坏名角色
+        不出现在结果里。
+        """
+        agents = config.get("agents")
+        models = agents.get("models") if isinstance(agents, dict) else None
+        if not isinstance(models, dict):
+            return {}
+        providers = cls._segment_or_empty(config, "llm").get("providers") or []
+        provider_names = {
+            p.get("name") for p in providers if isinstance(p, dict) and p.get("name")
+        }
+        report: Dict[str, List[str]] = {}
+        for role, assignment in models.items():
+            if roles is not None and role not in roles:
+                continue
+            if not isinstance(assignment, dict):
+                continue
+            raw_provider = assignment.get("provider")
+            if raw_provider is None or raw_provider == "":
+                continue
+            try:
+                chain = cls._normalize_provider_chain(raw_provider)
+            except ValueError:
+                continue
+            bad = []
+            for name, _element_model in chain:
+                if name and name not in provider_names and name not in bad:
+                    bad.append(name)
+            if bad:
+                report[role] = bad
+        return report
+
+    @classmethod
+    def _report_provider_ref_alerts(cls, proot: Path, effective: Dict[str, Any]) -> None:
+        """加载路径 provider 引用校验告警（task 1.2）。
+
+        未注册引用按「指纹（角色+坏名集合）」发射单条 major 配置告警（kind=signal、
+        spec=None 的 daemon 级信号，产生方标注 cause=model-chain），文案含角色名、
+        未注册名、相似名建议/注册表清单与修复指引；同指纹一次性去重（查账本未处理
+        同指纹记录，重启不重发），修复后指纹消失自动复位（未处理同类型记录的指纹
+        不在当前活跃集 → 批量 auto-resolve 收口，design Risks「复用 daemon_errors
+        指纹冷却机制形态」）。daemon 不能因配置坏拒绝启动——本方法 fail-open，
+        任何异常只记日志不阻断配置加载。
+        """
+        try:
+            report = cls.collect_unregistered_provider_refs(effective)
+            from core.admin_store import SIGNAL, AdminStore
+
+            store = AdminStore(proot)
+            active_fps: set = set()
+            if report:
+                providers = cls._segment_or_empty(effective, "llm").get("providers") or []
+                provider_names = sorted(
+                    {
+                        p.get("name")
+                        for p in providers
+                        if isinstance(p, dict) and p.get("name")
+                    }
+                )
+                agents = effective.get("agents")
+                models = agents.get("models") if isinstance(agents, dict) else {}
+                for role in sorted(report):
+                    bad_names = sorted(set(report[role]))
+                    fp = f"{role}:{','.join(bad_names)}"
+                    active_fps.add(fp)
+                    if store.has_unhandled_fingerprint(
+                        PROVIDER_REF_INVALID_SIGNAL_TYPE, fp
+                    ):
+                        continue
+                    assignment = models.get(role) if isinstance(models, dict) else None
+                    raw_provider = (
+                        assignment.get("provider")
+                        if isinstance(assignment, dict)
+                        else None
+                    )
+                    try:
+                        raw_json = json.dumps(raw_provider, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        raw_json = str(raw_provider)
+                    hints = "；".join(
+                        f"{n}（{cls.describe_provider_ref_fix_hint(n, provider_names)}）"
+                        for n in bad_names
+                    )
+                    store.append(
+                        {
+                            "kind": SIGNAL,
+                            "signal_type": PROVIDER_REF_INVALID_SIGNAL_TYPE,
+                            "spec": None,
+                            "severity": "major",
+                            "cause": "model-chain",
+                            "fingerprint": fp,
+                            "description": (
+                                f"模型链配置错误：agents.models.{role}.provider 引用了"
+                                f"未注册的 provider（{hints}）；该角色链已标记失效，"
+                                "派发将按模型链不可用归因，不回落默认网关"
+                            ),
+                            "evidence": (
+                                f"项目名={proot.name}；角色={role}；"
+                                f"未注册引用={', '.join(bad_names)}；"
+                                f"当前已注册 provider="
+                                f"{('、'.join(provider_names) if provider_names else '<空（未配置 llm.providers）>')}；"
+                                f"原始链条目={raw_json}；修复指引=编辑 .fenix/config.yaml "
+                                f"的 agents.models.{role}.provider 或经 Dashboard 设置页修正后保存"
+                            ),
+                            "recommended_action": (
+                                f"修正 agents.models.{role}.provider 的未注册引用"
+                                f"（{'、'.join(bad_names)}）并保存——热加载生效后同指纹"
+                                "告警自动复位"
+                            ),
+                        }
+                    )
+            # 复位半边：指纹消失（坏名已修复/角色已移除）→ 同类型未处理记录
+            # 中指纹不在活跃集的批量 auto-resolve（report 为空时活跃集为空集，
+            # 全部未处理同类型记录复位）。
+            store.auto_resolve_by_type_fingerprint(
+                PROVIDER_REF_INVALID_SIGNAL_TYPE,
+                active_fps,
+                resolve_note="provider 引用校验已通过（未注册引用已消除）——配置告警自动复位",
+            )
+        except Exception as e:  # noqa: BLE001 — fail-open：不阻断配置加载
+            _logger.warning(
+                "provider 引用校验告警发射失败（fail-open，不阻断配置加载）: %s", e
+            )
 
     @classmethod
     def _load_optional_yaml(cls, path: Path, label: str) -> Dict[str, Any]:
@@ -1689,6 +1911,12 @@ class ConfigLoader:
             # add-provider-failover：未知 provider 名只打 ERROR 不阻塞加载（design D3：
             # 沿用热更新哲学，运行期该链元素被跳过）。不再抛 ValueError，否则坏一个名字
             # 就整 daemon 起不来。
+            # add-provider-validation-alert-governance 1.2：「已跳过，不阻塞加载」
+            # 静默语义退役——错误文案升级为可循迹的失效说明（部分未注册=未知元素
+            # 跳过；全部未注册=该角色链判定分配失效，不回落默认网关），并附相似名
+            # 建议（design D2，公共单源 describe_provider_ref_fix_hint）；major
+            # 配置告警由 _report_provider_ref_alerts（resolve_config 尾部）按指纹
+            # 发射，本处只管日志层去重。
             unknown = [n for (n, _m) in chain if n not in provider_names]
             for unknown_name in unknown:
                 # 进程级一次性去重（code-review item eec7502eb329）：热更新逐周期
@@ -1697,9 +1925,12 @@ class ConfigLoader:
                     continue
                 _UNKNOWN_PROVIDER_REF_WARNED.add((agent_type, unknown_name))
                 _logger.error(
-                    "agents.models.%s.provider 引用了不存在的 provider（已跳过，不阻塞加载）: %s",
+                    "agents.models.%s.provider 引用了未注册的 provider（该元素运行期跳过，"
+                    "不阻塞加载；全部链条目未注册时该角色链判定为分配失效——派发按模型链"
+                    "不可用归因，不回落默认网关）: %s；%s",
                     agent_type,
                     unknown_name,
+                    cls.describe_provider_ref_fix_hint(unknown_name, sorted(provider_names)),
                 )
             # design D1/D2：逐元素可解析性检查（替换原"角色级 model 必须非空"）。
             # 元素自带 / 角色级 / provider 条目 model 三者皆空 → ERROR 指明元素下标（不阻塞）。
@@ -1777,6 +2008,63 @@ class ConfigLoader:
                 continue
             result.append((provider, model))
         return result if result else None
+
+    @classmethod
+    def get_agent_chain_resolution(cls, config: Dict[str, Any], agent_type: str) -> Dict[str, Any]:
+        """每角色模型链解析结果（add-provider-validation-alert-governance D3 判定单源）。
+
+        「无分配」与「分配失效」划界的唯一判定实现，runner 侧消费本结果、禁另立
+        口径（design D3）：
+
+        - ``{"status": "unassigned", "chain": [], "raw_provider": None}``——角色无
+          ``models`` 条目（或 ``provider`` 键缺席/空）：合法回落形态，走
+          harness-default-fallback 既有语义（对称回落 + 一次性 WARN）。
+        - ``{"status": "invalid", "chain": [], "raw_provider": <原始条目>,
+          "invalid_reason": <str>}``——角色**有** provider 条目但经校验后链为空
+          （全部条目引用未注册 provider，或链形态非法）：分配失效态，MUST NOT 静默
+          回落；派发按 ``[model-chain-unavailable]`` 既有语义归因。
+        - ``{"status": "ok", "chain": [(provider_dict, model), ...]}``——有效链
+          （与 ``get_agent_model_assignment`` 返回一致）；部分条目未注册时未知元素
+          照旧跳过（既有运行期语义保留）。
+        """
+        agents = cls._segment_or_empty(config, "agents")
+        models = agents.get("models") or {}
+        if not isinstance(models, dict):
+            return {"status": "unassigned", "chain": [], "raw_provider": None}
+        assignment = models.get(agent_type)
+        if not isinstance(assignment, dict):
+            return {"status": "unassigned", "chain": [], "raw_provider": None}
+        raw_provider = assignment.get("provider")
+        if raw_provider is None or raw_provider == "":
+            return {"status": "unassigned", "chain": [], "raw_provider": None}
+        try:
+            chain = cls._normalize_provider_chain(raw_provider)
+        except ValueError as e:
+            return {
+                "status": "invalid",
+                "chain": [],
+                "raw_provider": raw_provider,
+                "invalid_reason": f"链形态非法: {e}",
+            }
+        if not chain:
+            return {"status": "unassigned", "chain": [], "raw_provider": None}
+        providers = cls._segment_or_empty(config, "llm").get("providers") or []
+        provider_names = {
+            p.get("name") for p in providers if isinstance(p, dict) and p.get("name")
+        }
+        unknown = [n for (n, _m) in chain if n not in provider_names]
+        if unknown and len(unknown) == len(chain):
+            return {
+                "status": "invalid",
+                "chain": [],
+                "raw_provider": raw_provider,
+                "invalid_reason": (
+                    f"全部链条目引用未注册 provider: {', '.join(sorted(set(unknown)))}"
+                ),
+            }
+        role_model = assignment.get("model")
+        resolved_chain = cls.get_agent_model_assignment(config, agent_type) or []
+        return {"status": "ok", "chain": resolved_chain, "raw_provider": raw_provider}
 
     @classmethod
     def normalize_agent_models(

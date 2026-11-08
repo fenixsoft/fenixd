@@ -2552,30 +2552,34 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
                 # improve-failover-model-mapping-ui D5：UI 保存要求 provider 名存在于 llm.providers
                 # （model_patch 为入参：merged 校验传本次 patch 提取值；存量基线
                 # 复跑传 {}，跳过仅由本次提交引发的检查，避免误归因为存量）
+                # add-provider-validation-alert-governance D1：引用校验单源化——
+                # 坏名收集与相似名建议复用 ConfigLoader.collect_unregistered_
+                # provider_refs / describe_provider_ref_fix_hint（与 daemon 加载
+                # 路径同一实现，禁止两路径规则漂移）；拒绝语义不变（ValueError
+                # → 400），文案保留既有「引用了不存在的 provider」前缀、追加
+                # 相似名建议段（design D2：保存报错文案同样带建议）。
                 if model_patch:
-                    provider_names = set()
-                    provs = (llm or {}).get("providers") or []
-                    for p in provs:
-                        if isinstance(p, dict) and p.get("name"):
-                            provider_names.add(p["name"])
-                    for role, entry in model_patch.items():
-                        if not isinstance(entry, dict):
-                            continue
-                        provider_val = entry.get("provider")
-                        bad = []
-                        if isinstance(provider_val, str):
-                            if provider_val and provider_val not in provider_names:
-                                bad.append(provider_val)
-                        elif isinstance(provider_val, list):
-                            for el in provider_val:
-                                n = el.get("provider") if isinstance(el, dict) else el
-                                if isinstance(n, str) and n and n not in provider_names:
-                                    bad.append(n)
-                        if bad:
-                            raise ValueError(
-                                f"agents.models.{role}.provider 引用了不存在的 provider: "
-                                + ", ".join(sorted(set(bad)))
-                            )
+                    provider_names = sorted(
+                        {
+                            p.get("name")
+                            for p in ((llm or {}).get("providers") or [])
+                            if isinstance(p, dict) and p.get("name")
+                        }
+                    )
+                    bad_by_role = ConfigLoader.collect_unregistered_provider_refs(
+                        merged, roles=set(model_patch)
+                    )
+                    for role in sorted(bad_by_role):
+                        bad = sorted(set(bad_by_role[role]))
+                        hints = "；".join(
+                            f"{n}（{ConfigLoader.describe_provider_ref_fix_hint(n, provider_names)}）"
+                            for n in bad
+                        )
+                        raise ValueError(
+                            f"agents.models.{role}.provider 引用了不存在的 provider: "
+                            + ", ".join(bad)
+                            + f"（{hints}）"
+                        )
             if "max_concurrent" in agents:
                 mc = agents["max_concurrent"]
                 if not _is_int_not_bool(mc) or mc <= 0:

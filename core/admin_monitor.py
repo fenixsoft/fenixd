@@ -425,6 +425,21 @@ SIGNAL_SEVERITY = {
     # 多耗一轮 run，2026-10-02 cimbar-airgap-transfer 实证 61 轮 / $0.427）。
     "spec_amendment_inflight": "major",
 }
+
+# add-provider-validation-alert-governance 4.1/4.6：signal_type → cause 高置信
+# 封闭映射（design Migration Plan「映射表随 D5 根因枚举封闭收录并以单测固化」）。
+# 只收「signal_type 本身即确定根因」的高置信条目：契约族 → contract、daemon
+# 日志指纹风暴 → daemon-error；派发失败族（repeated_failures/flapping/
+# instant_fail_storm 等）可归因模型链或 CLI、不高置信，不收录（保持 unknown、
+# 不参与 supersede）。单源三处共用：_make_signal 入账标注 / 存量回填
+# backfill_causes / 单测固化（tests/test_alert_supersede.py）。
+SIGNAL_CAUSE_MAP = {
+    "verify_contract_missing": "contract",
+    "verify_contract_redraft": "contract",
+    "verify_regression_missing": "contract",
+    "daemon_errors": "daemon-error",
+}
+
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
     "flapping": "检查 spec 状态机空转回路（ready↔implementing），修复派发/恢复逻辑或人工介入",
@@ -3863,6 +3878,27 @@ class AdminMonitor:
         records = self.store.read_all()
         resolved_total = 0
 
+        # ── 通道零：存量账本 cause 回填（add-provider-validation-alert-
+        # governance 4.6，design Migration Plan）── daemon 启动首轮一次性（复用
+        # _lifecycle_backfilled 首轮语义：通道一异常不置位时下轮重试，回填本身
+        # 幂等——已带 cause 的记录跳过）：无 cause 字段的未处理告警按
+        # SIGNAL_CAUSE_MAP 高置信封闭映射补注根因；映射外保持 unknown、不参与
+        # supersede。异常只记日志不阻断双通道（对齐本函数逐段 try 兜底风格）。
+        try:
+            if not self._lifecycle_backfilled:
+                cause_backfilled = self.store.backfill_causes(SIGNAL_CAUSE_MAP)
+                if cause_backfilled:
+                    self.logger.info(
+                        "admin_monitor",
+                        f"alert cause 存量回填：{cause_backfilled} 条未处理告警"
+                        "按封闭映射补注根因（add-provider-validation-alert-"
+                        "governance 4.6）",
+                    )
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor", f"alert cause 回填失败（跳过）: {e}"
+            )
+
         # ── 通道一：既有 spec 附着条件判定 ───────────────────────────
         # evo-add-signal-subject-terminal-close 2.1：pending 过滤纳入未 handled
         # 且属 spec 附着条件族的 kind=signal 记录（blocked_stuck 等，落库形态
@@ -4024,24 +4060,39 @@ class AdminMonitor:
                 if entry.get("status") in ("ready", "implementing")
             ]
             if not hits:
+                # add-provider-validation-alert-governance 3.1（design D4）：
+                # 触发窗口只取 ready/implementing——spec 离开实现流程后本检测
+                # 器不再发任何 verify_contract_missing（去重态随之失效），验证
+                # 期契约仍缺按既有 major 语义由消费期通道
+                # （_write_verify_contract_missing，severity=major）发信号，
+                # 两段互斥不双发（既有边界不变）。
                 return signals
             from .verify_contract import CONTRACT_FILENAME, contract_file_unresolvable
 
             if not contract_file_unresolvable(self.project_root):
                 return signals
+            # add-provider-validation-alert-governance 3.1（design D4）：实现期
+            # 降噪——降 info 级 + 同 spec 一次性。一次性去重键 signal_type:spec、
+            # 判据持久化随告警账本（store 未处理记录在场即跳过成条），daemon
+            # 重启不重发；记录被处置（handled）后允许再次提示——即「去重态复
+            # 位」的人工出口。降级后只沉淀不召唤（_handle_signal info 分支），
+            # 文案保留实现期指引。
+            anchor = hits[0]
+            if self.store.has_unhandled_signal(anchor, "verify_contract_missing"):
+                return signals
             hits_desc = "、".join(
                 "{}({})".format(n, specs[n].get("status")) for n in hits
             )
-            signals.append(
-                self._make_signal(
-                    "verify_contract_missing",
-                    hits[0],
-                    "前置预检：验证契约仍为未裁决模板态；spec 仍在实现流程中，"
-                    "起草落位即可，勿复位 spec 状态",
-                    f"项目根={self.project_root}，契约路径=.fenix/"
-                    f"{CONTRACT_FILENAME}；命中 spec={hits_desc}",
-                )
+            preflight_signal = self._make_signal(
+                "verify_contract_missing",
+                anchor,
+                "前置预检：验证契约仍为未裁决模板态；spec 仍在实现流程中，"
+                "起草落位即可，勿复位 spec 状态",
+                f"项目根={self.project_root}，契约路径=.fenix/"
+                f"{CONTRACT_FILENAME}；命中 spec={hits_desc}",
             )
+            preflight_signal["severity"] = "info"
+            signals.append(preflight_signal)
         except Exception as e:
             # fail-open：预检缺陷不得拖垮监视器（design Risks 第 3 条）
             self.logger.error(
@@ -4346,6 +4397,11 @@ class AdminMonitor:
             "signal_type": signal_type,
             "spec": spec,
             "severity": SIGNAL_SEVERITY.get(signal_type, "major"),
+            # add-provider-validation-alert-governance 4.1：根因标签由产生方在
+            # 入账时标注——本工厂按封闭映射注入；映射外类型 cause=None（读侧
+            # 容错 unknown，不臆造枚举值）。发射点可后续覆盖（如 provider_ref_
+            # invalid 由加载路径直接标 model-chain，不经本工厂）。
+            "cause": SIGNAL_CAUSE_MAP.get(signal_type),
             "description": description,
             "evidence": evidence,
             "recommended_action": SIGNAL_RECOMMENDATION.get(signal_type, ""),
@@ -5645,6 +5701,10 @@ class AdminMonitor:
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec"),
                 "severity": signal.get("severity"),
+                # add-provider-validation-alert-governance 4.1：根因标签随信号
+                # 入账（_make_signal 注入 / 发射点直标）；缺席透传 None（读侧
+                # 容错 unknown），merge_signal 合并不改写已落盘 cause。
+                "cause": signal.get("cause"),
                 "description": signal.get("description"),
                 "evidence": signal.get("evidence"),
                 "recommended_action": signal.get("recommended_action"),
@@ -5746,6 +5806,23 @@ class AdminMonitor:
         spec = signal.get("spec")
         signal_type = signal.get("signal_type")
         status_hash = self._signal_status_hash(signal)
+
+        # info 级信号只沉淀不唤起（add-provider-validation-alert-governance
+        # 3.1，design D4）：实现期契约预检降噪的承载半边——info 在
+        # HUMAN_SEVERITIES 之外、永不召唤 Administrator；同 spec 一次性由检测
+        # 器判定（账本未处理记录在场即不成条），本分支兜底保证即使成条也只
+        # merge 沉淀、不进冷却锚点与唤起链。
+        if (signal.get("severity") or "").lower() == "info":
+            record, _is_new = self.store.merge_signal(
+                self._signal_record(signal, escalated=False), status_hash
+            )
+            if record is not None:
+                self.logger.info(
+                    "admin_monitor",
+                    f"Info signal consolidated (no invocation): {signal_type} "
+                    f"for '{spec or 'daemon'}' — 实现期降噪（design D4）",
+                )
+            return
 
         # 节流：冷却窗口内同 spec 同类信号已唤起过 / 已有未处理升级告警 → 跳过唤起
         if self._throttled(spec, signal_type):
