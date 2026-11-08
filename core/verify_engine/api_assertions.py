@@ -464,7 +464,20 @@ class ApiAssertionRunner:
                     "事件计数请引用 sse_connect 捕获"
                 ),
             }
-        events = resp.get("events") or []
+        events = resp.get("events")
+        # 形态预检：events 非 list（str/dict/int 等）时 len() 会把字符数/键数
+        # 当事件数参与 min 比较（可与下限误判 pass 假绿或 actual 失真）、int
+        # 形态直接抛 TypeError 被包成笼统「断言执行异常」——mock/手写 capture
+        # 来源可能出现，防御假设同 sse_event_matches 的 non_dict 预检
+        # （code-review item 5099d56875e6）
+        if not isinstance(events, list):
+            return {
+                "type": "sse_event_count",
+                "min": a.get("min", 1),
+                "actual": None,
+                "pass": False,
+                "error": f"events 字段非法: 须为 list，实际 {type(events).__name__}",
+            }
         raw_min = a.get("min", 1)
         # fail-closed：min 非数字时不得让 int() 抛 ValueError 被 run() 包成
         # 笼统「断言执行异常」，judge 须能区分场景配置错误与产品缺陷
@@ -539,6 +552,21 @@ class ApiAssertionRunner:
                     ),
                 }
             # fail-closed：无 JSON 载荷时不得以 actual=None 与 expected=None 蒙混判 pass
+            if resp.get("read_truncated"):
+                # capture 标注透出：响应体超读入上限被截断置 json=None。截断
+                # 必然伴随超大（读入上限 > 解析上限），若先走「超大未解析」
+                # 分支会把框架读入截断误归因为响应体积缺陷，故截断分支须
+                # 前置（口径对齐 body_contains 的 body_truncated 专项 error，
+                # code-review item 1ba4ef49abca）
+                return {
+                    "type": "json_path",
+                    "path": path,
+                    "expected": expected,
+                    "mode": mode,
+                    "actual": None,
+                    "pass": False,
+                    "error": f"{resp['read_truncated']}，截断致 JSON 不完整，无 JSON 载荷可求值",
+                }
             if resp.get("json_parse_skipped"):
                 # capture 标注透出：响应体超解析上限被跳过解析置 json=None，
                 # 「非合法 JSON」文案会把体积问题误归因为响应格式缺陷
@@ -870,6 +898,11 @@ class ApiAssertionRunner:
                     "json_schema 断言不支持 SSE 捕获（无 JSON 载荷）；"
                     "事件内容断言请改用 sse_event_matches"
                 )
+            elif resp.get("read_truncated"):
+                # capture 标注透出：响应体超读入上限被截断置 json=None（截断
+                # 分支前置口径对齐 _assert_json_path，code-review item
+                # 1ba4ef49abca）
+                error = f"{resp['read_truncated']}，截断致 JSON 不完整，无法做 schema 校验"
             elif resp.get("json_parse_skipped"):
                 # capture 标注透出：响应体超解析上限被跳过解析置 json=None，
                 # 非「响应体非合法 JSON」

@@ -116,7 +116,11 @@ def _schema_version_notes(raw: list) -> list[str]:
         ver = item.get("schema_version")
         if ver is None:
             continue
-        if ver != SCHEMA_VERSION:
+        # 精确类型门槛（type(...) is int，归一口径先例 _entry_contract_version
+        # 的 bool 拒绝）：True==1、1.0==1 使裸 != 比较把手工修坏的 true/1.0
+        # 版本声明漏过版本注记，非整型声明同样落入下方「未知 schema_version」
+        # 注记分支（code-review item dfa18eab780b）
+        if ver != SCHEMA_VERSION or type(ver) is not int:
             sid = item.get("id") or f"[{i}]"
             if type(ver) is int and ver > SCHEMA_VERSION:
                 # 声明版本新于当前实现（如新版写出的文件被旧版读）：措辞对齐
