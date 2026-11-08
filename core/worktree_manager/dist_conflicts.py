@@ -1107,6 +1107,11 @@ class G5DistConflictsMixin:
                     f"checkout -f HEAD -- {f} failed during self-heal: "
                     f"{type(e).__name__}: {e}",
                 )
+                # 异常态同样意味着自愈未完成、HEAD 侧已删路径的工作区残留
+                # 可能在场，与 rc!=0 分支同款清理防残留被后续 add -A 类操作
+                # 复活（item 47ad509cb046；_rm_working_tree_leftover 自带
+                # cat-file 探针，HEAD 侧仍在时保守不清，异常态下调用同样安全）
+                self._rm_working_tree_leftover(f)
             else:
                 if res.returncode != 0:
                     # 非阻塞记录（调用点 remaining 复查仍兜底），避免 checkout
