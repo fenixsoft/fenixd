@@ -158,12 +158,18 @@ def dashboard_env_file(framework_root) -> Path:
 
 
 def _quoted_env_value(value: str) -> str:
-    """EnvironmentFile 值落盘形态：含空白/引号/# 的值单引号包裹（systemd 单引号
-    语义为字面量、无 $ 展开，代理 URL/网关 token 原样保留）；单引号本身以
-    '\'' 序列转义。纯安全字符的值裸写，保持文件可读可审。"""
+    """EnvironmentFile 值落盘形态：含空白/引号/#/$/反斜杠的值以双引号包裹。
+
+    转义形态经 systemd 249 真机实测（瞬态 unit + EnvironmentFile 往返探针，
+    code-review item e63f37af8460）：双引号段内仅 ``\\\\`` 与 ``\\"`` 两个
+    转义被折叠，其余 ``\\x``、单引号、``$``、``#`` 一律字面量且无变量展开，
+    含单引号的值（代理网关 token/密码）以 ``"ab'cd"`` 裸放即往返等价；旧
+    shell 风格单引号包裹 ``'ab'\\''cd'`` 同环境实测被解析成错误字面量
+    ``ab''cd'``——单引号段没有字面单引号的表达，故含特殊字符的值一律改走
+    双引号形态。纯安全字符的值裸写，保持文件可读可审。"""
     if value == "" or not re.search(r"[\s\"'#\\$]", value):
         return value
-    return "'" + value.replace("'", "'\\''") + "'"
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def filter_session_identity(env: dict) -> dict:
@@ -200,15 +206,31 @@ def read_process_env(pid: int) -> dict:
 
 
 def render_env_file(env: dict) -> str:
-    """env dict → EnvironmentFile 文本（denylist 过滤后的键集原样承载）。"""
+    """env dict → EnvironmentFile 文本（渲染原语自含防线，不依赖唯一调用链）。
+
+    denylist 过滤（filter_session_identity）、非法键名与含换行值的剔除在
+    本函数原地兜底（code-review item 7a87a7581069）：read_process_env /
+    capture_env_candidate 已各挡一道，但绕过 capture 链直调本函数的代码
+    （如从配置文件读取 env 合成）不会再把坏行或会话身份键（CLAUDE_PID
+    自杀扳机、CLAUDECODE 自证行为）写进 0600 EnvironmentFile。对已过滤
+    入参幂等（重复过滤/剔除为无操作），capture 链现有行为不变。
+    """
+    filtered = filter_session_identity(env)
     lines = [
         "# fenixd systemd EnvironmentFile 候选稿（add-systemd-hosting）",
         "# 由在跑进程 /proc/<pid>/environ 机械捕获 + 会话身份 denylist 过滤生成，",
         "# 人工审核后提升为正式 EnvironmentFile（unit 引用路径见 unit 文件）。",
         "",
     ]
-    for key in sorted(env):
-        lines.append(f"{key}={_quoted_env_value(env[key])}")
+    for key in sorted(filtered):
+        # 键名/值形状校验与 read_process_env 同口径：EnvironmentFile 行格式
+        # 装不下非法键名与含换行的值（整行被 systemd 拒解析），剔除而非渲染。
+        if not _ENV_KEY_RE.match(key):
+            continue
+        value = filtered[key]
+        if "\n" in value or "\r" in value:
+            continue
+        lines.append(f"{key}={_quoted_env_value(value)}")
     return "\n".join(lines) + "\n"
 
 
@@ -318,6 +340,10 @@ def render_project_unit(root, python_executable: str | None = None) -> str:
     proot = Path(root)
     _validate_unit_path(proot, "项目根路径")
     interpreter = python_executable or "python3"
+    # ExecStart 裸插值位与项目根同防线（code-review item a42cfc33176e）：
+    # 含空白的解释器路径（虚拟环境/自定义安装目录）会被 systemd 拆成多个
+    # argv，服务无法启动且难回溯。
+    _validate_unit_path(interpreter, "Python 解释器路径")
     supervisor = proot / ".fenix" / "bin" / "fenixd_supervisor.py"
     env_file = project_env_file(proot)
     return f"""\
@@ -356,6 +382,9 @@ def render_dashboard_unit(framework_root, python_executable: str | None = None) 
     froot = Path(framework_root)
     _validate_unit_path(froot, "框架主树路径")
     interpreter = python_executable or "python3"
+    # 同 render_project_unit：ExecStart 裸插值位拒绝空白/引号解释器路径
+    # （code-review item a42cfc33176e）。
+    _validate_unit_path(interpreter, "Python 解释器路径")
     entry = froot / "bin" / "fenix_dashboard.py"
     env_file = dashboard_env_file(froot)
     return f"""\

@@ -160,10 +160,35 @@ class TestSessionIdentityDenylist:
         assert target.read_text() == "K=V\n"
 
     def test_render_env_file_quoting(self):
-        text = sh.render_env_file({"PLAIN": "abc", "WITH SPACE": "a b", "HASH": "a#b", "DOLLAR": "$X"})
+        text = sh.render_env_file({"PLAIN": "abc", "HASH": "a#b", "DOLLAR": "$X", "SQUOTE": "ab'cd"})
         assert "PLAIN=abc" in text
-        assert "'WITH SPACE=a b'" in text or "WITH SPACE='a b'" in text
-        assert "HASH='a#b'" in text or "'HASH=a#b'" in text
+        # 双引号包裹形态（systemd 249 真机实测往返等价，item e63f37af8460）：
+        # #/$/单引号在双引号段内均为字面量；旧 shell 风格 '\'' 序列同环境
+        # 实测解析为错误字面量，不再采用。
+        assert 'HASH="a#b"' in text
+        assert 'DOLLAR="$X"' in text
+        assert 'SQUOTE="ab\'cd"' in text
+
+    def test_render_env_file_skips_invalid_entries(self):
+        """渲染原语自含防线（item 7a87a7581069）：非法键名/含换行值/会话身份键
+        不落 EnvironmentFile——防线不依赖唯一调用链（read_process_env +
+        capture_env_candidate）自觉，绕过 capture 链直调同样安全。"""
+        text = sh.render_env_file({
+            "GOOD": "1",
+            "WITH SPACE": "a b",
+            "BASH_FUNC_x%%": "() { 0;}",
+            "MULTI": "a\nb",
+            "CRCHECK": "a\rb",
+            "CLAUDE_PID": "9",
+            "CLAUDECODE": "1",
+        })
+        assert "GOOD=1" in text
+        assert "WITH SPACE" not in text
+        assert "BASH_FUNC" not in text
+        assert "MULTI=" not in text
+        assert "CRCHECK=" not in text
+        assert "CLAUDE_PID" not in text
+        assert "CLAUDECODE" not in text
 
     def test_capture_env_candidate_writes_candidate_suffix(self, tmp_path):
         target = tmp_path / "systemd.env"
