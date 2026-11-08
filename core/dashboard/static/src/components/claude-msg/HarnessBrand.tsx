@@ -66,7 +66,12 @@ function brandForHarness(harness?: string | null): HarnessBrandValue {
     if (resolution.name in BRANDS_BY_HARNESS) {
       return BRANDS_BY_HARNESS[resolution.name as RegisteredHarnessName];
     }
-    return makeInitialLetterBrand(resolution.name, resolution.name.charAt(0).toUpperCase());
+    // Array.from 按码点取首字符（与 harnessBrandLogic.ts 回退分支单点一致，
+    // charAt(0) 对星象首字符会取到孤立代理半码元）
+    return makeInitialLetterBrand(
+      resolution.name,
+      (Array.from(resolution.name)[0] ?? '').toUpperCase(),
+    );
   }
   if (resolution.kind === 'fallback') {
     return makeInitialLetterBrand(resolution.name, resolution.letter);

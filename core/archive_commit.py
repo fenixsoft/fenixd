@@ -283,7 +283,10 @@ class ArchiveResidueScan(NamedTuple):
     - entries：逐条残留明细（自愈授权「同 spec 两侧成对」校验的数据源）；
     - non_spec_dirty：spec/changes 与 spec/archive 两类路径之外的脏文件——
       任一存在即判非归档残留（自愈否决证据，绝不自动触碰源码路径）；
-    - error：git status 探测失败信息（调用方按「无残留」fail-open 的依据）。
+    - error：git status 探测失败信息（调用方按「无残留」fail-open 的依据）；
+    - conflict_dirty：两类路径之内呈未解合并（冲突）态的脏文件——既不属
+      残留形态也永不属常态在飞编辑，任一存在同样否决自愈
+      （code-review item 4e42bb57df87）。
     """
 
     found: bool
@@ -292,6 +295,7 @@ class ArchiveResidueScan(NamedTuple):
     entries: list
     non_spec_dirty: list
     error: str | None = None
+    conflict_dirty: list = ()
 
 
 def archive_residue_spec(rel_path: str) -> str:
@@ -318,6 +322,13 @@ def archive_residue_spec(rel_path: str) -> str:
     if rel_path.startswith("spec/changes/"):
         return rel_path[len("spec/changes/") :].split("/", 1)[0]
     return ""
+
+
+# git porcelain 未解合并（冲突）态码全集（DD/AU/UD/UA/DU/AA/UU）。这些形态
+# 只能由中断/未收尾的 merge 产生，绝不可能来自常态在飞 spec 编辑（未暂存
+# 修改 `` M``、未跟踪草稿 ``??``），故可安全计为自愈否决性脏文件而不伤顺延
+# 成因的常态路径（code-review item 4e42bb57df87）。
+_UNMERGED_PORCELAIN_XY = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
 
 
 def scan_archive_residue(project_root) -> ArchiveResidueScan:
@@ -354,6 +365,7 @@ def scan_archive_residue(project_root) -> ArchiveResidueScan:
     paths_out: list = []
     entries: list = []
     non_spec_dirty: list = []
+    conflict_dirty: list = []
     found = False
     for line in result.stdout.splitlines():
         if len(line) < 4:
@@ -413,6 +425,14 @@ def scan_archive_residue(project_root) -> ArchiveResidueScan:
                 line_hits.append(hit)
                 names.append(hit["spec"])
                 paths_out.append(path)
+            elif xy in _UNMERGED_PORCELAIN_XY:
+                # 类内非残留形态中的未解冲突态（item 4e42bb57df87）：此前既不
+                # 入残留集也不入任何否决集，中断的 merge-back 在 spec/ 两类
+                # 路径下遗留未解冲突时 found=False 且否决集为空，自愈被
+                # 「主树干净」误授权直接重放。常态在飞编辑（未暂存修改 `` M``、
+                # 未跟踪草稿 ``??``）不落此分支、不计数——它们是 spec_dir_inflight
+                # 顺延成因本身，重放由在飞卫检与干净树闸门自行裁决。
+                conflict_dirty.append(path)
         if renamed and len(line_hits) == 2:
             # git R 重命名行天然成对（evo-mergeback-archive-residue-selfheal
             # 判据：两侧同现即完整归档移动，免逐侧单侧配对校验）
@@ -425,6 +445,7 @@ def scan_archive_residue(project_root) -> ArchiveResidueScan:
         entries,
         non_spec_dirty,
         None,
+        list(dict.fromkeys(conflict_dirty)),
     )
 
 
@@ -436,6 +457,10 @@ def assess_archive_residue_selfheal(scan: ArchiveResidueScan) -> tuple:
 
     - 全部脏文件都落在 spec/changes 与 spec/archive 两类路径——任一例外即
       「混合脏文件」，判非归档残留（绝不自动触碰/提交源码路径，非目标红线）；
+      类内非残留形态中的未解合并（冲突）态同样否决（中断的 merge-back 可在
+      两类路径下遗留，放行会在未解树上重放）；类内未暂存修改/未跟踪草稿属
+      spec_dir_inflight 顺延成因的常态在飞编辑，不计数（重放由在飞卫检与
+      干净树闸门自行裁决）；
     - 残留按**同 spec 名两侧成对**：changes 删除侧与 archive 新增侧同 spec 名
       同时在场（git R 重命名行两侧均命中时视为天然成对）；仅单侧的半提交
       形态（如 archive 侧已提交、只剩 changes 删除态）不授权自动收尾，
@@ -452,12 +477,25 @@ def assess_archive_residue_selfheal(scan: ArchiveResidueScan) -> tuple:
         return False, (
             f"存在 spec/changes、spec/archive 两类路径之外的脏文件: {preview}{more}"
         )
+    if scan.conflict_dirty:
+        # 类内未解合并（冲突）态（item 4e42bb57df87）：中断的 merge-back 在
+        # spec/ 两类路径下遗留 UU/DD 等形态时，宽判据不计残留、若不否决会被
+        # 「无残留」分支误授权在未解树上重放。
+        preview = "、".join(scan.conflict_dirty[:5])
+        more = (
+            f" 等 {len(scan.conflict_dirty)} 个" if len(scan.conflict_dirty) > 5 else ""
+        )
+        return False, (
+            f"存在 spec/ 两类路径内的未解合并（冲突）态脏文件: {preview}{more}"
+        )
     if not scan.found:
-        # 主树干净（无残留，或残留已被归档自身收口完成提交）：无可补提交，
-        # 直接授权重放 merge——design「收口已完成则跳过补提交直接重放」，
-        # 否则该场景会被熔断告警空烧一轮人工。否决集只含 error / 类外脏文件
+        # 无归档残留形态（无补提交可做）：直接授权重放 merge——design「收口
+        # 已完成则跳过补提交直接重放」，否则该场景会被熔断告警空烧一轮人工。
+        # 注意主树未必全净：spec/ 两类路径内的未暂存修改/未跟踪草稿（顺延
+        # 成因的常态在飞编辑）不属残留形态、不计数，重放能否推进由在飞卫检
+        # 与干净树闸门自行裁决。否决集只含 error / 类外脏文件 / 类内冲突态
         # / 单侧不成对残留。
-        return True, "无归档移动残留（主树干净，跳过补提交直接重放合并）"
+        return True, "无归档移动残留形态（无补提交可做，直接重放合并）"
     del_specs: set = set()
     add_specs: set = set()
     rename_paired: set = set()

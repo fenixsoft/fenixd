@@ -286,7 +286,7 @@ def persist_choice_step_records(store, signal: dict, signal_rec, disp,
             {
                 "kind": DISPOSITION,
                 "signal_type": signal.get("signal_type"),
-                "spec": signal.get("spec") or disp.spec,
+                "spec": signal.get("spec") or getattr(disp, "spec", ""),
                 "severity": signal.get("severity"),
                 "description": getattr(disp, "problem", "") or signal.get("description") or "",
                 "action_taken": action,

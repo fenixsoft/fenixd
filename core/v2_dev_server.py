@@ -49,6 +49,11 @@ V2_READY_TIMEOUT_SECONDS = 5.0
 # 最大重试轮数（总尝试 = 1 + 此值）。就绪超时不重试，仍按启动失败上抛。
 V2_PORT_CONFLICT_RETRIES = 2
 
+# stderr 取证尾部读取上限（字节，code-review item 2a28d6907c79）：够容纳
+# 启动即崩类证据（缺依赖栈/参数解析报错输出通常 <2KB），又不至于把失败
+# 错误信息撑爆。
+V2_STDERR_TAIL_MAX_BYTES = 4096
+
 # 不可归因进程记账（fix-v2-devserver-fallback-attribution 2.1）：daemon 进程内
 # 状态，重启即失、不持久化——重启后按新进程重放一次首见告警，可接受（重启
 # 场景由 reconcile_v2_servers 启动对账兜底）。结构 {pid: 累计扫描见次}：首见
@@ -146,6 +151,43 @@ def allocate_port(
             f"既有拦截性回退已封死（绝不回退主树 8787）",
         )
     return fallback
+
+
+def _read_stderr_tail(proc: subprocess.Popen) -> str:
+    """读取 dev-server 子进程 stderr 取证句柄的尾部内容（无句柄/读失败返回空串）。
+
+    句柄由 start() 创建（TemporaryFile，创建即链接删除、仅父进程句柄持有
+    inode），与子进程 dup 共享写偏移；读取后把偏移复位到末尾，避免回退偏移
+    改变子进程后续写入位置。仅在失败路径、_kill 关闭句柄之前调用。
+    """
+    f = getattr(proc, "_v2_stderr_capture", None)
+    if f is None:
+        return ""
+    try:
+        f.seek(0, os.SEEK_END)
+        end = f.tell()
+        f.seek(max(0, end - V2_STDERR_TAIL_MAX_BYTES))
+        data = f.read()
+        f.seek(0, os.SEEK_END)
+    except (OSError, ValueError):
+        return ""
+    return data.decode("utf-8", errors="replace").strip()
+
+
+def _close_stderr_capture(proc: subprocess.Popen) -> None:
+    """关闭并摘除子进程的 stderr 取证句柄（无名 inode 随最后引用关闭即释放）。
+
+    _kill/stop 即 dev-server 生命周期终点；对无取证句柄的进程（测试替身、
+    外部 spawn 形态）幂等无操作。
+    """
+    f = getattr(proc, "_v2_stderr_capture", None)
+    if f is None:
+        return
+    try:
+        f.close()
+    except OSError:
+        pass
+    proc._v2_stderr_capture = None
 
 
 def start(
@@ -246,20 +288,30 @@ def start(
             # pgrep 匹配模式（匹配键仍含 dev-server.mjs 路径与 marker 字面量）。
             cmd.append(attribution_token)
 
+        # stderr 取证（code-review item 2a28d6907c79）：stderr 不再 DEVNULL 丢弃，
+        # 落 TemporaryFile（创建即链接删除，仅父进程句柄持有 inode，无磁盘残留）
+        # ——node 自身启动即崩（缺依赖、脚本参数解析 exit(1)、模块不存在）不再
+        # 只能呈现为就绪超时：失败上抛前取尾部若干行拼入错误信息，供排障区分
+        # 「冷启动慢于就绪窗口」与「脚本秒级崩溃」。父进程侧句柄随 _kill/stop
+        # 统一关闭（_close_stderr_capture），失败/停止路径均无句柄泄漏；正常运行
+        # 期间句柄保持开启供失败取证。
+        stderr_capture = tempfile.TemporaryFile()
         try:
             # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
             # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_capture,
                 env=env,
                 start_new_session=True,
                 # 标记写入 argv[0] 不可靠；用 cwd + marker 文件不便，改由 pgrep 匹配
                 # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
             )
         except OSError as e:
+            stderr_capture.close()
             raise V2DevServerError(f"failed to spawn dev-server: {e}") from e
+        proc._v2_stderr_capture = stderr_capture
 
         # 等待端口就绪（dev-server.mjs 监听后即写 "listening"；不读 stdout 时用探测）。
         # 连通成功后还须做实例身份收口：allocate_port 的 bind 探测与 node 实际 bind
@@ -279,34 +331,46 @@ def start(
         # 按因识别；就绪超时维持既有「回收子进程后按启动失败上抛」语义，身份
         # 不符回收后有界重试（item e2e26c2a1a66，见循环上方说明）。
         if not ready:
+            # 失败取证（code-review item 2a28d6907c79）：_kill 会关闭 stderr 取证
+            # 句柄，尾部内容须先取走——崩溃类现场（脚本秒级崩溃即退）的证据随
+            # 错误信息上抛，不再只剩「readiness timeout」单一归因。
+            stderr_tail = _read_stderr_tail(proc)
             _log(
                 "error",
                 f"dev-server on port {port} not ready within "
                 f"{V2_READY_TIMEOUT_SECONDS:.0f}s, killing",
             )
             _kill(proc)
-            raise V2DevServerError(
+            msg = (
                 f"dev-server on port {port} not ready within "
                 f"{V2_READY_TIMEOUT_SECONDS:.0f}s (readiness timeout)"
             )
+            if stderr_tail:
+                msg += f"\nstderr tail:\n{stderr_tail}"
+            raise V2DevServerError(msg)
         # 身份不符（端口被抢注）：回收本轮子进程（_kill 清理语义不变）后换端口
         # 重试；重试耗尽按原错误文案上抛，消费方捕获/降级形态不变。
+        stderr_tail = _read_stderr_tail(proc)
         _kill(proc)
         if attempt < V2_PORT_CONFLICT_RETRIES:
             _log(
                 "warning",
                 f"dev-server on port {port} listened by another process, "
                 f"retrying with next port "
-                f"({attempt + 1}/{V2_PORT_CONFLICT_RETRIES})",
+                f"({attempt + 1}/{V2_PORT_CONFLICT_RETRIES})"
+                + (f"\nstderr tail:\n{stderr_tail}" if stderr_tail else ""),
             )
             continue
         _log(
             "error",
             f"dev-server on port {port} ready but port not served by it, killing",
         )
-        raise V2DevServerError(
+        msg = (
             f"dev-server on port {port} listened by another process (port conflict)"
         )
+        if stderr_tail:
+            msg += f"\nstderr tail:\n{stderr_tail}"
+        raise V2DevServerError(msg)
 
     if used_ports is not None:
         used_ports.add(port)
@@ -404,6 +468,11 @@ def _kill(proc: subprocess.Popen) -> None:
     「只杀 shell 不杀孙进程」。全程 try/except 包裹：进程恰好死亡引发
     ProcessLookupError 时按已终止处理（竞态安全）。
     """
+    # stderr 取证句柄收尾（code-review item 2a28d6907c79）：kill/stop 即
+    # dev-server 生命周期终点，父进程侧句柄在此统一关闭（TemporaryFile 无名
+    # inode 随之释放，无句柄/磁盘残留）。就绪超时/端口冲突等失败路径已在调用
+    # _kill 前取走尾部内容拼入错误信息。
+    _close_stderr_capture(proc)
     if proc.poll() is not None:
         return
     pid = proc.pid

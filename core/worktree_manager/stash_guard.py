@@ -1341,10 +1341,12 @@ class G6StashGuardMixin:
             return False
         try:
             for path in paths:
-                # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
-                # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
-                # 元字符时裸 pathspec 被 fnmatch 展开——误判「已忽略」会让
-                # 未忽略的真实交付物走完下方 rm 链被误移出索引
+                # 裸路径直传（不套 :(literal) magic）：check-ignore 的命令行
+                # 入参本就是字面 pathname（按 ignore 规则匹配、不做 pathspec
+                # 展开），且该命令不支持任何 pathspec magic——套 :(literal)
+                # 恒 fatal rc=128（"pathspec magic not supported"），被下方
+                # 「命令失败」分支捕获后忽略态校验确定性失败。877592c52c88
+                # 的字面量钉死纪律只适用于 add/checkout/rm 等 pathspec 消费方。
                 chk = subprocess.run(
                     [
                         "git",
@@ -1354,7 +1356,7 @@ class G6StashGuardMixin:
                         "--no-index",
                         "-q",
                         "--",
-                        f":(literal){path}",
+                        path,
                     ],
                     capture_output=True,
                     text=True,
@@ -1783,11 +1785,14 @@ class G6StashGuardMixin:
                     return False, True
             for path in du_paths:
                 chk = subprocess.run(
-                    # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
-                    # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
-                    # 元字符时裸 pathspec 被 fnmatch 展开，忽略态判定与上方
-                    # rm 的目标面漂移——误判「已忽略」会让真实交付物被误自愈
-                    ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", f":(literal){path}"],
+                    # 裸路径直传（不套 :(literal) magic）：check-ignore 的命令行
+                    # 入参本就是字面 pathname（按 ignore 规则匹配、不做 pathspec
+                    # 展开），与上方 rm 的 :(literal) 目标面天然一致；该命令
+                    # 不支持任何 pathspec magic——套 :(literal) 恒 fatal rc=128
+                    # （"pathspec magic not supported"），被下方「命令失败」分支
+                    # 捕获后 DU 自愈确定性失败（877592c52c88 的字面量钉死纪律
+                    # 只适用于 add/checkout/rm 等 pathspec 消费方）。
+                    ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",

@@ -1444,7 +1444,12 @@ def release_failed_batch(project_root, item_ids, logger=None) -> int:
                 # 会抛 TypeError 中断人工解除；按空列表容错、记录原样保留
                 # （不误整批解除、不改写坏档）。
                 raw = rec.get("item_ids")
-                rec_ids = raw if isinstance(raw, list) else []
+                # str 归一（code-review item cf48eb89b312）：target 侧
+                # requested 已全 str，坏档混入非字符串元素不归一则恒不命中、
+                # 被静默漏收且写回延续坏档形态；对齐 _record_item_ids/
+                # _failed_item_ids 的 str 口径（交集判定、写回余量与 shrunk
+                # 同一字符串口径）。
+                rec_ids = [str(i) for i in raw] if isinstance(raw, list) else []
                 ids = [i for i in rec_ids if i not in target]
                 if len(ids) == len(rec_ids):
                     kept.append(rec)  # 无交集，原样保留
@@ -6678,20 +6683,32 @@ class CodeFixOrchestrator:
             f"边界重试核销（branch={branch}, item_ids={item_ids}）"
             f"{trigger_detail}",
         )
-        write_progress(
-            root,
-            phase="merging",
-            reason="",
-            current=(
-                f"第 {batch_no} 批已合回但{trigger_short}未核销，"
-                f"保留待下一链边界重试（branch={branch}）"
-            ),
-            # 批上下文三键清除（defer D2 同款）：现场保留由延迟台账承载，
-            # 防读侧按陈旧 run_id 合成条级进度。
-            worktree=None,
-            run_id=None,
-            batch_total=None,
-        )
+        # 写盘失败兜底（code-review item 2768ac304c0c，同 _consumed_progress
+        # 「写盘失败不得劫持收尾」纪律）：延迟台账锚点已先落盘、恢复面仍在，
+        # 写盘 OSError 上穿会被 _run_batch 兜成 failed→halt 提前终止链，且批
+        # 上下文三键滞留进度文件——失败只 warning 留痕（进度文件由下个写点
+        # 覆盖自愈），保住 consumed 返回值与三键清除语义。
+        try:
+            write_progress(
+                root,
+                phase="merging",
+                reason="",
+                current=(
+                    f"第 {batch_no} 批已合回但{trigger_short}未核销，"
+                    f"保留待下一链边界重试（branch={branch}）"
+                ),
+                # 批上下文三键清除（defer D2 同款）：现场保留由延迟台账承载，
+                # 防读侧按陈旧 run_id 合成条级进度。
+                worktree=None,
+                run_id=None,
+                batch_total=None,
+            )
+        except Exception as e:  # noqa: BLE001 — 收尾写盘失败不劫持 consumed
+            self._log(
+                "warning",
+                f"code-fix 第 {batch_no} 批已合回未核销收尾进度写盘失败"
+                f"（branch={branch}）: {e}",
+            )
         return "consumed"
 
     def _retain_merged_unresolved_deferred(
@@ -6703,7 +6720,15 @@ class CodeFixOrchestrator:
         零核销与文案；条目与 worktree 原样保留，交下一链边界重试核销或
         人工对账。"""
         self._log("warning", warn)
-        write_progress(self.project_root, reason="", current=current)
+        # 同款写盘失败兜底（code-review item 2768ac304c0c）：条目与现场已
+        # 原样保留，写盘失败不得劫持保留收尾（returned 零核销语义不变）。
+        try:
+            write_progress(self.project_root, reason="", current=current)
+        except Exception as e:  # noqa: BLE001 — 保留收尾写盘失败不劫持返回
+            self._log(
+                "warning",
+                f"code-fix 已合回未核销保留收尾进度写盘失败: {e}",
+            )
         return 0, ret
 
     def _defer_merge_back(

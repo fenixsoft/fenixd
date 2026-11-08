@@ -87,6 +87,12 @@ class EventBus:
         # 直接锁内 read_all）——锁外预读的快照可能被另一线程的整轮派发甩开，
         # 对陈旧读数 diff 会产生「快照新 → 读数旧」的逆向迁移事件。
         self._state_lock = threading.RLock()
+        # 回缩守卫的「上一轮读数」锚（code-review item 9065a4c92064）：最近一次
+        # 非空读数的条目数，由 _build_known_snapshot 每次调用刷新（含守卫触发
+        # 轮）。与 ``_known_specs`` 同由 _state_lock 串行化（两条调用链均持锁）。
+        # 仅存内存：daemon 重启后 start() 以空 prev_known 冷启动重建基线，守卫
+        # 天然旁路、读数即真相，持久化该计数无收益。
+        self._last_read_specs_count = 0
 
     def _probe_thread_reusable(self, thread) -> bool:
         """is_alive() 复用守卫的有界 join 探测（code-review item 6b19b00fad85）。
@@ -1116,24 +1122,35 @@ class EventBus:
           双保险；``elif name in`` 而非 .get 缺省 None，避免把 None 引入
           快照（a1210ff24c15 归一口径）。
         - 回缩守卫（code-review 5ce21736ef35，空段守卫 3838697ca747 /
-          601892dd73ec 的非空残缺变体）：本轮条目数较既有快照骤减过半视为
-          异常残缺读而非权威删除——原样返回既有快照（缺失条目不剔除），
-          待下一轮读数确认；文件恢复后不会把存量 SPEC 误判「新出现」重放
-          hook 事件。
+          601892dd73ec 的非空残缺变体；锚定修正 9065a4c92064）：本轮条目数
+          较**上一轮读数**（非既有快照）骤减过半视为异常残缺读而非权威删除
+          ——原样返回既有快照（缺失条目不剔除）。「上一轮读数」锚在守卫触发
+          轮同样刷新，故持续性收缩（人工批量归档过半等）在下一轮读数持平时
+          即放行重写收敛；文件在中间态窗口后恢复则读数回升放行、快照从未
+          收缩——两种走向都不会把存量 SPEC 误判「新出现」重放 hook 事件。
         """
         # 非原子外部写者（手工编辑器 truncate+write 中间态、第三方工具）的
         # truncate 后 write 前中间态可产出「可解析但残缺」的非空读数：部分
         # 条目从本轮消失，照常重写快照会剔除它们——文件恢复后 watcher 感知
         # checksum 变化，这些条目 old_status=None 被判「新出现」，hook 事件
         # （from=None）被重放（PM 队列侧有 status 过滤兜底，hook 无吸收）。
-        # 本轮条目数不足既有快照一半即跳过重写并留痕（合法删除不会一次性
-        # 消失过半；人工批量清理属低频显式动作，下一轮读数即收敛确认）。
-        if prev_known and len(specs) * 2 < len(prev_known):
+        # 本轮条目数较上一轮读数骤减过半即跳过重写并留痕（单次读数间隔内
+        # 合法删除不会消失过半；锚随每轮读数刷新——含守卫触发轮——人工批量
+        # 清理属低频显式动作，下一轮读数持平即放行收敛确认，
+        # code-review item 9065a4c92064：旧实现较快照比较、锚永不收缩，
+        # 永久性收缩无收敛路径、warning 每轮重刷）。
+        prev_read_count = self._last_read_specs_count
+        shrinking = (
+            bool(prev_known) and bool(prev_read_count)
+            and len(specs) * 2 < prev_read_count
+        )
+        self._last_read_specs_count = len(specs)
+        if shrinking:
             self.logger.warning(
                 "event_bus",
-                f"STATE.md 读出条目数骤减（{len(prev_known)} → {len(specs)}，"
-                f"可能为外部残缺写中间态）：跳过快照重写，保留既有快照"
-                f"待下一轮确认",
+                f"STATE.md 读出条目数骤减（{prev_read_count} → {len(specs)}，"
+                f"可能为外部残缺写中间态）：跳过本轮快照重写，保留既有快照；"
+                f"下一轮读数持平即放行收敛",
             )
             return dict(prev_known)
         next_known = {}

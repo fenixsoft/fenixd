@@ -400,6 +400,16 @@ class PrototypeHandler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    # 基类 do_HEAD 直接走 send_head 返回 200 与 Content-Length，绕开 do_GET
+    # 的内部文件拦截——非回环绑定时 curl -I 即可确认 feedback.json 等存在
+    # 及其字节数（批注总量），与上方「隐藏存在性」口径相悖；HEAD 与 GET
+    # 同判定同 404。
+    def do_HEAD(self):
+        if self._is_internal_state_file(self.path):
+            self.send_error(404, "Not Found")
+            return
+        super().do_HEAD()
+
     # ── POST /feedback ────────────────────────────────────────────────
     # 写接口零鉴权（保持零依赖简易伺服形态的取舍）：--host 绑定非回环地址时，
     # 同网段任意对端可 POST 伪造/垃圾批注写进 feedback.json——该文件会回流给

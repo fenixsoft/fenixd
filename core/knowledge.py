@@ -1346,7 +1346,7 @@ def _stale_distill_retry_lines(proot: Path) -> list:
     todo_path = Path(proot) / ".fenix" / "todo.md"
     try:
         text = todo_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
     cur: "date | None" = None
     out = []

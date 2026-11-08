@@ -634,12 +634,13 @@ class AdminStore:
         为「一次锁内跨多条记录批量改写」的跨模块消费者提供公开 API
         （code-review item afc7d7f69279：escalation_chain.migrate_legacy_pending
         原直调私有 _mutate，绕开公开封装，AdminStore 内部重构会静默破坏
-        存量迁移）。保持 _mutate 默认语义：fn 返回假值仍照常写回
-        （skip_unchanged=False），返回 fn(records) 的结果；corrupt 拒写时
-        返回 None（调用方按未落盘处理）。单条/单字段改写请走
-        append/mark_*/close_* 专用入口。
+        存量迁移）。fn 返回假值仍照常写回（skip_unchanged=False），正常
+        写回返回 fn(records) 的结果；corrupt 拒写时返回 None（调用方按未
+        落盘处理，可读 last_write_refusal 辨因——item 2b5f3ceb9ba4：显式
+        传 refuse_returns_none=True 兑现本契约，拒写不再伪装成 fn 结果）。
+        单条/单字段改写请走 append/mark_*/close_* 专用入口。
         """
-        return self._mutate(fn)
+        return self._mutate(fn, refuse_returns_none=True)
 
     @staticmethod
     def _normalize_entry(entry: dict) -> dict:

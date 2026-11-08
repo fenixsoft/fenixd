@@ -54,22 +54,33 @@ EXEMPTION_REASON = {
 }
 
 # ── 非驱动视觉状态（fix-visual-baseline-settle D4）──────────────────
-# baseline_deferred（基线固化前置条件未满足，本轮不固化不比对）与
-# baseline_rejected（健全性判定拒绝固化）属「本轮无法/拒绝对比」语义，与
-# env/flaky 同属不构成打回依据：
-#   - 引擎侧 determine_scenario_status 已保证此类视觉状态不使场景降档
+# baseline_deferred（基线固化前置条件未满足，本轮不固化不比对）属「本轮
+# 无法比对」语义，与 env/flaky 同属不构成打回依据：
+#   - 引擎侧 determine_scenario_status 已保证此视觉状态不使场景降档
 #     （baseline_deferred 不落 warning/failed，场景按 DOM 断言正常判档）；
 #   - 既有豁免通道（_EXEMPT_ALLOWED_CLASSES / is_scenario_exemptible）对其
 #     放行——此类场景要么 status=pass 无需分类，要么按 DOM 断言单独归因。
-NON_DRIVING_VISUAL_STATUSES = ("baseline_deferred", "baseline_rejected")
+# baseline_rejected 不属本词表（code-review item eb924f33a2c9）：引擎侧按
+# D5「基线被拒固化（白屏/低对比度）」显式落 warning 档（core/verify_engine/
+# runner.py 基线防污染段），属 NON_PASS_STATUSES 须 classification + evidence
+# + triage，故归入下方驱动词表。
+NON_DRIVING_VISUAL_STATUSES = ("baseline_deferred",)
 
 # 驱动视觉状态词表（与引擎侧 determine_scenario_status 同档口径：
-# core/verify_engine/runner.py 把 diff_detected/warning/error/size_mismatch
-# 四档视觉结论均驱动场景落 warning 而非 pass——error/size_mismatch 两档由
-# code-review item b4c2ca41e4c2 并入 warning 档）。本模块三处判驱动口径
+# core/verify_engine/runner.py 把 diff_detected/warning/error/size_mismatch/
+# baseline_rejected 五档视觉结论均驱动场景落 warning 而非 pass——error/
+# size_mismatch 两档由 code-review item b4c2ca41e4c2 并入 warning 档；
+# baseline_rejected 按 D5「基线被拒固化（白屏/低对比度）」按环境存疑处理
+# 落 warning 档）。本模块三处判驱动口径
 # （_scenario_has_failure_signal / has_only_non_driving_visual_indicators /
 # derive_default_failed_assertions）统一引用本常量，避免词表漂移。
-DRIVING_VISUAL_STATUSES = ("diff_detected", "warning", "error", "size_mismatch")
+DRIVING_VISUAL_STATUSES = (
+    "diff_detected",
+    "warning",
+    "error",
+    "size_mismatch",
+    "baseline_rejected",
+)
 
 
 # 预留判别单源（当前全仓无生产消费点）：仅 tests/test_visual_baseline_integrity.py
@@ -81,9 +92,12 @@ def has_only_non_driving_visual_indicators(scenario: dict) -> bool:
 
     Returns:
         True 表示：全部 DOM 断言通过、无步骤失败，且 visual_results 中存在
-        baseline_deferred/baseline_rejected（不含 DRIVING_VISUAL_STATUSES 词表
-        内的驱动视觉结论）——judge 不得将其计入 bug-found 打回依据（同 flaky/env
-        待遇）；场景整体 status 应判 pass，无需分类与归因。
+        baseline_deferred（不含 DRIVING_VISUAL_STATUSES 词表内的驱动视觉
+        结论）——judge 不得将其计入 bug-found 打回依据（同 flaky/env 待遇）；
+        场景整体 status 应判 pass，无需分类与归因。
+        baseline_rejected 不属非驱动词表：引擎侧按 D5 显式落 warning 档
+        （NON_PASS_STATUSES，须 classification + evidence + triage），计为
+        失败信号、本函数返回 False（code-review item eb924f33a2c9）。
     """
     if not isinstance(scenario, dict):
         return False
@@ -181,7 +195,8 @@ def _scenario_has_failure_signal(scenario: dict) -> bool:
     判定口径与 ``has_only_non_driving_visual_indicators`` 同源：step_results
     任一 success=False，或 visual_results 存在驱动视觉状态（DRIVING_VISUAL_
     STATUSES 词表，与引擎侧 determine_scenario_status 同档）的视觉结论，即视为
-    有失败信号（baseline_deferred/rejected 等非驱动视觉状态不构成失败信号）。
+    有失败信号（baseline_deferred 等非驱动视觉状态不构成失败信号；
+    baseline_rejected 按引擎侧 D5 落 warning 档，计为失败信号）。
     """
     for s in scenario.get("step_results") or []:
         if isinstance(s, dict) and not s.get("success", True):

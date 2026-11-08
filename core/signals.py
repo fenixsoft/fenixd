@@ -20,7 +20,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from core.admin_store import _fsync_parent_dir
+from core.fs_utils import fsync_parent_dir as _fsync_parent_dir
 from core.spec_naming import validate_spec_name
 from core.timelib import now_utc, to_storage
 

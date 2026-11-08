@@ -660,6 +660,11 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
     if not spec_dir.is_dir():
         return False  # 本 run 未触碰成文目录（如 rejected 未修补形态）
     git = ["git", "-C", str(root)]
+    # 本函数是否已把 spec 目录写进主树索引（git add 成功即置 True）：收尾
+    # 提交失败时仅回滚自己 add 出来的暂存项（code-review item 7578d183376a
+    # ——残留暂存态会长期滞留主树索引、放大 spec/changes 与 worktree 分支
+    # merge-back 的冲突面），不动并发车道滞留在索引里的其他暂存变更。
+    added = False
     try:
         probe = subprocess.run(
             git + ["status", "--porcelain", "--", spec_rel],
@@ -684,6 +689,7 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
             capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
             check=True,
         )
+        added = True
         # commit 加 pathspec 与 porcelain 探测面对齐：只提交本 spec 目录的
         # 变更，避免并发车道滞留在主树索引里的已暂存变更被卷进本收尾提交。
         subprocess.run(
@@ -700,18 +706,52 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
             "spec-review 成文留痕收尾提交失败（best-effort，不阻断评审交付）"
             ": spec=%s err=%s", name, e,
         )
+        if added:
+            _unstage_spec_review_docs(git, spec_rel, name, e)
         return False
     except OSError as e:
         _logger.warning(
             "spec-review 成文留痕收尾提交失败（best-effort，不阻断评审交付）"
             ": spec=%s err=%s", name, e,
         )
+        if added:
+            _unstage_spec_review_docs(git, spec_rel, name, e)
         return False
     _logger.info(
         "spec-review 成文留痕收尾提交完成（散件滞留窗口收口）: spec=%s dir=%s",
         name, spec_rel,
     )
     return True
+
+
+def _unstage_spec_review_docs(git_cmd, spec_rel: str, name: str, orig_err) -> None:
+    """回滚 commit_spec_review_docs 自己 git add 出来的暂存项（best-effort）。
+
+    收尾提交失败（索引锁冲突/identity 缺失/超时）时，``git add`` 已把
+    ``spec/changes/<spec>/`` 条目（含目录内删除文件的暂存）写进主树索引；
+    不回滚则暂存态长期滞留，放大该目录与 worktree 分支 merge-back 的冲突
+    面（code-review item 7578d183376a）。只 reset 本函数自己 add 的同一
+    pathspec；reset 失败（如锁冲突仍在）仅 WARNING 留痕，不影响
+    「MUST NOT 抛异常」契约。
+    """
+    try:
+        subprocess.run(
+            git_cmd + ["reset", "-q", "--", spec_rel],
+            capture_output=True, timeout=_SPEC_REVIEW_COMMIT_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        _logger.warning(
+            "spec-review 成文留痕暂存回滚失败（best-effort，不阻断评审交付）"
+            ": spec=%s dir=%s err=%s（原始失败：%s）",
+            name, spec_rel, e, orig_err,
+        )
+        return
+    _logger.info(
+        "spec-review 成文留痕暂存回滚完成（提交失败后不残留暂存态）"
+        ": spec=%s dir=%s",
+        name, spec_rel,
+    )
 
 
 def _check_agent_result_artifact(

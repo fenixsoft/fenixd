@@ -300,7 +300,9 @@ export function registerTaskTools(ctx: { tools: { register(definition: unknown):
         ],
       },
       execute(args: { taskId: number }, exec: { agent?: { id?: string } | null }) {
-        return sharedStore.get(sessionIdOf(exec), args.taskId);
+        // args 整体缺位防御（同 TaskCreate/TaskUpdate 的 `input?.` 口径）：可选链后
+        // 交由 store.find 的 requireInteger 抛字段化校验错误，不在 execute 层抛裸 TypeError。
+        return sharedStore.get(sessionIdOf(exec), args?.taskId);
       },
     }),
   );

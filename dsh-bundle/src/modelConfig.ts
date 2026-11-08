@@ -56,6 +56,21 @@ export const DEFAULT_MODEL_CONTEXT_WINDOW = 262144;
 export const DEFAULT_MODEL_MAX_TOKENS = 32768;
 
 /**
+ * baseURL 校验失败时的脱敏回显：端点 URL 可能以 userinfo（user:pass@host）或
+ * query 参数形态内嵌 token/key，整串回显会随启动诊断落入 daemon 日志扩散——
+ * 故仅保留 protocol+host（host 不含 userinfo 与 query）；输入无法解析时回退占位符，
+ * 本函数自身绝不抛异常（与 headers 值只回显类型的脱敏口径对齐）。
+ */
+function redactBaseURLForError(raw: string): string {
+  try {
+    const parsed = new URL(raw.trim());
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "<unparsable-url>";
+  }
+}
+
+/**
  * 校验 model 段显式存在且三要素齐备；残缺形态抛「模型未显式配置」。
  *
  * 形态划界：``undefined``（config.model 整体缺席）返回 ``null`` 作为回落形态
@@ -99,12 +114,12 @@ export function assertModelExplicit(segment: unknown): FenixModelSegment | null 
     parsedBaseURL = new URL(normalizedBaseURL);
   } catch {
     throw new Error(
-      `模型配置非法：config.model.baseURL 必须是可解析的 http(s) URL——当前值「${seg.baseURL}」无法解析为 URL。`,
+      `模型配置非法：config.model.baseURL 必须是可解析的 http(s) URL——当前值脱敏形态「${redactBaseURLForError(seg.baseURL as string)}」无法解析为 URL（原值已省略，防内嵌凭据落日志）。`,
     );
   }
   if (parsedBaseURL.protocol !== "http:" && parsedBaseURL.protocol !== "https:") {
     throw new Error(
-      `模型配置非法：config.model.baseURL 的协议必须是 http/https——当前值「${seg.baseURL}」协议为 ${parsedBaseURL.protocol} 非法。`,
+      `模型配置非法：config.model.baseURL 的协议必须是 http/https——当前值脱敏形态「${redactBaseURLForError(seg.baseURL as string)}」协议为 ${parsedBaseURL.protocol} 非法（原值已省略，防内嵌凭据落日志）。`,
     );
   }
   // 可选字段类型守卫：字段存在但形态非法即在校验期 fail-fast（缺省路径行为不变），

@@ -2882,8 +2882,8 @@ def run_code_review(
                 # ── 覆盖完整性守卫（evo-add-code-review-ratelimit-resume 3.3）──
                 # 剃余重派 run（redispatch_of 非空）以**剩余** manifest 跑，若
                 # 原样按全仓收尾且 findings 非空，未覆盖文件的存量条目
-                # 会被误置 resolved（部分覆盖白洗——与下方 :1288 抢救红线同族
-                # 事故）；普通全仓 run（manual_full 或全仓 scheduled）同理——
+                # 会被误置 resolved（部分覆盖白洗——与下方 error 收场抢救
+                # 红线段同族事故）；普通全仓 run（manual_full 或全仓 scheduled）同理——
                 # 存在性产物门只查「任一来源有一行有效行」，agent 静默只审
                 # manifest 子集（自行切批少审漏审）时同样部分覆盖白洗。解锁
                 # 门：「本轮累计覆盖（原 run 及其重派链产物 file 字段并集）
