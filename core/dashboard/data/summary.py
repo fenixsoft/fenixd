@@ -864,16 +864,23 @@ class SummaryIndex:
       签名（fix-dashboard-read-path-performance D1：增量失效，不再全量重建）。
     - 有界性：摘要 dict 常驻内存（10000 spec ≈ 数十 MB，可接受）；签名只对存在
       路径记录，删除的 spec 目录从索引剔除。
-    - 锁粒度取舍（code-review item 8b43aa321467）：get()/invalidation_signature()
-      共用同一把实例级 RLock 且覆盖全部项目——任一项目的冷/增量重建（全项目
-      runs 签名扫描 + 逐 spec 签名比对 + 未命中 spec 的完整摘要重算，含
-      parse_quality_gates/count_scenarios/runs 读取等 IO）期间，其余项目的读请求
-      会被串行化阻塞。属已知取舍：写侧仅 watcher 单写者，HTTP 并发轮询规模
-      有限，按项目分槽锁（或重 IO 移出锁外）的收益不抵复杂度，暂不引入。
+    - 锁粒度（code-review item 8b43aa321467 登记 → fix-specs-api-latency D2
+      分槽翻案）：当时的实例级单锁取舍——「按项目分槽收益不抵复杂度」——
+      基于项目数少 + HTTP 并发轮询有限的判断；现状 7 项目、实测锁排队
+      ~0.3s、冷构建 1.875s 长尾，任一项目的冷/增量重建（全项目 runs 签名
+      扫描 + 逐 spec 签名比对 + 未命中 spec 的完整摘要重算，含
+      parse_quality_gates/count_scenarios/runs 读取等 IO）期间其余项目的读
+      请求被串行化阻塞，翻案有据。现状：get()/state_snapshot()/
+      invalidation_signature() 各自持有**本项目的槽锁**——同项目内三方法
+      仍互斥（保持既有写读正确性，RLock 可重入语义不变），跨项目读写互不
+      阻塞。
     """
 
     def __init__(self):
-        self._lock = threading.RLock()
+        # 分槽锁表（fix-specs-api-latency D2）：key=项目根规范串 → 该项目专用
+        # RLock。槽锁数量随项目数线性（7 项目 = 7 把 RLock，量级可忽略）；
+        # 项目删除后槽锁残留（dict 无清理机制）量级同样可忽略，不做清理。
+        self._locks: dict = {}
         self._idx: dict = {}
         self._state_sigs: dict = {}
         self._state_snapshot: dict = {}
@@ -881,13 +888,38 @@ class SummaryIndex:
         self._arch_sigs: dict = {}
         self._arch_snapshot: dict = {}
 
+    def _lock_for(self, key: str) -> threading.RLock:
+        """按项目 key 取槽锁（fix-specs-api-latency D2）。
+
+        ``dict.setdefault`` 在 CPython 下由 GIL 保证原子：同 key 并发取槽
+        要么都拿到已创建的那把锁、要么恰好一把新建成功并被双方取到，不会
+        产生双锁或丢锁，无需元锁。共享 dict（_idx/_state_sigs 等）各 key
+        仅被自己的槽读写，GIL 下 dict 条目级并发安全。
+        """
+        return self._locks.setdefault(key, threading.RLock())
+
     def get(self, proot, specs: dict | None = None, state_sig=None) -> list:
         """返回该项目的全部 spec_summary 列表。
 
-        顺序语义（code-review item 7fa611dccdfb）：合并归档清单后，**归档
-        条目在前**（STATE.archive.md 清单序，其中与活跃 specs 同名的条目
-        保持在归档位置），**活跃独有条目按合并追加序排在尾部**——并非
-        调用方传入 specs dict 的原始顺序；需要活跃序的消费方自行按键排序。
+        get_with_signature 的薄包装（fix-specs-api-latency D1）：仅取签名
+        聚合元组的列表位，行为与签名/取数分体前的 get() 逐字段一致——
+        watcher SSE 广播等既有消费方调用形态零变化。
+        """
+        return self.get_with_signature(proot, specs, state_sig)[0]
+
+    def get_with_signature(self, proot, specs: dict | None = None, state_sig=None) -> tuple:
+        """取数同趟产出失效签名聚合（fix-specs-api-latency D1）。
+
+        返回 ``(摘要列表, 失效签名 | None)``。签名与响应体出自同一次扫描
+        （同趟原子）：取数完成时直接复用本轮已驻留内存的 per-spec sigs
+        （缓存命中条目取 ``idx[name]["sigs"]`` 存量、重算条目取新算 sigs）
+        + 本轮 state/arch/runs 签名，按 ``invalidation_signature`` 完全同构
+        的 combine 结构聚合——聚合本身零额外 stat（仅排序与哈希）。生产
+        ETag 通道（/api/specs）消费该签名，不再独立预扫描全 spec。
+
+        state/arch 签名组件不可得（stat 失败等，含 STATE.md 消失窗口）时
+        返回 ``(列表, None)``，消费方降级为无条件 200 路径（宁缺 304 不假
+        304，design D4，与 _route_etag 降级纪律同构）。
 
         Args:
             proot: 项目根路径
@@ -896,6 +928,8 @@ class SummaryIndex:
             state_sig: STATE.md 的 (mtime_ns, size) 签名；变化时重新解析
                 STATE.md 快照并按 spec 增量失效（保留未变 spec 的缓存摘要）。
         """
+        from . import signature as _sigmod
+
         # 入口类型归一（code-review item bbcdba8851b9，对齐 invalidation_signature
         # 同款口径）：后续 proot / ".fenix" 拼接不因字符串实参抛 TypeError
         proot = Path(proot)
@@ -903,7 +937,7 @@ class SummaryIndex:
         # 跨组引用经门面延迟解析（D4/D8）
         import core.dashboard.data as _facade
 
-        with self._lock:
+        with self._lock_for(key):
             if state_sig is None:
                 state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
 
@@ -959,12 +993,17 @@ class SummaryIndex:
             # 逐 spec 透传给 spec_summary 查表，MUST NOT per-spec 归档解析。
             archive_dirs = _facade.archive_dir_map(proot)
             out = []
+            # 同趟聚合收集（fix-specs-api-latency D1）：本轮每个 spec 的签名
+            # （命中条目为存量 sigs——命中条件即 sigs == 本轮现算结果，两值
+            # 恒等；重算条目为新算 sigs），零额外 stat。
+            per_spec = []
             for spec_name, entry in specs.items():
                 entry = entry or {}
                 cached = idx.get(spec_name)
                 sigs = _spec_dep_sigs(proot, spec_name, entry, runs_sigs)
                 if cached is not None and cached.get("sigs") == sigs:
                     out.append(cached["summary"])
+                    per_spec.append((spec_name, sorted(cached["sigs"].items())))
                     continue
                 # D8：经门面延迟解析（tests 以 dash_data.spec_summary=... 替换）
                 # D2：复用本轮预扫描的 runs_sigs 分组结果，spec_summary 不再
@@ -980,6 +1019,7 @@ class SummaryIndex:
                 )
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
+                per_spec.append((spec_name, sorted(sigs.items())))
 
             # 清理已删除 spec 的签名条目
             for stale in [s for s in idx if s not in specs]:
@@ -992,7 +1032,26 @@ class SummaryIndex:
                 # _arch_sigs/_arch_snapshot），两侧失效互不牵连
                 if active_specs is not None:
                     self._state_snapshot[key] = active_specs
-            return out
+
+            # 同趟聚合（fix-specs-api-latency D1/D3）：与 invalidation_signature
+            # 完全同构的 combine 结构（state/arch/runs/逐 spec 依赖签名）。
+            # 一致性由结构同源保证，漂移由守卫测试锚定（tests/test_dashboard_
+            # index.py 的 get_with_signature 与 invalidation_signature 逐字节
+            # 等值断言——后者退役后的唯一消费方）。
+            if state_sig is None or arch_sig is None:
+                # 签名组件不可得（stat 失败等）：宁缺 304 不假 304，消费方
+                # 降级无条件 200 路径（design D4）
+                return out, None
+            per_spec.sort()
+            all_runs = sorted(
+                (str(p), s[0], s[1])
+                for d in runs_sigs.values()
+                for p, s in d.items()
+            )
+            sig = _sigmod.combine(
+                [("state", state_sig), ("arch", arch_sig), ("runs", all_runs), ("specs", per_spec)]
+            )
+            return out, sig
 
     def state_snapshot(self, proot) -> dict:
         """复用索引的 STATE.md 解析快照（签名未变免重解析，变化即刷新）。
@@ -1007,7 +1066,7 @@ class SummaryIndex:
         # 同款口径）：后续 proot / ".fenix" 拼接不因字符串实参抛 TypeError
         proot = Path(proot)
         key = str(proot.resolve())
-        with self._lock:
+        with self._lock_for(key):
             state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
             state_changed = (
                 state_sig is not None and self._state_sigs.get(key) != state_sig
@@ -1024,13 +1083,18 @@ class SummaryIndex:
             return specs
 
     def invalidation_signature(self, proot) -> str:
-        """摘要失效键组合哈希（/api/specs ETag 单源，add-dashboard-paging-and-etag 1.3）。
+        """摘要失效键组合哈希（原 /api/specs ETag 单源，add-dashboard-paging-and-etag 1.3）。
 
-        与 get() 逐 spec 失效键**完全同源**（_spec_dep_sigs + STATE/归档/runs
-        签名）：响应中任一摘要将被重算 ⇔ 此哈希翻转——签名完整性由复用同一
-        失效键集保证，不另建第二套扫描。复用 state/arch 解析快照（签名未变
-        不重解析），只 stat 不读内容；成本 ≈ get() 每请求本就支付的失效键
-        计算（per-spec sig 本就每次现算比对）。
+        **生产路径已退役**（fix-specs-api-latency D1）：/api/specs 的 ETag
+        供给改由 ``get_with_signature()`` 同趟聚合承担（签名与取数一趟完
+        成），本方法不再被任何生产端点消费，唯一消费方为一致性守卫测试
+        （同磁盘状态下与 get_with_signature 聚合签名逐字节等值的防漂移
+        锚定，design D3）。与 get() 逐 spec 失效键**完全同源**
+        （_spec_dep_sigs + STATE/归档/runs 签名）：响应中任一摘要将被重算
+        ⇔ 此哈希翻转——签名完整性由复用同一失效键集保证，不另建第二套
+        扫描。复用 state/arch 解析快照（签名未变不重解析），只 stat 不读
+        内容；成本 ≈ get() 每请求本就支付的失效键计算（per-spec sig 本就
+        每次现算比对）。
         """
         from . import signature as _sigmod
 
@@ -1039,9 +1103,10 @@ class SummaryIndex:
 
         proot = Path(proot)
         key = str(proot.resolve())
-        with self._lock:
+        with self._lock_for(key):
             state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
-            # RLock 可重入：state_snapshot 复用同一把锁与同一失效键
+            # RLock 可重入：state_snapshot 复用同一把槽锁与同一失效键
+            # （fix-specs-api-latency D2：同槽重入，不死锁）
             specs = self.state_snapshot(proot)
             arch_sig = _stat_sig(proot / ".fenix" / "STATE.archive.md")
             if arch_sig != self._arch_sigs.get(key) or key not in self._arch_snapshot:

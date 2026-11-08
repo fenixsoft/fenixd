@@ -5,6 +5,7 @@ Tests for dashboard spec summary index, config signature cache, and cleanup thro
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.dashboard import data as dash_data
 from core.dashboard.data import SummaryIndex
+from core.dashboard.data import signature as sigmod
+from core.dashboard.data import summary as summary_mod
 
 
 # ── 辅助：构造一个可用的 Fenixd 项目目录 ──────────────────────────────
@@ -250,3 +253,185 @@ class TestConfigCache:
         before = dict(_SPEC_MODE_CACHE)
         assert read_spec_mode(proot, "myspec") == "full"
         assert _SPEC_MODE_CACHE == before, "第二次读取应命中缓存（键不变）"
+
+
+# ── 分槽锁与同趟签名聚合（fix-specs-api-latency D1/D2）──────────────
+
+class TestSummaryIndexSlotsAndSignature:
+    """分槽锁并发语义（跨槽不阻塞/同槽互斥/可重入）与 get_with_signature
+    同趟聚合的一致性守卫、零额外扫描证明。"""
+
+    @staticmethod
+    def _make_project_with_archive(tmp_path: Path, name: str = "proj-a") -> Path:
+        """带归档态的项目夹具（一致性守卫须覆盖归档分支：STATE.archive.md
+        缺失时 arch 签名组件不可得、签名位为 None，无法做逐字节等值比对）。"""
+        proot = make_project(tmp_path, name)
+        (proot / ".fenix" / "STATE.archive.md").write_text(
+            "# Fenix Archive State\n\n## Specs\n\n"
+            "### archspec\n- status: pushed\n- priority: 1\n"
+            "- created: 2026-01-05T00:00:00+00:00\n- updated: 2026-01-05T00:00:00+00:00\n",
+            encoding="utf-8",
+        )
+        arc = proot / "spec" / "archive" / "2026-01-05-archspec"
+        (arc / "specs").mkdir(parents=True)
+        (arc / "tasks.md").write_text("## 1. 完成\n\n- [x] 1.1 旧任务\n", encoding="utf-8")
+        (arc / "specs" / "spec.md").write_text(
+            "## ADDED Requirements\n\n#### Scenario: 归档场景\n- **WHEN** x\n- **THEN** y\n",
+            encoding="utf-8",
+        )
+        return proot
+
+    # ── 1.3 分槽锁并发语义 ──────────────────────────────────────────
+
+    def test_cross_project_slots_do_not_block(self, tmp_path, monkeypatch):
+        """项目 A 冷重建在飞（槽内慢速 IO 用替身拖延）时，项目 B 的读请求
+        等待时间显著小于 A 的重建时长（跨槽互不阻塞，fix-specs-api-latency
+        D2 场景「跨项目读不互斥」）。"""
+        proot_a = make_project(tmp_path, "proj-a")
+        proot_b = make_project(tmp_path, "proj-b")
+        idx = SummaryIndex()
+
+        slow_seconds = 1.0
+        entered = threading.Event()
+        orig = dash_data.spec_summary
+
+        def slow_for_a(proot_, spec_name_, entry_, **kw):
+            if Path(proot_).resolve() == proot_a.resolve():
+                # 仅项目 A 的摘要重算被拖延（替身发生在槽锁内，等价慢速 IO）
+                entered.set()
+                time.sleep(slow_seconds)
+            return orig(proot_, spec_name_, entry_, **kw)
+
+        monkeypatch.setattr(dash_data, "spec_summary", slow_for_a)
+        builder = threading.Thread(target=lambda: idx.get(proot_a), daemon=True)
+        builder.start()
+        assert entered.wait(timeout=5), "A 重建未进入摘要重算阶段（A 已持槽）"
+        start = time.monotonic()
+        items_b = idx.get(proot_b)
+        elapsed_b = time.monotonic() - start
+        builder.join(timeout=10)
+        assert not builder.is_alive()
+        assert {s["name"] for s in items_b} == {"myspec", "otherspec"}
+        assert elapsed_b < slow_seconds / 2, (
+            f"跨槽读被项目 A 重建阻塞：B 耗时 {elapsed_b:.3f}s "
+            f"≥ A 单 spec 重算时长（{slow_seconds}s）的一半"
+        )
+
+    def test_same_project_concurrent_gets_serialize(self, tmp_path, monkeypatch):
+        """同项目并发 get 仍互斥（中间态不可见）：并发第二请求等同槽重建
+        完成后全命中缓存——摘要重算恰好一轮；并发双算会使命中计数翻倍。"""
+        proot = make_project(tmp_path)
+        idx = SummaryIndex()
+        orig = dash_data.spec_summary
+        lock = threading.Lock()
+        calls = []
+
+        def tracking(proot_, spec_name_, entry_, **kw):
+            with lock:
+                calls.append(spec_name_)
+            time.sleep(0.02)  # 拉开并发窗口：若互斥失效，双算可被计数区分
+            return orig(proot_, spec_name_, entry_, **kw)
+
+        monkeypatch.setattr(dash_data, "spec_summary", tracking)
+        results = {}
+
+        def worker():
+            results[threading.get_ident()] = idx.get(proot)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t_ in threads:
+            t_.start()
+        for t_ in threads:
+            t_.join(timeout=10)
+        assert len(results) == 2
+        lists = list(results.values())
+        assert lists[0] == lists[1], "并发读不应观察到重建中间态（两轮结果须一致）"
+        assert sorted(calls) == sorted(["myspec", "otherspec"]), (
+            f"同项目互斥失效：观察到 {len(calls)} 次摘要重算（应为 2 spec × 1 轮）"
+        )
+
+    def test_invalidation_signature_reentrant_no_deadlock(self, tmp_path):
+        """invalidation_signature 在槽锁内调用 state_snapshot（同槽 RLock
+        可重入）正常完成，不死锁（fix-specs-api-latency D2 场景）。"""
+        proot = make_project(tmp_path)
+        idx = SummaryIndex()
+        done = threading.Event()
+        result = {}
+
+        def worker():
+            result["sig"] = idx.invalidation_signature(proot)
+            done.set()
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        assert done.wait(timeout=5), "同槽重入死锁：invalidation_signature 未返回"
+        assert isinstance(result["sig"], str) and result["sig"]
+
+    # ── 2.2 一致性守卫（design D3：两套签名防漂移）─────────────────
+
+    def test_aggregate_signature_matches_invalidation_signature(self, tmp_path):
+        """同一磁盘状态下 get_with_signature 聚合签名与 invalidation_signature
+        逐字节等值（冷建轮与全命中轮都断言——命中轮聚合取 idx[name]["sigs"]
+        存量，等值仍须成立）。"""
+        proot = self._make_project_with_archive(tmp_path)
+        idx = SummaryIndex()
+        items1, sig1 = idx.get_with_signature(proot)
+        assert sig1, "夹具含活跃 STATE 与归档清单，签名应可得"
+        assert sig1 == idx.invalidation_signature(proot)
+        # 全命中轮（缓存命中条目以存量 sigs 参与聚合）
+        items2, sig2 = idx.get_with_signature(proot)
+        assert [s["name"] for s in items1] == [s["name"] for s in items2]
+        assert sig2 == idx.invalidation_signature(proot)
+        # 归档条目在列（归档分支覆盖：归档 spec 的依赖签名参与聚合）
+        assert any(s["archived"] for s in items1)
+
+    def test_signature_none_when_component_unavailable(self, tmp_path, monkeypatch):
+        """签名组件不可得（state/arch stat 失败，monkeypatch _stat_sig 返回
+        None）→ 返回 (列表, None)：摘要列表仍正常产出，签名位为 None。"""
+        proot = self._make_project_with_archive(tmp_path)
+        idx = SummaryIndex()
+        monkeypatch.setattr(summary_mod, "_stat_sig", lambda p: None)
+        items, sig = idx.get_with_signature(proot)
+        assert sig is None
+        assert {s["name"] for s in items} == {"myspec", "otherspec", "archspec"}
+
+    # ── 2.3 聚合零额外扫描 ─────────────────────────────────────────
+
+    def test_aggregation_adds_zero_extra_scans(self, tmp_path, monkeypatch):
+        """索引全命中状态下二次调用 get_with_signature：聚合段（combine
+        期间）新增 _stat_sig 计数为零——签名完全由内存中本轮签名集拼装
+        （结构性证明「三趟并一趟」，不依赖绝对时间）。"""
+        proot = self._make_project_with_archive(tmp_path)
+        idx = SummaryIndex()
+
+        calls = {"total": 0, "during_combine": 0}
+        orig_stat = summary_mod._stat_sig
+        orig_combine = sigmod.combine
+        lock = threading.Lock()
+
+        def counting_stat(p):
+            with lock:
+                calls["total"] += 1
+            return orig_stat(p)
+
+        def counting_combine(parts):
+            with lock:
+                snapshot = calls["total"]
+            out = orig_combine(parts)
+            with lock:
+                calls["during_combine"] += calls["total"] - snapshot
+            return out
+
+        monkeypatch.setattr(summary_mod, "_stat_sig", counting_stat)
+        monkeypatch.setattr(sigmod, "combine", counting_combine)
+
+        idx.get_with_signature(proot)  # 首轮冷建：预热索引与归档树 memo
+        calls["total"] = 0
+        calls["during_combine"] = 0
+        items, sig = idx.get_with_signature(proot)  # 全命中轮
+        assert sig
+        assert calls["total"] > 0, "计数器未生效（取数趟的失效键现算 stat 应被计入）"
+        assert calls["during_combine"] == 0, (
+            f"聚合段产生 {calls['during_combine']} 次新 stat："
+            "签名未完全复用本轮内存签名集"
+        )
