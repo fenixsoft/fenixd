@@ -1832,14 +1832,19 @@ class MainTreeStrayWipSweeper:
         """惰性清理（1.2）：剔除盘上已消失路径，集合为空的指纹整条删除。
 
         载入时与每轮盘点收尾各执行一次，使历史路径不当作存活散件参与计时
-        与升级（已归档/删除的散件处置后不复燃）。逐路径 ``exists()`` 探测
-        开销与在册条目数线性（注册表规模小），不读内容。
+        与升级（已归档/删除的散件处置后不复燃）。逐路径 ``lexists()`` 探测
+        （不跟随末级符号链接，与 _untracked_fingerprint/_untracked_entry_sizes
+        的 lstat 口径对齐）开销与在册条目数线性（注册表规模小），不读内容。
         """
         root = self.project_root
         for fp in list(self._untracked_registry):
             entry = self._untracked_registry[fp]
             files = entry.get("files") or []
-            alive = [p for p in files if (root / p).exists()]
+            # code-review item 327f83ec8ebb: lexists 不跟随末级符号链接——
+            # 悬空 symlink（git -uall 仍列为 untracked 条目，指纹/体积层按
+            # lstat 在场处理）不能判为已消失，否则注册表整条删除、
+            # first_seen 复位，宽限计时永不累积、stale 升级告警永不触发。
+            alive = [p for p in files if os.path.lexists(root / p)]
             if len(alive) == len(files):
                 continue
             if alive:

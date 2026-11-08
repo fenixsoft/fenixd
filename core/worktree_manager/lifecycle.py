@@ -22,7 +22,6 @@ from typing import Dict, Optional, Set
 
 from core.worktree_manager.constants import (  # noqa: E402
     STALE_LOCK_IDLE_SECONDS,
-    STALE_LOCK_SWEEP_LOCK_AGE_CAP_SECONDS,
 )
 from core.worktree_manager.artifact_paths import (
     ArtifactPathMatcher,

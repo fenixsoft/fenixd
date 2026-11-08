@@ -757,7 +757,11 @@ def _append_fail_history(
             json.dumps(rounds, ensure_ascii=False, indent=2),
             inherit_existing_mode=True,
         )
-    except OSError as e:
+    # 兜底口径对齐 _read_fail_history 读侧宽兜底（code-review item
+    # 999a448d0fb8）：docstring 承诺的静默降级不限于 OSError——TypeError/
+    # ValueError（如 failed_scenarios 非可迭代形态、路径成分异常）同样只
+    # warning 留痕，不炸穿无兜底的调用方（bug-found 采纳/裁决证据拒收）。
+    except (OSError, TypeError, ValueError) as e:
         pipeline._context.logger.warning(
             "pm_engine",
             f"fail_history 写回失败 '{spec_name}'（静默降级）: {e}",

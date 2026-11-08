@@ -111,7 +111,11 @@ def run_dist_build(
             mode=resolve_deps_mode(contract, read_config_deps_mode(project_root)),
             logger=logger,
         )
-        err = run_prepare_steps(contract, project_root)
+        # logger=logger（code-review item 144af89d6676）：per-step 信息与
+        # fcntl 主机锁等待诊断（含持有者 pid 留痕）走此通道，漏传则 prepare
+        # 失败只剩最终 err 串、构建卡点/持锁阻塞证据链缺失——与上方
+        # ensure_main_tree_deps / load_verify_contract 的传参口径对齐。
+        err = run_prepare_steps(contract, project_root, logger=logger)
         if err:
             logger.warning(
                 "worktree_manager",

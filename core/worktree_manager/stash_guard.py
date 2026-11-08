@@ -87,6 +87,17 @@ def _parse_dropped_stash_sha(pop_stdout: str | None) -> str:
     return m.group(1) if m else ""
 
 
+# autostash 回收的最小驻留龄（秒，code-review item 7b12cee6d0e0）：栈顶条目
+# committer 时间晚于「此刻 - 该龄期」即视为新鲜条目，本轮放弃回收。dashboard
+# 侧跨进程 merge-back 不共享 _main_tree_lock、也不计入引擎 _active_runs 空闲
+# 预检，其 stash push→merge→restore pop 临界区内主树干净且栈顶带
+# AUTOSTASH_MSG_PREFIX 的条目正是在飞改动；sha 复核只能防弹错条目（LIFO
+# 错配），防不了把新鲜条目当滞留条目回收。300s 按跨进程 merge-back 临界区
+# 上限取值（单次 merge + 冲突自愈通常秒级～分钟级）；巡检每 60s 一轮，真
+# 滞留条目（崩溃 run / daemon 重启遗留）龄期以分钟-小时计，晚回收数轮零损失。
+_AUTOSTASH_RECLAIM_MIN_AGE_SECONDS = 300
+
+
 class G6StashGuardMixin:
     """G6 主树还原/autostash 治理（design D1 表 A G6）。"""
 
@@ -483,6 +494,36 @@ class G6StashGuardMixin:
         except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
             return None
         return rev.returncode, rev.stdout
+
+    def _stash_entry_age_seconds(self, sha: str) -> float | None:
+        """解析 stash 条目（commit）的 committer 时间，返回其龄期秒数。
+
+        供 _reclaim_stale_autostash_locked 的新鲜度判别（code-review item
+        7b12cee6d0e0）使用：stash 条目是一次 commit，committer 时间即压栈
+        时刻。按已钉取的 sha 查询（非 refs/stash 实时栈顶），查询窗口内的
+        插队条目时间不会被误当目标条目龄期。git 不可用、超时、rc!=0 或
+        输出非整数时间戳返回 None（调用方按「guard 不可用」口径保守放弃
+        本轮，条目保留交下轮巡检）。
+        """
+        try:
+            ts = subprocess.run(
+                ["git", "-C", str(self.project_root), "show", "-s",
+                 "--format=%ct", sha],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
+            return None
+        if ts.returncode != 0:
+            return None
+        try:
+            commit_time = int(ts.stdout.strip())
+        except ValueError:
+            return None
+        return max(0.0, time.time() - commit_time)
 
     def _try_merge_file_threeway(self, f: str, pinned_sha: str) -> bytes | None:
         """对单个 UU 冲突文件做三方重试（态 1），成功返回合并后字节内容。
@@ -885,6 +926,32 @@ class G6StashGuardMixin:
                 "unavailable, skip this round to avoid mis-pop",
             )
             return False
+        # 新鲜度判别（code-review item 7b12cee6d0e0）：跨进程（dashboard 手工
+        # merge-back）不共享 _main_tree_lock、也不计入引擎空闲预检，其 stash
+        # push→merge→restore pop 临界区内栈顶正是带 AUTOSTASH 前缀的在飞条目
+        # ——sha 复核只能防弹错条目（LIFO 错配），防不了把新鲜条目当滞留条目
+        # 回收（pop 到新 HEAD 上、冲突文件被 _heal_unmerged_files 丢弃且条目
+        # 随后 drop，内容仅剩 gc 前按 sha 找回一条路）。低于最小驻留龄即放弃
+        # 本轮，条目保留交下轮巡检（届时在飞条目已被 restore_after_merge 消费
+        # 出栈）；解析失败按「git 不可用」口径保守放弃本轮。
+        entry_age = self._stash_entry_age_seconds(sha_before)
+        if entry_age is None:
+            self.logger.warning(
+                "worktree_manager",
+                "Stale autostash reclaim skipped (git unavailable): top "
+                "entry commit time unavailable",
+            )
+            return False
+        if entry_age < _AUTOSTASH_RECLAIM_MIN_AGE_SECONDS:
+            self.logger.info(
+                "worktree_manager",
+                f"Stale autostash reclaim skipped: top entry age "
+                f"{int(entry_age)}s < min residence age "
+                f"{_AUTOSTASH_RECLAIM_MIN_AGE_SECONDS}s — possible "
+                "in-flight cross-process merge-back entry, preserve for "
+                "next round",
+            )
+            return False
         # TOCTOU 复核（code-review item 9a1a53693bb4）：上方干净判定与 pop 之间
         # 还隔着 stash list / rev-parse 等多个子进程，窗口内用户（或
         # dashboard 侧进程）可能向主树落盘新改动——若与 autostash 条目触碰同一
@@ -1099,7 +1166,12 @@ class G6StashGuardMixin:
             return
         try:
             reset = subprocess.run(
-                ["git", "-C", str(self.project_root), "reset", "--", *paths],
+                # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
+                # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
+                # 元字符时裸 pathspec 被 fnmatch 展开，无关路径被连带还原
+                # 索引态、本次要回滚的路径自身反而欠配
+                ["git", "-C", str(self.project_root), "reset", "--"]
+                + [f":(literal){p}" for p in paths],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1143,7 +1215,11 @@ class G6StashGuardMixin:
         try:
             for path in paths:
                 rm = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
+                    # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
+                    # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
+                    # 元字符时裸 pathspec 被 fnmatch 展开，无关文件被连带移出
+                    # 索引并随下方裸 commit 入库（提交级脱管）
+                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", f":(literal){path}"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -1265,6 +1341,10 @@ class G6StashGuardMixin:
             return False
         try:
             for path in paths:
+                # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
+                # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
+                # 元字符时裸 pathspec 被 fnmatch 展开——误判「已忽略」会让
+                # 未忽略的真实交付物走完下方 rm 链被误移出索引
                 chk = subprocess.run(
                     [
                         "git",
@@ -1274,7 +1354,7 @@ class G6StashGuardMixin:
                         "--no-index",
                         "-q",
                         "--",
-                        path,
+                        f":(literal){path}",
                     ],
                     capture_output=True,
                     text=True,
@@ -1676,7 +1756,11 @@ class G6StashGuardMixin:
                 return False, False
             for path in du_paths:
                 rm = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
+                    # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
+                    # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
+                    # 元字符时裸 pathspec 被 fnmatch 展开，无关文件被连带移出
+                    # 索引、下方 commit --no-edit 把删除永久入库（提交级脱管）
+                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", f":(literal){path}"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -1699,7 +1783,11 @@ class G6StashGuardMixin:
                     return False, True
             for path in du_paths:
                 chk = subprocess.run(
-                    ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
+                    # :(literal) 钉死字面量匹配（code-review item 877592c52c88，
+                    # 对齐本文件 add/checkout 的既有纪律）：路径含 [ ] * ? 通配
+                    # 元字符时裸 pathspec 被 fnmatch 展开，忽略态判定与上方
+                    # rm 的目标面漂移——误判「已忽略」会让真实交付物被误自愈
+                    ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", f":(literal){path}"],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",

@@ -104,6 +104,9 @@ class PipelineContext:
                               retry_redispatch(spec_name)（evo-verify-infra-
                               retry-lane D5 廉价重派触发器；未组合 Dispatcher
                               的桩 pm 回落 pm._enqueue(spec_name, "verifier")
+        request_queue_drain    委托 pm._process_queue()（重验排程到期排空
+                              触发，code-review 3fe95948997b；未声明该属性
+                              的桩 pm no-op，见 _request_queue_drain）
     """
 
     # ── D1 核心成员 ─────────────────────────────────────────────────────────
@@ -148,6 +151,15 @@ class PipelineContext:
     schedule_infra_retry_redispatch: Callable[[str], None] = field(
         default=None, repr=False
     )
+
+    # ── 重验排程排空触发器（code-review 3fe95948997b）：委托
+    # pm._process_queue（engine.py 门面经注册表转发到 Dispatcher）——pipeline
+    # 子包侧零门面私有回引（verification-pipeline-modules 契约「self._pm._
+    # 零命中」审计；此前 escalation 重验回调经局部变量 getattr(pipeline,
+    # "_pm") 回引私有方法，对审计不可见）。有缺省（None）：桩 context 不
+    # 提供即视为排空通道未接线，消费侧 fail-open 跳过（派发兜底由
+    # _dispatch_backoff_until + 周期扫描承担）。
+    request_queue_drain: Callable[[], None] = field(default=None, repr=False)
 
     # ── 便捷构造（从 PMEngine 实例一键创建）─────────────────────────────────
 
@@ -244,6 +256,15 @@ class PipelineContext:
                 return pm._enqueue(spec_name, "verifier")
             return dispatcher._schedule_infra_retry_redispatch(spec_name)
 
+        def _request_queue_drain() -> None:
+            # 重验排程排空触发器（code-review 3fe95948997b）：属性访问推迟到
+            # 调用时（同上方委托包装惯例）。engine.py 门面经注册表把
+            # _process_queue 转发到 Dispatcher；桩 pm 未声明该属性时 no-op
+            # （与消费侧此前 getattr(pipeline, "_pm") 判空跳过行为一致）。
+            process_queue = getattr(pm, "_process_queue", None)
+            if process_queue is not None:
+                process_queue()
+
         return cls(
             logger=pm.logger,
             project_root=pm.project_root,
@@ -260,5 +281,6 @@ class PipelineContext:
             parallel_plan_lane=_parallel_plan_lane(pm),
             agent_runner=_agent_runner_lane(pm),
             schedule_infra_retry_redispatch=_schedule_infra_retry_redispatch,
+            request_queue_drain=_request_queue_drain,
             env_infra_markers=getattr(pm, "_ENV_INFRA_MARKERS", ()),
         )
