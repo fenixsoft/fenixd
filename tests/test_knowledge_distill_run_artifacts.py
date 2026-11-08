@@ -114,9 +114,9 @@ class TestDistillRunArtifacts(KnowledgeTestBase):
     def _index(self):
         return (
             f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+            "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
         )
 
     def _domain(self):
@@ -378,9 +378,9 @@ class TestDistillBatchHeartbeat(KnowledgeTestBase):
     def _index(self):
         return (
             f"# 知识真相源\n{STAMP}\n\n## 能力域\n\n"
-            "| 能力域 | 简介 | 能力数量 | 更新时间 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
+            "| 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1.1 | [pickup](domains/pickup/_domain.md) | 拣选 | 1 | 2026-09-29 15:02 |\n"
         )
 
     def _domain(self):
