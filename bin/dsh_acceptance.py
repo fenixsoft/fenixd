@@ -1827,19 +1827,25 @@ def execute_real_acceptance(args: argparse.Namespace, project_root: Path,
                     "status": "unavailable",
                     "reason": f"claude 基线车道失败：{baseline_ev['error']}"}
             else:
+                impl_ev = next(
+                    (e for e in evidence["lanes"]
+                     if e.get("lane") == "implementer"), None)
+                impl_s = impl_ev.get("elapsed_seconds") if impl_ev else None
                 evidence["baseline"] = {
                     "status": "available", "source": "同夹具 claude 车道现场采集",
                     "rows": [{"lane": "implementer",
                               "claude_seconds": baseline_ev.get("elapsed_seconds"),
-                              "dsh_seconds": next(
-                                  (e.get("elapsed_seconds") for e in
-                                   evidence["lanes"] if e.get("lane") == "implementer"),
-                                  None)}],
+                              "dsh_seconds": impl_s}],
                     }
+                # 失败 implementer 车道（error/超时收割）elapsed_seconds 只是
+                # 收割前部分耗时：照常算倍率会渲染出暗示 dsh 更快的误导行——
+                # 与 smoke 侧 compare_baseline 失败车道及上方 claude 基线失败
+                # 分支置 None 纪律同口径；dsh 耗时缺失同样不出倍率（不用 0
+                # 折算）（code-review item df2daa95d0a5、3c05b58cf78a、
+                # 7285055c3075）
                 evidence["baseline"]["rows"][0]["ratio"] = round(
-                    (evidence["baseline"]["rows"][0]["dsh_seconds"] or 0) /
-                    baseline_ev["elapsed_seconds"], 3) \
-                    if baseline_ev.get("elapsed_seconds") else None
+                    impl_s / baseline_ev["elapsed_seconds"], 3) \
+                    if impl_s and not (impl_ev or {}).get("error") else None
         else:
             evidence["baseline"] = {
                 "status": "unavailable",
