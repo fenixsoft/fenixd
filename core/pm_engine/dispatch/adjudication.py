@@ -25,6 +25,7 @@ from typing import Callable
 # 显式拒绝 bool/非整值浮点并 WARNING 留痕）同键跨通道语义分裂——读取点全部
 # 转调单一读取器，本模块双写实现删除。
 from core.pm_engine.dispatch.repair_lane import _max_retries
+from core.state_machine import FROZEN_FIELD
 
 
 def _entry_by_path(entries) -> dict:
@@ -856,6 +857,38 @@ class VAdjudicationMixin:
                     f"{type(e).__name__}: {e}",
                 )
 
+    def _adjudication_write_guarded(
+        self, spec_name: str, updates: dict, *, label: str
+    ) -> bool:
+        """裁决链终态/放行写盘 + 并发冻结复查（code-review item 848dfe1e0d29）。
+
+        争议 judge run 持续分钟级，期间 spec 已被本链写成临时 blocked「LLM
+        终审进行中」；窗口内并发 freeze_for_human 写入的含「原状态 X」冻结
+        error 会被终态写直接覆盖——冻结剥离（state_machine._apply_updates_
+        entry）只剥 status 键、error 写入照常生效（rollback.py 冻结剥离注释
+        同口径实证），frozen=True 保留但还原锚点丢失，unfreeze 经
+        parse_orig_status 无法还原（rollback._rollback_frozen_recheck 已治理
+        的同型并发窗口，本模块此前完全未设防）。本守卫取同款「先复查冻结
+        标记再写」最小侵入修法（state_machine 无 status 条件写公开原语）：
+        复查发现 frozen 即放弃本次 status/error 写，冻结现场原样保留待人工
+        解冻，调用方按冻结豁免路径照常收尾（WARNING/ERROR 留痕与 return
+        不受影响）。
+
+        Returns: True = 写盘已执行；False = 复查发现已冻结，写已放弃。
+        update_spec 写失败异常不在此捕获，仍由调用方既有 try/except 收口
+        （「非阻塞仅 WARNING」口径不变）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        if entry.get(FROZEN_FIELD):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"{label} '{spec_name}': 写盘前复查发现已冻结——放弃本次 "
+                "status/error 写，冻结现场保留待人工解冻还原",
+            )
+            return False
+        self._pm.state_machine.update_spec(spec_name, updates)
+        return True
+
     def _all_clear_proceed(self, spec_name: str, message: str) -> dict:
         """守卫重跑全清放行块（四预分类器共用样板）。
 
@@ -865,17 +898,25 @@ class VAdjudicationMixin:
         扫齐。告警文案由调用方传入（保留各通道原文案，含已对齐清单插值）。
         """
         self._pm.logger.warning("pm_engine", message)
+        # 复发计数清零（code-review item fa4b07399733）：文档不变量「SPEC
+        # 退出本形态（守卫放行）即清零」（_writeback_recur_bump docstring）
+        # 须覆盖全部放行出口——此前仅 judge 链末端显式清零，四预分类守卫
+        # 全清放行与空 remaining 放行出口 streak 残留，下轮同路径复发从
+        # 残留值续计、提前触发封顶误入 blocked。清零写自带非阻塞 try/except
+        # 口径，不阻塞放行。
+        self._writeback_recur_reset(spec_name)
         # 终态写盘不穿透裁决主体（code-review item 91dc42d762c6，对齐
         # c942deb9c1ff / 7e723f2d249d 口径）：写失败仅 WARNING，避免异常
         # 令 spec 滞留临时 blocked「LLM 终审进行中」僵尸文案；放行语义
         # 以上方 WARNING 告警为准。
         try:
-            self._pm.state_machine.update_spec(
+            self._adjudication_write_guarded(
                 spec_name,
                 {
                     "status": "implementing",
                     "error": None,
                 },
+                label="守卫重跑全清放行写盘",
             )
         except Exception as werr:
             self._pm.logger.warning(
@@ -2209,7 +2250,7 @@ class VAdjudicationMixin:
                 # 失败仅 WARNING，避免异常令 spec 滞留临时 blocked「LLM 终审
                 # 进行中」僵尸文案；归因以 ERROR 日志为准。
                 try:
-                    self._pm.state_machine.update_spec(
+                    self._adjudication_write_guarded(
                         spec_name,
                         {
                             "status": "blocked",
@@ -2219,6 +2260,7 @@ class VAdjudicationMixin:
                                 f"已 blocked 待人工裁决: {type(e).__name__}: {e}"
                             ),
                         },
+                        label="空剩余缺件对账置 blocked",
                     )
                 except Exception as werr:
                     self._pm.logger.warning(
@@ -2381,9 +2423,10 @@ class VAdjudicationMixin:
             # 7e723f2d249d，对齐上方临时 blocked c942deb9c1ff 口径）：写失败
             # 仅 WARNING，避免异常把 spec 滞留「LLM 终审进行中」僵尸文案。
             try:
-                self._pm.state_machine.update_spec(
+                self._adjudication_write_guarded(
                     spec_name,
                     {"status": "blocked", "tester_run": None, "error": err_final},
+                    label="终审解析失败置 blocked",
                 )
             except Exception as werr:
                 self._pm.logger.warning(
@@ -2836,13 +2879,14 @@ class VAdjudicationMixin:
             # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
             # 失败仅 WARNING，归因以 ERROR 日志为准。
             try:
-                self._pm.state_machine.update_spec(
+                self._adjudication_write_guarded(
                     spec_name,
                     {
                         "status": "blocked",
                         "tester_run": None,
                         "error": f"dispute judge 裁决后守卫重跑异常（需人工复核）: {e}",
                     },
+                    label="守卫重跑异常置 blocked",
                 )
             except Exception as werr:
                 self._pm.logger.warning(
@@ -2852,12 +2896,12 @@ class VAdjudicationMixin:
                 )
             return {"action": "handled"}
         if not remaining:
-            # Task 5.1：SPEC 退出本形态（守卫放行）→ 复发计数清零
-            self._writeback_recur_reset(spec_name)
             # 终审期间置 blocked 属临时态：恢复 in-flight（implementing），
             # worker 合并路径的 implementing → implemented 转换才合法
             # （放行块收敛复用 _all_clear_proceed——code-review item
-            # 6bc523df28ae，放行语义调整不再与本类四预分类器两处同步）
+            # 6bc523df28ae，放行语义调整不再与本类四预分类器两处同步；
+            # Task 5.1 复发计数清零亦收进 _all_clear_proceed——code-review
+            # item fa4b07399733，「守卫放行即清零」覆盖全部放行出口）
             return self._all_clear_proceed(
                 spec_name,
                 f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
@@ -2907,9 +2951,10 @@ class VAdjudicationMixin:
             # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
             # 失败仅 WARNING，归因以 ERROR 日志为准。
             try:
-                self._pm.state_machine.update_spec(
+                self._adjudication_write_guarded(
                     spec_name,
                     {"status": "blocked", "error": err, "tester_run": None},
+                    label="复发熔断置 blocked",
                 )
             except Exception as werr:
                 self._pm.logger.warning(
@@ -2954,7 +2999,7 @@ class VAdjudicationMixin:
             # 终态 blocked 写盘不穿透裁决主体（code-review item 7e723f2d249d）：
             # 失败仅 WARNING，归因以 ERROR 日志为准。
             try:
-                self._pm.state_machine.update_spec(
+                self._adjudication_write_guarded(
                     spec_name,
                     {
                         "status": "blocked",
@@ -2964,6 +3009,7 @@ class VAdjudicationMixin:
                             f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
                         ),
                     },
+                    label="unclear 转人工置 blocked",
                 )
             except Exception as werr:
                 self._pm.logger.warning(
