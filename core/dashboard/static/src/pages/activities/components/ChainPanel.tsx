@@ -173,11 +173,12 @@ export default function ChainPanel({
       key: 'admin',
       width: 170,
       render: (_: unknown, row: ChainSignatureQuota) => (
+        // fix 32f03ff150b6: cap 缺失（服务端代差/数据损坏）回落 attempts 原值或「—」，不渲染「N/undefined」
         <Progress
           percent={row.admin_cap ? Math.min(100, Math.round((row.admin_attempts / row.admin_cap) * 100)) : 0}
           size="small"
           status={row.admin_attempts >= row.admin_cap ? 'exception' : 'normal'}
-          format={() => `${row.admin_attempts}/${row.admin_cap}`}
+          format={() => (row.admin_cap != null ? `${row.admin_attempts}/${row.admin_cap}` : `${row.admin_attempts ?? '—'}`)}
         />
       ),
     },
@@ -186,11 +187,12 @@ export default function ChainPanel({
       key: 'arbiter',
       width: 170,
       render: (_: unknown, row: ChainSignatureQuota) => (
+        // fix 32f03ff150b6: cap 缺失（服务端代差/数据损坏）回落 rulings 原值或「—」，不渲染「N/undefined」
         <Progress
           percent={row.arbiter_cap ? Math.min(100, Math.round((row.arbiter_rulings / row.arbiter_cap) * 100)) : 0}
           size="small"
           status={row.arbiter_rulings >= row.arbiter_cap ? 'exception' : 'normal'}
-          format={() => `${row.arbiter_rulings}/${row.arbiter_cap}`}
+          format={() => (row.arbiter_cap != null ? `${row.arbiter_rulings}/${row.arbiter_cap}` : `${row.arbiter_rulings ?? '—'}`)}
         />
       ),
     },
