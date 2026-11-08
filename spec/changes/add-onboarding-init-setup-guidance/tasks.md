@@ -20,7 +20,7 @@
 
 ## 2. 运行时产物预防性 ignore（D2）
 
-- [ ] 2.1 `templates/gitignore-fenix.txt` 增加 `.claude/agents/` 规则（带成因注释：框架播种运行时产物，预防性 ignore）；`append_gitignore` 幂等补齐同一实现产出（判据 `^\.claude/agents/$`），既有项目缺失规则时追加
+- [x] 2.1 `templates/gitignore-fenix.txt` 增加 `.claude/agents/` 规则（带成因注释：框架播种运行时产物，预防性 ignore）；`append_gitignore` 幂等补齐同一实现产出（判据 `^\.claude/agents/$`），既有项目缺失规则时追加
 - [ ] 2.2 pytest 单测：新模板初始化后 `git status` 不视 `.claude/agents/` 为 untracked、`--ensure-gitignore` 对缺规则项目幂等补齐、已跟踪文件不受影响
 
 ## 3. 配置模板注释分形态改写（D3）

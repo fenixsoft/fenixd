@@ -8,6 +8,9 @@ __pycache__/
 # Worktrees (managed by fenixd)
 .claude/worktrees/
 
+# 框架播种的运行时产物（.claude/agents/ 下的 agent 定义软链），预防性 ignore
+.claude/agents/
+
 # 运行时/敏感目录（.fenix/config.yaml 含 API Key，绝不提交）
 # 用 /* 而非 .fenix/：目录整体排除后无法用 ! 放行其下入库文件
 .fenix/*
