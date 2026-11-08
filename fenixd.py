@@ -641,6 +641,22 @@ class FenixDaemon:
         )
         self.logger.info("fenixd", "AgentRunner initialized")
 
+        # 5.1. harness adapter 装配（ADR-271：daemon 入口注入进程级当前
+        # adapter，使一次性车道（spec-review/maintenance/admin/dispute-judge
+        # 直调 _run_agent → get_current_adapter）不再惰性回落 claude 缺省。
+        # 车道派发面（_execute_agent）每次 dispatch 现读现配，本注入只覆盖
+        # 「首派发前」与「不经派发装配的车道」；注入失败回落各车道缺省并告警。
+        try:
+            from core.agent_runner.harness import (
+                resolve_adapter_from_config,
+                set_current_adapter,
+            )
+            _startup_adapter = resolve_adapter_from_config(self.config)
+            set_current_adapter(_startup_adapter)
+            self.logger.info("fenixd", f"harness adapter injected at startup: {getattr(_startup_adapter, 'name', 'unknown')}")
+        except Exception as e:
+            self.logger.warning("fenixd", f"harness adapter 启动注入失败（一次性车道回落缺省）: {e}")
+
         # 5.4. Initialize PMEngine（提前于 AdminMonitor：add-blocked-reverify-lane
         # D2 的处置收尾复位需要 pm_engine 引用以派发 verifier；PMEngine 构造仅
         # 轻量初始化 + 加载 recovery_watch，无启动扫描副作用）
