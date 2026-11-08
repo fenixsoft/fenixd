@@ -23,6 +23,7 @@ from core.alert_lifecycle import (
     AUTO_RESOLVE_BY,
     AUTO_SELF_HEAL_BY,
     CONDITION_INFRA_TRANSIENT_SELF_HEALED,
+    CONDITION_SPEC_VERIFIED,
     DEFAULT_SELF_HEAL_QUIET_MINUTES,
     SELF_HEAL_SIGNAL_TYPES,
     attach_trigger,
@@ -350,8 +351,15 @@ class TestRegistryAndTriggerTagging:
             assert t == {"type": st, "spec": None,
                          "condition": CONDITION_INFRA_TRANSIENT_SELF_HEALED}
 
-    def test_inconclusive_loop_not_registered(self):
-        assert build_trigger("inconclusive_loop", None) is None
+    def test_inconclusive_loop_self_heal_exclusion_only(self):
+        """add-inconclusive-verified-autoclose 口径同步：条件注册表已登记
+        spec_verified（spec 附着面挂验证翻绿收口），自愈面维持排除——
+        安静≠翻绿证据，inconclusive_loop 仍不在 SELF_HEAL_SIGNAL_TYPES。"""
+        assert "inconclusive_loop" not in SELF_HEAL_SIGNAL_TYPES
+        assert build_trigger("inconclusive_loop", None) == {
+            "type": "inconclusive_loop", "spec": None,
+            "condition": CONDITION_SPEC_VERIFIED,
+        }
 
     def test_signal_record_carries_trigger(self):
         """_signal_record 统一埋点：daemon_errors 信号记录落 trigger。"""
