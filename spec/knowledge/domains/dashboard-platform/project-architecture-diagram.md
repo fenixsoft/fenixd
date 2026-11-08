@@ -1,13 +1,13 @@
 # 项目架构图（archify 按需生成）
 
-<!-- knowledge: capability=project-architecture-diagram rev=3
+<!-- knowledge: capability=project-architecture-diagram rev=4
      sources=spec/archive/2026-10-04-add-project-architecture-tab,spec/archive/2026-10-04-fix-archify-vendored-injection,spec/archive/2026-10-04-add-architecture-two-stage-generation -->
 
 项目详情页的「项目架构」页签：用户手动触发生成项目高层运行时架构图（headless claude 按 vendored archify 指引生成），产物经后端下发、前端沙箱渲染，让读者快速看懂项目核心组件、主链路与外部依赖。
 
 ## 规则
 
-- 页签与手动触发：项目详情页页签序列固定为 …→测试回归→项目架构（key `architecture`、label「项目架构」）→会话接入，对全部注册项目一视同仁（无项目级特殊处理），未注册项目查询一律 404。页签内容由独立组件 ArchitectureTab 承载，按 `active` 门控——仅选中本页签才发起请求，未选中零请求。系统不得在页面加载、页签切换、daemon 启动等任何时机自动触发生成；从未生成时展示空态提示与「刷新架构图」按钮。
+- 页签与手动触发：项目详情页页签序列固定为 …→测试回归→项目架构（key `architecture`、label「项目架构」）→项目知识，对全部注册项目一视同仁（无项目级特殊处理），未注册项目查询一律 404。页签内容由独立组件 ArchitectureTab 承载，按 `active` 门控——仅选中本页签才发起请求，未选中零请求。系统不得在页面加载、页签切换、daemon 启动等任何时机自动触发生成；从未生成时展示空态提示与「刷新架构图」按钮。
 - 生成范式（两段式管线）：点击「刷新架构图」后 POST 只受理并立即返回，实际生成由 daemon 后台线程执行顺序两段式管线——阶段1 探索 run 读取证、阶段2 出图 run 产图，磁盘 `.fenix/architecture/evidence.md` 是两段间唯一交接面。每段各为一次性 headless claude：`claude -p <提示词> --permission-mode bypassPermissions`，cwd=项目根，`start_new_session=True`，env=`os.environ.copy()` 剔除 agent-run 专用三键（FENIX_RUN_PROJECT_ROOT / FENIX_RUN_WORKTREE / CLAUDE_CODE_ENABLE_TODO_TOOLS）。HTTP 线程不得同步等待生成（范式见 ADR-216）。生成完全在开发主链路之外：无 run 台账、无车道、无预算、无新增配置项，超时等均为模块常数。两段 prompt 均落在「小上下文 × 短输出」安全区、均不内嵌 vendored SKILL.md 全文（见 ADR-224）。
 - 阶段1 探索 run：prompt 约 1KB、不注入 SKILL.md，按四项取证维度（组件/主链路/外部依赖/信任边界）只读取证写 evidence.md，marker 契约 `ARCHIFY_EVIDENCE_DONE`。判定链为「returncode==0 且 evidence.md 存在且非空」（不信 claude 自述），任一不满足直接判 failed 短路、不 spawn 阶段2；成功后 evidence.md 头部盖 `evidence-head: <HEAD sha> | <时间戳>` 指纹行。marker 命名保证 `ARCHIFY_EVIDENCE_DONE` 不以 `ARCHIFY_DONE` 开头，两段判定互不误中。
 - evidence 取证复用与 HEAD 指纹失效：refresh 受理时 evidence.md 存在、非空、带指纹头且记录的 HEAD sha 与当前 repo HEAD 一致 → 跳过阶段1 直接进入阶段2（重试只付出图成本）；缺失、损坏、无指纹头、HEAD 不一致、detached HEAD、非 git 项目或取 HEAD 异常一律判不匹配、正常重探索（图不因复用而陈旧）。当前 HEAD 以 proot 为 cwd 执行 `git rev-parse HEAD` 取得（daemon 进程 cwd 与项目根不同，禁用进程 cwd 取 HEAD）。无 TTL、无定时失效，HEAD 一致即有效；daemon 侧不做阶段2 自动重试，用户再点刷新即等效触发 HEAD 命中跳段。
@@ -25,3 +25,4 @@
 - 2026-10-04 add-project-architecture-tab（spec/archive/2026-10-04-add-project-architecture-tab） — 新建本能力：项目详情页新增「项目架构」页签，确立手动触发、一次性 headless claude + archify 生成、单飞/超时/重启残留合成三件套生命周期治理、`.fenix/architecture/` 产物存储与 3 端点下发、iframe 沙箱渲染契约
 - 2026-10-04 fix-archify-vendored-injection（spec/archive/2026-10-04-fix-archify-vendored-injection） — 改写「archify skill 可用性保障」：废除运行时自动安装（`npx skills add` 限时 120s 及三探测函数），改为 vendored 整包随库分发（`vendor/archify/`，commit 4e03cd2f 先于本 SPEC 入库）+ SKILL.md 原文与包根绝对路径注入提示词，生成链路零联网安装、零用户环境依赖，缺件按部署损坏判失败；其余规则不变
 - 2026-10-04 add-architecture-two-stage-generation（spec/archive/2026-10-04-add-architecture-two-stage-generation） — 生成编排从单体 claude -p 一次完成改写为探索/出图顺序两段式管线（evidence.md 磁盘唯一交接面、两段 prompt 不内嵌 SKILL.md 全文改包根绝对路径引用）、新增 evidence HEAD 指纹跳段复用与阶段1 判定链、超时 1800s 拆为探索 720s/出图 1080s 分段击杀、status.json 增可选 stage 键、候选 JSON 分段小步写纪律；产物权威判定链与其余生命周期治理不变
+- 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：页签序列条款收口（「会话接入」页签退役，序列尾为「项目知识」）

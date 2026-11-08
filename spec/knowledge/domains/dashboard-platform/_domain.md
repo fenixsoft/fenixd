@@ -1,7 +1,7 @@
 # 仪表盘服务
-> 最后更新：2026-11-08 00:35 UTC+8
+> 最后更新：2026-11-08 12:30 UTC+8
 
-跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、实时会话、前端壳层基建、按需生成类任务、协作拓扑派生/跨项目聚合端点与指挥中心聚合。
+跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、前端壳层基建、按需生成类任务与指挥中心聚合。
 
 ## 能力页
 
@@ -21,14 +21,12 @@
 | [dashboard-conditional-get](dashboard-conditional-get.md) | GET 读端点条件请求（ETag/304） | 2026-10-07 02:25 |
 | [dashboard-server-paging](dashboard-server-paging.md) | 读端点服务端分页 | 2026-10-07 02:25 |
 | [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 | 2026-10-03 04:59 |
-| [dashboard-live-session](dashboard-live-session.md) | 实时会话视图 | 2026-10-03 04:59 |
-| [session-composer](session-composer.md) | 会话输入控件（补全/草稿/键盘适配） | 2026-10-03 04:59 |
 | [project-architecture-diagram](project-architecture-diagram.md) | 项目架构图（archify 按需生成） | 2026-10-04 04:57 |
-| [topology-derivation](topology-derivation.md) | SPEC 协作拓扑派生端点（七阶段角色归列、KPI 五项口径、重试边仅连 attempt 链、多轮验证逐轮、交付终点按持久确证自适应、归档降级骨架） | 2026-10-30 23:11 |
-| [collab-graph-aggregation](collab-graph-aggregation.md) | 跨项目角色级协作图谱聚合端点（复用 derive_topology 零第二套映射、project 筛选、下钻明细内嵌、归档计 KPI 不进图） | 2026-10-30 23:11 |
 | [command-center-aggregation](command-center-aggregation.md) | 指挥中心后端聚合（KPI 四指标 7 日窗口径、组织网格五线静态花名册与汇报线、流水线五列桶映射、台账 50 条、收件箱只读装配复用 alert-resolve） | 2026-11-04 16:55 |
 
 > 退役：2026-11-08 v2 amis 壳域五能力页（原 v2-shell-router / v2-data-adapters / v2-sdk-vendor / v2-sse-bridge / v2-legacy-coexist）已随 add-knowledge-anchor-lint-and-prune 退役收口删除，历史见 spec/archive/2026-09-04-v2-shell-hash-router、spec/archive/2026-09-04-v2-vendor-amis-sdk 等 2026-09-04/05 系列归档与 git 历史；tests/v2 冒烟基建与 v2_dev_server 现役，不在本退役批范围。
+
+> 退役：2026-11-08 实时会话视图（原 dashboard-live-session）与会话输入控件（原 session-composer）已随「会话接入」分面退役批删除、SPEC 协作拓扑派生端点（原 topology-derivation）已随协作拓扑大屏退役批删除、跨项目角色级协作图谱聚合（原 collab-graph-aggregation）功能代码已随 v2 界面域退役消失本批补收口；历史见 spec/archive/2026-09-23-add-dashboard-live-session、spec/archive/2026-10-03-add-session-composer、spec/archive/2026-10-30-add-spec-topology-bigscreen、spec/archive/2026-10-30-add-collab-graph-bigscreen 与 git 历史。
 
 ## 症状速查
 

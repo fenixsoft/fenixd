@@ -55,7 +55,7 @@ class G9RepairSiteMixin:
                 # 按记录切分后路径与磁盘实际路径一致。
                 # 显式 UTF-8：text=True 缺省按 locale 解码，非 UTF-8 locale
                 # 下读中文等非 ASCII 未合并路径抛 UnicodeDecodeError（ValueError
-                # 子类，逃逸下方 except，对齐 session_routes._list_project_files 同款惯例）
+                # 子类，逃逸下方 except 静默降级惯例）
                 encoding="utf-8",
                 errors="replace",
                 timeout=10,

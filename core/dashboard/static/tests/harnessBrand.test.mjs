@@ -5,7 +5,7 @@
 //
 // 覆盖品牌回退链三分支（spec「回退链」Requirement；2026-10-29 用户定稿：
 // 缺省分支 claude → 中性「AI Assistant」，run meta 无 harness 不再冒充
-// Claude 品牌——context 缺省值（SessionPanel 等 claude 专用车道）不受影响，
+// Claude 品牌——context 缺省值（claude 专用车道）不受影响，
 // 仍为 Claude）：
 // 1. 缺省 = 中性（run meta 无 harness 字段/空值 → kind:'default'，装配层
 //    映射中性品牌）；
@@ -34,7 +34,7 @@ test('缺省：harness 字段为空串/纯空白 → default 中性分支', () =
   assert.deepEqual(resolveHarness('   '), { kind: 'default' });
 });
 
-test('context 缺省品牌名常量保持 Claude（SessionPanel 等 claude 专用车道未注入 Provider 即现状）', () => {
+test('context 缺省品牌名常量保持 Claude（claude 专用车道未注入 Provider 即现状）', () => {
   assert.equal(DEFAULT_BRAND_NAME, 'Claude');
 });
 

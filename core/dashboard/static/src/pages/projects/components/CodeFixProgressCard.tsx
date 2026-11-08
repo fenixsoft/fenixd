@@ -81,7 +81,7 @@ const ITEM_STATUS_LABELS: Record<string, string> = {
 
 interface CodeFixProgressCardProps {
   project: string;
-  /** 分面是否激活：未激活零请求（对齐 QualityTab/SessionPanel 门控约定） */
+  /** 分面是否激活：未激活零请求（对齐 QualityTab 门控约定） */
   active: boolean;
   /** 进度进入终止态/收尾时回调（QualityTab 据此刷新条目表格） */
   onSettled?: () => void;
@@ -164,7 +164,7 @@ export default function CodeFixProgressCard(
     sawRunningRef.current = false;
   }, [project]);
   useEffect(() => {
-    // active 门控（对齐 QualityTab/SessionPanel 的「未选中零请求」约定）：项目页
+    // active 门控（对齐 QualityTab 的「未选中零请求」约定）：项目页
     // <Tabs> 未设 destroyInactiveTabPane，本组件首次激活后会一直挂载；若修复链
     // 卡在 running=true，分面切走后仍会每 2s 打 fix-progress。
     if (!active || !project) return;

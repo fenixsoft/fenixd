@@ -1,13 +1,13 @@
 # 指挥中心后端聚合
 
-<!-- knowledge: capability=command-center-aggregation rev=2
+<!-- knowledge: capability=command-center-aggregation rev=3
      sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
 
 面向管理层演示叙事（组织、交付、裁决、执行四个切面）的第三块大屏数据面：对 dashboard 托管项目跨项目聚合出 KPI 四指标、组织网格、交付流水线、执行台账与裁决收件箱，全部只读。
 
 ## 规则
 
-- **五个只读端点**：`GET /api/command-center/{kpi,org,pipeline,ledger,inbox}`，由 `core/dashboard/routes/command_center_routes.py` mixin 注册；聚合实现单文件 `core/dashboard/data/command_center.py`，跨项目聚合入口沿用 `aggregate_*(registry_projects, project=None)` 注入模式（与 topology/collab-graph 同构）。端点只读无副作用，本能力 MUST NOT 新增任何裁决执行端点。
+- **五个只读端点**：`GET /api/command-center/{kpi,org,pipeline,ledger,inbox}`，由 `core/dashboard/routes/command_center_routes.py` mixin 注册；聚合实现单文件 `core/dashboard/data/command_center.py`，跨项目聚合入口沿用 `aggregate_*(registry_projects, project=None)` 注入模式（同构形态沿袭自 topology/collab-graph 先例，两者已分别随 v2 退役与本退役批删除）。端点只读无副作用，本能力 MUST NOT 新增任何裁决执行端点。
 - **可选项目筛选**：全部端点支持可选 `project` 参数收窄到单项目；响应回显 `project` 与 `projects` 全集。未知项目返回 200 + `{error: 'project not found'}` 错误字典（大屏按 200 消费的有意契约，非 404）。
 - **夹具与失效项目剔除**：缺省跨项目聚合剔除 `fixture=True` 登记项目与路径已不存在（exists=False）的 Registry 条目；夹具项目仅可显式 `project` 寻址。
 - **KPI 七日滚动窗口径**：`/kpi` 全部指标基于 7×24 小时滚动窗（UTC，锚定当前时刻），MUST NOT 引入其他口径：
@@ -29,3 +29,4 @@
 
 - 2026-10-31 add-command-center（spec/archive/2026-10-31-add-command-center） — 新增本能力：五个只读聚合端点（KPI 四指标 7 日窗精确口径、组织网格静态花名册与汇报线常量、流水线五列桶映射覆盖全量 SpecStatus、台账 50 条倒序 trigger 允许 null、收件箱只读装配复用 alert-resolve）
 - 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 组织网格花名册刷新为现行五线划分（设计线 planner-plan/planner-judge、verifier 入交付线、self-review 归质量线、knowledge-distiller 收编运营线），testing/scan 不出卡、ocr 未划线。
+- 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：聚合入口条款出处口径改历史出处（topology/collab-graph 已删除）

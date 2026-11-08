@@ -151,7 +151,7 @@ test('开关打开时恢复渲染 thinking（默认参数 true 行为不变）',
   const events = mixedStream();
   const msgs = runEventsToChatMessages(events, true);
   assert.ok(msgs.some((m) => m.isThinking));
-  // 既有直调方（SessionPanel.tsx:332）不传参：默认 true 行为不变
+  // 既有直调方不传参：默认 true 行为不变
   const msgsDefault = runEventsToChatMessages(events);
   assert.ok(msgsDefault.some((m) => m.isThinking));
 });

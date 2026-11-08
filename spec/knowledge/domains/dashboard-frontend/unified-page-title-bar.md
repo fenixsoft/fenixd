@@ -1,6 +1,6 @@
 # 全站统一标题栏
 
-<!-- knowledge: capability=unified-page-title-bar rev=14
+<!-- knowledge: capability=unified-page-title-bar rev=15
      sources=spec/changes/unified-page-title-bar,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/knowledge/_inbox/done/embed-titlebar-frosted-glass.md,spec/knowledge/_inbox/done/settings-help-document-scroll-unify.md,spec/knowledge/_inbox/done/chrome-soft-solid-titlebar-1106.md,spec/knowledge/_inbox/done/v2-overview-titlebar-white-variant-1106.md,spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md,spec/changes/add-spec-subtitle-and-row-click,spec/changes/add-titlebar-subtitle-stacked,spec/changes/add-knowledge-anchor-lint-and-prune -->
 
 dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitleBar.tsx`）：标题/副标题/返回箭头/过滤项四槽位声明，双壳位（顶栏承载 / embed 行壳位承载）自动分流——页面只声明数据，禁止逐页自画同类型标题 div。
@@ -21,7 +21,7 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 - **详情富标题两列结构与标签簇随块居中**：富标题内部为两列 flex（外层 alignItems center + wrap）：左列=英文名+中文下方行，右簇=模式/状态胶囊与快速切换下拉（Space align center）`flexShrink: 0` 随标题块整体垂直居中（playwright boundingRect 实测簇中心=箭头中心=标题栏中心）；中文下方行用 `width: 0 + minWidth: '100%'` 定宽技巧——不参与左列 max-content 定宽（列宽只由英文名决定，右簇紧跟英文名不被中文行宽度推开），再撑回列宽超出即省略；窄视口外层 wrap 右簇下坠。配套：控件 `TitleNode` 加 `minWidth: 0`（flex 项默认 min-width:auto 会撑住下方行 min-content，允许收缩才能让省略号生效）。移动端富标题只显英文标题（页级 `!isMobile` gate）：右簇（模式/状态胶囊与状态转移、快速切换下拉——移动端无快速切换入口系设计内取舍）与中文下方行均不渲染。守卫 `specTitleSubtitle.test.mjs` 钉死形态（零 subtitle 槽 + 下方行块级视觉锚），pageTitleBar / pageChrome / embedMount 既有守卫同步钉版。
 - **顶栏无面包屑**：顶栏右侧全局面包屑在任何视口宽度均不渲染（`HeaderCrumb` 组件、`crumbItems` 映射与 `global-header-crumb` 样式锚点不复存在），位置指示职责由顶栏页面标题承担；顶栏右上角只渲染该页过滤项（无过滤项页右上角为空）。
 - **定高偏移口径**：定高页扣减常数为双档并经 playwright 实拍校准，对象仅两类——`pageChrome.ts` 项目详情页框（desktop 150/142、mobile 198/142）与指挥中心 `SCREEN_CHROME_OFFSET`（standalone 126 / embed 118）。回校后定高卡体 `calc(100vh - offset)` 恰满视口——右栏自滚、无第二根滚动条、无视口下空带。帮助/设置页为文档级滚动页，不持定高偏移常数（滚动形态见 `document-scroll-unify`）；其目录/菜单 sticky 钉位常数（standalone 56 / embed 60）与本栏高度联动。改标题行或内容区顶带任何内边距必须回校全部联动常数并重新实拍；回校按实际渲染盘点——命中标题栏高度依赖字面量族（56/60、126/130 同族）才改、未命中不动（避免全族误改），SPEC 详情页中文标题下方行堆叠使标题块增高，实测零命中，既有常数未动。
-- **豁免面**：现存豁免仅两类——`layout:false` 脱壳页（SPEC 协作拓扑大屏）无壳层不适用；菜单「项目」父项落点 `/projects` 的兜底占位页（`PagePlaceholder`，项目列表就绪后自动重定向、仅空列表时兜底可见）保留其占位页头不迁移。
+- **豁免面**：现存豁免仅菜单「项目」父项落点 `/projects` 的兜底占位页（`PagePlaceholder`，项目列表就绪后自动重定向、仅空列表时兜底可见）保留其占位页头不迁移（原 `layout:false` 脱壳页豁免已随 SPEC 协作拓扑大屏 2026-11-08 退役失效，全站再无脱壳页）。
 - **非 embed 布局基线不变**：除标题栏迁移与面包屑退役外，ProLayout 侧栏结构、菜单数据、页签、主题 token 零改动；内容区左右留白仍走 `paddingInlinePageContainerContent` 单源。
 - **界面原型为 UI 真相源**：全部界面形态（顶栏排布、标题行尺寸、过滤项密度、行壳位同构关系）以已批准入库的高保真原型为准（standalone.html 独立形态 / embed.html 嵌入形态，原型持久保留于 SPEC 归档目录）；实现与评审必须对照原型，原型与文字描述冲突时以原型为准并升级用户裁决。
 
@@ -51,3 +51,4 @@ dashboard 前端唯一的全站内容标题栏控件（`src/components/PageTitle
 - 2026-11-07 mobile-ui-fixes-1107（spec/knowledge/_inbox/done/mobile-ui-fixes-1107.md） — 「过滤项统一右上落位」条款补移动端定式：filters 槽位即移动端「标题栏右侧控件位」单一定点，控件上移标题栏一律走槽位、不在内容区手画按钮行；窄幅放不下的过滤组整组下放内容区不注册槽位（指挥中心双下拉）
 - 2026-11-07 交互会话用户指令「移除所有v2版本的页面，只保留原版」（未走 SPEC） — v2 商业化域六页随域退役删除，「v2 六页并入」条款消失（守卫 tests/v2TitleBarGuard.test.mjs 同删）；「SPEC 详情标题栏中文标题下方行」收敛单详情页口径（combineSpecSubtitle 随 v2 specDetail 删除，下方行只取 title）；本页 v2 指涉收口为历史溯源
 - 2026-11-08 add-knowledge-anchor-lint-and-prune（spec/changes/add-knowledge-anchor-lint-and-prune/） — 补代码锚点段（高频消费页锚点范例批次）：主实现 PageTitleBar.tsx、注册单源 pageTitleBarStore.ts、守卫 pageTitleBar.test.mjs，路径逐一盘上核验
+- 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：豁免面条款收口：SPEC 协作拓扑大屏退役后全站无脱壳页，豁免面收缩为占位页一项

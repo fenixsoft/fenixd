@@ -1,12 +1,9 @@
-// runVisual.ts — run 可视化共享常量与纯函数（add-spec-topology-bigscreen 3.1）。
-//
-// 自 SpecTimeline.tsx **等价纯迁移**：状态语义色五分支（runDotColor）、终态
-// 原因语气（reasonTone）、Agent 中文名与 run_id 前缀映射（AGENT_LABEL /
+// runVisual.ts — run 可视化共享常量与纯函数（原 add-spec-topology-bigscreen
+// 3.1，自 SpecTimeline.tsx **等价纯迁移**：状态语义色五分支（runDotColor）、
+// 终态原因语气（reasonTone）、Agent 中文名与 run_id 前缀映射（AGENT_LABEL /
 // RUN_ID_PREFIX_LABEL / agentLabel）、金额格式化（formatUsd）。迁移后
 // SpecTimeline.tsx 渲染输出严格等价（tests/runVisual.test.mjs 纯函数单测
-// 背书，specs/topology-bigscreen-ui「SpecTimeline 等价迁移」Scenario）；
-// SPEC 协作拓扑大屏（PipelineView/SwimlaneView）消费同一常量单源，两处
-// 着色/角色口径永不漂移。
+// 背书）；协作拓扑大屏已退役，SpecTimeline 为唯一消费方。
 //
 // 零 import：node 测试环境（node:test 直载，先例 embedMount.test.mjs）无
 // 构建链，本模块保持纯函数 + 常量、不引任何依赖。

@@ -1,7 +1,7 @@
 # 多 harness 接入
 > 最后更新：2026-11-05 20:50 UTC+8
 
-多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」——HarnessAdapter 协议与 claude 字节级平移、`agent.harness` 全局开关、fenix-dsh Bundle（dsh 侧机制等价物五件套）、DshAdapter 事件投影接入、dsh 主通道真实验收与切换治理、无分配 provider 链时按 harness 自身配置的对称默认回落。run jsonl 以 claude stream-json 形状为唯一 canon、读侧零改动；dashboard 自由会话与 CLAUDE_PID watchdog 为显式豁免面（ADR-271）。
+多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」——HarnessAdapter 协议与 claude 字节级平移、`agent.harness` 全局开关、fenix-dsh Bundle（dsh 侧机制等价物五件套）、DshAdapter 事件投影接入、dsh 主通道真实验收与切换治理、无分配 provider 链时按 harness 自身配置的对称默认回落。run jsonl 以 claude stream-json 形状为唯一 canon、读侧零改动；CLAUDE_PID watchdog 为显式豁免面（ADR-271；原豁免面成员 dashboard 自由会话已随 2026-11-08 会话接入退役批删除）。
 
 ## 能力页
 

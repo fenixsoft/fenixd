@@ -1,13 +1,12 @@
-/** Tailwind 仅服务于迁移组件（claude-msg / claude-composer）：
+/** Tailwind 仅服务于迁移组件（claude-msg）：
  *  - 不含 preflight（避免重置 antd 全局样式）
  *  - darkMode 用 class 且全站不加 dark 类（dark: 变体不生效，保持亮色）
  *  - 颜色映射 claudecodeui（shadcn）的 HSL 语义变量，定义在 .claude-msg-pane 容器
- *  （add-session-composer 2.4：content 扩入 claude-composer——CLI 有 content
- *   配置时不启用自动内容检测，不扩则新组件类名静默不进 tailwind.gen.css） */
+ *  （CLI 有 content 配置时不启用自动内容检测，不扩则新组件类名静默不进
+ *   tailwind.gen.css——原 claude-composer 条目已随会话输入控件退役移除） */
 module.exports = {
   content: [
     './src/components/claude-msg/**/*.{ts,tsx}',
-    './src/components/claude-composer/**/*.{ts,tsx}',
   ],
   darkMode: ['class'],
   corePlugins: { preflight: false },

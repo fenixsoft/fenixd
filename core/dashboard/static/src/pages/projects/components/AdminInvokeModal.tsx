@@ -86,7 +86,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const acceptAnyRunRef = useRef(false);
   // 回车发送经 setTimeout 延后触发（等下拉选中项的 onChange 回写），
   // 用 ref 读取最新输入值，避免闭包拿到旧值。ref 在 effect 内同步、渲染
-  // 保持纯净（同 SessionPanel activeRef / CodeFixProgressCard onSettledRef
+  // 保持纯净（同 CodeFixProgressCard onSettledRef
   // 模式）：setState 后提交期先跑 effect，晚于其触发的 setTimeout 回调
   // 读到的必是已同步的最新值，时序等价
   const promptRef = useRef('');

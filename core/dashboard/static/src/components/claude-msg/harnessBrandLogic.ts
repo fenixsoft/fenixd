@@ -27,7 +27,7 @@ export type RegisteredHarnessName = (typeof REGISTERED_HARNESS_NAMES)[number];
 const REGISTERED_HARNESSES: ReadonlySet<string> = new Set(REGISTERED_HARNESS_NAMES);
 
 // context 缺省品牌名（= Claude 品牌，spec「缺省品牌等于现状」Scenario：
-// SessionPanel 等 claude 专用车道未注入 Provider，渲染结果与改造前一致；
+// claude 专用车道未注入 Provider，渲染结果与改造前一致；
 // 注意与 resolveHarness 缺省分支的中性品牌无关——那是 run 视图注入点的
 // meta 缺失路径，2026-10-29 起映射中性「AI Assistant」）
 export const DEFAULT_BRAND_NAME = 'Claude';

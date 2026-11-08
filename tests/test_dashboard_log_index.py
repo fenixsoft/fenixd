@@ -328,12 +328,8 @@ class TestGiantFirstLineDefense:
         assert any(f"#{3}" in e["message"] for e in events)
         # 事件时刻全部 ≥ 锚点（巨型行及其后残余不混入）
         assert all(e["timestamp"] >= anchor_ts for e in events)
-        # 拓扑派生链路：_scan_spec_log_events 可派生该 SPEC 的状态转移
-        from core.dashboard.data.topology import _scan_spec_log_events
-
-        transitions, _ = _scan_spec_log_events(proot, "demo", giant_ts)
-        assert len(transitions) == 3, "transitions MUST NOT 因单个巨型行整体为空"
-        assert all(t["to"] == "reviewing" for t in transitions)
+        # 拓扑派生链路断言已随协作拓扑能力退役移除（锚定窗口语义由
+        # timeline.get_spec_timeline 同源单点继续承载）
 
     def test_giant_line_content_not_read_wholesale(self, tmp_path):
         """超长行内容不整读入内存：单次 read 字节数有界（不以窗口上限整读）。"""

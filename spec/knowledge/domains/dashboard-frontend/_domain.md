@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-08 00:40 UTC+8
+> 最后更新：2026-11-08 12:14 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -31,8 +31,6 @@
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |
 | [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40 
 | [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身） | 2026-11-07 21:43 |
-| [topology-bigscreen-ui](topology-bigscreen-ui.md) | SPEC 协作拓扑大屏（脱壳全屏双视图、管线视图纵轴真实时间+PM 生命周期链+并行无伪串行边、跨视图联动、下钻复用） | 2026-10-30 23:11 |
-| [collab-graph-bigscreen-ui](collab-graph-bigscreen-ui.md) | 协作图谱大屏（overview 入口、8 角色固定就位、项目筛选器、下钻明细与跨大屏跳转） | 2026-10-30 23:11 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线） | 2026-11-07 21:43 |
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、缺省行为不变） | 2026-11-05 18:27 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
@@ -50,6 +48,7 @@
 | [dsh-web-connection-baseline](dsh-web-connection-baseline.md) | dsh web 连接基线与「重新连接中」重连环判读（浏览器 API 基线双门槛、低版本症状签名 101 正常零业务帧、close 4000 下游症状、健康握手对照、服务端/cookie/frp 排除面、console 优先与 tcpdump 取证纪律、无能力探测开放缺口） | 2026-11-07 21:36 |
 | [dsh-web-wide-table-scrollbar](dsh-web-wide-table-scrollbar.md) | dsh web 对话框宽表横向滚动与全宽变量同步（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、退化路径 margin 夹紧、哈希类失配自动回退、变量探针与活站假设验证配方） | 2026-11-07 21:40 |
 | [prolayout-header-actions-minwidth-ratchet](prolayout-header-actions-minwidth-ratchet.md) | ProLayout 顶栏动作区 min-width 棘轮锁（ResizeObserver 实测回写自锁只升不降、filters 槽宽组件 SPA 残留锁宽挤压标题签名、global.less 单源恒零化勿删、顶栏挂宽组件零额外处理、分态复现与逐元素量宽排查定式） | 2026-11-07 22:03 |
+| [timeline-chain-nodes](timeline-chain-nodes.md) | 时间轴处置链节点渲染（kind="chain" 紧凑链事件卡片 Bento 形态、六形态中文标签/着色映射圆点同源、未知形态中性灰兜底自有键防御、命名防混淆红线、折叠零特判与四类节点零回归） | 2026-11-08 12:14 |
 
 > 退役注记：v2 商业化界面域十页（v2-overview-page / v2-project-list-page / v2-project-detail-page
 > / v2-spec-detail-page / v2-config-page / v2-alerts-activities / v2-ops-page /
@@ -57,3 +56,5 @@
 > v2 六页代码整体退役删除（本域不再收录）；历史规则见
 > spec/changes/redesign-dashboard-v2-ui 与 -mobile 两个 SPEC 目录及 git 历史。
 > 一般域各页「镜像 v2 形态」条款已改历史出处口径（样式值保留）。
+>
+> 退役注记：SPEC 协作拓扑大屏（原 topology-bigscreen-ui）于 2026-11-08 用户指令退役批删除（页面/路由/派生端点整体移除）；协作图谱大屏（原 collab-graph-bigscreen-ui）功能代码已随 v2 界面域退役消失，本批补收口。历史见 spec/archive/2026-10-30-add-spec-topology-bigscreen、spec/archive/2026-10-30-add-collab-graph-bigscreen 与 git 历史。

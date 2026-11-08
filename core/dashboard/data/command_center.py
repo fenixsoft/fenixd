@@ -1,7 +1,7 @@
 """core.dashboard.data.command_center — 指挥中心跨项目聚合（add-command-center）。
 
-面向管理层演示的第三块大屏数据层（与 collab_graph / topology 同构：data
-模块 + routes mixin + server.py 注册 mixin）。跨项目聚合五类只读数据：
+面向管理层演示的第三块大屏数据层（data 模块 + routes mixin + server.py
+注册 mixin 的同构形态沿袭自既有 topology/collab_graph 先例）。跨项目聚合五类只读数据：
 
 - ``aggregate_kpi``       KPI 四指标（7×24h UTC 滚动窗，口径见 specs
                           command-center-aggregation「KPI 四指标派生」）；
@@ -216,7 +216,7 @@ def _window_runs(proot: Path, since_epoch: float, include_archive: bool = True) 
     return _facade.get_runs(proot, None, include_archive=include_archive, files=files)
 
 
-# ── 成本口径（复用 topology/timeline 既有成本单点） ───────────────────────
+# ── 成本口径（复用 timeline 既有成本单点） ───────────────────────
 
 # 已留痕过的脏 usage 值形态（str 截断为键；防逐 run/逐端点 debug 刷屏）
 _COERCE_INT_LOGGED: set = set()

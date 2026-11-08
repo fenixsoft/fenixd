@@ -151,42 +151,6 @@ def _sig_spec_detail(s, q, m):
     return _sig.spec_detail_signature(proot, spec)
 
 
-def _sig_spec_topology(s, q, m):
-    """拓扑端点签名（add-spec-topology-bigscreen 2.1）：detail 签名超集。
-
-    spec_detail_signature 已盖 STATE/spec 目录树/logs 树/verify-progress/本
-    spec runs（含归档）等全部派生数据源；拓扑派生额外并入 fix 家族子 SPEC
-    （fix-<spec>、fix-fix-<spec>…）的 run 产物——detail 签名只盖本 spec 命名
-    的 runs，家族 run 变化（新修复 run/终态翻转）必须翻转拓扑 ETag，否则
-    大屏 304 假命中、修复环不实时。spec 不存在 → None（错误体不挂 ETag）。
-    """
-    import re as _re
-    from pathlib import Path
-
-    from core.dashboard import data as dashboard_data
-    from core.dashboard.data import signature as _sig
-
-    project = _resolve_project_for_sig(s, q)
-    if project is None:
-        return None
-    spec = urllib.parse.unquote(m.group(1))
-    proot = Path(project["path"])
-    entry = s.server.summary_index.state_snapshot(proot).get(spec)
-    if entry is None:
-        entry = dashboard_data.parse_archived_state(proot).get(spec)
-    if entry is None and dashboard_data.resolve_spec_dir(proot, spec) is None:
-        return None
-    parts = [_sig.spec_detail_signature(proot, spec)]
-    fam_re = _re.compile(rf"^(?:fix-)+{_re.escape(spec)}$")
-    fam = []
-    for name, sigs in dashboard_data.runs_by_spec_sigs(proot).items():
-        if fam_re.fullmatch(name):
-            fam.append((name, sorted((str(p), v[0], v[1]) for p, v in sigs.items())))
-    if fam:
-        parts.append(sorted(fam, key=lambda x: x[0]))
-    return _sig.combine(parts)
-
-
 def _aggregate_alerts_sig(s, sig_fn):
     """跨项目告警类聚合签名（code-review item a71bde47b10c 提取的单点循环）。
 
@@ -326,13 +290,6 @@ def _get_spec_detail(s, p, q, m):
     spec = urllib.parse.unquote(m.group(1))
     s._json(s._api_spec_detail(spec, q))
 
-def _get_spec_topology(s, p, q, m):
-    # _api_spec_topology 是自含响应 handler（同 _get_spec_doc 注记）：成功写
-    # _json、错误分支自写 _error——不得再包 _json 双重写响应（keep-alive 下
-    # 残留第二响应 200+null 污染下一请求）。add-spec-topology-bigscreen 2.1。
-    spec = urllib.parse.unquote(m.group(1))
-    s._api_spec_topology(spec, q)
-
 def _get_runs_watch(s, p, q, m):
     rest = urllib.parse.unquote(m.group(1))
     run_id = rest[: -len("/watch")] if rest.endswith("/watch") else rest
@@ -418,16 +375,6 @@ def _get_evolution_analysis(s, p, q, m):
 
 def _get_evolution_draft(s, p, q, m):
     s._api_evolution_draft(q)
-
-def _get_session(s, p, q, m):
-    s._api_session_get(q)
-
-# add-session-composer 1.2/1.3：会话补全数据源只读端点
-def _get_session_files(s, p, q, m):
-    s._api_session_files(q)
-
-def _get_session_commands(s, p, q, m):
-    s._api_session_commands(q)
 
 def _get_quality_ocr_status(s, p, q, m):
     s._json(s._api_quality_ocr_status_get(q))
@@ -624,18 +571,6 @@ def _post_code_review_generate_spec(s, p, q, m):
 def _post_code_review_items_status(s, p, q, m):
     s._api_code_review_items_status(q)
 
-def _post_session_start(s, p, q, m):
-    s._api_session_start(q)
-
-def _post_session_send(s, p, q, m):
-    s._api_session_send(q)
-
-def _post_session_stop(s, p, q, m):
-    s._api_session_stop(q)
-
-def _post_session_watch(s, p, q, m):
-    s._api_session_watch(q, watch=True)
-
 # 4 个裸 endswith —— 排在 /api/project/describe 之后（保留顺序陷阱）
 
 def _post_start(s, p, q, m):
@@ -659,9 +594,6 @@ def _del_run_watch(s, p, q, m):
     rest = urllib.parse.unquote(m.group(1))
     s._json(s._api_run_watch(rest, q, watch=False))
 
-def _del_session_watch(s, p, q, m):
-    s._api_session_watch(q, watch=False)
-
 def _del_project(s, p, q, m):
     # m.group(1) 不消费（code-review item ddeae9121380）：_api_project_delete
     # 同 _api_project_lifecycle，自整条 path 经 _resolve_project_or_400 解析
@@ -679,9 +611,6 @@ _API_GET_ROUTES = [
     ("exact", "/api/specs",            _get_specs, _sig_specs),
     # 参数化前缀（regex）
     ("regex", r"^/api/specs/([^/]+)$", _get_spec_detail, _sig_spec_detail),
-    # SPEC 协作拓扑派生图（add-spec-topology-bigscreen 2.1，只读、detail 同族
-    # 单键寻址；自含响应 handler，条目第 4 位挂 ETag 签名）
-    ("regex", r"^/api/specs/([^/]+)/topology$", _get_spec_topology, _sig_spec_topology),
     # run 注入提示词读取（add-run-prompt-viewer 2.2）：更具体参数化路由
     # 必须注册在 ^/api/runs/(.+)$ 之前（_dispatch_table 按注册顺序首中即派发，
     # 兜底条目 (.+) 会吞掉 /prompt 后缀路径）
@@ -708,10 +637,6 @@ _API_GET_ROUTES = [
     ("exact", "/api/evolution/items",  _get_evolution_items),
     ("exact", "/api/evolution/analysis", _get_evolution_analysis),
     ("exact", "/api/evolution/draft",  _get_evolution_draft),
-    ("exact", "/api/session",         _get_session),
-    # add-session-composer 1.2/1.3：会话补全数据源（exact，排在本组末尾不动 watch regex 先例）
-    ("exact", "/api/session/files",    _get_session_files),
-    ("exact", "/api/session/commands", _get_session_commands),
     # 质量页签：open-code-review 安装状态（GET，无副作用）
     ("exact", "/api/quality/ocr-status", _get_quality_ocr_status),
     # code-review（add-code-review-agent-and-quality-tab）：台账与进度（GET，无副作用）
@@ -802,11 +727,6 @@ _API_POST_ROUTES = [
     # architecture：受理触发生成（add-project-architecture-tab，后台线程，
     # 不在 HTTP 线程内同步等待）
     ("exact", "/api/architecture/refresh", _post_architecture_refresh),
-    # session 路由（精确，排在裸 endswith 之前，防 /start /stop 误匹配）
-    ("exact", "/api/session/start",      _post_session_start),
-    ("exact", "/api/session/send",       _post_session_send),
-    ("exact", "/api/session/stop",       _post_session_stop),
-    ("regex", r"^/api/session/watch$",   _post_session_watch),
     # 裸 endswith（4 个，MUST 排最后——保留顺序陷阱）
     ("suffix", "/start",        _post_start),
     ("suffix", "/stop",         _post_stop),
@@ -816,7 +736,6 @@ _API_POST_ROUTES = [
 
 _API_DELETE_ROUTES = [
     ("regex",  r"^/api/runs/(.+)/watch$", _del_run_watch),
-    ("regex",  r"^/api/session/watch$",  _del_session_watch),
     ("regex",  r"^/api/projects/([^/]+)$", _del_project),
 ]
 

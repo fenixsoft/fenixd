@@ -1,8 +1,7 @@
 """agent-run 专用 env 键剔除口径（单一来源）。
 
 所有 spawn claude 子进程的非 agent-run 车道——蒸馏 run（core/knowledge）、
-知识回填（core/knowledge_backfill）、自由会话
-（core/dashboard/session_manager，D1.11）、一次性架构图生成
+知识回填（core/knowledge_backfill）、一次性架构图生成
 （core/dashboard/routes/architecture_routes）——都与 agent-run 无关，
 MUST NOT 把 agent-run 专用上下文键带进子进程环境。消费方清单以
 grep AGENT_RUN_BANNED_ENV_KEYS 的实测结果为准（此处枚举仅为快照，

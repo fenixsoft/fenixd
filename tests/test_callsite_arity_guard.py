@@ -91,7 +91,6 @@ ARITY_WHITELIST = [
     ("core/verify_engine/browser.py", "screenshot", "page"),
     ("core/verify_engine/visual_diff.py", "screenshot", "page"),
     ("core/dashboard/routes/base.py", "exception", "logger"),
-    ("core/dashboard/session_manager.py", "exception", "logger"),
     ("core/worktree_manager/artifact_paths.py", "exception", "logger"),
     # 4. str.format 模板调用（core/pm_engine/dispatch/backoff.py 的
     #    scheduled_log.format(spec_name=..., delay=...)，带 {spec_name}/

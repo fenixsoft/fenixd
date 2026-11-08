@@ -63,7 +63,6 @@ import { rowClickHitsExpandIcon, specDetailPath } from './specRowClick';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 import SpecStatusModal from './components/SpecStatusModal';
-import SessionPanel from './components/SessionPanel';
 import QualityTab from './components/QualityTab';
 import RegressionTab from './components/RegressionTab';
 import ArchitectureTab from './components/ArchitectureTab';
@@ -106,7 +105,7 @@ const LIST_REMARK_PLUGINS = [remarkGfm];
 // aqua 在 v6 token 类型面无 alias 对应，沿用 Badge 预设色名 'cyan'
 // （= cyan-6，同 ModeTag.tsx 口径，随主题算法变色）。
 // useToken 只能在组件内调用，故以 hook 形式供 SpecListPage / SpecCardList
-// 两处共用（同 SessionPanel.tsx 惯例）。
+// 两处共用。
 function useToneDot(): Record<string, string> {
   const { token } = theme.useToken();
   return useMemo(
@@ -1077,7 +1076,7 @@ function DevTab({
   statusTotal,
 }: DevTabProps) {
   // 行底色/状态点/验证中文案色走 token（code-review item 615f6f350d58）：
-  // useToken 只能在组件内调用（同 SessionPanel.tsx 惯例）
+  // useToken 只能在组件内调用（同 useToneDot 惯例）
   const { token } = theme.useToken();
   const toneDot = useToneDot();
 
@@ -1699,9 +1698,10 @@ export default function SpecListPage() {
   // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
   const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
 
-  // add-project-detail-tabs D1：项目页分面选中态（功能开发/代码审查/测试回归/会话接入）；
-  // add-spec-list-filter-stickiness 改写：选中态持久化到 URL `tab` 参数（合法值
-  // 见 listFilters.ts LIST_TABS，缺省 dev 且缺省不写参），读侧恢复复用既有 active 门控
+  // add-project-detail-tabs D1：项目页分面选中态（功能开发/代码审查/测试回归/
+  // 架构蓝图/项目知识）；add-spec-list-filter-stickiness 改写：选中态持久化到
+  // URL `tab` 参数（合法值见 listFilters.ts LIST_TABS，缺省 dev 且缺省不写参），
+  // 读侧恢复复用既有 active 门控
   const [activeTab, setActiveTab] = useState<ListTab>(initialFilters.tab);
 
   // 加载币值守卫（code-review item 95bc1b23a7b7）：本路由组件在 /projects/:name
@@ -2181,9 +2181,6 @@ export default function SpecListPage() {
     // 仅保留查看类（删除保留与否依实现；归档 SPEC 不可再调度，全部调度项移除）
     if (archivedOnly) {
       return [
-        // add-spec-topology-bigscreen 4.6：协作拓扑入口（归档 SPEC 亦可看状态
-        // 骨架大屏；只读查看类入口，不违反归档调度收敛）
-        { key: 'topology', label: '协作拓扑' },
         { type: 'divider' as const },
         { key: 'delete', label: '删除 SPEC', danger: true },
       ];
@@ -2208,8 +2205,6 @@ export default function SpecListPage() {
       { key: 'priority', label: '调整优先级', disabled: terminal },
       // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
       { key: 'pickup-time', label: '设置拾取时间', disabled: terminal },
-      // add-spec-topology-bigscreen 4.6：协作拓扑大屏入口（独立脱壳全屏页面）
-      { key: 'topology', label: '协作拓扑' },
       { type: 'divider' as const },
       { key: 'delete', label: '删除 SPEC', danger: true },
     ];
@@ -2228,19 +2223,13 @@ export default function SpecListPage() {
       handleDeleteSpec(record);
     } else if (key === 're-review') {
       handleReReview(record);
-    } else if (key === 'topology') {
-      // add-spec-topology-bigscreen 4.6：跳转协作拓扑大屏（脱壳路由
-      // /projects/:name/:spec/topology，退出大屏由页面内按钮返回本列表页）
-      history.push(
-        `/projects/${encodeURIComponent(name)}/${encodeURIComponent(record.name)}/topology`,
-      );
     }
   };
 
   // 四分面移动边距 16px（2026-11-07 用户指令「代码审查、测试回归、架构蓝图、
   // 项目知识的左右边距也设置为 16px」）：页签卡 body 缺省 24 + 容器 12 = 每侧
   // 36，四分面经负 margin 抵消卡体 20（容器 12 + 余 4 = 每侧 16）。功能开发
-  // （DevTab 自带 -12 全幅编排，抵的是容器 12）与会话接入不在此列、零改动；
+  // （DevTab 自带 -12 全幅编排，抵的是容器 12）不在此列、零改动；
   // 桌面不包裹零影响
   const facetWrap = (node: ReactNode) =>
     isMobile ? <div style={{ margin: '0 -20px' }}>{node}</div> : node;
@@ -2262,10 +2251,9 @@ export default function SpecListPage() {
         }
       />
       <PageContainer title={false} breadcrumbRender={false} pageHeaderRender={false}>
-      {/* add-project-detail-tabs D1：项目页分面 Tabs——「功能开发」（默认）/「代码审查」/
-          「测试回归」/「会话接入」；add-spec-list-filter-stickiness：选中态
-          持久化到 URL `tab`（replace 写回、缺省不写参）；
-          会话 Panel 的 active 门控见「会话接入」分面 children */}
+      {/* add-project-detail-tabs D1：项目页分面 Tabs——「功能开发」（默认）/
+          「代码审查」/「测试回归」/「架构蓝图」/「项目知识」；add-spec-list-filter-stickiness：
+          选中态持久化到 URL `tab`（replace 写回、缺省不写参） */}
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}
@@ -2316,7 +2304,7 @@ export default function SpecListPage() {
             label: '测试回归',
             // add-test-regression-tab：承载全量回归结果视图。RegressionTab
             // active 门控：仅在选中本分面时拉取 GET /api/regression/result，
-            // 未选中零请求（对齐 QualityTab/SessionPanel 按需加载语义）
+            // 未选中零请求（对齐 QualityTab 按需加载语义）
             children: facetWrap(<RegressionTab project={name} active={activeTab === 'regression'} />),
           },
           {
@@ -2332,16 +2320,9 @@ export default function SpecListPage() {
             key: 'knowledge',
             label: '项目知识',
             // add-knowledge-atlas 4.2：承载知识真相源只读视图（位于「架构蓝图」
-            // 与「会话接入」之间）。KnowledgeTab active 门控：仅在选中本分面时
+            // 之后）。KnowledgeTab active 门控：仅在选中本分面时
             // 拉取 GET /api/knowledge/index，未选中零请求（对齐按需加载语义）
             children: facetWrap(<KnowledgeTab project={name} active={activeTab === 'knowledge'} />),
-          },
-          {
-            key: 'session',
-            label: '会话接入',
-            // add-project-detail-tabs D2/D3：会话界面内联承载（由项目级会话全屏 Modal
-            // 迁移而来）。active 门控：仅在选中本分面时拉取会话状态与订阅事件流，未选中零请求
-            children: <SessionPanel project={name} active={activeTab === 'session'} />,
           },
         ]}
       />

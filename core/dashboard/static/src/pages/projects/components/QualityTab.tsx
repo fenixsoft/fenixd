@@ -17,7 +17,7 @@
 // admin.code_review.enabled 开关——配置项归设置页「质量」页签统一管理
 // （QualityPanel.tsx），分面承担的是「看结果 + 手动触发」。
 //
-// active 门控（对齐 SessionPanel）：仅在选中本分面时拉取数据与订阅 SSE，
+// active 门控（按需加载约定）：仅在选中本分面时拉取数据与订阅 SSE，
 // 未选中零请求（project-page-tabs 按需加载语义）。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Key } from 'react';

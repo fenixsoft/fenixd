@@ -298,14 +298,6 @@ test('无心跳覆盖的工具不写 toolElapsedSeconds', () => {
 
 // ── 既有分支不回归 ───────────────────────────────────────────────────
 
-test('session_ended 既有用例不回归', () => {
-  const msgs = runEventsToChatMessages([{ type: 'session_ended', reason: 'idle' }]);
-  assert.equal(msgs.length, 1);
-  assert.equal(msgs[0].type, 'system');
-  assert.match(msgs[0].content, /空闲/);
-  assert.doesNotMatch(msgs[0].content, /\[session_ended\]/);
-});
-
 test('error/interrupted/cancelled 终态分支保持不变', () => {
   const msgs = runEventsToChatMessages([
     { type: 'error', error: 'Max turns (600) reached' },

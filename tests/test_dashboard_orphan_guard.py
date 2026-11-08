@@ -443,7 +443,6 @@ class _FakeHttpd:
     def __init__(self, addr, registry, static_dir):
         self.addr = addr
         self.watcher = None
-        self.session_manager = None
         self.sse_hub = object()
         self.summary_index = None
 
@@ -468,14 +467,6 @@ class _FakeWatcher:
         pass
 
     def stop(self):
-        pass
-
-
-class _FakeSessionManager:
-    def __init__(self, hub):
-        self.hub = hub
-
-    def shutdown(self):
         pass
 
 
@@ -509,9 +500,6 @@ def _install_serve_harness(monkeypatch, bind_outcomes, occupant):
 
     monkeypatch.setattr(server_mod, "DashboardHTTPServer", fake_server_cls)
     monkeypatch.setattr(server_mod, "FileWatcher", _FakeWatcher)
-    monkeypatch.setattr(
-        "core.dashboard.session_manager.SessionManager", _FakeSessionManager
-    )
     monkeypatch.setattr(server_mod, "_bind_parent_lifecycle", lambda: None)
     monkeypatch.setattr(server_mod, "_find_dashboard_occupant", lambda port: occupant)
     monkeypatch.setattr(server_mod, "_proc_starttime", lambda pid: _OCCUPANT_STARTTIME)

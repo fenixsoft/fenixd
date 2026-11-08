@@ -1,7 +1,9 @@
 # ADR-303：协作拓扑派生单源在后端，前端零推导、聚合零复写
 
 date: 2026-10-30
-status: accepted
+status: retired
+
+Retired: 2026-11-08 SPEC 协作拓扑大屏（单 SPEC 端点/前端页面/派生引擎）经用户指令整体退役，跨项目聚合此前已随 v2 界面域退役消失，裁定主体不复存在
 
 ## Context
 

@@ -46,7 +46,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     ……以上仅为代表性摘录：spec-freeze / spec-activate / spec-resume /
     spec-task-reflow / spec-promote / spec-re-review / spec-unfreeze、
     run-cancel、hooks/audit 以及 code-review / regression / evolution /
-    session / knowledge / architecture 等路由 mixin 的端点族均未列入，
+    knowledge / architecture 等路由 mixin 的端点族均未列入，
     完整清单以 routes/ 各 mixin 的实际注册为准，此处不逐一维护。
 """
 
@@ -186,14 +186,12 @@ from .routes.evolution_routes import H7EvolutionRoutesMixin  # noqa: E402
 from .routes.help_routes import H8HelpRoutesMixin  # noqa: E402
 from .routes.sse_routes import H9SseRoutesMixin  # noqa: E402
 from .routes.static_routes import H10StaticRoutesMixin  # noqa: E402
-from .routes.session_routes import H_SessionRoutesMixin  # noqa: E402
 from .routes.code_review_routes import H11CodeReviewRoutesMixin  # noqa: E402
 from .routes.regression_routes import H12RegressionRoutesMixin  # noqa: E402
 from .routes.architecture_routes import H13ArchitectureRoutesMixin  # noqa: E402
 from .routes.knowledge_routes import H14KnowledgeRoutesMixin  # noqa: E402
-from .routes.topology_routes import H15TopologyRoutesMixin  # noqa: E402
 from .routes.command_center_routes import H17CommandCenterRoutesMixin  # noqa: E402
-class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H_SessionRoutesMixin, H11CodeReviewRoutesMixin, H12RegressionRoutesMixin, H13ArchitectureRoutesMixin, H14KnowledgeRoutesMixin, H15TopologyRoutesMixin, H17CommandCenterRoutesMixin, BaseHTTPRequestHandler):
+class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4RunRoutesMixin, H5SettingsRoutesMixin, H6AlertRoutesMixin, H7EvolutionRoutesMixin, H8HelpRoutesMixin, H9SseRoutesMixin, H10StaticRoutesMixin, H11CodeReviewRoutesMixin, H12RegressionRoutesMixin, H13ArchitectureRoutesMixin, H14KnowledgeRoutesMixin, H17CommandCenterRoutesMixin, BaseHTTPRequestHandler):
     """处理 GET/HEAD/POST/DELETE 请求，输出 JSON 或静态资源。
 
     protocol_version=HTTP/1.1：SSE 需要 keep-alive 长连接 + chunked 传输
@@ -548,7 +546,7 @@ def _start_claude_watchdog(env=None) -> bool:
         )
         # SIGTERM 的处置已由 serve() 安装为「优雅停机」（转 httpd.shutdown()，
         # code-review item a4e9b12a8b82），故此处 SIGTERM 会走完整清理链
-        # （session_manager.shutdown / watcher.stop / server_close），
+        # （watcher.stop / server_close），
         # 不再依赖默认处置的「立即终止、不展开 Python 帧」。
         os.kill(os.getpid(), signal.SIGTERM)
 
@@ -726,7 +724,7 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
                     )
                 # 等待旧实例退出（≤9s）。SIGTERM 在本模块内是 graceful 退出
                 # （_graceful_term → httpd.shutdown → finally 清理链：watcher/
-                # SSE/session_manager 收尾），实测空闲实例 ≈4.3s 进程才消失——
+                # SSE/socket 收尾），实测空闲实例 ≈4.3s 进程才消失——
                 # 初版 3s 窗口不等旧实例死透就重绑，必然再撞 EADDRINUSE、新实例
                 # 报错退出（2026-09-30 真实环境场景验证实证：「非 tmux 旧实例仍
                 # 接管」的「终止旧实例并成功绑定」时序破裂）。
@@ -760,13 +758,12 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             sys.exit(1)
 
     # 优雅停机信号处理（code-review item a4e9b12a8b82）：SIGTERM 若走默认处置会
-    # 立即终止进程、不展开 Python 帧——serve() 的 finally 清理链（session_manager
-    # .shutdown / watcher.stop / server_close）永不执行，live-session 子进程被
-    # 孤儿化（正是 self-watchdog 自杀 / 外部 stop 要防的形态）。安装 handler 把
+    # 立即终止进程、不展开 Python 帧——serve() 的 finally 清理链（watcher.stop /
+    # server_close）永不执行。安装 handler 把
     # SIGTERM 转为 httpd.shutdown()（从 serve_forever 干净返回 → 走 finally）。
-    # handler 闭包只引用 httpd（绑定/接管完成后即已存在），故在 watcher /
-    # SessionManager 创建**之前**安装：若晚于它们，启动窗口内到达的 SIGTERM 仍走
-    # 默认处置、孤儿化刚拉起的会话子进程（code-review item 26f606839a26）。窗口
+    # handler 闭包只引用 httpd（绑定/接管完成后即已存在），故在 watcher 创建**
+    # 之前**安装：若晚于它，启动窗口内到达的 SIGTERM 仍走默认处置（code-review
+    # item 26f606839a26）。窗口
     # 内提前到达的信号只会置位 shutdown 请求，serve_forever 启动即返回 → 同样走
     # 完整清理链。仅在主线程可安装（signal.signal 限制）；失败（非主线程调用
     # serve）降级为既有默认处置。
@@ -789,9 +786,6 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
         )
         httpd.watcher = watcher
         watcher.start()
-        # dashboard-live-session 3.2：会话管理器随 dashboard 生命周期（watcher 之后创建）
-        from .session_manager import SessionManager
-        httpd.session_manager = SessionManager(httpd.sse_hub)
     except Exception:
         # 绑定成功后的启动段抛异常时，旧实现会让异常逃出 serve() 而**不经过**
         # 下方 finally 的 server_close()，泄漏已绑定的监听 socket（in-process
@@ -807,12 +801,6 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             stop_all_claude_watchdogs()
         except Exception as e:  # noqa: BLE001
             sys.stderr.write(f"dashboard 启动段收割 claude-watchdog 失败: {e}\n")
-        try:
-            if httpd.session_manager is not None:
-                httpd.session_manager.shutdown()
-                httpd.session_manager = None
-        except Exception:
-            pass
         try:
             if watcher is not None:
                 watcher.stop()
@@ -852,7 +840,7 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
         # verify.yaml），并与用户重启后重新触发的下一轮起草并发写同一文件。
         # 退出链显式 killpg(SIGKILL) 整组终止（killpg 先例：core/knowledge.py
         # _kill_process_group）。惰性导入 + 吞异常：收割失败不得阻断下方
-        # session/watcher/socket 收尾。
+        # watcher/socket 收尾。
         try:
             from .routes.architecture_routes import _MANAGER as _arch_manager
 
@@ -865,17 +853,9 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             reap_all_autodraft()
         except Exception:  # noqa: BLE001
             pass
-        # dashboard-live-session 3.3：先终止会话子进程，再停 watcher。
-        # code-review item 7ead46b03f0e：三步各自吞异常并留痕——任一项抛出不得
-        # 跳过后续清理（server_close 被跳过会泄漏已绑定监听 socket，shutdown 被
-        # 跳过会孤儿化 live-session 子进程），与上方启动段异常路径的逐项清理
-        # 纪律对齐，保证 server_close 无条件执行。
-        if httpd.session_manager is not None:
-            try:
-                httpd.session_manager.shutdown()
-            except Exception as e:
-                sys.stderr.write(f"dashboard 退出清理 session_manager 失败: {e}\n")
-            httpd.session_manager = None
+        # code-review item 7ead46b03f0e：各步各自吞异常并留痕——任一项抛出不得
+        # 跳过后续清理（server_close 被跳过会泄漏已绑定监听 socket），与上方
+        # 启动段异常路径的逐项清理纪律对齐，保证 server_close 无条件执行。
         try:
             watcher.stop()
         except Exception as e:

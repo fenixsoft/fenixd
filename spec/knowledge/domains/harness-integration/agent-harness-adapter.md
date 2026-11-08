@@ -1,6 +1,6 @@
 # HarnessAdapter 进程边界协议与 claude 平移
 
-<!-- knowledge: capability=agent-harness-adapter rev=2
+<!-- knowledge: capability=agent-harness-adapter rev=3
      sources=spec/archive/2026-10-30-add-harness-adapter-layer,spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md -->
 
 「换 harness 只换 adapter」的接缝契约：在 `core/agent_runner/harness/` 包内把「怎么起进程、怎么读事件、怎么认进程」收敛为单一协议，claude 现状整体平移其中且行为逐字节不变（ADR-271）。
@@ -13,7 +13,7 @@
 - **claude spawn env 恒注入 `IS_SANDBOX=1`**：root/sudo 部署下 claude CLI 对 bypass 权限模式启动即安全拒绝（exit_code=1、0 API 轮次、stderr 引用旧旗标 `--dangerously-skip-permissions`），除非环境携带 `IS_SANDBOX=1`——主车道与一次性 spawn 恒注入 `--permission-mode bypassPermissions`，全在触发面内。adapter 在 build_spawn_spec env 收尾处统一兜底注入该键（`_ensure_sandbox_flag`），与 systemd 承载层的 EnvironmentFile 提升稿互为纵深：承载稿缺键（捕获侧 denylist 不产出该键）不再导致 run 秒死；非 root 场景该键不被 CLI 读取，注入无行为影响。快照对账（金样本 fixture）与 adapter 单测覆盖该键在场。
 - **一次性 spawn 收编**：监督 judge（liveness）、知识蒸馏（knowledge）、知识回填（knowledge_backfill）、架构图 autodraft（architecture_routes）、项目简介（project_routes）五个一次性 spawn 点统一走 `run_one_shot(adapter, …)`；各调用点 CLI 参数形态（judge 走 `--output-format json` argv 传 prompt、蒸馏走 `--permission-mode bypassPermissions` stdin 传 prompt 等差异）经 claude adapter 保持。告警叙事通道 `adjudication_narrative.default_channel` 经既有 `set_channel` 接缝注入 adapter 化实现，模型显式传递不依赖 CLI 默认档；新增轻量 LLM 生成需求禁再复制 CLI 形态（ADR-055 纪律由 ADR-271 升级承接）。
 - **进程识别泛化**：`proc_utils.py`、`event_bus.py`、`admin_monitor.py`、`bin/fenix_dashboard.py` 的 claude 进程名/pgrep pattern 由当前 harness adapter 的 `process_patterns()` 供给，claude 值与现状全等（命中/豁免行为不变，killpg 自保护守卫不受影响）。
-- **豁免面**：dashboard 自由会话（session_manager）与 `CLAUDE_PID` watchdog 不经 adapter 化、保持 claude 专用——自由会话恒以 claude CLI 长驻流式形态启动（ADR-139），watchdog 是 claude 专属监视器、随旧 harness 一起退役（ADR-271）。全仓核查命令构造唯一入口时两者不计入。
+- **豁免面**：`CLAUDE_PID` watchdog 不经 adapter 化、保持 claude 专用——它是 claude 专属监视器、随旧 harness 一起退役（ADR-271）；原豁免面成员 dashboard 自由会话（session_manager，ADR-139）已于 2026-11-08 随「会话接入」分面整体退役删除。全仓核查命令构造唯一入口时 watchdog 不计入。
 - **import 单向**：harness 包（protocol/claude_adapter/one_shot/工厂 `_resolve_adapter`）只依赖 stdlib 与既有纯工具模块，禁 import runner/event_bus/admin_monitor；消费侧单向 import 工厂取 `process_patterns()`。
 
 ## 关键行为
@@ -24,3 +24,4 @@
 
 - 2026-10-30 add-harness-adapter-layer（spec/archive/2026-10-30-add-harness-adapter-layer） — 新增本能力：HarnessAdapter 协议七成员与三数据类冻结、claude 现状字节级平移（金样本快照对账）、主通道两段化、五处一次性 spawn 收编 run_one_shot、进程识别 process_patterns() 泛化、自由会话与 CLAUDE_PID watchdog 豁免、harness 包 import 单向
 - 2026-11-05 systemd-hosted-daemon-path-missing-local-bin（spec/knowledge/_inbox/done/systemd-hosted-daemon-path-missing-local-bin.md） — 新增 claude spawn env 恒注入 IS_SANDBOX=1 兜底规则（root+bypassPermissions 放行键、与承载层提升稿互为纵深、快照与单测覆盖该键在场）
+- 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 豁免面条款收口：dashboard 自由会话退役，豁免面收缩为 CLAUDE_PID watchdog 单项

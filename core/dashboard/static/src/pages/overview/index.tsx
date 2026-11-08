@@ -19,7 +19,7 @@ const HEARTBEAT_MS = 30000;
 const ALERTS_TICK_COALESCE_MS = 500;
 // SSE 永久停连时告警横幅的兜底轮询间隔（code-review item 690bc68a1883）：服务端
 // 连接数满等非 200 响应会让 EventSource 永久停止重连，alerts/admin_activities
-// 事件永不再到，停留页面期间新告警不再上屏（SessionPanel item 2303508d27ff 同类
+// 事件永不再到，停留页面期间新告警不再上屏（item 2303508d27ff 同类兜底
 // 先例）。onerror 降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts，
 // onopen（连接恢复）停轮询；间隔对齐 HEARTBEAT_MS 量级
 const ALERTS_FALLBACK_POLL_MS = 30000;
@@ -132,7 +132,7 @@ export default function OverviewPage() {
     // onerror 只靠「原生自动重连」不够：非 200 响应（连接数满 503 等）会让浏览器
     // 永久停止重连，此后 alerts/admin_activities 事件永不再到，停留页面期间新增
     // 告警不再上屏。降级为低频 tick 轮询驱动 AlertBanner 重拉 /api/alerts
-    // （SessionPanel 2303508d27ff 同款兜底）；onopen（连接恢复）停轮询
+    // （item 2303508d27ff 同款兜底）；onopen（连接恢复）停轮询
     let alertsPollTimer: ReturnType<typeof setInterval> | null = null;
     // item cad10ca9d3a8：告警兜底轮询的降级状态标记（区别于定时器句柄）——
     // 可见性暂停只清句柄、保留标记，恢复可见后据此补启；仅 onopen（SSE 重连

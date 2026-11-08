@@ -1,5 +1,5 @@
 // pageChrome.ts — 项目详情页「页面 chrome」占用高度共享常数
-// （code-review item b2787f6789a9：原 SessionPanel / ArchitectureTab 各持一份
+// （code-review item b2787f6789a9：原 ArchitectureTab 等消费方各持一份
 // 硬编码副本，顶栏/页头/Tabs 尺寸调整时两处须同步，漏改一侧即单侧纵向溢出）。
 //
 // unified-page-title-bar 2.5 回校：PageContainer 页头从详情页摘除（标题/
@@ -19,7 +19,7 @@
 
 import { isEmbedMode } from './embedMount.ts';
 
-// [fenix-ignore:e6aef4e44ee9] 仓库内无共享布局 CSS 变量可派生（消费侧 SessionPanel/ArchitectureTab 均为 emotion 内联 calc 字符串插值），引入变量体系或视觉回归门改动面大于收益，推导口径已注释在文件头
+// [fenix-ignore:e6aef4e44ee9] 仓库内无共享布局 CSS 变量可派生（消费侧 ArchitectureTab 为 emotion 内联 calc 字符串插值），引入变量体系或视觉回归门改动面大于收益，推导口径已注释在文件头
 
 /** 桌面端偏移：配合 calc(100vh - Npx) 给分面视口填充高度（embed 取行壳位档） */
 export const PAGE_CHROME_OFFSET_DESKTOP = isEmbedMode() ? 154 : 150;

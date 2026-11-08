@@ -9,7 +9,7 @@
 // harness 字段 → 中性「AI Assistant」（AI 首字母徽标——无 meta 的 run 可能
 // 来自任何 harness，不再冒充 Claude）；未注册值 → 首字母徽标（圆形底 +
 // 大写首字母），不抛错白屏。context 缺省值仍为 Claude 品牌——未注入
-// Provider 的使用点（自由会话 SessionPanel 等 claude 专用车道）行为与改造
+// Provider 的使用点（claude 专用车道）行为与改造
 // 前逐字一致（spec「缺省品牌等于现状」）。三分支判定逻辑在
 // harnessBrandLogic.ts（node --test 直测），本文件只做 React 装配。
 import { createContext, useContext, useMemo, type ComponentType, type ReactNode } from 'react';

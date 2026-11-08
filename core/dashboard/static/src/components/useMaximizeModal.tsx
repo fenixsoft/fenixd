@@ -10,7 +10,7 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 
 // 最大化态共享几何（供 RunRecordModal 等「打开即最大化」弹窗复用，避免与 hook 内双写漂移）。
 // 宽用 100%（相对 fixed 弹层容器 content box）而非 100vw——100vw 含竖向滚动条宽度，经典滚动条
-// 环境下最大化弹窗会横向溢出一条滚动条；高用 dvh（同 SessionPanel/ArchitectureTab 先例）避免
+// 环境下最大化弹窗会横向溢出一条滚动条；高用 dvh（同 ArchitectureTab 先例）避免
 // 移动端地址栏收展时 100vh 大于实际可视高度、footer 被裁切。CSSProperties 同键双写会被覆盖，
 // 无法表达 CSS 声明级回退，故与先例一致直接用 dvh 不留 vh 回退。
 export const MAXIMIZED_WIDTH = '100%';

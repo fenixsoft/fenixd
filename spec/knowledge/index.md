@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-08 11:16 UTC+8
+> 最后更新：2026-11-08 12:14 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -34,7 +34,7 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。 | 17 | 2026-11-04 17:07 |
-| 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理。run jsonl 以 claude stream-json 形状为唯一 canon；dashboard 自由会话与 CLAUDE_PID watchdog 为显式豁免面。 | 6 | 2026-11-05 20:50 |
+| 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 6 | 2026-11-08 12:30 |
 | 3.3 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测、CLI 重试退避与环境阻塞止损。 | 30 | 2026-11-04 16:30 |
 | 3.4 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 14 | 2026-11-04 09:33 |
 | 3.5 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 16 | 2026-11-06 18:13 |
@@ -47,19 +47,19 @@
 | 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 19 | 2026-11-04 16:30 |
 | 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
 
-### 5 前端交互（3 域 · 71 能力）
+### 5 前端交互（3 域 · 66 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排。另有 dsh 面板桥集成（嵌入挂载/项目菜单行/设置停靠）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 43 | 2026-11-08 00:40 |
-| 5.2 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（双轨重启协议）、增量数据管线、实时会话。按需生成类任务、协作拓扑派生与跨项目聚合端点、指挥中心聚合同属此域。 | 20 | 2026-11-08 00:40 |
+| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排。另有 dsh 面板桥集成（嵌入挂载/项目菜单行/设置停靠）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 42 | 2026-11-08 12:14 |
+| 5.2 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（双轨重启协议）、增量数据管线。按需生成类任务与指挥中心聚合同属此域。 | 16 | 2026-11-08 12:30 |
 | 5.3 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-07 21:43 |
 
 ### 6 运维与自愈（2 域 · 52 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 6.1 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-05 18:19 |
+| 6.1 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 34 | 2026-11-08 11:59 |
 | 6.2 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、arbiter 立项通道退役注记。 | 18 | 2026-11-04 17:07 |
 
 ### 7 工程与质量（4 域 · 22 能力）

@@ -888,7 +888,7 @@ export default function SpecDetailPage() {
   // 整表写入已切换页面。effect 内同步的 ref 提供「当前路由值」，响应返回时
   // 比对不一致即整表丢弃（与主 effect 的 cancelled 守卫同一约定，
   // code-review item cae55cf05562）。同步放 effect（post-commit）而非渲染期
-  // ——渲染必须保持纯净，与 SessionPanel activeRef / list.tsx specMapRef
+  // ——渲染必须保持纯净，与 list.tsx specMapRef
   // 同一纪律（code-review item 35e26d047a50）
   const nameSpecRef = useRef({ name, spec });
   useEffect(() => {
@@ -900,7 +900,7 @@ export default function SpecDetailPage() {
   // 已清除的信息条写回。以 ref 提升到组件作用域，两类写入共享同一防回跳守卫
   // （code-review item bb989e8b9dff）
   const applyDetailRef = useRef<(data: SpecDetail) => void>(() => {});
-  // 告警「清除」在飞防重守卫（code-review item 03dafe97efab，比照 SessionPanel
+  // 告警「清除」在飞防重守卫（code-review item 03dafe97efab，比照既有在飞防重守卫
   // sendingRef 同帧原子短路口径）：网络往返窗口内连点/回车只放行首个调用，
   // 不并发重复 markAlertHandled、不多次 loadSpecAlerts。按告警 id 分键而非
   // 全局单布尔（code-review item 75bcd3ef3540）：单布尔会把在飞窗口内另一条

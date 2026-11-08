@@ -2,7 +2,7 @@
 //
 // 承载全量回归结果视图（add-project-detail-tabs 预留的 `regression` key）：
 // - active 门控：仅在选中本分面时拉取 `GET /api/regression/result`，未选中零
-//   请求（对齐 QualityTab / SessionPanel 的按需加载语义）。
+//   请求（对齐 QualityTab 的按需加载语义）。
 // - 三态渲染（spec test-regression-view Requirement 1）：
 //   1) 全绿（passed）：概览卡片（cmd 测试路径 / 用例总数 / 通过数 / 执行时间 /
 //      总耗时）+ 若 long_tests 非空仍展示长耗时用例表；

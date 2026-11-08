@@ -133,3 +133,7 @@
 ## [2026-11-08 03:40 UTC+8] distill | add-knowledge-anchor-lint-and-prune（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-08 03:44 UTC+8] distill | add-integration-test-env（第 1 轮，自动提交落库）
 ## [2026-11-08 11:16 UTC+8] fold | index 组级聚合分层与域编号（8 组导航层，纯展示不改机器接口）
+
+## [2026-11-08 12:30 UTC+8] retire | 协作拓扑与会话接入退役批（用户指令）：删 topology-derivation / topology-bigscreen-ui / dashboard-live-session / session-composer 四页；collab-graph-aggregation / collab-graph-bigscreen-ui 两页补收口（功能代码已随 v2 界面域退役消失）；ADR-303/ADR-139 翻 retired（Retired: 2026-11-08 注记行，adr/index.md 状态列同步）；index 计数 dashboard-frontend 43→41、dashboard-platform 20→16；project-page-tabs / spec-list-filter-stickiness / project-architecture-diagram / knowledge-dashboard-tab / help-docs-mechanism-coverage / unified-page-title-bar / command-center-console-ui / command-center-aggregation 八页镜像条款收口
+## [2026-11-08 12:07 UTC+8] distill | add-inconclusive-alert-verified-close（第 1 轮，自动提交落库）
+## [2026-11-08 12:17 UTC+8] distill | fix-timeline-chain-nodes-invisible（第 1 轮，自动提交落库）

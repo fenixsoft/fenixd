@@ -44,7 +44,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 #### 项目详情页分面（/projects/:name）
 
-点进项目卡片进入详情页，顶部 Tabs 分五个分面：「功能开发」（默认，SPEC 列表与状态操作）/「代码审查」（code-review 问题台账 + 手动触发与五类操作，见下文）/「测试回归」/「项目架构」/「会话接入」。各分面 active 门控：仅在选中时拉取数据，未选中零请求。
+点进项目卡片进入详情页，顶部 Tabs 分五个分面：「功能开发」（默认，SPEC 列表与状态操作）/「代码审查」（code-review 问题台账 + 手动触发与五类操作，见下文）/「测试回归」/「项目架构」/「项目知识」。各分面 active 门控：仅在选中时拉取数据，未选中零请求。
 
 「功能开发」分面的筛选条件（页签 / 搜索词 / 状态多选 / 类型 / 已归档过滤）会写入 URL（`core/dashboard/static/src/pages/projects/listFilters.ts`），刷新、分享链接、浏览器前进后退都能保留；解析走白名单 + fail-safe，非法参数静默忽略，不影响列表渲染。
 
@@ -62,19 +62,6 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 「项目架构」分面承载按需生成的项目架构图。系统**不自动生成**：从未生成过时展示空态文案与「刷新架构图」按钮，点击后后端仅受理（`POST /api/architecture/refresh`），起后台线程 spawn 一次性 headless claude（archify skill 以 vendored 形式随库分发于 `vendor/archify/`，指引原文直接注入生成提示词，无需安装、零网络依赖）阅读项目代码，产出自包含交互式 HTML 架构图，按项目存于 `.fenix/architecture/`（gitignored 运行时产物），经 `GET /api/architecture/diagram` 下发、前端以 `sandbox="allow-scripts"` 的 iframe 沙箱渲染（不带 allow-same-origin，产物脚本与主站隔离）。生成期间按钮置灰并以 3 秒间隔轮询状态（`GET /api/architecture/status`）；同一项目同时最多一个在飞生成（重复触发返回 409）。图的形态契约：只保留 8–16 个核心组件、突出且仅一条主要路径、标出外部依赖与信任边界、辅助信息进说明卡片不增加连线、节点与说明中文标注；产物按「退出码 → 文件存在且非空 → 自包含 HTML 特征 → 组件数 ∈ [8, 16]」机械判定，不采信 agent 自述（组件数无法提取时记空放行，可用性优先）。刷新即覆盖旧图，只保留最近一次。
 
 失败排查：archify skill 随库分发于 `vendor/archify/`（溯源见 `VENDORED.md`），无需安装，生成零网络依赖；生成前会校验包完整性（`SKILL.md` 存在且非空），若报「包缺件，属部署损坏」的 failed 错误，说明部署目录缺件或损坏，对照 `vendor/archify/VENDORED.md` 恢复包后重新点击「刷新架构图」即可。生成采用**两段式超时**（总预算 1800 秒不变）：探索段 ≤720 秒、出图段 ≤1080 秒分段计时，超时按当前阶段击杀 claude 进程及其派生子进程并判 failed（错误文案带阶段前缀）；状态接口的 `status` 含 `stage` 键（exploring/authoring）可区分当前所处阶段；HEAD 指纹与上次生成一致时重试会跳过探索段直接出图。**daemon 重启会中断在飞生成**：页签会把残留的「生成中」状态合成为失败（错误注明生成被中断），无需清理文件，直接重新点击「刷新架构图」即可。
-
-「会话接入」分面把一个 Claude Code 会话直接接进浏览器（composer 组件 `SessionComposer` 位于 `core/dashboard/static/src/components/claude-composer/`，路由在 `core/dashboard/routes/session_routes.py`）。会话是**显式开始**的：点击「开始会话」才拉起；会话输出经 SSE 实时流（`/api/stream`）推送，事件按 uuid 去重，断线重连不会出现重复消息。
-
-输入框（composer）的能力：
-
-- 输入 `/` 唤起斜杠命令与 skill 补全（150ms 防抖），↑↓ 选择、Tab 补全、Enter 确认、Esc 关闭；历史命令按项目存 localStorage（`command_history_<project>`）；
-- 输入 `@` 唤起文件提及补全，候选来自 `/api/session/files`（`git ls-files`，上限 5000 个；超时或非 git 仓库返回空数组）；
-- 命令与 skill 列表来自 `/api/session/commands`（会话 init 事件的缓存；无在飞会话时返回空数组）;
-- 草稿按项目自动持久化到 localStorage，切走再切回不丢；Enter 发送、Shift+Enter 换行；
-- 「停止会话」随时中止当前会话进程；输出被截断时显示 truncated 提示；
-- 移动端经 VisualViewport 适配软键盘弹起，输入框不被键盘遮挡。
-
-空闲回收：会话空闲 1800 秒（30 分钟）被自动回收（`core/dashboard/session_manager.py` 的 `SESSION_IDLE_TIMEOUT_SECONDS`），再次使用时重新开始即可。
 
 ### SPEC 详情页（/projects/:name/:spec）
 

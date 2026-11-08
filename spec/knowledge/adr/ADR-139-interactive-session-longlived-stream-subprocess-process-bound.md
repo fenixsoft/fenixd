@@ -1,7 +1,9 @@
 # ADR-139：交互式自由会话为长驻流式子进程，状态仅存 dashboard 进程内
 
 date: 2026-09-23
-status: accepted
+status: retired
+
+Retired: 2026-11-08 项目级自由会话（「会话接入」分面及其 dashboard 进程内会话托管）经用户指令整体退役，裁定主体不复存在
 
 ## Context
 

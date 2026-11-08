@@ -15,7 +15,7 @@
 //      原生参数，见 architectureDiagramUrl 注释），架构图默认以演示模式
 //      充满视口展示；用户仍可在图内工具栏退出/再进演示模式；
 //   4) failed：错误信息展示 + 按钮恢复可点（重试覆盖旧错误）。
-// - 容器显式 flex 定高（design D6）：桌面/移动两档高度常数（对齐 SessionPanel
+// - 容器显式 flex 定高（design D6）：桌面/移动两档高度常数（对齐 pageChrome 单源
 //   实测偏移 222/234），useIsMobile 切换，minHeight 兜底，避免移动端越界。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -41,7 +41,7 @@ interface ArchitectureTabProps {
 
 // ── 模块级命名常量（对齐 RegressionTab 5130098995b7 范式）────────────
 const POLL_INTERVAL_MS = 3000;
-// 分面高度 = 视口 − 页面 chrome（偏移常数与 SessionPanel 同源共享，
+// 分面高度 = 视口 − 页面 chrome（偏移常数以 pageChrome 为单源共享，
 // 推导见 utils/pageChrome.ts）。超短视口由 minHeight 保底。
 const FRAME_MIN_HEIGHT = 320;
 

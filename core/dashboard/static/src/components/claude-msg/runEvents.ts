@@ -293,10 +293,10 @@ export function thinkingPreviewText(text: string, max = 40): string {
 // 真正新增/被回填突变的消息（toolResult、耗时、任务状态、thinking 增量等）
 // 保留新引用触发重渲染。等值判定保证语义等价才复用，键碰撞只会让判定失败
 // 回落新对象，不影响正确性。缓存每轮按本轮产出整体重建（只含当前列表），
-// 不跨轮累积；多个调用方（ClaudeOutputPane / SessionPanel）交替转换时会互踩
+// 不跨轮累积；多个调用方（ClaudeOutputPane）交替转换时会互踩
 // 缓存键，代价仅是复用未命中，仍正确。
 type MessageReferenceCache = Map<string, ChatMessage>;
-// [fenix-ignore:e7b39aa4951c] 已知取舍非缺陷：复用前经 chatMessageShallowEqual 等值判定保证语义正确，且实测仅 ClaudeOutputPane/SessionPanel 两调用方，交替互踩缓存键的代价只是复用未命中（注释已载明）
+// [fenix-ignore:e7b39aa4951c] 已知取舍非缺陷：复用前经 chatMessageShallowEqual 等值判定保证语义正确，且实测调用方少（ClaudeOutputPane 等），交替互踩缓存键的代价只是复用未命中（注释已载明）
 let previousMessageCache: MessageReferenceCache = new Map();
 
 // 字段值比较：引用相等直通过；toolResult 是转换层每轮新建的嵌套对象，按其
@@ -536,32 +536,6 @@ function convertRunEvents(events: RunEvent[], showThinking: boolean = true): Cha
       } else {
         out.push({ type: 'system', content: `[${ev.type}]`, timestamp });
       }
-      continue;
-    }
-
-    // session 终态事件（dashboard-live-session 4.4）：
-    // reason 映射为中文系统行，MUST NOT 落 fallback 的 [session_ended]。
-    if (ev.type === 'session_ended') {
-      flushThinking();
-      const reason = payloadText(ev.reason);
-      let label: string;
-      switch (reason) {
-        case 'idle':
-          label = '会话因空闲已自动终止';
-          break;
-        case 'process_exit':
-          label = '会话进程已退出';
-          break;
-        case 'user':
-          label = '会话已停止';
-          break;
-        case 'shutdown':
-          label = 'Dashboard 正在关闭，会话已终止';
-          break;
-        default:
-          label = reason ? `会话已终止（${reason}）` : '会话已终止';
-      }
-      out.push({ type: 'system', content: label, timestamp });
       continue;
     }
 

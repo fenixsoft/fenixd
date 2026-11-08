@@ -96,7 +96,7 @@ export default function SpecStatusModal({
   // 在飞期间其余写动作按钮统一 disabled（code-review item 4011bc5fcc60），使
   // 「同一时刻只有一个确认动作在跑」在 UI 层成立而非仅注释声明。
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  // 弹窗级单飞重入守卫（code-review item 1ff7a536272c，比照 SessionPanel/
+  // 弹窗级单飞重入守卫（code-review item 1ff7a536272c，比照既有分面/
   // HooksPanel 的 savingRef 口径）：防重若只靠 pendingAction state 驱动的
   // 按钮 disabled，setPendingAction 渲染生效存在 React 调度间隙，间隙内
   // 连点会并发发出两次写请求；经 pendingActionRef 写读同帧原子短路，state

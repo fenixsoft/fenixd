@@ -93,7 +93,7 @@ from core.agent_runner.liveness import (
 from core.agent_runner.session import SessionTracker
 # attempt 在飞子进程清场经自保护守卫整组收割（code-review item
 # 0c4d156555a2；ADR-291 守卫纪律，与 liveness/maintenance_runs/
-# session_manager 先例同源单点）。
+# _kill_ocr_process_group 先例同源单点）。
 from core.proc_utils import guard_killpg
 # add-harness-adapter-layer：harness 适配层（命令构造/env 路由平移目标；
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
@@ -6258,7 +6258,7 @@ class AgentRunner:
     # 杀后残留为孤儿（占端口/持 git index.lock/改写 worktree，与 attempt
     # 层 sleep(10) 后复用同一 worktree 的下一 attempt 并行读写）；对齐
     # ADR-291「新增清场点必须走守卫」及 liveness/maintenance_runs.
-    # _kill_ocr_process_group/session_manager 既有先例。
+    # _kill_ocr_process_group 既有先例。
     # start_new_session=False 时保持直杀直接子进程语义（无独立组，整组投
     # 递会误伤调用者所在组）。守卫拒绝或组已不存在（返回 False）按
     # guard_killpg 契约静默收口、不降级单 pid 直杀；宽限窗口与组长收尸

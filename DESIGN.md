@@ -130,27 +130,15 @@
 > 移动应用）按同一模板增小节即可，不改通用条款与一般域；MUST NOT 为未出现的域
 > 预写内容。
 
-### 例外域：大屏域（spec-topology 拓扑大屏）
+### 例外域：大屏域（spec-topology 拓扑大屏）——已退役
 
-> 2026-11-04 用户指令：指挥中心（command-center 四屏）黑改白并去脱壳改
-> ProLayout 内容区嵌入，退出本域回归一般域（配色单源改挂 theme.ts dsh 对齐
-> 常量表，见 pages/command-center/shared.ts；Agent 卡缩宽 90% 随嵌入）。
-> collab-graph 协作图谱大屏此前已删除（commit 3f16acc7e）。原「深蓝黑四色
-> 单源」域专属 token 表随指挥中心迁移一并退役，历史值见
-> spec/archive/2026-10-31-add-command-center。本域现余成员=SPEC 协作拓扑
-> 大屏一项。
-
-- 用途声明：大屏展示——SPEC 全生命周期协作拓扑远距离投屏可读；layout:false
-  脱壳全屏深色页。（出处：spec/archive/2026-10-30-add-spec-topology-bigscreen）
-- 与一般域的偏离清单：
-  1. 配色：深底暗色页替代白底；状态语义色复用 utils/runVisual.ts STATUS_HEX
-     单源（与 SpecTimeline 同源）。（出处：add-spec-topology-bigscreen design
-     D6/D7）
-  2. 图表：手写 SVG + React 零图表库。（出处：同上）
-  3. 刷新：SSE 热更新 + 30s 轮询兜底（detail.tsx 同款），不走一般域心跳口径。
-     （出处：pages/projects/topology/index.tsx）
-  4. 静态渲染红线在本域按「管线/泳道图表静态 SVG、无任何动画元素」从紧执行。
-     （出处：specs/topology-bigscreen-ui「静态 SVG、无动画」Scenario）
+> 大屏域原为 `layout:false` 脱壳深色大屏的例外条款域（spec-topology 拓扑大屏
+> 单成员；collab-graph 协作图谱大屏此前已删除，指挥中心 2026-11-04 黑改白
+> 退出本域回归一般域，原「深蓝黑四色单源」域专属 token 表随迁移一并退役，
+> 历史值见 spec/archive/2026-10-31-add-command-center）。
+> **2026-11-08 用户指令退役**：SPEC 协作拓扑大屏（脱壳页面、路由、SPEC 列表
+> 菜单入口与后端派生端点）整体删除，本域成员清零、条款随之失效（历史条款见
+> spec/archive/2026-10-30-add-spec-topology-bigscreen 与 git 历史）。
 
 ### 例外域：v2 商业化界面域（redesign-dashboard-v2-ui）——已退役
 

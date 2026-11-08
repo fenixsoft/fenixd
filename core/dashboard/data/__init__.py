@@ -36,8 +36,6 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
                          code-review 20ad589a3bc4),
     merge_dispositions_by_run (admin_alerts.py，timeline.py 经门面解析；
                                code-review 55336c2a40af),
-    admin_events_for_spec (timeline.py，topology.py 经门面解析；
-                           code-review aba5c5dd1e75),
     compute_run_cost      (runs.py，timeline.py 经门面解析),
     count_scenarios       (spec_docs.py，summary.py 经门面解析),
     daemon_health         (summary.py),
@@ -69,13 +67,9 @@ _D8 约定_（可 patch 名契约，code-review item 895133450e96 修正：原�
     read_spec_title     (spec_docs.py，summary.py 经门面解析；
                          code-review 5aa6eed3fc95),
     resolve_spec_dir      (spec_docs.py，tasks.py、summary.py 经门面解析),
-    rotated_log_files     (timeline.py，topology.py 经门面解析；
-                           code-review aba5c5dd1e75),
     run_activity          (runs.py，summary.py 经门面解析),
     run_task_progress     (tasks.py，summary.py 经门面解析),
     spec_generation_progress (spec_docs.py，summary.py 经门面解析),
-    spec_total_duration     (summary.py 公开别名，topology.py 经门面解析；
-                             code-review d87d1114a797),
     task_progress         (tasks.py，summary.py 经门面解析),
     tasks_note            (tasks.py，summary.py 经门面解析),
     validated_spec_name   (spec_docs.py，tasks.py 经门面解析)
@@ -140,7 +134,6 @@ from .summary import (
     hosting_state,
     project_summary,
     _spec_total_duration,
-    spec_total_duration,
     _GLOBAL_BUDGET_CACHE,
     _GLOBAL_BUDGET_CACHE_MAX,
     _resolve_global_impl_run_budget,
@@ -179,8 +172,6 @@ from .timeline import (
     timeline_with_retry,
     _cost_summary_from_timeline,
     cost_summary_from_timeline,
-    rotated_log_files,
-    admin_events_for_spec,
 )
 
 # ── runs 组 ──
@@ -395,19 +386,6 @@ from .adjudication_choices import (
 
 # ── state 组 ──
 from .state import parse_state, parse_archived_state, STATE_ARCHIVE_BASENAME
-
-# ── topology 组（add-spec-topology-bigscreen）──
-# SPEC 协作拓扑派生：只读端点 /api/specs/<spec>/topology 的数据源（timeline/
-# runs 既有数据为唯一输入，前端零推导）
-from .topology import (
-    LANES,
-    LANE_LABELS,
-    STAGES,
-    STAGE_LABELS,
-    derive_topology,
-    split_attempt,
-    stage_lane_role,
-)
 
 # ── config_admin 组 ──
 from .config_admin import (
