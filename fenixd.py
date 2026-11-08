@@ -1411,6 +1411,12 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error("fenixd", f"Evolution checkpoint failed: {e}")
         except KeyboardInterrupt:
+            # code-review item 2dbc51913258：main() 装配下本分支不可达——
+            # SIGINT 已由 main() 自定义处理器接管为调用 shutdown()，Ctrl+C
+            # 以 SystemExit 形态在信号到达点抛出、经 finally shutdown 收口，
+            # 不会以 KeyboardInterrupt 到达此处。本分支仅兜底未装处理器
+            # 直接调 start()（嵌入/测试）或内层显式 raise 的来源；停机
+            # 收尾统一在 finally shutdown，勿在此追加。
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
             self.shutdown()
@@ -4316,10 +4322,9 @@ class FenixDaemon:
             running_run_ids_for_spec,
             soft_delete_spec,
         )
-        import time as _time
 
         proot = PROJECT_ROOT
-        deadline = _time.time() + max(1.0, float(total_timeout))
+        deadline = time.time() + max(1.0, float(total_timeout))
         try:
             # 停止回调先发（对当前在跑 run 逐个 cancel_run）
             stop_callback(running_run_ids_for_spec(proot, spec))
@@ -4329,10 +4334,10 @@ class FenixDaemon:
                 f"spec_delete 停止回调异常 spec='{spec}': {e}（有界等待仍继续）",
             )
         # 有界等待终态：轮询 running_run_ids_for_spec 直到该 spec 无在跑 run
-        while _time.time() < deadline:
+        while time.time() < deadline:
             if not running_run_ids_for_spec(proot, spec):
                 break
-            _time.sleep(min(1.0, max(0.1, deadline - _time.time())))
+            time.sleep(min(1.0, max(0.1, deadline - time.time())))
         if running_run_ids_for_spec(proot, spec):
             self.logger.warning(
                 "fenixd",
@@ -6820,11 +6825,16 @@ class FenixDaemon:
         _safe_log("info", "fenixd stopped")
         # code-review item ecc6fd4d27ad：仅在无在途异常时以 0 干净退出。
         # start() 的 while 主循环包在 try/except KeyboardInterrupt/finally 中，
-        # finally 调本方法——若主循环抛出非 KeyboardInterrupt 异常，此处的
-        # 无条件 sys.exit(0) 会在 finally 内抛 SystemExit 替换在途异常
-        # （SystemExit 非 Exception，main() 的 except Exception 捕获不到），
-        # FATAL 日志不打、失败被伪造成退出码 0。有在途异常时跳过 sys.exit，
-        # 让原异常继续传播给 main() 记 FATAL 并以退出码 1 结束。
+        # finally 调本方法——若主循环有在途异常，此处的无条件 sys.exit(0)
+        # 会在 finally 内抛 SystemExit 替换在途异常（SystemExit 非
+        # Exception，main() 的 except Exception 捕获不到），FATAL 日志不打、
+        # 失败被伪造成退出码 0。有在途异常时跳过 sys.exit，让原异常继续
+        # 传播给 main() 记 FATAL 并以退出码 1 结束。中断同理按在途异常
+        # 对账：SIGINT 已由 main() 自定义处理器接管（code-review item
+        # 2dbc51913258），Ctrl+C 以 SystemExit 形态经 finally 二次进入
+        # 本方法，在途 SystemExit 使下方跳过 sys.exit、退出码 0 不变；
+        # start() 的 except KeyboardInterrupt 分支仅兜底未装处理器的
+        # 直调路径。
         # 信号处理器路径（SIGTERM/SIGINT → 本方法）在主循环正常执行点进入、
         # 无在途异常 → 仍走 sys.exit(0)，行为不变；启动窗口信号同理。
         if sys.exc_info()[0] is None:

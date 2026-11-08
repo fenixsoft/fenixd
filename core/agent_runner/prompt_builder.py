@@ -324,6 +324,13 @@ def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
     prompt_builder 注入侧（{result_path}/{scenarios_path} 占位符）与 runner 产物
     硬门校验侧共用同一计算，避免双实现漂移；其余 agent 类型无 planner 产物契约，
     调用即 ValueError（fail-fast，防误用）。
+
+    一致性边界（code-review item 75b7205fa2f7）：本族路径有意不做 safe_component
+    净化——prompt 注入（{result_path}/{scenarios_path}）、agent 写侧与产物硬门
+    校验（result_gate / runner 遗留清理）三方均复用本函数同源计算，病理 spec 名
+    下路径仍三方自洽；同目录树内与 safe_component 净化族（report.json 等）的
+    目录分裂系跨族并存、双侧各自自洽。若未来收敛净化，MUST 在本函数单点改
+    （三方自动同步），勿在调用点各自拼路径。
     """
     vp_dir = Path(project_root) / ".fenix" / "verify-progress" / spec_name
     if agent_type == "planner-judge":
@@ -400,6 +407,11 @@ def spec_review_result_path(project_root, spec_name: str) -> Path:
     """评审结果文件路径（add-spec-review-gate）。
 
     返回 <项目根>/.fenix/spec-review/<spec_name>/.fenix-run-result.json
+
+    一致性边界（code-review item 75b7205fa2f7）：本族路径有意不做 safe_component
+    净化——注入（{result_path}）、写侧与产物硬门校验（result_gate / runner /
+    spec_review）三方均复用本函数同源计算，病理 spec 名下路径仍三方自洽；
+    若未来收敛净化，MUST 在本函数单点改（三方自动同步），勿在调用点各自拼路径。
     """
     return Path(project_root) / ".fenix" / "spec-review" / spec_name / ".fenix-run-result.json"
 
@@ -1766,10 +1778,25 @@ class PromptBuilder:
             kind = e.get("kind")
             if not isinstance(path, str) or not path or not kind:
                 continue
+            # 存在性检查锚定收口（code-review item 629fa1e0c090）：声明 path 由
+            # LLM/人维护，误写绝对路径（/abs/...）时 pathlib 拼接语义是整体替换，
+            # 存在性检查逃出主树基准、会把文件系统任意位置的文件误标「主树存在」；
+            # 含 .. 上跳成分同理。绝对路径剥掉前导 / 后按主树相对位置检查，剥后
+            # 仍含 .. 成分（或剥空）视为不可锚定 → exists=False（下游按「主树
+            # 不存在，疑似声明笔误」呈现），存在性检查恒锚定主树根；candidates
+            # 匹配只取 basename（match_basename_in_tree 自 project_root 遍历），
+            # 原样传入无逃逸面。
+            parts = Path(path).parts
+            if parts and parts[0] == "/":
+                parts = parts[1:]
+            if parts and ".." not in parts:
+                exists = bool((self._pm.project_root / Path(*parts)).exists())
+            else:
+                exists = False
             item = {
                 "path": path,
                 "kind": kind,
-                "exists": bool((self._pm.project_root / path).exists()),
+                "exists": exists,
                 "candidates": [],
             }
             if kind in ("new", "modify", "delete") and not item["exists"]:
@@ -2237,7 +2264,15 @@ class PromptBuilder:
           双通道共用同键（add-code-review-concurrency-and-429-resilience）
         """
         template = self._load_agent_template("code-review")
-        files: list = detail.get("manifest") or []
+        # 条目防御（code-review item 6bd00329828c）：与 conflict_paths（item
+        # 7387ef13061b）/amended_inflight（item d2ddbf82808b）的 isinstance list
+        # 防御同口径——非 list 脏值（如上游回归传入字符串）作废回空，否则 len
+        # 变字符数、清单 join 按单字符迭代渲染成逐字符一行一项的畸形段注入
+        # prompt（_str_id_list item 7673c27f0dd8 同族漂移防回归）。当前唯一
+        # 生产构造点（maintenance_runs）恒构造 list，防御对齐同族口径。
+        files = detail.get("manifest") or []
+        if not isinstance(files, list):
+            files = []
         total = len(files)
         manifest_txt = "\n".join(f"- {f}" for f in files) or "（manifest 为空——本 run 不应派发，见调用方）"
         window = detail.get("review_window") or "（全仓）"
@@ -2976,7 +3011,14 @@ class PromptBuilder:
         for v in violations:
             if not isinstance(v, dict):
                 continue
+            # 空标识回退（code-review item fe726cbd29b2）：与 _verdict_rejection_
+            # section 的单场景分支同口径——scenario_ids 缺失或经 _str_id_list
+            # 作废回空时回退渲染单场景 scenario_id，两者皆空保留 reason 并标注
+            # 缺场景标识，避免 judge 拿到「- : <理由>」无法对账的空清单行。
             sids = "、".join(_str_id_list(v.get("scenario_ids")))
+            if not sids:
+                single = v.get("scenario_id")
+                sids = f"`{single}`" if single else "（条目缺场景标识）"
             lines.append(f"  - {sids}: {v.get('reason')}\n")
         lines.append(
             "- 各被拒场景的差异化素材（框架已掌握的场景局部数据，归因改写 MUST "

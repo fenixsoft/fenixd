@@ -190,6 +190,17 @@ class G1LifecycleMixin:
         # 旧流，「无进程」时新旧流皆无法区分 create 构建中与孤儿死锁，陈锁判定按
         # 锁龄豁免构建窗口、不以流文件缺失为前提（见 _lock_young）。
         self._lock_since: Dict[str, float] = {}
+        # 供给中标记（code-review item bdba415bb5a7）：create 持锁期间的
+        # node_modules 冷供给可达 NPM_PROVISION_TIMEOUT=900s（verify_contract
+        # 侧 npm ci 上限，超时/失败还有清理+重装兜底轮），远超锁龄豁免阈值
+        # STALE_LOCK_IDLE_SECONDS=120s——供给窗口内无 attempt 子进程、无新鲜
+        # run 流，锁龄一旦超 120s 即被 refresh_locks / has_active_worktree 按
+        # 陈锁摘除并放行后续派发，重开同 spec 双派发窗口。键为
+        # ``<spec>:<agent_type>``（与 _lock_since 同键形态），仅覆盖
+        # _provision_worktree_deps 调用本身（create 两出口 try/finally 进出，
+        # 见 _provision_window_exit），供给结束/失败即退回原锁龄口径，不存在
+        # 永久豁免。
+        self._provision_in_progress: Set[str] = set()
         # 锁治理（D4）：进程表扫描函数，默认 pgrep 实现；测试可注入替身。
         # 签名 (spec_name) -> bool，表示进程表中是否存在指向该 spec worktree 的进程。
         # （家族限定扫描会附带 prefixes= 关键字，替身不支持时按 TypeError 退回
@@ -350,7 +361,14 @@ class G1LifecycleMixin:
                     # 仅分支模式经 create_worktree_on_branch 全新 checkout（queries
                     # 层明示「仅登记活动集与分支映射，不 seed」），新目录必无
                     # node_modules——与下方全新建树出口共用同一段幂等供给。
-                    self._provision_worktree_deps(wt_path)
+                    # 供给窗口豁免（code-review item bdba415bb5a7，同下方全新
+                    # 建树出口）：冷供给可达 900s、超锁龄豁免阈值 120s，先挂
+                    # _provision_in_progress 标记防并发陈锁判定摘锁。
+                    self._provision_in_progress.add(lock_key)
+                    try:
+                        self._provision_worktree_deps(wt_path)
+                    finally:
+                        self._provision_window_exit(lock_key)
                     return wt_path
                 # 无可复用遗产 → 清除上一轮的认领痕迹（prompt 注入以实际为准）。
                 # 仅清不再指向活动集成员的残留（code-review item 097d73d377dd）：
@@ -464,7 +482,14 @@ class G1LifecycleMixin:
             if agent_type in ("implementer", "fast-track"):
                 self._seed_spec(spec_name, wt_path)
 
-            self._provision_worktree_deps(wt_path)
+            # 供给窗口豁免（code-review item bdba415bb5a7，同上方认领出口）：
+            # 标记覆盖 _provision_worktree_deps 调用全程，finally 摘标记并按
+            # 锁在册与否刷新锁龄，豁免不越过供给窗口存续。
+            self._provision_in_progress.add(lock_key)
+            try:
+                self._provision_worktree_deps(wt_path)
+            finally:
+                self._provision_window_exit(lock_key)
 
             self.logger.info("worktree_manager", f"Worktree created: {wt_path}")
             return wt_path
@@ -522,6 +547,25 @@ class G1LifecycleMixin:
                 )
         except Exception as e:
             self.logger.warning("worktree_manager", f"worktree node_modules 供给跳过: {e}")
+
+    def _provision_window_exit(self, lock_key: str) -> None:
+        """供给窗口收尾（code-review item bdba415bb5a7）：摘标记 + 刷新锁龄。
+
+        create() 两条建树出口的 ``_provision_worktree_deps`` 调用以
+        try/finally 进入本方法（供给窗口豁免的统一定界）：无论供给成功/
+        失败都摘 ``_provision_in_progress`` 标记，豁免不越过供给窗口存续。
+        锁仍在册时刷新 ``_lock_since``：供给结束后到 attempt 子进程与 run
+        流建立之间还有一小段交接窗口（长供给已耗尽原锁龄的 120s 年轻豁免），
+        刷新让 ``_lock_young`` 的年轻豁免接管该窗口，此后陈锁判定回到原
+        口径；锁已不在册（create 失败路径 discard）则不写——不为已释放的
+        锁复活锁龄记录。全程持 ``_spec_lock_th``（与 _lock_young /
+        _release_spec_locks 读写同纪律；调用点在 create 主体、未持该锁，
+        非重入无死锁）。
+        """
+        with self._spec_lock_th:
+            self._provision_in_progress.discard(lock_key)
+            if lock_key in self._spec_locks:
+                self._lock_since[lock_key] = time.time()
 
     def _provision_worktree_static_root(self, wt_path: Path) -> None:
         """worktree 补 core/dashboard/static 软链（fix-v2-devserver-fallback-
@@ -1435,6 +1479,10 @@ class G1LifecycleMixin:
 
         daemon 重启后内存锁丢失、但进程表仍存在指向该 spec worktree 的存活
         agent 进程时，同样返回 True（重建登记），防止创建第二个并发 worktree。
+
+        create 供给窗口（node_modules 冷供给可达 NPM_PROVISION_TIMEOUT=900s，
+        code-review item bdba415bb5a7）经 _provision_in_progress 标记豁免，
+        供给结束即退回上述判定口径。
         """
         # [fenix-ignore:a83d069b9197] 台账所述子串比对已修复为 _lock_spec_name 精确比对（split(":")[0]==spec），spec 名互为子串不再误判持锁
         # 快照容错（code-review ae95d059b22）：sorted() 构建快照本身就要迭代原
@@ -1489,6 +1537,19 @@ class G1LifecycleMixin:
         # 的单键回收路径。
         if self._lock_young(spec_name):
             return True
+        # 供给窗口豁免（code-review item bdba415bb5a7）：node_modules 冷供给
+        # 可达 NPM_PROVISION_TIMEOUT=900s、超锁龄豁免阈值，供给中标记按 spec
+        # 全量生效——本方法陈锁释放按 spec 全摘（含他族键，上方 5d9601004a62
+        # 同理），任一族正处供给窗口即整体保守视为持锁；标记 try/finally 进出，
+        # 供给结束即退回原口径（无永久豁免）。spec 名快照锁内构建（与本函数
+        # 其余锁面读点同纪律），避免与供给收尾 discard 并发时集合迭代
+        # RuntimeError。
+        with self._spec_lock_th:
+            provisioning = {
+                self._lock_spec_name(k) for k in self._provision_in_progress
+            }
+        if spec_name in provisioning:
+            return True
         # ── 恢复重派遗产（add-recovery-legacy-check D2，同 refresh_locks 口径）──
         # 陈锁释放的同一时刻为孤儿 implementer worktree 注册遗产兜底
         # （code-review item 72e12f537b2a）：若锁在此处先被释放，refresh_locks
@@ -1521,6 +1582,9 @@ class G1LifecycleMixin:
           - 无匹配进程但流仍在增长 → 保守保留（进程扫描可能受窗口/权限影响）
           - 年轻锁（_lock_since 距今不足阈值）→ 保守保留（create 构建窗口豁免，
             按锁龄独立生效、不以流文件缺失为前提）
+          - create 供给窗口（_provision_in_progress 标记，bdba415bb5a7）→ 按键
+            豁免（冷供给可达 NPM_PROVISION_TIMEOUT=900s，超上方锁龄口径；
+            本族陈锁不因同 spec 他族供给被庇护）
 
         Returns: 被回收的锁 key 列表（审计/测试用）。
         """
@@ -1562,6 +1626,12 @@ class G1LifecycleMixin:
                 # 本族陈锁不因他族年轻构建被庇护延后回收；family=None（键解析不
                 # 出 agent_type）时维持 spec 粒度保守豁免，与同分支 alive/mtime 的
                 # 退回口径一致。
+                continue
+            if lock_key in self._provision_in_progress:
+                # 供给窗口豁免（code-review item bdba415bb5a7）：按本键精确
+                # 豁免——family 已知时回收只摘本族锁键，本族陈锁不因同 spec
+                # 他族供给被庇护延后回收（与上方家族过滤豁免同口径）；标记
+                # try/finally 进出，供给结束即退回原口径（无永久豁免）。
                 continue
             # ── 恢复重派遗产（add-recovery-legacy-check D2）──
             # 陈锁释放的同一时刻：若该 spec 尚有未被清理的 implementer worktree（孤儿，

@@ -232,7 +232,19 @@ def _atomic_write_text(target: Path, text: str, tmp_prefix: str, label: str) -> 
             dir=str(FENIX_DIR),
         )
         try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            # fdopen 本身可能抛异常（如 fd 无效）：此时 fd 尚未被接管，
+            # 下方 except BaseException 只 unlink 临时路径不关 fd，会泄漏
+            # 描述符，显式兜底关闭后再 raise（对齐 fixture_scheduling_showcase
+            # / fenix_detect_artifacts 同型助手，code-review item 804a6cf78f92）。
+            try:
+                f = os.fdopen(tmp_fd, "w", encoding="utf-8")
+            except Exception:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
+                raise
+            with f:
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())

@@ -386,13 +386,19 @@ async function launchChromeExtension(distPath, opts = {}) {
       // 打开新标签页 — 应该由扩展接管
       const newtabPage = await browserContext.newPage();
       // console 错误监听必须在页面加载前挂载（同 networkLog 的时序约束），
-      // 否则页面初始化窗口内的控制台错误会漏采致假通过；测试 5 只读取累计结果
+      // 否则页面初始化窗口内的控制台错误会漏采致假通过；测试 5 只读取累计结果。
+      // 监听统一挂到 context 上全部页面（含启动自带初始页与上方兜底页，
+      // code-review item f566f47045b9）——只挂 newtabPage 时其余页面的控制台
+      // 错误漏采，测试 5 对这些页面不可见（新开的 newtabPage 也在 pages() 内）
       const consoleErrors = [];
-      newtabPage.on('console', msg => {
+      const onConsoleError = msg => {
         if (msg.type() === 'error') {
           consoleErrors.push(msg.text());
         }
-      });
+      };
+      for (const p of browserContext.pages()) {
+        p.on('console', onConsoleError);
+      }
       // 等待页面加载
       await newtabPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
         // 超时不算致命错误
@@ -444,8 +450,11 @@ async function launchChromeExtension(distPath, opts = {}) {
     const hasUiTestFailures = uiResults.some(t => t.status === 'fail' || t.status === 'error');
 
     const result = {
-      // 超时收卷且 UI 测试与 networkLog 均为零证据时，扩展未经任何验证，不判通过
-      success: !hasCriticalAnomalies && !hasUiTestFailures && !(timedOut && uiResults.length === 0 && networkLog.length === 0),
+      // 超时收卷且一条 UI 测试都未跑时，UI 段完全未执行，无论 networkLog 是否
+      // 非空都不判通过——与 extensionLoaded=null 的不确定态语义对齐，防止下游
+      // 只看 success 字段把 UI 功能未经验证的扩展当验证通过
+      // （code-review item e3c30d895e01）
+      success: !hasCriticalAnomalies && !hasUiTestFailures && !(timedOut && uiResults.length === 0),
       // 超时收卷且一条 UI 测试都未跑时，扩展加载未经任何验证，置 null 表示不确定而非乐观通过
       extensionLoaded: timedOut && uiResults.length === 0 ? null : true,
       extensionId: await getExtensionId(absoluteDist, browserContext),
@@ -1024,11 +1033,19 @@ async function main() {
   if (opts.output) {
     const outputPath = path.resolve(opts.output);
     const outputDir = path.dirname(outputPath);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
+    try {
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+      fs.writeFileSync(outputPath, jsonOutput, 'utf-8');
+      console.log(`结果已写入: ${outputPath}`);
+    } catch (err) {
+      // 写盘失败（目录只读、磁盘满、权限不足等）不丢弃本轮采集证据：
+      // 此时浏览器验证已完整跑完，回退 stdout 输出完整 result JSON 并在
+      // stderr 提示回退原因，避免整轮重跑（code-review item 28c438924c1e）
+      console.error(`写盘失败已回退 stdout 输出（${outputPath}）: ${err.message || err}`);
+      console.log(jsonOutput);
     }
-    fs.writeFileSync(outputPath, jsonOutput, 'utf-8');
-    console.log(`结果已写入: ${outputPath}`);
   } else {
     console.log(jsonOutput);
   }

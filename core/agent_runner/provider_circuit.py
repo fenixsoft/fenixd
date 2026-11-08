@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict
 
 # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
-# 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/404）达阈值 → circuit_open，
+# 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/403/404）达阈值 → circuit_open，
 # 冷却期内不再派发该 provider（直接失败、不启动 claude、不计入 spec 连续失败重试、
 # 不触发状态机回退）。冷却结束后首个派发作半开探针，200 闭合、仍 4xx 重新冷却。
 # 5xx/网络错误不计数（属瞬态，走既有 retry）。常量化便于调参，不落盘（见 design D3）。
@@ -989,12 +989,15 @@ class ProviderCircuit:
         # 先剥已知非模型数字字段（item 686d4a1b599f：必须先于 model 归一，否则
         # 「字母段-数字」形态会被下方模型 pattern 误吞成 <model>，不同退出码/
         # 状态码的异类失败被折进同一指纹）。exit code / http 状态码保留数值——
-        # 异类失败指纹必须互异；连字符与空格两种书写形态统一为空格形态，同一
-        # 错误收敛同一指纹。request id 本身是可变字段，剥为骨架。
-        text = re.sub(r"\bexit[\s-]+code[\s-]+(\d+)\b", r"exit code \1", text)
-        text = re.sub(r"\bhttp[\s-]+(\d{3})\b", r"http \1", text)
+        # 异类失败指纹必须互异；连字符/下划线/空格三种书写形态统一为空格形态，
+        # 同一错误收敛同一指纹（code-review item b2e5a3e6ea70：分隔类扩下划线
+        # ——parse_api_error_status 的回视注释自证系统内存在「exit_code: 」拼装
+        # 变体，旧 [\s-]+ 不认下划线，exit_code 形态不被归一、与「exit code <n>」
+        # 形态拆成两个指纹各自计数）。request id 本身是可变字段，剥为骨架。
+        text = re.sub(r"\bexit[\s_-]+code[\s_-]+(\d+)\b", r"exit code \1", text)
+        text = re.sub(r"\bhttp[\s_-]+(\d{3})\b", r"http \1", text)
         text = re.sub(
-            r"\brequest[\s-]+id[\s-]+[a-z0-9][a-z0-9-]*\b", "request id", text
+            r"\brequest[\s_-]+id[\s_-]+[a-z0-9][a-z0-9-]*\b", "request id", text
         )
         # 剥 model 名：已知 provider 模型前缀（deepseek- / glm- / claude- /
         # gpt- / qwen- 等清单）且词内含数字版本痕迹的真实模型名（deepseek-v4 /
@@ -1022,12 +1025,14 @@ class ProviderCircuit:
         # 后保留的数值豁免剥离（item b31beddde9a6）：异类失败指纹必须互异，
         # 4 位以上退出码（exit code 1432 / 1532 形态）不得被吞成同一骨架。
         text = re.sub(
-            r"(?P<kept>\b(?:exit code|http) \d{4,})|\d{4,}",
+            r"(?P<kept>\b(?:exit[\s_-]+code|http)[\s_-]*\d{4,})|\d{4,}",
             lambda m: m.group("kept") or "",
             text,
         )
-        # 剥分隔符噪音与空白
-        text = re.sub(r"[\s:/.,()\"'-]+", " ", text).strip()
+        # 剥分隔符噪音与空白（item b2e5a3e6ea70：分隔类补下划线——994 归一
+        # 覆盖不到的「exit_code: <n>」冒号拼装形态经此剥开下划线/冒号，与
+        # 「exit code <n>」形态收敛同一指纹）
+        text = re.sub(r"[\s:/.,()\"'_-]+", " ", text).strip()
         return text
 
     def record_transient_error(
