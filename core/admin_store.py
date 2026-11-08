@@ -49,6 +49,26 @@ INFO = "info"
 # signal_type。单点常量防漂移（runner 终态派发 / 消费面 / 测试断言共引）。
 HOST_CHANGE_ROLLBACK_SIGNAL_TYPE = "host_change_rollback_obligation"
 
+# add-provider-validation-alert-governance 4.1：告警根因标签封闭枚举（design
+# D5）。信号产生方入账时标注 cause；与既有 signal_type/severity 正交——同
+# signal_type 可因归因不同携带不同根因。读侧对 cause 缺席/非法的记录容错为
+# unknown（DEFAULT_ALERT_CAUSE），不臆造枚举值。
+ALERT_CAUSES = (
+    "model-chain",
+    "harness-cli",
+    "init-stray",
+    "contract",
+    "daemon-error",
+    "unknown",
+)
+DEFAULT_ALERT_CAUSE = "unknown"
+
+# add-provider-validation-alert-governance 4.2：supersede 批量失效终态旁路的
+# handled_by 值（不动既有 resolved/acknowledged/auto-resolve/auto-self-heal
+# 语义）。判定单源：读侧（resolved 视图 / 前端徽标 / 撤销入口）以本常量判
+# superseded 态，禁止字面量散布。
+SUPERSEDED_BY = "superseded"
+
 # 记录数上限（2026-09-01 用户决策）：任何写回时自动裁剪，只保留最近 150 条。
 # 消费方（latest_signal 冷却去重、auto_resolve 按 id 闭环）均只依赖近期记录，
 # 裁掉最旧历史不影响语义。
@@ -654,6 +674,13 @@ class AdminStore:
             ch = rec.get("choices")
             if not (isinstance(ch, list) and all(isinstance(c, dict) for c in ch)):
                 rec["choices"] = None
+        # add-provider-validation-alert-governance 4.1：根因标签归一——产生方
+        # 入账标注；缺席透传为缺省（读侧容错 unknown）、枚举外脏值归 None（与
+        # choices 同款「非法形态归一」，不臆造枚举值）。append/merge_signal
+        # 原样落盘；存量无 cause 字段记录由启动首轮回填（backfill_causes）。
+        if "cause" in rec and rec.get("cause") is not None:
+            if rec.get("cause") not in ALERT_CAUSES:
+                rec["cause"] = None
         return rec
 
     def append(self, entry: dict) -> "dict | None":
@@ -1359,6 +1386,166 @@ class AdminStore:
                 continue
             return rec
         return None
+
+    # ── add-provider-validation-alert-governance 4.x：根因标签 / supersede ──
+
+    def has_unhandled_fingerprint(self, signal_type: str, fingerprint: str) -> bool:
+        """存在同 (signal_type, fingerprint) 的未处理 signal 记录。
+
+        加载路径 provider 引用校验告警的「指纹（角色+坏名集合）」一次性去重
+        判据（task 1.2，design Risks）：查账本而非进程内存——持久化跟随告警
+        账本，daemon 重启不重发；修复后指纹消失由 auto_resolve_by_type_
+        fingerprint 复位。fingerprint 缺失（None）的记录不参与匹配。
+        """
+        for rec in self.read_records():
+            if rec.get("kind") != SIGNAL or rec.get("handled"):
+                continue
+            if rec.get("signal_type") != signal_type:
+                continue
+            if rec.get("fingerprint") != fingerprint:
+                continue
+            return True
+        return False
+
+    def auto_resolve_by_type_fingerprint(
+        self, signal_type: str, active_fps: set, resolve_note: str
+    ) -> int:
+        """指纹消失自动复位：未处理同类型 signal 记录指纹不在活跃集 → auto-resolve。
+
+        加载路径校验告警的复位半边（task 1.2）：当前校验报告的活跃指纹集外
+        的未处理记录批量收口（handled_by=AUTO_RESOLVE_BY，与条件族自动闭环
+        同署），单事务一次读改写；零命中时 skip_unchanged 跳过写回（mtime
+        不变）。返回复位条数。
+        """
+
+        def mutate(records: list) -> int:
+            n = 0
+            for rec in records:
+                if rec.get("kind") != SIGNAL or rec.get("handled"):
+                    continue
+                if rec.get("signal_type") != signal_type:
+                    continue
+                if (rec.get("fingerprint") or "") in active_fps:
+                    continue
+                rec["handled"] = True
+                rec["handled_at"] = _utcnow_iso()
+                rec["handled_by"] = AUTO_RESOLVE_BY
+                rec["resolve_note"] = resolve_note
+                n += 1
+            return n
+
+        return int(self._mutate(mutate, skip_unchanged=True) or 0)
+
+    def has_unhandled_signal(self, spec: Optional[str], signal_type: str) -> bool:
+        """存在 (spec, signal_type) 的未处理 signal 记录（escalated 不限）。
+
+        实现期契约预检一次性去重判据（task 3.1，design D4「去重键
+        signal_type:spec、持久化随告警账本、重启不重发」）：info 级提示只发
+        一次——记录在账（未处理）期间同 spec 不再成条；记录被处置后才允许
+        再次提示。spec 严格相等（含 None==None 的 daemon 级形态）。
+        """
+        for rec in self.read_records():
+            if rec.get("kind") != SIGNAL or rec.get("handled"):
+                continue
+            if rec.get("signal_type") != signal_type:
+                continue
+            if rec.get("spec") != spec:
+                continue
+            return True
+        return False
+
+    def supersede_by_cause(self, cause: str, note: str) -> int:
+        """同根因未处理告警单事务批量标记 superseded（task 4.2，design D5）。
+
+        作用面：kind ∈ {signal, escalation}、未 handled、cause 显式等于给定
+        根因的记录，一次性置 handled=True / handled_by=superseded / handled_at
+        / resolve_note=触发观测点注记——单次 _mutate（一把排他锁内读改写全
+        量），批量失效原子；零命中时跳过写回（mtime 不变）。未处理计数与
+        升级链引用随 handled=True 自然扣除（pending 集合只收未 handled）。
+        返回失效条数。
+
+        unknown 根因硬拒（返回 0）：cause 缺席/无法回填的记录归因不明，
+        参与自动失效会把误归因放大成批量误失效（task 4.4「unknown 根因不参
+        与自动失效」防呆，观测点终判据互斥保护之外的兜底）。
+        """
+        if cause == DEFAULT_ALERT_CAUSE or not cause:
+            return 0
+
+        def mutate(records: list) -> int:
+            n = 0
+            for rec in records:
+                if rec.get("kind") not in (SIGNAL, ESCALATION):
+                    continue
+                if rec.get("handled"):
+                    continue
+                if rec.get("cause") != cause:
+                    continue
+                rec["handled"] = True
+                rec["handled_at"] = _utcnow_iso()
+                rec["handled_by"] = SUPERSEDED_BY
+                rec["resolve_note"] = note
+                n += 1
+            return n
+
+        return int(self._mutate(mutate, skip_unchanged=True) or 0)
+
+    def revert_supersede(self, alert_id: str) -> bool:
+        """人工撤销 superseded 标记，恢复未处理态（task 4.3 撤销入口）。
+
+        仅对 handled_by=superseded 的记录生效（其余终态路径——resolved/
+        acknowledged/auto-resolve/auto-self-heal——MUST NOT 经本入口回退）；
+        恢复 handled=False 并清 handled_* 字段，resolve_note 改写为撤销注记
+        （原失效注记已被撤销动作废止）。记录不存在或非 superseded 态返回
+        False。误失效的人工纠错面（design Risks：误触发可人工恢复未处理）。
+        """
+
+        def mutate(records: list) -> bool:
+            for rec in records:
+                if rec.get("id") != alert_id:
+                    continue
+                if rec.get("handled_by") != SUPERSEDED_BY:
+                    return False
+                rec["handled"] = False
+                rec["handled_at"] = None
+                rec["handled_by"] = None
+                rec["resolve_note"] = "失效标记已人工撤销（恢复未处理）"
+                return True
+            return False
+
+        return bool(self._mutate(mutate, skip_unchanged=True))
+
+    def backfill_causes(self, mapping: dict) -> int:
+        """存量账本 cause 回填（task 4.6，design Migration Plan）。
+
+        daemon 启动首轮一次性调用：对未处理且无 cause 字段的记录按
+        signal_type→cause 高置信封闭映射回填推断，resolve_note 注
+        「存量回填：」前缀（已有注记前缀追加，无注记新写「存量回填：根因
+        推断 <cause>（signal_type=<st>）」，对齐 alert-lifecycle 既有存量
+        回填机制形态）；映射外的保持 unknown（不写 cause）、不参与 supersede。
+        已 handled 记录不动（人工处置历史不旁路改写）。返回回填条数。
+        """
+        if not isinstance(mapping, dict):
+            return 0
+
+        def mutate(records: list) -> int:
+            n = 0
+            for rec in records:
+                if rec.get("handled"):
+                    continue
+                if rec.get("cause"):
+                    continue
+                signal_type = rec.get("signal_type")
+                cause = mapping.get(signal_type)
+                if not cause:
+                    continue
+                rec["cause"] = cause
+                note = f"存量回填：根因推断 {cause}（signal_type={signal_type}）"
+                existing = rec.get("resolve_note")
+                rec["resolve_note"] = f"存量回填：{existing}" if existing else note
+                n += 1
+            return n
+
+        return int(self._mutate(mutate, skip_unchanged=True) or 0)
 
     # ── evo-add-admin-orphan-disposition-effect-check 1.3 ─────────
 

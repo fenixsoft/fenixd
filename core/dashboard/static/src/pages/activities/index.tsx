@@ -26,7 +26,7 @@ import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import ChainPanel from './components/ChainPanel';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
-import { getAdminActivities, getAlerts, STREAM_URL } from '@/services/dashboard';
+import { getAdminActivities, getAlerts, revertAlertSupersede, STREAM_URL } from '@/services/dashboard';
 import type {
   AdminActivitiesData,
   ActivityItem,
@@ -48,6 +48,7 @@ import {
   AlertLines,
   AlertReportButton,
   AlertTitle,
+  CAUSE_LABEL,
   fmtDate,
   hasNarrativeReport,
 } from '@/components/alert-shared';
@@ -386,11 +387,13 @@ function MobileAlertPane({
   unhandled,
   resolved,
   onMarkHandled,
+  onRevertSupersede,
   onResolved,
 }: {
   unhandled: AlertItem[];
   resolved: AlertItem[];
   onMarkHandled: (a: AlertItem) => void;
+  onRevertSupersede: (a: AlertItem) => void;
   onResolved: () => void;
 }) {
   const [resolvedOpen, setResolvedOpen] = useState(true);
@@ -416,29 +419,37 @@ function MobileAlertPane({
             {resolvedOpen ? '收起已解决' : `已解决 ${resolved.length} 条`}
           </a>
           {resolvedOpen
-            ? resolved.map((a) => (
-                <div key={a.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'center' }}>
-                  <Tag style={{ marginInlineEnd: 0, flexShrink: 0 }} color="green">
-                    已解决
-                  </Tag>
-                  <span
-                    style={{
-                      fontSize: 12.5,
-                      minWidth: 0,
-                      flex: 1,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {a.description || a.id}
-                  </span>
-                  {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
-                  <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', flexShrink: 0 }}>
-                    {fmtDate(a.handled_at || a.created, { withYear: false })}
-                  </span>
-                </div>
-              ))
+            ? resolved.map((a) => {
+                const isSuperseded = a.handled_by === 'superseded';
+                return (
+                  <div key={a.id} style={{ display: 'flex', gap: 10, padding: '7px 0', alignItems: 'center' }}>
+                    <Tag style={{ marginInlineEnd: 0, flexShrink: 0 }} color={isSuperseded ? 'default' : 'green'}>
+                      {isSuperseded ? '已失效' : '已解决'}
+                    </Tag>
+                    <span
+                      style={{
+                        fontSize: 12.5,
+                        minWidth: 0,
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {a.description || a.id}
+                    </span>
+                    {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
+                    {isSuperseded ? (
+                      <a role="button" tabIndex={0} onClick={() => onRevertSupersede(a)} style={{ fontSize: 12, flexShrink: 0 }}>
+                        撤销失效
+                      </a>
+                    ) : null}
+                    <span style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', flexShrink: 0 }}>
+                      {fmtDate(a.handled_at || a.created, { withYear: false })}
+                    </span>
+                  </div>
+                );
+              })
             : null}
         </div>
       ) : null}
@@ -450,36 +461,135 @@ function AlertPanel({
   alertsData,
   optimistic,
   onMarkHandled,
+  onRevertSupersede,
   onResolved,
   isMobile,
 }: {
   alertsData: AlertsData | null;
   optimistic: string[];
   onMarkHandled: (a: AlertItem) => void;
+  onRevertSupersede: (a: AlertItem) => void;
   onResolved: () => void;
   isMobile?: boolean;
 }) {
   // 全局视图：不按项目过滤，仅剔除乐观移除的条目
   const visible = (a: AlertItem) => !optimistic.includes(a.id);
-  const unhandled = (alertsData?.alerts || []).filter(visible);
-  const resolved = (alertsData?.resolved || []).filter(visible);
+  // 根因筛选（add-provider-validation-alert-governance 4.3）：'' = 全部；
+  // cause 缺席的存量记录按 unknown 归组（后端 4.6 首轮回填前的旧账本）
+  const [causeFilter, setCauseFilter] = useState('');
+  const byCause = (a: AlertItem) => !causeFilter || (a.cause || 'unknown') === causeFilter;
+  const unhandled = (alertsData?.alerts || []).filter(visible).filter(byCause);
+  const resolvedAll = (alertsData?.resolved || []).filter(visible).filter(byCause);
+  // superseded（同根因批量失效）拆独立折叠组：默认收起、灰态呈现 + 撤销入口，
+  // 与真正的「已解决」终态视觉区分（误失效可纠错，不与解决语义混淆）
+  const superseded = resolvedAll.filter((a) => a.handled_by === 'superseded');
+  const resolved = resolvedAll.filter((a) => a.handled_by !== 'superseded');
 
-  if (!unhandled.length && !resolved.length) {
-    return <Empty description="暂无人工告警" />;
+  const collapseItems = [];
+  if (resolved.length) {
+    collapseItems.push({
+      key: 'resolved',
+      label: `已解决 (${resolved.length})`,
+      children: (
+        <List
+          size="small"
+          dataSource={resolved}
+          renderItem={(a) => (
+            <List.Item
+              /* 已解决告警保留调查报告入口（处置后补叙照常落盘，
+                 历史完整性）；无报告时不传 actions，不出空壳列 */
+              actions={
+                hasNarrativeReport(a)
+                  ? [
+                      <AlertActionColumn key="report">
+                        <AlertReportButton text={a.narrative.text} />
+                      </AlertActionColumn>,
+                    ]
+                  : undefined
+              }
+            >
+              <List.Item.Meta
+                title={<AlertTitle item={a} resolved variant="page" />}
+                description={<AlertLines item={a} variant="page" />}
+              />
+            </List.Item>
+          )}
+        />
+      ),
+    });
   }
+  if (superseded.length) {
+    collapseItems.push({
+      key: 'superseded',
+      label: `已失效 (${superseded.length})`,
+      children: (
+        <List
+          size="small"
+          dataSource={superseded}
+          renderItem={(a) => (
+            <List.Item
+              /* 已失效条目：撤销入口（误失效人工纠错面，恢复未处理态）+
+                 调查报告入口照常保留（失效不影响历史可读性） */
+              actions={[
+                <AlertActionColumn key="ops">
+                  {hasNarrativeReport(a) && <AlertReportButton text={a.narrative.text} />}
+                  <Button size="small" onClick={() => onRevertSupersede(a)} data-testid="alert-revert-supersede">
+                    撤销失效
+                  </Button>
+                </AlertActionColumn>,
+              ]}
+            >
+              <List.Item.Meta
+                title={<AlertTitle item={a} resolved variant="page" />}
+                description={<AlertLines item={a} variant="page" />}
+              />
+            </List.Item>
+          )}
+        />
+      ),
+    });
+  }
+
+  if (!unhandled.length && !resolvedAll.length) {
+    return <Empty description={causeFilter ? '该根因下暂无告警' : '暂无人工告警'} />;
+  }
+
+  const causeSelect = (
+    <Select
+      size="small"
+      value={causeFilter}
+      onChange={setCauseFilter}
+      style={{ minWidth: 140 }}
+      data-testid="alert-cause-filter"
+      options={[
+        { value: '', label: '全部根因' },
+        ...Object.entries(CAUSE_LABEL).map(([value, label]) => ({ value, label })),
+      ]}
+    />
+  );
 
   if (isMobile) {
     return (
-      <MobileAlertPane unhandled={unhandled} resolved={resolved} onMarkHandled={onMarkHandled} onResolved={onResolved} />
+      <div>
+        <div style={{ padding: '4px 0' }}>{causeSelect}</div>
+        <MobileAlertPane
+          unhandled={unhandled}
+          resolved={resolvedAll}
+          onMarkHandled={onMarkHandled}
+          onRevertSupersede={onRevertSupersede}
+          onResolved={onResolved}
+        />
+      </div>
     );
   }
 
   return (
     <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 0' }}>{causeSelect}</div>
       <List
         size="small"
         dataSource={unhandled}
-        locale={{ emptyText: '暂无未处理告警' }}
+        locale={{ emptyText: causeFilter ? '该根因下暂无未处理告警' : '暂无未处理告警' }}
         renderItem={(a) => (
           <List.Item
             actions={[
@@ -500,42 +610,13 @@ function AlertPanel({
           </List.Item>
         )}
       />
-      {resolved.length ? (
+      {collapseItems.length ? (
         <Collapse
           ghost
+          /* 已解决组默认展开（既有行为）；已失效组默认收起（弱化呈现，
+             展开后才有逐条撤销入口） */
           defaultActiveKey={['resolved']}
-          items={[
-            {
-              key: 'resolved',
-              label: `已解决 (${resolved.length})`,
-              children: (
-                <List
-                  size="small"
-                  dataSource={resolved}
-                  renderItem={(a) => (
-                    <List.Item
-                      /* 已解决告警保留调查报告入口（处置后补叙照常落盘，
-                         历史完整性）；无报告时不传 actions，不出空壳列 */
-                      actions={
-                        hasNarrativeReport(a)
-                          ? [
-                              <AlertActionColumn key="report">
-                                <AlertReportButton text={a.narrative.text} />
-                              </AlertActionColumn>,
-                            ]
-                          : undefined
-                      }
-                    >
-                      <List.Item.Meta
-                        title={<AlertTitle item={a} resolved variant="page" />}
-                        description={<AlertLines item={a} variant="page" />}
-                      />
-                    </List.Item>
-                  )}
-                />
-              ),
-            },
-          ]}
+          items={collapseItems}
         />
       ) : null}
     </div>
@@ -731,6 +812,22 @@ export default function ActivitiesPage() {
     [load, markHandled, message],
   );
 
+  // add-provider-validation-alert-governance 4.3：superseded 失效标记撤销
+  // （误失效人工纠错面，恢复未处理态）。a.project 全局视图必有（后端聚合
+  // 下发），缺失走 requireProject 的显式报错而非静默发失败请求。
+  const handleRevertSupersede = useCallback(
+    async (a: AlertItem) => {
+      try {
+        await revertAlertSupersede(a.project, a.id);
+        message.success('已撤销失效标记，告警恢复未处理');
+      } catch (e) {
+        message.error(`撤销失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+      void load();
+    },
+    [load, message],
+  );
+
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
 
   // 分页响应的 projects[] 平铺回全局单数组（服务端已按组内全局相对顺序下发，
@@ -868,6 +965,7 @@ export default function ActivitiesPage() {
                     alertsData={alertsData}
                     optimistic={optimistic}
                     onMarkHandled={(a) => void handleMarkHandled(a)}
+                    onRevertSupersede={(a) => void handleRevertSupersede(a)}
                     onResolved={() => void load()}
                     isMobile={isMobile}
                   />

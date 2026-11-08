@@ -456,6 +456,10 @@ export interface AlertItem {
   spec?: string;
   severity?: string;
   created?: string;
+  /** add-provider-validation-alert-governance 4.1：根因标签（产生方在入账时
+   * 按封闭映射标注：model-chain/harness-cli/init-stray/contract/daemon-error/
+   * unknown；缺省 = 存量记录或映射外，前端按 unknown 兜底渲染） */
+  cause?: string;
   description?: string;
   evidence?: string;
   action_taken?: string;
@@ -532,6 +536,17 @@ export function markAlertHandled(project: string | undefined, id: string) {
   requireProject(project, 'markAlertHandled');
   const q = `?project=${encodeURIComponent(project)}`;
   return request(`/api/alerts/${encodeURIComponent(id)}/handled${q}`, { method: 'POST' });
+}
+
+/** add-provider-validation-alert-governance 4.3：人工撤销 superseded 失效标记，
+ * 恢复未处理态（误失效纠错面）。仅 handled_by=superseded 的记录生效；
+ * 其余终态后端 404（"alert is not in superseded state"）如实上报。 */
+export function revertAlertSupersede(project: string | undefined, id: string) {
+  requireProject(project, 'revertAlertSupersede');
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request(`/api/alerts/${encodeURIComponent(id)}/revert-supersede${q}`, {
+    method: 'POST',
+  });
 }
 
 /** add-human-adjudication-choices 5.1：人工裁决一次选择完成处置闭环。

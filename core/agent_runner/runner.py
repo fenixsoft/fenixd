@@ -5337,6 +5337,18 @@ class AgentRunner:
             _circ = self.provider_circuits.get(provider_name)
             if _circ and _circ.get("cooldown_until", 0) > 0 and _circ["cooldown_until"] <= self._now():
                 self._record_provider_probe(provider_name, success=True)
+        # model-chain supersede 观测点（add-provider-validation-alert-governance
+        # 4.2，design D5）：成功终态即「派发成功」实测证据；观测点另一半「校验
+        # 干净加载」由 _maybe_supersede_model_chain_alerts 现查（当前 config 无
+        # 未注册 provider 引用）。两半齐备时同根因未处理告警单事务批量失效。
+        # fail-open：触发器缺陷不阻断成功收尾。
+        try:
+            self._maybe_supersede_model_chain_alerts()
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"model-chain supersede 触发器异常（fail-open，不阻断成功收尾）: {e}",
+            )
         # add-worktree-test-server（D2 终态回收）：worktree 清理前先回收其 dev-server。
         # fast-track 例外：成功不清理——硬校验/守卫在 dispatch 层判定，失败时
         # 保留 worktree 供重派继承（worktree-reuse）；通过则由 dispatch 在
@@ -5661,6 +5673,43 @@ class AgentRunner:
         """
         chain = self._get_agent_model_assignment(agent_type) or []
         if not chain:
+            # add-provider-validation-alert-governance D3：先问链解析单源——
+            # 「无分配」（角色无 models 条目）与「分配失效」（有条目但校验后链
+            # 空）在此划界：前者维持既有默认网关回落（下方 return）；后者为
+            # 配置错误态，不回落、不登记 harness-default 回落形态（adapter 的
+            # 回落 WARN 因不 spawn 天然不触发），按 [model-chain-unavailable]
+            # 既有语义归因直接失败（不启动进程、不创建 worktree、与 circuit
+            # 拦截同型不计入重试消耗——chain_exhausted=True + 归因标记使派发
+            # 器跳过同因重派）。
+            resolution = self._get_agent_chain_resolution(agent_type)
+            if resolution.get("status") == "invalid":
+                raw_provider = resolution.get("raw_provider")
+                try:
+                    raw_json = json.dumps(raw_provider, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    raw_json = str(raw_provider)
+                chain_err = (
+                    f"{MODEL_CHAIN_UNAVAILABLE_MARKER} 角色 {agent_type} 模型链分配失效"
+                    f"（{resolution.get('invalid_reason') or '校验后链为空'}）——"
+                    f"原始链条目={raw_json}；请修正 agents.models.{agent_type}.provider"
+                    f"（或经 Dashboard 设置页修正/移除该分配）"
+                )
+                self.logger.warning(
+                    "agent_runner",
+                    f"Suppressed {agent_type} dispatch for '{spec_name}': {chain_err}",
+                )
+                self._log_run_metrics(
+                    run_id=run_id, spec_name=spec_name, agent_type=agent_type,
+                    duration_seconds=time.time() - start_time, turns=turns,
+                    usage_info=usage_info, terminal="chain_exhausted",
+                    provider=None, model=None,
+                    latency=_metrics_latency(latency),
+                )
+                return None, None, [], AgentRunResult(
+                    attempt_run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=chain_err, chain_exhausted=True,
+                )
             # 无 provider 分配：走默认网关（cc-switch），无链可选。provider_name=None。
             st.provider_name = None
             st.model = None
@@ -8121,6 +8170,54 @@ class AgentRunner:
         """
         from core.config import ConfigLoader
         return ConfigLoader.get_agent_model_assignment(self.config, agent_type)
+
+    def _maybe_supersede_model_chain_alerts(self) -> None:
+        """model-chain supersede 观测点（add-provider-validation-alert-governance
+        4.2，design D5）。
+
+        触发判据两半（观测点不全不触发）：
+        - 「派发成功」实测证据——本方法仅由 ``_finalize_success`` 成功终态路径
+          可达（不以「配置加载成功」单条件触发，防误失效）；
+        - 「校验干净加载」——当前 config 无未注册 provider 引用（公共校验单源
+          collect_unregistered_provider_refs 现查，与加载路径同一实现）。
+
+        两半齐备时对 cause=model-chain 的全部未处理告警单事务批量标记
+        superseded（失效时间 + 触发观测点记录进 resolve_note），未处理计数与
+        升级链引用随之扣除；无目标记录时零写回（mtime 不变，幂等可重入）。
+        harness-cli 根因观测点（SPEC ① 自检态对接）按 design D5 暂不启用，
+        harness-cli 根因告警留人工处置，SPEC ① 落地后自然接入。
+        """
+        from core.admin_store import SUPERSEDED_BY, AdminStore
+        from core.config import ConfigLoader
+
+        report = ConfigLoader.collect_unregistered_provider_refs(self.config)
+        if report:
+            return  # 校验不干净：观测点未全通过，不失效（修复未生效不 supersede）
+        note = (
+            "模型链修复生效（观测点 model-chain：provider 引用校验干净加载 + "
+            "派发成功实测）——同根因未处理告警批量失效"
+            f"（handled_by={SUPERSEDED_BY}，可经面板人工撤销恢复未处理）"
+        )
+        superseded = AdminStore(self.project_root, self.logger).supersede_by_cause(
+            "model-chain", note
+        )
+        if superseded:
+            self.logger.info(
+                "agent_runner",
+                f"model-chain supersede 触发：{superseded} 条同根因未处理告警批量失效"
+                "（provider 校验干净加载 + 派发成功）",
+            )
+
+    def _get_agent_chain_resolution(self, agent_type: str) -> dict:
+        """每角色链解析结果（add-provider-validation-alert-governance D3 判定单源）。
+
+        Wraps ConfigLoader.get_agent_chain_resolution——「无分配 / 分配失效 /
+        有效链」三态判定与加载侧同一实现，派发侧禁另立口径（design D3）。
+        每次调用都从 config 重新解析（与 _get_agent_model_assignment 同款，
+        避免缓存状态不一致）。
+        """
+        from core.config import ConfigLoader
+        return ConfigLoader.get_agent_chain_resolution(self.config, agent_type)
 
     def _get_config(self, key: str, default=None):
         """Get a nested config value."""

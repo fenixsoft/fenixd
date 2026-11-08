@@ -26,6 +26,30 @@ export const SEV_LABEL: Record<string, string> = { critical: '严重', major: '�
 export const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', warning: 'gold', minor: 'blue', info: 'default' };
 
 /**
+ * 根因 → 中文标签（add-provider-validation-alert-governance 4.3）：与后端
+ * ALERT_CAUSES 封闭枚举同词表；缺省/未知值回退「未知」——cause 字段缺席的
+ * 存量记录（回填前的旧账本）不臆造归因。
+ */
+export const CAUSE_LABEL: Record<string, string> = {
+  'model-chain': '模型链',
+  'harness-cli': 'harness CLI',
+  'init-stray': 'init 残留',
+  contract: '验证契约',
+  'daemon-error': 'daemon 错误',
+  unknown: '未知',
+};
+
+/** 根因 → antd Tag 配色（同色系低饱和：根因是辅助筛选面，不与严重度抢视觉） */
+export const CAUSE_COLOR: Record<string, string> = {
+  'model-chain': 'purple',
+  'harness-cli': 'volcano',
+  'init-stray': 'orange',
+  contract: 'gold',
+  'daemon-error': 'magenta',
+  unknown: 'default',
+};
+
+/**
  * 时间格式化。空值统一占位 '—'（此前漂移：横幅 ''、activities '—'）；
  * withYear=false 供横幅窄空间用 MM-DD 起头（历史布局差异，经参数保留）。
  */
@@ -46,6 +70,7 @@ export function AlertTitle({
   variant: AlertSurfaceVariant;
 }) {
   const isPage = variant === 'page';
+  const isSuperseded = item.handled_by === 'superseded';
   return (
     <Space wrap size={6}>
       <Tag color={SEV_COLOR[item.severity || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
@@ -55,22 +80,38 @@ export function AlertTitle({
         <Tag
           style={{ marginInlineEnd: 0 }}
           color={
-            item.handled_by === 'auto-resolve'
-              ? 'cyan'
-              : item.handled_by === 'auto-self-heal'
-                ? 'green'
-                : 'geekblue'
+            isSuperseded
+              ? 'default'
+              : item.handled_by === 'auto-resolve'
+                ? 'cyan'
+                : item.handled_by === 'auto-self-heal'
+                  ? 'green'
+                  : 'geekblue'
           }
         >
           {/* add-alert-self-heal-marking 5.3：auto-self-heal（自愈闭环）独立
               徽标文案，区别于既有 auto-resolve（自动解决）。词表外未知值显示
               原文、仅空值兜底「人工处理」（与 SEV_LABEL 未知值口径一致，
-              避免后端新增自动化变体被误标成人工处置） */}
-          {item.handled_by === 'auto-resolve'
-            ? '🤖 自动解决'
-            : item.handled_by === 'auto-self-heal'
-              ? '♻️ 已自愈'
-              : item.handled_by || '👤 人工处理'}
+              避免后端新增自动化变体被误标成人工处置）。
+              add-provider-validation-alert-governance 4.3：superseded（同根因
+              批量失效）独立徽标——灰态弱化呈现，区别于解决/自愈等终态，配合
+              「已失效」折叠组与撤销入口表达「可人工恢复未处理」。 */}
+          {isSuperseded
+            ? '🏷️ 已失效'
+            : item.handled_by === 'auto-resolve'
+              ? '🤖 自动解决'
+              : item.handled_by === 'auto-self-heal'
+                ? '♻️ 已自愈'
+                : item.handled_by || '👤 人工处理'}
+        </Tag>
+      ) : null}
+      {item.cause ? (
+        <Tag
+          style={{ marginInlineEnd: 0 }}
+          color={CAUSE_COLOR[item.cause] || 'default'}
+          data-testid="alert-cause-tag"
+        >
+          根因：{CAUSE_LABEL[item.cause] || item.cause}
         </Tag>
       ) : null}
       {item.project ? <Tag style={{ marginInlineEnd: 0 }}>{item.project}</Tag> : null}
