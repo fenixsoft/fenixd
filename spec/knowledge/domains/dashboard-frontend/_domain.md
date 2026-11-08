@@ -16,7 +16,7 @@
 | [add-spec-priority-and-delete-api](add-spec-priority-and-delete-api.md) | SPEC 优先级与删除操作 | 2026-10-03 04:59 |
 | [spec-detail-tabs](spec-detail-tabs.md) | SPEC 详情页签 | 2026-10-03 04:59 |
 | [spec-detail-quick-switch](spec-detail-quick-switch.md) | SPEC 详情快速切换 | 2026-10-03 04:59 |
-| [spec-doc-view](spec-doc-view.md) | SPEC 文档查看（端点契约、三页签懒加载与组件内缓存、GFM 安全渲染链接协议白名单、空态/错误态/加载态三态区分、入口与跳转隔离） | 2026-11-08 00:40 
+| [spec-doc-view](spec-doc-view.md) | SPEC 文档查看（端点契约、三页签懒加载与组件内缓存、GFM 安全渲染链接协议白名单、空态/错误态/加载态三态区分、入口与跳转隔离） | 2026-11-08 00:40
 | [spec-status-actions-modal](spec-status-actions-modal.md) | 状态变更操作弹窗 | 2026-10-03 04:59 |
 | [spec-approve-push-modal](spec-approve-push-modal.md) | 审批推送弹窗 | 2026-10-03 04:59 |
 | [spec-timeline-accuracy](spec-timeline-accuracy.md) | 时间轴准确性（backward 序判定依赖生命周期枚举完整登记） | 2026-11-04 15:55 |
@@ -29,7 +29,7 @@
 | [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-06 17:00 |
 | [ui-theme](ui-theme.md) | 主题切换 | 2026-10-03 04:59 |
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |
-| [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40 
+| [activities-page](activities-page.md) | 运维记录页（三页签：处置链/自动运维记录/告警记录，默认处置链，`/chain` 重定向并入） | 2026-11-08 00:40
 | [settings-page](settings-page.md) | 设置页（全表面命名「配置」避让 dsh 官方「设置」、四处标签同步面、左菜单 sticky 钉住、页面文档级滚动、全量卡 Bento 边框灰底准例、标题栏作用域控件移动端瘦身） | 2026-11-07 21:43 |
 | [command-center-console-ui](command-center-console-ui.md) | 指挥中心三屏前端（/command-center ProLayout 嵌入页、org/pipeline/ledger 三 Tab+SPEC 视图、标题与双过滤迁统一标题栏（移动端双过滤落内容区首行）、theme.ts 配色单源与暗种子 *Bg 陷阱压制、五类卡片框 Bento 形态、Agent 卡流式自适应、连接线 ResizeObserver、SCREEN_CHROME_OFFSET 双档定高、KPI 条空值「—」、严肃企业风格红线） | 2026-11-07 21:43 |
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、缺省行为不变） | 2026-11-05 18:27 |
@@ -37,7 +37,7 @@
 | [timeline-origin-request](timeline-origin-request.md) | 时间轴立项原话展示（fenix-new 立项原话 request.md 持久化、时间轴首 state 节点附着、前端引用块渲染、缺失静默降级） | 2026-10-31 17:53 |
 | [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、内容区间距 15px + 呼吸带 16px 标记类、零值尾部 spread 传导、去边框页级作用域豁免、rebuild 后 reload 验证纪律） | 2026-11-06 17:11 |
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
-| [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、SPEC 详情页中文标题富标题内部下方行堆叠（移动端只显英文标题、subtitle 槽行内形态保留既有消费面）、embed 行壳位单档 60px 毛玻璃固定标题带、standalone 含移动端统一注册落 ProLayout 顶栏（移动=汉堡+logo+标题同条、副标题移动端隐藏）、v2 六页经 titleBar 槽位并入、PageContainer 页头与面包屑退役、过滤项统一右上落位（filters 槽位=移动端标题栏右侧控件位单一定点）、定高偏移双档回校、脱壳大屏与占位页豁免） | 2026-11-08 00:40 
+| [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、SPEC 详情页中文标题富标题内部下方行堆叠（移动端只显英文标题、subtitle 槽行内形态保留既有消费面）、embed 行壳位单档 60px 毛玻璃固定标题带、standalone 含移动端统一注册落 ProLayout 顶栏（移动=汉堡+logo+标题同条、副标题移动端隐藏）、v2 六页经 titleBar 槽位并入、PageContainer 页头与面包屑退役、过滤项统一右上落位（filters 槽位=移动端标题栏右侧控件位单一定点）、定高偏移双档回校、脱壳大屏与占位页豁免） | 2026-11-08 00:40
 | [dsh-bridge-projects-section](dsh-bridge-projects-section.md) | dsh 面板桥「项目」菜单行折叠开关与内嵌项目分区（点击=分区展开/折叠非主面板切换、右缘状态箭头、整行拦截层、键盘路径保留主面板注册、分区 5 行封顶滚动条 dsh web 同款定制、官方 Workspaces 列表同款） | 2026-11-06 17:54 |
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
 | [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | antd 表格限高滚动与 sticky 表头纪律（限高层钉 .ant-table-content、sticky 钉 thead>tr、rect 行高校准、几何证据验证；fenixd 台账磁贴不限高，「5 行封顶」落地面为 dsh web 侧栏） | 2026-11-06 17:54 |
