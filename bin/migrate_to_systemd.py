@@ -404,6 +404,14 @@ def stage1_write_units_and_env(proot: Path, froot: Path, dry_run: bool) -> dict:
                 plan.append(_env_summary(keys, sh.project_env_file(proot)))
             except sh.SystemdHostingError as e:
                 errors.append(str(e))
+    elif sh.project_env_file(proot).exists():
+        # 已迁移态幂等重跑（code-review item 396d27404d7b）：前置检查对
+        # 「无在跑进程但 unit 已装」按已迁移态放行，此态下不再有 env 捕获
+        # 源；正式 env 在场即够用（stage3 提升与 stage4 冒烟均以正式 env
+        # 为准），记 plan 放行使幂等修补（补 unit/重验）可走完编排
+        plan.append(
+            f"项目无在跑进程，正式 env 已在场，跳过 env 候选稿捕获（复用 {sh.project_env_file(proot)}）"
+        )
     else:
         errors.append(
             "项目下未定位到 supervisor/daemon 进程，env 候选稿捕获跳过"
