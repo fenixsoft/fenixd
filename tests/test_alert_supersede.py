@@ -434,6 +434,19 @@ class PanelViewTest(unittest.TestCase):
         self.store.mark_signal_handled(done["id"])
         self.assertFalse(revert_superseded_alert(self.proot, done["id"]))
 
+    def test_revert_fn_reachable_via_facade(self):
+        # BUG-01 回归（验证报告 alert-panel-undo-supersede-restore，第 1 轮
+        # 打回）：路由 _api_alert_revert_supersede 经 ``dashboard_data.<name>``
+        # 属性访问调用，门面 __init__ 漏 re-export 时 AttributeError → 撤销
+        # 端点恒 500。本测试穿透门面属性访问（既有用例直从 admin_alerts
+        # 导入、绕过门面），封堵该漏测缺口。
+        import core.dashboard.data as dashboard_data
+
+        rec = self._seed_signal(handled_by=SUPERSEDED_BY)
+        self.assertTrue(dashboard_data.revert_superseded_alert(self.proot, rec["id"]))
+        got = {r["id"]: r for r in AdminStore(self.proot, FakeLogger()).read_all()}
+        self.assertFalse(got[rec["id"]]["handled"])
+
     def test_revert_supersede_route_registered(self):
         # 撤销端点路由注册（regex 参数化，与 /handled 同款形态）
         from core.dashboard.routes import base as routes_base

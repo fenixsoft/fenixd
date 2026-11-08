@@ -75,7 +75,7 @@ KEY_FUNCTIONS = [
     # tasks
     "parse_tasks", "task_progress", "tasks_note", "run_task_progress",
     # admin_alerts
-    "get_alerts", "alerts_summary", "get_admin_activities",
+    "get_alerts", "alerts_summary", "get_admin_activities", "revert_superseded_alert",
     # spec_docs
     "resolve_spec_dir", "get_spec_doc", "count_scenarios", "count_planned_scenarios",
     # spec_archive
