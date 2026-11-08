@@ -4,12 +4,12 @@
 
 ### Requirement: 白名单文件初始化自动入库
 
-fenix-init 在 git 仓库内完成骨架写入后 SHALL 自动 `git add` 模板 gitignore 放行的白名单文件（`.fenix/todo.md`、`.fenix/verify.yaml`）——仅 staged、MUST NOT 自动 commit（提交时机留给用户）；仓库无提交史（ unborn 分支）时 git add 同样生效；非 git 仓库跳过并输出提示行。
+fenix-init 在 git 仓库内完成骨架写入后 SHALL 自动 `git add` 模板 gitignore 放行的白名单文件（`.fenix/todo.md`、`.fenix/verify.yaml`）——仅 staged、MUST NOT 自动 commit（提交时机留给用户）；git add 逐文件做存在性守卫：init 不播种的白名单文件（如 `todo.md`，由自省/进化车道后续创建）当期不存在时 SHALL 跳过该文件且 MUST NOT 因 pathspec 缺失报错，其在场时一并入库；仓库无提交史（unborn 分支）时 git add 同样生效；非 git 仓库跳过并输出提示行。
 
 #### Scenario: git 仓库内初始化后白名单文件已 staged
 
 - **WHEN** 在已初始化（`git init` 完成、允许零提交）的仓库内执行 fenix-init
-- **THEN** `.fenix/todo.md` 与 `.fenix/verify.yaml` 处于 git index（`git ls-files` 可见），无自动 commit 产生，控制台输出已入库提示
+- **THEN** `.fenix/verify.yaml` 处于 git index（`git ls-files` 可见），无自动 commit 产生，控制台输出已入库提示；init 未播种的 `.fenix/todo.md`（当期不存在）被跳过且不报错，其在场时（如后续重跑）一并入库
 
 #### Scenario: 非 git 仓库跳过并提示
 

@@ -23,7 +23,7 @@ cloud-phone 首跑告警中 6 条（3 major 白名单 + 3 info 散件）源于�
 
 ### D1 git add 用离散路径而非 `git add .`
 
-只 add 两个白名单文件（`.fenix/todo.md`、`.fenix/verify.yaml`），MUST NOT `git add .`——骨架生成时项目里可能已有用户未跟踪文件（如 `scripts/nat_check.py`），批量 add 会替用户做出入库决定。unborn 分支（零提交史）`git add` 正常工作，无需特殊处理。
+只 add 两个白名单文件（`.fenix/todo.md`、`.fenix/verify.yaml`），MUST NOT `git add .`——骨架生成时项目里可能已有用户未跟踪文件（如 `scripts/nat_check.py`），批量 add 会替用户做出入库决定。unborn 分支（零提交史）`git add` 正常工作，无需特殊处理。git add 逐文件存在性守卫：init 不播种 `.fenix/todo.md`（由自省/进化车道后续创建，`core/evolution.py` 以「todo.md 本就不存在」为常态分支），对当期不存在的白名单文件跳过且不报错。
 
 ### D2 gitignore 追加判据与幂等
 
@@ -31,7 +31,7 @@ cloud-phone 首跑告警中 6 条（3 major 白名单 + 3 info 散件）源于�
 
 ### D3 模板注释改写范围：只动误导表述
 
-llm 段「未配置时所有 Agent 使用默认环境变量模型（现状行为）」改为按 harness 分形态的两句话描述；agents.models 段「按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。」补一句无分配默认行为分形态说明。其余配置注释不动（控制模板 diff 面积）。
+llm 段「未配置时所有 Agent 使用默认环境变量模型（现状行为）」改为按 harness 分形态的两句话描述；agents.models 段「按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。」补一句无分配默认行为分形态说明。其余配置注释不动（控制模板 diff 面积）。dsh 分支描述的回落语义以 SPEC ①（对称回落闭环，`add-dispatch-precheck-true-fallback`）落地为前提（当前模板 agent.harness 段明示 dsh adapter 尚未部署）：① 合入前措辞用条件式表述（「将随对称回落闭环落地生效」），不得断言当下不存在的行为——注释与实际语义一致正是本变更要消除的缺陷类别，不得在新注释里复刻。
 
 ### D4 setup 引导以「检查 + 指引」形态写进 SKILL.md，不做自动探测脚本
 
