@@ -11,6 +11,7 @@
 - 扫描接入：AdminMonitor.run_once 内联闭环 + 启动首轮回填仅一次
 """
 
+import copy
 import time
 from pathlib import Path
 
@@ -21,10 +22,14 @@ from core.alert_lifecycle import (
     BACKFILL_SIGNAL_TYPES,
     CONDITION_SPEC_DELIVERED_ADJUDICATED,
     CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+    CONDITION_SPEC_VERIFIED,
+    SELF_HEAL_SIGNAL_TYPES,
+    SPEC_VERIFIED_STATUSES,
     _SIGNAL_CONDITIONS,
     build_trigger,
     evaluate_alert,
     find_resolvable,
+    find_self_healable,
 )
 from core.pm_engine import PMEngine
 
@@ -597,3 +602,184 @@ class TestInstantFailStormClosure:
         assert "spec_delivered_no_content" in note
         assert "dnc-spec" in note
         assert "人工裁决完成" not in note  # 硬编码单类型文案已泛化
+
+
+# ═════════════════════════════════════════════════════════════════
+# add-inconclusive-verified-autoclose：inconclusive_loop 验证翻绿自动消解
+# ═════════════════════════════════════════════════════════════════
+
+_GREEN_AT = "2026-11-08T03:00:00+00:00"
+
+
+class TestInconclusiveVerifiedAutoclose:
+    """inconclusive_loop（env 豁免握手族）验证翻绿自动收口。
+
+    - 条件族登记 spec_verified：翻绿状态集（verified/done/pushed）才收口；
+    - 在途态不收口（16:19 auto 重派反例回归锚：离开 blocked ≠ 翻绿）；
+    - 双 kind 同治 + 存量回填收录；自愈注册表维持排除（安静≠翻绿证据）。
+    """
+
+    def _alert(self, kind=ESCALATION, spec="ite-spec", trigger=True,
+               handled=False, **extra) -> dict:
+        alert = {
+            "id": "icl-1",
+            "kind": kind,
+            "signal_type": "inconclusive_loop",
+            "spec": spec,
+            "handled": handled,
+            "description": "'ite-spec' 连续 3 轮验证全部为 blocked-env（环境性失联）",
+            "evidence": "spec=ite-spec; 连续轮数=3; 末轮blocked_env数=6",
+        }
+        if trigger:
+            alert["trigger"] = build_trigger("inconclusive_loop", spec)
+        alert.update(extra)
+        return alert
+
+    # ── 1.1 条件族登记 ──────────────────────────────────────
+
+    def test_condition_registered_and_trigger_embedded(self):
+        """注册表登记 inconclusive_loop → spec_verified；写入埋点推导同一
+        条件（attach_trigger 经注册表统一出口）。"""
+        assert (
+            _SIGNAL_CONDITIONS.get("inconclusive_loop") == CONDITION_SPEC_VERIFIED
+        )
+        assert build_trigger("inconclusive_loop", "s") == {
+            "type": "inconclusive_loop",
+            "spec": "s",
+            "condition": CONDITION_SPEC_VERIFIED,
+        }
+
+    # ── 2.1 翻绿收口（双 kind × 三态）────────────────────────
+
+    def test_green_statuses_resolve_both_kinds(self):
+        """escalation 与 kind=signal 双形态 × verified/done/pushed 三态 →
+        可闭环，注记含 spec 名、翻绿表述与 updated 时刻。"""
+        for status in SPEC_VERIFIED_STATUSES:
+            for kind in (ESCALATION, "signal"):
+                specs = {"ite-spec": {"status": status, "updated": _GREEN_AT}}
+                note = evaluate_alert(self._alert(kind=kind), specs)
+                assert note is not None, (kind, status)
+                assert "ite-spec" in note
+                assert "验证已翻绿" in note
+                assert f"状态 {status}" in note
+                assert _GREEN_AT in note
+
+    def test_missing_updated_no_fabricated_moment(self):
+        """状态表无 updated 字段：保持既有表述，不硬造时刻。"""
+        note = evaluate_alert(self._alert(), {"ite-spec": {"status": "verified"}})
+        assert note is not None
+        assert "验证已翻绿" in note
+        assert "状态变更时刻" not in note
+
+    def test_writeback_preserves_fields_both_kinds(self, tmp_path):
+        """双 kind 落 store → auto_resolve 写回：handled 族字段置位，信号
+        本体字段（description/evidence/signal_type/escalated）逐位保留。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        esc = make_escalation(
+            store, spec="ite-spec", signal_type="inconclusive_loop",
+            trigger=build_trigger("inconclusive_loop", "ite-spec"),
+        )
+        sig = store.append({
+            "kind": SIGNAL, "signal_type": "inconclusive_loop",
+            "spec": "ite-spec", "description": "blocked-env 三连",
+            "evidence": "spec=ite-spec; 连续轮数=3", "escalated": True,
+            "trigger": build_trigger("inconclusive_loop", "ite-spec"),
+        })
+        specs = {"ite-spec": {"status": "verified", "updated": _GREEN_AT}}
+        resolvable = find_resolvable(store.read_all(), specs)
+        assert {r["id"] for r in resolvable} == {esc["id"], sig["id"]}
+        assert store.auto_resolve(resolvable) == 2
+        recs = {r["id"]: r for r in store.read_all()}
+        for rec in (recs[esc["id"]], recs[sig["id"]]):
+            assert rec["handled"] is True
+            assert rec["handled_by"] == AUTO_RESOLVE_BY
+            assert rec["handled_at"]
+            assert "ite-spec" in rec["resolve_note"]
+            assert "验证已翻绿" in rec["resolve_note"]
+            assert _GREEN_AT in rec["resolve_note"]
+        # 人工记录语义不被伪造：信号本体字段逐位保留
+        assert recs[esc["id"]]["description"] == "验证连续失败 3 轮，已冻结等待人工裁决"
+        assert recs[sig["id"]]["description"] == "blocked-env 三连"
+        assert recs[sig["id"]]["escalated"] is True
+        assert recs[sig["id"]]["signal_type"] == "inconclusive_loop"
+
+    # ── 2.2 不收口回归（16:19 auto 重派反例锚）───────────────
+
+    def test_inflight_or_missing_state_not_resolved(self):
+        """在途态/状态缺失/spec 不在状态表 → evaluate_alert 返回 None。
+
+        2026-11-07 add-integration-test-env 16:19 auto 重派反例：spec 离开
+        停车态回 testing 但环境仍坏——本条件比 spec_terminal_or_unblocked
+        严格一档，离开 blocked 不得收口（收口即假闭环）。"""
+        for status in ("drafted", "ready", "implementing", "implemented",
+                       "testing", "blocked", ""):
+            for kind in (ESCALATION, "signal"):
+                assert evaluate_alert(
+                    self._alert(kind=kind),
+                    {"ite-spec": {"status": status}},
+                ) is None, (kind, status)
+        assert evaluate_alert(self._alert(), {"ite-spec": {}}) is None  # 状态缺失
+        # spec 不在状态表：无法判定，保持原状
+        assert evaluate_alert(self._alert(), {"other": {"status": "pushed"}}) is None
+
+    def test_handled_entry_untouched_bitwise(self):
+        """人工已处理（handled=True）：判定跳过且字段与时间戳逐位不变。"""
+        alert = self._alert(handled=True, handled_by="human",
+                            handled_at="2026-11-07T09:00:00+00:00")
+        snapshot = copy.deepcopy(alert)
+        assert evaluate_alert(alert, {"ite-spec": {"status": "pushed"}}) is None
+        assert alert == snapshot
+
+    # ── 2.3 存量回填 ────────────────────────────────────────
+
+    def test_triggerless_escalation_backfills_green(self, tmp_path):
+        """无 trigger 存量形态（9e0403d0ac94 在案滞留件同款）：启动回填按
+        spec_verified 收口，注记带「存量回填」前缀与翻绿依据。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        legacy = make_escalation(store, spec="ite-spec",
+                                 signal_type="inconclusive_loop")  # 无 trigger
+        specs = {"ite-spec": {"status": "pushed", "updated": _GREEN_AT}}
+        resolvable = find_resolvable(store.read_all(), specs, backfill=True)
+        assert len(resolvable) == 1
+        assert store.auto_resolve(resolvable) == 1
+        rec = next(r for r in store.read_all() if r["id"] == legacy["id"])
+        assert rec["handled"] is True
+        assert rec["handled_by"] == AUTO_RESOLVE_BY
+        assert rec["resolve_note"].startswith("存量回填")
+        assert "验证已翻绿" in rec["resolve_note"]
+        assert _GREEN_AT in rec["resolve_note"]
+
+    def test_backfill_condition_is_verified_set_not_loose(self):
+        """回填条件 = 翻绿状态集：testing/implemented/blocked 不收口——
+        不得回退 spec_terminal_or_unblocked 的「离开 blocked 即解除」宽松
+        口径（16:19 反例证伪）。"""
+        alert = self._alert(trigger=False)
+        for status in ("testing", "implemented", "blocked"):
+            assert find_resolvable(
+                [alert], {"ite-spec": {"status": status}}, backfill=True
+            ) == [], status
+
+    def test_verify_fail_escalation_backfill_unchanged(self, tmp_path):
+        """既有 verify_fail_escalation 回填零回归：离开 blocked（testing）
+        仍按原条件收口（中性解除表述）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        make_escalation(store, spec="v2-x", signal_type="verify_fail_escalation")
+        resolvable = find_resolvable(
+            store.read_all(), {"v2-x": {"status": "testing"}}, backfill=True)
+        assert len(resolvable) == 1
+        assert "已非 blocked" in resolvable[0]["resolve_note"]
+
+    # ── 2.4 自愈面维持排除 ──────────────────────────────────
+
+    def test_self_heal_registry_exclusion_and_quiet_never_heals(self):
+        """inconclusive_loop 不在 SELF_HEAL_SIGNAL_TYPES：安静超窗也不自愈
+        收口（安静≠翻绿证据），保持人工队列可见。"""
+        assert "inconclusive_loop" not in SELF_HEAL_SIGNAL_TYPES
+        alert = self._alert()
+        far_future = time.time() + 10 * 86400  # 远超 1440 分钟默认安静窗口
+        # 自愈判定入口（evaluate_alert 注入 now / find_self_healable）均不收口
+        assert evaluate_alert(
+            alert, {"ite-spec": {"status": "blocked"}},
+            now=far_future, records=[alert],
+        ) is None
+        assert find_self_healable([alert], now=far_future) == []
