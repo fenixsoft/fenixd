@@ -1,7 +1,7 @@
 # 模型网关与配置
-> 最后更新：2026-11-04 16:30 UTC+8
+> 最后更新：2026-11-08 21:09 UTC+8
 
-模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置，以及分级配置与设置界面的配置体系，外加 Provider 手动健康检测。
+模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置、provider 引用校验与分配失效划界，以及分级配置与设置界面的配置体系，外加 Provider 手动健康检测。
 
 ## 能力页
 
@@ -11,6 +11,7 @@
 | [chain-model-mapping](chain-model-mapping.md) | 链模型映射（元素级模型解析） | 2026-10-03 04:59 |
 | [dashboard-chain-editor](dashboard-chain-editor.md) | 链模型映射编辑器 | 2026-10-03 04:59 |
 | [provider-chain-config](provider-chain-config.md) | provider 候选链配置 | 2026-10-03 04:59 |
+| [provider-ref-validation](provider-ref-validation.md) | provider 引用校验与分配失效划界（加载/保存两路径校验单源、相似名建议、链解析三态判定单源） | 2026-11-08 21:09 |
 | [failover-dispatch](failover-dispatch.md) | provider 故障切换派发（链推进/限流冷却/被 429 打死 run 自动重派，归因双源+剃余续跑；触发面只认失败不认挂） | 2026-11-04 15:55 |
 | [provider-fault-fuse](provider-fault-fuse.md) | provider 故障熔断 | 2026-10-03 04:59 |
 | [provider-transient-backoff](provider-transient-backoff.md) | 瞬时故障原地退避 | 2026-10-03 04:59 |

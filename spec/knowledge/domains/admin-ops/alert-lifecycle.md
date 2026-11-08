@@ -1,9 +1,9 @@
 # 告警生命周期自动闭环
 
-<!-- knowledge: capability=alert-lifecycle rev=4
-     sources=spec/archive/2026-09-06-add-alert-auto-resolve,spec/archive/2026-10-25-add-alert-self-heal-marking,spec/archive/2026-10-27-evo-add-signal-subject-terminal-close,spec/changes/add-inconclusive-alert-verified-close -->
+<!-- knowledge: capability=alert-lifecycle rev=5
+     sources=spec/archive/2026-09-06-add-alert-auto-resolve,spec/archive/2026-10-25-add-alert-self-heal-marking,spec/archive/2026-10-27-evo-add-signal-subject-terminal-close,spec/changes/add-inconclusive-alert-verified-close,spec/changes/add-provider-validation-alert-governance -->
 
-告警条目与底层 spec 状态的状态联动收口机制：spec 附着族（升级条目与信号条目皆然）按条件解除自动消解，基础设施瞬态族按签名安静自愈标注；自动收口只作用于人工甄别面的告警条目，不触碰 disposition 台账。
+告警条目与底层 spec 状态的状态联动收口机制：spec 附着族（升级条目与信号条目皆然）按条件解除自动消解，基础设施瞬态族按签名安静自愈标注；告警携带根因标签（cause），同根因修复观测点通过时未处理告警批量失效（superseded 旁路）；自动收口只作用于人工甄别面的告警条目，不触碰 disposition 台账。
 
 ## 规则
 
@@ -13,6 +13,15 @@
 - 自动闭环不覆盖人工处理记录：`handled=True` 的条目一律跳过，字段与时间戳逐位不变。
 - 闭环判定证据只取告警条目自身时间戳（`last_seen` 缺失回落 `created`），判定输入（告警列表、当前时刻、spec 状态表）全部由调用方注入；`alert_lifecycle` 模块保持纯函数，不读写文件、不读日志、不依赖锁。
 - 自动收口只作用于人工甄别面的告警条目本身，MUST NOT 改写 disposition 记录本体（result/status 逐位不变）——处置台账不被旁路改写是 AdminMonitor 生效核查 fail-closed 契约的前提。
+
+**根因标签（cause）与 superseded 批量失效旁路**
+
+- 告警入账携带根因标签 `cause`（封闭枚举：model-chain / harness-cli / init-stray / contract / daemon-error / unknown），由信号产生方按 signal_type→cause 封闭映射标注，与 signal_type/severity 正交——同 signal_type 可因归因不同携带不同根因（如派发失败可归因模型链或 CLI）。读侧对 cause 缺席/非法容错为 unknown，不臆造枚举值；信号合并不改写已落盘 cause。面板可按根因过滤/分组。
+- 存量账本回填：daemon 启动首轮对无 cause 的未处理告警按封闭映射推断回填（映射随枚举单测固化），resolve_note 注「存量回填：」前缀；映射外保持 unknown、不参与 supersede；已 handled 记录不动（人工处置历史不旁路改写）。
+- 同根因修复生效触发该根因全部未处理告警批量 superseded：触发判据是「根因对应的修复观测点通过」，每根因一个可判定判据，触发须实测证据齐备——model-chain 观测点为双半判据（provider 引用校验干净加载 **且** 其后派发成功，两半不全不触发）；harness-cli 观测点对接 harness 启动自检态（未落地前该根因留人工处置）；init-stray/contract 等其余根因不自动失效，枚举与观测点可扩展（新根因须随附可判定观测点）。
+- 写回形态：单事务原子批量（一把排他锁内读改写全量）置 `handled=True`、`handled_by="superseded"`、`handled_at` 失效时刻、`resolve_note` 记触发观测点注记；零命中零写回（mtime 不变）。作用面限 kind ∈ {signal, escalation}、cause 显式相等且未 handled 的记录；cause=unknown 硬拒参与自动失效（归因不明参与批量失效会把误归因放大成批量误失效）。未处理计数与升级链引用随 handled 自然扣除。
+- 既有终态语义不变：superseded 为独立终态旁路，与 auto-resolve / auto-self-heal / 人工 confirmed-close 路径并存，不拦截任一既有路径。
+- 面板呈现与纠错面：superseded 条目折叠「已失效」分组（默认收起、可展开，与已解决区可辨），不与待处理项混排；人工撤销入口仅对 `handled_by=superseded` 的记录生效（其余终态路径不可经此回退），恢复未处理态并注记撤销——误失效的人工纠错面。
 
 **spec 附着族：条件解除自动消解（auto-resolve）**
 
@@ -47,3 +56,4 @@
 - 2026-10-25 add-alert-self-heal-marking（spec/archive/2026-10-25-add-alert-self-heal-marking） — 覆盖面从 spec 附着族扩至基础设施瞬态族：签名安静自愈判定（SELF_HEAL_SIGNAL_TYPES 注册表、双源安静锚点、1440 分钟可配窗口）、auto-self-heal 独立写回标识与「已自愈」徽标、spec-less 存量回填推断；收口面限定人工甄别面、不触 disposition 台账
 - 2026-10-27 evo-add-signal-subject-terminal-close（spec/archive/2026-10-27-evo-add-signal-subject-terminal-close） — spec 附着条件族的 kind=signal 记录（blocked_stuck 等）纳入主体终态自动收口：判定端 kind 门按条件族白名单放宽、盘点通道 pending 纳入该族信号、写回端 auto_resolve kind 门开至 escalation+signal，收口注记附主体终态/解除时刻；签名安静族、escalation 既有闭环与 stuck 检测卫生逻辑不回归
 - 2026-11-08 add-inconclusive-alert-verified-close（spec/changes/add-inconclusive-alert-verified-close） — spec_verified 条件族：inconclusive_loop 接入验证翻绿自动收口（翻绿状态集 verified/done/pushed、escalation/signal 双 kind 同治、BACKFILL 收录且回填与在册同条件），废除其「永不自动闭环」排除；自愈注册表维持排除（安静≠翻绿），收口注记附翻绿依据与状态变更时刻
+- 2026-11-08 add-provider-validation-alert-governance（spec/changes/add-provider-validation-alert-governance/） — 新增根因标签 cause（封闭枚举、与 signal_type/severity 正交、存量回填）与 superseded 批量失效终态旁路（每根因可判定观测点、model-chain 双半判据、unknown 硬拒、面板「已失效」折叠组与人工撤销面）；auto-resolve / self-heal / terminal-close 语义不变

@@ -1,7 +1,7 @@
 # 验证契约前置预检与 serve 一致性静态检查
 
-<!-- knowledge: capability=verify-contract-preflight rev=2
-     sources=spec/archive/2026-10-07-evo-add-verify-contract-preflight,spec/archive/2026-10-30-evo-add-scenario-serve-consistency-preflight -->
+<!-- knowledge: capability=verify-contract-preflight rev=3
+     sources=spec/archive/2026-10-07-evo-add-verify-contract-preflight,spec/archive/2026-10-30-evo-add-scenario-serve-consistency-preflight,spec/changes/add-provider-validation-alert-governance -->
 
 验证契约（`.fenix/verify.yaml`）的两类确定性缺口——模板态挂着从未裁决、场景 kind 需求超出契约 serve/start 能力——在实现期巡检与出题产物消费期被前置检出，打回补契约或唤起 Administrator 起草，而非推迟到验证执行期以「应用不可达」fail-fast 空转暴露。
 
@@ -10,6 +10,7 @@
 **模板态前置巡检（admin_monitor 周期检测器）**
 
 - 触发窗口为 ready/implementing：项目存在该状态的 spec，且 `.fenix/verify.yaml` 存在但 yaml 解析不产生顶层映射（全注释模板、语法损坏、空文件均属此形态）时，写 `verify_contract_missing` 信号。testing 及之后不写——该形态由验证消费期轻量自证 fail-fast 与其信号通道负责，前置窗口与消费窗口互斥不双发。
+- 窗口内信号为 info 级、同 spec 一次性（只沉淀不召唤 Administrator）；验证消费窗口的 major 召唤语义不变。降噪治理规则见 [verify-contract-precheck-noise-reduction](verify-contract-precheck-noise-reduction.md)。
 - 文件缺失不触发：`.fenix/verify.yaml` 不存在是「无契约回退」的合法形态，前置预检只治理「模板态文件挂着从未裁决」，不把无契约项目卷入起草强制流、不扩大触发面。
 - 有效契约不触发：可解析为顶层映射（含实质 prepare/regression 或 serve 段）即视为已裁决，不写任何契约信号。
 - 项目级单例信号：同项目多个 ready/implementing spec 命中时只产出一条信号（spec 字段取首个命中 spec）。契约是项目级产物（一个项目一份 verify.yaml），既有节流按 (spec, signal_type) 判定、对不同 spec 不互斥，按 spec 数量产信号会把唤起放大 N 倍。
@@ -43,3 +44,4 @@
 
 - 2026-10-07 evo-add-verify-contract-preflight（spec/archive/2026-10-07-evo-add-verify-contract-preflight/） — 新增本能力页：实现期契约模板态前置巡检（ready/implementing 窗口、项目级单例、勿复位收尾），把契约起草从验证消费点前移到实现阶段并行（此前每个新项目首个 spec 首次推进到验证段必卡 blocked 等自主起草解锁，实测单次卡 26 分钟并连发 2 个 admin run）
 - 2026-10-30 evo-add-scenario-serve-consistency-preflight（spec/archive/2026-10-30-evo-add-scenario-serve-consistency-preflight/） — 新增 serve 一致性交叉规则与三路径统一挂载，前置探测从「可解析」收紧为「能力覆盖」（此前静态检查 serve-None 早退、只挂新鲜出题验收路径，api/web 场景遇无 serve 契约推迟到执行期 fail-fast：实测 3 轮空转 35 秒 0 场景执行、spec blocked 约 51 分钟等契约补课，且 3 条信号被宽松前置探测错误 auto-resolve）
+- 2026-11-08 add-provider-validation-alert-governance（spec/changes/add-provider-validation-alert-governance/） — 前置窗口信号治理收口：ready/implementing 窗口内 verify_contract_missing 降 info 级 + 同 spec 一次性（不召唤 Administrator）；降噪细则拆分至 verify-contract-precheck-noise-reduction 能力页，消费窗口 major 语义与 serve 一致性检查不变
