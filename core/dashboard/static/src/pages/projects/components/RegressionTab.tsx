@@ -25,7 +25,6 @@
 // 时点在前端本地计时——回归可跑 1800s，跨刷新后本地态丢失会让分面回落到
 // 「上次结果」。运行中轮询快照（2s），running 回落即刷新结果。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import dayjs from 'dayjs';
 import {
   App,
   Button,
@@ -57,20 +56,14 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 // 时长格式化单源（utils/duration.ts，对齐 list.tsx/detail.tsx 既有口径）；
 // 该单源空值回退为 ''，本页展示用 '—'，在调用处以 `|| '—'` 表达
 import { fmtDuration } from '@/utils/duration';
+// 日期时间格式化单源（utils/datetime.ts，code-review item 13ec66ff34fe）：
+// 原 fmtExecTime 与 ArchitectureTab fmtTime / SpecTimeline 组件内 fmtTime
+// 三处逐字重复，收敛单源；空值回退 '—' 与原实现一致
+import { fmtDateTime } from '@/utils/datetime';
 
 interface RegressionTabProps {
   project: string;
   active: boolean;
-}
-
-/** 执行时间显示（本地时区；快照为 UTC ISO；dayjs 统一格式——code-review
- * item 409fad9381a1：toLocaleString 输出随浏览器 locale 变化，与仓库其他
- * 页面（activities 等）的 YYYY-MM-DD HH:mm:ss 口径不齐；dayjs 解析失败
- * 返回 Invalid Date 而非抛异常，isValid 显式判后回退原文）。 */
-function fmtExecTime(iso?: string) {
-  if (!iso) return '—';
-  const d = dayjs(iso);
-  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : iso;
 }
 
 // ── 分类 Tag：失败 / 错误 / 超时 / 长耗时（spec 三态渲染表列的「分类」）──
@@ -486,7 +479,14 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
         window.clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
       }
-      setAwaitingStart(false);
+      // 等待启动窗口的失败不再退出过渡态（code-review item 930374e7cd32）：
+      // 原实现一次失败即静默清 awaitingStart——等待条消失、pollFailed 又只在
+      // running 分支渲染无处展示，用户易误判触发失败而重复点击（再被后端
+      // pending 拒绝）。保留过渡态，失败痕迹由 pollFailBanner 扩展到
+      // awaitingStart 渲染分支承载，等待窗口轮询经 pollFailed 哨停摆（不刷
+      // 屏），120s 超时兜底收口；下一次成功快照清 pollFailed 后轮询自动恢复。
+      // running 轮询止损场景 awaitingStart 本为 false（running 置位已清），
+      // 该场景语义不变。
       // 止损同时置页面内可见错误态（11f99f1d80c5）：running 旧帧仍按「正在
       // 执行」渲染且按钮禁用，提示条是 toast 之外唯一的失败痕迹与恢复指引
       setPollFailed(true);
@@ -565,27 +565,37 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 已弹「已受理」承诺，静默复位会让承诺悬空无任何「未启动」痕迹——口径对
   // 齐 QualityTab 两段等待的超时提示（未收到启动确认 → 去 daemon 侧确认），
   // 全量/定向子集两个入口共享本兜底，一处提示双双覆盖。
+  // active 门控（code-review item 43a1b667a594）：过渡态的两条快照清除路径
+  // （running 置位/started_at 推进）与等待窗口轮询都受 active 门控——切离
+  // 分面后 120s 计时若继续走，即便 daemon 已正常 mark_running 甚至跑完全程，
+  // 重进分面前必误弹「未收到启动确认」。离面即暂停计时（cleanup 清
+  // timeout），重进分面重置计时窗口；期间 awaitingStart 保留，重进后由
+  // 恢复的轮询快照按事实清除或走满本兜底。
   useEffect(() => {
-    if (!awaitingStart) return;
+    if (!awaitingStart || !active) return;
     const t = window.setTimeout(() => {
       setAwaitingStart(false);
       message.info('回归已受理但未收到启动确认，请确认 daemon 运行中');
     }, 120_000);
     return () => window.clearTimeout(t);
-  }, [awaitingStart, message]);
+  }, [awaitingStart, active, message]);
 
   // 等待启动窗口轮询：loadResult 的自轮询只在 running=true 时挂载，而受理
   // 到 daemon mark_running 之间有主循环消费时延——此窗口不轮询会让页面
   // 感知不到运行态置位（停在等待态直到超时）。2s 轮询直至 running 接管。
+  // pollFailed 哨（code-review item 930374e7cd32）：窗口内轮询失败止损后
+  // 不再每 2s 重试打请求（对齐 e419d82ceb2b 止损口径，toast 不刷屏），等待
+  // 条与 pollFailBanner 痕迹保留、120s 超时兜底收口；下一次成功快照清
+  // pollFailed 后本 effect 随依赖变化重新挂载，轮询自动恢复。
   useEffect(() => {
-    if (!awaitingStart || !active) return;
+    if (!awaitingStart || !active || pollFailed) return;
     const t = window.setInterval(() => {
       // 在飞去重（ccaadd7c9eb2）：与 running 轮询同口径，见 loadInFlightRef 注释
       if (loadInFlightRef.current > 0) return;
       void loadResult();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(t);
-  }, [awaitingStart, active, loadResult]);
+  }, [awaitingStart, active, pollFailed, loadResult]);
 
   // 切离分面清理轮询
   useEffect(() => {
@@ -809,11 +819,13 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
 
   const status = snapshot?.status ?? 'never_run';
 
-  // 轮询止损提示条（code-review item 11f99f1d80c5）：仅在 running 渲染分支
-  // 显示——快照是 running 旧帧时触发/修复按钮均被禁用，此条是页面内唯一的
-  // 失败痕迹与恢复指引；下一次成功快照使 running 回落后随之消失。
+  // 轮询止损提示条（code-review item 11f99f1d80c5）：快照是 running 旧帧时
+  // 触发/修复按钮均被禁用，此条是页面内唯一的失败痕迹与恢复指引；扩展到
+  // 等待启动窗口（code-review item 930374e7cd32）——该窗口轮询失败原先
+  // pollFailed 无处展示且等待条被静默清除，现保留过渡态并在此呈失败痕迹；
+  // 下一次成功快照（running 回落/pollFailed 清除）后随之消失。
   const pollFailBanner =
-    running && pollFailed ? (
+    (running || awaitingStart) && pollFailed ? (
       <Typography.Text type="danger" style={{ fontSize: 12 }}>
         进度读取失败，已停止自动刷新，可切出重进刷新
       </Typography.Text>
@@ -845,6 +857,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
                 verify.yaml；配置完成后点击下方按钮手动触发一次。
               </Typography.Text>
               {awaitingStart ? <RunningProgressView waiting /> : null}
+              {pollFailBanner}
               <div style={{ textAlign: 'right' }}>
                 {/* 交叉 pending 门控（code-review item f80503ee8385）：任一回归
                     动作在飞即禁用，对齐 overviewActions 三键 anyPending 与
@@ -1041,7 +1054,7 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
               {
                 key: 'time',
                 label: '执行时间',
-                children: fmtExecTime(snapshot?.started_at),
+                children: fmtDateTime(snapshot?.started_at),
               },
               {
                 key: 'duration',
@@ -1072,6 +1085,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
             </Typography.Paragraph>
           ) : null}
           {awaitingStart && !running ? <RunningProgressView waiting /> : null}
+          {/* 非 running 分支的止损痕迹（930374e7cd32）：等待启动窗口失败时等待
+              条仍在、无 running 分支可挂 banner，在此展示；running 场景由上方
+              running 分支内既有渲染位承载，避免双份 */}
+          {!running ? pollFailBanner : null}
           {overviewActions({
             snapshot,
             running,

@@ -9,7 +9,6 @@ import { Button, Collapse, Tag, theme, Timeline, Typography } from 'antd';
 import { FullscreenOutlined } from '@ant-design/icons';
 import { Fragment } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { statusMeta } from '@/services/dashboard';
@@ -18,6 +17,11 @@ import { ClaudeOutputPane, HarnessBrandProvider } from '@/components/claude-msg'
 import { OutlinedTag } from '@/components/StatusTag';
 import { SEV_LABEL } from '@/components/alert-shared';
 import { fmtDuration } from '@/utils/duration';
+// 日期时间格式化单源（utils/datetime.ts，code-review item 13ec66ff34fe）：
+// 时间轴节点头部时间原为组件内 fmtTime 局部实现，与 ArchitectureTab/
+// RegressionTab 逐字重复；引用处以 fallback '' 保持「空值经 dayjs Invalid
+// 回退原文（空串渲染为空）」的既有行为不变
+import { fmtDateTime } from '@/utils/datetime';
 // 状态语义色/角色映射共享常量（add-spec-topology-bigscreen 3.1 等价纯迁移）：
 // 常量与纯函数单源自 utils/runVisual，渲染输出与迁移前严格等价
 // （tests/runVisual.test.mjs 纯函数单测背书）；formatUsd 以 re-export 保持
@@ -620,10 +624,9 @@ export default function SpecTimeline({
       marginBottom: 8,
       flexWrap: 'wrap',
     };
-    const fmtTime = (v: string) => {
-      const d = dayjs(v);
-      return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : v;
-    };
+    // 时间轴头部时间格式化（utils/datetime.ts 单源，code-review item
+    // 13ec66ff34fe）：fallback '' 补空值早退且保持原「空值回退原文」行为
+    const fmtTime = (v: string) => fmtDateTime(v, '');
 
     return (
       <Timeline

@@ -153,12 +153,19 @@ function resolutionBadgeOf(rec: CodeReviewItem): { text: string; color: string }
 // 宽度（2026-09-20 用户要求）：浮层宽度 = 所在「问题」列宽度的 80%——列宽随
 // 视口自适应（无固定 width），故在悬浮时实测所在 td 宽度再换算，而非写死 px。
 // 延迟（2026-09-20 用户要求）：鼠标悬停满 1s 才弹出浮层，快速划过不触发
-// （避免浏览列表时浮层乱闪）；移出即时关闭并清除定时器。
+// （避免浏览列表时浮层乱闪）；移出经短延迟窗口关闭，浮层本体纳入停留判定
+// （code-review item 1662abbac61e：移入浮层滚动/复制全文不断开）。
 // 魔数收敛（code-review item ba13417eb1ff）：本组件用到的间隔/比例一律抽
 // 具名模块常量，SSE 端点走 services/dashboard 的 STREAM_URL 单源。
 const POPOVER_DELAY_MS = 1000;
 // 浮层宽度 = 所在「问题」列 td 实测宽度的比例（见上方「宽度」注释）
 const POPOVER_WIDTH_RATIO = 0.8;
+// 已弹出浮层的延迟关闭窗口（code-review item 1662abbac61e）：浮层受控弹出后
+// 用户移入浮层本体（placement topLeft，位于单元格上方）即离开 Paragraph，
+// 原实现立即关闭使全文无法滚动/复制。移出后先开本窗口再关，窗口内鼠标进入
+// 浮层本体或移回单元格即取消关闭，仅真正离开两者时关闭；窗口同时覆盖
+// Paragraph 与浮层间的 arrow 间隙段。
+const POPOVER_CLOSE_DELAY_MS = 150;
 // 运行中进度轮询间隔（运行结束即 clearInterval）
 const PROGRESS_POLL_INTERVAL_MS = 2000;
 // 心跳兜底刷新间隔（SSE 不可达时保底新鲜度，见下方 effect 注释）
@@ -177,6 +184,8 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
   const [popoverWidth, setPopoverWidth] = useState<number>();
   const cellRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<number | null>(null);
+  // 延迟关闭定时器（1662abbac61e）：移出 Paragraph 后开的关闭窗口
+  const closeTimerRef = useRef<number | null>(null);
 
   // 定时器统一清理：卸载 / 移出 / 重复进入都不会留下悬挂 timer
   const clearTimer = () => {
@@ -186,7 +195,16 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
     }
   };
 
+  const clearCloseTimer = () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
   const handleEnter = () => {
+    // 移回单元格取消延迟关闭（1662abbac61e）：单元格与浮层同为停留区
+    clearCloseTimer();
     clearTimer();
     // 宽度在延迟结束、真正弹出前实测（列宽可能因视口/内容变化）
     timerRef.current = window.setTimeout(() => {
@@ -198,12 +216,36 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
     }, POPOVER_DELAY_MS);
   };
 
+  // 移出 Paragraph（1662abbac61e）：取消未触发的打开定时器并开延迟关闭窗口
+  // ——窗口内鼠标移入浮层本体（handlePopoverEnter）或移回单元格（handleEnter）
+  // 都取消关闭，窗口到期才真正关闭；未弹出时窗口到期 setOpen(false) 幂等。
   const handleLeave = () => {
     clearTimer();
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setOpen(false);
+    }, POPOVER_CLOSE_DELAY_MS);
+  };
+
+  // 鼠标移入浮层本体：取消延迟关闭，保持浮层开启（滚动/复制全文）
+  const handlePopoverEnter = () => {
+    clearCloseTimer();
+  };
+
+  // 鼠标离开浮层本体：真正离开单元格与浮层两者，立即关闭
+  const handlePopoverLeave = () => {
+    clearCloseTimer();
     setOpen(false);
   };
 
-  useEffect(() => clearTimer, []);
+  useEffect(
+    () => () => {
+      clearTimer();
+      clearCloseTimer();
+    },
+    [],
+  );
 
   return (
     <div ref={cellRef}>
@@ -239,6 +281,10 @@ function ProblemCell({ rec }: { rec: CodeReviewItem }) {
           placement="topLeft"
           content={
             <div
+              // 浮层本体纳入停留判定（1662abbac61e）：在浮层内滚动/复制期间
+              // 不触发关闭，离开浮层本体才关
+              onMouseEnter={handlePopoverEnter}
+              onMouseLeave={handlePopoverLeave}
               style={{
                 width: popoverWidth ? `${popoverWidth}px` : undefined,
                 maxWidth: '80vw',
