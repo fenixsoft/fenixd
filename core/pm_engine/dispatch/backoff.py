@@ -20,6 +20,7 @@ import time
 from core.pm_engine.dispatch import (  # noqa: E402
     DEFAULT_DISPATCH_BACKOFF_SCHEDULE,
 )
+from core.state_machine import FROZEN_FIELD  # noqa: E402
 
 
 class BBackoffMixin:
@@ -150,6 +151,22 @@ class BBackoffMixin:
             f"worktree already active (lock conflict); backoff until {until_iso}"
         )
 
+        # 写盘前冻结复查（code-review item 440ec07a12cc，仿
+        # _rollback_failed_dispatch 的 _rollback_frozen_recheck 030f2c204875
+        # 同型并发窗口防护口径）：开头 read_one 仅判存在，与本 update_spec 之
+        # 间隔着 bump_counters 的 STATE 落盘 I/O——窗口内 spec 被并发
+        # freeze_for_human 冻结时，冻结剥离只剥 status 键，本路径写入的
+        # error 会覆盖内嵌「原状态 X」的冻结 error，人工解冻经 parse_orig_status
+        # 无法还原。复查发现 frozen 即放弃退避元数据写与 dispatch_stalled 升级
+        # （不再排程重试定时器），冻结现场原样保留待人工解冻。
+        if (self._pm.state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Dispatch backoff abandoned for '{spec_name}': 写盘前复查发现"
+                "已冻结——放弃退避元数据写与 dispatch_stalled 升级，冻结现场"
+                "保留待人工解冻还原",
+            )
+            return
         # 不翻转状态：spec 保持 ready，仅记录退避元数据。写失败不穿透派发
         # 主链（code-review item 5e42c83261da，对齐 91dc42d762c6 口径）：仅
         # WARNING 留痕后照常走排程/升级分支，本轮退避元数据缺失时恢复依赖
