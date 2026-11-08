@@ -190,3 +190,71 @@ test('畸形 chain_kind（原型链继承键）：hasOwnProperty 防御不报错
   assert.ok(html.includes('处置链'), '畸形形态走中性兜底');
   assert.ok(!html.includes('native code'), '不渲染原型链继承键命中值');
 });
+
+// ── 任务 2.3：无链节点零回归 ──
+test('仅 state/admin/verify/run 节点：渲染输出不含链卡片结构', async () => {
+  const html = await renderTimelineHtml([
+    {
+      kind: 'state',
+      time: '2026-11-08T09:00:00',
+      from: 'drafted',
+      to: 'ready',
+      backward: false,
+    },
+    {
+      kind: 'admin',
+      time: '2026-11-08T09:05:00',
+      record_kind: 'disposition',
+      severity: 'minor',
+      description: '复位告警并重派',
+      result: 'resolved',
+    },
+    {
+      kind: 'verify',
+      time: '2026-11-08T09:10:00',
+      total: 2,
+      passed: 2,
+    },
+    {
+      kind: 'run',
+      time: '2026-11-08T09:15:00',
+      run_id: 'impl-1',
+      agent_type: 'impl',
+      status: 'success',
+    },
+  ]);
+  // 四类节点照常渲染（改动前路径零回归）
+  assert.ok(html.includes('状态转移'), 'state 节点照常渲染');
+  assert.ok(html.includes('运维处置'), 'admin 节点照常渲染');
+  assert.ok(html.includes('验证执行'), 'verify 节点照常渲染');
+  assert.ok(html.includes('复位告警并重派'), 'admin 正文照常渲染');
+  // 链卡片结构零出现：六种标签、中性标签、语义着色 Tag、dot 同源变量全部缺席
+  for (const [, label] of KNOWN_CHAIN_KINDS) {
+    assert.ok(!html.includes(label), `无链节点时不得出现链标签「${label}」`);
+  }
+  assert.ok(!html.includes('>处置链<'), '无链节点时不得出现中性链标签');
+  // 灰圆点与 state 非回退分支共享属既有形态，不在此列；只断言链专属着色形态缺席
+  assert.ok(
+    !html.includes('item-icon-dot-color:gold') && !html.includes('ant-timeline-item-color-gold'),
+    '无链节点时不得出现链节点圆点着色形态',
+  );
+});
+
+test('state 节点 item.chain 折叠状态序列渲染不受链分支影响（命名防混淆红线）', async () => {
+  // state 的 chain 是折叠状态序列字段（非链事件）——全链展开渲染零变化
+  const html = await renderTimelineHtml([
+    {
+      kind: 'state',
+      time: '2026-11-08T09:20:00',
+      from: 'implemented',
+      to: 'pushed',
+      chain: ['implemented', 'testing', 'verified', 'done', 'pushed'],
+      backward: false,
+    },
+  ]);
+  assert.ok(html.includes('状态转移'), '折叠节点仍是状态转移卡片');
+  for (const s of ['implemented', 'testing', 'verified', 'done', 'pushed']) {
+    assert.ok(html.includes(`>${s}</span>`), `折叠序列中间态 ${s} 全链展开渲染`);
+  }
+  assert.ok(!html.includes('>处置链<'), 'state 的 chain 字段不得误触发链节点渲染');
+});
