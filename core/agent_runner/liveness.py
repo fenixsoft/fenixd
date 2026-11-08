@@ -553,6 +553,24 @@ class LivenessSupervisor:
                 if _file_tail_is_terminal(run_file):
                     self._terminal_verified.add(stem)
                     continue
+                # 锁内补写前原位复核（code-review item 911b63139a7a）：判据 ②
+                # 的 mtime stat 在锁外——runs 保留清理（runs_retention_check，
+                # daemon 主循环线程执行、不持本锁）可在该 stat 之后、取锁之前
+                # 把本文件移入 archive/ 或删除（停更超 _RUN_STALE_SECONDS 的
+                # 悬空 run 同样命中其 stale 移档判据）。此时上方末行复核经
+                # _file_tail_is_terminal 的 fail-open 判非终态拦不住，
+                # append_run_line 的追加模式会在 runs/ 下重建同名伪 run 文件
+                # （只剩一行 interrupted，与归档原产物同名并存，被读侧末行
+                # 口径当真实 interrupted 呈现）。与判据 ② 同口径复核：stat
+                # 失败（已移走/已删）即让位清理；mtime 被刷新到窗口内（收尾
+                # 线程仍在写、或清理移走后同名新产物已被重建）同样让位，
+                # idle_seconds 以复核值为准随补写落盘。
+                try:
+                    idle_seconds = int(now - run_file.stat().st_mtime)
+                except OSError:
+                    continue
+                if idle_seconds < RUNTIME_SWEEP_IDLE_SECONDS:
+                    continue
                 # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
                 try:
                     append_run_line(
@@ -1158,8 +1176,11 @@ class LivenessSupervisor:
         （零事件守卫先行放行），故区分「judge 通道故障」与「确认停滞」——
         首判为 stagnant 且 evidence 以 ``liveness judge unavailable`` 开头
         （超时/非零退出/输出不可解析/异常）时，以减半超时短重试一次，重试
-        仍故障才按原 fail-closed 语义返回 stagnant；judge 正常给出的 stagnant
-        verdict 属「确认停滞」，不重试。返回值结构与 evidence 格式不变。
+        仍故障才按原 fail-closed 语义返回 stagnant（附
+        ``unavailable_reason=judge_channel_failure`` 分型，供
+        _supervision_deadline_action 判死时按 infra 口径落账、对齐流不可读
+        分支，item e59e3ed15181）；judge 正常给出的 stagnant verdict 属
+        「确认停滞」，不重试。verdict/evidence 结构与 evidence 格式不变。
 
         code-review item 53d8a2f73d90：钉死 ClaudeAdapter 通道的结构性不可用
         （spawn 阶段 FileNotFoundError＝argv[0] 裸 "claude" PATH 解析缺失，
@@ -1282,20 +1303,33 @@ class LivenessSupervisor:
                     "evidence": f"liveness judge unavailable: {e}",
                     "unavailable_reason": "binary_missing",
                 }
-            # 其余 OSError 无法安全归类为部署态结构性故障，保留 fail-closed。
-            return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
+            # 其余 OSError 无法安全归类为部署态结构性故障，verdict 保留
+            # fail-closed（stagnant，经 _judge_liveness 减半重试链），但带
+            # unavailable_reason 分型——最终判死时由 _supervision_deadline_action
+            # 按 infra 口径落账（对齐流不可读分支，见其末分支注释）。
+            return {
+                "verdict": "stagnant",
+                "evidence": f"liveness judge unavailable: {e}",
+                "unavailable_reason": "judge_channel_failure",
+            }
         except Exception as e:
-            return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
+            return {
+                "verdict": "stagnant",
+                "evidence": f"liveness judge unavailable: {e}",
+                "unavailable_reason": "judge_channel_failure",
+            }
 
         if result.timed_out:
             # 超时：one_shot 已整组清场并收割；证据文案与现状 TimeoutExpired
-            # 分支逐字一致
+            # 分支逐字一致；unavailable_reason 分型供判死落账按 infra 口径
+            # （同上方 OSError 分支）
             return {
                 "verdict": "stagnant",
                 "evidence": (
                     f"liveness judge unavailable: judge timed out after "
                     f"{timeout}s (claude process group terminated)"
                 ),
+                "unavailable_reason": "judge_channel_failure",
             }
         text = result.stdout or ""
         try:
@@ -1316,6 +1350,7 @@ class LivenessSupervisor:
                 f"liveness judge unavailable: unparseable output "
                 f"(rc={result.returncode}) {(result.stderr or '')[:160]}"
             ),
+            "unavailable_reason": "judge_channel_failure",
         }
 
     @staticmethod
@@ -1707,7 +1742,8 @@ class LivenessSupervisor:
           3. 已用满 max_extensions → 终止；
           4. judge_window 内零事件 → 跳过 LLM、直接判停滞终止；
           5. LLM 判定 advancing → 续期 extension_seconds；
-          6. LLM 判定 stagnant（含 judge 不可用）→ 终止并保留证据。
+          6. LLM 判定 stagnant → 终止并保留证据；judge 通道故障（减半重试
+             后仍不可用）→ 按 infra 分型终止（豁免口径，见末分支注释）。
 
         evo-add-impl-wallclock-budget-sizing 2.1：``remaining_tasks``（剩余
         未勾选任务数，调用点由 runner 经 parse_tasks_md 同源取数传入）与
@@ -1997,6 +2033,30 @@ class LivenessSupervisor:
                 "settings": sup,
                 "remaining_tasks": remaining_tasks,
             }
+        # code-review item e59e3ed15181：judge 通道故障（超时/输出不可解析/
+        # OSError/其他异常，减半重试一次仍故障，经 _judge_liveness 的
+        # unavailable_reason=judge_channel_failure 分型透传）与流不可读同属
+        # 基础设施性证据缺失——能走到 judge 即零事件守卫已放行（窗口内有
+        # 实质事件），run 实际可能仍在推进，按 supervision 口径判死会误扣
+        # 实现预算。对齐上方流不可读分支（code-review 709297545d7e）：落
+        # DEATH_KIND_INFRA、reason 避开 stagnant 文案以落 budget 豁免口径
+        # （_is_exemptable_reason 按 "stagnant" 子串判不可豁免，结构化
+        # [death-kind:infra] 标记优先）；豁免侧的连续死亡循环仍由
+        # _alert_budget_exempt_loop 告警兜底。
+        if verdict.get("unavailable_reason"):
+            return {
+                "action": "kill",
+                "death_kind": DEATH_KIND_INFRA,
+                "reason": (
+                    "liveness judge unavailable: judge channel still "
+                    "failing after retry"
+                ),
+                "evidence": _annotated(str(verdict.get("evidence") or "")[:400]),
+                "settings": sup,
+                "remaining_tasks": remaining_tasks,
+            }
+        # judge 正常给出的 stagnant（无 unavailable_reason 分型）＝「确认
+        # 停滞」，按 supervision 口径判死不豁免
         return {
             "action": "kill",
             "death_kind": DEATH_KIND_SUPERVISION,
