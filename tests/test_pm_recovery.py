@@ -342,14 +342,18 @@ class TestPMEngineReplanLimit(unittest.TestCase):
         ], ensure_ascii=False), encoding="utf-8")
 
     def _write_valid_scenarios(self):
-        """绝对 URL 场景 → 验收通过（planner 产出合格结果）。"""
+        """绝对 URL 场景 → 验收通过（planner 产出合格结果）。
+
+        wait 无 target 时 value 须为有限毫秒数（验收期前移校验
+        b3113c78efad）；早期夹具的 "page loaded" 字符串形态已属坏档。
+        """
         self.scenarios_path.write_text(json.dumps([
             {
                 "id": "scn-a",
                 "description": "合法场景",
                 "steps": [
                     {"action": "navigate", "value": "http://127.0.0.1:8787/dashboard"},
-                    {"action": "wait", "value": "page loaded"},
+                    {"action": "wait", "value": 500},
                 ],
                 "assertions": [{"type": "element_visible", "selector": ".x", "label": "可见"}],
             },
