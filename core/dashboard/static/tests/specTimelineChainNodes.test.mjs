@@ -165,3 +165,28 @@ test('裸灰点形态退役：chain 节点 listitem 含卡片内容结构（时�
     '圆点着色与标签着色同源（gold）',
   );
 });
+
+// ── 任务 2.2：未知 chain_kind 中性兜底 ──
+test('未知 chain_kind：中性「处置链」灰标签 + summary 照常 + SSR 不抛错', async () => {
+  // 台账未来新增而前端未跟的形态（spec.md 未知链形态安全兜底场景）
+  const html = await renderTimelineHtml([
+    chainNode({ chain_kind: 'chain-future-kind', summary: '未知形态的链事件摘要' }),
+  ]);
+  assert.ok(html.includes('处置链'), '未知形态渲染中性「处置链」标签');
+  assert.ok(html.includes('未知形态的链事件摘要'), 'summary 照常展示');
+  // 中性灰标签：不落任何预设色 class（ant-tag-<color> 语义着色缺席）
+  assert.ok(
+    !/ant-tag-(blue|gold|green|orange|red)/.test(html),
+    '中性兜底不得携带语义着色',
+  );
+  // 圆点归一 gray（'default' 非 Timeline dot 合法色，圆点侧同源归一）
+  assert.ok(html.includes('ant-timeline-item-color-gray'), '圆点归一 gray 兜底');
+});
+
+test('畸形 chain_kind（原型链继承键）：hasOwnProperty 防御不报错', async () => {
+  // 口径同 AdminNode 的 SEV_LABEL 防御（code-review item 5f9331c7ecae）：
+  // 'constructor' 普通对象查找命中原型链继承键，不得渲染函数体或抛错
+  const html = await renderTimelineHtml([chainNode({ chain_kind: 'constructor' })]);
+  assert.ok(html.includes('处置链'), '畸形形态走中性兜底');
+  assert.ok(!html.includes('native code'), '不渲染原型链继承键命中值');
+});
