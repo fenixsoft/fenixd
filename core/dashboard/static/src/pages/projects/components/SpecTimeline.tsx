@@ -68,6 +68,34 @@ function arbiterActionFieldLabel(kind: string): string {
   return '处置动作';
 }
 
+// 处置链事件标签/着色映射（fix-timeline-chain-nodes-invisible 任务 1.1）：
+// chain_kind → 中文里程碑标签 + 语义着色（闭环绿 / 上升·复现橙 / 转单金 /
+// 派发蓝 / choice 失败红，设计 D2）；台账未来新增而前端未跟的未知形态走
+// 中性「处置链」灰标签兜底，不报错（对齐 arbiterOutcomeTone 的 default 语气）。
+const CHAIN_KIND_META: Record<string, { label: string; color: string }> = {
+  'chain-dispatch': { label: '链派发', color: 'blue' },
+  'chain-handoff': { label: '转单 Arbiter', color: 'gold' },
+  'chain-closed': { label: '链闭环', color: 'green' },
+  'chain-escalated': { label: '链终点上升', color: 'orange' },
+  'chain-recurrence': { label: '复现', color: 'orange' },
+  'chain-choice-failed': { label: 'choice 执行失败', color: 'red' },
+};
+
+// 键查找用 hasOwnProperty 自有键防御（口径同 AdminNode 的 SEV_LABEL，
+// code-review item 5f9331c7ecae）：后端下发 'constructor' 等畸形 chain_kind
+// 时普通对象查找命中原型链继承键。圆点色与标签着色同源（color）；
+// 'default' 非 Timeline dot 合法色，圆点侧归一 gray（unknown 兜底）。
+// 分支选择以 if/else 表达（先例：arbiterOutcomeTone，禁止嵌套三元）。
+function chainKindMeta(chainKind: string): { label: string; color: string; dot: string } {
+  const known = Object.prototype.hasOwnProperty.call(CHAIN_KIND_META, chainKind)
+    ? CHAIN_KIND_META[chainKind]
+    : null;
+  if (known) {
+    return { label: known.label, color: known.color, dot: known.color };
+  }
+  return { label: '处置链', color: 'default', dot: 'gray' };
+}
+
 // 回退节点判定谓词（code-review item 77b2b6634542）：StateNode 的「↩ 状态回退」
 // orange 徽标与主渲染 timeline.map 回调的圆点 colorWarning 着色共用此单一来源，
 // 防止两处内联各自演化导致徽标与圆点着色不一致。判定口径：后端 backward 字段
