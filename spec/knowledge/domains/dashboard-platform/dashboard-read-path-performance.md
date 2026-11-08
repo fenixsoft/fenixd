@@ -1,7 +1,7 @@
 # 读路径性能治理
 
-<!-- knowledge: capability=dashboard-read-path-performance rev=3
-     sources=spec/archive/2026-09-21-fix-dashboard-read-path-performance,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md -->
+<!-- knowledge: capability=dashboard-read-path-performance rev=4
+     sources=spec/archive/2026-09-21-fix-dashboard-read-path-performance,spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/changes/fix-specs-api-latency -->
 
 dashboard 读路径的延迟与有界性治理：`/api/specs` 单趟读、缓存按 spec 增量重算、run 元数据尾读、runs 清扫有界可审计。
 
@@ -9,7 +9,7 @@ dashboard 读路径的延迟与有界性治理：`/api/specs` 单趟读、缓存
 
 - `/api/specs` 列表读路径为单趟结构：取数与失效签名同趟产出（`SummaryIndex.get_with_signature`），签名与响应体出自同一次扫描（同趟原子），聚合本身零额外 stat；条件请求协商在 handler 内联完成，304/200 双路径均单趟。MUST NOT 为该端点单独预扫描全 spec 签名——表驱动 304 短路发生在 route handler 调用之前、彼时无取数可复用，独立预扫描会使读路径呈「签名一趟 + 取数一趟 + 发头前复核一趟」的三趟形态；同趟原子也使 `_json` 发头前签名复核对本端点不适用。
 - 单趟结构性预算由守卫测试钉死：`/api/specs` 单次 200 请求全链（签名+取数同趟）的 `_stat_sig` 调用计数 MUST NOT 超过三趟形态（handler 前独立签名 + get 取数 + 发头前复核签名）的 1/2，规模夹具活跃与归档 spec 各 ≥300。
-- 跨项目读并发由 SummaryIndex 分槽锁治理（同项目互斥、跨项目读写互不阻塞），锁纪律由 SPEC 摘要内存索引能力页承载。
+- 跨项目读并发由 SummaryIndex 按项目分槽锁治理：每项目一把 RLock（`dict.setdefault` 原子建槽），同项目内取数/快照/签名互斥且槽锁可重入（槽锁内重入同槽不死锁），跨项目读写互不阻塞——任一项目的冷/增量重建不得阻塞其他项目的读请求；锁纪律由 SPEC 摘要内存索引能力页承载。
 - SummaryIndex 失效语义：STATE.md 签名变化时保留既有 spec 缓存条目，仅重算新增的、已删除的、或自身状态/依赖签名发生变化的 spec；仅 STATE 条目字段变化（依赖文件全未变）也必须重算该 spec；全量重建仅用于首次构建与索引损坏场景。
 - runs 目录扫描复用：`spec_summary` 复用已预扫描的 `_runs_by_spec_sigs` 映射（每个目录每轮只 glob 一次），MUST NOT 为每个 spec 重新遍历整个 runs 目录；计算 N 个 spec 摘要时 runs 目录 glob 次数为常数。
 - run 元数据尾读：`_read_run_lines` 优先从文件尾部按字节窗口 seek 读取，仅窗口内取不全末 N 行（行长超过窗口）时回退全量逐行读取；正确性约束不变——MUST NOT 从行的中间截断导致末行被误解析（避免把已完成 run 误判为 running），回退路径的 `classify_run` 判定与全量读取一致。
@@ -28,3 +28,4 @@ dashboard 读路径的延迟与有界性治理：`/api/specs` 单趟读、缓存
 - 2026-09-21 2026-09-21-fix-dashboard-read-path-performance（spec/archive/2026-09-21-fix-dashboard-read-path-performance） — SummaryIndex 缓存由「STATE 变化即全丢」改为按 spec 增量失效；runs 目录取消 per-spec 全目录 glob；run 尾读改字节窗口 seek；`runs.keep` 由死键落地为真实归档清理消费点
 - 2026-10-06 2026-10-06-fix-run-cleanup-attach-spec-archive（spec/archive/2026-10-06-fix-run-cleanup-attach-spec-archive） — `runs.keep` 消费点已随该归档废除；归档目录清理改为无主产物按天龄兜底（无容量上限），清扫可审计与批次上限约束保留
 - 2026-11-08 specs-api-read-path-triple-scan（spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md） — 折叠 /api/specs 读路径单趟治理：取数与失效签名同趟（get_with_signature）、不经表驱动通道与发头前复核不适用、守卫测试结构性预算
+- 2026-11-08 fix-specs-api-latency（spec/changes/fix-specs-api-latency/） — /api/specs 三趟并一趟正式落地（自含 handler 内联协商、独立预扫描禁令）、SummaryIndex 实例级单锁改按项目分槽锁（跨项目锁排队消除；锁细则在 SPEC 摘要内存索引页）

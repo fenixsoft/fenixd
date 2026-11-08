@@ -1,5 +1,5 @@
 # 多 harness 接入
-> 最后更新：2026-11-05 20:50 UTC+8
+> 最后更新：2026-11-08 21:21 UTC+8
 
 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」——HarnessAdapter 协议与 claude 字节级平移、`agent.harness` 全局开关、fenix-dsh Bundle（dsh 侧机制等价物五件套）、DshAdapter 事件投影接入、dsh 主通道真实验收与切换治理、无分配 provider 链时按 harness 自身配置的对称默认回落。run jsonl 以 claude stream-json 形状为唯一 canon、读侧零改动；CLAUDE_PID watchdog 为显式豁免面（ADR-271；原豁免面成员 dashboard 自由会话已随 2026-11-08 会话接入退役批删除）。
 
@@ -12,4 +12,4 @@
 | [fenix-dsh-bundle](fenix-dsh-bundle.md) | fenix-dsh Bundle 五件套（Task 工具族/三守卫/非交互审批/模型显式配置/AGENTS.md 载体）与版本钉扎 | 2026-11-03 10:59 |
 | [dsh-harness-integration](dsh-harness-integration.md) | DshAdapter 接入（spawn 契约、事件投影、stderr 分类接口化、session 绑定、健康检查、prompt 注记、usage 降级、采集可观测性） | 2026-11-03 10:59 |
 | [dsh-primary-acceptance](dsh-primary-acceptance.md) | dsh 主通道验收与切换治理（一键验收脚本三模式、切换/回切运行手册、真实验收人工信号式触发、缺省翻转人工裁决） | 2026-10-30 23:11 |
-| [harness-default-fallback](harness-default-fallback.md) | harness 对称默认回落（无分配按 harness 自身配置启动、部分链笔误防护划界、进程×adapter 一次性 WARN、provider_source 归因标记） | 2026-11-03 10:59 |
+| [harness-default-fallback](harness-default-fallback.md) | harness 对称默认回落（无分配按 harness 自身配置启动、bundle 侧 modelConfig 形态划界兑现 dsh 回落、部分链笔误防护划界、两层 WARN 留痕、provider_source 归因标记） | 2026-11-08 21:21 |

@@ -1,7 +1,7 @@
 # 调度与派发
-> 最后更新：2026-10-30 23:11 UTC+8
+> 最后更新：2026-11-08 21:21 UTC+8
 
-调度与派发：并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复、即时唤醒信号与事件投递完整性、秒挂冷却派发门控。
+调度与派发：并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复、即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检。
 
 ## 能力页
 
@@ -16,3 +16,4 @@
 | [全量扫描兜底恢复](full-scan-resilience.md) | full_scan 单条隔离与孤儿 ready 白名单恢复 + 60 秒级精触发 | 2026-10-03 04:59 |
 | [SPEC 事件投递完整性](spec-event-delivery-integrity.md) | 同状态行动性更新的事件补发、bug_found 重发幂等、半写读取防御 | 2026-10-03 04:59 |
 | [秒挂冷却全车道门控](instant-fail-cooldown-full-lane-gate.md) | 秒挂冷却按故障面门控（planner/verifier 派发与 admin spec 作用域唤起入闸、全局信号放行、跳过 INFO 留痕）与到期复诵翻倍（上限 3 次/封顶 2400 秒） | 2026-10-30 23:11 |
+| [派发前置可达性自检](dispatch-precheck.md) | 派发前置 harness binary 可达性自检短路、`[harness-cli-unavailable]` 归因与升级信号豁免、PATH 缺陷自愈闭环（幂等追加 + restart_request、盲写门） | 2026-11-08 21:21 |

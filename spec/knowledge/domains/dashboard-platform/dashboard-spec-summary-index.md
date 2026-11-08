@@ -1,7 +1,7 @@
 # SPEC 摘要内存索引
 
-<!-- knowledge: capability=dashboard-spec-summary-index rev=2
-     sources=spec/archive/2026-09-09-add-dashboard-incremental-data,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md -->
+<!-- knowledge: capability=dashboard-spec-summary-index rev=3
+     sources=spec/archive/2026-09-09-add-dashboard-incremental-data,spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md,spec/changes/fix-specs-api-latency -->
 
 dashboard 服务端的 spec 摘要缓存与配置解析缓存：`/api/specs` 与 SSE 广播读索引，变更只重算受影响条目。
 
@@ -28,3 +28,4 @@ dashboard 服务端的 spec 摘要缓存与配置解析缓存：`/api/specs` 与
 - 2026-09-09 2026-09-09-add-dashboard-incremental-data（spec/archive/2026-09-09-add-dashboard-incremental-data） — 建立内存摘要索引、配置解析签名缓存与 cleanup_runs 节流，`/api/specs` 从每请求 O(N) 全量重算改为读索引
 - 已随 2026-09-21-fix-dashboard-read-path-performance 废除：STATE.md 签名变化即丢弃全部缓存并全量重建的失效语义（现按 spec 增量失效，规则由 dashboard-read-path-performance 能力页承载）
 - 2026-11-08 specs-api-read-path-triple-scan（spec/knowledge/_inbox/done/specs-api-read-path-triple-scan.md） — 折叠同趟聚合与并发纪律：get_with_signature 取数签名同趟（实例级单锁治理为按项目分槽锁）、invalidation_signature 生产供给退役为守卫锚
+- 2026-11-08 fix-specs-api-latency（spec/changes/fix-specs-api-latency/） — 本页同趟聚合与分槽锁规则的正式 SPEC 入库确认（`get_with_signature` 聚合签名、槽锁建槽与残留语义、invalidation_signature 唯一消费方=一致性守卫测试均以该 SPEC delta 为准定案）
