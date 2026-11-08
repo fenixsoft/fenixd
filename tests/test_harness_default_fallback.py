@@ -17,8 +17,10 @@ arbiter run 0.001s/0 tokens 秒败）——回落语义对 harness 对称（2026
 import json
 import logging
 import os
+from pathlib import Path
 
 import pytest
+import yaml
 
 from core.agent_runner import AgentRunner
 from core.agent_runner.harness import (
@@ -338,3 +340,106 @@ class TestFallbackEnvBridge:
             _make_request(env_overrides={}, model=None))
         assert spec.env["KEEP_ME"] == "yes"
         assert os.environ.get("KEEP_ME") == "yes"
+
+
+# ── bundle 侧联动断言（add-dispatch-precheck-true-fallback 4.1）──────────
+#
+# 「无 patch → 存活」的 spawn 侧形态由上方 TestSymmetricFallback 锁定
+# （argv 不含 --patch）；本段锁定随 bundle 出货的 dsh-bundle/cordis.patch.yml
+# 装配结构：agent-default-model 双行互补（D1 真对称回落）——无分配（回落
+# 形态）时 dsh-base 原生行以自身默认档供数保 dsh 存活，显式链形态由插入行
+# 以 fenix 三要素供数。与 dsh-bundle/tests/modelConfig.test.ts 的结构锁
+# 同构（pytest 侧独立复核，防单侧漂移）。
+
+
+class _JsExpr:
+    """cordis.patch.yml ``!!js`` 标签的解析替身（同构 vitest JsExpr）。"""
+
+    def __init__(self, expr: str):
+        self.expr = expr
+
+
+def _js_constructor(loader, node):
+    return _JsExpr(loader.construct_scalar(node))
+
+
+_JsLoader = type("_JsLoader", (yaml.SafeLoader,), {})
+_JsLoader.add_constructor("tag:yaml.org,2002:js", _js_constructor)
+
+_BUNDLE_PATCH = (
+    Path(__file__).resolve().parent.parent / "dsh-bundle" / "cordis.patch.yml"
+)
+
+
+def _load_bundle_entries() -> list:
+    doc = yaml.load(_BUNDLE_PATCH.read_text(encoding="utf-8"), Loader=_JsLoader)
+    entries = []
+    for item in doc:
+        if isinstance(item, dict) and "insert" in item:
+            entries.extend(item["insert"])
+        else:
+            entries.append(item)
+    return entries
+
+
+def _by_id(entries, entry_id):
+    return next(e for e in entries if e.get("id") == entry_id)
+
+
+def _disabled_in_mode(entry, mode: str) -> bool:
+    """模拟 loader disabledOf 对 ``!!js`` disabled 的按形态求值。"""
+    return f"mode === '{mode}'" in entry["disabled"].expr
+
+
+class TestBundlePatchTwoRowFallback:
+    def test_two_row_complementary_assembly(self):
+        """双行互补装配结构：原生行无 config 键（patch 逐键覆盖语义下
+        dsh-base 原生默认档原样保留）、插入行以 fenixModelConfig 三要素
+        供数，两行 disabled 判定互斥。"""
+        entries = _load_bundle_entries()
+        native = _by_id(entries, "agent-default-model")
+        inserted = _by_id(entries, "fenix-agent-default-model")
+        # 原生行：只追加 inject 与互补 disabled，不携带 config 键
+        assert native.get("inject") == ["fenixModelConfig"]
+        assert "config" not in native
+        assert "mode === 'explicit'" in native["disabled"].expr
+        # 插入行：同插件名 + 三要素 !!js 取值 + 反相 disabled
+        assert inserted["name"] == "@deepseek-ai/dsh-agent-default-model"
+        assert inserted.get("inject") == ["fenixModelConfig"]
+        assert "mode === 'fallback'" in inserted["disabled"].expr
+        assert inserted["config"]["provider"].expr == "ctx.fenixModelConfig.provider"
+        assert inserted["config"]["model"].expr == "ctx.fenixModelConfig.model"
+        # 互斥：同一形态下两行 disabled 判定必然一真一假
+        for mode in ("explicit", "fallback"):
+            assert _disabled_in_mode(native, mode) != _disabled_in_mode(inserted, mode)
+
+    def test_fallback_mode_native_row_alive(self):
+        """回落形态（config.model 整体缺席）：原生行激活、插入行禁用——
+        dsh 以自身默认档供数存活（无分配 spawn 不再 StartupError 的装配级
+        形态；插件失败时两行一起 pending → StartupError 语义仍由 1.3 锁定）。"""
+        entries = _load_bundle_entries()
+        native = _by_id(entries, "agent-default-model")
+        inserted = _by_id(entries, "fenix-agent-default-model")
+        assert _disabled_in_mode(native, "fallback") is False
+        assert _disabled_in_mode(inserted, "fallback") is True
+
+    def test_explicit_mode_inserted_row_alive(self):
+        """显式链形态：插入行激活、原生行禁用——fenix 三要素供数（与
+        重构前显式链 spawn 产物语义一致）。"""
+        entries = _load_bundle_entries()
+        native = _by_id(entries, "agent-default-model")
+        inserted = _by_id(entries, "fenix-agent-default-model")
+        assert _disabled_in_mode(inserted, "explicit") is False
+        assert _disabled_in_mode(native, "explicit") is True
+
+    def test_required_plugins_unconditional_in_both_modes(self):
+        """headless-runner（required 启动条目）与 llm-pi-ai 不随形态禁用：
+        回落形态 providers 插值 undefined → schema 缺省 {}（dsh 零路由的
+        原生休眠形态），headless-runner 两形态都激活。"""
+        entries = _load_bundle_entries()
+        headless = _by_id(entries, "headless-runner")
+        assert "fenixModelConfig" in headless.get("inject", [])
+        assert "disabled" not in headless
+        llm = _by_id(entries, "llm-pi-ai")
+        assert "disabled" not in llm
+        assert llm["config"]["providers"].expr == "ctx.fenixModelConfig.providers"
