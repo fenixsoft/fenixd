@@ -40,7 +40,7 @@ cloud-phone 首跑（2026-11-08）三个告警治理缺陷实证：
 
 根因封闭枚举 + 每根因一个修复观测点：
 - `model-chain`：校验后加载成功（无未注册引用告警再产生）且其后首个派发成功
-- `harness-cli`：启动自检可达（对接 SPEC ① 自检态）
+- `harness-cli`：启动自检可达（对接 SPEC ① 自检态；SPEC ① 尚未合回时本观测点暂不启用，`harness-cli` 根因告警留人工处置，SPEC ① 落地后自然接入——`model-chain` 观测点不依赖 SPEC ①，先行生效）
 - `init-stray`/`contract` 等其余根因：首版不自动失效（保留人工处置），枚举可扩展
 
 触发时同根因未处理告警**单事务批量**标记 superseded（原子写 + 失效时间 + 触发观测点记录），面板折叠「已失效」组、未处理计数扣除、升级链引用解除。
@@ -53,8 +53,9 @@ cloud-phone 首跑（2026-11-08）三个告警治理缺陷实证：
 
 ## Migration Plan
 
-- 既有合法配置零变化；既有账本告警无 `cause` 字段按「未知」根因呈现（不参与 supersede），新信号起强制带标签
-- 存量滞留告警（cloud-phone 28 条）：SPEC ① 自愈修复 CLI 根因后，`harness-cli` 根因告警由观测点自动 supersede；模型链根因同理；无法自动归因的由人工处置
+- 既有合法配置零变化；新信号入账起强制带 `cause` 标签
+- 存量账本 cause 回填：daemon 启动首轮对无 `cause` 字段的未处理告警按 `signal_type → cause` 高置信封闭映射回填推断（映射表随 D5 根因枚举封闭收录并以单测固化；resolve_note 注「存量回填：」前缀，对齐 alert-lifecycle 既有存量回填机制形态）；无法高置信映射的保持 unknown、不参与 supersede（人工处置）。误归因回填由观测点的派发成功终判据互斥保护：CLI 不可达期派发全失败，`model-chain` 观测点同样无法通过，反之亦然
+- 存量滞留告警（cloud-phone 28 条）：凭上述回填获得根因后，SPEC ① 自愈修复 CLI 根因 / 模型配置修复派发成功的观测点通过时自动 supersede；无法回填归因的由人工处置
 
 ## Revert Plan
 

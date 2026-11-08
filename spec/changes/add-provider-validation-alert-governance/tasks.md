@@ -9,6 +9,8 @@
   kind: modify
 - path: core/admin_store.py
   kind: modify
+- path: core/agent_runner/runner.py
+  kind: modify
 - path: core/dashboard/static/src/components/alert-shared.tsx
   kind: modify
 - path: tests/test_provider_ref_validation.py
@@ -40,7 +42,8 @@
 ## 4. 告警根因标签与批量 supersede（D5）
 
 - [ ] 4.1 告警账本增量 `cause` 字段（封闭枚举：model-chain / harness-cli / init-stray / contract / daemon-error / unknown），信号入账时由产生方标注；读侧缺席容错为 unknown
-- [ ] 4.2 supersede 触发器：每根因修复观测点（model-chain = 校验干净加载 + 其后首派发成功；harness-cli = 启动自检可达对接 SPEC ① 自检态），观测点通过时同根因未处理告警单事务批量标记 superseded（失效时间 + 触发观测点记录），升级链引用解除、未处理计数扣除
+- [ ] 4.2 supersede 触发器：每根因修复观测点（model-chain = 校验干净加载 + 其后首派发成功；harness-cli = 启动自检可达对接 SPEC ① 自检态，SPEC ① 未合回时该观测点暂不启用），观测点通过时同根因未处理告警单事务批量标记 superseded（失效时间 + 触发观测点记录），升级链引用解除、未处理计数扣除
 - [ ] 4.3 面板呈现（`alert-shared.tsx`）：根因分组过滤/折叠「已失效」组（默认收起可展开）、未处理计数同步、人工撤销 supersede 恢复未处理入口
 - [ ] 4.4 pytest 单测（tests/test_alert_supersede.py）：观测点触发批量失效原子性、观测点不全不触发、既有终态路径不受影响、撤销 supersede、unknown 根因不参与自动失效
 - [ ] 4.5 前端构建验证：alert-shared 改动后 dashboard 前端构建通过（worktree 内既有构建链路）
+- [ ] 4.6 存量账本 cause 回填：daemon 启动首轮按 signal_type→cause 高置信封闭映射为无 cause 未处理告警回填（resolve_note 注「存量回填：」前缀），无法映射保持 unknown 不参与 supersede；单测断言回填与 unknown 豁免（并入 tests/test_alert_supersede.py）
