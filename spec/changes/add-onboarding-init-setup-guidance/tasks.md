@@ -25,7 +25,7 @@
 
 ## 3. 配置模板注释分形态改写（D3）
 
-- [ ] 3.1 `.fenix/config.template.yaml` llm 段与 agents.models 段注释改写：按 `agent.harness` 分形态描述无分配默认行为（claude=环境继承 CLI 默认档；dsh=回落 dsh profile 默认档，对称回落），删除「默认环境变量模型」误导表述，补显式分配（provider+model）建议路径说明；dsh 分支措辞受 SPEC ①（add-dispatch-precheck-true-fallback，对称回落闭环）落地状态约束——① 尚未合入时按「无分配回落行为将随对称回落闭环（SPEC ①）落地生效」的条件式表述，不得断言当下不存在的行为（当前模板 agent.harness 段明示 dsh adapter 尚未部署）；其余注释不动
+- [x] 3.1 `.fenix/config.template.yaml` llm 段与 agents.models 段注释改写：按 `agent.harness` 分形态描述无分配默认行为（claude=环境继承 CLI 默认档；dsh=回落 dsh profile 默认档，对称回落），删除「默认环境变量模型」误导表述，补显式分配（provider+model）建议路径说明；dsh 分支措辞受 SPEC ①（add-dispatch-precheck-true-fallback，对称回落闭环）落地状态约束——① 尚未合入时按「无分配回落行为将随对称回落闭环（SPEC ①）落地生效」的条件式表述，不得断言当下不存在的行为（当前模板 agent.harness 段明示 dsh adapter 尚未部署）；其余注释不动
 - [ ] 3.2 验证：模板渲染（`fenix-init render_config` 路径）产物 YAML 可正常解析（safe_load），注释改动不破坏结构
 
 ## 4. fenix-setup 引导补强（D4）
