@@ -24,7 +24,9 @@ node_modules 通行被 gitignore，打包后即清理）。
     python3 bootstrap_vendor.py --project <工程目录> [--cache-dir <dir>]
                                 [--offline] [--install-timeout <sec>] [--pretty]
 
-退出码：0 = 判定完成（含 plain 降级，属正常产物）；2 = 用法/目录错误。
+退出码：0 = 判定完成（含 plain 降级，属正常产物）；2 = 用法/目录错误；
+3 = 工具自身未捕获异常（崩溃路径向 stderr 输出 ``ok: false`` JSON，不
+占用 0/2 语义）。
 """
 
 from __future__ import annotations
@@ -721,4 +723,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 崩溃兜底：输出 JSON 由 SKILL.md 管线消费，未捕获异常不得退化为
+    # traceback + 空 stdout。以独立退出码 3 终止并向 stderr 输出 ok:false
+    # JSON（与 anchor_tools.py 同款口径，不占用 0/2 既有语义）；argparse
+    # 的用法错误走 SystemExit(2)，不落入本兜底。
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"ok": False,
+                          "error": f"工具自身异常：{type(exc).__name__}: {exc}"},
+                         ensure_ascii=False), file=sys.stderr)
+        sys.exit(3)
