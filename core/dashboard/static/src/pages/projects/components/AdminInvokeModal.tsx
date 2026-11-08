@@ -140,13 +140,24 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     invokeTimeRef.current = 0;
     acceptAnyRunRef.current = false;
     // 自动重连：最新处置记录为 pending 时直接接管其输出流，避免误关弹窗后
-    // 无处找回会话。若用户在探测返回前已发起（409 场景），两者定位的是同一
-    // 个 pending run，结果收敛，无需加锁。
+    // 无处找回会话。用户在探测返回前发起时分两种情况：
+    // 409 场景——invokeTimeRef 仍为复位值 0，探测与 409 失败定位的是同一
+    // 个 pending run，结果收敛，无需加锁；
+    // 成功场景——探测在途期间旧 run 已完成、invoke 受理成功（服务端无
+    // pending、不返回 409），迟到的探测响应仍携带快照里的 pending 旧 run：
+    // 照写会把 runId 钉到旧 run 上，轮询 effect 因 runId 非空不再为本次新
+    // run 定位，旧 run 终态上报还会借 runDoneRef 的 false→true 迁移无声
+    // 清空用户正在输入的下一条提示词，新处置全程不可见。invokeTimeRef 非
+    // 0 即已被成功发起更新（唯一非 0 写入点是 handleSend 成功路径），此时
+    // 放弃本次探测结果，交由定位轮询按 created 锚点收敛
+    // （code-review item a0268f45fc8b）
     let stopped = false;
     void (async () => {
       try {
         const d = await getAdminActivities(project, spec);
         if (stopped) return;
+        // 探测响应早于本次成功发起（快照已失真）：放弃本次结果，见上方竞态论证
+        if (invokeTimeRef.current !== 0) return;
         const latest = (d.activities || [])[0];
         if (latest?.admin_run_id && latest?.status === 'pending') {
           acceptAnyRunRef.current = true;
