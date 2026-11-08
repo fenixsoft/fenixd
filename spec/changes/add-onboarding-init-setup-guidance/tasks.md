@@ -30,6 +30,6 @@
 
 ## 4. fenix-setup 引导补强（D4）
 
-- [ ] 4.1 `skills/fenix-setup/SKILL.md` 增加模型配置检查步骤：读项目 config.yaml → 核对 `llm.providers` 与 `agents.models` 形态 → 未配置分支给 Dashboard 设置页/手工编辑模板示例指引、已配置分支给 provider 名与注册表一致性核对要点
+- [x] 4.1 `skills/fenix-setup/SKILL.md` 增加模型配置检查步骤：读项目 config.yaml → 核对 `llm.providers` 与 `agents.models` 形态 → 未配置分支给 Dashboard 设置页/手工编辑模板示例指引、已配置分支给 provider 名与注册表一致性核对要点
 - [ ] 4.2 SKILL.md 增加首跑常见告警解读小节：白名单脱落（初始化已自举、存量 `git add` 处置）、散件首现（预防性 ignore 已内置）、契约模板态（实现期 info 属预期、验证期前完成裁决）三类，各含来源 + 处置
 - [ ] 4.3 全量回归：fenixd pytest 既有套件绿；对 fenixd 自身 `.fenix/` 目录演练 `--ensure-gitignore` 幂等（不产生重复规则）
