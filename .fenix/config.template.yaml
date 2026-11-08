@@ -25,7 +25,14 @@ schedule:
 
 # ---- LLM Provider 注册表（可选）----
 # 定义多个 LLM Provider，供 agents.models 引用。
-# 未配置时所有 Agent 使用默认环境变量模型（现状行为）。
+# 未配置 providers 时的默认行为按 agent.harness 选型分形态（选型见下方 agent 段）：
+#   claude（缺省）——各 Agent 继承 Claude CLI 会话环境（环境变量/登录档）的
+#     默认模型，框架不做独立模型分配；
+#   dsh ——无分配时回落 dsh profile 默认档（对称回落）；该回落行为将随对称回落
+#     闭环 SPEC（add-dispatch-precheck-true-fallback）落地生效，落地前使用 dsh
+#     形态建议显式分配模型（见下方 agents.models 段）。
+# 显式分配（agents.models 指定 provider+model）是获得确定模型与 failover 候选
+# 链的建议路径，示例见下方 agents.models 段注释。
 # llm:
 #   providers:
 #     - name: "volc-engine"            # 唯一标识，被 agents.models 引用
@@ -188,6 +195,9 @@ agents:
   transient_break_cooldown_seconds: 600
 
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
+  # 无分配角色的默认行为按 agent.harness 选型分形态：claude=继承 Claude CLI
+  # 会话环境默认档；dsh=对称回落 dsh profile 默认档（该回落将随对称回落闭环
+  # SPEC add-dispatch-precheck-true-fallback 落地生效，落地前建议显式分配）。
   # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track | code-review | code-fix | arbiter
   # arbiter 为全局决策者车道（add-arbiter-lane）：冻结/升级事件自动派发的跨
   #   车道验尸者。未分配时钉死 bigmodel/glm-5.3-flash（不回落默认网关——

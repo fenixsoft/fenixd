@@ -169,6 +169,41 @@ else
 fi
 ```
 
+### 6b. 模型配置检查（init-self-bootstrap）
+
+初始化完成后核对 LLM 配置形态，给新手一条确定的模型链路径。读取
+`.fenix/config.yaml`（由 `fenix-init` 从 `.fenix/config.template.yaml` 渲染，
+模板注释已按 `agent.harness` 选型分形态描述默认行为），检查两处：
+
+```bash
+python3 - <<'PYEOF'
+import yaml
+with open('.fenix/config.yaml', 'r', encoding='utf-8') as f:
+    cfg = yaml.safe_load(f) or {}
+providers = (cfg.get('llm') or {}).get('providers') or []
+models = (cfg.get('agents') or {}).get('models') or {}
+names = [p.get('name') for p in providers if isinstance(p, dict)]
+print("llm.providers 已配置:", bool(providers), names)
+print("agents.models 已分配角色:", sorted(models.keys()) if isinstance(models, dict) else "形态异常（应为角色->分配映射）")
+PYEOF
+```
+
+按检查结果分支指引：
+
+- **未配置（providers 空 / models 缺失）**——各 Agent 按所选 harness 使用默认档：
+  claude=继承 Claude CLI 会话环境默认模型；dsh=无分配回落 dsh profile 默认档
+  （该对称回落将随对称回落闭环 SPEC add-dispatch-precheck-true-fallback 落地生效）。
+  建议显式分配以获得确定模型与 failover 候选链：经 Dashboard 设置页填写 provider
+  与各角色模型，或参照 `.fenix/config.template.yaml` 的 `llm.providers` /
+  `agents.models` 注释示例手工编辑 `.fenix/config.yaml`（provider 与 model 两键必填，
+  该文件已 gitignore，API Key 不入库）。
+- **已配置**——核对一致性要点：① `agents.models` 各角色引用的 provider 名必须在
+  `llm.providers` 的 name 列表内（引用未注册 provider 的分配要到派发期才暴露失败）；
+  ② model 名与网关侧实际可用模型一致——模型被网关拒绝属确定性失败，runner 会记
+  WARNING（Unrecognized model rejected by provider）且全链被拒时带
+  [model-chain-unavailable] 标记不自动重派；③ 链形态支持单值 / 字符串数组 /
+  对象数组三种（见模板注释「provider 支持三种形态」段），修改后约 30s 配置热更新生效。
+
 ### 7. 启动 fenixd（systemd unit 承载）
 
 > **托管语义**（fix-supervisor-hosting-chain + add-systemd-hosting）：daemon 由
@@ -223,6 +258,37 @@ fi
   New SPEC:   /fenix-new "your idea"
   Stop:       请经 Dashboard 项目页「停止」按钮（systemctl stop + supervisor 收口退出）
 ```
+
+## 首跑常见告警解读（init-self-bootstrap）
+
+新项目首跑后周期盘点报出的三类高频告警，来源与处置如下：
+
+### 白名单文件脱落（whitelist_untracked，major）
+
+- **来源**：`.fenix/verify.yaml`、`.fenix/todo.md` 等模板 gitignore 用 `!` 规则
+  放行的白名单文件——「放行即声明入库意图、文件却未入库」。新初始化项目由
+  fenix-init 在骨架写入后自动 `git add`（仅 staged，提交时机留给用户），不会再
+  产生该告警；自举上线前初始化的存量/升级项目仍会命中。
+- **处置**：人工二选一——`git add .fenix/verify.yaml .fenix/todo.md` 恢复入库，
+  或删除 `.gitignore` 对应 `!` 放行规则、承认其为运行时文件。框架不代做该决定。
+
+### 散件首现（untracked 首现提示，info）
+
+- **来源**：框架播种的运行时产物目录 `.claude/agents/`（implementer.md /
+  verifier.md 软链）不在旧 gitignore 模板覆盖范围（旧模板只盖
+  `.claude/worktrees/`），播种产物成为 untracked 散件触发首现提示。新模板已
+  内置 `.claude/agents/` 预防性 ignore 规则（含成因注释），新项目不会再产生。
+- **处置**：对既有项目跑 `fenix-init --ensure-gitignore`（幂等补齐，规则已在场
+  时跳过不重复）；已被用户手工跟踪入库的同名文件不受影响（gitignore 只作用于
+  untracked）。
+
+### 契约模板态（verify_contract 未裁决提示，info）
+
+- **来源**：`.fenix/verify.yaml` 处于初始形态——全部配置行注释 = 未裁决无契约，
+  验证期框架按安全回退运行。SPEC 实现期出现该提示属预期，不是缺陷。
+- **处置**：进入验证期前完成裁决——在 Dashboard 设置页或直接编辑
+  `.fenix/verify.yaml` 取消注释启用验证契约；确无验证诉求的项目保持模板态亦可，
+  前置预检信号只提示、不阻塞实现流程。
 
 ## 人工切换步骤（tmux 承载存量部署迁移 systemd）
 

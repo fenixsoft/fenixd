@@ -7,6 +7,8 @@ fenix-init — Fenix Loop Engineering Framework 项目初始化命令。
   - spec/{changes,specs}/ 与 spec/archive/
   - .claude/agents/（软链接）与 .claude/worktrees/
   - 幂等确保 .gitignore 含 fenix 运行时目录规则（.fenix/* 等）
+  - 初始化产物自举：白名单文件（.fenix/verify.yaml 等）自动 git add——仅 staged
+    不 commit，提交时机留给用户（init-self-bootstrap）
 
 用法:
     fenix-init [DIR] [--name NAME] [--type web|cli|library|api]
@@ -16,6 +18,7 @@ fenix-init — Fenix Loop Engineering Framework 项目初始化命令。
 import argparse
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +33,10 @@ FENIX_LINKS = ["core", "bin", "tests", "fenixd.py", "__init__.py"]
 
 # 需要软链到项目 .claude/agents/ 的 agent 定义
 AGENT_LINKS = ["implementer.md", "verifier.md"]
+
+# 白名单文件（templates/gitignore-fenix.txt 的 `!` 规则放行者）：
+# 放行即声明入库意图，init 完成骨架写入后自动 git add（仅 staged 不 commit）
+WHITELIST_FILES = (".fenix/todo.md", ".fenix/verify.yaml")
 
 
 def log(msg: str):
@@ -59,28 +66,107 @@ def render_config(project_name: str, project_type: str) -> str:
     return content
 
 
+def _gitignore_rule_block(snippet: str, rule: str) -> str:
+    """从模板 snippet 提取以规则行 rule（整行匹配）为锚的块：规则行 + 紧邻前导注释行。
+
+    模板文件是追加文本的唯一来源（模板侧与 --ensure-gitignore 侧同一段实现
+    产出，禁止两处文本漂移）：追加块从模板抽取而非在代码里维护第二份文本。
+    模板被改坏（规则行缺席）时退化为裸规则行，不丢功能。
+    """
+    lines = snippet.splitlines()
+    idx = next((i for i, ln in enumerate(lines) if ln.strip() == rule), None)
+    if idx is None:
+        return rule + "\n"
+    start = idx
+    while start > 0 and lines[start - 1].lstrip().startswith("#"):
+        start -= 1
+    return "\n".join(lines[start:idx + 1]) + "\n"
+
+
 def append_gitignore(project_root: Path):
     """确保 .gitignore 含 fenix 运行时目录规则（幂等，可重复调用）。
 
-    判据取关键规则 ``^\\.fenix/\\*`` 而非整段标记：旧模板生成的项目（有标记但
-    规则过期）重跑时能补齐；已是新规则的项目跳过，不产生重复条目。
+    判据取关键规则行（``^\\.fenix/\\*`` 与 ``^\\.claude/agents/$``）而非整段
+    标记：旧模板生成的项目（有标记但规则缺项）重跑时能逐规则补齐；规则已齐
+    的项目跳过，不产生重复条目。``.claude/agents/`` 为框架播种运行时产物的
+    预防性 ignore（init-self-bootstrap D2），缺失时按模板块幂等追加。
     """
     snippet_path = FENIXD_HOME / "templates" / "gitignore-fenix.txt"
     snippet = snippet_path.read_text(encoding="utf-8") if snippet_path.exists() else ""
 
     gitignore = project_root / ".gitignore"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    if re.search(r"(?m)^\.fenix/\*$", existing):
-        log("  ⏭  .gitignore 已含 .fenix/* 规则，跳过")
+
+    new_content = existing
+    appended = []
+
+    if not re.search(r"(?m)^\.fenix/\*$", new_content):
+        # fenix 主段（.fenix/* + 白名单放行规则）整体追加，保持既有整段产出
+        if new_content:
+            if not new_content.endswith("\n"):
+                new_content += "\n"
+            new_content = new_content + "\n" + snippet
+        else:
+            new_content = snippet
+        appended.append("fenix 条目")
+
+    if not re.search(r"(?m)^\.claude/agents/$", new_content):
+        block = _gitignore_rule_block(snippet, ".claude/agents/")
+        if new_content:
+            if not new_content.endswith("\n"):
+                new_content += "\n"
+            new_content = new_content + "\n" + block
+        else:
+            new_content = block
+        appended.append(".claude/agents/ 预防性 ignore 规则")
+
+    if not appended:
+        log("  ⏭  .gitignore 已含 fenix 运行时规则（.fenix/* 与 .claude/agents/），跳过")
         return
-    if existing:
-        if not existing.endswith("\n"):
-            existing += "\n"
-        gitignore.write_text(existing + "\n" + snippet, encoding="utf-8")
-        log("  ✅ 已追加 fenix 条目到 .gitignore")
+
+    gitignore.write_text(new_content, encoding="utf-8")
+    for msg in appended:
+        log(f"  ✅ 已追加 {msg}到 .gitignore")
+
+
+def git_add_whitelist_files(project_root: Path):
+    """初始化产物自举（init-self-bootstrap D1）：白名单文件自动 git add。
+
+    只 add 白名单文件的离散路径，MUST NOT `git add .`——骨架生成时项目里可能
+    已有用户未跟踪文件，批量 add 会替用户做出入库决定。逐文件存在性守卫：
+    init 不播种 todo.md（由自省/进化车道后续创建），当期不存在时跳过该文件且
+    不报错，其在场时一并入库。仅 staged 不 commit（提交时机留给用户）；
+    unborn 分支（零提交史）git add 正常工作，无需特殊处理；幂等重跑不报错。
+    """
+    try:
+        probe = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(project_root), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        log("  ⚠  git 不可用，白名单文件待 git init 后手工入库")
+        return
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        log("  ⛅ 检测到非 git 仓库，白名单文件待 git init 后手工入库")
+        return
+
+    staged = []
+    for rel in WHITELIST_FILES:
+        target = project_root / rel
+        if not target.exists():
+            continue  # 逐文件存在性守卫：缺席的白名单文件跳过，不因 pathspec 缺失报错
+        add = subprocess.run(
+            ["git", "add", "--", rel],
+            cwd=str(project_root), capture_output=True, text=True, timeout=10,
+        )
+        if add.returncode == 0:
+            staged.append(rel)
+        else:
+            log(f"  ⚠  git add {rel} 失败（文件被 ignore 规则覆盖？）：{(add.stderr or '').strip()}")
+    if staged:
+        log(f"  ✅ 白名单文件已 git add（staged，提交时机留给用户）: {', '.join(staged)}")
     else:
-        gitignore.write_text(snippet, encoding="utf-8")
-        log("  ✅ 已创建 .gitignore")
+        log("  ⏭  白名单文件均不在场，跳过 git add")
 
 
 def main():
@@ -169,6 +255,9 @@ def main():
 
     # 5. .gitignore
     append_gitignore(project_root)
+
+    # 6. 初始化产物自举（init-self-bootstrap D1）：白名单文件自动 git add
+    git_add_whitelist_files(project_root)
 
     log("")
     log("工程骨架已生成。下一步：")
