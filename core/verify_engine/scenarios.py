@@ -47,6 +47,14 @@ CONTRACT_VERSION_FIELD = "contract_version"
 # （cli_runner._execute_run）共用同一常量防口径漂移。
 MAX_STEP_TIMEOUT = 1800.0  # 30 分钟
 
+# ── web 无 target wait 步骤毫秒数上限（code-review item b3113c78efad）──
+# 单源常量：运行层（browser.py execute_action 的 wait 分支拦截与 drag 三时长
+# 钳制，原 browser 本地 _MAX_WAIT_MS，item 03121e3f15f4）与验收层（
+# _validate_web 对无 target wait value 的量级预检）共用同一上限防口径漂移，
+# 与上方 MAX_STEP_TIMEOUT 同款单源取向。常量本体落本文件（词表/常量权威源，
+# browser 侧已 import scenarios，验收层反向 import browser 会成环）。
+MAX_WAIT_MS = 600_000  # 10 分钟
+
 
 # ── 旧 schema 字段迁移（frozen-scenario-schema-migration D1/D2）────
 # 冻结文件（frozen test_scenarios.json）可能以旧字段形态生成：
@@ -300,7 +308,12 @@ def migrate_frozen_contract(
 # 契约 v2「web 场景 MUST 含绝对 URL navigate」验收的核心判据，三处共用
 # （_find_step_url_candidate 候选判定 / web navigate 验收 / api url 验收），
 # 避免同一模式多处内联、后续调整时单处修改漂移。
-_ABSOLUTE_URL_RE = r"^https?://\S+$"
+# scheme 大小写不敏感（code-review item eed5af449735）：RFC 3986 中 scheme
+# 大小写等价，运行层 browser.py navigate 判 scheme 已按 IGNORECASE 放行
+# HTTPS://EXAMPLE.com（item bbca5c47bea6），验收层同口径——大小写敏感会把
+# 合法大写 scheme 绝对地址确定性打回，形成「验收拒、运行层可跑」的整轮
+# replan 白耗。
+_ABSOLUTE_URL_RE = r"(?i)^https?://\S+$"
 
 
 def _find_step_url_candidate(steps) -> str:
@@ -1507,6 +1520,35 @@ def _validate_web(scenario: TestScenario) -> list[str]:
             )
         if step.action in ACTIONS_REQUIRING_TARGET and not step.target:
             errors.append(f"场景'{scenario.id}'步骤{i}: 操作 '{step.action}' 需要 target 选择器")
+        # wait 无 target 毫秒值形态/量级预检（code-review item b3113c78efad）：
+        # 运行层 browser.py 对无 target wait 的 value 设 float 可转 + 非负有限
+        # + MAX_WAIT_MS 上限三道拦截（invalid_wait_value 结构化失败），坏档
+        # （毫秒/秒混写 "6000000"、"1e9"、非数值）此前过验收白烧一轮验证后才
+        # 在运行期失败——与 command/env/headers/url/threshold 确立的「坏档
+        # 验收期前移」同口径。判据逐字对齐运行层：value 缺省/空串经运行层
+        # falsy 归一为默认 1000 毫秒（合法缺省，不打回）；下界取闭区间——
+        # 运行层仅拦负值，0 毫秒是合法 no-op，收成开区间会新造「验收拒、
+        # 运行层可跑」误杀通道（即 eed5af449735 要消除的类）；上限 MAX_WAIT_MS
+        # 与 browser 单源共用。带 target 的 wait 走元素等待分支、value 不是
+        # 毫秒数，不纳入检查。
+        if step.action == "wait" and not step.target:
+            if step.value is None or step.value == "":
+                pass  # 运行层 falsy 默认 1000 毫秒，合法缺省
+            else:
+                try:
+                    wait_ms = float(str(step.value))
+                except (TypeError, ValueError):
+                    wait_ms = None
+                if wait_ms is None or not math.isfinite(wait_ms):
+                    errors.append(
+                        f"场景'{scenario.id}'步骤{i}: wait 值非法"
+                        f"（应为有限毫秒数）: {step.value!r}"
+                    )
+                elif wait_ms < 0 or wait_ms > MAX_WAIT_MS:
+                    errors.append(
+                        f"场景'{scenario.id}'步骤{i}: wait 值非法"
+                        f"（毫秒数须为 0~{MAX_WAIT_MS:g}）: {step.value!r}"
+                    )
         # expect_network 验收（add-mechanical-scenario-refetch-assertion 2.1）：
         # 仅交互步骤可携带（design D3 显式集合），形态逐条校验（url_pattern
         # 非空 / re: 正则可编译 / min_count 正整数）；min_count > 3 落 WARNING

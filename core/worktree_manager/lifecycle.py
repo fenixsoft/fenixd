@@ -1139,7 +1139,7 @@ class G1LifecycleMixin:
                     # 家族限定缓存键一并失效（code-review item 47b98315d174）：
                     # _spec_process_alive 按 (spec, prefixes) 二元组为家族限定
                     # 扫描单独缓存（refresh_locks 家族过滤判活消费，prefixes
-                    # 取 _lock_family_prefix 值域 verify/impl），仅清裸 spec 键
+                    # 取 _lock_family_prefix 值域 verify/impl/repair），仅清裸 spec 键
                     # 会在缓存窗口内残留摘锁前的家族存活判定，与上方「防读到
                     # 陈旧存活结果」的意图不完整一致。
                     self._proc_scan_cache.pop(
@@ -1604,8 +1604,11 @@ class G1LifecycleMixin:
             spec = self._lock_spec_name(lock_key)
             # 家族过滤判活（code-review item 216784713669）：进程扫描与流 mtime
             # 按锁键 agent_type 的家族前缀（create() 两族形状：verifier → verify、
-            # 其余 → impl）限定，死家族的锁不再被同 spec 他族活进程/新鲜流庇护；
-            # 解析不出 agent_type 时退回 spec 粒度保守判活。
+            # 其余 → impl；repair 键 → repair，code-review item e622a1c358b3——
+            # repair 载体换壳态与 run 流均 repair- 前缀，按 impl 判活会把活
+            # repair 误判死；该键缺 _lock_since 的保守摘除守卫不受影响）限定，
+            # 死家族的锁不再被同 spec 他族活进程/新鲜流庇护；解析不出 agent_type
+            # 时退回 spec 粒度保守判活。
             family = self._lock_family_prefix(lock_key)
             if family is not None:
                 alive = self._spec_process_alive(spec, prefixes=(family,))

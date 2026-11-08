@@ -170,6 +170,11 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
     支持的路径形态：
       - ``data.id``（对象键）
       - ``items[0].name``（数组下标）
+      - 点分数字下标（与括号下标同语义）：``data.items.0`` 对 list 按
+        下标求值——scenarios.py 权威断言字段表（json_path/json_output 的
+        extra.path 示例）即以此形态为例，求值器 MUST 接受，否则 planner
+        照示例生成的路径对数组载荷确定性「不存在」假失败
+        （code-review item bd6d1757d874）
       - 混合：``a.b[1].c``
       - 引号键（含点的键名）：``data['a.b']``
       - 宽松形态（有意放行，code-review item 80f0a81fbd6c）：下标段后可
@@ -204,6 +209,22 @@ def evaluate_json_path(data: Any, path: str, missing: Any = None) -> Any:
                 key = m.group(1)
                 if isinstance(cur, dict) and key in cur:
                     cur = cur[key]
+                elif isinstance(cur, list) and key.isdigit():
+                    # 点分纯数字段（data.items.0）对 list 与括号下标同语义：
+                    # dict 数字键仍优先按键查（上一分支），此分支只兜 dict
+                    # 查不上的 list 载荷；越界/非数字键维持既有 missing 语义
+                    # （code-review item bd6d1757d874，scenarios.py 示例
+                    # data.items.0 形态的求值单点）
+                    try:
+                        idx = int(key)
+                    except ValueError:
+                        # isdigit 对上标数字等非十进制形态也为 True，int
+                        # 失败按「路径不存在」回落（与括号分支同口径）
+                        return missing
+                    if 0 <= idx < len(cur):
+                        cur = cur[idx]
+                    else:
+                        return missing
                 else:
                     return missing
                 token = token[len(key) :]
@@ -243,6 +264,25 @@ def _missing_expected(expected: Any, mode: Any) -> bool:
     语义若要调整只改此处，防四处拦截口径漂移分叉。
     """
     return expected is None or (expected == "" and mode in ("contains", "regex"))
+
+
+def _json_path_match_text(value: Any) -> str:
+    """json_path contains/regex 子串匹配的文本归一单源。
+
+    容器节点（dict/list）按 json.dumps（ensure_ascii=False）序列化参与匹配
+    ——与同函数失败证据侧 shown_actual 的序列化同形，保证「参与匹配的文本」
+    与「judge 透出的证据」一致（code-review item 9e414455fd22：此前容器按
+    str() 走 Python repr 单引号形态，planner 按证据展示或 JSON 惯例写双引号
+    子串期望时内容存在却确定性失配）；不可序列化对象回落 str()。
+    标量（str/int/float/bool/None）维持 str() 归一，形态不变。
+    contains 与 regex 两处匹配文本 MUST 经此单源，防两分支形态漂移。
+    """
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
 
 
 class ApiAssertionRunner:
@@ -660,14 +700,20 @@ class ApiAssertionRunner:
             passed = actual == expected
         elif mode == "contains":
             # 以 is not None 判空：or 会把 0/False 等 falsy 合法值折叠为 ""；
-            # 左侧 expected 一并 str 归一（数值/布尔形态不抛 TypeError，
-            # 与 sse_event_matches 口径对齐）
-            passed = str(expected) in str(actual if actual is not None else "")
+            # 左侧 expected 一并归一（数值/布尔形态不抛 TypeError，与
+            # sse_event_matches 口径对齐）；容器节点经 _json_path_match_text
+            # 按 json.dumps 序列化参与匹配，与本函数下方证据侧 shown_actual
+            # 同形（匹配文本 = judge 看到的证据文本）
+            passed = _json_path_match_text(expected) in _json_path_match_text(
+                actual if actual is not None else ""
+            )
         else:  # regex
             pattern, regex_error = _compile_regex(str(expected))
             if pattern is not None:
                 passed = bool(
-                    pattern.search(str(actual if actual is not None else ""))
+                    pattern.search(
+                        _json_path_match_text(actual if actual is not None else "")
+                    )
                 )
             else:
                 # 非法正则显式报错：与「内容确实不匹配」可区分，judge

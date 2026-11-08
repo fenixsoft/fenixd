@@ -39,13 +39,18 @@ LOW_CONTRAST_STD_UPPER = 0.08
 LOW_CONTRAST_STD_UPPER_RELAXED = 0.095
 
 # 场景感知放宽的声明性子串（大小写不敏感）：
-#   - empty / zero-state / placeholder：空态、零状态、占位类场景天然低对比
+#   - empty-state / empty_state：空态类场景天然低对比。empty 必须以复合词
+#     形态命中：裸 "empty" 子串会误命中 form-not-empty-validation、
+#     non_empty_submit 等仅词面含该词的普通场景，低对比判定被误放宽出
+#     0.08-0.095 天然 std 带，污染画面绕过 blank/low_contrast 拒绝固化门
+#   - zero-state / placeholder：零状态、占位类场景天然低对比
 #   - low-contrast / low_contrast：场景 id 显式声明低对比的保留标记
 #     （复用同一子串匹配，不新增场景 schema 字段）
 # 连字符与下划线两种命名形态均在列，覆盖净化前后（safe_component 保连字符）
 # 的场景 id。
 LOW_CONTRAST_SCENARIO_MARKERS = (
-    "empty",
+    "empty-state",
+    "empty_state",
     "zero-state",
     "placeholder",
     "low-contrast",
@@ -67,9 +72,9 @@ def is_low_contrast_declared_scenario(name: Any) -> bool:
 def low_contrast_upper_for_scenario(name: Any) -> float:
     """按场景名计算 low_contrast 判定的 std 上限。
 
-    声明性场景名（empty/zero-state/placeholder/low-contrast/low_contrast
-    子串，大小写不敏感）用放宽上限，其余场景（含无场景上下文）维持缺省
-    0.08 行为不变。
+    声明性场景名（empty-state/empty_state/zero-state/placeholder/
+    low-contrast/low_contrast 子串，大小写不敏感）用放宽上限，其余场景
+    （含无场景上下文）维持缺省 0.08 行为不变。
     """
     if is_low_contrast_declared_scenario(name):
         return LOW_CONTRAST_STD_UPPER_RELAXED

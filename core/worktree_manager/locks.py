@@ -41,16 +41,28 @@ class G3LockMixin:
     def _lock_family_prefix(lock_key: str) -> str | None:
         """锁 key（``<spec>:<agent_type>``）→ 该族 worktree/run 流的目录前缀。
 
-        create() 的前缀裁定只有两族形状（lifecycle.create：verifier → "verify"，
+        create() 的前缀裁定两族形状（lifecycle.create：verifier → "verify"，
         其余 agent_type → "impl"，与 cleanup finally / keep_for_reuse 的
-        verifier/non-verifier 家族口径同源）。解析不出 agent_type（无 ":" 或空
-        后缀）返回 None：调用方（refresh_locks 陈锁回收）退回 spec 粒度保守
-        判活，宁多留不误放。
+        verifier/non-verifier 家族口径同源）；repair 键（repair_lane
+        ._claim_repair_site 登记的 ``<spec>:repair``）单独映射 "repair"
+        （code-review item e622a1c358b3）——repair 载体换壳态经
+        create_worktree_on_branch 默认前缀即 ``repair-<spec>-<ts>``（queries
+        ._WT_NAME_PREFIXES 同词表），run 流恒名 ``repair-<spec>-<ts>.jsonl``
+        （runner repair run_id），按 impl 判活会把活 repair 误判死（换壳态
+        进程扫描与流 mtime 双双落空、_lock_young 又因该键缺 _lock_since
+        豁免失效；原地态 impl- 载体由 repair- 流新鲜度兜底覆盖）。该键缺
+        _lock_since 的保守摘除守卫依赖不因此改变（98ad40e18a38 口径）。
+        解析不出 agent_type（无 ":" 或空后缀）返回 None：调用方（refresh_locks
+        陈锁回收）退回 spec 粒度保守判活，宁多留不误放。
         """
         agent_type = lock_key.partition(":")[2]
         if not agent_type:
             return None
-        return "verify" if agent_type == "verifier" else "impl"
+        if agent_type == "verifier":
+            return "verify"
+        if agent_type == "repair":
+            return "repair"
+        return "impl"
 
     def _register_spec_locks(self, spec_name: str) -> None:
         """按 spec 名重建两把锁（impl + verify），与 create() 的 key 形态一致。
@@ -176,7 +188,7 @@ class G3LockMixin:
         """该 spec 任一在册锁的锁龄 < STALE_LOCK_IDLE_SECONDS（create 构建窗口豁免）。
 
         family（code-review item 5d9601004a62，refresh_locks 家族过滤回收专用）：
-        传入时只考察该家族前缀（_lock_family_prefix 口径：verify/impl）的在册
+        传入时只考察该家族前缀（_lock_family_prefix 口径：verify/impl/repair）的在册
         锁，使构建窗口豁免与家族过滤判活同口径——本族陈锁不因同 spec 他族恰有
         年轻构建而被庇护跳过回收；None（缺省）保持 spec 全量扫描。
         has_active_worktree 调用点维持 spec 粒度（不传 family）：其陈锁释放按
