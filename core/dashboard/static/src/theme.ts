@@ -23,6 +23,11 @@ export const DSH_PRIMARY_HOVER = '#43454a';
 export const DSH_PRIMARY_ACTIVE = '#2c2c2e';
 /** dsw static-deepseek-500：alias-link / state-business-primary——蓝只留给链接、info、输入焦点。 */
 export const DSH_LINK = '#4176e6';
+/** 焦点光晕：DSH_LINK 的 12% alpha 衍生档，Input.activeShadow 与
+ * Select.activeOutlineColor 单源消费。rgb 通道由 parseInt 拆 DSH_LINK 的 hex
+ * 现算派生——改链接蓝时两处焦点光晕随动不脱钩（对齐 DSH_BG_SOFT ↔
+ * DSH_BG_SOFT_GLASS 的「同源共改」口径，且由代码派生强制而非注释约定）。 */
+export const DSH_LINK_FOCUS_GLOW = `rgba(${parseInt(DSH_LINK.slice(1, 3), 16)}, ${parseInt(DSH_LINK.slice(3, 5), 16)}, ${parseInt(DSH_LINK.slice(5, 7), 16)}, 0.12)`;
 /** dsw alias-state-success-primary：static-green-500。 */
 export const DSH_SUCCESS = '#22c55e';
 /** dsw alias-state-error-primary：static-red-600。 */
@@ -187,12 +192,12 @@ export const dshAlignedTheme = {
   components: {
     Input: {
       activeBorderColor: DSH_LINK,
-      activeShadow: `0 0 0 2px rgba(65, 118, 230, 0.12)`,
+      activeShadow: `0 0 0 2px ${DSH_LINK_FOCUS_GLOW}`,
       hoverBorderColor: 'rgba(0, 0, 0, 0.28)',
     },
     Select: {
       activeBorderColor: DSH_LINK,
-      activeOutlineColor: 'rgba(65, 118, 230, 0.12)',
+      activeOutlineColor: DSH_LINK_FOCUS_GLOW,
       hoverBorderColor: 'rgba(0, 0, 0, 0.28)',
       // 选项 hover/选中底（2026-11-04 用户报指挥中心筛选下拉「黑字黑底看
       // 不清」）：antd 缺省走 controlItemBgHover / colorPrimaryBg 派生族——
