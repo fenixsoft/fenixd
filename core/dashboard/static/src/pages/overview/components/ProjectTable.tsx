@@ -408,7 +408,10 @@ export default function ProjectTable({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <ProjectCell p={p} pending={pending.has(p.name)} mobile />
                 </div>
-                {renderDropdown(p)}
+                {/* 阻断点击冒泡到卡片根 div（code-review item 829beaddb799）：与桌面
+                    操作列 Space stopPropagation 同口径，否则点「更多操作」即触发
+                    卡片跳转、菜单永远打不开 */}
+                <Space size={4} onClick={(e) => e.stopPropagation()}>{renderDropdown(p)}</Space>
               </div>
               {!rowUnavailable(p) ? (
                 <>
