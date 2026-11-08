@@ -91,14 +91,19 @@ def get_unhandled_alerts(project_root) -> list:
 
 
 def _resolved_records(records: list) -> list:
-    """已处理告警过滤单点（ESCALATION 全量 + 自愈收口 SIGNAL，最新在前）。
+    """已处理告警过滤单点（ESCALATION 全量 + 自动化收口 SIGNAL，最新在前）。
 
     get_resolved_alerts docstring 的 5.3 口径（handled 且 kind=escalation，
-    或 kind=signal 且 handled_by="auto-self-heal"——人工 mark_signal_handled
+    或 kind=signal 且 handled_by 属自动化收口词表——人工 mark_signal_handled
     的信号不进本视图）在**已读记录**上的单点实现：单函数读路径与
     alerts_overview 单读聚合共用（code-review item d3d6a32a1091）。
+
+    add-provider-validation-alert-governance 4.3：自动化收口词表扩入
+    ``superseded``（同根因批量失效标记）——已失效告警进「已解决」折叠区
+    呈现（携带失效注记与撤销入口），而非从面板凭空消失（误失效不可见即
+    不可纠错）。
     """
-    from core.admin_store import AUTO_SELF_HEAL_BY, ESCALATION, SIGNAL
+    from core.admin_store import AUTO_SELF_HEAL_BY, ESCALATION, SIGNAL, SUPERSEDED_BY
 
     return [
         r
@@ -106,7 +111,10 @@ def _resolved_records(records: list) -> list:
         if r.get("handled")
         and (
             r.get("kind") == ESCALATION
-            or (r.get("kind") == SIGNAL and r.get("handled_by") == AUTO_SELF_HEAL_BY)
+            or (
+                r.get("kind") == SIGNAL
+                and r.get("handled_by") in (AUTO_SELF_HEAL_BY, SUPERSEDED_BY)
+            )
         )
     ]
 
@@ -149,6 +157,17 @@ def mark_alert_handled(project_root, alert_id: str) -> bool:
     if alert.get("kind") == SIGNAL:
         return store.mark_signal_handled(alert_id)
     return store.mark_handled(alert_id)
+
+
+def revert_superseded_alert(project_root, alert_id: str) -> bool:
+    """人工撤销 superseded 失效标记，恢复未处理态（task 4.3 撤销入口）。
+
+    直通 ``AdminStore.revert_supersede``（仅 handled_by=superseded 的记录
+    生效，其余终态拒回退——判定在 store 单点）。返回是否撤销成功。
+    """
+    from core.admin_store import AdminStore
+
+    return AdminStore(project_root).revert_supersede(alert_id)
 
 
 def mark_all_alerts_handled(project_root) -> int:

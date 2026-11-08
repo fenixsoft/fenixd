@@ -525,6 +525,11 @@ def _post_alert_handled(s, p, q, m):
     alert_id = urllib.parse.unquote(m.group(1))
     s._api_alert_handled(alert_id, q)
 
+def _post_alert_revert_supersede(s, p, q, m):
+    # add-provider-validation-alert-governance 4.3：superseded 失效标记撤销
+    alert_id = urllib.parse.unquote(m.group(1))
+    s._api_alert_revert_supersede(alert_id, q)
+
 def _post_alert_resolve(s, p, q, m):
     s._api_alert_resolve(q)
 
@@ -704,8 +709,9 @@ _API_POST_ROUTES = [
     ("exact", "/api/evolution/reject",    _post_evolution_reject),
     ("exact", "/api/evolution/delete",    _post_evolution_delete),
     ("exact", "/api/evolution/clear-todo", _post_evolution_clear_todo),
-    # 参数化 regex（/handled 和 /watch）
+    # 参数化 regex（/handled、/revert-supersede 和 /watch）
     ("regex", r"^/api/alerts/([^/]+)/handled$", _post_alert_handled),
+    ("regex", r"^/api/alerts/([^/]+)/revert-supersede$", _post_alert_revert_supersede),
     ("regex", r"^/api/runs/(.+)/watch$",        _post_run_watch),
     # /api/project/describe（精确，排在 endswith 之前）
     ("exact", "/api/project/describe",   _post_project_describe),

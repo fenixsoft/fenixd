@@ -476,6 +476,56 @@ class H6AlertRoutesMixin:
         self._json({"ok": True, "id": alert_id})
 
 
+    def _api_alert_revert_supersede(self, alert_id: str, query) -> None:
+        """POST /api/alerts/<id>/revert-supersede?project=<name> — 撤销失效标记。
+
+        add-provider-validation-alert-governance 4.3：superseded（同根因批量
+        失效）的误失效人工纠错面——恢复未处理态、重新进入待处理视图与升级链
+        口径。判定单点在 ``AdminStore.revert_supersede``（仅 superseded 态
+        生效，其余终态 404 如实上报）。成功后广播刷新横幅。
+        """
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(400, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not alert_id:
+            self._error(400, "missing alert id")
+            return
+        from core.admin_store import AdminStore
+
+        target = next(
+            (
+                r
+                for r in AdminStore(Path(project["path"]), logger).read_all()
+                if r.get("id") == alert_id
+            ),
+            None,
+        )
+        if target is None:
+            self._error(404, "alert not found")
+            return
+        if not dashboard_data.revert_superseded_alert(
+            Path(project["path"]), alert_id
+        ):
+            # 非 superseded 态（人工处置/自愈/auto-resolve 等终态）不可经本
+            # 入口回退——404 如实上报，不静默假成功
+            self._error(404, "alert is not in superseded state")
+            return
+        try:
+            self.server.sse_hub.broadcast(
+                {
+                    "project": project["name"],
+                    "type": "alerts",
+                    "summary": dashboard_data.alerts_summary(Path(project["path"])),
+                }
+            )
+        except Exception as e:
+            logger.warning("SSE 广播失败（告警已撤销失效标记）: %s", e)
+        self._json({"ok": True, "id": alert_id, "reverted": True})
+
     def _api_alert_resolve(self, query) -> None:
         """POST /api/alert-resolve — 人工裁决一次选择完成处置闭环（4.1）。
 
