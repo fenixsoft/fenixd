@@ -13,9 +13,12 @@ alert_lifecycle.py — 告警生命周期闭环（add-alert-auto-resolve）。
   - 首发仅一种 condition：``spec_terminal_or_unblocked``——关联 spec 状态
     到达终态（pushed/done）或离开 blocked 即视为解除。
   - ``handled=True`` 的条目一律跳过（人工处理记录不可覆盖）。
-  - 无 ``trigger`` 字段的存量告警按 signal_type ∈ {verify_fail_escalation,
-    blocked_stuck} + spec 字段存在推断为同一 condition（存量回填，design D4），
-    resolve_note 注明「存量回填」。
+  - 无 ``trigger`` 字段的存量告警按 signal_type 经注册表推断同一 condition
+    （存量回填，design D4）——推断口径与在册映射恒一致，resolve_note 注明
+    「存量回填」。
+  - add-inconclusive-verified-autoclose：``spec_verified`` 条件——关联 spec
+    验证翻绿（verified/done/pushed）即收口 inconclusive_loop 告警（收口=
+    问题前提消失、证据=验证翻绿、非替代人工裁决）。
   - evo-add-signal-subject-terminal-close：spec 附着条件族的 kind=signal
     记录（blocked_stuck 等）同样走上述主体终态判定——盘点 pending 过滤与
     auto_resolve 写回的 kind 门同步打开（design D2：按条件族白名单而非全部
@@ -32,8 +35,9 @@ alert_lifecycle.py — 告警生命周期闭环（add-alert-auto-resolve）。
   - 收敛升级（spec-less escalation 带 ``admin_run_id``）取双源锚点（D2）：
     ``admin_run_id`` 名下 disposition ＋ 同 signal_type 未收口 signal——
     MUST NOT 只锚 disposition created，否则底层风暴仍在复现时会被提前收口。
-  - inconclusive_loop（env 豁免握手族）刻意不在注册表，永不自愈闭环；
-    spec 附着族命中既有条件枚举时不做自愈判定（不双重判定）。
+  - inconclusive_loop（env 豁免握手族）自愈面维持排除（安静≠翻绿证据，
+    永不按安静时长收口）；其 spec 附着面挂 spec_verified 条件（验证翻绿
+    收口）。spec 附着族命中既有条件枚举时不做自愈判定（不双重判定）。
 
 本模块不读写文件、不依赖锁——写回由 AdminStore.auto_resolve /
 AdminStore.auto_self_heal 在排他锁内完成（design D6 / D3）。
@@ -62,8 +66,28 @@ _CONDITION_ALIAS = "spec_reach_terminal_or_unblocked"
 # 下一轮 auto_resolve 立即闭环、告警离开人工待处理队列、人工无从看见。
 CONDITION_SPEC_DELIVERED_ADJUDICATED = "spec_delivered_adjudicated"
 
-# 存量回填（design D4）：无 trigger 字段的存量告警按 signal_type 推断 condition
-BACKFILL_SIGNAL_TYPES = ("verify_fail_escalation", "blocked_stuck")
+# 验证翻绿收口条件（add-inconclusive-verified-autoclose D1/D2）：inconclusive_loop
+# （env 豁免握手族）关联 spec 验证翻绿时自动收口——收口=「豁免问题的前提
+# 已消失」，证据是验证引擎的 verified 判定（洗白门禁背书），不信任任何
+# agent 的自述；不替代人工裁决（修不好环境就永不 verified、告警永不收口，
+# fail-closed 由结构自带）。
+CONDITION_SPEC_VERIFIED = "spec_verified"
+# 翻绿状态集（D1）：verified 为锚点；done/pushed 是其后终态（覆盖扫描滞后
+# 窗口内已推进的 spec）。比 spec_terminal_or_unblocked 严格一档——只认
+# 「真翻绿」，不认「离开 blocked」（16:19 auto 重派反例钉死）。
+SPEC_VERIFIED_STATUSES = ("verified", "done", "pushed")
+
+# 存量回填（design D4）：无 trigger 字段的存量告警按 signal_type 经注册表
+# （_SIGNAL_CONDITIONS）推断 condition——推断与在册映射恒一致，MUST NOT
+# 落入 terminal_or_unblocked 宽松分支。
+# inconclusive_loop 收录（add-inconclusive-verified-autoclose）：存量无
+# trigger 条目（含 9e0403d0ac94 在案滞留件）随启动回填按 spec_verified
+# 条件收口。
+BACKFILL_SIGNAL_TYPES = (
+    "verify_fail_escalation",
+    "blocked_stuck",
+    "inconclusive_loop",
+)
 
 # ── 基础设施瞬态告警自愈闭环（add-alert-self-heal-marking）────────────────
 
@@ -77,8 +101,9 @@ CONDITION_INFRA_TRANSIENT_SELF_HEALED = "infra_transient_self_healed"
 # 收敛升级（「处置终态未收口」）signal_type 复制底层类型（daemon_errors 等），
 # 已在注册表内，经 admin_run_id 双源锚点规则覆盖。
 # 注册表外 signal_type 永不自愈闭环（保守缺省不变）；inconclusive_loop（env
-# 豁免握手族）刻意不在册——其出口是人工裁决（与 _SIGNAL_CONDITIONS 处注释
-# 同口径），无论安静多久都不自动收口。
+# 豁免握手族）自愈面维持排除——安静≠翻绿证据，无论安静多久都不自动收口；
+# 其 spec 附着面挂 spec_verified 条件（验证翻绿收口，与 _SIGNAL_CONDITIONS
+# 处注释同口径）。
 SELF_HEAL_SIGNAL_TYPES = ("daemon_errors", "run_infra_failure", "self-evolution")
 
 # 默认安静窗口（design D4）：1440 分钟盖过跨日同刻复发节律（实证指纹以
@@ -104,11 +129,12 @@ AUTO_RESOLVE_BY = "auto-resolve"
 # 条件 spec_delivered_adjudicated——仅终态闭环（信号产生时 SPEC 停在 ready
 # 待裁决，见条件常量处注释）；「补 tasks.md 归档凭据」裁决路径的告警收口为
 # 人工 handled（本模块只读状态表不读目录，不承诺「补内容即自动闭环」）。
-# inconclusive_loop（fix-env-exemption-exit-reachability 4.3）：env 豁免握手
-# 停车族刻意不接入本枚举——其出口是人工裁决（授予豁免/修环境重置/放弃，
-# adjudication_choices 注册表），任何一种都不可由状态表字段自动判定达成
-# （「已豁免」是 DISPOSITION 台账事实而非状态迁移），按保守缺省不写 trigger、
-# 永不自动闭环；闭环一律走人工处置后的 alert-resolve handled 收口。
+# inconclusive_loop（add-inconclusive-verified-autoclose）：env 豁免握手
+# 停车族接入验证翻绿收口——收口=「豁免问题的前提已消失」，证据是验证
+# 引擎的 verified 判定（洗白门禁背书），非替代人工裁决（修不好环境就永不
+# verified、告警永不收口，fail-closed 由结构自带）。旧「刻意不接入本枚举、
+# 永不自动闭环」条款自本条起废除；自愈面（SELF_HEAL_SIGNAL_TYPES）维持
+# 排除不变（安静≠翻绿证据）。
 _SIGNAL_CONDITIONS = {
     "verify_fail_escalation": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "blocked_stuck": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
@@ -132,6 +158,10 @@ _SIGNAL_CONDITIONS = {
     # 意义。冷却到期自动恢复不依赖本告警收口（is_instant_fail_cooldown
     # 独立判定），告警只承载人工关注面。
     "instant_fail_storm": CONDITION_SPEC_DELIVERED_ADJUDICATED,
+    # add-inconclusive-verified-autoclose：注册后既有 attach_trigger 写入点
+    # 自动埋点，未来产生的该族条目自动携带 trigger；存量无 trigger 条目经
+    # BACKFILL_SIGNAL_TYPES 回填按同一条件收口。
+    "inconclusive_loop": CONDITION_SPEC_VERIFIED,
 }
 
 
@@ -169,6 +199,7 @@ def _recognized(condition) -> bool:
         CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
         _CONDITION_ALIAS,
         CONDITION_SPEC_DELIVERED_ADJUDICATED,
+        CONDITION_SPEC_VERIFIED,
     )
 
 
@@ -195,8 +226,10 @@ def _self_heal_channel_applies(alert: dict) -> "tuple[bool, bool]":
     """记录是否落入自愈通道准入（add-alert-self-heal-marking 1.2），返回 (applies, backfill)。
 
     口径与两侧通道判定端同一：kind ∈ (escalation, signal) 且
-    signal_type ∈ SELF_HEAL_SIGNAL_TYPES（注册表外类型，含 inconclusive_loop
-    env 握手族，永不自愈），且既有条件未在册——trigger 已识别（_recognized）
+    signal_type ∈ SELF_HEAL_SIGNAL_TYPES（注册表外类型永不自愈；含
+    inconclusive_loop env 握手族——自愈面维持排除（安静≠翻绿证据），
+    spec 附着面挂 spec_verified 条件），且既有条件未在册——trigger 已识别
+    （_recognized）
     则排除，归既有条件判定通道，不双重判定（specs/alert-lifecycle 排除项）。
     backfill=无 trigger 字段（存量形态按回填语义判定）；自愈注册表与回填
     注册表 BACKFILL_SIGNAL_TYPES 互斥（无交集），故 backfill=True 时不存
@@ -368,6 +401,8 @@ def evaluate_alert(
       - trigger.condition 未识别（存量回填模式下 signal_type 不在
         BACKFILL_SIGNAL_TYPES 中同理）
       - 关联 spec 仍处于 blocked（条件未解除）
+      - spec_verified 条件：关联 spec 未到达翻绿状态集（在途态/缺失/不在
+        状态表，add-inconclusive-verified-autoclose）
       - 自愈族：signal_type 未注册 / 形态不符 / 窗口内仍复现 / 无时间锚点
     """
     specs = specs if isinstance(specs, dict) else {}  # 非 dict（如 STATE.md 扫描失败传 None）按空表处理
@@ -421,6 +456,28 @@ def evaluate_alert(
     if not isinstance(entry, dict):
         return None  # spec 不在状态表中：无法判定，保持原状
     status = str(entry.get("status") or "")
+    # 条件归一（add-inconclusive-verified-autoclose D4）：在册 trigger 条件
+    # 优先；无 trigger 的存量回填按 signal_type 经注册表推断同一条件——
+    # 回填口径与在册映射恒一致，MUST NOT 回落 terminal_or_unblocked 宽松
+    # 分支（离开 blocked ≠ 翻绿，16:19 auto 重派反例）。
+    effective_condition = (
+        condition if has_trigger else _SIGNAL_CONDITIONS.get(signal_type)
+    )
+    if effective_condition == CONDITION_SPEC_VERIFIED:
+        # 验证翻绿收口分支（与 spec_delivered_adjudicated 分支同层）：仅认
+        # 翻绿状态集三态；在途态/缺失一律保持原状。blocked 的显式拦截在
+        # 下方既有路径承担，本分支先行返回语义一致，既有终态路径零改动。
+        if status not in SPEC_VERIFIED_STATUSES:
+            return None
+        reason = (
+            f"spec {spec_name} 验证已翻绿（状态 {status}）——"
+            f"env 豁免裁决问题前提消失（验证翻绿收口）"
+        )
+        updated = str(entry.get("updated") or "")
+        if updated:
+            reason += f"（状态变更时刻 {updated}）"
+        # 存量回填形态注记带前缀（沿用 _resolve_note_for_condition 风格）
+        return f"存量回填：{reason}" if not has_trigger else reason
     if has_trigger and trigger.get("condition") == CONDITION_SPEC_DELIVERED_ADJUDICATED:
         # 独立条件（alert-noise-governance 1.4 登记 spec_delivered_no_content；
         # evo-instant-fail-storm-alert-closeout 1.1 扩展至 instant_fail_storm）：
