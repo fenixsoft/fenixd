@@ -1,35 +1,22 @@
 # 验证报告：add-provider-validation-alert-governance
 
-> ⚠️ 本报告由框架于 2026-11-08T12:30:09Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-08T12:21:47.614919+00:00+run-result@mtime1794140997974734844
+> ⚠️ 本报告由框架于 2026-11-08T12:52:54Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-08T12:52:53.875812+00:00+run-result@mtime1794142373923066185
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 14/15 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 15/15 场景通过，0 失败，0 错误（全部场景通过）**
 
-15 场景：14 pass、1 failed、0 warning。唯一失败为「人工撤销 supersede」：撤销端点恒 500（data 包漏导出 revert_superseded_alert，AttributeError），撤销不落盘、已失效计数停留 2。分类计数 product-bug=1；无 test-defect/flaky/env 遗留，同根因两条失败断言聚合为 1 个 bug。
+全绿快道: 15/15 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 14 |
-| 失败 | 1 |
+| 通过 | 15 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
-| 本链增量 Token（输入） | 12.53M |
-| 本链增量 Token（输出） | 0.20M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· text_contains + no_console_error
-
-- 关联场景：alert-panel-undo-supersede-restore
-- 描述：人工撤销 supersede 端点恒 500、撤销功能完全不可用：core/dashboard/data/__init__.py 漏导出 revert_superseded_alert，alert_routes.py:510 调 dashboard_data.revert_superseded_alert 抛 AttributeError；异常发生在存储变更前，撤销请求不落盘
-- 根因：data 包 __init__ 重导出清单未随新函数 revert_superseded_alert（admin_alerts.py:162）同步更新；单测仅覆盖 AdminStore.revert_supersede 直调与路由注册（test_revert_supersede_route_registered），未穿透 dashboard_data 属性访问，缺口漏测
-- 证据（场景 alert-panel-undo-supersede-restore 结构化证据，引用）：
-  - failed_assertions: [{"type": "text_contains", "selector": "text=已失效", "expected": "已失效 (1)", "actual": "组头 checked_elements=2 均不含「已失效 (1)」，计数停留「已失效 (2)」"}, {"type": "no_console_error", "selector": "", "expected": "无控制台错误", "actual": "[error] Failed to load resource: the server responded with a status of 500 (Internal Server Error)"}]
-  - screenshots: ["screenshots/alert-panel-undo-supersede-restore_assert_fail_0.png"]
-  - first_failed_step: 步骤5: 点击 alert-revert-supersede 后同窗服务端 500；实机复现钉死 500 即 revert-supersede POST 本身（data 包漏导出 AttributeError），撤销未落盘故计数停留已失效 (2)
+| 产品 Bug | 0 |
+| 本链增量 Token（输入） | 13.30M |
+| 本链增量 Token（输出） | 0.23M |
 
 
 ## 场景结果
@@ -46,18 +33,11 @@
 | contract-precheck-adjudicated-zero-signal | 契约已裁决零信号（D4/spec 场景「契约已裁决零信号」）：.fenix/verify.yaml 为可解析契约态时，implementing 与 testing 两状态下预检均不发任何 verify_contract_missing 信号（实现期 info 与验证期 major 都不发生）。 | pass | 0/3 | - |
 | contract-precheck-noise-unit-tests | 交付单测门（tasks 3.2）：tests/test_contract_precheck_noise.py 全量通过——实现期单条 info 不召唤、状态迁移后恢复 major、契约已裁决零信号、重启不重发。pytest 仅用 -v（禁 -q）；exit_code=0 仲裁全绿。 | pass | 0/3 | - |
 | alert-supersede-unit-tests | 交付单测门（tasks 4.4/4.6）：tests/test_alert_supersede.py 全量通过——观测点触发批量失效原子性、观测点不全不触发、既有终态路径（auto-resolve/self-heal/人工 close）不受影响、撤销 supersede、unknown 根因不参与自动失效、存量账本 cause 回填与 unknown 豁免。pytest 仅用 -v（禁 -q）；exit_code=0 仲裁全绿。 | pass | 0/3 | - |
-| seed-alert-fixtures-for-panel | 面板场景夹具供给（前置）：经 AdminStore 真实通道向验证实例自身项目（cwd=验证树根，非 fixture 打标、进缺省跨项目聚合）写入 5 条 escalation 种子——3 条未处理（2 条 cause=model-chain、1 条 cause=harness-cli，description 不含根因词避免断言自证）与 2 条 cause=model-chain 的 superseded 已失效记录（handled_by=superseded，resolve_note 含「模型链修复观测点通过」）。幂等可重入（按 description 去重）。 | pass | 0/4 | - |
+| seed-alert-fixtures-for-panel | 面板场景夹具供给（前置）：经 AdminStore 真实通道向验证实例自身项目（cwd=验证树根，非 fixture 打标、进缺省跨项目聚合）写入 5 条 escalation 种子——3 条未处理（2 条 cause=model-chain、1 条 cause=harness-cli，description 不含根因词避免断言自证）与 2 条 cause=model-chain 的 superseded 已失效记录（handled_by=superseded，resolve_note 含「模型链修复观测点通过」）。幂等可重入（按 description 去重）。judge 原地修复（2026-11-08 二轮）：种子落在真实实例账本上、两轮间被实例自身告警收口链逐条收走（mark_handled 形态：handled=True 且 handled_by/close_cause 皆空，非本特性 supersede 观测点——刻意失效种子 superseded 计数未动），原幂等只保存在性不恢复未处理态致重入失配；新增恢复段经 update_records 重置 3 条未处理种子的未处理态（不触碰刻意失效种子与非种子记录），断言与计数口径不变。 | pass | 0/4 | - |
 | alert-panel-superseded-collapsed-group | 面板「已失效」折叠组与未处理计数（tasks 4.3/spec 场景「模型配置修复后旧告警批量失效」的呈现面）：overview 告警横幅未处理计数为 3 条（2 条 model-chain + 1 条 harness-cli 种子，superseded 不计入）；未处理列表可见 model-chain 种子；「已失效 (2)」折叠组默认收起（组内已失效种子在 DOM 不可见＝不计入未处理的机械证明）；展开后已失效种子与其触发观测点记录（模型链修复观测点通过）可见，且存在人工撤销 supersede 恢复未处理入口（「恢复未处理」）。出处：http 路径来自 core/dashboard/static/src/app.tsx:146（SPA /overview 路由）与 core/dashboard/static/src/pages/overview/components/AlertBanner.tsx（横幅/展开列表/折叠区真实结构）；「已失效」「恢复未处理」文案为 spec alert-lifecycle ADDED Requirements 4.3  mandate，实现须以此措辞对齐。judge 原地修复（2026-11-08）：横幅 useState(true) 默认展开（展开控件实文「收起列表」）；「已失效」折叠组实现在 activities 页（Collapse defaultActiveKey=['resolved'] 已失效默认收起），overview 横幅只渲染未处理列表——步骤/断言按实面重排，横幅侧以计数 3+已失效种子不在横幅 DOM 承接「superseded 不计入未处理」机械证明。 | pass | 0/8 | - |
 | alert-panel-cause-badge-visible | 根因分组呈现（tasks 4.3「根因分组过滤」的可见面）：展开未处理列表后，告警条目按根因标签呈现——model-chain 以「模型链」面呈现可见（种子 description 特意不含根因词，命中只能是根因标签/分组控件本身）。出处：core/dashboard/static/src/app.tsx:146、AlertBanner.tsx；根因中文面措辞以 cause=model-chain→「模型链」为基准。judge 原地修复（2026-11-08）：同 S5：横幅默认展开（useState(true)），展开控件实文「收起列表」；根因标签经 alert-shared AlertTitle「根因：模型链」（data-testid=alert-cause-tag）在横幅未处理条目内呈现，断言随目标面修正。 | pass | 0/4 | - |
 | alerts-api-cause-field-contract | cause 根因标签经告警数据链可见（spec alert-lifecycle「入账带根因标签」的读侧契约）：GET /api/alerts 缺省跨项目聚合返回 200，未处理条目携带 cause 字段（种子 harness-cli 记录的根因值经端点透出），severity=major 随条目透出。出处：core/dashboard/routes/alert_routes.py:116（/api/alerts 缺省聚合分支）。judge 原地修复（2026-11-08）：缺省聚合响应体 >64KB（引擎 _JSON_PARSE_LIMIT，超限 resp_json=None），json_path/json_schema 对此端点结构性不可跑——severity 透出断言改 body_contains 紧凑序列化形态 "severity":"major"（种子按 created 倒序居响应最前，必然命中）。 | pass | 0/4 | - |
-| alert-panel-undo-supersede-restore | 人工撤销 supersede 恢复未处理（tasks 4.3「人工撤销 supersede 恢复未处理入口」）：在已展开「已失效」组的横幅内点击首条已失效告警的「恢复未处理」→ 该告警回到未处理态：横幅未处理计数 3→4、「已失效」组计数 2→1，恢复件与剩余失效件同时可见（步骤窗口内应伴随告警数据重拉）。出处：core/dashboard/static/src/app.tsx:146、AlertBanner.tsx；「恢复未处理」为撤销入口措辞（spec alert-lifecycle 4.3）。judge 原地修复（2026-11-08）：撤销入口实为 activities 页「撤销失效」按钮（data-testid=alert-revert-supersede → /api/alerts/<id>/revert-supersede），横幅与折叠组分属两面且断言须单页收口——「3→4 条未处理」以「已失效 (1) 组计数 + 恢复件入未处理列表」等强度机械证明承接。judge 原地修复（2026-11-08 二轮）：dashboard 为 hash 路由（config/config.ts history:hash），告警折叠组挂 activities「告警记录」页签（initialTab 按 location.hash 的 ?tab= 预选、缺省处置链）——裸路径 /activities 未预选页签致 text=已失效 不在 DOM；navigate 改 hash 深链 /#/activities?tab=alert。 | failed | 2/7 | product-bug |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
+| alert-panel-undo-supersede-restore | 人工撤销 supersede 恢复未处理（tasks 4.3「人工撤销 supersede 恢复未处理入口」）：在已展开「已失效」组的横幅内点击首条已失效告警的「恢复未处理」→ 该告警回到未处理态：横幅未处理计数 3→4、「已失效」组计数 2→1，恢复件与剩余失效件同时可见（步骤窗口内应伴随告警数据重拉）。出处：core/dashboard/static/src/app.tsx:146、AlertBanner.tsx；「恢复未处理」为撤销入口措辞（spec alert-lifecycle 4.3）。judge 原地修复（2026-11-08）：撤销入口实为 activities 页「撤销失效」按钮（data-testid=alert-revert-supersede → /api/alerts/<id>/revert-supersede），横幅与折叠组分属两面且断言须单页收口——「3→4 条未处理」以「已失效 (1) 组计数 + 恢复件入未处理列表」等强度机械证明承接。judge 原地修复（2026-11-08 二轮）：dashboard 为 hash 路由（config/config.ts history:hash），告警折叠组挂 activities「告警记录」页签（initialTab 按 location.hash 的 ?tab= 预选、缺省处置链）——裸路径 /activities 未预选页签致 text=已失效 不在 DOM；navigate 改 hash 深链 /#/activities?tab=alert。 | pass | 0/7 | - |
 
 ## 本轮场景集变更
 
