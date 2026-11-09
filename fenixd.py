@@ -465,6 +465,13 @@ class FenixDaemon:
         self._harness_precheck_done = False
         # 推送凭证自检 run-once 旗标（fix-push-credential-env-and-retry-rearm 4.1）
         self._credential_precheck_done = False
+        # 裁决车道前置自检（harden-arbiter-lane-resilience 3.2）：启动序列
+        # 探测一次 + 主循环周期重探（挂靠 1s tick 时间门，禁内存定时器）。
+        # _lane_preflight_ever_unhealthy——「恢复自动关闭」的边沿判定基线：
+        # healthy 收口只在曾 unhealthy 后执行一次 INFO 留痕（常态 healthy
+        # 周期探针零播报零写回）。
+        self._lane_preflight_ever_unhealthy = False
+        self._lane_preflight_next_ts = 0.0
         self._admin_thread = None
         # Administrator 后台执行 worker 池（fix-admin-run-blocks-mainloop D1/D6）：
         # 处置移出主循环，主循环只拾取与投递；admin.workers=0 回退同步行为。
@@ -1060,6 +1067,103 @@ class FenixDaemon:
             f"启动自检：推送凭证告警 — {description}；evidence: {evidence}",
         )
 
+    # ── 裁决车道前置自检（harden-arbiter-lane-resilience 3.2）──────────
+
+    def _lane_preflight_consume(self, health, source: str) -> None:
+        """探针结论消费（启动自检与周期重探共用单点）。
+
+        - unhealthy：WARNING 留痕 + 「车道环境不可用」告警单发（dedup_key
+          命中在案未处理条目即零写——同一 unhealthy 周期只发一次）；
+        - healthy：车道 infra 计数复位（能力一 R3 触发点之一）+ 在案未处理
+          告警自动关闭；常态 healthy 零播报（曾 unhealthy 后的首个 healthy
+          周期记一条 INFO 恢复留痕）。
+
+        fail-open：消费链任何异常只降级 WARNING，不阻塞调用方（启动序列/
+        主循环 tick 均不可击穿）。
+        """
+        try:
+            from core.agent_runner.lane_preflight import (
+                ensure_lane_env_alert,
+                resolve_lane_env_alert,
+            )
+
+            if not health.ok:
+                self._lane_preflight_ever_unhealthy = True
+                self.logger.warning(
+                    "fenixd",
+                    f"车道前置自检 unhealthy（{source}）: "
+                    + "；".join(health.reasons)[:500],
+                )
+                ensure_lane_env_alert(
+                    PROJECT_ROOT,
+                    self.logger,
+                    reasons=health.reasons,
+                    origin=source,
+                )
+                return
+            # healthy：车道复位（单例在场时）+ 告警自动关闭
+            try:
+                from core.pm_engine.arbiter import get_lane
+
+                lane = get_lane()
+                if lane is not None:
+                    lane.on_lane_healthy(source=source)
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd", f"车道 infra 计数复位失败（fail-open）: {e}"
+                )
+            resolved = resolve_lane_env_alert(
+                PROJECT_ROOT,
+                self.logger,
+                note=f"车道前置探针转 healthy（{source}）：CLI 可达 + 凭据"
+                "路由可解析，环境恢复，告警自动关闭",
+            )
+            if resolved or self._lane_preflight_ever_unhealthy:
+                self.logger.info(
+                    "fenixd",
+                    f"车道前置自检 healthy（{source}）"
+                    + (f"，自动关闭 {resolved} 条环境告警" if resolved else ""),
+                )
+                self._lane_preflight_ever_unhealthy = False
+        except Exception as e:  # noqa: BLE001 — 探针消费故障不击穿调用方
+            self.logger.warning(
+                "fenixd", f"车道前置自检消费失败（fail-open）: {e}"
+            )
+
+    def _startup_lane_preflight_check(self):
+        """启动序列裁决车道前置自检（harden-arbiter-lane-resilience 3.2 R2）。
+
+        启动时探测一次车道健康（probe_lane_health：CLI 可达 + 凭据路由本
+        地解析，不发 API 请求）；结论经 :meth:`_lane_preflight_consume` 单
+        点消费（unhealthy 告警单发 / healthy 复位+自动关闭）。调用方以非
+        阻塞 try/except 包裹（与相邻启动自检同口径）：自检自身故障只降级
+        WARNING，不击穿 start()。
+        """
+        from core.agent_runner.lane_preflight import probe_lane_health
+
+        health = probe_lane_health(self.config or {}, self.logger)
+        self._lane_preflight_consume(health, source="startup")
+        # 启动已探一次：周期重推从 60s 后起算（主循环首轮不重复探测）
+        self._lane_preflight_next_ts = time.time() + 60.0
+
+    def _lane_preflight_periodic_tick(self) -> None:
+        """主循环周期重探（harden-arbiter-lane-resilience 3.2 R4）。
+
+        挂靠主循环既有 1s tick 时间门（60s 节拍，与 recovery watch 同款范
+        式），禁内存定时器纪律满足；TTL 语义由车道派发前置的
+        LanePreflightCache 独立承担（arbiter.preflight_ttl），本节拍只负责
+        环境恢复检测（infra 计数复位 + 告警自动关闭）与持续 unhealthy 的
+        周期性再确认（告警 dedup_key 单发不重复）。
+        """
+        now = time.time()
+        if now < self._lane_preflight_next_ts:
+            return
+        self._lane_preflight_next_ts = now + 60.0
+        from core.agent_runner.lane_preflight import probe_lane_health
+
+        health = probe_lane_health(self.config or {}, self.logger)
+        self._lane_preflight_consume(health, source="periodic")
+
     def _remote_urls_have_embedded_credentials(self) -> bool:
         """扫描 daemon 自身仓库与全部已接管项目的 remote URL 集（纯本地）。
 
@@ -1194,6 +1298,19 @@ class FenixDaemon:
             self.logger.warning(
                 "fenixd",
                 f"Startup credential precheck failed (non-blocking): {e}",
+            )
+
+        # ── 裁决车道前置自检（harden-arbiter-lane-resilience 3.2 R2）──
+        # 启动时探测一次车道健康（CLI 可达 + 凭据路由本地解析，不发 API
+        # 请求）；unhealthy 发「车道环境不可用」告警（dedup 单发），healthy
+        # 复位车道 infra 计数并自动关闭在案告警。non-blocking 同款包裹：
+        # 自检自身故障不击穿 start()。
+        try:
+            self._startup_lane_preflight_check()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Startup lane preflight failed (non-blocking): {e}",
             )
 
         # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。
@@ -1454,6 +1571,16 @@ class FenixDaemon:
                     self._maybe_stale_selfheal_tick()
                 except Exception as e:
                     self.logger.error("fenixd", f"Stale-code selfheal check failed: {e}")
+                # 裁决车道前置周期重探（harden-arbiter-lane-resilience 3.2 R4）：
+                # 60s 节拍（时间门在 _lane_preflight_periodic_tick 内部，同
+                # _maybe_stale_selfheal_tick 挂载形态——每 pass 调用、门内自
+                # 控频，不新建线程/Timer）。环境恢复则复位车道 infra 计数 +
+                # 自动关闭在案「车道环境不可用」告警；异常捕获记日志不中断
+                # 主循环。
+                try:
+                    self._lane_preflight_periodic_tick()
+                except Exception as e:
+                    self.logger.error("fenixd", f"Lane preflight tick failed: {e}")
                 # run 人工取消文件信号拾取（add-run-cancel D5）：
                 # dashboard 写入 .fenix/cancel_run_request.json，主循环下一轮
                 # 消费并调 agent_runner.cancel_run（只设旗标，微秒级，不投 worker 池）。

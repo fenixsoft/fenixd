@@ -16,6 +16,7 @@ worker 为 daemon 线程：确定性等待以 queue.unfinished_tasks 轮询（�
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -344,6 +345,19 @@ class TestDedupAndRecurrence:
     def test_double_throat_single_dispatch_with_alert_bind(self, tmp_path):
         """双咽喉同签名：首个 queued、第二个 deduped 且 alert 补绑。"""
         lane = make_lane(tmp_path)
+        # 确定性闸（test_arbiter_backlog_sweep blocking_lane 同款教训）：把
+        # worker 拦在 _run_agent 内，保证 out2 dedup 判定时 sig 仍在
+        # _active——首跑失败（judgment 重试语义）会立即 discard _active，
+        # 不设闸 out2 结果是调度彩票（load-flake 实测）。
+        release = threading.Event()
+        runner = lane._runner_ref
+        orig_run_agent = runner._run_agent
+
+        def _gated_run(*a, **k):
+            release.wait(timeout=10)
+            return orig_run_agent(*a, **k)
+
+        runner._run_agent = _gated_run
         out1 = lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                            alert_id=None)
         assert out1 == "queued"
@@ -352,6 +366,7 @@ class TestDedupAndRecurrence:
             "alert-1",
         )
         assert out2 == "deduped"
+        release.set()
         assert drain(lane)
         # alert-1 经补绑进入触发，处置升级路径有挂靠目标（台账/告警以
         # _process_trigger 结果为准，这里只断言补绑生效不抛）
