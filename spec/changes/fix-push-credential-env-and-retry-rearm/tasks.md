@@ -17,6 +17,8 @@
   kind: new
 - path: tests/test_push_retry_recovery.py
   kind: new
+- path: tests/test_spec_approve_push.py
+  kind: modify
 - path: tests/test_systemd_env_path_hygiene.py
   kind: modify
 ```

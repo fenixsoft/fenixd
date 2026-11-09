@@ -25,5 +25,5 @@
 ## Impact
 
 - `core/pm_engine/engine.py`（`_git_push_ref` 注入 env、退避续推复用点）、新文件 `core/git_env.py`（HOME 解析与 git env 单源）、`core/systemd_hosting.py`（HOME 基线捕获与 unit 模板保底行）、`bin/migrate_to_systemd.py`（迁移摘要 HOME 结论）、`fenixd.py`（启动自检凭证探测）、`core/event_bus.py`（`_recover_one` done 分支）。
-- 配置新增 `pm.push.credential_file`（可选，缺省不写＝默认凭证文件）；`pm.push.retry_backoff_seconds` / `pm.push.max_retries` 语义不变。
+- 配置新增 `pm.push.credential_file`（可选，缺省不写＝默认凭证文件）与 `pm.push.credential_home`（可选，缺省不写＝HOME 按 env→pwd 序解析、不走配置覆盖）；`pm.push.retry_backoff_seconds` / `pm.push.max_retries` 语义不变。
 - 行为影响面：所有项目的 done→pushed 自动推送；无 API 破坏，存量项目零迁移（无 HOME 的存量 daemon 由启动自检告警 + unit 保底行自愈）。
