@@ -23,4 +23,4 @@
 
 ## 5. 知识沉淀
 
-- [ ] 5.1 更新知识页：recovery-continuity 域补「fast-track 冻结即保全」条目（不变量、接线点、守护清单）；worktree-vc 域补「冻结 spec 分支删除守卫」口径；如 1.1 发现与本文档根因模型不符，以 findings.md 为准回写 design.md 根因模型段
+- [x] 5.1 更新知识页：recovery-continuity 域补「fast-track 冻结即保全」条目（不变量、接线点、守护清单）；worktree-vc 域补「冻结 spec 分支删除守卫」口径；如 1.1 发现与本文档根因模型不符，以 findings.md 为准回写 design.md 根因模型段
