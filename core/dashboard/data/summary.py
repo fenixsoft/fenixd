@@ -24,6 +24,11 @@ from core.state_machine import (
 # 取消保持标记归一读值单点（add-cancelled-spec-resume-action D1；叶子模块，无环）
 from core.timelib import now_local, parse_ts
 from .state import normalize_bool_flag
+# blocked 处置相位判定（add-blocked-repairing-display 1.1）的两个既有单源：
+# agent 前缀真源表（runs.py 已模块级导入同模块，无新环）与 run 终态映射公开名
+# （core.code_review 跨包消费先例——公开名与私有定义单源绑定）
+from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
+from .runs import RUN_TERMINAL_STATUS_MAP
 
 # 服务端日志留痕出口（overview 降级摘要等；客户端只收固定文案，不外泄裸异常）
 logger = logging.getLogger("fenixd.dashboard.summary")
@@ -396,6 +401,116 @@ def normalize_depends_on(raw) -> str | None:
 _normalize_depends_on = normalize_depends_on
 
 
+# ── blocked SPEC 处置相位判定（add-blocked-repairing-display 1.1）────────────
+
+# 在飞处置 run 的 agent 归属集合：RUN_ID_AGENT_PREFIXES（run_files 唯一真源表）
+# 按 admin-/arbiter- 前缀过滤派生——不手写前缀→归属副本。get_runs 条目的
+# agent_type 即经该表推断，本集合与其口径同源。
+_BLOCKED_DISPOSITION_AGENT_TYPES = frozenset(
+    agent for prefix, agent in RUN_ID_AGENT_PREFIXES if prefix in ("admin-", "arbiter-")
+)
+if _BLOCKED_DISPOSITION_AGENT_TYPES != frozenset({"administrator", "arbiter"}):
+    # 真源表改名/删条目时启动即报错，而非相位判定静默退化为恒 None（仿同表
+    # 加载期顺序自检纪律）
+    raise RuntimeError(
+        "RUN_ID_AGENT_PREFIXES 丢失 admin-/arbiter- 条目：blocked 处置相位"
+        "在飞 run 判定失去真源依据（add-blocked-repairing-display）"
+    )
+
+
+def _blocked_disposition_phase(project_root, spec_name: str, runs) -> "str | None":
+    """blocked SPEC 处置相位单点判定（add-blocked-repairing-display 1.1）。
+
+    取值 ``repairing`` / ``queued`` / None（口径 = capability spec
+    blocked-disposition-display，与既有 frozen 字段同模式：后端单点判定，
+    前端只消费不重复判定）：
+
+    - repairing：在飞处置 agent——``admin-``/``arbiter-`` 前缀 run 非终态非
+      stale（复用 get_runs 既有元数据 memo，清单路径增量成本近似零），或链
+      状态文件 in_flight 区 admin/arbiter 相、未超 stale 超时口径（与
+      reap_stale_inflight 同源 stale_in_flight started_at 判据）的条目指向
+      该 spec；
+    - queued：无在飞处置 run，但自愈队列挂起待处置件——admin_alerts.json 该
+      spec 的 pending disposition（经 merge_dispositions_by_run 归并单点：
+      有唤起标记而无 final、待看护重派）或链 in_flight 区 deferred 让行条目
+      （deferred 与在办件同受 stale_in_flight 超时 reap 约束，同样排除残留）。
+      链派发队列是进程内 queue.Queue 无持久落盘，MUST NOT 作为判定源；
+    - None：以上皆无（人工升级件、冻结转人工等待面）——升级 kind 告警是
+      「等人」信号，MUST NOT 计入 queued（否则掩护真正需人工介入的件）。
+
+    fail-open：告警/链文件缺失、损坏（读层自身回空）乃至任何未预期异常一律
+    降级（在飞 run 证据仍可用时按其判定，否则 None），绝不沿 /api/specs
+    链路抛 500。纯显示层判定：对 STATE.md、调度、筛选与计数零写入零影响。
+    """
+    # ① 在飞处置 run（runs 由调用方传入——spec_summary/spec_detail 已算好）
+    terminal = frozenset(RUN_TERMINAL_STATUS_MAP.values()) | {"stale"}
+    for run in runs or []:
+        if (
+            isinstance(run, dict)
+            and run.get("agent_type") in _BLOCKED_DISPOSITION_AGENT_TYPES
+            and run.get("status") not in terminal
+        ):
+            return "repairing"
+    # ② 链在办 / ③ 挂起待处置（读层缺失/损坏自身回空骨架/空表，外层再兜
+    # 未预期异常——双层 fail-open）
+    try:
+        return _blocked_phase_from_persistent_state(project_root, spec_name)
+    except Exception:
+        logger.warning(
+            "blocked 处置相位判定数据源读取异常（fail-open 降级 null）: spec=%s",
+            spec_name,
+            exc_info=True,
+        )
+        return None
+
+
+def _blocked_phase_from_persistent_state(project_root, spec_name) -> "str | None":
+    """相位判定的持久载体半边：链在办/让行条目 + 告警挂起件。
+
+    仅 blocked spec 进入本路径（spec_summary/spec_detail 调用点守卫），
+    其余状态零读放大。
+    """
+    import core.dashboard.data as _facade
+    from core.pm_engine.escalation_chain import (
+        ChainQuotaStore,
+        entry_phase,
+        load_chain_state,
+    )
+    from core.admin_store import AdminStore
+
+    # 链在办/让行条目（load_chain_state fail-open：缺失/损坏/版本不识别回空
+    # 骨架）。stale 残留排除复用 ChainQuotaStore.stale_in_flight 公开判定——
+    # 与 admin_monitor 兜底看护 _reap_chain_inflight 消费同一函数，started_at
+    # 判据天然同源（缺 started_at/不可解析视为残留一并排除）。
+    stale_ids = {
+        str(x.get("chain_id") or "")
+        for x in ChainQuotaStore(project_root).stale_in_flight()
+    }
+    active = queued = False
+    for x in load_chain_state(project_root)["in_flight"]:
+        if x.get("spec") != spec_name or str(x.get("chain_id") or "") in stale_ids:
+            continue
+        phase = entry_phase(x)
+        if phase in ("admin", "arbiter"):
+            active = True
+        elif phase == "deferred":
+            queued = True
+    if active:
+        return "repairing"
+    if queued:
+        return "queued"
+    # admin_alerts.json 挂起待处置件（AdminStore 读层缺失/损坏返回 []；归并
+    # 单点与处置链视图同源——pending 让位于非 pending，同 run 有 final 即不再
+    # 计挂起）。spec 先过滤后归并（与 timeline._admin_events_for_spec 同序）。
+    records = [
+        r for r in AdminStore(project_root).read_all() if r.get("spec") == spec_name
+    ]
+    best_by_run = _facade.merge_dispositions_by_run(records)
+    if any(is_pending for is_pending, _rec in best_by_run.values()):
+        return "queued"
+    return None
+
+
 def spec_summary(
     project_root, spec_name: str, entry: dict, runs_files: list | None = None,
     state_entries: dict | None = None, archived_entries: dict | None = None,
@@ -524,6 +639,15 @@ def spec_summary(
         # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
         # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
         "frozen": _facade.is_spec_frozen(entry),
+        # add-blocked-repairing-display 1.1：blocked SPEC 处置相位（repairing/
+        # queued/null）。后端单点判定（与 frozen 同模式，前端只消费不重复判定）；
+        # 仅 blocked 态进入告警/链文件判定路径，其余状态恒 None。显示层 only：
+        # 对状态机/调度/筛选/计数零影响（真实状态恒 blocked）。
+        "blocked_phase": (
+            _blocked_disposition_phase(project_root, spec_name, runs)
+            if entry.get("status") == "blocked"
+            else None
+        ),
         # 取消保持态（add-cancelled-spec-resume-action D4）：前端「恢复运行」
         # 区块渲染判据。取值为归一化布尔——_cancelled_hold 已登记进
         # state.py parse_state 归一化表（与 frozen 同口径），文本 False 不再
@@ -858,6 +982,12 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
             add(wt / "spec" / "changes" / spec_name / "tasks.md")
             add(wt / ".fenix" / "verify-progress" / spec_name / "quality-gates.json")
             add(wt / ".fenix" / "verify-progress" / spec_name / "code-review.json")
+    # add-blocked-repairing-display 1.1：blocked 相位判定的两个持久数据源入
+    # 失效签名（仅 blocked 态——判定路径只对 blocked spec 展开，其余状态该
+    # 字段恒 None 与两文件无关；宁多勿漏：缺失不入集，出现/消失即翻签名）。
+    if entry and entry.get("status") == "blocked":
+        add(proot / ".fenix" / "admin_alerts.json")
+        add(proot / ".fenix" / "escalation_chain_state.json")
     # [fenix-ignore:01fa63282f46] 与 fcdd13be884c 重复：缓存键与 _spec_dep_sigs 均已并入用户级 config.yaml 签名，问题已修不成立
     # add-spec-status-modal-budget D3：budget_effective 依赖全局 config
     # （agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
@@ -1254,6 +1384,14 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     return {
         "name": spec_name,
         "status": entry.get("status"),
+        # add-blocked-repairing-display 1.1：处置相位透传（与 spec_summary 同一
+        # 判定单点 _blocked_disposition_phase；详情页头部三态标签数据源，runs
+        # 复用本函数已算的清单，非索引路径零额外 glob）
+        "blocked_phase": (
+            _blocked_disposition_phase(project_root, spec_name, runs)
+            if entry.get("status") == "blocked"
+            else None
+        ),
         # add-spec-chinese-title D4：中文标题透传（非索引路径，read_spec_title
         # 内部经 resolve_spec_dir 归档回退，低频调用不值得加映射参数）
         "title": _facade.read_spec_title(project_root, spec_name),

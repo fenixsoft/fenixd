@@ -231,6 +231,10 @@ def spec_detail_signature(proot, spec: str) -> str:
         proot / ".fenix" / ".fenix-run-result.json",
         proot / ".fenix" / "regression" / "last-run.json",
         proot / ".fenix" / "admin_alerts.json",
+        # add-blocked-repairing-display 1.1：blocked 处置相位判定源之二（链在办/
+        # 让行条目；admin_alerts 为 pending disposition 半边已在列——宁多勿漏，
+        # 两文件变化都须翻转详情签名使 blocked_phase 刷新）
+        proot / ".fenix" / "escalation_chain_state.json",
         proot / ".fenix" / "config.yaml",
     ]
     parts = [
