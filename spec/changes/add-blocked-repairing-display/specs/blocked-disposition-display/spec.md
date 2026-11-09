@@ -3,8 +3,8 @@
 ### Requirement: blocked SPEC 处置相位判定字段（后端单点）
 SPEC summary SHALL 新增 `blocked_phase` 字段，由后端单点判定（与既有 `frozen` 字段同模式），取值域为 `repairing` / `queued` / `null`。判定口径：
 
-- `repairing`：该 blocked SPEC 存在在飞处置 agent——`admin-<spec>-` 或 `arbiter-<spec>-` 前缀 run 处于非终态（复用既有 run 元数据终态/新鲜度口径），或处置链在办件（in-flight）指向该 spec；
-- `queued`：无在飞处置 run，但 agent 自愈队列已挂起该 spec 的待处置件（admin_monitor 挂起待处置信号，或链 pending 排队件）；
+- `repairing`：该 blocked SPEC 存在在飞处置 agent——`admin-<spec>-` 或 `arbiter-<spec>-` 前缀 run 处于非终态（复用既有 run 元数据终态/新鲜度口径），或链状态文件 in_flight 区 `phase` 为 `admin`/`arbiter` 且未超既有 stale in_flight 超时口径（与 `reap_stale_inflight` 同源 started_at 判据）的条目指向该 spec；
+- `queued`：无在飞处置 run，但 agent 自愈队列已挂起该 spec 的待处置件——判定只认有持久载体的挂起形态：`admin_alerts.json` 中该 spec 的 pending disposition 记录（有唤起标记而无 final、待看护重派，经既有 `merge_dispositions_by_run` 归并单点判定），或链状态文件 in_flight 区 `phase=deferred` 让行挂起条目。链派发队列是进程内 `queue.Queue`（无持久落盘），MUST NOT 作为判定源；
 - `null`：以上皆无——含人工升级件、冻结转人工等待面。
 
 MUST NOT 引入平行真相源：判定只读既有产物（run 目录、`admin_alerts.json`、链状态文件）。**人工升级件（升级 kind 告警）MUST NOT 计入 `queued`**——等待人的面必须保持「阻塞」。本字段是显示层判定，MUST NOT 影响状态机、调度、筛选与计数的任何行为。
@@ -14,7 +14,7 @@ MUST NOT 引入平行真相源：判定只读既有产物（run 目录、`admin_
 - **THEN** summary 的 `blocked_phase` 为 `"repairing"`
 
 #### Scenario: 仅挂起待处置件判定为 queued
-- **WHEN** 某 SPEC `status=blocked`、无任何在飞处置 run，且 admin_monitor 已挂起该 spec 的待处置信号或链上有该 spec 的 pending 排队件
+- **WHEN** 某 SPEC `status=blocked`、无任何在飞处置 run，且 `admin_alerts.json` 存在该 spec 的 pending disposition 记录（有唤起标记而无 final），或链状态文件 in_flight 区存在该 spec 的 `phase=deferred` 让行挂起条目
 - **THEN** summary 的 `blocked_phase` 为 `"queued"`
 
 #### Scenario: 等待人工面维持 null

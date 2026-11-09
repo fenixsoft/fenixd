@@ -27,7 +27,7 @@
 1. **字段形态：summary 新增 `blocked_phase: "repairing" | "queued" | null`**（而非两个布尔）。理由：三态互斥，单枚举字段消除非法组合；读侧容错缺省 `null` = 现状显示，存量零迁移。
 2. **判定数据源复用既有单源**：
    - 在飞 run：spec 关联 run 清单按 `admin-`/`arbiter-` 前缀过滤（`RUN_ID_AGENT_PREFIXES` 真源表判定 agent 归属，不手写前缀字面量），非终态判定复用 `_RUN_TERMINAL_STATUS_MAP` 末行口径与 run 元数据 memo 缓存——清单路径增量成本近似零；
-   - 链在办/pending：读链状态文件与 `admin_alerts.json` 的既有读路径（处置链视图同源），不新开读法。
+   - 链在办/挂起：读链状态文件 in_flight 区（`phase` admin/arbiter 相计在办并排除 stale 超时残留——与 `reap_stale_inflight` 同源 started_at 判据；`deferred` 相计挂起待重派）与 `admin_alerts.json` 既有读路径（pending disposition 经 `merge_dispositions_by_run` 归并单点判定「有唤起标记而无 final」；处置链视图同源，不新开读法）。链派发队列是进程内 `queue.Queue` 无持久落盘，不作为判定源。
 3. **人工升级件不计入 `queued`**：升级 kind 告警是「等人」信号（`human-escalation-alerts` 契约），计入排队会掩护真正需介入的件——这是本需求的核心价值，宁缺勿滥。
 4. **前端渲染辅助**：`services/dashboard.ts` 新增相位标签辅助（`blockedPhaseMeta(record)` 形态），`statusMeta` 本体与 `STATUS_META` 键域不变；列表/详情/切换下拉三处共用同一辅助，禁复制分支（三态语义单源）。
 5. **tone 选型**：修复中 = 进行中蓝（info，与「实现中/验证中」同类语义），排队中 = 等待橙（warning）；阻塞维持 critical 红。色板均为站内既有 token，无新色值。

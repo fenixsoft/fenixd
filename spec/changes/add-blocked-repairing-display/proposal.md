@@ -5,8 +5,8 @@
 ## What Changes
 
 - 后端 SPEC summary 新增处置相位判定字段 `blocked_phase`（后端单点判定，与既有 `frozen` 字段同模式）：
-  - `repairing`：该 blocked SPEC 存在在飞处置 agent（`admin-` / `arbiter-` 前缀 run 处于非终态，或处置链在办件指向该 spec）；
-  - `queued`：无在飞处置 run，但 agent 自愈队列已挂起该 spec 的待处置件（admin_monitor 挂起待处置信号 / 链 pending 排队件）；
+  - `repairing`：该 blocked SPEC 存在在飞处置 agent（`admin-` / `arbiter-` 前缀 run 处于非终态，或处置链 in_flight 区 `phase` 为 `admin`/`arbiter` 且未超既有 stale 超时口径的条目指向该 spec）；
+  - `queued`：无在飞处置 run，但 agent 自愈队列已挂起该 spec 的待处置件（`admin_alerts.json` 中该 spec 的 pending disposition 记录——有唤起标记而无 final、待看护重派；或链状态文件 in_flight 区 `phase=deferred` 让行挂起条目。链派发队列是进程内 `queue.Queue` 无持久载体，不作为判定源）；
   - `null`：无 agent 处理迹象（含人工升级件、冻结转人工等待面）→ 维持「阻塞」。
 - 前端 SPEC 列表页与详情页的状态标签按相位三态渲染：`repairing` → 「修复中」、`queued` → 「排队中」、其余 → 「阻塞」（维持现红 critical）。
 - **显示层 only**：状态机、调度、筛选、状态计数、运维页处置链视图全部不变，真实状态恒为 `blocked`；人工升级件不计入「排队中」（那是等待人的面，必须保持「阻塞」以便人工识别）。
