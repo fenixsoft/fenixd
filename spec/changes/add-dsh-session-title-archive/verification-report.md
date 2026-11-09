@@ -59,3 +59,13 @@
 **修正**：commit 本次——注册收口为 `AgentRunner._register_dsh_session_id`（登记值改**列表追加**：同 id 幂等、None 尝试不擦既有捕获、首个 None→None 哨兵、str 旧形态并入列表防御），消费侧 `_dsh_session_tidy_on_terminal` pop 后**全量按序投递**（None/空列表保持既有 WARN 面）。tests/test_dsh_session_tidy.py 新增多 attempt 全量归档、空列表防御与登记契约 9 用例（先红后绿，45 passed）。
 
 **存量补归档**：4 条泄漏会话（session-8f9bba9d/cad75a42/f6df70cf/a7596978，均终态）经生产 helper 手工归档，web 复验 repair 残留清零。**生效条件**：daemon 需重启吃新代码（cloud-phone 13:56 版本无此修复）。
+
+## 验证后缺陷修正三（2026-11-09 未分组复查追加）
+
+**缺陷**：web 未分组复查（9 条残留）发现 admin/arbiter 直调车道终态会话**永漏归档**——admin ×4（admin-global-1794210416 / admin-m3-…-1794210116 / admin-m3-…-1794214619 / admin-single-app-realdevice-retest-1794215520）+ arbiter ×2（arbiter-p2p-crossnet-traversal-1794215565 / -1794216592），run 均已终态归档但会话零归档痕迹（归档 trail 无命中、pending 队列空）。dsh-tidy-daemon-tests 未覆盖 maintenance 直调车道，故漏网。
+
+**根因**（源码坐实）：3.3 挂接只覆盖 `_execute_agent` finally（dispatch 族）与 dispute-judge/spec-review 直调 finally 两处——`run_administrator` / `run_arbiter`（core/agent_runner/maintenance_runs.py 直调车道）不经这两处终态外口，主 run try 无 finally 挂接，其 dsh 会话终态后无人投递。
+
+**修正**：两车道主 run try 各补 `finally: _dsh_session_tidy_on_terminal(run_id)`（getattr 判空——测试替身 runner 无此方法时静默跳过，对齐本文件 logger 判空先例；生产 facade 恒有）。tests/test_dsh_session_tidy.py 新增 3 用例（arbiter 成功/异常终态端到端投递 + admin/arbiter AST 源码契约，对齐 test_run_agent_call_site_arity.py 先例），先红后绿；关联 7 套件 169 passed。
+
+**存量补归档**：6 条泄漏会话经生产 helper 手工归档；未分组 9→2——余 2 条为活动 run 新会话（终态后自动归档，正常时机）与 frozen impl attempt ×1（`impl-p2p-crossnet-traversal-1794215454-a1`：run 终态 frozen 但 `_execute_agent` 线程未收口故 finally 未走，属冻结处理域，已手工补归档，freeze 语义由 fix-fasttrack-freeze-branch-preservation 车道跟进）。**生效条件**：daemon 重启吃新代码。

@@ -476,6 +476,17 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
                 f"Administrator run {run_id} failed: {error}",
                 {"run_id": run_id, "error": error, "failure_evidence": failure_evidence},
             )
+    finally:
+        # dsh 会话归档投递（add-dsh-session-title-archive 3.3 挂接补全 /
+        # fix-dsh-tidy-maintenance-lanes）：admin 直调车道不经 _execute_agent
+        # 终态外口，此前漏挂——本车道 dsh 会话终态后永漏归档、堆积 web
+        # 未分组（2026-11-09 实证 admin ×4）。对齐 dispute-judge/spec-review
+        # 直调 finally 先例：成功/异常终态全覆盖；登记无键时内部静默零
+        # 动作，异常内部 fail-open 不外冒。getattr 判空（本文件 logger 判空
+        # 同款先例）：测试替身 runner 无此方法时静默跳过，生产 facade 恒有。
+        _tidy = getattr(runner, "_dsh_session_tidy_on_terminal", None)
+        if _tidy is not None:
+            _tidy(run_id)
 
     disp = runner._read_admin_disposition(disp_path)
     # ── 产物硬门（对齐 code-review/code-fix 车道的 fail-closed 先例：
@@ -831,6 +842,17 @@ def run_arbiter(runner, trigger: dict) -> dict:
                 f"Arbiter run {run_id} failed: {error}",
                 {"run_id": run_id, "error": error, "failure_evidence": failure_evidence},
             )
+    finally:
+        # dsh 会话归档投递（add-dsh-session-title-archive 3.3 挂接补全 /
+        # fix-dsh-tidy-maintenance-lanes）：arbiter 直调车道不经 _execute_agent
+        # 终态外口，此前漏挂——本车道 dsh 会话终态后永漏归档、堆积 web
+        # 未分组（2026-11-09 实证 arbiter ×2）。对齐 dispute-judge/spec-review
+        # 直调 finally 先例：成功/异常终态全覆盖；登记无键时内部静默零
+        # 动作，异常内部 fail-open 不外冒。getattr 判空（本文件 logger 判空
+        # 同款先例）：测试替身 runner 无此方法时静默跳过，生产 facade 恒有。
+        _tidy = getattr(runner, "_dsh_session_tidy_on_terminal", None)
+        if _tidy is not None:
+            _tidy(run_id)
 
     # ── 产物硬门（fail-closed，同 admin 车道先例）────────────────────
     report = _read_arbiter_report(report_path)

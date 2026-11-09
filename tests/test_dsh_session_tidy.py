@@ -18,6 +18,7 @@ session-tidy-helper.test.ts 覆盖，此处不重复。
 """
 
 import json
+from pathlib import Path
 import os
 import stat
 import textwrap
@@ -26,6 +27,8 @@ from unittest.mock import patch
 import pytest
 
 from core.config import ConfigLoader
+from core.agent_runner.maintenance_runs import run_arbiter
+from tests.test_arbiter_lane import FakeRunner
 from core.dsh_session_tidy import (
     DEFAULT_MAX_ATTEMPTS,
     DshSessionTidySubmitter,
@@ -554,3 +557,79 @@ class TestDshSessionIdRegistration:
         runner._run_dsh_session_id = {"r1": "s0"}
         runner._register_dsh_session_id("r1-a2", "s2")
         assert runner._run_dsh_session_id == {"r1": ["s0", "s2"]}
+
+
+class TestMaintenanceLaneTidyHooks:
+    """admin/arbiter 直调车道终态 tidy 挂接契约（fix-dsh-tidy-maintenance-lanes）。
+
+    根因（2026-11-09 未分组复查实证）：add-dsh-session-title-archive 3.3 的
+    挂接只覆盖 _execute_agent finally（dispatch 族）与 dispute-judge/
+    spec-review 直调 finally——run_administrator / run_arbiter（maintenance_
+    runs.py 直调车道）漏挂，其 dsh 会话终态后永漏归档、堆积 web 未分组
+    （当日 cloud-phone 未分组 9 条中 admin ×4 + arbiter ×2）。
+    """
+
+    def test_arbiter_成功终态投递(self, tmp_path):
+        from tests.test_arbiter_guardrails import GOOD_REPORT
+
+        class TidySpyRunner(FakeRunner):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.tidy_calls = []
+
+            def _dsh_session_tidy_on_terminal(self, run_id):
+                self.tidy_calls.append(run_id)
+
+        runner = TidySpyRunner(tmp_path, script={"run": GOOD_REPORT})
+        result = run_arbiter(runner, {"spec": "spec-a",
+                                      "signal_type": "verify_env_blocked"})
+        assert result["ok"] is True
+        assert len(runner.tidy_calls) == 1
+        assert runner.tidy_calls[0] == result["run_id"]
+
+    def test_arbiter_异常终态仍投递(self, tmp_path):
+
+        class TidySpyRunner(FakeRunner):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.tidy_calls = []
+
+            def _dsh_session_tidy_on_terminal(self, run_id):
+                self.tidy_calls.append(run_id)
+
+        runner = TidySpyRunner(tmp_path, script={"run": "raise"})
+        result = run_arbiter(runner, {"spec": "spec-a",
+                                      "signal_type": "verify_env_blocked"})
+        assert result["ok"] is False
+        # 异常终态（gateway stall 等）同为终态外口：投递恰好一次
+        assert len(runner.tidy_calls) == 1
+        assert runner.tidy_calls[0] == result["run_id"]
+
+    def test_admin_arbiter_挂接源码契约(self):
+        # AST 源码契约（对齐 test_run_agent_call_site_arity.py 先例）：
+        # admin 车道缺端到端测试基建，用源码扫描钉死两直调车道的挂接在位，
+        # 任一侧回归漂移即红。
+        import ast
+        src = (Path(__file__).resolve().parent.parent
+               / "core" / "agent_runner" / "maintenance_runs.py")
+        tree = ast.parse(src.read_text(encoding="utf-8"))
+        hooked = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if node.name not in ("run_administrator", "run_arbiter"):
+                continue
+            # 兼容两种在位形态：直调 runner._dsh_session_tidy_on_terminal(run_id)
+            # （Attribute 调用）与 getattr 判空中间变量（字符串常量实参）。
+            hooked[node.name] = any(
+                (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "_dsh_session_tidy_on_terminal")
+                or (isinstance(n, ast.Constant)
+                    and n.value == "_dsh_session_tidy_on_terminal")
+                for n in ast.walk(node))
+        assert hooked.get("run_administrator") is True, (
+            "run_administrator 缺 _dsh_session_tidy_on_terminal 终态挂接"
+            "——admin 车道 dsh 会话将漏归档堆积 web 未分组")
+        assert hooked.get("run_arbiter") is True, (
+            "run_arbiter 缺 _dsh_session_tidy_on_terminal 终态挂接"
+            "——arbiter 车道 dsh 会话将漏归档堆积 web 未分组")
