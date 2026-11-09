@@ -6,12 +6,17 @@
  * ctx.sessionTitle.rename() 落会话 header——写入走会话自身 header 写路径
  * （同进程），不依赖 dsh web 在线。
  *
- * 命名入口选型（design D1，按安装版 SDK typings 定案）：**rename()**——同步
- * 立即落 header，且 source=user 语义把标题 pin 住（dsh-session-title「user 源
- * pins the session」）：后续首条 human message 不再调度 dsh-base 挂载的
- * session-title-llm LLM provider，对 fenix 系统提示词 boilerplate 生成标题的
- * 额外 LLM 调用与延迟被天然省去。provider 接口（register + automatic cadence）
- * 为异步消息流设计，对「启动期一次性命名」不贴合，不采用。
+ * 命名入口选型（design D1，按安装版 SDK typings 定案）：**rename()**——落
+ * header 且 source=user 语义把标题 pin 住（dsh-session-title「user 源 pins the
+ * session」）：后续首条 human message 不再调度 dsh-base 挂载的 session-title-llm
+ * LLM provider，对 fenix 系统提示词 boilerplate 生成标题的额外 LLM 调用与延迟
+ * 被天然省去。provider 接口（register + automatic cadence）为异步消息流设计，
+ * 对「启动期一次性命名」不贴合，不采用。
+ *
+ * 落盘时机（2026-11-09 缺陷修正）：dsh announce() 同步派发 session/created 期间
+ * 会话流只读（append 闸关闭），同步 rename 必抛「cannot append before
+ * session/created completes」——故 rename 经 queueMicrotask 推迟到派发循环同步
+ * 结束后执行；微任务仍先于 headless run() 续行与首条消息兜底，pin 语义不变。
  *
  * 派生规则（design D1）：`<PROJECT_ROOT basename> · <WORKTREE basename>`；
  * 任一 env 缺席回退另一 key 的 basename；两者全缺不命名（交由 dsh-session-title
@@ -21,9 +26,9 @@
  * 内置兜底（source.kind !== "fallback"，即此前本插件 rename 落下的 user 源或
  * provider 源）时不覆盖。
  *
- * 失败安全：session/created 监听器的同步抛错会否决会话创建并回滚（dsh-session
- * 「A synchronous throw vetoes and rolls back」）——本插件全部逻辑包 try/catch，
- * 异常走 logger.warn 留痕，绝不阻塞会话启动。
+ * 失败安全：session/created 监听器（含 queueMicrotask 延迟任务）内的抛错一律
+ * 吞掉走 logger.warn——同步抛错会否决会话创建并回滚（dsh-session「A
+ * synchronous throw vetoes and rolls back」），绝不阻塞会话启动。
  */
 
 import { basename } from "node:path";
@@ -131,20 +136,29 @@ export function registerSessionTitle(ctx: SessionTitleContext, options?: Registe
   const maxTitleBytes = options?.maxTitleBytes ?? DEFAULT_MAX_TITLE_BYTES;
   ctx.inject(["sessionTitle"], (scope) => {
     ctx.on("session/created", (session: unknown) => {
-      try {
-        const title = deriveSessionTitle(env, maxTitleBytes);
-        // env 全缺：不命名，标题交由 dsh-session-title 内置兜底（spec 场景）。
-        if (!title) return;
-        // 幂等：非内置兜底来源（本插件此前的 user 源 / provider 源）不覆盖。
-        const existing = scope.sessionTitle.get(session);
-        if (existing && existing.source?.kind !== "fallback") return;
-        scope.sessionTitle.rename(session, title);
-      } catch (err) {
-        ctx.logger?.warn(
-          `[fenix-dsh-bundle] 会话确定性标题写入失败（已忽略，不影响会话创建）：` +
-            `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      // dsh announce() 在同步派发 session/created 期间置 announcement=
+      // "dispatching"，会话流只读（append 闸关闭）——此刻同步 rename 必抛
+      // 「cannot append before session/created completes」（2026-11-09 端到端
+      // 实证，曾致标题全程静默失效）。推迟到微任务：announce 循环同步走完、
+      // 闸开后再落盘；微任务仍先于 headless run() 续行与首条消息兜底，user
+      // pin 语义不受影响。
+      queueMicrotask(() => {
+        try {
+          const title = deriveSessionTitle(env, maxTitleBytes);
+          // env 全缺：不命名，标题交由 dsh-session-title 内置兜底（spec 场景）。
+          if (!title) return;
+          // 幂等：非内置兜底来源（本插件此前的 user 源 / provider 源）不覆盖。
+          const existing = scope.sessionTitle.get(session);
+          if (existing && existing.source?.kind !== "fallback") return;
+          scope.sessionTitle.rename(session, title);
+        } catch (err) {
+          // 延迟任务内抛错同样不可外泄（否决/污染 run 启动）——吞掉并 WARN。
+          ctx.logger?.warn(
+            `[fenix-dsh-bundle] 会话确定性标题写入失败（已忽略，不影响会话创建）：` +
+              `${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      });
     });
   });
 }
