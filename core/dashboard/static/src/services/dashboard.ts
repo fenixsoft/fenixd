@@ -745,6 +745,14 @@ export interface SpecSummary {
    * 会漏判——前端 MUST 用该字段判定冻结，不得自行 startsWith。
    */
   frozen?: boolean;
+  /**
+   * add-blocked-repairing-display：blocked SPEC 处置相位（后端单点判定，与 frozen
+   * 同模式，前端只消费不重复判定）。repairing=在飞处置 agent（admin-/arbiter- run
+   * /链在办件）、queued=自愈队列挂起待处置件（pending disposition/deferred 让行）、
+   * null=等待人工面（含人工升级件/冻结转人工）。仅 status=blocked 时有值，其余
+   * 状态恒 null。显示层 only：真实状态恒 blocked，筛选/计数不受影响。
+   */
+  blocked_phase?: 'repairing' | 'queued' | null;
   /** add-task-progress-verify-phase：任务进度列阶段——"verify" 仅当 status==testing；
    * add-quality-gates-visibility 增 "gates"（implementing 收尾 / testing ocr 在飞），
    * 其余 "impl"（判定单点在后端） */
@@ -1787,6 +1795,36 @@ export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = 
 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {
   return STATUS_META[status] || { label: status || '未知', tone: 'muted' };
+}
+
+// ── blocked SPEC 处置相位标签（add-blocked-repairing-display 任务 2.1） ──
+
+// 相位→标签/tone 映射（值域锁死后端单点判定 blocked_phase：repairing/queued；
+// 其余一切经 statusMeta 原样回退）。tone 选型（design 决策 5）：修复中=进行中蓝
+// （info，与「验证中」同类语义）、排队中=等待橙（warning）、阻塞维持 critical 红。
+// 三态可区分：前两者 MUST NOT 沿用阻塞的 critical 红。键域刻意不含 null/非法值
+// ——回退路径统一走 statusMeta（现状行为），不在此造第二份「阻塞」元数据。
+const BLOCKED_PHASE_META: Record<'repairing' | 'queued', { label: string; tone: StatusTone }> = {
+  repairing: { label: '修复中', tone: 'info' },
+  queued: { label: '排队中', tone: 'warning' },
+};
+
+/**
+ * blocked SPEC 的状态标签渲染辅助（列表状态列/移动卡片、详情页头部与 spec 快速
+ * 切换下拉三处共用同一单源，禁复制分支）。
+ *
+ * status=blocked 且相位命中（repairing/queued）时覆盖标签；blocked_phase 缺席/
+ * null/非法值（存量前端缓存/增量 patch 竞态）→ statusMeta 原样（回退「阻塞」
+ * critical 红，行为与现状一致）；非 blocked 状态渲染完全不变。
+ */
+export function blockedPhaseMeta(
+  record?: { status?: string | null; blocked_phase?: 'repairing' | 'queued' | null } | null,
+): { label: string; tone: StatusTone } {
+  const phase = record?.blocked_phase;
+  if (record?.status === 'blocked' && phase && phase in BLOCKED_PHASE_META) {
+    return BLOCKED_PHASE_META[phase as 'repairing' | 'queued'];
+  }
+  return statusMeta(record?.status || '');
 }
 
 // ── 配置管理（/api/config，复用 v1 后端） ──

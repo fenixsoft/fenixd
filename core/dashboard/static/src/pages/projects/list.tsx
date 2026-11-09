@@ -40,6 +40,7 @@ import { getSpecDetail, getSpecs } from '@/services/dashboard';
 // 宿主对齐状态色单源（theme.ts；DESIGN.md「宿主对齐基线」）
 import { DSH_INTERACTIVE_ACTIVE, DSH_LINK, DSH_PRIMARY, SPEC_LIST_MOBILE_BG } from '@/theme';
 import {
+  blockedPhaseMeta,
   clearSpecError,
   deleteSpec,
   reReviewSpec,
@@ -760,7 +761,9 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
         // 行后避免按索引复用，行状态随正确行走（与桌面 Table rowKey 对齐）
         rowKey={(n) => n.record.name}
         renderItem={({ record, level }) => {
-          const m = statusMeta(record.status || '');
+          // blocked 处置相位三态（add-blocked-repairing-display 2.2）：移动卡片
+          // 与桌面状态列共用 dashboard.ts 单源辅助，禁复制分支
+          const m = blockedPhaseMeta(record);
           const created = record.created ? dayjs(record.created) : null;
           // 阶段感知进度（code-review item e1f8a359480d）：与桌面「任务进度」列
           // 共用 phaseProgressOf 单源，两侧口径一致
@@ -1093,7 +1096,10 @@ function DevTab({
       onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       render: (v: string | null, record: SpecSummary) => {
-        const m = statusMeta(v || '');
+        // blocked 处置相位三态（add-blocked-repairing-display 2.2）：repairing→
+        // 「修复中」info 蓝、queued→「排队中」warning 橙、缺席/null/非法值→阻塞
+        // 原样（blockedPhaseMeta 单源；筛选/状态计数/LIST_STATUSES 不变）
+        const m = blockedPhaseMeta(record);
         // v2 台账形态（2026-11-06 用户指令）：状态从「色点+文字」改语义胶囊
         // （镜像 v2 V2StatusPill）；等待标记组（定时/待激活/前置依赖）保留
         return (
