@@ -35,9 +35,9 @@
 
 ## 1. dsh-bundle 标题装配（bundle 侧）
 
-- [ ] 1.1 新增 `dsh-bundle/src/session-title.ts`：标题插件——从 spawn env `FENIX_RUN_PROJECT_ROOT` / `FENIX_RUN_WORKTREE` 派生确定性标题（格式 `<工程basename> · <worktreebasename>`，UTF-8 字节截断至 `maxTitleBytes=120`），经 `ctx.sessionTitle` 命名入口落会话 header（优先 `rename()` 语义；若安装版 SDK typings 表明 provider 接口更贴合则以 provider 实现，实现期二选一并留注释）；env 缺失逐级回退、全缺不命名不抛错；幂等（已有非默认标题不覆盖）。vitest 单测覆盖：正常派生 / 超限截断 / 单 key 回退 / 双缺不抛错 / 幂等（`dsh-bundle/tests/session-title.test.ts`）。
-- [ ] 1.2 `dsh-bundle/cordis.patch.yml` 追加 `@deepseek-ai/dsh-session` 与 `@deepseek-ai/dsh-session-title` 服务条目（limits 全显式：`fallbackMaxWords: 8` / `fallbackMaxBytes: 96` / `maxTitleBytes: 120`）与 1.1 插件 entry；遵守既有装配纪律（服务为 `- id:` config 段形态、MUST NOT 写进任何 entry 的 inject 列表；title 服务依赖 session store 的装配顺序以 cordis.patch.yml 头注既有事故教训为准）；`pnpm build` 与全量 vitest 通过。
-- [ ] 1.3 组装冒烟：临时 `DSH_HOME`（worktree 内目录）+ `plugin add link:<repo>/dsh-bundle` + `dsh --profile <临时profile> --dump-config` 断言新增服务条目出现（复用 `core/agent_runner/harness/dsh_adapter.py` 健康检查同款探测形态）；冒烟以 `dsh-bundle/tests/session-title.test.ts` 内集成用例承载（二进制缺席时明确 skip 并留痕），不新增未列管文件。
+- [x] 1.1 新增 `dsh-bundle/src/session-title.ts`：标题插件——从 spawn env `FENIX_RUN_PROJECT_ROOT` / `FENIX_RUN_WORKTREE` 派生确定性标题（格式 `<工程basename> · <worktreebasename>`，UTF-8 字节截断至 `maxTitleBytes=120`），经 `ctx.sessionTitle` 命名入口落会话 header（优先 `rename()` 语义；若安装版 SDK typings 表明 provider 接口更贴合则以 provider 实现，实现期二选一并留注释）；env 缺失逐级回退、全缺不命名不抛错；幂等（已有非默认标题不覆盖）。vitest 单测覆盖：正常派生 / 超限截断 / 单 key 回退 / 双缺不抛错 / 幂等（`dsh-bundle/tests/session-title.test.ts`）。
+- [x] 1.2 `dsh-bundle/cordis.patch.yml` 追加 `@deepseek-ai/dsh-session` 与 `@deepseek-ai/dsh-session-title` 服务条目（limits 全显式：`fallbackMaxWords: 8` / `fallbackMaxBytes: 96` / `maxTitleBytes: 120`）与 1.1 插件 entry；遵守既有装配纪律（服务为 `- id:` config 段形态、MUST NOT 写进任何 entry 的 inject 列表；title 服务依赖 session store 的装配顺序以 cordis.patch.yml 头注既有事故教训为准）；`pnpm build` 与全量 vitest 通过。
+- [x] 1.3 组装冒烟：临时 `DSH_HOME`（worktree 内目录）+ `plugin add link:<repo>/dsh-bundle` + `dsh --profile <临时profile> --dump-config` 断言新增服务条目出现（复用 `core/agent_runner/harness/dsh_adapter.py` 健康检查同款探测形态）；冒烟以 `dsh-bundle/tests/session-title.test.ts` 内集成用例承载（二进制缺席时明确 skip 并留痕），不新增未列管文件。
 
 ## 2. dsh-bundle 归档 helper（bundle 侧）
 
