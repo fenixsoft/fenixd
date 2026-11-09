@@ -18,6 +18,7 @@ patch time 模块对象属性全进程共享，重绑依旧生效。
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -26,7 +27,12 @@ from core.fast_track_result import (
     estimate_spec_scale,
     get_scale_precheck_config,
 )
-from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FROZEN_FIELD
+from core.git_base_branch import resolve_base_branch
+from core.state_machine import (
+    ENV_BLOCK_ROUNDS_FIELD,
+    FROZEN_FIELD,
+    FROZEN_HOLD_FIELD,
+)
 # add-dispatch-precheck-true-fallback 2.3：harness binary 缺失终态同享
 # 「确定性环境缺陷不自动重派」豁免面（与模型链不可用同款）。
 from core.agent_runner.harness import HARNESS_CLI_UNAVAILABLE_MARKER
@@ -725,6 +731,179 @@ class FFastTrackMixin:
                 f"fast-track worktree 延迟清理失败 '{spec_name}'（非阻塞）: {e}",
             )
 
+    def preserve_impl_site_before_freeze(
+        self, spec_name: str, result=None
+    ) -> dict:
+        """冻结转人工前的实现现场保全（preserve-before-freeze，R1）。
+
+        fast-track 四处重试耗尽/零变更哨冻结站点在 ``freeze_for_human`` 之前
+        调用（fix-fasttrack-freeze-branch-preservation R1）：实现分支相对解析
+        基线（``resolve_base_branch`` 单源）存在未合并提交时，触发 pre-rmtree
+        snapshot（沿用 worktree_manager 既有快照语义，clean 目录无产出属正常）
+        并在**单次原子写**内置 ``_frozen_hold: True`` + 回写 ``branch`` /
+        ``implementer_run`` 锚点——使 unfreeze 续做通道（``_frozen_hold →
+        _resolve_preserved_branch``）可达，且启动清扫的既有 ``_frozen_hold``
+        守卫（GC 守卫 (ii) / ``_branch_protected_by_state`` (c) 款）与新守卫
+        可判定。
+
+        分支解析三层与 ``_resolve_preserved_branch`` 同源口径（STATE.branch →
+        在册 worktree 事实查询 → 分支命名空间枚举），MUST NOT 另持平行副本；
+        rev-list 非空闸门先于一切写入——零未合并提交时**退化为记录性留痕**
+        （不置 hold、不产快照、行为与现状一致，R1 退化条款）。
+
+        原子写形态（design 防线 1 二选一之「助手单次锁定写」）：不复用
+        ``mark_frozen_hold``——其锁内复核要求 ``frozen`` 已置位（冻结终止
+        场景，frozen 在前 hold 在后），本保全发生在冻结之前、复核必放弃；
+        扩展其参数则须同放宽复核、违背其余调用点逐位不变。``update_spec``
+        单条目写本身即 flock 内读最新条目合并更新（与 unfreeze_spec 锚点
+        回写同一口径），hold 与锚点三键同一原子写不拆分。
+
+        幂等：entry 已有 ``_frozen_hold`` 且 ``branch`` 非空（保全登记在册）
+        时不重复快照、不重复写。
+
+        Returns: 保全摘要 dict——``{"preserved": bool, "branch": str,
+        "ahead": int|None, "snapshot_sha": str, "hold_written": bool,
+        "note": str}``（preserved=False 时 note 带退化/失败原因短句）。
+        调用方（_freeze_preserve_note）负责 fail-open：本方法不吞异常，
+        由其 try/except 兜底。
+        """
+        sm = self._pm.state_machine
+        wm = getattr(self._pm.agent_runner, "worktree_manager", None)
+        project_root = self._pm.project_root
+        entry = sm.read_one(spec_name) or {}
+        # 幂等：保全登记在册（hold + branch）→ 跳过重复快照与重复写。
+        # ahead 不重算（登记即事实，摘要只供 evidence 展示）。
+        if entry.get(FROZEN_HOLD_FIELD) and entry.get("branch"):
+            return {
+                "preserved": True,
+                "branch": str(entry.get("branch")),
+                "ahead": None,
+                "snapshot_sha": "",
+                "hold_written": True,
+                "note": "已有保全登记，幂等跳过",
+            }
+        # ── 三层分支解析（与 _resolve_preserved_branch 同源口径）──
+        branch = str(entry.get("branch") or "")
+        wt_path = getattr(result, "worktree_path", None)
+        if wm is not None and not branch:
+            resolved = wm.find_worktree_by_spec(spec_name)
+            if resolved is not None:
+                wt_path = wt_path or resolved[0]
+                branch = str(resolved[1] or "")
+        if wm is not None and not branch:
+            candidates = wm.find_branches_by_spec(spec_name)
+            if candidates:
+                branch = str(candidates[0].get("branch") or "")
+        if not branch:
+            return {
+                "preserved": False, "branch": "", "ahead": None,
+                "snapshot_sha": "", "hold_written": False,
+                "note": "分支不可得（STATE.branch/在册 worktree/命名空间枚举三层均空）",
+            }
+        # ── rev-list 非空闸门（基线经共享解析器单源）──
+        # 分支不可解析 / 零未合并提交 → 零提交退化：不置 hold、不产快照。
+        try:
+            ahead_res = subprocess.run(
+                ["git", "-C", str(project_root), "rev-list", "--count",
+                 f"{resolve_base_branch(project_root)}..{branch}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if ahead_res.returncode != 0:
+                return {
+                    "preserved": False, "branch": branch, "ahead": None,
+                    "snapshot_sha": "", "hold_written": False,
+                    "note": f"分支不可解析（rev-list 非零退出: "
+                            f"{(ahead_res.stderr or '').strip()[:80]}）",
+                }
+            ahead = int(ahead_res.stdout.strip() or "0")
+            if ahead <= 0:
+                return {
+                    "preserved": False, "branch": branch, "ahead": 0,
+                    "snapshot_sha": "", "hold_written": False,
+                    "note": "零未合并提交（零提交退化，不置 hold 不产快照）",
+                }
+        except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+            return {
+                "preserved": False, "branch": branch, "ahead": None,
+                "snapshot_sha": "", "hold_written": False,
+                "note": f"rev-list 超时/系统错误: {type(e).__name__}",
+            }
+        # ── pre-rmtree snapshot（沿用既有快照语义；clean/缺失目录无产出）──
+        snapshot_sha = ""
+        if wm is not None and wt_path:
+            try:
+                snapshot_sha = (
+                    wm._snapshot_dirty_worktree(Path(wt_path), branch) or ""
+                )
+            except Exception as e:  # noqa: BLE001 —— 快照失败不阻断保全主体
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fast-track 冻结前保全快照失败 '{spec_name}'（非阻塞，"
+                    f"分支 ref 保全不受影响）: {type(e).__name__}: {e}",
+                )
+        # ── hold + 锚点单次原子写（R1：三键同一窗口，MUST NOT 拆两次写）──
+        updates: dict = {"branch": branch, FROZEN_HOLD_FIELD: True}
+        impl_run = getattr(result, "run_id", None) or entry.get("implementer_run")
+        if impl_run:
+            updates["implementer_run"] = impl_run
+        hold_written = bool(sm.update_spec(spec_name, updates))
+        if not hold_written:
+            # 条目缺失/并发删除：保全未落盘，分支 ref 仍在（三层解析自 git），
+            # WARNING 留痕交由调用方冻结链继续（fail-open 不阻断冻结）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 冻结前保全锚点回写未生效 '{spec_name}'"
+                f"（条目缺失或被并发删除）——分支 '{branch}' ref 仍在",
+            )
+        self._pm.logger.info(
+            "pm_engine",
+            f"fast-track 冻结前现场保全 '{spec_name}': branch={branch} "
+            f"ahead={ahead} snapshot="
+            f"{('有 ' + snapshot_sha[:12]) if snapshot_sha else '无（worktree 干净或缺失）'} "
+            f"hold={'已置位' if hold_written else '写盘未生效'}",
+        )
+        return {
+            "preserved": True, "branch": branch, "ahead": ahead,
+            "snapshot_sha": snapshot_sha, "hold_written": hold_written,
+            "note": "",
+        }
+
+    def _freeze_preserve_note(self, spec_name: str, result=None) -> str:
+        """冻结站点保全入口：执行保全并产出 evidence 摘要文本（R1/R2）。
+
+        fail-open（design 兼容与风险条款）：保全失败（IO 异常）MUST NOT 阻断
+        冻结本身——异常降 ERROR 审计留痕后返回失败说明文本，冻结链继续。
+        """
+        try:
+            s = self.preserve_impl_site_before_freeze(spec_name, result=result)
+        except Exception as e:  # noqa: BLE001 —— 保全失败不阻断冻结
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track 冻结前现场保全失败 '{spec_name}'（不阻断冻结，"
+                f"fail-open ERROR 审计）: {type(e).__name__}: {e}",
+            )
+            return (
+                f"现场保全失败（不阻断冻结）: {type(e).__name__}: "
+                f"{str(e)[:80]}"
+            )
+        if not s.get("preserved"):
+            return f"现场保全未执行: {s.get('note', '')}"
+        if s.get("idempotent"):
+            return (
+                f"现场保全（幂等）: branch={s.get('branch')}, "
+                f"已有保全登记"
+            )
+        snap = (
+            f"snapshot={s['snapshot_sha'][:12]}"
+            if s.get("snapshot_sha")
+            else "snapshot=无（worktree 干净或缺失）"
+        )
+        return (
+            f"现场保全: branch={s.get('branch')}, ahead={s.get('ahead')}, "
+            f"{snap}, "
+            f"hold={'已置位' if s.get('hold_written') else '写盘未生效'}"
+        )
+
     def _reconcile_and_merge(self, spec_name: str, result) -> bool:
         """预算对账 + merge（fast-track 与 implementer 成功路径同语义）。
 
@@ -1066,6 +1245,10 @@ class FFastTrackMixin:
             if retries >= max_r:
                 fp = self._pm._redispatch_cause_fingerprint(contract_err)
                 orig_status = spec_entry.get("status") or "implementing"
+                # 冻结即保全（R1）：冻结转人工前先保全实现现场（preserve-
+                # before-freeze），摘要并入告警 evidence（R2）。fail-open，
+                # 保全失败不阻断冻结。
+                preserve_note = self._freeze_preserve_note(spec_name, result)
                 # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py
                 # 孪生位点 d708ce0288a8/ad24a537a716 同款口径）：freeze_for_human
                 # 裸调 IO 瞬时异常沿 worker 外层 except 逃逸会跳过重试耗尽冻结、
@@ -1088,7 +1271,7 @@ class FFastTrackMixin:
                         ),
                         evidence=(
                             f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                            f"fp={fp}; final_error={contract_err}"
+                            f"fp={fp}; final_error={contract_err}; {preserve_note}"
                         ),
                         recommended_action=(
                             "检查 runner 成功但分支名缺失的根因；处置后解冻"
@@ -1298,6 +1481,9 @@ class FFastTrackMixin:
             (self._pm.state_machine.read_one(spec_name) or {}).get("status")
             or "implementing"
         )
+        # 冻结即保全（R1）：本方法无 result 入参，保全走三层解析自证
+        # （STATE.branch / 在册 worktree / 命名空间枚举）。fail-open。
+        preserve_note = self._freeze_preserve_note(spec_name)
         # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py 孪生位点
         # d708ce0288a8/ad24a537a716 同款口径）：freeze_for_human 裸调 IO 瞬时
         # 异常沿 worker 外层 except 逃逸会跳过封顶冻结分类、落入通用回滚重派
@@ -1319,7 +1505,7 @@ class FFastTrackMixin:
                 ),
                 evidence=(
                     f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                    f"fp={fp}; final_error={err}"
+                    f"fp={fp}; final_error={err}; {preserve_note}"
                 ),
                 recommended_action=(
                     "检查结果文件持续非法的根因（runner 产出契约/场景集漂移）；处置后"
@@ -2155,6 +2341,9 @@ class FFastTrackMixin:
         if retries >= max_r:
             fp = self._pm._redispatch_cause_fingerprint(final_error)
             orig_status = (spec_entry or {}).get("status") or "implementing"
+            # 冻结即保全（R1）：冻结转人工前先保全实现现场，摘要并入告警
+            # evidence（R2）。fail-open，保全失败不阻断冻结。
+            preserve_note = self._freeze_preserve_note(spec_name, result)
             # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py 孪生
             # 位点 d708ce0288a8/ad24a537a716 同款口径）：freeze_for_human 裸调
             # IO 瞬时异常沿 worker 外层 except 逃逸会跳过重试耗尽冻结、落入
@@ -2176,7 +2365,7 @@ class FFastTrackMixin:
                     ),
                     evidence=(
                         f"spec={spec_name}; retries={retries}; max_retries={max_r}; "
-                        f"fp={fp}; final_error={final_error}"
+                        f"fp={fp}; final_error={final_error}; {preserve_note}"
                     ),
                     recommended_action=(
                         "检查失败根因；处置后解冻（unfreeze_spec 自动清零计数）可重新"
@@ -2288,6 +2477,10 @@ class FFastTrackMixin:
             # 解冻还原；blocked 终态清旧 tester_run 指针沿用
             # （code-review item 14a6755b9728）。
             orig_status = spec_entry.get("status") or "implementing"
+            # 冻结即保全（R1/R4 退化面）：零变更哨冻结前同样先保全——分支
+            # 零未合并提交时助手自然退化为记录性留痕（不置 hold 不产快照），
+            # worktree 若有未提交现场则由快照留档。fail-open。
+            preserve_note = self._freeze_preserve_note(spec_name, result)
             # 冻结收尾守卫（code-review item 84f09a73fe9b，对齐 queue.py
             # 孪生位点 d708ce0288a8/ad24a537a716「冻结 IO 失败不放大处置」
             # 同款口径）：freeze_for_human 含 flock+read_all+write_all 与告警
@@ -2311,7 +2504,8 @@ class FFastTrackMixin:
                     ),
                     evidence=(
                         f"spec={spec_name}; zero_change_attempts={attempts}; "
-                        f"run={getattr(result, 'run_id', '') or ''}"
+                        f"run={getattr(result, 'run_id', '') or ''}; "
+                        f"{preserve_note}"
                     ),
                     recommended_action=(
                         "检查任务书/上下文/网关稳定性；处置后解冻"
