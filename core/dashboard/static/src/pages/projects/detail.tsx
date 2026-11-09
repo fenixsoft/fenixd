@@ -7,7 +7,7 @@ import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, STREAM_URL, statusMeta } from '@/services/dashboard';
+import { blockedPhaseMeta, clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, STREAM_URL } from '@/services/dashboard';
 import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
 // 「重拉基底 + hooks 段整体替换」与设置页 HooksPanel 共用单源
 // （code-review item 7add07b1e0e8）
@@ -1138,13 +1138,16 @@ export default function SpecDetailPage() {
     };
   }, [name]);
 
-  const statusInfo = statusMeta(detail?.status || '');
+  // 详情页头部状态标签（add-blocked-repairing-display 2.3）：blocked 处置相位
+  // 三态与主列表同源（dashboard.ts blockedPhaseMeta 单源，无平行实现）——
+  // repairing→修复中蓝、queued→排队中橙、缺席/null/非法值→阻塞红原样
+  const statusInfo = blockedPhaseMeta(detail);
 
   // 下拉快速切换项：项目下除当前 SPEC 外的其他未归档 SPEC（只有当前一个时不展示箭头）。
   // archived 缺省（旧后端）按未归档处理，与列表页 !!s.archived 过滤语义一致。
   const otherSpecs = specList.filter((s) => s.name !== spec && !s.archived);
 
-  // 下拉快速切换面板（表格形式）：SPEC 名称（过长截断 + 悬停提示） + 状态标签（statusMeta 同列表页语义）。
+  // 下拉快速切换面板（表格形式）：SPEC 名称（过长截断 + 悬停提示） + 状态标签（blockedPhaseMeta 同列表页三态语义）。
   // 面板宽度上限 360px 且移动端不超出视口（max-width: calc(100vw - 32px)），内容区限高滚动。
   const renderSpecSwitch = () => (
     <div
@@ -1161,7 +1164,9 @@ export default function SpecDetailPage() {
     >
       <div style={{ maxHeight: '60vh', overflow: 'auto', padding: 4 }}>
         {otherSpecs.map((s) => {
-          const m = statusMeta(s.status || '');
+          // 快速切换下拉状态标签与主列表三态语义一致（同源 blockedPhaseMeta，
+          // add-blocked-repairing-display 2.3）
+          const m = blockedPhaseMeta(s);
           return (
             <div
               key={s.name}

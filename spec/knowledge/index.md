@@ -34,7 +34,7 @@
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
 | 3.1 | [agent-runtime](domains/agent-runtime/_domain.md) | Agent 进程托管与信号处理、非交互运行契约、提示词文件化。run 产物留存、超时与轮次上限生命周期、提示词层效率治理。 | 17 | 2026-11-04 17:07 |
-| 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理、dsh web 会话组织（分组判据/registry 写约束/归档 API 通道/会话流 append 闸）与 fenixd 侧会话自动卫生（确定性标题/run 终态多 attempt 全量归档）。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 8 | 2026-11-09 17:08 |
+| 3.2 | [harness-integration](domains/harness-integration/_domain.md) | 多 harness 接入：以进程边界为唯一接缝（SpawnSpec 进、归一化事件出），把「换 harness」收窄为「实现 adapter + 部署注册」。HarnessAdapter 协议与 claude 字节级平移、fenix-dsh Bundle 与 DshAdapter 事件投影、切换治理、dsh web 会话组织（分组判据/registry 写约束/归档 API 通道/会话流 append 闸）与 fenixd 侧会话自动卫生（确定性标题/run 终态多 attempt 全量归档）。run jsonl 以 claude stream-json 形状为唯一 canon；CLAUDE_PID watchdog 为显式豁免面。 | 8 | 2026-11-09 20:13 |
 | 3.3 | [run-resilience](domains/run-resilience/_domain.md) | 运行守护与失败韧性：超时监督与挂死判别、失败分类与错误归因降噪、失败计数与预算分档。运行清扫、重派循环治理、诚实退出收敛、状态写原子性与幂等、孤儿态探测、CLI 重试退避与环境阻塞止损。arbiter 车道故障分级（infra/judgment）与前置自检复位也在此域。 | 31 | 2026-11-09 20:24 |
 | 3.4 | [recovery-continuity](domains/recovery-continuity/_domain.md) | 中断恢复与续做：daemon 中断、停机与重启后的完整恢复链——现场保全、保留分支续做、存活核验、遗留处置。恢复监视告警、取消保持恢复与验证断点。 | 15 | 2026-11-09 18:04 |
 | 3.5 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载与捕获 PATH 卫生）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 17 | 2026-11-08 21:21 |
@@ -47,11 +47,11 @@
 | 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 20 | 2026-11-08 21:09 |
 | 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
 
-### 5 前端交互（3 域 · 66 能力）
+### 5 前端交互（3 域 · 67 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排。另有 dsh 面板桥集成（嵌入挂载/工作区行项目导航/设置停靠）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 42 | 2026-11-09 17:12 |
+| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排、SPEC 状态标签（含 blocked 处置相位三态）。另有 dsh 面板桥集成（嵌入挂载/工作区行项目导航/设置停靠）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 43 | 2026-11-09 20:16 |
 | 5.2 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（双轨重启协议）、增量数据管线。按需生成类任务与指挥中心聚合同属此域。 | 16 | 2026-11-08 21:21 |
 | 5.3 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-07 21:43 |
 
