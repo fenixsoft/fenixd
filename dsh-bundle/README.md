@@ -106,10 +106,68 @@ ADR-269 裁定「门禁与项目约定走入库 CLAUDE.md」。claude 通道原�
   - dsh 的指令注入是「参考性 guidance」措辞（`may be relevant… do not override`），与 claude 的
     项目指令强度不同，依赖强约束的规则仍应以工具面（三守卫）兜底而非提示词。
 
+## 会话标题装配（session-title）
+
+fenixd 经 dsh headless 派发的会话在 web 默认视图以首条消息截断为题，多 run 并发时无法辨认。
+本 Bundle 提供 `src/session-title.ts` 插件：会话创建时从 spawn 环境
+（`FENIX_RUN_PROJECT_ROOT` / `FENIX_RUN_WORKTREE`）派生确定性标题
+`<项目名> · <worktree 名>`（UTF-8 按字节截断，缺省上限 120 字节；两环境变量都缺时跳过，
+不影响会话创建）。
+
+- **装配面**（`cordis.patch.yml`）：dsh-base 已挂 `session` / `session-title` 两服务行，本层
+  **按 id 覆盖** limits（last-write-wins、whole config 替换——头注第 6 节）：
+  `session-title: {fallbackMaxWords: 8, fallbackMaxBytes: 96, maxTitleBytes: 120}`（dsh-base
+  缺省 5/40/80）。三 limits 全必填（缺任一即宿主校验拒绝），故整块覆盖而非散键。
+- **插件 entry**：`fenix-session-title`（`plugin add` 挂载；服务 `sessionTitle` 可安全
+  inject——插件内 `ctx.inject` 承担装配等待，宿主服务未就绪时抛错被插件吞掉并 WARN，
+  不否决会话创建）。`session/created` 监听器同步抛错会**否决会话创建并回滚**，插件内
+  一切异常必须吞掉。
+- **标题来源**：dsh `session-title` 服务三来源 newest-wins（fallback 首条消息摘要 /
+  provider LLM 生成 / rename 用户改名）；本插件走 `rename()`——`source=user` **pin 住**，
+  后续消息不再调度 LLM 生成（这正是 fenixd 需要的：确定性标题不被宿主改写）。装配冒烟
+  （临时 DSH_HOME + link 挂载 + dump-config）见 `tests/session-title.test.ts`。
+
+## 会话归档 helper（session-tidy-helper）
+
+run 终态后 dsh 会话仍留在 web 默认视图；归档投递由 **daemon 侧**（`core/dsh_session_tidy.py`）
+以子进程调用本 Bundle 产物 `dist/session-tidy-helper.mjs` 完成（协议面与鉴权机制详见
+[docs/probe-findings.md](docs/probe-findings.md) 第七章：unary RPC 走 HTTP POST envelope 而非
+WebSocket；鉴权为本地铸造的浏览器签名 cookie，密钥取 `.credentials.yaml` 的
+`records."client-connection/browser-session"` grant secret）。
+
+```bash
+node dsh-bundle/dist/session-tidy-helper.mjs \
+  --url http://127.0.0.1:3080 \
+  --secret-file /root/.dsh/.credentials.yaml \
+  --session-id <id> [--timeout 10]
+```
+
+stdout 恒为单行 JSON `{ok, session_id, outcome, detail}`；退出码三分类：
+
+| 退出码 | outcome | 语义 | daemon 侧处置 |
+| --- | --- | --- | --- |
+| 0 | `archived` | 成功（含已归档幂等 no-op） | 按成功，清队列残留 |
+| 2 | `retryable` | 可重试（连接失败/超时/`workspace/session-active`/5xx/子进程异常） | 入持久化重试队列 backoff 重试 |
+| 1 | `fatal` | 致命（凭据缺失或形态不符/鉴权被拒/协议错/`session/not-found`） | 不入队，WARN 留痕 |
+
+**部署注意**：
+
+- 实时归档要求 dsh web 在线（`agent.dsh_web_url`，缺省 `http://127.0.0.1:3080`）；离线/瞬态
+  由 daemon 侧持久化队列兜底（`.fenix/dsh_session_tidy/pending.jsonl`，daemon 重启不丢，
+  backoff 重试，200 次尝试或 30 天队龄先到为准后放弃并 WARN）。
+- 凭据依赖：`<DSH_HOME>/.credentials.yaml` 须存在且含 browser-session grant（web 首次启动
+  自建）；缺失按致命处置（重试无意义）。`agent.dsh_home` 缺省解析：显式配置 > `$DSH_HOME`
+  > `~/.dsh`。
+- 总开关 `agent.dsh_session_tidy`（缺省 `true`）：置 `false` 时 daemon 暂停投递、队列不清空；
+  本 Bundle 侧标题装配不受该开关影响。产物 `dist/session-tidy-helper.mjs` 由 `npm run build`
+  生成（gitignored 不入库），daemon 部署机须先在 Bundle 目录完成构建。
+- **非目标**：把会话分组归工程工作区受 dsh-workspace 的 cwd 精确匹配约束且宿主无会话
+  move API，不在本 Bundle 范围——归档（隐藏）之外的组织动作不做。
+
 ## 测试
 
 ```bash
-cd dsh-bundle && npm install && npx vitest run   # 83 例单测（dsh 以 alias 桩解耦）
+cd dsh-bundle && npm install && npx vitest run   # 129 例单测（dsh 以 alias 桩解耦；探针/组装冒烟无环境时明确 skip 留痕）
 ```
 
 端到端冒烟（DSH_HOME 隔离 + 假模型端点）：

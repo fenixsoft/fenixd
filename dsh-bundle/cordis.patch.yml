@@ -42,6 +42,19 @@
 #      不静默降级）。回落形态本插件正常供数 → 启动放行。本 bundle 供 headless
 #      车道专用；其它 profile（无 headless-runner 条目）挂载本 bundle 会因
 #      patch 目标不存在而启动报错，属预期行为。
+#   6. fenix-session-title —— dsh 会话确定性标题（add-dsh-session-title-archive）：
+#      会话启动期（session/created）以 spawn env 派生标题经 sessionTitle.rename()
+#      落 header（user 源 pin 住，同时天然省去 session-title-llm 对 boilerplate
+#      首条消息的 LLM 生成）。session / session-title 两服务由 dsh-base 首层
+#      insert 挂载（@deepseek-ai/dsh-session / @deepseek-ai/dsh-session-title），
+#      本层不重复 insert：按 dsh-base 头注「later bundle patches address rows
+#      by id, last write winning」以 id 寻址覆盖 session-title 行 limits
+#      （8/96/120 全显式，dsh-base 自带 5/40/80 不满足 spec 装配值）——
+#      config-only 覆盖行保留原行插件绑定，同下方 sandbox-policy/approval/
+#      llm-pi-ai 既有先例。session 行无 config 面需求，零触碰。
+#      ⚠ sessionTitle 是插件提供的服务（非 dsh 侧 config 条目），fenix-
+#      session-title entry 可安全 inject；装配等待由插件内 ctx.inject 声明式
+#      承担（同 systemPrompt 先例，entry 级不重复声明）。
 - insert:
     - id: fenix-model-config
       name: fenix-dsh-bundle/modelConfig
@@ -51,6 +64,8 @@
     - id: fenix-approval
       name: fenix-dsh-bundle/approval
       inject: [approval]
+    - id: fenix-session-title
+      name: fenix-dsh-bundle/session-title
 - id: sandbox-policy
   config:
     mode: danger-full-access
@@ -68,6 +83,11 @@
 - id: permission
   config:
     defaultPreset: danger-full-access
+- id: session-title
+  config:
+    fallbackMaxWords: 8
+    fallbackMaxBytes: 96
+    maxTitleBytes: 120
 - id: llm-pi-ai
   inject: [fenixModelConfig]
   config:
