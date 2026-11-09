@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-08 12:14 UTC+8
+> 最后更新：2026-11-09 17:12 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -38,9 +38,8 @@
 | [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、内容区间距 15px + 呼吸带 16px 标记类、零值尾部 spread 传导、去边框页级作用域豁免、rebuild 后 reload 验证纪律） | 2026-11-06 17:11 |
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
 | [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、SPEC 详情页中文标题富标题内部下方行堆叠（移动端只显英文标题、subtitle 槽行内形态保留既有消费面）、embed 行壳位单档 60px 毛玻璃固定标题带、standalone 含移动端统一注册落 ProLayout 顶栏（移动=汉堡+logo+标题同条、副标题移动端隐藏）、v2 六页经 titleBar 槽位并入、PageContainer 页头与面包屑退役、过滤项统一右上落位（filters 槽位=移动端标题栏右侧控件位单一定点）、定高偏移双档回校、脱壳大屏与占位页豁免） | 2026-11-08 00:40
-| [dsh-bridge-projects-section](dsh-bridge-projects-section.md) | dsh 面板桥「项目」菜单行折叠开关与内嵌项目分区（点击=分区展开/折叠非主面板切换、右缘状态箭头、整行拦截层、键盘路径保留主面板注册、分区 5 行封顶滚动条 dsh web 同款定制、官方 Workspaces 列表同款） | 2026-11-06 17:54 |
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
-| [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | antd 表格限高滚动与 sticky 表头纪律（限高层钉 .ant-table-content、sticky 钉 thead>tr、rect 行高校准、几何证据验证；fenixd 台账磁贴不限高，「5 行封顶」落地面为 dsh web 侧栏） | 2026-11-06 17:54 |
+| [project-ledger-bounded-scroll](project-ledger-bounded-scroll.md) | antd 表格限高滚动与 sticky 表头纪律（限高层钉 .ant-table-content、sticky 钉 thead>tr、rect 行高校准、几何证据验证；fenixd 台账磁贴不限高，「5 行封顶」原侧栏分区落地面已退役） | 2026-11-09 17:12 |
 | [layout-chrome-tinting](layout-chrome-tinting.md) | 布局 chrome 底色 soft 染色统一（顶栏毛玻璃只换 rgb 通道双档、colorBgScrollHeader 必随配、菜单侧栏 soft 实底平涂一体、三处边框同取 colorSplit、soft 染色族守卫） | 2026-11-06 16:55 |
 | [spec-detail-bento-skin](spec-detail-bento-skin.md) | SPEC 详情页 Bento 皮肤（顶栈五卡磁贴化、任务清单/质量门禁行渲染 Bento 勾选块形态（2026-11-06 对齐 v2 改版定形）、时间轴磁贴、页签区退出 bento 与卡体 padding 归零——内容交互零改动） | 2026-11-06 17:11 |
 | [sidebar-submenu-bounded-scroll](sidebar-submenu-bounded-scroll.md) | 侧栏子菜单限高滚动与定制滚动条（独立访问侧栏 inline 子菜单 5 项封顶 200px、gutter stable、中性灰 alpha 滚动条五条、锚点唯一与动画共存、headless overlay 引擎量宽判据） | 2026-11-06 17:54 |
@@ -49,6 +48,7 @@
 | [dsh-web-wide-table-scrollbar](dsh-web-wide-table-scrollbar.md) | dsh web 对话框宽表横向滚动与全宽变量同步（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、退化路径 margin 夹紧、哈希类失配自动回退、变量探针与活站假设验证配方） | 2026-11-07 21:40 |
 | [prolayout-header-actions-minwidth-ratchet](prolayout-header-actions-minwidth-ratchet.md) | ProLayout 顶栏动作区 min-width 棘轮锁（ResizeObserver 实测回写自锁只升不降、filters 槽宽组件 SPA 残留锁宽挤压标题签名、global.less 单源恒零化勿删、顶栏挂宽组件零额外处理、分态复现与逐元素量宽排查定式） | 2026-11-07 22:03 |
 | [timeline-chain-nodes](timeline-chain-nodes.md) | 时间轴处置链节点渲染（kind="chain" 紧凑链事件卡片 Bento 形态、六形态中文标签/着色映射圆点同源、未知形态中性灰兜底自有键防御、命名防混淆红线、折叠零特判与四类节点零回归） | 2026-11-08 12:14 |
+| [fenix-dash-bridge-workspace-nav](fenix-dash-bridge-workspace-nav.md) | dsh 侧栏工作区行项目导航（名称点击=项目详情 iframe 深链、行首图标原生展开/收缩分流、路径优先匹配判据、语义锚点拦截层与锚点漂移静默降级、非 fenix 行零侵入、固定条目收敛 5 项、60s 项目-工作区自动对齐、删除项目回退原生、官方列表滚动条注入维持） | 2026-11-09 17:12 |
 
 > 退役注记：v2 商业化界面域十页（v2-overview-page / v2-project-list-page / v2-project-detail-page
 > / v2-spec-detail-page / v2-config-page / v2-alerts-activities / v2-ops-page /
@@ -58,3 +58,5 @@
 > 一般域各页「镜像 v2 形态」条款已改历史出处口径（样式值保留）。
 >
 > 退役注记：SPEC 协作拓扑大屏（原 topology-bigscreen-ui）于 2026-11-08 用户指令退役批删除（页面/路由/派生端点整体移除）；协作图谱大屏（原 collab-graph-bigscreen-ui）功能代码已随 v2 界面域退役消失，本批补收口。历史见 spec/archive/2026-10-30-add-spec-topology-bigscreen、spec/archive/2026-10-30-add-collab-graph-bigscreen 与 git 历史。
+>
+> 退役注记：dsh 面板桥「项目」菜单行折叠开关与内嵌项目分区（原 dsh-bridge-projects-section）于 2026-11-09 随 move-project-nav-to-workspace-rows 退役删除——「项目」入口收敛进官方工作区行，现役规则见 fenix-dash-bridge-workspace-nav；历史见该 SPEC 与 git 历史。
