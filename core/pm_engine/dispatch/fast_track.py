@@ -761,9 +761,10 @@ class FFastTrackMixin:
         幂等：entry 已有 ``_frozen_hold`` 且 ``branch`` 非空（保全登记在册）
         时不重复快照、不重复写。
 
-        Returns: 保全摘要 dict——``{"preserved": bool, "branch": str,
-        "ahead": int|None, "snapshot_sha": str, "hold_written": bool,
-        "note": str}``（preserved=False 时 note 带退化/失败原因短句）。
+        Returns: 保全摘要 dict——``{"preserved": bool, "idempotent": bool,
+        "branch": str, "ahead": int|None, "snapshot_sha": str,
+        "hold_written": bool, "note": str}``（preserved=False 时 note 带
+        退化/失败原因短句；幂等跳过时 idempotent=True 且不重复快照/写）。
         调用方（_freeze_preserve_note）负责 fail-open：本方法不吞异常，
         由其 try/except 兜底。
         """
@@ -776,6 +777,7 @@ class FFastTrackMixin:
         if entry.get(FROZEN_HOLD_FIELD) and entry.get("branch"):
             return {
                 "preserved": True,
+                "idempotent": True,
                 "branch": str(entry.get("branch")),
                 "ahead": None,
                 "snapshot_sha": "",
