@@ -339,6 +339,7 @@ class FakeSubmitter:
     """DshSessionTidySubmitter 替身：记录实例化实参与 submit 结果。"""
 
     calls = []
+    submitted: list = []
     outcome = "archived"
     raise_on_submit: Exception | None = None
 
@@ -348,6 +349,7 @@ class FakeSubmitter:
         self.logger = logger
 
     def submit(self, session_id):
+        FakeSubmitter.submitted.append(session_id)
         if FakeSubmitter.raise_on_submit is not None:
             raise FakeSubmitter.raise_on_submit
         return FakeSubmitter.outcome
@@ -364,6 +366,7 @@ def make_runner(tmp_path, config=None, logger=None):
 @pytest.fixture()
 def fake_submitter(monkeypatch):
     FakeSubmitter.calls = []
+    FakeSubmitter.submitted = []
     FakeSubmitter.outcome = "archived"
     FakeSubmitter.raise_on_submit = None
     monkeypatch.setattr("core.dsh_session_tidy.DshSessionTidySubmitter", FakeSubmitter)
@@ -468,3 +471,86 @@ class TestRunnerTerminalHook:
         runner._run_dsh_session_id = {"r1": "sess-9"}
         runner._dsh_session_tidy_on_terminal("r1")
         assert any(e[0] == "warning" and "归档投递异常" in e[2] for e in logger.events)
+
+    def test_attempt链多次spawn全量归档(self, tmp_path, fake_submitter):
+        # fix-dsh-tidy-attempt-sessions：同一 run 多次 attempt（-a1/-a2/-a3 重试）
+        # 各 spawn 独立 dsh 会话，登记值为列表——终态须全量按序投递，而非只
+        # 归档末次 attempt 的会话（此前纯赋值覆盖致前序会话堆积 web 未分组）。
+        logger = RecordingLogger()
+        runner = make_runner(tmp_path, config={"agent": {"harness": "dsh"}}, logger=logger)
+        runner._run_dsh_session_id = {"r1": ["s-a1", "s-a2", "s-a3"]}
+        runner._dsh_session_tidy_on_terminal("r1")  # 不抛即不影响终态
+        assert fake_submitter.submitted == ["s-a1", "s-a2", "s-a3"]
+        assert runner._run_dsh_session_id == {}  # 登记已摘（生命周期卫生）
+        assert sum(1 for e in logger.events if e[0] == "info" and "已归档" in e[2]) == 3
+
+    def test_登记值空列表视同未捕获(self, tmp_path, fake_submitter):
+        # 防御面：空列表 = 无可归档目标，走既有「未捕获」WARN 面，不投递。
+        logger = RecordingLogger()
+        runner = make_runner(tmp_path, config={"agent": {"harness": "dsh"}}, logger=logger)
+        runner._run_dsh_session_id = {"r1": []}
+        runner._dsh_session_tidy_on_terminal("r1")
+        assert fake_submitter.calls == []
+        assert any(e[0] == "warning" and "未捕获 session_id" in e[2] for e in logger.events)
+
+
+class TestDshSessionIdRegistration:
+    """_register_dsh_session_id：逐 attempt 登记收口（fix-dsh-tidy-attempt-sessions）。
+
+    此前 _run_agent 内联纯赋值 `registry[base] = session_id`——多次 attempt
+    互相覆盖，终态只剩末次 attempt 的会话可归档。新契约：列表追加 + 同 id
+    幂等 + None 哨兵语义保持（键在值 None = spawn 了但 session 事件缺失）。
+    """
+
+    def _runner(self, tmp_path):
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.config = {"agent": {"harness": "dsh"}}
+        runner.project_root = tmp_path
+        runner.logger = RecordingLogger()
+        return runner
+
+    def test_首登成列表(self, tmp_path):
+        runner = self._runner(tmp_path)
+        runner._register_dsh_session_id("spec-x-1-a1", "s1")
+        assert runner._run_dsh_session_id == {"spec-x-1": ["s1"]}
+
+    def test_多attempt追加不覆盖(self, tmp_path):
+        runner = self._runner(tmp_path)
+        runner._register_dsh_session_id("spec-x-1-a1", "s1")
+        runner._register_dsh_session_id("spec-x-1-a2", "s2")
+        runner._register_dsh_session_id("spec-x-1-a3", "s3")
+        assert runner._run_dsh_session_id == {"spec-x-1": ["s1", "s2", "s3"]}
+
+    def test_同id幂等_resume重放不重复(self, tmp_path):
+        runner = self._runner(tmp_path)
+        runner._register_dsh_session_id("r1-a1", "s1")
+        runner._register_dsh_session_id("r1-a1", "s1")
+        assert runner._run_dsh_session_id == {"r1": ["s1"]}
+
+    def test_none尝试不擦除既有捕获(self, tmp_path):
+        # 某 attempt spawn 了但 session 事件缺失：既有 id 保留（仍可归档），
+        # 不得翻成 None 哨兵抹掉前序捕获。
+        runner = self._runner(tmp_path)
+        runner._register_dsh_session_id("r1-a1", "s1")
+        runner._register_dsh_session_id("r1-a2", None)
+        assert runner._run_dsh_session_id == {"r1": ["s1"]}
+
+    def test_首次none哨兵(self, tmp_path):
+        # 首个 attempt 即未捕获：None 哨兵（消费侧 WARN 面，区别于键不在=
+        # run 从未 spawn 的零动作）。
+        runner = self._runner(tmp_path)
+        runner._register_dsh_session_id("r1-a1", None)
+        assert runner._run_dsh_session_id == {"r1": None}
+
+    def test_none哨兵后捕获起列表(self, tmp_path):
+        runner = self._runner(tmp_path)
+        runner._register_dsh_session_id("r1-a1", None)
+        runner._register_dsh_session_id("r1-a2", "s2")
+        assert runner._run_dsh_session_id == {"r1": ["s2"]}
+
+    def test_str旧形态防御(self, tmp_path):
+        # 进程内存态遇旧 str 形态（跨版本防御）：并入列表不丢前序 id。
+        runner = self._runner(tmp_path)
+        runner._run_dsh_session_id = {"r1": "s0"}
+        runner._register_dsh_session_id("r1-a2", "s2")
+        assert runner._run_dsh_session_id == {"r1": ["s0", "s2"]}

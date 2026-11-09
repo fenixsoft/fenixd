@@ -5356,6 +5356,34 @@ class AgentRunner:
     # 子进程 helper，daemon 零协议面）。整段 fail-safe：投递是纯卫生侧车，
     # 任何异常 WARN 留痕，MUST NOT 影响 run 终态指标行、门禁与主链路。
 
+    def _register_dsh_session_id(self, run_id: str, session_id: str | None) -> None:
+        """终态 session_id 逐 attempt 登记（键归一 base run_id）。
+
+        fix-dsh-tidy-attempt-sessions：同一 run 的多次 attempt（``-a<n>``/
+        ``-r<n>`` 重试）各 spawn 独立 dsh 会话，登记值收敛为**列表追加**——
+        此前内联纯赋值逐 attempt 覆盖，终态只剩末次 attempt 的会话可归档，
+        前序会话漏归档、堆积 web 未分组。同 id 幂等（resume 重放同会话不
+        重复）；None 尝试不擦除既有捕获（前序 id 仍可归档）；首个 attempt
+        即 None → None 哨兵（消费侧 WARN 面，区别于键不在 = run 从未
+        spawn）。登记纯观测，MUST NOT 影响任何终态语义。
+        """
+        registry = self.__dict__.setdefault("_run_dsh_session_id", {})
+        key = self._normalize_run_id(str(run_id))
+        if not session_id:
+            if key not in registry:
+                registry[key] = None
+            return
+        current = registry.get(key)
+        if isinstance(current, list):
+            if session_id not in current:
+                current.append(session_id)
+        elif isinstance(current, str):
+            # 旧 str 形态防御（跨版本进程内存态）：并入列表不丢前序 id。
+            registry[key] = [current] if current == session_id else [current, session_id]
+        else:
+            # 键不在（首个捕获 attempt）或 None 哨兵 → 起列表。
+            registry[key] = [session_id]
+
     def _dsh_session_tidy_on_terminal(self, run_id: str) -> None:
         """run 终态收尾的 dsh 会话归档投递（任意终态路径经 _execute_agent
         finally 调用；dispute-judge/spec-review 直调车道在 _run_agent 返回后
@@ -5367,7 +5395,9 @@ class AgentRunner:
         - 终态未捕获 session_id（session 事件缺失）：不入队（无归档目标），
           仅 WARN 留痕；
         - run 从未 spawn（登记无键：frozen/熔断/链耗尽等提前终态）：静默
-          零动作（无会话可言，WARN 反成噪音）。
+          零动作（无会话可言，WARN 反成噪音）；
+        - 多次 attempt（fix-dsh-tidy-attempt-sessions）：登记值为列表（每次
+          attempt 独立 spawn 的会话 id），终态**全量按序投递**。
         """
         try:
             registry = getattr(self, "_run_dsh_session_id", None)
@@ -5379,14 +5409,16 @@ class AgentRunner:
                 # 无会话可言，静默零动作（WARN 反成噪音）。
                 return
             # 「键在值 None」= dsh spawn 了但 session 事件缺失（WARN 面见下）。
-            session_id = registry.pop(key)
+            captured = registry.pop(key)
             from core.config import ConfigLoader
 
             if ConfigLoader.get_harness(self.config) != "dsh":
                 return
-            if session_id is None:
-                # dsh run 终态但 session 事件缺失（登记值为 None）——接受
-                # 噪音：无归档目标，MUST NOT 入队。
+            session_ids = captured if isinstance(captured, list) else (
+                [captured] if isinstance(captured, str) else [])
+            if not session_ids:
+                # None 哨兵（或空列表防御）：dsh run 终态但 session 事件
+                # 缺失——接受噪音：无归档目标，MUST NOT 入队。
                 self.logger.warning(
                     "agent_runner",
                     f"dsh run '{run_id}' 终态未捕获 session_id（session 事件"
@@ -5403,19 +5435,20 @@ class AgentRunner:
                 dsh_home=str(ConfigLoader.get(self.config, "agent.dsh_home", "") or ""),
                 logger=self.logger,
             )
-            outcome = submitter.submit(str(session_id))
-            if outcome == "archived":
-                self.logger.info(
-                    "agent_runner",
-                    f"dsh 会话已归档（run '{run_id}'，session {session_id}）",
-                )
-            elif outcome == "queued":
-                self.logger.info(
-                    "agent_runner",
-                    f"dsh 会话归档入队重试（run '{run_id}'，session "
-                    f"{session_id}；web 离线/瞬态，后台 backoff 消费）",
-                )
-            # fatal / abandoned：submitter 内部已 WARN 留痕，终态侧静默。
+            for session_id in session_ids:
+                outcome = submitter.submit(str(session_id))
+                if outcome == "archived":
+                    self.logger.info(
+                        "agent_runner",
+                        f"dsh 会话已归档（run '{run_id}'，session {session_id}）",
+                    )
+                elif outcome == "queued":
+                    self.logger.info(
+                        "agent_runner",
+                        f"dsh 会话归档入队重试（run '{run_id}'，session "
+                        f"{session_id}；web 离线/瞬态，后台 backoff 消费）",
+                    )
+                # fatal / abandoned：submitter 内部已 WARN 留痕，终态侧静默。
         except Exception as e:  # noqa: BLE001 — 归档侧车绝不影响 run 终态
             try:
                 self.logger.warning(
@@ -8060,12 +8093,13 @@ class AgentRunner:
         turns = observed_result.get("num_turns", 0) if observed_result else 0
         session_id = observed_result.get("session_id") if observed_result else None
         # dsh 会话归档（add-dsh-session-title-archive 3.3）：终态 session_id
-        # 逐 run 登记（键归一 base run_id，与 _execute_agent finally 消费键
-        # 一致）——None 一并登记（消费侧据「键在值 None」WARN 留痕，区别于
-        # 「键不在」= run 从未 spawn 的零动作）。登记纯观测，MUST NOT 影响
-        # 任何终态语义。
-        self.__dict__.setdefault("_run_dsh_session_id", {})[
-            self._normalize_run_id(str(run_id))] = session_id
+        # 逐 attempt 登记进 base run_id 键下的列表（_register_dsh_session_id；
+        # fix-dsh-tidy-attempt-sessions：多次 attempt 各 spawn 独立 dsh 会话，
+        # 列表追加不覆盖——此前内联纯赋值使非末次 attempt 的会话漏归档、
+        # 堆积 web 未分组）。None 一并登记（消费侧据「键在值 None」WARN
+        # 留痕，区别于「键不在」= run 从未 spawn 的零动作）。登记纯观测，
+        # MUST NOT 影响任何终态语义。
+        self._register_dsh_session_id(run_id, session_id)
 
         if returncode != 0:
             # error-attribution-denoise（D5）：拼装 error 前过滤 CLI stderr 诊断

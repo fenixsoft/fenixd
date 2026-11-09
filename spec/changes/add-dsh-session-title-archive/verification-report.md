@@ -49,3 +49,13 @@
 **端到端复验**（隔离 DSH_HOME + 真实 fenix profile + FENIX_RUN_* env）：`session/created` 后 7ms、seq 0 落 `{"type":"session/title","data":{"title":"fake-proj · fake-wt","source":{"kind":"user"}}}`，流中零 `title-llm-request`（LLM 兜底被 pin 抑制）。排查结论已投递 `spec/knowledge/_inbox/dsh-session-created-append-gate.md`。
 
 **运营面备注**（非代码缺陷）：标题/归档均无存量回填，只对部署后新会话/新终态生效；bundle 经 profile 软链实时生效，daemon 侧归档挂接需各项目 daemon 重启后才有。
+
+## 验证后缺陷修正二（2026-11-09 repair 车道堆积复验追加）
+
+**缺陷**：repair 车道终态会话持续堆积 web 未分组（`cloud-phone · repair-p2p-crossnet-traversal-1794211508` ×2、`cloud-phone · repair-m3-audio-clipboard-textinput-1794210310` ×2）——tidy 挂接在 firing 且成功（每个 repair run 各归档了一个会话），但每次 attempt（`-a1/-a2/-a3` 重试）独立 spawn 的 dsh 会话只归档了末次，前序 attempt 会话漏归档。dsh-tidy-daemon-tests 未覆盖「多 attempt 同 run」维度，故漏网。
+
+**根因**（源码坐实）：`core/agent_runner/runner.py` 的 `_run_dsh_session_id` 注册以 `_normalize_run_id`（剥 `-a<n>/-r<n>` 尾）归一的 **base run_id 为键、纯赋值覆盖**——同 run 多 attempt 的注册互相覆盖，终态 `_dsh_session_tidy_on_terminal` 只 pop 出末次 attempt 的 session_id 投递（dsh-events 流坐实：repair-p2p 三 attempt=三个独立 session id，日志仅归档 a3）。非 repair 特有——一切重试链 run 都漏；repair 车道高重试率先暴露。
+
+**修正**：commit 本次——注册收口为 `AgentRunner._register_dsh_session_id`（登记值改**列表追加**：同 id 幂等、None 尝试不擦既有捕获、首个 None→None 哨兵、str 旧形态并入列表防御），消费侧 `_dsh_session_tidy_on_terminal` pop 后**全量按序投递**（None/空列表保持既有 WARN 面）。tests/test_dsh_session_tidy.py 新增多 attempt 全量归档、空列表防御与登记契约 9 用例（先红后绿，45 passed）。
+
+**存量补归档**：4 条泄漏会话（session-8f9bba9d/cad75a42/f6df70cf/a7596978，均终态）经生产 helper 手工归档，web 复验 repair 残留清零。**生效条件**：daemon 需重启吃新代码（cloud-phone 13:56 版本无此修复）。
