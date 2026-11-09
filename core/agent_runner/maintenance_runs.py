@@ -715,7 +715,12 @@ def run_arbiter(runner, trigger: dict) -> dict:
     触发消费 → 调查 run 启动（dsh 车道， ArbiterLane 单飞队列串行调用本函数）
     → 报告读回 + 双道产物硬门 → 车道终态指标行。返回信封 dict（非
     AdminDisposition——消费方是 ArbiterLane 结果分类，不是 admin 终态回写）：
-    ``{"ok", "run_id", "report", "error", "usage_info", "elapsed_s"}``。
+    ``{"ok", "run_id", "report", "error", "usage_info", "elapsed_s",
+    "rounds"}``。``rounds``（harden-arbiter-lane-resilience 2.1）：内部
+    turns 计数透传（``_run_agent`` 5 元组第 2 位）——失败分级按
+    ``rounds <= 0`` 判「无 API 往返样本」（0 rounds 秒挂→infra 通道），
+    信封携带真值，MUST NOT 从 error 文案反解；早退路径（import 失败/
+    spec 名不安全/申领失败）零派发 rounds=0。
 
     与 run_administrator 同款骨架（claim→组装→_run_agent→硬门→指标收尾），
     差异点：
@@ -729,7 +734,7 @@ def run_arbiter(runner, trigger: dict) -> dict:
       死人开关计数口径），MUST NOT 把空跑折算成处置成功。
     """
     spec = str((trigger or {}).get("spec") or "global")
-    empty = {"ok": False, "run_id": "", "report": {}, "error": "", "usage_info": {}, "elapsed_s": 0.0}
+    empty = {"ok": False, "run_id": "", "report": {}, "error": "", "usage_info": {}, "elapsed_s": 0.0, "rounds": 0}
     _log = getattr(runner, "logger", None)
     # code-review item 2631620c91b8：入口两处惰性 import 纳入 try 保护——原
     # 位于任何 try 之外，模块损坏/装配成环时 ImportError 直接穿透 run_arbiter，
@@ -907,6 +912,7 @@ def run_arbiter(runner, trigger: dict) -> dict:
         "error": error,
         "usage_info": usage_info or {},
         "elapsed_s": round(elapsed, 3),
+        "rounds": turns,
     }
 
 

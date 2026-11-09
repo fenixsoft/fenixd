@@ -901,6 +901,31 @@ class EscalationChain:
         self._quota.clear_in_flight(chain_id)
         if outcome == "closed":
             return
+        if outcome == "infra-failed":
+            # infra 终态（harden-arbiter-lane-resilience 2.1）：车道环境不可用
+            # （0 rounds/环境指纹秒挂，或派发前置探针拦截）——不循环重派、
+            # 不上升链终点、不升级人工：dead-man/上升语义都只对真实判断
+            # 失败有效，环境故障烧配额烧人工只会复制 2026-11-09 四签名秒挂
+            # 8h 全量人工事故。deferred 让行范式留痕（chain 事件落台账，
+            # 时间轴/处置链视图可查）——信号闭环靠既有触发面复报/回扫候选
+            # 重扫自然回喂，探针复位后下次触发恢复自主处置。
+            self._write_chain_event(
+                item,
+                kind="chain-infra-deferred",
+                action_or_upgrade=(
+                    "Arbiter 车道基础设施故障（infra-failed）：环境不可用，"
+                    "不循环重派、不上升链终点、不升级人工——deferred 让行"
+                    "范式留痕，等前置探针复位后由触发面复报/回扫重扫回喂"
+                    f"（run={item.get('arbiter_run_id') or ''}，失败原因: "
+                    f"{str(item.get('endpoint_reason') or '')[:300]}）"
+                ),
+            )
+            self._log(
+                "warning",
+                "Arbiter 车道 infra 失败链让行（不上升不重派，等探针复位回喂）"
+                f": sig={sig}",
+            )
+            return
         # escalated / dead-man / failed-retries-exhausted → 链终点上升
         self._endpoint_escalate(
             item,

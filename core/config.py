@@ -2845,10 +2845,19 @@ class ConfigLoader:
     ARBITER_BUDGET_WALLCLOCK_S_DEFAULT = 1800
     ARBITER_BUDGET_TOKENS_DEFAULT = 1_000_000
     ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT = 2
+    # harden-arbiter-lane-resilience 2.1/3.2 两新键（白名单扩六键）：
+    # max_consecutive_infra_failures: infra 失败独立上限（缺省=judgment 连败
+    #   上限同值——design「独立上限缺省沿用既有连败上限」）
+    # preflight_ttl: 派发前置探针结论 TTL 秒（缺省 300——TTL 内复用结论
+    #   零子进程开销，超时首查重探）
+    ARBITER_MAX_CONSECUTIVE_INFRA_FAILURES_DEFAULT = (
+        ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT
+    )
+    ARBITER_PREFLIGHT_TTL_DEFAULT = 300
 
     @classmethod
     def get_arbiter_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the ``arbiter`` 段四键，缺失/非法值回退缺省（不抛异常）。
+        """Return the ``arbiter`` 段六键，缺失/非法值回退缺省（不抛异常）。
 
         - enabled: 布尔，缺省 True（非布尔回退缺省——布尔缺省语义下非法即
           用缺省，与 stale_code_selfheal.enabled 同口径）
@@ -2856,9 +2865,14 @@ class ConfigLoader:
           0/负数/非整值浮点回退缺省——与 _normalize_int_value 同范式）
         - budget_tokens: 正整数，缺省 1_000_000（同上）
         - max_consecutive_failures: 正整数，缺省 2（同上）
+        - max_consecutive_infra_failures: 正整数，缺省 2（同上；infra 失败
+          独立计数上限，与 judgment 连败上限相互独立）
+        - preflight_ttl: 正整数秒，缺省 300（同上；派发前置探针结论缓存）
 
         节缺失、键缺失或值非法时不抛异常；读取走既有 config 对象，30s 配置
-        热更新自然生效（下一触发判定即采用新值）。
+        热更新自然生效（下一触发判定即采用新值）。白名单纪律：未列入本
+        dict 的 arbiter 段键不外透（旋钮必须经本单源，旁路直读违反
+        ConfigLoader 单源消费纪律）。
         """
         section = cls._segment_or_empty(config, "arbiter")
         enabled = section.get("enabled", cls.ARBITER_ENABLED_DEFAULT)
@@ -2879,6 +2893,16 @@ class ConfigLoader:
             "max_consecutive_failures": cls._normalize_int_value(
                 section.get("max_consecutive_failures"),
                 cls.ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT,
+                positive=True,
+            ),
+            "max_consecutive_infra_failures": cls._normalize_int_value(
+                section.get("max_consecutive_infra_failures"),
+                cls.ARBITER_MAX_CONSECUTIVE_INFRA_FAILURES_DEFAULT,
+                positive=True,
+            ),
+            "preflight_ttl": cls._normalize_int_value(
+                section.get("preflight_ttl"),
+                cls.ARBITER_PREFLIGHT_TTL_DEFAULT,
                 positive=True,
             ),
         }

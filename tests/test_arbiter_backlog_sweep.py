@@ -127,6 +127,14 @@ def make_lane(tmp_path, config=None, runner=None, sm=None):
     lane = ArbiterLane(tmp_path, FakeLogger())
     lane.set_runner(runner or FakeRunner(tmp_path))
     lane.set_state_machine(sm or FakeStateMachine())
+    # harden-arbiter-lane-resilience 3.2：派发前置探针结论预种 healthy——
+    # 测试密闭性（MUST NOT 依赖宿主 CLI/凭据环境；探针拦截/unhealthy 行为
+    # 由 tests/test_arbiter_lane_resilience.py 专测）。未播种时闸门会在每
+    # 次 submit 做真实子进程/文件系统探测，无 claude CLI 的宿主上全文件红。
+    from core.agent_runner.lane_preflight import LaneHealth
+
+    lane._preflight_cache._health = LaneHealth(ok=True, reasons=[])
+    lane._preflight_cache._probed_at = time.monotonic()
     if config is not None:
         lane.config = lambda: {
             "enabled": config.get("enabled", True),
@@ -134,6 +142,9 @@ def make_lane(tmp_path, config=None, runner=None, sm=None):
             "budget_tokens": config.get("budget_tokens", 1000000),
             "max_consecutive_failures": config.get(
                 "max_consecutive_failures", 2),
+            "max_consecutive_infra_failures": config.get(
+                "max_consecutive_infra_failures", 2),
+            "preflight_ttl": config.get("preflight_ttl", 300),
         }
     return lane
 
