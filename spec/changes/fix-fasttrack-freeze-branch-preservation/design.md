@@ -4,7 +4,7 @@
 
 single-app 事故的形态：run 收尾链路在「partial 申报 → 重派」循环中由 `_keep_fast_track_worktree`（`core/pm_engine/dispatch/fast_track.py:693`）保留 worktree；冻结转人工站点实测共四处（评审期补全：`fast_track.py:1076` 契约违反 / `:1308` 硬校验失败 / `:2165` 通用失败三类重试耗尽 + `:2300` 零变更哨三连；四处均无 mark_frozen_hold 伴调，同属事故损失形态——分支可携带早期尝试的未合并提交或 worktree 脏文件）调 `freeze_for_human`（`core/state_machine.py:2291`）——该单一入口只机械写 blocked/frozen/error/告警，**不触发任何保全**；随后保留的 worktree/分支被某条清理路径删除且未走 pre-rmtree snapshot（`core/worktree_manager/lifecycle.py:1283` 的快照未在此路径生效）。`mark_frozen_hold` 的既有调用面（fast_track.py:280、verification/pipeline.py:2948、repair_lane.py:665、queue.py:2744、spec_review.py:634）证明了「冻结即保全」已是框架惯例，fast-track 重试耗尽是漏网路径。
 
-删除者的精确定位属实现期调查任务（候选：stale sweep 对冻结 spec 的孤儿分支处置、lifecycle 分支删除段的 register_legacy 判定未覆盖 fast-track partial 形态、冻结后的收尾清理）；修复不依赖单一候选成立——见下述分层防线。
+删除者的精确定位属实现期调查任务，结论见本目录 `findings.md`（以 findings 为准回写本段，2026-11-09 调查）：**实际主嫌是 legacy 宽限期兜底回收链**——失败重试循环内 `_keep_fast_track_worktree` → `keep_for_reuse` → `register_legacy`（`reuse=True`，`registered_at` 随每轮失败刷新）；冻结（无 `_frozen_hold`、无锚点）后 `frozen` 挡住一切派发、无新 run 认领，`LEGACY_GRACE_SECONDS`（≈120s）过期；下一次 daemon 启动清扫 `cleanup_stale_worktrees` → `_reclaim_expired_legacy` → `_physically_reclaim_legacy` 以**无保护 `branch -D`** 收尾（`stale_sweep._branch_protected_by_state` 注释已点名的既有缺口）。次嫌是孤儿清扫：目录侧无 frozen 豁免、分支侧 `_branch_protected_by_state` (c) 款因 `_frozen_hold` 缺失失效。其余候选均排除：分支 GC 因 `--merged` 预筛对未合并分支无害；lifecycle cleanup verifier 族与 shutdown 孤儿处置在冻结后不触达（worktree 已被 `keep_for_reuse` 摘出活动集）；冻结站点自身无清理动作——删除全部发生在冻结之后的下一次 daemon 启动清扫。「为何未产快照」：`_snapshot_dirty_worktree` 只对 dirty worktree 产出快照（clean 目录返回空），事故 13 个提交已全部 commit、worktree clean → 一切删除路径的快照点无产出，分支 ref 是唯一保全载体——防线 1 补的正是「冻结时分支 ref 即保全锚点」。修复不依赖单一候选成立——见下述分层防线。
 
 ## 方案：冻结即保全 + 清理守护（两道防线）
 

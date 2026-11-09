@@ -441,6 +441,23 @@ class G7StaleSweepMixin:
                     f"unrecognized worktree naming, conservative keep",
                 )
                 continue
+            # ── 冻结保全现场守卫（fix-fasttrack-freeze-branch-preservation
+            # R3）── spec frozen+_frozen_hold（R1 冻结即保管的在册登记）时整
+            # 目录跳过：worktree remove 与下方分支处置一并保留——现场待人工
+            # 解冻走 _resolve_preserved_branch 续做，删除即把续做降级为从零
+            # 重派（single-app 事故形态：13 个已验证提交随 branch -D 险丢）。
+            # 覆盖 keep_for_reuse 登记未生效 / 遗产出册异常等「无遗产豁免」
+            # 窗口。复用上方 state_entries 单次快照，零新增锁序（R3）。
+            frozen_kept, frozen_reason = self._spec_frozen_hold_kept(
+                spec, states=state_entries
+            )
+            if frozen_kept:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Skip stale worktree cleanup for '{wt_dir.name}' — "
+                    f"{frozen_reason}，worktree 与分支保留待解冻续做",
+                )
+                continue
             # pgrep 失效窗的二次确认（code-review item 51b88016057c）：_worktree_
             # has_live_process 在 pgrep 不可用/超时时按无进程返回 False，此处
             # 无法区分「真无进程」与「探针故障」——删除前复核 run 流新鲜度，
@@ -779,6 +796,45 @@ class G7StaleSweepMixin:
                 f"STATE.md 解析失败（保守不清分支）: {e}",
             )
             return None
+
+    def _spec_frozen_hold_kept(
+        self, spec_name: str, states: Optional[dict] = None
+    ) -> tuple:
+        """冻结保全现场守卫（fix-fasttrack-freeze-branch-preservation R3）。
+
+        spec 处于 ``frozen=True`` 且 ``_frozen_hold: True``（即 R1 冻结即保全
+        的在册登记）时，自动周期清理入口 MUST 跳过对该 spec 实现分支与
+        worktree 的删除——现场待人工解冻走 ``_resolve_preserved_branch`` 续做，
+        删除即把续做降级为从零重派。守卫只做**正向匹配**（条目在册且双键
+        齐备才 kept）；STATE 不可解析（None）不在此放行豁免——目录/分支删除
+        链各自的既有保守姿态（``_branch_protected_by_state`` 的
+        「不可解析 → 保守保留」）继续兜底，本守卫不扩大 STATE 异常窗口的
+        行为面。守卫只约束自动周期清理入口；显式 spec 删除/归档收尾通道
+        （先清 STATE 条目、再清理现场）条目已不在册，天然不命中。
+
+        ``states`` 为预取的 STATE 条目快照（``_read_state_entries`` 返回值），
+        供批量调用复用同一快照；None（缺省）时自行读取。
+
+        Returns: ``(kept: bool, reason: str)``——kept=True 即 MUST 跳过删除。
+        """
+        from core.state_machine import FROZEN_HOLD_FIELD
+
+        if not spec_name:
+            return False, ""
+        if states is None:
+            states = self._read_state_entries()
+        if not isinstance(states, dict):
+            return False, ""
+        entry = states.get(spec_name)
+        if (
+            isinstance(entry, dict)
+            and entry.get("frozen")
+            and entry.get(FROZEN_HOLD_FIELD)
+        ):
+            return True, (
+                f"冻结保全现场（{spec_name}: blocked+frozen+_frozen_hold）"
+            )
+        return False, ""
 
     def _branch_protected_by_state(
         self, branch: str, states: Optional[dict] = None
