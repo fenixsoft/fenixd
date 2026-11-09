@@ -463,6 +463,12 @@ class EventBus:
                 # 不因 task-gap 前缀抑制，否则人工补勾后 spec 永远卡在 verified。
                 self.logger.info("event_bus", f"Recovery: re-triggering verified→done for '{name}'")
                 self.pm_engine.handle_event("spec_verified", name, entry)
+            elif status == "done":
+                # done 态推送退避续推（fix-push-credential-env-and-retry-rearm
+                # 5.1 / design D4）：周期扫描即退避到期消费通道（跨重启天然
+                # 存活，对齐 scheduled-reverify-restart-durability 既有纪律，
+                # 不引入内存定时器）。四重门 + 非阻塞投递见单点方法。
+                self._recover_done_push_retry(name, entry)
             return True
         except Exception as e:
             self.logger.error(
@@ -470,6 +476,96 @@ class EventBus:
                 f"Recovery failed for spec '{name}': {type(e).__name__}: {e}",
             )
             return False
+
+    def _recover_done_push_retry(self, name: str, entry: dict) -> bool:
+        """done 态推送退避到期续推（fix-push-credential-env-and-retry-rearm 5.1）。
+
+        design D4 四重门全与才投递（任一不满足为有意跳过、计入 handled）：
+
+        1. 退避门：``_is_push_backoffed`` True（next_retry 未到）→ debug 级
+           跳过，下一轮扫描重判（读侧复用 ReportBuilder 单点，禁裸解析）；
+        2. 计数门：``_get_push_retry_count >= pm.push.max_retries`` → 不再
+           自动续推（防死循环烧凭证，人工收敛出口）；
+        3. 耗尽升级门：error 文本含 ``[push_failed`` 升级标记 → 终局跳过
+           （STATE 可读面判定，MUST NOT 查询 admin store）；
+        4. executor 门：``_admin_executor`` 未挂载（未装配 / admin.workers=0）
+           → 当轮 WARNING 跳过、下一轮扫描重判，MUST NOT 内联同步调用
+           （扫描主循环不承担 120s git 超时）。
+
+        投递形态对齐 fenixd.py ``_check_approve_push_requests`` 既有实现
+        （``_admin_executor.submit`` + RuntimeError 回滚口径）：executor 引用
+        由 fenixd.py 启动序列事后挂载（同 code_fix_orchestrator 装配契约）。
+        续推语义完全复用 approve_push 既有单飞锁 / pushed 幂等跳过 / SHA
+        去重，本方法不新增任何推送语义。投递拒绝/异常按既有车道口径降级
+        （WARNING 留痕），MUST NOT 因投递失败中断整轮扫描。
+        """
+        # ── 门 3：耗尽升级终局（STATE 可读面，最先短路）──
+        error_text = str(entry.get("error") or "")
+        if "[push_failed" in error_text:
+            self.logger.debug(
+                "event_bus",
+                f"Recovery: skip '{name}' — push 耗尽已升级 push_failed "
+                f"（人工收敛出口），不再自动续推",
+            )
+            return True
+
+        # ── 门 2：重试计数上限 ──
+        max_retries = self._get_push_max_retries()
+        if self.pm_engine._get_push_retry_count(entry) >= max_retries:
+            self.logger.debug(
+                "event_bus",
+                f"Recovery: skip '{name}' — push 重试计数已达上限 "
+                f"（{max_retries}），不再自动续推",
+            )
+            return True
+
+        # ── 门 1：退避期 ──
+        if self.pm_engine._is_push_backoffed(entry):
+            self.logger.debug(
+                "event_bus",
+                f"Recovery: skip '{name}' — push 退避期内（到期后下一轮扫描拾取）",
+            )
+            return True
+
+        # ── 门 4：executor 非阻塞投递（fail-open）──
+        executor = getattr(self, "_admin_executor", None)
+        if executor is None:
+            self.logger.warning(
+                "event_bus",
+                f"Push retry: admin executor 未挂载（未装配/admin.workers=0），"
+                f"跳过 '{name}' 续推（下一轮扫描重判，不内联同步）",
+            )
+            return True
+        try:
+            executor.submit(self.pm_engine.approve_push, name)
+        except Exception as e:  # noqa: BLE001 — 投递拒绝（RuntimeError 等）降级
+            # 不中断整轮扫描：下轮重判，退避字段仍在（未到到期时间不受影响）
+            self.logger.warning(
+                "event_bus",
+                f"Push retry 投递被拒绝 '{name}': {type(e).__name__}: {e}"
+                f"（不中断扫描，下一轮重判）",
+            )
+            return True
+        self.logger.info(
+            "event_bus",
+            f"Push retry: '{name}' 退避已到期/无需退避，已投递 approve_push 续推"
+            f"（后台执行）",
+        )
+        return True
+
+    def _get_push_max_retries(self) -> int:
+        """``pm.push.max_retries`` 读取守卫（对齐 engine._handle_push_failure
+        守卫形态：bool/负值/非法回退默认 3），供 done 分支计数门使用。"""
+        from core.config import ConfigLoader
+
+        raw = ConfigLoader.get(self.config, "pm.push.max_retries", 3)
+        try:
+            value = 3 if raw is None else int(raw)
+        except (TypeError, ValueError):
+            return 3
+        if isinstance(raw, bool) or value < 0:
+            return 3
+        return value
 
     def _start_after_blocks(self, name: str, entry: dict, status_label: str) -> bool:
         """start_after 定时拾取早退判定（_recover_one drafted/reviewing 单点共用）。

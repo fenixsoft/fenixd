@@ -247,6 +247,38 @@ def apply_path_baseline(env: dict) -> tuple:
     return healed, missing
 
 
+def resolve_baseline_home(env: dict | None = None) -> str | None:
+    """HOME 基线取值（fix-push-credential-env-and-retry-rearm 3.1）。
+
+    经 ``core.git_env.resolve_git_env`` 单源解析（env → pwd → 配置三级序），
+    与推送子进程 env 注入共用同一判定，防承载层与运行时双源漂移。env 缺省
+    取当前进程 environ。三级皆空返回 None（调用方不注入、不写保底值）。
+    """
+    from core.git_env import resolve_git_env
+
+    return resolve_git_env(None, env=env if env is not None else None).resolved_home
+
+
+def apply_home_baseline(env: dict) -> tuple:
+    """env dict 的 HOME 基线补齐，返回 ``( healed dict, 补齐的 HOME 值或 None )``。
+
+    fix-push-credential-env-and-retry-rearm 3.1（与 apply_path_baseline
+    并列新增，PATH 产物逐字节不变）：捕获源 env 缺失或为空 HOME 时以
+    ``resolve_baseline_home`` 单源补 ``HOME=<resolved>``；已含非空 HOME 时
+    原值原样返回（补齐值为 None，产物与无此机制时逐字节一致）。三级解析
+    全空时不注入（行为回退现状，补齐值为 None），由启动自检就该状态告警。
+    """
+    home = env.get("HOME")
+    if isinstance(home, str) and home.strip():
+        return env, None
+    resolved = resolve_baseline_home(env)
+    if not resolved:
+        return env, None
+    healed = dict(env)
+    healed["HOME"] = resolved
+    return healed, resolved
+
+
 def append_env_path_dirs(env_file, dirs) -> list:
     """向既有 EnvironmentFile 的 PATH 行幂等追加目录（原子写）。
 
@@ -286,7 +318,7 @@ def append_env_path_dirs(env_file, dirs) -> list:
     return missing
 
 
-def render_env_file(env: dict, path_note=None) -> str:
+def render_env_file(env: dict, path_note=None, home_note=None) -> str:
     """env dict → EnvironmentFile 文本（渲染原语自含防线，不依赖唯一调用链）。
 
     denylist 过滤（filter_session_identity）、非法键名与含换行值的剔除在
@@ -299,6 +331,10 @@ def render_env_file(env: dict, path_note=None) -> str:
     ``path_note``（add-dispatch-precheck-true-fallback 3.1）：传入实际追加
     的基线目录清单时在头部写留痕注释（已追加目录与原因）；空/缺席时不
     产生任何额外行——完整 PATH 产物逐字节不变。
+
+    ``home_note``（fix-push-credential-env-and-retry-rearm 3.1）：传入实际
+    补齐的 HOME 值时在头部写留痕注释（同 PATH 追加留痕格式）；None 时不
+    产生任何额外行——已含 HOME 的候选稿产物逐字节不变。
     """
     filtered = filter_session_identity(env)
     lines = [
@@ -312,6 +348,13 @@ def render_env_file(env: dict, path_note=None) -> str:
             f" 缺失基线目录，已按序追加尾部：{'、'.join(path_note)}",
             "# 原因：systemd 承载进程不继承会话 shell 的 PATH 拼装，缺基线目录会"
             "使 ~/.local/bin 等位置的 harness 可执行文件在服务环境不可达。",
+        ])
+    if home_note:
+        lines.extend([
+            "# HOME 卫生（fix-push-credential-env-and-retry-rearm 3.1）：捕获源"
+            f" env 缺失 HOME，已以解析器单源补齐：HOME={home_note}",
+            "# 原因：systemd 承载进程常缺失 HOME，git 找不到 ~/.git-credentials"
+            "/~/.gitconfig 时推送凭证只剩 remote URL 内嵌单腿。",
         ])
     lines.append("")
     for key in sorted(filtered):
@@ -373,18 +416,23 @@ def write_env_file(text: str, target: Path) -> Path:
     return target
 
 
-def capture_env_candidate(pid: int, target: Path, path_report=None) -> dict:
-    """从在跑进程捕获 env → denylist 过滤 → PATH 基线并集 → 写 0600 候选稿。
+def capture_env_candidate(pid: int, target: Path, path_report=None, home_report=None) -> dict:
+    """从在跑进程捕获 env → denylist 过滤 → PATH/HOME 基线 → 写 0600 候选稿。
 
-    返回过滤后的键集（供 migrate 预演打印摘要；PATH 已含基线并集）；进程
-    不可读时抛 SystemdHostingError（候选稿是迁移验收的 env 冒烟基线，静默
-    空稿会让人工审核无从下手）。
+    返回过滤后的键集（供 migrate 预演打印摘要；PATH 已含基线并集，HOME
+    缺失时已补齐）；进程不可读时抛 SystemdHostingError（候选稿是迁移验收
+    的 env 冒烟基线，静默空稿会让人工审核无从下手）。
 
     PATH 卫生（add-dispatch-precheck-true-fallback 3.1）：捕获源 PATH 缺失
     基线目录（PATH_BASELINE_DIRS）按序追加尾部，候选稿头部留痕「已追加
     目录清单与原因」；完整 PATH 产物逐字节不变。``path_report`` 传 list 时
     收集实际追加目录（migrate 摘要 3.3「完整」/「补齐 <清单>」结论行的
     判定单源）。
+
+    HOME 卫生（fix-push-credential-env-and-retry-rearm 3.1）：捕获源 env
+    缺失 HOME 时以解析器单源补齐并留痕；已含 HOME 时产物逐字节不变。
+    ``home_report`` 传 list 时收集补齐的 HOME 值（migrate 摘要 HOME 结论行
+    的判定单源，与 PATH 结论并列）。
     """
     env = read_process_env(pid)
     if not env:
@@ -396,8 +444,11 @@ def capture_env_candidate(pid: int, target: Path, path_report=None) -> dict:
     healed, appended = apply_path_baseline(filtered)
     if path_report is not None:
         path_report.extend(appended)
+    healed, home_added = apply_home_baseline(healed)
+    if home_report is not None:
+        home_report.extend([home_added] if home_added else [])
     write_env_file(
-        render_env_file(healed, path_note=appended),
+        render_env_file(healed, path_note=appended, home_note=home_added),
         Path(f"{target}{ENV_CANDIDATE_SUFFIX}"),
     )
     return healed
@@ -453,6 +504,18 @@ def render_project_unit(root, python_executable: str | None = None) -> str:
     # PATH 保底（add-dispatch-precheck-true-fallback 3.2）：恒为展开绝对路径
     # （systemd 不展开 ~，字面 ~ 目录项会使保底 PATH 静默失效）。
     fallback_path = ":".join(PATH_BASELINE_DIRS)
+    # HOME 保底（fix-push-credential-env-and-retry-rearm 3.1）：经解析器单源
+    # 取值（env → pwd → 配置三级序）；三级皆空时不写保底行（无值可写，
+    # fail-open 回退现状），由启动自检就该状态告警。
+    resolved_home = resolve_baseline_home()
+    home_block = ""
+    if resolved_home:
+        home_block = (
+            "# HOME 保底（fix-push-credential-env-and-retry-rearm 3.1）：EnvironmentFile 在场\n"
+            "# 且含 HOME 时其值覆盖本行（systemd 加载顺序语义不变）；env 文件缺席/无\n"
+            "# HOME 键时本行兜底，保证 git 凭证文件（~/.git-credentials）在服务环境可达。\n"
+            f"Environment=HOME={resolved_home}\n"
+        )
     return f"""\
 [Unit]
 Description=Fenixd daemon hosting (supervisor) for {proot}
@@ -467,7 +530,7 @@ WorkingDirectory={proot}
 # 同名变量以 EnvironmentFile 为准）；env 文件缺席/未提升时本行兜底，保证
 # ~/.local/bin 等常见安装目录的 harness 可执行文件在服务环境可达。
 Environment=PATH={fallback_path}
-ExecStart={interpreter} {supervisor} --project-root {proot}
+{home_block}ExecStart={interpreter} {supervisor} --project-root {proot}
 EnvironmentFile=-{env_file}
 Restart=on-failure
 RestartSec={RESTART_SEC}
