@@ -4,7 +4,7 @@
 
 ### Requirement: 工作区行项目名称导航
 
-Client 半 SHALL 在官方工作区列表中，对 fenixd 项目对应的工作区行启用「名称点击=打开项目详情」：主面板 SHALL 切换为该项目 iframe（`main` keyed 面板 `fenix-project-<name>`，src 深链 `#/projects/<encodeURIComponent(name)>` 契约不变），且 MUST NOT 触发该行展开/收缩。行首图标（官方 hover folder→chevron 交换）点击 SHALL 维持原生展开/收缩，插件 MUST NOT 改变其点击语义。行-项目匹配判据 SHALL 与既有 `resolveWorkspaceIdForProject` 同序：工作区注册路径 realpath 相等优先、标题与项目名精确相等回落；工作区枚举 SHALL 复用既有 `ui.workspaces.list.getSnapshot().items` 通道。拦截定位 MUST 基于语义锚点（`data-row-key` 前缀 `workspace:` 的行元素及其名称文本），MUST NOT 依赖 CSS module 哈希类名作唯一判据；锚点不可达或结构漂移时 SHALL 静默不拦截（原生行为兜底），MUST NOT 产生控制台未处理异常。
+Client 半 SHALL 在官方工作区列表中，对 fenixd 项目对应的工作区行启用「名称点击=打开项目详情」：主面板 SHALL 切换为该项目 iframe（`main` keyed 面板 `fenix-project-<name>`，src 深链 `#/projects/<encodeURIComponent(name)>` 契约不变），且 MUST NOT 触发该行展开/收缩。行首图标（官方 hover folder→chevron 交换）点击 SHALL 维持原生展开/收缩，插件 MUST NOT 改变其点击语义。行-项目匹配判据 SHALL 路径身份优先：工作区注册路径与项目路径归一化后（统一分隔符、去尾斜杠；client 运行于浏览器无 fs.realpath，MUST NOT 依赖 fs 规范化）字符串相等优先命中，工作区标题与项目名精确相等回落。该优先序刻意不同于既有 `resolveWorkspaceIdForProject`（其实现为标题优先、basename 回落，见 dsh-plugins `src/client/index.ts`），路径优先以消除同名标题工作区误判；工作区枚举 SHALL 复用既有 `ui.workspaces.list.getSnapshot().items` 通道。拦截定位 MUST 基于语义锚点（`data-row-key` 前缀 `workspace:` 的行元素及其名称文本），MUST NOT 依赖 CSS module 哈希类名作唯一判据；锚点不可达或结构漂移时 SHALL 静默不拦截（原生行为兜底），MUST NOT 产生控制台未处理异常。
 
 #### Scenario: 名称点击打开项目详情
 
