@@ -805,4 +805,5 @@ class TestProjectionConstants:
         assert len(DSH_INIT_TOOLS) == 28  # 4 Task 工具 + 24 原生工具
 
     def test_version_whitelist_pinned(self):
-        assert DSH_VERSION_WHITELIST == ("0.2.0-rc.2",)
+        # 2026-11-09 dsh 0.2.2-rc.1 升版（main 783ba2115）追加第二钉版
+        assert DSH_VERSION_WHITELIST == ("0.2.0-rc.2", "0.2.2-rc.1")
