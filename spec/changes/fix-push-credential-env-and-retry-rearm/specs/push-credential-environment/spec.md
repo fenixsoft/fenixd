@@ -16,7 +16,7 @@
 
 ### Requirement: 凭证文件兜底通道
 
-系统 SHALL 在 git push 命令追加显式 credential helper 参数（`-c credential.helper=store --file=<abs>`）作为凭证第二通道：路径默认＝解析后 HOME 下的 `.git-credentials`，可经 `pm.push.credential_file` 覆盖；该解析路径**不存在**时 MUST NOT 追加该参数；配置显式置空字符串时 MUST 关断兜底。URL 内嵌 token 通道与 helper 通道并存兼容。
+系统 SHALL 在 git push 命令追加显式 credential helper 参数作为凭证第二通道：参数以**单一 argv 元素**传入（`["-c", "credential.helper=store --file=<abs>"]`——helper 值内的 `--file=` 属 credential.helper 配置串、git 按空白切分为 helper 子参数；MUST NOT 拆成多个 argv 元素，否则 `--file=` 会被 git 解析为顶层未知选项致推送必败）；路径默认＝解析后 HOME 下的 `.git-credentials`，可经 `pm.push.credential_file` 覆盖；该解析路径**不存在**时 MUST NOT 追加该参数；配置显式置空字符串时 MUST 关断兜底。URL 内嵌 token 通道与 helper 通道并存兼容。
 
 #### Scenario: 内嵌 token 吊销后凭证文件兜底
 - **WHEN** remote URL 内嵌 token 已失效（git 报 Authentication failed），但解析后凭证文件在场且含有效凭证

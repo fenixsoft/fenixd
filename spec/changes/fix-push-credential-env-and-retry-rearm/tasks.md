@@ -28,7 +28,7 @@
 
 ## 2. 推送子进程凭证双腿
 
-- [ ] 2.1 `core/pm_engine/engine.py` `_git_push_ref`：以 `resolve_git_env` 产出 env 显式传入 `subprocess.run(env=…)`；凭证文件在场时命令追加 `-c credential.helper=store --file=<abs>`（经 config 读 `pm.push.credential_file`），文件缺席不追加参数；解析失败安全回退现状行为并记 WARNING 日志
+- [ ] 2.1 `core/pm_engine/engine.py` `_git_push_ref`：以 `resolve_git_env` 产出 env 显式传入 `subprocess.run(env=…)`；凭证文件在场时命令追加 credential helper 参数——argv 单元素 `["-c", f"credential.helper=store --file={abs}"]`，MUST NOT 拆多元素（拆开后 `--file=` 成 git 顶层未知选项，推送必败）（经 config 读 `pm.push.credential_file`），文件缺席不追加参数；解析失败安全回退现状行为并记 WARNING 日志
 - [ ] 2.2 扩展 `tests/test_spec_approve_push.py` 或新建用例于 `tests/test_push_retry_recovery.py`：daemon env 无 HOME 时子进程 env 含注入 HOME、凭证文件在场时命令含 helper 参数、缺席时不含、注入失败回退不中断推送
 
 ## 3. 承载层 HOME 基线
@@ -39,13 +39,13 @@
 
 ## 4. 启动凭证自检
 
-- [ ] 4.1 `fenixd.py` 启动自检链新增凭证探测：解析 HOME 目录存在性、凭证文件在场性、remote URL 内嵌凭证扫描（纯本地不网络探测）；双腿皆缺或 HOME 解析失败发 WARNING 告警（含人工处置指引），探测异常 fail-open 仅记日志不阻断启动
+- [ ] 4.1 `fenixd.py` 启动自检链新增凭证探测：解析 HOME 目录存在性、凭证文件在场性、remote URL 内嵌凭证扫描（纯本地不网络探测；探测对象＝daemon 自身仓库与全部已接管项目的 remote URL 集，`git config --get-all remote.*.url` 本地读取，任一 URL 含凭证即认 URL 腿在场）；双腿皆缺或 HOME 解析失败发 WARNING 告警（含人工处置指引），探测异常 fail-open 仅记日志不阻断启动
 - [ ] 4.2 于 `tests/test_push_retry_recovery.py` 增用例：双腿皆缺告警一次、单腿可用不告警、探测异常不抛出不阻断
 
 ## 5. done 态退避续推通道
 
-- [ ] 5.1 `core/event_bus.py` `_recover_one` 增加 done 分支：status==done 且非退避期（`_is_push_backoffed` False）且 `_get_push_retry_count < pm.push.max_retries` 且非耗尽升级终局（push_failed 已发）时经 admin executor 非阻塞投递 `pm_engine.approve_push`（同 `_submit_approve_push` 形态）；退避期内 debug 级跳过；投递拒绝/异常按既有车道口径降级不中断整轮扫描；复用 approve_push 既有单飞锁/幂等/SHA 去重，不新增推送语义与内存定时器
-- [ ] 5.2 新建 `tests/test_push_retry_recovery.py`：退避到期续推投递发生、退避期内 debug 跳过不发 push、计数达上限/push_failed 已发不再投递、重启后（STATE 字段存量+退避已过期）首轮扫描拾取、executor 拒绝时扫描不中断、多 spec 命中时主循环不内联阻塞
+- [ ] 5.1 `core/event_bus.py` `_recover_one` 增加 done 分支：status==done 且非退避期（`_is_push_backoffed` False）且 `_get_push_retry_count < pm.push.max_retries` 且非耗尽升级终局（error 文本 `[push_failed` 标记或计数达上限，任一命中跳过；不查 admin store）时经 admin executor 非阻塞投递 `pm_engine.approve_push`——executor 由 fenixd.py 启动序列事后挂载到 event_bus（同 `code_fix_orchestrator` 装配契约），event_bus 侧 `getattr(self, "_admin_executor", None)` fail-open，None（未挂载/`admin.workers=0`）时当轮 WARNING 跳过下轮重判、MUST NOT 内联同步；投递形态对齐 fenixd.py `_check_approve_push_requests`（submit + submitted 计数 + RuntimeError 回滚）；退避/计数读侧复用 `ReportBuilder._is_push_backoffed` / `_get_push_retry_count`（经 pm_engine 静态转发，禁裸解析 error 文本）；退避期内 debug 级跳过；投递拒绝/异常按既有车道口径降级不中断整轮扫描；复用 approve_push 既有单飞锁/幂等/SHA 去重，不新增推送语义与内存定时器
+- [ ] 5.2 新建 `tests/test_push_retry_recovery.py`：退避到期续推投递发生、退避期内 debug 跳过不发 push、计数达上限/push_failed 已发不再投递、重启后（STATE 字段存量+退避已过期）首轮扫描拾取、executor 拒绝时扫描不中断、executor 缺席（None）当轮 WARNING 跳过且无内联 approve_push 调用、多 spec 命中时主循环不内联阻塞
 
 ## 6. 收口冒烟
 
