@@ -41,7 +41,7 @@ fenixd 以 dsh harness 驱动 agent 时，headless 会话落在共享 DSH_HOME�
 - 新增 Node helper（落 `dsh-bundle/` 源内，随 bundle 构建产出可执行入口；daemon 以 `node <helper> --url <web_url> --secret-file <dsh_home>/.credentials.yaml --session-id <id>` 调用）：使用 `@deepseek-ai/dsh-api-gateway/client` 开 `/api/remote.mux` 连接，调 `ctx.remote.workspace.archiveSession(sessionId)`，成功/已归档/可重试三类退出码 + 单行 JSON 结果到 stdout。
 - **为什么不用 Python 直连**：/api/remote.mux 是 Typert RPC 帧协议（InvocationDescriptor 编解码），Python 手搓高风险；SDK 已在 node_modules，复用即零新依赖。
 - **为什么不用 headless 进程写 registry**：跨进程无锁，web 内存缓存覆盖丢更新、UI 不实时刷新（dsh-storage-json README 明示），明确排除。
-- daemon 侧新增 `core/dsh_session_tidy.py`（命名可调）：终态收尾（`_log_run_metrics` 邻域、仅 dsh harness 且开关开启时）→ 同步等待 ≤10s → 失败入**持久化重试队列**（JSONL，`<state_dir>/dsh_session_tidy/pending.jsonl`，daemon 重启恢复消费、backoff 重试、上限后标记放弃并 WARN）；幂等：helper 收到「已归档」类错误按成功退出。
+- daemon 侧新增 `core/dsh_session_tidy.py`（命名可调）：终态收尾（`_log_run_metrics` 邻域、仅 dsh harness 且开关开启时）→ 同步等待 ≤10s → 失败入**持久化重试队列**（JSONL，`<project_root>/.fenix/dsh_session_tidy/pending.jsonl`，与 `.fenix/runs`、`.fenix/maintenance_log.jsonl` 同惯例；daemon 重启恢复消费、backoff 重试、上限后标记放弃并 WARN）；幂等：helper 收到「已归档」类错误按成功退出。终态但未捕获 `session_id`（session 事件缺失）的 run 不投递、WARN 留痕即止——此类会话无归档目标，属接受噪音。
 
 ### D3 配置：两个新键走既有 agent 配置面
 

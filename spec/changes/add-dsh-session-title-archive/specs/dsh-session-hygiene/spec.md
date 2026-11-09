@@ -30,6 +30,7 @@ fenix profile（`dsh-bundle/cordis.patch.yml` 装配）MUST 挂载 `dsh-session`
 - 归档 MUST 幂等：目标会话已归档时按成功处理。
 - run 主链路（事件投影、run_metrics、门禁）MUST NOT 依赖归档结果：投递同步等待有上限（可配置超时，缺省 10s），超时/失败转异步重试。
 - 归档调用 MUST 不带 `stopActivity`（run 已终态，无活动工作）；`workspace/session-active` 错误按「稍后重试」处理并入队。
+- 终态但未捕获 `session_id` 的 run（session 事件缺失）MUST NOT 产生归档投递或入队，以 WARN 留痕即止——此类会话无归档目标，属接受噪音。
 
 #### Scenario: run 终态后 dsh web 自动隐藏会话
 
