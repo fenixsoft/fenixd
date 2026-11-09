@@ -41,9 +41,9 @@
 
 ## 2. dsh-bundle 归档 helper（bundle 侧）
 
-- [ ] 2.2 新增 `dsh-bundle/src/session-tidy-helper.ts`：CLI（`--url <web基址> --secret-file <dsh_home>/.credentials.yaml --session-id <id> --timeout <秒>`），经 `@deepseek-ai/dsh-api-gateway/client` 开 `/api/remote.mux` 连接调用 `ctx.remote.workspace.archiveSession(sessionId)`；退出码三分类（0=成功/已归档幂等、2=可重试〔连接失败/超时/session-active〕、1=致命〔凭据缺失/协议错〕），stdout 单行 JSON（`{ok, session_id, outcome, detail}`）；编译产物入口为 `dsh-bundle/dist/session-tidy-helper.mjs`（`pnpm build` 增加该 entry，产物 gitignored 不入库）。
-- [ ] 2.1 鉴权打通探针：以本机真实 web（`/root/.dsh/.credentials.yaml` 的 `records.client-connection.browser-session.payload.secret`）核实握手精确形态（header/cookie/upgrade 参数名，以 `@deepseek-ai/dsh-api-gateway/client` SDK 源码为准），将结论与最小连通性证据写入 `dsh-bundle/docs/probe-findings.md` 新章节；探针脚本定名 `dsh-bundle/tests/auth-probe.test.ts`（无真实 web 时明确 skip 留痕）。若 grant 形态无法接入，按 design.md 风险段降级（credential seam 读取）并在 `.fenix-run-result.json` 申报实现路径变更。
-- [ ] 2.3 helper 测试 `dsh-bundle/tests/session-tidy-helper.test.ts`：参数解析/退出码映射/JSON 输出契约单测 + 归档调用集成用例（以临时 `DSH_HOME` 启动隔离 dsh web 实例验证 `archivedSessionIds` 写入与「已归档」幂等分类；若 dsh 无独立 web 启动入口，则以最小 WS stub 复现 gateway invoke 帧并在用例注释注明差异）。
+- [x] 2.2 新增 `dsh-bundle/src/session-tidy-helper.ts`：CLI（`--url <web基址> --secret-file <dsh_home>/.credentials.yaml --session-id <id> --timeout <秒>`），经 `@deepseek-ai/dsh-api-gateway/client` 开 `/api/remote.mux` 连接调用 `ctx.remote.workspace.archiveSession(sessionId)`；退出码三分类（0=成功/已归档幂等、2=可重试〔连接失败/超时/session-active〕、1=致命〔凭据缺失/协议错〕），stdout 单行 JSON（`{ok, session_id, outcome, detail}`）；编译产物入口为 `dsh-bundle/dist/session-tidy-helper.mjs`（`pnpm build` 增加该 entry，产物 gitignored 不入库）。
+- [x] 2.1 鉴权打通探针：以本机真实 web（`/root/.dsh/.credentials.yaml` 的 `records.client-connection.browser-session.payload.secret`）核实握手精确形态（header/cookie/upgrade 参数名，以 `@deepseek-ai/dsh-api-gateway/client` SDK 源码为准），将结论与最小连通性证据写入 `dsh-bundle/docs/probe-findings.md` 新章节；探针脚本定名 `dsh-bundle/tests/auth-probe.test.ts`（无真实 web 时明确 skip 留痕）。若 grant 形态无法接入，按 design.md 风险段降级（credential seam 读取）并在 `.fenix-run-result.json` 申报实现路径变更。
+- [x] 2.3 helper 测试 `dsh-bundle/tests/session-tidy-helper.test.ts`：参数解析/退出码映射/JSON 输出契约单测 + 归档调用集成用例（以临时 `DSH_HOME` 启动隔离 dsh web 实例验证 `archivedSessionIds` 写入与「已归档」幂等分类；若 dsh 无独立 web 启动入口，则以最小 WS stub 复现 gateway invoke 帧并在用例注释注明差异）。
 
 ## 3. daemon 侧 tidy 投递（core 侧）
 

@@ -140,3 +140,75 @@ update_goal, web_fetch, web_search, workflow, write`）。
    `strictDepBuilds: false`（恢复警告不阻断）+ `ignoredBuiltDependencies` 显式列知情忽略
    清单。Bundle 测试面不消费任何原生构建产物（esbuild 平台二进制走 optionalDependencies），
    忽略清单语义安全。
+
+## 七、session-tidy 归档通道探针（add-dsh-session-title-archive，2026-11-09）
+
+spec：run 终态经 dsh web HTTP API 将会话标记归档（`workspace.archiveSession`）。本节沉淀
+鉴权握手与传输形态的精确结论（探针脚本 `tests/auth-probe.test.ts`，CLI 端到端证据
+`.fenix/verify-evidence/add-dsh-session-title-archive/helper-cli-e2e-*.json`）。
+
+### 7.1 传输形态：unary 走 HTTP POST，非 WebSocket
+
+`/api/remote.mux` WebSocket 只承载 **stream** 方法；`archiveSession` 是 unary
+（`dsh-api-workspace-controller/lib/typert.host.js` 描述符 `invocation:{kind:'direct'}`）。
+SDK 浏览器 caller（`dsh-client-connection/lib/client.js createWebConnectionRpc`）把每次
+unary 调用发为：
+
+- `POST <base>/api/workspace/archiveSession`（路径 = `<channel>/<endpoint>` 去 semantics 前导斜杠）
+- body：`{"type":"client-request","rpcId":"<uuid>","method":"workspace/archiveSession",
+  "payload":{"args":{"request":{"sessionId":"<id>"}}}}`（args 键名取描述符
+  `parameters[0].name === "request"`；`prepareInvocation` 按参数名构造 named args）
+- 响应：`{"type":"server-response","rpcId":"<回显>","result":{"ok":true,"value":{"archivedSessionIds":[...]}}}`
+  或 `{"ok":false,"error":{"code":"...","message":"...","details":{...}}}`
+
+**「Python 手搓 WS 帧协议」风险不成立**：unary 根本不经 WS；helper 以 Node fetch +
+官方 envelope 形状实现（零 cordis 客户端栈引导——workspace 的 client 侧包是
+`window.__ModuleLoader__` 浏览器形态，Node 直载不可行，全栈引导反而不成立）。
+
+### 7.2 鉴权：`.credentials.yaml` grant 铸浏览器签名 cookie
+
+`dsh-client-connection/lib/index.js BrowserAuth`（源码逐行核实 + 真机探针验证）：
+
+- 签名密钥：credentialKey 产物键 `records["client-connection/browser-session"]`
+  （**斜杠合并单键**，非嵌套 map；YAML 形态 `kind: grant`、
+  `payload: {version: 1, secret: <base64url 32B>}`）
+- cookie 名：`dsh-auth-<base64url(sha256(authority))>`；authority = Host 头规范化
+  （`new URL("http://"+host).host`，如 `127.0.0.1:3080`），cookie 名与签名 audience 双绑定
+- cookie 值：`v1.<base64url(JSON payload)>.<base64url(HMAC-SHA256(secret, body))>`；
+  payload `{"version":1,"authority":"...","issuedAt":...,"expiresAt":...}`（**键序敏感**，
+  JSON.stringify 插入序 version→authority→issuedAt→expiresAt）
+- 验签窗：`issuedAt <= now < expiresAt` 且 `expiresAt-issuedAt <= cookieMaxAgeDays`
+  （缺省 30 天）——helper 铸 **1h TTL** cookie，落在任何合法配置窗内
+- 探针实测：无 cookie → 401；铸造 cookie → 200；签名篡改 → 401（cookie 真被验签，
+  排除「cookie 被忽略」假阳性）
+- 前置信任检查（`src/api-request-trust.ts`）：Host 须 loopback 或 trustedHosts；带 Origin
+  须等于 Host；`sec-fetch-site: cross-site` 拒绝——daemon 本机直连天然满足
+- 「The HTTP carrier accepts no query token outside the root exchange and no
+  Authorization-header token」——签名 cookie 是唯一程序化接入面，launch token 仅在
+  web 进程内存（无法从外部获取），cookie 自铸是正解
+
+### 7.3 archiveSession 语义与退出码映射
+
+宿主 `workspaceRegistry.archiveSession`（`dsh-workspace/lib/index.js`）源码核实：
+
+| 场景 | 宿主行为 | helper 退出码 |
+| --- | --- | --- |
+| 已归档（`archivedSessionIds.includes`） | 首检查直接 return，**no-op 幂等** | 0 |
+| live+持久化均无此会话（retention 清理后） | `session/not-found`（明确 miss） | 1（致命：重试永不成功） |
+| `workspace/session-activity` 监听器报活动 | `workspace/session-active` | 2（可重试；不带 stopActivity） |
+| web 离线 / 连接失败 / 超时 | fetch 失败 | 2 |
+| HTTP 5xx | 宿主瞬态 | 2 |
+| HTTP 401/403 / 404 / 非 envelope | 鉴权被拒 / 端点漂移 / 协议错 | 1 |
+
+CLI 端到端（真实 web，127.0.0.1:3080）实测三形态：已归档 id → exit 0
+`{"ok":true,...}`；不存在 id → exit 1 `session/not-found`；离线端口 → exit 2
+`连接失败`。归档调用**不带** `stopActivity`（run 已终态；spec 要求
+session-active 按稍后重试）。
+
+### 7.4 环境注记
+
+- 本机系统 dsh 为 0.2.2-rc.1（高于 bundle peer 钉扎 0.2.0-rc.2）：`plugin add link:` 被
+  版本门拒绝，按 CLI 指引在**隔离 DSH_HOME** 内 `plugin allow-version ... --accept-risk`
+  显式豁免后安装（冒烟/探针一次性环境；bundle 钉扎纪律不变，真实派发的健康检查仍按
+  白名单 fail-fast）。
+- 凭据文件 YAML 解析用 js-yaml（已列入 bundle dependencies——dist helper 运行时依赖）。
