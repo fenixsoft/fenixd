@@ -58,6 +58,16 @@
 - id: approval
   config:
     policy: never
+# permission 预设条目（2026-11-09 dsh 0.2.2-rc.1 适配）：新 runtime 的
+# permission-presets 在 apply 期 derive(sandbox, approval) 匹配不到预设表
+# 时报「composed sandbox and approval defaults match no preset; configure
+# defaultPreset explicitly」并拒激活（stderr 实证）。本组合（danger-full-
+# access + never）语义上就是预设表的 danger-full-access 项，显式钉
+# defaultPreset 消除 apply 期时序性误判；不改沙箱/审批行为（两键仍由
+# sandbox-policy / approval 条目驱动）。
+- id: permission
+  config:
+    defaultPreset: danger-full-access
 - id: llm-pi-ai
   inject: [fenixModelConfig]
   config:

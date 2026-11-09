@@ -12,7 +12,7 @@ export function defineTool<T>(options: T): T {
 }
 
 // ── @deepseek-ai/dsh-app-boot 桩 ───────────────────────────────────────────
-let mockRuntimeVersion = "0.2.0-rc.2";
+let mockRuntimeVersion = "0.2.2-rc.1";
 
 /** 测试内切换桩版本（版本钉扎 fail-fast 用例）。 */
 export function setMockDshRuntimeVersion(version: string): void {

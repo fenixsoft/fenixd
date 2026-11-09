@@ -12,7 +12,7 @@
 import { getDshRuntimeVersion } from "@deepseek-ai/dsh-app-boot";
 
 /** 唯一支持的 dsh 运行时版本（与 package.json peerDependencies 逐字一致）。 */
-export const PINNED_DSH_VERSION = "0.2.0-rc.2";
+export const PINNED_DSH_VERSION = "0.2.2-rc.1";
 
 /**
  * 断言当前 dsh 运行时版本与钉扎版本一致；不一致抛明确版本错误（fail-fast，

@@ -522,8 +522,13 @@ def _read_jsonl_entries(path: Path) -> Tuple[List[Dict[str, Any]], int]:
 # run jsonl 的自有事件行，消费方按 type 字段分发、不依赖「物理首行」位置；
 # prompt 行固定落盘于流头部（Popen 之前），dsh 投影的 system/init 首事件行
 # 因此顺延为物理第 2 行。证据采集取「首个非 runner 自有行」＝投影首事件。
+# stderr（2026-11-09 dsh 0.2.2-rc.1 适配）：runner 的 stderr 兜底行
+# （runner.py _read_stream is_stderr 分支，形状 {"type":"stderr","line":...}）
+# 与投影事件无关——新版 CLI 在首个 stdout 事件前会先向 stderr 写插件启动
+# 告警（如 permission presets 提示），若不跳过会被误认成投影首行。纯致命
+# stderr 仍由各车道退出码/stderr 检查兜住，此处跳过不掩盖失败。
 _RUNNER_OWNED_LINE_TYPES = frozenset(
-    {"prompt", "provider_marker", "throttled-wait"})
+    {"prompt", "provider_marker", "throttled-wait", "stderr"})
 
 
 def _first_projection_entry(

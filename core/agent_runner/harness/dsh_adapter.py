@@ -66,7 +66,7 @@ from .protocol import (
 # ── 部署常量（design D5：白名单不做配置键，随 Bundle README 版本表走代码）──
 
 #: dsh 版本白名单（dsh-bundle README 版本兼容表当前钉 release）。
-DSH_VERSION_WHITELIST = ("0.2.0-rc.2",)
+DSH_VERSION_WHITELIST = ("0.2.0-rc.2", "0.2.2-rc.1")
 
 #: Bundle 挂载的 dsh profile 名（dsh-bundle/README.md 部署段约定的自定义
 #: profile；shipped 模板名（headless 等）被 CLI 禁止作为自定义 profile 目标，
