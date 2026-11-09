@@ -32,4 +32,4 @@ arbiter（与 repair）裁决车道今日（2026-11-09）上午因基础设施�
 
 ## 影响面
 
-core/pm_engine/arbiter.py（失败分级 + infra 计数/复位）、core/agent_runner/（新增前置探针模块，复用 provider_circuit/latency 既有判定面）、fenixd.py（启动与周期接线）、tests/test_arbiter_lane_resilience.py（新增）。台账格式向后兼容（新 kind 不破坏既有读侧）。
+core/pm_engine/arbiter.py（失败分级 + infra 计数/复位）、core/agent_runner/（新增前置探针模块，复用 provider_circuit/latency 既有判定面）、core/config.py（`get_arbiter_config` 白名单扩展两新键）、core/pm_engine/escalation_chain.py（infra 终态字消费分支）、fenixd.py（启动与周期接线）、tests/test_arbiter_lane_resilience.py（新增）。台账格式向后兼容（新 kind 不破坏既有读侧）。
