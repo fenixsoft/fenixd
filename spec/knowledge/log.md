@@ -149,3 +149,4 @@
 ## [2026-11-09 17:12 UTC+8] fold | dsh-tidy-attempt-session-registration.md 折叠入库
 ## [2026-11-09 17:12 UTC+8] distill | move-project-nav-to-workspace-rows（第 1 轮，自动提交落库）：新建 fenix-dash-bridge-workspace-nav；ADR-339 新建（跨仓插件变更交付形态=基线快照+宿主直改+补丁镜像）；dsh-bridge-projects-section 页随能力退役删除（ADR-331 收口：域表尾退役注记、project-ledger-bounded-scroll 镜像条款收口 rev 2→3、index 简介同步、无相关 accepted ADR 需翻转）
 ## [2026-11-09 17:20 UTC+8] distill | move-project-nav-to-workspace-rows（第 1 轮，自动提交落库，折叠入库 2 条）
+## [2026-11-09 18:03 UTC+8] distill | fix-push-credential-env-and-retry-rearm（第 1 轮，自动提交落库）
