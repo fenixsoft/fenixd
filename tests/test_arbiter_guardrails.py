@@ -374,12 +374,18 @@ class TestDisabledZeroIntrusion:
 
 class TestLedgerCompleteness:
     def test_all_kinds_carry_five_segments(self, tmp_path):
-        """各 kind 台账条目五段结构完整（处置/升级/死人开关）。"""
+        """各 kind 台账条目五段结构完整（处置/升级/infra 分级/judgment 失败）。
+
+        harden-arbiter-lane-resilience 2.1：raise（spawn 级失败，0 rounds）
+        产 kind=infra-failed 条目（新失败终点族，五段完整性不分 kind 豁免）；
+        judgment 失败用「报告写盘但 outcome 非法」形态（有 API 往返）。
+        """
         for script, signal in (
             ({"run": {**GOOD_REPORT}}, "verify_env_blocked"),
             ({"run": {**ESCALATE_REPORT}}, "verify_env_blocked"),
             ({"run": "raise"}, "verify_env_blocked"),
-            ({"run": "raise"}, "verify_env_blocked"),
+            ({"run": {"summary": "s", "outcome": "bogus-outcome"}},
+             "verify_env_blocked"),
         ):
             runner = FakeRunner(tmp_path, script=script)
             lane = make_lane(tmp_path, runner=runner)

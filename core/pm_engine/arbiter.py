@@ -56,14 +56,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.agent_runner.lane_preflight import LanePreflightCache
+
 # 日志组件名（logger.warning(component, message) 口径）
 COMPONENT = "pm_engine.arbiter"
 
 # ── 配置缺省（spec「配置与 Dashboard 设置页」四键）───────────────────────
 ARBITER_ENABLED_DEFAULT = True
 ARBITER_BUDGET_WALLCLOCK_S_DEFAULT = 1800
-ARBITER_BUDGET_TOKENS_DEFAULT = 1_000_000
 ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT = 2
+ARBITER_BUDGET_TOKENS_DEFAULT = 1_000_000
+# infra 失败通道独立上限（harden-arbiter-lane-resilience 2.1）：缺省沿用
+# judgment 连败上限同值（design §能力一「独立上限缺省同值」）。
+ARBITER_MAX_CONSECUTIVE_INFRA_FAILURES_DEFAULT = (
+    ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT
+)
+# 派发前置探针结论 TTL（秒，agent-lane-preflight R3）：TTL 内复用探针结论，
+# 超时重探——探针含 dsh --version 子进程探测，不能每触发都跑。
+ARBITER_PREFLIGHT_TTL_DEFAULT = 300
 
 # 触发面信号词表（freeze_for_human 词汇机械枚举基线）。signal 维度触发面
 # 判定已反转为黑名单制（add-escalation-chain-admin-arbiter）：
@@ -246,6 +256,17 @@ class ArbiterLane:
         self._deadmanned: set = set()
         # 死人开关：签名 → 连续失败计数（成功清零；连败达阈值→停止自主尝试）
         self._failure_counts: Dict[str, int] = {}
+        # infra 失败通道（harden-arbiter-lane-resilience 2.1）：与 judgment
+        # 连败计数完全分离的独立计数——基础设施故障（0 rounds/环境指纹）
+        # 不烧死人开关资格，达上限也只记台账+告警不升级人工，健康探针
+        # 成功（:meth:`on_lane_healthy`）即全量清零恢复自主处置资格。
+        self._infra_failure_counts: Dict[str, int] = {}
+        # 派发前置探针结论 TTL 缓存（agent-lane-preflight R3）：TTL 内复用
+        # 探针结论零子进程开销，超时首查重探；TTL 热更新经 _preflight_gate
+        # 重建（下次生效）。
+        self._preflight_cache = LanePreflightCache(
+            ARBITER_PREFLIGHT_TTL_DEFAULT
+        )
         # 预算记账（贯穿 run 生命周期，验收「预算记账贯穿」）：run_id → 累计
         self._budget_ledger: Dict[str, dict] = {}
         # 在飞触发的迟到 alert 补绑表（签名 → alert_id；worker 取到触发时合并）
@@ -278,6 +299,10 @@ class ArbiterLane:
                 "budget_wallclock_s": ARBITER_BUDGET_WALLCLOCK_S_DEFAULT,
                 "budget_tokens": ARBITER_BUDGET_TOKENS_DEFAULT,
                 "max_consecutive_failures": ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT,
+                "max_consecutive_infra_failures": (
+                    ARBITER_MAX_CONSECUTIVE_INFRA_FAILURES_DEFAULT
+                ),
+                "preflight_ttl": ARBITER_PREFLIGHT_TTL_DEFAULT,
             }
 
     @property
@@ -362,7 +387,11 @@ class ArbiterLane:
         - ``"excluded"``：signal 在 chain.blacklist 黑名单（留 narrative 与
           人类——不进 Arbiter 也不进链，直达人工队列）；
         - ``"deduped"``：同签名已派发/在飞（含复现升级在飞）——本次触发
-          只绑 alert/补挂告警升级，不再派发；
+          只绑 alert/补挂告警升级，不再派发；**派发前置探针拦截
+          （harden-arbiter-lane-resilience 3.2）同样返回本字**（零新契约，
+          调用方零改动）——车道环境不可用时跳过本次派发且零状态变更
+          （不写 _active、不消费复现标记、不落台账、不计配额），信号闭环
+          靠既有触发面复报/回扫候选重扫自然回喂；
         - ``"recurrence-escalated"``：同签名已派发过（复发）——按 design D6
           直接产裁决包升级，不再自主处置；
         - ``"queued"``：已入单飞队列（排队后串行消费）。
@@ -377,6 +406,13 @@ class ArbiterLane:
             # 黑名单 kill switch 命中（触发面反转后 excluded=黑名单）：不进
             # Arbiter 也不进链，调用方走既有落盘路径（直达人工 + narrative）
             return "excluded"
+        # ── 派发前置探针拦截（agent-lane-preflight R3）────────────────
+        # 拦截点位于一切 dedup/_recurrence_inflight 复现标记消费之前；命中
+        # 零状态变更（见返回值段 deduped 条目注记）。关闭态零侵扰纪律下
+        # disabled/excluded 先行短路（enabled=false 不派发不拦截不产生
+        # 台账），探针只在真实派发意图上把关。
+        if not self._preflight_gate():
+            return "deduped"
         sig = arbiter_failure_signature(spec, signal_type)
         # 跨重启配额判定（D6 单次纪律的配额制取代，add-escalation-chain-
         # admin-arbiter 3.3）：已自主处置次数 = 拍板计数（chain 配额状态文件
@@ -945,7 +981,11 @@ class ArbiterLane:
         ``"escalated"``=Arbiter 自判须人类拍板，链终点上升；
         ``"dead-man"``=死人开关触发（半成品包已升级），链终点上升；
         ``"failed"``=未达阈值，链内循环重派（重派上限由链侧 bounded by
-        max_consecutive_failures，车道内部连败计数自然收敛到 dead-man）。
+        max_consecutive_failures，车道内部连败计数自然收敛到 dead-man）；
+        ``"infra-failed"``=基础设施故障或派发前置探针拦截（不进死人开关、
+        不升级人工）——链侧专用消费分支承接：不循环重派、不上升链终点，
+        deferred 让行范式留痕等探针复位/下次触发面回喂
+        （harden-arbiter-lane-resilience 2.1/3.2）。
 
         触发 dict 约定（链传入）：标准字段（signature/spec/signal_type/
         severity/description/evidence/recommended_action）＋转单载荷
@@ -958,6 +998,18 @@ class ArbiterLane:
         记账归链状态文件 in_flight 区管）。
         """
         sig = str(trigger.get("signature") or "")
+        # ── 派发前置探针拦截（agent-lane-preflight R3）────────────────
+        # 拦截点位于 _consume_pending_bind 之前；命中零状态变更（不写
+        # _active、不消费补绑、不落台账、不计配额），链侧按 infra-failed
+        # 消费分支让行留痕（零状态变更含链在办区——mark/clear 均在调用方
+        # _process_item，本方法返回即让链正常 clear，无滞留）。失败原因
+        # 回填 trigger 工作字段供链事件留痕可读（trigger 是链本次调用专属
+        # dict，非持久状态）。
+        if not self._preflight_gate():
+            trigger["_chain_failure_reason"] = (
+                "派发前置自检拦截：车道环境不可用（探针 unhealthy）"
+            )
+            return "infra-failed"
         with self._lock:
             self._consume_pending_bind(sig, trigger)
         try:
@@ -1274,12 +1326,22 @@ class ArbiterLane:
         self._apply_gaps(trigger, report)
 
     def _on_run_failed(self, trigger: dict, result: dict, budget: dict) -> str:
-        """失败路径：连败计数 → 死人开关（半成品包升级）/ 留待下次触发重试。
+        """失败路径：infra/judgment 分级 → 各自通道。
+
+        分级（harden-arbiter-lane-resilience 2.1）：预算耗尽恒判 judgment
+        （真实车道真实消耗）；其余按 :func:`classify_lane_failure`——
+        0 rounds（无 API 往返样本，信封 rounds 透传真值）或环境指纹命中
+        （MISSING_CREDENTIAL / No such file or directory / skipping profile
+        bundle）判 infra。
 
         返回终态字（add-escalation-chain-admin-arbiter 3.4 失败双轨的链消费
-        口径）：``"dead-man"``（死人开关触发，半成品包已升级）或 ``"failed"``
-        （未达阈值，等待同签名下次触发重试）。链同步驱动按返回值决定循环
-        重派或终点上升（半成品调查包已附台账）。
+        口径 + harden 2.1 infra 终态）：
+        ``"dead-man"``（死人开关触发，半成品包已升级）、``"failed"``
+        （judgment 未达阈值，等待同签名下次触发重试）、``"infra-failed"``
+        （基础设施故障——**不进死人开关、不升级人工**，台账 kind=
+        infra-failed 计独立计数，健康探针复位后同签名恢复自主处置资格）。
+        链同步驱动按返回值决定循环重派或终点上升（infra-failed 由链侧
+        专用消费分支承接：不重派不上升，deferred 范式留痕等回喂）。
         """
         sig = str(trigger.get("signature") or "")
         cfg = self.config()
@@ -1287,17 +1349,41 @@ class ArbiterLane:
             cfg.get("max_consecutive_failures")
             or ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT
         )
-        with self._lock:
-            count = self._failure_counts.get(sig, 0) + 1
-            self._failure_counts[sig] = count
-            self._active.discard(sig)
-            self._consume_pending_bind(sig, trigger)
+        max_infra = int(
+            cfg.get("max_consecutive_infra_failures")
+            or ARBITER_MAX_CONSECUTIVE_INFRA_FAILURES_DEFAULT
+        )
         reason = str(result.get("error") or "run 失败")
         half_report = {
             "summary": str((result.get("report") or {}).get("summary") or ""),
             "evidence_refs": (result.get("report") or {}).get("evidence_refs") or [],
         }
         trigger["_chain_failure_reason"] = reason[:400]
+        # ── infra/judgment 分级（预算耗尽恒判 judgment，先行短路）──────
+        if budget.get("tokens_exhausted") or budget.get("wallclock_exhausted"):
+            failure_class = "judgment"
+        else:
+            try:
+                from core.agent_runner.lane_preflight import classify_lane_failure
+
+                failure_class = classify_lane_failure(result)
+            except Exception as e:
+                # 分级器不可用按现行 judgment 语义（保守——不因新机制故障
+                # 改变既有死人开关行为）
+                self._log(
+                    "warning",
+                    f"失败分级器不可用（按 judgment 语义处理）: {type(e).__name__}: {e}",
+                )
+                failure_class = "judgment"
+        if failure_class == "infra":
+            return self._on_infra_failed(
+                trigger, result, budget, sig, reason, half_report, max_infra
+            )
+        with self._lock:
+            count = self._failure_counts.get(sig, 0) + 1
+            self._failure_counts[sig] = count
+            self._active.discard(sig)
+            self._consume_pending_bind(sig, trigger)
         if count >= max_fail or budget.get("tokens_exhausted") or budget.get(
             "wallclock_exhausted"
         ):
@@ -1360,6 +1446,131 @@ class ArbiterLane:
             )
             return "failed"
 
+    def _on_infra_failed(
+        self,
+        trigger: dict,
+        result: dict,
+        budget: dict,
+        sig: str,
+        reason: str,
+        half_report: dict,
+        max_infra: int,
+    ) -> str:
+        """infra 失败通道（harden-arbiter-lane-resilience 2.1，与 dead-man 通道并行互斥）。
+
+        独立计数 ``_infra_failure_counts``（不烧 judgment 连败资格）；写台账
+        kind=infra-failed（action 注明待健康探针复位）；**不**加
+        ``_deadmanned``、**不**升级人工 alert——改 WARNING 日志 + 一次性
+        「车道环境不可用」告警（dedup_key 单发，恢复经探针 healthy 自动
+        关闭）。达上限同样只记台账+告警：资格保留，等探针复位（环境修复
+        后签名恢复自主处置资格——2026-11-09 四签名秒挂 8h 事故的
+        「环境恢复后资格无法恢复」缺口收口）。
+
+        返回 ``"infra-failed"`` 终态字：异步路径（_process_trigger）忽略
+        返回值零影响；链同步路径经 process_chain_handoff 透传，链侧
+        infra-failed 消费分支承接（escalation_chain：不循环重派、不上升
+        链终点、不升级人工，deferred 让行范式留痕）。
+        """
+        with self._lock:
+            infra_count = self._infra_failure_counts.get(sig, 0) + 1
+            self._infra_failure_counts[sig] = infra_count
+            self._active.discard(sig)
+            self._consume_pending_bind(sig, trigger)
+        self._write_ledger(
+            trigger,
+            result,
+            kind="infra-failed",
+            report=half_report,
+            budget=budget,
+            action_or_upgrade=(
+                f"基础设施故障（infra {infra_count}/{max_infra}）：车道环境"
+                "不可用，不进死人开关、不升级人工——待健康探针复位后重试。"
+                f"失败原因: {reason}"
+            ),
+            status_after="",
+        )
+        self._log(
+            "warning",
+            f"arbiter 基础设施故障分级（infra-failed，不进死人开关）"
+            f"spec={trigger.get('spec')} sig={sig} "
+            f"({infra_count}/{max_infra}): {reason[:160]}",
+        )
+        # 一次性「车道环境不可用」告警（dedup_key 单发；非人工升级——
+        # 告警收口走探针 healthy 自动关闭，不走人工处置）
+        try:
+            from core.agent_runner.lane_preflight import ensure_lane_env_alert
+
+            ensure_lane_env_alert(
+                self.project_root,
+                self.logger,
+                reasons=[reason],
+                origin="arbiter-run-infra-failed",
+            )
+        except Exception as e:
+            self._log("warning", f"车道环境告警写入失败（fail-open）: {e}")
+        return "infra-failed"
+
+    # ── 前置自检与复位消费（agent-lane-preflight / harden 2.2）────────
+
+    def _full_config(self) -> dict:
+        """全量 config 读取（探针需要 agent.harness/agents.models/llm 段，
+        非 arbiter 六键切片；失败回空 dict=探针按缺省选型 fail-open）。"""
+        try:
+            from core.config import ConfigLoader
+
+            return ConfigLoader.resolve_config(self.project_root)
+        except Exception as e:
+            self._log("warning", f"探针用全量配置读取失败（按空配置降级）: {e}")
+            return {}
+
+    def _preflight_gate(self) -> bool:
+        """派发前置探针闸（TTL 缓存内复用结论；返回 True=放行派发）。
+
+        - unhealthy → False：调用方零状态变更返回既有终态字（异步
+          deduped / 链 infra-failed），不消耗 infra 计数、不产半成品包；
+        - healthy → True 放行，且此前有 infra 停机计数时触发复位
+          （:meth:`on_lane_healthy`，能力一 R3「派发前置复位」触发点）。
+        """
+        ttl = int(
+            self.config().get("preflight_ttl")
+            or ARBITER_PREFLIGHT_TTL_DEFAULT
+        )
+        if self._preflight_cache.ttl_s != ttl:
+            # TTL 热更新：重建缓存（下次取用按新 TTL 探测生效）
+            self._preflight_cache = LanePreflightCache(ttl)
+        health = self._preflight_cache.get_or_probe(
+            self._full_config(), self.logger
+        )
+        if health.ok:
+            self.on_lane_healthy(source="dispatch-preflight")
+            return True
+        self._log(
+            "warning",
+            "arbiter 派发前置自检拦截（车道环境不可用，零状态变更跳过本次"
+            f"派发，信号靠触发面复报/回扫候选重扫回喂）: "
+            + "；".join(health.reasons)[:400],
+        )
+        return False
+
+    def on_lane_healthy(self, source: str = "preflight") -> None:
+        """复位消费（harden-arbiter-lane-resilience 2.2 / R3）：健康信号
+        → 清全部 infra 计数 + 日志留痕。
+
+        judgment 连败计数（``_failure_counts``）与 dead-man 永久语义
+        （``_deadmanned`` + 台账 dead-man 读侧）**不动**——那是对真实判断
+        失败的资格治理，无复位（design §能力一复位消费）。infra 计数为空
+        时静默返回（零写零日志，周期探针 healthy 高频复用不刷屏）。
+        """
+        with self._lock:
+            had = bool(self._infra_failure_counts)
+            self._infra_failure_counts.clear()
+        if had:
+            self._log(
+                "info",
+                f"车道健康，infra 计数复位（source={source}）——签名恢复"
+                "自主处置资格（judgment 连败与 dead-man 不受影响）",
+            )
+
     # ── 处置台账（4.2）───────────────────────────────────────────────
 
     def _write_ledger(
@@ -1388,9 +1599,13 @@ class ArbiterLane:
             )
         root = str(report.get("root_cause") or "")
         if not root.strip():
+            # 失败终点族（judgment 失败/死人开关/infra 分级）根因缺段以真实
+            # 失败现场口径补位——infra-failed 同为失败终点（环境不可用），
+            # 五段完整性验收不分 kind 豁免（test_arbiter_guardrails
+            # TestLedgerCompleteness 全 kind 断言）。
             root = (
                 "run 未产出根因（失败终点，成因见 action_or_upgrade 与失败现场）"
-                if kind in ("failed", "dead-man")
+                if kind in ("failed", "dead-man", "infra-failed")
                 else ""
             )
         evidence = list(report.get("evidence_refs") or [])

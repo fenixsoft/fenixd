@@ -16,6 +16,7 @@ worker 为 daemon 线程：确定性等待以 queue.unfinished_tasks 轮询（�
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -125,6 +126,14 @@ def make_lane(tmp_path, config=None, runner=None, sm=None):
     lane = ArbiterLane(tmp_path, FakeLogger())
     lane.set_runner(runner or FakeRunner(tmp_path))
     lane.set_state_machine(sm or FakeStateMachine())
+    # harden-arbiter-lane-resilience 3.2：派发前置探针结论预种 healthy——
+    # 测试密闭性（MUST NOT 依赖宿主 CLI/凭据环境；探针拦截/unhealthy 行为
+    # 由 tests/test_arbiter_lane_resilience.py 专测）。未播种时闸门会在每
+    # 次 submit 做真实子进程/文件系统探测，无 claude CLI 的宿主上全文件红。
+    from core.agent_runner.lane_preflight import LaneHealth
+
+    lane._preflight_cache._health = LaneHealth(ok=True, reasons=[])
+    lane._preflight_cache._probed_at = time.monotonic()
     if config is not None:
         lane.config = lambda: {
             "enabled": config.get("enabled", True),
@@ -132,6 +141,9 @@ def make_lane(tmp_path, config=None, runner=None, sm=None):
             "budget_tokens": config.get("budget_tokens", 1000000),
             "max_consecutive_failures": config.get(
                 "max_consecutive_failures", 2),
+            "max_consecutive_infra_failures": config.get(
+                "max_consecutive_infra_failures", 2),
+            "preflight_ttl": config.get("preflight_ttl", 300),
         }
     return lane
 
@@ -333,6 +345,19 @@ class TestDedupAndRecurrence:
     def test_double_throat_single_dispatch_with_alert_bind(self, tmp_path):
         """双咽喉同签名：首个 queued、第二个 deduped 且 alert 补绑。"""
         lane = make_lane(tmp_path)
+        # 确定性闸（test_arbiter_backlog_sweep blocking_lane 同款教训）：把
+        # worker 拦在 _run_agent 内，保证 out2 dedup 判定时 sig 仍在
+        # _active——首跑失败（judgment 重试语义）会立即 discard _active，
+        # 不设闸 out2 结果是调度彩票（load-flake 实测）。
+        release = threading.Event()
+        runner = lane._runner_ref
+        orig_run_agent = runner._run_agent
+
+        def _gated_run(*a, **k):
+            release.wait(timeout=10)
+            return orig_run_agent(*a, **k)
+
+        runner._run_agent = _gated_run
         out1 = lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                            alert_id=None)
         assert out1 == "queued"
@@ -341,6 +366,7 @@ class TestDedupAndRecurrence:
             "alert-1",
         )
         assert out2 == "deduped"
+        release.set()
         assert drain(lane)
         # alert-1 经补绑进入触发，处置升级路径有挂靠目标（台账/告警以
         # _process_trigger 结果为准，这里只断言补绑生效不抛）
@@ -417,6 +443,13 @@ class TestSingleFlight:
 
 # ── 死人开关三路径 ──────────────────────────────────────
 
+# harden-arbiter-lane-resilience 2.1：spawn 级失败（run="raise" → 异常路径
+# rounds=0）现分级为 infra（不进死人开关）；judgment 死人开关回归需「有
+# API 往返」的失败——报告写盘但 outcome 非法（run_arbiter 产物硬门拦截，
+# turns=1 > 0、error 无环境指纹）即 judgment 形态。
+JUDGMENT_FAIL_REPORT = {"summary": "s", "outcome": "bogus-outcome"}
+
+
 class TestDeadManSwitch:
     def _escalation_targets(self, tmp_path, lane):
         """断言台账含 dead-man 且告警升级路径被调用（经 ledger 检查）。"""
@@ -425,8 +458,8 @@ class TestDeadManSwitch:
         return kinds
 
     def test_consecutive_failures_trigger_deadman(self, tmp_path):
-        """连败 2 次（缺省阈值）→ dead-man 升级。"""
-        runner = FakeRunner(tmp_path, script={"run": "raise"})
+        """连败 2 次（缺省阈值）→ dead-man 升级（judgment 形态：有 API 往返）。"""
+        runner = FakeRunner(tmp_path, script={"run": dict(JUDGMENT_FAIL_REPORT)})
         lane = make_lane(tmp_path, runner=runner)
         lane.submit_trigger(spec="spec-a", signal_type="verify_env_blocked",
                     alert_id="alert-1")
@@ -440,8 +473,8 @@ class TestDeadManSwitch:
         assert out == "recurrence-escalated"
 
     def test_single_failure_retries_without_deadman(self, tmp_path):
-        """单次失败留重试余量：不升级、台账 kind=failed。"""
-        runner = FakeRunner(tmp_path, script={"run": "raise"})
+        """单次失败留重试余量：不升级、台账 kind=failed（judgment 形态）。"""
+        runner = FakeRunner(tmp_path, script={"run": dict(JUDGMENT_FAIL_REPORT)})
         lane = make_lane(tmp_path, runner=runner)
         lane.submit_trigger(spec="spec-b", signal_type="verify_env_blocked")
         assert drain(lane)
@@ -605,7 +638,7 @@ assert hasattr(admin_store.AdminStore, "arbiter_resolve")
 assert hasattr(admin_store.AdminStore, "arbiter_upgrade")
 assert hasattr(adj, "narrative_yielded_to_arbiter")
 cfg = config_mod.ConfigLoader.get_arbiter_config({{}})
-assert cfg == {{"enabled": True, "budget_wallclock_s": 1800, "budget_tokens": 1000000, "max_consecutive_failures": 2}}, cfg
+assert cfg == {{"enabled": True, "budget_wallclock_s": 1800, "budget_tokens": 1000000, "max_consecutive_failures": 2, "max_consecutive_infra_failures": 2, "preflight_ttl": 300}}, cfg
 # restart_request 为运行时瞬时产物（supervisor 消费即删除）——不进常驻断言
 # （2026-11-01：曾断言根路径文件存在，消费后永久失败=时间炸弹）
 assert mr.ARBITER_REPORT_OUTCOMES == ("resolved", "escalate")
