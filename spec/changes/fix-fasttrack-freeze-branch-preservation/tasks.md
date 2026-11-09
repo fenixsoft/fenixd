@@ -8,7 +8,7 @@
 
 ## 2. 防线一：冻结即保全
 
-- [ ] 2.1 实现保全助手（preserve-before-freeze，见 design.md 防线 1 契约）：三层分支解析复用 `_resolve_preserved_branch` 同源口径、rev-list 非空闸门、pre-rmtree snapshot 复用 `core/worktree_manager/lifecycle.py:1283` 语义、`_frozen_hold: True` + `branch`/`implementer_run` 锚点 `.STATE.md.lock` 内原子回写、幂等、fail-open ERROR 审计；接线 `core/pm_engine/dispatch/fast_track.py` 两处重试耗尽站点（≈:1079 与 ≈:2168）在 `freeze_for_human` 之前调用，并把保全摘要并入告警 evidence（R1/R2）
+- [ ] 2.1 实现保全助手（preserve-before-freeze，见 design.md 防线 1 契约）：三层分支解析复用 `_resolve_preserved_branch` 同源口径、rev-list 非空闸门、pre-rmtree snapshot 复用 `core/worktree_manager/lifecycle.py:1283` 语义、`_frozen_hold: True` + `branch`/`implementer_run` 锚点 `.STATE.md.lock` 内原子回写、幂等、fail-open ERROR 审计；接线 `core/pm_engine/dispatch/fast_track.py` 全部四处冻结站点（≈:1076 契约违反 / ≈:1308 硬校验失败 / ≈:2165 通用失败 / ≈:2300 零变更哨）在 `freeze_for_human` 之前调用，并把保全摘要并入告警 evidence（R1/R2）；`_frozen_hold` 与锚点回写 MUST 同一原子窗口（扩展 `mark_frozen_hold` 新参数可选缺省且其余调用点逐位不变，或助手单次锁定写覆盖全部字段）
 - [ ] 2.2 实现期若判定保全逻辑应在冻结入口内聚（freeze_for_human 增可选保全回调），允许替代 2.1 的站点外置接线，但 MUST 保持其余 freeze_for_human 调用点行为逐位不变，并在 2.1 同一提交内说明选择依据
 
 ## 3. 防线二：清理守护

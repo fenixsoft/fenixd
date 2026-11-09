@@ -8,7 +8,7 @@ fast-track 车道重试耗尽冻结转人工时实现分支/现场未保全（si
 
 ### R1 冻结即保全（MUST）
 
-fast-track 重试耗尽冻结（`core/pm_engine/dispatch/fast_track.py` 两处 `freeze_for_human` 站点 ≈:1079 与 ≈:2168）在冻结前 MUST 对实现现场执行保全：实现分支相对解析基线（`resolve_base_branch`）存在未合并提交时，产生 pre-rmtree snapshot（沿用 `core/worktree_manager/lifecycle.py:1283` 既有快照语义）并保留分支，置 `_frozen_hold: True` 并在同一原子窗口回写 STATE `branch`/`implementer_run` 锚点（`.STATE.md.lock` 内最新条目复核，与 unfreeze_spec 同口径）。分支解析 MUST 复用 `_resolve_preserved_branch` 同源三层口径，MUST NOT 另持平行副本。保全失败 MUST NOT 阻断冻结（fail-open + ERROR 审计）。零未合并提交时 MUST 退化为现状行为（不置 hold、不产快照）。重复保全 MUST 幂等。
+fast-track 冻结转人工冻结（`core/pm_engine/dispatch/fast_track.py` 全部四处 `freeze_for_human` 直接调用站点：≈:1076 契约违反重试耗尽、≈:1308 硬校验失败重试耗尽（`_hard_check_fail_accounting`）、≈:2165 通用失败重试耗尽、≈:2300 零变更哨三连冻结）在冻结前 MUST 对实现现场执行保全：实现分支相对解析基线（`resolve_base_branch`）存在未合并提交时，产生 pre-rmtree snapshot（沿用 `core/worktree_manager/lifecycle.py:1283` 既有快照语义）并保留分支，置 `_frozen_hold: True` 并在同一原子窗口回写 STATE `branch`/`implementer_run` 锚点（`.STATE.md.lock` 内最新条目复核，与 unfreeze_spec 同口径）。分支解析 MUST 复用 `_resolve_preserved_branch` 同源三层口径，MUST NOT 另持平行副本。保全失败 MUST NOT 阻断冻结（fail-open + ERROR 审计）。零未合并提交时 MUST 退化为现状行为（不置 hold、不产快照）。重复保全 MUST 幂等。
 
 ### R2 告警证据（MUST）
 
@@ -16,7 +16,7 @@ fast-track 重试耗尽冻结（`core/pm_engine/dispatch/fast_track.py` 两处 `
 
 ### R3 清理守护（MUST）
 
-所有可删除 `fenix/<spec>-<ts>` 实现分支或 spec worktree 的清理入口（实现期全量定位，含 `core/worktree_manager/stale_sweep.py`、`core/worktree_manager/lifecycle.py` 遗产处置/分支删除段）对 `frozen=True` 且 `_frozen_hold: True`（或保全登记在册）的 spec MUST 跳过删除并 WARNING 留痕。守卫 MUST NOT 引入新锁序。
+所有可删除 `fenix/<spec>-<ts>` 实现分支或 spec worktree 的清理入口（实现期全量定位，含 `core/worktree_manager/stale_sweep.py`、`core/worktree_manager/lifecycle.py` 遗产处置/分支删除段）对 `frozen=True` 且 `_frozen_hold: True`（或保全登记在册）的 spec MUST 跳过删除并 WARNING 留痕。守卫 MUST NOT 引入新锁序。守卫只约束自动周期清理入口；显式 spec 删除/归档收尾通道（先清 STATE 条目、再清理现场）不属守卫对象，MUST NOT 被守卫反向阻断。
 
 ### R4 续做闭环（MUST）
 
