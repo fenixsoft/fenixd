@@ -37,3 +37,15 @@
 
 - 首轮写入 7 个场景
 
+
+## 验证后缺陷修正（2026-11-09 端到端复验追加）
+
+**缺陷**：真实环境核查发现 dsh-title-unit-tests 未覆盖的失效形态——插件在真实 headless spawn 下全程静默未落盘：合并后唯一 fenixd spawn 会话（session-3a4b595c）流内 title 记录为 `source.kind=fallback`（首条消息兜底），确定性 user 源从未出现，且无任何 WARN 痕迹。
+
+**根因**（源码坐实 + 同款接线 `--patch` 探针端到端复现）：dsh-session `announce()` 同步派发 `session/created` 期间会话流只读（append 闸关闭，announcement="dispatching"），监听器内同步 `sessionTitle.rename()` 必抛 `cannot append before session/created completes`；插件 try/catch 吞错走 logger.warn，headless 下日志静默。原验证树单测 mock 未复刻该语义，故 7/7 pass 仍漏网。
+
+**修正**：commit `0d5f066db`——`dsh-bundle/src/session-title.ts` rename 经 `queueMicrotask` 推迟到派发循环同步结束后落盘（微任务仍先于 run() 续行与首条消息兜底，user pin 语义不变）；`tests/session-title.test.ts` 新增「dsh announce 追加闸契约」用例（dispatching 旗标复刻），vitest 128 passed。
+
+**端到端复验**（隔离 DSH_HOME + 真实 fenix profile + FENIX_RUN_* env）：`session/created` 后 7ms、seq 0 落 `{"type":"session/title","data":{"title":"fake-proj · fake-wt","source":{"kind":"user"}}}`，流中零 `title-llm-request`（LLM 兜底被 pin 抑制）。排查结论已投递 `spec/knowledge/_inbox/dsh-session-created-append-gate.md`。
+
+**运营面备注**（非代码缺陷）：标题/归档均无存量回填，只对部署后新会话/新终态生效；bundle 经 profile 软链实时生效，daemon 侧归档挂接需各项目 daemon 重启后才有。
