@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-09
+mode: full
+title: 修复推送凭证环境依赖与重启退避续推
