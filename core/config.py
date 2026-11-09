@@ -443,6 +443,84 @@ class ConfigLoader:
                 "修复：config 增配 agent.dsh_api: anthropic-messages"
             )
 
+    # ── dsh web 归档投递配置面（add-dsh-session-title-archive 3.2）──────
+    # agent.dsh_web_url：dsh web 基址（session-tidy 归档投递的 helper
+    # --url 实参）；agent.dsh_session_tidy：归档投递总开关（缺省 true，
+    # false 时 daemon 侧投递暂停、重试队列不清空；bundle 侧标题装配不受
+    # 影响）。分层覆盖与热重载语义与 get_harness 同面：每次调用现读现
+    # 校验，30s 热更新重载即生效；设置页回显与投递消费同函数不脱节。
+    DSH_WEB_URL_DEFAULT = "http://127.0.0.1:3080"
+
+    @classmethod
+    def get_dsh_web_url(cls, config: Dict[str, Any]) -> str:
+        """读取并校验 ``agent.dsh_web_url``（dsh web 基址）。
+
+        缺省 ``http://127.0.0.1:3080``；显式 null 与 get_harness 的 None 短路
+        不同——按本文件「显式 null=写法问题」纪律（23468c4eba86 先例）硬
+        报错，避免静默回退把归档投递打到错误端点。非法值（无法解析/非
+        http(s)/缺 host/带路径或 query/fragment）**启动校验报错**（ValueError
+        加载期即暴露）：该键错误属部署错误而非可回退缺省的展示键，fail-fast
+        优于静默打错端点。合法值尾斜杠归一（helper 侧拼接 ``/api/<method>``
+        不受尾斜杠影响，归一保证设置页回显与实参一致）。
+        """
+        raw = cls.get(config, "agent.dsh_web_url", None)
+        if raw is None:
+            # 区分「键缺失」（回退缺省）与「键存在但值为 null」（显式 null
+            # 写法问题，硬报错——23468c4eba86 纪律）。
+            agent_segment = cls._segment_or_empty(config, "agent")
+            if "dsh_web_url" in agent_segment:
+                raise ValueError(
+                    "agent.dsh_web_url is explicitly null (key present with "
+                    "empty value): remove the line to use the default "
+                    f"{cls.DSH_WEB_URL_DEFAULT}, or set an http(s) base url"
+                )
+            return cls.DSH_WEB_URL_DEFAULT
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(
+                f"agent.dsh_web_url 配置值不支持：{raw!r}"
+                f"（须为 http(s)://host:port 形态基址，缺省 {cls.DSH_WEB_URL_DEFAULT}）"
+            )
+        text = raw.strip()
+        from urllib.parse import urlparse
+
+        parsed = urlparse(text)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                f"agent.dsh_web_url 配置值不支持：{raw!r}"
+                f"（须为 http(s)://host:port 形态基址，不带路径/参数）"
+            )
+        return text.rstrip("/")
+
+    @classmethod
+    def get_dsh_session_tidy_enabled(cls, config: Dict[str, Any]) -> bool:
+        """读取并归一 tidy 总开关 ``agent.dsh_session_tidy``（缺省 true）。
+
+        仅接受布尔；非布尔（含显式 null/字符串）按缺省 true 放行并 WARNING
+        一次（fail-open：开关误配只影响归档卫生不影响主链路，与 get_harness
+        非法值回退同模式）。false 语义 = 投递暂停、重试队列不清空（spec：
+        恢复开关后继续消费）；bundle 侧标题装配不受本开关影响。
+        """
+        raw = cls.get(config, "agent.dsh_session_tidy", None)
+        if raw is None:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        cls._warn_reader_once(
+            "agent.dsh_session_tidy",
+            raw,
+            _logger.warning,
+            "agent.dsh_session_tidy 配置值不支持：%r（合法值：true/false）；"
+            "按缺省 true 投递",
+            raw,
+        )
+        return True
+
     # ── run 停滞预算（evo-add-run-stop-loss 2.2，缺省关闭）────────────
     # agents.run_stall_budget_* 三键：复合判停（连续 N 次达到 120s 的往返，
     # 或 stall 占比达到一半且超过 M 分钟无产物 mtime 进展）的开关与阈值。
@@ -1367,6 +1445,14 @@ class ConfigLoader:
                                 f"like the runtime normalizer): element #{_idx} "
                                 f"{_el!r} in {schedule_val!r}"
                             )
+
+        # Validate agent 段（add-dsh-session-title-archive 3.2）：仅当
+        # agent.dsh_web_url 显式提供时进 get_dsh_web_url 校验（非法 URL
+        # 启动校验硬报错——加载与 30s 热更新双路径都经此处，坏值不被静默
+        # 放行到归档投递）；agent 段缺失/为空 = 全缺省，零校验零噪音。
+        # 显式 null 由 get_dsh_web_url 内部按「键存在但值为 null」硬报错。
+        if cls._segment_or_empty(config, "agent"):
+            cls.get_dsh_web_url(config)
 
         # Validate project type — 仅当（严格路径 或 显式提供 type）时校验。
         # 段入口经 _segment_or_empty 归一（code-review item b72e37e34e3b）：

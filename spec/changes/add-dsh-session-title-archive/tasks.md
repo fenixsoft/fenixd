@@ -47,9 +47,9 @@
 
 ## 3. daemon 侧 tidy 投递（core 侧）
 
-- [ ] 3.1 新增 `core/dsh_session_tidy.py`：投递器——同步子进程调用 helper（超时缺省 10s）→ 失败入持久化重试队列（JSONL，`<project_root>/.fenix/dsh_session_tidy/pending.jsonl`——对齐 `.fenix/runs`、`.fenix/maintenance_log.jsonl` 既有惯例，daemon 重启恢复消费）；backoff 重试、放弃阈值（缺省 200 条或 30 天，先到为准）放弃时 WARN；「已归档」按成功；队列并发 1。单测：入队/重试/放弃/幂等分类/重启恢复（队列文件读写 round-trip）。
-- [ ] 3.2 `core/config.py` 新增 `agent.dsh_web_url`（缺省 `http://127.0.0.1:3080`，非法 URL 启动校验报错）与 `agent.dsh_session_tidy`（缺省 true；false 时投递暂停、队列不清空）；分层覆盖与热重载语义对齐 `agent.harness` 同面（`get_harness` 邻域既有模式）；校验与缺省单测并入 `tests/test_dsh_session_tidy.py`。
-- [ ] 3.3 `core/agent_runner/runner.py` 终态收尾挂接：`agent.harness: dsh` 且开关开启且终态已捕获 `session_id`（`dsh_adapter` 投影）时调用 3.1 投递器；整段 try/except 包裹——任何异常 WARN 留痕且 MUST NOT 影响 run 终态指标行、门禁与 run 主链路；终态但未捕获 `session_id` 时 MUST NOT 入队（无归档目标）、仅 WARN 留痕；`agent.dsh_home` 缺省解析复用既有配置面。单测（monkeypatch helper 调用）：成功/超时/异常三形态均不影响终态指标；非 dsh harness 零动作；缺 `session_id` 仅 WARN 且不调用 helper。
+- [x] 3.1 新增 `core/dsh_session_tidy.py`：投递器——同步子进程调用 helper（超时缺省 10s）→ 失败入持久化重试队列（JSONL，`<project_root>/.fenix/dsh_session_tidy/pending.jsonl`——对齐 `.fenix/runs`、`.fenix/maintenance_log.jsonl` 既有惯例，daemon 重启恢复消费）；backoff 重试、放弃阈值（缺省 200 条或 30 天，先到为准）放弃时 WARN；「已归档」按成功；队列并发 1。单测：入队/重试/放弃/幂等分类/重启恢复（队列文件读写 round-trip）。
+- [x] 3.2 `core/config.py` 新增 `agent.dsh_web_url`（缺省 `http://127.0.0.1:3080`，非法 URL 启动校验报错）与 `agent.dsh_session_tidy`（缺省 true；false 时投递暂停、队列不清空）；分层覆盖与热重载语义对齐 `agent.harness` 同面（`get_harness` 邻域既有模式）；校验与缺省单测并入 `tests/test_dsh_session_tidy.py`。
+- [x] 3.3 `core/agent_runner/runner.py` 终态收尾挂接：`agent.harness: dsh` 且开关开启且终态已捕获 `session_id`（`dsh_adapter` 投影）时调用 3.1 投递器；整段 try/except 包裹——任何异常 WARN 留痕且 MUST NOT 影响 run 终态指标行、门禁与 run 主链路；终态但未捕获 `session_id` 时 MUST NOT 入队（无归档目标）、仅 WARN 留痕；`agent.dsh_home` 缺省解析复用既有配置面。单测（monkeypatch helper 调用）：成功/超时/异常三形态均不影响终态指标；非 dsh harness 零动作；缺 `session_id` 仅 WARN 且不调用 helper。
 
 ## 4. 文档
 
