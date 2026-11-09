@@ -24,3 +24,30 @@
 ## 5. 知识沉淀
 
 - [x] 5.1 更新知识页：recovery-continuity 域补「fast-track 冻结即保全」条目（不变量、接线点、守护清单）；worktree-vc 域补「冻结 spec 分支删除守卫」口径；如 1.1 发现与本文档根因模型不符，以 findings.md 为准回写 design.md 根因模型段
+
+## Deliverables
+
+<!-- planning 期未落声明段，收工守卫回退 typed 正则提取时把任务行中的「代码行锚」
+（path:line 形态，1.1/2.1 的调查与接线起点）误判为交付物——blob 恒不存在 →
+missing 打回。dispute judge 已对三条行锚裁定 reference（dispute 审计流在册），
+机械写回因「无声明段可改写」deferred。本段按裁定落位：真实交付物按 modify/new
+硬校验，行锚按 reference 软化（软校验仅审计留痕）。 -->
+
+```yaml
+- path: core/pm_engine/dispatch/fast_track.py
+  kind: modify
+- path: core/worktree_manager/lifecycle.py
+  kind: modify
+- path: core/worktree_manager/legacy_registry.py
+  kind: modify
+- path: core/worktree_manager/stale_sweep.py
+  kind: modify
+- path: tests/test_fasttrack_freeze_preservation.py
+  kind: new
+- path: core/pm_engine/dispatch/fast_track.py:693
+  kind: reference
+- path: core/worktree_manager/lifecycle.py:1283
+  kind: reference
+- path: core/worktree_manager/lifecycle.py:839-1012
+  kind: reference
+```
