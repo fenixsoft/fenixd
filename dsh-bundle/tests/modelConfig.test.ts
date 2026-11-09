@@ -29,7 +29,7 @@ const VALID = {
 };
 
 afterEach(() => {
-  setMockDshRuntimeVersion("0.2.0-rc.2");
+  setMockDshRuntimeVersion("0.2.2-rc.1");
 });
 
 describe("assertModelExplicit：形态划界", () => {

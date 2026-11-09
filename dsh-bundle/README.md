@@ -10,7 +10,8 @@ AGENTS.md 约定载体）接入 [dsh](https://www.npmjs.com/package/@deepseek-ai
 
 | Bundle 版本 | dsh 运行时 | 说明 |
 | --- | --- | --- |
-| 0.1.0 | **0.2.0-rc.2**（唯一钉版） | peerDependencies 精确钉 `@deepseek-ai/dsh`、`@deepseek-ai/dsh-app-boot`、`@deepseek-ai/dsh-tools` 为 `0.2.0-rc.2`，`@deepseek-ai/cordis` `~4.0.4` |
+| 0.1.0 | **0.2.0-rc.2**（原钉版） | peerDependencies 精确钉 `@deepseek-ai/dsh`、`@deepseek-ai/dsh-app-boot`、`@deepseek-ai/dsh-tools` 为 `0.2.0-rc.2`，`@deepseek-ai/cordis` `~4.0.4` |
+| 0.1.0 | **0.2.2-rc.1**（当前钉版，2026-11-09 升版） | 2026-11-09 dsh 服务重启升级到 0.2.2-rc.1 后 peerDependencies 三键同步钉 `0.2.2-rc.1`（`@deepseek-ai/cordis` 仍 `~4.0.4`）；fenixd 侧 `dsh_adapter.DSH_VERSION_WHITELIST` 同步追加；事件投影契约经 `bin/dsh_acceptance.py smoke` 全链冒烟复核 |
 
 版本不符时 dsh 以 `evaluatePluginCompatibility` 校验 peer 并**跳过本 Bundle**（stderr 显式版本错误，
 不静默降级）；随后因显式模型配置未应用，headless 车道将以 `MISSING_CREDENTIAL` 退出（见已知限制 3）。
