@@ -53,4 +53,4 @@
 
 ## 4. 文档
 
-- [ ] 4.1 `dsh-bundle/README.md` 增补：标题装配说明（服务条目与 limits）、session-tidy-helper 用法与退出码表、部署注意（web 需在线以实时归档，离线由 daemon 队列兜底；`.credentials.yaml` 依赖）；明确「分组归工程工作区受 dsh-workspace cwd 精确匹配 + 无 move API 限制，不在本 bundle 范围」。
+- [x] 4.1 `dsh-bundle/README.md` 增补：标题装配说明（服务条目与 limits）、session-tidy-helper 用法与退出码表、部署注意（web 需在线以实时归档，离线由 daemon 队列兜底；`.credentials.yaml` 依赖）；明确「分组归工程工作区受 dsh-workspace cwd 精确匹配 + 无 move API 限制，不在本 bundle 范围」。
