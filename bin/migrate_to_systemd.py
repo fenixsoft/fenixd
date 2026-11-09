@@ -405,18 +405,38 @@ def stage1_write_units_and_env(proot: Path, froot: Path, dry_run: bool) -> dict:
                     if not missing
                     else f"PATH 卫生：补齐 {'、'.join(missing)}（候选稿头部留痕原因）"
                 )
+                # HOME 卫生结论行（fix-push-credential-env-and-retry-rearm 3.2，
+                # 与 PATH 结论并列）：捕获源缺 HOME 时以解析器单源取补齐值
+                if (env.get("HOME") or "").strip():
+                    plan.append("HOME 卫生：完整（捕获源已带 HOME）")
+                else:
+                    resolved = sh.resolve_baseline_home(env)
+                    plan.append(
+                        f"HOME 卫生：补齐 {resolved}（候选稿头部留痕原因）"
+                        if resolved
+                        else "HOME 卫生：缺失且无法解析（三级皆空，候选稿不注入——"
+                        "启动后自检将告警，建议人工补 Environment=HOME）"
+                    )
         else:
             try:
-                # path_report 收集实际追加目录（3.1 基线并集），摘要据此出
-                # 「完整」/「补齐 <清单>」结论行（3.3）
+                # path_report 收集实际追加目录（3.1 基线并集）、home_report
+                # 收集实际补齐 HOME 值，摘要据此出「完整」/「补齐 <清单>」
+                # 结论行（3.3，两行并列）
                 path_report: list = []
+                home_report: list = []
                 keys = sh.capture_env_candidate(
-                    sup_pid, sh.project_env_file(proot), path_report=path_report)
+                    sup_pid, sh.project_env_file(proot),
+                    path_report=path_report, home_report=home_report)
                 plan.append(_env_summary(keys, sh.project_env_file(proot)))
                 plan.append(
                     "PATH 卫生：完整（基线目录齐备）"
                     if not path_report
                     else f"PATH 卫生：补齐 {'、'.join(path_report)}（候选稿头部留痕原因）"
+                )
+                plan.append(
+                    "HOME 卫生：完整（捕获源已带 HOME）"
+                    if not home_report
+                    else f"HOME 卫生：补齐 {home_report[0]}（候选稿头部留痕原因）"
                 )
             except sh.SystemdHostingError as e:
                 errors.append(str(e))

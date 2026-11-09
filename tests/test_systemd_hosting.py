@@ -196,12 +196,15 @@ class TestSessionIdentityDenylist:
         # 对完整 PATH 零改写，本用例聚焦 denylist 过滤 + 后缀 + 0600 原语义；
         # 缺失补齐/留痕/逐字节不变情形由 tests/test_systemd_env_path_hygiene.py 覆盖。
         complete_path = ":".join(sh.PATH_BASELINE_DIRS)
+        # HOME 键在场（fix-push-credential-env-and-retry-rearm 3.1 并列 HOME
+        # 基线后，缺失会被补齐——本用例聚焦 denylist 过滤，不测 HOME 基线）
         with mock.patch.object(
             sh, "read_process_env",
-            return_value={"A": "1", "CLAUDE_PID": "9", "PATH": complete_path},
+            return_value={"A": "1", "CLAUDE_PID": "9", "PATH": complete_path,
+                          "HOME": "/fixture/home"},
         ):
             keys = sh.capture_env_candidate(100, target)
-        assert keys == {"A": "1", "PATH": complete_path}
+        assert keys == {"A": "1", "PATH": complete_path, "HOME": "/fixture/home"}
         cand = Path(f"{target}{sh.ENV_CANDIDATE_SUFFIX}")
         assert cand.exists()
         assert "A=1" in cand.read_text()

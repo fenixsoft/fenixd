@@ -6,6 +6,7 @@ Task 5.3：幂等与竞态核对（连续两次 409、spec 已 pushed 后消费�
 move-distill-trigger-to-push 1.3：approve_push 成功转移后的蒸馏派发契约。
 """
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -472,3 +473,135 @@ class TestApprovePushDistillDispatch(unittest.TestCase):
         warn_texts = " ".join(str(c) for c in self.logger.warning.call_args_list)
         self.assertIn("知识蒸馏派发异常", warn_texts)
         self.assertIn("spec-a", warn_texts)
+
+
+# ── _git_push_ref 环境注入与凭证 helper（fix-push-credential-env-and-retry-rearm 2.2）──
+
+class TestGitPushRefEnvInjection(unittest.TestCase):
+    """推送 git 子进程的环境与凭证双腿。
+
+    - daemon env 无 HOME → 子进程 env 显式注入解析后 HOME；
+    - 凭证文件在场 → 命令含单元素 ``-c credential.helper=store --file=…``；
+    - 凭证文件缺席 → 不含 helper 参数（不产生「有凭证」假象）；
+    - env 解析失败 → 安全回退现状行为（裸继承 env、无 helper）不中断推送。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.logger = MagicMock()
+        self.engine = PMEngine(
+            MagicMock(), MagicMock(), {}, Path(self.tmpdir), self.logger
+        )
+        # 捕获 subprocess.run 的实参（args/env），不真跑 git
+        self.run_calls = []
+        self._orig_run = sys.modules["subprocess"].run
+
+        def fake_run(cmd, **kwargs):
+            self.run_calls.append({"cmd": cmd, "kwargs": kwargs})
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = ""
+            r.stderr = ""
+            return r
+
+        sys.modules["subprocess"].run = fake_run
+
+    def tearDown(self):
+        sys.modules["subprocess"].run = self._orig_run
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_no_home_env_gets_injected_home(self):
+        """daemon env 无 HOME → 子进程 env 含解析后 HOME（pwd 兜底）。"""
+        import core.git_env as ge
+
+        class _FakePwd:
+            pw_dir = "/pwd/injected"
+
+        orig_getpwuid = ge.pwd.getpwuid
+        ge.pwd.getpwuid = lambda uid: _FakePwd()
+        orig_home = os.environ.pop("HOME", None)
+        try:
+            ok, err = self.engine._git_push_ref("main")
+        finally:
+            ge.pwd.getpwuid = orig_getpwuid
+            if orig_home is not None:
+                os.environ["HOME"] = orig_home
+        self.assertTrue(ok)
+        passed_env = self.run_calls[0]["kwargs"]["env"]
+        self.assertEqual(passed_env.get("HOME"), "/pwd/injected")
+        # 显式 env= 注入（非裸继承）：传入的是独立 dict
+        self.assertIsNotNone(passed_env)
+
+    def test_env_home_passed_through_when_present(self):
+        """daemon env 有 HOME → 子进程 env 原样带该 HOME。"""
+        orig_home = os.environ.get("HOME")
+        os.environ["HOME"] = "/daemon/home"
+        try:
+            ok, err = self.engine._git_push_ref("main")
+        finally:
+            if orig_home is not None:
+                os.environ["HOME"] = orig_home
+            else:
+                os.environ.pop("HOME", None)
+        self.assertTrue(ok)
+        self.assertEqual(
+            self.run_calls[0]["kwargs"]["env"].get("HOME"), "/daemon/home"
+        )
+
+    def test_credential_file_present_adds_single_element_helper(self):
+        """凭证文件在场 → 命令含单元素 -c helper 参数（位于 push 子命令前）。"""
+        cred = Path(self.tmpdir) / ".git-credentials"
+        cred.write_text("https://user:tok@example.com\n", encoding="utf-8")
+        orig_home = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmpdir
+        try:
+            ok, err = self.engine._git_push_ref("main")
+        finally:
+            if orig_home is not None:
+                os.environ["HOME"] = orig_home
+            else:
+                os.environ.pop("HOME", None)
+        self.assertTrue(ok)
+        cmd = self.run_calls[0]["cmd"]
+        idx = cmd.index("-c")
+        # 单元素形态：--file= 与 helper 配置串同元素（MUST NOT 拆多元素）
+        self.assertEqual(
+            cmd[idx + 1], f"credential.helper=store --file={cred}"
+        )
+        # git 全局选项在 push 子命令之前
+        self.assertLess(idx, cmd.index("push"))
+
+    def test_credential_file_absent_no_helper_arg(self):
+        """凭证文件缺席 → 命令不含 helper 参数。"""
+        orig_home = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmpdir  # tmpdir 下无 .git-credentials
+        try:
+            ok, err = self.engine._git_push_ref("main")
+        finally:
+            if orig_home is not None:
+                os.environ["HOME"] = orig_home
+            else:
+                os.environ.pop("HOME", None)
+        self.assertTrue(ok)
+        self.assertNotIn("-c", self.run_calls[0]["cmd"])
+
+    def test_resolve_failure_falls_back_and_push_continues(self):
+        """env 解析失败 → 裸继承（env=None）、无 helper、WARNING、推送照常。"""
+        import core.git_env as git_env_mod
+
+        orig_resolve = git_env_mod.resolve_git_env
+        git_env_mod.resolve_git_env = MagicMock(
+            side_effect=RuntimeError("resolver down")
+        )
+        try:
+            ok, err = self.engine._git_push_ref("main")
+        finally:
+            git_env_mod.resolve_git_env = orig_resolve
+        self.assertTrue(ok)
+        call = self.run_calls[0]
+        self.assertIsNone(call["kwargs"]["env"])  # 裸继承现状行为
+        self.assertNotIn("-c", call["cmd"])
+        warn_texts = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("git 环境解析失败", warn_texts)

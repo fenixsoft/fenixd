@@ -34,12 +34,19 @@ MINIMAL_PATH = "/usr/bin:/bin"
 
 @pytest.fixture()
 def minimal_env():
-    return {"A": "1", "PATH": MINIMAL_PATH, "CLAUDE_PID": "9"}
+    # HOME 键在场（fix-push-credential-env-and-retry-rearm 3.1 并列基线后，
+    # 「已含 HOME 时 PATH 语境产物逐字节不变」的断言前提）
+    return {"A": "1", "PATH": MINIMAL_PATH, "HOME": "/fixture/home", "CLAUDE_PID": "9"}
 
 
 @pytest.fixture()
 def complete_env():
-    return {"A": "1", "PATH": ":".join(sh.PATH_BASELINE_DIRS), "CLAUDE_PID": "9"}
+    return {
+        "A": "1",
+        "PATH": ":".join(sh.PATH_BASELINE_DIRS),
+        "HOME": "/fixture/home",
+        "CLAUDE_PID": "9",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -232,3 +239,160 @@ class TestMigratePathConclusion:
         candidate = Path(f"{sh.project_env_file(proot)}{sh.ENV_CANDIDATE_SUFFIX}")
         assert candidate.exists()
         assert any("追加尾部" in ln for ln in candidate.read_text(encoding="utf-8").splitlines()[:6])
+
+
+# ---------------------------------------------------------------------------
+# HOME 基线（fix-push-credential-env-and-retry-rearm 3.1/3.2/3.3，与 PATH 并列）
+# ---------------------------------------------------------------------------
+
+
+class TestApplyHomeBaseline:
+    def test_missing_home_patched_from_resolver(self, monkeypatch):
+        env = {"A": "1", "PATH": MINIMAL_PATH}
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: "/resolved/home")
+        healed, added = sh.apply_home_baseline(env)
+        assert healed["HOME"] == "/resolved/home"
+        assert added == "/resolved/home"
+        assert healed["A"] == "1"  # 其余键不动
+
+    def test_present_home_byte_identical(self):
+        """已含非空 HOME → 原样返回（补齐值 None，无任何改写）。"""
+        env = {"A": "1", "HOME": "/existing/home"}
+        healed, added = sh.apply_home_baseline(env)
+        assert healed is env
+        assert added is None
+
+    def test_empty_home_counts_as_missing(self, monkeypatch):
+        env = {"HOME": ""}
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: "/resolved/home")
+        healed, added = sh.apply_home_baseline(env)
+        assert healed["HOME"] == "/resolved/home"
+        assert added == "/resolved/home"
+
+    def test_unresolvable_home_not_injected(self, monkeypatch):
+        """三级解析全空 → 不注入 HOME（行为回退现状）、不抛异常。"""
+        env = {"A": "1", "PATH": MINIMAL_PATH}
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: None)
+        healed, added = sh.apply_home_baseline(env)
+        assert "HOME" not in healed
+        assert added is None
+
+    def test_resolve_baseline_home_delegates_to_git_env(self):
+        """resolve_baseline_home 经 core.git_env 单源取值（同源判定）。"""
+        assert sh.resolve_baseline_home({"HOME": "/direct/home"}) == "/direct/home"
+
+
+class TestRenderEnvFileHomeNote:
+    def test_home_note_written_when_patched(self, tmp_path):
+        env = {"A": "1", "PATH": MINIMAL_PATH, "HOME": "/resolved/home"}
+        text = sh.render_env_file(env, home_note="/resolved/home")
+        assert "HOME 卫生" in text
+        assert "HOME=/resolved/home" in text
+        assert "HOME=/resolved/home" in text.splitlines()[-len(env):] or any(
+            ln == "HOME=/resolved/home" for ln in text.splitlines()
+        )
+
+    def test_no_home_note_byte_identical(self):
+        """home_note=None（已含 HOME）→ 产物与无 HOME 机制时逐字节一致。"""
+        env = {"A": "1", "PATH": MINIMAL_PATH, "HOME": "/existing/home"}
+        assert sh.render_env_file(env, home_note=None) == sh.render_env_file(env)
+
+
+class TestCaptureCandidateHomeIntegration:
+    def test_missing_home_candidate_patched_with_note(self, monkeypatch, tmp_path):
+        env = {"A": "1", "PATH": MINIMAL_PATH}  # 无 HOME
+        monkeypatch.setattr(sh, "read_process_env", lambda pid: env)
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: "/resolved/home")
+        target = tmp_path / "systemd.env"
+        home_report: list = []
+        keys = sh.capture_env_candidate(4242, target, home_report=home_report)
+        candidate = Path(f"{target}{sh.ENV_CANDIDATE_SUFFIX}")
+        text = candidate.read_text(encoding="utf-8")
+        assert "HOME" in keys
+        assert home_report == ["/resolved/home"]
+        assert any("HOME 卫生" in ln for ln in text.splitlines()[:8])
+        assert any(ln == "HOME=/resolved/home" for ln in text.splitlines())
+
+    def test_present_home_candidate_byte_identical(self, monkeypatch, tmp_path, complete_env):
+        """已含 HOME → 候选稿产物逐字节一致、home_report 空、无留痕头。"""
+        monkeypatch.setattr(sh, "read_process_env", lambda pid: complete_env)
+        target = tmp_path / "systemd.env"
+        home_report: list = []
+        sh.capture_env_candidate(4242, target, home_report=home_report)
+        assert home_report == []
+        expected = sh.render_env_file(sh.filter_session_identity(complete_env))
+        candidate = Path(f"{target}{sh.ENV_CANDIDATE_SUFFIX}")
+        assert candidate.read_text(encoding="utf-8") == expected
+        assert "HOME 卫生" not in expected
+
+
+class TestRenderProjectUnitHomeFallback:
+    def test_unit_contains_home_fallback_line(self, tmp_path):
+        text = sh.render_project_unit(tmp_path)
+        home_lines = [ln for ln in text.splitlines() if ln.startswith("Environment=HOME=")]
+        # 宿主解析器可解析（root 宿主恒可）→ 恰一行保底
+        assert len(home_lines) == 1
+        value = home_lines[0].split("=", 1)[1]
+        assert value  # 非空
+
+    def test_home_fallback_precedes_env_file_line(self, tmp_path):
+        """保底行在 EnvironmentFile 之前（systemd 后读覆盖语义不变）。"""
+        text = sh.render_project_unit(tmp_path)
+        lines = text.splitlines()
+        home_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Environment=HOME="))
+        envfile_idx = next(i for i, ln in enumerate(lines) if ln.startswith("EnvironmentFile="))
+        assert home_idx < envfile_idx
+
+    def test_unit_omits_home_line_when_unresolvable(self, monkeypatch, tmp_path):
+        """三级解析全空 → 不写保底行（无值可写，fail-open）。"""
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: None)
+        text = sh.render_project_unit(tmp_path)
+        assert not any(ln.startswith("Environment=HOME=") for ln in text.splitlines())
+
+
+class TestMigrateHomeConclusion:
+    """3.3 迁移摘要 HOME 卫生结论行（与 PATH 结论并列）。"""
+
+    def _stage1(self, monkeypatch, tmp_path, env):
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        froot = tmp_path / "fw"
+        froot.mkdir()
+        monkeypatch.setattr(mig, "_project_hosting_pid", lambda p: 4242)
+        monkeypatch.setattr(sh, "read_process_env", lambda pid: env)
+        monkeypatch.setattr(sh, "find_framework_dashboard_pid", lambda: None)
+        return mig.stage1_write_units_and_env(proot, froot, dry_run=True)
+
+    def test_dry_run_complete_home(self, monkeypatch, tmp_path):
+        env = {"A": "1", "PATH": MINIMAL_PATH, "HOME": "/src/home"}
+        result = self._stage1(monkeypatch, tmp_path, env)
+        assert result["ok"]
+        assert any("HOME 卫生：完整" in ln for ln in result["plan"])
+
+    def test_dry_run_missing_home_reports_patched_value(self, monkeypatch, tmp_path):
+        env = {"A": "1", "PATH": MINIMAL_PATH}  # 无 HOME
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: "/resolved/home")
+        result = self._stage1(monkeypatch, tmp_path, env)
+        assert result["ok"]
+        repair = [ln for ln in result["plan"] if "HOME 卫生：补齐" in ln]
+        assert len(repair) == 1
+        assert "/resolved/home" in repair[0]
+
+    def test_execute_capture_reports_home_conclusion(self, monkeypatch, tmp_path):
+        env = {"A": "1", "PATH": MINIMAL_PATH}  # 无 HOME
+        monkeypatch.setattr(sh, "resolve_baseline_home", lambda e=None: "/resolved/home")
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        froot = tmp_path / "fw"
+        froot.mkdir()
+        monkeypatch.setattr(mig, "_project_hosting_pid", lambda p: 4242)
+        monkeypatch.setattr(sh, "read_process_env", lambda pid: env)
+        monkeypatch.setattr(sh, "find_framework_dashboard_pid", lambda: None)
+        monkeypatch.setattr(
+            sh, "write_unit_file", lambda unit, text: tmp_path / unit
+        )
+        result = mig.stage1_write_units_and_env(proot, froot, dry_run=False)
+        assert result["ok"]
+        assert any("HOME 卫生：补齐 /resolved/home" in ln for ln in result["plan"])
+        candidate = Path(f"{sh.project_env_file(proot)}{sh.ENV_CANDIDATE_SUFFIX}")
+        assert "HOME=/resolved/home" in candidate.read_text(encoding="utf-8")

@@ -3333,12 +3333,38 @@ class PMEngine:
     def _git_push_ref(self, ref: str) -> tuple:
         """在 project_root 执行 git push origin <ref>。
 
+        环境/凭证确定性（fix-push-credential-env-and-retry-rearm 2.1）：
+        子进程不再裸继承 daemon 进程环境——经 ``resolve_git_env`` 单源产出
+        显式 ``env=``（HOME 注入），凭证文件在场时命令追加 credential helper
+        参数（argv 单元素 ``["-c", "credential.helper=store --file=<abs>"]``，
+        git 全局选项必须位于 push 子命令之前）；解析路径缺席不追加参数。
+        解析失败安全回退现状行为（裸继承 env、无 helper 参数）并记 WARNING，
+        不中断推送。
+
         Returns: (success: bool, error_message: str)
         """
+        # env/helper 解析与子进程执行分两层 try：解析层任一异常回退现状
+        # 行为（env=None＝subprocess 裸继承、无 helper 参数），执行层异常
+        # 维持既有 (False, str(e)) 契约。
+        push_env = None
+        helper_args: list = []
+        try:
+            from core.git_env import credential_helper_args, resolve_git_env
+
+            git_env = resolve_git_env(self.config)
+            push_env = git_env.process_env
+            helper_args = credential_helper_args(git_env)
+        except Exception as e:  # noqa: BLE001 — 解析失败回退现状，不中断推送
+            self.logger.warning(
+                "pm_engine",
+                f"git 环境解析失败，推送回退裸继承进程 env: {type(e).__name__}: {e}",
+            )
         try:
             result = subprocess.run(
-                ["git", "push", "origin", ref],
+                # helper 参数为 git 全局选项，MUST 在 push 子命令之前
+                ["git", *helper_args, "push", "origin", ref],
                 cwd=str(self.project_root),
+                env=push_env,
                 capture_output=True,
                 # errors="replace"（code-review item 022c2e4ced2a，与
                 # core/regression.py 加固先例同款）：git 输出含非 UTF-8 字节时

@@ -66,6 +66,24 @@ from core.signals import SCHEDULING_KICK_DIR
 # code-review item 69d57b48a605：approve_push 车道 created 时效分档复用同判据同阈值。
 # code-review item 6cc24b51f6b9：code_fix / regression_fix 手动触发车道同判据同阈值。
 SCHEDULING_KICK_STALE_THRESHOLD_SECONDS = 3600
+
+
+def _url_has_embedded_credential(url: str) -> bool:
+    """判定一个 remote URL 是否内嵌凭证（fix-push-credential-env-and-retry-rearm 4.1）。
+
+    http(s) 形态 URL 的 authority 段含用户名（``https://<token>@host/...``）
+    即认内嵌凭证腿在场；ssh 形态（``git@host:path``）走 ssh-key 认证，不算
+    内嵌凭证。解析失败（畸形 URL）按无凭证处理，不抛异常。
+    """
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(str(url).strip())
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    return bool(parts.username)
 from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
     commit_wip_checkpoint,
@@ -445,6 +463,8 @@ class FenixDaemon:
         # harness 启动可达性自检 run-once 旗标（add-dispatch-precheck-true-fallback
         # 2.2：进程内去重——启动序列探测一次，后续调用零重复）
         self._harness_precheck_done = False
+        # 推送凭证自检 run-once 旗标（fix-push-credential-env-and-retry-rearm 4.1）
+        self._credential_precheck_done = False
         self._admin_thread = None
         # Administrator 后台执行 worker 池（fix-admin-run-blocks-mainloop D1/D6）：
         # 处置移出主循环，主循环只拾取与投递；admin.workers=0 回退同步行为。
@@ -791,6 +811,13 @@ class FenixDaemon:
         self.event_bus.code_fix_orchestrator = self.code_fix_orchestrator
         self.logger.info("fenixd", "CodeFixOrchestrator initialized")
 
+        # done 态推送退避续推投递（fix-push-credential-env-and-retry-rearm
+        # 5.1）：admin executor 引用事后挂载到 event_bus（同 code_fix_
+        # orchestrator 装配契约）——event_bus._recover_one done 分支经它非
+        # 阻塞投递 approve_push；未挂载/admin.workers=0 时 event_bus 侧
+        # getattr fail-open 当轮 WARNING 跳过（MUST NOT 内联同步 git push）。
+        self.event_bus._admin_executor = self._admin_executor
+
         # 记录启动时配置文件 mtime，供主循环热更新检测基线
         self._config_snapshot = self._config_mtimes()
 
@@ -940,6 +967,150 @@ class FenixDaemon:
         )
         self.logger.warning("fenixd", f"启动自检：{precheck_error}")
 
+    def _startup_credential_precheck(self):
+        """启动序列推送凭证自检（fix-push-credential-env-and-retry-rearm 4.1）。
+
+        纯本地探测三项（不做 ls-remote 网络探测，避免启动期网络抖动误报）：
+
+        - 解析 HOME（``resolve_git_env`` 单源）是否为存在目录；
+        - 解析后凭证文件（``.git-credentials`` 或配置覆盖路径）是否在场；
+        - daemon 自身仓库与全部已接管项目的 remote URL 集是否含内嵌凭证
+          （``git config --get-regexp remote.*.url`` 本地读取）。
+
+        双腿（URL 内嵌凭证 + 凭证文件）皆缺或 HOME 解析失败时发 WARNING
+        自检告警（含归因与人工处置指引）；单腿可用属可运行状态，零噪音。
+        探测 fail-open：任何异常只记日志，MUST NOT 阻断启动或改变派发行为。
+        run-once 旗标进程内去重（与相邻 harness 自检同口径）。
+        """
+        if self._credential_precheck_done:
+            return
+        self._credential_precheck_done = True
+        from core.git_env import resolve_git_env
+
+        try:
+            git_env = resolve_git_env(self.config)
+            resolved_home = git_env.resolved_home
+            home_ok = bool(resolved_home) and Path(resolved_home).is_dir()
+            cred_ok = bool(git_env.credential_file) and Path(git_env.credential_file).is_file()
+            url_ok = self._remote_urls_have_embedded_credentials()
+        except Exception as e:  # noqa: BLE001 — 探测自身故障不阻断启动
+            self.logger.warning(
+                "fenixd", f"Startup credential precheck failed (non-blocking): {e}"
+            )
+            return
+
+        if home_ok and (cred_ok or url_ok):
+            return  # 单腿可用：可运行状态，零噪音（spec：不再制造噪音）
+
+        if not home_ok:
+            description = (
+                "推送凭证环境异常：HOME 解析失败（daemon env 无 HOME 且 pwd/配置"
+                "三级皆空或目录不存在）——git 找不到 ~/.git-credentials/~/.gitconfig，"
+                f"凭证双腿均不可用（凭证文件={'缺席' if not cred_ok else '在场'}，"
+                f"remote URL 内嵌凭证={'无' if not url_ok else '有'}）"
+            )
+        else:
+            description = (
+                "推送凭证双腿皆缺：凭证文件（解析路径）不在场，且全部 remote URL "
+                "无内嵌凭证——自动推送仅剩的认证通道均不可达，done SPEC 推送将失败"
+            )
+        recommended = (
+            "人工处置指引：① 在解析后 HOME（或 pm.push.credential_home 指定目录）"
+            "放置 .git-credentials（或以 pm.push.credential_file 指定路径）；"
+            "② 或为 remote URL 配置内嵌 token（https://<token>@host/...）；"
+            "修复后重启 daemon 自检通过告警自动消除"
+        )
+        dedup_key = "push-credential-both-legs-missing"
+
+        def _inflight(rec: dict) -> bool:
+            return (
+                rec.get("kind") == ESCALATION
+                and rec.get("signal_type") == "push_credential_missing"
+                and rec.get("dedup_key") == dedup_key
+            )
+
+        evidence = (
+            f"resolved_home={resolved_home or '<三级解析全空>'}; "
+            f"home_dir={'在场' if home_ok else '缺席/不可解析'}; "
+            f"credential_file={git_env.credential_file or '<关断/未解析>'} "
+            f"({'在场' if cred_ok else '缺席'}); "
+            f"remote_url_credential={'在场' if url_ok else '无'}"
+        )
+        try:
+            self.admin_store.append_if_absent(
+                {
+                    "kind": ESCALATION,
+                    "signal_type": "push_credential_missing",
+                    "dedup_key": dedup_key,
+                    "spec": None,
+                    "severity": "major",
+                    "description": description,
+                    "evidence": evidence,
+                    "action_taken": "仅告警（fail-open），不阻断启动、不改变派发行为",
+                    "recommended_action": recommended,
+                },
+                _inflight,
+            )
+        except Exception as e:  # noqa: BLE001 — 告警通道故障不阻断启动
+            self.logger.warning(
+                "fenixd", f"凭证自检告警写入 admin store 失败（fail-open）: {e}"
+            )
+        self.logger.warning(
+            "fenixd",
+            f"启动自检：推送凭证告警 — {description}；evidence: {evidence}",
+        )
+
+    def _remote_urls_have_embedded_credentials(self) -> bool:
+        """扫描 daemon 自身仓库与全部已接管项目的 remote URL 集（纯本地）。
+
+        任一 http(s) remote URL 的 authority 段含用户名（内嵌 token 形态
+        ``https://<token>@host/...``）即认 URL 凭证腿在场。registry 读取
+        故障 fail-open（仅扫 daemon 自身仓库）；git 读取异常按该仓库零 URL
+        处理，不中断扫描。
+        """
+        repos = [PROJECT_ROOT]
+        try:
+            from core.dashboard.registry import Registry
+
+            for proj in Registry().discover():
+                path = proj.get("path") if isinstance(proj, dict) else None
+                if path and Path(str(path)).exists():
+                    repos.append(Path(str(path)))
+        except Exception as e:  # noqa: BLE001 — registry 故障降级仅扫自身仓库
+            self.logger.warning(
+                "fenixd", f"凭证自检项目清单读取失败（降级仅扫 daemon 仓库）: {e}"
+            )
+        for repo in repos:
+            for url in self._read_remote_urls(repo):
+                if _url_has_embedded_credential(url):
+                    return True
+        return False
+
+    def _read_remote_urls(self, repo) -> list:
+        """本地读取一个仓库的全部 remote URL（``git config --get-regexp``）。
+
+        非仓库/无 remote/读取异常 → 空清单（不抛异常，扫描继续）。纯本地
+        读 config，无网络请求（spec：不做 ls-remote 网络探测）。
+        """
+        try:
+            result = subprocess.run(
+                ["git", "config", "--get-regexp", r"^remote\..*\.url$"],
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return []
+            urls = []
+            for line in result.stdout.splitlines():
+                parts = line.split(None, 1)  # 首个空白处切键/值（值可含空白极少见）
+                if len(parts) == 2 and parts[1].strip():
+                    urls.append(parts[1].strip())
+            return urls
+        except Exception:  # noqa: BLE001 — 单仓库读取失败不中断扫描
+            return []
+
     def _write_selfheal_restart_request(self, healed_dirs: list) -> None:
         """PATH 自愈后落 restart_request（JSON：reason/origin/date）。
 
@@ -1012,6 +1183,17 @@ class FenixDaemon:
             self.logger.warning(
                 "fenixd",
                 f"Startup harness precheck failed (non-blocking): {e}",
+            )
+
+        # ── 推送凭证自检（fix-push-credential-env-and-retry-rearm 4.1）──
+        # 双腿皆缺/HOME 解析失败发 WARNING 告警（含人工处置指引）；fail-open
+        # 同款包裹，探测自身故障不击穿 start()。
+        try:
+            self._startup_credential_precheck()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Startup credential precheck failed (non-blocking): {e}",
             )
 
         # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。
