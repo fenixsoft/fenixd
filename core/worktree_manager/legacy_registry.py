@@ -749,8 +749,32 @@ class G2LegacyRegistryMixin:
             if isinstance(rec, dict)
             and now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
         ]
+        # 冻结保全现场守卫的 STATE 快照（fix-fasttrack-freeze-branch-preservation
+        # R3）：整轮至多解析一次，逐条复用同一快照（与 stale_sweep 清扫段的
+        # state_entries 单次读取同口径）。
+        reclaim_states = self._read_state_entries()
         reclaimed: list = []
         for spec in expired:
+            # ── 冻结保全现场守卫（fix-fasttrack-freeze-branch-preservation
+            # R3）── spec frozen+_frozen_hold（R1 冻结即保管的在册登记）时跳过
+            # 本条回收并 WARNING 留痕：本链的 `_physically_reclaim_legacy` 以
+            # 无保护 `branch -D` 收尾（既有缺口，stale_sweep
+            # _branch_protected_by_state 注释已点名），不守卫即 single-app
+            # 事故删除者（启动清扫 → 过期遗产回收 → 实现分支被删）。
+            # 守卫必须在出册（pop）**之前**：出册后跳过会永久丢失登记，目录
+            # 随之失去清扫豁免反被孤儿清扫拾取——记录保持在册，宽限期豁免与
+            # reuse 认领继续生效；人工解冻清 `_frozen_hold` 后下一轮自然放行。
+            frozen_kept, frozen_reason = self._spec_frozen_hold_kept(
+                spec, states=reclaim_states
+            )
+            if frozen_kept:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Skip legacy reclaim for '{spec}' — {frozen_reason}，"
+                    f"过期遗产保留在册（worktree/branch 待解冻续做），"
+                    f"解冻后下轮清扫自然回收",
+                )
+                continue
             # pop、宽限期复核与放回全程持 _spec_lock_th（对齐 consume_legacy
             # 同款复核 0d5c6c7e148e 的持锁口径）：全程无锁时，pop 取到超期旧
             # 记录进入物理回收的间隙内，同 spec 可能被并发 register_legacy
