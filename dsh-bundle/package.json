@@ -9,6 +9,7 @@
     ".": "./dist/index.js",
     "./modelConfig": "./dist/modelConfig.js",
     "./approval": "./dist/approval.js",
+    "./session-title": "./dist/session-title.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
