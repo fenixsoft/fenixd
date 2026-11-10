@@ -108,3 +108,16 @@ $ node /usr/bin/dsh --version
 - 实弹复核：`systemctl restart dsh-web` 后超限 POST `/auth/login` → 400 body-too-large（curl exit 0）；跨源 403 cross-origin / 白名单外 400 unsupported-body / 凭据端点跨源 401 unauthenticated 均保持；未认证 `/` 登录页 17 断言全过（表单锚点、未配置提示、无原生 401 文案、无 `?token=`、无 animation/transition、裸 socket HEAD 200 零 body）。证据：`.fenix/verify-evidence/add-dsh-web-password-login/`。
 - 场景缺陷（headreq）复核：裁决 Agent 原地修复已在场景库生效（`curl -I -o` 头块污染 `-o` 文件 → 裸 socket 取证步骤），断言集不变，本轮实弹复测 HEAD_BODY_EMPTY 成立。
 
+
+## 报障修复轮（2026-11-10，用户报障：登录后仍见原生 401 文案）
+
+- 根因（m00694）：dsh 原生 `authorizeIndex` 按 cookie 鉴权不看信任列表，`admit` 按 `--trusted-host` 拒绝——从**不受信任地址**（不在 `--trusted-host`、非 loopback）访问时：登录页正常出（200）→ 登录 POST 成功 303 `/?token=` → 原生铸 cookie 303 → 带 cookie `GET /` 进插件认证分支 → admit 403 → 插件兜底 `writeNativeUnauthorized` 原生文案。宿主 Host 矩阵（curl 复现：`icyfenix.cn:3080` 四步链路完整复现用户所见）。
+- 次生根因：插件 `log()` 走 cordis logger 通道——**在 dsh 宿主不落 stdout**（fenix-skill-provider `src/host/index.ts:76` 实测先例），所有 warn 零痕迹，报障初期排查无日志可依。
+- 修复（宿主 dsh-plugins@374d542，index.js/tests/README）：
+  1. 登录页（未认证 `/`）信任预检：不受信任挂 `untrusted` 横幅预告；
+  2. 登录 POST 同源校验后 fail-fast：不受信任 303 `?error=untrusted`（不校验凭据）；
+  3. 已认证 `GET /` admit 403 → 403 `renderUntrustedHostPage`（当前地址 + 受信任列表 + 处理方法），替代原生文案；`probeUntrusted`/`readTrustedHosts` 契约缺失/抛错一律降级原行为；
+  4. 日志出口改 `console.*`（stderr/stdout → systemd StandardOutput append → dsh-web.log）。
+- 验证：单测 19/19（新增 untrusted 白名单/页面转义零泄漏/信任探测降级 5 用例）；隔离实例（临时 `DSH_HOME`:3082，无 `--trusted-host`）实测——未认证登录页带横幅 200、POST 303 untrusted、已认证 403 解释页（零 token/cookie 泄漏）、loopback 全链路回归（token 登录/凭据配置/正确密码 303 `/?token=`/错密码 303 invalid）全绿；**日志落盘实证**（`[fenix-dsh-auth] login rejected: untrusted host` / `admit refused … serving untrusted-host page` 两行出现在实例 stdout）。
+- 镜像同步：`fenix-dsh-auth.patch` 同法重建（1502→1676 行），干净目录 `patch -p1` 回放与部署态 `diff -r` 零差异、回放树单测 19/19。
+- 遗留：live 进程（pid 3992225）仍跑修复前代码，需 `systemctl restart dsh-web` 加载；不受信任地址的最终解是管理员把用户实际访问地址加入 systemd 单元 `--trusted-host`（代码修复只改善提示，不放宽信任语义）。

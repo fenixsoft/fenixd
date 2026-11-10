@@ -1,6 +1,6 @@
 diff -ruN a/client.js b/client.js
 --- a/client.js	1970-01-01 08:00:00.000000000 +0800
-+++ b/client.js	2026-11-10 13:33:27.352346560 +0800
++++ b/client.js	2026-11-10 17:06:37.405732096 +0800
 @@ -0,0 +1,308 @@
 +/**
 + * fenix-dsh-auth — Client 半（零构建，形态对齐 fenix-dsh-brand-fenix /
@@ -312,7 +312,7 @@ diff -ruN a/client.js b/client.js
 +})()
 diff -ruN a/cordis.patch.yml b/cordis.patch.yml
 --- a/cordis.patch.yml	1970-01-01 08:00:00.000000000 +0800
-+++ b/cordis.patch.yml	2026-11-10 13:33:27.352346560 +0800
++++ b/cordis.patch.yml	2026-11-10 17:06:37.405732096 +0800
 @@ -0,0 +1,8 @@
 +# fenix-dsh-auth
 +# dsh web 账号密码登录（首页 / 接管 + /auth/* 端点 + 设置「登录」分区）。
@@ -324,8 +324,8 @@ diff -ruN a/cordis.patch.yml b/cordis.patch.yml
 +      name: fenix-dsh-auth
 diff -ruN a/index.js b/index.js
 --- a/index.js	1970-01-01 08:00:00.000000000 +0800
-+++ b/index.js	2026-11-10 13:33:27.352346560 +0800
-@@ -0,0 +1,850 @@
++++ b/index.js	2026-11-10 17:06:37.405732096 +0800
+@@ -0,0 +1,968 @@
 +/**
 + * fenix-dsh-auth — Host 半（零构建 JS，dsh 0.2.2-rc.1 实测契约面）。
 + *
@@ -396,6 +396,7 @@ diff -ruN a/index.js b/index.js
 +	invalid: '用户名或密码错误',
 +	locked: '失败次数过多，请 60 秒后重试',
 +	unconfigured: '未配置账号密码：请先用 token URL 登录，然后在设置弹窗的「登录」分区配置账号密码',
++	untrusted: '当前访问地址不在 dsh web 信任主机列表中：即使账号密码正确，登录后也无法进入应用。请改用受信任地址访问，或由管理员将该地址加入 --trusted-host 后重启 dsh web',
 +})
 +
 +/** 凭据 key 段校验（等价 dsh-credentials KEY_SEGMENT_PATTERN 的保守子集）。 */
@@ -580,6 +581,66 @@ diff -ruN a/index.js b/index.js
 +}
 +
 +/**
++ * 渲染「不受信任地址」页。背景：dsh 原生 authorizeIndex 按 cookie 放行、
++ * admit 按 trustedHosts 拒绝——已登录但 Host 不受信任的浏览器此前只会看到
++ * 原生 401 文案（用户 m00694 报障的根因）。本页解释原因、列出受信任地址与
++ * 处理方法；静态渲染，禁 animation/transition；页面不含 token/凭据/哈希，
++ * host 与列表均经 escapeHtml。
++ * @param options.host - 请求 Host 头（可空）。
++ * @param options.trustedHosts - 受信任主机列表（不可用时省略区块）。
++ */
++export function renderUntrustedHostPage({ host, trustedHosts } = {}) {
++	const hostHtml = typeof host === 'string' && host !== '' ? `<code>${escapeHtml(host)}</code>` : '当前地址'
++	const listHtml = Array.isArray(trustedHosts) && trustedHosts.length > 0
++		? ['<p class="hint"><strong>受信任地址：</strong></p><ul>',
++			...trustedHosts.map((item) => `<li><code>${escapeHtml(String(item))}</code></li>`),
++			'</ul>']
++		: []
++	return [
++		'<!doctype html>',
++		'<html lang="zh-CN">',
++		'<head>',
++		'<meta charset="utf-8">',
++		'<meta name="viewport" content="width=device-width, initial-scale=1">',
++		'<meta name="referrer" content="same-origin">',
++		'<title>无法进入 dsh web</title>',
++		'<style>',
++		':root { color-scheme: light dark; }',
++		'* { box-sizing: border-box; }',
++		'body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;',
++		'  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;',
++		'  background: var(--dsw-specific-canvas, #ffffff); color: var(--dsw-alias-label-primary, #1a1a1a); }',
++		'.card { width: 100%; max-width: 460px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12));',
++		'  border-radius: var(--dsw-radius-lg, 12px); padding: 32px 28px; background: var(--dsw-specific-canvas, #ffffff); }',
++		'h1 { margin: 0 0 20px; font-size: 18px; font-weight: 600; text-align: center; }',
++		'p { margin: 12px 0; font-size: 13px; line-height: 1.7; }',
++		'code { font-size: 12px; padding: 1px 5px; border-radius: 4px; background: var(--dsw-specific-input-minor, rgba(0,0,0,0.06)); }',
++		'ol { margin: 12px 0; padding-left: 22px; font-size: 13px; line-height: 1.9; }',
++		'ul { margin: 6px 0; padding-left: 22px; font-size: 12px; line-height: 1.8; }',
++		'.error { margin: 16px 0; padding: 8px 10px; font-size: 13px; border-radius: var(--dsw-radius-md, 8px);',
++		'  background: var(--dsw-specific-danger-minor, rgba(220,38,38,0.08)); color: var(--dsw-specific-danger-major, #dc2626); }',
++		'.hint { margin: 16px 0 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-tertiary, #888); }',
++		'</style>',
++		'</head>',
++		'<body>',
++		'<main class="card">',
++		'<h1>无法进入 dsh web</h1>',
++		'<p class="error" role="alert">登录凭据已验证，但该地址不在信任主机列表中，应用与接口会拒绝来自此地址的访问。</p>',
++		`<p>当前访问地址 ${hostHtml} 未列入 dsh web 的信任主机列表（<code>--trusted-host</code>），因此登录后无法进入应用。</p>`,
++		...listHtml,
++		'<p><strong>处理方法（二选一）：</strong></p>',
++		'<ol>',
++		'<li>改用受信任地址访问本服务，然后重新登录；</li>',
++		'<li>或由管理员将当前地址加入 dsh web 启动参数 <code>--trusted-host</code>（systemd 单元 ExecStart）并重启 dsh web，然后重新登录。</li>',
++		'</ol>',
++		'<p class="hint">也可以使用 dsh 启动时打印的 token URL 登录（同样需要从受信任地址打开）。</p>',
++		'</main>',
++		'</body>',
++		'</html>',
++	].join('\n')
++}
++
++/**
 + * 解析登录 POST 请求体（design：urlencoded / JSON 白名单）。
 + * @param body - 已解码 UTF-8 请求体文本。
 + * @param contentType - 请求的 Content-Type 头（可带参数）。
@@ -707,13 +768,15 @@ diff -ruN a/index.js b/index.js
 + * @returns 卸载 disposer（注销路由 + 清限流态）。
 + */
 +export function apply(ctx) {
++	/* 日志出口：cordis logger 通道在 dsh 宿主不落 stdout（fenix-skill-provider
++	 * src/host/index.ts:76 实测先例）——此前 warn 全部不可见（dsh-web.log 零
++	 * 痕迹，用户报障排查受阻）。统一走 console.*：主进程 stderr/stdout →
++	 * systemd StandardOutput append → /var/log/dsh-web.log。 */
 +	const log = (level, message) => {
 +		const line = `[fenix-dsh-auth] ${message}`
-+		try {
-+			ctx.logger?.[level]?.(line)
-+		} catch {
-+			console.warn(line)
-+		}
++		if (level === 'error') console.error(line)
++		else if (level === 'info' || level === 'debug') console.log(line)
++		else console.warn(line)
 +	}
 +
 +	let services = probeServices(ctx)
@@ -845,6 +908,41 @@ diff -ruN a/index.js b/index.js
 +	res.end(req.method === 'HEAD' ? undefined : html)
 +}
 +
++/** 写「不受信任地址」页（403 + HTML：浏览器正常渲染，脚本类调用方仍可见失败语义）。 */
++function writeUntrustedHostPage(req, res, details) {
++	const html = renderUntrustedHostPage(details)
++	res.writeHead(403, {
++		'cache-control': 'no-store',
++		'content-type': 'text/html; charset=utf-8',
++		'referrer-policy': 'same-origin',
++		'content-length': Buffer.byteLength(html),
++	})
++	res.end(req.method === 'HEAD' ? undefined : html)
++}
++
++/** 读取受信任主机列表（connection 实例字段，公开 d.ts 未声明；仅接受数组形态）。 */
++export function readTrustedHosts(connection) {
++	try {
++		return Array.isArray(connection?.trustedHosts) ? connection.trustedHosts.map(String) : undefined
++	} catch {
++		return undefined
++	}
++}
++
++/**
++ * 信任探测：connection.isTrusted 在公开 d.ts 为 private（rpc-host.d.ts），
++ * 运行时存在才使用；缺失/抛错一律返回 undefined（无法判定），调用方保持
++ * 原行为不升级。返回 true 表示当前请求 Host 不受信任。
++ */
++export function probeUntrusted(connection, headers) {
++	try {
++		if (typeof connection?.isTrusted !== 'function') return undefined
++		return connection.isTrusted({ headers }) !== true
++	} catch {
++		return undefined
++	}
++}
++
 +/** 写 JSON 响应。 */
 +function writeJson(res, status, data, headOnly = false) {
 +	const body = JSON.stringify(data)
@@ -947,6 +1045,14 @@ diff -ruN a/index.js b/index.js
 +					log('warn', `admit failed (${error?.message ?? error}); falling back to native 401`)
 +					return writeNativeUnauthorized(req, res)
 +				}
++				const rejection = admission !== undefined && admission !== null && 'rejection' in admission ? admission.rejection : undefined
++				if (rejection === 403) {
++					/* cookie 有效但 Host 不受信任（authorizeIndex 与 admit 的信任
++					 * 判定不对称）：出解释页替代原生 401 文案（用户报障根因）。 */
++					const host = headerValue(req.headers, 'host')
++					log('warn', `admit refused an authenticated index request (403, host=${host ?? '?'}); serving untrusted-host page`)
++					return writeUntrustedHostPage(req, res, { host, trustedHosts: readTrustedHosts(connection) })
++				}
 +				if (admission !== undefined && admission !== null && !('rejection' in admission) && admission.peer !== undefined) {
 +					/* 固定读 /index.html：readResource 按同一匹配表选 responder，
 +					 * `/` 自身会命中本插件 handler 返回 404（design D2 关键坑）。 */
@@ -975,6 +1081,10 @@ diff -ruN a/index.js b/index.js
 +				const record = await readLoginRecord(credentials)
 +				const payload = record?.payload
 +				const configured = payload !== undefined && payload !== null && typeof payload === 'object' && typeof payload.hash === 'string'
++				/* 未认证且 Host 不受信任：登录页直接挂横幅预告（登录成功也进不去）。 */
++				if (probeUntrusted(connection, req.headers) === true) {
++					return writeLoginPage(req, res, 'untrusted')
++				}
 +				return writeLoginPage(req, res, configured ? '' : 'unconfigured')
 +			}
 +
@@ -1018,6 +1128,14 @@ diff -ruN a/index.js b/index.js
 +				log('warn', 'login rejected: cross-origin request')
 +				writeJson(res, 403, { error: 'cross-origin' })
 +				return
++			}
++
++			/* 信任预检（fail-fast）：不受信任 Host 上凭据验证必然白费——登录后
++			 * admit 仍会 403。先回登录页挂 untrusted 横幅，点击即得明确反馈。 */
++			if (probeUntrusted(connection, req.headers) === true) {
++				const host = headerValue(req.headers, 'host')
++				log('warn', `login rejected: untrusted host (${host ?? '?'})`)
++				return writeRedirect(req, res, '/auth/login?error=untrusted')
 +			}
 +
 +			let body
@@ -1178,7 +1296,7 @@ diff -ruN a/index.js b/index.js
 +}
 diff -ruN a/package.json b/package.json
 --- a/package.json	1970-01-01 08:00:00.000000000 +0800
-+++ b/package.json	2026-11-10 13:33:27.352346560 +0800
++++ b/package.json	2026-11-10 17:06:37.405732096 +0800
 @@ -0,0 +1,31 @@
 +{
 +  "name": "fenix-dsh-auth",
@@ -1213,8 +1331,8 @@ diff -ruN a/package.json b/package.json
 +}
 diff -ruN a/README.zh.md b/README.zh.md
 --- a/README.zh.md	1970-01-01 08:00:00.000000000 +0800
-+++ b/README.zh.md	2026-11-10 13:33:27.352346560 +0800
-@@ -0,0 +1,41 @@
++++ b/README.zh.md	2026-11-10 17:06:37.405732096 +0800
+@@ -0,0 +1,51 @@
 +# fenix-dsh-auth
 +
 +dsh web 账号密码登录插件（零构建 JS，dsh 0.2.2-rc.1 实测）。
@@ -1245,6 +1363,16 @@ diff -ruN a/README.zh.md b/README.zh.md
 +3. `systemctl restart dsh-web`，从 `/var/log/dsh-web.log` 尾部取新 token URL；
 +4. 浏览器 token 登录 → 设置「登录」分区配置账号密码 → 清 cookie 后 `/` 出现登录页，账号密码可登录。
 +
++## 不受信任地址的行为
++
++dsh 原生 `authorizeIndex` 按 cookie 鉴权（不看信任列表），而 `admit` 按 `--trusted-host` 拒绝——两者不对称。若浏览器从**不受信任地址**（不在 `--trusted-host`、非 loopback）打开本服务：
++
++- 未认证时 `/` 登录页直接挂横幅预告「当前访问地址不在信任主机列表中」；
++- 登录 POST 信任预检 fail-fast：不校验凭据，303 回登录页挂 `untrusted` 横幅（点击登录立即得到明确反馈，而不是登录后 401）；
++- 已有有效 cookie 但 Host 不受信任时，`/` 返回 403 解释页：列出当前地址、受信任地址与两种处理方法（改用受信任地址 / 管理员把地址加入 systemd 单元的 `--trusted-host` 后重启）。
++
++修复前该场景一律显示原生 `dsh web authentication required; …` 文案（用户报障根因）。授权路径 `/api`、`/connect` 的信任语义属 dsh 原生行为，本插件不改动。
++
 +## 安全边界
 +
 +- 密码仅以 scrypt 哈希 + 盐存储于 `<dsh_home>/.credentials.yaml`（dsh credentials 记录），本插件任何响应不回显密码/哈希/盐。
@@ -1258,8 +1386,8 @@ diff -ruN a/README.zh.md b/README.zh.md
 +- 彻底卸载：删除 profile `cordis.patch.yml` 的 insert 两行与 `package.json` 依赖（及 node_modules 链接）→ `systemctl restart dsh-web`。
 diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 --- a/tests/host.test.mjs	1970-01-01 08:00:00.000000000 +0800
-+++ b/tests/host.test.mjs	2026-11-10 13:33:27.352346560 +0800
-@@ -0,0 +1,240 @@
++++ b/tests/host.test.mjs	2026-11-10 17:06:37.405732096 +0800
+@@ -0,0 +1,286 @@
 +/**
 + * fenix-dsh-auth — Host 半单测（node:test，零外部依赖）。
 + *
@@ -1279,6 +1407,9 @@ diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 +	createRateLimiter,
 +	rateLimitHit,
 +	renderLoginPage,
++	renderUntrustedHostPage,
++	probeUntrusted,
++	readTrustedHosts,
 +	escapeHtml,
 +	normalizeLoginError,
 +	parseLoginBody,
@@ -1499,4 +1630,47 @@ diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 +
 +test('credential key keeps the <owner>/<id> dsh form', () => {
 +	assert.equal(CREDENTIAL_KEY, 'fenix-dsh-auth/login')
++})
++
++/* ── 不受信任地址（用户报障 m00694 修复面） ── */
++
++test('untrusted is a whitelisted login error and renders its banner', () => {
++	assert.equal(normalizeLoginError('untrusted'), 'untrusted')
++	const html = renderLoginPage('untrusted')
++	assert.ok(html.includes('信任主机'), 'banner text present')
++	assert.ok(!/animation|transition/i.test(html), 'static rendering kept')
++	// 白名单外仍折为无提示
++	assert.equal(normalizeLoginError('javascript:alert(1)'), '')
++})
++
++test('renderUntrustedHostPage explains and escapes, leaking no secrets', () => {
++	const html = renderUntrustedHostPage({ host: 'icyfenix.cn:3080', trustedHosts: ['home.icyfenix.cn:3080', '112.74.85.74:3080'] })
++	assert.ok(html.includes('<code>icyfenix.cn:3080</code>'), 'current host shown')
++	assert.ok(html.includes('home.icyfenix.cn:3080'), 'trusted list item 1')
++	assert.ok(html.includes('112.74.85.74:3080'), 'trusted list item 2')
++	assert.ok(html.includes('--trusted-host'), 'remediation hint')
++	assert.ok(!html.includes('token='), 'no launch token')
++	assert.ok(!html.includes('dsh-auth-'), 'no cookie name')
++	assert.ok(!/animation|transition/i.test(html), 'static rendering kept')
++})
++
++test('renderUntrustedHostPage degrades gracefully without host or list', () => {
++	const html = renderUntrustedHostPage({})
++	assert.ok(html.includes('当前地址'), 'generic host wording')
++	assert.ok(!html.includes('<ul>'), 'no empty list block')
++})
++
++test('probeUntrusted uses private isTrusted and never throws', () => {
++	assert.equal(probeUntrusted({ isTrusted: () => true }, { host: 'a:1' }), false)
++	assert.equal(probeUntrusted({ isTrusted: () => false }, { host: 'a:1' }), true)
++	assert.equal(probeUntrusted({ isTrusted: () => { throw new Error('boom') } }, {}), undefined)
++	assert.equal(probeUntrusted({}, {}), undefined)
++	assert.equal(probeUntrusted(undefined, {}), undefined)
++})
++
++test('readTrustedHosts accepts only array form', () => {
++	assert.deepEqual(readTrustedHosts({ trustedHosts: ['a:1', 'b:2'] }), ['a:1', 'b:2'])
++	assert.equal(readTrustedHosts({ trustedHosts: 'a:1' }), undefined)
++	assert.equal(readTrustedHosts({}), undefined)
++	assert.equal(readTrustedHosts(undefined), undefined)
 +})
