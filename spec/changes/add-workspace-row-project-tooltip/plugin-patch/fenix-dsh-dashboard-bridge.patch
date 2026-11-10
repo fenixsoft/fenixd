@@ -143,7 +143,7 @@
  import { buildProjectRowMap, compareNames } from './projectSync.js'
 -import type { ProjectRowInfo, WorkspaceItemLike } from './projectSync.js'
 +import type { ProjectRowInfo, ProjectSummaryProjection, WorkspaceItemLike } from './projectSync.js'
-+import { createWorkspaceTipController } from './wsTooltip.js'
++import { createNativeTipSuppressor, createWorkspaceTipController } from './wsTooltip.js'
 +import type { WorkspaceTipController } from './wsTooltip.js'
  
  /** ui-sidebar 传给图标组件的 owner props（SidebarPanelIconOwnerProps 子集）。 */
@@ -228,7 +228,7 @@
        emit()
      },
    }
-@@ -327,10 +366,17 @@
+@@ -327,10 +366,29 @@
      console.warn(`[fenix-dsh-dashboard-bridge] 工作区行 ${key} 名称导航未装配（${reason}），维持原生行为`)
    }
  
@@ -238,23 +238,43 @@
 +    getSummaries: () => projectGroupStore.getSnapshot().summaries,
 +  })
 +
++  // 已装层项目名集合（常驻消解器的命中名单）：与拦截层存亡严格同步——
++  // ensureOverlay 换层/新挂写入，removeAllOverlays 清空，removeOverlaysOfName
++  // 按名移除。消解器只对「确有拦截层的行」隐藏原生提示（非 fenix 行不误伤）。
++  const installedNames = new Set<string>()
++
++  // 原生提示互斥手段②（fix-workspace-tip-overlap）：安装期常驻启动，不随富
++  // 提示显隐启停——原生 tooltip 与富提示同为 500ms 延迟，show 时才挂观察器
++  // 会输掉竞速（落地缺陷实测：两卡同显）。
++  const nativeTipSuppressor = createNativeTipSuppressor(() => Array.from(installedNames))
++  nativeTipSuppressor.start()
++
    const removeAllOverlays = (): void => {
      for (const overlay of Array.from(document.querySelectorAll(`[${WORKSPACE_NAV_OVERLAY_ATTR}]`))) {
        overlay.remove()
      }
++    installedNames.clear()
 +    tip.leave() // 行卸载/清残留时富提示随收（overlay DOM 移除不再派发 mouseleave）
    }
  
    /** 挂装/幂等保活单行拦截层：既有同项目层存活即返回；缺失补挂；项目名变化换层。 */
-@@ -341,6 +387,7 @@
+@@ -339,9 +397,14 @@
+     if (parent === null) return
+     const existing = parent.querySelector(`[${WORKSPACE_NAV_OVERLAY_ATTR}]`)
      if (existing !== null) {
-       if (existing.getAttribute(WORKSPACE_NAV_OVERLAY_ATTR) === name) return // 存活幂等
+-      if (existing.getAttribute(WORKSPACE_NAV_OVERLAY_ATTR) === name) return // 存活幂等
++      const existingName = existing.getAttribute(WORKSPACE_NAV_OVERLAY_ATTR)
++      if (existingName === name) return // 存活幂等
++      if (existingName !== null) installedNames.delete(existingName) // 换层：旧名退出消解名单
        existing.remove() // 同文本位项目名变化（改名/换映射）：换层
 +      tip.leave() // 旧层移除：富提示随收（防残卡挂失锚）
++      nativeTipSuppressor.refresh() // 旧名的存量原生提示解Hide
      }
++    installedNames.add(name) // 新挂/换层：该行原生提示进入互斥名单
      const overlay = document.createElement('span')
      overlay.setAttribute(WORKSPACE_NAV_OVERLAY_ATTR, name)
-@@ -352,6 +399,22 @@
+     overlay.setAttribute('data-testid', 'fenix-wsnav-overlay')
+@@ -352,6 +415,22 @@
        event.preventDefault()
        deps.selectProject(name)
      })
@@ -277,18 +297,29 @@
      // 定位基准：名称文本 span 置 relative（static→relative 无布局位移），
      // 拦截层 inset:0 精确覆盖文本 rect 且随滚动自动跟随。
      if (nameText instanceof HTMLElement && getComputedStyle(nameText).position === 'static') {
-@@ -424,6 +487,7 @@
+@@ -424,6 +503,9 @@
      for (const overlay of Array.from(document.querySelectorAll(`[${attr}="${escaped}"]`))) {
        overlay.remove()
      }
 +    tip.leave()
++    installedNames.delete(name)
++    nativeTipSuppressor.refresh() // 项目移除：对应存量原生提示解Hide（删除行保留、回退原生）
    }
    const unsubscribeStore = projectGroupStore.subscribe(() => {
      const snapshot = projectGroupStore.getSnapshot()
-@@ -462,5 +526,6 @@
+@@ -431,6 +513,7 @@
+       if (!snapshot.projects.includes(name)) removeOverlaysOfName(name)
+     }
+     knownProjects = snapshot.projects
++    nativeTipSuppressor.refresh() // 快照兜底：名单与存量隐藏态对齐（换层路径之外的漂移）
+     rescan()
+   })
+ 
+@@ -462,5 +545,7 @@
      observer?.disconnect()
      if (debounce !== undefined) clearTimeout(debounce)
      removeAllOverlays()
++    nativeTipSuppressor.stop() // 全量解Hide：卸载后原生行为完整还原
 +    tip.dispose()
    }
  }
@@ -804,7 +835,7 @@
  describe('projectSessionStarter 与配套解析（保留不动）', () => {
 --- /dev/null
 +++ b/src/client/wsTooltip.ts
-@@ -0,0 +1,439 @@
+@@ -0,0 +1,473 @@
 +/**
 + * Client 半：官方工作区行「项目富提示」浮层（add-workspace-row-project-tooltip
 + * D2，2026-11-10）。fenix 项目工作区行名称悬停 500ms（对齐原生 delayMs）后，
@@ -822,10 +853,12 @@
 + * 单测/SSR）整体 no-op。显隐纯 display 切换，零 animation/transition（静态
 + * 渲染红线）；数据失效（投影缺失/exists:false/error）不渲染富提示——该行回退
 + * dsh 原生三行提示。原生提示互斥由两层插件侧手段承担（不改原生 tooltip
-+ * primitive）：① 拦截层 mouse 事件 stopPropagation（panels.tsx 侧）；② 富提示
-+ * 激活期间监听 body 新增浮层（含该行项目名文本）即隐藏（本模块，命中时
-+ * warn 一次）。②未命中且①未奏效时按静默降级纪律处理（富提示自身显隐不受
-+ * 影响，不破坏原生提示）。
++ * primitive）：① 拦截层 mouse 事件 stopPropagation（panels.tsx 侧）；② 常驻
++ * 消解器（createNativeTipSuppressor，panels.tsx 安装期 start）：监听 body 直子
++ * 新增/存量浮层，文本命中任一已装层项目名即隐藏（warn 一次），项目移除经
++ * refresh 解除（删除行保留回退原生）。②不随富提示显隐启停——两者同为 500ms
++ * 延迟，show 时才挂观察器会输掉竞速（落地缺陷：两卡同显）。②未命中且①未
++ * 奏效时按静默降级纪律处理（富提示自身显隐不受影响，不破坏原生提示）。
 + */
 +import type { ProjectSummaryProjection } from './projectSync.js'
 +
@@ -1097,39 +1130,61 @@
 +  dispose(): void
 +}
 +
-+/** body 直子新增浮层的原生提示消解观察器（手段②；未命中静默，命中 warn 一次）。
-+ * 本插件卡经 WORKSPACE_TIP_ATTR 排除，非 body 直子（行内浮层）不误伤。 */
-+interface NativeTipSuppressor {
-+  start(name: string): void
++/** 常驻原生提示消解器（手段②·fix-workspace-tip-overlap）：安装期 start、
++ * 不随富提示显隐启停——原生 tooltip 与富提示同为 500ms 延迟，show 时才挂
++ * 观察器会输掉竞速、错过 portal 节点的 add 事件（落地缺陷实测：两卡同显）。
++ * 命中规则 = body 直子（含 start 时存量兜底扫描）文本含任一已装层项目名；
++ * 本插件卡经 WORKSPACE_TIP_ATTR 排除，行内浮层（非 body 直子）不误伤。
++ * refresh 供项目移除后解除隐藏（删除行保留、回退原生），命中 warn 一次。 */
++export interface NativeTipSuppressor {
++  start(): void
++  refresh(): void
 +  stop(): void
 +}
 +
-+function createNativeTipSuppressor(): NativeTipSuppressor {
-+  if (typeof MutationObserver !== 'function') return { start: () => {}, stop: () => {} }
++export function createNativeTipSuppressor(getNames: () => readonly string[]): NativeTipSuppressor {
++  if (typeof MutationObserver !== 'function') {
++    return { start: () => {}, refresh: () => {}, stop: () => {} }
++  }
 +  let observer: MutationObserver | undefined
-+  let targetName = ''
-+  const hidden: HTMLElement[] = []
 +  let warned = false
++  const hidden = new Map<HTMLElement, string>()
++
++  const hideIfMatch = (node: HTMLElement): void => {
++    if (node.hasAttribute(WORKSPACE_TIP_ATTR)) return // 本插件富卡不误伤
++    if (hidden.has(node)) return
++    const text = node.textContent ?? ''
++    for (const name of getNames()) {
++      if (!text.includes(name)) continue
++      node.style.display = 'none'
++      hidden.set(node, name)
++      if (!warned) {
++        warned = true
++        console.warn(
++          '[fenix-dsh-dashboard-bridge] fenix 行原生提示常驻消解命中（已装层行互斥，非 fenix 行不误伤）',
++        )
++      }
++      return
++    }
++  }
++
 +  return {
-+    start(name: string) {
++    start() {
 +      this.stop()
-+      targetName = name
++      if (document.body === null) return
++      // 存量兜底：观察器启动前已 open 的 portal 节点 childList 不再报 add。
++      for (const node of Array.from(document.body.children)) {
++        if (node instanceof HTMLElement) hideIfMatch(node)
++      }
 +      observer = new MutationObserver((mutations) => {
 +        try {
 +          for (const mutation of mutations) {
++            for (const node of Array.from(mutation.removedNodes)) {
++              if (node instanceof HTMLElement) hidden.delete(node)
++            }
 +            for (const node of Array.from(mutation.addedNodes)) {
-+              if (!(node instanceof HTMLElement)) continue
-+              // portal 惯例挂 body 直下；不含本行项目名文本的原生节点不误伤。
-+              if (node.parentElement !== document.body) continue
-+              if (node.hasAttribute(WORKSPACE_TIP_ATTR)) continue
-+              if (!(node.textContent ?? '').includes(targetName)) continue
-+              node.style.display = 'none'
-+              hidden.push(node)
-+              if (!warned) {
-+                warned = true
-+                console.warn(
-+                  '[fenix-dsh-dashboard-bridge] fenix 行原生提示经插件侧隐藏（拦截层 pointer 吞噬未奏效，富提示激活期间互斥维持）',
-+                )
++              if (node instanceof HTMLElement && node.parentElement === document.body) {
++                hideIfMatch(node)
 +              }
 +            }
 +          }
@@ -1139,25 +1194,38 @@
 +      })
 +      observer.observe(document.body, { childList: true, subtree: true })
 +    },
++    refresh() {
++      const names = getNames()
++      for (const [node, name] of Array.from(hidden)) {
++        if (names.includes(name)) continue // 已装层仍在：维持隐藏
++        try {
++          node.style.removeProperty('display')
++        } catch {
++          // 节点已被宿主卸载：忽略。
++        }
++        hidden.delete(node)
++      }
++    },
 +    stop() {
 +      observer?.disconnect()
 +      observer = undefined
-+      for (const node of hidden.splice(0)) {
++      for (const node of hidden.keys()) {
 +        try {
 +          node.style.removeProperty('display')
 +        } catch {
 +          // 节点已被宿主卸载：忽略。
 +        }
 +      }
-+      targetName = ''
++      hidden.clear()
 +    },
 +  }
 +}
 +
 +/**
 + * 创建富提示控制器：单例深卡 lazy portal 到 body；enter 起 500ms 定时器，
-+ * 到点渲染 spec 并锚定拦截层 rect 右侧显示（视口 clamp），同时启动原生提示
-+ * 消解观察器；leave/滚动/行卸载即收。显隐纯 display 切换（零动画）。
++ * 到点渲染 spec 并锚定拦截层 rect 右侧显示（视口 clamp）；leave/滚动/行卸载
++ * 即收。显隐纯 display 切换（零动画）。原生提示互斥由常驻消解器承担
++ * （createNativeTipSuppressor，panels.tsx 安装期启动），控制器不再耦合启停。
 + */
 +export function createWorkspaceTipController(deps: WorkspaceTipDeps): WorkspaceTipController {
 +  if (typeof document === 'undefined') {
@@ -1166,7 +1234,6 @@
 +  let card: HTMLElement | undefined
 +  let timer: ReturnType<typeof setTimeout> | undefined
 +  let activeAnchor: Element | undefined
-+  const suppressor = createNativeTipSuppressor()
 +
 +  /** 任意容器滚动即收（scenario：mouseleave/滚动/行卸载即收；capture 捕获
 +   * 任意滚动容器，passive 零阻塞）。 */
@@ -1195,7 +1262,6 @@
 +      timer = undefined
 +    }
 +    disarmScrollGuard()
-+    suppressor.stop()
 +    activeAnchor = undefined
 +    if (card !== undefined) card.style.display = 'none'
 +  }
@@ -1223,7 +1289,6 @@
 +    if (top + cardHeight > viewportHeight - 8) top = Math.max(8, viewportHeight - cardHeight - 8)
 +    fresh.style.left = `${Math.round(left)}px`
 +    fresh.style.top = `${Math.round(top)}px`
-+    suppressor.start(name)
 +    armScrollGuard()
 +  }
 +

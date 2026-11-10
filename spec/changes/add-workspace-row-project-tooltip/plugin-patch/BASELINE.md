@@ -48,3 +48,22 @@
   git 历史。
 - `pnpm build` 后 `lib/` 产物经 symlink 即时映射（既有部署链）；回退补丁后
   须重跑 `pnpm build && systemctl restart dsh-web` 才回到快照运行态。
+
+## 追加修复（fix-workspace-tip-overlap，2026-11-10）
+
+交付后用户报告缺陷：fenix 行 hover 时原生 tooltip 未被屏蔽，两卡重叠。
+根因：落地版 `createNativeTipSuppressor` 为「富提示 show 时才 start 的观察
+器」，与原生 tooltip 同为 500ms 延迟，竞速失败错过 portal 节点的 add 事件。
+修复（用户裁决绕过立项直接修改宿主仓，未走 SPEC 流程）：
+
+- `wsTooltip.ts`：消解器改常驻型 `createNativeTipSuppressor(getNames)` →
+  `{start, refresh, stop}`——安装期 start（存量 body.children 兜底扫描 +
+  body childList/subtree 常驻观察），命中=body 直子文本含任一已装层项目名
+  且无 `WORKSPACE_TIP_ATTR`；refresh 供项目移除后解Hide；stop 全解。
+- `panels.tsx`：新增 `installedNames` 集合与消解器生命周期接线（换层/新挂
+  写名、removeOverlaysOfName 删名+refresh、store 订阅 refresh、teardown stop）。
+
+上 diff 已重生成，含本次修复增量。活站复验（playwright，token 会话）：
+fenix 行 hover 原生 display:none + 富卡独显；非 fenix 行（nongit）原生照常
+display:contents + 富卡 0；换行无残卡。vitest 89 过、pnpm build 过、
+systemctl restart dsh-web 后生效。
