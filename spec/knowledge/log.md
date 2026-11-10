@@ -161,3 +161,4 @@
 ## [2026-11-10 12:44 UTC+8] distill | add-workspace-row-project-tooltip（第 1 轮，自动提交落库）
 ## [2026-11-10 13:41 UTC+8] distill | add-agent-model-quick-assign（第 1 轮，自动提交落库）
 ## [2026-11-10 13:54 UTC+8] distill | add-dsh-web-password-login（第 1 轮，自动提交落库）
+## [2026-11-10 14:35 UTC+8] fold | proto-serving-via-dashboard.md 折叠入库
