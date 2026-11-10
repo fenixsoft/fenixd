@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-10 14:49 UTC+8
+> 最后更新：2026-11-10 14:54 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -25,7 +25,8 @@
 | [task-progress-phase-display](task-progress-phase-display.md) | 任务进度按阶段呈现 | 2026-10-03 04:59 |
 | [quality-gates-progress](quality-gates-progress.md) | 质量门禁进度呈现（详情页行渲染 Bento 勾选块形态，2026-11-06 对齐 v2 改版定形） | 2026-11-06 17:11 |
 | [activity-records-tabs](activity-records-tabs.md) | 活动记录页签 | 2026-10-03 04:59 |
-| [project-page-tabs](project-page-tabs.md) | 项目详情页签 | 2026-10-03 04:59 |
+| [project-page-tabs](project-page-tabs.md) | 项目详情页签（六分面：项目首页居首/功能开发默认、tab 参数持久化 replace 语义、按需加载门控） | 2026-11-10 14:54 |
+| [project-home-tab](project-home-tab.md) | 项目首页页签（只读文件浏览：git 可见文件树/目录导航与面包屑/文件内容查看与下载/README GFM 安全渲染/URL path 持久化/project-files 三端点与路径越界防护） | 2026-11-10 14:54 |
 | [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-06 17:00 |
 | [ui-theme](ui-theme.md) | 主题切换 | 2026-10-03 04:59 |
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |

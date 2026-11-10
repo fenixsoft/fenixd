@@ -165,3 +165,4 @@
 ## [2026-11-10 14:40 UTC+8] fold | supervisor-import-time-argv-guard-trap.md 折叠入库
 ## [2026-11-10 14:49 UTC+8] distill | add-maintenance-lane-provider-failover（第 1 轮，自动提交落库，折叠入库 2 条）
 ## [2026-11-10 14:54 UTC+8] fold | workspace-tooltip-mutex-racing-observer.md 折叠入库
+## [2026-11-10 15:00 UTC+8] distill | add-project-home-tab（第 1 轮，自动提交落库，折叠入库 1 条）
