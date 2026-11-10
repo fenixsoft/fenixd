@@ -109,12 +109,11 @@ const OV_WARNING = '#d97706';
 const OV_INFO = '#2563eb'; // v2 语义 info tone 前景
 const OV_INFO_SOFT = '#eff6ff';
 const OV_MUTED_SOFT = '#f1f5f9';
-// add-spec-list-mobile-style：移动卡磁贴/分隔/信息行镜像色（原型 T 常量同源，
-// 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200 / warning 软底 + amber-800）
+// add-spec-list-mobile-style：移动卡磁贴/分隔镜像色（原型 T 常量同源，
+// 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200；amber 软底/前景两值
+// 随信息行退役移除，add-spec-info-icon-tooltip 后信息色走 token.colorWarning）
 const OV_HAIRLINE = '#eef2f7';
 const OV_BORDER = '#e2e8f0';
-const OV_AMBER_SOFT = '#fffbeb';
-const OV_AMBER_TEXT = '#92400e';
 // 移动状态 chips 激活态计数（DSH_PRIMARY 黑底上的降透白，原型 chip-active
 // .chip-n 同值 rgba 62%）；仅 SpecCardList 移动编排块消费
 const OV_ON_PRIMARY_DIM = 'rgba(255, 255, 255, 0.62)';
@@ -770,7 +769,7 @@ interface SpecCardListProps {
 // 移动端（<768px）卡片形态（add-spec-list-mobile-style 重绘，UI 真相源
 // specs/dashboard-spec-table/prototype/index.html）：白磁贴（12px 圆角发丝边）
 // 内发丝线分卡，镜像桌面 .ov-bento 磁贴语态（D1 不逐卡开卡框）；卡 = 英文名主行
-// → 中文标题次行 → 语义胶囊行 → 阶段进度区 → 元信息行 → 验证行 → 信息行；
+// → 中文标题次行 → 语义胶囊行 → 阶段进度区 → 元信息行 → 验证行；
 // fix-* 子卡缩进 26px + └ 前缀灰符；整卡点击进详情（specDetailPath 单源）。
 // 仅在 md 断点以下渲染，桌面 Table 分支不受影响。
 function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError }: SpecCardListProps) {
@@ -885,12 +884,16 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                   {record.title}
                 </div>
               ) : null}
-              {/* 语义胶囊行：状态 tone 色对带色点 + 等待标记灰软底 + 模式胶囊 + ⋮ 更多 */}
+              {/* 语义胶囊行：状态 tone 色对带色点 + 等待标记灰软底 + 信息图标 + 模式胶囊 + ⋮ 更多 */}
               <div className="spec-card-pills" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap', minWidth: 0 }}>
                 <Pill tone={m.tone} dot>
                   {m.label}
                 </Pill>
                 <StatusWaitGroup record={record} pill />
+                {/* 信息图标（add-spec-info-icon-tooltip 2.1）：error 非空时状态
+                    胶囊旁点按弹层（完整信息 + 清除），替代 amber 软底信息行；
+                    32px 触控目标对齐 ⋮ 纪律，空值不渲染 */}
+                {record.error ? <SpecInfoIcon record={record} onClearError={onClearError} tapSize={32} /> : null}
                 {/* 模式胶囊单源 ModePill（与桌面模式列同源）；存量无 mode 字段
                     按缺省 full 展示「标准」 */}
                 <ModePill mode={record.mode} />
@@ -991,30 +994,6 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                       验证 {record.verify_done}/{record.verify_total}
                     </span>
                   )}
-                </div>
-              ) : null}
-              {/* 信息行：amber 软底圆角条、橙「信息」前缀、摘要单行省略 + 清除
-                  （信息清除既有契约保留，dashboard-spec-table 清除链路不变） */}
-              {record.error ? (
-                <div
-                  className="spec-card-info-row"
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, background: OV_AMBER_SOFT, borderRadius: 6, padding: '6px 8px' }}
-                >
-                  <span style={{ fontSize: 12, color: OV_WARNING, flex: '0 0 auto' }}>信息</span>
-                  <span
-                    style={{ flex: 1, minWidth: 0, fontSize: 12, color: OV_AMBER_TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  >
-                    {record.error}
-                  </span>
-                  <Button
-                    size="small"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClearError(record);
-                    }}
-                  >
-                    清除
-                  </Button>
                 </div>
               ) : null}
             </List.Item>
