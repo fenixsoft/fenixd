@@ -53,5 +53,7 @@
 
 - path: core/agent_runner/maintenance_runs.py
   kind: modify
+- path: core/agent_runner/runner.py
+  kind: modify
 - path: core/admin_monitor.py
   kind: modify
