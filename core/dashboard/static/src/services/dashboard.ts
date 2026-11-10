@@ -3393,6 +3393,8 @@ export interface ProjectLatestCommit {
 export interface ProjectFileEntry {
   name: string;
   dir: boolean;
+  /** 文件实际字节数（os.stat）；目录与读取失败为 null（目录不做递归汇总）。 */
+  bytes: number | null;
   last_commit: ProjectFileCommit | null;
 }
 
@@ -3443,4 +3445,12 @@ export async function fetchProjectFileContent(
 export function fetchProjectFileDownloadUrl(project: string, path: string): string {
   const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
   return withApiBase(`/api/project-files/download${q}`);
+}
+
+/** 文件图片内联直链（project-home-tab 增强：raw 通道仅服务图片扩展白
+ *  名单，Content-Type 按扩展名精确下发供 <img> 直显；同 download 走
+ *  withApiBase 前缀化单点——地址不经 fetch，浏览器直接导航加载）。 */
+export function fetchProjectFileRawUrl(project: string, path: string): string {
+  const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
+  return withApiBase(`/api/project-files/raw${q}`);
 }
