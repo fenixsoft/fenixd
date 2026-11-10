@@ -1520,8 +1520,8 @@ class TestManualAuthorizationChain(unittest.TestCase):
             def __init__(self):
                 self.jobs = []
 
-            def submit(self, fn, *args, **kwargs):
-                self.jobs.append((fn, args, kwargs))
+            def submit(self, fn, ctx=None):
+                self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
         proot = _make_project_root()
         _write_items(proot, {"a": _item("a")})
@@ -2111,12 +2111,12 @@ class _CapturingExecutor:
     def __init__(self):
         self.jobs = []
 
-    def submit(self, fn, *args, **kwargs):
-        self.jobs.append((fn, args, kwargs))
+    def submit(self, fn, ctx=None):
+        self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
     def run_one(self):
         """FIFO 跑一个作业，返回其是否为批 worker（args 非空）。"""
-        fn, args, _ = self.jobs.pop(0)
+        fn, args = self.jobs.pop(0)
         fn(*args)
         return bool(args)
 

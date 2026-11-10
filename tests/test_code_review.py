@@ -2135,12 +2135,12 @@ class _RecExecutor:
     def __init__(self):
         self.jobs = []
 
-    def submit(self, fn, *args, **kwargs):
-        self.jobs.append((fn, args, kwargs))
+    def submit(self, fn, ctx=None):
+        self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
 
 class _BoomExecutor:
-    def submit(self, fn, *args, **kwargs):
+    def submit(self, fn, ctx=None):
         raise RuntimeError("pool closed")
 
 
@@ -2148,8 +2148,8 @@ class _InlineExecutor:
     """submit 内联同步执行 worker——复现真实线程池「worker 与主线程并发收尾、
     可领跑」的时序面（_RecExecutor 不执行任务，覆盖不到该时序）。"""
 
-    def submit(self, fn, *args, **kwargs):
-        fn(*args, **kwargs)
+    def submit(self, fn, ctx=None):
+        fn(*((ctx,) if ctx is not None else ()))
 
 
 class _FakeMonitor:

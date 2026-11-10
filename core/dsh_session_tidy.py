@@ -69,7 +69,7 @@ EXIT_OK = 0
 EXIT_FATAL = 1
 EXIT_RETRYABLE = 2
 
-_logger = logging.getLogger("fenix.dsh_session_tidy")
+_logger = logging.getLogger("fenixd.dsh_session_tidy")
 
 
 def _default_logger() -> Any:

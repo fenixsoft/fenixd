@@ -40,8 +40,8 @@ class _RecExecutor:
     def __init__(self):
         self.jobs = []
 
-    def submit(self, fn, *args, **kwargs):
-        self.jobs.append((fn, args, kwargs))
+    def submit(self, fn, ctx=None):
+        self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
 
 class _FakeRunner:

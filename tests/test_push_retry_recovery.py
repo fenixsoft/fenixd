@@ -310,10 +310,10 @@ class _RecordingExecutor:
         self.submitted = []
         self._reject = reject
 
-    def submit(self, fn, *args):
+    def submit(self, fn, name=None):
         if self._reject:
             raise RuntimeError("pool saturated")
-        self.submitted.append((fn, args))
+        self.submitted.append((fn, (name,) if name is not None else ()))
 
 
 class TestRecoverOneDonePushRetry(unittest.TestCase):

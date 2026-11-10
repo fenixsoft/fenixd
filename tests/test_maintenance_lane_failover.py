@@ -439,7 +439,7 @@ class _StubRunnerNoLoop:
 
     def _write_provider_marker(self, run_id, spec_name, agent_type,
                                provider_name, model, chain_index, chain_len,
-                               *attempt):
+                               attempt=None):
         self.marker_calls.append((provider_name, model, chain_index, chain_len))
 
     def _run_agent(self, prompt, cwd, run_id, model_override=None,
