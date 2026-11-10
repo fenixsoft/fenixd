@@ -11,7 +11,7 @@ SPEC 生命周期。本域能力页清单如下。
 | [draft-promotion-gate](draft-promotion-gate.md) | 草稿 drafted→ready 晋升门控（promote_mode 模式开关；晋升链机械 lint 含中文标题存在性硬门，fix-cr-* 豁免） | 2026-11-06 20:15 |
 | [manual-spec-promotion](manual-spec-promotion.md) | SPEC 手工晋升 | 2026-10-03 04:59 |
 | [spec-review-gate](spec-review-gate.md) | 方案评审门（reviewing 状态） | 2026-10-11 02:08 |
-| [spec-review-agent](spec-review-agent.md) | 方案评审 agent | 2026-10-03 04:59 |
+| [spec-review-agent](spec-review-agent.md) | 方案评审 agent（判官范式契约与模型路由，判官车道已接入候选环） | 2026-11-10 12:24 |
 | [spec-review-recovery](spec-review-recovery.md) | 评审结论消费与中断恢复 | 2026-10-11 02:08 |
 | [spec-review-rejection-schema](spec-review-rejection-schema.md) | 评审拒绝结果的结构化模式 | 2026-10-03 04:59 |
 | [spec-review-infra-attribution](spec-review-infra-attribution.md) | 评审供给失败归因（结构化桥接+失败行归因括注/熔断成功清零/在飞上限/冻结文案红线） | 2026-10-31 16:23 |

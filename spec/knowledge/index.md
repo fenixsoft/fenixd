@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-10 11:24 UTC+8
+> 最后更新：2026-11-10 12:24 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -16,7 +16,7 @@
 | 1.1 | [project-management](domains/project-management/_domain.md) | 项目的发现接入、描述信息与生命周期控制（daemon 启停 systemctl 双轨/软删除）。含项目初始化骨架播种与针对 SPEC 的冻结/删除停止语义。 | 8 | 2026-11-08 19:28 |
 | 1.2 | [planning-generation](domains/planning-generation/_domain.md) | SPEC 的原生生成链路：从需求澄清到 proposal/design/tasks 成文。planner 出题阶段的产物硬门、契约情报与性能治理同属此域。 | 6 | 2026-10-03 04:59 |
 | 1.3 | [ui-prototyping](domains/ui-prototyping/_domain.md) | 界面原型确认环：SPEC 起草阶段用「真组件、假数据」的高保真原型对齐界面意图，浏览器批注迭代至批准入库。批准后以双通道契约约束后续 AI 实现与评审（原型纯视觉参照、无约束力），原型控制台 vendor DEV 警告非缺陷判读。 | 3 | 2026-11-07 21:53 |
-| 1.4 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升（含中文标题晋升硬门）/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-06 20:15 |
+| 1.4 | [spec-lifecycle](domains/spec-lifecycle/_domain.md) | SPEC 全生命周期：起草评审门（spec-review）与驳回恢复、晋升（含中文标题晋升硬门）/手工激活/定时解冻调度、并发治理与内容完整性门。归档链（手工/自动归档、归档态迁移与自动提交）与 fast-track 模式选择、状态机模型、立项与成文定调、SPEC 中文标题（display name）也在此域。 | 26 | 2026-11-10 12:24 |
 
 ### 2 执行车道（6 域 · 171 能力）
 
@@ -44,7 +44,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 20 | 2026-11-10 09:52 |
+| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 20 | 2026-11-10 12:24 |
 | 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
 
 ### 5 前端交互（3 域 · 67 能力）

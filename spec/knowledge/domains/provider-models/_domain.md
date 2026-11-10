@@ -12,7 +12,7 @@
 | [dashboard-chain-editor](dashboard-chain-editor.md) | 链模型映射编辑器 | 2026-10-03 04:59 |
 | [provider-chain-config](provider-chain-config.md) | provider 候选链配置 | 2026-10-03 04:59 |
 | [provider-ref-validation](provider-ref-validation.md) | provider 引用校验与分配失效划界（加载/保存两路径校验单源、相似名建议、链解析三态判定单源） | 2026-11-08 21:09 |
-| [failover-dispatch](failover-dispatch.md) | provider 故障切换派发（链推进/限流冷却/被 429 打死 run 自动重派，归因双源+剃余续跑；触发面只认失败不认挂；切链闸门结构化双源、维护/判官范式车道接入立项中） | 2026-11-10 09:52 |
+| [failover-dispatch](failover-dispatch.md) | provider 故障切换派发（链推进/限流冷却/被 429 打死 run 自动重派，归因双源+剃余续跑、重派按链重新解析；触发面只认失败不认挂；切链闸门结构化双源、八条 LLM 车道已接入候选环） | 2026-11-10 12:24 |
 | [provider-fault-fuse](provider-fault-fuse.md) | provider 故障熔断 | 2026-10-03 04:59 |
 | [provider-transient-backoff](provider-transient-backoff.md) | 瞬时故障原地退避 | 2026-10-03 04:59 |
 | [transient-dispatch-gating](transient-dispatch-gating.md) | 瞬断终态重派与全局熔断 | 2026-10-03 04:59 |

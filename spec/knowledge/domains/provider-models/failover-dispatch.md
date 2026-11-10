@@ -1,4 +1,4 @@
-<!-- knowledge: capability=failover-dispatch rev=5 sources=spec/archive/2026-09-02-add-provider-failover,spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md,spec/changes/add-maintenance-lane-provider-failover -->
+<!-- knowledge: capability=failover-dispatch rev=6 sources=spec/archive/2026-09-02-add-provider-failover,spec/archive/2026-09-30-add-code-review-concurrency-and-429-resilience,spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume,spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md,spec/changes/add-maintenance-lane-provider-failover -->
 
 # provider 故障切换派发（failover 链推进与可观测）
 
@@ -16,7 +16,9 @@ attempt 失败后的链推进决策与留痕：切换类错误驱动候选链前
 - 重派 run 在运行记录中标注「429 限流重派」缘由，供取证。
 - 可观测契约：每个 attempt 启动时向 run jsonl 追加 provider_marker 行（provider / model / chain_index）；AgentRunResult 携带 provider_used / model_used；跨 attempt 切换输出 INFO 级「provider switched」日志（含 spec 名与新旧 provider，模型名变化时附 `model_changed: <old>→<new>`）。
 - 单 provider 当日 attempt 计数超过 `pm.failover.daily_attempts_warn` 时打 WARNING，当日只告警一次。
-- 适用面现状边界（2026-11-10）：本页规则中的 attempt 环链推进适用于 dispatch 派发环；六条 LLM 维护车道（administrator / arbiter / self-review / evolution / code-review / code-fix）与两条判官范式车道（spec-review / dispute-judge）当前仍是「取链首候选直连、无链 failover、provider_marker 链下标恒 0/1」——接入由 `spec/changes/add-maintenance-lane-provider-failover/` 承接，落地后回填本页适用面。
+- 维护车道与判官范式车道已接入候选环（2026-11-10 add-maintenance-lane-provider-failover）：六条 LLM 维护车道（administrator / arbiter / self-review / evolution / code-review / code-fix）与两条判官范式车道（spec-review / dispute-judge）的 LLM 调用经同一候选环解析链、按切换类错误推进（R1–R3/R7），实现单一真源为 `AgentRunner._run_agent_with_chain_failover`（维护车道经 `maintenance_runs._run_lane_agent_with_failover` 薄封装，roles 逐个 or-fold 取首个有链配置的角色；判官范式两方法骨架镜像，共性行为必须两处同步改）。行为要点：切换判定/冷却/分类与 dispatch 环共用同一原语（`classify_switch_error` 单源）；provider_marker 写真实 `chain_index/chain_len` 与 additive `attempt`（不再恒 0/1）；非切换类错误（4xx 配额鉴权、产物门失败、业务失败、超时）不换候选、异常原样上抛由车道既有收场逻辑处理（R4）；未配置链或桩 runner 缺环方法时 fail-open 单发直连，行为与接入前逐字段一致（R7）。车道环内候选查询带 `skip_indexes`（已试下标本地记账）防簿记 fail-open 时重复选同一候选烧链。
+- 429 重派按链解析（同上 SPEC）：429 终局重派意图与 run jsonl 标注 additive 携带 `chain_len` 与 `failed_candidates`（环未介入时省略该键，向后兼容）；重派消费复跑经候选环**重新解析链**并按当时冷却跳过候选，MUST NOT 固定复用首跑链首（2026-11-10 事故形态：重派 run 再次解析到同一已限流链首、二次 429 烧尽重派额度）；`RATELIMIT_REDISPATCH_MAX=1` 与 300s 限流冷却语义不变。
+- 换候选可观测的车道名口径：`lane_name = agent_type or marker_agent_type or spec_name`——self-review / evolution 车道 `_run_agent` 不传 agent_type（超时覆盖查询面不扩面），换候选日志与链耗尽消息用 lane_name 点名车道。
 - 触发面是「失败」不是「挂」：链推进由 attempt 失败信号（错误/非零退出）驱动，网关「连得上但不响应」的 TCP 黑洞不产生失败信号、不触发任何链推进或退避——run 以约 1 轮/10 分钟的蠕动节奏耗到超时监督上限。黑洞型故障只有超时监督能兜底，取证时勿以「为何不 failover」归因，先确认 provider 是否处于黑洞形态。
 
 ## 溯源
@@ -26,3 +28,4 @@ attempt 失败后的链推进决策与留痕：切换类错误驱动候选链前
 - 2026-10-06 add-code-review-ratelimit-resume（spec/archive/2026-10-06-evo-add-code-review-ratelimit-resume） — 限流终局归因改双源（result 事件兜底）、重派消费由唯一周期消费方改为手动+周期双车道共享配额统一入口、code-review 车道重派由复用原 manifest 全量重跑改为剃余续跑只跑剩余文件
 - 2026-11-04 memory-distill-diagnostic-signatures（spec/knowledge/_inbox/done/memory-distill-diagnostic-signatures.md） — 折叠 failover 触发面判读签名：只认失败不认挂，TCP 黑洞不触发链推进，run 蠕动到监督上限须靠超时监督兜底
 - 2026-11-10 事故修复（core/agent_runner/runner.py，commit `d08d2fbd0`） — 修复「429/拒模型只出现在 result 事件时 attempt 环切链闸门恒假、链永不前进」缺陷：抽 `_switch_signal_text` 为切链判定单一真源（error 文本 + result 文本 + `api_error_status`），`_record_4xx_or_transient` 增拒模型 result 事件双源回退；补两条「降噪文本 + 结构化 429」回归用例。同时标注维护车道/判官范式车道暂无链 failover 的现状边界（接入见 spec/changes/add-maintenance-lane-provider-failover）
+- 2026-11-10 add-maintenance-lane-provider-failover（spec/changes/add-maintenance-lane-provider-failover） — 候选环接入六条维护车道与两条判官范式车道（判定/冷却/分类与 dispatch 环共用单一原语，marker 真实链下标，非切换错误不换候选，未配链 fail-open 单发）；429 重派意图 additive 携带 chain_len/失败候选、复跑按当时冷却重新解析链不固定复用链首；车道环选点加 skip_indexes 本地记账防簿记缺失时重复候选

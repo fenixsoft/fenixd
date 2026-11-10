@@ -1,6 +1,6 @@
 # 方案评审 Agent 本体（spec-review run）
-<!-- knowledge: capability=spec-review-agent rev=1
-     sources=spec/archive/2026-09-19-add-spec-review-gate -->
+<!-- knowledge: capability=spec-review-agent rev=2
+     sources=spec/archive/2026-09-19-add-spec-review-gate,spec/changes/add-maintenance-lane-provider-failover -->
 
 评审 run 的 agent 侧契约：提示词注册、判官式运行范式、输入可及性、结果 JSON 契约、结果硬门与主树写入边界。
 
@@ -9,7 +9,7 @@
 - 提示词文件 `agents/spec-review.md` 注册进 `core/agent_runner/prompt_builder.py` 的 `AGENT_PROMPT_FILES` 白名单（类型键 `spec-review`）；模板声明评审者角色与单轮定位、三个评估维度（`goal-fit` / `hole` / `regression`）、输出契约全文、写权限边界、取证义务（结论引用具体文件路径与位置）、禁止修改 SPEC 目录外任何文件；以未注册类型构建 prompt 时 fail-fast 抛异常，不静默返回空模板。
 - 占位符经 `_fill_placeholders` 接收 `{spec_name}`、`{spec_dir}`、`{result_path}`、`{state_path}` 等上下文，不使用 `str.format` 语法。
 - 运行范式与 `run_dispute_judge` 相同：不创建 git worktree，`cwd` 为主树项目根，`claude` 子进程以 `--add-dir <项目根>` 启动；run_id 形如 `spec-review-<spec>-<ts>`，前缀同时在 `core/agent_runner/run_files.py` 与 `core/admin_monitor.py` 的 `_RUN_PREFIXES` 两处登记（两处同源，缺一导致 run 文件与监控口径不一致）。
-- 模型路由：`agents.models.spec-review` 配置 provider 链时按链首 provider 的 `ANTHROPIC_BASE_URL / API_KEY / MODEL` 与独立 `CLAUDE_CONFIG_DIR` 启动并写 provider marker；未分配时走默认网关模型常量，不报错。
+- 模型路由：`agents.models.spec-review` 配置 provider 链时按链首 provider 的 `ANTHROPIC_BASE_URL / API_KEY / MODEL` 与独立 `CLAUDE_CONFIG_DIR` 启动并写 provider marker；未分配时走默认网关模型常量，不报错。2026-11-10 起判官范式车道（spec-review / dispute-judge）接入候选环：切换类错误（429/5xx/拒模型/连接类）在同一 run 内换下一候选，provider_marker 写真实 `chain_index/chain_len`，provider_used 归因最后尝试候选；未配置链时单发直连行为不变（见 [failover-dispatch](../provider-models/failover-dispatch.md)）。
 - 输入可及性：SPEC 目录下的 `proposal.md`、`design.md`、`tasks.md`、`specs/*/spec.md` 直接可读；额外可读 `spec/archive/` 已归档历史 SPEC 与 `.fenix/runs/` 历史 run 流转录用于复盘比对；提示词告知这些路径用途；输出 `history_consulted` 记录实际查阅过的路径，未查阅时为空数组，不伪造记录。
 - 结果契约：结果写入 `{result_path}`（即 `.fenix/spec-review/<spec>/.fenix-run-result.json`），不写其它任何路径。顶层字段：`status`（三取一）、`summary`（一句话结论）、`findings`（数组，每条含 `severity`（blocking/repairable/note）、`aspect`（goal-fit/hole/regression）、`detail`、`evidence`）、`repairs`（数组，每条含 path 与 summary）、`history_consulted`、`confidence`（high/medium/low）。
 - status 语义严格对应：`approved` 表示方案可行且未作改动（`repairs` 必须为空）；`repaired` 表示方案可行但已就地修补可修补漏洞（`repairs` 必须非空）；`rejected` 表示存在方向性风险或致命漏洞需人工裁决（`findings` 至少一条 `severity: blocking`）。
@@ -20,3 +20,4 @@
 ## 溯源
 
 - 2026-09-19 2026-09-19-add-spec-review-gate（spec/archive/2026-09-19-add-spec-review-gate） — 新增评审 agent 契约：提示词注册与占位符、判官范式与 run_id 双处登记、模型路由与输入可及性、结果 JSON 契约、结果硬门与主树写入边界（含不自动回滚裁定）
+- 2026-11-10 add-maintenance-lane-provider-failover（spec/changes/add-maintenance-lane-provider-failover） — 判官范式车道模型路由段补候选环接入语义（切换类错误同 run 换候选、marker 真实链下标、未配链行为不变）
