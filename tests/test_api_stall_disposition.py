@@ -251,7 +251,8 @@ class _CloseoutRunner:
 
     def _ratelimit_redispatch_on_terminal(self, run_id, error, provider_name,
                                           spec_name, api_error_status=None,
-                                          result_text=""):
+                                          result_text="", chain_len=None,
+                                          failed_candidates=None):
         self.ratelimit_calls.append({"run_id": run_id, "error": error})
         return dict(self._ratelimit_intent) if self._ratelimit_intent else None
 

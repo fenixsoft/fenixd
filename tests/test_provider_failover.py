@@ -746,6 +746,46 @@ class TestRatelimitRedispatch:
         rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
         assert not any(r.get("type") == "ratelimit_redispatch" for r in rows)
 
+    # ── 登记侧 additive 链信息（add-maintenance-lane-provider-failover R6）──
+
+    def test_intent_additive_chain_len_and_failed_candidates(self, tmp_path):
+        """候选环链耗尽 429 → 意图 dict 与 run jsonl 标注行 additive 携带
+        chain_len 与 failed_candidates（重派按链解析的取证留痕）；环未介入
+        （键未传）时意图省略该键，向后兼容。"""
+        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        run_file = self._mk_run(tmp_path, "run-chain")
+        failed = [
+            {"provider": "p1", "model": "m1", "chain_index": 0},
+            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash",
+             "chain_index": 1},
+        ]
+        intent = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-chain", error=self.REAL_429,
+            provider_name="inferaiapi.com", spec_name="code-review",
+            chain_len=2, failed_candidates=failed)
+        assert intent is not None
+        assert intent["chain_len"] == 2
+        assert intent["failed_candidates"] == failed
+        rows = [json.loads(l) for l in run_file.read_text(encoding="utf-8").splitlines()]
+        markers = [r for r in rows if r.get("type") == "ratelimit_redispatch"]
+        assert len(markers) == 1
+        assert markers[0]["chain_len"] == 2
+        assert markers[0]["failed_candidates"] == failed
+        # 环未介入：不传链键 → 意图与标注行均省略（向后兼容形态）
+        run_file2 = self._mk_run(tmp_path, "run-nochain")
+        intent2 = runner._ratelimit_redispatch_on_terminal(
+            run_id="run-nochain", error=self.REAL_429,
+            provider_name="inferaiapi.com", spec_name="code-review")
+        assert intent2 is not None
+        assert "chain_len" not in intent2
+        assert "failed_candidates" not in intent2
+        rows2 = [json.loads(l)
+                 for l in run_file2.read_text(encoding="utf-8").splitlines()]
+        markers2 = [r for r in rows2 if r.get("type") == "ratelimit_redispatch"]
+        assert len(markers2) == 1
+        assert "chain_len" not in markers2[0]
+        assert "failed_candidates" not in markers2[0]
+
     # ── 消费侧（admin_monitor._schedule/_consume_ratelimit_redispatch） ──
 
     @staticmethod

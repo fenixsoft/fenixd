@@ -781,7 +781,7 @@ class TestRunSelfReviewRunner:
         runner = self._runner(proot)
 
         def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
-                            max_turns, spec_name=None):
+                            max_turns, spec_name=None, agent_type=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({"date": run_id.split("-")[1],
                             "waste": ["W"], "mistakes": ["M"], "improvements": ["I"]}),
@@ -814,7 +814,7 @@ class TestRunSelfReviewRunner:
         runner = self._runner(proot)
 
         def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
-                            max_turns, spec_name=None):
+                            max_turns, spec_name=None, agent_type=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({
                     "date": "2026-09-08",
@@ -839,7 +839,7 @@ class TestRunSelfReviewRunner:
         runner = self._runner(proot)
 
         def failing(prompt, cwd, run_id, model_override, env_overrides,
-                    max_turns, spec_name=None):
+                    max_turns, spec_name=None, agent_type=None):
             raise RuntimeError("Timeout after 120s")
 
         runner._run_agent = failing
@@ -858,7 +858,7 @@ class TestRunSelfReviewRunner:
         runner = self._runner(proot)
 
         def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
-                            max_turns, spec_name=None):
+                            max_turns, spec_name=None, agent_type=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({
                     "date": "2026-09-04", "waste": [], "mistakes": [],
@@ -885,7 +885,7 @@ class TestRunSelfReviewRunner:
         runner = self._runner(proot)
 
         def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
-                            max_turns, spec_name=None):
+                            max_turns, spec_name=None, agent_type=None):
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
                 json.dumps({"date": "2026-09-04", "waste": ["W"],
                             "mistakes": [], "improvements": []}),
@@ -923,7 +923,7 @@ class TestRunSelfReviewModelChain:
         captured = {}
 
         def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
-                            max_turns, spec_name=None):
+                            max_turns, spec_name=None, agent_type=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(

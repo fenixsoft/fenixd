@@ -187,7 +187,8 @@ def _apply_provider_env(
 
 
 def _write_lane_provider_marker(
-    runner, run_id: str, spec_name: str, agent_type: str, assignment
+    runner, run_id: str, spec_name: str, agent_type: str, assignment,
+    chain_index: int = 0, chain_len: int = 1, attempt: int | None = None,
 ) -> None:
     """维护型车道 assignment 命中时写 provider_marker（code-review item
     faea95e2d494）。
@@ -197,10 +198,18 @@ def _write_lane_provider_marker(
     除 run_administrator 手动写点外，其余四条车道的 run jsonl 无任何
     provider/model 痕迹；而 _admin_failure_evidence 定位「模型不被网关接受」
     类失败正依赖 provider_marker。本助手在各车道 assignment 命中分支统一
-    接入，观测口径一致：车道不接 failover、只用链首选直连，链内下标恒 0/1
-    （与 run_administrator 既有写点同口径）。未命中（回退 _get_admin_model
-    的默认网关形态）不写。写点是观测增强：替身 runner 缺写点或写入失败
-    均不阻断维护 run 主流程。
+    接入，观测口径一致。未命中（回退 _get_admin_model 的默认网关形态）
+    不写。写点是观测增强：替身 runner 缺写点或写入失败均不阻断维护 run
+    主流程。
+
+    add-maintenance-lane-provider-failover 2.2：链下标/链长/尝试序号参数化
+    （缺省 ``0/1/None`` 保持既有单发直连调用点的写点形态不变）——车道接
+    入候选环后真实 ``chain_index``/``chain_len``/``attempt`` 由
+    runner._run_agent_with_chain_failover 直写 ``runner._write_provider_marker``
+    （链上逐候选各写一条），本助手仅在替身 runner 缺候选环的单发回退路径
+    使用（此时仍取链首选，0/1 口径如旧）。``attempt`` 非 None 时才随
+    keyword 透传——替身写点若只按既有 8 形参定义，keyword 多参会被
+    except 捕获降级为 WARNING（不阻断），但不传可让旧替身照常收到写点。
     """
     if not assignment:
         return
@@ -210,15 +219,27 @@ def _write_lane_provider_marker(
         # 替身/精简 runner 未提供写点（观测通道缺失）→ 跳过，不阻断车道
         return
     try:
-        marker_fn(
-            run_id,
-            spec_name,
-            agent_type,
-            provider.get("name"),
-            model_override,
-            0,
-            1,
-        )
+        if attempt is None:
+            marker_fn(
+                run_id,
+                spec_name,
+                agent_type,
+                provider.get("name"),
+                model_override,
+                chain_index,
+                chain_len,
+            )
+        else:
+            marker_fn(
+                run_id,
+                spec_name,
+                agent_type,
+                provider.get("name"),
+                model_override,
+                chain_index,
+                chain_len,
+                attempt,
+            )
     except Exception as e:  # noqa: BLE001 — 观测增强，写失败不阻断维护 run
         _log = getattr(runner, "logger", None)
         if _log is not None:
@@ -226,6 +247,111 @@ def _write_lane_provider_marker(
                 "agent_runner",
                 f"provider_marker 写入失败 {run_id}（不阻断维护 run）: {e}",
             )
+
+
+def _run_lane_agent_with_failover(
+    runner, run_id: str, roles, prompt: str, cwd, fallback_model,
+    spec_name: str, agent_type=None,
+    marker_spec_name: str | None = None,
+    marker_agent_type: str | None = None,
+    post_provider_env: Dict[str, str] | None = None,
+    max_turns: int | None = None,
+) -> tuple:
+    """维护车道模型路由 + 候选环薄封装（add-maintenance-lane-provider-failover 2.2）。
+
+    收敛六条维护车道此前各自手写的「解析 assignment（角色回退顺序）→ 取
+    链首选 → 组装 provider env → 写 marker → 调一次 ``_run_agent``」重复块
+    （同因先例：_apply_provider_env 去重 item 8303928771e4、marker 写点抽取
+    item faea95e2d494）：候选环本体单源在 runner
+    （``_run_agent_with_chain_failover``，design D1——环需要 circuit/冷却/
+    记账门面，放本模块会迫使 runner 反向 import 或复制一份），本助手只
+    承接车道差异参数。
+
+    Args:
+        runner: AgentRunner 实例（门面依赖注入）。
+        run_id: run 标识（run jsonl 落点）。
+        roles: 角色回退顺序（按序 ``_get_agent_model_assignment`` 首个命中，
+            与各车道既有 ``a or b or c`` 回退链逐字等价，如 code-fix 为
+            ``["code-fix", "code-review", "self-review", "administrator"]``）。
+        prompt / cwd: 透传 ``_run_agent``（code-fix 车道 cwd 为 worktree）。
+        fallback_model: 链为空时的既有回退模型（administrator/arbiter 之外
+            的车道为 ``_get_admin_model()`` 默认网关形态）。
+        spec_name / agent_type: ``_run_agent`` 形参——个别车道不传 agent_type
+            （self-review/evolution：超时覆盖查询面保持现状不扩面）。
+        marker_spec_name / marker_agent_type: provider_marker 专用字段（缺省
+            与 spec_name/agent_type 同值；self-review/evolution 的 marker 仍
+            写车道名而 ``_run_agent`` agent_type 缺省不传）。
+        post_provider_env: 每候选 provider env 组装（``_apply_provider_env``）
+            之后合并的车道专属 env（D7：evolution 的
+            ``CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0"`` 顺序不变量、code-fix
+            的 per-agent env 注入）。
+        max_turns: 透传（code-review/code-fix 为 None 不设限）。
+
+    Returns:
+        5 元组（与 ``_run_agent`` 同形）+ provider_name（实际候选/回退路径
+        None）+ model_override（实际模型名），共 7 元。
+
+    替身 runner 缺候选环（精简 duck-typed 测试替身）→ 回退既有单发直连
+    路径（取链首选、marker 0/1 口径、不换候选），与改造前行为逐字段一致
+    （R7 fail-open）。
+    """
+    assignment = None
+    for role in roles:
+        assignment = runner._get_agent_model_assignment(role)
+        if assignment:
+            break
+    loop_fn = getattr(runner, "_run_agent_with_chain_failover", None)
+    if callable(loop_fn):
+        return loop_fn(
+            run_id=run_id,
+            spec_name=spec_name,
+            agent_type=agent_type,
+            assignment=assignment,
+            prompt=prompt,
+            cwd=cwd,
+            fallback_model=fallback_model,
+            post_provider_env=post_provider_env,
+            max_turns=max_turns,
+            marker_spec_name=marker_spec_name,
+            marker_agent_type=marker_agent_type,
+        )
+    # 替身/精简 runner 未提供候选环 → 既有单发直连路径（fail-open）
+    env_overrides: Dict[str, str] = {}
+    provider_name = None
+    if assignment:
+        provider, model_override = assignment[0]
+        provider_name = provider.get("name")
+        _apply_provider_env(env_overrides, provider, model_override, runner)
+        _write_lane_provider_marker(
+            runner, run_id,
+            marker_spec_name if marker_spec_name is not None else spec_name,
+            marker_agent_type if marker_agent_type is not None else agent_type,
+            assignment,
+        )
+    else:
+        model_override = fallback_model
+    if post_provider_env:
+        env_overrides.update(post_provider_env)
+    try:
+        result5 = runner._run_agent(
+            prompt, cwd, run_id, model_override, env_overrides,
+            max_turns=max_turns, spec_name=spec_name, agent_type=agent_type,
+        )
+    except Exception as e:
+        # 失败归因上下文挂载（与 runner 候选环同口径的 additive 挂载）：替身
+        # 回退路径上抛的异常也要可供车道 except 回填 provider 维度。
+        try:
+            if getattr(e, "provider_name", None) is None:
+                e.provider_name = provider_name
+            if getattr(e, "model_override", None) is None:
+                e.model_override = model_override
+            e.chain_index = 0
+            e.chain_len = 1
+            e.failed_candidates = []
+        except Exception:  # noqa: BLE001 — 挂载失败不改变上抛语义
+            pass
+        raise
+    return (*result5, provider_name, model_override)
 
 
 def _unique_admin_run_id(runner, spec: str) -> str:
@@ -349,24 +475,16 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
         prompt = runner._build_prompt(spec, "administrator", detail=prompt_detail)
 
         # improve-config-ui-tabs：Administrator 运行时解析链（design D4）
-        #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env（直连）
+        #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env
         #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
-        assignment = runner._get_agent_model_assignment("administrator")
-        env_overrides: Dict[str, str] = {}
+        # add-maintenance-lane-provider-failover 3.1：模型路由 + env + marker +
+        # 单次 _run_agent 段收敛进 _run_lane_agent_with_failover 薄封装——链非空
+        # 时经 runner 候选环逐候选执行（切换类失败自动换下一候选，429 命中
+        # 300s 限流冷却），链空回退 _get_admin_model 单发（与现状一致）；
+        # provider_name/model_override 预置 None，实际值由封装返回值回填
+        # （终态指标 provider 维度取最终候选，R5）。
         provider_name = None
-        if assignment:
-            # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
-            provider, model_override = assignment[0]
-            # 收尾富指标行 provider 维度取数（对齐 run_evolution 等三车道取法）
-            provider_name = provider.get("name")
-            _apply_provider_env(env_overrides, provider, model_override, runner)
-            # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
-            # 时间轴才能展示 Administrator 实际驱动的 model@provider；写点已提取
-            # 为 _write_lane_provider_marker 与其余四条维护车道共用（item
-            # faea95e2d494），Administrator 不接 failover，链内下标恒 0/1
-            _write_lane_provider_marker(runner, run_id, spec, "administrator", assignment)
-        else:
-            model_override = runner._get_admin_model()
+        model_override = None
 
         # fix-admin-self-heal：唤起前先落 pending disposition，保证即使 admin 被
         # kill（如 daemon 重启/崩溃）也有记录可回溯；monitor 会检测无最终结果的
@@ -426,19 +544,19 @@ def run_administrator(runner, admin_signal: dict) -> AdminDisposition:
                 pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
 
     try:
-        # _run_agent 返回 5 元组（evo-api-stall-signal-grading 追加 stall_latency；
-        # add-cost-observability D1 加 usage_info）；此调用点曾两度漏改解包
-        # 宽度——3→4 元（2026-09-05）与 4→5 元（2026-10-15）都崩 too many
-        # values to unpack，现由 tests/test_run_agent_call_site_arity.py 契约钉死
-        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
-            prompt,
-            runner.project_root,
-            run_id,
-            model_override,
-            env_overrides,
-            max_turns=runner._get_config("agents.max_turns", 300),
+        # 模型路由 + 候选环单源入口（add-maintenance-lane-provider-failover 3.1）：
+        # 返回 5 元组（宽度契约由 tests/test_run_agent_call_site_arity.py 钉死，
+        # 此调用点曾两度漏改解包宽度）+ 实际 provider/model 两项回填终态归因。
+        output, turns, _session_id, usage_info, _stall_latency, provider_name, model_override = _run_lane_agent_with_failover(
+            runner,
+            run_id=run_id,
+            roles=["administrator"],
+            prompt=prompt,
+            cwd=runner.project_root,
+            fallback_model=runner._get_admin_model(),
             spec_name=spec,
             agent_type="administrator",
+            max_turns=runner._get_config("agents.max_turns", 300),
         )
         success = True
         error = ""
@@ -791,16 +909,11 @@ def run_arbiter(runner, trigger: dict) -> dict:
         prompt_detail["report_path"] = str(report_path)
         prompt = runner._build_prompt(spec, "arbiter", detail=prompt_detail)
         # model 解析链（Administrator 同构）：assignment → 钉死模型
-        assignment = runner._get_agent_model_assignment("arbiter")
-        env_overrides: Dict[str, str] = {}
+        # add-maintenance-lane-provider-failover 3.2：路由 + env + marker +
+        # 单次 _run_agent 段收敛进候选环薄封装（链非空逐候选执行，切换类
+        # 失败换下一候选；链空回退 ARBITER_PINNED_MODEL 单发）。
         provider_name = None
-        if assignment:
-            provider, model_override = assignment[0]
-            provider_name = provider.get("name")
-            _apply_provider_env(env_overrides, provider, model_override, runner)
-            _write_lane_provider_marker(runner, run_id, spec, "arbiter", assignment)
-        else:
-            model_override = ARBITER_PINNED_MODEL
+        model_override = None
         _started = time.monotonic()
         turns = 0
         usage_info: dict = {}
@@ -814,15 +927,18 @@ def run_arbiter(runner, trigger: dict) -> dict:
                 pass
 
     try:
-        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
-            prompt,
-            runner.project_root,
-            run_id,
-            model_override,
-            env_overrides,
-            max_turns=runner._get_config("agents.max_turns", 300),
+        # 候选环单源入口（add-maintenance-lane-provider-failover 3.2）：返回
+        # 5 元组 + 实际 provider/model 回填终态归因。
+        output, turns, _session_id, usage_info, _stall_latency, provider_name, model_override = _run_lane_agent_with_failover(
+            runner,
+            run_id=run_id,
+            roles=["arbiter"],
+            prompt=prompt,
+            cwd=runner.project_root,
+            fallback_model=ARBITER_PINNED_MODEL,
             spec_name=spec,
             agent_type="arbiter",
+            max_turns=runner._get_config("agents.max_turns", 300),
         )
         success = True
         error = ""
@@ -1150,23 +1266,12 @@ def run_self_review(
         # agents/self-review.md 全文无 Task 子代理派发（「亲自回顾聚合数据」单
         # 进程形态），不存在「派子代理-结束回合-后台被 600 秒上限击杀」暴露面。
         # 默认不改变未发生问题的车道行为（D2）。
-        env_overrides: Dict[str, str] = {}
-        assignment = runner._get_agent_model_assignment(
-            "self-review"
-        ) or runner._get_agent_model_assignment("administrator")
+        # add-maintenance-lane-provider-failover 3.3：路由 + env + marker +
+        # 单次 _run_agent 段收敛进候选环薄封装（链非空逐候选执行；链空回退
+        # _get_admin_model 单发）。_run_agent 的 agent_type 形参保持不传
+        # （超时覆盖查询面维持现状），marker_agent_type 显式写车道名。
         provider_name = None
-        if assignment:
-            provider, model_override = assignment[0]
-            # 收尾富指标行 provider 维度取数（对齐 run_administrator/run_evolution）
-            provider_name = provider.get("name")
-            _apply_provider_env(env_overrides, provider, model_override, runner)
-            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
-            # 车道观测口径一致；写失败不阻断，见助手 docstring）
-            _write_lane_provider_marker(
-                runner, run_id, "self-review", "self-review", assignment
-            )
-        else:
-            model_override = runner._get_admin_model()
+        model_override = None
 
         # 既有产物清理移入组装保护块、_claim_settled 置位之前（code-review
         # item 3b376b8ff5c5，对齐 run_administrator 的 _clear_admin_disposition
@@ -1190,14 +1295,18 @@ def run_self_review(
                 pass  # 清理失败不吞组装期原始异常（对齐 run_code_review 降级语义）
 
     try:
-        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
-            prompt,
-            runner.project_root,
-            run_id,
-            model_override,
-            env_overrides,
-            max_turns=runner._get_config("agents.max_turns", 300),
+        # 候选环单源入口（add-maintenance-lane-provider-failover 3.3）
+        output, turns, _session_id, usage_info, _stall_latency, provider_name, model_override = _run_lane_agent_with_failover(
+            runner,
+            run_id=run_id,
+            roles=["self-review", "administrator"],
+            prompt=prompt,
+            cwd=runner.project_root,
+            fallback_model=runner._get_admin_model(),
             spec_name="self-review",
+            marker_spec_name="self-review",
+            marker_agent_type="self-review",
+            max_turns=runner._get_config("agents.max_turns", 300),
         )
         success = True
         error = ""
@@ -2070,39 +2179,12 @@ def run_evolution(
 
         # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
         # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
-        env_overrides: Dict[str, str] = {}
-        assignment = runner._get_agent_model_assignment(
-            "self-review"
-        ) or runner._get_agent_model_assignment("administrator")
+        # add-maintenance-lane-provider-failover 3.3：路由 + env + marker +
+        # 单次 _run_agent 段收敛进候选环薄封装；车道专属 env
+        # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0"）经 post_provider_env 在
+        # 每候选 _apply_provider_env 之后注入（顺序不变量 item 4a65f8620c29）。
         provider_name = None
-        if assignment:
-            provider, model_override = assignment[0]
-            provider_name = provider.get("name")
-            _apply_provider_env(env_overrides, provider, model_override, runner)
-            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条维护
-            # 车道观测口径一致；写失败不阻断，见助手 docstring）
-            _write_lane_provider_marker(
-                runner, run_id, "evolution", "evolution", assignment
-            )
-        else:
-            model_override = runner._get_admin_model()
-        # evolution 车道专属 env：后台子代理等待上限归零（
-        # add-evolution-subagent-wait-ceiling 1.1）。本车道强制「逐条子代理」核查
-        # （agents/evolution.md 执行模式），Claude Code CLI 对未显式指定的 Task
-        # 子代理默认转后台，主 run 结束回合后 CLI 至多再等 600 秒
-        # （CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省 600000ms）即强杀仍在跑的
-        # 子代理——evo-1791048570 实证：主 run 以中期文案充当终局（CLI 侧
-        # completed、退出码 0），产物 json 与 .parts 分片零落盘，_salvage_evolution_
-        # out 无从合并，整任务重跑双倍消耗。置 "0" = 无限等待后台任务。只注入本
-        # 车道（D1）：其他维护车道若残留后台任务，等待上限归零会让 run 永不主动
-        # 退出、烧满 run_timeout，故不放 runner.py 全局 env 构造位
-        # （CLAUDE_CODE_ENABLE_TODO_TOOLS 所在，runner.py:5063 附近）。
-        # code-review item 4a65f8620c29：写入必须位于 _apply_provider_env 之后
-        # （provider.env 在其中最后合并、同键后写者胜）——车道不变量优先，不被
-        # provider.env 静默覆盖复活 evo-1791048570 事故形态；注入顺序约定与
-        # run_code_fix 的 per-agent env 后置注入对齐。
-        env_overrides["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
-
+        model_override = None
         _claim_settled = True
     finally:
         if not _claim_settled:
@@ -2116,14 +2198,33 @@ def run_evolution(
     # 语义预置（与上方 turns=0 同款，防 except 收尾路径 NameError）。
     _stall_latency = None
     try:
-        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
-            prompt,
-            runner.project_root,
-            run_id,
-            model_override,
-            env_overrides,
-            max_turns=runner._get_config("agents.max_turns", 300),
+        # 候选环单源入口（add-maintenance-lane-provider-failover 3.3）；
+        # 后台子代理等待上限归零（add-evolution-subagent-wait-ceiling 1.1）：
+        # 本车道强制「逐条子代理」核查（agents/evolution.md 执行模式），Claude
+        # Code CLI 对未显式指定的 Task 子代理默认转后台，主 run 结束回合后 CLI
+        # 至多再等 600 秒（CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS，缺省
+        # 600000ms）即强杀仍在跑的子代理——evo-1791048570 实证：主 run 以中期
+        # 文案充当终局（CLI 侧 completed、退出码 0），产物 json 与 .parts 分片
+        # 零落盘，_salvage_evolution_out 无从合并，整任务重跑双倍消耗。置 "0" =
+        # 无限等待后台任务。只注入本车道（D1）：其他维护车道若残留后台任务，
+        # 等待上限归零会让 run 永不主动退出、烧满 run_timeout，故不放 runner.py
+        # 全局 env 构造位（CLAUDE_CODE_ENABLE_TODO_TOOLS 所在）。
+        # code-review item 4a65f8620c29：写入必须位于每候选 _apply_provider_env
+        # 之后（provider.env 在其中最后合并、同键后写者胜）——车道不变量优先，
+        # post_provider_env 在候选环内该点位合并，不被 provider.env 静默覆盖
+        # 复活 evo-1791048570 事故形态。
+        output, turns, _session_id, usage_info, _stall_latency, provider_name, model_override = _run_lane_agent_with_failover(
+            runner,
+            run_id=run_id,
+            roles=["self-review", "administrator"],
+            prompt=prompt,
+            cwd=runner.project_root,
+            fallback_model=runner._get_admin_model(),
             spec_name="evolution",
+            marker_spec_name="evolution",
+            marker_agent_type="evolution",
+            post_provider_env={"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "0"},
+            max_turns=runner._get_config("agents.max_turns", 300),
         )
         run_ok = True
         error = ""
@@ -2715,24 +2816,14 @@ def run_code_review(
         # 等待上限不会被触达；②「谁审谁写、审完即写」分片直写纪律保证子代理
         # 半成品也已落盘可消费。若守卫失效，注入等待上限归零反而会让 run 永不
         # 主动退出、烧满 run_timeout（D1 权衡），故维持现状不改行为（D2）。
-        env_overrides: Dict[str, str] = {}
-        assignment = (
-            runner._get_agent_model_assignment("code-review")
-            or runner._get_agent_model_assignment("self-review")
-            or runner._get_agent_model_assignment("administrator")
-        )
+        # 模型解析链：agents.models.code-review > self-review > administrator >
+        # _get_admin_model → 默认网关（design D1 模型链回退）
+        # add-maintenance-lane-provider-failover 3.4：路由 + env + marker +
+        # 单次 _run_agent 段收敛进候选环薄封装（role 链全量解析，切换类失败
+        # 换下一候选；helper 重抛异常保留 api_error_status/result_text/
+        # stderr_lines 属性供 429 重派归因）。
         provider_name = None
-        if assignment:
-            provider, model_override = assignment[0]
-            provider_name = provider.get("name")
-            _apply_provider_env(env_overrides, provider, model_override, runner)
-            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条
-            # 维护车道观测口径一致；写失败不阻断，见助手 docstring）
-            _write_lane_provider_marker(
-                runner, run_id, "code-review", "code-review", assignment
-            )
-        else:
-            model_override = runner._get_admin_model()
+        model_override = None
         _manifest_settled = True
     finally:
         if not _manifest_settled:
@@ -2747,24 +2838,30 @@ def run_code_review(
     # 异常绑定即删，后续意图登记只能读这里存的值。
     claude_api_error_status = None
     claude_result_text = ""
+    # 候选环链信息（add-maintenance-lane-provider-failover R6：429 终局重派
+    # 意图携带链长与失败候选；环未介入（空链单发）时 None → 意图省略该键）
+    claude_chain_len = None
+    claude_failed_candidates = None
     turns = 0  # _run_agent 抛出路径无 turns（evo-add-run-metrics-lane-baseline 1.3）
     # evo-add-api-stall-disposition-closeout 1.1：抛出路径 stall stats 零样本
     # 语义预置（与上方 turns=0 同款，防 except 收尾路径 NameError）。
     _stall_latency = None
     try:
-        output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
-            prompt,
-            runner.project_root,
-            run_id,
-            model_override,
-            env_overrides,
+        # 候选环单源入口（add-maintenance-lane-provider-failover 3.4）
+        output, turns, _session_id, usage_info, _stall_latency, provider_name, model_override = _run_lane_agent_with_failover(
+            runner,
+            run_id=run_id,
+            roles=["code-review", "self-review", "administrator"],
+            prompt=prompt,
+            cwd=runner.project_root,
+            fallback_model=runner._get_admin_model(),
+            spec_name="code-review",
+            agent_type="code-review",
             # 轮次不设限（用户 2026-09-23）：全库审查 manifest 大（240 文件级）、
             # 子代理编排轮次消耗快，800+扩展(2×25%)=1200 实测不够用且死前
             # inserted=0（09-23 manual_full 事故）。_run_agent 对 None 跳过
             # 强制块（`if max_turns and ...`），失控兜底由超时+liveness 承担。
             max_turns=None,
-            spec_name="code-review",
-            agent_type="code-review",
         )
         run_ok = True
         error = ""
@@ -2772,6 +2869,10 @@ def run_code_review(
         output = ""
         run_ok = False
         error = str(e)
+        # 链耗尽/非切换失败异常携带最后尝试候选（runner 候选环 additive 挂载）
+        # ——终态归因与 429 重派意图的 provider 维度取最后尝试候选而非链首
+        # （R5/R6；链首直连失败时挂载值与链首一致，行为不变）。
+        provider_name = getattr(e, "provider_name", None) or provider_name
         # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空 dict 字面量
         # （code-review item 643baad3dab7）——_token_usage_fields 对空 dict 的
         # 产出（input/output 0、cost_usd None）与 _extract_usage_info(None) 的
@@ -2786,6 +2887,9 @@ def run_code_review(
         # （文本分类未命中时意图登记以此回退判 429，对齐 exc.api_timeout 先例）。
         claude_api_error_status = getattr(e, "api_error_status", None)
         claude_result_text = getattr(e, "result_text", "")
+        # 链耗尽聚合异常 / 非切换原样上抛异常均挂链信息（候选环 additive）
+        claude_chain_len = getattr(e, "chain_len", None)
+        claude_failed_candidates = getattr(e, "failed_candidates", None)
 
     # token 归账到独立类目（不写 STATE，与自省同一约束）。经门面调用
     # （对齐 run_administrator/run_self_review 的 runner.<method> 形态）：
@@ -3171,6 +3275,10 @@ def run_code_review(
                     # 登记侧以 result 事件回退判 429，意图照常登记并标注 run。
                     api_error_status=claude_api_error_status,
                     result_text=claude_result_text,
+                    # R6：意图与日志携带链长/失败候选；复跑消费经候选环按当时
+                    # 冷却重新解析链（不固定复用首跑链首）。
+                    chain_len=claude_chain_len,
+                    failed_candidates=claude_failed_candidates,
                 )
             except Exception as e:  # noqa: BLE001 — 意图登记失败不改变失败终态
                 _log = getattr(runner, "logger", None)
@@ -4210,25 +4318,13 @@ def run_code_fix(
 
         # 模型解析链（D1）：code-fix > code-review > self-review > administrator
         # > _get_admin_model → 默认网关（缺省与 code-review 同源）
-        env_overrides: Dict[str, str] = {}
-        assignment = (
-            runner._get_agent_model_assignment("code-fix")
-            or runner._get_agent_model_assignment("code-review")
-            or runner._get_agent_model_assignment("self-review")
-            or runner._get_agent_model_assignment("administrator")
-        )
+        # add-maintenance-lane-provider-failover 3.5：路由 + env + marker +
+        # 单次 _run_agent 段收敛进候选环薄封装（role 链全量解析，切换类失败
+        # 换下一候选；cwd 仍为本车道 worktree，agent_env 注入改为
+        # post_provider_env 后置合并，每候选组装顺序不变量保持）。
         provider_name = None
-        if assignment:
-            provider, model_override = assignment[0]
-            provider_name = provider.get("name")
-            _apply_provider_env(env_overrides, provider, model_override, runner)
-            # 观测：run jsonl 补写 provider_marker（item faea95e2d494，五条
-            # 维护车道观测口径一致；写失败不阻断，见助手 docstring）
-            _write_lane_provider_marker(
-                runner, run_id, "code-review-fix", "code-fix", assignment
-            )
-        else:
-            model_override = runner._get_admin_model()
+        model_override = None
+        post_provider_env: Dict[str, str] = {}
 
         # add-agent-env-overrides（2026-09-24 MAX_THINKING_TOKENS 实验）：配置键
         # ``agents.agent_env.code-fix`` 的 per-agent 环境变量注入——本函数只 spawn
@@ -4291,7 +4387,7 @@ def run_code_fix(
                 _sv = str(int(_v))
             else:
                 _sv = str(_v)
-            env_overrides[str(_k)] = _sv
+            post_provider_env[str(_k)] = _sv
         if agent_env:
             _log = getattr(runner, "logger", None)
             if _log is not None:
@@ -4316,18 +4412,21 @@ def run_code_fix(
         # 失败路径（api_error/异常/计数读取失败）保持缺省空串不添噪。
         failure_category = ""
         try:
-            output, turns, _session_id, usage_info, _stall_latency = runner._run_agent(
-                prompt,
-                wt,
-                run_id,
-                model_override,
-                env_overrides,
+            # 候选环单源入口（add-maintenance-lane-provider-failover 3.5）
+            output, turns, _session_id, usage_info, _stall_latency, provider_name, model_override = _run_lane_agent_with_failover(
+                runner,
+                run_id=run_id,
+                roles=["code-fix", "code-review", "self-review", "administrator"],
+                prompt=prompt,
+                cwd=wt,
+                fallback_model=runner._get_admin_model(),
+                spec_name="code-review-fix",
+                agent_type="code-fix",
                 # 轮次不设限（用户 2026-09-23）：批内条目数大时 800+扩展不够用，
                 # 撞上限=整批作废。_run_agent 对 None 跳过强制块；失控兜底由
                 # 超时覆盖（timeout_overrides）+ liveness 承担。
                 max_turns=None,
-                spec_name="code-review-fix",
-                agent_type="code-fix",
+                post_provider_env=post_provider_env,
             )
             run_ok = True
             error = ""
@@ -4335,6 +4434,9 @@ def run_code_fix(
             output = ""
             run_ok = False
             error = str(e)
+            # 链耗尽/非切换失败异常携带最后尝试候选（runner 候选环 additive
+            # 挂载）——失败归因 provider 维度取最后尝试候选而非链首（R5）。
+            provider_name = getattr(e, "provider_name", None) or provider_name
             # 失败路径无 usage 可归账 → 零值条目：五条维护车道统一用空
             # dict 字面量（code-review item 643baad3dab7，原 run_self_review/
             # run_evolution/run_code_review 的 _extract_usage_info(None) 例外
