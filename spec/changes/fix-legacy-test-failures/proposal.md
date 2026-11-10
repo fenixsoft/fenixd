@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- 逐项修复 12 个存量失败测试（精确清单见 tasks.md，来自 2026-11-10 全量实测）：
+- 逐项修复存量失败测试（权威清单 11 项见 tasks.md，来自 2026-11-10 全量实测；首测 12 failed 与复测 11 failed 的漂移由 design.md 复现门按 `[WIP]`/`[隔离]` 归因处置）：
   - **真实违例**：修实现（如 test_logger_no_bypass 指认的裸 `getLogger` 违例点）。
   - **过时断言**：断言与现行正确行为脱节时修断言，并注明归因。
   - **测试隔离/环境类**：修测试自身的隔离与确定性（顺序依赖、共享状态、时序敏感）。
@@ -27,4 +27,4 @@
 
 - 修改：失败测试对应的 tests/ 文件与少量 core/ 实现（精确清单以 tasks.md 为准）。
 - 行为契约：除真实违例修复外不改变既有行为；全量测试 0 failed。
-- 后续：本 SPEC 完成后 `add-platform-abstraction-layer`（已挂 `depends_on: fix-legacy-test-failures`）自动解除阻塞进入调度。
+- 后续：本 SPEC 完成后 `add-platform-abstraction-layer` 解除阻塞进入调度。其依赖关系已在其 proposal.md 声明（`depends_on: fix-legacy-test-failures`），但框架实际消费的调度依赖以其 `.spec.yaml` 的 `depends_on` 字段为准（core/pm_engine/engine.py:4181），该字段截至本 SPEC 成文尚未登记——本 SPEC 收工时须确认该登记已生效，否则「自动解除阻塞」不成立，须人工派发 SPEC-1。

@@ -41,7 +41,7 @@
 
 ## 8. 验收自检
 
-- [ ] 8.1 全量 `python3 -m pytest tests/ -q` 两次（间隔执行）均 0 failed
+- [ ] 8.1 全量 `python3 -m pytest tests/ -q` 两次（间隔执行）均 0 failed；若出现 tasks 所列 11 项之外的新失败，按同款归因纪律处置（干净分支复现 → 修并补归因记录；不复现 → 记 `[WIP]`/`[隔离]` 关闭），不得删除或放宽测试
 - [ ] 8.2 Deliverables 机械对账通过（lint_declared / lint_tasks_parseable）；每个修复任务的归因类别与证据已在任务说明记录
 - [ ] 8.3 确认零新增第三方依赖、未改 spec/ 既有能力 REQUIREMENT、未触碰 SPEC-1/SPEC-2 范围文件
 
@@ -67,6 +67,22 @@
 - path: tests/test_fake_double_fidelity.py
   kind: modify
 - path: tests/test_admin.py
+  kind: modify
+- path: tests/test_api_stall_disposition.py
+  kind: modify
+- path: tests/test_code_fix.py
+  kind: modify
+- path: tests/test_code_fix_manual_trigger.py
+  kind: modify
+- path: tests/test_code_review.py
+  kind: modify
+- path: tests/test_codefix_digest_metrics.py
+  kind: modify
+- path: tests/test_maintenance_lane_failover.py
+  kind: modify
+- path: tests/test_push_retry_recovery.py
+  kind: modify
+- path: tests/test_regression_autofix.py
   kind: modify
 - path: tests/test_impl_code_review_gate.py
   kind: modify
