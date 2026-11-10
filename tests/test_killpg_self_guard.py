@@ -382,8 +382,12 @@ class TestFormConsistency:
 
 # ── Scenario: grep 断言——core 下清场击杀裸 os.killpg 零存在 ──────────
 
-# 守卫模块自身是唯一直传 os.killpg 的执行点
-_GUARD_MODULE = "core/proc_utils.py"
+# 守卫模块自身是唯一直传 os.killpg 的执行点（W3 pal 上收后守卫执行跳居于
+# core/platform/linux.py 的 kill_tree；proc_utils.guard_killpg 为薄转发）
+_GUARD_MODULE = "core/platform/linux.py"
+
+# 守卫 WARNING 的 logger 名（随执行跳同迁；测试经名挂 Handler 捕获）
+_GUARD_LOGGER = "fenixd.platform.linux"
 
 # 探活调用点显式豁免清单（killpg(_, 0) 只做存在性检查、不投递信号），
 # 值＝该文件内探活调用点数量（漂移即须人工核对并同步本清单）。
@@ -429,8 +433,9 @@ class TestNoBareKillpgEscapesGuard:
                 continue  # 探活形态且文件在豁免清单
             violations.append(f"{rel}:{lineno}: {line.strip()}")
         assert not violations, (
-            "发现绕过 guard_killpg 的清场击杀（须收口到 core.proc_utils.guard_killpg，"
-            "探活调用点须登记进 _PROBE_EXEMPT）：\n" + "\n".join(violations)
+            "发现绕过守卫的清场击杀（须收口到 pal.kill_tree / "
+            "core.platform.linux，探活调用点须登记进 _PROBE_EXEMPT）：\n"
+            + "\n".join(violations)
         )
 
     def test_probe_exempt_list_pinned(self):

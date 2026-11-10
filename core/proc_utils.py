@@ -16,6 +16,8 @@
   收尸等差异化收尾留调用方；
 - ``guard_killpg``：清场击杀自保护守卫（add-killpg-self-guard）——目标组为
   调用者自身所在进程组、或非正 pgid 时拒绝发信号，按「组已不存在」静默降级。
+  W3 起执行跳上收 core.platform（pal.kill_tree，os.killpg 全库唯一位点随迁），
+  本模块公开签名不动薄转发。
 
 以下助手均只依赖 stdlib，任何 core 模块均可安全导入。
 """
@@ -28,6 +30,8 @@ import subprocess
 import time
 from contextlib import contextmanager
 from typing import List, Optional
+
+from core.platform import api as pal
 
 _logger = logging.getLogger("fenixd.proc_utils")
 
@@ -331,63 +335,9 @@ def kill_process_group(
 def guard_killpg(target_pid: int, sig: int, *, caller: str, resolve: bool = False) -> bool:
     """守卫版 killpg：拒绝把信号发往调用者自身所在进程组（add-killpg-self-guard）。
 
-    2026-10-07 两起同构事故：测试替身 proc 的 pid 怪值（0 等）流入产品清场
-    代码，``os.killpg`` 命中调用者自身所在进程组，整个测试套件/批回归被团灭
-    （ftrace 取证发送者＝pytest 主进程自身）。本守卫在任何清场击杀路径的
-    信号发出前做统一校验，一次性根治所有替身 pid 怪值变体（含未来新增的）。
-
-    两种入参形态（调用点按手上句柄显式选择，code review 逐点核对）：
-
-    - ``resolve=True``（解析型）：``target_pid`` 为**组内成员 pid**（通常是
-      ``Popen.pid``），先 ``os.getpgid(target_pid)`` 解析 pgid；解析失败
-      （ProcessLookupError/OSError ＝ 组已不存在/权限不可判）走既有静默
-      语义返回 False——该分支语义逐位不变，守卫不新增行为；
-    - ``resolve=False``（直传型）：``target_pid`` 为**独立成组组长 pid**
-      （spawn 侧 start_new_session=True 下 pgid==pid）或调用点已解析的
-      pgid，直接作 pgid 使用。
-
-    两个拒绝分支（命中即不发信号、记 WARNING（含调用点标识与目标 pgid）、
-    按「组已不存在」语义返回 False；调用方对 False MUST NOT 再降级单 pid
-    ``os.kill``——``os.kill(0, sig)`` 经同样折算是调用者自身组广播）：
-
-    1. 解析结果 == ``os.getpgid(0)``（调用者自身所在进程组）——替身 pid 怪值
-       解析到宿主组的事故形态（解析型 ``getpgid(0)`` 也返回自身组，同一
-       分支拦截）；
-    2. ``pgid <= 0``（仅直传型可达）——``os.killpg(0, sig)`` 经
-       ``kill(-pgid)`` 折算等价 ``kill(0, sig)``＝向调用者自身进程组广播，
-       数值上 ``0 != os.getpgid(0)`` 挡不住；负值折算为对任意 pid 的误投递
-       （如 ``killpg(-1)`` ≡ ``kill(1)``）。
-
-    返回 True＝信号已发出；False＝守卫拒绝或组已不存在（ESRCH 语义），
-    调用方一律按既有「组已不存在」路径静默返回，不改变控制流。
+    完整契约（两入参形态、两拒绝分支、返回值语义）见 pal.kill_tree——本
+    函数为 W3 转发化薄委托：执行跳上收 core.platform（os.killpg 全库唯一
+    位点随迁），公开签名不动，行为逐位等价。既有调用方（kill_process_group、
+    harness.one_shot lazy import、regression/adjudication 适配器）零改动。
     """
-    if resolve:
-        try:
-            pgid = os.getpgid(target_pid)
-        except (ProcessLookupError, OSError):
-            return False  # 组已不存在：既有静默语义，逐位保持
-    else:
-        pgid = target_pid
-    own_pgid = os.getpgid(0)  # pid 0 ＝ 调用者自身，恒可解析
-    if pgid == own_pgid:
-        _logger.warning(
-            "killpg self-guard: caller=%s 目标组=调用者自身进程组 (pgid=%d)"
-            " — 拒绝发信号，按组不存在静默返回",
-            caller,
-            pgid,
-        )
-        return False
-    if pgid <= 0:
-        _logger.warning(
-            "killpg self-guard: caller=%s 非正 pgid=%d（killpg(0)/负值 经"
-            " kill(-pgid) 折算等价自身组广播或误投递）— 拒绝发信号，按组"
-            "不存在静默返回",
-            caller,
-            pgid,
-        )
-        return False
-    try:
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, OSError):
-        return False  # 组已不存在：既有静默语义，逐位保持
-    return True
+    return pal.kill_tree(target_pid, sig, caller=caller, resolve=resolve)
