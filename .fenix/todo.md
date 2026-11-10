@@ -229,3 +229,8 @@
   - 证据：第 6 轮 judge 裁决（verification-report.md）：仅 1 个 product bug（BUG-01），bento 判 flaky、两队列场景判级联「非独立缺陷」；但机械 fail_history.json 将 4 个非过场景整体记为 cause_type=real-bugs/failure_class=product。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：fail_history 逐场景记录 judge 归因（仅 product 子集入 real-bugs），或将 failure_class 与裁决产物对齐（1 product + 3 flaky/cascade）。
+- **[arbiter:redesign] 验证侧冻结告警引用报告的时点一致性**
+  - 影响：judge_rerun_cap 等验证侧冻结的 error 指向裁决报告时，该报告可能不含最终引擎轮现场，人工需自行发现 report.json 才能拿到最新失败明细，增加误判面。
+  - 证据：STATE error 文案「详见 spec/changes/redesign-chain-panel-ui/verification-report.md」，该文件 mtime=本地 23:43（第 6 轮裁决、修复前 18/22 现场）；修复后轮引擎现场仅存于 report.json（16:00:50Z，20/22+残留失败明细）——人工按 error 指引读到滞后一轮的现场。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
+  - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
+  - 建议：冻结写点把最新 report.json 摘要/逐场景表附进告警 evidence，或 error 文案并列指出 report.json 路径。
