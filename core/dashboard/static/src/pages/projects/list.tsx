@@ -1620,11 +1620,12 @@ function DevTab({
               // add-spec-subtitle-and-row-click（task 2.1）：整行点击进详情
               // （镜像 overview 台账 onRow 范式：整行 cursor pointer + 路由跳
               // 转；SPEC 列表无 error 抑制语义，行恒可点）。事件目标守卫
-              // （design D3，单源 specRowClick.ts）：展开钮（fix-* 树展开与
-              // error 信息行展开共用 antd 展开图标类）命中不导航；操作列交互
-              // 单元格既有 stopPropagation 单元格守卫零改动命中；展开行内容
-              // 渲染于行外 ant-table-expanded-row，不在 onRow 命中面；名称
-              // 链接自有跳转与本行导航同目标不额外拦截（连跳同路由无害）。
+              // （design D3，单源 specRowClick.ts）：展开钮（fix-* 树形子级
+              // 展开，add-spec-info-icon-tooltip 后 keys 不再服务信息行）命中
+              // 不导航；操作列交互单元格既有 stopPropagation 单元格守卫零改动
+              // 命中；信息图标与清除按钮各自 stopPropagation（D3/D6）防误触发
+              // 行导航；名称链接自有跳转与本行导航同目标不额外拦截（连跳同
+              // 路由无害）。
               onClick: (e) => {
                 if (rowClickHitsExpandIcon(e)) return;
                 history.push(specDetailPath(project, record.name));
@@ -1644,20 +1645,9 @@ function DevTab({
               columnWidth: 28,
               expandedRowKeys: expandedKeys,
               onExpandedRowsChange: onExpandedKeysChange,
-              // 额外信息（error）行内下方展开，含清除按钮（对齐 v1 spec-info-row）
-              expandedRowRender: (record: SpecSummary) =>
-                record.error ? (
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                    <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-                      信息
-                    </Tag>
-                    <Typography.Text style={{ flex: 1 }}>{record.error}</Typography.Text>
-                    <Button size="small" onClick={() => void onClearError(record)}>
-                      清除
-                    </Button>
-                  </div>
-                ) : null,
-              rowExpandable: (record: SpecSummary) => !!record.error,
+              // add-spec-info-icon-tooltip 1.2：expandedRowRender/rowExpandable
+              // 已退役（error 信息收敛为状态旁信息图标 Popover）——受控 keys
+              // 仅服务 fix-* 树形子级展开，antd v5 树形表格凭受控 keys 驱动
             }}
           />
             </div>
@@ -1977,18 +1967,19 @@ export default function SpecListPage() {
     return c;
   }, [preStatus]);
 
-  // 受控展开：数据到达时默认全部展开（树形子级 + error 信息行可见），用户可手动收起
+  // 受控展开：数据到达时默认全部展开（fix-* 树形子级可见），用户可手动收起
+  // （add-spec-info-icon-tooltip 1.2：keys 不再服务 error 信息行——子行已退役）
   const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
   // 仅在**首次**数据到达时初始化展开状态（code-review item b229013a3316）：`tree`
   // 由 filtered→specMap 派生，任何 SSE 增量 patch / 30s 心跳重拉都会产生新引用，
   // 旧实现 `[tree]` 依赖会在流式更新期间反复把用户手工收起的树弹开，且与受控
   // 展开 onExpandedRowsChange 互相打架。用 ref 标记首次初始化。
   const expandedInitRef = useRef(false);
-  // 已见节点记忆（code-review item 81b677017e09）：error 信息行走
-  // expandedRowRender，可见性受 expandedKeys 控制。闩锁置位后 SSE patch 新增的
-  // spec（新建任务/修复子任务）也要默认展开，但不能把用户已手动收起的行强制
-  // 弹开——区分「新增节点」与「被用户收起的已见行」需要记忆已纳入展开集合的
-  // 节点名，增量合并只并入从未见过的 keys。
+  // 已见节点记忆（code-review item 81b677017e09）：keys 集合服务 fix-* 树形
+  // 子级展开（add-spec-info-icon-tooltip 1.2 后不再含 error 信息行）。闩锁置位
+  // 后 SSE patch 新增的 spec（新建任务/修复子任务）也要默认展开，但不能把
+  // 用户已手动收起的行强制弹开——区分「新增节点」与「被用户收起的已见行」
+  // 需要记忆已纳入展开集合的节点名，增量合并只并入从未见过的 keys。
   const seenKeysRef = useRef<Set<Key>>(new Set());
   // 项目切换复位闩锁（code-review item 9dd9b3c6679b）：本路由组件在同一路径
   // /projects/:name 下复用不重挂载，expandedInitRef 是锚定不到项目的一次性
@@ -2032,13 +2023,14 @@ export default function SpecListPage() {
     // 树归属门控（code-review item e6881ebd1b26）：name 变更的复位 effect 与
     // SSE flush 的 setSpecMap 同批提交时，本 effect 会以旧项目的 tree 执行——
     // 闩锁刚被复位又被置回、旧 keys 记入已见，新项目同名 spec 被判「已见」
-    // 不再默认展开、error 信息行保持折叠。specLoadedRef 只在当前项目 load
+    // 不再默认展开、树形子级保持折叠。specLoadedRef 只在当前项目 load
     // 成功落地时置位、随复位清 false：false 即 tree 快照不属于当前 name，
     // 跳过本次展开处理，等新项目数据落地后正常初始化
     if (!specLoadedRef.current) return;
     // 递归收集全树所有节点名（code-review item 6869f19d419c）：三层归并树
     // （fix-fix-a→fix-a→a）只收根名会漏掉中间层，其子级默认折叠隐藏；叶子名
-    // 也要收——error 信息行走 expandedRowRender，同受这组 keys 控制。
+    // 也要收（同受这组 keys 控制；add-spec-info-icon-tooltip 后 keys 仅服务
+    // 树形子级展开）。
     const keys: Key[] = [];
     const walk = (nodes: SpecSummaryNode[]) => {
       nodes.forEach((n) => {
@@ -2055,9 +2047,9 @@ export default function SpecListPage() {
       return;
     }
     // 闩锁置位后的增量合并（code-review item 81b677017e09）：SSE patch 新增的
-    // spec 原实现进不了 expandedKeys，其 error 信息行保持折叠不可见。只把从未
-    // 见过的节点 keys 并入展开集合——新增行默认展开；用户已手动收起的行是
-    // 「已见」节点、不在 fresh 内，不被强制重开（b229013a3316 语义保持）。
+    // spec（修复子任务）原实现进不了 expandedKeys，其树形子级保持折叠不可见。
+    // 只把从未见过的节点 keys 并入展开集合——新增行默认展开；用户已手动收起
+    // 的行是「已见」节点、不在 fresh 内，不被强制重开（b229013a3316 语义保持）。
     const fresh = keys.filter((k) => !seenKeysRef.current.has(k));
     if (fresh.length === 0) return;
     keys.forEach((k) => seenKeysRef.current.add(k));
