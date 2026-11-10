@@ -18,15 +18,19 @@ docs/superpowers/specs/2026-11-10-windows-native-support-pal-design.md §5）：
   proc_start_ticks / pid_alive_stat / pid_alive_signal / readlink_cwd /
   parent_comm / proc_dir_mtime / read_procfile / listen_inodes_for_port /
   proc_socket_links / process_tree_cpu_seconds）+ 具名高位接口
-  （process_environ / find_port_owner / is_alive_with_identity）。探活类
+  （process_info / process_environ / find_port_owner /
+  is_alive_with_identity）。探活类
   接口 fail-closed 三态：True＝锚定命中 / False＝失配（确定性否定）/
   None＝读不到、无法核实（调用方按各自保守方向处置）
 - C 文件锁：flock_exclusive / flock_release 原语（自持 fd 形态出口）+
   exclusive_lock / try_lock 具名形态（锁文件布局 ``.<name>.lock`` 与
   fs_utils.with_file_lock 同源）
-- D 托管：run_systemctl 单缝（list argv 不经 shell）/ systemctl_available /
-  SystemdHostingError。unit 文本渲染属 systemd 语义模板（HOME 基线经
-  core.git_env 三级解析，非平台 syscall），保留在 core.systemd_hosting
+- D 托管：HostingProvider 六名操作面（install_unit / start / stop /
+  is_running / env_file / logs_hint——Linux 后端转发 core.systemd_hosting
+  既有业务实现，systemd 语义一字不动）+ run_systemctl 单缝（list argv
+  不经 shell）/ systemctl_available / SystemdHostingError。unit 文本渲染
+  属 systemd 语义模板（HOME 基线经 core.git_env 三级解析，非平台
+  syscall），保留在 core.systemd_hosting
 - E 环境/用户/文件系统：home_dir（env→pwd 两级）/ current_user /
   ensure_link（symlink 幂等补建，悬空自愈）/ fsync_dir（O_DIRECTORY 纪律）
 - F 测试基建：pytest_timeout_method 平台化锚点（linux＝"signal"）
@@ -127,6 +131,8 @@ class ProcessIntelligence(Protocol):
 
     def proc_pids(self) -> list: ...
 
+    def process_info(self, pid: int) -> Optional[dict]: ...
+
     def process_environ(self, pid: int) -> dict: ...
 
     def find_port_owner(self, port: int) -> Optional[dict]: ...
@@ -172,6 +178,30 @@ class HostingSeam(Protocol):
                       available: Optional[bool] = None) -> subprocess.CompletedProcess: ...
 
 
+@runtime_checkable
+class HostingProvider(Protocol):
+    """托管承载操作面（SPEC 钉死六名，全部以项目根为键的统一家族）。
+
+    与 HostingSeam（systemctl 子进程缝）分层：本协议是承载生命周期操作
+    面，Linux 后端逐条转发 core.systemd_hosting 既有实现（unit 渲染与
+    HOME/PATH 基线属承载业务语义留彼处，转发经函数内延迟 import，
+    见 linux.py 对照表 D 组注记）；SPEC-2 Windows 后端同缝换计划任务/
+    服务后端（journalctl 文案换事件日志形态）。
+    """
+
+    def install_unit(self, root) -> dict: ...
+
+    def start(self, root) -> None: ...
+
+    def stop(self, root) -> None: ...
+
+    def is_running(self, root) -> bool: ...
+
+    def env_file(self, root): ...
+
+    def logs_hint(self, root) -> str: ...
+
+
 # ── E 环境/用户/文件系统 ────────────────────────────────────────────────
 
 @runtime_checkable
@@ -204,6 +234,7 @@ __all__ = [
     "ProcessIntelligence",
     "FileLocking",
     "HostingSeam",
+    "HostingProvider",
     "EnvironmentUserFs",
     "TestInfra",
 ]

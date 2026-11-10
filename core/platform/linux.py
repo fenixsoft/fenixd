@@ -10,8 +10,12 @@ Linux 全部行为零变化是本 SPEC 的行为契约。
 ``prctl`` / ``/proc/`` 字面量 / ``sys.platform`` 分支在 core/ 业务侧零存在，
 唯此文件可写。
 
-纯 stdlib：MUST NOT import 任何 core 模块（消费方向恒为 core.* → pal，
-反向依赖会成环——proc_utils / fs_utils / systemd_hosting 等将转发至此）。
+纯 stdlib：模块级导入面 MUST NOT import 任何 core 模块（消费方向恒为
+core.* → pal，模块级反向依赖会成环——proc_utils / fs_utils /
+systemd_hosting 等将转发至此）。唯一例外：D 组 HostingProvider 六名
+门面在**函数体内**延迟 import core.systemd_hosting 做同参转发（import
+期零环：调用点才加载彼模块，彼时 core.platform 已完成分发注入；承载
+业务语义仍留彼处，见对照表 D 组注记）。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 平移对照表（add-platform-abstraction-layer 7.2 自检锚，接口 → 平移源 → 说明）
@@ -109,6 +113,13 @@ B 进程情报
                                   析取，字典内锚＝合取；start_ticks/cwd_real/
                                   cwd_prefix 三锚；读不到→None，消费端保守
                                   方向各自保留）
+- process_info                  ← 新具名情报快照接口（SPEC 钉死形状
+                                  {alive, cmdline, exe, cwd, ppid,
+                                  start_token}；字段经既有低位原语复合，
+                                  start_token＝proc_start_ticks 单源——
+                                  pid 复用防护统一锚，SPEC-2 换
+                                  CreationTime 同缝；/proc 读不到→None
+                                  fail-closed 按死处置）
 
 C 文件锁
 - flock_exclusive / flock_release ← core/fs_utils.py:167/181 逐字平移（W1
@@ -125,6 +136,18 @@ D 托管（systemctl 缝）
                                   逐字平移（shutil.which 探测 + list argv
                                   subprocess.run；SystemdHostingError 家于
                                   api.py，systemd_hosting 3.1 起再导出）
+- HostingProvider 六名门面      ← core.systemd_hosting 既有业务实现逐条
+  （install_unit / start / stop     同参转发：install_unit≡install_project_
+  / is_running / env_file /         unit（幂等安装+enable --now）/ start≡
+  logs_hint）                       _enable_now 拉起缝（不新开 systemctl
+                                  位点）/ stop≡stop_unit_no_block（停机
+                                  双轨 stop 半边）/ is_running≡unit_active
+                                  / env_file≡project_env_file / logs_hint≡
+                                  journalctl 提示段（SPEC-2 换事件日志）。
+                                  函数内延迟 import 转发（见「纯 stdlib」
+                                  注记）；SPEC 钉死名上收平台层，承载业务
+                                  语义（unit 渲染 / HOME·PATH 基线 / stop
+                                  双轨判定）留 systemd_hosting 不动
 - unit 渲染（render_project_unit / render_dashboard_unit）保留
   core.systemd_hosting：其 HOME 基线经 core.git_env 三级解析（env→pwd→
   配置）、PATH 基线为承载语义常量——迁入 pal 破坏纯 stdlib 约束；渲染是
@@ -863,6 +886,42 @@ def _identity_alternative_match(pid: int, alt: dict) -> Optional[bool]:
     return True
 
 
+def process_info(pid: int) -> Optional[dict]:
+    """具名进程情报快照（B 组钉死接口，PID 复用防护统一在此）。
+
+    返回 ``{alive, cmdline, exe, cwd, ppid, start_token}``：全部字段经
+    既有低位原语复合读取，各自独立、允许部分缺席（快照语义，单一读面
+    失败不整体作废）。``start_token`` 即 stat starttime（proc_start_ticks
+    单源）：pid + starttime 唯一确定一个进程实例，复用防护锚定统一以
+    此为身份令牌（SPEC-2 win32 后端同缝换 CreationTime）。``alive`` 取
+    pid_alive_stat 缺省口径（/proc 条目可读即存活，与 kill(pid, 0) 的
+    「有主即活」保守方向一致；僵尸态语义由调用方经 pid_alive_stat 显式
+    另判）。
+
+    /proc 整体读不到（已退出、procfs 缺失、非法 pid）→ None：fail-closed
+    按死处置——情报接口拿不到情报，不伪装成「活着但字段全空」。
+    """
+    fields = proc_stat_fields(pid)
+    if fields is None:
+        return None
+    try:
+        exe = os.readlink(str(_proc_path(pid, "exe")))
+    except (OSError, ValueError):
+        exe = None  # 无读权限（ptrace 限制）/已退出/内核线程无 exe → 缺席
+    try:
+        ppid = int(fields[1])
+    except (IndexError, ValueError):
+        ppid = None  # 畸形 stat（护栏口径与 proc_start_ticks 一致）→ 缺席
+    return {
+        "alive": pid_alive_stat(pid),
+        "cmdline": cmdline_argv(pid),
+        "exe": exe,
+        "cwd": readlink_cwd(pid),
+        "ppid": ppid,
+        "start_token": proc_start_ticks(pid),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # C 文件锁
 # ═══════════════════════════════════════════════════════════════════════
@@ -1005,6 +1064,79 @@ def run_systemctl(args, timeout: float = 30, *,
         raise SystemdHostingError(f"systemctl {' '.join(args)} 执行失败: {e}") from e
 
 
+# ── HostingProvider 六名门面（SPEC 钉死托管操作面，D 组）────────────────
+# 承载业务语义（unit 渲染、HOME/PATH 基线、stop 双轨判定）居
+# core.systemd_hosting（对照表 D 组注记）；SPEC 钉死名在平台层出六名门面，
+# Linux 后端逐条同参转发该模块既有实现，systemd 语义一字不动。转发经函数
+# 内延迟 import：模块级导入面保持纯 stdlib（core.platform 先于 core.* 初
+# 始化，模块级 import 会成环），调用点才加载彼模块（彼时 core.platform 已
+# 完成分发注入，无环）。SPEC-2：Windows 后端同缝换计划任务/服务后端。
+
+
+def install_unit(root) -> dict:
+    """安装（如缺）并 enable --now 项目 unit；幂等（已装且活跃不重建不重启）。
+
+    ≡ core.systemd_hosting.install_project_unit 同参转发。
+    Returns: {"ok": bool, "error": str|None, "already": bool, "unit": str}
+    """
+    import core.systemd_hosting as _hosting
+
+    return _hosting.install_project_unit(root)
+
+
+def start(root) -> None:
+    """拉起项目 unit：daemon-reload + enable --now（既有拉起缝，幂等）。
+
+    ≡ core.systemd_hosting._enable_now(unit_name_for(root)) 同参转发——与
+    install_project_unit 的拉起语义同源，不新开 systemctl 位点；unit 未
+    安装时 enable 失败经 SystemdHostingError 上抛。
+    """
+    import core.systemd_hosting as _hosting
+
+    _hosting._enable_now(_hosting.unit_name_for(root))
+
+
+def stop(root) -> None:
+    """停机双轨 stop 半边：``systemctl stop --no-block`` 即刻返回（排水等待归调用方轮询）。
+
+    ≡ core.systemd_hosting.stop_unit_no_block(unit_name_for(root)) 同参转发。
+    """
+    import core.systemd_hosting as _hosting
+
+    _hosting.stop_unit_no_block(_hosting.unit_name_for(root))
+
+
+def is_running(root) -> bool:
+    """unit 服务是否活跃（is-active 返回 0）。
+
+    ≡ core.systemd_hosting.unit_active(unit_name_for(root)) 同参转发。
+    """
+    import core.systemd_hosting as _hosting
+
+    return _hosting.unit_active(_hosting.unit_name_for(root))
+
+
+def env_file(root):
+    """项目 unit 的正式 EnvironmentFile 路径（unit 模板引用同一函数，防漂移）。
+
+    ≡ core.systemd_hosting.project_env_file 同参转发。
+    """
+    import core.systemd_hosting as _hosting
+
+    return _hosting.project_env_file(root)
+
+
+def logs_hint(root) -> str:
+    """unit 日志排查提示（journalctl 命令段；SPEC-2 换事件日志形态）。
+
+    unit 名派生经 unit_name_for 单源（与 install/start/stop/is_running
+    同一口径）。
+    """
+    import core.systemd_hosting as _hosting
+
+    return f"journalctl -u {_hosting.unit_name_for(root)}"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # E 环境/用户/文件系统
 # ═══════════════════════════════════════════════════════════════════════
@@ -1133,6 +1265,7 @@ __all__ = [
     "proc_socket_links",
     "process_tree_cpu_seconds",
     "is_alive_with_identity",
+    "process_info",
     # C
     "flock_exclusive",
     "flock_release",
@@ -1141,6 +1274,12 @@ __all__ = [
     # D
     "systemctl_available",
     "run_systemctl",
+    "install_unit",
+    "start",
+    "stop",
+    "is_running",
+    "env_file",
+    "logs_hint",
     # E
     "home_dir",
     "current_user",
