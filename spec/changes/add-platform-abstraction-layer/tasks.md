@@ -131,3 +131,9 @@
 - [x] 7.1 运行 `python3 -m pytest tests/ -q` 全量回归零失败（438 个测试文件全绿，既有断言零修改，守卫测试除外）
   - 注记：经有界入口 `bin/run_full_suite.py --timeout 3600 --json` 达成（run10，rc=0，736s，failures=[]）。修复链：run3 的 59 例（cli_runner pal import 漏加、spawn_detached_async shell 单元素表解包、runner subprocess shadow 缝保 9 文件桩面、pal mtime 测试改新鲜子进程、modules_contract 身份断言形态锚随迁移同步、characterization rm 断言 token 化去路径撞车）→ run4 剩余 8 例（shadow 缝升级三型保真：Popen 形态契约 start_new_session 键保留+翻译收编转发函数、run 等属性动态透读 stdlib 当前值、包 __init__ subprocess 名重绑回 stdlib；守卫 start_new_session 位点级豁免钉计数）→ run5/6/7 三连守卫超时根因（AST 全量扫描越 pytest.ini 10s 单用例硬门：单遍收集器收敛 + timeout-allowlist 显式登记 30s）→ run7/8 悬空清扫两例负载 flaky（全局 Path.open spy 混入后台线程杂音：收窄只记目标路径，补写/缓存断言保留）→ run9 dsh 三车道冒烟负载越门（timeout-allowlist 同族通道登记 60s）→ run10 零失败。
 - [x] 7.2 自检 `core/platform/linux.py`（对照表模块 docstring 内「接口 → 平移源 → 说明」42 项 __all__ 全覆盖机械自检通过；仓库无 pyproject/requirements/setup 依赖声明文件，分支改动零出界（core/ tests/ spec/ pytest.ini install.sh 之外无文件），PAL 纯 stdlib 零新增第三方依赖成立） 与被平移源实现逐条对照表（接口→源位置→平移说明）写入 PR 描述或 `core/platform/linux.py` 模块 docstring；确认 pyproject/requirements 零新增第三方依赖
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-platform-abstraction-layer/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
