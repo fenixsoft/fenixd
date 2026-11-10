@@ -32,7 +32,6 @@ scenarios.json 结构（含来源轮次，便于增量审计）::
 """
 
 import errno
-import fcntl
 import json
 import logging
 import re
@@ -40,7 +39,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from core.fs_utils import atomic_write_text
+from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 
 # 可传播到 fenixd 已挂载 handler 的结构化日志器（fix-robustness-edge-cases 3.1：
 # 收敛旁路裸 getLogger("pm_engine")，保证 WARNING 落入 fenixd.log）
@@ -273,7 +272,7 @@ def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> Option
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         try:
-            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flock_exclusive(lf, nonblocking=True)
             return None
         except OSError as e:
             if e.errno not in (errno.EACCES, errno.EAGAIN):
@@ -287,7 +286,7 @@ def _acquire_scenarios_lock(lf, timeout: float = _SCENARIOS_LOCK_WAIT) -> Option
 def _release_scenarios_lock(lf) -> None:
     """释放并关闭锁文件；LOCK_UN 失败只保证 close（关闭 fd 即隐式释放 flock）。"""
     try:
-        fcntl.flock(lf, fcntl.LOCK_UN)
+        flock_release(lf)
     except OSError:
         pass
     try:

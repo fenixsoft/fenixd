@@ -51,7 +51,6 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 """
 
 import contextlib
-import fcntl
 import logging
 import os
 import re
@@ -65,6 +64,7 @@ from pathlib import Path
 from .registry import Registry
 from .watcher import FileWatcher
 from core.fenix_session import start_daemon, stop_daemon
+from core.fs_utils import flock_exclusive, flock_release
 from core.proc_utils import find_free_port as _proc_find_free_port
 
 logger = logging.getLogger("fenixd.dashboard.server")
@@ -155,7 +155,7 @@ def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock_exclusive(fd, nonblocking=True)
                 acquired = True
                 break
             except OSError:
@@ -166,7 +166,7 @@ def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
     finally:
         if acquired:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                flock_release(fd)
             except OSError:
                 pass
         os.close(fd)

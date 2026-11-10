@@ -118,7 +118,6 @@ BASE_URL 注入范围扩展（design D4）：
 """
 
 import errno
-import fcntl
 import json
 import os
 import re
@@ -137,6 +136,7 @@ from urllib.request import Request, urlopen
 
 import yaml
 
+from core.fs_utils import flock_exclusive, flock_release
 from core.proc_utils import find_free_port, kill_process_group
 
 CONTRACT_FILENAME = "verify.yaml"
@@ -1428,7 +1428,7 @@ class _PrepareHostLock:
         start = time.monotonic()
         while time.monotonic() - start < self._timeout:
             try:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock_exclusive(self._file.fileno(), nonblocking=True)
                 self._acquired = True
                 break
             except OSError:
@@ -1474,7 +1474,7 @@ class _PrepareHostLock:
         if self._file is not None:
             try:
                 if self._acquired:
-                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                    flock_release(self._file.fileno())
             except OSError:
                 pass
             try:
