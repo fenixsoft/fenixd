@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-09 20:16 UTC+8
+> 最后更新：2026-11-10 12:39 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -48,7 +48,7 @@
 | [dsh-web-wide-table-scrollbar](dsh-web-wide-table-scrollbar.md) | dsh web 对话框宽表横向滚动与全宽变量同步（wide/fill 分流、bleed 公式无下限缺陷、全宽覆盖须同步列宽变量、退化路径 margin 夹紧、哈希类失配自动回退、变量探针与活站假设验证配方） | 2026-11-07 21:40 |
 | [prolayout-header-actions-minwidth-ratchet](prolayout-header-actions-minwidth-ratchet.md) | ProLayout 顶栏动作区 min-width 棘轮锁（ResizeObserver 实测回写自锁只升不降、filters 槽宽组件 SPA 残留锁宽挤压标题签名、global.less 单源恒零化勿删、顶栏挂宽组件零额外处理、分态复现与逐元素量宽排查定式） | 2026-11-07 22:03 |
 | [timeline-chain-nodes](timeline-chain-nodes.md) | 时间轴处置链节点渲染（kind="chain" 紧凑链事件卡片 Bento 形态、六形态中文标签/着色映射圆点同源、未知形态中性灰兜底自有键防御、命名防混淆红线、折叠零特判与四类节点零回归） | 2026-11-08 12:14 |
-| [fenix-dash-bridge-workspace-nav](fenix-dash-bridge-workspace-nav.md) | dsh 侧栏工作区行项目导航（名称点击=项目详情 iframe 深链、行首图标原生展开/收缩分流、路径优先匹配判据、语义锚点拦截层与锚点漂移静默降级、非 fenix 行零侵入、固定条目收敛 5 项、60s 项目-工作区自动对齐、删除项目回退原生、官方列表滚动条注入维持） | 2026-11-09 17:12 |
+| [fenix-dash-bridge-workspace-nav](fenix-dash-bridge-workspace-nav.md) | dsh 侧栏工作区行项目导航与富提示（名称点击=项目详情 iframe 深链、行首图标原生展开/收缩分流、名称悬停富提示深卡：简介/运行态/状态胶囊/任务/活跃 Agent、路径优先匹配判据、语义锚点拦截层与锚点漂移静默降级、非 fenix 行零侵入、数据失效回退原生、固定条目收敛 5 项、60s 项目-工作区自动对齐、删除项目回退原生、官方列表滚动条注入维持） | 2026-11-10 12:39 |
 | [blocked-disposition-display](blocked-disposition-display.md) | blocked SPEC 处置相位三态显示（后端 `blocked_phase` 单点判定 repairing/queued/null——在飞处置 run/持久载体挂起件/等人面、升级件不入排队、显示层零状态机影响；前端四处共用 `blockedPhaseMeta` 三态标签与 fail-open 容错回退） | 2026-11-09 20:16 |
 
 > 退役注记：v2 商业化界面域十页（v2-overview-page / v2-project-list-page / v2-project-detail-page
