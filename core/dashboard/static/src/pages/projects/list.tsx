@@ -1,4 +1,4 @@
-import { ClockCircleOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
@@ -109,12 +109,11 @@ const OV_WARNING = '#d97706';
 const OV_INFO = '#2563eb'; // v2 语义 info tone 前景
 const OV_INFO_SOFT = '#eff6ff';
 const OV_MUTED_SOFT = '#f1f5f9';
-// add-spec-list-mobile-style：移动卡磁贴/分隔/信息行镜像色（原型 T 常量同源，
-// 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200 / warning 软底 + amber-800）
+// add-spec-list-mobile-style：移动卡磁贴/分隔镜像色（原型 T 常量同源，
+// 镜像纪律同上——V2_TILE_BORDER / V2 border slate-200；amber 软底/前景两值
+// 随信息行退役移除，add-spec-info-icon-tooltip 后信息色走 token.colorWarning）
 const OV_HAIRLINE = '#eef2f7';
 const OV_BORDER = '#e2e8f0';
-const OV_AMBER_SOFT = '#fffbeb';
-const OV_AMBER_TEXT = '#92400e';
 // 移动状态 chips 激活态计数（DSH_PRIMARY 黑底上的降透白，原型 chip-active
 // .chip-n 同值 rgba 62%）；仅 SpecCardList 移动编排块消费
 const OV_ON_PRIMARY_DIM = 'rgba(255, 255, 255, 0.62)';
@@ -130,6 +129,64 @@ function DotsIcon() {
       <circle cx={7} cy={7} r={1.2} />
       <circle cx={11.4} cy={7} r={1.2} />
     </svg>
+  );
+}
+
+// SPEC 信息图标 + 悬浮提示（add-spec-info-icon-tooltip D1-D3/D5/D6，桌面状态
+// 列与移动卡胶囊行共用单源）：error 非空时渲染于状态胶囊旁，空/null 不渲染
+// （缺失=无该元素，无占位灰显）。用 Popover 而非 Tooltip——弹层内含「清除」
+// 交互按钮，Tooltip overlay 不承载交互；trigger hover+click 双触发（桌面悬浮
+// 即见，触屏点按兜底）。弹层 = 完整文本（pre-wrap 可换行不截断，maxWidth
+// 限宽防超宽）+ 清除 small 按钮（stopPropagation 防触发行/卡导航，onClearError
+// handler 与 /api/spec-error-clear 契约零改动）；图标触发器 click 自身
+// stopPropagation（D6：图标在行命中面内，防误触发行导航）。
+function SpecInfoIcon({
+  record,
+  onClearError,
+  tapSize,
+}: {
+  record: SpecSummary;
+  onClearError: (record: SpecSummary) => void;
+  /** 外层点按目标边长 px；移动卡传 32（触控目标纪律，同 ⋮），桌面缺省自然尺寸 */
+  tapSize?: number;
+}) {
+  const { token } = theme.useToken();
+  return (
+    <Popover
+      trigger={['hover', 'click']}
+      placement="bottomLeft"
+      content={
+        <div style={{ maxWidth: 420 }}>
+          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 8 }}>{record.error}</div>
+          <Button
+            size="small"
+            data-testid="spec-info-clear"
+            onClick={(e) => {
+              e.stopPropagation();
+              void onClearError(record);
+            }}
+          >
+            清除
+          </Button>
+        </div>
+      }
+    >
+      <span
+        role="button"
+        aria-label="SPEC 信息"
+        data-testid="spec-info-icon"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          ...(tapSize ? { width: tapSize, height: tapSize } : null),
+        }}
+      >
+        <InfoCircleOutlined style={{ fontSize: 14, color: token.colorWarning }} />
+      </span>
+    </Popover>
   );
 }
 
@@ -713,7 +770,7 @@ interface SpecCardListProps {
 // 移动端（<768px）卡片形态（add-spec-list-mobile-style 重绘，UI 真相源
 // specs/dashboard-spec-table/prototype/index.html）：白磁贴（12px 圆角发丝边）
 // 内发丝线分卡，镜像桌面 .ov-bento 磁贴语态（D1 不逐卡开卡框）；卡 = 英文名主行
-// → 中文标题次行 → 语义胶囊行 → 阶段进度区 → 元信息行 → 验证行 → 信息行；
+// → 中文标题次行 → 语义胶囊行 → 阶段进度区 → 元信息行 → 验证行；
 // fix-* 子卡缩进 26px + └ 前缀灰符；整卡点击进详情（specDetailPath 单源）。
 // 仅在 md 断点以下渲染，桌面 Table 分支不受影响。
 function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError }: SpecCardListProps) {
@@ -828,12 +885,16 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                   {record.title}
                 </div>
               ) : null}
-              {/* 语义胶囊行：状态 tone 色对带色点 + 等待标记灰软底 + 模式胶囊 + ⋮ 更多 */}
+              {/* 语义胶囊行：状态 tone 色对带色点 + 等待标记灰软底 + 信息图标 + 模式胶囊 + ⋮ 更多 */}
               <div className="spec-card-pills" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap', minWidth: 0 }}>
                 <Pill tone={m.tone} dot>
                   {m.label}
                 </Pill>
                 <StatusWaitGroup record={record} pill />
+                {/* 信息图标（add-spec-info-icon-tooltip 2.1）：error 非空时状态
+                    胶囊旁点按弹层（完整信息 + 清除），替代 amber 软底信息行；
+                    32px 触控目标对齐 ⋮ 纪律，空值不渲染 */}
+                {record.error ? <SpecInfoIcon record={record} onClearError={onClearError} tapSize={32} /> : null}
                 {/* 模式胶囊单源 ModePill（与桌面模式列同源）；存量无 mode 字段
                     按缺省 full 展示「标准」 */}
                 <ModePill mode={record.mode} />
@@ -934,30 +995,6 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                       验证 {record.verify_done}/{record.verify_total}
                     </span>
                   )}
-                </div>
-              ) : null}
-              {/* 信息行：amber 软底圆角条、橙「信息」前缀、摘要单行省略 + 清除
-                  （信息清除既有契约保留，dashboard-spec-table 清除链路不变） */}
-              {record.error ? (
-                <div
-                  className="spec-card-info-row"
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, background: OV_AMBER_SOFT, borderRadius: 6, padding: '6px 8px' }}
-                >
-                  <span style={{ fontSize: 12, color: OV_WARNING, flex: '0 0 auto' }}>信息</span>
-                  <span
-                    style={{ flex: 1, minWidth: 0, fontSize: 12, color: OV_AMBER_TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  >
-                    {record.error}
-                  </span>
-                  <Button
-                    size="small"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClearError(record);
-                    }}
-                  >
-                    清除
-                  </Button>
                 </div>
               ) : null}
             </List.Item>
@@ -1107,6 +1144,9 @@ function DevTab({
           <Space size={4} wrap>
             <Pill tone={m.tone}>{m.label}</Pill>
             <StatusWaitGroup record={record} />
+            {/* 信息图标（add-spec-info-icon-tooltip 1.1）：error 非空时状态胶囊
+                旁悬浮提示（完整信息 + 清除），替代行下信息子行；空值不渲染 */}
+            {record.error ? <SpecInfoIcon record={record} onClearError={onClearError} /> : null}
           </Space>
         );
       },
@@ -1560,11 +1600,12 @@ function DevTab({
               // add-spec-subtitle-and-row-click（task 2.1）：整行点击进详情
               // （镜像 overview 台账 onRow 范式：整行 cursor pointer + 路由跳
               // 转；SPEC 列表无 error 抑制语义，行恒可点）。事件目标守卫
-              // （design D3，单源 specRowClick.ts）：展开钮（fix-* 树展开与
-              // error 信息行展开共用 antd 展开图标类）命中不导航；操作列交互
-              // 单元格既有 stopPropagation 单元格守卫零改动命中；展开行内容
-              // 渲染于行外 ant-table-expanded-row，不在 onRow 命中面；名称
-              // 链接自有跳转与本行导航同目标不额外拦截（连跳同路由无害）。
+              // （design D3，单源 specRowClick.ts）：展开钮（fix-* 树形子级
+              // 展开，add-spec-info-icon-tooltip 后 keys 不再服务信息行）命中
+              // 不导航；操作列交互单元格既有 stopPropagation 单元格守卫零改动
+              // 命中；信息图标与清除按钮各自 stopPropagation（D3/D6）防误触发
+              // 行导航；名称链接自有跳转与本行导航同目标不额外拦截（连跳同
+              // 路由无害）。
               onClick: (e) => {
                 if (rowClickHitsExpandIcon(e)) return;
                 history.push(specDetailPath(project, record.name));
@@ -1584,20 +1625,9 @@ function DevTab({
               columnWidth: 28,
               expandedRowKeys: expandedKeys,
               onExpandedRowsChange: onExpandedKeysChange,
-              // 额外信息（error）行内下方展开，含清除按钮（对齐 v1 spec-info-row）
-              expandedRowRender: (record: SpecSummary) =>
-                record.error ? (
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                    <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-                      信息
-                    </Tag>
-                    <Typography.Text style={{ flex: 1 }}>{record.error}</Typography.Text>
-                    <Button size="small" onClick={() => void onClearError(record)}>
-                      清除
-                    </Button>
-                  </div>
-                ) : null,
-              rowExpandable: (record: SpecSummary) => !!record.error,
+              // add-spec-info-icon-tooltip 1.2：行下信息子行已退役（error 信息
+              // 收敛为状态旁信息图标 Popover）——受控 keys 仅服务 fix-* 树形
+              // 子级展开，antd v5 树形表格凭受控 keys 驱动
             }}
           />
             </div>
@@ -1917,18 +1947,19 @@ export default function SpecListPage() {
     return c;
   }, [preStatus]);
 
-  // 受控展开：数据到达时默认全部展开（树形子级 + error 信息行可见），用户可手动收起
+  // 受控展开：数据到达时默认全部展开（fix-* 树形子级可见），用户可手动收起
+  // （add-spec-info-icon-tooltip 1.2：keys 不再服务 error 信息行——子行已退役）
   const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
   // 仅在**首次**数据到达时初始化展开状态（code-review item b229013a3316）：`tree`
   // 由 filtered→specMap 派生，任何 SSE 增量 patch / 30s 心跳重拉都会产生新引用，
   // 旧实现 `[tree]` 依赖会在流式更新期间反复把用户手工收起的树弹开，且与受控
   // 展开 onExpandedRowsChange 互相打架。用 ref 标记首次初始化。
   const expandedInitRef = useRef(false);
-  // 已见节点记忆（code-review item 81b677017e09）：error 信息行走
-  // expandedRowRender，可见性受 expandedKeys 控制。闩锁置位后 SSE patch 新增的
-  // spec（新建任务/修复子任务）也要默认展开，但不能把用户已手动收起的行强制
-  // 弹开——区分「新增节点」与「被用户收起的已见行」需要记忆已纳入展开集合的
-  // 节点名，增量合并只并入从未见过的 keys。
+  // 已见节点记忆（code-review item 81b677017e09）：keys 集合服务 fix-* 树形
+  // 子级展开（add-spec-info-icon-tooltip 1.2 后不再含 error 信息行）。闩锁置位
+  // 后 SSE patch 新增的 spec（新建任务/修复子任务）也要默认展开，但不能把
+  // 用户已手动收起的行强制弹开——区分「新增节点」与「被用户收起的已见行」
+  // 需要记忆已纳入展开集合的节点名，增量合并只并入从未见过的 keys。
   const seenKeysRef = useRef<Set<Key>>(new Set());
   // 项目切换复位闩锁（code-review item 9dd9b3c6679b）：本路由组件在同一路径
   // /projects/:name 下复用不重挂载，expandedInitRef 是锚定不到项目的一次性
@@ -1972,13 +2003,14 @@ export default function SpecListPage() {
     // 树归属门控（code-review item e6881ebd1b26）：name 变更的复位 effect 与
     // SSE flush 的 setSpecMap 同批提交时，本 effect 会以旧项目的 tree 执行——
     // 闩锁刚被复位又被置回、旧 keys 记入已见，新项目同名 spec 被判「已见」
-    // 不再默认展开、error 信息行保持折叠。specLoadedRef 只在当前项目 load
+    // 不再默认展开、树形子级保持折叠。specLoadedRef 只在当前项目 load
     // 成功落地时置位、随复位清 false：false 即 tree 快照不属于当前 name，
     // 跳过本次展开处理，等新项目数据落地后正常初始化
     if (!specLoadedRef.current) return;
     // 递归收集全树所有节点名（code-review item 6869f19d419c）：三层归并树
     // （fix-fix-a→fix-a→a）只收根名会漏掉中间层，其子级默认折叠隐藏；叶子名
-    // 也要收——error 信息行走 expandedRowRender，同受这组 keys 控制。
+    // 也要收（同受这组 keys 控制；add-spec-info-icon-tooltip 后 keys 仅服务
+    // 树形子级展开）。
     const keys: Key[] = [];
     const walk = (nodes: SpecSummaryNode[]) => {
       nodes.forEach((n) => {
@@ -1995,9 +2027,9 @@ export default function SpecListPage() {
       return;
     }
     // 闩锁置位后的增量合并（code-review item 81b677017e09）：SSE patch 新增的
-    // spec 原实现进不了 expandedKeys，其 error 信息行保持折叠不可见。只把从未
-    // 见过的节点 keys 并入展开集合——新增行默认展开；用户已手动收起的行是
-    // 「已见」节点、不在 fresh 内，不被强制重开（b229013a3316 语义保持）。
+    // spec（修复子任务）原实现进不了 expandedKeys，其树形子级保持折叠不可见。
+    // 只把从未见过的节点 keys 并入展开集合——新增行默认展开；用户已手动收起
+    // 的行是「已见」节点、不在 fresh 内，不被强制重开（b229013a3316 语义保持）。
     const fresh = keys.filter((k) => !seenKeysRef.current.has(k));
     if (fresh.length === 0) return;
     keys.forEach((k) => seenKeysRef.current.add(k));

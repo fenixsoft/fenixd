@@ -118,12 +118,13 @@ test('projects 桌面 SPEC 表格=Bento 台账磁贴（2026-11-06 用户指令�
   const tsx = readFileSync(join(STATIC_ROOT, 'src', 'pages', 'projects', 'list.tsx'), 'utf8');
   // 磁贴包裹 + 台账表格内部样式挂点（边框对齐 v2，表格本体仍是 antd 控件）
   assert.match(tsx, /<div className="ov-bento">\s*<div className="ov-bento-table">/);
-  // antd Table 功能不退役：固定布局/表头排序/分页换页大小/树形展开/信息子行
+  // antd Table 功能不退役：固定布局/表头排序/分页换页大小/树形展开
+  // （信息子行 add-spec-info-icon-tooltip 退役——信息收敛为状态旁图标 Popover）
   assert.match(tsx, /tableLayout="fixed"/);
   assert.match(tsx, /sorter: \(a: SpecSummary/);
   assert.match(tsx, /showSizeChanger: true/);
-  assert.match(tsx, /expandedRowRender/);
-  assert.match(tsx, /rowExpandable/);
+  assert.doesNotMatch(tsx, /expandedRowRender/);
+  assert.doesNotMatch(tsx, /rowExpandable/);
   // 行内容 v2 形态挂点：状态/模式胶囊、名称 dense、验证 pill、进度阶段名行
   assert.match(tsx, /<Pill tone=\{m\.tone\}>\{m\.label\}<\/Pill>/);
   assert.match(tsx, /<SpecNameCell project=\{project\} record=\{record\} dense \/>/);

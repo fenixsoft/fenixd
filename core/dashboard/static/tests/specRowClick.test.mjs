@@ -8,7 +8,8 @@
 // - list.tsx 整行点击接线：守卫接入 + history.push + 整行 cursor pointer +
 //   既有选中行底色 style 逻辑不变（PRIORITY_TERMINAL 分支合并进 style）；
 // - 四类守卫钉死：展开钮（守卫单源选择器）、操作列（stopPropagation 单元格
-//   守卫与菜单 domEvent 阻断）、展开行内容（行外渲染不在 onRow 命中面）、
+//   守卫与菜单 domEvent 阻断）、信息子行退役（行内交互各自 stopPropagation，
+//   add-spec-info-icon-tooltip 后无行下展开行）、
 //   名称链接（自有 onClick 保留不拦截、与行导航同源路径）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -77,7 +78,7 @@ test('list.tsx 应从守卫单源导入（guard/path 不在页面内散写）', 
 
 // ── 四类守卫钉死 ─────────────────────────────────────────────────────
 
-test('守卫一 展开钮：单源选择器锚在 specRowClick（树展开与 error 展开共用）', () => {
+test('守卫一 展开钮：单源选择器锚在 specRowClick（fix-* 树形子级展开）', () => {
   const svc = readSrc('src/pages/projects/specRowClick.ts');
   assert.ok(svc.includes('.ant-table-row-expand-icon'), 'antd 展开图标类锚应在守卫单源定义');
 });
@@ -89,10 +90,17 @@ test('守卫二 操作列：交互单元格 stopPropagation 守卫在场（零�
   assert.ok(actions.includes('domEvent.stopPropagation()'), '菜单项 domEvent 亦应阻断冒泡');
 });
 
-test('守卫三 展开行内容：expandedRowRender 在场（行外渲染不在 onRow 命中面）', () => {
+test('守卫三 信息子行退役：行内交互各自 stopPropagation（行下展开行不复现）', () => {
+  // add-spec-info-icon-tooltip：error 信息子行退役（expandedRowRender 移除），
+  // 行内新增交互面（信息图标/弹层清除）以自身 stopPropagation 短路行导航，
+  // 行级命中面不再有行下展开行内容区
   assert.ok(
-    listSrc.includes('expandedRowRender:'),
-    'error 信息展开行应保留——antd 渲染于行外 ant-table-expanded-row，不命中 onRow',
+    !listSrc.includes('expandedRowRender:'),
+    'error 信息展开行应已退役（信息收敛为状态旁图标 Popover）',
+  );
+  assert.ok(
+    listSrc.includes('function SpecInfoIcon(') && listSrc.includes('e.stopPropagation()'),
+    '信息图标单源应以自身 stopPropagation 防行导航误触',
   );
 });
 
