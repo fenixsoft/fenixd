@@ -531,11 +531,23 @@ class TokenAccountant:
                 # 见上方 rec 判空前的共享注释，不再重复）
                 if not choices and not severity_needs_human(severity):
                     store.mark_handled(rec["id"])
-            self._pm.logger.warning(
-                "agent_runner",
-                f"token budget alert ({severity}) for '{spec_name}': "
-                f"{tokens_in / 1_000_000:.2f}M / {budget:.0f}M",
-            )
+                # code-review item 1ea70b43fbbe：成功文案仅在记录确实落盘时输出，
+                # 与下方 rec is None 分支的「未落盘」留痕口径区分
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token budget alert ({severity}) for '{spec_name}': "
+                    f"{tokens_in / 1_000_000:.2f}M / {budget:.0f}M",
+                )
+            else:
+                # code-review item 1ea70b43fbbe：append 被下限保护拒写（记录未
+                # 落盘）时不得复用上方成功文案——运维读日志会误判告警已进
+                # Dashboard 待办；按 3e202131bd3a 的留痕意图明确记「未落盘」。
+                self._pm.logger.warning(
+                    "agent_runner",
+                    f"token budget alert NOT persisted for '{spec_name}' "
+                    f"({severity}): {tokens_in / 1_000_000:.2f}M / {budget:.0f}M "
+                    "(AdminStore append 拒写，告警未落盘)",
+                )
         except Exception as e:
             self._pm.logger.error(
                 "agent_runner",
@@ -568,6 +580,24 @@ class TokenAccountant:
         # 落盘——对齐 _accumulate_token_usage 的 D4 口径：不把不可观测当零入账，
         # 逐轮记录不得呈现为「确认零消耗」。
         if usage_info.get("unobserved"):
+            return
+        # code-review item a5bb78a802d3：spec_name 直接拼进落盘路径，经 STATE
+        # 人工编辑/上游校验缺口携带「..」等成分时可写出 verify-progress 目录
+        # 之外（本函数是写侧，会建目录落文件）——同目录拼接点均已设防
+        # （verify_scenarios.scenarios_path_for、adjudication_narrative
+        # ._collect_report_path），此处比照读侧防御用命名契约单源
+        # spec_naming.validate_spec_name 做 kebab-case 白名单校验（stdlib-only
+        # 中立模块，函数内惰性 import 无环，与本模块既有惰性导入惯例一致）；
+        # 非法值记 warning 后跳过本次侧车落盘，不阻断主流程。
+        from core.spec_naming import validate_spec_name
+
+        invalid_reason = validate_spec_name(spec_name)
+        if invalid_reason is not None:
+            self._pm.logger.warning(
+                "agent_runner",
+                f"skip verify-progress token sidecar (invalid spec name): "
+                f"{spec_name!r}: {invalid_reason}",
+            )
             return
         tokens_json = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "tokens.json"

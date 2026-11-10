@@ -406,6 +406,7 @@ def ensure_route_map(wt_path: Path, project_root: Path, logger,
     Returns:
         地图文件路径（存在/生成成功）或 None（fail-open 无地图）。
     """
+    # [fenix-ignore:7b0cef897613] or 兜底属留档风格点——当前全部调用方传正值或不传，参数未开放给配置/外部输入，0 秒超时对子进程生成器无意义
     timeout = timeout or ROUTE_MAP_TIMEOUT_SECONDS
     generator = Path(wt_path) / ROUTE_MAP_GENERATOR_REL
     if not generator.is_file():
@@ -958,7 +959,9 @@ class AgentRunner:
         # _stall_budget_states，协议见 _stall_budget_lock property 注释。
         self._stall_budget_lock = threading.Lock()
         # 轮次上限分支活性基线（add-turn-limit-anchor-c D2）：run_id →
-        # {"commit_count": int}。__init__ 即建态——消除 _turn_limit_action
+        # {"commit_count": int, "base_head": str}（base_head=首次判定时快照的
+        # 主树 HEAD，rev-list 恒定基线，code-review item 10f8a23b5d67）。
+        # __init__ 即建态——消除 _turn_limit_action
         # 首次进入的 hasattr 惰性初始化竞态（AgentRunner 实例被多个 worker
         # 线程共享，两线程同见缺失会各建一个 dict、后写者空 dict 覆盖前者，
         # 先写入的分支计数证据被孤立丢失，code-review item 26852ea34c26）。
@@ -1528,7 +1531,10 @@ class AgentRunner:
         # 返回 False = 排队期命中取消旗标：未获取信号量，直接收口为取消结果
         #（不派发、不 release 未持有的信号量；code-review item 384d41a7e2fa）。
         if not self._planner_throttle_acquire(spec_name, run_id, sem):
-            _meta = self._cancel_meta.get(run_id, {})
+            # 取键先归一化（code-review item 22156e558ea2）：与 cancel_run 登记、
+            # _cancel_is_requested 判定、_cancel_clear 清理收敛到同一 base 键，
+            # 防未来调用方传带 -a/-r 后缀 id 时 reason 静默 miss 退化空串。
+            _meta = self._cancel_meta.get(self._normalize_run_id(run_id), {})
             _reason = _meta.get("reason", "")
             self._cancel_clear(run_id)
             # fix-observability-gaps 1.1 / code-review item e77ac696cbb7：排队期
@@ -3186,28 +3192,54 @@ class AgentRunner:
                 "remaining_tasks": remaining_tasks,
             }
 
-        # ── 活性证据 a：分支提交增量（首次以主树 HEAD 为 run 起点基线）──
+        # ── 活性证据 a：分支提交增量（主树 HEAD 在首次判定时快照进状态槽
+        #    作 run 起点基线，code-review item 10f8a23b5d67——基线不随主树
+        #    前移漂移，防主树合回本分支提交时 rev-list 计数骤减误判无增量）──
         branch_alive = False
         branch_evidence = ""
         if wt_path is not None and self._worktree_path_valid(wt_path):
             try:
-                base_head = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
-                    capture_output=True, text=True, timeout=15,
-                )
+                # code-review item 339b589c0bee：查-建-清理迭代持
+                # _turn_branch_state_lock——键缺失时顺带淘汰 created_ts 超
+                # 24h 的陈旧条目，兜底 dispute-judge / spec-review / 维护型
+                # 等直调 _run_agent 车道（不经 _execute_agent 终态外口
+                # forget）触达轮次上限后的条目泄漏（对齐 _stall_budget_state_for
+                # 同款过期淘汰；无锁清理迭代撞并发建键/摘除会抛 RuntimeError
+                # 误判 run crashed）。临界区内仅纯内存 dict 操作，无阻塞调用
+                #（两段临界区之间只夹 git 子进程调用，不嵌套持锁）。
+                with self._turn_branch_state_lock:
+                    states = self._turn_branch_state
+                    state = states.get(run_id)
+                    if state is None:
+                        _now = time.time()
+                        for k in [k for k, v in states.items()
+                                  if _now - float(v.get("created_ts") or _now)
+                                  > 86400.0]:
+                            states.pop(k, None)
+                        state = states.setdefault(run_id, {})
+                        state.setdefault("created_ts", _now)
+                    base_sha = state.get("base_head")
+                if base_sha is None:
+                    # 首次判定：现取主树 HEAD 快照进状态槽，后续 rev-list 恒
+                    # 以该快照为基线——run 起点基线不随判定时点主树前移漂移
+                    base_head = subprocess.run(
+                        ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if base_head.returncode != 0 or not base_head.stdout.strip():
+                        raise subprocess.SubprocessError(
+                            f"rev-parse failed: base={base_head.returncode}")
+                    base_sha = base_head.stdout.strip()
                 branch_tip = subprocess.run(
                     ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
                     capture_output=True, text=True, timeout=15,
                 )
-                if (base_head.returncode != 0 or branch_tip.returncode != 0
-                        or not base_head.stdout.strip()
-                        or not branch_tip.stdout.strip()):
+                if branch_tip.returncode != 0 or not branch_tip.stdout.strip():
                     raise subprocess.SubprocessError(
-                        "rev-parse failed: "
-                        f"base={base_head.returncode} tip={branch_tip.returncode}")
+                        f"rev-parse failed: tip={branch_tip.returncode}")
                 rc = subprocess.run(
                     ["git", "-C", str(wt_path), "rev-list", "--count",
-                     f"{base_head.stdout.strip()}..{branch_tip.stdout.strip()}"],
+                     f"{base_sha}..{branch_tip.stdout.strip()}"],
                     capture_output=True, text=True, timeout=15,
                 )
                 if rc.returncode != 0 or not rc.stdout.strip():
@@ -3224,27 +3256,12 @@ class AgentRunner:
                     f"'{spec_name}' ({run_id}): {e} — fail-open as alive",
                 )
             else:
-                # code-review item 339b589c0bee：查-建-清理迭代持
-                # _turn_branch_state_lock——键缺失时顺带淘汰 created_ts 超
-                # 24h 的陈旧条目，兜底 dispute-judge / spec-review / 维护型
-                # 等直调 _run_agent 车道（不经 _execute_agent 终态外口
-                # forget）触达轮次上限后的条目泄漏（对齐 _stall_budget_state_for
-                # 同款过期淘汰；无锁清理迭代撞并发建键/摘除会抛 RuntimeError
-                # 误判 run crashed）。临界区内仅纯内存 dict 操作，无阻塞调用。
                 with self._turn_branch_state_lock:
-                    states = self._turn_branch_state
-                    state = states.get(run_id)
-                    if state is None:
-                        _now = time.time()
-                        for k in [k for k, v in states.items()
-                                  if _now - float(v.get("created_ts") or _now)
-                                  > 86400.0]:
-                            states.pop(k, None)
-                        state = states.setdefault(run_id, {})
-                        state.setdefault("created_ts", _now)
+                    # setdefault 幂等：并发首次判定以先到的快照为准
+                    state.setdefault("base_head", base_sha)
                     prev = state.get("commit_count")
                     if prev is None:
-                        # 首次判定：以 run 起点（主树 HEAD 基线）计分支新提交
+                        # 首次判定：以快照的 run 起点基线计分支新提交
                         branch_alive = count > 0
                     else:
                         branch_alive = count > prev  # 较上次判定有增量

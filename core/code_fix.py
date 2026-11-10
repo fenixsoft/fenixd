@@ -2524,13 +2524,20 @@ def _is_test_path(rel_path: str) -> bool:
 def _test_target_poison_reason(rel: str) -> str:
     """毒化目标判别（evo-add-regression-empty-result-failclosed 2.1，单源）。
 
-    返回原因串（哨兵注释项 # 前缀 / 「..」穿越段 / ``__pycache__`` 缓存路径 /
-    ``.pyc`` 编译缓存）；非毒化项返回空串。``_sanitize_test_target_paths``
-    （producer 出口消毒）与 ``_map_fix_files_to_tests`` 映射入口预检共用，
-    两处规则 MUST NOT 漂移。
+    返回原因串（哨兵注释项 # 前缀 / 「..」穿越段 / 路径含空白字符 /
+    ``__pycache__`` 缓存路径 / ``.pyc`` 编译缓存）；非毒化项返回空串。
+    ``_sanitize_test_target_paths``（producer 出口消毒）与
+    ``_map_fix_files_to_tests`` 映射入口预检共用，两处规则 MUST NOT 漂移。
     """
     if rel.startswith("#"):
         return "哨兵注释项 # 前缀"
+    # 路径含空白字符（code-review item a6d007a8e82e）：cmd 通道经
+    # shlex.quote 引用可正确收集，env 通道经 ${FENIX_TEST_TARGETS:-tests/}
+    # 这类 shell 展开按空白拆分成多条畸形路径——「同值双轨」契约对这类输入
+    # 不成立，单源判别两通道同源剔除（与既有毒化类同点收口，不给任一通道
+    # 留毒化面）；被剔除目标由调用方按既有 fail-open 语义回退全量。
+    if any(ch.isspace() for ch in rel):
+        return "路径含空白字符"
     norm = rel.replace("\\", "/")
     parts = [p for p in norm.split("/") if p and p != "."]
     # 「..」穿越段（code-review item 6c85102acec2）：形如 tests/../../x.py
@@ -2551,7 +2558,8 @@ def _sanitize_test_target_paths(targets, exec_root) -> list:
     """定向回归 targets 消毒（evo-add-regression-empty-result-failclosed 2.1，
     单点 producer 出口）。
 
-    过滤六类不可收集/毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
+    过滤七类不可收集/毒化项并留痕：# 前缀哨兵注释项、「..」穿越段、路径含
+    空白字符（env 通道 shell 展开按空白拆分，双轨同值不成立）、路径含
     ``__pycache__`` 段、``.pyc`` 编译缓存、相对 ``exec_root`` 不存在的
     路径、非 ``.py`` 后缀文件（非 pytest 可收集目标）；被过滤项聚合
     WARNING 留痕（含原因）。
@@ -2725,7 +2733,14 @@ def _map_fix_files_to_tests(fixed_files, exec_root) -> list:
                 # grep 退出码 0=有匹配 / 1=无匹配（均非错误）；>1 才是故障
                 if proc.returncode == 0:
                     for line in proc.stdout.splitlines():
-                        rel = line.strip().lstrip("./").strip("/")
+                        # 剥 ./ 前缀用与映射入口同款精确剥离（code-review
+                        # item b7081410cca2）：lstrip("./") 按字符集重复剥离，
+                        # grep 目标日后放宽时会过度剥掉点开头的合法相对路径
+                        # 前缀（如 .scripts/test_x.py），经出口消毒静默剔除。
+                        rel = line.strip()
+                        while rel.startswith("./"):
+                            rel = rel[2:]
+                        rel = rel.strip("/")
                         if rel:
                             direct.add(rel)
             except (OSError, subprocess.SubprocessError, ValueError):
@@ -3125,14 +3140,26 @@ def read_fix_out(worktree, run_id: str) -> list:
     item_id 非字符串的行按损坏行同款待遇丢弃并记 WARNING 留痕（对齐台账
     读侧 ``_read_items_unlocked`` 口径）：JSON 可解析但不可哈希的 item_id
     （如 list/dict）若放行，会在下游以不可哈希值作 dict 键抛 TypeError
-    击穿读侧容错契约。文件缺失返回空列表（run 失败路径由
-    CodeFixResult.success 承载）。
+    击穿读侧容错契约。文件缺失或读取时瞬时 I/O 异常（OSError）返回空列表
+    （run 失败路径由 CodeFixResult.success 承载）。
     """
     path = Path(worktree) / ".fenix" / "code-review" / f"fix-out-{run_id}.jsonl"
     rows: list = []
     if not path.is_file():
         return rows
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # 读侧瞬时 I/O 异常兜底（code-review item 03559fe33af5）：is_file()
+        # 预检到 read_text 之间存在 TOCTOU 窗口（产物可被清理/暂时不可读），
+        # 异常上穿会在批收尾两个裸调用点（_apply_llm_reject_exits 与
+        # _resolve_batch_regression_spec）沿 _run_batch 兜底链升级为
+        # batch_worker_error halt，把首轮 run 实际已成功的批整链终止——
+        # 与下方「读侧 MUST NOT 500 由实现保证」契约一致，按文件缺失同
+        # 语义返回空列表（明细不可得；_synthesize_item_progress 的 try
+        # 边界兜底语义不变）。
+        return rows
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue

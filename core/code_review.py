@@ -1761,10 +1761,12 @@ def _latest_review_run(project_root) -> Optional[str]:
     并让 409 重复触发守卫失效）。故匹配「epoch 后可跟多个 -<n> 段」的形态，
     取首个 epoch 段排序（code-review item ab5d3b4c3fa9）。同秒撞名退避
     （手动+同秒周期双触发）会产出 ``code-review-<epoch>`` 与
-    ``code-review-<epoch>-<n>`` 两份真实 run 并存，epoch 平局时以名字
-    字典序为确定性次键取更大者——退避 run 由 _unique_code_review_run_id
-    在基础候选被申领后才生成（创建序更晚），字典序更大即更新，消除对
-    glob 目录序的依赖（code-review item f7b084c51199）。
+    ``code-review-<epoch>-<n>`` 两份真实 run 并存，epoch 平局时以 epoch
+    之后的退避后缀段**数值序列**为确定性次键取更大者——退避 run 由
+    _unique_code_review_run_id 在基础候选被申领后才生成（创建序更晚），
+    数值序更大即更新；纯名字字典序在退避序进位到两位数后会反序
+   （``"-10" < "-2"``）误选更旧 run（code-review item 2317ab2b9af7），
+    消除对 glob 目录序的依赖（code-review item f7b084c51199）。
     """
     d = code_review_dir(project_root)
     if not d.is_dir():
@@ -1778,7 +1780,14 @@ def _latest_review_run(project_root) -> Optional[str]:
             if not m:
                 continue
             ts = int(m.group(1))
-            key = (ts, name)
+            # epoch 平局次键：退避后缀段取数值序列而非名字字典序——字典序
+            # 在退避序进位到两位数后反序（"-10" < "-2"），会误选更旧 run
+            #（code-review item 2317ab2b9af7）。无退避段为空元组，天然
+            # 小于任何退避 run（创建序更晚）。
+            backoff = tuple(
+                int(x) for x in re.findall(r"-(\d+)", name[m.end(1):])
+            )
+            key = (ts, backoff)
             if latest_key is None or key > latest_key:
                 latest_key = key
                 latest = name
@@ -2164,10 +2173,22 @@ def _spec_name_conflicted(project_root, state_machine, candidate: str) -> bool:
     判重并入 _archive_name_candidates 归一化候选集（原样名含于候选集，覆盖
     ``YYYY-MM-DD-<name>-<n>`` / ``<name>-<epoch>`` 形态）与归档台账检查。
     """
-    from core.evolution import _archive_name_candidates
-
     proot = Path(project_root)
-    if (proot / "spec" / "changes" / candidate).is_dir():
+    changes_dir = proot / "spec" / "changes" / candidate
+    # 首处判重的 stat 分口与其余三处判重同口径 fail-closed：is_dir() 对
+    # stat 层异常（权限漂移、NFS 句柄失效）回 False，会把瞬时访问失败
+    # 当作「无冲突」放行（code-review item 9838bb2c94f3）；确认缺失
+    #（FileNotFoundError）维持不冲突不误伤。
+    try:
+        changes_dir.stat()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        _logger.warning(
+            "code_review: 探测 spec/changes 候选目录判定重名失败，保守按冲突处理: %s", e
+        )
+        return True
+    if changes_dir.is_dir():
         return True
     try:
         if state_machine is not None and candidate in state_machine.read_all():
@@ -2191,6 +2212,17 @@ def _spec_name_conflicted(project_root, state_machine, candidate: str) -> bool:
         return True
     arch_root = proot / "spec" / "archive"
     if arch_root.is_dir():
+        # 导入并入使用处并纳入 fail-closed 兜底：顶部裸导入失败会以
+        # ImportError 穿透判重契约（既不保守判冲突也不返回结构化错误），
+        # 与同函数其余三处判重的失败语义不对称（code-review item
+        # bfddcc138731）。
+        try:
+            from core.evolution import _archive_name_candidates
+        except Exception as e:
+            _logger.warning(
+                "code_review: 导入归档名候选集工具判定重名失败，保守按冲突处理: %s", e
+            )
+            return True
         try:
             for archived in arch_root.iterdir():
                 if not archived.is_dir():
