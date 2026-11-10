@@ -1,35 +1,22 @@
 # 验证报告：add-maintenance-lane-provider-failover
 
-> ⚠️ 本报告由框架于 2026-11-10T05:51:40Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-10T05:45:58.128695+00:00+run-result@mtime1794289890495707692
+> ⚠️ 本报告由框架于 2026-11-10T06:28:38Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-10T06:28:38.620334+00:00+run-result@mtime1794292118675391112
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 26/27 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 27/27 场景通过，0 失败，0 错误（全部场景通过）**
 
-27 场景：26 pass / 1 fail。唯一失败场景 ring-model-rejected-both-tail-attribution 判 product-bug（major）：拒模型记账判定词表未覆盖 SPEC 验收场景要求的「HTTP 400 + result 字段拒模型正文（Model not found）」形态，_record_unrecognized_model 未被调用（两候选均无 WARNING 记账）；同场景换候选/链尾归因/冷却等功能断言全部通过。确定性证据链（SPEC 锚点 + 词表/调用点源码行）完整，免复现。
+全绿快道: 27/27 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 26 |
-| 失败 | 1 |
+| 通过 | 27 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
+| 产品 Bug | 0 |
 | 本链增量 Token（输入） | 14.50M |
 | 本链增量 Token（输出） | 0.15M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· json_output
-
-- 关联场景：ring-model-rejected-both-tail-attribution
-- 描述：候选环对「HTTP 400 拒模型正文仅在 result 事件 result 字段」形态不调用 _record_unrecognized_model 记账——SPEC 验收场景（specs/maintenance-lane-provider-failover/spec.md:19-21）THEN 要求记账并换候选；换候选/链尾 [model-chain-unavailable] 归因/双候选 switch 冷却均达成（5/7 断言过），唯拒模型 WARNING 记账缺失（probe-p1/probe-p2 两候选均无 'Unrecognized model rejected'）。
-- 根因：拒模型记账判定词表 UNRECOGNIZED_MODEL_TEXT_PATTERNS（core/agent_runner/provider_circuit.py:95-98）仅含 'unrecognized_model'/'unrecognized model' 两形态，未覆盖网关 'Model not found: <model>' 正文形态——该形态仅命中 SWITCH_ERROR_TEXT_PATTERNS 第三条（provider_circuit.py:61）走切换类链前进，runner.py:2568 is_reject 判定不命中 → runner.py:2580-2584 的 _record_unrecognized_model 调用被跳过。
-- 证据（场景 ring-model-rejected-both-tail-attribution 结构化证据，引用）：
-  - failed_assertions: [{"type": "json_output", "selector": "unrecognized_ledger_warn", "expected": true, "actual": false}, {"type": "json_output", "selector": "unrecognized_ledger_warn_p2", "expected": true, "actual": false}]
-  - screenshots: []
-  - first_failed_step: 步骤1(probe): 双候选均以 HTTP 400 + result 字段拒模型正文（Model not found）失败后，r.logger 无任何含 'Unrecognized model rejected' 的 warning——is_reject 未命中，_record_unrecognized_model 未被调用；同场景换候选/链尾归因/双冷却 5 断言均通过
 
 
 ## 场景结果
@@ -43,7 +30,7 @@
 | ring-attempt-cap-terminal-429-attribution | 候选环：三候选链全部以 429 失败 → _run_agent 恰好调用 3 次（候选上限=链长不超出）、终局异常保留 api_error_status=429 且文本含 [model-chain-unavailable] 归因、三候选均进限流冷却（R2/R6/D5） | pass | 0/9 | - |
 | ring-post-provider-env-per-candidate | 候选环：post_provider_env 在每候选 provider env 组装（ANTHROPIC_*/provider.env 合并）之后合并——换候选后第二候选的 env 仍含 post 键（如 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0），provider.env 键亦注入（D7/R7） | pass | 0/8 | - |
 | ring-fail-open-without-bookkeeping | 候选环：桩 runner 缺簿记接线（_record_daily_provider_attempt/_write_provider_marker 置 None）→ fail-open 不阻断，双候选 429 换候选仍成功（R7） | pass | 0/6 | - |
-| ring-model-rejected-both-tail-attribution | 候选环：双候选均以拒模型正文失败（model not found 仅在 result 事件 result_text）→ 先换第二候选（恰 2 次调用）、每次拒模型记 WARNING 记账（Unrecognized model rejected）、链尾仍被拒时错误文本带 [model-chain-unavailable] 归因（R2/R3） | failed（已修正） | 2/7 | product-bug |
+| ring-model-rejected-both-tail-attribution | 候选环：双候选均以拒模型正文失败（model not found 仅在 result 事件 result_text）→ 先换第二候选（恰 2 次调用）、每次拒模型记 WARNING 记账（Unrecognized model rejected）、链尾仍被拒时错误文本带 [model-chain-unavailable] 归因（R2/R3） | pass | 0/7 | - |
 | lane-code-review-dual-chain-failover | code-review 车道：双候选链（agents.models.code-review）首候选 429（结构化 result 事件）→ 本 run 换第二候选成功（_run_agent 2 次、第二次 env 指向第二候选）、provider_marker 记录真实 chain_index=0/1 与 chain_len=2（R1/R5） | pass | 0/10 | - |
 | lane-code-review-role-fallback-order | code-review 车道角色回退顺序保留：code-review 角色未配置 → 回退 self-review 链（marker chain_len 如实=1）；再未配置 → 回退 _get_admin_model 默认网关形态（无 ANTHROPIC_BASE_URL、无 marker）（R1） | pass | 0/10 | - |
 | lane-administrator-dual-chain-failover | administrator 车道：双候选链首候选 429 → 换第二候选成功（2 次调用、env 指向第二候选）、marker 记录 chain_index=0/1 与 chain_len=2（R1） | pass | 0/9 | - |
@@ -63,13 +50,6 @@
 | reg-provider-failover-family | 既有 provider failover 家族回归零回退：test_provider_failover / test_provider_circuit / test_transient_backoff / test_run_agent_call_site_arity（_run_agent 5 元解包宽度 AST 守卫）全绿（tasks 5.1；基线 133 passed） | pass | 0/2 | - |
 | reg-judge-lane-suites | 判官范式车道既有用例回归零回退：test_spec_review_agent / test_spec_review_gate / test_spec_review_infra_attribution / test_dual_lane_adjudication / test_deliverable_declaration_triage 全绿（tasks 5.1，收口语义不变；基线 144 passed） | pass | 0/2 | - |
 | reg-lane-suites | 六条维护车道既有用例回归零回退：test_code_review / test_code_fix / test_admin / test_evolution_bg_wait_ceiling / test_api_stall_disposition / test_daily_self_review 全绿（tasks 5.1，返回值/降级/告警路径不变；基线 550 passed） | pass | 0/2 | - |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
 
 ## 本轮场景集变更
 
