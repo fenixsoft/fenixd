@@ -1624,9 +1624,9 @@ function DevTab({
               columnWidth: 28,
               expandedRowKeys: expandedKeys,
               onExpandedRowsChange: onExpandedKeysChange,
-              // add-spec-info-icon-tooltip 1.2：expandedRowRender/rowExpandable
-              // 已退役（error 信息收敛为状态旁信息图标 Popover）——受控 keys
-              // 仅服务 fix-* 树形子级展开，antd v5 树形表格凭受控 keys 驱动
+              // add-spec-info-icon-tooltip 1.2：行下信息子行已退役（error 信息
+              // 收敛为状态旁信息图标 Popover）——受控 keys 仅服务 fix-* 树形
+              // 子级展开，antd v5 树形表格凭受控 keys 驱动
             }}
           />
             </div>
