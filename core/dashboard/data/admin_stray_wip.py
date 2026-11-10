@@ -21,6 +21,7 @@ import logging
 import os
 import re
 from core.fs_utils import flock_exclusive, flock_release
+from core.platform import api as pal
 import shutil
 import subprocess
 import tempfile
@@ -1140,13 +1141,14 @@ def _stray_manifest_path_escapes(proot, paths) -> list:
     同模块先例防线：夹具写入走 validate_scenario_revision_paths 白名单、
     spec 名拼路径走 kebab-case 正则；散件路径散布全仓、不在任何目录白名单
     内，故只取其绝对路径/穿越规则做同型校验，白名单目录约束不适用。
-    首段冒号（Windows 盘符形态）检查仅 ``os.name == "nt"`` 生效——POSIX
+    首段冒号（Windows 盘符形态）检查仅 ``pal.IS_WINDOWS`` 生效（4.3 平台
+    谓词单点，Linux 恒 False 同原 ``os.name == "nt"`` 口径）——POSIX
     文件名可合法含冒号，非 nt 下一律判不合规会把此类条目从 archive/ignore/
     delete 三个执行器永久剔除（code-review item 8502d6ba2438）；非 nt 的
     越界风险由绝对路径判定与下方 realpath 前缀锚定兜底。
     """
     base = os.path.realpath(os.path.abspath(str(proot)))
-    check_win_drive = os.name == "nt"
+    check_win_drive = pal.IS_WINDOWS  # 4.3：平台谓词单点（Linux 恒 False）
     bad: list = []
     for raw in paths or []:
         p = str(raw or "").strip()
