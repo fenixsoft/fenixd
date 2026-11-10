@@ -1,7 +1,7 @@
 # 处置链可观测与配置
 
-<!-- knowledge: capability=chain-observability rev=2
-     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md -->
+<!-- knowledge: capability=chain-observability rev=3
+     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md,spec/changes/redesign-chain-panel-ui -->
 
 处置链的过程可见性面：SPEC 时间轴的全链节点、Dashboard 处置链视图（运维页三页签之一）与链配置（配额/复位窗/黑名单）设置界面。
 
@@ -13,10 +13,10 @@
 - Dashboard 处置链视图展示：链上在办件（Admin/Arbiter 当前 run 标识与已耗时）、等待队列深度、各签名配额水位（已用/上限）、近期上升件。
 - 处置链视图不是独立菜单页，是运维页（`/activities`）三页签之一（antd Tabs：处置链 / 自动运维记录 / 告警记录），默认激活处置链页签；侧栏无「处置链」菜单项。
 - 老路由 `/chain` 保留重定向至 `/activities?tab=chain`：hash 路由 query 随 hash 传递，运维页读 `?tab=` 预选页签（非法值回退处置链），老深链落地处置链页签不 404。
-- 只读纪律与 30s 轮询保持；处置链页签失活即卸载面板，轮询随卸载停止（非常驻轮询）。
+- 只读纪律为分层只读（redesign-chain-panel-ui 改定）：人工队列区是人工裁决主入口（内嵌裁决面板，经 alert-resolve 闭环端点执行 choices）；上升件全量列表与详情抽屉纯只读预览（无执行按钮，执行入口收敛于人工队列与告警记录页签）。30s 轮询保持；处置链页签失活即卸载面板，轮询随卸载停止（非常驻轮询）。
 - 单项目聚合 Select 位于运维页统一标题栏筛选槽，仅在处置链页签激活时渲染；筛选 state 提升宿主页，跨页签切换保持。
 - 失败面隔离：SSE 断流/加载失败横幅仅罩自动运维记录/告警记录两路数据，处置链页签激活时不展示；处置链数据不同源，保留自身 fail-soft 内联 Alert，不混报。
-- 处置链视图只读：不提供链上人工干预入口，人工裁决入口收敛于上升件 choices。
+- 处置链视图分层只读：视图主面（统计行/链在办/签名配额/上升件全量与详情抽屉）不提供链上人工干预入口；唯一执行面是人工队列内嵌裁决面板（复用告警裁决交互与 alert-resolve 端点，destructive 项二次确认），裁决主入口收敛于此与告警记录页签。
 - 视图数据单源：读 `admin_alerts.json`、arbiter ledger 与链状态文件，不引入平行真相源。
 - 链配置四项——Admin 尝试配额、Arbiter 复现配额、复位窗天数、黑名单信号清单——在 Dashboard 设置页提供编辑界面，经既有配置热更新（30s mtime 检测）生效，无需重启；配置键归属 `core/config.py` 单源校验。
 
@@ -24,3 +24,4 @@
 
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 新增本页：时间轴全链节点（含 fail-open 台账联查扩展）、Dashboard 处置链视图（只读+数据单源）、链配置设置界面
 - 2026-11-05 dashboard-ops-tabs-chain-merge（spec/knowledge/_inbox/done/dashboard-ops-tabs-chain-merge.md） — 处置链视图随迁运维页三页签形态：独立菜单页退役（默认页签 + 老路由重定向 + 页签失活卸载停轮询 + 单项目筛选迁标题栏筛选槽 + SSE 横幅不罩处置链）
+- 2026-11-10 redesign-chain-panel-ui（spec/changes/redesign-chain-panel-ui/） — 处置链页签 bento 重绘：只读纪律改分层只读（人工队列内嵌裁决=主入口，其余面纯只读）；在办件联查富化（问题摘要/配额计数/run 标识尽力提取）与签名 esc 计数下发（数据契约单源 chain_overview）

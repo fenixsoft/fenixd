@@ -117,6 +117,17 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
 }
 
+/* 处置链页签可下钻信号名（redesign-chain-panel-ui 3.3，对齐原型 .siglink）：
+   有链上上升件的签名名可点击下钻详情抽屉，hover 染链接色 + 下划线示可点 */
+.ov-siglink {
+  cursor: pointer;
+
+  &:hover {
+    color: #4176e6;
+    text-decoration: underline;
+  }
+}
+
 /* 任务清单 v2 行渲染勾选块 */
 .ov-task-check {
   width: 15px;

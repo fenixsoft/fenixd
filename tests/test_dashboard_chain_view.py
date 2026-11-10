@@ -34,17 +34,20 @@ def _seed_quota(proot, sig, attempts=0, rulings=0):
     return store
 
 
-def _seed_escalation(proot, spec=None, chain_sig=None, handled=False) -> str:
+def _seed_escalation(proot, spec=None, chain_sig=None, handled=False,
+                     description="链上升件描述", created=None) -> str:
     store = AdminStore(proot)
     entry = {
         "kind": ESCALATION,
         "signal_type": "verify_env_blocked",
         "spec": spec,
         "severity": "major",
-        "description": "链上升件描述",
+        "description": description,
         "evidence": "e",
         "recommended_action": "r",
     }
+    if created:
+        entry["created"] = created
     if chain_sig:
         entry["chain"] = {"signature": chain_sig, "chain_id": "chain-1"}
     rec = store.append(entry)
@@ -151,6 +154,152 @@ class TestChainOverviewDataLayer:
         view = chain_overview(proot)
         assert view["summary"]["signatures"] == 0
         assert view["signatures"] == []
+
+
+class TestChainOverviewEnrichment:
+    """redesign-chain-panel-ui 1.1：在办件联查富化与签名 esc 计数下发。"""
+
+    @pytest.fixture()
+    def proot(self, tmp_path, monkeypatch):
+        p = tmp_path / "proj"
+        p.mkdir()
+        (p / ".fenix").mkdir(parents=True)
+        # 同 test_four_sections_derived：隔离机器级用户配置，cap 走纯缺省路径
+        monkeypatch.setattr(
+            "core.config.USER_CONFIG_DIR", p / ".fenix" / "no-user-config"
+        )
+        return p
+
+    @staticmethod
+    def _seed_ledger(proot, entries):
+        """直写台账文件（load_arbiter_ledger JSONL 读侧单源同形）。"""
+        from core.pm_engine.arbiter import arbiter_ledger_path
+
+        arbiter_ledger_path(proot).write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_inflight_problem_summary_truncated(self, proot):
+        """problem 取同签名最近上升件描述并截断 160 字符。"""
+        long_desc = "证" * 600
+        _seed_quota(proot, "sig-a", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "admin"
+        )
+        # 两条同签名：created 更新者胜（显式 created 保先后可判定）
+        _seed_escalation(
+            proot, chain_sig="sig-a", description="旧件摘要",
+            created="2026-01-01T00:00:00+00:00",
+        )
+        _seed_escalation(
+            proot, chain_sig="sig-a", description=long_desc,
+            created="2026-01-02T00:00:00+00:00",
+        )
+        view = chain_overview(proot)
+        item = view["in_flight"][0]
+        assert item["problem"] == long_desc[:160]
+        assert len(item["problem"]) == 160
+
+    def test_inflight_problem_none_without_escalation(self, proot):
+        """在办签名无链上上升件：problem 置 None（前端显「—」不伪文案）。"""
+        _seed_quota(proot, "sig-a", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "admin"
+        )
+        _seed_escalation(proot, chain_sig="sig-other")  # 异签名不入 problem
+        view = chain_overview(proot)
+        assert view["in_flight"][0]["problem"] is None
+
+    def test_inflight_quota_counts_joined(self, proot):
+        """四计数联查：used 取签名条目计数、cap 取即时配置（缺省 2/3）。"""
+        _seed_quota(proot, "sig-a", attempts=1, rulings=2)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "arbiter"
+        )
+        view = chain_overview(proot)
+        item = view["in_flight"][0]
+        assert item["admin_attempts_used"] == 1
+        assert item["arbiter_rulings"] == 2
+        assert item["admin_cap"] == 2
+        assert item["arbiter_cap"] == 3
+
+    def test_inflight_counts_none_without_signature_entry(self, proot):
+        """签名无计数条目（链外残留登记）：used 置 None 不伪 0。"""
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-orphan", "spec-x", "admin"
+        )
+        view = chain_overview(proot)
+        item = view["in_flight"][0]
+        assert item["admin_attempts_used"] is None
+        assert item["arbiter_rulings"] is None
+        # cap 恒下发（缺省配置），与 used 的 None 区分「无数据」与「0 次」
+        assert item["admin_cap"] == 2
+        assert item["arbiter_cap"] == 3
+
+    def test_run_id_from_chain_ledger(self, proot):
+        """run_id 主路径：链台账 chain-* 事件按 chain_id 联查。"""
+        _seed_quota(proot, "sig-a", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "admin"
+        )
+        self._seed_ledger(proot, [
+            {"kind": "chain-admin", "chain_id": "chain-1",
+             "run_id": "run-ledger-1", "signature": "sig-a", "spec": "spec-a"},
+        ])
+        view = chain_overview(proot)
+        assert view["in_flight"][0]["run_id"] == "run-ledger-1"
+
+    def test_run_id_fallback_pending_disposition(self, proot):
+        """run_id 回落：无台账事件时取同 spec 最新 pending disposition。"""
+        _seed_quota(proot, "sig-a", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "admin"
+        )
+        store = AdminStore(proot)
+        store.append({
+            "kind": "disposition", "signal_type": "verify_env_blocked",
+            "spec": "spec-a", "admin_run_id": "run-admin-9",
+            "status": "pending", "description": "d",
+        })
+        view = chain_overview(proot)
+        assert view["in_flight"][0]["run_id"] == "run-admin-9"
+
+    def test_run_id_none_when_unavailable(self, proot):
+        """run_id 双路径皆空：置 None（不可得显「—」，不阻断视图）。"""
+        _seed_quota(proot, "sig-a", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "admin"
+        )
+        view = chain_overview(proot)
+        assert view["in_flight"][0]["run_id"] is None
+
+    def test_corrupt_ledger_fail_open(self, proot):
+        """台账损坏：run_id 联查 fail-open 置 None，视图不抛。"""
+        _seed_quota(proot, "sig-a", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "sig-a", "spec-a", "admin"
+        )
+        from core.pm_engine.arbiter import arbiter_ledger_path
+
+        arbiter_ledger_path(proot).write_text("{broken\n", encoding="utf-8")
+        view = chain_overview(proot)
+        assert view["in_flight"][0]["run_id"] is None
+        assert view["summary"]["in_flight"] == 1
+
+    def test_signature_esc_counts(self, proot):
+        """签名条目附 esc_total/esc_pending（待人工子集计数、零值不缺键）。"""
+        _seed_quota(proot, "sig-a", attempts=1)
+        _seed_quota(proot, "sig-b", attempts=1)
+        _seed_escalation(proot, chain_sig="sig-a")  # 待人工
+        _seed_escalation(proot, chain_sig="sig-a", handled=True)  # 已收口
+        view = chain_overview(proot)
+        quads = {s["signature"]: s for s in view["signatures"]}
+        assert quads["sig-a"]["esc_total"] == 2
+        assert quads["sig-a"]["esc_pending"] == 1
+        # 无上升件签名：计数 0 下发（前端组头聚合零值不缺键）
+        assert quads["sig-b"]["esc_total"] == 0
+        assert quads["sig-b"]["esc_pending"] == 0
 
 
 class TestChainApi:
