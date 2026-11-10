@@ -44,7 +44,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 20 | 2026-11-08 21:09 |
+| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 20 | 2026-11-10 09:52 |
 | 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
 
 ### 5 前端交互（3 域 · 67 能力）
