@@ -191,33 +191,35 @@
   - 证据：tests/integration/run.sh 与 Dockerfile 不支持代理环境变量注入/透传（无 HTTPS_PROXY 类面）：验证轮容器内 GitHub bulk 截断时唯一失败路径无法通过环境修复翻绿（.fenix/runs/archive/admin-add-integration-test-env-1794066458.jsonl 探针：~41KB/s、8m47s 死亡、ref 协商与 npm 健康；.history/it-verify/smoke/orchestrate.log:5,11 GnuTLS -110/early EOF）；同轮证明交付物经 FENIX_IT_GIT_REPO 本地源路径实测全绿（.fenix/verify-evidence/add-integration-test-env/smoke-summary.json）；触发 run_id=arbiter-add-integration-test-env-1794067782（签名 add-integration-test-env::inconclusive_loop，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：交付物增强：run.sh 支持 FENIX_IT_HTTPS_PROXY（或透传宿主 HTTPS_PROXY/ALL_PROXY）并配置容器内 git/npm 走代理；或克隆源分级 fallback（GitHub → 镜像源 → 本地源）；契约语义边界（公开克隆契约在代理/镜像源下是否仍算覆盖）需 owner 拍板后成文
+
 - **[arbiter:add-inte] 验证轮对网络面瞬态劣化无探针延迟重验自愈（env 失败直接烧轮进豁免握手停车）**
   - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：瞬态网络劣化把「等几小时自然恢复后重验」变成人工裁决+整轮验证预算消耗（本轮 impl 修复轮 $29 + admin run $4.2 + 验证轮与 arbiter 轮成本）；豁免握手停车频次被网络波动放大；限速窗口内立即重验还可能再烧一轮
   - 证据：验证轮 2026-11-07T15:43Z GitHub bulk 截断判 env 进豁免握手停车（.fenix/verify-progress/add-integration-test-env/judge_attribution.json + .fenix-run-result.json）；约 8.5 小时后宿主 bulk 面自然恢复（Arbiter 探针 run arbiter-add-integration-test-env-1794067782：浅克隆 44s/116MB RC=0）；现行重验前补救探针仅覆盖 dist 新鲜度面（verdict-env-exemption-handshake「重验前补救」段），无网络面探针与延迟重验窗；触发 run_id=arbiter-add-integration-test-env-1794067782（签名 add-integration-test-env::inconclusive_loop，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：verify 引擎对 env 类（网络签名）失败引入带网络探针的延迟重验窗：T+N 小时后自动 probe（浅克隆探针通过才派重验，一次为限），与豁免握手衔接（自动重验成功则免人工裁决；失败再进既有停车）；需设计自动延迟重验与人工 choices 的优先级/互斥边界，避免与 grant_env_exemption 竞态
+
 - **[arbiter:add-inte] inconclusive 升级停车缺调度守卫（MUST NOT enqueue 承诺仅由 30 分钟退避支撑）**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：级二豁免握手/inconclusive 升级停车车道全部受影响：每次停车 30 分钟后验证轮自动重烧（预算+成本），若环境未恢复则再败再进握手+SIGNAL+Admin/Arbiter 链路重烧；「人工处置是唯一出路」的契约语义名存实亡，人工 choices 与在飞验证轮竞态（本例在飞轮结果将悬置于人工拍板之前）
   - 证据：core/pm_engine/verification/escalation.py:251-360 _escalate_inconclusive_parking docstring 承诺「升级后停止自动重验（MUST NOT enqueue verifier）——人工处置是唯一出路」，实现仅写 _dispatch_backoff_until=now+30min（注释自认用途「防 orphaned_state 误报」）；grep 全 core：_in_inconclusive_reverify 旗标消费点仅在 verification 内部（judge 预算隔离），dispatch 面无停车守卫。实测：本 spec 退避 16:17:38Z 到期后 16:19:47Z auto 重派 verifier（.fenix/logs/fenixd.log:18933 channel=auto agent_type=verifier），与 Arbiter#1 escalate 挂靠（16:18:43Z）竞态，人工裁决窗口实测仅 30 分钟。触发 run_id=arbiter-add-integration-test-env-1794068323；触发 run_id=arbiter-add-integration-test-env-1794068323（签名 add-integration-test-env::inconclusive_loop，来源 escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：调度器派发守卫：dispatch 面对带 INCONCLUSIVE_PARKING_ERROR_MARKER（或 _in_inconclusive_reverify=True 且无 admin 放行处置记录）的 spec 跳过 enqueue（错误文案已承载判据，标记常量已存在），仅 grant_env_exemption/manual_fixed_reverify/abandon 三 choice 动作或显式 unfreeze 可解除；同时保留 _dispatch_backoff_until 的 orphaned_state 防误报原职责
+
 - **[arbiter:add-inte] 孤儿处置生效核查无因果归属校验（状态推进冒领为处置生效证据）**
   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：孤儿处置收敛车道在「处置=升级移交（escalate/handoff）」形态下系统性假闭环风险：Administrator 环境核查通道 SIGNAL 被错误收口（人工三选一未发生），处置台账混入因果不符的 resolved 记录；人工 choices 告警虽仍 pending 未被吞，但 SIGNAL 收口后 AdminMonitor 不再对该 spec 做环境核查唤起，链路观感=已闭环
   - 证据：spec/knowledge/domains/admin-ops/admin-orphan-disposition-effect-check.md 设计为 fail-closed（「宁可滞留升级，不可假闭环」）且「只信外部真实状态证据」，但判据未校验状态推进与处置动作的因果归属。实测：Admin run 1794066458 处置为 escalate→handoff=arbiter（本不改 spec 状态），AdminMonitor 孤儿扫描却把调度器退避到期自然重派导致的「frozen=False status=testing」当作其生效证据，16:25:36Z 回填 resolved 并收口 Administrator 通道 SIGNAL ddaf28d7175c（.fenix/logs/fenixd.log:18967-18968，.fenix/admin_alerts.json#f08188b52aa9 evidence=『STATE frozen=False status=testing（已解冻推进）』）——与该 Admin 处置「等待人工豁免或修环境」语义相反的状态变化被采信。触发 run_id=arbiter-add-integration-test-env-1794068323；触发 run_id=arbiter-add-integration-test-env-1794068323（签名 add-integration-test-env::inconclusive_loop，来源 escalation-alert）
   - 调查评估：触发信号 inconclusive_loop（spec=add-integration-test-env）：'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：生效核查按处置动作形态分流判据：escalate/handoff 类处置的「生效」证据应为链上接续（Arbiter 接手记录/人工 choice 落账），而非 spec 状态推进；spec 状态推进类证据仅适用于「处置=状态动作（unfreeze/reset）」形态且需校验 Transition 的 trigger/channel 与处置动作语义一致（capability 页已有 channel/note 对账机制，收紧到逐形态匹配即可）
-### 知识真相源
-- [ ] knowledge-distill 重试：归档 add-integration-test-env — 校验违规经 3 轮 run 仍未通过（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查；pending 台账条目保留，将由 daemon 重启续跑接管）
-- [ ] knowledge-distill 重试：归档 add-knowledge-anchor-lint-and-prune — 校验违规经 3 轮 run 仍未通过（spec/knowledge/ 回滚未确认，半成品滞留工作区，请人工核查；pending 台账条目保留，将由 daemon 重启续跑接管）
 
 ## 2026-11-09
+
 ### 知识真相源
 - audit 语义项转写失败：duplicate（spec/knowledge/domains/knowledge-atlas/knowledge-anchor-discipline.md × spec/knowledge/domains/knowledge-atlas/knowledge-atlas-directory.md），请人工核查
 
 ## 2026-11-11
+
 ### 可改进
 - **[arbiter:redesign] judge 生命周期硬上限进度感知**
   - 影响：验证车道长修复链 spec（多轮 test-defect 修复 + product 修复）在接近真实收敛点时被计数冻结打断，每次冻结消耗一次 Arbiter/人工裁决成本（本 spec $40.6、judge 侧 ~18.6M input tokens）。
