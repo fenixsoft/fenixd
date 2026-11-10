@@ -35,6 +35,9 @@ IS_WINDOWS = True
 
 TERM_GRACE_SECONDS = 5
 
+# procfs 挂载根占位（Windows 无 procfs；SPEC-2 按实际进程情报后端另定）
+PROCFS_ROOT = None
+
 
 def _spec2(name: str) -> NotImplementedError:
     return NotImplementedError(
@@ -113,6 +116,10 @@ def proc_dir_mtime(pid: int) -> Optional[float]:
 
 def read_procfile(relpath: str) -> Optional[bytes]:
     raise _spec2("win32.read_procfile")
+
+
+def proc_pids() -> list:
+    raise _spec2("win32.proc_pids")
 
 
 def process_environ(pid: int) -> dict:
@@ -195,6 +202,7 @@ def pytest_timeout_method() -> str:
 __all__ = [
     "IS_WINDOWS",
     "TERM_GRACE_SECONDS",
+    "PROCFS_ROOT",
     "FileLockBusy",
     "FileLockUnavailable",
     "SystemdHostingError",
@@ -214,6 +222,7 @@ __all__ = [
     "parent_comm",
     "proc_dir_mtime",
     "read_procfile",
+    "proc_pids",
     "process_environ",
     "find_port_owner",
     "listen_inodes_for_port",

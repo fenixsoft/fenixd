@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from core.fs_utils import fsync_parent_dir, flock_exclusive, flock_release
+from core.platform import api as pal
 from core.proc_utils import (
     guard_killpg,
     pid_alive_signal,
@@ -360,10 +361,9 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
         # worktree 内路径的无关进程（tail -f/grep）argv 也会命中，单凭 argv
         # 判身份会整组误杀；真实例 spawn 即 cwd=worktree（见
         # serving._serve_command_in_worktree），cwd 单信号足以核身。
-        try:
-            cwd_link = os.readlink(f"/proc/{pid}/cwd")
-        except OSError:
-            cwd_link = ""
+        # 4.1：cwd 经 pal.readlink_cwd 单点（None ＝ 原读取失败 → ""；空串
+        # ＝僵尸态原样返回，同落下方 not cwd_link「无法核实」拦截）
+        cwd_link = pal.readlink_cwd(pid) or ""
         if not cwd_link:
             # cwd 读不到＝无法核实，与上方 starttime 快照分支同口径返回
             # None（sweep 跳过本轮收割且保留登记、下轮重试）：一次瞬时读

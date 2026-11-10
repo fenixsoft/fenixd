@@ -69,6 +69,18 @@ B 进程情报
 - read_procfile                 ← 新聚合原语：任意 /proc/<relpath> 字节读
                                   （杂项消费点如 /proc/self/* 经此；relpath
                                   校验禁 ".." 与绝对形态）
+- proc_pids                     ← 新枚举原语：os.listdir("/proc") 数字目录名
+                                  单点（fenix_session._procs_matching /
+                                  systemd_hosting._find_dashboard_pid /
+                                  serving_reclaim.has_live_process 三处同款
+                                  枚举上收；OSError **上抛不吞**——各调用方
+                                  「procfs 不可用」降级方向不同，吞成空表会
+                                  把「无法枚举」伪装成「无进程」）
+- PROCFS_ROOT                   ← 新常量：procfs 挂载根。dashboard/server 的
+                                  stat/comm/cmdline 读取因 server.Path 测试
+                                  缝（_patch_proc_files 经模块 Path 构造拦截
+                                  重定向）保留本模块实现，路径构造引用本常量
+                                  消 /proc/ 字面量（6.1 守卫口径）
 - process_environ               ← core/systemd_hosting.py:184 read_process_env
                                   逐字平移（_ENV_KEY_RE + 换行值过滤）
 - find_port_owner               ← core/dashboard/server.py:208
@@ -477,6 +489,26 @@ def read_procfile(relpath: str) -> Optional[bytes]:
         return Path("/proc", *rel.split("/")).read_bytes()
     except OSError:
         return None
+
+
+# procfs 挂载根（内核进程表文件系统）。业务代码的 procfs 路径构造一律引用
+# 本常量，禁再写字面量（6.1 守卫按「字符串常量含 /proc/」断言，字面量唯一
+# 豁免位是 core/platform/ 包）。既有测试缝经消费模块的 Path 构造拦截
+# （dashboard 侧 _patch_proc_files patch 的是 server.Path，fake_path 按拼合
+# 完成后的完整路径串匹配），常量化不改变拦截形态。
+PROCFS_ROOT = "/proc"
+
+
+def proc_pids() -> List[str]:
+    """/proc 下全部数字 pid 目录名（进程枚举单点；/proc 不可用抛 OSError）。
+
+    故意**不吞** OSError：既有调用方（fenix_session._procs_matching 的
+    「procfs 不可用 → OSError 上抛交调用方判未运行」、systemd_hosting 的
+    「→ None」、serving_reclaim 的「→ True fail-safe」）各自的降级方向
+    不同，吞成空表会把「无法枚举」伪装成「无进程」，破坏调用方语义契约；
+    上抛由调用方按各自方向处置。
+    """
+    return [name for name in os.listdir(PROCFS_ROOT) if name.isdigit()]
 
 
 # 合法 env 键名（/proc/<pid>/environ 可能含 bash 导出的函数键 `BASH_FUNC_…%%`
@@ -1037,6 +1069,7 @@ def pytest_timeout_method() -> str:
 __all__ = [
     "IS_WINDOWS",
     "TERM_GRACE_SECONDS",
+    "PROCFS_ROOT",
     "FileLockBusy",
     "FileLockUnavailable",
     "SystemdHostingError",
@@ -1058,6 +1091,7 @@ __all__ = [
     "parent_comm",
     "proc_dir_mtime",
     "read_procfile",
+    "proc_pids",
     "process_environ",
     "find_port_owner",
     "listen_inodes_for_port",

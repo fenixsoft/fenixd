@@ -517,6 +517,20 @@ class TestCwdCommMtimeProcfile:
         assert pal.readlink_cwd(-5) is None
         assert pal.read_cmdline_raw("self/thread-self") is None
 
+    def test_proc_pids_enumerates_self(self):
+        # 4.1 新增枚举原语：含自身 pid、全数字目录名；procfs 不可用上抛
+        # OSError（不吞成空表，各调用方降级方向不同）
+        pids = pal.proc_pids()
+        assert str(os.getpid()) in pids
+        assert all(name.isdigit() for name in pids)
+
+    def test_procfs_root_constant(self):
+        # procfs 挂载根常量（业务路径构造引用它消 /proc/ 字面量）
+        assert pal.PROCFS_ROOT == "/proc"
+        import core.platform.linux as pal_linux
+
+        assert pal.PROCFS_ROOT is pal_linux.PROCFS_ROOT
+
 
 class TestProcessEnviron:
     def test_self_environ_has_path(self):

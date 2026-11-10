@@ -66,16 +66,18 @@ def is_claude_process(pid_str: str) -> bool:
     # import 同此理由）。
     from core.agent_runner.harness import current_process_patterns
 
-    try:
-        with open(f"/proc/{pid_str}/cmdline", "rb") as f:
-            argv0 = f.read().split(b"\0", 1)[0]
-        return os.path.basename(argv0.decode("utf-8", "replace")) in tuple(
-            current_process_patterns()
-        )
-    except OSError:
+    # add-platform-abstraction 4.1：读取经 pal.read_cmdline_raw 单点
+    # （fail-closed：读不到/非法 pid 一律 None）。pid_str 已 isdigit 校验，
+    # "0"/前导零等怪值在 pal 侧同样落 None，与原 open OSError 路径同向。
+    argv0_bytes = pal.read_cmdline_raw(pid_str)
+    if argv0_bytes is None:
         # /proc 读取失败（进程已退出、权限不足等）按非 claude 进程计。
-        # bytes.split 恒返回非空列表，[0] 不会 IndexError，无需防御分支。
         return False
+    argv0 = argv0_bytes.split(b"\0", 1)[0]
+    # bytes.split 恒返回非空列表，[0] 不会 IndexError，无需防御分支。
+    return os.path.basename(argv0.decode("utf-8", "replace")) in tuple(
+        current_process_patterns()
+    )
 
 
 def proc_stat_fields(pid: int) -> Optional[List[str]]:
@@ -88,16 +90,12 @@ def proc_stat_fields(pid: int) -> Optional[List[str]]:
 
     读取失败（/proc 缺失、权限不足、非 Linux 等 OSError）或内容无右括号
     （畸形）返回 None。
+
+    W3 起实现单源 pal.proc_stat_fields（逐字平移），本函数为公开签名
+    薄委托（同模块 pid_alive_stat/proc_start_ticks 与 serving_registry
+    等下游经此间接消费）。
     """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            data = f.read().decode("utf-8", "replace")
-    except OSError:
-        return None
-    _, sep, tail = data.rpartition(")")
-    if not sep:
-        return None
-    return tail.split()
+    return pal.proc_stat_fields(pid)
 
 
 def pid_alive_stat(pid: int, zombie_is_dead: bool = False) -> bool:
@@ -112,13 +110,10 @@ def pid_alive_stat(pid: int, zombie_is_dead: bool = False) -> bool:
       口径（pid_alive_signal）的「有主即活」保守方向一致。
 
     stat 不可读（/proc 缺失、权限、畸形）按已终止计（宁可少杀）。
+
+    W3 起单源 pal.pid_alive_stat（逐字平移），薄委托。
     """
-    fields = proc_stat_fields(pid)
-    if fields is None:
-        return False
-    if zombie_is_dead and fields[:1] == ["Z"]:
-        return False
-    return True
+    return pal.pid_alive_stat(pid, zombie_is_dead=zombie_is_dead)
 
 
 def proc_start_ticks(pid: int) -> Optional[int]:
@@ -128,14 +123,10 @@ def proc_start_ticks(pid: int) -> Optional[int]:
     新进程的 starttime 必然不同——以此锚定登记项的收割目标（对 exec/argv
     变化免疫，starttime 在 fork 时即固定），serving_registry 登记制据此
     做 pid 复用防误杀。
+
+    W3 起单源 pal.proc_start_ticks（逐字平移），薄委托。
     """
-    fields = proc_stat_fields(pid)
-    if fields is None or len(fields) < 20:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
+    return pal.proc_start_ticks(pid)
 
 
 def pid_alive_signal(pid: int) -> bool:
@@ -143,16 +134,10 @@ def pid_alive_signal(pid: int) -> bool:
 
     EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按存活，
     与 kill_process_group 对 getpgid EPERM 的显式处理同口径。
+
+    W3 起单源 pal.pid_alive_signal（逐字平移），薄委托。
     """
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
+    return pal.pid_alive_signal(pid)
 
 
 def find_free_port() -> int:

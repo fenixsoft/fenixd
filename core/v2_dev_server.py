@@ -29,6 +29,7 @@ from core.proc_utils import (
     pid_alive_stat,
     proc_start_ticks,
 )
+from core.platform import api as pal
 
 # ── 端口分配（design D3）──────────────────────────────────────────────
 # 确定性端口段：V2_TEST_PORT_BASE 起、连续 V2_TEST_PORT_RANGE 个高位端口。
@@ -399,26 +400,11 @@ def _wait_ready(port: int, timeout: float = 5.0) -> bool:
 def _listen_inode(port: int) -> List[str]:
     """取 port 当前全部 LISTEN socket 的 inode（/proc/net/tcp[6]；无则空表）。
 
-    /proc/net/tcp 固定布局：local_address 形如 0100007F:4A38（IP:十六进制
-    端口）、第 4 列 st=0A 即 LISTEN、第 10 列为 socket inode。收集该端口
-    全部 LISTEN 条目而非首条：wildcard（00000000/::）与具体地址（如
-    0100007F）可被不同进程同时 LISTEN 同一端口，只取首条可能命中他方
-    socket 的 inode，导致身份收口误判。
+    add-platform-abstraction 4.1：实现单源 pal.listen_inodes_for_port
+    （2.1 自本函数逐字平移：收集全部 LISTEN 条目非首条、畸形行逐行跳过），
+    本函数为薄委托，保留既有模块内调用点。
     """
-    inodes: List[str] = []
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
-        try:
-            rows = Path(table).read_text().splitlines()[1:]
-        except OSError:
-            continue
-        for row in rows:
-            fields = row.split()
-            try:
-                if fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
-                    inodes.append(fields[9])
-            except (IndexError, ValueError):
-                continue
-    return inodes
+    return pal.listen_inodes_for_port(port)
 
 
 def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -> bool:
@@ -441,20 +427,12 @@ def _port_listened_by(port: int, proc: subprocess.Popen, timeout: float = 2.0) -
         inodes = _listen_inode(port)
         if inodes:
             targets = {f"socket:[{inode}]" for inode in inodes}
-            try:
-                for fd in Path(f"/proc/{proc.pid}/fd").iterdir():
-                    # 单个 fd 可能在遍历间隙被对端关闭（readlink 落 ENOENT，
-                    # 代理 SSE 的连接 fd 高频生灭）：跳过该 fd 继续扫余项，
-                    # 不连带丢弃本轮已扫到的 LISTEN socket；仅 procfs 目录
-                    # 整体不可读才整轮放弃、交由重试窗兜底。
-                    try:
-                        link = os.readlink(fd)
-                    except OSError:
-                        continue
-                    if link in targets:
-                        return True
-            except OSError:
-                pass
+            # 4.1：fd 扫描经 pal.proc_socket_links 单点（单 fd 在遍历间隙
+            # 被对端关闭落 ENOENT 就地跳过、procfs 目录整体不可读 → None），
+            # 「仅整体不可读才放弃本轮」的语义由 None 判定表达，命中即真。
+            links = pal.proc_socket_links(proc.pid)
+            if links is not None and not targets.isdisjoint(links):
+                return True
         if time.time() >= deadline:
             return False
         time.sleep(0.1)
@@ -584,19 +562,21 @@ def _pid_recently_started(pid: int, grace_seconds: float = 60.0) -> bool:
     Linux /proc/<pid> 目录的 mtime 即该 PID 当前进程的创建时刻，可作启动
     时刻近似（秒级误差可接受）；读取失败（进程已消失等）按不豁免计。
     """
-    try:
-        started_at = os.stat(f"/proc/{pid}").st_mtime
-    except OSError:
+    # 4.1：目录 mtime 经 pal.proc_dir_mtime 单点（读不到 → None 按不豁免计）
+    started_at = pal.proc_dir_mtime(pid)
+    if started_at is None:
         return False
     return (time.time() - started_at) < grace_seconds
 
 
 def _pid_cwd(pid: int) -> Optional[Path]:
-    """读取 /proc/<pid>/cwd 符号链接目标（读取失败/进程已消亡返回 None）。"""
-    try:
-        return Path(os.readlink(f"/proc/{pid}/cwd"))
-    except OSError:
-        return None
+    """读取 /proc/<pid>/cwd 符号链接目标（读取失败/进程已消亡返回 None）。
+
+    4.1：经 pal.readlink_cwd 单点（空串＝僵尸态原样返回不折算，Path("")
+    形态与原 readlink 直读一致）。
+    """
+    target = pal.readlink_cwd(pid)
+    return None if target is None else Path(target)
 
 
 def _kill_pids(pids: list, logger=None) -> int:
@@ -817,10 +797,10 @@ def _dev_server_orphan_pids(logger=None, worktree_base=None) -> list:
     out = []
     seen_unattributed = set()
     for pid in _pgrep_dev_servers(V2_DEV_SERVER_MARKER):
-        try:
-            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-            tokens = [a.decode("utf-8", "replace") for a in argv if a]
-        except OSError:
+        # 4.1：cmdline 经 pal.cmdline_argv 单点（NUL 切分 + replace 解码 +
+        # 空段丢弃，读不到 → None 按不可归因跳过）
+        tokens = pal.cmdline_argv(int(pid))
+        if tokens is None:
             continue
         if not _is_dev_server_argv(tokens):
             # marker 裸子串 pgrep 会命中 cmdline 恰携带 marker 字面量与

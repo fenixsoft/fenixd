@@ -736,19 +736,16 @@ def find_framework_dashboard_pid() -> int | None:
     判据：Python 解释器执行 fenix_dashboard.py 且带 --serve；命中多个（理论
     上不应发生——serve 端口独占）返回首个。/proc 不可用返回 None。
     """
+    # 4.1：枚举经 pal.proc_pids（OSError 上抛 → None 同原口径）、cmdline
+    # 经 pal.cmdline_argv（None ＝ 原读取失败，跳过该 pid）
     try:
-        pids = os.listdir("/proc")
+        pids = pal.proc_pids()
     except OSError:
         return None
     for pid in pids:
-        if not pid.isdigit():
+        argv = pal.cmdline_argv(int(pid))
+        if argv is None:
             continue
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                raw = f.read().decode("utf-8", errors="replace")
-        except (OSError, ValueError):
-            continue
-        argv = [t for t in raw.split("\x00") if t]
         if not argv or not Path(argv[0]).name.startswith("python"):
             continue
         if not any(t.endswith("fenix_dashboard.py") for t in argv):

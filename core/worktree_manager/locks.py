@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from core.agent_runner.run_files import run_spec_part  # noqa: E402
+from core.platform import api as pal  # noqa: E402
 
 from core.worktree_manager import _is_claude_process  # noqa: E402
 from core.worktree_manager.constants import (  # noqa: E402
@@ -410,19 +411,27 @@ class G3LockMixin:
         """
         base_text = str(self.base_dir)
         base_real = os.path.realpath(base_text)
-        try:
-            with open(f"/proc/{pid_str}/cmdline", "rb") as f:
-                argv_text = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
-        except OSError:
-            argv_text = ""
+        # 4.1：cmdline 经 pal.read_cmdline_raw 单点（fail-closed；None ＝
+        # 原读取失败口径，argv 信号缺席按空串计）
+        raw = pal.read_cmdline_raw(int(pid_str))
+        argv_text = (
+            raw.replace(b"\0", b" ").decode("utf-8", "replace")
+            if raw is not None
+            else ""
+        )
         # argv 命中同样按目录边界匹配（code-review c2b43a144ff0）：口径与
         # 下方 cwd 分支的 startswith(base_real + os.sep) 对齐，同前缀更长
         # 目录名（worktrees-backup/ 等）不再被误判归属本项目
         if base_text + os.sep in argv_text or base_real + os.sep in argv_text:
             return True
+        # 4.1：cwd 经 pal.readlink_cwd 单点（None ＝ 原读取失败 → 不归属；
+        # 空串＝僵尸态原样返回，realpath("") 折算形态与原 readlink 直读一致）
         try:
-            cwd_real = os.path.realpath(os.readlink(f"/proc/{pid_str}/cwd"))
-        except OSError:
+            cwd_link = pal.readlink_cwd(int(pid_str))
+            cwd_real = os.path.realpath(cwd_link) if cwd_link is not None else None
+        except (OSError, ValueError):
+            return False
+        if cwd_real is None:
             return False
         return cwd_real == base_real or cwd_real.startswith(base_real + os.sep)
 
@@ -573,9 +582,15 @@ class G3LockMixin:
                 # 与 _pid_in_project_worktrees 一致先 realpath 归一，消解
                 # 符号链接/挂载拼写差异，避免同一物理 cwd 归属核对能命中、
                 # 清扫却漏杀
+                # 4.1：cwd 经 pal.readlink_cwd 单点（None ＝ 原读取失败 → "")
                 try:
-                    cwd_real = os.path.realpath(os.readlink(f"/proc/{pid_str}/cwd"))
-                except OSError:
+                    cwd_link = pal.readlink_cwd(int(pid_str))
+                    cwd_real = (
+                        os.path.realpath(cwd_link)
+                        if cwd_link is not None
+                        else ""
+                    )
+                except (OSError, ValueError):
                     cwd_real = ""
                 # cmdline 命中的跨项目归属核对（code-review 40cfa57f5f02）：
                 # token 是全机性字面匹配，他项目同名 worktree 下进程的 argv

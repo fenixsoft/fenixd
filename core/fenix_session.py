@@ -23,6 +23,8 @@ import signal
 import time
 from pathlib import Path
 
+from core.platform import api as pal
+
 from .systemd_hosting import (
     SystemdHostingError,
     install_project_unit,
@@ -67,19 +69,23 @@ def _procs_matching(match) -> list:
     # 即约定「调用方负责兜底整体异常」：is_running 的 except 路径据此判未运行
     # （tmux 回退已随 systemd 承载退役，fail-closed），supervisor_running /
     # _fenix_pids_under 各自降级。
-    pids = os.listdir("/proc")
+    # 4.1：枚举经 pal.proc_pids 单点（OSError 上抛语义不变——本函数约定
+    # 「调用方负责兜底整体异常」，is_running 的 except 路径据此判未运行）；
+    # cwd/cmdline 读经 pal.readlink_cwd / pal.read_cmdline_raw（None ＝
+    # 原读取失败，跳过该 pid）。
+    pids = pal.proc_pids()
     hits = []
     for pid in pids:
-        if not pid.isdigit():
-            continue
         try:
-            cwd = os.readlink(f"/proc/{pid}/cwd")
+            cwd = pal.readlink_cwd(int(pid))
+            if cwd is None:
+                continue
             cwd_resolved = Path(cwd).expanduser().resolve()
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                raw = f.read().decode("utf-8", errors="replace")
+            argv = pal.cmdline_argv(int(pid))
+            if argv is None:
+                continue
         except (OSError, ValueError):
             continue
-        argv = [token for token in raw.split("\x00") if token]
         if match(cwd_resolved, argv):
             hits.append(pid)
     return hits
@@ -310,12 +316,10 @@ def _is_daemon_cmdline(pid, root: Path | None = None) -> bool:
     确已退出则无需信号，仍存活则由超时兜底路径复核补杀。root 缺省 None
     时保留纯结构判据，兼容既有无 root 调用点。
     """
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            raw = f.read().decode("utf-8", errors="replace")
-    except (OSError, ValueError):
+    # 4.1：cmdline 经 pal.cmdline_argv 单点（None ＝ 原读取失败 → False）
+    argv = pal.cmdline_argv(int(pid)) if str(pid).isdigit() else None
+    if argv is None:
         return False
-    argv = [token for token in raw.split("\x00") if token]
     if not _is_python_argv(argv):
         return False
     script = _argv_script_token(argv)
@@ -328,10 +332,10 @@ def _is_daemon_cmdline(pid, root: Path | None = None) -> bool:
         return True
     # 项目根锚定（item 33a5a217f420）：_is_daemon_proc 的 cwd/script 归一化
     # 判据与快照侧逐字同款，绝对脚本路径启动仍能通过（item 9f0426156676）。
-    try:
-        cwd = Path(os.readlink(f"/proc/{pid}/cwd")).expanduser().resolve()
-    except (OSError, ValueError):
+    cwd_link = pal.readlink_cwd(int(pid))
+    if cwd_link is None:
         return False
+    cwd = Path(cwd_link).expanduser().resolve()
     return _is_daemon_proc(cwd, argv, root)
 
 
@@ -350,13 +354,15 @@ def _is_snapshot_proc_cmdline(pid, root: Path):
     退出/不可读），复核不可判——照旧尝试补杀，进程确已退出由 os.kill 的
     ProcessLookupError 兜底，无害。
     """
-    try:
-        cwd = Path(os.readlink(f"/proc/{pid}/cwd")).expanduser().resolve()
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            raw = f.read().decode("utf-8", errors="replace")
-    except (OSError, ValueError):
+    # 4.1：cwd/cmdline 经 pal.readlink_cwd / pal.cmdline_argv 单点
+    # （None ＝ 原读取失败 → 复核不可判 None，照旧尝试补杀）
+    if not str(pid).isdigit():
         return None
-    argv = [token for token in raw.split("\x00") if token]
+    cwd_link = pal.readlink_cwd(int(pid))
+    argv = pal.cmdline_argv(int(pid))
+    if cwd_link is None or argv is None:
+        return None
+    cwd = Path(cwd_link).expanduser().resolve()
     return _is_daemon_proc(cwd, argv, root) or _is_supervisor_proc(cwd, argv, root)
 
 
