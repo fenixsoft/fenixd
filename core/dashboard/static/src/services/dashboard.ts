@@ -695,6 +695,15 @@ export interface ChainInFlightItem {
   spec?: string | null;
   phase: string;
   started_at?: string;
+  /** 1.1 富化：同签名最近上升件描述截断 160 字符（无上升件 null，显「—」） */
+  problem?: string | null;
+  /** 1.1 富化：签名配额联查（签名无计数条目 null——前端显「—」不伪 0） */
+  admin_attempts_used?: number | null;
+  arbiter_rulings?: number | null;
+  admin_cap?: number;
+  arbiter_cap?: number;
+  /** 1.1 富化：run 标识尽力提取（链台账→pending disposition 回落，不可得 null） */
+  run_id?: string | null;
   /** 跨项目聚合时注入的来源项目名 */
   project?: string;
 }
@@ -712,6 +721,9 @@ export interface ChainSignatureQuota {
   exhausted: boolean;
   last_seen?: string;
   last_spec_status?: string;
+  /** 1.1 富化：同签名链上结果计数（总数/待人工，组头聚合与结果标签用） */
+  esc_total: number;
+  esc_pending: number;
   project?: string;
 }
 
@@ -724,11 +736,24 @@ export interface ChainEscalationItem {
   severity?: string;
   created?: string;
   description?: string;
+  /** 上升件登记时从注册表快照下发的裁决选项（5.2 抽屉只读预览用） */
+  choices?: AlertChoice[];
+  evidence?: string;
+  recommended_action?: string;
   handled?: boolean;
   handled_by?: string;
   handled_at?: string;
   close_cause?: string | null;
-  chain?: { signature?: string; chain_id?: string };
+  /** 链上下文（_send_human_escalation_alert 直写；admin_trail 条目含 action/created） */
+  chain?: {
+    signature?: string;
+    chain_id?: string;
+    arbiter_rulings?: { created?: string; summary?: string; run_id?: string }[];
+    admin_trail?: { action?: string; created?: string; run_id?: string }[];
+    handoff_reason?: string;
+    arbiter_run_id?: string;
+    arbiter_ledger_ids?: (string | number)[];
+  };
 }
 
 export interface ChainSummary {

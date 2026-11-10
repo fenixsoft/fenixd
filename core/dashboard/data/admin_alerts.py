@@ -263,14 +263,62 @@ def _chain_subject(signature: str) -> dict:
     return {"spec": head, "subject": "", "granularity": "spec"}
 
 
+def _safe_int(v) -> int:
+    """宽松 int 归一（损坏值归 0，链视图 fail-open 口径）。
+
+    与 summary._int_or_zero / timeline 重派计数同款兜底（code-review item
+    262689521310）：load_chain_state 只做 dict() 保真不归一值类型，状态
+    文件值被手改/半损坏为非数值真值（or 0 挡不住）时裸 int() 抛
+    ValueError/TypeError 会让视图 5xx，违背观测面 fail-open 承诺——归 0。
+    """
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _chain_run_id_index(project_root) -> dict:
+    """链台账事件 chain_id → 最新非空 run_id（在办件 run 标识联查）。
+
+    redesign-chain-panel-ui 1.1：链在办件登记（mark_in_flight）仅五字段
+    无 run 标识；run_id 从链上下文**尽力提取**——链事件台账（
+    load_arbiter_ledger 单源读侧，kind=chain-* 五段事件自带 run_id，
+    admin 相=admin run id、arbiter 相=arbiter_run_id）按 chain_id 归并，
+    append-only 后写覆盖即最新事件。
+
+    台账读取/解析任何异常 fail-open 返回空索引（run 标识缺失前端显「—」，
+    不阻断视图，亦不伪 0）。
+    """
+    try:
+        from core.pm_engine.arbiter import load_arbiter_ledger
+
+        entries = load_arbiter_ledger(project_root)
+    except Exception:
+        return {}
+    best: dict = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        if not str(e.get("kind") or "").startswith("chain-"):
+            continue
+        cid = str(e.get("chain_id") or "")
+        rid = str(e.get("run_id") or "")
+        if cid and rid:
+            best[cid] = rid
+    return best
+
+
 def chain_overview(project_root) -> dict:
     """处置链单读聚合（add-escalation-chain-admin-arbiter 5.2，只读）。
 
     为 Dashboard 处置链视图而设：一次读齐链状态文件与 admin 告警存储两源
     （配额上限即时解析项目级配置，与链头热更新同源），派生四视图——
 
-    - ``in_flight``：链在办件（admin_monitor 兜底看护同源，phase=admin/arbiter）；
-    - ``signatures``：配额水位（逐签名 attempts/rulings + cap + exhausted 标记）；
+    - ``in_flight``：链在办件（admin_monitor 兜底看护同源，phase=admin/arbiter；
+      redesign-chain-panel-ui 1.1 富化——problem 摘要/配额计数/run 标识，
+      见下方富化段注记）；
+    - ``signatures``：配额水位（逐签名 attempts/rulings + cap + exhausted
+      标记；redesign-chain-panel-ui 附 esc_total/esc_pending 链上结果计数）；
     - ``escalations``：链关联上升件全量（链终点直写、携带 ``chain.signature``
       关联键；含已收口，close_cause=closed-by-chain/migrated 区分）；
     - ``queue``：未收口上升件（escalations 的未 handled 子集，人工队列）。
@@ -281,6 +329,16 @@ def chain_overview(project_root) -> dict:
 
     spec=null 信号按主体键归组：签名即归组键，signatures 条目附 subject
     投影（_chain_subject）供前端在无 spec 归属时按主体键展示。
+
+    redesign-chain-panel-ui 1.1 在办富化（D2 后端下发，前端零联查）：每件
+    在办附 ``problem``（同签名最近上升件 description 截断 160 字符，无上升
+    件 None）、``admin_attempts_used``/``admin_cap``/``arbiter_rulings``/
+    ``arbiter_cap``（链状态文件签名条目联查；签名无计数条目时 used 置
+    None——前端显「—」不伪 0）、``run_id``（链台账事件按 chain_id 联查
+    _chain_run_id_index，admin 相回落同 spec 最新 pending disposition 的
+    admin_run_id，均不可得 None）。联查询数据缺失一律置 None 不阻断视图。
+    signatures 条目附 ``esc_total``/``esc_pending``（同签名上升件总数与
+    待人工数，spec 分组组头聚合与链上结果标签的联查基础）。
     """
     from core.admin_store import AdminStore
     from core.pm_engine.escalation_chain import ChainQuotaStore, load_chain_state
@@ -291,36 +349,9 @@ def chain_overview(project_root) -> dict:
     arbiter_cap = int(cfg.get("arbiter_rulings") or 0)
     in_flight = [dict(x) for x in state["in_flight"]]
 
-    signatures = []
-    for sig, ent in sorted(state["signatures"].items()):
-        if not isinstance(ent, dict):
-            ent = {}
-        # try/except 同 summary._int_or_zero / timeline 重派计数口径（code-review
-        # item 262689521310）：load_chain_state 只做 dict() 保真不归一值类型，
-        # 状态文件值被手改/半损坏为非数值真值（or 0 挡不住）时裸 int() 抛
-        # ValueError/TypeError 会让本视图 5xx，违背上方 fail-open 承诺——归 0。
-        try:
-            attempts = int(ent.get("admin_attempts") or 0)
-        except (TypeError, ValueError, OverflowError):
-            attempts = 0
-        try:
-            rulings = int(ent.get("arbiter_rulings") or 0)
-        except (TypeError, ValueError, OverflowError):
-            rulings = 0
-        signatures.append(
-            {
-                "signature": sig,
-                **_chain_subject(sig),
-                "admin_attempts": attempts,
-                "admin_cap": admin_cap,
-                "arbiter_rulings": rulings,
-                "arbiter_cap": arbiter_cap,
-                "exhausted": attempts >= admin_cap and rulings >= arbiter_cap,
-                "last_seen": str(ent.get("last_seen") or ""),
-                "last_spec_status": str(ent.get("last_spec_status") or ""),
-            }
-        )
-
+    # 上升件读取提前到 signatures 构建前：在办 problem 摘要、签名 esc 计数
+    # 两组联查（redesign-chain-panel-ui 1.1）都以 escalations 为数据基础，
+    # 单次 read_all 派生全部视图（读失败置空，四视图空态不变）
     escalations = []
     try:
         records = AdminStore(project_root).read_all()
@@ -334,6 +365,87 @@ def chain_overview(project_root) -> dict:
             continue
         escalations.append(dict(rec))
     queue = [r for r in escalations if not r.get("handled")]
+
+    # 同签名链上结果计数与 problem 摘要索引（redesign-chain-panel-ui 1.1）：
+    # esc 计数=escalations 逐条归桶；problem 取该签名**最近**上升件描述
+    # （created 字符串比较取最大——脏值按空串比较兜底，仅求可判定先后），
+    # 截断 160 字符（行卡 2 行 clamp 的摘要形态，前端不做二次截断）
+    esc_stats: dict = {}
+    problem_idx: dict = {}
+    for r in escalations:
+        chain_ref = r.get("chain")
+        sig = (
+            str(chain_ref.get("signature") or "")
+            if isinstance(chain_ref, dict)
+            else ""
+        )
+        if not sig:
+            continue
+        st = esc_stats.setdefault(sig, {"esc_total": 0, "esc_pending": 0})
+        st["esc_total"] += 1
+        if not r.get("handled"):
+            st["esc_pending"] += 1
+        desc = str(r.get("description") or "")
+        cur = problem_idx.get(sig)
+        if desc and (cur is None or str(r.get("created") or "") >= cur[0]):
+            problem_idx[sig] = (str(r.get("created") or ""), desc[:160])
+
+    signatures = []
+    for sig, ent in sorted(state["signatures"].items()):
+        if not isinstance(ent, dict):
+            ent = {}
+        attempts = _safe_int(ent.get("admin_attempts") or 0)
+        rulings = _safe_int(ent.get("arbiter_rulings") or 0)
+        esc = esc_stats.get(sig) or {"esc_total": 0, "esc_pending": 0}
+        signatures.append(
+            {
+                "signature": sig,
+                **_chain_subject(sig),
+                "admin_attempts": attempts,
+                "admin_cap": admin_cap,
+                "arbiter_rulings": rulings,
+                "arbiter_cap": arbiter_cap,
+                "exhausted": attempts >= admin_cap and rulings >= arbiter_cap,
+                "last_seen": str(ent.get("last_seen") or ""),
+                "last_spec_status": str(ent.get("last_spec_status") or ""),
+                "esc_total": esc["esc_total"],
+                "esc_pending": esc["esc_pending"],
+            }
+        )
+
+    # 在办富化（redesign-chain-panel-ui 1.1）：run_id 先走链台账事件索引，
+    # admin 相回落同 spec 最新 pending disposition 的 admin_run_id（旧数据
+    # 台账事件缺 run_id 的兜底；merge_dispositions_by_run 单源归并）。
+    # 任何联查异常按缺数据处理（字段置 None），不得阻断视图
+    run_idx = _chain_run_id_index(project_root)
+    pending_run_idx: dict = {}
+    try:
+        for rid, (is_pending, rec) in merge_dispositions_by_run(records).items():
+            spec = str(rec.get("spec") or "")
+            if is_pending and spec:
+                pending_run_idx[spec] = str(rid)
+    except Exception:
+        pending_run_idx = {}
+    for item in in_flight:
+        sig = str(item.get("signature") or "")
+        ent = state["signatures"].get(sig)
+        found = problem_idx.get(sig)
+        item["problem"] = found[1] if found else None
+        if isinstance(ent, dict):
+            item["admin_attempts_used"] = _safe_int(ent.get("admin_attempts") or 0)
+            item["arbiter_rulings"] = _safe_int(ent.get("arbiter_rulings") or 0)
+        else:
+            # 签名无计数条目（链外残留登记/状态文件半损坏）：置 None 前端
+            # 显「—」，不伪 0（伪 0 会被读成「尚未尝试」）
+            item["admin_attempts_used"] = None
+            item["arbiter_rulings"] = None
+        item["admin_cap"] = admin_cap
+        item["arbiter_cap"] = arbiter_cap
+        item["run_id"] = (
+            run_idx.get(str(item.get("chain_id") or ""))
+            or pending_run_idx.get(str(item.get("spec") or ""))
+            or None
+        )
 
     return {
         "summary": {
