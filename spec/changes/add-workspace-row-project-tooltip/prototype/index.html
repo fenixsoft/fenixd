@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · dsh web 工作区行项目富 tooltip</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     设计 token 单源（全部来自实测/源码，见页尾「设计说明」）
+     深卡 = dsh web 原生 tooltip 实测值（#2C2C2E / 16px / 12·16 / 三层阴影）
+     胶囊 = fenixd 概览台账 ProjectTable.tsx OV_TONE 单源
+     侧栏 = dsh web 侧栏实测值（#F9FAFB / 行 34px / radius 12）
+     红线：本页零 animation / transition；数值 tabular-nums；字号只用 12/14/16
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    --dsw-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --tip-bg: #2C2C2E;
+    --tip-radius: 16px;
+    --tip-shadow: rgba(0,0,0,0.2) 0 0 1px 0, rgba(0,0,0,0.02) 0 0 4px 0, rgba(0,0,0,0.08) 0 12px 32px 0;
+    --tip-title: #ffffff;
+    --tip-sub: #cfd3d6;
+    --tip-sub-dim: rgba(207,211,214,0.55);
+    --sidebar-bg: #F9FAFB;
+    --sidebar-text: #0F1115;
+    --sidebar-muted: #81858C;
+    --row-radius: 12px;
+    /* OV_TONE（概览台账单源）：[文字, 软底] */
+    --tone-info: #2563eb;      --tone-info-bg: #eff6ff;
+    --tone-warning: #d97706;   --tone-warning-bg: #fffbeb;
+    --tone-critical: #dc2626;  --tone-critical-bg: #fef2f2;
+    --tone-good: #16a34a;      --tone-good-bg: #f0fdf4;
+    --tone-aqua: #0891b2;      --tone-aqua-bg: #ecfeff;
+    --tone-muted: #64748b;     --tone-muted-bg: #f1f5f9;
+    /* 方案B（暗面派生）：文字取 OV_TONE 同相亮化，底取同相 16% 透明 */
+    --d-info: #7aa2ff;   --d-info-bg: rgba(37,99,235,.16);
+    --d-warning: #f0ac54;--d-warning-bg: rgba(217,119,6,.16);
+    --d-critical: #ff8080;--d-critical-bg: rgba(220,38,38,.18);
+    --d-good: #5fce8f;   --d-good-bg: rgba(22,163,74,.16);
+    --d-aqua: #45c1dc;   --d-aqua-bg: rgba(8,145,178,.16);
+    --d-muted: #a9b4c0;  --d-muted-bg: rgba(100,116,139,.22);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--dsw-font); background: #ffffff; color: #0F1115; font-size: 14px; line-height: 20px; }
+  .page { max-width: 1120px; margin: 0 auto; padding: 20px 28px 64px; }
+  h1 { font-size: 18px; font-weight: 700; line-height: 28px; margin-bottom: 4px; }
+  h2 { font-size: 16px; font-weight: 700; line-height: 24px; margin: 0 0 10px; }
+  .banner {
+    border: 1px solid rgba(0,0,0,0.16); background: #fffbeb; color: #92400e;
+    border-radius: 12px; padding: 10px 14px; font-size: 14px; line-height: 20px;
+    margin-bottom: 16px; font-weight: 500;
+  }
+  .muted { color: #81858C; }
+  .num { font-variant-numeric: tabular-nums; }
+  section { margin-top: 36px; }
+
+  /* ── 胶囊（两方案共用形态：999 胶囊 · 12px · padding-inline 9 · weight 500） ── */
+  .pill {
+    display: inline-block; border-radius: 999px; font-size: 12px; line-height: 18px;
+    padding: 1px 9px; font-weight: 500; white-space: nowrap;
+  }
+  .p-info    { color: var(--tone-info);     background: var(--tone-info-bg); }
+  .p-warning { color: var(--tone-warning);  background: var(--tone-warning-bg); }
+  .p-critical{ color: var(--tone-critical); background: var(--tone-critical-bg); }
+  .p-good    { color: var(--tone-good);     background: var(--tone-good-bg); }
+  .p-aqua    { color: var(--tone-aqua);     background: var(--tone-aqua-bg); }
+  .p-muted   { color: var(--tone-muted);    background: var(--tone-muted-bg); }
+  body.alt .p-info    { color: var(--d-info);     background: var(--d-info-bg); }
+  body.alt .p-warning { color: var(--d-warning);  background: var(--d-warning-bg); }
+  body.alt .p-critical{ color: var(--d-critical); background: var(--d-critical-bg); }
+  body.alt .p-good    { color: var(--d-good);     background: var(--d-good-bg); }
+  body.alt .p-aqua    { color: var(--d-aqua);     background: var(--d-aqua-bg); }
+  body.alt .p-muted   { color: var(--d-muted);    background: var(--d-muted-bg); }
+
+  /* ── 富 tooltip 卡（本项目要确认的内容本体） ── */
+  .tip {
+    background: var(--tip-bg); border-radius: var(--tip-radius);
+    padding: 12px 16px; box-shadow: var(--tip-shadow);
+    font-family: var(--dsw-font); color: var(--tip-sub);
+  }
+  .tip-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .tip-name { color: var(--tip-title); font-size: 14px; line-height: 20px; font-weight: 400; }
+  .tip-path { color: var(--tip-sub); font-size: 12px; line-height: 16px; margin-top: 2px; }
+  .tip-desc {
+    color: var(--tip-sub); font-size: 12px; line-height: 16px; margin-top: 6px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tip-desc.empty { color: var(--tip-sub-dim); }
+  .tip-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .tip-stats { color: var(--tip-sub); font-size: 12px; line-height: 16px; margin-top: 8px; }
+  .tip-stats b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* 原生对照卡（非 fenix 行保持现状） */
+  .tip.native { width: fit-content; }
+  .tip.native .tip-name { margin-bottom: 2px; }
+
+  /* ── 侧栏仿样 ── */
+  .demo { display: flex; border: 1px solid rgba(0,0,0,0.10); border-radius: 12px; overflow: visible; }
+  .sidebar {
+    width: 276px; flex: none; background: var(--sidebar-bg);
+    border-right: 1px solid rgba(0,0,0,0.10); border-radius: 12px 0 0 12px;
+    padding: 12px 8px 24px;
+  }
+  .sidebar-head { font-size: 14px; font-weight: 700; line-height: 20px; padding: 0 9px 10px; color: var(--sidebar-text); }
+  .ws-header { font-size: 14px; font-weight: 400; line-height: 20px; color: var(--sidebar-muted); padding: 14px 9px 6px; }
+  .ws-row-wrap { position: relative; }
+  .ws-row {
+    display: flex; align-items: center; gap: 6px; height: 34px;
+    padding: 0 8px 0 9px; border-radius: var(--row-radius);
+    font-size: 14px; line-height: 20px; color: var(--sidebar-text); cursor: default;
+  }
+  .ws-row:hover { background: rgba(15,17,21,0.06); }
+  .ws-row .icon { display: inline-flex; flex: none; color: #61666b; }
+  .ws-row .chev { display: inline-flex; flex: none; color: #adb2b8; }
+  .ws-row .ws-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-row .actions { display: inline-flex; flex: none; gap: 4px; color: #81858C; }
+  /* tooltip 浮层：hover 即现（无过渡，静态渲染红线） */
+  .ws-row-wrap .tip { position: absolute; left: calc(100% + 12px); top: -5px; z-index: 30; width: 300px; display: none; }
+  .ws-row-wrap .tip.native { width: fit-content; }
+  .ws-row-wrap:hover .tip { display: block; }
+  .demo-content { flex: 1 1 auto; min-height: 480px; background: #ffffff; border-radius: 0 12px 12px 0; padding: 24px; }
+  .demo-hint { font-size: 12px; line-height: 16px; color: #81858C; }
+
+  /* ── 变体一览 ── */
+  .variants { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px 28px; }
+  .variant .cap { font-size: 12px; line-height: 16px; color: #61666b; margin-bottom: 10px; }
+  .variant .cap b { color: #0F1115; font-weight: 600; }
+  .variant .tip { width: 300px; }
+
+  /* ── 方案切换 ── */
+  .switch { display: inline-flex; border: 1px solid rgba(0,0,0,0.16); border-radius: 8px; overflow: hidden; }
+  .switch button {
+    font-family: var(--dsw-font); font-size: 14px; line-height: 20px; padding: 6px 14px;
+    border: none; background: #ffffff; color: #0F1115; cursor: pointer;
+  }
+  .switch button + button { border-left: 1px solid rgba(0,0,0,0.16); }
+  .switch button.on { background: #0f1115; color: #ffffff; }
+  .switch-note { font-size: 12px; line-height: 16px; color: #81858C; margin-top: 8px; }
+
+  /* ── 设计说明 ── */
+  .notes { border: 1px solid rgba(0,0,0,0.10); border-radius: 12px; padding: 16px 18px; font-size: 12px; line-height: 18px; color: #61666b; }
+  .notes b { color: #0F1115; font-weight: 600; }
+  .notes ul { list-style: none; }
+  .notes li { padding: 3px 0 3px 0; }
+  .notes code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; background: #f1f5f9; border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body class="alt">
+<div class="page">
+
+  <div class="banner" data-proto-id="proto-banner">
+    仿样原型 · 视觉参照、无约束力 — 本页为纯 HTML/CSS 仿样（插件栈画像 unknown），仅确认 tooltip
+    <b>内容与视觉</b>，不进入 UI 真相源绑定；实现以 SPEC 为准。页面数据全部为内联假数据。
+  </div>
+
+  <h1>dsh web 工作区行 · fenix 项目富 tooltip</h1>
+  <div class="muted">fenix 项目行悬停项目名 → 富 tooltip（简介一行 / 运行态 / 状态胶囊 / 任务与活跃 Agent）；非 fenix 行保持原生 tooltip 不变。</div>
+
+  <!-- ═══════════════ 交互演示 ═══════════════ -->
+  <section data-proto-id="ws-tooltip-demo">
+    <h2>交互演示</h2>
+    <div class="demo-hint" style="margin-bottom:10px">把鼠标放到左侧工作区行名字上（前 7 行为 fenix 项目，最后 activation-showcase 为非 fenix 对照）。</div>
+    <div class="demo">
+      <div class="sidebar" data-proto-id="ws-tooltip-demo-sidebar">
+        <div class="sidebar-head">FENIX HARNESS</div>
+        <div class="ws-header">Workspaces</div>
+
+        <div class="ws-row-wrap" data-proto-id="ws-tooltip-demo-row-fenix">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">fenixd</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip" data-proto-id="ws-tooltip-demo-rich-card">
+            <div class="tip-head"><span class="tip-name">fenixd</span><span class="pill p-good">运行中</span></div>
+            <div class="tip-path">~/fenixd</div>
+            <div class="tip-desc">Fenix 循环工程框架主仓：SPEC 驱动的自主开发流水线（假数据示例）</div>
+            <div class="tip-pills"><span class="pill p-warning">实现中 2</span><span class="pill p-critical">阻塞 1</span><span class="pill p-good">已推送 4</span><span class="pill p-aqua">评审中 1</span></div>
+            <div class="tip-stats">任务 <b>27/31</b> 个 · 活跃 Agent <b>2</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">fenix-desktop</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip">
+            <div class="tip-head"><span class="tip-name">fenix-desktop</span><span class="pill p-good">运行中</span></div>
+            <div class="tip-path">~/fenix-desktop</div>
+            <div class="tip-desc">桌面端应用壳与工作区编排，这一行演示简介过长时的单行截断省略效果（假数据示例）</div>
+            <div class="tip-pills"><span class="pill p-good">已推送 2</span></div>
+            <div class="tip-stats">任务 <b>12/15</b> 个 · 活跃 Agent <b>1</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">scheduling-showcase</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip">
+            <div class="tip-head"><span class="tip-name">scheduling-showcase</span><span class="pill p-good">运行中</span></div>
+            <div class="tip-path">~/scheduling-showcase</div>
+            <div class="tip-desc">定时调度能力演示项目（假数据示例）</div>
+            <div class="tip-pills"><span class="pill p-info">验证中 1</span></div>
+            <div class="tip-stats">任务 <b>5/8</b> 个 · 活跃 Agent <b>1</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">cloud-phone</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip">
+            <div class="tip-head"><span class="tip-name">cloud-phone</span><span class="pill p-good">运行中</span></div>
+            <div class="tip-path">~/cloud-phone</div>
+            <div class="tip-desc">云手机平台接入与设备编排（假数据示例）</div>
+            <div class="tip-pills"><span class="pill p-critical">阻塞 1</span></div>
+            <div class="tip-stats">任务 <b>3/9</b> 个 · 活跃 Agent <b>0</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">fenix-server</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip">
+            <div class="tip-head"><span class="tip-name">fenix-server</span><span class="pill p-warning">未运行</span></div>
+            <div class="tip-path">~/fenix-server</div>
+            <div class="tip-desc">服务端守护与 API 网关（假数据示例）</div>
+            <div class="tip-pills"><span class="pill p-good">已推送 1</span></div>
+            <div class="tip-stats">任务 <b>8/8</b> 个 · 活跃 Agent <b>0</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">potplayer-base</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip">
+            <div class="tip-head"><span class="tip-name">potplayer-base</span><span class="pill p-good">运行中</span></div>
+            <div class="tip-path">~/potplayer-base</div>
+            <div class="tip-desc empty">暂无简介</div>
+            <div class="tip-pills"><span class="pill p-muted">草稿 2</span></div>
+            <div class="tip-stats">任务 <b>—</b> 个 · 活跃 Agent <b>—</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">dsh-plugins</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip">
+            <div class="tip-head"><span class="tip-name">dsh-plugins</span><span class="pill p-good">运行中</span></div>
+            <div class="tip-path">~/dsh-plugins</div>
+            <div class="tip-desc">dsh web 插件集：面板桥、指挥中心等（假数据示例）</div>
+            <div class="tip-pills"><span class="pill p-info">就绪 1</span><span class="pill p-aqua">已实现 1</span><span class="pill p-critical">有Bug 1</span><span class="pill p-good">完成 3</span><span class="pill p-muted">+1</span></div>
+            <div class="tip-stats">任务 <b>58/73</b> 个 · 活跃 Agent <b>3</b> 个</div>
+          </div>
+        </div>
+
+        <div class="ws-row-wrap" data-proto-id="ws-tooltip-demo-row-nonfenix">
+          <div class="ws-row">
+            <span class="icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1.5 4.5 A1.5 1.5 0 0 1 3 3 h3 l1.5 1.5 H13 A1.5 1.5 0 0 1 14.5 6 v5 A1.5 1.5 0 0 1 13 12.5 H3 A1.5 1.5 0 0 1 1.5 11 z"/></svg></span>
+            <span class="chev"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M5 3.5 L10 7 L5 10.5 z"/></svg></span>
+            <span class="ws-title">activation-showcase</span>
+            <span class="actions"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2.5 v9 M2.5 7 h9"/></svg></span>
+          </div>
+          <div class="tip native" data-proto-id="ws-tooltip-demo-native-card">
+            <div class="tip-name">activation-showcase</div>
+            <div class="tip-path">~/activation-showcase</div>
+            <div class="tip-path">Created 2026-10-15 14:29</div>
+          </div>
+        </div>
+
+      </div>
+      <div class="demo-content">
+        <div class="demo-hint">（右侧内容区留白，tooltip 实际悬浮于此层之上）</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ 状态变体一览 ═══════════════ -->
+  <section data-proto-id="ws-tooltip-variants">
+    <h2>状态变体一览（钉住展示，便于逐张批注）</h2>
+    <div class="variants">
+
+      <div class="variant" data-proto-id="ws-tooltip-variant-healthy">
+        <div class="cap"><b>① 常规运行</b> — 简介一行 + 非零状态胶囊 + 任务/Agent 齐全</div>
+        <div class="tip">
+          <div class="tip-head"><span class="tip-name">fenixd</span><span class="pill p-good">运行中</span></div>
+          <div class="tip-path">~/fenixd</div>
+          <div class="tip-desc">Fenix 循环工程框架主仓：SPEC 驱动的自主开发流水线（假数据示例）</div>
+          <div class="tip-pills"><span class="pill p-warning">实现中 2</span><span class="pill p-critical">阻塞 1</span><span class="pill p-good">已推送 4</span><span class="pill p-aqua">评审中 1</span></div>
+          <div class="tip-stats">任务 <b>27/31</b> 个 · 活跃 Agent <b>2</b> 个</div>
+        </div>
+      </div>
+
+      <div class="variant" data-proto-id="ws-tooltip-variant-blocked">
+        <div class="cap"><b>② 阻塞态</b> — 阻塞红胶囊最醒目；运行态仍为绿</div>
+        <div class="tip">
+          <div class="tip-head"><span class="tip-name">cloud-phone</span><span class="pill p-good">运行中</span></div>
+          <div class="tip-path">~/cloud-phone</div>
+          <div class="tip-desc">云手机平台接入与设备编排（假数据示例）</div>
+          <div class="tip-pills"><span class="pill p-critical">阻塞 1</span><span class="pill p-warning">实现中 1</span></div>
+          <div class="tip-stats">任务 <b>3/9</b> 个 · 活跃 Agent <b>1</b> 个</div>
+        </div>
+      </div>
+
+      <div class="variant" data-proto-id="ws-tooltip-variant-dense">
+        <div class="cap"><b>③ 多状态溢出</b> — 胶囊超过 4 个时收进「+N」（tooltip 窄面特有，台账不折叠）</div>
+        <div class="tip">
+          <div class="tip-head"><span class="tip-name">dsh-plugins</span><span class="pill p-good">运行中</span></div>
+          <div class="tip-path">~/dsh-plugins</div>
+          <div class="tip-desc">dsh web 插件集：面板桥、指挥中心等（假数据示例）</div>
+          <div class="tip-pills"><span class="pill p-info">就绪 1</span><span class="pill p-aqua">已实现 1</span><span class="pill p-critical">有Bug 1</span><span class="pill p-good">完成 3</span><span class="pill p-muted">+1</span></div>
+          <div class="tip-stats">任务 <b>58/73</b> 个 · 活跃 Agent <b>3</b> 个</div>
+        </div>
+      </div>
+
+      <div class="variant" data-proto-id="ws-tooltip-variant-sparse">
+        <div class="cap"><b>④ 无简介 + 口径缺失</b> — 简介显「暂无简介」；任务/Agent 无数据显示「—」不显 0</div>
+        <div class="tip">
+          <div class="tip-head"><span class="tip-name">potplayer-base</span><span class="pill p-good">运行中</span></div>
+          <div class="tip-path">~/potplayer-base</div>
+          <div class="tip-desc empty">暂无简介</div>
+          <div class="tip-pills"><span class="pill p-muted">草稿 2</span></div>
+          <div class="tip-stats">任务 <b>—</b> 个 · 活跃 Agent <b>—</b> 个</div>
+        </div>
+      </div>
+
+      <div class="variant" data-proto-id="ws-tooltip-variant-idle">
+        <div class="cap"><b>⑤ 未运行</b> — 运行态橙胶囊（未运行）；无活跃 Agent 显 0（0 是真实数值）</div>
+        <div class="tip">
+          <div class="tip-head"><span class="tip-name">fenix-server</span><span class="pill p-warning">未运行</span></div>
+          <div class="tip-path">~/fenix-server</div>
+          <div class="tip-desc">服务端守护与 API 网关（假数据示例）</div>
+          <div class="tip-pills"><span class="pill p-good">已推送 1</span></div>
+          <div class="tip-stats">任务 <b>8/8</b> 个 · 活跃 Agent <b>0</b> 个</div>
+        </div>
+      </div>
+
+      <div class="variant" data-proto-id="ws-tooltip-variant-nonfenix">
+        <div class="cap"><b>⑥ 非 fenix 行（对照）</b> — 原生 tooltip 一字不改：名称 / 路径 / Created</div>
+        <div class="tip native">
+          <div class="tip-name">activation-showcase</div>
+          <div class="tip-path">~/activation-showcase</div>
+          <div class="tip-path">Created 2026-10-15 14:29</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════ 胶囊风格切换 ═══════════════ -->
+  <section data-proto-id="ws-tooltip-pill-switch">
+    <h2>胶囊风格（二选一，作用于上方全部卡片）</h2>
+    <div class="switch">
+      <button id="pillA" type="button">方案A · 软底胶囊（与概览台账同款）</button>
+      <button id="pillB" class="on" type="button">方案B · 暗面胶囊（深卡同相透明底）</button>
+    </div>
+    <div class="switch-note">方案A 直接沿用台账 OV_TONE 软底浅胶囊（与详情概览表格 1:1 同源）；方案B 按深色卡面做同相透明底派生（文字亮化）。默认 A。</div>
+  </section>
+
+  <!-- ═══════════════ 设计说明 ═══════════════ -->
+  <section data-proto-id="ws-tooltip-notes">
+    <h2>设计说明（色值与规则出处）</h2>
+    <div class="notes">
+      <ul>
+        <li><b>深卡规格</b>：逐值取自 dsh web 原生 tooltip 实测 — 底 <code>#2C2C2E</code>、圆角 16px、内距 12/16、阴影三层（1px/4px/12px 32px）、标题 <code>#fff</code> 14/20、次文本 <code>#cfd3d6</code> 12/16；无箭头，出现于行右侧（side=right），原生 500ms 延迟保留。</li>
+        <li><b>胶囊规格</b>：999 胶囊 · 12px · padding-inline 9 · weight 500，tone 色对逐值取自概览台账单源 <code>OV_TONE</code>；状态→tone 映射逐值取自 <code>STATUS_META</code>（阻塞/有Bug=critical、已推送/完成/已验证=good、实现中=warning、评审中/已实现=aqua、验证中/就绪=info、草稿=muted）。</li>
+        <li><b>内容行序</b>：名称+运行态 / 路径 / 简介一行 / 状态胶囊 / 任务与活跃 Agent — 与概览台账 ProjectCell 行序一致；路径行沿用原生 tooltip 既有内容，Created 时间行不再保留（概览台账无此列，可批注恢复）。</li>
+        <li><b>运行态胶囊</b>：运行中=good / 未运行=warning / 运行中·未托管=warning，与台账名称行同口径。</li>
+        <li><b>溢出规则</b>：胶囊超过 4 个折叠「+N」muted 胶囊（tooltip 窄面特有；台账不折叠）。</li>
+        <li><b>null 口径</b>：任务/Agent 无数据显示「—」不显 0（0 是真实数值时照常显示，如变体⑤ Agent 0）；简介空显「暂无简介」（与台账同文案）。</li>
+        <li><b>数值排版</b>：任务 x/y、Agent 数一律 tabular-nums。</li>
+        <li><b>红线遵守</b>：本页零 animation/transition（悬停即时显隐）；字号只用 12/14/16 阶内值；卡片宽 300px（原生内容自宽 244px，富内容放宽并保持同内距）。</li>
+        <li><b>未纳入</b>：问题数（problems）与 SPEC 总数列未放（用户未点名、避免拥挤），需要可批注追加。</li>
+        <li><b>实现要点（SPEC 细化，非本页职责）</b>：fenix 行悬停项目名时抑制 dsh 原生 Tooltip 并挂自绘同规格卡，数据取 <code>/api/projects</code> 的 ProjectSummary（60s 随 projectSync 刷新）；非 fenix 行零侵入。</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+<script>
+  (function () {
+    var a = document.getElementById('pillA'), b = document.getElementById('pillB');
+    function setAlt(on) { document.body.classList.toggle('alt', on); a.classList.toggle('on', !on); b.classList.toggle('on', on); }
+    a.addEventListener('click', function () { setAlt(false); });
+    b.addEventListener('click', function () { setAlt(true); });
+  })();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>
