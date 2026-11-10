@@ -3283,3 +3283,248 @@ class TestArchiveManifestBasenameSync(unittest.TestCase):
             STATE_ARCHIVE_BASENAME, ARCHIVE_MANIFEST_FILENAME,
             "dashboard 归档清单文件名与 state_machine 侧漂移："
             "parse_archived_state 将静默恒空，归档条目可见性失效")
+
+
+class TestQuickAssignModels(unittest.TestCase):
+    """快速分配数据层（add-agent-model-quick-assign 3.1）：同一份模板整体覆盖
+    ConfigLoader.KNOWN_AGENT_TYPES 全部角色的 agents.models；指定项目目标缺
+    provider 自动补齐（保留既有同名定义）、无法补齐单目标失败不中断其他目标。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot_a = Path(self.tmpdir) / "proj-a"
+        self.proot_b = Path(self.tmpdir) / "proj-b"
+        for p in (self.proot_a, self.proot_b):
+            (p / ".fenix").mkdir(parents=True)
+        self.user_dir = Path(self.tmpdir) / "user-fenix"
+        self.user_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _patch_user(self):
+        return patch("core.dashboard.data.USER_CONFIG_PATH", self.user_dir / "config.yaml")
+
+    def _write_user(self, cfg):
+        import yaml
+        with open(self.user_dir / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True)
+
+    def _read_yaml(self, path):
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def _write_proj(self, proot, cfg):
+        import yaml
+        with open(Path(proot) / ".fenix" / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True)
+
+    USER_PROVIDERS = [
+        {"name": "volc-engine", "baseurl": "https://volc.example.com", "apikey": "sk-volc",
+         "model": "deepseek-v4-pro"},
+        {"name": "bigmodel.cn", "baseurl": "https://open.bigmodel.cn", "apikey": "sk-big",
+         "model": "glm-5.3-flash", "sdk_model": "glm-5.3"},
+    ]
+
+    def test_user_target_overwrites_all_roles_and_keeps_other_keys(self):
+        """① 用户级目标：覆盖全部 13 角色、原分配被替换、subagent_model_override
+        与其他 agents/llm 键保留、单行无元素级模型写为 provider 字符串形态"""
+        from core.config import ConfigLoader
+        from core.dashboard.data import quick_assign_models
+
+        self._write_user({
+            "llm": {"providers": self.USER_PROVIDERS, "monthly_budget_usd": 99},
+            "agents": {
+                "models": {"implementer": "old-provider", "verifier": "old-provider"},
+                "subagent_model_override": "keep-me",
+                "max_concurrent": 5,
+            },
+        })
+        assignment = {"provider": [{"provider": "volc-engine", "model": ""}]}
+        with self._patch_user():
+            result = quick_assign_models(
+                assignment,
+                [{"scope": "user"}],
+                {"scope": "user"},
+            )
+        self.assertTrue(result["ok"], result["results"])
+        self.assertEqual(len(result["results"]), 1)
+        r = result["results"][0]
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["scope"], "user")
+        self.assertTrue(r.get("path"))
+
+        cfg = self._read_yaml(self.user_dir / "config.yaml")
+        models = cfg["agents"]["models"]
+        self.assertEqual(len(models), len(ConfigLoader.KNOWN_AGENT_TYPES))
+        for role in ConfigLoader.KNOWN_AGENT_TYPES:
+            # 单行且无元素级模型 → provider 字段规范化为字符串形态（serialize
+            # 角色级容器恒为 {provider: X, model?: Y}，X 单行为字符串）
+            self.assertEqual(models[role], {"provider": "volc-engine"}, role)
+        # 原分配被替换（不再有 old-provider）
+        dumped = str(cfg)
+        self.assertNotIn("old-provider", dumped)
+        # 其他 agents 键保留
+        self.assertEqual(cfg["agents"]["subagent_model_override"], "keep-me")
+        self.assertEqual(cfg["agents"]["max_concurrent"], 5)
+        # llm 段其他键保留
+        self.assertEqual(cfg["llm"]["monthly_budget_usd"], 99)
+        self.assertEqual(len(cfg["llm"]["providers"]), 2)
+
+    def test_project_target_autofills_missing_provider_and_keeps_existing(self):
+        """② 项目目标缺 provider：补齐完整定义；项目既有 provider 与 llm 其他键保留"""
+        from core.dashboard.data import quick_assign_models
+
+        self._write_user({"llm": {"providers": self.USER_PROVIDERS}})
+        # 项目 B 仅有自己的 provider（非模板引用），无 volc-engine
+        self._write_proj(self.proot_b, {
+            "llm": {"providers": [{"name": "local-only", "baseurl": "https://local", "apikey": "k"}],
+                     "monthly_budget_usd": 7},
+            "agents": {"max_concurrent": 3},
+        })
+        assignment = {"model": "deepseek-v4-pro",
+                      "provider": [{"provider": "volc-engine", "model": ""}]}
+        with self._patch_user():
+            result = quick_assign_models(
+                assignment,
+                [{"scope": "project", "project": "proj-b", "root": str(self.proot_b)}],
+                {"scope": "user"},
+            )
+        self.assertTrue(result["ok"], result["results"])
+        cfg = self._read_yaml(self.proot_b / ".fenix" / "config.yaml")
+        names = [p["name"] for p in cfg["llm"]["providers"]]
+        self.assertIn("volc-engine", names)
+        self.assertIn("local-only", names, "项目既有 provider 保留")
+        volc = next(p for p in cfg["llm"]["providers"] if p["name"] == "volc-engine")
+        # 补齐的是完整定义（name/baseurl/apikey/model/sdk_model 取自源作用域）
+        self.assertEqual(volc["baseurl"], "https://volc.example.com")
+        self.assertEqual(volc["apikey"], "sk-volc")
+        self.assertEqual(volc["model"], "deepseek-v4-pro")
+        self.assertEqual(cfg["llm"]["monthly_budget_usd"], 7, "llm 其他键保留")
+        self.assertEqual(cfg["agents"]["max_concurrent"], 3, "agents 其他键保留")
+        self.assertEqual(cfg["agents"]["models"]["verifier"],
+                         {"model": "deepseek-v4-pro", "provider": "volc-engine"})
+
+    def test_project_existing_same_name_provider_not_overwritten(self):
+        """③ 项目已有同名 provider 定义不被覆盖（仅 agents.models 被覆盖）"""
+        from core.dashboard.data import quick_assign_models
+
+        self._write_user({"llm": {"providers": self.USER_PROVIDERS}})
+        self._write_proj(self.proot_b, {
+            "llm": {"providers": [{"name": "volc-engine", "baseurl": "https://proj-own.example.com",
+                                   "apikey": "sk-proj-own"}]},
+        })
+        assignment = {"provider": [{"provider": "volc-engine", "model": ""}]}
+        with self._patch_user():
+            result = quick_assign_models(
+                assignment,
+                [{"scope": "project", "project": "proj-b", "root": str(self.proot_b)}],
+                {"scope": "user"},
+            )
+        self.assertTrue(result["ok"], result["results"])
+        cfg = self._read_yaml(self.proot_b / ".fenix" / "config.yaml")
+        providers = cfg["llm"]["providers"]
+        self.assertEqual(len(providers), 1, "不追加重复定义")
+        self.assertEqual(providers[0]["baseurl"], "https://proj-own.example.com",
+                         "项目既有同名定义保持原值")
+        self.assertEqual(providers[0]["apikey"], "sk-proj-own")
+        self.assertEqual(cfg["agents"]["models"]["implementer"], {"provider": "volc-engine"})
+
+    def test_unfillable_provider_fails_single_target_without_write(self):
+        """④ 模板引用的 provider 在源作用域中不存在：该项目失败且不落盘；其他
+        目标成功。源作用域=项目级（覆盖 1.2 的项目分支解析）：源项目自身
+        llm.providers 不含模板引用的 foo；用户级目标自身有 foo 定义故写入成功"""
+        from core.dashboard.data import quick_assign_models
+
+        self._write_user({
+            "llm": {"providers": self.USER_PROVIDERS
+                    + [{"name": "foo", "baseurl": "https://foo.example.com", "apikey": "sk-foo"}]},
+        })
+        # 源项目 proj-a 自带 providers（不含 foo）→ 有效视图缺 foo
+        self._write_proj(self.proot_a, {
+            "llm": {"providers": [{"name": "proj-a-local", "baseurl": "https://a", "apikey": "k"}]},
+        })
+        assignment = {"provider": [{"provider": "foo", "model": ""}]}
+        with self._patch_user():
+            result = quick_assign_models(
+                assignment,
+                [{"scope": "project", "project": "proj-b", "root": str(self.proot_b)},
+                 {"scope": "user"}],
+                {"scope": "project", "project": "proj-a", "root": str(self.proot_a)},
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(len(result["results"]), 2)
+        proj_result = next(r for r in result["results"] if r["scope"] == "project")
+        user_result = next(r for r in result["results"] if r["scope"] == "user")
+        self.assertFalse(proj_result["ok"])
+        self.assertIn("foo", proj_result["error"], "错误文本含缺失 provider 名")
+        self.assertFalse(
+            (self.proot_b / ".fenix" / "config.yaml").exists(),
+            "失败目标不落盘",
+        )
+        self.assertTrue(user_result["ok"], "其他目标照常成功（部分成功语义）")
+        user_cfg = self._read_yaml(self.user_dir / "config.yaml")
+        self.assertEqual(user_cfg["agents"]["models"]["implementer"], {"provider": "foo"})
+
+    def test_multi_row_chain_order_and_optional_role_model(self):
+        """⑤ 多行候选链顺序与元素级 model 保留；角色级缺省 model 仅在填写时写入"""
+        from core.dashboard.data import quick_assign_models
+
+        self._write_user({"llm": {"providers": self.USER_PROVIDERS}})
+        assignment = {
+            "model": "deepseek-v4-pro",
+            "provider": [
+                {"provider": "volc-engine", "model": "deepseek-v4-pro"},
+                {"provider": "bigmodel.cn", "model": ""},
+            ],
+        }
+        with self._patch_user():
+            result = quick_assign_models(assignment, [{"scope": "user"}], {"scope": "user"})
+        self.assertTrue(result["ok"], result["results"])
+        cfg = self._read_yaml(self.user_dir / "config.yaml")
+        chain = cfg["agents"]["models"]["verifier"]
+        self.assertEqual(chain, {
+            "model": "deepseek-v4-pro",
+            "provider": [
+                {"provider": "volc-engine", "model": "deepseek-v4-pro"},
+                "bigmodel.cn",
+            ],
+        }, "行序即回退顺序；无元素级模型的行为字符串形态")
+        # 角色级缺省 model 留空 → 不写
+        assignment2 = {"model": "", "provider": [{"provider": "bigmodel.cn", "model": ""}]}
+        with self._patch_user():
+            result2 = quick_assign_models(assignment2, [{"scope": "user"}], {"scope": "user"})
+        self.assertTrue(result2["ok"], result2["results"])
+        cfg2 = self._read_yaml(self.user_dir / "config.yaml")
+        self.assertEqual(cfg2["agents"]["models"]["verifier"], {"provider": "bigmodel.cn"},
+                         "角色级缺省 model 留空不写（serialize 容器仅含 provider 键）")
+
+    def test_duplicate_targets_deduped_and_single_failure_does_not_stop_others(self):
+        """重复目标去重（(scope, project) 只写一次）；混合目标单失败不中断"""
+        from core.config import ConfigLoader
+        from core.dashboard.data import quick_assign_models
+
+        self._write_user({"llm": {"providers": self.USER_PROVIDERS}})
+        assignment = {"provider": [{"provider": "volc-engine", "model": ""}]}
+        with self._patch_user():
+            result = quick_assign_models(
+                assignment,
+                [{"scope": "project", "project": "proj-a", "root": str(self.proot_a)},
+                 {"scope": "project", "project": "proj-a", "root": str(self.proot_a)},
+                 {"scope": "project", "project": "proj-b", "root": str(self.proot_b)},
+                 {"scope": "user"},
+                 {"scope": "user"}],
+                {"scope": "user"},
+            )
+        self.assertTrue(result["ok"], result["results"])
+        # 重复目标由路由层（task 2.1）按 (scope, project) 去重后才下发；
+        # 数据层契约是逐目标各写一次（幂等覆盖），此处只验证全成功
+        self.assertEqual(len(result["results"]), 5)
+        cfg_a = self._read_yaml(self.proot_a / ".fenix" / "config.yaml")
+        self.assertEqual(cfg_a["agents"]["models"]["implementer"], {"provider": "volc-engine"})
+        # proj-a 缺 volc-engine 定义 → 自动补齐
+        names_a = [p["name"] for p in cfg_a["llm"]["providers"]]
+        self.assertIn("volc-engine", names_a)
+        cfg_b = self._read_yaml(self.proot_b / ".fenix" / "config.yaml")
+        self.assertEqual(len(cfg_b["agents"]["models"]), len(ConfigLoader.KNOWN_AGENT_TYPES))
