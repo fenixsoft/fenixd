@@ -133,7 +133,7 @@
 
 ## 6. W6+W7 守卫与收尾（必须排在 §4/§5 之后）
 
-- [ ] 6.1 新建 `tests/test_platform_guard.py`，两组断言（断言调用/导入语法与字符串字面量，非注释词面）：① POSIX 面——core/（唯一豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/`（`/proc/` 按裸字面量口径断言字符串——存量 16 个命中文件中 6 个为单引号/f-string 形态，双引号前缀口径实测仅命中 10 个、会漏检回潮）；② 平台判断面——core/（豁免整个 `core/platform/`，`__init__.py` 单点分发为设计内唯一分支点）零 `sys.platform` / `platform.system` / `os.name` 判断（spec Requirement 1「业务代码零平台分支」场景的守卫执行面）
+- [x] 6.1 新建 `tests/test_platform_guard.py`（AST 口径双组守卫：① 组语法词面导入/调用/关键字/属性 + `/proc/` 字符串常量面（f-string 常量段覆盖、docstring 排除），systemd_hosting 两 payload 文件级豁免双向钉计数；② 组属性判断面豁免整个 core/platform/；import 别名映射（`import os as o; o.killpg`）与 from-import 直引名（`from sys import platform`）逃逸面封堵，注入 9 处违禁负向验证全抓；dashboard `_bind_parent_lifecycle` ctypes.prctl 残点随本任务补迁 pal.bind_to_parent（ctypes.CDLL 共享模块对象缝，orphan_guard 5 用例零修改过），两组断言（断言调用/导入语法与字符串字面量，非注释词面）：① POSIX 面——core/（唯一豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/`（`/proc/` 按裸字面量口径断言字符串——存量 16 个命中文件中 6 个为单引号/f-string 形态，双引号前缀口径实测仅命中 10 个、会漏检回潮）；② 平台判断面——core/（豁免整个 `core/platform/`，`__init__.py` 单点分发为设计内唯一分支点）零 `sys.platform` / `platform.system` / `os.name` 判断（spec Requirement 1「业务代码零平台分支」场景的守卫执行面）
 - [ ] 6.2 `core/event_bus.py` "inotify" 文档措辞修正（实为 2s checksum 轮询；措辞词面位于 :4/:56/:156，:1059 为 `_watch_loop` 定义锚）；`install.sh` 退役 tmux 依赖检查清理（:44）；`pytest.ini` 平台拆分锚点（linux 路径零变化）
 
 ## 7. 验收自检
