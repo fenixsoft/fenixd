@@ -15,6 +15,10 @@
   kind: new
 - path: spec/knowledge/domains/provider-models/failover-dispatch.md
   kind: modify
+- path: spec/knowledge/domains/provider-models/_domain.md
+  kind: modify
+- path: spec/knowledge/domains/spec-lifecycle/spec-review-agent.md
+  kind: modify
 - path: spec/knowledge/index.md
   kind: modify
 ```
