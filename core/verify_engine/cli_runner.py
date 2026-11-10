@@ -34,6 +34,7 @@ from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .cli_assertions import CliAssertionRunner
 from .scenarios import MAX_STEP_TIMEOUT, validate_scenario
 from ..proc_utils import guard_killpg
+from core.platform import api as pal  # 5.2 spawn_detached_async 消费
 
 DEFAULT_RUN_TIMEOUT = 60.0
 

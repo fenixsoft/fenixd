@@ -23,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Dict, Any
 
 from core.platform import api as pal
@@ -180,6 +181,37 @@ from core.agent_runner.maintenance_runs import (
     run_impl_ocr,
     run_regression,
     run_self_review,
+)
+
+# ── spawn 单源转发与测试缝保留（add-platform-abstraction-layer 5.1）──────
+# 本模块 spawn 位点经 pal.spawn_detached 单源（独立进程组纪律上收
+# core.platform.linux；new_session ≡ start_new_session 字面）。既有 9 个
+# 测试文件（test_turn_limit_lifecycle 等）以 monkeypatch.setattr(runner_mod,
+# "subprocess", SimpleNamespace(Popen=替身, PIPE=…, …)) 整体替换**本模块
+# 命名空间**的 subprocess 名打桩——spawn 调用 MUST 保持 subprocess.Popen
+# 词面经本名字命中桩（pal. 前缀会脱靶到真 pal，替身不生效、读流环卡死）。
+# 故把本模块 subprocess 名 shadow 为轻量命名空间：Popen 位转发 pal 单源
+# （未带 new_session 的调用点保持 Popen 缺省「无独立组」语义逐位等价），
+# 其余属性（PIPE/run/TimeoutExpired/SubprocessError——本模块全部消费面）
+# 直引 stdlib 真身。此 shadow 仅本模块命名空间生效，不触碰共享 subprocess
+# 模块；测试替换本名字时替身直接接管全部属性消费，语义与旧形态一致。
+_subprocess_stdlib = subprocess
+
+
+def _popen_via_pal(cmd, *args, **kwargs):
+    """spawn 缝转发：显式 new_session 的位点走 pal 单源；缺省 False ≡
+    stdlib Popen 缺省（start_new_session=False，无独立组）语义。"""
+    return pal.spawn_detached(cmd, *args,
+                              new_session=kwargs.pop("new_session", False),
+                              **kwargs)
+
+
+subprocess = SimpleNamespace(  # noqa: F811 —— 测试缝 shadow（见上注）
+    Popen=_popen_via_pal,
+    PIPE=_subprocess_stdlib.PIPE,
+    run=_subprocess_stdlib.run,
+    SubprocessError=_subprocess_stdlib.SubprocessError,
+    TimeoutExpired=_subprocess_stdlib.TimeoutExpired,
 )
 
 # ── 路由地图生成（add-planner-efficiency：planner-route-map）─────────────
@@ -6999,7 +7031,9 @@ class AgentRunner:
         except OSError:
             pass
 
-        proc = pal.spawn_detached(
+        # spawn 经本模块 subprocess 缝名（见模块头 shadow 绑定注）：单源转发
+        # pal.spawn_detached，测试 patch 本名字时替身直接接管（测试零修改）。
+        proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

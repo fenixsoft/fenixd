@@ -524,8 +524,18 @@ class TestCwdCommMtimeProcfile:
         assert isinstance(comm, str) and comm and "\n" not in comm
 
     def test_proc_dir_mtime_near_now(self):
-        mtime = pal.proc_dir_mtime(os.getpid())
-        assert isinstance(mtime, float) and abs(time.time() - mtime) < 300
+        # 用新鲜 spawn 的子进程断言「mtime ≈ 启动时刻」：本测试进程的 /proc
+        # mtime 停在 pytest 启动时刻，全量长跑下距 now 可远超任意固定窗。
+        import subprocess as sp
+
+        proc = sp.Popen(["sleep", "30"])
+        try:
+            mtime = pal.proc_dir_mtime(proc.pid)
+            assert isinstance(mtime, float) and abs(time.time() - mtime) < 300
+            assert pal.proc_dir_mtime(10**9) is None  # 不存在 pid → None
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
 
     def test_read_procfile_and_traversal_guard(self):
         assert pal.read_procfile("self/status").startswith(b"Name:")

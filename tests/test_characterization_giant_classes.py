@@ -361,8 +361,13 @@ class TestPurgeIgnoredBroughtIn:
             # git diff --diff-filter=A 返回空
             mock_sub.return_value = MagicMock(returncode=0, stdout="")
             wm._purge_ignored_brought_in(old_head)
-            # 只应调用 diff，不应调用 rm
-            rm_calls = [c for c in mock_sub.call_args_list if "rm" in str(c)]
+            # 只应调用 diff，不应调用 rm（argv token 级精确匹配——子串形态
+            # 会被 worktree 绝对路径撞车：本仓 worktree 名含 "platform" 的
+            # "rm" 子串曾误判为 git rm 调用）
+            rm_calls = [
+                c for c in mock_sub.call_args_list
+                if isinstance(c.args[0], list) and "rm" in c.args[0]
+            ]
             assert not rm_calls, "无新增时不应调用 git rm"
 
     def test_ignored_added_file_is_purged(self, tmp_path):

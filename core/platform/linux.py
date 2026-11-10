@@ -227,6 +227,11 @@ async def spawn_detached_async(cmd, cwd=None, env=None, *, new_session: bool = T
     stderr 等 kwargs 原样透传。
     """
     if shell:
+        # shell 形态接受 str 或单元素列表（cli_runner 5.2 以 [str(cmd)] 单元素
+        # 表表达「原 shell 串」——解包取串，避免 create_subprocess_shell 落
+        # list 形态的 ValueError）
+        if not isinstance(cmd, str):
+            cmd = cmd[0]
         return await asyncio.create_subprocess_shell(
             cmd, cwd=cwd, env=env, start_new_session=new_session, **kwargs)
     return await asyncio.create_subprocess_exec(
