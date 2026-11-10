@@ -4,6 +4,12 @@
 原样搬移为 mixin（方法体零改动）。`_HASHED_STATIC_RE` 类属性随本
 mixin 迁移；`_GZIP_EXT`/`_GZIP_MIN`/`_maybe_gzip` 在 H0 底座
 （routes/base.py），经继承解析。
+
+add-proto-dashboard-serving：fenix-prototype skill 的独立原型服务器
+（serve_prototype.py）退役，原型静态伺服（`GET /proto/...`，本文件
+`_serve_prototype`）与批注落盘（`POST /api/proto/<project>/<spec>/feedback`，
+`_api_proto_feedback`）改由 dashboard 常驻进程承载；落盘 IO 单源在
+`core/dashboard/prototype_io.py`。
 """
 
 from __future__ import annotations
@@ -17,6 +23,13 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from core.dashboard.server import ALLOWED_IMAGE_EXT  # noqa: E402 — 常量门面
+from core.dashboard.prototype_io import (  # noqa: E402 — 落盘/校验单源
+    FEEDBACK_FILE_NAME,
+    FeedbackWriteRejected,
+    PROTOTYPE_FILE_TYPES,
+    append_feedback,
+    spec_segment_safe,
+)
 
 
 class H10StaticRoutesMixin:
@@ -147,6 +160,129 @@ class H10StaticRoutesMixin:
             return
         ctype = mimetypes.guess_type(str(target))[0] or "image/png"
         self._send_file(target, ctype)
+
+    def _serve_prototype(self, path: str):
+        # /proto/<project>/<spec>/<file>（add-proto-dashboard-serving）
+        # 静态伺服 .fenix/prototypes/<spec>/ 下的原型单文件 HTML 及其
+        # 同目录资源（annotator.js、vendor、图片/字体），防护口径镜像
+        # _serve_screenshot：段校验 → 项目须注册 → resolve + 包含检查 →
+        # 后缀白名单（feedback.json 与手工放入的任意可执行/源码文件
+        # 不经本通道外泄）。
+        parts = path.split("/")
+        # ['', 'proto', project, spec, file...]（file 允许为空：目录形态）
+        if len(parts) < 4:
+            self._error(404, "Not Found")
+            return
+        project_name = urllib.parse.unquote(parts[2])
+        spec = urllib.parse.unquote(parts[3])
+        # spec 段防穿越：与 _serve_screenshot 同口径（「..」组件搬迁攻击、
+        # 绝对路径段丢弃前缀攻击、%00 NUL → resolve ValueError→500），单源
+        # 校验在 prototype_io.spec_segment_safe。
+        if not spec_segment_safe(spec):
+            self._error(403, "Forbidden")
+            return
+        # file_part 一并 decode（同 _serve_screenshot：合法文件名含空格/#/%
+        # 时网络上恒为 percent-encoded）；解码还原的「..」由下方 resolve +
+        # is_relative_to 兜底，还原的 NUL 在此拒绝。
+        file_part = urllib.parse.unquote("/".join(parts[4:]))
+        if "\x00" in file_part:
+            self._error(403, "Forbidden")
+            return
+
+        project = self.server.project_by_name(project_name)
+        if project is None or not project.get("exists"):
+            # 与 _serve_screenshot 同语义：未知/非活跃项目答 404（不区分
+            # 项目存在性，避免把鉴权失败与资源缺失混同）
+            self._error(404, "project not found")
+            return
+
+        proto_root = (
+            Path(project["path"]) / ".fenix" / "prototypes"
+        ).resolve()
+        spec_dir = (proto_root / spec).resolve()
+        # 纵深防御：spec 段已先拒「..」，此处 resolve + 包含检查兜住
+        # symlink 等词法校验覆盖不到的搬迁形态
+        if not spec_dir.is_relative_to(proto_root):
+            self._error(403, "Forbidden")
+            return
+        if file_part:
+            target = (spec_dir / file_part).resolve()
+            if not target.is_relative_to(spec_dir):
+                self._error(403, "Forbidden")
+                return
+        else:
+            target = spec_dir
+        if target.is_dir():
+            if not path.endswith("/"):
+                # 目录形态无尾斜杠 → 301 补斜杠（同 SimpleHTTPRequestHandler）：
+                # 原型页的相对资源引用（src="annotator.js"）以文档 URL 为基
+                # 解析，缺尾斜杠会落到上级目录。query 原样携带（proto_round
+                # 迭代参数不得丢失）。301 会被中介缓存，但目录→目录/ 的映射
+                # 恒定，缓存无害。
+                raw, sep, query = self.path.partition("?")
+                self._mark_response_started()
+                self.send_response(301)
+                self.send_header("Location", raw + "/" + (sep + query if sep else ""))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            target = target / "index.html"
+        # feedback.json 及其隔离 .bak / 伴生 .lock 不对外伺服：批注回流数据
+        # 只经 agent 从磁盘读，静态通道只出原型渲染资源（与退役独立服务器
+        # 同口径）
+        if target.name == FEEDBACK_FILE_NAME or target.name.startswith(
+                FEEDBACK_FILE_NAME + "."):
+            self._error(403, "Forbidden")
+            return
+        if not target.is_file():
+            self._error(404, "Not Found")
+            return
+        ctype = PROTOTYPE_FILE_TYPES.get(target.suffix.lower())
+        if ctype is None:
+            # 后缀白名单：原型目录不该出现可执行/源码/密钥类文件，即便被
+            # 手工放进来也不经本通道外泄（与截图路由的 ALLOWED_IMAGE_EXT
+            # 同思路；响应 404 与「文件不存在」不可区分）
+            self._error(404, "Not Found")
+            return
+        # 原型处于高频修订循环：恒 no-cache（_send_file 默认值）
+        self._send_file(target, ctype)
+
+    def _api_proto_feedback(self, project_name: str, spec: str,
+                            query: dict) -> None:
+        # POST /api/proto/<project>/<spec>/feedback（add-proto-dashboard-
+        # serving）：fenix-prototype 批注回流端点，落盘语义单源在
+        # prototype_io.append_feedback（锁内读改写、结构保留、损坏隔离）。
+        if not spec_segment_safe(spec):
+            self._error(403, "Forbidden")
+            return
+        project = self.server.project_by_name(project_name)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        proto_root = (
+            Path(project["path"]) / ".fenix" / "prototypes"
+        ).resolve()
+        spec_dir = (proto_root / spec).resolve()
+        if not spec_dir.is_relative_to(proto_root) or not spec_dir.is_dir():
+            self._error(404, "prototype not found")
+            return
+        # _read_json_body 统一收口：Content-Length 合法性/256KB 上限/非法
+        # JSON/非 dict 体各自结构化报错；anchor/text 字段校验与写入语义
+        # 单源在 append_feedback（HTTP 层不重复）。
+        annotation = self._read_json_body()
+        if annotation is None:
+            return
+        try:
+            target, note = append_feedback(spec_dir, annotation)
+        except FeedbackWriteRejected as exc:
+            self._error(exc.status, exc.message)
+            return
+        payload: dict = {"ok": True, "stored": str(target)}
+        if note:
+            payload["warning"] = note
+        self._json(payload)
+
 
     def _hashed_gzip_payload(self, path: Path, body: bytes,
                              st: Optional[os.stat_result] = None) -> Optional[bytes]:

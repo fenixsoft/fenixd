@@ -2,8 +2,10 @@
  * fenix-prototype 注入式批注器（任务 2.1）
  *
  * 与组件栈无关的纯 DOM 操作：hover 高亮、点选元素、意见输入面板、意见列表、
- * POST /feedback 提交批注（锚点 + 文本 + 时间戳 + 轮次）；服务器不可达时降级
- * 为本地导出 JSON 文件（用户可把文件交给 agent）。
+ * POST 批注（锚点 + 文本 + 时间戳 + 轮次）到按页面路径自适应推导的批注端点
+ * （dashboard 承载伺服时为 /api/proto/<project>/<spec>/feedback，根路径伺服
+ * 形态兜底 /feedback）；服务器不可达时降级为本地导出 JSON 文件（用户可把
+ * 文件交给 agent）。
  *
  * 注入方式（原型 HTML 内）：
  *   <script src="annotator.js" defer></script>
@@ -24,7 +26,17 @@
   window.__fenixPrototypeAnnotator = true;
 
   var ANCHOR_ATTR = "data-proto-id";
-  var FEEDBACK_URL = "/feedback";
+  // 批注提交端点随伺服形态自适应（dashboard 承载后同一页面 URL 可能是
+  // /proto/<project>/<spec>/index.html 或 /proto/<project>/<spec>/）：
+  // 命中 dashboard 原型通道时按页面 pathname 推导
+  // /api/proto/<project>/<spec>/feedback（捕获段原样传递，不做二次编码——
+  // pathname 里的 percent-encoding 保持原样即可与服务端 unquote 对上）；
+  // 其余形态（独立 serve_prototype.py 的根路径伺服）兜底 "/feedback"。
+  // file:// 打开时 fetch 不可用，走本地导出降级，本值不参与。
+  var FEEDBACK_URL = (function () {
+    var m = window.location.pathname.match(/^\/proto\/([^/]+)\/([^/]+)(?:\/|$)/);
+    return m ? "/api/proto/" + m[1] + "/" + m[2] + "/feedback" : "/feedback";
+  })();
 
   // ── 状态 ─────────────────────────────────────────────────────────────
   var state = {
