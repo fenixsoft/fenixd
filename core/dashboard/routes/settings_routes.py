@@ -335,6 +335,101 @@ class H5SettingsRoutesMixin:
         config[cleared_field] = result.get(cleared_field)
         self._json(config)
 
+    def _api_config_quick_assign(self, query):
+        """POST /api/config/quick-assign — 快速分配（add-agent-model-quick-assign 2.1）。
+
+        body: {"assignment": {"model"?: str, "provider": [{"provider", "model"?}]},
+               "targets": [{"scope": "user"} | {"scope": "project", "project": <名>}],
+               "source_scope": {"scope": "user"} | {"scope": "project", "project": <名>}}
+
+        请求级非法（body 非 dict、assignment/targets/source_scope 形态非法、
+        项目名未注册/不可解析）→ 400 且不调用数据层、不写任何目标；执行
+        阶段（含部分目标失败）恒 200 逐项回报（spec 部分成功语义）。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        if not isinstance(body, dict):
+            self._error(400, "body 必须为 JSON 对象")
+            return
+
+        # ── assignment 校验 ──
+        assignment = body.get("assignment")
+        if not isinstance(assignment, dict):
+            self._error(400, "body.assignment 必须为对象")
+            return
+        role_model = assignment.get("model")
+        if role_model is not None and not isinstance(role_model, str):
+            self._error(400, "body.assignment.model 必须为字符串或缺省")
+            return
+        rows = assignment.get("provider")
+        if not isinstance(rows, list) or not rows:
+            self._error(400, "body.assignment.provider 必须为非空数组")
+            return
+        for i, row in enumerate(rows):
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("provider"), str)
+                or not row["provider"].strip()
+            ):
+                self._error(400, f"body.assignment.provider[{i}].provider 必须为非空字符串")
+                return
+            row_model = row.get("model")
+            if row_model is not None and not isinstance(row_model, str):
+                self._error(400, f"body.assignment.provider[{i}].model 必须为字符串或缺省")
+                return
+
+        # ── targets 校验 + (scope, project) 去重 ──
+        raw_targets = body.get("targets")
+        if not isinstance(raw_targets, list) or not raw_targets:
+            self._error(400, "body.targets 必须为非空数组")
+            return
+        targets = []
+        seen = set()
+        for i, t in enumerate(raw_targets):
+            if not isinstance(t, dict) or t.get("scope") not in ("user", "project"):
+                self._error(400, f"body.targets[{i}].scope 必须为 user|project")
+                return
+            if t["scope"] == "user":
+                if ("user", None) in seen:
+                    continue
+                seen.add(("user", None))
+                targets.append({"scope": "user"})
+                continue
+            name = t.get("project")
+            if not isinstance(name, str) or not name.strip():
+                self._error(400, f"body.targets[{i}].project 必须为非空字符串")
+                return
+            proj = self.server.project_by_name(name)
+            if proj is None or not proj.get("exists"):
+                self._error(400, f"项目未注册或不存在: {name}")
+                return
+            if ("project", name) in seen:
+                continue
+            seen.add(("project", name))
+            targets.append({"scope": "project", "project": name, "root": proj["path"]})
+
+        # ── source_scope 校验（design D3/D2：必填）──
+        raw_source = body.get("source_scope")
+        if not isinstance(raw_source, dict) or raw_source.get("scope") not in ("user", "project"):
+            self._error(400, 'body.source_scope 必须为 {"scope": "user"} 或 {"scope": "project", "project": <名>}')
+            return
+        if raw_source["scope"] == "user":
+            source_scope = {"scope": "user"}
+        else:
+            sname = raw_source.get("project")
+            if not isinstance(sname, str) or not sname.strip():
+                self._error(400, "body.source_scope.project 必须为非空字符串")
+                return
+            sproj = self.server.project_by_name(sname)
+            if sproj is None or not sproj.get("exists"):
+                self._error(400, f"source_scope 项目未注册或不存在: {sname}")
+                return
+            source_scope = {"scope": "project", "project": sname, "root": sproj["path"]}
+
+        # 执行含部分失败恒 200（逐项结果由数据层回报）
+        self._json(dashboard_data.quick_assign_models(assignment, targets, source_scope))
+
 
     def _api_prompts_get(self, query) -> None:
         """GET /api/prompts[?project=<name>] — agent 提示词读取（自含响应）。

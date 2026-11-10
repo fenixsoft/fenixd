@@ -3617,3 +3617,213 @@ def clear_project_page_keys(project_root, page: str) -> dict:
             return fail(f"写入配置文件失败: {e}")
 
     return {"ok": True, "error": None, "cleared": cleared, "path": str(config_path)}
+
+
+# ── add-agent-model-quick-assign：快速分配（整体覆盖全部 Agent 角色模型分配）──
+
+
+def _source_provider_defs(source_scope) -> list:
+    """解析快速分配的 provider 定义来源作用域（design D3，task 1.2）。
+
+    source_scope（已由路由层校验形态）：
+    - {"scope": "user"} → 用户级 raw config 的 llm.providers（原始文件值，
+      与 sync_config_from_user 的「raw 不做缺省填充」口径同源——补齐目标
+      需要的是完整 provider 定义本身，不是回显视图的归一形态）；
+    - {"scope": "project", "project": <项目名>, "root": <项目根>} → 该项目
+      read_effective_config 的 llm.providers（设置页当前作用域看到的有效
+      列表，正是弹窗 provider 下拉的数据来源）。
+
+    安全降级（spec「不因源配置缺失导致 500」）：source_scope 非 dict、scope
+    未识别、项目 root 缺失、读取/解析异常、llm 段非 dict、providers 非 list、
+    元素非 dict 或缺非空 name —— 一律忽略该来源/该元素返回部分结果，绝不
+    抛未捕获异常；引用了源里不存在的 provider 由 quick_assign_models 的
+    「无法补齐」分支给出含名字的失败，模板合法性另有 _validate_merged_view
+    兜底。
+
+    Returns: [{"name": str, ...完整定义}, ...]（内部引用共享源列表元素，
+    调用方不得原地修改；补齐落盘走 deepcopy）
+    """
+    import core.dashboard.data as _facade
+
+    if not isinstance(source_scope, dict):
+        return []
+    scope = source_scope.get("scope")
+    defs = None
+    if scope == "user":
+        raw = {}
+        try:
+            if _facade.USER_CONFIG_PATH.exists():
+                with _facade.USER_CONFIG_PATH.open("r", encoding="utf-8") as f:
+                    loaded = yaml.safe_load(f)
+            else:
+                loaded = {}
+        except (yaml.YAMLError, OSError, UnicodeDecodeError):
+            # 非法/不可读的用户级配置不阻断流程：按「源无可补齐定义」处理
+            # （本文件无模块级 logger，静默降级——引用了缺失 provider 的目标
+            # 在补齐分支单独失败并给出含名字的明确错误）
+            loaded = {}
+        if isinstance(loaded, dict) and isinstance(loaded.get("llm"), dict):
+            defs = loaded["llm"].get("providers")
+    elif scope == "project":
+        root = source_scope.get("root")
+        if not root:
+            return []
+        try:
+            eff = read_effective_config(root)
+            llm = eff.get("llm")
+            if isinstance(llm, dict):
+                defs = llm.get("providers")
+        except Exception:  # noqa: BLE001 — 有效视图任何异常都按「源缺失」降级（不 500）
+            defs = None
+    else:
+        return []
+    if not isinstance(defs, list):
+        return []
+    # 缺 name / name 非非空 str 的元素丢弃（交由 _validate_merged_view 兜底），
+    # 不因单个脏元素丢弃整份来源
+    return [
+        d
+        for d in defs
+        if isinstance(d, dict) and isinstance(d.get("name"), str) and d.get("name")
+    ]
+
+
+def quick_assign_models(assignment, targets, source_scope) -> dict:
+    """快速分配：同一份模板整体覆盖 ConfigLoader.KNOWN_AGENT_TYPES 全部角色
+    的 agents.models（add-agent-model-quick-assign task 1.1）。
+
+    与单角色保存同语义：模板 = 角色级缺省模型（可空）+ provider+模型候选链
+    （行序即回退顺序），经 serialize_models_patch 规范化（单行且无元素级
+    模型 → provider 名字符串形态）。原有各角色分配被替换而非合并；不触碰
+    subagent_model_override 及其他 agents/llm 键（除下方 provider 补齐）。
+
+    Args:
+        assignment: {"model"?: str, "provider": [{provider, model?}]}——路由层
+            已做请求级校验（provider 非空 list、每行 provider 非空 str）。
+        targets: 目标列表，元素为路由层解析后的
+            {"scope": "user"} 或 {"scope": "project", "project": <名>, "root": <根路径>}。
+        source_scope: provider 定义来源作用域（design D3），形态同
+            _source_provider_defs 参数。
+
+    Returns: {"ok": bool, "results": [{"scope", "project"?, "ok", "error"?, "path"?}]}
+        ok = 全部目标成功；单目标失败不中断其他目标（部分成功语义）。
+
+    锁纪律（与 sync_config_from_user 同款，code-review item c0f2467c8462）：
+    多目标的读-构-写全程持 _CONFIG_WRITE_LOCK——本函数内部改调
+    _write_config_locked（其契约即「调用方须已持锁」），不得改调 write_config
+    （内部重复取锁死锁）。调用方为 HTTP 路由，不持本锁，无重入风险。
+    """
+    from core.config import ConfigLoader
+
+    # 模板规范化：trim；角色级 model 留空/非 str 不写（serialize 也会兜底，
+    # 但此处先行剪掉空串键，保证 KNOWN_AGENT_TYPES 深拷贝出的是干净模板）
+    template: dict = {}
+    role_model = assignment.get("model") if isinstance(assignment, dict) else None
+    if isinstance(role_model, str) and role_model.strip():
+        template["model"] = role_model.strip()
+    rows = assignment.get("provider") if isinstance(assignment, dict) else None
+    chain = []
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("provider")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            model = row.get("model")
+            chain.append(
+                {"provider": name.strip(), "model": model.strip() if isinstance(model, str) else ""}
+            )
+    template["provider"] = chain
+
+    # 全部已知角色同一份模板（deepcopy 防角色间引用串改），serialize 得规范形态
+    models = {role: copy.deepcopy(template) for role in ConfigLoader.KNOWN_AGENT_TYPES}
+    agents_patch = {"models": ConfigLoader.serialize_models_patch(models)}
+    referenced = []  # 模板引用的 provider 名，行序首次出现（去重）
+    for row in chain:
+        if row["provider"] not in referenced:
+            referenced.append(row["provider"])
+
+    source_by_name = {d["name"]: d for d in _source_provider_defs(source_scope)}
+    results = []
+
+    with _CONFIG_WRITE_LOCK:
+        for target in targets or []:
+            if not isinstance(target, dict) or target.get("scope") not in ("user", "project"):
+                results.append({"scope": None, "ok": False, "error": f"未知目标: {target!r}"})
+                continue
+            scope = target["scope"]
+            if scope == "user":
+                result = _write_config_locked(None, {"agents": agents_patch}, scope="user")
+                results.append(
+                    {
+                        "scope": "user",
+                        "ok": result["ok"],
+                        **({"error": result.get("error")} if result.get("error") else {}),
+                        "path": result.get("path"),
+                    }
+                )
+                continue
+
+            name = target.get("project")
+            root = target.get("root")
+            proj_path = Path(root) / ".fenix" / "config.yaml" if root else None
+            fail = lambda err: results.append(  # noqa: E731 — 局部小助手，同文件惯例
+                {
+                    "scope": "project",
+                    "project": name,
+                    "ok": False,
+                    "error": err,
+                    "path": str(proj_path) if proj_path else None,
+                }
+            )
+            if not root or not name:
+                fail(f"项目目标缺少 project/root: {target!r}")
+                continue
+
+            # 持锁读项目 raw llm.providers（design D4 步骤 1-3）：项目级写路径的
+            # provider 校验只看项目 raw 合并视图，不含用户级继承——缺失须先补齐
+            existing = None
+            if proj_path.exists():
+                try:
+                    with proj_path.open("r", encoding="utf-8") as f:
+                        loaded = yaml.safe_load(f)
+                except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+                    fail(f"读取项目现有配置失败: {e}")
+                    continue
+                if isinstance(loaded, dict) and isinstance(loaded.get("llm"), dict):
+                    existing = loaded["llm"].get("providers")
+            # 非列表按空列表处理（design D4：交由既有校验兜底）
+            existing = existing if isinstance(existing, list) else []
+            existing_names = {
+                d.get("name")
+                for d in existing
+                if isinstance(d, dict) and isinstance(d.get("name"), str) and d.get("name")
+            }
+            missing = [n for n in referenced if n not in existing_names]
+            patch: dict = {"agents": agents_patch}
+            if missing:
+                unavailable = [n for n in missing if n not in source_by_name]
+                if unavailable:
+                    fail(
+                        "provider 定义无法自动补齐（源作用域中不存在）: "
+                        + "、".join(sorted(unavailable))
+                    )
+                    continue
+                # 追加缺失定义（保留项目既有同名定义，绝不覆盖；deepcopy 防
+                # 源列表元素与落盘 YAML 共享可变对象）
+                patch["llm"] = {
+                    "providers": existing + [copy.deepcopy(source_by_name[n]) for n in missing]
+                }
+            result = _write_config_locked(root, patch, scope="project")
+            results.append(
+                {
+                    "scope": "project",
+                    "project": name,
+                    "ok": result["ok"],
+                    **({"error": result.get("error")} if result.get("error") else {}),
+                    "path": result.get("path"),
+                }
+            )
+
+    return {"ok": all(r["ok"] for r in results), "results": results}
