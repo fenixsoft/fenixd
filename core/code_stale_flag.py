@@ -142,7 +142,7 @@ def request_restart(log: Callable[[str], None], action: str) -> bool:
     try:
         log(
             f"{action}：检测到进程代码陈旧（磁盘代码较进程启动时已更新，"
-            f"关键路径正以旧代码执行），{detail}；当前动作照常完成"
+            f"关键路径正以旧代码执行），{detail}；当前动作将照常继续执行"
         )
     except Exception:  # noqa: BLE001 — 日志通道故障不得反噬关键路径动作
         pass

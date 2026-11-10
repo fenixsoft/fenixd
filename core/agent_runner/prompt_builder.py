@@ -610,8 +610,10 @@ class PromptBuilder:
                     ),
                 }
             )
-        # add-arbiter-lane 3.1：arbiter 模板复用信号八键（{sig_type}/{sig_spec}/
-        # {severity}/{description}/{evidence}/{recommendation}/{dash_script}）
+        # add-arbiter-lane 3.1：arbiter 模板复用信号七键（{sig_type}/{sig_spec}/
+        # {severity}/{description}/{evidence}/{recommendation}/{dash_script}；
+        # 较 administrator 少 {disp_path}——arbiter 模板不消费处置路径键，
+        # code-review item e2935db5c487）
         # + 车道专属 {report_path}（调查报告实例文件，注入值 = 框架读侧路径
         # 同源防漂移，run_arbiter 硬门读同一路径）与 {run_id}（报告契约段
         # 回填用）。与 admin 同白名单纪律：键仅 arbiter 模板引用。
@@ -1574,8 +1576,16 @@ class PromptBuilder:
         REPLAN_FEEDBACK.md 靠 agent 自觉去读，实测 planner 会无视。文件
         缺失 / 读取失败 → 返回空串（不注入）。
         """
+        # 写侧 pipeline.verify_progress_dir 经 safe_component 净化目录成分落盘
+        # REPLAN_FEEDBACK.md（item dd07c72fe22d），读点同走净化保持两侧目录
+        # 一致——病理 spec 名（含 / 或 ..）时裸内插会写读分裂、注入静默失效
+        # （code-review item 95c4a63f53be，与同文件其余指令文件读点同口径）。
         replan_fb_path = (
-            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "REPLAN_FEEDBACK.md"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / safe_component(spec_name)
+            / "REPLAN_FEEDBACK.md"
         )
         if not replan_fb_path.exists():
             return ""
@@ -1656,8 +1666,17 @@ class PromptBuilder:
         branch = progress.get("branch") or "unknown"
         tasks = progress.get("tasks_checked")
         # 截断守卫（2.2）：attribution / conclusion 各自截断防提示词膨胀。
-        attr = str(diag.get("attribution") or "")[:500]
-        conc = str(diag.get("conclusion") or "")[:800]
+        # 截断注记（code-review item 38856360a5ad）：与上方降级原文分支及
+        # _prev_error_section 同口径——超限注明原文总字数，不让重派 agent
+        # 无从感知诊断证据缩水。
+        attr_raw = str(diag.get("attribution") or "")
+        attr = attr_raw[:500]
+        if len(attr_raw) > 500:
+            attr += f"\n…（原文共 {len(attr_raw)} 字，已尾部截断）"
+        conc_raw = str(diag.get("conclusion") or "")
+        conc = conc_raw[:800]
+        if len(conc_raw) > 800:
+            conc += f"\n…（原文共 {len(conc_raw)} 字，已尾部截断）"
         return (
             f"\n\n## Previous run diagnosis (structured, inherited by this attempt)\n"
             f"Use this diagnosis to adjust your strategy — do NOT repeat the same detection:\n\n"
@@ -2347,7 +2366,13 @@ class PromptBuilder:
         - {worktree}: 本批 worktree 根路径（agent 工作目录）
         """
         template = self._load_agent_template("code-fix")
+        # 条目防御（code-review item f63f5a976a87）：与 conflict_paths（item
+        # 7387ef13061b）/amended_inflight（item d2ddbf82808b）的 isinstance list
+        # 防御同口径——非 list 脏值作废回空；否则 for 迭代按字符/键进行、
+        # slim_items 静默变空清单，且 items 真值非空会绕过下方空 items 告警。
         items: list = detail.get("items") or []
+        if not isinstance(items, list):
+            items = []
         if not items and detail.get("has_failed_scenarios"):
             # 空 items + 派发方声明存在待修失败场景（fastlane 经 detail 顶层
             # 键注入的失败上下文标记）→ WARNING 留痕（进程级去重），替换静默
@@ -2640,40 +2665,48 @@ class PromptBuilder:
             entry = self._pm.state_machine.read_one(spec_name)
         except Exception:
             entry = None
-        if not is_repair_round(self._pm.project_root, spec_name, entry):
-            return ""
-        persisted = load_scenario_set(self._pm.project_root, spec_name)
-        if persisted is None or not persisted.scenarios:
-            return ""
-        fix_section = read_verify_fix_section(self._pm.project_root, spec_name)
-        extended = declares_new_delivery(fix_section)
-        ids = "、".join(s.id for s in persisted.scenarios)
-        lines = [
-            "",
-            "## 验证场景集冻结（修复轮约束，add-verify-scenario-freeze）",
-            "",
-            f"- 你处于**修复轮**：必须复用持久化场景集，不得重新膨胀场景面。",
-            f"- 持久化集共 {len(persisted.scenarios)} 个既有场景（第 "
-            f"{persisted.round} 轮稳定），MUST 全部覆盖：{ids}",
-        ]
-        if extended:
+        # 冻结段主体 fail-open（code-review item edd7de1adc89）：is_repair_round /
+        # load_scenario_set / read_verify_fix_section / declares_new_delivery /
+        # persisted.scenarios 迭代任一抛错（如 tasks.md 读取 OSError、脏场景集）
+        # 均回空串零注入，不沿 _build_prompt 冒泡中止该次派发——与同族
+        # schema/freeze/evidence 段「prompt 软约束失败不阻断派发」口径一致。
+        try:
+            if not is_repair_round(self._pm.project_root, spec_name, entry):
+                return ""
+            persisted = load_scenario_set(self._pm.project_root, spec_name)
+            if persisted is None or not persisted.scenarios:
+                return ""
+            fix_section = read_verify_fix_section(self._pm.project_root, spec_name)
+            extended = declares_new_delivery(fix_section)
+            ids = "、".join(s.id for s in persisted.scenarios)
+            lines = [
+                "",
+                "## 验证场景集冻结（修复轮约束，add-verify-scenario-freeze）",
+                "",
+                f"- 你处于**修复轮**：必须复用持久化场景集，不得重新膨胀场景面。",
+                f"- 持久化集共 {len(persisted.scenarios)} 个既有场景（第 "
+                f"{persisted.round} 轮稳定），MUST 全部覆盖：{ids}",
+            ]
+            if extended:
+                lines.append(
+                    "- 修复段声明了**新增交付范围**：仅允许为该新增范围追加场景，"
+                    "新增场景在 JSON 顶层用 ``added_in_round`` 标注本轮轮次；"
+                    "非该范围的场景不得新增。"
+                )
+            else:
+                lines.append(
+                    "- 修复段**未声明新增交付范围**：MUST NOT 新增任何场景"
+                    "（修复轮不扩容，design D2）。"
+                )
             lines.append(
-                "- 修复段声明了**新增交付范围**：仅允许为该新增范围追加场景，"
-                "新增场景在 JSON 顶层用 ``added_in_round`` 标注本轮轮次；"
-                "非该范围的场景不得新增。"
+                "- 移除既有场景 MUST 在场景对象上用 ``remove_reason`` 字段给出理由"
+                "（如对应功能已按任务书移除）；无理由的缺场景将被确定性校验器以"
+                "持久化集补齐（等效于忽略你的删减），验证报告标注。"
             )
-        else:
-            lines.append(
-                "- 修复段**未声明新增交付范围**：MUST NOT 新增任何场景"
-                "（修复轮不扩容，design D2）。"
-            )
-        lines.append(
-            "- 移除既有场景 MUST 在场景对象上用 ``remove_reason`` 字段给出理由"
-            "（如对应功能已按任务书移除）；无理由的缺场景将被确定性校验器以"
-            "持久化集补齐（等效于忽略你的删减），验证报告标注。"
-        )
-        lines.append("")
-        return "\n".join(lines)
+            lines.append("")
+            return "\n".join(lines)
+        except Exception:  # noqa: BLE001 — prompt 软约束 fail-open（同族段同口径），缺段零注入不阻断派发
+            return ""
 
     def _interaction_contract_section(self, spec_name: str) -> str:
         """构建交互契约约束段（add-interaction-contract-and-per-assert-triage 1.2）。

@@ -1493,6 +1493,11 @@ def _write_claim_placeholder(fd: int, content: str = "{}\n", sync: bool = False)
                 pass
 
 
+# 退避候选数上限（code-review item 2bcb7911392c）：取 1000（保守值，远超
+# 秒级时间戳撞名退避的常态量级），仅为防御性护栏而非可达路径的容量规划。
+_CLAIM_RUN_PATH_MAX_ATTEMPTS = 1000
+
+
 def _claim_run_path(
     runner,
     base: str,
@@ -1537,6 +1542,21 @@ def _claim_run_path(
     candidate = base
     n = 0
     while True:
+        # 退避护栏（code-review item 2bcb7911392c）：候选名彼此唯一且探针按
+        # 候选名探测具体文件时必然收敛，此前无界；上限仅防未来探针形态演进
+        # （目录级/前缀级恒真探测）或目录内海量历史残留使循环次数与残留量
+        # 线性相关且无任何护栏日志。触顶留 WARNING 后返回当前候选（对齐目录
+        # 建不出/其他 OSError 的「返回候选、落盘失败由调用方执行路径统一报
+        # 错」既有降级口径，不改变调用点契约）。
+        if n >= _CLAIM_RUN_PATH_MAX_ATTEMPTS:
+            _log = getattr(runner, "logger", None)
+            if _log is not None:
+                _log.warning(
+                    "agent_runner",
+                    f"run_id 申领退避触顶（base={base}，n={n} 仍冲突），返回"
+                    f"当前候选 {candidate}——落盘冲突由调用方执行路径统一报错",
+                )
+            return candidate
         if probe is not None and probe(candidate):
             n += 1
             candidate = f"{base}-{n}"
@@ -2925,8 +2945,17 @@ def run_code_review(
             _toolface_reg = getattr(runner, "_run_toolface", None)
             tf = None
             if isinstance(_toolface_reg, dict):
-                tf = _toolface_reg.get(
-                    getattr(runner, "_normalize_run_id", lambda r: r)(run_id))
+                # 打桩 _normalize_run_id 抛错/签名不匹配不得从收尾段穿透
+                # （code-review item 64f3f88b295e）：异常会顶掉失败信封，
+                # 调用方 admin_monitor._worker 拿到异常而非 CodeReviewResult
+                # 失败信封，丢失终态指标行与重派意图上交——登记键取值失败
+                # 回落恒等 run_id（同分支 _run_toolface 取值后判型防御口径）。
+                try:
+                    _reg_key = getattr(
+                        runner, "_normalize_run_id", lambda r: r)(run_id)
+                except Exception:  # noqa: BLE001 — 键回落恒等，不改硬门失败终态
+                    _reg_key = run_id
+                tf = _toolface_reg.get(_reg_key)
             if isinstance(tf, dict):
                 face["toolface"] = tf
             gate_fail_face = face
@@ -2966,6 +2995,35 @@ def run_code_review(
             run_ok = False
             error = f"读取审查产物失败: {e}"
             findings = []
+            # 本失败路径发生在 if run_ok 体内，下方的 error 收场抢救 else
+            # 分支已不可达（code-review item 698a4d014ce4）——「中途死亡不
+            # 等于零产出」的抢救意图对本路径同样适用，不补抢救则分片与终局
+            # 消息中尚存的审查结论被整体放弃。先补终局消息结论行进主产物，
+            # 再尽力重试一次聚合读侧落账（仍失败只留痕，不改失败终态；红线
+            # 与既有抢救一致：不核销、不激活 code-fix 检查点，run_ok 仍 False）。
+            try:
+                _salvage_terminal_conclusion_rows(runner, run_id)
+                findings = runner._read_code_review_out(runner.project_root, run_id)
+                if findings:
+                    stats = upsert_findings(
+                        runner.project_root,
+                        findings,
+                        review_id=run_id,
+                        review_kind=review_kind,
+                    )
+                    inserted = stats.get("inserted", 0)
+                    updated = stats.get("updated", 0)
+                    error = (
+                        f"{error}；读取失败后抢救落账 inserted={inserted} "
+                        f"updated={updated}（部分覆盖，未做全仓快照核销）"
+                    )
+            except Exception as _salv_e:  # noqa: BLE001 — 抢救失败不改原失败终态
+                _log = getattr(runner, "logger", None)
+                if _log is not None:
+                    _log.warning(
+                        "code-review",
+                        f"读取失败折算后抢救失败（run {run_id}）: {_salv_e}",
+                    )
         # `_read_code_review_out` 所有返回路径都是 list（缺失文件返回 []），
         # 旧写法 `findings is not None` 是恒真判断（code-review item d315670fb35f），
         # 会误导读者以为存在 None 返回路径。直接判 run_ok。
@@ -4457,11 +4515,30 @@ def run_code_fix(
                 run_ok = False
                 error = f"code-fix 产物计数读取失败: {out_path} 读取异常（{e}）"
                 rows = []
+            # 计数对齐编排侧读口径（code-review item 97e4b7c682d5）：
+            # read_fix_out/_split_fix_rows 对同条目多行按「后行覆盖、fixed
+            # 优先于 skipped」去重，非 str item_id 行按损坏行丢弃；此处此前
+            # 逐行累加，agent 同 run 内对同一条目补写多行（先 skipped 后
+            # fixed 的合法更新形态）会重复计数（完成行与指标虚高），非 str
+            # item_id 行也被计入而编排侧实际丢弃。fixed 计 distinct 命中行
+            # 的条目数（不随末行回退降级），skipped 计末行为 skipped 且不在
+            # fixed 集的条目数——与 _split_fix_rows 的 fixed_ids/skip_reasons
+            # 分区逐点同义。
+            _fix_fixed_ids: set = set()
+            _fix_last: dict = {}
             for rec in rows:
+                _iid = rec.get("item_id")
+                if not isinstance(_iid, str):
+                    continue
                 if rec.get("status") == "fixed":
-                    fixed += 1
-                elif rec.get("status") == "skipped":
-                    skipped += 1
+                    _fix_fixed_ids.add(_iid)
+                _fix_last[_iid] = rec
+            fixed = len(_fix_fixed_ids)
+            skipped = sum(
+                1
+                for _iid, rec in _fix_last.items()
+                if rec.get("status") == "skipped" and _iid not in _fix_fixed_ids
+            )
 
         # 收尾富指标行（evo-add-run-metrics-lane-baseline 1.3）：含 agent_type/
         # cost_usd，离群初筛按车道分组与成本维度自此可见。产物硬门/计数读取
@@ -4549,6 +4626,41 @@ def _unique_impl_ocr_run_id(spec_name: str) -> str:
     即便同秒双实例，产物写侧为原子替换，后写者覆盖亦无害。
     """
     return f"impl-ocr-{spec_name}-{int(time.time())}"
+
+
+def _unavailable_artifact(
+    spec_name: str,
+    branch: str,
+    base_commit: str,
+    head_commit: str,
+    run_id: str = "",
+    reason: str = "",
+) -> dict:
+    """impl-ocr 车道 unavailable 产物缺省构造（code-review item 82141c18e5fe）。
+
+    入口 import 失败 / 非法 spec 名两个早退分支与主流程缺省 ``artifact``
+    此前各自内联字段完全相同的字典字面量（共三份），新增产物字段须三处
+    同步（漏一处即早退路径产物缺字段、join 读侧比对口径分裂）；收敛为一
+    处。早退分支以 ``run_id=""`` 调用（尚未派生 run_id、盘面零写入，由
+    调用方既有缺省分支兜底）；主流程缺省 artifact ``reason`` 留空，由各
+    失败点显式改写。
+    """
+    return {
+        "status": "unavailable",
+        "spec": spec_name,
+        "run_id": run_id,
+        "kind": "impl-ocr-lane",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "fingerprint": {
+            "branch": branch,
+            "merge_base": base_commit,
+            "head_commit": head_commit,
+        },
+        "review_range": {},
+        "llm": {},
+        "findings": [],
+        "reason": reason,
+    }
 
 
 def _ocr_finding_fingerprint(finding: dict) -> str:
@@ -5010,72 +5122,46 @@ def run_impl_ocr(
                 "agent_runner",
                 f"impl-ocr 车道入口 import 失败，折算 unavailable 产物返回: {reason}",
             )
-        return {
-            "status": "unavailable",
-            "spec": spec_name,
-            "run_id": "",
-            "kind": "impl-ocr-lane",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "fingerprint": {
-                "branch": branch,
-                "merge_base": base_commit,
-                "head_commit": head_commit,
-            },
-            "review_range": {},
-            "llm": {},
-            "findings": [],
-            "reason": reason,
-        }
+        return _unavailable_artifact(
+            spec_name, branch, base_commit, head_commit, run_id="", reason=reason
+        )
 
     unsafe = _spec_name_path_error(spec_name)
     if unsafe:
         _log = getattr(runner, "logger", None)
         if _log is not None:
             _log.warning("agent_runner", f"impl-ocr 车道拒绝非法 spec 名: {unsafe}")
-        return {
-            "status": "unavailable",
-            "spec": spec_name,
-            "run_id": "",
-            "kind": "impl-ocr-lane",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "fingerprint": {
-                "branch": branch,
-                "merge_base": base_commit,
-                "head_commit": head_commit,
-            },
-            "review_range": {},
-            "llm": {},
-            "findings": [],
-            "reason": unsafe,
-        }
+        return _unavailable_artifact(
+            spec_name, branch, base_commit, head_commit, run_id="", reason=unsafe
+        )
 
     run_id = _unique_impl_ocr_run_id(spec_name)
     log = getattr(runner, "logger", None)
     artifact_path, raw_path, cursor_path = _impl_ocr_paths(
         runner.project_root, spec_name
     )
-    artifact: dict = {
-        "status": "unavailable",  # 缺省失败态，成功路径显式改写
-        "spec": spec_name,
-        "run_id": run_id,
-        "kind": "impl-ocr-lane",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "fingerprint": {
-            "branch": branch,
-            "merge_base": base_commit,
-            "head_commit": head_commit,
-        },
-        "review_range": {},
-        "llm": {},
-        "findings": [],
-        "reason": "",
-    }
+    # 缺省失败态（成功路径显式改写）；构造收敛走 _unavailable_artifact
+    # （code-review item 82141c18e5fe，与两处早退信封同源）
+    artifact: dict = _unavailable_artifact(
+        spec_name, branch, base_commit, head_commit, run_id=run_id, reason=""
+    )
 
+    # 启动事件 message 先归一再求值（code-review item fc27c4e22a36）：切片
+    # 的 base_commit/head_commit 若为 None/非字符串，TypeError 在本函数主
+    # try 之前、调用方帧内就抛出，_write_impl_ocr_run_events 的内部兜底
+    # try 够不着——直接穿透违反 docstring「MUST NOT 抛未捕获异常（任务
+    # 3.3）」契约，既不落 unavailable 产物也不清理现场。str(x or "") 归一
+    # 后任何入参形态都只走既有折算收尾（f-string 内插 branch 对 None 本就
+    # 不抛，归一只针对切片点）。
+    _start_message = (
+        f"ocr 车道启动: {branch} "
+        f"{str(base_commit or '')[:8]}..{str(head_commit or '')[:8]}"
+    )
     _write_impl_ocr_run_events(
         runner.project_root,
         run_id,
         spec_name,
-        [("start", {"message": f"ocr 车道启动: {branch} {base_commit[:8]}..{head_commit[:8]}"})],
+        [("start", {"message": _start_message})],
     )
 
     wt = None

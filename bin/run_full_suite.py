@@ -32,6 +32,7 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
 
 import argparse
 import fcntl
+import json
 import os
 import re
 import signal
@@ -1008,8 +1009,6 @@ def main(argv=None) -> int:
 
 
 def json_dumps(data) -> str:
-    import json
-
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 

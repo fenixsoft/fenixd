@@ -630,6 +630,27 @@ class ConfigLoader:
             return default
         return int(value)
 
+    @staticmethod
+    def _int_exceeds_float_range(value: Any) -> bool:
+        """int 值试转 float 是否溢出（YAML 任意精度整数防御，item 5484fe2ee8e0）。
+
+        YAML 合法的任意精度整数（``10**400`` 形态超长数字字面量）是 int 实例、
+        非 bool、``<=0`` 比较正常，能穿透 isinstance/bool/非有限浮点/``<=0``
+        全部既有守卫，却在消费点 ``float(value)`` 抛未捕获 OverflowError——
+        比 .inf 的「恒不超时」更糟，是 run 派发主链路与 stuck 周期检测的直接
+        崩溃。bool（int 子类）与非 int 值不参与判定恒 False（其非法语义由
+        各自守卫处理）。供 normalize_timeout_overrides /
+        effective_run_timeout_seconds / effective_stuck_threshold_seconds 与
+        .inf/.nan 同族输入同口径回退并留痕。
+        """
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+        try:
+            float(value)
+        except OverflowError:
+            return True
+        return False
+
     @classmethod
     def _normalize_stall_budget_positive(cls, config: Dict[str, Any], key: str,
                                          default, integer: bool):
@@ -3101,12 +3122,30 @@ class ConfigLoader:
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
         # enabled: "false"）静默转 True、意外开启自省周期调度；非 bool 回退
         # 文档缺省 False（与 get_regression_config 同范式，code-review
-        # item 1050310f1b6e）。
+        # item 1050310f1b6e）。非法回退经 _warn_reader_once 留痕（code-review
+        # item f88e19622f23，对齐 admin.code_review.enabled 同族「回退必告警」
+        # 口径——引号串写法错误悄悄改向调度开关且无日志线索属事故形态）。
         enabled = sr.get("enabled", False)
         if not isinstance(enabled, bool):
+            cls._warn_reader_once(
+                "admin.self_review.enabled",
+                enabled,
+                _logger.warning,
+                "admin.self_review.enabled 非法值 %r（非 bool），"
+                "回退缺省 False",
+                enabled,
+            )
             enabled = False
         read_todo = sr.get("read_todo", False)
         if not isinstance(read_todo, bool):
+            cls._warn_reader_once(
+                "admin.self_review.read_todo",
+                read_todo,
+                _logger.warning,
+                "admin.self_review.read_todo 非法值 %r（非 bool），"
+                "回退缺省 False",
+                read_todo,
+            )
             read_todo = False
         # todo_head_restore：回写前 HEAD 自愈开关（evo-self-review-todo-head-
         # restore R2），缺省 true（清空丢历史是已兑现事故形态，防护默认在）；
@@ -3114,6 +3153,14 @@ class ConfigLoader:
         # 台账时豁免——跳过恢复且不落恢复 WARNING。
         todo_head_restore = sr.get("todo_head_restore", True)
         if not isinstance(todo_head_restore, bool):
+            cls._warn_reader_once(
+                "admin.self_review.todo_head_restore",
+                todo_head_restore,
+                _logger.warning,
+                "admin.self_review.todo_head_restore 非法值 %r（非 bool），"
+                "回退缺省 True",
+                todo_head_restore,
+            )
             todo_head_restore = True
         return {
             "enabled": enabled,
@@ -3498,9 +3545,19 @@ class ConfigLoader:
         reg = cls._sub_segment_or_empty(admin, "regression")
         # 严格 bool：bool(...) 会把任何 truthy 非 bool 值（如 YAML 引号串
         # enabled: "false"）静默转 True、意外开启周期回归；非 bool 回退文档
-        # 缺省 False（与 get_code_review_fix_config 同范式）。
+        # 缺省 False（与 get_code_review_fix_config 同范式）。非法回退经
+        # _warn_reader_once 留痕（code-review item f88e19622f23，与
+        # admin.code_review.enabled 同族「回退必告警」口径对齐）。
         enabled = reg.get("enabled", False)
         if not isinstance(enabled, bool):
+            cls._warn_reader_once(
+                "admin.regression.enabled",
+                enabled,
+                _logger.warning,
+                "admin.regression.enabled 非法值 %r（非 bool），"
+                "回退缺省 False",
+                enabled,
+            )
             enabled = False
         return {
             "enabled": enabled,
@@ -3530,17 +3587,42 @@ class ConfigLoader:
         # 静默截断（2.5→2 阈值偏移，0.5→0 首次即判失败）。判定核心已单点
         # 收敛 _normalize_int_value（code-review item 05cdb9c48227）：接受集
         # 与原内联守卫逐值一致（正整数、整值浮点按整数接受、.nan/.inf 同拒）。
-        threshold = cls._normalize_int_value(threshold, 3, positive=True)
+        # 非法回退留痕（code-review item caa0072609e3，对齐同文件整值读取器
+        # admin.code_review.max_files / batch_size / archive.auto_threshold 的
+        # 「配置了但非法回退必告警」口径）：本函数注释所述事故形态（2.5→2
+        # 阈值偏移、0.5→0 首次即判失败）恰靠日志才能定位，坏配置在场时静默
+        # 回退使用户无任何线索。整值浮点数值相等（3 == 3.0）静默接受不告警，
+        # _warn_reader_once 去重不刷屏，回退行为不变。
+        normalized = cls._normalize_int_value(threshold, 3, positive=True)
+        if normalized != threshold:
+            cls._warn_reader_once(
+                "admin.run_infra_breaker.threshold",
+                threshold,
+                _logger.warning,
+                "admin.run_infra_breaker.threshold 非法值 %r（非正整数），"
+                "回退缺省 3",
+                threshold,
+            )
+        threshold = normalized
         # 非有限浮点同拒（code-review item 25f2aed84a49，范式先例 a61ee2b2031e /
         # d9e9a238696f）：nan 使 <=0 比较恒 False 可穿透校验，冷却比较恒 False
         # （熔断即建即恢复或永不恢复），且经 get_admin_config 嵌套输出时以 NaN
         # 字面量进入 JSON 序列化（非法 JSON）。
+        # 非法回退留痕同上方 threshold（item caa0072609e3）。
         if (
             not isinstance(cooldown, (int, float))
             or isinstance(cooldown, bool)
             or (isinstance(cooldown, float) and not math.isfinite(cooldown))
             or cooldown <= 0
         ):
+            cls._warn_reader_once(
+                "admin.run_infra_breaker.cooldown_minutes",
+                cooldown,
+                _logger.warning,
+                "admin.run_infra_breaker.cooldown_minutes 非法值 %r"
+                "（非正数/bool/非有限浮点），回退缺省 30",
+                cooldown,
+            )
             cooldown = 30
         return {
             "threshold": int(threshold),
@@ -3590,7 +3672,8 @@ class ConfigLoader:
         """stuck 判定阈值单源派生自 run 超时（design D1/D2/D4）。
 
         effective_threshold = run_timeout_seconds + STUCK_GRACE_SECONDS（600s）。
-        run_timeout_seconds 缺失、非正数或非有限浮点（.nan）时回退
+        run_timeout_seconds 缺失、非正数、非有限浮点（.nan）或 float 溢出的
+        超长整数时回退
         STUCK_FALLBACK_SECONDS（9600s）并打
         WARNING（D4：
         防有人把超时关掉导致恢复永不触发）。旧键
@@ -3611,15 +3694,20 @@ class ConfigLoader:
         # code-review d9e9a238696f：YAML .nan 字面量穿透 isinstance 与 <=0 检查，
         # 阈值得 nan+600，后续超时比较恒 False，stuck/恢复判定永不触发——
         # 非有限浮点与缺失/非正数同口径回退
+        # code-review 5484fe2ee8e0：YAML 任意精度整数（10**400 形态超长 int
+        # 字面量）穿透 isinstance/bool/非有限/<=0 全部检查后，下方 float(rt)
+        # 抛未捕获 OverflowError 使 stuck 周期检测直接崩溃——同族同口径回退
         if (
             not isinstance(rt, (int, float))
             or isinstance(rt, bool)
             or (isinstance(rt, float) and not math.isfinite(rt))
             or rt <= 0
+            or cls._int_exceeds_float_range(rt)
         ):
             if not _STUCK_FALLBACK_WARNED:
                 _logger.warning(
-                    "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
+                    "agents.run_timeout_seconds 缺失、≤0、非有限（.inf/.nan）"
+                    "或超出 float 可表示范围，stuck 阈值按 %ss 回退生效"
                     "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
                     STUCK_FALLBACK_SECONDS,
                     STUCK_GRACE_SECONDS,
@@ -4099,6 +4187,23 @@ class ConfigLoader:
                         min_allowed,
                     )
                 continue
+            # YAML 任意精度整数防御（code-review item 5484fe2ee8e0，与
+            # .inf/.nan 同族口径）：超长 int 字面量（如 10**400 形态）穿透
+            # 上方类型/下限检查后，会在消费点 float()（effective_run_timeout_
+            # seconds / judge_timeout_seconds）抛未捕获 OverflowError 使派发
+            # 主链路崩溃——试转溢出按同族非法值整条忽略并 ERROR 留痕（同一
+            # 去重范式），进程不崩溃、该键回退全局默认。
+            if cls._int_exceeds_float_range(val):
+                dedup_key = (key, repr(val))
+                if dedup_key not in _TIMEOUT_OVERRIDE_INVALID_WARNED:
+                    _TIMEOUT_OVERRIDE_INVALID_WARNED.add(dedup_key)
+                    _logger.error(
+                        "agents.timeout_overrides.%s 为 %d 位数字的超长整数，"
+                        "超出 float 可表示范围，该键被忽略并回退全局默认",
+                        key,
+                        len(str(val)),
+                    )
+                continue
             out[key] = int(val)
         return out
 
@@ -4110,7 +4215,7 @@ class ConfigLoader:
 
         解析顺序 MUST：``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，
         否则回退 ``agents.run_timeout_seconds`` 全局默认；全局缺失/非正数/非有限浮点
-        （.inf/.nan）回退 RUN_TIMEOUT_FALLBACK_SECONDS（9000）。
+        （.inf/.nan）/float 溢出的任意精度整数回退 RUN_TIMEOUT_FALLBACK_SECONDS（9000）。
 
         覆盖 MUST 适用于 TIMEOUT_OVERRIDE_AGENT_TYPES 全部键（KNOWN_AGENT_TYPES
         全集 + repair，含 implementer、verifier、planner-plan、planner-judge、
@@ -4133,16 +4238,21 @@ class ConfigLoader:
         # 字面量穿透 rt > 0 检查直通生效，墙钟永不触发，且经
         # supervision_config_floor 把 absolute_max 对齐成 inf 请求持久化自传播）
         # 均与 effective_stuck_threshold_seconds（d9e9a238696f）同键同口径。
+        # 任意精度整数同族回退（5484fe2ee8e0：10**400 形态超长 int 字面量穿透
+        # isinstance/bool/非有限/<=0 全部检查后，下方 float(rt) 抛未捕获
+        # OverflowError 直接崩溃）。
         if (
             not isinstance(rt, (int, float))
             or isinstance(rt, bool)
             or (isinstance(rt, float) and not math.isfinite(rt))
             or rt <= 0
+            or cls._int_exceeds_float_range(rt)
         ):
             if not _RUN_TIMEOUT_FALLBACK_WARNED:
                 _logger.warning(
-                    "agents.run_timeout_seconds 缺失、≤0 或非有限（.inf/.nan），"
-                    "run 超时按 %ss 回退生效；建议显式配置合法的 run_timeout_seconds",
+                    "agents.run_timeout_seconds 缺失、≤0、非有限（.inf/.nan）"
+                    "或超出 float 可表示范围，run 超时按 %ss 回退生效；"
+                    "建议显式配置合法的 run_timeout_seconds",
                     RUN_TIMEOUT_FALLBACK_SECONDS,
                 )
                 _RUN_TIMEOUT_FALLBACK_WARNED = True

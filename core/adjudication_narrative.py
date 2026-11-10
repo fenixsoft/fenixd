@@ -738,12 +738,18 @@ def _resolve_model(admin_cfg: Dict[str, Any]) -> str:
 
 
 def _resolve_timeout(admin_cfg: Dict[str, Any]) -> float:
-    """叙事硬超时（admin.narrative_timeout_seconds，缺省 180；下限 1s）。"""
+    """叙事硬超时（admin.narrative_timeout_seconds，缺省 180；钳制 1~1800s）。"""
     try:
         value = float(admin_cfg.get("narrative_timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
     except (TypeError, ValueError):
         value = float(DEFAULT_TIMEOUT_SECONDS)
-    return max(value, 1.0)
+    # 上界钳制（code-review c5a4d8f67085）：上游读路径（get_admin_config 的
+    # _normalize_int_value）与 dashboard 写路径（config_admin.py 校验仅 >0）
+    # 均不设上界，病态大值会把 LLM 调用窗口与本模块 _narrative_worker 的
+    # 排队等待上限（本值×_MAX_ATTEMPTS）一并无界拉长，排队线程长期占满
+    # _NARRATIVE_MAX_THREADS 名额使叙事车道静默瘫痪。取缺省 180 的 10 倍
+    # （1800s）量级：覆盖慢网关长尾，超出视为配置错误收敛到上界。
+    return min(max(value, 1.0), 1800.0)
 
 
 def _format_facts(facts: Any) -> str:

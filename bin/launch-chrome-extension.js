@@ -109,6 +109,9 @@ function parseArgs() {
   // 文案明示须为纯数字毫秒数，避免 parseInt 前缀解析静默改变调用方口径
   if (invalidTimeoutValue !== null) invalidReason = `--timeout 需要纯数字毫秒数（如 60000，不支持 60s/60000ms 等带单位后缀），得到: "${invalidTimeoutValue}"`;
   else if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) invalidReason = '--timeout 需要正数参数（毫秒，须大于 0）';
+  // 超过 2147483647（2^31-1）的 delay 会使下方 setTimeout 按 1ms 立即触发（Node 32 位
+  // 有符号整数上限），总预算失效恒超时收卷、uiResults 为空整轮判不确定态，故设上界报错
+  else if (opts.timeout > 2147483647) invalidReason = '--timeout 过大（毫秒，须不超过 2147483647）';
   // startsWith 前 String() 归一：--output/--detect 未传时默认值为 null，
   // 直接对 null 调 startsWith 会在任何未带这两个选项的调用下 TypeError 崩溃
   if (opts.distPath === undefined || opts.distPath === '' || String(opts.distPath).startsWith('--')) invalidReason = '--dist-path 缺少取值';
@@ -399,6 +402,11 @@ async function launchChromeExtension(distPath, opts = {}) {
       for (const p of browserContext.pages()) {
         p.on('console', onConsoleError);
       }
+      // 此后（UI 测试期间）新开的页面（扩展再开标签页/弹窗页）也统一挂同一监听
+      // （code-review item 58f4e5c2bbc7）：只挂监听时刻已存在的页面时新开页面
+      // 控制台错误漏采，测试 5 对其不可见；'page' 事件只对新创建的页面触发，
+      // 与上方既有页循环不重叠，不会重复挂载双计
+      browserContext.on('page', p => p.on('console', onConsoleError));
       // 等待页面加载
       await newtabPage.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
         // 超时不算致命错误
@@ -795,9 +803,12 @@ async function runUITests(context, page, consoleErrors = [], overridesNewtab = f
       }
       results.push({
         test: '按钮可见性',
-        status: buttons.length > 0 ? 'pass' : 'warn',
+        // 有按钮但 0 个可见（渲染失败、display:none 等）时降为 warn：只看 buttons.length
+        // 会把整页按钮全隐藏的渲染故障判 pass（code-review item e20468598ece），与用例名
+        // 「可见性」判据语义对齐；同其余 warn 分支口径不进 hasUiTestFailures/uiTestFailures
+        status: buttons.length > 0 && clickableCount > 0 ? 'pass' : 'warn',
         detail: buttons.length > 0
-          ? `${buttons.length} 个按钮 (${clickableCount} 个可见；仅检测可见性，未点击)`
+          ? `${buttons.length} 个按钮 (${clickableCount} 个可见；仅检测可见性，未点击${clickableCount === 0 ? '；全部不可见，可能渲染失败' : ''})`
           : '未发现按钮',
       });
     } catch (e) {

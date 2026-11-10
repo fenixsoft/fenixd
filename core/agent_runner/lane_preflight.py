@@ -19,6 +19,7 @@ infra 环境指纹集是「探针能探什么」与「run 失败算不算环境�
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,26 @@ class LaneHealth:
 
     ok: bool
     reasons: List[str] = field(default_factory=list)
+
+
+def _callable_accepts_timeout_kwarg(func) -> bool:
+    """预判 callable 是否接受 ``timeout`` 关键字实参（**kwargs 视为接受）。
+
+    签名不可内省（builtin/C 扩展等罕见形态）按接受处理——探针体内的
+    TypeError 由外层 unhealthy 兜底如实归因，不做「TypeError 试探回退」
+    （那会把体内 TypeError 误判为签名不符并二次执行探针）。
+    """
+    try:
+        params = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        p.kind
+        in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        and p.name == "timeout"
+        or p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in params
+    )
 
 
 def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_TIMEOUT_S) -> LaneHealth:
@@ -102,10 +123,13 @@ def probe_lane_health(config, logger=None, health_timeout: float = PROBE_HEALTH_
                 adapter = resolve_adapter_from_config(config or {})
                 health_check = getattr(adapter, "check_health", None)
                 if health_check is not None:
-                    try:
+                    # 签名预判调用形态（不走 except TypeError 试探回退——
+                    # 探针体内 TypeError 会被误判为「无 timeout 形参」并
+                    # 二次执行探针）；体内异常由外层 unhealthy 兜底如实归因
+                    if _callable_accepts_timeout_kwarg(health_check):
                         health_check(timeout=health_timeout)
-                    except TypeError:
-                        # 兼容无 timeout 形参的 adapter 声明
+                    else:
+                        # 兼容无 timeout 形参的 adapter 声明（零参直调）
                         health_check()
     except Exception as e:
         # 探针自身故障按 unhealthy 处置（含 HarnessHealthError 的兜外形态）
@@ -228,10 +252,15 @@ LANE_ENV_DEDUP_KEY = "lane-env-unavailable-arbiter-repair"
 
 
 def _lane_env_alert_inflight(rec: dict) -> bool:
+    # 人工已处理（handled=True）条目不属「在案未处理」：不再抑制新的
+    # unhealthy 告警落地（否则环境持续不可用期间人工可见面失明，只能等
+    # 150 条窗口裁剪后才重新武装）；同型口径见 admin_store
+    # dispatch_host_change_rollback_alert 的 is_inflight（not handled 判据）
     return (
         rec.get("kind") == ESCALATION_KIND
         and rec.get("signal_type") == LANE_ENV_ALERT_SIGNAL
         and rec.get("dedup_key") == LANE_ENV_DEDUP_KEY
+        and not rec.get("handled")
     )
 
 
