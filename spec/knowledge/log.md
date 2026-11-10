@@ -171,3 +171,4 @@
 ## [2026-11-10 18:35 UTC+8] fold | posix-dependency-true-distribution-1110.md 折叠失败滞留：spec/knowledge/domains/daemon-runtime/framework-install.md: prehistoric sources 锚点格式非法（应形如 git:<ref>-..<日期>）: 
 ## [2026-11-10 18:43 UTC+8] distill | fix-legacy-test-failures（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-11 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 12 / 过 8）
+## [2026-11-11 02:57 UTC+8] fold | posix-dependency-true-distribution-1110.md 折叠失败滞留：spec/knowledge/domains/daemon-runtime/framework-install.md: prehistoric sources 锚点格式非法（应形如 git:<ref>-..<日期>）: 
