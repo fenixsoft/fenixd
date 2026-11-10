@@ -139,4 +139,4 @@
 ## 7. 验收自检
 
 - [ ] 7.1 运行 `python3 -m pytest tests/ -q` 全量回归零失败（438 个测试文件全绿，既有断言零修改，守卫测试除外）
-- [ ] 7.2 自检 `core/platform/linux.py` 与被平移源实现逐条对照表（接口→源位置→平移说明）写入 PR 描述或 `core/platform/linux.py` 模块 docstring；确认 pyproject/requirements 零新增第三方依赖
+- [x] 7.2 自检 `core/platform/linux.py`（对照表模块 docstring 内「接口 → 平移源 → 说明」42 项 __all__ 全覆盖机械自检通过；仓库无 pyproject/requirements/setup 依赖声明文件，分支改动零出界（core/ tests/ spec/ pytest.ini install.sh 之外无文件），PAL 纯 stdlib 零新增第三方依赖成立） 与被平移源实现逐条对照表（接口→源位置→平移说明）写入 PR 描述或 `core/platform/linux.py` 模块 docstring；确认 pyproject/requirements 零新增第三方依赖
