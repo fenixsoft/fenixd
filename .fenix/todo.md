@@ -216,3 +216,11 @@
 ## 2026-11-09
 ### 知识真相源
 - audit 语义项转写失败：duplicate（spec/knowledge/domains/knowledge-atlas/knowledge-anchor-discipline.md × spec/knowledge/domains/knowledge-atlas/knowledge-atlas-directory.md），请人工核查
+
+## 2026-11-11
+### 可改进
+- **[arbiter:redesign] judge 生命周期硬上限进度感知**
+  - 影响：验证车道长修复链 spec（多轮 test-defect 修复 + product 修复）在接近真实收敛点时被计数冻结打断，每次冻结消耗一次 Arbiter/人工裁决成本（本 spec $40.6、judge 侧 ~18.6M input tokens）。
+  - 证据：fail_history.json（第 6 轮 4 非过）→ 修复后 report.json（20/22）：6 次派发期间失败集单调收缩（18 过→20 过），冻结发生在修复刚闭环、残留失败首次真实执行的轮界；STATE _judge_rerun_count 生命周期累计不区分「有产出的修复推进」与「空转复判」。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
+  - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
+  - 建议：失败集严格改进（本轮失败/级联集为上轮真子集）时对 _judge_rerun_count 衰减或部分返还；或给「修复轮闭环后的首轮裁决」设一次豁免额度；或冻结告警附「失败集改进轨迹」辅助人工快速解冻决策。
