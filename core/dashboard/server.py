@@ -530,16 +530,14 @@ def _bind_parent_lifecycle() -> None:
     if os.environ.get("FENIX_DASHBOARD_DETACH") == "1":
         _start_claude_watchdog()
         return
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        # PR_SET_PDEATHSIG = 1（linux/sched.h）；SIGTERM = 15
-        if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
-            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
-    except Exception as e:  # 非 Linux / libc 不可用：仅告警不阻断启动
+    # PDEATHSIG 纪律经 pal.bind_to_parent（A 组单源，纪律上收 linux.py）；
+    # False＝非 Linux / libc 不可用 / prctl 失败：仅告警不阻断启动（策略留本端）。
+    # 既有测试缝（零修改契约）：test_dashboard_orphan_guard 以
+    # monkeypatch.setattr(ctypes, "CDLL", ...) 打桩——pal 后端经共享 ctypes
+    # 模块对象属性读取取 CDLL，桩照常生效，prctl 调用形态逐位一致。
+    if not pal.bind_to_parent(signal.SIGTERM):
         sys.stderr.write(
-            f"dashboard serve 无法设置 PDEATHSIG（{e}）；"
+            "dashboard serve 无法设置 PDEATHSIG（bind_to_parent 失败）；"
             "父进程退出后本实例不会自动终止，请注意。\n"
         )
     if os.getppid() == 1:
