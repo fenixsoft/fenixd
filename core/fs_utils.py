@@ -29,11 +29,14 @@ self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
 只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
+import errno
 import fcntl
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
+from typing import Optional
 
 _logger = logging.getLogger("fenixd.fs_utils")
 
@@ -122,7 +125,39 @@ def fsync_parent_dir(path: Path) -> None:
         os.close(dfd)
 
 
-def with_file_lock(path: Path, fn):
+class FileLockBusy(Exception):
+    """nonblocking 模式下限时内未抢到伴生锁（他方持锁）。
+
+    与 FileLockUnavailable 两因可区分，供调用方分别降级留痕（对齐
+    verify_scenarios._acquire_scenarios_lock 的现行两因分类口径）。
+    """
+
+
+class FileLockUnavailable(Exception):
+    """flock 本身不可用（特殊文件系统不支持等非 EAGAIN/EACCES errno）。"""
+
+
+def flock_exclusive(fileobj, *, nonblocking: bool = False) -> None:
+    """对已打开的锁文件做单次 ``LOCK_EX``（nonblocking 时 | ``LOCK_NB``）flock。
+
+    core/ 全部 flock syscall 的单源原语（platform-abstraction C 组转发面，
+    零行为变化平移）：需要自持 fd 管理锁生命周期的消费点（持锁横跨多个
+    调用、或以 contextmanager 形态 yield 锁内区间）各自保留既有轮询节奏 /
+    errno 分类 / 降级策略，syscall 调用收口于此；with_file_lock 是其上的
+    标准封装（锁文件布局 ``.<name>.lock`` 一处维护）。fileobj 接受文件对象
+    或 fd（fcntl.flock 两种形态均接受）。失败抛 OSError，errno 原样上抛。
+    """
+    flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
+    fcntl.flock(fileobj, flags)
+
+
+def flock_release(fileobj) -> None:
+    """``LOCK_UN`` 释放（close 亦隐式释放；失败处理策略归调用方，原样上抛）。"""
+    fcntl.flock(fileobj, fcntl.LOCK_UN)
+
+
+def with_file_lock(path: Path, fn, *, nonblocking: bool = False,
+                   timeout_s: Optional[float] = None):
     """在 path 同目录的 ``.<name>.lock`` 文件上加 flock 互斥后执行 fn。
 
     调用方（daemon 主线程 / dashboard server 线程）可能同时写同一存储；
@@ -132,15 +167,41 @@ def with_file_lock(path: Path, fn):
     原 evolution 私有 ``_with_lock``，self_review 三处跨模块 import 以共用
     todo.md 锁，提升于此公共归属（item 1a8a9328767b）；evolution 侧以
     ``as _with_lock`` 别名引用，内部调用面与锁文件布局不变。
+
+    可选参数（platform-abstraction W1 前置扩展，默认行为不变）：
+
+    - 默认（无新参）：现行阻塞 ``LOCK_EX`` 语义，完全不变。
+    - ``nonblocking=True``：以 ``LOCK_EX | LOCK_NB`` 轮询抢锁而非无限阻塞，
+      ``timeout_s``（默认 0 = 仅尝试一次）内每 50ms 重试；仅「锁被占」类
+      errno（EAGAIN/EACCES）值得重试，其余（特殊文件系统不支持 flock 等）
+      立即抛 ``FileLockUnavailable``；限时未抢到抛 ``FileLockBusy``——两因
+      可区分，调用方可分别降级留痕（对齐 verify_scenarios 现行分类）。
+      ``timeout_s`` 仅在 nonblocking 下生效。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / f".{path.name}.lock"
     with open(lock_path, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        if nonblocking:
+            deadline = time.monotonic() + max(0.0, float(timeout_s or 0.0))
+            while True:
+                try:
+                    flock_exclusive(lock_f, nonblocking=True)
+                    break
+                except OSError as e:
+                    if e.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise FileLockUnavailable(
+                            f"文件系统不支持 flock（errno={e.errno}）") from e
+                    if time.monotonic() >= deadline:
+                        raise FileLockBusy(
+                            f"限时 {float(timeout_s or 0.0):g}s 内未抢到锁（他方持锁）"
+                        ) from e
+                    time.sleep(0.05)
+        else:
+            flock_exclusive(lock_f)
         try:
             return fn()
         finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+            flock_release(lock_f)
 
 
 def git_c_env() -> dict:
