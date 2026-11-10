@@ -84,6 +84,7 @@ from core.code_review import (  # noqa: F401
 )
 from core.agent_runner.provider_circuit import PROVIDER_SWITCH_COOLDOWN_SECONDS
 from core.config import ConfigLoader
+from core.fs_utils import atomic_write_text
 from core.git_base_branch import resolve_base_branch
 from core.verify_contract import RegressionSpec, load_verify_contract
 
@@ -274,21 +275,14 @@ def _failed_path(project_root) -> Path:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """临时文件 + fsync + os.replace 原子写（对齐 core.code_review._atomic_write）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp-{uuid.uuid4().hex[:8]}")
-    try:
-        with tmp.open("w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    """临时文件 + fsync + os.replace 原子写（core.fs_utils.atomic_write_text 单源）。
+
+    W2 平移：权限口径取 inherit_existing_mode（替换**既有**文件继承原权限、
+    **新**文件 0644）——原 open("w") 的 umask 缺省在标准 umask 下同为 0644，
+    既有文件权限从此不被静默改写；不刷父目录的现行口径经 fsync_parent=False
+    显式表达。
+    """
+    atomic_write_text(path, content, inherit_existing_mode=True, fsync_parent=False)
 
 
 def read_progress(project_root, synthesize: bool = True) -> dict:

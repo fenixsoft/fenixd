@@ -16,7 +16,7 @@ import re
 import subprocess
 import tempfile
 
-from core.fs_utils import flock_exclusive, flock_release
+from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 import threading
 import time
 
@@ -2951,45 +2951,15 @@ class StateMachine:
 
     def _atomic_write_text(self, path: Path, content: str):
         """temp 写盘 + fsync + rename 的原子文本替换（原子写机制单点实现，
-        _write_all_locked 亦复用本方法落盘 STATE.md）。"""
-        parent = path.parent
-        tid = threading.get_ident()
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=f".{path.name}.{os.getpid()}.{tid}.",
-            suffix=".tmp",
-            dir=str(parent),
-        )
-        tmp_path = Path(tmp_path_str)
-        try:
-            # fdopen 失败路径显式接管（对齐 serving_registry._write_unlocked /
-            # regression._atomic_write 先例 cbb57806fbfd）：with 的 close 只在
-            # fdopen 成功后才生效，fdopen 自身抛错时裸 fd 无人关闭——f 为
-            # None 时兜底 os.close。
-            f = None
-            try:
-                f = os.fdopen(tmp_fd, "w", encoding="utf-8")
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                if f is not None:
-                    f.close()
-                else:
-                    try:
-                        os.close(tmp_fd)
-                    except OSError:
-                        pass
-            os.rename(str(tmp_path), str(path))
-            # rename 后刷父目录项，保证替换结果掉电不回退（对齐
-            # admin_store._write_store 口径；内部吞 EINVAL 等目录 fsync
-            # 不支持的文件系统异常）。
-            _fsync_parent_dir(path)
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
+        _write_all_locked 亦复用本方法落盘 STATE.md）。
+
+        W2 收敛：实现单源于 core.fs_utils.atomic_write_text——mkstemp 唯一
+        临时文件、replace 前刷缓冲并 fsync、fdopen 失败路径显式接管
+        （cbb57806fbfd 纪律随平移上收单源）、rename 后刷父目录项（吞 EINVAL
+        等目录 fsync 不支持的文件系统异常）逐条对齐；STATE.md 保持 mkstemp
+        0600 不放宽（apply_mode=False 显式表达现行口径）。
+        """
+        atomic_write_text(path, content, apply_mode=False)
 
     def _upsert_archive_entry_locked(self, spec_name: str, entry: dict):
         """清单条目幂等写入（调用方 MUST 已持有 .STATE.md.lock）。

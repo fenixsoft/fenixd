@@ -41,7 +41,8 @@ from typing import Optional
 _logger = logging.getLogger("fenixd.fs_utils")
 
 
-def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -> None:
+def atomic_write_text(path, content: "str | bytes", inherit_existing_mode: bool = False,
+                      *, apply_mode: bool = True, fsync_parent: bool = True) -> None:
     """mkstemp 唯一临时文件 + fsync + os.replace 原子写（单点实现）。
 
     固定 ``<name>.tmp`` 临时名在并发写同一目标时会互相截断：进程 A 完成
@@ -51,13 +52,20 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
 
     mkstemp 以 0600 建临时文件，rename 前按 ``inherit_existing_mode`` 修复
     权限（语义见模块 docstring）；chmod 失败不阻断写入（权限是尽力而为的
-    附属属性）。
+    附属属性）。``apply_mode=False`` 跳过 chmod（产物保持 mkstemp 0600，
+    平移自 runner/claude_adapter/state_machine 三份私有原子写的现行口径，
+    W2 收敛时以参数显式表达而非默认放宽）。
+
+    ``content`` 支持 bytes（str 先按 utf-8 编码落盘由 ``"w"`` 模式承担，
+    bytes 直接 ``"wb"`` 写原始字节——runner 平移口径，不因文本模式编解码
+    抛 UnicodeEncodeError、不改变字节）。
 
     rename 后尽力而为 fsync 父目录（code-review item f19b8ef57ce6）：fsync
     临时文件只保证文件内容持久，目录项改动（rename 本身）须 fsync 父目录
     才在整机断电/内核崩溃后有持久化保证，否则可能出现「写成功但重启后回到
     旧内容」。进程被 kill 的场景 page cache 仍在、无影响；目录 fsync 失败
-    不阻断写入（与 chmod 同为尽力而为的附属纪律）。
+    不阻断写入（与 chmod 同为尽力而为的附属纪律）。``fsync_parent=False``
+    平移自原无父目录刷盘的私有实现口径。
     """
     path = Path(path)
     parent = path.parent
@@ -65,36 +73,55 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            f.write(content)
+        # fdopen 失败路径显式接管（state_machine._atomic_write_text 先例
+        # cbb57806fbfd 平移）：with 的 close 只在 fdopen 成功后才生效，
+        # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            if isinstance(content, (bytes, bytearray)):
+                f = os.fdopen(tmp_fd, "wb")
+                f.write(content)
+            else:
+                f = os.fdopen(tmp_fd, "w", encoding="utf-8")
+                f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        try:
-            if inherit_existing_mode:
-                # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
-                # 「其他 OSError→跳过 chmod 留 debug 日志」；先 exists() 再
-                # stat() 的双探测在两步间目标被并发删除时会连带跳过 chmod，
-                # 产物静默保持 0600（item 7b94b65d0f0c）
-                try:
-                    mode = os.stat(path).st_mode & 0o777
-                except FileNotFoundError:
-                    mode = 0o644
+        finally:
+            if f is not None:
+                f.close()
             else:
-                mode = 0o644
-            os.chmod(tmp_path, mode)
-        except OSError as exc:
-            _logger.debug("atomic_write_text: best-effort chmod skipped for %s: %s", path, exc)
-        os.replace(tmp_path, path)
-        # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
-        # 失败不阻断主流程
-        try:
-            dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
+        if apply_mode:
             try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
+                if inherit_existing_mode:
+                    # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
+                    # 「其他 OSError→跳过 chmod 留 debug 日志」；先 exists() 再
+                    # stat() 的双探测在两步间目标被并发删除时会连带跳过 chmod，
+                    # 产物静默保持 0600（item 7b94b65d0f0c）
+                    try:
+                        mode = os.stat(path).st_mode & 0o777
+                    except FileNotFoundError:
+                        mode = 0o644
+                else:
+                    mode = 0o644
+                os.chmod(tmp_path, mode)
+            except OSError as exc:
+                _logger.debug("atomic_write_text: best-effort chmod skipped for %s: %s", path, exc)
+        os.replace(tmp_path, path)
+        if fsync_parent:
+            # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
+            # 失败不阻断主流程
+            try:
+                dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
     finally:
         if tmp_path.exists():
             try:

@@ -94,6 +94,7 @@ from core.agent_runner.session import SessionTracker
 # attempt 在飞子进程清场经自保护守卫整组收割（code-review item
 # 0c4d156555a2；ADR-291 守卫纪律，与 liveness/maintenance_runs/
 # _kill_ocr_process_group 先例同源单点）。
+from core.fs_utils import atomic_write_text
 from core.proc_utils import guard_killpg
 # add-harness-adapter-layer：harness 适配层（命令构造/env 路由平移目标；
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
@@ -6466,25 +6467,12 @@ class AgentRunner:
         root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
 
         def _write_atomic(dest: Path, data: str | bytes) -> None:
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=".fenix-run-result.", suffix=".tmp",
-                dir=str(dest.parent),
-            )
-            tmp_path = Path(tmp_name)
-            try:
-                # 二进制落盘（str 先按 utf-8 编码）：原始字节拷回路径不因文本
-                # 模式编解码抛 UnicodeEncodeError、不改变字节。
-                if isinstance(data, str):
-                    data = data.encode("utf-8")
-                with os.fdopen(fd, "wb") as f:
-                    f.write(data)
-                os.replace(tmp_path, dest)
-            finally:
-                if tmp_path.exists():
-                    try:
-                        tmp_path.unlink()
-                    except OSError:
-                        pass
+            # W2 收敛：mkstemp 唯一临时文件 + os.replace 原子写单源于
+            # core.fs_utils.atomic_write_text；现行口径经参数显式表达——
+            # 二进制落盘（str 按 utf-8 落、bytes 原始字节不因文本模式编解码
+            # 抛 UnicodeEncodeError）、不 chmod（产物保持 mkstemp 0600）、
+            # 不刷父目录。
+            atomic_write_text(dest, data, apply_mode=False, fsync_parent=False)
 
         if wt_result.exists():
             # fix-code-review 21a9e198cdb8：mtime 守卫（与 _copyback_verify_progress
