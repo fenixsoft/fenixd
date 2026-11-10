@@ -1,7 +1,7 @@
 # Arbiter 自主裁决车道
 
 <!-- knowledge: capability=arbiter-lane rev=5
-     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/changes/add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/changes/add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
+     sources=spec/archive/2026-11-03-add-arbiter-lane,spec/archive/2026-11-10-add-arbiter-backlog-sweep,spec/changes/add-escalation-chain-admin-arbiter,spec/changes/add-arbiter-gap-todo-routing,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md -->
 
 Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处置链第二级（全局视野），链路由与配额语义见 [escalation-chain](escalation-chain.md)。
 
@@ -30,7 +30,7 @@ Arbiter agent 对升级边信号做自主调查与处置/拍板的车道：处�
 ## 溯源
 
 - 2026-10-31 add-arbiter-lane（spec/archive/2026-11-03-add-arbiter-lane/） — 新增本页基线：触发面注册与单飞、run 预算封顶、权限红线许可清单、自主处置白名单、五段处置台账、告警零噪音分层、立项节流、配置与关闭态、车道注册
-- 2026-10-31 add-arbiter-backlog-sweep（spec/changes/add-arbiter-backlog-sweep/） — 触发面扩增存量冻结回扫（daemon 启动与热更新跃迁各一次，幂等回扫）
+- 2026-10-31 add-arbiter-backlog-sweep（spec/archive/2026-11-10-add-arbiter-backlog-sweep/） — 触发面扩增存量冻结回扫（daemon 启动与热更新跃迁各一次，幂等回扫）
 - 2026-11-03 add-escalation-chain-admin-arbiter（spec/changes/add-escalation-chain-admin-arbiter/） — 触发面白名单枚举改黑名单制默认入链；同签名「只派发一次」改配额治理（2 次/签名+复位窗，dead-man 永久单次例外）；白名单③放开 impl run 预算上调（预算豁免拍板面承接）；回扫管线接入链头 Admin
 - 2026-11-03 chain-arbiter-rulings-default-3（spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md） — 折叠 Arbiter 复现配额缺省调整为 3 次/签名（配额语义与复位通道不变）
 - 2026-11-03 arbiter-filing-retire-gap-todo-routing（spec/knowledge/_inbox/done/arbiter-filing-retire-gap-todo-routing.md） — 折叠 arbiter 立项通道整体退役与 gaps→todo 路由：权限红线禁止清单五类扩六类（新增禁立项）、立项节流三限废止移除、框架缺口改走 gaps 数组→todo.md 唯一出口（含 todo 条目契约、gap-noted 台账与同主题轻量去重）
