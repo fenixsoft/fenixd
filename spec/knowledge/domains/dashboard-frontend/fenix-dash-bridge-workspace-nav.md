@@ -1,7 +1,7 @@
 # dsh 侧栏工作区行项目导航
 
-<!-- knowledge: capability=fenix-dash-bridge-workspace-nav rev=2
-     sources=spec/changes/move-project-nav-to-workspace-rows,spec/changes/add-workspace-row-project-tooltip -->
+<!-- knowledge: capability=fenix-dash-bridge-workspace-nav rev=3
+     sources=spec/changes/move-project-nav-to-workspace-rows,spec/changes/add-workspace-row-project-tooltip,spec/knowledge/_inbox/done/workspace-tooltip-mutex-racing-observer.md -->
 
 dashboard-bridge 插件在 dsh web 侧栏官方工作区列表上的项目导航与概况预览能力：项目导航收敛进官方工作区行，行内分流「名称点击=打开项目详情、行首图标点击=原生展开/收缩」；名称悬停显示项目富提示深卡（简介、运行态、SPEC 状态、任务、活跃 Agent），并随项目同步周期自动对齐工作区注册。侧栏无独立「项目」入口与内嵌项目分区。
 
@@ -9,7 +9,7 @@ dashboard-bridge 插件在 dsh web 侧栏官方工作区列表上的项目导航
 
 - **名称点击 = 项目详情导航**：fenixd 项目对应的工作区行，名称文本区点击将主面板切换为该项目 iframe（`main` keyed 面板 `fenix-project-<name>`，src 深链 `#/projects/<encodeURIComponent(name)>`），不触发行展开/收缩。行首图标为官方 hover folder→chevron CSS 交换形态，其点击维持原生展开/收缩，插件不改其点击语义。
 - **行-项目匹配判据路径优先**：工作区注册路径与项目路径归一化（统一分隔符、去尾斜杠）后字符串相等优先命中；工作区标题与项目名精确相等回落。client 运行于浏览器无 fs.realpath，路径比对只做字符串归一化，不承诺 symlink 别名归并（此类行由标题回落覆盖）。该优先序刻意与插件内既有 `resolveWorkspaceIdForProject`（标题优先、basename 回落）相反——同名标题下路径命中的才是真项目行，标题命中可能是用户自建同名工作区。工作区枚举复用 `ui.workspaces.list.getSnapshot().items`（workspaceId/title/path）。
-- **拦截层基于语义锚点**：名称导航与悬停富提示共用同一拦截层——挂在命中行的名称文本元素（`span.projectText`）上方的透明命中区（`data-fenix-wsnav` 锚属性，尺寸取名称文本 rect），`stopPropagation` + `preventDefault` 后调项目面板切换；行首图标区（`slot.folder`/`slot.chevron`）不遮挡。定位锚点链：`data-row-key` 前缀 `workspace:` 的行元素 → 行内名称文本按文本内容比对项目名；MUST NOT 依赖 CSS module 哈希类名作唯一判据。
+- **拦截层基于语义锚点**：名称导航与悬停富提示共用同一拦截层——挂在命中行的名称文本元素（`span.projectText`）上方的透明命中区（`data-fenix-wsnav` 锚属性，尺寸取名称文本 rect），`stopPropagation` + `preventDefault` 后调项目面板切换；行首图标区（`slot.folder`/`slot.chevron`）不遮挡。定位锚点链：`data-row-key` 前缀 `workspace:` 的行元素 → 行内名称文本按文本内容比对项目名——行 key 载 `workspace:<uuid>`、不含项目名，按名定位行只认行内名称文本，不可用 key 包含名判定；MUST NOT 依赖 CSS module 哈希类名作唯一判据。
 - **锚点漂移静默降级**：锚点不可达或结构漂移时该行不装拦截层（无导航、无富提示，原生整行折叠兜底），不产生未处理异常，不做破坏性兜底。拦截层是插件命令式外挂 DOM，宿主 React 重渲染可致失挂或 rect 漂移——订阅 `ui.workspaces.list` store 变更或在侧栏工作区区域挂 MutationObserver 触发重扫；重扫前校验锚点与既有拦截层存活，缺失才补挂，补挂路径同样 warn-only。
 - **拦截不外溢**：行尾省略号菜单、新会话按钮、右键菜单、拖拽排序等官方交互全部照常；拦截层仅覆盖名称文本 rect。
 - **非 fenix 工作区行零侵入**：不命中匹配判据的行，点击与悬停行为与插件介入前完全一致（原生展开/收缩 + dsh 原生 tooltip），无导航、无富提示、无额外 DOM 注入。
@@ -19,7 +19,8 @@ dashboard-bridge 插件在 dsh web 侧栏官方工作区列表上的项目导航
 - **状态胶囊组真值单源**：状态→tone 映射、中文标签与暗面派生色为插件侧钉值常量（srcContract 钉值防漂移），映射与 fenixd 概览台账 STATUS_META 逐键一致并含阻塞分相扩展（repairing=修复中 info / queued=排队中 warning）；未知状态回退 muted。派生色文字取同相亮化、底同相 16%~22% 透明（info `#7aa2ff` / warning `#f0ac54` / critical `#ff8080` / good `#5fce8f` / aqua `#45c1dc` / muted `#a9b4c0`）。胶囊仅渲染非零状态，序取状态标签表键序（确定序防端点 dict 序漂移，未知状态码点序殿后）；非零超过 4 个折叠为前 4 枚 + `+N` muted 摘要胶囊（不带计数）；全零或字段缺失整段不渲染。
 - **富提示数据面=精简投影**：插件项目同步周期（60s）把 `GET <prefix>/api/projects` 响应解析为精简 ProjectSummary 投影 `{name, path, description, daemon, hosting, exists, discovered, status_counts, task_done, task_total, active_runs}`，供行匹配与富提示共用；不保留全量响应对象（problems 等本能力不需要的字段不落内存）。数值字段缺失以 null 承载，`exists`/`error` 为降级标记。fenixd 后端零改动。
 - **数据失效回退原生**：投影缺失（undefined）、`exists:false` 或 `error` 非空的行不渲染富提示（不渲染残缺卡），悬停回退 dsh 原生三行提示；名称点击导航链不受数据降级影响（拦截层照常装挂）。`/api/projects` 拉取失败时投影为空、全部行走原生回退，60s 后自愈。
-- **原生提示互斥（插件侧消解）**：fenix 行富提示激活期间，该行 dsh 原生三行提示不得同时可见；互斥由两层插件侧手段承担、不改宿主原生 tooltip primitive：① 拦截层 mouse 事件（mouseover/out/move）stopPropagation 吞噬；② 富提示激活期间监听 body 直子新增浮层，含该行项目名文本且非本富卡节点予以隐藏（命中 warn 一次，leave 时恢复其 display；不含项目名的节点不误伤）。宿主机制致两手段均无法消解时按静默降级纪律 warn-only 收场，富提示自身显隐不受影响、不破坏原生提示。
+- **原生提示互斥以常驻消解器为兜底主手段**：fenix 行的 dsh 原生三行提示不得与富提示同时可见；互斥由两层插件侧手段承担、不改宿主原生 tooltip primitive。① 拦截层 mouse 事件（mouseover/out/move）stopPropagation 吞噬——只对 React 合成 hover 链（mouseover/out 代理）有效，宿主原生 `mouseenter` 型监听不经合成代理、拦不住，互斥兜底不能假设①必奏效。② 常驻原生提示消解器：插件安装期即启动、不随富提示显隐启停——互斥消解手段必须常驻，原生 tooltip 与富提示同为 500ms 延迟，「目标出现后才挂观察器」必输竞速、错过 portal 节点的 add 事件（竞速型观察器是互斥类需求的反模式）。两手段均无法消解时按静默降级纪律 warn-only 收场，富提示自身显隐不受影响、不破坏原生提示。
+- **常驻消解器命中规则与名单同步**：观察器挂 body（childList+subtree），start 时先对存量 `body.children` 做一轮兜底扫描（观察器启动前已 open 的 portal 节点不会再报 add 事件）。隐藏判定 keyed by 「已装拦截层项目名集合」（`installedNames`，与拦截层存亡严格同步：换层/新挂写入、按名移除与全清删除），body 直子浮层文本命中任一已装层项目名即 `display:none` 隐藏——非 fenix 行零侵入不误伤，行内浮层（非 body 直子）不命中。本插件富卡经 `data-fenix-wstip` 锚属性自排除（富卡 textContent 同样含项目名，不排除则自吞）。项目移除经 refresh 解除对应隐藏（删除行保留、回退原生），插件卸载 stop 全量解Hide；命中 warn 一次，消解异常静默。
 - **静态渲染红线与即收**：富卡显隐纯 display 切换，零 CSS animation/transition（srcContract 钉值断言）；mouseleave、任意容器滚动（capture 链滚动守卫）、行卸载即收。定位锚定拦截层 rect 右侧（水平间距 12px、纵向偏移 -5px），视口越界时水平翻转到锚左侧并纵向 clamp；行瞬窗（宿主重渲染替换中 rect 归零）不显示残卡。
 - **富卡不吞点击**：富卡 `pointer-events:none`，悬停激活期间点击行名称仍走既有导航链（`fenix-project-<name>` 深链）。
 - **侧栏固定条目收敛 5 项**：概览/指挥中心/配置/运维/帮助；无「项目」条目、无内嵌项目分区（常驻内嵌、锚点漂移浮层降级、窄轨计数徽标、分区标题折叠拦截层等形态均不存在）。`#panel=fenix-projects` 深链键未注册，由既有 deepLinkPanels 未注册吞语义兜底，无异常。
@@ -44,3 +45,4 @@ dashboard-bridge 插件在 dsh web 侧栏官方工作区列表上的项目导航
 
 - 2026-11-09 move-project-nav-to-workspace-rows（spec/changes/move-project-nav-to-workspace-rows/） — 新建本页：侧栏「项目」菜单行+内嵌项目分区整体退役（该面既有规则随能力页 dsh-bridge-projects-section 删除收口，官方列表滚动条注入规则移入本页），确立工作区行名称导航/图标折叠分流、路径优先匹配判据、语义锚点拦截与静默降级、60s 自动对齐、删除项目回退原生；跨仓交付形态=基线快照+宿主直改+补丁镜像（ADR-339）
 - 2026-11-10 add-workspace-row-project-tooltip（spec/changes/add-workspace-row-project-tooltip/） — 新增名称悬停富提示族规则：插件自渲染深卡浮层（视觉归属 dsh 宿主原生语言、宪法豁免限定插件浮层面）、projectSync 精简 ProjectSummary 投影数据面、状态胶囊组钉值单源与 +N 折叠、空口径「不伪装」、数据失效回退原生、原生提示互斥两层插件侧消解、静态渲染红线与滚动即收、富卡不吞点击；既有导航/对齐/降级/滚动条规则不变
+- 2026-11-10 workspace-tooltip-mutex-racing-observer（spec/knowledge/_inbox/done/workspace-tooltip-mutex-racing-observer.md） — 折叠原生提示互斥缺陷结论：竞速型观察器（富提示 show 时才挂观察器，与原生 tooltip 同 500ms 延迟必输竞速、两卡同显）定为互斥类反模式，消解器改常驻型（安装期 start + 存量 body.children 兜底扫描）、命中名单 keyed by installedNames 与拦截层存亡严格同步（换层/新挂/按名移除/全清）、富卡经 data-fenix-wstip 自排除、stopPropagation 拦不住原生 mouseenter 型监听（①手段只覆盖合成 hover 链）；行 key 载 uuid 不含项目名、按名定位只认行内名称文本；旧「富提示激活期间监听 body 直子新增浮层」规则被常驻消解器规则取代
