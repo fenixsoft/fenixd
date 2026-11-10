@@ -3943,13 +3943,23 @@ class AgentRunner:
                     # 进入 switch 短冷却，同 run 后续 attempt 前进到下一候选（跨
                     # provider 不 resume，见 _resumable_session_id）。
                     # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
-                    if _may_switch and self.classify_switch_error(error):
+                    # 切链闸门 MUST 复用结构化双源信号（2026-11-09 事故：
+                    # glm 周额度耗尽，429 只出现在 result 事件的
+                    # api_error_status / result 文本里，降噪后 error 仅剩
+                    # `Exit code: 1`——单凭 error 文本判定恒 False，链指针
+                    # 一次都不前进，deepseek 候选从未被尝试，任务全部阻塞）。
+                    # 口径见 error-attribution-denoise：dispatch 分类不得读
+                    # 降噪文本反推，必须用原始 stderr 或结构化标记；噪声行
+                    # （[claude-code:unrecognized_model]，成功 run 同样在场）
+                    # 不参与回填。
+                    switch_signal = self._switch_signal_text(error, e)
+                    if _may_switch and self.classify_switch_error(switch_signal):
                         # add-impl-selfcheck-model-probe（2.1）：unrecognized_model
                         # 命中即记 WARNING（provider/model/run_id，供链摘除决策）。
                         # 链尾模型仍被拒 → 归因注入「全链模型不可用」语义（2.2，
                         # 派发器据此跳过同因重派）并置旗标：attempt 预算立即收场，
                         # 对同一拒模型再起必败进程是纯浪费。
-                        if self.classify_unrecognized_model_error(error):
+                        if self.classify_unrecognized_model_error(switch_signal):
                             self._record_unrecognized_model(
                                 provider_name, model, attempt_run_id, spec_name)
                             st.chain_reject_hits += 1
@@ -3960,7 +3970,7 @@ class AgentRunner:
                         # add-code-review-concurrency-and-429-resilience（D3）：
                         # 429 限流冷却走同一通道但用独立常量时长（非
                         # switch_cooldown_seconds 配置），便于限流调参。
-                        if self.classify_ratelimit_error(error):
+                        if self.classify_ratelimit_error(switch_signal):
                             self._record_switch_cooldown(
                                 provider_name,
                                 cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
@@ -4530,6 +4540,14 @@ class AgentRunner:
             else:
                 _exc_code = _exc_status
         _exc_result_text = getattr(exc, "result_text", "") or ""
+        # 拒模型双源回退（与 429 同口径，2026-11-09 事故同批补）：真实拒
+        # 模型形态是 HTTP 400/404 正文（只进入 result 事件的 result 字段），
+        # 降噪后的 error 只剩 `Exit code: 1`；若不先于 4xx code 解析回退，
+        # 会被误判为 4xx 配额/鉴权失败——计熔断、may_switch=False，链永不
+        # 前进。unrecognized_model 判定先于 4xx 是本函数既有纪律（单源文本
+        # 版见上方「add-impl-selfcheck-model-probe」注释）。
+        if _exc_result_text and self.classify_unrecognized_model_error(_exc_result_text):
+            return error, False, True
         if _exc_code == 429 or (
                 _exc_result_text
                 and self.classify_ratelimit_error(_exc_result_text)):
@@ -4597,6 +4615,48 @@ class AgentRunner:
                     f"global transient break 记账失败（不阻断）: {_break_err}",
                 )
         return error, is_transient, True  # may_switch：else 分支（provider 在位且 code 非 4xx）
+
+    def _switch_signal_text(self, error, exc) -> str:
+        """切链判定用的富信号文本：降噪 error + 结构化 429/拒模型回填。
+
+        2026-11-09 事故（glm 周/月额度耗尽，链上的 deepseek 候选从未被尝试、
+        任务整夜阻塞）：429 证据只存在于 run 产物的 result 事件（异常挂载的
+        ``api_error_status`` / ``result_text``），而 ``_denoise_stderr`` 之后
+        error 只剩 ``claude CLI failed: Exit code: 1``——attempt 循环的切链
+        闸门只读 error 文本 → ``classify_switch_error`` 恒 False，链指针不动。
+        本方法把结构化字段并入判定文本，供闸门与冷却类型判定共用；error 本身
+        保持原样传给下游（不改归因/派发读侧语义）。
+
+        MUST NOT 回填原始 stderr 诊断行：``[claude-code:unrecognized_model]``
+        是 CLI 启动期定噪（glm/deepseek 链成功 run 同样在场），裸匹配等价于
+        「exit 1 即切链」，会误伤 4xx/鉴权等不切换语义（口径见
+        cli-stderr-noise-filtering / error-attribution-denoise）。
+
+        Args:
+            error: 降噪后的错误文本（不在本方法内改写）。
+            exc: attempt 循环捕获的原始异常（可能挂载 api_error_status /
+                result_text；缺省或缺字段时返回 error 原文）。
+
+        Returns:
+            判定文本：error + result_text 正文；``api_error_status`` 归一化
+            为 429 时追加标准 ``HTTP 429`` 形态（result 事件只给状态码时
+            文本分类器仍能命中）。
+        """
+        parts = [error or ""]
+        if exc is not None:
+            result_text = getattr(exc, "result_text", "") or ""
+            if result_text:
+                parts.append(str(result_text))
+            status = getattr(exc, "api_error_status", None)
+            if status is not None and not isinstance(status, bool):
+                code = status
+                if isinstance(status, str):
+                    code = self.parse_api_error_status(status)
+                    if code is None and status.strip().isdigit():
+                        code = int(status.strip())
+                if code == 429:
+                    parts.append("HTTP 429")
+        return "\n".join(p for p in parts if p)
 
     # ── 429 限流终态归因与重派意图登记（add-code-review-concurrency-and-429-resilience D4）──
     def _ratelimit_terminal_hit(self, run_id: str, error: str,

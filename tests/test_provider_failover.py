@@ -378,6 +378,104 @@ class TestChainSelectExecute:
         # 三次重试都在首候选（a.com），未前进到 aliyun
         assert calls["providers"] == ["https://a.com"] * 3
 
+    def test_structured_429_result_advances_chain_despite_denoised_error(
+            self, tmp_path, monkeypatch):
+        """429 仅存在于 result 事件时也必须推进链（2026-11-09 事故回归）。
+
+        事故形态：glm 周/月额度耗尽，claude CLI 的 429 文案只落在 result 事件
+        （``api_error_status=429`` / ``result`` 文本），而 ``_denoise_stderr``
+        把 stderr 诊断噪声行滤掉后 error 只剩 `Exit code: 1`。修复前切链闸门
+        只读 error 文本 → `classify_switch_error` 恒 False，链指针不前进，
+        链上的 deepseek 候选从未被尝试（全部尝试都打同一限额耗尽 provider）。
+        """
+        runner = make_runner(tmp_path, chain_config(["inferaiapi.com", "aliyun"]))
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+
+        providers = []
+
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None, spec_name=None,
+                            agent_type=None, task_progress_snapshot=None):
+            providers.append(env_overrides.get("ANTHROPIC_BASE_URL"))
+            if len(providers) == 1:
+                err = RuntimeError(
+                    "claude CLI failed: Exit code: 1 | latency: run impl-x-a1: "
+                    "0 rounds（无 API 往返样本）"
+                )
+                err.stderr_lines = [
+                    '[claude-code:unrecognized_model] {"model":"glm-5.3-flash",'
+                    '"query_source":"sdk"}',
+                ]
+                err.exit_code = 1
+                err.has_result = True
+                err.api_error_status = 429
+                err.result_text = (
+                    "API Error: Request rejected (429) · [1310][您已达到每周/每月"
+                    "使用上限，您的限额将在 2026-11-10 10:43:04 重置。][id]"
+                )
+                raise err
+            return ("ok", 1, "sess", {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "cost_usd": None,
+            }, None)
+
+        runner._run_agent = fake_run_agent
+        runner._extract_session_id = MagicMock(return_value=None)
+
+        result = runner.run_implementer("s")
+        # 次候选（aliyun）接管：链指针在结构化 429 信号下前进
+        assert result.success is True
+        assert result.provider_used == "aliyun"
+        assert providers == ["https://a.com", "https://b.com"]
+        # 首候选进限流冷却（429 通道，复用 switch 冷却字段）
+        assert runner._provider_circuit.is_switch_cooldown("inferaiapi.com", now=now)
+
+    def test_structured_429_status_only_advances_chain(self, tmp_path, monkeypatch):
+        """result_text 缺失、仅异常挂载 api_error_status=429 时同样推进链。
+
+        归因双源的第二条腿：部分 CLI/adapter 只在 result 事件暴露结构化状态码，
+        result 文本为空。判定文本由 ``_switch_signal_text`` 回填标准 ``HTTP 429``
+        形态，避免「状态码在、文本无」再次漏判。
+        """
+        runner = make_runner(tmp_path, chain_config(["inferaiapi.com", "aliyun"]))
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+
+        providers = []
+
+        def fake_run_agent(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None, spec_name=None,
+                            agent_type=None, task_progress_snapshot=None):
+            providers.append(env_overrides.get("ANTHROPIC_BASE_URL"))
+            if len(providers) == 1:
+                err = RuntimeError("claude CLI failed: Exit code: 1")
+                err.stderr_lines = []
+                err.exit_code = 1
+                err.has_result = True
+                err.api_error_status = 429
+                err.result_text = ""
+                raise err
+            return ("ok", 1, "sess", {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "cost_usd": None,
+            }, None)
+
+        runner._run_agent = fake_run_agent
+        runner._extract_session_id = MagicMock(return_value=None)
+
+        result = runner.run_implementer("s")
+        assert result.success is True
+        assert result.provider_used == "aliyun"
+        assert providers == ["https://a.com", "https://b.com"]
+        assert runner._provider_circuit.is_switch_cooldown("inferaiapi.com", now=now)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3.2 CLAUDE_CONFIG_DIR 随候选切换 + 跨 provider 切换日志
