@@ -12,6 +12,7 @@
 
 - 分面数据拉取 MUST 遵循按需加载门控：仅在本分面被选中时请求 project-files API，未选中零请求；切离分面时在飞请求结果到达后静默丢弃（不报错弹窗）。
 - 文件表格列 MUST 为：名称 / 最近提交信息 / 最近提交时间；目录条目先行（同类型按名称不区分大小写升序）；窄屏视口（<768px）MUST 隐藏后两列，仅留名称列。
+- 目录条目数 MUST 有 200 项上限：超出部分截断，list 响应附 `truncated_count` 字段，前端 MUST 显示截断提示（如「仅展示前 200 项」）。
 - 目录与文件的行均 SHALL 可点击（原型第 2 轮批注定稿）：目录行进入子目录，文件行打开内容视图。
 - 分支 Select SHALL 仅渲染当前分支单选项（detached HEAD 显示短 hash），MUST NOT 提供切换（本期边界，原型中分支/标签为假数据演示）。
 
@@ -125,6 +126,7 @@ project-files 三端点（list / content / download）SHALL 实施路径安全�
 - `project` 参数 MUST 解析为 registry 内存在（exists）的项目，未知/缺失项目返回 404/400（对齐 `_project_query_or_error` 既有口径）。
 - `path` 参数 MUST 解析（含 URL 解码）后 containment 校验：解析出的绝对路径 MUST 仍位于该项目根内（resolve + is_relative_to），越界（`..`、绝对路径、符号链接逃逸）返回 400，MUST NOT 泄露项目根外任何文件内容。
 - `path` 指向不存在的文件/目录返回 404；对 git 可见集合之外的路径（gitignored），list 不展示、content/download 仍按磁盘实况校验 containment 后服务（与 GitHub「工作树实况」语义一致）。
+- `path` 解析后指向已存在的目录时，content / download 端点 MUST 返回 400（目录不经内容/下载通道服务；list 通道正常服务目录）。
 - 端点 MUST NOT 读取或列出 `.git` 目录内容（README 盒、列表、内容、下载全链路排除）。
 
 #### Scenario: 越界路径拒绝

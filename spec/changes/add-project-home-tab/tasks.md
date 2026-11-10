@@ -55,7 +55,7 @@
 
 ## 5. 测试与构建验证
 
-- [ ] 5.1 `tests/test_dashboard_project_files_api.py`（pytest，对齐 test_dashboard_architecture_api.py 习语，tmp_path+monkeypatch 造 git 仓夹具）：containment 越界 400（含 `..`/绝对路径/`.git` 深防）、未知项目 404、缺参 400、目录列表目录先行排序与 gitignored 排除、条目提交属性解析、README 判定链、256 KiB 截断、二进制 binary 标记、download attachment 头与字节回读、非 git 项目 non_git 标记
+- [ ] 5.1 `tests/test_dashboard_project_files_api.py`（pytest，对齐 test_dashboard_architecture_api.py 习语，tmp_path+monkeypatch 造 git 仓夹具）：containment 越界 400（含 `..`/绝对路径/`.git` 深防）、未知项目 404、缺参 400、目录列表目录先行排序与 gitignored 排除、条目提交属性解析、README 判定链、256 KiB 截断、二进制 binary 标记、download attachment 头与字节回读、非 git 项目 non_git 标记、目录路径 content/download 400、超 200 项截断 truncated_count
 - [ ] 5.2 `core/dashboard/static/tests/projectHomeTab.test.mjs`（零依赖 node:test，同 qualityGates.test.mjs 习语）：纯逻辑直测（相对时间六档格式化、条目排序、面包屑层级构建）+ 源码扫描钉接线（list.tsx items 首位 home + 缺省 dev 不变 + active 门控表达式 + path 写回 replace + 窄屏列分流 + markdown 管线复用点 + ProjectHomeTab 渲染锚）
 - [ ] 5.3 `npm run build`（core/dashboard/static）成功出 dist；worktree 实例浏览器冒烟：默认进页签功能开发选中且 URL 无 tab 参、项目首页居首；home 分面目录导航/面包屑回退/文件打开/下载触发/README 渲染/URL path 直达复现；console 无新增错误；截图存 `.history/`（禁读仅存档），与 prototype/ 逐区块对照记录
 - [ ] 5.4 全量回归：pytest 既有套件 + `node --test tests/*.test.mjs`（core/dashboard/static）全绿

@@ -21,7 +21,7 @@
 
 新文件 `core/dashboard/data/project_files.py`（数据逻辑）+ `core/dashboard/routes/project_files_routes.py`（薄 handler mixin）；`routes/base.py` GET 路由表接线三条（kind=exact，携带 ETag 签名函数返回 None 即不参与 304 协商——文件树含实时 git 属性，签名不廉价）；`server.py` 挂 mixin。
 
-- `GET /api/project-files/list?project=<name>&path=<relpath>` → `{branch, latest: {author, hash, time}|null, entries: [{name, dir, last_commit: {hash, message, time}|null}], readme: "README.md"|null}`。readme 字段按 README.md → readme.md 缺省链判定（仅根目录查询时返回）。
+- `GET /api/project-files/list?project=<name>&path=<relpath>` → `{branch, latest: {author, hash, time}|null, entries: [{name, dir, last_commit: {hash, message, time}|null}], readme: "README.md"|null, non_git: false}`。readme 字段按 README.md → readme.md 缺省链判定（仅根目录查询时返回）；`non_git` 置 true（此时 entries 为空、branch/latest 为 null）标记非 git 项目（判定见 D3），前端据此渲染 Empty 空态。
 - `GET /api/project-files/content?project=<name>&path=<relpath>` → `{content, lines, bytes, truncated, binary}`；文本读至 256 KiB 上限截断；二进制（前 8 KiB 含 NUL）置 `binary=true` 不带 content。
 - `GET /api/project-files/download?project=<name>&path=<relpath>` → 原始字节流 + `Content-Disposition: attachment; filename*=UTF-8''<basename>`（RFC 5987 编码防注入）；handler 自写响应（不走 `_json`）。
 - 端点命名对齐既有 `project-files` 前缀族；400/404 口径对齐 `project_routes._project_query_or_error`（缺参 400、未知项目 404）。
