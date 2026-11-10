@@ -1,0 +1,2589 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原型 · 重绘处置链页签（redesign-chain-panel-ui）</title>
+<script src="vendor.js"></script>
+<style>
+:root{
+  --text:#0f1115; --text2:#61666b; --text3:#81858c; --text4:#adb2b8;
+  --border:rgba(0,0,0,.16); --border2:rgba(0,0,0,.10); --split:rgba(0,0,0,.08);
+  --bg-soft:#f9fafb; --link:#4176e6; --ok:#22c55e; --err:#ec1313; --warn:#f59e0b;
+  --hair:#f1f5f9; --bento-bd:#eef2f7; --hover:#f8fafc;
+  --font:-apple-system,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Helvetica Neue',Arial,sans-serif;
+  --mono:'SF Mono','JetBrains Mono',Consolas,'Liberation Mono',monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:#eef1f5;font-family:var(--font);color:var(--text);font-size:13px}
+.proto-shell{max-width:1560px;margin:0 auto;padding:12px 16px 40px}
+.bento{background:#fff;border:1px solid var(--bento-bd);border-radius:12px;
+  box-shadow:0 1px 3px rgba(15,23,42,.05),0 1px 2px rgba(15,23,42,.03)}
+.num{font-size:28px;font-weight:600;line-height:34px;font-variant-numeric:tabular-nums}
+.lbl{font-size:13px;color:var(--text3)}
+.sub{font-size:12px;color:var(--text3);margin-top:2px;font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono)}
+.t2{color:var(--text2)} .t3{color:var(--text3)} .t4{color:var(--text4)}
+.spacer{flex:1 1 auto;min-width:0}
+/* 卡片 */
+.card-hd{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--hair)}
+.card-title{font-size:14px;font-weight:600}
+.card-extra{font-size:12px;color:var(--text3)}
+.card-bd{padding:4px 16px 10px}
+/* 统计行 */
+.stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px}
+.stat-tile{padding:14px 16px}
+/* 行 */
+.hairline{border-bottom:1px solid var(--hair)}
+.rowitem{padding:12px 0}
+.rowitem:last-child{border-bottom:none}
+.rowlink{cursor:pointer}
+.rowlink:hover{background:var(--hover)}
+/* ── 人工队列内嵌裁决控件 round3：内嵌面板式重设计（左控件右动作列，
+   对齐 overview AlertBanner 的 AlertActionColumn 竖排语义） ── */
+.adjud-panel{margin:8px 14px 12px 32px;background:var(--bg-soft);border:1px solid var(--hair);border-radius:8px;padding:10px 12px;display:flex;gap:12px;align-items:stretch}
+.adjud-hd{flex:0 0 64px;font-size:12px;font-weight:600;color:var(--text2);padding-top:4px}
+.adjud-main{flex:1;min-width:0}
+.adjud-side{display:flex;flex-direction:column;gap:6px;min-width:88px}
+.adjud-side .ant-btn{width:100%;margin:0}
+.siglink{cursor:pointer}
+.siglink:hover{color:var(--link);text-decoration:underline}
+.esc-row{padding:10px 14px;border-bottom:1px solid var(--hair)}
+.esc-row:last-child{border-bottom:none}
+.esc-l1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.esc-l2{margin-top:5px;color:var(--text);font-size:13px;line-height:20px}
+.esc-l3{margin-top:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--text3);font-variant-numeric:tabular-nums}
+.clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* 配额 */
+.grouphd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--bg-soft);
+  border-radius:8px;padding:7px 12px;margin:10px 0 2px}
+.sig-row{display:grid;grid-template-columns:minmax(0,1fr) 260px minmax(0,1.2fr) 120px;
+  gap:12px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--hair)}
+.sig-row:last-child{border-bottom:none}
+.qchip{display:inline-flex;align-items:center;gap:6px}
+.qbar{width:56px;height:4px;border-radius:2px;background:var(--hair);overflow:hidden}
+.qbar>i{display:block;height:100%;border-radius:2px}
+/* 在办链进度 */
+.stepper{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.step{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+.step .bar{width:72px;height:4px;border-radius:2px;background:var(--hair);overflow:hidden}
+.step .bar>i{display:block;height:100%;border-radius:2px}
+.steparrow{color:var(--text4);font-size:12px}
+/* 抽屉 */
+.sect{margin-top:14px}
+.sect-hd{font-size:12px;font-weight:600;color:var(--text3);margin-bottom:6px}
+.sect-bd{font-size:13px;line-height:21px;white-space:pre-wrap;word-break:break-word}
+.evidence{background:var(--bg-soft);border:1px solid var(--hair);border-radius:8px;
+  padding:10px 12px;font-family:var(--mono);font-size:12px;line-height:19px;white-space:pre-wrap;word-break:break-word;color:var(--text2)}
+.choice-chip{border:1px solid var(--border);border-radius:8px;padding:6px 10px;max-width:100%}
+.choice-chip.destr{border-color:var(--err)}
+.choice-chip .cl{font-size:12px;font-weight:600}
+.choice-chip.destr .cl{color:var(--err)}
+.choice-chip .cd{font-size:11px;color:var(--text3);margin-top:2px}
+.ro-note{margin-top:12px;padding:8px 12px;background:var(--bg-soft);border-radius:8px;font-size:12px;color:var(--text2)}
+/* radio 黑底白字 */
+.proto-radio-dark .ant-radio-button-wrapper-checked{background:#0f1115;border-color:#0f1115;color:#fff}
+.proto-radio-dark .ant-radio-button-wrapper-checked::before{background:transparent!important}
+/* 页脚注记 */
+.proto-note{margin-top:16px;font-size:11px;color:var(--text4);text-align:center}
+@media (max-width:1100px){
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .sig-row{grid-template-columns:minmax(0,1fr) 220px;grid-auto-rows:auto}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+/* ═══════════════ 内嵌数据（真实快照 2026-11-10T09:00Z 加工） ═══════════════ */
+const DATA = {
+ "snapshot": "2026-11-10T09:00:00+00:00",
+ "summary": {
+  "in_flight": 2,
+  "in_flight_admin": 1,
+  "in_flight_arbiter": 1,
+  "queue": 1,
+  "queue_major": 1,
+  "queue_critical": 0,
+  "escalations": 18,
+  "escalations_24h": 7,
+  "signatures": 25,
+  "signatures_admin_full": 2,
+  "signatures_arbiter_full": 4,
+  "signatures_linked": 10,
+  "quota_exhausted": 0
+ },
+ "in_flight": [
+  {
+   "chain_id": "chain-1794298801234-e91f5a2b",
+   "signature": "m3-audio-clipboard-textinput::verify_env_blocked",
+   "spec": "m3-audio-clipboard-textinput",
+   "project": "cloud-phone",
+   "phase": "admin",
+   "started_at": "2026-11-10T06:42:18+00:00",
+   "problem": "场景计划争议（第 3 轮）：冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → 删除 test_scenarios.json 批准重新出题；② 文件可修复 → 修复后保持冻结。",
+   "admin_used": 1,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "run_id": "admin-m3-audio-clipboard-1794298801",
+   "events": [
+    {
+     "t": "system",
+     "at": "06:42:18",
+     "text": "入链 chain-1794298801234-e91f5a2b · 签名 verify_env_blocked · Admin 尝试 1/2 · 调度 Administrator 唤起。"
+    },
+    {
+     "t": "user",
+     "at": "06:42:20",
+     "text": "处置 spec m3-audio-clipboard-textinput 冻结场景争议（第 3 轮）：先鉴定冻结场景文件状态，再决定「修复后保持冻结」或「删除 test_scenarios.json 重新出题」。"
+    },
+    {
+     "t": "assistant",
+     "at": "06:42:41",
+     "text": "读取冻结场景文件与最近 3 轮验证日志，定位损坏/过期点，再抽查失败场景复现。"
+    },
+    {
+     "t": "tool",
+     "at": "06:43:02",
+     "text": "$ python3 -c \"import json;json.load(open('spec/changes/m3-audio-clipboard-textinput/test_scenarios.json'))\"\n（退出码 0，JSON 结构完整）"
+    },
+    {
+     "t": "tool",
+     "at": "06:43:55",
+     "text": "$ pytest tests/audio -k clipboard -x -q\n2 failed, 11 passed in 38.2s\nFAILED tests/audio/test_clipboard_paste.py::test_paste_text_input - AssertionError: expected sample rate 48000, got 44100"
+    },
+    {
+     "t": "assistant",
+     "at": "06:45:10",
+     "text": "场景文件未损坏，是断言基线过期：粘贴文本输入用例的采样率断言未跟随 48k 基线更新。结论偏向「修复后保持冻结」，开始改基线。"
+    },
+    {
+     "t": "tool",
+     "at": "06:47:36",
+     "text": "$ git diff --stat\n tests/audio/test_clipboard_paste.py | 6 +++---\n 1 file changed, 3 insertions(+), 3 deletions(-)"
+    },
+    {
+     "t": "tool",
+     "at": "06:51:04",
+     "text": "$ pytest tests/audio -k clipboard -q\n13 passed in 41.7s"
+    },
+    {
+     "t": "assistant",
+     "at": "06:52:19",
+     "text": "失败场景全部通过。准备提交修复并请求解除冻结闸门复检；本链尝试 1/2 待复检收口。"
+    },
+    {
+     "t": "system",
+     "at": "—",
+     "text": "快照时刻（09:00 UTC）无新事件 · 等待闸门复检；复检仍失败则进入 Admin 尝试 2/2。"
+    }
+   ],
+   "elapsed_min": 137
+  },
+  {
+   "chain_id": "chain-1794299123456-7c41d908",
+   "signature": "p2p-crossnet-traversal::verify_fail_escalation",
+   "spec": "p2p-crossnet-traversal",
+   "project": "cloud-phone",
+   "phase": "arbiter",
+   "started_at": "2026-11-10T05:07:44+00:00",
+   "problem": "'p2p-crossnet-traversal' 升级闸门连续失败第 3 轮，已冻结等待处置——round2/round3 失败场景集完全相同，疑似「根因已修复但闸门仍冻结」误置。",
+   "admin_used": 2,
+   "admin_cap": 2,
+   "arbiter_rulings": 1,
+   "arbiter_cap": 2,
+   "run_id": "arbiter-p2p-crossnet-traversal-1794299123",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（2 尝试耗尽），Arbiter 冻结鉴定接单复现验证。",
+   "events": [
+    {
+     "t": "system",
+     "at": "05:07:44",
+     "text": "入链 chain-1794299123456-7c41d908 · 签名 verify_fail_escalation · Admin 尝试 2/2 均未收敛 → 上升 Arbiter 冻结鉴定。"
+    },
+    {
+     "t": "user",
+     "at": "05:07:47",
+     "text": "调查 spec p2p-crossnet-traversal 升级闸门连续失败（第 3 轮）：复现 round2/round3 失败场景，鉴定「根因已修复但闸门仍冻结」假设是否成立。"
+    },
+    {
+     "t": "assistant",
+     "at": "05:08:12",
+     "text": "先比对 round2/round3 两轮失败场景集是否一致，再核对闸门冻结标记与重派计数器的时序。"
+    },
+    {
+     "t": "tool",
+     "at": "05:09:40",
+     "text": "$ fenix verify diff round2 round3 --json\n{\"identical_scenarios\": 14, \"diff\": [], \"round2_failed\": 14, \"round3_failed\": 14}"
+    },
+    {
+     "t": "assistant",
+     "at": "05:11:02",
+     "text": "两轮失败场景集完全一致（14/14）——与「根因已修复但闸门未解冻」假设方向一致。继续核对闸门状态。"
+    },
+    {
+     "t": "tool",
+     "at": "05:13:26",
+     "text": "$ jq \".frozen, .unfrozen_at\" .fenix/verify-progress/p2p-crossnet-traversal/scenarios.json\ntrue\nnull"
+    },
+    {
+     "t": "assistant",
+     "at": "05:15:48",
+     "text": "闸门 frozen=true 且无解冻记录：根因修复合入后闸门标记未随验证通过清除，误置假设成立。发起冻结鉴定复现验证，产出裁决建议。"
+    },
+    {
+     "t": "system",
+     "at": "—",
+     "text": "Arbiter 裁决 1/2 已产出：建议人工确认解冻（复现证据与假设一致）；等待裁决回流/人工介入。"
+    }
+   ],
+   "elapsed_min": 232
+  }
+ ],
+ "signatures": [
+  {
+   "signature": "add-integration-test-env::inconclusive_loop",
+   "signal": "inconclusive_loop",
+   "spec": "add-integration-test-env",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 2,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-07T16:32:57.365838+00:00",
+   "last_spec_status": "implemented",
+   "esc_total": 1,
+   "esc_pending": 0
+  },
+  {
+   "signature": "add-integration-test-env::verify_env_blocked",
+   "signal": "verify_env_blocked",
+   "spec": "add-integration-test-env",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-07T17:00:38.054739+00:00",
+   "last_spec_status": "testing",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "add-knowledge-inbox-pipeline::verify_env_blocked",
+   "signal": "verify_env_blocked",
+   "spec": "add-knowledge-inbox-pipeline",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 1,
+   "admin_cap": 2,
+   "arbiter_rulings": 2,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-03T14:34:34.923801+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "fix-escalation-freeze-vs-parallel-admin-race::spec-review-rejected",
+   "signal": "spec-review-rejected",
+   "spec": "fix-escalation-freeze-vs-parallel-admin-race",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 1,
+   "admin_cap": 2,
+   "arbiter_rulings": 1,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-03T14:15:40.804111+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "fix-scenario-revision-choice-registration-surface::spec-review-rejected",
+   "signal": "spec-review-rejected",
+   "spec": "fix-scenario-revision-choice-registration-surface",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 1,
+   "admin_cap": 2,
+   "arbiter_rulings": 1,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-03T14:09:15.140814+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "harden-arbiter-lane-resilience::verify_env_blocked",
+   "signal": "verify_env_blocked",
+   "spec": "harden-arbiter-lane-resilience",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 2,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-09T13:45:01.449137+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "stale-code-governance-activation-window::spec-review-rejected",
+   "signal": "spec-review-rejected",
+   "spec": "stale-code-governance-activation-window",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenixd",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-03T14:32:53.586238+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "client-ui-redesign::redispatch_loop_detected",
+   "signal": "redispatch_loop_detected",
+   "spec": "client-ui-redesign",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-10T06:40:28.155509+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 2,
+   "esc_pending": 1
+  },
+  {
+   "signature": "client-ux-and-input-latency::judge_rerun_cap",
+   "signal": "judge_rerun_cap",
+   "spec": "client-ux-and-input-latency",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 2,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-08T21:35:08.419888+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "client-ux-and-input-latency::warning_stale_triage",
+   "signal": "warning_stale_triage",
+   "spec": "client-ux-and-input-latency",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 1,
+   "admin_cap": 2,
+   "arbiter_rulings": 2,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-08T19:43:36.759991+00:00",
+   "last_spec_status": "testing",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "gaming-uplink-1080p::redispatch_loop_detected",
+   "signal": "redispatch_loop_detected",
+   "spec": "gaming-uplink-1080p",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T01:40:41.920943+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 2,
+   "esc_pending": 0
+  },
+  {
+   "signature": "gaming-uplink-1080p::spec-review-incomplete",
+   "signal": "spec-review-incomplete",
+   "spec": "gaming-uplink-1080p",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T01:04:01.787981+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "gaming-uplink-1080p::verify_env_blocked",
+   "signal": "verify_env_blocked",
+   "spec": "gaming-uplink-1080p",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T04:29:52.660440+00:00",
+   "last_spec_status": "testing",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "m0-a2a-streaming-pipeline::spec-review-incomplete",
+   "signal": "spec-review-incomplete",
+   "spec": "m0-a2a-streaming-pipeline",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-08T08:22:34.624556+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "m3-audio-clipboard-textinput::inconclusive_loop",
+   "signal": "inconclusive_loop",
+   "spec": "m3-audio-clipboard-textinput",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T12:53:48.982510+00:00",
+   "last_spec_status": "implemented",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "m3-audio-clipboard-textinput::redispatch_loop_detected",
+   "signal": "redispatch_loop_detected",
+   "spec": "m3-audio-clipboard-textinput",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T09:30:17.214301+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 4,
+   "esc_pending": 0
+  },
+  {
+   "signature": "m3-audio-clipboard-textinput::spec-review-incomplete",
+   "signal": "spec-review-incomplete",
+   "spec": "m3-audio-clipboard-textinput",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T01:08:50.474339+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "m3-audio-clipboard-textinput::verify_env_blocked",
+   "signal": "verify_env_blocked",
+   "spec": "m3-audio-clipboard-textinput",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 2,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T13:54:31.172028+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 1,
+   "esc_pending": 0
+  },
+  {
+   "signature": "p2p-crossnet-traversal::impl_budget_exhausted",
+   "signal": "impl_budget_exhausted",
+   "spec": "p2p-crossnet-traversal",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 2,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T09:36:08.244058+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 1,
+   "esc_pending": 0
+  },
+  {
+   "signature": "p2p-crossnet-traversal::redispatch_loop_detected",
+   "signal": "redispatch_loop_detected",
+   "spec": "p2p-crossnet-traversal",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T01:40:42.437756+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 2,
+   "esc_pending": 0
+  },
+  {
+   "signature": "p2p-crossnet-traversal::spec-review-incomplete",
+   "signal": "spec-review-incomplete",
+   "spec": "p2p-crossnet-traversal",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T01:07:04.067757+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 0,
+   "esc_pending": 0
+  },
+  {
+   "signature": "p2p-crossnet-traversal::verify_fail_escalation",
+   "signal": "verify_fail_escalation",
+   "spec": "p2p-crossnet-traversal",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 1,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T13:30:13.460367+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 1,
+   "esc_pending": 0
+  },
+  {
+   "signature": "single-app-realdevice-retest::redispatch_loop_detected",
+   "signal": "redispatch_loop_detected",
+   "spec": "single-app-realdevice-retest",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 0,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T02:21:54.658212+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 3,
+   "esc_pending": 0
+  },
+  {
+   "signature": "single-app-realdevice-retest::verify_env_blocked",
+   "signal": "verify_env_blocked",
+   "spec": "single-app-realdevice-retest",
+   "subject": "",
+   "granularity": "spec",
+   "project": "cloud-phone",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 2,
+   "arbiter_cap": 2,
+   "exhausted": false,
+   "last_seen": "2026-11-09T13:29:10.283562+00:00",
+   "last_spec_status": "blocked",
+   "esc_total": 1,
+   "esc_pending": 0
+  },
+  {
+   "signature": "token-usage-monitor-panel::spec-review-incomplete",
+   "signal": "spec-review-incomplete",
+   "spec": "token-usage-monitor-panel",
+   "subject": "",
+   "granularity": "spec",
+   "project": "fenix-desktop",
+   "admin_attempts": 0,
+   "admin_cap": 2,
+   "arbiter_rulings": 1,
+   "arbiter_cap": 3,
+   "exhausted": false,
+   "last_seen": "2026-11-05T11:15:16.241074+00:00",
+   "last_spec_status": "reviewing",
+   "esc_total": 0,
+   "esc_pending": 0
+  }
+ ],
+ "groups": [
+  {
+   "spec": "client-ui-redesign",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "client-ui-redesign::redispatch_loop_detected",
+     "signal": "redispatch_loop_detected",
+     "spec": "client-ui-redesign",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-10T06:40:28.155509+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 2,
+     "esc_pending": 1
+    }
+   ],
+   "esc_total": 2,
+   "esc_pending": 1,
+   "last_seen": "2026-11-10T06:40:28.155509+00:00"
+  },
+  {
+   "spec": "m3-audio-clipboard-textinput",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "m3-audio-clipboard-textinput::inconclusive_loop",
+     "signal": "inconclusive_loop",
+     "spec": "m3-audio-clipboard-textinput",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T12:53:48.982510+00:00",
+     "last_spec_status": "implemented",
+     "esc_total": 0,
+     "esc_pending": 0
+    },
+    {
+     "signature": "m3-audio-clipboard-textinput::redispatch_loop_detected",
+     "signal": "redispatch_loop_detected",
+     "spec": "m3-audio-clipboard-textinput",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T09:30:17.214301+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 4,
+     "esc_pending": 0
+    },
+    {
+     "signature": "m3-audio-clipboard-textinput::spec-review-incomplete",
+     "signal": "spec-review-incomplete",
+     "spec": "m3-audio-clipboard-textinput",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T01:08:50.474339+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    },
+    {
+     "signature": "m3-audio-clipboard-textinput::verify_env_blocked",
+     "signal": "verify_env_blocked",
+     "spec": "m3-audio-clipboard-textinput",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 2,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T13:54:31.172028+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 1,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 5,
+   "esc_pending": 0,
+   "last_seen": "2026-11-09T13:54:31.172028+00:00"
+  },
+  {
+   "spec": "p2p-crossnet-traversal",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "p2p-crossnet-traversal::impl_budget_exhausted",
+     "signal": "impl_budget_exhausted",
+     "spec": "p2p-crossnet-traversal",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 2,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T09:36:08.244058+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 1,
+     "esc_pending": 0
+    },
+    {
+     "signature": "p2p-crossnet-traversal::redispatch_loop_detected",
+     "signal": "redispatch_loop_detected",
+     "spec": "p2p-crossnet-traversal",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T01:40:42.437756+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 2,
+     "esc_pending": 0
+    },
+    {
+     "signature": "p2p-crossnet-traversal::spec-review-incomplete",
+     "signal": "spec-review-incomplete",
+     "spec": "p2p-crossnet-traversal",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T01:07:04.067757+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    },
+    {
+     "signature": "p2p-crossnet-traversal::verify_fail_escalation",
+     "signal": "verify_fail_escalation",
+     "spec": "p2p-crossnet-traversal",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 1,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T13:30:13.460367+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 1,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 4,
+   "esc_pending": 0,
+   "last_seen": "2026-11-09T13:30:13.460367+00:00"
+  },
+  {
+   "spec": "single-app-realdevice-retest",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "single-app-realdevice-retest::redispatch_loop_detected",
+     "signal": "redispatch_loop_detected",
+     "spec": "single-app-realdevice-retest",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T02:21:54.658212+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 3,
+     "esc_pending": 0
+    },
+    {
+     "signature": "single-app-realdevice-retest::verify_env_blocked",
+     "signal": "verify_env_blocked",
+     "spec": "single-app-realdevice-retest",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 2,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T13:29:10.283562+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 1,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 4,
+   "esc_pending": 0,
+   "last_seen": "2026-11-09T13:29:10.283562+00:00"
+  },
+  {
+   "spec": "gaming-uplink-1080p",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "gaming-uplink-1080p::redispatch_loop_detected",
+     "signal": "redispatch_loop_detected",
+     "spec": "gaming-uplink-1080p",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T01:40:41.920943+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 2,
+     "esc_pending": 0
+    },
+    {
+     "signature": "gaming-uplink-1080p::spec-review-incomplete",
+     "signal": "spec-review-incomplete",
+     "spec": "gaming-uplink-1080p",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T01:04:01.787981+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    },
+    {
+     "signature": "gaming-uplink-1080p::verify_env_blocked",
+     "signal": "verify_env_blocked",
+     "spec": "gaming-uplink-1080p",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-09T04:29:52.660440+00:00",
+     "last_spec_status": "testing",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 2,
+   "esc_pending": 0,
+   "last_seen": "2026-11-09T04:29:52.660440+00:00"
+  },
+  {
+   "spec": "add-integration-test-env",
+   "project": "fenixd",
+   "sigs": [
+    {
+     "signature": "add-integration-test-env::inconclusive_loop",
+     "signal": "inconclusive_loop",
+     "spec": "add-integration-test-env",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 2,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-07T16:32:57.365838+00:00",
+     "last_spec_status": "implemented",
+     "esc_total": 1,
+     "esc_pending": 0
+    },
+    {
+     "signature": "add-integration-test-env::verify_env_blocked",
+     "signal": "verify_env_blocked",
+     "spec": "add-integration-test-env",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-07T17:00:38.054739+00:00",
+     "last_spec_status": "testing",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 1,
+   "esc_pending": 0,
+   "last_seen": "2026-11-07T17:00:38.054739+00:00"
+  },
+  {
+   "spec": "harden-arbiter-lane-resilience",
+   "project": "fenixd",
+   "sigs": [
+    {
+     "signature": "harden-arbiter-lane-resilience::verify_env_blocked",
+     "signal": "verify_env_blocked",
+     "spec": "harden-arbiter-lane-resilience",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 2,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-09T13:45:01.449137+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-09T13:45:01.449137+00:00"
+  },
+  {
+   "spec": "client-ux-and-input-latency",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "client-ux-and-input-latency::judge_rerun_cap",
+     "signal": "judge_rerun_cap",
+     "spec": "client-ux-and-input-latency",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 2,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-08T21:35:08.419888+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    },
+    {
+     "signature": "client-ux-and-input-latency::warning_stale_triage",
+     "signal": "warning_stale_triage",
+     "spec": "client-ux-and-input-latency",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 1,
+     "admin_cap": 2,
+     "arbiter_rulings": 2,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-08T19:43:36.759991+00:00",
+     "last_spec_status": "testing",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-08T21:35:08.419888+00:00"
+  },
+  {
+   "spec": "m0-a2a-streaming-pipeline",
+   "project": "cloud-phone",
+   "sigs": [
+    {
+     "signature": "m0-a2a-streaming-pipeline::spec-review-incomplete",
+     "signal": "spec-review-incomplete",
+     "spec": "m0-a2a-streaming-pipeline",
+     "subject": "",
+     "granularity": "spec",
+     "project": "cloud-phone",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 2,
+     "exhausted": false,
+     "last_seen": "2026-11-08T08:22:34.624556+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-08T08:22:34.624556+00:00"
+  },
+  {
+   "spec": "token-usage-monitor-panel",
+   "project": "fenix-desktop",
+   "sigs": [
+    {
+     "signature": "token-usage-monitor-panel::spec-review-incomplete",
+     "signal": "spec-review-incomplete",
+     "spec": "token-usage-monitor-panel",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenix-desktop",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 1,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-05T11:15:16.241074+00:00",
+     "last_spec_status": "reviewing",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-05T11:15:16.241074+00:00"
+  },
+  {
+   "spec": "add-knowledge-inbox-pipeline",
+   "project": "fenixd",
+   "sigs": [
+    {
+     "signature": "add-knowledge-inbox-pipeline::verify_env_blocked",
+     "signal": "verify_env_blocked",
+     "spec": "add-knowledge-inbox-pipeline",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 1,
+     "admin_cap": 2,
+     "arbiter_rulings": 2,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-03T14:34:34.923801+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-03T14:34:34.923801+00:00"
+  },
+  {
+   "spec": "stale-code-governance-activation-window",
+   "project": "fenixd",
+   "sigs": [
+    {
+     "signature": "stale-code-governance-activation-window::spec-review-rejected",
+     "signal": "spec-review-rejected",
+     "spec": "stale-code-governance-activation-window",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 0,
+     "admin_cap": 2,
+     "arbiter_rulings": 0,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-03T14:32:53.586238+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-03T14:32:53.586238+00:00"
+  },
+  {
+   "spec": "fix-escalation-freeze-vs-parallel-admin-race",
+   "project": "fenixd",
+   "sigs": [
+    {
+     "signature": "fix-escalation-freeze-vs-parallel-admin-race::spec-review-rejected",
+     "signal": "spec-review-rejected",
+     "spec": "fix-escalation-freeze-vs-parallel-admin-race",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 1,
+     "admin_cap": 2,
+     "arbiter_rulings": 1,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-03T14:15:40.804111+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-03T14:15:40.804111+00:00"
+  },
+  {
+   "spec": "fix-scenario-revision-choice-registration-surface",
+   "project": "fenixd",
+   "sigs": [
+    {
+     "signature": "fix-scenario-revision-choice-registration-surface::spec-review-rejected",
+     "signal": "spec-review-rejected",
+     "spec": "fix-scenario-revision-choice-registration-surface",
+     "subject": "",
+     "granularity": "spec",
+     "project": "fenixd",
+     "admin_attempts": 1,
+     "admin_cap": 2,
+     "arbiter_rulings": 1,
+     "arbiter_cap": 3,
+     "exhausted": false,
+     "last_seen": "2026-11-03T14:09:15.140814+00:00",
+     "last_spec_status": "blocked",
+     "esc_total": 0,
+     "esc_pending": 0
+    }
+   ],
+   "esc_total": 0,
+   "esc_pending": 0,
+   "last_seen": "2026-11-03T14:09:15.140814+00:00"
+  }
+ ],
+ "escalations": [
+  {
+   "id": "701acddae192",
+   "project": "cloud-phone",
+   "spec": "client-ui-redesign",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-10T06:40:28.179420+00:00",
+   "description": "'client-ui-redesign' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=client-ui-redesign; retries=4; max_retries=3; fp=0c9759dd9960; final_error=实现者申报未完成（status=partial）：5.1",
+   "recommended_action": "'client-ui-redesign' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": false,
+   "handled_at": "",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794292828051-bbc731cb",
+   "chain_signature": "client-ui-redesign::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "fb4cce6e51db",
+   "project": "cloud-phone",
+   "spec": "m3-audio-clipboard-textinput",
+   "signal_type": "verify_env_blocked",
+   "severity": "warning",
+   "created": "2026-11-09T13:55:12.202240+00:00",
+   "description": "场景计划争议（第 1 轮）：冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → 删除 .fenix/verify-progress/m3-audio-clipboard-textinput/test_scenarios.json 批准重新出题；② 文件可修复 → 修复后保持冻结。③ 如需恢复迁移前集合：删除 .fenix/verify-progress/m3-audio-clipboard-textinput/test_scenarios.json 与 test_scenarios.json.contract-v1.bak 的对应项后由 planner 重出题 / 或把 .bak ...",
+   "evidence": "spec=m3-audio-clipboard-textinput; report=spec/changes/m3-audio-clipboard-textinput/verification-report.md",
+   "recommended_action": "场景计划争议（第 1 轮）：冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → 删除 .fenix/verify-progress/m3-audio-clipboard-textinput/test_scenarios.json 批准重新出题；② 文件可修复 → 修复后保持冻结。③ 如需恢复迁移前集合：删除 .fenix/verify-progress/m3-audio-clipboard-textinput/test_scenarios.json 与 test_scenarios.json.contract-v1.bak 的对应项后由 planner 重出题 / 或把 .bak ...",
+   "handled": true,
+   "handled_at": "2026-11-10T00:54:07.933831+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-dead-man",
+   "endpoint_label": "死人开关触发",
+   "endpoint_reason": "死人开关触发（连败 2/2 或预算耗尽）: claude CLI failed: dsh: RATE_LIMIT: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1310\",\"message\":\"[1310][您已达到每周/每月使用上限，您的限额将在 2026-11-10 10:43:04 重置。][20261109215510e0b2419fcdd04137]\"},\"request_id\":\"20261109215510e0b2419…",
+   "handoff_reason": "",
+   "admin_used": 2,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794232429259-23178c14",
+   "chain_signature": "m3-audio-clipboard-textinput::verify_env_blocked",
+   "choices": [
+    {
+     "id": "revise_scenario_reverify",
+     "label": "修订场景·重验",
+     "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
+     "destructive": false
+    }
+   ]
+  },
+  {
+   "id": "d96f3bd54fa2",
+   "project": "cloud-phone",
+   "spec": "client-ui-redesign",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T13:35:24.899181+00:00",
+   "description": "'client-ui-redesign' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=client-ui-redesign; retries=3; max_retries=3; fp=a812d1171a33; final_error=provider chain exhausted for implementer 'client-ui-redesign': all 1 candidates in switch/4xx cooldown",
+   "recommended_action": "'client-ui-redesign' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-10T00:54:07.958415+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-dead-man",
+   "endpoint_label": "死人开关触发",
+   "endpoint_reason": "死人开关触发（连败 2/2 或预算耗尽）: claude CLI failed: dsh: RATE_LIMIT: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1310\",\"message\":\"[1310][您已达到每周/每月使用上限，您的限额将在 2026-11-10 10:43:04 重置。][20261109213523dd2bba7ef61c468c]\"},\"request_id\":\"20261109213523dd2bba7…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794231283841-d4774c8b",
+   "chain_signature": "client-ui-redesign::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "c501ba98648a",
+   "project": "cloud-phone",
+   "spec": "p2p-crossnet-traversal",
+   "signal_type": "verify_fail_escalation",
+   "severity": "major",
+   "created": "2026-11-09T13:30:45.851943+00:00",
+   "description": "'p2p-crossnet-traversal' 升级闸门连续失败第 3 轮，已冻结等待人工裁决",
+   "evidence": "spec=p2p-crossnet-traversal; fail_rounds=3; failure_profile=round1:real-bugs; round2:repeat; round3:repeat; diff[round1]: added=['crypto-deliverables-exist'] removed=[] persisted=[]; diff[round2]: added=[] removed=[] persisted=['crypto-deliverables-exist']; diff[round3]: added=[] removed=[] persiste…",
+   "recommended_action": "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；人工重置计数器即重新获得自动修复机会。\n行级根因（验证裁决产物）：\n- [crypto-deliverables-exist] 实现交付时未对 scripts/natlab_run.py 执行 chmod +x，交付物核查脚本 [ -x ] 检查失败使整步 exit 1\n裁决指引：按行级根因人工修复后重跑验证（manual_fixed_reverify）；确认非缺陷可豁免/推进（force_advance）；需放弃本 SPEC 走 abandon；维持自动修复走 continue_auto_fix。",
+   "handled": true,
+   "handled_at": "2026-11-10T00:54:07.984231+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-escalated",
+   "endpoint_label": "Arbiter 上升",
+   "endpoint_reason": "白名单③（验证侧计数冻结复位）前置条件「考古证明失败源已消除」被证据否证：natlab_run.py 可执行位缺失在 master 工作树、master git index、code-fix 分支 tip、round3 结构化验证证据四个独立表面一致在案；修复本体（对 master 产品脚本 chmod +x 至 100755，或把产品分支 fenix/p2p-crossnet-traversal-1794215453 上的 d94a5dd 合回基线）踩红线 3 且超出白名单 6 授权面（仅 spec/ 目录在飞改…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 1,
+   "chain_id": "chain-1794230197394-6df74215",
+   "chain_signature": "p2p-crossnet-traversal::verify_fail_escalation",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并重置验证失败轮计数（重新获得自动修复预算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证失败轮计数后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "d8fc3fb68cbb",
+   "project": "cloud-phone",
+   "spec": "single-app-realdevice-retest",
+   "signal_type": "verify_env_blocked",
+   "severity": "critical",
+   "created": "2026-11-09T13:16:37.220671+00:00",
+   "description": "用户指令冻结：验证环境阻塞连续 2 轮，admin 处置未奏效，转人工 — env 失败场景不得判 verified（须升级 admin 处置）: probe-only-happy-path-ok、mirror-limit-fault-injection-repro\n\n> [成本参考] 重新出题成本：累计 费用未回传 / 1.0M tokens",
+   "evidence": "spec=single-app-realdevice-retest; report=spec/changes/single-app-realdevice-retest/verification-report.md",
+   "recommended_action": "按序执行：① 自进化车道消费 todo.md 第 87、111-126 行三个冻结环缺口主题立项（_status_to_event 补 testing→verify 入队映射、处置回执补下游落地校验、恢复路径对 env 失败 spec 禁 fast-track 直通 verified）→实现→合并→fenixd 自身重验绿；② 人工重启 fenixd daemon 加载修复代码（Arbiter 受红线 5 约束不可代执行）；③ 对本 spec 执行 unfreeze_spec(status='testing')（框架附带清零重启重验计数），此时解冻才会真实派发新 verifier 重验 probe-only-happy-path-ok 与 mirror-limit-fault-injection-repro 两场景——环境已就绪、产品脚本契约已被 device-discovery-and-exit-codes 场景验证正确，预期…",
+   "handled": true,
+   "handled_at": "2026-11-10T00:54:08.010308+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-escalated",
+   "endpoint_label": "Arbiter 上升",
+   "endpoint_reason": "本触发形态上命中白名单③（验证侧计数冻结 + 考古证明环境失败源已消除），但唯一自主处置动作「显式 status 解冻→testing」已在 11:31:02（run -1794223258）与 12:18:47（run -1794225773）两轮实证失效——解冻后框架不入队 verifier（_status_to_event 缺 testing 键），spec 被 fast-track 恢复重入反复消费 10:04 陈旧 report、由 verified 洗白门禁连计 2 轮后再次冻结；12:39 admin…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 1,
+   "chain_id": "chain-1794229305527-6876be08",
+   "chain_signature": "single-app-realdevice-retest::verify_env_blocked",
+   "choices": [
+    {
+     "id": "revise_scenario_reverify",
+     "label": "修订场景·重验",
+     "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
+     "destructive": false
+    }
+   ]
+  },
+  {
+   "id": "24727bfc4c4e",
+   "project": "cloud-phone",
+   "spec": "m3-audio-clipboard-textinput",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T09:30:17.234420+00:00",
+   "description": "'m3-audio-clipboard-textinput' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=m3-audio-clipboard-textinput; retries=6; max_retries=3; fp=150a3bbfeca4; final_error=实现者申报未完成（status=partial）：1.1、1.2、5.3",
+   "recommended_action": "'m3-audio-clipboard-textinput' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T11:23:00.531552+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794216617096-eb9887db",
+   "chain_signature": "m3-audio-clipboard-textinput::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "b7adf38a93f3",
+   "project": "cloud-phone",
+   "spec": "p2p-crossnet-traversal",
+   "signal_type": "impl_budget_exhausted",
+   "severity": "major",
+   "created": "2026-11-09T09:29:52.660860+00:00",
+   "description": "'p2p-crossnet-traversal' 实现尝试预算耗尽（4/4），已冻结等待人工裁决",
+   "evidence": "spec=p2p-crossnet-traversal; used=4; budget=4; recent_failure=验证失败（原地打回第 2 轮），重修中",
+   "recommended_action": "在告警 b7adf38a93f3 上拍板（推荐序）：①首选 continue_auto_fix（解冻+重置实现预算 used 4→0，重获自动修复）——真实失败源唯一且 minor（natlab_run.py 缺可执行位）、修复已备、24/25 场景通过，重置即事实退款 2 格伪耗尽（daemon 关停击杀未豁免），请一并追认该预算政策口径；②执行前/同时授权落位修复：把 fenix/p2p-crossnet-traversal-1794215453 的 d94a5dd（scripts/natlab_run.py 纯 mode 修复）合回基线，或在解冻派发时附带 chmod +x 指令——否则重验必复失败于同一检查（重修基线实测仍 100644）；③不建议 reset_verification（基线无修复，重验必复失败）与 force_advance（带缺陷收口，SPEC「可执行位」验收声明失真）；abandon 代价最大（丢弃…",
+   "handled": true,
+   "handled_at": "2026-11-09T11:23:00.567235+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-escalated",
+   "endpoint_label": "Arbiter 上升",
+   "endpoint_reason": "四个处置面全部白名单外：①预算/计数处置——预算政策显式白名单外，budget_override 两源标准（「预算上限误设」）不成立（cap=4 为 config 默认策略，且含 2 格真实消耗），计数退款须改 STATE 预算字段（红线 4）；②+x 修复落位——修复 commit 停留侧分支，落位需 merge 产品分支（红线 3）；③主树 WIP 跨 spec 分拣提交——白名单 ⑤ 仅产裁决包；④预算计数伪影的机制性根因（daemon 关停击杀不豁免）属框架缺口，走 gaps 上报非自主修复。框架自身对账两…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 1,
+   "chain_id": "chain-1794215564952-f6ac9413",
+   "chain_signature": "p2p-crossnet-traversal::impl_budget_exhausted",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并重置实现预算计数（重新获得完整实现预算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "e040ec9ed536",
+   "project": "cloud-phone",
+   "spec": "m3-audio-clipboard-textinput",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T07:45:40.963631+00:00",
+   "description": "'m3-audio-clipboard-textinput' 实现尝试连续 3 次失败（含 repair 通道）已达 agents.max_retries 上限，自动重试终止——已冻结转人工处置",
+   "evidence": "spec=m3-audio-clipboard-textinput; retries=5; max_retries=3; final_error=Semantic merge conflicts detected by pre-merge rehearsal (3 path(s))",
+   "recommended_action": "'m3-audio-clipboard-textinput' 实现尝试连续 3 次失败（含 repair 通道）已达 agents.max_retries 上限，自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T08:16:23.610821+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794210340857-8e96307b",
+   "chain_signature": "m3-audio-clipboard-textinput::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "92bab752e1b2",
+   "project": "cloud-phone",
+   "spec": "single-app-realdevice-retest",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T02:21:54.688626+00:00",
+   "description": "'single-app-realdevice-retest' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=single-app-realdevice-retest; retries=6; max_retries=3; fp=0c9759dd9960; final_error=实现者申报未完成（status=partial）：5.1",
+   "recommended_action": "'single-app-realdevice-retest' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.857444+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794190914551-08058383",
+   "chain_signature": "single-app-realdevice-retest::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "e5b7f9bc5d26",
+   "project": "cloud-phone",
+   "spec": "m3-audio-clipboard-textinput",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:40:43.043508+00:00",
+   "description": "'m3-audio-clipboard-textinput' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=m3-audio-clipboard-textinput; retries=4; max_retries=3; fp=a9c64be886d9; final_error=dsh 版本 '0.2.2-rc.1' 不在兼容白名单 ['0.2.0-rc.2']（版本漂移会破坏事件投影契约）——请安装 0.2.0-rc.2（npm install -g @deepseek-ai/dsh@0.2.0-rc.2），或更新 dsh-bundle 版本兼容表后同步本白名单；也可将 agent.harness 改回 claude",
+   "recommended_action": "'m3-audio-clipboard-textinput' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.880537+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794188442911-3c4027d9",
+   "chain_signature": "m3-audio-clipboard-textinput::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "ebc8f0edc632",
+   "project": "cloud-phone",
+   "spec": "p2p-crossnet-traversal",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:40:42.465073+00:00",
+   "description": "'p2p-crossnet-traversal' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=p2p-crossnet-traversal; retries=4; max_retries=3; fp=a9c64be886d9; final_error=dsh 版本 '0.2.2-rc.1' 不在兼容白名单 ['0.2.0-rc.2']（版本漂移会破坏事件投影契约）——请安装 0.2.0-rc.2（npm install -g @deepseek-ai/dsh@0.2.0-rc.2），或更新 dsh-bundle 版本兼容表后同步本白名单；也可将 agent.harness 改回 claude",
+   "recommended_action": "'p2p-crossnet-traversal' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.902172+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794188442338-5a5816fa",
+   "chain_signature": "p2p-crossnet-traversal::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "afa4c8c77318",
+   "project": "cloud-phone",
+   "spec": "gaming-uplink-1080p",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:40:41.947624+00:00",
+   "description": "'gaming-uplink-1080p' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=gaming-uplink-1080p; retries=4; max_retries=3; fp=d0b2de9ff951; final_error=本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
+   "recommended_action": "'gaming-uplink-1080p' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.923719+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794188441842-29f84893",
+   "chain_signature": "gaming-uplink-1080p::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "3239f7c045fa",
+   "project": "cloud-phone",
+   "spec": "single-app-realdevice-retest",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:40:41.485736+00:00",
+   "description": "'single-app-realdevice-retest' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=single-app-realdevice-retest; retries=5; max_retries=3; fp=d0b2de9ff951; final_error=本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
+   "recommended_action": "'single-app-realdevice-retest' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.945170+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794188441366-c4611c9d",
+   "chain_signature": "single-app-realdevice-retest::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "29463a1e3f5e",
+   "project": "cloud-phone",
+   "spec": "m3-audio-clipboard-textinput",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:31:25.953433+00:00",
+   "description": "'m3-audio-clipboard-textinput' 连续 3 轮以同一归因（指纹 a9c64be886d9）判失败重派，达熔断阈值——已冻结转人工处置，不再自动重派",
+   "evidence": "spec=m3-audio-clipboard-textinput; fp=a9c64be886d9; streak=3; retries=3; max_retries=3; final_error=dsh 版本 '0.2.2-rc.1' 不在兼容白名单 ['0.2.0-rc.2']（版本漂移会破坏事件投影契约）——请安装 0.2.0-rc.2（npm install -g @deepseek-ai/dsh@0.2.0-rc.2），或更新 dsh-bundle 版本兼容表后同步本白名单；也可将 agent.harness 改回 claude",
+   "recommended_action": "'m3-audio-clipboard-textinput' 连续 3 轮以同一归因（指纹 a9c64be886d9）判失败重派，达熔断阈值——已冻结转人工处置，不再自动重派",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.966910+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-dead-man",
+   "endpoint_label": "死人开关触发",
+   "endpoint_reason": "死人开关触发（连败 2/2 或预算耗尽）: claude CLI failed: dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route \"deepseek-official\"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launchi…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794187879644-e3e994c1",
+   "chain_signature": "m3-audio-clipboard-textinput::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "2372c58b9447",
+   "project": "cloud-phone",
+   "spec": "p2p-crossnet-traversal",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:31:19.452332+00:00",
+   "description": "'p2p-crossnet-traversal' 连续 3 轮以同一归因（指纹 a9c64be886d9）判失败重派，达熔断阈值——已冻结转人工处置，不再自动重派",
+   "evidence": "spec=p2p-crossnet-traversal; fp=a9c64be886d9; streak=3; retries=3; max_retries=3; final_error=dsh 版本 '0.2.2-rc.1' 不在兼容白名单 ['0.2.0-rc.2']（版本漂移会破坏事件投影契约）——请安装 0.2.0-rc.2（npm install -g @deepseek-ai/dsh@0.2.0-rc.2），或更新 dsh-bundle 版本兼容表后同步本白名单；也可将 agent.harness 改回 claude",
+   "recommended_action": "'p2p-crossnet-traversal' 连续 3 轮以同一归因（指纹 a9c64be886d9）判失败重派，达熔断阈值——已冻结转人工处置，不再自动重派",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:16.986245+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-dead-man",
+   "endpoint_label": "死人开关触发",
+   "endpoint_reason": "死人开关触发（连败 2/2 或预算耗尽）: claude CLI failed: dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route \"deepseek-official\"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launchi…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794187874187-e767a737",
+   "chain_signature": "p2p-crossnet-traversal::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "ebf43be21192",
+   "project": "cloud-phone",
+   "spec": "gaming-uplink-1080p",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:31:13.984528+00:00",
+   "description": "'gaming-uplink-1080p' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=gaming-uplink-1080p; retries=3; max_retries=3; fp=d0b2de9ff951; final_error=本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
+   "recommended_action": "'gaming-uplink-1080p' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:17.009708+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-dead-man",
+   "endpoint_label": "死人开关触发",
+   "endpoint_reason": "死人开关触发（连败 2/2 或预算耗尽）: claude CLI failed: dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route \"deepseek-official\"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launchi…",
+   "handoff_reason": "frozen 预检让位：Admin 车道冻结态不派发（0 尝试 0 消耗），Arbiter 冻结鉴定接单——machine 冻结（_frozen_source=machine）且属白名单自愈面（坏产物/计数冻结等）可显式 status 解冻恢复可运行；human 冻结（_frozen_source=human）或白名单外不得自动解冻，产出裁决包上升人工",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794187867564-b642d036",
+   "chain_signature": "gaming-uplink-1080p::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "05626e13fac6",
+   "project": "cloud-phone",
+   "spec": "single-app-realdevice-retest",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-09T01:31:06.763042+00:00",
+   "description": "'single-app-realdevice-retest' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=single-app-realdevice-retest; retries=4; max_retries=3; fp=d0b2de9ff951; final_error=本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
+   "recommended_action": "'single-app-realdevice-retest' fast-track 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": true,
+   "handled_at": "2026-11-09T02:32:17.032894+00:00",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794187866619-b74c8d24",
+   "chain_signature": "single-app-realdevice-retest::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  },
+  {
+   "id": "9e0403d0ac94",
+   "project": "fenixd",
+   "spec": "add-integration-test-env",
+   "signal_type": "inconclusive_loop",
+   "severity": "major",
+   "created": "2026-11-07T16:18:43.132170+00:00",
+   "description": "'add-integration-test-env' 连续 1 轮验证失败均被裁决归类 env（级二豁免握手首次命中即升级（judge 已裁决全 env），env 断言 2 条、blocked-env 场景 0 个），judge 已裁决全部失败归环境、等待人工豁免或修环境——自动重验已停止",
+   "evidence": "spec=add-integration-test-env; 连续轮数=1; 末轮blocked_env数=0; 签名摘要=it-smoke-mode-full-green:exit_code+N",
+   "recommended_action": "① 优先拍板 grant_env_exemption（告警 9e0403d0ac94 choices 下拉）：现场探针显示 GitHub bulk 窗口已关（容器内 ≈20KB/s），在飞轮 smoke 大概率再败同签名，豁免写入后双门同源命中即可合法收敛 verified 带豁免回链，不再赌分钟级波动的网络窗口；公开克隆覆盖面损失有 72h TTL+场景 hash 双锚失效兜底。② 若拍板时实测容器内 git clone --depth 1 走通（判据），可选 manual_fixed_reverify 真翻绿保覆盖面，但窗口分钟级波动有再烧风险。③ abandon 不推荐（交付物 11 项全落地功能正确）。④ 在飞验证轮（16:19:47Z auto 重派）无需人工干预，让其跑完由 judge 按豁免在场与否自然处置。⑤ 两条新 gap 建议自进化优先评估立项（停车守卫缺失使每次豁免握手停车 30 分钟后自动重烧验证预算；孤…",
+   "handled": true,
+   "handled_at": "2026-11-08T03:25:37.765115+00:00",
+   "close_cause": null,
+   "endpoint_kind": "arbiter-escalated",
+   "endpoint_label": "Arbiter 上升",
+   "endpoint_reason": "三选一裁决权属人工专属，Arbiter 白名单零命中，替人工执行 choice 越白名单（升级偏向：拿不准=升级）。具体：① grant_env_exemption 的写入唯一源是人工动作（STATE _env_exemptions，豁免不得自我批准），Admin 与 Arbiter 均无写入面；② manual_fixed_reverify 语义是「人工确认环境已修复并重置重验」——bulk 面恢复是 Arbiter 探针的瞬态快照，「网络已稳定到可重验」的判断正是该 choice 要人工拍板的内容；③ spec…",
+   "handoff_reason": "裁决超出链上环境运维拍板面：环境根因（宿主→GitHub 直连 bulk 限速截断）无 admin 合法修复杠杆，剩余出路为人类专属的 grant_env_exemption，或涉及场景覆盖取舍/交付物代理面增强的 owner 级决策",
+   "admin_used": 0,
+   "arbiter_rulings": 1,
+   "chain_id": "chain-1794066458012-2baf5f06",
+   "chain_signature": "add-integration-test-env::inconclusive_loop",
+   "choices": [
+    {
+     "id": "grant_env_exemption",
+     "label": "授予 env 豁免",
+     "desc": "确认失败确属环境且不可修复：落 env 豁免放行记录并重置验证重跑（下轮 verified 合法生效，报告带豁免回链）",
+     "destructive": false
+    },
+    {
+     "id": "revise_scenario_reverify",
+     "label": "修订场景·重验",
+     "desc": "失败确属场景定义不可行/夹具缺供给：修订场景定义与夹具供给层文件（仅白名单路径）并重置重验（上限 2 次，超限转人工）",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  }
+ ],
+ "queue": [
+  {
+   "id": "701acddae192",
+   "project": "cloud-phone",
+   "spec": "client-ui-redesign",
+   "signal_type": "redispatch_loop_detected",
+   "severity": "major",
+   "created": "2026-11-10T06:40:28.179420+00:00",
+   "description": "'client-ui-redesign' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "evidence": "spec=client-ui-redesign; retries=4; max_retries=3; fp=0c9759dd9960; final_error=实现者申报未完成（status=partial）：5.1",
+   "recommended_action": "'client-ui-redesign' 连续失败重试 3 轮已达上限（max_retries），自动重试终止——已冻结转人工处置",
+   "handled": false,
+   "handled_at": "",
+   "close_cause": null,
+   "endpoint_kind": "dead-man-permanent",
+   "endpoint_label": "死人开关·永久单次",
+   "endpoint_reason": "dead-man 永久单次例外（此前同签名已停机，不再自主处置）",
+   "handoff_reason": "",
+   "admin_used": 0,
+   "arbiter_rulings": 0,
+   "chain_id": "chain-1794292828051-bbc731cb",
+   "chain_signature": "client-ui-redesign::redispatch_loop_detected",
+   "choices": [
+    {
+     "id": "continue_auto_fix",
+     "label": "继续自动修复",
+     "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
+     "destructive": false
+    },
+    {
+     "id": "manual_fixed_reverify",
+     "label": "人工已修复·重置验证重跑",
+     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
+     "destructive": false
+    },
+    {
+     "id": "force_advance",
+     "label": "接受现状推进",
+     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
+     "destructive": false
+    },
+    {
+     "id": "abandon",
+     "label": "撤销丢弃",
+     "desc": "撤销并丢弃该 spec 的工作（软删除归档，留处置痕，不可自动恢复）",
+     "destructive": true
+    }
+   ]
+  }
+ ],
+ "projects": [
+  "cloud-phone",
+  "fenix-desktop",
+  "fenixd"
+ ]
+
+};
+
+const { useState, useMemo } = React;
+const antd = window.antd;
+const { ConfigProvider, Tag, Empty, Select, Tabs, Radio, Drawer, Timeline, Modal, Popconfirm, Input, Button } = antd;
+const h = React.createElement;
+
+const THEME = {
+  token: {
+    colorPrimary:'#0f1115', colorLink:'#4176e6',
+    colorSuccess:'#22c55e', colorError:'#ec1313', colorWarning:'#f59e0b',
+    colorText:'#0f1115', colorTextSecondary:'#61666b',
+    colorTextTertiary:'#81858c', colorTextQuaternary:'#adb2b8',
+    colorBorder:'rgba(0,0,0,0.16)', colorBorderSecondary:'rgba(0,0,0,0.10)',
+    colorSplit:'rgba(0,0,0,0.08)', colorBgLayout:'#eef1f5', colorBgContainer:'#ffffff',
+    fontFamily:"-apple-system,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Helvetica Neue',Arial,sans-serif",
+    fontSize:13,
+  },
+};
+
+const SEV_TAG = { critical:'red', major:'volcano', warning:'gold', minor:'default', info:'default' };
+const SEV_LABEL = { critical:'critical', major:'major', warning:'warning', minor:'minor', info:'info' };
+
+function fmtTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return iso;
+  const p = n => String(n).padStart(2,'0');
+  return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+function fmtDur(min){
+  if(min == null) return '—';
+  if(min < 60) return min + 'm';
+  return Math.floor(min/60) + 'h ' + (min%60) + 'm';
+}
+function sevTag(sev){
+  return h(Tag, {color: SEV_TAG[sev] || 'default', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, SEV_LABEL[sev] || sev || '—');
+}
+function quotaBar(used, cap, exhausted){
+  const capN = cap || 0;
+  const pct = capN > 0 ? Math.min(100, Math.round(used * 100 / capN)) : 0;
+  const color = exhausted ? 'var(--err)' : (capN > 0 && used >= capN ? 'var(--warn)' : 'var(--text3)');
+  return h('span', {className:'qbar'}, h('i', {style:{width: pct + '%', background: color}}));
+}
+function quotaChip(label, used, cap, exhausted, key){
+  return h('span', {className:'qchip', key},
+    h('span', {className:'t3', style:{fontSize:11}}, label),
+    h('span', {className:'mono', style:{fontSize:12, fontVariantNumeric:'tabular-nums'}}, (used||0) + '/' + (cap||0)),
+    quotaBar(used, cap, exhausted));
+}
+
+/* ── 页头（模拟宿主页 chrome：标题 + 页签 + 项目筛选） ── */
+function HeaderSim(props){
+  const { project, onProject, tab, onTab } = props;
+  return h('div', {className:'bento', 'data-proto-id':'ops-chain-header', style:{padding:'10px 16px 0', marginBottom:12}},
+    h('div', {style:{display:'flex', alignItems:'center', gap:16}},
+      h('div', {style:{fontSize:18, fontWeight:700, paddingRight:8}}, '运维'),
+      h('div', {className:'spacer'}),
+      h('div', {'data-proto-id':'chain-project-filter'},
+        h(Select, {
+          size:'small', style:{width:200}, value: project,
+          onChange: onProject,
+          options: [{value:'all', label:'全部项目'}].concat(
+            DATA.projects.map(p => ({value:p, label:p}))),
+        })),
+    ),
+    h('div', {'data-proto-id':'ops-chain-tabs', style:{marginTop:2}},
+      h(Tabs, {
+        size:'small', activeKey: tab, onChange: onTab,
+        items: [
+          {key:'chain', label:'处置链'},
+          {key:'auto', label:'自动运维记录'},
+          {key:'alert', label:'告警记录'},
+        ],
+      })),
+  );
+}
+
+/* ── 统计行 ── */
+function StatTile(props){
+  const { label, value, subNodes } = props;
+  return h('div', {className:'bento stat-tile'},
+    h('div', {className:'lbl'}, label),
+    h('div', {className:'num'}, value),
+    h('div', {className:'sub'}, subNodes));
+}
+
+/* ── 链在办 ── */
+function InFlightStepper(props){
+  const { it } = props;
+  const cur = it.phase;
+  const steps = [
+    {key:'admin', label:'Admin', used:it.admin_used, cap:it.admin_cap},
+    {key:'arbiter', label:'Arbiter', used:it.arbiter_rulings, cap:it.arbiter_cap},
+    {key:'manual', label:'人工', used:null, cap:null},
+  ];
+  const kids = [];
+  steps.forEach((s, i) => {
+    const state = cur === s.key ? 'cur' : (steps.findIndex(x => x.key === cur) > i ? 'done' : 'future');
+    const color = state === 'cur' ? 'var(--text)' : (state === 'done' ? 'var(--text3)' : 'var(--text4)');
+    const barColor = s.key === 'manual' ? null
+      : (state === 'cur' ? 'var(--warn)' : (state === 'done' ? 'var(--text3)' : 'transparent'));
+    const inner = [];
+    inner.push(h('span', {key:'l', style:{color, fontWeight: state === 'cur' ? 600 : 400}}, s.label));
+    if(s.cap) inner.push(h('span', {key:'n', className:'mono t3', style:{fontVariantNumeric:'tabular-nums'}}, (s.used||0) + '/' + s.cap));
+    if(barColor !== null) inner.push(h('span', {key:'b', className:'bar'}, h('i', {style:{background: barColor}})));
+    kids.push(h('span', {className:'step', key:s.key}, inner));
+    if(i < steps.length - 1) kids.push(h('span', {className:'steparrow', key:'a'+i}, '→'));
+  });
+  return h('div', {className:'stepper'}, kids);
+}
+
+function InFlightCard(props){
+  const { items, onOpenRun } = props;
+  return h('div', {className:'bento', 'data-proto-id':'chain-inflight-card', style:{marginBottom:12}},
+    h('div', {className:'card-hd'},
+      h('div', {className:'card-title'}, '链在办（' + items.length + '）'),
+      h('div', {className:'spacer'}),
+      h('div', {className:'card-extra'}, '30s 自动刷新 · 点行看处置过程')),
+    h('div', {className:'card-bd', 'data-proto-id':'chain-inflight-list'},
+      items.length === 0
+        ? h(Empty, {image: Empty.PRESENTED_IMAGE_SIMPLE, description:'当前无在办处置链'})
+        : items.map((it, i) =>
+          h('div', {className:'rowitem hairline rowlink', key: it.chain_id || i, onClick: () => onOpenRun(it)},
+            h('div', {style:{display:'flex', alignItems:'center', gap:8, flexWrap:'wrap'}},
+              h(Tag, {color: it.phase === 'admin' ? 'blue' : 'purple', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}},
+                it.phase === 'admin' ? 'Admin 处置中' : 'Arbiter 调查中'),
+              h('span', {style:{fontSize:13, fontWeight:600}}, it.spec),
+              h('span', {className:'mono t3', style:{fontSize:12}}, '::' + (it.signature.split('::')[1] || '')),
+              h('span', {className:'spacer'}),
+              h('span', {className:'t3', style:{fontSize:12, fontVariantNumeric:'tabular-nums'}}, '已耗时 ' + fmtDur(it.elapsed_min))),
+            h('div', {className:'clamp2', style:{marginTop:6, lineHeight:'20px'}}, it.problem || '—'),
+            h('div', {style:{marginTop:8}}, h(InFlightStepper, {it})),
+            h('div', {className:'mono t4', style:{marginTop:8, fontSize:11, display:'flex', gap:14, flexWrap:'wrap'}},
+              h('span', null, 'run ' + (it.run_id || '—')),
+              h('span', null, '入链 ' + fmtTime(it.started_at)),
+              h('span', null, it.chain_id),
+              h('span', {className:'spacer'}),
+              h('span', {style:{color:'var(--link)', fontFamily:'inherit'}}, '处置过程 ›'))))));
+}
+
+/* ── 在办件「处置过程」弹窗（复用 agent 运行记录窗形态：AdminRunModal 80vw/72vh + 事件转录面板） ── */
+function RunEvent(props){
+  const ev = props.ev;
+  const roleMap = {
+    system: {label:'链路', color:'#81858c', bg:'#f9fafb'},
+    user:   {label:'调度', color:'#0f1115', bg:'#eef2f7'},
+    assistant:{label:'Agent', color:'#4176e6', bg:'#f0f5ff'},
+    tool:   {label:'工具', color:'#61666b', bg:'#ffffff'},
+  };
+  const r = roleMap[ev.t] || roleMap.assistant;
+  return h('div', {style:{marginBottom:10}},
+    h('div', {style:{display:'flex', alignItems:'center', gap:8, marginBottom:4}},
+      h('span', {style:{fontSize:11, lineHeight:'18px', padding:'0 8px', borderRadius:9, background:r.bg, color:r.color, fontWeight:600, flexShrink:0}}, r.label),
+      ev.at && ev.at !== '—' ? h('span', {className:'t4 mono', style:{fontSize:11}}, ev.at) : null),
+    h('div', {className: ev.t === 'tool' ? 'mono' : '', style:{fontSize: ev.t === 'tool' ? 12 : 13, lineHeight:'20px', whiteSpace:'pre-wrap', wordBreak:'break-word', color: ev.t === 'system' ? '#81858c' : '#0f1115', background: ev.t === 'tool' ? '#ffffff' : 'transparent', border: ev.t === 'tool' ? '1px solid #f1f5f9' : 'none', borderRadius: ev.t === 'tool' ? 6 : 0, padding: ev.t === 'tool' ? '8px 10px' : 0}}, ev.text));
+}
+
+function InflightRunModal(props){
+  const { it, onClose } = props;
+  const open = !!it;
+  const [full, setFull] = useState(false);
+  const events = it && it.events || [];
+  return h(Modal, {
+    open, onCancel: onClose, footer: null, destroyOnHidden: true,
+    width: full ? '98vw' : '80vw',
+    title: it ? h('span', {style:{display:'inline-flex', alignItems:'center', gap:10}},
+      h(Tag, {color: it.phase === 'admin' ? 'blue' : 'purple', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}},
+        it.phase === 'admin' ? 'Admin 处置中' : 'Arbiter 调查中'),
+      h('span', {style:{fontSize:15, fontWeight:600}}, it.spec + ' 处置过程'),
+      h('span', {style:{fontSize:12, color:'#8c8c8c', fontWeight:400}}, '共 ' + events.length + ' 条事件'),
+      h('span', {className:'spacer'}),
+      h(Button, {size:'small', type:'text', onClick: () => setFull(v => !v)}, full ? '⤡ 还原' : '⤢ 放大')) : null,
+    styles: {body: {height: '72vh', overflow: 'auto', padding: 12}},
+  },
+    it ? h('div', {'data-proto-id':'chain-inflight-run-modal'},
+      h('div', {className:'mono t3', style:{fontSize:11, marginBottom:12, display:'flex', gap:14, flexWrap:'wrap'}},
+        h('span', null, 'run ' + (it.run_id || '—')),
+        h('span', null, '入链 ' + fmtTime(it.started_at)),
+        h('span', null, it.chain_id),
+        h('span', null, '尝试 Admin ' + (it.admin_used||0) + '/' + (it.admin_cap||2) + ' · Arbiter ' + (it.arbiter_rulings||0) + '/' + (it.arbiter_cap||2))),
+      h('div', {style:{border:'1px solid #f0f0f0', borderRadius:8, padding:12, background:'#fafafa'}},
+        events.map((ev, i) => h(RunEvent, {key:i, ev}))),
+      h('div', {className:'t4', style:{fontSize:11, marginTop:8, textAlign:'center'}},
+        '形态复用 agent 运行记录窗（AdminRunModal）：真实实现经 runId 流式拉取 ClaudeOutputPane，此处为静态转录演示。')) : null);
+}
+
+/* ── 签名配额（按 spec 分组） ── */
+function outcomeChips(s){
+  const chips = [];
+  const closed = (s.esc_total||0) - (s.esc_pending||0);
+  if(s.esc_pending > 0) chips.push(h(Tag, {key:'p', color:'volcano', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, '待人工 ' + s.esc_pending));
+  if(closed > 0) chips.push(h(Tag, {key:'c', color:'green', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, '已收口 ' + closed));
+  if(s.exhausted) chips.push(h(Tag, {key:'e', color:'red', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, '配额耗尽'));
+  else if(s.admin_cap && s.admin_attempts >= s.admin_cap) chips.push(h(Tag, {key:'af', color:'orange', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, 'Admin 顶格'));
+  else if(s.arbiter_cap && s.arbiter_rulings >= s.arbiter_cap) chips.push(h(Tag, {key:'rf', color:'orange', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, 'Arbiter 顶格'));
+  if(!chips.length) chips.push(h('span', {key:'n', className:'t4', style:{fontSize:12}}, '无上升件'));
+  return chips;
+}
+
+function QuotaCard(props){
+  const { groups, onOpenSig } = props;
+  return h('div', {className:'bento', 'data-proto-id':'chain-quotas-card', style:{marginBottom:12}},
+    h('div', {className:'card-hd'},
+      h('div', {className:'card-title'}, '签名配额与上升（' + groups.reduce((n,g) => n + g.sigs.length, 0) + '）'),
+      h('div', {className:'spacer'}),
+      h('div', {className:'card-extra'}, '按 spec 分组 · 待人工优先排序')),
+    h('div', {className:'card-bd', 'data-proto-id':'chain-quotas-list'},
+      h('div', {style:{display:'grid', gridTemplateColumns:'minmax(0,1fr) 260px minmax(0,1.2fr) 120px', gap:12, padding:'8px 12px 2px', borderBottom:'1px solid var(--hair)'}},
+        h('span', {className:'t3', style:{fontSize:11}}, '信号签名'),
+        h('span', {className:'t3', style:{fontSize:11}}, '配额水位'),
+        h('span', {className:'t3', style:{fontSize:11}}, '链上结果'),
+        h('span', {className:'t3', style:{fontSize:11, textAlign:'right'}}, '最近出现')),
+      groups.length === 0
+        ? h(Empty, {image: Empty.PRESENTED_IMAGE_SIMPLE, description:'无签名记录'})
+        : groups.map((g, gi) => [
+            h('div', {className:'grouphd', key:'g'+gi},
+              h('span', {style:{fontSize:13, fontWeight:600, fontFamily:'var(--mono)'}}, g.spec),
+              h(Tag, {style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, g.project),
+              g.last_spec_status ? h(Tag, {style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, g.last_spec_status) : null,
+              h('span', {className:'spacer'}),
+              h('span', {className:'t3', style:{fontSize:12, fontVariantNumeric:'tabular-nums'}},
+                g.sigs.length + ' 签名 · ↑' + g.esc_total + (g.esc_pending > 0 ? ' · 待 ' + g.esc_pending : ''))),
+            g.sigs.map((s, si) =>
+              h('div', {className:'sig-row', key:'g'+gi+'-'+si},
+                s.esc_total > 0
+                  ? h('span', {className:'mono siglink',
+                      style:{fontSize:12, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'},
+                      title: s.signature + '（查看处置过程）',
+                      'data-proto-id': (gi === 0 && si === 0) ? 'chain-sig-process' : undefined,
+                      onClick: e => { e.stopPropagation(); onOpenSig(s); }}, s.signal)
+                  : h('span', {className:'mono', style:{fontSize:12, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}, title: s.signature}, s.signal),
+                h('span', {style:{display:'flex', gap:12, flexWrap:'wrap'}},
+                  quotaChip('Admin', s.admin_attempts, s.admin_cap, s.exhausted, 'qa'),
+                  quotaChip('Arb', s.arbiter_rulings, s.arbiter_cap, s.exhausted, 'qb'),
+                  s.granularity !== 'spec'
+                    ? h(Tag, {style:{fontSize:10, lineHeight:'16px', padding:'0 5px'}}, s.granularity === 'type' ? '类型级' : '主体级')
+                    : null),
+                h('span', {style:{display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}, outcomeChips(s)),
+                h('span', {className:'t3', style:{fontSize:12, fontVariantNumeric:'tabular-nums', textAlign:'right'}, title: s.last_seen}, fmtTime(s.last_seen))))
+          ].flat())));
+}
+
+/* ── 上升件行（人工队列 / 全量共用） ── */
+function EscRow(props){
+  const { esc, sigIdx, onClick } = props;
+  const sig = sigIdx[esc.chain_signature] || null;
+  const adminCap = sig ? sig.admin_cap : 2;
+  const arbCap = sig ? sig.arbiter_cap : 2;
+  return h('div', {className:'esc-row rowlink', onClick},
+    h('div', {className:'esc-l1'},
+      sevTag(esc.severity),
+      h('span', {className:'mono', style:{fontSize:13, fontWeight:600}}, esc.signal_type),
+      h('span', {className:'t3', style:{fontSize:12}}, esc.spec + ' · ' + esc.project),
+      esc.endpoint_label ? h(Tag, {style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, esc.endpoint_label) : null,
+      esc.handled
+        ? h(Tag, {color:'green', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, '已收口')
+        : h(Tag, {color:'volcano', style:{fontSize:11, lineHeight:'18px', padding:'0 6px'}}, '待人工'),
+      h('span', {className:'spacer'}),
+      h('span', {className:'t3', style:{fontSize:12, fontVariantNumeric:'tabular-nums'}}, fmtTime(esc.created))),
+    h('div', {className:'esc-l2 clamp2'}, esc.description || '—'),
+    h('div', {className:'esc-l3'},
+      h('span', null, 'Admin ' + (esc.admin_used||0) + '/' + adminCap + ' → Arbiter ' + (esc.arbiter_rulings||0) + '/' + arbCap),
+      (esc.choices && esc.choices.length) ? h('span', null, '裁决选项 ' + esc.choices.length) : null,
+      esc.chain_id ? h('span', {className:'mono'}, esc.chain_id.slice(0, 22) + '…') : null));
+}
+
+/* ── 人工队列内嵌裁决控件（round3 重设计：面板式布局，交互复用 overview 告警裁决） ── */
+function QueueAdjudication(props){
+  const { esc, first } = props;
+  const [choiceId, setChoiceId] = useState('');
+  const [note, setNote] = useState('');
+  const [msg, setMsg] = useState(null);
+  const sel = (esc.choices || []).find(c => c.id === choiceId);
+  const needsConfirm = !!(sel && sel.destructive);
+  const demo = (text) => setMsg({tone:'secondary', text});
+  const execBtn = h(Button, {
+    size:'small', type: needsConfirm ? 'primary' : 'default', danger: needsConfirm,
+    disabled: !choiceId,
+    onClick: () => !needsConfirm && demo('裁决已受理：' + (sel ? sel.label : '') + '（原型静态演示，未产生真实副作用）'),
+  }, '执行');
+  return h('div', Object.assign({className:'adjud-panel'},
+    first ? {'data-proto-id':'chain-queue-adjudication'} : {}),
+    h('div', {className:'adjud-hd'}, '人工裁决'),
+    h('div', {className:'adjud-main'},
+      (esc.choices && esc.choices.length)
+        ? h(Select, {size:'small', style:{width:'100%'}, placeholder:'选择裁决项',
+            value: choiceId || undefined, onChange: v => { setChoiceId(v); setMsg(null); },
+            options: esc.choices.map(c => ({value:c.id, label:c.label, title:c.desc}))})
+        : h('div', {className:'t4', style:{fontSize:12}}, '该告警无裁决选项'),
+      (esc.choices && esc.choices.length)
+        ? h(Input, {size:'small', style:{width:'100%', marginTop:6}, maxLength:200,
+            placeholder:'处置依据（可选）', value: note, onChange: e => setNote(e.target.value)})
+        : null,
+      sel && sel.desc ? h('div', {className:'t3', style:{fontSize:12, marginTop:5}}, sel.desc) : null,
+      msg ? h('div', {className:'t3', style:{fontSize:12, marginTop:5}}, msg.text) : null),
+    h('div', {className:'adjud-side'},
+      (esc.choices && esc.choices.length)
+        ? (needsConfirm
+            ? h(Popconfirm, {title:'确认执行该裁决？', description: sel.desc || '该操作可能不可自动恢复，请确认',
+                okText:'确认执行', cancelText:'取消', onConfirm: () => demo('裁决已受理：' + sel.label + '（原型静态演示，未产生真实副作用）')}, execBtn)
+            : execBtn)
+        : null,
+      h(Button, {size:'small', onClick: () => demo('已标记处理（原型静态演示）')}, '标记已处理')));
+}
+
+function QueueCard(props){
+  const { items, sigIdx, onOpen } = props;
+  // 批注 round1：无内容不渲染整卡
+  if(items.length === 0) return null;
+  return h('div', {className:'bento', 'data-proto-id':'chain-queue-card', style:{marginBottom:12}},
+    h('div', {className:'card-hd'},
+      h('div', {className:'card-title'}, '人工队列（' + items.length + '）'),
+      h('div', {className:'spacer'}),
+      h('div', {className:'card-extra'}, '裁决入口内嵌 · 复用「告警记录」同款交互')),
+    h('div', {className:'card-bd', style:{padding:0}, 'data-proto-id':'chain-queue-list'},
+      items.map((e, i) => h('div', {key: e.id},
+        h(EscRow, {esc: e, sigIdx, onClick: () => onOpen(e)}),
+        h(QueueAdjudication, {esc: e, first: i === 0})))));
+}
+
+function EscalationsCard(props){
+  const { all, shown, filter, onFilter, sigIdx, onOpen } = props;
+  const pending = all.filter(e => !e.handled).length;
+  return h('div', {className:'bento', 'data-proto-id':'chain-escalations-card', style:{marginBottom:12}},
+    h('div', {className:'card-hd'},
+      h('div', {className:'card-title'}, '上升件全量（' + all.length + '）'),
+      h('div', {className:'spacer'}),
+      h('div', {'data-proto-id':'chain-escalations-toolbar'},
+        h(Radio.Group, {
+          size:'small', value: filter, onChange: ev => onFilter(ev.target.value),
+          optionType:'button', className:'proto-radio-dark',
+          options: [
+            {value:'all', label:'全部 ' + all.length},
+            {value:'pending', label:'待人工 ' + pending},
+            {value:'closed', label:'已收口 ' + (all.length - pending)},
+          ]}))),
+    h('div', {className:'card-bd', style:{padding:0}, 'data-proto-id':'chain-escalations-list'},
+      shown.length === 0
+        ? h('div', {style:{padding:'18px 16px'}}, h(Empty, {image: Empty.PRESENTED_IMAGE_SIMPLE, description:'无匹配上升件'}))
+        : shown.map(e => h(EscRow, {key: e.id, esc: e, sigIdx, onClick: () => onOpen(e)}))));
+}
+
+/* ── 上升件抽屉 ── */
+function ChoiceChip(props){
+  const c = props.c;
+  return h('div', {className:'choice-chip' + (c.destructive ? ' destr' : '')},
+    h('div', {className:'cl'}, c.label),
+    c.desc ? h('div', {className:'cd'}, c.desc) : null);
+}
+
+function EscDrawer(props){
+  const { esc, sigIdx, onClose } = props;
+  const open = !!esc;
+  const sig = esc ? (sigIdx[esc.chain_signature] || null) : null;
+  const steps = [];
+  if(esc){
+    steps.push({color:'gray', children:
+      h('div', null,
+        h('div', {style:{fontSize:12, fontWeight:600}}, '入链'),
+        h('div', {className:'mono t3', style:{fontSize:11}}, esc.chain_id || '—'),
+        h('div', {className:'t3', style:{fontSize:12}}, '签名 ' + (esc.chain_signature || '—') + ' · ' + fmtTime(esc.created)))});
+    steps.push({color:'blue', children:
+      h('div', null,
+        h('div', {style:{fontSize:12, fontWeight:600}}, 'Admin 处置 ' + (esc.admin_used||0) + '/' + (sig ? sig.admin_cap : 2)),
+        esc.handoff_reason ? h('div', {className:'t2', style:{fontSize:12, whiteSpace:'pre-wrap', wordBreak:'break-word'}}, esc.handoff_reason) : null)});
+    steps.push({color:'purple', children:
+      h('div', null,
+        h('div', {style:{fontSize:12, fontWeight:600}}, 'Arbiter 裁决 ' + (esc.arbiter_rulings||0) + '/' + (sig ? sig.arbiter_cap : 2)),
+        esc.endpoint_reason ? h('div', {className:'t2', style:{fontSize:12, whiteSpace:'pre-wrap', wordBreak:'break-word'}}, esc.endpoint_reason) : null)});
+    steps.push({color: esc.handled ? 'green' : 'red', children:
+      h('div', null,
+        h('div', {style:{fontSize:12, fontWeight:600}}, esc.handled ? '终点 · 已收口' : '终点 · 待人工'),
+        h('div', {className:'t3', style:{fontSize:12}},
+          (esc.endpoint_label || '—') + (esc.handled ? ' · ' + fmtTime(esc.handled_at) + (esc.close_cause ? ' · ' + esc.close_cause : '') : '')))});
+  }
+  return h(Drawer, {
+    open, onClose, size: 640, rootClassName:'proto-esc-drawer',
+    title: esc ? h('span', {style:{display:'inline-flex', gap:8, alignItems:'center'}},
+      sevTag(esc.severity), h('span', {className:'mono', style:{fontSize:14}}, esc.signal_type)) : null,
+  },
+    esc ? h('div', {'data-proto-id':'chain-esc-drawer-body'},
+      h('div', {className:'t3', style:{fontSize:12}},
+        esc.spec + ' · ' + esc.project + ' · ' + fmtTime(esc.created) + (esc.handled ? ' → ' + fmtTime(esc.handled_at) : '')),
+      h('div', {className:'sect'},
+        h('div', {className:'sect-hd'}, '描述'),
+        h('div', {className:'sect-bd'}, esc.description || '—')),
+      esc.evidence ? h('div', {className:'sect'},
+        h('div', {className:'sect-hd'}, '证据'),
+        h('div', {className:'evidence'}, esc.evidence)) : null,
+      h('div', {className:'sect'},
+        h('div', {className:'sect-hd'}, '链痕'),
+        h(Timeline, {items: steps})),
+      esc.recommended_action ? h('div', {className:'sect'},
+        h('div', {className:'sect-hd'}, '建议处置'),
+        h('div', {className:'sect-bd'}, esc.recommended_action)) : null,
+      (esc.choices && esc.choices.length) ? h('div', {className:'sect'},
+        h('div', {className:'sect-hd'}, '裁决选项（' + esc.choices.length + ' · 只读预览）'),
+        h('div', {style:{display:'flex', gap:8, flexWrap:'wrap'}},
+          esc.choices.map((c, i) => h(ChoiceChip, {key: c.id || i, c})))) : null,
+      h('div', {className:'ro-note'}, '处置链视图保持只读：裁决执行入口收敛于「告警记录」页签（链可观测性纪律）。')) : null);
+}
+
+/* ── 应用 ── */
+function App(){
+  const [project, setProject] = useState('all');
+  const [tab, setTab] = useState('chain');
+  const [escFilter, setEscFilter] = useState('all');
+  const [sel, setSel] = useState(null);
+  const [selRun, setSelRun] = useState(null);
+
+  const sigIdx = useMemo(() => {
+    const m = {};
+    DATA.signatures.forEach(s => { m[s.signature] = s; });
+    return m;
+  }, []);
+  // escalation.chain 对象展开：chain_signature 供联查
+  const matchP = it => project === 'all' || it.project === project;
+  const inflight = DATA.in_flight.filter(matchP);
+  const groups = DATA.groups
+    .map(g => Object.assign({}, g, {sigs: g.sigs.filter(matchP)}))
+    .filter(g => g.sigs.length > 0);
+  const escAll = DATA.escalations.filter(matchP);
+  const queue = DATA.queue.filter(matchP);
+  const escShown = escAll.filter(e => escFilter === 'all' || (escFilter === 'pending' ? !e.handled : e.handled));
+  // 签名配额行点信号名 → 打开该签名最近一条上升件的处置过程（待人工优先）
+  const openSig = (s) => {
+    const cands = escAll.filter(e => e.chain_signature === s.signature);
+    if(!cands.length) return;
+    const pending = cands.filter(e => !e.handled);
+    const pool = pending.length ? pending : cands;
+    setSel(pool.slice().sort((a, b) => (b.created || '').localeCompare(a.created || ''))[0]);
+  };
+
+  const snapMs = new Date(DATA.snapshot).getTime();
+  const within24 = escAll.filter(e => e.created && (snapMs - new Date(e.created).getTime()) <= 24 * 3600 * 1000).length;
+  const sigsN = groups.reduce((n, g) => n + g.sigs.length, 0);
+  const linked = groups.reduce((n, g) => n + g.sigs.filter(s => s.esc_total > 0).length, 0);
+  const adminFull = groups.reduce((n, g) => n + g.sigs.filter(s => s.admin_cap && s.admin_attempts >= s.admin_cap).length, 0);
+  const arbFull = groups.reduce((n, g) => n + g.sigs.filter(s => s.arbiter_cap && s.arbiter_rulings >= s.arbiter_cap).length, 0);
+  const queueMajor = queue.filter(e => e.severity === 'major' || e.severity === 'critical').length;
+  const inflAdm = inflight.filter(i => i.phase === 'admin').length;
+  const inflArb = inflight.filter(i => i.phase === 'arbiter').length;
+
+  const stats = [
+    {label:'链在办', value: String(inflight.length), subNodes: 'Admin ' + inflAdm + ' · Arbiter ' + inflArb},
+    {label:'待人工', value: String(queue.length), subNodes: queueMajor > 0 ? 'major+' + queueMajor : '无 major+'},
+    {label:'上升件', value: String(escAll.length), subNodes: '近 24h ' + within24},
+    {label:'签名水位', value: String(sigsN), subNodes: '顶格 Admin ' + adminFull + ' · Arbiter ' + arbFull},
+    {label:'签名关联上升', value: String(linked), subNodes: '占水位 ' + (sigsN ? Math.round(linked * 100 / sigsN) : 0) + '%'},
+  ];
+
+  return h('div', {className:'proto-shell'},
+    h(HeaderSim, {project, onProject: setProject, tab, onTab: setTab}),
+    tab !== 'chain'
+      ? h('div', {className:'bento', style:{padding:40}},
+          h(Empty, {description:'现状页签——本原型仅重绘「处置链」页签'}))
+      : [
+        h('div', {className:'stats-row', 'data-proto-id':'chain-stats-row', key:'stats'},
+          stats.map((s, i) => h(StatTile, {key:i, label:s.label, value:s.value, subNodes:s.subNodes}))),
+        h(QueueCard, {key:'queue', items: queue, sigIdx, onOpen: setSel}),
+        h(InFlightCard, {key:'inflight', items: inflight, onOpenRun: setSelRun}),
+        h(QuotaCard, {key:'quotas', groups, onOpenSig: openSig}),
+        h(EscalationsCard, {key:'esc', all: escAll, shown: escShown, filter: escFilter, onFilter: setEscFilter, sigIdx, onOpen: setSel}),
+      ],
+    h(EscDrawer, {esc: sel, sigIdx, onClose: () => setSel(null)}),
+    h(InflightRunModal, {it: selRun, onClose: () => setSelRun(null)}),
+    h('div', {className:'proto-note'},
+      '原型注记：数据为 ' + DATA.snapshot.replace('T', ' ').slice(0, 16) + ' UTC 真实快照（链在办 ' + DATA.in_flight.length +
+      ' 件及其处置过程为演示注入示例）· round2 批注落实：人工队列置首（空则整卡隐藏）+ 内嵌裁决控件、在办行点击弹出处置过程窗（复用 agent 运行记录窗形态）· round3 批注落实：裁决控件面板式重设计、签名配额行信号名可点击查看处置过程（待人工优先）· 仅桌面稿 · redesign-chain-panel-ui'),
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  h(ConfigProvider, {theme: THEME}, h(App)));
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>
