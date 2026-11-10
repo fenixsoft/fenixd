@@ -48,3 +48,9 @@
 
 - [x] 6.1 `diff -ruN` 以空基线对 `/root/dsh-plugins/fenix-dsh-auth/` 现状生成 `plugin-patch/fenix-dsh-auth.patch`（含全部新建文件；不含 node_modules），并在干净目录 `patch -p1 --dry-run` 回放校验可应用
 - [x] 6.2 `plugin-patch/DEPLOY.md` 落位（部署步骤、token URL 获取、设置分区操作、回滚与卸载步骤、HTTPS 部署提示、反代部署须透传 Host 头的前置条件）；`BASELINE.md` 补记改后状态摘要（触达文件与改动要点、验证结论一行），确认 Deliverables 逐条对齐
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-dsh-web-password-login/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
