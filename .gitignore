@@ -83,3 +83,6 @@ dsh-bundle/pnpm-lock.yaml
 
 # 集成测试运行时凭据（真实 key，禁止入库）
 tests/integration/.env
+
+# 存量测试 mock 逃逸落盘（str(MagicMock(name=...)) 进路径拼接，历史性、无失败影响）
+MagicMock/
