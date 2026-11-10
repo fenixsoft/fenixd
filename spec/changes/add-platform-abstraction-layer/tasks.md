@@ -117,8 +117,8 @@
 
 ## 3. W4 单源转发化
 
-- [ ] 3.1 `core/proc_utils.py`（kill_process_group/guard_killpg 公开签名不动，内部转发 pal.kill_tree；os.killpg:390 迁入 linux.py）、`core/fs_utils.py`（flock 原语转发 pal C 组）、`core/systemd_hosting.py`（_run_systemctl/unit 渲染/environ 捕获转发 pal D 组，systemd 全语义一字不动）
-- [ ] 3.2 `core/git_env.py` home/current_user 并入 pal E 组（pwd:21 迁入 linux.py，公开行为不变）
+- [x] 3.1 `core/proc_utils.py`（kill_process_group/guard_killpg 公开签名不动，内部转发 pal.kill_tree；os.killpg:390 迁入 linux.py）、`core/fs_utils.py`（flock 原语转发 pal C 组）、`core/systemd_hosting.py`（_run_systemctl/unit 渲染/environ 捕获转发 pal D 组，systemd 全语义一字不动）
+- [x] 3.2 `core/git_env.py` home/current_user 并入 pal E 组（pwd:21 迁入 linux.py，公开行为不变）。注：既有 test_git_env 以 `monkeypatch.setattr(ge.pwd, "getpwuid", ...)` 打桩，git_env 经 `sys.modules["pwd"]` 保同名属性引用共享模块对象（linux 后端同对象），桩随 pal.home_dir 模块属性读取生效，测试零修改
 
 ## 4. W4b 直接消费端迁移（守卫零豁免前提）
 
