@@ -21,7 +21,8 @@ test('词表常量：状态 11 项、页签 6 项、类型 2 项', () => {
   );
   assert.deepEqual(
     [...LIST_TABS],
-    ['dev', 'quality', 'regression', 'architecture', 'knowledge'],
+    // add-project-home-tab：home 居首（缺省 tab 仍为 dev，仅显式 ?tab=home 进入）
+    ['home', 'dev', 'quality', 'regression', 'architecture', 'knowledge'],
   );
   assert.deepEqual([...LIST_TYPES], ['active', 'completed']);
 });

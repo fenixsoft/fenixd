@@ -1,11 +1,13 @@
 // add-spec-list-filter-stickiness D2/D3：功能开发列表过滤状态 ↔ URL 查询参数
 // 的白名单与缺省约定。纯函数形态（零依赖、无 JSX），便于纳入 node --test 纯函数单测。
 
-export type ListTab = 'dev' | 'quality' | 'regression' | 'architecture' | 'knowledge';
+export type ListTab = 'home' | 'dev' | 'quality' | 'regression' | 'architecture' | 'knowledge';
 export type ListTypeFilter = '' | 'active' | 'completed';
 
-// 页签合法值域（与项目页分面 Tabs 的 key 同序）
+// 页签合法值域（与项目页分面 Tabs 的 key 同序；add-project-home-tab 起
+// home 为首位——项目首页页签，缺省 tab 仍是 dev，仅显式 ?tab=home 进入）
 export const LIST_TABS: readonly ListTab[] = [
+  'home',
   'dev',
   'quality',
   'regression',

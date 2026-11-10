@@ -407,6 +407,17 @@ def _get_knowledge_file(s, p, q, m):
 def _get_arbiter_status(s, p, q, m):
     s._api_arbiter_status_get(q)
 
+# ── project-files（add-project-home-tab）─────────────────────────
+
+def _get_project_files_list(s, p, q, m):
+    s._api_project_files_list(q)
+
+def _get_project_files_content(s, p, q, m):
+    s._api_project_files_content(q)
+
+def _get_project_files_download(s, p, q, m):
+    s._api_project_files_download(q)
+
 
 # ── POST 路由适配函数 ─────────────────────────────────────────────────
 
@@ -666,6 +677,12 @@ _API_GET_ROUTES = [
     # Arbiter 车道运行时状态（add-arbiter-lane 5.2：设置页 arbiter 面板
     # 状态区只读数据源——开关/预算/队列/台账摘要）
     ("exact", "/api/arbiter/status",   _get_arbiter_status),
+    # project-files（add-project-home-tab）：项目文件浏览三通道（GET，无副
+    # 作用；文件树含实时 git 属性，签名不廉价——3 元组条目不参与 304 协商，
+    # 宁缺 304 不假 304；download 自写响应不走 _json）
+    ("exact", "/api/project-files/list", _get_project_files_list),
+    ("exact", "/api/project-files/content", _get_project_files_content),
+    ("exact", "/api/project-files/download", _get_project_files_download),
 ]
 
 _API_POST_ROUTES = [

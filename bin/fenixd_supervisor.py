@@ -46,7 +46,23 @@ def _resolve_project_root() -> tuple:
     """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--project-root", dest="project_root", default=None)
-    args, unknown = parser.parse_known_args()
+    # 导入态 argv 隔离（add-project-home-tab 全量回归实测）：本模块被 pytest
+    # 测试文件导入（test_supervisor_hosting / test_stale_code_selfheal /
+    # test_supervisor_log_single_write / test_systemd_hosting）时，
+    # parse_known_args() 缺省读的是宿主 pytest 进程的 sys.argv——入口注入的
+    # ``--basetemp=<worktree>/.fenix/pytest-basetemp`` 绝对路径一旦同时含
+    # proj 与 root 子串（``/root/`` 前缀恒含 root；spec 名含 project 即含
+    # proj），下方拼写近似守卫会把宿主参数误判为拼错的 --project-root 并
+    # sys.exit(2)——import 期 SystemExit 直接触发 pytest INTERNALERROR，
+    # 全量套件 exit 3 秒败（worktree 路径敏感，主树 basetemp 路径不含
+    # proj 不触发）。故仅当 argv[0] 确为本脚本（真实 CLI 入口，含测试经
+    # monkeypatch sys.argv 模拟 CLI 的形态）时才消费参数；宿主进程（argv[0]
+    # 为 pytest 等）一律跳过解析、按 env/cwd 兜底——与旧导入态行为一致
+    # （pytest argv 从不含 --project-root，argparse 结果同为 None）。
+    if Path(sys.argv[0] if sys.argv else "").name == "fenixd_supervisor.py":
+        args, unknown = parser.parse_known_args()
+    else:
+        args, unknown = parser.parse_known_args([])
     # code-review 1522e1224d6a：add_help=False 使 -h/--help 落入 unknown 且不
     # 命中下方拼写近似检测——按惯例查询用法的运维会看到 supervisor 在
     # cwd/FENIX_PROJECT_ROOT 解析出的项目上直接拉起 daemon（前台阻塞，Ctrl+C

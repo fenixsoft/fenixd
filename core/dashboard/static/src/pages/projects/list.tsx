@@ -68,6 +68,7 @@ import QualityTab from './components/QualityTab';
 import RegressionTab from './components/RegressionTab';
 import ArchitectureTab from './components/ArchitectureTab';
 import KnowledgeTab from './components/KnowledgeTab';
+import ProjectHomeTab from './components/ProjectHomeTab';
 // add-quality-gates-visibility：阶段→完成度/配色映射抽到纯函数模块（node:test
 // 可加载 .ts），list.tsx 原地 import 替换本地定义，调用点零改动
 import {
@@ -1679,6 +1680,14 @@ export default function SpecListPage() {
   // 读侧恢复复用既有 active 门控
   const [activeTab, setActiveTab] = useState<ListTab>(initialFilters.tab);
 
+  // add-project-home-tab：项目首页页签的目录路径（仓库根相对路径）。挂载时惰性
+  // 读取 ?path= 一次（直达子目录场景；仅 tab=home 时消费，否则不读——`?path=x`
+  // 配 dev 缺省的脏 URL 不被误消费），此后由页内导航上行驱动、写回块 replace
+  // 落 URL；路径合法性（containment）由后端 400/404 兜底
+  const [homePath, setHomePath] = useState(() =>
+    initialFilters.tab === 'home' ? searchParams.get('path') || '' : '',
+  );
+
   // 加载币值守卫（code-review item 95bc1b23a7b7）：本路由组件在 /projects/:name
   // 下复用不重挂载，name 变化会重建 load 重新拉取，但旧项目在飞请求不会被丢弃；
   // 30s 心跳 + visibilitychange + run_meta + SSE 多路触发也让同项目内存在重叠
@@ -1856,13 +1865,16 @@ export default function SpecListPage() {
   useEffect(() => {
     const next = new URLSearchParams();
     if (activeTab !== 'dev') next.set('tab', activeTab);
+    // add-project-home-tab：path 仅 tab=home 且非根目录时写参（根目录不写、
+    // tab≠home 不出现；replace 语义并入本块，切走分面即消失）
+    if (activeTab === 'home' && homePath) next.set('path', homePath);
     if (debouncedQ.trim()) next.set('q', debouncedQ.trim());
     if (statusList.length > 0) next.set('status', statusList.join(','));
     if (type) next.set('type', type);
     if (archivedOnly) next.set('archived', '1');
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQ, statusList, type, archivedOnly, activeTab]);
+  }, [debouncedQ, statusList, type, archivedOnly, activeTab, homePath]);
 
   const filtered = useMemo(() => {
     const kw = debouncedQ.trim().toLowerCase();
@@ -2201,11 +2213,11 @@ export default function SpecListPage() {
     }
   };
 
-  // 四分面移动边距 16px（2026-11-07 用户指令「代码审查、测试回归、架构蓝图、
+  // 分面移动边距 16px（2026-11-07 用户指令「代码审查、测试回归、架构蓝图、
   // 项目知识的左右边距也设置为 16px」）：页签卡 body 缺省 24 + 容器 12 = 每侧
-  // 36，四分面经负 margin 抵消卡体 20（容器 12 + 余 4 = 每侧 16）。功能开发
+  // 36，各分面经负 margin 抵消卡体 20（容器 12 + 余 4 = 每侧 16）。功能开发
   // （DevTab 自带 -12 全幅编排，抵的是容器 12）不在此列、零改动；
-  // 桌面不包裹零影响
+  // 桌面不包裹零影响。add-project-home-tab 起「项目首页」同包裹（五分面对齐）
   const facetWrap = (node: ReactNode) =>
     isMobile ? <div style={{ margin: '0 -20px' }}>{node}</div> : node;
 
@@ -2233,6 +2245,21 @@ export default function SpecListPage() {
         activeKey={activeTab}
         onChange={setActiveTab}
         items={[
+          {
+            key: 'home',
+            label: '项目首页',
+            // add-project-home-tab：项目首页页签（首位）。active 门控对齐既有
+            // 分面按需加载语义；目录路径由主组件持有（URL 持久化），页内导航
+            // 经 onNavigate 上行驱动写回块 replace 落 URL
+            children: facetWrap(
+              <ProjectHomeTab
+                project={name}
+                active={activeTab === 'home'}
+                initialPath={homePath}
+                onNavigate={setHomePath}
+              />,
+            ),
+          },
           {
             key: 'dev',
             label: '功能开发',
