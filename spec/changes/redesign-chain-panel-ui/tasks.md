@@ -9,6 +9,8 @@
   kind: modify
 - path: spec/knowledge/domains/admin-ops/chain-observability.md
   kind: modify
+- path: tests/test_dashboard_chain_view.py
+  kind: modify
 ```
 
 > 界面真相源：`specs/redesign-chain-panel-ui/prototype/index.html`（UI 视觉/布局/交互以 prototype/ 为准；本任务清单约束行为与数据语义）。视觉规范基线：bento `.ov-bento` 语言、DSH token（theme.ts）、字号阶 11/12/13/14/16/18/28、数值 tabular-nums、null 显「—」、禁 CSS animation/transition。
@@ -17,6 +19,7 @@
 
 - [ ] 1.1 `core/dashboard/data/admin_alerts.py` chain_overview：在办件（in_flight）联查富化——problem 摘要（同签名最近上升件 description 截断，约 160 字符）、admin_attempts_used/admin_cap/arbiter_rulings/arbiter_cap（escalation.chain 或签名配额联查）、run_id 尽力提取（不可得置 null）；联查 fail-open（缺数据字段置 null，不阻断视图）
 - [ ] 1.2 `core/dashboard/static/src/services/dashboard.ts`：ChainInFlightItem 类型投影扩展（上述富化字段，均允许 null）；不破坏既有调用方
+- [ ] 1.3 扩展 `tests/test_dashboard_chain_view.py`：在办富化字段单测（problem 摘要截断、admin/arbiter 已用与上限联查、run_id 尽力提取，含联查数据缺失时字段置 null 的 fail-open 分支），既有 summary 与四视图断言保持不变
 
 ## 2. 链在办卡
 
