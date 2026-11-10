@@ -744,12 +744,26 @@ export interface ChainEscalationItem {
   handled_by?: string;
   handled_at?: string;
   close_cause?: string | null;
-  /** 链上下文（_send_human_escalation_alert 直写；admin_trail 条目含 action/created） */
+  /** 链上下文（escalation_chain 链终点直写；arbiter_rulings/admin_attempts_used
+   * 为终点时刻配额计数，admin_trail 条目含 run_id/result/success/error/handoff） */
   chain?: {
-    signature?: string;
     chain_id?: string;
-    arbiter_rulings?: { created?: string; summary?: string; run_id?: string }[];
-    admin_trail?: { action?: string; created?: string; run_id?: string }[];
+    signature?: string;
+    granularity?: string;
+    endpoint_kind?: string;
+    endpoint_reason?: string;
+    admin_attempts_used?: number;
+    arbiter_rulings?: number;
+    admin_trail?: {
+      run_id?: string;
+      result?: string;
+      success?: boolean;
+      error?: string;
+      escalate?: boolean;
+      choice_id?: string;
+      handoff?: string;
+      handoff_reason?: string;
+    }[];
     handoff_reason?: string;
     arbiter_run_id?: string;
     arbiter_ledger_ids?: (string | number)[];
