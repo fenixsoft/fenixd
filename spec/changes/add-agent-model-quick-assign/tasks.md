@@ -60,7 +60,7 @@
 - [x] 6.1 `core/dashboard/static/tests/agentModels.test.mjs` 增加 `buildQuickAssignAssignment` / `buildQuickAssignTargets` 用例：空行过滤、trim、model 留空省略、provider 为空行丢弃；本作用域展开（user / project）、指定项目去重与空串剔除、顺序（本作用域在前）。
 - [x] 6.2 新建 `core/dashboard/static/tests/quickAssign.test.mjs`：沿用 `tests/hooksPanel.test.mjs` 的 esbuild 打包 + `react-dom/server` SSR 范式（react/react-dom/antd external，产物落 `node_modules/.tmp-*`，无 jsdom）渲染 `QuickAssignModal`，断言标题、模板行控件、本作用域/指定项目选项、应用按钮在场及禁用态；另断言源码中无新增 CSS 动画/过渡（DESIGN.md 静态渲染约束）。
 - [x] 6.3 前端验证：`cd core/dashboard/static && node --test tests/*.test.mjs` 全量通过，并 `npm run build` 重建生产产物（`dist/` 为 gitignored 构建产物，不纳入交付声明，无需提交）。
-- [ ] 6.4 移动端形态自检：在 390px 视口下打开弹窗（可用既有 playwright 测试环境或 SSR 断言 + 源码检查），确认弹窗 body 可滚动、应用/取消按钮可达、无横向溢出；截图/临时文件放 `.history/`。
+- [x] 6.4 移动端形态自检：在 390px 视口下打开弹窗（可用既有 playwright 测试环境或 SSR 断言 + 源码检查），确认弹窗 body 可滚动、应用/取消按钮可达、无横向溢出；截图/临时文件放 `.history/`。
 
 ## 7. 回归
 
