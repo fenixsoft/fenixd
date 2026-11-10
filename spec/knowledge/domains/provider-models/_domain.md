@@ -1,5 +1,5 @@
 # 模型网关与配置
-> 最后更新：2026-11-10 13:36 UTC+8
+> 最后更新：2026-11-10 14:40 UTC+8
 
 模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置、provider 引用校验与分配失效划界，以及分级配置与设置界面的配置体系，外加 Provider 手动健康检测。
 
@@ -12,7 +12,8 @@
 | [dashboard-chain-editor](dashboard-chain-editor.md) | 链模型映射编辑器 | 2026-10-03 04:59 |
 | [provider-chain-config](provider-chain-config.md) | provider 候选链配置 | 2026-10-03 04:59 |
 | [provider-ref-validation](provider-ref-validation.md) | provider 引用校验与分配失效划界（加载/保存两路径校验单源、相似名建议、链解析三态判定单源） | 2026-11-08 21:09 |
-| [failover-dispatch](failover-dispatch.md) | provider 故障切换派发（链推进/限流冷却/被 429 打死 run 自动重派，归因双源+剃余续跑、重派按链重新解析；触发面只认失败不认挂；切链闸门结构化双源、八条 LLM 车道已接入候选环） | 2026-11-10 12:24 |
+| [failover-dispatch](failover-dispatch.md) | provider 故障切换派发（dispatch 环链推进/限流冷却/被 429 打死 run 自动重派，归因双源+剃余续跑；触发面只认失败不认挂；切链闸门结构化双源；适用面覆盖 dispatch 环与八条 LLM 车道候选环） | 2026-11-10 14:40 |
+| [maintenance-lane-provider-failover](maintenance-lane-provider-failover.md) | 维护车道 provider 候选环（八条 LLM 车道单 run 链 failover：角色回退链解析、切换类错误换候选、429 限流冷却、全链耗尽廉价失败、marker 真实链下标、429 终局重派按链解析） | 2026-11-10 14:40 |
 | [provider-fault-fuse](provider-fault-fuse.md) | provider 故障熔断 | 2026-10-03 04:59 |
 | [provider-transient-backoff](provider-transient-backoff.md) | 瞬时故障原地退避 | 2026-10-03 04:59 |
 | [transient-dispatch-gating](transient-dispatch-gating.md) | 瞬断终态重派与全局熔断 | 2026-10-03 04:59 |

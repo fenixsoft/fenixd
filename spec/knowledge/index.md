@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-10 14:35 UTC+8
+> 最后更新：2026-11-10 14:40 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -40,11 +40,11 @@
 | 3.5 | [daemon-runtime](domains/daemon-runtime/_domain.md) | daemon 进程生命周期、单例与托管链、启动序列与排水语义。托管链 systemd 承载层（unit 安装、on-failure 重启策略与 supervisor 退出码协议、EnvironmentFile 环境承载与捕获 PATH 卫生）同属此域。结构化日志单事件读写治理。宿主环境已知脆弱面登记。 | 17 | 2026-11-08 21:21 |
 | 3.6 | [worktree-vc](domains/worktree-vc/_domain.md) | 实现工作树的隔离、播种、回读与卫生：spec 锁终态释放与陈锁清扫、已合并分支宽限期自动回收、分支基线解析单源口径、冻结 spec 清理豁免。实现分支合回主树与推送的全生命周期纪律（推送 git 子进程凭证双腿确定性、done 态退避周期扫描续推）；主树 WIP 占用归因单源、周期盘点与滞留升级、untracked 散件自动认领、白名单文件脱落巡检。 | 32 | 2026-11-09 17:58 |
 
-### 4 模型与成本（2 域 · 34 能力）
+### 4 模型与成本（2 域 · 35 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配（含快速分配）、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 20 | 2026-11-10 13:36 |
+| 4.1 | [provider-models](domains/provider-models/_domain.md) | LLM provider 注册表与角色模型分配（含快速分配）、候选链与 failover（dispatch 环与八条 LLM 车道）、瞬断治理与熔断。provider 引用校验与分配失效划界。计费配置、分级配置与设置界面的配置体系、Provider 手动健康检测。 | 21 | 2026-11-10 14:40 |
 | 4.2 | [cost-observability](domains/cost-observability/_domain.md) | run 成本采集与本地计价、预算与费控治理。延迟/进度/耗时观测、run 记录流呈现可读性与产物保留策略。 | 14 | 2026-11-04 16:30 |
 
 ### 5 前端交互（3 域 · 68 能力）
