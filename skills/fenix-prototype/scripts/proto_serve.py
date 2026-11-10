@@ -183,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--round", type=int, default=1,
                         help="迭代轮次（写入 URL proto_round 参数，默认 1）")
     parser.add_argument("--pretty", action="store_true", help="JSON 缩进输出")
+    parser.add_argument("--json", action="store_true",
+                        help="兼容旧 serve_prototype.py 调用形态的占位开关；"
+                             "本脚本输出恒为 JSON，此开关无副作用")
     args = parser.parse_args(argv)
 
     root = Path(args.project).expanduser()
@@ -212,10 +215,13 @@ def main(argv: list[str] | None = None) -> int:
             continue
         name = match_registered_project(payload["projects"], root)
         if name is None:
+            add_py = _dashboard_py()
+            add_hint = (f"python3 {add_py} --add-project {root}"
+                        if add_py else
+                        f"用框架 bin/fenix_dashboard.py --add-project {root} 注册")
             return _fail(4, "project-not-registered",
                          f"dashboard 存活（端口 {port}）但项目未注册：{root}",
-                         hint=f"python3 {REPO_ROOT / 'bin' / 'fenix_dashboard.py'}"
-                              " --add-project " + str(root),
+                         hint=add_hint,
                          pretty=args.pretty)
         url = build_url(port, name, args.spec, page, args.round)
         # 端到端验证：不带 query 直取页面 URL，须 200 才交付（否则用户拿到

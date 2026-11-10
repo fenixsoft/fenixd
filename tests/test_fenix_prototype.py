@@ -718,11 +718,16 @@ class TestProtoServeCli:
         assert rc == 2
         assert json.loads(capsys.readouterr().out)["error"] == "no-html"
 
-    def test_dashboard_not_alive_exit_3(self, tmp_path, capsys):
+    def test_dashboard_not_alive_exit_3(self, tmp_path, capsys, monkeypatch):
         root = _make_project_with_proto(tmp_path)
         dash = _DummyDashboard([])
         port = dash.port
         dash.stop()
+        # 隔离环境端口面：宿主机 8787 可能跑着真实 dashboard，且
+        # ~/.config/fenixd/dashboard.yaml 的 port: 8787 也在候选链里——
+        # HOME 钉到 tmp（配置缺失）+ DEFAULT_PORT 钉死，保证确定性
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(proto_serve, "DEFAULT_PORT", port)
         rc = proto_serve.main(["--project", str(root), "--spec", "spec-x",
                                "--dashboard-port", str(port)])
         assert rc == 3

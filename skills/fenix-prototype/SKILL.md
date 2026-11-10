@@ -17,7 +17,7 @@ description: Use when the user wants a UI prototype before drafting a SPEC, or w
 1. **栈画像侦察**（§1）：识别组件库与版本、主题 token、设计约束。
 2. **vendor bootstrap 与三级降级**（§2）：预打包真实组件库，判定资源加载层级。
 3. **原型生成**（§3）：按生成 prompt 契约产出单文件 HTML 原型。
-4. **伺服与批注**（§4）：起独立原型服务器，用户在浏览器批注。
+4. **伺服与批注**（§4）：经 fenix dashboard 伺服原型并生成访问 URL，用户在浏览器批注。
 5. **迭代闭环**（§5）：读批注 → 修订 → 用户刷新复看，循环至认可。
 6. **批准入库与冻结**（§6）：原型落 `specs/<spec>/prototype/` 并回填 SPEC 声明。
 
@@ -134,27 +134,41 @@ UI 真相源绑定（§6 批准段对其单独处理）。`vendor` / `cdn` 层�
 <script src="annotator.js" defer></script>
 ```
 
-（`annotator.js` 从 `skills/fenix-prototype/assets/annotator.js` 复制进原型目录。）
+（`annotator.js` 从 `skills/fenix-prototype/assets/annotator.js` 复制进原型目录。
+批注器按页面路径自动推导提交端点：dashboard `/proto/` 形态下 POST
+`/api/proto/<project>/<spec>/feedback`，由 dashboard 落盘回 `<原型目录>/feedback.json`；
+file:// 直开时降级本地导出。）
 
-启动原型服务器（独立进程，python 标准库实现，零 dashboard 依赖）：
+原型**不独立启动 HTTP 服务器**——由 fenix dashboard（systemd 常驻单例，默认
+`127.0.0.1:8787`）经 `/proto/<project>/<spec>/` 路由伺服原型目录。生成用户可直接
+打开的访问地址：
 
 ```bash
-python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --json
+python3 skills/fenix-prototype/scripts/proto_serve.py \
+    --project <工程根> --spec <spec> --json
 ```
 
-- 启动输出含完整访问 URL（`url` 字段），MUST 把 URL 交给用户在浏览器打开；
-- 默认绑定 `127.0.0.1`；用户从局域网/隧道访问时显式 `--host 0.0.0.0` 并如实告知
-  监听范围；端口默认 OS 分配随机高端口，冲突自动重试；
-- **生命周期**：同目录已有存活实例 → 自动复用（输出 `action: reused`）；残留 PID
-  → 自动探测接管（`started`，stderr 提示 `stale-takeover`）；批准/会话结束 MUST 回收：
+- 输出 `url` 字段（如 `http://127.0.0.1:8787/proto/<project>/<spec>/?proto_round=1`），
+  MUST 把 URL 交给用户在浏览器打开；多页原型换页用文件名形态
+  `.../<spec>/<page>.html?proto_round=N`；
+- 脚本自动探测 dashboard 端口（`--dashboard-port` > `~/.config/fenixd/dashboard.yaml`
+  的 `port:` > 8787）、校验项目已注册、端到端验证 URL 可达（HTTP 200）后才输出，
+  不得把验证不过的地址交给用户；
+- 退出码即诊断：`2` 输入错（原型目录缺失/无 HTML，按 hint 回 §3 生成）；`3`
+  dashboard 不存活（按 hint 拉起：`python3 <框架根>/bin/fenix_dashboard.py --serve`
+  或 `sudo systemctl start fenix-dashboard`，存活后重跑本命令）；`4` 项目未注册
+  （按 hint `fenix_dashboard.py --add-project <工程根>` 注册后重跑）；`5` URL
+  验证失败（通常 dashboard 版本过旧未含 `/proto/` 路由，或 spec 名不符，按 hint 核对）；
+- **远程访问**：dashboard 只绑定 `127.0.0.1`，端口固定（默认 8787）——远程客户端
+  只需一条指向 dashboard 端口的既有 SSH 隧道即可覆盖所有原型，不再按原型逐个转发
+  随机端口；
+- **生命周期零管理**：dashboard 常驻、原型目录变更即时生效（该路由恒 no-cache
+  伺服），没有起服/回收步骤，也不存在残留进程。
 
-  ```bash
-  python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --stop
-  ```
-
-- 用户在浏览器批注（点选带 `data-proto-id` 的区块 → 输入意见 → 提交），批注落
-  `<原型目录>/feedback.json`；服务器不可达时（如 file:// 直接打开）批注器降级为
-  本地导出 JSON，用户把导出文件交给 agent 拷贝回原型目录同名位置即可回流。
+用户在浏览器批注（点选带 `data-proto-id` 的区块 → 输入意见 → 提交），批注经
+dashboard API 落回 `<原型目录>/feedback.json`；批注端点不可达时（如 file:// 直接
+打开）批注器降级为本地导出 JSON，用户把导出文件交给 agent 拷贝回原型目录同名
+位置即可回流。
 
 ## 5. 会话内迭代闭环
 
@@ -171,7 +185,8 @@ python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --json
    ```
 
 4. 引导用户刷新复看；迭代轮次通过 URL 参数携带（如
-   `http://127.0.0.1:<port>/index.html?proto_round=2`），批注自动带新轮次号；
+   `http://127.0.0.1:8787/proto/<project>/<spec>/?proto_round=2`，重跑 §4 的
+   `proto_serve.py --round <N>` 即得），批注自动带新轮次号；
 5. 循环直至用户明示认可（§6）。迭代全程会话内完成，MUST NOT 依赖异步审批流；
    每轮修订 MUST 向用户报告：消化了哪些意见、哪些锚保留、哪些区块换锚。
 
@@ -186,15 +201,14 @@ python3 skills/fenix-prototype/scripts/serve_prototype.py <原型目录> --json
 
 用户明示认可后，按序执行：
 
-1. **回收服务器**：`serve_prototype.py <原型目录> --stop`；
-2. **整页截图（尽力而为）**：本机有 playwright-cli 则用命名会话对每个原型 HTML
+1. **整页截图（尽力而为）**：本机有 playwright-cli 则用命名会话对每个原型 HTML
    抓整页截图随原型入库；无头浏览器不可用或抓取失败时**MUST NOT 阻塞批准**，
    在 SPEC 中显式记录「无渲染凭证（截图尽力而为降级）」——HTML 是真相源主体，
    截图只是渲染凭证；
-3. **落位入库**：把原型 HTML（连同 `vendor.js`、截图等渲染所需资源）复制到
+2. **落位入库**：把原型 HTML（连同 `vendor.js`、截图等渲染所需资源）复制到
    `specs/<spec>/prototype/`，随 SPEC 流程 `git add specs/<spec>/prototype/` 入库提交；
-4. **清理草稿目录**：删除 `.fenix/prototypes/<spec>/`（运行时目录，不入库）；
-5. **回填 SPEC 声明（绑定力第一通道）**：
+3. **清理草稿目录**：删除 `.fenix/prototypes/<spec>/`（运行时目录，不入库）；
+4. **回填 SPEC 声明（绑定力第一通道）**：
    - SPEC 正文引用原型路径：`界面原型（UI 真相源）：specs/<spec>/prototype/index.html`；
    - 相关 Scenario 显式声明「**界面以 prototype/ 为准**」（与「数值以 Scenario 为准」
      同纪律等级），例如：
