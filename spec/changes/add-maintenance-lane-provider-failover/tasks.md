@@ -19,7 +19,7 @@
   kind: modify
 ```
 
-设计真相源：本 change `design.md` + `spec/knowledge/domains/provider-models/failover-dispatch.md`。前置依赖：2026-11-09 事故修复 ①（`runner._switch_signal_text` 与 attempt 环双源闸门）已在 main；本 SPEC 只处理维护车道 ②，不改 ④ 冷却时长。
+设计真相源：本 change `design.md` + `spec/knowledge/domains/provider-models/failover-dispatch.md`。前置依赖：2026-11-09 事故修复 ①（`runner._switch_signal_text` 与 attempt 环双源闸门）已在 main；本 SPEC 处理维护车道 + 判官范式车道（spec-review / dispute-judge）②，不改 ④ 冷却时长。
 
 # Tasks — 维护车道接入 provider 退避链
 
@@ -29,9 +29,10 @@
 
 ## 2. 共享 failover 助手
 
-- [ ] 2.1 `core/agent_runner/maintenance_runs.py` 新增 `_run_lane_agent_with_failover(...)`：入参含 `runner`、`run_id`、`spec_name`、`agent_type`、`assignment`、`prompt`、`cwd`、`env_overrides`、`post_provider_env`、`max_turns`、`fallback_model`；内部按 `runner._select_chain_candidate` 选候选（跳过 circuit/switch 冷却）、`_apply_provider_env` → `post_provider_env` → `_write_lane_provider_marker(..., chain_index, chain_len, attempt)` → `_run_agent`（解包 5 元）；失败用 `runner._switch_signal_text(error, exc)` + `runner.classify_switch_error(...)` 判定，429 调 `_record_switch_cooldown(..., cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS)`，拒模型调 `_record_unrecognized_model`，换下一候选；候选上限 = 链长；全链冷却/耗尽抛含 `[model-chain-unavailable]` 的 `RuntimeError`（R1/R2/R3/R6）。
-- [ ] 2.2 `_write_lane_provider_marker` 扩展 `chain_index`/`chain_len`/`attempt` 参数（默认 `0/1/None` 保兼容），移除硬编码，透传 `runner._write_provider_marker`（R1/R5）。
+- [ ] 2.1 `core/agent_runner/runner.py` 新增候选环 `AgentRunner._run_agent_with_chain_failover(...)`：入参含 `run_id`、`spec_name`、`agent_type`、`assignment`、`prompt`、`cwd`、`provider_env`/`post_provider_env`、`max_turns`；内部按 `_select_chain_candidate` 选候选（跳过 circuit/switch/限流冷却）、组装 provider env（`_apply_provider_env` → `post_provider_env`）→ `_write_provider_marker(..., chain_index, chain_len, attempt)` → `_run_agent`（解包 5 元）；失败用 `_switch_signal_text(error, exc)` + `classify_switch_error(...)` 判定，429 调 `_record_switch_cooldown(..., cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS)`，拒模型调 `_record_unrecognized_model`，换下一候选；候选上限 = 链长；成功返回 5 元组 + 实际 `provider_name/model_override`；全链冷却/耗尽抛含 `[model-chain-unavailable]` 的 `RuntimeError`（R1/R2/R3/R6）。
+- [ ] 2.2 `core/agent_runner/maintenance_runs.py` 新增薄封装 `_run_lane_agent_with_failover(...)`：解析角色回退顺序 `assignment`、回退模型、既有 env 合并与 marker 落盘参数、`max_turns` → 调 runner 候选环；`_write_lane_provider_marker` 扩展 `chain_index`/`chain_len`/`attempt` 参数（默认 `0/1/None` 保兼容），移除硬编码并透传 `runner._write_provider_marker`（R1/R5）。
 - [ ] 2.3 helper 单测（tests/test_maintenance_lane_failover.py）：双候选链首候选 429（result 事件结构化）→ 换第二候选成功；全冷却时不调 `_run_agent` 直接 `[model-chain-unavailable]`；HTTP 404 不换候选原样上抛；业务失败/超时不换候选；桩 runner 缺簿记方法 fail-open（R2/R4/R7）。
+- [ ] 2.4 判官范式共用性单测：直接断言 `run_spec_review` 与 `run_dispute_judge` 均经同一候选环（如 monkeypatch 候选环计数/入参），且未配置 `agents.models` 时两处仍走 `DEFAULT_GATEWAY_MODEL` 单次执行、不写 marker。
 
 ## 3. 六车道接入
 
@@ -40,7 +41,10 @@
 - [ ] 3.3 `run_self_review` 与 `run_evolution` 改接 helper（self-review > administrator 链；evolution 的 `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="0"` 经 `post_provider_env` 在每候选 `_apply_provider_env` 之后注入）。
 - [ ] 3.4 `run_code_review` 改接 helper（role 链 code-review > self-review > administrator；`max_turns=None`；helper 重抛异常 MUST 保留 `api_error_status`/`result_text`/`stderr_lines` 属性供 429 重派归因）。
 - [ ] 3.5 `run_code_fix` 改接 helper（role 链 code-fix > code-review > self-review > administrator；marker 仍写 `spec_name="code-review-fix"`、`agent_type="code-fix"`）。
-- [ ] 3.6 每车道回归用例：双候选链下首候选 429 换候选成功、provider_marker 记录真实 `chain_index`/`chain_len`（含 `attempt`）、返回值 5 元结构与既有降级/告警路径逐字段不变（R1/R5/R7）。
+- [ ] 3.6 六条维护车道各自回归用例：双候选链下首候选 429 换候选成功、provider_marker 记录真实 `chain_index`/`chain_len`（含 `attempt`）、返回值 5 元结构与既有降级/告警路径逐字段不变（R1/R5/R7）。
+- [ ] 3.7 `run_spec_review` 改接候选环（角色链 `spec-review`，回退 `DEFAULT_GATEWAY_MODEL`；保留派发前结果文件清理、成功 `AgentRunResult(provider_used/model_used)`、except 四型与 finally 摘品牌登记）。
+- [ ] 3.8 `run_dispute_judge` 改接候选环（角色链 `dispute-judge`，回退 `DEFAULT_GATEWAY_MODEL`；保留派发前 unlink 旧裁决、收工补写 run stamp、result gate 与品牌登记收口），与 3.7 镜像同步。
+- [ ] 3.9 判官范式车道回归用例：spec-review / dispute-judge 各一条「双候选链首候选 429 → 换第二候选成功 + marker 真实链下标 + provider_used 为最终候选」；镜像契约断言两处均调用同一 helper。
 
 ## 4. 429 重派按链解析
 
@@ -49,9 +53,9 @@
 
 ## 5. 回归验证
 
-- [ ] 5.1 定向套件全绿：`tests/test_provider_failover.py`、`tests/test_provider_circuit.py`、`tests/test_transient_backoff.py`、`tests/test_maintenance_lane_failover.py`、`tests/test_run_agent_call_site_arity.py`、admin_monitor/code-review 相关用例。
+- [ ] 5.1 定向套件全绿：`tests/test_provider_failover.py`、`tests/test_provider_circuit.py`、`tests/test_transient_backoff.py`、`tests/test_maintenance_lane_failover.py`、`tests/test_run_agent_call_site_arity.py`、spec-review/dispute-judge 相关既有用例、admin_monitor/code-review 相关用例。
 - [ ] 5.2 全量 `python3 -m pytest tests -q` 绿；确认无新增 `threading.Timer`/后台线程（复用既有调度节拍）；确认 manifest/terminal-salvage/证据读侧对多 attempt 单文件仍取末条口径。
 
 ## 6. 知识回填
 
-- [ ] 6.1 更新 `spec/knowledge/domains/provider-models/failover-dispatch.md`：维护车道纳入链 failover、provider_marker 真实链下标（不再恒 0/1）、429 重派按链解析；同步 `spec/knowledge/index.md` 计数与时间戳。
+- [ ] 6.1 更新 `spec/knowledge/domains/provider-models/failover-dispatch.md`：维护车道与判官范式车道纳入链 failover、provider_marker 真实链下标（不再恒 0/1）、429 重派按链解析；同步 `spec/knowledge/domains/spec-lifecycle/spec-review-agent.md` 的模型路由段（判官范式车道按链选择）；同步 `spec/knowledge/index.md` 计数与时间戳。
