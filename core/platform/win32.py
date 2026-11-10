@@ -14,7 +14,8 @@ sys.platform 单点分支保证（非 Windows 环境本模块不被导入）。
 - B 组：/proc 读面换 Windows API（psutil 或 Win32 Toolhelp 快照），
   ``is_alive_with_identity`` 锚键换 CreationTime（等价 starttime）；
 - C 组：flock 换 ``msvcrt.locking``（语义差异须在 exclusive_lock 层吸收）；
-- D 组：systemctl 缝换计划任务（schtasks）或服务后端；
+- D 组：systemctl 缝换计划任务（schtasks）或服务后端，HostingProvider
+  六名（install_unit/start/stop/is_running/env_file/logs_hint）同缝；
 - E 组：``home_dir`` 换 ``USERPROFILE``、``ensure_link`` 换
   ``os.symlink``（需开发者模式或特权）；
 - F 组：``pytest_timeout_method`` 恒 ``"thread"``（Windows 无 SIGALRM）。
@@ -150,6 +151,10 @@ def is_alive_with_identity(pid: int, identity) -> Optional[bool]:
     raise _spec2("win32.is_alive_with_identity")
 
 
+def process_info(pid: int) -> Optional[dict]:
+    raise _spec2("win32.process_info")
+
+
 # ── C 文件锁 ────────────────────────────────────────────────────────────
 
 def flock_exclusive(fileobj, *, nonblocking: bool = False) -> None:
@@ -176,6 +181,33 @@ def systemctl_available() -> bool:
 
 def run_systemctl(args, timeout: float = 30) -> subprocess.CompletedProcess:
     raise _spec2("win32.run_systemctl")
+
+
+# HostingProvider 六名（SPEC 钉死托管操作面；SPEC-2 换计划任务/服务后端，
+# journalctl 文案换事件日志形态）
+
+def install_unit(root) -> dict:
+    raise _spec2("win32.install_unit")
+
+
+def start(root) -> None:
+    raise _spec2("win32.start")
+
+
+def stop(root) -> None:
+    raise _spec2("win32.stop")
+
+
+def is_running(root) -> bool:
+    raise _spec2("win32.is_running")
+
+
+def env_file(root):
+    raise _spec2("win32.env_file")
+
+
+def logs_hint(root) -> str:
+    raise _spec2("win32.logs_hint")
 
 
 # ── E 环境/用户/文件系统 ────────────────────────────────────────────────
@@ -234,12 +266,19 @@ __all__ = [
     "proc_socket_links",
     "process_tree_cpu_seconds",
     "is_alive_with_identity",
+    "process_info",
     "flock_exclusive",
     "flock_release",
     "try_lock",
     "exclusive_lock",
     "systemctl_available",
     "run_systemctl",
+    "install_unit",
+    "start",
+    "stop",
+    "is_running",
+    "env_file",
+    "logs_hint",
     "home_dir",
     "current_user",
     "ensure_link",

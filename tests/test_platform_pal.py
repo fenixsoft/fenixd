@@ -268,6 +268,7 @@ class TestBackendContractShape:
 
         for proto in (api_contract.ProcessLifecycle, api_contract.ProcessIntelligence,
                       api_contract.FileLocking, api_contract.HostingSeam,
+                      api_contract.HostingProvider,
                       api_contract.EnvironmentUserFs, api_contract.TestInfra):
             assert isinstance(pal_linux, proto), proto.__name__
 
@@ -277,6 +278,7 @@ class TestBackendContractShape:
 
         for proto in (api_contract.ProcessLifecycle, api_contract.ProcessIntelligence,
                       api_contract.FileLocking, api_contract.HostingSeam,
+                      api_contract.HostingProvider,
                       api_contract.EnvironmentUserFs, api_contract.TestInfra):
             assert isinstance(pal_win32, proto), proto.__name__
 
@@ -675,6 +677,42 @@ class TestIsAliveWithIdentity:
             pal.is_alive_with_identity(os.getpid(), {"bogus_anchor": 1})
 
 
+class TestProcessInfo:
+    """B 组具名情报快照（SPEC 钉死形状 {alive, cmdline, exe, cwd, ppid, start_token}）。"""
+
+    def test_live_child_shape(self, tmp_path):
+        proc = _spawn_sleeper(tmp_path)
+        try:
+            info = pal.process_info(proc.pid)
+            start_ticks = pal.proc_start_ticks(proc.pid)
+        finally:
+            _reap(proc)
+        assert info is not None
+        assert info["alive"] is True
+        # start_token＝proc_start_ticks 单源（PID 复用防护统一锚）
+        assert info["start_token"] == start_ticks and start_ticks > 0
+        assert info["ppid"] == os.getpid()
+        assert info["cmdline"] and info["cmdline"][0].endswith("sleep")
+        # exe 可读性随内核 ptrace 限制浮动：有值必指向 sleep 二进制
+        assert info["exe"] is None or info["exe"].endswith("sleep")
+        assert os.path.realpath(info["cwd"]) == os.path.realpath(str(tmp_path))
+
+    def test_self_snapshot(self):
+        info = pal.process_info(os.getpid())
+        assert info["alive"] is True
+        assert info["ppid"] == os.getppid()
+        assert info["start_token"] == pal.proc_start_ticks(os.getpid())
+        assert os.path.realpath(info["cwd"]) == os.path.realpath(os.getcwd())
+
+    def test_dead_pid_maps_to_none(self):
+        # 必死 pid（pid_max+1）：杜绝复用竞态的确定性否定（fail-closed 按死处置）
+        assert pal.process_info(_pid_ceiling()) is None
+
+    def test_invalid_pid_forms_map_to_none(self):
+        assert pal.process_info(0) is None
+        assert pal.process_info(-1) is None
+
+
 # ── C 组具名形态（try_lock / exclusive_lock）─────────────────────────
 
 class TestNamedLockForms:
@@ -765,6 +803,62 @@ class TestSystemctlSeam:
     def test_available_reflects_which(self, monkeypatch):
         monkeypatch.setattr(pal_linux.shutil, "which", lambda name: None)
         assert pal.systemctl_available() is False
+
+
+class TestHostingProviderFacade:
+    """D 组六名门面：同参转发 core.systemd_hosting 既有实现（语义一字不动）。
+
+    转发面 monkeypatch 断言：SPEC 钉死名 → 既有业务函数，unit 名派生经
+    unit_name_for 单源，不新开 systemctl 位点。
+    """
+
+    def test_facade_injected_from_linux_backend(self):
+        # __init__.py 单点分发：七名（process_info + 六名门面）即 linux 后端实现对象
+        assert pal.process_info is pal_linux.process_info
+        assert pal.install_unit is pal_linux.install_unit
+        assert pal.stop is pal_linux.stop
+
+    def test_install_unit_forwards(self, monkeypatch, tmp_path):
+        import core.systemd_hosting as sh
+
+        calls = {}
+        sentinel = {"ok": True, "error": None, "already": True, "unit": "u.service"}
+
+        def _fake_install(root):
+            calls["root"] = root
+            return sentinel
+
+        monkeypatch.setattr(sh, "install_project_unit", _fake_install)
+        assert pal.install_unit(tmp_path) is sentinel
+        assert calls["root"] == tmp_path
+
+    def test_lifecycle_three_forward_with_derived_unit(self, monkeypatch, tmp_path):
+        import core.systemd_hosting as sh
+
+        seen = []
+        monkeypatch.setattr(sh, "_enable_now",
+                            lambda unit: seen.append(("start", unit)))
+        monkeypatch.setattr(sh, "stop_unit_no_block",
+                            lambda unit: seen.append(("stop", unit)))
+        monkeypatch.setattr(sh, "unit_active",
+                            lambda unit: seen.append(("is_running", unit)) or True)
+        assert pal.start(tmp_path) is None
+        assert pal.stop(tmp_path) is None
+        assert pal.is_running(tmp_path) is True
+        want = sh.unit_name_for(tmp_path)
+        assert seen == [("start", want), ("stop", want), ("is_running", want)]
+
+    def test_env_file_identity_with_project_env_file(self, tmp_path):
+        import core.systemd_hosting as sh
+
+        assert pal.env_file(tmp_path) == sh.project_env_file(tmp_path)
+
+    def test_logs_hint_contains_derived_unit(self, tmp_path):
+        import core.systemd_hosting as sh
+
+        hint = pal.logs_hint(tmp_path)
+        assert "journalctl" in hint
+        assert sh.unit_name_for(tmp_path) in hint
 
 
 # ── E 组环境/用户/文件系统 ────────────────────────────────────────────

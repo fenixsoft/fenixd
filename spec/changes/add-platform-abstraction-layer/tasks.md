@@ -134,6 +134,9 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-platform-abstraction-layer/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-platform-abstraction-layer/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+  - 复核结论（2026-11-11）：两败均为**真实产品缺口**，非场景缺陷——`surface.missing_api=["process_info"]` 与 `surface.missing_hosting=六名` 断言逐字源自 spec.md:32/54 的 SHALL 钉死接口名（hasattr 探针口径），产品 core/platform/{api,linux}.py 确无这些名（git 全历史无 `def process_info`），判 product-bug 成立，修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+  - 修复（a964b7644）：B 组交付 `process_info(pid)`（SPEC 钉死形状 `{alive, cmdline, exe, cwd, ppid, start_token}`，start_token=proc_start_ticks 单源防 PID 复用，/proc 读不到→None fail-closed）；D 组交付 HostingProvider 六名门面（install_unit/start/stop/is_running/env_file/logs_hint 以项目根为键，逐条同参转发 core.systemd_hosting 既有实现，函数内延迟 import 保 pal 模块级纯 stdlib 零环、不新开 systemctl 位点）；win32 占位后端同缝、api 协议面/对照表/__all__ 同步；test_platform_pal.py 补行为对齐单测 9 例
+- [x] 修复后重跑验证确认通过
+  - 复验证据（2026-11-11）：surface 探针 missing_api/missing_hosting 均空（process_info + 六名全命中，门面身份=linux 后端对象）；test_platform_pal + test_platform_guard + test_systemd_hosting 148 passed；tests/ 引用 core.platform 全部文件 17 passed。全量回归交框架验证链复跑（有界入口 `bin/run_full_suite.py` 通道在位）。证据落 `.fenix/verify-evidence/add-platform-abstraction-layer/repair-r1-surface-probe-1111.json`
