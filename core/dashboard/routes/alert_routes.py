@@ -193,10 +193,11 @@ class H6AlertRoutesMixin:
     def _api_chain(self, query) -> dict:
         """处置链只读视图（add-escalation-chain-admin-arbiter 5.2）。
 
-        ?project=<name> → 该项目链聚合（data 层 chain_overview 单读）；
-        缺省 → 跨项目聚合（同 _api_alerts 缺省分支口径：跳过 fixture/
-        不存在项目，在办件/签名水位/上升件逐条注入 ``project`` 字段，
-        summary 逐项累加）。
+        ?project=<name> → 该项目链聚合（data 层 chain_overview 单读；
+        在办件行级注入 ``project``——BUG-01 修复，前端处置过程弹窗分支的
+        项目名依据）；缺省 → 跨项目聚合（同 _api_alerts 缺省分支口径：
+        跳过 fixture/不存在项目，在办件/签名水位/上升件逐条注入
+        ``project`` 字段，summary 逐项累加）。
 
         错误契约同 _api_alerts（**有意 200**）：?project 指向不存在/未就绪
         项目时返回 ``{"error": "project not found"}`` 字典（HTTP 仍 200，
@@ -209,7 +210,16 @@ class H6AlertRoutesMixin:
             if project is None or not project.get("exists"):
                 return {"error": "project not found"}
             proot = Path(project["path"])
-            return {"project": project["name"], **dashboard_data.chain_overview(proot)}
+            view = dashboard_data.chain_overview(proot)
+            # redesign-chain-panel-ui 验证修复 BUG-01：单项目分支在办行级
+            # 注入 project——聚合分支逐行注入而本分支原先只有顶层 project
+            # 键，前端在办行点击（it.run_id && it.project）在筛选模式下恒
+            # 落降级抽屉，AdminRunModal 处置过程分支不可达。signatures/
+            # escalations 行级注入系聚合分支既有形状，本分支不跟随（非本次
+            # 失败根因，两分支行级形状差异勿在本端点顺手拉平）
+            for row in view["in_flight"]:
+                row["project"] = project["name"]
+            return {"project": project["name"], **view}
 
         projects_out = []
         summary_keys = ("in_flight", "signatures", "quota_exhausted", "escalations", "queue")

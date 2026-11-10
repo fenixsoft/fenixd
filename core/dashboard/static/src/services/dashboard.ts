@@ -704,7 +704,7 @@ export interface ChainInFlightItem {
   arbiter_cap?: number;
   /** 1.1 富化：run 标识尽力提取（链台账→pending disposition 回落，不可得 null） */
   run_id?: string | null;
-  /** 跨项目聚合时注入的来源项目名 */
+  /** 来源项目名（路由层行级注入：单项目与跨项目聚合分支均在办件注入） */
   project?: string;
 }
 

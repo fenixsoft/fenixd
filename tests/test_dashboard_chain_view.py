@@ -318,6 +318,26 @@ class TestChainApi:
         assert body["signatures"][0]["signature"] == "spec-a::verify_env_blocked"
         assert body["escalations"][0]["chain"]["signature"] == "spec-a::verify_env_blocked"
 
+    def test_single_project_inflight_row_injects_project(self, server_fx):
+        """单项目分支在办行级注入 project（BUG-01 修复防回潮）。
+
+        聚合分支逐行注入而单项目分支原先只在顶层放 project 键，前端在办行
+        点击（it.run_id && it.project）在筛选模式下恒落降级抽屉——
+        AdminRunModal 处置过程分支不可达。行级注入后分支恢复可达。
+        """
+        proot, srv = server_fx
+        _seed_quota(proot, "spec-a::verify_env_blocked", attempts=1)
+        ChainQuotaStore(proot).mark_in_flight(
+            "chain-1", "spec-a::verify_env_blocked", "spec-a", "admin"
+        )
+        status, body = srv.get("/api/chain?project=proj-a")
+        assert status == 200
+        assert body.get("error") is None
+        assert body["summary"]["in_flight"] == 1
+        row = body["in_flight"][0]
+        assert row["project"] == "proj-a"
+        assert row["chain_id"] == "chain-1"
+
     def test_aggregate_default_injects_project(self, tmp_path):
         """缺省跨项目聚合：逐条注入 project、summary 累加（fixture 项目跳过）。"""
         from core.dashboard.registry import Registry
