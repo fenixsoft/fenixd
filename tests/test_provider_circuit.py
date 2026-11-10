@@ -237,9 +237,11 @@ class TestCircuitHalfOpenRecovery:
 
         def fake_run_agent(*a, **k):
             # add-impl-selfcheck-model-probe（2.1）：unrecognized_model 现为独立
-            # 判定类（确定性拒模型 → 切链，不入 4xx 熔断计数），本测试验证的是
-            # 半开探针仍 4xx → 重新冷却，夹具须用纯 404（不含 unrecognized_model）。
-            raise RuntimeError("claude CLI failed: HTTP 404 model_not_found")
+            # 判定类（确定性拒模型 → 切链，不入 4xx 熔断计数）；2026-11-10
+            # add-maintenance-lane-provider-failover 验证修复起「model not
+            # found」网关形态同属拒模型类。本测试验证的是半开探针仍 4xx →
+            # 重新冷却，夹具须用纯配额 404（不含任何拒模型形态文本）。
+            raise RuntimeError("claude CLI failed: HTTP 404 quota exceeded")
 
         patch_runner_for_exec(runner, tmp_path, claude_side_effect=fake_run_agent)
         monkeypatch.setattr("time.sleep", lambda _s: None)  # 吞掉 attempt 间退避

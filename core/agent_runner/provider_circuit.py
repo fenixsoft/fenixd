@@ -46,19 +46,29 @@ PROVIDER_SWITCH_COOLDOWN_SECONDS = 300
 # 今日（2026-08-27）真实故障文本 fixture（inferaiapi / aliyun 各自拒绝 deepseek 变体）：
 # claude CLI 经 SDK 包装时把 unrecognized_model 打到 stderr，形如下列；用于 classify_switch_error
 # 文本匹配（design D2）。中央化便于日后新增网关报错形态。
+# 网关「model not found」正文形态收窄正则（单源常量）：not found 前的 model
+# 后缀只能是「空 / 引号模型名 / 含 - . / : 分隔符的模型 id」（真实模型名几乎
+# 必带分隔符），「model file not found」等与网关无关的本地错误不命中。切换类
+# 与拒模型两词表共用同一正则（同形态一判——2026-11-10 add-maintenance-lane-
+# provider-failover 验证修复：拒模型记账 WARNING 须覆盖该正文形态，此前仅命中
+# 切换类导致链前进但无记账、瞬断通道仍原地重试同一必拒模型）。
+MODEL_NOT_FOUND_TEXT_PATTERN = (
+    r"model[_\s]+(?:\"[^\"]*\"|'[^']*'|[\w.\-/:]*[\-./:][\w.\-/:]*)?[_\s]*not[_\s]{0,2}found"
+)
 SWITCH_ERROR_TEXT_PATTERNS = (
     r"unrecognized_model",
     r"unrecognized model",
     # 第三条收窄（code-review item 86524e70841b）：原先 model/not/found 三词以
     # . * 放宽连接，「model file not found」等与网关无关的本地错误也会被判切换类
     # （触发 provider switch 冷却并推进 failover 链 + classify_transient_error
-    # 通道 1 瞬断记账）。现要求 not found 前的 model 后缀只能是「空 / 引号模型名 /
-    # 含 - . / : 分隔符的模型 id」（真实模型名几乎必带分隔符），已登记网关样例
-    # （tests/test_provider_failover「model not found: deepseek-v4-flash」、
-    # tests/test_harness_dsh_adapter「Model "x" not found」「Model not found」、
-    # OpenAI 错误码形态 model_not_found）保持命中；正/反例 fixture 断言见
+    # 通道 1 瞬断记账）。收窄正则现单源化为上方 MODEL_NOT_FOUND_TEXT_PATTERN
+    # （2026-11-10 add-maintenance-lane-provider-failover 验证修复起与拒模型
+    # 词表共用），已登记网关样例（tests/test_provider_failover「model not
+    # found: deepseek-v4-flash」、tests/test_harness_dsh_adapter
+    # 「Model "x" not found」「Model not found」、OpenAI 错误码形态
+    # model_not_found）保持命中；正/反例 fixture 断言见
     # tests/test_transient_backoff.py TestClassifyTransientError。
-    r"model[_\s]+(?:\"[^\"]*\"|'[^']*'|[\w.\-/:]*[\-./:][\w.\-/:]*)?[_\s]*not[_\s]{0,2}found",
+    MODEL_NOT_FOUND_TEXT_PATTERN,
 )
 # ── 429 限流分类与限流冷却（add-code-review-concurrency-and-429-resilience D3）──
 # 2026-09-24 事故：bigmodel 网关 429（`API Error: Request rejected (429) ·
@@ -95,6 +105,14 @@ RATELIMIT_REDISPATCH_MAX = 1
 UNRECOGNIZED_MODEL_TEXT_PATTERNS = (
     r"unrecognized_model",
     r"unrecognized model",
+    # 第三条（2026-11-10 add-maintenance-lane-provider-failover 验证修复，
+    # SPEC 场景「拒模型换候选并在链尾归因」）：网关「Model not found:
+    # <model>」HTTP 400 正文（只进 result 事件 result 字段）同为 provider
+    # 明确返回的确定性拒模型——此前仅命中切换类词表：车道候选环链前进但无
+    # 记账 WARNING（_record_unrecognized_model 不触发），dispatch 侧
+    # _record_4xx_or_transient 还会把该形态误入 4xx 熔断计数。与切换类第三条
+    # 共用收窄正则，本地错误形态不命中；本判定是切换类的真子集关系保持。
+    MODEL_NOT_FOUND_TEXT_PATTERN,
 )
 # ── CLI stderr 启动期诊断噪声行（reduce-cli-stderr-noise-attribution D1）────
 # claude CLI 启动期对非 Anthropic 模型名打的固定 stderr 诊断（每 run 恰 1 条，
@@ -635,11 +653,14 @@ class ProviderCircuit:
     def classify_unrecognized_model_error(error_text: str) -> bool:
         """判断错误文本是否属于「拒模型」确定性失败（add-impl-selfcheck-model-probe 2.1）。
 
-        仅严格匹配 unrecognized_model 结构化类别（stderr
-        ``[claude-code:unrecognized_model]`` 或等价文本形态）。5xx / 超时 /
-        连接类 / 4xx 配额鉴权等其余错误 MUST NOT 命中（处理路径行为不变，
-        回归断言固化）——本判定是 ``classify_switch_error`` 的**真子集**，
-        独立存在的原因是拒模型要按确定性失败收窄处理（不进瞬断通道，
+        匹配 unrecognized_model 结构化类别（stderr
+        ``[claude-code:unrecognized_model]`` 或等价文本形态）与网关
+        「Model not found」正文形态（收窄正则与切换类第三条共用单源，本地
+        错误形态不命中——2026-11-10 add-maintenance-lane-provider-failover
+        验证修复扩纳）。5xx / 超时 / 连接类 / 4xx 配额鉴权等其余错误 MUST NOT
+        命中（处理路径行为不变，回归断言固化）——本判定是
+        ``classify_switch_error`` 的**真子集**，独立存在的原因是拒模型要按
+        确定性失败收窄处理（不进瞬断通道，
         见 UNRECOGNIZED_MODEL_TEXT_PATTERNS 注释）。
 
         Args:
