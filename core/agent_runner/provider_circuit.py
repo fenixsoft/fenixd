@@ -921,9 +921,22 @@ class ProviderCircuit:
         的跨天重置读改写互斥（此前 AgentRunner 在自己的 _daily_count_lock
         临界区内直写私有属性，两个写者分属两把锁不互斥，日期翻转窗口内可能
         双清零/丢清零）。调用方不持有本锁，无锁序耦合。
+
+        日期变化时同步清空 per-provider 当日 attempt 计数与单次告警标记
+        （code-review item 03e3e12c2164）：本方法在 dispatch 路径先于当日首个
+        ``_record_daily_provider_attempt`` 执行（_check_daily_limit →
+        _resolve_provider_candidate 时序），只翻日期会让后者的
+        ``today != _daily_reset_date`` 跨天重置整天不再成立——昨日 attempt
+        余量与 warned 标记泄漏进新的一天，daily_attempts_warn 告警被昨日余量
+        提前误触发、或因 warned 残留整日漏报。重置体与
+        ``_record_daily_provider_attempt`` 的跨天分支同形，同一把锁内读改写，
+        无新增锁序。
         """
         with self._provider_circuit_lock:
-            self._daily_reset_date = today
+            if today != self._daily_reset_date:
+                self._daily_provider_attempts = {}
+                self._daily_provider_warned = {}
+                self._daily_reset_date = today
 
     def _record_daily_provider_attempt(self, provider_name: str) -> None:
         """per-provider 当日 attempt 计数 + 单次 WARNING 告警（design D5 / spec 4.2）。
@@ -1114,6 +1127,12 @@ class ProviderCircuit:
             )
         )
         if window <= 0:
+            # 窗口禁用早退仍须登记探针判败标记（code-review item c9d4edde67e7）：
+            # 早退发生在 _append_transient_event 记账之前，不补登记则观察窗内
+            # 同指纹探针失败不留判败标记、探针被空过放行。探针观察窗由独立的
+            # transient_unseal_probe_window_seconds 驱动，与记账窗口键解耦，
+            # 本语义不受 agents.transient_break_window_seconds 配置影响。
+            self._mark_transient_probe_failed_if_observing(fingerprint, now)
             return False
         # 阈值判定消费记账助手锁内返回的快照（item f678576e5bd7）：此前锁外
         # 直读 _transient_break_events[fingerprint]，与并发到期 clear()（
@@ -1195,6 +1214,27 @@ class ProviderCircuit:
             return True
         return False
 
+    def _mark_transient_probe_failed_if_observing(
+        self, fingerprint: str, now: float
+    ) -> None:
+        """探针观察窗内同指纹记账 → 登记探针判败标记（D4）。
+
+        独立成助手（code-review item c9d4edde67e7）：``record_transient_error``
+        的 ``window <= 0`` 早退分支发生在 ``_append_transient_event`` 记账之前，
+        若判败登记只内嵌在记账助手里，记账窗口被显式禁用（0，或 0.x 经
+        ``int()`` 截断为 0）时观察窗内的探针失败将不留判败标记，探针被空过
+        放行——「探针败即续冻」语义不应随记账窗口配置失效。本助手与判定方
+        （``is_probe_observation`` → ``_finish_probe`` 的「读 passed → 清集」
+        序列）同持 ``_unseal_lock`` 互斥（item 62a1c4e3e71f）；``_unseal_lock``
+        为 RLock，从记账助手的既有临界区内调用可安全重入。
+        """
+        with self._unseal_lock:
+            if (
+                self._transient_probe_until > now
+                and fingerprint in self._transient_probe_fps
+            ):
+                self._transient_probe_failed.add(fingerprint)
+
     def _append_transient_event(
         self,
         fingerprint: str,
@@ -1224,12 +1264,10 @@ class ProviderCircuit:
         # 探针判败标记 MUST 与判定方（is_probe_observation → _finish_probe 的
         # 「读 passed → 清集」序列）互斥（item 62a1c4e3e71f）：标记落在判定读
         # 与清集之间会被静默丢弃，探针误判 PASSED → 错峰放行照常启动。
+        # 收口单点助手（code-review item c9d4edde67e7）：window<=0 早退分支
+        # 不经本记账助手，也须完成同一登记（见该助手 docstring）。
         with self._unseal_lock:
-            if (
-                self._transient_probe_until > now
-                and fingerprint in self._transient_probe_fps
-            ):
-                self._transient_probe_failed.add(fingerprint)
+            self._mark_transient_probe_failed_if_observing(fingerprint, now)
             # 记账本体同锁保护（code-review item 0e23519cd2d1）：setdefault/
             # 滑窗过滤/append/回写 MUST 与探针标记段同一临界区——记账来自并发
             # run-worker 线程，锁外「读-过滤-回写」会以本线程的过滤版本覆盖

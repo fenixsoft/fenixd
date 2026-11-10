@@ -63,6 +63,7 @@ if str(_FENIX_DIR) not in sys.path:
 FRAMEWORK_ROOT = (_FENIX_DIR / "core").resolve().parent
 
 from core import systemd_hosting as sh  # noqa: E402
+from core.platform import api as pal  # noqa: E402
 from core.fenix_session import (  # noqa: E402
     _alive_pids,
     _fenix_pids_under,
@@ -290,6 +291,33 @@ def teardown_old_project_chain(proot: Path, dry_run: bool) -> dict:
             pass
 
 
+def _is_snapshot_dashboard_cmdline(pid: int):
+    """快照 dashboard pid 补杀前复核：cmdline 是否仍是 dashboard serve 形态。
+
+    teardown_old_dashboard 的 SIGTERM → 等端口释放（≤15s）→ SIGKILL 窗口内，
+    快照 pid 可能退出并被内核复用为无关进程，盲杀误伤复用者（code-review
+    item 79f638ff7e7e）——防误杀契约对齐项目链拆解路径的
+    _is_snapshot_proc_cmdline。判据与 sh.find_framework_dashboard_pid 同款
+    （Python 解释器 + 脚本 token 尾段 fenix_dashboard.py + --serve 严格
+    等号）；只对快照 pid 自身复核、不重扫 /proc（aea5d1c9400d 契约）。
+    返回三态：True＝仍是 dashboard serve 形态，可补杀；False＝/proc 可读但
+    已非该形态（疑似 pid 复用），跳过补杀；None＝/proc 读取失败（进程已
+    退出/不可读），复核不可判——照旧尝试补杀，由 os.kill 的
+    ProcessLookupError 兜底，无害。
+    """
+    if not str(pid).isdigit():
+        return None
+    argv = pal.cmdline_argv(int(pid))
+    if argv is None:
+        return None
+    return (
+        bool(argv)
+        and Path(argv[0]).name.startswith("python")
+        and any(t.endswith("fenix_dashboard.py") for t in argv)
+        and "--serve" in argv
+    )
+
+
 def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
     """拆旧 dashboard 实例：旧配方直接 kill pid 并等待端口释放。
 
@@ -330,10 +358,20 @@ def teardown_old_dashboard(froot: Path, dry_run: bool) -> dict:
             break
         time.sleep(0.5)
     if port_occupied(port):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError) as e:
-            errors.append(f"SIGKILL 旧 dashboard pid {pid} 失败: {e}")
+        # 补杀前复核（code-review item 79f638ff7e7e）：False（cmdline 已非
+        # dashboard serve 形态，疑似 pid 复用）跳过补杀计入 error；None
+        # （/proc 不可读，进程已退出/不可判）照旧尝试，由 ProcessLookupError
+        # 兜底——口径与项目链拆解路径一致
+        if _is_snapshot_dashboard_cmdline(pid) is False:
+            errors.append(
+                f"SIGKILL 旧 dashboard pid {pid} 补杀前复核失败"
+                "（cmdline 已非 fenix_dashboard.py --serve 形态，疑似 pid 复用），跳过补杀"
+            )
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError) as e:
+                errors.append(f"SIGKILL 旧 dashboard pid {pid} 失败: {e}")
         recheck = time.time() + 5
         while port_occupied(port) and time.time() < recheck:
             time.sleep(0.5)
@@ -485,8 +523,12 @@ def stage1_write_units_and_env(proot: Path, froot: Path, dry_run: bool) -> dict:
             sh.write_unit_file(sh.DASHBOARD_UNIT, dashboard_text)
         except sh.SystemdHostingError as e:
             errors.append(str(e))
-    plan.append(f"unit {project_unit}（全文见上）→ {sh.SYSTEMD_UNIT_DIR}（不 enable）")
-    plan.append(f"unit {sh.DASHBOARD_UNIT}（全文见上）→ {sh.SYSTEMD_UNIT_DIR}（不 enable）")
+    # 全文提示方向（code-review item 030dea18c53b）：migrate() 先打 plan 行、
+    # dry-run 下 unit 全文随后才打印，标注须为「见下」；execute 模式全文不
+    # 打印（unit 已落 systemd 目录），不留落空提示
+    unit_text_hint = "（全文见下）" if dry_run else ""
+    plan.append(f"unit {project_unit}{unit_text_hint} → {sh.SYSTEMD_UNIT_DIR}（不 enable）")
+    plan.append(f"unit {sh.DASHBOARD_UNIT}{unit_text_hint} → {sh.SYSTEMD_UNIT_DIR}（不 enable）")
     return {
         "ok": not errors,
         "error": "; ".join(errors) if errors else None,

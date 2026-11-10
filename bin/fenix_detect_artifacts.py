@@ -55,7 +55,8 @@ from pathlib import Path
 # 时 sys.path[0] 是 bin/，cwd 不入 path，不加此项则 write_config_if_unresolved 里
 # validate_build_artifact_paths 的 import 恒 ImportError 被静默跳过，写入前校验沦为死代码
 FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(FRAMEWORK_ROOT))
+if str(FRAMEWORK_ROOT) not in sys.path:
+    sys.path.insert(0, str(FRAMEWORK_ROOT))
 
 # package.json 构建脚本键白名单（code-review item 0c0caf5199e6）：判存在与列
 # 键名共用同一元组（单一事实源），避免两处字面量须同步演进、漏改一处漂移

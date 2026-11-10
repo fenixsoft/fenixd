@@ -127,7 +127,7 @@ def _collect_signals(
         # item 2039d1332343）：parse_state 把 `- status:` 空值折叠为 None 且
         # 条目仍在活跃集，.get(key, "") 在键存在值为 None 时返回 None，带
         # error 的该类 SPEC 会外显 `name（None）：...` 字面量
-        st = entry.get("status") or ""
+        st = entry.get("status") or "?"
         frozen = data.is_spec_frozen(entry)
         err = entry.get("error")
         # 冻结的 error 是冻结标记本身，不算故障

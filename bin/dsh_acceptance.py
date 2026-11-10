@@ -2209,6 +2209,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             manifest = build_fixture(parent, prefix)
         except (ValueError, OSError) as e:
             print(f"夹具装置创建失败：{e}", file=sys.stderr)
+            # mkdtemp 成功但 build_fixture 中途失败：脚本自建父目录已落盘而
+            # cleanup_fixture 尚未接管——按模块头零残留契约就地回收（同
+            # run_smoke / execute_real_acceptance 口径）；用户 --parent 显式
+            # 传入的目录不代删（同 manifest["parent_created_by_script"] 记账）
+            if args.parent is None:
+                shutil.rmtree(parent, ignore_errors=True)
             return 2
         # parent 来源记账：脚本 mkdtemp 自建的随清理 rmdir；用户 --parent
         # 显式传入的目录不代删（cleanup_fixture 凭此键区分）

@@ -661,9 +661,11 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
         return False  # 本 run 未触碰成文目录（如 rejected 未修补形态）
     git = ["git", "-C", str(root)]
     # 本函数是否已把 spec 目录写进主树索引（git add 成功即置 True）：收尾
-    # 提交失败时仅回滚自己 add 出来的暂存项（code-review item 7578d183376a
-    # ——残留暂存态会长期滞留主树索引、放大 spec/changes 与 worktree 分支
-    # merge-back 的冲突面），不动并发车道滞留在索引里的其他暂存变更。
+    # 提交失败时回滚该 spec 目录 pathspec 下的暂存项（code-review item
+    # 7578d183376a——残留暂存态会长期滞留主树索引、放大 spec/changes 与
+    # worktree 分支 merge-back 的冲突面）。粒度边界：git 无法区分暂存条目
+    # 由谁写入，同目录内并发车道此前已暂存的条目会被连带 unstage（仅暂存
+    # 态丢失、工作区内容不受影响）；其他目录的并发暂存变更不受影响。
     added = False
     try:
         probe = subprocess.run(
@@ -691,7 +693,9 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
         )
         added = True
         # commit 加 pathspec 与 porcelain 探测面对齐：只提交本 spec 目录的
-        # 变更，避免并发车道滞留在主树索引里的已暂存变更被卷进本收尾提交。
+        # 变更，避免并发车道滞留在主树索引里其他目录的已暂存变更被卷进本
+        # 收尾提交（同目录内的并发暂存条目与 pathspec 匹配、仍会被卷入，
+        # 与下方回滚同一粒度边界）。
         subprocess.run(
             git + ["commit", "-m",
                    f"[fenix] spec: {name}"
@@ -725,13 +729,16 @@ def commit_spec_review_docs(project_root, spec_name: str) -> bool:
 
 
 def _unstage_spec_review_docs(git_cmd, spec_rel: str, name: str, orig_err) -> None:
-    """回滚 commit_spec_review_docs 自己 git add 出来的暂存项（best-effort）。
+    """回滚收尾提交失败后滞留在主树索引里的 spec 目录暂存项（best-effort）。
 
     收尾提交失败（索引锁冲突/identity 缺失/超时）时，``git add`` 已把
     ``spec/changes/<spec>/`` 条目（含目录内删除文件的暂存）写进主树索引；
     不回滚则暂存态长期滞留，放大该目录与 worktree 分支 merge-back 的冲突
-    面（code-review item 7578d183376a）。只 reset 本函数自己 add 的同一
-    pathspec；reset 失败（如锁冲突仍在）仅 WARNING 留痕，不影响
+    面（code-review item 7578d183376a）。reset 以整个 spec 目录 pathspec
+    为粒度——git 无法区分暂存条目由谁写入，「只回滚自己 add 的条目」在
+    git 层面不可实现：同一目录内并发车道此前已暂存的条目会被连带
+    unstage（仅暂存态丢失，工作区内容不受影响，并发车道可重新 add）。
+    reset 失败（如锁冲突仍在）仅 WARNING 留痕，不影响
     「MUST NOT 抛异常」契约。
     """
     try:
@@ -2494,6 +2501,7 @@ def _append_crosscheck_skipped(runner, spec_name: str, run_file, reason: str) ->
             f"impl-task-crosscheck-skipped 审计事件写入失败"
             f"（非阻塞）: {e}",
         )
+
 
 def _bump_task_gate_rejections(runner, spec_name: str, delta: int = 1) -> int:
     """任务完成度类产物硬门拒绝计数原子增减（改进①「只卡第一次」）。
