@@ -160,6 +160,7 @@ function SpecInfoIcon({
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 8 }}>{record.error}</div>
           <Button
             size="small"
+            data-testid="spec-info-clear"
             onClick={(e) => {
               e.stopPropagation();
               void onClearError(record);
