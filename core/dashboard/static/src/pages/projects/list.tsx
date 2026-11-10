@@ -1,4 +1,4 @@
-import { ClockCircleOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
@@ -130,6 +130,63 @@ function DotsIcon() {
       <circle cx={7} cy={7} r={1.2} />
       <circle cx={11.4} cy={7} r={1.2} />
     </svg>
+  );
+}
+
+// SPEC 信息图标 + 悬浮提示（add-spec-info-icon-tooltip D1-D3/D5/D6，桌面状态
+// 列与移动卡胶囊行共用单源）：error 非空时渲染于状态胶囊旁，空/null 不渲染
+// （缺失=无该元素，无占位灰显）。用 Popover 而非 Tooltip——弹层内含「清除」
+// 交互按钮，Tooltip overlay 不承载交互；trigger hover+click 双触发（桌面悬浮
+// 即见，触屏点按兜底）。弹层 = 完整文本（pre-wrap 可换行不截断，maxWidth
+// 限宽防超宽）+ 清除 small 按钮（stopPropagation 防触发行/卡导航，onClearError
+// handler 与 /api/spec-error-clear 契约零改动）；图标触发器 click 自身
+// stopPropagation（D6：图标在行命中面内，防误触发行导航）。
+function SpecInfoIcon({
+  record,
+  onClearError,
+  tapSize,
+}: {
+  record: SpecSummary;
+  onClearError: (record: SpecSummary) => void;
+  /** 外层点按目标边长 px；移动卡传 32（触控目标纪律，同 ⋮），桌面缺省自然尺寸 */
+  tapSize?: number;
+}) {
+  const { token } = theme.useToken();
+  return (
+    <Popover
+      trigger={['hover', 'click']}
+      placement="bottomLeft"
+      content={
+        <div style={{ maxWidth: 420 }}>
+          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 8 }}>{record.error}</div>
+          <Button
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation();
+              void onClearError(record);
+            }}
+          >
+            清除
+          </Button>
+        </div>
+      }
+    >
+      <span
+        role="button"
+        aria-label="SPEC 信息"
+        data-testid="spec-info-icon"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          ...(tapSize ? { width: tapSize, height: tapSize } : null),
+        }}
+      >
+        <InfoCircleOutlined style={{ fontSize: 14, color: token.colorWarning }} />
+      </span>
+    </Popover>
   );
 }
 
@@ -1107,6 +1164,9 @@ function DevTab({
           <Space size={4} wrap>
             <Pill tone={m.tone}>{m.label}</Pill>
             <StatusWaitGroup record={record} />
+            {/* 信息图标（add-spec-info-icon-tooltip 1.1）：error 非空时状态胶囊
+                旁悬浮提示（完整信息 + 清除），替代行下信息子行；空值不渲染 */}
+            {record.error ? <SpecInfoIcon record={record} onClearError={onClearError} /> : null}
           </Space>
         );
       },
