@@ -5189,7 +5189,7 @@ def run_impl_ocr(
             # 登记 API 为 planned-restart-drain 2.1 新增：旧测试替身/第三方
             # runner 缺该方法时按未登记处理（行为同现状）。
             lane_done = threading.Event()
-            proc = subprocess.Popen(
+            proc = pal.spawn_detached(
                 cmd,
                 cwd=str(wt),
                 env={**os.environ, **env_overrides},
@@ -5201,7 +5201,7 @@ def run_impl_ocr(
                 # 硬超时/异常/排水清场用 _kill_ocr_process_group 杀整棵树，杜绝
                 # 「只杀直接子进程会让孙进程存活」（仓库惯例：regression D8、
                 # v2_dev_server design D2、knowledge_backfill 等）。
-                start_new_session=True,
+                new_session=True,
             )
             _register_lane = getattr(runner, "register_lane_process", None)
             if callable(_register_lane):

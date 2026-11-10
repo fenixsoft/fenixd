@@ -18,6 +18,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.platform import api as pal
 from core.proc_utils import hold_free_port
 from core.serving_registry import ServingRegistry, pid_alive
 from core.verify_contract import (
@@ -561,13 +562,13 @@ def _serve_command_in_worktree(pipeline, spec_name, contract, scenarios_path) ->
     # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
     boot_log = pipeline._open_boot_log(spec_name)
     try:
-        proc = subprocess.Popen(
+        proc = pal.spawn_detached(
             cmd_str,
             shell=True,
             cwd=str(wt),
             stdout=boot_log,
             stderr=boot_log,
-            start_new_session=True,
+            new_session=True,
             env=env,
         )
     except Exception as e:
@@ -739,13 +740,13 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
     boot_log = pipeline._open_boot_log(spec_name)
     try:
-        proc = subprocess.Popen(
+        proc = pal.spawn_detached(
             cmd_str,
             shell=True,
             cwd=str(pipeline._context.project_root),
             stdout=boot_log,
             stderr=boot_log,
-            start_new_session=True,
+            new_session=True,
             env=env,
         )
     except Exception as e:
@@ -1699,13 +1700,13 @@ def _legacy_selfheal_start(
         except OSError:
             pass
     try:
-        proc = subprocess.Popen(
+        proc = pal.spawn_detached(
             start_cmd,
             shell=True,
             cwd=str(pipeline._context.project_root),
             stdout=boot_log,
             stderr=boot_log,
-            start_new_session=True,
+            new_session=True,
             env=env,
         )
     except Exception as e:

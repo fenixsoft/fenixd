@@ -300,12 +300,12 @@ def start(
         try:
             # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
             # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
-            proc = subprocess.Popen(
+            proc = pal.spawn_detached(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_capture,
                 env=env,
-                start_new_session=True,
+                new_session=True,
                 # 标记写入 argv[0] 不可靠；用 cwd + marker 文件不便，改由 pgrep 匹配
                 # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
             )

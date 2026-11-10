@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core import timelib
+from core.platform import api as pal
 from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 from core.log_adapter import StdLoggerAdapter
 from core.verify_contract import RegressionSpec
@@ -1095,13 +1096,13 @@ def run_regression(
         except OSError:
             log_fh = None
         try:
-            proc = subprocess.Popen(
+            proc = pal.spawn_detached(
                 spec.cmd,
                 shell=use_shell,
                 cwd=str(project_root),
                 stdout=log_fh if log_fh is not None else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                new_session=True,
             )
         except OSError as e:
             elapsed = round(time.monotonic() - started_mono, 2)

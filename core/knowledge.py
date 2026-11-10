@@ -51,6 +51,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from core.platform import api as pal
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
 # add-harness-adapter-layer 4.1：一次性 spawn 收编入口（蒸馏 run）
 from core.agent_runner.harness import (
@@ -1155,7 +1156,7 @@ def _default_spawn(cmd: list, cwd: str, env=None):
     agent-run 专用键，code-review item 8c9e46ed49c2）；None（测试直呼等
     未经 harness 的调用形态）回落既有 _build_spawn_env() 全量口径。
     """
-    return subprocess.Popen(
+    return pal.spawn_detached(
         cmd,
         cwd=cwd,
         stdin=subprocess.PIPE,
@@ -1165,7 +1166,7 @@ def _default_spawn(cmd: list, cwd: str, env=None):
         encoding="utf-8",
         errors="replace",
         env=env if env is not None else _build_spawn_env(),
-        start_new_session=True,
+        new_session=True,
     )
 
 

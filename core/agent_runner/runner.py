@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from core.platform import api as pal
 from core.git_base_branch import resolve_base_branch
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
@@ -6998,7 +6999,7 @@ class AgentRunner:
         except OSError:
             pass
 
-        proc = subprocess.Popen(
+        proc = pal.spawn_detached(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -7015,7 +7016,7 @@ class AgentRunner:
             # 独立进程组启动（code-review item 28640d6b8b35：工具孙进程随组；
             # item 0c4d156555a2——停机清场与 runner 轮询环各终止/兜底通道均经
             # guard_killpg 守卫整组收割，_signal_attempt_child 单点收口）。
-            start_new_session=spawn_spec.start_new_session,
+            new_session=spawn_spec.start_new_session,
         )
         self._running_agents[run_id] = proc
 
