@@ -51,3 +51,11 @@ entries:
     timeout_seconds: 30
     reason: 平台守卫 AST 全量扫描 core/（240 文件），空载 4.3s，全量回归
       负载放大越 10s 门（run5/6/7 三连实证），静态扫描族负载敏感同口径
+  # add-platform-abstraction-layer 7.1 全量回归实证（run9）：三车道冒烟起
+  # 真实 dsh + node mock 端点子进程（run_smoke 内部 timeout=150s），空载
+  # 3.1s，全量负载下子进程启动/端口往返放大越 10s 门——与上方
+  # test_dsh_e2e_smoke_full_chain（420s）同族同理由，60s 留 20x 余量。
+  - nodeid: tests/test_dsh_acceptance.py::test_smoke_end_to_end_three_lanes
+    timeout_seconds: 60
+    reason: 真实 dsh + node mock 端点三车道全链（内部超时 150s 口径），空载
+      3.1s，全量负载下子进程启动与端口往返放大越 10s 门（run9 实证）
