@@ -3142,22 +3142,27 @@ class TestBundleRevHeader:
         """dist 构建物是 gitignored 产物（.gitignore dist/），fresh worktree
         等隔离环境不存在；本类验证的是头部机制而非 dist 在场（缺席降级另有
         test_missing_dist_rev_absent_no_crash 覆盖）。缺席时种最小 index.html，
-        用例后按原状（缺席）还原，不污染仓库静态目录。"""
+        用例后按原状还原，不污染仓库静态目录。"""
         index_html = server_fx[1].httpd.static_dir / "dist" / "index.html"
         dist_dir = index_html.parent
         made_dir = not dist_dir.exists()
-        existed = index_html.exists()
-        if not existed:
+        # 原字节快照必须覆盖「已存在」形态：test_bundle_rev_flips_after_rebuild
+        # 会就地改写真实 dist/index.html（主树常驻 dashboard 直接读盘），只按
+        # 缺席还原会把它永久留成 rebuilt 占位（2026-11-10 首页退化为占位事故）。
+        original = index_html.read_bytes() if index_html.exists() else None
+        if original is None:
             dist_dir.mkdir(parents=True, exist_ok=True)
             index_html.write_text(
                 "<!DOCTYPE html><html><body>seed-for-tests</body></html>",
                 encoding="utf-8",
             )
         yield
-        if not existed:
+        if original is None:
             index_html.unlink(missing_ok=True)
             if made_dir and not any(dist_dir.iterdir()):
                 dist_dir.rmdir()
+        else:
+            index_html.write_bytes(original)
 
     def test_json_200_carries_bundle_rev(self, server_fx):
         proot, srv = server_fx
