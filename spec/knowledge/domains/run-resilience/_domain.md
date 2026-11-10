@@ -1,5 +1,5 @@
 # 运行守护与失败韧性
-> 最后更新：2026-11-09 20:24 UTC+8
+> 最后更新：2026-11-10 11:24 UTC+8
 
 运行守护与失败韧性。本域能力页清单如下。
 
@@ -11,7 +11,7 @@
 | [timeout-supervision](timeout-supervision.md) | 超时监督配置一致性 | 2026-10-03 04:59 |
 | [hang-discrimination](hang-discrimination.md) | 挂起与慢速判别 | 2026-10-03 04:59 |
 | [run-failure-classification](run-failure-classification.md) | run 失败三级分类与熔断 | 2026-10-03 04:59 |
-| [arbiter-lane-infra-failure-reset](arbiter-lane-infra-failure-reset.md) | arbiter 车道故障分级与 infra 复位（0 rounds/环境指纹秒挂不烧死人开关资格、两级前置自检 TTL 闸拦截零状态变更、探针 healthy 三触发点复位、链 infra-failed deferred 留痕） | 2026-11-09 20:24 |
+| [arbiter-lane-infra-failure-reset](arbiter-lane-infra-failure-reset.md) | arbiter 车道故障分级与 infra 复位（0 rounds/环境指纹秒挂不烧死人开关资格、两级前置自检 TTL 闸拦截零状态变更、探针 healthy 三触发点复位、链 infra-failed deferred 留痕） | 2026-11-10 11:24 |
 | [run-failure-judgment](run-failure-judgment.md) | run 失败判定（产物优先） | 2026-10-03 04:59 |
 | [error-attribution-denoise](error-attribution-denoise.md) | 错误归因降噪与取证判读（死因误标防护：exit 143 判读、自杀排除、日志归属层、复发三轴、在飞识别与转录前缀盲区、悬空 run 判读、kill 来源 ftrace 插桩） | 2026-11-04 16:30 |
 | [fail-counter-budget](fail-counter-budget.md) | 失败计数预算 | 2026-10-03 04:59 |
