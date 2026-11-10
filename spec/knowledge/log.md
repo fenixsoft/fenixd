@@ -158,3 +158,4 @@
 ## [2026-11-10 09:54 UTC+8] backfill | 2026-11-09 glm 限额事故知识回填：failover-dispatch rev 4→5（切链闸门结构化双源 `_switch_signal_text` + `d08d2fbd0` 修复溯源 + 维护/判官范式车道暂无链 failover 的现状边界）、model-chain-health-probe rev 1→2（拒模型条目归属改为现网 spec-review 链、deepseek 网关支持名 `deepseek-flash`/`deepseek-v4-pro`、2026-11-10 探针复核）；域导航与总索引时间戳同步
 ## [2026-11-10 11:24 UTC+8] fold | dashboard-test-dist-index-pollution-1110.md 折叠入库
 ## [2026-11-10 11:30 UTC+8] distill | harden-arbiter-lane-resilience（第 1 轮，自动提交落库，折叠入库 1 条）
+## [2026-11-10 12:44 UTC+8] distill | add-workspace-row-project-tooltip（第 1 轮，自动提交落库）

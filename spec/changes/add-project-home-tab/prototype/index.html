@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 · add-project-home-tab · 项目首页页签</title>
+<script>window.__PROTO_FEEDBACK_ROUND__ = 2;</script>
+<script src="vendor.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #0f1115;
+    -webkit-font-smoothing: antialiased;
+  }
+  .proto-page { padding: 16px 15px 32px; max-width: 1216px; margin: 0 auto; }
+
+  /* ── 标题栏（unified-page-title-bar 形态）────────────────────────── */
+  .proto-titlebar { display: flex; align-items: baseline; gap: 8px; padding: 4px 0 12px; }
+  .proto-titlebar .back-btn {
+    border: none; background: transparent; cursor: pointer; padding: 2px 6px;
+    color: #61666b; font-size: 16px; line-height: 1; align-self: center;
+  }
+  .proto-titlebar .back-btn:hover { color: #0f1115; }
+  .proto-titlebar .proj-name { font-size: 18px; font-weight: 700; }
+  .proto-titlebar .proj-sub { font-size: 14px; font-weight: 400; color: #61666b; }
+  .proto-titlebar .proj-sub .num { font-variant-numeric: tabular-nums; font-weight: 600; color: #0f1115; }
+
+  /* ── GitHub 式文件浏览容器 ──────────────────────────────────────── */
+  .file-box { border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 8px; overflow: hidden; }
+  .fb-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); flex-wrap: wrap; }
+  .fb-latest { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); }
+  .fb-latest .who { font-weight: 600; font-size: 13px; }
+  .fb-latest .what { color: #61666b; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-latest .hash { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #61666b; background: #f9fafb; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 4px; padding: 1px 6px; font-variant-numeric: tabular-nums; }
+  .fb-latest .when { margin-left: auto; color: #81858c; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .fb-crumb { padding: 8px 16px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); font-size: 14px; }
+  .fb-crumb .cur-root { font-weight: 600; }
+
+  .filetable .fname-cell { display: flex; align-items: center; gap: 8px; }
+  .filetable .fname-cell .ficon { display: inline-flex; color: #81858c; flex: none; }
+  .filetable .fname-cell .fname { font-size: 14px; color: #0f1115; }
+  .filetable tr.row-dir, .filetable tr.row-file { cursor: pointer; }
+  .filetable tr.row-dir:hover .fname, .filetable tr.row-file:hover .fname { color: #4176e6; }
+  .filetable .msg-cell { color: #61666b; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .filetable .time-cell { color: #81858c; font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+
+  /* ── README 卡 ─────────────────────────────────────────────────── */
+  .readme-box { border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 8px; margin-top: 16px; overflow: hidden; }
+  .readme-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); font-size: 14px; font-weight: 600; }
+  .readme-head .ficon { display: inline-flex; color: #81858c; }
+  .readme-head .size { margin-left: auto; font-weight: 400; color: #81858c; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .md-body { padding: 20px 24px 28px; font-size: 14px; line-height: 1.7; color: #0f1115; }
+  .md-body h1 { font-size: 28px; font-weight: 700; line-height: 1.3; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); }
+  .md-body h2 { font-size: 18px; font-weight: 600; margin: 28px 0 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); }
+  .md-body h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+  .md-body p { margin: 0 0 12px; }
+  .md-body ul, .md-body ol { margin: 0 0 12px; padding-left: 22px; }
+  .md-body li { margin: 4px 0; }
+  .md-body a { color: #4176e6; text-decoration: none; }
+  .md-body a:hover { text-decoration: underline; }
+  .md-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: #f9fafb; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 4px; padding: 1px 5px; }
+  .md-body pre { background: #f9fafb; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 8px; padding: 12px 16px; overflow: auto; margin: 0 0 12px; }
+  .md-body pre code { background: transparent; border: none; padding: 0; font-size: 13px; line-height: 1.6; }
+  .md-body blockquote { margin: 0 0 12px; padding: 2px 0 2px 12px; border-left: 3px solid #e5e7eb; color: #61666b; }
+  .md-body table { border-collapse: collapse; margin: 0 0 12px; width: 100%; font-variant-numeric: tabular-nums; }
+  .md-body th, .md-body td { border: 1px solid rgba(0, 0, 0, 0.08); padding: 6px 12px; font-size: 13px; text-align: left; }
+
+  /* ── 文件内容视图（点击文件行后展示，GitHub 文件页样式）──────────── */
+  .fileview-box { border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 8px; margin-top: 16px; overflow: hidden; }
+  .fileview-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid rgba(0, 0, 0, 0.08); background: #f9fafb; }
+  .fileview-head .ficon { display: inline-flex; color: #81858c; }
+  .fileview-head .name { font-size: 14px; font-weight: 600; color: #0f1115; }
+  .fileview-head .meta { font-size: 12px; color: #81858c; font-variant-numeric: tabular-nums; }
+  .fileview-head .acts { margin-left: auto; display: flex; gap: 8px; }
+  .fileview-body { padding: 12px 16px; overflow: auto; }
+  .fileview-body pre { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6; color: #0f1115; white-space: pre; }
+  .md-body th { background: #f9fafb; font-weight: 600; }
+  .md-body .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+
+  /* ── 功能开发分面 mock ─────────────────────────────────────────── */
+  .devtab-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 12px; }
+  .devtab-filter .count { margin-left: auto; color: #81858c; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .spec-name-cell .en { font-weight: 600; font-size: 14px; }
+  .spec-name-cell .cn { color: #81858c; font-size: 12px; margin-top: 2px; }
+  .status-cell { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+  .status-cell .dot { width: 6px; height: 6px; border-radius: 999px; display: inline-block; flex: none; }
+  .num-cell { font-variant-numeric: tabular-nums; font-size: 13px; }
+
+  /* ── 既有分面占位 ──────────────────────────────────────────────── */
+  .facet-placeholder { padding: 56px 0; text-align: center; color: #adb2b8; font-size: 13px; }
+  .facet-placeholder .big { font-size: 16px; color: #81858c; margin-bottom: 6px; }
+
+  .proto-footer { margin-top: 24px; color: #adb2b8; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  'use strict';
+  var h = React.createElement;
+  var ant = window.antd;
+  var ConfigProvider = ant.ConfigProvider, Tabs = ant.Tabs, Table = ant.Table, Select = ant.Select,
+      Input = ant.Input, Avatar = ant.Avatar, Typography = ant.Typography, Breadcrumb = ant.Breadcrumb,
+      Space = ant.Space, Tooltip = ant.Tooltip, Button = ant.Button;
+  var Text = Typography.Text;
+
+  /* ── 主题 token（单源 theme.ts 宿主对齐基线，DESIGN.md 配色单源红线）── */
+  var T = {
+    primary: '#0f1115', primaryHover: '#43454a', primaryActive: '#2c2c2e',
+    link: '#4176e6', success: '#22c55e', error: '#ec1313', warning: '#f59e0b',
+    text: '#0f1115', text2: '#61666b', text3: '#81858c', text4: '#adb2b8',
+    border: 'rgba(0, 0, 0, 0.16)', border2: 'rgba(0, 0, 0, 0.10)', split: 'rgba(0, 0, 0, 0.08)',
+    bgSoft: '#f9fafb',
+    font: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+  };
+
+  /* ── 内联 SVG 图标（vendor 无 @ant-design/icons，自绘中性图标）────── */
+  function Icon(svgPath, size, color) {
+    return h('span', { className: 'ficon', style: color ? { color: color } : undefined },
+      h('svg', { width: size || 16, height: size || 16, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': true },
+        h('path', { d: svgPath })));
+  }
+  var ICON_FOLDER = 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z';
+  var ICON_FILE = 'M6 2h7l7 7v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4c0-1.1.9-2 2-2zm7 1.5V9h5.5L13 3.5z';
+  var ICON_BACK = 'M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z';
+
+  /* ── URL 状态：?tab= 与 ?path=（镜像 spec-list-filter-stickiness 语义）── */
+  function readParams() {
+    var sp = new URLSearchParams(location.search);
+    var legal = ['home', 'dev', 'quality', 'regression', 'architecture', 'knowledge'];
+    var tab = sp.get('tab');
+    if (legal.indexOf(tab) < 0) tab = null;
+    var path = (sp.get('path') || '').split('/').filter(Boolean);
+    return { tab: tab, path: path, round: sp.get('proto_round') || '1' };
+  }
+  function writeParams(patch) {
+    var sp = new URLSearchParams(location.search);
+    if ('tab' in patch) { if (patch.tab && patch.tab !== 'dev') sp.set('tab', patch.tab); else sp.delete('tab'); }
+    if ('path' in patch) { if (patch.path && patch.path.length) sp.set('path', patch.path.join('/')); else sp.delete('path'); }
+    if (!sp.get('proto_round')) sp.set('proto_round', '1');
+    history.replaceState(null, '', location.pathname + '?' + sp.toString());
+  }
+  var P0 = readParams();
+
+  /* ── 假数据：fenixd 仓库根与子目录（全部内联字面量）──────────────── */
+  var TREE = {
+    '': [
+      { name: 'agents', dir: true, msg: 'refactor: agent prompt files 分层', when: '3 天前' },
+      { name: 'bin', dir: true, msg: 'fix: fenix_spec.py 名称校验', when: '昨天' },
+      { name: 'core', dir: true, msg: 'api: 项目文件浏览端点（示例）', when: '2 小时前' },
+      { name: 'docs', dir: true, msg: 'docs: help 页面批量更新', when: '5 天前' },
+      { name: 'skills', dir: true, msg: 'add fenix-process skill', when: '1 天前' },
+      { name: 'spec', dir: true, msg: 'spec: add-project-home-tab 草稿', when: '2 小时前' },
+      { name: 'templates', dir: true, msg: 'templates 常规刷新', when: '2 周前' },
+      { name: 'tests', dir: true, msg: 'tests: verify 管线回归用例', when: '6 小时前' },
+      { name: 'AGENTS.md', dir: false, msg: 'docs: agent 项目约定', when: '4 天前' },
+      { name: 'CLAUDE.md', dir: false, msg: 'docs: 临时文件纪律', when: '4 天前' },
+      { name: 'DESIGN.md', dir: false, msg: 'design: 宪法修正案补录', when: '1 天前' },
+      { name: 'README.md', dir: false, msg: 'docs: readme 重写', when: '2 天前' },
+      { name: 'fenixd.py', dir: false, msg: 'daemon 入口健壮性加固', when: '昨天' },
+      { name: 'install.sh', dir: false, msg: 'install: PATH 自愈', when: '3 天前' },
+      { name: 'pytest.ini', dir: false, msg: 'test: 配置调整', when: '2 周前' }
+    ],
+    'core': [
+      { name: 'dashboard', dir: true, msg: 'dashboard 数据模块重构', when: '1 天前' },
+      { name: 'dashboard.py', dir: false, msg: 'api: dashboard 路由整理', when: '1 天前' },
+      { name: 'scheduler.py', dir: false, msg: '调度：秒挂冷却门控', when: '3 天前' },
+      { name: 'state_machine.py', dir: false, msg: '状态机：手工激活哨兵', when: '5 天前' },
+      { name: 'knowledge.py', dir: false, msg: 'knowledge: inbox 管线', when: '2 小时前' },
+      { name: 'verifier.py', dir: false, msg: 'verify: 场景冻结打捞', when: '6 小时前' }
+    ],
+    'core/dashboard': [
+      { name: 'static', dir: true, msg: '前端：项目首页页签（示例）', when: '2 小时前' },
+      { name: 'data.py', dir: false, msg: 'data: 读取路径性能修复', when: '1 天前' },
+      { name: 'events.py', dir: false, msg: 'sse: 事件投递完整性', when: '4 天前' },
+      { name: 'server.py', dir: false, msg: 'server: 静态资源服务', when: '2 周前' }
+    ],
+    'core/dashboard/static': [
+      { name: 'dist', dir: true, msg: 'build: 产物重建', when: '2 小时前' },
+      { name: 'src', dir: true, msg: 'src: 页面源码（示例）', when: '2 小时前' },
+      { name: 'package.json', dir: false, msg: 'deps: antd 升级 6.6.0', when: '3 天前' },
+      { name: 'umi.config.ts', dir: false, msg: 'build: umi 配置', when: '2 周前' }
+    ],
+    'core/dashboard/static/src': [
+      { name: 'components', dir: true, msg: 'components: 公共组件', when: '1 天前' },
+      { name: 'pages', dir: true, msg: 'pages: 项目页分面（示例）', when: '2 小时前' },
+      { name: 'app.tsx', dir: false, msg: 'app: ConfigProvider 装配', when: '5 天前' },
+      { name: 'theme.ts', dir: false, msg: 'theme: 宿主对齐单源', when: '3 天前' },
+      { name: 'global.less', dir: false, msg: 'style: 全局样式', when: '2 周前' }
+    ],
+    'docs': [
+      { name: 'help', dir: true, msg: 'help: 帮助中心页面', when: '5 天前' },
+      { name: 'design', dir: true, msg: 'design: 宪法原文', when: '1 天前' },
+      { name: 'runbook.md', dir: false, msg: 'runbook: 值班手册', when: '1 周前' }
+    ],
+    'skills': [
+      { name: 'fenix-new', dir: true, msg: 'skill: 需求与设计 Agent', when: '1 天前' },
+      { name: 'fenix-prototype', dir: true, msg: 'skill: 原型确认环', when: '1 周前' },
+      { name: 'fenix-status', dir: true, msg: 'skill: 状态查询', when: '2 周前' }
+    ],
+    'spec': [
+      { name: 'changes', dir: true, msg: 'changes: 活跃 SPEC', when: '2 小时前' },
+      { name: 'archive', dir: true, msg: 'archive: 归档迁移', when: '1 天前' },
+      { name: 'knowledge', dir: true, msg: 'knowledge: inbox 回填', when: '2 小时前' }
+    ],
+    'agents': [
+      { name: 'implementer.md', dir: false, msg: 'prompt: 实现者契约', when: '3 天前' },
+      { name: 'code-review.md', dir: false, msg: 'prompt: 评审者契约', when: '3 天前' },
+      { name: 'planner.md', dir: false, msg: 'prompt: 规划者契约', when: '1 周前' }
+    ],
+    'bin': [
+      { name: 'fenix_spec.py', dir: false, msg: 'fix: 名称校验', when: '昨天' },
+      { name: 'fenix_cli.py', dir: false, msg: 'cli: activate 子命令', when: '4 天前' },
+      { name: 'serve.py', dir: false, msg: 'serve: dashboard 启动', when: '2 周前' }
+    ],
+    'templates': [
+      { name: 'proposal.md', dir: false, msg: 'templates: proposal 骨架', when: '2 周前' },
+      { name: 'tasks.md', dir: false, msg: 'templates: tasks 骨架', when: '2 周前' }
+    ],
+    'tests': [
+      { name: 'test_verify_pipeline.py', dir: false, msg: 'tests: 回归用例', when: '6 小时前' },
+      { name: 'test_scheduler.py', dir: false, msg: 'tests: 调度门控', when: '3 天前' },
+      { name: 'test_state_machine.py', dir: false, msg: 'tests: 状态机', when: '5 天前' }
+    ]
+  };
+
+  var LATEST = { author: '陈默', msg: 'api: 项目文件浏览端点（示例）', hash: '9f31c0d', when: '2 小时前' };
+
+  /* ── 假数据：文件内容（按「目录路径/文件名」取用）────────────────── */
+  var CONTENT = {
+    'README.md': '# Fenixd — Fenix 循环工程框架\n\n一次立项，闭环交付：需求澄清 → SPEC 评审 → 实现 → 验证 → 裁决 → 合回主树。\n\n## 特性\n\n- 全自动闭环：需求 → SPEC → 实现 → 验证 → 合回，全程无人工值守\n- 多项目并发：优先级队列、依赖唤醒与兜底恢复\n- 验证管线：场景冻结、裁决证据留存、失败自动修复车道\n- 知识真相源：spec/knowledge 按能力域组织项目知识\n\n## 快速开始\n\n```bash\ngit clone https://github.com/fenixsoft/fenixd.git && cd fenixd\n./install.sh\npython3 fenixd.py\n```\n\n## 项目状态\n\n| 模块 | 说明 | 状态 |\n|------|------|------|\n| 调度车道 | 并发槽位与优先级调度 | 稳定 |\n| 验证管线 | 场景生命周期与裁决 | 稳定 |\n| 知识真相源 | 能力域知识消费与回填 | 演进中 |\n',
+    'fenixd.py': '"""fenixd daemon 入口：装配调度、验证、裁决与仪表盘。"""\n\nfrom core.scheduler import Scheduler\nfrom core.verifier import Verifier\nfrom core.dashboard.server import serve_dashboard\n\n\ndef main() -> None:\n    scheduler = Scheduler()\n    verifier = Verifier()\n    scheduler.start()\n    verifier.start()\n    serve_dashboard(scheduler, verifier)  # 阻塞主线程\n\n\nif __name__ == \'__main__\':\n    main()\n',
+    'core/scheduler.py': '"""调度车道：并发槽位与秒挂冷却门控。"""\n\nfrom dataclasses import dataclass\n\nMAX_CONCURRENCY = 3\nCOOLDOWN_SECONDS = 30\n\n\n@dataclass\nclass Slot:\n    spec: str\n    started_at: float\n\n\nclass Scheduler:\n    def __init__(self) -> None:\n        self.slots: list[Slot] = []\n        self.cooldown: dict[str, float] = {}\n\n    def can_pick(self, spec: str, now: float) -> bool:\n        if len(self.slots) >= MAX_CONCURRENCY:\n            return False\n        return now >= self.cooldown.get(spec, 0)\n',
+    'core/state_machine.py': '"""SPEC 生命周期状态机：drafted → ready → running → merged / blocked。"""\n\nTRANSITIONS = {\n    \'drafted\': {\'ready\', \'error\'},\n    \'ready\': {\'running\'},\n    \'running\': {\'merged\', \'blocked\', \'error\'},\n    \'blocked\': {\'running\'},\n}\n\n\ndef can_transit(cur: str, nxt: str) -> bool:\n    return nxt in TRANSITIONS.get(cur, set())\n'
+  };
+  var GENERIC_CONTENT = '# （原型示例内容）\n\n原型假数据未包含该文件的真实内容；\n真实现将实时读取项目工作目录中的文件原文并在此渲染，\n「下载」按钮提供原始文件下载。\n';
+
+  function fileContent(dirPath, name) {
+    var key = (dirPath.length ? dirPath.join('/') + '/' : '') + name;
+    return Object.prototype.hasOwnProperty.call(CONTENT, key) ? CONTENT[key] : GENERIC_CONTENT;
+  }
+
+  function lookup(path) {
+    var key = path.join('/');
+    return Object.prototype.hasOwnProperty.call(TREE, key) ? TREE[key] : null;
+  }
+  function sortEntries(list) {
+    return list.slice().sort(function (a, b) {
+      if (a.dir !== b.dir) return a.dir ? -1 : 1;
+      return a.name < b.name ? -1 : 1;
+    });
+  }
+
+  /* ── README（内联假数据，Markdown 渲染后的静态 HTML 结构）───────── */
+  function readmeBody() {
+    var badges = ['Python 3.11+', 'React 19 · antd 6', 'UmiJS', 'MIT License'].map(function (b) {
+      return h('span', {
+        key: b,
+        style: { border: '1px solid ' + T.border2, borderRadius: 999, padding: '1px 10px', fontSize: 12, color: T.text2 }
+      }, b);
+    });
+    return h('div', { className: 'md-body', 'data-proto-id': 'project-home-readme-body' },
+      h('h1', null, 'Fenixd — Fenix 循环工程框架'),
+      h('div', { className: 'badge-row' }, badges),
+      h('p', null, 'fenixd 是一个把「自然语言需求」变成「自动实现、验证与合回」闭环的守护进程。它以 SPEC 为一等公民，管理多项目并发调度、验证管线、裁决与代码审查，全部过程在 Web 仪表盘可见。'),
+      h('blockquote', null, '一次立项，闭环交付：需求澄清 → SPEC 评审 → 实现 → 验证 → 裁决 → 合回主树。'),
+      h('h2', null, '✨ 特性'),
+      h('ul', null,
+        h('li', null, '全自动闭环：', h('code', null, '需求 → SPEC → 实现 → 验证 → 合回'), '，全程无人工值守'),
+        h('li', null, '多项目并发：优先级队列、依赖唤醒与兜底恢复'),
+        h('li', null, '验证管线：场景冻结、裁决证据留存、失败自动修复车道'),
+        h('li', null, '知识真相源：', h('a', { href: '#' }, 'spec/knowledge'), ' 按能力域组织项目知识')),
+      h('h2', null, '🏗 架构总览'),
+      h('pre', null, h('code', null,
+        'fenixd/\n' +
+        '├── agents/        # Agent 提示词与角色契约（实现/评审/规划）\n' +
+        '├── core/          # daemon 核心：调度、验证、裁决、状态机\n' +
+        '│   └── dashboard/ # Web 仪表盘（UmiJS + antd）\n' +
+        '├── skills/        # Fenix 斜杠命令（/fenix-new、/fenix-prototype…）\n' +
+        '├── spec/          # SPEC 真相源（changes / archive / knowledge）\n' +
+        '└── tests/         # 验证管线场景与回归用例')),
+      h('h2', null, '🚀 快速开始'),
+      h('pre', null, h('code', null,
+        '# 安装\n' +
+        'git clone https://github.com/fenixsoft/fenixd.git && cd fenixd\n' +
+        './install.sh\n\n' +
+        '# 启动 daemon 与仪表盘\n' +
+        'python3 fenixd.py')),
+      h('h2', null, '📊 项目状态'),
+      h('table', null,
+        h('thead', null, h('tr', null, h('th', null, '模块'), h('th', null, '说明'), h('th', null, '状态'))),
+        h('tbody', null,
+          h('tr', null, h('td', null, '调度车道'), h('td', null, '并发槽位与优先级调度'), h('td', null, h('strong', null, '稳定'))),
+          h('tr', null, h('td', null, '验证管线'), h('td', null, '场景生命周期与裁决'), h('td', null, h('strong', null, '稳定'))),
+          h('tr', null, h('td', null, '知识真相源'), h('td', null, '能力域知识消费与回填'), h('td', null, h('strong', null, '演进中'))))),
+      h('h2', null, '📖 文档'),
+      h('ul', null,
+        h('li', null, h('a', { href: '#' }, 'DESIGN.md'), '：界面设计宪法'),
+        h('li', null, h('a', { href: '#' }, 'docs/help'), '：帮助中心'),
+        h('li', null, h('a', { href: '#' }, 'spec/knowledge'), '：知识真相源总目录')));
+  }
+
+  /* ── 文件表 ─────────────────────────────────────────────────────── */
+  function FileTable(props) {
+    var path = props.path, onOpen = props.onOpen, narrow = props.narrow;
+    var list = lookup(path);
+    var columns = [
+      {
+        title: '名称', dataIndex: 'name', key: 'name', ellipsis: false,
+        render: function (v, r) {
+          return h('span', { className: 'fname-cell' },
+            Icon(r.dir ? ICON_FOLDER : ICON_FILE, 16),
+            h('span', { className: 'fname' }, v));
+        }
+      },
+      { title: '最近提交信息', dataIndex: 'msg', key: 'msg', ellipsis: true, hidden: narrow,
+        render: function (v) { return h('span', { className: 'msg-cell' }, v); } },
+      { title: '最近提交时间', dataIndex: 'when', key: 'when', hidden: narrow, width: 128,
+        render: function (v) { return h('span', { className: 'time-cell' }, v); } }
+    ];
+    if (!list) {
+      return h('div', { className: 'facet-placeholder', 'data-proto-id': 'project-home-empty' },
+        h('div', { className: 'big' }, '目录数据未覆盖'),
+        '原型假数据未包含该目录（真实现将实时读取项目工作目录）');
+    }
+    return h(Table, {
+      className: 'filetable',
+      size: 'middle',
+      pagination: false,
+      columns: columns,
+      dataSource: sortEntries(list).map(function (r) { return Object.assign({ key: r.name }, r); }),
+      rowClassName: function (r) { return r.dir ? 'row-dir' : 'row-file'; },
+      onRow: function (r) {
+        return { onClick: function () { onOpen(r.name); } };
+      }
+    });
+  }
+
+  /* ── 项目首页分面（本 SPEC 新增界面）─────────────────────────────── */
+  function HomeTab(props) {
+    var path = props.path, setPath = props.setPath, narrow = props.narrow;
+
+    /* path 尾段可能是已点开的文件：拆出 dirPath（目录层级）与 fileEntry（文件行） */
+    var dirPath = path.slice();
+    var fileEntry = null;
+    if (!lookup(dirPath) && dirPath.length > 0) {
+      var parent = lookup(dirPath.slice(0, -1));
+      var last = dirPath[dirPath.length - 1];
+      var hit = parent ? parent.filter(function (r) { return r.name === last && !r.dir; })[0] : null;
+      if (hit) { fileEntry = hit; dirPath = dirPath.slice(0, -1); }
+    }
+    var atRoot = dirPath.length === 0 && !fileEntry;
+
+    function openEntry(name) {
+      setPath(dirPath.concat([name]));
+    }
+    function crumbTo(idx) {
+      setPath(path.slice(0, idx + 1));
+    }
+    function downloadFile() {
+      var name = fileEntry.name;
+      var blob = new Blob([fileContent(dirPath, name)], { type: 'text/plain;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }
+
+    var breadcrumb = h('div', { className: 'fb-crumb', 'data-proto-id': 'project-home-breadcrumb' },
+      dirPath.length === 0 && !fileEntry
+        ? h('span', { className: 'cur-root' }, 'fenixd')
+        : h(Breadcrumb, {
+            items: [{ title: h('a', { onClick: function () { setPath([]); } }, 'fenixd' ) }]
+              .concat(path.map(function (seg, i) {
+                return {
+                  title: i === path.length - 1
+                    ? h('span', { className: 'cur-root' }, seg)
+                    : h('a', { onClick: function () { crumbTo(i); } }, seg)
+                };
+              }))
+          }));
+
+    var toolbar = h('div', { className: 'fb-toolbar', 'data-proto-id': 'project-home-toolbar' },
+      h(Space, { size: 12, wrap: true },
+        h(Select, {
+          value: 'main', style: { width: 150 }, size: 'small',
+          options: [{ value: 'main', label: 'main' }, { value: 'master', label: 'master' }]
+        }),
+        h(Text, { type: 'secondary', style: { fontSize: 12 } }, '3 个分支 · 12 个标签')),
+      h(Text, { type: 'secondary', style: { fontSize: 12 } }, '只读浏览 · 点击文件夹进入子目录，点击文件查看内容'));
+
+    var latest = dirPath.length === 0 && !fileEntry ? h('div', { className: 'fb-latest', 'data-proto-id': 'project-home-latest-commit' },
+      h(Avatar, { size: 24, style: { backgroundColor: T.bgSoft, color: T.text2, border: '1px solid ' + T.border2, fontSize: 12 } }, '陈'),
+      h('span', { className: 'who' }, LATEST.author),
+      h('span', { className: 'what' }, LATEST.msg),
+      h('span', { className: 'hash' }, LATEST.hash),
+      h('span', { className: 'when' }, LATEST.when)) : null;
+
+    var fileview = fileEntry ? (function () {
+      var content = fileContent(dirPath, fileEntry.name);
+      var lines = content.split('\n').length;
+      var kb = (content.length / 1024).toFixed(1);
+      return h('div', { className: 'fileview-box', 'data-proto-id': 'project-home-fileview' },
+        h('div', { className: 'fileview-head' },
+          Icon(ICON_FILE, 16),
+          h('span', { className: 'name' }, fileEntry.name),
+          h('span', { className: 'meta' }, lines + ' 行 · ' + kb + ' KB（示例）'),
+          h('span', { className: 'acts' },
+            h(Button, {
+              size: 'small', 'data-proto-id': 'project-home-fileview-download',
+              onClick: downloadFile
+            }, '下载'))),
+        h('div', { className: 'fileview-body' },
+          h('pre', null, content)));
+    })() : null;
+
+    return h('div', { 'data-proto-id': 'project-home-panel' },
+      h('div', { className: 'file-box', 'data-proto-id': 'project-home-filetable' },
+        toolbar, latest, breadcrumb,
+        h(FileTable, { path: dirPath, onOpen: openEntry, narrow: narrow })),
+      fileview,
+      atRoot ? h('div', { className: 'readme-box', 'data-proto-id': 'project-home-readme' },
+        h('div', { className: 'readme-head' },
+          Icon(ICON_FILE, 16), 'README.md', h('span', { className: 'size' }, '4.2 KB')),
+        readmeBody()) : null);
+  }
+
+  /* ── 功能开发分面（既有界面 mock，默认选中）─────────────────────── */
+  var SPECS = [
+    { en: 'add-project-home-tab', cn: '项目首页页签（文件与 README）', st: '运行中', tone: T.link, pri: 'P1', prog: '63%', act: '2 小时前' },
+    { en: 'add-knowledge-inbox-pipeline', cn: '知识收件箱管线', st: '运行中', tone: T.link, pri: 'P3', prog: '41%', act: '2 小时前' },
+    { en: 'add-spec-chinese-title', cn: 'SPEC 中文标题', st: '已完成', tone: T.success, pri: 'P5', prog: '100%', act: '昨天' },
+    { en: 'fix-dashboard-read-path-performance', cn: '仪表盘读取性能修复', st: '已完成', tone: T.success, pri: 'P2', prog: '100%', act: '3 天前' },
+    { en: 'blocked-disposition-display', cn: 'blocked 处置相位显示', st: '已完成', tone: T.success, pri: 'P4', prog: '100%', act: '4 天前' },
+    { en: 'add-spec-manual-activation', cn: 'SPEC 手工激活档', st: '已归档', tone: T.text4, pri: 'P5', prog: '100%', act: '1 周前' }
+  ];
+  function DevTab() {
+    return h('div', { 'data-proto-id': 'project-home-devtab' },
+      h('div', { className: 'devtab-filter' },
+        h(Input, { placeholder: '搜索 SPEC 名称…', style: { width: 260 } }),
+        h(Select, { defaultValue: 'all', style: { width: 130 }, size: 'middle',
+          options: [{ value: 'all', label: '状态：全部' }, { value: 'running', label: '运行中' }, { value: 'done', label: '已完成' }] }),
+        h(Select, { defaultValue: 'all', style: { width: 130 },
+          options: [{ value: 'all', label: '类型：全部' }, { value: 'feature', label: 'feature' }, { value: 'fix', label: 'fix' }] }),
+        h('span', { className: 'count' }, '共 6 个 SPEC（示例）')),
+      h(Table, {
+        size: 'middle', pagination: false,
+        dataSource: SPECS.map(function (r, i) { return Object.assign({ key: i }, r); }),
+        columns: [
+          { title: 'SPEC', dataIndex: 'en', key: 'en',
+            render: function (v, r) {
+              return h('div', { className: 'spec-name-cell' },
+                h('div', { className: 'en' }, v),
+                h('div', { className: 'cn' }, r.cn));
+            } },
+          { title: '状态', dataIndex: 'st', key: 'st', width: 110,
+            render: function (v, r) {
+              return h('span', { className: 'status-cell' },
+                h('span', { className: 'dot', style: { backgroundColor: r.tone } }), v);
+            } },
+          { title: '优先级', dataIndex: 'pri', key: 'pri', width: 90,
+            render: function (v) { return h('span', { className: 'num-cell' }, v); } },
+          { title: '进度', dataIndex: 'prog', key: 'prog', width: 90,
+            render: function (v) { return h('span', { className: 'num-cell' }, v); } },
+          { title: '最近活动', dataIndex: 'act', key: 'act', width: 120,
+            render: function (v) { return h('span', { className: 'time-cell' }, v); } }
+        ]
+      }));
+  }
+
+  function FacetPlaceholder(props) {
+    return h('div', { className: 'facet-placeholder', 'data-proto-id': 'project-home-facet-' + props.id },
+      h('div', { className: 'big' }, props.label),
+      '既有分面 · 原型范围外（保持现状）');
+  }
+
+  /* ── 页面骨架 ───────────────────────────────────────────────────── */
+  function App() {
+    var st = React.useState({ tab: P0.tab || 'dev', path: P0.tab === 'home' ? P0.path : [] });
+    var state = st[0], setState = st[1];
+    var vp = React.useState(window.innerWidth);
+    var vw = vp[0], setVw = vp[1];
+    React.useEffect(function () {
+      var fn = function () { setVw(window.innerWidth); };
+      window.addEventListener('resize', fn);
+      return function () { window.removeEventListener('resize', fn); };
+    }, []);
+    var narrow = vw < 768;
+
+    function setTab(tab) {
+      setState({ tab: tab, path: state.path });
+      writeParams({ tab: tab });
+    }
+    function setPath(path) {
+      setState({ tab: 'home', path: path });
+      writeParams({ tab: 'home', path: path });
+    }
+
+    var items = [
+      { key: 'home', label: '项目首页',
+        children: h(HomeTab, { path: state.tab === 'home' ? state.path : [], setPath: setPath, narrow: narrow }) },
+      { key: 'dev', label: '功能开发', children: h(DevTab, null) },
+      { key: 'quality', label: '代码审查', children: h(FacetPlaceholder, { id: 'quality', label: '代码审查' }) },
+      { key: 'regression', label: '测试回归', children: h(FacetPlaceholder, { id: 'regression', label: '测试回归' }) },
+      { key: 'architecture', label: '架构蓝图', children: h(FacetPlaceholder, { id: 'architecture', label: '架构蓝图' }) },
+      { key: 'knowledge', label: '项目知识', children: h(FacetPlaceholder, { id: 'knowledge', label: '项目知识' }) }
+    ];
+
+    return h(ConfigProvider, {
+      theme: {
+        token: {
+          colorPrimary: T.primary, colorPrimaryHover: T.primaryHover, colorPrimaryActive: T.primaryActive,
+          colorLink: T.link, colorInfo: T.link, colorSuccess: T.success, colorError: T.error, colorWarning: T.warning,
+          colorText: T.text, colorTextSecondary: T.text2, colorTextTertiary: T.text3, colorTextQuaternary: T.text4,
+          colorBgLayout: '#ffffff', colorBorder: T.border, colorBorderSecondary: T.border2, colorSplit: T.split,
+          fontFamily: T.font, controlHeight: 32
+        }
+      }
+    }, h('div', { className: 'proto-page' },
+      h('div', { className: 'proto-titlebar', 'data-proto-id': 'project-home-pagetitle' },
+        h('button', { className: 'back-btn', title: '返回总览' }, Icon(ICON_BACK, 18)),
+        h('span', { className: 'proj-name' }, 'fenixd'),
+        h('span', { className: 'proj-sub' }, '共 ', h('span', { className: 'num' }, '42'), ' 个 SPEC')),
+      h(Tabs, {
+        'data-proto-id': 'project-home-tabs',
+        activeKey: state.tab,
+        onChange: setTab,
+        items: items
+      }),
+      h('div', { className: 'proto-footer', 'data-proto-id': 'project-home-footer' },
+        '原型说明：默认进入「功能开发」页签（既有行为保持）；URL 支持 ?tab=home&path=core/dashboard 复现状态。全部数据为内联假数据。')
+    ));
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(App, null));
+})();
+</script>
+<script src="annotator.js" defer></script>
+</body>
+</html>

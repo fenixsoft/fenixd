@@ -4,7 +4,10 @@
 覆盖（对应 spec/changes/fenix-prototype）：
 - 任务 1.1：stack_profile.py 栈画像侦察（React+antd 识别 / unknown 降级标记）
 - 任务 1.4：anchor_tools.py 锚保持比对（未波及锚保持 / 波及区块换锚可检出）
-- 任务 2.2/2.3：serve_prototype.py 服务器生命周期与批注落盘
+- 任务 2.2/2.3：proto_serve.py dashboard 承载伺服的 URL 生成与退出码契约
+  （add-proto-dashboard-serving：独立 serve_prototype.py 服务器退役，
+  原型经 fenix dashboard /proto/ 路由伺服，路由本体见
+  tests/test_dashboard_prototype_routes.py）+ annotator.js 端点推导契约
 - 任务 1.2：bootstrap_vendor.py 三级降级判定（纯函数级，不打真实网络）
 
 全部测试确定性：不依赖现场 LLM 生成、不打真实外网、不起长驻进程。
@@ -533,263 +536,249 @@ class TestAnchorToolsCli:
 
 
 # ---------------------------------------------------------------------------
-# 任务 2.2 / 2.3：serve_prototype.py 生命周期与批注落盘（真实子进程全链路）
+# add-proto-dashboard-serving：proto_serve.py 地址生成 + annotator 端点契约
+# （serve_prototype.py 独立服务器退役；dashboard 承载伺服的 skill 侧单测。
+#  dashboard 路由本体见 tests/test_dashboard_prototype_routes.py）
 # ---------------------------------------------------------------------------
 
-import subprocess  # noqa: E402
-import time  # noqa: E402
-import urllib.request  # noqa: E402
+import http.server  # noqa: E402
+import re  # noqa: E402
+import threading  # noqa: E402
 
-import serve_prototype  # noqa: E402
+import proto_serve  # noqa: E402
 
-SERVE_SCRIPT = str(SCRIPTS_DIR / "serve_prototype.py")
+ANNOTATOR_JS = (SCRIPTS_DIR.parent / "assets" / "annotator.js").read_text(
+    encoding="utf-8")
 
 
-def _make_proto_dir(tmp_path: Path) -> Path:
-    proto = tmp_path / "proto"
-    proto.mkdir()
+def _make_project_with_proto(tmp_path: Path) -> Path:
+    """造一个含 .fenix/prototypes/spec-x/（多页原型）的项目根。"""
+    root = tmp_path / "proj"
+    proto = root / ".fenix" / "prototypes" / "spec-x"
+    (proto / "assets").mkdir(parents=True)
     (proto / "index.html").write_text(
-        '<html><body data-proto-id="page-root"><h1>原型</h1></body></html>',
-        encoding="utf-8")
-    return proto
+        "<html><body>首页</body></html>", encoding="utf-8")
+    (proto / "order-list.html").write_text(
+        "<html><body>列表页</body></html>", encoding="utf-8")
+    (proto / "assets" / "annotator.js").write_text("// stub", encoding="utf-8")
+    return root
 
 
-def _start_server(proto: Path, *extra):
-    out_path = proto / f".start-{int(time.time() * 1000)}.out"
-    out_f = open(out_path, "w", encoding="utf-8")
-    proc = subprocess.Popen([sys.executable, SERVE_SCRIPT, str(proto), "--json", *extra],
-                            stdout=out_f, stderr=subprocess.STDOUT)
-    return proc, out_f, out_path
+class _DummyDashboard:
+    """本地假 dashboard：/api/projects 返回注册表；/proto/ 可配置 200/404。
+
+    不依赖真实 dashboard 实例（测试确定性纪律），只复刻 proto_serve 消费的
+    两个 HTTP 面：探测端点形态（200 + {"projects": [...]}）与原型路由可达性。
+    """
+
+    def __init__(self, projects: list, proto_status: int = 200):
+        self.projects = projects
+        self.proto_status = proto_status
+        outer = self
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):  # 静音访问日志
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/api/projects"):
+                    body = json.dumps({"projects": outer.projects}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                else:
+                    body = b"<html>proto</html>"
+                    self.send_response(outer.proto_status)
+                    self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
 
 
-def _wait_result(out_path: Path, timeout: float = 5.0) -> dict:
-    """轮询启动输出直至出现结果 JSON（server 就绪后打印）。"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+class TestParseYamlPort:
+    def test_top_level_port(self):
+        assert proto_serve.parse_yaml_port("port: 8787\nprojects: []\n") == 8787
+
+    def test_ignores_indented_and_comment_lines(self):
+        text = "# port: 9999\nprojects:\n  - name: x\n    port: 1234\n"
+        assert proto_serve.parse_yaml_port(text) is None
+
+    def test_out_of_range_returns_none(self):
+        assert proto_serve.parse_yaml_port("port: 99999\n") is None
+
+
+class TestConfigPortCandidates:
+    def test_explicit_first_then_default(self, tmp_path):
+        got = proto_serve.config_port_candidates(9000, tmp_path / "nope.yaml")
+        assert got == [9000, proto_serve.DEFAULT_PORT]
+
+    def test_yaml_port_between_explicit_and_default(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        cfg.write_text("port: 18787\n", encoding="utf-8")
+        got = proto_serve.config_port_candidates(None, cfg)
+        assert got == [18787, proto_serve.DEFAULT_PORT]
+
+    def test_dedup_preserves_order(self, tmp_path):
+        got = proto_serve.config_port_candidates(8787, tmp_path / "nope.yaml")
+        assert got == [proto_serve.DEFAULT_PORT]
+
+
+class TestMatchRegisteredProject:
+    def test_matches_by_realpath(self, tmp_path):
+        root = _make_project_with_proto(tmp_path)
+        projects = [{"name": "other", "path": str(tmp_path / "x")},
+                    {"name": "proj", "path": str(root) + "/"}]
+        assert proto_serve.match_registered_project(projects, root) == "proj"
+
+    def test_missing_path_entry_is_ignored(self, tmp_path):
+        assert proto_serve.match_registered_project([{"name": "n"}], tmp_path) is None
+
+
+class TestBuildUrl:
+    def test_index_uses_dir_form_with_trailing_slash(self):
+        url = proto_serve.build_url(8787, "fenixd", "spec-x", "index.html", 2)
+        assert url == "http://127.0.0.1:8787/proto/fenixd/spec-x/?proto_round=2"
+
+    def test_subpage_uses_file_form(self):
+        url = proto_serve.build_url(8787, "fenixd", "spec-x", "order-list.html", 1)
+        assert url == ("http://127.0.0.1:8787/proto/fenixd/spec-x/"
+                       "order-list.html?proto_round=1")
+
+
+class TestProbeDashboard:
+    def test_live_dummy_is_detected(self, tmp_path):
+        root = _make_project_with_proto(tmp_path)
+        dash = _DummyDashboard([{"name": "proj", "path": str(root)}])
         try:
-            for line in out_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("{"):
-                    data = json.loads(line)
-                    if "action" in data or "error" in data:
-                        return data
-        except (OSError, ValueError):
-            pass
-        time.sleep(0.05)
-    raise AssertionError(f"服务器启动超时（{timeout}s）：{out_path.read_text(encoding='utf-8') if out_path.exists() else '<无输出>'}")
-
-
-def _stop_server(proto: Path):
-    subprocess.run([sys.executable, SERVE_SCRIPT, str(proto), "--stop"],
-                   capture_output=True, text=True, timeout=10)
-
-
-class TestServePrototypeLifecycle:
-    """任务 2.3：启动→POST 落盘→复用→残留接管→回收，全链路钉死。"""
-
-    def test_start_post_feedback_and_recycle(self, tmp_path):
-        proto = _make_proto_dir(tmp_path)
-        proc, out_f, out_path = _start_server(proto)
-        try:
-            result = _wait_result(out_path)
-            assert result["ok"] is True and result["action"] == "started"
-            port = result["url"].rsplit(":", 1)[1].strip("/")
-
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/feedback",
-                data=json.dumps({"anchor": "page-root", "text": "标题再大一点",
-                                 "timestamp": "2026-10-29T08:00:00Z", "round": 1}).encode(),
-                headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                payload = json.loads(resp.read().decode())
-            assert payload["ok"] is True
-
-            entries = json.loads((proto / "feedback.json").read_text(encoding="utf-8"))
-            assert len(entries) == 1
-            assert entries[0]["anchor"] == "page-root"
-            assert entries[0]["text"] == "标题再大一点"
-            assert entries[0]["round"] == 1
-            assert entries[0]["timestamp"]
+            payload = proto_serve.probe_dashboard(dash.port)
+            assert payload is not None
+            assert proto_serve.match_registered_project(
+                payload["projects"], root) == "proj"
         finally:
-            _stop_server(proto)
-            proc.wait(timeout=8)
-            out_f.close()
-        # 回收：PID 文件不留存
-        assert not (proto / ".proto-server.json").exists()
+            dash.stop()
 
-    def test_feedback_rejects_invalid_payload(self, tmp_path):
-        proto = _make_proto_dir(tmp_path)
-        proc, out_f, out_path = _start_server(proto)
+    def test_closed_port_returns_none(self):
+        dash = _DummyDashboard([])
+        port = dash.port
+        dash.stop()  # 关停后端口不再存活
+        assert proto_serve.probe_dashboard(port) is None
+
+
+class TestProtoServeCli:
+    """main() 退出码契约：0/2/3/4/5 全分支钉死。"""
+
+    def _run(self, root: Path, dash, *extra, spec="spec-x"):
+        argv = ["--project", str(root), "--spec", spec,
+                "--dashboard-port", str(dash.port), *extra]
         try:
-            result = _wait_result(out_path)
-            port = result["url"].rsplit(":", 1)[1].strip("/")
-
-            # 缺 anchor → 400
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/feedback",
-                data=json.dumps({"text": "没有锚"}).encode(),
-                headers={"Content-Type": "application/json"}, method="POST")
-            with pytest.raises(urllib.error.HTTPError) as exc_info:
-                urllib.request.urlopen(req, timeout=5)
-            assert exc_info.value.code == 400
-
-            # 非法 JSON → 400
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/feedback", data=b"not-json{",
-                headers={"Content-Type": "application/json"}, method="POST")
-            with pytest.raises(urllib.error.HTTPError) as exc_info:
-                urllib.request.urlopen(req, timeout=5)
-            assert exc_info.value.code == 400
+            return proto_serve.main(argv)
         finally:
-            _stop_server(proto)
-            proc.wait(timeout=8)
-            out_f.close()
+            dash.stop()
 
-    def test_second_start_reuses_live_instance(self, tmp_path):
-        proto = _make_proto_dir(tmp_path)
-        proc, out_f, out_path = _start_server(proto)
-        try:
-            first = _wait_result(out_path)
-            proc2, out_f2, out_path2 = _start_server(proto)
-            try:
-                second = _wait_result(out_path2)
-                assert second["action"] == "reused"
-                assert second["url"] == first["url"], "复用必须同端口"
-                assert second["pid"] == first["pid"]
-                # 复用后原进程仍存活
-                assert proc.poll() is None
-            finally:
-                out_f2.close()
-        finally:
-            _stop_server(proto)
-            proc.wait(timeout=8)
-            out_f.close()
+    def test_ok_end_to_end(self, tmp_path, capsys):
+        root = _make_project_with_proto(tmp_path)
+        dash = _DummyDashboard([{"name": "proj", "path": str(root)}])
+        rc = self._run(root, dash)
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["ok"] is True
+        assert out["url"] == (f"http://127.0.0.1:{dash.port}"
+                              "/proto/proj/spec-x/?proto_round=1")
+        assert out["project"] == "proj"
+        assert out["files"] == ["index.html", "order-list.html"]
+        assert out["proto_dir"] == str(root / ".fenix" / "prototypes" / "spec-x")
 
-    def test_reuse_with_mixed_invocation_path_forms(self, tmp_path):
-        """BUG-01 回归钉死（验证轮 proto-server-lifecycle-reuse-stale-recycle）：
-        首实例以相对形态路径启动、次实例以绝对解析路径调用时，存活实例
-        MUST 仍被复用（同端口、不另起新端口、不报端口冲突）。
+    def test_round_param_flows_into_url(self, tmp_path, capsys):
+        root = _make_project_with_proto(tmp_path)
+        dash = _DummyDashboard([{"name": "proj", "path": str(root)}])
+        rc = self._run(root, dash, "--round", "3")
+        assert rc == 0
+        assert "proto_round=3" in json.loads(capsys.readouterr().out)["url"]
 
-        旧实现以 ``resolve 后绝对路径 in cmdline`` 做子串核实，而 cmdline 记录
-        调用形态路径，凡非绝对解析路径调用即确定性误判 stale 另起新端口；
-        修复口径：目录一致性以 PID 文件 resolve 口径比对，脚本身份以完整路径
-        或脚本名任一命中即可。
-        """
-        import os
+    def test_missing_proto_dir_exit_2(self, tmp_path, capsys):
+        root = tmp_path / "proj"
+        root.mkdir()
+        rc = proto_serve.main(["--project", str(root), "--spec", "nope"])
+        assert rc == 2
+        assert json.loads(capsys.readouterr().out)["error"] == "prototype-dir-missing"
 
-        proto_parent = tmp_path / "mixed"
-        proto_parent.mkdir()
-        proto = proto_parent / "proto"
-        proto.mkdir()
-        (proto / "index.html").write_text(
-            '<html><body data-proto-id="page-root"><h1>原型</h1></body></html>',
-            encoding="utf-8")
-        rel_script = os.path.relpath(SERVE_SCRIPT, proto_parent)
-        assert not Path(rel_script).is_absolute()
+    def test_no_html_exit_2(self, tmp_path, capsys):
+        root = tmp_path / "proj"
+        (root / ".fenix" / "prototypes" / "spec-x").mkdir(parents=True)
+        rc = proto_serve.main(["--project", str(root), "--spec", "spec-x"])
+        assert rc == 2
+        assert json.loads(capsys.readouterr().out)["error"] == "no-html"
 
-        # 首实例：cwd=proto_parent，以相对形态路径调用（cmdline 不含绝对解析路径）
-        out_path = proto_parent / ".first.out"
-        out_f = open(out_path, "w", encoding="utf-8")
-        first_proc = subprocess.Popen(
-            [sys.executable, rel_script, "proto", "--json"],
-            cwd=proto_parent, stdout=out_f, stderr=subprocess.STDOUT)
-        try:
-            first = _wait_result(out_path)
-            assert first["action"] == "started"
+    def test_dashboard_not_alive_exit_3(self, tmp_path, capsys):
+        root = _make_project_with_proto(tmp_path)
+        dash = _DummyDashboard([])
+        port = dash.port
+        dash.stop()
+        rc = proto_serve.main(["--project", str(root), "--spec", "spec-x",
+                               "--dashboard-port", str(port)])
+        assert rc == 3
+        out = json.loads(capsys.readouterr().out)
+        assert out["error"] == "dashboard-not-alive"
+        assert "hint" in out  # 拉起指引（fenix_dashboard.py / systemd unit）
 
-            # 次实例：绝对解析路径调用（调用形态与首实例不同）
-            proc2, out_f2, out_path2 = _start_server(proto)
-            try:
-                second = _wait_result(out_path2)
-                assert second["action"] == "reused", (
-                    "两次启动调用形态路径不同 MUST 仍复用存活实例，"
-                    f"实际：{second}")
-                assert second["url"] == first["url"], "复用必须同端口"
-                assert second["pid"] == first["pid"]
-                assert first_proc.poll() is None, "复用后原进程仍存活"
-            finally:
-                out_f2.close()
-        finally:
-            _stop_server(proto)
-            first_proc.wait(timeout=8)
-            out_f.close()
-        assert not (proto / ".proto-server.json").exists()
+    def test_unregistered_project_exit_4(self, tmp_path, capsys):
+        root = _make_project_with_proto(tmp_path)
+        dash = _DummyDashboard(
+            [{"name": "other", "path": str(tmp_path / "elsewhere")}])
+        rc = self._run(root, dash)
+        assert rc == 4
+        out = json.loads(capsys.readouterr().out)
+        assert out["error"] == "project-not-registered"
+        assert "--add-project" in out["hint"]
 
-    def test_stale_pid_takeover_after_kill(self, tmp_path):
-        proto = _make_proto_dir(tmp_path)
-        proc, out_f, out_path = _start_server(proto)
-        first = _wait_result(out_path)
-        first_pid = first["pid"]
-        # SIGKILL：无清理机会，PID 文件残留成陈旧记录
-        proc.kill()
-        proc.wait(timeout=8)
-        out_f.close()
-        assert (proto / ".proto-server.json").exists()
-        assert serve_prototype.read_pid_file(proto)["pid"] == first_pid
-
-        # 再启动：探测残留 → 接管，新实例新端口
-        proc2, out_f2, out_path2 = _start_server(proto)
-        try:
-            second = _wait_result(out_path2)
-            assert second["action"] == "started", "残留必须被接管而非复用"
-            assert second["pid"] != first_pid
-            # 接管后 PID 文件指向新实例
-            assert serve_prototype.read_pid_file(proto)["pid"] == second["pid"]
-        finally:
-            _stop_server(proto)
-            proc2.wait(timeout=8)
-            out_f2.close()
-
-    def test_stop_reports_not_running_when_fresh(self, tmp_path):
-        proto = _make_proto_dir(tmp_path)
-        done = subprocess.run([sys.executable, SERVE_SCRIPT, str(proto), "--stop", "--json"],
-                              capture_output=True, text=True, timeout=10)
-        assert done.returncode == 1
-        assert json.loads(done.stdout.strip().splitlines()[-1])["action"] == "not-running"
-
-    def test_stale_stop_only_cleans_pid_file(self, tmp_path):
-        # PID 文件残留但进程已死：--stop 清理文件、不误报停止
-        proto = _make_proto_dir(tmp_path)
-        serve_prototype.write_pid_file(proto, 999999, "127.0.0.1", 59999)
-        result = serve_prototype.stop_server(proto, SERVE_SCRIPT)
-        assert result["action"] == "cleaned-stale"
-        assert not (proto / ".proto-server.json").exists()
-
-    def test_pid_reuse_by_innocent_process_is_not_killed(self, tmp_path):
-        # PID 被无辜进程复用：判定 stale 接管，MUST NOT 杀掉无辜进程
-        proto = _make_proto_dir(tmp_path)
-        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        try:
-            serve_prototype.write_pid_file(proto, victim.pid, "127.0.0.1", 59998)
-            probe = serve_prototype.probe_existing(proto, SERVE_SCRIPT)
-            assert probe["state"] == "stale"
-            assert victim.poll() is None, "无辜进程必须存活"
-        finally:
-            victim.kill()
-            victim.wait(timeout=5)
+    def test_proto_url_unreachable_exit_5(self, tmp_path, capsys):
+        root = _make_project_with_proto(tmp_path)
+        dash = _DummyDashboard([{"name": "proj", "path": str(root)}],
+                               proto_status=404)
+        rc = self._run(root, dash)
+        assert rc == 5
+        out = json.loads(capsys.readouterr().out)
+        assert out["error"] == "proto-url-unreachable"
+        assert "hint" in out
 
 
-class TestServeStaticServing:
-    def test_serves_index_and_blocks_traversal(self, tmp_path):
-        proto = _make_proto_dir(tmp_path)
-        (proto / "annotator.js").write_text("window.__x = 1;", encoding="utf-8")
-        proc, out_f, out_path = _start_server(proto)
-        try:
-            result = _wait_result(out_path)
-            port = result["url"].rsplit(":", 1)[1].strip("/")
-            base = f"http://127.0.0.1:{port}"
-            with urllib.request.urlopen(f"{base}/index.html", timeout=5) as resp:
-                assert b"page-root" in resp.read()
-            with urllib.request.urlopen(f"{base}/annotator.js", timeout=5) as resp:
-                assert b"__x" in resp.read()
-            # 路径穿越被拒（SimpleHTTPRequestHandler 目录收敛）
-            with pytest.raises(urllib.error.HTTPError) as exc_info:
-                urllib.request.urlopen(f"{base}/..%2f..%2fetc%2fpasswd", timeout=5)
-            assert exc_info.value.code in (301, 404)
-        finally:
-            _stop_server(proto)
-            proc.wait(timeout=8)
-            out_f.close()
+class TestAnnotatorEndpointContract:
+    """annotator.js 批注端点契约：dashboard /proto/ 子路径伺服形态下按页面
+    路径推导 API 端点，根路径伺服形态兜底 /feedback。"""
+
+    def test_no_absolute_feedback_assignment(self):
+        # 旧绝对路径赋值退役：/proto/ 子路径伺服下 POST 根路径必打错端点
+        assert 'FEEDBACK_URL = "/feedback"' not in ANNOTATOR_JS
+
+    def test_derives_api_proto_endpoint_from_pathname(self):
+        assert "/api/proto/" in ANNOTATOR_JS
+        # 推导正则须锚定 /proto/<project>/<spec> 两段结构
+        assert r"^\/proto\/([^/]+)\/([^/]+)(?:\/|$)" in ANNOTATOR_JS
+
+    def test_keeps_root_fallback_and_local_export(self):
+        # 根路径伺服兜底与 file:// 本地导出降级保留（连不通时批注不丢）
+        assert '"/feedback"' in ANNOTATOR_JS
+        assert "exportLocal" in ANNOTATOR_JS
+
+    def test_derivation_logic_matches_dashboard_route_shape(self):
+        # 用 Python 侧同构正则验证推导逻辑与 dashboard 路由形态互恰：
+        # /proto/p/s/ 与 /proto/p/s/index.html 两种页面 URL 都推导出同一端点
+        pattern = re.compile(r"^/proto/([^/]+)/([^/]+)(?:/|$)")
+        for pathname in ("/proto/proj-a/spec-x/",
+                         "/proto/proj-a/spec-x/index.html",
+                         "/proto/proj-a/spec-x"):
+            m = pattern.match(pathname)
+            assert m, pathname
+            assert m.group(1) == "proj-a" and m.group(2) == "spec-x"
 
 
 # ---------------------------------------------------------------------------

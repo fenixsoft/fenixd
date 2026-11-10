@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-09
+mode: fast-track
+title: 移除读图拦截守卫

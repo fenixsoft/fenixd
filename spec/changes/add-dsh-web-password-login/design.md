@@ -69,6 +69,7 @@ dsh 插件有两条可用接缝：① profile `cordis.patch.yml` 的 insert 行�
 - [`restart dsh-web` 打断在飞 GUI 会话] → 部署链沿用既有链路（用户已知情立项）；仅断 web 进程，CLI/daemon 会话不受影响；restart 由实现 Agent 在 daemon 侧执行（不处于 web 进程内）。
 - [登录页 XSS/凭据泄漏] → 服务端转义、错误码白名单、页面零 token；登录与凭据写端点同源校验；凭据接口要求 owner Peer。
 - [HTTP 明文传输密码] → 仅限内网/本机或 HTTPS 反代场景；DEPLOY.md 明示公网必须 HTTPS 反代。
+- [反代部署下 Origin/Host 不同源误拒登录] → 同源判定按协议默认端口归一化（443/80 与省略端口等价），Origin 头缺失按同源放行（仍受限流）；DEPLOY.md 明示反代 MUST 透传 Host 头（如 nginx `proxy_set_header Host $host`），未透传时合法登录将确定性 403。
 - [限流内存增长] → 每次尝试清理过期条目；单进程上限可控。
 - [/index.html 未接管] → D2 范围声明；用户可见入口均为 `/`；后续如需要可扩展（注册 /index.html 路由并自行渲染 index，需另行决策）。
 - [登录后 token 出现在 URL/日志] → token 为瞬时中间态（302 跟随即清除），且 dsh 原生日志语义不变；登录页与 POST 响应不写入 token。

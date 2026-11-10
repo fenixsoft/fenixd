@@ -42,7 +42,7 @@ Host 半 SHALL 保留 dsh 原生 token 登录：GET `/` 且携带有效单一 `?
 
 ### Requirement: 账号密码登录与自动带 token
 
-Host 半 SHALL 提供登录端点 `POST /auth/login`（接受 `application/x-www-form-urlencoded` 或 JSON），接收用户名与密码：凭据已配置且校验通过时 SHALL 303 重定向到同源 `/?token=<当前 launchToken>`（由 dsh 原生 authorizeIndex 铸 cookie 并 303 回 `./`，URL 上的 token 仅为瞬时中间态）；校验失败时 SHALL 303 回 `/auth/login?error=invalid` 并在登录页显示统一错误（MUST NOT 区分「用户名不存在」与「密码错误」）；凭据未配置时 SHALL 303 回 `/auth/login?error=unconfigured`；请求体超过 8KB 或 Content-Type 不支持时 SHALL 返回 400。登录 POST MUST 校验 Origin/Host 同源，跨源请求 SHALL 返回 403。GET `/auth/login` SHALL 无需认证即可返回登录页。
+Host 半 SHALL 提供登录端点 `POST /auth/login`（接受 `application/x-www-form-urlencoded` 或 JSON），接收用户名与密码：凭据已配置且校验通过时 SHALL 303 重定向到同源 `/?token=<当前 launchToken>`（由 dsh 原生 authorizeIndex 铸 cookie 并 303 回 `./`，URL 上的 token 仅为瞬时中间态）；校验失败时 SHALL 303 回 `/auth/login?error=invalid` 并在登录页显示统一错误（MUST NOT 区分「用户名不存在」与「密码错误」）；凭据未配置时 SHALL 303 回 `/auth/login?error=unconfigured`；请求体超过 8KB 或 Content-Type 不支持时 SHALL 返回 400。登录 POST MUST 校验 Origin/Host 同源（比较时端口号按协议默认值归一化：https 443 / http 80 与省略端口等价；Origin 头缺失的非浏览器客户端请求按同源处理，仍受限流约束；经反向代理部署时反代 MUST 透传 Host 头，该前置条件由 DEPLOY.md 记载），跨源请求 SHALL 返回 403。GET `/auth/login` SHALL 无需认证即可返回登录页。
 
 #### Scenario: 正确密码登录成功
 

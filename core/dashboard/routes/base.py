@@ -523,6 +523,16 @@ def _post_run_watch(s, p, q, m):
 def _post_project_describe(s, p, q, m):
     s._api_project_describe(q)
 
+def _post_proto_feedback(s, p, q, m):
+    # add-proto-dashboard-serving：fenix-prototype 原型批注落盘适配
+    # （POST /api/proto/<project>/<spec>/feedback，serve_prototype.py
+    # 独立服务器退役后的替代通道）；unquote 后交 H10 处理
+    s._api_proto_feedback(
+        urllib.parse.unquote(m.group(1)),
+        urllib.parse.unquote(m.group(2)),
+        q,
+    )
+
 def _post_code_review_run(s, p, q, m):
     s._api_code_review_run(q)
 
@@ -695,6 +705,9 @@ _API_POST_ROUTES = [
     ("regex", r"^/api/alerts/([^/]+)/handled$", _post_alert_handled),
     ("regex", r"^/api/alerts/([^/]+)/revert-supersede$", _post_alert_revert_supersede),
     ("regex", r"^/api/runs/(.+)/watch$",        _post_run_watch),
+    # add-proto-dashboard-serving：fenix-prototype 原型批注落盘（regex 条目，
+    # 无后缀冲突；非 /api/ 的 POST 在 H0 分派层即 405，不达此表）
+    ("regex", r"^/api/proto/([^/]+)/([^/]+)/feedback$", _post_proto_feedback),
     # /api/project/describe（精确，排在 endswith 之前）
     ("exact", "/api/project/describe",   _post_project_describe),
     # code-review（add-code-review-agent-and-quality-tab）：手动触发 / generate-spec / 状态流转
@@ -1048,6 +1061,11 @@ class H0BaseMixin:
                     self._serve_static("dist/index.html")
                 elif path.startswith("/screenshots/"):
                     self._serve_screenshot(path)
+                elif path.startswith("/proto/"):
+                    # add-proto-dashboard-serving：fenix-prototype 原型静态
+                    # 伺服（须先于 SPA fallback——无扩展名原型路径不得被
+                    # 前端路由接管）
+                    self._serve_prototype(path)
                 else:
                     stripped = path.lstrip("/")
                     last_seg = stripped.rsplit("/", 1)[-1]

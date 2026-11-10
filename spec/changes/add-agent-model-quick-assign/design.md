@@ -67,7 +67,7 @@
 
 - `assignment.model` 可省略或空串（不写角色级缺省模型）；`assignment.provider` 必须是非空数组，每行 `provider` 非空字符串，`model` 可省略/空串（留空表示不指定元素级模型）。
 - `targets` 非空数组；元素 `scope` 只能为 `user`（无 project 字段）或 `project`（`project` 非空字符串，必须是 dashboard 已注册项目）。前端负责把「本作用域」展开为具体 `targets` 元素并去重；服务端对重复目标按 `(scope, project)` 去重后只写一次。
-- `source_scope` 指定 provider 定义来源作用域：`{"scope":"user"}` 取用户级 raw `llm.providers`；`{"scope":"project","project":"<name>"}` 取该项目 `read_effective_config` 的 `llm.providers`（即设置页当前作用域看到的那份有效列表，正是弹窗里可选 provider 的来源）。
+- `source_scope` 指定 provider 定义来源作用域：`{"scope":"user"}` 取用户级 raw `llm.providers`；`{"scope":"project","project":"<name>"}` 取该项目 `read_effective_config` 的 `llm.providers`（即设置页当前作用域看到的那份有效列表，正是弹窗里可选 provider 的来源）。该字段必填：前端按设置页当前作用域构造（用户级 → `{"scope":"user"}`，项目级 → `{"scope":"project","project":"<当前项目>"}`），与弹窗 provider 下拉的数据来源同域（构造位置见 D6 应用流程与 tasks 5.1）。
 - 请求级非法（body 非对象、assignment/targets/source_scope 非法、项目名未注册/不可解析）→ `400 {"error": "..."}` 且**不写任何目标**。
 - 执行成功（含部分失败）→ `200 {"ok": bool, "results": [{ "scope": "user"|"project", "project": "<name>"?, "ok": bool, "error": "<失败原因>"?, "path": "<写入文件路径>" }]}`；`ok` 为全部目标成功。失败原因来自该目标 `_write_config_locked` 返回的 `error`，或 provider 无法补齐的明确提示（含缺失 provider 名）。
 
@@ -84,7 +84,7 @@
 3. 若 `missing` 非空：从 D3 的源 provider 定义列表按 name 建立映射；`missing` 中任一在源中不存在 → 该目标直接返回失败（错误含缺失名），不写盘；否则构造项目级 patch 的 `llm.providers = 项目既有列表 + 缺失定义深拷贝`（同名保留项目既有定义，绝不覆盖）。
 4. patch 的 `agents.models` = 对 `ConfigLoader.KNOWN_AGENT_TYPES` **全部角色**生成同一份 `{model?, provider:[...]}` 深拷贝，经 `serialize_models_patch` 得到规范形态。
 5. 调 `_write_config_locked(project_root, patch, scope="project")`（本函数内已持锁，直接复用内部实现，天然复用既有校验与原子写；无缺失时 patch 不携带 `llm` 段）。返回 `{"ok","error","path"}` 转成逐项结果。
-6. 用户级目标：patch 仅 `{"agents": {"models": ...}}`，调 `_write_config_locked(None, patch, scope="user")`。若用户级 raw 缺模板引用的 provider，则既有校验返回失败 → 该目标失败（与项目目标同口径，不做用户级自动补齐：用户级无「上级」可补）。
+6. 用户级目标：patch 仅 `{"agents": {"models": ...}}`，在 `quick_assign_models` 持 `_CONFIG_WRITE_LOCK` 的临界区内调 `_write_config_locked(None, patch, scope="user")`（该函数契约要求调用方已持锁，与项目目标同一持锁口径）。若用户级 raw 缺模板引用的 provider，则既有校验返回失败 → 该目标失败（与项目目标同口径，不做用户级自动补齐：用户级无「上级」可补）。
 
 `_deep_merge_managed` 对 `llm` 段逐键替换、`providers` 列表整体替换，因此项目补齐 patch 只带 `providers` 时不会清掉项目 `llm` 段其他键；`agents.models` 整体替换符合「覆盖全部角色」需求。
 
