@@ -236,3 +236,8 @@
   - 证据：STATE error 文案「详见 spec/changes/redesign-chain-panel-ui/verification-report.md」，该文件 mtime=本地 23:43（第 6 轮裁决、修复前 18/22 现场）；修复后轮引擎现场仅存于 report.json（16:00:50Z，20/22+残留失败明细）——人工按 error 指引读到滞后一轮的现场。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：冻结写点把最新 report.json 摘要/逐场景表附进告警 evidence，或 error 文案并列指出 report.json 路径。
+- **[arbiter:redesign] arbiter escalate 后升级告警同签名复现入链即时烧配额**
+  - 影响：每次 Arbiter escalate 都会立即再烧一次复现配额（缺省 3 次/签名）做零变化复查：同签名最多浪费 2 轮完整 Arbiter run（墙钟约 30 分钟、成本约 4-5 USD 量级），结论必然与首次相同；告警零噪音分层被重复 run 稀释（人类看到的是重复升级而非新信息）。
+  - 证据：fenixd.log 时序：16:15:20.735（attempt 1 产裁决包升级）→ 16:15:44.099（人工告警 e9cc3a192d65 创建，endpoint=arbiter-escalated）→ 16:15:44.345（「arbiter 触发入队（单飞串行）source=escalation-alert」）——arbiter-escalated 人工告警自身作为 escalation-alert 信号在 250ms 内复现入链，场景零变化即再派发 Arbiter；本 run（arbiter-redesign-chain-panel-ui-1794327344）即该复现 attempt 2 实例（attempt 1 耗时 869.9s / 2.16 USD 量级）；arbiter_ledger.jsonl chain-ev-1794327344345 与告警 created 同秒互证。；触发 run_id=arbiter-redesign-chain-panel-ui-1794327344（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 escalation-alert）
+  - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
+  - 建议：复现入链去重面增加守卫：endpoint=arbiter-escalated 且告警 pending 未人工处置时不自动复派（或要求场景变化信号才复派，如新一轮 verify report / STATE 变更 / 告警内容更新）；或将 arbiter-escalated 产物告警改为终态人工包形态（不再作为链触发源）。方向供自进化立项裁量。
