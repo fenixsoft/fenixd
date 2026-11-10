@@ -49,7 +49,6 @@ start_new_session=True 创建独立会话组，
 
 import datetime
 import errno
-import fcntl
 import json
 import logging
 import os
@@ -61,7 +60,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core import timelib
-from core.fs_utils import atomic_write_text
+from core.platform import api as pal
+from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 from core.log_adapter import StdLoggerAdapter
 from core.verify_contract import RegressionSpec
 
@@ -856,7 +856,7 @@ class _SuiteLock:
         acquired = False
         while time.time() - start < _LOCK_WAIT_TIMEOUT_SECONDS:
             try:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock_exclusive(self._file.fileno(), nonblocking=True)
                 acquired = True
                 break
             except OSError as e:
@@ -907,7 +907,7 @@ class _SuiteLock:
     def __exit__(self, *exc):
         try:
             if self._file is not None:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                flock_release(self._file.fileno())
                 self._file.close()
         except OSError:
             pass
@@ -1096,13 +1096,13 @@ def run_regression(
         except OSError:
             log_fh = None
         try:
-            proc = subprocess.Popen(
+            proc = pal.spawn_detached(
                 spec.cmd,
                 shell=use_shell,
                 cwd=str(project_root),
                 stdout=log_fh if log_fh is not None else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                new_session=True,
             )
         except OSError as e:
             elapsed = round(time.monotonic() - started_mono, 2)

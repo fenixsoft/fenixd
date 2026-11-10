@@ -154,18 +154,19 @@ def _file_write_lock(project_root: Path, filename: str):
     重读盘上状态合并后再回写。锁文件自身无内容语义；各锁的竞态背景说明留在
     调用侧包装函数的 docstring。
     """
-    import fcntl
+
+    from core.fs_utils import flock_exclusive, flock_release
 
     lock_dir = Path(project_root) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_dir / filename, os.O_RDWR | os.O_CREAT, 0o644)
     fh = os.fdopen(fd, "r+")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 

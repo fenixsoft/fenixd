@@ -5,7 +5,6 @@ Provides JSON-format structured logging with rotation support.
 Writes to .fenix/logs/fenixd.log.
 """
 
-import fcntl
 import json
 import logging
 import os
@@ -229,7 +228,7 @@ class FlockRotatingFileHandler(RotatingFileHandler):
         # [fenix-ignore:68f9518f845d] 锁文件常驻仅是目录卫生问题，close 时清理存在多进程竞态、收益有限，保持现状
         lock_fd = os.open(self._lock_filename, os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            flock_exclusive(lock_fd)
             if self._path_is_stale():
                 # 基底文件已被其他进程轮转改名：只关闭旧流并重新打开新基底
                 # 文件，不再 rename，避免覆盖他人的备份序列
@@ -240,7 +239,7 @@ class FlockRotatingFileHandler(RotatingFileHandler):
                 return
             super().doRollover()
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            flock_release(lock_fd)
             os.close(lock_fd)
 
 

@@ -24,6 +24,7 @@ import signal
 import subprocess
 import threading
 
+from core.platform import api as pal
 from core.proc_utils import guard_killpg
 
 # 安装命令的包名（固定字面量，不拼接任何用户输入）
@@ -148,7 +149,7 @@ def _run_captured(argv: list, timeout: int, caller: str) -> subprocess.Completed
 
     ``caller``：守卫告警中的调用点标识（guard_killpg WARNING 的取证锚点）。
     """
-    p = subprocess.Popen(
+    p = pal.spawn_detached(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -162,7 +163,7 @@ def _run_captured(argv: list, timeout: int, caller: str) -> subprocess.Completed
         text=True,
         encoding="utf-8",
         errors="replace",
-        start_new_session=True,
+        new_session=True,
     )
     try:
         out, err = p.communicate(timeout=timeout)

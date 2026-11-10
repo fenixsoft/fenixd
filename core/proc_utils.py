@@ -16,6 +16,8 @@
   收尸等差异化收尾留调用方；
 - ``guard_killpg``：清场击杀自保护守卫（add-killpg-self-guard）——目标组为
   调用者自身所在进程组、或非正 pgid 时拒绝发信号，按「组已不存在」静默降级。
+  W3 起执行跳上收 core.platform（pal.kill_tree，os.killpg 全库唯一位点随迁），
+  本模块公开签名不动薄转发。
 
 以下助手均只依赖 stdlib，任何 core 模块均可安全导入。
 """
@@ -29,6 +31,8 @@ import time
 from contextlib import contextmanager
 from typing import List, Optional
 
+from core.platform import api as pal
+
 _logger = logging.getLogger("fenixd.proc_utils")
 
 # kill_process_group 的 SIGTERM 优雅退出宽限秒数（wait(timeout=...)）。
@@ -36,7 +40,8 @@ _logger = logging.getLogger("fenixd.proc_utils")
 # 3 秒）构成并行两套击杀时序常量（未并入的差异理由见 serving_registry 侧
 # docstring）；两侧取值由 tests/test_serving_registry_kill_timing.py 守卫
 # 钉住，单侧调整须两侧同步修订并更新守卫断言，防同名语义静默分叉。
-TERM_GRACE_SECONDS = 5
+# W3 起取值单源 pal.TERM_GRACE_SECONDS（A 组平移常量），值仍 5。
+TERM_GRACE_SECONDS = pal.TERM_GRACE_SECONDS
 
 
 def is_claude_process(pid_str: str) -> bool:
@@ -61,16 +66,18 @@ def is_claude_process(pid_str: str) -> bool:
     # import 同此理由）。
     from core.agent_runner.harness import current_process_patterns
 
-    try:
-        with open(f"/proc/{pid_str}/cmdline", "rb") as f:
-            argv0 = f.read().split(b"\0", 1)[0]
-        return os.path.basename(argv0.decode("utf-8", "replace")) in tuple(
-            current_process_patterns()
-        )
-    except OSError:
+    # add-platform-abstraction 4.1：读取经 pal.read_cmdline_raw 单点
+    # （fail-closed：读不到/非法 pid 一律 None）。pid_str 已 isdigit 校验，
+    # "0"/前导零等怪值在 pal 侧同样落 None，与原 open OSError 路径同向。
+    argv0_bytes = pal.read_cmdline_raw(pid_str)
+    if argv0_bytes is None:
         # /proc 读取失败（进程已退出、权限不足等）按非 claude 进程计。
-        # bytes.split 恒返回非空列表，[0] 不会 IndexError，无需防御分支。
         return False
+    argv0 = argv0_bytes.split(b"\0", 1)[0]
+    # bytes.split 恒返回非空列表，[0] 不会 IndexError，无需防御分支。
+    return os.path.basename(argv0.decode("utf-8", "replace")) in tuple(
+        current_process_patterns()
+    )
 
 
 def proc_stat_fields(pid: int) -> Optional[List[str]]:
@@ -83,16 +90,12 @@ def proc_stat_fields(pid: int) -> Optional[List[str]]:
 
     读取失败（/proc 缺失、权限不足、非 Linux 等 OSError）或内容无右括号
     （畸形）返回 None。
+
+    W3 起实现单源 pal.proc_stat_fields（逐字平移），本函数为公开签名
+    薄委托（同模块 pid_alive_stat/proc_start_ticks 与 serving_registry
+    等下游经此间接消费）。
     """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            data = f.read().decode("utf-8", "replace")
-    except OSError:
-        return None
-    _, sep, tail = data.rpartition(")")
-    if not sep:
-        return None
-    return tail.split()
+    return pal.proc_stat_fields(pid)
 
 
 def pid_alive_stat(pid: int, zombie_is_dead: bool = False) -> bool:
@@ -107,13 +110,10 @@ def pid_alive_stat(pid: int, zombie_is_dead: bool = False) -> bool:
       口径（pid_alive_signal）的「有主即活」保守方向一致。
 
     stat 不可读（/proc 缺失、权限、畸形）按已终止计（宁可少杀）。
+
+    W3 起单源 pal.pid_alive_stat（逐字平移），薄委托。
     """
-    fields = proc_stat_fields(pid)
-    if fields is None:
-        return False
-    if zombie_is_dead and fields[:1] == ["Z"]:
-        return False
-    return True
+    return pal.pid_alive_stat(pid, zombie_is_dead=zombie_is_dead)
 
 
 def proc_start_ticks(pid: int) -> Optional[int]:
@@ -123,14 +123,10 @@ def proc_start_ticks(pid: int) -> Optional[int]:
     新进程的 starttime 必然不同——以此锚定登记项的收割目标（对 exec/argv
     变化免疫，starttime 在 fork 时即固定），serving_registry 登记制据此
     做 pid 复用防误杀。
+
+    W3 起单源 pal.proc_start_ticks（逐字平移），薄委托。
     """
-    fields = proc_stat_fields(pid)
-    if fields is None or len(fields) < 20:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
+    return pal.proc_start_ticks(pid)
 
 
 def pid_alive_signal(pid: int) -> bool:
@@ -138,16 +134,10 @@ def pid_alive_signal(pid: int) -> bool:
 
     EPERM 恰恰证明目标进程存在、仅属其他用户（无权发信号）——按存活，
     与 kill_process_group 对 getpgid EPERM 的显式处理同口径。
+
+    W3 起单源 pal.pid_alive_signal（逐字平移），薄委托。
     """
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
+    return pal.pid_alive_signal(pid)
 
 
 def find_free_port() -> int:
@@ -331,63 +321,9 @@ def kill_process_group(
 def guard_killpg(target_pid: int, sig: int, *, caller: str, resolve: bool = False) -> bool:
     """守卫版 killpg：拒绝把信号发往调用者自身所在进程组（add-killpg-self-guard）。
 
-    2026-10-07 两起同构事故：测试替身 proc 的 pid 怪值（0 等）流入产品清场
-    代码，``os.killpg`` 命中调用者自身所在进程组，整个测试套件/批回归被团灭
-    （ftrace 取证发送者＝pytest 主进程自身）。本守卫在任何清场击杀路径的
-    信号发出前做统一校验，一次性根治所有替身 pid 怪值变体（含未来新增的）。
-
-    两种入参形态（调用点按手上句柄显式选择，code review 逐点核对）：
-
-    - ``resolve=True``（解析型）：``target_pid`` 为**组内成员 pid**（通常是
-      ``Popen.pid``），先 ``os.getpgid(target_pid)`` 解析 pgid；解析失败
-      （ProcessLookupError/OSError ＝ 组已不存在/权限不可判）走既有静默
-      语义返回 False——该分支语义逐位不变，守卫不新增行为；
-    - ``resolve=False``（直传型）：``target_pid`` 为**独立成组组长 pid**
-      （spawn 侧 start_new_session=True 下 pgid==pid）或调用点已解析的
-      pgid，直接作 pgid 使用。
-
-    两个拒绝分支（命中即不发信号、记 WARNING（含调用点标识与目标 pgid）、
-    按「组已不存在」语义返回 False；调用方对 False MUST NOT 再降级单 pid
-    ``os.kill``——``os.kill(0, sig)`` 经同样折算是调用者自身组广播）：
-
-    1. 解析结果 == ``os.getpgid(0)``（调用者自身所在进程组）——替身 pid 怪值
-       解析到宿主组的事故形态（解析型 ``getpgid(0)`` 也返回自身组，同一
-       分支拦截）；
-    2. ``pgid <= 0``（仅直传型可达）——``os.killpg(0, sig)`` 经
-       ``kill(-pgid)`` 折算等价 ``kill(0, sig)``＝向调用者自身进程组广播，
-       数值上 ``0 != os.getpgid(0)`` 挡不住；负值折算为对任意 pid 的误投递
-       （如 ``killpg(-1)`` ≡ ``kill(1)``）。
-
-    返回 True＝信号已发出；False＝守卫拒绝或组已不存在（ESRCH 语义），
-    调用方一律按既有「组已不存在」路径静默返回，不改变控制流。
+    完整契约（两入参形态、两拒绝分支、返回值语义）见 pal.kill_tree——本
+    函数为 W3 转发化薄委托：执行跳上收 core.platform（os.killpg 全库唯一
+    位点随迁），公开签名不动，行为逐位等价。既有调用方（kill_process_group、
+    harness.one_shot lazy import、regression/adjudication 适配器）零改动。
     """
-    if resolve:
-        try:
-            pgid = os.getpgid(target_pid)
-        except (ProcessLookupError, OSError):
-            return False  # 组已不存在：既有静默语义，逐位保持
-    else:
-        pgid = target_pid
-    own_pgid = os.getpgid(0)  # pid 0 ＝ 调用者自身，恒可解析
-    if pgid == own_pgid:
-        _logger.warning(
-            "killpg self-guard: caller=%s 目标组=调用者自身进程组 (pgid=%d)"
-            " — 拒绝发信号，按组不存在静默返回",
-            caller,
-            pgid,
-        )
-        return False
-    if pgid <= 0:
-        _logger.warning(
-            "killpg self-guard: caller=%s 非正 pgid=%d（killpg(0)/负值 经"
-            " kill(-pgid) 折算等价自身组广播或误投递）— 拒绝发信号，按组"
-            "不存在静默返回",
-            caller,
-            pgid,
-        )
-        return False
-    try:
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, OSError):
-        return False  # 组已不存在：既有静默语义，逐位保持
-    return True
+    return pal.kill_tree(target_pid, sig, caller=caller, resolve=resolve)

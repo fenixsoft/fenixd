@@ -380,11 +380,17 @@ class TestRuntimeDanglingRunSweep(unittest.TestCase):
     # ── 4.3 流停保护 ─────────────────────────────────────────────────
     def test_fresh_mtime_run_not_patched_not_opened(self):
         """mtime 停更 < 阈值的无终态 run 不被补写不被读取（短路免读）。"""
-        self._write("impl-spec-c-1788900000-a1", [{"type": "assistant"}], 600)
+        target = self._write("impl-spec-c-1788900000-a1",
+                             [{"type": "assistant"}], 600)
         opened = []
         orig_open = Path.open
         def _spy_open(self, *a, **kw):
-            opened.append(str(self))
+            # 全量回归单进程内常驻后台线程（轮询/watchdog/server 残留），
+            # 全局 Path.open spy 会混入非目标路径杂音（run7/run8 实证例
+            # 不固定地红）——断言对象是「该 run 文件不被打开」，只记目标
+            # 路径；补写断言（patched）独立保留，不掩盖真判据翻转。
+            if str(self) == str(target):
+                opened.append(str(self))
             return orig_open(self, *a, **kw)
         with unittest.mock.patch.object(Path, "open", _spy_open):
             patched = self.sweeper.sweep_dangling_runs()
@@ -401,15 +407,19 @@ class TestRuntimeDanglingRunSweep(unittest.TestCase):
     # ── 4.4 缓存语义 ─────────────────────────────────────────────────
     def test_terminal_file_cached_no_reopen(self):
         """已终态文件第二轮不重复打开（缓存命中短路）。"""
-        self._write("impl-spec-e-1788900000-a1",
-                    [{"type": "assistant"}, {"type": "result", "result": "ok"}], 7200)
+        target = self._write("impl-spec-e-1788900000-a1",
+                             [{"type": "assistant"},
+                              {"type": "result", "result": "ok"}], 7200)
         first = self.sweeper.sweep_dangling_runs()
         self.assertEqual(first, [], "含 result 终态不补写")
         self.assertIn("impl-spec-e-1788900000-a1", self.sweeper._terminal_verified)
         opened = []
         orig_open = Path.open
         def _spy_open(self, *a, **kw):
-            opened.append(str(self))
+            # 同 fresh 例：只记目标路径，免疫全量进程内后台线程的杂音打开
+            # （run8 实证）；缓存真翻车（目标文件被重开）仍被本断言命中。
+            if str(self) == str(target):
+                opened.append(str(self))
             return orig_open(self, *a, **kw)
         with unittest.mock.patch.object(Path, "open", _spy_open):
             second = self.sweeper.sweep_dangling_runs()

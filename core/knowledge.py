@@ -51,6 +51,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from core.platform import api as pal
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS as _BANNED_ENV_KEYS
 # add-harness-adapter-layer 4.1：一次性 spawn 收编入口（蒸馏 run）
 from core.agent_runner.harness import (
@@ -69,6 +70,7 @@ from core.agent_runner.provider_circuit import UNRECOGNIZED_MODEL_TEXT_PATTERNS
 # add-distill-run-artifacts 1.1：蒸馏批 run 产物行追加复用既有原语（O_APPEND
 # 单行原子性与 \udXXX UTF-8 预清洗防御同口径），MUST NOT 手写 open("a") 文本追加。
 from core.agent_runner.run_files import append_run_error, append_run_line
+from core.fs_utils import flock_exclusive, flock_release
 from core.knowledge_backfill import (
     append_todo_line,
     atomic_write_text,
@@ -773,17 +775,16 @@ def _source_rewrite_lock(proot: Path):
     文本，两轮改写叠加不丢。锁文件与 knowledge-log.lock 同目录不同文件、
     互不阻塞（改写窗口毫秒级，不值得与编年账追加互排队）。
     """
-    import fcntl
 
     lock_dir = Path(proot) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fh = open(lock_dir / "knowledge-rewrite.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 
@@ -909,17 +910,16 @@ def _knowledge_log_lock(proot: Path):
     段，且 distill 与 audit 车道可能分属 daemon / dashboard --serve 两进程，
     持锁串行保证并发追加不丢行（4.1 契约）。
     """
-    import fcntl
 
     lock_dir = Path(proot) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fh = open(lock_dir / "knowledge-log.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 
@@ -1156,7 +1156,7 @@ def _default_spawn(cmd: list, cwd: str, env=None):
     agent-run 专用键，code-review item 8c9e46ed49c2）；None（测试直呼等
     未经 harness 的调用形态）回落既有 _build_spawn_env() 全量口径。
     """
-    return subprocess.Popen(
+    return pal.spawn_detached(
         cmd,
         cwd=cwd,
         stdin=subprocess.PIPE,
@@ -1166,7 +1166,7 @@ def _default_spawn(cmd: list, cwd: str, env=None):
         encoding="utf-8",
         errors="replace",
         env=env if env is not None else _build_spawn_env(),
-        start_new_session=True,
+        new_session=True,
     )
 
 
@@ -2123,17 +2123,16 @@ def _pending_ledger_lock(proot: Path):
     同目录不同文件、互不阻塞（不复用后者——它被整个蒸馏 run 长期持有，append
     在 dispatch 归档主流程上，不得排队等 run 结束）。
     """
-    import fcntl
 
     lock_dir = Path(proot) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fh = open(lock_dir / "knowledge-distill-pending.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 
@@ -2465,13 +2464,12 @@ class DistillManager:
 
     def _acquire_file_lock(self, proot: Path):
         """跨进程单飞锁（flock，阻塞等待——并发归档事件排队串行）。"""
-        import fcntl
-
+    
         lock_dir = proot / ".fenix"
         lock_dir.mkdir(parents=True, exist_ok=True)
         fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            flock_exclusive(fh.fileno())
         except BaseException:
             # flock 失败（EINTR 信号处理器抛出/文件系统不支持等）必须先关句柄
             # 再抛，否则常驻 daemon 每次失败泄漏一个 fd（code-review 6302dcf20837）
@@ -2484,10 +2482,9 @@ class DistillManager:
         try:
             self._run_batch(proot, batch)
         finally:
-            import fcntl
-
+        
             try:
-                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                flock_release(lock_fh.fileno())
             finally:
                 lock_fh.close()
 

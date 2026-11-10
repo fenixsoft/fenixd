@@ -30,9 +30,10 @@ one-shot 重启 hook（hook-restart-once）：all-done → restart-daemon 触发
 admin_store 的 DisputeAuditStore 追加模式）。
 """
 
-import fcntl
 import http.client
 import json
+from core.platform import api as pal
+from core.fs_utils import flock_exclusive, flock_release
 import math
 import os
 import signal
@@ -319,7 +320,7 @@ def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
     超时仍抛 TimeoutExpired（与 subprocess.run 同契约，调用方按
     SubprocessError 记失败）。
     """
-    proc = subprocess.Popen(
+    proc = pal.spawn_detached(
         ["git"] + args,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
@@ -329,7 +330,7 @@ def _run_git(args: List[str], cwd: Path) -> subprocess.CompletedProcess:
         # 捕获口径为 (SubprocessError, OSError)，解码异常会穿到通用兜底、
         # 使审计归因降级为「hook 执行异常」而非具体 git 段失败
         errors="replace",
-        start_new_session=True,
+        new_session=True,
     )
     try:
         out, err = proc.communicate(timeout=60)
@@ -1134,7 +1135,7 @@ class HookEngine:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with lockfile.open("w", encoding="utf-8") as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                flock_exclusive(lf)
                 try:
                     ids: List[str] = []
                     if path.exists():
@@ -1161,7 +1162,7 @@ class HookEngine:
                             pass
                         raise
                 finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
             return None
         except OSError as e:
             return f"标记写入失败: {e}"
@@ -1639,7 +1640,7 @@ class HookEngine:
         env["FENIX_HOOK_PROJECT_ROOT"] = str(self.project_root)
         try:
             # start_new_session：bash 为新进程组首，超时可 killpg 连孙进程一并回收
-            proc = subprocess.Popen(
+            proc = pal.spawn_detached(
                 ["bash", "-c", command],
                 cwd=str(self.project_root),
                 env=env,
@@ -1650,7 +1651,7 @@ class HookEngine:
                 # 下方 except OSError 捕获，会穿到通用兜底、使审计归因降级为
                 # 「hook 执行异常」而非具体 shell 失败
                 errors="replace",
-                start_new_session=True,
+                new_session=True,
             )
             try:
                 out, err = proc.communicate(timeout=timeout)
@@ -1710,7 +1711,7 @@ class HookEngine:
         try:
             with self._audit_lock:
                 with lockfile.open("w", encoding="utf-8") as lf:
-                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    flock_exclusive(lf)
                     try:
                         with path.open("a", encoding="utf-8") as f:
                             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -1719,7 +1720,7 @@ class HookEngine:
                             # SIGKILL/掉电时最新一条审计行不因页缓存未刷而丢失
                             os.fsync(f.fileno())
                     finally:
-                        fcntl.flock(lf, fcntl.LOCK_UN)
+                        flock_release(lf)
         except OSError as e:
             self._log_error(f"审计写入失败: {e}")
 

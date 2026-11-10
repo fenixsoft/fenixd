@@ -13,7 +13,6 @@ admin_store.py — Administrator 告警/处置记录持久化（.fenix/admin_ale
 都在 fcntl.flock 排他锁内进行（锁文件与数据文件同路径 + .lock）。
 """
 
-import fcntl
 import json
 import os
 import stat
@@ -26,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from .alert_lifecycle import AUTO_RESOLVE_BY, AUTO_SELF_HEAL_BY
-from core.fs_utils import fsync_parent_dir as _fsync_parent_dir_impl
+from core.fs_utils import fsync_parent_dir as _fsync_parent_dir_impl, flock_exclusive, flock_release
 from core.timelib import parse_ts
 
 
@@ -404,12 +403,12 @@ class AdminStore:
         # _lock() 新开 fd，同进程跨 fd 亦互斥）双锁，不留单 flock 特例
         with self._thread_lock:
             with self._lock() as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                flock_exclusive(lf)
                 try:
                     records, _corrupt = self._read_unlocked(self.alerts_path)
                     return records
                 finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
 
     def _write_unlocked(self, records: list):
         """原子写（临时文件 + rename），调用方须已持有文件排他锁。"""
@@ -484,7 +483,7 @@ class AdminStore:
             # 「None=在途 / 非空=拒写」区分；线程本地后互不影响
             self.last_write_refusal = None
             with self._lock() as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                flock_exclusive(lf)
                 try:
                     records, corrupt = self._read_unlocked(self.alerts_path)
                     result = fn(records)
@@ -530,7 +529,7 @@ class AdminStore:
                         self._archive_unlocked(trimmed)
                     return result
                 finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
 
     # ── 叙事侧车级联清理（upgrade-narrative-to-investigation 3.4）──────
 
@@ -617,11 +616,11 @@ class AdminStore:
         try:
             with self._thread_lock:
                 with self._lock() as lf:
-                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    flock_exclusive(lf)
                     try:
                         out = _read_jsonl_locked(self.archive_path)
                     finally:
-                        fcntl.flock(lf, fcntl.LOCK_UN)
+                        flock_release(lf)
         except (OSError, UnicodeDecodeError):
             return []
         return out
@@ -1802,7 +1801,7 @@ class DisputeAuditStore:
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         with self._thread_lock:
             with self._acquire_lock() as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                flock_exclusive(lf)
                 try:
                     # code-review item 41edb3cbe5f0：追加前探测首建；确为
                     # 首建时文件 fsync 后同刷父目录项（与 _write_unlocked
@@ -1820,7 +1819,7 @@ class DisputeAuditStore:
                         _fsync_parent_dir(self.audit_path)
                     self._trim_unlocked()
                 finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
 
     def _trim_unlocked(self) -> None:
         """写回前裁剪到最近 MAX_AUDIT_RECORDS 条（调用方须已持有排他锁）。
@@ -1845,11 +1844,11 @@ class DisputeAuditStore:
         try:
             with self._thread_lock:
                 with self._acquire_lock() as lf:
-                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    flock_exclusive(lf)
                     try:
                         out = _read_jsonl_locked(self.audit_path)
                     finally:
-                        fcntl.flock(lf, fcntl.LOCK_UN)
+                        flock_release(lf)
         except (OSError, UnicodeDecodeError):
             return []
         # str(...) or ""：对 "created" 非字符串脏形态（null/数字等）设防，

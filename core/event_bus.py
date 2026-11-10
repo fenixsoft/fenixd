@@ -1,8 +1,9 @@
 """
 event_bus.py — File-system event monitoring for fenixd.
 
-Watches STATE.md for changes using inotify (Linux) and dispatches
-internal events to the PM Engine. Includes periodic full-scan fallback.
+Watches STATE.md for changes using a checksum polling loop (2s tick,
+exponential backoff on persistent read failures) and dispatches internal
+events to the PM Engine. Includes periodic full-scan fallback.
 """
 
 import hashlib
@@ -52,8 +53,8 @@ class EventBus:
     """
     Monitor STATE.md for changes and dispatch events to PM Engine.
 
-    Uses polling + checksum comparison for cross-platform compatibility
-    (with optional inotify support on Linux).
+        Uses polling + checksum comparison (2s tick) for cross-platform
+    compatibility — no inotify, pure polling on all platforms.
     """
 
     def __init__(
@@ -153,7 +154,7 @@ class EventBus:
                 "或项目确为空）：按空基线继续，存量 SPEC 将由后续扫描重新登记",
             )
 
-        # Start the inotify/polling watcher
+        # Start the checksum polling watcher
         # 线程存活复用守卫（code-review item de45aae4e422）：对齐姊妹类
         # dashboard/watcher.start() 的同族防线（其注释引用 code-review item
         # 7de4656dfa6f）。stop() 对 _scan_thread 仅 join(timeout=0.5)，扫描线程

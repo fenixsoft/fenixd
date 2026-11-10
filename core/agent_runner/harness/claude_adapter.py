@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from core.agent_env_keys import AGENT_RUN_BANNED_ENV_KEYS
+from core.fs_utils import atomic_write_text
 from core.agent_runner.harness.protocol import (
     ENV_MODE_AGENT_RUN,
     ENV_MODE_CLEAN,
@@ -164,27 +165,17 @@ def ensure_agent_config_dir(
         return cfg_dir
 
     def _write_atomic() -> None:
-        # mkstemp 生成唯一临时文件（固定 .settings.tmp 在并发首建/重写时交错
-        # 截断写坏 settings.json），与 _copyback_run_result 的 _write_atomic
-        # 同款手法。
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=".settings.", suffix=".tmp", dir=str(cfg_dir))
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(settings, ensure_ascii=False, indent=2))
-                # code-review item 161e36c1913c：replace 前刷缓冲并 fsync，
-                # 与 admin_store._write_unlocked 原子写模式对齐，掉电时
-                # settings.json 不以空/部分内容经 rename 落位。
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, marker)
-        finally:
-            if tmp_path.exists():
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
+        # W2 收敛：mkstemp 唯一临时文件（固定 .settings.tmp 在并发首建/重写
+        # 时交错截断写坏 settings.json）+ replace 前刷缓冲并 fsync（code-
+        # review item 161e36c1913c，掉电时 settings.json 不以空/部分内容经
+        # rename 落位）单源于 core.fs_utils.atomic_write_text；现行口径经
+        # 参数显式表达——settings.json 保持 mkstemp 0600 不放宽、不刷父目录。
+        atomic_write_text(
+            marker,
+            json.dumps(settings, ensure_ascii=False, indent=2),
+            apply_mode=False,
+            fsync_parent=False,
+        )
 
     # symlink 补建提取为小函数，marker 已存在的两条早退 return 路径同样执行
     # ——首次创建时建链失败（OSError 仅 WARNING 留痕）或事后被清理的隔离

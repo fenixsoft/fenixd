@@ -34,10 +34,7 @@ import threading
 import time
 from pathlib import Path
 
-try:
-    import fcntl  # 跨进程文件锁（Linux/macOS）；Windows 无此模块走降级
-except ImportError:  # 平台兜底：无 fcntl 时保持仅进程内互斥的历史行为
-    fcntl = None  # type: ignore[assignment]
+from core.fs_utils import flock_exclusive, flock_release
 
 FEEDBACK_FILE_NAME = "feedback.json"
 MAX_FEEDBACK_FILE_BYTES = 8 << 20  # 8MB：feedback.json 总量上限，超限拒绝写入
@@ -104,18 +101,16 @@ def feedback_file_lock(target: Path):
     """feedback.json 读改写的跨进程互斥：独占 flock 伴生锁文件 ``<名>.lock``。
 
     锁落在伴生文件而非 feedback.json 本身：目标文件经 tmp 原子 replace 换名，
-    inode 随每次写入变化，锁旧 inode 保护不了新文件。无 fcntl 平台（Windows）
-    或锁文件创建/加锁失败时降级为仅进程内互斥（历史行为），不让写入崩溃。
+    inode 随每次写入变化，锁旧 inode 保护不了新文件。平台分发收敛至
+    core/platform 单点（无 fcntl 的 Windows 分支属 SPEC-2 pal 后端职责）；
+    锁文件创建/加锁失败时降级为仅进程内互斥（历史行为），不让写入崩溃。
     """
-    if fcntl is None:
-        yield
-        return
     lock_path = target.with_name(target.name + ".lock")
     fd: int | None = None
     try:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            flock_exclusive(fd)
         except OSError as exc:
             print(f"feedback-lock-unavailable: 跨进程锁不可用（{exc}），"
                   "降级为仅进程内互斥", file=sys.stderr)
@@ -124,7 +119,7 @@ def feedback_file_lock(target: Path):
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            flock_release(fd)
     finally:
         if fd is not None:
             os.close(fd)

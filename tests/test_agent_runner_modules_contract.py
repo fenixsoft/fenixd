@@ -104,7 +104,17 @@ class TestD6PatchGap:
 class TestRunClaudeSeam:
     def test_subprocess_name_in_place(self):
         import subprocess as sp
-        assert runner_mod.subprocess is sp
+
+        # 5.1 pal 收敛后本名 shadow 为轻量命名空间（runner.py 模块头注）：
+        # Popen 位转发 pal.spawn_detached 单源，其余属性直引 stdlib 真身。
+        # 打桩基座语义保持——名字可整体替换（monkeypatch.setattr(rmod,
+        # "subprocess", ns) 桩形态不受影响）、非转发属性与 stdlib 同一身份。
+        ns = runner_mod.subprocess
+        assert ns.PIPE is sp.PIPE
+        assert ns.run is sp.run
+        assert ns.TimeoutExpired is sp.TimeoutExpired
+        assert ns.SubprocessError is sp.SubprocessError
+        assert callable(ns.Popen)
 
     def test_run_claude_uses_module_qualified_subprocess(self):
         src = inspect.getsource(runner_mod.AgentRunner._run_agent)

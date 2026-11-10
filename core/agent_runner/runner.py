@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from core.platform import api as pal
 from core.git_base_branch import resolve_base_branch
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
@@ -94,6 +95,7 @@ from core.agent_runner.session import SessionTracker
 # attempt 在飞子进程清场经自保护守卫整组收割（code-review item
 # 0c4d156555a2；ADR-291 守卫纪律，与 liveness/maintenance_runs/
 # _kill_ocr_process_group 先例同源单点）。
+from core.fs_utils import atomic_write_text
 from core.proc_utils import guard_killpg
 # add-harness-adapter-layer：harness 适配层（命令构造/env 路由平移目标；
 # design D8 单向依赖——runner 消费 harness，harness 不反向 import runner）
@@ -179,6 +181,49 @@ from core.agent_runner.maintenance_runs import (
     run_regression,
     run_self_review,
 )
+
+# ── spawn 单源转发与测试缝保留（add-platform-abstraction-layer 5.1）──────
+# 本模块 spawn 位点经 pal.spawn_detached 单源（独立进程组纪律上收
+# core.platform.linux）。既有测试以三种形态消费/打桩本模块 subprocess 名，
+# shadow 形态对三类逐一保真：
+# 1. 命名空间整体替换型（9 文件：monkeypatch.setattr(runner_mod,
+#    "subprocess", SimpleNamespace(Popen=替身, …))）——spawn 调用 MUST 保持
+#    subprocess.Popen 词面经本名字命中桩（pal. 前缀会脱靶到真 pal，替身
+#    不生效、读流环卡死）；模块属性整体替换直接接管，不经代理。
+# 2. Popen 形态契约型（test_harness_claude_snapshot golden 快照：
+#    patch runner.subprocess.Popen 属性后断言 kwargs 含 start_new_session
+#    等主树 Popen 键）——spawn 调用点保持 Popen 形态词面
+#    （start_new_session= 键），new_session 翻译收编在转发函数内，
+#    替身/桩看到的主树键集逐位不变。
+# 3. stdlib 模块属性打桩型（test_planner_route_map 超时 fail-open：
+#    monkeypatch.setattr(subprocess, "run", ...) 打共享模块属性）——
+#    run/PIPE/TimeoutExpired/SubprocessError 不做函数对象快照绑定，
+#    __getattr__ 每次透读 stdlib 模块**当前属性值**：桩 setattr 到共享
+#    模块后本名照常命中，恢复后自动还原；非打桩期与 stdlib 真身同一
+#    对象（modules_contract 身份断言保持）。
+# 此 shadow 仅本模块命名空间生效，不触碰共享 subprocess 模块。
+_subprocess_stdlib = subprocess
+
+
+def _popen_via_pal(cmd, *args, **kwargs):
+    """spawn 缝转发：收主树 Popen 形态契约（start_new_session= 键），翻译为
+    pal 单源 new_session；缺省 False ≡ stdlib Popen 缺省（无独立组）语义。"""
+    return pal.spawn_detached(cmd, *args,
+                              new_session=bool(
+                                  kwargs.pop("start_new_session", False)),
+                              **kwargs)
+
+
+class _SubprocessSeamProxy:
+    """subprocess 名 shadow 代理（形态契约见上方分节注释）。"""
+
+    def __getattr__(self, name):
+        if name == "Popen":
+            return _popen_via_pal
+        return getattr(_subprocess_stdlib, name)
+
+
+subprocess = _SubprocessSeamProxy()  # noqa: F811 —— 测试缝 shadow（见上注）
 
 # ── 路由地图生成（add-planner-efficiency：planner-route-map）─────────────
 # 项目声明生成器协议（design D1）：
@@ -6466,25 +6511,12 @@ class AgentRunner:
         root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
 
         def _write_atomic(dest: Path, data: str | bytes) -> None:
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=".fenix-run-result.", suffix=".tmp",
-                dir=str(dest.parent),
-            )
-            tmp_path = Path(tmp_name)
-            try:
-                # 二进制落盘（str 先按 utf-8 编码）：原始字节拷回路径不因文本
-                # 模式编解码抛 UnicodeEncodeError、不改变字节。
-                if isinstance(data, str):
-                    data = data.encode("utf-8")
-                with os.fdopen(fd, "wb") as f:
-                    f.write(data)
-                os.replace(tmp_path, dest)
-            finally:
-                if tmp_path.exists():
-                    try:
-                        tmp_path.unlink()
-                    except OSError:
-                        pass
+            # W2 收敛：mkstemp 唯一临时文件 + os.replace 原子写单源于
+            # core.fs_utils.atomic_write_text；现行口径经参数显式表达——
+            # 二进制落盘（str 按 utf-8 落、bytes 原始字节不因文本模式编解码
+            # 抛 UnicodeEncodeError）、不 chmod（产物保持 mkstemp 0600）、
+            # 不刷父目录。
+            atomic_write_text(dest, data, apply_mode=False, fsync_parent=False)
 
         if wt_result.exists():
             # fix-code-review 21a9e198cdb8：mtime 守卫（与 _copyback_verify_progress
@@ -7010,6 +7042,8 @@ class AgentRunner:
         except OSError:
             pass
 
+        # spawn 经本模块 subprocess 缝名（见模块头 shadow 绑定注）：单源转发
+        # pal.spawn_detached，测试 patch 本名字时替身直接接管（测试零修改）。
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -7027,6 +7061,9 @@ class AgentRunner:
             # 独立进程组启动（code-review item 28640d6b8b35：工具孙进程随组；
             # item 0c4d156555a2——停机清场与 runner 轮询环各终止/兜底通道均经
             # guard_killpg 守卫整组收割，_signal_attempt_child 单点收口）。
+            # 主树 Popen 形态词面保持（start_new_session 键经 shadow 转发
+            # _popen_via_pal 翻译为 pal.spawn_detached 单源 new_session——
+            # golden 快照与 Popen 形态桩看到的键集逐位不变）。
             start_new_session=spawn_spec.start_new_session,
         )
         self._running_agents[run_id] = proc

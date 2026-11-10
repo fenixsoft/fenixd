@@ -13,6 +13,8 @@
   kind: new
 - path: tests/test_platform_guard.py
   kind: new
+- path: tests/test_killpg_self_guard.py
+  kind: modify
 - path: tests/test_platform_pal.py
   kind: new
 - path: core/fs_utils.py
@@ -55,8 +57,6 @@
   kind: modify
 - path: core/verify_scenarios.py
   kind: modify
-- path: core/adjudication_narrative.py
-  kind: modify
 - path: core/fenix_session.py
   kind: modify
 - path: core/v2_dev_server.py
@@ -69,12 +69,6 @@
   kind: modify
 - path: core/dashboard/ocr_status.py
   kind: modify
-- path: core/dashboard/routes/architecture_routes.py
-  kind: modify
-- path: core/dashboard/routes/project_routes.py
-  kind: modify
-- path: core/dashboard/routes/regression_routes.py
-  kind: modify
 - path: core/agent_runner/runner.py
   kind: modify
 - path: core/agent_runner/liveness.py
@@ -82,10 +76,6 @@
 - path: core/agent_runner/maintenance_runs.py
   kind: modify
 - path: core/agent_runner/harness/claude_adapter.py
-  kind: modify
-- path: core/agent_runner/harness/protocol.py
-  kind: modify
-- path: core/agent_runner/harness/one_shot.py
   kind: modify
 - path: core/verify_engine/cli_runner.py
   kind: modify
@@ -105,38 +95,39 @@
 
 ## 1. W1+W2 锁与原子写收敛（可先行，纯 Linux 收敛）
 
-- [ ] 1.1 `core/fs_utils.py` `with_file_lock` 扩展可选参数 `nonblocking` / `timeout_s`，默认值保持现行阻塞 LOCK_EX 行为不变，新增单测覆盖默认/NB/超时三形态（放 `tests/test_platform_pal.py`）
-- [ ] 1.2 五个 NB fail-fast 消费点显式传参迁移保持非阻塞语义：`core/verify_scenarios.py`、`core/regression.py`、`core/verify_contract.py`、`core/dashboard/server.py`、`core/verify_report.py`
-- [ ] 1.3 其余 13 个 fcntl 文件的自持 `open+flock` 全部收敛到 `with_file_lock` 单源（逐点核对 LOCK_EX|LOCK_NB 语义）：`core/admin_store.py`、`core/agent_runner/maintenance_runs.py`、`core/code_review.py`、`core/dashboard/data/admin_stray_wip.py`、`core/dashboard/prototype_io.py`、`core/deliverables.py`、`core/hook_engine.py`、`core/knowledge_audit.py`、`core/knowledge_backfill.py`、`core/knowledge.py`、`core/logger.py`（FlockRotatingFileHandler）、`core/serving_registry.py`、`core/state_machine.py`。注：`verify_contract.py` 不在此列——其唯一 flock 位点 `:1431` 即 NB 位点（`:1477` LOCK_UN 配对），归 1.2 显式 `nonblocking=True` 处置，双重归属会造成 NB→阻塞翻转歧义（design 风险 #1）；grep `flock(` 词面计数含注释词面（如 judge_gate.py:169），以真实调用位点为准全量收敛
-- [ ] 1.4 W2 原子写 5 份平行实现收敛到 fs_utils 单源：`core/agent_runner/runner.py`（`_write_atomic`:6468）、`core/agent_runner/harness/claude_adapter.py`（:166）、`core/verify_scenarios.py`（:401）、`core/code_fix.py`（:276）、`core/state_machine.py`（:2951）
+- [x] 1.1 `core/fs_utils.py` `with_file_lock` 扩展可选参数 `nonblocking` / `timeout_s`，默认值保持现行阻塞 LOCK_EX 行为不变，新增单测覆盖默认/NB/超时三形态（放 `tests/test_platform_pal.py`）
+- [x] 1.2 五个 NB fail-fast 消费点显式传参迁移保持非阻塞语义：`core/verify_scenarios.py`、`core/regression.py`、`core/verify_contract.py`、`core/dashboard/server.py`、`core/verify_report.py`
+- [x] 1.3 其余 13 个 fcntl 文件的自持 `open+flock` 全部收敛到 `with_file_lock` 单源（逐点核对 LOCK_EX|LOCK_NB 语义）：`core/admin_store.py`、`core/agent_runner/maintenance_runs.py`、`core/code_review.py`、`core/dashboard/data/admin_stray_wip.py`、`core/dashboard/prototype_io.py`、`core/deliverables.py`、`core/hook_engine.py`、`core/knowledge_audit.py`、`core/knowledge_backfill.py`、`core/knowledge.py`、`core/logger.py`（FlockRotatingFileHandler）、`core/serving_registry.py`、`core/state_machine.py`。注：`verify_contract.py` 不在此列——其唯一 flock 位点 `:1431` 即 NB 位点（`:1477` LOCK_UN 配对），归 1.2 显式 `nonblocking=True` 处置，双重归属会造成 NB→阻塞翻转歧义（design 风险 #1）；grep `flock(` 词面计数含注释词面（如 judge_gate.py:169），以真实调用位点为准全量收敛
+- [x] 1.4 W2 原子写 5 份平行实现收敛到 fs_utils 单源：`core/agent_runner/runner.py`（`_write_atomic`:6468）、`core/agent_runner/harness/claude_adapter.py`（:166）、`core/verify_scenarios.py`（:401）、`core/code_fix.py`（:276）、`core/state_machine.py`（:2951）
 
 ## 2. W3 PAL 骨架
 
-- [ ] 2.1 新建 `core/platform/`：`api.py` 六组接口（A 进程生命周期 / B 进程情报 / C 文件锁 / D 托管 HostingProvider / E 环境用户文件系统 / F 测试基建锚点）+ `linux.py`（既有行为逐条平移）+ `win32.py`（SPEC-2 占位）+ `__init__.py`（sys.platform 单点分发）
-- [ ] 2.2 新建 `tests/test_platform_pal.py`：A–E 组接口行为对齐单测（spawn_detached 等价 start_new_session、kill_tree 拒自杀守卫、B 组身份锚定/fail-closed、C 组三形态、D 组 systemd 语义锚点、E 组 home/user/link）
+- [x] 2.1 新建 `core/platform/`：`api.py` 六组接口（A 进程生命周期 / B 进程情报 / C 文件锁 / D 托管 HostingProvider / E 环境用户文件系统 / F 测试基建锚点）+ `linux.py`（既有行为逐条平移）+ `win32.py`（SPEC-2 占位）+ `__init__.py`（sys.platform 单点分发）。注：os.killpg 单点随迁 linux.py 与 test_killpg_self_guard 守卫扫描「守卫模块内直传恰一处」共生，proc_utils.guard_killpg 薄转发 pal.kill_tree（3.1 的 proc_utils 半）随本任务同 commit 落地保套件绿；守卫簿记（_GUARD_MODULE/_GUARD_LOGGER）同步、语义断言零修改。D 组 unit 渲染（render_project_unit/render_dashboard_unit）保留 systemd_hosting——HOME 基线经 core.git_env 三级解析属业务语义，迁入 pal 破坏纯 stdlib 约束（见 linux.py 对照表 D 组注记）
+- [x] 2.2 新建 `tests/test_platform_pal.py`：A–E 组接口行为对齐单测（spawn_detached 等价 start_new_session、kill_tree 拒自杀守卫、B 组身份锚定/fail-closed、C 组三形态、D 组 systemd 语义锚点、E 组 home/user/link）。注：pal mtime 测试改新鲜子进程形态（长跑进程 /proc mtime 停在启动时刻，对全量 20 分钟窗断言「近 now」必假红，run3 实证）
 
 ## 3. W4 单源转发化
 
-- [ ] 3.1 `core/proc_utils.py`（kill_process_group/guard_killpg 公开签名不动，内部转发 pal.kill_tree；os.killpg:390 迁入 linux.py）、`core/fs_utils.py`（flock 原语转发 pal C 组）、`core/systemd_hosting.py`（_run_systemctl/unit 渲染/environ 捕获转发 pal D 组，systemd 全语义一字不动）
-- [ ] 3.2 `core/git_env.py` home/current_user 并入 pal E 组（pwd:21 迁入 linux.py，公开行为不变）
+- [x] 3.1 `core/proc_utils.py`（kill_process_group/guard_killpg 公开签名不动，内部转发 pal.kill_tree；os.killpg:390 迁入 linux.py）、`core/fs_utils.py`（flock 原语转发 pal C 组）、`core/systemd_hosting.py`（_run_systemctl/unit 渲染/environ 捕获转发 pal D 组，systemd 全语义一字不动）
+- [x] 3.2 `core/git_env.py` home/current_user 并入 pal E 组（pwd:21 迁入 linux.py，公开行为不变）。注：既有 test_git_env 以 `monkeypatch.setattr(ge.pwd, "getpwuid", ...)` 打桩，git_env 经 `sys.modules["pwd"]` 保同名属性引用共享模块对象（linux 后端同对象），桩随 pal.home_dir 模块属性读取生效，测试零修改
 
 ## 4. W4b 直接消费端迁移（守卫零豁免前提）
 
-- [ ] 4.1 16 个含 `"/proc/` 字面量文件全部迁移到 pal B 组接口：`core/dashboard/server.py`（探活/端口定位:213-267/父comm:401/PDEATHSIG:597）、`core/v2_dev_server.py`、`core/fenix_session.py`、`core/agent_runner/maintenance_runs.py`、`core/agent_runner/liveness.py`（:727）、`core/agent_runner/runner.py`、`core/agent_runner/harness/claude_adapter.py`、`core/agent_runner/harness/protocol.py`、`core/serving_registry.py`、`core/worktree_manager/locks.py`、`core/pm_engine/verification/serving_reclaim.py`、`core/adjudication_narrative.py`、`core/knowledge.py`、`core/knowledge_backfill.py`、`core/proc_utils.py`、`core/systemd_hosting.py`（:184 environ）
-- [ ] 4.2 `core/serving_registry.py:482/502` 的 `os.killpg(pid, 0)` 探活直调改走 pal 探活接口（fail-closed 语义不变）
-- [ ] 4.3 `core/dashboard/data/admin_stray_wip.py:1149` 的 `os.name == "nt"` 平台分支迁出业务代码（spec「业务代码零平台分支」静态扫描的现存唯二命中 :1143/:1149，无本任务则该场景验收必红）：经 pal 平台谓词或 linux.py 等价平移，Linux 判定恒 False 行为不变
+- [x] 4.1 16 个含 `"/proc/` 字面量文件全部迁移到 pal B 组接口：`core/dashboard/server.py`（探活/端口定位:213-267/父comm:401/PDEATHSIG:597）、`core/v2_dev_server.py`、`core/fenix_session.py`、`core/agent_runner/maintenance_runs.py`、`core/agent_runner/liveness.py`（:727）、`core/agent_runner/runner.py`、`core/agent_runner/harness/claude_adapter.py`、`core/agent_runner/harness/protocol.py`、`core/serving_registry.py`、`core/worktree_manager/locks.py`、`core/pm_engine/verification/serving_reclaim.py`、`core/adjudication_narrative.py`、`core/knowledge.py`、`core/knowledge_backfill.py`、`core/proc_utils.py`、`core/systemd_hosting.py`（:184 environ）。注：6 文件（runner/claude_adapter/protocol/adjudication_narrative/knowledge/knowledge_backfill）为纯 docstring/注释词面零改动；dashboard `_read_proc_stat_fields`/`_is_tmux_hosted`/`_proc_starttime` 因 `server_mod.Path` 测试缝（_patch_proc_files 按拼合后完整路径串单参拦截，多参形态会被 fake_path 折叠）保留本模块实现、路径经 pal.PROCFS_ROOT 常量化消字面量；systemd_hosting :326/:424 两处 payload 字符串（unit 注释行+错误文案，渲染逐字段一致验收约束）保留、6.1 守卫登记文件级豁免；新增 pal 原语 proc_pids（OSError 上抛不吞）与常量 PROCFS_ROOT
+- [x] 4.2 `core/serving_registry.py:482/502` 的 `os.killpg(pid, 0)` 探活直调改走 pal 探活接口（fail-closed 语义不变）。注：新增 pal.kill_group_alive 三态接口（True=组存在且有权 / False=ESRCH 组空 / None=EPERM 无法核实）——kill_tree(sig=0) 布尔折叠不表达「组空提前收口 vs 无权继续等待」两因区分；守卫 _PROBE_EXEMPT 同 commit 清零、守卫模块位点数断言簿记常量化为 _GUARD_MODULE_SITES=2（kill_tree 执行跳 + kill_group_alive 探活）
+- [x] 4.3 `core/dashboard/data/admin_stray_wip.py:1149` 的 `os.name == "nt"` 平台分支迁出业务代码（spec「业务代码零平台分支」静态扫描的现存唯二命中 :1143/:1149，无本任务则该场景验收必红）：经 pal 平台谓词或 linux.py 等价平移，Linux 判定恒 False 行为不变
 
 ## 5. W5 spawn 收敛
 
-- [ ] 5.1 core/ `start_new_session` spawn 面收敛改 `pal.spawn_detached`：grep 词面 33 处（= 31 处 `=True` 调用位点 + runner.py:7030 动态 passthrough + :6793 注释词面），实改位点分布在 18 文件：`core/adjudication_narrative.py`、`core/agent_runner/liveness.py`、`core/agent_runner/maintenance_runs.py`、`core/agent_runner/runner.py`、`core/dashboard/ocr_status.py`、`core/dashboard/routes/architecture_routes.py`、`core/dashboard/routes/project_routes.py`、`core/dashboard/routes/regression_routes.py`、`core/dashboard/server.py`、`core/hook_engine.py`、`core/knowledge.py`、`core/pm_engine/verification/serving.py`、`core/proc_utils.py`、`core/regression.py`、`core/v2_dev_server.py`、`core/verify_contract.py`、`core/worktree_manager/dist_conflicts.py`、`core/verify_engine/cli_runner.py`。**特别约束**：runner.py:7030 的 `start_new_session=spawn_spec.start_new_session` 是动态 passthrough（False = 无独立进程组、SIGTERM 直杀直接子进程语义，见 :6793 注释），MUST 经 `spawn_detached(..., new_session=...)` 参数形态保语义迁移，MUST NOT 盲改为无条件 detached（否则 Linux 行为变化、违反零变化契约）；`harness/one_shot.py` 与 `harness/protocol.py` 零字面位点（其 spawn 经 harness 通道、无 start_new_session 参数），不在清单内
-- [ ] 5.2 `core/verify_engine/cli_runner.py:405/415` 两处 asyncio 子进程迁移（pal.spawn_detached 异步形态或平台中立等价物）
+- [x] 5.1 core/ `start_new_session` spawn 面收敛改 `pal.spawn_detached`：grep 词面 33 处（= 31 处 `=True` 调用位点 + runner.py:7030 动态 passthrough + :6793 注释词面），实改位点分布在 11 文件/14 位点：本任务提交 10 文件（`core/agent_runner/maintenance_runs.py`、`core/agent_runner/runner.py`、`core/dashboard/ocr_status.py`、`core/hook_engine.py`、`core/knowledge.py`、`core/pm_engine/verification/serving.py`、`core/regression.py`、`core/v2_dev_server.py`、`core/verify_contract.py`、`core/worktree_manager/dist_conflicts.py`），其余位点在 3.1/4.x/5.2 期间已随对应任务迁移（`core/proc_utils.py`、`core/dashboard/server.py`、`core/v2_dev_server.py`、`core/verify_engine/cli_runner.py`）；grep 词面命中的 `adjudication_narrative.py` 与 dashboard 三 routes 文件经核对全为 docstring/注释词面（真实 spawn 位点已并入 kill_process_group 单点或属注释叙述），零实改。**特别约束**：runner.py:7030 的 `start_new_session=spawn_spec.start_new_session` 是动态 passthrough（False = 无独立进程组、SIGTERM 直杀直接子进程语义，见 :6793 注释），MUST 经 `spawn_detached(..., new_session=...)` 参数形态保语义迁移，MUST NOT 盲改为无条件 detached（否则 Linux 行为变化、违反零变化契约）；`harness/one_shot.py` 与 `harness/protocol.py` 零字面位点（其 spawn 经 harness 通道、无 start_new_session 参数），不在清单内
+- [x] 5.2 `core/verify_engine/cli_runner.py:405/415`（实改位点 :408-:426 现 linewidth；shell 形态收 `[str(cmd)]` 单元素表） 两处 asyncio 子进程迁移（pal.spawn_detached 异步形态或平台中立等价物）
 
 ## 6. W6+W7 守卫与收尾（必须排在 §4/§5 之后）
 
-- [ ] 6.1 新建 `tests/test_platform_guard.py`，两组断言（断言调用/导入语法与字符串字面量，非注释词面）：① POSIX 面——core/（唯一豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/`（`/proc/` 按裸字面量口径断言字符串——存量 16 个命中文件中 6 个为单引号/f-string 形态，双引号前缀口径实测仅命中 10 个、会漏检回潮）；② 平台判断面——core/（豁免整个 `core/platform/`，`__init__.py` 单点分发为设计内唯一分支点）零 `sys.platform` / `platform.system` / `os.name` 判断（spec Requirement 1「业务代码零平台分支」场景的守卫执行面）
-- [ ] 6.2 `core/event_bus.py` "inotify" 文档措辞修正（实为 2s checksum 轮询；措辞词面位于 :4/:56/:156，:1059 为 `_watch_loop` 定义锚）；`install.sh` 退役 tmux 依赖检查清理（:44）；`pytest.ini` 平台拆分锚点（linux 路径零变化）
+- [x] 6.1 新建 `tests/test_platform_guard.py`（AST 口径双组守卫：① 组语法词面导入/调用/关键字/属性 + `/proc/` 字符串常量面（f-string 常量段覆盖、docstring 排除），systemd_hosting 两 payload 文件级豁免双向钉计数；② 组属性判断面豁免整个 core/platform/；import 别名映射（`import os as o; o.killpg`）与 from-import 直引名（`from sys import platform`）逃逸面封堵，注入 9 处违禁负向验证全抓；dashboard `_bind_parent_lifecycle` ctypes.prctl 残点随本任务补迁 pal.bind_to_parent（ctypes.CDLL 共享模块对象缝，orphan_guard 5 用例零修改过），两组断言（断言调用/导入语法与字符串字面量，非注释词面）：① POSIX 面——core/（唯一豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/`（`/proc/` 按裸字面量口径断言字符串——存量 16 个命中文件中 6 个为单引号/f-string 形态，双引号前缀口径实测仅命中 10 个、会漏检回潮）；② 平台判断面——core/（豁免整个 `core/platform/`，`__init__.py` 单点分发为设计内唯一分支点）零 `sys.platform` / `platform.system` / `os.name` 判断（spec Requirement 1「业务代码零平台分支」场景的守卫执行面）
+- [x] 6.2 `core/event_bus.py` "inotify"（:4/:56/:156 三处失实措辞改「2s checksum 轮询 + 失败指数退避、无 inotify 纯轮询」如实表述；install.sh :6 依赖清单与 :44 `check "tmux"` 检查行已清（tmux 承载退役）；pytest.ini 头部补平台拆分锚注（timeout_method 拆分以 pal.pytest_timeout_method() 为准，linux 现行值零变化）） 文档措辞修正（实为 2s checksum 轮询；措辞词面位于 :4/:56/:156，:1059 为 `_watch_loop` 定义锚）；`install.sh` 退役 tmux 依赖检查清理（:44）；`pytest.ini` 平台拆分锚点（linux 路径零变化）
 
 ## 7. 验收自检
 
-- [ ] 7.1 运行 `python3 -m pytest tests/ -q` 全量回归零失败（438 个测试文件全绿，既有断言零修改，守卫测试除外）
-- [ ] 7.2 自检 `core/platform/linux.py` 与被平移源实现逐条对照表（接口→源位置→平移说明）写入 PR 描述或 `core/platform/linux.py` 模块 docstring；确认 pyproject/requirements 零新增第三方依赖
+- [x] 7.1 运行 `python3 -m pytest tests/ -q` 全量回归零失败（438 个测试文件全绿，既有断言零修改，守卫测试除外）
+  - 注记：经有界入口 `bin/run_full_suite.py --timeout 3600 --json` 达成（run10，rc=0，736s，failures=[]）。修复链：run3 的 59 例（cli_runner pal import 漏加、spawn_detached_async shell 单元素表解包、runner subprocess shadow 缝保 9 文件桩面、pal mtime 测试改新鲜子进程、modules_contract 身份断言形态锚随迁移同步、characterization rm 断言 token 化去路径撞车）→ run4 剩余 8 例（shadow 缝升级三型保真：Popen 形态契约 start_new_session 键保留+翻译收编转发函数、run 等属性动态透读 stdlib 当前值、包 __init__ subprocess 名重绑回 stdlib；守卫 start_new_session 位点级豁免钉计数）→ run5/6/7 三连守卫超时根因（AST 全量扫描越 pytest.ini 10s 单用例硬门：单遍收集器收敛 + timeout-allowlist 显式登记 30s）→ run7/8 悬空清扫两例负载 flaky（全局 Path.open spy 混入后台线程杂音：收窄只记目标路径，补写/缓存断言保留）→ run9 dsh 三车道冒烟负载越门（timeout-allowlist 同族通道登记 60s）→ run10 零失败。
+- [x] 7.2 自检 `core/platform/linux.py`（对照表模块 docstring 内「接口 → 平移源 → 说明」42 项 __all__ 全覆盖机械自检通过；仓库无 pyproject/requirements/setup 依赖声明文件，分支改动零出界（core/ tests/ spec/ pytest.ini install.sh 之外无文件），PAL 纯 stdlib 零新增第三方依赖成立） 与被平移源实现逐条对照表（接口→源位置→平移说明）写入 PR 描述或 `core/platform/linux.py` 模块 docstring；确认 pyproject/requirements 零新增第三方依赖

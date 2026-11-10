@@ -8,6 +8,7 @@ from pathlib import Path
 # tool_result 事件识别单一真源（design D1：禁止在真源之外再次硬编码事件类型比较），
 # 本模块经类内 staticmethod 别名委托复用（与 runner.py 同型），不保留本地副本。
 from core.timelib import from_epoch
+from core.platform import api as pal
 from core.agent_runner.latency import entry_is_tool_result
 from core.agent_runner.run_files import (
     append_run_line,
@@ -723,12 +724,13 @@ class LivenessSupervisor:
                 # rc==1＝扫描正常完成但无匹配，继续其余前缀
                 continue
             for pid_str in res.stdout.split():
-                try:
-                    with open(f"/proc/{pid_str}/cmdline", "rb") as f:
-                        argv = f.read().split(b"\0")
-                except OSError:
+                # 4.1：cmdline 经 pal.read_cmdline_raw 单点（fail-closed；
+                # None ＝ 原读取失败口径，无法排除归属，保守判存活）
+                raw = pal.read_cmdline_raw(int(pid_str))
+                if raw is None:
                     # 进程刚退出/权限不足：无法排除归属，保守判存活
                     return True
+                argv = raw.split(b"\0")
                 for arg in argv:
                     text = arg.decode("utf-8", "replace")
                     idx = text.find("worktrees/")

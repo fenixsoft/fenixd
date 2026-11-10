@@ -25,7 +25,6 @@
 """
 
 import errno
-import fcntl
 import json
 import logging
 import re
@@ -34,7 +33,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.fs_utils import atomic_write_text
+from core.fs_utils import atomic_write_text, flock_exclusive, flock_release
 # verify-progress 路径成分净化（读取侧与写侧 engine._safe_component 同口径，
 # code-review item f19f580d2734）：spec_name 含分隔符或纯点成分时，读侧裸拼
 # 会与写侧净化后路径错位，闸门恒判 report.json 缺失。仅收敛 verify-progress
@@ -379,7 +378,7 @@ def _acquire_advisory_lock(lf, spec_name, timeout: float = _VERDICT_LOCK_WAIT) -
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         try:
-            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flock_exclusive(lf, nonblocking=True)
             return True
         except OSError as e:
             if e.errno not in (errno.EACCES, errno.EAGAIN):
@@ -463,7 +462,7 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
             if lf is not None:
                 # LOCK_UN 失败不掩盖原始异常（close 即隐式释放 flock）
                 try:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
                 except OSError:
                     pass
                 lf.close()
@@ -1870,7 +1869,7 @@ def record_verdict_round(
         if lf is not None:
             # LOCK_UN 失败不掩盖原始异常（close 即隐式释放 flock）
             try:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+                flock_release(lf)
             except OSError:
                 pass
             lf.close()

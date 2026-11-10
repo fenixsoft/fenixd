@@ -18,13 +18,14 @@ DEFAULT_GATEWAY_MODEL 随 `_get_admin_model` 同迁本模块（D2b 规则 3）�
 """
 
 import dataclasses
-import fcntl
 import hashlib
 import json
 import math
 import os
 import re
 import shlex
+from core.platform import api as pal
+from core.fs_utils import flock_exclusive, flock_release
 import shutil
 import signal
 import subprocess
@@ -1601,7 +1602,7 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
         tokens_json.parent.mkdir(parents=True, exist_ok=True)
         lock_path = tokens_json.parent / f".{tokens_json.name}.lock"
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 data = {}
                 if tokens_json.is_file():
@@ -1647,7 +1648,7 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
                         except OSError:
                             pass
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
     except (OSError, ValueError, TypeError):
         # item 37eebaf5faae：json.dumps 遇不可序列化值抛 TypeError（此前不在
         # 收口内，归账可在 agent 工作完成后的收尾记账处崩溃）；ValueError 已
@@ -3719,60 +3720,12 @@ def agent_process_cpu_seconds(proc) -> float | None:
     权限不足）返回 None，调用方按 fail-open 不触发（看门狗宁可漏杀不可误杀，
     且无进程句柄时 cancel_run 也无从终止）。
 
-    ``proc`` 为 subprocess.Popen 或等价句柄（只需 .pid 属性）；子进程遍历用
-    内核提供的 /proc/<pid>/task/<tid>/children（比全表扫 /proc 匹配 ppid 便宜
-    且无「孙进程在遍历间隙被收养」的误判面）。
+    add-platform-abstraction 4.1：实现单源 pal.process_tree_cpu_seconds
+    （2.1 自本函数逐字平移：task/<tid>/children 进程树汇总 + SC_CLK_TCK
+    缺省 100.0 俱在），本函数为薄委托；既有测试经模块属性整体替换本名，
+    转发不触碰缝。
     """
-    pid = getattr(proc, "pid", None)
-    if not pid or pid <= 0:
-        return None
-    ticks = 0.0
-    read_any = False
-    seen: set[int] = set()
-    queue = [int(pid)]
-    try:
-        clk_tck = os.sysconf("SC_CLK_TCK")
-    except (ValueError, OSError, AttributeError):
-        clk_tck = 100.0
-    if not clk_tck:
-        clk_tck = 100.0
-    while queue:
-        cur = queue.pop()
-        if cur in seen:
-            continue
-        seen.add(cur)
-        try:
-            with open(f"/proc/{cur}/stat", "rb") as f:
-                stat = f.read()
-        except OSError:
-            continue
-        # stat 的 comm 字段可含空格/括号，以最后一个 ')' 切开取其后字段
-        rparen = stat.rfind(b")")
-        if rparen < 0:
-            continue
-        fields = stat[rparen + 2 :].split()
-        # fields[11]=utime fields[12]=stime（14th/15th 列，state 从 fields[0] 起）
-        if len(fields) < 13:
-            continue
-        try:
-            ticks += int(fields[11]) + int(fields[12])
-        except ValueError:
-            continue
-        read_any = True
-        # 逐线程 children 汇总（同 pid 多线程时 children 记录在各 task 下）
-        try:
-            for tid_dir in os.scandir(f"/proc/{cur}/task"):
-                try:
-                    with open(f"/proc/{cur}/task/{tid_dir.name}/children", "rb") as f:
-                        queue.extend(int(x) for x in f.read().split())
-                except (OSError, ValueError):
-                    continue
-        except OSError:
-            continue
-    if not read_any:
-        # 顶层 pid 就读不到（已退出/权限）→ 判据不可用，调用方 fail-open
-        return None
-    return ticks / clk_tck
+    return pal.process_tree_cpu_seconds(proc)
 
 
 def _accumulate_code_review_tokens(runner, run_id: str, usage_info: dict) -> None:
@@ -5236,7 +5189,7 @@ def run_impl_ocr(
             # 登记 API 为 planned-restart-drain 2.1 新增：旧测试替身/第三方
             # runner 缺该方法时按未登记处理（行为同现状）。
             lane_done = threading.Event()
-            proc = subprocess.Popen(
+            proc = pal.spawn_detached(
                 cmd,
                 cwd=str(wt),
                 env={**os.environ, **env_overrides},
@@ -5248,7 +5201,7 @@ def run_impl_ocr(
                 # 硬超时/异常/排水清场用 _kill_ocr_process_group 杀整棵树，杜绝
                 # 「只杀直接子进程会让孙进程存活」（仓库惯例：regression D8、
                 # v2_dev_server design D2、knowledge_backfill 等）。
-                start_new_session=True,
+                new_session=True,
             )
             _register_lane = getattr(runner, "register_lane_process", None)
             if callable(_register_lane):

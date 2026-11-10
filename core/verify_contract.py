@@ -118,7 +118,6 @@ BASE_URL 注入范围扩展（design D4）：
 """
 
 import errno
-import fcntl
 import json
 import os
 import re
@@ -137,6 +136,8 @@ from urllib.request import Request, urlopen
 
 import yaml
 
+from core.platform import api as pal
+from core.fs_utils import flock_exclusive, flock_release
 from core.proc_utils import find_free_port, kill_process_group
 
 CONTRACT_FILENAME = "verify.yaml"
@@ -1218,13 +1219,13 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     else set()
                 )
                 try:
-                    proc = subprocess.Popen(
+                    proc = pal.spawn_detached(
                         cmd_str,
                         shell=True,
                         cwd=str(project_root),
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        start_new_session=True,
+                        new_session=True,
                         env=env,
                     )
                 except Exception as e:
@@ -1428,7 +1429,7 @@ class _PrepareHostLock:
         start = time.monotonic()
         while time.monotonic() - start < self._timeout:
             try:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock_exclusive(self._file.fileno(), nonblocking=True)
                 self._acquired = True
                 break
             except OSError:
@@ -1474,7 +1475,7 @@ class _PrepareHostLock:
         if self._file is not None:
             try:
                 if self._acquired:
-                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                    flock_release(self._file.fileno())
             except OSError:
                 pass
             try:
@@ -1585,7 +1586,7 @@ def _run_prepare_steps_unlocked(
             # 同一纪律）：subprocess.run 超时只 kill 直接子进程，npm/pnpm 派生
             # 的 node 构建孙进程会继续后台写 dist，与后续验证 serve/prepare
             # 并发污染被测产物目录（code-review item 2fa170366d6b）。
-            p = subprocess.Popen(
+            p = pal.spawn_detached(
                 cmd,
                 shell=use_shell,
                 cwd=str(cwd),
@@ -1600,7 +1601,7 @@ def _run_prepare_steps_unlocked(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                start_new_session=True,
+                new_session=True,
             )
         # ValueError 与 OSError 同捕（code-review item c9a11de9d009）：cmd/cwd
         # 含空字节（YAML 双引号 ``\0`` 转义可过 _prepare_run_valid 的形态守卫）
@@ -2136,7 +2137,7 @@ def _run_npm_provision(argv: list, cwd: Path) -> subprocess.CompletedProcess:
     约定向调用方抛 TimeoutExpired（由既有 ``except (SubprocessError,
     OSError)`` 清理路径接管）。Popen 的 OSError 同样交由调用方捕获。
     """
-    p = subprocess.Popen(
+    p = pal.spawn_detached(
         argv,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
@@ -2149,7 +2150,7 @@ def _run_npm_provision(argv: list, cwd: Path) -> subprocess.CompletedProcess:
         text=True,
         encoding="utf-8",
         errors="replace",
-        start_new_session=True,
+        new_session=True,
     )
     try:
         out, err = p.communicate(timeout=NPM_PROVISION_TIMEOUT)

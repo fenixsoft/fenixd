@@ -55,7 +55,7 @@ from core.agent_runner.harness.one_shot import (
     OneShotCommunicateError,
     run_one_shot,
 )
-from core.fs_utils import atomic_write_text as _fs_atomic_write_text
+from core.fs_utils import atomic_write_text as _fs_atomic_write_text, flock_exclusive, flock_release
 from core.git_text import unquote_git_path
 from core.log_adapter import StdLoggerAdapter
 from core.timelib import now_local
@@ -151,18 +151,17 @@ def _todo_write_lock(project_root: Path):
     另立锁名，两簇锁互不互斥，跨车道并发仍是「各自读旧全文→拼接→原子
     替换」的后写覆盖先写（code-review 7508274d893d）。锁文件自身无内容语义。
     """
-    import fcntl
 
     todo_dir = Path(project_root) / ".fenix"
     todo_dir.mkdir(parents=True, exist_ok=True)
     # [fenix-ignore:7508274d893d] 条目描述的另立锁名 todo.lock 在当前代码中不存在：锁文件已与其他 todo.md 写方统一为 .fenix/.todo.md.lock（见 docstring）
     fh = open(todo_dir / ".todo.md.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 
@@ -709,17 +708,16 @@ def _ledger_write_lock(project_root: Path):
     会用内存中的旧 entries 覆盖先写者刚落盘的条目（code-review 5feb371288c8）。
     锁文件自身无内容语义。
     """
-    import fcntl
 
     lock_dir = Path(project_root) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fh = open(lock_dir / "knowledge_backfill.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 
@@ -1751,17 +1749,16 @@ def knowledge_distill_lock(project_root: Path):
     MUST NOT 在已持该锁的进程内嵌套再取（flock 对同进程的第二个 fd 同样
     互斥，会自阻塞）：本车道写段内不经 DistillManager 任何加锁路径。
     """
-    import fcntl
 
     lock_dir = Path(project_root) / ".fenix"
     lock_dir.mkdir(parents=True, exist_ok=True)
     fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 

@@ -12,7 +12,6 @@ spawn）创建时登记（pid/port/spec/worktree）、stop 时移除；daemon �
 收割效率，不制造新失败。
 """
 
-import fcntl
 import json
 import os
 import signal
@@ -21,7 +20,8 @@ import threading
 import time
 from pathlib import Path
 
-from core.fs_utils import fsync_parent_dir
+from core.fs_utils import fsync_parent_dir, flock_exclusive, flock_release
+from core.platform import api as pal
 from core.proc_utils import (
     guard_killpg,
     pid_alive_signal,
@@ -144,7 +144,7 @@ class ServingRegistry:
         """
         with self._thread_lock:
             with self._lock() as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                flock_exclusive(lf)
                 try:
                     records = self._read_unlocked(self.path)
                     result = fn(records)
@@ -152,7 +152,7 @@ class ServingRegistry:
                         self._write_unlocked(records)
                     return result
                 finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
 
     # ── 公开 API ───────────────────────────────────────────────────
 
@@ -267,11 +267,11 @@ class ServingRegistry:
         try:
             with self._thread_lock:
                 with self._lock() as lf:
-                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    flock_exclusive(lf)
                     try:
                         return self._read_unlocked(self.path)
                     finally:
-                        fcntl.flock(lf, fcntl.LOCK_UN)
+                        flock_release(lf)
         except OSError:
             if self.logger:
                 self.logger.warning("serving_registry", f"登记读取失败（非阻塞）: {self.path}")
@@ -361,10 +361,9 @@ def _harvest_identity_ok(entry: dict, pid: int) -> bool:
         # worktree 内路径的无关进程（tail -f/grep）argv 也会命中，单凭 argv
         # 判身份会整组误杀；真实例 spawn 即 cwd=worktree（见
         # serving._serve_command_in_worktree），cwd 单信号足以核身。
-        try:
-            cwd_link = os.readlink(f"/proc/{pid}/cwd")
-        except OSError:
-            cwd_link = ""
+        # 4.1：cwd 经 pal.readlink_cwd 单点（None ＝ 原读取失败 → ""；空串
+        # ＝僵尸态原样返回，同落下方 not cwd_link「无法核实」拦截）
+        cwd_link = pal.readlink_cwd(pid) or ""
         if not cwd_link:
             # cwd 读不到＝无法核实，与上方 starttime 快照分支同口径返回
             # None（sweep 跳过本轮收割且保留登记、下轮重试）：一次瞬时读
@@ -478,14 +477,15 @@ def kill_process_group(pid: int, logger=None) -> bool:
             # 误判风险与下方组长探针同源（且进入本函数前 sweep 已做过
             # starttime 身份核对），保守口径不变：无权探测（EPERM）按存活
             # 继续等待但不升级投递。
-            try:
-                os.killpg(pid, 0)
-            except ProcessLookupError:
+            # 4.2：探活经 pal.kill_group_alive 三态单点（True＝命中接管 /
+            # False＝组空确定性否定 / None＝无权无法核实按存活继续等待），
+            # 两因区分语义逐位保留。
+            alive = pal.kill_group_alive(pid)
+            if alive is False:
                 return sent  # 孤儿组已空（无存活成员）
-            except OSError:
-                pass  # 组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
-            else:
+            if alive is True:
                 pgid = pid
+            # None：组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
                 # 孤儿组仍存活：接管 pgid 后补发一次 SIGTERM 再进入就绪
                 # 等待——本路径因 getpgid 解析不到组长跳过了顶部投递，
                 # 组内存活成员从未收到优雅终止信号，直接升级 SIGKILL 会
@@ -498,12 +498,11 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 ):
                     sent = True
         else:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
+            # 4.2：同上，pal.kill_group_alive 三态（False＝组空提前收口；
+            # True/None＝组非空或无权，按存活继续等待）
+            alive = pal.kill_group_alive(pgid)
+            if alive is False:
                 return sent  # 组空（组长已死且无存活成员）
-            except OSError:
-                pass  # 组非空但无权探测 → 按存活继续等待
         time.sleep(0.2)
     if pgid is not None:
         # SIGKILL 实际发出成功同样置位（守卫拒绝/组已不存在则静默，sent

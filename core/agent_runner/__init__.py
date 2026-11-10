@@ -33,3 +33,10 @@ from .runner import (  # noqa: F401
     run_spec_part,
 )
 from .runner import *  # noqa: F401,F403
+# PAL 5.1 后 runner 模块内 subprocess 名 shadow 为转发命名空间（见 runner.py
+# 模块头注），随上方 * 导入会把本名的主树语义（stdlib 共享模块对象）覆盖成
+# 该命名空间——而测试以 agent_runner_module.subprocess.Popen = ... 形态打桩，
+# 依赖此名与 harness/one_shot、liveness 等消费点的 stdlib subprocess 名解析到
+# 同一模块对象（setattr 落模块对象 → 全局可见）。此处显式重绑回 stdlib，
+# shadow 只保留在 runner 模块命名空间内（保 runner_mod.subprocess 整体替换桩型）。
+import subprocess  # noqa: F401

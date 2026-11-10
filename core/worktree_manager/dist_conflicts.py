@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from core.platform import api as pal
 from core.worktree_manager.constants import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
 )
@@ -146,7 +147,7 @@ def run_dist_build(
         # 组 → wait → SIGKILL 组补刀 → 补 communicate 排空管道收尸，随后按
         # subprocess.run 同约定向调用方抛 TimeoutExpired（TimeoutExpired 属
         # SubprocessError 族，由下方既有 except 接管，失败口径不变）。
-        p = subprocess.Popen(
+        p = pal.spawn_detached(
             ["npm", "run", "build"],
             cwd=str(static_dir),
             stdout=subprocess.PIPE,
@@ -158,7 +159,7 @@ def run_dist_build(
             text=True,
             encoding="utf-8",
             errors="replace",
-            start_new_session=True,
+            new_session=True,
         )
         try:
             out, err = p.communicate(timeout=FALLBACK_BUILD_TIMEOUT_SECONDS)

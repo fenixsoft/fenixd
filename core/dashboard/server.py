@@ -51,7 +51,6 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 """
 
 import contextlib
-import fcntl
 import logging
 import os
 import re
@@ -65,7 +64,9 @@ from pathlib import Path
 from .registry import Registry
 from .watcher import FileWatcher
 from core.fenix_session import start_daemon, stop_daemon
+from core.fs_utils import flock_exclusive, flock_release
 from core.proc_utils import find_free_port as _proc_find_free_port
+from core.platform import api as pal
 
 logger = logging.getLogger("fenixd.dashboard.server")
 
@@ -155,7 +156,7 @@ def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock_exclusive(fd, nonblocking=True)
                 acquired = True
                 break
             except OSError:
@@ -166,7 +167,7 @@ def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
     finally:
         if acquired:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                flock_release(fd)
             except OSError:
                 pass
         os.close(fd)
@@ -208,92 +209,16 @@ class DashboardHandler(H0BaseMixin, H2ProjectRoutesMixin, H3SpecRoutesMixin, H4R
 def _find_dashboard_occupant(port: int) -> dict | None:
     """定位占用目标端口的进程（仅 Linux）。
 
-    返回 {"pid": int, "cmdline": str} 或 None（无占用 / 无法判定）。
+    返回 {"pid": int, "cmdline": str, "starttime": int|None} 或 None
+    （无占用 / 无法判定）。
 
-    判定（inode 映射，避免 /proc/<pid>/net/tcp 按网络命名空间而非进程返回错误 PID）：
-    1. 读 /proc/net/tcp（及 /proc/net/tcp6）找到监听目标端口的 socket inode，
-       地址匹配 127.0.0.1 / 0.0.0.0 通配（IPv4）与 :: 通配 / ::1（IPv6）
-       （code-review item 9df14cc4442f）；
-    2. 遍历 /proc/<pid>/fd/* 软链接，匹配 socket:[inode] 得到真正持有该
-       端口的 PID；
-    3. 读取该进程 cmdline。
+    add-platform-abstraction 4.1：实现单源 pal.find_port_owner（2.1 自本
+    函数逐字平移：v4/v6 地址匹配形态、len(parts)<10 护栏、探测异常 stderr
+    留痕、starttime 防 PID 复用快照俱在），本函数为薄委托。本模块无本体
+    直调测试（serve 接管链经 _install_serve_harness 整体替换本名），转发
+    不触碰既有测试缝。
     """
-    try:
-        port_hex = f"{port & 0xffff:04X}"
-        # 匹配形态放宽（code-review item 9df14cc4442f）：bind 127.0.0.1:port 对
-        # 0.0.0.0 通配、IPv6 通配（::）或 ::1 上的监听同样 EADDRINUSE，旧实现
-        # 只扫 IPv4 表 /proc/net/tcp 且仅认 0100007F，此时定位不到占用者、
-        # serve() 只能报「未知进程（PID ?）」。现补充扫描 /proc/net/tcp6（禁用
-        # IPv6 的机器上该文件不存在，按无此表跳过）；IPv6 地址列 32 hex、按
-        # 32 位字小端打印，通配 :: 为全零、::1 为 …01000000。匹配不上仍返回
-        # None——「匹配不上即不接管」的保守语义不变。
-        v4_addrs = ("0100007F", "00000000")  # 127.0.0.1 / 0.0.0.0 通配
-        v6_addrs = (
-            "0" * 32,  # :: 通配
-            "00000000000000000000000001000000",  # ::1
-        )
-        inode = None
-        for net_table, listen_addrs in (
-            (Path("/proc/net/tcp"), v4_addrs),
-            (Path("/proc/net/tcp6"), v6_addrs),
-        ):
-            if not net_table.exists():
-                continue
-            for line in net_table.read_text(
-                encoding="utf-8", errors="replace"
-            ).split("\n")[1:]:
-                parts = line.split()
-                # 字段数护栏按实际取用下标（inode 是第 10 列）判定（code-review item
-                # aaf3f304a0de）：旧实现只查 `len(parts) < 4`，而下方读 `parts[9]`——
-                # 4~9 个字段的截断/畸形行会抛 IndexError，被外层 `except Exception:
-                # return None` 吞掉，使「解析失败」与「无占用者」不可区分；调用方据此
-                # 打印误导性的「未知进程」并非 0 退出，而不是接管陈旧 dashboard 实例。
-                if len(parts) < 10:
-                    continue
-                local = parts[1]
-                state = parts[3]
-                if state != "0A":  # 0A = LISTEN
-                    continue
-                if ":" not in local:
-                    continue
-                addr, p = local.split(":", 1)
-                if p.upper() == port_hex and addr.upper() in listen_addrs:
-                    inode = parts[9]
-                    break
-            if inode:
-                break
-        if not inode:
-            return None
-        # 通过 /proc/<pid>/fd 软链接匹配 inode → 真正持有端口的 PID
-        for pid_dir in Path("/proc").glob("[0-9]*"):
-            fd_dir = pid_dir / "fd"
-            if not fd_dir.is_dir():
-                continue
-            try:
-                for link in fd_dir.iterdir():
-                    try:
-                        target = os.readlink(str(link))
-                    except OSError:
-                        continue
-                    if target == f"socket:[{inode}]":
-                        try:
-                            raw = (pid_dir / "cmdline").read_bytes()
-                            cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
-                        except OSError:
-                            cmdline = ""
-                        pid = int(pid_dir.name)
-                        # starttime 随 PID 一并返回（code-review item 5612e191a8f5）：
-                        # 接管方 kill 前可据此复核进程身份，防「查询后目标死亡、PID
-                        # 被复用」时误杀无关进程。
-                        return {"pid": pid, "cmdline": cmdline, "starttime": _proc_starttime(pid)}
-            except OSError:
-                continue
-    except Exception as e:
-        # 探测失败≠无占用者（code-review item 532de62ce081）：兜底仍返回 None
-        # 保持行为不变，但写一行 stderr 留痕，与「端口确实空闲」区分，便于排查。
-        sys.stderr.write(f"dashboard 端口占用者探测异常（按无占用者处理）: {e}\n")
-        return None
-    return None
+    return pal.find_port_owner(port)
 
 
 def _is_dashboard_serve_cmd(cmdline: str) -> bool:
@@ -325,8 +250,15 @@ def _read_proc_stat_fields(pid: int) -> list[str] | None:
     _parent_is_pid1 / _proc_state 四处消费各自取所需下标，避免解析规则在多处
     重复实现后漂移。
     """
+    # server.Path 测试缝（_patch_proc_files 经模块 Path 构造拦截重定向
+    # /proc/<pid>/stat）：读取留本模块，路径构造经 pal.PROCFS_ROOT 常量
+    # 消字面量（4.1/6.1）；fake_path 按拼合完成后的完整路径串匹配，形态
+    # 不变。
     try:
-        data = Path(f"/proc/{pid}/stat").read_text()
+        # 单参数 f-string 形态：_patch_proc_files.fake_path 未命中 mapping
+        # 时只透传首参（多参形态会被折成 Path("/proc") 目录），缝要求拼合
+        # 完成后以完整路径串单参构造。
+        data = Path(f"{pal.PROCFS_ROOT}/{pid}/stat").read_text()
         return data[data.rindex(")") + 2 :].split()
     except (OSError, ValueError, IndexError):
         return None
@@ -376,7 +308,7 @@ def _claude_watchdog_loop(
         if cur == starttime:
             read_failures = 0
             continue
-        if cur is not None or not Path(f"/proc/{pid}").exists():
+        if cur is not None or pal.proc_dir_mtime(pid) is None:
             # 读到不同 starttime（PID 复用）或进程已消失 → 判死
             on_death()
             return
@@ -413,13 +345,21 @@ def _is_tmux_hosted(ppid: int | None = None) -> bool:
         # 字节读 + replace 解码：comm 可经 PR_SET_NAME 写入任意字节，严格解码的
         # UnicodeDecodeError（ValueError）会逃逸 OSError 处理器、违反「读取失败
         # → False」的 fail-safe 契约（code-review 发现）
-        comm = Path(f"/proc/{ppid}/comm").read_bytes().decode("utf-8", "replace").strip()
+        # server.Path 测试缝（_patch_proc_files）：读取留本模块，路径经
+        # pal.PROCFS_ROOT 常量消字面量（4.1/6.1，同 _read_proc_stat_fields）
+        # 单参数 f-string 形态，理由同 _read_proc_stat_fields（fake_path
+        # 未命中时只透传首参，多参会被折成 Path("/proc") 目录）
+        comm = Path(f"{pal.PROCFS_ROOT}/{ppid}/comm").read_bytes().decode(
+            "utf-8", "replace"
+        ).strip()
     except OSError:
         return False
     if comm == "tmux: server":
         return True
     try:
-        argv0 = Path(f"/proc/{ppid}/cmdline").read_bytes().split(b"\0")[0]
+        argv0 = Path(f"{pal.PROCFS_ROOT}/{ppid}/cmdline").read_bytes().split(
+            b"\0"
+        )[0]
     except OSError:
         return False
     base = os.path.basename(argv0.decode("utf-8", "replace"))
@@ -590,16 +530,14 @@ def _bind_parent_lifecycle() -> None:
     if os.environ.get("FENIX_DASHBOARD_DETACH") == "1":
         _start_claude_watchdog()
         return
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        # PR_SET_PDEATHSIG = 1（linux/sched.h）；SIGTERM = 15
-        if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
-            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
-    except Exception as e:  # 非 Linux / libc 不可用：仅告警不阻断启动
+    # PDEATHSIG 纪律经 pal.bind_to_parent（A 组单源，纪律上收 linux.py）；
+    # False＝非 Linux / libc 不可用 / prctl 失败：仅告警不阻断启动（策略留本端）。
+    # 既有测试缝（零修改契约）：test_dashboard_orphan_guard 以
+    # monkeypatch.setattr(ctypes, "CDLL", ...) 打桩——pal 后端经共享 ctypes
+    # 模块对象属性读取取 CDLL，桩照常生效，prctl 调用形态逐位一致。
+    if not pal.bind_to_parent(signal.SIGTERM):
         sys.stderr.write(
-            f"dashboard serve 无法设置 PDEATHSIG（{e}）；"
+            "dashboard serve 无法设置 PDEATHSIG（bind_to_parent 失败）；"
             "父进程退出后本实例不会自动终止，请注意。\n"
         )
     if os.getppid() == 1:
@@ -868,11 +806,13 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
 
 
 def _is_process_alive(pid: int) -> bool:
-    """进程是否存活（/proc/<pid> 目录存在即视为存活，Linux 限定）。"""
-    try:
-        return Path(f"/proc/{pid}").exists()
-    except OSError:
-        return False
+    """进程是否存活（/proc/<pid> 目录存在即视为存活，Linux 限定）。
+
+    add-platform-abstraction 4.1：目录存在性经 pal.proc_dir_mtime 单点
+    （同 os.stat(2) 口径，读不到 → None；本模块无本体直调测试，serve 接管
+    链经 _install_serve_harness 整体替换本名）。
+    """
+    return pal.proc_dir_mtime(pid) is not None
 
 
 def _proc_state(pid: int) -> str | None:

@@ -26,6 +26,7 @@ from pathlib import Path
 import subprocess
 
 from core.serving_registry import ServingRegistry
+from core.platform import api as pal
 
 RECLAIM_GRACE_SECONDS = 600
 
@@ -114,50 +115,34 @@ def has_live_process(wt_path: Path) -> bool:
 
     扫描 /proc/[pid]/cmdline 与 /proc/[pid]/cwd。
     无法判定时返回 True（fail-safe）。
+
+    add-platform-abstraction 4.1：枚举经 pal.proc_pids（OSError → fail-safe
+    True，同原 procfs 目录不可用口径）；逐 pid 的 cmdline/cwd 经
+    pal.read_cmdline_raw / pal.readlink_cwd（None ＝ 原单进程读取失败口径，
+    跳过该信号继续余项）。argv/cwd 判据与 realpath 归一、os.sep 前缀口径
+    逐字保留。
     """
     try:
         target = str(wt_path.resolve())
-        proc_base = Path("/proc")
-        if not proc_base.is_dir():
-            return True
-        for pid_dir in proc_base.iterdir():
-            pid_name = pid_dir.name
-            if not pid_name.isdigit():
-                continue
-            # argv check（code-review f9dc60296502：与 cwd 判据同口径——cmdline
-            # 按 NUL 切分成单个 argv 后做全等/目录前缀匹配；纯子串匹配在目录名
-            # 互为前缀时误命中（…/spec-1000 命中指向 …/spec-10001 的进程），
-            # 失效方向为 fail-safe 误保留、无主目录永不回收）
-            cmdline_file = pid_dir / "cmdline"
-            try:
-                cmdline_bytes = cmdline_file.read_bytes()
-                cmdline = cmdline_bytes.decode("utf-8", "replace")
-                if any(
-                    arg == target or arg.startswith(target + os.sep)
-                    for arg in cmdline.split("\0")
-                ):
-                    return True
-            except OSError:
-                pass
-            # cwd check
-            cwd_file = pid_dir / "cwd"
-            try:
-                cwd_link = os.readlink(str(cwd_file))
-                # code-review 4ac8ad87577c：readlink 结果先 realpath 归一再比较
-                # （与 worktree_manager/locks.py 的 _pid_in_project_worktrees /
-                # _kill_worktree_strays 同范式，消解符号链接/挂载拼写差异）——
-                # 字面前缀匹配在 cwd 为拼写不同但同物理的路径时漏命中，失败
-                # 方向是「判无主→删目录」而非保守保留
-                cwd_real = os.path.realpath(cwd_link)
-                # code-review 7eab5dba1293：分隔符与 argv 判据同源（os.sep），
-                # 消除同函数两口径
-                if cwd_real == target or cwd_real.startswith(target + os.sep):
-                    return True
-            except OSError:
-                pass
-        return False
+        pids = pal.proc_pids()
     except Exception:
         return True
+    for pid_name in pids:
+        pid = int(pid_name)
+        raw = pal.read_cmdline_raw(pid)
+        if raw is not None:
+            cmdline = raw.decode("utf-8", "replace")
+            if any(
+                arg == target or arg.startswith(target + os.sep)
+                for arg in cmdline.split("\0")
+            ):
+                return True
+        cwd_link = pal.readlink_cwd(pid)
+        if cwd_link is not None:
+            cwd_real = os.path.realpath(cwd_link)
+            if cwd_real == target or cwd_real.startswith(target + os.sep):
+                return True
+    return False
 
 
 def is_within_grace_period(wt_path: Path) -> bool:
@@ -181,8 +166,12 @@ def _pid_alive(pid) -> bool:
     pid 复用会让已亡实例被无关新进程「顶活」——本助手只作保留判据，
     失败方向是多保留一份证据日志而非误删，可接受。
     """
+    # 4.1：存在性经 pal.proc_dir_mtime 单点（同 os.stat(2) 口径）。非数值
+    # pid 仍按「异常 → True」fail-safe；非正 pid 走 False（原 Path.exists
+    # 对 /proc/<非正> 恒 False，非异常路径），正数读不到 → False。
     try:
-        return Path(f"/proc/{int(pid)}").exists()
+        pid_int = int(pid)
+        return pid_int > 0 and pal.proc_dir_mtime(pid_int) is not None
     except Exception:
         return True
 

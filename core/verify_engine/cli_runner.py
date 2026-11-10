@@ -34,6 +34,7 @@ from .runner import VerifyRunner, register_runner, determine_scenario_status
 from .cli_assertions import CliAssertionRunner
 from .scenarios import MAX_STEP_TIMEOUT, validate_scenario
 from ..proc_utils import guard_killpg
+from core.platform import api as pal  # 5.2 spawn_detached_async 消费
 
 DEFAULT_RUN_TIMEOUT = 60.0
 
@@ -402,24 +403,27 @@ class CliRunner(VerifyRunner):
 
         try:
             if use_shell:
-                proc = await asyncio.create_subprocess_shell(
-                    str(cmd),
+                # 5.2：异步 spawn 经 pal.spawn_detached_async 单点（shell
+                # 形态收 str 命令单元素表；new_session 透传独立进程组语义）
+                proc = await pal.spawn_detached_async(
+                    [str(cmd)],
                     cwd=str(cwd),
                     env=env,
                     stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,  # 独立进程组：超时强杀可带全组
+                    new_session=True,  # 独立进程组：超时强杀可带全组
+                    shell=True,
                 )
             else:
-                proc = await asyncio.create_subprocess_exec(
-                    *[str(c) for c in cmd],
+                proc = await pal.spawn_detached_async(
+                    [str(c) for c in cmd],
                     cwd=str(cwd),
                     env=env,
                     stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
+                    new_session=True,
                 )
         except FileNotFoundError as e:
             # 空 cwd 回退链根目录（scenario_root/project_root）不做存在性校验，

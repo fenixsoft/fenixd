@@ -29,16 +29,22 @@ self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
 只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
-import fcntl
+import errno
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
+from typing import Optional
+
+from core.platform import api as pal
+from core.platform.api import FileLockBusy, FileLockUnavailable
 
 _logger = logging.getLogger("fenixd.fs_utils")
 
 
-def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -> None:
+def atomic_write_text(path, content: "str | bytes", inherit_existing_mode: bool = False,
+                      *, apply_mode: bool = True, fsync_parent: bool = True) -> None:
     """mkstemp 唯一临时文件 + fsync + os.replace 原子写（单点实现）。
 
     固定 ``<name>.tmp`` 临时名在并发写同一目标时会互相截断：进程 A 完成
@@ -48,13 +54,20 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
 
     mkstemp 以 0600 建临时文件，rename 前按 ``inherit_existing_mode`` 修复
     权限（语义见模块 docstring）；chmod 失败不阻断写入（权限是尽力而为的
-    附属属性）。
+    附属属性）。``apply_mode=False`` 跳过 chmod（产物保持 mkstemp 0600，
+    平移自 runner/claude_adapter/state_machine 三份私有原子写的现行口径，
+    W2 收敛时以参数显式表达而非默认放宽）。
+
+    ``content`` 支持 bytes（str 先按 utf-8 编码落盘由 ``"w"`` 模式承担，
+    bytes 直接 ``"wb"`` 写原始字节——runner 平移口径，不因文本模式编解码
+    抛 UnicodeEncodeError、不改变字节）。
 
     rename 后尽力而为 fsync 父目录（code-review item f19b8ef57ce6）：fsync
     临时文件只保证文件内容持久，目录项改动（rename 本身）须 fsync 父目录
     才在整机断电/内核崩溃后有持久化保证，否则可能出现「写成功但重启后回到
     旧内容」。进程被 kill 的场景 page cache 仍在、无影响；目录 fsync 失败
-    不阻断写入（与 chmod 同为尽力而为的附属纪律）。
+    不阻断写入（与 chmod 同为尽力而为的附属纪律）。``fsync_parent=False``
+    平移自原无父目录刷盘的私有实现口径。
     """
     path = Path(path)
     parent = path.parent
@@ -62,36 +75,48 @@ def atomic_write_text(path, content: str, inherit_existing_mode: bool = False) -
     tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            f.write(content)
+        # fdopen 失败路径显式接管（state_machine._atomic_write_text 先例
+        # cbb57806fbfd 平移）：with 的 close 只在 fdopen 成功后才生效，
+        # fdopen 自身抛错时裸 fd 无人关闭——f 为 None 时兜底 os.close。
+        f = None
+        try:
+            if isinstance(content, (bytes, bytearray)):
+                f = os.fdopen(tmp_fd, "wb")
+                f.write(content)
+            else:
+                f = os.fdopen(tmp_fd, "w", encoding="utf-8")
+                f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        try:
-            if inherit_existing_mode:
-                # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
-                # 「其他 OSError→跳过 chmod 留 debug 日志」；先 exists() 再
-                # stat() 的双探测在两步间目标被并发删除时会连带跳过 chmod，
-                # 产物静默保持 0600（item 7b94b65d0f0c）
-                try:
-                    mode = os.stat(path).st_mode & 0o777
-                except FileNotFoundError:
-                    mode = 0o644
+        finally:
+            if f is not None:
+                f.close()
             else:
-                mode = 0o644
-            os.chmod(tmp_path, mode)
-        except OSError as exc:
-            _logger.debug("atomic_write_text: best-effort chmod skipped for %s: %s", path, exc)
-        os.replace(tmp_path, path)
-        # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
-        # 失败不阻断主流程
-        try:
-            dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
+        if apply_mode:
             try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
+                if inherit_existing_mode:
+                    # 单次 os.stat，以 FileNotFoundError 区分「不存在→0644」与
+                    # 「其他 OSError→跳过 chmod 留 debug 日志」；先 exists() 再
+                    # stat() 的双探测在两步间目标被并发删除时会连带跳过 chmod，
+                    # 产物静默保持 0600（item 7b94b65d0f0c）
+                    try:
+                        mode = os.stat(path).st_mode & 0o777
+                    except FileNotFoundError:
+                        mode = 0o644
+                else:
+                    mode = 0o644
+                os.chmod(tmp_path, mode)
+            except OSError as exc:
+                _logger.debug("atomic_write_text: best-effort chmod skipped for %s: %s", path, exc)
+        os.replace(tmp_path, path)
+        if fsync_parent:
+            # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
+            # 失败不阻断主流程。W3 起纪律原语上收 pal.fsync_dir（E 组单点）。
+            pal.fsync_dir(parent)
     finally:
         if tmp_path.exists():
             try:
@@ -109,20 +134,43 @@ def fsync_parent_dir(path: Path) -> None:
     （item 671399f09114）：admin_store 侧薄委托引用，serving_registry 直用
     公共名。目录 fsync 在个别文件系统上不支持或失败（EINVAL 等），静默
     忽略，此时仍保留进程级崩溃安全保证。
+
+    W3 起为 pal.fsync_dir 薄委托（O_DIRECTORY 口径统一，E 组单点；调用方
+    传目录路径，行为与原 O_RDONLY 形态逐位等价）。
     """
-    try:
-        dfd = os.open(str(path.parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dfd)
-    except OSError:
-        pass
-    finally:
-        os.close(dfd)
+    pal.fsync_dir(path.parent)
 
 
-def with_file_lock(path: Path, fn):
+# FileLockBusy / FileLockUnavailable 家址上收 core.platform.api（C 组契约面，
+# 见头部 import）——W1 收敛期本模块为其原始定义处，W3 转发化后以同名字再
+# 导出，既有 ``fs_utils.FileLockBusy`` 引用身份不变（is 同一类对象）。
+
+
+def flock_exclusive(fileobj, *, nonblocking: bool = False) -> None:
+    """对已打开的锁文件做单次 ``LOCK_EX``（nonblocking 时 | ``LOCK_NB``）flock。
+
+    core/ 全部 flock syscall 的单源原语（platform-abstraction C 组转发面，
+    零行为变化平移）：需要自持 fd 管理锁生命周期的消费点（持锁横跨多个
+    调用、或以 contextmanager 形态 yield 锁内区间）各自保留既有轮询节奏 /
+    errno 分类 / 降级策略，syscall 调用收口于此；with_file_lock 是其上的
+    标准封装（锁文件布局 ``.<name>.lock`` 一处维护）。fileobj 接受文件对象
+    或 fd（fcntl.flock 两种形态均接受）。失败抛 OSError，errno 原样上抛。
+
+    W3 起为 pal.flock_exclusive 薄委托（syscall 家址上收 core.platform.linux）。
+    """
+    pal.flock_exclusive(fileobj, nonblocking=nonblocking)
+
+
+def flock_release(fileobj) -> None:
+    """``LOCK_UN`` 释放（close 亦隐式释放；失败处理策略归调用方，原样上抛）。
+
+    W3 起为 pal.flock_release 薄委托。
+    """
+    pal.flock_release(fileobj)
+
+
+def with_file_lock(path: Path, fn, *, nonblocking: bool = False,
+                   timeout_s: Optional[float] = None):
     """在 path 同目录的 ``.<name>.lock`` 文件上加 flock 互斥后执行 fn。
 
     调用方（daemon 主线程 / dashboard server 线程）可能同时写同一存储；
@@ -132,15 +180,41 @@ def with_file_lock(path: Path, fn):
     原 evolution 私有 ``_with_lock``，self_review 三处跨模块 import 以共用
     todo.md 锁，提升于此公共归属（item 1a8a9328767b）；evolution 侧以
     ``as _with_lock`` 别名引用，内部调用面与锁文件布局不变。
+
+    可选参数（platform-abstraction W1 前置扩展，默认行为不变）：
+
+    - 默认（无新参）：现行阻塞 ``LOCK_EX`` 语义，完全不变。
+    - ``nonblocking=True``：以 ``LOCK_EX | LOCK_NB`` 轮询抢锁而非无限阻塞，
+      ``timeout_s``（默认 0 = 仅尝试一次）内每 50ms 重试；仅「锁被占」类
+      errno（EAGAIN/EACCES）值得重试，其余（特殊文件系统不支持 flock 等）
+      立即抛 ``FileLockUnavailable``；限时未抢到抛 ``FileLockBusy``——两因
+      可区分，调用方可分别降级留痕（对齐 verify_scenarios 现行分类）。
+      ``timeout_s`` 仅在 nonblocking 下生效。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / f".{path.name}.lock"
     with open(lock_path, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        if nonblocking:
+            deadline = time.monotonic() + max(0.0, float(timeout_s or 0.0))
+            while True:
+                try:
+                    flock_exclusive(lock_f, nonblocking=True)
+                    break
+                except OSError as e:
+                    if e.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise FileLockUnavailable(
+                            f"文件系统不支持 flock（errno={e.errno}）") from e
+                    if time.monotonic() >= deadline:
+                        raise FileLockBusy(
+                            f"限时 {float(timeout_s or 0.0):g}s 内未抢到锁（他方持锁）"
+                        ) from e
+                    time.sleep(0.05)
+        else:
+            flock_exclusive(lock_f)
         try:
             return fn()
         finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+            flock_release(lock_f)
 
 
 def git_c_env() -> dict:
