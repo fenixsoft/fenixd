@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-11-08 21:21 UTC+8
+> 最后更新：2026-11-10 18:13 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、前端壳层基建、按需生成类任务与指挥中心聚合。
 
@@ -35,6 +35,7 @@
 | dsh web「重新连接中」重连环、WS 反复断连（close 4000 是下游症状勿查传输层） | [dsh-web-connection-baseline](../dashboard-frontend/dsh-web-connection-baseline.md)（dashboard-frontend 域） |
 | 嵌入态 hash 深链丢失/挂载路径漂移（同源前缀代理挂载下） | [dashboard-embed-mount](../dashboard-frontend/dashboard-embed-mount.md)（dashboard-frontend 域） |
 | 前端 rebuild 后改动不生效（拿到旧 bundle 验证新改动） | [page-container-chrome](../dashboard-frontend/page-container-chrome.md)（dashboard-frontend 域；hash goto 不重载文档，验证须整页 reload） |
+| 冒烟直达路径形态白屏 + console css/js/preload_helper 资源 404 | [page-container-chrome](../dashboard-frontend/page-container-chrome.md)（dashboard-frontend 域；hash 入口必须带 `/#/`，路径形态令 dist 相对资源引用解析错误） |
 | SSE 断开空窗/增量停摆 | [dashboard-sse-refresh](dashboard-sse-refresh.md)（30s 心跳兜底刷新、重连恢复增量） |
 | dashboard 端口被占/实例疑似陈旧僵死 | [dashboard-instance-lifecycle](dashboard-instance-lifecycle.md)（陈旧进程判读、双轨重启协议） |
 | SPEC 列表请求慢/超时（/api/specs 服务端延迟） | [dashboard-read-path-performance](dashboard-read-path-performance.md)（单趟同源聚合与分槽锁治理） |

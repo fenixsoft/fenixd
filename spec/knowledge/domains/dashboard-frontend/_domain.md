@@ -1,5 +1,5 @@
 # 仪表盘前端
-> 最后更新：2026-11-10 15:04 UTC+8
+> 最后更新：2026-11-10 18:13 UTC+8
 
 仪表盘前端。本域能力条目清单如下（能力页由存量回填批次逐步产出，落盘后此处升级为链接）。
 
@@ -26,7 +26,7 @@
 | [quality-gates-progress](quality-gates-progress.md) | 质量门禁进度呈现（详情页行渲染 Bento 勾选块形态，2026-11-06 对齐 v2 改版定形） | 2026-11-06 17:11 |
 | [activity-records-tabs](activity-records-tabs.md) | 活动记录页签 | 2026-10-03 04:59 |
 | [project-page-tabs](project-page-tabs.md) | 项目详情页签（六分面：项目首页居首/功能开发默认、tab 参数持久化 replace 语义、按需加载门控） | 2026-11-10 14:54 |
-| [project-home-tab](project-home-tab.md) | 项目首页页签（只读文件浏览：git 可见文件树/目录导航与面包屑/文件内容查看与下载/README GFM 安全渲染/URL path 持久化/project-files 三端点与路径越界防护） | 2026-11-10 14:54 |
+| [project-home-tab](project-home-tab.md) | 项目首页页签（只读文件浏览：git 可见文件树/目录导航与面包屑/内容渲染分通道（md 管线/图片 raw 直显/PrismLight 代码高亮/纯文本兜底）/文件下载/README GFM 安全渲染/URL path 持久化与挂载一次性 seed/project-files 四端点与路径越界防护） | 2026-11-10 18:13 |
 | [dashboard-spec-archive](dashboard-spec-archive.md) | 归档查询视图 | 2026-10-06 17:00 |
 | [ui-theme](ui-theme.md) | 主题切换 | 2026-10-03 04:59 |
 | [spec-detail-page](spec-detail-page.md) | SPEC 详情页（常驻信息区 + 四页签：运行时间轴/场景结果/Bug 列表/失败截图，运行节点展开对话流按需加载，场景双空态语义，Bug 卡片与截图 lightbox） | 2026-10-03 04:59 |
@@ -36,7 +36,7 @@
 | [dashboard-embed-mount](dashboard-embed-mount.md) | dashboard 嵌入挂载（apiBase 前缀单点、embed=1 壳层隐藏+统一标题行内嵌内容区首行、缺省行为不变） | 2026-11-05 18:27 |
 | [harness-brand-projection](harness-brand-projection.md) | 对话视图 harness 品牌投影（context 缺省 Claude、run_metrics harness 键真相源、回退链、DshLogo 官方资产） | 2026-10-30 23:11 |
 | [timeline-origin-request](timeline-origin-request.md) | 时间轴立项原话展示（fenix-new 立项原话 request.md 持久化、时间轴首 state 节点附着、前端引用块渲染、缺失静默降级） | 2026-10-31 17:53 |
-| [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、内容区间距 15px + 呼吸带 16px 标记类、零值尾部 spread 传导、去边框页级作用域豁免、rebuild 后 reload 验证纪律） | 2026-11-06 17:11 |
+| [page-container-chrome](page-container-chrome.md) | 内容区留白与边框治理（ProLayout token 留白单源、内容区间距 15px + 呼吸带 16px 标记类、零值尾部 spread 传导、去边框页级作用域豁免、前端冒烟加载纪律：hash 入口必须带 `/#/` 与 rebuild 后 reload 验证） | 2026-11-10 18:13 |
 | [run-visual-agent-labels](run-visual-agent-labels.md) | run 时间轴 agent 标签映射（AGENT_LABEL/RUN_ID_PREFIX_LABEL 新车道登记纪律、漏登记回退「未知 Agent」） | 2026-11-04 17:46 |
 | [unified-page-title-bar](unified-page-title-bar.md) | 全站统一标题栏（四槽位声明控件、SPEC 详情页中文标题富标题内部下方行堆叠（移动端只显英文标题、subtitle 槽行内形态保留既有消费面）、embed 行壳位单档 60px 毛玻璃固定标题带、standalone 含移动端统一注册落 ProLayout 顶栏（移动=汉堡+logo+标题同条、副标题移动端隐藏）、v2 六页经 titleBar 槽位并入、PageContainer 页头与面包屑退役、过滤项统一右上落位（filters 槽位=移动端标题栏右侧控件位单一定点）、定高偏移双档回校、脱壳大屏与占位页豁免） | 2026-11-08 00:40
 | [document-scroll-unify](document-scroll-unify.md) | 帮助/设置页文档级滚动统一（滚动条跨标题区域三模式同构、目录/菜单 sticky 钉住 56/60 双档纯定位、两页无定高偏移与内滚、贴缘负边距不存续、守卫锁定） | 2026-11-05 20:37 |
