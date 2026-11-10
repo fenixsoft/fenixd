@@ -754,8 +754,10 @@ def is_alive_with_identity(pid: int, identity) -> Optional[bool]:
     pid = int(pid)
     any_unknown = False
     for alt in alternatives:
-        if not isinstance(alt, dict):
-            raise ValueError(f"锚定备选须为 dict：{alt!r}")
+        if not isinstance(alt, dict) or not alt:
+            # 空锚定字典（零锚）会静默退化为无条件命中——锚定接口的静默
+            # 漏锚与无条件放行同罪，显式拒绝
+            raise ValueError(f"锚定备选须为非空 dict：{alt!r}")
         unknown_keys = set(alt) - set(_IDENTITY_ANCHOR_KEYS)
         if unknown_keys:
             raise ValueError(f"未知身份锚键：{sorted(unknown_keys)}（合法："

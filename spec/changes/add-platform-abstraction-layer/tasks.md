@@ -112,7 +112,7 @@
 
 ## 2. W3 PAL 骨架
 
-- [ ] 2.1 新建 `core/platform/`：`api.py` 六组接口（A 进程生命周期 / B 进程情报 / C 文件锁 / D 托管 HostingProvider / E 环境用户文件系统 / F 测试基建锚点）+ `linux.py`（既有行为逐条平移）+ `win32.py`（SPEC-2 占位）+ `__init__.py`（sys.platform 单点分发）
+- [x] 2.1 新建 `core/platform/`：`api.py` 六组接口（A 进程生命周期 / B 进程情报 / C 文件锁 / D 托管 HostingProvider / E 环境用户文件系统 / F 测试基建锚点）+ `linux.py`（既有行为逐条平移）+ `win32.py`（SPEC-2 占位）+ `__init__.py`（sys.platform 单点分发）。注：os.killpg 单点随迁 linux.py 与 test_killpg_self_guard 守卫扫描「守卫模块内直传恰一处」共生，proc_utils.guard_killpg 薄转发 pal.kill_tree（3.1 的 proc_utils 半）随本任务同 commit 落地保套件绿；守卫簿记（_GUARD_MODULE/_GUARD_LOGGER）同步、语义断言零修改。D 组 unit 渲染（render_project_unit/render_dashboard_unit）保留 systemd_hosting——HOME 基线经 core.git_env 三级解析属业务语义，迁入 pal 破坏纯 stdlib 约束（见 linux.py 对照表 D 组注记）
 - [ ] 2.2 新建 `tests/test_platform_pal.py`：A–E 组接口行为对齐单测（spawn_detached 等价 start_new_session、kill_tree 拒自杀守卫、B 组身份锚定/fail-closed、C 组三形态、D 组 systemd 语义锚点、E 组 home/user/link）
 
 ## 3. W4 单源转发化
