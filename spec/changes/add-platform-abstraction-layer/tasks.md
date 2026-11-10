@@ -123,7 +123,7 @@
 ## 4. W4b 直接消费端迁移（守卫零豁免前提）
 
 - [x] 4.1 16 个含 `"/proc/` 字面量文件全部迁移到 pal B 组接口：`core/dashboard/server.py`（探活/端口定位:213-267/父comm:401/PDEATHSIG:597）、`core/v2_dev_server.py`、`core/fenix_session.py`、`core/agent_runner/maintenance_runs.py`、`core/agent_runner/liveness.py`（:727）、`core/agent_runner/runner.py`、`core/agent_runner/harness/claude_adapter.py`、`core/agent_runner/harness/protocol.py`、`core/serving_registry.py`、`core/worktree_manager/locks.py`、`core/pm_engine/verification/serving_reclaim.py`、`core/adjudication_narrative.py`、`core/knowledge.py`、`core/knowledge_backfill.py`、`core/proc_utils.py`、`core/systemd_hosting.py`（:184 environ）。注：6 文件（runner/claude_adapter/protocol/adjudication_narrative/knowledge/knowledge_backfill）为纯 docstring/注释词面零改动；dashboard `_read_proc_stat_fields`/`_is_tmux_hosted`/`_proc_starttime` 因 `server_mod.Path` 测试缝（_patch_proc_files 按拼合后完整路径串单参拦截，多参形态会被 fake_path 折叠）保留本模块实现、路径经 pal.PROCFS_ROOT 常量化消字面量；systemd_hosting :326/:424 两处 payload 字符串（unit 注释行+错误文案，渲染逐字段一致验收约束）保留、6.1 守卫登记文件级豁免；新增 pal 原语 proc_pids（OSError 上抛不吞）与常量 PROCFS_ROOT
-- [ ] 4.2 `core/serving_registry.py:482/502` 的 `os.killpg(pid, 0)` 探活直调改走 pal 探活接口（fail-closed 语义不变）
+- [x] 4.2 `core/serving_registry.py:482/502` 的 `os.killpg(pid, 0)` 探活直调改走 pal 探活接口（fail-closed 语义不变）。注：新增 pal.kill_group_alive 三态接口（True=组存在且有权 / False=ESRCH 组空 / None=EPERM 无法核实）——kill_tree(sig=0) 布尔折叠不表达「组空提前收口 vs 无权继续等待」两因区分；守卫 _PROBE_EXEMPT 同 commit 清零、守卫模块位点数断言簿记常量化为 _GUARD_MODULE_SITES=2（kill_tree 执行跳 + kill_group_alive 探活）
 - [ ] 4.3 `core/dashboard/data/admin_stray_wip.py:1149` 的 `os.name == "nt"` 平台分支迁出业务代码（spec「业务代码零平台分支」静态扫描的现存唯二命中 :1143/:1149，无本任务则该场景验收必红）：经 pal 平台谓词或 linux.py 等价平移，Linux 判定恒 False 行为不变
 
 ## 5. W5 spawn 收敛
