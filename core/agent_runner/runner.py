@@ -23,7 +23,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Optional, Dict, Any
 
 from core.platform import api as pal
@@ -185,34 +184,46 @@ from core.agent_runner.maintenance_runs import (
 
 # ── spawn 单源转发与测试缝保留（add-platform-abstraction-layer 5.1）──────
 # 本模块 spawn 位点经 pal.spawn_detached 单源（独立进程组纪律上收
-# core.platform.linux；new_session ≡ start_new_session 字面）。既有 9 个
-# 测试文件（test_turn_limit_lifecycle 等）以 monkeypatch.setattr(runner_mod,
-# "subprocess", SimpleNamespace(Popen=替身, PIPE=…, …)) 整体替换**本模块
-# 命名空间**的 subprocess 名打桩——spawn 调用 MUST 保持 subprocess.Popen
-# 词面经本名字命中桩（pal. 前缀会脱靶到真 pal，替身不生效、读流环卡死）。
-# 故把本模块 subprocess 名 shadow 为轻量命名空间：Popen 位转发 pal 单源
-# （未带 new_session 的调用点保持 Popen 缺省「无独立组」语义逐位等价），
-# 其余属性（PIPE/run/TimeoutExpired/SubprocessError——本模块全部消费面）
-# 直引 stdlib 真身。此 shadow 仅本模块命名空间生效，不触碰共享 subprocess
-# 模块；测试替换本名字时替身直接接管全部属性消费，语义与旧形态一致。
+# core.platform.linux）。既有测试以三种形态消费/打桩本模块 subprocess 名，
+# shadow 形态对三类逐一保真：
+# 1. 命名空间整体替换型（9 文件：monkeypatch.setattr(runner_mod,
+#    "subprocess", SimpleNamespace(Popen=替身, …))）——spawn 调用 MUST 保持
+#    subprocess.Popen 词面经本名字命中桩（pal. 前缀会脱靶到真 pal，替身
+#    不生效、读流环卡死）；模块属性整体替换直接接管，不经代理。
+# 2. Popen 形态契约型（test_harness_claude_snapshot golden 快照：
+#    patch runner.subprocess.Popen 属性后断言 kwargs 含 start_new_session
+#    等主树 Popen 键）——spawn 调用点保持 Popen 形态词面
+#    （start_new_session= 键），new_session 翻译收编在转发函数内，
+#    替身/桩看到的主树键集逐位不变。
+# 3. stdlib 模块属性打桩型（test_planner_route_map 超时 fail-open：
+#    monkeypatch.setattr(subprocess, "run", ...) 打共享模块属性）——
+#    run/PIPE/TimeoutExpired/SubprocessError 不做函数对象快照绑定，
+#    __getattr__ 每次透读 stdlib 模块**当前属性值**：桩 setattr 到共享
+#    模块后本名照常命中，恢复后自动还原；非打桩期与 stdlib 真身同一
+#    对象（modules_contract 身份断言保持）。
+# 此 shadow 仅本模块命名空间生效，不触碰共享 subprocess 模块。
 _subprocess_stdlib = subprocess
 
 
 def _popen_via_pal(cmd, *args, **kwargs):
-    """spawn 缝转发：显式 new_session 的位点走 pal 单源；缺省 False ≡
-    stdlib Popen 缺省（start_new_session=False，无独立组）语义。"""
+    """spawn 缝转发：收主树 Popen 形态契约（start_new_session= 键），翻译为
+    pal 单源 new_session；缺省 False ≡ stdlib Popen 缺省（无独立组）语义。"""
     return pal.spawn_detached(cmd, *args,
-                              new_session=kwargs.pop("new_session", False),
+                              new_session=bool(
+                                  kwargs.pop("start_new_session", False)),
                               **kwargs)
 
 
-subprocess = SimpleNamespace(  # noqa: F811 —— 测试缝 shadow（见上注）
-    Popen=_popen_via_pal,
-    PIPE=_subprocess_stdlib.PIPE,
-    run=_subprocess_stdlib.run,
-    SubprocessError=_subprocess_stdlib.SubprocessError,
-    TimeoutExpired=_subprocess_stdlib.TimeoutExpired,
-)
+class _SubprocessSeamProxy:
+    """subprocess 名 shadow 代理（形态契约见上方分节注释）。"""
+
+    def __getattr__(self, name):
+        if name == "Popen":
+            return _popen_via_pal
+        return getattr(_subprocess_stdlib, name)
+
+
+subprocess = _SubprocessSeamProxy()  # noqa: F811 —— 测试缝 shadow（见上注）
 
 # ── 路由地图生成（add-planner-efficiency：planner-route-map）─────────────
 # 项目声明生成器协议（design D1）：
@@ -7050,7 +7061,10 @@ class AgentRunner:
             # 独立进程组启动（code-review item 28640d6b8b35：工具孙进程随组；
             # item 0c4d156555a2——停机清场与 runner 轮询环各终止/兜底通道均经
             # guard_killpg 守卫整组收割，_signal_attempt_child 单点收口）。
-            new_session=spawn_spec.start_new_session,
+            # 主树 Popen 形态词面保持（start_new_session 键经 shadow 转发
+            # _popen_via_pal 翻译为 pal.spawn_detached 单源 new_session——
+            # golden 快照与 Popen 形态桩看到的键集逐位不变）。
+            start_new_session=spawn_spec.start_new_session,
         )
         self._running_agents[run_id] = proc
 

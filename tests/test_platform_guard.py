@@ -33,6 +33,14 @@ POSIX_EXEMPT_FILES = {"core/platform/linux.py"}
 # payload + environ 捕获失败错误文案，渲染逐字段一致是 SPEC 验收约束。
 PROCFS_PAYLOAD_EXEMPT = {"core/systemd_hosting.py": 2}
 
+# ① 组 start_new_session 关键字的位点级豁免（值＝该文件内 keyword 出现数，
+# 断言双向钉死：回潮或消失都判漂移）——runner.py _run_agent spawn 位点是
+# 测试缝 shadow 转发本身：start_new_session 键为主树 Popen 形态契约保留
+# （test_harness_claude_snapshot golden 快照桩按主树键集逐位断言），实际经
+# 模块级 _popen_via_pal 翻译为 pal.spawn_detached 单源 new_session——独立
+# 进程组纪律仍收 pal，本豁免不构成 syscall 绕行通道。
+START_NEW_SESSION_KEYWORD_EXEMPT = {"core/agent_runner/runner.py": 1}
+
 
 def _iter_core_files():
     for path in sorted(CORE_DIR.rglob("*.py")):
@@ -74,6 +82,21 @@ def _module_aliases(tree):
     return aliases
 
 
+def _start_new_session_keyword_hits():
+    """① 组 start_new_session 关键字出现位点（豁免钉计数的数据源）。"""
+    hits = []
+    for rel, path in _iter_core_files():
+        if rel in POSIX_EXEMPT_FILES:
+            continue
+        tree = _parse_module(path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "start_new_session":
+                        hits.append((rel, node.lineno))
+    return hits
+
+
 def _posix_syntax_violations():
     """① 组语法词面：fcntl/pwd 导入、killpg/setsid 调用与 from os import、
     start_new_session 关键字、prctl 引用（Attribute/Name 两形态）。"""
@@ -109,13 +132,19 @@ def _posix_syntax_violations():
                     violations.append(
                         f"{rel}:{lineno}: {func.value.id}.{func.attr}() 直调"
                     )
-                for kw in node.keywords:
-                    if kw.arg == "start_new_session":
-                        violations.append(f"{rel}:{lineno}: start_new_session= 关键字")
             elif isinstance(node, ast.Attribute) and node.attr == "prctl":
                 violations.append(f"{rel}:{lineno}: prctl 属性访问")
             elif isinstance(node, ast.Name) and node.id == "prctl":
                 violations.append(f"{rel}:{lineno}: prctl 名字引用")
+    # start_new_session 关键字经位点级豁免钉计数过滤（计数不匹配即报——
+    # runner.py shadow 转发缝之外回潮任何一处都不可静默）。
+    sns_hits = _start_new_session_keyword_hits()
+    sns_counts = {}
+    for rel, _ in sns_hits:
+        sns_counts[rel] = sns_counts.get(rel, 0) + 1
+    for rel, lineno in sns_hits:
+        if sns_counts[rel] != START_NEW_SESSION_KEYWORD_EXEMPT.get(rel):
+            violations.append(f"{rel}:{lineno}: start_new_session= 关键字")
     return violations
 
 
@@ -178,7 +207,18 @@ class TestPosixFaceBusinessClean:
     def test_no_posix_syntax_faces_outside_pal_linux(self):
         """fcntl/pwd 导入、killpg/setsid 直调（含 from os import 形态）、
         start_new_session 关键字、prctl 引用在 core/（唯一豁免 linux.py 外）
-        零存在——回潮即违「平台 syscall 单点」架构约束。"""
+        零存在——回潮即违「平台 syscall 单点」架构约束。start_new_session
+        经位点级豁免（runner.py shadow 转发缝的 Popen 形态契约保留），计数
+        双向钉死：回潮或消失都须人工核对同步。"""
+        drifted = {
+            rel: sum(1 for r, _ in _start_new_session_keyword_hits()
+                     if r == rel)
+            for rel in START_NEW_SESSION_KEYWORD_EXEMPT
+        }
+        assert drifted == START_NEW_SESSION_KEYWORD_EXEMPT, (
+            f"start_new_session 豁免计数漂移（回潮或消失都须人工核对同步）："
+            f"{drifted} != {START_NEW_SESSION_KEYWORD_EXEMPT}"
+        )
         violations = _posix_syntax_violations()
         assert not violations, (
             "core/ 出现 POSIX 专属词面（须收敛到 core.platform.linux / pal）：\n"
