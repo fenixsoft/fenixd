@@ -69,6 +69,11 @@ B 进程情报
 - read_procfile                 ← 新聚合原语：任意 /proc/<relpath> 字节读
                                   （杂项消费点如 /proc/self/* 经此；relpath
                                   校验禁 ".." 与绝对形态）
+- kill_group_alive              ← 新组探活三态接口（serving_registry
+                                  kill_process_group 等待循环 sig=0 直调
+                                  上收，4.2）：True＝组存在且有权 / False＝
+                                  ESRCH 组空（确定性否定）/ None＝EPERM 等
+                                  无法核实（调用方按各自保守方向处置）
 - proc_pids                     ← 新枚举原语：os.listdir("/proc") 数字目录名
                                   单点（fenix_session._procs_matching /
                                   systemd_hosting._find_dashboard_pid /
@@ -488,6 +493,30 @@ def read_procfile(relpath: str) -> Optional[bytes]:
     try:
         return Path("/proc", *rel.split("/")).read_bytes()
     except OSError:
+        return None
+
+
+def kill_group_alive(pgid: int) -> Optional[bool]:
+    """进程组探活三态（sig=0 存在性检查，不投递信号）。
+
+    True＝killpg(pgid, 0) 命中（组存在且调用者有权）；False＝组已不存在
+    （ProcessLookupError，确定性否定）；None＝组仍非空但无权探测（EPERM
+    等 OSError，无法核实）。
+
+    平移自 core/serving_registry.py kill_process_group 等待循环的组探活
+    直调形态（4.2 上收单点）：等待循环须区分「组空 → 提前收口」与「无权
+    → 按存活继续等待」两因，``kill_tree(sig=0)`` 的布尔折叠不表达该区分，
+    故独立三态接口。非正 pgid 与 ESRCH 同向按 False（killpg 对负值/不存在
+    组恒落 ProcessLookupError）。
+    """
+    if int(pgid) <= 0:
+        return False
+    try:
+        os.killpg(int(pgid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (OSError, ValueError):
         return None
 
 
@@ -1080,6 +1109,7 @@ __all__ = [
     "terminate_graceful",
     "kill_tree",
     "bind_to_parent",
+    "kill_group_alive",
     # B
     "read_cmdline_raw",
     "cmdline_argv",

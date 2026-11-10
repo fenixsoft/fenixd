@@ -76,6 +76,10 @@ def bind_to_parent(sig: int = signal.SIGTERM) -> bool:
     raise _spec2("win32.bind_to_parent")
 
 
+def kill_group_alive(pgid: int) -> Optional[bool]:
+    raise _spec2("win32.kill_group_alive")
+
+
 # ── B 进程情报 ──────────────────────────────────────────────────────────
 
 def read_cmdline_raw(pid: int) -> Optional[bytes]:
@@ -212,6 +216,7 @@ __all__ = [
     "terminate_graceful",
     "kill_tree",
     "bind_to_parent",
+    "kill_group_alive",
     "read_cmdline_raw",
     "cmdline_argv",
     "proc_stat_fields",

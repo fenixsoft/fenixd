@@ -385,6 +385,7 @@ class TestFormConsistency:
 # 守卫模块自身是唯一直传 os.killpg 的执行点（W3 pal 上收后守卫执行跳居于
 # core/platform/linux.py 的 kill_tree；proc_utils.guard_killpg 为薄转发）
 _GUARD_MODULE = "core/platform/linux.py"
+_GUARD_MODULE_SITES = 2  # kill_tree 执行跳 + kill_group_alive 探活（4.2）
 
 # 守卫 WARNING 的 logger 名（随执行跳同迁；测试经名挂 Handler 捕获）
 _GUARD_LOGGER = "fenixd.platform.linux"
@@ -396,9 +397,7 @@ _GUARD_LOGGER = "fenixd.platform.linux"
 # adjudication_narrative 的同款探活亦已并入该单点（item 614e441bb97a，
 # 薄适配器 kill_process_group(sigkill_only_if_group_alive=True) 形态），
 # 本文件不再有探活点，故不列。
-_PROBE_EXEMPT = {
-    "core/serving_registry.py": 2,  # kill_process_group 组空判定（pgid 路径 + 孤儿组接管路径）
-}
+_PROBE_EXEMPT: dict = {}  # 4.2 探活点已迁 pal.kill_group_alive，无豁免
 
 # 探活形态：第二实参为字面量 0
 _PROBE_SHAPE = re.compile(r"os\.killpg\(\s*[^,()]+,\s*0\s*\)")
@@ -454,10 +453,16 @@ class TestNoBareKillpgEscapesGuard:
         assert not unregistered, f"新探活调用点须登记进 _PROBE_EXEMPT：{unregistered}"
 
     def test_guard_module_is_the_only_direct_killpg(self):
-        """守卫模块内直传 os.killpg 恰好一处（guard_killpg 的执行跳）。"""
+        """守卫模块内直传 os.killpg 恰好 _GUARD_MODULE_SITES 处。
+
+        4.2 起两处（簿记常量钉形态防漂移）：kill_tree 的执行跳（投递形态）
+        与 kill_group_alive 的探活（sig=0 三态）。全库唯一位点仍在守卫模块。
+        """
         guard_hits = [
             (lineno, line.strip())
             for rel, lineno, line in _killpg_lines()
             if rel == _GUARD_MODULE
         ]
-        assert len(guard_hits) == 1, f"守卫模块内 os.killpg 执行点漂移：{guard_hits}"
+        assert len(guard_hits) == _GUARD_MODULE_SITES, (
+            f"守卫模块内 os.killpg 执行点漂移：{guard_hits}"
+        )

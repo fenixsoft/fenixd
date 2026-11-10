@@ -425,6 +425,27 @@ class TestKillTreeGuard:
             _reap(proc)
 
 
+
+class TestKillGroupAlive:
+    def test_self_group_alive(self):
+        # 自身进程组恒有权且存在 → True
+        assert pal.kill_group_alive(os.getpgrp()) is True
+
+    def test_nonexistent_group_false(self):
+        # 不存在的组（高位 pid 段）→ ESRCH 确定性否定 False
+        assert pal.kill_group_alive(_pid_ceiling() + 10_000) is False
+
+    def test_nonpositive_false(self):
+        # 非正 pgid 与 ESRCH 同向
+        assert pal.kill_group_alive(0) is False
+        assert pal.kill_group_alive(-5) is False
+
+    def test_contract_shape(self):
+        # win32 后端同签名占位（契约面一致）
+        from core.platform import win32
+
+        assert hasattr(win32, "kill_group_alive")
+
 class TestBindToParent:
     def test_pdeathsig_set_in_child(self, tmp_path):
         # prctl 须在被绑定进程内执行：子进程内调 bind_to_parent 并回传结果，

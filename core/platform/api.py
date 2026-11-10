@@ -96,6 +96,8 @@ class ProcessLifecycle(Protocol):
 
     def bind_to_parent(self, sig: int = ...) -> bool: ...
 
+    def kill_group_alive(self, pgid: int) -> Optional[bool]: ...
+
 
 # ── B 进程情报 ──────────────────────────────────────────────────────────
 

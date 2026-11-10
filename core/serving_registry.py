@@ -477,14 +477,15 @@ def kill_process_group(pid: int, logger=None) -> bool:
             # 误判风险与下方组长探针同源（且进入本函数前 sweep 已做过
             # starttime 身份核对），保守口径不变：无权探测（EPERM）按存活
             # 继续等待但不升级投递。
-            try:
-                os.killpg(pid, 0)
-            except ProcessLookupError:
+            # 4.2：探活经 pal.kill_group_alive 三态单点（True＝命中接管 /
+            # False＝组空确定性否定 / None＝无权无法核实按存活继续等待），
+            # 两因区分语义逐位保留。
+            alive = pal.kill_group_alive(pid)
+            if alive is False:
                 return sent  # 孤儿组已空（无存活成员）
-            except OSError:
-                pass  # 组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
-            else:
+            if alive is True:
                 pgid = pid
+            # None：组非空但无权探测 → 按存活继续等待（同 pgid 路径口径）
                 # 孤儿组仍存活：接管 pgid 后补发一次 SIGTERM 再进入就绪
                 # 等待——本路径因 getpgid 解析不到组长跳过了顶部投递，
                 # 组内存活成员从未收到优雅终止信号，直接升级 SIGKILL 会
@@ -497,12 +498,11 @@ def kill_process_group(pid: int, logger=None) -> bool:
                 ):
                     sent = True
         else:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
+            # 4.2：同上，pal.kill_group_alive 三态（False＝组空提前收口；
+            # True/None＝组非空或无权，按存活继续等待）
+            alive = pal.kill_group_alive(pgid)
+            if alive is False:
                 return sent  # 组空（组长已死且无存活成员）
-            except OSError:
-                pass  # 组非空但无权探测 → 按存活继续等待
         time.sleep(0.2)
     if pgid is not None:
         # SIGKILL 实际发出成功同样置位（守卫拒绝/组已不存在则静默，sent
