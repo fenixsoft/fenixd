@@ -26,11 +26,14 @@ systemd 是唯一能在该形态下拉回的进程外监督者。本模块承担
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
 from pathlib import Path
+
+from core.platform import api as pal
+from core.platform.api import SystemdHostingError
+from core.platform.linux import ENV_KEY_RE as _ENV_KEY_RE
 
 # dashboard unit 固定名（框架主树唯一一条；hook_engine restart-dashboard、
 # migrate 脚本、serve 接管豁免指引共用同一常量，防字面量漂移）
@@ -64,12 +67,9 @@ DASHBOARD_ENV_BASENAME = "dashboard-systemd.env"
 ENV_CANDIDATE_SUFFIX = ".candidate"
 
 
-class SystemdHostingError(Exception):
-    """systemd 承载操作失败（systemctl 不可用/无权限/unit 操作失败等）。
-
-    携带可读中文错误信息，调用方（fenix_session/路由/hook）直接透传给用户，
-    MUST NOT 静默降级为 tmux（承载层语义 BREAKING：tmux 路径已退役）。
-    """
+# SystemdHostingError 家址上收 core.platform.api（D 组契约面，见头部 import）
+# ——W3 转发化后以同名字再导出，既有 ``core.systemd_hosting.SystemdHostingError``
+# 引用（fenix_session/hook_engine 等）身份不变（is 同一类对象）。
 
 
 # ── 会话身份 denylist（add-systemd-hosting：EnvironmentFile 候选稿过滤）─────
@@ -94,8 +94,11 @@ _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def systemctl_available() -> bool:
-    """systemctl 是否可执行（非 systemd 环境 → False，调用方拒绝并给可读错误）。"""
-    return shutil.which("systemctl") is not None
+    """systemctl 是否可执行（非 systemd 环境 → False，调用方拒绝并给可读错误）。
+
+    W3 起为 pal.systemctl_available 薄委托（D 组单缝上收 core.platform.linux）。
+    """
+    return pal.systemctl_available()
 
 
 def _run_systemctl(args, timeout: float = 30) -> subprocess.CompletedProcess:
@@ -103,22 +106,14 @@ def _run_systemctl(args, timeout: float = 30) -> subprocess.CompletedProcess:
 
     systemctl 不可用时抛 SystemdHostingError（可读错误含「需要 systemd」指引），
     由调用方转成各自的错误返回形态（fenix_session 返回 dict，hook 记 failure）。
+
+    W3 起为 pal.run_systemctl 薄委托（单缝实现逐字平移上收 pal，语义一字
+    不动）；本文件内既有调用面（unit_installed/unit_active/install/stop/
+    restart 等）零改动。可用性判定保留本模块先行（``systemctl_available``
+    为既有 monkeypatch 缝，tests/test_systemd_hosting 缝契约），结论直传
+    pal（``available=``），两因错误文案逐字不变。
     """
-    if not systemctl_available():
-        raise SystemdHostingError(
-            "需要 systemd：systemctl 不可用（非 systemd 环境？）。"
-            "fenixd 托管链已迁移 systemd unit 承载（tmux 路径退役），"
-            "请在 systemd 环境运行或人工以旧配方恢复。"
-        )
-    try:
-        return subprocess.run(
-            ["systemctl", *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (subprocess.SubprocessError, OSError) as e:
-        raise SystemdHostingError(f"systemctl {' '.join(args)} 执行失败: {e}") from e
+    return pal.run_systemctl(args, timeout=timeout, available=systemctl_available())
 
 
 def _sanitize_unit_component(name: str) -> str:
@@ -187,22 +182,11 @@ def read_process_env(pid: int) -> dict:
     键集来源为在跑进程的实环境（design R1：非白名单凭记忆——漏掉 load-bearing
     键会让迁移后 agent run 全灭）。非法键名/含换行的值（bash 导出函数等）跳过：
     EnvironmentFile 行格式装不下，整行会被 systemd 拒解析。
+
+    W3 起为 pal.process_environ 薄委托（B 组单点，含 _ENV_KEY_RE 同源，
+    本模块以别名再导出供 :363 候选稿过滤共用）。
     """
-    try:
-        raw = Path(f"/proc/{int(pid)}/environ").read_bytes()
-    except (OSError, ValueError):
-        return {}
-    env = {}
-    for chunk in raw.split(b"\0"):
-        if not chunk:
-            continue
-        key, sep, value = chunk.decode("utf-8", "replace").partition("=")
-        if not sep or not _ENV_KEY_RE.match(key):
-            continue
-        if "\n" in value or "\r" in value:
-            continue
-        env[key] = value
-    return env
+    return pal.process_environ(pid)
 
 
 # ── PATH 卫生基线（add-dispatch-precheck-true-fallback 3.1）─────────────────

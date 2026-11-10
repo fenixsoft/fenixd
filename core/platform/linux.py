@@ -480,9 +480,10 @@ def read_procfile(relpath: str) -> Optional[bytes]:
 
 
 # 合法 env 键名（/proc/<pid>/environ 可能含 bash 导出的函数键 `BASH_FUNC_…%%`
-# 等，写入 EnvironmentFile 会被 systemd 拒绝整行解析，跳过）。平移自
-# systemd_hosting._ENV_KEY_RE（候选稿过滤同用此单点，3.1 起转发）。
-_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# 等，写入 EnvironmentFile 会被 systemd 拒绝整行解析，跳过）。原
+# systemd_hosting._ENV_KEY_RE，W3 上收公开单源（environ 捕获与候选稿过滤
+# 同用此单点，systemd_hosting 以 _ENV_KEY_RE 别名再导出）。
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def process_environ(pid: int) -> dict:
@@ -503,7 +504,7 @@ def process_environ(pid: int) -> dict:
         if not chunk:
             continue
         key, sep, value = chunk.decode("utf-8", "replace").partition("=")
-        if not sep or not _ENV_KEY_RE.match(key):
+        if not sep or not ENV_KEY_RE.match(key):
             continue
         if "\n" in value or "\r" in value:
             continue
@@ -905,15 +906,23 @@ def systemctl_available() -> bool:
     return shutil.which("systemctl") is not None
 
 
-def run_systemctl(args, timeout: float = 30) -> subprocess.CompletedProcess:
+def run_systemctl(args, timeout: float = 30, *,
+                  available: Optional[bool] = None) -> subprocess.CompletedProcess:
     """systemctl 调用单缝（subprocess.run，list argv 不经 shell）。
 
     systemctl 不可用时抛 SystemdHostingError（可读错误含「需要 systemd」指引），
     由调用方转成各自的错误返回形态（fenix_session 返回 dict，hook 记 failure）。
 
+    ``available``：调用方已判定的可用性可信结论直传（None＝本缝自行探测）。
+    为 systemd_hosting._run_systemctl 转发层保留缝的可拦截性——该模块的
+    ``systemctl_available`` 是既有 monkeypatch 缝（tests/test_systemd_hosting
+    缝契约），转发层先行本模块判定后把结论直传于此，两因错误文案
+    （「需要 systemd」/「执行失败」）与本实现逐字一致。
+
     平移自 core/systemd_hosting.py _run_systemctl（W3 D 组上收单源）。
     """
-    if not systemctl_available():
+    ok = systemctl_available() if available is None else available
+    if not ok:
         raise SystemdHostingError(
             "需要 systemd：systemctl 不可用（非 systemd 环境？）。"
             "fenixd 托管链已迁移 systemd unit 承载（tmux 路径退役），"
@@ -1070,4 +1079,6 @@ __all__ = [
     "fsync_dir",
     # F
     "pytest_timeout_method",
+    # D/B 支撑单源
+    "ENV_KEY_RE",
 ]

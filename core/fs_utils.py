@@ -30,13 +30,15 @@ self_review 写 ``todo.md`` 须同一把锁，原语原为 evolution 私有
 """
 
 import errno
-import fcntl
 import logging
 import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+from core.platform import api as pal
+from core.platform.api import FileLockBusy, FileLockUnavailable
 
 _logger = logging.getLogger("fenixd.fs_utils")
 
@@ -113,15 +115,8 @@ def atomic_write_text(path, content: "str | bytes", inherit_existing_mode: bool 
         os.replace(tmp_path, path)
         if fsync_parent:
             # 尽力而为 fsync 父目录（rename 目录项持久化，item f19b8ef57ce6）；
-            # 失败不阻断主流程
-            try:
-                dir_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-            except OSError:
-                pass
+            # 失败不阻断主流程。W3 起纪律原语上收 pal.fsync_dir（E 组单点）。
+            pal.fsync_dir(parent)
     finally:
         if tmp_path.exists():
             try:
@@ -139,29 +134,16 @@ def fsync_parent_dir(path: Path) -> None:
     （item 671399f09114）：admin_store 侧薄委托引用，serving_registry 直用
     公共名。目录 fsync 在个别文件系统上不支持或失败（EINVAL 等），静默
     忽略，此时仍保留进程级崩溃安全保证。
+
+    W3 起为 pal.fsync_dir 薄委托（O_DIRECTORY 口径统一，E 组单点；调用方
+    传目录路径，行为与原 O_RDONLY 形态逐位等价）。
     """
-    try:
-        dfd = os.open(str(path.parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(dfd)
-    except OSError:
-        pass
-    finally:
-        os.close(dfd)
+    pal.fsync_dir(path.parent)
 
 
-class FileLockBusy(Exception):
-    """nonblocking 模式下限时内未抢到伴生锁（他方持锁）。
-
-    与 FileLockUnavailable 两因可区分，供调用方分别降级留痕（对齐
-    verify_scenarios._acquire_scenarios_lock 的现行两因分类口径）。
-    """
-
-
-class FileLockUnavailable(Exception):
-    """flock 本身不可用（特殊文件系统不支持等非 EAGAIN/EACCES errno）。"""
+# FileLockBusy / FileLockUnavailable 家址上收 core.platform.api（C 组契约面，
+# 见头部 import）——W1 收敛期本模块为其原始定义处，W3 转发化后以同名字再
+# 导出，既有 ``fs_utils.FileLockBusy`` 引用身份不变（is 同一类对象）。
 
 
 def flock_exclusive(fileobj, *, nonblocking: bool = False) -> None:
@@ -173,14 +155,18 @@ def flock_exclusive(fileobj, *, nonblocking: bool = False) -> None:
     errno 分类 / 降级策略，syscall 调用收口于此；with_file_lock 是其上的
     标准封装（锁文件布局 ``.<name>.lock`` 一处维护）。fileobj 接受文件对象
     或 fd（fcntl.flock 两种形态均接受）。失败抛 OSError，errno 原样上抛。
+
+    W3 起为 pal.flock_exclusive 薄委托（syscall 家址上收 core.platform.linux）。
     """
-    flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
-    fcntl.flock(fileobj, flags)
+    pal.flock_exclusive(fileobj, nonblocking=nonblocking)
 
 
 def flock_release(fileobj) -> None:
-    """``LOCK_UN`` 释放（close 亦隐式释放；失败处理策略归调用方，原样上抛）。"""
-    fcntl.flock(fileobj, fcntl.LOCK_UN)
+    """``LOCK_UN`` 释放（close 亦隐式释放；失败处理策略归调用方，原样上抛）。
+
+    W3 起为 pal.flock_release 薄委托。
+    """
+    pal.flock_release(fileobj)
 
 
 def with_file_lock(path: Path, fn, *, nonblocking: bool = False,

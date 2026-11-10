@@ -40,7 +40,8 @@ _logger = logging.getLogger("fenixd.proc_utils")
 # 3 秒）构成并行两套击杀时序常量（未并入的差异理由见 serving_registry 侧
 # docstring）；两侧取值由 tests/test_serving_registry_kill_timing.py 守卫
 # 钉住，单侧调整须两侧同步修订并更新守卫断言，防同名语义静默分叉。
-TERM_GRACE_SECONDS = 5
+# W3 起取值单源 pal.TERM_GRACE_SECONDS（A 组平移常量），值仍 5。
+TERM_GRACE_SECONDS = pal.TERM_GRACE_SECONDS
 
 
 def is_claude_process(pid_str: str) -> bool:

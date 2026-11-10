@@ -701,8 +701,15 @@ class TestSystemctlSeam:
             pal.run_systemctl(["is-active", "nonexistent-unit-xyz"])
 
     def test_exception_identity_single_source(self):
-        # 门面与后端同源；core.systemd_hosting 的副本在 3.1 转发化后并入
+        # 门面/后端/被平移源三方同类（再导出保既有引用身份不变）
+        from core.systemd_hosting import SystemdHostingError as SdhError
+
         assert pal.SystemdHostingError is pal_linux.SystemdHostingError
+        assert pal.SystemdHostingError is SdhError
+        from core import fs_utils
+
+        assert fs_utils.FileLockBusy is pal.FileLockBusy
+        assert fs_utils.FileLockUnavailable is pal.FileLockUnavailable
 
     @pytest.mark.skipif(not pal.systemctl_available(), reason="无 systemd 环境")
     def test_version_roundtrip(self):

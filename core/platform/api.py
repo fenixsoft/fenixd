@@ -164,7 +164,8 @@ class HostingSeam(Protocol):
 
     def systemctl_available(self) -> bool: ...
 
-    def run_systemctl(self, args, timeout: float = 30) -> subprocess.CompletedProcess: ...
+    def run_systemctl(self, args, timeout: float = 30,
+                      available: Optional[bool] = None) -> subprocess.CompletedProcess: ...
 
 
 # ── E 环境/用户/文件系统 ────────────────────────────────────────────────
