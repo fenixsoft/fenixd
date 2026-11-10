@@ -159,9 +159,13 @@ python3 skills/fenix-prototype/scripts/proto_serve.py \
   或 `sudo systemctl start fenix-dashboard`，存活后重跑本命令）；`4` 项目未注册
   （按 hint `fenix_dashboard.py --add-project <工程根>` 注册后重跑）；`5` URL
   验证失败（通常 dashboard 版本过旧未含 `/proto/` 路由，或 spec 名不符，按 hint 核对）；
-- **远程访问**：dashboard 只绑定 `127.0.0.1`，端口固定（默认 8787）——远程客户端
-  只需一条指向 dashboard 端口的既有 SSH 隧道即可覆盖所有原型，不再按原型逐个转发
-  随机端口；
+- **远程访问（FRP 隧道，默认）**：dashboard 只绑定 `127.0.0.1`，端口固定（默认
+  8787）——交付用户的 URL MUST 把 `proto_serve.py` 输出的 `127.0.0.1:8787` 换成
+  FRP 隧道公网入口 **`http://home.icyfenix.cn:18787`**（透传到本机 dashboard
+  8787，纯 HTTP 无 TLS，**禁用 https**；路径与 `?proto_round=N` 不变），用户免
+  端口转发直接访问；127.0.0.1 地址仅作服务器本机自检。交付前用该公网地址端到端
+  探测一次（HTTP 200）；隧道不可达时才退回「SSH 隧道指向 dashboard 端口」方案并
+  向用户明示备用地址；
 - **生命周期零管理**：dashboard 常驻、原型目录变更即时生效（该路由恒 no-cache
   伺服），没有起服/回收步骤，也不存在残留进程。
 
