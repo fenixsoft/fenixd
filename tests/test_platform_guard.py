@@ -19,6 +19,7 @@
 """
 
 import ast
+import functools
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent.parent / "core"
@@ -47,7 +48,14 @@ def _iter_core_files():
         yield path.relative_to(CORE_DIR.parent).as_posix(), path
 
 
+@functools.lru_cache(maxsize=None)
 def _parse_module(path):
+    # 全量回归单用例 10s 硬门（pytest.ini timeout=10）：四个检测函数
+    # （syntax/procfs/platform-branch/sns-hits）各自全量 walk 同一批 core/
+    # 文件，无缓存时同一文件被 ast.parse 四遍（本机实测 ~6.6s，全量高负载
+    # 下膨胀越门判超时失败）。守卫面是静态扫描（同一 pytest 进程内 core/
+    # 源文件不变），进程级缓存安全：首个检测函数承担全部解析成本，后续
+    # 零解析直用同一 AST 树（ast.walk 只读迭代）。
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
@@ -82,60 +90,101 @@ def _module_aliases(tree):
     return aliases
 
 
-def _start_new_session_keyword_hits():
-    """① 组 start_new_session 关键字出现位点（豁免钉计数的数据源）。"""
-    hits = []
+@functools.lru_cache(maxsize=None)
+def _scan_core():
+    """单遍全量扫描：一次 parse+walk 产出全部四类命中数据。
+
+    pytest.ini 单用例 10s 硬门（timeout=10）：原四个检测函数各自全量
+    parse+walk 同一批 core/ 文件（本机实测 ~6.6s），全量回归高负载下膨胀
+    越门判超时失败（run5/6/7 三连实锤）。守卫面是静态扫描（同一 pytest
+    进程内 core/ 源文件不变），进程级缓存安全；各检测函数改薄壳消费本
+    结果集，断言语义零变化。
+    """
+    syntax = []        # ① 组语法词面（fcntl/pwd 导入、killpg/setsid、prctl）
+    sns_hits = []      # ① 组 start_new_session 关键字位点（豁免钉计数数据源）
+    procfs = {}        # ① 组非 docstring "/proc/" 字符串常量 {rel: [(lineno, repr)]}
+    branch = []        # ② 组平台判断面（sys.platform/platform.system/os.name）
     for rel, path in _iter_core_files():
-        if rel in POSIX_EXEMPT_FILES:
+        posix_face = rel not in POSIX_EXEMPT_FILES            # ① 组整文件豁免
+        branch_face = not rel.startswith("core/platform/")    # ② 组目录豁免
+        if not posix_face and not branch_face:
             continue
         tree = _parse_module(path)
+        aliases = _module_aliases(tree)
+        ds = _docstring_node_ids(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                for kw in node.keywords:
-                    if kw.arg == "start_new_session":
-                        hits.append((rel, node.lineno))
-    return hits
+            lineno = getattr(node, "lineno", 0)
+            if posix_face:
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.split(".")[0] in ("fcntl", "pwd"):
+                            syntax.append(f"{rel}:{lineno}: import {alias.name}")
+                elif isinstance(node, ast.ImportFrom):
+                    mod = node.module or ""
+                    names = ", ".join(a.name for a in node.names)
+                    if mod.split(".")[0] in ("fcntl", "pwd"):
+                        syntax.append(f"{rel}:{lineno}: from {mod} import {names}")
+                    elif mod == "os" and any(
+                        a.name in ("killpg", "setsid") for a in node.names
+                    ):
+                        syntax.append(f"{rel}:{lineno}: from os import {names}")
+                elif isinstance(node, ast.Call):
+                    func = node.func
+                    if (
+                        isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Name)
+                        and aliases.get(func.value.id, func.value.id) == "os"
+                        and func.attr in ("killpg", "setsid")
+                    ):
+                        syntax.append(
+                            f"{rel}:{lineno}: {func.value.id}.{func.attr}() 直调"
+                        )
+                    for kw in node.keywords:
+                        if kw.arg == "start_new_session":
+                            sns_hits.append((rel, lineno))
+                elif isinstance(node, ast.Attribute) and node.attr == "prctl":
+                    syntax.append(f"{rel}:{lineno}: prctl 属性访问")
+                elif isinstance(node, ast.Name) and node.id == "prctl":
+                    syntax.append(f"{rel}:{lineno}: prctl 名字引用")
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and id(node) not in ds
+                    and "/proc/" in node.value
+                ):
+                    procfs.setdefault(rel, []).append((lineno, node.value[:60]))
+            if branch_face:
+                if isinstance(node, ast.ImportFrom):
+                    mod = (node.module or "").split(".")[0]
+                    for a in node.names:
+                        if (mod, a.name) in _BRANCH_DIRECT_IMPORTS:
+                            branch.append(
+                                f"{rel}:{lineno}: from {mod} import {a.name}"
+                            )
+                elif isinstance(node, ast.Attribute) and isinstance(
+                        node.value, ast.Name):
+                    base = aliases.get(node.value.id, node.value.id)
+                    if (base, node.attr) in _BRANCH_JUDGED:
+                        branch.append(
+                            f"{rel}:{lineno}: {base}.{node.attr} 平台判断"
+                        )
+    return {"syntax": syntax, "sns_hits": sns_hits, "procfs": procfs,
+            "branch": branch}
+
+
+_BRANCH_JUDGED = {("sys", "platform"), ("platform", "system"), ("os", "name")}
+_BRANCH_DIRECT_IMPORTS = _BRANCH_JUDGED
+
+
+def _start_new_session_keyword_hits():
+    """① 组 start_new_session 关键字出现位点（豁免钉计数的数据源）。"""
+    return _scan_core()["sns_hits"]
 
 
 def _posix_syntax_violations():
     """① 组语法词面：fcntl/pwd 导入、killpg/setsid 调用与 from os import、
     start_new_session 关键字、prctl 引用（Attribute/Name 两形态）。"""
-    violations = []
-    for rel, path in _iter_core_files():
-        if rel in POSIX_EXEMPT_FILES:
-            continue
-        tree = _parse_module(path)
-        aliases = _module_aliases(tree)
-        for node in ast.walk(tree):
-            lineno = getattr(node, "lineno", 0)
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.split(".")[0] in ("fcntl", "pwd"):
-                        violations.append(f"{rel}:{lineno}: import {alias.name}")
-            elif isinstance(node, ast.ImportFrom):
-                mod = node.module or ""
-                names = ", ".join(a.name for a in node.names)
-                if mod.split(".")[0] in ("fcntl", "pwd"):
-                    violations.append(f"{rel}:{lineno}: from {mod} import {names}")
-                elif mod == "os" and any(
-                    a.name in ("killpg", "setsid") for a in node.names
-                ):
-                    violations.append(f"{rel}:{lineno}: from os import {names}")
-            elif isinstance(node, ast.Call):
-                func = node.func
-                if (
-                    isinstance(func, ast.Attribute)
-                    and isinstance(func.value, ast.Name)
-                    and aliases.get(func.value.id, func.value.id) == "os"
-                    and func.attr in ("killpg", "setsid")
-                ):
-                    violations.append(
-                        f"{rel}:{lineno}: {func.value.id}.{func.attr}() 直调"
-                    )
-            elif isinstance(node, ast.Attribute) and node.attr == "prctl":
-                violations.append(f"{rel}:{lineno}: prctl 属性访问")
-            elif isinstance(node, ast.Name) and node.id == "prctl":
-                violations.append(f"{rel}:{lineno}: prctl 名字引用")
+    violations = list(_scan_core()["syntax"])
     # start_new_session 关键字经位点级豁免钉计数过滤（计数不匹配即报——
     # runner.py shadow 转发缝之外回潮任何一处都不可静默）。
     sns_hits = _start_new_session_keyword_hits()
@@ -154,23 +203,7 @@ def _procfs_string_hits():
     ast.walk 覆盖 f-string（JoinedStr）内的 Constant 常量段——单引号/f-string
     形态的回潮同罪（双引号前缀 grep 口径漏检面的补齐）。
     """
-    hits = {}
-    for rel, path in _iter_core_files():
-        if rel in POSIX_EXEMPT_FILES:
-            continue  # linux.py 唯一位点：① 组整文件豁免
-        tree = _parse_module(path)
-        ds = _docstring_node_ids(tree)
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and id(node) not in ds
-                and "/proc/" in node.value
-            ):
-                hits.setdefault(rel, []).append(
-                    (node.lineno, node.value[:60])
-                )
-    return hits
+    return _scan_core()["procfs"]
 
 
 def _platform_branch_violations():
@@ -179,28 +212,7 @@ def _platform_branch_violations():
     裸 Name 基座才计数——``foo.platform.system`` 链式不误伤）+ from-import
     直引名禁面（``from sys import platform`` 后裸 Name 使用 AST 不可判，
     禁导入词面本身）。"""
-    violations = []
-    judged = {("sys", "platform"), ("platform", "system"), ("os", "name")}
-    direct_import = {("sys", "platform"), ("platform", "system"), ("os", "name")}
-    for rel, path in _iter_core_files():
-        if rel.startswith("core/platform/"):
-            continue
-        tree = _parse_module(path)
-        aliases = _module_aliases(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                mod = (node.module or "").split(".")[0]
-                for a in node.names:
-                    if (mod, a.name) in direct_import:
-                        violations.append(
-                            f"{rel}:{node.lineno}: from {mod} import {a.name}"
-                        )
-            elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                base = aliases.get(node.value.id, node.value.id)
-                attr = node.attr
-                if (base, attr) in judged:
-                    violations.append(f"{rel}:{node.lineno}: {base}.{attr} 平台判断")
-    return violations
+    return _scan_core()["branch"]
 
 
 class TestPosixFaceBusinessClean:
@@ -210,16 +222,35 @@ class TestPosixFaceBusinessClean:
         零存在——回潮即违「平台 syscall 单点」架构约束。start_new_session
         经位点级豁免（runner.py shadow 转发缝的 Popen 形态契约保留），计数
         双向钉死：回潮或消失都须人工核对同步。"""
-        drifted = {
-            rel: sum(1 for r, _ in _start_new_session_keyword_hits()
-                     if r == rel)
-            for rel in START_NEW_SESSION_KEYWORD_EXEMPT
-        }
+        drifted = {}
+        violations = []
+        collect_error = None
+        try:
+            drifted = {
+                rel: sum(1 for r, _ in _start_new_session_keyword_hits()
+                         if r == rel)
+                for rel in START_NEW_SESSION_KEYWORD_EXEMPT
+            }
+            violations = _posix_syntax_violations()
+        except Exception:  # noqa: BLE001 —— 取证：异常形态失败也须留详情
+            import traceback
+            collect_error = traceback.format_exc()
+        if collect_error or violations or drifted != START_NEW_SESSION_KEYWORD_EXEMPT:
+            # 失败取证落点：全量回归（bin/run_full_suite.py）的 pytest 详情
+            # 随输出临时文件消失，断言消息之外这里留下唯一可读的违禁清单
+            # （.history 在 .gitignore 内，绿跑零副作用）。
+            import json as _json
+            _dump = Path(__file__).resolve().parent.parent / ".history" / "guard-posix-failure.json"
+            _dump.parent.mkdir(parents=True, exist_ok=True)
+            _dump.write_text(_json.dumps({
+                "drifted": drifted, "violations": violations,
+                "collect_error": collect_error,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        assert collect_error is None, f"守卫收集异常：\n{collect_error}"
         assert drifted == START_NEW_SESSION_KEYWORD_EXEMPT, (
             f"start_new_session 豁免计数漂移（回潮或消失都须人工核对同步）："
             f"{drifted} != {START_NEW_SESSION_KEYWORD_EXEMPT}"
         )
-        violations = _posix_syntax_violations()
         assert not violations, (
             "core/ 出现 POSIX 专属词面（须收敛到 core.platform.linux / pal）：\n"
             + "\n".join(violations)
