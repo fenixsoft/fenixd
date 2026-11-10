@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import logging
 import math
+import sys
 
 # session 事件提取窗口（code-review item 18321ea53e1c）：run jsonl 物理首行是
 # prompt 自有行而非 system/init（prompt-viewer 契约），head 窗口须容纳超长
@@ -165,6 +166,33 @@ class SessionTracker:
         out["output_tokens"] = _to_int(usage.get("output_tokens"))
         out["cache_creation_input_tokens"] = _to_int(usage.get("cache_creation_input_tokens"))
         out["cache_read_input_tokens"] = _to_int(usage.get("cache_read_input_tokens"))
+        # code-review item dcd820e98fd8：_to_int 对合法超大整数字面量（JSON/YAML
+        # 任意精度往返产生的 10**400 级）不做量级守卫、原样放行，而 cost 侧已有
+        # OverflowError 捕获 + math.isfinite 钳制（下方）、token_budget 累计侧
+        # _accumulate_token_usage 亦设 sys.float_info.max 门，四个 token 字段唯独
+        # 缺同款防护——畸形超大值可经公开入口 extract_usage_info（D8）泄入
+        # harness 适配层与 verify-progress 侧车 tokens.json 落盘，报告合成侧做
+        # float 换算时会抛 OverflowError。比照 token_budget 累计侧边界口径：超
+        # float 可表示范围（sys.float_info.max）才视为畸形（合法大值不受影响），
+        # 按缺失处理回 0 并留 warning。
+        oversized = [
+            k
+            for k in (
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+            if abs(out[k]) > sys.float_info.max
+        ]
+        if oversized:
+            bad = {k: out[k] for k in oversized}
+            _logger.warning(
+                "extract_usage_info: token 字段畸形超大（超 float 可表示范围），"
+                f"按缺失处理回 0：{bad!r}"
+            )
+            for k in oversized:
+                out[k] = 0
         # 成本字段：仅网关真实回传时非空（design D5 / spec「金额展示不伪造」）
         cost = result_event.get("total_cost_usd")
         if cost is None:  # 键缺失或显式 null 均回退旧版键；显式判 None，0.0 不误回退
