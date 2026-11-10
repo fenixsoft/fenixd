@@ -41,9 +41,9 @@
 
 ## 8. 验收自检
 
-- [ ] 8.1 全量 `python3 -m pytest tests/ -q` 两次（间隔执行）均 0 failed；若出现 tasks 所列 11 项之外的新失败，按同款归因纪律处置（干净分支复现 → 修并补归因记录；不复现 → 记 `[WIP]`/`[隔离]` 关闭），不得删除或放宽测试
-- [ ] 8.2 Deliverables 机械对账通过（lint_declared / lint_tasks_parseable）；每个修复任务的归因类别与证据已在任务说明记录
-- [ ] 8.3 确认零新增第三方依赖、未改 spec/ 既有能力 REQUIREMENT、未触碰 SPEC-1/SPEC-2 范围文件
+- [x] 8.1 全量 `python3 -m pytest tests/ -q` 两次（间隔执行）均 0 failed；若出现 tasks 所列 11 项之外的新失败，按同款归因纪律处置（干净分支复现 → 修并补归因记录；不复现 → 记 `[WIP]`/`[隔离]` 关闭），不得删除或放宽测试 —— 证据：经有界入口 bin/run_full_suite.py 三次全量——run1（修复前基线复核，744.7s）失败集=仅 D/F 两项（11 项中其余 9 项不复现）；run2（修复后 730.0s）与 run3（修复后 733.0s，间隔执行）均 rc=0 / 0 failed / 无挂起，摘要 JSON 归档 .fenix/verify-evidence/fix-legacy-test-failures/
+- [x] 8.2 Deliverables 机械对账通过（lint_declared / lint_tasks_parseable）；每个修复任务的归因类别与证据已在任务说明记录 —— lint_declared 与 lint_tasks_parseable 实测双 PASS；归因注记已逐任务落 tasks.md（D=`[违例类替身债]` 13 处签名显式化、F=`[违例]` 层级名修正、其余 9 项=`[WIP]` 复现门关闭）
+- [x] 8.3 确认零新增第三方依赖、未改 spec/ 既有能力 REQUIREMENT、未触碰 SPEC-1/SPEC-2 范围文件 —— diff 复核：实现改动仅 core/dsh_session_tidy.py 层级名一行 + 9 个测试替身签名 + .gitignore；零新增 import（标准库已有）；spec/ 既有能力 REQUIREMENT 零改动（仅本 SPEC tasks.md 勾选）；core/platform/（SPEC-1/SPEC-2 范围）零触碰
 
 ## Deliverables
 
