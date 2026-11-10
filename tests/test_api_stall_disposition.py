@@ -104,8 +104,8 @@ class _RecExecutor:
     def __init__(self):
         self.jobs = []
 
-    def submit(self, fn, *a, **k):
-        self.jobs.append((fn, a, k))
+    def submit(self, fn, ctx=None):
+        self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
 
 def _read_metric_rows(tmp_path: Path, terminal: str | None = None) -> list[dict]:

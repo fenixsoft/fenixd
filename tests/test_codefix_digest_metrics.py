@@ -524,8 +524,8 @@ class TestChainRollupLastBatch:
             def __init__(self):
                 self.jobs = []
 
-            def submit(self, fn, *a, **k):
-                self.jobs.append((fn, a, k))
+            def submit(self, fn, ctx=None):
+                self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
         runner = _RollupRunner(proot, fix_success=True)
         hold = _HoldExecutor()
@@ -534,7 +534,7 @@ class TestChainRollupLastBatch:
         res = orch.checkpoint()
         assert res["triggered"] is True
         assert len(hold.jobs) == 1
-        hold.jobs[0][0](*hold.jobs[0][1], **hold.jobs[0][2])  # 跑第一批
+        hold.jobs[0][0](*hold.jobs[0][1])  # 跑第一批
 
         prog = read_progress(proot)
         assert prog["chain_rollup"] is None, "非末批不出账"
@@ -593,12 +593,12 @@ class TestChainRollupMidChainTerminal:
             def __init__(self):
                 self.jobs = []
 
-            def submit(self, fn, *a, **k):
-                self.jobs.append((fn, a, k))
+            def submit(self, fn, ctx=None):
+                self.jobs.append((fn, (ctx,) if ctx is not None else ()))
 
         def _run_one(hold):
-            fn, a, k = hold.jobs.pop(0)
-            fn(*a, **k)
+            fn, a = hold.jobs.pop(0)
+            fn(*a)
 
         runner = _RollupRunner(proot, fix_success=True)
         hold = _HoldExecutor()

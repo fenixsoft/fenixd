@@ -2974,7 +2974,9 @@ class TestAdminRunWorkerPool:
         daemon, store = self._make_daemon(proot, runner)
 
         class _ClosedExecutor:
-            def submit(self, *a, **k):
+            # 显式签名对齐生产 executor.submit（fake-double 守卫：替身不得比
+            # 生产更宽容；一进来即 raise，参数仅供调用形态兼容）。
+            def submit(self, fn, ctx=None):
                 raise RuntimeError("cannot schedule new futures after shutdown")
 
         daemon._admin_executor = _ClosedExecutor()
