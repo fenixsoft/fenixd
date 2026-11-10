@@ -42,3 +42,11 @@
 ## F7 R6 消费侧零改动结论（tasks.md 4.1 后半，deliverables 声明差异说明）
 
 deliverables 声明 `core/admin_monitor.py kind: modify`，实施后该文件零改动——这是设计结论而非遗漏：R6 后半「复跑前重新解析链并按当时冷却状态跳过候选（不固定复用 `assignment[0]`）」由 Task 3.4 改造自然满足——`_consume_code_review_redispatch` 复调 `run_code_review`，后者经 `_run_lane_agent_with_failover` 每轮重新 `_get_agent_model_assignment` 解析链并进候选环，`_select_chain_candidate` 按当时 switch/限流冷却跳过候选；admin_monitor 的守卫链/Timer 延迟计算/重派上限记账均无需触碰。R6 前半「重派意图携带 chain_len/失败候选」落在 runner `_ratelimit_redispatch_on_terminal` 与 run_code_review 的意图登记传参（additive）。回归证据：tests/test_maintenance_lane_failover.py `TestRatelimitRedispatchChain.test_redispatch_reparse_skips_cooled_first_candidate`（首轮全链 429 → 清第二候选冷却复跑 → 实际使用第二候选，MUST NOT 固定复用链首）与 tests/test_provider_failover.py 既有 TestRatelimitRedispatch 消费侧用例全绿（admin_monitor 守卫链行为不变）。
+
+## F8 验证修复轮（原地打回第 1 轮）：复核结论与修复记录
+
+失败场景 ring-model-rejected-both-tail-attribution 复核结论：**真实产品 Bug（复核成立，非场景缺陷）**——SPEC 场景「拒模型换候选并在链尾归因」（specs/maintenance-lane-provider-failover/spec.md:19-21）明文要求「HTTP 400 拒模型正文（只在 result 事件 result 字段）」失败时框架调用 `_record_unrecognized_model` 记账并换候选；产品实际仅换候选、无记账。根因：`UNRECOGNIZED_MODEL_TEXT_PATTERNS` 仅含 unrecognized_model 两形态，「Model not found: <model>」正文只命中切换类词表第三条——换候选/链尾归因/双候选冷却均正常（5/7 断言过），唯记账 WARNING 缺失。断言与 SPEC 一致，判产品缺陷，修产品代码。
+
+修复（单源共享正则）：`provider_circuit.py` 把切换类词表第三条的收窄正则提升为 `MODEL_NOT_FOUND_TEXT_PATTERN` 常量，`UNRECOGNIZED_MODEL_TEXT_PATTERNS` 扩纳同款——「拒模型 ⊆ 切换类」真子集保持，本地错误形态（model file not found 等）不命中。车道候选环 `_record_unrecognized_model` 记账恢复；dispatch 侧 `_record_4xx_or_transient` 对 result-only「Model not found」形态同时由「误入 4xx 熔断计数」转为拒模型确定性收窄（与该函数既有注释口径对齐，2026-11-09 事故修复同批补的拒模型 result 事件双源回退自此覆盖该正文形态）。测试同步：test_provider_circuit 半开探针夹具改纯配额 404（`model_not_found` 形态自本轮起属拒模型类，不再充当「纯 404」夹具）；test_transient_backoff 增拒模型判定正/反例（网关三形态命中、本地/纯配额形态不命中、真子集保持）；test_maintenance_lane_failover 增网关拒模型正文形态候选环回归（每候选记账 WARNING + 换候选 + marker 真实链下标 + 双候选 switch 冷却 + 链尾 `[model-chain-unavailable]` 归因）。
+
+重跑证据：冻结场景集 27/27 全过（24 探针 + 4 reg 套件），定向 pytest 套件 244 passed；探针重跑结果与摘要见主树 `.fenix/verify-evidence/add-maintenance-lane-provider-failover/scenario_probe_rerun_round2.json`（含 `.summary.md`）。

@@ -216,6 +216,32 @@ class TestClassifyTransientError:
             assert ProviderCircuit.classify_transient_error(
                 [text], 1, False) is False, text
 
+    def test_unrecognized_classifier_covers_gateway_model_not_found(self):
+        """拒模型记账词表覆盖网关 model-not-found 正文形态（2026-11-10
+        add-maintenance-lane-provider-failover 验证修复）：HTTP 400 拒模型
+        正文（只进 result 事件 result 字段）→ classify_unrecognized_model_error
+        命中（记账 WARNING + 确定性收窄），本地错误形态与纯配额 4xx 仍不命中；
+        「拒模型 ⊆ 切换类」真子集关系保持。"""
+        for text in (
+            # 验证场景 ring-model-rejected-both-tail-attribution 的正文形态
+            "Model not found: deepseek-flash - this model does not exist",
+            # 既有登记网关样例（同正则单源）
+            "model not found: deepseek-v4-flash",
+            'API Error: 404 {"code":"model_not_found"}',
+        ):
+            assert ProviderCircuit.classify_unrecognized_model_error(
+                text) is True, text
+            # 真子集关系：命中拒模型必命中切换类
+            assert ProviderCircuit.classify_switch_error(text) is True, text
+        for text in (
+            "model file not found",
+            "checkpoint not found for model training",
+            "HTTP 404 Not Found",  # 纯配额/资源 404（无 model 前缀）
+            "HTTP 500",
+        ):
+            assert ProviderCircuit.classify_unrecognized_model_error(
+                text) is False, text
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 真实故障文本 fixture 回放（Task 6.4 前置）

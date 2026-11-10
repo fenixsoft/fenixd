@@ -66,6 +66,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-maintenance-lane-provider-failover/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-maintenance-lane-provider-failover/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码（复核结论：product-bug 成立，断言与 SPEC spec.md:19-21 一致；修产品代码——拒模型记账词表扩纳「Model not found」正文形态，详见 findings.md F8）
+- [x] 修复后重跑验证确认通过（冻结场景集 27/27 全过含原失败场景，定向套件 244 passed；证据 `.fenix/verify-evidence/add-maintenance-lane-provider-failover/scenario_probe_rerun_round2.json`）

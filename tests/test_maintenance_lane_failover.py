@@ -322,6 +322,46 @@ class TestChainFailoverLoop:
         assert runner.logger.has("Unrecognized model rejected by provider")
         assert runner.logger.has("原因=unrecognized_model")
 
+    def test_gateway_model_not_found_body_records_and_switches(self, tmp_path):
+        """网关拒模型 HTTP 400 正文形态（「Model not found: <model>」仅在
+        result 事件 result 字段、无 unrecognized_model 字样）→ 每候选记账
+        WARNING + 换候选 + 双候选 switch 冷却 + 链尾 [model-chain-unavailable]
+        归因（SPEC 场景「拒模型换候选并在链尾归因」；验证修复轮 BUG-01 回归：
+        词表此前未覆盖该形态，链前进但无记账）。"""
+        runner = make_real_runner(tmp_path, dual_chain_config(["code-review"]))
+
+        def behavior(call, run_id, cwd):
+            e = RuntimeError("claude CLI failed: Exit code: 1")
+            e.api_error_status = 400
+            e.result_text = (
+                f"Model not found: {call['model']} - this model does not exist"
+            )
+            raise e
+
+        calls = install_run_agent(runner, behavior)
+        with pytest.raises(RuntimeError) as ei:
+            self._call(runner, tmp_path)
+        msg = str(ei.value)
+        assert "[model-chain-unavailable]" in msg
+        assert "全链模型不可用" in msg
+        assert [c["model"] for c in calls] == ["m1", "m2"]
+        # 每候选各一条记账 WARNING（provider 名随候选区分，探针断言同款口径）
+        warns = [m for lvl, m in runner.logger.records if lvl == "warning"]
+        assert any(
+            "Unrecognized model rejected" in m and "'p1'" in m for m in warns)
+        assert any(
+            "Unrecognized model rejected" in m and "'p2'" in m for m in warns)
+        # 换候选成立且原因归拒模型（R5）
+        assert runner.logger.has("provider switched")
+        assert runner.logger.has("原因=unrecognized_model")
+        # marker 真实链下标 + additive attempt（R5）
+        ms = markers(tmp_path, "lane-x")
+        assert [(m["chain_index"], m["chain_len"], m["attempt"]) for m in ms] == [
+            (0, 2, 1), (1, 2, 2)]
+        # 双候选均进 switch 冷却（拒模型非 429 → 默认 switch 时长通道）
+        assert runner.switch_cooldown_until("p1") > runner._now()
+        assert runner.switch_cooldown_until("p2") > runner._now()
+
     def test_bookkeeping_missing_failopen(self, tmp_path):
         """簿记方法缺失（实例属性置 None 遮蔽门面转发）→ 判定/换候选不受阻、
         marker 不写、无冷却记账，run 照常完成（R7 fail-open）。"""
