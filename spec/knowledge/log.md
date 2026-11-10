@@ -160,3 +160,4 @@
 ## [2026-11-10 11:30 UTC+8] distill | harden-arbiter-lane-resilience（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-10 12:44 UTC+8] distill | add-workspace-row-project-tooltip（第 1 轮，自动提交落库）
 ## [2026-11-10 13:41 UTC+8] distill | add-agent-model-quick-assign（第 1 轮，自动提交落库）
+## [2026-11-10 13:54 UTC+8] distill | add-dsh-web-password-login（第 1 轮，自动提交落库）
