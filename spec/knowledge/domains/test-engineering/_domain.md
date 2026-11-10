@@ -1,5 +1,5 @@
 # 测试工程
-> 最后更新：2026-11-10 11:20 UTC+8
+> 最后更新：2026-11-10 14:35 UTC+8
 
 测试工程：测试套件自身的结构、隔离、守卫与编写设计纪律，以及全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）也在此域。本域能力页清单如下。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [test-import-isolation](test-import-isolation.md) | 测试导入隔离 | 2026-10-03 04:59 |
+| [test-import-isolation](test-import-isolation.md) | 测试导入隔离：模块身份保障（同名包截胡守卫）与导入期副作用安全（导入期禁解析宿主 argv、INTERNALERROR 秒败判因） | 2026-11-10 14:35 |
 | [test-incremental-selection](test-incremental-selection.md) | 测试增量选择 | 2026-10-03 04:59 |
 | [test-callsite-migration](test-callsite-migration.md) | 测试调用点迁移 | 2026-10-03 04:59 |
 | [test-double-fidelity](test-double-fidelity.md) | 测试替身保真度 | 2026-10-03 04:59 |
