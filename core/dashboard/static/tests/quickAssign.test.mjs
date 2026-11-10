@@ -159,6 +159,20 @@ test('saving 态：应用按钮 loading/disabled、取消禁用（spec「重复�
   assert.ok(/\sdisabled[=>]/.test(html.slice(i, i + 400)), 'saving 态取消按钮 disabled');
 });
 
+test('移动端形态（task 6.4）：弹窗宽度收窄、body 限高滚动、footer 常驻可达、行控件不溢出 390', () => {
+  const src = readFileSync(join(ROOT, 'src/pages/settings/components/QuickAssignModal.tsx'), 'utf-8');
+  // 宽度：移动端 calc(100vw - 32px)（390px 视口无横向溢出），PC 固定 560
+  assert.ok(src.includes("isMobile ? 'calc(100vw - 32px)' : 560"), '移动端弹窗宽度应为 calc(100vw - 32px)');
+  // body 限高滚动：maxHeight + overflowY auto（长内容可完整滚动）
+  assert.ok(/maxHeight:\s*'calc\(100vh - 220px\)'/.test(src), 'body 应限高');
+  assert.ok(/overflowY:\s*'auto'/.test(src), 'body 应可滚动');
+  // 应用/取消在 Modal footer（native footer 不随 body 滚动，恒可达）
+  assert.ok(/footer={\s*<QuickAssignModalFooter/.test(src), '应用/取消按钮应在 footer 常驻');
+  // 行控件移动端宽度分支（130+120+删除按钮 ≈ 300px < 390 可用宽度）
+  assert.ok(src.includes('isMobile ? 130 : 180'), 'Provider 下拉应有移动端收窄分支');
+  assert.ok(src.includes('isMobile ? 120 : 200'), '模型输入框应有移动端收窄分支');
+});
+
 test('DESIGN.md 静态渲染：源码无新增 CSS 动画/过渡', async () => {
   const src = readFileSync(join(ROOT, 'src/pages/settings/components/QuickAssignModal.tsx'), 'utf-8');
   assert.ok(!/animation\s*:/.test(src), '不得声明 CSS animation');
