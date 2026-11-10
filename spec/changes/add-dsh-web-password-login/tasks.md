@@ -9,7 +9,7 @@
   kind: new
 ```
 
-> 跨仓交付形态见 design.md D5/D5 偏离声明：实现面在 `/root/dsh-plugins/fenix-dsh-auth/` 宿主主树直改（新建零构建插件），部署配置在 `/root/.dsh/profiles/web/{package.json,cordis.patch.yml}`；本仓交付物为基线快照 + 补丁镜像 + 部署文档。宿主触达文件为 `/root/dsh-plugins/fenix-dsh-auth/` 下 package.json、index.js、client.js、cordis.patch.yml、README.zh.md、tests/host.test.mjs 与 profile 两个配置文件——绝对路径不可进声明段（等同未声明），故以本段注记与 design.md/proposal.md Impact 记载为准。
+> 跨仓交付形态见 design.md D5 偏离声明：实现面在 `/root/dsh-plugins/fenix-dsh-auth/` 宿主主树直改（新建零构建插件），部署配置在 `/root/.dsh/profiles/web/{package.json,cordis.patch.yml}`；本仓交付物为基线快照 + 补丁镜像 + 部署文档。宿主触达文件为 `/root/dsh-plugins/fenix-dsh-auth/` 下 package.json、index.js、client.js、cordis.patch.yml、README.zh.md、tests/host.test.mjs 与 profile 两个配置文件——绝对路径不可进声明段（等同未声明），故以本段注记与 design.md/proposal.md Impact 记载为准。
 
 ## 1. 基线快照（跨仓只读，最先执行）
 
@@ -40,11 +40,11 @@
 
 - [ ] 5.1 部署：`/root/.dsh/profiles/web/package.json` 增加 `"fenix-dsh-auth": "link:/root/dsh-plugins/fenix-dsh-auth"` 并在 `node_modules` 建符号链接（或 `dsh plugin --profile web add`）；`cordis.patch.yml` 增加 insert 行（`id: fenix-dsh-auth`、`name: fenix-dsh-auth`）
 - [ ] 5.2 `systemctl restart dsh-web`（部署链既有步骤）并从 `/var/log/dsh-web.log` 尾部取新 token URL
-- [ ] 5.3 playwright 命名会话（`-s` 隔离）逐 Scenario 实拍：token URL 登录成功；清 cookie 后 `/` 显示登录页且无「dsh web authentication required」文案；未配置凭据提示；设置「登录」分区配置账号密码；错误密码提示；正确密码 303 → 应用打开且 URL 不残留 token；`/api/...` 未认证仍 401；`/connect?token=` 行为不变；移除账号密码后回退为未配置提示
+- [ ] 5.3 playwright 命名会话（`-s` 隔离）逐 Scenario 实拍：token URL 登录成功；清 cookie 后 `/` 显示登录页且无「dsh web authentication required」文案；未配置凭据提示；设置「登录」分区配置账号密码；错误密码提示；正确密码 303 → 应用打开且 URL 不残留 token；`/api/...` 未认证仍 401；`/connect?token=` 行为不变；移除账号密码后回退为未配置提示;登录页 HEAD 请求仅返回响应头且无 body
 - [ ] 5.4 验证收尾与留档：以 token 登录态 `DELETE /auth/credentials` 清测试凭据并确认 `GET` 返回 `{configured:false}`（用户实例不留已知密码）；实拍截图落 `/root/fenixd/.history/`
 - [ ] 5.5 控制台零未处理异常核查（降级路径仅 warn）
 
 ## 6. 补丁镜像与收尾（本仓）
 
 - [ ] 6.1 `diff -ruN` 以空基线对 `/root/dsh-plugins/fenix-dsh-auth/` 现状生成 `plugin-patch/fenix-dsh-auth.patch`（含全部新建文件；不含 node_modules），并在干净目录 `patch -p1 --dry-run` 回放校验可应用
-- [ ] 6.2 `plugin-patch/DEPLOY.md` 落位（部署步骤、token URL 获取、设置分区操作、回滚与卸载步骤、HTTPS 部署提示）；`BASELINE.md` 补记改后状态摘要（触达文件与改动要点、验证结论一行），确认 Deliverables 逐条对齐
+- [ ] 6.2 `plugin-patch/DEPLOY.md` 落位（部署步骤、token URL 获取、设置分区操作、回滚与卸载步骤、HTTPS 部署提示、反代部署须透传 Host 头的前置条件）；`BASELINE.md` 补记改后状态摘要（触达文件与改动要点、验证结论一行），确认 Deliverables 逐条对齐
