@@ -168,3 +168,4 @@
 ## [2026-11-10 15:00 UTC+8] distill | add-project-home-tab（第 1 轮，自动提交落库，折叠入库 1 条）
 ## [2026-11-10 15:12 UTC+8] distill | add-spec-info-icon-tooltip（第 1 轮，自动提交落库）
 ## [2026-11-10 18:23 UTC+8] fold | dashboard-smoke-prismlight-routes-1110.md 折叠入库
+## [2026-11-10 18:35 UTC+8] fold | posix-dependency-true-distribution-1110.md 折叠失败滞留：spec/knowledge/domains/daemon-runtime/framework-install.md: prehistoric sources 锚点格式非法（应形如 git:<ref>-..<日期>）: 
