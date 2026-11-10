@@ -13,6 +13,8 @@
   kind: new
 - path: tests/test_platform_guard.py
   kind: new
+- path: tests/test_killpg_self_guard.py
+  kind: modify
 - path: tests/test_platform_pal.py
   kind: new
 - path: core/fs_utils.py
@@ -55,8 +57,6 @@
   kind: modify
 - path: core/verify_scenarios.py
   kind: modify
-- path: core/adjudication_narrative.py
-  kind: modify
 - path: core/fenix_session.py
   kind: modify
 - path: core/v2_dev_server.py
@@ -69,12 +69,6 @@
   kind: modify
 - path: core/dashboard/ocr_status.py
   kind: modify
-- path: core/dashboard/routes/architecture_routes.py
-  kind: modify
-- path: core/dashboard/routes/project_routes.py
-  kind: modify
-- path: core/dashboard/routes/regression_routes.py
-  kind: modify
 - path: core/agent_runner/runner.py
   kind: modify
 - path: core/agent_runner/liveness.py
@@ -82,10 +76,6 @@
 - path: core/agent_runner/maintenance_runs.py
   kind: modify
 - path: core/agent_runner/harness/claude_adapter.py
-  kind: modify
-- path: core/agent_runner/harness/protocol.py
-  kind: modify
-- path: core/agent_runner/harness/one_shot.py
   kind: modify
 - path: core/verify_engine/cli_runner.py
   kind: modify
@@ -128,7 +118,7 @@
 
 ## 5. W5 spawn 收敛
 
-- [x] 5.1 core/ `start_new_session` spawn 面收敛改 `pal.spawn_detached`：grep 词面 33 处（= 31 处 `=True` 调用位点 + runner.py:7030 动态 passthrough + :6793 注释词面），实改位点分布在 18 文件：`core/adjudication_narrative.py`、`core/agent_runner/liveness.py`、`core/agent_runner/maintenance_runs.py`、`core/agent_runner/runner.py`、`core/dashboard/ocr_status.py`、`core/dashboard/routes/architecture_routes.py`、`core/dashboard/routes/project_routes.py`、`core/dashboard/routes/regression_routes.py`、`core/dashboard/server.py`、`core/hook_engine.py`、`core/knowledge.py`、`core/pm_engine/verification/serving.py`、`core/proc_utils.py`、`core/regression.py`、`core/v2_dev_server.py`、`core/verify_contract.py`、`core/worktree_manager/dist_conflicts.py`、`core/verify_engine/cli_runner.py`。**特别约束**：runner.py:7030 的 `start_new_session=spawn_spec.start_new_session` 是动态 passthrough（False = 无独立进程组、SIGTERM 直杀直接子进程语义，见 :6793 注释），MUST 经 `spawn_detached(..., new_session=...)` 参数形态保语义迁移，MUST NOT 盲改为无条件 detached（否则 Linux 行为变化、违反零变化契约）；`harness/one_shot.py` 与 `harness/protocol.py` 零字面位点（其 spawn 经 harness 通道、无 start_new_session 参数），不在清单内
+- [x] 5.1 core/ `start_new_session` spawn 面收敛改 `pal.spawn_detached`：grep 词面 33 处（= 31 处 `=True` 调用位点 + runner.py:7030 动态 passthrough + :6793 注释词面），实改位点分布在 11 文件/14 位点：本任务提交 10 文件（`core/agent_runner/maintenance_runs.py`、`core/agent_runner/runner.py`、`core/dashboard/ocr_status.py`、`core/hook_engine.py`、`core/knowledge.py`、`core/pm_engine/verification/serving.py`、`core/regression.py`、`core/v2_dev_server.py`、`core/verify_contract.py`、`core/worktree_manager/dist_conflicts.py`），其余位点在 3.1/4.x/5.2 期间已随对应任务迁移（`core/proc_utils.py`、`core/dashboard/server.py`、`core/v2_dev_server.py`、`core/verify_engine/cli_runner.py`）；grep 词面命中的 `adjudication_narrative.py` 与 dashboard 三 routes 文件经核对全为 docstring/注释词面（真实 spawn 位点已并入 kill_process_group 单点或属注释叙述），零实改。**特别约束**：runner.py:7030 的 `start_new_session=spawn_spec.start_new_session` 是动态 passthrough（False = 无独立进程组、SIGTERM 直杀直接子进程语义，见 :6793 注释），MUST 经 `spawn_detached(..., new_session=...)` 参数形态保语义迁移，MUST NOT 盲改为无条件 detached（否则 Linux 行为变化、违反零变化契约）；`harness/one_shot.py` 与 `harness/protocol.py` 零字面位点（其 spawn 经 harness 通道、无 start_new_session 参数），不在清单内
 - [x] 5.2 `core/verify_engine/cli_runner.py:405/415`（实改位点 :408-:426 现 linewidth；shell 形态收 `[str(cmd)]` 单元素表） 两处 asyncio 子进程迁移（pal.spawn_detached 异步形态或平台中立等价物）
 
 ## 6. W6+W7 守卫与收尾（必须排在 §4/§5 之后）
