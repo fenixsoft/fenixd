@@ -1,5 +1,5 @@
 # 模型网关与配置
-> 最后更新：2026-11-10 09:52 UTC+8
+> 最后更新：2026-11-10 13:36 UTC+8
 
 模型网关与配置域：LLM provider 注册表与角色模型分配、候选链与 failover、瞬断治理与熔断、计费配置、provider 引用校验与分配失效划界，以及分级配置与设置界面的配置体系，外加 Provider 手动健康检测。
 
@@ -7,7 +7,7 @@
 
 | 能力页 | 简介 | 更新时间 |
 | --- | --- | --- |
-| [llm-model-assignment](llm-model-assignment.md) | 各 agent 角色的模型分配 | 2026-10-03 04:59 |
+| [llm-model-assignment](llm-model-assignment.md) | 各 agent 角色的模型分配与快速分配（一份模板整体覆盖全部角色、多项目投放与 provider 自动补齐） | 2026-11-10 13:36 |
 | [chain-model-mapping](chain-model-mapping.md) | 链模型映射（元素级模型解析） | 2026-10-03 04:59 |
 | [dashboard-chain-editor](dashboard-chain-editor.md) | 链模型映射编辑器 | 2026-10-03 04:59 |
 | [provider-chain-config](provider-chain-config.md) | provider 候选链配置 | 2026-10-03 04:59 |
