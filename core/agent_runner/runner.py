@@ -157,6 +157,7 @@ from core.agent_runner.maintenance_runs import (
     _accumulate_code_review_tokens,
     _accumulate_evolution_tokens,
     _accumulate_self_review_tokens,
+    _apply_provider_env,
     _clear_admin_disposition,
     _clear_self_review_out,
     _delete_admin_disposition,
@@ -644,6 +645,28 @@ class _AttemptState:
     # 原始 owner 命中。None = 本链从未经 create 取得（继承/repair 载体等），
     # 终态不发起释放（不传 owner 的释放会误放他人锁，禁用）。
     lock_owner_run_id: Optional[str] = None
+
+
+def _attach_candidate_context(exc: Exception, provider_name, model_override,
+                              chain_index: int, chain_len: int,
+                              failed_candidates: list) -> None:
+    """车道候选环失败归因上下文挂载（add-maintenance-lane-provider-failover）。
+
+    把「最后尝试候选 provider/model 与链信息」additive 挂到上抛异常——车道
+    except 块据此回填终态归因的 provider 维度与 429 重派意图的链信息
+    （R5/R6）。已挂载的字段不覆盖；异常对象不可挂属性（个别 C 层异常）时
+    静默跳过，不影响原样上抛语义。
+    """
+    try:
+        if getattr(exc, "provider_name", None) is None:
+            exc.provider_name = provider_name
+        if getattr(exc, "model_override", None) is None:
+            exc.model_override = model_override
+        exc.chain_index = chain_index
+        exc.chain_len = chain_len
+        exc.failed_candidates = list(failed_candidates)
+    except Exception:  # noqa: BLE001 — 挂载失败不改变上抛语义
+        pass
 
 
 class AgentRunner:
@@ -1653,30 +1676,19 @@ class AgentRunner:
                 error=f"dispute judge prompt 构建失败: {e}",
             )
 
-        # 模型路由（design Non-Goal：不新增配置键）：已分配 provider 用分配模型
-        # 直连（与 administrator 同通道）；未分配走默认网关（cc-switch），
-        # --model 用官方模型名常量，由网关映射到可用模型。
+        # 模型路由 + 车道候选环（add-maintenance-lane-provider-failover 3.8，
+        # 与 run_spec_review 3.7 镜像同步）：已分配 provider 按完整链逐候选
+        # 执行（切换类失败换下一候选、marker 真实链下标）；未分配走默认网关
+        # （cc-switch）单次，--model 用官方模型名常量，由网关映射到可用模型。
+        # provider_name/model_override 预置链首语义：成功由候选环返回值覆盖，
+        # 取消/冻结/判停等与候选无关的收口路径保持改造前「链首或 None」取值
+        # 逐字段一致；链耗尽 catch-all 由异常属性回填最后尝试候选。
         assignment = self._get_agent_model_assignment("dispute-judge")
-        env_overrides: Dict[str, str] = {}
         provider_name = None
+        model_override = None
         if assignment:
-            provider, model_override = assignment[0]
-            provider_name = provider["name"]
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"], model_override)
-            )
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
-            # 观测：run jsonl 写 provider_marker（与 dispatch attempt 路径同口径）
-            self._write_provider_marker(
-                run_id, spec_name, "dispute-judge",
-                provider["name"], model_override, 0, 1,
-            )
-        else:
-            model_override = DEFAULT_GATEWAY_MODEL
+            provider_name = assignment[0][0]["name"]
+            model_override = assignment[0][1]
 
         # 类型钳制收敛单点（63835b81527f 修复的 DRY 收敛，code-review item
         # b52339ebef51）：agents.max_turns 非法值回落缺省 300，钳制缘由与
@@ -1685,11 +1697,15 @@ class AgentRunner:
 
         start_time = time.time()
         try:
-            output, turns, _session_id, _usage, _latency = self._run_agent(
-                prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=max_turns,
+            output, turns, _session_id, _usage, _latency, provider_name, model_override = self._run_agent_with_chain_failover(
+                run_id=run_id,
                 spec_name=spec_name,
                 agent_type="dispute-judge",
+                assignment=assignment,
+                prompt=prompt,
+                cwd=self.project_root,
+                fallback_model=DEFAULT_GATEWAY_MODEL,
+                max_turns=max_turns,
             )
             # 收工后补写 run stamp（code-review item 01d1335a9902）：结果文件按
             # spec 固定路径跨轮复用且内容不带 run id——派发前 unlink 失败 +
@@ -1788,6 +1804,11 @@ class AgentRunner:
                 "agent_runner",
                 f"dispute judge run 失败 '{spec_name}'（等价 unclear）: {e}",
             )
+            # 链耗尽/非切换失败异常携带最后尝试候选（车道候选环 additive
+            # 挂载）——终态 provider 维度取最后尝试候选而非链首（R5；镜像
+            # run_spec_review catch-all 同步）。
+            provider_name = getattr(e, "provider_name", None) or provider_name
+            model_override = getattr(e, "model_override", None) or model_override
             return AgentRunResult(
                 run_id, spec_name, "dispute-judge",
                 success=False, duration_seconds=time.time() - start_time,
@@ -1881,27 +1902,19 @@ class AgentRunner:
                 error=f"spec review prompt 构建失败: {e}",
             )
 
-        # 模型路由：复用 agents.models.spec-review（未分配走默认网关）
+        # 模型路由 + 车道候选环（add-maintenance-lane-provider-failover 3.7，
+        # 与 run_dispute_judge 3.8 镜像同步）：复用 agents.models.spec-review
+        # 完整链逐候选执行（切换类失败换下一候选、marker 真实链下标；未分配
+        # 走默认网关单次）。provider_name/model_override 预置链首语义：成功由
+        # 候选环返回值覆盖，取消/冻结/判停等与候选无关的收口路径保持改造前
+        # 「链首或 None」取值逐字段一致；链耗尽 catch-all 由异常属性回填最后
+        # 尝试候选。
         assignment = self._get_agent_model_assignment("spec-review")
-        env_overrides: Dict[str, str] = {}
         provider_name = None
+        model_override = None
         if assignment:
-            provider, model_override = assignment[0]
-            provider_name = provider["name"]
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"], model_override)
-            )
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
-            self._write_provider_marker(
-                run_id, spec_name, "spec-review",
-                provider["name"], model_override, 0, 1,
-            )
-        else:
-            model_override = DEFAULT_GATEWAY_MODEL
+            provider_name = assignment[0][0]["name"]
+            model_override = assignment[0][1]
 
         # 类型钳制收敛单点（63835b81527f 修复的 DRY 收敛，code-review item
         # b52339ebef51）：agents.max_turns 非法值回落缺省 300，钳制缘由与
@@ -1910,11 +1923,15 @@ class AgentRunner:
 
         start_time = time.time()
         try:
-            output, turns, _session_id, _usage, _latency = self._run_agent(
-                prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=max_turns,
+            output, turns, _session_id, _usage, _latency, provider_name, model_override = self._run_agent_with_chain_failover(
+                run_id=run_id,
                 spec_name=spec_name,
                 agent_type="spec-review",
+                assignment=assignment,
+                prompt=prompt,
+                cwd=self.project_root,
+                fallback_model=DEFAULT_GATEWAY_MODEL,
+                max_turns=max_turns,
             )
             return AgentRunResult(
                 run_id, spec_name, "spec-review",
@@ -1978,6 +1995,11 @@ class AgentRunner:
                 "agent_runner",
                 f"spec review run 失败 '{spec_name}': {e}",
             )
+            # 链耗尽/非切换失败异常携带最后尝试候选（车道候选环 additive
+            # 挂载）——终态 provider 维度取最后尝试候选而非链首（R5；镜像
+            # run_dispute_judge catch-all 同步）。
+            provider_name = getattr(e, "provider_name", None) or provider_name
+            model_override = getattr(e, "model_override", None) or model_override
             return AgentRunResult(
                 run_id, spec_name, "spec-review",
                 success=False, duration_seconds=time.time() - start_time,
@@ -2373,7 +2395,8 @@ class AgentRunner:
             return None
 
     def _select_chain_candidate(self, chain, spec_name: str, agent_type: str,
-                                 now: float | None = None) -> int:
+                                 now: float | None = None,
+                                 skip_indexes=None) -> int:
         """在候选链上选择首个「未熔断且未处于 switch 冷却」的候选下标（add-provider-failover）。
 
         design D3：链选择跳过 switch-cooldown 中或 4xx 熔断中的候选；返回值用于落点。
@@ -2383,9 +2406,16 @@ class AgentRunner:
         Args:
             chain: ConfigLoader.get_agent_model_assignment 返回的候选链
                 （list[(provider_dict, model)]），可为空。
+            skip_indexes: 本 run 内已尝试候选下标集合（add-maintenance-lane-
+                provider-failover：车道候选环的单 run 内换候选保证——候选
+                尝试上限=链长且 MUST NOT 重复同一候选；簿记面 fail-open（无
+                冷却记账）时选择器不得依赖冷却状态前进，由调用方传已试下标
+                兜底。dispatch attempt 环不传（其链前进依赖冷却记账既有语义）。
         """
         now = self._now() if now is None else now
         for idx, (provider, _model) in enumerate(chain):
+            if skip_indexes and idx in skip_indexes:
+                continue
             name = provider["name"]
             if self.is_circuit_open(name, now=now):
                 continue
@@ -2393,6 +2423,232 @@ class AgentRunner:
                 continue
             return idx
         return -1
+
+    # ── 维护/判官范式车道候选环（add-maintenance-lane-provider-failover D1）──
+    # 车道侧单 run 候选环的唯一实现：六条 LLM 维护车道经
+    # maintenance_runs._run_lane_agent_with_failover 薄封装进入，判官范式
+    # 车道（run_spec_review / run_dispute_judge）直接调用。复用 dispatch
+    # attempt 环的判定/冷却原语（_switch_signal_text / classify_* /
+    # _record_switch_cooldown / _record_unrecognized_model），不与 attempt
+    # 环共享计数状态——车道不绑 worktree/spec 重试/result gate 语义
+    # （design D1 备选 B 否决理由）。
+    # 候选失败时须保留到终态归因的结构化属性（api_error_status /
+    # result_text / stderr_lines / exit_code / conn_error / api_timeout）：
+    # code-review 429 重派归因（claude_api_error_status）、admin 证据四件套
+    # （_admin_failure_evidence）与判官范式 catch-all 归因桥接都从异常对象
+    # 读这些键；链耗尽聚合异常按此清单逐项拷贝。
+    _FAILOVER_PRESERVED_EXC_ATTRS = (
+        "api_error_status", "result_text", "stderr_lines", "exit_code",
+        "conn_error", "api_timeout",
+    )
+
+    def _run_agent_with_chain_failover(
+        self, run_id: str, spec_name: str, agent_type,
+        assignment, prompt: str, cwd,
+        fallback_model=None,
+        provider_env: Dict[str, str] | None = None,
+        post_provider_env: Dict[str, str] | None = None,
+        max_turns: int | None = None,
+        marker_spec_name: str | None = None,
+        marker_agent_type: str | None = None,
+    ) -> tuple:
+        """车道单 run 候选环：按链逐候选执行 `_run_agent`，切换类失败换下一候选。
+
+        design D1/D3/D5/D6/D7（add-maintenance-lane-provider-failover）：
+
+        - ``assignment`` 为空 → 既有回退语义单次执行（``fallback_model``，
+          不写 provider_marker，行为与未配置 ``agents.models`` 时逐字段一致，
+          R1/R7）；
+        - 非空链 → 逐候选：``_select_chain_candidate`` 选首个未熔断且未处于
+          switch/限流冷却的候选（跳过不可用候选）→ provider env 组装
+          （``_apply_provider_env`` → ``post_provider_env`` 后置合并，D7：
+          evolution 等车道专属 env 的顺序不变量）→ 写 provider_marker（真实
+          ``chain_index``/``chain_len`` + additive ``attempt``）→ ``_run_agent``
+          （解包 5 元）；
+        - 候选以切换类错误失败（判定单源 ``_switch_signal_text`` +
+          ``classify_switch_error``，R3：MUST NOT 读降噪文本反推）→ 429 记
+          限流冷却（``PROVIDER_RATELIMIT_COOLDOWN_SECONDS``）、拒模型记
+          ``_record_unrecognized_model`` + switch 冷却、其余切换类记 switch
+          冷却，换下一候选；候选尝试上限 = 链长（R2）；
+        - 非切换错误（4xx 配额/鉴权、业务失败、超时等）原样上抛（R4）；
+        - 全链冷却/耗尽 → 抛含 ``[model-chain-unavailable]`` 的 RuntimeError
+          且不再启动进程（D6）；链尾候选以切换类失败耗尽时，聚合异常保留
+          最后一次失败的各结构化属性（429 终局重派归因依赖，D5/R4 of
+          code-review 车道）；
+        - 簿记面（marker 写点 / 冷却与拒模型记账 / 当日 attempt 计数）对
+          替身 runner 缺方法 fail-open（getattr 探测，R7）；判定原语
+          （``_switch_signal_text`` 等）不 fail-open——缺失即 AttributeError
+          fail-loud（design Risks：旧代码单独 cherry-pick 不得静默回退）。
+
+        Returns:
+            5 元组 ``(output, turns, session_id, usage_info, stall_latency)``
+            （与 ``_run_agent`` 逐字段同形）+ ``provider_name``（实际候选
+            provider 名；回退路径 None）+ ``model_override``（实际模型名；
+            回退路径为 ``fallback_model``），共 7 元。
+        """
+        chain = list(assignment) if assignment else []
+        if not chain:
+            env = dict(provider_env or {})
+            if post_provider_env:
+                env.update(post_provider_env)
+            output, turns, session_id, usage_info, stall_latency = self._run_agent(
+                prompt, cwd, run_id, fallback_model, env,
+                max_turns=max_turns, spec_name=spec_name, agent_type=agent_type,
+            )
+            return output, turns, session_id, usage_info, stall_latency, None, fallback_model
+
+        chain_len = len(chain)
+        attempt = 0
+        failed_candidates: list[dict] = []
+        tried_indexes: set[int] = set()
+        last_exc: Exception | None = None
+        last_error_text = ""
+        reject_hits = 0
+        # 车道名（日志/归因）：个别车道 _run_agent 不传 agent_type（超时覆盖
+        # 查询面保持现状）但观测与归因文案仍须点名车道——取 marker 车道名，
+        # 缺省回落 spec_name。
+        lane_name = agent_type or marker_agent_type or spec_name
+        while attempt < chain_len:
+            idx = self._select_chain_candidate(chain, spec_name, agent_type,
+                                               skip_indexes=tried_indexes)
+            if idx < 0:
+                break  # 全链冷却：廉价失败，不启动进程（D6）
+            provider, model_override = chain[idx]
+            attempt += 1
+            provider_name = provider.get("name")
+            env = dict(provider_env or {})
+            _apply_provider_env(env, provider, model_override, self)
+            if post_provider_env:
+                env.update(post_provider_env)
+            marker_fn = getattr(self, "_write_provider_marker", None)
+            if callable(marker_fn):
+                # marker 专用 spec/agent 名（缺省与 _run_agent 同名）：个别
+                # 车道 _run_agent 不传 agent_type（超时覆盖查询面保持现状）
+                # 但 marker 仍须写车道名（self-review/evolution 先例）。
+                try:
+                    marker_fn(run_id,
+                              marker_spec_name if marker_spec_name is not None else spec_name,
+                              marker_agent_type if marker_agent_type is not None else agent_type,
+                              provider_name,
+                              model_override, idx, chain_len, attempt)
+                except Exception as e:  # noqa: BLE001 — 观测增强，写失败不阻断
+                    self.logger.warning(
+                        "agent_runner",
+                        f"provider_marker 写入失败 {run_id}（车道候选环，不阻断）: {e}",
+                    )
+            try:
+                output, turns, session_id, usage_info, stall_latency = self._run_agent(
+                    prompt, cwd, run_id, model_override, env,
+                    max_turns=max_turns, spec_name=spec_name, agent_type=agent_type,
+                )
+            except Exception as e:
+                error = str(e)
+                # 切换判定单源（R3）：富信号文本（error + result_text +
+                # api_error_status）喂 classify_switch_error；降噪文本反推
+                # 与 stderr 噪声行回填均禁止。
+                switch_signal = self._switch_signal_text(error, e)
+                if not self.classify_switch_error(switch_signal):
+                    # 非切换错误：原样上抛（R4）——归因上下文 additive 挂载
+                    # （车道 except 据此回填 provider 维度；挂载失败不改变
+                    # 上抛语义，个别不可挂属性的异常静默跳过）。
+                    _attach_candidate_context(
+                        e, provider_name, model_override, idx, chain_len,
+                        failed_candidates)
+                    raise
+                failed_candidates.append({
+                    "provider": provider_name, "model": model_override,
+                    "chain_index": idx,
+                })
+                # 单 run 内换候选保证（R2）：已试下标本地记账——簿记面 fail-open
+                #（无冷却记账）时选择器不得重复选同一候选烧链。
+                tried_indexes.add(idx)
+                last_exc = e
+                last_error_text = error
+                is_ratelimit = self.classify_ratelimit_error(switch_signal)
+                is_reject = self.classify_unrecognized_model_error(switch_signal)
+                cooldown_fn = getattr(self, "_record_switch_cooldown", None)
+                if is_ratelimit:
+                    # 429 限流冷却：独立常量时长（复用 switch 冷却通道，D3）
+                    if callable(cooldown_fn):
+                        cooldown_fn(
+                            provider_name,
+                            cooldown_seconds=PROVIDER_RATELIMIT_COOLDOWN_SECONDS,
+                        )
+                else:
+                    if is_reject:
+                        reject_hits += 1
+                        record_reject = getattr(
+                            self, "_record_unrecognized_model", None)
+                        if callable(record_reject):
+                            record_reject(
+                                provider_name, model_override, run_id, spec_name)
+                    # 其余切换类（拒模型/5xx/连接类）：默认 switch 短冷却
+                    if callable(cooldown_fn):
+                        cooldown_fn(provider_name)
+                if is_ratelimit:
+                    reason = "429"
+                elif is_reject:
+                    reason = "unrecognized_model"
+                else:
+                    code = self.parse_api_error_status(switch_signal)
+                    reason = "5xx" if (code is not None and 500 <= code <= 599) else "conn"
+                # 换候选日志（R5）：车道 / 前候选 / 后候选 / 原因。
+                # 冷却刚记账后重选即得下一可用候选（状态未变，与循环顶部
+                # 重选同一结果）；无可用候选如实标注。
+                nxt = self._select_chain_candidate(chain, spec_name, agent_type,
+                                                   skip_indexes=tried_indexes)
+                next_desc = (
+                    f"{chain[nxt][0].get('name')}@{chain[nxt][1]}（chain_index={nxt}）"
+                    if nxt >= 0 else "无可用候选（全链冷却）"
+                )
+                self.logger.info(
+                    "agent_runner",
+                    f"provider switched（车道候选环）: agent_type={lane_name} "
+                    f"spec={spec_name} run={run_id} 前候选="
+                    f"{provider_name}@{model_override}（chain_index={idx}，"
+                    f"原因={reason}）→ 后候选={next_desc}（attempt {attempt}/{chain_len}）",
+                )
+                continue
+            return (output, turns, session_id, usage_info, stall_latency,
+                    provider_name, model_override)
+
+        # 全链冷却 / 耗尽（D6）：廉价失败，不启动新进程。链上确有候选尝试过
+        # 时，聚合异常保留最后一次失败的各结构化属性（429 终局重派归因与
+        # 判官范式归因桥接依赖）；链尾候选为拒模型时按 dispatch 环同款语义
+        # 注入「全链模型不可用」标注（派发读侧据此跳过同因重派）。
+        if last_error_text:
+            head = (
+                f"车道 {lane_name}（spec={spec_name}）链上 {chain_len} 个候选全部"
+                f"尝试失败（失败候选: {failed_candidates}）"
+            )
+            if reject_hits and failed_candidates:
+                body = annotate_model_chain_unavailable(
+                    last_error_text,
+                    failed_candidates[-1]["provider"],
+                    failed_candidates[-1]["model"],
+                    reject_hits,
+                )
+            else:
+                body = f"{MODEL_CHAIN_UNAVAILABLE_MARKER} {head}：{last_error_text}"
+            fail = RuntimeError(body)
+            if last_exc is not None:
+                for attr in self._FAILOVER_PRESERVED_EXC_ATTRS:
+                    val = getattr(last_exc, attr, None)
+                    if val is not None:
+                        setattr(fail, attr, val)
+            # 车道归因取数（429 终局重派按链解析，D5/R6）：最后尝试候选与
+            # 链信息挂异常对象——run_code_review 据此更新 provider_name 与
+            # 重派意图的 chain_len / 失败候选列表。
+            if failed_candidates:
+                fail.provider_name = failed_candidates[-1].get("provider")
+                fail.model_override = failed_candidates[-1].get("model")
+            fail.chain_len = chain_len
+            fail.failed_candidates = list(failed_candidates)
+            raise fail
+        raise RuntimeError(
+            f"{MODEL_CHAIN_UNAVAILABLE_MARKER} 车道 {lane_name}（spec={spec_name}）"
+            f"链上全部 {chain_len} 个候选处于冷却/不可用（未启动进程）"
+        )
 
     def _worktree_path_valid(self, wt_path: Path) -> bool:
         """worktree 路径存在性快检（fix-resume-stale-worktree 3a）。
@@ -4738,7 +4994,9 @@ class AgentRunner:
                                           provider_name: str | None = None,
                                           spec_name: str = "",
                                           api_error_status=None,
-                                          result_text: str = "") -> dict | None:
+                                          result_text: str = "",
+                                          chain_len: int | None = None,
+                                          failed_candidates=None) -> dict | None:
         """run 终态归因为 429 限流时登记 ``ratelimit_redispatch`` 意图（design D4）。
 
         分工（design D4）：runner 只负责终态归因与意图登记——
@@ -4769,6 +5027,10 @@ class AgentRunner:
                 文本分类未命中时的回退源之一，run_code_review 传入）。
             result_text: 非零退出分支挂异常的 result 事件 ``result`` 文本（同
                 上；命中限流签名即判 429）。
+            chain_len: 候选环链长（add-maintenance-lane-provider-failover R6：
+                终端 429 归因携带链信息；空链单发/挂载缺失时 None → 意图省略
+                该键，读侧向后兼容）。
+            failed_candidates: 候选环失败候选清单（同上；None → 省略）。
         """
         # evo-add-code-review-ratelimit-resume 1.1：归因双源——文本分类未命中
         # 时回退 result 事件（富归因参数 → run jsonl 兜底）判 429。
@@ -4838,21 +5100,25 @@ class AgentRunner:
             except Exception:  # noqa: BLE001 — 冷却记账失败不阻断意图登记
                 pass
         # ② run jsonl 标注重派缘由（冷却到期时刻双格式：iso 供人读、epoch 供
-        # 消费侧算延迟；写失败仅丢留痕，不阻断意图上交）。
+        # 消费侧算延迟；写失败仅丢留痕，不阻断意图上交）。链信息（chain_len/
+        # 失败候选）additive 携带（add-maintenance-lane-provider-failover R6：
+        # 重派消费复跑按当时冷却重新解析链，意图留痕供终态归因与诊断）。
+        intent_event: dict = {
+            "type": "ratelimit_redispatch",
+            "run_id": run_id,
+            "spec": spec_name,
+            "provider": provider_name,
+            "reason": "429 ratelimit",
+            "cooldown_until": from_epoch(cooldown_until).isoformat(),
+            "cooldown_until_epoch": cooldown_until,
+            "max_redispatches": RATELIMIT_REDISPATCH_MAX,
+        }
+        if chain_len is not None:
+            intent_event["chain_len"] = chain_len
+        if failed_candidates is not None:
+            intent_event["failed_candidates"] = failed_candidates
         try:
-            append_run_line(
-                run_file,
-                {
-                    "type": "ratelimit_redispatch",
-                    "run_id": run_id,
-                    "spec": spec_name,
-                    "provider": provider_name,
-                    "reason": "429 ratelimit",
-                    "cooldown_until": from_epoch(cooldown_until).isoformat(),
-                    "cooldown_until_epoch": cooldown_until,
-                    "max_redispatches": RATELIMIT_REDISPATCH_MAX,
-                },
-            )
+            append_run_line(run_file, intent_event)
         except OSError:
             pass
         self.logger.info(
@@ -4860,9 +5126,11 @@ class AgentRunner:
             f"Ratelimit redispatch intent registered (add-code-review-"
             f"concurrency-and-429-resilience) — run={run_id} spec={spec_name!r} "
             f"provider={provider_name!r} cooldown_until="
-            f"{from_epoch(cooldown_until).isoformat()}",
+            f"{from_epoch(cooldown_until).isoformat()}"
+            + (f" chain_len={chain_len} 失败候选={failed_candidates}"
+               if chain_len is not None else ""),
         )
-        return {
+        intent = {
             "reason": "429 ratelimit",
             "provider": provider_name,
             "run_id": run_id,
@@ -4870,6 +5138,11 @@ class AgentRunner:
             "cooldown_until_epoch": cooldown_until,
             "max_redispatches": RATELIMIT_REDISPATCH_MAX,
         }
+        if chain_len is not None:
+            intent["chain_len"] = chain_len
+        if failed_candidates is not None:
+            intent["failed_candidates"] = failed_candidates
+        return intent
 
     # ── R6 子步 2: 瞬断原地退避重试（等价搬移，D1 R6 表，Task 5.1）──────
     # 仅处理「is_transient 且原地预算未耗尽」时的瞬断重试段：写 transient_retry

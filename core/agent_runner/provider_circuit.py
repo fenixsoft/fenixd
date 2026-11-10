@@ -849,34 +849,38 @@ class ProviderCircuit:
         model: str,
         chain_index: int,
         chain_len: int,
+        attempt: int | None = None,
     ) -> None:
         """向 run jsonl 写入 provider_marker 行（design D5 / spec failover-dispatch「产物可追溯」）。
 
         在 attempt 启动、进程派发前写入，供 Dashboard / 事后审计确认本次 run 实际使用的
         provider/model 与链内下标；三件套摘要（baseurl/apikey 不落盘，仅记 provider 名）。
+        ``attempt`` 为 additive 可选序号（add-maintenance-lane-provider-failover
+        D2：车道候选环多 attempt 共用同一 run jsonl，供读侧区分同 run 内的
+        候选次序；None 时不落该键，读侧向后兼容）。
         """
         if not provider_name:
             return
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         run_file = runs_dir / f"{run_id}.jsonl"
+        marker: dict = {
+            "type": "provider_marker",
+            "spec": spec_name,
+            "agent_type": agent_type,
+            "provider": provider_name,
+            "model": model,
+            "chain_index": chain_index,
+            "chain_len": chain_len,
+        }
+        if attempt is not None:
+            marker["attempt"] = attempt
         try:
             # mkdir 移入 try（code-review item b42d9b865018）：旧实现 mkdir 在
             # try 外，权限/只读盘下的 OSError 会从标记写入中途逃逸，打断 attempt
             # 启动；且写失败被 `except OSError: pass` 静默吞掉，丢失 provider
             # 可追溯性而无任何痕迹。现 mkdir 一并守卫，失败记 WARNING。
             runs_dir.mkdir(parents=True, exist_ok=True)
-            append_run_line(
-                run_file,
-                {
-                    "type": "provider_marker",
-                    "spec": spec_name,
-                    "agent_type": agent_type,
-                    "provider": provider_name,
-                    "model": model,
-                    "chain_index": chain_index,
-                    "chain_len": chain_len,
-                },
-            )
+            append_run_line(run_file, marker)
         # 守卫面放宽（code-review item 016d03665bd7）：append_run_line 内
         # json.dumps 对不可序列化值抛 TypeError / 循环引用抛 ValueError，均非
         # OSError（line 预清洗只挡 UnicodeEncodeError）；只接 OSError 会让这类
