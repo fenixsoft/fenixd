@@ -1,0 +1,1 @@
+现在dsh web是靠token验证的，很不方便，你将其调整为用户名/密码验证，在设置菜单中增加登录用户、密码的设置，登录同时支持token和用户密码验证，如果token过期，不要显示“dsh web authentication required; reopen the URL printed by dsh web.”，而是转到用户名密码的输入页面，校验通过后转自动在URL后加上token，完成登录。
