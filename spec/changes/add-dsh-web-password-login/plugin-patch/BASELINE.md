@@ -100,3 +100,11 @@ $ node /usr/bin/dsh --version
 3. 登录页 `<meta name="referrer" content="no-referrer">` 会让浏览器把本页 form POST 的 Origin 头置为 `null`（opaque origin），触发服务端跨源 403——policy 必须用 `same-origin`（响应头同步），单测已加 `no-referrer` 禁用断言。
 4. node 24.19 的 `node --test <dir>` 目录 positional 不做测试发现（MODULE_NOT_FOUND），须用 `node --test 'tests/**/*.test.mjs'` 原生 glob。
 
+## 验证修复轮（2026-11-10，原地打回第 1 轮）
+
+- 产品修复（BUG-01，severity=major）：`index.js` `readRequestBody` 超限分支不再 `req.destroy()`——先摘除 data 监听丢弃余量、保留 socket，使 SPEC 要求的 400 `{"error":"body-too-large"}` 得以送达（修复前 reject 后同步销毁 socket，handler catch 的 writeJson 400 写在已断连 socket 上，客户端只见空回复：curl exit 52 / STATUS=000）。
+- 单测强化：`tests/host.test.mjs` 两个超限用例补「拒绝 MUST NOT 销毁底层 socket」断言（`fakeRequest` 的 destroyed 标志改挂 `req.destroyed` 属性以可断言）；测试数保持 14，与冻结场景 `dshauth-plugin-unit-tests` 字面断言（`pass 14`）对齐。
+- 镜像同步：`fenix-dsh-auth.patch` 以同法（空基线 `diff -ruN a b`）重建（1493→1502 行），干净目录 `patch -p1 --dry-run` exit 0、实应用后与部署态 `diff -r` 零差异、回放树内单测 `EXIT=0 / pass 14 / fail 0`。
+- 实弹复核：`systemctl restart dsh-web` 后超限 POST `/auth/login` → 400 body-too-large（curl exit 0）；跨源 403 cross-origin / 白名单外 400 unsupported-body / 凭据端点跨源 401 unauthenticated 均保持；未认证 `/` 登录页 17 断言全过（表单锚点、未配置提示、无原生 401 文案、无 `?token=`、无 animation/transition、裸 socket HEAD 200 零 body）。证据：`.fenix/verify-evidence/add-dsh-web-password-login/`。
+- 场景缺陷（headreq）复核：裁决 Agent 原地修复已在场景库生效（`curl -I -o` 头块污染 `-o` 文件 → 裸 socket 取证步骤），断言集不变，本轮实弹复测 HEAD_BODY_EMPTY 成立。
+

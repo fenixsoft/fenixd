@@ -1,6 +1,6 @@
 diff -ruN a/client.js b/client.js
 --- a/client.js	1970-01-01 08:00:00.000000000 +0800
-+++ b/client.js	2026-11-10 12:09:32.404034777 +0800
++++ b/client.js	2026-11-10 13:33:27.352346560 +0800
 @@ -0,0 +1,308 @@
 +/**
 + * fenix-dsh-auth — Client 半（零构建，形态对齐 fenix-dsh-brand-fenix /
@@ -312,7 +312,7 @@ diff -ruN a/client.js b/client.js
 +})()
 diff -ruN a/cordis.patch.yml b/cordis.patch.yml
 --- a/cordis.patch.yml	1970-01-01 08:00:00.000000000 +0800
-+++ b/cordis.patch.yml	2026-11-10 11:49:43.730006272 +0800
++++ b/cordis.patch.yml	2026-11-10 13:33:27.352346560 +0800
 @@ -0,0 +1,8 @@
 +# fenix-dsh-auth
 +# dsh web 账号密码登录（首页 / 接管 + /auth/* 端点 + 设置「登录」分区）。
@@ -324,8 +324,8 @@ diff -ruN a/cordis.patch.yml b/cordis.patch.yml
 +      name: fenix-dsh-auth
 diff -ruN a/index.js b/index.js
 --- a/index.js	1970-01-01 08:00:00.000000000 +0800
-+++ b/index.js	2026-11-10 12:16:21.642349218 +0800
-@@ -0,0 +1,846 @@
++++ b/index.js	2026-11-10 13:33:27.352346560 +0800
+@@ -0,0 +1,850 @@
 +/**
 + * fenix-dsh-auth — Host 半（零构建 JS，dsh 0.2.2-rc.1 实测契约面）。
 + *
@@ -866,23 +866,27 @@ diff -ruN a/index.js b/index.js
 +	res.end()
 +}
 +
-+/** 读请求体并限时（超 8KB 拒绝；SPEC：超限返回 400）。导出供测试。 */
++/** 读请求体并限时（超 8KB 拒绝；SPEC：超限返回 400——拒绝 MUST NOT 销毁
++ * socket，否则 400 写在已断连的 socket 上、客户端只见空回复）。导出供测试。 */
 +export function readRequestBody(req, maxBytes) {
 +	return new Promise((resolve, reject) => {
 +		const chunks = []
 +		let total = 0
 +		let settled = false
-+		req.on('data', (chunk) => {
++		const onData = (chunk) => {
 +			if (settled) return
 +			total += chunk.length
 +			if (total > maxBytes) {
 +				settled = true
++				// 摘除 data 监听丢弃余量；保留 socket 让上层 handler 把
++				// 400 送达客户端，响应完成后由 Node 关闭未读完的连接。
++				req.removeListener('data', onData)
 +				reject(Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { code: 'FENIX_BODY_TOO_LARGE' }))
-+				req.destroy()
 +				return
 +			}
 +			chunks.push(chunk)
-+		})
++		}
++		req.on('data', onData)
 +		req.on('end', () => {
 +			if (settled) return
 +			settled = true
@@ -1174,7 +1178,7 @@ diff -ruN a/index.js b/index.js
 +}
 diff -ruN a/package.json b/package.json
 --- a/package.json	1970-01-01 08:00:00.000000000 +0800
-+++ b/package.json	2026-11-10 11:49:42.074021490 +0800
++++ b/package.json	2026-11-10 13:33:27.352346560 +0800
 @@ -0,0 +1,31 @@
 +{
 +  "name": "fenix-dsh-auth",
@@ -1209,7 +1213,7 @@ diff -ruN a/package.json b/package.json
 +}
 diff -ruN a/README.zh.md b/README.zh.md
 --- a/README.zh.md	1970-01-01 08:00:00.000000000 +0800
-+++ b/README.zh.md	2026-11-10 11:50:11.585750555 +0800
++++ b/README.zh.md	2026-11-10 13:33:27.352346560 +0800
 @@ -0,0 +1,41 @@
 +# fenix-dsh-auth
 +
@@ -1254,8 +1258,8 @@ diff -ruN a/README.zh.md b/README.zh.md
 +- 彻底卸载：删除 profile `cordis.patch.yml` 的 insert 两行与 `package.json` 依赖（及 node_modules 链接）→ `systemctl restart dsh-web`。
 diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 --- a/tests/host.test.mjs	1970-01-01 08:00:00.000000000 +0800
-+++ b/tests/host.test.mjs	2026-11-10 12:16:26.674323976 +0800
-@@ -0,0 +1,235 @@
++++ b/tests/host.test.mjs	2026-11-10 13:33:27.352346560 +0800
+@@ -0,0 +1,240 @@
 +/**
 + * fenix-dsh-auth — Host 半单测（node:test，零外部依赖）。
 + *
@@ -1388,22 +1392,22 @@ diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 +function fakeRequest(body, { delayMs = 0 } = {}) {
 +	const req = new EventEmitter()
 +	req.socket = { remoteAddress: '127.0.0.1' }
-+	let destroyed = false
++	req.destroyed = false
 +	req.destroy = () => {
-+		destroyed = true
++		req.destroyed = true
 +	}
 +	process.nextTick(() => {
 +		if (delayMs > 0) {
 +			const chunk = Buffer.from(body)
 +			req.emit('data', chunk.slice(0, Math.ceil(chunk.length / 2)))
 +			setTimeout(() => {
-+				if (destroyed) return
++				if (req.destroyed) return
 +				req.emit('data', chunk.slice(Math.ceil(chunk.length / 2)))
 +				req.emit('end')
 +			}, delayMs)
 +			return
 +		}
-+		if (destroyed) return
++		if (req.destroyed) return
 +		if (body.length > 0) req.emit('data', Buffer.from(body))
 +		req.emit('end')
 +	})
@@ -1413,10 +1417,14 @@ diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 +test('readRequestBody rejects oversized bodies (8KB cap)', async () => {
 +	const maxBytes = 8 * 1024
 +	const oversized = 'a'.repeat(maxBytes + 1)
++	const req = fakeRequest(oversized)
 +	await assert.rejects(
-+		readRequestBody(fakeRequest(oversized), maxBytes),
++		readRequestBody(req, maxBytes),
 +		(error) => error.code === 'FENIX_BODY_TOO_LARGE',
 +	)
++	// 超限拒绝 MUST NOT 销毁底层 socket（destroy 先于响应会令 SPEC 要求的
++	// 400 body-too-large 无法送达，客户端只见断连空回复）
++	assert.equal(req.destroyed, false)
 +	// 恰好不超限的 body 正常读取
 +	const ok = await readRequestBody(fakeRequest('username=u&password=p'), maxBytes)
 +	assert.equal(ok, 'username=u&password=p')
@@ -1427,6 +1435,7 @@ diff -ruN a/tests/host.test.mjs b/tests/host.test.mjs
 +	const half = 'a'.repeat(maxBytes / 2)
 +	const req = fakeRequest(half + half + half, { delayMs: 5 })
 +	await assert.rejects(readRequestBody(req, maxBytes), (error) => error.code === 'FENIX_BODY_TOO_LARGE')
++	assert.equal(req.destroyed, false)
 +})
 +
 +test('parseLoginBody accepts urlencoded and JSON only', () => {
