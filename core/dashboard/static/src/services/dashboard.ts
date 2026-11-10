@@ -3329,3 +3329,75 @@ export async function getKnowledgeFile(
     `/api/knowledge/file${q}`,
   );
 }
+
+// ── add-project-home-tab：项目首页页签（项目文件浏览三通道）─────────
+
+/** 单条目最近提交（短 hash / subject / ISO 时间；目录条目取其下最近提交）。 */
+export interface ProjectFileCommit {
+  hash: string;
+  message: string;
+  time: string;
+}
+
+/** 整仓最近一次提交（仅根目录查询附带；空仓为 null）。 */
+export interface ProjectLatestCommit {
+  author: string;
+  hash: string;
+  time: string;
+}
+
+/** 目录列表条目（dir=true 为目录，目录先行由后端排序保证）。 */
+export interface ProjectFileEntry {
+  name: string;
+  dir: boolean;
+  last_commit: ProjectFileCommit | null;
+}
+
+/** GET /api/project-files/list 响应：git 可见文件集合上构建的目录列表。
+ *  非 git 项目 non_git=true 且 entries 空；超出上限时后端附
+ *  truncated_count。latest/readme 仅根目录查询非 null。 */
+export interface ProjectFilesListData {
+  branch: string | null;
+  latest: ProjectLatestCommit | null;
+  entries: ProjectFileEntry[];
+  readme: string | null;
+  non_git: boolean;
+  truncated_count?: number;
+}
+
+/** GET /api/project-files/content 响应：文本至 256 KiB 截断；binary=true
+ *  时 content 为 null（前 8 KiB 含 NUL 判定）。bytes 恒为文件实值字节数。 */
+export interface ProjectFileContentData {
+  content: string | null;
+  lines: number;
+  bytes: number;
+  truncated: boolean;
+  binary: boolean;
+}
+
+/** 目录列表（项目首页页签；path 缺省为仓库根）。 */
+export async function fetchProjectFileList(
+  project: string,
+  path = "",
+): Promise<ProjectFilesListData> {
+  const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
+  return request<ProjectFilesListData>(`/api/project-files/list${q}`);
+}
+
+/** 文件内容（gitignored 文件按磁盘实况照常服务；越界 400 / 非文件 404
+ *  由 request 抛 ApiError）。 */
+export async function fetchProjectFileContent(
+  project: string,
+  path: string,
+): Promise<ProjectFileContentData> {
+  const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
+  return request<ProjectFileContentData>(`/api/project-files/content${q}`);
+}
+
+/** 文件下载直链（Content-Disposition attachment；经 embedMount 单点前缀
+ *  化——该地址不经 fetch，浏览器直接导航下载，同 architectureDiagramUrl
+ *  旁路先例）。 */
+export function fetchProjectFileDownloadUrl(project: string, path: string): string {
+  const q = `?project=${encodeURIComponent(project)}&path=${encodeURIComponent(path)}`;
+  return withApiBase(`/api/project-files/download${q}`);
+}
