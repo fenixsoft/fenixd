@@ -222,16 +222,19 @@
 
 ### 可改进
 - **[arbiter:redesign] judge 生命周期硬上限进度感知**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：验证车道长修复链 spec（多轮 test-defect 修复 + product 修复）在接近真实收敛点时被计数冻结打断，每次冻结消耗一次 Arbiter/人工裁决成本（本 spec $40.6、judge 侧 ~18.6M input tokens）。
   - 证据：fail_history.json（第 6 轮 4 非过）→ 修复后 report.json（20/22）：6 次派发期间失败集单调收缩（18 过→20 过），冻结发生在修复刚闭环、残留失败首次真实执行的轮界；STATE _judge_rerun_count 生命周期累计不区分「有产出的修复推进」与「空转复判」。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：失败集严格改进（本轮失败/级联集为上轮真子集）时对 _judge_rerun_count 衰减或部分返还；或给「修复轮闭环后的首轮裁决」设一次豁免额度；或冻结告警附「失败集改进轨迹」辅助人工快速解冻决策。
 - **[arbiter:redesign] fail_history cause_type 语义与裁决归因对齐**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：bug-found→impl 修复轮的派发依据与 judge 裁决语义存在偏差：修复面被放大到 4 场景（本轮 impl 自行复核纠偏未造成错误修复，但若 impl 不复核，可能对 flaky/级联场景做空修复）。
   - 证据：第 6 轮 judge 裁决（verification-report.md）：仅 1 个 product bug（BUG-01），bento 判 flaky、两队列场景判级联「非独立缺陷」；但机械 fail_history.json 将 4 个非过场景整体记为 cause_type=real-bugs/failure_class=product。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
   - 建议：fail_history 逐场景记录 judge 归因（仅 product 子集入 real-bugs），或将 failure_class 与裁决产物对齐（1 product + 3 flaky/cascade）。
 - **[arbiter:redesign] 验证侧冻结告警引用报告的时点一致性**
+  - 自进化：问题成立 / 建议合理 / — 不需要
   - 影响：judge_rerun_cap 等验证侧冻结的 error 指向裁决报告时，该报告可能不含最终引擎轮现场，人工需自行发现 report.json 才能拿到最新失败明细，增加误判面。
   - 证据：STATE error 文案「详见 spec/changes/redesign-chain-panel-ui/verification-report.md」，该文件 mtime=本地 23:43（第 6 轮裁决、修复前 18/22 现场）；修复后轮引擎现场仅存于 report.json（16:00:50Z，20/22+残留失败明细）——人工按 error 指引读到滞后一轮的现场。；触发 run_id=arbiter-redesign-chain-panel-ui-1794326450（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 chain-handoff:escalation-alert）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
