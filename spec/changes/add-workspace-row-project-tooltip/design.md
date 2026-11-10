@@ -27,7 +27,7 @@ dsh 原生 tooltip 实测规格（2026-11-10，活站提取）：深卡底 `#2C2
 
 **D1 数据面——projectSync 保留精简投影**：`parseProjectNames` 升级为解析 ProjectSummary 投影 `{name, path, description, daemon, hosting, exists, discovered, status_counts, task_done, task_total, active_runs}`，60s 周期与容错纪律不变（单项目失败项 exists:false/error → 该行走原生回退）。不存全量对象（problems/scenario_count/updated 等本能力不需要，投影面收敛内存与泄漏面）。
 
-**D2 渲染面——插件自渲染深卡浮层**：新建 tooltip 渲染（可落 `src/client/wsTooltip.ts`，实现者可按契约自行拆分），portal 挂 `document.body`，定位锚定拦截层 rect 右侧（对齐原生 card 相对行右缘浮出），复用原生实测规格值（D2 规格见 Context）。hover 目标 = 既有 `data-fenix-wsnav` 拦截层（与点击同一语义锚，天然只覆盖 fenix 行名称区，非 fenix 行自动零侵入）。show/hide 纯 display 切换，零动画；`mouseenter/mouseleave` + 500ms 定时器（对齐原生 delayMs），滚转/失焦/行卸载即收。
+**D2 渲染面——插件自渲染深卡浮层**：新建 tooltip 渲染（可落 `src/client/wsTooltip.ts`，实现者可按契约自行拆分），portal 挂 `document.body`，定位锚定拦截层 rect 右侧（对齐原生 card 相对行右缘浮出），复用原生实测规格值（D2 规格见 Context）。hover 目标 = 既有 `data-fenix-wsnav` 拦截层（与点击同一语义锚，天然只覆盖 fenix 行名称区，非 fenix 行自动零侵入）。show/hide 纯 display 切换，零动画；`mouseenter/mouseleave` + 500ms 定时器（对齐原生 delayMs），滚转/失焦/行卸载即收。富提示与原生三行提示互斥：既有拦截层不抑制原生提示（proposal 亦实测记录 fenix 行悬停原生提示照常触发），富提示激活期间须以插件侧手段消解原生提示（拦截层 pointer 事件吞噬或原生提示层悬停期隐藏，不改原生 primitive）；宿主机制致无法消解时按静默降级纪律 warn-only，不做破坏性兜底。
 
 **D3 状态胶囊真值单源**：状态→tone 映射与暗面派生色按原型定稿表硬编码于插件侧常量（并加 srcContract 钉值防漂移）：drafted=草稿 muted / ready=就绪 info / reviewing=评审中 aqua / implementing=实现中 warning / implemented=已实现 aqua / testing=验证中 info / verified=已验证 good / bug-found=有Bug critical / blocked=阻塞 critical / done=完成 good / pushed=已推送 good；repairing=修复中 info / queued=排队中 warning（阻塞分相）。派生色：info #7aa2ff / warning #f0ac54 / critical #ff8080 / good #5fce8f / aqua #45c1dc / muted #a9b4c0，底=同相 rgba 16%~22%。
 

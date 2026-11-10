@@ -43,6 +43,12 @@ fenix 项目工作区行（`data-row-key` 前缀 `workspace:` 且命中项目匹
 - **WHEN** 用户点击富提示所覆盖的行名称区域
 - **THEN** 既有拦截层行为不变——仍触发项目详情深链（`fenix-project-<name>`），富提示不吞点击
 
+#### Scenario: 原生提示互斥
+
+- **WHEN** fenix 行富提示可见（悬停激活期间）
+- **THEN** 该行 dsh 原生三行提示不出现——富提示与原生提示不得同时可见（既有拦截层不抑制原生提示，须插件侧消解：拦截层 pointer 事件吞噬或原生提示层悬停期隐藏等手段，不改原生 tooltip primitive）
+- **AND** 宿主机制致插件侧无法消解时按静默降级纪律处理（warn-only、不异常、不破坏原生提示），富提示自身显隐不受影响
+
 #### Scenario: 数据失效回退原生
 
 - **WHEN** `/api/projects` 拉取失败或该项目摘要字段缺失（exists:false / error 降级项）

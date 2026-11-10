@@ -11,12 +11,22 @@
   kind: new
 - path: spec/changes/add-workspace-row-project-tooltip/plugin-patch/baseline/fenix-dsh-dashboard-bridge/tests/srcContract.test.ts
   kind: new
+- path: spec/changes/add-workspace-row-project-tooltip/plugin-patch/baseline/fenix-dsh-dashboard-bridge/tests/projectSync.test.ts
+  kind: new
+- path: /root/dsh-plugins/fenix-dsh-dashboard-bridge/src/client/projectSync.ts
+  kind: reference
+- path: /root/dsh-plugins/fenix-dsh-dashboard-bridge/src/client/panels.tsx
+  kind: reference
+- path: /root/dsh-plugins/fenix-dsh-dashboard-bridge/tests/projectSync.test.ts
+  kind: reference
+- path: /root/dsh-plugins/fenix-dsh-dashboard-bridge/tests/srcContract.test.ts
+  kind: reference
 ```
 
 ## 1. 基线快照
 
 - [ ] 1.1 记录宿主基线：`git -C /root/dsh-plugins rev-parse HEAD` 与 `git -C /root/dsh-plugins status --porcelain` 输出写入本 SPEC `plugin-patch/BASELINE.md`（HEAD、快照文件清单、宿主未提交态与恢复备忘）
-- [ ] 1.2 把拟触达文件当前内容只读复制进 `plugin-patch/baseline/fenix-dsh-dashboard-bridge/`（`src/client/projectSync.ts`、`src/client/panels.tsx`、`tests/srcContract.test.ts`）
+- [ ] 1.2 把拟触达文件当前内容只读复制进 `plugin-patch/baseline/fenix-dsh-dashboard-bridge/`（`src/client/projectSync.ts`、`src/client/panels.tsx`、`tests/projectSync.test.ts`、`tests/srcContract.test.ts`）
 
 ## 2. 数据面投影（宿主仓直改）
 
@@ -27,7 +37,7 @@
 
 - [ ] 3.1 新增富提示渲染模块（如 `src/client/wsTooltip.ts`，可按契约自行拆分）：hover 既有 `data-fenix-wsnav` 拦截层 500ms 后于行右侧 portal 渲染深卡（底 #2C2C2E、圆角 16px、标题 #fff 14/20、次文本 #cfd3d6 12/16、阴影与内距按 design.md Context 实测值），show/hide 纯 display 切换零 animation/transition，mouseleave/滚动/行卸载即收
 - [ ] 3.2 富提示内容按原型定稿渲染：名称 + 运行态胶囊（运行中 good/未运行 warning/运行中·未托管 warning + 自动发现 muted）、路径、简介一行（空→「暂无简介」）、非零状态胶囊组（STATUS_META 映射 + 方案B 暗面派生色，>4 折叠 +N，全零不渲染）、`任务 x/y 个 · 活跃 Agent n 个`（null→「—」，真实 0 照显，数值 tabular-nums）
-- [ ] 3.3 `src/client/panels.tsx`：接入渲染模块——数据失效（exists:false/error/投影缺失）与非 fenix 行回退原生提示；点击导航行为不变；锚点漂移静默降级纪律不变
+- [ ] 3.3 `src/client/panels.tsx`：接入渲染模块——数据失效（exists:false/error/投影缺失）与非 fenix 行回退原生提示；fenix 行富提示激活期间原生三行提示互斥（插件侧手段，不改原生 tooltip primitive，无法消解时 warn-only 静默降级）；点击导航行为不变；锚点漂移静默降级纪律不变
 - [ ] 3.4 `tests/srcContract.test.ts`：钉值更新——状态→tone 映射与暗面派生色常量表、投影键集合、tooltip DOM 契约（锚属性、回退分支、零动画声明）
 
 ## 4. 验证与部署（宿主链路）

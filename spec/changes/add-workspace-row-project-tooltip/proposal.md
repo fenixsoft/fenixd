@@ -7,7 +7,7 @@ dsh 侧栏工作区行的 fenix 项目名称已有点击导航（fenix-dash-brid
 - fenix 项目工作区行名称悬停（500ms，对齐原生延迟）时显示富提示深卡：名称 + 运行态胶囊、路径、简介（仅一行，空显示「暂无简介」）、非零 SPEC 状态胶囊（超过 4 个折叠为 +N）、`任务 x/y 个 · 活跃 Agent n 个`；数值 tabular-nums，无数据显示「—」不伪装 0。
 - 视觉为用户定稿的「方案B 暗面胶囊」原型样式：深卡 `#2C2C2E`、16px 圆角（对齐 dsh 原生 tooltip 实测值），状态胶囊取 STATUS_META tone 的暗面同相派生色；零 animation/transition。
 - 非 fenix 目录行维持 dsh 原生提示，零侵入（现有行为不变）。
-- 拦截层点击行为不变（点击名称仍进项目详情深链）。
+- 拦截层点击行为不变（点击名称仍进项目详情深链）；fenix 行富提示激活期间原生三行提示互斥不出现（插件侧消解，不改原生 tooltip primitive）。
 - 数据面：插件 `projectSync` 60s 周期任务从仅解析项目名改为保留精简 ProjectSummary 投影（description / daemon / hosting / exists / discovered / status_counts / task_done / task_total / active_runs）；fenixd 后端零改动。
 - 跨仓交付形态照 ADR-339 先例（move-project-nav-to-workspace-rows）：宿主仓 dsh-plugins 直改 + 本仓 `plugin-patch/` 补丁镜像。
 
