@@ -8,7 +8,8 @@ remote URL 内嵌 token 一条腿。本模块为 ``_git_push_ref``（engine 推�
 启动凭证自检（fenixd）两个消费点提供同一套判定，防双源漂移：
 
 - HOME 三级解析：进程 env 非空 ``HOME`` → ``pwd.getpwuid(uid).pw_dir`` →
-  配置 ``pm.push.credential_home``（可选覆盖）；
+  配置 ``pm.push.credential_home``（可选覆盖）；前两级经 pal.home_dir
+  单源（platform-abstraction E 组，W3 起转发，公开行为不变）；
 - 产出显式注入版子进程 env（``process_env``）；
 - credential helper 文件路径解析（默认解析后 HOME 下 ``.git-credentials``，
   配置 ``pm.push.credential_file`` 覆盖；显式置空字符串关断兜底）。
@@ -18,9 +19,18 @@ fail-open，由启动自检就该状态发 WARNING 告警。
 """
 
 import os
-import pwd
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from core.platform import api as pal
+
+# 既有测试缝（零修改契约）：test_git_env 以 monkeypatch.setattr(ge.pwd,
+# "getpwuid", ...) 打桩——此处与 pal 后端（linux.py）引用同一份共享 pwd
+# 模块对象，桩随 pal.home_dir 的模块属性读取生效。经 sys.modules 取引用
+# 而非 ``import pwd``：core/ 侧该词面的唯一豁免位在 core/platform/linux.py
+# （6.1 守卫）。pal 导入链已加载 linux 后端，Linux 恒非 None。
+pwd = sys.modules.get("pwd")
 
 # credential helper 配置串（design D2）：helper 值内的 ``--file=`` 属
 # credential.helper 配置串，git 按空白切分为 helper 子参数——argv 侧 MUST
@@ -52,17 +62,13 @@ def _resolve_home(config, env: dict) -> str | None:
 
     任一级拿到非空值即返回（``~`` 形态经 expanduser 展开）；级内异常
     （pwd 条目缺失、配置读取异常）fail-open 落到下一级；三级皆空返回 None。
+
+    前两级（env 非空 HOME → pwd 条目）W3 起经 pal.home_dir 单源（E 组
+    平移，判定口径逐位等价）；配置覆盖级属业务语义留本模块。
     """
-    home = env.get("HOME")
-    if isinstance(home, str) and home.strip():
-        return home
-    try:
-        pw_dir = pwd.getpwuid(os.getuid()).pw_dir
-        if isinstance(pw_dir, str) and pw_dir.strip():
-            return pw_dir
-    except (KeyError, OSError):
-        # pwd 数据库无当前 uid 条目（极端容器环境）：落下一级
-        pass
+    resolved = pal.home_dir(env)
+    if resolved:
+        return resolved
     try:
         from core.config import ConfigLoader
 
