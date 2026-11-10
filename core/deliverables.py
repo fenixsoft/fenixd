@@ -1895,7 +1895,6 @@ def _declaration_write_lock(spec_dir):
     静默取错锁（仓内各调用点经 resolve_writeback_target / project_root 拼接
     均为绝对路径，校验不改变既有行为）。
     """
-    import fcntl
 
     spec_path = Path(spec_dir)
     if not spec_path.is_absolute():
@@ -1905,15 +1904,17 @@ def _declaration_write_lock(spec_dir):
         )
     fenix_dir = spec_path.parent.parent.parent / ".fenix"
     fenix_dir.mkdir(parents=True, exist_ok=True)
+    from core.fs_utils import flock_exclusive, flock_release
+
     fh = open(
         fenix_dir / f"declaration-{Path(spec_dir).name}.lock", "w"
     )  # noqa: SIM115 — 生命周期=with
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flock_exclusive(fh.fileno())
         yield
     finally:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            flock_release(fh.fileno())
         finally:
             fh.close()
 

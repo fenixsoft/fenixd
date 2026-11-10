@@ -18,13 +18,13 @@ DEFAULT_GATEWAY_MODEL 随 `_get_admin_model` 同迁本模块（D2b 规则 3）�
 """
 
 import dataclasses
-import fcntl
 import hashlib
 import json
 import math
 import os
 import re
 import shlex
+from core.fs_utils import flock_exclusive, flock_release
 import shutil
 import signal
 import subprocess
@@ -1601,7 +1601,7 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
         tokens_json.parent.mkdir(parents=True, exist_ok=True)
         lock_path = tokens_json.parent / f".{tokens_json.name}.lock"
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 data = {}
                 if tokens_json.is_file():
@@ -1647,7 +1647,7 @@ def _append_token_run(tokens_json: Path, entry: dict) -> None:
                         except OSError:
                             pass
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
     except (OSError, ValueError, TypeError):
         # item 37eebaf5faae：json.dumps 遇不可序列化值抛 TypeError（此前不在
         # 收口内，归账可在 agent 工作完成后的收尾记账处崩溃）；ValueError 已

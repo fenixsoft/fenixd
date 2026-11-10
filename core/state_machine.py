@@ -9,13 +9,14 @@ Handles atomic reads/writes of STATE.md with file locking.
 """
 
 import ast
-import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
 import tempfile
+
+from core.fs_utils import flock_exclusive, flock_release
 import threading
 import time
 
@@ -1459,11 +1460,11 @@ class StateMachine:
         # 否则同进程二次 flock 会自阻塞死锁。
         lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 self._write_all_locked(specs)
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
 
     def _write_all_locked(self, specs: Dict[str, dict]):
         """write_all 的锁内实现（temp 写盘 + rename），不加锁。
@@ -1498,7 +1499,7 @@ class StateMachine:
         """
         lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 specs = self.read_all()
                 result, changed = mutate(specs)
@@ -1506,7 +1507,7 @@ class StateMachine:
                     self._write_all_locked(specs)
                 return result
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
 
     def _anchor_recheck_locked(self, specs: Dict[str, dict], spec_name: str,
                                snapshot: Optional[dict],
@@ -1602,7 +1603,7 @@ class StateMachine:
         for attempt in (1, 2):
             new_values: Dict[str, int] = {}
             with open(lock_path, "w") as lock_f:
-                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                flock_exclusive(lock_f)
                 try:
                     specs = self.read_all()
                     if spec_name not in specs:
@@ -1648,7 +1649,7 @@ class StateMachine:
                         for field in deltas
                     }
                 finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+                    flock_release(lock_f)
             # [fenix-ignore:48c4c7c0e6c6] 非缺陷：SPEC 缺失与 CAS 收敛两出口在置位后立即 break 出 for 循环（finally 先解锁再跳出），本行比较与下方「已重试」告警在这两条路径上不可达，不会产出「wrote {} 已重试」失实告警
             if verify == new_values:
                 return new_values
@@ -1721,7 +1722,7 @@ class StateMachine:
         lock_path = self._lockfile
         missing = False
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 specs = self.read_all()
                 if spec_name not in specs:
@@ -1745,7 +1746,7 @@ class StateMachine:
                     self._write_all_locked(specs)
                     return True
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
         # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
         self.logger.warning(
             "state_machine",
@@ -1797,7 +1798,7 @@ class StateMachine:
         lock_path = self._lockfile
         missing = False
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 specs = self.read_all()
                 if spec_name not in specs:
@@ -1835,7 +1836,7 @@ class StateMachine:
                     self._write_all_locked(specs)
                     return True, entry[IMPL_RUN_BUDGET_USED_FIELD]
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
         # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
         self.logger.warning(
             "state_machine",
@@ -1890,7 +1891,7 @@ class StateMachine:
         lock_path = self._lockfile
         missing = False
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 specs = self.read_all()
                 if spec_name not in specs:
@@ -1910,7 +1911,7 @@ class StateMachine:
                         self._write_all_locked(specs)
                     return current
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
         # SPEC-not-found 告警带出锁外再记（持锁窗口不含 I/O）
         self.logger.warning(
             "state_machine",
@@ -3069,7 +3070,7 @@ class StateMachine:
         }
         lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 specs = self.read_all()
                 if spec_name not in specs:
@@ -3139,7 +3140,7 @@ class StateMachine:
                     "error": None,
                 }
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
 
     def remove_archived_entry(self, spec_name: str) -> bool:
         """从归档清单移除该 SPEC 的小节（软删除专用）。返回是否确有移除。
@@ -3150,7 +3151,7 @@ class StateMachine:
         """
         lock_path = self._lockfile
         with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            flock_exclusive(lock_f)
             try:
                 path = self._archive_path
                 if not path.exists():
@@ -3180,7 +3181,7 @@ class StateMachine:
                 )
                 return True
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                flock_release(lock_f)
 
     # ── State Transitions ──────────────────────────────────────────
 

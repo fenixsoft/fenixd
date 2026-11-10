@@ -27,7 +27,6 @@ code_review_state.json 写入失败）走裸 ``logging.getLogger("fenixd.code_re
 """
 
 import difflib
-import fcntl
 import glob
 import hashlib
 import json
@@ -43,6 +42,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from core.fs_utils import with_file_lock
 from core.timelib import now_local, parse_ts
 
 _logger = logging.getLogger("fenixd.code_review")
@@ -402,14 +402,7 @@ def _with_lock(path: Path, fn):
     无锁的「读-改-写」会整批丢条目（evolution design「daemon 与 Dashboard
     同时写同一存储」即为此先例）。MUST NOT 在 fn 内再次加同一把锁。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.parent / f".{path.name}.lock"
-    with open(lock_path, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            return fn()
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+    return with_file_lock(path, fn)
 
 
 def _read_items_unlocked(

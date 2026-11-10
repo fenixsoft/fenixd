@@ -12,7 +12,6 @@ spawn）创建时登记（pid/port/spec/worktree）、stop 时移除；daemon �
 收割效率，不制造新失败。
 """
 
-import fcntl
 import json
 import os
 import signal
@@ -21,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from core.fs_utils import fsync_parent_dir
+from core.fs_utils import fsync_parent_dir, flock_exclusive, flock_release
 from core.proc_utils import (
     guard_killpg,
     pid_alive_signal,
@@ -144,7 +143,7 @@ class ServingRegistry:
         """
         with self._thread_lock:
             with self._lock() as lf:
-                fcntl.flock(lf, fcntl.LOCK_EX)
+                flock_exclusive(lf)
                 try:
                     records = self._read_unlocked(self.path)
                     result = fn(records)
@@ -152,7 +151,7 @@ class ServingRegistry:
                         self._write_unlocked(records)
                     return result
                 finally:
-                    fcntl.flock(lf, fcntl.LOCK_UN)
+                    flock_release(lf)
 
     # ── 公开 API ───────────────────────────────────────────────────
 
@@ -267,11 +266,11 @@ class ServingRegistry:
         try:
             with self._thread_lock:
                 with self._lock() as lf:
-                    fcntl.flock(lf, fcntl.LOCK_EX)
+                    flock_exclusive(lf)
                     try:
                         return self._read_unlocked(self.path)
                     finally:
-                        fcntl.flock(lf, fcntl.LOCK_UN)
+                        flock_release(lf)
         except OSError:
             if self.logger:
                 self.logger.warning("serving_registry", f"登记读取失败（非阻塞）: {self.path}")

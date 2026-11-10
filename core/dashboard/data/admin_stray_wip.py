@@ -17,10 +17,10 @@ signal_type 绑定守卫单源（design D4）：本族执行器是 admin 处置�
 signal_type 白名单（详见各常量注释）。
 """
 
-import fcntl
 import logging
 import os
 import re
+from core.fs_utils import flock_exclusive, flock_release
 import shutil
 import subprocess
 import tempfile
@@ -537,11 +537,11 @@ def _gitignore_lock(proot):
     # ——均为 OSError 子类，调用方兜底口径不变；.git 是目录→正常落锁文件。
     lf = open(lock_path, "w")
     try:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+        flock_exclusive(lf)
         try:
             yield
         finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            flock_release(lf)
     finally:
         lf.close()
 
