@@ -428,6 +428,49 @@ export function syncConfigFromUser(
   });
 }
 
+// ── add-agent-model-quick-assign 4.1：快速分配（整体覆盖全部 Agent 角色）──
+
+/** 快速分配目标：本作用域（由前端按当前设置页作用域展开为 user/project）或指定项目 */
+export type QuickAssignTarget = { scope: 'user' } | { scope: 'project'; project: string };
+
+/** 分配模板：角色级默认模型（可省略=不写）+ provider+模型候选链（行序即回退顺序） */
+export interface QuickAssignAssignment {
+  model?: string;
+  provider: { provider: string; model?: string }[];
+}
+
+/** provider 定义来源作用域（design D3：服务端从该作用域读定义，不在请求里传定义） */
+export type QuickAssignSourceScope =
+  | { scope: 'user'; project?: never }
+  | { scope: 'project'; project: string };
+
+/** 单目标写入结果：失败含 error；成功含写入路径（与后端 quick_assign_models 回执一致） */
+export interface QuickAssignResult {
+  scope: 'user' | 'project';
+  project?: string;
+  ok: boolean;
+  error?: string;
+  path?: string;
+}
+
+export interface QuickAssignResponse {
+  ok: boolean;
+  results: QuickAssignResult[];
+}
+
+/** 快速分配：POST /api/config/quick-assign（执行含部分失败恒 200，逐项结果在 body） */
+export function quickAssignConfig(payload: {
+  assignment: QuickAssignAssignment;
+  targets: QuickAssignTarget[];
+  source_scope: QuickAssignSourceScope;
+}): Promise<QuickAssignResponse> {
+  return request<QuickAssignResponse>('/api/config/quick-assign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function deleteProject(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }

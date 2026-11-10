@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isEmbedMode } from '@/utils/embedMount';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
-import type { ConfigData, OverviewData } from '@/services/dashboard';
+import type { ConfigData, OverviewData, QuickAssignResponse } from '@/services/dashboard';
 // PAGE_LABELS 单一来源移入无依赖共享模块（code-review item 6df16f377728）：
 // 子组件不再从本文件反向导入，消除 index → panels → button → index 模块循环。
 import { PAGE_LABELS } from './pageLabels';
@@ -301,6 +301,41 @@ export default function SettingsPage() {
     }
   };
 
+  // 快速分配应用回调（add-agent-model-quick-assign 5.3）：弹窗内已逐项展示
+  // 结果；本回调负责成功提示（含「重启 daemon 后生效」口径）与当前作用域
+  // 重载——若 results 含本作用域成功项（用户级作用域下的 user 目标，或项目
+  // 级作用域下 project===当前项目的目标），快照复位面板判脏（新配置回填后
+  // 旧编辑已不成立，对齐 handleSave 的已落盘复位口径）→ getConfig 重载 →
+  // setConfig；重载完成经 scopeRef/projectRef 币值守卫丢弃迟到回包（沿用
+  // handleSave 同款守卫）；重载失败沿用既有「已保存，但刷新配置失败…」
+  // warning。仅指定项目成功则只提示成功、不重载当前表单（spec「仅指定项目
+  // 时不重载当前表单」）。
+  const handleQuickAssignApplied = async (result: QuickAssignResponse) => {
+    const results = result?.results || [];
+    const okCount = results.filter((r) => r.ok).length;
+    if (okCount > 0) {
+      message.success(`配置已保存，重启 daemon 后生效（快速分配成功写入 ${okCount} 个目标）`);
+    }
+    const currentScopeOk = results.some((r) => {
+      if (!r.ok) return false;
+      return scope === 'project'
+        ? r.scope === 'project' && r.project === project
+        : r.scope === 'user';
+    });
+    if (!currentScopeOk) return;
+    const scopeAtStart = scope;
+    const projectAtStart = project;
+    snapshotPanelDirty()();
+    try {
+      const configData = await getConfig(project);
+      if (scopeRef.current === scopeAtStart && projectRef.current === projectAtStart) {
+        setConfig(configData);
+      }
+    } catch {
+      message.warning('已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值');
+    }
+  };
+
   // 自进化页签唯一保存入口：两张卡片各自校验并收集本节配置，合并后一次提交
   // （任一卡片校验失败即中止；项目级作用域下建议改进项为只读、返回空补丁，
   // 故只提交在当前作用域可写的陈旧自愈节）。
@@ -585,6 +620,8 @@ export default function SettingsPage() {
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
                     onConfigSynced={scope === 'project' ? handleConfigSynced : undefined}
+                    projects={projects}
+                    onQuickAssignApplied={handleQuickAssignApplied}
                   />
                 )}
                 {activeKey === 'parallel' && (

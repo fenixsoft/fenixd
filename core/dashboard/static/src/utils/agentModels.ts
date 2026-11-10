@@ -9,6 +9,55 @@ export interface ChainRow {
   model: string;
 }
 
+// ── add-agent-model-quick-assign 4.2：快速分配纯函数（零 React 依赖，
+// 保持可被 node --test 直接加载）──
+
+/** 快速分配目标：与 services/dashboard.ts 的 QuickAssignTarget 同形
+ * （此处结构化最小形态，避免 utils 反向依赖 services 层）。 */
+export type QuickAssignTarget = { scope: 'user' } | { scope: 'project'; project: string };
+
+export interface QuickAssignAssignment {
+  model?: string;
+  provider: { provider: string; model?: string }[];
+}
+
+/** 弹窗模板编辑器状态 → 请求 assignment：trim 输入；丢弃 provider 为空的行；
+ * 角色级 model 留空则省略该字段；数组保持行序。 */
+export function buildQuickAssignAssignment(
+  roleModel: string,
+  rows: ChainRow[],
+): QuickAssignAssignment {
+  const model = (roleModel || '').trim();
+  const provider = (rows || [])
+    .map((r) => ({ provider: (r?.provider || '').trim(), model: (r?.model || '').trim() }))
+    .filter((r) => r.provider);
+  const assignment: QuickAssignAssignment = { provider };
+  if (model) assignment.model = model;
+  return assignment;
+}
+
+/** 弹窗作用域选择 → 请求 targets：本作用域按当前项目有无展开为 user/project
+ * 目标（includeCurrent）；指定项目去重并剔除空串。本作用域目标在前。 */
+export function buildQuickAssignTargets(
+  includeCurrent: boolean,
+  project: string | undefined,
+  selectedProjects: string[],
+): QuickAssignTarget[] {
+  const targets: QuickAssignTarget[] = [];
+  if (includeCurrent) {
+    if (project) targets.push({ scope: 'project', project });
+    else targets.push({ scope: 'user' });
+  }
+  const seen = new Set<string>(targets.map((t) => (t.scope === 'project' ? t.project : '')));
+  for (const name of selectedProjects || []) {
+    const trimmed = (name || '').trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    targets.push({ scope: 'project', project: trimmed });
+  }
+  return targets;
+}
+
 export interface RoleValue {
   /** 后端角色 key（agents.models 键）：表单行与后端键按此映射，不依赖下标
    * （code-review item 042e1dc46cb4——顺序/长度漂移时下标映射会静默写错键）。 */

@@ -3216,3 +3216,165 @@ class TestBundleRevHeader:
         finally:
             if exists:
                 backup.rename(index_html)
+
+
+class TestConfigQuickAssignAPI:
+    """POST /api/config/quick-assign（add-agent-model-quick-assign 3.2）：请求级
+    非法 400 且零写入；执行含部分失败恒 200 逐项回报；未注册路由 404。"""
+
+    def _make_server(self, tmp_path, registry):
+        return _TestServer(registry, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    VALID_BODY = {
+        "assignment": {"model": "deepseek-v4-pro",
+                       "provider": [{"provider": "volc-engine", "model": "deepseek-v4-pro"}]},
+        "targets": [{"scope": "user"}],
+        "source_scope": {"scope": "user"},
+    }
+
+    def _register(self, tmp_path, proot, name="proj-a"):
+        import yaml
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": name, "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return reg
+
+    def _write_user(self, tmp_path, monkeypatch):
+        import yaml
+        user_dir = tmp_path / "user-fenix"
+        user_dir.mkdir(exist_ok=True)
+        with open(user_dir / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump({"llm": {"providers": [
+                {"name": "volc-engine", "baseurl": "https://volc.example.com",
+                 "apikey": "sk-volc", "model": "deepseek-v4-pro"},
+            ]}}, f, allow_unicode=True)
+        monkeypatch.setattr("core.dashboard.data.USER_CONFIG_PATH", user_dir / "config.yaml")
+        return user_dir
+
+    def test_quick_assign_user_scope_success(self, tmp_path, monkeypatch):
+        import yaml
+        self._write_user(tmp_path, monkeypatch)
+        reg = self._register(tmp_path, tmp_path)
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/quick-assign", self.VALID_BODY)
+            assert status == 200
+            assert body["ok"] is True
+            assert len(body["results"]) == 1
+            assert body["results"][0]["scope"] == "user"
+            assert body["results"][0]["ok"] is True
+            assert body["results"][0]["path"]
+            # 读回配置断言：全部角色写入模板（单行含元素级模型 → 数组形态；
+            # 角色级缺省 model 已填写 → 同时写入）
+            user_cfg = yaml.safe_load(
+                (tmp_path / "user-fenix" / "config.yaml").read_text(encoding="utf-8"))
+            assert user_cfg["agents"]["models"]["implementer"] == {
+                "model": "deepseek-v4-pro",
+                "provider": [{"provider": "volc-engine", "model": "deepseek-v4-pro"}]}
+        finally:
+            srv.stop()
+
+    def test_partial_failure_still_200_with_per_target_results(self, tmp_path, monkeypatch):
+        """两个项目目标其一失败仍 200：results 逐项含 ok/error，成功目标已落盘。
+        proj-a 本地自带模板引用的 foo 定义（写入成功、无需补齐）；源作用域=
+        用户级（无 foo）→ proj-b 无法补齐单目标失败"""
+        import yaml
+        self._write_user(tmp_path, monkeypatch)
+        proot_a = make_project(tmp_path)
+        proot_b = tmp_path / "proj-b"
+        (proot_b / ".fenix").mkdir(parents=True)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": "proj-a", "path": str(proot_a)},
+                               {"name": "proj-b", "path": str(proot_b)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        # proj-a 自带 foo 定义（与用户级无同名冲突）：目标校验直接通过
+        with open(proot_a / ".fenix" / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump({"llm": {"providers": [
+                {"name": "foo", "baseurl": "https://proj-a-foo", "apikey": "k-foo"}]}}, f)
+        body_req = {
+            "assignment": {"provider": [{"provider": "foo", "model": ""}]},
+            "targets": [{"scope": "project", "project": "proj-a"},
+                        {"scope": "project", "project": "proj-b"}],
+            "source_scope": {"scope": "user"},
+        }
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/quick-assign", body_req)
+            assert status == 200, "执行含部分失败恒 200"
+            assert body["ok"] is False
+            by_proj = {r.get("project"): r for r in body["results"]}
+            assert by_proj["proj-a"]["ok"] is True
+            assert "foo" in by_proj["proj-b"].get("error", ""), "失败项含缺失 provider 名"
+            # 成功目标已落盘
+            cfg_a = yaml.safe_load(
+                (proot_a / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            assert cfg_a["agents"]["models"]["implementer"] == {"provider": "foo"}
+            assert not (proot_b / ".fenix" / "config.yaml").exists(), "失败目标不落盘"
+        finally:
+            srv.stop()
+
+    def test_request_level_invalid_returns_400_without_writes(self, tmp_path, monkeypatch):
+        """assignment 缺省/provider 空 list/targets 空/project 未注册/
+        source_scope 项目未注册 → 400 且无任何写入"""
+        import yaml
+        self._write_user(tmp_path, monkeypatch)
+        proot = make_project(tmp_path)
+        reg = self._register(tmp_path, proot)
+        srv = self._make_server(tmp_path, reg)
+        user_cfg_path = tmp_path / "user-fenix" / "config.yaml"
+        before = user_cfg_path.read_text(encoding="utf-8")
+        proj_cfg_path = proot / ".fenix" / "config.yaml"
+        proj_before = (
+            proj_cfg_path.read_text(encoding="utf-8") if proj_cfg_path.exists() else None
+        )
+        cases = [
+            # assignment 缺省
+            {"targets": [{"scope": "user"}], "source_scope": {"scope": "user"}},
+            # provider 空 list
+            {"assignment": {"provider": []}, "targets": [{"scope": "user"}],
+             "source_scope": {"scope": "user"}},
+            # targets 空
+            {"assignment": {"provider": [{"provider": "volc-engine"}]},
+             "targets": [], "source_scope": {"scope": "user"}},
+            # targets 中 project 未注册
+            {"assignment": {"provider": [{"provider": "volc-engine"}]},
+             "targets": [{"scope": "project", "project": "ghost"}],
+             "source_scope": {"scope": "user"}},
+            # source_scope 项目未注册
+            {"assignment": {"provider": [{"provider": "volc-engine"}]},
+             "targets": [{"scope": "user"}],
+             "source_scope": {"scope": "project", "project": "ghost"}},
+            # source_scope 缺省
+            {"assignment": {"provider": [{"provider": "volc-engine"}]},
+             "targets": [{"scope": "user"}]},
+        ]
+        try:
+            for bad in cases:
+                status, body = srv.post_json("/api/config/quick-assign", bad)
+                assert status == 400, f"应 400: {bad}"
+                assert body["error"], f"应含错误文案: {bad}"
+            assert user_cfg_path.read_text(encoding="utf-8") == before, "400 路径零写入"
+            proj_after = (
+                proj_cfg_path.read_text(encoding="utf-8") if proj_cfg_path.exists() else None
+            )
+            assert proj_after == proj_before, "项目级零写入"
+        finally:
+            srv.stop()
+
+    def test_unknown_route_returns_404(self, tmp_path, monkeypatch):
+        """确认路由已注册后，未知相近路径仍 404（路由表 exact 匹配）"""
+        self._write_user(tmp_path, monkeypatch)
+        reg = self._register(tmp_path, tmp_path)
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, _ = srv.post_json("/api/config/quick-assign-typo", self.VALID_BODY)
+            assert status == 404
+            # 正名路由可达（若未注册则这里也会 404，用例即失败）
+            status2, _ = srv.post_json("/api/config/quick-assign", self.VALID_BODY)
+            assert status2 == 200
+        finally:
+            srv.stop()

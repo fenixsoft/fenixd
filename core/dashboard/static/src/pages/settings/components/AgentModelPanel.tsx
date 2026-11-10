@@ -11,11 +11,12 @@ import {
 } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
 import { checkLlmHealth } from '@/services/dashboard';
-import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData } from '@/services/dashboard';
+import type { AgentModelAssignment, AgentsConfig, AgentsModels, ConfigData, QuickAssignResponse } from '@/services/dashboard';
 import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
 import { resolveHealthCheckParams, toHealthDisplay, type HealthCheckDisplay } from '@/utils/llmHealth';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
+import QuickAssignModal from './QuickAssignModal';
 import SyncFromUserButton from './SyncFromUserButton';
 import { SETTINGS_ACTIONS_ROW_STYLE } from '../styles';
 import { usePanelDirty } from '../panelDirty';
@@ -147,9 +148,13 @@ interface AgentModelPanelProps {
   project?: string;
   /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
   onConfigSynced?: (config: ConfigData) => void;
+  /** 已注册项目名列表（快速分配「指定项目」多选来源） */
+  projects: string[];
+  /** 快速分配应用结束回调（父组件按结果决定重载当前作用域与成功提示） */
+  onQuickAssignApplied: (result: QuickAssignResponse) => void;
 }
 
-export default function AgentModelPanel({ config, onSave, project, onConfigSynced }: AgentModelPanelProps) {
+export default function AgentModelPanel({ config, onSave, project, onConfigSynced, projects, onQuickAssignApplied }: AgentModelPanelProps) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
   // 用户编辑置脏：切页签/作用域前由 index 经 anyPanelDirty 弹丢弃确认
@@ -160,6 +165,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   // 「复制/粘贴」临时剪贴板：存放某个角色当前的分配（角色级默认模型 + Provider 行链）。
   // 仅存活于本组件生命周期（刷新即失效），用于把一份配置快速套用到其他角色。
   const [clipboard, setClipboard] = useState<{ label: string; value: RoleValue } | null>(null);
+
+  // 快速分配弹窗（add-agent-model-quick-assign 5.2）：标题行右侧入口按钮 +
+  // 受控弹窗；应用结果逐项展示在弹窗内，重载/成功提示由父组件承担。
+  const [quickAssignOpen, setQuickAssignOpen] = useState(false);
 
   // 行拖拽排序（原生 HTML5 DnD，零依赖）：
   // - dragReady：当前「按住手柄」的行（`${roleIndex}-${rowIndex}`）——行默认
@@ -466,7 +475,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
 
   return (
     <div>
-      <h3>模型分配</h3>
+      {/* 标题行右侧「快速分配」入口（add-agent-model-quick-assign 5.2）：整体
+          覆盖全部角色的分配模板编辑入口；small 档与面板既有按钮规格一致 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h3 style={{ margin: 0 }}>模型分配</h3>
+        <Button size="small" data-testid="quick-assign-open" onClick={() => setQuickAssignOpen(true)}>
+          快速分配
+        </Button>
+      </div>
       <Text type="secondary">
         为每种 Agent 角色分配 Provider 与模型。模型名留空时使用所选 Provider 的默认模型。
       </Text>
@@ -1011,6 +1027,14 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
           )}
         </Form.List>
       </Form>
+      <QuickAssignModal
+        open={quickAssignOpen}
+        project={project}
+        projects={projects}
+        providers={providers}
+        onCancel={() => setQuickAssignOpen(false)}
+        onApplied={onQuickAssignApplied}
+      />
     </div>
   );
 }

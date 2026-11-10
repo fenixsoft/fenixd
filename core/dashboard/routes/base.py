@@ -416,6 +416,10 @@ def _post_config(s, p, q, m):
 def _post_config_sync(s, p, q, m):
     s._api_config_sync_from_user(q)
 
+# add-agent-model-quick-assign 2.2：快速分配（整体覆盖全部 Agent 角色模型分配）
+def _post_config_quick_assign(s, p, q, m):
+    s._api_config_quick_assign(q)
+
 def _post_config_llm_health_check(s, p, q, m):
     s._api_config_llm_health_check_post(q)
 
@@ -668,6 +672,9 @@ _API_POST_ROUTES = [
     # 精确路由（原顺序保持）
     ("exact", "/api/config",              _post_config),
     ("exact", "/api/config/sync-from-user", _post_config_sync),
+    # 快速分配（add-agent-model-quick-assign 2.2）：同一份模板整体覆盖全部
+    # Agent 角色的 agents.models，支持本作用域/多项目目标与 provider 自动补齐
+    ("exact", "/api/config/quick-assign", _post_config_quick_assign),
     # LLM Provider 健康检测（add-provider-health-check）：daemon 代理探测
     # {baseurl}/v1/messages（纯只读、无副作用、不落盘密钥；探测失败恒 200 业务数据）
     ("exact", "/api/config/llm-health-check", _post_config_llm_health_check),

@@ -408,4 +408,5 @@ from .config_admin import (
     _SYNC_PAGE_KEYS,
     sync_config_from_user,
     clear_project_page_keys,
+    quick_assign_models,
 )
