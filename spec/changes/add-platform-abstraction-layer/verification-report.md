@@ -1,55 +1,32 @@
 # 验证报告：add-platform-abstraction-layer
 
-> ⚠️ 本报告由框架于 2026-11-10T17:16:46Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-10T17:12:07.021762+00:00+run-result@mtime1794330985595717496
+> ⚠️ 本报告由框架于 2026-11-10T18:50:48Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-11-10T18:50:48.093940+00:00+run-result@mtime1794336648155366719
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 12/14 场景通过，2 失败，0 错误（2 个真实产品 Bug）**
+**状态：verified — 14/14 场景通过，0 失败，0 错误（全部场景通过）**
 
-14 场景 12 过 2 败。其余面全绿：A/C/E 组行为探针、D 组 systemd 五锚点+既有测试、posix/平台分支 AST 零命中、守卫回潮探针红-绿、全量回归 10291 passed 零失败、tests/ 变更面审计合规。两败同属 API 表面完整性缺口（非行为回归）：①SPEC 钉死 B 组 process_info 未交付（跨场景双探针交叉实证）；②D 组托管 HostingProvider 六名接口未按钉死名交付。均为确定性缺陷（hasattr False/AttributeError），免复现引用即证。
+全绿快道: 14/14 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 12 |
-| 失败 | 2 |
+| 通过 | 14 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 2 |
-| 本链增量 Token（输入） | 8.25M |
-| 本链增量 Token（输出） | 0.20M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· json_output/exit_code
-
-- 关联场景：pal-package-deliverables-and-api-surface、pal-b-group-proc-intel
-- 描述：SPEC 钉死的 B 组进程情报接口 process_info(pid)（含 start_token 防 PID 复用）未交付：core/platform/api.py 与 linux.py 均无该名，surface 探针 hasattr False、pal-b 探针 AttributeError 崩溃双路交叉实证
-- 根因：实现遗漏：SPEC spec.md:32 显式钉死接口名，git 全历史无 def process_info（属 SPEC 目标新接口而非平移件），tasks.md 2.1 标记完成但 linux.py 平移清单未含此项
-- 证据（场景 pal-package-deliverables-and-api-surface 结构化证据，引用）：
-  - failed_assertions: [{"type": "json_output", "selector": "surface.missing_api", "expected": [], "actual": ["process_info"]}, {"type": "json_output", "selector": "surface.missing_hosting", "expected": [], "actual": ["install_unit", "start", "stop", "is_running", "env_file", "logs_hint"]}]
-  - screenshots: []
-  - first_failed_step: 步骤1(surface): hasattr 探针实证 core.platform.api 缺 SPEC 钉死 B 组接口 process_info 与 D 组托管面六名（install_unit/start/stop/is_running/env_file/logs_hint）；同步骤 A/C/E 组钉死名与守卫断言全过，缺口面精确限于这两处
-
-### BUG-02（severity=major）· json_output
-
-- 关联场景：pal-package-deliverables-and-api-surface
-- 描述：SPEC 钉死的 D 组托管接口六名（install_unit/start/stop/is_running/env_file/logs_hint）全仓不存在：托管语义仍以旧名（install_project_unit/unit_installed/unit_active/project_env_file）散在 core/systemd_hosting.py，平台层仅迁移 systemctl_available/run_systemctl 缝
-- 根因：设计偏航：tasks.md 2.1 注记仅声明 unit 渲染保留 systemd_hosting（HOME 基线业务语义），HostingProvider 六名接口被静默未交付；SPEC spec.md:54 SHALL 条款未满足
-- 证据（场景 pal-package-deliverables-and-api-surface 结构化证据，引用）：
-  - failed_assertions: [{"type": "json_output", "selector": "surface.missing_api", "expected": [], "actual": ["process_info"]}, {"type": "json_output", "selector": "surface.missing_hosting", "expected": [], "actual": ["install_unit", "start", "stop", "is_running", "env_file", "logs_hint"]}]
-  - screenshots: []
-  - first_failed_step: 步骤1(surface): hasattr 探针实证 core.platform.api 缺 SPEC 钉死 B 组接口 process_info 与 D 组托管面六名（install_unit/start/stop/is_running/env_file/logs_hint）；同步骤 A/C/E 组钉死名与守卫断言全过，缺口面精确限于这两处
+| 产品 Bug | 0 |
+| 本链增量 Token（输入） | 9.83M |
+| 本链增量 Token（输出） | 0.22M |
 
 
 ## 场景结果
 
 | 场景 | 描述 | 状态 | 失败断言 | 分类 |
 | --- | --- | --- | --- | --- |
-| pal-package-deliverables-and-api-surface | PAL 包交付物与 API 表面：core/platform/ 四文件与 tests/test_platform_{guard,pal}.py 落位；core.platform.api 暴露 A/B/C/E 组钉死接口名与 D 组托管面（install_unit/start/stop/is_running/env_file/logs_hint）；__init__.py 按 sys.platform 单点分发；win32.py 占位不引入 win32 依赖；依赖清单与 core/ 零 psutil/portalocker/pywin32。出处：specs/platform-abstraction/spec.md Requirement 1/4/5/8（接口名钉死）与 tasks.md 2.1/7.2 | failed（已修正） | 2/12 | product-bug |
+| pal-package-deliverables-and-api-surface | PAL 包交付物与 API 表面：core/platform/ 四文件与 tests/test_platform_{guard,pal}.py 落位；core.platform.api 暴露 A/B/C/E 组钉死接口名与 D 组托管面（install_unit/start/stop/is_running/env_file/logs_hint）；__init__.py 按 sys.platform 单点分发；win32.py 占位不引入 win32 依赖；依赖清单与 core/ 零 psutil/portalocker/pywin32。出处：specs/platform-abstraction/spec.md Requirement 1/4/5/8（接口名钉死）与 tasks.md 2.1/7.2 | pass | 0/12 | - |
 | pal-a-group-spawn-forms | PAL A 组 spawn 两形态：spawn_detached 默认形态等价 start_new_session=True（新会话、自为组长）；new_session=False 保留无独立进程组、SIGTERM 直杀直接子进程语义（runner.py:7030 动态 passthrough 平移）；terminate_graceful 走 SIGTERM→grace→SIGKILL 纪律（忽略 SIGTERM 的进程 grace 到期被 SIGKILL）。出处：spec.md Requirement A 组三 Scenario、tasks.md 5.1 特别约束 | pass | 0/7 | - |
 | pal-a-group-kill-tree-self-guard | PAL A 组 kill_tree：目标为调用者自身所在进程组时拒绝执行（guard_killpg 拒自杀守卫语义，不向自身发信号）；对含组内后台成员的会话组长执行 kill_tree 后整组消失（SIGTERM→grace→SIGKILL 覆盖组内成员）。出处：spec.md Requirement A 组 kill_tree Scenario、tasks.md 3.1 | pass | 0/3 | - |
-| pal-b-group-proc-intel | PAL B 组进程情报：parent_comm 与 /proc/<pid>/comm 现行读法一致；process_environ 平移 read_process_env（dict 含 PATH）；find_port_owner 经 /proc/net/tcp inode+fd 扫描定位真实 LISTEN socket 持有者（无 lsof 依赖）、无占用返回 None；process_info/is_alive_with_identity 活判活、死后判死（fail-closed 语义）。出处：spec.md Requirement B 组两 Scenario、tasks.md 4.1/4.2 | failed（已修正） | 9/9 | product-bug |
+| pal-b-group-proc-intel | PAL B 组进程情报：parent_comm 与 /proc/<pid>/comm 现行读法一致；process_environ 平移 read_process_env（dict 含 PATH）；find_port_owner 经 /proc/net/tcp inode+fd 扫描定位真实 LISTEN socket 持有者（无 lsof 依赖）、无占用返回 None；process_info/is_alive_with_identity 活判活、死后判死（fail-closed 语义）。出处：spec.md Requirement B 组两 Scenario、tasks.md 4.1/4.2 | pass | 0/9 | - |
 | pal-c-lock-default-blocking | with_file_lock 默认形态行为不变：空闲锁下 fn 执行且返回值透传、锁文件布局 .<name>.lock 不变；锁被占用时默认形态阻塞等待（不 fail-fast），锁释放后完成——既有阻塞 LOCK_EX 语义零变化。出处：spec.md Requirement C 组 Scenario 默认参数行为不变、tasks.md 1.1 | pass | 0/4 | - |
 | pal-c-lock-nb-and-timeout | with_file_lock 扩展形态：nonblocking=True 锁被占用时立即返回失败且 fn 不执行（LOCK_EX\|LOCK_NB 语义）；timeout_s=1 限时等待到期返回失败且 fn 不执行；五个 NB fail-fast 消费点（verify_scenarios/regression/verify_contract/dashboard server/verify_report）保留 nonblocking 显式传参词面。出处：spec.md Requirement C 组 Scenario NB fail-fast 语义保持、tasks.md 1.1/1.2 | pass | 0/5 | - |
 | pal-d-group-systemd-anchors | PAL D 组 systemd 语义一字不动：render_project_unit 渲染输出含 Restart=on-failure / SuccessExitStatus=75 / TimeoutStopSec=2100 / KillMode=mixed / EnvironmentFile=- 前缀五锚点；systemd_hosting 门面（render_project_unit/read_process_env/_run_systemctl）签名保留；read_process_env 平移 /proc/<pid>/environ→dict；既有 test_systemd_hosting 全绿（断言零修改）。出处：spec.md Requirement D 组两 Scenario、tasks.md 3.1 | pass | 0/6 | - |
@@ -60,13 +37,6 @@
 | guard-tests-green-and-regression-red | 静态守卫测试交付与行为：tests/test_platform_guard.py 全绿（POSIX 九类 + 平台判断面两组断言）；回潮即红——向 core/ 临时植入 import fcntl 文件后守卫失败并指认该文件，清理后恢复全绿（探针自清理不污染树）；pytest.ini linux 路径零变化（timeout=10 + timeout_method=signal + timeout-allowlist.yaml 机制在位）。出处：spec.md Requirement 7 两 Scenario、Requirement 6、tasks.md 6.1/6.2 | pass | 0/10 | - |
 | misc-cleanup-contract | W6 顺手项：core/event_bus.py 「inotify」误导性措辞词面清零（实为 2s checksum 轮询）；install.sh 退役 tmux 依赖检查（check "tmux" 调用行）清零；event_bus 既有测试全绿（措辞修正不破坏行为）。出处：tasks.md 6.2 | pass | 0/5 | - |
 | full-regression-zero-new-failures | 全量回归与测试面零修改验收：python3 -m pytest tests/ -q 全量零失败（SPEC-0 基线上 438 个测试文件全绿）；相对 merge-base(main,HEAD) 的 tests/ 变更仅允许新增 test_platform_guard.py / test_platform_pal.py（既有测试文件断言零修改，守卫测试除外）。出处：spec.md Requirement 8 两 Scenario、tasks.md 7.1 | pass | 0/5 | - |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
 
 ## 本轮场景集变更
 
