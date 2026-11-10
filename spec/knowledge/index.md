@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-10 18:35 UTC+8
+> 最后更新：2026-11-11 02:57 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -68,7 +68,7 @@
 | --- | --- | --- | --- | --- |
 | 7.1 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）也在此域。 | 16 | 2026-11-10 18:35 |
 | 7.2 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
-| 7.3 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。 | 4 | 2026-10-03 04:59 |
+| 7.3 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。平台抽象层（PAL 单点分发与 POSIX syscall 零散落守卫）也在此域。 | 5 | 2026-11-11 02:57 |
 | 7.4 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
 
 ### 8 文档与知识（2 域 · 20 能力）
