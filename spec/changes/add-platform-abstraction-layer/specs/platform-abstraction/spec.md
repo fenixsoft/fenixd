@@ -14,11 +14,15 @@
 - **THEN** `pal` 暴露的实现对齐 `linux.py`，且 `core/platform/__init__.py` 是唯一含平台选择逻辑的模块
 
 ### Requirement: PAL A 组进程生命周期接口
-系统 SHALL 提供进程生命周期接口：`spawn_detached(cmd, cwd, env) -> Popen`、`terminate_graceful(proc, grace_s)`、`kill_tree(pid_or_proc, caller)`、`bind_to_parent(child)`。Linux 后端 MUST 逐条平移现行语义：`start_new_session=True` spawn 面、SIGTERM→grace→SIGKILL 纪律、killpg + 拒自杀进程组守卫（guard_killpg 语义）、PDEATHSIG（dashboard/server.py:597 现行为）。
+系统 SHALL 提供进程生命周期接口：`spawn_detached(cmd, cwd, env, *, new_session=True) -> Popen`、`terminate_graceful(proc, grace_s)`、`kill_tree(pid_or_proc, caller)`、`bind_to_parent(child)`。Linux 后端 MUST 逐条平移现行语义：`start_new_session=True` spawn 面、`new_session=False` 形态（runner.py:7030 `spawn_spec.start_new_session` 动态 passthrough：无独立进程组、SIGTERM 直杀直接子进程）、SIGTERM→grace→SIGKILL 纪律、killpg + 拒自杀进程组守卫（guard_killpg 语义）、PDEATHSIG（dashboard/server.py:597 现行为）。
 
 #### Scenario: spawn_detached 等价 start_new_session
 - **WHEN** 以 `pal.spawn_detached` 启动一个脱离会话的子进程
 - **THEN** 子进程行为与现行 `subprocess.Popen(..., start_new_session=True)` 等价（新会话、脱离父进程组）
+
+#### Scenario: new_session=False 保留直杀子进程语义
+- **WHEN** 以 `new_session=False` 调用 `pal.spawn_detached`（runner.py:7030 的 `spawn_spec.start_new_session` 动态 passthrough 平移路径）
+- **THEN** 子进程不新建会话/进程组（对齐现行 `start_new_session=False` 语义），SIGTERM 直达直接子进程，行为与迁移前逐位一致
 
 #### Scenario: kill_tree 保留拒自杀守卫
 - **WHEN** 调用 `pal.kill_tree` 且目标为调用者自身所在进程组
@@ -36,7 +40,7 @@
 - **THEN** Linux 后端按现行 /proc/net/tcp inode+fd 扫描实现（dashboard/server.py:213-267 平移），不引入新外部命令依赖
 
 ### Requirement: PAL C 组文件锁与 with_file_lock 向后兼容扩展
-系统 SHALL 将 core/ 全部 78 处 `flock(` 用法收敛到 `fs_utils.with_file_lock` 单源（含 `FlockRotatingFileHandler`），并提供 `exclusive_lock(path, timeout_s)` / `try_lock(path)` PAL 接口。`with_file_lock` MUST 新增可选参数 `nonblocking` / `timeout_s`，默认值 MUST 保持现行阻塞 LOCK_EX 行为不变；五个 NB fail-fast 消费点（verify_scenarios / regression / verify_contract / dashboard server / verify_report）MUST 以显式参数保持非阻塞语义。
+系统 SHALL 将 core/ 全部 `flock(` 用法（grep 词面 78 处，含极少量注释词面，以真实调用位点为准）收敛到 `fs_utils.with_file_lock` 单源（含 `FlockRotatingFileHandler`），并提供 `exclusive_lock(path, timeout_s)` / `try_lock(path)` PAL 接口。`with_file_lock` MUST 新增可选参数 `nonblocking` / `timeout_s`，默认值 MUST 保持现行阻塞 LOCK_EX 行为不变；五个 NB fail-fast 消费点（verify_scenarios / regression / verify_contract / dashboard server / verify_report）MUST 以显式参数保持非阻塞语义。
 
 #### Scenario: 默认参数行为不变
 - **WHEN** 以无新参形式调用 `with_file_lock(path, fn)`
@@ -72,7 +76,7 @@ pytest 配置 MUST 完成平台拆分：Linux 路径 MUST 保持 `timeout_method
 - **THEN** timeout 门行为与现行完全一致（10s 硬门 + SIGALRM + allowlist 机制）
 
 ### Requirement: POSIX syscall 零散落静态守卫
-系统 SHALL 新增静态守卫测试：断言 core/（唯一豁免 `core/platform/linux.py`）零 `import fcntl`、零 `import pwd`、零 `os.killpg(`、零 `os.setsid(`、零 `start_new_session=`、零 `prctl`、零 `"/proc/` 字面量。守卫 MUST 零豁免清单——所有直接消费端（16 个含 `/proc/` 字面量文件、`serving_registry.py` 的 `os.killpg(pid, 0)` 探活直调）MUST 在本 SPEC 内迁移到 PAL，不以豁免换省事。守卫启用 MUST 排在 W4b 迁移完成之后。
+系统 SHALL 新增静态守卫测试：断言 core/（唯一豁免 `core/platform/linux.py`）零 `import fcntl`、零 `from fcntl import`、零 `import pwd`、零 `os.killpg(`、零 `from os import killpg`、零 `os.setsid(`、零 `start_new_session=`、零 `prctl`、零 `/proc/` 字面量（`/proc/` 按裸字面量口径断言字符串，覆盖单/双引号与 f-string 形态——存量 16 个命中文件中 6 个不以双引号前缀形态出现，双引号口径守卫会漏检；from-import 变体防 import 形态逃逸）。守卫 MUST 零豁免清单——所有直接消费端（16 个含 `/proc/` 字面量文件、`serving_registry.py` 的 `os.killpg(pid, 0)` 探活直调）MUST 在本 SPEC 内迁移到 PAL，不以豁免换省事。守卫启用 MUST 排在 W4b 迁移完成之后。
 
 #### Scenario: 守卫在迁移后全绿
 - **WHEN** W4b 迁移完成后运行守卫测试
