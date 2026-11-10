@@ -3,7 +3,7 @@
 # fenixd 安装程序
 # =============================================================================
 # 将 fenixd 框架安装到本机：
-#   1. 检查依赖（Python 3.10+ / git / tmux / Claude Code CLI / PyYAML）
+#   1. 检查依赖（Python 3.10+ / git / Claude Code CLI / PyYAML）
 #   2. 将 Claude Code skills 软链到 ~/.claude/skills/
 #   3. 将 fenix-init 软链到 PATH（优先 ~/.local/bin，其次 /usr/local/bin）
 #
@@ -41,7 +41,6 @@ else
   fail=1
 fi
 check "git" git --version
-check "tmux" tmux -V
 check "claude CLI" claude --version
 if python3 -c "import yaml" 2>/dev/null; then
   echo "  ✅ PyYAML ($(python3 -c 'import yaml; print(yaml.__version__)' 2>/dev/null))"
