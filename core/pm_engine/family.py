@@ -62,6 +62,19 @@ class FamilyGovernor:
             existing = self._pm.state_machine.read_one(candidate)
             if existing is None:
                 return candidate
+            # STATE 坏条目防御（code-review item 48e4948b4a9c，与
+            # _same_root_siblings / _has_non_terminal_child_fix 的
+            # 18a70e5931b4 同款范式同步）：read_one 返回非 dict 脏值时无法判
+            # 状态，按不可复用处理——WARNING 留痕后返回 None 跳过本轮派生，
+            # 不让 .get 抛 AttributeError 中断 bug-found 主链，也不在状态未知
+            # 时盲目复用派生（缺口留待条目修复后的周期重评）。
+            if not isinstance(existing, dict):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fix SPEC '{candidate}' 的 STATE 条目非 dict（脏值），"
+                    "无法判状态——跳过本轮派生，待条目修复后周期重评",
+                )
+                return None
             status = existing.get("status", "")
             if status in ("testing", "implementing"):
                 # 已有进行中的 fix SPEC，视为重复派发，跳过
@@ -79,6 +92,11 @@ class FamilyGovernor:
         fix SPEC 由验证引擎发现 bug 后自动创建，仅写入 STATE.md 是不够的——
         implementer Agent 依赖磁盘上的 proposal.md/tasks.md 才能执行，
         缺失会导致 SPEC 卡在 implementing 状态。此处生成最小可执行的 SPEC 文档。
+
+        返回 bool（code-review item e99a4d0606a0）：True=模板已就绪；
+        False=目录创建或模板写盘失败——调用方据此跳过 add_spec/_enqueue
+        （不带病派发：缺模板的 spec 派给 implementer 必被 format 打回，
+        白烧一轮 run），失败留痕 STATE 待下轮重评。
         """
         spec_dir = self._pm.project_root / "spec" / "changes" / fix_spec_name
         # 目录创建纳入「写盘失败不抛穿」（与下方模板写入同口径）：磁盘满/
@@ -88,9 +106,9 @@ class FamilyGovernor:
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"fix SPEC 目录创建失败 '{fix_spec_name}'（非阻断，派生主链继续）: {e}",
+                f"fix SPEC 目录创建失败 '{fix_spec_name}'（本轮跳过派发待下轮重评）: {e}",
             )
-            return
+            return False
 
         proposal = (
             f"# Proposal: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
@@ -143,7 +161,8 @@ class FamilyGovernor:
         # os.replace 原子性）
         # 写盘失败不抛穿（code-fix 313e34f89f8c，与 _inject_verify_fix_task 同
         # 口径）：磁盘满/权限等 OSError 若裸抛会穿透 _do_legacy_fix_spec_bug_found
-        # 中断本轮状态重置与 _enqueue 主链——WARNING 留痕后返回，派生主链继续。
+        # 中断本轮状态重置与 _enqueue 主链——WARNING 留痕后返回 False，调用方
+        # 据此跳过本轮派发（code-review item e99a4d0606a0），不抛穿语义不变。
         try:
             for filename, content in (("proposal.md", proposal), ("tasks.md", tasks)):
                 fd, tmp_name = tempfile.mkstemp(
@@ -166,10 +185,11 @@ class FamilyGovernor:
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"fix SPEC 模板文件写入失败 '{fix_spec_name}'（非阻断，派生主链继续）: {e}",
+                f"fix SPEC 模板文件写入失败 '{fix_spec_name}'（本轮跳过派发待下轮重评）: {e}",
             )
-            return
+            return False
         self._pm.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
+        return True
 
     @staticmethod
     def _fix_prefix_depth(name: str) -> int:
@@ -411,7 +431,21 @@ class FamilyGovernor:
             sib_spec = self._pm.state_machine.read_one(sib) or {}
             status = sib_spec.get("status", "")
             if status == "implementing":
-                return sib
+                # 孤儿在途复核（code-review item 49753428690c，与下方 ready
+                # 分支的活性复核口径对齐）：implementing 兄弟进程已死的孤儿
+                # 在途若仅凭状态无条件判 actionable，同根兄弟修复会被无限期
+                # 抑制直至孤儿治理链另行收口。不存活则不计 actionable 并留
+                # info 留痕，继续考察其余兄弟（记入 probed_dead 防兜底循环
+                # 重复探测，与 ready 分支同款）。
+                if self._pm._sibling_has_live_agent(sib):
+                    return sib
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"implementing 兄弟 '{sib}' 探测无存活 agent 进程，"
+                    "不计 actionable（孤儿在途不再抑制同根兄弟修复）",
+                )
+                probed_dead.add(sib)
+                continue
             if status == "ready":
                 # 仅当队列含该兄弟的实现车道条目时才视为 actionable。匹配实现
                 # 车道集合 (implementer, fast-track)（code-review item
@@ -420,6 +454,14 @@ class FamilyGovernor:
                 # read_spec_mode 选道的 _enqueue 通道字面量），只认 implementer
                 # 会让同根 fast-track fix 兄弟对互斥判定失明。
                 with self._pm._queue_lock:
+                    # 队列条目布局锚定（code-review item c5a20c48876d）：写侧
+                    # 单点是 core/pm_engine/dispatch/queue.py 的 _enqueue/
+                    # _enqueue_front —— `entry = (priority, spec_name,
+                    # agent_type, time.time())`（_enqueue docstring 同口径）。
+                    # 本判定点按下标消费：e[1]=spec_name、e[2]=agent_type、
+                    # e[3]=enqueued_at。写侧增删字段或改 namedtuple 时此处须
+                    # 同步，否则先到先得裁决静默失配（匹配不到条目→误判 not
+                    # actionable，时间比较取错字段）。
                     sib_entry = next(
                         (
                             e
@@ -519,13 +561,19 @@ class FamilyGovernor:
                 # 尾部锚定（对齐 worktree_manager.locks._worktree_has_live_process
                 # 的锚定纪律）：裸子串在兄弟 worktree 目录名互为前缀时过配——
                 # impl-x-<ts10> 的 pattern 会命中 impl-x-<ts11> 的进程，
-                # 其活进程持续把本 spec 判存活，压制孤儿修复/重派判定
+                # 其活进程持续把本 spec 判存活，压制孤儿修复/重派判定。
+                # 模式同时锚定本项目 worktree 根路径前缀（code-review item
+                # 9b0111574174）：裸 `worktrees/<名>` 片段会命中同机其他项目
+                # 同名 worktree 的存活进程，sibling 互斥被无关项目活动压制
                 try:
                     r = _sp.run(
                         [
                             "pgrep",
                             "-f",
-                            f"worktrees/{re.escape(d.name)}([/[:space:]\"']|$)",
+                            (
+                                f"{re.escape(str(wt_root))}/"
+                                f"{re.escape(d.name)}([/[:space:]\"']|$)"
+                            ),
                         ],
                         capture_output=True,
                         text=True,
@@ -540,6 +588,19 @@ class FamilyGovernor:
                         "pm_engine",
                         f"pgrep 探测超时（10s），跳过 worktree 目录 "
                         f"'{d.name}' 继续扫描",
+                    )
+                    continue
+                except Exception as exc:
+                    # 单目录探测其余异常同款隔离（code-review item
+                    # 0487342dbb43，与上方 TimeoutExpired 分支同一口径）：
+                    # pgrep 二进制缺失（FileNotFoundError）、进程表权限异常等
+                    # 单目录错误若冒泡到最外层 except，同样把整轮扫描放大成
+                    # 「兄弟判不存活」的 fail-open——前序目录已确认的存活进程
+                    # 完全不参与判定；仅 iterdir 等整轮级失败才落外层 fail-open
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"pgrep 探测异常，跳过 worktree 目录 "
+                        f"'{d.name}' 继续扫描: {exc}",
                     )
                     continue
                 if r.returncode == 0 and r.stdout.strip():
@@ -672,6 +733,12 @@ class FamilyGovernor:
         out = []
         prev_set = None
         for r in history:
+            # 坏条目防御（code-review item 48e4948b4a9c，同 _same_root_siblings
+            # 口径）：侧车 JSON 数组混入非 dict 条目时跳过，不让 .get 抛
+            # AttributeError 中断升级闸门冻结分型（此时 _verify_fail_rounds 已
+            # 递增，中断会使本轮冻结/打回全部落空）。
+            if not isinstance(r, dict):
+                continue
             scenarios = [str(s) for s in (r.get("failed_scenarios") or [])]
             cur_set = set(scenarios)
             ftype = r.get("cause_type") or "unknown"
@@ -816,6 +883,26 @@ class FamilyGovernor:
         infra 轮**不进本分支**（防御性守卫，正常由归因入口改走
         ``_record_infra_failure`` 记账，不递增闸门计数、不冻结、不派生 fix）。
         """
+        # spec 名路径安全筛查（code-review item 3965b45995f1，与 arbiter 回扫
+        # _backlog_candidates 的同款守卫范式对齐）：下游各写点把 spec_name 直接
+        # 内插路径——_ensure_fix_spec_files 的 spec/changes/<名> mkdir/os.replace、
+        # _inject_verify_fix_task 的 tasks.md 读写、_read_prev_impl_conclusions
+        # 的 verify-progress 快照目录，派生 fix-<名> 亦继承该名——上游
+        # state_machine.add_spec 无字符集约束，含 ../ 分量或路径分隔符的名字可把
+        # mkdir/os.replace 引出 project_root 任意写（模板文本含 LLM 可影响内容，
+        # 构成实际写原语）。拼点前按分量拒绝（serving._spec_name_path_error 同
+        # 口径，不做 slug 改写），WARNING 后放弃本轮 bug-found 处理（打回/派生/
+        # 注入一并跳过，缺口留待后续周期重评）。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+
+        unsafe_reason = _spec_name_path_error(spec_name)
+        if unsafe_reason:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"bug-found 处理跳过路径不安全 spec={spec_name!r}: {unsafe_reason}",
+            )
+            return
+
         # ── infra 防御性守卫（evo-infra-failure-budget-exempt R3）──
         # 调用方应在统一归因入口（enrich_failure_class 判定处）拦截 infra：
         # 记 _verify_infra_rounds + 预算退款 + 台账 failure_class=infra，
@@ -1227,7 +1314,32 @@ class FamilyGovernor:
             existing_fix is None
             or guard_status not in _FIX_SPEC_IN_FLIGHT_OR_TERMINAL
         ):
-            self._ensure_fix_spec_files(fix_spec_name, spec_name)
+            if not self._ensure_fix_spec_files(fix_spec_name, spec_name):
+                # 模板落盘失败不带病派发（code-review item e99a4d0606a0，与
+                # spec-review format 打回先例对应）：缺失 proposal.md/tasks.md
+                # 的 spec 派给 implementer 必被 format 打回，白烧一轮 run 后
+                # 再回 bug-found。此处跳过 add_spec/重置与 _enqueue，提前
+                # return（不落尾部「scheduling」项目日志误导审计）；失败经
+                # STATE error 留痕供后续周期重评（fix SPEC 尚不存在时无 STATE
+                # 条目可挂，仅日志留痕，不预建条目——下轮 bug-found 从头重评）。
+                # error 写前冻结复查（域纪律 858-865 同款）：冻结条目的
+                # update_spec 只剥 status 键、error 覆写照常生效，会破坏冻结
+                # 现场——发现冻结即让位不写。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"fix SPEC '{fix_spec_name}' 模板落盘失败——跳过本轮 "
+                    "add_spec/重置与入队，待下轮 bug-found 重评",
+                )
+                if existing_fix is not None:
+                    from core.state_machine import FROZEN_FIELD
+
+                    latest_fix = self._pm.state_machine.read_one(fix_spec_name) or {}
+                    if not latest_fix.get(FROZEN_FIELD):
+                        self._pm.state_machine.update_spec(
+                            fix_spec_name,
+                            {"error": "fix SPEC 模板落盘失败待下轮重试"},
+                        )
+                return
 
         # 重派通道按 spec 实现模式选择（code-review item f8ec6766731f，与上方
         # inplace 打回路径、repair_lane._fallback_after_repair 同口径）：fast-track
@@ -1317,6 +1429,24 @@ class FamilyGovernor:
                 # 不淘汰的永久滞留条目，还违背守卫「不动该 spec」的裁定。
                 self._pm._enqueue(fix_spec_name, channel)
         else:
+            # 写前冻结复查（code-review item 9724e43eef43，对齐上方 legacy fix
+            # 重置 1294-1301 与守卫一 858-865 的写前冻结复查同款口径，使冻结
+            # 让位纪律在 derive 主链全覆盖）：滞后 bug-found 事件（implementing
+            # =滞后重放形态，STATE 条目注释自证）落在已人工冻结的父 SPEC 上
+            # 时，盲派仍会自动新建 fix 子 SPEC 并入队——人工冻结的「停止自动
+            # 修复」语义在该分支失效。发现冻结即放弃派生与入队（提前 return，
+            # 不落尾部「scheduling」项目日志误导审计），冻结现场保留待人工
+            # 解冻，bug-found 事件留待解冻后周期重评。
+            from core.state_machine import FROZEN_FIELD
+
+            latest_parent = self._pm.state_machine.read_one(spec_name) or {}
+            if latest_parent.get(FROZEN_FIELD):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"legacy 派生放弃：'{spec_name}' 写盘前复查发现已冻结"
+                    "——放弃 fix 子 SPEC 新建与入队，冻结现场保留待人工解冻",
+                )
+                return
             self._pm.state_machine.add_spec(
                 fix_spec_name,
                 {
@@ -1423,13 +1553,18 @@ class FamilyGovernor:
         if findings:
             lines.append("上轮登记的 findings：")
             for f in findings[:5]:
+                # 单条截断（code-review item bd0667a83f8d，与 summary[:800]、
+                # arbiter 根因行 [:160] 的截断口径拉齐）：agent 产出的超长
+                # finding 整行注入会随「## 验证修复」段每轮重写持续膨胀，
+                # 撑大任务完成度门禁的解析输入；非 dict 条目走 str 同样截断。
                 if isinstance(f, dict):
-                    lines.append(
-                        f"- {f.get('type', '?')}: {f.get('element', '')}"
+                    body = (
+                        f"{f.get('type', '?')}: {f.get('element', '')}"
                         f" — {f.get('suggestion') or f.get('current', '')}"
                     )
                 else:
-                    lines.append(f"- {f}")
+                    body = str(f)
+                lines.append(f"- {body[:200]}" + ("…" if len(body) > 200 else ""))
             lines.append("")
         return "\n".join(lines)
 
@@ -1474,88 +1609,64 @@ class FamilyGovernor:
             )
             return
 
-        try:
-            text = tasks_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            self._pm.logger.warning(
-                "pm_engine",
-                f"tasks.md 读取失败，跳过验证修复段注入：{spec_name}: {e}",
-            )
-            return
+        # 读-改-写整段收进 fs_utils.with_file_lock（code-review item
+        # da9c7fe7143f，与 todo.md 写方 arbiter._note_gap_todo 同款锁原语）：
+        # 此前从 read_text 到 os.replace 横跨读产物、段界扫描、文本重构多步
+        # I/O 且全程不持锁，与 engine._sync_task_progress（mkstemp+replace
+        # 全文件回写勾选进度）并发时整文件快照互相覆盖——勾选进度或验证修复
+        # 段丢失，_task_completion_blocker 会把丢失判为永久缺口阻断
+        # verified→done。锁文件为 tasks.md 同目录伴生 ``.tasks.md.lock``
+        # （``.<name>.lock`` 布局由 with_file_lock 单点维护），引擎侧
+        # _sync_task_progress 的同锁收口对齐后即共用同一把锁；锁内不得再取
+        # 同一把锁（with_file_lock 契约），_read_prev_impl_conclusions 的
+        # verify-progress 快照侧车写点不在同一锁文件上，无自阻塞风险。
+        from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 todo.md 写方共用同一锁原语
 
-        report_path = f"spec/changes/{spec_name}/verification-report.md"
-        # fix-fake-failure-first：第一步强制复核失败场景有效性——验证场景自身
-        # 的断言缺陷（英文状态字面量 vs 产品中文渲染、不存在选择器等）曾被当作
-        # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。
-        # prev 是 agent 自由文本，拼入段前先净化（行首「## 」/围栏标记加引用
-        # 前缀），防下方段界扫描被注入文本内部的伪段界/未闭合围栏带偏
-        # （code-review item 0d8df4cc0e33）。
-        prev = self._sanitize_injected_text(self._read_prev_impl_conclusions(spec_name))
-        section = (
-            f"\n\n## 验证修复（原地打回第 {fail_rounds} 轮）\n"
-            f"{prev}"
-            f"\n- [ ] 先复核失败有效性：逐条核对 `{report_path}` 中失败场景的期望断言"
-            f"（状态字面量/选择器/前置数据）与产品实际行为是否相符——"
-            f"断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码\n"
-            f"- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码\n"
-            f"- [ ] 修复后重跑验证确认通过\n"
-        )
-
-        # 段界起点围栏感知（code-review item ba8419bf22ef）：与下方终点扫描
-        # 口径对齐——tasks.md 代码围栏示例内可能出现行首「## 验证修复」行，
-        # 裸 search 会让起点落入围栏内部，替换区间从围栏中段拼接破坏围栏
-        # 结构与后续版式。逐行跟踪 ``` / ~~~ 围栏开合（判定谓词与终点扫描
-        # 逐字对齐），仅取围栏外的首个命中。
+        injected = False
         m = None
-        m_start = 0
-        m_end = 0
-        fence_char = ""
-        fence_len = 0
-        offset = 0
-        for line in text.splitlines(keepends=True):
-            body = line.strip()
-            if fence_char:
-                # 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
-                if body and set(body) == {fence_char} and len(body) >= fence_len:
-                    fence_char = ""
-            elif body.startswith("```") or body.startswith("~~~"):
-                fence_char = body[0]
-                fence_len = len(body) - len(body.lstrip(body[0]))
-            elif line.startswith("## "):
-                lm = self._pm._VERIFY_FIX_SECTION_RE.match(line)
-                if lm:
-                    m = lm
-                    m_start = offset
-                    m_end = offset + lm.end()
-                    break
-            offset += len(line)
-        if m:
-            # 已有验证修复段：替换为新轮数版本
-            # 找到段的起始位置（含前一个 \n\n），到段尾
-            start = m_start
-            # 向前找到段落分隔
-            while start > 0 and text[start - 1] == "\n":
-                start -= 1
-            # 向后找到下一个二级标题或文件末尾。MUST NOT 排除「验」字（item
-            # 255393413ec3）：本段内部不含二级标题，「## 验收标准」等以「验」
-            # 开头的后续标题也是合法段界——排除会把整段误并入替换区间删掉。
-            after = text[m_end:]
-            # 段界探测围栏感知（code-review item cb421886ef72）：tasks.md 可能
-            # 贴含行首「## 」的代码围栏示例，裸搜 "\n## " 会在围栏内提前截断
-            # 替换区间丢内容——逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配
-            # 首个二级标题（保持原「下一个二级标题」命中语义）。
-            end = len(text)
-            # 行首相对位置从 0 累计，命中时绝对下标 = 切片原点 m_end + 相对
-            # 累计值（code-review item 3e3b67e58122）：end 供 text[end:] 按
-            # 绝对下标切片，若漏加 m_end（此前误初始化为 m.end()，等于只把
-            # 标题行内的匹配相对终点计入），算出的 end 比下一个二级标题的
-            # 真实绝对位置少 m_end——text[end:] 落进旧段体内部，旧段尾部
-            # （含旧轮任务行）残留在新段与后续标题之间，会被
-            # _task_completion_blocker 判为永久缺口阻断 verified→done。
-            offset = 0
+
+        def _do() -> None:
+            nonlocal injected, m
+
+            try:
+                text = tasks_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"tasks.md 读取失败，跳过验证修复段注入：{spec_name}: {e}",
+                )
+                return
+
+            report_path = f"spec/changes/{spec_name}/verification-report.md"
+            # fix-fake-failure-first：第一步强制复核失败场景有效性——验证场景自身
+            # 的断言缺陷（英文状态字面量 vs 产品中文渲染、不存在选择器等）曾被当作
+            # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。
+            # prev 是 agent 自由文本，拼入段前先净化（行首「## 」/围栏标记加引用
+            # 前缀），防下方段界扫描被注入文本内部的伪段界/未闭合围栏带偏
+            # （code-review item 0d8df4cc0e33）。
+            prev = self._sanitize_injected_text(self._read_prev_impl_conclusions(spec_name))
+            section = (
+                f"\n\n## 验证修复（原地打回第 {fail_rounds} 轮）\n"
+                f"{prev}"
+                f"\n- [ ] 先复核失败有效性：逐条核对 `{report_path}` 中失败场景的期望断言"
+                f"（状态字面量/选择器/前置数据）与产品实际行为是否相符——"
+                f"断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码\n"
+                f"- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码\n"
+                f"- [ ] 修复后重跑验证确认通过\n"
+            )
+
+            # 段界起点围栏感知（code-review item ba8419bf22ef）：与下方终点扫描
+            # 口径对齐——tasks.md 代码围栏示例内可能出现行首「## 验证修复」行，
+            # 裸 search 会让起点落入围栏内部，替换区间从围栏中段拼接破坏围栏
+            # 结构与后续版式。逐行跟踪 ``` / ~~~ 围栏开合（判定谓词与终点扫描
+            # 逐字对齐），仅取围栏外的首个命中。
+            m = None
+            m_start = 0
+            m_end = 0
             fence_char = ""
             fence_len = 0
-            for line in after.splitlines(keepends=True):
+            offset = 0
+            for line in text.splitlines(keepends=True):
                 body = line.strip()
                 if fence_char:
                     # 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
@@ -1565,57 +1676,104 @@ class FamilyGovernor:
                     fence_char = body[0]
                     fence_len = len(body) - len(body.lstrip(body[0]))
                 elif line.startswith("## "):
-                    end = m_end + offset
-                    break
+                    lm = self._pm._VERIFY_FIX_SECTION_RE.match(line)
+                    if lm:
+                        m = lm
+                        m_start = offset
+                        m_end = offset + lm.end()
+                        break
                 offset += len(line)
-            # 行首锚保持（item a25d95843de3）：start 已回退吃掉段前全部换行、
-            # section.strip() 又剥掉新段自带的前导换行，直接拼接会把「## 验证修复」
-            # 标题粘在上一行行尾，下一轮 ^## 验证修复 MULTILINE 失配走追加分支、
-            # 修复段重复堆积。此处补回段落分隔（与追加分支 \n\n 形态一致）；
-            # start==0（段落在文件头）时不补，避免文件首出现多余空行。
-            sep = "\n\n" if start > 0 else ""
-            # 段尾同样回补空行分隔（code-review item ecc1436a1615）：end 落在
-            # 下一个二级标题行首，原区间内标题前的空行被一并吞掉，段尾只补
-            # 单 \n 会让修复段与后续标题贴合成单换行相接、tasks.md 版式逐轮
-            # 退化——与段前 sep 的 \n\n 形态对称。end 抵文件末尾（段后无
-            # 后续标题）时不补，避免文件尾堆积空行。
-            sep_tail = "\n\n" if end < len(text) else "\n"
-            new_text = text[:start] + sep + section.strip() + sep_tail + text[end:]
-        else:
-            # 无现有段：追加到末尾
-            new_text = text.rstrip("\n") + section
+            if m:
+                # 已有验证修复段：替换为新轮数版本
+                # 找到段的起始位置（含前一个 \n\n），到段尾
+                start = m_start
+                # 向前找到段落分隔
+                while start > 0 and text[start - 1] == "\n":
+                    start -= 1
+                # 向后找到下一个二级标题或文件末尾。MUST NOT 排除「验」字（item
+                # 255393413ec3）：本段内部不含二级标题，「## 验收标准」等以「验」
+                # 开头的后续标题也是合法段界——排除会把整段误并入替换区间删掉。
+                after = text[m_end:]
+                # 段界探测围栏感知（code-review item cb421886ef72）：tasks.md 可能
+                # 贴含行首「## 」的代码围栏示例，裸搜 "\n## " 会在围栏内提前截断
+                # 替换区间丢内容——逐行跟踪 ``` / ~~~ 围栏开合，仅在围栏外匹配
+                # 首个二级标题（保持原「下一个二级标题」命中语义）。
+                end = len(text)
+                # 行首相对位置从 0 累计，命中时绝对下标 = 切片原点 m_end + 相对
+                # 累计值（code-review item 3e3b67e58122）：end 供 text[end:] 按
+                # 绝对下标切片，若漏加 m_end（此前误初始化为 m.end()，等于只把
+                # 标题行内的匹配相对终点计入），算出的 end 比下一个二级标题的
+                # 真实绝对位置少 m_end——text[end:] 落进旧段体内部，旧段尾部
+                # （含旧轮任务行）残留在新段与后续标题之间，会被
+                # _task_completion_blocker 判为永久缺口阻断 verified→done。
+                offset = 0
+                fence_char = ""
+                fence_len = 0
+                for line in after.splitlines(keepends=True):
+                    body = line.strip()
+                    if fence_char:
+                        # 闭栏：同字符、长度不小于开栏的裸标记行（不得带 info 串）
+                        if body and set(body) == {fence_char} and len(body) >= fence_len:
+                            fence_char = ""
+                    elif body.startswith("```") or body.startswith("~~~"):
+                        fence_char = body[0]
+                        fence_len = len(body) - len(body.lstrip(body[0]))
+                    elif line.startswith("## "):
+                        end = m_end + offset
+                        break
+                    offset += len(line)
+                # 行首锚保持（item a25d95843de3）：start 已回退吃掉段前全部换行、
+                # section.strip() 又剥掉新段自带的前导换行，直接拼接会把「## 验证修复」
+                # 标题粘在上一行行尾，下一轮 ^## 验证修复 MULTILINE 失配走追加分支、
+                # 修复段重复堆积。此处补回段落分隔（与追加分支 \n\n 形态一致）；
+                # start==0（段落在文件头）时不补，避免文件首出现多余空行。
+                sep = "\n\n" if start > 0 else ""
+                # 段尾同样回补空行分隔（code-review item ecc1436a1615）：end 落在
+                # 下一个二级标题行首，原区间内标题前的空行被一并吞掉，段尾只补
+                # 单 \n 会让修复段与后续标题贴合成单换行相接、tasks.md 版式逐轮
+                # 退化——与段前 sep 的 \n\n 形态对称。end 抵文件末尾（段后无
+                # 后续标题）时不补，避免文件尾堆积空行。
+                sep_tail = "\n\n" if end < len(text) else "\n"
+                new_text = text[:start] + sep + section.strip() + sep_tail + text[end:]
+            else:
+                # 无现有段：追加到末尾
+                new_text = text.rstrip("\n") + section
 
-        # 原子写（tempfile + fsync + os.replace，对齐 engine._sync_task_progress
-        # 同款手法——tasks.md 是任务完成度门禁（_task_completion_blocker 经
-        # parse_tasks_md 读取）的关键输入，中途崩溃/磁盘满不得留截断文件）
-        try:
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=f".tasks.{spec_name}.",
-                suffix=".tmp",
-                dir=str(tasks_path.parent),
-            )
+            # 原子写（tempfile + fsync + os.replace，对齐 engine._sync_task_progress
+            # 同款手法——tasks.md 是任务完成度门禁（_task_completion_blocker 经
+            # parse_tasks_md 读取）的关键输入，中途崩溃/磁盘满不得留截断文件）
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_name, str(tasks_path))
-            finally:
-                if os.path.exists(tmp_name):
-                    try:
-                        os.unlink(tmp_name)
-                    except OSError:
-                        pass
-        except OSError as e:
-            self._pm.logger.warning(
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=f".tasks.{spec_name}.",
+                    suffix=".tmp",
+                    dir=str(tasks_path.parent),
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(new_text)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_name, str(tasks_path))
+                finally:
+                    if os.path.exists(tmp_name):
+                        try:
+                            os.unlink(tmp_name)
+                        except OSError:
+                            pass
+            except OSError as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"验证修复段写入 tasks.md 失败：{spec_name}: {e}",
+                )
+                return
+            injected = True
+
+        with_file_lock(tasks_path, _do)
+        if injected:
+            self._pm.logger.info(
                 "pm_engine",
-                f"验证修复段写入 tasks.md 失败：{spec_name}: {e}",
+                f"验证修复段已{'更新' if m else '注入'}：{spec_name}（原地打回第 {fail_rounds} 轮）",
             )
-            return
-        self._pm.logger.info(
-            "pm_engine",
-            f"验证修复段已{'更新' if m else '注入'}：{spec_name}（原地打回第 {fail_rounds} 轮）",
-        )
 
     def _send_human_escalation_alert(
         self,
