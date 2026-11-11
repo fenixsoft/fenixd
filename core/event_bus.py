@@ -1326,7 +1326,9 @@ class EventBus:
             # 持锁重读盘上最新状态再 diff（见 docstring，code-review item
             # 8780d9734a12），避免调用方锁外预读的陈旧快照产生逆向迁移事件。
             current_specs = self.state_machine.read_all()
-            events, accepted_names, hook_events = self._diff_specs(current_specs)
+            events, accepted_names, hook_events, testing_transitions = (
+                self._diff_specs(current_specs)
+            )
 
         # Hook 分发（锁外，code-review item 592f948a8b25）：锁内只采集事件，
         # 此处按采集顺序逐条派发。保持原相对顺序——diff 循环内 hook 原本即
@@ -1357,6 +1359,25 @@ class EventBus:
                     f"PM Engine failed to handle {event_kind}: {e}",
                 )
 
+        # 外部 →testing 跃迁即时派发（add-adjudication-auto-exec 4.1，
+        # specs/testing-dispatch-liveness）：testing 不产生 PM 事件
+        # （_status_to_event 返回空），dashboard/admin 直写解冻进 testing 后
+        # verifier 派发原本只能等 30 分钟 full_scan 的 _recover_testing 兜底。
+        # watch 通道 diff 出「既有 SPEC 跃迁进入 testing」即刻复用同一恢复
+        # 出口（无驱动判定 + admin 在飞互斥 + 队列去重全在
+        # _recover_testing/下游守卫内，不新增 PM 事件类型）；有驱动件
+        # （在飞 run/已排队）在 spec_is_undriven 判定处自然跳过。派发失败
+        # 单条捕获记 WARNING——无状态损坏，full_scan 兜底网照常补派。
+        for testing_name, testing_entry in testing_transitions:
+            try:
+                self._recover_testing(testing_name, testing_entry)
+            except Exception as e:
+                self.logger.warning(
+                    "event_bus",
+                    f"→testing 即时派发失败（full_scan 兜底重试）"
+                    f"'{testing_name}': {type(e).__name__}: {e}",
+                )
+
         # 1.1/1.2/1.5：依赖定向唤醒——为每个转入接受态的 SPEC 反查 dependents
         # 并经 PMEngine 门面触发重评（D5：EventBus 只识别事实，派发决策留在
         # PMEngine；复用已读入的 current_specs 字典，不额外读盘的百量级遍历）。
@@ -1380,10 +1401,11 @@ class EventBus:
         """纯函数段：与已知快照 diff 出事件与依赖唤醒候选，并原子重写快照。
 
         MUST 在 ``_state_lock`` 内调用（调用方 ``_dispatch_changes`` 已持锁）。
-        Returns: ``(events, accepted_names, hook_events)``；``hook_events`` 为
-        待派发的 hook 事件 (spec, old, new, entry) 列表，由调用方在锁外派发
-        （code-review item 592f948a8b25：hook 分发可能同步读盘做 all-done
-        评估，不留在临界区内）。
+        Returns: ``(events, accepted_names, hook_events, testing_transitions)``；
+        ``hook_events`` 为待派发的 hook 事件 (spec, old, new, entry) 列表，
+        ``testing_transitions`` 为跃迁进入 testing 的 (spec, entry) 列表，
+        均由调用方在锁外派发（code-review item 592f948a8b25：锁外回调可能
+        同步读盘，不留在临界区内）。
         """
         events = []
         # 依赖唤醒候选（dispatch-dependency-wakeup 1.1/1.2）：本轮转入依赖闸门
@@ -1391,6 +1413,13 @@ class EventBus:
         accepted_names = []
         # hook 事件采集（add-spec-hooks D1）：锁内只记录不派发，见 docstring。
         hook_events = []
+        # →testing 跃迁采集（add-adjudication-auto-exec 4.1）：testing 不产
+        # PM 事件，锁内只记录，调用方锁外经 _recover_testing 即时派发。
+        # 只采集「既有 SPEC 的真实跃迁」——新出现（old=None）不算：基线
+        # 重建/外部重写窗口内全量 SPEC 判新出现时，逐个即时派发会对全部
+        # testing 态 SPEC 形成派发风暴（2026-09-07 hook 重放同型），新出现件
+        # 沿用 full_scan 的 _recover_one 兜底节奏。
+        testing_transitions = []
 
         # 空读视为异常读而非权威删除（code-review item 3838697ca747）：
         # current_specs 为空（STATE.md 被外部截断/清空、解析层对损坏内容宽松
@@ -1406,7 +1435,7 @@ class EventBus:
                 "STATE.md 读出空段（可能被外部截断/清空）：跳过本轮 diff，"
                 "保留既有快照待下一轮确认",
             )
-            return [], [], []
+            return [], [], [], []
 
         # Check for new or changed SPECs
         for name, entry in current_specs.items():
@@ -1442,6 +1471,9 @@ class EventBus:
                 event_kind = self._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
+                # 4.1：跃迁进入 testing → 即时派发候选（锁外 _recover_testing）
+                if new_status == "testing":
+                    testing_transitions.append((name, entry))
                 # 1.1：转入依赖接受态 → 候选触发 dependents 重评
                 if new_status in DEPENDENCY_ACCEPTED_STATUSES:
                     accepted_names.append(name)
@@ -1450,7 +1482,7 @@ class EventBus:
         # 循环的跳过口径一致，避免快照重写处对坏条目二次引爆
         # （code-review item d392b921a012）；构造规则单点见 _build_known_snapshot。
         self._known_specs = self._build_known_snapshot(current_specs, self._known_specs)
-        return events, accepted_names, hook_events
+        return events, accepted_names, hook_events, testing_transitions
 
     @staticmethod
     def _find_dependents(current_specs: dict, dep_name: str, logger=None) -> list:

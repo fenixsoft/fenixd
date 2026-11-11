@@ -21,7 +21,7 @@
 import { Alert, App as AntdApp, Button, Drawer, Empty, Input, Radio, Select, Spin, Tag, Timeline } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { getChainOverview, markAlertHandled } from '@/services/dashboard';
+import { getChainOverview, markAlertHandled, autoExecBadge, autoExecCountdown } from '@/services/dashboard';
 import type {
   AlertChoice,
   AlertItem,
@@ -194,6 +194,11 @@ function EscRow({
   // 链痕计数（chain_context 终点时刻配额快照；链外记录缺 chain 显「—」）
   const usedAdmin = esc.chain?.admin_attempts_used;
   const usedArb = esc.chain?.arbiter_rulings;
+  // 自动执行徽标与 grace 倒计时（add-adjudication-auto-exec 5.2）：徽标
+  // 独立于「已收口」（表达执行者是策略引擎，非静默混入人工闭环）；倒计时
+  // 仅满足条件的 pending 告警渲染（推荐明确 + 可逆档）
+  const autoBadge = autoExecBadge(esc);
+  const countdown = autoExecCountdown(esc);
   return (
     <div
       onClick={onClick}
@@ -214,6 +219,14 @@ function EscRow({
           <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color="green">已收口</Tag>
         ) : (
           <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color="volcano">待人工</Tag>
+        )}
+        {autoBadge && (
+          <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color={autoBadge.color}>{autoBadge.label}</Tag>
+        )}
+        {countdown && (
+          <Tag style={{ ...tagSm, marginInlineEnd: 0 }} color={countdown.done ? 'gold' : 'geekblue'}>
+            {countdown.text}
+          </Tag>
         )}
         <span className="ov-ellipsis" style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: T.text3, fontVariantNumeric: 'tabular-nums' }}>

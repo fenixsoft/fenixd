@@ -56,10 +56,21 @@ from types import MappingProxyType
 #                scenario-pairing 1.1）：载荷要求判定收敛注册表单源，消费侧
 #                （处置产物硬门、自动执行通道）经 choice_requires_payload()
 #                只读本位，MUST NOT 各自硬编码选项名单。
+# 可选第八字段：
+#   risk_tier  风险档位声明（add-adjudication-auto-exec 1.2）：三档枚举
+#              reversible-experiment（reset 类：清计数重验，失败自然再冻结
+#              再告警的自限动作）/ state-advance（带病推进类：豁免闸门、
+#              判断性声明或需人工核对归属的写副作用）/ terminal（终局不可逆
+#              类：弃单、删除）。策略引擎（admin_auto_exec）仅自动执行
+#              reversible-experiment 档；**缺档按 terminal 兜底**（不自动
+#              执行，保守方向安全）——兜底口径单点在 choice_risk_tier()，
+#              消费侧 MUST NOT 各自读键缺省。档位声明不改变既有解析/
+#              payload 校验/执行行为。
 # 跨信号逐字共享的选项提为模块级单源（code-review item 7542b25da792），
 # 各信号元组按引用复用：字段演进只改一处，不再多点同步。desc 带信号特定
 # 文案的同名选项（judge/verify 链的 manual_fixed_reverify、评审族的
-# force_advance）语义有差异，保持就地声明不强行合并。
+# force_advance）语义有差异，保持就地声明不强行合并（risk_tier 由
+# _assert_registry_consistency 钉死跨桶一致）。
 _ABANDON = {
     "id": "abandon",
     "label": "撤销丢弃",
@@ -67,6 +78,7 @@ _ABANDON = {
     "action": "abandon",
     "destructive": True,
     "spec_scoped": True,
+    "risk_tier": "terminal",
 }
 _FORCE_ADVANCE = {
     "id": "force_advance",
@@ -74,6 +86,7 @@ _FORCE_ADVANCE = {
     "desc": "人工豁免剩余缺口，spec 推进到 done 并解除冻结（留豁免痕）",
     "action": "force_advance",
     "spec_scoped": True,
+    "risk_tier": "state-advance",
 }
 _MANUAL_FIXED_REVERIFY = {
     "id": "manual_fixed_reverify",
@@ -81,6 +94,7 @@ _MANUAL_FIXED_REVERIFY = {
     "desc": "人工已修复问题：清场景与验证计数器后重置验证重跑",
     "action": "reset_verification",
     "spec_scoped": True,
+    "risk_tier": "reversible-experiment",
 }
 
 # register-revise-scenario-choice-on-intervention-signals 1.1：场景修订重验
@@ -114,6 +128,10 @@ _REVISE_SCENARIO_REVERIFY = {
     "action": "revise_scenario_reverify",
     "spec_scoped": True,
     "requires_payload": True,
+    # 修订+重验属 reset 类自限动作（写入限夹具供给层白名单、修订次数有上限
+    # 超限转人工，失败自然再冻结再告警）；requires_payload 载荷门使自动执行
+    # 通道无载荷时必然跳过，档位声明只表达动作本身的不可逆性
+    "risk_tier": "reversible-experiment",
 }
 
 # fix-global-signal-choice-execution 1.3：全局形态信号的非作用域收口动作。
@@ -130,6 +148,8 @@ _ACK_SELF_HEAL = {
             "不触碰任何 spec 状态机（全局信号可执行）",
     "action": "ack_self_heal",
     "spec_scoped": False,
+    # 纯知情收口零状态触碰，问题复发自然再告警（自限）
+    "risk_tier": "reversible-experiment",
 }
 
 # evo-add-commit-stray-wip-choice 1.1：主树散件 WIP 的提交动作（全局信号，
@@ -148,6 +168,8 @@ _COMMIT_STRAY_WIP = {
             "互斥，处置记录附提交 hash；全局信号可执行）",
     "action": "commit_stray_wip",
     "spec_scoped": False,
+    # 主树 git 写副作用且依赖「核对归属」人工判断（归属误判非自限），不自动执行
+    "risk_tier": "state-advance",
 }
 
 # evo-recurring-stray-remediation 1.1：主树散件的当场根治动作。被 track 的
@@ -167,6 +189,8 @@ _UNTRACK_STRAY_WIP = {
             "（结果附 untrack 清单与提交 hash；全局信号可执行）",
     "action": "untrack_stray_wip",
     "spec_scoped": False,
+    # 主树 git 写 + 生成物判定依赖人工核对（同 commit_stray_wip 口径）
+    "risk_tier": "state-advance",
 }
 
 # evo-stray-untracked-escalation 3.2：untracked 散件认领三裁决（全局信号，
@@ -185,6 +209,8 @@ _ARCHIVE_UNTRACKED_STRAY = {
             "ignore 规则并以独立提交落地，不再触发盘点告警）",
     "action": "archive_untracked_stray",
     "spec_scoped": False,
+    # 文件搬迁依赖人工归属判断（可回搬但误判非自限）
+    "risk_tier": "state-advance",
 }
 _IGNORE_UNTRACKED_STRAY = {
     "id": "ignore_untracked_stray",
@@ -193,6 +219,8 @@ _IGNORE_UNTRACKED_STRAY = {
             "或既有规则已覆盖的不重复写，独立提交落地）",
     "action": "ignore_untracked_stray",
     "spec_scoped": False,
+    # ignore 规则影响后续 tracked 判定，依赖人工归属判断
+    "risk_tier": "state-advance",
 }
 _DELETE_UNTRACKED_STRAY = {
     "id": "delete_untracked_stray",
@@ -202,6 +230,8 @@ _DELETE_UNTRACKED_STRAY = {
     "action": "delete_untracked_stray",
     "destructive": True,
     "spec_scoped": False,
+    # 文件删除不可逆（终局）
+    "risk_tier": "terminal",
 }
 
 _ADJUDICATION_REGISTRY: dict = {
@@ -213,6 +243,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "解冻并重置实现预算计数（重新获得完整实现预算），继续自动修复",
             "action": "continue_auto_fix",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         _MANUAL_FIXED_REVERIFY,
         _FORCE_ADVANCE,
@@ -225,6 +256,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "人工已修复验证链问题：清场景文件与 judge/验证计数器后重置重验",
             "action": "reset_verification",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         _FORCE_ADVANCE,
         _ABANDON,
@@ -236,6 +268,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "解冻并重置验证失败轮计数（重新获得自动修复预算），继续自动修复",
             "action": "continue_auto_fix",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         {
             "id": "manual_fixed_reverify",
@@ -243,6 +276,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "人工已修复问题：清场景与验证失败轮计数后重置验证重跑",
             "action": "reset_verification",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         _FORCE_ADVANCE,
         _ABANDON,
@@ -262,6 +296,9 @@ _ADJUDICATION_REGISTRY: dict = {
             "重跑（下轮 verified 合法生效，报告带豁免回链）",
             "action": "grant_env_exemption",
             "spec_scoped": True,
+            # 豁免是 spec 级持久放行语义（质量闸门让位），「确属环境且不可
+            # 修复」本身是判断性声明——误放行非自限，不自动执行
+            "risk_tier": "state-advance",
         },
         # register-revise-scenario-choice-on-intervention-signals 1.2：本桶
         # 内联声明提为模块常量 _REVISE_SCENARIO_REVERIFY（字段逐字不变，
@@ -278,6 +315,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "解冻并清同因重派计数（同因重试从零起算），继续自动修复",
             "action": "continue_auto_fix",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         _MANUAL_FIXED_REVERIFY,
         _FORCE_ADVANCE,
@@ -309,6 +347,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "解冻回 reviewing 重新评审",
             "action": "revise_reproposal",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         {
             "id": "force_advance",
@@ -316,6 +355,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "人工裁定方向仍成立，豁免评审门推进到 done（留豁免痕）",
             "action": "force_advance",
             "spec_scoped": True,
+            "risk_tier": "state-advance",
         },
         _ABANDON,
     ),
@@ -326,6 +366,7 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "评审链路已排查修复：解冻回 reviewing 重新派发评审",
             "action": "retry_review",
             "spec_scoped": True,
+            "risk_tier": "reversible-experiment",
         },
         {
             "id": "skip_review_gate",
@@ -335,6 +376,8 @@ _ADJUDICATION_REGISTRY: dict = {
             "action": "skip_review_gate",
             "destructive": True,
             "spec_scoped": True,
+            # 质量闸门人工授权放行（闸门让位语义），不自动执行
+            "risk_tier": "state-advance",
         },
         _ABANDON,
     ),
@@ -346,6 +389,8 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "确认 token 消耗符合预期，仅关闭本条告警，不改动 spec 状态",
             "action": "ignore",
             "spec_scoped": False,
+            # 纯知情确认零状态触碰，预算再触线自然再告警（自限）
+            "risk_tier": "reversible-experiment",
         },
         {
             "id": "freeze_stop_loss",
@@ -353,6 +398,8 @@ _ADJUDICATION_REGISTRY: dict = {
             "desc": "立即冻结该 spec（blocked + 冻结标记），停止自动派发止损",
             "action": "freeze_stop_loss",
             "spec_scoped": True,
+            # 冻结标记解除需人工介入（误冻结非自限、停车等人工）
+            "risk_tier": "state-advance",
         },
         {
             "id": "raise_budget",
@@ -361,6 +408,8 @@ _ADJUDICATION_REGISTRY: dict = {
             "继续当前工作",
             "action": "raise_budget",
             "spec_scoped": False,
+            # 预算翻倍是可逆配置写（失败=再触线再告警，连续 cap 节流成本放大）
+            "risk_tier": "reversible-experiment",
         },
     ),
     # ── 配置裁决类（kind=SIGNAL，经 Administrator 处置契约消费，不经前端告警区）──
@@ -372,6 +421,8 @@ _ADJUDICATION_REGISTRY: dict = {
             "build_artifact_paths（本动作仅确认信号，不代填配置）",
             "action": "open_config",
             "spec_scoped": False,
+            # 仅确认收口不修复（配置缺口仍在），关信号≠自愈，不自动执行
+            "risk_tier": "state-advance",
         },
         {
             "id": "declare_no_artifacts",
@@ -380,6 +431,8 @@ _ADJUDICATION_REGISTRY: dict = {
             "（留处置痕）",
             "action": "declare_no_artifacts",
             "spec_scoped": False,
+            # 写配置判定的判断性声明（误声明使产物校验静默失效），不自动执行
+            "risk_tier": "state-advance",
         },
         _ACK_SELF_HEAL,
         # 本桶末位追加 _ACK_SELF_HEAL：该桶 spec 允许为空串（可能全局形态的
@@ -415,17 +468,45 @@ ADJUDICATION_CHOICES: MappingProxyType = MappingProxyType({
 })
 
 
+# ── 风险档位（add-adjudication-auto-exec 1.2）────────────────────────
+# 三档枚举与缺档兜底口径单点。策略引擎（core/admin_auto_exec.py）仅自动执行
+# reversible-experiment 档；档位排序供「共存更高档 pending 告警」判据（判据③）
+# 比较，值即序（字典序与档位高低一致，勿改字面量形态）。
+RISK_TIER_REVERSIBLE = "reversible-experiment"
+RISK_TIER_STATE_ADVANCE = "state-advance"
+RISK_TIER_TERMINAL = "terminal"
+RISK_TIERS: tuple = (
+    RISK_TIER_REVERSIBLE,
+    RISK_TIER_STATE_ADVANCE,
+    RISK_TIER_TERMINAL,
+)
+
+
+def choice_risk_tier(choice) -> str:
+    """选项 dict → 风险档位（缺档按最保守 terminal 兜底）。
+
+    add-adjudication-auto-exec 1.2：历史条目/笔误漏声明 ``risk_tier`` 时
+    MUST NOT 被策略引擎自动执行——兜底取 terminal（不自动执行档），保守
+    方向安全。枚举外脏值同样按 terminal 兜底（不臆造档位）。消费侧（策略
+    引擎、读侧投影）经本函数取档，MUST NOT 各自读键缺省（兜底口径单源）。
+    """
+    tier = (choice or {}).get("risk_tier")
+    return tier if tier in RISK_TIERS else RISK_TIER_TERMINAL
+
+
 # 模块加载期自检（code-review item cf4b9efbae3a）：resolve_choice 的全表反查
 # 在首个命中即返回，其结论以「同一 id 在各信号下 action 语义一致、spec_scoped
-# 取值一致、destructive 取值一致、requires_payload 取值一致」为前提（见
-# resolve_choice docstring），该不变式此前无任何断言钉死——同一 id 若以作用域/
-# 非作用域（或带/不带 destructive 确认门字段、带/不带 requires_payload 载荷
-# 声明位）两种形态登记在不同桶，反查判 scoped-no-reverse 还是放行、返回的
-# 选项触发不触发前端二次确认、缺载荷拦不拦，都将取决于注册表插入顺序。此处
-# 遍历全表 fail-fast：任一 id 跨桶出现 action/spec_scoped/destructive/
-# requires_payload 冲突即在 import 期拒绝，不留给运行期静默漂移
+# 取值一致、destructive 取值一致、requires_payload 取值一致、risk_tier 取值
+# 一致」为前提（见 resolve_choice docstring），该不变式此前无任何断言钉死——
+# 同一 id 若以作用域/非作用域（或带/不带 destructive 确认门字段、带/不带
+# requires_payload 载荷声明位、带不同 risk_tier 档位）两种形态登记在不同桶，
+# 反查判 scoped-no-reverse 还是放行、返回的选项触发不触发前端二次确认、缺载荷
+# 拦不拦、自动执行引擎放不放行，都将取决于注册表插入顺序。此处遍历全表
+# fail-fast：任一 id 跨桶出现 action/spec_scoped/destructive/requires_payload/
+# risk_tier 冲突即在 import 期拒绝，不留给运行期静默漂移
 # （code-review item 26a81a23b8da；requires_payload 位随
-# fix-admin-choice-payload-and-scenario-pairing 1.1 并入同一不变式）。
+# fix-admin-choice-payload-and-scenario-pairing 1.1 并入同一不变式；
+# risk_tier 位随 add-adjudication-auto-exec 1.2 并入同一不变式）。
 def _assert_registry_consistency() -> None:
     first_seen: dict = {}
     for sig, choices in ADJUDICATION_CHOICES.items():
@@ -435,22 +516,27 @@ def _assert_registry_consistency() -> None:
             scoped = bool(choice.get("spec_scoped", True))
             destructive = bool(choice.get("destructive", False))
             requires_payload = bool(choice.get("requires_payload", False))
+            tier = choice_risk_tier(choice)
             prev = first_seen.get(cid)
             if prev is not None and (
-                (prev[1], prev[2], prev[3], prev[4])
-                != (action, scoped, destructive, requires_payload)
+                (prev[1], prev[2], prev[3], prev[4], prev[5])
+                != (action, scoped, destructive, requires_payload, tier)
             ):
                 raise AssertionError(
                     f"choice id {cid!r} 跨桶语义冲突：桶 {prev[0]!r} 声明 "
                     f"action={prev[1]!r}/spec_scoped={prev[2]}"
-                    f"/destructive={prev[3]}/requires_payload={prev[4]}，"
+                    f"/destructive={prev[3]}/requires_payload={prev[4]}"
+                    f"/risk_tier={prev[5]}，"
                     f"桶 {sig!r} 声明 "
                     f"action={action!r}/spec_scoped={scoped}"
                     f"/destructive={destructive}"
-                    f"/requires_payload={requires_payload}；resolve_choice "
+                    f"/requires_payload={requires_payload}"
+                    f"/risk_tier={tier}；resolve_choice "
                     "全表反查在首个命中即返回，结论将取决于注册表插入顺序"
                 )
-            first_seen[cid] = (sig, action, scoped, destructive, requires_payload)
+            first_seen[cid] = (
+                sig, action, scoped, destructive, requires_payload, tier,
+            )
 
 
 _assert_registry_consistency()

@@ -55,15 +55,73 @@ def _merge_narrative_sidecars(project_root, records: list) -> list:
     return merged
 
 
+def _auto_exec_grace_minutes(project_root) -> int:
+    """auto_exec.grace_minutes 读侧解析（fail-open 回落缺省 30 分钟）。
+
+    倒计时下发用的窗口宽即策略引擎判定所用的同一配置单源
+    （ConfigLoader.get_auto_exec_config）；解析失败按缺省兜底——视图是
+    观测面，配置不可读不得让告警读路径 5xx。
+    """
+    try:
+        from pathlib import Path
+
+        from core.config import ConfigLoader
+
+        cfg = ConfigLoader.get_auto_exec_config(
+            ConfigLoader.resolve_config(Path(project_root))
+        )
+        return int(cfg.get("grace_minutes") or 30)
+    except Exception:
+        return 30
+
+
+def _merge_auto_exec_fields(records: list, grace_minutes: int) -> list:
+    """读时合并自动执行投影（add-adjudication-auto-exec 5.1，无 schema 变更）。
+
+    每条 ESCALATION 记录附 ``auto_exec`` 投影（复用策略引擎读侧单点
+    ``auto_exec_projection``）：``executed``（handled_by=auto-policy →
+    前端「自动执行」徽标派生键，与人工闭环不混同）、
+    ``recommended_choice``/``risk_tier``（推荐明确性与档位徽标）、
+    ``anchor_at``/``due_at``（grace 否决窗倒计时，锚=推荐落账时刻）、
+    ``skip_reason``（推荐不明确说明）；另附 ``created_at``（记录 created
+    透传，前端现值时间基准）。非 escalation 记录不附（处置/信号记录无
+    自动执行语义，载荷不膨胀）；单条投影异常 fail-open 置 None（前端按
+    无投影渲染，读路径不 5xx）。
+    """
+    from core.admin_auto_exec import auto_exec_projection
+    from core.admin_store import ESCALATION
+
+    out: list = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            out.append(rec)
+            continue
+        item = dict(rec)
+        if item.get("kind") == ESCALATION:
+            try:
+                proj = auto_exec_projection(item, grace_minutes=grace_minutes)
+                proj["created_at"] = str(item.get("created") or "")
+                item["auto_exec"] = proj
+            except Exception:
+                item["auto_exec"] = None
+        out.append(item)
+    return out
+
+
 def get_alerts(project_root) -> list:
     """读取项目全部 Administrator 告警/处置记录（最新在前）。缺失/损坏返回 []。
 
     返回前合并叙事侧车（upgrade-narrative-to-investigation 3.3）：含补叙
-    narrative 字段与未完成告警的 narrative_pending 占位标记。
+    narrative 字段与未完成告警的 narrative_pending 占位标记；ESCALATION
+    记录另附自动执行投影 ``auto_exec``（add-adjudication-auto-exec 5.1，
+    徽标与 grace 倒计时派生键）。
     """
     from core.admin_store import AdminStore
 
-    return _merge_narrative_sidecars(project_root, AdminStore(project_root).read_all())
+    return _merge_auto_exec_fields(
+        _merge_narrative_sidecars(project_root, AdminStore(project_root).read_all()),
+        _auto_exec_grace_minutes(project_root),
+    )
 
 
 def _unhandled_records(records: list) -> list:
@@ -82,11 +140,15 @@ def _unhandled_records(records: list) -> list:
 
 
 def get_unhandled_alerts(project_root) -> list:
-    """读取项目未处理的升级告警（最新在前）。含叙事侧车合并（3.3）。"""
+    """读取项目未处理的升级告警（最新在前）。含叙事侧车合并（3.3）与
+    自动执行投影（add-adjudication-auto-exec 5.1，grace 倒计时数据源）。"""
     from core.admin_store import AdminStore
 
-    return _merge_narrative_sidecars(
-        project_root, _unhandled_records(AdminStore(project_root).read_all())
+    return _merge_auto_exec_fields(
+        _merge_narrative_sidecars(
+            project_root, _unhandled_records(AdminStore(project_root).read_all())
+        ),
+        _auto_exec_grace_minutes(project_root),
     )
 
 
@@ -123,7 +185,9 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
     """读取项目已处理的升级告警（最新在前，add-alert-auto-resolve D5）。
 
     供管理员视图「已解决」折叠区展示：含 handled_by（区分自动解决/人工处理/
-    已自愈）、resolve_note（解除/处置依据）与 handled_at。仍走
+    已自愈）、resolve_note（解除/处置依据）与 handled_at；ESCALATION 记录
+    另附自动执行投影（add-adjudication-auto-exec 5.1，``executed`` 徽标供
+    已解决区区分机器执行与人工处置）。仍走
     AdminStore.read_all 既有读取路径（不绕锁、不改存储格式）。已解决告警同样
     合并侧车 narrative（历史完整性：人工已处置后补叙照常落盘，3.2）。
 
@@ -134,8 +198,11 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
     """
     from core.admin_store import AdminStore
 
-    return _merge_narrative_sidecars(
-        project_root, _resolved_records(AdminStore(project_root).read_all())[:limit]
+    return _merge_auto_exec_fields(
+        _merge_narrative_sidecars(
+            project_root, _resolved_records(AdminStore(project_root).read_all())[:limit]
+        ),
+        _auto_exec_grace_minutes(project_root),
     )
 
 
@@ -364,6 +431,23 @@ def chain_overview(project_root) -> dict:
         if not isinstance(chain_ref, dict) or not str(chain_ref.get("signature") or ""):
             continue
         escalations.append(dict(rec))
+    # 自动执行投影（add-adjudication-auto-exec 5.1）：链上升件行附
+    # ``auto_exec``（executed 徽标 / grace 倒计时 / 推荐档位），queue 为
+    # escalations 同对象子集自然继承。投影异常单条置 None 不阻断视图
+    # （观测面 fail-open，同本函数既有联查口径）。
+    try:
+        from core.admin_auto_exec import auto_exec_projection
+
+        _grace = _auto_exec_grace_minutes(project_root)
+        for row in escalations:
+            try:
+                proj = auto_exec_projection(row, grace_minutes=_grace)
+                proj["created_at"] = str(row.get("created") or "")
+                row["auto_exec"] = proj
+            except Exception:
+                row["auto_exec"] = None
+    except Exception:
+        pass
     queue = [r for r in escalations if not r.get("handled")]
 
     # 同签名链上结果计数与 problem 摘要索引（redesign-chain-panel-ui 1.1）：
