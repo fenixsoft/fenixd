@@ -2527,6 +2527,26 @@ class PMEngine:
             self.logger.debug("pm_engine", f"任务回写跳过（无 tasks.md）：{spec_name}")
             return
 
+        # 读-改-写整段收进 fs_utils.with_file_lock（code-review item
+        # da9c7fe7143f）：与 family._inject_verify_fix_task 共用 tasks.md
+        # 同目录伴生 ``.tasks.md.lock``（``.<name>.lock`` 布局由
+        # with_file_lock 单点维护），两个框架全文件回写写点（勾选进度 vs
+        # 验证修复段注入）并发时不再互相整文件覆盖——后写者覆盖先写者的
+        # 丢失形态（勾选进度或修复段消失、_task_completion_blocker 误判
+        # 永久缺口阻断 verified→done）就此消除。锁内横跨
+        # replace→commit→失败回滚整段，family 侧注入写点最长等一个
+        # commit 窗口；无嵌套同锁（with_file_lock 契约：fn 内不得再取
+        # 同一把锁），锁内各写点均在同一锁文件上。
+        from core.fs_utils import with_file_lock  # noqa: PLC0415 —— 与 todo.md 写方共用同一锁原语
+
+        with_file_lock(
+            tasks_path,
+            lambda: self._sync_task_progress_locked(spec_name, tasks_path),
+        )
+
+    def _sync_task_progress_locked(self, spec_name: str, tasks_path: Path) -> None:
+        """_sync_task_progress 的锁内段（持 .tasks.md.lock 执行，勿直接调用）。"""
+
         run_file = find_impl_run_file(self.project_root, spec_name)
         if run_file is None:
             self.logger.debug("pm_engine", f"任务回写跳过（无 run 产物）：{spec_name}")
