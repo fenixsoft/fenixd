@@ -71,12 +71,23 @@ import {
   parseHomePath,
   splitHomePath,
 } from './projectHomeShared';
+import type { ProjectFileKind } from './projectHomeShared';
 import { ProjectCodeBlock } from './ProjectCodeBlock';
 import { ICON_BLUE, ProjectFileIcon } from './ProjectFileIcon';
 
 // remarkPlugins 提为模块级常量（对齐 KnowledgeTab KNOWLEDGE_REMARK_PLUGINS
 // 先例）：内联数组每次渲染新建引用会让 react-markdown 重新 parse。
 const HOME_REMARK_PLUGINS = [remarkGfm];
+
+// 内容盒类型标签查表（code-review item 8720c2e78c21：嵌套三元被审查规则
+// 禁止，抽为查表局部计算，范式对齐 CodeFixProgressCard 的 barStatus/
+// subTestId 局部计算先例）
+const HOME_VIEW_KIND_LABEL: Record<ProjectFileKind, string> = {
+  markdown: 'Markdown',
+  image: '图片',
+  code: '代码',
+  text: '文本',
+};
 
 // Bento 磁贴帧（dashboard-frontend 域条款；SpecTimeline OV_TILE 先例同值，
 // 2026-11-06 定形）：发丝边 #eef2f7 + 12px 圆角 + 软阴影 + 纯白底。文件
@@ -173,6 +184,35 @@ export default function ProjectHomeTab({
   // 内容按文件 path（README 以文件名同键复用内容缓存）
   const listCacheRef = useRef<Map<string, ProjectFilesListData>>(new Map());
   const contentCacheRef = useRef<Map<string, ProjectFileContentData>>(new Map());
+
+  // 跨项目切换清态（code-review item 9b27c5dad1f5）：本组件随 Tab 常驻挂载
+  // （list.tsx 挂载无 key={name}，refs 不随项目切换重建，project 变化只重启
+  // 加载 effect、不卸载组件，口径同 KnowledgeTab setView 复位 /
+  // ArchitectureTab setStatus(null) / CodeFixProgressCard setProgress(null)），
+  // dir/file/dirData/fileData/fileError/error/readmeData 会保留上一项目的
+  // 浏览位置与数据——面包屑与文件表格先按旧位置渲染（新项目同路径 404 时
+  // 误报「路径不存在」，恰好存在同路径则静默串显），README 盒按旧
+  // dirData.readme 渲染直至新数据到达。loading/fileLoading 一并复位：在飞
+  // 请求被 cancelled 丢弃后不会回调 setXxxLoading(false)（口径同 openDir 的
+  // 注释）。两个进程内缓存以纯 path 为键、不含 project 维度（code-review
+  // item c6bb6045054b）：切项目不清空会同路径命中旧项目的列表/内容/README
+  // 数据串显（所见为 A 的内容、下载按钮所指却是 B），故清态时同步清空两 Map
+  // ——与本 effect 同口径、二选一关系的另一形态见 SpecDocModal 缓存键含
+  // project 维度。声明序在各加载 effect 之前：project 变化时清空先于新请求
+  // 响应执行，不会误清新项目刚取到的数据。
+  useEffect(() => {
+    setDir('');
+    setFile(null);
+    setDirData(null);
+    setFileData(null);
+    setFileError('');
+    setError('');
+    setReadmeData(null);
+    setLoading(false);
+    setFileLoading(false);
+    listCacheRef.current.clear();
+    contentCacheRef.current.clear();
+  }, [project]);
 
   // initialPath 直达解析只做一次（挂载初值快照）：空串视为无 seed（常规根
   // 目录加载）；非空在首次激活时先按目录探测、404 回退父目录 + 文件命中
@@ -450,6 +490,9 @@ export default function ProjectHomeTab({
   const nonGit = dirData?.non_git === true;
   // 内容盒渲染分类（project-home-tab 增强：md/图片/代码/纯文本四路）
   const viewKind = filePath !== null ? fileKind(filePath) : null;
+  // 类型标签（code-review item 8720c2e78c21：嵌套三元被审查规则禁止，抽为
+  // 查表局部计算，见 HOME_VIEW_KIND_LABEL）
+  const kindLabel = viewKind !== null ? HOME_VIEW_KIND_LABEL[viewKind] : null;
 
   if (nonGit) {
     // 非 git 项目空态：Empty + 中文说明，不报错弹窗、不渲染破损列表
@@ -643,13 +686,7 @@ export default function ProjectHomeTab({
                   color: DSH_TEXT_SECONDARY,
                 }}
               >
-                {viewKind === 'markdown'
-                  ? 'Markdown'
-                  : viewKind === 'image'
-                    ? '图片'
-                    : viewKind === 'code'
-                      ? '代码'
-                      : '文本'}
+                {kindLabel}
               </span>
             )}
             {fileData && !fileData.binary && (
