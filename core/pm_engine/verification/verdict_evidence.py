@@ -989,13 +989,27 @@ def _escalate_dedup_resynthesis(
     # 三清收敛 _clear_verdict_injection_files 单源（item ab709f1b18b6），
     # 顺序 directive → manifest → violations 与原出口逐字一致。
     _clear_verdict_injection_files(pipeline, spec_name)
-    pipeline._context.state_machine.update_spec(
-        spec_name,
-        {
-            "status": "blocked",
-            "error": error,
-        },
-    )
+    # blocked 落盘容错（code-review item 1d1f9483ad48，与下方 notifier 及
+    # escalation.py 裁决路径写点的「写盘失败不得抛穿」包裹模式对齐）：
+    # update_spec 含磁盘 IO 且不吞 OSError，磁盘满/权限异常若裸外溢会沿
+    # _handle_attr_dedup_rejection → _rejection_closure 的 except 折算为
+    # cause=requeue_error——admin 无升级记录、spec 停留 testing 停滞到 stuck
+    # 兜底，且三件套已被上方清除（预算证据丢失）。失败仅 ERROR 留痕，
+    # 照常走 notifier 与结构化返回，不抛穿收口链。
+    try:
+        pipeline._context.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "blocked",
+                "error": error,
+            },
+        )
+    except Exception as e:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"重合成预算耗尽 blocked 落盘失败 '{spec_name}'（spec 状态未变更、"
+            f"升级告警照发可人工介入）: {type(e).__name__}: {e}",
+        )
     # 升级通道自身失败不得抛穿裁决流程（与 escalation.py 升级路径的包裹
     # 模式对齐）：blocked 处置已在上方 update_spec 落盘，notifier 抛异常仅记
     # warning（人工唤起仍有 blocked_stuck 兜底）；裸外溢会沿
@@ -1413,13 +1427,25 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
             "input": max(0, cur["input"] - prev_input),
             "output": max(0, cur["output"] - prev_output),
         }
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "_judge_token_delta": json.dumps(delta, ensure_ascii=False),
-                "_judge_token_baseline": json.dumps(cur, ensure_ascii=False),
-            },
-        )
+        # 记账写点容错（code-review item 2b78c587195e，与 judge_gate
+        # _judge_round_bump「写失败不阻断主流程」同款防护）：update_spec 含
+        # 磁盘 IO 且不吞 OSError，磁盘满/权限异常若上抛会中断采纳收尾链
+        # （_clear_fail_history、on_spec_verified 被跳过）——失败仅 WARNING
+        # 留痕，增量缺失只影响 STATE 时间线记账精度，不得放大为整轮降级。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "_judge_token_delta": json.dumps(delta, ensure_ascii=False),
+                    "_judge_token_baseline": json.dumps(cur, ensure_ascii=False),
+                },
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' token 增量记账写入失败（不阻断采纳收尾）: "
+                f"{type(e).__name__}: {e}",
+            )
     # fix-scheduled-reverify-survive-restart D1：重验执行落定（bug-found 分支
     # 见下；verified 分支经既有 update_spec 并入同款清零集）——排程重验窗口
     # 已消费（重验已执行、裁决落定），等待态标记/来源与截止残留一并清零
@@ -1430,10 +1456,20 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
     if status == "bug-found":
         from core.state_machine import REVERIFY_STATE_RESET_FIELDS
 
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            dict(REVERIFY_STATE_RESET_FIELDS),
-        )
+        # 记账写点容错（code-review item 2b78c587195e，同上方 token 写点
+        # 「写失败不阻断采纳收尾」口径）：清零落盘失败仅 WARNING 留痕——
+        # 残留等待态标记由读侧消费与后续采纳清零点兜底，不中断采纳收尾。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                dict(REVERIFY_STATE_RESET_FIELDS),
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' 重验等待态清零写入失败（不阻断采纳收尾）: "
+                f"{type(e).__name__}: {e}",
+            )
     # verified 落定 = judge 重跑窗口关闭：judge_rerun_count 归零并解除
     # hard cap 冻结标记（与 _verify_fail_rounds 的清零点对齐，D1 同语义）；
     # 打回轮（bug-found）不清零——失败链中计数跨轮累计直至上限。
@@ -1449,42 +1485,53 @@ def _record_verdict_adoption(pipeline, spec_name: str, status: str, report=None)
             SCENARIO_REPAIR_EXHAUSTED_FIELD,
         )
 
-        pipeline._context.state_machine.update_spec(
-            spec_name,
-            {
-                "_judge_rerun_count": 0,
-                "_judge_cap_frozen": False,
-                # fix-recovery-path-blockers D4：场景原地修复预算耗尽轮次与
-                # _judge_rerun_count 同生命周期——verified 落定清零，使成功
-                # 后的新一轮验证重新获得「首次耗尽排程重验」的完整体验。
-                SCENARIO_REPAIR_EXHAUSTED_FIELD: 0,
-                # fix-judge-budget-counters-alignment D3：修复申报计数留痕
-                # 三字段（生命周期申报轮数/耗尽后拒收轮数/最近申报摘要）与
-                # _judge_rerun_count 同族清零点——verified 落定一并清零/清除
-                # （同一原子写），下一验证周期的申报历史从零起算。
-                JUDGE_REPAIR_CLAIMS_FIELD: 0,
-                JUDGE_REPAIR_REJECTED_FIELD: 0,
-                JUDGE_REPAIR_LAST_SUMMARY_FIELD: None,
-                # fix-env-exemption-exit-reachability D3：inconclusive 重验
-                # 预算隔离双字段与 _judge_rerun_count 同生命周期——verified
-                # 落定一并清零/清除（独立计数器归零、旗标清除），防旗标
-                # 泄漏使后续正常轮的 judge 派发持续被分流进隔离账。
-                JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 0,
-                IN_INCONCLUSIVE_REVERIFY_FIELD: False,
-                # 同机制去重旗标（judge_gate._judge_inconclusive_cap_escalate
-                # 写入）：独立计数器到顶升级告警「只发一次」的语义须限定在
-                # 单个 episode 内——verified 落定不清除会永久残留，后续新
-                # episode 再到顶时去重命中、人工升级告警被静默吞掉。与人工
-                # 复位清单（admin_actions._RETRY_COUNTER_RESETS）同形态清
-                # False；读侧为字符串防御式解析，STATE.md 往返安全。
-                JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD: False,
-                # fix-scheduled-reverify-survive-restart D1：verified 落定 =
-                # 排程重验窗口已消费——等待态标记/来源与仍未来的截止残留
-                # 一并清零（与 bug-found 分支/unfreeze_spec/恢复路径拾起同源
-                # 清零集，fastlane.VERIFIED_RESET_FIELDS 展开同款）。
-                **REVERIFY_STATE_RESET_FIELDS,
-            },
-        )
+        # 记账写点容错（code-review item 2b78c587195e，同上方两写点
+        # 「写失败不阻断采纳收尾」口径）：verified 落定的计数清零/旗标复位
+        # 落盘失败仅 WARNING 留痕——残留计数的兜底由读侧防御式解析与
+        # 人工复位清单承担，不中断采纳收尾链。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "_judge_rerun_count": 0,
+                    "_judge_cap_frozen": False,
+                    # fix-recovery-path-blockers D4：场景原地修复预算耗尽轮次与
+                    # _judge_rerun_count 同生命周期——verified 落定清零，使成功
+                    # 后的新一轮验证重新获得「首次耗尽排程重验」的完整体验。
+                    SCENARIO_REPAIR_EXHAUSTED_FIELD: 0,
+                    # fix-judge-budget-counters-alignment D3：修复申报计数留痕
+                    # 三字段（生命周期申报轮数/耗尽后拒收轮数/最近申报摘要）与
+                    # _judge_rerun_count 同族清零点——verified 落定一并清零/清除
+                    # （同一原子写），下一验证周期的申报历史从零起算。
+                    JUDGE_REPAIR_CLAIMS_FIELD: 0,
+                    JUDGE_REPAIR_REJECTED_FIELD: 0,
+                    JUDGE_REPAIR_LAST_SUMMARY_FIELD: None,
+                    # fix-env-exemption-exit-reachability D3：inconclusive 重验
+                    # 预算隔离双字段与 _judge_rerun_count 同生命周期——verified
+                    # 落定一并清零/清除（独立计数器归零、旗标清除），防旗标
+                    # 泄漏使后续正常轮的 judge 派发持续被分流进隔离账。
+                    JUDGE_INCONCLUSIVE_DISPATCHES_FIELD: 0,
+                    IN_INCONCLUSIVE_REVERIFY_FIELD: False,
+                    # 同机制去重旗标（judge_gate._judge_inconclusive_cap_escalate
+                    # 写入）：独立计数器到顶升级告警「只发一次」的语义须限定在
+                    # 单个 episode 内——verified 落定不清除会永久残留，后续新
+                    # episode 再到顶时去重命中、人工升级告警被静默吞掉。与人工
+                    # 复位清单（admin_actions._RETRY_COUNTER_RESETS）同形态清
+                    # False；读侧为字符串防御式解析，STATE.md 往返安全。
+                    JUDGE_INCONCLUSIVE_CAP_ESCALATED_FIELD: False,
+                    # fix-scheduled-reverify-survive-restart D1：verified 落定 =
+                    # 排程重验窗口已消费——等待态标记/来源与仍未来的截止残留
+                    # 一并清零（与 bug-found 分支/unfreeze_spec/恢复路径拾起同源
+                    # 清零集，fastlane.VERIFIED_RESET_FIELDS 展开同款）。
+                    **REVERIFY_STATE_RESET_FIELDS,
+                },
+            )
+        except Exception as e:
+            pipeline._context.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' verified 落定清零集写入失败（不阻断采纳收尾）: "
+                f"{type(e).__name__}: {e}",
+            )
 
 
 def _def_view(sc) -> dict:
