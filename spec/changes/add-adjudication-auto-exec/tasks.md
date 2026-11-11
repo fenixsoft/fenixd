@@ -41,10 +41,10 @@
 
 ## 2. 自动执行策略引擎
 
-- [ ] 2.1 新增 core/admin_auto_exec.py 扫描判定：60s 轮询读 pending 升级告警，判据四条全过才到点执行（arbiter 完整调查≥1 且有明确推荐 choice、推荐 choice risk_tier=reversible-experiment、同 SPEC 无共存更高档 pending、连续 auto-exec 计数<cap——计数从处置留痕按 actor=auto-policy 派生不新增状态文件），grace 到期时刻=created_at+grace_minutes 读时计算，任一判据不满足跳过并记日志
+- [ ] 2.1 新增 core/admin_auto_exec.py 扫描判定：60s 轮询读 pending 升级告警，判据四条全过才到点执行（arbiter 完整调查≥1 且有明确推荐 choice——由告警 choices[] 注册 id 对 recommended_action 文本正向提及解析，否定语境不计，唯一命中方执行、零/多义命中跳过；推荐 choice risk_tier=reversible-experiment、同 SPEC 无共存更高档 pending、连续 auto-exec 计数<cap——计数从处置留痕按 actor=auto-policy 派生不新增状态文件），grace 到期时刻=推荐可用时刻（arbiter_upgrade.upgraded_at，无 upgrade 痕回退 created）+grace_minutes 读时计算，任一判据不满足跳过并记日志
 - [ ] 2.2 同模块实现到点执行：执行前瞬时重读 handled 与判据（人工先到先得），复用 core/admin_choice_exec.py 单机器执行（如需扩 actor=auto-policy 留痕形态则修改该模块），留痕与人工同构，异常单条捕获隔离、enabled=false 时整体停用
 - [ ] 2.3 human-only 档老化升级：pending 超 aging 阈值（2h/6h 两档）的 state-advance/terminal 告警写升级活动记录（复用既有活动记录写入点），只做可见性不执行动作
-- [ ] 2.4 新增 tests/test_admin_auto_exec_policy.py：覆盖到点自动执行成功留痕 actor=auto-policy、四判据逐条缺失跳过、人工先到先得不重复执行、连续 cap 超限转人工、开关停用、异常单条隔离
+- [ ] 2.4 新增 tests/test_admin_auto_exec_policy.py：覆盖到点自动执行成功留痕 actor=auto-policy、四判据逐条缺失跳过（含推荐歧义/零命中跳过）、grace 自推荐落账时刻起算（异步升级件 upgraded_at 晚于 created 时窗口完整）、人工先到先得不重复执行、连续 cap 超限转人工、开关停用、异常单条隔离
 
 ## 3. daemon 装配
 
@@ -52,7 +52,7 @@
 
 ## 4. 外部 testing 跃迁即时派发
 
-- [ ] 4.1 core/event_bus.py 的 _dispatch_changes 增加 →testing 跃迁处理：spec_is_undriven 命中且无在飞 Administrator run（复用 _recover_testing 与 _spec_has_active_admin_run 既有语义）时立即 re-trigger verifier 派发，不新增事件类型，失败不留状态损坏
+- [ ] 4.1 core/event_bus.py 的 _dispatch_changes 增加 →testing 跃迁处理：spec_is_undriven 命中且无在飞 Administrator run（复用 _recover_testing 与 _spec_has_active_admin_run 既有语义）时立即 re-trigger verifier 派发，不新增事件类型，失败不留状态损坏；锁纪律：`_dispatch_changes` 既有约定 PM Engine 处理必须在 `_state_lock` 外执行（docstring 明文），锁内只采集 →testing 跃迁、re-trigger 派发放锁外
 - [ ] 4.2 新增 tests/test_event_bus_testing_dispatch.py：覆盖 blocked→testing 秒级触发派发、有驱动/在飞 run 不重复派发、派发失败语义与 30min full_scan 兜底共存
 
 ## 5. Dashboard 展示

@@ -12,7 +12,7 @@ redesign-chain-panel-ui 事故（2026-11-11）暴露升级处置链终点的结�
 
 **Goals:**
 
-- pending 升级告警在「推荐明确 + 动作可逆自限 + 判据满足」时于 grace 窗后自动执行，处理延迟 10h36m → ≤32min
+- pending 升级告警在「推荐明确 + 动作可逆自限 + 判据满足」时于 grace 窗后自动执行，**推荐可用（arbiter 完整调查产出）到执行完成 ≤32min**（redesign 件全链 10h36m 中机器有效产出集中头 2h，本机制压缩的是决策就绪之后的等待段）
 - 人工否决/改选在 grace 窗内始终优先（先到先得）
 - 自动执行留痕与人工点击同构、dashboard 可审计、不静默
 - testing 跃迁外部直写后即时派发（秒级），消除 30min 兜底延迟
@@ -29,14 +29,14 @@ redesign-chain-panel-ui 事故（2026-11-11）暴露升级处置链终点的结�
 
 1. **风险档位收敛在静态注册表单源**。risk_tier 作为 choice 条目字段落在 adjudication_choices.py，历史条目缺档按最保守 `terminal` 兜底（不自动执行）。*备选*：告警发射时逐条拷贝档位 → 弃，违反三处同源禁复制，漂移风险高。
 
-2. **策略引擎 = daemon 侧新增模块 + 60s 轻量扫描环**。新模块（core/admin_auto_exec.py）每 60s 读 pending 告警做廉价判定（文件读 + 内存判据），到点执行。*备选 A*：挂 30min full_scan → grace 30min 实际延迟最坏 60min，价值折半，弃；*备选 B*：挂 dashboard 进程 → dashboard 非常驻，daemon 才是权威，弃；*备选 C*：逐告警定时器 → 复杂度不值，弃。
+2. **策略引擎 = daemon 侧新增模块 + 60s 轻量扫描环**。新模块（core/admin_auto_exec.py）每 60s 读 pending 告警做廉价判定（文件读 + 内存判据），到点执行。*备选 A*：挂 30min full_scan → grace 30min 实际延迟最坏 60min，价值折半，弃；*备选 B*：挂 dashboard 进程 → dashboard 虽为常驻独立服务进程（bin/fenix_dashboard.py --serve 常驻运行），但告警生命周期与车道派发权威在 daemon，引擎须与 STATE 写权威同侧、不随 dashboard 独立重启失联，弃；*备选 C*：逐告警定时器 → 复杂度不值，弃。
 
 3. **执行复用既有单机器**，新增 actor=auto-policy 的 disposition 留痕形态，与人工/链出口同构。三处同源扩展为四处同源，禁止第四份复制逻辑。
 
-4. **grace 窗状态不落盘**：到期时刻 = created_at + grace（缺省 30min，单源 core/config.py 签名常量），读时计算。窗内人工动作（resolve 任一 choice 或 mark handled）先到先得；引擎执行前瞬时重读 handled 与判据，二次确认后执行。
+4. **grace 窗状态不落盘**：到期时刻 = **推荐可用时刻** + grace（缺省 30min，单源 core/config.py 签名常量），读时计算。推荐可用时刻取告警 `arbiter_upgrade.upgraded_at`（arbiter 调查完成、推荐落账时刻）——告警创建与推荐落账异步（实证 redesign 件 created 16:15:44Z → upgraded 17:55:56Z，相隔 1h40m），若锚 created 会使异步升级件在推荐落账时 grace 早已过期、可否决窗归零，违背「窗内人工可否决」契约；无 upgrade 痕的告警回退 `created`（告警时间戳字段实名 `created`）。窗内人工动作（resolve 任一 choice 或 mark handled）先到先得；引擎执行前瞬时重读 handled 与判据，二次确认后执行。
 
 5. **自动执行判据**（全部满足才执行，缺一跳过并记日志）：
-   - 该告警关联 arbiter 完整调查 ≥1 次且有明确推荐 choice（链状态/处置叙事中记录的 recommendation）
+   - 该告警关联 arbiter 完整调查 ≥1 次且有明确推荐 choice。推荐 choice **无结构化字段**（recommended_action 为 arbiter 产出的自由文本，实证 redesign 件同段文本正向推荐 manual_fixed_reverify 且负向提及 force_advance/abandon），机械解析约定：对告警 `choices[]` 注册 id 在 recommended_action 文本做正向提及匹配（「不推荐 / 不选 / 勿选 / 不作为」等否定语境就近修饰的不计正向）；**唯一**正向命中方视为「推荐明确」，零命中或多义命中一律判推荐不明确、跳过等人工（宁跳过勿误执行，方向 fail-safe）
    - 推荐 choice 的 risk_tier = reversible-experiment
    - 同 spec 无共存更高风险档 pending 告警
    - 本 spec 连续 auto-exec 计数 < 上限（缺省 2，config 单源；计数从处置留痕按 actor 派生，不新增状态文件）
@@ -65,5 +65,5 @@ redesign-chain-panel-ui 事故（2026-11-11）暴露升级处置链终点的结�
 
 ## Open Questions
 
-- 告警记录当前是否携带结构化 severity 字段供「共存更高档」判定，还是需从 signal_type 推导？（实现期核实，倾向后者）
+- 已核实（评审期实测）：告警记录携带结构化 severity 字段（redesign 上升件 severity=major；降噪分级 critical/major 进 pending、warning/minor 写入即 handled 为既有语义），判据③「共存更高档」可直接读 severity，辅以 signal_type→choices→risk_tier 读时解析互补；告警时间戳字段实名 `created`，grace 计算读该字段
 - 老化升级的活动记录落点（admin_activities vs 叙事 sidecar）实现期定。
