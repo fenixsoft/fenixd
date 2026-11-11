@@ -113,12 +113,17 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
 /** 取文件名末段扩展名（小写，不带点）。点开头的隐藏文件（.env、
  *  .editorconfig 等）剥掉前导点后按剩余部分参与映射（无第二点时剩余
  *  整段即扩展名，'.env' → 'env' → ini）；'.gitignore' 这类无语义扩展名
- *  的点文件不在映射表，归纯文本。导出供 ProjectFileIcon 复用（纯函数）。 */
+ *  的点文件不在映射表，归纯文本。本就无点的普通文件名（'py'、
+ *  'LICENSE'）返回空串——无扩展名，避免恰好与已知扩展名同名的文件被
+ *  误判出扩展名（fileKind 误入 code/image 通道）。导出供 ProjectFileIcon
+ *  复用（纯函数）。 */
 export function extOf(name: string): string {
   const lower = name.toLowerCase();
-  const stripped = lower.startsWith('.') ? lower.slice(1) : lower;
+  const isDotFile = lower.startsWith('.');
+  const stripped = isDotFile ? lower.slice(1) : lower;
   const i = stripped.lastIndexOf('.');
-  return i >= 0 ? stripped.slice(i + 1) : stripped;
+  if (i >= 0) return stripped.slice(i + 1);
+  return isDotFile ? stripped : '';
 }
 
 /** 文件是否属图片直显集合（后端 raw 通道白名单的镜像；两侧一致由测试钉）。 */
