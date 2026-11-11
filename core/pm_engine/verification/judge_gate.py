@@ -536,6 +536,7 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
     # 上抛中断本轮 verdict 处置，故调用点再包一层容错（比照 infra_classify
     # 同因失败哨冻结，code-review item 738682ae5449）：冻结落盘失败仅 ERROR
     # 留痕——judge_rerun_cap 语义下 spec 未冻结可由下一轮超限重触发兜底。
+    freeze_persisted = True
     try:
         pipeline._context.state_machine.freeze_for_human(
             spec_name,
@@ -572,15 +573,26 @@ def _judge_hard_cap_freeze(pipeline, spec_name: str, count: int) -> None:
             extra_updates={"_judge_cap_frozen": True},
         )
     except Exception as e:
+        freeze_persisted = False
         pipeline._context.logger.error(
             "pm_engine",
             f"judge 重跑硬上限冻结转人工写盘失败 '{spec_name}'（frozen/blocked "
             f"本轮未落盘，下一轮超限可重触发）: {type(e).__name__}: {e}",
         )
-    pipeline._context.logger.error(
-        "pm_engine",
-        f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— " f"冻结为 blocked，等待人工裁决",
-    )
+    # 收尾留痕按冻结是否落盘分叉（code-review item 6d1192064f0a，比照
+    # 6d5db0d31b「日志宣称与实际状态相反」缺陷形态）：写盘失败路径不得再
+    # 宣称「已冻结为 blocked」误导人工对账，降级 WARNING 沿用上方失败口径。
+    if freeze_persisted:
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— " f"冻结为 blocked，等待人工裁决",
+        )
+    else:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— frozen/blocked "
+            "本轮未落盘，下一轮超限可重触发",
+        )
 
 
 # ── judge 预算隔离（fix-env-exemption-exit-reachability D3/3.3）──────────
