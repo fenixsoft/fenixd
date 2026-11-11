@@ -153,8 +153,12 @@ def extract_recommended_choice(rec) -> tuple:
     漂移——注册表后续收窄/改档时以注册表现值为准），拒绝解析按不明确
     处理。返回选项为注册表逐项拷贝（risk_tier 等档位声明随附）。
     """
-    text = ""
-    upgrade = rec.get("arbiter_upgrade") if isinstance(rec.get("arbiter_upgrade"), dict) else {}
+    if not isinstance(rec, dict):
+        # 非 dict 记录（外部直写异常形态）按推荐不明确返回，不抛
+        # AttributeError 中断读侧装配（与 grace_anchor 防御口径对齐）
+        return None, None, "告警记录形态异常（非 dict），无推荐可解析"
+    raw = rec.get("arbiter_upgrade")
+    upgrade = raw if isinstance(raw, dict) else {}
     text = str(upgrade.get("recommended_action") or "").strip()
     if not text:
         text = str(rec.get("recommended_action") or "").strip()
@@ -313,9 +317,11 @@ class AdminAutoExecEngine:
         except Exception as e:  # noqa: BLE001 — 读失败整轮放弃
             self.logger.warning(LOG_CHANNEL, f"告警存储读取失败本轮跳过: {e}")
             return 0
+        from core.admin_store import ESCALATION
+
         pending = [
             r for r in records
-            if r.get("kind") == "escalation" and not r.get("handled")
+            if r.get("kind") == ESCALATION and not r.get("handled")
         ]
         executed = 0
         for rec in pending:
@@ -523,6 +529,35 @@ class AdminAutoExecEngine:
                 f"告警 {alert_id} 窗口内已被人工处理，跳过自动执行（先到先得）",
             )
             return False
+        # 幂等去重（留痕即执行凭据）：该告警已有 actor=auto-policy 处置留痕，
+        # 说明前轮已执行过本推荐但闭环未落（_close_alert 写回失败，或执行→
+        # 留痕→闭环间隙进程崩溃）——不重复执行有副作用动作，只按前轮动作
+        # 幂等补闭环（_close_alert 对已闭环件幂等返回 False）。留痕写失败/
+        # 崩溃发生在留痕落盘之前的更内层窗口无留痕可查，不在本判据覆盖面
+        # （不新增存储结构前提下的最大可收敛窗口）。
+        try:
+            prior = self._auto_exec_trace(alert_id)
+        except Exception as e:  # noqa: BLE001 — 去重读失败按不可判定跳过（勿重复执行）
+            self.logger.warning(
+                LOG_CHANNEL,
+                f"告警 {alert_id} 执行留痕去重读失败本轮跳过: "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
+        if (
+            prior is not None
+            and str(prior.get("result") or prior.get("status") or "") != "failed"
+        ):
+            # 前轮 result=failed 的留痕不拦重试也不补闭环：执行失败按设计
+            # 保持 pending 等人工，重试仍由判据④连续计数上界兜底
+            action = str(prior.get("action_taken") or cid)
+            self.logger.info(
+                LOG_CHANNEL,
+                f"告警 {alert_id} 已有 auto-policy 执行留痕（前轮执行未闭环），"
+                f"跳过重复执行仅补闭环（action={action}）",
+            )
+            self._close_alert(alert_id, action)
+            return False
         try:
             from core.admin_choice_exec import execute_choice_for_disposition
         except Exception as e:  # noqa: BLE001 — 执行机器不可用按失败放弃本轮
@@ -613,6 +648,24 @@ class AdminAutoExecEngine:
         return next(
             (r for r in records if str(r.get("id") or "") == alert_id), None,
         )
+
+    def _auto_exec_trace(self, alert_id: str):
+        """该告警已存在的 actor=auto-policy 处置留痕（无则 None）。
+
+        幂等去重判据单点（走查 AdminStore 既有记录面，零新增存储结构）：
+        本引擎是 auto-policy actor 的唯一写点，留痕在场的告警必已经历过
+        一次自动执行。读失败由调用方按不可判定跳过（勿重复执行）。
+        """
+        from core.admin_store import DISPOSITION
+
+        for r in self.store.read_all():
+            if (
+                r.get("kind") == DISPOSITION
+                and str(r.get("alert_id") or "") == alert_id
+                and str(r.get("actor") or "") == AUTO_POLICY_ACTOR
+            ):
+                return r
+        return None
 
     def _close_alert(self, alert_id: str, action: str) -> bool:
         """自动执行成功后的告警闭环：handled_by=auto-policy（5.1 徽标派生键）。
