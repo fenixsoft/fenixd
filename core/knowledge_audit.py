@@ -468,14 +468,17 @@ def _sync_disputed_annotations(
     project_root: Path,
     desired: dict[str, str],
     restrict_pages=None,
+    logger=None,
 ) -> tuple[list[str], list[str]]:
     """把涉事页顶 disputed 注记对齐到期望态（写入/更新/摘除）。
 
     ``desired`` 为页 rel → 期望注记行；不在期望态的受限页摘除既有注记（消费
     摘除 / 台账清零自愈共用）。``restrict_pages`` 限定可触碰页（消费段传涉事
-    页保持轻量；缺省不限）。写前查 150 行硬顶（超限跳过留痕不写，返回值第二
+    页保持轻量；缺省不限）。``logger`` 为可选日志器（缺省 null_logger），
+    越界页 WARNING 经其留痕。写前查 150 行硬顶（超限跳过留痕不写，返回值第二
     元）；既有注记为原位替换（行数不变，无硬顶问题）。返回 ``(改写页, 跳过页)``。
     """
+    log = logger or null_logger()
     pages = set(desired)
     if restrict_pages is not None:
         # 并集而非交集：受限页是「允许触碰」上限，desired 为空（消费摘除 /
@@ -484,8 +487,25 @@ def _sync_disputed_annotations(
         pages |= set(restrict_pages)
     changed: list[str] = []
     skipped: list[str] = []
+    kroot = (Path(project_root) / KNOWLEDGE_DIR).resolve()
     for rel in sorted(pages):
         path = Path(project_root) / rel
+        # 越界复核（对齐 core.knowledge 同族写面 resolve().relative_to()
+        # 收口）：desired 键与 restrict_pages 均源自疑点台账条目的 pages
+        # 字段，台账是人工可编辑文件，其余字段处处按「人工编辑/旧版本写坏」
+        # 防御性归一，pages 拼路径前同样收口——rel 含 ``../`` 相对段或绝对
+        # 形态时注记的插入/摘除会落到真相源目录之外的任意文件。越界页按损坏
+        # 台账同款口径 WARNING 留痕并跳过该页（不写不摘，不计入 skipped——
+        # 该返回值消费侧按 150 行硬顶文案上报），不让单条损坏条目炸注记同步。
+        try:
+            path.resolve().relative_to(kroot)
+        except (ValueError, OSError):
+            log.warning(
+                "knowledge",
+                f"audit 台账条目 pages 越出真相源目录（损坏或被篡改），"
+                f"跳过该页 disputed 注记同步：{rel!r}",
+            )
+            continue
         if not path.is_file():
             continue
         # 读入走 strict 辅助（code-review cbd86b36d5c1）：非 UTF-8 页跳过注记
@@ -727,7 +747,7 @@ def consume_arbitration(
         # （knowledge_daily_check → 本段）不持蒸馏锁，无自阻塞。
         with knowledge_distill_lock(project_root):
             changed, _skipped = _sync_disputed_annotations(
-                project_root, desired, restrict_pages=pages_touched
+                project_root, desired, restrict_pages=pages_touched, logger=log
             )
             if changed:
                 try:
@@ -2180,7 +2200,10 @@ def run_audit(
     annotated = {p["rel"] for p in scan["pages"] if _DISPUTED_RE.search(p["text"])}
     with knowledge_distill_lock(project_root):
         changed, note_skipped = _sync_disputed_annotations(
-            project_root, desired, restrict_pages=set(desired) | annotated
+            project_root,
+            desired,
+            restrict_pages=set(desired) | annotated,
+            logger=log,
         )
         # 提交留在临界区内：锁外提交的窗口期里，并发蒸馏 run 会把刚落盘未提交
         # 的注记当 carryover，其全目录 pathspec 提交还会把注记卷进蒸馏提交
