@@ -45,6 +45,14 @@ _PORT_BOUNDARY = r"(?=[/\?#\"']|$)"
 # IPv6 字面量去方括号归一为 ::1）。
 _LOCAL_PROBE_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 
+# code-review ae02d9ad242e：主树 static 共享实例的缓存哨兵键。``_contract_
+# static_servers`` 同一 dict 混用两种键空间（spec 名键与共享哨兵键），旧哨兵
+# "main" 与合法 spec 名冲突：名为 main 的 spec 以 worktree/command 形态运行
+# 时会覆写共享静态实例条目（后续 static+main 供给读出 dict 炸穿阶段 2.5），
+# spec 终局 ``_evict_spec_serving`` 也会误驱逐共享实例。改用含 ``\0`` 的保留
+# 形态——spec 名落 spec/changes 目录名，文件名不可能含 ``\0``，哨兵不可达。
+_SHARED_MAIN_STATIC_KEY = "\0shared-main-static"
+
 
 def _spec_name_path_error(spec_name: str):
     """spec 名路径分量校验：合法返回 None，非法返回人类可读原因。
@@ -259,20 +267,20 @@ def _ensure_serving_worktree(pipeline, spec_name: str, contract, mode: str):
 def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tuple:
     """方案 1（默认）：主树构建 + 主树起服务。同 root 复用已启动实例。
 
-    code-review a6337eba0acb：本路径只写共享键 ``"main"``、从不清 spec 键
-    条目——上一轮以 worktree 作用域运行遗留的 spec 键条目（server/wt_path）
-    会滞留：旧实例不 stop、旧 serving worktree 不清理，且
+    code-review a6337eba0acb：本路径只写共享键 ``_SHARED_MAIN_STATIC_KEY``、
+    从不清 spec 键条目——上一轮以 worktree 作用域运行遗留的 spec 键条目
+    （server/wt_path）会滞留：旧实例不 stop、旧 serving worktree 不清理，且
     ``_current_instance_base_url`` 对 spec 键优先，滞留旧实例的 base_url
     会被当作本轮实例供给引擎（与本轮新主树实例 split-brain）。供给前先按
     单一 ``_evict_spec_serving`` 清退样板驱逐 spec 键旧条目（幂等，无旧
-    条目安全空转；共享键 ``"main"`` 不受影响）。
+    条目安全空转；共享键 ``_SHARED_MAIN_STATIC_KEY`` 不受影响）。
     """
     root_dir = Path(pipeline._context.project_root) / contract.serve.root
     if not root_dir.is_dir():
         return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
     pipeline._evict_spec_serving(spec_name)
     cache = pipeline.__dict__.setdefault("_contract_static_servers", {})
-    srv = cache.get("main")
+    srv = cache.get(_SHARED_MAIN_STATIC_KEY)
     if (
         srv is None
         or srv.root != root_dir.resolve()
@@ -307,7 +315,7 @@ def _serve_static_in_main(pipeline, spec_name, contract, scenarios_path) -> tupl
                 "pm_engine", f"静态服务实例构造失败（主树）: {e}"
             )
             return False, False, f"静态实例启动失败: {e}"
-        cache["main"] = srv
+        cache[_SHARED_MAIN_STATIC_KEY] = srv
     return pipeline._finalize_static(srv, contract, scenarios_path, "主树")
 
 
@@ -656,8 +664,9 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     HEAD 变化更频繁（未提交改动 + prepare 重建产物），照搬会测得旧产物、
     违 BASE_URL 新鲜性铁律。但仍以 ``spec_name`` 为键写入
     ``_contract_static_servers``（server/mode 元数据），供
-    ``_evict_spec_serving`` 终局回收——禁用键 ``"main"``（该键为 static
-    主树共享实例专属、多 spec 共享、终局豁免）。code-review a6337eba0acb：
+    ``_evict_spec_serving`` 终局回收——禁用键 ``_SHARED_MAIN_STATIC_KEY``
+    （该键为 static 主树共享实例哨兵、多 spec 共享、终局豁免）。
+    code-review a6337eba0acb：
     覆写条目前先经 ``_evict_spec_serving`` 清退上一轮旧条目（unregister →
     stop → worktree 清理，对作用域翻转遗留的 worktree 形态条目同样兼容），
     同 spec 连轮不再滞留旧实例与其 servers.json 登记。
@@ -775,7 +784,7 @@ def _serve_command_in_main(pipeline, spec_name, contract, scenarios_path) -> tup
     # 旧 serving worktree 不 _remove_serving_worktree（旧 pid 登记永久
     # 残留到 daemon 周期清扫）。_evict_spec_serving 幂等（无旧条目安全
     # 空转），对缺 wt_path 的 command-主树旧条目同型兼容；主树 static
-    # 共享键 "main" 不受影响。
+    # 共享键 _SHARED_MAIN_STATIC_KEY 不受影响。
     pipeline._evict_spec_serving(spec_name)
     cache[spec_name] = {
         "server": srv,
@@ -948,7 +957,9 @@ def _evict_spec_serving(pipeline, spec_name: str) -> None:
 
     command 型：stop 进程 + 移除 servers.json 登记 + 移除 serving worktree；
     static 型：stop 实例。幂等：无缓存条目/无登记时安全空转。
-    主树 static 共享实例（缓存键 "main"）不在此列（多 spec 共享，保留）。
+    主树 static 共享实例（哨兵键 ``_SHARED_MAIN_STATIC_KEY``）不在此列
+    （多 spec 共享，保留；code-review ae02d9ad242e：哨兵含 ``\0``，合法
+    spec 名不可达，spec 名恰为 main 时 pop("main") 也不再命中共享条目）。
     """
     cache = pipeline.__dict__.get("_contract_static_servers", {})
     old = cache.pop(spec_name, None)
@@ -989,13 +1000,13 @@ def _current_instance_base_url(pipeline, spec_name: str) -> str:
     优先级：
       1. ``_contract_static_servers`` 缓存中的 server.base_url
          （契约 static/command 两型：worktree 作用域键=spec_name、
-         主树 static 共享实例键="main"）；
+         主树 static 共享实例键=哨兵 ``_SHARED_MAIN_STATIC_KEY``）；
       2. 无契约兜底 spawn（commands.start）时查 serving 登记；
       3. 均无 → 空串（引擎/web runner 落回 navigate 考古，api runner
          无实例形态探针保守健康）。
     """
     cache = pipeline.__dict__.get("_contract_static_servers", {})
-    for key in (spec_name, "main"):
+    for key in (spec_name, _SHARED_MAIN_STATIC_KEY):
         entry = cache.get(key)
         if entry is None:
             continue
@@ -1007,8 +1018,13 @@ def _current_instance_base_url(pipeline, spec_name: str) -> str:
             # 实例返回，否则契约轻量自证/探针探死端口永久失败，
             # 环境死循环（fix-dashboard-fault-isolation 实证）。
             # StaticVerifyServer 无 ok 属性（线程驻留），getattr 默认
-            # True 保持原行为；CommandVerifyServer.ok 含进程 liveness。
-            if not getattr(srv, "ok", True):
+            # True；code-review 599267a0d3ae：存活门改双属性口径——补
+            # alive 门（对齐 StaticVerifyServer.alive 线程存活门
+            # 3d75f84caf3c 与 _serve_static_in_main/_worktree 复用门同款），
+            # 服务线程意外退出的死实例地址不再被当作现存实例分发；无该
+            # 属性的老形态 getattr 默认 True 保持放行；
+            # CommandVerifyServer.ok 含进程 liveness。
+            if not (getattr(srv, "ok", True) and getattr(srv, "alive", True)):
                 continue
             return srv.base_url
     # 兜底 spawn（commands.start，无契约）：serving 登记里的端口。
@@ -1103,13 +1119,13 @@ def _probe_dist_freshness(pipeline, spec_name: str) -> str:
 
     # ── 被测实例形态判定：worktree 自建形态直通 ──
     # 缓存形态：worktree 条目为 dict 且带 wt_path；主树 static 共享实例
-    # （键 "main"）缓存的是 server 对象本身；主树 command 实例为 dict 无
-    # wt_path。取本轮实例与 _current_instance_base_url 同优先级（spec 优先，
-    # 回落 "main"）。
+    # （哨兵键 _SHARED_MAIN_STATIC_KEY）缓存的是 server 对象本身；主树
+    # command 实例为 dict 无 wt_path。取本轮实例与 _current_instance_base_url
+    # 同优先级（spec 优先，回落哨兵键）。
     cache = pipeline.__dict__.get("_contract_static_servers", {})
     entry = cache.get(spec_name)
     if not isinstance(entry, dict):
-        entry = cache.get("main")
+        entry = cache.get(_SHARED_MAIN_STATIC_KEY)
     if isinstance(entry, dict) and entry.get("wt_path"):
         return ""  # worktree 自建：本轮产物即 prepare 构建，探针天然新鲜
 
@@ -1619,14 +1635,17 @@ def _legacy_selfheal_start(
         if pm:
             base_port = int(pm.group(1))
     # code-review c23edf798863：邻近扫描 pre 快照（对齐契约路径 6cea9255ff17
-    # 同款，517-524/700-707 先例）——spawn 前对 base_port+1..+50 做一次响应
-    # 快照（同款 _probe_ports_responding + http_error_ok=True，4xx/5xx 亦算
-    # 应答）。缺快照时窗口内既有监听服务会被下方邻近扫描当作「本轮新出现
+    # 同款，517-524/700-707 先例）——spawn 前对 base_port..base_port+50 做一次
+    # 响应快照（同款 _probe_ports_responding + http_error_ok=True，4xx/5xx
+    # 亦算应答）。缺快照时窗口内既有监听服务会被下方邻近扫描当作「本轮新出现
     # 的监听」命中，reg.register 锁到无关服务且 _rewrite_scenario_port 把
     # 端口持久改写进冻结场景集，污染跨轮延续
+    # code-review 6079c08c1dec：快照范围含 base_port 本身——下方外来端口改写
+    # 分支据此剔除 spawn 前已在场的响应者（{port} 注入形态下 base_port 此刻
+    # 仍被 hold_free_port 占住，探针连上无应答超时判阴性，注入路径不受影响）
     pre = (
         _probe_ports_responding(
-            range(base_port + 1, base_port + 51),
+            range(base_port, base_port + 51),
             probe=lambda p: _probe_url(f"http://127.0.0.1:{p}/", http_error_ok=True),
         )
         if base_port
@@ -1750,7 +1769,17 @@ def _legacy_selfheal_start(
     # （base_port → 扫描到的邻近端口），对「场景写了别的端口」完全无能为力，
     # 导致应用明明已启动却被判不可达、spec 永久卡死在 testing
     # （fix-fix-improve-verify-adjudication）。
-    if base_port and _probe_url(f"http://127.0.0.1:{base_port}/", http_error_ok=True):
+    # code-review 6079c08c1dec：base_port 响应者须为本轮 spawn 后新出现的
+    # 监听才可信——spawn 前已在场（pre 快照命中）的响应者可能是无关 HTTP
+    # 服务（本轮实例 bind 失败即死，裸探针不核验响应者归属），
+    # 照旧改写会把场景端口经 _rewrite_scenario_port 持久锁到无关服务上
+    # 且无回滚（a736820044fb）。剔除后跳过改写，落入下方既有最终失败分支
+    # （与邻近扫描 c23edf798863 同款剔除口径）
+    if (
+        base_port
+        and base_port not in pre
+        and _probe_url(f"http://127.0.0.1:{base_port}/", http_error_ok=True)
+    ):
         foreign_ports = {
             m.group(1)
             for u in urls
