@@ -95,7 +95,8 @@ class PipelineContext:
         read_implementer_result  委托 pm._read_implementer_result(spec_name)
         exempt_infra_run_budget  委托 pm._exempt_infra_run_budget(spec_name,
                                 reason, refund_key="")
-        env_infra_markers     只读 tuple，来自 pm._ENV_INFRA_MARKERS
+        env_infra_markers     只读 tuple，来自 pm._ENV_INFRA_MARKERS；
+                              空缺省恒不匹配 infra 标记（见字段注释）
         ocr_join_gate         委托 pm._dispatcher._ocr_join_gate(spec_name,
                               origin) → "pass"/"defer"/"reject"
                               （add-impl-ocr-parallel-lane：Dispatcher 未组合
@@ -129,6 +130,11 @@ class PipelineContext:
     ocr_join_gate: Callable[[str, str], str] = field(
         repr=False, default=_ocr_join_gate_disabled
     )
+    # env/infra 失败判定标记（有缺省，空元组）：桩 context 未提供或 pm 未
+    # 声明 _ENV_INFRA_MARKERS 时空元组恒不匹配——消费侧
+    # （escalation._judge_bugs_declare_env）判 env 恒 False，infra 失败按
+    # product 类记账、照常消耗验证预算（偏移方向为预算消耗型而非零行为
+    # 变化）；需覆盖该车道时桩须显式注入标记。
     env_infra_markers: tuple[str, ...] = field(default=(), repr=True)
 
     # ── add-verify-lane-throughput 1.3：并行出题车道控制（SimpleNamespace，
