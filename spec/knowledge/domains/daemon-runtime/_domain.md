@@ -1,5 +1,5 @@
 # 守护进程平台
-> 最后更新：2026-11-08 21:21 UTC+8
+> 最后更新：2026-11-11 13:59 UTC+8
 
 守护进程平台域：daemon 进程生命周期、单例与托管链（systemd unit 承载、on-failure 重启策略与 supervisor 退出码协议、env 捕获 PATH 卫生）、启动序列与排水语义、结构化日志单事件读写治理、宿主环境已知脆弱面登记。
 
@@ -18,7 +18,7 @@
 | [systemd-env-path-hygiene](systemd-env-path-hygiene.md) | systemd env 捕获 PATH 卫生（捕获稿基线并集补齐留痕、unit 模板保底 Environment=PATH、迁移摘要卫生结论） | 2026-11-08 21:21 |
 | [supervisor-hosting](supervisor-hosting.md) | supervisor 托管链（托管态判定与 systemctl 双轨启停语义、信号消费校验、整链人工重建、supervisor_fused 解熔断 compileall 核验） | 2026-11-05 04:11 |
 | [host-env-hazards](host-env-hazards.md) | 宿主环境已知脆弱面（网关 DNS 失效 drop-in 绕过待 revert、dns_probe_failed 归因判读、spawn 层失败三查判读、dashboard unit 缺席 tmux 兜底常驻待收口） | 2026-11-06 18:13 |
-| [state-watch-event-bus](state-watch-event-bus.md) | STATE.md 变更监视与事件派发总线 | 2026-09-27 17:23 |
+| [state-watch-event-bus](state-watch-event-bus.md) | STATE.md 变更监视与事件派发总线（固定 2 秒间隔轮询 + checksum，无 inotify） | 2026-11-11 13:59 |
 | [structured-log-rotation](structured-log-rotation.md) | JSON 结构化日志与跨进程安全轮转 | 2026-09-27 17:23 |
 | [framework-install](framework-install.md) | 框架安装（依赖检查与软链装配） | 2026-09-27 17:23 |
 | [cli-process-report](cli-process-report.md) | SPEC 进度 CLI 报告（/fenix-process 数据源） | 2026-09-27 17:23 |

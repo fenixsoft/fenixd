@@ -1,6 +1,7 @@
 # 平台抽象层（PAL）
 
-<!-- knowledge: capability=platform-abstraction rev=1 sources=spec/changes/add-platform-abstraction-layer -->
+<!-- knowledge: capability=platform-abstraction rev=2
+     sources=spec/changes/add-platform-abstraction-layer,spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md -->
 
 `core/platform/` 是全库唯一的平台敏感实现收口点：六组平台中立接口（A–F）对业务代码屏蔽 Linux 系统调用习惯（flock / procfs / systemd / 进程组信号 / pwd），使 core/ 业务代码零平台分支、POSIX syscall 零散落；第二后端（Windows）可在干净切口上接入而 Linux 行为零变化。
 
@@ -16,6 +17,7 @@
 - **原子写单源**：跨模块原子写收敛 `fs_utils.atomic_write_text` 单一实现（mkstemp 唯一临时文件 + fsync + `os.replace`），热路径（runner / state_machine 等）不另建私有平行实现。
 - **spawn 收敛**：core/ 的 detached spawn 面统一走 `pal.spawn_detached`（asyncio 子进程走 `spawn_detached_async`）；`new_session=False` 形态保留「不新建会话/进程组、信号直达直接子进程」的动态 passthrough 语义，不得盲改无条件 detached。
 - **静态守卫（零豁免纪律）**：`tests/test_platform_guard.py` 以 AST 口径断言两类防回潮面——① POSIX 面：core/（唯一整文件豁免 `core/platform/linux.py`）零 `import fcntl`、`from fcntl import`、`import pwd`、`os.killpg(`、`from os import killpg`、`os.setsid(`、`start_new_session=`、`prctl`、`/proc/` 字面量（按裸字面量口径断言字符串常量，覆盖单/双引号与 f-string 形态、排除 docstring——双引号前缀口径存在漏检面）；② 平台判断面：core/（豁免整个 `core/platform/`）零 `sys.platform` / `platform.system` / `os.name` 属性访问，import 别名逃逸（如 `import sys as s`）经别名映射封堵。豁免面登记计数双向钉死（回潮或消失都判漂移须人工核对）：`/proc/` 渲染 payload 豁免 `systemd_hosting.py` 2 处、`start_new_session` 关键字豁免 `runner.py` 测试缝 shadow 转发 1 处（主树 Popen 形态契约保留，不构成 syscall 绕行通道）。新增直接消费端必须迁移到 PAL，不得以豁免清单换省事。
+- **进程模型不变量**：全库（core/ 与 bin/）零 `os.fork`、零 `multiprocessing`，并发只走 asyncio 与线程；asyncio 子进程面仅 `core/verify_engine/cli_runner.py` 两处调用点、统一经 `pal.spawn_detached_async`；信号处理器注册面仅 `core/dashboard/server.py` 与 `bin/fenixd_supervisor.py` 三处（SIGTERM/SIGINT）；信号常量面全库仅 SIGKILL / SIGTERM / SIGINT 三种。新增进程创建或信号用法先收口进 PAL 对应接口组，不在业务代码新开调用点。
 - **测试基建平台拆分**：pytest `timeout_method` 以 `pal.pytest_timeout_method()` 为单源（Linux 恒 `signal`，SIGALRM 硬门与 allowlist 机制不变；win32 恒 `thread` 属 Windows 后端范围）。
 - **依赖面不变**：本层 Linux 面零新增第三方依赖；Windows 后端依赖（psutil / portalocker / pywin32）按平台 extras 由后续 SPEC 引入，不进主依赖。
 
@@ -30,9 +32,11 @@
 - 主实现：`core/platform/`（`__init__.py` 单点分发、`api.py` 契约 + 门面、`linux.py` Linux 后端、`win32.py` 占位）
 - 锁与原子写单源：`core/fs_utils.py`（`with_file_lock` / `atomic_write_text`）
 - 转发消费端：`core/proc_utils.py`、`core/systemd_hosting.py`
+- asyncio 子进程消费端：`core/verify_engine/cli_runner.py`
 - 守卫与契约测试：`tests/test_platform_guard.py`、`tests/test_platform_pal.py`
 - 测试基建消费：`pytest.ini`（`timeout_method` 接 pal F 组）
 
 ## 溯源
 
 - 2026-11-11 add-platform-abstraction-layer（spec/changes/add-platform-abstraction-layer/） — 新建本页：core/platform/ 六组 PAL API 与 Linux 后端、sys.platform 单点分发、proc_utils/fs_utils/systemd_hosting 转发化、flock 与原子写收敛单源、with_file_lock 非阻塞参数扩展、POSIX 面/平台判断面双静态守卫契约
+- 2026-11-11 posix-dependency-true-distribution-1110（spec/knowledge/_inbox/done/posix-dependency-true-distribution-1110.md） — 新增进程模型不变量规则：全库零 os.fork/零 multiprocessing、asyncio 子进程面收敛 cli_runner 经 spawn_detached_async、信号注册面与信号常量面收口位置
