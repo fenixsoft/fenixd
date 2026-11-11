@@ -744,6 +744,17 @@ export interface ChainEscalationItem {
   handled_by?: string;
   handled_at?: string;
   close_cause?: string | null;
+  /** 自动执行投影（add-adjudication-auto-exec 5.1 读侧下发；absent/null =
+   * 投影不可得或非 escalation 记录）——executed 徽标与 grace 倒计时派生键 */
+  auto_exec?: {
+    executed: boolean;
+    recommended_choice?: string | null;
+    risk_tier?: string | null;
+    skip_reason?: string | null;
+    anchor_at?: string | null;
+    due_at?: string | null;
+    created_at?: string;
+  } | null;
   /** 链上下文（escalation_chain 链终点直写；arbiter_rulings/admin_attempts_used
    * 为终点时刻配额计数，admin_trail 条目含 run_id/result/success/error/handoff） */
   chain?: {
@@ -796,6 +807,48 @@ export interface ChainOverviewData {
 export async function getChainOverview(project?: string): Promise<ChainOverviewData> {
   const qs = project ? `?project=${encodeURIComponent(project)}` : '';
   return request<ChainOverviewData>(`/api/chain${qs}`);
+}
+
+// ── 裁决自动执行徽标/倒计时（add-adjudication-auto-exec 5.2，纯逻辑） ──
+
+/**
+ * 自动执行徽标（executed=handled_by=auto-policy）：独立徽标而非静默混入
+ * 人工闭环——「已收口」绿标只表达终态，本徽标表达「执行者是策略引擎」。
+ * 未自动执行的记录返回 null（不渲染）。
+ */
+export function autoExecBadge(
+  esc?: Pick<ChainEscalationItem, 'auto_exec'> | null,
+): { label: string; color: string } | null {
+  if (!esc?.auto_exec?.executed) return null;
+  return { label: '自动执行', color: 'cyan' };
+}
+
+/**
+ * grace 否决窗倒计时标注（满足条件的 pending 告警）：投影给出明确推荐
+ * （recommended_choice）且为可逆档（reversible-experiment，与策略引擎
+ * 判据②同词表）且 due_at 可解析时下发；窗口未满逐秒倒计时，已满显示
+ * 「等待自动执行」（引擎 60s 轮询到点即执行）。非 pending（已收口/已
+ * 执行）、推荐不明确、非可逆档一律 null（不渲染，避免误导人工）。
+ */
+export function autoExecCountdown(
+  esc?: (Pick<ChainEscalationItem, 'auto_exec' | 'handled'> & { handled?: boolean }) | null,
+  now: Date = new Date(),
+): { text: string; done: boolean } | null {
+  const p = esc?.auto_exec;
+  if (!p || p.executed || esc?.handled) return null;
+  if (!p.recommended_choice || p.risk_tier !== 'reversible-experiment') return null;
+  if (!p.due_at) return null;
+  const due = Date.parse(p.due_at);
+  if (!Number.isFinite(due)) return null;
+  const diffMs = due - now.getTime();
+  if (diffMs <= 0) return { text: '等待自动执行', done: true };
+  const totalSec = Math.floor(diffMs / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return { text: h > 0 ? `自动执行倒计时 ${h}:${mm}:${ss}` : `自动执行倒计时 ${mm}:${ss}`, done: false };
 }
 
 // ── 项目 SPEC 列表（/api/specs，与 v1 项目视图同源） ──
