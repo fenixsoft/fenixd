@@ -61,19 +61,73 @@ IN_FLIGHT_IMPL_STATES = ("implementing", "implemented", "testing")
 SPEC_CHANGES_PREFIX = "spec/changes/"
 
 
+def _unquote_porcelain_path(path: str) -> Optional[str]:
+    """展开 git porcelain 的 C 风格引号路径（code-review item 663351d7a40a）。
+
+    core.quotePath=false 只放开非 ASCII 高位字节按原样输出；含双引号、反斜杠
+    或控制字符的路径仍按 C 风格加引号输出（外层双引号包裹 + 反斜杠转义）。
+    去外层引号并反转义 ``\\"``、``\\\\``、git 产出的字母转义（\\t \\n \\r \\a
+    \\b \\f \\v）与 ``\\NNN`` 八进制——不展开则路径以带引号字符串形态写入
+    dirty_files，指纹键与真实路径失真（脏文件仅作 WARNING 留痕与新增文件
+    去重、非硬门，失真只伤可观测性）。形态不合法（缺收口引号、悬挂反斜杠、
+    未知转义序列）返回 None 由调用方按「无路径」跳过，不让失真键入快照。
+    """
+    if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
+        return None
+    body = path[1:-1]
+    out: list = []
+    i = 0
+    n = len(body)
+    letter_escapes = {
+        "t": "\t", "n": "\n", "r": "\r", "a": "\a",
+        "b": "\b", "f": "\f", "v": "\v",
+    }
+    while i < n:
+        ch = body[i]
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        if i + 1 >= n:
+            return None  # 悬挂反斜杠（形态不合法）
+        nxt = body[i + 1]
+        if nxt in ('"', "\\"):
+            out.append(nxt)
+            i += 2
+        elif nxt in letter_escapes:
+            out.append(letter_escapes[nxt])
+            i += 2
+        elif nxt in "01234567":
+            digits = ""
+            j = i + 1
+            while j < n and len(digits) < 3 and body[j] in "01234567":
+                digits += body[j]
+                j += 1
+            out.append(chr(int(digits, 8)))
+            i = j
+        else:
+            return None  # 未知转义序列（形态不合法）
+    return "".join(out) or None
+
+
 def _parse_porcelain_path(line: str) -> Optional[str]:
     """从 `git status --porcelain` 输出行提取文件路径。
 
     porcelain 固定格式为「两状态符 + 空格 + 原文路径」，路径从 line[3:] 起
     原样截取（可含空格）；不能按空白 split 取 parts[1]——含空格的路径会被
     截断失真（code-review item 27ad5869fb3f）。重命名/拷贝条目（R/C 状态）
-    形如「XY orig -> new」，按箭头分段取新路径。行过短（无路径）返回 None。
+    形如「XY orig -> new」，按箭头分段取新路径。路径段以 '"' 开头（C 风格
+    引号形态，core.quotePath=false 亦只放开非 ASCII 高位字节）时做引号展开
+    与反转义（_unquote_porcelain_path，code-review item 663351d7a40a），其余
+    路径原行为不变。行过短（无路径）或引号路径形态不合法返回 None。
     """
     if len(line) < 4:
         return None
     path = line[3:]
     if " -> " in path:
         path = path.split(" -> ", 1)[1]
+    if path.startswith('"'):
+        path = _unquote_porcelain_path(path)
     return path or None
 
 
@@ -108,6 +162,32 @@ def _hash_file_capped(path: Path, cap: int = _DIRTY_HASH_MAX_BYTES) -> Tuple[str
         return f"{size}:{h.hexdigest()}", True
     except OSError:
         return None, False
+
+
+def _snapshot_key_in_scope(rel: object, spec_name: str, *, dirty: bool) -> bool:
+    """快照键归属校验（code-review item 6df4693778de），供 _verify_snapshot 的
+    spec_files/dirty_files 两处循环复用（单源）。
+
+    snapshot.json 与 STATE.md 同目录、同属人工可编辑的盘上本地数据（本仓威胁
+    模型），键未校验即拼 ``project_root / rel`` 做存在性检查/读取——``../x``
+    或绝对路径键会落到 SPEC 目录（乃至项目根）之外；spec_files 侧一条指向
+    不存在路径的脏键即可触发「SPEC 目录内文件被删除」硬门误判，经
+    _handle_review_failure 归 content 白耗重试预算至冻结转人工。判定按写侧
+    不变量分两支：spec_files 恒为 ``spec/changes/<spec_name>/`` 内相对路径
+    （_take_snapshot 对 spec_dir rglob 取 relative_to），dirty_files 恒为
+    SPEC 目录外相对路径（同函数对 SPEC_CHANGES_PREFIX 前缀显式跳过）。非
+    str、空串、含 ``..`` 成分、绝对路径或不合写侧前缀的键一律非法，由调用
+    方跳过并 WARNING 留痕，不让脏键参与比对。
+    """
+    if not isinstance(rel, str) or not rel:
+        return False
+    if ".." in rel.split("/"):
+        return False
+    if rel.startswith("/"):
+        return False
+    if dirty:
+        return not rel.startswith(SPEC_CHANGES_PREFIX)
+    return rel.startswith(SPEC_CHANGES_PREFIX + spec_name + "/")
 
 
 def _dirty_file_fingerprint(path: Path) -> Optional[str]:
@@ -578,7 +658,11 @@ class SpecReviewManager:
         result = None  # 异常路径下不绑定（修复验证轮 BUG：UnboundLocalError）
         try:
             result = self.agent_runner.run_spec_review(spec_name, run_id=run_id)
-            run_ok = bool(getattr(result, "success", False))
+            # `is True` 严格等值（对齐下方 frozen_terminated 先例，code-review
+            # item c37e6817f7e5）：MagicMock 等替身在属性访问时自动生成 truthy
+            # 子对象，裸布尔会把失败 run 误判成功、绕过 ③0-③ 的失败分类与重试
+            # 递增；生产结果 AgentRunResult.success 为显式 bool，不受影响。
+            run_ok = getattr(result, "success", False) is True
             run_err = getattr(result, "error", None)
         except Exception as e:  # noqa: BLE001 — 派发异常须收口锚点，不得留残余
             run_ok, run_err = False, str(e)
@@ -651,9 +735,21 @@ class SpecReviewManager:
 
             # ② 产物优先判定（D1）：产物已合法落盘 → 按产物消费，exit code 失败仅
             #    降级 warning 日志留痕，不递增 _review_attempts、不重派
-            artifact_ok, artifact_data = self._artifact_landed_valid(
-                spec_name, run_started_at=attempt_started_at
-            )
+            # 判定异常收口（code-review item 2cdb07ac8761）：_artifact_landed_valid
+            # 内锚点回落段的 read_one 只捕 (TypeError, ValueError)，STATE.md 瞬态
+            # IO 异常（OSError 族）会从直调点一路逃出 dispatch_review——本轮失败
+            # 不分类、不递增尝试。按 (False, None) 降级走既有 _handle_review_failure
+            # 重试语义（对齐 _classify_run_failure 调用同方法的宽包装口径）。
+            try:
+                artifact_ok, artifact_data = self._artifact_landed_valid(
+                    spec_name, run_started_at=attempt_started_at
+                )
+            except Exception as e:  # noqa: BLE001 — 判定异常按产物不合法降级，不逃出本方法
+                artifact_ok, artifact_data = False, None
+                self.logger.warning(
+                    "spec_review",
+                    f"产物落盘判定异常（按产物不合法降级走重试语义）: {spec_name}: {e}",
+                )
             if artifact_ok:
                 self.logger.warning(
                     "spec_review",
@@ -1242,6 +1338,15 @@ class SpecReviewManager:
         modified_spec = []
         unreadable_spec = []
         for rel, old_hash in snapshot.get("spec_files", {}).items():
+            # 键归属校验（code-review item 6df4693778de）：非法键跳过留痕，
+            # 不让其拼出 SPEC 目录外路径参与硬门比对。
+            if not _snapshot_key_in_scope(rel, spec_name, dirty=False):
+                self.logger.warning(
+                    "spec_review",
+                    f"快照 spec_files 键越界（跳过该键，不参与硬门比对）: "
+                    f"{spec_name}: {rel!r}",
+                )
+                continue
             full = self.project_root / rel
             if not full.exists():
                 return f"SPEC 目录内文件被删除: {rel}"
@@ -1322,6 +1427,15 @@ class SpecReviewManager:
         # 读失败返回 None 照旧静默跳过。
         changed_dirty = []
         for rel, old_hash in snapshot.get("dirty_files", {}).items():
+            # 键归属校验（code-review item 6df4693778de，单源 _snapshot_key_in_scope）：
+            # 非法键跳过留痕，不让其拼出项目根外路径参与留痕比对。
+            if not _snapshot_key_in_scope(rel, spec_name, dirty=True):
+                self.logger.warning(
+                    "spec_review",
+                    f"快照 dirty_files 键越界（跳过该键，不参与留痕比对）: "
+                    f"{spec_name}: {rel!r}",
+                )
+                continue
             full = self.project_root / rel
             if not full.exists():
                 continue  # 文件被删除，可能不是评审者所为
@@ -1377,7 +1491,13 @@ class SpecReviewManager:
         # （spec/changes/<spec_name>/）内的文件。
         spec_root = (self.project_root / "spec" / "changes").resolve()
         allowed_dir = (spec_root / spec_name).resolve()
-        repairs = review_data.get("repairs") or []
+        # falsy 值仅对 None 兜底（code-review item a83f191215cb）：旧 `or []` 把
+        # 0/""/False 等非法形态一并归一为 []，恒通过下方 isinstance 校验、绕过
+        # 「repairs 非列表（非法产物）」的 fail-closed 分支，与注释宣称的
+        # 「非法形态按非法产物直接判失败」偏差——其余 falsy 非列表值现落入该校验。
+        repairs = review_data.get("repairs")
+        if repairs is None:
+            repairs = []
         # repairs 元素类型校验（code-review item 29ed238af688）：repairs 由 LLM
         # 产出，可能非列表/元素非 dict；旧实现 repair.get(...) 会抛 AttributeError
         # 逃出 consume_review_result，绕过本文件的失败分类/重试与冻结路径。
