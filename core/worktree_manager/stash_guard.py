@@ -1569,11 +1569,16 @@ class G6StashGuardMixin:
             # 路径反转义（同 _list_dirty_tracked_files 口径）：diff --name-only
             # 对非 ASCII/特殊字符路径默认输出 C-quoted 转义形，不反转义则下方
             # ls-files/check-ignore/rm --cached 的 pathspec 永不命中，purge
-            # 对该类文件静默跳过。
+            # 对该类文件静默跳过。路径段同款不 strip（item 05aba0f5f726，
+            # 口径对齐 _list_dirty_tracked_files）：空格非可引号字符，
+            # diff --name-only 对含首/尾空格的文件名不加引号原样输出，
+            # strip 会截掉文件名自身空白致下方 ls-files/check-ignore/
+            # rm --cached 的 pathspec 永不命中，purge 对该类 ignored
+            # 草稿静默跳过。
             cands = [
-                unquote_git_path(ln.strip())
+                unquote_git_path(ln)
                 for ln in diff.stdout.splitlines()
-                if ln.strip()
+                if ln
             ]
             # 批量口径（item 2eecaa4ef78d，对照 mergeback._backup_untracked_spec_files
             # 的 d307bc3bd39e）：本方法在 merge 成功后的 _post_merge_finalize 内执行
