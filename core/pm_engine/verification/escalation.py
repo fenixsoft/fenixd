@@ -1953,11 +1953,11 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
     # 路径解析与戳校验复用统一读取入口的实现（evo-verifier-result-single-
     # source R1；函数内 import 与 pipeline.py 同款先例，防模块环导入）。
     from core.pm_engine.verification.report_gate import (
-        _verifier_stamp_gate,
-        _verify_progress_result_paths,
+        is_verifier_stamp_gate,
+        verify_progress_result_paths,
     )
 
-    primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
+    primary, _shared = verify_progress_result_paths(pipeline, spec_name)
     if not primary.exists():
         return False
     try:
@@ -1970,7 +1970,7 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
         return False
     # spec 戳不符 = 其它 spec 残留，不采信（规则唯一实现在
     # _verifier_stamp_gate；primary 只做 spec 戳、不做 role 门，见 docstring）
-    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    ok, _reason = is_verifier_stamp_gate(data, spec_name, require_verifier_role=False)
     if not ok:
         return False
     # 仅验证裁决车道申报的 bug-found 产物才采信 bugs 字段（implementer

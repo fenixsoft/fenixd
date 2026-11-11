@@ -424,6 +424,11 @@ def _verify_progress_result_paths(pipeline, spec_name: str) -> tuple:
 verify_progress_result_paths = _verify_progress_result_paths
 
 
+# 公开别名（跨模块消费走公开名，不 import 私有符号；同 is_verifier_dispatch_stamp
+# 先例，code-review item 6194cae8960d）
+is_verifier_stamp_gate = _verifier_stamp_gate
+
+
 def _read_shared_result(
     pipeline,
     path: Path,
