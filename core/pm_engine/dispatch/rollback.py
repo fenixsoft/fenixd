@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 import shlex
 import time
 from datetime import datetime, timezone
@@ -61,7 +62,13 @@ def _normalized_positive_float_value(cfg, key: str, default, pm):
         return default
     try:
         v = float(cfg)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # 巨大 int（合法 JSON/YAML 任意精度，如 10**400）送 float() 抛
+        # OverflowError 同按非法值处置（code-review item f785f777dac2，口径
+        # 对齐 backoff._coerce_finite_delay 851ba3eeed41）：否则异常逃出本
+        # 归一助手（_dispatch_rollback_backoff_seconds 的宽 except 只包读取
+        # 层），沿 _rollback_failed_dispatch 冒泡到外层 except 被记成泛化
+        # 「State rollback failed」，状态复位/预算豁免/重派入队整段中止。
         if logger is not None:
             logger.warning(
                 "pm_engine",
@@ -143,20 +150,34 @@ class RRollbackMixin:
         if not until:
             return False
         try:
-            return float(until) > time.time()
-        except (TypeError, ValueError):
+            until_f = float(until)
+        except (TypeError, ValueError, OverflowError):
             # 字段非法留痕（code-review item ba44c6896ccf）：回退 False（按
             # 未退避放行）方向合理——True 会因持续损坏造成永久停派——但
             # 静默吞掉会让防振荡窗失效且事后无法从日志区分「字段缺失」（
             # 上方 falsy 提前返回，正常缺省形态）与「字段损坏已放行」。
             # 与本文件 _dispatch_rollback_backoff_seconds 的非法值 WARNING
-            # 口径对齐（01c0160765d2 可诊断性）。
+            # 口径对齐（01c0160765d2 可诊断性）。OverflowError 一并兜住
+            # （外部直写的巨型 int 是合法 JSON，同 f785f777dac2 缺口）。
             _logger.warning(
                 "spec %r 的 _dispatch_backoff_until 非法（%r，%s），"
                 "按未退避放行本轮派发（防振荡窗对该条目失效）",
                 spec.get("name"), until, type(until).__name__,
             )
             return False
+        # 非有限守卫（code-review item 591819346db7，时间字段 isfinite 回退
+        # 同 recovery.py afaa44a20ba8 先例）：inf 是合法 float、不触上方类型
+        # except，却使比较恒 True——该 spec 被永久判为退避中（派发冻结）。
+        # 按「损坏」WARNING 留痕回退 False（未退避放行），与上方分支同向；
+        # NaN 比较恒 False 本无害，统一按损坏留痕不改变放行结果。
+        if not math.isfinite(until_f):
+            _logger.warning(
+                "spec %r 的 _dispatch_backoff_until 非有限（%r），"
+                "按未退避放行本轮派发（防振荡窗对该条目失效）",
+                spec.get("name"), until_f,
+            )
+            return False
+        return until_f > time.time()
 
     def _dispatch_rollback_backoff_seconds(self) -> int:
         """派发异常回滚后的防振荡退避窗（秒）。
@@ -303,9 +324,22 @@ class RRollbackMixin:
                 )
                 return
             status = spec_entry.get("status")
-            backoff_until = int(datetime.now(timezone.utc).timestamp()) + (
-                self._dispatch_rollback_backoff_seconds()
-            )
+            # 退避窗求值独立守卫（code-review item 8db6f4463d58）：配置消费
+            # （读取层/值级归一）抛异常时不跳外层 except，按缺省窗 300s 回退
+            # ——保证下方分支判态与未覆盖组合 WARNING（01c0160765d2）先于
+            # 配置消费保留留痕，事后对账可区分「配置值级问题」与「分支逻辑
+            # 问题」，异常爆炸半径不越过本求值点。
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            try:
+                backoff_until = now_ts + self._dispatch_rollback_backoff_seconds()
+            except Exception as backoff_exc:  # noqa: BLE001 —— 回退缺省退避窗
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"派发失败回滚：退避窗配置消费异常"
+                    f"（{type(backoff_exc).__name__}: {backoff_exc}），"
+                    "回退缺省 300s，分支判态与留痕继续",
+                )
+                backoff_until = now_ts + 300
             if agent_type == "verifier" and status == "testing":
                 # error 置 None（code-review item 5d15a55cbce8，与 implementer
                 # 分支同口径）：非空 error 对 implemented 态恢复/展示路径是额外
