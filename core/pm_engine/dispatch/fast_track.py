@@ -2084,6 +2084,9 @@ class FFastTrackMixin:
             ),
         )
 
+    # [fenix-ignore:0a10c498efda] 复查与调用方 update_spec 非同一临界区、毫秒级并发冻结残窗属接受性残余
+    # （docstring 已留痕读侧失败按未冻结继续）；消除须在 state_machine 新增条件写原语并迁移
+    # 本文件六处写点与 adjudication 车道，info 级窗口收益不及回归风险。
     def _error_write_frozen_recheck(self, spec_name: str, context_label: str) -> bool:
         """终态 error 写盘前的冻结复查（code-review item 9eccfb685eed，仿
         backoff._handle_dispatch_lock_conflict 的 440ec07a12cc / rollback
