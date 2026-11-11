@@ -249,6 +249,7 @@
   - 建议：复现入链去重面增加守卫：endpoint=arbiter-escalated 且告警 pending 未人工处置时不自动复派（或要求场景变化信号才复派，如新一轮 verify report / STATE 变更 / 告警内容更新）；或将 arbiter-escalated 产物告警改为终态人工包形态（不再作为链触发源）。方向供自进化立项裁量。
 
 - **[arbiter:redesign] 冻结场景描述与实现传输通道漂移无守卫（alert-resolve ?project 措辞陈旧）**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：影响验证裁决面：judge 定性轮、场景修复轮与人工裁决包读者都可能沿陈旧描述向错误方向归因（多烧修复预算或误判 product-bug）；场景描述自带「路径出处」锚点机制但不含传输形态类实现细节的新鲜度约束，漂移静默存在。
   - 证据：test_scenarios.json 中 w-queue-exec-ack-self-heal 描述声称「断言裁决请求打 /api/alert-resolve?project=rcp-chain-showcase」，但实现已收敛为 body 通道（dashboard.ts:675-682，code-review item 7045ef4ae4c7 收敛旧 ?project= 双通道；alert_routes.py:539-583 query 优先/body 兜底/缺项目 400）；官方轮捕获样例亦为裸 URL（含 body）。本次 Arbiter 复查中该措辞险些引导出一条假 product-bug 机制（前端丢参致服务端失配），经代码面核查方排除。；触发 run_id=arbiter-redesign-chain-panel-ui-1794332909（签名 redesign-chain-panel-ui::judge_rerun_cap，来源 startup）
   - 调查评估：触发信号 judge_rerun_cap（spec=redesign-chain-panel-ui）：'redesign-chain-panel-ui' judge 重跑超上限（6/5 轮），已冻结等待人工裁决。Arbiter 调查判定为框架缺口——修复涉及框架代码或产品面变更，超出处置白名单，记 todo 由自进化统一立项。
@@ -270,12 +271,14 @@
 
 ### 浪费
 - **stale悬空强制重启硬杀全仓审查run，106分钟作废覆盖延迟一天**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：一次全仓代码审查 run 跑了 106 分钟、694 轮后被排水硬杀，已完成 6/21 波（170/352 文件），剩余约 182 个文件的审查覆盖延迟约 22 小时才由续跑接管；这是本窗 6 次计划内重启中唯一一次杀到在飞 run（其余 5 次 drain 均为 0 秒空排水），交付零损失（已落盘分片保全）。
   - 证据：日志 17:47:29Z 告警 591f9f54784a（stale_code_dangling_timeout，陈旧悬空超时升级告警）自述「不再等待空闲、直接触发规划性重启」，17:47:31 Shutting down，17:48:24「Drain finished after 50s, remaining runs: ['code-review-1794326531']」同秒向该全仓周期审查 run 发 SIGTERM；其档案（.fenix/runs/archive/code-review-1794326531.jsonl）末三行依次为 interrupted(reason=daemon shutdown)、run_metrics(duration_s=6373.2、turns=694、Read=318/Bash=329)、error「Exit code: 143」（exit 143 成批=排水屠杀签名）；终态抢救文件 terminal-salvage-code-review-1794326531.txt 记「第六波完成（累计 170/352）」，21 个波次分片 out-*-b01..b21.jsonl 已直写落盘；续跑 code-review-1794412954 于窗口末 15:59Z 启动，其 manifest 的 redispatch_of 字段指回被杀 run。
   - 调查评估：在 code-review 车道夜间全仓审查（scheduled 周期审查）暴露。已核实事实：daemon 进程 08:36:50Z 前启动，09:47Z 主树 merge（提交 e4856d537，fix-legacy-test-failures 分支合入）动 core/ 后持旧，此后约 8 小时常规空闲自愈未获触发（该链含 300 秒空闲边沿与 1800 秒合流闸多级条件，具体为何未触发未逐项核实），至 17:47:29Z 悬空超 max_dangling_seconds（缺省 14400 秒即 4 小时，core/config.py:2760）被强制重启。根因与 2026-11-04#浪费#2、2026-11-05#浪费#1 同族：交付密集日每个动 core/ 的 merge 都让 daemon 变旧，重启必然撞上在飞 run；本窗新形态是 dangling 强制重启（设计上「不再无限等待空闲」），50 秒排水窗对 106 分钟的审查 run 结构性等不到收尾。与存量关系：11-04 窗建议（排水窗对齐 LLM 轮长 ≥300 秒、在飞 run 落 WIP checkpoint 再停、重启触发加在飞闸门）至今未立项，spec/changes/ 活跃区无承接 spec（本窗复核）；缓解面已有两道——波次分片直写落盘使 6 波发现保全、redispatch_of 续跑机制存在，把损失从「全废」收敛为「覆盖延迟」。结论：第四窗复发证实敞口稳定，属系统性缺口非一次性失误；code-review 车道被杀后需等整日调度节拍才续跑，覆盖空窗是该车道特有的加重因子。
   - 建议：重申 11-04 建议并补车道特有项：①agents.run_drain_max_seconds 提到 ≥300 秒；②dangling 强制重启前对在飞 run 落 WIP checkpoint（复用 drain-preserve 机制）再杀；③code-review 车道对被排水硬杀的全仓审查增加即时 redispatch（复用 push-retry-recovery 式周期扫描消费通道），不等下个夜间调度节拍，把剩余覆盖空窗从 22 小时压到分钟级。
 
 - **API停滞第五窗23run合计约174分钟，聚合出口缺口五窗未落地**
+  - 自进化：问题成立 / 建议部分合理 / — 不需要
   - 影响：窗口内 23 个 run 累计 API 停滞（单轮 API 往返超 60 秒的等待段）约 10442 秒 ≈ 174.0 分钟纯墙钟等待，为五窗序列 92→370→175.5→210.1→174.0 的低位持平；零失败零金额损失，损失面全在墙钟，最重单 run planner-plan-redesign-chain-panel-ui（出题车道）停滞 1824.7 秒、最长单轮 352.6 秒。
   - 证据：数据摘要第 6 节 23 行 api-stall 聚合行相加得 10442.0 秒（终态指标行无 total 字段，按聚合行口径转引，与前三窗同口径）；抽 3 个档案终态 run_metrics 原值核对吻合：planner-plan-redesign-chain-panel-ui-1794364608-a1 stalls=9/max=352.6、impl-add-adjudication-auto-exec-1794367334-a1 stalls=8/max=232.7、evo-1794334713 stalls=6/max=236.1；窗口内 19 条 admin 告警中 api_round_stall_escalated（API 停滞升级信号）零出现——23 个停滞 run 全部 success 终态，被升级面 success 豁免放行（有意设计）。
   - 调查评估：在出题/实现/评审/admin/code-fix/evo 六车道普遍暴露。已核实事实：合计按聚合行口径相加、抽样与档案原值吻合；升级信号面无信号是 success 豁免使然（monitor-escalated-signal-negative-controls 修复的有意设计，2026-11-04 窗已核实），非接线缺口。根因未定、多假说并存（网关排队/长上下文/本地网络，2026-11-02-evo-add-api-stall-disposition-closeout 归档留痕口径），不预设。与存量关系：cost-observability 域 api-stall-observability 能力页现行文本仍为「纯读侧不干预」（本窗复核）；「连续两窗合计超 150 分钟即做 model 对照与收敛试验」的触发条件自 11-05 窗起持续成立，本窗两窗合计 210.1+174.0=384.1 分钟，第五窗仍无承接机制（cost-observability 域无聚合出口页、spec/changes/ 无对应 spec）。结论：持续摩擦非失控，观测闭环、聚合出口缺口第五窗，属既有建议落地拖延。
@@ -286,12 +289,14 @@
 
 ### 可改进
 - **daemon_errors升级面无可自愈豁免，WIP重叠重试ERROR误报重启建议**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：merge-back（实现分支合回主树）被 WIP 重叠闸门拦截期间的重复 ERROR（precheck 检查以 25-120 秒重试节奏共 4 条）被 daemon_errors 升级面判为「10 分钟窗口内复现 2 次」成 critical 告警并建议重启 daemon——该事件 7 分钟后被周期消费者自动合回自愈，重启建议零必要；若按建议重启还会硬杀当时唯一在处置的 admin run，属人工面噪音加误导 triage 的双重敞口。
   - 证据：告警 95dd9ded5c5b（daemon_errors critical，指纹 5406fd44，「10 分钟窗口内复现 2 次，建议检查根因并重启 daemon」，04:11:53Z 创建，至今 handled=False 留噪音）；ERROR 源为 worktree_manager「Merge-back blocked by WIP overlap precheck (policy=escalate)」04:11:13Z 与 04:11:38Z 两条（同一次合回的重试、间隔 25 秒）；闭环记录 c836b596ba9e（处置记录，「周期消费者 merge-only 重试成功…自动合回，无需人工处置」，04:18:12Z）；源码 core/admin_monitor.py:5065 _detect_daemon_errors 的豁免面仅有重启冷却窗、同轮孪生指纹合并与跨日同刻判别，无可自愈链路 ERROR 的签名豁免（本窗复核）。
   - 调查评估：在 add-adjudication-auto-exec 实现分支合回主树时暴露。已核实事实：ERROR 原文、告警原文、自动合回闭环记录、源码豁免面逐一度核。根因：daemon_errors 判据是纯形态级（同指纹+频次+间隔），不区分「daemon 自身故障」与「框架自愈链路的过渡态记录」——WIP 重叠 precheck 的 escalate 拦截属 wip-defer-merge-retry（WIP 阻断延迟合回，等待标志+周期自动合回）治理链的设计内中间态，自带重试与周期自动消费者，落 ERROR 行只是留痕。与存量关系：2026-11-06#可改进#1 同族（promotion lint 声明类双失败触发同类 critical 误报），其建议只点名声明类 lint、未覆盖 merge-back precheck 形态；「同 run 重试≠风暴」的判读法已入处置实践（本窗 admin 处置记录 b6e5a9c74081 即按 evidence 归属 spec 并被在飞 run 覆盖待重评），但停留在人工判读层，框架升级面未收紧。结论：判据缺口明确、同族第二例，critical 文案「建议重启 daemon」对该形态系统性误导，适合小 spec 治本。
   - 建议：二选一或并用：①daemon_errors 升级面为「带已知自愈消费者的 ERROR 签名」增加豁免名单（merge-back precheck policy=escalate、promotion lint 类），名单单源配置并注明各自的自愈消费者；②在 ERROR 源头（worktree_manager precheck）把重试窗口内的重复拦截改为同指纹聚合日志（同 run 重试不重复落 ERROR 行），从源头消除复现计数。
 
 - **纯文本轮通胀第五窗扩散到admin/arbiter车道，响应端仍缺席**
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
   - 影响：4 个 run 命中纯文本轮离群维度（轮数>100 且纯文本轮占比>50%，纯文本轮=无工具调用的模型回复轮）：admin 车道 105 轮中 65 轮（61.9%）、arbiter（自主裁决）车道 123 轮中 67 轮（54.5%）、planner-judge 车道 102 轮中 56 轮（54.9%）、planner-plan（出题）车道 244 轮中 135 轮（55.3%）——admin 与 arbiter 车道为首次命中，命中面从 planner 双车道扩散到四车道；复发敞口为每窗多烧一轮演化复核注意力（历史实测曾白跑一轮复核）。
   - 证据：四 run 终态 run_metrics 原值逐字段核对吻合（text_turns 65/67/56/135，model 均为 glm-5.3-flash，admin run admin-add-adjudication-auto-exec-1794370313 时长 931.1 秒）；检测 spec evo-refine-midflight-outlier-dims（离群维度细化）已归档于 spec/archive/2026-11-04-，三项交付均为观测端、无响应端定义；本窗复核 cost-observability 与 agent-runtime 两域均无响应端能力页、spec/changes/ 无承接 spec。
   - 调查评估：命中面跨四车道。已核实事实：占比、轮数与 model 字段按摘要+档案双源核对一致。根因未定（模型输出行为漂移假说，检测 spec 原文口径），token 面不可量化（该批 run 的 input_tokens=0 计量缺失）。与存量关系：planner-plan 车道已四连窗命中（11-04 一 run→11-05 三 run→11-06 两 run→本窗一 run），planner-judge 第二窗，「同车道连续两窗命中即按 model 字段做对照与提示词收敛试验」的触发条件自 11-05 起成立至今五窗，属建议落地拖延非新缺口；本窗新增信息是同一模型扩散到 admin/arbiter 两个处置链车道——二者提示词分属不同模板，扩散形态提示收敛对象可能在共享层（模型行为或公共提示词片段）而非单车道模板。结论：观测闭环后响应端落地时机已过四窗，命中面还在扩大，不应再观察。
