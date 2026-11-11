@@ -19,6 +19,10 @@ from core.worktree_manager.constants import (  # noqa: E402
     DASHBOARD_STATIC_ROOT,
 )
 from core.worktree_manager.mergeback import _unquote_git_path  # noqa: E402
+# C-quote 感知 rename 拆分单源（code-review item 446fb1f82c92）：porcelain 对
+# 含空格路径强制引号包裹（git ≥ 2.25），引号内「 -> 」不参与切分；包 __init__
+# 先 re-export constants 再装载子模块，本导入无装载环。
+from core.worktree_manager.stash_guard import _split_rename_sides  # noqa: E402
 from core.proc_utils import guard_killpg  # noqa: E402
 
 
@@ -29,6 +33,14 @@ def _collect_unmerged_paths(status_text: str) -> list:
     ``old -> new`` 双胞胎拆分（两侧路径都计入）。``_resolve_build_artifact_conflicts``
     的产物自愈判定与 ``_collect_conflict_paths`` 的失败分类共用本函数，
     口径变更只动这一处，避免自愈判定与冲突分类漂移。
+
+    路径段统一经 ``_unquote_git_path`` 反转义 C 引号形（code-review item
+    446fb1f82c92）：porcelain 对含空格/非 ASCII 路径强制引号包裹
+    （quotePath=false 只去非 ASCII 八进制转义、不去引号形，git ≥ 2.25 起
+    含空格路径必带引号），不反转义则 paths_in 产物判定、checkout/git rm
+    pathspec、冲突分类证据三条消费链全部失配。rename 拆分 C-quote 感知
+    （stash_guard 单源 ``_split_rename_sides``），引号内自含「 -> 」不被
+    误切，无引号载荷切分结果与旧 ``split(" -> ")`` 逐字节一致。
     """
     paths: list = []
     for line in status_text.splitlines():
@@ -38,9 +50,9 @@ def _collect_unmerged_paths(status_text: str) -> list:
         path = line[3:].strip()
         # [fenix-ignore:5df180a3c6f5] 歧义成立但触发面趋零（文件名含 " -> " 且恰处 unmerged rename 条目且恰走产物自愈）且失败走语义冲突降级道非静默腐蚀；切 -z 须同改本文件 3 处 git 采集命令并把本唯一口径的输入契约改为 NUL 形态（调用方误喂行形态会静默采空致自愈整体失效），且与仓内 stash_guard/archive_commit/knowledge_backfill/spec_review 等其余行形态 " -> " 解析点割裂成格式孤岛，改动面与回归风险超出 info 级病态输入影响面
         if " -> " in path:
-            paths.extend(p.strip() for p in path.split(" -> "))
+            paths.extend(_unquote_git_path(p) for p in _split_rename_sides(path))
         else:
-            paths.append(path)
+            paths.append(_unquote_git_path(path))
     return [p for p in paths if p]
 
 
@@ -593,7 +605,13 @@ class G5DistConflictsMixin:
                     f"manually per the .fenix/verify.yaml prepare contract",
                 )
                 return
-            changed = [l.strip() for l in diff.stdout.splitlines() if l.strip()]
+            # 不 strip（code-review item bdcf16283b42，口径对齐
+            # _list_unmerged_files 的 4d158f275b1c）：splitlines 已去换行，
+            # 原行原样保留——diff --name-only（quotePath=false）对含首尾
+            # 空格的路径原样输出不加引号，strip 会剥掉路径首尾空格致与
+            # staged_paths 及磁盘真实路径失配（src_touched 漏判 / foreign
+            # 误判跳过 amend）。
+            changed = [l for l in diff.stdout.splitlines() if l]
             # 首个子句以 DASHBOARD_STATIC_ROOT 限定重建作用域（Non-Goals：不改
             # 重建触发面）；产物判定走实例判定器（evo-merge-back-wip-artifact-scope
             # D3，与预演闸/自愈同一口径）。
@@ -689,7 +707,12 @@ class G5DistConflictsMixin:
             # 哈希新产物名不在 changed，靠 is_artifact 放行）——越界即 unstage、
             # 跳过 amend，仅保留工作区重建，合并提交内容不偏离「分支并入」语义。
             staged_paths = [
-                ln[3:].split(" -> ", 1)[-1]
+                # porcelain 行形态路径反转义（code-review item 446fb1f82c92）：
+                # 含空格产物路径恒带引号包裹，不反转义则与 changed/判定器比对
+                # 永不命中、真实产物误判 foreign 跳过 amend；rename 取新侧且
+                # C-quote 感知（_split_rename_sides 单源），引号内「 -> 」不
+                # 误切，无引号载荷行为不变。
+                _unquote_git_path(_split_rename_sides(ln[3:])[-1])
                 for ln in staged.stdout.splitlines()
                 # porcelain 首位（index 列）非空格＝该条目确已暂存（item
                 # 2e8df62a8f9a）：" M"/" D" 等仅工作树态条目并非 staged；
