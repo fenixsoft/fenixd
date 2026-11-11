@@ -2636,7 +2636,46 @@ class PMEngine:
         commit_msg = f"[fenix] {spec_name}: sync task progress from run record"
         ok, err = self._git_commit([str(tasks_path)], commit_msg)
         if not ok:
-            self.logger.warning("pm_engine", f"任务回写 commit 失败 '{spec_name}': {err}")
+            # 写前快照回滚（code-review item a327a7aded71）：commit 失败时仅记
+            # WARNING 会让已 os.replace 落盘的勾选修改滞留为主树已跟踪脏文件，
+            # 而入口 _worktree_is_dirty 注释承诺的「留待下个调度周期重试」永不
+            # 成立——脏正是本方法自造，主树回写链路无人提交或还原它，全树级
+            # 脏判据会让回写通道对全部 spec 静默停摆。原子写回写前快照（上方
+            # mkstemp+replace 同款形态）使工作树恢复干净，脏检查可按注释承诺
+            # 在下个调度周期重试。
+            rolled_back = False
+            try:
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=f".tasks.{spec_name}.",
+                    suffix=".tmp",
+                    dir=str(tasks_path.parent),
+                )
+                tmp_path = Path(tmp_name)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(text)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(str(tmp_path), str(tasks_path))
+                    rolled_back = True
+                finally:
+                    if tmp_path.exists():
+                        try:
+                            tmp_path.unlink()
+                        except OSError:
+                            pass
+            except OSError as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"任务回写 commit 失败后回滚亦失败 '{spec_name}': {e}"
+                    "——工作树留脏，需人工还原 tasks.md 后回写才能重试",
+                )
+            if rolled_back:
+                self.logger.warning(
+                    "pm_engine",
+                    f"任务回写 commit 失败 '{spec_name}': {err}"
+                    "（已回滚 tasks.md 写前原文，留待下个调度周期重试）",
+                )
             return
         # 勾选数按本轮实际翻转行数上报（code-review item c7092742360e，对齐 flat
         # 兜底分支 c9632f1ba5fb 的实际写入数 bound 口径）：done_ids 分支取
@@ -3725,17 +3764,30 @@ class PMEngine:
                 f"{error_base} [push_attempts={attempts}] " f"[push_failed — 已停止自动重试]"
             )
             # 超限分支文本无退避标记 → 退避截止字段同语义清空
-            self.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": final_error,
-                    # 字段化双活（code-review item bbba88d8e6af）：重试计数
-                    # 同步落专用字段，「清除错误」整段清 error 文本不再归零；
-                    # 文本标记保留（展示语义 + 存量读侧回退）。
-                    PUSH_ATTEMPTS_FIELD: attempts,
-                    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
-                },
-            )
+            # 退避记账写盘防穿透（code-review item 2596d7e1fe6b，对齐
+            # _legacy_degrade_gate「STATE 写入失败……（告警照发）」口径）：
+            # STATE 原子写遇瞬时 IO 故障抛 OSError 等不得沿 _push_lock 临界区
+            # 穿透 approve_push 一路炸到 _on_spec_done 调用方（中断 done 收口
+            # 链上 _auto_approve 之后的 legacy fix-* 父 SPEC 重验块）——降级
+            # WARNING 留痕，记账丢失按文本标记口径容忍，push_failed 告警照发。
+            try:
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": final_error,
+                        # 字段化双活（code-review item bbba88d8e6af）：重试计数
+                        # 同步落专用字段，「清除错误」整段清 error 文本不再归零；
+                        # 文本标记保留（展示语义 + 存量读侧回退）。
+                        PUSH_ATTEMPTS_FIELD: attempts,
+                        PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: None,
+                    },
+                )
+            except Exception as e:  # noqa: BLE001 — 记账失败非阻塞，告警照发
+                self.logger.warning(
+                    "pm_engine",
+                    f"push 超限记账 STATE 写入失败 '{spec_name}': {e}"
+                    "（push_failed 告警照发）",
+                )
             self.logger.error(
                 "pm_engine",
                 f"Push retries exhausted for '{spec_name}' ({attempts}/{max_retries})",
@@ -3748,18 +3800,28 @@ class PMEngine:
                 f"{error_base} [push_attempts={attempts}] "
                 f"[push_backoff next_retry_at={next_retry}]"
             )
-            self.state_machine.update_spec(
-                spec_name,
-                {
-                    "error": final_error,
-                    # 字段化双活（code-review item bbba88d8e6af）：退避截止
-                    # 与重试计数同步落专用字段，「清除错误」整段清 error 文本
-                    # 不再连根抹掉 → 退避期/计数归零；文本标记保留（展示
-                    # 语义 + 存量读侧回退）。
-                    PUSH_ATTEMPTS_FIELD: attempts,
-                    PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: next_retry,
-                },
-            )
+            # 退避记账写盘防穿透（code-review item 2596d7e1fe6b，与上方超限
+            # 分支及 _legacy_degrade_gate 同口径）：写盘异常不得穿出 _push_lock
+            # 临界区中断 approve_push → _on_spec_done 收口链，降级 WARNING。
+            try:
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": final_error,
+                        # 字段化双活（code-review item bbba88d8e6af）：退避截止
+                        # 与重试计数同步落专用字段，「清除错误」整段清 error 文本
+                        # 不再连根抹掉 → 退避期/计数归零；文本标记保留（展示
+                        # 语义 + 存量读侧回退）。
+                        PUSH_ATTEMPTS_FIELD: attempts,
+                        PUSH_BACKOFF_NEXT_RETRY_AT_FIELD: next_retry,
+                    },
+                )
+            except Exception as e:  # noqa: BLE001 — 记账失败非阻塞，告警照发
+                self.logger.warning(
+                    "pm_engine",
+                    f"push 退避记账 STATE 写入失败 '{spec_name}': {e}"
+                    "（本轮 push 失败告警照发）",
+                )
             self.logger.warning(
                 "pm_engine",
                 f"Push failed for '{spec_name}' ({ref}): {error_msg}; "
