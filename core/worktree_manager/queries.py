@@ -216,7 +216,17 @@ class G8QueryMixin:
                 if entry.split(" ", 1)[0].strip() in ("100644", "100755", "040000"):
                     return True
             return False
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            # 超时降级同样留痕（code-review item ee855eef9341，与下方泛化
+            # except 及文件内「异常降级必 WARNING」惯例对齐）：本地 ls-tree
+            # 超时（timeout=30s）非常态，git 子进程反复挂起属系统性形态——
+            # 交付守卫会全员确定性缺件打回且无线索可循，不落痕时无从区分
+            # 「真缺件」与「git 超时」。fail-closed 语义不变，仅补留痕。
+            self.logger.warning(
+                "worktree_manager",
+                f"file_exists_on_branch('{branch}', '{rel_path}') git 子进程"
+                f"超时({e.timeout}s)降级 False",
+            )
             return False
         except Exception as e:
             # 意外异常降级留痕（code-review item 7d41064eae86，与文件内
