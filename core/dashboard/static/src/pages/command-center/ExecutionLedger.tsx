@@ -214,9 +214,9 @@ const columns: ColumnsType<CommandCenterLedgerRow> = [
   { title: '成本', dataIndex: 'cost', key: 'cost', render: (v) => fmtUsd(v) },
   { title: '开始时间', dataIndex: 'started_at', key: 'started_at', render: (v) => fmtShortTs(v) },
   // trigger 为既有调度记录数据缺口（后端口径允许 null 不硬造）；字符串
-  // 原样透出（fmtMetric 数值口径对字符串恒返「—」，后端补真实 trigger
-  // 值时会被整体吃成占位符——code-review 39e3bca2d260）
-  { title: 'trigger', dataIndex: 'trigger', key: 'trigger', render: (v) => v ?? '—' },
+  // 原样透出、空串同归「—」占位符（fmtMetric 数值口径对字符串恒返「—」，
+  // 后端补真实 trigger 值时会被整体吃成占位符——code-review 39e3bca2d260）
+  { title: 'trigger', dataIndex: 'trigger', key: 'trigger', render: (v) => v || '—' },
 ];
 
 export default function ExecutionLedger({

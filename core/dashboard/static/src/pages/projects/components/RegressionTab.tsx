@@ -306,9 +306,25 @@ interface CaseRow {
 /** 合并 failure/error 用例与长耗时用例为统一结果表（带分类列）。 */
 function buildRows(snapshot: RegressionResult): Array<CaseRow> {
   const rows: Array<CaseRow> = [];
+  // 内容派生行 key（code-review item edc5eef19237）：跨快照刷新行身份稳定，
+  // 头部增删不再使整表行 key 平移触发行重挂载；快照内同名同位用例唯一性
+  // 由 dedup 逻辑隐含假设（failures 数组自身仍可能出现完全重复条目），
+  // 冲突时回退下标后缀保证 key 唯一
+  const usedKeys = new Set<string>();
+  const rowKey = (kind: string, name: string, file: string, line: number): string => {
+    const base = `${kind}-${name}-${file}-${line}`;
+    let key = base;
+    let n = rows.length;
+    while (usedKeys.has(key)) {
+      key = `${base}-${n}`;
+      n += 1;
+    }
+    usedKeys.add(key);
+    return key;
+  };
   for (const f of snapshot.failures ?? []) {
     rows.push({
-      key: `f-${rows.length}`,
+      key: rowKey(f.kind, f.name, f.file, f.line),
       name: f.name,
       file: f.file,
       line: f.line,
@@ -322,9 +338,10 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
   // 把整段原始命令输出冒充 file 渲染进该列，误导）；output/reason 落概览卡
   // 的超时详情区（见下方渲染）。
   if (snapshot.status === 'timeout') {
+    const timeoutName = '（本次回归整体超时）';
     rows.push({
-      key: `t-${rows.length}`,
-      name: '（本次回归整体超时）',
+      key: rowKey('timeout', timeoutName, '', 0),
+      name: timeoutName,
       file: '',
       line: 0,
       // duration 缺失兜底 null（非 0）：耗时列已有判空 '—' 分支，0 会被
@@ -346,7 +363,7 @@ function buildRows(snapshot: RegressionResult): Array<CaseRow> {
     });
     if (dup) continue;
     rows.push({
-      key: `l-${rows.length}`,
+      key: rowKey('long', lt.name, lt.file, lt.line),
       name: lt.name,
       file: lt.file,
       line: lt.line,
@@ -551,14 +568,37 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
   // 已完成结果并存且概览三键被禁至超时。以 started_at 相对受理时刻基线是否
   // 推进判定本次回归已实际启动（任务 5.6 判据同口径；两端同源服务端时钟，
   // 字符串比对即可），推进即退出过渡态。
-  const baselineStartedAtRef = useRef<string | null>(null);
+  // 基线未就绪哨兵（code-review item 3319df42b46c）：undefined 表示受理时刻
+  // 首载快照尚未落定（snapshotRef.current 为 null）、基线待补记——首个落定
+  // 快照以其 started_at 补记基线并跳过本帧判定，避免上一项目/上一轮旧快照的
+  // 非空 started_at 相对 null 基线被误判为「已推进」提前清除过渡态；null
+  // 表示基线已就绪且受理时刻快照无 started_at（如 never_run），判定口径不变。
+  const baselineStartedAtRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     if (!awaitingStart || running) return;
+    if (baselineStartedAtRef.current === undefined) {
+      // 基线未就绪：快照未落定则继续等待，落定即以其 started_at 补记基线
+      if (snapshot === null) return;
+      baselineStartedAtRef.current = snapshot.started_at ?? null;
+      return;
+    }
     const startedAt = snapshot?.started_at ?? null;
     if (startedAt !== null && startedAt !== baselineStartedAtRef.current) {
       setAwaitingStart(false);
     }
   }, [awaitingStart, running, snapshot]);
+
+  // 受理时刻 started_at 基线记录（handleTrigger/handleTriggerIssues 共用，
+  // 3319df42b46c）：快照已落定 → 基线直接取受理时刻快照（e8b493096141 同源
+  // 口径，正常窗口行为不变）；首载未落定（snapshotRef.current 为 null）→
+  // 置 undefined 哨兵，由上方推进 effect 以首个落定快照补记基线
+  const recordBaselineStartedAt = () => {
+    if (snapshotRef.current === null) {
+      baselineStartedAtRef.current = undefined;
+      return;
+    }
+    baselineStartedAtRef.current = snapshotRef.current.started_at ?? null;
+  };
 
   // 等待启动超时兜底：daemon 长时间未消费信号（如中途退出）不再无限等待。
   // 超时退出同时补一次轻量提示（code-review item 1087d6a7eb1a）：受理成功
@@ -670,8 +710,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       // started_at 推进清除 effect 判定本次回归已启动。经 snapshotRef 取
       // 最新快照（e8b493096141）：闭包捕获的 snapshot 在 POST 往返期间可能
       // 已被 loadResult 更新，基线须与 state 同源，否则推进 effect 会把旧
-      // 基线判为「已推进」、本次回归尚未启动即清除过渡态
-      baselineStartedAtRef.current = snapshotRef.current?.started_at ?? null;
+      // 基线判为「已推进」、本次回归尚未启动即清除过渡态。首载未落定时
+      // 基线置未就绪哨兵（3319df42b46c），旧快照非空 started_at 不再被
+      // 误判为「已启动」提前清过渡态
+      recordBaselineStartedAt();
       setAwaitingStart(true);
       // 触发成功立即刷新：新一轮运行中态（running=true）由服务端 marker 提供，
       // 轮询接管（task 5.6）。经 ref 调最新闭包（code-review item 7a7ce4f87987）：
@@ -706,6 +748,10 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
     fixPollAbortedRef.current = false; // 本轮请求开启新哨（上一轮取消状态作废）
     try {
       const res = await fixRegression(project);
+      // POST 往返期间切换项目即直接返回（f538e7f059ec，对齐 handleTrigger/
+      // handleTriggerIssues 的受理守卫口径）：回链时间戳缺失提示与后续轮询
+      // 结果提示不得落在切换后项目的视图上（finally 仍复位 fixPending）
+      if (projectRef.current !== project) return;
       const wantedAt = res.requested_at;
       // 防御守卫（code-review item c789aa093ba5，同 QualityTab
       // handleTriggerFixRun 口径）：回链时间戳缺失时 isTriggerResultForRequest
@@ -797,10 +843,11 @@ export default function RegressionTab({ project, active }: RegressionTabProps) {
       if (projectRef.current !== project) return;
       message.success('已受理，daemon 将只重跑失败/错误/长耗时的用例（无法定向时自动回退全量）');
       // 受理成功 → 等待启动过渡态（同 handleTrigger，running 置位后由真实
-      // 进度接管；受理时刻快照基线同 handleTrigger）；经 ref 调最新闭包
-      // （7a7ce4f87987，切项目防旧闭包后发先至）；基线同样经 snapshotRef
-      // 取最新快照（e8b493096141，保证与 state 同源）
-      baselineStartedAtRef.current = snapshotRef.current?.started_at ?? null;
+      // 进度接管；受理时刻快照基线同 handleTrigger，含首载未落定哨兵
+      // 3319df42b46c）；经 ref 调最新闭包（7a7ce4f87987，切项目防旧闭包
+      // 后发先至）；基线同样经 snapshotRef 取最新快照（e8b493096141，
+      // 保证与 state 同源）
+      recordBaselineStartedAt();
       setAwaitingStart(true);
       void loadResultRef.current();
     } catch (e) {

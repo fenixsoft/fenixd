@@ -877,10 +877,13 @@ const SuggestedImprovementsPanel = forwardRef<
 
   const menuItems = (item: EvolutionItem): MenuProps['items'] => {
     const dis = getActionDisabled(item.status);
+    // 批量在飞时整组菜单项一并禁用（code-review item 10ff05c46ff6）：单条
+    // 决策不得与批量串行写并发，否则逐条完成后的 loadItems 会自增请求序号，
+    // 把批量收尾的刷新当过期丢弃，列表短暂滞后于批量结果汇报
     return ACTIONS.map((a) => ({
       key: a.key,
       label: a.label,
-      disabled: dis[a.key],
+      disabled: dis[a.key] || batchRunning,
       danger: 'danger' in a ? a.danger : undefined,
       onClick: () => {
         if (a.key === 'view') openView(item);
@@ -1410,17 +1413,19 @@ const SuggestedImprovementsPanel = forwardRef<
         footer={
           /* antd footer 缺省右对齐：操作区落在弹窗右下角。
              拒绝 = 描边红字（danger），删除 = 实心红底白字（danger + primary），
-             两者破坏性层级不同，须一眼可分 */
+             两者破坏性层级不同，须一眼可分。
+             batchRunning 并入 disabled（code-review item 10ff05c46ff6）：批量
+             串行在飞时单条决策不得并发写，与操作列菜单同口径 */
           <Space>
             <Button
-              disabled={viewActionDisabled.accept}
+              disabled={viewActionDisabled.accept || batchRunning}
               onClick={() => viewItem && handleAccept(viewItem, closeView)}
             >
               同意
             </Button>
             <Button
               danger
-              disabled={viewActionDisabled.reject}
+              disabled={viewActionDisabled.reject || batchRunning}
               onClick={() => viewItem && handleReject(viewItem, closeView)}
             >
               拒绝
@@ -1428,7 +1433,7 @@ const SuggestedImprovementsPanel = forwardRef<
             <Button
               type="primary"
               danger
-              disabled={viewActionDisabled.delete}
+              disabled={viewActionDisabled.delete || batchRunning}
               onClick={() => viewItem && handleDelete(viewItem, closeView)}
             >
               删除
