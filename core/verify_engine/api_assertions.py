@@ -728,7 +728,20 @@ class ApiAssertionRunner:
         if isinstance(shown_actual, str):
             shown_actual = shown_actual[:200]
         elif isinstance(shown_actual, (dict, list)):
-            shown_actual = json.dumps(shown_actual, ensure_ascii=False)[:200]
+            # 不可序列化容器（mock/手写 capture 携带 set/datetime 等对象）回落
+            # str()，回落形态与上方 _json_path_match_text 单源同款（code-review
+            # item 0274976fd784）：此处 TypeError 穿出会被 run() 兜底替换成笼统
+            # 「断言执行异常」，已算出的 pass 裁决与定向 error 一并丢失——证据
+            # 侧不得比匹配侧少这层防御
+            try:
+                shown_actual = json.dumps(shown_actual, ensure_ascii=False)
+            except (TypeError, ValueError):
+                shown_actual = str(shown_actual)
+            shown_actual = shown_actual[:200]
+        elif not isinstance(shown_actual, (int, float, bool)) and shown_actual is not None:
+            # 其余非 JSON 标量类型先 str() 归一，保证 result["actual"] 恒为
+            # 可序列化形态（下游引擎证据序列化不再二次失败）
+            shown_actual = str(shown_actual)[:200]
         result = {
             "type": "json_path",
             "path": path,
