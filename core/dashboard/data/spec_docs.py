@@ -4,7 +4,6 @@ refactor-dashboard-data-module D3 分组：本模块承载 SPEC 文档/场景职
 resolve_spec_dir / 文档白名单 / 场景计数与生成进度。
 """
 
-import functools
 import json
 import re
 import threading
@@ -85,20 +84,6 @@ def _archive_dir_entries(archive_root: Path) -> list:
     return entries
 
 
-@functools.lru_cache(maxsize=4096)
-def _archive_name_patterns(spec: str):
-    """spec 名 → 归档目录匹配正则对（编译缓存）。
-
-    resolve_spec_dir 每次调用重复 re.compile 两个按名构造的正则（每请求
-    ~800 次编译）；语义与原内联构造完全一致，仅提升编译产物复用。
-    """
-    escaped = re.escape(spec)
-    return (
-        re.compile(r"^\d{4}-\d{2}-\d{2}-" + escaped + r"(-\d+)*$"),
-        re.compile(r"^\d{4}-\d{2}-\d{2}-" + escaped + r"$"),
-    )
-
-
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
 
 
@@ -108,14 +93,13 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     1. spec 不匹配 ``_SPEC_NAME_RE`` → 返回 None（kebab-case 白名单天然排除
        ``..``/``/``，此处校验同时强化 parse_tasks 的健壮性）
     2. ``spec/changes/<spec>`` 为目录 → 返回活跃目录（活跃优先，既有行为不变）
-    3. 否则遍历 ``spec/archive/``，目录名匹配日期前缀 + 可选冲突数字后缀
-       （``^\\d{4}-\\d{2}-\\d{2}-{re.escape(spec)}(-\\d+)*$``；``re.escape``
-       防 spec 名含 ``-`` 引发歧义），命中多个时**全等目录名（剥日期前缀
-       后与 spec 全等）优先**（对齐 evolution.resolve_accepted_spec_dir：
-       合法 spec 名允许数字结尾，可选数字后缀会把独立 spec——如
-       ``evo-foo`` 与 ``evo-foo-2`` 并存——的归档目录一并命中，sorted 兜底
-       因后缀字典序更大而把后者误归属给前者）；同层内取 ``sorted()[-1]``
-       （字典序最大 = 日期最新/后缀最大）
+    3. 否则查 ``spec/archive/``：目录名 → 基名候选分组单源
+       _archive_candidate_pairs（日期前缀剥取 + 尾部数字后缀剥除 + 软删除
+       墓碑按全等名登记不进 exact 集；与原按名正则
+       ``^\\d{4}-\\d{2}-\\d{2}-{re.escape(spec)}(-\\d+)*$`` 同一命中集），
+       spec 名下取用走 _latest_candidate：**全等目录名（剥日期前缀后与
+       spec 全等）优先**，同层 ``sorted()[-1]`` 兜底（字典序最大 = 日期
+       最新/后缀最大）
     4. 无命中 → None
 
     与 evolution.resolve_accepted_spec_dir 的取舍差异（code-review item
@@ -128,7 +112,9 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     到日期最新的全等归档目录，evolution 解析到墓碑。理由：本模块服务
     文档读取回退，日期全等目录是该 spec 最后一次正规归档、文档最完整；
     evolution 以条目 spec_name 为权威做知识溯源，软删除终态墓碑即其权威
-    位置。两处只改其一会造成读取漂移，维护时须同步评估。
+    位置。该墓碑取舍已随解析/取用规则单源进 _archive_candidate_pairs /
+    _latest_candidate，不再有「两处只改其一」的读取漂移面
+    （code-review item 60b5d65f546d）。
     """
     if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
         return None
@@ -138,29 +124,26 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     archive_root = Path(project_root) / "spec" / "archive"
     if not archive_root.is_dir():
         return None
-    pattern, exact_pattern = _archive_name_patterns(spec)
     # 归档根清单走签名失效 memo（模块头注释）：签名未变零 iterdir，不再
     # 每 spec 全量扫描归档根。遍历失败（IO/权限等）等价无归档命中，与
     # _read_spec_scenarios 兜底口径一致（_archive_dir_entries 内处理）。
-    matches = [d for d in _archive_dir_entries(archive_root) if pattern.match(d.name)]
+    # 候选分组与 exact 判定单源 _archive_candidate_pairs：spec 名下的
+    # 日期/后缀候选即原按名正则命中的同一目录集合。
+    pairs = _archive_candidate_pairs(_archive_dir_entries(archive_root)).get(spec, [])
     # 软删除墓碑形态（soft_delete_spec 的 ``<spec>-<Unix秒>`` 命名同样落
     # archive/）：目录名与 spec 名**全等**即命中——知识溯源链接以归档目录名
     # 剥日期前缀引用软删除 SPEC（无日期可剥，名字原样传入）。spec 已过
     # kebab-case 白名单（无 ``/``/``..``），路径拼接安全；全等比较无前缀
-    # 歧义（``evo-foo`` 不会误命中 ``evo-foo-<ts>``）。与日期 pattern 命中
-    # 合并后仍走下方 exact 优先 + sorted 兜底。
+    # 歧义（``evo-foo`` 不会误命中 ``evo-foo-<ts>``）。按路径直构探测而非
+    # 只依赖助手名册：spec 名自带日期前缀的极端形态会被日期分支吞掉登记，
+    # 直构通道不漏；与名册重复登记无害（取用 sorted 取最大）。
     tombstone = archive_root / spec
-    if tombstone.is_dir():
-        matches.append(tombstone)
-    if not matches:
+    extra = [tombstone] if tombstone.is_dir() else []
+    if not pairs and not extra:
         return None
-    # 全等目录名（剥日期前缀后与 spec 全等）优先（对齐
-    # evolution.resolve_accepted_spec_dir 口径）：合法 spec 名允许数字结尾，
-    # 可选数字后缀 (-\d+)* 会把独立 spec（如 evo-foo 与 evo-foo-2 并存）的
-    # 归档目录一并命中，sorted 兜底因后缀字典序更大而误归属到错误 spec；
-    # 无全等命中时才回退到含数字后缀的归一化候选层。
-    exact = [d for d in matches if exact_pattern.match(d.name)]
-    return sorted(exact or matches)[-1]
+    # exact 优先 + sorted 兜底的取用单源 _latest_candidate（全等目录名优先
+    # 的归属歧义理由见其 docstring）
+    return _latest_candidate(pairs, extra)
 
 
 # ── SPEC 中文标题读取（add-spec-chinese-title D2/D3） ──────────────
@@ -239,36 +222,27 @@ def read_spec_title(project_root, spec_name, archive_dirs: dict | None = None) -
 
 
 # 归档目录名解析（add-spec-chinese-title D3）：日期前缀剥取与尾部「-<数字>」
-# 冲突后缀剥除（`(-\d+)*$` 匹配语义的逆操作），与 _archive_name_patterns 同族。
+# 冲突后缀剥除（原 resolve_spec_dir 按名正则 `(-\d+)*$` 匹配语义的逆操作；
+# 该双写已由下方 _archive_candidate_pairs 单源收编——item 60b5d65f546d）。
 _ARCHIVE_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-(.+)$")
 _TRAILING_NUM_GROUP_RE = re.compile(r"^(.+)-\d+$")
 
 
-def archive_dir_map(project_root) -> dict:
-    """归档根单次扫描建立 spec 名 → 归档目录映射（add-spec-chinese-title D3）。
+def _archive_candidate_pairs(entries) -> dict:
+    """归档目录项清单 → 基名 → [(剥日期前缀名, 是否 exact 候选, 目录), ...]。
 
-    /api/specs 索引路径的归档 title 读取下发表：SummaryIndex 每轮调用一次
-    本函数（目录清单走 _archive_dir_entries 签名+TTL memo，非全量 iterdir），
-    消费侧 read_spec_title 按 spec 名 O(1) 查表——归档条目 title 读取
-    MUST NOT per-spec 逐个归档解析。
-
-    语义对齐 resolve_spec_dir：剥日期前缀后与 spec 名全等的目录为 exact
-    候选（优先取用）；冲突后缀目录（``<date>-<spec>-<n>`` 形态）剥后缀登记到
-    基名下作后缀候选（独立 spec 并存——如 ``evo-foo`` 与 ``evo-foo-2``——的
-    歧义由 exact 优先还原）；同层多命中取 ``sorted()[-1]``（字典序最大 =
-    日期最新/后缀最大）；软删除墓碑目录（无日期前缀、名字即 spec 名）按
-    全等名登记且不进 exact 集（对齐 resolve_spec_dir 中墓碑不参与 exact
-    优先、仅兜底取胜出的取舍）。映射仅服务 title 读取的候选目录解析，非一般
-    目录寻址入口。
+    「日期前缀剥取 + 尾部数字后缀剥除 + 软删除墓碑全等登记不进 exact 集」
+    的归档目录解析**单源**（resolve_spec_dir / archive_dir_map 共同消费，
+    消除两处并行实现——item 60b5d65f546d：双写只改其一会造成读取漂移）。
+    一个目录除全等名外还登记到全部尾部数字后缀剥除基名下（evo-foo-2-3 →
+    evo-foo-2 → evo-foo），登记项是否 exact 由「剥前缀名 == 登记基名」判定
+    （exact 仅保留最内层全等形态）；软删除墓碑（无日期前缀、名字过
+    _SPEC_NAME_RE）按全等名登记且不进 exact 集。纯函数：只读 entries、
+    不触碰缓存与文件系统，返回值交由 _latest_candidate 做 exact 优先 +
+    sorted 兜底取用。
     """
-    archive_root = Path(project_root) / "spec" / "archive"
-    if not archive_root.is_dir():
-        return {}
-    # 基名 → [(该目录剥日期前缀名, 是否 exact 候选, 目录), ...]：一个目录除
-    # 全等名外还登记到全部尾部数字后缀剥除基名下（evo-foo-2-3 → evo-foo-2 →
-    # evo-foo），登记项是否 exact 由「剥前缀名 == 登记基名」判定。
     candidates: dict = {}
-    for d in _archive_dir_entries(archive_root):
+    for d in entries:
         m = _ARCHIVE_DATE_PREFIX_RE.match(d.name)
         if m:
             stripped = m.group(1)
@@ -284,10 +258,49 @@ def archive_dir_map(project_root) -> dict:
         elif _SPEC_NAME_RE.match(d.name):
             # 软删除墓碑（无日期前缀）：按全等名登记，不进 exact 集
             candidates.setdefault(d.name, []).append((d.name, False, d))
+    return candidates
+
+
+def _latest_candidate(pairs, extra=()) -> Path:
+    """归档候选取用单源：exact（日期全等）优先，同层 ``sorted()[-1]`` 兜底。
+
+    全等目录名（剥日期前缀后与 spec 全等）优先（对齐
+    evolution.resolve_accepted_spec_dir 口径）：合法 spec 名允许数字结尾，
+    可选数字后缀 (-\d+)* 会把独立 spec（如 evo-foo 与 evo-foo-2 并存）的
+    归档目录一并命中，sorted 兜底因后缀字典序更大而误归属到错误 spec；
+    无全等命中时才回退到含数字后缀的归一化候选层。sorted 取字典序最大 =
+    日期最新/后缀最大。extra 为 resolve_spec_dir 按路径直构的软删除墓碑
+    补充候选（可能与 pairs 名册重复，重复元不影响 sorted 最大值）。
+    """
+    exact = [d for _, is_exact, d in pairs if is_exact]
+    return sorted(exact or [d for _, _, d in pairs] + list(extra))[-1]
+
+
+def archive_dir_map(project_root) -> dict:
+    """归档根单次扫描建立 spec 名 → 归档目录映射（add-spec-chinese-title D3）。
+
+    /api/specs 索引路径的归档 title 读取下发表：SummaryIndex 每轮调用一次
+    本函数（目录清单走 _archive_dir_entries 签名+TTL memo，非全量 iterdir），
+    消费侧 read_spec_title 按 spec 名 O(1) 查表——归档条目 title 读取
+    MUST NOT per-spec 逐个归档解析。
+
+    解析语义与 resolve_spec_dir 同源单策略：分组走 _archive_candidate_pairs
+    （剥日期前缀后与 spec 名全等为 exact 候选；冲突后缀目录
+    （``<date>-<spec>-<n>`` 形态）剥后缀登记到基名下作后缀候选；软删除墓碑
+    目录（无日期前缀、名字即 spec 名）按全等名登记且不进 exact 集——对齐
+    墓碑不参与 exact 优先、仅兜底取胜出的取舍），取用走 _latest_candidate
+    （exact 优先 + sorted 兜底，字典序最大 = 日期最新/后缀最大；独立 spec
+    并存——如 ``evo-foo`` 与 ``evo-foo-2``——的歧义由 exact 优先还原）。
+    单源化后不再有「两处只改其一」的读取漂移面（item 60b5d65f546d）。映射
+    仅服务 title 读取的候选目录解析，非一般目录寻址入口。
+    """
+    archive_root = Path(project_root) / "spec" / "archive"
+    if not archive_root.is_dir():
+        return {}
+    candidates = _archive_candidate_pairs(_archive_dir_entries(archive_root))
     out: dict = {}
     for name, pairs in candidates.items():
-        exact = [d for _, ex, d in pairs if ex]
-        out[name] = sorted(exact or [d for _, _, d in pairs])[-1]
+        out[name] = _latest_candidate(pairs)
     return out
 
 

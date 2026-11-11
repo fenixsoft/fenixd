@@ -56,7 +56,8 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
     按该集合过滤——空列表返回空结果而非回退 open（code-review item
     6eec934d7fc9：路由把 ``?status=,,`` 解析为 [] 时不应意外返回全部 open）。
     脏形态容错（20316258dd45）：statuses 本身不可迭代 → 回退缺省视图；含非
-    str 元素 → 剔除相应元素（非 str 元素本就不参与命中），均不抛异常。
+    str 元素 → 剔除相应元素（非 str 元素本就不参与命中），均不抛异常。裸
+    str 同为可迭代标量 → 同口径回退缺省视图，不按单字符拆分（51c24183bb21）。
     sort_by/sort_order: server-side 排序（2026-09-24 台账分页配套）——
     ``severity``|``status`` × ``asc``|``desc``；白名单外值回退默认排序
     （severity 升序，即 sort_by/sort_order 均缺省的历史行为）。同键条目沿用
@@ -75,10 +76,18 @@ def read_code_review_items(project_root, statuses=None, sort_by=None, sort_order
         # 过滤读取键 str() 归一后的形态，剔除不改变过滤结果）；statuses 本身不可迭代
         # 则回退缺省视图 {"open"}——与 sort_by/sort_order 脏形态回退缺省行为
         # 同口径。空列表语义不变：仍严格按空集过滤返回空结果（6eec934d7fc9）。
-        try:
-            wanted = {s for s in statuses if isinstance(s, str)}
-        except TypeError:
+        if isinstance(statuses, str):
+            # str 排除（code-review item 51c24183bb21）：str 是可迭代标量，
+            # 可迭代且可哈希，set 推导会按单字符拆分（如 "open" →
+            # {'o','p','e','n'}），与任何真实 status 都不命中 → 静默返回空
+            # 结果而非回退缺省视图。与不可迭代标量同口径回退缺省视图
+            # {"open"}。
             wanted = {"open"}
+        else:
+            try:
+                wanted = {s for s in statuses if isinstance(s, str)}
+            except TypeError:
+                wanted = {"open"}
     # rows 为完整台账记录 dict（evo-code-review-snapshot-writeoff-integrity
     # 2.3/R4 契约确认）：resolution 字段随行自动透传给 routes→前端，前端据此
     # 展示核销来源徽标（code-fix-auto=已修复 / snapshot_closed=快照关闭 /

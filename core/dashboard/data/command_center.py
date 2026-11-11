@@ -898,7 +898,7 @@ def aggregate_pipeline(registry_projects, project=None, *, now=None) -> dict:
                     # 在飞 lane 经 LANE_ALIASES 归并（code-review item
                     # 3df182cc9d24）：与组织网格/spec 视图同口径，避免同一
                     # 指挥中心内车道命名跨卡漂移（repair vs code-fix 等）。
-                    raw_lane = latest.get("agent_type")
+                    raw_lane = latest.get("agent_type") or "agent"
                     card["running"] = {
                         "lane": LANE_ALIASES.get(raw_lane, raw_lane),
                         "started_at": latest.get("started"),

@@ -265,6 +265,9 @@ def resolve_relative(root: Path, relpath: str) -> Path:
     - 绝对路径（POSIX ``/`` 或 Windows 盘符形态）直接拒绝；
     - ``Path.resolve()`` 消化 ``..`` 与 symlink 后仍须位于项目根内
       （is_relative_to），越界抛 ``PathEscape``；
+    - 畸形字节（URL 解码出的嵌入式 NUL / 非 UTF-8 代理字符）使 ``resolve()``
+      抛 ValueError 族（UnicodeEncodeError 亦属之），与 OSError 一并收敛为
+      ``PathEscape``（路由层统一转 400，避免穿透成 500）；
     - ``.git`` 全链路排除：解析后落在 ``<root>/.git`` 内（含 ``.git`` 本身，
       worktree 布局下它是文件同样命中相等分支）抛 ``PathEscape``。
     """
@@ -275,7 +278,7 @@ def resolve_relative(root: Path, relpath: str) -> Path:
     try:
         resolved_root = root.resolve()
         candidate = (resolved_root / relpath).resolve()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise PathEscape(f"unresolvable path: {type(exc).__name__}") from exc
     if not candidate.is_relative_to(resolved_root):
         raise PathEscape("escapes project root")
@@ -384,11 +387,15 @@ def _run_git_log(root: Path, fmt: str, path: str | None = None) -> str | None:
 
 def entry_commit(root: Path, rel_path: str) -> dict | None:
     """单条目最近提交（任务 1.3 单飞 ``git log -1``；目录条目传目录路径，
-    git 自动取该目录下最近一次提交）。无提交历史/命令失败 → None。"""
-    line = _run_git_log(root, f"%h{_US}%s{_US}%aI", rel_path)
+    git 自动取该目录下最近一次提交）。无提交历史/命令失败 → None。
+
+    字段分隔用 git 占位符 ``%x00``（NUL，与 visible_files 的 ``-z`` 通道
+    同款）而非 ``\\x1f``：提交标题自身可合法含该控制字符，用它切分会在
+    标题内提前截断、time 字段被污染。"""
+    line = _run_git_log(root, "%h\x00%s\x00%aI", rel_path)
     if line is None:
         return None
-    parts = line.split(_US, 2)
+    parts = line.split("\x00", 2)
     if len(parts) < 3:
         return None
     return {"hash": parts[0], "message": parts[1], "time": parts[2]}
@@ -500,6 +507,7 @@ def list_directory(root: Path, rel_dir: str) -> dict:
         if scoped is not None:
             hidden_children = ignored_children(scoped, rel_dir)
     entries, truncated = build_entries(files, rel_dir, hidden_children)
+    # [fenix-ignore:b73cc3db9cd4] 单飞为注释明示的有意设计，批量化改造涉及 git 调用契约变化，超出本批最小改动边界
     for entry in entries:
         entry["last_commit"] = entry_commit(
             root, f"{rel_dir}/{entry['name']}" if rel_dir else entry["name"]

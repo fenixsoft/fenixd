@@ -680,6 +680,15 @@ def validate_scenario_revision_paths(project_root, paths) -> str:
     # 此处显式拒绝并点明形态错误，不静默归一掩盖调用方笔误。
     if isinstance(paths, str):
         return "paths 入参须为路径列表（收到字符串，请传 [path, ...]）"
+    # 形态守卫补充（code-review item 05e2b4f09119）：其余不可迭代标量
+    # （程序化直调误传整数等）会在下方 for 迭代处抛 TypeError 穿透，违背
+    # 「返回空串或拒绝理由、不抛异常」的校验器契约；try iter 试迭代探形，
+    # None/0 等 falsy 值仍落既有 `paths or []` 空集口径不受影响，dict 等
+    # 合法可迭代形态不误伤。
+    try:
+        iter(paths or [])
+    except TypeError:
+        return "paths 入参须为路径列表（收到不可迭代标量，请传 [path, ...]）"
     base = os.path.abspath(str(project_root or ""))
     for raw in paths or []:
         p = str(raw or "").strip()

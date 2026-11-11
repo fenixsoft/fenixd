@@ -519,6 +519,14 @@ class Registry:
                     existing = str(Path(raw).expanduser().resolve())
                 except (OSError, RuntimeError, ValueError):
                     continue
+                # 软删除条目不占别名空间（code-review item 05ced95a0d43）：
+                # discover 读侧对 ignored 命中的条目在 name 登记前 continue——
+                # 被忽略项目不占监控列表的别名空间；写侧构建 existing_names
+                # 时同序过滤，避免注册与已忽略条目同名的新项目被一个在监控
+                # 列表中不可见的占用者拒绝。同路径的 ignored 条目不受此过滤
+                # 影响（existing == key 分支仍按 item eb88a85426ca 报恢复提示）。
+                if existing != key and existing in ignored_keys:
+                    continue
                 existing_name = p.get("name")
                 if not isinstance(existing_name, str) or not existing_name.strip():
                     existing_name = Path(existing).name or existing

@@ -74,7 +74,11 @@ _VERIFICATION_REPORT_NAME = "verification-report.md"
 # 去重防刷屏；design 决策 5）。
 _DAILY_AUDIT_INTERVAL_SECONDS = 24 * 3600
 
-# 每日盘点去重水位（进程内 wall-clock 时间戳；模块级变量便于测试逐用例重置）。
+# 每日盘点去重水位（进程内单调时钟时间戳；模块级变量便于测试逐用例重置）。
+# 用 time.monotonic 与 soft_delete_spec 的限时 deadline 及 quality_gates 指纹
+# 缓存 TTL 同口径（code-review item 22e39ebbfdec：墙钟回拨会令 24h 去重窗口
+# 拉长或提前到期）。0.0 哨兵 =「从未盘点」，恒放行首次盘点（monotonic 基准
+# 不保证大于 0，不能沿用墙钟版「now-0.0 恒超窗」的隐式判断）。
 _daily_audit_last_ts = 0.0
 
 
@@ -356,6 +360,19 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 与 f57d00940d1d 对 specs 快照的处置对齐：进入清理段前重新判定。
     in_manifest = spec in parse_archived_state(proot)
     state_entry_removed = False
+
+    # 归档自动提交单点（code-review item 91d8bd85673d）：下方异常路径（目录
+    # 滞留 archive 的部分完成）与成功路径共用同一提交样板——知识页溯源改写
+    # pass + commit_archive_move + committed/commit_warning 回填——收拢到同一
+    # 助手单源维护，fail-open 语义与告警字段名两条路径不漂移（对齐
+    # archive_spec 的提交写法，见 core/archive_commit.py）。
+    def _commit_archived(result, archive_path):
+        rewritten = _rewrite_knowledge_sources(proot, spec, archive_path)
+        cr = commit_archive_move(proot, spec, archive_path, extra_paths=rewritten)
+        result["committed"] = cr["committed"]
+        if cr["warning"]:
+            result["commit_warning"] = cr["warning"]
+
     try:
         if spec in specs:
             # 以 remove_spec 真实返回值驱动（code-review item f57d00940d1d）：
@@ -426,11 +443,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
         # 的归档目录将永久未入库。fail-open：提交失败仅追加告警字段，不吞原
         # 错误信息（对齐成功路径与 archive_spec 的提交写法）。
         if archived:
-            rewritten = _rewrite_knowledge_sources(proot, spec, archive_path)
-            cr = commit_archive_move(proot, spec, archive_path, extra_paths=rewritten)
-            result["committed"] = cr["committed"]
-            if cr["warning"]:
-                result["commit_warning"] = cr["warning"]
+            _commit_archived(result, archive_path)
         return result
     result = {
         "found": True,
@@ -447,11 +460,7 @@ def soft_delete_spec(project_root, spec: str, stop_callback=None) -> dict:
     # 提交前先做知识页溯源改写 pass（move-distill-trigger-to-push 3.2），改写
     # 文件与归档两侧并入同一 [fenix] archive: 提交。
     if archived:
-        rewritten = _rewrite_knowledge_sources(proot, spec, archive_path)
-        cr = commit_archive_move(proot, spec, archive_path, extra_paths=rewritten)
-        result["committed"] = cr["committed"]
-        if cr["warning"]:
-            result["commit_warning"] = cr["warning"]
+        _commit_archived(result, archive_path)
     return result
 
 
@@ -912,8 +921,12 @@ def _daily_stale_audit(proot: Path, logger=None) -> dict:
     global _daily_audit_last_ts
     idle = {"fired": False, "stale_dirs": [], "terminal_unarchived": 0,
             "oldest_terminal_age_days": None}
-    now = time.time()
-    if now - _daily_audit_last_ts < _DAILY_AUDIT_INTERVAL_SECONDS:
+    now = time.monotonic()
+    # 0.0 哨兵（初始值/测试重置值）=「从未盘点」，恒放行；否则按单调钟差
+    # 落在 24h 去重窗口内的跳过
+    if _daily_audit_last_ts > 0.0 and (
+        now - _daily_audit_last_ts < _DAILY_AUDIT_INTERVAL_SECONDS
+    ):
         return dict(idle)
     flagged = _scan_stale_dirs(proot)
     if flagged is None:

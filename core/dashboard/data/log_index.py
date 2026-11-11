@@ -426,11 +426,10 @@ def _skip_leading_giant_lines(f, start: int, size: int) -> int:
             # 未见行界时把 \n 落在下一字节的该行提前误判为超长丢弃。
             if scanned > LOG_LINE_SKIP_THRESHOLD:
                 break
-        giant = found_nl and scanned > LOG_LINE_SKIP_THRESHOLD
-        if not found_nl:
-            giant = scanned > LOG_LINE_SKIP_THRESHOLD
+        giant = scanned > LOG_LINE_SKIP_THRESHOLD
         if not giant:
             return pos
+        # 是否越过行界（found_nl）只决定推进方式，不参与超长判定
         if found_nl:
             pos = pos + scanned + 1  # 超长行行尾 \n 的下一行首（连续超长行继续跳）
         else:
