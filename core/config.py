@@ -2986,6 +2986,70 @@ class ConfigLoader:
             "blacklist": blacklist,
         }
 
+    # ── 裁决自动执行策略（add-adjudication-auto-exec 1.1）────────────────
+    # pending 升级告警推荐项到点自动执行（revocation-window auto-exec）：
+    # enabled 无独立降级通道——false 即整体停用回退纯人工语义（design 决策 7）。
+    # grace_minutes: 否决窗（自推荐可用时刻起算，窗满仍 pending 才执行；
+    #   锚点取告警 arbiter_upgrade.upgraded_at，无 upgrade 痕回退 created）
+    # consecutive_max: 同 SPEC 连续自动执行上限（计数自处置留痕 actor=
+    #   auto-policy 派生，超限强制人工——算力烧损循环节流）
+    # aging_warning_minutes / aging_critical_minutes: human-only 档（state-
+    #   advance/terminal）pending 告警老化升级两档阈值（只做可见性不执行动作）
+    AUTO_EXEC_ENABLED_DEFAULT = True
+    AUTO_EXEC_GRACE_MINUTES_DEFAULT = 30
+    AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT = 2
+    AUTO_EXEC_AGING_WARNING_MINUTES_DEFAULT = 120
+    AUTO_EXEC_AGING_CRITICAL_MINUTES_DEFAULT = 360
+
+    @classmethod
+    def get_auto_exec_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``auto_exec`` 段五键，缺失/非法值回退缺省（不抛异常）。
+
+        - enabled: 布尔，缺省 True（非布尔回退缺省，与 stale_code_selfheal.
+          enabled 同口径——布尔缺省语义下非法即用缺省）
+        - grace_minutes / consecutive_max: 正整数，缺省 30 / 2（bool 是 int
+          子类由 _normalize_int_value 显式排除；0/负数无语义回退缺省）
+        - aging_warning_minutes / aging_critical_minutes: 正整数分钟，缺省
+          120 / 360（warning 档阈值 MUST 小于 critical 档——脏配置致倒挂时
+          两者互换取更早档生效，防高severity档永不触达）
+
+        节缺失、键缺失或值非法时不抛异常；策略引擎每轮扫描即时解析，30s
+        配置热更新自然生效。
+        """
+        section = cls._segment_or_empty(config, "auto_exec")
+        enabled = section.get("enabled", cls.AUTO_EXEC_ENABLED_DEFAULT)
+        if not isinstance(enabled, bool):
+            enabled = cls.AUTO_EXEC_ENABLED_DEFAULT
+        warning = cls._normalize_int_value(
+            section.get("aging_warning_minutes"),
+            cls.AUTO_EXEC_AGING_WARNING_MINUTES_DEFAULT,
+            positive=True,
+        )
+        critical = cls._normalize_int_value(
+            section.get("aging_critical_minutes"),
+            cls.AUTO_EXEC_AGING_CRITICAL_MINUTES_DEFAULT,
+            positive=True,
+        )
+        if warning > critical:
+            # 倒挂兜底：warning 阈值大于 critical 时提前升级（更早档先行），
+            # 不静默放任高档永不触达
+            warning, critical = critical, warning
+        return {
+            "enabled": enabled,
+            "grace_minutes": cls._normalize_int_value(
+                section.get("grace_minutes"),
+                cls.AUTO_EXEC_GRACE_MINUTES_DEFAULT,
+                positive=True,
+            ),
+            "consecutive_max": cls._normalize_int_value(
+                section.get("consecutive_max"),
+                cls.AUTO_EXEC_CONSECUTIVE_MAX_DEFAULT,
+                positive=True,
+            ),
+            "aging_warning_minutes": warning,
+            "aging_critical_minutes": critical,
+        }
+
     BRANCH_GC_ENABLED_DEFAULT = True
     BRANCH_GC_RETENTION_DAYS_DEFAULT = 7
     # retention_days 最小值 1（0/负数无语义：当天即删，宽限期形同虚设）。
