@@ -173,3 +173,4 @@
 ## [2026-11-11 00:03 UTC+8] lint | audit 体检（修 0 / 转写 0 / 待人工 12 / 过 8）
 ## [2026-11-11 02:57 UTC+8] fold | posix-dependency-true-distribution-1110.md 折叠失败滞留：spec/knowledge/domains/daemon-runtime/framework-install.md: prehistoric sources 锚点格式非法（应形如 git:<ref>-..<日期>）: 
 ## [2026-11-11 03:02 UTC+8] distill | add-platform-abstraction-layer（第 1 轮，自动提交落库）
+## [2026-11-11 13:09 UTC+8] fold | contextmenu-suppressor-interactive-guard-1111.md 折叠入库
