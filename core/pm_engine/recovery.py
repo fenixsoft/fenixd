@@ -292,7 +292,7 @@ class RecoveryWatch:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_str, str(path))
-            # 目录 fsync（code-review item 298cde6e2b3b）：rename 元数据须对
+            # 目录 fsync（code-review item aed1dbe27662）：rename 元数据须对
             # 父目录 fsync 才在断电/宿主崩溃后持久化，否则重启后 recovery_watch
             # 回退上一份快照、其间登记的观察项丢失。目录句柄不支持 fsync 的
             # 文件系统/平台按 best-effort 跳过，不扰动主流程。
@@ -759,7 +759,7 @@ class RecoveryWatch:
                         f" (layer-3 dispatch re-probe failed: "
                         f"{type(reprobe_exc).__name__})"
                     )
-                # 就地重派 evidence 三分支（code-review item aed1dbe27662）：
+                # 就地重派 evidence 三分支（code-review item f5344fb42be6）：
                 # dispatched 仅在 status == 'ready' 时才尝试（上方 2.2/2.3），
                 # 其余卡死形态从未尝试——统一输出 'not established' 会误导
                 # Administrator 读成「已尝试且被闸门拦下」。按实际语义区分：
@@ -1249,7 +1249,17 @@ class RecoveryWatch:
             ):
                 pending = True
                 raw_since = wm.pending_merge_since(spec_name)
-                if isinstance(raw_since, (int, float)):
+                # bool 是 int 子类：True 会被 float() 折算成 epoch 1.0 秒，
+                # age_start 极小使 grace_cutoff 恒过期、D1 豁免被静默短路
+                # （code-review item 298cde6e2b3b）。布尔返回按「年龄不可度量」
+                # 处置——不进 pending_since，落下方 None 保守不豁免分支，留痕。
+                if isinstance(raw_since, bool):
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"pending_merge_since returned bool for '{spec_name}' "
+                        f"(age not measurable, D1 exemption conservatively skipped)",
+                    )
+                elif isinstance(raw_since, (int, float)):
                     pending_since = float(raw_since)
         except Exception as _d1_err:
             # D1 探测失败留痕（code-review item 46300f3ce558，同第 2/3 层
