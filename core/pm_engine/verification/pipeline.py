@@ -1648,10 +1648,15 @@ class VerificationPipeline:
         migrated = False
         if set_version < CURRENT_CONTRACT_VERSION:
             migrated = True
-            # 步骤 3：迁移前备份原文件（回退口 D4 配套；随下次成功迁移覆盖）
+            # 步骤 3：迁移前备份原文件（回退口 D4 配套；随下次成功迁移覆盖）。
+            # tmp+replace 原子写（共用 scenario_gate 助手，与下方写回同口径）：
+            # 裸写中途中断会留截断 .bak，而下方升级文案把「恢复 .bak」列为
+            # 人工恢复选项，截断备份按该指引恢复会二次损坏冻结集（code-review
+            # item 5e7b6f7304a2）。
             try:
-                (verify_dir / f"test_scenarios.json.contract-v{set_version}.bak").write_text(
-                    path.read_text(encoding="utf-8"), encoding="utf-8"
+                atomic_write_text(
+                    verify_dir / f"test_scenarios.json.contract-v{set_version}.bak",
+                    path.read_text(encoding="utf-8"),
                 )
             except (OSError, UnicodeDecodeError) as e:
                 self._context.logger.warning(
@@ -2522,13 +2527,16 @@ class VerificationPipeline:
         # 同走 env_error → replan / 升级温和通道，不炸穿到 engine 层触发
         # 整轮回滚 + legacy 降级（对齐 _load_frozen_or_escalate 的兜底
         # 口径；缺失文件顶层拯救不适用——助手内部 OSError 兜底返回
-        # None，照常进下方 env_error 赋值）。
+        # None，照常进下方 env_error 赋值）。捕获口径放宽为 (OSError,
+        # ValueError)（code-review item fc137ecba530）：权限/目录/IO 等
+        # 其余 OSError 子类同走温和通道，与 _load_frozen_or_escalate 读端
+        # 全量口径一致。
         try:
             if scenarios_override is not None:
                 scenarios = scenarios_override
             else:
                 scenarios = load_scenarios(scenarios_path)
-        except (ValueError, FileNotFoundError) as e:
+        except (OSError, ValueError) as e:
             # 顶层拯救助手（evo-scenario-product-toplevel-contract 2.2）：判定
             # 失败前先尝试「dict 且含 scenarios 数组」唯一形态的机械解包——
             # 解包重过全部校验通过即以纯数组原子重写落地（其余读端与冻结层
@@ -2639,10 +2647,12 @@ class VerificationPipeline:
             if scenarios_override is None:
                 # FileNotFoundError 同收口（code-review item 3d051b000228）：
                 # 首载后文件在飞被删（选项①竞窗）同走 env_error → replan
-                # 温和通道，不炸穿整轮回滚（口径同上方首载读点）。
+                # 温和通道，不炸穿整轮回滚（口径同上方首载读点）。捕获口径
+                # 同步放宽为 (OSError, ValueError)（code-review item
+                # fc137ecba530），其余 OSError 子类一并温和收口。
                 try:
                     scenarios = load_scenarios(scenarios_path)
-                except (ValueError, FileNotFoundError) as e:
+                except (OSError, ValueError) as e:
                     env_error = f"自愈改写后场景文件验收失败: {e}"
                     # 同属场景文件结构验收阶段 → 格式类（design D3 按失败
                     # 发生阶段判定；该读点文件已过首载拯救/校验，一般仅
@@ -2731,6 +2741,12 @@ class VerificationPipeline:
             )
             if _parallel_override is not None:
                 try:
+                    # bool 是 int 子类，int(False)=0 / int(True)=1 不抛异常
+                    # 会静默把并行度映射成 0/1——显式路由进下方 WARNING 兜底，
+                    # 兑现注释「不把布尔语义映射为特定并行度」的宣称
+                    # （code-review item ca54c13920a4）。
+                    if isinstance(_parallel_override, bool):
+                        raise TypeError("布尔值不映射为特定并行度")
                     engine.max_parallel = int(_parallel_override)
                     engine._parallel_override_active = True
                 except (TypeError, ValueError):
