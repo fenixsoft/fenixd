@@ -34,24 +34,26 @@ import { AlertAdjudicationExec, useAlertAdjudication } from '@/hooks/useAlertAdj
 import type { AlertAdjudication } from '@/hooks/useAlertAdjudication';
 import AdminRunModal from './AdminRunModal';
 import { SEV_COLOR, SEV_LABEL, fmtDate } from '@/components/alert-shared';
+import { DSH_BG_SOFT, DSH_ERROR, DSH_LINK, DSH_TEXT, DSH_TEXT_CAPTION, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY, DSH_WARNING } from '@/theme';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 // 轮询周期：与设置页链配置热更新（30s）同拍——观测面无需更快
 const REFRESH_MS = 30_000;
 
-// DSH token 色（原型 CSS 变量的字面值投影——页内内联样式直接取字面值，
-// 避免 var(--xxx) 在非 dsh 宿主上下文的解析风险）
+// DSH token 色（code-review item 9c524b0c1927：由字面值双写改为 '@/theme'
+// 单源 import，消除主题改色漂移面；hair/hover 在 theme.ts 无单源键，
+// 保留原型字面值）
 const T = {
-  text: '#0f1115',
-  text2: '#61666b',
-  text3: '#81858c',
-  text4: '#adb2b8',
+  text: DSH_TEXT,
+  text2: DSH_TEXT_SECONDARY,
+  text3: DSH_TEXT_TERTIARY,
+  text4: DSH_TEXT_CAPTION,
   hair: '#f1f5f9',
-  soft: '#f9fafb',
+  soft: DSH_BG_SOFT,
   hover: '#f8fafc',
-  err: '#ec1313',
-  warn: '#f59e0b',
-  link: '#4176e6',
+  err: DSH_ERROR,
+  warn: DSH_WARNING,
+  link: DSH_LINK,
 } as const;
 
 // 原型小标签统一形态（11px / 18px 行高 / 6px 水平内边距）
@@ -112,13 +114,17 @@ function InFlightStepper({ it }: { it: ChainInFlightItem }) {
       {steps.map((s, i) => {
         const state = i === curIdx ? 'cur' : curIdx > i ? 'done' : 'future';
         const labelColor = state === 'cur' ? T.text : state === 'done' ? T.text3 : T.text4;
-        const barColor = !s.hasBar
-          ? null
-          : state === 'cur'
-            ? T.warn
-            : state === 'done'
-              ? T.text3
-              : 'transparent';
+        // 嵌套三元展开为 if/else（项目清单禁嵌套三元，code-review item 97ea9c6cbb9c）
+        let barColor: string | null = null;
+        if (s.hasBar) {
+          if (state === 'cur') {
+            barColor = T.warn;
+          } else if (state === 'done') {
+            barColor = T.text3;
+          } else {
+            barColor = 'transparent';
+          }
+        }
         return (
           <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
             <span style={{ color: labelColor, fontWeight: state === 'cur' ? 600 : 400 }}>{s.label}</span>
@@ -456,16 +462,38 @@ function QueueRow({
   const selChoiceId = adj.alertChoiceSels[esc.id] || '';
   const selChoice = (esc.choices || []).find((c) => c.id === selChoiceId);
   const msg = adj.alertResolveMsgs[esc.id];
-  const msgColor = !msg ? undefined : msg.tone === 'error' ? T.err : msg.tone === 'warning' ? T.warn : T.text3;
+  // 消息色调映射（嵌套三元展开为 if/else：项目清单禁嵌套三元，
+  // code-review item 97ea9c6cbb9c）
+  let msgColor: string | undefined = undefined;
+  if (msg?.tone === 'error') {
+    msgColor = T.err;
+  } else if (msg?.tone === 'warning') {
+    msgColor = T.warn;
+  } else if (msg) {
+    msgColor = T.text3;
+  }
   const hasChoices = (esc.choices?.length ?? 0) > 0;
 
+  // 标记已处理防重（code-review item 4207183c0835）：state 是本次渲染快照，
+  // 双击间隔小于一帧时两次调用都读到旧值、各自发出重复请求；ref 在请求发出前
+  // 同步置位、finally 清除（useAlertAdjudication.handleResolve 的
+  // resolvingIdsRef 同款口径），state 仅驱动按钮 loading 视图
+  const handledInFlightRef = useRef(false);
+  const [handlingHandled, setHandlingHandled] = useState(false);
+
   const handleMarkHandled = async () => {
+    if (handledInFlightRef.current) return;
+    handledInFlightRef.current = true;
+    setHandlingHandled(true);
     try {
       await markAlertHandled(esc.project, esc.id);
       message.success('已标记处理');
       onRefresh();
     } catch (err) {
       message.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      handledInFlightRef.current = false;
+      setHandlingHandled(false);
     }
   };
 
@@ -521,7 +549,7 @@ function QueueRow({
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 88 }}>
           {hasChoices && <AlertAdjudicationExec alert={alert} adj={adj} onResolved={onRefresh} />}
-          <Button size="small" onClick={() => void handleMarkHandled()}>
+          <Button size="small" loading={handlingHandled} disabled={handlingHandled} onClick={() => void handleMarkHandled()}>
             标记已处理
           </Button>
         </div>
@@ -654,10 +682,14 @@ export default function ChainPanel({
 
   // 分段筛选（5.1）：全部/待人工/已收口（含计数，Radio.Group button 深色激活）
   const [escFilter, setEscFilter] = useState<'all' | 'pending' | 'closed'>('all');
-  const escShown = useMemo(
-    () => escalations.filter((e) => (escFilter === 'all' ? true : escFilter === 'pending' ? !e.handled : !!e.handled)),
-    [escalations, escFilter],
-  );
+  // 分段谓词（嵌套三元展开为 if/else：项目清单禁嵌套三元，code-review item 97ea9c6cbb9c）
+  const escShown = useMemo(() => {
+    return escalations.filter((e) => {
+      if (escFilter === 'all') return true;
+      if (escFilter === 'pending') return !e.handled;
+      return !!e.handled;
+    });
+  }, [escalations, escFilter]);
 
   const [selEsc, setSelEsc] = useState<ChainEscalationItem | null>(null);
   const [selRun, setSelRun] = useState<{ project: string; spec?: string; runId: string } | null>(null);
@@ -800,7 +832,8 @@ export default function ChainPanel({
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前无在办处置链" />
             ) : (
               inFlight.map((it, i) => {
-                const sigTail = (it.signature || '').split('::')[1] || '';
+                // 签名后缀同上升件单元格口径：取 '::' 后全部剩余分段（code-review item 791ef5b2cb55）
+                const sigTail = (it.signature || '').split('::').slice(1).join('::');
                 return (
                   <div
                     key={it.chain_id || it.signature || `in-flight-${i}`}
