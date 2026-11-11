@@ -1656,8 +1656,23 @@ class AssertionRunner:
                 "pass": False,
                 "error": f"非法 axis: {axis!r}，仅支持 left/top",
             }
+        tolerance_raw = a.get("tolerance", 2)
+        if isinstance(tolerance_raw, bool):
+            # bool 是 int 子类，float(True)=1.0 能通过下方 isfinite/非负检查，
+            # tolerance: true 的 YAML 笔误会被静默折算成 1px 容差按正常断言
+            # 裁决且无任何非法提示；比照 _int_or_none 的 bool 显式排除口径，
+            # 与下方非数值容差同走确定性失败分支并回显原值。
+            return {
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "axis": axis,
+                "tolerance": tolerance_raw,
+                "pass": False,
+                "error": f"非法 tolerance: {tolerance_raw!r}，须为数值（像素）",
+            }
         try:
-            tolerance = float(a.get("tolerance", 2))
+            tolerance = float(tolerance_raw)
         except (TypeError, ValueError):
             # 非数值容差按确定性失败上报而非静默回退默认 2.0：配置错误被
             # 吞掉后断言按非本意阈值裁决，与上方非法 axis、z_index_order
