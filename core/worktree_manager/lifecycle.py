@@ -659,6 +659,10 @@ class G1LifecycleMixin:
         时，原 run 迟到的终态释放不得把新锁摘掉）；不传（None）维持既有幂等
         语义（不校验归属，defer 车道既有 caller 零改动）。
 
+        摘锁成功后失效该 spec 的进程扫描缓存（code-review item f1224c0cefe2，
+        与 cleanup finally 同纪律），防释放后缓存窗口内派发闸门读到陈旧存活
+        结论（裸 spec 键 + verify/impl/repair 三族元组键）。
+
         Returns: 是否确有在册锁被释放（无锁时 False，幂等安全）。
         """
         lock_key = f"{spec_name}:{agent_type}"
@@ -679,6 +683,21 @@ class G1LifecycleMixin:
             self._spec_locks.discard(lock_key)
             self._lock_since.pop(lock_key, None)
             self._spec_lock_owners.pop(lock_key, None)
+            # 摘锁后失效进程扫描缓存（code-review item f1224c0cefe2）：与
+            # cleanup finally 的失效纪律（47b98315d174「防读到陈旧存活结果」）
+            # 同款——释放前最近一次判活写入的 alive=True 会在
+            # PROCESS_SCAN_CACHE_SECONDS 缓存窗口内残留，期间派发闸门读到陈旧
+            # 存活结论而跳过派发（spec 短暂停顿，方向保守非双派发）。按被摘键
+            # 失效裸 spec 键与三族元组键（与 cleanup finally 同口径），使释放
+            # 后的下一次判定必然重新真实扫描；repair 族元组键一并失效（既有
+            # cleanup 失效块本就缺席该族）。注：repair_lane.py 的直摘点
+            # （_claim_repair_site 登记 / Thread 启动失败回滚 / worker
+            # finally）绕过本方法直写 _spec_locks、同无缓存失效，属独立面，
+            # 本条目不改。
+            self._proc_scan_cache.pop(spec_name, None)
+            self._proc_scan_cache.pop((spec_name, ("verify",)), None)
+            self._proc_scan_cache.pop((spec_name, ("impl",)), None)
+            self._proc_scan_cache.pop((spec_name, ("repair",)), None)
         return released
 
     def _seed_spec(self, spec_name: str, wt_path: Path):
@@ -1523,6 +1542,37 @@ class G1LifecycleMixin:
         mtime = self._latest_stream_mtime(spec_name)
         if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
             return True  # 进程扫描未命中但流仍在增长：保守视为持锁
+        # repair 族判活补扫（code-review item 31df14a8a2e9）：上方缺省探针只扫
+        # impl/verify 两族（_pgrep_spec_process / _latest_stream_mtime 的缺省
+        # prefixes），repair- 前缀载体与 repair-*.jsonl run 流双双不在覆盖面；
+        # <spec>:repair 锁（repair_lane._claim_repair_site 登记）又缺
+        # _lock_since——不享受 _lock_young 豁免、下方摘锁的 not_after 守卫保守
+        # 跳过该键，判定链原本走到底部无条件 return False：派发闸门对「注册着
+        # 的在飞 repair 锁」给出无锁结论，外部 drafted 重放 / 重启回放 / admin
+        # 复位 ready 等点火路径落到修复中 spec 时放行同 spec 双 run（新
+        # implementer 与 repair worker 并行，merge-back 相互踩踏）。e622a1c358b3
+        # 已为 refresh_locks 补 repair 族判活（按 impl 判活会把活 repair 误判
+        # 死），同一探针在派发闸门此处同步收口：按在册锁键家族并集中缺省探针
+        # 未覆盖的族追加同款族限定探测，进程存活或流仍在增长任一命中即视为持
+        # 锁——宁可慢派发不双派发；repair 键泄漏（进程与流双亡）时探测落空，
+        # 照旧走下方陈锁链路放行，不新增永久阻塞面。解析不出 agent_type 的在册
+        # 键维持缺省 spec 粒度口径（与 refresh_locks 的 family=None 分支同），
+        # 不在此追加；同族重复键的重复探测经 _spec_process_alive 缓存近零成本。
+        # 注：repair_lane.py 的直摘点（Thread 启动失败回滚 / worker finally）
+        # 绕过 release_spec_lock 直写 _spec_locks，属独立面，本条目不改。
+        for k in snapshot:
+            if self._lock_spec_name(k) != spec_name:
+                continue
+            family = self._lock_family_prefix(k)
+            if family is None or family in ("impl", "verify"):
+                continue
+            if self._spec_process_alive(spec_name, prefixes=(family,)):
+                return True
+            family_mtime = self._latest_stream_mtime(spec_name, prefixes=(family,))
+            if family_mtime is not None and (
+                time.time() - family_mtime
+            ) <= STALE_LOCK_IDLE_SECONDS:
+                return True
         # create 构建窗口豁免（双派发穿透原地修 2026-09-06）：以锁龄二次确认——
         # 锁在 create() 拿到而 attempt 子进程与其流文件尚未产生（实测构建可达十几
         # 秒）。豁免按锁龄独立生效、不以「无流文件」为前提（code-review item
