@@ -35,9 +35,9 @@
 
 ## 1. 配置单源与注册表风险档位
 
-- [ ] 1.1 core/config.py 新增 auto_exec 配置单源：enabled（缺省 true）、grace_minutes（缺省 30）、consecutive_max（缺省 2）、aging_warning_minutes/aging_critical_minutes（缺省 120/360），签名常量形态与既有配置键风格一致
-- [ ] 1.2 core/dashboard/data/adjudication_choices.py 为全部 choice 条目声明 risk_tier（judge_rerun_cap 桶：manual_fixed_reverify=reversible-experiment、force_advance=state-advance、abandon=terminal；其余桶按动作不可逆性定档），缺档读取侧按 terminal 兜底，不改变既有解析/payload/执行行为
-- [ ] 1.3 新增 tests/test_adjudication_choices_risk_tier.py：覆盖每条选项档位合法、缺档 terminal 兜底、既有 resolve_choice 行为不回归
+- [x] 1.1 core/config.py 新增 auto_exec 配置单源：enabled（缺省 true）、grace_minutes（缺省 30）、consecutive_max（缺省 2）、aging_warning_minutes/aging_critical_minutes（缺省 120/360），签名常量形态与既有配置键风格一致
+- [x] 1.2 core/dashboard/data/adjudication_choices.py 为全部 choice 条目声明 risk_tier（judge_rerun_cap 桶：manual_fixed_reverify=reversible-experiment、force_advance=state-advance、abandon=terminal；其余桶按动作不可逆性定档），缺档读取侧按 terminal 兜底，不改变既有解析/payload/执行行为
+- [x] 1.3 新增 tests/test_adjudication_choices_risk_tier.py：覆盖每条选项档位合法、缺档 terminal 兜底、既有 resolve_choice 行为不回归
 
 ## 2. 自动执行策略引擎
 
