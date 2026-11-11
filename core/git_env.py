@@ -18,12 +18,18 @@ remote URL 内嵌 token 一条腿。本模块为 ``_git_push_ref``（engine 推�
 fail-open，由启动自检就该状态发 WARNING 告警。
 """
 
+import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.platform import api as pal
+
+# 模块级裸 WARNING 通道（core/ 既有先例：archive_commit / proc_utils 等），
+# 用于解析层 fail-closed 降级留痕——daemon 注入式 logger 仅消费点可达。
+logger = logging.getLogger("fenixd.git_env")
 
 # 既有测试缝（零修改契约）：test_git_env 以 monkeypatch.setattr(ge.pwd,
 # "getpwuid", ...) 打桩——此处与 pal 后端（linux.py）引用同一份共享 pwd
@@ -136,9 +142,25 @@ def credential_helper_args(git_env: GitEnv) -> list:
     配置串，git 按空白切分为 helper 子参数；拆成两个元素会让 ``--file=``
     被 git 解析为顶层未知选项，推送必败。解析路径不存在时返回 ``[]``——
     不追加参数，避免 git 静默创建空凭证文件造成「有凭证」假象（spec）。
+
+    路径含空白字符（``\\s``：空格/制表符等）时 fail-closed 返回 ``[]`` 并
+    发 WARNING：git 对 credential.helper 值的空白切分**无引号转义机制**
+    （无法在配置串内表达含空白的路径），直接内插会让 ``--file=`` 的路径
+    从空白处截断成两个 helper 子参数，credential-store 收到错误路径、推送
+    凭证读取静默失败。拒绝追加即回退既有无 helper 腿（URL 内嵌 token 兜底），
+    不产生「路径可用却推不动」的无指向报错。
     """
     cred = git_env.credential_file if git_env else None
     if not cred:
+        return []
+    if re.search(r"\s", cred):
+        logger.warning(
+            "推送凭证文件路径含空白字符，git credential.helper 配置串按空白"
+            "切分且无引号转义机制，无法表达该路径；拒绝追加 helper 参数，"
+            "推送回退 URL 内嵌 token 单腿。请改用无空白路径"
+            "（pm.push.credential_file / credential_home）： %s",
+            cred,
+        )
         return []
     try:
         if not Path(cred).is_file():
