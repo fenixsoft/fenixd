@@ -25,6 +25,13 @@ from core.pm_engine.dispatch import (
     MAX_REPAIR_ROUNDS_PER_FAILURE,
 )
 
+# 整型配置上界（code-review item 244132a988de）：巨型值同属使保护界限失效的
+# 无意义形态——merge_breaker_threshold 配成 10**30 使 streak >= threshold 永不
+# 成立、fp 熔断被静默禁用；max_retries 配成天文数字使 retries >= max_r 冻结
+# 转人工永不触发、fallback 重派失去上限。与负值分支同口径按非法处置（回缺省
+# 而非钳制——钳制会把配置语义改写成另一个值且同样无留痕）。
+_INT_CONFIG_UPPER_BOUND = 10**6
+
 
 def _normalize_int_config_value(
     value, key: str, default: int, logger=None, *, min: int | None = None
@@ -52,6 +59,9 @@ def _normalize_int_config_value(
       ``max(result, min)`` 收敛（熔断阈值 ``min=1``，负数/0 配置无意义）；
       ``min`` 为 None → 负数按非法 WARNING 留痕回缺省（重试上限
       0=不自动重试为合法语义，负值无意义，此前被静默采信）。
+    - 上界策略：归一结果超 ``_INT_CONFIG_UPPER_BOUND``（10**6）按非法
+      WARNING 留痕回缺省（244132a988de，口径与负值分支并列声明）——
+      巨型值使保护界限失效（熔断阈值/重试上限永不触发），不静默采信。
 
     永不抛异常（两读取器消费点全在失败收尾链）。归一规则调整只改此处。
     """
@@ -80,6 +90,17 @@ def _normalize_int_config_value(
                 "pm_engine",
                 f"配置 {key} 非法（应为整数，{reason}）: {value!r}，"
                 f"回退缺省 {default}",
+            )
+        return default
+    if normalized > _INT_CONFIG_UPPER_BOUND:
+        # 上界守卫（244132a988de，与负值分支并列）：原生 int 与
+        # int(str(...)) 分支对任意大小整数照常采信，巨型值使熔断/冻结
+        # 转人工保护界限实质失效，按非法留痕回缺省。
+        if logger is not None:
+            logger.warning(
+                "pm_engine",
+                f"配置 {key} 非法（超出合理上界 {_INT_CONFIG_UPPER_BOUND}）: "
+                f"{value!r}，回退缺省 {default}",
             )
         return default
     if min is not None:
@@ -625,7 +646,16 @@ class PRepairLaneMixin:
                             elif data.get("status") == "error":
                                 repair_ok = False
                                 repair_error = data.get("error") or "repair agent 显式报告失败"
-                    except (json.JSONDecodeError, OSError) as e:
+                    # UnicodeDecodeError 单列（code-review item d01555da7eb7，
+                    # 对齐 recovery.py _load_recovery_watch 614e096ffbdb）：
+                    # read_text 遇非法 UTF-8 字节抛的是 ValueError 族而非
+                    # OSError，不补列会被外层 except 误记为「repair agent
+                    # 派发异常」，结果文件损坏与派发链路故障归因混同。
+                    except (
+                        json.JSONDecodeError,
+                        OSError,
+                        UnicodeDecodeError,
+                    ) as e:
                         repair_ok = False
                         repair_error = f"repair 结果文件解析失败: {e}"
             except Exception as e:
@@ -1490,6 +1520,21 @@ class PRepairLaneMixin:
                     f"（按 'implementing' 缺省继续收尾）: {type(e).__name__}: {e}",
                 )
                 orig_status = "implementing"
+            # 冻结转人工写前状态复查（code-review item 94d37693c953，对齐本方法
+            # ready 回退分支 a5995960e313 同款守卫）：上方 orig_status 读取与
+            # freeze_for_human 之间同样被本方法开头的 worktree cleanup 等 git IO
+            # 拉长窗口——窗口内并发写者（admin/panel 处置、恢复链，此类处置不持
+            # :repair 锁）推进 spec 时无条件冻结会裹住刚被人工推进的 spec、回退
+            # 人工意图，需再解冻还原。已不在（None,"","implementing"）→ 放弃
+            # 冻结、WARNING 留痕直接 return，与 ready 分支口径对齐；读取失败按
+            # 上方既有宽口径守卫降级为 "implementing"，继续原路径收尾。
+            if orig_status not in (None, "", "implementing"):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair 链回退冻结转人工放弃 '{spec_name}'：status 已被并发"
+                    f"推进为 '{orig_status}'——跳过冻结（不裹住在飞/已推进状态）",
+                )
+                return
             # 冻结收尾守卫（code-review item e8f1fac9cbc8，对齐同文件 66588fe4ac71
             # / _enqueue_front 851-860 守卫范式）：本方法可能运行在 worker 的
             # except 兜底内（4ba308cf06fe），freeze_for_human 裸调抛错会从失败
