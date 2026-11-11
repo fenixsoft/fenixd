@@ -503,7 +503,7 @@ class H2ProjectRoutesMixin:
         """DELETE /api/projects/<name> —— 软删除：停止 daemon + 写入忽略列表。
 
         缺失项目（目录已不存在，exists=false）也允许删除：跳过停止 daemon，
-        仅从监控列表移除并写入忽略列表。
+        先写入忽略列表再从监控列表移除（code-review item d9d96f508c57）。
         """
         from core.dashboard import server as _server_mod  # noqa: E402 — D3 缝隙命名空间延迟解析
         project = self._resolve_project_or_400(path, "/api/projects/", require_exists=False)
@@ -556,18 +556,11 @@ class H2ProjectRoutesMixin:
                 if errors:
                     self._json({"ok": False, "error": "；".join(errors)})
                     return
-            # 2) 移除显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
-            try:
-                self.server.registry.remove_project(project["path"])
-            except Exception as e:
-                # 移除失败留痕（code-review item de01de91d3a7）：忽略优先语义下
-                # 不阻断删除，但项目可能残留于显式注册列表，须可追查。
-                logger.warning(
-                    "移除显式注册项失败（path=%s）: %s: %s",
-                    project["path"],
-                    type(e).__name__,
-                    e,
-                )
+            # 2) 写入忽略列表 + 移除显式注册项（忽略优先：先忽略后移除，
+            # code-review item d9d96f508c57——add_ignored 幂等且失败时项目
+            # 仍在监控列表、状态未变，本次请求可 meaningful 重试；若先移除
+            # 后忽略，忽略写入失败会留下「已注销未忽略」中间态，重试即
+            # 400「项目不存在或未监控」，只能等发现扫描扫回后再删）。
             try:
                 add_result = self.server.registry.add_ignored(project["path"])
                 if not add_result[0]:
@@ -591,8 +584,21 @@ class H2ProjectRoutesMixin:
                 )
                 errors.append("写入忽略列表失败")
             if errors:
+                # 忽略写入失败即中止（d9d96f508c57）：项目尚未移出监控列表，
+                # 客户端直接重试即可，不产生「已注销未忽略」中间态。
                 self._json({"ok": False, "error": "；".join(errors)})
                 return
+            try:
+                self.server.registry.remove_project(project["path"])
+            except Exception as e:
+                # 移除失败留痕（code-review item de01de91d3a7）：忽略优先语义下
+                # 不阻断删除，但项目可能残留于显式注册列表，须可追查。
+                logger.warning(
+                    "移除显式注册项失败（path=%s）: %s: %s",
+                    project["path"],
+                    type(e).__name__,
+                    e,
+                )
         # 成功：清理 describe 互斥锁注册表（code-review item fcca0c5efd45），
         # 已删项目名的锁条目不再随项目增删残留。整段持 _DESCRIBE_LOCKS_GUARD
         # 完成 get/试抢/pop，不被并发 setdefault 插入；非阻塞试抢到手说明无
