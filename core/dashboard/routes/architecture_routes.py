@@ -640,13 +640,16 @@ class ArchitectureManager:
                     time.monotonic(),
                     "failed",
                     error=f"后台生成线程启动失败（{type(exc).__name__}），请重试",
+                    logger=logger,
                 )
             finally:
                 lock.release()
             return False, False, "架构图生成线程启动失败，请重试"
         return True, False, None
 
-    def _write_stage(self, proot: Path, started_at: str, stage: str) -> None:
+    def _write_stage(
+        self, proot: Path, started_at: str, stage: str, logger=None
+    ) -> None:
         """在飞阶段迁移落盘（state 仍 generating + stage 键）：阶段1/阶段2
         spawn 前写，前端轮询可辨当前段。尽力而为：写失败不中断生成。"""
         try:
@@ -660,10 +663,11 @@ class ArchitectureManager:
             # 违背本助手「写失败不中断生成」承诺；宽捕口径对齐 refresh()/
             # _finish()（item 7c1787f26168/1e7127422a27），BaseException 仍
             # 照常穿出不吞，warning 留痕不静默。
-            logger.warning(
-                f"架构图阶段状态写入失败（stage={stage}）: "
-                f"{type(exc).__name__}: {exc!r}",
-            )
+            if logger is not None:
+                logger.warning(
+                    f"架构图阶段状态写入失败（stage={stage}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
 
     def _run_stage(
         self,
@@ -790,6 +794,7 @@ class ArchitectureManager:
                 self._finish(
                     proot, started_at, t0, "failed",
                     error=_SKILL_VENDORED_MISSING_ERROR,
+                    logger=logger,
                 )
                 return
             try:
@@ -807,6 +812,7 @@ class ArchitectureManager:
                 self._finish(
                     proot, started_at, t0, "failed",
                     error="架构图运行目录创建失败",
+                    logger=logger,
                 )
                 return
 
@@ -816,14 +822,14 @@ class ArchitectureManager:
                 # exploring 段标记——否则指纹命中时首个 stage 写入是下方
                 # authoring，受理至该写入之间 stage 恒为受理初态 null，
                 # 前端阶段展示缺段（纯展示口径，不影响判定）。
-                self._write_stage(proot, started_at, "exploring")
+                self._write_stage(proot, started_at, "exploring", logger=logger)
                 if logger is not None:
                     logger.info(
                         f"evidence HEAD 指纹命中，跳过阶段1 探索"
                         f"（project={project_name}），只付出图成本",
                     )
             else:
-                self._write_stage(proot, started_at, "exploring")
+                self._write_stage(proot, started_at, "exploring", logger=logger)
                 ok, rc, _stdout, stderr, err = self._run_stage(
                     proot, project_name, key,
                     prompt=_build_explore_prompt(proot, project_name),
@@ -833,7 +839,9 @@ class ArchitectureManager:
                 )
                 if not ok:
                     # spawn 失败/通信异常/超时：failed 短路，不 spawn 阶段2
-                    self._finish(proot, started_at, t0, "failed", error=err)
+                    self._finish(
+                        proot, started_at, t0, "failed", error=err, logger=logger
+                    )
                     return
                 # 阶段1 判定链（design D4，不信 claude 自述）：rc==0 且
                 # evidence 非空，任一不满足直接 failed 短路
@@ -848,6 +856,7 @@ class ArchitectureManager:
                         proot, started_at, t0, "failed",
                         error=f"阶段1 探索失败（claude 非零退出 exit={rc}），"
                               f"取证材料未产出",
+                        logger=logger,
                     )
                     return
                 if not _evidence_ready(proot):
@@ -855,12 +864,13 @@ class ArchitectureManager:
                         proot, started_at, t0, "failed",
                         error=f"阶段1 探索失败（{ARCHITECTURE_DIR}/"
                               f"{EVIDENCE_FILENAME} 缺失或为空），取证材料未产出",
+                        logger=logger,
                     )
                     return
                 _stamp_evidence_head(proot)
 
             # ── 3) 阶段2 出图 run ────────────────────────────────────
-            self._write_stage(proot, started_at, "authoring")
+            self._write_stage(proot, started_at, "authoring", logger=logger)
             # code-review item 6271296f09ad：spawn 前清理上一轮残留的旧图，
             # 使「产物存在」本身即代表本轮写入——阶段2 claude 自述完成
             # （exit=0 + ARCHIFY_DONE marker）但写盘被静默拒绝时，判定链的
@@ -896,7 +906,8 @@ class ArchitectureManager:
                     f"stderr 尾部: {(stderr or '')[-400:] if isinstance(stderr, str) else ''}",
                 )
             self._finish(
-                proot, started_at, t0, state, error=error, component_count=count
+                proot, started_at, t0, state, error=error, component_count=count,
+                logger=logger,
             )
         except Exception as exc:  # noqa: BLE001 — 兜底判定链等意外异常
             # code-review item 3f4adc8143f0：意外异常若放任穿出线程体，终态未
@@ -911,6 +922,7 @@ class ArchitectureManager:
             self._finish(
                 proot, started_at, t0, "failed",
                 error="架构图生成因内部错误终止，请重试",
+                logger=logger,
             )
         finally:
             lock.release()
@@ -924,6 +936,7 @@ class ArchitectureManager:
         *,
         error: str | None = None,
         component_count: int | None = None,
+        logger=None,
     ) -> None:
         """终态落盘（ready/failed）：generated_at 仅 ready 填、duration_ms 全程。"""
         duration_ms = int((time.monotonic() - t0) * 1000)
@@ -948,10 +961,11 @@ class ArchitectureManager:
             # code-review item 79585a2bd0c7：不逃逸线程（读侧按残留态兜底）
             # 但须留痕服务端日志——残留 generating 合成的「生成被中断」无法
             # 与真实写盘故障区分，口径对齐本模块其余失败路径。
-            logger.warning(
-                f"架构图终态写盘失败（proot={proot}）: "
-                f"{type(exc).__name__}: {exc!r}",
-            )
+            if logger is not None:
+                logger.warning(
+                    f"架构图终态写盘失败（proot={proot}）: "
+                    f"{type(exc).__name__}: {exc!r}",
+                )
 
 
 # dashboard 进程内单例（design D2 单写者）。测试经独立 tmp 项目隔离，
