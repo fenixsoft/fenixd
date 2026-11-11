@@ -1,5 +1,5 @@
 # 知识真相源
-> 最后更新：2026-11-11 13:09 UTC+8
+> 最后更新：2026-11-11 13:14 UTC+8
 
 本项目知识按**能力域**组织：域内一能力一页，只装当前生效的业务规则；
 历史演变见各页「溯源」段与 `spec/archive/`。能力页由存量回填批次逐步产出，
@@ -51,7 +51,7 @@
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排、SPEC 状态标签（含 blocked 处置相位三态）。另有 dsh 面板桥集成（嵌入挂载/工作区行项目导航/右缘页签直达/设置停靠）、dsh web 访问面（入口账号密码登录、连接基线、设置 UI 契约）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 46 | 2026-11-11 13:09 |
+| 5.1 | [dashboard-frontend](domains/dashboard-frontend/_domain.md) | 跨项目仪表盘前端。覆盖现产六页（概览/项目列表/SPEC 详情/配置/运维/帮助）与指挥中心的页面规则、全站统一标题栏与 chrome 染色、antd 表格与滚动纪律、移动端卡片流编排、SPEC 状态标签（含 blocked 处置相位三态）。另有 dsh 面板桥集成（嵌入挂载/工作区行项目导航/右缘页签直达/设置停靠）、dsh web 访问面（入口账号密码登录、连接基线、设置 UI 契约）、Bento 磁贴视觉条款（12px 圆角、跨域镜像不引用）与帮助文档体系。 | 46 | 2026-11-11 13:14 |
 | 5.2 | [dashboard-platform](domains/dashboard-platform/_domain.md) | 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期（双轨重启协议）、增量数据管线。按需生成类任务与指挥中心聚合同属此域。 | 16 | 2026-11-10 18:13 |
 | 5.3 | [mobile-adaptation](domains/mobile-adaptation/_domain.md) | dashboard 前端在窄屏视口（<768px）下的适配规则：断点统一、信息密度、触控目标、渐进披露与越界布局优先。 | 8 | 2026-11-07 21:43 |
 
@@ -62,11 +62,11 @@
 | 6.1 | [admin-ops](domains/admin-ops/_domain.md) | Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账。人工裁决选择题、告警生命周期与自解释叙事、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛。升级处置链（Admin→Arbiter→人工）的路由配额与链痕协调、链上处置台账即时闭合与 choice 链上执行、可观测配置、Arbiter 自主裁决车道。 | 35 | 2026-11-08 21:09 |
 | 6.2 | [self-evolution](domains/self-evolution/_domain.md) | 每日定时自省与聚合口径、框架自进化车道（条目复核与 SPEC 起草立项）、产物契约校验与部分接受、架构师 agent。陈旧代码自愈及其冷却保护、关键路径陈旧预检、todo.md 写路径防护、arbiter 立项通道退役注记。 | 18 | 2026-11-04 17:07 |
 
-### 7 工程与质量（4 域 · 23 能力）
+### 7 工程与质量（4 域 · 24 能力）
 
 | 编号 | 能力域 | 简介 | 能力数量 | 更新时间 |
 | --- | --- | --- | --- | --- |
-| 7.1 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）也在此域。 | 16 | 2026-11-10 18:35 |
+| 7.1 | [test-engineering](domains/test-engineering/_domain.md) | 测试套件自身的结构、隔离与守卫。全量回归的声明、执行与展示。Docker 集成测试环境（一键编排、凭据注入与网络故障判别）与 sink/store/服务装配链的真实工厂集成断言纪律也在此域。 | 17 | 2026-11-11 13:14 |
 | 7.2 | [build-gates](domains/build-gates/_domain.md) | 仓库构建层面的前置把关：交叉编译检查等编译级门禁，在提交前与实现 run 收工自证前拦截构建类缺陷。 | 1 | 2026-10-12 08:31 |
 | 7.3 | [codebase-structure](domains/codebase-structure/_domain.md) | core 后端代码的结构组织与结构类重构纪律：包分层、门面转发契约、巨型类与超长函数拆分。平台抽象层（PAL 单点分发与 POSIX syscall 零散落守卫）也在此域。 | 5 | 2026-11-11 02:57 |
 | 7.4 | [time-semantics](domains/time-semantics/_domain.md) | 全链时间语义：时间原语单源、时区分层约定（存储 aware UTC / 渲染本地）、naive 时间戳唯一解读策略。静态守卫防回潮与存量调用点迁移稳态。 | 2 | 2026-11-04 15:55 |
