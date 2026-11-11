@@ -427,7 +427,8 @@ class ArbiterLane:
         - ``"disabled"``：arbiter.enabled=false（关闭态零侵扰——调用方应走
           既有 narrative/人工路径，本方法不做任何写入）；
         - ``"excluded"``：signal 在 chain.blacklist 黑名单（留 narrative 与
-          人类——不进 Arbiter 也不进链，直达人工队列）；
+          人类——不进 Arbiter 也不进链，直达人工队列）；spec 名路径不安全
+          同出口（item dabef7963cec，与回扫面同款防线）；
         - ``"deduped"``：同签名已派发/在飞（含复现升级在飞）——本次触发
           只绑 alert/补挂告警升级，不再派发；**派发前置探针拦截
           （harden-arbiter-lane-resilience 3.2）同样返回本字**（零新契约，
@@ -449,7 +450,18 @@ class ArbiterLane:
             # Arbiter 也不进链，调用方走既有落盘路径（直达人工 + narrative）
             return "excluded"
         sig = arbiter_failure_signature(spec, signal_type)
-        # ── 派发前置探针拦截（agent-lane-preflight R3）────────────────
+        # 路径安全单点筛查（item dabef7963cec）：spec 名含 ../ 等不安全分量
+        # 时签名会内插进 unfreeze/预算改写等写点，回扫面
+        # （_backlog_candidates）已按同款排除；事件面（冻结/告警双咽喉）
+        # 不安全即 excluded——不进 Arbiter 不进链不产生台账，调用方走既有
+        # 落盘路径直达人工，与黑名单同出口。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+        if _spec_name_path_error(spec):
+            self._log(
+                "warning",
+                f"arbiter 触发拒绝路径不安全 spec={spec!r}",
+            )
+            return "excluded"
         # 拦截点位于一切 dedup/_recurrence_inflight 复现标记消费之前；命中
         # 零状态变更（见返回值段 deduped 条目注记）。关闭态零侵扰纪律下
         # disabled/excluded 先行短路（enabled=false 不派发不拦截不产生
@@ -471,6 +483,7 @@ class ArbiterLane:
         # 状态迁移清零由链配额层负责（此处只读判定，不复位不计数——拍板
         # 计数在 _on_disposition_success 落）。台账 dead-man 读失败按空集
         # fail-open（load_arbiter_ledger 自带降级）。
+        # [fenix-ignore:e8ea683f7ae2] 配额/dead-man 读在锁外属本模块声明的慢盘取舍（单次超发有界、下一触发收敛）；严格化须把盘 IO 挪进 _lock 临界区，冻结咽喉热路径代价更大
         persisted_deadmanned = self._ledger_sigs(kinds={"dead-man"})
         quota = self._chain_quota()
         rulings = self._safe_rulings(quota, sig)
