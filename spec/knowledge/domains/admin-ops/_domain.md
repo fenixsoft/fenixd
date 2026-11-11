@@ -1,5 +1,5 @@
 # 管理员运营与告警
-> 最后更新：2026-11-11 13:28 UTC+8
+> 最后更新：2026-11-11 14:12 UTC+8
 
 管理员运营与告警：Administrator 自愈 agent、健康监视与异常探测、处置留痕与运维记录视图、维护型工作登记台账、人工裁决选择题、告警生命周期与告警自解释叙事、告警面板验证夹具种子、请求型信号前置探测闭环、孤儿处置生效核查收敛、升级处置链（Admin→Arbiter→人工）的路由配额与可观测配置、链终点推荐项分级自动执行、Arbiter 自主裁决车道。本域能力页清单如下（个别条目由后续回填批次产出，落盘后升级为链接）。
 
@@ -36,7 +36,7 @@
 | [arbiter-lane](arbiter-lane.md) | Arbiter 自主裁决车道（触发面黑名单制与单飞配额、权限红线含禁立项、处置白名单、五段台账、零噪音分层、框架缺口 gaps→todo 路由） | 2026-11-03 23:39 |
 | [escalation-chain](escalation-chain.md) | 升级处置链（Admin→Arbiter→人工）路由与配额语义（frozen 预检、frozen-terminated 不计尝试、Arbiter 复现配额缺省 3）、防自环、链痕单源协调、让行留痕与看护扫描唤醒、失败双轨上升、黑名单 kill switch 与 fail-open 降级、存量迁移、看护豁免通道、链上 admin run 返回即落账（单源落账助手）与闭环出口 choice 执行（fail-closed）、链事件 run_id 结构字段与看护对账兜底、链终点推荐项分级自动执行摘要（细则→adjudication-auto-exec） | 2026-11-11 13:28 |
 | [adjudication-auto-exec](adjudication-auto-exec.md) | 链终点 pending 升级告警推荐项分级自动执行（四判据、grace 否决窗锚推荐可用时刻、连续自动执行上限、human-only 档老化升级、fail-open 降级、auto_exec 读面投影） | 2026-11-11 13:28 |
-| [chain-observability](chain-observability.md) | 处置链可观测与配置（时间轴全链节点、Dashboard 处置链视图·运维页三页签之一、链配置设置界面） | 2026-11-05 18:19 |
+| [chain-observability](chain-observability.md) | 处置链可观测与配置（时间轴全链节点、Dashboard 处置链视图·运维页三页签之一·bento 行卡形态·分层只读、链配置设置界面） | 2026-11-11 14:12 |
 | [blocked-disposition-classification](blocked-disposition-classification.md) | blocked 冻结/阻塞二分类机械化 | 2026-10-03 04:59 |
 | [stuck-signal-hygiene](stuck-signal-hygiene.md) | stuck 信号活跃度预检与处置后静默 | 2026-10-03 04:59 |
 | [signal-preprobe-handled-writeback](signal-preprobe-handled-writeback.md) | 请求型信号前置探测闭环与处置回写 | 2026-10-04 04:51 |
