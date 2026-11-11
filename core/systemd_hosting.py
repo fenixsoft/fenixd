@@ -88,10 +88,6 @@ SESSION_IDENTITY_DENYLIST_PREFIXES = (
     "GIT_ASKPASS",
 )
 
-# 合法 env 键名（/proc/<pid>/environ 可能含 bash 导出的函数键 `BASH_FUNC_…%%`
-# 等，写入 EnvironmentFile 会被 systemd 拒绝整行解析，跳过）
-_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
 
 def systemctl_available() -> bool:
     """systemctl 是否可执行（非 systemd 环境 → False，调用方拒绝并给可读错误）。

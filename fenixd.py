@@ -68,22 +68,6 @@ from core.signals import SCHEDULING_KICK_DIR
 SCHEDULING_KICK_STALE_THRESHOLD_SECONDS = 3600
 
 
-def _url_has_embedded_credential(url: str) -> bool:
-    """判定一个 remote URL 是否内嵌凭证（fix-push-credential-env-and-retry-rearm 4.1）。
-
-    http(s) 形态 URL 的 authority 段含用户名（``https://<token>@host/...``）
-    即认内嵌凭证腿在场；ssh 形态（``git@host:path``）走 ssh-key 认证，不算
-    内嵌凭证。解析失败（畸形 URL）按无凭证处理，不抛异常。
-    """
-    try:
-        from urllib.parse import urlsplit
-
-        parts = urlsplit(str(url).strip())
-    except ValueError:
-        return False
-    if parts.scheme not in ("http", "https"):
-        return False
-    return bool(parts.username)
 from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
     commit_wip_checkpoint,
@@ -100,6 +84,25 @@ from core.alert_lifecycle import attach_trigger
 from core.admin_monitor import AdminMonitor, DISPOSITION_AUTO_RESET_SIGNAL_TYPES
 from core.hook_engine import HookEngine
 from core.pm_engine import PMEngine
+
+
+def _url_has_embedded_credential(url: str) -> bool:
+    """判定一个 remote URL 是否内嵌凭证（fix-push-credential-env-and-retry-rearm 4.1）。
+
+    http(s) 形态 URL 的 authority 段含用户名（``https://<token>@host/...``）
+    即认内嵌凭证腿在场；ssh 形态（``git@host:path``）走 ssh-key 认证，不算
+    内嵌凭证。解析失败（畸形 URL）按无凭证处理，不抛异常。
+    """
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(str(url).strip())
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    return bool(parts.username)
+
 
 # Administrator 处置状态实例文件的残留清扫阈值（fix-admin-run-blocks-mainloop
 # tasks 1.3）：run 异常中断时实例文件可能残留，无功能影响（按 run_id 读取），
@@ -5916,6 +5919,16 @@ class FenixDaemon:
                 if self._admin_executor is not None:
                     self._admin_executor.submit(self._evolution_worker, ready, pending, snapshot_at)
                 else:
+                    # admin.workers=0 同步回退（逃生门，对齐 _submit_admin_run /
+                    # spec_delete 同款）：无后台池可投递，自进化分析在主循环线程
+                    # 内同步执行。阻塞代价承认：不同于 approve_push/spec_delete
+                    # 车道的 60-120s 有界等待，自进化 run 无车道级有界等待——按
+                    # _is_idle 口径单批至多 (1+MAX_FIX_ROUNDS)=3 轮 ×
+                    # RUN_TIMEOUT_SECONDS=1800s 硬超时，最坏可在本线程同步阻塞
+                    # 约 90 分钟，期间全部 1s 粒度文件信号车道（admin_invoke /
+                    # cancel_run / approve_push / spec_delete / code_review /
+                    # regression / code_fix 等）与陈旧自愈 tick 全部停摆
+                    # （admin.workers=0 为显式配置选择，按既有口径接受该代价）。
                     self._evolution_worker(ready, pending, snapshot_at)
             except Exception as e:
                 self._evolution_in_flight = False

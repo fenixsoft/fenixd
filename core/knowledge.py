@@ -337,6 +337,18 @@ def validate_knowledge(project_root) -> list:
         # 补闭合围栏反而错移配对、把末个真实闭合围栏之后的正文整段吞掉。
         scrubbed = re.sub(r"```.*?```", "", text, flags=re.S)
         scrubbed = re.sub(r"`[^`\n]+`", "", scrubbed)
+
+        def _check_target_exists(target: str, path_part: str) -> None:
+            """越界与存在性裁决（严格/兜底两通道共用，裁决口径一致）。"""
+            resolved = (rel_dir / path_part).resolve()
+            try:
+                resolved.relative_to(kroot.resolve())
+            except ValueError:
+                violations.append(f"{label}: 链接越出真相源目录: {target}")
+                return
+            if not resolved.exists():
+                violations.append(f"{label}: 链接目标不存在: {target}")
+
         for m in _LINK_RE.finditer(scrubbed):
             target = m.group(1)
             if target.startswith(("http://", "https://", "mailto:")):
@@ -376,14 +388,7 @@ def validate_knowledge(project_root) -> list:
                 path_part = path_part[1:-1]
                 if not path_part:
                     continue  # <> 空包裹按纯页内锚点同口径跳过
-            resolved = (rel_dir / path_part).resolve()
-            try:
-                resolved.relative_to(kroot.resolve())
-            except ValueError:
-                violations.append(f"{label}: 链接越出真相源目录: {target}")
-                continue
-            if not resolved.exists():
-                violations.append(f"{label}: 链接目标不存在: {target}")
+            _check_target_exists(target, path_part)
 
         # 非标准目标兜底（code-review a89f0fcb03e7）：_LINK_RE 捕获组排除
         # 空白与右括号，目标含空格/嵌套括号的链接整体不参与上方越界/存在性
@@ -395,13 +400,36 @@ def validate_knowledge(project_root) -> list:
             target = m.group(1)
             if not target or not re.search(r"[\s(]", target):
                 continue  # 空目标无路径语义；合法形态已由 _LINK_RE 检查
-            # <目标> 尖括号完整包裹为合法 markdown 形态（code-review
-            # cc2ca6fe60b1）：此类目标正含空格/括号才落到本兜底，按报错文案
-            # 承诺放行，不再判格式违规。_LINK_LOOSE_RE 原样捕获尖括号，此处
-            # 只放行不参与后续检查，无去括号需求。
-            if target.startswith("<") and target.endswith(">"):
-                continue
             if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            # <目标> 尖括号完整包裹为合法 markdown 形态（code-review
+            # cc2ca6fe60b1）：此类目标正含空格/括号才落到本兜底，豁免「格式
+            # 违规」上报，但不整体放行——剥掉成对尖括号（与严格通道
+            # 619958a1e296 同款剥离口径）后继续做越界与存在性检查，含空格的
+            # 死链/越界目标（如 <../../x y.md>）不得借合法形态逃过校验
+            # （code-review 3c03f175bff0，堵 a89f0fcb03e7 自述问题在该形态
+            # 上的残留面；两类合法尖括号形态校验强度恢复对称）。
+            if target.startswith("<") and target.endswith(">"):
+                # 先剥括号再判外链：<https://a b.com> 剥前以 ``<`` 开头命中不了
+                # 上方外链豁免，剥后命中——该形态正是上方格式违规文案建议的
+                # 自愈出路，不得反被下方存在性检查误伤（868d1925dbca 两通道
+                # 裁决一致性同款纪律）。
+                stripped = target[1:-1]
+                if stripped.startswith(("http://", "https://", "mailto:")):
+                    continue
+                path_part = stripped.split("#", 1)[0]
+                if not path_part:
+                    continue  # <> 空包裹/纯页内锚点按严格通道同口径跳过
+                # 与严格通道同序：%xx 解码后判越界（转义形态不得绕出真相源
+                # 目录），NUL 字节按格式违规记条目防 resolve ValueError 击穿
+                # 整个 validate_knowledge（375576fcef79 同口径）。
+                path_part = urllib.parse.unquote(path_part)
+                if "\x00" in path_part:
+                    violations.append(
+                        f"{label}: 链接目标格式非法（含 NUL 字节）: {target}"
+                    )
+                    continue
+                _check_target_exists(target, path_part)
                 continue
             violations.append(
                 f"{label}: 链接目标格式非法（含空格或未转义括号，须 %20 转义"
@@ -430,7 +458,13 @@ def validate_knowledge(project_root) -> list:
                 # split 按竖线逐字切开会把合法的 ``\\|`` 一并切开，列数虚增或
                 # 时间列下标错位，合法表格被误判更新时间违规、白烧修正轮。
                 cells = [c.strip() for c in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
-                if cells and cells[0] and set(cells[0]) <= {"-"}:  # 分隔行（首列非空，防空串误判）
+                # 分隔行判定放行对齐冒号（code-review 73885cc17ab7）：GFM 同样
+                # 合法的 `| :--- | :---: |` 对齐分隔行（LLM 蒸馏产出常见变体）
+                # 首列含 ``:``，只认纯 ``-`` 会把整行误判为数据行、末列时间必然
+                # 失配而报「更新时间缺失或格式非法」，修正轮难以从文案定位到
+                # 分隔行形态、白烧 2 轮修正预算；冒号无数据语义，豁免性质与上
+                # 方切列豁免转义竖线同款。（首列非空，防空串误判）
+                if cells and cells[0] and set(cells[0]) <= {"-", ":"}:
                     continue
                 if len(cells) != expected_cols or not _STAMP_CELL_RE.match(cells[ts_col_idx]):
                     out.append(
@@ -789,6 +823,34 @@ def _source_rewrite_lock(proot: Path):
             fh.close()
 
 
+@contextmanager
+def _knowledge_distill_lock(proot: Path):
+    """知识页写段与蒸馏批串行的进程间互斥（flock，``.fenix/knowledge-distill.lock``）。
+
+    与 ``DistillManager._acquire_file_lock`` 同一锁文件：蒸馏 run 在批内
+    flock 长期持有期间，claude 以自身陈旧视图整页重写知识页——其他知识页
+    写段（归档溯源改写等）在本锁内执行即与其串行，防「一方基于读时快照的
+    整页回写覆盖另一方刚写入的页面内容」（溯源改写被回退死链复活、或蒸馏
+    产出被吞），与 run_audit 机械段/语义转写段/disputed 注记段的取蒸馏锁
+    纪律同口径（code-review c47e5407501c）。阻塞等待语义与
+    _acquire_file_lock 一致。注意 flock 跨 fd 不重入：已持有
+    knowledge-distill.lock 的上下文（蒸馏批内部）MUST NOT 再进入本锁，
+    同线程二次取锁自锁死；归档链路（CLI / dashboard）现状均在蒸馏锁外调用。
+    """
+
+    lock_dir = Path(proot) / ".fenix"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_dir / "knowledge-distill.lock", "w")  # noqa: SIM115 — 生命周期=with
+    try:
+        flock_exclusive(fh.fileno())
+        yield
+    finally:
+        try:
+            flock_release(fh.fileno())
+        finally:
+            fh.close()
+
+
 def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_name: str) -> list:
     """归档溯源改写 pass：知识页中该 SPEC 的 changes/ 引用批量改到归档路径。
 
@@ -813,7 +875,14 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
         实际发生替换的文件相对路径清单（posix 形态、相对项目根），供调用方
         并入归档提交的 pathspec。无命中的知识页不改写不写盘（无 mtime 噪声）。
         命中页的读改写窗口持跨进程 flock（``_source_rewrite_lock``），并发
-        归档对同一页的改写叠加不丢。
+        归档对同一页的改写叠加不丢。整个改写 pass 外层另持蒸馏单飞锁
+        （``_knowledge_distill_lock``，与 DistillManager 同一
+        ``.fenix/knowledge-distill.lock``）：在飞蒸馏 run 以自身陈旧视图整页
+        重写知识页，与本 pass 的读改写并发时后写者整页覆盖先写者——溯源改写
+        被回退（死链复活）或蒸馏产出被吞；持蒸馏锁串行与 run_audit 写段同
+        口径（code-review c47e5407501c）。取舍：归档主流程在长蒸馏批在飞时
+        阻塞等待锁（flock 阻塞语义，与 _acquire_file_lock 一致；归档链路
+        fail-open 语义不变，阻塞非异常），换取页内容不丢。
 
     Raises:
         读页/写盘等异常原样抛给调用方——fail-open（告警留痕、归档照常）的
@@ -823,52 +892,56 @@ def rewrite_source_links_to_archive(project_root, spec_name: str, archive_dir_na
     kroot = proot / KNOWLEDGE_DIR
     if not kroot.is_dir():
         return []
-    # 右边界： (?![A-Za-z0-9._-]) ——命中名后随名字字符即否决（前缀同名保护）；
-    # 边界零宽不消费，尾随的 ``/`` ``）`` ``，`` 或串尾均放行
-    pattern = re.compile(
-        re.escape(f"spec/changes/{spec_name}") + rf"(?!{_SOURCE_NAME_CLS})"
-    )
-    replacement = f"spec/archive/{archive_dir_name}"
-    rewritten: list = []
-    for page in sorted(kroot.rglob("*.md")):
-        page_rel = page.relative_to(kroot)
-        # 编年账与候选区显式豁免（add-knowledge-inbox-pipeline 5.1）：候选
-        # 原文「永久可考」要求逐字节冻结——含 ``spec/changes/<名>`` 历史形态
-        # 文本的条目不改写（接受指向已消失目录的历史文本，静默改写才是真
-        # 违背承诺）；log.md 同冻结。
-        if page_rel.as_posix() == "log.md" or INBOX_DIRNAME in page_rel.parts:
-            continue
-        try:
-            text = page.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            # 单页不可读：与 validate_knowledge 的读取防御同口径按跳过处理，
-            # 不让一个坏页阻断整批改写（调用方的 fail-open 针对整体异常）
-            continue
-        if f"spec/changes/{spec_name}" not in text:
-            continue  # 快速预筛：无命中不读写盘（不取锁）
-        # 逐页读改写互斥（code-review c6002c057367）：上方预筛读到的是无锁
-        # 快照，并发归档可能在预筛与取锁之间已改写本页（另一 SPEC 的
-        # changes/ 引用）——持锁后重读盘上最新文本再做替换回写（同
-        # _pending_ledger_lock 的持锁重读-回写纪律），后写者不再以旧文本
-        # 覆盖先写者刚落的 ``spec/archive/`` 改写。
-        with _source_rewrite_lock(proot):
+    # 整个改写 pass 持蒸馏单飞锁（code-review c47e5407501c，见 docstring）：
+    # 与在飞蒸馏 run（flock 长期持有）串行，堵「整页读改写 vs 蒸馏整页重写」
+    # 的丢失更新窗口；无知识目录的 no-op 路径不取锁不排队。
+    with _knowledge_distill_lock(proot):
+        # 右边界： (?![A-Za-z0-9._-]) ——命中名后随名字字符即否决（前缀同名保护）；
+        # 边界零宽不消费，尾随的 ``/`` ``）`` ``，`` 或串尾均放行
+        pattern = re.compile(
+            re.escape(f"spec/changes/{spec_name}") + rf"(?!{_SOURCE_NAME_CLS})"
+        )
+        replacement = f"spec/archive/{archive_dir_name}"
+        rewritten: list = []
+        for page in sorted(kroot.rglob("*.md")):
+            page_rel = page.relative_to(kroot)
+            # 编年账与候选区显式豁免（add-knowledge-inbox-pipeline 5.1）：候选
+            # 原文「永久可考」要求逐字节冻结——含 ``spec/changes/<名>`` 历史形态
+            # 文本的条目不改写（接受指向已消失目录的历史文本，静默改写才是真
+            # 违背承诺）；log.md 同冻结。
+            if page_rel.as_posix() == "log.md" or INBOX_DIRNAME in page_rel.parts:
+                continue
             try:
                 text = page.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
-                # 单页不可读：与预筛读取同口径按跳过处理，不让一个坏页
-                # 阻断整批改写（调用方的 fail-open 针对整体异常）
+                # 单页不可读：与 validate_knowledge 的读取防御同口径按跳过处理，
+                # 不让一个坏页阻断整批改写（调用方的 fail-open 针对整体异常）
                 continue
-            new_text = pattern.sub(lambda _m: replacement, text)
-            if new_text == text:
-                continue  # 仅前缀同名命中（右边界全否决），不改写
-            # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
-            if not page.is_file():
-                continue
-            # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
-            # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
-            atomic_write_text(page, new_text)
-        rewritten.append(page.relative_to(proot).as_posix())
-    return rewritten
+            if f"spec/changes/{spec_name}" not in text:
+                continue  # 快速预筛：无命中不读写盘（不取锁）
+            # 逐页读改写互斥（code-review c6002c057367）：上方预筛读到的是无锁
+            # 快照，并发归档可能在预筛与取锁之间已改写本页（另一 SPEC 的
+            # changes/ 引用）——持锁后重读盘上最新文本再做替换回写（同
+            # _pending_ledger_lock 的持锁重读-回写纪律），后写者不再以旧文本
+            # 覆盖先写者刚落的 ``spec/archive/`` 改写。
+            with _source_rewrite_lock(proot):
+                try:
+                    text = page.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    # 单页不可读：与预筛读取同口径按跳过处理，不让一个坏页
+                    # 阻断整批改写（调用方的 fail-open 针对整体异常）
+                    continue
+                new_text = pattern.sub(lambda _m: replacement, text)
+                if new_text == text:
+                    continue  # 仅前缀同名命中（右边界全否决），不改写
+                # 写盘前再查父目录仍在（并发归档/清理移除目录时 fail-open 跳过单页）
+                if not page.is_file():
+                    continue
+                # 原子落盘（tmp+os.replace）：与 _write_pending_ledger 同口径，避免
+                # 写入中途 SIGKILL/掉电留下截断知识页（code-review c03e0a119818）
+                atomic_write_text(page, new_text)
+            rewritten.append(page.relative_to(proot).as_posix())
+        return rewritten
 
 
 # ── 编年账 log.md（add-knowledge-inbox-pipeline 4.1）──────────────────
@@ -2155,14 +2228,22 @@ def _distill_run_artifact_open(proot: Path, archived_names: list) -> "Path | Non
 
     run_id = ``knowledge-distiller-<首归档名>-<int(time.time())>``：一批多
     归档时中段取首归档名（人类可读溯源）、批内全名单进开始行 ``archived``
-    字段数组；归档目录名自带日期前缀含点号，run_id 白名单
-    ``run_files._RUN_ID_RE``（``[A-Za-z0-9._-]``）允许，合法。
+    字段数组；归档目录名自带日期前缀含点号。读侧 run_id 白名单
+    ``_RUN_ID_RE``（``^[A-Za-z0-9._-]+`` 全串校验，实际定义于
+    core/dashboard/data/runs.py 的 _resolve_run_file 前置）不接受非
+    ASCII——_gate_distill 只拦路径分隔符与 ./.. 不拦非 ASCII 字符，SPEC
+    目录名为中文等形态时原样拼入会被读侧判 invalid、`run_id=...` 直查恒
+    返回哨兵路径、产物按 run_id 定位恒「不存在」，故首归档名先做白名单外
+    字符归一（非白名单字符折叠为 ``_``，原始全名仍在开始行 ``archived``
+    数组可溯源；code-review c9bd4a44a216）。
     """
+    # 归一字符集与读侧 _RUN_ID_RE 白名单（^[A-Za-z0-9._-]+\Z）保持一致
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", archived_names[0])
     run_file = (
         proot
         / ".fenix"
         / "runs"
-        / f"knowledge-distiller-{archived_names[0]}-{int(time.time())}.jsonl"
+        / f"knowledge-distiller-{stem}-{int(time.time())}.jsonl"
     )
     try:
         run_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2583,6 +2664,13 @@ class DistillManager:
             # 祖先折叠条目时事后展开会把折叠产出误充基线，与 run_baseline
             # 同根因同口径
             status_before = _knowledge_baseline_snapshot(proot)
+            # 折叠 run 越界写面对账快照（code-review 8eee244da029，与
+            # _run_batch_core 主蒸馏轮同口径）：折叠前置段 run 经同一
+            # _spawn_and_wait（同 bypassPermissions 权限）直跑主树，spawn 前
+            # 取 git status 快照，成功与回滚两条收尾路径各调 _audit_stray_writes
+            # 对账留痕（只告警不回滚，防吞用户未提交改动）——条目内容提示注入
+            # 后越界改写主树其他路径不得零 WARNING 静默。
+            spawn_status_before = _git_status_paths(proot)
             # add-distill-run-work-summary：折叠子 run stdout 不进总结
             # （design Non-Goal，folded 计数语义不变），第三位丢弃
             ok, err, _fold_stdout = self._spawn_and_wait(
@@ -2618,10 +2706,12 @@ class DistillManager:
                             name,
                             commit or "无变更",
                         )
+                        _audit_stray_writes(proot, spawn_status_before, name)
                         continue
                     err = "校验通过但自动提交失败"
             reason = err or "；".join(violations[:3])
             self._rollback_failed_fold(proot, status_before, name, snapshot, origin_rel)
+            _audit_stray_writes(proot, spawn_status_before, name)
             append_knowledge_log(
                 proot, "fold", f"{name} 折叠失败滞留：{_log_subject_safe(reason, 120)}"
             )

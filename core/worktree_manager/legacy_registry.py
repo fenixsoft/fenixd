@@ -336,6 +336,12 @@ class G2LegacyRegistryMixin:
             # spec 键会在缓存窗口内残留摘锁前的家族存活判定。
             self._proc_scan_cache.pop((spec_name, ("verify",)), None)
             self._proc_scan_cache.pop((spec_name, ("impl",)), None)
+            # repair 族键一并失效（code-review item 20f10fcb8a39）：上注释值域
+            # 含 repair（refresh_locks 对 <spec>:repair 键按 (spec,("repair",))
+            # 读写本缓存，e622a1c358b3），补齐实现消除注释与实现漂移——当前
+            # 摘锁点因缺 _lock_since 的保守守卫（98ad40e18a38）尚摘不到
+            # repair 键，先补失效防未来释放路径残留陈旧存活判定。
+            self._proc_scan_cache.pop((spec_name, ("repair",)), None)
             self._release_spec_locks_of(spec_name, not_after=entry_ts, family=lock_family)
             return
         self._active_worktrees.discard(wt_str)
@@ -367,6 +373,12 @@ class G2LegacyRegistryMixin:
         # 窗口内残留摘锁前的家族存活判定。
         self._proc_scan_cache.pop((spec_name, ("verify",)), None)
         self._proc_scan_cache.pop((spec_name, ("impl",)), None)
+        # repair 族键一并失效（code-review item 20f10fcb8a39，登记未生效出口
+        # 同款）：上注释值域含 repair（refresh_locks 对 <spec>:repair 键按
+        # (spec,("repair",)) 读写本缓存，e622a1c358b3），补齐实现消除注释与
+        # 实现漂移——当前摘锁点因缺 _lock_since 的保守守卫（98ad40e18a38）
+        # 尚摘不到 repair 键，先补失效防未来释放路径残留陈旧存活判定。
+        self._proc_scan_cache.pop((spec_name, ("repair",)), None)
         self.logger.info(
             "worktree_manager",
             f"Kept worktree for reuse: {wt_path} (branch {branch}, "

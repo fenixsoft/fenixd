@@ -2,6 +2,7 @@ import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
 import { App, Button, Card, Menu, Select, Space, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { isEmbedMode } from '@/utils/embedMount';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
@@ -41,6 +42,9 @@ import ArbiterPanel from './components/ArbiterPanel';
 import ChainPanel from './components/ChainPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 import type { SettingsSectionHandle } from './components/settingsSection';
+// 页签底部保存按钮行布局单源（code-review item 2051fbd81007）：自进化/仲裁两
+// 个堆叠页签的保存按钮行不再各自内联，与其他面板保存行同取此常量
+import { SETTINGS_ACTIONS_ROW_STYLE } from './styles';
 
 const { Text } = Typography;
 
@@ -304,12 +308,17 @@ export default function SettingsPage() {
   // 快速分配应用回调（add-agent-model-quick-assign 5.3）：弹窗内已逐项展示
   // 结果；本回调负责成功提示（含「重启 daemon 后生效」口径）与当前作用域
   // 重载——若 results 含本作用域成功项（用户级作用域下的 user 目标，或项目
-  // 级作用域下 project===当前项目的目标），快照复位面板判脏（新配置回填后
-  // 旧编辑已不成立，对齐 handleSave 的已落盘复位口径）→ getConfig 重载 →
-  // setConfig；重载完成经 scopeRef/projectRef 币值守卫丢弃迟到回包（沿用
-  // handleSave 同款守卫）；重载失败沿用既有「已保存，但刷新配置失败…」
-  // warning。仅指定项目成功则只提示成功、不重载当前表单（spec「仅指定项目
-  // 时不重载当前表单」）。
+  // 级作用域下 project===当前项目的目标），先武装快照（首个 await 前的同一
+  // 同步段，同 handleSave 快照口径）→ getConfig 重载 → setConfig → 复位面板
+  // 判脏。复位后移到重载成功并比对币值通过之后（code-review item
+  // 46bf698756cb）：新配置回填后旧编辑已不成立，对齐 handleSave 的已落盘
+  // 复位时序——旧实现先复位后重载，重载失败只弹 warning、config 停留旧值，
+  // 未保存编辑仍在而脏标记已被清零，切页签不再弹丢弃确认、面板卸载即静默
+  // 丢弃这批编辑。重载完成经 scopeRef/projectRef 币值守卫丢弃迟到回包（沿用
+  // handleSave 同款守卫，守卫不过不复位——该路径判脏已由 handleScopeSelect
+  // 的切换确认口径处理）；重载失败沿用既有「已保存，但刷新配置失败…」
+  // warning、脏标记原样保留。仅指定项目成功则只提示成功、不重载当前表单
+  // （spec「仅指定项目时不重载当前表单」）。
   const handleQuickAssignApplied = async (result: QuickAssignResponse) => {
     const results = result?.results || [];
     const okCount = results.filter((r) => r.ok).length;
@@ -325,113 +334,103 @@ export default function SettingsPage() {
     if (!currentScopeOk) return;
     const scopeAtStart = scope;
     const projectAtStart = project;
-    snapshotPanelDirty()();
+    // 先武装快照不立即复位（code-review item 46bf698756cb）：复位推迟到重载
+    // 成功之后执行；快照后新置脏的再编辑经 lastDirtyAt 门禁保留（panelDirty
+    // 在飞保存再编辑守卫同款口径）
+    const resetPanelDirty = snapshotPanelDirty();
     try {
       const configData = await getConfig(project);
       if (scopeRef.current === scopeAtStart && projectRef.current === projectAtStart) {
         setConfig(configData);
+        resetPanelDirty();
       }
     } catch {
       message.warning('已保存，但刷新配置失败，请切换作用域或刷新页面查看最新值');
     }
   };
 
+  // 堆叠页签两段式保存入口工厂（code-review item 2f264f982565）：自进化与仲裁
+  // 两个保存入口此前整段复制同一约 30 行流程——savingRef 置位、Promise.all
+  // 收集、undefined/null 双守卫、reduce 合并、空补丁提示、finally 复位逐句
+  // 相同，仅 ref 对与两处提示文案不同（「请先修正表单校验错误」「没有需要
+  // 保存的变更」两段文案两入口本就同文，随工厂自然单源）。提取后两个入口各
+  // 一行调用，与 useGatedFormPanel 收敛六面板同族脚手架的先例同口径：守卫
+  // 口径或文案调整单点生效，未来堆叠页签再增加直接接入不再翻倍复制。
+  const createStackedTabSave = (
+    refs: RefObject<SettingsSectionHandle | null>[],
+    labels: { collectError: string; notReady: string },
+  ) => {
+    return async () => {
+      // 重入守卫（code-review item d64feaab59a4）：本入口是 collect 校验 →
+      // handleSave 写盘 → getConfig 重载的多段异步链，在飞窗口为全页保存入口
+      // 中最长；saving 期间连点直接短路，不发重复写盘请求、不重复弹「保存成功」。
+      if (savingRef.current) return;
+      savingRef.current = true;
+      setSaving(true);
+      try {
+        // collect 契约是校验失败返回 null 而非 reject，但未禁止内部意外异常
+        // （config 缺段、ref 转发链断裂）——异常穿透会逃逸为 onClick 的未处理
+        // Promise 拒绝：saving 被 finally 复位，用户却零反馈，点击如同失效
+        // （code-review item e15f483ca1ed）。对齐 handleSave 的 error 口径后中止。
+        const parts = await Promise.all(
+          refs.map((ref) => ref.current?.collect()),
+        ).catch(() => {
+          message.error(labels.collectError);
+          return null;
+        });
+        if (parts === null) return;
+        // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
+        // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——undefined（面板
+        // 未就绪）与 null（校验失败）分开提示，均中止保存。
+        if (parts.some((p) => p === undefined)) {
+          message.warning(labels.notReady);
+          return;
+        }
+        // 校验失败不再静默返回（code-review item 57ca856f0531）：旧实现裸
+        // return 使用户以为已保存，实际什么都没发生。
+        if (parts.some((p) => p === null)) {
+          message.warning('请先修正表单校验错误');
+          return;
+        }
+        // 上方 undefined/null 双守卫已中止空元素，无需再做空值兜底
+        const merged = parts.reduce<Partial<ConfigData>>(
+          (acc, p) => ({ ...acc, ...p }),
+          {},
+        );
+        if (Object.keys(merged).length === 0) {
+          message.info('没有需要保存的变更');
+          return;
+        }
+        await handleSave(merged);
+      } finally {
+        // 各中止路径与在飞链结束统一复位；ref 同帧复位先于 state 渲染生效
+        savingRef.current = false;
+        setSaving(false);
+      }
+    };
+  };
+
   // 自进化页签唯一保存入口：两张卡片各自校验并收集本节配置，合并后一次提交
   // （任一卡片校验失败即中止；项目级作用域下建议改进项为只读、返回空补丁，
   // 故只提交在当前作用域可写的陈旧自愈节）。
-  const handleSelfEvolutionSave = async () => {
-    // 重入守卫（code-review item d64feaab59a4）：本入口是 collect 校验 →
-    // handleSave 写盘 → getConfig 重载的多段异步链，在飞窗口为全页保存入口
-    // 中最长；saving 期间连点直接短路，不发重复写盘请求、不重复弹「保存成功」。
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      // collect 契约是校验失败返回 null 而非 reject，但未禁止内部意外异常
-      // （config 缺段、ref 转发链断裂）——异常穿透会逃逸为 onClick 的未处理
-      // Promise 拒绝：saving 被 finally 复位，用户却零反馈，点击如同失效
-      // （code-review item e15f483ca1ed）。对齐 handleSave 的 error 口径后中止。
-      const parts = await Promise.all([
-        staleSelfhealRef.current?.collect(),
-        suggestionsRef.current?.collect(),
-      ]).catch((error) => {
-        message.error('收集自进化配置失败，保存已中止，请稍后重试');
-        return null;
-      });
-      if (parts === null) return;
-      // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c）：ref 未挂（卡片
-      // 未渲染/面板卸载）时 ``?.collect()`` 得 undefined——旧空检查只拒 null
-      // 哨兵，undefined 落入 ``?? {}`` 被当空数据合并：(a) 两 ref 都未挂时
-      // 用户看到「没有需要保存的变更」尽管啥也没收集；(b) 部分 ref 在场时真
-      // 数据与「未收集」混为一谈。undefined（面板未就绪）与 null（校验失败）
-      // 分开提示，均中止保存。
-      if (parts.some((p) => p === undefined)) {
-        message.warning('自进化面板未就绪，无法收集本节配置，请稍后重试');
-        return;
-      }
-      // 校验失败/无变更不再静默返回（code-review item 57ca856f0531）：旧实现两处
-      // 裸 return 使用户以为已保存，实际什么都没发生。
-      if (parts.some((p) => p === null)) {
-        message.warning('请先修正表单校验错误');
-        return;
-      }
-      // 上方 undefined/null 双守卫已中止空元素，无需再做空值兜底
-      const merged = parts.reduce<Partial<ConfigData>>(
-        (acc, p) => ({ ...acc, ...p }),
-        {},
-      );
-      if (Object.keys(merged).length === 0) {
-        message.info('没有需要保存的变更');
-        return;
-      }
-      await handleSave(merged);
-    } finally {
-      // 各中止路径与在飞链结束统一复位；ref 同帧复位先于 state 渲染生效
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
+  const handleSelfEvolutionSave = createStackedTabSave(
+    [staleSelfhealRef, suggestionsRef],
+    {
+      collectError: '收集自进化配置失败，保存已中止，请稍后重试',
+      notReady: '自进化面板未就绪，无法收集本节配置，请稍后重试',
+    },
+  );
 
   // 仲裁页签唯一保存入口（handleSelfEvolutionSave 同款两段式：两面板各自
   // validateFields 收集 → 合并为一次提交，任一校验失败即中止并提示）。复用
   // 同一对 saving/savingRef：两页签互斥渲染，state 语义不交叉。
-  const handleArbiterTabSave = async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      const parts = await Promise.all([
-        arbiterSectionRef.current?.collect(),
-        chainSectionRef.current?.collect(),
-      ]).catch((error) => {
-        message.error('收集仲裁配置失败，保存已中止，请稍后重试');
-        return null;
-      });
-      if (parts === null) return;
-      // ref 未挂载 ≠ 空收集（code-review item 51a0f171bc8c 同款口径）：undefined
-      // （面板未就绪）与 null（校验失败）分开提示，均中止保存
-      if (parts.some((p) => p === undefined)) {
-        message.warning('仲裁面板未就绪，无法收集配置，请稍后重试');
-        return;
-      }
-      if (parts.some((p) => p === null)) {
-        message.warning('请先修正表单校验错误');
-        return;
-      }
-      const merged = parts.reduce<Partial<ConfigData>>(
-        (acc, p) => ({ ...acc, ...p }),
-        {},
-      );
-      if (Object.keys(merged).length === 0) {
-        message.info('没有需要保存的变更');
-        return;
-      }
-      await handleSave(merged);
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
-  };
+  const handleArbiterTabSave = createStackedTabSave(
+    [arbiterSectionRef, chainSectionRef],
+    {
+      collectError: '收集仲裁配置失败，保存已中止，请稍后重试',
+      notReady: '仲裁面板未就绪，无法收集配置，请稍后重试',
+    },
+  );
 
   // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
   // Hook 为项目级设置置于菜单最末。项目简介页签固定名「项目」，不随项目名变长
@@ -697,7 +696,7 @@ export default function SettingsPage() {
                       project={scope === 'project' ? project : undefined}
                     />
                     {/* 页签唯一「保存」按钮：置于页面最下方、右对齐（自进化页签同款） */}
-                    <div style={{ textAlign: 'right', marginTop: 24 }}>
+                    <div style={SETTINGS_ACTIONS_ROW_STYLE}>
                       <Button
                         type="primary"
                         onClick={handleArbiterTabSave}
@@ -761,7 +760,7 @@ export default function SettingsPage() {
                       project={project}
                     />
                     {/* 页签唯一「保存」按钮：置于页面最下方、右对齐（与其它页签一致） */}
-                    <div style={{ textAlign: 'right', marginTop: 24 }}>
+                    <div style={SETTINGS_ACTIONS_ROW_STYLE}>
                       <Button
                         type="primary"
                         onClick={handleSelfEvolutionSave}

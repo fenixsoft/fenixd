@@ -118,11 +118,14 @@ def atomic_write_text(path, content: "str | bytes", inherit_existing_mode: bool 
             # 失败不阻断主流程。W3 起纪律原语上收 pal.fsync_dir（E 组单点）。
             pal.fsync_dir(parent)
     finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+        # 无条件按路径 unlink（item b5cf8ed27892）：成功路径 replace 后临时名
+        # 已释放，先 exists() 再 unlink 的双探测窗口内另一进程 mkstemp 若恰好
+        # 复用同名，本方会误删对方在写的临时文件；missing_ok 单次 unlink 收窄
+        # 窗口且不依赖 exists() 判定，FileNotFoundError/OSError 均容忍。
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def fsync_parent_dir(path: Path) -> None:

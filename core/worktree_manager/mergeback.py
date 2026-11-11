@@ -537,13 +537,22 @@ class G4MergebackMixin:
 
             store = AdminStore(self.project_root, self.logger)
             for r in store.read_all():
+                # 去重键结构化优先（code-review item 5646952c3447）：新记录以独立
+                # fingerprint 字段等值比较，指纹不再嵌在 evidence prose 里充当去重
+                # 键（evidence 文案调整或他处出现同形「指纹=」子串时子串口径会静默
+                # 漏判/误判）；存量历史在途记录无该字段，回退既有子串口径防漏判
+                # 重复轰炸。
+                if r.get("fingerprint"):
+                    fp_hit = r.get("fingerprint") == fp
+                else:
+                    fp_hit = f"指纹={fp}" in (r.get("evidence") or "")
                 if (
                     r.get("kind") == SIGNAL
                     and r.get("signal_type") == "spec_amendment_inflight"
                     and not r.get("handled")
                     and not r.get("escalated")
                     and r.get("spec") == spec
-                    and f"指纹={fp}" in (r.get("evidence") or "")
+                    and fp_hit
                 ):
                     return
             short = ", ".join(commits)
@@ -552,6 +561,10 @@ class G4MergebackMixin:
                     "kind": SIGNAL,
                     "signal_type": "spec_amendment_inflight",
                     "spec": spec or "",
+                    # 结构化去重键（code-review item 5646952c3447）：读取端按字段
+                    # 等值比较；evidence 内的「指纹=」prose 仅为人工排障留痕，
+                    # 不再承担去重职责。
+                    "fingerprint": fp,
                     "severity": "major",
                     "description": (
                         f"SPEC '{spec}' 实现分支在飞期间，主树 spec/changes/{spec}/ "
@@ -1763,10 +1776,43 @@ class G4MergebackMixin:
                 # 运行时草稿带未提交修改、而 merge 需写该路径时，git 直接拒绝且不进入
                 # 冲突态（_resolve_ignored_modify_delete_conflicts 覆盖不到）。移出后重试。
                 blockers = self._parse_merge_blockers(error)
-                if blockers and self._untrack_ignored_local_changes(blockers):
-                    result = _merge_once(branch)
-                elif blockers and self._discard_identical_local_changes(blockers, branch):
-                    result = _merge_once(branch)
+                if blockers:
+                    # 组合自愈（code-review item 96a746895319）：两级入口对整个
+                    # blocker 集合都是全有全无判定（untrack 要求全部路径被 ignore、
+                    # identical 要求全部路径与分支内容字节级一致），混合 blocker
+                    # （ignored 运行时草稿 + 与分支内容相同的 tracked 文件）会互相
+                    # 否定、逐路径本可自动解死的合回被推入冲突失败路径。先整批尝试
+                    # （纯同因集合保持既有单提交行为）；两级都判 False 时按路径维度
+                    # 拆分，以单路径清单复用各入口既有逐路径语义（依次 untrack→
+                    # discard-identical），全部处置成功才重试 merge；整批自愈成功
+                    # 但重试仍失败时重析新 error 再评估第二级，不再因 elif 短路让
+                    # 第二级自愈同轮失联。
+                    healed = False
+                    if self._untrack_ignored_local_changes(blockers):
+                        healed = True
+                    elif self._discard_identical_local_changes(blockers, branch):
+                        healed = True
+                    else:
+                        unresolved = []
+                        for path in blockers:
+                            if self._untrack_ignored_local_changes([path]):
+                                continue
+                            if not self._discard_identical_local_changes([path], branch):
+                                unresolved.append(path)
+                        healed = not unresolved
+                    if healed:
+                        result = _merge_once(branch)
+                        if result.returncode != 0:
+                            error = (
+                                result.stderr.strip()
+                                or result.stdout.strip()
+                                or f"exit code {result.returncode}"
+                            )
+                            blockers = self._parse_merge_blockers(error)
+                            if blockers and self._discard_identical_local_changes(
+                                blockers, branch
+                            ):
+                                result = _merge_once(branch)
             if result.returncode == 0:
                 # merge 已落地（HEAD 前移、内容已进主树，code-review item
                 # 9518e4be1085）：以下辅助步骤只做清理/重建，任何抛错仅

@@ -2301,6 +2301,7 @@ class StateMachine:
         recommended_action: str,
         alert_callback=None,
         extra_updates: Optional[dict] = None,
+        precheck_locked=None,
     ) -> bool:
         """「冻结转人工」单一入口（fix-blocked-freeze-classification D2）。
 
@@ -2327,6 +2328,15 @@ class StateMachine:
                 生产接线点：recover_interrupted 的 human_alert_callback、
                 spec_review/budget/spec_integrity 的 pm_engine
                 ._send_human_escalation_alert。None 仅允许单测场景。
+            precheck_locked: 冻结写锁内前置守卫回调（code-review 992acd3a8528，
+                可选）。提供时在 ``.STATE.md.lock`` 写临界区内以最新条目调用
+                （``callable(fresh_entry) -> bool``），返回 False 即整体放弃本
+                冻结写（不落盘、不发告警、返回 False）——「复查 → 冻结写」
+                原子化，闭合独立 precheck 与冻结写分处两临界区之间的残余窗口
+                （recover_interrupted 超限冻结专用）。回调 MUST 只做纯读判定，
+                锁内取锁会二次 flock 自阻塞、锁内落日志违反持锁窗口不含 I/O
+                约定。缺省 None 时走既有 update_spec 直写路径，其余调用方
+                行为不变。
 
         Returns: True 表示状态已更新。
         """
@@ -2361,15 +2371,47 @@ class StateMachine:
                 )
             }
             updates.update(safe_extra)
-        ok = self.update_spec(spec_name, updates)
+        if precheck_locked is None:
+            ok = self.update_spec(spec_name, updates)
+        else:
+            # 锁内守卫写（code-review 992acd3a8528）：守卫回调在 .STATE.md.lock
+            # 写临界区内以最新条目复查，「复查 → 冻结写」原子化（对齐
+            # set_impl_budget_used_if_unchanged 的锁内 CAS 范式）——独立 precheck
+            # 与冻结写分处两临界区时，人工冻结/取消保持恰落在两临界区之间的
+            # 残余窗口仍可趁隙（updates 自带 FROZEN_FIELD 使 _apply_updates_entry
+            # 的冻结剥离分支不触发，显式 status 写还会把 _cancelled_hold 清回
+            # False）。单条目写语义单源 _apply_updates_entry（freeze_spec 同款
+            # _mutate_locked 闭包形态），不复制第二份实现。
+            applied: dict = {}
+
+            def _guarded_mutate(specs):
+                entry = specs.get(spec_name)
+                if entry is None:
+                    return False, False
+                if not precheck_locked(entry):
+                    return False, False
+                found = self._apply_updates_entry(
+                    specs, spec_name, updates, applied
+                )
+                return found, found
+
+            ok = self._mutate_locked(_guarded_mutate)
+            if ok:
+                self._log_update_applied(spec_name, applied)
         if not ok and alert_callback is not None:
-            # code-review 2886e9ef0e25：update_spec False = 条目缺失/被并发删除，
-            # 冻结并未落盘——不再发送「已冻结」人工升级告警（人工会按推荐动作
-            # 去排查/解冻一个并不存在的冻结条目），改记 warning 留痕；与
-            # recover_interrupted 据 frozen_ok 修正 recovered 口径一致。
+            # code-review 2886e9ef0e25：update_spec False = 条目缺失/被并发删除
+            # （或锁内守卫拒绝——两种形态下冻结都未落盘），不再发送「已冻结」
+            # 人工升级告警（人工会按推荐动作去排查/解冻一个并不存在的冻结
+            # 条目），改记 warning 留痕；与 recover_interrupted 据 frozen_ok
+            # 修正 recovered 口径一致。
+            _fail_reason = (
+                "SPEC 缺失、被并发删除或冻结前锁内守卫拒绝"
+                if precheck_locked is not None
+                else "SPEC 缺失或被并发删除"
+            )
             self.logger.warning(
                 "state_machine",
-                f"freeze_for_human: '{spec_name}' 冻结写盘失败（SPEC 缺失或被并发删除），"
+                f"freeze_for_human: '{spec_name}' 冻结写盘失败（{_fail_reason}），"
                 f"跳过人工升级告警",
             )
             return False
@@ -3511,6 +3553,13 @@ class StateMachine:
         放行——freeze_for_human 内部 update_spec 对并发删除已有 False 出口与
         留痕（code-review c649ac7eb82e），此处不复刻。纯读锁：任何出口均不
         落盘。
+
+        残余窗口如实声明（code-review 992acd3a8528）：本复查与 freeze_for_human
+        的冻结写分处两个独立临界区，单独只收窄不闭合——恰落在「本复查放行 →
+        冻结写」之间落地的并发冻结/取消保持仍可趁隙。该窗口由 freeze_for_human
+        的 ``precheck_locked`` 锁内守卫闭合（与冻结写同一把 .STATE.md.lock
+        临界区内二次复查，复查与写原子）；本入口保留为快速失败出口——拒绝时
+        免去无谓的冻结写尝试并按上方文案留痕。
         """
         skip: dict = {}
 
@@ -3692,13 +3741,32 @@ class StateMachine:
                         # 取消保持，freeze_for_human 的 updates 自带 FROZEN_FIELD
                         # （冻结剥离分支不触发）会照常落盘。对齐
                         # _recovery_update_spec 同款出口：命中即跳过本冻结写并
-                        # WARNING 留痕，不计入 recovered。
+                        # WARNING 留痕，不计入 recovered。本复查与冻结写分处
+                        # 两个临界区、单独只收窄不闭合——「复查放行 → 冻结写」
+                        # 之间的残余窗口由下方 precheck_locked 锁内守卫在同一把
+                        # 写锁内二次复查闭合（code-review 992acd3a8528）。
                         if not self._recovery_freeze_precheck(name):
                             # 对称回退（code-review d036d2b10ed9）：放行的冻结写
                             # 未发生——本 spec 不计入恢复，本次递增不保留。
                             # delta=-1 结果下限 0（_bump_counter 钳零）。
                             self.bump_verify_redo_count(name, -1)
                             continue
+                        # 写侧锁内守卫（code-review 992acd3a8528）：与冻结写同一
+                        # 把 .STATE.md.lock 临界区内复查 frozen/_cancelled_hold，
+                        # 闭合上方独立 precheck 放行后的残余窗口。守卫锁内只做
+                        # 纯读判定（MUST NOT 取锁——锁内二次 flock 自阻塞；
+                        # MUST NOT 落日志——持锁窗口不含 I/O），跳过原因记入
+                        # guard_skip 带出锁外留痕。
+                        guard_skip: dict = {}
+
+                        def _overlimit_freeze_guard_locked(entry):
+                            if entry.get(FROZEN_FIELD):
+                                guard_skip["frozen"] = True
+                                return False
+                            if entry.get("_cancelled_hold"):
+                                guard_skip["cancelled_hold"] = True
+                                return False
+                            return True
                         # 超限冻结：blocked + frozen + 规范 error 前缀，本次启动
                         # 不再重派 verifier（冻结期间自动链路的 status 改写被
                         # update_spec 剥离），唯一出路是人工 unfreeze_spec。
@@ -3734,7 +3802,34 @@ class StateMachine:
                                 "重验计数）重验"
                             ),
                             alert_callback=human_alert_callback,
+                            precheck_locked=_overlimit_freeze_guard_locked,
                         )
+                        if not frozen_ok and guard_skip:
+                            # 锁内守卫拒绝（code-review 992acd3a8528）：人工冻结/
+                            # 取消保持恰在 precheck 放行与本冻结写之间的残余窗口
+                            # 落地——冻结写未发生，人工冻结 error/_frozen_source/
+                            # 取消保持标记保持原样；对称回退（code-review
+                            # d036d2b10ed9 同口径）：不计入恢复的 spec 不占重启
+                            # 重验预算。下方「已冻结为 blocked」error 留痕对本
+                            # 出口不实，故提前带原因 continue。
+                            self.bump_verify_redo_count(name, -1)
+                            if guard_skip.get("frozen"):
+                                self.logger.warning(
+                                    "state_machine",
+                                    f"跳过重启重验超限冻结：'{name}' 已在冻结写"
+                                    f"锁内复查出并发冻结——冻结写整体放弃，"
+                                    f"人工冻结 error 不被「重启重验超限」文案"
+                                    f"覆盖、_frozen_source 不被误标 machine",
+                                )
+                            else:
+                                self.logger.warning(
+                                    "state_machine",
+                                    f"跳过重启重验超限冻结：'{name}' 已在冻结写"
+                                    f"锁内复查出人工取消保持——冻结写整体放弃，"
+                                    f"取消保持标记不被冻结写的显式 status 写"
+                                    f"清回 False",
+                                )
+                            continue
                         self.logger.error(
                             "state_machine",
                             f"SPEC '{name}' 重启重验已达预算上限 "

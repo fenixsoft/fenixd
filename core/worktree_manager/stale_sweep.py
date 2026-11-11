@@ -557,11 +557,35 @@ class G7StaleSweepMixin:
                     # 不清 git 注册，陈旧注册仍 checkout 该分支会令下方 branch -D
                     # 被 git 拒绝——对齐 lifecycle.cleanup() 先 prune 再 -D 的次序；
                     # 收尾 prune 虽能清注册但目录已消失、分支无重试入口即残留。
-                    subprocess.run(
-                        ["git", "-C", str(self.project_root), "worktree", "prune"],
-                        capture_output=True,
-                        timeout=10,
-                    )
+                    # prune 自身不得抛穿（code-review item 818b8da2477f）：对齐
+                    # 下方收尾 prune 的专属 except + WARNING + returncode 检查
+                    # 降级口径——TimeoutExpired/OSError 穿出到逐目录
+                    # except Exception 会整体跳过本目录剩余分支处置段（在飞
+                    # 引用保护复核与 branch -D 判定），而本清扫仅 daemon 启动
+                    # 执行一次、分支将滞留至下次重启。失败方向保守：注册未清
+                    # 则下方 branch -D 被 git 拒绝、分支保留交下轮清扫。
+                    try:
+                        prune_res = subprocess.run(
+                            ["git", "-C", str(self.project_root), "worktree", "prune"],
+                            capture_output=True,
+                            text=True,
+                            # 显式 UTF-8 + errors="replace"（对齐收尾 prune 惯例，
+                            # 理由同其注释：locale 缺省解码可抛 UnicodeDecodeError）
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=10,
+                        )
+                        if prune_res.returncode != 0:
+                            self.logger.warning(
+                                "worktree_manager",
+                                f"Post-rmtree worktree prune failed (non-blocking): "
+                                f"{(prune_res.stderr or '').strip()[:200]}",
+                            )
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"Post-rmtree worktree prune failed (non-blocking): {e}",
+                        )
                 # 分支处置前复核目录残留（code-review item 9cc41ea4f6dc）：
                 # remove 失败且 rmtree 兜底也失败时目录仍在（_rmtree_with_
                 # residual_warning 只 WARNING 留痕、无返回值，目录按约定保留

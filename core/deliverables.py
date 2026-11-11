@@ -191,9 +191,17 @@ _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
 # 路径前缀（_DELIVERABLE_PREFIXES）不含 spec/、属非交付落点——不排除则
 # 未来入库的 spec 夹具同名文件可成为唯一 basename 命中、同型误拦合法
 # kind: new 声明（与 .history 同型收口，code-review item 620164c1e5a6）。
+# 剪枝深度分两组（code-review item d4f233a739ab）：语义上指仓库顶层树的名字
+# （spec/.fenix/.history/dist）仅在项目根深度 0 剪枝——这些名字嵌套在别处时
+# 语义不同（如 core/dashboard/static/dist/ 是合法交付落点、嵌套目录树内的
+# spec/ 是文档子树），任意深度剪枝会把落在其中的声明路径静默漏检（规则 4
+# 疑似笔误判定收窄，fail-open 方向白烧一轮 run）；.git/node_modules/
+# __pycache__ 是惯例上任何深度都不参与交付的目录，保持全局剪枝。两者并集
+# 仍导出为 _BASENAME_EXCLUDE_DIRS（既有导入消费面契约不变）。
+_BASENAME_EXCLUDE_DIRS_TOPLEVEL = ("dist", ".fenix", ".history", "spec")
+_BASENAME_EXCLUDE_DIRS_GLOBAL = (".git", "node_modules", "__pycache__")
 _BASENAME_EXCLUDE_DIRS = (
-    ".git", "node_modules", "dist", ".fenix", "__pycache__", ".history",
-    "spec",
+    _BASENAME_EXCLUDE_DIRS_TOPLEVEL + _BASENAME_EXCLUDE_DIRS_GLOBAL
 )
 
 # 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
@@ -2064,9 +2072,12 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
 def match_basename_in_tree(project_root, path: str) -> List[str]:
     """主树 basename 精确匹配（add-deliverable-declaration-triage D1）。
 
-    以 ``Path(path).name`` 对主树文件做 basename 精确匹配（rglob），排除
-    ``_BASENAME_EXCLUDE_DIRS``（``.git``/``node_modules``/``dist``/
-    ``.fenix``/``__pycache__``/``.history``/``spec``）目录内的命中；返回相对项目根的命中路径列表，
+    以 ``Path(path).name`` 对主树文件做 basename 精确匹配（rglob），按剪枝
+    深度分两组排除：``_BASENAME_EXCLUDE_DIRS_TOPLEVEL``（``dist``/``.fenix``/
+    ``.history``/``spec``，语义上指仓库顶层树）仅在项目根深度 0 剪枝，
+    ``_BASENAME_EXCLUDE_DIRS_GLOBAL``（``.git``/``node_modules``/
+    ``__pycache__``，惯例全局目录名）任意深度剪枝（并集仍为
+    ``_BASENAME_EXCLUDE_DIRS``）；返回相对项目根的命中路径列表，
     确定性排序（字符串升序）。不引入编辑距离/模糊串匹配（D1：basename 内
     笔误如 ``verifcation.py`` 由 judge 层兜底，lint 层保持零误拦取向）。
 
@@ -2088,18 +2099,28 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
         # fail-open 返回空列表（与 docstring「遍历异常返回空列表」同口径，
         # code-review item 0952ecdc646d）
         return []
-    excluded = set(_BASENAME_EXCLUDE_DIRS)
+    excluded = set(_BASENAME_EXCLUDE_DIRS_GLOBAL)
+    excluded_toplevel = excluded | set(_BASENAME_EXCLUDE_DIRS_TOPLEVEL)
+    # 深度 0 判定基准（code-review item d4f233a739ab）：os.walk 首个 dirpath
+    # 与传入 root 同源（fspath），但调用方可能传相对路径或带尾分隔符形态，
+    # 两侧先 abspath 规范化再比较，避免分隔符/相对形态不一致误判深度。
+    root_abs = os.path.abspath(str(root))
     hits: List[str] = []
     try:
         # os.walk + 就地剪枝（code-review item 5f9ed67a5538）：旧 rglob 先整树
         # 遍历、再在结果阶段按路径组件过滤 _BASENAME_EXCLUDE_DIRS，.git/
         # node_modules/dist 等大目录仍被深入扫描——本函数被晋升 lint 与派发
         # 处方共用，大型仓库单次判定耗时被无谓放大。改为遍历时剪枝：命中排除
-        # 名的目录不再下探（语义与旧「任一组件命中即跳过」等价）；os.walk 缺省
-        # 不跟随目录符号链接，与 rglob 的 ``**`` 递归行为一致。is_file 守卫
-        # 保留（与旧实现对齐：同名目录/断链 symlink 不计命中）。
+        # 名的目录不再下探；顶层树名（d4f233a739ab）仅在深度 0 剪枝，嵌套
+        # 同名目录（如 core/dashboard/static/dist/）不误剪、其内声明路径可
+        # 被规则 4 检出；全局惯例目录名任意深度剪枝。os.walk 缺省不跟随目录
+        # 符号链接，与 rglob 的 ``**`` 递归行为一致。is_file 守卫保留（与旧
+        # 实现对齐：同名目录/断链 symlink 不计命中）。
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in excluded]
+            if os.path.abspath(dirpath) == root_abs:
+                dirnames[:] = [d for d in dirnames if d not in excluded_toplevel]
+            else:
+                dirnames[:] = [d for d in dirnames if d not in excluded]
             for fn in filenames:
                 if fn != name:
                     continue
