@@ -16,6 +16,8 @@ sys.platform 单点分支保证（非 Windows 环境本模块不被导入）。
 - C 组：flock 换 ``msvcrt.locking``（语义差异须在 exclusive_lock 层吸收）；
 - D 组：systemctl 缝换计划任务（schtasks）或服务后端，HostingProvider
   六名（install_unit/start/stop/is_running/env_file/logs_hint）同缝；
+  ``run_systemctl`` 带 keyword-only ``available``（调用方已判可用性直传，
+  None＝本缝自行探测，见 HostingSeam 协议与 systemd_hosting 转发形态）；
 - E 组：``home_dir`` 换 ``USERPROFILE``、``ensure_link`` 换
   ``os.symlink``（需开发者模式或特权）；
 - F 组：``pytest_timeout_method`` 恒 ``"thread"``（Windows 无 SIGALRM）。
@@ -179,7 +181,8 @@ def systemctl_available() -> bool:
     return False  # 非 systemd 环境：与 linux 后端在无 systemd 主机同语义
 
 
-def run_systemctl(args, timeout: float = 30) -> subprocess.CompletedProcess:
+def run_systemctl(args, timeout: float = 30, *,
+                  available: Optional[bool] = None) -> subprocess.CompletedProcess:
     raise _spec2("win32.run_systemctl")
 
 
