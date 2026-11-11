@@ -1635,9 +1635,22 @@ class BrowserManager:
                 # invalid_mock_status 同口径，结构化失败并附原始值。
                 # 转换点位于 mouse.down 之前，提前 return 无按压状态泄漏
                 try:
-                    hold = int(cfg.get("hold", 450))
-                    dwell = int(cfg.get("dwell", 600))
-                    via_wait = int(cfg.get("via_wait", 300))
+                    # bool 是 int 子类，须在 int() 前显式排除（code-review
+                    # item 6106f61e4cef，与 mock_status 分支 /
+                    # _evaluate_expect_network 的 min_count 同纪律），否则
+                    # JSON 配置 {"hold": true} 被 int(True)=1 静默折算为
+                    # 1ms 长按，拖拽退化为快速拖动且失败归因偏离配置错误
+                    raw_hold = cfg.get("hold", 450)
+                    raw_dwell = cfg.get("dwell", 600)
+                    raw_via_wait = cfg.get("via_wait", 300)
+                    if any(
+                        isinstance(v, bool)
+                        for v in (raw_hold, raw_dwell, raw_via_wait)
+                    ):
+                        raise ValueError
+                    hold = int(raw_hold)
+                    dwell = int(raw_dwell)
+                    via_wait = int(raw_via_wait)
                 # OverflowError 并入同款拦截（code-review item e3f70f16ae5c）：
                 # json 的 1e999 解析为 inf，int(inf) 抛 OverflowError 不在原
                 # 元组内，会穿到顶层 except 归因退化为 unknown——与 wait 的
