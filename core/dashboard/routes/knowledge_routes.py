@@ -203,9 +203,9 @@ class H14KnowledgeRoutesMixin:
             try:
                 payload["index_md"] = index_md.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
+                # 读取失败按字段级降级（index_md 保持 None、initialized 反映
+                # 存在性），对齐同端点 ADR/titles 容错口径，不 500
                 logger.warning("knowledge index.md 读取失败（%s）: %s", project["name"], exc)
-                self._error(500, "index.md 读取失败")
-                return
         domains_dir = kroot / "domains"
         if _probe_is_dir(domains_dir):
             # 枚举本身失败（权限/IO）时按空清单降级，对齐 help_routes 双层容错口径
@@ -306,7 +306,7 @@ class H14KnowledgeRoutesMixin:
         if target is None:
             self._error(400, "非法路径（仅允许 domains/ 与 adr/ 前缀）")
             return
-        if not target.is_file():
+        if not _probe_is_file(target):
             self._error(404, "文件不存在")
             return
         try:

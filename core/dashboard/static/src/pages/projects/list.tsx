@@ -1,3 +1,4 @@
+// [fenix-ignore:761f75d197e5] 单文件体量为多轮下沉重构（DevTab/progressPhase/listFilters 等先例）后的存量形态，本轮大规模拆分需跑全量回归门，回归风险大于收益
 import { ClockCircleOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
@@ -49,7 +50,7 @@ import {
   statusMeta,
   STREAM_URL,
 } from '@/services/dashboard';
-import type { SpecDetail, SpecSummary } from '@/services/dashboard';
+import type { SpecDetail, SpecSummary, StatusTone } from '@/services/dashboard';
 // 时长格式化与详情页共用单源（code-review item f8307715a795）
 import { fmtDuration } from '@/utils/duration';
 // 刷新/心跳节奏常量与详情页共用单源（code-review item 73395d34f3de）
@@ -193,8 +194,9 @@ function SpecInfoIcon({
 }
 
 /** 语义胶囊徽标（镜像 v2 shared.tsx V2Pill filled 形态：999 胶囊 + tone 软底）。
- * tone 键域对齐 statusMeta 的 StatusTone，muted 兜底。 */
-function Pill({ tone = 'muted', children, style, dot }: { tone?: string; children: ReactNode; style?: CSSProperties; dot?: boolean }) {
+ * tone 键域=statusMeta 的 StatusTone（类型同源收窄，code-review item
+ * eb0f9f4702cc：拼写漂移编译期暴露，不再静默落 muted 兜底）。 */
+function Pill({ tone = 'muted', children, style, dot }: { tone?: StatusTone; children: ReactNode; style?: CSSProperties; dot?: boolean }) {
   const pair =
     tone === 'critical'
       ? [OV_ERROR, '#fef2f2']
@@ -258,6 +260,9 @@ type PhaseProgress = {
   isVerify: boolean;
   isGates: boolean;
   gen: { done: number; total: number } | null;
+  /** 无任务清单口径不可得（D3：0 与口径不可得分离，MUST NOT 显示假 0）：
+   * 桌面「任务进度」列与移动卡片同源判定，两侧显「—」不再分叉 */
+  noTasks: boolean;
 };
 
 function phaseProgressOf(record: SpecSummary): PhaseProgress {
@@ -284,7 +289,12 @@ function phaseProgressOf(record: SpecSummary): PhaseProgress {
   } else {
     counter = `${record.task_done}/${record.task_total}`;
   }
-  return { percent: renderPercent(record, gen), label, counter, isVerify, isGates, gen };
+  // 无任务清单判定收进单源（code-review item 347f89bac175）：草稿/就绪等
+  // impl 阶段 task_total=0 的行口径不可得；verify/gates 阶段 0/0 是真实阶段
+  // 口径照常显示。桌面列此前无此守卫，对同一行渲染「实现 0/0 · 0%」假进度，
+  // 与移动卡片「—」口径分叉。
+  const noTasks = !isVerify && !isGates && (record.task_total ?? 0) === 0;
+  return { percent: renderPercent(record, gen), label, counter, isVerify, isGates, gen, noTasks };
 }
 
 function progressSortPct(record: SpecSummary): number {
@@ -598,8 +608,11 @@ function ScheduledPickupTag({ record, pill }: { record: SpecSummary; pill?: bool
   if (!sa) return null;
   const target = dayjs(sa);
   if (!target.isValid()) return null;
+  // 到期判定用秒级 diff（code-review item e3630fe52a6b）：分钟 diff 经 Math.round，
+  // 刚过期不足半分钟时得 -0（`-0 < 0` 为 false 漏判），到期后约 30 秒内等待标记
+  // 仍渲染——秒级负值才是可靠过期信号。
+  if (target.diff(dayjs(), 'second') < 0) return null; // 已到期：交调度器正常拾取，不再展示等待标记
   const diffMin = Math.round(target.diff(dayjs(), 'minute', true));
-  if (diffMin < 0) return null; // 已到期：交调度器正常拾取，不再展示等待标记
   const targetLocal = target.format('MM-DD HH:mm');
   const tip = `定时拾取 · ${targetLocal}（本地）启动，约 ${diffMin} 分钟后被 daemon 拾取`;
   const label = diffMin <= 1 ? '即将调度' : `${diffMin}分后`;
@@ -795,9 +808,17 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
   // 分页改磁贴底部「加载更多」（任务 2.3）：pageSize 20 语义保持（数据层分页
   // 不变），替代 antd List 分页器；过滤/树变化时回到首页
   const [visibleCount, setVisibleCount] = useState(SPEC_CARD_PAGE_SIZE);
+  // 重置只跟随「列表内容变化」（code-review item d6c9dd1d1b62）：心跳整表重拉 /
+  // SSE patch 每次都产生新的 data 引用（内容可能完全相同），按引用重置会把用户
+  // 「加载更多」展开的条数在 30s 内打回首页——改按节点名序列化指纹比较，内容
+  // 等价时零重置，纯后台刷新不再收窄列表。
+  const dataKey = useMemo(() => flat.map((n) => n.record.name).join('\n'), [flat]);
+  const prevDataKeyRef = useRef(dataKey);
   useEffect(() => {
+    if (prevDataKeyRef.current === dataKey) return;
+    prevDataKeyRef.current = dataKey;
     setVisibleCount(SPEC_CARD_PAGE_SIZE);
-  }, [data]);
+  }, [dataKey]);
   const shown = useMemo(() => flat.slice(0, visibleCount), [flat, visibleCount]);
 
   return (
@@ -829,9 +850,9 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
           // 共用 phaseProgressOf 单源，两侧口径一致
           const prog = phaseProgressOf(record);
           const terminal = PRIORITY_TERMINAL.has(record.status || '');
-          // 草稿 / impl 阶段无任务清单 → 口径不可得显「—」（D3：0 与口径不可得
-          // 分离，MUST NOT 显示假 0）；verify/gates 阶段 0/0 是真实阶段口径照常显示
-          const noTasks = !prog.isVerify && !prog.isGates && (record.task_total ?? 0) === 0;
+          // 无任务清单判定走 phaseProgressOf 单源 noTasks（D3：0 与口径不可得
+          // 分离，MUST NOT 显示假 0；code-review item 347f89bac175 起桌面列同判，
+          // verify/gates 阶段 0/0 是真实阶段口径照常显示）
           return (
             <List.Item
               data-testid="spec-mobile-card"
@@ -926,7 +947,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
               {/* 阶段进度区：终态卡省略（D3 不重复画 100% 条）；草稿/无任务计数
                   显「—」；其余 阶段名 + 「计数 · 百分比」同行在上 + ramp 色条
                   （progressPhase 单源 strokeColorFor/trailColorFor，禁另写色表） */}
-              {terminal ? null : noTasks ? (
+              {terminal ? null : prog.noTasks ? (
                 <div className="spec-card-progress-empty" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 9, fontSize: 12, color: OV_TEXT_TERTIARY }}>
                   <span>任务进度</span>
                   <span className="ov-num">—</span>
@@ -1230,7 +1251,7 @@ function DevTab({
       render: (_: unknown, record: SpecSummary) => {
         // 阶段感知推导单点在 phaseProgressOf（code-review item e1f8a359480d）：
         // 与移动端卡片、排序键共用，本列不再各自内联 gen/计数分支。
-        const { percent: p, label, counter, isVerify, isGates, gen } = phaseProgressOf(record);
+        const { percent: p, label, counter, isVerify, isGates, gen, noTasks } = phaseProgressOf(record);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
@@ -1251,6 +1272,14 @@ function DevTab({
         // 的数据编码色豁免，底轨随阶段同 ramp 的「空条可辨」语义优先保留。
         return (
           <div style={{ minWidth: 0 }}>
+            {noTasks ? (
+              // 无任务清单口径不可得（D3：0 与口径不可得分离；noTasks 判定与移动
+              // 卡片同源 phaseProgressOf，code-review item 347f89bac175）：显「—」
+              // 占位，不渲染假 0/0 与 0% 进度条；下方 run 层线索照常呈现，不丢
+              // implementing 阶段快照未落时的存活信号
+              <span className="ov-num" style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>—</span>
+            ) : (
+              <>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
               <span style={{ fontSize: 12, color: OV_TEXT_TERTIARY }}>{label}</span>
               {/* add-quality-gates-visibility：gates 阶段计数=门禁完成度，
@@ -1277,6 +1306,8 @@ function DevTab({
                 trailColor={trailColorFor(!!gen, isVerify, isGates)}
               />
             </div>
+              </>
+            )}
             {!isVerify && !isGates && (runAhead || runCurrent || runActive) ? (
               // run 层线索与计数换行分离（与 verify_current/gates_current 同款
               // 二行结构统一）；marginLeft 4 保留 run 已汇报与进行中并存时的间距

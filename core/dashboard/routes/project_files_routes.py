@@ -43,8 +43,9 @@ class H15ProjectFilesRoutesMixin:
 
     def _project_files_target(self, query, what: str):
         """四端点共用解析：项目校验（对齐 _project_query_or_error）+ path
-        containment。成功返回 (root, abs_path)；失败已发送错误响应并返回
-        None。path 缺省按根目录（空串）处理——list 通道根查询是主形态。"""
+        containment。成功返回 (root, relpath, abs_path)；失败已发送错误
+        响应并返回 None。path 缺省按根目录（空串）处理——list 通道根查询
+        是主形态。"""
         project = self._project_query_or_error(query, what)
         if project is None:
             return None
@@ -150,11 +151,18 @@ class H15ProjectFilesRoutesMixin:
             return
         try:
             with abs_path.open("rb") as f:
-                while True:
-                    chunk = f.read(DOWNLOAD_CHUNK_BYTES)
+                remaining = size
+                while remaining > 0:
+                    # 以已声明 size 为上界：并发追加时不超发字节，keep-alive
+                    # 分帧不失步
+                    chunk = f.read(min(DOWNLOAD_CHUNK_BYTES, remaining))
                     if not chunk:
+                        # 并发截断致实际字节 < 声明长度：客户端会等不足字节
+                        # 挂起，置 close_connection 让残留随连接关闭作废
+                        self.close_connection = True
                         break
                     self.wfile.write(chunk)
+                    remaining -= len(chunk)
         except BrokenPipeError:
             # 客户端中断下载：交 _handle_inner 的 BrokenPipeError 分支静默收场
             raise
@@ -205,11 +213,18 @@ class H15ProjectFilesRoutesMixin:
             return
         try:
             with abs_path.open("rb") as f:
-                while True:
-                    chunk = f.read(DOWNLOAD_CHUNK_BYTES)
+                remaining = size
+                while remaining > 0:
+                    # 以已声明 size 为上界：并发追加时不超发字节，keep-alive
+                    # 分帧不失步（与 download 通道同口径）
+                    chunk = f.read(min(DOWNLOAD_CHUNK_BYTES, remaining))
                     if not chunk:
+                        # 并发截断致实际字节 < 声明长度：置 close_connection
+                        # 让残留随连接关闭作废，避免客户端等不足字节挂起
+                        self.close_connection = True
                         break
                     self.wfile.write(chunk)
+                    remaining -= len(chunk)
         except BrokenPipeError:
             raise
         except OSError:

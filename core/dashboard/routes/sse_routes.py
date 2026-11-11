@@ -194,8 +194,19 @@ class H9SseRoutesMixin:
             frame = b": ping\n\n"
         else:
             # default=str：事件含不可序列化对象（如 datetime）时降级为字符串，
-            # 避免 TypeError 穿出外层仅捕获连接类异常的 try 导致异常外泄
-            data = json.dumps(event, ensure_ascii=False, default=str)
+            # 避免 TypeError 穿出外层仅捕获连接类异常的 try 导致异常外泄。
+            # allow_nan=False 与 base 层 _json 同口径（code-review item
+            # f4f082aaa5b9）：非有限浮点（inf/NaN）缺省会序列化成 NaN/Infinity
+            # 字面量——非法 JSON，前端 JSON.parse 对该帧直接抛错。流式通道
+            # 无法像 base 层那样 500 留痕，且 ValueError 若穿出外层 try 会
+            # 打断整个 SSE 流，故序列化失败降级为字符串帧（合法 JSON，前端
+            # parse 不炸、按未知负载忽略）。
+            try:
+                data = json.dumps(
+                    event, ensure_ascii=False, default=str, allow_nan=False
+                )
+            except ValueError:
+                data = json.dumps(str(event), ensure_ascii=False)
             frame = ("data: %s\n\n" % data).encode("utf-8")
         chunk = b"%X\r\n" % len(frame) + frame + b"\r\n"
         self.wfile.write(chunk)

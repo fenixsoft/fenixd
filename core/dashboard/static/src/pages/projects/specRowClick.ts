@@ -6,7 +6,7 @@
 // 同目标不拦截（连跳同路由无害）。node:test 直测（同 specTitle.ts 习语）。
 import type { MouseEvent } from 'react';
 
-/** 展开钮判定锚：fix-* 树展开与 error 信息行展开共用 antd 展开图标类。 */
+/** 展开钮判定锚：antd 展开图标类仅服务 fix-* 树形子级展开（error 信息行展开已随 add-spec-info-icon-tooltip 退役）。 */
 export const ROW_EXPAND_ICON_SELECTOR = '.ant-table-row-expand-icon';
 
 /**

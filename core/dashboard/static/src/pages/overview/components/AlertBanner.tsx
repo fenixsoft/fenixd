@@ -101,6 +101,11 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
   }
 
   const count = Math.min(data?.total_unhandled ?? alerts.length, alerts.length);
+  // 「清理所有事件」确认弹窗条数按后端全量口径（code-review item b278f6e832bf）：
+  // alerts 已剔除乐观遮蔽中的在飞条目，上式 min 钳制后的 count 会少于
+  // clearAllAlerts 实际标记的后端条数；弹窗须如实呈现影响范围（后端
+  // total_unhandled 与同一 payload 的 alerts 全量同源，不做可见列表钳制）
+  const clearAllCount = data?.total_unhandled ?? alerts.length;
   const top = alerts.reduce((m, a) => (sevRank(a.severity) > sevRank(m.severity) ? a : m), alerts[0]);
   const latest = alerts[0];
   const resolved = (data?.resolved || []).filter((a) => !inOptimistic(a.id));
@@ -127,7 +132,7 @@ export default function AlertBanner({ refreshTick }: { refreshTick: number }) {
       title: '清理所有事件',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认清理全部项目的 ${count} 条未处理告警？\n\n`}
+          {`确认清理全部项目的 ${clearAllCount} 条未处理告警？\n\n`}
           该操作会把所有项目的未处理告警标记为已处理，且不可撤销；标记后
           AdminMonitor 不会对同一告警重新升级，请确认已逐条知悉。
         </div>

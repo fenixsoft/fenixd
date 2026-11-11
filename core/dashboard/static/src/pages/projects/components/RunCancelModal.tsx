@@ -49,7 +49,11 @@ export default function RunCancelModal({ project, runId, onClose, onAccepted }: 
       title="终止运行"
       open={open}
       onCancel={onClose}
-      onOk={() => void handleCancel()}
+      // onOk 返回 Promise（code-review item 6ee22cfaf358）：antd 等待其落定并
+      // 保持弹窗打开——失败时（handleCancel 内部已 toast 吞错，Promise 恒
+      // resolve）已填原因不丢、loading 态可见；成功路径由 handleCancel 自调
+      // onClose() 关闭，行为不变。void 形式返回 undefined 会让弹窗瞬时关闭。
+      onOk={() => handleCancel()}
       okText="确认终止"
       okButtonProps={{ danger: true, loading: sending }}
       cancelText="取消"

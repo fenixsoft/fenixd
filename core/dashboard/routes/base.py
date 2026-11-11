@@ -1133,7 +1133,9 @@ class H0BaseMixin:
         场景「发送部分字节后停滞」（停滞中的 recv 到点抛 socket.timeout），
         不承诺字节滴漏场景的全阶段墙上时限。读取前对 connection 局部设超时、
         读完/异常恢复原值；连接已带更紧超时（如 SSE 流终结后复用的连接，
-        见 sse_routes 注记）时尊重原值不放大。超时即置 close_connection=True
+        见 sse_routes 注记）时尊重原值不放大；原值为 0（非阻塞模式，
+        code-review item f4683d58df07）同样改写为局部超时——否则读停滞既无
+        超时约束，BlockingIOError 也不在下方捕获口径内。超时即置 close_connection=True
         ——停滞半截的 body 残留不可信，随连接关闭作废（与 413/超限分支同
         口径），再上抛由调用方处置（_read_json_body 回 408、drain 静默放弃）。
         """
@@ -1143,11 +1145,14 @@ class H0BaseMixin:
             original_timeout = conn.gettimeout()
             if (
                 original_timeout is None
+                or original_timeout == 0
                 or original_timeout > self._BODY_READ_TIMEOUT_SECONDS
             ):
                 conn.settimeout(self._BODY_READ_TIMEOUT_SECONDS)
             return self.rfile.read(size)
-        except (socket.timeout, TimeoutError):
+        except (socket.timeout, TimeoutError, BlockingIOError):
+            # BlockingIOError（非阻塞残留场景的防御，f4683d58df07）：与超时
+            # 分支同口径置 close_connection=True，半截残留随连接关闭作废。
             self.close_connection = True
             raise
         finally:

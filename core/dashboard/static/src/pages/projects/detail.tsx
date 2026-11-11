@@ -1041,7 +1041,11 @@ export default function SpecDetailPage() {
         return;
       }
       if (msg.type === 'state' && msg.project === name) {
-        const d = msg.details?.[spec];
+        // spec 来自路由参数，details 查找用 hasOwnProperty 自有键防御
+        // （code-review item 9aea22a9ee35，口径同 SpecTimeline AdminNode 的
+        // SEV_LABEL / codeFixGuidance.isKnownReason）：spec 名恰为
+        // constructor 等继承键时普通查找命中函数，会把垃圾值写进 detail state
+        const d = Object.prototype.hasOwnProperty.call(msg.details ?? {}, spec) ? msg.details![spec] : undefined;
         if (d) {
           applyDetail(d);
           return;
@@ -1632,6 +1636,7 @@ export default function SpecDetailPage() {
       {(detail?.error || specAlerts.length > 0) && (
         <div style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {specAlerts.map((a) => {
+            const sev = a.severity || '';
             const evidenceText = fmtEvidence(a.evidence);
             const hasContent = !!(a.recommended_action || evidenceText);
             const expanded = expandedAlerts.has(a.id);
@@ -1654,8 +1659,13 @@ export default function SpecDetailPage() {
                 message={
                   <Space size={6} wrap>
                     <span style={{ fontSize: 14 }}>告警：{a.description || a.action_taken || '人工升级告警'}</span>
-                    <Tag color={SEV_COLOR[a.severity || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
-                      {SEV_LABEL[a.severity || ''] || a.severity || '未知'}
+                    <Tag color={Object.prototype.hasOwnProperty.call(SEV_COLOR, sev) ? SEV_COLOR[sev] : 'default'} style={{ marginInlineEnd: 0 }}>
+                      {/* SEV_LABEL/SEV_COLOR 查找用 hasOwnProperty 自有键防御
+                          （code-review item c9b3c218e5e4，口径同 SpecTimeline
+                          AdminNode 的 SEV_LABEL）：severity 漂移为 constructor
+                          等继承键时普通查找命中函数，作为 React 子节点渲染会抛
+                          运行时错 */}
+                      {Object.prototype.hasOwnProperty.call(SEV_LABEL, sev) ? SEV_LABEL[sev] : sev || '未知'}
                     </Tag>
                   </Space>
                 }
