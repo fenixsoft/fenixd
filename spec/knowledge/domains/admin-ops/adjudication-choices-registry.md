@@ -1,7 +1,7 @@
 # 裁决选项静态注册表
 
-<!-- knowledge: capability=adjudication-choices-registry rev=7
-     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/changes/register-revise-scenario-choice-on-intervention-signals -->
+<!-- knowledge: capability=adjudication-choices-registry rev=8
+     sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/archive/2026-10-09-evo-fix-global-signal-choice-execution,spec/archive/2026-10-08-fix-env-exemption-exit-reachability,spec/archive/2026-10-15-evo-fix-env-exemption-gate-conflict-and-scenario-revision-exit,spec/archive/2026-10-26-evo-add-commit-stray-wip-choice,spec/archive/2026-10-27-evo-recurring-stray-remediation,spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing,spec/changes/register-revise-scenario-choice-on-intervention-signals,spec/changes/add-adjudication-auto-exec -->
 
 按 signal_type 映射裁决选项集的纯静态注册表（`core/dashboard/data/adjudication_choices.py`），是人工下拉处置与 Administrator 自动处置共用的裁决空间。
 
@@ -42,6 +42,8 @@
 - `ack_self_heal`（确认自愈·继续观察，非作用域收口动作）声明在可能全局形态的 `build_artifact_paths_missing` 桶末位，未注册 signal_type 经全表反查可达，保证全局信号执行收口不断路。
 - `commit_stray_wip` 是注册表中首个带主树 git 写副作用的动作：执行器以 signal_type 绑定守卫收口（仅受理 `maintree_stray_wip_stale`，未注册信号与姊妹 info 信号一律拒绝），未注册信号经全表反查通道可达本动作但不获执行授权（守卫细节见 [adjudication-choice-scope-guard](adjudication-choice-scope-guard.md)，执行语义见 [adjudication-actions](adjudication-actions.md)）。
 - `untrack_stray_wip` 沿用同款双保险形态入桶（spec_scoped=False + 执行端 signal_type 绑定守卫仅收 `maintree_stray_wip_stale`），与 `commit_stray_wip` 同桶并存：提交适合交互会话遗留等应入库改动，根治适合被 track 的生成物类散件（每次构建必复发的确定性敞口）；二者的取舍由处置程序按复发计数判断（复发型处置义务见 [admin-choices-contract](admin-choices-contract.md)）。
+- 每个选项显式声明必填字段 `risk_tier`（三档枚举，add-adjudication-auto-exec 1.2）：`reversible-experiment`（可逆自限——reset 族/重派族，失败可重跑无终局损失）、`state-advance`（状态推进——force_advance/skip_review_gate 等推进状态机且方向不可简单撤销）、`terminal`（终局——abandon 及一切未声明/脏值兜底）。档位读取单点 `choice_risk_tier(choice)`：缺档或枚举外脏值一律按 `terminal` 兜底（最保守，永不因漏档误自动执行）；import 期一致性自检扩为五元组（action/scoped/destructive/requires_payload/tier），跨桶共享 id 档位漂移即拒绝启动。
+- 档位消费面（1.2 钦定映射与策略引擎对齐）：`judge_rerun_cap` 桶 manual_fixed_reverify=reversible / force_advance=state-advance / abandon=terminal；分档语义规则=reset 族（continue_auto_fix/manual_fixed_reverify/retry_review/revise_reproposal）归 reversible，豁免/闸门/冻结/声明类（grant_env_exemption/skip_review_gate/freeze_stop_loss/open_config/declare_no_artifacts/commit_stray_wip 族）归 state-advance 或 terminal，abandon 族恒 terminal。自动执行策略引擎判据②仅 `reversible-experiment` 档可自动执行（语义见 [escalation-chain](escalation-chain.md)），human-only 两档（state-advance/terminal）永等人。
 
 ## 溯源
 
@@ -53,3 +55,4 @@
 - 2026-10-27 evo-recurring-stray-remediation（spec/archive/2026-10-27-evo-recurring-stray-remediation） — maintree_stray_wip_stale 桶新增 untrack_stray_wip 根治·散件出库选项（git rm --cached + .gitignore 追加 + 独立提交），沿 commit_stray_wip 双保险形态（spec_scoped=False + 执行器 signal_type 绑定守卫），与提交选项同桶并存
 - 2026-10-31 fix-admin-choice-payload-and-scenario-pairing（spec/archive/2026-10-31-fix-admin-choice-payload-and-scenario-pairing） — 选项新增可选布尔键 requires_payload（纯静态声明、缺省 false），载荷要求判定收敛注册表单源（消费侧从 resolve_choice 解析结果读取、禁各自硬编码选项名单），当前仅 revise_scenario_reverify 置 true
 - 2026-11-03 register-revise-scenario-choice-on-intervention-signals（spec/changes/register-revise-scenario-choice-on-intervention-signals/） — 新增 manual-intervention 与 verify_env_blocked 两信号桶（单选项桶，各含单源共享的 revise_scenario_reverify，inconclusive_loop 桶内联声明引用化、字段逐字不变；import 期 _assert_registry_consistency 钉死三桶逐项相等），场景修订重验出口经 admin 自动处置通道可达；scoped-no-reverse 反查收紧守卫与载荷通道维持不变
+- 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 全部 38 选项声明 risk_tier 三档（reversible-experiment/state-advance/terminal，choice_risk_tier 单点 terminal 兜底），一致性自检扩五元组钉跨桶档位；档位供自动执行策略引擎判据②消费（仅 reversible 档自动执行）与 human-only 老化升级定档

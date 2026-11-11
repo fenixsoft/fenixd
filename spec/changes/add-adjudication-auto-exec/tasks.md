@@ -63,4 +63,4 @@
 
 ## 6. 知识页同步
 
-- [ ] 6.1 更新 spec/knowledge/domains/admin-ops/adjudication-choices-registry.md（risk_tier 三档与兜底语义）与 spec/knowledge/domains/admin-ops/escalation-chain.md（链终点 auto-exec 语义、判据、cap、开关），rev 递增与既有格式一致
+- [x] 6.1 更新 spec/knowledge/domains/admin-ops/adjudication-choices-registry.md（risk_tier 三档与兜底语义）与 spec/knowledge/domains/admin-ops/escalation-chain.md（链终点 auto-exec 语义、判据、cap、开关），rev 递增与既有格式一致
