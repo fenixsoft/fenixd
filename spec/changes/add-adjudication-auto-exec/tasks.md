@@ -57,7 +57,7 @@
 
 ## 5. Dashboard 展示
 
-- [ ] 5.1 core/dashboard/data/admin_alerts.py 读时合并层透出自动执行所需字段：handled_by=auto-policy 值、created_at、推荐 choice 与 risk_tier（供倒计时与徽标派生，无 schema 变更）
+- [x] 5.1 core/dashboard/data/admin_alerts.py 读时合并层透出自动执行所需字段：handled_by=auto-policy 值、created_at、推荐 choice 与 risk_tier（供倒计时与徽标派生，无 schema 变更）
 - [ ] 5.2 ChainPanel.tsx + services/dashboard.ts：自动执行记录独立徽标展示（非静默混入人工），满足条件的 pending 告警展示 grace 倒计时标注
 - [ ] 5.3 新增 core/dashboard/static/tests/autoExecBadge.test.mjs：覆盖徽标渲染与倒计时展示逻辑
 
