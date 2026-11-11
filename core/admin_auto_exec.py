@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from core.config import ConfigLoader
+from core.timelib import parse_ts
 
 # 引擎日志通道（与 admin_monitor/event_bus 等通道命名同族）
 LOG_CHANNEL = "admin_auto_exec"
@@ -69,23 +70,15 @@ _SIBLING_HOP_LIMIT = 6
 
 
 def parse_alert_time(value) -> "datetime | None":
-    """告警时间戳 → aware UTC datetime；缺失/非法返回 None。
+    """告警时间戳 → aware datetime；缺失/非法返回 None。
 
-    兼容 ``Z`` 后缀与 naive 形态（naive 按 UTC 解读——admin_store 写侧恒
-    UTC 单一后缀族，naive 形态仅来自外部直写的历史脏数据）。
+    解析单源走 timelib.parse_ts（timelib-consolidation：模块外禁直调
+    fromisoformat）。admin_store 写侧恒 aware UTC（to_storage 单一 ``Z``
+    后缀族），aware 输入语义不变；naive 形态仅来自外部直写的历史脏数据，
+    按 timelib 唯一 naive 策略本地解读（本函数原私有实现的 naive→UTC 属
+    唯一策略外的第二种 naive 解读，随迁移收拢）。
     """
-    s = str(value or "").strip()
-    if not s:
-        return None
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return parse_ts(str(value or "").strip())
 
 
 def grace_anchor(rec) -> "datetime | None":

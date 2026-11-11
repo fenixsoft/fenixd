@@ -576,7 +576,9 @@ class TestAdminChoicePreflight(_PreflightBase):
             choice_id="retry-review", spec=SPEC, actions_taken="处置依据"
         )
 
-    def _execute(self, mon, exec_mock):
+    # 帮手命名避开生产 seam `_execute`（admin_auto_exec 同名方法）：fake
+    # fidelity 守卫按同名比对替身/生产 arity，本帮手是测试动作封装非替身
+    def _execute_choice(self, mon, exec_mock):
         import core.dashboard.data.admin_actions as admin_actions
 
         with mock.patch.object(
@@ -597,7 +599,7 @@ class TestAdminChoicePreflight(_PreflightBase):
         code_stale_flag.register(lambda: True)
         exec_mock = mock.MagicMock(return_value={"ok": True, "action": "x", "error": None})
 
-        result = self._execute(mon, exec_mock)
+        result = self._execute_choice(mon, exec_mock)
 
         # 执行结果原样透传（_apply_choice_execution 附带 steps 留痕键不属预检）
         self.assertTrue(result["ok"])
@@ -617,7 +619,7 @@ class TestAdminChoicePreflight(_PreflightBase):
         mon = self._make_monitor()
         exec_mock = mock.MagicMock(return_value={"ok": True, "action": "x", "error": None})
 
-        result = self._execute(mon, exec_mock)
+        result = self._execute_choice(mon, exec_mock)
 
         self.assertTrue(result["ok"])
         self.assertEqual(exec_mock.call_count, 1)

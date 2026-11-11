@@ -468,10 +468,18 @@ class TestCmdlineReads:
     def test_raw_and_argv_forms(self):
         proc = _spawn_sleeper()
         try:
-            raw = pal.read_cmdline_raw(proc.pid)
-            assert raw is not None and raw.startswith(b"sleep")
+            # fork→exec 窗口竞态：exec 完成前 /proc/<pid>/cmdline 为空（全量
+            # 回归高负载下 exec 被推迟时首读得 b''）。轮询至 exec 完成再断言，
+            # 被测原语不变，仅消解读取时序的脆弱面。
+            raw = b""
+            deadline = time.monotonic() + 5.0
+            while not raw and time.monotonic() < deadline:
+                raw = pal.read_cmdline_raw(proc.pid) or b""
+                if not raw:
+                    time.sleep(0.01)
+            assert raw.startswith(b"sleep")
             argv = pal.cmdline_argv(proc.pid)
-            assert argv[0].endswith("sleep") and "30" in argv
+            assert argv is not None and argv[0].endswith("sleep") and "30" in argv
         finally:
             _reap(proc)
 

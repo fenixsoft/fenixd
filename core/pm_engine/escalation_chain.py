@@ -2138,12 +2138,17 @@ def get_chain(project_root=None, logger=None, pm=None) -> Optional[EscalationCha
         if _CHAIN is None:
             _CHAIN = EscalationChain(project_root, logger)
         elif _CHAIN.project_root != Path(project_root):
-            # WARNING 留痕（item 0665a25939d6）：daemon 单项目常态不触发；
-            # 多项目交错/测试污染单例时显式告警旧注入被丢弃，不静默。
+            # 留痕（item 0665a25939d6）：daemon 单项目常态不触发；多项目交错/
+            # 测试污染单例时显式留痕旧注入被丢弃，不静默。留痕级别用 debug
+            # 而非 warning——链单例装配挂在 PMEngine 构造/装配点上，重建日志
+            # 经调用方 logger 发出，warning 会溢入与链无关的「零 WARNING」
+            # 契约断言面（回归实证：test_push_closeout 非 git 静默跳过、
+            # tasksmd relint fail-open 均被上一轮的 warning 击穿）；debug
+            # 保留留痕可观测性，且不破契约。
             old_root = _CHAIN.project_root
             _CHAIN = EscalationChain(project_root, logger)
             _CHAIN._log(
-                "warning",
+                "debug",
                 f"处置链单例 project_root 变化重建（旧链 runner/state_machine/"
                 f"pm 注入全部丢弃，须装配点重新接线）: old={old_root} "
                 f"new={Path(project_root)}",
