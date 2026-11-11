@@ -1,7 +1,7 @@
 # 调度与派发
-> 最后更新：2026-11-08 21:21 UTC+8
+> 最后更新：2026-11-11 13:28 UTC+8
 
-调度与派发：并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复、即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检。
+调度与派发：并发槽位与优先级调度、队列老化、依赖唤醒与兜底恢复、即时唤醒信号与事件投递完整性、秒挂冷却派发门控、派发前置 harness 可达性自检、外部直写 STATE 的 testing 跃迁即时派发。
 
 ## 能力页
 
@@ -17,3 +17,4 @@
 | [SPEC 事件投递完整性](spec-event-delivery-integrity.md) | 同状态行动性更新的事件补发、bug_found 重发幂等、半写读取防御 | 2026-10-03 04:59 |
 | [秒挂冷却全车道门控](instant-fail-cooldown-full-lane-gate.md) | 秒挂冷却按故障面门控（planner/verifier 派发与 admin spec 作用域唤起入闸、全局信号放行、跳过 INFO 留痕）与到期复诵翻倍（上限 3 次/封顶 2400 秒） | 2026-10-30 23:11 |
 | [派发前置可达性自检](dispatch-precheck.md) | 派发前置 harness binary 可达性自检短路、`[harness-cli-unavailable]` 归因与升级信号豁免、PATH 缺陷自愈闭环（幂等追加 + restart_request、盲写门） | 2026-11-08 21:21 |
+| [testing 跃迁即时派发](testing-dispatch-liveness.md) | 外部进程直写 STATE 的 testing 跃迁经 watch 通道秒级即时派发 verifier（复用 _recover_testing 恢复路径、零新增事件类型、无驱动判定与在飞互斥吸收幂等），与 60 秒精触发/30 分钟 full_scan 兜底三层共存 | 2026-11-11 13:28 |

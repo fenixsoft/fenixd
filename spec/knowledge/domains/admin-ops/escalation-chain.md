@@ -1,6 +1,6 @@
 # 升级处置链（Admin→Arbiter→人工）
 
-<!-- knowledge: capability=escalation-chain rev=8
+<!-- knowledge: capability=escalation-chain rev=9
      sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
@@ -34,12 +34,8 @@
 - 链入口不按 severity 过滤：minor 预算循环等低严重度信号同样入链。降噪分级是「人工队列」的属性而非「信号」的属性——降级态保留原降噪（critical/major 进 pending、warning/minor 写入即 handled）。
 - 降级 fail-open：`arbiter.enabled=false` 或 Admin+Arbiter 车道双双失能（链级判定，如 harness 级 spawn 失败，非单件失败）时，整体退回无链时代的升级边行为——直达人工队列（既有降噪生效）+ narrative 补叙，逐字节一致；链级失能不逐件烧配额，一次性 WARN 留痕；配置修复后自动恢复入链，无需人工干预。
 - 存量迁移：启用链路由的首个 daemon 启动执行一次性迁移（版本哨兵防重跑）——存量 pending escalation 中能判定「底层已闭环」（同签名 spec 已终态或处置已 resolved）的自动收口（`close_cause=migrated`），其余保留人工队列；迁移不回填入链。回扫哨兵与迁移哨兵互不重入：回扫消费在案 pending 入链派发，迁移只收口已闭环 pending。
-- 链终点等待语义分级自动执行（add-adjudication-auto-exec，链序不变——只改链终点在「有明确推荐 + 可逆动作」时的等待方式）：daemon 侧策略引擎 `core/admin_auto_exec.py`（60s 扫描环，装配于 EventBus 之后）对 pending 升级告警跑四判据——①`arbiter_upgrade` 完整调查痕且推荐文本对告警 choices 快照 id 唯一正向提及命中（否定语境「不推荐/不选/勿选」就近修饰不计正向、允许隔同级选项列表；零/多义命中判不明确跳过）；②推荐档位 `risk_tier=reversible-experiment`（档位经注册表单源，缺档 terminal 兜底永不自动执行）；③同 SPEC 无共存更高档 pending（severity 更高或选项集最高档更高，任一命中即冲突让人工一并裁决）；④本 SPEC 连续自动执行计数 < cap。四判据全过且 grace 否决窗满（缺省 30 分钟，到期=推荐可用时刻 `arbiter_upgrade.upgraded_at` 回退 `created` + grace_minutes，读时计算不落盘）仍 pending → 自动执行推荐 choice：复用 `execute_choice_for_disposition` 单机器（人工 alert-resolve/admin 直接路径/链 closed 出口之外的第四同源处），DISPOSITION 留痕与人工同构仅 `actor=auto-policy`；执行前瞬时重读 handled 先到先得（窗口内人工处置即让位）；成功闭环告警（handled_by=auto-policy），失败不闭环保持 pending 等人工。
-- 连续计数从处置留痕按 actor 派生（零新增状态文件）：从最新留痕向前数 actor=auto-policy 连续段；aging-watch 与 pending 在飞记录中性跳过（不误计不误重置），人工/链出口留痕（无 actor）中断计数。cap 与 grace 阈值单源 `ConfigLoader.get_auto_exec_config`（缺省 cap=2、grace=30 分钟、老化 120/360 分钟，`auto_exec` 配置段热更新生效）；超 cap 转纯人工等待，cap 放宽或人工留痕落地后计数重置自然恢复。
-- human-only 两档（state-advance/terminal）不自动执行，超老化阈值（缺省 2h warning / 6h critical）写升级活动记录（actor=aging-watch，result=aging，只做可见性不执行动作），同告警同档去重、warning→critical 随老化递进；可逆档由 grace 窗语义负责不写老化。
-- 开关与降级：`auto_exec.enabled` 缺省 true；false 时引擎零动作零噪音（回退纯人工语义）；引擎构造/启动异常在 daemon 装配处捕获降级为 None——引擎缺位不阻塞其他车道。fail-open 纪律：单告警判定异常单条捕获隔离同轮其余照常，存储读失败整轮放弃，任何异常不上抛不阻塞。
-- 告警读面透出自动执行投影（Dashboard 5.1/5.2）：ESCALATION 行读时附 `auto_exec` 投影（executed 徽标键=handled_by=auto-policy、recommended_choice/risk_tier、anchor_at/due_at 倒计时）；前端「自动执行」徽标独立于人工闭环「已收口」绿标并存，grace 倒计时仅可逆档+明确推荐 pending 件渲染。
-- 外部 →testing 跃迁即时派发（testing-dispatch-liveness）：testing 不产生 PM 事件（`_status_to_event` 返回空），dashboard/裁决外写解冻进 testing 后 verifier 派发原只能等 30 分钟 full_scan 兜底；event_bus `_diff_specs` 锁内采集「既有 SPEC 跃迁进入 testing」（新出现即 testing 不采集——防基线重建窗口派发风暴），`_dispatch_changes` 锁外复用 `_recover_testing` 即时派发（无驱动判定/admin 在飞互斥/队列去重全沿用既有守卫，零新 PM 事件类型）；派发失败单条 WARNING 隔离，full_scan 兜底网共存。
+- 链终点等待语义分级自动执行（链序不变——只改链终点在「有明确推荐 + 可逆动作」时的等待方式）：pending 升级告警满足四判据（arbiter 完整调查有唯一正向提及的明确推荐、推荐档位 reversible-experiment、同 SPEC 无共存更高档 pending、连续自动执行未超上限）且 grace 否决窗（缺省 30 分钟，自推荐可用时刻起算）满仍 pending 时，daemon 侧策略引擎经既有单执行机器自动执行推荐 choice——留痕与人工同构仅 `actor=auto-policy`，窗内人工处置先到先得；human-only 两档（state-advance/terminal）不自动执行、超老化阈值只写升级活动记录（actor=aging-watch，仅可见性）。判据明细、grace 锚点、连续计数派生、开关与 fail-open 降级、dashboard auto_exec 投影见 [adjudication-auto-exec](adjudication-auto-exec.md)。
+- 链终点处置（人工或自动执行重验类 choice）外写 STATE 解冻进入 testing 后，verifier 派发经 watch 通道秒级即时触发、不等 30 分钟周期兜底（派发通道语义见 [testing-dispatch-liveness](../dispatch-scheduling/testing-dispatch-liveness.md)）。
 
 ## 溯源
 
@@ -50,4 +46,4 @@
 - 2026-11-04 escalation-chain-disposition-ledger-gap（spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md） — 折叠链路由处置台账缺口取证（链上线首日 4 例同根因）：链全出口不写 final 处置记录致 pending 永久孤儿（宽限后必然假「处置中断」）、链成功路径不执行 choice 载荷（单通道修复静默跳过）、逐动作记录无 run id 的 by_run 归并盲区、排查判据=run 名下有无 final
 - 2026-11-04 fix-escalation-chain-ledger-closure（spec/changes/fix-escalation-chain-ledger-closure/） — 台账闭合缺口终态收口（上条折叠的缺口定性随之废除）：链路径改为 run_administrator 返回即落账（单源 append_admin_final、先于链 closed 事件、append 失败降级不阻断）、closed 出口执行注册表 choice（单执行机器 admin_choice_exec、fail-closed 不伪造闭环、白名单外保持转单）、链事件 run_id 结构字段、看护 chain-closed 对账兜底
 - 2026-11-05 用户定调直改（fenix-desktop token-usage-monitor-panel 首例实战；无 SPEC，core/pm_engine/escalation_chain.py 直改） — Arbiter 必经不变式：frozen 预检与 frozen-terminated 空壳击杀出口由「deferred 等人工解冻（链内零痕迹静默挂起）」改道 Arbiter 相冻结鉴定（frozen_skip_admin 置位 + 零配额 + {handoff_reason} 注入鉴定面与许可边界）；deferred 收窄为互斥让行专用形态，空 yield_to 分转 legacy 消化分支自然退役；人工直达例外收敛为四类（关闭态/dead-man/黑名单/看护第三通道）
-- 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 链终点等待语义分级自动执行：四判据（调查痕/唯一正向推荐/可逆档/无共存更高档+连续 cap）+ grace 否决窗（锚 upgraded_at 回退 created）到点自动执行推荐 choice（执行机器第四同源处，留痕 actor=auto-policy）；human-only 档 2h/6h 老化升级只做可见性；auto_exec.enabled 开关与 fail-open 降级；配套外部 →testing 跃迁 watch 通道即时派发与告警读面 auto_exec 投影（徽标/grace 倒计时）
+- 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 链终点等待语义分级自动执行入页（本页保留链级摘要与 testing 派发指引；判据/窗锚/计数/降级/读面投影细则归 adjudication-auto-exec 能力页，外部 →testing 跃迁即时派发归 dispatch-scheduling 域 testing-dispatch-liveness 能力页）
