@@ -35,7 +35,21 @@ class G3LockMixin:
 
     @staticmethod
     def _lock_spec_name(lock_key: str) -> str:
-        """锁 key（``<spec>:<agent_type>``）→ spec 名。"""
+        """锁 key（``<spec>:<agent_type>``）→ spec 名。
+
+        按首个冒号截断：spec 名含 ``:`` 时被截为冒号前缀，与登记端整名失配
+        （code-review item ecc59bdc97a2）。不在此改 rsplit(":", 1) 的原因：
+        cleanup finally（lifecycle.py:1134 ``k.split(":")[0] == wt_spec`` 及
+        :1136-1138 同款 partition 家族过滤）在 lifecycle.py 内裸解析锁键、不经
+        本单源，单改本方法只造出两套口径分叉而非修复；收敛策略是登记入口
+        （_register_spec_locks）的 slug 白名单 WARNING 告警（词表
+        ``[A-Za-z0-9._-]``，与 _pgrep_spec_process 的 :366-369 注释同口径），
+        见该方法。残余面：冒号 spec 名下本方法与 lifecycle.py:1134 均按截断名
+        失配——has_active_worktree / cleanup finally 的摘锁比对恒 False/错配，
+        闸门误判无锁（下游 create 精确键检查与 _stale_lock_owner_dead 兜底住
+        双派发，代价退避空转）、cleanup 摘不到对应锁（refresh_locks 陈锁清扫
+        兜底）；has_active_lock 整键精确比对不受影响。
+        """
         return lock_key.split(":")[0]
 
     @staticmethod
@@ -88,6 +102,26 @@ class G3LockMixin:
         run 上下文，owner=None（_spec_lock_owners 无条目等价）——acquire 陈锁
         清扫对 owner 未知的锁退回锁龄判据（保守，缺 owner=无法核对存活）。
         """
+        # 登记入口 slug 白名单告警（code-review item ecc59bdc97a2，不硬拒绝）：
+        # 锁键 ``<spec>:<agent_type>`` 的解析端（_lock_spec_name /
+        # _lock_family_prefix / _release_spec_locks_core 家族过滤）按首个冒号
+        # 切分，spec 名含白名单（[A-Za-z0-9._-]，与 _pgrep_spec_process 的
+        # :366-369 spec/worktree 目录名 slug 口径同词表）外字符（典型 ``:``）
+        # 时整名与截断名失配。此处只 WARNING 留痕不拒绝登记：拒绝会让进程表
+        # 重建路径（daemon 重启 + 活子进程）失去锁保护，失败方向是放大双派发
+        # 而非收敛。残余面：create() 主登记路径在 lifecycle.py 内直写
+        # _spec_locks 不经本方法，cleanup finally（lifecycle.py:1134）的裸
+        # split 解析亦在 lifecycle.py——都不在本文件可收敛范围，口径关系与
+        # 失配后果详见 _lock_spec_name docstring。
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", spec_name):
+            self.logger.warning(
+                "worktree_manager",
+                f"Spec name '{spec_name}' contains characters outside the "
+                "slug whitelist [A-Za-z0-9._-]; lock keys are parsed as "
+                "'<spec>:<agent_type>' splitting at the FIRST ':', so gate "
+                "matching and stale-lock release may miss this spec's locks "
+                "(code-review item ecc59bdc97a2)",
+            )
         with self._spec_lock_th:
             self._spec_locks.add(f"{spec_name}:implementer")
             self._lock_since[f"{spec_name}:implementer"] = time.time()
