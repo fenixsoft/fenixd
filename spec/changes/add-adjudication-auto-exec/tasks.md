@@ -48,7 +48,7 @@
 
 ## 3. daemon 装配
 
-- [ ] 3.1 fenixd.py 在 admin 告警通道装配区（EventBus 初始化附近，~:788）实例化策略引擎并启动 60s 扫描环，注入 logger 与既有依赖引用，disabled/异常降级不影响其他车道启动
+- [x] 3.1 fenixd.py 在 admin 告警通道装配区（EventBus 初始化附近，~:788）实例化策略引擎并启动 60s 扫描环，注入 logger 与既有依赖引用，disabled/异常降级不影响其他车道启动
 
 ## 4. 外部 testing 跃迁即时派发
 

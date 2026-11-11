@@ -460,6 +460,9 @@ class FenixDaemon:
         self.agent_runner = None
         self.admin_store = None
         self.admin_monitor = None
+        # 裁决自动执行策略引擎（add-adjudication-auto-exec 3.1）：构造失败
+        # 降级为 None（引擎缺位 = 纯人工语义，不阻塞其他车道）
+        self.admin_auto_exec = None
         # harness 启动可达性自检 run-once 旗标（add-dispatch-precheck-true-fallback
         # 2.2：进程内去重——启动序列探测一次，后续调用零重复）
         self._harness_precheck_done = False
@@ -794,6 +797,32 @@ class FenixDaemon:
             hook_dispatcher=self.hook_engine.dispatch,
         )
         self.logger.info("fenixd", "EventBus initialized")
+
+        # 7.5 裁决自动执行策略引擎装配（add-adjudication-auto-exec 3.1）：
+        # 注入共享 config（引擎每轮经 ConfigLoader.get_auto_exec_config 实时
+        # 读取——配置热更新 30s 内生效）与 admin_store（与告警面/裁决链同一
+        # 存储实例，读写同一份 admin_alerts.json）。enabled=false 时引擎照常
+        # 构造启动（scan_once 内 enabled 门零动作零噪音）；构造/启动异常捕获
+        # 降级为 None——引擎缺位 = 纯人工语义，不阻塞其他车道（design 决策 7）。
+        try:
+            from core.admin_auto_exec import AdminAutoExecEngine
+
+            self.admin_auto_exec = AdminAutoExecEngine(
+                self.config,
+                PROJECT_ROOT,
+                self.logger,
+                store=self.admin_store,
+            )
+            self.admin_auto_exec.start()
+        except Exception as e:
+            self.admin_auto_exec = None
+            self.logger.warning(
+                "fenixd",
+                f"裁决自动执行策略引擎装配失败（降级纯人工语义）: "
+                f"{type(e).__name__}: {e}",
+            )
+        else:
+            self.logger.info("fenixd", "AdminAutoExecEngine initialized")
 
         self.logger.info("fenixd", "All components initialized successfully")
 
@@ -7019,6 +7048,13 @@ class FenixDaemon:
                 _safe_log("error", f"Admin worker pool shutdown failed: {e}")
         if self.event_bus:
             self.event_bus.stop()
+        # 裁决自动执行引擎收口（add-adjudication-auto-exec 3.1）：有界 join
+        # 不阻塞关停（engine.stop 内部 timeout=2.0）；None 缺位跳过
+        if self.admin_auto_exec:
+            try:
+                self.admin_auto_exec.stop()
+            except Exception as e:
+                _safe_log("error", f"AdminAutoExecEngine shutdown failed: {e}")
 
         # ── 规划性重启排水（interrupt-recovery-preserve D1/D4）──
         # restart_request 在册 = 规划性重启（supervisor 协议唯一信号源）→ 排水
