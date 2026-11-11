@@ -37,3 +37,12 @@ Dashboard 项目详情页（SPEC 列表页，`/projects/:name`）现有五页签
 - **文档**：`docs/help/08-dashboard.md` 补章节。
 - **界面真相源**：`spec/changes/add-project-home-tab/prototype/`（vendor 层真组件原型，具约束力；screenshots/ 含渲染凭证）。
 - **不新增配置项**；不改状态机、不动调度链路；各注册项目一视同仁（非 git 目录的项目该页签展示空态 + 说明）。
+
+## 2026-11-10 增强批次（request 追加）
+
+用户 request（m00001）五点增强：1) 文件列表与 README 卡片调整为本域 bento 磁贴样式（与其他页签一致）；2) `*.md` 渲染为 markdown；3) 引入代码渲染控件（常见语言高亮 + 行号，调研 vuepress 内置方案）；4) 图片直接显示；5) 仅非代码、非图片、非 markdown 保持纯文本。
+
+- **选型**：代码高亮选 `react-syntax-highlighter` PrismLight + 显式注册 38 语言 + oneLight——库已在依赖树（claude-msg 同源，视觉一致），vuepress v1 highlight.js / v2 shiki 均需新依赖故弃；PrismLight 轻量构建保证 list 页首屏 chunk 不引入全量 refractor。
+- **新增契约**：`GET /api/project-files/raw` 图片内联通道（扩展白名单 inline 语义，svg 附 CSP: sandbox）；content 通道语义不变；图片文件前端不经 content 通道。
+- **spec 变化**：「二进制文件降级」Scenario 收窄为非图片二进制；新增「内容盒四路渲染」「Bento 磁贴帧一致性」Requirement。
+- **Impact 增量**：`ProjectCodeBlock.tsx`（新增组件）、`projectHomeShared.ts`（纯函数增量）、`project_files.py`（IMAGE_INLINE_TYPES）、`project_files_routes.py`（raw 端点）、`base.py`（路由行）、`dashboard.ts`（rawUrl 函数）、`docs/help/08-dashboard.md`；不新增依赖、不新增配置项。

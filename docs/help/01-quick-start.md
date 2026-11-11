@@ -4,6 +4,8 @@
 
 ## 依赖清单
 
+先安装框架本体：克隆 fenixd 框架仓库，在框架根目录运行 `bash install.sh`——脚本按下表检查依赖，把 8 个 /fenix-* skill 软链进 `~/.claude/skills/`，并把 `fenix-init` 命令装入 PATH。
+
 | 依赖 | 最低版本 | 用途 |
 |------|---------|------|
 | Python | 3.10+ | 框架运行时 |
@@ -32,7 +34,7 @@
 
 ### 3. 提交就绪
 
-设计确认后，SPEC 自动流转至 `ready`，进入调度池等待派发。这段时间你可以随时打开 Dashboard 查看它的状态。
+设计确认后，SPEC 自动流转至 `ready`，进入调度池等待派发。这段时间你可以随时打开 Dashboard 查看它的状态（服务未启动时先运行 `/fenix-dashboard`，详见[Dashboard 操作手册](08-dashboard.md)）。
 
 ### 4. 自动循环
 
@@ -64,7 +66,7 @@ flowchart TD
     I --> D
     J --> K["/fenix-approve\n人工审批"]
     K --> L["pushed\n终态"]
-    K -- 拒绝 --> D
+    K -- 暂不推送 --> J
 ```
 
 ## 验证进度查看

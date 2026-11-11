@@ -1,4 +1,4 @@
-import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar, TitleBarNum } from '@/components/PageTitleBar';
 import {
@@ -57,6 +57,8 @@ import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 // 评审 blocked 标记与 v2 specDetail 共用单源（code-review item 801f9399dba8）
 import { SPEC_REVIEW_BLOCKED_MARKERS } from '@/utils/specReview';
+import { requestHostNewSession } from '@/utils/embedBridge';
+import { isEmbedMode } from '@/utils/embedMount';
 // SPEC 中文标题关键字命中单源（add-spec-chinese-title 2.2）
 import { specKeywordHit } from './specTitle';
 // 整行点击守卫与路径单源（add-spec-subtitle-and-row-click task 2.1）
@@ -2260,6 +2262,25 @@ export default function SpecListPage() {
           此处渲染当前路由项目名）；onBack 行为不变 */}
       <PageTitleBar
         back={() => history.push('/overview')}
+        filters={
+          /* 「新会话」按钮（2026-11-11 用户需求）：仅 dsh web 嵌入态渲染
+             （standalone dashboard 无宿主，无法新建 dsh 会话，按钮不可见）；
+             embed 档经 filters 槽位落标题行右端（即界面右上角）。点击
+             postMessage 宿主桥（embedBridge 单点）→ fenix-dsh-dashboard-
+             bridge 以当前项目为工作区走原生新建会话（无工作区自动按项目
+             目录建）。非 embed 恒 undefined：filters 槽位空值零渲染。 */
+          isEmbedMode() ? (
+            <Button
+              size="small"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                requestHostNewSession(name);
+              }}
+            >
+              新会话
+            </Button>
+          ) : undefined
+        }
         title={
           <Space size={8} align="baseline" style={{ minWidth: 0 }}>
             <span>{name}</span>

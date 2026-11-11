@@ -8,7 +8,7 @@ SPEC 进入 `drafted` 状态后、被晋升为 `ready` 之前，框架执行一�
 
 声明 lint 的核心逻辑在 `core/deliverables.py` 的 `lint_declared()` 函数中，它解析 tasks.md 的 `## Deliverables` 段，逐条校验六个确定性规则：路径含 `<`/`>` 模板占位符（守卫会静默跳过该条目，形同虚设）、`kind: modify` 指向主树目录而非具体文件（目录无法按 blob 精确对账）、`kind: modify`/`kind: reference` 指向的路径在主树不存在（modify 语义即修改既有文件、reference 即引用既有文件，不存在即声明有错）、`kind: new` 在仓库内有唯一 basename 命中时判疑似笔误（零或多命中 fail-open 交由后续层兜底）、`kind: modify`/`kind: new` 的路径被 `.gitignore` 排除（在任何分支均不可交付），以及路径解析后不在项目根内（仓库外路径不可交付）。六条规则都只拦确定性无效形态，lint 自身故障一律 fail-open，不因 lint 本身的 bug 阻塞流水线。
 
-除了交付路径 lint，`lint_tasks_parseable()` 还校验 tasks.md 的分组标题是否符合 `## <编号>. <标题>` 格式。这不是死板的格式要求，而是因为下游的任务进度跟踪器依赖分组正则解析（与 `core/dashboard/data.py:parse_tasks`、`bin/fenix_process.py:parse_tasks` 同源），无法解析的 tasks.md 意味着整条流水线的任务进度会丢失。
+除了交付路径 lint，`lint_tasks_parseable()` 还校验 tasks.md 的分组标题是否符合 `## <编号>. <标题>` 格式（编号后的点号可选，`## 1 标题` 亦合法）。这不是死板的格式要求，而是因为下游的任务进度跟踪器依赖分组正则解析（与 `core/dashboard/data/tasks.py:parse_tasks` 的分组正则同源；`bin/fenix_process.py` 已改为经 dashboard data 门面消费，不再持有自有实现），无法解析的 tasks.md 意味着整条流水线的任务进度会丢失。
 
 两道 lint 的编排由 `core/pm_engine/promotion.py` 的 `promote_drafted()` 统一完成：先执行晋升前软化（把 gitignored/仓库外路径的声明自动降级为 `kind: reference`，消除不可满足条目），再依次跑声明 lint 和 tasks 格式 lint，最后做出晋升判定。软化的目的是减少误拦：有些路径确实是不可交付的（比如 `.fenix/config.yaml` 被 gitignore），但它们在 tasks.md 中的原意是「引用」而非「新建」，自动修正 kind 比阻塞晋升更合理。软化结果写入 `DisputeAuditStore` 供事后审计。
 
@@ -58,15 +58,15 @@ Fast-track 模式下，`validate_fast_track_result()` 对 `.fenix-run-result.jso
 
 `core/agent_runner/runner.py` 在启动 Agent 子进程时，通过环境变量注入与 settings 注入构建两层运行时守卫。
 
-第一层是 worktree 隔离守卫（`block-main-tree-write.py`）。当 Agent 在 worktree 中运行时，`FENIX_RUN_PROJECT_ROOT` 和 `FENIX_RUN_WORKTREE` 环境变量被注入（`core/agent_runner/runner.py:2520`），PreToolUse hook 在 Agent 调用 Write/Edit/NotebookEdit 工具时拦截：如果目标文件路径解析后指向主树（而非 worktree），hook 返回 `deny` 并在纠偏提示中给出 worktree 内的相对路径。路径穿越逃逸（用 `..` 逃逸出 worktree）同样被拦截。这个守卫防住的是一类真实事故：Agent 被 skill 注入文本锚定为项目根的绝对路径后，39 次写盘全部落主树、worktree 零改动。没有这道守卫，这类事故完全无感，直到用户发现主树被改。
+第一层是 worktree 隔离守卫（`block-main-tree-write.py`）。当 Agent 在 worktree 中运行时，`FENIX_RUN_PROJECT_ROOT` 和 `FENIX_RUN_WORKTREE` 环境变量被注入（`core/agent_runner/harness/claude_adapter.py` / `harness/dsh_adapter.py`），PreToolUse hook 在 Agent 调用 Write/Edit/NotebookEdit 工具时拦截：如果目标文件路径解析后指向主树（而非 worktree），hook 返回 `deny` 并在纠偏提示中给出 worktree 内的相对路径。路径穿越逃逸（用 `..` 逃逸出 worktree）同样被拦截。这个守卫防住的是一类真实事故：Agent 被 skill 注入文本锚定为项目根的绝对路径后，39 次写盘全部落主树、worktree 零改动。没有这道守卫，这类事故完全无感，直到用户发现主树被改。
 
-第二层是图片读取守卫。`.fenix/agent-settings.json`（在 `runner.py:1424-1428` 构造）注入 PreToolUse hook `block-image-read`，阻止 verifier/planner 读取 PNG/JPG 文件。当模型不支持图像输入时，读截图会把图片送进对话导致 400 错误整轮失败。
+第二层是图片读取守卫。`.fenix/agent-settings.json`（在 `core/agent_runner/runner.py:2265` 构造）注入 PreToolUse hook `block-image-read`，阻止 verifier/planner 读取 PNG/JPG 文件。当模型不支持图像输入时，读截图会把图片送进对话导致 400 错误整轮失败。
 
 第三层是场景出题分批守卫（`planner-scenario-batching.py`，前文已述）。这三层 hook 各自独立，互不耦合，任一触发都不影响其他两层的守卫行为。
 
 ### 收工守卫
 
-实现 Agent 完成代码编写后、提交前，收工守卫对账三件事：零变更守卫检查 run 内是否产生了新提交，声称成功但既无新提交也无 Edit/Write 工具调用的 run 被判定为失败并重新派发；交付物守卫提取 tasks.md 的 Deliverables 声明（`core/deliverables.py:extract_paths()`），逐条检查声明路径是否在分支上真实存在，缺件阻塞收工；修复预算（`agents.impl_run_budget`）跟踪 run 内修复轮次，预算用尽仍有缺陷则自动升级 full 模式。三道对账都是确定性机械检查，不依赖 LLM 判断。
+实现 Agent 完成代码编写后、提交前，收工守卫对账三件事：零变更守卫检查 run 内是否产生了新提交，声称成功但既无新提交也无 Edit/Write 工具调用的 run 被判定为失败并重新派发；交付物守卫提取 tasks.md 的 Deliverables 声明（`core/deliverables.py:extract_paths()`），逐条检查声明路径是否在分支上真实存在，缺件阻塞收工；修复轮次预算：同一失败链的修复轮次受代码常量约束（`MAX_REPAIR_ROUNDS_PER_FAILURE = 2`，`core/pm_engine/dispatch/__init__.py`），超限回落常规重派通道；fast-track 硬检查判定 bug-found 时自动升级 full 模式（`_escalate_to_full_mode`），实现 run 的启动次数另受 `agents.impl_run_budget` 预算收口（耗尽转 `blocked` 交人工）。三道对账都是确定性机械检查，不依赖 LLM 判断。
 
 **交付物路径修正写「生效命中层」（relocation writeback）**：judge 裁决「声明路径是笔误、实际路径是 X」这类修正时，写回目标不是固定主树，而是按**生效声明命中层**判定（`core/deliverables.py` 的 `resolve_writeback_target`）：声明在 worktree 内生效 → 修正写入该 worktree 并随分支提交；命中主树声明 → 写主树（同源写入不算错层）；声明只存在于分支（不可写层）→ 走 dispute 审计核销（凭据记录 relocation old→new 映射，或 judge 判定的 actual_path）。修正落地后按守卫读取基准（worktree > branch > main）复检，读回仍是旧路径即判修正未生效；同一族路径反复出错触发独立持久化的熔断计数，防止修正循环空转。
 
@@ -102,7 +102,7 @@ autostash 条目的 `git stash pop` 也可能撞上冲突。`core/worktree_manag
 
 ### merge-back 的 spec 目录在飞守卫
 
-merge-back（把实现分支合并回主树）开跑前有一道前置检查（`core/worktree_manager/mergeback.py`，位于 rehearse 与 wip 重叠闸之后、clean tree 检查之前）：若 `spec/changes/<spec>/` 目录在主树存在未提交编辑（含未跟踪文件），说明有别的会话正在改这份 SPEC 的任务书/设计文档——此时合并会把「文档改动」与「代码改动」搅进同一提交。守卫的处理是**有界顺延**：默认最多顺延 30 分钟 / 3 轮（STATE 字段 `_merge_retry_pending` 记账），期间不重派实现轮、不消耗预算；顺延超限回落人工通道（merge 熔断告警）。守卫解析自身失败时 fail-open 放行，不因守卫故障阻塞正常合并。
+merge-back（把实现分支合并回主树）开跑前有一道前置检查（`core/worktree_manager/mergeback.py`，位于 rehearse 与 wip 重叠闸之后、clean tree 检查之前）：若 `spec/changes/<spec>/` 目录在主树存在未提交编辑（含未跟踪文件），说明有别的会话正在改这份 SPEC 的任务书/设计文档——此时合并会把「文档改动」与「代码改动」搅进同一提交。守卫的处理是**有界顺延**：默认 60 秒 / 轮、至多 3 轮（总计约 3 分钟，`mergeback.spec_dir_inflight_retry_delay_seconds` / `spec_dir_inflight_max_rounds` 可调；STATE 字段 `_merge_retry_pending` 记账），期间不重派实现轮、不消耗预算；顺延超限回落人工通道（merge 熔断告警）。守卫解析自身失败时 fail-open 放行，不因守卫故障阻塞正常合并。
 
 ### 重启协议
 
@@ -114,7 +114,7 @@ daemon 由 `fenixd_supervisor.py` 托管的完整重启协议是自愈链路的�
 
 daemon 进程持有的是启动时刻的代码副本（Python import 后不重载磁盘文件），在自我开发场景下「代码陈旧」是常态而非异常。陈旧检测（`fenixd.py` 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` mtime 与启动 baseline）是持续状态而非一次性事件：命中后保持 `self._code_stale` 为真、落一条 `signal_type: stale_code`、`severity: warning` 的 escalation 告警，直到重启刷新 baseline 或磁盘代码回退才解除。该告警为 `warning` 级——陈旧属可经空闲自愈收敛的持续状态，无需人工介入，故写入即自动标记已处理：**不进**人工告警横幅与待处理队列，仅在运维记录页/历史区可见；告警写入由状态边沿（假→真）触发，单个陈旧周期内不重复堆积。
 
-陈旧自愈的触发条件是**同时**满足：陈旧为真、`stale_code_selfheal.enabled` 为真（缺省开启）、项目受 supervisor 托管（`managed`）、`.fenix/restart_request` 不在册。空闲判定口径是**同时**满足三源皆空：（1）`pm_engine._active_runs` 无活跃 run（planner / implementer / verifier / judge 全部形态均在其内）；（2）`agent_runner._running_agents` 无在飞 agent run——spec-review 评审 run 不占 `pm_engine._active_runs`（`_active_reviews` 独立登记），只在 `_running_agents` 内可见，缺这一维则重启会在评审中途杀掉在飞评审 run（`evo-stale-selfheal-restart-cooldown` 2.1 补全）；（3）admin 处置 worker 池无在途任务（worker 池未启用时该维度视为空闲）。任一非零即判非空闲，倒逼计时清零。连续空闲达到 `stale_code_selfheal.idle_confirm_seconds`（缺省 120s）后 daemon touch `.fenix/restart_request`，supervisor 执行的仍是既有优雅重启协议（restart_request 协议本身不变）。未托管项目（`unmanaged`）不自愈——`restart_request` 无人消费，写了即死信，此时仅维持陈旧告警，交由 Dashboard「安装托管」或 `/fenix-setup` 的安装托管路径处置。
+陈旧自愈的触发条件是**同时**满足：陈旧为真、`stale_code_selfheal.enabled` 为真（缺省开启）、项目受 supervisor 托管（`managed`）、`.fenix/restart_request` 不在册。空闲判定口径是**同时**满足三源皆空：（1）`pm_engine._active_runs` 无活跃 run（planner / implementer / verifier / judge 全部形态均在其内）；（2）`agent_runner._running_agents` 无在飞 agent run——spec-review 评审 run 不占 `pm_engine._active_runs`（`_active_reviews` 独立登记），只在 `_running_agents` 内可见，缺这一维则重启会在评审中途杀掉在飞评审 run（`evo-stale-selfheal-restart-cooldown` 2.1 补全）；（3）admin 处置 worker 池无在途任务（worker 池未启用时该维度视为空闲）。任一非零即判非空闲，倒逼计时清零。连续空闲达到 `stale_code_selfheal.idle_confirm_seconds`（缺省 600s）后 daemon touch `.fenix/restart_request`，supervisor 执行的仍是既有优雅重启协议（restart_request 协议本身不变）。未托管项目（`unmanaged`）不自愈——`restart_request` 无人消费，写了即死信，此时仅维持陈旧告警，交由 Dashboard「安装托管」或 `/fenix-setup` 的安装托管路径处置。
 
 自动重启会把新代码引入运行中的系统：若新代码无法启动，supervisor 的启动失败熔断兜底——daemon 启动后 60 秒内退出计为一次启动失败，连续 3 次失败时停止自动拉起，写熔断标记 `.fenix/supervisor_fused`（独立文件，含时间戳/失败次数/自身 pid，便于手工删除），在 `supervisor.log` 落 critical 记录并经既有告警通道产出 `severity: critical` 的 `supervisor_fused` 告警。人工恢复路径：修复代码 → 删除 `.fenix/supervisor_fused` → 重启 supervisor；或直接重启 supervisor 进程（计数与熔断不被新进程继承）。daemon 存活超过 60 秒重置连续失败计数为 0，容忍偶发的单次启动抖动。配置关停（`stale_code_selfheal.enabled: false`）是另一个退出通道：此时陈旧状态与告警仍产生（正确的长期提醒，因为陈旧确实是持续缺陷），只是不再自动触发重启。
 

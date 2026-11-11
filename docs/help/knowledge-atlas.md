@@ -1,6 +1,6 @@
 # 知识真相源
 
-知识真相源是 Fenix 的长期记忆层：把已归档 SPEC 里仍然现行的规则、决策与约束蒸馏成一组人可读、可校验、可追溯的 Markdown 页面，放在 `spec/knowledge/` 下随仓库提交。回填（backfill）与体检（audit）两条车道负责让这组页面保持新鲜、自洽、可导航。本文说明目录结构、如何在 Dashboard 里操作、两条车道各自的行为。（关系图（graph）车道已随 graphify 功能取消下线：开关、生成与下发代码均已移除，存量 `graph/` 产物保留但不再更新。）
+知识真相源是 Fenix 的长期记忆层：把已归档 SPEC 里仍然现行的规则、决策与约束蒸馏成一组人可读、可校验、可追溯的 Markdown 页面，放在 `spec/knowledge/` 下随仓库提交。回填（backfill）与体检（audit）两条车道，加上随归档自动派发的蒸馏（distill）与 `_inbox/` 候选区折叠（fold），负责让这组页面保持新鲜、自洽、可导航。本文说明目录结构、如何在 Dashboard 里操作、各车道的行为。（关系图（graph）车道已随 graphify 功能取消下线：开关、生成与下发代码均已移除，存量 `graph/` 产物保留但不再更新。）
 
 ## 目录结构
 
@@ -14,9 +14,11 @@ spec/knowledge/
 │   │   ├── _domain.md          # 域说明（该域的边界与归属口径）
 │   │   └── <能力>.md           # 能力页：现行规则的唯一事实来源
 │   └── ...
-└── adr/
-    ├── index.md                # ADR 索引（编号、标题、状态）
-    └── ADR-NNN-*.md            # 架构决策记录（accepted / superseded）
+├── _inbox/                     # 候选区：人工投递的排查/立项结论（折叠成功移入 done/ 留存溯源）
+├── adr/
+│   ├── index.md                # ADR 索引（编号、标题、状态）
+│   └── ADR-NNN-*.md            # 架构决策记录（accepted / superseded）
+└── log.md                      # 编年账：蒸馏/折叠/回填/体检轮收尾由 daemon 代码侧追加流水行
 ```
 
 每个能力页头部有一行知识 marker，记录能力名、修订号与来源归档，溯源段逐条指向 `spec/archive/` 里的出处；audit 车道据此清理悬空溯源：
@@ -38,7 +40,7 @@ spec/knowledge/
 
 ## 页签导航
 
-Dashboard 设置页（设置 → 杂项设置）的「真相源」卡片提供开关：
+Dashboard 设置页（配置 → 归档页签）的「真相源」卡片提供开关：
 
 - **知识真相源（总开关）**：`knowledge.enabled`，默认开启。关闭后归档照常完成，但不再派发蒸馏 run。
 - **周期体检（audit）**：`knowledge.audit_enabled`，默认开启。关闭后 daemon 不再执行每日体检。
@@ -65,3 +67,8 @@ python3 -m core.knowledge_backfill --project-root .
 ```
 
 流程：清单缺失时先派聚类自举 run 产域骨架与导航页 → 按域分批（每批 ≤20 个归档）派批量蒸馏 run → 每批经全量校验后 pathspec 提交（`[fenix] knowledge: backfill batch N/total`）→ 收敛后输出汇报。进度台账在 `.fenix/knowledge_backfill.jsonl`（pending / distilled / failed），中断后重跑只处理 pending/failed 条目；单批失败不阻塞后续批，失败项登记 todo.md。
+
+日常运行中另有两条自动链路：
+
+- **归档即蒸馏**：SPEC 经 `/fenix-approve` 批准推送完成归档时登记蒸馏台账并自动派发蒸馏 run（Dashboard 里的归档操作同源；daemon 重启后从 pending 台账恢复重派）。上文的手动 CLI 用于批量回填存量归档。
+- **`_inbox/` 候选区折叠**：人工投递 `spec/knowledge/_inbox/` 的排查/立项结论（Markdown 文件）会在每轮蒸馏 run 开头被逐条折叠进真相源——候选区非空不构成独立派发条件，折叠只在已有蒸馏批内顺带执行。折叠成功的条目移入 `_inbox/done/`（溯源永久保留区），失败回滚滞留原地待下轮。

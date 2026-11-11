@@ -1297,7 +1297,15 @@ export default function QualityTab({ project, active }: QualityTabProps) {
   // 比散置消费点。
 
   return (
-    <Card variant="borderless">
+    <Card
+      variant="borderless"
+      // 桌面卡体内边距对齐「功能开发」分面包裹卡（list.tsx DevTab 卡挂
+      // .projects-page → global.less 8px 档，2026-11-04 收紧口径）：本卡此前吃
+      // antd 缺省 24px，两分面并排切换观感差异明显（2026-11-11 用户指令）。
+      // 移动端保持缺省 24px 不动——facetWrap 的 -20px 抵消口径按 24px 卡体
+      // 调校（抵后 4 + 容器 12 = 每侧 16px），改 8 会把两侧压穿到负值
+      styles={isMobile ? undefined : { body: { padding: 8 } }}
+    >
       {/* 工具栏：左对齐（严重度/状态下拉框 + 已选计数），右对齐（三个动作按钮同排） */}
       <div
         style={{

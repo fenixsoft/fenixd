@@ -1,6 +1,6 @@
 # Dashboard 操作手册
 
-Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控与运维入口。日常查看进度、处理告警、调整配置都可以在这里完成，本章按五个页面逐一讲解。
+Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控与运维入口。日常查看进度、处理告警、调整配置都可以在这里完成，本章按侧边栏页面逐一讲解。
 
 ## 启动
 
@@ -16,8 +16,9 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 |------|------|------|
 | 概览 | `/overview` | 跨项目状态统计、任务进度、问题、活跃运行 |
 | 项目 | `/projects` | 项目列表与各项目聚合摘要 |
-| 设置 | `/settings` | 配置管理、验证契约、token 预算面板 |
+| 配置 | `/settings` | 配置管理、验证契约、token 预算面板（菜单名「配置」，路由仍是 /settings） |
 | 运维 | `/activities` | Administrator 活动时间线 + 人工告警处置 |
+| 指挥中心 | `/command-center` | 多项目执行总览：组织网格 / 管线看板 / 执行台账三视图，60s 静默轮询 |
 | 帮助 | `/help` | 帮助文档中心（本文档集） |
 
 ## 五页逐面板
@@ -48,11 +49,11 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 #### 项目首页分面（只读文件浏览）
 
-「项目首页」分面是项目的 GitHub 式只读文件浏览入口（不提供任何写操作）。直接进入详情页时缺省仍选中「功能开发」，点击「项目首页」页签才加载（URL 带 `?tab=home`）。页面上自上而下：分支工具栏（单值只读展示当前分支名，detached HEAD 显示短 hash，不提供切换）、根目录最近提交条（作者 / 短 hash / 相对时间，打开文件时不渲染）、面包屑（根节点为项目名，逐级回退）、文件表格与 README 盒。
+「项目首页」分面是项目的 GitHub 式只读文件浏览入口（不提供任何写操作）。直接进入详情页时缺省仍选中「功能开发」，点击「项目首页」页签才加载（URL 带 `?tab=home`）。页面上自上而下：根目录最近提交条（作者 / 短 hash / 相对时间，右端单值只读展示当前分支名、不提供切换；打开文件时不渲染；原独立工具栏已取消）、面包屑（进入目录后才显示；根节点为项目名，逐级回退）、文件表格与 README 盒。
 
-文件表格三列：名称 / 最近提交信息 / 最近提交时间（目录先行、名称不分大小写升序，无提交历史的条目显示「—」），窄屏（<768px）仅保留名称列。点击目录行进入子目录，点击文件行打开文件内容盒：头部为图标 + 文件名 + 行数·字节数 + 下载按钮，正文为等宽源码区；文本内容超 256 KB 时只渲染前 256 KB 并提示「文件过大，仅展示前 256 KB，下载查看全文」；二进制文件不预览、仅保留下载。目录条目超过 200 项时表格下方提示截断条。根目录下若存在 `README.md` / `readme.md` 则在表格下方渲染 README 盒（GFM 语法），打开文件时隐藏、返回目录恢复。
+文件表格四列：名称 / 大小（文件显示实际大小，自动按 B/KB/MB/GB 档位；目录显示「目录」）/ 最近提交信息 / 最近提交时间（目录先行、名称不分大小写升序，无提交历史的条目显示「—」），窄屏（<768px）仅保留名称列。行图标统一蓝色系：常用扩展名（ts/js/py/vue/rs/go/css/json/yaml/sh/Dockerfile/.gitignore 等）显示各自的品牌图标，md/pdf/zip/图片/音视频等显示对应类型图标，其余为通用文件图标。点击目录行进入子目录，点击文件行打开文件内容盒。三张卡片（文件列表 / 文件内容 / README）均为 bento 磁贴样式（发丝边框 + 12px 圆角 + 软阴影白底），与其他页签卡片风格一致。内容盒头部为图标 + 文件名 + 类型徽标 + 行数·字节数 + 下载按钮，正文按文件类型四路渲染：`*.md` 经与 README 相同的安全管线渲染 GFM 全文；图片文件（png/jpg/jpeg/gif/webp/bmp/ico/avif/svg）直接显示原图（不经文本通道、无截断，加载失败显示降级提示）；代码文件（Python/TS/JS/Go/Rust/C 族/YAML/TOML/JSON/Shell 等常见类型与 Makefile/Dockerfile 等构建文件）以语法高亮 + 行号展示（oneLight 主题）；其余文件保持等宽纯文本。文本内容超 256 KB 时只渲染前 256 KB 并提示「文件过大，仅展示前 256 KB，下载查看全文」；非图片的二进制文件不预览、仅保留下载。目录条目超过 200 项时表格下方提示截断条。根目录下若存在 `README.md` / `readme.md` 则在表格下方渲染 README 盒（GFM 语法），打开文件时隐藏、返回目录恢复。
 
-URL 持久化：`?tab=home&path=<路径>` 记录当前浏览位置，刷新、分享链接、浏览器前进后退都能直达同一目录或文件；回到根目录时 `path` 参数移除，切回其他分面时两参都不出现。非 git 项目（或暂无提交历史）显示空态「该项目不是 git 仓库或暂无提交历史」，不报错弹窗。后端通道为 `GET /api/project-files/list|content|download`，仅列出 git 可见文件（gitignored 目录如 node_modules、dist、.fenix 不入列表，未跟踪文件入列表）。
+URL 持久化：`?tab=home&path=<路径>` 记录当前浏览位置，刷新、分享链接、浏览器前进后退都能直达同一目录或文件；回到根目录时 `path` 参数移除，切回其他分面时两参都不出现。非 git 项目（或暂无提交历史）显示空态「该项目不是 git 仓库或暂无提交历史」，不报错弹窗。后端通道为 `GET /api/project-files/list|content|download|raw`（raw 为图片内联直显通道），列出 git 可见文件 + gitignored 条目（node_modules、dist、.history 等忽略目录/文件**以灰色一并显示**，可点击进入；与可见条目同名的忽略项不标灰；`.git` 永不出现），未跟踪文件入列表。大小列靠左对齐。
 
 「功能开发」分面的筛选条件（页签 / 搜索词 / 状态多选 / 类型 / 已归档过滤）会写入 URL（`core/dashboard/static/src/pages/projects/listFilters.ts`），刷新、分享链接、浏览器前进后退都能保留；解析走白名单 + fail-safe，非法参数静默忽略，不影响列表渲染。
 
@@ -97,7 +98,7 @@ SPEC 的设计文档不在页面页签里，而是经**文档弹窗**（SpecDocM
 
 ### 设置页（/settings）
 
-设置页承担配置管理职责。页签按作用域分两层（实读 `core/dashboard/static/src/pages/settings/index.tsx`）：**用户级** 11 个页签——LLM / 智能体（agents）/ 提示词（prompts）/ 并行（parallel）/ Token / 验证（verify）/ 质量（quality）/ 审批（approval）/ 杂项（misc）/ 系统（system）/ 自进化（self-evolution）；选定具体项目后**追加** 3 个项目级页签——自省（self-review）/ 项目（project-profile）/ Hook（hook）。主要能力：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
+设置页承担配置管理职责。页签按作用域分两层（实读 `core/dashboard/static/src/pages/settings/index.tsx` 与 `pageLabels.ts`）：**用户级** 12 个页签——模型（llm）/ 模型分配（agents）/ 提示词（prompts）/ 并行（parallel）/ 预算（token）/ 验证（verify）/ 质量（quality）/ 审批（approval）/ 归档（misc，历史键名：归档管理 + 「真相源」卡片）/ 系统（system）/ 自进化（self-evolution）/ 仲裁（arbiter，处置链配置并入本页签堆叠呈现）；选定具体项目后**追加** 3 个项目级页签——自省（self-review）/ 项目（project-profile）/ Hook（hook）。主要能力：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
 
 「质量」页签（内部 key `quality`，位于「验证」之后）承载代码质量门与周期性审查/回归设置，现状为**两张卡片**（节标题「代码质量」/「回归测试」置于卡片外）+ 页签顶部的 ocr 环境探测提示。第一张「代码质量」卡：单个开关「收尾代码质量审查」（`verify.impl_code_review`，键路径不变）——开启后由框架在该实现 merge-back 成功、tester 派发的同一时点自动启动收尾代码审查（`bin/ocr_review.py`）**异步并行车道**——审查与验证车道并行在飞，不占 agent turn、实现者无需等待，tester 判定 verified 时于 testing 出口 join 裁决；环境未安装 ocr 时自动按 unavailable 降级跳过（该开关原置于「验证」页签，独立成页后验证页不再承载它，避免双入口）。「周期性代码审查」开关（`admin.code_review.enabled`，从项目页「代码审查」分面迁来，项目页分面只保留结果展示与手动触发）**并入同一张卡片**：开启后与每日自省同周期派发 code-review agent 审查产品代码质量，问题入台账供「代码审查」分面消费。第二张「回归测试」卡：开关「周期性全量回归」（`admin.regression.enabled`）：开启后与每日自省同周期自动执行一次全量回归（需项目 `.fenix/verify.yaml` 配置 `regression` 段），结果落到 `.fenix/regression/last-run.json` 供「测试回归」分面展示；同一自然日防重，与 implementer 收尾的全量套件互斥（主机级锁）；手动触发（项目页「立即执行全量回归」）不受本开关约束。长耗时用例阈值来自 `verify.yaml` 的 `regression.long_test_threshold_seconds`（缺省 8 秒），属项目测试体系声明，在项目页「验证」面板的 `verify.yaml` 编辑入口中调整，本卡片不提供第二个写入路径。
 
@@ -111,7 +112,7 @@ SPEC 的设计文档不在页面页签里，而是经**文档弹窗**（SpecDocM
 页签顶部有一行 open-code-review 环境状态（`GET /api/quality/ocr-status`，按 `shutil.which("ocr")` 探测，与 `bin/ocr_review.py` 的 PATH 解析同源）：已安装时显示版本号并放行开关；未安装时显示橙色提示 + 「一键安装」按钮，**开关置灰不可用**（避免开启一个运行期必然降级跳过的开关）。点「一键安装」调用 `POST /api/quality/ocr-install`，后端执行 `npm install -g @alibaba-group/open-code-review`（固定字面量，无用户输入拼接，不做提权）——成功后重新探测并解锁开关，失败（如权限不足 EACCES）返回 400 并把 npm 报错末尾透出，用户可自行 `sudo npm install -g @alibaba-group/open-code-review` 安装后刷新页面。**后端不拦「未安装时保存 `impl_code_review: true`」**：存量已勾选的配置不应因环境探测而保存失败，运行期降级语义保持不变。
 
 「自进化」页签（原「自愈」改名，内部 key `self-evolution`）下自上而下两张卡片，页签内容最下方为**唯一**的右对齐「保存」按钮——点击后一次提交同时写回两节配置（`stale_code_selfheal` + 用户级作用域下的 `self_evolution`）；两张卡片内均不自带保存按钮：
-1. **代码陈旧自愈**（既有 `stale_code_selfheal` 面板，配置键/缺省值/控件全部不变）：`enabled` 开关（缺省开启）与 `idle_confirm_seconds` 连续空闲确认秒数（缺省 120），附语义说明——陈旧状态 + 启用 + 托管 + 连续空闲达到阈值后 daemon touch `.fenix/restart_request` 触发优雅重启；未托管项目不自愈、仅维持陈旧告警。保存经页签底部唯一按钮，非法值（非布尔 / 非正整数秒数）被后端拒绝返回可读错误。
+1. **代码陈旧自愈**（既有 `stale_code_selfheal` 面板，配置键/缺省值/控件全部不变）：`enabled` 开关（缺省开启）与 `idle_confirm_seconds` 连续空闲确认秒数（缺省 600，`evo-reduce-stale-code-selfheal-noise` 起由 120 上调），附语义说明——陈旧状态 + 启用 + 托管 + 连续空闲达到阈值后 daemon touch `.fenix/restart_request` 触发优雅重启；未托管项目不自愈、仅维持陈旧告警。保存经页签底部唯一按钮，非法值（非布尔 / 非正整数秒数）被后端拒绝返回可读错误。
 2. **建议改进项**（新增 `SuggestedImprovementsPanel`）：标题「建议改进项」位于卡片外（与第一张卡片同构），其下为功能注解；卡片内为全局配置控件——「允许框架自改进」开关（`self_evolution.auto_accept`，缺省关闭，开关与名称同行不换行）与「每轮分析条目上限」数字输入（1..200，缺省 20，独占一行、后缀单位「条」），两者下方各有功能注解。用户级作用域可保存（写用户级配置）；项目级作用域下两项置只读并提示「全局键，请在用户级作用域修改」，此时底部保存按钮仅提交项目级可写的 `stale_code_selfheal`。配置表单之外另有全局动作按钮「清理所有项目自省内容」（实心红底白字告警样式，项目级作用域下禁用）：二次确认后调用 `POST /api/evolution/clear-todo`，把所有已发现项目的 `.fenix/todo.md` 截断为空文件（保留文件本体），只清这一份自省文本——下方条目列表读的是 `items.jsonl`，不受影响；也不代各项目提交 git，清空结果由下一次每日自省一并提交。无 `todo.md` 的项目计入「跳过」，单个项目失败不中断其余，完成后提示「已清空 N / 跳过 M / 失败 K 个」。其下为跨项目建议改进项表格，列序：项目 / 日期 / 类别 / 问题 / 评估结论 / 状态 / 操作，默认按入库时间倒序；状态中文映射：待决策 / 不需要立项 / 草稿生成失败 / 已同意 / 已自动接受 / 已拒绝 / 接受失败。操作列「更多」下拉提供查看分析结论 / 查看 SPEC 草稿 / 同意 / 拒绝（拒绝为危险项），同意与拒绝均需二次确认弹窗；「查看分析结论」在抽屉中渲染评估结论全文（含三项判定与证据）；「查看 SPEC 草稿」可切换 proposal / design / tasks / spec 四类文档。移动端表格横向滚动 + 操作列固定右侧（不做卡片式降级）。
 
 ### 运维记录页（/activities）
@@ -120,7 +121,7 @@ SPEC 的设计文档不在页面页签里，而是经**文档弹窗**（SpecDocM
 
 ## 帮助页自身用法
 
-「帮助」菜单（运维之下）进入本文档中心。桌面端左侧是文档目录（选中高亮），右侧为 Markdown 正文；移动端（<768px）正文置顶，通过顶部「文档目录」按钮打开抽屉切换。URL 采用 `#/help?doc=<name>` 形式，可以直链到具体文档，刷新或分享都不会丢失；目录点击与正文内相对链接均可完成页内切换。
+「帮助」菜单（指挥中心之下）进入本文档中心。桌面端左侧是文档目录（选中高亮），右侧为 Markdown 正文；移动端（<768px）正文置顶，通过顶部「文档目录」按钮打开抽屉切换。URL 采用 `#/help?doc=<name>` 形式，可以直链到具体文档，刷新或分享都不会丢失；目录点击与正文内相对链接均可完成页内切换。
 
 ## 安全边界
 

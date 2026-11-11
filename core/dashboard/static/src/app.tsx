@@ -72,7 +72,8 @@ export function rootContainer(container: ReactNode) {
 
 // 顶栏标题：logo + 自绘 SVG lockup（2026-11-07 用户指令：与 dsh web 侧栏品牌
 // 同步）。主行 FENIX HARNESS：Montserrat 600/12.5px/字距 1px 大写（dsh 官方
-// boot 屏 wordmark 语言），HARNESS 500 权重次级灰弱化；副标 WEB DASHBOARD：
+// boot 屏 wordmark 语言），HARNESS 500 权重次级灰弱化；副标 THE AI-NATIVE
+// SDLC（2026-11-10 用户指令：原 WEB DASHBOARD 改文）：
 // Montserrat 500/9px/字距 2.2px，基线 y=30.5（与主行视觉空隙 ≈7.2px）。两行
 // textLength 锁同宽 117.3px（lengthAdjust=spacing 均分字隙，字体回退仍等宽）。
 // 颜色走 antd token（theme.ts 单源零新色：colorText/colorTextSecondary/
@@ -91,7 +92,7 @@ function HeaderTitle() {
         height={38}
         viewBox="0 0 124 38"
         role="img"
-        aria-label="Fenix Harness — Web Dashboard"
+        aria-label="Fenix Harness — The AI-Native SDLC"
         style={{ display: 'block', overflow: 'visible' }}
       >
         <text
@@ -121,7 +122,7 @@ function HeaderTitle() {
           letterSpacing="2.2px"
           fill={token.colorTextTertiary}
         >
-          WEB DASHBOARD
+          THE AI-NATIVE SDLC
         </text>
       </svg>
     </Space>

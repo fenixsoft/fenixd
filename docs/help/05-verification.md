@@ -100,8 +100,8 @@ ready:
 |------|------|------|
 | **pass** | 场景全部通过 | → verified → done |
 | **fail + 报告完整** | 场景失败且验证报告有证据 | → bug-found（修复循环） |
-| **blocked-env** | 环境不可达/构建失败（非产品缺陷） | → 不判 bug-found，走两级豁免握手：级一判据（judge 前全批 blocked-env）判 inconclusive 进自动重验；级二判据（judge 后断言归因全 env）在 judge 采纳前拦截、不落 verified——豁免落 verified 须 admin DISPOSITION 放行 |
-| **inconclusive** | 证据不足（全批 blocked-env 或断言归因全 env 的重验轮） | → 自动回 implemented 重派新 attempt，最多 `verify_engine.inconclusive_max_attempts`（缺省 3）轮；第 4 轮写 `inconclusive_loop` SIGNAL 呼 admin 后停等人工 |
+| **blocked-env** | 环境不可达/构建失败（非产品缺陷） | → 不判 bug-found，走两级豁免握手：级一判据（judge 前全批 blocked-env）判 inconclusive 进自动重验；级二判据（judge 后断言归因全 env）在 judge 采纳前拦截、不落 verified——首次命中即升级停车等人工；豁免放行以 admin 授予的 STATE 豁免为生效源 |
+| **inconclusive** | 证据不足（全批 blocked-env 或断言归因全 env 的重验轮） | → 自动回 implemented 重派新 attempt；重验计数达 `verify_engine.inconclusive_max_attempts`（缺省 2）或升级阈值 `verify_engine.inconclusive_escalate_attempts`（缺省 4）即写 `inconclusive_loop` SIGNAL 呼 admin 后停等人工（失败签名与上一轮相同时不等计数提前升级） |
 
 > 关键防伪机制：**构建失败/环境不可达绝不判 bug-found**，防止「验证没能发生」被当成「验证发现了缺陷」→ 派生伪 fix → 修复级联空烧 token。
 
@@ -111,10 +111,10 @@ ready:
 
 机制（`core/pm_engine/verification/escalation.py`）：环境类失败（blocked-env / 证据不足）有两级豁免防线——
 
-- **级一（judge 前）**：整批场景全部 blocked-env 且无任何 fail/error 时，本轮不出 verdict、记为 inconclusive 并回 implemented 重派新验证 attempt。级一/级二共享同一计数 `_inconclusive_attempts`：前 3 次（`verify_engine.inconclusive_max_attempts`，缺省 3）静默重派；达到第 4 次（`verify_engine.inconclusive_escalate_attempts`）升级写入 inconclusive_loop 信号并暂停自动重验。
-- **级二（judge 后）**：judge 结论采纳前做归因断言——无 product-bug / test-defect 归因、无 flaky / 未知归因、且至少一条 env 归因，才允许按环境问题豁免（否则结论照常生效）。
+- **级一（judge 前）**：整批场景全部 blocked-env 且无任何 fail/error 时，本轮不出 verdict、记为 inconclusive 并回 implemented 重派新验证 attempt。级一/级二共享同一计数 `_inconclusive_attempts`：计数未达上限（`verify_engine.inconclusive_max_attempts`，缺省 2）前静默重派；计数达上限、或达升级阈值（`verify_engine.inconclusive_escalate_attempts`，缺省 4）、或失败签名与上一轮相同（无新信息）时提前升级——写入 inconclusive_loop 信号并暂停自动重验。
+- **级二（judge 后）**：judge 结论采纳前做归因断言——无 product-bug / test-defect 归因、无 flaky / 未知归因、且至少一条 env 归因（按断言级归类）即**拦截 verified 并首次命中立即升级停车**（写 inconclusive_loop 信号呼叫人工：授予环境豁免 / 修订场景后重验 / 人工修环境后重验 / 放弃），不再自动重验；断言不满足（含 flaky 归因）则结论照常生效。
 
-**admin DISPOSITION 放行守卫**：对 inconclusive 循环的人工放行处置须经握手校验——放行记录的创建时间必须晚于本轮 inconclusive_loop 信号，陈旧的放行不复用（`_handle_env_exemption_handshake`）。放行被采纳后，本轮 report.json 会写入 `admin_disposition_backlink` 回链（信号类型 / 处置 id / 动作摘要），供审计对账。
+**admin 放行守卫**：对 inconclusive 循环的豁免放行以 admin 授予的 spec 级 STATE 豁免（`_env_exemptions`）为生效源——覆盖全部 env 失败场景即放行；无 STATE 豁免时回退查 AdminStore 的 DISPOSITION 存量放行记录，且须过握手时效校验——放行记录的创建时间必须晚于本轮 inconclusive_loop 信号，陈旧的放行不复用（`_handle_env_exemption_handshake`）。放行被采纳后，本轮 report.json 会写入 `admin_disposition_backlink` 回链（信号类型 / 处置 id / 动作摘要），供审计对账。
 
 **排查指引**：「verified 卡在 implemented 反复重验」通常不是死循环——先查 `.fenix/verify-progress/<spec>/` 下的 inconclusive_loop 信号与对应 admin 处置记录；有效放行落地后，下一轮验证即正常推进。
 
@@ -165,7 +165,7 @@ ready:
 
 **你会看到什么**：验证多轮因基础设施问题（构建环境、依赖安装、端口占用等）失败，但 SPEC 没有像产品缺陷那样被三轮熔断冻结，也未重复扣减 run 预算。
 
-机制（`core/state_machine.py`）：判定为 infra 的验证失败轮不计入 `MAX_VERIFY_FAIL_ROUNDS` 的冻结判定，冻结计数只在验证 PASS 时归零；对应验证 run 的预算按幂等退款（`_infra_refunded_run_ids` 记账，同一 run 不重复退）。观测字段落在 STATE.md：`_infra_failure_count`（infra 失败次数，观测不归零）、`_verify_infra_rounds`（infra 轮数，不参与冻结）、`_infra_refunded_run_ids`（退款幂等清单）。预算口径详见 [调度与治理规则](06-governance.md) 的「三类预算」。
+机制（STATE 字段见 `core/state_machine.py`，infra 判定与回拨见 `core/pm_engine/verification/infra_classify.py`，冻结判定 `MAX_VERIFY_FAIL_ROUNDS` 见 `core/pm_engine/family.py`）：判定为 infra 的验证失败轮不计入 `MAX_VERIFY_FAIL_ROUNDS` 的冻结判定，冻结计数只在验证 PASS 时归零；对应验证 run 的预算按幂等退款（`_infra_refunded_run_ids` 记账，同一 run 不重复退）。观测字段落在 STATE.md：`_infra_failure_count`（infra 失败次数，观测不归零）、`_verify_infra_rounds`（infra 轮数，不参与冻结）、`_infra_refunded_run_ids`（退款幂等清单）。预算口径详见 [调度与治理规则](06-governance.md) 的「三类预算」。
 
 ## 验证结果在哪看
 

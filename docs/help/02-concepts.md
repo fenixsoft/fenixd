@@ -26,7 +26,7 @@ graph TB
         PM --> SM
     end
 
-    subgraph POOL ["Agent Pool（十二类 Agent）"]
+    subgraph POOL ["Agent Pool（十四类 Agent）"]
         IMP["Implementer\n（实现者）"]
         VER["Verifier\n（验证者）"]
         PP["Planner-Plan\n（规划器）"]
@@ -38,6 +38,8 @@ graph TB
         EV["Evolution\n（自进化）"]
         REV["Spec-Review\n（方案评审）"]
         CR["Code-Review\n（代码审查）"]
+        REP["Repair\n（合回救回）"]
+        ARB["Arbiter\n（仲裁者）"]
         IMP ~~~ PP
         PP ~~~ FT
         VER ~~~ PJ
@@ -46,11 +48,13 @@ graph TB
         SR ~~~ EV
         DJ ~~~ REV
         REV ~~~ CR
+        CR ~~~ REP
+        REP ~~~ ARB
     end
 
     subgraph DASH ["Dashboard"]
         API["REST API\n（/api/*）"]
-        WEB["Web UI\n（概览/项目/设置/运维/帮助）"]
+        WEB["Web UI\n（概览/项目/配置/运维/指挥中心/帮助）"]
         API -.-> WEB
     end
 
@@ -67,7 +71,7 @@ graph TB
 
 两条入边的分工是理解调度的关键：**正常唤醒靠文件监听（2 秒级），兜底扫描只是安全网**。各唤醒源的间隔、成本实测与已知盲区见[调度与治理规则](06-governance.md#调度节拍spec-何时被唤醒)。
 
-## 十二类 Agent 角色
+## 十四类 Agent 角色
 
 | Agent 类型 | 职责 | 触发时机 |
 |-----------|------|---------|
@@ -83,10 +87,12 @@ graph TB
 | **spec-review**（方案评审） | 阅读 SPEC 三文档做方案级评审（goal-fit/hole/regression），结论 approved/repaired/rejected | `drafted → reviewing` 晋升门禁 |
 | **code-review**（代码审查） | 周期性仓库级代码审查，问题沉淀为可追踪台账（`.fenix/code-review/items.jsonl`），供项目页「代码审查」分面消费并生成 fix-cr-* 修复 SPEC | 每日自省时点同步触发 / 项目页「代码审查」分面手动触发 |
 | **code-fix**（代码修复） | 按批修复 code-review 台账的 `open` 条目：在独立 worktree 内修复并提交，全量回归通过才合回主树 | 审查收尾产生新 `open` 条目 / full scan 周期兜底 / 项目页「代码审查」分面手动触发 |
+| **repair**（合回救回） | merge-back 冲突定向救回：在实现 worktree（或换壳全新 worktree）内修复冲突合并并完成验证 | 实现代码合回主分支发生冲突时 |
+| **arbiter**（仲裁者） | 处置链第二级全局视野裁决：冻结升级/Admin 配额耗尽时接单，按自主处置白名单动作并落报告与 outcome 双道硬门 | 处置链升级边触发（Admin 让位/配额耗尽/冻结鉴定） |
 
 ## full 模式 vs fast-track 模式
 
-Fenix 有两种实现-验证路径，daemon 会按 SPEC 的特征自动选择。
+Fenix 有两种实现-验证路径，在立项时定档：/fenix-new 按需求复杂度评估给出建议，与用户确认后写入 SPEC 的 `mode` 字段（缺省 `full`），daemon 按该字段分流派发。
 
 ### full 模式（标准闭环）
 
@@ -110,7 +116,7 @@ sequenceDiagram
 
 ### fast-track 模式（轻量合并）
 
-fast-track 把实现与验证合并为单次 Agent 调用，省去独立的 verifier 调用与部分 worktree 开销，token 消耗更低。适用条件是影响面小且验证简单：单文件改动、模块数不超过 1、无 UI 变动、验证场景不超过 3 个。不满足任一条件时自动走 full 模式；fast-track 失败后也会回退为 full 模式重试。
+fast-track 把实现与验证合并为单次 Agent 调用，省去独立的 verifier 调用与部分 worktree 开销，token 消耗更低。适用条件是影响面小且验证简单，立项评估的四维参考：单点小改动、模块数不超过 1、无 UI 与数据迁移、预期验证场景不超过 3 个；/fenix-new 据此给出建议，用户也可用 `--fast-track`/`--full` 显式指定。运行失败也不会回退为 full 模式——恢复重入仍走 fast-track 收尾路径。
 
 ## Worktree 隔离
 
@@ -129,7 +135,7 @@ Agent 角色的模型通道由配置决定：`llm.providers` 注册 Provider，`
 | 内容 | 处理方式 |
 |------|---------|
 | skills / plugins | **共享**：symlink 指向 `~/.claude/`，所有 Provider 同一份技能与插件 |
-| settings.json | 按 Provider 重新生成：`enabledPlugins` 复制自 `~/.claude/settings.json`，hooks 复制自 `.fenix/agent-settings.json`；**不复制任何 `env`**：网关的模型映射类变量对直连 Provider 无用且有毒（陈旧映射会污染子代理模型解析） |
+| settings.json | 按 Provider 重新生成：`enabledPlugins` 复制自 `~/.claude/settings.json`，hooks 复制自 `.fenix/agent-settings.json`；**宿主 `env` 不复制**（网关的模型映射类变量对直连 Provider 无用且有毒），分配了模型时按 Provider 写入子代理模型映射 `env`（`CLAUDE_CODE_SUBAGENT_MODEL` 与 `ANTHROPIC_DEFAULT_*_MODEL`） |
 | 会话 transcript、任务数据、session-env、shell-snapshots、`.claude.json` | **按 Provider 隔离**（API Key 只经进程环境注入，不落盘） |
 
 会话类数据跟随配置根目录被隔离，且这恰好是必要的语义，不是单纯副作用：
@@ -142,7 +148,7 @@ Agent 角色的模型通道由配置决定：`llm.providers` 注册 Provider，`
 ### 观测与注意
 
 - 每个带 Provider 分配的 run 会在 run 产物写 provider_marker，SPEC 详情时间轴可见该次 run 实际驱动的 `model@provider`。
-- 隔离目录的 `settings.json` 已存在则跳过重建：**修改 `~/.claude/settings.json` 的 enabledPlugins 或 `.fenix/agent-settings.json` 后，存量隔离目录不会自动刷新**，删除对应 `.fenix/agent-config/<provider>/`（或仅其 settings.json）即可按需重建。
+- 隔离目录的 `settings.json` 按内容幂等重建：已存在且与将写入内容一致（含 `_schema_version` 标记）则跳过；修改 `~/.claude/settings.json` 的 enabledPlugins 或 `.fenix/agent-settings.json` 后，下次派发即按内容比对自动原子重写，无需手动删除重建。
 
 ## 多项目机制
 

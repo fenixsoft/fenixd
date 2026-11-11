@@ -24,7 +24,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
 | poll_interval_minutes | 30 | 分钟 | 热更新 |
-| daily_report_time | `"09:00"` | HH:MM | 热更新 |
+| daily_report_time | `"09:00"` | HH:MM | **死键**：全仓无读点，每日报告当前未挂调度（键保留占位，配置不生效） |
 
 `poll_interval_minutes` 是**兜底**全量扫描的间隔（正常唤醒靠 2 秒的文件监听器），它的取值理由与「盲区」见[调度节拍](06-governance.md#调度节拍spec-何时被唤醒)——调小它主要影响恢复动作的副作用放大半径，而非扫描成本（实测中位 26.7 ms）。
 
@@ -36,7 +36,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | max_retries | 3 | ≥0 | 热更新 |
 | impl_run_budget | **代码缺省 6**（模板 4） | 1-10 | 热更新 |
 | token_budget_millions | **代码缺省 50**（模板 50） | 0-1000（0=关闭） | 热更新 |
-| max_turns | 400 | ≥1 | 重启 |
+| max_turns | **代码缺省 300**（模板 400） | ≥1 | 热更新（下一次 run 生效） |
 | daily_run_limit | **代码缺省 50**（模板 300） | ≥0（0=无限） | 热更新 |
 | run_timeout_seconds | 9000 | ≥1 | 热更新 |
 | timeout_overrides.<角色> | —（无覆盖） | 秒数（见下节） | 热更新 |
@@ -45,14 +45,27 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | run_stall_budget_enabled | false | bool | 热更新 |
 | run_stall_budget_stalls | 5 | 正整数 | 热更新 |
 | run_stall_budget_window_minutes | 10 | 正整数（分钟） | 热更新 |
-| subagent_model_override | "" (空串=使用 provider model) | 模型名字符串 | 重启 |
-| use_new_verifier | true | bool | 重启 |
+| subagent_model_override | "" (空串=使用 provider model) | 模型名字符串 | 热更新（下一次派发生效） |
+| use_new_verifier | true | bool | 热更新（下一轮验证生效） |
 
 补充语义（实读 `core/config.py`、`core/pm_engine/budget.py`）：
 
 - `impl_run_budget_max`：实现尝试预算的**上限键**（open-impl-budget-ceiling）——per-spec 覆盖（STATE 字段 `impl_run_budget_override`）与全局 `agents.impl_run_budget` 都按它夹紧；上限键自身再受硬天花板 1000 约束（防极端配置使预算闸门事实上失效）。
 - `verify_redo_budget`：daemon 重启后 testing 态恢复路径的重验预算（缺省 3）——只对「重启 → 自动重验」这一条路径计数（`bump_verify_redo_count`），超限以 `verify_redo_exhausted` 冻结转人工；正常运行轮的重验不占它。
 - `run_stall_budget_*` 三键：run 止损开关与参数（缺省关闭），语义与排查见[调度与治理规则](06-governance.md#run-止损run-stall-budget)。
+
+### agent（harness 进程边界选型）
+
+顶层 `agent` 段（单数，区别于复数的 `agents` 段）声明子代理跑在哪种 harness 进程边界上：
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| agent.harness | `claude` | claude/dsh | 热更新（影响下一次派发） |
+| agent.dsh_web_url | `http://127.0.0.1:3080` | URL | 热更新 |
+| agent.dsh_session_tidy | `true` | bool | 热更新 |
+| agent.dsh_api | — | dsh 通道协议段 | 热更新 |
+
+`claude`（缺省）= 每个子代理一个 Claude Code CLI 子进程；`dsh` = DSH headless 通道（DshAdapter，`add-dsh-adapter-integration`）。`agent.harness` 非法值回退 `claude` 并 WARNING；选择 `dsh` 时派发前置健康检查校验 Bundle 安装/版本/挂载，不通过该次派发 fail-fast 终态（`agent.dsh_web_url` 指向在线实例）。设置页「系统」页签可切换。
 
 ### agents.（瞬断治理）：provider 网关瞬时故障的退避与熔断
 
@@ -139,7 +152,7 @@ Agent 可用的模型通道（Provider）注册表。未配置 = 空注册表，
 
 ### agents.models
 
-按 Agent 角色声明模型通道，键取 11 个角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review` / `dispute-judge` / `code-review` / `code-fix`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
+按 Agent 角色声明模型通道，键取 13 个角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review` / `dispute-judge` / `code-review` / `code-fix` / `knowledge-distiller`（归档蒸馏车道，随 SPEC 归档单点派发）/ `arbiter`（仲裁分配）。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
 
 > **code-review（周期性代码审查，add-code-review-agent-and-quality-tab）**：`agents.models.code-review` 可为其独立分配模型；未配置时模型链依次回退 `agents.models.self-review` → `agents.models.administrator` → `admin.agent_model` → 默认网关（与 evolution 同型链）。
 
@@ -169,13 +182,13 @@ agents:
 |----|--------|---------|
 | base_dir | `.claude/worktrees` | 重启 |
 | implement_branch_prefix | `fenix` | 重启 |
-| verify_branch_prefix | `fenix/verify` | 重启 |
+| verify_branch_prefix | `fenix/verify` | **死键**：全仓无读点——verify 分支创建端硬编码 `fenix/verify-<spec>-<时间戳>` 前缀，本键配置不生效（键保留占位） |
 
 ### gates
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
-| require_push_approval | true | bool | 热更新 |
+| require_push_approval | true | bool | **死键**：全仓无读点——push 是否人工审批由 `approve_mode` 单独决定（`auto` 即自动批准），本键配置不生效（键保留占位） |
 | approve_mode | `manual` | manual/auto | 热更新 |
 | promote_mode | `auto` | auto/manual | 热更新 |
 | spec_review_mode | `auto` | auto/never | 热更新 |
@@ -198,7 +211,7 @@ agents:
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
 | static_scope | `main` | main/worktree | 热更新（下一轮验证生效） |
-| deps_mode | `prefer-offline` | prefer-offline/hardlink | 热更新（下一个 worktree 创建生效） |
+| deps_mode | `hardlink` | prefer-offline/hardlink | 热更新（下一个 worktree 创建生效） |
 | impl_code_review | `false` | bool | 热更新（下一轮实现收尾阶段生效） |
 | impl_code_review_timeout_sec | `600` | 正整数 | 热更新（写入 run 级 ocr 配置，确定性生效） |
 | impl_code_review_concurrency | `4` | 正整数 | 热更新（经车道命令注入硬生效） |
@@ -206,6 +219,7 @@ agents:
 | repo_code_review_concurrency | `4` | 正整数 | 热更新 |
 | impl_code_review_mode | `gate` | gate/advisory | 热更新 |
 | impl_code_review_lane_timeout_sec | `2400` | 正整数秒 | 热更新 |
+| planner_max_concurrent | `0`（不节流） | 非负整数（正数 = verify 管线 planner 出题阶段并发上限） | 热更新（下一轮 planner run 生效） |
 
 `verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关，不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
 
@@ -222,7 +236,9 @@ agents:
 - **`impl_code_review_mode`**（缺省 `gate`）：实现收尾审查的 join 裁决双档——`gate` 为 join 时存在非 rejected findings 即走 bug-found 打回修复轮；`advisory` 把 findings 一律入 code-review 台账、不打回。
 - **`impl_code_review_lane_timeout_sec`**（缺省 2400）：实现收尾触发的并行审查车道整体超时（秒）。
 
-三键均为 YAML-only（设置页未暴露）。
+`verify.planner_max_concurrent`（`add-planner-efficiency`，设置页「并行」页签）：`0`（缺省）不节流；配置正整数后跨 verify 管线的 planner 出题并发按该上限收敛（与 `agents.max_concurrent` 正交，后者管的是全部 run 的进程并发）。
+
+其中 `repo_code_review_concurrency` 与 `impl_code_review_mode` 已纳入设置页「质量」页签、`planner_max_concurrent` 在「并行」页签（节流开关 + 上限，0=不节流）；仅 `impl_code_review_lane_timeout_sec` 仍为 YAML-only。
 
 ### verify_engine（视觉校验）
 
@@ -250,6 +266,24 @@ deps_mode 仅对 nodejs 项目生效，供给入口是 package.json/node_modules
 |----|--------|---------|
 | retry_backoff_seconds | `[300, 900]` | 热更新 |
 | max_retries | 3 | 热更新 |
+
+### knowledge（项目知识真相源）
+
+项目知识真相源 `spec/knowledge/` 的开关与蒸馏车道配置（目录结构与车道机制见[知识真相源](knowledge-atlas.md)）：
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| knowledge.enabled | `true` | bool（蒸馏总开关） | 热更新 |
+| knowledge.audit_enabled | `true` | bool（体检车道开关，默认随每日检查点开启） | 热更新 |
+| knowledge.no_conflict_exempt | `true` | bool（疑点台账内容豁免） | 热更新 |
+| knowledge.escalate_after_rounds | `2` | 正整数 | 热更新 |
+| knowledge.escalated_stale_days | `7` | 正整数（天） | 热更新 |
+| knowledge.model | —（无） | 裸模型名 | 热更新 |
+
+- `enabled` / `audit_enabled`：设置页「归档」页签「真相源」卡片可编辑（页签键 misc 为历史遗留，现语义「归档 + 真相源」），写入项目 config.yaml 的 `knowledge` 段。
+- `no_conflict_exempt`（`add-knowledge-audit-finding-ledger` 4.1）：语义项转写判定「无矛盾」计误报的内容豁免开关。
+- `escalate_after_rounds`：同一疑点连续 N 轮复核均无确定性判定即升级待人工（豁免解冻重派不计入轮次）；`escalated_stale_days`：escalated 条目挂起超过该天数时对涉事知识页写 disputed 超龄注记（`add-knowledge-audit-escalation-consumption` 2.1）。
+- `model`（`evo-distill-model-name-fallback` 1.1）：归档蒸馏 spawn 的显式裸模型名；未配置（缺省）时 spawn 不传 `--model`，生效模型名由宿主 `ANTHROPIC_DEFAULT_*_MODEL` 别名解析（此时打一次 WARNING）。已下线的 `graph_enabled` 键被静默忽略。除 enabled/audit_enabled 两键外均为 YAML-only。
 
 ### admin
 
@@ -287,7 +321,7 @@ supervisor 每次启动时原子覆写 `.fenix/supervisor_runtime.json`，供 da
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
 | enabled | `true` | bool | 热更新（下一检测周期生效） |
-| idle_confirm_seconds | `120` | 正整数秒（建议 ≤ 86400，过大仅警告不拒绝） | 热更新（下一检测周期生效） |
+| idle_confirm_seconds | `600` | 正整数秒（建议 ≤ 86400，过大仅警告不拒绝） | 热更新（下一检测周期生效） |
 | cooldown_window_seconds | `1800` | 正整数秒（重启计数滑动窗口） | 热更新（下一检测周期生效） |
 | cooldown_threshold | `3` | 正整数（窗口内自愈重启次数阈值） | 热更新（下一检测周期生效） |
 | cooldown_duration_seconds | `600` | 正整数秒（冷却锁存时长） | 热更新（下一检测周期生效） |
@@ -298,7 +332,7 @@ supervisor 每次启动时原子覆写 `.fenix/supervisor_runtime.json`，供 da
 ```yaml
 stale_code_selfheal:
   enabled: true        # 关闭后不再自动触发重启，但陈旧状态与告警仍产生
-  idle_confirm_seconds: 120
+  idle_confirm_seconds: 600
   # 重启冷却（evo-stale-selfheal-restart-cooldown）：冷却**无独立开关**，整体关闭
   # 走 enabled: false；五键非正整数回退缺省（`0` 不等效关闭）。经 .fenix/config.yaml
   # 配置 + 30s 热更新生效；Dashboard 面板未暴露这五键（面板只读写上面两键，
@@ -324,6 +358,7 @@ stale_code_selfheal:
 |----|--------|------|---------|
 | auto_accept | `false` | bool | 热更新（下一检查点生效） |
 | max_items_per_run | `20` | 整数 1..200 | 热更新（下一检查点生效） |
+| spec_run_at | —（无，立项即执行） | `"HH:MM"` 或不配置 | 热更新（下一检查点生效） |
 
 ```yaml
 self_evolution:
@@ -331,13 +366,13 @@ self_evolution:
   max_items_per_run: 20   # 每轮分析条目上限，超出部分留待下轮（id 未入库自然再选中）
 ```
 
-两键均为**全局（用户级）键**：Dashboard 配置写入 API 对项目级作用域提交 `self_evolution` 返回 400（引导到用户级作用域修改），项目级配置文件不会被写入该键；读取侧的有效值取用户级 + 项目级合并后配置。节、键缺失或值非法（`auto_accept` 非布尔、`max_items_per_run` 非 1..200 整数/布尔混入）时回退缺省值，不使 daemon 启动失败，30s 热更新路径不受该节中断。
+两键均为**全局（用户级）键**：Dashboard 配置写入 API 对项目级作用域提交 `self_evolution` 返回 400（引导到用户级作用域修改），项目级配置文件不会被写入该键；读取侧的有效值取用户级 + 项目级合并后配置。节、键缺失或值非法（`auto_accept` 非布尔、`max_items_per_run` 非 1..200 整数/布尔混入）时回退缺省值，不使 daemon 启动失败，30s 热更新路径不受该节中断。`spec_run_at`（`add-evolution-timed-specs`，同为全局用户级键）：配置 `"HH:MM"` 后 evo SPEC 统一延迟到每日该时刻立项，缺省（无值/非法回退）为分析完成后立项即执行；设置页「自进化」页签「建议改进项」卡片以「立即立项 / 每日定时」模式编辑该键。
 
 语义：仅当 daemon 为自托管（`PROJECT_ROOT == FRAMEWORK_ROOT`）时启用自进化检查点（节拍复用 `admin.interval_minutes`，缺省 5 分钟）。检查点按 Dashboard registry 逐项目判定就绪（`.fenix/self_review_state.json` 的 `last_run_at` 晚于 `.fenix/evolution/state.json` 水位，且 `.fenix/todo.md` 非空），就绪即入队；无 `evo-` 分析 run 在途时立刻以队列中全部就绪项目启动一次分析 run。分析结论与草稿落在 gitignored 的 `.fenix/evolution/`（见[文件与数据地图](10-artifacts.md)）；接受后 SPEC 名统一使用 `evo-` 前缀并进入既有流水线（见[生命周期](03-lifecycle.md)）。`auto_accept` 为真时，分析落地完成后对本轮全部 `pending` 条目自动走接受路径（单条失败不影响其余），无需人工点击。
 
 ### admin.code_review（周期性代码审查）
 
-设置页「质量」页签的开关（`add-code-review-agent-and-quality-tab`；2026-09-19 从项目页「代码审查」分面迁来——分面只保留结果展示与手动触发）：开启后与每日自省**同周期**触发 `code-review` agent，审查窗口内开发 SPEC 的**产品代码**质量（框架侧 manifest 已排除测试/manifest 外文档/构建产物），问题沉淀到独立台账 `.fenix/code-review/items.jsonl`，并在项目页「代码审查」分面以可复选表格呈现（支持一键生成修复 SPEC `fix-cr-<slug>`）。审查窗口与自省**同源**：`window_start` 取 `.fenix/self_review_state.json` 的 `last_run_at`（首跑/旧格式回退 `now - 24h`），即周期口径 = `admin.self_review.run_at` 时点，二者永远同窗口、不引入漂移。该同源口径限定 `scope: window`（缺省）档——`scope: full` 全仓审查不设窗口。审查路径为两步：先 `ocr scan`（**全文件扫描**，非 diff-based 的 `ocr review`）批量扫描，再由各子代理**分片直写** `out-<run_id>-b<N>.jsonl`（每批一个分片文件，读侧一律按 N 升序聚合消费，主产物 `out-<run_id>.jsonl` 仅作兜底）；产物缺失或零有效行时整轮判失败（`repo-code-review-gate`）。
+设置页「质量」页签的开关（`add-code-review-agent-and-quality-tab`；2026-09-19 从项目页「代码审查」分面迁来——分面只保留结果展示与手动触发）：开启后默认与每日自省**同时点**触发 `code-review` agent（触发时点 `run_at` 缺省回退 `admin.self_review.run_at`，显式配置可错峰，`add-code-review-run-at`），审查窗口内开发 SPEC 的**产品代码**质量（框架侧 manifest 已排除测试/manifest 外文档/构建产物），问题沉淀到独立台账 `.fenix/code-review/items.jsonl`，并在项目页「代码审查」分面以可复选表格呈现（支持一键生成修复 SPEC `fix-cr-<slug>`）。审查窗口与自省**同源**：`window_start` 取 `.fenix/self_review_state.json` 的 `last_run_at`（首跑/旧格式回退 `now - 24h`），即周期口径 = `admin.self_review.run_at` 时点，二者永远同窗口、不引入漂移。该同源口径限定 `scope: window`（缺省）档——`scope: full` 全仓审查不设窗口。审查路径为两步：先 `ocr scan`（**全文件扫描**，非 diff-based 的 `ocr review`）批量扫描，再由各子代理**分片直写** `out-<run_id>-b<N>.jsonl`（每批一个分片文件，读侧一律按 N 升序聚合消费，主产物 `out-<run_id>.jsonl` 仅作兜底）；产物缺失或零有效行时整轮判失败（`repo-code-review-gate`）。
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
@@ -345,6 +380,7 @@ self_evolution:
 | max_files | `500` | 正整数 | 热更新（下一检查点生效） |
 | scope | `window` | window/full（恰为字符串 `full` 才走全仓，其余值一律回退 window） | 热更新（下一检查点生效） |
 | stall_alert_minutes | `15` | 正整数（分钟） | 热更新 |
+| run_at | 回退 `admin.self_review.run_at` | HH:MM | 热更新（下一检查点生效） |
 
 ```yaml
 admin:
@@ -368,6 +404,8 @@ admin:
 | enabled | `false` | bool | 热更新（下一检查点生效） |
 | batch_size | `20` | 正整数 | 热更新（下一次选批生效） |
 | targeted_retry_max | `3` | 1–5（越界回退 3） | 热更新（下一轮定向重试生效） |
+| targeted_regression | `true` | bool | 热更新（下一批回归生效） |
+| night_quiet_window | `"03:00-03:15,04:15-04:45"` | 多窗 `"HH:MM-HH:MM"`（逗号/分号分隔）/ `off` / 空串（关闭） | 热更新 |
 
 ```yaml
 admin:
@@ -377,6 +415,8 @@ admin:
 ```
 
 - `enabled` 缺省 `false`：关闭时不选批、不派 run、不写进度文件（全链路零动作），旧配置零迁移。
+- `targeted_regression`（缺省 `true`，`add-codefix-affinity-batching`）：批收尾回归的两段式口径——true 时链内非末批走「首轮全量 + 失败子集定向重试」、末批恒全量兜底；false 退化为每批恒全量。设置页「质量」页签可编辑。
+- `night_quiet_window`（缺省 `"03:00-03:15,04:15-04:45"`）：静默窗命中时 code-fix 批收尾守卫、周期代码审查顺延、admin 唤起避让与自进化避让共用同一解析器——多窗以逗号/分号分隔，`off`/空串关闭；YAML-only，无设置页入口。
 - 回归契约缺失的 **fail-closed**：项目 `verify.yaml` 无有效 `regression` 段时本批不合回、不派 run——契约整体缺失发 `verify_contract_missing` 信号、仅缺段发 `verify_regression_missing` 信号，复用既有 AI 起草通道（administrator 起草/补段后下一轮 full scan 自动续做）；进度记 `phase=blocked` 与原因。
 - 回归失败处置（定向重试）：首轮回归不通过后，在同一 worktree 内定向重试最多 `targeted_retry_max`（缺省 3）轮，每轮只重跑本轮失败用例子集（失败用例 → 源码行映射失败时 fail-closed 回全量重跑；prompt 注入失败用例摘要）；耗尽后该批**现场即弃**——worktree cleanup + 放锁，不再保留现场待人工——并把该批条目写入失败保留集合（`.fenix/code-review/fix-failed.json`）防止重复派发。新 code-fix 链启动时自动释放预算内（`fail_count < FAIL_RETRY_MAX`，即 3）的失败条目重新入池重试；达到上限的条目保持跳过，一次性告警并在 `.fenix/todo.md` 登记待清理项。
 - 批内零有效修复（产物行全 `skipped` 或分支无提交）MUST NOT 合回、不核销——防「空跑白洗 resolved」。
@@ -538,6 +578,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 键 | .fenix/config.template.yaml 值 | 代码缺省 | 差异说明 |
 |----|------------------------|---------|---------|
 | agents.impl_run_budget | 4 | **6** | 模板注释也称「缺省 4」，实际代码缺省 6（`DEFAULT_IMPL_RUN_BUDGET = 6`） |
+| agents.max_turns | 400 | **300** | 模板注释亦称「默认 400」，实际所有读点均以 300 为缺省（`_clamped_max_turns` 等） |
 | agents.daily_run_limit | 300 | **50** | 模板默认 300，代码缺省 50（`agents.daily_run_limit` 未配置时） |
 | agents.token_budget_millions | 50 | **50** | 一致 |
 | admin.shutdown_drain_seconds | 0 | **1800** | 模板（fenix-init 新项目）开箱即得快速停机；存量项目未配置该键时仍按代码缺省 1800 排水 |
@@ -549,16 +590,19 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 
 | 设置页面板 | 对应配置键 |
 |-----------|-----------|
-| 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode / gates.start_after_scope |
-| Token 预算面板 | agents.token_budget_millions |
+| 模型 / 模型分配 / 审批 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode / gates.start_after_scope |
+| 预算 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
-| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/4/low）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「代码审查」分面迁来）；admin.code_review.stall_alert_minutes（审查零进度停滞告警阈值，缺省 15）；admin.code_review_fix.enabled（自动修复代码问题开关）；admin.code_review_fix.batch_size（自动修复每批条目数） |
-| 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
+| 并行 | agents.max_concurrent / verify.planner_max_concurrent（planner 出题节流开关 + 上限，0=不节流） |
+| 质量 | verify.impl_code_review（实现阶段收尾代码质量审查开关，自「验证」页迁出；页签顶部的 ocr 环境探测/一键安装不写配置键）；verify.impl_code_review_timeout_sec / verify.impl_code_review_concurrency / verify.impl_code_review_effort（收尾审查三运行参数：超时秒/并发/力度，缺省 600/4/low）；verify.repo_code_review_concurrency（全仓审查并行度）；verify.impl_code_review_mode（join 裁决 gate/advisory）；admin.code_review.enabled（周期性代码审查开关，2026-09-19 自项目页「代码审查」分面迁来）；admin.code_review.run_at（周期审查触发时点，缺省回退自省 run_at）；admin.code_review.stall_alert_minutes（审查零进度停滞告警阈值，缺省 15）；admin.code_review_fix.enabled（自动修复代码问题开关）；admin.code_review_fix.batch_size（自动修复每批条目数）；admin.code_review_fix.targeted_regression（批收尾定向回归开关） |
+| 提示词 | agents/ 通用层 + .fenix/agents/ 项目级 |
+| 归档（归档管理 + 「真相源」卡片） | knowledge.enabled / knowledge.audit_enabled |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |
-| 自进化 | stale_code_selfheal.enabled / stale_code_selfheal.idle_confirm_seconds（第一张卡片「代码陈旧自愈」）；self_evolution.auto_accept / self_evolution.max_items_per_run（第二张卡片「建议改进项」，全局用户级键） |
+| 自进化 | stale_code_selfheal.enabled / stale_code_selfheal.idle_confirm_seconds（第一张卡片「代码陈旧自愈」）；self_evolution.auto_accept / self_evolution.max_items_per_run / self_evolution.spec_run_at（第二张卡片「建议改进项」，全局用户级键） |
+| 仲裁 | arbiter.enabled（全局决策者车道开关；处置链设置在本页签内堆叠呈现） |
 | Hook | hooks.global / hooks.specs.<spec 名>（两级订阅，见 [hooks](#hooks)） |
-| （不经设置页，YAML-only） | agents.timeout_overrides.*（按角色超时覆盖）/ agents.impl_run_budget_max / agents.verify_redo_budget / agents.run_stall_budget_enabled / agents.run_stall_budget_stalls / agents.run_stall_budget_window_minutes / agents.transient_unseal_backoff_base_seconds / agents.transient_unseal_backoff_max_seconds / agents.transient_unseal_probe_window_seconds / agents.transient_unseal_stable_window_seconds / agents.transient_unseal_release_stagger_seconds / stale_code_selfheal.max_dangling_seconds / admin.code_review.scope / admin.review_stall_minutes / admin.mergeback_wip_orphan_grace_minutes / verify.repo_code_review_concurrency / verify.impl_code_review_mode / verify.impl_code_review_lane_timeout_sec |
+| （不经设置页，YAML-only） | agents.timeout_overrides.*（按角色超时覆盖）/ agents.impl_run_budget_max / agents.verify_redo_budget / agents.run_stall_budget_enabled / agents.run_stall_budget_stalls / agents.run_stall_budget_window_minutes / agents.transient_unseal_backoff_base_seconds / agents.transient_unseal_backoff_max_seconds / agents.transient_unseal_probe_window_seconds / agents.transient_unseal_stable_window_seconds / agents.transient_unseal_release_stagger_seconds / stale_code_selfheal.max_dangling_seconds / admin.code_review.scope / admin.review_stall_minutes / admin.mergeback_wip_orphan_grace_minutes / verify.impl_code_review_lane_timeout_sec / admin.code_review_fix.night_quiet_window / knowledge.no_conflict_exempt / knowledge.escalate_after_rounds / knowledge.escalated_stale_days / knowledge.model |
 
 ## 相关文档
 

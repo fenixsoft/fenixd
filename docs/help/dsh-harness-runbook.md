@@ -2,7 +2,7 @@
 
 本手册覆盖把 agent 执行通道从 `claude` 切换到 `dsh`（DeepSeek 官方 CLI）的完整运维路径：切换步骤、回切步骤、故障处置与真实验收执行指引。适配层架构背景见 ADR-271（`spec/knowledge/adr/ADR-271-pluggable-agent-harness.md`）与母设计文档（`docs/superpowers/specs/2026-10-13-multi-harness-adapter-design.md`）。
 
-本手册是依赖链第四环（`spec/changes/dsh-primary-acceptance-switch/`）的交付物。依赖链前三环：
+本手册是依赖链第四环（`spec/archive/2026-10-30-dsh-primary-acceptance-switch/`）的交付物。依赖链前三环：
 
 | 环 | SPEC | 交付 |
 |---|---|---|
@@ -16,7 +16,7 @@
 
 | 组件 | 钉定版本 | 说明 |
 |---|---|---|
-| dsh CLI | `0.2.0-rc.2` | 版本白名单钉在 `core/agent_runner/harness/dsh_adapter.py` 的 `DSH_VERSION_WHITELIST`（随本表走代码，不做配置键） |
+| dsh CLI | `0.2.0-rc.2` / `0.2.2-rc.1` | 版本白名单钉在 `core/agent_runner/harness/dsh_adapter.py` 的 `DSH_VERSION_WHITELIST`（随本表走代码，不做配置键） |
 | fenix-dsh-bundle | 与 dsh 运行时同步升版 | 升级 dsh 必须同步升版 Bundle 并重测（`npm install` + 全量冒烟） |
 | Node.js | 18+ | dsh 运行时 |
 
@@ -33,7 +33,7 @@ cd <repo>/dsh-bundle && npm install
 # 2) 以 link: 形态挂入自定义 profile（DSH_HOME 隔离部署示例）
 DSH_HOME=$DSH_HOME dsh --profile fenix --from-default-profile headless   # 首次创建 profile
 DSH_HOME=$DSH_HOME dsh plugin --profile fenix add "link:<repo>/dsh-bundle"
-# 并确认 $DSH_HOME/profiles/fenix/package.json 的 dsh.profile.bundles 含 "fenix-dsh-bundle"
+# 并确认（缺则追加）$DSH_HOME/profiles/fenix/package.json 的 dsh.profile.bundles 含 "fenix-dsh-bundle"
 
 # 3) 验证挂载
 DSH_HOME=$DSH_HOME dsh --profile fenix --dump-config | grep fenix
@@ -43,13 +43,16 @@ DSH_HOME=$DSH_HOME dsh --profile fenix --dump-config | grep fenix
 
 ### 2. 配置切换
 
-在项目 `.fenix/config.yaml` 中配置（两个键均为热载：每轮 dispatch 时 `resolve_adapter_from_config` 重新解析，改完下轮 run 即生效，无需重启 daemon）：
+在项目 `.fenix/config.yaml` 中配置（以下键均为热载：每轮 dispatch 时 `resolve_adapter_from_config` 重新解析，改完下轮 run 即生效，无需重启 daemon）：
 
 ```yaml
 agent:
   harness: dsh          # 合法值 claude | dsh（单源：core/agent_runner/harness/__init__.py）
   dsh_profile: fenix    # 缺省 fenix（Bundle README 约定名）
   # dsh_home: /path     # 可选；缺省空 = 继承进程环境。DSH_HOME 隔离部署由此键指定
+  # dsh_api: anthropic-messages
+  #                     # 可选；provider 链指向 Anthropic 端点（baseurl 含 /anthropic）时必配——
+  #                     # 缺省会以 OpenAI 形状请求该端点，协议错配即 TRANSPORT 断流（启动时有 WARNING 提示）
 ```
 
 ### 3. 健康检查确认
@@ -91,7 +94,7 @@ ps -ef | grep "dsh.*headless" | grep -v grep
 # 急迫路径：规划性重启（supervisor SIGTERM → 排水窗口 → 重启；窗口 agents.run_drain_max_seconds，缺省 60s）
 ```
 
-**检查点**：配置回切后新派发的 run 的 run jsonl 首行 `harness` 字段应回到 `claude`（`ls <project>/.fenix/runs/` 最新文件首行）。
+**检查点**：`harness:"dsh"` 标记只出现在 dsh 投影线上（dsh run 的 run jsonl 首个 init 事件带 `"harness":"dsh"`）；claude 通道是原生 stream-json，不含该字段。回切后新派发 run 的 jsonl（`ls <project>/.fenix/runs/` 最新文件）首行不应再出现 `"harness":"dsh"` 标记。
 
 ### 3. Bundle 卸载（可选，仅在彻底弃用 dsh 时）
 
@@ -105,7 +108,7 @@ DSH_HOME=$DSH_HOME dsh plugin --profile fenix remove fenix-dsh-bundle
 
 ### 3.1 版本漂移（dsh 升级后健康门拒绝）
 
-**症状**：`check_health()` 报版本白名单不符（如 `dsh 版本 0.2.1 不在白名单 ("0.2.0-rc.2",)`）。
+**症状**：`check_health()` 报版本白名单不符（如 `dsh 版本 0.2.1 不在白名单 ("0.2.0-rc.2", "0.2.2-rc.1")`）。
 
 **处置**：白名单是设计决策（design D5：钉版本防事件流 schema 漂移），不做配置豁免。按序操作：
 
@@ -125,13 +128,13 @@ DSH_HOME=$DSH_HOME dsh plugin --profile fenix remove fenix-dsh-bundle
 
 ### 3.3 投影异常（事件投影计数/坏事件非零）
 
-**症状**：run_metrics 里 projection 计数异常——`bad_events` 三分类（`json_parse_failed`/`unknown_type`/`over_limit_truncated`）任一非零，或 `events_received_unknown` 增长。
+**症状**：run_metrics 里 projection 计数异常——`bad_events` 四分类（`json_parse_failed`/`json_shape_mismatch`/`unknown_type`/`over_limit_truncated`）任一非零，或 `events_received_unknown` 增长。
 
 **处置**：
 
 1. 先取原始事件 dump 旁路对账：`<project>/.fenix/runs/<run_id>.dsh-events.jsonl`（投影层的输入真相源）。
 2. `unknown_type` 非零 → dsh 版本事件 schema 漂移（新事件类型未入词表）：核对 dsh 版本是否仍在白名单，漂移即回 3.1 处置。
-3. `json_parse_failed` 非零 → 事件流截断/污染：单发偶发可重跑观察；连续复现按产品缺陷立案（附 dump 旁路文件）。
+3. `json_parse_failed` / `json_shape_mismatch` 非零 → 事件流截断/污染，或出现合法 JSON 但非对象的行（标量/数组）：单发偶发可重跑观察；连续复现按产品缺陷立案（附 dump 旁路文件）。
 4. 投影观测是旁路职责（计数失败不阻断投影），投影异常本身不判 run 失败，但验收判定（`evaluate_agent_lane`）会 fail-loud——验收报告第二节会如实呈现。
 
 ### 3.4 健康检查失败 / headless 挂起
@@ -239,5 +242,5 @@ ls ~/.dsh | grep dshacc       # 应无输出；有则按前缀删除对应 profi
 
 - ADR-271 可插拔 harness 抽象：`spec/knowledge/adr/ADR-271-pluggable-agent-harness.md`
 - 母设计文档（多 harness 适配层总设计）：`docs/superpowers/specs/2026-10-13-multi-harness-adapter-design.md`
-- SPEC 依赖链：`spec/changes/add-harness-adapter-layer/`（SPEC-1 协议层）→ `spec/changes/add-fenix-dsh-bundle/`（SPEC-2 Bundle）→ `spec/changes/add-dsh-adapter-integration/`（SPEC-3 DshAdapter）→ `spec/changes/dsh-primary-acceptance-switch/`（本 SPEC：验收与切换运维）
+- SPEC 依赖链：`spec/archive/2026-10-30-add-harness-adapter-layer/`（SPEC-1 协议层）→ `spec/archive/2026-10-30-add-fenix-dsh-bundle/`（SPEC-2 Bundle）→ `spec/archive/2026-10-30-add-dsh-adapter-integration/`（SPEC-3 DshAdapter）→ `spec/archive/2026-10-30-dsh-primary-acceptance-switch/`（本 SPEC：验收与切换运维）
 - 验收脚本：`bin/dsh_acceptance.py`（fixture/smoke/accept 三模式；测试 `tests/test_dsh_acceptance.py`）

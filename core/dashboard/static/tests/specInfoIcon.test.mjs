@@ -55,7 +55,9 @@ test('Popover 触发：hover 与 click 双触发（D1 桌面悬浮 / 触屏点�
 
 test('InfoCircleOutlined 接线：14px + token.colorWarning（D2 形态与语义色）', () => {
   assert.ok(
-    listSrc.includes("import { ClockCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';"),
+    listSrc.includes(
+      "import { ClockCircleOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';",
+    ),
     '应导入 InfoCircleOutlined',
   );
   const block = specInfoIconBlock();

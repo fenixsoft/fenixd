@@ -1,7 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { PageTitleBar } from '@/components/PageTitleBar';
 import { Alert, App, Badge, Button, Card, Collapse, Descriptions, Dropdown, Empty, Image, Input, Select, Space, Spin, Tabs, Tag, theme, Tooltip, Typography } from 'antd';
-import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
+import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled, PlusOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams, useLocation } from '@umijs/max';
 import dayjs from 'dayjs';
@@ -37,6 +37,8 @@ import { SEV_COLOR, SEV_LABEL } from '@/components/alert-shared';
 // 时长格式化与列表页「耗时」列共用单源（code-review item f8307715a795：
 // 两页逐行重复实现抽公共模块，本页不再在组件体内每渲染重建）
 import { fmtDuration } from '@/utils/duration';
+import { requestHostNewSession } from '@/utils/embedBridge';
+import { isEmbedMode } from '@/utils/embedMount';
 // 刷新/心跳节奏常量与列表页共用单源（code-review item 73395d34f3de）
 import { HEARTBEAT_MS, REFRESH_THROTTLE_MS } from '@/utils/refreshPolicy';
 import { fmtEvidence } from '@/utils/evidence';
@@ -1535,6 +1537,25 @@ export default function SpecDetailPage() {
     <div className="spec-detail-page">
     <PageTitleBar
       title={richTitle}
+      filters={
+        /* 「新会话」按钮（2026-11-11 用户需求）：仅 dsh web 嵌入态渲染
+           （standalone dashboard 无宿主，按钮不可见）；embed 档经 filters
+           槽位落标题行右端（界面右上角）。点击 postMessage 宿主桥并携带
+           「对于 <SPEC 英文名> SPEC：」前缀（SPEC 英文名是 canonical 标识，
+           宿主经 uiWorkspace.startSession(ws, { prompt }) 预填新会话输入
+           框首行）。缺参数/加载/错误分支页（上方早退渲染）不挂按钮。 */
+        isEmbedMode() ? (
+          <Button
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              requestHostNewSession(name, `对于 ${spec} SPEC：`);
+            }}
+          >
+            新会话
+          </Button>
+        ) : undefined
+      }
       // 中文标题已收进 richTitle 内部下方行（2026-11-06 用户指令「中文标题
       // 放在英文标题下方」），不经 subtitle 槽——见上方富标题组合注
       back={backToList}

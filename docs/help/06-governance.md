@@ -96,7 +96,7 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 
 派发锁冲突按 `pm.dispatch_backoff_schedule`（默认 `[30, 120, 600]` 秒）递增退避：派发 implementer 遇到 worktree already active 时依次拉长等待间隔，期间不消耗 attempt 配额；若序列耗尽仍拿不到锁，触发 `dispatch_stalled` 信号升级处置。
 
-秒挂冷却针对「刚启动即失败」的 run：这类 run 会进入冷却期，冷却期内 implementer/fast-track/repair 的再次派发一律跳过，防止失败—重派—再失败的反抖空转。
+秒挂冷却针对「刚启动即失败」的 run：这类 run 会进入冷却期，冷却期内 implementer/fast-track/planner-plan/verifier 的再次派发一律跳过（repair 车道不经队列，由 repair_lane 在派发前直查同一冷却），防止失败—重派—再失败的反抖空转。
 
 **信号死法冷却**：同一 SPEC 连续 3 次以「信号死亡」收场（进程被 Exit 143 / 负信号杀死，且非人工关停、非框架主动终止）时，进入 600 秒冷却——期间全部 agent 类型的重派一律跳过、不消耗任何预算，到期自动恢复，并落 major 告警（15 分钟节流，`core/agent_runner/provider_circuit.py`、`core/pm_engine/dispatch/queue.py`）。与秒挂冷却同时命中时取更晚到期者。
 
@@ -111,7 +111,7 @@ provider（LLM 路由）持续报错会触发熔断；熔断的解除不是瞬�
 3. **错峰放行**：探针通过后按 `agents.transient_unseal_release_stagger_seconds`（缺省 30 秒）节拍逐个放行积压派发，避免惊群；
 4. **open**：稳定窗 `agents.transient_unseal_stable_window_seconds`（缺省 1800 秒）内无新故障，解封次数随之衰减。
 
-`backoff_base_seconds` / `release_stagger_seconds` 置 0 可整体禁用该机制。重新熔断时上述中间态全部作废、从头再来。
+`backoff_base_seconds` 置 0 可整体禁用该解封节奏（解封到期即全量放行，不进 hold / 探针 / 错峰）；`release_stagger_seconds` 置 0 仅取消错峰节拍——hold 与探针观察窗仍在，放行不再按节拍逐个进行。重新熔断时上述中间态全部作废、从头再来。
 
 **排查入口**：SPEC 停在 `ready` 却迟迟不派发、并发槽位空闲时，先查 `.fenix/logs/fenixd.log` 的解封保持日志（特征串 `Transient unseal ... active — N queued dispatch(es) held`）——你遇到的可能不是调度或预算问题，而是某条 provider 车道还在 hold / 观察窗 / 错峰放行中。
 
@@ -251,8 +251,10 @@ flowchart TD
     SEV -- major --> ADM
     SEV -- minor/auto-resolve --> AUTO["自动解决"]
 
-    ADM -- 处置失败 --> ESC["升级人工告警"]
+    ADM -- 处置失败 --> ARB["升级处置链（Arbiter 复现裁决）"]
     ADM -- 处置成功 --> RES["自动解决（incident 闭环）"]
+    ARB -- 裁决失败 / 配额耗尽 --> ESC["升级人工告警"]
+    ARB -- 裁决成立 --> RES
     ESC --> BANNER["Dashboard 红色横幅 + 运维记录"]
     AUTO --> BANNER
 ```

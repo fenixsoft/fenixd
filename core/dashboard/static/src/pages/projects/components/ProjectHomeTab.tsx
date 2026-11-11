@@ -2,9 +2,17 @@
 //
 // 仿 GitHub 项目页形态的只读文件浏览（UI 真相源
 // spec/changes/add-project-home-tab/prototype/index.html，逐区块对照）：
-// 工具栏（分支 Select 单值只读）→ 根目录最近提交条 → 面包屑（根=项目名）→
-// 文件表格（名称/最近提交信息/最近提交时间三列，窄屏仅名称列）→
+// 根目录最近提交条（分支 Select 移入条右端，原独立工具栏 2026-11-10 增强
+// 批次取消）→ 面包屑（根=项目名）→ 文件表格（名称/大小/最近提交信息/最近
+// 提交时间四列，窄屏仅名称列）→
 // 文件内容盒（打开文件时，替代 README 盒位置）/ README 渲染盒（根目录）。
+//
+// 三卡统一 Bento 磁贴帧（project-home-tab 增强 2026-11-10，与其他页签
+// 卡片风格一致；dashboard-frontend 域条款：发丝边 #eef2f7 + 12px 圆角 +
+// 软阴影 + 纯白底）。内容盒按文件类型分四路渲染：markdown → react-markdown
+// 安全管线（与 README 同源，MUST NOT 新写管线）；图片 → raw 通道 <img>
+// 直显（不经 content 通道）；代码 → ProjectCodeBlock 高亮 + 行号；其余
+// → 纯文本 pre（二进制非图片仍走降级提示）。
 //
 // 数据纪律：
 // - active 门控：仅选中本分面发首次列表请求（对齐 QualityTab/KnowledgeTab
@@ -18,6 +26,7 @@
 // - Markdown 管线复用 react-markdown + markdownComponents 安全渲染族
 //   （与 SpecDocModal 同源，SafeLink 协议白名单），MUST NOT 新写管线。
 import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import {
   Alert,
   Avatar,
@@ -25,13 +34,11 @@ import {
   Button,
   Empty,
   Select,
-  Space,
   Spin,
   Table,
-  Typography,
 } from 'antd';
 import type { TableProps } from 'antd';
-import { FileOutlined, FolderOutlined } from '@ant-design/icons';
+import { FolderOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -39,6 +46,7 @@ import {
   fetchProjectFileContent,
   fetchProjectFileDownloadUrl,
   fetchProjectFileList,
+  fetchProjectFileRawUrl,
 } from '@/services/dashboard';
 import type {
   ProjectFileContentData,
@@ -55,18 +63,38 @@ import {
   DSH_TEXT_TERTIARY,
 } from '@/theme';
 import {
+  MONO_FONT,
+  fileKind,
   formatBytes,
   formatRelativeTime,
   homeCrumbs,
   parseHomePath,
   splitHomePath,
 } from './projectHomeShared';
+import { ProjectCodeBlock } from './ProjectCodeBlock';
+import { ICON_BLUE, ProjectFileIcon } from './ProjectFileIcon';
 
 // remarkPlugins 提为模块级常量（对齐 KnowledgeTab KNOWLEDGE_REMARK_PLUGINS
 // 先例）：内联数组每次渲染新建引用会让 react-markdown 重新 parse。
 const HOME_REMARK_PLUGINS = [remarkGfm];
 
-const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+// Bento 磁贴帧（dashboard-frontend 域条款；SpecTimeline OV_TILE 先例同值，
+// 2026-11-06 定形）：发丝边 #eef2f7 + 12px 圆角 + 软阴影 + 纯白底。文件
+// 列表 / 文件内容 / README 三卡统一帧形态，与其他页签卡片风格一致。
+const TILE_BORDER = '#eef2f7';
+const TILE_SHADOW =
+  '0 1px 3px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03)';
+const TILE_FRAME: CSSProperties = {
+  border: `1px solid ${TILE_BORDER}`,
+  borderRadius: 12,
+  background: '#fff',
+  boxShadow: TILE_SHADOW,
+  overflow: 'hidden',
+};
+
+// 类型图标蓝：ICON_BLUE 从 ProjectFileIcon 导入（antd blue-6，与全站蓝色 ramp
+// 同源——progressPhase TRACK 色同 ramp；DSH_PRIMARY 是近黑主色不适合图标语义）。
+// 文件夹与文件图标统一蓝色系；常用扩展名由 ProjectFileIcon 渲染 simple-icons 品牌图标。
 
 interface ProjectHomeTabProps {
   project: string;
@@ -75,6 +103,51 @@ interface ProjectHomeTabProps {
   initialPath: string;
   /** 浏览位置上行（list.tsx replace 写回 URL；根目录传空串）。 */
   onNavigate: (path: string) => void;
+}
+
+// Markdown 渲染体（README 盒与 *.md 文件视图共用同一安全管线形态；
+// 单源组件防止两处 padding/管线漂移，管线本身仍是 markdown-shared 复用）。
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div style={{ padding: '20px 24px 28px', fontSize: 14, lineHeight: 1.7 }}>
+      <Markdown remarkPlugins={HOME_REMARK_PLUGINS} components={markdownComponents}>
+        {content}
+      </Markdown>
+    </div>
+  );
+}
+
+// 图片直显（raw 通道 <img>，不经 content 通道；加载失败降级提示，下载
+// 按钮在内容盒头部仍可用）。调用处以 key={filePath} 挂载，切换文件即
+// 重置失败态。
+function FileImagePreview({ project, path }: { project: string; path: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div
+        data-testid="project-home-image-fallback"
+        style={{
+          padding: '40px 16px',
+          textAlign: 'center',
+          color: DSH_TEXT_TERTIARY,
+          fontSize: 13,
+        }}
+      >
+        图片加载失败，可下载后查看
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: 16, display: 'flex', justifyContent: 'center' }}>
+      <img
+        data-testid="project-home-image"
+        src={fetchProjectFileRawUrl(project, path)}
+        alt={path}
+        style={{ maxWidth: '100%', maxHeight: 480 }}
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
 }
 
 export default function ProjectHomeTab({
@@ -168,11 +241,14 @@ export default function ProjectHomeTab({
           setDir(parent);
           if (pd.entries.some((en) => en.name === name && !en.dir)) {
             setFile(name);
-            try {
-              const c = await fetchProjectFileContent(project, seed);
-              if (!cancelled) contentCacheRef.current.set(seed, c);
-            } catch {
-              if (!cancelled) setFileError('文件内容加载失败');
+            // 图片文件不经 content 通道（直显走 raw <img>），免无意义请求
+            if (fileKind(seed) !== 'image') {
+              try {
+                const c = await fetchProjectFileContent(project, seed);
+                if (!cancelled) contentCacheRef.current.set(seed, c);
+              } catch {
+                if (!cancelled) setFileError('文件内容加载失败');
+              }
             }
           } else {
             setError('路径不存在');
@@ -197,6 +273,9 @@ export default function ProjectHomeTab({
   // ── 文件内容加载（打开文件时；缓存命中免请求）───────────────────────
   useEffect(() => {
     if (filePath === null || !active) return;
+    // 图片直显走 raw 通道（<img> 加载完整字节），不经 content 通道——
+    // 免一次无意义请求，也避开 256 KiB 截断语义（raw 无截断）
+    if (fileKind(filePath) === 'image') return;
     const cached = contentCacheRef.current.get(filePath);
     if (cached) {
       setFileData(cached);
@@ -250,11 +329,14 @@ export default function ProjectHomeTab({
   }, [readmeName, active, project]);
 
   // ── 导航动作（原地更新列表，不整页刷新、不改路由路径）───────────────
+  // fileLoading 一并复位：图片文件的内容 effect 在取数前短路返回，在飞
+  // 文本请求被 cancel 后不会回调 setFileLoading(false)，不复位会永久 Spin。
   const openDir = (name: string) => {
     const next = dir ? `${dir}/${name}` : name;
     setFile(null);
     setFileData(null);
     setFileError('');
+    setFileLoading(false);
     setDir(next);
     onNavigate(next);
   };
@@ -262,6 +344,7 @@ export default function ProjectHomeTab({
     setFile(name);
     setFileData(null);
     setFileError('');
+    setFileLoading(false);
     onNavigate(dir ? `${dir}/${name}` : name);
   };
   /** 面包屑回退：depth=0 回根目录，n 回前 n 段目录。 */
@@ -270,11 +353,12 @@ export default function ProjectHomeTab({
     setFile(null);
     setFileData(null);
     setFileError('');
+    setFileLoading(false);
     setDir(next);
     onNavigate(next);
   };
 
-  // ── 文件表格（三列；窄屏 <768px 仅名称列）──────────────────────────
+  // ── 文件表格（四列；窄屏 <768px 仅名称列）──────────────────────────
   const columns: TableProps<ProjectFileEntry>['columns'] = [
     {
       title: '名称',
@@ -284,11 +368,39 @@ export default function ProjectHomeTab({
       render: (_v, r) => (
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {r.dir ? (
-            <FolderOutlined style={{ color: DSH_TEXT_TERTIARY, flex: 'none' }} />
+            <FolderOutlined
+              style={{ color: r.hidden ? DSH_TEXT_TERTIARY : ICON_BLUE, flex: 'none' }}
+            />
           ) : (
-            <FileOutlined style={{ color: DSH_TEXT_TERTIARY, flex: 'none' }} />
+            <ProjectFileIcon name={r.name} muted={r.hidden === true} />
           )}
-          <span style={{ fontSize: 14 }}>{r.name}</span>
+          <span style={{ fontSize: 14, color: r.hidden ? DSH_TEXT_TERTIARY : undefined }}>
+            {r.name}
+          </span>
+        </span>
+      ),
+    },
+    {
+      // 大小列（2026-11-10 增强批次）：文件 stat 实际大小（后端 bytes 字段，
+      // formatBytes 自动 B/KB/MB/GB 档位）；目录不做递归汇总，显示「目录」。
+      // 左对齐（2026-11-11 用户修正：与其他列头同向，扫读更顺）。
+      title: '大小',
+      dataIndex: 'bytes',
+      key: 'size',
+      width: 96,
+      hidden: isMobile,
+      render: (v: number | null, r) => (
+        <span
+          style={{
+            display: 'block',
+            textAlign: 'left',
+            color: r.dir || r.hidden ? DSH_TEXT_TERTIARY : DSH_TEXT_SECONDARY,
+            fontSize: 13,
+            whiteSpace: 'nowrap',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {r.dir ? '目录' : v !== null && v !== undefined ? formatBytes(v) : '—'}
         </span>
       ),
     },
@@ -298,8 +410,15 @@ export default function ProjectHomeTab({
       key: 'msg',
       ellipsis: true,
       hidden: isMobile,
-      render: (v: string | undefined) => (
-        <span style={{ color: DSH_TEXT_SECONDARY, fontSize: 13 }}>{v || '—'}</span>
+      render: (v: string | undefined, r) => (
+        <span
+          style={{
+            color: r.hidden ? DSH_TEXT_TERTIARY : DSH_TEXT_SECONDARY,
+            fontSize: 13,
+          }}
+        >
+          {v || '—'}
+        </span>
       ),
     },
     {
@@ -308,7 +427,7 @@ export default function ProjectHomeTab({
       key: 'time',
       hidden: isMobile,
       width: 128,
-      render: (v: string | undefined) => (
+      render: (v: string | undefined, r) => (
         <span
           style={{
             display: 'block',
@@ -319,7 +438,7 @@ export default function ProjectHomeTab({
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          {v ? formatRelativeTime(v) : '—'}
+          {v && !r.hidden ? formatRelativeTime(v) : '—'}
         </span>
       ),
     },
@@ -329,6 +448,8 @@ export default function ProjectHomeTab({
   const atRoot = dir === '' && file === null;
   const latest = atRoot ? dirData?.latest ?? null : null;
   const nonGit = dirData?.non_git === true;
+  // 内容盒渲染分类（project-home-tab 增强：md/图片/代码/纯文本四路）
+  const viewKind = filePath !== null ? fileKind(filePath) : null;
 
   if (nonGit) {
     // 非 git 项目空态：Empty + 中文说明，不报错弹窗、不渲染破损列表
@@ -345,42 +466,12 @@ export default function ProjectHomeTab({
     <div data-testid="project-home-panel">
       <div
         data-testid="project-home-filetable"
-        style={{
-          border: `1px solid ${DSH_BORDER_SECONDARY}`,
-          borderRadius: 8,
-          overflow: 'hidden',
-        }}
+        style={TILE_FRAME}
       >
-        {/* 工具栏：分支 Select 仅渲染当前分支单选项（detached 显示短 hash），
-            不提供切换（本期边界；原型中分支/标签为假数据演示，不落实现） */}
-        <div
-          data-testid="project-home-toolbar"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '10px 16px',
-            borderBottom: `1px solid ${DSH_SPLIT}`,
-            flexWrap: 'wrap',
-          }}
-        >
-          <Space size={12} wrap>
-            <Select
-              size="small"
-              style={{ width: 150 }}
-              value={dirData?.branch ?? undefined}
-              options={
-                dirData?.branch ? [{ value: dirData.branch, label: dirData.branch }] : []
-              }
-            />
-          </Space>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            只读浏览 · 点击文件夹进入子目录，点击文件查看内容
-          </Typography.Text>
-        </div>
-
-        {/* 根目录最近提交条（作者 / 短 hash / 相对时间；打开文件时不渲染） */}
+        {/* 根目录最近提交条（作者 / 短 hash / 相对时间；打开文件时不渲染）。
+            分支 Select 从原独立工具栏移入本条右侧（2026-11-10 增强批次：
+            去标头减面积；单值只读不提供切换，原型中分支/标签为假数据演示，
+            不落实现） */}
         {latest && (
           <div
             data-testid="project-home-latest-commit"
@@ -430,21 +521,30 @@ export default function ProjectHomeTab({
             >
               {formatRelativeTime(latest.time)}
             </span>
+            {dirData?.branch && (
+              <Select
+                size="small"
+                style={{ width: 150 }}
+                value={dirData.branch}
+                options={[{ value: dirData.branch, label: dirData.branch }]}
+              />
+            )}
           </div>
         )}
 
-        {/* 面包屑（根=项目名；文件视图末段为文件名） */}
-        <div
-          data-testid="project-home-breadcrumb"
-          style={{
-            padding: '8px 16px',
-            borderBottom: `1px solid ${DSH_SPLIT}`,
-            fontSize: 14,
-          }}
-        >
-          {crumbs.length === 0 && file === null ? (
-            <span style={{ fontWeight: 600 }}>{project}</span>
-          ) : (
+        {/* 面包屑（进入目录后才显示；根目录整条隐藏——2026-11-10 第三批增强） */}
+        {dir !== '' && (
+          <div
+            data-testid="project-home-breadcrumb"
+            style={{
+              padding: '8px 16px',
+              borderBottom: `1px solid ${DSH_SPLIT}`,
+              fontSize: 14,
+            }}
+          >
+            {crumbs.length === 0 && file === null ? (
+              <span style={{ fontWeight: 600 }}>{project}</span>
+            ) : (
             <Breadcrumb
               items={[
                 {
@@ -477,8 +577,9 @@ export default function ProjectHomeTab({
                 ...(file ? [{ title: <span style={{ fontWeight: 600 }}>{file}</span> }] : []),
               ]}
             />
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {error ? (
           <Alert type="warning" showIcon message={error} style={{ margin: '12px 16px' }} />
@@ -516,12 +617,7 @@ export default function ProjectHomeTab({
       {filePath !== null && (
         <div
           data-testid="project-home-fileview"
-          style={{
-            border: `1px solid ${DSH_BORDER_SECONDARY}`,
-            borderRadius: 8,
-            marginTop: 16,
-            overflow: 'hidden',
-          }}
+          style={{ ...TILE_FRAME, marginTop: 16 }}
         >
           <div
             style={{
@@ -534,8 +630,28 @@ export default function ProjectHomeTab({
               flexWrap: 'wrap',
             }}
           >
-            <FileOutlined style={{ color: DSH_TEXT_TERTIARY }} />
+            <ProjectFileIcon name={file ?? ''} />
             <span style={{ fontSize: 14, fontWeight: 600 }}>{file}</span>
+            {viewKind !== null && (
+              <span
+                style={{
+                  fontSize: 12,
+                  padding: '1px 8px',
+                  borderRadius: 10,
+                  background: DSH_BG_SOFT,
+                  border: `1px solid ${DSH_SPLIT}`,
+                  color: DSH_TEXT_SECONDARY,
+                }}
+              >
+                {viewKind === 'markdown'
+                  ? 'Markdown'
+                  : viewKind === 'image'
+                    ? '图片'
+                    : viewKind === 'code'
+                      ? '代码'
+                      : '文本'}
+              </span>
+            )}
             {fileData && !fileData.binary && (
               <span
                 style={{
@@ -559,6 +675,9 @@ export default function ProjectHomeTab({
             <div style={{ padding: 24, textAlign: 'center' }}>
               <Spin />
             </div>
+          ) : viewKind === 'image' ? (
+            // 图片直显（raw 通道；不取 content——<img> 加载完整字节）
+            <FileImagePreview key={filePath} project={project} path={filePath} />
           ) : fileData?.binary ? (
             <div
               style={{
@@ -572,19 +691,29 @@ export default function ProjectHomeTab({
             </div>
           ) : fileData ? (
             <>
-              <div style={{ padding: '12px 16px', overflow: 'auto' }}>
-                <pre
-                  style={{
-                    margin: 0,
-                    fontFamily: MONO_FONT,
-                    fontSize: 13,
-                    lineHeight: 1.6,
-                    whiteSpace: 'pre',
-                  }}
-                >
-                  {fileData.content}
-                </pre>
-              </div>
+              {viewKind === 'markdown' ? (
+                // *.md 经安全管线渲染（与 README 同源，MUST NOT 新写管线）
+                <MarkdownBody content={fileData.content ?? ''} />
+              ) : viewKind === 'code' ? (
+                <div style={{ overflow: 'auto' }}>
+                  <ProjectCodeBlock path={filePath} content={fileData.content ?? ''} />
+                </div>
+              ) : (
+                // 非代码/非图片/非 markdown 兜底：纯文本（原形态）
+                <div style={{ padding: '12px 16px', overflow: 'auto' }}>
+                  <pre
+                    style={{
+                      margin: 0,
+                      fontFamily: MONO_FONT,
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                      whiteSpace: 'pre',
+                    }}
+                  >
+                    {fileData.content}
+                  </pre>
+                </div>
+              )}
               {fileData.truncated && (
                 <div
                   style={{
@@ -607,12 +736,7 @@ export default function ProjectHomeTab({
       {atRoot && readmeData && !readmeData.binary && dirData?.readme && (
         <div
           data-testid="project-home-readme"
-          style={{
-            border: `1px solid ${DSH_BORDER_SECONDARY}`,
-            borderRadius: 8,
-            marginTop: 16,
-            overflow: 'hidden',
-          }}
+          style={{ ...TILE_FRAME, marginTop: 16 }}
         >
           <div
             style={{
@@ -625,7 +749,7 @@ export default function ProjectHomeTab({
               fontWeight: 600,
             }}
           >
-            <FileOutlined style={{ color: DSH_TEXT_TERTIARY }} />
+            <ProjectFileIcon name={dirData.readme} />
             {dirData.readme}
             <span
               style={{
@@ -639,11 +763,7 @@ export default function ProjectHomeTab({
               {formatBytes(readmeData.bytes)}
             </span>
           </div>
-          <div style={{ padding: '20px 24px 28px', fontSize: 14, lineHeight: 1.7 }}>
-            <Markdown remarkPlugins={HOME_REMARK_PLUGINS} components={markdownComponents}>
-              {readmeData.content ?? ''}
-            </Markdown>
-          </div>
+          <MarkdownBody content={readmeData.content ?? ''} />
           {readmeData.truncated && (
             <div
               style={{

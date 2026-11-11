@@ -4,10 +4,15 @@
 - 文件集合：``git ls-files --cached --others --exclude-standard``（cwd=项目根）
   全集 + ``.git/index`` mtime 进程内缓存（30s TTL 兜底），天然排除
   gitignored（node_modules / dist / .fenix）与 ``.git``；
+- 忽略项通道（2026-11-11 增强）：``git ls-files --others --ignored
+  --exclude-standard --directory``（全忽略目录折叠为 ``dir/`` 单条，sub-second）
+  + 30s TTL 进程内缓存，为目录列表补 ``hidden`` 条目（灰色字体呈现）；
+  ``.git`` 不在此通道输出；
 - 目录条目：在集合上做前缀分组构建（目录条目 = 集合内存在该前缀下文件的
-  去重目录名），目录先行、名称不分大小写升序；
+  去重目录名），目录先行、名称不分大小写升序；忽略项子项按同名归并
+  （全忽略目录为目录条目、忽略文件为文件条目，标 ``hidden: true``）；
 - git 属性：每条目单飞 ``git log -1``（目录条目传目录路径，git 自动取目录
-  下最近提交）；整仓最近提交与分支名仅根目录查询附带；
+  下最近提交；忽略项路径无提交 → null）；整仓最近提交与分支名仅根目录查询附带；
 - 内容通道：256 KiB 截断、前 8 KiB 含 NUL 判二进制、README 判定链。
 
 安全约束：``resolve_relative`` 是全部通道共用的 containment 单点
@@ -36,6 +41,26 @@ _GIT_TIMEOUT_SECONDS = 15
 
 # 下载分块大小（design D4）
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+
+# 图片内联通道（project-home-tab 增强 2026-11-10）：扩展名 → Content-Type
+# 白名单。raw 通道（_api_project_files_raw）仅服务此集合，供前端 <img>
+# 直显；svg 因可内嵌 <script> 由路由层追加 CSP sandbox 防线。
+IMAGE_INLINE_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".avif": "image/avif",
+    ".svg": "image/svg+xml",
+}
+
+
+def image_content_type(abs_path: Path) -> str | None:
+    """按扩展名（不分大小写）返回图片 Content-Type；非白名单返回 None。"""
+    return IMAGE_INLINE_TYPES.get(abs_path.suffix.lower())
 
 
 class PathEscape(Exception):
@@ -129,6 +154,107 @@ def visible_files(root: Path) -> list[str] | None:
     return files
 
 
+# ── 忽略项通道（2026-11-11 增强：目录列表 hidden 条目）───────────────
+
+# 忽略项缓存 TTL（秒）：.gitignore 变化与新增未跟踪文件不挪 .git/index
+# mtime，mtime 失效判据对此通道无效，退化为纯 TTL（30s 内的滞后对浏览
+# 视图无害，与 visible_files 同量级）。
+_IGNORED_CACHE_TTL = 30.0
+_IGNORED_CACHE: dict[str, tuple[float, list[str]]] = {}
+_IGNORED_CACHE_LOCK = threading.Lock()
+
+
+def ignored_entries(root: Path) -> list[str] | None:
+    """git 忽略项全集（仓库根相对路径；``--directory`` 折叠形态）。
+
+    ``git ls-files --others --ignored --exclude-standard --directory``：
+    全忽略目录折叠为 ``dir/`` 单条（尾斜杠标记）、忽略文件按实际路径逐条
+    输出；``.git`` 永不出现。非 git 目录或命令失败返回 ``None``——调用方
+    据此跳过 hidden 合并（主列表不受影响，忽略项是增强非依赖）。
+    """
+    key = str(root)
+    now = time.monotonic()
+    with _IGNORED_CACHE_LOCK:
+        hit = _IGNORED_CACHE.get(key)
+        if hit is not None and now - hit[0] < _IGNORED_CACHE_TTL:
+            return hit[1]
+
+    try:
+        proc = _git_run(
+            root,
+            ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is None or proc.returncode != 0:
+        return None
+    # -z 同 visible_files：禁用 core.quotePath 八进制引号形态
+    entries = [line for line in (proc.stdout or "").split("\x00") if line]
+    with _IGNORED_CACHE_LOCK:
+        _IGNORED_CACHE[key] = (time.monotonic(), entries)
+    return entries
+
+
+def ignored_children(entries: list[str], rel_dir: str) -> list[str]:
+    """在忽略项全集上提取 rel_dir 直接子项名（纯函数，可独立单测）。
+
+    返回名字列表：全忽略目录带尾斜杠（``node_modules/``）、忽略文件为裸名。
+    去重 + 名称不分大小写升序。根目录（rel_dir 空串）取全集首段。
+    """
+    prefix = f"{rel_dir}/" if rel_dir else ""
+    children: set[str] = set()
+    for entry in entries:
+        if prefix:
+            if not entry.startswith(prefix):
+                continue
+            rest = entry[len(prefix):]
+        else:
+            rest = entry
+        if not rest:
+            continue
+        slash = rest.find("/")
+        if slash >= 0:
+            children.add(rest[:slash] + "/")
+        else:
+            children.add(rest)
+    return sorted(children, key=str.lower)
+
+
+def ignored_entries_scoped(root: Path, rel_dir: str) -> list[str] | None:
+    """纯忽略目录的下一层扫描（2026-11-11）。
+
+    根级流经 ``--directory`` 折叠后，被整目录忽略的深层内容不可见
+    （如 ``node_modules/`` 折叠后拿不到 ``pkg/``）——导航进入这类目录时按
+    目录 scope（pathspec ``<rel_dir>/*``）再扫一层。注意 scope 扫描不能带
+    ``--directory``：git 对整体忽略的目录恒折叠为 ``dir/`` 单条，pathspec
+    指到目录内部也无效；去掉该旗标后输出递归文件明细，交
+    ``ignored_children`` 取直接子项（深层目录自然归并为 ``child/``）。
+    输出为仓库根相对路径。同 ``ignored_entries`` 走纯 TTL 缓存（键带
+    rel_dir）；失败返回 None 静默跳过。
+    """
+    key = f"{root}::{rel_dir}"
+    now = time.monotonic()
+    with _IGNORED_CACHE_LOCK:
+        hit = _IGNORED_CACHE.get(key)
+        if hit is not None and now - hit[0] < _IGNORED_CACHE_TTL:
+            return hit[1]
+
+    try:
+        proc = _git_run(
+            root,
+            ["ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+             "--", f"{rel_dir}/*"],
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is None or proc.returncode != 0:
+        return None
+    entries = [line for line in (proc.stdout or "").split("\x00") if line]
+    with _IGNORED_CACHE_LOCK:
+        _IGNORED_CACHE[key] = (time.monotonic(), entries)
+    return entries
+
+
 # ── 路径安全（任务 1.2）──────────────────────────────────────────────
 
 def resolve_relative(root: Path, relpath: str) -> Path:
@@ -170,12 +296,16 @@ def is_known_path(files: list[str], rel_dir: str) -> bool:
 
 # ── 目录条目构建（任务 1.1）──────────────────────────────────────────
 
-def build_entries(files: list[str], rel_dir: str) -> tuple[list[dict], int]:
+def build_entries(
+    files: list[str], rel_dir: str, hidden_names: list[str] | None = None
+) -> tuple[list[dict], int]:
     """在文件集合上做前缀分组，构建目录条目列表。
 
     目录条目 = 集合内存在该前缀下文件的去重首段目录名；目录先行、同类型
-    名称不分大小写升序。超出 ``MAX_DIR_ENTRIES`` 截断（目录优先列），返回
-    ``(entries, truncated_count)``。
+    名称不分大小写升序。``hidden_names``（ignored_children 产物，目录带
+    尾斜杠）按名归并进同序：同名已可见（部分忽略的混合目录等）以可见
+    为准不标 hidden；纯忽略目录/文件为 ``hidden: true`` 条目。超出
+    ``MAX_DIR_ENTRIES`` 截断（目录优先列），返回 ``(entries, truncated_count)``。
     """
     prefix = f"{rel_dir}/" if rel_dir else ""
     dir_names: set[str] = set()
@@ -195,6 +325,20 @@ def build_entries(files: list[str], rel_dir: str) -> tuple[list[dict], int]:
         else:
             file_names.append(rest)
 
+    # 忽略项归并（2026-11-11 增强）：同名可见优先（混合目录不标灰），纯
+    # 忽略项补入对应类目。
+    hidden_set: set[str] = set()
+    for name in hidden_names or []:
+        is_dir = name.endswith("/")
+        plain = name[:-1] if is_dir else name
+        if plain in dir_names or plain in file_names:
+            continue  # 同名可见（混合内容目录）：保持可见形态，不标 hidden
+        if is_dir:
+            dir_names.add(plain)
+        else:
+            file_names.append(plain)
+        hidden_set.add(plain)
+
     dirs_sorted = sorted(dir_names, key=str.lower)
     files_sorted = sorted(file_names, key=str.lower)
     ordered = dirs_sorted + files_sorted
@@ -204,7 +348,12 @@ def build_entries(files: list[str], rel_dir: str) -> tuple[list[dict], int]:
         ordered = ordered[:MAX_DIR_ENTRIES]
     dir_boundary = len(dirs_sorted)
     entries = [
-        {"name": name, "dir": i < dir_boundary, "last_commit": None}
+        {
+            "name": name,
+            "dir": i < dir_boundary,
+            "hidden": name in hidden_set,
+            "last_commit": None,
+        }
         for i, name in enumerate(ordered)
     ]
     return entries, truncated
@@ -327,7 +476,11 @@ def list_directory(root: Path, rel_dir: str) -> dict:
     readme, non_git}``（+ 可选 ``truncated_count``）。
 
     非 git 项目：``non_git=true``、entries 空、branch/latest/readme 全
-    null。latest/readme 仅根目录查询（rel_dir 为空串）附带。
+    null。latest/readme 仅根目录查询（rel_dir 为空串）附带。文件条目附
+    ``bytes``（os.stat 实际大小；目录/读取失败为 None——目录尺寸需递归
+    汇总，前端以「目录」文案呈现，不做伪尺寸）。每条目附 ``hidden``
+    （2026-11-11 增强）：纯忽略目录/文件为 true（前端灰色字体），同名
+    可见条目恒 false；忽略项通道失败时静默跳过合并（主列表不受影响）。
     """
     files = visible_files(root)
     if files is None:
@@ -336,11 +489,29 @@ def list_directory(root: Path, rel_dir: str) -> dict:
             "readme": None, "non_git": True,
         }
     is_root = rel_dir == ""
-    entries, truncated = build_entries(files, rel_dir)
+    ignored = ignored_entries(root)
+    hidden_children = ignored_children(ignored, rel_dir) if ignored is not None else []
+    if not hidden_children and rel_dir and not any(
+        f.startswith(f"{rel_dir}/") for f in files
+    ):
+        # 纯忽略目录（不在可见集合）：根级流已折叠拿不到深层子项，
+        # 按目录 scope 再扫一层（2026-11-11）
+        scoped = ignored_entries_scoped(root, rel_dir)
+        if scoped is not None:
+            hidden_children = ignored_children(scoped, rel_dir)
+    entries, truncated = build_entries(files, rel_dir, hidden_children)
     for entry in entries:
         entry["last_commit"] = entry_commit(
             root, f"{rel_dir}/{entry['name']}" if rel_dir else entry["name"]
         )
+        if entry["dir"]:
+            entry["bytes"] = None
+        else:
+            abs_path = root / rel_dir / entry["name"] if rel_dir else root / entry["name"]
+            try:
+                entry["bytes"] = abs_path.stat().st_size
+            except OSError:
+                entry["bytes"] = None
     payload: dict = {
         "branch": branch_name(root),
         "latest": latest_commit(root) if is_root else None,

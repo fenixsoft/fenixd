@@ -103,7 +103,7 @@
 | `_frozen_hold` | 冻结保持标记（冻结终止在跑 agent 后置位） |
 | `_cancelled_hold` | 取消保持标记（人工取消后的有意等待） |
 | `_env_block_rounds` | env 阻塞连续轮数（≥2 轮冻结升级） |
-| `_inconclusive_attempts` | env 豁免两级防线共享计数（3 静默重派 / 4 升级） |
+| `_inconclusive_attempts` | env 豁免两级防线共享计数（静默重派上限缺省 2 / 升级阈值缺省 4，均可经 `verify_engine.inconclusive_*` 配置调整） |
 | `_infra_failure_count` / `_verify_infra_rounds` | infra 失败观测（不计入冻结判定） |
 | `_infra_refunded_run_ids` | infra 验证 run 预算退款幂等清单 |
 | `_fastlane_fail_streak` | fastlane 连续失败计数（达 2 回落整轮） |

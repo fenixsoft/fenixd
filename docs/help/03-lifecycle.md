@@ -34,7 +34,7 @@ stateDiagram-v2
 
 `/fenix-new` 创建 SPEC 后即进入 `drafted`。此时 SPEC 还停留在设计阶段，proposal、design 与 tasks.md 正在生成或等待确认；一旦设计文档与任务书完成并经晋升链校验通过，SPEC 便转入 `ready` 或 `reviewing`（依评审门禁判定分流，见下一节）。
 
-**框架自动生成的改进 SPEC**：当 `self_evolution` 自进化链路（仅自托管 daemon 启用，见[配置参考](09-config.md#self_evolution框架自进化)）判定某条目值得立项并经人工「同意」或开关打开后自动接受时，SPEC 统一使用 `evo-` 前缀（`evo-<slug>`，重名追加条目 id 短后缀）进入 `spec/changes/`，以 `drafted`（priority 5）注册 STATE——与人工 `/fenix-new` 生成的 SPEC **完全同源**：由既有 `gates.promote_mode`（本机 auto）自动晋升 → `ready` → 实现 → 验证 → `done`，终点 `pushed` 仍需人工审批（推送审批门 `gates.require_push_approval` 保持不变）。接受过程「先提交后注册」（仅 add 该 spec 目录并提交后再注册），失败时不产生「已提交未注册 / 已注册未提交」半成品，条目标 `accept_failed` 可重试（见[建议改进项面板](08-dashboard.md#设置页settings)）。
+**框架自动生成的改进 SPEC**：当 `self_evolution` 自进化链路（仅自托管 daemon 启用，见[配置参考](09-config.md#self_evolution框架自进化)）判定某条目值得立项并经人工「同意」或开关打开后自动接受时，SPEC 统一使用 `evo-` 前缀（`evo-<slug>`，重名追加条目 id 短后缀）进入 `spec/changes/`，以 `drafted`（priority 5）注册 STATE——与人工 `/fenix-new` 生成的 SPEC **完全同源**：由既有 `gates.promote_mode`（本机 auto）自动晋升 → `ready` → 实现 → 验证 → `done`，终点 `pushed` 仍需人工审批（推送审批门 `gates.approve_mode` 保持缺省 `manual` 不变，`auto` 时自动推送）。接受过程「先提交后注册」（仅 add 该 spec 目录并提交后再注册），失败时不产生「已提交未注册 / 已注册未提交」半成品，条目标 `accept_failed` 可重试（见[建议改进项面板](08-dashboard.md#设置页settings)）。
 
 ### reviewing（方案评审中）
 
@@ -72,7 +72,7 @@ PM 派出 implementer 后 SPEC 进入 `implementing`，实现者此时正在 wor
 
 planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进到 `done`，无需任何人工操作。
 
-> **门禁逃生门**：`verified → testing` 仅允许由门禁拦截触发的自动回退调用（`_on_spec_verified` 门禁发现应用不可达或证据不足时自动回退），人工路径无法直接执行该转移，无法绕过验证门禁。
+> **门禁逃生门**：`verified → testing` 仅允许由门禁拦截触发的自动回退调用（`_on_spec_verified` 的验证完成度门禁发现验证进度不完整——`done < total`——时自动回退断点续跑），人工路径无法直接执行该转移，无法绕过验证门禁。
 
 ### verified 滞留与回炉路径（task-gap）
 
@@ -130,7 +130,7 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 ## 冻结与解冻
 
-冻结通过 `/fenix-freeze` 或 Dashboard 冻结操作触发：状态写入 blocked，附带结构化 `frozen: true` 标记与规范前缀 error。冻结期间所有自动链路对状态的改写都会被剥离，唯一出路是解冻。解冻（`/fenix-unfreeze`）恢复冻结前的状态并清空 error；对未冻结的 SPEC 执行解冻是幂等 no-op，可以放心调用。
+冻结通过 Dashboard 的 SPEC 冻结操作触发（人工冻结无 CLI 子命令）：状态写入 blocked，附带结构化 `frozen: true` 标记与规范前缀 error。冻结期间所有自动链路对状态的改写都会被剥离，唯一出路是解冻。解冻同样经 Dashboard 操作完成（SPEC 行「解冻」动作，或冻结管理弹窗的解除定时；定时冻结到期由 daemon 自动解冻），恢复冻结前的状态并清空 error；对未冻结的 SPEC 执行解冻是幂等 no-op，可以放心调用。
 
 ## 取消保持态（_cancelled_hold）
 
@@ -146,7 +146,7 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 | 分类 | 标记 | 判据（admin 是否有操作杠杆） | 消费者 |
 |------|------|------------------------------|--------|
-| **冻结转人工** | `frozen: true` + 人工升级告警 | 无杠杆：需人在场决策（改方案、撤案、判是否值得再跑、改配置） | `admin_monitor` 的 blocked_stuck **豁免**（`:387` 对 frozen 直接跳过，不唤起 Administrator）；Dashboard 渲染「冻结」标签；人工升级告警通知人 |
+| **冻结转人工** | `frozen: true` + 人工升级告警 | 无杠杆：需人在场决策（改方案、撤案、判是否值得再跑、改配置） | `admin_monitor` 的 blocked_stuck **豁免**（`:4126` 对 frozen 直接跳过，不唤起 Administrator）；Dashboard 渲染「冻结」标签；人工升级告警通知人 |
 | **阻塞待 admin** | 不写 frozen | 有杠杆：admin 可自动修复（改环境、起草契约、清 git 状态） | `admin_monitor` 超时巡检**唤起** Administrator agent 介入；Dashboard 渲染「阻塞」标签 |
 
 **判据是唯一的**：对某类停摆问一句「admin agent 对它有可操作杠杆吗？」——无 → 冻结转人工（`frozen=true` **且** 发人工升级告警，二者成对、不可分离）；有 → 阻塞待 admin（不写 frozen）。判据不依赖文案，只看杠杆归属。
@@ -166,7 +166,7 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 ## Daemon 重启中断恢复
 
-SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自动把它回退到 `ready`，同时清空陈旧 run 字段并重置重试计数，重新进入调度池。这是设计行为而非数据丢失。
+SPEC 处于中断状态（`implementing`/`testing`/`reviewing`）时，daemon 重启会按状态自动回退：`implementing` → `ready`（清空陈旧 run 字段并重置重试计数，重新进入调度池；可保留分支时走下述保留续做）；`testing` → `implemented`（仅清 tester_run、保留实现锚点，验证流水线全新重入；重启重验计数超预算则冻结转人工）；`reviewing` → `drafted`（清空评审 run 引用与尝试计数，重新进入晋升链）。这是设计行为而非数据丢失。
 
 **保留续做 vs 清空重建**：`implementing` 中断时，若发现可保留的分支（相对 main 有未合并提交，经上述三层锚点回落链解析），则保留 `branch`/`implementer_run` 并打 `_recovery_resume` 标记，由 dispatch 层在保留分支的 worktree 内 `claude --resume` 续做而非从零重派；仅零提交/分支缺失/载体不可用才走清空重建（零留痕的静默早退是本框架治理重点，锚点缺失一律打 WARNING 附候选清单）。
 

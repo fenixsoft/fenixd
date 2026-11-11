@@ -78,7 +78,7 @@
 
 **现象**：想暂停自动化，自己手工处理，或让 Administrator 介入。
 
-**处置**：冻结用 Dashboard SPEC 行「冻结」或 `/fenix-freeze`，SPEC 进入 blocked + frozen 标记，自动链全部剥离；处理完后用「解冻」恢复原状态。若只想让 Administrator 诊断一次，用 SPEC 行「呼叫 Admin」，它会写 admin_invoke_request.json，daemon 下一轮拾取后唤起。
+**处置**：冻结用 Dashboard SPEC 行「冻结」（CLI 无冻结/解冻命令，Dashboard 是两者唯一入口），SPEC 进入 blocked + frozen 标记，自动链全部剥离；处理完后在 Dashboard 用「解冻」恢复原状态。若只想让 Administrator 诊断一次，用 SPEC 行「呼叫 Admin」，它会写 admin_invoke_request.json，daemon 下一轮拾取后唤起。
 
 相关：[生命周期与状态机](03-lifecycle.md#冻结与解冻)、[Dashboard 操作手册](08-dashboard.md)
 

@@ -41,7 +41,7 @@ Fenix 是一个基于日志运作的框架：daemon 的每次决策、Agent 的�
 - **格式**：纯文本行（非 JSON）：
 
   ```
-  2026-08-26T00:54:00.551321+00:00 supervisor: daemon exited (rc=0, restart=auto)
+  2026-08-26T00:54:00.551321+00:00 supervisor: daemon exited (rc=0, restart=auto, alive=86400s)
   ```
 
 - **写入者**：`bin/fenixd_supervisor.py` 的 `log()`，文件是唯一 sink；同一次启动重定向还把 daemon 进程的 stdout/stderr 也汇入此文件。
@@ -68,8 +68,11 @@ Fenix 是一个基于日志运作的框架：daemon 的每次决策、Agent 的�
 | `repair-` | 修复者 | `code-review-` | 代码审查 |
 | `planner-` | 规划者（兜底） | `code-fix-` | 审查修复 |
 | `admin-` | Administrator | `dispute-judge-` | 争议裁决 |
+| `arbiter-` | 全局决策者 | `review-` | 每日自省 |
+| `maintenance-` | 维护车道 | `impl-ocr-` | OCR 并行实现 |
+| `evo-` | 自进化分析 | `knowledge-distiller-` | 知识蒸馏 |
 
-例外：自进化分析 run 无 spec 段，命名为 `evo-<unix秒>.jsonl`（`core/agent_runner/maintenance_runs.py`）。
+例外：无 spec 段的运维车道 run 不走 `<spec>-<unix秒>` 形态——自进化分析为 `evo-<unix秒>.jsonl`、每日自省为 `review-<日期>[-<n>].jsonl`、维护车道为 `maintenance-<scope>-<unix秒>.jsonl`、知识蒸馏为 `knowledge-distiller-<归档名>-<unix秒>.jsonl`、周期代码审查为 `code-review-<unix秒>.jsonl`（`core/agent_runner/maintenance_runs.py`、`core/maintenance_ledger.py`、`core/knowledge.py`）。
 
 ### 行类型清单
 
@@ -103,13 +106,13 @@ Fenix 是一个基于日志运作的框架：daemon 的每次决策、Agent 的�
 
 ### admin_alerts.json — 告警/信号/处置台账
 
-- **形态**：单个 JSON 数组（非 JSONL），整体读-改-写；flock 跨进程排他 + tempfile/rename 原子替换；写回前裁剪到最近 **150 条**（`core/admin_store.py` 的 `MAX_RECORDS`）；文件损坏时改名 `.corrupt-<时间戳>` 留底并拒绝写入（fail-closed）。
+- **形态**：单个 JSON 数组（非 JSONL），整体读-改-写；flock 跨进程排他 + tempfile/rename 原子替换；写回前裁剪到最近 **150 条**（`core/admin_store.py` 的 `MAX_RECORDS`），裁出的最旧记录逐行转入归档旁路文件 `admin_alerts_archive.jsonl`（自身滚动上限 2000 条，再淘汰即永久丢失）；活跃文件损坏时改名 `.corrupt-<时间戳>` 留底并拒绝写入（fail-closed）。
 - **每条字段**：`kind`（`signal` 信号 / `escalation` 升级 / `disposition` 处置）、`id`（12 位十六进制）、`created`、`handled`/`handled_at`、`severity`（critical/major/minor）、`signal_type`、`spec`、`description`、`evidence`（JSON 字符串契约）、`action_taken`、`result`、`recommended_action`。
 - **写入者**：AdminMonitor 各检测器、hook 失败、provider 熔断、stale-code 检测等（经 AdminStore 统一入口）。Dashboard 告警横幅与「运维记录」页的数据源。
 
 ### dispute_audits.jsonl — 自动裁决审计
 
-- **形态**：append-only JSONL + flock，无轮转。
+- **形态**：append-only JSONL + flock；写回前裁剪到最近 **500 条**（`core/admin_store.py` 的 `MAX_AUDIT_RECORDS`，裁掉最旧——并非无限留痕）。
 - **每行字段**：`kind: "dispute-audit"`、`created`、`spec`、`trigger_run_id`、`judge_run_id`、`verdicts`（裁决 JSON 全文，逐产物 element/verdict/reasoning）、`diff`（交付物声明修正前后对照）。
 - **用途**：dispute-judge 自动裁决与声明重定位的完整留痕，人工可复核、可回滚；与人工告警流（admin_alerts.json）刻意隔离。
 
@@ -175,7 +178,7 @@ Administrator agent 与 daemon 之间的一次性交接文件：agent 按提示�
 
 ### 验证车道产物（verify-progress/ 与 verify-serving/）
 
-验证进度（`<spec>.json`）、场景报告（`report.json`）、逐轮 token（`tokens.json`）、judge 归因（`scenario-attribution.json`）、被测实例登记与启动日志（`verify-serving/servers.json`、`<spec>-boot.log`，探活失败时读尾 2KB 溯因）——这些归[验证体系](05-verification.md)章节管辖，此处不展开。
+验证进度（`<spec>.json`）、场景报告（`report.json`）、逐轮 token（`tokens.json`）、judge 归因（`judge_attribution.json`）、被测实例登记与启动日志（`verify-serving/servers.json`、`<spec>-boot.log`，探活失败时读尾 2KB 溯因）——这些归[验证体系](05-verification.md)章节管辖，此处不展开。
 
 ## 写入方式与可靠性速览
 
@@ -194,7 +197,7 @@ Administrator agent 与 daemon 之间的一次性交接文件：agent 按提示�
 
 ## 与信号文件的区分
 
-以下文件长得像日志但**只承载一次信号，消费即删或随状态覆盖**，无历史可查：`scheduling_kick/<spec>.json`（即时派发唤醒）、`admin_invoke_request.json`（Admin 唤起）、`regression_request.json`（手动回归触发）、`code_fix_request.json`（手动自动修复授权）、`spec_delete_request.json`（SPEC 删除异步受理）、`restart_request.json`、`daemon_started`（最近启动时刻）、`daemon.lock`/`lifecycle.lock`/`full-suite.lock`（互斥锁）、`recovery_watch.json`、`self_review_state.json`/`code_review_state.json`/`regression/state.json`（调度防重水位）。它们的语义见[文件与数据地图](10-artifacts.md)。
+以下文件长得像日志但**只承载一次信号，消费即删或随状态覆盖**，无历史可查：`scheduling_kick/<spec>.json`（即时派发唤醒）、`admin_invoke_request.json`（Admin 唤起）、`regression_request.json`（手动回归触发）、`code_fix_request.json`（手动自动修复授权）、`spec_delete_request.json`（SPEC 删除异步受理）、`restart_request`（touch 型重启请求，无扩展名）、`daemon_started`（最近启动时刻）、`daemon.lock`/`lifecycle.lock`/`full-suite.lock`（互斥锁）、`recovery_watch.json`、`self_review_state.json`/`code_review_state.json`/`regression/state.json`（调度防重水位）。它们的语义见[文件与数据地图](10-artifacts.md)。
 
 ## 排障入口速查
 
