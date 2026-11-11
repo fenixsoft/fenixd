@@ -52,8 +52,8 @@
 
 ## 4. 外部 testing 跃迁即时派发
 
-- [ ] 4.1 core/event_bus.py 的 _dispatch_changes 增加 →testing 跃迁处理：spec_is_undriven 命中且无在飞 Administrator run（复用 _recover_testing 与 _spec_has_active_admin_run 既有语义）时立即 re-trigger verifier 派发，不新增事件类型，失败不留状态损坏；锁纪律：`_dispatch_changes` 既有约定 PM Engine 处理必须在 `_state_lock` 外执行（docstring 明文），锁内只采集 →testing 跃迁、re-trigger 派发放锁外
-- [ ] 4.2 新增 tests/test_event_bus_testing_dispatch.py：覆盖 blocked→testing 秒级触发派发、有驱动/在飞 run 不重复派发、派发失败语义与 30min full_scan 兜底共存
+- [x] 4.1 core/event_bus.py 的 _dispatch_changes 增加 →testing 跃迁处理：spec_is_undriven 命中且无在飞 Administrator run（复用 _recover_testing 与 _spec_has_active_admin_run 既有语义）时立即 re-trigger verifier 派发，不新增事件类型，失败不留状态损坏；锁纪律：`_dispatch_changes` 既有约定 PM Engine 处理必须在 `_state_lock` 外执行（docstring 明文），锁内只采集 →testing 跃迁、re-trigger 派发放锁外
+- [x] 4.2 新增 tests/test_event_bus_testing_dispatch.py：覆盖 blocked→testing 秒级触发派发、有驱动/在飞 run 不重复派发、派发失败语义与 30min full_scan 兜底共存
 
 ## 5. Dashboard 展示
 
