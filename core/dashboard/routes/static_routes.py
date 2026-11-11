@@ -108,16 +108,13 @@ class H10StaticRoutesMixin:
         # /screenshots/<project>/%2Ftmp%2Ffoo/x.png → spec == '/tmp/foo'）；
         # pathlib 拼接遇绝对段会整体丢弃前缀，同样把 screenshots_dir 搬迁到
         # 约束目录之外，令包含检查平凡通过。与「..」搬迁同属攻击面，一并拒绝。
-        spec_norm = spec.replace("\\", "/")
-        if (
-            not spec_norm
-            or spec_norm in (".", "..")
-            or ".." in spec_norm.split("/")
-            or spec_norm.startswith("/")
-            # NUL 字节（%00 解码产物）会让下方 .resolve() 抛 ValueError
-            # （code-review item 747894f47c57）穿透为 500，一并拒绝
-            or "\x00" in spec
-        ):
+        # 校验单源复用 prototype_io.spec_segment_safe（拒绝空段/「.」「..」
+        # 组件/绝对段/反斜杠折叠为「/」后判组件/NUL——NUL 即 %00 解码产物，
+        # 会让下方 .resolve() 抛 ValueError（code-review item 747894f47c57）
+        # 穿透为 500，一并拒绝），与 _serve_prototype/_api_proto_feedback
+        # 同一实现，消除安全校验双实现的漂移风险（code-review item
+        # 514e687d5772）。
+        if not spec_segment_safe(spec):
             self._error(403, "Forbidden")
             return
         # 剩余部分一并 decode（code-review item 206cc192537f）：SPA 以
@@ -141,11 +138,11 @@ class H10StaticRoutesMixin:
             self._error(404, "project not found")
             return
 
-        # 拼接刻意用原始 spec 而非上方校验用的 spec_norm（code-review item
-        # 4ff940f60087）：前提是仅 POSIX——反斜杠不作分隔符折叠，含「\」的
-        # spec 在磁盘上是单个目录名，校验（对 spec_norm）严格保守于拼接
-        # （对原始 spec），穿越防护不受影响；若移植到反斜杠作分隔符的平台
-        # （Windows），两处须同步改用 spec_norm。
+        # 拼接刻意用原始 spec 而非 spec_segment_safe 内部判组件所用的反斜杠
+        # 折叠形态（code-review item 4ff940f60087）：前提是仅 POSIX——反斜杠
+        # 不作分隔符折叠，含「\」的 spec 在磁盘上是单个目录名，校验（折叠后）
+        # 严格保守于拼接（对原始 spec），穿越防护不受影响；若移植到反斜杠作
+        # 分隔符的平台（Windows），拼接处须同样先折叠。
         screenshots_dir = (
             Path(project["path"]) / ".fenix" / "verify-progress" / spec / "screenshots"
         ).resolve()
@@ -175,9 +172,9 @@ class H10StaticRoutesMixin:
             return
         project_name = urllib.parse.unquote(parts[2])
         spec = urllib.parse.unquote(parts[3])
-        # spec 段防穿越：与 _serve_screenshot 同口径（「..」组件搬迁攻击、
-        # 绝对路径段丢弃前缀攻击、%00 NUL → resolve ValueError→500），单源
-        # 校验在 prototype_io.spec_segment_safe。
+        # spec 段防穿越：与 _serve_screenshot 共用单源校验
+        # prototype_io.spec_segment_safe（「..」组件搬迁攻击、绝对路径段
+        # 丢弃前缀攻击、%00 NUL → resolve ValueError→500）。
         if not spec_segment_safe(spec):
             self._error(403, "Forbidden")
             return
