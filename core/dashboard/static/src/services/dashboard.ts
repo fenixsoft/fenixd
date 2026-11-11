@@ -3434,6 +3434,8 @@ export interface ProjectFileEntry {
   dir: boolean;
   /** 文件实际字节数（os.stat）；目录与读取失败为 null（目录不做递归汇总）。 */
   bytes: number | null;
+  /** 纯 git 忽略项条目（2026-11-11）：全忽略目录/忽略文件为 true，前端灰色呈现。 */
+  hidden?: boolean;
   last_commit: ProjectFileCommit | null;
 }
 
