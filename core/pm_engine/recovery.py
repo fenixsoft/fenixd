@@ -202,8 +202,10 @@ class RecoveryWatch:
         # 非法 UTF-8 字节（二进制损坏）抛 UnicodeDecodeError（ValueError 子类，
         # 既非 OSError 也非 json.JSONDecodeError）——不兜住会沿 engine 构造内的
         # 裸调用逃逸、daemon 启动直接失败，恰是最需 fail-open 的形态
-        # （code-review item 614e096ffbdb）。
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        # （code-review item 614e096ffbdb）。深嵌套（数千层）的合法字节序列
+        # 另会使 json.loads 抛 RecursionError，同款逃逸路径，一并兜住
+        # （code-review item 1bafd4df72f0）。
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as e:
             self._pm.logger.warning(
                 "pm_engine",
                 f"recovery_watch.json 读取失败（按空续查，损坏文件改名移开）: "
@@ -290,6 +292,18 @@ class RecoveryWatch:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_str, str(path))
+            # 目录 fsync（code-review item 298cde6e2b3b）：rename 元数据须对
+            # 父目录 fsync 才在断电/宿主崩溃后持久化，否则重启后 recovery_watch
+            # 回退上一份快照、其间登记的观察项丢失。目录句柄不支持 fsync 的
+            # 文件系统/平台按 best-effort 跳过，不扰动主流程。
+            try:
+                dfd = os.open(str(path.parent), os.O_DIRECTORY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
         except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -410,12 +424,15 @@ class RecoveryWatch:
                 # 被手工编辑或部分损坏时（_load_recovery_watch 只过滤非 dict 条目，
                 # 不校验字段类型）due 可为非数值字符串，裸 float() 抛 ValueError
                 # 会中止整轮复查循环，本次到期观察项之后的条目全部漏看（升级信号
-                # 静默丢失）。回退 0.0（立即到期）而非跳过：与上方 ``or 0`` 的缺失
-                # 字段既有语义一致，且升级观察项宁可提前复查也不静默漏看——复查
-                # 路径本身会 pop/顺延/升级闭环该条，提前到期无重入风险。
+                # 静默丢失）。巨大 int（合法 JSON，如 10**400）另使 float() 抛
+                # OverflowError（同 _parse_event_timestamp 守卫的注释口径），
+                # 一并兜住（code-review item 2636a20ffc47）。回退 0.0（立即到期）
+                # 而非跳过：与上方 ``or 0`` 的缺失字段既有语义一致，且升级观察项
+                # 宁可提前复查也不静默漏看——复查路径本身会 pop/顺延/升级闭环
+                # 该条，提前到期无重入风险。
                 try:
                     due = float(item.get("due") or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     due = 0.0
                 # 非有限 due 守卫（code-review item afaa44a20ba8）：json.loads/
                 # json.dumps 均合法接受 Infinity，inf 使 now < due 恒真、条目永不
@@ -742,13 +759,24 @@ class RecoveryWatch:
                         f" (layer-3 dispatch re-probe failed: "
                         f"{type(reprobe_exc).__name__})"
                     )
+                # 就地重派 evidence 三分支（code-review item aed1dbe27662）：
+                # dispatched 仅在 status == 'ready' 时才尝试（上方 2.2/2.3），
+                # 其余卡死形态从未尝试——统一输出 'not established' 会误导
+                # Administrator 读成「已尝试且被闸门拦下」。按实际语义区分：
+                # 成功 / 尝试未成立（闸门拦下）/ 不适用（状态非 ready）。
+                if dispatched:
+                    redispatch_desc = "succeeded"
+                elif status == "ready":
+                    redispatch_desc = "not established (gates rejected)"
+                else:
+                    redispatch_desc = "not applicable (status not ready)"
                 evidence = (
                     f"auto-recovery/defer at {item.get('registered_at')} "
                     f"({item.get('reason')}); {reread_desc}"
                     f"{probe_failure_desc} "
                     f"with no active dispatch after followup window, in-place "
                     f"redispatch "
-                    f"{'succeeded' if dispatched else 'not established'}, "
+                    f"{redispatch_desc}, "
                     f"error={str(fresh.get('error') or '')[:120]}"
                 )
                 self._pm.logger.error(
@@ -791,9 +819,9 @@ class RecoveryWatch:
                 # 全部漏看（升级信号静默丢失）。此处把「单条失败仅影响该条」
                 # 固化为结构保证：记 WARNING、保留观察项后继续下一条。顺延写回
                 # 走身份比对守卫（同 e46bd875e05b 口径）；条目已弹出（异常发生
-                # 于 pop 之后的判定/升级路径）时按升级失败恢复同款恢复观察项
-                # （不覆盖并发重新登记）。内层既有窄捕语义不变：只有真正逃逸
-                # 的异常才落到这里。
+                # 于 pop 之后的判定/升级路径）时同样恢复观察项并顺延 due（不覆盖
+                # 并发重新登记；顺延与日志及身份命中分支口径对齐）。内层既有
+                # 窄捕语义不变：只有真正逃逸的异常才落到这里。
                 retry_due = now + self._inflight_retry_minutes() * 60
                 retained = False
                 with self._watch_lock:
@@ -802,6 +830,12 @@ class RecoveryWatch:
                         self._pm._save_recovery_watch()
                         retained = True
                     elif spec_name not in self._recovery_watch:
+                        # 条目已弹出时同样顺延 due（code-review item 43a82eb24e10）：
+                        # 与日志 'due deferred' 及上方身份命中分支对齐——沿用原
+                        # （通常已过期）due 会让恢复后的条目下轮 60s tick 立即
+                        # 重新复查，WARNING 以 60s 频率刷屏而非日志声称的
+                        # inflight_retry 间隔。
+                        item["due"] = retry_due
                         self._recovery_watch[spec_name] = item
                         self._pm._save_recovery_watch()
                         retained = True
