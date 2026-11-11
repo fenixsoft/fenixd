@@ -1803,6 +1803,34 @@ def _validate_typed(scenario: TestScenario, kind: str) -> list[str]:
             specs,
             lambda key, a=a: _assert_lookup_value(a, key),
         )
+        # sse_event_count min 形态验收（code-review item 393e9d4cbfc3）：单源表
+        # 对 extra.min 仅登记必填存在性（include_zero 只拦缺失/空串），min=0 /
+        # -1 / "abc" / true 均能过验收，白烧一轮场景执行后才在运行期
+        # _assert_sse_event_count 被 fail-closed 拦截（min<=0 恒真假绿已按配置
+        # 错误显式拒绝，820f6cc34f42）——与 no_overlap threshold 同型缺口（该处
+        # 运行期同样有定向 error，仍被前移）。判据逐字对齐运行层 invalid_min
+        # 口径：bool 显式排除（int 子类否则被静默折算成 1）、int() 可转、>0；
+        # 数值串 "2" 运行期合法消费故不收紧。min 仅 sse_event_count 消费，其余
+        # 断言类型无此运行期失败面，不扩大拦截范围（消费面对齐先例
+        # ed59b43fbd40）。缺失/空串已由上方必填检查报告，此处不重复报错。
+        if a.type == "sse_event_count":
+            raw_min = a.extra.get("min")
+            if raw_min not in ("", None):
+                if isinstance(raw_min, bool):
+                    minimum = None
+                else:
+                    try:
+                        minimum = int(raw_min)
+                    # inf 的 int() 抛 OverflowError，不在运行层
+                    # except (TypeError, ValueError) 覆盖内（被包成笼统执行
+                    # 异常）——验收期按「不可 int 转换」同款拦截，判据不放宽
+                    except (TypeError, ValueError, OverflowError):
+                        minimum = None
+                if minimum is None or minimum <= 0:
+                    errors.append(
+                        f"场景'{scenario.id}'断言{i}: 类型 'sse_event_count' 的 min "
+                        f"须为正整数（事件数下限），收到 {raw_min!r}"
+                    )
     return errors
 
 

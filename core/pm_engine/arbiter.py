@@ -161,8 +161,17 @@ def arbiter_failure_signature(spec: str, signal_type: str) -> str:
     同一冻结/升级事件经双咽喉（freeze_for_human → _send_human_escalation_alert）
     各报一次时，两处按 (spec, signal_type) 计算出同签名——第二咽喉自然命中
     dedup（绑 alert 而非重复派发），无需跨模块传递事件 id。
+
+    spec 成分中的 ``::`` 转义为 ``\\:\\:``（code-review 02f0a0197614）：裸
+    拼接无转义时 spec="a::b"+signal="c" 与 spec="a"+signal="b::c" 产出同
+    签名——本签名是 dedup、复现配额（chain 状态文件）、dead-man 台账、todo
+    来源前缀的共用键，碰撞会把两个不同失败合并记账（误 dedup 吞掉一次升级、
+    或配额被无关签名消耗）。转义序列自身不含连续 ``::``，故不含 ``::`` 的
+    spec 逐字节不变——台账/配额/dead-man 存量键全部不受影响（不换分隔符、
+    不做双格式迁移窗）。signal 侧为框架信号词表枚举名，不含 ``::``，不转义。
     """
-    return f"{(spec or 'global').strip()}::{(signal_type or 'unknown').strip()}"
+    spec_part = (spec or "global").strip().replace("::", "\\:\\:")
+    return f"{spec_part}::{(signal_type or 'unknown').strip()}"
 
 
 def arbiter_report_path(project_root, run_id: str) -> Path:
@@ -282,6 +291,19 @@ class ArbiterLane:
         # 跃迁时回扫一次；True→False 不回扫，下次 False→True 再回扫一次）。
         self._startup_swept = False
         self._last_seen_enabled: Optional[bool] = None
+        # 派发前置探针拦截遥测（code-review d488eb0ddbeb）：拦截在返回字上
+        # 与在飞 dedup 同字（零新契约的既有取舍）——累计计数供 snapshot()
+        # 单列；拦截签名集供 sweep_backlog 把该形态从 deduped 摘要单列
+        # preflight-blocked（派发成功或归类消费即清，防陈旧残留误标真
+        # dedup；同签名已在飞的真 dedup 拦截不记入集合）。
+        self._preflight_blocked_total = 0
+        self._preflight_blocked_sigs: set = set()
+        # 台账签名集读缓存（code-review fd762a606443）：台账 append-only
+        # 无轮转，全量读盘解析成本随台账线性增长且在 submit_trigger 关键
+        # 路径上——按（mtime_ns, size）失效缓存 (signature, kind) 投影，
+        # 台账新写即整体失效重读（不持有全量记录 dict，内存只随签名数线性）。
+        self._ledger_cache_key: Optional[tuple] = None
+        self._ledger_sig_pairs: Optional[List[tuple]] = None
 
     # ── 配置读取（热更新语义：每次触发/run 读取时即时解析）─────────────
 
@@ -332,13 +354,33 @@ class ArbiterLane:
     def _arbiter_rulings_quota(self) -> int:
         """Arbiter 复现配额上限（chain.arbiter_rulings，缺省单源
         ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT，现值 3）。"""
-        try:
-            from core.config import ConfigLoader
+        from core.config import ConfigLoader
 
+        try:
             default = ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT
             return int(self._chain_cfg().get("arbiter_rulings") or default)
         except (TypeError, ValueError):
-            return 3
+            # 兜底直接引用单源常量（对齐 escalation_chain.quota_config 口径，
+            # 消除与缺省值的手工双份真相——该值 2026-11-03 刚经历 2→3 调整，
+            # 硬编码 3 会在下次调值时静默漂移）
+            return ConfigLoader.CHAIN_ARBITER_RULINGS_DEFAULT
+
+    def _safe_rulings(self, quota, sig: str) -> int:
+        """复现配额读侧容错（code-review 659188b1f8cc）：chain 状态文件
+        局部损坏（signatures 内既有条目的 arbiter_rulings 字段被手工编辑
+        成非数字）时 ChainQuotaStore.arbiter_rulings 内部 int() 抛
+        ValueError——按 0（配额未耗尽）降级留 warning，不使触发登记与回扫
+        扫描段整体中断（fail-open 方向与 _chain_quota 返回 None 同口径）。"""
+        if quota is None:
+            return 0
+        try:
+            return int(quota.arbiter_rulings(sig))
+        except (TypeError, ValueError) as exc:
+            self._log(
+                "warning",
+                f"arbiter 复现配额读侧值损坏（按 0 未耗尽降级）: sig={sig} {exc}",
+            )
+            return 0
 
     def in_trigger_surface(self, signal_type: str) -> bool:
         """signal 维度触发面判定（处置链反转后）：非黑名单即入。
@@ -385,7 +427,8 @@ class ArbiterLane:
         - ``"disabled"``：arbiter.enabled=false（关闭态零侵扰——调用方应走
           既有 narrative/人工路径，本方法不做任何写入）；
         - ``"excluded"``：signal 在 chain.blacklist 黑名单（留 narrative 与
-          人类——不进 Arbiter 也不进链，直达人工队列）；
+          人类——不进 Arbiter 也不进链，直达人工队列）；spec 名路径不安全
+          同出口（item dabef7963cec，与回扫面同款防线）；
         - ``"deduped"``：同签名已派发/在飞（含复现升级在飞）——本次触发
           只绑 alert/补挂告警升级，不再派发；**派发前置探针拦截
           （harden-arbiter-lane-resilience 3.2）同样返回本字**（零新契约，
@@ -406,14 +449,33 @@ class ArbiterLane:
             # 黑名单 kill switch 命中（触发面反转后 excluded=黑名单）：不进
             # Arbiter 也不进链，调用方走既有落盘路径（直达人工 + narrative）
             return "excluded"
-        # ── 派发前置探针拦截（agent-lane-preflight R3）────────────────
+        sig = arbiter_failure_signature(spec, signal_type)
+        # 路径安全单点筛查（item dabef7963cec）：spec 名含 ../ 等不安全分量
+        # 时签名会内插进 unfreeze/预算改写等写点，回扫面
+        # （_backlog_candidates）已按同款排除；事件面（冻结/告警双咽喉）
+        # 不安全即 excluded——不进 Arbiter 不进链不产生台账，调用方走既有
+        # 落盘路径直达人工，与黑名单同出口。
+        from core.pm_engine.verification.serving import _spec_name_path_error
+        if _spec_name_path_error(spec):
+            self._log(
+                "warning",
+                f"arbiter 触发拒绝路径不安全 spec={spec!r}",
+            )
+            return "excluded"
         # 拦截点位于一切 dedup/_recurrence_inflight 复现标记消费之前；命中
         # 零状态变更（见返回值段 deduped 条目注记）。关闭态零侵扰纪律下
         # disabled/excluded 先行短路（enabled=false 不派发不拦截不产生
-        # 台账），探针只在真实派发意图上把关。
+        # 台账），探针只在真实派发意图上把关。拦截遥测（d488eb0ddbeb）：
+        # 返回字保持 deduped（零新契约），车道级累计计数与拦截签名集单列
+        # ——签名集供 sweep_backlog 把该形态从 deduped 摘要单列
+        # preflight-blocked；同签名已在飞的触发即使被拦（探针复位后回扫
+        # 重扫仍会 dedup），不记入集合防误标。
         if not self._preflight_gate():
+            with self._lock:
+                self._preflight_blocked_total += 1
+                if sig not in self._active:
+                    self._preflight_blocked_sigs.add(sig)
             return "deduped"
-        sig = arbiter_failure_signature(spec, signal_type)
         # 跨重启配额判定（D6 单次纪律的配额制取代，add-escalation-chain-
         # admin-arbiter 3.3）：已自主处置次数 = 拍板计数（chain 配额状态文件
         # 持久化，跨重启有效）＋台账 dead-man 永久例外（单次停机不复位——
@@ -421,9 +483,10 @@ class ArbiterLane:
         # 状态迁移清零由链配额层负责（此处只读判定，不复位不计数——拍板
         # 计数在 _on_disposition_success 落）。台账 dead-man 读失败按空集
         # fail-open（load_arbiter_ledger 自带降级）。
+        # [fenix-ignore:e8ea683f7ae2] 配额/dead-man 读在锁外属本模块声明的慢盘取舍（单次超发有界、下一触发收敛）；严格化须把盘 IO 挪进 _lock 临界区，冻结咽喉热路径代价更大
         persisted_deadmanned = self._ledger_sigs(kinds={"dead-man"})
         quota = self._chain_quota()
-        rulings = quota.arbiter_rulings(sig) if quota is not None else 0
+        rulings = self._safe_rulings(quota, sig)
         rulings_cap = self._arbiter_rulings_quota()
         recurrence_payload: Optional[dict] = None
         recurrence_bind = False
@@ -611,10 +674,10 @@ class ArbiterLane:
         """运行时只读快照：车道运行时面单帧视图（routes 读侧消费）。
 
         返回 dict 即 ``/api/arbiter/status`` 的 lane 段 schema（settings_
-        routes 消费方，键集与形状不得变更）。锁内组装保证各计数同帧一致；
-        此前该端点跨模块直读 _queue/_active 等私有结构（code-review
-        21372fd6d003），现由数据属主统一封装，车道内部结构变更不再静默
-        破坏读侧端点。
+        routes 消费方，键集只增不减——读侧按键取值，新增键向后兼容）。
+        锁内组装保证各计数同帧一致；此前该端点跨模块直读 _queue/_active
+        等私有结构（code-review 21372fd6d003），现由数据属主统一封装，
+        车道内部结构变更不再静默破坏读侧端点。
         """
         with self._lock:
             return {
@@ -624,6 +687,9 @@ class ArbiterLane:
                 "failure_counts": dict(self._failure_counts),
                 "dispositioned_total": len(self._dispositioned),
                 "deadmanned_total": len(self._deadmanned),
+                # 探针拦截累计（d488eb0ddbeb）：与在飞 dedup 在返回字上同
+                # 形态，单列供运维读出「派发被车道环境不可用拦住」
+                "preflight_blocked_total": self._preflight_blocked_total,
             }
 
     def _pending_machine_alerts(self) -> Dict[str, dict]:
@@ -669,13 +735,37 @@ class ArbiterLane:
         查询任意 kind 集合仍可用本方法直传）。
         load_arbiter_ledger 自带 fail-open（IO 失败/坏行按空集降级），
         读失败按无台账处理照旧放行。
+        读缓存（code-review fd762a606443）：台账 append-only 无轮转，
+        全量 read_text+逐行 json.loads 成本随台账线性增长，且本方法在
+        submit_trigger 关键路径（每次触发）与每轮回扫上——按
+        （mtime_ns, size）双键失效缓存解析投影（不持有全量记录 dict）：
+        台账新写任一键变化即整体失效重读，未变时零读盘复用。stat 失败
+        （文件不存在）不缓存、每次直读（读侧 fail-open 空集，台账创建后
+        自然进入缓存轨道）。缓存读写均为原子引用赋值，并发 miss 的重复
+        读盘幂等（后写覆盖同值），不加锁。
         """
-        records = load_arbiter_ledger(self.project_root)
-        return {
-            str(rec.get("signature") or "")
-            for rec in records
-            if rec.get("kind") in kinds
-        }
+        path = arbiter_ledger_path(self.project_root)
+        try:
+            st = path.stat()
+            cache_key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            cache_key = None
+        if (
+            cache_key is not None
+            and self._ledger_cache_key == cache_key
+            and self._ledger_sig_pairs is not None
+        ):
+            pairs = self._ledger_sig_pairs
+        else:
+            records = load_arbiter_ledger(self.project_root)
+            pairs = [
+                (str(rec.get("signature") or ""), rec.get("kind"))
+                for rec in records
+            ]
+            if cache_key is not None:
+                self._ledger_cache_key = cache_key
+                self._ledger_sig_pairs = pairs
+        return {sig for sig, kind in pairs if kind in kinds}
 
     def _backlog_candidates(self, sm) -> List[dict]:
         """存量回扫候选判定：frozen=true ∧ 同 spec pending 机器升级告警。
@@ -709,67 +799,77 @@ class ArbiterLane:
         rulings_cap = self._arbiter_rulings_quota()
         out: List[dict] = []
         for name, entry in specs.items():
-            e = entry or {}
-            if not e.get("frozen"):
-                continue
-            if str(e.get("frozen_until") or "").strip():
-                continue
-            spec = str(name)
-            alert = alert_index.get(spec)
-            if alert is not None:
-                signal_type = str(alert.get("signal_type") or "")
-                severity = str(alert.get("severity") or "major")
-                description = str(alert.get("description") or "")
-                evidence = str(alert.get("evidence") or "")
-                recommended_action = str(alert.get("recommended_action") or "")
-                alert_id = str(alert.get("id") or "")
-            else:
-                # 机器证据第二/三半边（2026-11-01）：告警半边随生命周期衰减
-                # （escalation 会被自愈收口置 handled），frozen 却无限期持续
-                # ——陈旧欠账必须靠不衰减的持久证据回扫。持久半边=咽喉标记
-                # （freeze_for_human 写 _frozen_source/_frozen_signal_type）
-                # 与遗留机器冻结菜单文案（标记上线前的存量标本，evo-refine
-                # 候选=0 二段根因实证）。
-                frozen_signal = str(e.get("_frozen_signal_type") or "")
-                has_marker = (
-                    str(e.get("_frozen_source") or "") == "machine"
-                    and bool(frozen_signal)
-                )
-                has_legacy_menu = (
-                    ARBITER_LEGACY_MACHINE_FREEZE_MENU
-                    in str(e.get("error") or "")
-                )
-                if not has_marker and not has_legacy_menu:
+            # per-candidate 容错（code-review 659188b1f8cc）：单候选判定
+            # 失败不中断整轮扫描（对齐 sweep_backlog「单个候选失败不中断
+            # 整轮」承诺）——留 warning 继续，不让一处异常使整轮回扫作废。
+            try:
+                e = entry or {}
+                if not e.get("frozen"):
                     continue
-                signal_type = frozen_signal or "verify_env_blocked"
-                severity = "major"
-                description = str(e.get("error") or "")[:200]
-                evidence = ""
-                recommended_action = ""
-                alert_id = ""
-            sig = arbiter_failure_signature(spec, signal_type)
-            if sig in deadman_ledger or sig in self._deadmanned:
-                continue
-            if quota is not None and quota.arbiter_rulings(sig) >= rulings_cap:
-                continue
-            if _spec_name_path_error(spec):
+                if str(e.get("frozen_until") or "").strip():
+                    continue
+                spec = str(name)
+                alert = alert_index.get(spec)
+                if alert is not None:
+                    signal_type = str(alert.get("signal_type") or "")
+                    severity = str(alert.get("severity") or "major")
+                    description = str(alert.get("description") or "")
+                    evidence = str(alert.get("evidence") or "")
+                    recommended_action = str(alert.get("recommended_action") or "")
+                    alert_id = str(alert.get("id") or "")
+                else:
+                    # 机器证据第二/三半边（2026-11-01）：告警半边随生命周期衰减
+                    # （escalation 会被自愈收口置 handled），frozen 却无限期持续
+                    # ——陈旧欠账必须靠不衰减的持久证据回扫。持久半边=咽喉标记
+                    # （freeze_for_human 写 _frozen_source/_frozen_signal_type）
+                    # 与遗留机器冻结菜单文案（标记上线前的存量标本，evo-refine
+                    # 候选=0 二段根因实证）。
+                    frozen_signal = str(e.get("_frozen_signal_type") or "")
+                    has_marker = (
+                        str(e.get("_frozen_source") or "") == "machine"
+                        and bool(frozen_signal)
+                    )
+                    has_legacy_menu = (
+                        ARBITER_LEGACY_MACHINE_FREEZE_MENU
+                        in str(e.get("error") or "")
+                    )
+                    if not has_marker and not has_legacy_menu:
+                        continue
+                    signal_type = frozen_signal or "verify_env_blocked"
+                    severity = "major"
+                    description = str(e.get("error") or "")[:200]
+                    evidence = ""
+                    recommended_action = ""
+                    alert_id = ""
+                sig = arbiter_failure_signature(spec, signal_type)
+                if sig in deadman_ledger or sig in self._deadmanned:
+                    continue
+                if self._safe_rulings(quota, sig) >= rulings_cap:
+                    continue
+                if _spec_name_path_error(spec):
+                    self._log(
+                        "warning",
+                        f"arbiter 回扫跳过路径不安全 spec={spec!r}",
+                    )
+                    continue
+                out.append(
+                    {
+                        "spec": spec,
+                        "signal_type": signal_type,
+                        "signature": sig,
+                        "severity": severity,
+                        "description": description,
+                        "evidence": evidence,
+                        "recommended_action": recommended_action,
+                        "alert_id": alert_id,
+                    }
+                )
+            except Exception as exc:
                 self._log(
                     "warning",
-                    f"arbiter 回扫跳过路径不安全 spec={spec!r}",
+                    f"arbiter 回扫候选判定失败（跳过该候选继续）: spec={name} {exc}",
                 )
                 continue
-            out.append(
-                {
-                    "spec": spec,
-                    "signal_type": signal_type,
-                    "signature": sig,
-                    "severity": severity,
-                    "description": description,
-                    "evidence": evidence,
-                    "recommended_action": recommended_action,
-                    "alert_id": alert_id,
-                }
-            )
         return out
 
     def sweep_backlog(self, *, source: str = "backlog-sweep") -> dict:
@@ -789,6 +889,8 @@ class ArbiterLane:
                 "source": source,
                 "dispatched": [],
                 "deduped": [],
+                "preflight_blocked": [],
+                "escalated": [],
                 "skipped": [],
                 "failed": [],
             }
@@ -800,12 +902,20 @@ class ArbiterLane:
                 "source": source,
                 "dispatched": [],
                 "deduped": [],
+                "preflight_blocked": [],
+                "escalated": [],
                 "skipped": [],
                 "failed": [],
             }
-        candidates = self._backlog_candidates(sm)
+        try:
+            candidates = self._backlog_candidates(sm)
+        except Exception as e:  # 扫描段故障不中断整轮（不吞：留 warning 痕）
+            self._log("warning", f"arbiter 回扫候选扫描失败（按空集降级）: {e}")
+            candidates = []
         dispatched: List[str] = []
         deduped: List[str] = []
+        preflight_blocked: List[str] = []
+        escalated: List[str] = []
         skipped: List[dict] = []
         failed: List[dict] = []
         for cand in candidates:
@@ -829,11 +939,29 @@ class ArbiterLane:
                 continue
             if outcome == "queued":
                 dispatched.append(sig)
+                # 探针已复位（派发成功）：清陈旧拦截标记，防后续误标真 dedup
+                with self._lock:
+                    self._preflight_blocked_sigs.discard(sig)
+            elif outcome == "deduped" and sig in self._preflight_blocked_sigs:
+                # 探针拦截形态单列（d488eb0ddbeb）：submit_trigger 零新契约
+                # 仍返回 deduped，靠拦截签名集分辨「车道环境不可用未派发」
+                # 与「同签名在飞折叠」——防环境长期不可用时 deduped 虚高、
+                # dispatched=0 而摘要读不出「整轮被探针拦截」。消费即清。
+                with self._lock:
+                    self._preflight_blocked_sigs.discard(sig)
+                preflight_blocked.append(sig)
             elif outcome == "deduped":
                 deduped.append(sig)
+            elif outcome == "recurrence-escalated":
+                # 配额耗尽/dead-man 例外直升级：TOCTOU 窗口（扫描时配额未
+                # 满、提交时已被并发拍板耗尽）下属合法终态，单列与
+                # dispatched/deduped/failed 并列（50fa892f29ae——不混入
+                # 供异常审计的 skipped）
+                escalated.append(sig)
             else:
-                # disabled/excluded/recurrence-escalated：白名单判据下不应
-                # 出现，显式记录供审计（不静默丢弃）
+                # disabled/excluded：黑名单制触发面下回扫候选默认在面内，
+                # 此二形态仅在候选扫描与提交之间配置热更新（enabled 翻转/
+                # 黑名单变更）的窄窗内合法出现，显式记录供审计（不静默丢弃）
                 skipped.append({"signature": sig, "outcome": outcome})
         summary = {
             "status": "ok",
@@ -841,14 +969,17 @@ class ArbiterLane:
             "scanned": len(candidates),
             "dispatched": dispatched,
             "deduped": deduped,
+            "preflight_blocked": preflight_blocked,
+            "escalated": escalated,
             "skipped": skipped,
             "failed": failed,
         }
         self._log(
             "info",
             f"arbiter 存量回扫完成 source={source} 候选={len(candidates)} "
-            f"派发={len(dispatched)} dedup={len(deduped)} 失败={len(failed)} "
-            f"跳过={len(skipped)}"
+            f"派发={len(dispatched)} dedup={len(deduped)} "
+            f"探针拦截={len(preflight_blocked)} 升级={len(escalated)} "
+            f"失败={len(failed)} 跳过={len(skipped)}"
             + (f" {[(s['signature'], s['outcome']) for s in skipped]}"
                if skipped else ""),
         )
@@ -918,16 +1049,28 @@ class ArbiterLane:
                 trigger = self._queue.get()
             except Exception:  # pragma: no cover - 队列关闭等病态
                 continue
+            sig = ""
             try:
-                sig = trigger.get("signature") or ""
+                sig = str(trigger.get("signature") or "")
                 with self._lock:
                     bind = self._pending_binds.pop(sig, None)
                     if bind and not trigger.get("alert_id"):
                         trigger["alert_id"] = bind
                 self._process_trigger(trigger)
             except Exception as e:
-                # 单个触发的处理崩溃不得杀死 worker（静默死亡反例：至少落日志）
-                self._log("error", f"arbiter 触发处理异常（继续下一触发）: {e}")
+                # 单个触发的处理崩溃不得杀死 worker（静默死亡反例：至少落
+                # 日志）；同时清掉 _active 占位（code-review 4e7ec307f1d8）
+                # ——异常若落在三出口清位之前（如 report 形态异常在分类判定
+                # 处抛出），占位滞留会使同签名后续触发在 submit_trigger 恒判
+                # deduped（只绑 alert 不派发、不落台账、不升级），升级边零
+                # 留痕失明直至进程重启，与「MUST NOT 静默死亡」设计承诺相悖。
+                # discard 不存在的元素为无害 no-op（三出口已清位时）。
+                with self._lock:
+                    self._active.discard(sig)
+                self._log(
+                    "error",
+                    f"arbiter 触发处理异常（继续下一触发）: sig={sig} {e}",
+                )
             finally:
                 try:
                     self._queue.task_done()
@@ -942,7 +1085,14 @@ class ArbiterLane:
             result = self._run_investigation(trigger)
         except Exception as e:
             result = {"ok": False, "error": f"arbiter run 派发异常: {e}", "report": {}}
-        report = result.get("report") or {}
+        # 调查产物形态防御（code-review 5a89503a3152，与 _pending_machine_
+        # alerts 的记录形态防御同口径）：result/report 非dict 时按空值降级
+        # ——防 .get 抛 AttributeError 越过三出口分类直落 worker 兜底
+        if not isinstance(result, dict):
+            result = {}
+        report = result.get("report")
+        if not isinstance(report, dict):
+            report = {}
         budget = result.get("budget") or {}
         if not result.get("ok"):
             self._on_run_failed(trigger, result, budget)
@@ -1006,6 +1156,8 @@ class ArbiterLane:
         # 回填 trigger 工作字段供链事件留痕可读（trigger 是链本次调用专属
         # dict，非持久状态）。
         if not self._preflight_gate():
+            with self._lock:
+                self._preflight_blocked_total += 1
             trigger["_chain_failure_reason"] = (
                 "派发前置自检拦截：车道环境不可用（探针 unhealthy）"
             )
@@ -1016,8 +1168,13 @@ class ArbiterLane:
             result = self._run_investigation(trigger)
         except Exception as e:
             result = {"ok": False, "error": f"arbiter run 派发异常: {e}", "report": {}}
+        # 调查产物形态防御（同 _process_trigger，code-review 5a89503a3152）
+        if not isinstance(result, dict):
+            result = {}
         trigger["_chain_run_id"] = str(result.get("run_id") or "")
-        report = result.get("report") or {}
+        report = result.get("report")
+        if not isinstance(report, dict):
+            report = {}
         budget = result.get("budget") or {}
         if not result.get("ok"):
             return self._on_run_failed(trigger, result, budget)

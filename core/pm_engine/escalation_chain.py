@@ -107,8 +107,18 @@ def chain_state_path(project_root) -> Path:
     return Path(project_root) / ".fenix" / CHAIN_STATE_FILENAME
 
 
-def load_chain_state(project_root) -> dict:
-    """读全量链状态（fail-open：缺失/损坏/版本不识别一律回空骨架）。"""
+def load_chain_state(project_root, logger=None) -> dict:
+    """读全量链状态（fail-open：缺失/损坏/版本不识别一律回空骨架）。
+
+    条目级 fail-open（item 1c2cbd4d6a91）：signatures 条目内计数字段
+    （admin_attempts/arbiter_rulings）一并归一——非数字脏值置 0（logger
+    非空时 WARNING 留痕，缺省 None 静默归一）。此前只归一顶层与条目容器
+    形态，人工编辑/部分损坏写入的非数字脏值会让读侧 admin_attempts()/
+    arbiter_rulings() 与写侧 _inc 的 int() 每次抛 ValueError——读路径逃出
+    _run_admin_phase、写路径逃出 _mutate，均被 worker 兜底为 chain-error，
+    该签名配额复位/重派/终点上升全链失效；对齐 spec_review 409 行
+    _review_attempts 的 (TypeError, ValueError) 收口防御。
+    """
     path = chain_state_path(project_root)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -119,9 +129,31 @@ def load_chain_state(project_root) -> dict:
     state = _empty_state()
     sigs = raw.get("signatures")
     if isinstance(sigs, dict):
-        state["signatures"] = {
-            str(k): dict(v) for k, v in sigs.items() if isinstance(v, dict)
-        }
+        entries: Dict[str, dict] = {}
+        for k, v in sigs.items():
+            if not isinstance(v, dict):
+                continue
+            ent = dict(v)
+            for key in ("admin_attempts", "arbiter_rulings"):
+                raw_val = ent.get(key)
+                if raw_val is None or isinstance(raw_val, int):
+                    continue
+                try:
+                    ent[key] = int(raw_val or 0)
+                except (TypeError, ValueError):
+                    ent[key] = 0
+                    if logger is not None:
+                        try:
+                            logger.warning(
+                                COMPONENT,
+                                f"链状态条目计数字段非数字（置 0 降级，兑现"
+                                f"条目级 fail-open）: sig={k} field={key} "
+                                f"raw={raw_val!r}",
+                            )
+                        except Exception:
+                            pass
+            entries[str(k)] = ent
+        state["signatures"] = entries
     meta = raw.get("meta")
     if isinstance(meta, dict):
         state["meta"] = dict(meta)
@@ -140,13 +172,40 @@ def _empty_state() -> dict:
     }
 
 
-def save_chain_state(project_root, state: dict) -> bool:
-    """原子写链状态（mkstemp + os.replace；写失败 False 由调用方降级）。"""
+def save_chain_state(project_root, state: dict, logger=None) -> bool:
+    """原子写链状态（mkstemp + os.replace；写失败 False 由调用方降级）。
+
+    版本防护（item fc1263e8a299）：写盘前重读磁盘文件的 version——文件存在
+    且 version 不被当前代码识别（≠ CHAIN_STATE_VERSION，如结构升级后回滚
+    运行的旧 daemon）时拒绝覆写并 WARNING 留痕（logger 非空时；缺省 None
+    静默拒绝），保留磁盘原文件，不把新版本状态整体清零。load 侧「版本不
+    识别回空骨架」的 fail-open 语义不变（条目级兼容矩阵不受牵动），仅堵住
+    降级态下配额计数与 in_flight 重派锚点被后续 save 静默抹盘的口子。
+    """
     import os
     import tempfile
 
     path = chain_state_path(project_root)
     try:
+        try:
+            disk_version = json.loads(
+                path.read_text(encoding="utf-8")
+            ).get("version")
+        except (OSError, ValueError, AttributeError):
+            disk_version = None  # 缺失/损坏/非 JSON 对象：无版本可护，照常写
+        if disk_version is not None and disk_version != CHAIN_STATE_VERSION:
+            if logger is not None:
+                try:
+                    logger.warning(
+                        COMPONENT,
+                        f"链状态文件版本不被当前代码识别，拒绝覆写（保留磁盘"
+                        f"原文件，防降级态把新版本配额/重派锚点静默清零）: "
+                        f"disk_version={disk_version!r} "
+                        f"expected={CHAIN_STATE_VERSION} path={path}",
+                    )
+                except Exception:
+                    pass
+            return False
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(state)
         payload["version"] = CHAIN_STATE_VERSION
@@ -168,7 +227,13 @@ def save_chain_state(project_root, state: dict) -> bool:
                 except OSError:
                     pass
         return True
-    except OSError:
+    except (OSError, TypeError, ValueError):
+        # 写失败降级契约（item ccd832f8f21d）：不只 OSError——json.dump 遇
+        # 不可序列化值抛 TypeError（循环引用抛 ValueError）同样归一为返回
+        # False 走调用方既有降级路径（与 spec_review._load_snapshot_or_none
+        # 的读取失败收口元组同族口径）。此前 deferred 留痕的 trigger/payload
+        # 快照混入非 JSON 类型时异常穿透 _mutate 中断链件处理，违背本函数
+        # 「写失败 False 由调用方降级」的 docstring 契约。
         return False
 
 
@@ -240,18 +305,65 @@ def _days_since(ts_iso: str, now: Optional[datetime] = None) -> Optional[float]:
     return (now - then).total_seconds() / 86400.0
 
 
+# dead-man 签名索引缓存（item 3d7a0694eb87）：_deadmanned 逐链件全量加载
+# arbiter ledger 并线性比对 signature，链事件（chain-escalated/chain-closed/
+# chain-error 等）本身也持续追加同一台账，无归档/裁剪下每件处理成本随台账
+# 规模线性上涨（链 worker 单飞串行，拖慢所有后续升级信号处置时延）。首个
+# 链件加载时构建 signature→命中索引，按台账文件 mtime 失效（dead-man 记录
+# 只增不删，索引语义与逐条扫描一致）；读失败按空索引降级（= 非 dead-man
+# 放行，fail-open 口径不变）。
+_DEADMAN_INDEX_CACHE: Dict[str, bool] = {}
+_DEADMAN_INDEX_STAMP: Optional[tuple] = None
+_DEADMAN_INDEX_LOCK = threading.Lock()
+
+
+def _deadman_signature_index(project_root) -> Dict[str, bool]:
+    """dead-man 台账索引（signature→True；mtime 失效，O(1) 查询）。"""
+    global _DEADMAN_INDEX_CACHE, _DEADMAN_INDEX_STAMP
+    try:
+        from core.pm_engine.arbiter import arbiter_ledger_path, load_arbiter_ledger
+
+        path = arbiter_ledger_path(project_root)
+        try:
+            st = path.stat()
+            # 失效键对齐 arbiter._ledger_sigs 既有口径：(mtime_ns, size) 双键
+            stamp = (str(path), st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = (str(path), -1, -1)  # 台账不存在：空索引（fail-open 一致）
+        with _DEADMAN_INDEX_LOCK:
+            if _DEADMAN_INDEX_STAMP == stamp:
+                return _DEADMAN_INDEX_CACHE
+            index: Dict[str, bool] = {}
+            for rec in load_arbiter_ledger(project_root):
+                if rec.get("kind") in DEADMAN_LEDGER_KINDS:
+                    index[str(rec.get("signature") or "")] = True
+            _DEADMAN_INDEX_CACHE = index
+            _DEADMAN_INDEX_STAMP = stamp
+            return index
+    except Exception:
+        return {}
+
+
 class ChainQuotaStore:
     """双车道配额状态读写层（task 1.4；.fenix/escalation_chain_state.json）。
 
     计数是状态不是台账事实（决策 2）——不入 arbiter ledger；跨重启有效。
     每次变更全量重读改写（状态文件小，且触发频率=升级边信号频率，低频）；
     锁内串行化本进程并发写者。
+
+    锁口径（item 2236e4a16395）：``_lock`` 是类级共享锁——模块自身存在临时
+    构造独立实例执行 _mutate 的路径（mark_migration_done 迁移哨兵），实例级
+    锁各持一把时与链自身 store 的并发读改写之间无互斥，全量 load→mutate→
+    save 交错会互相覆盖（迁移哨兵被旧状态回写、并发计数增量被抹）。所有
+    实例共享同一把线程锁，_mutate 既有用法不变。
     """
+
+    _PROC_LOCK = threading.Lock()
 
     def __init__(self, project_root, logger=None):
         self.project_root = Path(project_root)
         self.logger = logger
-        self._lock = threading.Lock()
+        self._lock = ChainQuotaStore._PROC_LOCK
 
     # ── 配置读取（热更新：每次判定即时解析）─────────────────────────
 
@@ -295,9 +407,9 @@ class ChainQuotaStore:
         超配额重复派发语义静默失效。
         """
         with self._lock:
-            state = load_chain_state(self.project_root)
+            state = load_chain_state(self.project_root, self.logger)
             result = fn(state)
-            if not save_chain_state(self.project_root, state):
+            if not save_chain_state(self.project_root, state, self.logger):
                 self._log_warning(
                     "处置链配额状态写盘失败（本次变更仅内存生效未持久化，"
                     "配额计数可能重复消耗）: "
@@ -306,7 +418,7 @@ class ChainQuotaStore:
             return result
 
     def entry(self, sig: str) -> dict:
-        state = load_chain_state(self.project_root)
+        state = load_chain_state(self.project_root, self.logger)
         return dict(state["signatures"].get(sig) or {})
 
     def admin_attempts(self, sig: str) -> int:
@@ -403,7 +515,7 @@ class ChainQuotaStore:
 
     def snapshot(self) -> dict:
         """只读快照（dashboard 配额水位消费）：sig → 计数条目。"""
-        state = load_chain_state(self.project_root)
+        state = load_chain_state(self.project_root, self.logger)
         return {k: dict(v) for k, v in state["signatures"].items()}
 
     # ── 链在办件登记（design 决策 1：admin_monitor 兜底看护对象）────
@@ -1582,9 +1694,29 @@ class EscalationChain:
         trigger["admin_trail"] = admin_trail
         trigger["admin_handoff_reason"] = str(item.get("admin_handoff_reason") or "")
         trigger["source"] = f"chain-handoff:{item.get('source') or ''}"
-        max_fail = int(
-            lane.config().get("max_consecutive_failures") or 2
-        )
+        # 连败上限读取守卫（item abebded37c0c，对齐 quota_config →
+        # get_chain_config 的 _normalize_int_value 正整数归一口径）：
+        # try int() 失败回退单源缺省常量并 WARNING 留痕——非数字脏值不再沿
+        # _process 上抛被 worker 兜底为 chain-error（该件既不重派也不走
+        # _endpoint_escalate 人工终点上升，升级信号仅剩台账痕迹）；显式 0
+        # 不作为合法配置，0/负值同按非法配置回退缺省（原 `or 2` 的 falsy
+        # 兜底会静默把显式 0 吞成缺省，此处把该语义显式化并留痕）。
+        from core.config import ConfigLoader
+
+        raw_max_fail = lane.config().get("max_consecutive_failures")
+        try:
+            max_fail = int(raw_max_fail)
+        except (TypeError, ValueError):
+            max_fail = 0
+        if max_fail <= 0:
+            self._log(
+                "warning",
+                f"arbiter.max_consecutive_failures 配置非法（须正整数，显式 0 "
+                f"不作为合法配置），回退缺省 "
+                f"{ConfigLoader.ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT}: "
+                f"{raw_max_fail!r}",
+            )
+            max_fail = ConfigLoader.ARBITER_MAX_CONSECUTIVE_FAILURES_DEFAULT
         outcome = "failed"
         for _ in range(max(1, max_fail)):
             try:
@@ -1813,19 +1945,13 @@ class EscalationChain:
     # ── 判定助手 ────────────────────────────────────────────────────
 
     def _deadmanned(self, sig: str) -> bool:
-        """dead-man 永久例外判定（台账 kind=dead-man 单源，跨重启有效）。"""
-        try:
-            from core.pm_engine.arbiter import load_arbiter_ledger
+        """dead-man 永久例外判定（台账 kind=dead-man 单源，跨重启有效）。
 
-            for rec in load_arbiter_ledger(self.project_root):
-                if (
-                    str(rec.get("signature") or "") == sig
-                    and rec.get("kind") in DEADMAN_LEDGER_KINDS
-                ):
-                    return True
-        except Exception:
-            pass
-        return False
+        经 signature 索引缓存查询（item 3d7a0694eb87：首链件加载构建 dict，
+        台账 mtime 失效）——不再逐链件全量线性扫描台账；读失败/台账缺席
+        按空索引放行（= 非 dead-man），fail-open 口径不变。
+        """
+        return bool(_deadman_signature_index(self.project_root).get(sig))
 
     def _write_chain_event(
         self, item: dict, *, kind: str, action_or_upgrade: str, extra: Optional[dict] = None
@@ -1994,13 +2120,39 @@ _CHAIN_LOCK = threading.Lock()
 
 
 def get_chain(project_root=None, logger=None, pm=None) -> Optional[EscalationChain]:
-    """取链单例（未装配时惰性建；project_root 缺失返回 None）。"""
+    """取链单例（未装配时惰性建；project_root 缺失返回 None）。
+
+    警示（item 0665a25939d6）：``project_root=None`` 分支无锁直接返回当前
+    单例且不校验其归属项目——多项目调用方交错或测试污染单例时可能拿到
+    **非当前项目**的链，调用方 MUST 传显式 project_root 或自行核实归属。
+    project_root 变化时单例按判等重建（下方 WARNING 留痕）：旧链经
+    set_runner/set_state_machine/set_pm 注入的装配全部丢弃，重建后到装配点
+    （engine.py）重新接线前 _resolve_runner/_resolve_state_machine 惰性借道
+    arbiter lane，可能指向另一项目的 lane。保守取单例方案（per-project
+    字典注册表侵入面大，不采）。
+    """
     global _CHAIN
     if project_root is None:
         return _CHAIN
     with _CHAIN_LOCK:
-        if _CHAIN is None or _CHAIN.project_root != Path(project_root):
+        if _CHAIN is None:
             _CHAIN = EscalationChain(project_root, logger)
+        elif _CHAIN.project_root != Path(project_root):
+            # 留痕（item 0665a25939d6）：daemon 单项目常态不触发；多项目交错/
+            # 测试污染单例时显式留痕旧注入被丢弃，不静默。留痕级别用 debug
+            # 而非 warning——链单例装配挂在 PMEngine 构造/装配点上，重建日志
+            # 经调用方 logger 发出，warning 会溢入与链无关的「零 WARNING」
+            # 契约断言面（回归实证：test_push_closeout 非 git 静默跳过、
+            # tasksmd relint fail-open 均被上一轮的 warning 击穿）；debug
+            # 保留留痕可观测性，且不破契约。
+            old_root = _CHAIN.project_root
+            _CHAIN = EscalationChain(project_root, logger)
+            _CHAIN._log(
+                "debug",
+                f"处置链单例 project_root 变化重建（旧链 runner/state_machine/"
+                f"pm 注入全部丢弃，须装配点重新接线）: old={old_root} "
+                f"new={Path(project_root)}",
+            )
         elif logger is not None and _CHAIN.logger is None:
             _CHAIN.logger = logger
         if pm is not None and _CHAIN._resolve_pm() is None:
