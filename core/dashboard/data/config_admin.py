@@ -2480,6 +2480,7 @@ def _write_config_locked(scope_root, config_patch: dict, scope: str = "project")
     if isinstance(_baseline_view.get("llm"), dict) and "billing" in _baseline_view["llm"]:
         _baseline_view["llm"].pop("billing", None)
 
+    # [fenix-ignore:0e0a0891743e] 三处规则单源化需 characterization 先行的专项重构，双层兜底为 D7 有意设计，本车道最小改动边界不实施
     def _validate_merged_view(merged, model_patch):
         # 折叠原内联校验段（入参名 merged 遮蔽外层同名变量，校验逻辑零改动）
         # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
@@ -3744,10 +3745,15 @@ def quick_assign_models(assignment, targets, source_scope) -> dict:
         if row["provider"] not in referenced:
             referenced.append(row["provider"])
 
-    source_by_name = {d["name"]: d for d in _source_provider_defs(source_scope)}
     results = []
 
     with _CONFIG_WRITE_LOCK:
+        # 补齐源读取亦须持锁（与 sync_config_from_user 的 c0f2467c8462 修复同款
+        # TOCTOU 纪律）：锁外读取会在并发保存源作用域配置时基于旧快照补齐旧
+        # provider 定义（旧单价/旧模型列表）并落盘。_source_provider_defs 仅
+        # 直读文件或调 read_effective_config，均不取 _CONFIG_WRITE_LOCK，锁内
+        # 调用无重入风险；其内部全路径吞异常降级，不会持锁外抛。
+        source_by_name = {d["name"]: d for d in _source_provider_defs(source_scope)}
         for target in targets or []:
             if not isinstance(target, dict) or target.get("scope") not in ("user", "project"):
                 results.append({"scope": None, "ok": False, "error": f"未知目标: {target!r}"})

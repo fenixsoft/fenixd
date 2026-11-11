@@ -334,6 +334,9 @@ def parse_verdict(project_root, spec_name) -> dict:
     md 文件缺失时回退 .fenix-run-result.json 的裁决段（_verdict_from_run_result）：
     fast-track 模式不产 verification-report.md，原先 verdict.exists 恒 False，
     列表「验证」列 Popover 与详情页 VerdictPanel 对 fast-track spec 恒隐。
+    md 在盘但解析全空（status/conclusion 空串且 summary 五键全 None）时走同一
+    兜底，命中后返回值附可选标记 unparsable_report=True（结论实来自 run-result，
+    消费方未读该键不受影响）。
     """
     # 读侧形态白名单（item 87200f11aa7a）：spec_name 拼进 spec/changes/ 读
     # 路径，同 parse_report 口径 fail-closed（不走 run-result 兜底，防兜底
@@ -425,6 +428,21 @@ def parse_verdict(project_root, spec_name) -> dict:
             mm = re.search(rf"{pat}\s*[：:]\s*([\dN/A\-＋+—]+)", content, re.I)
             if mm and not _is_empty_value(mm.group(1)):
                 summary[field] = mm.group(1).strip()
+
+    # 解析全空兜底（code-review item cbb6ceca33da）：md 在盘且可读但内容为
+    # 空/截断/方言不符（写侧崩溃留下的半截文件）时，status 空串、conclusion
+    # 空串且 summary 五键全 None——对前端与读失败是同一种空面板，而
+    # .fenix-run-result.json 里可能有完整可用裁决。对齐 409a469e4156 原则
+    # （降级方向不能比缺失更差），走同一兜底；兜底也无裁决（无 run-result 或
+    # 其无裁决段）时维持现状空结论，exists=True 继续保留「md 在盘」信号。
+    # conclusion 非空不触发：此时面板并非全空，兜底会丢已解析出的人类可读
+    # 结论正文，降级方向反而变差。
+    if not status and not conclusion and all(v is None for v in summary.values()):
+        fallback = _verdict_from_run_result(project_root, spec_name)
+        if fallback and fallback.get("exists"):
+            # 标记来源：结论实来自 run-result 而非盘上报告（后者不可解析）
+            fallback["unparsable_report"] = True
+            return fallback
 
     return {
         "exists": True,
@@ -650,7 +668,9 @@ def parse_filtered_failures(project_root, spec_name) -> list:
         ]
         out.append(
             {
-                "scenario_id": sc.get("scenario_id", "?"),
+                # 空值归一与 parse_bugs 同口径（code-review item f885ca178d53）：
+                # or 兜底使显式 null 与缺失同归 "?"，None 不直透前端
+                "scenario_id": sc.get("scenario_id") or "?",
                 "classification": classification,
                 "evidence_summary": evidence_summary,
                 "screenshots": screenshots,

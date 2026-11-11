@@ -4,7 +4,13 @@ refactor-dashboard-data-module D3 分组：本模块承载 evolution_items 职�
 包含 6.4/6.5 草稿/分析文档读取与白名单校验。
 """
 
+import codecs
 from pathlib import Path
+
+# 文档/分析全文读取的字节截断上限：与 project_files 内容通道共用同一契约
+# （256 KiB，超限截断并在返回体附 truncated 标记，避免单个「查看」请求把
+# 超大文档整读进内存并整体塞进 JSON 响应体）
+from .project_files import CONTENT_LIMIT_BYTES
 
 # ── 建议改进项读取助手（add-framework-self-evolution 6.4/6.5）────────
 
@@ -131,8 +137,12 @@ def read_evolution_items(project_root, project_filter=None) -> list:
 def read_evolution_analysis(project_root, item_id_) -> dict:
     """读取某条目的分析结论全文（6.5）。
 
-    返回 ``{"found": True, "content": analysis_md}`` 或
+    返回 ``{"found": True, "content": analysis_md, "truncated": bool}`` 或
     ``{"not_found": True}``（item_id 未知 → 端点 404）。
+
+    analysis_md 取自 items.jsonl，run 产物可写入任意大文本，透出前按
+    CONTENT_LIMIT_BYTES 字节上限截断并附 truncated 标记（增量键，不改变
+    既有键，前端 markdown 渲染不受影响）。
     """
     from core.evolution import read_items
 
@@ -140,7 +150,17 @@ def read_evolution_analysis(project_root, item_id_) -> dict:
     rec = items.get(item_id_)
     if rec is None:
         return {"not_found": True}
-    return {"found": True, "content": rec.get("analysis_md") or ""}
+    analysis_md = rec.get("analysis_md") or ""
+    raw = analysis_md.encode("utf-8")
+    truncated = len(raw) > CONTENT_LIMIT_BYTES
+    if truncated:
+        # 切点可能落在多字节 UTF-8 序列中间：增量解码器把尾部不完整序列
+        # 留在缓冲丢弃（MUST NOT 切出半个字符）；analysis_md 是合法 str
+        # 的编码产物，不存在中段坏字节
+        analysis_md = codecs.getincrementaldecoder("utf-8")().decode(
+            raw[:CONTENT_LIMIT_BYTES]
+        )
+    return {"found": True, "content": analysis_md, "truncated": truncated}
 
 
 def read_evolution_draft(project_root, item_id_, doc) -> dict:
@@ -183,13 +203,25 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
         if not resolved.is_file():
             return {"found": False}
         try:
-            content = resolved.read_text(encoding="utf-8")
+            # 字节截断（对齐 project_files 内容通道契约）：只读
+            # LIMIT+1 字节判超限，避免超大文档整读进内存
+            with resolved.open("rb") as f:
+                raw = f.read(CONTENT_LIMIT_BYTES + 1)
+            truncated = len(raw) > CONTENT_LIMIT_BYTES
+            if truncated:
+                raw = raw[:CONTENT_LIMIT_BYTES]
+            if truncated:
+                # 切点可能落在多字节 UTF-8 序列中间：增量解码器把尾部
+                # 不完整序列留在缓冲（丢弃），中段真坏字节仍严格报错
+                content = codecs.getincrementaldecoder("utf-8")().decode(raw)
+            else:
+                content = raw.decode("utf-8")
         except (OSError, UnicodeDecodeError):
             # 文档可被手工编辑成非 UTF-8 编码，解码失败与 IO 错误同样按
             # 不可读落空态，不穿透为不透明 500（同 settings_routes 的
             # _read_project_doc 双分支防护）
             return {"found": False}
-        return {"found": True, "content": content}
+        return {"found": True, "content": content, "truncated": truncated}
 
     def _record_capability(rec: dict) -> str:
         """提取条目记录的 spec.capability（非 dict 或缺失时返回空串）。"""

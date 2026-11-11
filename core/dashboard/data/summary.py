@@ -1264,7 +1264,11 @@ class SummaryIndex:
             # RLock 可重入：state_snapshot 复用同一把槽锁与同一失效键
             # （fix-specs-api-latency D2：同槽重入，不死锁）
             specs = self.state_snapshot(proot)
-            arch_sig = _stat_sig(proot / ".fenix" / "STATE.archive.md")
+            # 清单签名与 get_with_signature 同源（ba0ab737a591）：缺失（ENOENT，
+            # 多数项目的常态稳态）以哨兵 "missing" 参与聚合、仅真 stat 失败返回
+            # None——旧 _stat_sig 在缺失态返回 None，与本方法 docstring 承诺的
+            # 聚合签名逐字节等值相悖。
+            arch_sig = _arch_manifest_sig(proot / ".fenix" / "STATE.archive.md")
             if arch_sig != self._arch_sigs.get(key) or key not in self._arch_snapshot:
                 self._arch_snapshot[key] = _facade.parse_archived_state(proot)
                 self._arch_sigs[key] = arch_sig

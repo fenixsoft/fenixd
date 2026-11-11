@@ -22,7 +22,7 @@ def fallback_log(logger, level: str, msg: str) -> None:
     """
     if logger is not None:
         try:
-            if isinstance(logger, logging.Logger):
+            if isinstance(logger, (logging.Logger, logging.LoggerAdapter)):
                 getattr(logger, level)("fenixd %s", msg)
             else:
                 getattr(logger, level)("fenixd", msg)

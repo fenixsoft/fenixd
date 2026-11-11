@@ -19,6 +19,7 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useModel } from '@umijs/max';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -381,6 +382,17 @@ function MobileAlertRow({
   );
 }
 
+// fix 15e5748a5a7c: role="button" 锚点有 tabIndex 可聚焦但回车/空格默认不触发
+// onClick——补 keydown 激活；Space 须 preventDefault 防触发同时滚动页面
+function anchorActivate(handler: () => void) {
+  return (e: ReactKeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handler();
+    }
+  };
+}
+
 // 告警记录移动 pane（prototype/m-ops.html r2）：未处理直接行 +「收起已解决」
 // 紧凑行（已解决 Tag + 单行描述 + 时间；报告入口保留）；桌面 List+Collapse 不变
 function MobileAlertPane({
@@ -414,6 +426,7 @@ function MobileAlertPane({
             role="button"
             tabIndex={0}
             onClick={() => setResolvedOpen((o) => !o)}
+            onKeyDown={anchorActivate(() => setResolvedOpen((o) => !o))}
             style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', display: 'inline-block', padding: '4px 2px' }}
           >
             {resolvedOpen ? '收起已解决' : `已解决 ${resolved.length} 条`}
@@ -440,7 +453,13 @@ function MobileAlertPane({
                     </span>
                     {hasNarrativeReport(a) ? <AlertReportButton text={a.narrative.text} /> : null}
                     {isSuperseded ? (
-                      <a role="button" tabIndex={0} onClick={() => onRevertSupersede(a)} style={{ fontSize: 12, flexShrink: 0 }}>
+                      <a
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onRevertSupersede(a)}
+                        onKeyDown={anchorActivate(() => onRevertSupersede(a))}
+                        style={{ fontSize: 12, flexShrink: 0 }}
+                      >
                         撤销失效
                       </a>
                     ) : null}
@@ -662,6 +681,9 @@ export default function ActivitiesPage() {
   // daemon 停止）期间页面无任何提示，运维记录可能长时间停在陈旧数据而用户无感知。
   // 连续失败达 SSE_DOWN_THRESHOLD 才置位；连接恢复由 onopen / onmessage 自动消除
   const [streamDown, setStreamDown] = useState(false);
+  // fix 4c4b14d4b674: 区分断流形态——CLOSED（浏览器已永久放弃重连，只能手动刷新
+  // 恢复）与 CONNECTING（自动重连中）提示文案不同；连接恢复时两态一并复位
+  const [streamLost, setStreamLost] = useState(false);
   const sseFailCountRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -761,6 +783,7 @@ export default function ActivitiesPage() {
     es.onopen = () => {
       sseFailCountRef.current = 0;
       setStreamDown(false);
+      setStreamLost(false);
     };
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
@@ -772,6 +795,7 @@ export default function ActivitiesPage() {
       // fix 8fa2edf72bc5: 能收到消息即连接存活——复位计数并消除断流提示条
       sseFailCountRef.current = 0;
       setStreamDown(false);
+      setStreamLost(false);
       if (msg.type !== 'alerts' && msg.type !== 'refresh') return;
       // fix 4ffc804c77cd: 节流改尾沿触发——窗口内事件不再直接丢弃，改为排一次
       // 尾沿补拉（pending 已排程则合并），避免静默期尾部变更滞留到下个事件才上屏
@@ -792,10 +816,16 @@ export default function ActivitiesPage() {
     // fix 8fa2edf72bc5: 自动重连期间 error 频繁触发（readyState===CONNECTING 表示
     // 正在重连），累积连续失败达阈值才提示，避免瞬态抖动闪烁；CLOSED（非 200 响应
     // 等浏览器已放弃重连）直接提示。恢复由上方 onopen / onmessage 自动消除。
+    // fix 4c4b14d4b674: CLOSED 后浏览器不会再自动重连（onopen/onmessage 不会再触发），
+    // 提示条须区分文案引导手动刷新，不再宣称「正在尝试重连」
     es.onerror = () => {
       sseFailCountRef.current += 1;
-      if (es.readyState === EventSource.CLOSED || sseFailCountRef.current >= SSE_DOWN_THRESHOLD) {
+      if (es.readyState === EventSource.CLOSED) {
         setStreamDown(true);
+        setStreamLost(true);
+      } else if (sseFailCountRef.current >= SSE_DOWN_THRESHOLD) {
+        setStreamDown(true);
+        setStreamLost(false);
       }
     };
     // 卸载必须关闭，防 EventSource 连接泄漏；并同步清理尾沿补拉定时器
@@ -925,8 +955,12 @@ export default function ActivitiesPage() {
       {activeTab !== 'chain' && streamDown ? (
         <div style={{ marginBottom: 16 }}>
           <Card styles={{ body: isMobile ? { padding: '12px 4px' } : undefined }}>
+            {/* fix 4c4b14d4b674: 按断流形态区分文案——CLOSED（浏览器已放弃重连）
+                引导手动刷新，CONNECTING（自动重连中）保留原提示 */}
             <Typography.Text type="warning">
-              实时刷新已断开：页面数据可能不是最新，正在尝试重连
+              {streamLost
+                ? '实时刷新已断开：页面数据可能不是最新，请手动刷新页面恢复'
+                : '实时刷新已断开：页面数据可能不是最新，正在尝试重连'}
             </Typography.Text>
           </Card>
         </div>

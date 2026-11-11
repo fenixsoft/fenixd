@@ -924,7 +924,13 @@ export default function OrgGrid({
             >
               {(() => {
                 const { x1, y1 } = links[0];
-                const my = (y1 + links[0].y2) / 2;
+                // 母线中位线基准取各列接顶高度 y2 的最小值而非第 0 列值
+                // （code-review edeef74ad012）：当前 grid alignItems:'start'
+                // 使各分区 section 顶对齐、y2 恒等，数值与原第 0 列取值完全
+                // 一致（零视觉变化）；未来分区顶部不等高时母线仍锚定最高列
+                // 顶，各列垂尾自母线向下接入各自 l.y2 不悬空。上方
+                // links.length 短路已保证非空，无需空数组防御。
+                const my = (y1 + Math.min(...links.map((l) => l.y2))) / 2;
                 const xs = links.map((l) => l.x2);
                 const left = Math.min(...xs, x1);
                 const right = Math.max(...xs, x1);

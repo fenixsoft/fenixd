@@ -51,15 +51,22 @@ export default function CommandCenterPage() {
     : 'today';
   // 全局项目筛选（2026-10-28 页签右侧）：驱动组织总览/交付流水线/执行台账
   // 三屏（三端点均收 project），状态提升至宿主；各屏上报 projects 全集在此
-  // 合并——任一屏到过数据即撑起下拉，不依赖先访组织总览
+  // 以最新上报全量收敛——任一屏到过数据即撑起下拉，不依赖先访组织总览；
+  // 项目被删除后随下一次上报从下拉消失（与 overview 页 setInitialState 的
+  // 菜单全量替换口径一致，死项目名不再永久残留可选）
   // [fenix-ignore:89d7af3f7510] 初值仅读一次为有意取舍（上方注释已声明），浏览器侧导航（前进/后退/改地址栏）致 URL 与筛选 state 失同步是已声明边界
   const [project, setProjectState] = useState(urlProject);
   const [allProjects, setAllProjects] = useState<string[]>([]);
-  // 上报合并（同引用短路防上报环；useCallback 稳定身份配下游 effect deps）
+  // 上报合并（三端点响应 projects 均为后端聚合范围全集回显而非当前筛选
+  // 视图子集——command_center_routes._command_center_scope + data 层
+  // _echo_projects，故按最新上报全量替换安全，活项目不因筛选切换消失；
+  // 同引用短路防上报环；useCallback 稳定身份配下游 effect deps）
   const reportProjects = useCallback((list: string[]) => {
     setAllProjects((prev) => {
-      const merged = [...new Set([...prev, ...list])].sort();
-      return merged.length === prev.length ? prev : merged;
+      const merged = [...new Set(list)].sort();
+      return merged.length === prev.length && merged.every((p, i) => p === prev[i])
+        ? prev
+        : merged;
     });
   }, []);
   // 时间窗（今日/7日/全量）：仅组织总览有时间窗口径（流水线/台账端点无

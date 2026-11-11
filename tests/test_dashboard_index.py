@@ -385,6 +385,22 @@ class TestSummaryIndexSlotsAndSignature:
         # 归档条目在列（归档分支覆盖：归档 spec 的依赖签名参与聚合）
         assert any(s["archived"] for s in items1)
 
+    def test_aggregate_signature_matches_invalidation_signature_without_archive_manifest(
+        self, tmp_path
+    ):
+        """归档清单缺失（无 STATE.archive.md，多数项目的常态稳态）下两套签名
+        仍逐字节等值（ba0ab737a591）：arch 组件以缺失哨兵 "missing" 同源参与
+        聚合（_arch_manifest_sig），而非 None 使两方法签名分叉。"""
+        proot = make_project(tmp_path)
+        idx = SummaryIndex()
+        items1, sig1 = idx.get_with_signature(proot)
+        assert sig1, "清单缺失是稳定空态（哨兵参与聚合而非判不可得），签名应可得"
+        assert sig1 == idx.invalidation_signature(proot)
+        assert not any(s["archived"] for s in items1)
+        # 全命中轮（缓存命中条目以存量 sigs 参与聚合）
+        items2, sig2 = idx.get_with_signature(proot)
+        assert sig2 == idx.invalidation_signature(proot)
+
     def test_signature_none_when_component_unavailable(self, tmp_path, monkeypatch):
         """签名组件不可得（state/arch stat 失败，monkeypatch _stat_sig 返回
         None）→ 返回 (列表, None)：摘要列表仍正常产出，签名位为 None。"""

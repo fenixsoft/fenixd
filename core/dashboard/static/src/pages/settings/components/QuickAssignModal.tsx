@@ -11,6 +11,14 @@ import { DSH_ERROR, DSH_SUCCESS, DSH_TEXT_SECONDARY, DSH_TEXT_TERTIARY } from '@
 
 const { Text } = Typography;
 
+/** 候选链行 + 前端渲染用稳定 id（code-review item a36ecf597353）：下标作 key
+ * 时删中间行会使后续行键整体平移，antd Select 的非受控搜索态/焦点错位到相邻
+ * 行。id 仅作 React key，不进提交载荷——buildQuickAssignAssignment 构造请求体
+ * 时只挑 provider/model 字段。 */
+interface QuickAssignRow extends ChainRow {
+  id: number;
+}
+
 /** 单目标结果 → 用户可读标签（「用户级」/「项目 <名称>」） */
 function targetLabel(r: QuickAssignResult): string {
   return r.scope === 'user' ? '用户级' : `项目 ${r.project}`;
@@ -25,7 +33,7 @@ export interface QuickAssignModalBodyProps {
   projects: string[];
   providers: LlmProvider[];
   roleModel: string;
-  rows: ChainRow[];
+  rows: QuickAssignRow[];
   includeCurrent: boolean;
   includeProjects: boolean;
   selectedProjects: string[];
@@ -79,7 +87,7 @@ export function QuickAssignModalBody({
           style={{ marginBottom: 8 }}
         />
         {rows.map((row, index) => (
-          <Space key={index} style={{ display: 'flex', marginBottom: 8 }} align="center">
+          <Space key={row.id} style={{ display: 'flex', marginBottom: 8 }} align="center">
             <Select
               data-testid={`quick-assign-row-provider-${index}`}
               style={{ width: isMobile ? 130 : 180 }}
@@ -255,7 +263,11 @@ export default function QuickAssignModal({
 
   // 模板编辑状态：角色级默认模型 + 候选链行（行序即回退顺序，至少保留一行）
   const [roleModel, setRoleModel] = useState('');
-  const [rows, setRows] = useState<ChainRow[]>([{ provider: '', model: '' }]);
+  // 行创建时经计数器发号稳定 id（useRef 计数即可，避免 crypto.randomUUID 兼容面）；
+  // 初始值用惰性初始化，保证 makeRow 只在首次挂载时调用
+  const nextRowId = useRef(1);
+  const makeRow = (): QuickAssignRow => ({ id: nextRowId.current++, provider: '', model: '' });
+  const [rows, setRows] = useState<QuickAssignRow[]>(() => [makeRow()]);
   // 作用域选择：本作用域（默认勾选）+ 指定项目（勾选联动多选，取消勾选清空已选）
   const [includeCurrent, setIncludeCurrent] = useState(true);
   const [includeProjects, setIncludeProjects] = useState(false);
@@ -271,7 +283,7 @@ export default function QuickAssignModal({
   useEffect(() => {
     if (open) {
       setRoleModel('');
-      setRows([{ provider: '', model: '' }]);
+      setRows([makeRow()]);
       setIncludeCurrent(true);
       setIncludeProjects(false);
       setSelectedProjects([]);
@@ -376,7 +388,10 @@ export default function QuickAssignModal({
         onRowChange={(index, patch) =>
           setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)))
         }
-        onAddRow={() => setRows((prev) => [...prev, { provider: '', model: '' }])}
+        onAddRow={() => {
+          const row = makeRow();
+          setRows((prev) => [...prev, row]);
+        }}
         onRemoveRow={(index) => setRows((prev) => prev.filter((_, i) => i !== index))}
         onIncludeCurrentChange={setIncludeCurrent}
         onIncludeProjectsChange={(v) => {
