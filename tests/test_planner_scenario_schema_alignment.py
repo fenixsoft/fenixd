@@ -272,14 +272,24 @@ class TestEquivalenceRegression:
         }])
         assert errs
 
-    def test_sse_event_count_min_zero_legal(self):
-        """sse_event_count extra.min=0 合法（include_zero 语义）。"""
+    def test_sse_event_count_min_zero_invalid(self):
+        """sse_event_count extra.min=0 非法。
+
+        原断言 min=0 合法（2026-09-14 f12db3cbd，早于运行层 fail-closed
+        决策）。运行层 _assert_sse_event_count 已按 invalid_min 显式拒绝
+        min<=0（min=0 在「actual >= minimum」语义下恒真、假绿；「断言零
+        事件」须由相等语义断言承载，code-review item 820f6cc34f42），验收
+        层已对齐同款口径——断言表 mode=include_zero 只表示「0 不算缺失」
+        （存在性检查），不是「min=0 是合法下限」。本用例翻转锁定验收期
+        前移后的新契约（code-review item 393e9d4cbfc3）。
+        """
         errs = validate_scenario_dicts([{
             "id": "x", "kind": "api",
             "steps": [{"action": "sse_connect", "url": "http://localhost/events"}],
             "assertions": [{"type": "sse_event_count", "min": 0}],
         }])
-        assert errs == []
+        assert errs
+        assert any("正整数" in e for e in errs)
 
     def test_sse_event_count_min_none_invalid(self):
         """sse_event_count 缺 min → 非法。"""
