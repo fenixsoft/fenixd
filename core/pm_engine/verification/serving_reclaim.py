@@ -442,9 +442,11 @@ def reclaim_verify_serving(
         {"reclaimed": [...], "kept": [...], "boot_logs_reclaimed": [...],
          "reclaim_failed": [...]}
 
-    kept 为「本轮未回收」观测集合（有意保留 + 回收失败，对 serve_root
-    全集完备）；reclaim_failed 是其中回收动作失败条目的机读子集视图，
-    消费方按 kept - reclaim_failed 即可区分有意保留与回收缺口。
+    kept 为「本轮未回收」观测集合（有意保留 + 回收失败，完备范围收敛
+    为「目录 + boot.log 候选」全集，code-review item e490a90e14e4：顶层
+    状态文件按保留约定直接跳过、不进任何观测集合）；reclaim_failed 是
+    其中回收动作失败条目的机读子集视图，消费方按 kept - reclaim_failed
+    即可区分有意保留与回收缺口。
     """
     if not reclaim_enabled:
         if logger:
@@ -502,7 +504,8 @@ def reclaim_verify_serving(
         if not file_entry.is_file():
             continue
         name = file_entry.name
-        # 顶层状态文件一律保留
+        # 顶层状态文件一律保留（不进任何观测集合：kept 完备范围为
+        # 「目录 + boot.log 候选」，与 docstring 口径一致）
         if _is_state_file(name):
             continue
         # 无法解析为 <spec>-boot.log → 保留（杂散文件计入 kept 留痕观测）

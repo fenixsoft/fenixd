@@ -1078,11 +1078,11 @@ def load_judge_bugs(pipeline, spec_name) -> list:
     处理（items 退化为场景 ID+影响面，分流判据按不满足保守回落）。
     """
     from core.pm_engine.verification.report_gate import (
-        _verifier_stamp_gate,
-        _verify_progress_result_paths,
+        is_verifier_stamp_gate,
+        verify_progress_result_paths,
     )
 
-    primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
+    primary, _shared = verify_progress_result_paths(pipeline, spec_name)
     if not primary.exists():
         return []
     try:
@@ -1091,7 +1091,7 @@ def load_judge_bugs(pipeline, spec_name) -> list:
         return []
     if not isinstance(data, dict):
         return []
-    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    ok, _reason = is_verifier_stamp_gate(data, spec_name, require_verifier_role=False)
     if not ok:
         return []
     if data.get("status") != "bug-found":

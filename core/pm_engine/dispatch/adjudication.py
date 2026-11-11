@@ -857,6 +857,7 @@ class VAdjudicationMixin:
                     f"{type(e).__name__}: {e}",
                 )
 
+    # [fenix-ignore:2a008cf5845e] 接受性残余（info 级）：read_one 复查与 update_spec 非同一临界区的毫秒级残窗已在此 docstring 留痕自述（state_machine 无条件写原语），彻底消除须在 state_machine 新增 frozen 条件写原语并迁移本守卫与 fast_track._error_write_frozen_recheck 六处写点，跨车道改动回归风险不及 info 级窗口收益。
     def _adjudication_write_guarded(
         self, spec_name: str, updates: dict, *, label: str
     ) -> bool:

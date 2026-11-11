@@ -1213,7 +1213,11 @@ def _warning_stale_triage_alert(pipeline, spec_name: str, scenario_ids: list) ->
             try:
                 data = json.loads(recheck_path.read_text(encoding="utf-8"))
                 if isinstance(data, list):
-                    existing = data
+                    # 仅收 str（code-review item f4388ba9451b）：与
+                    # _update_warning_streaks 回读过滤同口径——list/dict 等
+                    # 不可哈希脏元素会让 dict.fromkeys 抛 TypeError，穿出
+                    # 下方 except OSError 兜底致整条 triage 升级通道被跳过
+                    existing = [sid for sid in data if isinstance(sid, str)]
             except (json.JSONDecodeError, OSError, ValueError):
                 # UnicodeDecodeError 非 OSError 子类，一并收口（item
                 # fc51c35a9f83，与上方 already_recheck 回读同口径）
@@ -1446,6 +1450,33 @@ def _scenario_defect_reroute_gate(
             directive_path.unlink()
         except OSError:
             pass
+
+    if reroute_judge is None:
+        # run_planner 违反类型契约返回 None（区别于上方抛异常形态，code-review
+        # item fd778fbc2e38）：与异常分支同处置立即早退（对齐 verdict_evidence
+        # ._dispatch_judge 的 None 契约防御口径），防 AttributeError 穿出改道门。
+        pipeline._context.logger.error(
+            "pm_engine",
+            f"改道重派 judge 返回 None '{spec_name}'（run_planner 违反契约，"
+            f"保持 testing）",
+        )
+        # 留痕写盘不得抛穿改道门（容错口径同上）：失败仅 ERROR 留痕，
+        # 收口恒返回 True 语义不变。
+        try:
+            pipeline._context.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": "场景缺陷改道重派 judge 返回 None（保持 testing）："
+                    "run_planner 违反契约",
+                },
+            )
+        except Exception as e2:
+            pipeline._context.logger.error(
+                "pm_engine",
+                f"改道重派 None 留痕写盘失败 '{spec_name}'（error 未落盘，"
+                f"收口语义不变，保持 testing）: {type(e2).__name__}: {e2}",
+            )
+        return True
 
     if not reroute_judge.success:
         # 改道重派失败：取消/派发故障。保持 testing，不升级人工
@@ -1922,11 +1953,11 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
     # 路径解析与戳校验复用统一读取入口的实现（evo-verifier-result-single-
     # source R1；函数内 import 与 pipeline.py 同款先例，防模块环导入）。
     from core.pm_engine.verification.report_gate import (
-        _verifier_stamp_gate,
-        _verify_progress_result_paths,
+        is_verifier_stamp_gate,
+        verify_progress_result_paths,
     )
 
-    primary, _shared = _verify_progress_result_paths(pipeline, spec_name)
+    primary, _shared = verify_progress_result_paths(pipeline, spec_name)
     if not primary.exists():
         return False
     try:
@@ -1939,7 +1970,7 @@ def _judge_bugs_declare_env(pipeline, spec_name: str) -> bool:
         return False
     # spec 戳不符 = 其它 spec 残留，不采信（规则唯一实现在
     # _verifier_stamp_gate；primary 只做 spec 戳、不做 role 门，见 docstring）
-    ok, _reason = _verifier_stamp_gate(data, spec_name, require_verifier_role=False)
+    ok, _reason = is_verifier_stamp_gate(data, spec_name, require_verifier_role=False)
     if not ok:
         return False
     # 仅验证裁决车道申报的 bug-found 产物才采信 bugs 字段（implementer
@@ -2662,7 +2693,10 @@ def _handle_env_exemption_handshake(
                 backlink_note = "报告已保留豁免回链"
                 try:
                     save_report(pipeline._context.project_root, spec_name, rep)
-                except OSError as e:
+                except (OSError, TypeError, ValueError) as e:
+                    # 含 json.dump 不可序列化载荷的 TypeError/ValueError（对齐
+                    # _speculative_bug_found_gate 写点与 verdict_evidence
+                    # ._adopt_report 捕获口径，code-review item 56c308de3461）
                     backlink_note = "报告豁免回链写回失败（未保留）"
                     pipeline._context.logger.warning(
                         "pm_engine",
@@ -2750,7 +2784,9 @@ def _handle_env_exemption_handshake(
         backlink_note = "报告已保留处置回链"
         try:
             save_report(pipeline._context.project_root, spec_name, rep)
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
+            # 含 json.dump 不可序列化载荷的 TypeError/ValueError（捕获口径
+            # 对齐 _adopt_report，code-review item 56c308de3461）
             backlink_note = "报告处置回链写回失败（未保留）"
             pipeline._context.logger.warning(
                 "pm_engine",

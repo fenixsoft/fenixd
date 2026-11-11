@@ -2002,12 +2002,31 @@ class QQQueueMixin:
                         # implemented；否则 ready→implemented 被拒后仍会写
                         # implementer_run 并入队 verifier（status=ready 不满足
                         # (implemented, testing) 永不派发）。
-                        self._pm._merge_ready_fallback(
-                            spec_name,
-                            result.run_id,
-                            "implementer",
-                            getattr(result, "branch", None),
-                        )
+                        # 兜底调用守卫（code-review item 5b05ff0b64a6）：
+                        # _merge_ready_fallback 内部裸做 read_one 与 transition
+                        # （engine.py，只读参照勿改），瞬时 OSError 裸调穿出到
+                        # worker 外层 except 会把本轮成功收口转
+                        # _rollback_failed_dispatch 误回滚重派（8a0aae40bbf3
+                        # 自述要防的同型危险面）——同函数后续 update_spec/入队
+                        # 均已逐点包裹，唯此段与 _finalize_merge_success 收口段
+                        # 漏包。失败记审计后继续 transition 收口（status 确为
+                        # ready 且兜底未生效时 ready→implemented 被拒，走下方
+                        # 既有「保留计数与 error 现场」早退），MUST NOT 回落
+                        # 通用回滚。
+                        try:
+                            self._pm._merge_ready_fallback(
+                                spec_name,
+                                result.run_id,
+                                "implementer",
+                                getattr(result, "branch", None),
+                            )
+                        except Exception as e:  # noqa: BLE001 —— 兜底 IO 失败不放大处置
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"确认型 no-op ready 态兜底失败 '{spec_name}'"
+                                f"（继续 transition 收口，交收口重试/审计）: "
+                                f"{type(e).__name__}: {e}",
+                            )
                         # transition 返回值校验（code-review item
                         # de738e0aadd7，对齐 _finalize_merge_success 的
                         # f3a8a1249ede 同型收口）：_merge_ready_fallback 补记与
@@ -2097,7 +2116,12 @@ class QQQueueMixin:
                                 f"{type(e).__name__}: {e}",
                             )
                         return
-                    spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+                    # 读侧守卫（code-review item de82b1cb7b15，走
+                    # _read_spec_entry_safe 单一落点）：read_one 真实文件 IO
+                    # 裸调瞬时抛错沿 worker 外层 except 转
+                    # _rollback_failed_dispatch 会跳过下方零变更哨分类，
+                    # MUST NOT 放大。
+                    spec_entry = self._read_spec_entry_safe(spec_name, "零变更哨")
                     # _zero_change_attempts 锁内原子递增（code-review item
                     # 8eb2f7b9e6ad）：取写后值参与零变更哨阈值
                     # （ZERO_CHANGE_BREAKER_ATTEMPTS）判定与 error 文案，
@@ -2559,8 +2583,13 @@ class QQQueueMixin:
                                 warn_label="契约违反重试",
                             )
                         if retries >= max_r:
-                            spec_entry = (
-                                self._pm.state_machine.read_one(spec_name) or {}
+                            # 读侧守卫（code-review item de82b1cb7b15，走
+                            # _read_spec_entry_safe 单一落点）：本分支手头无
+                            # read_one 快照，裸调瞬时抛错沿 worker 外层 except
+                            # 转 _rollback_failed_dispatch 会跳过重试耗尽冻结
+                            # 分类，MUST NOT 放大。
+                            spec_entry = self._read_spec_entry_safe(
+                                spec_name, "契约违反重试耗尽"
                             )
                             fp = self._pm._redispatch_cause_fingerprint(contract_err)
                             orig_status = spec_entry.get("status") or "implementing"
@@ -2962,7 +2991,13 @@ class QQQueueMixin:
                         # 与零变更哨 spec_entry 及 _handle_merge_back_real_failure
                         # 的 read_one or {} 站点对齐（对照定位用方法名/分支语义，
                         # 勿写裸行号——本文件自定约定）。
-                        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+                        # 读侧守卫（code-review item de82b1cb7b15，走
+                        # _read_spec_entry_safe 单一落点）：f8c5c67e7eb4 只修了
+                        # 返回 None 形态（or {}），抛 OSError 形态此前仍裸调——
+                        # flock+read_all 真实文件 IO 瞬时异常沿 worker 外层
+                        # except 转 _rollback_failed_dispatch 会跳过同因熔断/
+                        # 重试耗尽分类，MUST NOT 放大。
+                        spec_entry = self._read_spec_entry_safe(spec_name, "通用失败")
                         # _retry_count 锁内原子递增（code-review item
                         # e0da51239a8d）：取写后值参与 retries >= max_r 判定与
                         # error 文案，else 分支 update_spec 不再并写该字段（对齐
@@ -3471,6 +3506,29 @@ class QQQueueMixin:
                 return 0
         return self._parse_int_field(entry, field, 0) + 1
 
+    def _read_spec_entry_safe(self, spec_name: str, warn_label: str) -> dict:
+        """worker 失败分类链 read_one 读取守卫单一落点（code-review item
+        de82b1cb7b15，沿 _bump_fallback_count 的 except 侧收敛方向同型收敛）。
+
+        失败分类链三处读侧（零变更哨 / 契约违反重试耗尽 / 通用失败分支的
+        spec_entry）此前裸调 ``read_one or {}``：flock+read_all 真实文件 IO
+        抛 OSError 时沿 worker 外层 except 落入 _rollback_failed_dispatch，
+        紧邻的零变更哨/同因熔断/重试耗尽冻结分类整体被跳过——正是
+        d708ce0288a8 / be172509602e 为同链写侧加守卫时自述 MUST NOT 放大的
+        同一放大面，读侧兄弟站点漏包。本助手统一「WARNING 留痕 + 失败按
+        {} 继续分类」口径（条目缺字段经 _parse_int_field / entry.get 缺省
+        回退，分类语义不依赖读取成功）。
+        """
+        try:
+            return self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"{warn_label}读取 spec 现场失败 '{spec_name}'"
+                f"（按空条目继续失败分类）: {type(e).__name__}: {e}",
+            )
+            return {}
+
     def _log_freeze_for_human_failure(
         self, spec_name: str, err: Exception, warn_label: str
     ) -> None:
@@ -3772,6 +3830,12 @@ class QQQueueMixin:
             p for p in paths
             if (self._pm.project_root / p).exists() or self._path_in_index(p)
         ]
+        # 超时归因按 stage 记录真实阶段（code-review item 19cc00046edc）：单一
+        # except subprocess.TimeoutExpired 分支此前固定文案「git commit timed
+        # out」，add 阶段超时同样落入该文案、自愈失败归因失真——add 与 commit
+        # 各自推进 stage，超时文案按真实阶段命名（reset 阶段超时被下方
+        # best-effort 清理的 except Exception 吞掉，不会到本分支）。
+        stage = "add"
         try:
             if addable:
                 add = subprocess.run(
@@ -3785,6 +3849,7 @@ class QQQueueMixin:
                 )
                 if add.returncode != 0:
                     return False, add.stderr.strip() or f"git add exit {add.returncode}", ""
+            stage = "commit"
             commit = subprocess.run(
                 ["git", "commit", "-m", commit_msg, "--"] + paths,
                 cwd=root,
@@ -3809,7 +3874,7 @@ class QQQueueMixin:
                     "",
                 )
         except subprocess.TimeoutExpired:
-            return False, "git commit timed out", ""
+            return False, f"git {stage} timed out", ""
         except Exception as e:  # noqa: BLE001 — 环境性异常按补提交失败处置
             return False, str(e), ""
         # pathspec 锚定读哈希（同 archive_commit.commit_archive_move 口径：
@@ -4296,7 +4361,26 @@ class QQQueueMixin:
         self, spec_name: str, merge_info, merge_error: str, branch: str,
     ) -> None:
         """WIP 等待条目重试仍被阻断：计数 +1（首阻时刻沿用），超限降级。"""
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 入口读取守卫（code-review item 9e23c4252c73，对齐同文件
+        # _defer_merge_back / _retry_merge_back_only / _handle_merge_back_real_
+        # failure 的 d9a7315bce20 同款守卫）：read_one 是 flock+read_all 真实
+        # 文件 IO，本方法被实现 worker 失败链（_defer_merge_back →
+        # _assess_archive_residue_selfheal → _retry_merge_back_only）与
+        # merge-only 重试 Timer 回调两条链共享，裸调瞬时 OSError 在 worker
+        # 路径沿外层 except 落入 _rollback_failed_dispatch（把「仅顺延等待、
+        # 保留分支锚点」的处置放大成 ready 回滚并清空 branch 锚点），沿 Timer
+        # 回调外溢则该链不再排程新 Timer，MUST NOT 放大——logger.warning 留痕
+        # 后按空条目继续（首阻缺省=now 的记账未生效语义；下方
+        # bump_counters/update_spec 各自守卫照常）。
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception as e:  # noqa: BLE001 —— 读取 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"WIP 等待重试失败分类读取 spec 现场失败 '{spec_name}'"
+                f"（按空条目继续记账与降级处置）: {type(e).__name__}: {e}",
+            )
+            entry = {}
         now = time.time()
         # first_at 非计数字段，沿用单一落点解析值；count 改走锁内原子递增
         # （bump_counters 返回写后值，code-review item 6c89067c172a）：原先
@@ -4813,12 +4897,29 @@ class QQQueueMixin:
         # D3）：status=ready（评审收尾竞态回退残留）时先补记合法转移
         # ready→implementing，再推进 implemented——消除 ready→
         # implemented 非法转移 ERROR 与 83 分钟状态矛盾。
-        self._pm._merge_ready_fallback(
-            spec_name,
-            run_id,
-            audit_agent_type,
-            branch,
-        )
+        # 兜底调用守卫（code-review item 5b05ff0b64a6，对齐上方 update_spec
+        # e9377c18ee85 / verifier 入队 67a4576e66d5 逐点包裹范式）：
+        # _merge_ready_fallback 内部裸做 read_one 与 transition（engine.py，
+        # 只读参照勿改），瞬时 OSError 裸调穿出——worker 路径沿外层 except 转
+        # _rollback_failed_dispatch 会把已物理合入 main 的成功轮次误回滚重派
+        # （8a0aae40bbf3 自述要防的同型危险面）；经 merge-only 重试 Timer 线程
+        # 进入则杀死回调且不再排程新 Timer。失败记审计后继续 transition 收口
+        # （status 确为 ready 且兜底未生效时 ready→implemented 被拒，走下方
+        # 既有「保留计数与 error 现场」早退），MUST NOT 回落通用回滚。
+        try:
+            self._pm._merge_ready_fallback(
+                spec_name,
+                run_id,
+                audit_agent_type,
+                branch,
+            )
+        except Exception as e:  # noqa: BLE001 —— 兜底 IO 失败不放大处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"merge 成功收尾 ready 态兜底失败 '{spec_name}'"
+                f"（继续 transition 收口，交收口重试/审计）: "
+                f"{type(e).__name__}: {e}",
+            )
         # transition 返回值校验（code-review item f3a8a1249ede，对齐
         # fast_track.py _reconcile_and_merge 的 40292d21fd97 同型收口）：
         # 上方读态/fallback 与 implemented 转移之间存在窗口，并发写者可能已
@@ -5024,7 +5125,18 @@ class QQQueueMixin:
         缺失时以 head 兜底（与车道写侧 `base or head` 回退同构，两侧相等才视为
         新鲜）。分支不可得返回 None（无审查对象）。
         """
-        entry = self._pm.state_machine.read_one(spec_name) or {}
+        # 共享读侧守卫（code-review item 742743efdeaf，对齐同文件
+        # a79f230f331a / d9a7315bce20 对共享读侧一律加守卫的纪律）：本读取器
+        # 被 _finalize_merge_success（调用点外层已包 try）、
+        # _on_impl_ocr_lane_finished（回调线程已包 try）与 _ocr_join_gate 三方
+        # 共享，后者经 pipeline._apply_verified 裸消费——read_one 是
+        # flock+read_all 真实文件 IO，裸调瞬时 OSError 会穿出 join 门禁中止
+        # 本轮 verified 推进（spec 停留 testing 等下轮重评）。失败按 None
+        # 返回，归入既有「分支指纹不可得放行」分支，三条调用方行为口径统一。
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception:  # noqa: BLE001 —— 读取 IO 失败按指纹不可得放行
+            return None
         branch = entry.get("branch")
         if not branch:
             return None

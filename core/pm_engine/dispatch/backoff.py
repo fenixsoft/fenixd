@@ -86,13 +86,27 @@ class BBackoffMixin:
 
         - 不递增 ``_retry_count``、不写 retries exhausted：锁冲突是基础设施状态
           而非任务失败，attempt 配额不被消耗；
-        - spec 保持 ready，error 字段记录「backoff until <time>」供 Dashboard 可读；
+        - spec 保持 ready，error 字段供 Dashboard 可读（未耗尽记「backoff
+          until <time>」；序列耗尽按等待人工处置口径记录，item 48f6c2952f40）；
         - 按 ``pm.dispatch_backoff_schedule`` 逐档递增安排下次尝试（定时器重入
           ``_on_spec_ready``，daemon 重启后由周期扫描兜底）；
         - 序列耗尽仍持锁 → 发 dispatch_stalled 信号（severity major）上报，spec
           保持 ready 等待处置，不再自旋重试。
         """
-        spec = self._pm.state_machine.read_one(spec_name)
+        # 读侧非阻塞守卫（code-review item b64cb3633156，对齐下方写侧
+        # 5e42c83261da「不穿透派发主链」同段口径）：STATE 瞬态 IO/解析异常
+        # 会沿本方法 → _on_spec_ready 的 try（仅 finally 无 except）逃逸，
+        # 跳过本轮退避元数据写、重试定时器排程与 dispatch_stalled 升级——
+        # 存在性未知按 INFO 留痕后直接返回，不写退避元数据也不排程。
+        try:
+            spec = self._pm.state_machine.read_one(spec_name)
+        except Exception as rerr:  # noqa: BLE001 — 环境性读失败按「存在性未知」处置
+            self._pm.logger.info(
+                "pm_engine",
+                f"Dispatch lock conflict for '{spec_name}' — spec 存在性未知"
+                f"（STATE 读失败，本轮不排程）: {type(rerr).__name__}: {rerr}",
+            )
+            return
         if not spec:
             # 条目缺失/读取为空（并发删除场景，code-review item 978b9c796502）：
             # 仿 _rollback_failed_dispatch 的同款守卫——仅 INFO 留痕后直接返回，
@@ -147,9 +161,20 @@ class BBackoffMixin:
         # 组装 dispatch_stalled 证据时取本轮值，而非 read_one 的更新前旧快照
         # （旧快照取到的是上一轮冲突时间与上一轮退避文案）。
         conflict_at = _dt.now(_tz.utc).isoformat()
-        error_text = (
-            f"worktree already active (lock conflict); backoff until {until_iso}"
-        )
+        # error 文案按分支口径分写（code-review item 48f6c2952f40）：序列耗尽
+        # 分支不再排程任何重试定时器，「backoff until <iso>」承诺届时自动重试
+        # 与事实不符，Dashboard/运维按该时刻等进展会误判系统停滞——改按显式
+        # 人工处置口径记录；未耗尽分支维持既有自动重试口径不变。
+        if exhausted:
+            error_text = (
+                "worktree already active (lock conflict); backoff schedule "
+                "exhausted; awaiting manual disposition"
+            )
+        else:
+            error_text = (
+                f"worktree already active (lock conflict); "
+                f"backoff until {until_iso}"
+            )
 
         # 写盘前冻结复查（code-review item 440ec07a12cc，仿
         # _rollback_failed_dispatch 的 _rollback_frozen_recheck 030f2c204875
@@ -159,7 +184,21 @@ class BBackoffMixin:
         # error 会覆盖内嵌「原状态 X」的冻结 error，人工解冻经 parse_orig_status
         # 无法还原。复查发现 frozen 即放弃退避元数据写与 dispatch_stalled 升级
         # （不再排程重试定时器），冻结现场原样保留待人工解冻。
-        if (self._pm.state_machine.read_one(spec_name) or {}).get(FROZEN_FIELD):
+        # 冻结复查读侧同款非阻塞守卫（item b64cb3633156）：复查读失败按
+        # 「未冻结」放行仅 WARNING 留痕，不因读异常跳过退避元数据写与
+        # dispatch_stalled 升级主流程（与写侧非阻塞处置同型）。
+        try:
+            frozen_recheck = (
+                self._pm.state_machine.read_one(spec_name) or {}
+            ).get(FROZEN_FIELD)
+        except Exception as rerr:  # noqa: BLE001 — 环境性读失败按「未冻结」放行
+            frozen_recheck = None
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Dispatch backoff 冻结复查 STATE 读失败 '{spec_name}'"
+                f"（按未冻结放行）: {type(rerr).__name__}: {rerr}",
+            )
+        if frozen_recheck:
             self._pm.logger.warning(
                 "pm_engine",
                 f"Dispatch backoff abandoned for '{spec_name}': 写盘前复查发现"
@@ -206,7 +245,17 @@ class BBackoffMixin:
                 f"Dispatch backoff exhausted for '{spec_name}' — lock still held, "
                 f"escalating dispatch_stalled",
             )
-            self._pm._signal_dispatch_stalled(spec_name, evidence)
+            signaled = self._pm._signal_dispatch_stalled(spec_name, evidence)
+            if not signaled:
+                # 写盘失败不抛出而是返回 False（code-review item f072cc6931d1，
+                # 对齐 recovery.py 两处调用点 befe1e6861fa 的守卫口径）：
+                # WARNING 留痕注明升级未落盘，不静默丢弃——耗尽分支已停止
+                # 排程定时器，升级将由退避窗过期后周期扫描再次撞锁隐式重发。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"dispatch_stalled 升级信号未落盘 '{spec_name}'"
+                    f"（将由下轮冲突隐式重试）",
+                )
             # 序列耗尽后不再自旋重试（定时器停止），spec 保持 ready 等待处置
             return
 
@@ -466,18 +515,20 @@ class BBackoffMixin:
                 # 幂等早退，旧定时器保留，到期自会重入派发链（闸门查询侧
                 # 届时按现状判定）。
                 return
-            # 截止时刻变化（冷却被续写/翻倍）：落表新截止后按新截止重排。
-            # 旧 Timer 的 cancel 与判重摘除推迟到新 Timer start 成功之后
-            # （code-review item 6126d4f5e8f4）：原先「先 cancel/discard 再
-            # resolve_delay/排程」在 resolve_delay 抛异常/返回 None（冷却截止
-            # 被并发清除的竞态窗、cooldown_until_fn 内部异常）时，该 spec 同时
-            # 失去在飞定时器与判重标记，通道再无任何重试动作，恢复完全依赖
-            # 周期扫描兜底——比上方幂等早退分支「旧定时器保留、到期自会兜底
-            # 重入」的保守姿态倒退。改为旧定时器全程保活：新 Timer start 成功
-            # 后才 cancel（旧回调幂等（摘标记+重入派发链），双飞窗口至多多
-            # 一次重入，与原 cancel 守卫同口径）；start 失败则恢复旧登记，旧
-            # 定时器仍是通道唯一在飞驱动。
-            deadline_table[spec_name] = float(current_deadline)
+            # 截止时刻变化（冷却被续写/翻倍）：按新截止重排。旧 Timer 的
+            # cancel、判重摘除与新截止落表在本分支一律不提前执行——原先在
+            # 此处先落表新截止（deadline_table[spec_name] = 新值）再走
+            # resolve_delay/排程，后者抛异常/返回 None（冷却截止被并发清除
+            # 的竞态窗、cooldown_until_fn 内部异常）提前 return 时表内截止
+            # 已被改写、而唯一在飞的仍是按旧截止排程的旧定时器，后续重排
+            # 调用因 live_deadline == current_deadline 幂等早退不再补排新
+            # 定时器，恢复被延后到旧定时器提前触发被闸门挡回一次后自愈
+            # （item 2433828bc80e）。改为新截止统一由下方新排程段落表（start
+            # 失败由回滚分支恢复旧截止，item 6126d4f5e8f4），失败路径零改写：
+            # 表内保留旧截止，下次重排仍判「截止变化」可补排；且旧定时器
+            # 全程保活：新 Timer start 成功后才 cancel（旧回调幂等（摘标记+
+            # 重入派发链），双飞窗口至多多一次重入，与原 cancel 守卫同口径）；
+            # start 失败则恢复旧登记，旧定时器仍是通道唯一在飞驱动。
             old_timer = (
                 handle_table.get(spec_name) if handle_table else None
             )
@@ -486,7 +537,9 @@ class BBackoffMixin:
         # item 81c30a0d3023，对齐同函数两处 resolve_deadline 的防护口径——
         # 回调可能失败）：失败按「本轮不排程」return，恢复靠周期扫描兜底，
         # 异常不再沿 _schedule_recovery_timer → queue 处理链外泄
-        # （如 _cooldown_remaining 对 None 截止 `until <= 0` 抛 TypeError）。
+        # （如 _cooldown_remaining 对 None 截止 `until <= 0` 抛 TypeError）；
+        # 重排路径此刻表内旧截止/判重标记/旧句柄均未改写，return 即完整
+        # 保留调用前现场（item 2433828bc80e）。
         try:
             raw_delay = resolve_delay(spec_name)
             if raw_delay is None:
@@ -565,10 +618,30 @@ class BBackoffMixin:
         with self._queue_lock:
             timers.discard(spec_name)
         self._pm.logger.info("pm_engine", fired_log)
+        # 回调体异常守卫（code-review item 3e1b6e0e0454，对齐排程侧
+        # _schedule_recovery_timer_locked 81c30a0d3023 的同源防护口径）：
+        # 本回调在 threading.Timer daemon 线程执行，裸调失败沿默认钩子只落
+        # stderr、不进结构化日志，冷却恢复失败无留痕——窄捕记 WARNING，
+        # 恢复依赖周期扫描兜底（与冷却通道「enqueue 拒绝不重试」同口径）。
         try:
             self._pm._on_spec_ready(spec_name)
+        except Exception as e:  # noqa: BLE001 — 回调失败按「本轮恢复未遂」处置
+            self._pm.logger.warning(
+                "pm_engine",
+                f"recovery callback failed for '{spec_name}' — 本轮恢复未遂"
+                f"（依赖周期扫描兜底）: {type(e).__name__}: {e}",
+            )
         finally:
-            self._pm._process_queue()
+            # _process_queue 单独窄捕：finally 内再抛会顶替 _on_spec_ready
+            # 的原始异常，且同样不进结构化日志（item 3e1b6e0e0454）。
+            try:
+                self._pm._process_queue()
+            except Exception as e:  # noqa: BLE001 — 队列驱动失败不顶替原始异常
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"_process_queue after recovery callback failed for "
+                    f"'{spec_name}'（非阻塞）: {type(e).__name__}: {e}",
+                )
 
     def _schedule_instant_fail_recovery(self, spec_name: str, lock_held: bool = False) -> None:
         """冷却到期后重入 ``_on_spec_ready``（cli-retry-backoff 2.2）。

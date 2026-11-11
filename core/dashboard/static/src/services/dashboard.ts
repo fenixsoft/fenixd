@@ -180,7 +180,7 @@ let bundleRevReloadFn: () => void = () => {
 };
 
 /** 测试钩子：注入 reload 桩（生产勿调用）。 */
-export function _setBundleRev(opts: { reload?: (url?: string) => void }): void {
+export function _setBundleRev(opts: { reload?: () => void }): void {
   if (opts.reload) bundleRevReloadFn = opts.reload;
 }
 Object.defineProperty(_setBundleRev, '__state', {
@@ -831,7 +831,7 @@ export function autoExecBadge(
  * 执行）、推荐不明确、非可逆档一律 null（不渲染，避免误导人工）。
  */
 export function autoExecCountdown(
-  esc?: (Pick<ChainEscalationItem, 'auto_exec' | 'handled'> & { handled?: boolean }) | null,
+  esc?: Pick<ChainEscalationItem, 'auto_exec' | 'handled'> | null,
   now: Date = new Date(),
 ): { text: string; done: boolean } | null {
   const p = esc?.auto_exec;
