@@ -18,8 +18,11 @@ pending.jsonl``——与 ``.fenix/runs``、``.fenix/maintenance_log.jsonl`` 同�
 （环境瞬态，入队兜底；受同一放弃阈值约束，不会无限堆积）。
 
 并发 1：``submit`` 全程持锁串行（含 helper 子进程等待与队列读写）——
-队列文件读改写与 helper 调用都不并发交错；并发 run 终态投递依次排队，
-单次投递同步等待受 helper ``--timeout``（缺省 10s）+ 子进程宽限约束。
+submitter 由 run 终态挂接按次新建（threading.Lock 随实例走，仅约束同
+实例），队列读改写的跨实例互斥由队列路径 flock 承担
+（``core.fs_utils.with_file_lock``，跨进程/跨线程）：队列文件读改写与
+helper 调用在并行 run 终态下都不并发交错、依次排队；单次投递同步等待
+受 helper ``--timeout``（缺省 10s）+ 子进程宽限约束。
 
 重试消费策略（事件驱动，无后台线程）：每次 ``submit`` 先抽干最多
 ``drain_limit`` 条到期条目再投递新会话——daemon 重启后第一次新 run 终态
@@ -37,6 +40,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+from core.fs_utils import atomic_write_text, with_file_lock
 
 #: 队列目录与文件（相对 <project_root>/.fenix/，对齐 runs/maintenance_log 惯例）。
 QUEUE_DIRNAME = "dsh_session_tidy"
@@ -140,7 +145,8 @@ class DshSessionTidySubmitter:
 
     def _load_entries(self) -> list[dict]:
         """读全部待重试条目（损坏行跳过不抛——半行 JSON 来自崩溃残留，读侧
-        跳过即可，不阻断投递主链路）。"""
+        跳过即可；数值字段非法的条目同样逐条跳过并 WARN 留痕——单条损坏
+        不得在 due 过滤/放弃判定处抛错扩散到整条投递通道）。"""
         path = self.queue_path
         try:
             text = path.read_text(encoding="utf-8")
@@ -159,21 +165,43 @@ class DshSessionTidySubmitter:
                 entry = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(entry, dict) and entry.get("session_id"):
-                entries.append(entry)
+            if not (isinstance(entry, dict) and entry.get("session_id")):
+                continue
+            normalized = self._normalize_entry(entry)
+            if normalized is None:
+                self._logger.warning(
+                    "dsh_session_tidy",
+                    f"重试队列损坏条目跳过（数值字段非法，防单条毒化整通道）: "
+                    f"session_id={entry.get('session_id')}",
+                )
+                continue
+            entries.append(normalized)
         return entries
 
+    @staticmethod
+    def _normalize_entry(entry: dict) -> dict | None:
+        """数值字段逐条装载守卫（attempts/enqueued_at/next_attempt_at）：
+        存在但不可数值化（外部编辑/写残变体）→ 返回 None（调用方跳过该
+        条）；数值字符串容错归一为数值；缺省字段不动（下游 ``.get`` 缺省
+        面接管）。"""
+        for key, cast in (("attempts", int), ("enqueued_at", float),
+                          ("next_attempt_at", float)):
+            if key not in entry:
+                continue
+            try:
+                entry[key] = cast(entry[key])
+            except (TypeError, ValueError):
+                return None
+        return entry
+
     def _save_entries(self, entries: list[dict]) -> None:
-        """全量原子重写（tmp + os.replace；空队列时落空文件等价清空）。"""
-        path = self.queue_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        """全量原子重写（fs_utils.atomic_write_text：mkstemp 唯一临时名 +
+        os.replace；空队列时落空文件等价清空）。固定 ``.tmp`` 临时名在并发
+        写者下会互相截断（该原语注释点名要消灭的形态），不复用。"""
         payload = "".join(
             json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries
         )
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(payload)
-        os.replace(tmp, path)
+        atomic_write_text(self.queue_path, payload)
 
     # ── helper 调用 ─────────────────────────────────────────────────────
 
@@ -300,31 +328,21 @@ class DshSessionTidySubmitter:
                     self._save_entries(fresh)
 
     def submit(self, session_id: str) -> str:
-        """投递单会话归档。全程持锁（并发 1）；永不抛异常——任何意外折叠
-        为 "queued"（入队兜底）并 WARN，run 主链路不感知。
+        """投递单会话归档。全程持锁（实例 threading.Lock + 队列路径 flock
+        双层，跨实例互斥——submitter 按 run 终态逐次新建，单靠实例锁挡不住
+        并行终态的另一实例）；永不抛异常——意外异常把该会话以可重试条目
+        落盘重试队列（入队兜底）后返回 "queued"；入队自身失败才降级为仅
+        WARN 并返回 "error"（未入队），run 主链路不感知。
 
         返回处置结果字符串："archived"（成功/幂等）|"queued"（入队重试）
-        |"abandoned"（放弃阈值触顶）|"fatal"（致命失败不入队）。"""
+        |"abandoned"（放弃阈值触顶）|"fatal"（致命失败不入队）
+        |"error"（意外异常且兜底入队自身失败，未入队）。"""
         try:
             with self._lock:
-                now = self._clock()
-                # 先抽干到期重试（事件驱动消费；含 daemon 重启恢复消费），
-                # 再投递新会话——旧账不挤占新投递的同步等待预算（抽干有
-                # drain_limit 上界）。
-                self._drain_due_entries(now)
-                exit_code, detail = self._invoke_helper(session_id)
-                if exit_code == EXIT_OK:
-                    # 成功（含已归档幂等）：清队列同 id 残留条目（若有）。
-                    self._drop_entry(session_id)
-                    return "archived"
-                if exit_code == EXIT_FATAL:
-                    self._drop_entry(session_id)
-                    self._logger.warning(
-                        "dsh_session_tidy",
-                        f"会话 {session_id} 归档致命失败（不入队）：{detail[:200]}",
-                    )
-                    return "fatal"
-                return self._process_retryable(session_id, detail, now)
+                # flock 以队列路径加锁（.<name>.lock，跨进程/跨线程），补齐
+                # 「锁随实例走」留下的跨实例队列读改写交错窗口。
+                return with_file_lock(
+                    self.queue_path, lambda: self._submit_locked(session_id))
         except Exception as e:  # noqa: BLE001 — 投递绝不影响 run 主链路
             try:
                 self._logger.warning(
@@ -333,7 +351,41 @@ class DshSessionTidySubmitter:
                 )
             except Exception:  # noqa: BLE001 — logger 二次异常静默
                 pass
-            return "queued"
+            # 入队兜底落到实处：意外异常下该会话仍按 _process_retryable 的
+            # 条目形态落盘重试队列（否则持久化队列「daemon 重启不丢、事件
+            # 驱动恢复消费」的兜底对本会话失效）；入队自身失败（如
+            # _save_entries 盘满 OSError）才降级为仅 WARN，返回 "error"
+            # 如实表示未入队，不以 queued 谎报兜底已生效。
+            try:
+                with self._lock:
+                    return with_file_lock(
+                        self.queue_path,
+                        lambda: self._process_retryable(
+                            session_id, f"submit 意外异常兜底: {str(e)[:300]}",
+                            self._clock()),
+                    )
+            except Exception:  # noqa: BLE001 — 入队自身失败：仅 WARN 即止
+                return "error"
+
+    def _submit_locked(self, session_id: str) -> str:
+        """flock 持有下的投递主链路：先抽干到期重试（事件驱动消费；含
+        daemon 重启恢复消费），再投递新会话——旧账不挤占新投递的同步等待
+        预算（抽干有 drain_limit 上界）。"""
+        now = self._clock()
+        self._drain_due_entries(now)
+        exit_code, detail = self._invoke_helper(session_id)
+        if exit_code == EXIT_OK:
+            # 成功（含已归档幂等）：清队列同 id 残留条目（若有）。
+            self._drop_entry(session_id)
+            return "archived"
+        if exit_code == EXIT_FATAL:
+            self._drop_entry(session_id)
+            self._logger.warning(
+                "dsh_session_tidy",
+                f"会话 {session_id} 归档致命失败（不入队）：{detail[:200]}",
+            )
+            return "fatal"
+        return self._process_retryable(session_id, detail, now)
 
     def _drop_entry(self, session_id: str) -> None:
         """移除同 id 队列条目（成功/致命后的队列卫生；文件缺失视为无队列）。"""
