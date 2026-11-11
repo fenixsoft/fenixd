@@ -421,7 +421,9 @@ function buildSystemFormValues(config: ConfigData): SystemFormValues {
     escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 60,
     merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
-    bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
+    // 非法手写值不进 Select（口径同下方 harness：read_config 原文视图可透传
+    // 非法枚举，Select 只出 inplace/derive 两合法值，缺省 inplace）
+    bug_repair_mode: admin.bug_repair_mode === 'derive' ? 'derive' : 'inplace',
     stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
     // add-adjudication-alert-narrative：告警叙事三键（缺省与后端
     // _ADMIN_DEFAULTS / config.template.yaml 同源）
