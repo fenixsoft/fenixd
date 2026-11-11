@@ -133,10 +133,12 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
             # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
-            # 与 core/deliverables.py 的 _TASKS_GROUP_RE/_TASKS_ITEM_RE 同源
-            # 正则（task-track D1），两处必须一致；bin/fenix_process.py 已改为
-            # 经 _render_tasks 消费本门面解析结果（detail.tasks），不再持有
-            # 自有 parse_tasks。
+            # 分组正则与 core/deliverables.py 的 _TASKS_GROUP_RE 字面同步
+            # （task-track D1）；任务行正则两侧语义刻意不同——本文件是带
+            # id/desc 捕获的严格版，deliverables 的 _TASKS_ITEM_RE 是仅按
+            # checkbox 前缀计数的宽松版，勿互相同步。bin/fenix_process.py
+            # 已改为经 _render_tasks 消费本门面解析结果（detail.tasks），
+            # 不再持有自有 parse_tasks。
             m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
                 saw_header = True

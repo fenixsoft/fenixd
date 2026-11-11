@@ -505,6 +505,12 @@ def chain_overview(project_root) -> dict:
     pending_run_idx: dict = {}
     try:
         for rid, (is_pending, rec) in merge_dispositions_by_run(records).items():
+            # 仅收录携带真实 admin_run_id 的记录：merge_dispositions_by_run
+            # 对缺 admin_run_id 的记录以 f"run-{id(rec)}" 合成键占位归组，
+            # 该键由内存地址派生，非真实 run 标识，不可下发前端（run_id
+            # 维持 None 由前端显「—」）
+            if not rec.get("admin_run_id"):
+                continue
             spec = str(rec.get("spec") or "")
             if is_pending and spec:
                 pending_run_idx[spec] = str(rid)

@@ -3164,6 +3164,15 @@ def execute_adjudication_choice(project_root, spec: str, choice_id: str,
             r = freeze_spec(project_root, spec, reason=note or "token 预算止损（人工裁决）")
             if r.get("ok") and not r.get("frozen") and r.get("error"):
                 r = {"ok": False, "steps": [], "error": r.get("error")}
+            elif r.get("ok") and r.get("frozen"):
+                # 成功分支补 steps 留痕（code-review item c7f66c04f327）：与其余
+                # 裁决动作响应口径对齐——alert-resolve 端点把 steps 回显给操作
+                # 者，止损冻结不应缺席成功留痕；原状态已并入冻结 error，不重复。
+                reason_txt = note or "token 预算止损（人工裁决）"
+                r["steps"] = [
+                    f"已冻结 spec（status → blocked）· 原因：{reason_txt}"
+                    f" · 停止 {r.get('stopped_agents', 0)} 个在跑 agent",
+                ]
         elif action == "raise_budget":
             r = _exec_raise_budget(project_root, spec)
         elif action == "declare_no_artifacts":

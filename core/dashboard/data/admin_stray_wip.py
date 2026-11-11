@@ -552,6 +552,10 @@ def _append_gitignore_entries(proot, paths) -> list:
 
     条目先经 _gitignore_escape_entry 转义成字面匹配规则行再比对/写入
     （code-review item f0d504af6cac），返回与写入的都是转义后的行。
+    含换行（``\n``/``\r``）的条目整体拒绝不写入（code-review item
+    dbe76ce6e8bf，fail-closed）：gitignore 按行解析规则，内嵌换行条目
+    字面落盘会被拆成多条独立规则行、第二行起的首字符 #/! 语义不再受
+    首字符转义保护；跳过 + logger.warning 留痕，零字节进入 .gitignore。
     去重双重口径：转义后条目字面行已在 .gitignore → 不重复写（幂等重入
     不增行）；``check-ignore --no-index`` 判定已被既有规则覆盖（如通配
     ``*.log``）→ 追加亦冗余，不写（复核仍传原始路径，见
@@ -577,6 +581,18 @@ def _append_gitignore_entries(proot, paths) -> list:
         }
         appended: list = []
         for p in paths:
+            # 含换行条目整体拒绝（code-review item dbe76ce6e8bf，fail-closed）：
+            # gitignore 规则按行解析，内嵌 \n/\r 的条目字面写入会被拆成多条
+            # 独立规则行，第二行起的首字符 #/! 不再受 _gitignore_escape_entry
+            # 首字符转义保护（如 "a\n!.gitignore" 落成把 .gitignore 反向排除
+            # 出忽略面的规则行）。跳过不写 + logger.warning 留痕（清单分号
+            # 截断同款留痕形态），%r 使换行以 \n 字面进日志不拆行；返回形状
+            # 不变（appended 仍只含实际写入行，回滚/还原语义不受影响）。
+            if "\n" in p or "\r" in p:
+                logger.warning(
+                    "stray_wip 清单条目含换行，拒绝写入 .gitignore: %r", p,
+                )
+                continue
             # 去重按转义后的字面行（item f0d504af6cac）：.gitignore 实际存的
             # 是转义行，按原始路径比对会漏判（如 # 开头文件名的历史行只是
             # 注释，永远等不到字面匹配）。
