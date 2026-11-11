@@ -101,8 +101,12 @@ function toFormState(v: boolean | null | undefined): HasBuildArtifactsState {
 // 共用，缺省调整只改此处，避免两份映射漏改一处导致初值与回填值分叉。
 function buildVerifyFormValues(config: ConfigData) {
   return {
-    static_scope: config.verify?.static_scope || 'main',
-    deps_mode: config.verify?.deps_mode || 'hardlink',
+    // 非法手写值不进 Radio.Group（比照 SystemPanel 的 harness 归一，code-review
+    // item 2752a5701cce）：`||` 只兜空值，.fenix 配置词表外取值会原样回填成
+    // 「无一选项选中」且 required 因值非空放行、保存原样回传——显式按本文件
+    // Radio.Group 词表归一到合法缺省。
+    static_scope: config.verify?.static_scope === 'worktree' ? 'worktree' : 'main',
+    deps_mode: config.verify?.deps_mode === 'prefer-offline' ? 'prefer-offline' : 'hardlink',
     serving_reclaim_enabled: config.verify?.serving_reclaim?.enabled ?? true,
     build_artifact_paths: (config.worktree?.build_artifact_paths || []).map(
       (p) => ({ path: p }),
