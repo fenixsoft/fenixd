@@ -591,8 +591,15 @@ export default function QualityTab({ project, active }: QualityTabProps) {
           }
         }, PROGRESS_POLL_INTERVAL_MS);
       }
-    } catch {
-      // 进度读取失败静默（非关键路径）
+    } catch (e) {
+      // 过期响应（cleanup 后晚到的失败）不止损不提示，与轮询 tick catch 同口径
+      // 复核序号；置位常驻错误条（code-review item 948fbc0a4798）：首载/30s
+      // 心跳/SSE 触发的读取失败此前被本分支整体吞掉，错误条只覆盖 running 轮询
+      // tick 失败路径——此处补齐使错误条机制覆盖全部进度读取失败路径。不弹
+      // toast：心跳/SSE 周期性触发本函数，弹窗噪音大，错误条 + 「重试读取」
+      // 入口即恢复通道（成功读取经 setProgressReadError(null) 自清）。
+      if (seq !== progressSeqRef.current) return;
+      setProgressReadError(e instanceof Error ? e.message : String(e));
     } finally {
       // 成功/失败两条路径都递减在飞计数（269005cbcda4，对齐 ArchitectureTab；
       // 59ceed862544 起引用计数递减，先完成者不再提前放行并发中的另一请求）
