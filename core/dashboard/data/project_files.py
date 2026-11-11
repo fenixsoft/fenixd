@@ -389,10 +389,11 @@ def entry_commit(root: Path, rel_path: str) -> dict | None:
     """单条目最近提交（任务 1.3 单飞 ``git log -1``；目录条目传目录路径，
     git 自动取该目录下最近一次提交）。无提交历史/命令失败 → None。
 
-    字段分隔用 git 占位符 ``%x00``（NUL，与 visible_files 的 ``-z`` 通道
-    同款）而非 ``\\x1f``：提交标题自身可合法含该控制字符，用它切分会在
+    字段分隔用 git 占位符 ``%x00``（format 传字面占位符，git 在 stdout 输出
+    真 NUL，与 visible_files 的 ``-z`` 通道同款；NUL 不能进 execve 参数）
+    而非 ``\\x1f``：提交标题自身可合法含该控制字符，用它切分会在
     标题内提前截断、time 字段被污染。"""
-    line = _run_git_log(root, "%h\x00%s\x00%aI", rel_path)
+    line = _run_git_log(root, "%h%x00%s%x00%aI", rel_path)
     if line is None:
         return None
     parts = line.split("\x00", 2)
