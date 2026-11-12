@@ -134,6 +134,22 @@ def load_chain_state(project_root, logger=None) -> dict:
             if not isinstance(v, dict):
                 continue
             ent = dict(v)
+            # 救回指纹归一（add-arbiter-blacklist-disposition 6.2，条目级
+            # fail-open 同构）：非字符串脏值置空——防抖读侧 rescue_fingerprint
+            # 与写侧 record_rescue_fingerprint 均按 str 消费，脏值置空使防抖
+            # 视为「无指纹」（放行重派），不炸穿读路径。
+            raw_fp = ent.get("last_rescue_fingerprint")
+            if raw_fp is not None and not isinstance(raw_fp, str):
+                ent["last_rescue_fingerprint"] = ""
+                if logger is not None:
+                    try:
+                        logger.warning(
+                            COMPONENT,
+                            f"链状态条目救回指纹非字符串（置空降级）: "
+                            f"sig={k} raw={raw_fp!r}",
+                        )
+                    except Exception:
+                        pass
             for key in ("admin_attempts", "arbiter_rulings"):
                 raw_val = ent.get(key)
                 if raw_val is None or isinstance(raw_val, int):
@@ -458,6 +474,8 @@ class ChainQuotaStore:
 
         记录 last_spec_status；与上次观测值不同（且双方非空）→ 配额清零并
         返回 True。首见只落基线不复位（避免首轮触发误清）。
+        救回指纹随清零一并清（add-arbiter-blacklist-disposition 6.2）：
+        状态迁移=外部处置介入过，重新给自动救回机会——防抖不跨迁移存续。
         """
         def _obs(state):
             ent = state["signatures"].setdefault(
@@ -469,6 +487,7 @@ class ChainQuotaStore:
             if prev and cur and prev != cur:
                 ent["admin_attempts"] = 0
                 ent["arbiter_rulings"] = 0
+                ent["last_rescue_fingerprint"] = ""
                 ent["reset_cause"] = "spec-transition"
                 ent["reset_at"] = _utcnow_iso()
                 return True
@@ -492,12 +511,34 @@ class ChainQuotaStore:
             ):
                 ent["admin_attempts"] = 0
                 ent["arbiter_rulings"] = 0
+                ent["last_rescue_fingerprint"] = ""
                 ent["reset_cause"] = "window"
                 ent["reset_at"] = _utcnow_iso()
                 return True
             return False
 
         return bool(self._mutate(_reset, sig=sig))
+
+    def record_rescue_fingerprint(self, sig: str, fingerprint: str) -> None:
+        """救回指纹登记（add-arbiter-blacklist-disposition 6.2）。
+
+        Arbiter 相非闭环终态（escalated/dead-man/重试耗尽）时记录本次失败
+        面指纹（last_rescue_fingerprint）——同签名同指纹后续触发被防抖拦
+        截不重派（resolved 闭环不记录：处置后同根因复发的升级由车道 D6
+        _dispositioned 语义承接，防抖不与其重复圈地）。
+        """
+        def _rec(state):
+            ent = state["signatures"].setdefault(
+                sig, {"admin_attempts": 0, "arbiter_rulings": 0}
+            )
+            ent["last_rescue_fingerprint"] = str(fingerprint or "")
+            ent["last_seen"] = _utcnow_iso()
+
+        self._mutate(_rec, sig=sig)
+
+    def rescue_fingerprint(self, sig: str) -> str:
+        """读上次救回指纹（缺省空串；脏值由 load_chain_state 归一置空）。"""
+        return str(self.entry(sig).get("last_rescue_fingerprint") or "")
 
     def record_recurrence(self, sig: str) -> None:
         """复现登记：刷新 last_seen（复位窗计时锚点）。
@@ -928,38 +969,49 @@ class EscalationChain:
             )
             return
 
-        self._quota.mark_in_flight(chain_id, sig, spec, "admin")
-        admin_trail, phase = self._run_admin_phase(item, quota_cfg)
-        if phase == "deferred":
-            # 互斥让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2）：
-            # yield_to=被让行 admin run——deferred 形态改写附信号详情快照；
-            # 看护巡检扫描重派（被让行 run 终态后自动回喂，不阻塞人工）。
-            # 用户定调 2026-11-05 后冻结件不再走此出口（改道 Arbiter 相，
-            # frozen-arbiter 直落下方 Arbiter 级）。
-            yield_to = str(item.pop("defer_yield_to", "") or "")
-            deferred_ok = self._quota.defer_in_flight(
-                chain_id, sig, spec,
-                yield_to=yield_to,
-                item_signal=self._deferred_signal_snapshot(item),
-            )
-            if deferred_ok:
-                self._log(
-                    "info",
-                    f"处置链互斥让行留痕（deferred，等被让行 run 终态回喂）: "
-                    f"sig={sig} yield_to={yield_to}",
+        # 早期介入路由直达 Arbiter 级（add-arbiter-blacklist-disposition
+        # 6.2 skip_admin）：verify_repeat_failure 信号跳过 Admin 相——Admin
+        # 受限运维面对「连续同签名验证失败」无可执行处置面（非冻结态改场景/
+        # 复位计数皆越权），派发即空转烧配额。0 尝试 0 消耗直达 Arbiter 相
+        # （in_flight phase 记 arbiter，如实反映接单车道）。
+        if str(item.get("signal_type") or "") == "verify_repeat_failure":
+            item["skip_admin"] = True
+            self._quota.mark_in_flight(chain_id, sig, spec, "arbiter")
+            admin_trail: List[dict] = []
+            phase = "skip-admin"
+        else:
+            self._quota.mark_in_flight(chain_id, sig, spec, "admin")
+            admin_trail, phase = self._run_admin_phase(item, quota_cfg)
+            if phase == "deferred":
+                # 互斥让行留痕（fix-escalation-chain-watchdog-yield-gaps 1.2）：
+                # yield_to=被让行 admin run——deferred 形态改写附信号详情快照；
+                # 看护巡检扫描重派（被让行 run 终态后自动回喂，不阻塞人工）。
+                # 用户定调 2026-11-05 后冻结件不再走此出口（改道 Arbiter 相，
+                # frozen-arbiter 直落下方 Arbiter 级）。
+                yield_to = str(item.pop("defer_yield_to", "") or "")
+                deferred_ok = self._quota.defer_in_flight(
+                    chain_id, sig, spec,
+                    yield_to=yield_to,
+                    item_signal=self._deferred_signal_snapshot(item),
                 )
-            else:
-                # 在办条目已被并发清除（defer_in_flight=False 无副作用）：
-                # deferred 留痕未落盘，改打 warning 如实告警，不再宣称留痕成功
-                self._log(
-                    "warning",
-                    f"处置链互斥让行留痕未落盘（在办条目已被并发清除，"
-                    f"重派锚点缺失）: sig={sig} yield_to={yield_to}",
-                )
-            return
-        self._quota.clear_in_flight(chain_id)
-        if phase == "closed":
-            return  # Admin 处置成功闭环（side-effects 已在 _run_admin_phase 落）
+                if deferred_ok:
+                    self._log(
+                        "info",
+                        f"处置链互斥让行留痕（deferred，等被让行 run 终态回喂）: "
+                        f"sig={sig} yield_to={yield_to}",
+                    )
+                else:
+                    # 在办条目已被并发清除（defer_in_flight=False 无副作用）：
+                    # deferred 留痕未落盘，改打 warning 如实告警，不再宣称留痕成功
+                    self._log(
+                        "warning",
+                        f"处置链互斥让行留痕未落盘（在办条目已被并发清除，"
+                        f"重派锚点缺失）: sig={sig} yield_to={yield_to}",
+                    )
+                return
+            self._quota.clear_in_flight(chain_id)
+            if phase == "closed":
+                return  # Admin 处置成功闭环（side-effects 已在 _run_admin_phase 落）
         if phase == "frozen-arbiter":
             # 冻结改道（用户定调 2026-11-05「告警、阻塞到人类之前一定要先
             # 经过 arbiter 的处理」）：Admin 冻结态不可动作（零派发零配额），
@@ -1008,9 +1060,59 @@ class EscalationChain:
             )
             return
 
+        # 救回防抖（add-arbiter-blacklist-disposition 6.2）：同指纹不重派
+        # ——Arbiter 已对该签名同失败面救回/裁决过（last_rescue_fingerprint
+        # 相同）→ 不再自动重派（重复救回无效面=烧配额烧人工），按既有上升
+        # 路径直达人工 + 台账防抖命中留痕；指纹变化=失败面变化，重获派发
+        # 资格（按新指纹计；配额键未变沿用既有 arbiter_rulings 计数）。复位
+        # 窗/spec 状态迁移清零沿用（两清零点显式清指纹，防抖不跨复位存续）。
+        # 载荷无指纹（直派回落/历史件）防抖不命中——防抖只在链路内生效。
+        item_fp = str((item.get("payload") or {}).get("fingerprint") or "")
+        if item_fp:
+            try:
+                last_fp = self._quota.rescue_fingerprint(sig)
+            except Exception:
+                last_fp = ""  # 读故障 fail-open（放行重派，人工兜底在终点）
+            if last_fp and item_fp == last_fp:
+                self._log(
+                    "warning",
+                    f"救回防抖命中（同指纹不重派）: sig={sig} "
+                    f"fingerprint={item_fp[:16]}",
+                )
+                self._write_chain_event(
+                    item,
+                    kind="chain-rescue-dedup",
+                    action_or_upgrade=(
+                        f"救回防抖命中：同指纹失败面已救回/裁决过"
+                        f"（fingerprint={item_fp[:16]}），不重派 Arbiter，"
+                        f"直达人工"
+                    ),
+                )
+                self._endpoint_escalate(
+                    item,
+                    reason=(
+                        f"救回防抖命中：同指纹失败面（{item_fp[:16]}）此前已"
+                        f"救回/裁决过，不重派 Arbiter（重复自动处置无效面）"
+                    ),
+                    endpoint_kind="rescue-dedup",
+                    admin_trail=admin_trail,
+                )
+                return
+
         self._quota.mark_in_flight(chain_id, sig, spec, "arbiter")
         outcome = self._run_arbiter_phase(item, admin_trail, quota_cfg)
         self._quota.clear_in_flight(chain_id)
+        if item_fp and outcome not in ("closed", "infra-failed"):
+            # 非 closed 终态（escalated/dead-man/重试耗尽）登记救回指纹
+            # （6.2）：该失败面已被 Arbiter 裁决过，同指纹复发防抖拦截至
+            # 人工。infra-failed 不记（车道环境故障，失败面未获裁决）。
+            try:
+                self._quota.record_rescue_fingerprint(sig, item_fp)
+            except Exception as e:
+                self._log(
+                    "warning",
+                    f"救回指纹登记失败（fail-open，防抖下次失效）: sig={sig} {e}",
+                )
         if outcome == "closed":
             return
         if outcome == "infra-failed":
