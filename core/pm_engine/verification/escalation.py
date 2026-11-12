@@ -41,6 +41,7 @@ from core.state_machine import (
 # （code-review ef9941a3a42b）。
 from core.fs_utils import atomic_write_text
 from core.timelib import parse_ts
+from core.pm_engine.verification.report_gate import verify_progress_dir
 
 # 改道指令落盘目录成分净化（code-review item c6d32fd8ff1e）：与 prompt_builder
 # _scenario_reroute_directive_section 读侧单源同口径——两侧都不净化时功能自洽，
@@ -1300,6 +1301,263 @@ def _write_scenario_reroute_stoploss(
             "pm_engine",
             f"scenario_reroute_stoploss 写盘失败 '{spec_name}'（不阻断改道）: {e}",
         )
+
+
+# ── 早期介入路由发射（add-arbiter-blacklist-disposition 6.1）─────────────
+# 连续 ≥2 轮同失败签名 → 直发 verify_repeat_failure 给 Arbiter 早期调查
+# （不等第 3 轮预算耗尽冻结闸门）。发射端 fail-open：任何异常/失能/dedup
+# 只影响发射本身，打回与冻结闸门主流程零影响（既有冻结→链升级路径逐字节
+# 一致——发射点在 family bug-found 路由冻结闸门判定之前，不改其判定）。
+
+VERIFY_REPEAT_FAILURE_SIGNAL = "verify_repeat_failure"
+# 发射阈值：连续 ≥2 轮同失败签名（与 MAX_VERIFY_FAIL_ROUNDS=3 冻结闸门
+# 错位一轮——第 2 轮早期介入、第 3 轮冻结兜底，两路对同一失败问题经
+# _emit 侧车与冻结预检去重不双派）。
+VERIFY_REPEAT_FAILURE_MIN_ROUNDS = 2
+# 同指纹发射侧车留存窗（窗内不双派；过期视为陈旧残留，指纹未变也重获
+# 发射资格——车道 submit_trigger 签名 dedup 仍兜底在飞合并）。
+_VERIFY_REPEAT_FAILURE_WINDOW_S = 24 * 3600
+
+
+def _verify_repeat_failure_path(pipeline, spec_name: str) -> Path:
+    """早期触发发射侧车路径（verify-progress 目录，与 reroute_stoploss 同级）。"""
+    return (
+        pipeline._context.project_root
+        / ".fenix"
+        / "verify-progress"
+        / safe_component(spec_name)
+        / "verify_repeat_failure.json"
+    )
+
+
+def _failed_assertions_hash(pipeline, spec_name: str, failed_ids: list) -> str:
+    """断言集哈希（指纹单源第二半边）：失败场景断言文本集合的 sha256。
+
+    从冻结场景文件读（fail-open：缺文件/解析失败/加载失败 → 空集哈希——
+    断言面缺失时指纹退化为仅失败 id 集，早期介入判定不断链）。断言文本
+    str 归一排序后联合哈希，场景内断言顺序不敏感。
+    """
+    import hashlib
+
+    texts: list = []
+    try:
+        from core.verify_engine.scenarios import load_scenarios
+
+        frozen_path = (
+            verify_progress_dir(pipeline, spec_name) / "test_scenarios.json"
+        )
+        if frozen_path.is_file():
+            wanted = {str(s) for s in (failed_ids or [])}
+            for sc in load_scenarios(frozen_path):
+                sid = str(getattr(sc, "id", "") or "")
+                if sid and sid in wanted:
+                    for a in getattr(sc, "assertions", None) or []:
+                        texts.append(str(a))
+    except Exception:  # noqa: BLE001 — 断言面缺失指纹退化，不断发射链路
+        texts = []
+    texts.sort()
+    return hashlib.sha256("\n".join(texts).encode("utf-8")).hexdigest()
+
+
+def _repeat_failure_fingerprint(failed_ids: list, assertions_hash: str) -> str:
+    """早期介入指纹单源：失败场景 id 集 + 断言集哈希（sort_keys 联合 sha256）。
+
+    链侧 last_rescue_fingerprint 防抖（6.2）与本发射侧车同引本函数——
+    两端指纹口径漂移会使防抖永不命中（防抖死代码）。
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {
+            "failed_ids": sorted(str(s) for s in (failed_ids or [])),
+            "assertions_hash": str(assertions_hash or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def maybe_emit_verify_repeat_failure(
+    pipeline, spec_name: str, fail_rounds: int, failed_ids: list
+) -> str:
+    """早期介入路由发射。返回处置字（调用方仅日志消费，不阻断主流程）：
+
+    - ``"disabled"``：D9 降级态（``arbiter_blacklist.enabled=false``）——
+      不发射（降级态断言：黑名单制关闭时早期介入路由一并下线）；
+    - ``"below-threshold"``：轮数未达发射阈值（单轮失败走既有打回，不早期
+      介入）；
+    - ``"signature-drift"``：失败面逐轮漂移（末两轮 failed_scenarios 集不
+      同）——不同问题的失败轮不构成「连续同失败签名」，不早期介入（交由
+      既有打回/冻结闸门按各轮独立分型）；
+    - ``"frozen-taken-over"``：spec 已冻结——预算耗尽冻结路径已接管
+      （verify_fail_escalation 在链上），去重不双派；
+    - ``"deduped"``：同指纹发射侧车在窗内（已发射在飞/已派发）——不双派；
+    - ``"lane-unavailable"``：Arbiter 车道未装配（不发射不落侧车）；
+    - ``"queued"``/``"deduped"``（链/车道返回）：已发射（deduped=签名
+      dedup 兜底命中，同样记侧车——本次触发已被在飞件合并）。
+    """
+    try:
+        if int(fail_rounds or 0) < VERIFY_REPEAT_FAILURE_MIN_ROUNDS:
+            return "below-threshold"
+    except (TypeError, ValueError):
+        return "below-threshold"
+    # 签名漂移检测（连续 ≥2 轮**同**失败签名才构成早期介入前提）：fail_
+    # history 末两轮 failed_scenarios 集不同 → 失败面在变（每轮新问题），
+    # 交既有闸门独立分型，不发射。历史不足两轮（<2 条）按漂移拒绝——单轮
+    # 不足以判定「连续同签名」。
+    from core.pm_engine.verification.infra_classify import _read_fail_history
+
+    _history = _read_fail_history(pipeline, spec_name)
+    if len(_history) >= 2:
+        _last = {str(s) for s in (_history[-1].get("failed_scenarios") or [])}
+        _prev = {str(s) for s in (_history[-2].get("failed_scenarios") or [])}
+        if _last != _prev:
+            return "signature-drift"
+    elif len(_history) < 2:
+        return "signature-drift"
+    try:
+        from core.pm_engine.arbiter_blacklist import blacklist_enabled
+
+        if not blacklist_enabled(pipeline._context.project_root):
+            return "disabled"  # D9 降级态不发射
+    except Exception:  # noqa: BLE001 — 开关读取故障按启用态继续（fail-open）
+        pass
+    ids = [str(s) for s in (failed_ids or [])]
+    fingerprint = _repeat_failure_fingerprint(
+        ids, _failed_assertions_hash(pipeline, spec_name, ids)
+    )
+    # 去重①：同指纹侧车窗内不双派（指纹变=失败面变，重获发射资格）
+    path = _verify_repeat_failure_path(pipeline, spec_name)
+    prev = None
+    try:
+        if path.exists():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                prev = loaded
+    except (OSError, ValueError):
+        prev = None
+    if isinstance(prev, dict) and prev.get("fingerprint") == fingerprint:
+        prev_ts = parse_ts(str(prev.get("submitted_at") or ""))
+        if prev_ts is not None and (
+            datetime.now(timezone.utc) - prev_ts
+        ).total_seconds() < _VERIFY_REPEAT_FAILURE_WINDOW_S:
+            return "deduped"
+    # 去重②：spec 已冻结 → 冻结路径已接管（verify_fail_escalation 在链上）
+    try:
+        sm = pipeline._context.state_machine
+        entry = (sm.read_one(spec_name) or {}) if sm is not None else {}
+        if entry.get(FROZEN_FIELD):
+            return "frozen-taken-over"
+    except Exception:  # noqa: BLE001 — 冻结预检故障不拦发射（车道 dedup 兜底）
+        pass
+    # 载荷组装：逐轮失败面对照（fail_history 侧车末 4 轮）+ judge 归因摘要如有
+    history = _history
+    rounds_face = [
+        {
+            "round": r.get("round"),
+            "failed_scenarios": [str(s) for s in (r.get("failed_scenarios") or [])][:20],
+            "failure_class": str(r.get("failure_class") or ""),
+        }
+        for r in history[-4:]
+        if isinstance(r, dict)
+    ]
+    judge_class = ""
+    for r in reversed(history):
+        fc = str(r.get("failure_class") or "") if isinstance(r, dict) else ""
+        if fc and fc != "unknown":
+            judge_class = fc
+            break
+    # 发射链优先（对齐 _on_machine_freeze 冻结钩子「链优先回落直派」先例）：
+    # 链入队时 payload 携带指纹（6.2 链侧救回防抖消费）；链 disabled/
+    # blacklisted/异常回落车道直派——blacklisted 回落后 lane.submit_trigger
+    # 经 in_trigger_surface 同一黑名单配置判 excluded（双闸同源不破语义），
+    # disabled 时直派亦短路 disabled 零写入。
+    from core.pm_engine.escalation_chain import get_chain
+
+    try:
+        chain = get_chain(
+            pipeline._context.project_root, pipeline._context.logger
+        )
+    except Exception:  # noqa: BLE001 — 链装配异常回落直派
+        chain = None
+    _desc = (
+        f"'{spec_name}' 连续 {fail_rounds} 轮同失败签名（早期介入路由），"
+        f"Arbiter 早期调查介入"
+    )
+    _evidence = (
+        f"spec={spec_name}; fingerprint={fingerprint[:16]}; "
+        f"failed_ids={','.join(sorted(ids))[:200]}; "
+        f"fail_rounds={fail_rounds}; "
+        f"judge_class={judge_class or 'unknown'}; "
+        f"逐轮失败面对照={json.dumps(rounds_face, ensure_ascii=False)[:400]}"
+    )
+    _action = (
+        "调查连续同签名验证失败根因：黑名单禁项面内机械可判则救回"
+        "（工具箱 T1/T2），否则产裁决包；T2 探针复现时 MUST NOT 报 resolved"
+    )
+    outcome = None
+    if chain is not None:
+        try:
+            outcome = chain.submit_entry(
+                spec=spec_name,
+                signal_type=VERIFY_REPEAT_FAILURE_SIGNAL,
+                severity="major",
+                description=_desc,
+                evidence=_evidence,
+                recommended_action=_action,
+                payload={"fingerprint": fingerprint},
+                source="verify-repeat-failure",
+            )
+        except RuntimeError:
+            outcome = None  # 队列满：回落直派（显式报错形态不吞，下同）
+        except Exception:  # noqa: BLE001 — 链登记异常回落直派
+            outcome = None
+    if outcome in ("queued", "deduped"):
+        pass  # 已入链（skip_admin 路由直达 Arbiter 相，6.2）
+    else:
+        # 回落车道直派（签名 dedup 兜底在飞合并）
+        from core.pm_engine.arbiter import get_lane
+
+        lane = get_lane(
+            pipeline._context.project_root, pipeline._context.logger
+        )
+        if lane is None:
+            return "lane-unavailable"
+        outcome = lane.submit_trigger(
+            spec=spec_name,
+            signal_type=VERIFY_REPEAT_FAILURE_SIGNAL,
+            severity="major",
+            description=_desc,
+            evidence=_evidence,
+            recommended_action=_action,
+            source="verify-repeat-failure",
+        )
+    # 侧车落盘（写失败仅告警——发射已成功，侧车缺失只损失下轮去重）
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            path,
+            json.dumps(
+                {
+                    "fingerprint": fingerprint,
+                    "failed_ids": sorted(ids),
+                    "fail_rounds": int(fail_rounds or 0),
+                    "rounds_face": rounds_face,
+                    "judge_class": judge_class,
+                    "submit_outcome": str(outcome),
+                    "submitted_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    except OSError as e:
+        pipeline._context.logger.warning(
+            "pm_engine",
+            f"verify_repeat_failure 侧车写盘失败 '{spec_name}'（不阻断）: {e}",
+        )
+    return str(outcome)
 
 
 def _scenario_defect_reroute_gate(

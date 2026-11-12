@@ -17,6 +17,15 @@ import tempfile
 # 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
 MAX_VERIFY_FAIL_ROUNDS = 3
 
+# 早期介入路由发射阈值（add-arbiter-blacklist-disposition 6.1）：连续达到
+# 此轮数即直发 verify_repeat_failure 给 Arbiter 早期调查（与上方冻结闸门
+# 错位一轮——第 2 轮早期介入、第 3 轮冻结兜底）。单源在
+# verification/escalation.py（本处 re-export 供路由判定消费，防两侧字面量
+# 漂移）。
+from core.pm_engine.verification.escalation import (  # noqa: E402
+    VERIFY_REPEAT_FAILURE_MIN_ROUNDS,
+)
+
 # fix SPEC 的「终态」状态集：_resolve_fix_spec_name 的递归派生判定与
 # _same_root_siblings 的家族宽度/兄弟互斥筛选共用（code-review item
 # 757e05f354fd：两处各写字面量后口径漂移——verified 的同根兄弟既被宽度门
@@ -1154,6 +1163,35 @@ class FamilyGovernor:
             failure_class=failure_class,
             run_id=run_id,
         )
+
+        # ── 早期介入路由（add-arbiter-blacklist-disposition 6.1）───────
+        # 连续 ≥2 轮同失败签名 → 直发 verify_repeat_failure 给 Arbiter
+        # 早期调查（不等第 3 轮预算耗尽冻结闸门）。发射 fail-open：异常/
+        # 失能/dedup 一律只留日志，打回与冻结闸门主流程零影响（下方既有
+        # 冻结→链升级路径逐字节一致——本调用点在其判定之前）。
+        if fail_rounds >= VERIFY_REPEAT_FAILURE_MIN_ROUNDS:
+            try:
+                from core.pm_engine.verification.escalation import (
+                    maybe_emit_verify_repeat_failure,
+                )
+
+                _emit = maybe_emit_verify_repeat_failure(
+                    self._pm._verification,
+                    spec_name,
+                    fail_rounds,
+                    self._pm._failed_scenario_ids(spec_name),
+                )
+                if _emit == "queued":
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"早期介入路由已发射 '{spec_name}'（第 {fail_rounds} 轮"
+                        f"同签名失败 → Arbiter 早期调查）",
+                    )
+            except Exception as e:  # noqa: BLE001 — 发射故障不阻断打回主流程
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"早期介入路由发射失败 '{spec_name}'（不阻断打回主流程）: {e!r}",
+                )
 
         if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
             # ── 升级闸门：冻结转人工（freeze_for_human 单一入口）──
