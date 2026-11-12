@@ -126,6 +126,12 @@ ARITY_WHITELIST = [
     #    与 core/logger.py Logger.exception(component, message) 同名异签名
     #    ——同族 3 的 stdlib 单参形态。
     ("core/agent_runner/harness/one_shot.py", "exception", "logger"),
+    # 10. add-arbiter-blacklist-disposition：arbiter_blacklist.py 禁项判定段
+    #     模板 _BLACKLIST_MODE_SECTION_TEMPLATE.format(ban_lines=...)（{ban_lines}
+    #     具名占位全关键字展开）——同族 1/4/5/6/7/8 的 str.format 误报
+    #    （引入调用点时补豁免）。
+    ("core/pm_engine/arbiter_blacklist.py", "format",
+     "_BLACKLIST_MODE_SECTION_TEMPLATE"),
 ]
 
 

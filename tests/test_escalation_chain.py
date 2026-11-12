@@ -2230,8 +2230,20 @@ class TestVerifyRepeatFailureEmission(unittest.TestCase):
         me = self
 
         class _C:
-            def submit_entry(self, **kw):
-                me.chain_calls.append(kw)
+            # 替身签名与生产 EscalationChain.submit_entry 同形（显式关键字，
+            # 禁 **kw 宽容形态——fake-double-fidelity OnRepo 守卫锚定）
+            def submit_entry(self, *, spec, signal_type, severity="major",
+                             description="", evidence="",
+                             recommended_action="", trigger=None,
+                             payload=None, source=""):
+                me.chain_calls.append({
+                    "spec": spec, "signal_type": signal_type,
+                    "severity": severity, "description": description,
+                    "evidence": evidence,
+                    "recommended_action": recommended_action,
+                    "trigger": trigger, "payload": payload,
+                    "source": source,
+                })
                 return "queued"
 
         return _C()
