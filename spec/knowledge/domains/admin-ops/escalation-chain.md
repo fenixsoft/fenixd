@@ -1,7 +1,7 @@
 # 升级处置链（Admin→Arbiter→人工）
 
-<!-- knowledge: capability=escalation-chain rev=9
-     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec -->
+<!-- knowledge: capability=escalation-chain rev=10
+     sources=spec/changes/add-escalation-chain-admin-arbiter,spec/knowledge/_inbox/done/escalation-chain-orphan-watchdog-double-path.md,spec/changes/fix-escalation-chain-watchdog-yield-gaps,spec/knowledge/_inbox/done/chain-arbiter-rulings-default-3.md,spec/knowledge/_inbox/done/escalation-chain-disposition-ledger-gap.md,spec/changes/fix-escalation-chain-ledger-closure,spec/changes/add-adjudication-auto-exec,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md -->
 
 升级边信号的默认消费通道：两级自动化处置（Admin 受限运维先行、Arbiter 全局拍板兜底）逐级收敛，人工裁决只是链终点失败后的例外出口。
 
@@ -31,8 +31,9 @@
 - 失败双轨上升：(a) Arbiter 自判无法处理/无法决策/尝试无效（含 run 崩溃超时，沿用同签名失败重试 1/2 次与半成品调查包机制）；(b) 复现配额耗尽（缺省 3 次拍板后第 4 次复现）。
 - 上升件必附全链痕迹（Admin 尝试痕、Arbiter 台账五段、剩余 choices）与全链关联键（链 run_id 族）；上升件在人工队列期间，链上任一级后续成功闭环时自动收口（`close_cause` 族标记，含 `CLOSED_BY_CHAIN`），不滞留。
 - 触发面为黑名单制：黑名单内信号绕过全链直达人工队列（写入即按降级态降噪分级标记 handled 的既有语义），初始为空集。
+- 链头派发让位判定单源在发射层：`core/pm_engine/family.py` 的 `yielded_to_arbiter`——链可用 ∧ 非黑名单即让位入链；该判定属纯路由语义，与调查叙事槽位无耦合（叙事生成链退役后发射点零 LLM 调用，见 [adjudication-alert-narrative](adjudication-alert-narrative.md)）。
 - 链入口不按 severity 过滤：minor 预算循环等低严重度信号同样入链。降噪分级是「人工队列」的属性而非「信号」的属性——降级态保留原降噪（critical/major 进 pending、warning/minor 写入即 handled）。
-- 降级 fail-open：`arbiter.enabled=false` 或 Admin+Arbiter 车道双双失能（链级判定，如 harness 级 spawn 失败，非单件失败）时，整体退回无链时代的升级边行为——直达人工队列（既有降噪生效）+ narrative 补叙，逐字节一致；链级失能不逐件烧配额，一次性 WARN 留痕；配置修复后自动恢复入链，无需人工干预。
+- 降级 fail-open：`arbiter.enabled=false` 或 Admin+Arbiter 车道双双失能（链级判定，如 harness 级 spawn 失败，非单件失败）时，整体退回无链时代的升级边行为——直达人工队列（既有降噪生效），零叙事生成调用，逐字节一致；链级失能不逐件烧配额，一次性 WARN 留痕；配置修复后自动恢复入链，无需人工干预。
 - 存量迁移：启用链路由的首个 daemon 启动执行一次性迁移（版本哨兵防重跑）——存量 pending escalation 中能判定「底层已闭环」（同签名 spec 已终态或处置已 resolved）的自动收口（`close_cause=migrated`），其余保留人工队列；迁移不回填入链。回扫哨兵与迁移哨兵互不重入：回扫消费在案 pending 入链派发，迁移只收口已闭环 pending。
 - 链终点等待语义分级自动执行（链序不变——只改链终点在「有明确推荐 + 可逆动作」时的等待方式）：pending 升级告警满足四判据（arbiter 完整调查有唯一正向提及的明确推荐、推荐档位 reversible-experiment、同 SPEC 无共存更高档 pending、连续自动执行未超上限）且 grace 否决窗（缺省 30 分钟，自推荐可用时刻起算）满仍 pending 时，daemon 侧策略引擎经既有单执行机器自动执行推荐 choice——留痕与人工同构仅 `actor=auto-policy`，窗内人工处置先到先得；human-only 两档（state-advance/terminal）不自动执行、超老化阈值只写升级活动记录（actor=aging-watch，仅可见性）。判据明细、grace 锚点、连续计数派生、开关与 fail-open 降级、dashboard auto_exec 投影见 [adjudication-auto-exec](adjudication-auto-exec.md)。
 - 链终点处置（人工或自动执行重验类 choice）外写 STATE 解冻进入 testing 后，verifier 派发经 watch 通道秒级即时触发、不等 30 分钟周期兜底（派发通道语义见 [testing-dispatch-liveness](../dispatch-scheduling/testing-dispatch-liveness.md)）。
@@ -47,3 +48,4 @@
 - 2026-11-04 fix-escalation-chain-ledger-closure（spec/changes/fix-escalation-chain-ledger-closure/） — 台账闭合缺口终态收口（上条折叠的缺口定性随之废除）：链路径改为 run_administrator 返回即落账（单源 append_admin_final、先于链 closed 事件、append 失败降级不阻断）、closed 出口执行注册表 choice（单执行机器 admin_choice_exec、fail-closed 不伪造闭环、白名单外保持转单）、链事件 run_id 结构字段、看护 chain-closed 对账兜底
 - 2026-11-05 用户定调直改（fenix-desktop token-usage-monitor-panel 首例实战；无 SPEC，core/pm_engine/escalation_chain.py 直改） — Arbiter 必经不变式：frozen 预检与 frozen-terminated 空壳击杀出口由「deferred 等人工解冻（链内零痕迹静默挂起）」改道 Arbiter 相冻结鉴定（frozen_skip_admin 置位 + 零配额 + {handoff_reason} 注入鉴定面与许可边界）；deferred 收窄为互斥让行专用形态，空 yield_to 分转 legacy 消化分支自然退役；人工直达例外收敛为四类（关闭态/dead-man/黑名单/看护第三通道）
 - 2026-11-11 add-adjudication-auto-exec（spec/changes/add-adjudication-auto-exec/） — 链终点等待语义分级自动执行入页（本页保留链级摘要与 testing 派发指引；判据/窗锚/计数/降级/读面投影细则归 adjudication-auto-exec 能力页，外部 →testing 跃迁即时派发归 dispatch-scheduling 域 testing-dispatch-liveness 能力页）
+- 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠链头派发让位判定单源迁居（`core/pm_engine/family.py` 的 `yielded_to_arbiter`，判定与叙事槽位解耦入页）；fail-open 降级口径去掉 narrative 补叙尾注（叙事生成链已退役）

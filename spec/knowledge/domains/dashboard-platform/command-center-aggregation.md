@@ -1,7 +1,7 @@
 # 指挥中心后端聚合
 
-<!-- knowledge: capability=command-center-aggregation rev=3
-     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md -->
+<!-- knowledge: capability=command-center-aggregation rev=4
+     sources=spec/archive/2026-10-31-add-command-center,spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md -->
 
 面向管理层演示叙事（组织、交付、裁决、执行四个切面）的第三块大屏数据面：对 dashboard 托管项目跨项目聚合出 KPI 四指标、组织网格、交付流水线、执行台账与裁决收件箱，全部只读。
 
@@ -23,10 +23,11 @@
 - **汇报线为静态常量**：`/org` 响应 `edges` 恒为模块常量 4 条：planner→implementer、implementer→code-review、code-review→judge、code-fix→code-review。
 - **交付流水线五列桶映射**：`/pipeline` 跨项目收集活跃 SPEC 按五列归组，桶映射 MUST 覆盖 `SpecStatus` 全量（含侧挂 blocked）：`drafted`←{drafted, reviewing}（单证评审属需求阶段）；`ready`←{ready}；`implementing`←{implementing, bug-found, blocked}（侧挂暂停归在制列）；`verifying`←{implemented, testing, verified}；`pushed`←{done, pushed}（终态未归档仍为活跃 SPEC）。每卡携带原生 `status`；implementing 列卡存在在飞 run 时附 `running`（含 lane 与开始时间）。
 - **执行台账**：`/ledger` 跨项目最近 50 条 run（LEDGER_CAP=50）按开始时间倒序，每行含 `project`、`spec`、`lane`、`outcome`（classify_run 口径）、`duration`、`tokens`、`cost`、`started_at`、`trigger`；trigger 调度/派发记录不可得时 MUST 为 `null`，MUST NOT 硬造默认值。
-- **裁决收件箱只装配**：`/inbox` 收集未终态且告警记录携带 choices 快照的 admin_alerts 条目，按严重度降序、created_at 降序排列；每卡含告警 id、project、spec、run/kind 溯源、signal_type、severity、`narrative`（adjudication_narrative 侧车合并产物，可得则带，缺失时 `narrative_pending=true`）、`choices`、`created_at`。`choices` MUST 读告警记录内快照，MUST NOT 回读裁决注册表演进态（历史告警不回写语义）；卡片响应定形（additionalProperties false），不携带任何执行动作端点引用，裁决执行唯一通道复用既有 `POST /api/alert-resolve`。
+- **裁决收件箱只装配**：`/inbox` 收集未终态且告警记录携带 choices 快照的 admin_alerts 条目，按严重度降序、created_at 降序排列；每卡含告警 id、project、spec、run/kind 溯源、signal_type、severity、`narrative`（调查报告槽位内容，仅历史侧车/arbiter 报告已合并时携带，缺失不带该字段、无 pending 派生字段）、`choices`、`created_at`。`choices` MUST 读告警记录内快照，MUST NOT 回读裁决注册表演进态（历史告警不回写语义）；卡片响应定形（additionalProperties false），不携带任何执行动作端点引用，裁决执行唯一通道复用既有 `POST /api/alert-resolve`。
 
 ## 溯源
 
 - 2026-10-31 add-command-center（spec/archive/2026-10-31-add-command-center） — 新增本能力：五个只读聚合端点（KPI 四指标 7 日窗精确口径、组织网格静态花名册与汇报线常量、流水线五列桶映射覆盖全量 SpecStatus、台账 50 条倒序 trigger 允许 null、收件箱只读装配复用 alert-resolve）
 - 2026-11-04 memory-distill-unspec-landed-rules（spec/knowledge/_inbox/done/memory-distill-unspec-landed-rules.md） — 组织网格花名册刷新为现行五线划分（设计线 planner-plan/planner-judge、verifier 入交付线、self-review 归质量线、knowledge-distiller 收编运营线），testing/scan 不出卡、ocr 未划线。
 - 2026-11-08 协作拓扑与会话接入退役批（用户指令，无归档 SPEC，登记见 log.md） — 镜像条款收口：聚合入口条款出处口径改历史出处（topology/collab-graph 已删除）
+- 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠收件箱响应定形收缩（consolidate-alerts-to-ops-page）：`narrative` 仅历史侧车/arbiter 报告已合并时携带，`narrative_pending` 字段退役（无槽位内容的卡不带该字段、无生成中语义）

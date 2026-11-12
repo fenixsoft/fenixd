@@ -1,5 +1,5 @@
 # 仪表盘服务
-> 最后更新：2026-11-10 18:13 UTC+8
+> 最后更新：2026-11-12 17:36 UTC+8
 
 跨项目 Web 仪表盘的服务端与平台层：独立服务进程、实例生命周期、增量数据管线、前端壳层基建、按需生成类任务与指挥中心聚合。
 
@@ -22,7 +22,7 @@
 | [dashboard-server-paging](dashboard-server-paging.md) | 读端点服务端分页 | 2026-10-07 02:25 |
 | [dashboard-connection-limit](dashboard-connection-limit.md) | 连接数上限 | 2026-10-03 04:59 |
 | [project-architecture-diagram](project-architecture-diagram.md) | 项目架构图（archify 按需生成） | 2026-10-04 04:57 |
-| [command-center-aggregation](command-center-aggregation.md) | 指挥中心后端聚合（KPI 四指标 7 日窗口径、组织网格五线静态花名册与汇报线、流水线五列桶映射、台账 50 条、收件箱只读装配复用 alert-resolve） | 2026-11-04 16:55 |
+| [command-center-aggregation](command-center-aggregation.md) | 指挥中心后端聚合（KPI 四指标 7 日窗口径、组织网格五线静态花名册与汇报线、流水线五列桶映射、台账 50 条、收件箱只读装配复用 alert-resolve、narrative 槽位内容可得才携带无 pending 派生字段） | 2026-11-12 17:36 |
 
 > 退役：2026-11-08 v2 amis 壳域五能力页（原 v2-shell-router / v2-data-adapters / v2-sdk-vendor / v2-sse-bridge / v2-legacy-coexist）已随 add-knowledge-anchor-lint-and-prune 退役收口删除，历史见 spec/archive/2026-09-04-v2-shell-hash-router、spec/archive/2026-09-04-v2-vendor-amis-sdk 等 2026-09-04/05 系列归档与 git 历史；tests/v2 冒烟基建与 v2_dev_server 现役，不在本退役批范围。
 

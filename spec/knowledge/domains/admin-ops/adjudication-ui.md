@@ -1,4 +1,4 @@
-<!-- knowledge: capability=adjudication-ui rev=1 sources=spec/archive/2026-09-27-add-human-adjudication-choices -->
+<!-- knowledge: capability=adjudication-ui rev=2 sources=spec/archive/2026-09-27-add-human-adjudication-choices,spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md -->
 
 # 告警选择题交互
 
@@ -6,7 +6,7 @@
 
 ## 现行规则
 
-- 带非空 `choices` 的告警在告警卡片内渲染：选项下拉框（`Select`，展示 label+desc）、可选备注输入框（note）、「执行」按钮；受影响组件为 spec 详情页告警区（`pages/projects/detail.tsx`）与 overview 横幅（`pages/overview/components/AlertBanner.tsx`），服务层 `services/dashboard.ts` 提供 `resolveAlert` 函数。
+- 带非空 `choices` 的告警在告警卡片内渲染：选项下拉框（`Select`，展示 label+desc）、可选备注输入框（note）、「执行」按钮；受影响组件为 spec 详情页告警区（`pages/projects/detail.tsx`）、运维页告警记录（移动端行内）与指挥中心收件箱，服务层 `services/dashboard.ts` 提供 `resolveAlert` 函数。
 - 点击执行调用 `POST /api/alert-resolve`：成功 → 该告警转为已处理态并提示处置结果摘要；失败 → 展示错误与已执行步骤说明，告警保持可重试（下拉与按钮恢复可交互，允许改选重试）。
 - 执行中按钮处于 loading 态，防重复提交。
 - 不带 `choices` 的告警保持既有「知道了」（markAlertHandled）交互，不出现下拉框。
@@ -16,3 +16,4 @@
 ## 溯源
 
 - 2026-09-27 add-human-adjudication-choices（spec/archive/2026-09-27-add-human-adjudication-choices） — 建立告警选择题交互契约：下拉+执行渲染、三态反馈、知情类无下拉、不可逆动作二次确认与留痕提示
+- 2026-11-12 alert-narrative-generation-chain-retired（spec/knowledge/_inbox/done/alert-narrative-generation-chain-retired.md） — 折叠裁决渲染面收缩（consolidate-alerts-to-ops-page）：overview 横幅形态退役，裁决闭环保留于 spec 详情页告警区、运维页告警记录（移动端行内）与指挥中心收件箱三面
